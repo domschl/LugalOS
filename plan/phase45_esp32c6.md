@@ -124,23 +124,62 @@ above is the raw archives).
   "calibrate every boot" for a first pass; storing the result is an
   optimisation (45.9).
 
-### 4.3 The shim, concretely (45.3)
+### 4.3 The shim, as built (45.3b)
 
-LugalOS has no FreeRTOS. The shim must provide, with the *blocking and
-ISR-context* semantics the blob expects:
+The blob reaches its OS through **two** ABI-checked tables, not one: Espressif's
+`wifi_osi_funcs_t` (127 entries on this chip) and, separately, the coexistence
+library's `coex_adapter_funcs_t` (20; the ROM keeps its pointer at
+`g_coa_funcs_p`). The 45.2 census found only the first. Both are filled by
+`drivers/radio/esp32c6_osi_table.c`, the only file that includes IDF's headers.
 
-| Blob wants | LugalOS primitive to map onto | Risk |
+```
+        blob + ROM (U-mode, radio domain)
+          │  function pointers (the two tables)
+          ▼
+   drivers/radio/osi_impl.c ──── in the domain, no ecall ────► kernel/uheap.c   heap
+          │                                                     uprintf.c       log formatting
+          │ ecall (one number per operation)                    nvs_ram.c        key/value store
+          ▼
+   kernel/kobj_sys.c  ── ownership + pointer validation ──► kernel/kobj_sched.c ──► kernel/kobj.c
+                                                             (blocking, timeouts)    (state machines)
+```
+
+| Layer | What | Where it runs |
 |---|---|---|
-| mutex / recursive mutex | kernel lock *within the phase-31 wait-for graph rules* | Deadlock graph assumptions: the blob takes locks from its own task and from ISR-deferred paths. |
-| binary/counting semaphores, `…FromISR` | kernel semaphores | ISR-safe variants must not allocate. |
-| queues | a small ring queue with wake-up | Item-by-copy semantics. |
-| task create (the blob creates ~2–4 tasks: `pp`, timer, event) | `task_create` with the stack sizes IDF gives | Stack size budget against 512 KB. |
-| timers | one shim timer service on the existing tick | ms resolution is sufficient. |
-| interrupt alloc/enable | 45.4's C6 interrupt driver | The blob installs its own MAC/PHY/BB interrupt handlers by *source number*. |
-| `malloc`/`free`/`calloc` | `palloc`/heap | The blob allocates big, aligned, DMA-capable buffers. |
+| `kobj.c` | semaphores, mutexes (recursive), queues, event groups, timers as non-blocking state machines with FIFO direct hand-off; allocates nothing | kernel; host-tested against reference models |
+| `kobj_sched.c` | the blocking, timed waits and wake-ups (`task_block_until_ms`), one leaf spinlock | kernel |
+| `kobj_sys.c` | the syscalls (`kobj_abi.h`): handles honoured only for the creating domain, every user pointer copied through `uaccess`, threads in the caller's domain, random, MAC, one log line | kernel |
+| `uheap.c` | the radio's own heap in its own RAM (boundary tags, 32 size classes, corruption check) — malloc is not a syscall | domain |
+| `uprintf.c` | a printf with no libc and no 64-bit arithmetic, for the blob's log calls | domain |
+| `nvs_ram.c` | IDF's NVS protocol in RAM (the blob keys off `NOT_FOUND`) | domain |
+| `osi_impl.c` | the 127 + 20 entries, in plain C types | domain |
+| `esp32c6_osi_table.c` | wires them to IDF's structs; compiles against IDF's headers; `tools/c6_blob_spike/osi_table_check.sh` checks types and completeness | domain, C6 build only |
+| `plat.h` | the seam to the chip: PHY enable/disable/country, modem clock and MAC reset | 45.6 |
 
-Everything above lives in `drivers/esp32c6_wifi_osal.c` (one file, mirroring
-IDF's adapter) and is **not** compiled into any untainted build.
+Entries by where they are served: **in the kernel** (an `ecall`): semaphores,
+mutexes, queues, event groups, timers, threads, time, random, the MAC, one log
+line, interrupts, events. **In the domain**: malloc/free and friends, the
+key/value store, formatting, `is_from_isr` (the stack pointer says which
+thread this is), ticks (1 tick = 1 ms; `0xffffffff` blocks forever), and every
+constant or no-op. **Ported from IDF**: the PHY and modem clock/reset.
+
+Design points that were decisions, not just code:
+
+* **Kernel objects stay out of the radio's memory.** A semaphore whose count
+  lives in the blob's RAM is one a stray store can turn into a deadlock; a
+  handle into a kernel table can only be misused as a handle, and is refused
+  (`KO_FAIL`) unless the caller's domain made it.
+* **A critical section is mutual exclusion among the domain's threads.** The
+  hardware interrupt itself runs only a kernel stub; the handler logic runs in a
+  thread of the domain (§4.5), so excluding that thread is excluding the
+  interrupt. No priority inheritance (the scheduler has none), so a low-priority
+  holder can delay the interrupt thread; the sections are short.
+* **Threads are real kernel tasks in the caller's own domain.** The blob creates
+  its `pp` task through the table; the shim adds a timer thread (it calls the
+  blob's timer callbacks) and, in 45.6, an interrupt thread. The entry and the
+  stack are validated against the creator's regions before the task exists.
+* **The log path is a formatter in the domain and one ecall**, not the kernel's
+  printk engine, which a U-mode caller cannot reach.
 
 ### 4.4 What the spike measured (45.2, 2026-10-05)
 
@@ -364,6 +403,46 @@ the flash window under a U-mode grant (a PMP region is a physical-address
 check; nothing about it is flash-specific), and any real radio register
 access from U-mode (the radio clocks are not up; 45.6).
 
+### 4.6 What building it found (45.3b)
+
+* **The lock checker caught a real bug on first contact.** `kq_create` allocated
+  pages while holding the object spinlock; `[Lock BUG] took g_palloc_lock while
+  holding g_kobj_lock`. A spinlock is a leaf. The core now allocates nothing:
+  queue storage is the caller's, allocated before the lock and returned by
+  delete for freeing after it.
+* **On RV32 every 64-bit shift is a libgcc call, and U-mode text cannot call
+  libgcc.** The formatter's first version faulted on its first `v >> bit`
+  (`__lshrdi3`). It now divides in 16-bit limbs. Nothing warns about this — the
+  linker resolves it happily — so `tools/check_radio_text.py` reads the objects
+  and fails on any reference outside the shim (mutation-tested: an injected
+  64-bit divide is caught as `__udivdi3`); it runs in the suite. **On the C6 the
+  same applies to the shim, not to the blob**, whose own soft-float helpers
+  resolve into ROM (§4.4).
+* **`EXCLUDE_FILE` in GNU ld applies to the pattern that follows it, not to the
+  list.** `*(EXCLUDE_FILE(x) .rodata .rodata.*)` excluded `.rodata` and let
+  `.rodata.str1.1` through, so a log format string stayed in kernel read-only
+  data and the first `%s` faulted in U-mode. Each pattern needs its own.
+* **GCC refuses to put code and constants in one section** (`section type
+  conflict`), so a U-mode test's strings live in a second input section the
+  linker folds into the same read-only+execute region.
+* **A differential test against libc found four format edge cases** in the
+  formatter that hand-written cases had not (`%.0d` of 0, `%#.4o`, `%#.0o` of
+  0, a precision/zero-flag interaction): 60 000 random formats × four seeds now
+  agree with `snprintf`.
+* **`os_get_time` is the supplicant's `struct os_time {long; long}`**, not a
+  `timeval` — 8 bytes here, not 16. Read from IDF's source before it was wrong in
+  the radio.
+* **IDF's sleep-retention wrappers return 1, not 0**, and
+  `_wifi_disable_ac_ax` returns false: a table of constants has to copy the
+  constants.
+* **Verification in the suite now:** `kobjselftest` (kernel tasks, real timeouts,
+  a timeout racing a grant 100 times — it must go both ways, and does: 60/40),
+  `kobjutest` (29 checks: every operation, the ownership and pointer boundary,
+  a second thread in the domain), `radioosi` (22 checks through the shim's
+  entries, in a domain whose text and data are the linker's), the host harnesses
+  `kobj_host`, `uheap_host`, `uprintf_host`, `nvs_host` under ASan/UBSan (each
+  mutation-tested), and `check_radio_text.py`.
+
 ## 5. Milestones
 
 Each milestone ends with a verification that can be repeated and a commit
@@ -426,13 +505,13 @@ by flashing*.
   consequences for the design. Tools: `tools/umode_probe_esp32c6.{c,ld}`,
   `umode_probe_esp32c6_entry.S`, `tools/build_umode_probe_esp32c6.sh`,
   `tools/c6_blob_spike/rom_scan.py`, and the shared `tools/c6_standalone.h`.
-* **45.3b The OSAL shim, in two halves.** The table in §4.3 as a *kernel side*
-  (the services: semaphores, mutexes, queues, tasks, timers, memory, time,
-  NVS, coexistence — with host-side unit tests of the queue/semaphore
-  semantics, pure C, built for every target) and a *U-mode side* (the ABI-checked
-  `wifi_osi_funcs_t` whose entries are generated `ecall` stubs, plus the
-  callback threads of §4.5: timers, ISR upcalls). Built against IDF's own
-  headers (§4.4, ABI md5s).
+* **45.3b The OS shim — DONE 2026-10-05, on QEMU.** Everything the blob's two
+  OS tables ask of an operating system is implemented and tested in a confined
+  U-mode domain on rv32 (PMP), rv64 (Sv39) and the two-hart rv64-smp build, with
+  no C6 involved; §4.3 describes what was built and §4.6 what it found. What
+  stays open is exactly the part that needs the chip: interrupts, the PHY and
+  clock port, the event sink (`radio_plat_*`, `KOBJ_OP_INTR_*`,
+  `KOBJ_OP_EVENT_POST`) — 45.4 and 45.6.
 * **45.4 C6 kernel bring-up.** Interrupt matrix and controller, trap
   vector, the system tick, PMP setup, the kernel's scheduler, the VFS and
   the existing `lsh` console on USB-JTAG. This is the "LugalOS runs on the C6"
@@ -532,7 +611,7 @@ Not a design yet, but the properties that §7's constraints demand:
 
 | Risk | Why | What we do |
 |---|---|---|
-| **Shim bugs are timing bugs** | The blob assumes FreeRTOS scheduling and ISR semantics | 45.2 enumerates what's reachable; 45.3 tests the primitives in isolation on the host before any flash |
+| **Shim bugs are timing bugs** | The blob assumes FreeRTOS scheduling and ISR semantics | Done for the primitives (45.3b: models on the host, real tasks and races in QEMU); what remains is the blob's own expectations, found only by running it (45.6) |
 | **ISR latency in U-mode** | The radio's MAC/PWR interrupts become a kernel stub + a U-mode thread wake-up (§4.5) | Measure in 45.6; fallback is M-mode handlers for that path only |
 | **RAM** | 512 KB total, with the kernel, stacks, the IP stack and the blob's buffers | 45.2 measures *before* 45.3 starts; pool sizes are a config knob |
 | **WPA supplicant + crypto** | Open; sized in 45.2 at ≈ 46 KB (§4.4) | Port in 45.7; the 11-entry crypto table is the interface |
