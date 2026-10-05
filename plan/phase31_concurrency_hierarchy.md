@@ -1703,25 +1703,30 @@ which is how this one stayed hidden.)
     `i2cstats` answers 20 of 20 times in 0.05 s. Any board whose console is
     USB CDC was affected, at whatever output lengths happen to be multiples
     of 64.
-  * **Open, predates §7: a board that does not come back from `reboot`
-    after a full hardware suite.** The sequence is the full `test_rp2350.py`
-    suite, then the node-pool test, then its closing `reboot`. Afterwards the
-    board answers nothing on either port, ignores the 1200-baud touch, and
-    does not re-enumerate; only a USB replug recovers it. Seen on
-    rp2350-clock (twice) and rp2350-chess (three times, the first on that
-    board's very first suite run). The firmware from before §7 (build 723,
-    `c14e1cf`) did it as well, on its second try. What it is not:
-    * the watchdog tick. TICKS `WATCHDOG_CTRL` read `3` (running, 12 cycles)
-      after every one of the suite's tests;
-    * the node-pool test alone. 10 of 10 on a freshly booted board, and 12
-      of 12 manual exhaust-then-reboot iterations, came back;
-    * a plain `reboot`, which came back 22 of 22 times.
+  * **A board that does not come back from `reboot`: the USB hub, not the
+    firmware.** The sequence was the full `test_rp2350.py` suite, then the
+    node-pool test, then its closing `reboot`. Afterwards the board answered
+    nothing on either port, ignored the 1200-baud touch, and the host still
+    listed it under its old device number; only a USB replug recovered it.
+    It happened on rp2350-clock (twice) and rp2350-chess (three times), and
+    with the firmware from before §7 (build 723) as well. Ruled out on the
+    way:
+    * the watchdog tick: TICKS `WATCHDOG_CTRL` read `3` (running, 12 cycles)
+      after every test;
+    * the bootrom's boot locks, which make an API return an error rather
+      than spin;
+    * the board itself: alive for a full minute in the same state when not
+      rebooted.
 
-    The open questions are whether the board ever reaches the bootrom's
-    reboot call, and which earlier test sets it up. Each attempt costs a
-    replug. The harness now calls `rp2350.wake_shell()`, which repeats
-    Ctrl-C until a prompt answers and says so when none does, so a silent
-    board is reported up front rather than as 28 unrelated failures.
+    Every hang was behind the same USB hub (Genesys Logic). With the board
+    plugged in directly, 8 of 8 suite-then-reboot sequences re-enumerated,
+    including the real CLI run (31/31). The likely mechanism: the hub does
+    not report the disconnect when the chip resets, so the host never
+    re-enumerates it, and the rebooted board waits for a bus reset that
+    never comes. One thing from the hunt is kept: the harness now calls
+    `rp2350.wake_shell()`, which repeats Ctrl-C until a prompt answers and
+    says so when none does, so a silent board is reported up front rather
+    than as 28 unrelated failures.
 * Not a concurrency finding, but found by the same run: `test_psram`'s
   cold-cache read fell from a steady 23.8 MB/s to 20.5–23.2 MB/s. Nothing
   in these changes touches PSRAM. They moved the bench's own loop
