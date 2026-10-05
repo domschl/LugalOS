@@ -20,6 +20,7 @@
  * (the default on this chip). Built only for the C6: it needs the IDF include
  * path and the blob to link against. */
 
+#include "radio_redirect.h"
 #include "osi_impl.h"
 #include "plat.h"
 
@@ -47,7 +48,7 @@ static uint8_t coex_schm_curr_period_get_w(void)   { return coex_schm_curr_perio
 static void *coex_schm_curr_phase_get_w(void)      { return coex_schm_curr_phase_get(); }
 static int coex_register_start_cb_w(int (*cb)(void)) { return coex_register_start_cb(cb); }
 static int coex_schm_process_restart_w(void)       { return coex_schm_process_restart(); }
-static int coex_schm_register_cb_w(int type, int (*cb)(int)) { return coex_schm_register_callback(type, cb); }
+static int coex_schm_register_cb_w(int type, int (*cb)(int)) { return coex_schm_register_callback(type, (void *)(uintptr_t)cb); }
 /* Power management (CONFIG_ESP_COEX_POWER_MANAGEMENT) is off for this radio, and IDF's
  * own wrappers answer exactly this when it is. */
 static int coex_schm_flexible_period_set_w(uint8_t period) { (void)period; return 0; }

@@ -1,6 +1,7 @@
 #include "kernel/shell.h"
 #if defined(CONFIG_BOARD_ESP32C6)
 #include "drivers/ws2812.h"
+#include "kernel/radio_c6.h"
 #endif
 #include "kernel/printk.h"
 #include "kernel/console.h"
@@ -3580,6 +3581,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         } else if (!ws2812_set((uint8_t)v[0], (uint8_t)v[1], (uint8_t)v[2])) {
             cprintf("led: the pulse generator never finished a frame\n");
         }
+        return;
+    } else if (strcmp(cmd_line, "radio") == 0) {
+        (void)radio_c6_start();
         return;
     } else if (strcmp(cmd_line, "intrdump") == 0) {
         cmd_intrdump();

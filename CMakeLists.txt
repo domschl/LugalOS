@@ -967,6 +967,27 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
     list(APPEND SOURCES drivers/usbjtag_esp32c6.c)
     # 45.5: the board's one WS2812 (GPIO8) through the RMT pulse generator.
     list(APPEND SOURCES drivers/ws2812.c drivers/ws2812_esp32c6.c)
+    # 45.6: the Wi-Fi radio. The kernel half is always built (it says so when there
+    # is no blob); the rest only with an ESP-IDF tree to take headers and archives
+    # from (cmake/radio_esp32c6.cmake).
+    list(APPEND SOURCES kernel/radio_c6.c)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/radio_esp32c6.cmake)
+    if(LUGALOS_RADIO_C6)
+        add_compile_definitions(CONFIG_RADIO_C6=1)
+        set(RADIO_C6_SOURCES drivers/radio/esp32c6_osi_table.c drivers/radio/radio_main.c
+            drivers/radio/radio_libc.c drivers/radio/plat_esp32c6.c)
+        list(APPEND SOURCES ${RADIO_C6_SOURCES} ${LUGALOS_RADIO_IDF_SOURCES})
+        # IDF's headers as system headers, so only *our* warnings count.
+        set(_radio_opts "")
+        foreach(_d IN LISTS LUGALOS_RADIO_INC)
+            list(APPEND _radio_opts "-isystem" "${_d}")
+        endforeach()
+        # U-mode code: no UBSan handlers (they are kernel text), no jump tables.
+        set_source_files_properties(${RADIO_C6_SOURCES} ${LUGALOS_RADIO_IDF_SOURCES}
+            PROPERTIES COMPILE_OPTIONS "-fbuiltin;-fno-jump-tables;-fno-sanitize=undefined;${_radio_opts}"
+                       COMPILE_DEFINITIONS "${LUGALOS_RADIO_DEFS}")
+        set_source_files_properties(${LUGALOS_RADIO_IDF_SOURCES} PROPERTIES COMPILE_OPTIONS "-w;-fno-jump-tables;-fno-sanitize=undefined;${_radio_opts}")
+    endif()
     # The boot-time flash mapping and watchdogs, in .boot.text (SRAM): it is what
     # makes the flash window exist, so it cannot live in it.
     list(APPEND SOURCES arch/riscv/common/xip_esp32c6.c)
@@ -1117,6 +1138,12 @@ set_target_properties(lugalos.elf PROPERTIES LINK_DEPENDS
 # -L: linker/rp2350.ld INCLUDEs the generated lugalos_bulk.ld (38.4).
 target_link_options(lugalos.elf PRIVATE -T${LINKER_SCRIPT} -L${CMAKE_CURRENT_BINARY_DIR})
 target_link_libraries(lugalos.elf PRIVATE gcc)
+if(LUGALOS_TARGET STREQUAL "ESP32C6" AND LUGALOS_RADIO_C6)
+    # The blob's archives, and the chip-ROM symbol scripts its references resolve
+    # through (cmake/radio_esp32c6.cmake). A group: the archives call each other.
+    target_link_options(lugalos.elf PRIVATE ${LUGALOS_RADIO_ROM_LD})
+    target_link_libraries(lugalos.elf PRIVATE -Wl,--start-group ${LUGALOS_RADIO_ARCHIVES} -Wl,--end-group)
+endif()
 
 # I7a §3.3: the same four numbers the compiler got, handed to the linker so
 # its ASSERTs check the real boundaries rather than a second copy of them.
@@ -1315,9 +1342,9 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
     # `objcopy -O binary` would pad the gap. See the P4 block above for the
     # (intended) "empty loadable segment" warning this extraction can emit.
     set(RAW_BIN_COMMANDS
-        COMMAND ${CMAKE_OBJCOPY} -O binary -j .text -j .rodata --gap-fill 0
+        COMMAND ${CMAKE_OBJCOPY} -O binary -j .radio_text -j .text -j .rodata --gap-fill 0
                 lugalos.elf lugalos-xip.bin
-        COMMAND ${CMAKE_OBJCOPY} -R .text -R .rodata --strip-all
+        COMMAND ${CMAKE_OBJCOPY} -R .radio_text -R .text -R .rodata --strip-all
                 lugalos.elf lugalos-ram.elf)
 else()
     set(RAW_BIN_COMMANDS

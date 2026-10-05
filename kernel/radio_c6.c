@@ -1,0 +1,104 @@
+/* The kernel's half of the ESP32-C6 Wi-Fi radio (45.6, plan/phase45_esp32c6.md):
+ * build the radio's memory domain, start its main thread in U-mode, and report
+ * what happened.
+ *
+ * The blob, the OS-table shim and the chip-side code (drivers/radio/) all run
+ * *there*, in one domain, behind a PMP that grants exactly what they touch:
+ *
+ *   text + rodata     the flash window's first 512 KB (linker/esp32c6.ld, .radio_text)
+ *   state             the blob's .data/.bss (.radio_data) and the shim's (.udata_kobj)
+ *   shim text         16 KB in SRAM (.utext_kobj)
+ *   heap and stack    palloc'd, each one NAPOT block
+ *   the chip's ROM    code (512 KB) and its working data (0x4087c000, 16 KB), which the
+ *                     blob's ROM-resident halves read and write (45.3a)
+ *   the modem         0x600A0000 (64 KB: MAC, baseband, PHY), PMU/LP_AON, PCR
+ *
+ * That is twelve regions of the C6's sixteen PMP entries (MEM_DOMAIN_MAX_REGIONS).
+ * PMP restricts the CPU and not the MAC's DMA (plan §4.5): this contains bugs,
+ * and the `tainted` label (not here yet: 45.9) is what covers trust.
+ *
+ * Without the blob linked in (no ESP-IDF tree at configure time) none of this
+ * exists and `radio` says so. */
+
+#include "kernel/radio_c6.h"
+#include "kernel/sched.h"
+#include "kernel/palloc.h"
+#include "kernel/mem_domain.h"
+#include "kernel/console.h"
+#include "kernel/printk.h"
+#include "arch/umode.h"
+#include "lugalos_config.h"
+#include "../drivers/radio/radio_main.h"
+#include <stddef.h>
+#include <stdint.h>
+
+/* Keeps .radio_text alive in a build with no blob, so the flash layout does not
+ * depend on whether there is one (linker/esp32c6.ld). */
+const uint32_t g_radio_text_marker __attribute__((section(".radio_text_marker"), used)) = 0x31444152u;
+
+#if defined(CONFIG_RADIO_C6)
+
+extern char _radio_text_start[], _radio_data_start[], _radio_bss_start[], _radio_bss_end[], _utext_kobj_start[], _udata_kobj_start[];
+
+#define ARENA_PAGES 16          /* 64 KB: the radio's heap */
+#define STACK_PAGES 4           /* 16 KB: the main thread's stack, with the context at its bottom */
+
+static mem_domain_t g_rdomain;
+static void *g_rstack;
+static void *g_rarena;
+static int g_rpid = -1;
+
+static void radio_task(void *arg) {
+    (void)arg;
+    radio_ctx_t *ctx = (radio_ctx_t *)g_rstack;
+    ctx->arena = g_rarena;
+    ctx->arena_bytes = ARENA_PAGES * 4096u;
+    ctx->stage = RADIO_STAGE_NONE;
+
+    for (volatile char *p = _radio_bss_start; p < _radio_bss_end; p++) *p = 0;   /* not in the image */
+    mem_domain_init(&g_rdomain);
+    int bad = 0;
+    bad |= mem_domain_add(&g_rdomain, (uintptr_t)_radio_text_start, 512u * 1024, MEM_R | MEM_X);
+    bad |= mem_domain_add(&g_rdomain, (uintptr_t)_radio_data_start, 32768, MEM_R | MEM_W);
+    bad |= mem_domain_add(&g_rdomain, (uintptr_t)_utext_kobj_start, 16384, MEM_R | MEM_X);
+    bad |= mem_domain_add(&g_rdomain, (uintptr_t)_udata_kobj_start, 32768, MEM_R | MEM_W);
+    bad |= mem_domain_add(&g_rdomain, (uintptr_t)g_rarena, ARENA_PAGES * 4096u, MEM_R | MEM_W);
+    bad |= mem_domain_add(&g_rdomain, (uintptr_t)g_rstack, STACK_PAGES * 4096u, MEM_R | MEM_W);
+    bad |= mem_domain_add(&g_rdomain, 0x40000000u, 512u * 1024, MEM_R | MEM_X);   /* ROM code */
+    bad |= mem_domain_add(&g_rdomain, 0x4087c000u, 16384, MEM_R | MEM_W);        /* ROM data */
+    bad |= mem_domain_add(&g_rdomain, 0x600A0000u, 65536, MEM_R | MEM_W);        /* MAC, baseband, PHY, modem */
+    bad |= mem_domain_add(&g_rdomain, 0x600B0000u, 8192, MEM_R | MEM_W);         /* PMU, LP_AON */
+    bad |= mem_domain_add(&g_rdomain, 0x60096000u, 4096, MEM_R | MEM_W);         /* PCR */
+    bad |= mem_domain_add(&g_rdomain, 0x6000E000u, 4096, MEM_R | MEM_W);         /* SAR ADC (the PHY's temperature sensor) */
+    if (bad || task_set_domain(sched_current_pid(), &g_rdomain) != 0) {
+        printk("[radio] Refusing to enter U-mode: the domain is not enforceable\n");
+        ctx->stage = RADIO_STAGE_FAILED;
+        return;
+    }
+    arch_enter_user((void (*)(void))radio_main, (uintptr_t)g_rstack + STACK_PAGES * 4096u, 0, (uintptr_t)g_rstack, 0);
+}
+
+int radio_c6_start(void) {
+    if (g_rpid >= 0 && sched_task_state(g_rpid) != TASK_DEAD) { cprintf("radio: already running\n"); return 1; }
+    g_rstack = palloc_pages_aligned(STACK_PAGES, STACK_PAGES);
+    g_rarena = palloc_pages_aligned(ARENA_PAGES, ARENA_PAGES);
+    if (!g_rstack || !g_rarena) { cprintf("radio: out of memory for the radio's heap/stack\n"); return 1; }
+    g_rpid = task_create("radio", radio_task, NULL);
+    if (g_rpid < 0) { cprintf("radio: could not create the task\n"); return 1; }
+    for (int i = 0; i < 10000 && sched_task_state(g_rpid) != TASK_DEAD; i++) task_sleep_ms(1);
+    const radio_ctx_t *ctx = (const radio_ctx_t *)g_rstack;
+    static const char *const names[] = { "not started", "FAILED", "OS shim up", "coexistence up", "esp_wifi_init_internal returned 0" };
+    cprintf("radio: stage %u (%s), esp_wifi_init rc=0x%x, task %s\n", (unsigned)ctx->stage,
+            ctx->stage < 5 ? names[ctx->stage] : "?", (unsigned)ctx->rc_init,
+            sched_task_state(g_rpid) == TASK_DEAD ? "ended" : "still running");
+    return ctx->stage == RADIO_STAGE_INIT ? 0 : 1;
+}
+
+#else
+
+int radio_c6_start(void) {
+    cprintf("radio: this build has no Wi-Fi blob (no ESP-IDF tree at configure time)\n");
+    return 1;
+}
+
+#endif

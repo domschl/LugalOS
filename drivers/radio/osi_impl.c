@@ -244,8 +244,26 @@ RADIO_TEXT uint32_t radio_osi_queue_msg_waiting(void *q) {
     long n = K(KOBJ_OP_Q_WAITING, (uintptr_t)q, 0, 0, 0, 0);
     return n < 0 ? 0 : (uint32_t)n;
 }
-RADIO_TEXT void *radio_osi_wifi_create_queue(int len, int isz) { return radio_osi_queue_create((uint32_t)len, (uint32_t)isz); }
-RADIO_TEXT void radio_osi_wifi_delete_queue(void *q) { radio_osi_queue_delete(q); }
+/* The blob does not get a queue handle from this entry but a `wifi_static_queue_t *`
+ * (IDF's esp_adapter.c: a malloc'd struct whose first and only member is the handle)
+ * and reads `->handle` itself; handing it the bare handle, as every other create
+ * does, made it dereference 0x30000001 (45.6). */
+typedef struct { void *handle; void *storage; } wifi_static_queue_shape_t;
+
+RADIO_TEXT void *radio_osi_wifi_create_queue(int len, int isz) {
+    wifi_static_queue_shape_t *w = radio_osi_malloc(sizeof(*w));
+    if (!w) return 0;
+    w->storage = 0;
+    w->handle = radio_osi_queue_create((uint32_t)len, (uint32_t)isz);
+    if (!w->handle) { radio_osi_free(w); return 0; }
+    return w;
+}
+RADIO_TEXT void radio_osi_wifi_delete_queue(void *q) {
+    wifi_static_queue_shape_t *w = q;
+    if (!w) return;
+    radio_osi_queue_delete(w->handle);
+    radio_osi_free(w);
+}
 
 /* ---- event groups ---------------------------------------------------------- */
 

@@ -123,7 +123,11 @@ bool mem_domain_permits(const mem_domain_t *d, uintptr_t base, uintptr_t len,
  * Size is encoded as trailing one-bits: a value with k trailing ones matches
  * 8 << k bytes, naturally aligned. */
 
+#if defined(CONFIG_BOARD_ESP32C6)
+#define PMP_ENTRIES 16
+#else
 #define PMP_ENTRIES 8
+#endif
 
 #if defined(CONFIG_BOARD_RP2350)
 /* Hazard3 hardwires three PMP regions that this kernel cannot switch off, and
@@ -179,6 +183,16 @@ static void pmpaddr_write(int idx, uintptr_t v) {
         case 5: write_csr(pmpaddr5, v); break;
         case 6: write_csr(pmpaddr6, v); break;
         case 7: write_csr(pmpaddr7, v); break;
+#if PMP_ENTRIES > 8
+        case 8: write_csr(pmpaddr8, v); break;
+        case 9: write_csr(pmpaddr9, v); break;
+        case 10: write_csr(pmpaddr10, v); break;
+        case 11: write_csr(pmpaddr11, v); break;
+        case 12: write_csr(pmpaddr12, v); break;
+        case 13: write_csr(pmpaddr13, v); break;
+        case 14: write_csr(pmpaddr14, v); break;
+        case 15: write_csr(pmpaddr15, v); break;
+#endif
         default: break;
     }
 }
@@ -193,6 +207,16 @@ static uintptr_t pmpaddr_read(int idx) {
         case 5: return read_csr(pmpaddr5);
         case 6: return read_csr(pmpaddr6);
         case 7: return read_csr(pmpaddr7);
+#if PMP_ENTRIES > 8
+        case 8: return read_csr(pmpaddr8);
+        case 9: return read_csr(pmpaddr9);
+        case 10: return read_csr(pmpaddr10);
+        case 11: return read_csr(pmpaddr11);
+        case 12: return read_csr(pmpaddr12);
+        case 13: return read_csr(pmpaddr13);
+        case 14: return read_csr(pmpaddr14);
+        case 15: return read_csr(pmpaddr15);
+#endif
         default: return 0;
     }
 }
@@ -249,6 +273,13 @@ int mem_domain_activate(const mem_domain_t *d) {
     for (int i = 0; i < 4; i++) w1 |= ((uintptr_t)cfg[4 + i]) << (i * 8);
     write_csr(pmpcfg0, w0);
     write_csr(pmpcfg1, w1);
+#if PMP_ENTRIES > 8
+    uintptr_t w2 = 0, w3 = 0;
+    for (int i = 0; i < 4; i++) w2 |= ((uintptr_t)cfg[8 + i]) << (i * 8);
+    for (int i = 0; i < 4; i++) w3 |= ((uintptr_t)cfg[12 + i]) << (i * 8);
+    write_csr(pmpcfg2, w2);
+    write_csr(pmpcfg3, w3);
+#endif
 #else
     for (int i = 0; i < 8; i++) w0 |= ((uintptr_t)cfg[i]) << (i * 8);
     write_csr(pmpcfg0, w0);

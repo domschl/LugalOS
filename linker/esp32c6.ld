@@ -61,12 +61,44 @@ SECTIONS
         _ramfunc_end = .;
     } > RAM
 
+    /* --- the radio's text: first in the flash window, one 512 KB block ---------
+     * Espressif's Wi-Fi/PHY/coexistence archives and the radio's own open code
+     * (45.6): everything the radio's U-mode domain executes or reads from flash.
+     * 512 KB, self-aligned at the window's start, so one PMP NAPOT entry grants it
+     * (the blob is ~372 KB). The kernel's own text follows at +512 KB. The marker
+     * keeps the section alive in a build without the blob, so the image layout --
+     * and the flash offset of everything after it -- is the same either way.
+     *
+     * Declared before .text so that its patterns win the input sections: ld gives an
+     * input section to the first statement that matches it. */
+    .radio_text ORIGIN(XIP) : {
+        _xip_start = .;
+        _radio_text_start = .;
+        KEEP(*(.radio_text_marker))
+        *libnet80211.a:*(.text .text.* .rodata .rodata.* .srodata .srodata.* .rodata_wlog* .iram1 .iram1.* .wifi*iram* .coexiram*)
+        *libpp.a:*(.text .text.* .rodata .rodata.* .srodata .srodata.* .rodata_wlog* .iram1 .iram1.* .wifi*iram* .coexiram*)
+        *libcore.a:*(.text .text.* .rodata .rodata.* .srodata .srodata.* .rodata_wlog* .iram1 .iram1.* .wifi*iram* .coexiram*)
+        *libmesh.a:*(.text .text.* .rodata .rodata.* .srodata .srodata.* .rodata_wlog* .iram1 .iram1.* .wifi*iram* .coexiram*)
+        *libespnow.a:*(.text .text.* .rodata .rodata.* .srodata .srodata.* .rodata_wlog* .iram1 .iram1.* .wifi*iram* .coexiram*)
+        *libphy.a:*(.text .text.* .rodata .rodata.* .srodata .srodata.* .rodata_wlog* .iram1 .iram1.* .wifi*iram* .coexiram*)
+        *libcoexist.a:*(.text .text.* .rodata .rodata.* .srodata .srodata.* .rodata_wlog* .iram1 .iram1.* .wifi*iram* .coexiram*)
+        
+        *radio_main.c.obj(.text .text.* .rodata .rodata.* .srodata .srodata.*)
+        *esp32c6_osi_table.c.obj(.text .text.* .rodata .rodata.* .srodata .srodata.*)
+        *plat_esp32c6.c.obj(.text .text.* .rodata .rodata.* .srodata .srodata.*)
+        *esp_wifi_regulatory.c.obj(.text .text.* .rodata .rodata.* .srodata .srodata.*)
+        *ftm_load_calibration.c.obj(.text .text.* .rodata .rodata.* .srodata .srodata.*)
+        . = ALIGN(4);
+        _radio_text_end = .;
+    } > XIP
+    ASSERT(_radio_text_end - _radio_text_start <= 512K,
+           "the radio's text has outgrown its 512 KB PMP region (kernel/radio_c6.c)")
+
     /* --- the flash-resident half --------------------------------------------- */
-    .text : {
+    .text ORIGIN(XIP) + 512K : {
         _ktext_lo = .;
         . = ALIGN(4);
-        _xip_start = .;
-        *(EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj) .text EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj) .text.*)
+        *(EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj *radio_libc.c.obj) .text EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj *radio_libc.c.obj) .text.*)
         . = ALIGN(4);
         _ktext_hi = .;
     } > XIP
@@ -82,8 +114,8 @@ SECTIONS
 
     .rodata : {
         . = ALIGN(4);
-        *(EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj) .rodata EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj) .rodata.*)
-        *(EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj) .srodata EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj) .srodata.*)
+        *(EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj *radio_libc.c.obj) .rodata EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj *radio_libc.c.obj) .rodata.*)
+        *(EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj *radio_libc.c.obj) .srodata EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj *radio_libc.c.obj) .srodata.*)
         . = ALIGN(4);
         _xip_end = .;
     } > XIP
@@ -106,6 +138,7 @@ SECTIONS
         *uprintf.c.obj(.text .text.* .rodata .rodata.* .srodata .srodata.*)
         *nvs_ram.c.obj(.text .text.* .rodata .rodata.* .srodata .srodata.*)
         *uheap.c.obj(.text .text.* .rodata .rodata.* .srodata .srodata.*)
+        *radio_libc.c.obj(.text .text.* .rodata .rodata.* .srodata .srodata.*)
         . = _utext_kobj_start + 16384;
     } > RAM
 
@@ -114,6 +147,52 @@ SECTIONS
         *(.udata_kobj .udata_kobj.*)
         . = _udata_kobj_start + 32768;
     } > RAM
+
+    /* The radio's writable state: the blob's .data and .bss (about 20 KB) and the
+     * radio's own, in one self-aligned 32 KB block so one PMP entry grants it.
+     * Initialised data and zeroed bss are both *in the image* (the .bss part is a run
+     * of zeros the loader writes), because the kernel's startup clears only its own
+     * .bss. */
+    .radio_data : ALIGN(32768) {
+        _radio_data_start = .;
+        *libnet80211.a:*(.data .data.* .sdata .sdata.* .dram1 .dram1.*)
+        *libpp.a:*(.data .data.* .sdata .sdata.* .dram1 .dram1.*)
+        *libcore.a:*(.data .data.* .sdata .sdata.* .dram1 .dram1.*)
+        *libmesh.a:*(.data .data.* .sdata .sdata.* .dram1 .dram1.*)
+        *libespnow.a:*(.data .data.* .sdata .sdata.* .dram1 .dram1.*)
+        *libphy.a:*(.data .data.* .sdata .sdata.* .dram1 .dram1.*)
+        *libcoexist.a:*(.data .data.* .sdata .sdata.* .dram1 .dram1.*)
+        *radio_main.c.obj(.data .data.* .sdata .sdata.*)
+        *esp32c6_osi_table.c.obj(.data .data.* .sdata .sdata.*)
+        *plat_esp32c6.c.obj(.data .data.* .sdata .sdata.*)
+        *esp_wifi_regulatory.c.obj(.data .data.* .sdata .sdata.*)
+        *ftm_load_calibration.c.obj(.data .data.* .sdata .sdata.*)
+        *radio_libc.c.obj(.data .data.* .sdata .sdata.*)
+        . = ALIGN(4);
+    } > RAM
+    /* Zeroed by the kernel before every start of the radio (kernel/radio_c6.c): it is
+     * not in the image, and the kernel's startup clears only its own .bss. */
+    .radio_bss (NOLOAD) : {
+        _radio_bss_start = .;
+        *libnet80211.a:*(.bss .bss.* .sbss .sbss.* COMMON)
+        *libpp.a:*(.bss .bss.* .sbss .sbss.* COMMON)
+        *libcore.a:*(.bss .bss.* .sbss .sbss.* COMMON)
+        *libmesh.a:*(.bss .bss.* .sbss .sbss.* COMMON)
+        *libespnow.a:*(.bss .bss.* .sbss .sbss.* COMMON)
+        *libphy.a:*(.bss .bss.* .sbss .sbss.* COMMON)
+        *libcoexist.a:*(.bss .bss.* .sbss .sbss.* COMMON)
+        *radio_main.c.obj(.bss .bss.* .sbss .sbss.* COMMON)
+        *esp32c6_osi_table.c.obj(.bss .bss.* .sbss .sbss.* COMMON)
+        *plat_esp32c6.c.obj(.bss .bss.* .sbss .sbss.* COMMON)
+        *esp_wifi_regulatory.c.obj(.bss .bss.* .sbss .sbss.* COMMON)
+        *ftm_load_calibration.c.obj(.bss .bss.* .sbss .sbss.* COMMON)
+        *radio_libc.c.obj(.bss .bss.* .sbss .sbss.* COMMON)
+        . = ALIGN(4);
+        _radio_bss_end = .;
+        . = _radio_data_start + 32768;
+    } > RAM
+    ASSERT(_radio_bss_end <= _radio_data_start + 32768,
+           "the radio's data has outgrown its 32 KB PMP region (kernel/radio_c6.c)")
 
     /* No AT> anywhere: LOADADDR(.data) == ADDR(.data), so _sidata == _data_start and
      * entry.S skips its copy loop -- the loader (load-ram, and the ROM for a flash
