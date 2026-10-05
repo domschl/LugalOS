@@ -97,7 +97,7 @@ console, loading and reset all on it.
 * Leave it running by itself (stage 2 at `0x0` + the OS image, verified, then reset):
   `tools/c6flash.py build/esp32c6`
 * Test it: `python3 tests/hw/test_esp32c6.py` (loads the kernel itself; `--no-load` tests
-  what is running). 14 checks; skips when no board is attached.
+  what is running). 15 checks; skips when no board is attached.
 * The top 16 KB of SRAM (`0x4087c000`..) is the **ROM's data** — never hand it out; the
   ROM's Wi-Fi code keeps its state there.
 * Quick standalone checks (no kernel): `tools/build_minimal_esp32c6.sh run`,

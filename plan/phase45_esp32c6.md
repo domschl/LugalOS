@@ -593,9 +593,17 @@ by flashing*.
     isolation proofs. And `tools/c6flash.py`: both halves in flash, no host.
 
   `tests/hw/test_esp32c6.py` is the repeatable form — **14 of 14 pass**.
-* **45.5 LED.** WS2812 on GPIO8 via RMT; a `/dev/led` (or `/proc`-style)
-  node and a shell command; `(led r g b)` in Lisp. First useful thing that
-  works with no radio.
+* **45.5 LED — DONE 2026-10-05, confirmed by eye.** WS2812 on GPIO8 through RMT
+  channel 0 (XTAL / 4 = 10 MHz pulse clock, 0.3/0.9 us bit widths). The wire
+  encoder is portable (`drivers/ws2812.c`) and checked on the host against the
+  datasheet windows, with a mutation (a swapped pulse width) caught
+  (`tests/host/ws2812_host.c`); `drivers/ws2812_esp32c6.c` is the peripheral.
+  Shell `led R G B` / `led off`, Lisp `(led r g b)`. Findings: the Zero's LED takes
+  **R,G,B** order (as its vendor demo says; a bare WS2812 is G,R,B) —
+  `CONFIG_WS2812_RGB_ORDER`; the RMT RAM is written by plain APB access
+  (`SYS_CONF.APB_FIFO_MASK`). Not done: a `/dev/led` node — the shell and Lisp
+  entry points cover the use, and a file node earns its place only when 45.6
+  wants to show Wi-Fi state on the LED.
 * **45.6 Wi-Fi bring-up: PHY + `esp_wifi_init`.** Calibration, `wifi_init`,
   `start`; `wifi scan` lists access points. First time the blob runs; every
   failure here is a shim or interrupt bug and is debugged with the 45.2 trace.

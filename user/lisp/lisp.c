@@ -1,4 +1,7 @@
 #include "lisp.h"
+#if defined(CONFIG_BOARD_ESP32C6)
+#include "drivers/ws2812.h"
+#endif
 #include "kernel/printk.h"
 #include "kernel/lock.h"
 #include "kernel/scratch.h"
@@ -5984,6 +5987,20 @@ static lisp_val_t *prim_p9_uart_send(lisp_val_t *args, lisp_val_t *env) {
     }
     return &false_val;
 }
+
+#if defined(CONFIG_BOARD_ESP32C6)
+/* `(led r g b)` -- 45.5: the board's RGB LED, each channel 0-255 (clamped).
+ * Returns #t if the frame went out. */
+static lisp_val_t *prim_led(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    long c[3];
+    for (int i = 0; i < 3; i++) {
+        c[i] = arg_int(args, i, 0);
+        c[i] = c[i] < 0 ? 0 : c[i] > 255 ? 255 : c[i];
+    }
+    return ws2812_set((uint8_t)c[0], (uint8_t)c[1], (uint8_t)c[2]) ? &true_val : &false_val;
+}
+#endif
 
 static lisp_val_t *prim_i2c_scan(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;

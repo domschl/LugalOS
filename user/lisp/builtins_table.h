@@ -204,6 +204,9 @@ static const builtin_t builtins[] = {
     BUILTIN_PRIM("klog-detach", prim_klog_detach),
     BUILTIN_PRIM("klog-sinks", prim_klog_sinks),
     BUILTIN_PRIM("lcm", prim_lcm),
+#if defined(CONFIG_BOARD_ESP32C6)
+    BUILTIN_PRIM("led", prim_led),
+#endif
     BUILTIN_PRIM("length", prim_length),
     BUILTIN_PRIM("list", prim_list),
     BUILTIN_PRIM("list-ref", prim_list_ref),

@@ -965,6 +965,8 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
     # no display -- the same stated emptiness as the P4's E2, and for the same
     # reason: a board with none of those registers none of them.
     list(APPEND SOURCES drivers/usbjtag_esp32c6.c)
+    # 45.5: the board's one WS2812 (GPIO8) through the RMT pulse generator.
+    list(APPEND SOURCES drivers/ws2812.c drivers/ws2812_esp32c6.c)
     # The boot-time flash mapping and watchdogs, in .boot.text (SRAM): it is what
     # makes the flash window exist, so it cannot live in it.
     list(APPEND SOURCES arch/riscv/common/xip_esp32c6.c)

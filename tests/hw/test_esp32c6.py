@@ -165,6 +165,15 @@ def test_radio_shim(c: Console):
               ok and "RADIOOSI_OK" in out and out.count("PASS") >= 22, "%d PASS" % out.count("PASS"))
 
 
+def test_led(c: Console):
+    """The frame must complete (the RMT's end-of-transmission flag). That the LED
+    shows the right colour only an eye can say; confirmed once, 45.5."""
+    ok1, o1 = c.run("led 0 0 20", r"lsh>", 4)
+    ok2, o2 = c.run("led off", r"lsh>", 4)
+    bad = "never finished" in o1 + o2 or "usage" in o1 + o2
+    return _t("a WS2812 frame goes out through the RMT and completes (led R G B / off)", ok1 and ok2 and not bad)
+
+
 def test_still_alive(c: Console):
     """A kernel that boots and then resets (the flash-boot watchdogs, a crash) looks
     perfect to every quick test above and dies minutes later -- the P4's phase 32
@@ -183,7 +192,7 @@ def test_still_alive(c: Console):
 
 TESTS = [test_boots, test_heap, test_tick_rate, test_preemption, test_locks, test_priostress,
          test_pmp, test_umode, test_isolation, test_deputy, test_kobj_kernel, test_kobj_umode,
-         test_radio_shim, test_still_alive]
+         test_radio_shim, test_led, test_still_alive]
 
 
 def main() -> int:

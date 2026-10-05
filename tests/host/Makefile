@@ -22,12 +22,13 @@ BASE    := -std=gnu11 -g -fno-omit-frame-pointer $(INC) $(WARN) -DLUGALOS_HOST_T
 ASAN    := -O1 -fsanitize=address,undefined -fno-sanitize-recover=all
 PLAIN   := -O1
 
-HARNESSES := fat32_host chibicc_host p9_host net_host kobj_host uheap_host uprintf_host nvs_host
+HARNESSES := fat32_host chibicc_host p9_host net_host kobj_host uheap_host uprintf_host nvs_host ws2812_host
 
 fat32_host_SRC   := fat32_host.c $(ROOT)/fs/fat32.c
 chibicc_host_SRC := chibicc_host.c $(wildcard $(ROOT)/user/chibicc/*.c)
 p9_host_SRC      := p9_host.c $(ROOT)/fs/9p.c $(ROOT)/kernel/sha256.c
 nvs_host_SRC     := nvs_host.c $(ROOT)/drivers/radio/nvs_ram.c
+ws2812_host_SRC  := ws2812_host.c $(ROOT)/drivers/ws2812.c
 uprintf_host_SRC := uprintf_host.c $(ROOT)/drivers/radio/uprintf.c
 uheap_host_SRC   := uheap_host.c $(ROOT)/kernel/uheap.c
 kobj_host_SRC    := kobj_host.c $(ROOT)/kernel/kobj.c

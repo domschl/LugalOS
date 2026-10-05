@@ -1,4 +1,7 @@
 #include "kernel/shell.h"
+#if defined(CONFIG_BOARD_ESP32C6)
+#include "drivers/ws2812.h"
+#endif
 #include "kernel/printk.h"
 #include "kernel/console.h"
 #include "kernel/klog.h"
@@ -3555,6 +3558,29 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         (void)vtterm_selftest();
         return;
 #if defined(CONFIG_BOARD_ESP32C6)
+    } else if (strncmp(cmd_line, "led", 3) == 0 && (cmd_line[3] == 0 || cmd_line[3] == ' ')) {
+        /* 45.5: `led R G B` (0-255 each), `led off`, `led` alone for usage. */
+        unsigned v[3] = {0, 0, 0};
+        const char *q = cmd_line + 3;
+        int n = 0;
+        while (*q == ' ') q++;
+        if (strcmp(q, "off") == 0) {
+            n = 3;
+            q += 3;
+        } else {
+            while (n < 3 && *q >= '0' && *q <= '9') {
+                unsigned x = 0;
+                while (*q >= '0' && *q <= '9') { x = x * 10 + (unsigned)(*q++ - '0'); if (x > 255) x = 255; }
+                v[n++] = x;
+                while (*q == ' ') q++;
+            }
+        }
+        if (n != 3 || *q) {
+            cprintf("usage: led R G B   (0-255 each)   |   led off\n");
+        } else if (!ws2812_set((uint8_t)v[0], (uint8_t)v[1], (uint8_t)v[2])) {
+            cprintf("led: the pulse generator never finished a frame\n");
+        }
+        return;
     } else if (strcmp(cmd_line, "intrdump") == 0) {
         cmd_intrdump();
         return;
