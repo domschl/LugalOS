@@ -3582,6 +3582,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
             cprintf("led: the pulse generator never finished a frame\n");
         }
         return;
+    } else if (strcmp(cmd_line, "radio trace on") == 0 || strcmp(cmd_line, "radio trace off") == 0) {
+        radio_c6_trace(cmd_line[12] == 'o' && cmd_line[13] == 'n');
+        return;
     } else if (strcmp(cmd_line, "radio") == 0) {
         (void)radio_c6_start();
         return;

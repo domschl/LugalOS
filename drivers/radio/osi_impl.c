@@ -74,6 +74,11 @@ static RADIO_TEXT void r_free(void *p) {
 }
 
 RADIO_TEXT bool radio_osi_init(void *arena, uint32_t arena_size) {
+    /* The state lives in a NOLOAD region the kernel does not clear, and SRAM keeps its
+     * contents across a reset: on the C6 a stale thread-semaphore table from the
+     * previous run made the blob wait on a handle that no longer existed (45.6).
+     * Volatile, so the compiler cannot turn the loop into a call to memset. */
+    for (volatile uint32_t *p = (volatile uint32_t *)&g_r; p < (volatile uint32_t *)(&g_r + 1); p++) *p = 0;
     if (!uheap_init(&g_r.heap, arena, arena_size)) return false;
     g_r.heap_lock = K(KOBJ_OP_MUTEX_CREATE, 0, 0, 0, 0, 0);
     g_r.nvs_lock = K(KOBJ_OP_MUTEX_CREATE, 0, 0, 0, 0, 0);

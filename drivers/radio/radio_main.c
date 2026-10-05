@@ -57,6 +57,17 @@ void radio_main(uintptr_t arg) {
     ctx->rc_init = r;
     ctx->stage = r == 0 ? RADIO_STAGE_INIT : RADIO_STAGE_FAILED;
 
+    if (r == 0) {
+        r = esp_wifi_set_mode(WIFI_MODE_STA);
+        RLOG("esp_wifi_set_mode(STA) -> 0x%x", r);
+        r = esp_wifi_start();
+        RLOG("esp_wifi_start -> 0x%x", r);
+        ctx->rc_start = r;
+        if (r == 0) ctx->stage = RADIO_STAGE_STARTED;
+    }
+
+    radio_osi_task_delay(2000);                        /* let the blob's own task run what start queued */
+
     register long a0 __asm__("a0") = SYS_UEXIT;        /* returning would jump to 0 */
     __asm__ volatile("ecall" : "+r"(a0) :: "memory");
     for (;;) { }

@@ -109,8 +109,37 @@ static long thread_create(uintptr_t entry, uintptr_t arg, uintptr_t stack_base,
  * exist. */
 #define OWN(h) do { if (!kobj_owned_by((kh_t)(h), owner)) return KO_FAIL; } while (0)
 
+/* The 45.2 trace, from the kernel's side: every call the radio makes into the
+ * kernel-object seam, as it makes it. Everything the shim does that matters to
+ * the blob's control flow passes through here, so this is the whole picture of
+ * what the blob is waiting for without a debugger. Off unless `radio trace on`;
+ * the quiet calls (clock, critical sections, log lines) are never traced. */
+volatile int g_kobj_trace;
+static const char *const k_opnames[KOBJ_OP_COUNT] = {
+    "sem_create", "sem_take", "sem_give", "sem_delete", "mutex_create", "mutex_lock", "mutex_unlock",
+    "mutex_delete", "q_create", "q_send", "q_recv", "q_waiting", "q_delete", "ev_create", "ev_set",
+    "ev_clear", "ev_wait", "ev_delete", "timer_setfn", "timer_arm", "timer_disarm", "timer_done",
+    "timer_wait", "time_us", "crit_enter", "crit_leave", "thread_create", "thread_self", "random", "mac",
+    "log", "intr_set", "intr_clear", "isr_set", "ints_on", "ints_off", "event_post",
+};
+
+static long kobj_syscall_impl(unsigned op, uintptr_t a1, uintptr_t a2, uintptr_t a3, uintptr_t a4, uintptr_t a5);
+
 long kobj_syscall(unsigned op, uintptr_t a1, uintptr_t a2, uintptr_t a3,
                   uintptr_t a4, uintptr_t a5) {
+    const bool tr = g_kobj_trace && op < KOBJ_OP_COUNT && op != KOBJ_OP_TIME_US && op != KOBJ_OP_CRIT_ENTER
+                    && op != KOBJ_OP_CRIT_LEAVE && op != KOBJ_OP_LOG && op != KOBJ_OP_THREAD_SELF;
+    int pid = tr ? sched_current_pid() : 0;
+    if (tr)
+        printk("[ktrace] pid%d %s(%lx,%lx,%lx,%lx) ...\n", pid, k_opnames[op],
+               (unsigned long)a1, (unsigned long)a2, (unsigned long)a3, (unsigned long)a4);
+    long r = kobj_syscall_impl(op, a1, a2, a3, a4, a5);
+    if (tr) printk("[ktrace] pid%d %s -> %ld\n", pid, k_opnames[op], r);
+    return r;
+}
+
+static long kobj_syscall_impl(unsigned op, uintptr_t a1, uintptr_t a2, uintptr_t a3,
+                              uintptr_t a4, uintptr_t a5) {
     kos_init();
     const uintptr_t owner = caller_domain();
     uint8_t item[KQUEUE_MAX_ITEM];

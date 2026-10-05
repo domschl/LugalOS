@@ -11,12 +11,14 @@
 #define RADIO_STAGE_OSI    2   /* heap and tables up */
 #define RADIO_STAGE_COEX   3
 #define RADIO_STAGE_INIT   4   /* esp_wifi_init_internal returned 0 */
+#define RADIO_STAGE_STARTED 5  /* esp_wifi_start returned 0 */
 
 typedef struct {
     void    *arena;            /* the radio heap, in the radio's domain */
     uint32_t arena_bytes;
     volatile uint32_t stage;
     volatile int32_t  rc_init;
+    volatile int32_t  rc_start;
 } radio_ctx_t;
 
 void radio_main(uintptr_t arg);
