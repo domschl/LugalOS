@@ -1047,6 +1047,24 @@ int task_unblock(int pid) {
     return 0;
 }
 
+void task_block_until_ms(uint64_t deadline_ms) {
+    if (deadline_ms == 0 || !g_active || !sched_has_task()) {
+        task_block();
+        return;
+    }
+    {
+        uintptr_t f = spin_lock_irqsave(&g_sched_lock);
+        g_tasks[cur()].wake_at_ms = deadline_ms;
+        spin_unlock_irqrestore(&g_sched_lock, f);
+    }
+    task_block();
+    {
+        uintptr_t f = spin_lock_irqsave(&g_sched_lock);
+        g_tasks[cur()].wake_at_ms = 0;
+        spin_unlock_irqrestore(&g_sched_lock, f);
+    }
+}
+
 void task_sleep_ms(uint32_t ms) {
     uint64_t end = time_get_ms() + ms;
     /* Same for a hart with no task as for no scheduler at all: there is no

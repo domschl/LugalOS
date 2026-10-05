@@ -267,6 +267,16 @@ void task_block(void);
 void task_sleep_ms(uint32_t ms);
 int  task_unblock(int pid);
 
+/* Blocks until task_unblock() wakes the calling task or the monotonic
+ * millisecond clock reaches `deadline_ms`, whichever comes first (45.3b,
+ * kernel/kobj_sched.c). `deadline_ms` 0 means no deadline: plain
+ * task_block(). The primitive a *timed wait* needs and task_sleep_ms() cannot
+ * be: that one re-blocks until the deadline whatever wakes it, this returns
+ * on the first wake and leaves the caller to decide whether the deadline has
+ * passed. Same prepare/test/block contract as task_block(): call
+ * task_prepare_block() first, re-test the condition, loop. */
+void task_block_until_ms(uint64_t deadline_ms);
+
 /* The pid of the task this hart is running, or -1 if it is running none.
  *
  * The -1 case is real, and used to be silently answered as 0. A secondary

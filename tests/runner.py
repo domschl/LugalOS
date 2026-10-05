@@ -999,6 +999,20 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Cross-Hart Lock Primitives: Atomic Gate, Real Masking, ylock Re-entry (S1)",
                         lock_ok, log if not lock_ok else ""))
 
+        # 45.3b (plan/phase45_esp32c6.md): the kernel objects the ESP32-C6's
+        # confined Wi-Fi runtime needs -- semaphores, mutexes, queues, event
+        # groups, timers -- under real tasks and preemption: FIFO hand-off,
+        # timed waits that wake on time, a wake that beats the sleep, a timeout
+        # racing a grant (units conserved, and the race must go both ways), a
+        # delete under a waiter, a timer thread that wakes for an earlier
+        # deadline. The state machines are also checked on the host against
+        # reference models (tests/host/kobj_host.c).
+        ok, log = session.send_and_expect("kobjselftest\n",
+                                          r"KOBJSELFTEST_(OK|FAIL)", timeout=60.0)
+        kobj_ok = ok and "KOBJSELFTEST_OK" in log
+        results.append(("Kernel Objects For A Confined Runtime: Sync, Queues, Events, Timers (45.3b kobjselftest)",
+                        kobj_ok, log if not kobj_ok else ""))
+
         # 38.3 (plan/phase38_psram.md): libc's memcpy/memmove/memset are word
         # loops now, and every line of the kernel links against them. Every
         # offset pair within two words, every length to 67, memmove at every

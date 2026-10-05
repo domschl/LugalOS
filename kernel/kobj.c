@@ -161,6 +161,8 @@ int kobj_set_owner(kh_t h, uintptr_t owner) {
     return KO_OK;
 }
 
+bool kobj_valid(kh_t h) { return owner_slot(h) != NULL; }
+
 bool kobj_owned_by(kh_t h, uintptr_t owner) {
     uintptr_t *o = owner_slot(h);
     return o && *o == owner;

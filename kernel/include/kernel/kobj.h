@@ -192,6 +192,8 @@ uint32_t ktimer_count(void);
  * small, structured numbers. Kernel-internal callers use owner 0. */
 int  kobj_set_owner(kh_t h, uintptr_t owner);
 bool kobj_owned_by(kh_t h, uintptr_t owner);
+/* Does `h` name a live object of any type? */
+bool kobj_valid(kh_t h);
 /* How many bytes one queue item is, so the syscall layer can size its copy. */
 uint32_t kq_item_size(kh_t h);
 

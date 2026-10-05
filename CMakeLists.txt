@@ -36,6 +36,11 @@ endif()
 set(COMMON_CFLAGS "-Wall -Wextra -pedantic -ffreestanding -nostdlib -fno-builtin -fno-stack-protector -mcmodel=medany -ggdb")
 set(COMMON_ASFLAGS "-ffreestanding -nostdlib -mcmodel=medany -ggdb")
 
+set(KOBJ_SOURCES "")
+if(LUGALOS_TARGET STREQUAL "RV32_NOMMU" OR LUGALOS_TARGET STREQUAL "RV64_MMU")
+    set(KOBJ_SOURCES kernel/kobj.c kernel/kobj_sched.c kernel/kobj_selftest.c)
+    add_compile_definitions(CONFIG_KOBJ=1)
+endif()
 if(LUGALOS_TARGET STREQUAL "RV32_NOMMU")
     set(ARCH_MARCH "rv32imac_zicsr_zifencei")
     set(ARCH_MABI "ilp32")
@@ -604,6 +609,10 @@ set(SOURCES
     kernel/ipc.c
     kernel/devirq.c
     kernel/sched.c
+    # 45.3b (plan/phase45_esp32c6.md): kernel-owned semaphores, mutexes, queues,
+    # event groups and timers for a confined runtime. QEMU only until a board
+    # needs them: the tables are ~7 KB of .bss, which RP2350's heap cannot spare.
+    ${KOBJ_SOURCES}
     kernel/shell.c
     kernel/line_editor.c
     kernel/editor.c

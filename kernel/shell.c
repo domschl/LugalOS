@@ -15,6 +15,9 @@
 #include "kernel/screenshot.h"
 #include "kernel/sched.h"
 #include "kernel/lock.h"
+#if defined(CONFIG_KOBJ)
+#include "kernel/kobj_sched.h"
+#endif
 #include "kernel/hart.h"
 #include "kernel/time.h"
 #include "kernel/discipline.h"
@@ -602,6 +605,9 @@ static void cmd_help(void) {
     cprintf("  chanechotest    - Client blocks on chan_call() into a real U-mode server; must echo back\n");
     cprintf("  hmacselftest    - SHA-256/HMAC-SHA-256 against the FIPS and RFC 4231 vectors\n");
     cprintf("  lockselftest    - Cross-hart locks: atomic gate, real interrupt masking, ylock re-entry\n");
+#if defined(CONFIG_KOBJ)
+    cprintf("  kobjselftest    - Kernel semaphores/mutexes/queues/events/timers under real tasks (45.3b)\n");
+#endif
     cprintf("  memselftest     - libc memcpy/memmove/memset against a byte reference, every alignment\n");
     cprintf("  fmtselftest     - printk/ksnprintf formatting against fixed strings\n");
     cprintf("  zonetest        - The bulk page zone: placement, alignment, free by address, fallback\n");
@@ -3500,6 +3506,10 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "lockselftest") == 0) {
         lock_selftest();
+#if defined(CONFIG_KOBJ)
+    } else if (strcmp(cmd_line, "kobjselftest") == 0) {
+        kobj_selftest();
+#endif
         return;
     } else if (strcmp(cmd_line, "zonetest") == 0) {
         /* 38.4, plan/phase38_psram.md: the bulk page zone. */
