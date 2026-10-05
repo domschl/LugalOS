@@ -82,6 +82,9 @@ enum {
     KOBJ_OP_INTS_ON,           /* (mask)                            -> rc  enable these CPU interrupts */
     KOBJ_OP_INTS_OFF,          /* (mask)                            -> rc */
     KOBJ_OP_EVENT_POST,        /* (base*, id, data*, size)          -> rc  a Wi-Fi event for the netif driver */
+    KOBJ_OP_ISR_WAIT,          /* (uintptr_t out[3] = fn,arg,slot)  -> rc  the interrupt thread's wait: blocks until a line the
+                                  domain asked for has fired; the kernel has already masked it */
+    KOBJ_OP_ISR_DONE,          /* (slot)                            -> rc  the handler has run: unmask the line */
     KOBJ_OP_COUNT
 };
 

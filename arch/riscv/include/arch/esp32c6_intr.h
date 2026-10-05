@@ -54,4 +54,10 @@
  * enable register is the driver's. Returns 0 on success. */
 int esp32c6_intmtx_route(uint32_t src, uint32_t line);
 
+/* Masks and unmasks a line at the controller without touching its priority or its
+ * mie bit: what a level-triggered line's handler thread needs between "it fired"
+ * and "it has been serviced" (kernel/radio_intr.c). Callable from the trap handler. */
+void esp32c6_irq_mask(uint32_t line);
+void esp32c6_irq_unmask(uint32_t line);
+
 #endif

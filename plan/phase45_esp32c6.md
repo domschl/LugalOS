@@ -506,6 +506,49 @@ interrupt (source 48) and line 11 is allocated for it, but a task waiting for a 
 yields in a loop as every console here did before M4. It moves to the interrupt when
 something needs the CPU back (45.6's measurements will say).
 
+### 4.8 What bringing the radio up found (45.6)
+
+The blob links and runs unchanged; everything that went wrong was *the chip around it*, and
+every one of these was found by looking, not by reading:
+
+* **The blob's libc calls bind to the kernel's.** `memcpy`, `strlen`... are the kernel's
+  names in kernel text, which U-mode cannot execute; and Espressif's ROM linker scripts
+  *silently replace* the kernel's same-named symbols (a script assignment beats an
+  object's). `tools/c6_radio_libs.py` rewrites the blob's imports in copies of the archives
+  to `radio_*` names (ROM address or `radio_libc.c`); `radio_redirect.h` does the same for
+  the compiler's own struct-copy calls; `check_radio_text.py` fails the build if a radio
+  object references a kernel symbol.
+* **SRAM survives a reset.** The shim's state lives in a NOLOAD region; a stale
+  thread-semaphore table from the previous run made the blob wait on a dead handle. Now
+  cleared at init.
+* **U-mode reads of peripherals returned zeros, silently — the HP APM.** Its reset state
+  (region 0 = everything, attribute 0) denies every REE mode, which is U-mode, by returning
+  0 to reads and dropping writes. PCR and the modem blocks looked "unpowered" for hours
+  (M-mode `peek` saw `0x7e600000` where U-mode saw 0). The kernel opens the APM for the
+  radio; the PMP stays the fence that is ours. `peek`/`poke` shell commands exist for this.
+* **A chip started by the ROM has none of IDF's boot-time modem setup:** the ICG
+  (clock-gating) maps for every modem domain (a gated block stalls the bus), the analog
+  I2C master's clock source and enable (without it the ROM's `regi2c` read polls its busy
+  bit forever — found with a tick-time sampler that prints `epc`), the Wi-Fi low-power
+  clock (RC_SLOW) and the power clock — **without which the MAC raises no interrupt at all**,
+  with everything else apparently working. Ported behind `plat.h` from IDF's
+  `modem_clock*.c`/`rtc_clk_init.c`/`esp_perip_clk_init` using IDF's own `*_ll.h` headers.
+* **`register_chipv7_phy` returns 1 = "calibration data not stored", which is normal;** a
+  full calibration takes ~90 ms. There is no NVS: every boot calibrates.
+* **Kernel-side interrupts:** the blob's interrupt numbers are names, not hardware lines;
+  each gets a free line (12..19). The hardware interrupt lands in a stub that masks the
+  (level-triggered) line and wakes a U-mode interrupt thread, which runs the blob's handler
+  and unmasks (`KOBJ_OP_ISR_WAIT/DONE`). 42 interrupts per scan, serviced with the thread
+  design; ISR latency is not yet measured against a loaded link (45.7).
+* **Small blob contracts:** `_wifi_create_queue` returns a `wifi_static_queue_t *`, not a
+  handle; the crypto table must have the right size/version even for a scan; the
+  supplicant callback table must be registered (all stubs) or the first AP found is a null
+  call; the timer thread must be started.
+
+**Left for 45.7:** the supplicant and its crypto (auth modes, WPA2-PSK), the event sink, the
+`netif`, PLL temperature tracking (`phy_common.c`), and putting the blob's data back to its
+initial state so `radio` can start twice in one boot.
+
 ## 5. Milestones
 
 Each milestone ends with a verification that can be repeated and a commit
@@ -604,9 +647,12 @@ by flashing*.
   (`SYS_CONF.APB_FIFO_MASK`). Not done: a `/dev/led` node — the shell and Lisp
   entry points cover the use, and a file node earns its place only when 45.6
   wants to show Wi-Fi state on the LED.
-* **45.6 Wi-Fi bring-up: PHY + `esp_wifi_init`.** Calibration, `wifi_init`,
-  `start`; `wifi scan` lists access points. First time the blob runs; every
-  failure here is a shim or interrupt bug and is debugged with the 45.2 trace.
+* **45.6 Wi-Fi bring-up — DONE 2026-10-05: `radio` scans 14 channels and lists the access
+  points.** PHY + `esp_wifi_init` + start + scan, the blob in its confined U-mode domain,
+  interrupts through the kernel's interrupt thread (§4.8). Hardware test:
+  `test_radio_scan` (16/16 on the suite; needs one AP in range). Not yet: association
+  (supplicant, 45.7) — and the scan's `authmode` is wrong (all 1) because IE parsing is the
+  supplicant's.
 * **45.7 Associate (WPA2-PSK) and DHCP.** Supplicant integration, then the
   existing phase-19 stack with a new `netif` over the blob's `esp_wifi_internal_tx`
   / rx callback (the CYW43 `netif` in `drivers/cyw43_rp2350.c` is the

@@ -53,6 +53,8 @@
  * in without a system call (pass 0, 0 until that thread exists). */
 bool radio_osi_init(void *arena, uint32_t arena_size);
 void radio_osi_set_isr_stack(uintptr_t lo, uintptr_t hi);
+/* Creates the interrupt thread (needs the kernel's ISR_WAIT/ISR_DONE: C6 with the radio). */
+bool radio_osi_start_isr_thread(void);
 
 /* The two threads the shim itself runs. Both are created by the caller
  * (typically with radio_thread_create below) and never return. */

@@ -75,19 +75,23 @@ static void modem_wifi_clocks(bool en) {
     modem_lpcon_ll_enable_coex_clock(LPCON, en);
 }
 
+/* esp_perip_clk_init(): the Wi-Fi power/timer block (TSF, beacon and sleep timing, and the
+ * interrupts that come from it) runs from the modem's low-power clock, which follows the
+ * system's slow clock -- the RC_SLOW oscillator -- unless told otherwise. The ROM leaves
+ * every source deselected and the power clock off. */
+static void modem_wifi_lpclk(void) {
+    modem_lpcon_ll_enable_wifi_lpclk_slow_osc(LPCON, false);
+    modem_lpcon_ll_enable_wifi_lpclk_fast_osc(LPCON, false);
+    modem_lpcon_ll_enable_wifi_lpclk_32k_xtal(LPCON, false);
+    modem_lpcon_ll_enable_wifi_lpclk_main_xtal(LPCON, false);
+    modem_lpcon_ll_enable_wifi_lpclk_slow_osc(LPCON, true);
+    modem_lpcon_ll_set_wifi_lpclk_divisor_value(LPCON, 0);
+    modem_lpcon_ll_enable_wifipwr_clock(LPCON, true);
+}
+
 void radio_plat_wifi_clock_enable(void)  {
-    static int once;
-    if (!once++) {
-        radio_osi_log_write(3, "plat", "before: syscon04=%08x 0c=%08x pcr108=%08x", *(volatile uint32_t *)0x600A9804,
-                            *(volatile uint32_t *)0x600A980C, *(volatile uint32_t *)0x60096108);
-        modem_wifi_clocks(true);
-        radio_osi_log_write(3, "plat", "readback: mac=%d apb=%d bb=%d coex=%d icg_wifi=%x", modem_syscon_ll_wifi_mac_clock_is_enabled(SYSCON),
-                            modem_syscon_ll_wifi_apb_clock_is_enabled(SYSCON), modem_syscon_ll_wifibb_clock_is_enabled(SYSCON),
-                            modem_lpcon_ll_coex_clock_is_enabled(LPCON), modem_syscon_ll_get_wifi_icg_bitmap(SYSCON));
-        radio_osi_log_write(3, "plat", "after: pmu0c=%08x syscon00=%08x lpcon10=%08x", *(volatile uint32_t *)0x600B000C,
-                            *(volatile uint32_t *)0x600A9800, *(volatile uint32_t *)0x600AF010);
-        return;
-    }
+    static bool lp_done;
+    if (!lp_done) { modem_icg_init(); modem_wifi_lpclk(); lp_done = true; }
     modem_wifi_clocks(true);
 }
 void radio_plat_wifi_clock_disable(void) { modem_wifi_clocks(false); }
@@ -123,18 +127,27 @@ static bool g_phy_calibrated;
  * calibration-data store (there is no NVS: every boot is a full calibration) and
  * without the sleep/retention variants. */
 void radio_plat_phy_enable(void) {
-    if (g_phy_calibrated) { PLAT_TRACE("phy_enable (already calibrated)"); return; }
-    PLAT_TRACE("phy_enable: clocks");
     modem_phy_clocks();
-    PLAT_TRACE("phy_enable: clocks on");
-    radio_osi_log_write(3, "plat", "phy_version %s", get_phy_version_str());
-    esp_phy_calibration_data_t *cal = radio_osi_zalloc(sizeof(*cal));
-    if (!cal) { PLAT_TRACE("phy_enable: out of memory"); return; }
-    radio_osi_read_mac(cal->mac, 0);
-    int r = register_chipv7_phy(&phy_init_data, cal, PHY_RF_CAL_FULL);
-    radio_osi_log_write(3, "plat", "register_chipv7_phy -> %d", r);
-    radio_osi_free(cal);                       /* the PHY keeps its own copy */
-    g_phy_calibrated = true;
+    if (!g_phy_calibrated) {
+        radio_osi_log_write(3, "plat", "phy_version %s", get_phy_version_str());
+        esp_phy_calibration_data_t *cal = radio_osi_zalloc(sizeof(*cal));
+        if (!cal) { PLAT_TRACE("phy_enable: out of memory"); return; }
+        radio_osi_read_mac(cal->mac, 0);
+        int r = register_chipv7_phy(&phy_init_data, cal, PHY_RF_CAL_FULL);
+        radio_osi_log_write(3, "plat", "register_chipv7_phy -> %d", r);
+        radio_osi_free(cal);                   /* the PHY keeps its own copy */
+        g_phy_calibrated = true;
+    } else {
+        phy_wakeup_init();                     /* bring the RF back after phy_close_rf() */
+    }
+    /* IDF also starts the PLL temperature tracking here (phy_common.c, an esp_timer user):
+     * not yet -- it matters over temperature and time, not for a first scan. */
+    phy_wifi_enable_set(1);                    /* esp_adapter.c's phy_enable_wrapper, after esp_phy_enable */
 }
-void radio_plat_phy_disable(void)       { PLAT_TRACE("phy_disable (not yet)"); }
+
+void radio_plat_phy_disable(void) {
+    phy_wifi_enable_set(0);
+    phy_close_rf();
+    phy_xpd_tsens();
+}
 int  radio_plat_phy_update_country(const char *country) { (void)country; return 0; }

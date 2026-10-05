@@ -174,6 +174,19 @@ def test_led(c: Console):
     return _t("a WS2812 frame goes out through the RMT and completes (led R G B / off)", ok1 and ok2 and not bad)
 
 
+def test_radio_scan(c: Console):
+    """The Wi-Fi blob in its U-mode domain: init, PHY calibration, interrupts through the
+    interrupt thread, a scan of all 14 channels. One start per boot, and it needs at least
+    one access point in range -- a test that depends on the room, said so in its name."""
+    ok, out = c.run("radio", r"radio: stage \d", 60)
+    m = re.search(r"scan found (\d+) access points", out)
+    n = int(m.group(1)) if m else 0
+    fired = re.search(r"fired (\d+) times", out)
+    return _t("Wi-Fi scan through the blob: interrupts delivered, access points found (needs one in range)",
+              ok and "stage 6" in out and n >= 1 and bool(fired) and int(fired.group(1)) > 0,
+              "%d APs, %s irqs" % (n, fired.group(1) if fired else "?"))
+
+
 def test_still_alive(c: Console):
     """A kernel that boots and then resets (the flash-boot watchdogs, a crash) looks
     perfect to every quick test above and dies minutes later -- the P4's phase 32
@@ -192,7 +205,7 @@ def test_still_alive(c: Console):
 
 TESTS = [test_boots, test_heap, test_tick_rate, test_preemption, test_locks, test_priostress,
          test_pmp, test_umode, test_isolation, test_deputy, test_kobj_kernel, test_kobj_umode,
-         test_radio_shim, test_led, test_still_alive]
+         test_radio_shim, test_led, test_radio_scan, test_still_alive]
 
 
 def main() -> int:

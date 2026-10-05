@@ -21,6 +21,7 @@
 #include "kernel/mem_domain.h"
 #include "kernel/random.h"
 #include "kernel/identity.h"
+#include "kernel/radio_intr.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
 #include "arch/umode.h"
@@ -121,7 +122,7 @@ static const char *const k_opnames[KOBJ_OP_COUNT] = {
     "mutex_delete", "q_create", "q_send", "q_recv", "q_waiting", "q_delete", "ev_create", "ev_set",
     "ev_clear", "ev_wait", "ev_delete", "timer_setfn", "timer_arm", "timer_disarm", "timer_done",
     "timer_wait", "time_us", "crit_enter", "crit_leave", "thread_create", "thread_self", "random", "mac",
-    "log", "intr_set", "intr_clear", "isr_set", "ints_on", "ints_off", "event_post",
+    "log", "intr_set", "intr_clear", "isr_set", "ints_on", "ints_off", "event_post", "isr_wait", "isr_done",
 };
 
 static long kobj_syscall_impl(unsigned op, uintptr_t a1, uintptr_t a2, uintptr_t a3, uintptr_t a4, uintptr_t a5);
@@ -246,6 +247,15 @@ static long kobj_syscall_impl(unsigned op, uintptr_t a1, uintptr_t a2, uintptr_t
         else printk("[radio%u] %s\n", (unsigned)a1, line);
         return KO_OK;
     }
+#if defined(CONFIG_BOARD_ESP32C6) && defined(CONFIG_RADIO_C6)
+    case KOBJ_OP_INTR_SET:   return radio_intr_set((uint32_t)a2, (uint32_t)a3);
+    case KOBJ_OP_INTR_CLEAR: return radio_intr_clear((uint32_t)a1, (uint32_t)a2);
+    case KOBJ_OP_ISR_SET:    return radio_isr_set((uint32_t)a1, a2, a3);
+    case KOBJ_OP_INTS_ON:    return radio_ints_on((uint32_t)a1);
+    case KOBJ_OP_INTS_OFF:   return radio_ints_off((uint32_t)a1);
+    case KOBJ_OP_ISR_WAIT:   return radio_isr_wait(a1);
+    case KOBJ_OP_ISR_DONE:   return radio_isr_done((uint32_t)a1);
+#endif
     default:
         return KO_FAIL;
     }

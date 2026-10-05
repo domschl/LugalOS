@@ -970,7 +970,7 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
     # 45.6: the Wi-Fi radio. The kernel half is always built (it says so when there
     # is no blob); the rest only with an ESP-IDF tree to take headers and archives
     # from (cmake/radio_esp32c6.cmake).
-    list(APPEND SOURCES kernel/radio_c6.c)
+    list(APPEND SOURCES kernel/radio_c6.c kernel/radio_intr.c)
     include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/radio_esp32c6.cmake)
     if(LUGALOS_RADIO_C6)
         add_compile_definitions(CONFIG_RADIO_C6=1)
@@ -984,7 +984,7 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
         endforeach()
         # U-mode code: no UBSan handlers (they are kernel text), no jump tables.
         set_source_files_properties(${RADIO_C6_SOURCES} ${LUGALOS_RADIO_IDF_SOURCES}
-            PROPERTIES COMPILE_OPTIONS "-fbuiltin;-fno-jump-tables;-fno-sanitize=undefined;${_radio_opts}"
+            PROPERTIES COMPILE_OPTIONS "-std=gnu11;-fbuiltin;-fno-jump-tables;-fno-sanitize=undefined;${_radio_opts}"
                        COMPILE_DEFINITIONS "${LUGALOS_RADIO_DEFS}")
         set_source_files_properties(${LUGALOS_RADIO_IDF_SOURCES} PROPERTIES COMPILE_OPTIONS "-w;-fno-jump-tables;-fno-sanitize=undefined;${_radio_opts}")
     endif()

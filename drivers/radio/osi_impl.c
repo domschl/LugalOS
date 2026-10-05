@@ -303,15 +303,46 @@ static RADIO_TEXT void thread_tramp(uintptr_t a) {
     for (;;) { }
 }
 
-RADIO_TEXT int32_t radio_thread_create(void (*entry)(void *), void *param, uint32_t stack_bytes, uint32_t prio) {
+static RADIO_TEXT int32_t thread_create_ex(void (*entry)(void *), void *param, uint32_t stack_bytes, uint32_t prio,
+                                           uint8_t **stack_out) {
     stack_bytes = (stack_bytes + 7u) & ~7u;
     uint8_t *stack = (uint8_t *)r_malloc(stack_bytes);
+    if (stack_out) *stack_out = stack;
     tramp_t *t = (tramp_t *)r_malloc(sizeof *t);
     if (!stack || !t) { r_free(stack); r_free(t); return KO_FAIL; }
     t->fn = entry; t->param = param;
     long pid = K(KOBJ_OP_THREAD_CREATE, thread_tramp, t, stack, stack_bytes, prio);
     if (pid < 0) { r_free(stack); r_free(t); }
     return (int32_t)pid;          /* the stack is the thread's for good: a radio thread does not exit */
+}
+
+RADIO_TEXT int32_t radio_thread_create(void (*entry)(void *), void *param, uint32_t stack_bytes, uint32_t prio) {
+    return thread_create_ex(entry, param, stack_bytes, prio, 0);
+}
+
+/* The interrupt thread (plan §4.5): sleeps in the kernel until a line the blob asked for
+ * has fired, calls the blob's handler, tells the kernel it may unmask the line. Its stack
+ * is how radio_osi_is_from_isr() knows it is in an interrupt without a system call. */
+#define ISR_STACK_BYTES 3072u
+static RADIO_TEXT void isr_thread(void *unused) {
+    (void)unused;
+    for (;;) {
+        uintptr_t rec[3];
+        if (K(KOBJ_OP_ISR_WAIT, (uintptr_t)rec, 0, 0, 0, 0) != KO_OK) {
+            ksys(SYS_UEXIT, 0, 0, 0, 0, 0);
+            for (;;) { }
+        }
+        ((void (*)(void *))rec[0])((void *)rec[1]);
+        K(KOBJ_OP_ISR_DONE, rec[2], 0, 0, 0, 0);
+    }
+}
+
+RADIO_TEXT bool radio_osi_start_isr_thread(void) {
+    uint8_t *stack = 0;
+    int32_t pid = thread_create_ex(isr_thread, 0, ISR_STACK_BYTES, 24, &stack);
+    if (pid < 0 || !stack) return false;
+    radio_osi_set_isr_stack((uintptr_t)stack, (uintptr_t)stack + ISR_STACK_BYTES);
+    return true;
 }
 
 RADIO_TEXT int32_t radio_osi_task_create_pinned_to_core(void *func, const char *name, uint32_t stack_depth,

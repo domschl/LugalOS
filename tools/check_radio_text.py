@@ -69,7 +69,7 @@ def check_c6(build):
         for f in files:
             path = os.path.join(root, f)
             if f.endswith(".obj") and os.path.realpath(path) not in mine \
-                    and "esp_wifi_regulatory" not in f and "ftm_load" not in f:
+                    and "esp_wifi_regulatory" not in f and "ftm_load" not in f and "phy_init_data" not in f:
                 kernel_defined |= nm(path, "--defined-only")
     bad = {}
     for o in radio:

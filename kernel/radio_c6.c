@@ -22,6 +22,7 @@
 
 #include "kernel/radio_c6.h"
 #include "kernel/sched.h"
+#include "kernel/radio_intr.h"
 #include "kernel/palloc.h"
 #include "kernel/mem_domain.h"
 #include "kernel/console.h"
@@ -65,6 +66,7 @@ static void radio_task(void *arg) {
     ctx->stage = RADIO_STAGE_NONE;
 
     HP_APM_REGION0_PMS_ATTR = 0x777u;
+    radio_intr_reset();
     for (volatile char *p = _radio_bss_start; p < _radio_bss_end; p++) *p = 0;   /* not in the image */
     mem_domain_init(&g_rdomain);
     int bad = 0;
@@ -102,12 +104,13 @@ int radio_c6_start(void) {
     g_rpid = task_create("radio", radio_task, NULL);
     if (g_rpid < 0) { cprintf("radio: could not create the task\n"); return 1; }
     for (int i = 0; i < 10000 && sched_task_state(g_rpid) != TASK_DEAD; i++) task_sleep_ms(1);
+    radio_intr_report();
     const radio_ctx_t *ctx = (const radio_ctx_t *)g_rstack;
-    static const char *const names[] = { "not started", "FAILED", "OS shim up", "coexistence up", "esp_wifi_init_internal returned 0", "esp_wifi_start returned 0" };
+    static const char *const names[] = { "not started", "FAILED", "OS shim up", "coexistence up", "esp_wifi_init_internal returned 0", "esp_wifi_start returned 0", "scan found access points" };
     cprintf("radio: stage %u (%s), esp_wifi_init rc=0x%x, start rc=0x%x, task %s\n", (unsigned)ctx->stage,
-            ctx->stage < 6 ? names[ctx->stage] : "?", (unsigned)ctx->rc_init, (unsigned)ctx->rc_start,
+            ctx->stage < 7 ? names[ctx->stage] : "?", (unsigned)ctx->rc_init, (unsigned)ctx->rc_start,
             sched_task_state(g_rpid) == TASK_DEAD ? "ended" : "still running");
-    return ctx->stage == RADIO_STAGE_STARTED ? 0 : 1;
+    return ctx->stage >= RADIO_STAGE_STARTED ? 0 : 1;
 }
 
 #else

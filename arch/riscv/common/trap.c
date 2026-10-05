@@ -933,7 +933,7 @@ void trap_handler(trap_frame_t *frame) {
               extern volatile int g_kobj_trace;
               static unsigned n;
               if (g_kobj_trace && ++n % 100 == 0)
-                  cprintf("[tick] epc=%08lx ra=%08lx\n", (unsigned long)frame->epc, (unsigned long)frame->ra);
+                  cprintf("[tick] epc=%08lx ra=%08lx intmtx_status=%08lx\n", (unsigned long)frame->epc, (unsigned long)frame->ra, (unsigned long)*(volatile uint32_t *)0x60010134UL);
             }
 #endif
             /* Rearm FIRST. A RISC-V timer interrupt is level-triggered off
@@ -1577,3 +1577,8 @@ void trap_handler(trap_frame_t *frame) {
         }
     }
 }
+
+#if defined(CONFIG_BOARD_ESP32C6)
+void esp32c6_irq_mask(uint32_t line)   { C6_PLIC_ENABLE &= ~(1u << line); }
+void esp32c6_irq_unmask(uint32_t line) { C6_PLIC_ENABLE |= (1u << line); }
+#endif

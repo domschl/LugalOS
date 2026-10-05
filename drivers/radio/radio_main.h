@@ -12,6 +12,7 @@
 #define RADIO_STAGE_COEX   3
 #define RADIO_STAGE_INIT   4   /* esp_wifi_init_internal returned 0 */
 #define RADIO_STAGE_STARTED 5  /* esp_wifi_start returned 0 */
+#define RADIO_STAGE_SCANNED 6  /* a scan found at least one access point */
 
 typedef struct {
     void    *arena;            /* the radio heap, in the radio's domain */
@@ -19,6 +20,7 @@ typedef struct {
     volatile uint32_t stage;
     volatile int32_t  rc_init;
     volatile int32_t  rc_start;
+    volatile uint32_t ap_count;
 } radio_ctx_t;
 
 void radio_main(uintptr_t arg);
