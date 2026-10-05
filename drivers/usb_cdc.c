@@ -314,6 +314,7 @@ typedef struct {
     uint32_t ep2_tx_tail;
     bool     ep2_tx_busy;
     bool     ep2_tx_pid;
+    bool     ep2_tx_zlp_pending; /* the last packet was full: see ep2_tx_pump() */
     uint8_t  ep2_rx_ring[USB_EP2_RX_RING_SIZE];
     uint32_t ep2_rx_head;
     uint32_t ep2_rx_tail;
@@ -478,6 +479,7 @@ static void ep2_configure(void) {
     g_usb.ep2_rx_head = g_usb.ep2_rx_tail = 0;
     g_usb.ep2_tx_busy = false;
     g_usb.ep2_tx_pid = false;
+    g_usb.ep2_tx_zlp_pending = false;
     g_usb.ep2_rx_pid = false;
     g_usb.ep2_dtr = false; // wait for the host to actually assert DTR before queuing anything
 
@@ -490,7 +492,24 @@ static void ep2_configure(void) {
 
 // Copy any buffered TX bytes into an EP2 IN packet if the endpoint is free.
 static void ep2_tx_pump(void) {
-    if (!g_usb.ep2_configured || g_usb.ep2_tx_busy || g_usb.ep2_tx_head == g_usb.ep2_tx_tail) {
+    if (!g_usb.ep2_configured || g_usb.ep2_tx_busy) return;
+
+    /* A burst that ends on a full 64-byte packet is not over as far as the
+     * host is concerned: a bulk IN transfer ends with a short packet, and
+     * an exact multiple of the packet size needs a zero-length one after it
+     * (EP4 learned this first -- see ep4_link_send_frame()). Without it
+     * Linux's cdc-acm held the whole burst, echo included, until the next
+     * output happened to end short -- the next keystroke's echo. On the
+     * clock persona `i2cstats` landed on that boundary and every second one
+     * appeared one command late (2026-10-05). */
+    if (g_usb.ep2_tx_head == g_usb.ep2_tx_tail) {
+        if (!g_usb.ep2_tx_zlp_pending) return;
+        g_usb.ep2_tx_zlp_pending = false;
+        uint32_t zctrl = (1u << 15) | (1u << 14) | (1u << 10);   // FULL | LAST_BUFF | AVAIL | len=0
+        if (g_usb.ep2_tx_pid) zctrl |= (1u << 13);
+        g_usb.ep2_tx_pid = !g_usb.ep2_tx_pid;
+        g_usb.ep2_tx_busy = true;
+        ep_buf_ctrl_write((volatile uint32_t *)USB_EP2_IN_BUF_CTRL, zctrl);
         return;
     }
 
@@ -500,6 +519,7 @@ static void ep2_tx_pump(void) {
         txbuf[n++] = g_usb.ep2_tx_ring[g_usb.ep2_tx_tail];
         g_usb.ep2_tx_tail = (g_usb.ep2_tx_tail + 1) % USB_EP2_TX_RING_SIZE;
     }
+    g_usb.ep2_tx_zlp_pending = (n == 64);
 
     uint32_t ctrl = (1u << 15) | (1u << 14) | (1u << 10) | n; // FULL | LAST_BUFF | AVAIL | len
     if (g_usb.ep2_tx_pid) ctrl |= (1u << 13); // DATA1_PID
@@ -638,6 +658,7 @@ void usb_cdc_task(void) {
             g_usb.ep2_rx_head = g_usb.ep2_rx_tail = 0;
             g_usb.ep2_tx_busy = false;
             g_usb.ep2_tx_pid = false;
+            g_usb.ep2_tx_zlp_pending = false;
             g_usb.ep2_rx_pid = false;
             g_usb.ep2_dtr = false;
             // Same reasoning for EP4 (ACM1 network endpoint, A3b).
@@ -1427,6 +1448,7 @@ USB_UATTR static void u_ep2_configure(void) {
     g_usb.ep2_rx_head = g_usb.ep2_rx_tail = 0;
     g_usb.ep2_tx_busy = false;
     g_usb.ep2_tx_pid = false;
+    g_usb.ep2_tx_zlp_pending = false;
     g_usb.ep2_rx_pid = false;
     g_usb.ep2_dtr = false;
 
@@ -1436,7 +1458,24 @@ USB_UATTR static void u_ep2_configure(void) {
 }
 
 USB_UATTR static void u_ep2_tx_pump(void) {
-    if (!g_usb.ep2_configured || g_usb.ep2_tx_busy || g_usb.ep2_tx_head == g_usb.ep2_tx_tail) {
+    if (!g_usb.ep2_configured || g_usb.ep2_tx_busy) return;
+
+    /* A burst that ends on a full 64-byte packet is not over as far as the
+     * host is concerned: a bulk IN transfer ends with a short packet, and
+     * an exact multiple of the packet size needs a zero-length one after it
+     * (EP4 learned this first -- see ep4_link_send_frame()). Without it
+     * Linux's cdc-acm held the whole burst, echo included, until the next
+     * output happened to end short -- the next keystroke's echo. On the
+     * clock persona `i2cstats` landed on that boundary and every second one
+     * appeared one command late (2026-10-05). */
+    if (g_usb.ep2_tx_head == g_usb.ep2_tx_tail) {
+        if (!g_usb.ep2_tx_zlp_pending) return;
+        g_usb.ep2_tx_zlp_pending = false;
+        uint32_t zctrl = (1u << 15) | (1u << 14) | (1u << 10);   // FULL | LAST_BUFF | AVAIL | len=0
+        if (g_usb.ep2_tx_pid) zctrl |= (1u << 13);
+        g_usb.ep2_tx_pid = !g_usb.ep2_tx_pid;
+        g_usb.ep2_tx_busy = true;
+        u_ep_buf_ctrl_write((volatile uint32_t *)USB_EP2_IN_BUF_CTRL, zctrl);
         return;
     }
 
@@ -1446,9 +1485,10 @@ USB_UATTR static void u_ep2_tx_pump(void) {
         txbuf[n++] = g_usb.ep2_tx_ring[g_usb.ep2_tx_tail];
         g_usb.ep2_tx_tail = (g_usb.ep2_tx_tail + 1) % USB_EP2_TX_RING_SIZE;
     }
+    g_usb.ep2_tx_zlp_pending = (n == 64);
 
     uint32_t ctrl = (1u << 15) | (1u << 14) | (1u << 10) | n; // FULL | LAST_BUFF | AVAIL | len
-    if (g_usb.ep2_tx_pid) ctrl |= (1u << 13);
+    if (g_usb.ep2_tx_pid) ctrl |= (1u << 13); // DATA1_PID
     g_usb.ep2_tx_pid = !g_usb.ep2_tx_pid;
     g_usb.ep2_tx_busy = true;
 
@@ -1538,6 +1578,7 @@ USB_UATTR static void usb_cdc_umode_body(void) {
                 g_usb.ep2_rx_head = g_usb.ep2_rx_tail = 0;
                 g_usb.ep2_tx_busy = false;
                 g_usb.ep2_tx_pid = false;
+                g_usb.ep2_tx_zlp_pending = false;
                 g_usb.ep2_rx_pid = false;
                 g_usb.ep2_dtr = false;
                 g_usb.ep4_configured = false;

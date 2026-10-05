@@ -1691,16 +1691,30 @@ which is how this one stayed hidden.)
     before §7 (3 of 20 after): a ~0.7 ms preemption inside its single timed
     read made "after" look 20 % slower with every register identical. It now
     takes the fastest of three passes, and passed 20 of 20.
-  * **Open: one boot hang on rp2350-clock.** After the node-pool test's
-    `reboot` (a full bootrom reset), the board re-enumerated on USB and then
-    answered nothing: no console echo, no 9P on the second port, and no
-    reaction to the 1200-baud touch. That touch is serviced by the U-mode USB
-    task, so tasks had stopped being scheduled. Two other reboots of the same
-    firmware came back healthy. Whether it predates §7 is not yet known; the
-    next step is a reboot loop on the old and new firmware. The harness now
-    calls `rp2350.wake_shell()`, which repeats Ctrl-C until a prompt answers
-    and says so when none does, so a silent board is reported up front
-    rather than as 28 unrelated failures.
+  * **The i2c test's empty replies: a missing USB zero-length packet.**
+    On the clock, every second `i2cstats` produced no output within 8 s.
+    The echo, the `[I2cStats]` record and the prompt then all arrived when
+    the next key was typed. The firmware before §7 did the same. The console
+    endpoint (EP2) sent bursts in 64-byte packets with no trailing ZLP, so a
+    burst ending exactly on a packet boundary left the host's bulk transfer
+    open. Linux's cdc-acm holds such a transfer until a short packet arrives,
+    and here that was the next keystroke's echo. EP4 (the 9P port) already
+    sent ZLPs for the same reason. EP2 now does too, in both pumps, and
+    `i2cstats` answers 20 of 20 times in 0.05 s. Any board whose console is
+    USB CDC was affected, at whatever output lengths happen to be multiples
+    of 64.
+  * **Two silent boards, not reproduced.** Twice the clock board stopped
+    answering on both ports after a suite run, ignored the 1200-baud touch
+    and did not re-enumerate. Replugging the USB hub brought it back the
+    first time; the second time the board itself was replugged. Neither
+    reproduced afterwards: 10 of 10 plain `reboot`s, 12 of 12 manual
+    exhaust-then-reboot iterations, 10 of 10 runs of the node-pool test
+    itself, and a full suite followed by a reboot all came back. That fits
+    the hub the user found. If it recurs, the next step is the same reboot
+    loop on the firmware before §7. The harness now calls
+    `rp2350.wake_shell()`, which repeats Ctrl-C until a prompt answers and
+    says so when none does, so a silent board is reported up front rather
+    than as 28 unrelated failures.
 * Not a concurrency finding, but found by the same run: `test_psram`'s
   cold-cache read fell from a steady 23.8 MB/s to 20.5–23.2 MB/s. Nothing
   in these changes touches PSRAM. They moved the bench's own loop
