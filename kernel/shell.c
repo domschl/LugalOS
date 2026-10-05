@@ -4284,7 +4284,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
          * drivers/spisd_rp2350.c, drivers/virtio_blk.c, or (since 35.3)
          * drivers/sdmmc_esp32p4.c, which is why this used to be absent on
          * the P4 and no longer is. */
+#if defined(CONFIG_BOARD_ESP32C6)
+        printk("[BlkStats] no block device on this board (45.4)\n");   /* nothing defines blk_task_call_count() here */
+#else
         printk("[BlkStats] calls=%u\n", blk_task_call_count());
+#endif
         return;
 #if defined(CONFIG_BOARD_RP2350)
     } else if (strncmp(cmd_line, "i2cdiag", 7) == 0) {

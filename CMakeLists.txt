@@ -68,6 +68,24 @@ elseif(LUGALOS_TARGET STREQUAL "RP2350")
         LUGALOS_FLASHFS_SIZE=${LUGALOS_FLASHFS_SIZE}
         LUGALOS_IDENTITY_BASE=${LUGALOS_IDENTITY_BASE}
         LUGALOS_IDENTITY_SIZE=${LUGALOS_IDENTITY_SIZE})
+elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
+    # 45.4, plan/phase45_esp32c6.md. The C6's HP core is RV32IMAC (datasheet:
+    # no F, no FPU), M and U with no S-mode (misa 0x40903105, read off this
+    # silicon in 45.1), so the P4's recipe applies as it stands: CONFIG_MODE_M,
+    # CONFIG_NOMMU, the generic RISC-V cross compiler (cmake/toolchain-
+    # esp32c6.cmake), no IDF toolchain.
+    set(ARCH_MARCH "rv32imac_zicsr_zifencei")
+    set(ARCH_MABI "ilp32")
+    set(LINKER_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/linker/esp32c6.ld")
+    add_compile_definitions(CONFIG_TARGET_RV32=1 CONFIG_NOMMU=1 CONFIG_MODE_M=1
+                            CONFIG_BOARD_ESP32C6=1 CONFIG_BOARD_ESP=1)
+    # The flash map: one definition, reaching the boot code (where the OS image
+    # is) here and tools/c6flash.py (the same numbers) through the manifest below.
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/flash_layout_esp32c6.cmake)
+    add_compile_definitions(
+        LUGALOS_C6_FLASH_SIZE=${LUGALOS_C6_FLASH_SIZE}
+        LUGALOS_C6_OSIMAGE_BASE=${LUGALOS_C6_OSIMAGE_BASE}
+        LUGALOS_C6_OSIMAGE_SIZE=${LUGALOS_C6_OSIMAGE_SIZE})
 elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
     # E2, plan/phase27_esp32p4_bringup.md. The P4's HP cores are RV32IMAFC
     # (datasheet section 4.1.1.1), and we compile the IMAC subset: no float,
@@ -83,7 +101,7 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
     set(ARCH_MARCH "rv32imac_zicsr_zifencei")
     set(ARCH_MABI "ilp32")
     set(LINKER_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/linker/esp32p4.ld")
-    add_compile_definitions(CONFIG_TARGET_RV32=1 CONFIG_NOMMU=1 CONFIG_MODE_M=1 CONFIG_BOARD_ESP32P4=1)
+    add_compile_definitions(CONFIG_TARGET_RV32=1 CONFIG_NOMMU=1 CONFIG_MODE_M=1 CONFIG_BOARD_ESP32P4=1 CONFIG_BOARD_ESP=1)
 
     # E6: the flash map, on the same principle as RP2350's above -- one
     # definition, reaching the driver as compile definitions and the flashing
@@ -140,7 +158,7 @@ include_directories(
 )
 
 # UBSan only makes sense on QEMU targets (bare metal has no abort/printf runtime)
-if(LUGALOS_TARGET STREQUAL "RP2350" OR LUGALOS_TARGET STREQUAL "ESP32P4" OR LUGALOS_TARGET STREQUAL "K210")
+if(LUGALOS_TARGET STREQUAL "RP2350" OR LUGALOS_TARGET STREQUAL "ESP32P4" OR LUGALOS_TARGET STREQUAL "ESP32C6" OR LUGALOS_TARGET STREQUAL "K210")
     option(ENABLE_SANITIZERS "Enable UBSan runtime sanitizers for bug catching" OFF)
 else()
     option(ENABLE_SANITIZERS "Enable UBSan runtime sanitizers for bug catching" ON)
@@ -361,8 +379,8 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
     set(FLASH_FS_OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/flashfs.bin)
     set(FLASH_FS_SOURCE "")
     set(FLASH_FS_COMMENT "Generating flashfs.bin (its own flash segment, not linked in)")
-elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
-    # E2, plan/phase27_esp32p4_bringup.md: built as a raw image, and linked
+elseif(LUGALOS_TARGET STREQUAL "ESP32P4" OR LUGALOS_TARGET STREQUAL "ESP32C6")
+    # E2, plan/phase27_esp32p4_bringup.md (and 45.4 for the C6): built as a raw image, and linked
     # into nothing, because there is nowhere to put it yet.
     #
     # The QEMU form below is a 512 KB C array. This kernel is delivered by
@@ -487,6 +505,8 @@ if(NOT DEFINED LUGALOS_BOARD_FILE)
         set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-rp2350.cmake")
     elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
         set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-esp32p4-nano.cmake")
+    elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
+        set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-esp32c6-zero.cmake")
     endif()
 endif()
 
@@ -939,6 +959,15 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
     # not gated out when the feature is off; it stubs itself internally, so
     # fs/vfs_server.c and kernel/board.c need no matching #if.
     list(APPEND SOURCES drivers/sdmmc_esp32p4.c)
+elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
+    # 45.4, plan/phase45_esp32c6.md. One driver again: the console, on the
+    # USB-Serial/JTAG peripheral. No block device, no netif, no identity backend,
+    # no display -- the same stated emptiness as the P4's E2, and for the same
+    # reason: a board with none of those registers none of them.
+    list(APPEND SOURCES drivers/usbjtag_esp32c6.c)
+    # The boot-time flash mapping and watchdogs, in .boot.text (SRAM): it is what
+    # makes the flash window exist, so it cannot live in it.
+    list(APPEND SOURCES arch/riscv/common/xip_esp32c6.c)
 else()
     # QEMU targets: VirtIO block device + 16550 UART + VirtIO console (9P link, A3)
     list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c drivers/virtio_console.c)
@@ -953,7 +982,7 @@ else()
 endif()
 
 # Architecture-specific memory management source
-if(LUGALOS_TARGET MATCHES "RV32_NOMMU" OR LUGALOS_TARGET STREQUAL "RP2350" OR LUGALOS_TARGET STREQUAL "ESP32P4")
+if(LUGALOS_TARGET MATCHES "RV32_NOMMU" OR LUGALOS_TARGET STREQUAL "RP2350" OR LUGALOS_TARGET STREQUAL "ESP32P4" OR LUGALOS_TARGET STREQUAL "ESP32C6")
     list(APPEND SOURCES arch/riscv/rv32_nommu/vmm.c)
 else()
     list(APPEND SOURCES arch/riscv/rv64_mmu/vmm.c)
@@ -1175,6 +1204,15 @@ fs ${LUGALOS_P4_FLASHFS_BASE} ${LUGALOS_P4_FLASHFS_SIZE} flashfs.bin exact
 ")
 endif()
 
+# 45.4.2: the C6's flash manifest, for tools/c6run.py and tools/c6flash.py. One
+# definition of the map (cmake/flash_layout_esp32c6.cmake), read by the tool
+# rather than retyped on a command line -- the same discipline as the P4's
+# flash.manifest. Columns: name, base, reserved size, artifact.
+if(LUGALOS_TARGET STREQUAL "ESP32C6")
+    file(GENERATE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/flash.manifest
+         CONTENT "stage2 ${LUGALOS_C6_STAGE2_BASE} ${LUGALOS_C6_STAGE2_SIZE} lugalos-ram.img\nosimage ${LUGALOS_C6_OSIMAGE_BASE} ${LUGALOS_C6_OSIMAGE_SIZE} lugalos-xip.bin\n")
+endif()
+
 # UF2 converter: official uf2conv.py with RP2350 RISC-V family support
 set(UF2CONV_PY python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/uf2conv.py)
 
@@ -1201,7 +1239,7 @@ endif()
 #
 # A command list rather than an if(): POST_BUILD cannot carry one, the same
 # constraint SD_STAGE_COMMANDS above works around.
-if(LUGALOS_TARGET STREQUAL "ESP32P4")
+if(LUGALOS_TARGET STREQUAL "ESP32P4" OR LUGALOS_TARGET STREQUAL "ESP32C6")
     set(UF2_COMMANDS COMMAND ${CMAKE_COMMAND} -E true)
 else()
     set(UF2_COMMANDS COMMAND ${UF2CONV_PY} --family rp2350_riscv --base ${LUGALOS_FLASH_BASE} lugalos.bin -o lugalos.uf2)
@@ -1269,6 +1307,16 @@ if(LUGALOS_TARGET STREQUAL "ESP32P4")
                 lugalos.elf lugalos-ram.elf)
     # (.ramfunc is RAM-resident and therefore kept: removing only the two
     #  flash sections is what makes that automatic. U3.)
+elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
+    # 45.4.2: the same two-halves split as the P4's, for the same reason -- the flash
+    # window at 0x42000000 and SRAM at 0x40800000 are 8 MB apart, and a single
+    # `objcopy -O binary` would pad the gap. See the P4 block above for the
+    # (intended) "empty loadable segment" warning this extraction can emit.
+    set(RAW_BIN_COMMANDS
+        COMMAND ${CMAKE_OBJCOPY} -O binary -j .text -j .rodata --gap-fill 0
+                lugalos.elf lugalos-xip.bin
+        COMMAND ${CMAKE_OBJCOPY} -R .text -R .rodata --strip-all
+                lugalos.elf lugalos-ram.elf)
 else()
     set(RAW_BIN_COMMANDS
         COMMAND ${CMAKE_OBJCOPY} -O binary lugalos.elf lugalos.bin)

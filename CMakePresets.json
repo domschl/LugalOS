@@ -168,6 +168,27 @@
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-rp2350.cmake",
         "LUGALOS_ENABLE_SMP": "ON"
       }
+    },
+    {
+      "name": "esp32c6",
+      "displayName": "ESP32-C6 (Waveshare ESP32-C6-Zero)",
+      "description": "45.4, plan/phase45_esp32c6.md. LugalOS on the C6: the whole kernel RAM-resident in the 496 KB of SRAM below the ROM's data, console on the USB-Serial/JTAG port, delivered by `tools/c6run.py` (esptool load-ram; nothing is written to flash). The first form is cooperative and polled; 45.4.2 adds the interrupt controller and the tick, 45.4.3 boots from flash and executes in place, 45.4.4 brings up U-mode. No Wi-Fi yet.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/esp32c6",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-esp32c6.cmake",
+        "LUGALOS_ENABLE_SMP": "OFF",
+        "LUGALOS_ENABLE_CC": "OFF",
+        "LUGALOS_ENABLE_ED": "OFF",
+        "LUGALOS_ENABLE_SPISD": "OFF",
+        "LUGALOS_ENABLE_SDMMC": "OFF",
+        "LUGALOS_ENABLE_ST7735": "OFF",
+        "LUGALOS_ENABLE_TM1638": "OFF",
+        "LUGALOS_ENABLE_CHESS": "OFF",
+        "LUGALOS_ENABLE_PICO_CLOCK_GREEN": "OFF",
+        "LUGALOS_ENABLE_DCF77": "OFF",
+        "LUGALOS_ENABLE_GPS": "OFF"
+      }
     }
   ],
   "buildPresets": [
@@ -214,6 +235,10 @@
     {
       "name": "rp2350-smp",
       "configurePreset": "rp2350-smp"
+    },
+    {
+      "name": "esp32c6",
+      "configurePreset": "esp32c6"
     }
   ]
 }

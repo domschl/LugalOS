@@ -354,6 +354,28 @@ static bool arch_ticker_init(void) {
     return true;
 }
 
+/* --- ESP32-C6: no tick yet ---------------------------------------------- */
+#elif defined(CONFIG_BOARD_ESP32C6)
+
+/* 45.4.1, plan/phase45_esp32c6.md: the first boot is cooperative. The tick is
+ * the system timer's ALARM raised through the interrupt matrix and the PLIC
+ * (INTMTX source 57 -> a CPU line, TRM "Interrupt Matrix" and PLIC_MX), none of
+ * which is up until 45.4.2 -- an unrouted source delivers nothing, and an
+ * enabled one without a vector table takes a trap into whatever mtvec points at.
+ * So the ticker reports that preemption is off, which is the contract
+ * (kernel/include/kernel/ticker.h: "returns false if this target has no usable
+ * timer, so preemption can stay off and say so"), and everything above it runs
+ * on yields, as every target did before B6. */
+#define TICK_HZ 1000000UL
+
+static uint64_t now(void) { return time_get_us(); }
+static void set_deadline(uint64_t t) { (void)t; }
+
+static bool arch_ticker_init(void) {
+    printk("[Ticker] ESP32-C6: the tick interrupt is not routed yet (45.4.2); preemption off\n");
+    return false;
+}
+
 /* --- QEMU RV32: CLINT, M-mode ---------------------------------------- */
 #elif !defined(CONFIG_MODE_S)
 

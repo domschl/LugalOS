@@ -25,7 +25,7 @@
  * QEMU keeps the generous numbers because it has 128 MB and because the
  * larger pools compile larger programs; the hardware targets share the
  * figures phase 10 measured on the RP2350. */
-#if defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32P4)
+#if defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32P4) || defined(CONFIG_BOARD_ESP32C6)
 #define MAX_NODES 256
 #define MAX_OBJS 128
 #define MAX_TYPES 64

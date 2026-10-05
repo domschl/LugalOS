@@ -50,9 +50,12 @@
 #include "fs/9p.h"
 #include "lisp.h"
 
-#if !defined(CONFIG_BOARD_RP2350) && !defined(CONFIG_BOARD_ESP32P4)
+#if !defined(CONFIG_BOARD_RP2350) && !defined(CONFIG_BOARD_ESP32P4) && !defined(CONFIG_BOARD_ESP32C6)
 #include "drivers/virtio_console.h"
 #include "drivers/virtio_blk.h"
+#elif defined(CONFIG_BOARD_ESP32C6)
+/* 45.4, plan/phase45_esp32c6.md: no virtio, no RP2350 drivers, and no block
+ * device at all yet -- the C6 has no card slot, and /flash0 waits for 45.4.3. */
 #elif defined(CONFIG_BOARD_ESP32P4)
 /* E2, plan/phase27_esp32p4_bringup.md: neither set of headers. This board has
  * no virtio (it is not QEMU) and none of the RP2350 drivers below -- 35.3's
@@ -458,6 +461,8 @@ void kernel_main(void) {
      * for everything else. */
 #if defined(CONFIG_BOARD_RP2350)
     spisd_task_start();
+#elif defined(CONFIG_BOARD_ESP32C6)
+    /* No block device on this board yet (45.4); nothing to start. */
 #elif defined(CONFIG_BOARD_ESP32P4)
     /* 35.3, plan/phase35_esp32p4_sdmmc.md: the microSD card on the SD/MMC
      * host. Same endpoint name and same batching as the two above, and the

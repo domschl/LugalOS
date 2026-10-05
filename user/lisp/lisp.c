@@ -97,8 +97,9 @@
  * own on-demand move-list pools (user/chess/src/search.c) needed to
  * allocate, quietly eaten enough of the heap that they no longer fit. */
 #define NODE_POOL_SIZE 1024
-#elif defined(CONFIG_BOARD_ESP32P4)
-/* E2, plan/phase27_esp32p4_bringup.md: the RP2350 figure, for the RP2350
+#elif defined(CONFIG_BOARD_ESP32P4) || defined(CONFIG_BOARD_ESP32C6)
+/* E2, plan/phase27_esp32p4_bringup.md (and 45.4, the C6, whose SRAM is smaller
+ * still: 496 KB with the ROM's 16 KB fenced off): the RP2350 figure, for the RP2350
  * reason, on a board with the same shape of budget.
  *
  * The QEMU 4096 below is free against 128 MB. Here it is not: measured on
@@ -357,7 +358,7 @@ static lisp_val_t *alloc_node(lisp_type_t type) {
 /* 38.5: a board file may size it, as it may size the node pool. The LCD-7
  * keeps both in PSRAM and takes eight times the default (sign-off S2). */
 #define STRING_POOL_SIZE CONFIG_LISP_STRING_POOL
-#elif defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32P4)
+#elif defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32P4) || defined(CONFIG_BOARD_ESP32C6)
 /* Fixed at 384 on both real boards, and deliberately not the NODE_POOL_SIZE/2
  * ratio -- see the paragraph above for why that ratio was the bug rather than
  * the rule. */

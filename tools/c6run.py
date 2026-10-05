@@ -18,6 +18,9 @@ fixed in one place.
     tools/c6run.py IMAGE.elf                 load into RAM and run, watch 8 s
     tools/c6run.py IMAGE.elf --listen-secs 20
     tools/c6run.py --ports                   show what was found
+    tools/c6run.py --kernel build/esp32c6    run the LugalOS kernel: write the flash-
+                                             resident half if it changed, load the
+                                             RAM half, watch the console
 
 **Nothing here writes flash.** `esptool load-ram` delivers the image into HP
 SRAM and jumps to it; a reset restores whatever is in flash.
@@ -85,7 +88,37 @@ def load(port, img, tries=3):
     return False
 
 
-def listen(port, secs):
+def kernel_flash_if_changed(port, bdir):
+    """The kernel is two images (plan/phase45 45.4.2): .text/.rodata run in place
+    from flash, the rest is loaded to SRAM. Write the first at the address the
+    build's manifest gives (build/<preset>/flash.manifest -- the one definition of
+    the map, never retyped here), but only when it differs from what this tool last
+    wrote: 380 KB over USB-Serial/JTAG is several seconds, and a rebuild that only
+    touched RAM-half code does not change it."""
+    import hashlib
+    man = {}
+    for line in open(os.path.join(bdir, "flash.manifest")):
+        f = line.split()
+        if len(f) == 4:
+            man[f[0]] = (int(f[1], 0), int(f[2], 0), f[3])
+    base, size, art = man["osimage"]
+    path = os.path.join(bdir, art)
+    data = open(path, "rb").read()
+    if len(data) > size:
+        sys.exit("%s is %d bytes; its flash partition is %d" % (art, len(data), size))
+    digest = hashlib.sha256(data).hexdigest() + " @%#x" % base
+    stamp = os.path.join(bdir, ".c6run.flashed")
+    if os.path.exists(stamp) and open(stamp).read().strip() == digest:
+        print("flash: %s unchanged since the last write" % art)
+        return
+    print("flash: writing %s (%d bytes) at %#x ..." % (art, len(data), base))
+    r = esptool("--port", port, "write-flash", "%#x" % base, path, timeout=300)
+    if r.returncode != 0:
+        sys.exit("write-flash failed:\n" + (r.stderr or r.stdout)[-600:])
+    open(stamp, "w").write(digest)
+
+
+def listen(port, secs, cmds=(), cmd_wait=1.5):
     # On USB-Serial/JTAG, RTS high while DTR is low is the chip's reset line
     # (esptool's "UnixTightReset"). pyserial applies DTR before RTS on open,
     # and the kernel raises both on open, so asking for DTR *low* passes
@@ -98,14 +131,20 @@ def listen(port, secs):
     s.rts = False
     s.open()
     out = bytearray()
-    end = time.time() + secs
-    try:
-        while time.time() < end:
+
+    def drain(until):
+        while time.time() < until:
             d = s.read(256)
             if d:
-                out += d
+                out.extend(d)
                 sys.stdout.write(d.decode("utf-8", "replace"))
                 sys.stdout.flush()
+
+    try:
+        drain(time.time() + secs)
+        for c in cmds:                       # each line typed at the console, then its output awaited
+            s.write(c.encode() + b"\r")
+            drain(time.time() + cmd_wait)
     finally:
         s.close()
     return out.decode("utf-8", "replace")
@@ -115,7 +154,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("image", nargs="?", help=".elf or .img to load into RAM and run")
     ap.add_argument("--port")
+    ap.add_argument("--kernel", metavar="BUILD_DIR", help="a LugalOS build directory (build/esp32c6)")
     ap.add_argument("--listen", action="store_true", help="watch the console and exit")
+    ap.add_argument("--cmd", action="append", default=[], metavar="LINE", help="type LINE at the console after the listen window (repeatable)")
+    ap.add_argument("--cmd-wait", type=float, default=1.5, help="seconds to read after each --cmd")
     ap.add_argument("--listen-secs", type=float, default=8.0)
     ap.add_argument("--ports", action="store_true")
     ap.add_argument("--expect", default="[C6_MINIMAL]", help="text the program must print (default: %(default)s)")
@@ -125,12 +167,16 @@ def main():
         print("\n".join(sorted(glob.glob(BYID))) or "(none)")
         return
     port = find_port(a.port)
+    if a.kernel:
+        kernel_flash_if_changed(port, a.kernel)
+        a.image = os.path.join(a.kernel, "lugalos-ram.elf")
+        a.expect = "LugalOS" if a.expect == "[C6_MINIMAL]" else a.expect
     if a.image:
         if not load(port, image_for(a.image)):
             sys.exit(1)
     elif not a.listen:
         ap.error("give an IMAGE, or --listen")
-    text = listen(port, a.listen_secs)
+    text = listen(port, a.listen_secs, a.cmd, a.cmd_wait)
     if a.image and a.expect not in text:
         sys.exit("\nloaded, but the program's banner never appeared")
 

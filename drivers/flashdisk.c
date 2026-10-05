@@ -48,6 +48,14 @@ static const uint32_t g_flash_fs_size = (uint32_t)LUGALOS_FLASHFS_SIZE;
  * surviving a power cycle, and until now flashdisk_write_blocks() printed
  * "read-only" on every target including RP2350. */
 static const uint32_t g_flash_fs_size = (uint32_t)LUGALOS_P4_FLASHFS_SIZE;
+#elif defined(CONFIG_BOARD_ESP32C6)
+/* 45.4, plan/phase45_esp32c6.md: the RAM-resident first form has no /flash0 --
+ * the image is delivered by load-ram and the filesystem has nowhere to live
+ * until 45.4.3 boots from flash and lays out a map. The size is zero, so
+ * flashdisk_get_device() below declines and `df` says so, rather than pointing
+ * at flash that has not been written. (The P4's E2 made the same choice.) */
+static const uint8_t *const g_flash_fs_start = NULL;
+static const uint32_t g_flash_fs_size = 0;
 #else
 extern const uint8_t g_flash_fs_start[];
 extern const uint32_t g_flash_fs_size;

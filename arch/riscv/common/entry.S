@@ -39,9 +39,18 @@ _start:
      * clear, none of which touch it. */
     mv tp, t0
 
-    /* Setup Machine trap vector base address first */
+    /* Setup Machine trap vector base address first.
+     *
+     * Not on the C6: its mtvec is hardwired to *vectored* mode and its base must
+     * be 256-byte aligned (measured, 45.3a: writing 0x40800200 reads back
+     * 0x40800201), so the vector is a table, installed below once the flash that
+     * holds the rest of the kernel is mapped. Until then a trap goes to the ROM's
+     * own handler, which is the right place for one that happens before this
+     * kernel can report anything. */
+#if !defined(CONFIG_BOARD_ESP32C6)
     la t0, trap_vector_entry
     csrw mtvec, t0
+#endif
 
     /* Disable M-mode interrupts */
     csrw mstatus, zero
@@ -110,6 +119,27 @@ _start:
 #if CONFIG_ENABLE_SMP
 .Lp4_skip_boot_setup:
 #endif
+#endif
+
+#if defined(CONFIG_BOARD_ESP32C6)
+    /* 45.4.2, plan/phase45_esp32c6.md: the C6 boots like the P4's U2 -- one boot
+     * path with new first steps, not a second stage with its own entry.
+     *
+     * .text and .rodata are in the flash window at 0x42000000, which nothing has
+     * pointed at the OS image yet, so every instruction after this point that is
+     * not in .boot depends on esp32c6_xip_map() having run. Both functions are in
+     * .boot.text beside this code and touch only registers and ROM (see
+     * arch/riscv/common/xip_esp32c6.c for why they may not use a string, a table
+     * or a call into the kernel). The watchdogs first: a boot from flash arms
+     * two the ROM expects the bootloader to disarm. */
+    call esp32c6_boot_wdt_disable
+    call esp32c6_xip_map
+
+    /* The trap vector, now that the table is reachable: vectored mode (the
+     * hardware forces it), base 256-aligned (trap_vector_table below). */
+    la t0, trap_vector_table
+    ori t0, t0, 1
+    csrw mtvec, t0
 #endif
 
 #if defined(CONFIG_MODE_S)
@@ -330,6 +360,24 @@ s_mode_start:
  * already page-aligned around it. The other targets keep 16 because their
  * mtvec is in direct or vectored mode, where only bits [1:0] are the mode
  * field. */
+#if defined(CONFIG_BOARD_ESP32C6)
+/* The C6's vector table (45.4.2). mtvec is forced to vectored mode: a synchronous
+ * exception enters at BASE, interrupt n at BASE + 4*n, and BASE must be 256-byte
+ * aligned or the hardware rounds it down into whatever precedes it (found the
+ * hard way in 45.3a: a handler at an unaligned address restarted the program from
+ * _start). 32 interrupt lines, one slot each, every slot a jump to the one
+ * handler below -- which decodes mcause itself, exactly as on every other target.
+ * `.option norvc` keeps each jump 4 bytes so the slots are where the hardware looks. */
+.align 8
+.global trap_vector_table
+trap_vector_table:
+    .option push
+    .option norvc
+    .rept 32
+    j trap_vector_entry
+    .endr
+    .option pop
+#endif
 #if defined(CONFIG_BOARD_ESP32P4)
 .align 6
 #else

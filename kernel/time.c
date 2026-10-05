@@ -66,8 +66,15 @@ static bool g_clock_set = false;
  * arch/riscv/rp2350/boot_header.S) made the whole system run at 43% speed and
  * was invisible for months because nothing ever said what the divisor was. */
 #define TICKS_TIMER0_CYCLES (*(volatile uint32_t *)0x4010801CUL)
-#elif defined(CONFIG_BOARD_ESP32P4)
-/* ESP32-P4: the system timer (TRM chapter 16), UNIT0.
+#elif defined(CONFIG_BOARD_ESP32P4) || defined(CONFIG_BOARD_ESP32C6)
+/* ESP32-P4 and ESP32-C6: the system timer (P4 TRM chapter 16, C6 TRM chapter
+ * 'System Timer'; the register layout is the same family), UNIT0.
+ *
+ * The C6 (45.4, plan/phase45_esp32c6.md) differs in two things only: the base
+ * address, which comes from the board file (CONFIG_SYSTIMER_BASE, 0x6000A000),
+ * and that its clock tree needs no gating here -- the ROM leaves the timer
+ * running and 45.1 measured it against the CPU cycle counter (160 MHz CPU over
+ * 16 MHz timer). The rest of this comment is the P4's, and is as true here.
  *
  * A 52-bit free-running counter, and this reads it -- it does not use the
  * comparators, take an interrupt, or program an alarm. That is why a time
@@ -93,7 +100,11 @@ static bool g_clock_set = false;
  * resolution and irrelevant to every caller here. It will matter to E4 and
  * to phase 29's PTP, and it is written down now so that it is a known
  * property rather than a surprise then. */
+#if defined(CONFIG_BOARD_ESP32C6)
+#define SYSTIMER_BASE           ((uintptr_t)CONFIG_SYSTIMER_BASE)
+#else
 #define SYSTIMER_BASE           0x500E2000UL
+#endif
 #define SYSTIMER_CONF           (SYSTIMER_BASE + 0x00)
 #define SYSTIMER_UNIT0_OP       (SYSTIMER_BASE + 0x04)
 #define SYSTIMER_UNIT0_VALUE_HI (SYSTIMER_BASE + 0x40)
@@ -141,7 +152,7 @@ static inline uint64_t read_hardware_counter_us(void) {
         lo = TIMER0_TIMELR;
     } while (hi != TIMER0_TIMEHR);
     return ((uint64_t)hi << 32) | lo;
-#elif defined(CONFIG_BOARD_ESP32P4)
+#elif defined(CONFIG_BOARD_ESP32P4) || defined(CONFIG_BOARD_ESP32C6)
     /* The counter cannot be read directly: writing UNIT0_UPDATE latches it
      * into the two VALUE registers, which is what makes a 52-bit read atomic
      * without the retry loop the RP2350 branch above needs. VALUE_VALID
@@ -195,6 +206,12 @@ void time_init(void) {
                                   ~P4_SYSTIMER_CLK_SRC_SEL) | P4_SYSTIMER_CLK_EN;
     P4_REG(SYSTIMER_CONF) |= SYSTIMER_REGFILE_CLK_EN;
     P4_REG(SYSTIMER_CONF) |= SYSTIMER_UNIT0_WORK_EN;
+#elif defined(CONFIG_BOARD_ESP32C6)
+    /* The register file's clock and UNIT0's counter, explicitly rather than
+     * inherited from the ROM (the same refusal as the P4's above); 45.1 read
+     * CONF at 0x6000A000 and found both bits as written here. */
+    P4_REG(SYSTIMER_CONF) |= SYSTIMER_REGFILE_CLK_EN;
+    P4_REG(SYSTIMER_CONF) |= SYSTIMER_UNIT0_WORK_EN;
 #endif
     g_boot_us_offset = read_hardware_counter_us();
     g_base_mono_us = time_get_us();
@@ -202,7 +219,7 @@ void time_init(void) {
 #if defined(CONFIG_BOARD_RP2350)
     printk("[Timer] System Hardware Clock Initialized (clk_ref/%u = 1 us tick).\n",
            (unsigned)(TICKS_TIMER0_CYCLES & 0x1ffu));
-#elif defined(CONFIG_BOARD_ESP32P4)
+#elif defined(CONFIG_BOARD_ESP32P4) || defined(CONFIG_BOARD_ESP32C6)
     /* Says the divisor out loud for the same reason the RP2350 line does: a
      * wrong divider there made the whole system run at 43% speed and stayed
      * invisible for months because nothing ever printed what it was. */

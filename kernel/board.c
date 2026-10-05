@@ -23,7 +23,7 @@
 #include "drivers/sdmmc.h"
 #endif
 
-#if !defined(CONFIG_BOARD_RP2350) && !defined(CONFIG_BOARD_ESP32P4)
+#if !defined(CONFIG_BOARD_RP2350) && !defined(CONFIG_BOARD_ESP32P4) && !defined(CONFIG_BOARD_ESP32C6)
 #include "drivers/virtio_console.h"
 #include "drivers/virtio_blk.h"
 #include "drivers/virtio_net.h"
@@ -186,6 +186,9 @@ static void *get_spisd(void) { return spisd_get_device(); }
 static int   probe_enc28j60(void) { return enc28j60_init(); }
 static void *get_enc28j60(void)   { return enc28j60_get_netif(); }
 #endif
+#elif defined(CONFIG_BOARD_ESP32C6)
+/* 45.4, plan/phase45_esp32c6.md: no virtio, no netif and no block device yet;
+ * the Wi-Fi radio is a netif of its own when it arrives (45.7). */
 #elif defined(CONFIG_BOARD_ESP32P4)
 /* Z4, plan/phase28_esp32p4_ethernet.md: the P4's own Ethernet MAC and the
  * IP101GRI it drives over RMII. A netif exactly like the ENC28J60 above --
@@ -317,6 +320,8 @@ static const dev_driver_t dev_enc28j60 = {
     .probe = probe_enc28j60, .get = get_enc28j60,
 };
 #endif
+#elif defined(CONFIG_BOARD_ESP32C6)
+/* 45.4: a stated emptiness, as the P4's was at E2 -- see the declarations above. */
 #elif defined(CONFIG_BOARD_ESP32P4)
 /* E2, plan/phase27_esp32p4_bringup.md, amended by phase 28's Z4: this board
  * had no device table of its own at all until the EMAC arrived. The entries
@@ -406,6 +411,8 @@ void board_register_devices(void) {
 #if defined(CONFIG_ETH_CS_GPIO)
     dev_register(&dev_enc28j60);
 #endif
+#elif defined(CONFIG_BOARD_ESP32C6)
+    /* Nothing beyond the unconditional entries above (45.4). */
 #elif defined(CONFIG_BOARD_ESP32P4)
     dev_register(&dev_emac);
     dev_register(&dev_sdmmc);
