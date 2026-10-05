@@ -354,26 +354,73 @@ static bool arch_ticker_init(void) {
     return true;
 }
 
-/* --- ESP32-C6: no tick yet ---------------------------------------------- */
+/* --- ESP32-C6: system timer comparator 0, through the interrupt matrix --- */
 #elif defined(CONFIG_BOARD_ESP32C6)
 
-/* 45.4.1, plan/phase45_esp32c6.md: the first boot is cooperative. The tick is
- * the system timer's ALARM raised through the interrupt matrix and the PLIC
- * (INTMTX source 57 -> a CPU line, TRM "Interrupt Matrix" and PLIC_MX), none of
- * which is up until 45.4.2 -- an unrouted source delivers nothing, and an
- * enabled one without a vector table takes a trap into whatever mtvec points at.
- * So the ticker reports that preemption is off, which is the contract
- * (kernel/include/kernel/ticker.h: "returns false if this target has no usable
- * timer, so preemption can stay off and say so"), and everything above it runs
- * on yields, as every target did before B6. */
-#define TICK_HZ 1000000UL
+/* 45.4.3, plan/phase45_esp32c6.md. The tick is the system timer's TARGET0
+ * comparator against UNIT0 -- the same counter kernel/time.c reads for the clock
+ * -- raised as INTMTX source 57 and routed to CPU line ESP32C6_IRQ_TICK
+ * (arch/esp32c6_intr.h), where trap_handler() recognises it. Not the CLINT: the
+ * C6's core-local timer is bound to lines 3/4/7 and neither documented nor
+ * stable in rate, where this counter is XTAL/2.5 = 16 MHz by the TRM and was
+ * measured against the CPU cycle counter in 45.1.
+ *
+ * Absolute-time, one-shot: each tick programs the next deadline (ticker_next()),
+ * exactly as the CLINT targets do. The comparator interrupt is *level*: it stays
+ * raised until INT_CLR is written, so set_deadline() clears it first -- returning
+ * from the handler without re-arming does not drop a tick, it re-enters forever.
+ *
+ * Registers: IDF soc/esp32c6/register/soc/systimer_reg.h. */
+#include "arch/esp32c6_intr.h"
+#include "lugalos_config.h"
 
-static uint64_t now(void) { return time_get_us(); }
-static void set_deadline(uint64_t t) { (void)t; }
+#define C6_SYSTIMER_BASE   ((uintptr_t)CONFIG_SYSTIMER_BASE)
+#define C6_ST(off)         (*(volatile uint32_t *)(C6_SYSTIMER_BASE + (off)))
+#define C6_ST_CONF         0x00u
+#define C6_ST_UNIT0_OP     0x04u
+#define C6_ST_TARGET0_HI   0x1cu
+#define C6_ST_TARGET0_LO   0x20u
+#define C6_ST_TARGET0_CONF 0x34u
+#define C6_ST_COMP0_LOAD   0x50u
+#define C6_ST_UNIT0_HI     0x40u
+#define C6_ST_UNIT0_LO     0x44u
+#define C6_ST_INT_ENA      0x64u
+#define C6_ST_INT_CLR      0x6cu
+#define C6_ST_TARGET0_WORK_EN  (1u << 24)
+#define C6_ST_UNIT0_UPDATE     (1u << 30)
+#define C6_ST_UNIT0_VALID      (1u << 29)
+#define C6_ST_TARGET0_INT      (1u << 0)
+
+/* The system timer's counter ticks at XTAL/2.5. */
+#define TICK_HZ 16000000UL
+
+/* The 52-bit counter, latched by UPDATE so the two halves are one instant. Bounded
+ * on the VALID flag for the reason time.c's reader is: a hang here would take the
+ * tick (and printk's timestamps) with it. */
+static uint64_t now(void) {
+    C6_ST(C6_ST_UNIT0_OP) = C6_ST_UNIT0_UPDATE;
+    for (unsigned i = 0; i < 10000u; i++)
+        if (C6_ST(C6_ST_UNIT0_OP) & C6_ST_UNIT0_VALID) break;
+    uint32_t lo = C6_ST(C6_ST_UNIT0_LO);
+    uint32_t hi = C6_ST(C6_ST_UNIT0_HI);
+    return ((uint64_t)(hi & 0xfffffu) << 32) | lo;
+}
+
+static void set_deadline(uint64_t t) {
+    C6_ST(C6_ST_INT_CLR)  = C6_ST_TARGET0_INT;               /* lower the level first */
+    C6_ST(C6_ST_TARGET0_HI) = (uint32_t)(t >> 32) & 0xfffffu;
+    C6_ST(C6_ST_TARGET0_LO) = (uint32_t)t;
+    C6_ST(C6_ST_TARGET0_CONF) = 0;                           /* one-shot, UNIT0, target mode */
+    C6_ST(C6_ST_COMP0_LOAD) = 1;                             /* latch the new compare value */
+    C6_ST(C6_ST_INT_ENA) |= C6_ST_TARGET0_INT;
+    C6_ST(C6_ST_CONF)    |= C6_ST_TARGET0_WORK_EN;
+}
 
 static bool arch_ticker_init(void) {
-    printk("[Ticker] ESP32-C6: the tick interrupt is not routed yet (45.4.2); preemption off\n");
-    return false;
+    if (esp32c6_intmtx_route(ESP32C6_SRC_SYSTIMER_TARGET0, ESP32C6_IRQ_TICK) != 0) return false;
+    arch_irq_enable(ESP32C6_IRQ_TICK);
+    set_deadline(now() + g_interval);
+    return true;
 }
 
 /* --- QEMU RV32: CLINT, M-mode ---------------------------------------- */

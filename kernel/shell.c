@@ -275,6 +275,52 @@ static void cmd_fsbench(const char *dir, const char *name, unsigned kb) {
     else cprintf("verified\n");
 }
 
+#if defined(CONFIG_BOARD_ESP32C6)
+/* 45.4.3: where is the tick? One line per link in the chain -- the system timer's
+ * comparator, the interrupt matrix route, the controller's enable/priority/
+ * threshold, the core's own mstatus/mie/mtvec -- so a tick that does not arrive can
+ * be located rather than guessed at. Read twice, a few ms apart, with a busy loop
+ * that never yields in between, because the question "is it moving" is the useful
+ * one. */
+static void cmd_intrdump(void) {
+    #define R32(a) (*(volatile uint32_t *)(uintptr_t)(a))
+    uint32_t mstatus, mie, mtvec;
+    __asm__ volatile("csrr %0, mstatus" : "=r"(mstatus));
+    __asm__ volatile("csrr %0, mie" : "=r"(mie));
+    __asm__ volatile("csrr %0, mtvec" : "=r"(mtvec));
+    cprintf("[INTC] mstatus=0x%08x (MIE=%u)  mie=0x%08x  mtvec=0x%08x\n",
+            (unsigned)mstatus, (unsigned)((mstatus >> 3) & 1u), (unsigned)mie, (unsigned)mtvec);
+    cprintf("[INTC] PLIC enable=0x%08x type=0x%08x thresh=%u  pri[8]=%u pri[9]=%u  emip=0x%08x\n",
+            (unsigned)R32(0x20001000), (unsigned)R32(0x20001004), (unsigned)R32(0x20001090),
+            (unsigned)R32(0x20001010 + 4 * 8), (unsigned)R32(0x20001010 + 4 * 9), (unsigned)R32(0x2000100c));
+    cprintf("[INTC] matrix: src57(systimer0)->line %u   src48(usb)->line %u\n",
+            (unsigned)R32(0x60010000 + 4 * 57), (unsigned)R32(0x60010000 + 4 * 48));
+    {   /* does mie exist, and is the line's bit writable? */
+        uint32_t got;
+        __asm__ volatile("csrr %0, mie" : "=r"(got));
+        cprintf("[INTC] mie=0x%08x\n", (unsigned)got);
+        uint32_t mip;
+        __asm__ volatile("csrr %0, mip" : "=r"(mip));
+        cprintf("[INTC] mip=0x%08x  PLIC emip=0x%08x  INTPRI eip_status=0x%08x enable=0x%08x thresh=%u pri8=%u systimer int_st=0x%08x\n",
+                (unsigned)mip, (unsigned)R32(0x2000100c), (unsigned)R32(0x600C5008), (unsigned)R32(0x600C5000),
+                (unsigned)R32(0x600C508c), (unsigned)R32(0x600C502c), (unsigned)R32(0x6000A070));
+    }
+    cprintf("[INTC] PLIC_MX conf(0x200013fc)=0x%08x  PLIC_UX conf(0x200017fc)=0x%08x  UX enable=0x%08x thresh=%u\n",
+            (unsigned)R32(0x200013fc), (unsigned)R32(0x200017fc), (unsigned)R32(0x20001400), (unsigned)R32(0x20001490));
+    uint32_t t0 = (uint32_t)ticker_ticks();
+    cprintf("[INTC] systimer: conf=0x%08x int_ena=0x%08x int_raw=0x%08x target0=0x%08x:%08x\n",
+            (unsigned)R32(0x6000A000), (unsigned)R32(0x6000A064), (unsigned)R32(0x6000A068),
+            (unsigned)R32(0x6000A01c), (unsigned)R32(0x6000A020));
+    cprintf("[INTC] ticks=%lu enabled=%u\n", (unsigned long)ticker_ticks(), (unsigned)ticker_enabled());
+    uint64_t end = time_get_us() + 200000;
+    while (time_get_us() < end) { }        /* 200 ms without yielding */
+    cprintf("[INTC] ticks after 200 ms of spinning: %lu (+%lu)  int_raw=0x%08x\n",
+            (unsigned long)ticker_ticks(), (unsigned long)((uint32_t)ticker_ticks() - t0),
+            (unsigned)R32(0x6000A068));
+    #undef R32
+}
+#endif
+
 #if defined(CONFIG_BOARD_ESP32P4)
 /* E6: read flash, and show enough of it to be checkable against something
  * that is not this code.
@@ -3508,6 +3554,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
          * QEMU as well as on the board with the panel. */
         (void)vtterm_selftest();
         return;
+#if defined(CONFIG_BOARD_ESP32C6)
+    } else if (strcmp(cmd_line, "intrdump") == 0) {
+        cmd_intrdump();
+        return;
+#endif
     } else if (strcmp(cmd_line, "lockselftest") == 0) {
         lock_selftest();
 #if defined(CONFIG_KOBJ)

@@ -30,8 +30,13 @@
 #include "lugalos_config.h"
 #endif
 
-#if defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32P4)
-/* Both boards reach memory-mapped controller registers from this file; the
+#if defined(CONFIG_BOARD_ESP32C6)
+#include "arch/esp32c6_intr.h"
+#include "lugalos_config.h"
+#endif
+
+#if defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32P4) || defined(CONFIG_BOARD_ESP32C6)
+/* These boards reach memory-mapped controller registers from this file; the
  * QEMU targets use their own casts inline in the PLIC helpers below. */
 #define REG(addr) (*(volatile uint32_t *)(uintptr_t)(addr))
 #endif
@@ -89,6 +94,30 @@ static inline uint32_t meinext_irq(bool *valid) {
     __asm__ __volatile__("csrr %0, 0xbe4" : "=r"(v)); /* RVCSR_MEINEXT */
     *valid = (v & 0x80000000u) == 0;
     return (uint32_t)((v >> 2) & 0x1ffu);
+}
+#elif defined(CONFIG_BOARD_ESP32C6)
+/* ESP32-C6: the interrupt matrix and "PLIC_MX", 45.4.3 (plan/phase45_esp32c6.md).
+ * See arch/esp32c6_intr.h for the shape of it. Register layout from IDF's
+ * soc/esp32c6/register/soc/plic_reg.h and interrupt_matrix_reg.h.
+ *
+ * Enable, type and clear are one bit per line; priority is a word per line at
+ * +0x10; the threshold is at +0x90. A pending *level* interrupt follows its
+ * peripheral, so the driver's ISR clearing its own source is the acknowledge. */
+#define C6_PLIC_BASE        0x20001000UL
+#define C6_PLIC_ENABLE      (*(volatile uint32_t *)(C6_PLIC_BASE + 0x00UL))
+#define C6_PLIC_TYPE        (*(volatile uint32_t *)(C6_PLIC_BASE + 0x04UL))   /* 0 level, 1 edge */
+#define C6_PLIC_CLEAR       (*(volatile uint32_t *)(C6_PLIC_BASE + 0x08UL))   /* edge pending */
+#define C6_PLIC_PRI(n)      (*(volatile uint32_t *)(C6_PLIC_BASE + 0x10UL + 4UL * (n)))
+#define C6_PLIC_THRESH      (*(volatile uint32_t *)(C6_PLIC_BASE + 0x90UL))
+#define C6_INTMTX_MAP(src)  (*(volatile uint32_t *)(0x60010000UL + 4UL * (src)))
+
+int esp32c6_intmtx_route(uint32_t src, uint32_t line) {
+    if (line < ESP32C6_IRQ_MIN || line > ESP32C6_IRQ_MAX || ((1u << line) & ESP32C6_IRQ_RESERVED_MASK)) {
+        printk("[INTC] route refused: line %u is reserved or out of range\n", (unsigned)line);
+        return -1;
+    }
+    C6_INTMTX_MAP(src) = line;
+    return 0;
 }
 #elif defined(CONFIG_BOARD_ESP32P4)
 /* ESP32-P4: the CLIC, E3 (plan/phase27_esp32p4_bringup.md).
@@ -649,6 +678,16 @@ void trap_init(void) {
      * kernel/main.c now enables them unconditionally, once, after the
      * controller is up -- so there is one place that decides, and it is not
      * two of four arch arms. */
+#elif defined(CONFIG_BOARD_ESP32C6)
+    /* Everything off and level-triggered, one flat threshold, before any line is
+     * enabled: the ROM leaves this controller however its own boot wanted it, and
+     * an enabled line with a stale route is how a board takes an interrupt into a
+     * vector nobody set up. mstatus.MIE is left alone (main.c turns it on after
+     * ticker_init(), as everywhere); there is no mie to set on this controller. */
+    C6_PLIC_ENABLE = 0;
+    C6_PLIC_TYPE   = 0;
+    C6_PLIC_CLEAR  = 0xffffffffu;
+    C6_PLIC_THRESH = 0;
 #elif defined(CONFIG_BOARD_ESP32P4)
     /* mtvt (CSR 0x307): the hardware-vectored jump table.
      *
@@ -737,6 +776,25 @@ void arch_irq_enable(uint32_t irq_num) {
     uint32_t mask  = 1u << (irq_num % 16u);
     uintptr_t v = index | ((uintptr_t)mask << 16);
     __asm__ __volatile__("csrrs zero, 0xbe0, %0" :: "r"(v)); /* RVCSR_MEIEA */
+#elif defined(CONFIG_BOARD_ESP32C6)
+    /* Level, priority 1, enabled -- in that order, so the line is never briefly
+     * enabled carrying what the ROM left. A number outside 1..31 or in the reserved
+     * set is refused: line 7, say, is the CLINT's and enabling it from a driver
+     * that meant a device is a tick nobody armed. */
+    if (irq_num < ESP32C6_IRQ_MIN || irq_num > ESP32C6_IRQ_MAX ||
+        ((1u << irq_num) & ESP32C6_IRQ_RESERVED_MASK)) {
+        printk("[INTC] arch_irq_enable(%u) refused: not an available line\n", (unsigned)irq_num);
+        return;
+    }
+    C6_PLIC_TYPE &= ~(1u << irq_num);
+    C6_PLIC_PRI(irq_num) = 1;
+    C6_PLIC_ENABLE |= (1u << irq_num);
+    /* And at the core: the TRM is explicit that "an M mode interrupt (external or
+     * local) further needs to be unmasked at core level by setting the corresponding
+     * bit in mie" -- bit n for line n -- and that the controller's pending state
+     * reflects an *enabled and unmasked* signal. Without this the line is routed,
+     * enabled, asserted and never taken (45.4.3: int_raw=1, ticks=0, mie=0). */
+    __asm__ volatile("csrs mie, %0" :: "r"(1u << irq_num));
 #elif defined(CONFIG_BOARD_ESP32P4)
     /* CLIC: describe the line, then enable it -- attributes and level first,
      * so the line is never briefly enabled while still carrying whatever the
@@ -860,7 +918,14 @@ void trap_handler(trap_frame_t *frame) {
 #endif
         /* Timer: 7 is machine-mode, 5 is supervisor-mode. This is the
          * preemption tick. */
+#if defined(CONFIG_BOARD_ESP32C6)
+        /* The C6's tick is the system timer's comparator through the interrupt
+         * matrix, delivered as an ordinary line (ESP32C6_IRQ_TICK), not as the
+         * CLINT's 7 -- 3, 4 and 7 are the core-local interrupts and not ours. */
+        if (code == ESP32C6_IRQ_TICK) {
+#else
         if (code == 7 || code == 5) {
+#endif
             ticker_count_tick();
             /* Rearm FIRST. A RISC-V timer interrupt is level-triggered off
              * mtime >= mtimecmp, so it stays pending until the comparator
@@ -891,6 +956,20 @@ void trap_handler(trap_frame_t *frame) {
             bool valid;
             uint32_t irq_num = meinext_irq(&valid);
             if (valid) devirq_dispatch(irq_num);
+            return;
+        }
+#elif defined(CONFIG_BOARD_ESP32C6)
+        /* No claim register and nothing to acknowledge: mcause *is* the line, and for a
+         * level source the driver's ISR clearing its own interrupt is the whole
+         * acknowledge. A line with no handler would re-enter forever (the source is
+         * still asserted on return), so it is masked on the way out -- losing an
+         * interrupt nobody claimed is the strictly better failure. */
+        if (code >= ESP32C6_IRQ_MIN && code <= ESP32C6_IRQ_MAX) {
+            if (devirq_dispatch((uint32_t)code) != 0) {
+                C6_PLIC_ENABLE &= ~(1u << code);
+                printk_critical("[INTC] Masked line %u: no handler, and a level-triggered "
+                                "source would re-enter forever\n", (unsigned)code);
+            }
             return;
         }
 #elif defined(CONFIG_BOARD_ESP32P4)
