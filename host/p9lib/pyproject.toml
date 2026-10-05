@@ -3,7 +3,9 @@ name = "p9lib"
 version = "0.1.0"
 description = "A real, general-purpose 9P2000 client and file utility for LugalOS's filesystem server"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "pyserial>=3.5",
+]
 
 [project.optional-dependencies]
 serial = ["pyserial>=3.5"]

@@ -2846,12 +2846,17 @@ int chess_canvas_selftest(void) {
     int wrimx = 7, brimx = 6;
     bool wking = !PIX(k1x + bodyx, k1y + bodyy) && PIX(k1x + wrimx, k1y + bodyy);
     bool bking = PIX(k8x + bodyx, k8y + bodyy) && !PIX(k8x + brimx, k8y + bodyy);
+    /* White knight: g1 (white, on a dark square) -- white body, black rim. */
+    int n1x = x0 + 6 * CB_SQ, n1y = y0 + 7 * CB_SQ;
+    int nbodyx = 24, nbodyy = 27, nwrimx = 11;
+    bool wknight = !PIX(n1x + nbodyx, n1y + nbodyy) && PIX(n1x + nwrimx, n1y + nbodyy);
     bool frame = PIX(x0 - 1, y0 + 100) && PIX(x0 + CB_N, y0 + 100);
 #undef PIX
     cprintf("  [%s] empty light square is white\n", light ? "ok" : "FAIL"); fails += !light;
     cprintf("  [%s] empty dark square is the grey pattern\n", grey ? "ok" : "FAIL"); fails += !grey;
     cprintf("  [%s] white king: white body, black rim\n", wking ? "ok" : "FAIL"); fails += !wking;
     cprintf("  [%s] black king: black body, white rim\n", bking ? "ok" : "FAIL"); fails += !bking;
+    cprintf("  [%s] white knight: white body, black rim\n", wknight ? "ok" : "FAIL"); fails += !wknight;
     cprintf("  [%s] the board's frame\n", frame ? "ok" : "FAIL"); fails += !frame;
     req[0] = 'L'; req[1] = SCREEN_LAYOUT_TEXT;
     (void)console_canvas(req, 2, reply);
