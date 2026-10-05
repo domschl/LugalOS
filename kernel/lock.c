@@ -167,8 +167,15 @@ uint32_t    lock_faults(void)    { return g_lock_faults; }
 
 bool lock_check_may_block_named(const char *what, const char *name,
                                 const char *site) {
-    uint32_t h = hart_id();
-    if (!g_spin_depth[h]) return false;
+    /* The hart and its depth read with interrupts masked (2026-10-05): this
+     * runs in task context, and a task preempted between the two and resumed
+     * on the other hart read *that* hart's depth -- "[Lock BUG] called
+     * chan_call() while holding ?", depth 0, from a caller holding nothing.
+     * A caller that really holds a spinlock has them masked already. */
+    uintptr_t f = irq_save();
+    bool held = g_spin_depth[hart_id()] != 0;
+    irq_restore(f);
+    if (!held) return false;
     lock_fault(what, name, site);
     return true;
 }
@@ -376,6 +383,10 @@ void ylock_init(ylock_t *l) {
  * ylock_held_by(). Written with interrupts masked, by the holder only. */
 static uint8_t g_ylocks_held[MAX_TASKS];
 
+/* How long a wait-for cycle seen from ylock_acquire() must persist before it
+ * is reported -- see the report's call site. */
+#define YLOCK_CYCLE_TURNS 2048u
+
 void ylock_acquire_at(ylock_t *l, const char *name, const char *site) {
     (void)name; (void)site;
     /* A ylock may be held across a block -- that is what it is for -- but it
@@ -390,6 +401,7 @@ void ylock_acquire_at(ylock_t *l, const char *name, const char *site) {
      * spins rather than yields, which sched_yield() below already does for
      * it; a bring-up hart taking a ylock is rare and short by construction. */
     int me = sched_context_id();
+    unsigned cycle_turns = 0;
     for (;;) {
         uintptr_t f = irq_save();
 
@@ -467,8 +479,21 @@ void ylock_acquire_at(ylock_t *l, const char *name, const char *site) {
         int holder = l->owner;
         irq_restore(f);
 
+        /* Reported only once the cycle has outlasted YLOCK_CYCLE_TURNS turns
+         * (2026-10-05). The edge staying up across the yield (above) also
+         * means it outlives the lock it was for: the holder releases, and
+         * until this waiter next runs its edge still names that holder. On
+         * two harts the holder can meanwhile want a lock this waiter holds
+         * and see a cycle that is already over -- `task 7 waiting for task
+         * 0`, sixteen times a session, once two terminals' shells pumped
+         * input (g_input_lock, then a terminal's input_lock). A ylock cycle
+         * that is real never clears, so it is still reported, a few
+         * milliseconds later; one that clears was not a deadlock. */
         if (me >= 0 && me < MAX_TASKS && !waitfor_enter(me, holder)) {
-            waitfor_report_cycle("ylock_acquire()", me, holder);
+            if (++cycle_turns == YLOCK_CYCLE_TURNS)
+                waitfor_report_cycle("ylock_acquire()", me, holder);
+        } else {
+            cycle_turns = 0;
         }
         sched_yield();
     }

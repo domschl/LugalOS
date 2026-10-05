@@ -124,6 +124,12 @@ typedef struct task {
     int          hart_affinity;
     /* Phase 44: virtual terminal ID (0 = root/default console). */
     int          vterm_id;
+    /* The wake token (task_prepare_block()): armed by the task before it
+     * publishes what it will wait for, set by a task_unblock() that finds
+     * it not yet BLOCKED, consumed by its task_block(). Both under
+     * g_sched_lock. */
+    bool         wait_armed;
+    bool         wake_pending;
 } task_t;
 
 /* Turns the currently-executing boot context into task 0 so that there is
@@ -219,7 +225,24 @@ int sched_task_state(int pid);
  * `*status`. False if it is still alive, or was terminated by a fault. */
 bool sched_task_exited_cleanly(int pid, long *status);
 
-/* Blocks/unblocks by pid. A BLOCKED task is skipped by sched_yield(). */
+/* Blocks/unblocks by pid. A BLOCKED task is skipped by sched_yield().
+ *
+ * A task_unblock() that arrives before the task_block() it was meant for is
+ * lost unless the waiter called task_prepare_block() first: then it leaves
+ * a token, and the block returns at once instead of waiting for a wake that
+ * has already happened. irq_save() closes that window on one hart only --
+ * on two, the party that wakes the waiter runs on the other hart, and
+ * chan_call() lost replies that way (2026-10-05: a terminal's shell blocked
+ * forever inside the uart call of console_pump(), holding g_input_lock, and
+ * every terminal's input with it).
+ *
+ * The pattern is prepare, then test the condition, then block, in a loop:
+ * the token covers only wakes after the prepare, so one that came earlier
+ * must be visible in the condition, and task_wait_done() once the condition
+ * holds, so no token is left armed for an unrelated block later. A block
+ * without a prepare behaves as it always did. */
+void task_prepare_block(void);
+void task_wait_done(void);
 void task_block(void);
 
 /* Sleeps the calling task for `ms`, without being runnable meanwhile.

@@ -472,6 +472,8 @@ static int task_create_full(const char *name, void (*entry)(void *), void *arg,
     t->exit_clean = false;
     t->priority = TASK_PRIO_NORMAL; /* M3: raised/lowered via task_set_priority() */
     t->wake_at_ms = 0;
+    t->wait_armed = false;
+    t->wake_pending = false;
     int cpid = cur();
     t->vterm_id = (cpid >= 0 && cpid < MAX_TASKS) ? g_tasks[cpid].vterm_id : 0;
 
@@ -839,14 +841,31 @@ void sched_dump_table(void) {
     }
 }
 
+/* What sched_switch() did: switched away and was resumed, found the wake
+ * token already set, or found nothing else to run on this hart. */
+enum { SWITCH_RAN, SWITCH_WOKEN, SWITCH_IDLE };
+
+static int sched_switch(bool block);
+
 void sched_yield(void) {
-    if (!g_active) return;
+    (void)sched_switch(false);
+}
+
+/* sched_yield(), and with `block` task_block()'s switch: the BLOCKED mark is
+ * made under the same hold of g_sched_lock as the switch itself, so it is
+ * covered by the hand-off below. It used to be made in a lock section of its
+ * own, released before yielding, and on two harts a task_unblock() in that
+ * gap made the task READY while it was still running here -- the other
+ * hart took it and resumed it from its previous, stale frame ("[Sched BUG]
+ * ... has ra=0x2", rv64-smp, 2026-10-05). */
+static int sched_switch(bool block) {
+    if (!g_active) return SWITCH_IDLE;
 
     /* Nothing to switch away from on a hart that owns no task -- and, before
      * the identity fix, `prev` would have been 0 here and this hart would
      * have parked the boot task's stack pointer over the boot task's own.
      * A bring-up hart that yields simply keeps going. */
-    if (!sched_has_task()) return;
+    if (!sched_has_task()) return SWITCH_IDLE;
 
     /* X7: the point at which core 1 notices it must get out of the XIP
      * window before core 0 turns it off. One load of a .bss word that is
@@ -862,8 +881,29 @@ void sched_yield(void) {
     uintptr_t flags = spin_lock_irqsave(&g_sched_lock);
 
     int prev = cur();
+    bool prepared = false;
+    if (block) {
+        bool woken = g_tasks[prev].wake_pending;
+        prepared = g_tasks[prev].wait_armed;
+        g_tasks[prev].wait_armed = false;
+        g_tasks[prev].wake_pending = false;
+        if (woken) { spin_unlock_irqrestore(&g_sched_lock, flags); return SWITCH_WOKEN; }
+        g_tasks[prev].state = TASK_BLOCKED;
+    }
     int next = next_runnable(prev);
-    if (next < 0) { spin_unlock_irqrestore(&g_sched_lock, flags); return; }
+    if (next < 0) {
+        /* Nothing else to run, so this returns -- and the task keeps running
+         * here, which is what its state must say. Left BLOCKED, a wake would
+         * make it READY and let the other hart take it while it runs. A
+         * prepared waiter stays armed, so the wake it is waiting for still
+         * leaves its token (task_block()). */
+        if (block && g_tasks[prev].state != TASK_RUNNING) {
+            g_tasks[prev].state = TASK_RUNNING;
+            g_tasks[prev].wait_armed = prepared;
+        }
+        spin_unlock_irqrestore(&g_sched_lock, flags);
+        return SWITCH_IDLE;
+    }
 
     /* next_runnable() can hand back the *calling* task, and switching to
      * ourselves would be a silent corruption rather than a no-op.
@@ -889,7 +929,7 @@ void sched_yield(void) {
     if (next == prev) {
         g_tasks[prev].state = TASK_RUNNING;   /* the scan had marked us READY */
         spin_unlock_irqrestore(&g_sched_lock, flags);
-        return;
+        return SWITCH_RAN;
     }
 
     if (g_tasks[prev].state == TASK_RUNNING) g_tasks[prev].state = TASK_READY;
@@ -920,6 +960,7 @@ void sched_yield(void) {
     handoff_check();
     spin_unlock_irqrestore(&g_sched_lock, flags);
     sched_reap();
+    return SWITCH_RAN;
 }
 
 void task_block(void) {
@@ -944,18 +985,35 @@ void task_block(void) {
      * what turns the hang into a named one. */
     (void)lock_check_may_block("blocked in task_block()");
 
-    /* Marked BLOCKED under the lock, then released before yielding --
-     * sched_yield() takes it again, and spinlock_t is not re-entrant.
-     *
-     * The gap between the two is harmless, and worth saying why rather than
-     * leaving a reader to wonder: BLOCKED means "do not pick me", so a hart
-     * scanning the table in that window declines to schedule a task that is
-     * still running here. The state this sets is the *absence* of a claim,
-     * which is the one transition that cannot race into a double-schedule. */
+    /* Marked BLOCKED inside the switch, under the lock that is handed off
+     * across it: see sched_switch(). */
+    if (sched_switch(true) != SWITCH_IDLE) return;
+
+    /* Nothing else could run here. A waiter that prepared waits for its wake
+     * or for work, reading plain words rather than taking g_sched_lock on
+     * every turn -- the bus-sharing reason sched_peek_runnable() exists. One
+     * that did not prepare returns at once, as task_block() always has. */
+    volatile const bool *woken = &g_tasks[cur()].wake_pending;
+    volatile const bool *armed = &g_tasks[cur()].wait_armed;
+    while (*armed && !*woken && !sched_peek_runnable()) {
+        __asm__ volatile("" ::: "memory");
+    }
+}
+
+void task_prepare_block(void) {
+    if (!g_active || !sched_has_task()) return;
     uintptr_t flags = spin_lock_irqsave(&g_sched_lock);
-    g_tasks[cur()].state = TASK_BLOCKED;
+    g_tasks[cur()].wait_armed = true;
+    g_tasks[cur()].wake_pending = false;
     spin_unlock_irqrestore(&g_sched_lock, flags);
-    sched_yield();
+}
+
+void task_wait_done(void) {
+    if (!g_active || !sched_has_task()) return;
+    uintptr_t flags = spin_lock_irqsave(&g_sched_lock);
+    g_tasks[cur()].wait_armed = false;
+    g_tasks[cur()].wake_pending = false;
+    spin_unlock_irqrestore(&g_sched_lock, flags);
 }
 
 int task_unblock(int pid) {
@@ -966,9 +1024,13 @@ int task_unblock(int pid) {
      * one that had already gone. */
     uintptr_t flags = spin_lock_irqsave(&g_sched_lock);
     if (g_tasks[pid].state != TASK_BLOCKED) {
+        /* Not blocked yet: a waiter that prepared gets the token instead
+         * (task_prepare_block()), so its block does not outlast this wake. */
+        if (g_tasks[pid].wait_armed) g_tasks[pid].wake_pending = true;
         spin_unlock_irqrestore(&g_sched_lock, flags);
         return -1;
     }
+    g_tasks[pid].wait_armed = false;
     g_tasks[pid].wake_at_ms = 0;   /* an explicit wake outranks a deadline */
     g_tasks[pid].state = TASK_READY;
     spin_unlock_irqrestore(&g_sched_lock, flags);

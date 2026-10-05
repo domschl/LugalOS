@@ -76,9 +76,11 @@ void console_hotkey(unsigned code) {
 /* From an input wait only: a hotkey draws (a layout change) or writes 48 KB
  * to the SD card (a screenshot), neither of which belongs inside a print. */
 static void run_hotkey(void) {
-    unsigned hk = g_hotkey;
+    /* Taken, not read then cleared: every task in an input wait calls this,
+     * and two of them on two harts both saw one Super+Enter and opened two
+     * terminals for it. */
+    unsigned hk = __atomic_exchange_n(&g_hotkey, 0u, __ATOMIC_ACQ_REL);
     if (!hk) return;
-    g_hotkey = 0;
     if (hk == CONSOLE_HOTKEY_SCREENSHOT) {
         char path[48];
         (void)screenshot_save(NULL, path, sizeof(path));

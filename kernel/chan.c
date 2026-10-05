@@ -175,13 +175,25 @@ static int chan_call_task(chan_endpoint_t *ep, uint32_t req_len) {
         return -1;
     }
 
+    /* Prepared before the request is visible: on two harts the owner can
+     * serve it and reply before this task reaches task_block(), and that
+     * reply's wake has to leave a token rather than vanish (sched.h). The
+     * loop is the other half -- the reply, not the wake, ends the wait
+     * (chan_serve_reply() and chan_owner_exited() both clear caller_pid). */
+    task_prepare_block();
     uintptr_t flags = irq_save();
     ep->req_len = req_len;
     ep->caller_pid = me;
     ep->reply_len = -1;
     ep->request_pending = true;
-    task_unblock(ep->owner_pid); /* no-op if the owner is not yet waiting; it will see the request when it next asks */
-    task_block();
+    task_unblock(ep->owner_pid); /* if the owner is not yet waiting, it sees the request when it next asks */
+    for (;;) {
+        task_block();
+        if (ep->caller_pid != me) break;
+        task_prepare_block();
+        if (ep->caller_pid != me) break;
+    }
+    task_wait_done();
     irq_restore(flags);
     waitfor_leave(me);
 
@@ -299,10 +311,15 @@ int chan_call_user(chan_endpoint_t *ep, uintptr_t ureq, uint32_t req_len,
 
 uint32_t chan_serve_wait(chan_endpoint_t *ep) {
     if (ep->request_pending) return ep->req_len;
+    /* Prepare, test, block, until a request is there: the same lost wake as
+     * in chan_call_task(), from the caller's side (sched.h). */
     uintptr_t flags = irq_save();
-    if (!ep->request_pending) {
+    for (;;) {
+        task_prepare_block();
+        if (ep->request_pending) break;
         task_block();
     }
+    task_wait_done();
     irq_restore(flags);
     return ep->req_len;
 }
