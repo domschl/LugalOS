@@ -272,9 +272,6 @@ def test_firmware_freshness(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     only symptom was one command being missing, which looked like a broken
     feature rather than a stale board."""
     name = "Firmware freshness: board build id matches the local build"
-    want = rp2350.local_build_id()
-    if want is None:
-        return (name, True, "SKIPPED: no build/rp2350/ build to compare against")
     try:
         with serial.Serial(ports.console, 115200, timeout=2) as ser:
             ser.dtr = True
@@ -283,17 +280,37 @@ def test_firmware_freshness(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
             ser.write(b"cat /proc/buildid\n")
             ser.flush()
             out = rp2350.drain(ser, quiet=0.5, deadline=5.0).decode("utf-8", errors="replace")
+            ser.write(b"cat /proc/node\n")
+            ser.flush()
+            node = rp2350.drain(ser, quiet=0.5, deadline=5.0).decode("utf-8", errors="replace")
+
+        # Compare against the build of the persona the board runs, not
+        # build/rp2350: an rp2350-terminal board checked against build/rp2350
+        # warned "reflash" whenever the two build dirs were built at different
+        # commits, though the board was running exactly the terminal build.
+        pm = re.search(r"^persona: (\S+)", node, re.M)
+        if pm:
+            build_dir = build_dir_for_persona(pm.group(1))
+            if build_dir is None:
+                return (name, True,
+                        f"SKIPPED: no local build/ directory for persona {pm.group(1)} to compare against")
+        else:
+            build_dir = rp2350.REPO_ROOT / "build" / "rp2350"
+        uf2 = f"{build_dir.relative_to(rp2350.REPO_ROOT)}/lugalos.uf2"
+        want = rp2350.local_build_id(build_dir)
+        if want is None:
+            return (name, True, f"SKIPPED: no {build_dir.name}/ build to compare against")
 
         m = re.search(r"(\d+\.\d+\.\d+)\s+(\S+)", out.replace("cat /proc/buildid", ""))
         if not m:
             return (name, True,
                     "SKIPPED: board predates /proc/buildid -- it is definitely older than this "
-                    f"tree (expected build {want}); reflash build/rp2350/lugalos.uf2")
+                    f"tree (expected build {want}); reflash {uf2}")
         got = m.group(2)
         if got != want:
             return (name, True,
-                    f"WARNING: board is running build {got}, local tree builds {want} -- "
-                    "reflash build/rp2350/lugalos.uf2 if the tests below look wrong")
+                    f"WARNING: board is running build {got}, {build_dir.name} builds {want} -- "
+                    f"reflash {uf2} if the tests below look wrong")
         return (name, True, f"build {got}")
     except Exception as e:
         return (name, False, str(e))
@@ -1995,6 +2012,23 @@ def find_build_for(build_id: str, persona: str) -> "Path | None":
         if bid and per and bid.group(1) == build_id and per.group(1) == persona:
             return d
     return None
+
+
+def build_dir_for_persona(persona: str) -> "Path | None":
+    """The local build directory whose lugalos_config.h is persona `persona`,
+    preferring the one named after it (build/rv64 and build/rv64-smp share a
+    persona). None if no build of that persona exists."""
+    matches = []
+    for d in sorted((rp2350.REPO_ROOT / "build").glob("*/")):
+        try:
+            per = re.search(r'#define\s+CONFIG_NODE_PERSONA\s+"([^"]+)"',
+                            (d / "lugalos_config.h").read_text())
+        except OSError:
+            continue
+        if per and per.group(1) == persona:
+            matches.append(d)
+    named = [d for d in matches if d.name == persona]
+    return (named or matches or [None])[0]
 
 
 def parse_config_header(path: Path) -> dict[str, str]:
