@@ -248,7 +248,7 @@ static void kutest_task(void *arg) {
      * top. It is a single region, so it is a single power-of-two grant on PMP
      * and a single page on Sv39. */
     mem_domain_add(&g_kutest_domain, (uintptr_t)g_kpage, 4096, MEM_R | MEM_W);
-    mem_domain_add(&g_kutest_domain, (uintptr_t)_utext_kobj_start, 4096, MEM_R | MEM_X);
+    mem_domain_add(&g_kutest_domain, (uintptr_t)_utext_kobj_start, 16384, MEM_R | MEM_X);
 
     if (task_set_domain(sched_current_pid(), &g_kutest_domain) != 0) {
         printk("[kobjutest] Refusing to enter U-mode: the domain is not enforceable\n");

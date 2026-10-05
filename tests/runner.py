@@ -1024,6 +1024,19 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Kernel Objects From A Confined U-mode Task: Boundary Checks (45.3b kobjutest)",
                         kobju_ok, log if not kobju_ok else ""))
 
+        # 45.3b: the Wi-Fi blob's OS table as the radio domain implements it
+        # (drivers/radio/*, kernel/uheap.c), linked into a U-mode domain's own
+        # text and called from its threads: heap, every synchronisation object,
+        # a timer thread calling back into the domain, a blob-style task, the
+        # key/value store, a formatted log line. Nothing in it may call outside
+        # the domain; tools/check_radio_text.py checks that mechanically on the
+        # objects (a 64-bit shift on rv32 is a libgcc call, and was the first bug).
+        ok, log = session.send_and_expect("radioosi\n",
+                                          r"RADIOOSI_(OK|FAIL)", timeout=60.0)
+        radio_ok = ok and "RADIOOSI_OK" in log
+        results.append(("Wi-Fi OS-Table Shim In A Confined U-mode Domain (45.3b radioosi)",
+                        radio_ok, log if not radio_ok else ""))
+
         # 38.3 (plan/phase38_psram.md): libc's memcpy/memmove/memset are word
         # loops now, and every line of the kernel links against them. Every
         # offset pair within two words, every length to 67, memmove at every
@@ -8549,12 +8562,26 @@ def main() -> int:
 
     ok, info = test_host_sanitizer_harnesses()
     total_tests += 1
-    name = "Host Harnesses: FAT32, cc, 9P And IP Under ASan/UBSan (tests/host)"
+    name = "Host Harnesses: FAT32, cc, 9P, IP And The Radio Shim Under ASan/UBSan (tests/host)"
     if ok:
         passed_tests += 1
         print(f"  [PASS] {name}")
     else:
         print(f"  [FAIL] {name}\n    Log Output:\n{info}")
+
+    # 45.3b: the radio shim must not call anything outside its own text -- a
+    # compiler helper or libc call from U-mode is an instruction fault at run
+    # time that the linker never reports. Read off the objects of every build
+    # that has them.
+    total_tests += 1
+    name = "Radio Shim Is Self-Contained: No Call Outside Its Own U-mode Text (45.3b)"
+    chk = subprocess.run([sys.executable, str(Path(__file__).resolve().parent.parent / "tools" / "check_radio_text.py"),
+                          str(rv32_elf.parent), str(rv64_elf.parent)], capture_output=True, text=True)
+    if chk.returncode == 0:
+        passed_tests += 1
+        print(f"  [PASS] {name}")
+    else:
+        print(f"  [FAIL] {name}\n    Log Output:\n{chk.stdout}{chk.stderr}")
 
     # 2. RV64 Target
     if rv64_elf.exists():

@@ -17,20 +17,29 @@ static RADIO_TEXT void put(out_t *o, char c) {
     o->len++;
 }
 
-/* Digits of `v` in `base`, least significant first, into `tmp`. Shift-and-
- * subtract: dividing a 64-bit value by 10 with `/` would call __udivdi3 on
- * rv32, which a U-mode page cannot reach. */
+/* Digits of `v` in `base`, least significant first, into `tmp`.
+ *
+ * Schoolbook division of the 64-bit value by `base` (<= 16), one 16-bit limb at
+ * a time, using only 32-bit arithmetic. Not for show: on rv32 a 64-bit `/`, `%`
+ * *or shift* is a call into libgcc (__udivdi3, __lshrdi3, ...), which a U-mode
+ * text page cannot reach -- the first version of this function faulted on its
+ * first shift. tools/check_radio_text.py now checks that nothing in the radio's
+ * objects calls anything outside them. */
 static RADIO_TEXT int digits(unsigned long long v, unsigned base, bool upper, char *tmp) {
+    uint32_t limb[4] = { (uint32_t)(v >> 48) & 0xffffu, (uint32_t)(v >> 32) & 0xffffu,
+                         (uint32_t)(v >> 16) & 0xffffu, (uint32_t)v & 0xffffu };
     int n = 0;
-    if (v == 0) { tmp[n++] = '0'; return n; }
-    while (v) {
-        unsigned long long q = 0, r = 0;
-        for (int bit = 63; bit >= 0; bit--) {
-            r = (r << 1) | ((v >> bit) & 1u);
-            if (r >= base) { r -= base; q |= 1ull << bit; }
+    for (;;) {
+        bool zero = true;
+        uint32_t rem = 0;
+        for (int i = 0; i < 4; i++) {
+            uint32_t cur = rem * 65536u + limb[i];
+            limb[i] = cur / base;
+            rem = cur % base;
+            if (limb[i]) zero = false;
         }
-        tmp[n++] = (char)(r < 10 ? '0' + r : (upper ? 'A' : 'a') + (r - 10));
-        v = q;
+        tmp[n++] = (char)(rem < 10 ? '0' + rem : (upper ? 'A' : 'a') + (rem - 10));
+        if (zero) break;
     }
     return n;
 }

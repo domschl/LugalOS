@@ -56,7 +56,7 @@ void radio_osi_set_isr_stack(uintptr_t lo, uintptr_t hi);
 
 /* The two threads the shim itself runs. Both are created by the caller
  * (typically with radio_thread_create below) and never return. */
-void radio_timer_thread(uintptr_t unused);
+void radio_timer_thread(void *unused);
 
 /* ---- the entries -------------------------------------------------------- */
 

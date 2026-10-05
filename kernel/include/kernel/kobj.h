@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "kernel/kobj_abi.h"
 
 /* Kernel-owned synchronisation objects for a confined runtime (45.3b,
  * plan/phase45_esp32c6.md §4.5).
@@ -55,14 +56,9 @@
 
 typedef uint32_t kh_t;
 
-/* Results. KO_BLOCK is not an error: the waiter was queued. */
-#define KO_OK       0
-#define KO_BLOCK    1    /* queued `w`; the caller must wait for KW_GRANT */
-#define KO_AGAIN   (-1)  /* would block, and the caller asked not to */
-#define KO_FULL    (-2)  /* give/send to something already at capacity */
-#define KO_FAIL    (-3)  /* bad handle, wrong type, or wrong owner */
-#define KO_TIMEOUT (-4)  /* a wait ended without being granted */
-#define KO_DELETED (-5)  /* the object went away under a waiter */
+/* Results: KO_OK, KO_BLOCK (not an error: the waiter was queued), KO_AGAIN, KO_FULL,
+ * KO_FAIL, KO_TIMEOUT, KO_DELETED -- defined in kobj_abi.h, because U-mode code
+ * receives them too. */
 
 /* A waiter lives in the *caller's* storage (the blocked task's kernel stack)
  * for exactly as long as it is queued. */

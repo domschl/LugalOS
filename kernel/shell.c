@@ -18,6 +18,7 @@
 #if defined(CONFIG_KOBJ)
 #include "kernel/kobj_sched.h"
 #include "kernel/kobj_sys.h"
+#include "kernel/radio_osi_test.h"
 #endif
 #include "kernel/hart.h"
 #include "kernel/time.h"
@@ -609,6 +610,7 @@ static void cmd_help(void) {
 #if defined(CONFIG_KOBJ)
     cprintf("  kobjselftest    - Kernel semaphores/mutexes/queues/events/timers under real tasks (45.3b)\n");
     cprintf("  kobjutest       - The same objects from a U-mode task in a PMP/Sv39 domain (45.3b)\n");
+    cprintf("  radioosi        - The Wi-Fi OS-table shim, called as the blob will, in a U-mode domain (45.3b)\n");
 #endif
     cprintf("  memselftest     - libc memcpy/memmove/memset against a byte reference, every alignment\n");
     cprintf("  fmtselftest     - printk/ksnprintf formatting against fixed strings\n");
@@ -3513,6 +3515,8 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         kobj_selftest();
     } else if (strcmp(cmd_line, "kobjutest") == 0) {
         kobj_utest();
+    } else if (strcmp(cmd_line, "radioosi") == 0) {
+        radio_osi_test();
 #endif
         return;
     } else if (strcmp(cmd_line, "zonetest") == 0) {

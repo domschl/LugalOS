@@ -24,6 +24,15 @@
  * without limit. Timer delays are microseconds.
  */
 
+/* Results. KO_BLOCK never leaves the kernel (it means "the waiter was queued"). */
+#define KO_OK       0
+#define KO_BLOCK    1
+#define KO_AGAIN   (-1)  /* would block, and the caller asked not to */
+#define KO_FULL    (-2)  /* give/send to something already at capacity */
+#define KO_FAIL    (-3)  /* bad handle, wrong type, wrong owner, bad pointer */
+#define KO_TIMEOUT (-4)  /* a wait ended without being granted */
+#define KO_DELETED (-5)  /* the object went away under a waiter */
+
 #define SYS_KOBJ_BASE 32
 
 enum {

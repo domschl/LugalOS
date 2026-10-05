@@ -294,7 +294,7 @@ RADIO_TEXT int32_t radio_thread_create(void (*entry)(void *), void *param, uint3
 RADIO_TEXT int32_t radio_osi_task_create_pinned_to_core(void *func, const char *name, uint32_t stack_depth,
                                                         void *param, uint32_t prio, void *handle, uint32_t core) {
     (void)name; (void)core;                      /* one core; names are for a debugger we do not have */
-    int32_t pid = radio_thread_create((void (*)(void *))func, param, stack_depth, prio);
+    int32_t pid = radio_thread_create((void (*)(void *))(uintptr_t)func, param, stack_depth, prio);
     if (pid < 0) return PD_FALSE;
     if (handle) *(uint32_t *)handle = (uint32_t)pid;
     return PD_TRUE;
@@ -330,7 +330,7 @@ RADIO_TEXT void radio_osi_timer_done(void *t) { K(KOBJ_OP_TIMER_DONE, (uintptr_t
 
 /* The thread that calls the blob's timer callbacks: waits in the kernel for the
  * next due timer, calls it in this domain, repeats. */
-RADIO_TEXT void radio_timer_thread(uintptr_t unused) {
+RADIO_TEXT void radio_timer_thread(void *unused) {
     (void)unused;
     volatile uintptr_t rec[3];
     for (;;) {

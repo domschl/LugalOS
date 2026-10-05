@@ -38,7 +38,9 @@ set(COMMON_ASFLAGS "-ffreestanding -nostdlib -mcmodel=medany -ggdb")
 
 set(KOBJ_SOURCES "")
 if(LUGALOS_TARGET STREQUAL "RV32_NOMMU" OR LUGALOS_TARGET STREQUAL "RV64_MMU")
-    set(KOBJ_SOURCES kernel/kobj.c kernel/kobj_sched.c kernel/kobj_sys.c kernel/kobj_selftest.c kernel/kobj_utest.c)
+    set(KOBJ_SOURCES kernel/kobj.c kernel/kobj_sched.c kernel/kobj_sys.c kernel/kobj_selftest.c kernel/kobj_utest.c
+        kernel/uheap.c drivers/radio/osi_impl.c drivers/radio/uprintf.c drivers/radio/nvs_ram.c
+        kernel/radio_osi_test.c)
     add_compile_definitions(CONFIG_KOBJ=1)
 endif()
 if(LUGALOS_TARGET STREQUAL "RV32_NOMMU")
@@ -987,6 +989,7 @@ set_source_files_properties(
     drivers/pico_clock_font.c
     kernel/umode_probe.c
     kernel/kobj_utest.c
+    kernel/radio_osi_test.c
     # 36.6a: the screen terminal's U-mode path (drivers/lcdterm_attr.h).
     # vtterm.c's parser is exactly the switch-heavy code this list exists for.
     drivers/lcd7_rp2350.c
@@ -1003,6 +1006,16 @@ set_source_files_properties(
     drivers/usbkbd.c
     drivers/usbkbd_rp2350.c
     PROPERTIES COMPILE_OPTIONS -fno-jump-tables)
+
+# 45.3b: the radio shim is U-mode code: placed in its own domain's text by
+# linker/qemu-rv*.ld, so it may not call into the kernel -- which includes the
+# UBSan handlers every other file here is instrumented with.
+set_source_files_properties(
+    kernel/uheap.c drivers/radio/osi_impl.c drivers/radio/uprintf.c drivers/radio/nvs_ram.c
+    PROPERTIES COMPILE_OPTIONS "-fno-jump-tables;-fno-sanitize=undefined")
+# ...and its one piece of writable state goes in the domain's data region, not in the kernel's .bss.
+set_source_files_properties(drivers/radio/osi_impl.c
+    PROPERTIES COMPILE_DEFINITIONS "RADIO_DATA=__attribute__((section(\".udata_kobj\")))")
 
 # Every object, not an enumerated subset: lugalos_config.h is reached
 # transitively (kernel/palloc.h and kernel/balloc.h both include it, and most

@@ -12,15 +12,15 @@ SECTIONS
         _ktext_lo = .;
         . = ALIGN(4);
         *(.text.entry)
-        *(.text .text.*)
+        *(EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj) .text EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj) .text.*)
         . = ALIGN(4);
         _ktext_hi = .;
     } > RAM
 
     .rodata : {
         . = ALIGN(4);
-        *(.rodata .rodata.*)
-        *(.srodata .srodata.*)
+        *(EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj) .rodata EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj) .rodata.*)
+        *(EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj) .srodata EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj) .srodata.*)
         . = ALIGN(4);
     } > RAM
 
@@ -54,14 +54,31 @@ SECTIONS
         . = _utext_start + 4096;
     } > RAM
 
-    /* 45.3b: U-mode code that is not a driver -- the `kobjutest` task. One page
-     * of its own, because the shared .utext above is exactly full and a
-     * driver's page is not the place for a test. Same shape: one page, so the
-     * grant is a single power-of-two region. */
-    .utext_kobj : ALIGN(4096) {
+    /* 45.3b: U-mode code that is not a driver -- the `kobjutest` and `radioosi`
+     * tasks, and the radio shim they exercise (drivers/radio/*, kernel/uheap.c),
+     * which is linked into the domain's own text exactly as it will be on the C6:
+     * code and read-only data in one region the domain may execute, its writable
+     * state in another. Kept out of .text/.rodata above by EXCLUDE_FILE, because a
+     * U-mode task cannot call a kernel function and the shim must be callable by
+     * function pointer, as the blob will call it.
+     *
+     * Each is a single power-of-two, self-aligned block, so the grant is one PMP
+     * region (and page-aligned for Sv39): 16 KB of text, 32 KB of data. */
+    .utext_kobj : ALIGN(16384) {
         _utext_kobj_start = .;
         *(.utext_kobj .utext_kobj.*)
-        . = _utext_kobj_start + 4096;
+        *(.utext_kobj_ro .utext_kobj_ro.*)   /* a test's read-only strings: a different input section from its code, because GCC refuses to mix the two */
+        *osi_impl.c.obj(.text .text.* .rodata .rodata.* .srodata .srodata.*)
+        *uprintf.c.obj(.text .text.* .rodata .rodata.* .srodata .srodata.*)
+        *nvs_ram.c.obj(.text .text.* .rodata .rodata.* .srodata .srodata.*)
+        *uheap.c.obj(.text .text.* .rodata .rodata.* .srodata .srodata.*)
+        . = _utext_kobj_start + 16384;
+    } > RAM
+
+    .udata_kobj (NOLOAD) : ALIGN(32768) {
+        _udata_kobj_start = .;
+        *(.udata_kobj .udata_kobj.*)
+        . = _udata_kobj_start + 32768;
     } > RAM
 
     .data : ALIGN(2M) {
