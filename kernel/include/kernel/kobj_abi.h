@@ -64,6 +64,15 @@ enum {
     KOBJ_OP_MAC,               /* (type, uint8_t out[6])            -> rc  (the node's MAC; type = IDF's
                                   esp_mac_type_t: 0 STA, 1 AP, 2 BT, 3 ETH -- last octet offset by type) */
     KOBJ_OP_LOG,               /* (level, text*, len)               -> rc  one line, rendered by the runtime */
+    /* The interrupt and event seam to the board (45.4/45.6; "not available" -- KO_FAIL --
+     * on a build that has no radio). The radio's hardware interrupts are routed and masked by the
+     * kernel; the *handler* runs in a thread of the domain that the kernel wakes. */
+    KOBJ_OP_INTR_SET,          /* (cpu, source, num, prio)          -> rc  route source to CPU interrupt num */
+    KOBJ_OP_INTR_CLEAR,        /* (source, num)                     -> rc */
+    KOBJ_OP_ISR_SET,           /* (num, fn, arg)                    -> rc  handler for CPU interrupt num */
+    KOBJ_OP_INTS_ON,           /* (mask)                            -> rc  enable these CPU interrupts */
+    KOBJ_OP_INTS_OFF,          /* (mask)                            -> rc */
+    KOBJ_OP_EVENT_POST,        /* (base*, id, data*, size)          -> rc  a Wi-Fi event for the netif driver */
     KOBJ_OP_COUNT
 };
 
