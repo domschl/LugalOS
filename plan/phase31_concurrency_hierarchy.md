@@ -1703,18 +1703,25 @@ which is how this one stayed hidden.)
     `i2cstats` answers 20 of 20 times in 0.05 s. Any board whose console is
     USB CDC was affected, at whatever output lengths happen to be multiples
     of 64.
-  * **Two silent boards, not reproduced.** Twice the clock board stopped
-    answering on both ports after a suite run, ignored the 1200-baud touch
-    and did not re-enumerate. Replugging the USB hub brought it back the
-    first time; the second time the board itself was replugged. Neither
-    reproduced afterwards: 10 of 10 plain `reboot`s, 12 of 12 manual
-    exhaust-then-reboot iterations, 10 of 10 runs of the node-pool test
-    itself, and a full suite followed by a reboot all came back. That fits
-    the hub the user found. If it recurs, the next step is the same reboot
-    loop on the firmware before §7. The harness now calls
-    `rp2350.wake_shell()`, which repeats Ctrl-C until a prompt answers and
-    says so when none does, so a silent board is reported up front rather
-    than as 28 unrelated failures.
+  * **Open, predates §7: a board that does not come back from `reboot`
+    after a full hardware suite.** The sequence is the full `test_rp2350.py`
+    suite, then the node-pool test, then its closing `reboot`. Afterwards the
+    board answers nothing on either port, ignores the 1200-baud touch, and
+    does not re-enumerate; only a USB replug recovers it. Seen on
+    rp2350-clock (twice) and rp2350-chess (three times, the first on that
+    board's very first suite run). The firmware from before §7 (build 723,
+    `c14e1cf`) did it as well, on its second try. What it is not:
+    * the watchdog tick. TICKS `WATCHDOG_CTRL` read `3` (running, 12 cycles)
+      after every one of the suite's tests;
+    * the node-pool test alone. 10 of 10 on a freshly booted board, and 12
+      of 12 manual exhaust-then-reboot iterations, came back;
+    * a plain `reboot`, which came back 22 of 22 times.
+
+    The open questions are whether the board ever reaches the bootrom's
+    reboot call, and which earlier test sets it up. Each attempt costs a
+    replug. The harness now calls `rp2350.wake_shell()`, which repeats
+    Ctrl-C until a prompt answers and says so when none does, so a silent
+    board is reported up front rather than as 28 unrelated failures.
 * Not a concurrency finding, but found by the same run: `test_psram`'s
   cold-cache read fell from a steady 23.8 MB/s to 20.5–23.2 MB/s. Nothing
   in these changes touches PSRAM. They moved the bench's own loop
