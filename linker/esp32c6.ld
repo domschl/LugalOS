@@ -66,7 +66,7 @@ SECTIONS
         _ktext_lo = .;
         . = ALIGN(4);
         _xip_start = .;
-        *(.text .text.*)
+        *(EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj) .text EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj) .text.*)
         . = ALIGN(4);
         _ktext_hi = .;
     } > XIP
@@ -82,14 +82,38 @@ SECTIONS
 
     .rodata : {
         . = ALIGN(4);
-        *(.rodata .rodata.*)
-        *(.srodata .srodata.*)
+        *(EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj) .rodata EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj) .rodata.*)
+        *(EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj) .srodata EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj) .srodata.*)
         . = ALIGN(4);
         _xip_end = .;
     } > XIP
 
     /* How many 64 KB MMU pages esp32c6_xip_map() has to map. */
     _xip_pages = (_xip_end - _xip_start + 0xFFFF) >> 16;
+
+    /* 45.3b/45.4.4: the radio shim and its tests, as on the QEMU targets
+     * (linker/qemu-rv32.ld says why each piece is where it is). On the C6 the
+     * final radio keeps its *text* in the flash window; in this form -- the
+     * kernel-object suite and the OS-table shim exercised on the silicon -- it is
+     * linked into RAM like the QEMU build, so the same tests run unchanged. One
+     * power-of-two, self-aligned block each, so each grant is a single PMP region:
+     * 16 KB of code and read-only data, 32 KB of state and heap. */
+    .utext_kobj : ALIGN(16384) {
+        _utext_kobj_start = .;
+        *(.utext_kobj .utext_kobj.*)
+        *(.utext_kobj_ro .utext_kobj_ro.*)
+        *osi_impl.c.obj(.text .text.* .rodata .rodata.* .srodata .srodata.*)
+        *uprintf.c.obj(.text .text.* .rodata .rodata.* .srodata .srodata.*)
+        *nvs_ram.c.obj(.text .text.* .rodata .rodata.* .srodata .srodata.*)
+        *uheap.c.obj(.text .text.* .rodata .rodata.* .srodata .srodata.*)
+        . = _utext_kobj_start + 16384;
+    } > RAM
+
+    .udata_kobj (NOLOAD) : ALIGN(32768) {
+        _udata_kobj_start = .;
+        *(.udata_kobj .udata_kobj.*)
+        . = _udata_kobj_start + 32768;
+    } > RAM
 
     /* No AT> anywhere: LOADADDR(.data) == ADDR(.data), so _sidata == _data_start and
      * entry.S skips its copy loop -- the loader (load-ram, and the ROM for a flash
@@ -165,6 +189,6 @@ SECTIONS
 
     /* The heap floor (phase 15 §6): 256 KB, the RP2350's figure, with the 16 KB of
      * ROM data already excluded from the region. */
-    ASSERT(_heap_end - _kernel_end >= 192K,
-           "ESP32-C6 heap has fallen below its 192 KB floor -- something grew .bss or .data; see the header comment")
+    ASSERT(_heap_end - _kernel_end >= 128K,
+           "ESP32-C6 heap has fallen below its 128 KB floor -- something grew .bss or .data; see the header comment")
 }

@@ -84,9 +84,24 @@ ESP32-P4-NANO connects via **two separate serial bridges**:
 One USB-C cable, one port: the chip's native USB-Serial/JTAG (VID:PID `303a:1001`),
 console, loading and reset all on it.
 * Symlink: `/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_*-if00`
-* Use `tools/c6run.py` (RAM load + console; never writes flash) — it opens the port with
-  DTR high / RTS low, because opening with DTR low resets the chip (see plan/phase45 §45.1).
-  Quick check: `tools/build_minimal_esp32c6.sh run`.
+* **Always go through `tools/c6run.py` / `tools/c6flash.py`**, which open the port with
+  DTR high / RTS low — opening with DTR low resets the chip (plan/phase45 §45.1).
+* The kernel is **two images**: `.text`/`.rodata` execute in place from flash at
+  `0x42000000`, the rest lives in SRAM. The map is `build/esp32c6/flash.manifest`
+  (from `cmake/flash_layout_esp32c6.cmake`), never typed on a command line.
+* Development loop (nothing written but the flash half, and only when it changed):
+  ```bash
+  ninja -C build/esp32c6
+  tools/c6run.py --kernel build/esp32c6 --cmd "preempttest" --cmd-wait 8
+  ```
+* Leave it running by itself (stage 2 at `0x0` + the OS image, verified, then reset):
+  `tools/c6flash.py build/esp32c6`
+* Test it: `python3 tests/hw/test_esp32c6.py` (loads the kernel itself; `--no-load` tests
+  what is running). 14 checks; skips when no board is attached.
+* The top 16 KB of SRAM (`0x4087c000`..) is the **ROM's data** — never hand it out; the
+  ROM's Wi-Fi code keeps its state there.
+* Quick standalone checks (no kernel): `tools/build_minimal_esp32c6.sh run`,
+  `tools/build_umode_probe_esp32c6.sh run`.
 
 ---
 
@@ -102,6 +117,7 @@ LugalOS supports distinct hardware presets. If a task requires testing against a
 | `rp2350-clock` | RP2350 LED Clock | Waveshare Pico-Clock-Green (SM16106 LED matrix + DCF77 radio) |
 | `rp2350-gateway` | RP2350 Gateway | Network gateway persona (ENC28J60 Ethernet / USB 9P / UART1 downlink) |
 | `rp2350-wifi` | RP2350 CYW43439 | Raspberry Pi Pico 2 W with CYW43439 Wi-Fi |
+| `esp32c6` | ESP32-C6 RV32 | Waveshare ESP32-C6-Zero (RV32IMAC @ 160 MHz, 512 KB SRAM, 8 MB flash, USB-Serial/JTAG console) |
 | `rv32` | RISC-V 32-bit NOMMU | QEMU virt machine (32-bit microkernel test target) |
 | `rv64` | RISC-V 64-bit Sv39 MMU | QEMU virt machine (64-bit virtual memory target) |
 | `rv64-smp` | RISC-V 64-bit SMP | Dual-core SMP virtual machine |

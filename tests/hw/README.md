@@ -7,6 +7,7 @@ Three suites, one per attached target:
 | `test_rp2350.py` | RP2350 (Pico 2 / Pico 2 W) | USB, both ACM ports; a UART adapter for `p9share` |
 | `test_gateway.py` | RP2350 gateway persona | an IP address and a 9P key |
 | `test_esp32p4.py` | ESP32-P4 (Waveshare ESP32-P4-NANO) | both cables — see below |
+| `test_esp32c6.py` | ESP32-C6 (Waveshare ESP32-C6-Zero) | the one USB-C cable; loads the kernel itself (`tools/c6run.py --kernel`), or `--no-load` |
 
 Every one of them **skips rather than fails** when its board is not attached,
 so all three are safe to run speculatively and safe to leave out of CI.

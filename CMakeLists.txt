@@ -37,7 +37,7 @@ set(COMMON_CFLAGS "-Wall -Wextra -pedantic -ffreestanding -nostdlib -fno-builtin
 set(COMMON_ASFLAGS "-ffreestanding -nostdlib -mcmodel=medany -ggdb")
 
 set(KOBJ_SOURCES "")
-if(LUGALOS_TARGET STREQUAL "RV32_NOMMU" OR LUGALOS_TARGET STREQUAL "RV64_MMU")
+if(LUGALOS_TARGET STREQUAL "RV32_NOMMU" OR LUGALOS_TARGET STREQUAL "RV64_MMU" OR LUGALOS_TARGET STREQUAL "ESP32C6")
     set(KOBJ_SOURCES kernel/kobj.c kernel/kobj_sched.c kernel/kobj_sys.c kernel/kobj_selftest.c kernel/kobj_utest.c
         kernel/uheap.c drivers/radio/osi_impl.c drivers/radio/uprintf.c drivers/radio/nvs_ram.c
         kernel/radio_osi_test.c)

@@ -443,6 +443,69 @@ access from U-mode (the radio clocks are not up; 45.6).
   `kobj_host`, `uheap_host`, `uprintf_host`, `nvs_host` under ASan/UBSan (each
   mutation-tested), and `check_radio_text.py`.
 
+### 4.7 What bringing the kernel up found (45.4, 2026-10-05)
+
+**On the silicon (`tests/hw/test_esp32c6.py`, 14 of 14):** boots to a shell with a
+256 KB heap and the ROM's top 16 KB of SRAM fenced off; the tick holds 100 Hz
+(+20 per 200 ms) through matrix and PLIC; `preempttest` PREEMPTED, `lockselftest`
+16/16, `priostress` FAIR; `pmpinfo` 16 entries, 8-byte minimum region, nothing
+locked; `usertest` (ecall cause 8), `isolationtest` (store fault contained, canary
+untouched), `deputytest` (refused); `kobjselftest` (the timeout-versus-grant race
+goes both ways, 61/39), `kobjutest` 29 checks, `radioosi` 22 checks; and the
+kernel clock keeps counting past a minute — which is what finds a watchdog that
+resets a kernel that booted perfectly.
+
+* **A RAM-resident kernel does not fit, so execute-in-place came first.** The
+  image is ~540 KB against 496 KB usable: the kernel has grown since the P4's first
+  boot (net stack, MQTT, NTP, 9P, the kernel objects) and nothing was left for a
+  heap. The P4's phase-32 shape — `.text`/`.rodata` in flash, boot code and state in
+  SRAM — was therefore a prerequisite, not a follow-up. SRAM now holds 155 KB of
+  `.bss` and a 256 KB heap.
+* **A cached read of mapped flash returns `0x0addbad0` until the ROM's
+  `spi_flash_boot_attach()` has run.** The MMU sequence is IDF's second-stage
+  bootloader's (cache off, 64 KB pages, unmap, map, un-shut the buses, cache on) and
+  is not the problem; the SPI0 read path (command, dummy cycles, pins) is
+  unconfigured when the chip was started by `esptool load-ram`, because the flash
+  writes esptool does go through SPI1 and need none of it. A board that boots *from*
+  flash has had it run for it. With it, 65 536 words read back exactly. Found with a
+  standalone probe before any kernel code depended on it.
+* **`mtvec` is hardwired to vectored mode and wants a 256-byte-aligned base**
+  (45.3a measured the read-back). So the vector is a table: 32 four-byte jumps (slot
+  0 takes synchronous exceptions, slot *n* interrupt *n*), every slot jumping to the
+  one handler that decodes `mcause` as on every other target.
+* **An M-mode interrupt line also needs its bit in `mie`** — the TRM says so in one
+  bullet ("further needs to be unmasked at core level") and nothing else reports the
+  omission: the line was routed, enabled, asserted (`int_raw`=1) and never taken.
+  `intrdump` exists because that was found by reading every link of the chain, not by
+  guessing.
+* **Line 8 does not deliver.** The same source on line 10 ticks at exactly 100 Hz and
+  a different source on line 9 was delivered, so it is not the wiring; mie bit 8 is
+  where the standard puts the user-external enable. Refused in
+  `arch/esp32c6_intr.h` with the evidence.
+* **Interrupt-matrix sources are the *register offset / 4*,** not a count of the
+  header's enum (off by one here): system-timer target 0 is source 57, FROM_CPU_INTR0
+  is 22, USB-Serial/JTAG is 48. The table is in `arch/esp32c6_intr.h`.
+* **The TRM's INTPRI registers (`0x600C5000`) and IDF's `PLIC_MX` (`0x20001000`) are
+  not mirrors:** writes to the second do not show in the first, and the second is what
+  takes interrupts (IDF: "ESP32C6 should use the PLIC controller instead of INTC").
+  The kernel uses PLIC_MX, as IDF does in M-mode.
+* **Interrupts can be delegated to U-mode on this core** (`mideleg`, `uie`, the N
+  extension; `misa` bit 13 was set in 45.1). That is a real alternative to the
+  interrupt-*thread* of §4.5 for the radio's MAC/PWR lines: the handler would run in
+  U-mode directly, with no kernel stub and no thread wake-up, which is the latency
+  risk §9 names. Not built; the thread design stands until 45.6 measures it.
+* **Flash boot works and survives.** `tools/c6flash.py` writes stage 2 (the RAM half
+  as the ROM's image format) at `0x0` and the OS image at `0x20000`; the board came up
+  running from flash with nothing attached and was still counting at 103 s. The
+  flash-boot watchdogs (RWDT, MWDT0, the super watchdog) are disarmed in `.boot.text`
+  exactly as IDF's bootloader does; `load-ram` arms none, so this is a no-op on the
+  development loop and essential on the final one.
+
+**Still polled, deliberately:** the console. The USB-Serial/JTAG peripheral has an
+interrupt (source 48) and line 11 is allocated for it, but a task waiting for a key
+yields in a loop as every console here did before M4. It moves to the interrupt when
+something needs the CPU back (45.6's measurements will say).
+
 ## 5. Milestones
 
 Each milestone ends with a verification that can be repeated and a commit
@@ -512,11 +575,24 @@ by flashing*.
   stays open is exactly the part that needs the chip: interrupts, the PHY and
   clock port, the event sink (`radio_plat_*`, `KOBJ_OP_INTR_*`,
   `KOBJ_OP_EVENT_POST`) — 45.4 and 45.6.
-* **45.4 C6 kernel bring-up.** Interrupt matrix and controller, trap
-  vector, the system tick, PMP setup, the kernel's scheduler, the VFS and
-  the existing `lsh` console on USB-JTAG. This is the "LugalOS runs on the C6"
-  milestone for the untainted core. Reuse `arch/riscv/` the way phase 27
-  reused it for the P4.
+* **45.4 C6 kernel bring-up — DONE 2026-10-05, on the silicon.** LugalOS boots
+  to `lsh` on the ESP32-C6-Zero, preempts, runs the whole U-mode stack under a
+  16-entry PMP, and boots from flash by itself. Four steps, in the order they
+  turned out to be necessary (§4.7 has what each found):
+  * **45.4.1 First boot, cooperative.** The `esp32c6` preset, board file,
+    USB-Serial/JTAG console driver (polled), system-timer clock, a stated-empty
+    device table. It linked and did *not fit* in SRAM — see 45.4.2.
+  * **45.4.2 Execute in place.** `.text`/`.rodata` run from flash at
+    `0x42000000` through the MMU; `.boot.text` in SRAM maps it. A standalone probe
+    (`tools/xip_probe_esp32c6.c`) established the sequence on this chip first.
+  * **45.4.3 Interrupts and the tick.** Interrupt matrix → PLIC_MX → a 32-slot
+    256-aligned vectored `mtvec`; the tick is system-timer comparator 0 on CPU
+    line 10.
+  * **45.4.4 U-mode and the shim on the silicon.** The kernel-object suites and
+    the radio OS-table shim run unchanged on the C6, plus the kernel's own
+    isolation proofs. And `tools/c6flash.py`: both halves in flash, no host.
+
+  `tests/hw/test_esp32c6.py` is the repeatable form — **14 of 14 pass**.
 * **45.5 LED.** WS2812 on GPIO8 via RMT; a `/dev/led` (or `/proc`-style)
   node and a shell command; `(led r g b)` in Lisp. First useful thing that
   works with no radio.
