@@ -98,10 +98,8 @@ From the datasheet and the P4 precedent (phases 27/34):
 | (`libmesh`, `libespnow`, `libsmartconfig`, `libwapi`) | not needed | | | |
 
 Unlinked archive totals (~550 KB text); `--gc-sections` will shrink it, and
-it runs XIP from flash, so the open questions are *RAM at run time* (static
-plus the RX/TX buffer pools the blob allocates) and the IRAM-resident hot
-paths IDF pins with `linker.lf`. 45.2 measures exactly that, before any
-other Wi-Fi work.
+it runs XIP from flash. §4.4 has the *linked* numbers from 45.2 (the table
+above is the raw archives).
 
 ### 4.2 The boundary is narrow and mostly open
 
@@ -141,6 +139,111 @@ ISR-context* semantics the blob expects:
 
 Everything above lives in `drivers/esp32c6_wifi_osal.c` (one file, mirroring
 IDF's adapter) and is **not** compiled into any untainted build.
+
+### 4.4 What the spike measured (45.2, 2026-10-05)
+
+Linked with `-Wl,--gc-sections` from the roots a scan/join/pass-frames station
+needs, against the chip's ROM linker scripts, with no OS and no IDF code
+(IDF `~/Source/gith/esp/esp-idf`, ESP32-C6 libraries as shipped there):
+
+| What survives | text | rodata | data | bss |
+|---|---|---|---|---|
+| `libnet80211` | 178 KB | 47 KB | 1.6 KB | 10.9 KB |
+| `libpp` | 102 KB | 10 KB | 2.7 KB | 2.9 KB |
+| `libphy` | 28.6 KB | 0.6 KB | 0.4 KB | — |
+| `libcoexist` | 5.5 KB | 1.3 KB | 0.1 KB | — |
+| `libcore` | 0.4 KB | — | — | — |
+| **blob total** | **315 KB** | **59 KB** | **4.8 KB** | **13.8 KB** |
+
+* **Flash ≈ 374 KB, static RAM ≈ 19 KB** for the blob itself (mesh, ESP-NOW,
+  SmartConfig, WAPI and SoftAP code drop out). It runs from flash through the
+  cache; the blob marks 47.6 KB of its code as IRAM-worthy
+  (`.wifi0iram` 21.8 KB, `.wifislprxiram` 11.5 KB, `.wifiextrairam` 6.5 KB,
+  `.wifirxiram` 4.3 KB, `.wifislpiram` 3.6 KB), which IDF places in IRAM only
+  with `CONFIG_ESP_WIFI_{IRAM,RX_IRAM,SLP_IRAM}_OPT` on. **Whether the radio
+  interrupt path tolerates flash-cache misses is a 45.6 experiment;** the
+  fallback costs ≈ 22–48 KB of SRAM, which the budget absorbs.
+* **The link has exactly 46 unresolved symbols, and every one is trivial or
+  open source:** libc (`memcpy`, `strcpy`, `sprintf`, `floor`, …), the four
+  `*_printf` hooks (`esp_wifi/src/lib_printf.c`), the regulatory tables
+  (`esp_wifi/regulatory/`), 24 FTM calibration tables
+  (`esp_wifi/src/ftm_load_calibration.c` — unused, stubbed), `WIFI_EVENT`,
+  `hexstr2bin`, `rtc_clk_xtal_freq_get`, `g_espnow_user_oui`,
+  `mesh_sta_auth_expire_time`. **There is no hidden symbol dependency.** All
+  other traffic goes through the function-pointer table and callback
+  registrations (`esp_wifi_register_wpa_cb_internal` …) at run time.
+* **The blob also needs 304 chip-ROM symbols** (`pp*`, `lmac*`, `rc*`, `phy`
+  calibration, `pwr_hal_*`, `coex_core_*`, and soft-float libgcc). The ROM's
+  own radio *data* lives at the very top of SRAM (`0x4087fce8–0x4087ffff`,
+  e.g. `g_osi_funcs_p = 0x4087ff6c`) — **that range is not ours**, and the
+  ROM boot stack at `0x4087e610` is dead only after boot. This pins the ROM
+  version: the demo's boot log reports `pp/net80211/coexist rom version
+  5b8dcfa`; record it as the version the blob was built against.
+* **The blob does soft-float arithmetic** (`__adddf3`, `__muldf3`, `__divsf3`,
+  `__floatsidf`, … from ROM libgcc; plus `floor`). That is integer code on a
+  core with no FPU, so the AGENTS.md "no float in M-mode" rule is not violated
+  here — but it is code that *does* arithmetic on floats, and `floor` must
+  come from us. Noted rather than hidden.
+* **The OS table (`wifi_osi_funcs_t`) has 127 fields on this chip; the
+  reachable code calls at least 100 of them** (static lower bound — a
+  straight-line reading of the disassembly through the table pointer):
+  interrupts/spinlocks 11 of 14, semaphores/mutexes 10 of 10, tasks 5 of 7,
+  timers/time 8 of 8, memory 8 of 11, queues/event groups 5 of 15 (so most of
+  the queue and event-group API is IDF's own, not the blob's), NVS 10 of 12,
+  coexistence 20 of 23, sleep/PM/regdma 6 of 8, logging 3, random 3, and the
+  PHY/clock/MAC/event group 11 of 11. The 27 not seen are queue/event-group
+  variants, `_task_create`, `_realloc/_calloc`, the `coex_init/deinit/
+  condition_set` trio and the two regdma entries.
+* **The table is ABI-checked.** The blob exports
+  `esp_wifi_internal_osi_funcs_md5_check` and siblings (crypto functions,
+  supplicant header, wifi types): IDF's `wifi_init.c` compares them against
+  the headers it was built with. So our shim must be built against **IDF's
+  own headers, from the same IDF tree as the libraries**, not a transcription.
+* **Interrupts: the C6 has a PLIC (32 CPU interrupt lines), not a CLIC**
+  (`SOC_INT_PLIC_SUPPORTED`; `SOC_CPU_CORES_NUM = 1`). The blob asks for four
+  sources through the interrupt matrix — `WIFI_MAC`, `WIFI_PWR`, `WIFI_BB`,
+  `COEX` — via `_set_intr/_set_isr`. 45.4's interrupt driver has to route
+  these.
+* **Tasks:** the blob creates one task itself (`pp`, priority 23, stack
+  ≈ 6.6 KB in the demo log). The supplicant's `wpa2` task and IDF's event loop
+  are IDF's, not the blob's: ours can be inline callbacks.
+* **The open code around the blob is ≈ 5 000 lines** that must be ported
+  rather than called: `esp_phy/src/phy_init.c` (1 300; calibration, the
+  `register_chipv7_phy` call), `phy_common.c` (400), `esp_hw_support`
+  `pmu_init.c`/`pmu_param.c` (720; the modem power domain and regulator
+  setup), `modem/modem_clock.c` (340; modem clock gating), `rtc_clk*.c`,
+  `esp_wifi/src/wifi_init.c` (800), `esp_coex/src/coexist.c` (300). **This —
+  not the blob — is the real size of 45.6**, and its one non-obvious part is
+  that a chip started from ROM (our `load-ram` path, and later our own
+  second stage) has *not* had IDF's `pmu_init()`; the radio's power and
+  clock state is ours to establish.
+* **The open half of WPA2-PSK is small.** Station-only, internal crypto (no
+  mbedtls), no SAE/EAP/WPS: `tools/c6_blob_spike/supplicant.sh` compiles the
+  wpa_supplicant files that matter (`wpa.c`, `wpa_ie.c`, `wpa_common.c`,
+  `pmksa_cache.c`, SHA-1/256/MD5, AES, CCMP, the ESP glue) to **≈ 46 KB text,
+  1.5 KB bss**. The blob reaches the crypto through an 11-entry table
+  (`wpa_crypto_funcs_t`: HMAC-SHA256, PBKDF2-SHA1, AES-128 enc/dec, OMAC1,
+  CCMP enc/dec, GMAC, SHA-256, AES wrap/unwrap) — all standard algorithms,
+  several of which the tree already has (`kernel/sha256.c`). This compiles
+  against IDF headers with stubbed FreeRTOS and `sdkconfig.h`; it has *not*
+  been linked or run (45.7). The earlier worry that the supplicant would be
+  "the largest unknown after the shim" is retired: it is one of the smaller
+  ones.
+* **RAM at run time is estimated, not measured.** Static: blob ≈ 19 KB + its
+  tasks' stacks (≈ 7 KB) + supplicant ≈ 2 KB. Heap: IDF's defaults allocate
+  10 static RX buffers of 1 700 B and allow 32 dynamic RX and 32 dynamic TX
+  buffers (≈ 1.6 KB each, only while in flight); minimal settings are a
+  fraction of that. A rough working figure is **60–120 KB of the 512 KB** for
+  the radio, leaving ≈ 300 KB for the kernel, the IP stack and the persona.
+  For scale: the Waveshare demo (Wi-Fi + BLE + FreeRTOS + lwIP) boots with
+  317 KB of heap free, i.e. ≈ 184 KB static. **Measure in 45.6.**
+
+**Verdict: GO.** Every symbol the blob needs is accounted for, the cost is
+within budget with margin, the boundary is one ABI-checked table, and the
+supplicant is small. What the spike could *not* show, and 45.3–45.6 must: that
+the blob runs under our scheduler's blocking and interrupt semantics, that the
+radio's power and clock domains can be brought up without IDF's startup, and
+whether the radio ISR path is happy executing from flash.
 
 ## 5. Milestones
 
@@ -189,11 +292,16 @@ by flashing*.
     access points, so the antenna and radio are good — a useful control for
     45.6. *Flash layout (45.4) should assume 8 MB; the demo will be overwritten
     when we flash LugalOS and need not be backed up (same stance as §7.4).*
-* **45.2 Spike: what does the blob cost?** Link `libnet80211`, `libpp`,
-  `libphy`, `libcoexist` against a stub OSAL (every entry traps with its
-  name), `--gc-sections`, map the result. Report: text/data/bss, how many OSAL
-  entries are *actually reachable* from `esp_wifi_init → start → scan →
-  connect`, and the RAM the buffer pools want. **Go/no-go point for §9.**
+* **45.2 Spike: what does the blob cost? — DONE 2026-10-05, verdict GO.**
+  `tools/c6_blob_spike/{link.sh,census.py,supplicant.sh,spike.ld}`: a *static*
+  measurement (nothing is run on the chip); reproduce with
+  `tools/c6_blob_spike/link.sh && python3 tools/c6_blob_spike/census.py &&
+  tools/c6_blob_spike/supplicant.sh`. Results in §4.4. The plan asked for a
+  trap-by-name run of `esp_wifi_init`; that was deliberately not done here,
+  because `esp_wifi_init` needs the open PHY/PMU/modem-clock code in front of
+  it (§4.4) and would have made this a 45.6 in miniature. The reachability
+  question is answered statically instead (a lower bound), and 45.3's host
+  tests plus 45.6's first run give the dynamic answer.
 * **45.3 The OSAL shim.** The table in §4.3, with a host-side unit test of the
   queue/semaphore semantics (pure C, built for every target). Decides
   U-mode-versus-taint-only for the radio tasks (§2).
@@ -298,8 +406,9 @@ Not a design yet, but the properties that §7's constraints demand:
 |---|---|---|
 | **Shim bugs are timing bugs** | The blob assumes FreeRTOS scheduling and ISR semantics | 45.2 enumerates what's reachable; 45.3 tests the primitives in isolation on the host before any flash |
 | **RAM** | 512 KB total, with the kernel, stacks, the IP stack and the blob's buffers | 45.2 measures *before* 45.3 starts; pool sizes are a config knob |
-| **WPA supplicant + crypto** | Open but large; not yet inspected | Inspect in 45.2; budget as its own milestone if it needs one |
-| **Blob/ROM version drift** | The blob in `~/Source/gith/esp/esp-idf` must match the ROM function-table version | Record the IDF commit and the ROM version register in 45.2; pin it |
+| **WPA supplicant + crypto** | Open; sized in 45.2 at ≈ 46 KB (§4.4) | Port in 45.7; the 11-entry crypto table is the interface |
+| **Radio power/clock bring-up** | The 5 000 open lines around the blob (§4.4); a ROM-booted chip has not had IDF's `pmu_init()` | First thing 45.6 does, with the Waveshare demo (which works on this board) as the control |
+| **Blob/ROM version drift** | The blob must match the chip's ROM (304 ROM symbols; ROM rev `5b8dcfa` per the demo log) and our shim must match the blob's ABI md5s | Build only against the IDF tree the libraries came from; pin its commit when 45.3 starts |
 | **Debugging on a chip with no QEMU** | | USB-JTAG console, `tools/c6run.py` log capture, the 45.2 trap-by-name stubs |
 | **Plan B** | If 45.2 or 45.6 shows the in-process route is unworkable | Stop and revisit with ESP-Hosted's open slave firmware (built with IDF) on the C6, LugalOS on the host side only. This loses the stand-alone C6 node. Do not start plan B without asking. |
 
