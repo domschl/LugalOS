@@ -15,6 +15,7 @@
 #include "drivers/i2c_rtc.h"
 #include "drivers/bme280.h"
 #include "drivers/bme680.h"
+#include "drivers/tsl2561.h"
 #include "drivers/tsl2591.h"
 #include "drivers/sensor_hub.h"
 #include "drivers/piousb.h"
@@ -1397,18 +1398,51 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
             if (lf)
                 used += (uint32_t)ksnprintf(buf + used, cap - used,
                     "last_failure=%s\n", lf);
+        } else if (tsl2561_is_detected()) {
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "part=%s\naddr=0x%02x\nsample_period_s=%lu\n",
+                tsl2561_part_name(), tsl2561_address(),
+                (unsigned long)sensor_hub_sample_period_s());
+
+            tsl2561_reading_t tr;
+            uint32_t t_age = 0;
+            if (!tsl2561_cached(&tr, &t_age)) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "valid=no\n");
+            } else {
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "valid=yes\nage_s=%lu\nlux_c100=%ld\n",
+                    (unsigned long)t_age, (long)tr.lux_c100);
+            }
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "reads=%lu\nfailures=%lu\n",
+                (unsigned long)tsl2561_read_count(),
+                (unsigned long)tsl2561_fail_count());
+            const char *lf = tsl2561_last_failure();
+            if (lf)
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "last_failure=%s\n", lf);
         } else {
             used += (uint32_t)ksnprintf(buf + used, cap - used, "part=none\n");
             return (int)used;
         }
 
-        if ((bme680_is_detected() || bme280_is_detected()) && tsl2591_is_detected()) {
-            tsl2591_reading_t tr;
-            uint32_t t_age = 0;
-            if (tsl2591_cached(&tr, &t_age)) {
-                used += (uint32_t)ksnprintf(buf + used, cap - used,
-                    "lux_c100=%ld\nlux_age_s=%lu\n",
-                    (long)tr.lux_c100, (unsigned long)t_age);
+        if (bme680_is_detected() || bme280_is_detected()) {
+            if (tsl2591_is_detected()) {
+                tsl2591_reading_t tr;
+                uint32_t t_age = 0;
+                if (tsl2591_cached(&tr, &t_age)) {
+                    used += (uint32_t)ksnprintf(buf + used, cap - used,
+                        "lux_c100=%ld\nlux_age_s=%lu\n",
+                        (long)tr.lux_c100, (unsigned long)t_age);
+                }
+            } else if (tsl2561_is_detected()) {
+                tsl2561_reading_t tr;
+                uint32_t t_age = 0;
+                if (tsl2561_cached(&tr, &t_age)) {
+                    used += (uint32_t)ksnprintf(buf + used, cap - used,
+                        "lux_c100=%ld\nlux_age_s=%lu\n",
+                        (long)tr.lux_c100, (unsigned long)t_age);
+                }
             }
         }
         return (int)used;
