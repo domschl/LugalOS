@@ -28,6 +28,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import re
 import sys
@@ -174,6 +175,37 @@ def test_led(c: Console):
     return _t("a WS2812 frame goes out through the RMT and completes (led R G B / off)", ok1 and ok2 and not bad)
 
 
+def _wifi_credentials() -> tuple[str, str] | None:
+    """(ssid, 64-hex derived PSK) from ~/.config/lugalos/wifi.env (wpa_supplicant.conf style:
+    network={ ssid="..." psk=... }), or None. A quoted psk is a passphrase and is derived here
+    (PBKDF2-HMAC-SHA1, 4096 rounds, the SSID as salt); the board only ever sees the derived key."""
+    path = Path.home() / ".config" / "lugalos" / "wifi.env"
+    try:
+        text = path.read_text()
+    except OSError:
+        return None
+    ssid = re.search(r'ssid\s*=\s*"([^"]*)"', text)
+    psk = re.search(r'psk\s*=\s*("[^"]*"|[0-9a-fA-F]{64})', text)
+    if not ssid or not psk:
+        return None
+    key = psk.group(1)
+    if key.startswith('"'):
+        key = hashlib.pbkdf2_hmac("sha1", key.strip('"').encode(), ssid.group(1).encode(), 4096, 32).hex()
+    return ssid.group(1), key
+
+
+def test_radio_join(c: Console):
+    """Associate with the configured network: WPA2-PSK 4-way handshake through the supplicant.
+    The command (which carries the derived key) is never printed. Needs a reboot-fresh radio, so
+    it replaces the scan test's run when credentials exist (see TESTS)."""
+    cred = _wifi_credentials()
+    if cred is None:
+        return _t("associate with ~/.config/lugalos/wifi.env (skipped: no credentials)", True, "skipped")
+    ok, out = c.run("radio join %s %s" % cred, r"radio: stage \d", 90)
+    return _t("WPA2-PSK association through the supplicant", ok and "stage 7" in out,
+              "joined" if "stage 7" in out else "; ".join(re.findall(r"radio3\] radio: (?:join|event)[^\n]*", out))[:140])
+
+
 def test_radio_scan(c: Console):
     """The Wi-Fi blob in its U-mode domain: init, PHY calibration, interrupts through the
     interrupt thread, a scan of all 14 channels. One start per boot, and it needs at least
@@ -185,6 +217,14 @@ def test_radio_scan(c: Console):
     return _t("Wi-Fi scan through the blob: interrupts delivered, access points found (needs one in range)",
               ok and "stage 6" in out and n >= 1 and bool(fired) and int(fired.group(1)) > 0,
               "%d APs, %s irqs" % (n, fired.group(1) if fired else "?"))
+
+
+def test_radio_scan_or_join(c: Console):
+    """The radio starts once per boot, so one test covers both: with credentials it scans *and*
+    joins (the scan runs first either way), without them just scans."""
+    if _wifi_credentials() is None:
+        return test_radio_scan(c)
+    return test_radio_join(c)
 
 
 def test_still_alive(c: Console):
@@ -205,7 +245,7 @@ def test_still_alive(c: Console):
 
 TESTS = [test_boots, test_heap, test_tick_rate, test_preemption, test_locks, test_priostress,
          test_pmp, test_umode, test_isolation, test_deputy, test_kobj_kernel, test_kobj_umode,
-         test_radio_shim, test_led, test_radio_scan, test_still_alive]
+         test_radio_shim, test_led, test_radio_scan_or_join, test_still_alive]
 
 
 def main() -> int:

@@ -3605,7 +3605,22 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         radio_c6_trace(cmd_line[12] == 'o' && cmd_line[13] == 'n');
         return;
     } else if (strcmp(cmd_line, "radio") == 0) {
-        (void)radio_c6_start();
+        (void)radio_c6_start(NULL, NULL);
+        return;
+    } else if (strncmp(cmd_line, "radio join ", 11) == 0) {
+        /* `radio join <ssid> <64-hex psk>` -- the derived PSK, never a passphrase (as `wifi join`). */
+        char ssid[33], psk[65];
+        const char *a = cmd_line + 11;
+        uint32_t i = 0, j = 0;
+        while (*a == ' ') a++;
+        while (*a && *a != ' ' && i < 32) ssid[i++] = *a++;
+        ssid[i] = 0;
+        while (*a == ' ') a++;
+        while (*a && *a != ' ' && j < 64) psk[j++] = *a++;
+        psk[j] = 0;
+        if (i == 0 || j != 64) { cprintf("usage: radio join <ssid> <64-hex psk>\n"); return; }
+        (void)radio_c6_start(ssid, psk);
+        memset(psk, 0, sizeof psk);
         return;
     } else if (strcmp(cmd_line, "intrdump") == 0) {
         cmd_intrdump();

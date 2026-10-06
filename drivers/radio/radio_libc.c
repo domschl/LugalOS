@@ -60,6 +60,63 @@ LIBC_TEXT int radio_strncmp(const char *a, const char *b, size_t n) {
 }
 
 LIBC_TEXT void radio_free(void *p) { radio_osi_free(p); }
+LIBC_TEXT void *radio_malloc(size_t n) { return radio_osi_malloc(n); }
+LIBC_TEXT void *radio_calloc(size_t n, size_t m) { return radio_osi_calloc(n, m); }
+LIBC_TEXT void *radio_realloc(void *p, size_t n) { return radio_osi_realloc(p, n); }
+
+LIBC_TEXT size_t radio_strlen(const char *s) { size_t n = 0; while (s[n]) n++; return n; }
+LIBC_TEXT int radio_strcmp(const char *a, const char *b) {
+    for (; *a && *a == *b; a++, b++) { }
+    return (uint8_t)*a < (uint8_t)*b ? -1 : (uint8_t)*a > (uint8_t)*b;
+}
+LIBC_TEXT char *radio_strchr(const char *s, int c) {
+    for (; ; s++) { if (*s == (char)c) return (char *)s; if (!*s) return 0; }
+}
+LIBC_TEXT char *radio_strrchr(const char *s, int c) {
+    const char *r = 0;
+    for (; ; s++) { if (*s == (char)c) r = s; if (!*s) return (char *)r; }
+}
+LIBC_TEXT char *radio_strstr(const char *h, const char *n) {
+    if (!*n) return (char *)h;
+    for (; *h; h++) {
+        const char *a = h, *b = n;
+        while (*a && *b && *a == *b) { a++; b++; }
+        if (!*b) return (char *)h;
+    }
+    return 0;
+}
+LIBC_TEXT long radio_strtol(const char *s, char **end, int base) {
+    long v = 0; int neg = 0;
+    while (*s == ' ' || *s == '\t') s++;
+    if (*s == '-') { neg = 1; s++; } else if (*s == '+') s++;
+    if ((base == 0 || base == 16) && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) { s += 2; base = 16; }
+    else if (base == 0) base = (s[0] == '0') ? 8 : 10;
+    for (;; s++) {
+        int d = (*s >= '0' && *s <= '9') ? *s - '0' : (*s >= 'a' && *s <= 'z') ? *s - 'a' + 10 : (*s >= 'A' && *s <= 'Z') ? *s - 'A' + 10 : 99;
+        if (d >= base) break;
+        v = v * base + d;
+    }
+    if (end) *end = (char *)s;
+    return neg ? -v : v;
+}
+LIBC_TEXT int radio_atoi(const char *s) { return (int)radio_strtol(s, 0, 10); }
+LIBC_TEXT int radio_vsnprintf(char *b, size_t n, const char *f, va_list ap) { return ku_vsnprintf(b, (uint32_t)n, f, ap); }
+LIBC_TEXT int radio_snprintf(char *b, size_t n, const char *f, ...) {
+    va_list ap; va_start(ap, f); int r = ku_vsnprintf(b, (uint32_t)n, f, ap); va_end(ap); return r;
+}
+/* A radio that aborts ends its thread (the kernel logs the exit); there is nothing to unwind to. */
+LIBC_TEXT void radio_abort(void) {
+    radio_osi_log_write(1, "radio", "abort()");
+    register long a0 __asm__("a0") = 20;           /* SYS_UEXIT (kernel/ipc.h) */
+    __asm__ volatile("ecall" : "+r"(a0) :: "memory");
+    for (;;) { }
+}
+LIBC_TEXT void __assert_func(const char *file, int line, const char *func, const char *expr) {
+    radio_osi_log_write(1, "radio", "assert %s:%d %s: %s", file, line, func, expr);
+    radio_abort();
+}
+/* libgcc's byte swap, which a U-mode text cannot call. */
+LIBC_TEXT unsigned __bswapsi2(unsigned x) { return (x >> 24) | ((x >> 8) & 0xff00u) | ((x << 8) & 0xff0000u) | (x << 24); }
 
 /* Formatting and the blob's own log sinks go to the shim's formatter and, from
  * there, one ecall per line. The four *_printf are the blob libraries' log hooks. */

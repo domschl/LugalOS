@@ -112,6 +112,8 @@ void     radio_osi_free(void *p);
 int32_t  radio_osi_event_post(const char *event_base, int32_t event_id, void *event_data,
                               size_t event_data_size, uint32_t ticks_to_wait);
 uint32_t radio_osi_get_free_heap_size(void);
+/* Pops the oldest queued Wi-Fi event (id, up to 48 bytes of its data); false if none. */
+bool     radio_osi_event_pop(int32_t *id, uint8_t *data, uint32_t *size);
 uint32_t radio_osi_rand(void);
 void     radio_osi_empty(void);           /* dport stall, pm sleep lock, rtc iso, ...: nothing to do on this chip */
 int      radio_osi_read_mac(uint8_t *mac, unsigned int type);

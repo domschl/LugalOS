@@ -21,31 +21,13 @@
 /* The event base the blob posts under (IDF defines it with ESP_EVENT_DEFINE_BASE). */
 esp_event_base_t const WIFI_EVENT = "WIFI_EVENT";
 
-/* The crypto table the blob's WPA hooks call through. The blob refuses to initialise
- * unless it has the right *size and version* (it said so: "expected size=52
- * version=1, actual size=0"); the functions are only reached when a station
- * authenticates, which is the supplicant's work (45.7, where this becomes IDF's
- * crypto_ops.c table over the supplicant's crypto). A scan never calls them. */
-const wpa_crypto_funcs_t g_wifi_default_wpa_crypto_funcs = {
-    .size = sizeof(wpa_crypto_funcs_t),
-    .version = ESP_WIFI_CRYPTO_VERSION,
-};
+/* IDF's wpa_supplicant (compiled into this domain, cmake/radio_esp32c6.cmake): registers its
+ * callbacks with the blob and starts its timer loop. */
+extern int esp_supplicant_init(void);
 
-/* The supplicant's callback table (struct wpa_funcs: 29 slots). Scan results are handed
- * to the supplicant for IE parsing through it, and the blob dereferences the table
- * pointer itself -- unregistered, the first access point found was a null load in
- * scan_add_ssid_do (45.6). Every slot is a stub that
- * says "nothing" (the two init/deinit slots say "fine"); the real table is 45.7's. */
-extern int esp_wifi_register_wpa_cb_internal(void *cb);
-static int wpa_stub_true(void) { return 1; }
-static int wpa_stub_zero(void) { return 0; }
-static void *g_wpa_funcs_none[32];
-static void wpa_stubs_install(void) {
-    for (int i = 0; i < 29; i++) g_wpa_funcs_none[i] = (void *)(uintptr_t)wpa_stub_zero;
-    g_wpa_funcs_none[0] = (void *)(uintptr_t)wpa_stub_true;      /* wpa_sta_init */
-    g_wpa_funcs_none[1] = (void *)(uintptr_t)wpa_stub_true;      /* wpa_sta_deinit */
-    esp_wifi_register_wpa_cb_internal(g_wpa_funcs_none);
-}
+/* IDF's esp_wifi_connect() is a thin wrapper over the blob's internal entry (esp_wifi/src). */
+extern int esp_wifi_connect_internal(void);
+int esp_wifi_connect(void) { return esp_wifi_connect_internal(); }
 
 /* A ROM function, under the radio_ name tools/c6_radio_libs.py gives it an address for. */
 extern void rom_update_cpu_frequency(uint32_t ticks_per_us) __asm__("radio_ets_update_cpu_frequency");
@@ -78,7 +60,8 @@ void radio_main(uintptr_t arg) {
     ctx->stage = r == 0 ? RADIO_STAGE_INIT : RADIO_STAGE_FAILED;
 
     if (r == 0) {
-        wpa_stubs_install();
+        r = esp_supplicant_init();
+        RLOG("esp_supplicant_init -> 0x%x", r);
         r = esp_wifi_set_mode(WIFI_MODE_STA);
         RLOG("esp_wifi_set_mode(STA) -> 0x%x", r);
         r = esp_wifi_start();
@@ -106,6 +89,29 @@ void radio_main(uintptr_t arg) {
                      recs[i].bssid[0], recs[i].bssid[1], recs[i].bssid[2], recs[i].bssid[3], recs[i].bssid[4], recs[i].bssid[5]);
         }
         if (n) ctx->stage = RADIO_STAGE_SCANNED;
+    }
+
+    if (r == 0 && ctx->join) {
+        wifi_config_t wc = { 0 };
+        for (int i = 0; i < 32 && ctx->ssid[i]; i++) wc.sta.ssid[i] = (uint8_t)ctx->ssid[i];
+        for (int i = 0; i < 64 && ctx->pass[i]; i++) wc.sta.password[i] = (uint8_t)ctx->pass[i];   /* 64 hex = a raw PSK */
+        wc.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+        wc.sta.pmf_cfg.capable = true;
+        r = esp_wifi_set_config(WIFI_IF_STA, &wc);
+        RLOG("esp_wifi_set_config -> 0x%x", r);
+        r = esp_wifi_connect();
+        RLOG("esp_wifi_connect -> 0x%x", r);
+        for (int t = 0; t < 200 && !ctx->connected; t++) {           /* 20 s */
+            int32_t id; uint8_t d[48]; uint32_t sz;
+            while (radio_osi_event_pop(&id, d, &sz)) {
+                RLOG("event %d (%u bytes)", (int)id, (unsigned)sz);
+                if (id == WIFI_EVENT_STA_CONNECTED) ctx->connected = 1;
+                if (id == WIFI_EVENT_STA_DISCONNECTED) ctx->disc_reason = sz > 39 ? d[39] : 255;
+            }
+            radio_osi_task_delay(100);
+        }
+        RLOG("join %s", ctx->connected ? "succeeded" : "FAILED");
+        if (ctx->connected) ctx->stage = RADIO_STAGE_JOINED;
     }
 
     register long a0 __asm__("a0") = SYS_UEXIT;        /* returning would jump to 0 */

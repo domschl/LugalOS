@@ -49,6 +49,8 @@ typedef int BaseType_t; typedef unsigned UBaseType_t; typedef uint32_t EventBits
 #define portTICK_PERIOD_MS 1
 #define pdMS_TO_TICKS(x) (x)
 typedef struct { int dummy; } portMUX_TYPE;
+extern void radio_osi_task_delay(uint32_t);
+#define vTaskDelay(t) radio_osi_task_delay(t)
 ]=])
     foreach(_h task semphr queue event_groups portmacro timers)
         file(WRITE "${_STUB}/freertos/${_h}.h" "#include \"freertos/FreeRTOS.h\"\n")
@@ -85,7 +87,6 @@ typedef struct { int dummy; } portMUX_TYPE;
 #define CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE 1
 #define CONFIG_ESP_WIFI_ESPNOW_MAX_ENCRYPT_NUM 7
 #define CONFIG_ESP_WIFI_TX_HETB_QUEUE_NUM 3
-#define CONFIG_ESP_WIFI_SOFTAP_SUPPORT 1
 #define CONFIG_ESP_WIFI_FTM_ENABLE 1
 #define CONFIG_ESP_PHY_MAX_WIFI_TX_POWER 20
 #define CONFIG_ESP_PHY_MAX_TX_POWER 20
@@ -137,6 +138,45 @@ typedef struct { int dummy; } portMUX_TYPE;
         "${_C}/esp_wifi/regulatory/esp_wifi_regulatory.c"
         "${_C}/esp_wifi/src/ftm_load_calibration.c"
         "${_C}/esp_phy/esp32c6/phy_init_data.c")
+    # The supplicant: IDF's wpa_supplicant (station, WPA2-PSK, its own crypto -- no mbedtls, no
+    # SAE/EAP/WPS/SoftAP), compiled into the radio domain. tools/c6_blob_spike/supplicant.sh
+    # measured it at ~46 KB of text; 45.7 links it.
+    set(_W "${_C}/wpa_supplicant")
+    set(LUGALOS_RADIO_SUP_SOURCES "")
+    foreach(_f src/rsn_supp/wpa.c src/rsn_supp/wpa_ie.c src/rsn_supp/pmksa_cache.c
+               src/common/wpa_common.c src/common/ieee802_11_common.c
+               src/utils/common.c src/utils/wpabuf.c src/utils/wpa_debug.c
+               src/crypto/sha1-prf.c src/crypto/sha256-prf.c src/crypto/sha1-pbkdf2.c src/crypto/sha1.c
+               src/crypto/sha1-internal.c src/crypto/sha256.c src/crypto/sha256-internal.c
+               src/crypto/md5.c src/crypto/md5-internal.c src/crypto/rc4.c src/crypto/aes-wrap.c
+               src/crypto/aes-unwrap.c src/crypto/aes-internal.c src/crypto/aes-internal-enc.c
+               src/crypto/aes-internal-dec.c src/crypto/aes-omac1.c src/crypto/ccmp.c
+               src/crypto/aes-ccm.c src/crypto/aes-cbc.c src/crypto/crypto_ops.c
+               esp_supplicant/src/esp_wpa_main.c esp_supplicant/src/esp_wpas_glue.c
+               esp_supplicant/src/esp_common.c port/eloop.c)
+        list(APPEND LUGALOS_RADIO_SUP_SOURCES "${_W}/${_f}")
+    endforeach()
+    set(LUGALOS_RADIO_SUP_INC
+        "${_W}/src" "${_W}/src/utils" "${_W}/esp_supplicant/src" "${_W}/esp_supplicant/include"
+        "${_W}/esp_supplicant/include/esp_private" "${_W}/port/include" "${_W}/include" "${_W}/include/esp_supplicant"
+        "${_C}/esp_wifi/include/local" "${_C}/esp_wifi/wifi_apps/include" "${_C}/esp_wifi/wifi_apps/roaming_app/include" "${_C}/esp_rom/esp32c6/include/esp32c6")
+    # ...and the supplicant reaches for most of IDF's public headers: the spike's rule, every
+    # component's include dirs for this chip, none for another target or for the OS layers.
+    file(GLOB _sup_globs "${_C}/*/include" "${_C}/*/port/include" "${_C}/*/include/esp32c6"
+                         "${_C}/*/esp32c6/include" "${_C}/*/*/include" "${_C}/esp_hw_support/port/esp32c6"
+                         "${_C}/esp_system/port/include" "${_C}/soc/esp32c6/register")
+    foreach(_d IN LISTS _sup_globs)
+        if(_d MATCHES "/linux/|/freertos/|/newlib/|esp32c2|esp32s|esp32c3|esp32h|esp32p4|esp32c5|esp32c61|/esp32/")
+            continue()
+        endif()
+        list(APPEND LUGALOS_RADIO_SUP_INC "${_d}")
+    endforeach()
+    set(LUGALOS_RADIO_SUP_DEFS ESP_SUPPLICANT IEEE8021X_EAPOL ESPRESSIF_USE CONFIG_IEEE80211W CONFIG_SHA256
+        CONFIG_NO_RADIUS CONFIG_CRYPTO_INTERNAL __ets__
+        # The kernel has its own SHA-256 under the same names (kernel/sha256.c), in kernel
+        # text; the supplicant's copies are the radio domain's and take another name.
+        sha256_init=wpa_sha256_init sha256_update=wpa_sha256_update sha256_final=wpa_sha256_final
+        hmac_sha256=wpa_hmac_sha256 sha256=wpa_sha256)
     message(STATUS "C6 radio: ESP-IDF at ${LUGALOS_IDF_ROOT}")
 else()
     message(STATUS "C6 radio: no ESP-IDF tree found (set IDF_ROOT) -- building without the Wi-Fi blob")

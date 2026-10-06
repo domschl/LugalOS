@@ -93,7 +93,7 @@ static void radio_task(void *arg) {
 extern volatile int g_kobj_trace;
 void radio_c6_trace(int on) { g_kobj_trace = on; }
 
-int radio_c6_start(void) {
+int radio_c6_start(const char *ssid, const char *psk) {
     /* The blob's initialised data is loaded once, with the image; a second start would run
      * it from the state the first one left. Until the kernel keeps a pristine copy, one
      * start per boot. */
@@ -101,14 +101,24 @@ int radio_c6_start(void) {
     g_rstack = palloc_pages_aligned(STACK_PAGES, STACK_PAGES);
     g_rarena = palloc_pages_aligned(ARENA_PAGES, ARENA_PAGES);
     if (!g_rstack || !g_rarena) { cprintf("radio: out of memory for the radio's heap/stack\n"); return 1; }
+    radio_ctx_t *c0 = (radio_ctx_t *)g_rstack;
+    c0->join = 0;
+    if (ssid && psk) {
+        uint32_t i = 0;
+        for (; ssid[i] && i < 32; i++) c0->ssid[i] = ssid[i];
+        c0->ssid[i] = 0;
+        for (i = 0; psk[i] && i < 64; i++) c0->pass[i] = psk[i];
+        c0->pass[i] = 0;
+        c0->join = 1;
+    }
     g_rpid = task_create("radio", radio_task, NULL);
     if (g_rpid < 0) { cprintf("radio: could not create the task\n"); return 1; }
-    for (int i = 0; i < 10000 && sched_task_state(g_rpid) != TASK_DEAD; i++) task_sleep_ms(1);
+    for (int i = 0; i < 40000 && sched_task_state(g_rpid) != TASK_DEAD; i++) task_sleep_ms(1);
     radio_intr_report();
     const radio_ctx_t *ctx = (const radio_ctx_t *)g_rstack;
-    static const char *const names[] = { "not started", "FAILED", "OS shim up", "coexistence up", "esp_wifi_init_internal returned 0", "esp_wifi_start returned 0", "scan found access points" };
+    static const char *const names[] = { "not started", "FAILED", "OS shim up", "coexistence up", "esp_wifi_init_internal returned 0", "esp_wifi_start returned 0", "scan found access points", "joined (4-way handshake done)" };
     cprintf("radio: stage %u (%s), esp_wifi_init rc=0x%x, start rc=0x%x, task %s\n", (unsigned)ctx->stage,
-            ctx->stage < 7 ? names[ctx->stage] : "?", (unsigned)ctx->rc_init, (unsigned)ctx->rc_start,
+            ctx->stage < 8 ? names[ctx->stage] : "?", (unsigned)ctx->rc_init, (unsigned)ctx->rc_start,
             sched_task_state(g_rpid) == TASK_DEAD ? "ended" : "still running");
     return ctx->stage >= RADIO_STAGE_STARTED ? 0 : 1;
 }
@@ -117,7 +127,8 @@ int radio_c6_start(void) {
 
 void radio_c6_trace(int on) { (void)on; }
 
-int radio_c6_start(void) {
+int radio_c6_start(const char *ssid, const char *psk) {
+    (void)ssid; (void)psk;
     cprintf("radio: this build has no Wi-Fi blob (no ESP-IDF tree at configure time)\n");
     return 1;
 }

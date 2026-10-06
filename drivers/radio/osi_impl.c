@@ -73,7 +73,10 @@ static RADIO_TEXT void r_free(void *p) {
     K(KOBJ_OP_MUTEX_UNLOCK, g_r.heap_lock, 0, 0, 0, 0);
 }
 
+static RADIO_TEXT void ev_reset(void);
+
 RADIO_TEXT bool radio_osi_init(void *arena, uint32_t arena_size) {
+    ev_reset();
     /* The state lives in a NOLOAD region the kernel does not clear, and SRAM keeps its
      * contents across a reset: on the C6 a stale thread-semaphore table from the
      * previous run made the blob wait on a handle that no longer existed (45.6).
@@ -440,9 +443,46 @@ RADIO_TEXT int radio_osi_read_mac(uint8_t *mac, unsigned int type) {
 
 /* ---- events ---------------------------------------------------------------- */
 
+/* The blob announces what the radio is doing (STA started, connected, disconnected, scan done...)
+ * with esp_event_post(). IDF delivers those to an event loop; here the sink is a small ring in
+ * the domain that the radio's main thread drains (radio_osi_event_pop). Entries of any other
+ * base are dropped, a full ring drops the oldest, and the call always answers 0 (ESP_OK):
+ * an event nobody wants is not an error the blob should react to. */
+#define EV_RING 16u
+#define EV_DATA 48u
+typedef struct { int32_t id; uint32_t size; uint8_t data[EV_DATA]; } rev_t;
+RADIO_DATA static rev_t g_ev[EV_RING];
+RADIO_DATA static volatile uint32_t g_ev_head, g_ev_tail;
+
 RADIO_TEXT int32_t radio_osi_event_post(const char *base, int32_t id, void *data, size_t size, uint32_t ticks) {
     (void)ticks;
-    return K(KOBJ_OP_EVENT_POST, base, id, data, size, 0) == KO_OK ? PD_TRUE : PD_FALSE;
+    if (!base || base[0] != 'W') return 0;                 /* "WIFI_EVENT" only */
+    K(KOBJ_OP_CRIT_ENTER, 0, 0, 0, 0, 0);
+    if (g_ev_head - g_ev_tail == EV_RING) g_ev_tail++;
+    rev_t *e = &g_ev[g_ev_head % EV_RING];
+    e->id = id;
+    e->size = size < EV_DATA ? (uint32_t)size : EV_DATA;
+    for (uint32_t i = 0; data && i < e->size; i++) e->data[i] = ((const uint8_t *)data)[i];
+    g_ev_head++;
+    K(KOBJ_OP_CRIT_LEAVE, 0, 0, 0, 0, 0);
+    return 0;
+}
+
+static RADIO_TEXT void ev_reset(void) { g_ev_head = 0; g_ev_tail = 0; }
+
+RADIO_TEXT bool radio_osi_event_pop(int32_t *id, uint8_t *data, uint32_t *size) {
+    bool got = false;
+    K(KOBJ_OP_CRIT_ENTER, 0, 0, 0, 0, 0);
+    if (g_ev_tail != g_ev_head) {
+        const rev_t *e = &g_ev[g_ev_tail % EV_RING];
+        *id = e->id;
+        *size = e->size;
+        for (uint32_t i = 0; data && i < e->size; i++) data[i] = e->data[i];
+        g_ev_tail++;
+        got = true;
+    }
+    K(KOBJ_OP_CRIT_LEAVE, 0, 0, 0, 0, 0);
+    return got;
 }
 
 /* ---- logging --------------------------------------------------------------- */

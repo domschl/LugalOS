@@ -975,8 +975,8 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
     if(LUGALOS_RADIO_C6)
         add_compile_definitions(CONFIG_RADIO_C6=1)
         set(RADIO_C6_SOURCES drivers/radio/esp32c6_osi_table.c drivers/radio/radio_main.c
-            drivers/radio/radio_libc.c drivers/radio/plat_esp32c6.c)
-        list(APPEND SOURCES ${RADIO_C6_SOURCES} ${LUGALOS_RADIO_IDF_SOURCES})
+            drivers/radio/radio_libc.c drivers/radio/plat_esp32c6.c drivers/radio/radio_supp_os.c)
+        list(APPEND SOURCES ${RADIO_C6_SOURCES} ${LUGALOS_RADIO_IDF_SOURCES} ${LUGALOS_RADIO_SUP_SOURCES})
         # IDF's headers as system headers, so only *our* warnings count.
         set(_radio_opts "")
         foreach(_d IN LISTS LUGALOS_RADIO_INC)
@@ -986,6 +986,13 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
         set_source_files_properties(${RADIO_C6_SOURCES} ${LUGALOS_RADIO_IDF_SOURCES}
             PROPERTIES COMPILE_OPTIONS "-std=gnu11;-fbuiltin;-fno-jump-tables;-fno-sanitize=undefined;${_radio_opts}"
                        COMPILE_DEFINITIONS "${LUGALOS_RADIO_DEFS}")
+        set(_sup_opts "")
+        foreach(_d IN LISTS LUGALOS_RADIO_SUP_INC)
+            list(APPEND _sup_opts "-isystem" "${_d}")
+        endforeach()
+        set_source_files_properties(${LUGALOS_RADIO_SUP_SOURCES} PROPERTIES
+            COMPILE_OPTIONS "-w;-std=gnu11;-fbuiltin;-fno-jump-tables;-fno-sanitize=undefined;-include;${CMAKE_CURRENT_SOURCE_DIR}/drivers/radio/radio_redirect.h;${_radio_opts};${_sup_opts}"
+            COMPILE_DEFINITIONS "${LUGALOS_RADIO_DEFS};${LUGALOS_RADIO_SUP_DEFS}")
         set_source_files_properties(${LUGALOS_RADIO_IDF_SOURCES} PROPERTIES COMPILE_OPTIONS "-w;-fno-jump-tables;-fno-sanitize=undefined;${_radio_opts}")
     endif()
     # The boot-time flash mapping and watchdogs, in .boot.text (SRAM): it is what
