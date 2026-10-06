@@ -132,8 +132,20 @@ _start:
      * arch/riscv/common/xip_esp32c6.c for why they may not use a string, a table
      * or a call into the kernel). The watchdogs first: a boot from flash arms
      * two the ROM expects the bootloader to disarm. */
+    /* Boot breadcrumbs: LP_AON store register 0 (0x600B1000) survives a reset, so after a boot that
+     * says nothing -- no console, no LED -- `peek 600b1000` from a RAM-loaded kernel says how far
+     * this one got: 0x10 entry, 0x11 watchdogs off, 0x12 flash mapped, then kernel/main.c's. */
+    li t1, 0x600B1000
+    li t2, 0x10
+    sw t2, 0(t1)
     call esp32c6_boot_wdt_disable
+    li t1, 0x600B1000
+    li t2, 0x11
+    sw t2, 0(t1)
     call esp32c6_xip_map
+    li t1, 0x600B1000
+    li t2, 0x12
+    sw t2, 0(t1)
 
     /* The trap vector, now that the table is reachable: vectored mode (the
      * hardware forces it), base 256-aligned (trap_vector_table below). */

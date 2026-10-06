@@ -36,6 +36,18 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* The node's MAC is the chip's own, from eFuse (EFUSE_RD_MAC_SYS_0/1: the base MAC Espressif burned,
+ * which is also what IDF and every router's device list know this board by) -- so the address a
+ * router reserves for it is the one printed on the chip's label and stable across builds. Overrides the
+ * weak hook in kernel/identity.c. Bytes: mac1[1], mac1[0], mac0[3..0]. */
+bool board_factory_mac(uint8_t out[6]) {
+    uint32_t m0 = *(volatile uint32_t *)0x600B0844u, m1 = *(volatile uint32_t *)0x600B0848u;
+    if (m0 == 0 && (m1 & 0xffffu) == 0) return false;
+    out[0] = (uint8_t)(m1 >> 8); out[1] = (uint8_t)m1;
+    out[2] = (uint8_t)(m0 >> 24); out[3] = (uint8_t)(m0 >> 16); out[4] = (uint8_t)(m0 >> 8); out[5] = (uint8_t)m0;
+    return (out[0] & 1) == 0;
+}
+
 /* Keeps .radio_text alive in a build with no blob, so the flash layout does not
  * depend on whether there is one (linker/esp32c6.ld). */
 const uint32_t g_radio_text_marker __attribute__((section(".radio_text_marker"), used)) = 0x31444152u;

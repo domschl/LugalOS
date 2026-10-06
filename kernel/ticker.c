@@ -526,10 +526,16 @@ bool ticker_init(uint32_t hz) {
     g_interval = TICK_HZ / hz;
     if (g_interval == 0) g_interval = 1;
 
+#if defined(CONFIG_BOARD_ESP32C6)
+    *(volatile uint32_t *)0x600B1000u = 0x3a;
+#endif
     if (!arch_ticker_init()) {
         g_enabled = false;
         return false;
     }
+#if defined(CONFIG_BOARD_ESP32C6)
+    *(volatile uint32_t *)0x600B1000u = 0x3b;
+#endif
     g_enabled = true;
     printk("[Ticker] Preemption timer at %u Hz (%lu ticks of a %lu Hz clock%s)\n",
            (unsigned)hz, (unsigned long)g_interval,

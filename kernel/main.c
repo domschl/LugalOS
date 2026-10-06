@@ -131,7 +131,14 @@ static void klog_lcd_sink(char c) {
 }
 #endif
 
+#if defined(CONFIG_BOARD_ESP32C6)
+#define C6_BREADCRUMB(n) (*(volatile uint32_t *)0x600B1000u = (n))   /* see arch/riscv/common/entry.S */
+#else
+#define C6_BREADCRUMB(n) ((void)0)
+#endif
+
 void kernel_main(void) {
+    C6_BREADCRUMB(0x20);
 #if defined(CONFIG_BOARD_ESP32P4)
     /* Before anything else, and before the first printk: the top of L2MEM is
      * the L2 cache's own storage until this shrinks it, and linker/esp32p4.ld
@@ -143,6 +150,7 @@ void kernel_main(void) {
      * exist before anything can printk(), which the device registry itself
      * does -- so these two cannot go through it, and stay explicit here. */
     uart_init(board_uart_base());
+    C6_BREADCRUMB(0x21);
     /* The 2-and-3-blink boot signal that used to be here and in
      * uart_rp2350.c is gone (user, 2026-08-23). It dates from bring-up, when
      * "did we reach kernel_main at all" was a live question; it answered that
@@ -248,7 +256,9 @@ void kernel_main(void) {
 
     /* Hardware: what exists is a per-board table (kernel/board.c), not a
      * sequence of #ifs here. */
+    C6_BREADCRUMB(0x22);
     board_register_devices();
+    C6_BREADCRUMB(0x23);
     /* Who this node is, before anything asks. netif_register() hands out the
      * MAC, so this must precede any driver probe that registers an
      * interface. See kernel/identity.h for the resolution order. */
@@ -381,13 +391,16 @@ void kernel_main(void) {
     (void)piousb_init();
 #endif
 
+    C6_BREADCRUMB(0x30);
     sched_init();
+    C6_BREADCRUMB(0x31);
     /* Preemption (B6). Started after sched_init() so there is a task table to
      * switch within, and after the server task below would be pointless --
      * the tick is what lets a busy node keep answering. 100 Hz: frequent
      * enough that a spinning task cannot monopolise the console, rare enough
      * that the switch cost is irrelevant. */
     (void)ticker_init(100);
+    C6_BREADCRUMB(0x32);
 
     /* Two facts, separated (G1, plan/phase30_driver_framework.md).
      *
@@ -408,6 +421,7 @@ void kernel_main(void) {
      * call measures the tick rate against kernel/time.c, and a tick arriving
      * mid-measurement would be measuring the measurement. */
     irq_restore(IRQ_ENABLE_BIT); /* from here on, anything can be preempted */
+    C6_BREADCRUMB(0x33);
 
     /* X1, plan/phase23_multicore_scheduling.md: let any secondary harts into
      * the kernel.
@@ -438,6 +452,7 @@ void kernel_main(void) {
      * possible falls back to the pre-M4 direct-access path for no reason
      * other than the task not existing yet. */
     uart_task_start();
+    C6_BREADCRUMB(0x34);
 
 #if defined(CONFIG_BOARD_RP2350)
     /* M4.5, plan/phase12_microkernel_migration.md, Part B: the GP16

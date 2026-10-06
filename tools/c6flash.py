@@ -53,7 +53,7 @@ def main():
     # Stage 2: the RAM half as the ROM's image format. Flash parameters go in its header.
     ram_elf = os.path.join(a.build, "lugalos-ram.elf")
     stage2 = os.path.join(a.build, man["stage2"][2])
-    r = c6run.esptool("elf2image", "--flash-mode", "dio", "--flash-freq", "80m",
+    r = c6run.esptool("elf2image", "--flash-mode", "dio", "--flash-freq", "40m",
                       "--flash-size", "8MB", "-o", stage2, ram_elf)
     if r.returncode != 0:
         sys.exit("elf2image failed:\n" + (r.stderr or r.stdout)[-600:])
@@ -71,7 +71,7 @@ def main():
         args += ["%#x" % base, path]
         print("  %-8s %#08x  %s (%d bytes)" % (name, base, art, os.path.getsize(path)))
 
-    cmd = ["--port", port, "write-flash", "--flash-mode", "dio", "--flash-freq", "80m", "--flash-size", "8MB"] + args
+    cmd = ["--port", port, "write-flash", "--flash-mode", "dio", "--flash-freq", "40m", "--flash-size", "8MB"] + args
     r = c6run.esptool(*cmd, timeout=600)
     sys.stdout.write(r.stdout[-400:])
     if r.returncode != 0:

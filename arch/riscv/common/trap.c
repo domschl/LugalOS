@@ -880,6 +880,10 @@ uintptr_t arch_last_ecall_cause(void) { return g_last_ecall_cause; }
 
 void trap_handler(trap_frame_t *frame) {
     uintptr_t cause = frame->cause;
+#if defined(CONFIG_BOARD_ESP32C6)
+    *(volatile uint32_t *)0x600B1008u = (uint32_t)cause;      /* LP_AON stores 2,3: the last trap, for a boot that says nothing */
+    *(volatile uint32_t *)0x600B100Cu = (uint32_t)frame->epc;
+#endif
     uintptr_t is_interrupt = cause & ((uintptr_t)1 << (__riscv_xlen - 1));
 #if defined(CONFIG_BOARD_ESP32P4)
     /* In CLIC mode mcause is not just a cause code with an interrupt bit on
@@ -928,6 +932,7 @@ void trap_handler(trap_frame_t *frame) {
 #endif
             ticker_count_tick();
 #if defined(CONFIG_BOARD_ESP32C6)
+            { static uint32_t n; *(volatile uint32_t *)0x600B1004u = ++n; }   /* LP_AON store 1: ticks since boot, survives a reset */
             { /* 45.6 hang finder: with `radio trace on`, once a second report where the
                * interrupted code was. A spinning loop shows up here; a bus stall shows nothing. */
               extern volatile int g_kobj_trace;
