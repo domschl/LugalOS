@@ -30,6 +30,7 @@
 #include "net/ip.h"
 #include "net/tcp.h"
 #include "kernel/identity.h"
+#include "kernel/taint.h"
 #include "kernel/sha256.h"
 #include "kernel/chan.h"
 #include "kernel/hart.h"
@@ -916,7 +917,7 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
             }
         }
         used += (uint32_t)ksnprintf(buf + used, cap - used,
-            "persona: %s\nbuild seed: %s\n", CONFIG_NODE_PERSONA, CONFIG_NODE_SEED);
+            "persona: %s\nbuild seed: %s\ntaint: %s\n", CONFIG_NODE_PERSONA, CONFIG_NODE_SEED, LUGALOS_TAINT);
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "9P uname: %s\n", node_name());
         return (int)used;
@@ -1092,7 +1093,8 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
         return (int)used;
     } else if (strcmp(rel, "version") == 0) {
         used += (uint32_t)ksnprintf(buf + used, cap - used,
-            "LugalOS v%s (Bare-Metal RISC-V Lisp Machine)\n", LUGALOS_VERSION);
+            "LugalOS v%s (Bare-Metal RISC-V Lisp Machine)%s%s\n", LUGALOS_VERSION,
+            LUGALOS_TAINTED ? " tainted: " : "", LUGALOS_TAINTED ? LUGALOS_TAINT : "");
         return (int)used;
     } else if (strcmp(rel, "cpuinfo") == 0) {
         /* S0, plan/phase22_smp_locking_foundation.md §6.2: which hart is

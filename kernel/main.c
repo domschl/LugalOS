@@ -36,8 +36,10 @@
 #include "drivers/dcf77.h"
 #endif
 #include "drivers/uart_net.h"   /* uart1_link_init(), N5 */
-#include "drivers/cyw43.h"
-#include "kernel/radio_c6.h"    /* cyw43_autostart_task_start() */
+#include "drivers/cyw43.h"    /* cyw43_autostart_task_start() */
+#include "kernel/radio_c6.h"    /* radio_c6_autostart() */
+#include "drivers/watchdog.h"   /* watchdog_start() */
+#include "kernel/taint.h"       /* the boot banner's taint, 45.9 */
 #include "net/ip.h"
 #include "drivers/bme280.h"
 #include "net/mqttd.h"
@@ -230,7 +232,8 @@ void kernel_main(void) {
      * it is the transport and the boot burst is the one guaranteed to have no
      * consumer draining it yet. Still says "LugalOS", which tools/p4run.py
      * waits for as its proof of life. */
-    printk("\n=== LugalOS Lisp Machine v%s ===\n", LUGALOS_VERSION_FULL);
+    printk("\n=== LugalOS Lisp Machine v%s ===%s%s\n", LUGALOS_VERSION_FULL,
+           LUGALOS_TAINTED ? " tainted: " : "", LUGALOS_TAINTED ? LUGALOS_TAINT : "");
 
     /* Three compile-time constants describing one machine, so one line.
      * Nothing is lost: the same three facts, 45 bytes instead of 135. */
@@ -550,6 +553,7 @@ void kernel_main(void) {
     cyw43_autostart_task_start();
 #endif
 #if defined(CONFIG_BOARD_ESP32C6)
+    watchdog_start();                     /* 45.8: an unattended node must not stay hung */
     radio_c6_autostart();                 /* the same policy for the C6's radio (45.8) */
 #endif
 

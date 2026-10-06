@@ -108,9 +108,11 @@ console, loading and reset all on it.
 * Leave it running by itself (stage 2 at `0x0` + the OS image, verified, then reset):
   `tools/c6flash.py build/esp32c6`
 * Test it: `python3 tests/hw/test_esp32c6.py` (loads the kernel itself; `--no-load` tests
-  what is running). 17 checks (with WLAN credentials in the identity record the board
+  what is running). 19 checks (with WLAN credentials in the identity record the board
   joins by itself at boot and the radio-start tests watch that instead); skips when no board is attached. Wi-Fi checks read
   `~/.config/lugalos/wifi.env` (never print it; only the derived 64-hex PSK goes to the board).
+* The hardware watchdog (MWDT0, 30 s) is armed at boot; `wdt` shows it and the last reset's
+  cause, `wdt test` stops feeding it (the board resets -- only when that is the point).
 * A cold chip and a warm one differ: PMU/LP registers survive a chip reset, so radio
   bring-up changes must be checked after a USB power cycle (ask the user to unplug ~10 s).
 * A known-good reference exists: ESP-IDF's toolchain is installed (`~/.espressif`); its

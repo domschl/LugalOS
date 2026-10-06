@@ -279,6 +279,35 @@ def test_radio_ip(c: Console):
     return _t("DHCP lease on wlan0, then the host pings it", n >= 2, "%s, %d/3 replies" % (addr, n))
 
 
+def test_taint(c: Console):
+    """45.9 (plan §2): a build that links Espressif's Wi-Fi libraries says so -- in /proc/version and
+    machine-readably in /proc/node -- and a build without them says "none"."""
+    ok1, ver = c.run("version", r"LugalOS v[^\n]*", 8)
+    ok2, node = c.run("cat /proc/node", r"9P uname[^\n]*", 8)
+    m = re.search(r"taint: (\S+)", node)
+    taint = m.group(1) if m else None
+    if taint == "blob(espressif-wifi)":
+        good = "tainted: blob(espressif-wifi)" in ver
+    else:
+        good = taint == "none" and "tainted" not in ver
+    return _t("taint reported (/proc/version, /proc/node)", good and taint is not None, "taint: %s" % taint)
+
+
+def test_watchdog(c: Console):
+    """45.8: the hardware watchdog is armed and its feeder runs (the feed count advances). That it
+    really resets a hung board is `wdt test` -- deliberately not run here: it reboots the board."""
+    ok1, out1 = c.run("wdt", r"last reset[^\n]*", 8)
+    m1 = re.search(r"watchdog: armed, timeout (\d+) s, (\d+) feeds", out1)
+    time.sleep(9)
+    ok2, out2 = c.run("wdt", r"last reset[^\n]*", 8)
+    m2 = re.search(r"watchdog: armed, timeout (\d+) s, (\d+) feeds", out2)
+    reason = re.search(r"last reset: ([^\r\n]*)", out2)
+    good = bool(m1 and m2 and int(m2.group(2)) > int(m1.group(2)))
+    return _t("hardware watchdog armed and fed", good,
+              "%s s, feeds %s -> %s, last reset: %s" % (m2.group(1) if m2 else "?", m1.group(2) if m1 else "?",
+                                                         m2.group(2) if m2 else "?", reason.group(1) if reason else "?"))
+
+
 def test_still_alive(c: Console):
     """A kernel that boots and then resets (the flash-boot watchdogs, a crash) looks
     perfect to every quick test above and dies minutes later -- the P4's phase 32
@@ -297,7 +326,7 @@ def test_still_alive(c: Console):
 
 TESTS = [test_boots, test_heap, test_tick_rate, test_preemption, test_locks, test_priostress,
          test_pmp, test_umode, test_isolation, test_deputy, test_kobj_kernel, test_kobj_umode,
-         test_radio_shim, test_led, test_radio_scan_or_join, test_radio_ip, test_still_alive]
+         test_radio_shim, test_led, test_radio_scan_or_join, test_radio_ip, test_taint, test_watchdog, test_still_alive]
 
 
 def main() -> int:

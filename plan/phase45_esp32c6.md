@@ -704,7 +704,7 @@ by flashing*.
   from eFuse (§4.9). Hardware tests: `test_radio_join`, `test_radio_ip` (lease + host ping;
   17/17 on the suite). Not yet: authenticated 9P over TCP (needs the identity store, 45.8),
   a shell `ping`.
-* **45.8 Unattended operation — identity store, autostart and rejoin DONE 2026-10-06.**
+* **45.8 Unattended operation — DONE 2026-10-06** (identity store, autostart, rejoin, watchdog).
   - *Identity store:* one 4 KB flash sector at `0x7F0000` (`drivers/idstore_esp32c6.c`), the
     phase-21 record unchanged. The ROM's SPI routines do the transfers, from `.ramfunc` with
     interrupts masked and the I-cache suspended (the kernel executes from the flash it writes);
@@ -732,11 +732,20 @@ by flashing*.
     pools (~46 KB) stay, by decision.
   - *RP2350W:* the CYW43 netif now starts the same DHCP client after it attaches the stack -- a
     fixed address in the record still wins. Builds; not yet run on a Pico 2 W.
-  - *Not yet:* a hardware watchdog; "AP absent at boot, appears later" tested only in its two
-    halves.
-* **45.9 Taint flag, `/proc/node`, tests.** §2 delivered (the flag could
-  start earlier; it is listed here so it is verified). `tests/hw/test_esp32c6.py`
-  written to the same skip-if-absent pattern as the P4 suite.
+  - *Watchdog:* MWDT0 armed once the scheduler runs (`drivers/wdt_esp32c6.c`): no feed for 30 s
+    and the whole system resets; a one-page `wdog` task at normal priority feeds it every 7.5 s,
+    so what keeps the board alive is ordinary tasks still being scheduled. The boot reports the
+    ROM's reset cause (`wdt`, `[WDT] last reset: ...`). `wdt test` withholds the feed: verified --
+    the board reset, came back as "watchdog (MWDT0, system)" and rejoined by itself.
+  - *Not yet:* "AP absent at boot, appears later" tested only in its two halves.
+* **45.9 Taint flag, `/proc/node`, tests — DONE 2026-10-06.** §2 as specified:
+  `CONFIG_TAINT_BLOB` is set by the build that links the Wi-Fi libraries and by nothing else
+  (`kernel/include/kernel/taint.h`); the boot banner and `/proc/version` append
+  `tainted: blob(espressif-wifi)`, `/proc/node` always carries `taint: <list>` (`none` on every
+  other build). `tests/hw/test_esp32c6.py` (skip-if-absent, as the P4 suite): 19 checks --
+  boot, timer, scheduler, locks, PMP and U-mode isolation, kernel objects, the radio shim, LED,
+  the join (watched when the record autostarts it), DHCP + host ping, taint, watchdog, and a
+  minute without a reset.
 
 ### Sensor node
 

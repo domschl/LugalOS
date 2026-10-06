@@ -976,7 +976,8 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
     # USB-Serial/JTAG peripheral. No block device and no display -- the same stated
     # emptiness as the P4's E2: a board with none of those registers none of them.
     # 45.8: the identity store, one flash sector (drivers/idstore_esp32c6.c).
-    list(APPEND SOURCES drivers/usbjtag_esp32c6.c drivers/idstore_esp32c6.c)
+    list(APPEND SOURCES drivers/usbjtag_esp32c6.c drivers/idstore_esp32c6.c drivers/wdt_esp32c6.c)
+    # 45.8: the hardware watchdog (drivers/wdt_esp32c6.c).
     # 45.5: the board's one WS2812 (GPIO8) through the RMT pulse generator.
     list(APPEND SOURCES drivers/ws2812.c drivers/ws2812_esp32c6.c)
     # 45.6: the Wi-Fi radio. The kernel half is always built (it says so when there
@@ -986,6 +987,8 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
     include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/radio_esp32c6.cmake)
     if(LUGALOS_RADIO_C6)
         add_compile_definitions(CONFIG_RADIO_C6=1)
+        # 45.9: this build links code it cannot audit, and says so (kernel/include/kernel/taint.h).
+        add_compile_definitions(CONFIG_TAINT_BLOB=1)
         set(RADIO_C6_SOURCES drivers/radio/esp32c6_osi_table.c drivers/radio/radio_main.c
             drivers/radio/radio_libc.c drivers/radio/plat_esp32c6.c drivers/radio/radio_supp_os.c drivers/radio/radio_netif.c)
         list(APPEND SOURCES ${RADIO_C6_SOURCES} ${LUGALOS_RADIO_IDF_SOURCES} ${LUGALOS_RADIO_SUP_SOURCES} ${LUGALOS_RADIO_PMU_SOURCES})

@@ -2,6 +2,7 @@
 #if defined(CONFIG_BOARD_ESP32C6)
 #include "drivers/ws2812.h"
 #include "kernel/radio_c6.h"
+#include "drivers/watchdog.h"
 #endif
 #include "kernel/printk.h"
 #include "kernel/console.h"
@@ -3621,6 +3622,14 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "radio probe") == 0) {
         radio_c6_probe();
         return;
+#if defined(CONFIG_BOARD_ESP32C6)
+    } else if (strcmp(cmd_line, "wdt") == 0) {
+        watchdog_report();
+        return;
+    } else if (strcmp(cmd_line, "wdt test") == 0) {
+        watchdog_withhold();
+        return;
+#endif
     } else if (strcmp(cmd_line, "radio rejoin") == 0) {
         radio_c6_rejoin();
         return;
