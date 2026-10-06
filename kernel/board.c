@@ -7,6 +7,7 @@
 #include "drivers/i2c_rtc.h"
 #include "drivers/i2c_bus.h"
 #include "drivers/bme280.h"
+#include "drivers/sensor_hub.h"
 #include "drivers/at24c32.h"
 #include "drivers/block.h"
 #include "kernel/console.h"
@@ -135,11 +136,11 @@ static int probe_at24c32(void)  { at24c32_init();  return 0; }
  * costs an afternoon. Runs before i2c_task_start(), so it reaches the bus
  * directly; every later read goes through the shared task. */
 static int probe_bme280(void)   {
-    if (!bme280_init()) return -1;
-    /* Q5: a part that answered becomes publishable. Registering here rather
-     * than in mqttd_start() keeps mqttd ignorant of I2C, and means a board
-     * with no sensor registers nothing rather than publishing zeroes. */
-    bme280_register_sources();
+    sensor_hub_init();
+    if (sensor_hub_device_count() == 0) return -1;
+    if (bme280_is_detected()) {
+        bme280_register_sources();
+    }
     return 0;
 }
 /* Like probe_i2c_rtc() above: reports whether there is a device, not whether

@@ -49,6 +49,17 @@ Reference documentation and vendor SDKs are located in `~/gith/` or `~/Source/gi
 * **Flashing Tools:** `${ESP_ROOT}/esptool/`
 * **Reference Factory Flash Backup:** `${ESP_ROOT}/p4nano-factory-flash/`
 
+### Environmental Sensors Datasheets
+* **Path:** `~/gith/sensors/` or `~/Source/gith/sensors/`
+  * Contains official component datasheets for all supported environmental and light sensors:
+    * BME280: `bst-bme280-ds002.pdf`
+    * BME680: `bst-bme680-ds001.pdf`
+    * CCS811: `CCS811_Datasheet-DS000459.pdf`
+    * SGP30: `Sensirion_Gas_Sensors_Datasheet_SGP30.pdf`
+    * TSL2561: `TSL2561.pdf`
+    * TSL2591: `TSL25911_Datasheet_EN_v1.pdf`
+
+
 ---
 
 ## 3. Connected Hardware Targets & TTY Port Mappings

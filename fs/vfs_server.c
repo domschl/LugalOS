@@ -14,6 +14,8 @@
 #include "drivers/cyw43.h"
 #include "drivers/i2c_rtc.h"
 #include "drivers/bme280.h"
+#include "drivers/bme680.h"
+#include "drivers/sensor_hub.h"
 #include "drivers/piousb.h"
 #include "kernel/time.h"
 #include "kernel/printk.h"
@@ -1305,6 +1307,35 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
          * uses, because the parser on the other end may be a shell script.
          * Scaling here would put a decimal point in two places. */
         uint32_t used = 0;
+        if (bme680_is_detected()) {
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "part=%s\naddr=0x%02x\nsample_period_s=%lu\n",
+                bme680_part_name(), bme680_address(),
+                (unsigned long)sensor_hub_sample_period_s());
+
+            bme680_reading_t r;
+            uint32_t age_s = 0;
+            if (!bme680_cached(&r, &age_s)) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "valid=no\n");
+            } else {
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "valid=yes\nage_s=%lu\ntemperature_c100=%ld\npressure_pa=%lu\nhumidity_rh1000=%lu\ngas_resistance_ohm=%lu\n",
+                    (unsigned long)age_s, (long)r.temperature_c100,
+                    (unsigned long)r.pressure_pa,
+                    (unsigned long)((uint32_t)r.humidity_cpercent * 10u),
+                    (unsigned long)r.gas_res_ohm);
+            }
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "reads=%lu\nfailures=%lu\n",
+                (unsigned long)bme680_read_count(),
+                (unsigned long)bme680_fail_count());
+            const char *lf = bme680_last_failure();
+            if (lf)
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "last_failure=%s\n", lf);
+            return (int)used;
+        }
+
         if (!bme280_is_detected()) {
             used += (uint32_t)ksnprintf(buf + used, cap - used, "part=none\n");
             return (int)used;

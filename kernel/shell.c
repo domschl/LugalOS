@@ -32,6 +32,8 @@
 #include "drivers/i2c_rtc.h"
 #include "drivers/i2c_bus.h"
 #include "drivers/bme280.h"
+#include "drivers/bme680.h"
+#include "drivers/sensor_hub.h"
 #include "drivers/boardprobe.h"
 #include "drivers/clocks_rp2350.h"
 #include "drivers/flash_rp2350.h"
@@ -1259,15 +1261,22 @@ static void cmd_mqtt(const char *arg) {
  * targets. */
 static void cmd_sensor(const char *arg) {
     while (*arg == ' ') arg++;
-    if (strncmp(arg, "selftest", 8) == 0) { bme280_selftest(true); return; }
+    if (strncmp(arg, "selftest", 8) == 0) {
+        bme280_selftest(true);
+        bme680_selftest(true);
+        return;
+    }
     if (strncmp(arg, "init", 4) == 0) {
-        bme280_part_t part = bme280_init();
-        cprintf("sensor: %s\n", part == BME280_PART_NONE
-                ? "nothing found at 0x76 or 0x77" : bme280_part_name());
+        sensor_hub_init();
+        if (sensor_hub_device_count() == 0) {
+            cprintf("sensor: nothing found at 0x76 or 0x77\n");
+        } else {
+            sensor_hub_print_status();
+        }
         return;
     }
     if (*arg) { cprintf("usage: sensor [selftest | init]\n"); return; }
-    bme280_print_status();
+    sensor_hub_print_status();
 }
 
 /* `mqttd ...` -- Q5, the appliance loop.

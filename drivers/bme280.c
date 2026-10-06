@@ -1,5 +1,6 @@
 #include "drivers/bme280.h"
 #include "drivers/i2c_bus.h"
+#include "drivers/i2c_reg.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
 #include "kernel/sched.h"
@@ -80,12 +81,11 @@ static struct {
 } g;
 
 static bool rd(uint8_t reg, uint8_t *dst, uint32_t len) {
-    return i2c_xfer(g.addr, &reg, 1u, dst, len);
+    return i2c_reg_read_bytes(g.addr, reg, dst, len);
 }
 
 static bool wr(uint8_t reg, uint8_t value) {
-    uint8_t w[2] = { reg, value };
-    return i2c_xfer(g.addr, w, 2u, NULL, 0u);
+    return i2c_reg_write_u8(g.addr, reg, value);
 }
 
 static uint16_t u16le(const uint8_t *p) { return (uint16_t)((uint16_t)p[1] << 8 | p[0]); }
@@ -692,3 +692,62 @@ void bme280_print_status(void) {
     if (g.last_fail) cprintf(" (last: %s)", g.last_fail);
     cprintf("\n");
 }
+
+/* --- Sensor Device Contract (Category D) --- */
+
+static bool bme280_dev_init(struct sensor_dev *dev) {
+    bme280_part_t part = bme280_init();
+    if (part == BME280_PART_NONE) return false;
+    dev->addr = g.addr;
+    dev->chan_mask = (1u << SENSOR_CHAN_TEMP) | (1u << SENSOR_CHAN_PRESSURE);
+    if (g.cal.has_humidity) {
+        dev->chan_mask |= (1u << SENSOR_CHAN_HUMIDITY);
+    }
+    return true;
+}
+
+static bool bme280_dev_sample(struct sensor_dev *dev) {
+    (void)dev;
+    bme280_reading_t r;
+    return bme280_read(&r);
+}
+
+static bool bme280_dev_get_value(struct sensor_dev *dev, sensor_chan_t chan, int32_t *out_val) {
+    (void)dev;
+    if (!g.have_last || !out_val) return false;
+    switch (chan) {
+        case SENSOR_CHAN_TEMP:
+            *out_val = g.last.temperature_c100;
+            return true;
+        case SENSOR_CHAN_PRESSURE:
+            *out_val = (int32_t)(g.last.pressure_pa256 >> 8);
+            return true;
+        case SENSOR_CHAN_HUMIDITY:
+            if (!g.last.have_humidity) return false;
+            *out_val = (int32_t)(((uint64_t)g.last.humidity_rh1024 * 100u + 512u) >> 10);
+            return true;
+        default:
+            return false;
+    }
+}
+
+static uint32_t bme280_dev_selftest(bool report) {
+    return bme280_selftest(report);
+}
+
+static const sensor_ops_t bme280_ops = {
+    .init      = bme280_dev_init,
+    .sample    = bme280_dev_sample,
+    .get_value = bme280_dev_get_value,
+    .selftest  = bme280_dev_selftest,
+};
+
+sensor_dev_t bme280_sensor_dev = {
+    .name      = "bme280",
+    .addr      = 0,
+    .chan_mask = (1u << SENSOR_CHAN_TEMP) |
+                 (1u << SENSOR_CHAN_PRESSURE) |
+                 (1u << SENSOR_CHAN_HUMIDITY),
+    .ops       = &bme280_ops,
+    .priv      = NULL,
+};
