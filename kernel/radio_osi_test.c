@@ -41,13 +41,16 @@
 #define KU __attribute__((section(".utext_kobj"), noinline, no_sanitize("undefined")))
 #define KSTR __attribute__((section(".utext_kobj_ro"))) static const
 
-extern char _utext_kobj_start[], _udata_kobj_start[];
+extern char _utext_kobj_start[], _udata_kobj_start[], _udata_kobj_end[];
 
 #define NCHECK 22
-#define ARENA_BYTES 24576u
+#define ARENA_PAGES 4u
+#define ARENA_BYTES (ARENA_PAGES * 4096u)
 
-/* The arena, in the radio data region (and 8-byte aligned, which the heap needs). */
-static uint8_t g_arena[ARENA_BYTES] __attribute__((section(".udata_kobj"), aligned(8)));
+/* The arena: pages from the heap for the test's duration, granted to its domain as one NAPOT region
+ * (a power of two, self-aligned). It used to be a static 24 KB in the shim's data region, which kept
+ * that region at 32 KB of SRAM on every board for a self-test (45.8). */
+static uint8_t *g_arena;
 
 typedef struct {
     volatile uint32_t result[NCHECK];
@@ -57,6 +60,7 @@ typedef struct {
     volatile uint32_t thread_sem_a, thread_sem_b;
     volatile uint32_t isr_in, isr_out, isr_done;
     volatile uint32_t finished;
+    uint8_t *arena;                  /* the test heap, in the domain (the kernel's g_arena is not) */
     uint32_t etstimer[8];            /* stands in for the blob's ETSTimer: only its address matters */
     uint32_t etstimer2[8];
 } rctx_t;
@@ -112,11 +116,12 @@ KU static void radio_utest_body(uintptr_t arg) {
     rctx_t *ctx = (rctx_t *)arg;
 
     /* 0-3: the heap, through the table's entries. */
-    bool up = radio_osi_init(g_arena, ARENA_BYTES);
+    uint8_t *arena = ctx->arena;
+    bool up = radio_osi_init(arena, ARENA_BYTES);
     RCHECK(0, up, up);
     uint32_t free0 = radio_osi_get_free_heap_size();
     uint8_t *p = (uint8_t *)radio_osi_malloc(100);
-    bool in_arena = p >= g_arena && p + 100 <= g_arena + ARENA_BYTES && ((uintptr_t)p & 7) == 0;
+    bool in_arena = p >= arena && p + 100 <= arena + ARENA_BYTES && ((uintptr_t)p & 7) == 0;
     RCHECK(1, p && in_arena && radio_osi_get_free_heap_size() < free0, (uintptr_t)p & 7);
     for (int i = 0; i < 100; i++) p[i] = (uint8_t)(i + 1);
     p = (uint8_t *)radio_osi_realloc(p, 3000);
@@ -266,7 +271,8 @@ static void radio_task(void *arg) {
      * linker's, one power-of-two block each. */
     mem_domain_add(&g_rdomain, (uintptr_t)g_rpage, 4096, MEM_R | MEM_W);
     mem_domain_add(&g_rdomain, (uintptr_t)_utext_kobj_start, 16384, MEM_R | MEM_X);
-    mem_domain_add(&g_rdomain, (uintptr_t)_udata_kobj_start, 32768, MEM_R | MEM_W);
+    mem_domain_add(&g_rdomain, (uintptr_t)_udata_kobj_start, (uint32_t)(_udata_kobj_end - _udata_kobj_start), MEM_R | MEM_W);
+    mem_domain_add(&g_rdomain, (uintptr_t)g_arena, ARENA_BYTES, MEM_R | MEM_W);
     if (task_set_domain(sched_current_pid(), &g_rdomain) != 0) {
         printk("[radioosi] Refusing to enter U-mode: the domain is not enforceable\n");
         return;
@@ -292,6 +298,9 @@ int radio_osi_test(void) {
     }
     g_rpage = palloc_pages_aligned(1, 1);
     if (!g_rpage) { cprintf("RADIOOSI_FAIL (no page)\n"); return 1; }
+    g_arena = palloc_pages_aligned(ARENA_PAGES, ARENA_PAGES);
+    if (!g_arena) { palloc_free(g_rpage, 1); g_rpage = NULL; cprintf("RADIOOSI_FAIL (no arena)\n"); return 1; }
+    ((rctx_t *)g_rpage)->arena = g_arena;
     int pid = task_create("radioosi", radio_task, NULL);
     if (pid < 0) { cprintf("RADIOOSI_FAIL (no task)\n"); return 1; }
     for (int i = 0; i < 6000 && sched_task_state(pid) != TASK_DEAD; i++) task_sleep_ms(1);
@@ -322,6 +331,7 @@ int radio_osi_test(void) {
     if (sched_task_state(pid) == TASK_DEAD) {             /* as kobjutest: never under a live task */
         kobj_sys_release_domain((uintptr_t)&g_rdomain);
         palloc_free(g_rpage, 1); g_rpage = NULL;
+        palloc_free(g_arena, ARENA_PAGES); g_arena = NULL;
     }
     return fails;
 }

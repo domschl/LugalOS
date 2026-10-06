@@ -2034,6 +2034,10 @@ static bool cyw43_register_netif(void) {
     net_stack_attach(&g_netif);
     if (net_task_start() < 0)
         printk("cyw43: netsrv did not start; frames will not be serviced\n");
+    /* The address: a fixed one in the identity record (`netcfg`) is applied by net_task_start() and
+     * wins; without one, DHCP (net/dhcp.c defers to an explicit configuration, so starting it is
+     * harmless on a board that has one). The C6 does the same (45.7). */
+    dhcp_start();
     return true;
 }
 

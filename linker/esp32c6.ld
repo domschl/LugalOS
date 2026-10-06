@@ -150,11 +150,6 @@ SECTIONS
         . = _utext_kobj_start + 16384;
     } > RAM
 
-    .udata_kobj (NOLOAD) : ALIGN(32768) {
-        _udata_kobj_start = .;
-        *(.udata_kobj .udata_kobj.*)
-        . = _udata_kobj_start + 32768;
-    } > RAM
 
     /* The radio's writable state: the blob's .data and .bss (about 20 KB) and the
      * radio's own, in one self-aligned 32 KB block so one PMP entry grants it.
@@ -212,6 +207,18 @@ SECTIONS
         . = ALIGN(4);
         _radio_bss_end = .;
         . = _radio_data_start + 32768;
+    } > RAM
+
+    /* After the radio's 32 KB block, not before it: that block must be self-aligned, and
+     * 0x40808000 is the first 32 KB boundary after the U-mode text -- placed ahead of it,
+     * this 8 KB region only turned the rest of that boundary into padding. */
+    .udata_kobj (NOLOAD) : ALIGN(8192) {
+        _udata_kobj_start = .;
+        *(.udata_kobj .udata_kobj.*)
+        /* 8 KB, a power of two (one NAPOT region): the shim's state, ~3 KB. Was 32 KB while it also held the
+         * radioosi test's 24 KB arena, which now comes from the heap for the test's duration (45.8). */
+        . = _udata_kobj_start + 8192;
+        _udata_kobj_end = .;
     } > RAM
     ASSERT(_radio_bss_end <= _radio_data_start + 32768,
            "the radio's data has outgrown its 32 KB PMP region (kernel/radio_c6.c)")

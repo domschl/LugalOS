@@ -57,7 +57,7 @@ const uint32_t g_radio_text_marker __attribute__((section(".radio_text_marker"),
 
 #if defined(CONFIG_RADIO_C6)
 
-extern char _radio_text_start[], _radio_data_start[], _radio_bss_start[], _radio_bss_end[], _utext_kobj_start[], _udata_kobj_start[];
+extern char _radio_text_start[], _radio_data_start[], _radio_bss_start[], _radio_bss_end[], _utext_kobj_start[], _udata_kobj_start[], _udata_kobj_end[];
 
 #define ARENA_PAGES 16          /* 64 KB (one NAPOT region): the frame rings (10 KB) and the radio heap */
 #define STACK_PAGES 4           /* 16 KB: the main thread's stack, with the context at its bottom */
@@ -114,7 +114,7 @@ static void radio_task(void *arg) {
     bad |= mem_domain_add(&g_rdomain, (uintptr_t)_radio_text_start, 512u * 1024, MEM_R | MEM_X);
     bad |= mem_domain_add(&g_rdomain, (uintptr_t)_radio_data_start, 32768, MEM_R | MEM_W);
     bad |= mem_domain_add(&g_rdomain, (uintptr_t)_utext_kobj_start, 16384, MEM_R | MEM_X);
-    bad |= mem_domain_add(&g_rdomain, (uintptr_t)_udata_kobj_start, 32768, MEM_R | MEM_W);
+    bad |= mem_domain_add(&g_rdomain, (uintptr_t)_udata_kobj_start, (uint32_t)(_udata_kobj_end - _udata_kobj_start), MEM_R | MEM_W);
     bad |= mem_domain_add(&g_rdomain, (uintptr_t)g_rarena, ARENA_PAGES * 4096u, MEM_R | MEM_W);
     bad |= mem_domain_add(&g_rdomain, (uintptr_t)g_rstack, STACK_PAGES * 4096u, MEM_R | MEM_W);
     bad |= mem_domain_add(&g_rdomain, 0x40000000u, 512u * 1024, MEM_R | MEM_X);   /* ROM code */

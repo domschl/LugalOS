@@ -7,9 +7,12 @@
 #include <string.h>
 
 void uart_net_init(void) {
+#if !defined(CONFIG_BOARD_ESP32C6)
     printk("[UART 9P] SLIP transport online (RFC 1055).\n");
+#endif
 }
 
+#if !defined(CONFIG_BOARD_ESP32C6)
 /* --- link_uart_slip (A3) ---
  * Accumulates raw (still SLIP-escaped) bytes as they arrive; a SLIP_END
  * marks the end of a frame, at which point the accumulated bytes (which
@@ -120,6 +123,8 @@ p9_link_t *uart_slip_get_link(void) {
  * delimiter and is ignored, and an overflowing frame is dropped so the link
  * resynchronises on the next delimiter rather than emitting a truncated
  * message. */
+#endif /* !CONFIG_BOARD_ESP32C6: the SLIP link */
+
 int slip_feed(uint8_t c, uint8_t *frame, uint32_t frame_cap,
               uint32_t *frame_len, bool *escaping) {
     if (c == SLIP_END) {
@@ -200,6 +205,7 @@ int slip_decode(const uint8_t *src, uint32_t len, uint8_t *dst, uint32_t dst_max
     return (int)out;
 }
 
+#if !defined(CONFIG_BOARD_ESP32C6)
 /* --- link_uart_demux (A3b) ---
  *
  * The state machine is a byte-routing variant of link_uart_slip's own
@@ -499,3 +505,27 @@ int uart_net_rpc(const char *write_payload, char *read_out_buf, uint32_t read_ma
 
     return result;
 }
+
+#else /* CONFIG_BOARD_ESP32C6 */
+
+/* The C6 has no UART 9P link: its console is the USB-Serial/JTAG peripheral and 9P runs over TCP.
+ * The SLIP link and the console/9P demux would cost ~12 KB of static buffers that nothing ever fills
+ * (45.8), so they are stubs here -- no link, which the device registry skips -- and the codec above
+ * stays. */
+p9_link_t *uart_slip_get_link(void) { return NULL; }
+void uart_demux_init(uart_raw_has_char_fn has_char, uart_raw_getc_fn getc) { (void)has_char; (void)getc; }
+void uart_demux_set_enabled(bool enabled) { (void)enabled; }
+bool uart_demux_is_enabled(void) { return false; }
+bool uart_demux_console_has_char(void) { return false; }
+char uart_demux_console_getc(void) { return 0; }
+p9_link_t *uart_demux_get_link(void) { return NULL; }
+int uart_net_send_9p(const uint8_t *req_buf, uint32_t req_len, uint8_t *resp_buf, uint32_t resp_max) {
+    (void)req_buf; (void)req_len; (void)resp_buf; (void)resp_max;
+    return -1;
+}
+int uart_net_rpc(const char *write_payload, char *read_out_buf, uint32_t read_max) {
+    (void)write_payload; (void)read_out_buf; (void)read_max;
+    return -1;
+}
+
+#endif /* CONFIG_BOARD_ESP32C6 */

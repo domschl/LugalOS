@@ -724,8 +724,16 @@ by flashing*.
     domain's objects every run, into tables the radio shares (`kobj_sys_release_domain()` releases
     a finished domain's objects, timers and crit mutex). Stacks right-sized (`dhcpc`, U-mode
     threads' kernel stacks: 4 KB) -- 52 KB heap free with the radio joined, stable across suite runs.
+  - *SRAM:* the blob's code is XIP; in SRAM it has ~26 KB of state and its 64 KB heap. The rest
+    was ours: the shim's data region held a 24 KB self-test arena (now heap pages for the test's
+    duration; region 32 -> 8 KB, placed after the radio's 32 KB block so it is not padding), and
+    the C6 carried a QEMU stand-in EEPROM (4 KB) and the UART SLIP/demux 9P link (~12 KB) it never
+    uses (stubbed on the C6). Heap 224 -> 264 KB; **92 KB free with the radio joined**. The Lisp
+    pools (~46 KB) stay, by decision.
+  - *RP2350W:* the CYW43 netif now starts the same DHCP client after it attaches the stack -- a
+    fixed address in the record still wins. Builds; not yet run on a Pico 2 W.
   - *Not yet:* a hardware watchdog; "AP absent at boot, appears later" tested only in its two
-    halves; SRAM headroom (the kernel's static buffers, not the blob, are most of it).
+    halves.
 * **45.9 Taint flag, `/proc/node`, tests.** §2 delivered (the flag could
   start earlier; it is listed here so it is verified). `tests/hw/test_esp32c6.py`
   written to the same skip-if-absent pattern as the P4 suite.

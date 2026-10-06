@@ -75,10 +75,13 @@ SECTIONS
         . = _utext_kobj_start + 16384;
     } > RAM
 
-    .udata_kobj (NOLOAD) : ALIGN(32768) {
+    .udata_kobj (NOLOAD) : ALIGN(8192) {
         _udata_kobj_start = .;
         *(.udata_kobj .udata_kobj.*)
-        . = _udata_kobj_start + 32768;
+        /* 8 KB, a power of two (one NAPOT region): the shim's state, ~3 KB. Was 32 KB while it also held the
+         * radioosi test's 24 KB arena, which now comes from the heap for the test's duration (45.8). */
+        . = _udata_kobj_start + 8192;
+        _udata_kobj_end = .;
     } > RAM
 
     .data : ALIGN(2M) {
