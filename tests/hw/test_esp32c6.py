@@ -227,6 +227,32 @@ def test_radio_scan_or_join(c: Console):
     return test_radio_join(c)
 
 
+def test_radio_ip(c: Console):
+    """After the join, IP over the encrypted link (45.7): a DHCP lease on wlan0, then the host pings
+    that address. Association alone proves nothing about data -- the board joined for days while every
+    protected frame was en-/decrypted with a mangled key. Skips without credentials, and the ping part
+    when the host is not on the board's subnet."""
+    if _wifi_credentials() is None:
+        return _t("IP over Wi-Fi (skipped: no credentials)", True, "skipped")
+    addr = None
+    for _ in range(10):
+        ok, out = c.run("cat /proc/net", r"arp cache[^\n]*", 8)
+        m = re.search(r"address: (\d+\.\d+\.\d+\.\d+)", out)
+        if m and m.group(1) != "0.0.0.0":
+            addr = m.group(1)
+            break
+        time.sleep(2)
+    if addr is None:
+        return _t("DHCP lease on wlan0, then the host pings it", False, "no address")
+    import subprocess
+    r = subprocess.run(["ping", "-c", "3", "-W", "2", addr], capture_output=True, text=True)
+    got = re.search(r"(\d+) received", r.stdout)
+    n = int(got.group(1)) if got else 0
+    if n == 0 and re.search(r"Network is unreachable|Destination Host Unreachable", r.stdout + r.stderr):
+        return _t("DHCP lease on wlan0 (host not on its subnet: ping skipped)", True, addr)
+    return _t("DHCP lease on wlan0, then the host pings it", n >= 2, "%s, %d/3 replies" % (addr, n))
+
+
 def test_still_alive(c: Console):
     """A kernel that boots and then resets (the flash-boot watchdogs, a crash) looks
     perfect to every quick test above and dies minutes later -- the P4's phase 32
@@ -245,7 +271,7 @@ def test_still_alive(c: Console):
 
 TESTS = [test_boots, test_heap, test_tick_rate, test_preemption, test_locks, test_priostress,
          test_pmp, test_umode, test_isolation, test_deputy, test_kobj_kernel, test_kobj_umode,
-         test_radio_shim, test_led, test_radio_scan_or_join, test_still_alive]
+         test_radio_shim, test_led, test_radio_scan_or_join, test_radio_ip, test_still_alive]
 
 
 def main() -> int:

@@ -132,13 +132,15 @@ extern void radio_osi_task_delay(uint32_t);
         "${_C}/newlib/platform_include" "${_C}/esp_netif/include" "${_C}/esp_phy/include"
         "${_C}/riscv/include" "${_C}/esp_hal_gpio/include" "${_C}/esp_hal_gpio/esp32c6/include"
         "${_C}/esp_hw_support/port/esp32c6/include" "${_C}/esp_wifi/include/esp_private"
-        "${_C}/esp_wifi/include/local" "${_C}/esp_wifi/regulatory" "${_C}/hal/esp32c6/include" "${_C}/hal/platform_port/include" "${_C}/esp_phy/esp32c6/include" "${_C}/esp_hal_pmu/esp32c6/include" "${_C}/esp_hal_pmu/include" "${_C}/esp_hal_regi2c/esp32c6/include" "${_C}/esp_hal_regi2c/include" "${_C}/esp_rom/esp32c6" "${_C}/soc/esp32c6/include/modem")
+        "${_C}/esp_wifi/include/local" "${_C}/esp_wifi/regulatory" "${_C}/hal/esp32c6/include" "${_C}/hal/platform_port/include" "${_C}/esp_phy/esp32c6/include" "${_C}/esp_hal_clock/esp32c6/include" "${_C}/esp_hal_clock/include" "${_C}/esp_hal_pmu/esp32c6/include" "${_C}/esp_hal_pmu/include" "${_C}/esp_hal_regi2c/esp32c6/include" "${_C}/esp_hal_regi2c/include" "${_C}/esp_rom/esp32c6" "${_C}/esp_rom/esp32c6/include" "${_C}/soc/esp32c6/include/modem" "${_C}/esp_hw_support/port/esp32c6/private_include" "${_C}/esp_hw_support/port/esp32c6" "/home/dsc/Source/gith/esp/esp-idf/components/esp_hw_support/port/include" "${_C}/esp_hw_support/include/esp_private" "${_C}/esp_rom/esp32c6/include/esp32c6")
     set(LUGALOS_RADIO_DEFS CONFIG_IDF_TARGET_ESP32C6=1 CONFIG_SOC_WIFI_HE_SUPPORT=1 ESP_PLATFORM=1)
     set(LUGALOS_RADIO_IDF_SOURCES
         "${_C}/esp_wifi/regulatory/esp_wifi_regulatory.c"
         "${_C}/esp_wifi/src/ftm_load_calibration.c"
         "${_C}/esp_phy/esp32c6/phy_init_data.c"
-        "${_C}/esp_hal_regi2c/esp32c6/regi2c_impl.c")
+        "${_C}/esp_hal_regi2c/esp32c6/regi2c_impl.c"
+        "${_C}/hal/esp32c6/efuse_hal.c" "${_C}/hal/efuse_hal.c" "${_C}/esp_hw_support/port/esp32c6/pmu_param.c")
+    set(LUGALOS_RADIO_PMU_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/drivers/radio/radio_pmu_init.c")
     # The supplicant: IDF's wpa_supplicant (station, WPA2-PSK, its own crypto -- no mbedtls, no
     # SAE/EAP/WPS/SoftAP), compiled into the radio domain. tools/c6_blob_spike/supplicant.sh
     # measured it at ~46 KB of text; 45.7 links it.
@@ -173,7 +175,7 @@ extern void radio_osi_task_delay(uint32_t);
         list(APPEND LUGALOS_RADIO_SUP_INC "${_d}")
     endforeach()
     set(LUGALOS_RADIO_SUP_DEFS ESP_SUPPLICANT IEEE8021X_EAPOL ESPRESSIF_USE CONFIG_IEEE80211W CONFIG_SHA256
-        CONFIG_NO_RADIUS CONFIG_CRYPTO_INTERNAL __ets__ DEBUG_PRINT
+        CONFIG_NO_RADIUS CONFIG_CRYPTO_INTERNAL __ets__
         # The kernel has its own SHA-256 under the same names (kernel/sha256.c), in kernel
         # text; the supplicant's copies are the radio domain's and take another name.
         sha256_init=wpa_sha256_init sha256_update=wpa_sha256_update sha256_final=wpa_sha256_final

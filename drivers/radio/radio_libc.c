@@ -18,8 +18,21 @@
 
 #define LIBC_TEXT __attribute__((noinline, optimize("no-tree-loop-distribute-patterns")))
 
+/* Whole 32-bit stores wherever the destination is word-aligned, as the ROM's (newlib's) memcpy does --
+ * not just for speed: the blob copies the CCMP keys into the MAC's key RAM (0x600A5800..) with memcpy,
+ * and that RAM ignores byte enables -- a byte store rewrites the whole word with only its own lane set.
+ * A byte-at-a-time copy left each key word holding its last byte alone (59000000 bf000000 ...): the
+ * 4-way handshake, done in software, succeeded, and every protected frame after it was en-/decrypted
+ * with a mangled key (45.7: joined, no data in either direction, on every WPA2 network). */
 LIBC_TEXT void *radio_memcpy(void *d, const void *s, size_t n) {
     uint8_t *dp = d; const uint8_t *sp = s;
+    while (n && ((uintptr_t)dp & 3u)) { *dp++ = *sp++; n--; }
+    if (((uintptr_t)sp & 3u) == 0) {
+        for (; n >= 4; n -= 4, dp += 4, sp += 4) *(volatile uint32_t *)dp = *(const uint32_t *)sp;
+    } else {
+        for (; n >= 4; n -= 4, dp += 4, sp += 4)
+            *(volatile uint32_t *)dp = (uint32_t)sp[0] | (uint32_t)sp[1] << 8 | (uint32_t)sp[2] << 16 | (uint32_t)sp[3] << 24;
+    }
     while (n--) *dp++ = *sp++;
     return d;
 }

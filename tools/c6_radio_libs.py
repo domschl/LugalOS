@@ -31,7 +31,7 @@ RADIO_LIBC = ["memcpy", "memmove", "memcmp", "strcpy", "strncpy", "strncmp", "fr
               "net80211_printf", "coexist_printf", "rtc_clk_xtal_freq_get"]
 # ROM functions the radio's own code (not the blob) calls, declared in C with an
 # asm label of the radio_ name: they get their ROM address here like the rest.
-EXTRA_ROM = ["ets_update_cpu_frequency", "ets_delay_us", "memset"]
+EXTRA_ROM = ["ets_update_cpu_frequency", "ets_delay_us", "memset", "ets_install_putc1", "ets_install_putc2"]
 ROM_SCRIPTS = ["rom", "rom.pp", "rom.net80211", "rom.phy", "rom.coexist", "rom.libc",
                "rom.newlib", "rom.libgcc", "rom.api"]
 NM = "riscv64-elf-nm"
@@ -84,7 +84,7 @@ def main():
                    "__ashrdi3", "__muldi3", "__clzsi2", "__ctzsi2", "__popcountsi2", "__bswapsi2"]
     with open(os.path.join(out, "radio_rom.ld"), "w") as f:
         # Peripheral register blocks IDF's headers name as objects (esp32c6.peripherals.ld).
-        f.write("MODEM_LPCON = 0x600AF000;\nMODEM_SYSCON = 0x600A9800;\n")
+        f.write("MODEM_LPCON = 0x600AF000;\nMODEM_SYSCON = 0x600A9800;\nEFUSE = 0x600B0800;\nPMU = 0x600B0000;\nLP_CLKRST = 0x600B0400;\nPCR = 0x60096000;\n")
         for h in GCC_HELPERS:
             if h in rom and h != "__bswapsi2":
                 f.write("%s = %s;\n" % (h, rom[h]))

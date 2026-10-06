@@ -549,6 +549,43 @@ every one of these was found by looking, not by reading:
 `netif`, PLL temperature tracking (`phy_common.c`), and putting the blob's data back to its
 initial state so `radio` can start twice in one boot.
 
+### 4.9 What association and IP found (45.7, 2026-10-06)
+
+* **A byte-wise `memcpy` into MMIO broke every encrypted frame.** The blob copies the CCMP keys
+  into the Wi-Fi MAC's key RAM (`0x600A5800`..) with `memcpy`, and in the radio's domain that is
+  ours (`radio_memcpy`, drivers/radio/radio_libc.c). The key RAM ignores byte enables: a byte store
+  rewrites the whole word with only its own lane set, so after a byte loop each key word held its
+  last byte alone (`59000000 bf000000 ...`). The supplicant's 4-way handshake runs in software and
+  succeeded; every protected frame after it, both directions, used a mangled key -- associated,
+  "connected", and not one data frame through, on three different access points. An open network
+  worked at once (DHCP in 70 ms), which is what isolated it. Fixed by storing whole aligned words,
+  as the ROM's (newlib's) memcpy does. **Rule: a libc function substituted for a ROM one must keep
+  its access widths -- the blob uses it on hardware.**
+* **The LP APM silently dropped the PHY's PMU writes.** Like the HP APM (§4.8), the LP APM
+  (`0x600B3800`, in front of PMU/LP clock/LP_AON) denies REE by reading zeros and dropping writes.
+  The PHY library switches the RF blocks' I2C power bits in `PMU_RF_PWC` itself while it
+  calibrates; from U-mode those writes vanished and a cold chip's PLL calibration timed out
+  (`pll_cal exceeds 2ms`, then a scan finding nothing). Opened at radio start like the HP APM; the
+  PMP still limits the radio to its 8 KB PMU/LP_AON window. PMU registers survive a chip reset, so
+  only a power cycle tests this -- a warm reset hid it twice.
+* **Cold boot needs IDF's startup, not the ROM's.** A flash boot leaves the CPU at 40 MHz on the
+  crystal with the PLL off; the RF synthesizer derives from that PLL. The radio start (M-mode,
+  `radio_plat_cpu_to_pll`, `rtc_osc_tuning`, IDF's unmodified `pmu_init()`) now does what IDF's
+  bootloader and `esp_clk_init` do. `pmu_init` and friends carry `IRAM_ATTR` (`.iram1`), which the
+  linker script must place or the image silently lacks them (an illegal instruction in
+  `PMU_instance`).
+* **PHY bring-up as IDF does it:** `phy_init_param_set(1)` before calibration (combo PHY), the
+  calibration-only clocks (BT baseband, BT APB, modem-security APB) released afterwards
+  (`phy_module_disable()`), and `phy_param_track_tot()` on enable and once a second.
+* **Method.** What found the key bug was a known-good reference: IDF's stock `station` example
+  built for the same board (toolchain in `~/.espressif`), its modem registers dumped and diffed
+  against ours. Crypto configuration was identical, which pointed at the key bytes themselves.
+* **Not yet:** an authenticated 9P attach over TCP. The server answers on 564 and negotiates
+  `version`, then (correctly) refuses an unauthenticated `attach`; authenticating needs the
+  node's key, and the C6 has no identity store yet (45.8). The shell has no `ping`, so "ping
+  both ways" is host-to-board only for now. The kernel froze three times during this work
+  (once each during a join, a scan and early after boot) -- under investigation.
+
 ## 5. Milestones
 
 Each milestone ends with a verification that can be repeated and a commit
@@ -653,11 +690,12 @@ by flashing*.
   `test_radio_scan` (16/16 on the suite; needs one AP in range). Not yet: association
   (supplicant, 45.7) — and the scan's `authmode` is wrong (all 1) because IE parsing is the
   supplicant's.
-* **45.7 Associate (WPA2-PSK) and DHCP.** Supplicant integration, then the
-  existing phase-19 stack with a new `netif` over the blob's `esp_wifi_internal_tx`
-  / rx callback (the CYW43 `netif` in `drivers/cyw43_rp2350.c` is the
-  template). Verifies: ping both ways, 9P over TCP/564 on the board, the
-  existing `tests/hw` network checks adapted.
+* **45.7 Associate (WPA2-PSK) and DHCP — DONE 2026-10-06: the board joins WPA2-PSK
+  from a cold boot, gets its address by DHCP and answers ping.** Supplicant (IDF's, in the
+  radio domain), `wlan0` over frame rings onto the phase-19 stack, DHCP client, factory MAC
+  from eFuse (§4.9). Hardware tests: `test_radio_join`, `test_radio_ip` (lease + host ping;
+  17/17 on the suite). Not yet: authenticated 9P over TCP (needs the identity store, 45.8),
+  a shell `ping`.
 * **45.8 Unattended operation.** Credentials stored like the identity record,
   rejoin after AP loss (phase-26's R5 behaviour), watchdog.
 * **45.9 Taint flag, `/proc/node`, tests.** §2 delivered (the flag could

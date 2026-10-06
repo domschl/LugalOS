@@ -29,6 +29,25 @@ extern int esp_supplicant_init(void);
 extern int esp_wifi_connect_internal(void);
 int esp_wifi_connect(void) { return esp_wifi_connect_internal(); }
 
+/* The chip ROM's own debug prints (its PHY and clock code call ets_printf) go to its console -- here the
+ * USB-Serial/JTAG peripheral, which the radio's domain has no business touching (a load fault at
+ * 0x6000f004 on the first cold run). The ROM's character sink is replaceable; this one collects a line
+ * and hands it to the radio's log. */
+extern void rom_install_putc1(void (*fn)(char)) __asm__("radio_ets_install_putc1");
+extern void rom_install_putc2(void (*fn)(char)) __asm__("radio_ets_install_putc2");
+static void rom_putc(char c) {
+    static char line[96];
+    static unsigned n;
+    if (c == '\r') return;
+    if (c == '\n' || n == sizeof line - 1) {
+        line[n] = 0;
+        if (n) radio_osi_log_write(3, "rom", "%s", line);
+        n = 0;
+        if (c == '\n') return;
+    }
+    line[n++] = c;
+}
+
 /* A ROM function, under the radio_ name tools/c6_radio_libs.py gives it an address for. */
 extern void rom_update_cpu_frequency(uint32_t ticks_per_us) __asm__("radio_ets_update_cpu_frequency");
 
@@ -54,6 +73,8 @@ void radio_main(uintptr_t arg) {
     /* The ROM's own idea of the CPU frequency: 1000 us of ets_delay_us measured as
      * 330 us until told (45.3a). The PHY uses ets_delay_us. */
     rom_update_cpu_frequency(160);
+    rom_install_putc1(rom_putc);
+    rom_install_putc2(0);
 
     /* The thread that runs the blob's timer callbacks (esp_timer in IDF), and the interrupt thread. */
     if (radio_thread_create(radio_timer_thread, 0, 3072, 22) < 0) { RLOG("no timer thread"); radio_fail(ctx); }
@@ -63,8 +84,8 @@ void radio_main(uintptr_t arg) {
     RLOG("coex_init -> %d", r);
     ctx->stage = RADIO_STAGE_COEX;
 
-    esp_wifi_internal_set_log_level(WIFI_LOG_VERBOSE);
-    esp_wifi_internal_set_log_mod(WIFI_LOG_MODULE_ALL, WIFI_LOG_SUBMODULE_ALL, true);   /* the blob says why it refuses (esp_wifi_set_log_level() in IDF) */
+    esp_wifi_internal_set_log_level(WIFI_LOG_INFO);   /* esp_wifi_set_log_level() in IDF, at CONFIG_LOG_DEFAULT_LEVEL */
+    esp_wifi_internal_set_log_mod(WIFI_LOG_MODULE_ALL, WIFI_LOG_SUBMODULE_ALL, true);
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     r = esp_wifi_init_internal(&cfg);
     RLOG("esp_wifi_init_internal -> 0x%x", r);
@@ -124,7 +145,7 @@ void radio_main(uintptr_t arg) {
         wifi_config_t wc = { 0 };
         for (int i = 0; i < 32 && ctx->ssid[i]; i++) wc.sta.ssid[i] = (uint8_t)ctx->ssid[i];
         for (int i = 0; i < 64 && ctx->pass[i]; i++) wc.sta.password[i] = (uint8_t)ctx->pass[i];   /* 64 hex = a raw PSK */
-        wc.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+        wc.sta.threshold.authmode = ctx->pass[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;   /* no key: an open network */
         if (ctx->best_rssi > -127) {
             wc.sta.bssid_set = true;
             for (int k = 0; k < 6; k++) wc.sta.bssid[k] = ctx->best_bssid[k];
@@ -161,8 +182,10 @@ void radio_main(uintptr_t arg) {
     /* From here the main thread is the event pump: link state and rejoin. Without a join there is nothing
      * more to do and it ends. */
     if (ctx->join && r == 0) {
+        uint32_t tick = 0;
         for (;;) {
             int32_t id; uint8_t d[48]; uint32_t sz;
+            if ((++tick % 5) == 0) radio_plat_phy_track();      /* IDF's 1 s PLL-tracking timer */
             while (radio_osi_event_pop(&id, d, &sz)) {
                 if (id == WIFI_EVENT_STA_CONNECTED) ctx->connected = 1;
                 if (id == WIFI_EVENT_STA_DISCONNECTED) { ctx->connected = 0; ctx->disc_reason = sz > 39 ? d[39] : 255; retry_in = 10; }

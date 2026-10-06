@@ -60,8 +60,8 @@
 /* The C6 has sixteen PMP entries (45.3a measured it) and nothing hardwired
  * ahead of them. The radio's domain (45.6) needs about ten: its own text, its
  * state, its heap, a stack page, the ROM's code and data, and the peripheral
- * pages the PHY and the modem clocks live in. Twelve leaves two spare. */
-#define MEM_DOMAIN_MAX_REGIONS 12
+ * pages the PHY and the modem clocks live in. Fourteen leaves two spare (the radio's thirteen: text, state, shim text and state, heap, stack, ROM code and data, modem, PMU, PCR, UART0, SAR ADC). */
+#define MEM_DOMAIN_MAX_REGIONS 14
 #else
 #define MEM_DOMAIN_MAX_REGIONS 5
 #endif

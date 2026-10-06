@@ -22,6 +22,7 @@
 
 #include "kernel/radio_c6.h"
 #include "kernel/sched.h"
+#include "kernel/time.h"
 #include "kernel/radio_intr.h"
 #include "kernel/kobj_sched.h"
 #include "net/netif.h"
@@ -72,6 +73,12 @@ static int g_rpid = -1;
  * and the one that is ours (it grants the radio exactly three peripheral windows), so
  * the APM is opened for all three REE modes (R/W/X each); the PMP still decides. */
 #define HP_APM_REGION0_PMS_ATTR (*(volatile uint32_t *)0x6009900cu)
+/* The LP APM fences the LP peripherals (PMU, LP clock/reset, LP_AON) the same way, and its reset state is
+ * just as closed. The PHY library switches the RF blocks' power (PMU_RF_PWC: the TX/RX, clock-generator and
+ * PLL I2C buses) itself while it calibrates; from U-mode, behind a closed LP APM, those writes vanished and
+ * a cold chip's PLL calibration timed out ("pll_cal exceeds 2ms", no access point found). Opened like the
+ * HP APM; the PMP grants the radio only the PMU/LP_AON window of it. */
+#define LP_APM_REGION0_PMS_ATTR (*(volatile uint32_t *)0x600b380cu)
 
 static void radio_task(void *arg) {
     (void)arg;
@@ -83,6 +90,21 @@ static void radio_task(void *arg) {
     ctx->stage = RADIO_STAGE_NONE;
 
     HP_APM_REGION0_PMS_ATTR = 0x777u;
+    LP_APM_REGION0_PMS_ATTR = 0x777u;
+    /* The chip's boot-time clock setup (drivers/radio/plat_esp32c6.c) runs here, in M-mode, not in the
+     * radio's domain: part of it writes the LP_CLKRST block, which is behind the LP APM -- a second
+     * permission controller, closed to U-mode by reading zeros and dropping writes, exactly as the HP
+     * APM was. Run from U-mode the modem's time counter never started and the PHY waited on it forever
+     * (a cold boot; a RAM load hid it with state the previous firmware left). */
+    {
+        extern void pmu_init(void);              /* IDF's: the power management unit's active/modem/sleep parameters */
+        extern void radio_plat_early_init(void);
+        extern void radio_plat_cpu_to_pll(void);
+        radio_plat_early_init();                 /* modem clock gating and the analog I2C master, which the PLL setup needs */
+        radio_plat_cpu_to_pll();                 /* a flash boot leaves the CPU on the 40 MHz crystal, PLL off */
+        pmu_init();
+        radio_plat_early_init();
+    }
     radio_intr_reset();
     for (volatile char *p = _radio_bss_start; p < _radio_bss_end; p++) *p = 0;   /* not in the image */
     mem_domain_init(&g_rdomain);
@@ -98,7 +120,13 @@ static void radio_task(void *arg) {
     bad |= mem_domain_add(&g_rdomain, 0x600A0000u, 65536, MEM_R | MEM_W);        /* MAC, baseband, PHY, modem */
     bad |= mem_domain_add(&g_rdomain, 0x600B0000u, 8192, MEM_R | MEM_W);         /* PMU, LP_AON */
     bad |= mem_domain_add(&g_rdomain, 0x60096000u, 4096, MEM_R | MEM_W);         /* PCR */
-    bad |= mem_domain_add(&g_rdomain, 0x6000E000u, 4096, MEM_R | MEM_W);         /* SAR ADC (the PHY's temperature sensor) */
+    /* UART0: the chip ROM's PHY and clock code waits for its transmitter to drain before it changes a
+     * clock (uart_tx_wait_idle reads UART_STATUS) -- found as a load fault at 0x6000001c on the first
+     * cold run. */
+    bad |= mem_domain_add(&g_rdomain, 0x60000000u, 4096, MEM_R | MEM_W);
+    /* And the SAR ADC, which holds the temperature sensor the PHY's calibration reads: not touched on a
+     * warm chip, a load fault at 0x6000e000 on a cold one. */
+    bad |= mem_domain_add(&g_rdomain, 0x6000E000u, 4096, MEM_R | MEM_W);
     if (bad || task_set_domain(sched_current_pid(), &g_rdomain) != 0) {
         printk("[radio] Refusing to enter U-mode: the domain is not enforceable\n");
         ctx->stage = RADIO_STAGE_FAILED;
@@ -108,6 +136,27 @@ static void radio_task(void *arg) {
 }
 
 extern volatile int g_kobj_trace;
+/* Bring-up probe: is the modem's time counter (0x600AD000) running, before and after the early
+ * clock setup? M-mode, no domain: the setup code is plain register writes. */
+void radio_c6_probe(void) {
+#if defined(CONFIG_RADIO_C6)
+    extern void radio_plat_early_init(void);
+    volatile uint32_t *c = (volatile uint32_t *)0x600AD000u;
+    uint32_t a = *c; for (volatile int i = 0; i < 400000; i++) { } uint32_t b = *c;
+    cprintf("probe: modem counter before early init: %08x -> %08x (%s)\n", (unsigned)a, (unsigned)b, a != b ? "running" : "STOPPED");
+    *(volatile uint32_t *)0x6009900cu = 0x777u;
+    radio_plat_early_init();
+    a = *c; for (volatile int i = 0; i < 400000; i++) { } b = *c;
+    cprintf("probe: after early init: %08x -> %08x (%s)\n", (unsigned)a, (unsigned)b, a != b ? "running" : "STOPPED");
+    {   /* the counter's rate against the system timer (XTAL-derived, 1 us resolution) */
+        uint64_t t0 = time_get_us(); uint32_t c0 = *c;
+        task_sleep_ms(200);
+        uint64_t t1 = time_get_us(); uint32_t c1 = *c;
+        cprintf("probe: modem counter %u ticks in %u us (system timer)\n", (unsigned)(c1 - c0), (unsigned)(t1 - t0));
+    }
+#endif
+}
+
 void radio_c6_stats(void) {
 #if defined(CONFIG_RADIO_C6)
     const radio_ctx_t *c = (const radio_ctx_t *)g_rstack;

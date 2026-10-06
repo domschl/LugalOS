@@ -49,6 +49,7 @@ long ksys(long nr, long a1, long a2, long a3, long a4, long a5) {
 typedef struct {
     uheap_t     heap;
     long        heap_lock;               /* a kernel mutex handle */
+    uint32_t    alloc_fails;             /* diagnostic: failed heap allocations */
     nvs_store_t nvs;
     long        nvs_lock;
     struct { int32_t pid; long sem; } tsem[TSEM_MAX];
@@ -60,10 +61,12 @@ RADIO_DATA static radio_state_t g_r;
 
 /* ---- heap: the radio's own, serialised by one kernel mutex --------------- */
 
+RADIO_TEXT void radio_osi_log_write(unsigned level, const char *tag, const char *format, ...);
 static RADIO_TEXT void *r_malloc(uint32_t n) {
     K(KOBJ_OP_MUTEX_LOCK, g_r.heap_lock, FOREVER, 0, 0, 0);
     void *p = uheap_alloc(&g_r.heap, n);
     K(KOBJ_OP_MUTEX_UNLOCK, g_r.heap_lock, 0, 0, 0, 0);
+    if (!p && g_r.alloc_fails++ < 16) radio_osi_log_write(3, "radio", "heap: alloc of %u bytes FAILED", (unsigned)n);
     return p;
 }
 

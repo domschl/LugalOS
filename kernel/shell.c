@@ -3601,6 +3601,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
             for (unsigned long i = 0; i < n; i++) cprintf("%08lx: %08lx\n", a + 4 * i, (unsigned long)*(volatile uint32_t *)(a + 4 * i));
         }
         return;
+    } else if (strcmp(cmd_line, "radio probe") == 0) {
+        radio_c6_probe();
+        return;
     } else if (strcmp(cmd_line, "radio stats") == 0) {
         radio_c6_stats();
         return;
@@ -3611,7 +3614,8 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         (void)radio_c6_start(NULL, NULL);
         return;
     } else if (strncmp(cmd_line, "radio join ", 11) == 0) {
-        /* `radio join <ssid> <64-hex psk>` -- the derived PSK, never a passphrase (as `wifi join`). */
+        /* `radio join <ssid> <64-hex psk>` -- the derived PSK, never a passphrase (as `wifi join`).
+         * `radio join <ssid>` alone joins an open network. */
         char ssid[33], psk[65];
         const char *a = cmd_line + 11;
         uint32_t i = 0, j = 0;
@@ -3621,7 +3625,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         while (*a == ' ') a++;
         while (*a && *a != ' ' && j < 64) psk[j++] = *a++;
         psk[j] = 0;
-        if (i == 0 || j != 64) { cprintf("usage: radio join <ssid> <64-hex psk>\n"); return; }
+        if (i == 0 || (j != 64 && j != 0)) { cprintf("usage: radio join <ssid> [<64-hex psk>]  (no psk: an open network)\n"); return; }
         (void)radio_c6_start(ssid, psk);
         memset(psk, 0, sizeof psk);
         return;

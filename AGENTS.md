@@ -97,7 +97,12 @@ console, loading and reset all on it.
 * Leave it running by itself (stage 2 at `0x0` + the OS image, verified, then reset):
   `tools/c6flash.py build/esp32c6`
 * Test it: `python3 tests/hw/test_esp32c6.py` (loads the kernel itself; `--no-load` tests
-  what is running). 15 checks; skips when no board is attached.
+  what is running). 17 checks; skips when no board is attached. Wi-Fi checks read
+  `~/.config/lugalos/wifi.env` (never print it; only the derived 64-hex PSK goes to the board).
+* A cold chip and a warm one differ: PMU/LP registers survive a chip reset, so radio
+  bring-up changes must be checked after a USB power cycle (ask the user to unplug ~10 s).
+* A known-good reference exists: ESP-IDF's toolchain is installed (`~/.espressif`); its
+  `examples/wifi/getting_started/station` builds for the board, for register diffs.
 * The top 16 KB of SRAM (`0x4087c000`..) is the **ROM's data** — never hand it out; the
   ROM's Wi-Fi code keeps its state there.
 * Quick standalone checks (no kernel): `tools/build_minimal_esp32c6.sh run`,

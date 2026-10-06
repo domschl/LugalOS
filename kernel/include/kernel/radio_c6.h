@@ -7,6 +7,7 @@ int radio_c6_start(const char *ssid, const char *psk);
 /* Trace every kernel-object call the radio makes (kernel/kobj_sys.c). */
 void radio_c6_trace(int on);
 void radio_c6_stats(void);
+void radio_c6_probe(void);
 /* The wlan0 interface, once the radio has joined a network (NULL before). */
 struct netif;
 struct netif *radio_c6_netif(void);

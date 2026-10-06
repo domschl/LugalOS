@@ -15,7 +15,9 @@
  * register windows PCR, PMU and the modem block granted. The QEMU test
  * provides stubs. */
 
+void radio_plat_early_init(void);                 /* the boot-time modem/analog clock setup IDF has already done (once, first) */
 void radio_plat_phy_enable(void);                 /* esp_phy_enable(PHY_MODEM_WIFI); phy_wifi_enable_set(1) */
+void radio_plat_phy_track(void);                  /* phy_track_pll(): once a second while the PHY is on */
 void radio_plat_phy_disable(void);                /* phy_wifi_enable_set(0); esp_phy_disable(PHY_MODEM_WIFI) */
 int  radio_plat_phy_update_country(const char *country);   /* esp_phy_update_country_info() */
 void radio_plat_wifi_reset_mac(void);             /* modem_clock_module_mac_reset(PERIPH_WIFI_MODULE) */

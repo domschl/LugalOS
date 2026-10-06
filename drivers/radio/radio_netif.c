@@ -58,8 +58,17 @@ static void tx_thread(void *unused) {
     }
 }
 
+/* IDF's wifi_default.c registers these with the blob when the interface starts (esp_netif's reference
+ * counting of a TCP/IP stack buffer that a zero-copy transmit may still hold). Our transmit copies the frame
+ * into a ring slot, so there is never a stack buffer to count; registered anyway so that the blob sees the
+ * same interface start as under IDF. */
+static void netstack_buf_ref(void *b) { (void)b; }
+static void netstack_buf_free(void *b) { (void)b; }
+
 bool radio_netif_start(radio_ctx_t *ctx) {
     g_ctx = ctx;
+    int nb = esp_wifi_internal_reg_netstack_buf_cb(netstack_buf_ref, netstack_buf_free);
+    radio_osi_log_write(3, "radio", "reg_netstack_buf_cb -> 0x%x", nb);
     int rr = esp_wifi_internal_reg_rxcb(WIFI_IF_STA, (wifi_rxcb_t)rx_cb);
     radio_osi_log_write(3, "radio", "reg_rxcb -> 0x%x", rr);
     if (rr != 0) return false;
