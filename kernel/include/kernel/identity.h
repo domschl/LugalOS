@@ -196,6 +196,9 @@ bool node_wlan_psk(uint8_t out[NODE_WLAN_PSK_LEN]);
 node_id_result_t node_identity_set_wlan(const char *ssid, uint32_t ssid_len,
                                         const uint8_t *psk, uint32_t psk_len);
 
+/* `wlan clear`: removes the SSID and the PSK -- the board no longer joins by itself at boot. */
+node_id_result_t node_identity_clear_wlan(void);
+
 /* --- Network autoconfig: the address, stored beside the credentials that
  * reach it. Read at net_task_start(), so a board that has one comes up on
  * the network with no boot script involved. --- */

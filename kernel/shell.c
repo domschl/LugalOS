@@ -719,7 +719,7 @@ static void cmd_help(void) {
     cprintf("                  - report uid/name/mac/key fingerprint, or set/provision/key (no args: report)\n");
     cprintf("  peers [add <name> <hex> [<aname>] [ro|rw]|remove <name>]\n");
     cprintf("                  - list grants (name/fingerprint/aname/mode), or add/remove one\n");
-    cprintf("  wlan [<ssid> <psk-hex>]\n");
+    cprintf("  wlan [<ssid> <psk-hex>|clear]\n");
     cprintf("                  - report ssid/psk fingerprint, or install a credential (derived PSK, not a passphrase)\n");
     cprintf("  dcf77selftest   - DCF-77 frame decoder against synthetic frames (no radio needed)\n");
     cprintf("  clockuiselftest - Pico-Clock-Green menu against synthetic key presses\n");
@@ -1952,6 +1952,13 @@ static void cmd_mqttcfg(const char *arg) {
 
 static void cmd_wlan(const char *arg) {
     if (!arg || !*arg) { wlan_print_report(); return; }
+
+    if (strcmp(arg, "clear") == 0) {
+        node_id_result_t rc = node_identity_clear_wlan();
+        if (rc == NODE_ID_OK) cprintf("wlan: cleared -- this board will not join a network by itself\n");
+        else                  cprintf("wlan: %s\n", node_id_result_str(rc));
+        return;
+    }
 
     char ssid[NODE_WLAN_SSID_MAX + 1], hexstr[80];
     const char *p = arg;

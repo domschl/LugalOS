@@ -745,7 +745,11 @@ by flashing*.
     so what keeps the board alive is ordinary tasks still being scheduled. The boot reports the
     ROM's reset cause (`wdt`, `[WDT] last reset: ...`). `wdt test` withholds the feed: verified --
     the board reset, came back as "watchdog (MWDT0, system)" and rejoined by itself.
-  - *Not yet:* "AP absent at boot, appears later" tested only in its two halves.
+  - *AP absent at start, appears later:* verified 2026-10-06 with an open guest network: the radio
+    started with it switched off (wlan0 link down, retries 2/5/15 s then every 30 s, quiet), it was
+    switched on ~3.5 min later, the next retry joined ("link up again after 8 attempts") and DHCP
+    leased 192.168.179.2 13 s after. `wlan clear` (new) withdraws the record's credentials -- the
+    intent to join -- as `netcfg clear` does the address.
 * **45.9 Taint flag, `/proc/node`, tests — DONE 2026-10-06.** §2 as specified:
   `CONFIG_TAINT_BLOB` is set by the build that links the Wi-Fi libraries and by nothing else
   (`kernel/include/kernel/taint.h`); the boot banner and `/proc/version` append

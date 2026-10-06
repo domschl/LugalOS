@@ -294,6 +294,9 @@ typedef struct {
     const uint8_t *key;     uint32_t key_len;
     const char    *ssid;    uint32_t ssid_len;
     const uint8_t *psk;     uint32_t psk_len;     /* NODE_WLAN_PSK_LEN bytes, or NULL */
+    /* Withdraws the credentials (both, they are one thing): stored WLAN credentials are the intent to
+     * join (autostart), so dropping that intent has to be expressible too (45.8). */
+    bool           clear_wlan;
     /* The IPv4 config, as one 12-byte blob. `clear_ipv4` is not the same as
      * leaving `ipv4` NULL: NULL means "carry whatever is on record forward",
      * which is the right default for every other setter, while clearing has
@@ -400,7 +403,7 @@ static int identity_store_write(const identity_patch_t *patch) {
     if (patch->ssid) {
         final_ssid_len = patch->ssid_len;
         memcpy(final_ssid, patch->ssid, final_ssid_len);
-    } else if (old_valid) {
+    } else if (old_valid && !patch->clear_wlan) {
         int n = idstore_get_field(oldp, IDSTORE_FIELD_WLAN_SSID, final_ssid, sizeof(final_ssid));
         if (n > 0) final_ssid_len = (uint32_t)n;
     }
@@ -410,7 +413,7 @@ static int identity_store_write(const identity_patch_t *patch) {
     if (patch->psk) {
         memcpy(final_psk, patch->psk, sizeof(final_psk));
         have_psk = true;
-    } else if (old_valid) {
+    } else if (old_valid && !patch->clear_wlan) {
         have_psk = idstore_get_field(oldp, IDSTORE_FIELD_WLAN_PSK, final_psk, sizeof(final_psk)) == (int)sizeof(final_psk);
     }
 
@@ -840,6 +843,13 @@ node_id_result_t node_identity_set_ipv4(const uint8_t ip[NODE_IPV4_LEN],
     memcpy(blob + 2 * NODE_IPV4_LEN, gw,   NODE_IPV4_LEN);
 
     identity_patch_t patch = { .ipv4 = blob };
+    if (identity_store_write(&patch) != 0) return NODE_ID_ERR_WRITE_FAILED;
+    return NODE_ID_OK;
+}
+
+node_id_result_t node_identity_clear_wlan(void) {
+    if (!identity_store_device()) return NODE_ID_ERR_NO_BACKEND;
+    identity_patch_t patch = { .clear_wlan = true };
     if (identity_store_write(&patch) != 0) return NODE_ID_ERR_WRITE_FAILED;
     return NODE_ID_OK;
 }
