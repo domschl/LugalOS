@@ -731,6 +731,7 @@ set(SOURCES
     # under it are -- the fixed-point and epoch arithmetic is the fiddly part,
     # and arithmetic should not be debugged by flashing.
     net/ntp.c
+    net/dhcp.c
     net/ntp_server.c
     # Q1 (plan/phase26_mqtt_and_environment_sensors.md): the MQTT 3.1.1
     # client. Built for every target for the same reason the SNTP client
@@ -970,12 +971,12 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
     # 45.6: the Wi-Fi radio. The kernel half is always built (it says so when there
     # is no blob); the rest only with an ESP-IDF tree to take headers and archives
     # from (cmake/radio_esp32c6.cmake).
-    list(APPEND SOURCES kernel/radio_c6.c kernel/radio_intr.c)
+    list(APPEND SOURCES kernel/radio_c6.c kernel/radio_intr.c kernel/radio_netif_c6.c)
     include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/radio_esp32c6.cmake)
     if(LUGALOS_RADIO_C6)
         add_compile_definitions(CONFIG_RADIO_C6=1)
         set(RADIO_C6_SOURCES drivers/radio/esp32c6_osi_table.c drivers/radio/radio_main.c
-            drivers/radio/radio_libc.c drivers/radio/plat_esp32c6.c drivers/radio/radio_supp_os.c)
+            drivers/radio/radio_libc.c drivers/radio/plat_esp32c6.c drivers/radio/radio_supp_os.c drivers/radio/radio_netif.c)
         list(APPEND SOURCES ${RADIO_C6_SOURCES} ${LUGALOS_RADIO_IDF_SOURCES} ${LUGALOS_RADIO_SUP_SOURCES})
         # IDF's headers as system headers, so only *our* warnings count.
         set(_radio_opts "")

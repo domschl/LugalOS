@@ -24,6 +24,7 @@ esp_event_base_t const WIFI_EVENT = "WIFI_EVENT";
 /* IDF's wpa_supplicant (compiled into this domain, cmake/radio_esp32c6.cmake): registers its
  * callbacks with the blob and starts its timer loop. */
 extern int esp_supplicant_init(void);
+extern int esp_wifi_statis_dump(uint32_t modules);
 
 /* IDF's esp_wifi_connect() is a thin wrapper over the blob's internal entry (esp_wifi/src). */
 extern int esp_wifi_connect_internal(void);
@@ -34,19 +35,30 @@ extern void rom_update_cpu_frequency(uint32_t ticks_per_us) __asm__("radio_ets_u
 
 #define RLOG(...) radio_osi_log_write(3, "radio", __VA_ARGS__)
 
+static void radio_exit(void) {
+    register long a0 __asm__("a0") = SYS_UEXIT;        /* returning from the entry would jump to 0 */
+    __asm__ volatile("ecall" : "+r"(a0) :: "memory");
+    for (;;) { }
+}
+
+static void radio_fail(radio_ctx_t *ctx) { ctx->stage = RADIO_STAGE_FAILED; ctx->done = 1; radio_exit(); }
+
 void radio_main(uintptr_t arg) {
     radio_ctx_t *ctx = (radio_ctx_t *)arg;
 
-    if (!radio_osi_init(ctx->arena, ctx->arena_bytes)) { ctx->stage = RADIO_STAGE_FAILED; return; }
+    /* The frame rings occupy the front of the arena; the heap is the rest. */
+    ctx->rings = (rn_rings_t *)ctx->arena;
+    const uint32_t ring_bytes = (sizeof(rn_rings_t) + 15u) & ~15u;       /* the heap wants 8-byte alignment */
+    if (!radio_osi_init((uint8_t *)ctx->arena + ring_bytes, ctx->arena_bytes - ring_bytes)) radio_fail(ctx);
     ctx->stage = RADIO_STAGE_OSI;
 
     /* The ROM's own idea of the CPU frequency: 1000 us of ets_delay_us measured as
      * 330 us until told (45.3a). The PHY uses ets_delay_us. */
     rom_update_cpu_frequency(160);
 
-    /* The thread that runs the blob's timer callbacks (esp_timer in IDF). */
-    if (radio_thread_create(radio_timer_thread, 0, 3072, 22) < 0) { RLOG("no timer thread"); ctx->stage = RADIO_STAGE_FAILED; return; }
-    if (!radio_osi_start_isr_thread()) { RLOG("no interrupt thread"); ctx->stage = RADIO_STAGE_FAILED; return; }
+    /* The thread that runs the blob's timer callbacks (esp_timer in IDF), and the interrupt thread. */
+    if (radio_thread_create(radio_timer_thread, 0, 3072, 22) < 0) { RLOG("no timer thread"); radio_fail(ctx); }
+    if (!radio_osi_start_isr_thread()) { RLOG("no interrupt thread"); radio_fail(ctx); }
 
     int r = coex_init();
     RLOG("coex_init -> %d", r);
@@ -67,6 +79,7 @@ void radio_main(uintptr_t arg) {
         r = esp_wifi_start();
         RLOG("esp_wifi_start -> 0x%x", r);
         ctx->rc_start = r;
+        esp_wifi_get_mac(WIFI_IF_STA, ctx->mac);
         if (r == 0) ctx->stage = RADIO_STAGE_STARTED;
     }
 
@@ -91,7 +104,11 @@ void radio_main(uintptr_t arg) {
         if (n) ctx->stage = RADIO_STAGE_SCANNED;
     }
 
+    int retry_in = 0;
     if (r == 0 && ctx->join) {
+        /* As esp_netif does when it attaches to the station: the receive callback is in place before the
+         * connection, so the first frame after the handshake has somewhere to go. */
+        if (!radio_netif_start(ctx)) RLOG("netif start failed");
         wifi_config_t wc = { 0 };
         for (int i = 0; i < 32 && ctx->ssid[i]; i++) wc.sta.ssid[i] = (uint8_t)ctx->ssid[i];
         for (int i = 0; i < 64 && ctx->pass[i]; i++) wc.sta.password[i] = (uint8_t)ctx->pass[i];   /* 64 hex = a raw PSK */
@@ -99,22 +116,46 @@ void radio_main(uintptr_t arg) {
         wc.sta.pmf_cfg.capable = true;
         r = esp_wifi_set_config(WIFI_IF_STA, &wc);
         RLOG("esp_wifi_set_config -> 0x%x", r);
+        /* No modem sleep: the blob's power save lets the RF and the MAC doze between beacons through the
+         * PMU's modem state (sleep retention, REGDMA), none of which this radio has. IDF's default is
+         * WIFI_PS_MIN_MODEM; this is NONE until power saving is ported deliberately. */
+        esp_wifi_set_ps(WIFI_PS_NONE);
         r = esp_wifi_connect();
         RLOG("esp_wifi_connect -> 0x%x", r);
-        for (int t = 0; t < 200 && !ctx->connected; t++) {           /* 20 s */
+        /* Like IDF's default event handler: a disconnect while we mean to be connected is answered with
+         * esp_wifi_connect() again, after a short pause (a stale session at the AP, say, which kicks a
+         * station that rebooted without deauthenticating, is gone a moment later). */
+        for (int t = 0; t < 300 && !ctx->connected; t++) {           /* 30 s */
             int32_t id; uint8_t d[48]; uint32_t sz;
             while (radio_osi_event_pop(&id, d, &sz)) {
                 RLOG("event %d (%u bytes)", (int)id, (unsigned)sz);
                 if (id == WIFI_EVENT_STA_CONNECTED) ctx->connected = 1;
-                if (id == WIFI_EVENT_STA_DISCONNECTED) ctx->disc_reason = sz > 39 ? d[39] : 255;
+                if (id == WIFI_EVENT_STA_DISCONNECTED) { ctx->disc_reason = sz > 39 ? d[39] : 255; retry_in = 10; }
             }
+            if (retry_in && --retry_in == 0) { r = esp_wifi_connect(); RLOG("reconnect -> 0x%x", r); r = 0; }
             radio_osi_task_delay(100);
         }
-        RLOG("join %s", ctx->connected ? "succeeded" : "FAILED");
+        RLOG("join %s; radio heap free %u of %u", ctx->connected ? "succeeded" : "FAILED",
+             (unsigned)radio_osi_get_free_heap_size(), (unsigned)ctx->arena_bytes);
         if (ctx->connected) ctx->stage = RADIO_STAGE_JOINED;
     }
+    ctx->done = 1;
 
-    register long a0 __asm__("a0") = SYS_UEXIT;        /* returning would jump to 0 */
-    __asm__ volatile("ecall" : "+r"(a0) :: "memory");
-    for (;;) { }
+    /* From here the main thread is the event pump: link state and rejoin. Without a join there is nothing
+     * more to do and it ends. */
+    if (ctx->join && r == 0) {
+        int dump_in = 60;      /* DIAGNOSTIC: the blob's own counters, once, ~12 s after the join */
+        for (;;) {
+            int32_t id; uint8_t d[48]; uint32_t sz;
+            if (dump_in && --dump_in == 0) { RLOG("-- statistics --"); esp_wifi_statis_dump(0x7f); }
+            while (radio_osi_event_pop(&id, d, &sz)) {
+                if (id == WIFI_EVENT_STA_CONNECTED) ctx->connected = 1;
+                if (id == WIFI_EVENT_STA_DISCONNECTED) { ctx->connected = 0; ctx->disc_reason = sz > 39 ? d[39] : 255; retry_in = 10; }
+                RLOG("event %d", (int)id);
+            }
+            if (retry_in && --retry_in == 0) esp_wifi_connect();
+            radio_osi_task_delay(200);
+        }
+    }
+    radio_exit();
 }

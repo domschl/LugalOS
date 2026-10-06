@@ -55,7 +55,8 @@ def check(build):
 # cannot execute (45.6: a struct copy in radio_main.c compiled to `memcpy` and faulted
 # at 0x420ba702, kernel text; radio_redirect.h is the fix, this is the check).
 C6_OBJS = ["drivers/radio/radio_main.c.obj", "drivers/radio/esp32c6_osi_table.c.obj",
-           "drivers/radio/plat_esp32c6.c.obj", "drivers/radio/radio_libc.c.obj"]
+           "drivers/radio/plat_esp32c6.c.obj", "drivers/radio/radio_libc.c.obj",
+           "drivers/radio/radio_supp_os.c.obj", "drivers/radio/radio_netif.c.obj"]
 
 
 def check_c6(build):

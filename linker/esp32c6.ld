@@ -89,7 +89,9 @@ SECTIONS
         *esp_wifi_regulatory.c.obj(.text .text.* .rodata .rodata.* .srodata .srodata.*)
         *ftm_load_calibration.c.obj(.text .text.* .rodata .rodata.* .srodata .srodata.*)
         *phy_init_data.c.obj(.text .text.* .rodata .rodata.* .srodata .srodata.*)
+        *regi2c_impl.c.obj(.text .text.* .rodata .rodata.* .srodata .srodata.*)
         *radio_supp_os.c.obj(.text .text.* .rodata .rodata.* .srodata .srodata.*)
+        *radio_netif.c.obj(.text .text.* .rodata .rodata.* .srodata .srodata.*)
         *esp-idf/components/wpa_supplicant/*(.text .text.* .rodata .rodata.* .srodata .srodata.*)
         . = ALIGN(4);
         _radio_text_end = .;
@@ -171,6 +173,7 @@ SECTIONS
         *esp_wifi_regulatory.c.obj(.data .data.* .sdata .sdata.*)
         *ftm_load_calibration.c.obj(.data .data.* .sdata .sdata.*)
         *phy_init_data.c.obj(.data .data.* .sdata .sdata.*)
+        *regi2c_impl.c.obj(.data .data.* .sdata .sdata.*)
         *esp-idf/components/wpa_supplicant/*(.data .data.* .sdata .sdata.*)
         *radio_libc.c.obj(.data .data.* .sdata .sdata.*)
         . = ALIGN(4);
@@ -192,7 +195,9 @@ SECTIONS
         *esp_wifi_regulatory.c.obj(.bss .bss.* .sbss .sbss.* COMMON)
         *ftm_load_calibration.c.obj(.bss .bss.* .sbss .sbss.* COMMON)
         *phy_init_data.c.obj(.bss .bss.* .sbss .sbss.* COMMON)
+        *regi2c_impl.c.obj(.bss .bss.* .sbss .sbss.* COMMON)
         *radio_supp_os.c.obj(.bss .bss.* .sbss .sbss.* COMMON)
+        *radio_netif.c.obj(.bss .bss.* .sbss .sbss.* COMMON)
         *esp-idf/components/wpa_supplicant/*(.bss .bss.* .sbss .sbss.* COMMON)
         *radio_libc.c.obj(.bss .bss.* .sbss .sbss.* COMMON)
         . = ALIGN(4);

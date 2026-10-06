@@ -103,6 +103,10 @@ uint32_t net_take_unclaimed(uint8_t *out);
  * when there is no interface to pump. */
 int net_task_start(void);
 
+/* Starts the DHCP client task (net/dhcp.c): waits for the interface's link, takes an address from the
+ * network's server, and renews it. Idempotent; returns the task's pid. */
+int dhcp_start(void);
+
 /* --- The shared transmit path ---
  * Callers write their payload at net_tx_payload() and hand the length to
  * net_tx_send(). One buffer, one frame in flight, by construction. */

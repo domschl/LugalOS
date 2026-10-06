@@ -121,6 +121,19 @@ static void modem_phy_clocks(void) {
     SET_PERI_REG_MASK(PMU_RF_PWC_REG, PMU_PERIF_I2C_RSTB);
 }
 
+/* IDF's pmu_init() -> esp_ocode_calib_init() (at a power-on reset): the RF block's resistor reference
+ * ("O-code"), taken from the chip's eFuse and forced into the ULP analog block over the analog I2C
+ * bus. Nothing of IDF's startup has run here, and the chip was power-cycled by a USB plug, not by us:
+ * the value is whatever the analog block powered up with. 1 Mbit/s DSSS (beacons, the handshake) works
+ * regardless; OFDM/HT data -- the DHCP exchange -- did not. */
+extern void _regi2c_impl_write_mask(uint8_t block, uint8_t host_id, uint8_t reg_add, uint8_t msb, uint8_t lsb, uint8_t data);
+static void rf_ocode_from_efuse(void) {
+    uint32_t ocode = (*(volatile uint32_t *)0x600B086Cu >> 9) & 0xffu;      /* EFUSE rd_sys_part1_data4.ocode */
+    _regi2c_impl_write_mask(0x61, 0, 6, 7, 0, (uint8_t)ocode);              /* I2C_ULP_EXT_CODE */
+    _regi2c_impl_write_mask(0x61, 0, 5, 6, 6, 1);                           /* I2C_ULP_IR_FORCE_CODE */
+    radio_osi_log_write(3, "plat", "o-code %u from eFuse", (unsigned)ocode);
+}
+
 static bool g_phy_calibrated;
 
 /* esp_phy_enable() -> esp_phy_load_cal_and_init(), for the first enable, without the
@@ -129,6 +142,7 @@ static bool g_phy_calibrated;
 void radio_plat_phy_enable(void) {
     modem_phy_clocks();
     if (!g_phy_calibrated) {
+        rf_ocode_from_efuse();
         radio_osi_log_write(3, "plat", "phy_version %s", get_phy_version_str());
         esp_phy_calibration_data_t *cal = radio_osi_zalloc(sizeof(*cal));
         if (!cal) { PLAT_TRACE("phy_enable: out of memory"); return; }

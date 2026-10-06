@@ -31,3 +31,27 @@ void *wps_get_wps_sm_cb(void) { return 0; }
 
 /* The authenticator side (SoftAP) is not built; esp_wpa_main.c's wpa_ap_rx_eapol still names it. */
 void wpa_receive(void *auth, void *sm, uint8_t *data, size_t len) { (void)auth; (void)sm; (void)data; (void)len; }
+
+/* The supplicant's debug prints (wpa_printf -> ESP_LOG*): one line each through the shim's log call.
+ * The ESP_LOG_VERSION 1 macros pass a pre-rendered level/tag/format to esp_log() and ask for a
+ * timestamp from esp_log_timestamp(). */
+#include <stdarg.h>
+uint32_t esp_log_timestamp(void) { return (uint32_t)(radio_osi_esp_timer_get_time() / 1000); }
+void esp_log(const void *config, const char *tag, const char *fmt, ...) {
+    (void)config;
+    va_list ap;
+    va_start(ap, fmt);
+    radio_osi_log_writev(3, tag, fmt, ap);
+    va_end(ap);
+}
+
+/* DIAGNOSTIC: what the supplicant hands the blob when it installs a key (never the key itself). */
+extern int esp_wifi_set_sta_key_internal_real(int, const uint8_t *, int, int, uint8_t *, size_t, uint8_t *, size_t, int)
+    __asm__("esp_wifi_set_sta_key_internal");
+int radio_dbg_set_key(int alg, const uint8_t *addr, int idx, int tx, uint8_t *seq, size_t seq_len, uint8_t *key, size_t key_len, int flag) {
+    int r = esp_wifi_set_sta_key_internal_real(alg, addr, idx, tx, seq, seq_len, key, key_len, flag);
+    radio_osi_log_write(3, "radio", "set_key alg=%d addr=%02x:%02x:%02x idx=%d tx=%d seq_len=%u key_len=%u flag=%d -> %d", alg,
+                        addr ? addr[0] : 0, addr ? addr[1] : 0, addr ? addr[2] : 0, idx, tx, (unsigned)seq_len,
+                        (unsigned)key_len, flag, r);
+    return r;
+}

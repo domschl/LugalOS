@@ -61,8 +61,8 @@ extern void radio_osi_task_delay(uint32_t);
 #pragma once
 #define CONFIG_IDF_TARGET_ESP32C6 1
 #define CONFIG_SOC_WIFI_HE_SUPPORT 1
-#define CONFIG_LOG_DEFAULT_LEVEL 3
-#define CONFIG_LOG_MAXIMUM_LEVEL 3
+#define CONFIG_LOG_DEFAULT_LEVEL 5
+#define CONFIG_LOG_MAXIMUM_LEVEL 5
 #define CONFIG_LOG_VERSION 1
 #define CONFIG_LOG_MAXIMUM_EQUALS_DEFAULT 1
 #define CONFIG_LOG_TIMESTAMP_SOURCE_RTOS 1
@@ -70,11 +70,11 @@ extern void radio_osi_task_delay(uint32_t);
 #define CONFIG_ESP_COEX_ENABLED 1
 #define CONFIG_ESP_PHY_ENABLED 1
 #define CONFIG_ESP_WIFI_ENABLED 1
-#define CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM 10
-#define CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM 32
+#define CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM 8
+#define CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM 16
 #define CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER 1
 #define CONFIG_ESP_WIFI_TX_BUFFER_TYPE 1
-#define CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM 32
+#define CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM 16
 #define CONFIG_ESP_WIFI_STATIC_RX_MGMT_BUFFER 1
 #define CONFIG_ESP_WIFI_DYNAMIC_RX_MGMT_BUF 0
 #define CONFIG_ESP_WIFI_RX_MGMT_BUF_NUM_DEF 5
@@ -132,12 +132,13 @@ extern void radio_osi_task_delay(uint32_t);
         "${_C}/newlib/platform_include" "${_C}/esp_netif/include" "${_C}/esp_phy/include"
         "${_C}/riscv/include" "${_C}/esp_hal_gpio/include" "${_C}/esp_hal_gpio/esp32c6/include"
         "${_C}/esp_hw_support/port/esp32c6/include" "${_C}/esp_wifi/include/esp_private"
-        "${_C}/esp_wifi/include/local" "${_C}/esp_wifi/regulatory" "${_C}/hal/esp32c6/include" "${_C}/hal/platform_port/include" "${_C}/esp_phy/esp32c6/include" "${_C}/esp_hal_pmu/esp32c6/include" "${_C}/esp_hal_pmu/include")
+        "${_C}/esp_wifi/include/local" "${_C}/esp_wifi/regulatory" "${_C}/hal/esp32c6/include" "${_C}/hal/platform_port/include" "${_C}/esp_phy/esp32c6/include" "${_C}/esp_hal_pmu/esp32c6/include" "${_C}/esp_hal_pmu/include" "${_C}/esp_hal_regi2c/esp32c6/include" "${_C}/esp_hal_regi2c/include" "${_C}/esp_rom/esp32c6" "${_C}/soc/esp32c6/include/modem")
     set(LUGALOS_RADIO_DEFS CONFIG_IDF_TARGET_ESP32C6=1 CONFIG_SOC_WIFI_HE_SUPPORT=1 ESP_PLATFORM=1)
     set(LUGALOS_RADIO_IDF_SOURCES
         "${_C}/esp_wifi/regulatory/esp_wifi_regulatory.c"
         "${_C}/esp_wifi/src/ftm_load_calibration.c"
-        "${_C}/esp_phy/esp32c6/phy_init_data.c")
+        "${_C}/esp_phy/esp32c6/phy_init_data.c"
+        "${_C}/esp_hal_regi2c/esp32c6/regi2c_impl.c")
     # The supplicant: IDF's wpa_supplicant (station, WPA2-PSK, its own crypto -- no mbedtls, no
     # SAE/EAP/WPS/SoftAP), compiled into the radio domain. tools/c6_blob_spike/supplicant.sh
     # measured it at ~46 KB of text; 45.7 links it.
@@ -172,11 +173,12 @@ extern void radio_osi_task_delay(uint32_t);
         list(APPEND LUGALOS_RADIO_SUP_INC "${_d}")
     endforeach()
     set(LUGALOS_RADIO_SUP_DEFS ESP_SUPPLICANT IEEE8021X_EAPOL ESPRESSIF_USE CONFIG_IEEE80211W CONFIG_SHA256
-        CONFIG_NO_RADIUS CONFIG_CRYPTO_INTERNAL __ets__
+        CONFIG_NO_RADIUS CONFIG_CRYPTO_INTERNAL __ets__ DEBUG_PRINT
         # The kernel has its own SHA-256 under the same names (kernel/sha256.c), in kernel
         # text; the supplicant's copies are the radio domain's and take another name.
         sha256_init=wpa_sha256_init sha256_update=wpa_sha256_update sha256_final=wpa_sha256_final
-        hmac_sha256=wpa_hmac_sha256 sha256=wpa_sha256)
+        hmac_sha256=wpa_hmac_sha256 sha256=wpa_sha256
+        esp_wifi_set_sta_key_internal=radio_dbg_set_key)
     message(STATUS "C6 radio: ESP-IDF at ${LUGALOS_IDF_ROOT}")
 else()
     message(STATUS "C6 radio: no ESP-IDF tree found (set IDF_ROOT) -- building without the Wi-Fi blob")

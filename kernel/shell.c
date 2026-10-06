@@ -3601,6 +3601,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
             for (unsigned long i = 0; i < n; i++) cprintf("%08lx: %08lx\n", a + 4 * i, (unsigned long)*(volatile uint32_t *)(a + 4 * i));
         }
         return;
+    } else if (strcmp(cmd_line, "radio stats") == 0) {
+        radio_c6_stats();
+        return;
     } else if (strcmp(cmd_line, "radio trace on") == 0 || strcmp(cmd_line, "radio trace off") == 0) {
         radio_c6_trace(cmd_line[12] == 'o' && cmd_line[13] == 'n');
         return;
