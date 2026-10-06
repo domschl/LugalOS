@@ -111,6 +111,7 @@ console, loading and reset all on it.
   what is running). 19 checks (with WLAN credentials in the identity record the board
   joins by itself at boot and the radio-start tests watch that instead); skips when no board is attached. Wi-Fi checks read
   `~/.config/lugalos/wifi.env` (never print it; only the derived 64-hex PSK goes to the board).
+* I2C on the C6-Zero: GPIO0 = SDA, GPIO1 = SCL (100 kHz); `i2c scan`, `sensor`, `/proc/sensors`.
 * The hardware watchdog (MWDT0, 30 s) is armed at boot; `wdt` shows it and the last reset's
   cause, `wdt test` stops feeding it (the board resets -- only when that is the point).
 * A cold chip and a warm one differ: PMU/LP registers survive a chip reset, so radio

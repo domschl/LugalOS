@@ -415,8 +415,15 @@ static bool i2c_probe_addr(uint8_t addr) {
     }
     return false;
 }
-#elif defined(CONFIG_BOARD_ESP32P4)
-/* ESP32-P4 I2C0 -- E7, plan/phase27_esp32p4_bringup.md.
+#elif defined(CONFIG_BOARD_ESP32P4) || defined(CONFIG_BOARD_ESP32C6)
+/* Espressif's I2C controller: the ESP32-P4's I2C0 (E7, plan/phase27_esp32p4_bringup.md) and, since
+ * 45.10, the ESP32-C6's (plan/phase45_esp32c6.md). The C6's register map, bit positions and command
+ * opcodes are the P4's to the bit (checked against IDF's soc/esp32c6/register/soc/i2c_reg.h and
+ * esp_hal_i2c/esp32c6 i2c_ll.h); what differs is in the per-chip block below -- the base, the clock
+ * and reset, the GPIO matrix's offsets, the pins and signal numbers. Everything else -- the command
+ * lists, the timing, the bus clear and the recovery -- is one implementation, learned once on the P4.
+ *
+ * ESP32-P4 I2C0 -- E7.
  *
  * A different peripheral from RP2350's above, not a variant of it: that is a
  * Synopsys DW_apb_i2c driven by writing bytes into IC_DATA_CMD, this is
@@ -443,108 +450,131 @@ static bool i2c_probe_addr(uint8_t addr) {
  * are unsigned long constants rather than pointers. */
 #define REG(addr) (*(volatile uint32_t *)(uintptr_t)(addr))
 
-#define P4_I2C_BASE        0x500C4000UL
-#define P4_I2C_SCL_LOW     (P4_I2C_BASE + 0x00)
-#define P4_I2C_CTR         (P4_I2C_BASE + 0x04)
-#define P4_I2C_SR          (P4_I2C_BASE + 0x08)
-#define P4_I2C_TO          (P4_I2C_BASE + 0x0c)
-#define P4_I2C_FIFO_ST     (P4_I2C_BASE + 0x14)
-#define P4_I2C_FIFO_CONF   (P4_I2C_BASE + 0x18)
-#define P4_I2C_DATA        (P4_I2C_BASE + 0x1c)
-#define P4_I2C_INT_RAW     (P4_I2C_BASE + 0x20)
-#define P4_I2C_INT_CLR     (P4_I2C_BASE + 0x24)
-#define P4_I2C_SDA_HOLD    (P4_I2C_BASE + 0x30)
-#define P4_I2C_SDA_SAMPLE  (P4_I2C_BASE + 0x34)
-#define P4_I2C_SCL_HIGH    (P4_I2C_BASE + 0x38)
-#define P4_I2C_SCL_START_HOLD   (P4_I2C_BASE + 0x40)
-#define P4_I2C_SCL_RSTART_SETUP (P4_I2C_BASE + 0x44)
-#define P4_I2C_SCL_STOP_HOLD    (P4_I2C_BASE + 0x48)
-#define P4_I2C_SCL_STOP_SETUP   (P4_I2C_BASE + 0x4c)
-#define P4_I2C_FILTER_CFG  (P4_I2C_BASE + 0x50)
-#define P4_I2C_COMD(n)     (P4_I2C_BASE + 0x58 + 4u * (n))
-#define P4_I2C_SCL_ST_TO        (P4_I2C_BASE + 0x78)
-#define P4_I2C_SCL_MAIN_ST_TO   (P4_I2C_BASE + 0x7c)
-#define P4_I2C_SCL_SP_CONF      (P4_I2C_BASE + 0x80)
+#if defined(CONFIG_BOARD_ESP32P4)
+#define ESP_I2C_BASE        0x500C4000UL
+#else   /* ESP32-C6: I2C0 at DR_REG_I2C_EXT_BASE */
+#define ESP_I2C_BASE        0x60004000UL
+#endif
+#define ESP_I2C_SCL_LOW     (ESP_I2C_BASE + 0x00)
+#define ESP_I2C_CTR         (ESP_I2C_BASE + 0x04)
+#define ESP_I2C_SR          (ESP_I2C_BASE + 0x08)
+#define ESP_I2C_TO          (ESP_I2C_BASE + 0x0c)
+#define ESP_I2C_FIFO_ST     (ESP_I2C_BASE + 0x14)
+#define ESP_I2C_FIFO_CONF   (ESP_I2C_BASE + 0x18)
+#define ESP_I2C_DATA        (ESP_I2C_BASE + 0x1c)
+#define ESP_I2C_INT_RAW     (ESP_I2C_BASE + 0x20)
+#define ESP_I2C_INT_CLR     (ESP_I2C_BASE + 0x24)
+#define ESP_I2C_SDA_HOLD    (ESP_I2C_BASE + 0x30)
+#define ESP_I2C_SDA_SAMPLE  (ESP_I2C_BASE + 0x34)
+#define ESP_I2C_SCL_HIGH    (ESP_I2C_BASE + 0x38)
+#define ESP_I2C_SCL_START_HOLD   (ESP_I2C_BASE + 0x40)
+#define ESP_I2C_SCL_RSTART_SETUP (ESP_I2C_BASE + 0x44)
+#define ESP_I2C_SCL_STOP_HOLD    (ESP_I2C_BASE + 0x48)
+#define ESP_I2C_SCL_STOP_SETUP   (ESP_I2C_BASE + 0x4c)
+#define ESP_I2C_FILTER_CFG  (ESP_I2C_BASE + 0x50)
+#define ESP_I2C_COMD(n)     (ESP_I2C_BASE + 0x58 + 4u * (n))
+#define ESP_I2C_SCL_ST_TO        (ESP_I2C_BASE + 0x78)
+#define ESP_I2C_SCL_MAIN_ST_TO   (ESP_I2C_BASE + 0x7c)
+#define ESP_I2C_SCL_SP_CONF      (ESP_I2C_BASE + 0x80)
 
-#define P4_I2C_TIME_OUT_EN     (1u << 5)    /* TO: above the 5-bit value    */
-#define P4_I2C_SCL_FILTER_EN   (1u << 8)    /* FILTER_CFG, one per line     */
-#define P4_I2C_SDA_FILTER_EN   (1u << 9)
-#define P4_I2C_SCL_RST_SLV_EN  (1u << 0)    /* SCL_SP_CONF: clear the bus   */
-#define P4_I2C_SCL_RST_SLV_NUM(n) ((uint32_t)(n) << 1)
+#define ESP_I2C_TIME_OUT_EN     (1u << 5)    /* TO: above the 5-bit value    */
+#define ESP_I2C_SCL_FILTER_EN   (1u << 8)    /* FILTER_CFG, one per line     */
+#define ESP_I2C_SDA_FILTER_EN   (1u << 9)
+#define ESP_I2C_SCL_RST_SLV_EN  (1u << 0)    /* SCL_SP_CONF: clear the bus   */
+#define ESP_I2C_SCL_RST_SLV_NUM(n) ((uint32_t)(n) << 1)
 
-#define P4_I2C_SDA_FORCE_OUT  (1u << 0)
-#define P4_I2C_SCL_FORCE_OUT  (1u << 1)
-#define P4_I2C_MS_MODE        (1u << 4)
-#define P4_I2C_TRANS_START    (1u << 5)
-#define P4_I2C_CLK_EN         (1u << 8)
-#define P4_I2C_FSM_RST        (1u << 10)
-#define P4_I2C_CONF_UPGATE    (1u << 11)
-#define P4_I2C_RX_FIFO_RST    (1u << 12)
-#define P4_I2C_TX_FIFO_RST    (1u << 13)
-#define P4_I2C_FIFO_PRT_EN    (1u << 14)
+#define ESP_I2C_SDA_FORCE_OUT  (1u << 0)
+#define ESP_I2C_SCL_FORCE_OUT  (1u << 1)
+#define ESP_I2C_MS_MODE        (1u << 4)
+#define ESP_I2C_TRANS_START    (1u << 5)
+#define ESP_I2C_CLK_EN         (1u << 8)
+#define ESP_I2C_FSM_RST        (1u << 10)
+#define ESP_I2C_CONF_UPGATE    (1u << 11)
+#define ESP_I2C_RX_FIFO_RST    (1u << 12)
+#define ESP_I2C_TX_FIFO_RST    (1u << 13)
+#define ESP_I2C_FIFO_PRT_EN    (1u << 14)
 
-#define P4_I2C_INT_END_DETECT      (1u << 3)
-#define P4_I2C_INT_ARB_LOST        (1u << 5)
-#define P4_I2C_INT_TRANS_COMPLETE  (1u << 7)
-#define P4_I2C_INT_TIME_OUT        (1u << 8)
-#define P4_I2C_INT_NACK            (1u << 10)
+#define ESP_I2C_INT_END_DETECT      (1u << 3)
+#define ESP_I2C_INT_ARB_LOST        (1u << 5)
+#define ESP_I2C_INT_TRANS_COMPLETE  (1u << 7)
+#define ESP_I2C_INT_TIME_OUT        (1u << 8)
+#define ESP_I2C_INT_NACK            (1u << 10)
 
 /* Opcodes. See the header comment: these are the P4's, not ESP32's. */
-#define P4_CMD_RSTART 6u
-#define P4_CMD_WRITE  1u
-#define P4_CMD_STOP   2u
-#define P4_CMD_READ   3u
-#define P4_CMD_END    4u
+#define ESP_CMD_RSTART 6u
+#define ESP_CMD_WRITE  1u
+#define ESP_CMD_STOP   2u
+#define ESP_CMD_READ   3u
+#define ESP_CMD_END    4u
 
 /* op<<11 | ack_check_en<<8 | ack_value<<10 | byte_num */
-#define P4_CMD(op, ack_check, ack_val, n) \
+#define ESP_CMD(op, ack_check, ack_val, n) \
     (((uint32_t)(op) << 11) | ((uint32_t)(ack_check) << 8) | \
      ((uint32_t)(ack_val) << 10) | (uint32_t)(n))
 
+#if defined(CONFIG_BOARD_ESP32P4)
 #define P4_CLKRST_BASE      0x500E6000UL
 #define P4_SOC_CLK_CTRL2    (P4_CLKRST_BASE + 0x1c)   /* bit 12: I2C0 APB gate */
 #define P4_PERI_CLK_CTRL10  (P4_CLKRST_BASE + 0x40)   /* b0 src sel, b1 clk en */
 #define P4_HP_RST_EN1       (P4_CLKRST_BASE + 0xc4)   /* bit 22: I2C0 reset    */
+#define ESP_GPIO_BASE        0x500E0000UL
+#define ESP_GPIO_IN_OFF      0x158u
+#define ESP_GPIO_OUT_OFF     0x558u
+#define ESP_IOMUX_BASE       0x500E1000UL
+#define ESP_I2C_SDA_GPIO 7u
+#define ESP_I2C_SCL_GPIO 8u
+#define ESP_I2C_SDA_SIG  69u
+#define ESP_I2C_SCL_SIG  68u
+#else   /* ESP32-C6 */
+/* PCR: I2C_CONF (bit 0 APB clock, bit 1 reset) and I2C_SCLK_CONF (bit 20 source: 0 = XTAL, bits
+ * [19:12] divider, bit 22 enable) -- IDF's soc/esp32c6/register/soc/pcr_reg.h. */
+#define C6_PCR_I2C_CONF      0x60096020UL
+#define C6_PCR_I2C_SCLK_CONF 0x60096024UL
+#define ESP_GPIO_BASE        0x60091000UL
+#define ESP_GPIO_IN_OFF      0x154u
+#define ESP_GPIO_OUT_OFF     0x554u
+#define ESP_IOMUX_BASE       0x60090000UL
+/* The ESP32-C6-Zero's GPIO0 (SDA) and GPIO1 (SCL) -- also the 32 kHz crystal's pins, which this
+ * board does not fit, so their IO_MUX function 1 is plain GPIO. Signals I2CEXT0_SDA/SCL (46/45),
+ * IDF's soc/esp32c6/include/soc/gpio_sig_map.h. */
+#define ESP_I2C_SDA_GPIO 0u
+#define ESP_I2C_SCL_GPIO 1u
+#define ESP_I2C_SDA_SIG  46u
+#define ESP_I2C_SCL_SIG  45u
+#endif
+#define ESP_GPIO_ENABLE_W1TS (ESP_GPIO_BASE + 0x24)
+#define ESP_GPIO_PIN(n)      (ESP_GPIO_BASE + 0x74 + 4u * (n))
+#define ESP_GPIO_IN_SEL(sig) (ESP_GPIO_BASE + ESP_GPIO_IN_OFF + 4u * (sig))
+#define ESP_GPIO_OUT_SEL(n)  (ESP_GPIO_BASE + ESP_GPIO_OUT_OFF + 4u * (n))
+#define ESP_GPIO_PAD_DRIVER  (1u << 2)                 /* open drain           */
+#define ESP_IOMUX_PAD(n)     (ESP_IOMUX_BASE + 0x4 + 4u * (n))
+#define ESP_IOMUX_FUN_GPIO   (1u << 12)                /* MCU_SEL = 1          */
+#define ESP_IOMUX_FUN_IE     (1u << 9)
+#define ESP_IOMUX_FUN_PU     (1u << 8)
 
-#define P4_GPIO_BASE        0x500E0000UL
-#define P4_GPIO_ENABLE_W1TS (P4_GPIO_BASE + 0x24)
-#define P4_GPIO_PIN(n)      (P4_GPIO_BASE + 0x74 + 4u * (n))
-#define P4_GPIO_IN_SEL(sig) (P4_GPIO_BASE + 0x158 + 4u * (sig))
-#define P4_GPIO_OUT_SEL(n)  (P4_GPIO_BASE + 0x558 + 4u * (n))
-#define P4_GPIO_PAD_DRIVER  (1u << 2)                 /* open drain           */
-#define P4_IOMUX_PAD(n)     (0x500E1000UL + 0x4 + 4u * (n))
-#define P4_IOMUX_FUN_GPIO   (1u << 12)                /* MCU_SEL = 1          */
-#define P4_IOMUX_FUN_IE     (1u << 9)
-#define P4_IOMUX_FUN_PU     (1u << 8)
-
-#define P4_I2C_SDA_GPIO 7u
-#define P4_I2C_SCL_GPIO 8u
-#define P4_I2C_SDA_SIG  69u
-#define P4_I2C_SCL_SIG  68u
-
-static bool g_p4_i2c_ready;
-static void i2c_p4_bringup_timing(void);
+static bool g_esp_i2c_ready;
+static void esp_i2c_bringup_timing(void);
 static bool i2c_xfer_raw(uint8_t addr, const uint8_t *w, int wlen,
                          uint8_t *r, int rlen);
 static bool i2c_probe_addr(uint8_t addr);
-static void p4_i2c_bus_clear(void);
-static uint32_t g_p4_i2c_last_int;
-static uint32_t g_p4_i2c_last_sr;
+static void esp_i2c_bus_clear(void);
+static uint32_t g_esp_i2c_last_int;
+static uint32_t g_esp_i2c_last_sr;
 
-static void p4_pad_for_i2c(uint32_t gpio, uint32_t sig) {
+static void esp_pad_for_i2c(uint32_t gpio, uint32_t sig) {
     /* Open drain, input enabled, weak pull-up. The pull-up matters even with
      * a module that has its own: without it an absent module leaves the line
      * floating, and a floating SDA reads as a permanent ACK from every
      * address, which is a bus scan that finds 128 devices. */
-    uint32_t pad = REG(P4_IOMUX_PAD(gpio));
+    uint32_t pad = REG(ESP_IOMUX_PAD(gpio));
     pad &= ~(7u << 12);
-    REG(P4_IOMUX_PAD(gpio)) = pad | P4_IOMUX_FUN_GPIO | P4_IOMUX_FUN_IE | P4_IOMUX_FUN_PU;
-    REG(P4_GPIO_PIN(gpio)) |= P4_GPIO_PAD_DRIVER;
-    REG(P4_GPIO_ENABLE_W1TS) = (1u << gpio);
+    REG(ESP_IOMUX_PAD(gpio)) = pad | ESP_IOMUX_FUN_GPIO | ESP_IOMUX_FUN_IE | ESP_IOMUX_FUN_PU;
+    REG(ESP_GPIO_PIN(gpio)) |= ESP_GPIO_PAD_DRIVER;
+    REG(ESP_GPIO_ENABLE_W1TS) = (1u << gpio);
     /* Both directions: the controller drives the line and also samples it, so
      * a one-way route gives a bus that transmits and never sees an ACK. */
-    REG(P4_GPIO_OUT_SEL(gpio)) = sig;
-    REG(P4_GPIO_IN_SEL(sig))   = gpio | (1u << 7);   /* bit 7: take from matrix */
+    REG(ESP_GPIO_OUT_SEL(gpio)) = sig;
+    REG(ESP_GPIO_IN_SEL(sig))   = gpio | (1u << 7);   /* bit 7: take from matrix */
 }
 
 /* The controller's own bringup: clocks, reset, pads, master mode, timing.
@@ -559,13 +589,14 @@ static void p4_pad_for_i2c(uint32_t gpio, uint32_t sig) {
  * `verbose` narrates each step through printk_critical() -- the diagnostic
  * shape kept from that hunt, because it costs one branch and it is the only
  * console path that survives a step which takes the peripheral bus down.
- * Idempotent: the second caller finds g_p4_i2c_ready and returns. */
-static void i2c_p4_hw_bringup(bool verbose) {
-    if (g_p4_i2c_ready) {
+ * Idempotent: the second caller finds g_esp_i2c_ready and returns. */
+static void esp_i2c_hw_bringup(bool verbose) {
+    if (g_esp_i2c_ready) {
         if (verbose) printk_critical("[I2Cdiag] already up\n");
         return;
     }
 
+#if defined(CONFIG_BOARD_ESP32P4)
     if (verbose) printk_critical("[I2Cdiag] 1: APB gate\n");
     REG(P4_SOC_CLK_CTRL2) |= (1u << 12);
 
@@ -576,24 +607,31 @@ static void i2c_p4_hw_bringup(bool verbose) {
     if (verbose) printk_critical("[I2Cdiag] 3: reset pulse\n");
     REG(P4_HP_RST_EN1) |=  (1u << 22);
     REG(P4_HP_RST_EN1) &= ~(1u << 22);
+#else   /* ESP32-C6: the same three steps in the PCR -- APB clock, function clock from the 40 MHz
+         * crystal undivided (so the timing below holds as it is), a reset pulse */
+    REG(C6_PCR_I2C_CONF) |= (1u << 0);
+    REG(C6_PCR_I2C_SCLK_CONF) = (REG(C6_PCR_I2C_SCLK_CONF) & ~((1u << 20) | (0xffu << 12))) | (1u << 22);
+    REG(C6_PCR_I2C_CONF) |=  (1u << 1);
+    REG(C6_PCR_I2C_CONF) &= ~(1u << 1);
+#endif
 
-    if (verbose) printk_critical("[I2Cdiag] 4: pad GPIO7 (SDA)\n");
-    p4_pad_for_i2c(P4_I2C_SDA_GPIO, P4_I2C_SDA_SIG);
+    if (verbose) printk_critical("[I2Cdiag] 4: pad (SDA)\n");
+    esp_pad_for_i2c(ESP_I2C_SDA_GPIO, ESP_I2C_SDA_SIG);
 
-    if (verbose) printk_critical("[I2Cdiag] 5: pad GPIO8 (SCL)\n");
-    p4_pad_for_i2c(P4_I2C_SCL_GPIO, P4_I2C_SCL_SIG);
+    if (verbose) printk_critical("[I2Cdiag] 5: pad (SCL)\n");
+    esp_pad_for_i2c(ESP_I2C_SCL_GPIO, ESP_I2C_SCL_SIG);
 
     if (verbose) printk_critical("[I2Cdiag] 6: CTR\n");
-    REG(P4_I2C_CTR) = P4_I2C_MS_MODE | P4_I2C_CLK_EN |
-                      P4_I2C_SDA_FORCE_OUT | P4_I2C_SCL_FORCE_OUT;
+    REG(ESP_I2C_CTR) = ESP_I2C_MS_MODE | ESP_I2C_CLK_EN |
+                      ESP_I2C_SDA_FORCE_OUT | ESP_I2C_SCL_FORCE_OUT;
 
     if (verbose) printk_critical("[I2Cdiag] 7: timing\n");
-    i2c_p4_bringup_timing();
+    esp_i2c_bringup_timing();
 
     if (verbose) printk_critical("[I2Cdiag] 8: fifo + commit\n");
-    REG(P4_I2C_FIFO_CONF) = P4_I2C_FIFO_PRT_EN;
-    REG(P4_I2C_CTR) |= P4_I2C_CONF_UPGATE;
-    g_p4_i2c_ready = true;
+    REG(ESP_I2C_FIFO_CONF) = ESP_I2C_FIFO_PRT_EN;
+    REG(ESP_I2C_CTR) |= ESP_I2C_CONF_UPGATE;
+    g_esp_i2c_ready = true;
 
     /* The controller is fresh; the bus is not.
      *
@@ -609,11 +647,11 @@ static void i2c_p4_hw_bringup(bool verbose) {
      * Nine clocks here cost 90 microseconds once and make the first
      * transaction as trustworthy as the rest. */
     if (verbose) printk_critical("[I2Cdiag] 9: bus clear\n");
-    p4_i2c_bus_clear();
+    esp_i2c_bus_clear();
     if (verbose) printk_critical("[I2Cdiag] bringup complete\n");
 }
 
-void i2c_bus_init(void) { i2c_p4_hw_bringup(false); }
+void i2c_bus_init(void) { esp_i2c_hw_bringup(false); }
 
 /* Every period below is in cycles of the controller's source clock, which
  * step 2 above selects as XTAL_CLK: 40 MHz on this board, undivided
@@ -622,7 +660,7 @@ void i2c_bus_init(void) { i2c_p4_hw_bringup(false); }
  * on flying leads wants over the board's own pull-ups. Those are 2.2 kOhm to
  * 3V3 on both lines, fitted on the NANO itself (ESP32-P4-NANO-schematic.pdf,
  * the ESP_I2C_SDA/ESP_I2C_SCL nets) -- so the pads' internal pull-ups that
- * p4_pad_for_i2c() also enables are a backstop for a bare chip, not what is
+ * esp_pad_for_i2c() also enables are a backstop for a bare chip, not what is
  * holding this bus up.
  *
  * The numbers are IDF's own i2c_ll_master_cal_bus_clk() evaluated for that
@@ -649,38 +687,38 @@ void i2c_bus_init(void) { i2c_p4_hw_bringup(false); }
  * asymmetry is copied rather than tidied, because it is a measurement
  * ("according to practical measurement and some hardware behaviour") and not
  * an oversight. */
-static void i2c_p4_bringup_timing(void) {
+static void esp_i2c_bringup_timing(void) {
     const uint32_t half = 200u;                   /* 40 MHz / 100 kHz / 2 */
     const uint32_t wait_high = half / 2u - 2u;    /* 98, for >= 80 kHz    */
     const uint32_t high      = half - wait_high;  /* 102                  */
     const uint32_t sample    = half / 2u;         /* 100                  */
 
-    REG(P4_I2C_SCL_LOW)          = half - 1u;
-    REG(P4_I2C_SCL_HIGH)         = high | (wait_high << 9);
-    REG(P4_I2C_SCL_START_HOLD)   = half - 1u;
-    REG(P4_I2C_SCL_RSTART_SETUP) = half - 1u;
-    REG(P4_I2C_SCL_STOP_HOLD)    = half - 1u;
-    REG(P4_I2C_SCL_STOP_SETUP)   = half - 1u;
-    REG(P4_I2C_SDA_HOLD)         = half / 4u - 1u;
-    REG(P4_I2C_SDA_SAMPLE)       = sample - 1u;
+    REG(ESP_I2C_SCL_LOW)          = half - 1u;
+    REG(ESP_I2C_SCL_HIGH)         = high | (wait_high << 9);
+    REG(ESP_I2C_SCL_START_HOLD)   = half - 1u;
+    REG(ESP_I2C_SCL_RSTART_SETUP) = half - 1u;
+    REG(ESP_I2C_SCL_STOP_HOLD)    = half - 1u;
+    REG(ESP_I2C_SCL_STOP_SETUP)   = half - 1u;
+    REG(ESP_I2C_SDA_HOLD)         = half / 4u - 1u;
+    REG(ESP_I2C_SDA_SAMPLE)       = sample - 1u;
     /* threshold 7 on each line, both filters enabled */
-    REG(P4_I2C_FILTER_CFG)       = 7u | (7u << 4) | P4_I2C_SCL_FILTER_EN |
-                                   P4_I2C_SDA_FILTER_EN;
+    REG(ESP_I2C_FILTER_CFG)       = 7u | (7u << 4) | ESP_I2C_SCL_FILTER_EN |
+                                   ESP_I2C_SDA_FILTER_EN;
     /* 2^12 source cycles, about 10 bus cycles, and the enable that makes it
      * mean anything. IDF's formula: ceil(log2(5 * half_cycle)) + 2. */
-    REG(P4_I2C_TO)               = 12u | P4_I2C_TIME_OUT_EN;
-    REG(P4_I2C_SCL_ST_TO)        = 0x10u;
-    REG(P4_I2C_SCL_MAIN_ST_TO)   = 0x10u;
+    REG(ESP_I2C_TO)               = 12u | ESP_I2C_TIME_OUT_EN;
+    REG(ESP_I2C_SCL_ST_TO)        = 0x10u;
+    REG(ESP_I2C_SCL_MAIN_ST_TO)   = 0x10u;
 
-    REG(P4_I2C_FIFO_CONF) = P4_I2C_FIFO_PRT_EN;
-    REG(P4_I2C_CTR) |= P4_I2C_CONF_UPGATE;
-    g_p4_i2c_ready = true;
+    REG(ESP_I2C_FIFO_CONF) = ESP_I2C_FIFO_PRT_EN;
+    REG(ESP_I2C_CTR) |= ESP_I2C_CONF_UPGATE;
+    g_esp_i2c_ready = true;
 }
 
-static void p4_i2c_reset_fifo(void) {
-    REG(P4_I2C_FIFO_CONF) |= P4_I2C_TX_FIFO_RST | P4_I2C_RX_FIFO_RST;
-    REG(P4_I2C_FIFO_CONF) &= ~(P4_I2C_TX_FIFO_RST | P4_I2C_RX_FIFO_RST);
-    REG(P4_I2C_INT_CLR) = 0xffffffffu;
+static void esp_i2c_reset_fifo(void) {
+    REG(ESP_I2C_FIFO_CONF) |= ESP_I2C_TX_FIFO_RST | ESP_I2C_RX_FIFO_RST;
+    REG(ESP_I2C_FIFO_CONF) &= ~(ESP_I2C_TX_FIFO_RST | ESP_I2C_RX_FIFO_RST);
+    REG(ESP_I2C_INT_CLR) = 0xffffffffu;
 }
 
 /* Every transaction starts here, and it starts by throwing away whatever the
@@ -700,10 +738,10 @@ static void p4_i2c_reset_fifo(void) {
  * nobody here decides, and "what did the previous caller leave behind" is not
  * a question any of them should have to answer. Two register writes at the
  * top of each transaction removes it. */
-static void p4_i2c_begin(void) {
-    REG(P4_I2C_CTR) |= P4_I2C_FSM_RST;
-    p4_i2c_reset_fifo();
-    REG(P4_I2C_CTR) |= P4_I2C_CONF_UPGATE;
+static void esp_i2c_begin(void) {
+    REG(ESP_I2C_CTR) |= ESP_I2C_FSM_RST;
+    esp_i2c_reset_fifo();
+    REG(ESP_I2C_CTR) |= ESP_I2C_CONF_UPGATE;
 }
 
 /* What a failed transaction leaves behind, and why nothing works afterwards
@@ -737,28 +775,28 @@ static void p4_i2c_begin(void) {
  *
  * The hardware clears the enable when it has sent the pulses, so waiting on
  * that bit waits for the bus rather than for a guessed delay. */
-static void p4_i2c_bus_clear(void) {
-    REG(P4_I2C_SCL_SP_CONF) = P4_I2C_SCL_RST_SLV_NUM(9) | P4_I2C_SCL_RST_SLV_EN;
-    REG(P4_I2C_CTR) |= P4_I2C_CONF_UPGATE;
+static void esp_i2c_bus_clear(void) {
+    REG(ESP_I2C_SCL_SP_CONF) = ESP_I2C_SCL_RST_SLV_NUM(9) | ESP_I2C_SCL_RST_SLV_EN;
+    REG(ESP_I2C_CTR) |= ESP_I2C_CONF_UPGATE;
 
-    /* Bounded in wall time for the reason p4_i2c_run() is: nine pulses at
+    /* Bounded in wall time for the reason esp_i2c_run() is: nine pulses at
      * 100 kHz is 90 us, and a bus that has not finished them in 5 ms is not
      * going to. Give up rather than spin -- the enable is then cleared by
      * hand so the next transaction does not start into a pending clear. */
     uint64_t deadline = time_get_us() + 5000u;
-    while ((REG(P4_I2C_SCL_SP_CONF) & P4_I2C_SCL_RST_SLV_EN) != 0) {
+    while ((REG(ESP_I2C_SCL_SP_CONF) & ESP_I2C_SCL_RST_SLV_EN) != 0) {
         if (time_get_us() >= deadline) {
-            REG(P4_I2C_SCL_SP_CONF) = 0;
+            REG(ESP_I2C_SCL_SP_CONF) = 0;
             break;
         }
     }
-    REG(P4_I2C_CTR) |= P4_I2C_CONF_UPGATE;
-    REG(P4_I2C_INT_CLR) = 0xffffffffu;
+    REG(ESP_I2C_CTR) |= ESP_I2C_CONF_UPGATE;
+    REG(ESP_I2C_INT_CLR) = 0xffffffffu;
 }
 
 /* After a failure: the ordinary preparation, plus the bus clear.
  *
- * The clear is *here* and in bringup, and deliberately not in p4_i2c_begin().
+ * The clear is *here* and in bringup, and deliberately not in esp_i2c_begin().
  * Putting it before every transaction was tried and made things worse rather
  * than better -- a clear ends in a STOP, and a START issued straight after it
  * does not leave the bus-free time a slave needs (t_BUF, 4.7 us at 100 kHz),
@@ -767,19 +805,19 @@ static void p4_i2c_bus_clear(void) {
  * someone else: at bringup, when this kernel has just arrived and has no idea
  * what the previous firmware left mid-byte, and after an error, when the
  * transfer we just abandoned may have stopped a slave mid-byte ourselves. */
-static void p4_i2c_recover(void) {
-    p4_i2c_begin();
-    p4_i2c_bus_clear();
+static void esp_i2c_recover(void) {
+    esp_i2c_begin();
+    esp_i2c_bus_clear();
 }
 
 /* Runs a command list that has already been written, and reports what the
  * bus said. Bounded: a stuck bus must not become a stuck kernel. */
-/* g_p4_i2c_last_int / _sr (declared above): what the last transaction
+/* g_esp_i2c_last_int / _sr (declared above): what the last transaction
  * ended on. */
 
-static bool p4_i2c_run(void) {
-    REG(P4_I2C_CTR) |= P4_I2C_CONF_UPGATE;
-    REG(P4_I2C_CTR) |= P4_I2C_TRANS_START;
+static bool esp_i2c_run(void) {
+    REG(ESP_I2C_CTR) |= ESP_I2C_CONF_UPGATE;
+    REG(ESP_I2C_CTR) |= ESP_I2C_TRANS_START;
 
     /* Bounded in *wall time*, not in iterations.
      *
@@ -792,24 +830,25 @@ static bool p4_i2c_run(void) {
     uint64_t deadline = time_get_us() + 10000u;
     uint32_t st = 0;
     do {
-        st = REG(P4_I2C_INT_RAW);
-        if (st & (P4_I2C_INT_NACK | P4_I2C_INT_TIME_OUT | P4_I2C_INT_ARB_LOST)) break;
-        if (st & (P4_I2C_INT_TRANS_COMPLETE | P4_I2C_INT_END_DETECT)) break;
+        st = REG(ESP_I2C_INT_RAW);
+        if (st & (ESP_I2C_INT_NACK | ESP_I2C_INT_TIME_OUT | ESP_I2C_INT_ARB_LOST)) break;
+        if (st & (ESP_I2C_INT_TRANS_COMPLETE | ESP_I2C_INT_END_DETECT)) break;
     } while (time_get_us() < deadline);
 
-    g_p4_i2c_last_int = st;
-    g_p4_i2c_last_sr  = REG(P4_I2C_SR);
+    g_esp_i2c_last_int = st;
+    g_esp_i2c_last_sr  = REG(ESP_I2C_SR);
 
-    bool ok = (st & (P4_I2C_INT_TRANS_COMPLETE | P4_I2C_INT_END_DETECT)) != 0 &&
-              (st & (P4_I2C_INT_NACK | P4_I2C_INT_TIME_OUT | P4_I2C_INT_ARB_LOST)) == 0;
+    bool ok = (st & (ESP_I2C_INT_TRANS_COMPLETE | ESP_I2C_INT_END_DETECT)) != 0 &&
+              (st & (ESP_I2C_INT_NACK | ESP_I2C_INT_TIME_OUT | ESP_I2C_INT_ARB_LOST)) == 0;
     /* Every failure, including the deadline expiring with no bit set at all,
      * leaves the FSM somewhere this driver did not put it. See
-     * p4_i2c_recover(): without this, one absent address makes the whole bus
+     * esp_i2c_recover(): without this, one absent address makes the whole bus
      * absent. */
-    if (!ok) p4_i2c_recover();
+    if (!ok) esp_i2c_recover();
     return ok;
 }
 
+#if defined(CONFIG_BOARD_ESP32P4)
 /* Step-by-step through printk_critical(), because the failure
  * being chased is a machine that stops rather than a wrong answer, and the
  * ordinary console is part of what stops: printk() batches and reaches the
@@ -820,21 +859,21 @@ static bool p4_i2c_run(void) {
  * from the shell task directly rather than through the i2c endpoint, so the
  * i2c task is not in the picture either. */
 void i2c_p4_diag(void) {
-    i2c_p4_hw_bringup(true);
-    printk_critical("[I2Cdiag] ready=%d\n", (int)g_p4_i2c_ready);
+    esp_i2c_hw_bringup(true);
+    printk_critical("[I2Cdiag] ready=%d\n", (int)g_esp_i2c_ready);
    
-    printk_critical("[I2Cdiag] CTR=0x%08x\n", (unsigned)REG(P4_I2C_CTR));
+    printk_critical("[I2Cdiag] CTR=0x%08x\n", (unsigned)REG(ESP_I2C_CTR));
    
     printk_critical("[I2Cdiag] SR=0x%08x FIFO_ST=0x%08x\n",
-           (unsigned)REG(P4_I2C_SR), (unsigned)REG(P4_I2C_FIFO_ST));
+           (unsigned)REG(ESP_I2C_SR), (unsigned)REG(ESP_I2C_FIFO_ST));
    
     printk_critical("[I2Cdiag] clkrst: CTRL2=0x%08x CTRL10=0x%08x RST1=0x%08x\n",
            (unsigned)REG(P4_SOC_CLK_CTRL2), (unsigned)REG(P4_PERI_CLK_CTRL10),
            (unsigned)REG(P4_HP_RST_EN1));
    
     printk_critical("[I2Cdiag] pads: io7=0x%08x io8=0x%08x out7=0x%08x in69=0x%08x\n",
-           (unsigned)REG(P4_IOMUX_PAD(7)), (unsigned)REG(P4_IOMUX_PAD(8)),
-           (unsigned)REG(P4_GPIO_OUT_SEL(7)), (unsigned)REG(P4_GPIO_IN_SEL(69)));
+           (unsigned)REG(ESP_IOMUX_PAD(7)), (unsigned)REG(ESP_IOMUX_PAD(8)),
+           (unsigned)REG(ESP_GPIO_OUT_SEL(7)), (unsigned)REG(ESP_GPIO_IN_SEL(69)));
    
     /* Both shapes, three times each, and the repetition is the measurement.
      *
@@ -843,7 +882,7 @@ void i2c_p4_diag(void) {
      * mechanical: 1,1,1 is a part; 0,0,0 is an empty address; **0,1,1 is a
      * stale controller** -- the first transaction paying for what the
      * previous one left behind. That last pattern is what found
-     * p4_i2c_begin() and the bringup bus clear, so the diagnostic keeps the
+     * esp_i2c_begin() and the bringup bus clear, so the diagnostic keeps the
      * shape that found it rather than reporting a single verdict.
      *
      * The read is reported separately from the probe because they are
@@ -855,33 +894,35 @@ void i2c_p4_diag(void) {
     for (int i = 0; i < 3; i++) {
         bool pok = i2c_probe_addr(0x76u);
         printk_critical("[I2Cdiag] probe#%d 0x76 -> %d  INT_RAW=0x%08x SR=0x%08x\n",
-               i, (int)pok, (unsigned)g_p4_i2c_last_int, (unsigned)g_p4_i2c_last_sr);
+               i, (int)pok, (unsigned)g_esp_i2c_last_int, (unsigned)g_esp_i2c_last_sr);
     }
     for (int i = 0; i < 3; i++) {
         uint8_t reg = 0xd0u, id = 0;
         bool rok = i2c_xfer_raw(0x76u, &reg, 1, &id, 1);
         printk_critical("[I2Cdiag] read#%d 0x76 reg 0xd0 -> %d id=0x%02x  INT_RAW=0x%08x SR=0x%08x\n",
-               i, (int)rok, (unsigned)id, (unsigned)g_p4_i2c_last_int,
-               (unsigned)g_p4_i2c_last_sr);
+               i, (int)rok, (unsigned)id, (unsigned)g_esp_i2c_last_int,
+               (unsigned)g_esp_i2c_last_sr);
     }
 }
 
 /* What the last transaction ended on, for i2cdiag. Exposed rather than
  * printed here: this runs inside the i2c task, which may not printk(). */
 void i2c_p4_last_status(uint32_t *int_raw, uint32_t *sr) {
-    if (int_raw) *int_raw = g_p4_i2c_last_int;
-    if (sr) *sr = g_p4_i2c_last_sr;
+    if (int_raw) *int_raw = g_esp_i2c_last_int;
+    if (sr) *sr = g_esp_i2c_last_sr;
 }
 
+#endif /* CONFIG_BOARD_ESP32P4: i2cdiag */
+
 static bool i2c_write_bytes(uint8_t addr, const uint8_t *src, int len) {
-    if (!g_p4_i2c_ready || len < 0 || len > 30) return false;
-    p4_i2c_begin();
-    REG(P4_I2C_DATA) = (uint32_t)(addr << 1);          /* address + write     */
-    for (int i = 0; i < len; i++) REG(P4_I2C_DATA) = src[i];
-    REG(P4_I2C_COMD(0)) = P4_CMD(P4_CMD_RSTART, 0, 0, 0);
-    REG(P4_I2C_COMD(1)) = P4_CMD(P4_CMD_WRITE, 1, 0, 1 + len);
-    REG(P4_I2C_COMD(2)) = P4_CMD(P4_CMD_STOP, 0, 0, 0);
-    return p4_i2c_run();
+    if (!g_esp_i2c_ready || len < 0 || len > 30) return false;
+    esp_i2c_begin();
+    REG(ESP_I2C_DATA) = (uint32_t)(addr << 1);          /* address + write     */
+    for (int i = 0; i < len; i++) REG(ESP_I2C_DATA) = src[i];
+    REG(ESP_I2C_COMD(0)) = ESP_CMD(ESP_CMD_RSTART, 0, 0, 0);
+    REG(ESP_I2C_COMD(1)) = ESP_CMD(ESP_CMD_WRITE, 1, 0, 1 + len);
+    REG(ESP_I2C_COMD(2)) = ESP_CMD(ESP_CMD_STOP, 0, 0, 0);
+    return esp_i2c_run();
 }
 /* Write-then-read with a repeated start, which is the shape every register
  * read on this bus takes: address+W, the register number, RESTART,
@@ -891,46 +932,46 @@ static bool i2c_write_bytes(uint8_t addr, const uint8_t *src, int len) {
  * pointer, lose the register selection. */
 static bool i2c_xfer_raw(uint8_t addr, const uint8_t *w, int wlen,
                          uint8_t *r, int rlen) {
-    if (!g_p4_i2c_ready) return false;
+    if (!g_esp_i2c_ready) return false;
     if (wlen < 0 || rlen < 0 || wlen > 30 || rlen > 30) return false;
     if (rlen == 0) return i2c_write_bytes(addr, w, wlen);
 
-    p4_i2c_begin();
-    REG(P4_I2C_DATA) = (uint32_t)(addr << 1);
-    for (int i = 0; i < wlen; i++) REG(P4_I2C_DATA) = w[i];
-    REG(P4_I2C_DATA) = (uint32_t)((addr << 1) | 1u);
+    esp_i2c_begin();
+    REG(ESP_I2C_DATA) = (uint32_t)(addr << 1);
+    for (int i = 0; i < wlen; i++) REG(ESP_I2C_DATA) = w[i];
+    REG(ESP_I2C_DATA) = (uint32_t)((addr << 1) | 1u);
 
     unsigned c = 0;
-    REG(P4_I2C_COMD(c++)) = P4_CMD(P4_CMD_RSTART, 0, 0, 0);
-    REG(P4_I2C_COMD(c++)) = P4_CMD(P4_CMD_WRITE, 1, 0, 1 + wlen);
-    REG(P4_I2C_COMD(c++)) = P4_CMD(P4_CMD_RSTART, 0, 0, 0);
-    REG(P4_I2C_COMD(c++)) = P4_CMD(P4_CMD_WRITE, 1, 0, 1);
+    REG(ESP_I2C_COMD(c++)) = ESP_CMD(ESP_CMD_RSTART, 0, 0, 0);
+    REG(ESP_I2C_COMD(c++)) = ESP_CMD(ESP_CMD_WRITE, 1, 0, 1 + wlen);
+    REG(ESP_I2C_COMD(c++)) = ESP_CMD(ESP_CMD_RSTART, 0, 0, 0);
+    REG(ESP_I2C_COMD(c++)) = ESP_CMD(ESP_CMD_WRITE, 1, 0, 1);
     if (rlen > 1) {
         /* All but the last byte are ACKed; the last is NACKed, which is how a
          * master tells the device the read is over. Sending ACK for the final
          * byte leaves the device driving the bus into the STOP. */
-        REG(P4_I2C_COMD(c++)) = P4_CMD(P4_CMD_READ, 0, 0, rlen - 1);
+        REG(ESP_I2C_COMD(c++)) = ESP_CMD(ESP_CMD_READ, 0, 0, rlen - 1);
     }
-    REG(P4_I2C_COMD(c++)) = P4_CMD(P4_CMD_READ, 0, 1, 1);
-    REG(P4_I2C_COMD(c++)) = P4_CMD(P4_CMD_STOP, 0, 0, 0);
+    REG(ESP_I2C_COMD(c++)) = ESP_CMD(ESP_CMD_READ, 0, 1, 1);
+    REG(ESP_I2C_COMD(c++)) = ESP_CMD(ESP_CMD_STOP, 0, 0, 0);
 
-    if (!p4_i2c_run()) return false;
-    for (int i = 0; i < rlen; i++) r[i] = (uint8_t)(REG(P4_I2C_DATA) & 0xffu);
+    if (!esp_i2c_run()) return false;
+    for (int i = 0; i < rlen; i++) r[i] = (uint8_t)(REG(ESP_I2C_DATA) & 0xffu);
     return true;
 }
 
 /* Address-only transaction: a START, the address byte with ACK checking on,
  * and a STOP. Nothing is read, so the only thing that distinguishes a present
  * device from an absent one is whether the address was acknowledged -- which
- * is precisely what p4_i2c_run() returns false for. */
+ * is precisely what esp_i2c_run() returns false for. */
 static bool i2c_probe_addr(uint8_t addr) {
-    if (!g_p4_i2c_ready) return false;
-    p4_i2c_begin();
-    REG(P4_I2C_DATA) = (uint32_t)(addr << 1);
-    REG(P4_I2C_COMD(0)) = P4_CMD(P4_CMD_RSTART, 0, 0, 0);
-    REG(P4_I2C_COMD(1)) = P4_CMD(P4_CMD_WRITE, 1, 0, 1);
-    REG(P4_I2C_COMD(2)) = P4_CMD(P4_CMD_STOP, 0, 0, 0);
-    return p4_i2c_run();
+    if (!g_esp_i2c_ready) return false;
+    esp_i2c_begin();
+    REG(ESP_I2C_DATA) = (uint32_t)(addr << 1);
+    REG(ESP_I2C_COMD(0)) = ESP_CMD(ESP_CMD_RSTART, 0, 0, 0);
+    REG(ESP_I2C_COMD(1)) = ESP_CMD(ESP_CMD_WRITE, 1, 0, 1);
+    REG(ESP_I2C_COMD(2)) = ESP_CMD(ESP_CMD_STOP, 0, 0, 0);
+    return esp_i2c_run();
 }
 #else
 void i2c_bus_init(void) {}

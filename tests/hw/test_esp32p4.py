@@ -343,7 +343,8 @@ def test_sensor_reads(b: Board) -> tuple[str, bool, str]:
     out = b.console_session.cmd("sensor", deadline=20.0)
     if "none found" in out:
         return name, True, "SKIPPED (no BME280 fitted)"
-    m = re.search(r"(bm[ep]280) @0x([0-9a-f]{2}): (-?\d+)\.(\d\d) C, (\d+)\.(\d\d) hPa", out)
+    # "bme280 at 0x76: ..." since the phase-46 sensor hub, "bme280 @0x76: ..." before it.
+    m = re.search(r"(bm[ep]280) (?:@|at )0x([0-9a-f]{2}): (-?\d+)\.(\d\d) C, (\d+)\.(\d\d) hPa", out)
     if not m:
         return name, False, f"unparseable: {out[-300:]!r}"
     temp = float(f"{m.group(3)}.{m.group(4)}")

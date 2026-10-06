@@ -761,9 +761,15 @@ by flashing*.
 
 ### Sensor node
 
-* **45.10 I2C on the C6 + BME280.** C6 I2C driver under the existing shared
-  `i2c` task API; reuse `drivers/bme280.c` unchanged (its compensation is pure
-  fixed-point).
+* **45.10 I2C on the C6 + sensors — DONE 2026-10-06.** The C6's I2C controller is the P4's to
+  the bit (register map, bit positions, command opcodes, checked against IDF's headers), so
+  `drivers/i2c_bus.c`'s P4 arm became one Espressif arm for both: per chip only the base, the
+  clock and reset (P4: HP_SYS_CLKRST; C6: PCR, XTAL undivided so the 100 kHz timing holds),
+  the GPIO matrix's offsets and the pins (C6-Zero: GPIO0 SDA, GPIO1 SCL; signals 46/45). The
+  phase-46 drivers ran unchanged: a BME280 (0x76) and a TSL2591 (0x29) on the first boot,
+  in `/proc/sensors` through the hub's sampler. `at24c32.c` probes a real EEPROM on the C6 now.
+  Hardware: `test_i2c_sensors` (C6 20/20); the P4 suite 25/25 on the shared arm (its sensor
+  test updated for the hub's `at 0x76` output). Heap free with radio + sensors: 84 KB.
 * **45.11 `esp32c6-sensor` persona.** The phase-26 persona (join WLAN, MQTT
   announce, periodic publish, will) on this board. Soak run. **End of the
   stand-alone scope: scenarios 1 and 2 are done here.**

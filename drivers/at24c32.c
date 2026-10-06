@@ -51,11 +51,6 @@ static bool i2c_write_at24(uint16_t mem_addr, const uint8_t *src, size_t len) {
     return i2c_xfer(AT24C32_I2C_ADDR, buf, (uint32_t)(len + 2u), NULL, 0);
 }
 
-#elif defined(CONFIG_BOARD_ESP32C6)
-/* No I2C controller driver on the C6 yet (45.10) -- and no synthetic EEPROM either: 4 KB of SRAM for
- * a stand-in only QEMU's tests use. No EEPROM, until the real probe can run here. */
-static bool i2c_write_at24(uint16_t mem_addr, const uint8_t *src, size_t len) { (void)mem_addr; (void)src; (void)len; return false; }
-static bool i2c_read_at24(uint16_t mem_addr, uint8_t *dst, size_t len) { (void)mem_addr; (void)dst; (void)len; return false; }
 #else
 // Synthetic RAM EEPROM for targets with no I2C controller
 static uint8_t g_qemu_eeprom[AT24C32_SIZE_BYTES];
@@ -95,12 +90,8 @@ void at24c32_init(void) {
      * `eeprom-read`/`eeprom-write` primitives and the identity store all work
      * against this buffer, so the device really is present and usable. It is
      * simply not a chip, and only the message was ever claiming otherwise. */
-#if defined(CONFIG_BOARD_ESP32C6)
-    g_at24c32_detected = false;              /* no bus driver yet, and no stand-in (see above) */
-#else
     g_at24c32_detected = true;
     printk("[AT24C32] Synthetic 4 KB RAM EEPROM (no I2C bus).\n");
-#endif
 #endif
 }
 

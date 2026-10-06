@@ -279,6 +279,24 @@ def test_radio_ip(c: Console):
     return _t("DHCP lease on wlan0, then the host pings it", n >= 2, "%s, %d/3 replies" % (addr, n))
 
 
+def test_i2c_sensors(c: Console):
+    """45.10: the C6's I2C controller (GPIO0 SDA, GPIO1 SCL) and the phase-46 sensor hub on it. A bus
+    with nothing attached is a skip, not a failure; anything that answers must be one the hub knows
+    and give a valid reading."""
+    ok, scan = c.run("i2c scan", r"Found \d+[^\n]*", 15)
+    m = re.search(r"Found (\d+)", scan)
+    n = int(m.group(1)) if m else -1
+    if n == 0:
+        return _t("I2C bus and sensors (skipped: nothing on GPIO0/GPIO1)", True, "skipped")
+    ok2, sens = c.run("cat /proc/sensors", r"lsh>", 10)
+    parts = re.findall(r"part=(\w+)", sens)
+    valid = "valid=yes" in sens
+    readings = re.findall(r"(temperature_c100|pressure_pa|humidity_rh1000|lux_c100|eco2_ppm)=(-?\d+)", sens)
+    good = n > 0 and bool(parts) and valid and bool(readings)
+    return _t("I2C bus and sensors (%d device(s) answering)" % max(n, 0), good,
+              "parts %s, %s" % (",".join(parts) or "none", " ".join("%s=%s" % r for r in readings[:4])))
+
+
 def test_taint(c: Console):
     """45.9 (plan §2): a build that links Espressif's Wi-Fi libraries says so -- in /proc/version and
     machine-readably in /proc/node -- and a build without them says "none"."""
@@ -326,7 +344,7 @@ def test_still_alive(c: Console):
 
 TESTS = [test_boots, test_heap, test_tick_rate, test_preemption, test_locks, test_priostress,
          test_pmp, test_umode, test_isolation, test_deputy, test_kobj_kernel, test_kobj_umode,
-         test_radio_shim, test_led, test_radio_scan_or_join, test_radio_ip, test_taint, test_watchdog, test_still_alive]
+         test_radio_shim, test_led, test_radio_scan_or_join, test_radio_ip, test_i2c_sensors, test_taint, test_watchdog, test_still_alive]
 
 
 def main() -> int:

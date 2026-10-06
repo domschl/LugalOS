@@ -47,7 +47,7 @@
  * spent E7 announcing "No I2C controller on this target" while answering a
  * bus scan (plan/phase27_esp32p4_bringup.md E7). A board that gains one adds
  * itself here, once. */
-#if defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32P4)
+#if defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32P4) || defined(CONFIG_BOARD_ESP32C6)
 #define I2C_HAVE_CONTROLLER 1
 #else
 #define I2C_HAVE_CONTROLLER 0
