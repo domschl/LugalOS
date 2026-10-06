@@ -45,6 +45,37 @@ static uint32_t rosc_bit(uint32_t spacing_us) {
 bool random_is_hardware(void) { return true; }
 const char *random_source(void) { return "ROSC phase noise, SHA-256 whitened"; }
 
+#elif defined(CONFIG_BOARD_ESP32C6)
+
+/* The C6's RNG (LPPERI_RNG_DATA, IDF's WDEV_RND_REG). Espressif's own
+ * statement of what it is worth: true random numbers *while an entropy source
+ * runs* -- the RF subsystem, or the SAR ADC's noise source that IDF's
+ * bootloader_random_enable() switches on -- and not otherwise. The second is
+ * not ported (the PHY shares that ADC for its temperature sensor), so this
+ * target counts as having a hardware source exactly while the radio's RF is
+ * up (45.8). Before that, key generation refuses, as on a target with none;
+ * a network-facing nonce is not needed before there is a network. */
+#include "kernel/radio_c6.h"
+#define RNG_DATA (*(volatile uint32_t *)0x600B2808UL)
+
+static void spin_us(uint32_t us) {
+    uint64_t start = time_get_us();
+    while (time_get_us() - start < us) { /* spin */ }
+}
+
+/* IDF's esp_random(): at least 16 APB cycles between words, or the register
+ * hands back bits it has not finished stirring. 1 us is 40 of them. */
+static uint32_t rng_word(void) {
+    spin_us(1);
+    return RNG_DATA;
+}
+
+bool random_is_hardware(void) { return radio_c6_rf_on(); }
+const char *random_source(void) {
+    return radio_c6_rf_on() ? "RNG with the radio's RF on, SHA-256 whitened"
+                            : "RNG without an entropy source (radio off: NOT random)";
+}
+
 #else  /* the QEMU targets: no entropy source at all, and it must show */
 
 bool random_is_hardware(void) { return false; }
@@ -93,6 +124,11 @@ void random_bytes(void *out, uint32_t len) {
             }
             pool[i] = b;
         }
+        sha256_update(&ctx, pool, sizeof(pool));
+        memset(pool, 0, sizeof(pool));
+#elif defined(CONFIG_BOARD_ESP32C6)
+        uint32_t pool[16];                       /* 512 raw bits */
+        for (unsigned i = 0; i < 16; i++) pool[i] = rng_word();
         sha256_update(&ctx, pool, sizeof(pool));
         memset(pool, 0, sizeof(pool));
 #endif

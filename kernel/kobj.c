@@ -152,6 +152,28 @@ static uintptr_t *owner_slot(kh_t h) {
     return NULL;
 }
 
+uint32_t kobj_owned(uintptr_t owner, kh_t *out, uint32_t cap) {
+    uint32_t n = 0;
+    if (owner == 0) return 0;                       /* the kernel's own: never released this way */
+#define COLLECT(arr, N, T, field) \
+    for (int i = 0; i < (N); i++) \
+        if ((arr)[i].used && (arr)[i].field == owner && n < cap) out[n++] = H_MAKE(T, (arr)[i].gen, i);
+    COLLECT(g_sem, KSEM_MAX, KOBJ_SEM, owner)
+    COLLECT(g_mtx, KMUTEX_MAX, KOBJ_MUTEX, dom)
+    COLLECT(g_q, KQUEUE_MAX, KOBJ_QUEUE, owner)
+    COLLECT(g_ev, KEVT_MAX, KOBJ_EVENT, owner)
+#undef COLLECT
+    return n;
+}
+
+uint32_t ktimer_release_owner(uintptr_t owner) {
+    uint32_t n = 0;
+    if (owner == 0) return 0;
+    for (int i = 0; i < KTIMER_MAX; i++)
+        if (g_tm[i].used && g_tm[i].owner == owner) { memset(&g_tm[i], 0, sizeof g_tm[i]); n++; }
+    return n;
+}
+
 int kobj_set_owner(kh_t h, uintptr_t owner) {
     uintptr_t *o = owner_slot(h);
     if (!o) return KO_FAIL;

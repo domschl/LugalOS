@@ -161,7 +161,9 @@ def test_kobj_umode(c: Console):
 
 
 def test_radio_shim(c: Console):
-    ok, out = c.run("radioosi", r"RADIOOSI_(OK|FAIL)", 30)
+    ok, out = c.run("radioosi", r"RADIOOSI_(OK|FAIL|SKIP)", 30)
+    if "RADIOOSI_SKIP" in out:
+        return _t("the Wi-Fi OS-table shim (skipped: the radio is running -- the shim state is its own)", True, "skipped")
     return _t("the Wi-Fi OS-table shim in a confined U-mode domain (22 checks)",
               ok and "RADIOOSI_OK" in out and out.count("PASS") >= 22, "%d PASS" % out.count("PASS"))
 
@@ -219,9 +221,33 @@ def test_radio_scan(c: Console):
               "%d APs, %s irqs" % (n, fired.group(1) if fired else "?"))
 
 
+def _record_ssid(c: Console) -> str | None:
+    """The SSID in the board's identity record, or None: credentials there are the intent to join,
+    and the kernel's autostart task (45.8) has started the radio by itself."""
+    ok, out = c.run("cat /proc/node", r"9P uname[^\n]*", 8)
+    m = re.search(r"wlan ssid: (\S+)", out)
+    return m.group(1) if m else None
+
+
+def test_radio_autojoin(c: Console, ssid: str):
+    """45.8: a board with WLAN credentials in its identity record joins at boot with no command
+    typed -- the radio is then already running, so this waits for the association instead."""
+    for _ in range(30):
+        ok, out = c.run("radio stats", r"rx_cb=\d+", 8)
+        if re.search(r"joins=[1-9]\d* connected=1", out):
+            return _t("joins \"%s\" by itself at boot (credentials in the identity record)" % ssid, True, "joined")
+        time.sleep(2)
+    return _t("joins \"%s\" by itself at boot (credentials in the identity record)" % ssid, False,
+              "; ".join(re.findall(r"radio: joins[^\n]*", out))[:140])
+
+
 def test_radio_scan_or_join(c: Console):
     """The radio starts once per boot, so one test covers both: with credentials it scans *and*
-    joins (the scan runs first either way), without them just scans."""
+    joins (the scan runs first either way), without them just scans. With credentials in the
+    identity record the kernel has already started it (45.8), and the test watches that join."""
+    ssid = _record_ssid(c)
+    if ssid:
+        return test_radio_autojoin(c, ssid)
     if _wifi_credentials() is None:
         return test_radio_scan(c)
     return test_radio_join(c)
@@ -232,7 +258,7 @@ def test_radio_ip(c: Console):
     that address. Association alone proves nothing about data -- the board joined for days while every
     protected frame was en-/decrypted with a mangled key. Skips without credentials, and the ping part
     when the host is not on the board's subnet."""
-    if _wifi_credentials() is None:
+    if _wifi_credentials() is None and _record_ssid(c) is None:
         return _t("IP over Wi-Fi (skipped: no credentials)", True, "skipped")
     addr = None
     for _ in range(10):

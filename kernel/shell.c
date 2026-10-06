@@ -3604,6 +3604,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "radio probe") == 0) {
         radio_c6_probe();
         return;
+    } else if (strcmp(cmd_line, "radio rejoin") == 0) {
+        radio_c6_rejoin();
+        return;
     } else if (strcmp(cmd_line, "radio stats") == 0) {
         radio_c6_stats();
         return;

@@ -36,7 +36,8 @@
 #include "drivers/dcf77.h"
 #endif
 #include "drivers/uart_net.h"   /* uart1_link_init(), N5 */
-#include "drivers/cyw43.h"    /* cyw43_autostart_task_start() */
+#include "drivers/cyw43.h"
+#include "kernel/radio_c6.h"    /* cyw43_autostart_task_start() */
 #include "net/ip.h"
 #include "drivers/bme280.h"
 #include "net/mqttd.h"
@@ -547,6 +548,9 @@ void kernel_main(void) {
      * seconds on every boot. Must follow sched_init(). */
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_WL_CS_GPIO)
     cyw43_autostart_task_start();
+#endif
+#if defined(CONFIG_BOARD_ESP32C6)
+    radio_c6_autostart();                 /* the same policy for the C6's radio (45.8) */
 #endif
 
     /* R2, plan/phase19_ip_stack_and_ethernet.md: the IP stack, on whatever

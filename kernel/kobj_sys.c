@@ -54,6 +54,16 @@ static kh_t crit_mutex(uintptr_t owner, bool create) {
     return 0;
 }
 
+/* Everything a finished domain still holds here: its critical-section entry above (whose mutex is
+ * about to be deleted -- the entry must not outlive it), then every object and timer it owns
+ * (kos_release_owner). Only once no thread of the domain can run. */
+uint32_t kobj_sys_release_domain(uintptr_t owner) {
+    if (owner == 0) return 0;
+    for (int i = 0; i < CRIT_MAX; i++)
+        if (g_crit[i].m && g_crit[i].owner == owner) { g_crit[i].m = 0; g_crit[i].owner = 0; }
+    return kos_release_owner(owner);
+}
+
 /* ---- threads in the caller's domain -------------------------------------- *
  *
  * The radio is several tasks sharing one memory domain: the blob creates its own
@@ -101,7 +111,10 @@ static long thread_create(uintptr_t entry, uintptr_t arg, uintptr_t stack_base,
         if (!g_thr[i].used) { slot = i; break; }
     if (slot < 0) return KO_FAIL;
     g_thr[slot] = (kthread_t){ true, dom, entry, arg, stack_base + stack_size };
-    int pid = task_create("uthread", kthread_body, &g_thr[slot]);
+    /* One page of kernel stack: it carries only the thread's system calls and traps (the thread's own
+     * stack is the domain's), measured under 1.5 KB with the Wi-Fi radio's four threads joining and
+     * logging (45.8). On the C6, with the radio resident, every page of the 224 KB heap counts. */
+    int pid = task_create_sized("uthread", kthread_body, &g_thr[slot], 1);
     if (pid < 0) { g_thr[slot].used = false; return KO_FAIL; }
     task_set_priority(pid, tier_for(prio));
     return pid;

@@ -12,5 +12,9 @@ long kobj_syscall(unsigned op, uintptr_t a1, uintptr_t a2, uintptr_t a3,
 
 /* `kobjutest` (kernel/kobj_utest.c): a U-mode task using every operation. */
 int kobj_utest(void);
+/* Releases everything a finished memory domain still holds in the kernel-object layer -- its objects,
+ * timers and critical-section mutex -- and returns how many objects and timers that was. Only once no
+ * task of the domain can run any more. */
+uint32_t kobj_sys_release_domain(uintptr_t owner);
 
 #endif

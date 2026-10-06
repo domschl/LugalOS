@@ -269,3 +269,29 @@ int kos_timer_wait(uintptr_t owner, uintptr_t *key, uintptr_t *fn, uintptr_t *ar
         task_block_until_ms(dl_ms);
     }
 }
+
+/* ---- releasing a finished domain's objects ------------------------------
+ *
+ * A domain's objects are its own (the syscall layer stamps the owner), and nothing deleted them when
+ * the domain was done: a test domain left a queue page, four semaphores, a mutex, an event group and
+ * its timers behind on every run -- and the tables are fixed and shared with the live Wi-Fi radio, so
+ * repeated runs on a running node walk toward the point where the radio's next create fails (45.8).
+ * Each object goes through its ordinary delete: waiters are woken with KO_DELETED and a queue's
+ * storage is freed. Call only once no task of the domain can run any more. */
+uint32_t kos_release_owner(uintptr_t owner) {
+    if (owner == 0) return 0;
+    kh_t h[KSEM_MAX + KMUTEX_MAX + KQUEUE_MAX + KEVT_MAX];
+    uint32_t n, t;
+    LOCKED(n = kobj_owned(owner, h, sizeof h / sizeof h[0]));
+    for (uint32_t i = 0; i < n; i++) {
+        switch ((int)(h[i] >> 28)) {
+        case KOBJ_SEM:   kos_sem_delete(h[i]); break;
+        case KOBJ_MUTEX: kos_mutex_delete(h[i]); break;
+        case KOBJ_QUEUE: kos_q_delete(h[i]); break;
+        case KOBJ_EVENT: kos_ev_delete(h[i]); break;
+        }
+    }
+    LOCKED(t = ktimer_release_owner(owner));
+    timer_poke();
+    return n + t;
+}

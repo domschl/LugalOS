@@ -296,5 +296,13 @@ int kobj_utest(void) {
     bool clean = sched_task_exited_cleanly(pid, &status);
     if (!dead || !clean || !g_kctx->finished) { fails++; cprintf("  FAIL the task did not finish cleanly (dead=%d clean=%d)\n", dead, clean); }
     if (fails == 0) cprintf("KOBJUTEST_OK\n"); else cprintf("KOBJUTEST_FAIL (%d)\n", fails);
+    /* Give the page back once nothing can touch it any more -- the test task is gone; a task that
+     * did not end keeps it, as a leak is the lesser harm than a page freed under a running thread.
+     * Every run used to keep it (45.8: 8 KB a run on the C6, where the radio leaves ~50 KB free). */
+    if (dead) {
+        kos_sem_delete(g_kctx->kernel_sem);
+        kobj_sys_release_domain((uintptr_t)&g_kutest_domain);   /* what its U-mode code created and never deleted */
+        palloc_free(g_kpage, 1); g_kpage = NULL; g_kctx = NULL;
+    }
     return fails;
 }

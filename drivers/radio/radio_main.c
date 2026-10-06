@@ -28,6 +28,8 @@ extern int esp_supplicant_init(void);
 /* IDF's esp_wifi_connect() is a thin wrapper over the blob's internal entry (esp_wifi/src). */
 extern int esp_wifi_connect_internal(void);
 int esp_wifi_connect(void) { return esp_wifi_connect_internal(); }
+extern int esp_wifi_disconnect_internal(void);
+int esp_wifi_disconnect(void) { return esp_wifi_disconnect_internal(); }
 
 /* The chip ROM's own debug prints (its PHY and clock code call ets_printf) go to its console -- here the
  * USB-Serial/JTAG peripheral, which the radio's domain has no business touching (a load fault at
@@ -138,11 +140,11 @@ void radio_main(uintptr_t arg) {
     }
 
     int retry_in = 0;
+    static wifi_config_t wc;            /* kept: the pump below re-applies it without the BSSID pin */
     if (r == 0 && ctx->join) {
         /* As esp_netif does when it attaches to the station: the receive callback is in place before the
          * connection, so the first frame after the handshake has somewhere to go. */
         if (!radio_netif_start(ctx)) RLOG("netif start failed");
-        wifi_config_t wc = { 0 };
         for (int i = 0; i < 32 && ctx->ssid[i]; i++) wc.sta.ssid[i] = (uint8_t)ctx->ssid[i];
         for (int i = 0; i < 64 && ctx->pass[i]; i++) wc.sta.password[i] = (uint8_t)ctx->pass[i];   /* 64 hex = a raw PSK */
         wc.sta.threshold.authmode = ctx->pass[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;   /* no key: an open network */
@@ -167,7 +169,7 @@ void radio_main(uintptr_t arg) {
             int32_t id; uint8_t d[48]; uint32_t sz;
             while (radio_osi_event_pop(&id, d, &sz)) {
                 RLOG("event %d (%u bytes)", (int)id, (unsigned)sz);
-                if (id == WIFI_EVENT_STA_CONNECTED) ctx->connected = 1;
+                if (id == WIFI_EVENT_STA_CONNECTED) { ctx->connected = 1; ctx->joins++; }
                 if (id == WIFI_EVENT_STA_DISCONNECTED) { ctx->disc_reason = sz > 39 ? d[39] : 255; retry_in = 10; }
             }
             if (retry_in && --retry_in == 0) { r = esp_wifi_connect(); RLOG("reconnect -> 0x%x", r); r = 0; }
@@ -179,17 +181,44 @@ void radio_main(uintptr_t arg) {
     }
     ctx->done = 1;
 
-    /* From here the main thread is the event pump: link state and rejoin. Without a join there is nothing
-     * more to do and it ends. */
+    /* From here the main thread is the event pump, for the life of the board (45.8): link state, and
+     * rejoining whenever the link is lost -- an AP rebooting overnight, a power cut that brought the node
+     * back before the router. It never gives up, with a capped backoff, and it logs the first few
+     * attempts of an outage only, so a network that is simply gone does not fill the log.
+     *
+     * The BSSID pin the first join used (the strongest AP of the SSID at boot) is dropped after a few
+     * failures: with two APs for one SSID, the one that disappeared must not be the only one this node
+     * will ever try again. The kernel can also ask for a rejoin (`rejoin_req`): its supervisor does when a
+     * link that claims to be up has carried nothing for minutes (kernel/radio_c6.c). */
     if (ctx->join && r == 0) {
-        uint32_t tick = 0;
+        static const uint16_t backoff_ticks[] = { 10, 25, 75, 150 };   /* 200 ms ticks: 2, 5, 15, 30 s */
+        uint32_t tick = 0, fails = 0;
         for (;;) {
             int32_t id; uint8_t d[48]; uint32_t sz;
             if ((++tick % 5) == 0) radio_plat_phy_track();      /* IDF's 1 s PLL-tracking timer */
             while (radio_osi_event_pop(&id, d, &sz)) {
-                if (id == WIFI_EVENT_STA_CONNECTED) ctx->connected = 1;
-                if (id == WIFI_EVENT_STA_DISCONNECTED) { ctx->connected = 0; ctx->disc_reason = sz > 39 ? d[39] : 255; retry_in = 10; }
-                RLOG("event %d", (int)id);
+                if (id == WIFI_EVENT_STA_CONNECTED) {
+                    ctx->connected = 1; ctx->joins++;
+                    if (fails) RLOG("link up again after %u attempts", (unsigned)fails);
+                    fails = 0; retry_in = 0;
+                }
+                if (id == WIFI_EVENT_STA_DISCONNECTED) {
+                    if (ctx->connected) RLOG("link lost (reason %u)", sz > 39 ? (unsigned)d[39] : 255u);
+                    ctx->connected = 0; ctx->disc_reason = sz > 39 ? d[39] : 255;
+                    fails++;
+                    uint32_t k = fails - 1 < 3 ? fails - 1 : 3;
+                    retry_in = backoff_ticks[k];
+                    if (fails <= 3) RLOG("rejoin attempt %u in %u s", (unsigned)fails, (unsigned)(retry_in / 5));
+                    if (fails == 3 && wc.sta.bssid_set) {
+                        wc.sta.bssid_set = false;      /* any AP of the SSID from now on */
+                        RLOG("bssid pin dropped: %d", esp_wifi_set_config(WIFI_IF_STA, &wc));
+                    }
+                }
+            }
+            if (ctx->rejoin_req) {
+                ctx->rejoin_req = 0;
+                RLOG("rejoin requested by the kernel");
+                esp_wifi_disconnect();              /* the STA_DISCONNECTED it posts starts the rejoin above */
             }
             if (retry_in && --retry_in == 0) esp_wifi_connect();
             radio_osi_task_delay(200);

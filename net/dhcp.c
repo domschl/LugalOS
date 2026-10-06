@@ -159,7 +159,7 @@ static void dhcp_task(void *arg) {
         if (!ok) { task_sleep_ms(5000); continue; }
         if (net_set_address(ip, mask, gw) == 0) {
             g_owned = true;
-            printk("[DHCP] %u.%u.%u.%u/%u.%u.%u.%u gw %u.%u.%u.%u, lease %us\\n", ip[0], ip[1], ip[2], ip[3],
+            printk("[DHCP] %u.%u.%u.%u/%u.%u.%u.%u gw %u.%u.%u.%u, lease %us\n", ip[0], ip[1], ip[2], ip[3],
                    mask[0], mask[1], mask[2], mask[3], gw[0], gw[1], gw[2], gw[3], (unsigned)lease_s);
         }
         /* Renew at half the lease (clamped to something that is not a busy loop). */
@@ -175,7 +175,7 @@ static void dhcp_task(void *arg) {
 int dhcp_start(void) {
     static int pid = -1;
     if (pid >= 0) return pid;
-    pid = task_create_sized("dhcpc", dhcp_task, NULL, 3);
-    if (pid < 0) printk("[DHCP] could not start the client task\\n");
+    pid = task_create_sized("dhcpc", dhcp_task, NULL, 1);   /* measured peak under 1 KB (C6, 2026-10-06) */
+    if (pid < 0) printk("[DHCP] could not start the client task\n");
     return pid;
 }

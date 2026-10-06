@@ -31,10 +31,12 @@
 #include "kernel/mem_domain.h"
 #include "kernel/console.h"
 #include "kernel/printk.h"
+#include "kernel/identity.h"
 #include "arch/umode.h"
 #include "lugalos_config.h"
 #include "../drivers/radio/radio_main.h"
 #include <stddef.h>
+#include <string.h>
 #include <stdint.h>
 
 /* The node's MAC is the chip's own, from eFuse (EFUSE_RD_MAC_SYS_0/1: the base MAC Espressif burned,
@@ -157,12 +159,24 @@ void radio_c6_probe(void) {
 #endif
 }
 
+bool radio_c6_started(void) { return g_rpid >= 0; }
+
+bool radio_c6_rf_on(void) {
+#if defined(CONFIG_RADIO_C6)
+    const radio_ctx_t *c = (const radio_ctx_t *)g_rstack;
+    return c && c->stage >= RADIO_STAGE_STARTED;
+#else
+    return false;
+#endif
+}
+
 void radio_c6_stats(void) {
 #if defined(CONFIG_RADIO_C6)
     const radio_ctx_t *c = (const radio_ctx_t *)g_rstack;
     if (!c) { cprintf("radio: not started\n"); return; }
     radio_intr_report();
-    cprintf("radio: connected=%u disc_reason=%u rx_cb=%u rx_dropped=%u tx_sent=%u tx_err=%u rings rx %u/%u tx %u/%u\n",
+    cprintf("radio: joins=%u ", (unsigned)c->joins);
+    cprintf("connected=%u disc_reason=%u rx_cb=%u rx_dropped=%u tx_sent=%u tx_err=%u rings rx %u/%u tx %u/%u\n",
             (unsigned)c->connected, (unsigned)c->disc_reason, (unsigned)c->rx_calls, (unsigned)c->rx_dropped,
             (unsigned)c->tx_sent, (unsigned)c->tx_errors, (unsigned)c->rings->rx.head, (unsigned)c->rings->rx.tail,
             (unsigned)c->rings->tx.head, (unsigned)c->rings->tx.tail);
@@ -198,7 +212,11 @@ int radio_c6_start(const char *ssid, const char *psk) {
     cprintf("radio: stage %u (%s), esp_wifi_init rc=0x%x, start rc=0x%x, task %s\n", (unsigned)ctx->stage,
             ctx->stage < 8 ? names[ctx->stage] : "?", (unsigned)ctx->rc_init, (unsigned)ctx->rc_start,
             sched_task_state(g_rpid) == TASK_DEAD ? "ended" : "still running");
-    if (ctx->stage == RADIO_STAGE_JOINED && radio_netif_register((radio_ctx_t *)g_rstack) == 0) {
+    /* wlan0 exists whenever a join was intended and the radio is up -- not only when the first
+     * attempt already succeeded: a node booting before its router (the power-cut case) joins later,
+     * through the radio's rejoin loop, and must have an interface to join *with*. The link state follows
+     * the association (kernel/radio_netif_c6.c), so DHCP and netsrv simply wait for it. */
+    if (ctx->join && ctx->stage >= RADIO_STAGE_STARTED && radio_netif_register((radio_ctx_t *)g_rstack) == 0) {
         cprintf("radio: wlan0 registered (%s)\n", ctx->connected ? "link up" : "link down");
         net_stack_attach(radio_c6_netif());
         net_task_start();
@@ -218,3 +236,73 @@ int radio_c6_start(const char *ssid, const char *psk) {
 }
 
 #endif
+
+/* `radio rejoin`: drop the association and join again, as the supervisor below does on its own. */
+void radio_c6_rejoin(void) {
+#if defined(CONFIG_RADIO_C6)
+    radio_ctx_t *c = (radio_ctx_t *)g_rstack;
+    if (!c || !c->join) { cprintf("radio: not started with a network to join\n"); return; }
+    c->rejoin_req = 1;
+    cprintf("radio: rejoin requested\n");
+#endif
+}
+
+/* --- unattended operation (45.8) ----------------------------------------
+ *
+ * The RP2350W's policy, applied to this radio (drivers/cyw43_rp2350.c, I9): **WLAN credentials in the
+ * identity record are the intent to join.** No enable flag -- `wlan` stores them, and a board with none
+ * does nothing here. A task, so the shell is usable at once; it starts the radio, which then joins and
+ * keeps rejoining by itself (drivers/radio/radio_main.c's pump: capped backoff, never gives up), and stays
+ * as the supervisor for the life of the board.
+ *
+ * What it supervises is the one failure the radio cannot see: a link that is "connected" and carries
+ * nothing. The CYW43 learned it on a clock board that went silent for a day (2026-09-02) -- an AP that
+ * stops without a goodbye leaves the association standing. On any real segment something arrives within
+ * minutes (ARP, broadcasts), so RX_SILENCE_MS without a single received frame means the link is up in
+ * name only, and a rejoin costs a few seconds where not doing one costs the board. */
+#define RX_SILENCE_MS (5u * 60u * 1000u)
+
+#if defined(CONFIG_RADIO_C6)
+static void wlan_autostart_task(void *arg) {
+    (void)arg;
+    char ssid[NODE_WLAN_SSID_MAX + 1];
+    uint8_t psk[NODE_WLAN_PSK_LEN];
+    if (!node_wlan_ssid(ssid, sizeof(ssid)) || !node_wlan_psk(psk)) {
+        memset(psk, 0, sizeof(psk));
+        task_set_exit_status(0);
+        return;                                  /* no credentials: not meant to join anything */
+    }
+    char hex[2 * NODE_WLAN_PSK_LEN + 1];
+    static const char digits[] = "0123456789abcdef";
+    for (unsigned i = 0; i < NODE_WLAN_PSK_LEN; i++) { hex[2 * i] = digits[psk[i] >> 4]; hex[2 * i + 1] = digits[psk[i] & 15]; }
+    hex[2 * NODE_WLAN_PSK_LEN] = 0;
+    memset(psk, 0, sizeof(psk));
+    printk("[wlan] joining \"%s\" from the identity record\n", ssid);
+    int rc = radio_c6_start(ssid, hex);
+    memset(hex, 0, sizeof(hex));
+    const radio_ctx_t *c = (const radio_ctx_t *)g_rstack;
+    if (rc != 0 || !c || c->stage < RADIO_STAGE_STARTED) {
+        printk("[wlan] the radio did not start -- nothing to supervise\n");
+        task_set_exit_status(1);
+        return;
+    }
+    uint32_t last_rx = c->rx_calls;
+    uint64_t last_change = time_get_ms();
+    for (;;) {
+        task_sleep_ms(10000);
+        uint64_t now = time_get_ms();
+        if (!c->connected || c->rx_calls != last_rx) { last_rx = c->rx_calls; last_change = now; continue; }
+        if (now - last_change >= RX_SILENCE_MS) {
+            printk("[wlan] connected, but nothing received for %u s -- rejoining\n", (unsigned)(RX_SILENCE_MS / 1000));
+            ((radio_ctx_t *)c)->rejoin_req = 1;
+            last_change = now;
+        }
+    }
+}
+#endif
+
+void radio_c6_autostart(void) {
+#if defined(CONFIG_RADIO_C6)
+    if (task_create("wlan", wlan_autostart_task, NULL) < 0) printk("[wlan] could not create the autostart task\n");
+#endif
+}

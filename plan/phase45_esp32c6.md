@@ -704,8 +704,28 @@ by flashing*.
   from eFuse (§4.9). Hardware tests: `test_radio_join`, `test_radio_ip` (lease + host ping;
   17/17 on the suite). Not yet: authenticated 9P over TCP (needs the identity store, 45.8),
   a shell `ping`.
-* **45.8 Unattended operation.** Credentials stored like the identity record,
-  rejoin after AP loss (phase-26's R5 behaviour), watchdog.
+* **45.8 Unattended operation — identity store, autostart and rejoin DONE 2026-10-06.**
+  - *Identity store:* one 4 KB flash sector at `0x7F0000` (`drivers/idstore_esp32c6.c`), the
+    phase-21 record unchanged. The ROM's SPI routines do the transfers, from `.ramfunc` with
+    interrupts masked and the I-cache suspended (the kernel executes from the flash it writes);
+    the ROM's chip record said 2 MB and is set to 8 MB first. Not in `flash.manifest`. `identity
+    provision`, `identity name`, `wlan`, `peers` work, persist across a reset.
+  - *Entropy:* the C6's RNG is a source only while the RF is on (Espressif); `random_is_hardware()`
+    says so, and `identity key --generate` refuses before the radio is up.
+  - *Authenticated 9P over TCP/564:* a host peer key (`~/.config/lugalos/p9-peer.env`, 0600) granted
+    with `peers add` on the console; HMAC challenge, attach, `/proc/node` read over Wi-Fi.
+  - *Autostart:* WLAN credentials in the record are the intent to join (the RP2350W's policy):
+    a `wlan` task starts the radio at boot and supervises it (a link "up" but silent for 5 min is
+    rejoined). `wlan0` exists whenever a join was meant, not only after a first success. The
+    radio's pump rejoins forever with backoff (2/5/15/30 s), logs only the first attempts, and
+    drops the BSSID pin after three failures so a second AP of the SSID is tried. `radio rejoin`.
+  - *Found on the way:* the `radioosi` self-test re-initialised the live radio's shim state and
+    killed a radio thread (now refuses while the radio runs); `kobjutest` leaked its page and its
+    domain's objects every run, into tables the radio shares (`kobj_sys_release_domain()` releases
+    a finished domain's objects, timers and crit mutex). Stacks right-sized (`dhcpc`, U-mode
+    threads' kernel stacks: 4 KB) -- 52 KB heap free with the radio joined, stable across suite runs.
+  - *Not yet:* a hardware watchdog; "AP absent at boot, appears later" tested only in its two
+    halves; SRAM headroom (the kernel's static buffers, not the blob, are most of it).
 * **45.9 Taint flag, `/proc/node`, tests.** §2 delivered (the flag could
   start earlier; it is listed here so it is verified). `tests/hw/test_esp32c6.py`
   written to the same skip-if-absent pattern as the P4 suite.

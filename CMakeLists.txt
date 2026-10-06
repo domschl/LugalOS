@@ -85,7 +85,9 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
     add_compile_definitions(
         LUGALOS_C6_FLASH_SIZE=${LUGALOS_C6_FLASH_SIZE}
         LUGALOS_C6_OSIMAGE_BASE=${LUGALOS_C6_OSIMAGE_BASE}
-        LUGALOS_C6_OSIMAGE_SIZE=${LUGALOS_C6_OSIMAGE_SIZE})
+        LUGALOS_C6_OSIMAGE_SIZE=${LUGALOS_C6_OSIMAGE_SIZE}
+        LUGALOS_C6_IDENTITY_BASE=${LUGALOS_C6_IDENTITY_BASE}
+        LUGALOS_C6_IDENTITY_SIZE=${LUGALOS_C6_IDENTITY_SIZE})
 elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
     # E2, plan/phase27_esp32p4_bringup.md. The P4's HP cores are RV32IMAFC
     # (datasheet section 4.1.1.1), and we compile the IMAC subset: no float,
@@ -962,10 +964,10 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
     list(APPEND SOURCES drivers/sdmmc_esp32p4.c)
 elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
     # 45.4, plan/phase45_esp32c6.md. One driver again: the console, on the
-    # USB-Serial/JTAG peripheral. No block device, no netif, no identity backend,
-    # no display -- the same stated emptiness as the P4's E2, and for the same
-    # reason: a board with none of those registers none of them.
-    list(APPEND SOURCES drivers/usbjtag_esp32c6.c)
+    # USB-Serial/JTAG peripheral. No block device and no display -- the same stated
+    # emptiness as the P4's E2: a board with none of those registers none of them.
+    # 45.8: the identity store, one flash sector (drivers/idstore_esp32c6.c).
+    list(APPEND SOURCES drivers/usbjtag_esp32c6.c drivers/idstore_esp32c6.c)
     # 45.5: the board's one WS2812 (GPIO8) through the RMT pulse generator.
     list(APPEND SOURCES drivers/ws2812.c drivers/ws2812_esp32c6.c)
     # 45.6: the Wi-Fi radio. The kernel half is always built (it says so when there

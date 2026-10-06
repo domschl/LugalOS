@@ -51,6 +51,9 @@ int  kos_timer_arm(uintptr_t owner, uintptr_t key, uintptr_t fn, uintptr_t arg,
                    uint64_t delay_us, bool periodic);
 int  kos_timer_disarm(uintptr_t owner, uintptr_t key);
 int  kos_timer_done(uintptr_t owner, uintptr_t key);
+/* Deletes every object and timer `owner` (a memory domain) holds; returns how many. Owner 0 is the
+ * kernel's and is refused. Only once no task of that domain can run any more. */
+uint32_t kos_release_owner(uintptr_t owner);
 /* Blocks until one of `owner`'s timers is due (KO_OK, fields filled) or
  * `timeout_ms` passes (KO_TIMEOUT). Arming or disarming wakes it to
  * recompute. One timer thread per owner. */

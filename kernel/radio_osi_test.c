@@ -20,6 +20,10 @@
  * granted text region (a literal in ordinary .rodata would fault). */
 
 #include "kernel/radio_osi_test.h"
+#include "kernel/kobj_sys.h"
+#if defined(CONFIG_BOARD_ESP32C6)
+#include "kernel/radio_c6.h"
+#endif
 #include "kernel/kobj_abi.h"
 #include "kernel/sched.h"
 #include "kernel/palloc.h"
@@ -271,6 +275,17 @@ static void radio_task(void *arg) {
 }
 
 int radio_osi_test(void) {
+#if defined(CONFIG_BOARD_ESP32C6)
+    /* The shim under test is the live radio's own (drivers/radio/osi_impl.c: one static state), and
+     * radio_osi_init() starts by zeroing it -- the radio's heap, thread semaphores and event ring. Run
+     * while the radio is up, it pulled that state out from under the blob, which then dereferenced a
+     * dead handle and the thread was killed (45.8: a board that autostarts its radio from the identity
+     * record). So it refuses then: run it on a board without stored WLAN credentials, or before `radio`. */
+    if (radio_c6_started()) {
+        cprintf("RADIOOSI_SKIP (the radio is running and this shim state is its own)\n");
+        return 0;
+    }
+#endif
     if (!mem_domain_enforced()) {
         cprintf("radioosi: no enforced memory domains on this build -- nothing to test.\n");
         return 0;
@@ -304,5 +319,9 @@ int radio_osi_test(void) {
         cprintf("  FAIL the main thread did not finish cleanly (clean=%d)\n", clean);
     }
     if (fails == 0) cprintf("RADIOOSI_OK\n"); else cprintf("RADIOOSI_FAIL (%d)\n", fails);
+    if (sched_task_state(pid) == TASK_DEAD) {             /* as kobjutest: never under a live task */
+        kobj_sys_release_domain((uintptr_t)&g_rdomain);
+        palloc_free(g_rpage, 1); g_rpage = NULL;
+    }
     return fails;
 }

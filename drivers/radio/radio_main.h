@@ -53,6 +53,8 @@ typedef struct {
     uint8_t  mac[6];                    /* the station's MAC, set once the radio started */
     volatile uint32_t rx_calls, rx_dropped, tx_sent, tx_errors;   /* frame-path counters, for `radio stats` */
     volatile uint32_t disc_reason;
+    volatile uint32_t rejoin_req;       /* kernel -> radio: drop the association and join again (a link that carries nothing) */
+    volatile uint32_t joins;            /* successful associations since start, for `radio stats` */
 } radio_ctx_t;
 
 void radio_main(uintptr_t arg);

@@ -193,6 +193,12 @@ uint32_t ktimer_count(void);
  * small, structured numbers. Kernel-internal callers use owner 0. */
 int  kobj_set_owner(kh_t h, uintptr_t owner);
 bool kobj_owned_by(kh_t h, uintptr_t owner);
+/* Every live semaphore, mutex, queue and event group `owner` holds (at most `cap`, into `out`), and
+ * how many. Owner 0 -- the kernel's own -- always answers none. For releasing what a finished domain
+ * left behind (kos_release_owner()). */
+uint32_t kobj_owned(uintptr_t owner, kh_t *out, uint32_t cap);
+/* Frees every timer slot `owner` holds; returns how many. Owner 0 is refused (0). */
+uint32_t ktimer_release_owner(uintptr_t owner);
 /* Does `h` name a live object of any type? */
 bool kobj_valid(kh_t h);
 /* How many bytes one queue item is, so the syscall layer can size its copy. */
