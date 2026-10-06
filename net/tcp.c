@@ -490,16 +490,42 @@ static uint32_t parse_mss(const uint8_t *seg, uint32_t hdr_len) {
     return 0;
 }
 
+/* A slot that is only waiting out TIME_WAIT -- the oldest one -- released for a new connection.
+ *
+ * TIME_WAIT exists to absorb a retransmitted FIN from a conversation that has ended; holding a whole
+ * slot for it is affordable when slots are plentiful and not when there are TCP_MAX_CONNS == 2 of
+ * them. On a sensor node one is the MQTT connection for good, so a 9P client that reconnected within
+ * TCP_TIME_WAIT_MS of its last session was refused (45.8, tests/hw/test_wifi.py). Reusing a TIME_WAIT
+ * slot for a new SYN is what Linux does too (RFC 6191): the old conversation is over, and conn_release()
+ * bumps the slot's epoch, so anything still holding its link sees it go stale. */
+static tcp_conn_t *recycle_time_wait(void) {
+    tcp_conn_t *oldest = NULL;
+    for (uint32_t i = 0; i < TCP_MAX_CONNS; i++) {
+        tcp_conn_t *c = &g_conns[i];
+        if (c->in_use && c->state == TCP_TIME_WAIT &&
+            (!oldest || (int64_t)(c->time_wait_at_ms - oldest->time_wait_at_ms) < 0)) oldest = c;
+    }
+    if (oldest) conn_release(oldest);
+    return oldest;
+}
+
 static void accept_syn(const uint8_t src[IPV4_LEN], const uint8_t *seg,
                        uint16_t sport, uint16_t dport, uint32_t hdr_len) {
     tcp_conn_t *c = free_conn();
+    if (!c) c = recycle_time_wait();
     if (!c) {
-        /* Both slots busy. A reset is the honest answer -- better than a
-         * silent drop, which looks to the client like a black hole. */
+        /* Both slots busy with live conversations. A reset is the honest
+         * answer -- better than a silent drop, which looks to the client like
+         * a black hole. */
         tcp_reset_stray(src, seg, hdr_len, 0);
         return;
     }
+    /* The epoch survives the reset of the slot, as in the active open below: it is what makes a link
+     * handed out for an earlier conversation on this slot stale. Zeroed with the rest, every accepted
+     * connection restarted at 0 -- and a stale link from the slot's first conversation matched again. */
+    uint32_t epoch = c->epoch;
     memset(c, 0, sizeof(*c));
+    c->epoch = epoch;
     c->in_use = true;
     c->state = TCP_SYN_RECEIVED;
     memcpy(c->peer_ip, src, IPV4_LEN);

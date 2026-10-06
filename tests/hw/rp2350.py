@@ -92,6 +92,11 @@ def _candidate_ports() -> tuple[list[str], list[str]]:
     (`/dev/ttyACM*`, `/dev/ttyUSB*`) naming conventions."""
     acm = sorted(set(glob.glob("/dev/tty.usbmodem*") + glob.glob("/dev/ttyACM*")))
     uart = sorted(set(glob.glob("/dev/tty.usbserial-*") + glob.glob("/dev/ttyUSB*")))
+    # Never probe an ESP32-C6's (or any Espressif chip's) USB-Serial/JTAG port: it runs LugalOS too, so
+    # it answers the probe like an RP2350 console -- and opening it with the default modem lines can
+    # reset the chip (AGENTS.md, tools/c6run.py). Found with a C6 and an RP2350W attached together.
+    espressif = {os.path.realpath(p) for p in glob.glob("/dev/serial/by-id/usb-Espressif_*")}
+    acm = [p for p in acm if os.path.realpath(p) not in espressif]
     return acm, uart
 
 
@@ -273,6 +278,15 @@ def discover_ports(console: str | None = None, net: str | None = None,
     than raising, so callers can treat "no hardware attached" as a normal,
     expected outcome instead of an error."""
     acm_candidates, uart_candidates = _candidate_ports()
+
+    # The USB descriptor first: "LugalOS Dual CDC ACM" is the RP2350's own USB stack and nothing else's,
+    # so when it is there it names both ports without opening anything. Behavioural probing is the
+    # fallback for a board whose descriptor is not that one.
+    if not console or not net:
+        by_id = ports_by_usb_descriptor()
+        if by_id:
+            console = console or by_id.console
+            net = net or by_id.net
 
     if not console or not net:
         for p in acm_candidates:

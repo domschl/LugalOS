@@ -731,7 +731,15 @@ by flashing*.
     uses (stubbed on the C6). Heap 224 -> 264 KB; **92 KB free with the radio joined**. The Lisp
     pools (~46 KB) stay, by decision.
   - *RP2350W:* the CYW43 netif now starts the same DHCP client after it attaches the stack -- a
-    fixed address in the record still wins. Builds; not yet run on a Pico 2 W.
+    fixed address in the record still wins. Verified 2026-10-06 on the rp2350-sensor board (BME280,
+    SGP30, DS3231): with the record's fixed address it keeps it; after `netcfg clear` it takes a
+    DHCP lease (the board now runs on DHCP). `tests/hw/test_wifi.py` 5/5 (authenticated 9P over
+    Wi-Fi), `tests/hw/test_rp2350.py` 30/31 -- the buddy-arena check fails only by test order (an
+    earlier test reserves the arena first; standalone `ballocdemo` passes).
+  - *TCP:* with TCP_MAX_CONNS 2 and MQTT holding one slot for good, a 9P client reconnecting within
+    the 2 s TIME_WAIT was refused. A new SYN now recycles the oldest TIME_WAIT slot (as Linux does,
+    RFC 6191), and an accepted slot keeps its epoch across the reset -- before, every accept restarted
+    it at 0, so a stale link from the slot's first conversation could match again.
   - *Watchdog:* MWDT0 armed once the scheduler runs (`drivers/wdt_esp32c6.c`): no feed for 30 s
     and the whole system resets; a one-page `wdog` task at normal priority feeds it every 7.5 s,
     so what keeps the board alive is ordinary tasks still being scheduled. The boot reports the
