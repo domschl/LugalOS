@@ -24,7 +24,6 @@ esp_event_base_t const WIFI_EVENT = "WIFI_EVENT";
 /* IDF's wpa_supplicant (compiled into this domain, cmake/radio_esp32c6.cmake): registers its
  * callbacks with the blob and starts its timer loop. */
 extern int esp_supplicant_init(void);
-extern int esp_wifi_statis_dump(uint32_t modules);
 
 /* IDF's esp_wifi_connect() is a thin wrapper over the blob's internal entry (esp_wifi/src). */
 extern int esp_wifi_connect_internal(void);
@@ -64,7 +63,8 @@ void radio_main(uintptr_t arg) {
     RLOG("coex_init -> %d", r);
     ctx->stage = RADIO_STAGE_COEX;
 
-    esp_wifi_internal_set_log_level(WIFI_LOG_VERBOSE);   /* the blob says why it refuses (esp_wifi_set_log_level() in IDF) */
+    esp_wifi_internal_set_log_level(WIFI_LOG_VERBOSE);
+    esp_wifi_internal_set_log_mod(WIFI_LOG_MODULE_ALL, WIFI_LOG_SUBMODULE_ALL, true);   /* the blob says why it refuses (esp_wifi_set_log_level() in IDF) */
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     r = esp_wifi_init_internal(&cfg);
     RLOG("esp_wifi_init_internal -> 0x%x", r);
@@ -95,11 +95,23 @@ void radio_main(uintptr_t arg) {
         RLOG("scan found %u access points", (unsigned)n);
         static wifi_ap_record_t recs[16];
         uint16_t got = n < 16 ? n : 16;
+        ctx->best_rssi = -127;
         if (esp_wifi_scan_get_ap_records(&got, recs) == 0) {
             for (uint16_t i = 0; i < got; i++)
                 RLOG("  %-32s ch%2u %4d dBm  auth %u  %02x:%02x:%02x:%02x:%02x:%02x", (char *)recs[i].ssid,
                      (unsigned)recs[i].primary, (int)recs[i].rssi, (unsigned)recs[i].authmode,
                      recs[i].bssid[0], recs[i].bssid[1], recs[i].bssid[2], recs[i].bssid[3], recs[i].bssid[4], recs[i].bssid[5]);
+            /* The strongest access point of the wanted SSID: the blob's default connects to the *first* match
+             * of its channel sweep (fast scan), which on a mesh is as often a weak repeater as the near one. */
+            for (uint16_t i = 0; i < got; i++) {
+                bool same = ctx->ssid[0] != 0;
+                for (int k = 0; same && k < 32; k++) { if ((char)recs[i].ssid[k] != ctx->ssid[k]) same = false; if (!ctx->ssid[k]) break; }
+                if (same && recs[i].rssi > ctx->best_rssi) {
+                    ctx->best_rssi = recs[i].rssi;
+                    ctx->best_chan = recs[i].primary;
+                    for (int k = 0; k < 6; k++) ctx->best_bssid[k] = recs[i].bssid[k];
+                }
+            }
         }
         if (n) ctx->stage = RADIO_STAGE_SCANNED;
     }
@@ -113,6 +125,11 @@ void radio_main(uintptr_t arg) {
         for (int i = 0; i < 32 && ctx->ssid[i]; i++) wc.sta.ssid[i] = (uint8_t)ctx->ssid[i];
         for (int i = 0; i < 64 && ctx->pass[i]; i++) wc.sta.password[i] = (uint8_t)ctx->pass[i];   /* 64 hex = a raw PSK */
         wc.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+        if (ctx->best_rssi > -127) {
+            wc.sta.bssid_set = true;
+            for (int k = 0; k < 6; k++) wc.sta.bssid[k] = ctx->best_bssid[k];
+            RLOG("joining the strongest %s: %d dBm", ctx->ssid, (int)ctx->best_rssi);
+        }
         wc.sta.pmf_cfg.capable = true;
         r = esp_wifi_set_config(WIFI_IF_STA, &wc);
         RLOG("esp_wifi_set_config -> 0x%x", r);
@@ -144,10 +161,8 @@ void radio_main(uintptr_t arg) {
     /* From here the main thread is the event pump: link state and rejoin. Without a join there is nothing
      * more to do and it ends. */
     if (ctx->join && r == 0) {
-        int dump_in = 60;      /* DIAGNOSTIC: the blob's own counters, once, ~12 s after the join */
         for (;;) {
             int32_t id; uint8_t d[48]; uint32_t sz;
-            if (dump_in && --dump_in == 0) { RLOG("-- statistics --"); esp_wifi_statis_dump(0x7f); }
             while (radio_osi_event_pop(&id, d, &sz)) {
                 if (id == WIFI_EVENT_STA_CONNECTED) ctx->connected = 1;
                 if (id == WIFI_EVENT_STA_DISCONNECTED) { ctx->connected = 0; ctx->disc_reason = sz > 39 ? d[39] : 255; retry_in = 10; }

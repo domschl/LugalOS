@@ -43,6 +43,9 @@ typedef struct {
     uint32_t join;                      /* kernel -> radio: 1 = associate after the scan */
     char     ssid[33];
     char     pass[65];                  /* a 64-hex derived PSK, never a passphrase */
+    int32_t  best_rssi;                 /* strongest AP with the wanted SSID found by the scan (-127: none) */
+    uint8_t  best_bssid[6];
+    uint8_t  best_chan;
     volatile uint32_t connected;        /* link state: set on STA_CONNECTED, cleared on STA_DISCONNECTED */
     volatile uint32_t done;             /* the initial phase (scan/join) is over; radio_main keeps running */
     uint32_t tx_sem;                    /* a kernel semaphore (the kernel gives it per queued TX frame) */

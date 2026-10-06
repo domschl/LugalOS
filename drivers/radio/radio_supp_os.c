@@ -45,13 +45,3 @@ void esp_log(const void *config, const char *tag, const char *fmt, ...) {
     va_end(ap);
 }
 
-/* DIAGNOSTIC: what the supplicant hands the blob when it installs a key (never the key itself). */
-extern int esp_wifi_set_sta_key_internal_real(int, const uint8_t *, int, int, uint8_t *, size_t, uint8_t *, size_t, int)
-    __asm__("esp_wifi_set_sta_key_internal");
-int radio_dbg_set_key(int alg, const uint8_t *addr, int idx, int tx, uint8_t *seq, size_t seq_len, uint8_t *key, size_t key_len, int flag) {
-    int r = esp_wifi_set_sta_key_internal_real(alg, addr, idx, tx, seq, seq_len, key, key_len, flag);
-    radio_osi_log_write(3, "radio", "set_key alg=%d addr=%02x:%02x:%02x idx=%d tx=%d seq_len=%u key_len=%u flag=%d -> %d", alg,
-                        addr ? addr[0] : 0, addr ? addr[1] : 0, addr ? addr[2] : 0, idx, tx, (unsigned)seq_len,
-                        (unsigned)key_len, flag, r);
-    return r;
-}

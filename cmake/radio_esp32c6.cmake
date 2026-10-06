@@ -61,8 +61,8 @@ extern void radio_osi_task_delay(uint32_t);
 #pragma once
 #define CONFIG_IDF_TARGET_ESP32C6 1
 #define CONFIG_SOC_WIFI_HE_SUPPORT 1
-#define CONFIG_LOG_DEFAULT_LEVEL 5
-#define CONFIG_LOG_MAXIMUM_LEVEL 5
+#define CONFIG_LOG_DEFAULT_LEVEL 3
+#define CONFIG_LOG_MAXIMUM_LEVEL 3
 #define CONFIG_LOG_VERSION 1
 #define CONFIG_LOG_MAXIMUM_EQUALS_DEFAULT 1
 #define CONFIG_LOG_TIMESTAMP_SOURCE_RTOS 1
@@ -177,8 +177,7 @@ extern void radio_osi_task_delay(uint32_t);
         # The kernel has its own SHA-256 under the same names (kernel/sha256.c), in kernel
         # text; the supplicant's copies are the radio domain's and take another name.
         sha256_init=wpa_sha256_init sha256_update=wpa_sha256_update sha256_final=wpa_sha256_final
-        hmac_sha256=wpa_hmac_sha256 sha256=wpa_sha256
-        esp_wifi_set_sta_key_internal=radio_dbg_set_key)
+        hmac_sha256=wpa_hmac_sha256 sha256=wpa_sha256)
     message(STATUS "C6 radio: ESP-IDF at ${LUGALOS_IDF_ROOT}")
 else()
     message(STATUS "C6 radio: no ESP-IDF tree found (set IDF_ROOT) -- building without the Wi-Fi blob")
