@@ -583,8 +583,16 @@ initial state so `radio` can start twice in one boot.
 * **Not yet:** an authenticated 9P attach over TCP. The server answers on 564 and negotiates
   `version`, then (correctly) refuses an unauthenticated `attach`; authenticating needs the
   node's key, and the C6 has no identity store yet (45.8). The shell has no `ping`, so "ping
-  both ways" is host-to-board only for now. The kernel froze three times during this work
-  (once each during a join, a scan and early after boot) -- under investigation.
+  both ways" is host-to-board only for now. The console went dead three times during this work;
+  the two confirmed stalls were both in builds that *linked the blob's own statistics dumpers*
+  (`dbg_hmac_rxtx_statis_dump`/`esf_buf_statis_dump`, then `esp_wifi_statis_dump`/
+  `dbg_dump_rx_errors`), which pull further closed objects into the image. Not reproduced without
+  them: 10 reset/join/DHCP/ping/idle cycles clean, five of them with the blob's log at VERBOSE and
+  the host port closed (backpressure: the console driver's bounded spin recovers). Don't link
+  those dumpers. (Note: the tick breadcrumb counts 100 Hz ticks, and reading it with esptool
+  resets the chip -- it dates the read, not a hang.) For a real hang next time: OpenOCD from
+  `~/.espressif` can halt the core over the built-in USB-JTAG without a reset (needs the
+  openocd udev rule for user access).
 
 ## 5. Milestones
 
