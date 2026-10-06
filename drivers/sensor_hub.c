@@ -1,6 +1,7 @@
 #include "drivers/sensor_hub.h"
 #include "drivers/bme280.h"
 #include "drivers/bme680.h"
+#include "drivers/tsl2591.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
 #include "kernel/sched.h"
@@ -43,6 +44,7 @@ bool sensor_hub_register(sensor_dev_t *dev) {
 
 void sensor_hub_init(void) {
     /* Register built-in drivers */
+    sensor_hub_register(&tsl2591_sensor_dev);
     sensor_hub_register(&bme680_sensor_dev);
     sensor_hub_register(&bme280_sensor_dev);
 
@@ -161,6 +163,7 @@ uint32_t sensor_hub_selftest(bool report) {
     /* Ensure default drivers are registered */
     sensor_hub_register(&bme280_sensor_dev);
     sensor_hub_register(&bme680_sensor_dev);
+    sensor_hub_register(&tsl2591_sensor_dev);
 
     for (uint32_t i = 0; i < s_driver_count; i++) {
         sensor_dev_t *dev = s_drivers[i];

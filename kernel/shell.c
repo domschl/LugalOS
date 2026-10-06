@@ -33,6 +33,7 @@
 #include "drivers/i2c_bus.h"
 #include "drivers/bme280.h"
 #include "drivers/bme680.h"
+#include "drivers/tsl2591.h"
 #include "drivers/sensor_hub.h"
 #include "drivers/boardprobe.h"
 #include "drivers/clocks_rp2350.h"
@@ -1264,6 +1265,7 @@ static void cmd_sensor(const char *arg) {
     if (strncmp(arg, "selftest", 8) == 0) {
         bme280_selftest(true);
         bme680_selftest(true);
+        tsl2591_selftest(true);
         return;
     }
     if (strncmp(arg, "init", 4) == 0) {

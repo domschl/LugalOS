@@ -759,6 +759,7 @@ set(SOURCES
     drivers/i2c_reg.c
     drivers/sensor.c
     drivers/bme680.c
+    drivers/tsl2591.c
     drivers/sensor_hub.c
     fs/p9_chan.c
     libc/string.c

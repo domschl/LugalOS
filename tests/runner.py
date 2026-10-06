@@ -5671,6 +5671,11 @@ def test_bme280_compensation(elf_path: Path, img_path: Path, arch_name: str) -> 
             return (name, False,
                     f"bme680 compensation does not match the reference:\n{log[-700:]}")
 
+        m_tsl = re.search(r"tsl2591 selftest: (\d+) case", log)
+        if not m_tsl or int(m_tsl.group(1)) != 0:
+            return (name, False,
+                    f"tsl2591 compensation does not match the reference:\n{log[-700:]}")
+
         # With no sensor fitted -- and there is none on either QEMU target --
         # the driver must say so rather than report zeroes as a measurement.
         ok, log = session.send_and_expect("sensor\n", r"sensor: |@0x", timeout=6.0)
