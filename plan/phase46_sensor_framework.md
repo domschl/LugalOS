@@ -303,9 +303,15 @@ typedef struct {
  * Created `tools/bme680_reference.py` independent verification script.
  * Silicon verification on physical Pimoroni BME680: 26.63 °C, 960.30 hPa, 52.11 %RH, 21.46 kOhm gas resistance.
 
-### 46.6 Light Sensors: TSL2561 and TSL2591
-* Implement `drivers/tsl2561.c` and `drivers/tsl2591.c`.
-* Implement gain/integration time control and piecewise integer Lux calculations.
+### 46.6 Light Sensors: TSL2561 and TSL2591 [Concluded]
+ * Implemented `drivers/tsl2561.c` and `drivers/tsl2591.c`.
+ * Implemented gain/integration time control, CPL and piecewise integer Lux calculations.
+ * Reference math scripts: `tools/tsl2561_reference.py`, `tools/tsl2591_reference.py`.
+ * Silicon verification on physical hardware:
+   - TSL2591 at 0x29 (on BlueDot dual breakout): 128.77 Lux, verified concurrently alongside BME280 at 0x77.
+   - TSL2561 at 0x39: 106.61 Lux, verified standalone with DS3231 RTC.
+ * Autonomous sampling, non-blocking cache, staleness age tracking (`age_s`), and `/proc/sensors` multi-sensor reporting.
+ * All selftests pass with 0 failures on real silicon and in automated regression runner.
 
 ### 46.7 MOX Air Quality Sensor: CCS811
 * Implement `drivers/ccs811.c`: active-low `/WAKE` handling, `APP_START` boot transition, Mode 3 pulse measurement, eCO2/TVOC registers.
