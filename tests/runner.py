@@ -5676,6 +5676,11 @@ def test_bme280_compensation(elf_path: Path, img_path: Path, arch_name: str) -> 
             return (name, False,
                     f"tsl2591 compensation does not match the reference:\n{log[-700:]}")
 
+        m_ccs811 = re.search(r"ccs811 selftest: (\d+) case", log)
+        if not m_ccs811 or int(m_ccs811.group(1)) != 0:
+            return (name, False,
+                    f"ccs811 compensation does not match the reference:\n{log[-700:]}")
+
         m_tsl2561 = re.search(r"tsl2561 selftest: (\d+) case", log)
         if not m_tsl2561 or int(m_tsl2561.group(1)) != 0:
             return (name, False,

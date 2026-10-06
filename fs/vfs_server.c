@@ -15,6 +15,7 @@
 #include "drivers/i2c_rtc.h"
 #include "drivers/bme280.h"
 #include "drivers/bme680.h"
+#include "drivers/ccs811.h"
 #include "drivers/tsl2561.h"
 #include "drivers/tsl2591.h"
 #include "drivers/sensor_hub.h"
@@ -1421,6 +1422,29 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
             if (lf)
                 used += (uint32_t)ksnprintf(buf + used, cap - used,
                     "last_failure=%s\n", lf);
+        } else if (ccs811_is_detected()) {
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "part=%s\naddr=0x%02x\nsample_period_s=%lu\n",
+                ccs811_part_name(), ccs811_address(),
+                (unsigned long)sensor_hub_sample_period_s());
+
+            ccs811_reading_t cr;
+            uint32_t c_age = 0;
+            if (!ccs811_cached(&cr, &c_age)) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "valid=no\n");
+            } else {
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "valid=yes\nage_s=%lu\neco2_ppm=%u\ntvoc_ppb=%u\n",
+                    (unsigned long)c_age, (unsigned int)cr.eco2_ppm, (unsigned int)cr.tvoc_ppb);
+            }
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "reads=%lu\nfailures=%lu\n",
+                (unsigned long)ccs811_read_count(),
+                (unsigned long)ccs811_fail_count());
+            const char *lf = ccs811_last_failure();
+            if (lf)
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "last_failure=%s\n", lf);
         } else {
             used += (uint32_t)ksnprintf(buf + used, cap - used, "part=none\n");
             return (int)used;
@@ -1442,6 +1466,16 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
                     used += (uint32_t)ksnprintf(buf + used, cap - used,
                         "lux_c100=%ld\nlux_age_s=%lu\n",
                         (long)tr.lux_c100, (unsigned long)t_age);
+                }
+            }
+
+            if (ccs811_is_detected()) {
+                ccs811_reading_t cr;
+                uint32_t c_age = 0;
+                if (ccs811_cached(&cr, &c_age)) {
+                    used += (uint32_t)ksnprintf(buf + used, cap - used,
+                        "eco2_ppm=%u\ntvoc_ppb=%u\ngas_age_s=%lu\n",
+                        (unsigned int)cr.eco2_ppm, (unsigned int)cr.tvoc_ppb, (unsigned long)c_age);
                 }
             }
         }

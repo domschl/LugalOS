@@ -313,8 +313,17 @@ typedef struct {
  * Autonomous sampling, non-blocking cache, staleness age tracking (`age_s`), and `/proc/sensors` multi-sensor reporting.
  * All selftests pass with 0 failures on real silicon and in automated regression runner.
 
-### 46.7 MOX Air Quality Sensor: CCS811
-* Implement `drivers/ccs811.c`: active-low `/WAKE` handling, `APP_START` boot transition, Mode 3 pulse measurement, eCO2/TVOC registers.
+### 46.7 MOX Air Quality Sensor: CCS811 [Concluded]
+* Implemented `drivers/ccs811.c` and `drivers/include/drivers/ccs811.h`.
+* Active-low `/WAKE` support, `APP_START` (0xF4) bootloader state machine transition.
+* Mode 1 continuous IAQ measurements: extracts eCO2 (ppm) and TVOC (ppb) from `ALG_RESULT_DATA` (0x02).
+* Implemented cross-sensor environmental compensation: Sensor Hub routes ambient $T$ & $H$ from BME280/BME680 into CCS811 `ENV_DATA` (0x05) encoded in 1/512 %RH and 1/512 °C with -25°C offset.
+* Reference math script: `tools/ccs811_reference.py`.
+* Silicon verification on physical hardware: CCS811 at 0x5A running concurrently alongside BME280 at 0x76:
+  - `ccs811 at 0x5a: 400 ppm eCO2, 0 ppb TVOC`
+  - `bme280 at 0x76: 26.20 C, 959.13 hPa, 47.16 %RH`
+  - `/proc/sensors`: reports station & sea-level pressure, temperature, humidity, eCO2, TVOC, and independent staleness ages.
+* All 5 driver selftests (BME280, BME680, CCS811, TSL2561, TSL2591) pass with 0 failures.
 
 ### 46.8 Sensirion Multi-Pixel Gas Sensor: SGP30
 * Implement `drivers/sgp30.c`: 16-bit commands, CRC-8 validation, eCO2 and TVOC extraction.

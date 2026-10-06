@@ -1,6 +1,7 @@
 #include "drivers/sensor_hub.h"
 #include "drivers/bme280.h"
 #include "drivers/bme680.h"
+#include "drivers/ccs811.h"
 #include "drivers/tsl2561.h"
 #include "drivers/tsl2591.h"
 #include "kernel/printk.h"
@@ -47,6 +48,7 @@ void sensor_hub_init(void) {
     /* Register built-in drivers */
     sensor_hub_register(&tsl2591_sensor_dev);
     sensor_hub_register(&tsl2561_sensor_dev);
+    sensor_hub_register(&ccs811_sensor_dev);
     sensor_hub_register(&bme680_sensor_dev);
     sensor_hub_register(&bme280_sensor_dev);
 
@@ -98,6 +100,17 @@ void sensor_hub_sample_all(void) {
             }
         } else {
             c->fail_count++;
+        }
+    }
+
+    /* Cross-Sensor Compensation Pipeline (Phase 46 §5.2 / §4.9):
+     * If ambient temperature and humidity are available from BME280/BME680,
+     * feed them into gas sensors (such as CCS811) for real-time baseline tuning. */
+    int32_t t = 0, h = 0;
+    if (sensor_hub_get(SENSOR_CHAN_TEMP, &t, NULL) &&
+        sensor_hub_get(SENSOR_CHAN_HUMIDITY, &h, NULL)) {
+        if (ccs811_is_detected()) {
+            ccs811_set_env_data(t, h);
         }
     }
 }
@@ -165,6 +178,7 @@ uint32_t sensor_hub_selftest(bool report) {
     /* Ensure default drivers are registered */
     sensor_hub_register(&bme280_sensor_dev);
     sensor_hub_register(&bme680_sensor_dev);
+    sensor_hub_register(&ccs811_sensor_dev);
     sensor_hub_register(&tsl2561_sensor_dev);
     sensor_hub_register(&tsl2591_sensor_dev);
 
