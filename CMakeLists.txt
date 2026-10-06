@@ -758,6 +758,15 @@ set(SOURCES
     # controller. Deliberately NOT in the -fno-jump-tables list below: it has
     # no UATTR code, since it rides the shared i2c task rather than being one.
     drivers/bme280.c
+    # Phase 46 (plan/phase46_sensor_framework.md): I2C register and command helpers.
+    drivers/i2c_reg.c
+    drivers/sensor.c
+    drivers/bme680.c
+    drivers/ccs811.c
+    drivers/sgp30.c
+    drivers/tsl2561.c
+    drivers/tsl2591.c
+    drivers/sensor_hub.c
     fs/p9_chan.c
     libc/string.c
     # 38.3: the exhaustive check behind libc's word loops (`memselftest`).

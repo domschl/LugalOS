@@ -14,6 +14,12 @@
 #include "drivers/cyw43.h"
 #include "drivers/i2c_rtc.h"
 #include "drivers/bme280.h"
+#include "drivers/bme680.h"
+#include "drivers/ccs811.h"
+#include "drivers/sgp30.h"
+#include "drivers/tsl2561.h"
+#include "drivers/tsl2591.h"
+#include "drivers/sensor_hub.h"
 #include "drivers/piousb.h"
 #include "kernel/time.h"
 #include "kernel/printk.h"
@@ -1305,49 +1311,206 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
          * uses, because the parser on the other end may be a shell script.
          * Scaling here would put a decimal point in two places. */
         uint32_t used = 0;
-        if (!bme280_is_detected()) {
+        if (bme680_is_detected()) {
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "part=%s\naddr=0x%02x\nsample_period_s=%lu\n",
+                bme680_part_name(), bme680_address(),
+                (unsigned long)sensor_hub_sample_period_s());
+
+            bme680_reading_t r;
+            uint32_t age_s = 0;
+            if (!bme680_cached(&r, &age_s)) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "valid=no\n");
+            } else {
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "valid=yes\nage_s=%lu\ntemperature_c100=%ld\npressure_pa=%lu\nhumidity_rh1000=%lu\ngas_resistance_ohm=%lu\n",
+                    (unsigned long)age_s, (long)r.temperature_c100,
+                    (unsigned long)r.pressure_pa,
+                    (unsigned long)((uint32_t)r.humidity_cpercent * 10u),
+                    (unsigned long)r.gas_res_ohm);
+            }
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "reads=%lu\nfailures=%lu\n",
+                (unsigned long)bme680_read_count(),
+                (unsigned long)bme680_fail_count());
+            const char *lf = bme680_last_failure();
+            if (lf)
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "last_failure=%s\n", lf);
+        } else if (bme280_is_detected()) {
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "part=%s\naddr=0x%02x\nsample_period_s=%lu\n",
+                bme280_part_name(), bme280_address(),
+                (unsigned long)bme280_sample_period_s());
+
+            bme280_reading_t r;
+            uint32_t age_s = 0;
+            if (!bme280_cached(&r, &age_s)) {
+                /* Detected but never read: distinguishable from a stale reading,
+                 * and from no part at all, which are three different situations
+                 * with three different fixes. */
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "valid=no\n");
+            } else {
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "valid=yes\nage_s=%lu\ntemperature_c100=%ld\npressure_pa=%lu\n",
+                    (unsigned long)age_s, (long)r.temperature_c100,
+                    (unsigned long)(r.pressure_pa256 >> 8));
+                /* Phase 40, item 11: reduced to sea level, where the node knows
+                 * its altitude -- so a gateway republishing this file
+                 * (`mqttd file`) can publish what weather services quote. */
+                int32_t alt;
+                if (bme280_altitude(&alt))
+                    used += (uint32_t)ksnprintf(buf + used, cap - used,
+                        "altitude_m=%ld\npressure_msl_pa=%ld\n", (long)alt,
+                        (long)bme280_sea_level_pa((int32_t)(r.pressure_pa256 >> 8),
+                                                  r.temperature_c100, alt));
+                if (r.have_humidity)
+                    used += (uint32_t)ksnprintf(buf + used, cap - used,
+                        "humidity_rh1000=%lu\n",
+                        (unsigned long)((r.humidity_rh1024 * 1000u) >> 10));
+            }
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "reads=%lu\nfailures=%lu\n",
+                (unsigned long)bme280_read_count(),
+                (unsigned long)bme280_fail_count());
+            const char *lf = bme280_last_failure();
+            if (lf)
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "last_failure=%s\n", lf);
+        } else if (tsl2591_is_detected()) {
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "part=%s\naddr=0x%02x\nsample_period_s=%lu\n",
+                tsl2591_part_name(), tsl2591_address(),
+                (unsigned long)sensor_hub_sample_period_s());
+
+            tsl2591_reading_t tr;
+            uint32_t t_age = 0;
+            if (!tsl2591_cached(&tr, &t_age)) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "valid=no\n");
+            } else {
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "valid=yes\nage_s=%lu\nlux_c100=%ld\n",
+                    (unsigned long)t_age, (long)tr.lux_c100);
+            }
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "reads=%lu\nfailures=%lu\n",
+                (unsigned long)tsl2591_read_count(),
+                (unsigned long)tsl2591_fail_count());
+            const char *lf = tsl2591_last_failure();
+            if (lf)
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "last_failure=%s\n", lf);
+        } else if (tsl2561_is_detected()) {
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "part=%s\naddr=0x%02x\nsample_period_s=%lu\n",
+                tsl2561_part_name(), tsl2561_address(),
+                (unsigned long)sensor_hub_sample_period_s());
+
+            tsl2561_reading_t tr;
+            uint32_t t_age = 0;
+            if (!tsl2561_cached(&tr, &t_age)) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "valid=no\n");
+            } else {
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "valid=yes\nage_s=%lu\nlux_c100=%ld\n",
+                    (unsigned long)t_age, (long)tr.lux_c100);
+            }
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "reads=%lu\nfailures=%lu\n",
+                (unsigned long)tsl2561_read_count(),
+                (unsigned long)tsl2561_fail_count());
+            const char *lf = tsl2561_last_failure();
+            if (lf)
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "last_failure=%s\n", lf);
+        } else if (ccs811_is_detected()) {
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "part=%s\naddr=0x%02x\nsample_period_s=%lu\n",
+                ccs811_part_name(), ccs811_address(),
+                (unsigned long)sensor_hub_sample_period_s());
+
+            ccs811_reading_t cr;
+            uint32_t c_age = 0;
+            if (!ccs811_cached(&cr, &c_age)) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "valid=no\n");
+            } else {
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "valid=yes\nage_s=%lu\neco2_ppm=%u\ntvoc_ppb=%u\n",
+                    (unsigned long)c_age, (unsigned int)cr.eco2_ppm, (unsigned int)cr.tvoc_ppb);
+            }
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "reads=%lu\nfailures=%lu\n",
+                (unsigned long)ccs811_read_count(),
+                (unsigned long)ccs811_fail_count());
+            const char *lf = ccs811_last_failure();
+            if (lf)
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "last_failure=%s\n", lf);
+        } else if (sgp30_is_detected()) {
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "part=%s\naddr=0x%02x\nsample_period_s=%lu\n",
+                sgp30_part_name(), sgp30_address(),
+                (unsigned long)sensor_hub_sample_period_s());
+
+            sgp30_reading_t sr;
+            uint32_t s_age = 0;
+            if (!sgp30_cached(&sr, &s_age)) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "valid=no\n");
+            } else {
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "valid=yes\nage_s=%lu\neco2_ppm=%u\ntvoc_ppb=%u\n",
+                    (unsigned long)s_age, (unsigned int)sr.eco2_ppm, (unsigned int)sr.tvoc_ppb);
+            }
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "reads=%lu\nfailures=%lu\n",
+                (unsigned long)sgp30_read_count(),
+                (unsigned long)sgp30_fail_count());
+            const char *lf = sgp30_last_failure();
+            if (lf)
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "last_failure=%s\n", lf);
+        } else {
             used += (uint32_t)ksnprintf(buf + used, cap - used, "part=none\n");
             return (int)used;
         }
-        used += (uint32_t)ksnprintf(buf + used, cap - used,
-            "part=%s\naddr=0x%02x\nsample_period_s=%lu\n",
-            bme280_part_name(), bme280_address(),
-            (unsigned long)bme280_sample_period_s());
 
-        bme280_reading_t r;
-        uint32_t age_s = 0;
-        if (!bme280_cached(&r, &age_s)) {
-            /* Detected but never read: distinguishable from a stale reading,
-             * and from no part at all, which are three different situations
-             * with three different fixes. */
-            used += (uint32_t)ksnprintf(buf + used, cap - used, "valid=no\n");
-        } else {
-            used += (uint32_t)ksnprintf(buf + used, cap - used,
-                "valid=yes\nage_s=%lu\ntemperature_c100=%ld\npressure_pa=%lu\n",
-                (unsigned long)age_s, (long)r.temperature_c100,
-                (unsigned long)(r.pressure_pa256 >> 8));
-            /* Phase 40, item 11: reduced to sea level, where the node knows
-             * its altitude -- so a gateway republishing this file
-             * (`mqttd file`) can publish what weather services quote. */
-            int32_t alt;
-            if (bme280_altitude(&alt))
-                used += (uint32_t)ksnprintf(buf + used, cap - used,
-                    "altitude_m=%ld\npressure_msl_pa=%ld\n", (long)alt,
-                    (long)bme280_sea_level_pa((int32_t)(r.pressure_pa256 >> 8),
-                                              r.temperature_c100, alt));
-            if (r.have_humidity)
-                used += (uint32_t)ksnprintf(buf + used, cap - used,
-                    "humidity_rh1000=%lu\n",
-                    (unsigned long)((r.humidity_rh1024 * 1000u) >> 10));
+        if (bme680_is_detected() || bme280_is_detected()) {
+            if (tsl2591_is_detected()) {
+                tsl2591_reading_t tr;
+                uint32_t t_age = 0;
+                if (tsl2591_cached(&tr, &t_age)) {
+                    used += (uint32_t)ksnprintf(buf + used, cap - used,
+                        "lux_c100=%ld\nlux_age_s=%lu\n",
+                        (long)tr.lux_c100, (unsigned long)t_age);
+                }
+            } else if (tsl2561_is_detected()) {
+                tsl2561_reading_t tr;
+                uint32_t t_age = 0;
+                if (tsl2561_cached(&tr, &t_age)) {
+                    used += (uint32_t)ksnprintf(buf + used, cap - used,
+                        "lux_c100=%ld\nlux_age_s=%lu\n",
+                        (long)tr.lux_c100, (unsigned long)t_age);
+                }
+            }
+
+            if (ccs811_is_detected()) {
+                ccs811_reading_t cr;
+                uint32_t c_age = 0;
+                if (ccs811_cached(&cr, &c_age)) {
+                    used += (uint32_t)ksnprintf(buf + used, cap - used,
+                        "eco2_ppm=%u\ntvoc_ppb=%u\ngas_age_s=%lu\n",
+                        (unsigned int)cr.eco2_ppm, (unsigned int)cr.tvoc_ppb, (unsigned long)c_age);
+                }
+            } else if (sgp30_is_detected()) {
+                sgp30_reading_t sr;
+                uint32_t s_age = 0;
+                if (sgp30_cached(&sr, &s_age)) {
+                    used += (uint32_t)ksnprintf(buf + used, cap - used,
+                        "eco2_ppm=%u\ntvoc_ppb=%u\ngas_age_s=%lu\n",
+                        (unsigned int)sr.eco2_ppm, (unsigned int)sr.tvoc_ppb, (unsigned long)s_age);
+                }
+            }
         }
-        used += (uint32_t)ksnprintf(buf + used, cap - used,
-            "reads=%lu\nfailures=%lu\n",
-            (unsigned long)bme280_read_count(),
-            (unsigned long)bme280_fail_count());
-        const char *lf = bme280_last_failure();
-        if (lf)
-            used += (uint32_t)ksnprintf(buf + used, cap - used,
-                "last_failure=%s\n", lf);
         return (int)used;
     }
     else if (strcmp(rel, "clock") == 0) {

@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "drivers/sensor.h"
 
 /* Bosch BMP280 / BME280 environment sensors (Q4,
  * plan/phase26_mqtt_and_environment_sensors.md).
@@ -147,5 +148,8 @@ uint32_t bme280_sample_period_s(void);
 
 /* The human-readable report behind `sensor` and /proc/sensors. */
 void bme280_print_status(void);
+
+/* Sensor Device Contract instance (Category D) */
+extern sensor_dev_t bme280_sensor_dev;
 
 #endif // DRIVERS_BME280_H

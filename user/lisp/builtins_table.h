@@ -276,6 +276,8 @@ static const builtin_t builtins[] = {
     BUILTIN_PRIM("rm", prim_rm),
     BUILTIN_PRIM("rmdir", prim_rmdir),
     BUILTIN_PRIM("screenshot", prim_screenshot),
+    BUILTIN_PRIM("sensor-list", prim_sensor_list),
+    BUILTIN_PRIM("sensor-read", prim_sensor_read),
     BUILTIN_PRIM("set-date", prim_set_date),
     BUILTIN_PRIM("set-time", prim_set_date),
     BUILTIN_PRIM("spawn", prim_spawn),

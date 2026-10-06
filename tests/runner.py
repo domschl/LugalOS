@@ -3827,6 +3827,9 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         ok, log = session.send_and_expect("help", r"\(help\)", timeout=3.0)
         results.append(("Shell help Command Mentions Lisp (help) Primitive (D2/D3)", ok, log if not ok else ""))
 
+        ok, log = session.send_and_expect("lisp\n(sensor-list)\n(sensor-read 'temp)\nexit", r"=> \(\)[\s\S]*=> #f", timeout=4.0)
+        results.append(("Lisp (sensor-list) and (sensor-read) Return Safely On No Sensor", ok, log if not ok else ""))
+
         # 23. Regression: fat32_write_file() must free a file's old cluster
         # chain when overwriting it, instead of leaking a new chain on every
         # write (B8, see plan/completed/2026-08-07_review_and_remediation.md).
@@ -5665,6 +5668,31 @@ def test_bme280_compensation(elf_path: Path, img_path: Path, arch_name: str) -> 
             return (name, False,
                     f"the compensation does not match the reference "
                     f"(expected {want_t}, {want_p}, {want_h}):\n{log[-700:]}")
+
+        m680 = re.search(r"bme680 selftest: (\d+) case", log)
+        if not m680 or int(m680.group(1)) != 0:
+            return (name, False,
+                    f"bme680 compensation does not match the reference:\n{log[-700:]}")
+
+        m_tsl = re.search(r"tsl2591 selftest: (\d+) case", log)
+        if not m_tsl or int(m_tsl.group(1)) != 0:
+            return (name, False,
+                    f"tsl2591 compensation does not match the reference:\n{log[-700:]}")
+
+        m_ccs811 = re.search(r"ccs811 selftest: (\d+) case", log)
+        if not m_ccs811 or int(m_ccs811.group(1)) != 0:
+            return (name, False,
+                    f"ccs811 compensation does not match the reference:\n{log[-700:]}")
+
+        m_sgp30 = re.search(r"sgp30 selftest: (\d+) case", log)
+        if not m_sgp30 or int(m_sgp30.group(1)) != 0:
+            return (name, False,
+                    f"sgp30 compensation does not match the reference:\n{log[-700:]}")
+
+        m_tsl2561 = re.search(r"tsl2561 selftest: (\d+) case", log)
+        if not m_tsl2561 or int(m_tsl2561.group(1)) != 0:
+            return (name, False,
+                    f"tsl2561 compensation does not match the reference:\n{log[-700:]}")
 
         # With no sensor fitted -- and there is none on either QEMU target --
         # the driver must say so rather than report zeroes as a measurement.

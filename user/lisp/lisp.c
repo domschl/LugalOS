@@ -30,6 +30,7 @@
 #include "net/tcp.h"
 #include "net/ntp.h"
 #include "net/mqttd.h"
+#include "drivers/sensor_hub.h"
 #include <limits.h>
 #include "kernel/identity.h"
 #include "kernel/sha256.h"
@@ -6025,6 +6026,145 @@ static lisp_val_t *prim_lsh(lisp_val_t *args, lisp_val_t *env) {
     shell_run();
     lisp_unpark(&park);
     return &nil_val;
+}
+
+static int parse_sensor_chan(const char *name) {
+    if (!name) return -1;
+    if (strcmp(name, "temp") == 0 || strcmp(name, "temperature") == 0) return SENSOR_CHAN_TEMP;
+    if (strcmp(name, "pressure") == 0 || strcmp(name, "press") == 0) return SENSOR_CHAN_PRESSURE;
+    if (strcmp(name, "humidity") == 0 || strcmp(name, "hum") == 0) return SENSOR_CHAN_HUMIDITY;
+    if (strcmp(name, "lux") == 0 || strcmp(name, "light") == 0) return SENSOR_CHAN_LUX;
+    if (strcmp(name, "eco2") == 0 || strcmp(name, "co2") == 0) return SENSOR_CHAN_ECO2;
+    if (strcmp(name, "tvoc") == 0 || strcmp(name, "voc") == 0) return SENSOR_CHAN_TVOC;
+    if (strcmp(name, "gas-res") == 0 || strcmp(name, "gas") == 0 || strcmp(name, "gas_res") == 0) return SENSOR_CHAN_GAS_RES;
+    return -1;
+}
+
+static const char *lisp_val_str(const lisp_val_t *v) {
+    if (!v) return NULL;
+    if (v->type == LISP_SYMBOL) return v->u.sym;
+    if (v->type == LISP_STRING) return v->u.str;
+    return NULL;
+}
+
+/* `(sensor-list)` -- Milestone 46.9: lists all detected sensor device names as symbols. */
+static lisp_val_t *prim_sensor_list(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    uint32_t count = sensor_hub_device_count();
+    if (count == 0) {
+        sensor_hub_init();
+        count = sensor_hub_device_count();
+    }
+    lisp_val_t *res = &nil_val;
+    for (int i = (int)count - 1; i >= 0; i--) {
+        sensor_dev_t *dev = sensor_hub_device_get((uint32_t)i);
+        if (dev && dev->name) {
+            res = make_pair(make_sym(dev->name), res);
+        }
+    }
+    return res;
+}
+
+/* `(sensor-read [chan | dev] [chan | age | filtered])` -- Milestone 46.9:
+ * Reads cached sensor metrics without bus blocking. */
+static lisp_val_t *prim_sensor_read(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    uint32_t count = sensor_hub_device_count();
+    if (count == 0) {
+        sensor_hub_init();
+        count = sensor_hub_device_count();
+    }
+    if (count == 0) return &false_val;
+
+    /* Ensure at least one sample has been taken across active sensors */
+    bool any_valid = false;
+    int32_t tmp = 0;
+    for (int ch = 0; ch < SENSOR_CHAN_MAX; ch++) {
+        if (sensor_hub_get((sensor_chan_t)ch, &tmp, NULL)) {
+            any_valid = true;
+            break;
+        }
+    }
+    if (!any_valid) {
+        sensor_hub_sample_all();
+    }
+
+    int nargs = lisp_list_len(args);
+    if (nargs == 0) {
+        /* Return alist of all valid channels: ((temp . 2611) (pressure . 95866) ...) */
+        static const char *const chan_names[SENSOR_CHAN_MAX] = {
+            "temp", "pressure", "humidity", "lux", "eco2", "tvoc", "gas-res"
+        };
+        lisp_val_t *alist = &nil_val;
+        for (int ch = SENSOR_CHAN_MAX - 1; ch >= 0; ch--) {
+            int32_t val = 0;
+            if (sensor_hub_get((sensor_chan_t)ch, &val, NULL)) {
+                lisp_val_t *cell = make_pair(make_sym(chan_names[ch]), make_int((long)val));
+                alist = make_pair(cell, alist);
+            }
+        }
+        return alist;
+    }
+
+    lisp_val_t *arg0 = lisp_list_ref(args, 0);
+    const char *s0 = lisp_val_str(arg0);
+    if (!s0) return &false_val;
+
+    /* Check if arg0 is a sensor device name */
+    sensor_dev_t *target_dev = NULL;
+    for (uint32_t i = 0; i < count; i++) {
+        sensor_dev_t *d = sensor_hub_device_get(i);
+        if (d && d->name && strcmp(d->name, s0) == 0) {
+            target_dev = d;
+            break;
+        }
+    }
+
+    if (target_dev) {
+        if (nargs < 2) return &false_val;
+        const char *s1 = lisp_val_str(lisp_list_ref(args, 1));
+        int ch = parse_sensor_chan(s1);
+        if (ch < 0) return &false_val;
+
+        int32_t val = 0;
+        uint32_t age = 0;
+        if (!sensor_hub_get_dev(target_dev, (sensor_chan_t)ch, &val, &age)) {
+            return &false_val;
+        }
+
+        if (nargs >= 3) {
+            const char *mod = lisp_val_str(lisp_list_ref(args, 2));
+            if (mod && strcmp(mod, "age") == 0) {
+                return make_int((long)age);
+            }
+        }
+        return make_int((long)val);
+    }
+
+    /* Otherwise arg0 is a channel name */
+    int ch = parse_sensor_chan(s0);
+    if (ch < 0) return &false_val;
+
+    int32_t val = 0;
+    uint32_t age = 0;
+    if (nargs >= 2) {
+        const char *mod = lisp_val_str(lisp_list_ref(args, 1));
+        if (mod) {
+            if (strcmp(mod, "age") == 0) {
+                if (!sensor_hub_get((sensor_chan_t)ch, &val, &age)) return &false_val;
+                return make_int((long)age);
+            }
+            if (strcmp(mod, "filtered") == 0) {
+                if (!sensor_hub_get_filtered((sensor_chan_t)ch, &val)) return &false_val;
+                return make_int((long)val);
+            }
+        }
+    }
+
+    if (!sensor_hub_get((sensor_chan_t)ch, &val, NULL)) {
+        return &false_val;
+    }
+    return make_int((long)val);
 }
 
 static lisp_val_t *prim_help(lisp_val_t *args, lisp_val_t *env);
