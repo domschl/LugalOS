@@ -141,6 +141,7 @@ static int probe_bme280(void)   {
     if (bme280_is_detected()) {
         bme280_register_sources();
     }
+    sensor_hub_register_sources();     /* every other channel the hub's devices provide (45.11) */
     return 0;
 }
 /* Like probe_i2c_rtc() above: reports whether there is a device, not whether

@@ -82,7 +82,10 @@
  * across the threshold publishes once, not once per sample.
  */
 
-#define MQTTD_MAX_SOURCES 4
+/* 12: a BME280 alone fills four (temperature, pressure, humidity, sea-level pressure), and the phase-46
+ * hub adds a channel per further sensor -- lux, eCO2, TVOC, gas resistance (45.11). At 4 the hub's
+ * channels were refused and never published. ~220 bytes a slot (state + file-source entry). */
+#define MQTTD_MAX_SOURCES 12
 #define MQTTD_VALUE_MAX   32
 
 /* Reads one measurement as a fixed-point integer. False when the reading

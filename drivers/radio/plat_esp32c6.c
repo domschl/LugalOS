@@ -207,7 +207,10 @@ void radio_plat_phy_enable(void) {
     modem_phy_clocks();
     CRUMB(0x61);
     if (!g_phy_calibrated) {
-        rf_ocode_from_efuse();
+        /* No O-code write here: pmu_init() has just done it, in M-mode at the radio start
+         * (esp_ocode_calib_init() -> rf_ocode_from_efuse()). Repeating it from U-mode was redundant,
+         * and it is where a boot on 2026-10-06 stalled (breadcrumb 0x61, kernel still ticking): IDF's
+         * analog-I2C helpers wait for the master's busy bit without a bound. */
         CRUMB(0x62);
         radio_osi_log_write(3, "plat", "phy_version %s", get_phy_version_str());
         esp_phy_calibration_data_t *cal = radio_osi_zalloc(sizeof(*cal));

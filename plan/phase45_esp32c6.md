@@ -745,6 +745,14 @@ by flashing*.
     so what keeps the board alive is ordinary tasks still being scheduled. The boot reports the
     ROM's reset cause (`wdt`, `[WDT] last reset: ...`). `wdt test` withholds the feed: verified --
     the board reset, came back as "watchdog (MWDT0, system)" and rejoined by itself.
+  - *Open: one boot stalled in the radio's PHY bring-up* (2026-10-06, after `identity altitude`
+    and a restart): console silent, kernel still ticking (283 s), breadcrumb 0x61 -- i.e. in the
+    U-mode repeat of the RF O-code write, whose IDF analog-I2C helper (`regi2c_impl.c`) waits for the
+    master's busy bit without a bound. The repeat was redundant (pmu_init() writes the O-code in
+    M-mode just before) and is gone; the next boot was normal. Not reproduced since. If it recurs,
+    the breadcrumb (0x62/0x63 now = inside the PHY library) says where; OpenOCD over USB-JTAG would
+    show it live -- on this host that needs `plugdev` as a *system* group (`groupadd -r`): udev
+    ignores the openocd rule's GROUP for an ordinary one, and its uaccess tag with it.
   - *AP absent at start, appears later:* verified 2026-10-06 with an open guest network: the radio
     started with it switched off (wlan0 link down, retries 2/5/15 s then every 30 s, quiet), it was
     switched on ~3.5 min later, the next retry joined ("link up again after 8 attempts") and DHCP
@@ -770,9 +778,24 @@ by flashing*.
   in `/proc/sensors` through the hub's sampler. `at24c32.c` probes a real EEPROM on the C6 now.
   Hardware: `test_i2c_sensors` (C6 20/20); the P4 suite 25/25 on the shared arm (its sensor
   test updated for the hub's `at 0x76` output). Heap free with radio + sensors: 84 KB.
-* **45.11 `esp32c6-sensor` persona.** The phase-26 persona (join WLAN, MQTT
-  announce, periodic publish, will) on this board. Soak run. **End of the
-  stand-alone scope: scenarios 1 and 2 are done here.**
+* **45.11 Sensor persona — DONE 2026-10-06. End of the stand-alone scope: scenarios 1 and 2
+  are done here.** As on the RP2350W the persona is the identity record, not a build: WLAN
+  credentials are the intent to join, a broker (`mqttcfg 192.168.178.32:1883`) the intent to
+  publish -- the `esp32c6` image needs no second preset. What it took:
+  - the phase-46 hub registers its channels with mqttd (`sensor_hub_register_sources()`: one
+    source per channel a detected device provides, named `lux`, `eco2`, `tvoc`, ... read from the
+    hub's cache; the BME280's own registrations win by name). Before, only the BME280 published:
+    the C6's lux and the RP2350W's SGP30 never left the board;
+  - `MQTTD_MAX_SOURCES` 4 -> 12 (a BME280 alone filled four);
+  - the kernel starts the hub's sampler (all devices, gas compensation fed) instead of the
+    BME280-only one, which left every other sensor sampled only on `sensor`;
+  - TCP: a new SYN also takes a slot whose peer has finished (LAST_ACK, CLOSING, a 9P link in
+    CLOSE_WAIT), not only TIME_WAIT -- with MQTT holding the other slot, a client that closes first
+    was still refused on reconnect (`test_wifi.py` 2/5 -> 5/5).
+  **Soak, 30 min, both nodes unattended** (C6: BME280 + TSL2591; RP2350W: BME280 + SGP30): 108
+  messages, every channel on change and on the 5-min heartbeat, both `online` throughout -- no
+  `offline`, no reconnect, no rejoin, no watchdog reset; retained `status` and the last will
+  verified across resets. C6 heap free with radio, sensors and MQTT: 60 KB.
 
 ### Expansion (planned only far enough to avoid foreclosing it — §7)
 

@@ -42,6 +42,7 @@
 #include "kernel/taint.h"       /* the boot banner's taint, 45.9 */
 #include "net/ip.h"
 #include "drivers/bme280.h"
+#include "drivers/sensor_hub.h"
 #include "net/mqttd.h"
 #include "kernel/identity.h"
 #include "arch/csr.h"
@@ -538,7 +539,12 @@ void kernel_main(void) {
      * a sensor and no network stack, so the only thing that ever reads the
      * part is something on the far end of a 9P link, and that something
      * cannot reach across the wire and start a conversion. */
-    bme280_sampler_start(0);
+    /* 45.11: the phase-46 hub's sampler, which samples *every* device it found (through bme280_read()
+     * for the BME280, so that cache and its counters stay current) and feeds the gas sensors their
+     * temperature/humidity compensation. Until now this started the BME280-only sampler, and a TSL2591
+     * or an SGP30 was read only when someone typed `sensor` -- in /proc/sensors for a moment, never on
+     * MQTT. The BME280 sampler is the fallback for a board whose hub found nothing. */
+    if (sensor_hub_sampler_start(0) < 0) bme280_sampler_start(0);
 
     /* The 9P/filesystem server, now a scheduled task rather than something
      * pumped from the console's busy-wait (D4). Must follow sched_init(). */

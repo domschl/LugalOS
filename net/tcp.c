@@ -490,29 +490,36 @@ static uint32_t parse_mss(const uint8_t *seg, uint32_t hdr_len) {
     return 0;
 }
 
-/* A slot that is only waiting out TIME_WAIT -- the oldest one -- released for a new connection.
+/* A slot whose peer has already closed, released for a new connection.
  *
- * TIME_WAIT exists to absorb a retransmitted FIN from a conversation that has ended; holding a whole
- * slot for it is affordable when slots are plentiful and not when there are TCP_MAX_CONNS == 2 of
- * them. On a sensor node one is the MQTT connection for good, so a 9P client that reconnected within
- * TCP_TIME_WAIT_MS of its last session was refused (45.8, tests/hw/test_wifi.py). Reusing a TIME_WAIT
- * slot for a new SYN is what Linux does too (RFC 6191): the old conversation is over, and conn_release()
- * bumps the slot's epoch, so anything still holding its link sees it go stale. */
-static tcp_conn_t *recycle_time_wait(void) {
-    tcp_conn_t *oldest = NULL;
-    for (uint32_t i = 0; i < TCP_MAX_CONNS; i++) {
-        tcp_conn_t *c = &g_conns[i];
-        if (c->in_use && c->state == TCP_TIME_WAIT &&
-            (!oldest || (int64_t)(c->time_wait_at_ms - oldest->time_wait_at_ms) < 0)) oldest = c;
+ * With TCP_MAX_CONNS == 2 and a sensor node's MQTT connection holding one slot for good, a 9P client
+ * that reconnected right after its last session was refused (45.8/45.11, tests/hw/test_wifi.py): the
+ * old slot was still winding down. Which state it winds down through depends on who closes first --
+ * TIME_WAIT when we did; CLOSE_WAIT and then LAST_ACK when the client did, which is the usual case
+ * (only TIME_WAIT was recycled at first, and the refusals came back as soon as MQTT took the other
+ * slot). In every one of these the peer has finished with the conversation, so a new SYN may take
+ * the slot: TIME_WAIT first (nothing left to lose), then LAST_ACK/CLOSING (only our FIN's ACK is
+ * outstanding), and CLOSE_WAIT last -- and only for a 9P link, never a stream, whose owner (mqttd)
+ * still holds it and decides when it ends. Linux reuses TIME_WAIT for a new SYN too (RFC 6191).
+ * conn_release() bumps the slot's epoch, so anything still holding the old link sees it go stale. */
+static tcp_conn_t *recycle_finished(void) {
+    static const tcp_state_t order[] = { TCP_TIME_WAIT, TCP_LAST_ACK, TCP_CLOSING, TCP_CLOSE_WAIT };
+    for (uint32_t k = 0; k < sizeof order / sizeof order[0]; k++) {
+        for (uint32_t i = 0; i < TCP_MAX_CONNS; i++) {
+            tcp_conn_t *c = &g_conns[i];
+            if (!c->in_use || c->state != order[k]) continue;
+            if (order[k] == TCP_CLOSE_WAIT && c->is_stream) continue;
+            conn_abort(c);                 /* an RST where the state still owes the peer one */
+            return c;
+        }
     }
-    if (oldest) conn_release(oldest);
-    return oldest;
+    return NULL;
 }
 
 static void accept_syn(const uint8_t src[IPV4_LEN], const uint8_t *seg,
                        uint16_t sport, uint16_t dport, uint32_t hdr_len) {
     tcp_conn_t *c = free_conn();
-    if (!c) c = recycle_time_wait();
+    if (!c) c = recycle_finished();
     if (!c) {
         /* Both slots busy with live conversations. A reset is the honest
          * answer -- better than a silent drop, which looks to the client like

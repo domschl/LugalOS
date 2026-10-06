@@ -283,3 +283,43 @@ void sensor_hub_print_status(void) {
                 (unsigned long)c->fail_count, c->fail_count == 1u ? "" : "s");
     }
 }
+
+/* --- publishing the hub's channels (45.11) ---------------------------------
+ *
+ * Phase 46 gave the hub every channel its devices measure, but only the BME280 driver told mqttd about
+ * its own: a TSL2591's lux (the C6 sensor node) and an SGP30's eCO2/TVOC (the RP2350W) were in
+ * /proc/sensors and never left the board. A node's /flash0 is identical everywhere and the C6 has no
+ * card for a per-board boot script, so publishing has to follow from what was *found*, as the BME280's
+ * own registration already does. Each source reads the cached sample -- the sampler task does the bus
+ * work; publishing adds none. A reading older than three sample periods counts as none. */
+#include "net/mqttd.h"
+
+static bool hub_chan_source(int32_t *out, void *ctx) {
+    sensor_chan_t chan = (sensor_chan_t)(uintptr_t)ctx;
+    uint32_t age = 0;
+    if (!sensor_hub_get(chan, out, &age)) return false;
+    return age <= 3u * sensor_hub_sample_period_s() + 5u;
+}
+
+void sensor_hub_register_sources(void) {
+    /* The BME280's rules for the slow environmental channels; change-driven ones for the rest:
+     * publish on a real move, never faster than every 5 s, and at least every 5 min as a heartbeat. */
+    static const mqttd_rule_t env_rule  = { .min_interval_s = 5, .max_interval_s = 300, .delta = 10,   .alpha_shift = 3 };
+    static const mqttd_rule_t lux_rule  = { .min_interval_s = 5, .max_interval_s = 300, .delta = 500,  .alpha_shift = 2 };
+    static const mqttd_rule_t gas_rule  = { .min_interval_s = 5, .max_interval_s = 300, .delta = 25,   .alpha_shift = 2 };
+    static const mqttd_rule_t res_rule  = { .min_interval_s = 5, .max_interval_s = 300, .delta = 5000, .alpha_shift = 3 };
+    uint32_t have = 0;
+    for (uint32_t i = 0; i < sensor_hub_device_count(); i++) {
+        const sensor_dev_t *dev = sensor_hub_device_get(i);
+        if (dev) have |= dev->chan_mask;
+    }
+    for (uint32_t ch = 0; ch < SENSOR_CHAN_MAX; ch++) {
+        if (!(have & (1u << ch))) continue;
+        const mqttd_rule_t *rule = ch == SENSOR_CHAN_LUX ? &lux_rule
+                                 : (ch == SENSOR_CHAN_ECO2 || ch == SENSOR_CHAN_TVOC) ? &gas_rule
+                                 : ch == SENSOR_CHAN_GAS_RES ? &res_rule : &env_rule;
+        /* A name already taken (the BME280's own) is refused by mqttd, which is the rule wanted. */
+        (void)mqttd_add_source(sensor_chan_name((sensor_chan_t)ch), hub_chan_source,
+                               (void *)(uintptr_t)ch, sensor_chan_decimals((sensor_chan_t)ch), rule);
+    }
+}

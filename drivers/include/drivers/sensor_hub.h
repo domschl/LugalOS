@@ -46,6 +46,12 @@ bool sensor_hub_get_dev(const sensor_dev_t *dev, sensor_chan_t chan, int32_t *ou
 /* Diagnostic selftest running all drivers' math tests against golden vectors */
 uint32_t sensor_hub_selftest(bool report);
 
+/* Publishes the hub's channels through mqttd: one source per channel any detected device provides,
+ * named by sensor_chan_name() ("lux", "eco2", ...), read from the hub's cache. A channel already
+ * registered by name -- the BME280 registers its own, with its own rules, before this runs -- is left
+ * alone. Does nothing without a broker: mqttd only publishes what it was told about once it runs. */
+void sensor_hub_register_sources(void);
+
 /* Human-readable status report for the shell 'sensor' command */
 void sensor_hub_print_status(void);
 
