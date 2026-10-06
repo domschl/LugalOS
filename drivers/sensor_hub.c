@@ -2,6 +2,7 @@
 #include "drivers/bme280.h"
 #include "drivers/bme680.h"
 #include "drivers/ccs811.h"
+#include "drivers/sgp30.h"
 #include "drivers/tsl2561.h"
 #include "drivers/tsl2591.h"
 #include "kernel/printk.h"
@@ -49,6 +50,7 @@ void sensor_hub_init(void) {
     sensor_hub_register(&tsl2591_sensor_dev);
     sensor_hub_register(&tsl2561_sensor_dev);
     sensor_hub_register(&ccs811_sensor_dev);
+    sensor_hub_register(&sgp30_sensor_dev);
     sensor_hub_register(&bme680_sensor_dev);
     sensor_hub_register(&bme280_sensor_dev);
 
@@ -112,6 +114,9 @@ void sensor_hub_sample_all(void) {
         if (ccs811_is_detected()) {
             ccs811_set_env_data(t, h);
         }
+        if (sgp30_is_detected()) {
+            sgp30_set_absolute_humidity(t, h);
+        }
     }
 }
 
@@ -173,12 +178,25 @@ bool sensor_hub_get(sensor_chan_t chan, int32_t *out_val, uint32_t *age_s) {
     return false;
 }
 
+bool sensor_hub_get_filtered(sensor_chan_t chan, int32_t *out_val) {
+    if (chan >= SENSOR_CHAN_MAX || !out_val) return false;
+    for (uint32_t i = 0; i < s_active_count; i++) {
+        dev_cache_t *c = &s_caches[i];
+        if (c->valid[chan]) {
+            *out_val = c->filtered_val[chan];
+            return true;
+        }
+    }
+    return false;
+}
+
 uint32_t sensor_hub_selftest(bool report) {
     uint32_t failed = 0;
     /* Ensure default drivers are registered */
     sensor_hub_register(&bme280_sensor_dev);
     sensor_hub_register(&bme680_sensor_dev);
     sensor_hub_register(&ccs811_sensor_dev);
+    sensor_hub_register(&sgp30_sensor_dev);
     sensor_hub_register(&tsl2561_sensor_dev);
     sensor_hub_register(&tsl2591_sensor_dev);
 

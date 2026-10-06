@@ -34,6 +34,7 @@
 #include "drivers/bme280.h"
 #include "drivers/bme680.h"
 #include "drivers/ccs811.h"
+#include "drivers/sgp30.h"
 #include "drivers/tsl2561.h"
 #include "drivers/tsl2591.h"
 #include "drivers/sensor_hub.h"
@@ -1268,6 +1269,7 @@ static void cmd_sensor(const char *arg) {
         bme280_selftest(true);
         bme680_selftest(true);
         ccs811_selftest(true);
+        sgp30_selftest(true);
         tsl2561_selftest(true);
         tsl2591_selftest(true);
         return;

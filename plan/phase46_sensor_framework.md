@@ -325,12 +325,29 @@ typedef struct {
   - `/proc/sensors`: reports station & sea-level pressure, temperature, humidity, eCO2, TVOC, and independent staleness ages.
 * All 5 driver selftests (BME280, BME680, CCS811, TSL2561, TSL2591) pass with 0 failures.
 
-### 46.8 Sensirion Multi-Pixel Gas Sensor: SGP30
-* Implement `drivers/sgp30.c`: 16-bit commands, CRC-8 validation, eCO2 and TVOC extraction.
+### 46.8 Sensirion Multi-Pixel Gas Sensor: SGP30 [Concluded]
+* Implemented `drivers/sgp30.c` and `drivers/include/drivers/sgp30.h`.
+* 16-bit big-endian command protocol, Sensirion CRC-8 (polynomial 0x31, init 0xFF) validation.
+* Pure integer Taylor expansion in Q16 for absolute humidity calculation `sgp30_calc_ah_8_8` formatted as fixed-point 8.8 $g/\text{m}^3$.
+* Reference math script: `tools/sgp30_reference.py`.
+* Silicon verification on physical hardware: SGP30 at 0x58 running concurrently alongside BME280 at 0x76:
+  - `sgp30 at 0x58: 400 ppm eCO2, 0 ppb TVOC`
+  - `bme280 at 0x76: 26.11 C, 958.66 hPa, 48.48 %RH`
+  - `/proc/sensors`: unified reporting of temperature, pressure, humidity, eCO2, TVOC, and independent staleness ages.
+* All 6 driver selftests (BME280, BME680, CCS811, SGP30, TSL2561, TSL2591) pass with 0 failures.
 
-### 46.9 Cross-Sensor Compensation & Lisp Bindings
-* Enable Sensor Hub cross-compensation ($T$ and $H$ feed into CCS811 `ENV_DATA` and SGP30 `0x2061`).
-* Expose `sensor-read` and `sensor-list` primitives to the Lisp environment.
+### 46.9 Cross-Sensor Compensation & Lisp Bindings [Concluded]
+* Sensor Hub cross-compensation pipeline: live ambient $T$ & $H$ from BME280/BME680 routed into CCS811 `ENV_DATA` (0x05) and SGP30 `0x2061` absolute humidity registers.
+* Added `(sensor-list)` primitive to Lisp: returns detected sensor symbols, e.g. `(sgp30 bme280)`.
+* Added `(sensor-read [chan | dev] [chan | age | filtered])` primitive to Lisp:
+  - `(sensor-read)`: returns an alist of all available channels, e.g. `((temp . 2633) (pressure . 95857) (humidity . 4792) (eco2 . 400) (tvoc . 0))`.
+  - `(sensor-read 'temp)`: returns ambient temperature (centi-Celsius).
+  - `(sensor-read 'eco2)` / `(sensor-read 'tvoc)`: returns gas metrics directly.
+  - `(sensor-read 'temp 'age)`: returns metric age in seconds.
+  - `(sensor-read 'temp 'filtered)`: returns EMA filtered value.
+  - `(sensor-read 'bme280 'temp)`: reads specific device channel.
+* Zero SRAM overhead: registered in `.rodata` `user/lisp/builtins_table.h` in exact ASCII sorted order for $O(\log N)$ `bsearch()`.
+* Automated regression test in QEMU virt verifying safe `()` and `#f` returns when no sensors are fitted.
 
 ### 46.10 Verification, QEMU Regression & Hardware Soak
 * Silicon verification on RP2350 and ESP32-P4 boards with connected sensors.

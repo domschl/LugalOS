@@ -37,6 +37,9 @@ uint32_t sensor_hub_sample_period_s(void);
 /* Cached read from the primary sensor providing chan, without taking the I2C bus */
 bool sensor_hub_get(sensor_chan_t chan, int32_t *out_val, uint32_t *age_s);
 
+/* Cached read of EMA filtered value */
+bool sensor_hub_get_filtered(sensor_chan_t chan, int32_t *out_val);
+
 /* Cached read from a specific sensor device */
 bool sensor_hub_get_dev(const sensor_dev_t *dev, sensor_chan_t chan, int32_t *out_val, uint32_t *age_s);
 

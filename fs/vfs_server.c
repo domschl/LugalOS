@@ -16,6 +16,7 @@
 #include "drivers/bme280.h"
 #include "drivers/bme680.h"
 #include "drivers/ccs811.h"
+#include "drivers/sgp30.h"
 #include "drivers/tsl2561.h"
 #include "drivers/tsl2591.h"
 #include "drivers/sensor_hub.h"
@@ -1445,6 +1446,29 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
             if (lf)
                 used += (uint32_t)ksnprintf(buf + used, cap - used,
                     "last_failure=%s\n", lf);
+        } else if (sgp30_is_detected()) {
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "part=%s\naddr=0x%02x\nsample_period_s=%lu\n",
+                sgp30_part_name(), sgp30_address(),
+                (unsigned long)sensor_hub_sample_period_s());
+
+            sgp30_reading_t sr;
+            uint32_t s_age = 0;
+            if (!sgp30_cached(&sr, &s_age)) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "valid=no\n");
+            } else {
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "valid=yes\nage_s=%lu\neco2_ppm=%u\ntvoc_ppb=%u\n",
+                    (unsigned long)s_age, (unsigned int)sr.eco2_ppm, (unsigned int)sr.tvoc_ppb);
+            }
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "reads=%lu\nfailures=%lu\n",
+                (unsigned long)sgp30_read_count(),
+                (unsigned long)sgp30_fail_count());
+            const char *lf = sgp30_last_failure();
+            if (lf)
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "last_failure=%s\n", lf);
         } else {
             used += (uint32_t)ksnprintf(buf + used, cap - used, "part=none\n");
             return (int)used;
@@ -1476,6 +1500,14 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
                     used += (uint32_t)ksnprintf(buf + used, cap - used,
                         "eco2_ppm=%u\ntvoc_ppb=%u\ngas_age_s=%lu\n",
                         (unsigned int)cr.eco2_ppm, (unsigned int)cr.tvoc_ppb, (unsigned long)c_age);
+                }
+            } else if (sgp30_is_detected()) {
+                sgp30_reading_t sr;
+                uint32_t s_age = 0;
+                if (sgp30_cached(&sr, &s_age)) {
+                    used += (uint32_t)ksnprintf(buf + used, cap - used,
+                        "eco2_ppm=%u\ntvoc_ppb=%u\ngas_age_s=%lu\n",
+                        (unsigned int)sr.eco2_ppm, (unsigned int)sr.tvoc_ppb, (unsigned long)s_age);
                 }
             }
         }
