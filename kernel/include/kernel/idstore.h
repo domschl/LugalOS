@@ -125,6 +125,7 @@ typedef enum {
                                     * height above sea level in whole metres, int16 big-endian.
                                     * What the BME280's sea-level pressure is reduced with; a
                                     * board without it publishes station pressure only. */
+    IDSTORE_FIELD_SENSOR_CAL = 10, /* instance scope (phase 46): persistent multi-sensor calibration blob */
 } idstore_field_type_t;
 
 typedef struct {

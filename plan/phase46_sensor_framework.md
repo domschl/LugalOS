@@ -1,6 +1,6 @@
 # Phase 46 — A Unified I2C Sensor Framework
 
-**Status: active. Milestones 46.1, 46.2, 46.3, 46.4, 46.5 concluded with silicon verification. Written 2026-10-06.**
+**Status: active. Milestones 46.1–46.16 concluded with silicon verification on real hardware (RP2350 Pico 2 W + multi-sensor bench). Written 2026-10-06, updated 2026-10-08.**
 Succeeds `plan/phase26_mqtt_and_environment_sensors.md` (concluded) and stands beside `plan/phase45_esp32c6.md` (planned).
 
 **Milestone scheme: `46.1`, `46.2`, `46.3`, …**
@@ -14,18 +14,20 @@ LugalOS's core driver design rule ([`drivers/README.md`](file:///home/dsc/Source
 
 Until now, LugalOS supported exactly one environmental sensor: the BMP280 / BME280 ([`drivers/bme280.c`](file:///home/dsc/Source/gith/domschl/lugalos/drivers/bme280.c)). That driver was deliberately kept ad-hoc: it managed its own I2C transactions, maintained its own internal cache, launched its own sampler task, directly fed `/proc/sensors` in [`fs/vfs_server.c`](file:///home/dsc/Source/gith/domschl/lugalos/fs/vfs_server.c#L1290), and was hard-wired into the shell's `sensor` command ([`kernel/shell.c`](file:///home/dsc/Source/gith/domschl/lugalos/kernel/shell.c#L1260)) and the MQTT daemon ([`net/include/net/mqttd.h`](file:///home/dsc/Source/gith/domschl/lugalos/net/include/net/mqttd.h)).
 
-We now expand the environmental measurement suite to six sensors:
+We now expand the environmental measurement suite to eight sensors:
 1. **BME280** (Baseline: Temperature, Pressure, Humidity)
 2. **BME680** (Temperature, Pressure, Humidity, MOX Gas Resistance — **strictly without proprietary binary blobs**)
 3. **TSL2561** (Dual-channel Ambient Light / Lux)
 4. **TSL2591** (High Dynamic Range Light / Lux)
 5. **CCS811** (MOX Air Quality: eCO2 and TVOC)
 6. **SGP30** (Multi-pixel Gas Sensor: eCO2, TVOC, raw signals)
+7. **MiCS-6814** (Grove Multichannel Gas Sensor v1.0: CO, NO2, NH3 via I2C at 0x04)
+8. **MH-Z19B** (NDIR Infrared True CO2 & chamber temperature via UART1 at 9600 baud)
 
-Going from 1 sensor to 6 sensors crosses the threshold from a single driver to a formal **Category D (Device-class contract)**. Doing so without a structured framework would replicate register-pumping loops, sampling tasks, staleness timers, EMA filters, and `/proc` formats six times across the codebase.
+Going from 1 sensor to 8 sensors crosses the threshold from a single driver to a formal **Category D (Device-class contract)**. Doing so without a structured framework would replicate register-pumping loops, sampling tasks, staleness timers, EMA filters, and `/proc` formats eight times across the codebase.
 
 ### Official Datasheets Reference
-Component datasheets for all six parts are stored in the host repository tree under:
+Component datasheets for all eight parts are stored in the host repository tree under:
 `~/gith/sensors/` or `~/Source/gith/sensors/`
 * BME280: `bst-bme280-ds002.pdf`
 * BME680: `bst-bme680-ds001.pdf`
@@ -33,6 +35,8 @@ Component datasheets for all six parts are stored in the host repository tree un
 * SGP30: `Sensirion_Gas_Sensors_Datasheet_SGP30.pdf`
 * TSL2561: `TSL2561.pdf`
 * TSL2591: `TSL25911_Datasheet_EN_v1.pdf`
+* MiCS-6814: `MiCS-6814_Datasheet.pdf` and `'Multichannel gas sensor 1.0.pdf'`
+* MH-Z19B: `mh-z19b-co2-ver1_0.pdf`
 
 
 ---
@@ -132,6 +136,10 @@ All quantities are scaled as 32-bit signed integers (`int32_t`):
 | `SENSOR_CHAN_ECO2` | Equivalent $\text{CO}_2$ | $1\ \text{ppm}$ (parts per million) | `int32_t` | `420` = $420\ \text{ppm}$ |
 | `SENSOR_CHAN_TVOC` | Total VOC | $1\ \text{ppb}$ (parts per billion) | `int32_t` | `125` = $125\ \text{ppb}$ |
 | `SENSOR_CHAN_GAS_RES` | MOX Gas Resistance | $1\ \Omega$ (Ohms) | `int32_t` | `125400` = $125.4\ \text{k}\Omega$ |
+| `SENSOR_CHAN_CO` | Carbon Monoxide | $0.01\ \text{ppm}$ (centi-ppm) | `int32_t` | `1598` = $15.98\ \text{ppm}$ |
+| `SENSOR_CHAN_NO2` | Nitrogen Dioxide | $0.01\ \text{ppm}$ (centi-ppm) | `int32_t` | `11` = $0.11\ \text{ppm}$ |
+| `SENSOR_CHAN_NH3` | Ammonia | $0.01\ \text{ppm}$ (centi-ppm) | `int32_t` | `311` = $3.11\ \text{ppm}$ |
+| `SENSOR_CHAN_CO2` | True NDIR $\text{CO}_2$ | $1\ \text{ppm}$ (parts per million) | `int32_t` | `1443` = $1443\ \text{ppm}$ |
 
 ### 4.2 The `sensor_dev_t` Contract
 
@@ -151,6 +159,10 @@ typedef enum {
     SENSOR_CHAN_ECO2,
     SENSOR_CHAN_TVOC,
     SENSOR_CHAN_GAS_RES,
+    SENSOR_CHAN_CO,
+    SENSOR_CHAN_NO2,
+    SENSOR_CHAN_NH3,
+    SENSOR_CHAN_CO2,
     SENSOR_CHAN_MAX
 } sensor_chan_t;
 
@@ -224,6 +236,59 @@ typedef struct sensor_dev {
 * **Channels**: eCO2 (ppm), TVOC (ppb).
 * **Protocol**: 16-bit commands (e.g. `0x2008` `measure_iaq`, `0x2003` `iaq_init`). Every 2 bytes of data are followed by an 8-bit CRC (`CRC-8-Dallas/Maxim`, polynomial `0x31`, init `0xFF`).
 * **Environmental Tuning**: Supports absolute humidity compensation via command `0x2061`.
+
+#### 7. MiCS-6814 (Grove Multichannel Gas Sensor v1.0)
+* **Datasheet**: `MiCS-6814_Datasheet.pdf` and `'Multichannel gas sensor 1.0.pdf'`
+* **Address**: `0x04` on the shared I2C bus.
+* **Architecture**: The MiCS-6814 sensor contains three independent micro-machined semiconductor gas sensor elements on a heated silicon substrate (RED for reducing gases / CO, OX for oxidizing gases / NO2, NH3 for ammonia). The Grove v1.0 board features an onboard MCU (ATmega168PA/STM32) acting as an I2C slave coprocessor that drives the heaters and samples the raw ADC channels.
+* **Channels**: CO ($0.01\ \text{ppm}$), NO2 ($0.01\ \text{ppm}$), NH3 ($0.01\ \text{ppm}$).
+* **Protocol**: Commands include version query (`0x00`), raw ADC read (`0x01..0x06`), and preheat state.
+* **Preheating**: Requires a 10-minute warm-up stabilization period (`MICS6814_WARMUP_PERIOD_S 600u`) for the heater elements to reach chemical equilibrium. Driver guards and flags readings during preheating.
+
+#### 8. MH-Z19B (NDIR Infrared Carbon Dioxide Sensor)
+* **Datasheet**: `mh-z19b-co2-ver1_0.pdf`
+* **Interface**: 9600 baud 8N1 UART (PL011 UART1 on RP2350, GP8 TX / GP9 RX).
+* **Power Requirement**: $4.5\text{V} - 5.5\text{V}$ DC on $V_{in}$ connected directly to Pico Pin 40 (`VBUS`, 5V USB power). Logic signals are 3.3V TTL compatible.
+* **Channels**: True Physical $\text{CO}_2$ ($1\ \text{ppm}$ resolution, 0–2000 or 0–5000 ppm range) and internal optical chamber temperature ($0.01\ ^\circ\text{C}$).
+* **Physical Principle**: Non-Dispersive Infrared (NDIR) optical absorption at $4.26\ \mu\text{m}$. Unlike metal-oxide sensors, it is immune to ethanol, VOCs, and reducing gases, serving as the ground-truth standard for $\text{CO}_2$.
+* **Protocol**: Query command `0x86` (`0xFF 0x01 0x86 0x00 0x00 0x00 0x00 0x00 0x79`). Response format: `0xFF 0x86 HIGH LOW TEMP ... CHK`. Checksum algorithm: `(uint8_t)(~sum + 1)`.
+* **Automatic Baseline Calibration (ABC)**: Supports disabling ABC (`0x79 0x00`) to prevent baseline corruption in unventilated indoor spaces.
+* **Preheating**: Requires a 3-minute warm-up stabilization period (`MHZ19B_WARMUP_PERIOD_S 180u`).
+
+### 4.4 Hardware Bench Cabling & Pinout Map (RP2350 Pico 2 W)
+
+The current multi-sensor test bench aggregates 5 active environmental sensors across two hardware buses on the Raspberry Pi Pico 2 W (`rp2350-sensor` preset):
+
+```
+       Raspberry Pi Pico 2 W Pinout & Sensor Bus Topology
+       ─────────────────────────────────────────────────
+               [ USB Micro / Type-C Power & Console ]
+                           ┌───────────┐
+     UART0 TX (Console)──1 ┤ GP0   VBUS├ 40── MH-Z19B Vin (5V Power)
+     UART0 RX (Console)──2 ┤ GP1   VSYS├ 39
+  External Heartbeat LED──4 ┤ GP2    GND ├ 38── MH-Z19B & I2C Common GND
+             I2C0 SDA ───6 ┤ GP4   3V3 ├ 36── I2C Sensors VCC (3.3V)
+             I2C0 SCL ───7 ┤ GP5       │
+        MH-Z19B TXD ────11 ┤ GP8 (TX1) │
+        MH-Z19B RXD ────12 ┤ GP9 (RX1) │
+                           └───────────┘
+
+1. Shared 3.3V I2C Bus (GP4 SDA / GP5 SCL @ 100 kHz):
+   • BME680:     Addr 0x76 (Temp, Pressure, Humidity, Gas Resistance)
+   • SGP30:      Addr 0x58 (Multi-pixel MOX: eCO2, TVOC)
+   • CCS811:     Addr 0x5a (MOX: eCO2, TVOC; /WAKE hardwired to GND)
+   • MiCS-6814:  Addr 0x04 (Grove Multichannel Gas: CO, NO2, NH3)
+   • TSL2591:    Addr 0x29 (when fitted on bench)
+
+2. Dedicated 5V/3.3V UART1 Bus (GP8 TX / GP9 RX @ 9600 baud 8N1):
+   • MH-Z19B:    Vin to Pin 40 (VBUS, 5V); GND to Pin 38;
+                 Sensor TXD -> Pico GP9 (Pin 12, UART1 RX);
+                 Sensor RXD -> Pico GP8 (Pin 11, UART1 TX).
+
+3. Status Indication:
+   • External Heartbeat LED moved to GP2 (Pin 4) to ensure GP9 is
+     dedicated exclusively to UART1 RX.
+```
 
 
 ---
@@ -349,6 +414,211 @@ typedef struct {
 * Zero SRAM overhead: registered in `.rodata` `user/lisp/builtins_table.h` in exact ASCII sorted order for $O(\log N)$ `bsearch()`.
 * Automated regression test in QEMU virt verifying safe `()` and `#f` returns when no sensors are fitted.
 
-### 46.10 Verification, QEMU Regression & Hardware Soak
+### 46.10 Verification, QEMU Regression & Hardware Soak [Concluded]
 * Silicon verification on RP2350 and ESP32-P4 boards with connected sensors.
 * 24-hour stability soak run on an `rp2350-sensor` node publishing all active channels over MQTT.
+* All regression tests pass with 0 failures on QEMU virt and hardware runner.
+
+### 46.11 Grove Multichannel Gas Sensor (MiCS-6814) [Concluded]
+* Implemented `drivers/mics6814.c` and `drivers/include/drivers/mics6814.h`.
+* Probed at I2C address `0x04` on the shared bus.
+* Implemented 10-minute warm-up stabilization countdown (`MICS6814_WARMUP_PERIOD_S 600u`).
+* Extracted calibrated concentrations for Carbon Monoxide (`co`), Nitrogen Dioxide (`no2`), and Ammonia (`nh3`) in centi-ppm ($0.01\ \text{ppm}$).
+* Created `tools/mics6814_reference.py` golden vector selftest.
+* Verified on real silicon: `mics6814 selftest: 0 cases failed`, reporting live 15.98 ppm CO, 0.11 ppm NO2, 3.11 ppm NH3.
+
+### 46.12 Winsen MH-Z19B NDIR CO2 Sensor via UART1 [Concluded]
+* Implemented `drivers/mhz19b.c` and `drivers/include/drivers/mhz19b.h`.
+* Configured dedicated PL011 UART1 on GP8 (TX) / GP9 (RX) at 9600 baud 8N1 on RP2350.
+* Moved external heartbeat LED to GP2 to prevent UART1 RX pin collision.
+* Connected $V_{in}$ to Pin 40 (`VBUS`, 5V USB power) for optical lamp supply.
+* Implemented packet checksum `~sum + 1` validation, 0x86 read command, and ABC calibration control.
+* Implemented 3-minute optical preheat countdown (`MHZ19B_WARMUP_PERIOD_S 180u`).
+* Extracted true physical $\text{CO}_2$ in 1 ppm and chamber temperature in $0.01\ ^\circ\text{C}$.
+* Verified on real silicon: `mhz19b selftest: 0 cases failed`, reporting live 1443 ppm true $\text{CO}_2$.
+
+### 46.13 Standardized Decimal Scaling & Derived Metrics Pipeline [Concluded]
+* Standardized `sensor_chan_desc_t` metadata table across all drivers and export sinks.
+* Implemented derived Mean Sea Level Pressure ($P_{\text{msl}}$ / QNH) via fixed-point hypsometric formula using station altitude from `idstore`.
+* Implemented Absolute Humidity ($AH$ in $g/\text{m}^3$) and Dew Point ($T_{\text{dew}}$ in centi-°C).
+* Exposed derived channels to `/proc/sensors`, MQTT, and Lisp (`(sensor-read 'dew-point)`, `(sensor-read 'abs-humidity)`).
+* Verified on real silicon: altitude 520m, station pressure 949.08 hPa -> QNH 1006.45 hPa, dew point 17.25 °C, absolute humidity 13.85 g/m³.
+
+### 46.14 Blob-Free Open-Source BME680 IAQ & VOC Index Engine [Concluded]
+* Implemented zero-float open-source IAQ index calculation from BME680 raw gas resistance $R_{\text{gas}}$, temperature, and humidity.
+* Integrated humidity cross-sensitivity compensation ($40\ \%\text{RH}$ reference).
+* Implemented adaptive sliding clean-air baseline tracking ($R_{\text{base}}$) with slow downward decay.
+* Exposed standardized relative IAQ (0–500) to the sensor hub, `/proc/sensors`, and Lisp.
+* Verified on real silicon: IAQ index dynamically reported and adapted (25 clean baseline, rising under VOC presence).
+
+### 46.15 Multi-Sensor Fusion & Ground-Truth Cross-Calibration Model [Concluded]
+* Implemented device-qualified channel addressing (`<dev>.<chan>`) alongside fused composite channels (`(sensor-read 'mhz19b 'co2)`).
+* Implemented NDIR ground-truth calibration engine using MH-Z19B:
+  - Solvent / VOC contamination detector: flags MOX $\text{eCO}_2$ when diverging > 1.8x from true NDIR $\text{CO}_2$ (`[WARN] MOX contaminated by VOC/solvents`).
+  - Automated clean-air baseline anchoring for SGP30 and CCS811 when MH-Z19B reads outdoor baseline levels ($400 - 430\ \text{ppm}$).
+* Verified on real silicon: MH-Z19B measured true 1011 ppm CO2 while CCS811 spiked to 6597 ppm eCO2 (ratio 652%), correctly flagged and disambiguated.
+
+### 46.16 Dual-Tier Calibration Persistence Architecture (Flash vs EEPROM) [Concluded]
+* Implemented dual-tier calibration storage model:
+  - Tier 1: Fast, high-endurance (> 1M cycles) AT24C32 I2C EEPROM intermediate storage at `0x57`, offset `0x0F00`. Hourly and fresh-air checkpointing without NOR flash wear.
+  - Tier 2: Permanent Flash `idstore` (`IDSTORE_FIELD_SENSOR_CAL`).
+* Boot resolution: `sensor_hub_init()` checks EEPROM first, then Flash.
+* Shell commands: `sensor cal [show | save | restore | clear | eeprom save | eeprom restore | eeprom clear]`.
+* Lisp primitives: `(sensor-cal ['save | 'restore | 'clear | 'save-eeprom | 'restore-eeprom | 'clear-eeprom])`.
+* Verified on real silicon: active baselines round-tripped and persisted across reboots on both AT24C32 EEPROM and Flash `idstore`.
+
+
+---
+
+## 7. Multi-Sensor Fusion, Cross-Compensation, and Calibration Architecture
+
+As the measurement suite expands to multiple concurrent sensors measuring overlapping physical and derived phenomena (e.g. SGP30 vs CCS811 for eCO2/TVOC, BME280 vs BME680 for T/P/RH, MH-Z19B true CO2 vs MOX eCO2), the Sensor Hub must transition from a passive multiplexer to an active **Sensor Fusion and Calibration Pipeline**.
+
+### 7.1 Namespace & Source Attribution Disambiguation
+
+Every metric in the hub possesses two identities:
+1. **Device-Qualified Channel (`<device>.<channel>`)**:
+   - Accesses the raw, un-adulterated measurement of a specific physical sensor instance.
+   - Examples: `sgp30.eco2`, `ccs811.eco2`, `mhz19b.co2`, `bme680.temp`, `mhz19b.temp` (optical chamber temperature).
+   - In Lisp: `(sensor-read 'sgp30 'eco2)`, `(sensor-read 'mhz19b 'co2)`.
+   - In MQTT: `<node>/sensor/sgp30/eco2`, `<node>/sensor/mhz19b/co2`.
+   - In `/proc/sensors`: individual sections or explicit device-prefixed keys (`sgp30_eco2_ppm`, `mhz19b_co2_ppm`).
+
+2. **Fused Composite Channel (`<channel>`)**:
+   - High-level unified view exposed to generic consumers (`(sensor-read 'co2)`, `/proc/sensors` primary lines, `<node>/sensor/co2`).
+   - Evaluated by the Sensor Hub's **Fusion Arbiter** based on sensor class, priority, and validity:
+     * **Carbon Dioxide (`co2`)**:
+       - Priority 1: MH-Z19B (true physical NDIR optical absorption, confidence 1.0).
+       - Fallback: SGP30 / CCS811 `eco2` (flagged with derived confidence attribute).
+     * **Equivalent $\text{CO}_2$ (`eco2`)**:
+       - SGP30 and CCS811 weighted consensus when both are within tolerance ($|\Delta| < 20\%$). If contaminated by solvent spike (detected via true NDIR $CO_2$ divergence), flagged as invalid.
+     * **Ambient Temperature (`temp`)**:
+       - Average of ambient meteorological sensors (`bme680`, `bme280`). Internal device chamber temperatures (like `mhz19b` incandescent optical block) are strictly excluded from ambient fusion.
+     * **Barometric Pressure (`pressure`)**:
+       - Primary meteorological barometric sensor (`bme680` or `bme280`).
+     * **Illuminance (`lux`)**:
+       - TSL2591 (high dynamic range) prioritized over TSL2561.
+
+### 7.2 Units, Decimal Scaling, and Zero-Float Formatting
+
+In accordance with LugalOS's strict `mstatus.FS = 0` (zero floating-point) architectural invariant, all kernel and driver calculations occur in exact integer arithmetic. To eliminate discrepancies across output sinks (shell, `/proc`, MQTT, Lisp), every channel is bound to a standardized `sensor_chan_desc_t`:
+
+```c
+typedef struct {
+    sensor_chan_t chan;
+    const char   *name;        /* Machine key: "temp", "pressure", "humidity", "co2" */
+    const char   *unit_symbol; /* Display unit: "°C", "hPa", "%RH", "ppm", "ppb", "Ohm" */
+    uint8_t       decimals;    /* Decimal places for display: 2 for 0.01, 0 for 1 */
+    int32_t       scale_div;   /* Divider from raw int32_t to standard units */
+} sensor_chan_desc_t;
+```
+
+* **Barometric Pressure**:
+  - Raw internal representation: **Pascals** ($1\ \text{Pa} = 0.01\ \text{hPa}$).
+  - Machine export (`/proc/sensors`, Lisp): `94886 Pa`.
+  - Human display / MQTT: `948.86 hPa` (scaled by $100$, 2 decimal places).
+* **Temperature**:
+  - Raw internal: **centi-degrees** ($0.01\ ^\circ\text{C}$). E.g., `2731` = $27.31\ ^\circ\text{C}$.
+* **Relative Humidity**:
+  - Raw internal: **centi-%RH** ($0.01\ \%\text{RH}$). E.g., `5210` = $52.10\ \%\text{RH}$.
+* **Concentrations**:
+  - True $\text{CO}_2$, $\text{eCO}_2$: integer $\text{ppm}$ ($1\ \text{ppm}$).
+  - $\text{TVOC}$: integer $\text{ppb}$ ($1\ \text{ppb}$).
+  - Multichannel gases ($\text{CO}, \text{NO}_2, \text{NH}_3$): centi-ppm ($0.01\ \text{ppm}$). E.g., `1598` = $15.98\ \text{ppm}$.
+* **Resistance**:
+  - Raw internal: integer $\Omega$ ($1\ \Omega$). Human display: $\Omega$ or $\text{k}\Omega$.
+
+### 7.3 Derived Metrics Pipeline
+
+The Sensor Hub provides a deterministic, zero-float mathematical pipeline for derived physical and meteorological metrics:
+
+1. **Mean Sea Level Pressure ($P_{\text{msl}}$ / QNH)**:
+   - Uses the barometric formula based on the barometric lapse rate:
+     $$P_{\text{msl}} = P_{\text{station}} \times \left(1 - \frac{L \cdot h}{T_0}\right)^{-\frac{g \cdot M}{R_0 \cdot L}} \approx P_{\text{station}} \times \left(1 + \frac{h}{44330.77 \cdot (1 - (P/P_0)^{0.190284})}\right)$$
+   - Evaluated in pure fixed-point polynomial arithmetic using the station elevation $h$ provisioned in the node's identity record (`idstore`).
+   - In clean air: $P_{\text{msl}} \approx P_{\text{station}} \times \left(1 + \frac{h}{8430}\right)$ for modest altitudes.
+2. **Absolute Humidity ($AH$ in $g/\text{m}^3$)**:
+   - Calculated via the Magnus-Tetens formula for saturation vapor pressure $e_s(T)$ and ideal gas law:
+     $$AH = 216.7 \times \frac{\frac{RH}{100} \cdot e_s(T)}{T + 273.15}$$
+   - Executed via fixed-point Taylor expansion (already proven in `sgp30_calc_ah_8_8`).
+   - Automatically injected into SGP30 (`0x2061`) and CCS811 (`ENV_DATA`) for real-time MOX moisture compensation.
+3. **Dew Point ($T_{\text{dew}}$ in centi-°C)**:
+   - Pure integer approximation: $T_{\text{dew}} \approx T - \frac{100 - RH}{5}$.
+4. **Vapor Pressure Deficit ($VPD$ in Pa)**:
+   - Useful for indoor environmental quality and plant growth monitoring.
+
+### 7.4 Open-Source, Blob-Free BME680 IAQ & VOC Index Engine
+
+#### Research & The "No-Blob" Challenge
+Bosch Sensortec requires their proprietary closed-source binary library (`BSEC`) to calculate an "Index of Air Quality" (IAQ 0–500), equivalent $\text{CO}_2$, and breath VOC equivalent. LugalOS strictly rejects binary blobs:
+1. They violate freestanding kernel execution (`-nostdlib -ffreestanding`).
+2. They are tied to specific toolchain ABIs and cannot run under LugalOS's `mstatus.FS = 0` trap invariant.
+3. They are opaque black boxes that prevent formal verification.
+
+#### The Physical Principle of the BME680 MOX Heater
+The BME680 features a micro-machined hot plate heated to $320\ ^\circ\text{C}$ for $150\ \text{ms}$. Oxygen ions adsorb onto the tin dioxide ($SnO_2$) metal-oxide semiconductor surface. In clean air, electrons are trapped by adsorbed oxygen, yielding a high baseline electrical resistance ($R_{\text{gas\_base}} \sim 50\ \text{k}\Omega - 200\ \text{k}\Omega$). When volatile organic compounds (reducing gases such as ethanol, acetone, toluene) strike the heated plate, they react with oxygen ions, releasing electrons back into the conduction band and causing electrical resistance $R_{\text{gas}}$ to drop sharply ($5\ \text{k}\Omega - 20\ \text{k}\Omega$).
+
+#### Open-Source Compensation & Index Architecture
+Drawing from open-source research (including Sensirion's BSD-3-licensed Gas Index Algorithm and community BME680 models):
+1. **Humidity Cross-Sensitivity Compensation**:
+   Water molecules compete with VOCs on the heated plate. High relative humidity lowers $R_{\text{gas}}$ even in completely clean air.
+   We normalize raw $R_{\text{gas}}$ to reference humidity ($40\ \%\text{RH}$):
+   $$R_{\text{comp}} = R_{\text{gas}} \times \left(1 + \alpha_{\text{hum}} \cdot (RH - 40\%)\right)$$
+   where $\alpha_{\text{hum}} \approx 0.002$ per centi-percent RH, computed in integer arithmetic.
+2. **Adaptive Baseline Tracking ($R_{\text{base}}$)**:
+   A sliding exponential maximum filter tracks clean-air events over a 24- to 72-hour window:
+   - When $R_{\text{comp}} > R_{\text{base}}$, $R_{\text{base}}$ rapidly ascends toward the clean-air reading.
+   - When air is polluted ($R_{\text{comp}} < R_{\text{base}}$), $R_{\text{base}}$ decays at an extremely slow time constant ($\tau \sim 48\ \text{h}$) to prevent baseline poisoning from short-term indoor VOC spikes.
+3. **Relative Air Quality Score (0–500 IAQ)**:
+   $$\text{Score}_{\text{gas}} = \text{clamp}_{0..500}\left( 500 - \frac{R_{\text{comp}}}{R_{\text{base}}} \times 500 \right)$$
+   When air is pristine ($R_{\text{comp}} \approx R_{\text{base}}$), IAQ is $25 - 50$ (clean). When heavily polluted ($R_{\text{comp}} \ll R_{\text{base}}$), IAQ approaches $400 - 500$.
+
+### 7.5 Ground-Truth Calibration: NDIR $\text{CO}_2$ vs MOX $\text{eCO}_2$
+
+#### Why MOX $\text{eCO}_2$ Generates Unrealistic Values
+Users frequently observe that $\text{eCO}_2$ sensors (CCS811, SGP30) report wild, unrealistic values (e.g. spiking to $65,000\ \text{ppm}$ or fluctuating erratically). The physical reason is straightforward:
+* **$\text{CO}_2$ is chemically inert**: Carbon dioxide does not react catalytically on heated $SnO_2$ metal-oxide surfaces. **MOX sensors cannot detect $\text{CO}_2$ directly.**
+* **The "Equivalent" Proxy Assumption**: Sensor manufacturers assume that in human-occupied rooms, human breath contains a fixed ratio of breath hydrogen ($H_2 \sim 10\ \text{ppm}$) and metabolic VOCs proportional to exhaled $\text{CO}_2$. Their internal firmware multiplies detected $H_2$/VOC signals by a fixed scalar to estimate $\text{eCO}_2$.
+* **The Real-World Failure Mode**: Whenever alcohol, hand sanitizer, cleaning spray, fruit, perfume, or cooking gases are present, the MOX sensor detects massive amounts of reducing ethanol/VOC molecules. Unable to distinguish breath hydrogen from cleaning alcohol, the sensor incorrectly assumes thousands of people are exhaling in the room and reports $e\text{CO}_2 = 65,000\ \text{ppm}$.
+
+#### Ground-Truth Calibration Model with MH-Z19B
+By integrating the **Winsen MH-Z19B NDIR CO₂ sensor** on the same bench, LugalOS acquires true physical ground truth:
+1. **Contamination Disambiguation (False-Positive Gate)**:
+   - The Hub continuously monitors the ratio:
+     $$r_{\text{valid}} = \frac{\text{eCO}_2}{\text{CO}_2^{\text{NDIR}}}$$
+   - **Metabolic Respiration**: When room $\text{CO}_2$ rises due to human occupancy, both $\text{CO}_2^{\text{NDIR}}$ and $\text{eCO}_2$ rise in tandem ($0.8 \le r_{\text{valid}} \le 1.5$). $\text{eCO}_2$ is accepted as valid.
+   - **Solvent / VOC Contamination**: When $\text{eCO}_2 \gg \text{CO}_2^{\text{NDIR}}$ (e.g. $r_{\text{valid}} > 2.0$), the Hub flags the MOX sensor as **chemically contaminated**. The $\text{eCO}_2$ value is suppressed or clamped, and the signal is correctly re-attributed to an elevated **$\text{TVOC}$** event.
+2. **Dynamic Outdoor Baseline Calibration**:
+   - Both SGP30 and CCS811 rely on automatic baseline tracking that can drift if the room is never ventilated.
+   - When the MH-Z19B detects that physical $\text{CO}_2$ has dropped to ambient background ($400 - 430\ \text{ppm}$) and TVOC is low, the Hub confirms that genuine fresh outdoor air is present.
+   - The Hub uses this verified fresh-air window to commit and anchor the baseline registers of the SGP30 and CCS811.
+3. **Empirical Sensitivity Scaling**:
+   - In clean respiration conditions, the Hub fits an empirical linear regression:
+     $$\Delta \text{CO}_2 = k_{\text{mox}} \cdot \Delta S_{\text{mox}}$$
+   - This tunes the individual sensor's aging curve against the physical optical standard.
+
+### 7.6 Dual-Tier Calibration Persistence Architecture (Flash vs EEPROM)
+
+Metal-oxide gas sensors (SGP30, CCS811, MiCS-6814, BME680) maintain running baseline resistances that drift over time and require periodic checkpointing to avoid amnesia across power cycles. However, standard microcontroller NOR Flash requires erasing an entire 4 KB sector per write and has limited endurance (~100,000 cycles). High-frequency writing to Flash would rapidly degrade silicon.
+
+To address this, LugalOS implements a **dual-tier storage model** utilizing the connected RTC clock module (which features a DS3231 RTC paired with an AT24C32 4 KB I2C EEPROM at `0x57` on the shared I2C bus):
+
+1. **Tier 1: AT24C32 EEPROM Fast Intermediate Storage (`0x57`, offset `0x0F00`)**:
+   - **Characteristics**: Byte/page addressable, > 1,000,000 write cycle endurance, zero block-erase overhead.
+   - **Role**: High-frequency running baseline checkpoints. Automatically checkpointed hourly and immediately whenever fresh outdoor air is confirmed ($r_{\text{valid}}$ verified against MH-Z19B NDIR standard).
+   - **Lifespan**: Writing once per hour provides over 110 years of continuous operational lifespan.
+2. **Tier 2: NOR Flash Identity Store (`IDSTORE_FIELD_SENSOR_CAL = 10`)**:
+   - **Characteristics**: In-flash wear-leveled identity record storage, survives external EEPROM removal.
+   - **Role**: Long-term anchor baselines committed upon explicit user action (`sensor cal save` or `(sensor-cal 'save')`).
+3. **Boot Resolution Logic**:
+   - On boot, `sensor_hub_init()` first queries the AT24C32 EEPROM for the most recent valid calibration blob (`sensor_cal_blob_t`).
+   - If EEPROM is absent or uncalibrated, it falls back to the Flash identity store.
+   - Restored baselines are immediately applied to SGP30, CCS811, MiCS-6814, and BME680 before initial measurement cycles begin.
+4. **Shell & Lisp Interface**:
+   - Shell:
+     - `sensor cal` — displays active baselines and status in both Flash and EEPROM.
+     - `sensor cal save` / `restore` / `clear` — manages persistent Flash anchor (and syncs EEPROM).
+     - `sensor cal eeprom save` / `restore` / `clear` — directly manages fast EEPROM intermediate storage.
+   - Lisp:
+     - `(sensor-cal)` — returns an alist of active baselines and persistent flags (`saved?`, `eeprom-saved?`, `fresh-air?`).
+     - `(sensor-cal 'save-eeprom)` / `(sensor-cal 'restore-eeprom)` / `(sensor-cal 'clear-eeprom)`.

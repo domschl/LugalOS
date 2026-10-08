@@ -195,6 +195,44 @@ bool sgp30_read(sgp30_reading_t *out) {
     return true;
 }
 
+bool sgp30_get_baseline(uint16_t *eco2_base, uint16_t *tvoc_base) {
+    if (!g.detected || !eco2_base || !tvoc_base) return false;
+    uint8_t cmd[2] = { (uint8_t)(CMD_GET_IAQ_BASELINE >> 8), (uint8_t)(CMD_GET_IAQ_BASELINE & 0xFFu) };
+    if (!i2c_xfer(g.addr, cmd, 2u, NULL, 0u)) return false;
+
+    uint64_t wait_until = time_get_ms() + 12u;
+    while (time_get_ms() < wait_until) sched_yield();
+
+    uint8_t buf[6];
+    if (!i2c_xfer(g.addr, NULL, 0u, buf, 6u)) return false;
+
+    if (sgp30_crc8(buf, 2u) != buf[2] || sgp30_crc8(&buf[3], 2u) != buf[5]) return false;
+
+    *eco2_base = (uint16_t)((uint16_t)buf[0] << 8 | buf[1]);
+    *tvoc_base = (uint16_t)((uint16_t)buf[3] << 8 | buf[4]);
+    return true;
+}
+
+bool sgp30_set_baseline(uint16_t eco2_base, uint16_t tvoc_base) {
+    if (!g.detected) return false;
+    /* Per Sensirion SGP30 datasheet, CMD_SET_IAQ_BASELINE sends TVOC first, then eCO2 */
+    uint8_t cmd[8];
+    cmd[0] = (uint8_t)(CMD_SET_IAQ_BASELINE >> 8);
+    cmd[1] = (uint8_t)(CMD_SET_IAQ_BASELINE & 0xFFu);
+    cmd[2] = (uint8_t)(tvoc_base >> 8);
+    cmd[3] = (uint8_t)(tvoc_base & 0xFFu);
+    cmd[4] = sgp30_crc8(&cmd[2], 2u);
+    cmd[5] = (uint8_t)(eco2_base >> 8);
+    cmd[6] = (uint8_t)(eco2_base & 0xFFu);
+    cmd[7] = sgp30_crc8(&cmd[5], 2u);
+
+    if (!i2c_xfer(g.addr, cmd, 8u, NULL, 0u)) return false;
+
+    uint64_t wait_until = time_get_ms() + 10u;
+    while (time_get_ms() < wait_until) sched_yield();
+    return true;
+}
+
 uint32_t sgp30_selftest(bool report) {
     uint32_t failed = 0;
 

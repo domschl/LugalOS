@@ -22,6 +22,7 @@
 #define REG_ALG_RESULT_DATA  0x02u
 #define REG_RAW_DATA         0x03u
 #define REG_ENV_DATA         0x05u
+#define REG_BASELINE         0x11u
 #define REG_HW_ID            0x20u
 #define REG_ERROR_ID         0xE0u
 #define REG_APP_START        0xF4u
@@ -90,6 +91,20 @@ bool ccs811_set_env_data(int32_t temp_c100, int32_t rh_cpercent) {
     uint8_t payload[4];
     ccs811_encode_env_data(temp_c100, rh_cpercent, payload);
     return i2c_reg_write_bytes(g.addr, REG_ENV_DATA, payload, 4);
+}
+
+bool ccs811_get_baseline(uint16_t *baseline_out) {
+    if (!g.detected || !baseline_out) return false;
+    uint8_t buf[2];
+    if (!i2c_reg_read_bytes(g.addr, REG_BASELINE, buf, 2)) return false;
+    *baseline_out = (uint16_t)(((uint16_t)buf[0] << 8) | buf[1]);
+    return true;
+}
+
+bool ccs811_set_baseline(uint16_t baseline) {
+    if (!g.detected) return false;
+    uint8_t buf[2] = { (uint8_t)(baseline >> 8), (uint8_t)(baseline & 0xFF) };
+    return i2c_reg_write_bytes(g.addr, REG_BASELINE, buf, 2);
 }
 
 bool ccs811_init(void) {

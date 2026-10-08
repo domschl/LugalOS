@@ -38,6 +38,8 @@
 #include "drivers/sgp30.h"
 #include "drivers/tsl2561.h"
 #include "drivers/tsl2591.h"
+#include "drivers/mics6814.h"
+#include "drivers/mhz19b.h"
 #include "drivers/sensor_hub.h"
 #include "drivers/boardprobe.h"
 #include "drivers/clocks_rp2350.h"
@@ -1273,6 +1275,9 @@ static void cmd_sensor(const char *arg) {
         sgp30_selftest(true);
         tsl2561_selftest(true);
         tsl2591_selftest(true);
+        mics6814_selftest(true);
+        mhz19b_selftest(true);
+        sensor_derived_selftest(true);
         return;
     }
     if (strncmp(arg, "init", 4) == 0) {
@@ -1284,7 +1289,89 @@ static void cmd_sensor(const char *arg) {
         }
         return;
     }
-    if (*arg) { cprintf("usage: sensor [selftest | init]\n"); return; }
+    if (strncmp(arg, "cal", 3) == 0) {
+        const char *sub = arg + 3;
+        while (*sub == ' ') sub++;
+        if (*sub == '\0' || strcmp(sub, "show") == 0) {
+            sensor_cal_blob_t cur;
+            sensor_hub_cal_get_current(&cur);
+            cprintf("Active Sensor Baselines:\n");
+            cprintf("  SGP30: eCO2=%u, TVOC=%u\n", cur.sgp30_eco2_base, cur.sgp30_tvoc_base);
+            cprintf("  CCS811: 0x%04x (%u)\n", cur.ccs811_base, cur.ccs811_base);
+            cprintf("  MiCS-6814 R0: NH3=%u, CO=%u, NO2=%u\n", cur.mics6814_r0_nh3, cur.mics6814_r0_co, cur.mics6814_r0_no2);
+            cprintf("  BME680: %lu Ohm\n", (unsigned long)cur.bme680_r_base);
+            sensor_cal_blob_t saved;
+            if (sensor_hub_cal_has_saved(&saved)) {
+                cprintf("Stored Baselines in Flash Identity Store:\n");
+                cprintf("  SGP30: eCO2=%u, TVOC=%u\n", saved.sgp30_eco2_base, saved.sgp30_tvoc_base);
+                cprintf("  CCS811: 0x%04x (%u)\n", saved.ccs811_base, saved.ccs811_base);
+                cprintf("  MiCS-6814 R0: NH3=%u, CO=%u, NO2=%u\n", saved.mics6814_r0_nh3, saved.mics6814_r0_co, saved.mics6814_r0_no2);
+                cprintf("  BME680: %lu Ohm\n", (unsigned long)saved.bme680_r_base);
+            } else {
+                cprintf("Stored Baselines in Flash: none (uncalibrated flash)\n");
+            }
+            sensor_cal_blob_t eep_saved;
+            if (sensor_hub_cal_eeprom_has_saved(&eep_saved)) {
+                cprintf("Stored Baselines in AT24C32 EEPROM (0x57):\n");
+                cprintf("  SGP30: eCO2=%u, TVOC=%u\n", eep_saved.sgp30_eco2_base, eep_saved.sgp30_tvoc_base);
+                cprintf("  CCS811: 0x%04x (%u)\n", eep_saved.ccs811_base, eep_saved.ccs811_base);
+                cprintf("  MiCS-6814 R0: NH3=%u, CO=%u, NO2=%u\n", eep_saved.mics6814_r0_nh3, eep_saved.mics6814_r0_co, eep_saved.mics6814_r0_no2);
+                cprintf("  BME680: %lu Ohm\n", (unsigned long)eep_saved.bme680_r_base);
+            }
+            return;
+        }
+        if (strcmp(sub, "save") == 0) {
+            if (sensor_hub_cal_save()) {
+                cprintf("sensor cal: active baselines saved to persistent identity store\n");
+            } else {
+                cprintf("sensor cal: save failed (identity store unavailable)\n");
+            }
+            return;
+        }
+        if (strcmp(sub, "restore") == 0) {
+            if (sensor_hub_cal_restore()) {
+                cprintf("sensor cal: baselines restored from persistent identity store\n");
+            } else {
+                cprintf("sensor cal: restore failed (no valid calibration found)\n");
+            }
+            return;
+        }
+        if (strcmp(sub, "clear") == 0) {
+            if (sensor_hub_cal_clear()) {
+                cprintf("sensor cal: stored calibration cleared from persistent identity store\n");
+            } else {
+                cprintf("sensor cal: clear failed\n");
+            }
+            return;
+        }
+        if (strcmp(sub, "eeprom save") == 0 || strcmp(sub, "eeprom-save") == 0) {
+            if (sensor_hub_cal_eeprom_save()) {
+                cprintf("sensor cal: active baselines saved to AT24C32 EEPROM (0x57)\n");
+            } else {
+                cprintf("sensor cal: save to EEPROM failed (no EEPROM detected)\n");
+            }
+            return;
+        }
+        if (strcmp(sub, "eeprom restore") == 0 || strcmp(sub, "eeprom-restore") == 0) {
+            if (sensor_hub_cal_eeprom_restore()) {
+                cprintf("sensor cal: baselines restored from AT24C32 EEPROM (0x57)\n");
+            } else {
+                cprintf("sensor cal: restore from EEPROM failed (no valid calibration)\n");
+            }
+            return;
+        }
+        if (strcmp(sub, "eeprom clear") == 0 || strcmp(sub, "eeprom-clear") == 0) {
+            if (sensor_hub_cal_eeprom_clear()) {
+                cprintf("sensor cal: calibration cleared from AT24C32 EEPROM\n");
+            } else {
+                cprintf("sensor cal: clear EEPROM failed\n");
+            }
+            return;
+        }
+        cprintf("usage: sensor cal [show | save | restore | clear | eeprom save | eeprom restore | eeprom clear]\n");
+        return;
+    }
+    if (*arg) { cprintf("usage: sensor [selftest | init | cal [show|save|restore|clear|eeprom...]]\n"); return; }
     sensor_hub_print_status();
 }
 

@@ -5694,6 +5694,21 @@ def test_bme280_compensation(elf_path: Path, img_path: Path, arch_name: str) -> 
             return (name, False,
                     f"tsl2561 compensation does not match the reference:\n{log[-700:]}")
 
+        m_mics6814 = re.search(r"mics6814 selftest: (\d+) case", log)
+        if not m_mics6814 or int(m_mics6814.group(1)) != 0:
+            return (name, False,
+                    f"mics6814 compensation does not match the reference:\n{log[-700:]}")
+
+        m_mhz19b = re.search(r"mhz19b selftest: (\d+) case", log)
+        if not m_mhz19b or int(m_mhz19b.group(1)) != 0:
+            return (name, False,
+                    f"mhz19b selftest did not pass:\n{log[-700:]}")
+
+        m_derived = re.search(r"sensor_derived selftest: (\d+) case", log)
+        if not m_derived or int(m_derived.group(1)) != 0:
+            return (name, False,
+                    f"sensor_derived selftest did not pass:\n{log[-700:]}")
+
         # With no sensor fitted -- and there is none on either QEMU target --
         # the driver must say so rather than report zeroes as a measurement.
         ok, log = session.send_and_expect("sensor\n", r"sensor: |@0x", timeout=6.0)

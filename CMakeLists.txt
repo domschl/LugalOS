@@ -766,6 +766,8 @@ set(SOURCES
     drivers/sgp30.c
     drivers/tsl2561.c
     drivers/tsl2591.c
+    drivers/mics6814.c
+    drivers/mhz19b.c
     drivers/sensor_hub.c
     fs/p9_chan.c
     libc/string.c

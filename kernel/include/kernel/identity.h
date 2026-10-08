@@ -305,4 +305,10 @@ node_id_result_t node_identity_set_ipv4(const uint8_t ip[NODE_IPV4_LEN],
  * moving a board to DHCP later means removing this, not replacing it. */
 node_id_result_t node_identity_clear_ipv4(void);
 
+/* Phase 46: persistent sensor calibration */
+struct sensor_cal_blob;
+bool node_sensor_cal(struct sensor_cal_blob *out);
+node_id_result_t node_identity_set_sensor_cal(const struct sensor_cal_blob *cal);
+node_id_result_t node_identity_clear_sensor_cal(void);
+
 #endif /* LUGALOS_KERNEL_IDENTITY_H */

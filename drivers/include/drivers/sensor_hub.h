@@ -55,4 +55,45 @@ void sensor_hub_register_sources(void);
 /* Human-readable status report for the shell 'sensor' command */
 void sensor_hub_print_status(void);
 
+/* Ground-truth cross-calibration status (Phase 46 §7.5) */
+bool    sensor_hub_is_mox_contaminated(void);
+bool    sensor_hub_is_fresh_air_verified(void);
+int32_t sensor_hub_co2_ratio_pct(void);
+
+/* Reload cached node altitude from identity store */
+void    sensor_hub_altitude_reload(void);
+
+/* Multi-sensor calibration blob stored in identity store (IDSTORE_FIELD_SENSOR_CAL) */
+#define SENSOR_CAL_MAGIC   0x43u  /* 'C' */
+#define SENSOR_CAL_VERSION 1u
+
+typedef struct sensor_cal_blob {
+    uint8_t  magic;          /* SENSOR_CAL_MAGIC */
+    uint8_t  version;        /* SENSOR_CAL_VERSION */
+    uint16_t flags;          /* 1 = valid, 2 = fresh_air_verified */
+    uint16_t sgp30_eco2_base;
+    uint16_t sgp30_tvoc_base;
+    uint16_t ccs811_base;
+    uint16_t mics6814_r0_nh3;
+    uint16_t mics6814_r0_co;
+    uint16_t mics6814_r0_no2;
+    uint32_t bme680_r_base;
+} __attribute__((packed)) sensor_cal_blob_t;
+
+/* Sensor calibration operations */
+bool sensor_hub_cal_get_current(sensor_cal_blob_t *out);
+bool sensor_hub_cal_apply(const sensor_cal_blob_t *cal);
+bool sensor_hub_cal_save(void);
+bool sensor_hub_cal_restore(void);
+bool sensor_hub_cal_clear(void);
+bool sensor_hub_cal_has_saved(sensor_cal_blob_t *out);
+
+/* EEPROM calibration operations (AT24C32 at 0x57) */
+#define SENSOR_CAL_EEPROM_ADDR 0x0F00u
+bool sensor_hub_cal_eeprom_has_saved(sensor_cal_blob_t *out);
+bool sensor_hub_cal_eeprom_save(void);
+bool sensor_hub_cal_eeprom_restore(void);
+bool sensor_hub_cal_eeprom_clear(void);
+
 #endif /* DRIVERS_SENSOR_HUB_H */
+

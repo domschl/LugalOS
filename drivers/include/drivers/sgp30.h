@@ -36,6 +36,10 @@ bool sgp30_read(sgp30_reading_t *out);
 /* Computes and writes absolute humidity compensation (fixed-point 8.8 g/m^3) */
 bool sgp30_set_absolute_humidity(int32_t temp_c100, int32_t rh_cpercent);
 
+/* Baseline get/set operations (0x2015 / 0x201E) */
+bool sgp30_get_baseline(uint16_t *eco2_base, uint16_t *tvoc_base);
+bool sgp30_set_baseline(uint16_t eco2_base, uint16_t tvoc_base);
+
 /* Sensirion CRC-8 checksum calculation */
 uint8_t sgp30_crc8(const uint8_t *data, uint32_t len);
 
