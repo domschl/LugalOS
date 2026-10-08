@@ -81,6 +81,8 @@ set(_optional_keys
     # UART simply does not set them. (The W5500's own pins lived here too,
     # until phase 19's R0 removed the part.)
     CONFIG_UART1_BASE CONFIG_UART1_TX_GPIO CONFIG_UART1_RX_GPIO
+    # MH-Z19B NDIR CO2 sensor via UART
+    CONFIG_MHZ19B_UART_BASE CONFIG_MHZ19B_TX_GPIO CONFIG_MHZ19B_RX_GPIO
     # Z0, plan/phase28_esp32p4_ethernet.md: the P4's EMAC and the IP101GRI
     # it drives over RMII. Optional like every pin map here -- the three
     # boards in this tree that have no MAC simply do not set them, and

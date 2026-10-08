@@ -6034,9 +6034,17 @@ static int parse_sensor_chan(const char *name) {
     if (strcmp(name, "pressure") == 0 || strcmp(name, "press") == 0) return SENSOR_CHAN_PRESSURE;
     if (strcmp(name, "humidity") == 0 || strcmp(name, "hum") == 0) return SENSOR_CHAN_HUMIDITY;
     if (strcmp(name, "lux") == 0 || strcmp(name, "light") == 0) return SENSOR_CHAN_LUX;
-    if (strcmp(name, "eco2") == 0 || strcmp(name, "co2") == 0) return SENSOR_CHAN_ECO2;
+    if (strcmp(name, "eco2") == 0) return SENSOR_CHAN_ECO2;
     if (strcmp(name, "tvoc") == 0 || strcmp(name, "voc") == 0) return SENSOR_CHAN_TVOC;
     if (strcmp(name, "gas-res") == 0 || strcmp(name, "gas") == 0 || strcmp(name, "gas_res") == 0) return SENSOR_CHAN_GAS_RES;
+    if (strcmp(name, "co") == 0) return SENSOR_CHAN_CO;
+    if (strcmp(name, "no2") == 0) return SENSOR_CHAN_NO2;
+    if (strcmp(name, "nh3") == 0) return SENSOR_CHAN_NH3;
+    if (strcmp(name, "co2") == 0) return SENSOR_CHAN_CO2;
+    if (strcmp(name, "pressure-msl") == 0 || strcmp(name, "msl") == 0 || strcmp(name, "qnh") == 0) return SENSOR_CHAN_PRESSURE_MSL;
+    if (strcmp(name, "ah") == 0 || strcmp(name, "abs-humidity") == 0) return SENSOR_CHAN_AH;
+    if (strcmp(name, "dew-point") == 0 || strcmp(name, "dew") == 0) return SENSOR_CHAN_DEW_POINT;
+    if (strcmp(name, "iaq") == 0) return SENSOR_CHAN_IAQ;
     return -1;
 }
 
@@ -6045,6 +6053,55 @@ static const char *lisp_val_str(const lisp_val_t *v) {
     if (v->type == LISP_SYMBOL) return v->u.sym;
     if (v->type == LISP_STRING) return v->u.str;
     return NULL;
+}
+
+/* `(sensor-cal ['save | 'restore | 'clear])` -- Phase 46:
+ * Queries or persists multi-sensor calibration baselines. */
+static lisp_val_t *prim_sensor_cal(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (args && args->type == LISP_PAIR) {
+        const char *op = lisp_val_str(args->u.pair.car);
+        if (op) {
+            if (strcmp(op, "save") == 0) {
+                return sensor_hub_cal_save() ? &true_val : &false_val;
+            }
+            if (strcmp(op, "restore") == 0) {
+                return sensor_hub_cal_restore() ? &true_val : &false_val;
+            }
+            if (strcmp(op, "clear") == 0) {
+                return sensor_hub_cal_clear() ? &true_val : &false_val;
+            }
+            if (strcmp(op, "save-eeprom") == 0 || strcmp(op, "eeprom-save") == 0) {
+                return sensor_hub_cal_eeprom_save() ? &true_val : &false_val;
+            }
+            if (strcmp(op, "restore-eeprom") == 0 || strcmp(op, "eeprom-restore") == 0) {
+                return sensor_hub_cal_eeprom_restore() ? &true_val : &false_val;
+            }
+            if (strcmp(op, "clear-eeprom") == 0 || strcmp(op, "eeprom-clear") == 0) {
+                return sensor_hub_cal_eeprom_clear() ? &true_val : &false_val;
+            }
+        }
+    }
+
+    sensor_cal_blob_t cur;
+    sensor_hub_cal_get_current(&cur);
+    sensor_cal_blob_t saved;
+    bool has_saved = sensor_hub_cal_has_saved(&saved);
+    sensor_cal_blob_t eep_saved;
+    bool has_eep_saved = sensor_hub_cal_eeprom_has_saved(&eep_saved);
+
+    lisp_val_t *res = &nil_val;
+    res = make_pair(make_pair(make_sym("eeprom-saved?"), has_eep_saved ? &true_val : &false_val), res);
+    res = make_pair(make_pair(make_sym("saved?"), has_saved ? &true_val : &false_val), res);
+    res = make_pair(make_pair(make_sym("fresh-air?"), (cur.flags & 2u) ? &true_val : &false_val), res);
+    res = make_pair(make_pair(make_sym("bme680-base"), make_int((long)cur.bme680_r_base)), res);
+    res = make_pair(make_pair(make_sym("mics-no2"), make_int((long)cur.mics6814_r0_no2)), res);
+    res = make_pair(make_pair(make_sym("mics-co"), make_int((long)cur.mics6814_r0_co)), res);
+    res = make_pair(make_pair(make_sym("mics-nh3"), make_int((long)cur.mics6814_r0_nh3)), res);
+    res = make_pair(make_pair(make_sym("ccs811"), make_int((long)cur.ccs811_base)), res);
+    res = make_pair(make_pair(make_sym("sgp30-tvoc"), make_int((long)cur.sgp30_tvoc_base)), res);
+    res = make_pair(make_pair(make_sym("sgp30-eco2"), make_int((long)cur.sgp30_eco2_base)), res);
+    return res;
 }
 
 /* `(sensor-list)` -- Milestone 46.9: lists all detected sensor device names as symbols. */
@@ -6093,7 +6150,8 @@ static lisp_val_t *prim_sensor_read(lisp_val_t *args, lisp_val_t *env) {
     if (nargs == 0) {
         /* Return alist of all valid channels: ((temp . 2611) (pressure . 95866) ...) */
         static const char *const chan_names[SENSOR_CHAN_MAX] = {
-            "temp", "pressure", "humidity", "lux", "eco2", "tvoc", "gas-res"
+            "temp", "pressure", "humidity", "lux", "eco2", "tvoc", "gas-res",
+            "co", "no2", "nh3", "co2", "pressure-msl", "abs-humidity", "dew-point", "iaq"
         };
         lisp_val_t *alist = &nil_val;
         for (int ch = SENSOR_CHAN_MAX - 1; ch >= 0; ch--) {

@@ -19,6 +19,8 @@
 #include "drivers/sgp30.h"
 #include "drivers/tsl2561.h"
 #include "drivers/tsl2591.h"
+#include "drivers/mics6814.h"
+#include "drivers/mhz19b.h"
 #include "drivers/sensor_hub.h"
 #include "drivers/piousb.h"
 #include "kernel/time.h"
@@ -1330,6 +1332,22 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
                     (unsigned long)r.pressure_pa,
                     (unsigned long)((uint32_t)r.humidity_cpercent * 10u),
                     (unsigned long)r.gas_res_ohm);
+
+                int32_t alt;
+                if (node_altitude(&alt)) {
+                    int32_t msl = sensor_calc_sea_level_pa((int32_t)r.pressure_pa, r.temperature_c100, alt);
+                    used += (uint32_t)ksnprintf(buf + used, cap - used,
+                        "altitude_m=%ld\npressure_msl_pa=%ld\n", (long)alt, (long)msl);
+                }
+                int32_t ah = sensor_calc_abs_humidity_c100(r.temperature_c100, (int32_t)r.humidity_cpercent);
+                int32_t dp = sensor_calc_dew_point_c100(r.temperature_c100, (int32_t)r.humidity_cpercent);
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "abs_humidity_c100=%ld\ndew_point_c100=%ld\n", (long)ah, (long)dp);
+                int32_t iaq = 0;
+                if (sensor_hub_get(SENSOR_CHAN_IAQ, &iaq, NULL)) {
+                    used += (uint32_t)ksnprintf(buf + used, cap - used,
+                        "iaq=%ld\n", (long)iaq);
+                }
             }
             used += (uint32_t)ksnprintf(buf + used, cap - used,
                 "reads=%lu\nfailures=%lu\n",
@@ -1471,6 +1489,66 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
             if (lf)
                 used += (uint32_t)ksnprintf(buf + used, cap - used,
                     "last_failure=%s\n", lf);
+        } else if (mics6814_is_detected()) {
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "part=%s\naddr=0x%02x\nsample_period_s=%lu\n",
+                mics6814_part_name(), mics6814_address(),
+                (unsigned long)sensor_hub_sample_period_s());
+
+            mics6814_reading_t mr;
+            uint32_t m_age = 0;
+            if (!mics6814_cached(&mr, &m_age)) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "valid=no\n");
+            } else {
+                uint32_t rem = 0;
+                bool warming = mics6814_is_warming_up(&rem);
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "valid=yes\nage_s=%lu\nco_c_ppm=%ld\nno2_c_ppm=%ld\nnh3_c_ppm=%ld\nwarming_up=%s\n",
+                    (unsigned long)m_age, (long)mr.co_c_ppm, (long)mr.no2_c_ppm, (long)mr.nh3_c_ppm,
+                    warming ? "yes" : "no");
+                if (warming) {
+                    used += (uint32_t)ksnprintf(buf + used, cap - used,
+                        "warmup_remaining_s=%lu\n", (unsigned long)rem);
+                }
+            }
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "reads=%lu\nfailures=%lu\n",
+                (unsigned long)mics6814_read_count(),
+                (unsigned long)mics6814_fail_count());
+            const char *lf = mics6814_last_failure();
+            if (lf)
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "last_failure=%s\n", lf);
+        } else if (mhz19b_is_detected()) {
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "part=%s\nsample_period_s=%lu\n",
+                mhz19b_part_name(),
+                (unsigned long)sensor_hub_sample_period_s());
+
+            mhz19b_reading_t mr;
+            uint32_t m_age = 0;
+            if (!mhz19b_cached(&mr, &m_age)) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "valid=no\n");
+            } else {
+                uint32_t rem = 0;
+                bool warming = mhz19b_is_warming_up(&rem);
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "valid=yes\nage_s=%lu\nco2_ppm=%ld\nchamber_temp_c100=%ld\nwarming_up=%s\n",
+                    (unsigned long)m_age, (long)mr.co2_ppm, (long)mr.temp_c100,
+                    warming ? "yes" : "no");
+                if (warming) {
+                    used += (uint32_t)ksnprintf(buf + used, cap - used,
+                        "warmup_remaining_s=%lu\n", (unsigned long)rem);
+                }
+            }
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "reads=%lu\nfailures=%lu\n",
+                (unsigned long)mhz19b_read_count(),
+                (unsigned long)mhz19b_fail_count());
+            const char *lf = mhz19b_last_failure();
+            if (lf)
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "last_failure=%s\n", lf);
         } else {
             used += (uint32_t)ksnprintf(buf + used, cap - used, "part=none\n");
             return (int)used;
@@ -1503,14 +1581,63 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
                         "eco2_ppm=%u\ntvoc_ppb=%u\ngas_age_s=%lu\n",
                         (unsigned int)cr.eco2_ppm, (unsigned int)cr.tvoc_ppb, (unsigned long)c_age);
                 }
-            } else if (sgp30_is_detected()) {
+            }
+            if (sgp30_is_detected()) {
                 sgp30_reading_t sr;
                 uint32_t s_age = 0;
                 if (sgp30_cached(&sr, &s_age)) {
-                    used += (uint32_t)ksnprintf(buf + used, cap - used,
-                        "eco2_ppm=%u\ntvoc_ppb=%u\ngas_age_s=%lu\n",
-                        (unsigned int)sr.eco2_ppm, (unsigned int)sr.tvoc_ppb, (unsigned long)s_age);
+                    if (!ccs811_is_detected()) {
+                        used += (uint32_t)ksnprintf(buf + used, cap - used,
+                            "eco2_ppm=%u\ntvoc_ppb=%u\ngas_age_s=%lu\n",
+                            (unsigned int)sr.eco2_ppm, (unsigned int)sr.tvoc_ppb, (unsigned long)s_age);
+                    } else {
+                        used += (uint32_t)ksnprintf(buf + used, cap - used,
+                            "sgp30_eco2_ppm=%u\nsgp30_tvoc_ppb=%u\nsgp30_age_s=%lu\n",
+                            (unsigned int)sr.eco2_ppm, (unsigned int)sr.tvoc_ppb, (unsigned long)s_age);
+                    }
                 }
+            }
+
+            if (mics6814_is_detected()) {
+                mics6814_reading_t mr;
+                uint32_t m_age = 0;
+                if (mics6814_cached(&mr, &m_age)) {
+                    uint32_t rem = 0;
+                    bool warming = mics6814_is_warming_up(&rem);
+                    used += (uint32_t)ksnprintf(buf + used, cap - used,
+                        "co_c_ppm=%ld\nno2_c_ppm=%ld\nnh3_c_ppm=%ld\nmics6814_age_s=%lu\nmics6814_warming_up=%s\n",
+                        (long)mr.co_c_ppm, (long)mr.no2_c_ppm, (long)mr.nh3_c_ppm,
+                        (unsigned long)m_age, warming ? "yes" : "no");
+                    if (warming) {
+                        used += (uint32_t)ksnprintf(buf + used, cap - used,
+                            "mics6814_warmup_remaining_s=%lu\n", (unsigned long)rem);
+                    }
+                }
+            }
+
+            if (mhz19b_is_detected()) {
+                mhz19b_reading_t mr;
+                uint32_t m_age = 0;
+                if (mhz19b_cached(&mr, &m_age)) {
+                    uint32_t rem = 0;
+                    bool warming = mhz19b_is_warming_up(&rem);
+                    used += (uint32_t)ksnprintf(buf + used, cap - used,
+                        "co2_ppm=%ld\nmhz19b_chamber_temp_c100=%ld\nmhz19b_age_s=%lu\nmhz19b_warming_up=%s\n",
+                        (long)mr.co2_ppm, (long)mr.temp_c100,
+                        (unsigned long)m_age, warming ? "yes" : "no");
+                    if (warming) {
+                        used += (uint32_t)ksnprintf(buf + used, cap - used,
+                            "mhz19b_warmup_remaining_s=%lu\n", (unsigned long)rem);
+                    }
+                }
+            }
+
+            if (mhz19b_is_detected() && (ccs811_is_detected() || sgp30_is_detected())) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "mox_contaminated=%s\nco2_ratio_pct=%ld\nfresh_air_verified=%s\n",
+                    sensor_hub_is_mox_contaminated() ? "yes" : "no",
+                    (long)sensor_hub_co2_ratio_pct(),
+                    sensor_hub_is_fresh_air_verified() ? "yes" : "no");
             }
         }
         return (int)used;

@@ -36,12 +36,13 @@ set(CONFIG_UART0_BASE     0x40070000)
 set(CONFIG_UART0_TX_GPIO  0)
 set(CONFIG_UART0_RX_GPIO  1)
 
-# Heartbeat LED. NOT CONFIG_LED_ONBOARD_GPIO and NOT GP25: on a Pico 2 **W**
-# the user LED hangs off the wireless module (WL_GPIO0) and GP25 is the
-# CYW43439's chip select -- the same finding cmake/board-rp2350-wifi.cmake and
-# the clock persona both record. GP9 is free on every RP2350W board this
-# project has met.
-set(CONFIG_LED_EXT_GPIO   9)
+# Heartbeat LED. Moved to GP2 (freeing GP9 for UART1 RX).
+set(CONFIG_LED_EXT_GPIO   2)
+
+# MH-Z19B NDIR CO2 Sensor via UART1 on GP8 (TX) / GP9 (RX) at 9600 baud.
+set(CONFIG_MHZ19B_UART_BASE 0x40078000)
+set(CONFIG_MHZ19B_TX_GPIO   8)
+set(CONFIG_MHZ19B_RX_GPIO   9)
 
 # I2C0 on GP4/GP5: the BME280, at 0x76 or 0x77 depending on its SDO strapping
 # (drivers/bme280.c probes both).

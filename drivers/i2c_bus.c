@@ -1000,7 +1000,7 @@ void i2c_scan_bus(void) {
         cprintf("%02x: ", row);
         for (int col = 0; col < 16; col++) {
             uint8_t addr = row + col;
-            if (addr < 0x08 || addr > 0x77) {
+            if (addr < 0x03 || addr > 0x77) {
                 cprintf("   ");
             } else {
                 if (i2c_probe_addr(addr)) {

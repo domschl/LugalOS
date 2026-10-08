@@ -50,6 +50,10 @@ bool ccs811_set_env_data(int32_t temp_c100, int32_t rh_cpercent);
 /* Encodes temperature and humidity into 4-byte ENV_DATA payload */
 void ccs811_encode_env_data(int32_t temp_c100, int32_t rh_cpercent, uint8_t out[4]);
 
+/* Baseline register operations (0x11) */
+bool ccs811_get_baseline(uint16_t *baseline_out);
+bool ccs811_set_baseline(uint16_t baseline);
+
 /* Selftest against golden vectors (tools/ccs811_reference.py) */
 uint32_t ccs811_selftest(bool report);
 

@@ -336,29 +336,7 @@ const char *bme280_last_failure(void) { return g.last_fail; }
  * which a 64-bit integer holds; no 128-bit arithmetic, which RV32 lacks.
  * Temperatures are those of the air at the station, as the formula wants. */
 int32_t bme280_sea_level_pa(int32_t pa, int32_t t_c100, int32_t alt_m) {
-    if (alt_m == 0 || pa <= 0) return pa;
-    /* In units of 10^-4 K: L h = 65 h, T + 273.15 = 100 t_c100 + 2 731 500. */
-    int64_t num = 65LL * alt_m;
-    int64_t den = 100LL * t_c100 + 2731500LL + num;
-    if (den <= 0) return pa;                       /* below absolute zero: not air */
-    const int64_t ONE = 1LL << 30;
-    int64_t x = (num * ONE) / den;                 /* Q30, |x| < 0.15 */
-
-    /* s = -ln(1 - x) = x + x^2/2 + x^3/3 + ... */
-    int64_t s = 0, xk = x;
-    for (int k = 1; k <= 7; k++) {
-        s += xk / k;
-        xk = (xk * x) / ONE;
-    }
-    int64_t y = (s * 5257) / 1000;                 /* Q30, < 0.8 */
-
-    /* e^y = 1 + y + y^2/2! + ... */
-    int64_t e = ONE, term = ONE;
-    for (int k = 1; k <= 9; k++) {
-        term = (term * y) / ONE / k;
-        e += term;
-    }
-    return (int32_t)(((int64_t)pa * e + (ONE / 2)) / ONE);
+    return sensor_calc_sea_level_pa(pa, t_c100, alt_m);
 }
 
 /* --- The vector ---

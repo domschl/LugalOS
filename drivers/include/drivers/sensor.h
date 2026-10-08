@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 /* Environmental Sensor Device-Class Contract (Category D, phase 46 §4).
  *
@@ -21,6 +22,14 @@
  *   SENSOR_CHAN_ECO2:     1 ppm        (parts per million: 420 is 420 ppm)
  *   SENSOR_CHAN_TVOC:     1 ppb        (parts per billion: 125 is 125 ppb)
  *   SENSOR_CHAN_GAS_RES:  1 Ohm        (Ohms: 125400 is 125.4 kOhm)
+ *   SENSOR_CHAN_CO:       0.01 ppm     (centi-ppm: 120 is 1.20 ppm)
+ *   SENSOR_CHAN_NO2:      0.01 ppm     (centi-ppm: 15 is 0.15 ppm)
+ *   SENSOR_CHAN_NH3:      0.01 ppm     (centi-ppm: 68 is 0.68 ppm)
+ *   SENSOR_CHAN_CO2:      1 ppm        (parts per million true CO2: 400 is 400 ppm)
+ *   SENSOR_CHAN_PRESSURE_MSL: 1 Pa     (Sea-level pressure / QNH: 101325 is 1013.25 hPa)
+ *   SENSOR_CHAN_AH:       0.01 g/m³    (Absolute humidity: 1125 is 11.25 g/m³)
+ *   SENSOR_CHAN_DEW_POINT: 0.01 °C     (Dew point: 1520 is 15.20 °C)
+ *   SENSOR_CHAN_IAQ:      1            (Index of Air Quality: 0-500)
  */
 
 typedef enum {
@@ -31,6 +40,14 @@ typedef enum {
     SENSOR_CHAN_ECO2,
     SENSOR_CHAN_TVOC,
     SENSOR_CHAN_GAS_RES,
+    SENSOR_CHAN_CO,
+    SENSOR_CHAN_NO2,
+    SENSOR_CHAN_NH3,
+    SENSOR_CHAN_CO2,
+    SENSOR_CHAN_PRESSURE_MSL,
+    SENSOR_CHAN_AH,
+    SENSOR_CHAN_DEW_POINT,
+    SENSOR_CHAN_IAQ,
     SENSOR_CHAN_MAX
 } sensor_chan_t;
 
@@ -62,10 +79,33 @@ typedef struct sensor_dev {
     void               *priv;       /* Driver-specific context / calibration */
 } sensor_dev_t;
 
-/* String representation of a channel name for MQTT topics and /proc/sensors */
-const char *sensor_chan_name(sensor_chan_t chan);
+/* Channel metadata and uniform decimal scaling descriptor */
+typedef struct {
+    sensor_chan_t chan;
+    const char   *name;        /* Machine key: "temperature", "pressure", "co2", etc. */
+    const char   *unit_symbol; /* Display unit: "°C", "hPa", "%RH", "ppm", "ppb", "Ohm", "g/m³" */
+    uint8_t       decimals;    /* Decimal places for display */
+    int32_t       scale_div;   /* Divider from raw int32_t to standard units */
+} sensor_chan_desc_t;
 
-/* Number of decimal digits for fixed-point printing (e.g. 2 for centi-units) */
-uint8_t sensor_chan_decimals(sensor_chan_t chan);
+/* Channel metadata accessors */
+const sensor_chan_desc_t *sensor_chan_desc(sensor_chan_t chan);
+const char               *sensor_chan_name(sensor_chan_t chan);
+const char               *sensor_chan_unit(sensor_chan_t chan);
+uint8_t                   sensor_chan_decimals(sensor_chan_t chan);
+int32_t                   sensor_chan_scale_div(sensor_chan_t chan);
+
+/* Formats a raw sensor channel value into a human-readable string with units.
+ * Returns bytes written (excluding NUL). */
+size_t sensor_format_channel(sensor_chan_t chan, int32_t raw_val, char *buf, size_t cap);
+
+/* Derived meteorological and physical metric calculations (pure integer, zero-float) */
+int32_t  sensor_calc_sea_level_pa(int32_t pa, int32_t t_c100, int32_t alt_m);
+int32_t  sensor_calc_abs_humidity_c100(int32_t t_c100, int32_t rh_c100);
+int32_t  sensor_calc_dew_point_c100(int32_t t_c100, int32_t rh_c100);
+int32_t  sensor_calc_bme680_iaq(int32_t gas_res_ohm, int32_t t_c100, int32_t rh_c100, int32_t *inout_r_base);
+
+/* Pure arithmetic selftest for derived calculations against golden vectors */
+uint32_t sensor_derived_selftest(bool report);
 
 #endif /* DRIVERS_SENSOR_H */
