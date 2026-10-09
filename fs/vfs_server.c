@@ -1769,8 +1769,8 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
                 int32_t val = 0;
                 uint32_t age = 0;
                 if (sensor_hub_get_dev(dev, (sensor_chan_t)ch, &val, &age)) {
+                    if (!any_val || age < min_age) min_age = age;
                     any_val = true;
-                    min_age = age;
                     switch ((sensor_chan_t)ch) {
                         case SENSOR_CHAN_TEMP:
                             used += (uint32_t)ksnprintf(buf + used, cap - used, "temperature_c100=%ld\n", (long)val);

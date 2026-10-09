@@ -19,20 +19,42 @@
  * not part of the RTC driver any more. */
 
 #if defined(CONFIG_BOARD_RP2350)
-/* Dual I2C controller support on RP2350:
- * - Bus 0: I2C0 peripheral at 0x40090000 on GP4 (SDA) and GP5 (SCL)
- * - Bus 1: I2C1 peripheral at 0x40098000 on GP6 (SDA) and GP7 (SCL)
+/* Two I2C buses on RP2350.
  *
- * If CONFIG_ENABLE_TM1638 is defined (rp2350-chess), GP6/GP7 are reserved
- * for the TM1638 display/keypad, so I2C1 is disabled on that persona. */
-#if defined(CONFIG_ENABLE_TM1638) && CONFIG_ENABLE_TM1638
-#define RP2350_I2C1_AVAILABLE 0
-#else
-#define RP2350_I2C1_AVAILABLE 1
-#endif
-
+ * Bus 0 is the board's own bus, where the board file puts it
+ * (CONFIG_I2C_RTC_BASE/SDA/SCL -- names historical): I2C0 on GP4/GP5 on most
+ * personas, but I2C1 on GP6/GP7 on rp2350-clock (the Pico-Clock-Green's
+ * DS3231) and rp2350-terminal. The RTC and the EEPROM sit on it and only
+ * ever use bus 0, so it must stay wherever the board file says.
+ *
+ * Bus 1 is I2C1 on GP6/GP7, and exists only where those pins are free: bus 0
+ * must be I2C0 (otherwise I2C1 already *is* bus 0), and the TM1638 must not
+ * have GP6/GP7 (rp2350-chess). Everywhere else there is one bus. */
 #define I2C0_BASE              0x40090000UL
 #define I2C1_BASE              0x40098000UL
+
+#define I2C_BUS0_BASE          ((uintptr_t)CONFIG_I2C_RTC_BASE)
+#define I2C_BUS0_SDA           CONFIG_I2C_RTC_SDA_GPIO
+#define I2C_BUS0_SCL           CONFIG_I2C_RTC_SCL_GPIO
+#if CONFIG_I2C_RTC_BASE == 0x40098000UL
+#define I2C_BUS0_RESET_BIT     (1u << 5) // RESETS_RESET_I2C1
+#define I2C_BUS0_ACCESSCTRL    (ACCESSCTRL_BASE + 0x88) // ACCESSCTRL_I2C1
+#else
+#define I2C_BUS0_RESET_BIT     (1u << 4) // RESETS_RESET_I2C0
+#define I2C_BUS0_ACCESSCTRL    (ACCESSCTRL_BASE + 0x84) // ACCESSCTRL_I2C0
+#endif
+
+#if CONFIG_I2C_RTC_BASE == 0x40090000UL && !(defined(CONFIG_ENABLE_TM1638) && CONFIG_ENABLE_TM1638)
+#define RP2350_I2C1_AVAILABLE  1
+#define I2C_BUS1_BASE          I2C1_BASE
+#define I2C_BUS1_SDA           6
+#define I2C_BUS1_SCL           7
+#define I2C_BUS1_RESET_BIT     (1u << 5) // RESETS_RESET_I2C1
+#define I2C_BUS1_ACCESSCTRL    (ACCESSCTRL_BASE + 0x88) // ACCESSCTRL_I2C1
+#else
+#define RP2350_I2C1_AVAILABLE  0
+#define I2C_BUS1_BASE          I2C_BUS0_BASE
+#endif
 
 #define RESETS_BASE            0x40020000UL
 #define RESETS_RESET           (RESETS_BASE + 0x0000)
@@ -41,8 +63,6 @@
 #define RESETS_RESET_DONE      (RESETS_BASE + 0x0008)
 
 #define ACCESSCTRL_BASE        0x40060000UL
-#define ACCESSCTRL_I2C0        (ACCESSCTRL_BASE + 0x84)
-#define ACCESSCTRL_I2C1        (ACCESSCTRL_BASE + 0x88)
 #define ACCESSCTRL_I2C_NSP     (1u << 1)
 #define ACCESSCTRL_I2C_NSU     (1u << 0)
 #define ACCESSCTRL_WRITE_PASSWORD 0xacce0000UL
@@ -97,7 +117,7 @@
 #define REG(addr) (*(volatile uint32_t *)(addr))
 
 static inline uintptr_t rp2350_i2c_base(uint8_t bus) {
-    return (bus == 1) ? I2C1_BASE : I2C0_BASE;
+    return (bus == 1) ? I2C_BUS1_BASE : I2C_BUS0_BASE;
 }
 
 static void rp2350_i2c_init_controller(uintptr_t base) {
@@ -127,47 +147,44 @@ static void rp2350_i2c_init_controller(uintptr_t base) {
 }
 
 void i2c_bus_init(void) {
-    /* 1. Assert and clear resets for I2C0 (bit 4) and I2C1 (bit 5) */
-    uint32_t rst_mask = (1u << 4);
+    /* 1. Assert and clear the controllers' resets */
+    uint32_t rst_mask = I2C_BUS0_RESET_BIT;
 #if RP2350_I2C1_AVAILABLE
-    rst_mask |= (1u << 5);
+    rst_mask |= I2C_BUS1_RESET_BIT;
 #endif
     REG(RESETS_RESET_SET) = rst_mask;
     for (volatile int i = 0; i < 1000; i++);
     REG(RESETS_RESET_CLR) = rst_mask;
     int timeout = 10000;
-    while (!(REG(RESETS_RESET_DONE) & (1u << 4)) && --timeout > 0);
+    while ((REG(RESETS_RESET_DONE) & rst_mask) != rst_mask && --timeout > 0);
+
+    /* M5 Phase 3: the controllers need to be Non-secure-accessible for the
+     * U-mode task's serve loop to touch them -- from M-mode, before the task
+     * exists. Every ACCESSCTRL register except GPIO_NSMASK0/1 needs 0xacce
+     * in the write's upper 16 bits, or the write bus-faults. */
+    REG(I2C_BUS0_ACCESSCTRL) = ACCESSCTRL_WRITE_PASSWORD | REG(I2C_BUS0_ACCESSCTRL)
+                             | ACCESSCTRL_I2C_NSP | ACCESSCTRL_I2C_NSU;
 #if RP2350_I2C1_AVAILABLE
-    timeout = 10000;
-    while (!(REG(RESETS_RESET_DONE) & (1u << 5)) && --timeout > 0);
+    REG(I2C_BUS1_ACCESSCTRL) = ACCESSCTRL_WRITE_PASSWORD | REG(I2C_BUS1_ACCESSCTRL)
+                             | ACCESSCTRL_I2C_NSP | ACCESSCTRL_I2C_NSU;
 #endif
 
-    /* M5 Phase 3: ACCESSCTRL for Non-secure / U-mode */
-    REG(ACCESSCTRL_I2C0) = ACCESSCTRL_WRITE_PASSWORD | REG(ACCESSCTRL_I2C0)
-                         | ACCESSCTRL_I2C_NSP | ACCESSCTRL_I2C_NSU;
+    /* 2. Pins as Function 3 (I2C); pull-ups, input enable, Schmitt (0x5A) */
+    REG(IO_BANK0_CTRL(I2C_BUS0_SDA)) = 3;
+    REG(IO_BANK0_CTRL(I2C_BUS0_SCL)) = 3;
+    REG(PADS_BANK0_PAD(I2C_BUS0_SDA)) = 0x5A;
+    REG(PADS_BANK0_PAD(I2C_BUS0_SCL)) = 0x5A;
 #if RP2350_I2C1_AVAILABLE
-    REG(ACCESSCTRL_I2C1) = ACCESSCTRL_WRITE_PASSWORD | REG(ACCESSCTRL_I2C1)
-                         | ACCESSCTRL_I2C_NSP | ACCESSCTRL_I2C_NSU;
+    REG(IO_BANK0_CTRL(I2C_BUS1_SDA)) = 3;
+    REG(IO_BANK0_CTRL(I2C_BUS1_SCL)) = 3;
+    REG(PADS_BANK0_PAD(I2C_BUS1_SDA)) = 0x5A;
+    REG(PADS_BANK0_PAD(I2C_BUS1_SCL)) = 0x5A;
 #endif
 
-    /* 2. Configure Bus 0: GP4 (SDA) & GP5 (SCL) as Function 3 (I2C) with pull-ups */
-    REG(IO_BANK0_CTRL(4)) = 3;
-    REG(IO_BANK0_CTRL(5)) = 3;
-    REG(PADS_BANK0_PAD(4)) = 0x5A;
-    REG(PADS_BANK0_PAD(5)) = 0x5A;
-
+    /* 3. Timing & master mode */
+    rp2350_i2c_init_controller(I2C_BUS0_BASE);
 #if RP2350_I2C1_AVAILABLE
-    /* Configure Bus 1: GP6 (SDA) & GP7 (SCL) as Function 3 (I2C) with pull-ups */
-    REG(IO_BANK0_CTRL(6)) = 3;
-    REG(IO_BANK0_CTRL(7)) = 3;
-    REG(PADS_BANK0_PAD(6)) = 0x5A;
-    REG(PADS_BANK0_PAD(7)) = 0x5A;
-#endif
-
-    /* 3. Configure timing & master mode on controllers */
-    rp2350_i2c_init_controller(I2C0_BASE);
-#if RP2350_I2C1_AVAILABLE
-    rp2350_i2c_init_controller(I2C1_BASE);
+    rp2350_i2c_init_controller(I2C_BUS1_BASE);
 #endif
 }
 
@@ -957,8 +974,12 @@ void i2c_scan_bus_id(uint8_t bus) {
         return;
     }
 #if defined(CONFIG_BOARD_RP2350)
-    int sda = (bus == 1) ? 6 : 4;
-    int scl = (bus == 1) ? 7 : 5;
+#if RP2350_I2C1_AVAILABLE
+    int sda = (bus == 1) ? I2C_BUS1_SDA : I2C_BUS0_SDA;
+    int scl = (bus == 1) ? I2C_BUS1_SCL : I2C_BUS0_SCL;
+#else
+    int sda = I2C_BUS0_SDA, scl = I2C_BUS0_SCL;
+#endif
     if (bus == 0) {
         cprintf("\nI2C Bus Scan (GP%d SDA / GP%d SCL):\n", sda, scl);
     } else {
@@ -1271,7 +1292,7 @@ I2C_UATTR static void i2c_umode_body(void) {
         uint32_t resp_len = 0;
         switch (op) {
         case I2C_OP_XFER: {
-            uintptr_t base = I2C0_BASE;
+            uintptr_t base = I2C_BUS0_BASE;
             bool ok = false;
             uint32_t rlen = 0;
             if (req_len >= 4) {
@@ -1301,8 +1322,9 @@ I2C_UATTR static void i2c_umode_body(void) {
                 uint8_t addr = req[2];
                 uint32_t wlen = req[3];
                 rlen = req[4];
-                uintptr_t base = (bus == 1) ? I2C1_BASE : I2C0_BASE;
-                if (wlen <= I2C_XFER_WMAX && rlen <= I2C_XFER_RMAX &&
+                uintptr_t base = (bus == 1) ? I2C_BUS1_BASE : I2C_BUS0_BASE;
+                if (bus < 1u + RP2350_I2C1_AVAILABLE &&
+                    wlen <= I2C_XFER_WMAX && rlen <= I2C_XFER_RMAX &&
                     (long)(5u + wlen) <= req_len) {
                     if (rlen) {
                         ok = i2c_usys_read_reg(base, addr, &req[5], (int)wlen,
@@ -1348,9 +1370,9 @@ static void i2c_task_body(void *arg) {
         .stack_base   = (uintptr_t)g_i2c_ustack,
         .stack_size   = sizeof(g_i2c_ustack),
         .regions      = {
-            { I2C0_BASE, 4096, MEM_R | MEM_W },
+            { I2C_BUS0_BASE, 4096, MEM_R | MEM_W },
 #if RP2350_I2C1_AVAILABLE
-            { I2C1_BASE, 4096, MEM_R | MEM_W },
+            { I2C_BUS1_BASE, 4096, MEM_R | MEM_W },
 #endif
         },
 #if RP2350_I2C1_AVAILABLE

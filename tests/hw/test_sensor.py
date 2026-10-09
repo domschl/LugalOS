@@ -179,9 +179,17 @@ def main() -> int:
             m = re.search(r"=>\s+(\d+)", out)
             assert m and int(m.group(1)) > 0, "Failed to read humidity from hdc1080"
 
-        out = run_cmd(ser, "(sensor-read 'ccs811 'eco2)", 0.5)
+        # A CCS811 that was just (re)started has no result at the hub's first
+        # sample -- the driver keeps no value rather than a 0 -- so its first
+        # eCO2 can take one sampler period (60 s) to appear.
+        deadline = time.time() + 75.0
+        while True:
+            out = run_cmd(ser, "(sensor-read 'ccs811 'eco2)", 0.5)
+            m = re.search(r"=>\s+(\d+)", out)
+            if (m and int(m.group(1)) >= 400) or time.time() > deadline:
+                break
+            time.sleep(5.0)
         print(f"(sensor-read 'ccs811 'eco2) -> {out.strip()}")
-        m = re.search(r"=>\s+(\d+)", out)
         assert m and int(m.group(1)) >= 400, "Failed to read eCO2 from ccs811"
 
         out = run_cmd(ser, "(sensor-read 'sgp30 'eco2)", 0.5)

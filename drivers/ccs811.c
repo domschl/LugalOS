@@ -182,6 +182,18 @@ bool ccs811_read(ccs811_reading_t *out) {
         return fail("status error");
     }
 
+    /* Until the first conversions complete after APP_START or a reset, the
+     * result registers hold 0/0 -- with DATA_READY clear, and seen on the
+     * first boards for a sample or two with it set. eCO2 is clipped to
+     * 400..8192 ppm (datasheet, "eCO2"), so 0 is never a measurement. Caching
+     * it would publish 0 ppm eCO2 as a reading (and as the fused CO2
+     * fallback), so such a read keeps the previous sample instead. */
+    if (!(status & STATUS_DATA_READY) || eco2 == 0) {
+        if (!g.have_last) return false;
+        *out = g.last;
+        return true;
+    }
+
     out->eco2_ppm = eco2;
     out->tvoc_ppb = tvoc;
     out->status = status;
