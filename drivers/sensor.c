@@ -27,6 +27,15 @@ const sensor_chan_desc_t *sensor_chan_desc(sensor_chan_t chan) {
     return &s_descriptors[chan];
 }
 
+const char *sensor_tier_name(sensor_tier_t tier) {
+    switch (tier) {
+    case SENSOR_TIER_HW:       return "hw";
+    case SENSOR_TIER_INFERRED: return "inferred";
+    case SENSOR_TIER_FUSED:    return "fused";
+    default:                   return "unknown";
+    }
+}
+
 const char *sensor_chan_name(sensor_chan_t chan) {
     if (chan >= SENSOR_CHAN_MAX) return "unknown";
     return s_descriptors[chan].name;

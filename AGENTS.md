@@ -55,7 +55,12 @@ Reference documentation and vendor SDKs are located in `~/gith/` or `~/Source/gi
     * BME280: `bst-bme280-ds002.pdf`
     * BME680: `bst-bme680-ds001.pdf`
     * CCS811: `CCS811_Datasheet-DS000459.pdf`
+    * HDC1080: `hdc1080.pdf`
+    * MCP9808: `MCP9808.pdf`
+    * MH-Z19B: `mh-z19b-co2-ver1_0.pdf`
+    * MiCS-6814: `MiCS-6814_Datasheet.pdf` & `'Multichannel gas sensor 1.0.pdf'`
     * SGP30: `Sensirion_Gas_Sensors_Datasheet_SGP30.pdf`
+    * TMP117: `tmp117.pdf`
     * TSL2561: `TSL2561.pdf`
     * TSL2591: `TSL25911_Datasheet_EN_v1.pdf`
 

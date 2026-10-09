@@ -16,6 +16,7 @@
 static struct {
     bool              detected;
     uint8_t           addr;
+    uint8_t           bus;
     hdc1080_reading_t last;
     uint64_t          last_ms;
     bool              have_last;
@@ -84,32 +85,24 @@ bool hdc1080_init(void) {
     g.detected = false;
     g.addr = HDC1080_I2C_ADDR;
 
-    uint16_t manuf_id = 0;
-    if (!i2c_reg_read_u16_be(g.addr, HDC1080_REG_MANUF_ID, &manuf_id)) {
-        return false;
-    }
-    if (manuf_id != HDC1080_MANUFACTURER_ID) {
-        return false;
-    }
+    for (uint8_t b = 0; b < i2c_bus_count(); b++) {
+        uint16_t manuf_id = 0, dev_id = 0;
+        if (!i2c_reg_read_u16_be_bus(b, g.addr, HDC1080_REG_MANUF_ID, &manuf_id)) continue;
+        if (manuf_id != HDC1080_MANUFACTURER_ID) continue;
+        if (!i2c_reg_read_u16_be_bus(b, g.addr, HDC1080_REG_DEV_ID, &dev_id)) continue;
+        if (dev_id != HDC1080_DEVICE_ID) continue;
 
-    uint16_t dev_id = 0;
-    if (!i2c_reg_read_u16_be(g.addr, HDC1080_REG_DEV_ID, &dev_id)) {
-        return false;
-    }
-    if (dev_id != HDC1080_DEVICE_ID) {
-        return false;
-    }
+        /* Configure device for sequential Temp + Humidity measurement, 14-bit resolution */
+        uint16_t config = HDC1080_CONFIG_MODE_BOTH | HDC1080_CONFIG_TRES_14 | HDC1080_CONFIG_HRES_14;
+        if (!i2c_reg_write_u16_be_bus(b, g.addr, HDC1080_REG_CONFIG, config)) continue;
 
-    /* Configure device for sequential Temp + Humidity measurement, 14-bit resolution */
-    uint16_t config = HDC1080_CONFIG_MODE_BOTH | HDC1080_CONFIG_TRES_14 | HDC1080_CONFIG_HRES_14;
-    if (!i2c_reg_write_u16_be(g.addr, HDC1080_REG_CONFIG, config)) {
-        return false;
+        g.bus = b;
+        g.detected = true;
+        printk("[HDC1080] HDC1080 temperature & humidity sensor detected at bus %u 0x%02x (TI ID: 0x%04x).\n",
+               b, g.addr, manuf_id);
+        return true;
     }
-
-    g.detected = true;
-    printk("[HDC1080] HDC1080 temperature & humidity sensor detected at 0x%02x (TI ID: 0x%04x).\n",
-           g.addr, manuf_id);
-    return true;
+    return false;
 }
 
 bool hdc1080_read(hdc1080_reading_t *out) {
@@ -117,7 +110,7 @@ bool hdc1080_read(hdc1080_reading_t *out) {
 
     /* 1. Trigger measurement by writing pointer 0x00 (Temperature register) */
     uint8_t ptr = HDC1080_REG_TEMP;
-    if (!i2c_xfer(g.addr, &ptr, 1, NULL, 0)) {
+    if (!i2c_xfer_bus(g.bus, g.addr, &ptr, 1, NULL, 0)) {
         return fail("trigger conversion");
     }
 
@@ -127,7 +120,7 @@ bool hdc1080_read(hdc1080_reading_t *out) {
 
     /* 3. Read 4 bytes: 2 bytes Temp, 2 bytes Humidity */
     uint8_t buf[4];
-    if (!i2c_xfer(g.addr, NULL, 0, buf, 4)) {
+    if (!i2c_xfer_bus(g.bus, g.addr, NULL, 0, buf, 4)) {
         return fail("read measurement data");
     }
 
@@ -190,8 +183,10 @@ uint32_t hdc1080_selftest(bool report) {
 /* --- Environmental Sensor Device-Class Integration (Category D, Phase 46) --- */
 
 static bool hdc1080_dev_init(sensor_dev_t *dev) {
-    (void)dev;
-    return hdc1080_init();
+    if (!hdc1080_init()) return false;
+    dev->bus = g.bus;
+    dev->addr = g.addr;
+    return true;
 }
 
 static bool hdc1080_dev_sample(sensor_dev_t *dev) {

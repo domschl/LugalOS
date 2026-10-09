@@ -6129,8 +6129,69 @@ static lisp_val_t *prim_sensor_list(lisp_val_t *args, lisp_val_t *env) {
     return res;
 }
 
-/* `(sensor-read [chan | dev] [chan | age | filtered])` -- Milestone 46.9:
- * Reads cached sensor metrics without bus blocking. */
+static lisp_val_t *make_dev_chan_alist(const sensor_dev_t *dev) {
+    static const char *const names[SENSOR_CHAN_MAX] = {
+        "temp", "pressure", "humidity", "lux", "eco2", "tvoc", "gas-res",
+        "co", "no2", "nh3", "co2", "pressure-msl", "abs-humidity", "dew-point", "iaq"
+    };
+    lisp_val_t *alist = &nil_val;
+    for (int ch = SENSOR_CHAN_MAX - 1; ch >= 0; ch--) {
+        if (!(dev->chan_mask & (1u << ch))) continue;
+        int32_t val = 0;
+        if (sensor_hub_get_dev(dev, (sensor_chan_t)ch, &val, NULL)) {
+            alist = make_pair(make_pair(make_sym(names[ch]), make_int((long)val)), alist);
+        }
+    }
+    return alist;
+}
+
+static lisp_val_t *make_hw_tree(uint32_t count) {
+    lisp_val_t *hw_list = &nil_val;
+    for (int i = (int)count - 1; i >= 0; i--) {
+        sensor_dev_t *dev = sensor_hub_device_get((uint32_t)i);
+        if (!dev) continue;
+        lisp_val_t *dev_alist = make_dev_chan_alist(dev);
+        hw_list = make_pair(make_pair(make_sym(dev->name), dev_alist), hw_list);
+    }
+    return hw_list;
+}
+
+static lisp_val_t *make_inferred_alist(void) {
+    static const sensor_chan_t inf_chans[] = {
+        SENSOR_CHAN_IAQ, SENSOR_CHAN_DEW_POINT, SENSOR_CHAN_AH, SENSOR_CHAN_PRESSURE_MSL
+    };
+    static const char *const inf_names[] = {
+        "iaq", "dew-point", "abs-humidity", "pressure-msl"
+    };
+    lisp_val_t *alist = &nil_val;
+    for (size_t i = 0; i < sizeof(inf_chans)/sizeof(inf_chans[0]); i++) {
+        int32_t val = 0;
+        if (sensor_hub_get(inf_chans[i], &val, NULL)) {
+            alist = make_pair(make_pair(make_sym(inf_names[i]), make_int((long)val)), alist);
+        }
+    }
+    return alist;
+}
+
+static lisp_val_t *make_fused_alist(void) {
+    static const char *const names[SENSOR_CHAN_MAX] = {
+        "temp", "pressure", "humidity", "lux", "eco2", "tvoc", "gas-res",
+        "co", "no2", "nh3", "co2", "pressure-msl", "abs-humidity", "dew-point", "iaq"
+    };
+    lisp_val_t *alist = &nil_val;
+    for (int ch = SENSOR_CHAN_MAX - 1; ch >= 0; ch--) {
+        if (ch == SENSOR_CHAN_PRESSURE_MSL || ch == SENSOR_CHAN_AH ||
+            ch == SENSOR_CHAN_DEW_POINT || ch == SENSOR_CHAN_IAQ) continue;
+        int32_t val = 0;
+        if (sensor_hub_get((sensor_chan_t)ch, &val, NULL)) {
+            alist = make_pair(make_pair(make_sym(names[ch]), make_int((long)val)), alist);
+        }
+    }
+    return alist;
+}
+
+/* `(sensor-read [chan | dev | 'hw | 'inferred | 'fused] [chan | age | filtered])` -- Milestone 46.9 & 46.18:
+ * Reads cached sensor metrics in a hierarchical tiered layout without bus blocking. */
 static lisp_val_t *prim_sensor_read(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     uint32_t count = sensor_hub_device_count();
@@ -6155,25 +6216,23 @@ static lisp_val_t *prim_sensor_read(lisp_val_t *args, lisp_val_t *env) {
 
     int nargs = lisp_list_len(args);
     if (nargs == 0) {
-        /* Return alist of all valid channels: ((temp . 2611) (pressure . 95866) ...) */
-        static const char *const chan_names[SENSOR_CHAN_MAX] = {
-            "temp", "pressure", "humidity", "lux", "eco2", "tvoc", "gas-res",
-            "co", "no2", "nh3", "co2", "pressure-msl", "abs-humidity", "dew-point", "iaq"
-        };
-        lisp_val_t *alist = &nil_val;
-        for (int ch = SENSOR_CHAN_MAX - 1; ch >= 0; ch--) {
-            int32_t val = 0;
-            if (sensor_hub_get((sensor_chan_t)ch, &val, NULL)) {
-                lisp_val_t *cell = make_pair(make_sym(chan_names[ch]), make_int((long)val));
-                alist = make_pair(cell, alist);
-            }
-        }
-        return alist;
+        /* Return tiered hierarchical tree: ((hw ...) (inferred ...) (fused ...)) */
+        lisp_val_t *hw = make_pair(make_sym("hw"), make_hw_tree(count));
+        lisp_val_t *inferred = make_pair(make_sym("inferred"), make_inferred_alist());
+        lisp_val_t *fused = make_pair(make_sym("fused"), make_fused_alist());
+        return make_pair(hw, make_pair(inferred, make_pair(fused, &nil_val)));
     }
 
     lisp_val_t *arg0 = lisp_list_ref(args, 0);
     const char *s0 = lisp_val_str(arg0);
     if (!s0) return &false_val;
+
+    /* Tier-specific inspection */
+    if (nargs == 1) {
+        if (strcmp(s0, "hw") == 0) return make_hw_tree(count);
+        if (strcmp(s0, "inferred") == 0) return make_inferred_alist();
+        if (strcmp(s0, "fused") == 0) return make_fused_alist();
+    }
 
     /* Check if arg0 is a sensor device name */
     sensor_dev_t *target_dev = NULL;
@@ -6186,7 +6245,9 @@ static lisp_val_t *prim_sensor_read(lisp_val_t *args, lisp_val_t *env) {
     }
 
     if (target_dev) {
-        if (nargs < 2) return &false_val;
+        if (nargs == 1) {
+            return make_dev_chan_alist(target_dev);
+        }
         const char *s1 = lisp_val_str(lisp_list_ref(args, 1));
         int ch = parse_sensor_chan(s1);
         if (ch < 0) return &false_val;
@@ -6230,6 +6291,33 @@ static lisp_val_t *prim_sensor_read(lisp_val_t *args, lisp_val_t *env) {
         return &false_val;
     }
     return make_int((long)val);
+}
+
+/* `(sensor-origin chan)` -- Milestone 46.18:
+ * Returns origin, provenance tier, and mathematical model for a given channel. */
+static lisp_val_t *prim_sensor_origin(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (lisp_list_len(args) < 1) return &false_val;
+    const char *name = lisp_val_str(lisp_list_ref(args, 0));
+    if (!name) return &false_val;
+    int ch = parse_sensor_chan(name);
+    if (ch < 0) return &false_val;
+
+    sensor_origin_t orig;
+    if (!sensor_hub_get_origin((sensor_chan_t)ch, &orig)) return &false_val;
+
+    lisp_val_t *alist = &nil_val;
+    if (orig.desc) {
+        alist = make_pair(make_pair(make_sym("desc"), make_str(orig.desc)), alist);
+    }
+    if (orig.model_name) {
+        alist = make_pair(make_pair(make_sym("model"), make_sym(orig.model_name)), alist);
+    }
+    if (orig.source_dev) {
+        alist = make_pair(make_pair(make_sym("source"), make_sym(orig.source_dev)), alist);
+    }
+    alist = make_pair(make_pair(make_sym("tier"), make_sym(sensor_tier_name(orig.tier))), alist);
+    return alist;
 }
 
 static lisp_val_t *prim_help(lisp_val_t *args, lisp_val_t *env);

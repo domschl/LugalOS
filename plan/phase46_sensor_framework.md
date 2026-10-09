@@ -14,7 +14,7 @@ LugalOS's core driver design rule ([`drivers/README.md`](file:///home/dsc/Source
 
 Until now, LugalOS supported exactly one environmental sensor: the BMP280 / BME280 ([`drivers/bme280.c`](file:///home/dsc/Source/gith/domschl/lugalos/drivers/bme280.c)). That driver was deliberately kept ad-hoc: it managed its own I2C transactions, maintained its own internal cache, launched its own sampler task, directly fed `/proc/sensors` in [`fs/vfs_server.c`](file:///home/dsc/Source/gith/domschl/lugalos/fs/vfs_server.c#L1290), and was hard-wired into the shell's `sensor` command ([`kernel/shell.c`](file:///home/dsc/Source/gith/domschl/lugalos/kernel/shell.c#L1260)) and the MQTT daemon ([`net/include/net/mqttd.h`](file:///home/dsc/Source/gith/domschl/lugalos/net/include/net/mqttd.h)).
 
-We now expand the environmental measurement suite to eight sensors:
+We now expand the environmental measurement suite to eleven sensors:
 1. **BME280** (Baseline: Temperature, Pressure, Humidity)
 2. **BME680** (Temperature, Pressure, Humidity, MOX Gas Resistance — **strictly without proprietary binary blobs**)
 3. **TSL2561** (Dual-channel Ambient Light / Lux)
@@ -23,20 +23,26 @@ We now expand the environmental measurement suite to eight sensors:
 6. **SGP30** (Multi-pixel Gas Sensor: eCO2, TVOC, raw signals)
 7. **MiCS-6814** (Grove Multichannel Gas Sensor v1.0: CO, NO2, NH3 via I2C at 0x04)
 8. **MH-Z19B** (NDIR Infrared True CO2 & chamber temperature via UART1 at 9600 baud)
+9. **HDC1080** (High-accuracy digital humidity and temperature sensor via I2C at 0x40)
+10. **MCP9808** (Microchip $\pm 0.25^\circ\text{C}$ precision digital temperature sensor via I2C at 0x18–0x1F)
+11. **TMP117** (TI $\pm 0.1^\circ\text{C}$ NIST-traceable precision digital temperature sensor via I2C at 0x48–0x4B)
 
-Going from 1 sensor to 8 sensors crosses the threshold from a single driver to a formal **Category D (Device-class contract)**. Doing so without a structured framework would replicate register-pumping loops, sampling tasks, staleness timers, EMA filters, and `/proc` formats eight times across the codebase.
+Going from 1 sensor to 11 sensors crosses the threshold from a single driver to a formal **Category D (Device-class contract)**. Doing so without a structured framework would replicate register-pumping loops, sampling tasks, staleness timers, EMA filters, and `/proc` formats eleven times across the codebase.
 
 ### Official Datasheets Reference
-Component datasheets for all eight parts are stored in the host repository tree under:
+Component datasheets for all parts are stored in the host repository tree under:
 `~/gith/sensors/` or `~/Source/gith/sensors/`
 * BME280: `bst-bme280-ds002.pdf`
 * BME680: `bst-bme680-ds001.pdf`
 * CCS811: `CCS811_Datasheet-DS000459.pdf`
+* HDC1080: `hdc1080.pdf`
+* MCP9808: `MCP9808.pdf`
+* MH-Z19B: `mh-z19b-co2-ver1_0.pdf`
+* MiCS-6814: `MiCS-6814_Datasheet.pdf` and `'Multichannel gas sensor 1.0.pdf'`
 * SGP30: `Sensirion_Gas_Sensors_Datasheet_SGP30.pdf`
+* TMP117: `tmp117.pdf`
 * TSL2561: `TSL2561.pdf`
 * TSL2591: `TSL25911_Datasheet_EN_v1.pdf`
-* MiCS-6814: `MiCS-6814_Datasheet.pdf` and `'Multichannel gas sensor 1.0.pdf'`
-* MH-Z19B: `mh-z19b-co2-ver1_0.pdf`
 
 
 ---
@@ -638,3 +644,131 @@ To address this, LugalOS implements a **dual-tier storage model** utilizing the 
    - Lisp:
      - `(sensor-cal)` — returns an alist of active baselines and persistent flags (`saved?`, `eeprom-saved?`, `fresh-air?`).
      - `(sensor-cal 'save-eeprom)` / `(sensor-cal 'restore-eeprom)` / `(sensor-cal 'clear-eeprom)`.
+
+### 7.7 Hierarchical Multi-Sensor State Presentation (Milestone 46.18)
+
+When multiple environmental sensors are deployed simultaneously (e.g. BME680 + HDC1080 for temperature/humidity, MH-Z19B + CCS811 + SGP30 for carbon dioxide, TSL2561/TSL2591 for ambient light), flat metric presentation introduces ambiguity regarding value origin, calibration source, and physical vs inferred transducers.
+
+Milestone 46.18 implements an explicit three-tier presentation hierarchy across all subsystem interfaces:
+1. **Tier 1: Direct Physical Hardware (`hw`)** — Raw transducer measurements tied to a specific silicon device address.
+2. **Tier 2: Inferred Mathematical Models (`inferred`)** — Values synthesized through deterministic physics formulas (Magnus dew point, August-Roche-Magnus absolute humidity, hypsometric MSL barometric pressure, BME680 IAQ heuristic).
+3. **Tier 3: Fused Consensus & Arbitration (`fused`)** — Top-level system arbitration prioritizing optical ground truth (e.g. MH-Z19B NDIR over MOX eCO2) and primary environmental sensors.
+
+#### 1. MQTT Hierarchical Topics
+Topics published under `lugalos/<node>/` now explicitly identify their origin:
+* **Hardware Devices**: `lugalos/<node>/sensor/<device>/<metric>`
+  * `sensor/bme680/temperature`, `sensor/bme680/pressure`, `sensor/bme680/humidity`, `sensor/bme680/gas_resistance`
+  * `sensor/hdc1080/temperature`, `sensor/hdc1080/humidity`
+  * `sensor/ccs811/eco2`, `sensor/ccs811/tvoc`
+  * `sensor/sgp30/eco2`, `sensor/sgp30/tvoc`
+  * `sensor/mhz19b/co2`
+  * `sensor/mics6814/co`, `sensor/mics6814/no2`, `sensor/mics6814/nh3`
+  * `sensor/tsl2591/lux`, `sensor/tsl2561/lux`
+* **Inferred Models**: `lugalos/<node>/sensor/inferred/<metric>`
+  * `sensor/inferred/pressure_msl`
+  * `sensor/inferred/abs_humidity`
+  * `sensor/inferred/dew_point`
+  * `sensor/inferred/iaq`
+* **Fused Consensus**: `lugalos/<node>/sensor/fused/<metric>`
+  * `sensor/fused/co2` (MH-Z19B optical NDIR priority, MOX eCO2 fallback)
+  * `sensor/fused/temperature`, `sensor/fused/humidity`, `sensor/fused/pressure`
+  * `sensor/fused/eco2`, `sensor/fused/tvoc`, `sensor/fused/lux`
+
+#### 2. Lisp Dialect Hierarchy & Provenance Inspection
+* `(sensor-read)` (0 args):
+  Returns a structured 3-tier nested tree:
+  ```lisp
+  ((hw (bme680 (temp . 2450) (pressure . 95800) (humidity . 4520) (gas-res . 34000))
+       (hdc1080 (temp . 2410) (humidity . 4600))
+       (ccs811 (eco2 . 450) (tvoc . 15))
+       (mics6814 (co . 120) (no2 . 15) (nh3 . 30))
+       (mhz19b (co2 . 420)))
+   (inferred (pressure-msl . 101325)
+             (dew-point . 1230)
+             (abs-humidity . 980)
+             (iaq . 55))
+   (fused (co2 . 420)
+          (temp . 2450)
+          (pressure . 95800)
+          (humidity . 4520)
+          (eco2 . 450)
+          (tvoc . 15)))
+  ```
+* Tier Subtree Queries:
+  * `(sensor-read 'hw)` — returns the hardware device tree.
+  * `(sensor-read 'inferred)` — returns the derived metrics alist.
+  * `(sensor-read 'fused)` — returns the arbitrated consensus alist.
+* Device Queries:
+  * `(sensor-read '<dev>)` — returns all channels for that specific device (e.g. `(sensor-read 'hdc1080)` => `((temp . 2410) (humidity . 4600))`).
+  * `(sensor-read '<dev> '<chan> ['age])` — returns the numeric value (or sample age) from that device.
+* Channel Provenance Inspection:
+  * `(sensor-origin '<chan>)` — returns metadata describing origin tier, source device, mathematical model, and physical principle:
+    ```lisp
+    (sensor-origin 'co2)
+    ;; => ((tier . fused) (source . mhz19b) (model . ndir-optical) (desc . "NDIR infrared optical absorption"))
+
+    (sensor-origin 'dew-point)
+    ;; => ((tier . inferred) (source . bme680) (model . magnus-tetens) (desc . "dew point temperature"))
+
+    (sensor-origin 'temp)
+    ;; => ((tier . fused) (source . bme680) (model . hardware-transducer) (desc . "bme680"))
+    ```
+
+#### 3. VFS `/proc` Subdirectory Hierarchy
+* `/proc/sensors`: Maintained as a 100% backward-compatible composite flat key=value file, preventing any breakage of legacy consumers, remote 9P gateways, or `cat /proc/sensors` parsers.
+* `/proc/sensor/` virtual directory:
+  * Listed in `ls /proc` as `<DIR>`.
+  * `ls /proc/sensor` lists `fused`, `inferred`, and all actively detected device names (`bme680`, `hdc1080`, `ccs811`, `mics6814`, `mhz19b`, etc.).
+  * `/proc/sensor/fused`: Contains the current arbitrated readings (`co2_ppm`, `temperature_c100`, `humidity_rh1000`, `pressure_pa`, etc.).
+  * `/proc/sensor/inferred`: Contains mathematical models (`pressure_msl_pa`, `altitude_m`, `dew_point_c100`, `abs_humidity_c100`, `iaq`, `mox_contaminated`, `fresh_air_verified`).
+  * `/proc/sensor/<device>`: Contains device-specific identity, address, sample period, validity, and raw transducer measurements.
+
+### 7.8 Dual I2C Controller Architecture & Address Collision Resolution (Milestone 46.19)
+
+As the environmental sensor bench grew beyond 8 sensors, two physical limitations emerged:
+1. **Address Collisions**: Certain sensors share immutable or conflicting factory I2C addresses (e.g. BME280 and BME680 both default to `0x76`; HDC1080 and other parts conflict at `0x40`).
+2. **Bus Capacitance & Wire Distance**: Running remote sensors away from heat-generating components over longer wiring harnesses increases capacitance and degrades signal integrity if all devices share a single bus.
+
+Milestone 46.19 implements dual-bus architecture on RP2350:
+1. **Hardware Blocks**:
+   * **Bus 0 (`I2C0`)**: Base `0x40090000`, fixed on **GP4** (SDA) / **GP5** (SCL), `FUNCSEL = 3`.
+   * **Bus 1 (`I2C1`)**: Base `0x40098000`, fixed on **GP6** (SDA) / **GP7** (SCL), `FUNCSEL = 3`.
+2. **Security & Microkernel Isolation**:
+   * Resets cleared for both controllers (bit 4 for I2C0, bit 5 for I2C1 in `RESETS`).
+   * Non-secure access permissions granted for both controllers via `ACCESSCTRL_I2C0` (`0x40060084`) and `ACCESSCTRL_I2C1` (`0x40060088`).
+   * Driver task memory domain configured with dual 4096-byte MMIO windows (`I2C0_BASE` and `I2C1_BASE`).
+3. **Seams & Register Helpers**:
+   * IPC wire protocol extended with `I2C_OP_XFER_BUS` (`'B'`).
+   * Register helpers generalized to multi-bus: `i2c_reg_*_bus(...)` and `i2c_cmd_*_bus(...)`.
+   * `struct sensor_dev` extended with `uint8_t bus;`.
+   * Both `drivers/bme280.c` and `drivers/bme680.c` probe across all available buses (`i2c_bus_count()`), allowing BME680 to run on Bus 0 at `0x76` while BME280 concurrently runs on Bus 1 at `0x76` without address collision.
+4. **Shell & Diagnostics**:
+   * `i2c scan [bus]` and `i2cdiag [bus] [addr] [reg]` in `kernel/shell.c`.
+   * Universal `peek` and `poke` commands enabled across all architectures for low-level register and GPIO debugging.
+
+### 7.9 Remote Precision Temperature Sensors & Thermal Self-Heating Isolation (Milestone 46.20)
+
+Temperature sensors placed near heat-generating electronics (microcontrollers, voltage regulators, and MOX gas sensors with integrated heating elements like BME680) exhibit substantial thermal offsets. Milestone 46.20 adds dedicated remote precision temperature sensors on Bus 1:
+
+1. **MCP9808 Driver (`drivers/mcp9808.c`, `drivers/include/drivers/mcp9808.h`)**:
+   * Microchip $\pm 0.25^\circ\text{C}$ typ / $\pm 0.5^\circ\text{C}$ max precision digital temperature sensor at addresses `0x18`–`0x1F`.
+   * Configured for maximum 12-bit resolution ($0.0625^\circ\text{C}$ / LSB, 250 ms conversion time).
+   * Exact integer fixed-point conversion without floats:
+     * Positive: `temp_c100 = (raw12 * 25 + 2) / 4`.
+     * Negative: `temp_c100 = - ((4096 - raw12) * 25 + 2) / 4`.
+   * Deterministic selftest vectors verified against golden reference values.
+2. **TMP117 Driver (`drivers/tmp117.c`, `drivers/include/drivers/tmp117.h`)**:
+   * Texas Instruments $\pm 0.1^\circ\text{C}$ NIST-traceable precision digital temperature sensor at addresses `0x48`–`0x4B` (active at `0x49` with ADD0 strapped to V+).
+   * 16-bit resolution ($0.0078125^\circ\text{C} = 1/128^\circ\text{C}$ / LSB).
+   * Configured for 8-sample continuous averaging mode; rejects power-up unready status (`0x8000`).
+   * Exact integer fixed-point conversion: `((raw * 25) ± 16) / 32`.
+   * Deterministic selftest vectors verified against golden reference values.
+3. **Thermal Isolation & Sensor Hub Arbitration**:
+   * Hub implements prioritized arbitration for `SENSOR_CHAN_TEMP`:
+     $$\text{tmp117 } (\pm 0.1^\circ\text{C}) \longrightarrow \text{mcp9808 } (\pm 0.25^\circ\text{C}) \longrightarrow \text{bme280} \longrightarrow \text{bme680} \longrightarrow \text{hdc1080}$$
+   * Live silicon measurements prove thermal isolation:
+     * **Remote Bus 1 Reference**: TMP117 (24.05 °C), MCP9808 (23.88 °C), BME280 (24.30 °C).
+     * **Onboard Bus 0**: BME680 (26.20 °C, $+2.1^\circ\text{C}$ self-heating from MOX plate), HDC1080 (29.78 °C, $+5.7^\circ\text{C}$ self-heating from MCU/board).
+4. **VFS & Lisp Interface**:
+   * `/proc/sensor/<dev>` outputs `bus=%u` to report physical bus provenance.
+   * `(sensor-read 'temp)` in Lisp selects `tmp117` (fused: 2405), while `(sensor-read '<dev> 'temp)` allows targeted reads of individual sensors.

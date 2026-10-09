@@ -769,6 +769,8 @@ set(SOURCES
     drivers/mics6814.c
     drivers/mhz19b.c
     drivers/hdc1080.c
+    drivers/mcp9808.c
+    drivers/tmp117.c
     drivers/sensor_hub.c
     fs/p9_chan.c
     libc/string.c

@@ -60,24 +60,31 @@
 #define I2C_XFER_WMAX 40u
 #define I2C_XFER_RMAX 64u
 
+#define I2C_BUS_MAX 2u
+
+/* Number of active/available I2C controllers on this board */
+uint8_t i2c_bus_count(void);
+
 /* Brings up the controller: clocks, reset, pads, master mode, timing.
  * Idempotent, and a no-op where there is no controller. Must run before any
  * device is probed. */
 void i2c_bus_init(void);
 
-/* One transfer: write `wlen` bytes, then read `rlen`; either half may be
- * empty. Routed through the owning task once it is running, and taken
- * straight to the hardware before that task exists -- which is what lets a
- * device driver be ordinary M-mode code that knows nothing about the task.
+/* One transfer on a specific I2C bus: write `wlen` bytes, then read `rlen`;
+ * either half may be empty. Routed through the owning task once it is
+ * running, or direct hardware access. */
+bool i2c_xfer_bus(uint8_t bus, uint8_t addr, const uint8_t *w, uint32_t wlen,
+                  uint8_t *r, uint32_t rlen);
+
+/* Backwards-compatible transfer on primary bus (bus 0).
  *
  * This is the whole device-facing surface of the bus. */
 bool i2c_xfer(uint8_t addr, const uint8_t *w, uint32_t wlen,
               uint8_t *r, uint32_t rlen);
 
-/* Prints which addresses answer. Diagnostic: it probes the controller
- * directly rather than going through the task, which is why its answers can
- * differ from a device's -- see tests/hw/README.md on what that split means
- * when it appears. */
+/* Prints which addresses answer on a specific bus or all active buses.
+ * Diagnostic: it probes the controller directly rather than going through the task. */
+void i2c_scan_bus_id(uint8_t bus);
 void i2c_scan_bus(void);
 
 /* The owning task. Must run after sched_init(); every device keeps working

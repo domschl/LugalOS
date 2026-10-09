@@ -41,6 +41,8 @@
 #include "drivers/mics6814.h"
 #include "drivers/mhz19b.h"
 #include "drivers/hdc1080.h"
+#include "drivers/mcp9808.h"
+#include "drivers/tmp117.h"
 #include "drivers/sensor_hub.h"
 #include "drivers/boardprobe.h"
 #include "drivers/clocks_rp2350.h"
@@ -1279,6 +1281,8 @@ static void cmd_sensor(const char *arg) {
         mics6814_selftest(true);
         mhz19b_selftest(true);
         hdc1080_selftest(true);
+        mcp9808_selftest(true);
+        tmp117_selftest(true);
         sensor_derived_selftest(true);
         return;
     }
@@ -3706,8 +3710,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
             cprintf("led: the pulse generator never finished a frame\n");
         }
         return;
+#endif
     } else if (strncmp(cmd_line, "peek ", 5) == 0 || strncmp(cmd_line, "poke ", 5) == 0) {
-        /* 45.6 bring-up aid, C6 only: `peek ADDR [COUNT]` reads words, `poke ADDR VALUE` writes one.
+        /* Bring-up aid: `peek ADDR [COUNT]` reads words, `poke ADDR VALUE` writes one.
          * Hex, no 0x needed. M-mode and unrestricted: a stray poke can hang the chip. */
         const char *q = cmd_line + 5;
         unsigned long a = 0, v = 0;
@@ -3725,6 +3730,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
             for (unsigned long i = 0; i < n; i++) cprintf("%08lx: %08lx\n", a + 4 * i, (unsigned long)*(volatile uint32_t *)(a + 4 * i));
         }
         return;
+#if defined(CONFIG_BOARD_ESP32C6)
     } else if (strcmp(cmd_line, "radio probe") == 0) {
         radio_c6_probe();
         return;
@@ -4030,6 +4036,16 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "i2c") == 0 || strcmp(cmd_line, "i2c scan") == 0) {
         i2c_scan_bus();
+        return;
+    } else if (strncmp(cmd_line, "i2c scan ", 9) == 0) {
+        const char *p = &cmd_line[9];
+        while (*p == ' ') p++;
+        if (*p >= '0' && *p <= '9') {
+            uint8_t bus = (uint8_t)(*p - '0');
+            i2c_scan_bus_id(bus);
+        } else {
+            cprintf("usage: i2c scan [bus]\n");
+        }
         return;
     } else if (strcmp(cmd_line, "date") == 0) {
         /* Local first, because that is what the question means, and UTC
@@ -4553,17 +4569,30 @@ static void parse_and_eval_cmd(const char *cmd_line) {
 #if defined(CONFIG_BOARD_RP2350)
     } else if (strncmp(cmd_line, "i2cdiag", 7) == 0) {
         {
-            extern void i2c_rp2350_diag(uint8_t addr, uint8_t reg);
-            /* `i2cdiag [addr [reg]]`, both hex. Defaults probe the BME280's
-             * chip-id register, which is the read that phase 30 found
-             * failing while a bare address probe succeeded. */
-            unsigned a = 0x76, r = 0xd0;
+            extern void i2c_rp2350_diag_bus(uint8_t bus, uint8_t addr, uint8_t reg);
+            unsigned bus = 0, a = 0x76, r = 0xd0;
             const char *p = cmd_line + 7;
             while (*p == ' ') p++;
-            if (*p) { a = 0; while (*p && *p != ' ') { a = a * 16u + (unsigned)((*p <= '9') ? *p - '0' : (*p | 32) - 'a' + 10); p++; } }
-            while (*p == ' ') p++;
-            if (*p) { r = 0; while (*p && *p != ' ') { r = r * 16u + (unsigned)((*p <= '9') ? *p - '0' : (*p | 32) - 'a' + 10); p++; } }
-            i2c_rp2350_diag((uint8_t)a, (uint8_t)r);
+            unsigned v[3] = { 0, 0, 0 };
+            int n_args = 0;
+            while (*p && n_args < 3) {
+                while (*p == ' ') p++;
+                if (!*p) break;
+                v[n_args] = 0;
+                while (*p && *p != ' ') {
+                    v[n_args] = v[n_args] * 16u + (unsigned)((*p <= '9') ? *p - '0' : (*p | 32) - 'a' + 10);
+                    p++;
+                }
+                n_args++;
+            }
+            if (n_args == 3) {
+                bus = v[0]; a = v[1]; r = v[2];
+            } else if (n_args == 2) {
+                bus = 0; a = v[0]; r = v[1];
+            } else if (n_args == 1) {
+                bus = 0; a = v[0]; r = 0xd0;
+            }
+            i2c_rp2350_diag_bus((uint8_t)bus, (uint8_t)a, (uint8_t)r);
         }
         return;
 #endif

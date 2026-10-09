@@ -53,6 +53,7 @@
 static struct {
     bme280_part_t  part;
     uint8_t        addr;
+    uint8_t        bus;
     bme280_calib_t cal;
     /* Which bus transfer failed last, and how many have. Hardware
      * instrumentation: on the first board this ran on, one read in three
@@ -81,11 +82,11 @@ static struct {
 } g;
 
 static bool rd(uint8_t reg, uint8_t *dst, uint32_t len) {
-    return i2c_reg_read_bytes(g.addr, reg, dst, len);
+    return i2c_reg_read_bytes_bus(g.bus, g.addr, reg, dst, len);
 }
 
 static bool wr(uint8_t reg, uint8_t value) {
-    return i2c_reg_write_u8(g.addr, reg, value);
+    return i2c_reg_write_u8_bus(g.bus, g.addr, reg, value);
 }
 
 static uint16_t u16le(const uint8_t *p) { return (uint16_t)((uint16_t)p[1] << 8 | p[0]); }
@@ -93,6 +94,7 @@ static int16_t  s16le(const uint8_t *p) { return (int16_t)u16le(p); }
 
 bme280_part_t bme280_part(void)     { return g.part; }
 uint8_t       bme280_address(void)  { return g.addr; }
+uint8_t       bme280_bus(void)      { return g.bus; }
 bool          bme280_is_detected(void) { return g.part != BME280_PART_NONE; }
 const bme280_calib_t *bme280_calibration(void) { return &g.cal; }
 
@@ -161,48 +163,52 @@ static bool read_calibration(void) {
 
 bme280_part_t bme280_init(void) {
     static const uint8_t addrs[2] = { BME280_ADDR_LOW, BME280_ADDR_HIGH };
+    uint8_t buses = i2c_bus_count();
 
     g.part = BME280_PART_NONE;
-    for (uint32_t i = 0; i < 2u; i++) {
-        g.addr = addrs[i];
-        uint8_t id = 0;
-        if (!rd(REG_ID, &id, 1u)) continue;
+    for (uint8_t b = 0; b < buses; b++) {
+        for (uint32_t i = 0; i < 2u; i++) {
+            g.bus = b;
+            g.addr = addrs[i];
+            uint8_t id = 0;
+            if (!rd(REG_ID, &id, 1u)) continue;
 
-        bme280_part_t part = part_from_id(id);
-        if (part == BME280_PART_NONE) {
-            const char *other = foreign_part(id);
-            if (other) printk("[BME280] 0x%02x answers with chip id 0x%02x -- that is a %s.\n",
-                              g.addr, id, other);
-            continue;
+            bme280_part_t part = part_from_id(id);
+            if (part == BME280_PART_NONE) {
+                const char *other = foreign_part(id);
+                if (other) printk("[BME280] Bus %u addr 0x%02x answers with chip id 0x%02x -- that is a %s.\n",
+                                  g.bus, g.addr, id, other);
+                continue;
+            }
+            g.part = part;
+
+            /* A reset costs 2 ms and removes "whatever the last boot left in the
+             * control registers" from the list of things a wrong reading could
+             * be. */
+            (void)wr(REG_RESET, RESET_WORD);
+            uint64_t until = time_get_ms() + 10u;
+            while (time_get_ms() < until) sched_yield();
+
+            if (!read_calibration()) {
+                printk("[BME280] Found a %s at bus %u 0x%02x but could not read its calibration.\n",
+                       bme280_part_name(), g.bus, g.addr);
+                g.part = BME280_PART_NONE;
+                continue;
+            }
+
+            /* ctrl_hum BEFORE ctrl_meas, and this order is not a preference: the
+             * humidity oversampling setting only takes effect on the next write
+             * to ctrl_meas. A driver that writes them the other way round reads
+             * humidity at the wrong oversampling, or zero, and everything else
+             * looks fine. */
+            if (g.part == BME280_PART_BME280) (void)wr(REG_CTRL_HUM, OSRS_X1);
+            (void)wr(REG_CONFIG, 0x00u);            /* filter off, no standby */
+            (void)wr(REG_CTRL_MEAS, CTRL_MEAS_FORCED);
+
+            printk("[BME280] %s at bus %u 0x%02x on I2C.\n",
+                   bme280_part_name(), g.bus, g.addr);
+            return g.part;
         }
-        g.part = part;
-
-        /* A reset costs 2 ms and removes "whatever the last boot left in the
-         * control registers" from the list of things a wrong reading could
-         * be. */
-        (void)wr(REG_RESET, RESET_WORD);
-        uint64_t until = time_get_ms() + 10u;
-        while (time_get_ms() < until) sched_yield();
-
-        if (!read_calibration()) {
-            printk("[BME280] Found a %s at 0x%02x but could not read its calibration.\n",
-                   bme280_part_name(), g.addr);
-            g.part = BME280_PART_NONE;
-            continue;
-        }
-
-        /* ctrl_hum BEFORE ctrl_meas, and this order is not a preference: the
-         * humidity oversampling setting only takes effect on the next write
-         * to ctrl_meas. A driver that writes them the other way round reads
-         * humidity at the wrong oversampling, or zero, and everything else
-         * looks fine. */
-        if (g.part == BME280_PART_BME280) (void)wr(REG_CTRL_HUM, OSRS_X1);
-        (void)wr(REG_CONFIG, 0x00u);            /* filter off, no standby */
-        (void)wr(REG_CTRL_MEAS, CTRL_MEAS_FORCED);
-
-        printk("[BME280] %s at 0x%02x on the shared I2C bus.\n",
-               bme280_part_name(), g.addr);
-        return g.part;
     }
     g.addr = 0;
     return BME280_PART_NONE;
@@ -676,6 +682,7 @@ void bme280_print_status(void) {
 static bool bme280_dev_init(struct sensor_dev *dev) {
     bme280_part_t part = bme280_init();
     if (part == BME280_PART_NONE) return false;
+    dev->bus = g.bus;
     dev->addr = g.addr;
     dev->chan_mask = (1u << SENSOR_CHAN_TEMP) | (1u << SENSOR_CHAN_PRESSURE);
     if (g.cal.has_humidity) {

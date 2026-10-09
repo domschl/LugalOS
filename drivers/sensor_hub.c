@@ -8,6 +8,8 @@
 #include "drivers/mics6814.h"
 #include "drivers/mhz19b.h"
 #include "drivers/hdc1080.h"
+#include "drivers/tmp117.h"
+#include "drivers/mcp9808.h"
 #include "drivers/at24c32.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
@@ -78,15 +80,17 @@ bool sensor_hub_register(sensor_dev_t *dev) {
 
 void sensor_hub_init(void) {
     /* Register built-in drivers */
-    sensor_hub_register(&mhz19b_sensor_dev);
+    sensor_hub_register(&tmp117_sensor_dev);
+    sensor_hub_register(&mcp9808_sensor_dev);
+    sensor_hub_register(&bme280_sensor_dev);
+    sensor_hub_register(&bme680_sensor_dev);
     sensor_hub_register(&hdc1080_sensor_dev);
+    sensor_hub_register(&mhz19b_sensor_dev);
     sensor_hub_register(&mics6814_sensor_dev);
     sensor_hub_register(&tsl2591_sensor_dev);
     sensor_hub_register(&tsl2561_sensor_dev);
     sensor_hub_register(&ccs811_sensor_dev);
     sensor_hub_register(&sgp30_sensor_dev);
-    sensor_hub_register(&bme680_sensor_dev);
-    sensor_hub_register(&bme280_sensor_dev);
 
     s_active_count = 0;
     memset(s_caches, 0, sizeof(s_caches));
@@ -305,7 +309,19 @@ bool sensor_hub_get(sensor_chan_t chan, int32_t *out_val, uint32_t *age_s) {
         return false;
     }
 
-    /* 2. For CO2: Prioritize true physical NDIR optical absorption (mhz19b) */
+    /* 2. For Temperature: Prioritize high-accuracy remote sensors away from heat sources */
+    if (chan == SENSOR_CHAN_TEMP) {
+        static const sensor_dev_t *const temp_prio[] = {
+            &tmp117_sensor_dev, &mcp9808_sensor_dev, &bme280_sensor_dev, &bme680_sensor_dev, &hdc1080_sensor_dev
+        };
+        for (size_t p = 0; p < sizeof(temp_prio)/sizeof(temp_prio[0]); p++) {
+            if (sensor_hub_get_dev(temp_prio[p], SENSOR_CHAN_TEMP, out_val, age_s)) {
+                return true;
+            }
+        }
+    }
+
+    /* 3. For CO2: Prioritize true physical NDIR optical absorption (mhz19b) */
     if (chan == SENSOR_CHAN_CO2) {
         if (sensor_hub_get_dev(&mhz19b_sensor_dev, SENSOR_CHAN_CO2, out_val, age_s)) {
             return true;
@@ -314,7 +330,7 @@ bool sensor_hub_get(sensor_chan_t chan, int32_t *out_val, uint32_t *age_s) {
         return sensor_hub_get(SENSOR_CHAN_ECO2, out_val, age_s);
     }
 
-    /* 3. Physical sensor cache search */
+    /* 4. Physical sensor cache search */
     for (uint32_t i = 0; i < s_active_count; i++) {
         dev_cache_t *c = &s_caches[i];
         if (c->valid[chan]) {
@@ -344,7 +360,22 @@ bool sensor_hub_get_filtered(sensor_chan_t chan, int32_t *out_val) {
         return false;
     }
 
-    /* 2. Physical sensor cache search */
+    /* 2. For Temperature: Prioritize high-accuracy remote sensors */
+    if (chan == SENSOR_CHAN_TEMP) {
+        static const sensor_dev_t *const temp_prio[] = {
+            &tmp117_sensor_dev, &mcp9808_sensor_dev, &bme280_sensor_dev, &bme680_sensor_dev, &hdc1080_sensor_dev
+        };
+        for (size_t p = 0; p < sizeof(temp_prio)/sizeof(temp_prio[0]); p++) {
+            for (uint32_t i = 0; i < s_active_count; i++) {
+                if (s_caches[i].dev == temp_prio[p] && s_caches[i].valid[chan]) {
+                    *out_val = s_caches[i].filtered_val[chan];
+                    return true;
+                }
+            }
+        }
+    }
+
+    /* 3. Physical sensor cache search */
     for (uint32_t i = 0; i < s_active_count; i++) {
         dev_cache_t *c = &s_caches[i];
         if (c->valid[chan]) {
@@ -355,9 +386,95 @@ bool sensor_hub_get_filtered(sensor_chan_t chan, int32_t *out_val) {
     return false;
 }
 
+bool sensor_hub_get_origin(sensor_chan_t chan, sensor_origin_t *out) {
+    if (chan >= SENSOR_CHAN_MAX || !out) return false;
+
+    if (chan == SENSOR_CHAN_PRESSURE_MSL) {
+        if (!s_derived[SENSOR_CHAN_PRESSURE_MSL].valid) return false;
+        out->tier = SENSOR_TIER_INFERRED;
+        out->source_dev = bme680_is_detected() ? "bme680" : (bme280_is_detected() ? "bme280" : "unknown");
+        out->model_name = "hypsometric";
+        out->desc = "barometric reduction to MSL";
+        return true;
+    }
+    if (chan == SENSOR_CHAN_DEW_POINT) {
+        if (!s_derived[SENSOR_CHAN_DEW_POINT].valid) return false;
+        out->tier = SENSOR_TIER_INFERRED;
+        out->source_dev = bme680_is_detected() ? "bme680" : (bme280_is_detected() ? "bme280" : (hdc1080_is_detected() ? "hdc1080" : "unknown"));
+        out->model_name = "magnus-tetens";
+        out->desc = "dew point temperature";
+        return true;
+    }
+    if (chan == SENSOR_CHAN_AH) {
+        if (!s_derived[SENSOR_CHAN_AH].valid) return false;
+        out->tier = SENSOR_TIER_INFERRED;
+        out->source_dev = bme680_is_detected() ? "bme680" : (bme280_is_detected() ? "bme280" : (hdc1080_is_detected() ? "hdc1080" : "unknown"));
+        out->model_name = "august-roche-magnus";
+        out->desc = "absolute humidity in g/m3";
+        return true;
+    }
+    if (chan == SENSOR_CHAN_IAQ) {
+        if (!s_derived[SENSOR_CHAN_IAQ].valid) return false;
+        out->tier = SENSOR_TIER_INFERRED;
+        out->source_dev = "bme680";
+        out->model_name = "bme680-iaq";
+        out->desc = "index of air quality (0-500)";
+        return true;
+    }
+    if (chan == SENSOR_CHAN_CO2) {
+        int32_t val = 0;
+        if (sensor_hub_get_dev(&mhz19b_sensor_dev, SENSOR_CHAN_CO2, &val, NULL)) {
+            out->tier = SENSOR_TIER_FUSED;
+            out->source_dev = "mhz19b";
+            out->model_name = "ndir-optical";
+            out->desc = "NDIR infrared optical absorption";
+            return true;
+        }
+        if (sensor_hub_get(SENSOR_CHAN_ECO2, &val, NULL)) {
+            out->tier = SENSOR_TIER_FUSED;
+            out->source_dev = ccs811_is_detected() ? "ccs811" : (sgp30_is_detected() ? "sgp30" : "unknown");
+            out->model_name = "mox-equivalent";
+            out->desc = "metal oxide eCO2 fallback";
+            return true;
+        }
+        return false;
+    }
+
+    if (chan == SENSOR_CHAN_TEMP) {
+        static const sensor_dev_t *const temp_prio[] = {
+            &tmp117_sensor_dev, &mcp9808_sensor_dev, &bme280_sensor_dev, &bme680_sensor_dev, &hdc1080_sensor_dev
+        };
+        for (size_t p = 0; p < sizeof(temp_prio)/sizeof(temp_prio[0]); p++) {
+            for (uint32_t i = 0; i < s_active_count; i++) {
+                if (s_caches[i].dev == temp_prio[p] && s_caches[i].valid[chan]) {
+                    out->tier = SENSOR_TIER_FUSED;
+                    out->source_dev = s_caches[i].dev->name;
+                    out->model_name = "hardware-transducer";
+                    out->desc = s_caches[i].dev->name;
+                    return true;
+                }
+            }
+        }
+    }
+
+    for (uint32_t i = 0; i < s_active_count; i++) {
+        dev_cache_t *c = &s_caches[i];
+        if (c->valid[chan]) {
+            out->tier = SENSOR_TIER_FUSED;
+            out->source_dev = c->dev->name;
+            out->model_name = "hardware-transducer";
+            out->desc = c->dev->name;
+            return true;
+        }
+    }
+    return false;
+}
+
 uint32_t sensor_hub_selftest(bool report) {
     uint32_t failed = 0;
     /* Ensure default drivers are registered */
+    sensor_hub_register(&tmp117_sensor_dev);
+    sensor_hub_register(&mcp9808_sensor_dev);
     sensor_hub_register(&mhz19b_sensor_dev);
     sensor_hub_register(&hdc1080_sensor_dev);
     sensor_hub_register(&mics6814_sensor_dev);
@@ -685,13 +802,28 @@ bool sensor_hub_cal_eeprom_clear(void) {
     return w == (int)sizeof(zeros);
 }
 
-/* --- Publishing the hub's channels (Phase 45 §11, Phase 46 §7.2) --- */
+/* --- Publishing the hub's channels (Phase 45 §11, Phase 46 §7.2, Milestone 46.18) --- */
 #include "net/mqttd.h"
 
+typedef struct {
+    const sensor_dev_t *dev;
+    sensor_chan_t       chan;
+    sensor_tier_t       tier;
+} hub_source_ctx_t;
+
+static hub_source_ctx_t s_source_ctx[MQTTD_MAX_SOURCES];
+static char             s_topic_names[MQTTD_MAX_SOURCES][MQTTD_NAME_MAX];
+static uint32_t         s_topic_count = 0;
+
 static bool hub_chan_source(int32_t *out, void *ctx) {
-    sensor_chan_t chan = (sensor_chan_t)(uintptr_t)ctx;
+    const hub_source_ctx_t *sc = (const hub_source_ctx_t *)ctx;
+    if (!sc) return false;
     uint32_t age = 0;
-    if (!sensor_hub_get(chan, out, &age)) return false;
+    if (sc->tier == SENSOR_TIER_HW && sc->dev) {
+        if (!sensor_hub_get_dev(sc->dev, sc->chan, out, &age)) return false;
+    } else {
+        if (!sensor_hub_get(sc->chan, out, &age)) return false;
+    }
     return age <= 3u * sensor_hub_sample_period_s() + 5u;
 }
 
@@ -701,31 +833,78 @@ void sensor_hub_register_sources(void) {
     static const mqttd_rule_t gas_rule  = { .min_interval_s = 5, .max_interval_s = 300, .delta = 25,   .alpha_shift = 2 };
     static const mqttd_rule_t res_rule  = { .min_interval_s = 5, .max_interval_s = 300, .delta = 5000, .alpha_shift = 3 };
 
+    s_topic_count = 0;
     uint32_t have = 0;
-    for (uint32_t i = 0; i < sensor_hub_device_count(); i++) {
-        const sensor_dev_t *dev = sensor_hub_device_get(i);
-        if (dev) have |= dev->chan_mask;
+
+    /* 1. Register direct hardware channels: sensor/<device>/<metric> */
+    for (uint32_t i = 0; i < s_active_count; i++) {
+        const sensor_dev_t *dev = s_caches[i].dev;
+        if (!dev) continue;
+        have |= dev->chan_mask;
+        for (uint32_t ch = 0; ch < SENSOR_CHAN_MAX; ch++) {
+            if (!(dev->chan_mask & (1u << ch))) continue;
+            if (s_topic_count >= MQTTD_MAX_SOURCES) break;
+            uint32_t idx = s_topic_count++;
+            s_source_ctx[idx].dev = dev;
+            s_source_ctx[idx].chan = (sensor_chan_t)ch;
+            s_source_ctx[idx].tier = SENSOR_TIER_HW;
+            ksnprintf(s_topic_names[idx], sizeof(s_topic_names[idx]),
+                      "sensor/%s/%s", dev->name, sensor_chan_name((sensor_chan_t)ch));
+            const mqttd_rule_t *rule = ch == SENSOR_CHAN_LUX ? &lux_rule
+                                     : (ch == SENSOR_CHAN_ECO2 || ch == SENSOR_CHAN_TVOC ||
+                                        ch == SENSOR_CHAN_CO || ch == SENSOR_CHAN_NO2 || ch == SENSOR_CHAN_NH3 ||
+                                        ch == SENSOR_CHAN_CO2 || ch == SENSOR_CHAN_IAQ) ? &gas_rule
+                                     : ch == SENSOR_CHAN_GAS_RES ? &res_rule : &env_rule;
+            (void)mqttd_add_source(s_topic_names[idx], hub_chan_source,
+                                   &s_source_ctx[idx], sensor_chan_decimals((sensor_chan_t)ch), rule);
+        }
     }
 
-    /* Include derived channels if dependencies are met */
-    if ((have & (1u << SENSOR_CHAN_PRESSURE)) && s_have_altitude) {
-        have |= (1u << SENSOR_CHAN_PRESSURE_MSL);
-    }
-    if ((have & (1u << SENSOR_CHAN_TEMP)) && (have & (1u << SENSOR_CHAN_HUMIDITY))) {
-        have |= (1u << SENSOR_CHAN_AH) | (1u << SENSOR_CHAN_DEW_POINT);
-    }
-    if (bme680_is_detected()) {
-        have |= (1u << SENSOR_CHAN_IAQ);
+    /* 2. Register derived/inferred channels: sensor/inferred/<metric> */
+    static const sensor_chan_t inferred_chans[] = {
+        SENSOR_CHAN_PRESSURE_MSL, SENSOR_CHAN_AH, SENSOR_CHAN_DEW_POINT, SENSOR_CHAN_IAQ
+    };
+    for (size_t k = 0; k < sizeof(inferred_chans)/sizeof(inferred_chans[0]); k++) {
+        sensor_chan_t ch = inferred_chans[k];
+        bool avail = false;
+        if (ch == SENSOR_CHAN_PRESSURE_MSL && (have & (1u << SENSOR_CHAN_PRESSURE)) && s_have_altitude) avail = true;
+        if ((ch == SENSOR_CHAN_AH || ch == SENSOR_CHAN_DEW_POINT) &&
+            (have & (1u << SENSOR_CHAN_TEMP)) && (have & (1u << SENSOR_CHAN_HUMIDITY))) avail = true;
+        if (ch == SENSOR_CHAN_IAQ && bme680_is_detected()) avail = true;
+
+        if (avail && s_topic_count < MQTTD_MAX_SOURCES) {
+            have |= (1u << ch);
+            uint32_t idx = s_topic_count++;
+            s_source_ctx[idx].dev = NULL;
+            s_source_ctx[idx].chan = ch;
+            s_source_ctx[idx].tier = SENSOR_TIER_INFERRED;
+            ksnprintf(s_topic_names[idx], sizeof(s_topic_names[idx]),
+                      "sensor/inferred/%s", sensor_chan_name(ch));
+            const mqttd_rule_t *rule = (ch == SENSOR_CHAN_IAQ) ? &gas_rule : &env_rule;
+            (void)mqttd_add_source(s_topic_names[idx], hub_chan_source,
+                                   &s_source_ctx[idx], sensor_chan_decimals(ch), rule);
+        }
     }
 
+    /* 3. Register fused/consensus channels: sensor/fused/<metric> */
     for (uint32_t ch = 0; ch < SENSOR_CHAN_MAX; ch++) {
-        if (!(have & (1u << ch))) continue;
+        /* Only physical channels (or true CO2) participate in fused consensus */
+        if (ch == SENSOR_CHAN_PRESSURE_MSL || ch == SENSOR_CHAN_AH ||
+            ch == SENSOR_CHAN_DEW_POINT || ch == SENSOR_CHAN_IAQ) continue;
+        if (!(have & (1u << ch)) && !(ch == SENSOR_CHAN_CO2 && (have & (1u << SENSOR_CHAN_ECO2)))) continue;
+        if (s_topic_count >= MQTTD_MAX_SOURCES) break;
+        uint32_t idx = s_topic_count++;
+        s_source_ctx[idx].dev = NULL;
+        s_source_ctx[idx].chan = (sensor_chan_t)ch;
+        s_source_ctx[idx].tier = SENSOR_TIER_FUSED;
+        ksnprintf(s_topic_names[idx], sizeof(s_topic_names[idx]),
+                  "sensor/fused/%s", sensor_chan_name((sensor_chan_t)ch));
         const mqttd_rule_t *rule = ch == SENSOR_CHAN_LUX ? &lux_rule
                                  : (ch == SENSOR_CHAN_ECO2 || ch == SENSOR_CHAN_TVOC ||
                                     ch == SENSOR_CHAN_CO || ch == SENSOR_CHAN_NO2 || ch == SENSOR_CHAN_NH3 ||
-                                    ch == SENSOR_CHAN_CO2 || ch == SENSOR_CHAN_IAQ) ? &gas_rule
+                                    ch == SENSOR_CHAN_CO2) ? &gas_rule
                                  : ch == SENSOR_CHAN_GAS_RES ? &res_rule : &env_rule;
-        (void)mqttd_add_source(sensor_chan_name((sensor_chan_t)ch), hub_chan_source,
-                               (void *)(uintptr_t)ch, sensor_chan_decimals((sensor_chan_t)ch), rule);
+        (void)mqttd_add_source(s_topic_names[idx], hub_chan_source,
+                               &s_source_ctx[idx], sensor_chan_decimals((sensor_chan_t)ch), rule);
     }
 }

@@ -1677,6 +1677,144 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
         }
         return (int)used;
     }
+    else if (strncmp(rel, "sensor/", 7) == 0) {
+        const char *sub = rel + 7;
+        uint32_t used = 0;
+        if (strcmp(sub, "fused") == 0) {
+            used += (uint32_t)ksnprintf(buf + used, cap - used, "tier=fused\n");
+            int32_t val = 0;
+            uint32_t age = 0;
+            if (sensor_hub_get(SENSOR_CHAN_CO2, &val, &age)) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "co2_ppm=%ld\nage_s=%lu\n", (long)val, (unsigned long)age);
+            }
+            if (sensor_hub_get(SENSOR_CHAN_TEMP, &val, &age)) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "temperature_c100=%ld\nage_s=%lu\n", (long)val, (unsigned long)age);
+            }
+            if (sensor_hub_get(SENSOR_CHAN_PRESSURE, &val, &age)) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "pressure_pa=%ld\nage_s=%lu\n", (long)val, (unsigned long)age);
+            }
+            if (sensor_hub_get(SENSOR_CHAN_HUMIDITY, &val, &age)) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "humidity_rh1000=%ld\nage_s=%lu\n", (long)(val * 10), (unsigned long)age);
+            }
+            if (sensor_hub_get(SENSOR_CHAN_LUX, &val, &age)) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "lux_c100=%ld\nage_s=%lu\n", (long)val, (unsigned long)age);
+            }
+            if (sensor_hub_get(SENSOR_CHAN_ECO2, &val, &age)) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "eco2_ppm=%ld\nage_s=%lu\n", (long)val, (unsigned long)age);
+            }
+            if (sensor_hub_get(SENSOR_CHAN_TVOC, &val, &age)) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "tvoc_ppb=%ld\nage_s=%lu\n", (long)val, (unsigned long)age);
+            }
+            if (sensor_hub_get(SENSOR_CHAN_GAS_RES, &val, &age)) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "gas_resistance_ohm=%ld\nage_s=%lu\n", (long)val, (unsigned long)age);
+            }
+            if (sensor_hub_get(SENSOR_CHAN_CO, &val, &age)) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "co_c_ppm=%ld\nage_s=%lu\n", (long)val, (unsigned long)age);
+            }
+            if (sensor_hub_get(SENSOR_CHAN_NO2, &val, &age)) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "no2_c_ppm=%ld\nage_s=%lu\n", (long)val, (unsigned long)age);
+            }
+            if (sensor_hub_get(SENSOR_CHAN_NH3, &val, &age)) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "nh3_c_ppm=%ld\nage_s=%lu\n", (long)val, (unsigned long)age);
+            }
+            return (int)used;
+        } else if (strcmp(sub, "inferred") == 0) {
+            used += (uint32_t)ksnprintf(buf + used, cap - used, "tier=inferred\n");
+            int32_t val = 0;
+            uint32_t age = 0;
+            int32_t alt = 0;
+            if (node_altitude(&alt)) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "altitude_m=%ld\n", (long)alt);
+            }
+            if (sensor_hub_get(SENSOR_CHAN_PRESSURE_MSL, &val, &age)) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "pressure_msl_pa=%ld\nage_s=%lu\n", (long)val, (unsigned long)age);
+            }
+            if (sensor_hub_get(SENSOR_CHAN_DEW_POINT, &val, &age)) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "dew_point_c100=%ld\nage_s=%lu\n", (long)val, (unsigned long)age);
+            }
+            if (sensor_hub_get(SENSOR_CHAN_AH, &val, &age)) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "abs_humidity_c100=%ld\nage_s=%lu\n", (long)val, (unsigned long)age);
+            }
+            if (sensor_hub_get(SENSOR_CHAN_IAQ, &val, &age)) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "iaq=%ld\nage_s=%lu\n", (long)val, (unsigned long)age);
+            }
+            if (mhz19b_is_detected() && (ccs811_is_detected() || sgp30_is_detected())) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "mox_contaminated=%s\nco2_ratio_pct=%ld\nfresh_air_verified=%s\n",
+                    sensor_hub_is_mox_contaminated() ? "yes" : "no",
+                    (long)sensor_hub_co2_ratio_pct(),
+                    sensor_hub_is_fresh_air_verified() ? "yes" : "no");
+            }
+            return (int)used;
+        } else {
+            /* Look for matching sensor device */
+            sensor_dev_t *dev = NULL;
+            for (uint32_t i = 0; i < sensor_hub_device_count(); i++) {
+                sensor_dev_t *d = sensor_hub_device_get(i);
+                if (d && d->name && strcmp(d->name, sub) == 0) {
+                    dev = d;
+                    break;
+                }
+            }
+            if (!dev) return -1;
+
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "tier=hw\npart=%s\nbus=%u\naddr=0x%02x\nsample_period_s=%lu\n",
+                dev->name, (unsigned)dev->bus, dev->addr, (unsigned long)sensor_hub_sample_period_s());
+
+            bool any_val = false;
+            uint32_t min_age = 0;
+            for (uint32_t ch = 0; ch < SENSOR_CHAN_MAX; ch++) {
+                if (!(dev->chan_mask & (1u << ch))) continue;
+                int32_t val = 0;
+                uint32_t age = 0;
+                if (sensor_hub_get_dev(dev, (sensor_chan_t)ch, &val, &age)) {
+                    if (!any_val || age < min_age) min_age = age;
+                    any_val = true;
+                    switch ((sensor_chan_t)ch) {
+                        case SENSOR_CHAN_TEMP:
+                            used += (uint32_t)ksnprintf(buf + used, cap - used, "temperature_c100=%ld\n", (long)val);
+                            break;
+                        case SENSOR_CHAN_PRESSURE:
+                            used += (uint32_t)ksnprintf(buf + used, cap - used, "pressure_pa=%ld\n", (long)val);
+                            break;
+                        case SENSOR_CHAN_HUMIDITY:
+                            used += (uint32_t)ksnprintf(buf + used, cap - used, "humidity_rh1000=%ld\n", (long)(val * 10));
+                            break;
+                        case SENSOR_CHAN_LUX:
+                            used += (uint32_t)ksnprintf(buf + used, cap - used, "lux_c100=%ld\n", (long)val);
+                            break;
+                        case SENSOR_CHAN_ECO2:
+                            used += (uint32_t)ksnprintf(buf + used, cap - used, "eco2_ppm=%ld\n", (long)val);
+                            break;
+                        case SENSOR_CHAN_TVOC:
+                            used += (uint32_t)ksnprintf(buf + used, cap - used, "tvoc_ppb=%ld\n", (long)val);
+                            break;
+                        case SENSOR_CHAN_GAS_RES:
+                            used += (uint32_t)ksnprintf(buf + used, cap - used, "gas_resistance_ohm=%ld\n", (long)val);
+                            break;
+                        case SENSOR_CHAN_CO:
+                            used += (uint32_t)ksnprintf(buf + used, cap - used, "co_c_ppm=%ld\n", (long)val);
+                            break;
+                        case SENSOR_CHAN_NO2:
+                            used += (uint32_t)ksnprintf(buf + used, cap - used, "no2_c_ppm=%ld\n", (long)val);
+                            break;
+                        case SENSOR_CHAN_NH3:
+                            used += (uint32_t)ksnprintf(buf + used, cap - used, "nh3_c_ppm=%ld\n", (long)val);
+                            break;
+                        case SENSOR_CHAN_CO2:
+                            used += (uint32_t)ksnprintf(buf + used, cap - used, "co2_ppm=%ld\n", (long)val);
+                            break;
+                        default:
+                            break;
+                    }
+                }
+            }
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "valid=%s\nage_s=%lu\n", any_val ? "yes" : "no", (unsigned long)min_age);
+            return (int)used;
+        }
+    }
     else if (strcmp(rel, "clock") == 0) {
         /* The discipline loop's own account of itself (P5). Everywhere else
          * this tree reports what a device did; this reports what the clock
@@ -1974,7 +2112,7 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
 
 /* Unsized on purpose: /proc/dcf77 exists only where a receiver does, and the
  * one caller that walks this list already derives the count with sizeof. */
-static const char *g_proc_names[] = { "ps", "meminfo", "version", "cpuinfo", "df", "kmsg", "devices", "buildid", "path", "ports", "config", "net", "node", "clock", "sensors",
+static const char *g_proc_names[] = { "ps", "meminfo", "version", "cpuinfo", "df", "kmsg", "devices", "buildid", "path", "ports", "config", "net", "node", "clock", "sensors", "sensor",
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)
     "usbhost",
 #endif
@@ -2034,14 +2172,21 @@ static int vfs_open_into(vfs_handle_t *h, const char *path, int flags) {
         h->rel_path[sizeof(h->rel_path) - 1] = '\0';
         h->kind = MOUNT_FAT32;
     } else if (m->kind == MOUNT_PROC) {
-        if (rel[0] == '\0') {
+        strncpy(h->rel_path, rel, sizeof(h->rel_path) - 1);
+        h->rel_path[sizeof(h->rel_path) - 1] = '\0';
+        size_t rlen = strlen(h->rel_path);
+        if (rlen > 0 && h->rel_path[rlen - 1] == '/') {
+            h->rel_path[rlen - 1] = '\0';
+        }
+
+        if (h->rel_path[0] == '\0' || strcmp(h->rel_path, "sensor") == 0) {
             h->is_dir = true;
-        } else if (strcmp(rel, "kmsg") == 0) {
+        } else if (strcmp(h->rel_path, "kmsg") == 0) {
             h->is_kmsg = true;
             h->kmsg_start = klog_oldest();
             h->proc_len = (uint32_t)(klog_total() - h->kmsg_start);
         } else {
-            int len = vfs_generate_proc_content(rel, h->proc_buf, sizeof(h->proc_buf));
+            int len = vfs_generate_proc_content(h->rel_path, h->proc_buf, sizeof(h->proc_buf));
             if (len < 0) return -1;
             h->proc_len = (uint32_t)len;
         }
@@ -2244,16 +2389,49 @@ int vfs_readdir(int fd, uint32_t index, char *name_out, uint32_t name_max, vfs_s
             return 0;
         }
         case MOUNT_PROC: {
-            /* Derived from the table rather than hardcoded: adding /proc/kmsg
-             * (B0) meant updating a literal 4 in a second place, which is
-             * exactly the drift this sizeof() prevents next time. */
-            if (index >= sizeof(g_proc_names) / sizeof(g_proc_names[0])) return -1;
-            if (name_out && name_max > 0) {
-                strncpy(name_out, g_proc_names[index], name_max - 1);
-                name_out[name_max - 1] = '\0';
+            if (h->rel_path[0] == '\0') {
+                if (index >= sizeof(g_proc_names) / sizeof(g_proc_names[0])) return -1;
+                if (name_out && name_max > 0) {
+                    strncpy(name_out, g_proc_names[index], name_max - 1);
+                    name_out[name_max - 1] = '\0';
+                }
+                if (stat_out) {
+                    stat_out->size = 0;
+                    stat_out->is_dir = (strcmp(g_proc_names[index], "sensor") == 0) ? 1 : 0;
+                }
+                return 0;
+            } else if (strcmp(h->rel_path, "sensor") == 0) {
+                if (index == 0) {
+                    if (name_out && name_max > 0) {
+                        strncpy(name_out, "fused", name_max - 1);
+                        name_out[name_max - 1] = '\0';
+                    }
+                    if (stat_out) { stat_out->size = 0; stat_out->is_dir = 0; }
+                    return 0;
+                }
+                if (index == 1) {
+                    if (name_out && name_max > 0) {
+                        strncpy(name_out, "inferred", name_max - 1);
+                        name_out[name_max - 1] = '\0';
+                    }
+                    if (stat_out) { stat_out->size = 0; stat_out->is_dir = 0; }
+                    return 0;
+                }
+                uint32_t dev_idx = index - 2;
+                if (dev_idx < sensor_hub_device_count()) {
+                    sensor_dev_t *dev = sensor_hub_device_get(dev_idx);
+                    if (dev && dev->name) {
+                        if (name_out && name_max > 0) {
+                            strncpy(name_out, dev->name, name_max - 1);
+                            name_out[name_max - 1] = '\0';
+                        }
+                        if (stat_out) { stat_out->size = 0; stat_out->is_dir = 0; }
+                        return 0;
+                    }
+                }
+                return -1;
             }
-            if (stat_out) { stat_out->size = 0; stat_out->is_dir = 0; }
-            return 0;
+            return -1;
         }
         case MOUNT_DEV: {
             if (index >= (uint32_t)DEV_COUNT) return -1;
@@ -2635,9 +2813,15 @@ void vfs_ls(const char *path) {
             }
             break;
         case MOUNT_PROC: { // listed via the real handle/readdir API (V5 fix)
-            cprintf("\nDirectory Listing (/proc/):\n");
+            cprintf("\nDirectory Listing (/proc/%s%s):\n", rel[0] ? rel : "", rel[0] ? "/" : "");
             cprintf("Name        Type\n----------  ----\n");
-            int fd = vfs_open("/proc", VFS_O_READ);
+            char open_path[64];
+            if (rel[0] != '\0') {
+                ksnprintf(open_path, sizeof(open_path), "/proc/%s", rel);
+            } else {
+                ksnprintf(open_path, sizeof(open_path), "/proc");
+            }
+            int fd = vfs_open(open_path, VFS_O_READ);
             if (fd >= 0) {
                 char name[32];
                 vfs_stat_t st;

@@ -85,8 +85,9 @@
 /* 24: covers all channels across multi-sensor nodes (BME280/680, CCS811, SGP30,
  * TSL2561/2591, MiCS-6814) plus sea-level pressure, altitude, and gateway file sources.
  * ~220 bytes a slot (state + file-source entry). */
-#define MQTTD_MAX_SOURCES 24
-#define MQTTD_VALUE_MAX   32
+#define MQTTD_MAX_SOURCES      32
+#define MQTTD_MAX_FILE_SOURCES 8
+#define MQTTD_VALUE_MAX        32
 
 /* Reads one measurement as a fixed-point integer. False when the reading
  * failed, which publishes nothing at all rather than a stale or zero value --
@@ -135,7 +136,7 @@ int  mqttd_add_source(const char *name, mqttd_sample_fn fn, void *ctx,
  * full, the name is taken, or a string does not fit. */
 #define MQTTD_FILE_PATH_MAX  96
 #define MQTTD_FILE_FIELD_MAX 24
-#define MQTTD_NAME_MAX       24
+#define MQTTD_NAME_MAX       36
 int  mqttd_add_file_source(const char *name, const char *path, const char *field,
                            uint8_t decimals, uint16_t max_age_s,
                            const mqttd_rule_t *rule);

@@ -19,74 +19,52 @@
  * not part of the RTC driver any more. */
 
 #if defined(CONFIG_BOARD_RP2350)
-/* Board-fact-driven (L3, plan/phase11_pico_clock_green.md) rather than the
- * GP4/GP5/I2C0 literals this file hardcoded before: the Pico-Clock-Green
- * baseboard's DS3231 is wired to GP6/GP7, which RP2350's GPIO-to-
- * controller mapping (alternates every 4 pins) puts on the I2C1
- * peripheral instance, not I2C0 -- a different base address, not just
- * different pins. cmake/board-rp2350.cmake keeps the original GP4/GP5/
- * I2C0 values (CONFIG_I2C_RTC_BASE == I2C0's 0x40090000); cmake/board-
- * rp2350-clock.cmake sets GP6/GP7/I2C1 (0x40098000) instead. */
-#define I2C_SDA_PIN CONFIG_I2C_RTC_SDA_GPIO
-#define I2C_SCL_PIN CONFIG_I2C_RTC_SCL_GPIO
+/* Two I2C buses on RP2350.
+ *
+ * Bus 0 is the board's own bus, where the board file puts it
+ * (CONFIG_I2C_RTC_BASE/SDA/SCL -- names historical): I2C0 on GP4/GP5 on most
+ * personas, but I2C1 on GP6/GP7 on rp2350-clock (the Pico-Clock-Green's
+ * DS3231) and rp2350-terminal. The RTC and the EEPROM sit on it and only
+ * ever use bus 0, so it must stay wherever the board file says.
+ *
+ * Bus 1 is I2C1 on GP6/GP7, and exists only where those pins are free: bus 0
+ * must be I2C0 (otherwise I2C1 already *is* bus 0), and the TM1638 must not
+ * have GP6/GP7 (rp2350-chess). Everywhere else there is one bus. */
+#define I2C0_BASE              0x40090000UL
+#define I2C1_BASE              0x40098000UL
+
+#define I2C_BUS0_BASE          ((uintptr_t)CONFIG_I2C_RTC_BASE)
+#define I2C_BUS0_SDA           CONFIG_I2C_RTC_SDA_GPIO
+#define I2C_BUS0_SCL           CONFIG_I2C_RTC_SCL_GPIO
+#if CONFIG_I2C_RTC_BASE == 0x40098000UL
+#define I2C_BUS0_RESET_BIT     (1u << 5) // RESETS_RESET_I2C1
+#define I2C_BUS0_ACCESSCTRL    (ACCESSCTRL_BASE + 0x88) // ACCESSCTRL_I2C1
+#else
+#define I2C_BUS0_RESET_BIT     (1u << 4) // RESETS_RESET_I2C0
+#define I2C_BUS0_ACCESSCTRL    (ACCESSCTRL_BASE + 0x84) // ACCESSCTRL_I2C0
+#endif
+
+#if CONFIG_I2C_RTC_BASE == 0x40090000UL && !(defined(CONFIG_ENABLE_TM1638) && CONFIG_ENABLE_TM1638)
+#define RP2350_I2C1_AVAILABLE  1
+#define I2C_BUS1_BASE          I2C1_BASE
+#define I2C_BUS1_SDA           6
+#define I2C_BUS1_SCL           7
+#define I2C_BUS1_RESET_BIT     (1u << 5) // RESETS_RESET_I2C1
+#define I2C_BUS1_ACCESSCTRL    (ACCESSCTRL_BASE + 0x88) // ACCESSCTRL_I2C1
+#else
+#define RP2350_I2C1_AVAILABLE  0
+#define I2C_BUS1_BASE          I2C_BUS0_BASE
+#endif
 
 #define RESETS_BASE            0x40020000UL
 #define RESETS_RESET           (RESETS_BASE + 0x0000)
-#define RESETS_RESET_SET       (RESETS_BASE + 0x2000) // Atomic Bit SET Alias
-#define RESETS_RESET_CLR       (RESETS_BASE + 0x3000) // Atomic Bit CLR Alias
-#define RESETS_RESET_DONE      (RESETS_BASE + 0x0008) // Reset Done Register --
-    // was 0x000C (off by one register); verified against
-    // ~/gith/pico/pico-sdk/src/rp2350/hardware_regs/include/hardware/regs/
-    // resets.h's RESETS_RESET_DONE_OFFSET while researching L2's own ADC
-    // reset sequence. Likely dormant rather than actually broken: the
-    // 10000-iteration poll below still burns enough real time for the
-    // peripheral's (near-instant) unreset to finish underneath it
-    // regardless of which address it polled, so this was never observed
-    // to misbehave -- but it's the wrong register, so fixed outright now
-    // that it's been found, not left in place because it happened to work.
+#define RESETS_RESET_SET       (RESETS_BASE + 0x2000)
+#define RESETS_RESET_CLR       (RESETS_BASE + 0x3000)
+#define RESETS_RESET_DONE      (RESETS_BASE + 0x0008)
 
-/* RESETS_RESET_I2C0 is bit 4, RESETS_RESET_I2C1 is bit 5 (resets.h) --
- * derived from CONFIG_I2C_RTC_BASE rather than added as its own board
- * fact, so a board file can't get this one wrong independently of the
- * base address it already has to get right. */
-#if CONFIG_I2C_RTC_BASE == 0x40098000UL
-#define I2C_RTC_RESET_BIT (1u << 5) // RESETS_RESET_I2C1
-#else
-#define I2C_RTC_RESET_BIT (1u << 4) // RESETS_RESET_I2C0
-#endif
-
-/* M5 Phase 3, plan/phase12_microkernel_migration.md: RP2350's Secure/
- * Non-secure split -- the same mechanism found for GPIO in M5 Phase 1
- * (drivers/uart_rp2350.c's ACCESSCTRL_GPIO_NSMASK0 comment has the full
- * datasheet citation, not repeated here) -- also gates I2C0/I2C1, but
- * through a differently-shaped register: one register per peripheral
- * (not one bit per GPIO), with SP/SU/NSP/NSU bits (Secure/Non-secure x
- * Privileged/Unprivileged). Checked directly against
- * ~/gith/pico/pico-sdk's accessctrl.h: reset value 0xfc, i.e. Secure
- * access enabled (SP=1) and Non-secure access disabled (NSP=NSU=0) by
- * default. U-mode is Non-secure+Unprivileged -- NSU -- and that header's
- * own comment notes NSU "is writable... if and only if NSP is set", so
- * both bits need setting together, from M-mode, before the task exists
- * (i2c_hw_init() below). Same conditional shape as I2C_RTC_RESET_BIT
- * above, for the same reason. */
-#define ACCESSCTRL_BASE 0x40060000UL
-#if CONFIG_I2C_RTC_BASE == 0x40098000UL
-#define ACCESSCTRL_I2C_RTC (ACCESSCTRL_BASE + 0x88) // ACCESSCTRL_I2C1
-#else
-#define ACCESSCTRL_I2C_RTC (ACCESSCTRL_BASE + 0x84) // ACCESSCTRL_I2C0
-#endif
-#define ACCESSCTRL_I2C_NSP (1u << 1)
-#define ACCESSCTRL_I2C_NSU (1u << 0)
-
-/* Found the hard way, as a boot-time bus fault, immediately after adding
- * the write below without it: every ACCESSCTRL register *except*
- * GPIO_NSMASK0/1 (the two heartbeat's own fix, drivers/uart_rp2350.c,
- * happened to use) requires the 16-bit value 0xacce present in the
- * write's upper 16 bits, or the write both fails *and* raises a bus
- * fault rather than silently doing nothing -- straight from the
- * datasheet's own ACCESSCTRL overview section, not something either of
- * this tree's two prior ACCESSCTRL fixes (GPIO_NSMASK0, both exempt) had
- * ever needed to learn. */
+#define ACCESSCTRL_BASE        0x40060000UL
+#define ACCESSCTRL_I2C_NSP     (1u << 1)
+#define ACCESSCTRL_I2C_NSU     (1u << 0)
 #define ACCESSCTRL_WRITE_PASSWORD 0xacce0000UL
 
 #define IO_BANK0_BASE          0x40028000UL
@@ -95,114 +73,128 @@
 #define PADS_BANK0_BASE        0x40038000UL
 #define PADS_BANK0_PAD(n)      (PADS_BANK0_BASE + 0x004 + (n) * 4)
 
-#define I2C_RTC_BASE            ((uintptr_t)CONFIG_I2C_RTC_BASE)
-#define IC_CON                 (I2C_RTC_BASE + 0x00)
-#define IC_TAR                 (I2C_RTC_BASE + 0x04)
-#define IC_DATA_CMD            (I2C_RTC_BASE + 0x10)
-#define IC_SS_SCL_HCNT         (I2C_RTC_BASE + 0x14)
-#define IC_SS_SCL_LCNT         (I2C_RTC_BASE + 0x18)
-#define IC_FS_SCL_HCNT         (I2C_RTC_BASE + 0x1C)
-#define IC_FS_SCL_LCNT         (I2C_RTC_BASE + 0x20)
-#define IC_INTR_STAT           (I2C_RTC_BASE + 0x2C)
-#define IC_RAW_INTR_STAT       (I2C_RTC_BASE + 0x34)
-#define IC_CLR_TX_ABRT         (I2C_RTC_BASE + 0x54)
-/* Offsets and masks from the Pico SDK's own hardware/regs/i2c.h, not
- * inferred: I2C_IC_CLR_STOP_DET_OFFSET 0x60, and STOP_DET is bit 9 of
- * IC_RAW_INTR_STAT (I2C_IC_RAW_INTR_STAT_STOP_DET_BITS 0x200). */
-#define IC_CLR_STOP_DET        (I2C_RTC_BASE + 0x60)
+#define IC_CON_OFFSET          0x00
+#define IC_TAR_OFFSET          0x04
+#define IC_DATA_CMD_OFFSET     0x10
+#define IC_SS_SCL_HCNT_OFFSET  0x14
+#define IC_SS_SCL_LCNT_OFFSET  0x18
+#define IC_FS_SCL_HCNT_OFFSET  0x1C
+#define IC_FS_SCL_LCNT_OFFSET  0x20
+#define IC_INTR_STAT_OFFSET    0x2C
+#define IC_RAW_INTR_STAT_OFFSET 0x34
+#define IC_CLR_TX_ABRT_OFFSET  0x54
+#define IC_CLR_STOP_DET_OFFSET 0x60
+#define IC_ENABLE_OFFSET       0x6C
+#define IC_STATUS_OFFSET       0x70
+#define IC_TXFLR_OFFSET        0x74
+#define IC_RXFLR_OFFSET        0x78
+#define IC_SDA_HOLD_OFFSET     0x7C
+#define IC_TX_ABRT_SOURCE_OFFSET 0x80
+#define IC_FS_SPKLEN_OFFSET    0xA0
+
 #define IC_RAW_STOP_DET        (1u << 9)
-#define IC_ENABLE              (I2C_RTC_BASE + 0x6C)
-#define IC_STATUS              (I2C_RTC_BASE + 0x70)
-#define IC_TXFLR               (I2C_RTC_BASE + 0x74)
-#define IC_RXFLR               (I2C_RTC_BASE + 0x78)
-#define IC_SDA_HOLD            (I2C_RTC_BASE + 0x7C)
-#define IC_TX_ABRT_SOURCE      (I2C_RTC_BASE + 0x80)
-#define IC_FS_SPKLEN           (I2C_RTC_BASE + 0xA0)
+
+#define I2C_RTC_BASE           ((uintptr_t)CONFIG_I2C_RTC_BASE)
+#define IC_CON                 (I2C_RTC_BASE + IC_CON_OFFSET)
+#define IC_TAR                 (I2C_RTC_BASE + IC_TAR_OFFSET)
+#define IC_DATA_CMD            (I2C_RTC_BASE + IC_DATA_CMD_OFFSET)
+#define IC_SS_SCL_HCNT         (I2C_RTC_BASE + IC_SS_SCL_HCNT_OFFSET)
+#define IC_SS_SCL_LCNT         (I2C_RTC_BASE + IC_SS_SCL_LCNT_OFFSET)
+#define IC_FS_SCL_HCNT         (I2C_RTC_BASE + IC_FS_SCL_HCNT_OFFSET)
+#define IC_FS_SCL_LCNT         (I2C_RTC_BASE + IC_FS_SCL_LCNT_OFFSET)
+#define IC_INTR_STAT           (I2C_RTC_BASE + IC_INTR_STAT_OFFSET)
+#define IC_RAW_INTR_STAT       (I2C_RTC_BASE + IC_RAW_INTR_STAT_OFFSET)
+#define IC_CLR_TX_ABRT         (I2C_RTC_BASE + IC_CLR_TX_ABRT_OFFSET)
+#define IC_CLR_STOP_DET        (I2C_RTC_BASE + IC_CLR_STOP_DET_OFFSET)
+#define IC_ENABLE              (I2C_RTC_BASE + IC_ENABLE_OFFSET)
+#define IC_STATUS              (I2C_RTC_BASE + IC_STATUS_OFFSET)
+#define IC_TXFLR               (I2C_RTC_BASE + IC_TXFLR_OFFSET)
+#define IC_RXFLR               (I2C_RTC_BASE + IC_RXFLR_OFFSET)
+#define IC_SDA_HOLD            (I2C_RTC_BASE + IC_SDA_HOLD_OFFSET)
+#define IC_TX_ABRT_SOURCE      (I2C_RTC_BASE + IC_TX_ABRT_SOURCE_OFFSET)
+#define IC_FS_SPKLEN           (I2C_RTC_BASE + IC_FS_SPKLEN_OFFSET)
 
 #define REG(addr) (*(volatile uint32_t *)(addr))
 
-void i2c_bus_init(void) {
-    /* 1. Assert and then clear the peripheral's reset using RP2350 Atomic
-     * Alias Registers (I2C0 or I2C1, whichever CONFIG_I2C_RTC_BASE says) */
-    REG(RESETS_RESET_SET) = I2C_RTC_RESET_BIT;
-    for (volatile int i = 0; i < 1000; i++);
-    REG(RESETS_RESET_CLR) = I2C_RTC_RESET_BIT;
-    int timeout = 10000;
-    while (!(REG(RESETS_RESET_DONE) & I2C_RTC_RESET_BIT) && --timeout > 0);
-
-    /* M5 Phase 3: the I2C controller needs to be Non-secure-accessible for
-     * the U-mode task's own serve loop below to actually touch it -- must
-     * happen here, from M-mode, before the task exists. See
-     * ACCESSCTRL_I2C_RTC's own comment above -- including the write
-     * password prefix that comment explains. */
-    REG(ACCESSCTRL_I2C_RTC) = ACCESSCTRL_WRITE_PASSWORD | REG(ACCESSCTRL_I2C_RTC)
-                              | ACCESSCTRL_I2C_NSP | ACCESSCTRL_I2C_NSU;
-
-    /* 2. Configure GP4 (SDA) & GP5 (SCL) strictly as Function 3 (I2C) */
-    REG(IO_BANK0_CTRL(I2C_SDA_PIN)) = 3;
-    REG(IO_BANK0_CTRL(I2C_SCL_PIN)) = 3;
-
-    /* 3. Enable Pull-ups, Input Enable, Schmitt Trigger on GP4 & GP5 pads (0x5A) */
-    REG(PADS_BANK0_PAD(I2C_SDA_PIN)) = 0x5A;
-    REG(PADS_BANK0_PAD(I2C_SCL_PIN)) = 0x5A;
-
-    /* 4. Disable I2C0 before configuring */
-    REG(IC_ENABLE) = 0;
-
-    /* Master mode (bit 0), 7-bit addressing, Fast mode (2u << 1), Restart enable (bit 6), Slave disable (bit 5), TX_EMPTY_CTRL (bit 8) */
-    REG(IC_CON) = (1u << 0) | (1u << 5) | (2u << 1) | (1u << 6) | (1u << 8);
-    /* A placeholder target, because IC_TAR must hold *something* before
-     * IC_ENABLE goes high and every transfer sets its own before starting.
-     *
-     * It used to be the DS3231's 0x68 -- a device address written into the
-     * bus's initialisation, which is the leak this split exists to find, and
-     * the compiler found it the moment the two files were separated. Nothing
-     * depended on the value; it simply read as though the bus belonged to one
-     * device, which for this file's whole history it did. */
-    REG(IC_TAR) = 0x00;
-
-    /* 100kHz Standard Mode clock dividers from clk_sys (CONFIG_CLK_SYS_HZ,
-     * arch/rp2350_clocks.h -- this was the literal 150000000 until 36.1).
-     * The per-line figures are at 150 MHz. */
-    uint32_t freq_in = CONFIG_CLK_SYS_HZ;
-    uint32_t baudrate = 100000; // 100 kHz
-    uint32_t period = (freq_in + baudrate / 2) / baudrate; // 1500 cycles
-    uint32_t lcnt = period * 3 / 5; // 900
-    uint32_t hcnt = period - lcnt;  // 600
-
-    REG(IC_FS_SCL_HCNT) = hcnt;
-    REG(IC_FS_SCL_LCNT) = lcnt;
-    REG(IC_SS_SCL_HCNT) = hcnt;
-    REG(IC_SS_SCL_LCNT) = lcnt;
-
-    REG(IC_FS_SPKLEN) = lcnt < 16 ? 1 : lcnt / 16;
-
-    /* Critical 300ns SDA Hold Time (matching Pico SDK); 46 cycles at 150 MHz */
-    uint32_t sda_tx_hold_count = ((freq_in * 3) / 10000000) + 1; // 46 cycles = 307ns
-    REG(IC_SDA_HOLD) = sda_tx_hold_count;
-
-    /* Enable I2C0 */
-    REG(IC_ENABLE) = 1;
+static inline uintptr_t rp2350_i2c_base(uint8_t bus) {
+    return (bus == 1) ? I2C_BUS1_BASE : I2C_BUS0_BASE;
 }
 
-/* `stop` false leaves the transfer open, so a read phase can continue it with
- * a repeated START -- the controller emits one by itself when the direction
- * changes, because IC_CON's RESTART_EN is set in i2c_bus_init().
- *
- * A register read is **one** transaction: address+W, the register number,
- * RESTART, address+R, the data. This driver used to make it two, with a STOP
- * between them and the controller disabled across the gap. The parts on these
- * boards tolerate that because their internal address pointer survives a
- * STOP; a part that does not, or a second master arriving in the gap, would
- * not. The ESP32-P4 arm has always built it as one command list and says so
- * in its own comment -- this is the same shape on the other controller.
- *
- * plan/open_issues.md carried this while it existed in three copies. */
-static bool i2c_write_bytes_stop(uint8_t addr, const uint8_t *src, int len, bool stop) {
-    REG(IC_ENABLE) = 0;
-    REG(IC_TAR) = addr;
-    REG(IC_ENABLE) = 1;
-    (void)REG(IC_CLR_TX_ABRT);
+static void rp2350_i2c_init_controller(uintptr_t base) {
+    REG(base + IC_ENABLE_OFFSET) = 0;
+    /* Master mode (bit 0), 7-bit addressing, Fast mode (2u << 1), Restart enable (bit 6), Slave disable (bit 5), TX_EMPTY_CTRL (bit 8) */
+    REG(base + IC_CON_OFFSET) = (1u << 0) | (1u << 5) | (2u << 1) | (1u << 6) | (1u << 8);
+    REG(base + IC_TAR_OFFSET) = 0x00;
+
+    /* 100kHz Standard Mode clock dividers from clk_sys (CONFIG_CLK_SYS_HZ) */
+    uint32_t freq_in = CONFIG_CLK_SYS_HZ;
+    uint32_t baudrate = 100000; // 100 kHz
+    uint32_t period = (freq_in + baudrate / 2) / baudrate;
+    uint32_t lcnt = period * 3 / 5;
+    uint32_t hcnt = period - lcnt;
+
+    REG(base + IC_FS_SCL_HCNT_OFFSET) = hcnt;
+    REG(base + IC_FS_SCL_LCNT_OFFSET) = lcnt;
+    REG(base + IC_SS_SCL_HCNT_OFFSET) = hcnt;
+    REG(base + IC_SS_SCL_LCNT_OFFSET) = lcnt;
+    REG(base + IC_FS_SPKLEN_OFFSET) = lcnt < 16 ? 1 : lcnt / 16;
+
+    /* 300ns SDA Hold Time matching Pico SDK */
+    uint32_t sda_tx_hold_count = ((freq_in * 3) / 10000000) + 1;
+    REG(base + IC_SDA_HOLD_OFFSET) = sda_tx_hold_count;
+
+    REG(base + IC_ENABLE_OFFSET) = 1;
+}
+
+void i2c_bus_init(void) {
+    /* 1. Assert and clear the controllers' resets */
+    uint32_t rst_mask = I2C_BUS0_RESET_BIT;
+#if RP2350_I2C1_AVAILABLE
+    rst_mask |= I2C_BUS1_RESET_BIT;
+#endif
+    REG(RESETS_RESET_SET) = rst_mask;
+    for (volatile int i = 0; i < 1000; i++);
+    REG(RESETS_RESET_CLR) = rst_mask;
+    int timeout = 10000;
+    while ((REG(RESETS_RESET_DONE) & rst_mask) != rst_mask && --timeout > 0);
+
+    /* M5 Phase 3: the controllers need to be Non-secure-accessible for the
+     * U-mode task's serve loop to touch them -- from M-mode, before the task
+     * exists. Every ACCESSCTRL register except GPIO_NSMASK0/1 needs 0xacce
+     * in the write's upper 16 bits, or the write bus-faults. */
+    REG(I2C_BUS0_ACCESSCTRL) = ACCESSCTRL_WRITE_PASSWORD | REG(I2C_BUS0_ACCESSCTRL)
+                             | ACCESSCTRL_I2C_NSP | ACCESSCTRL_I2C_NSU;
+#if RP2350_I2C1_AVAILABLE
+    REG(I2C_BUS1_ACCESSCTRL) = ACCESSCTRL_WRITE_PASSWORD | REG(I2C_BUS1_ACCESSCTRL)
+                             | ACCESSCTRL_I2C_NSP | ACCESSCTRL_I2C_NSU;
+#endif
+
+    /* 2. Pins as Function 3 (I2C); pull-ups, input enable, Schmitt (0x5A) */
+    REG(IO_BANK0_CTRL(I2C_BUS0_SDA)) = 3;
+    REG(IO_BANK0_CTRL(I2C_BUS0_SCL)) = 3;
+    REG(PADS_BANK0_PAD(I2C_BUS0_SDA)) = 0x5A;
+    REG(PADS_BANK0_PAD(I2C_BUS0_SCL)) = 0x5A;
+#if RP2350_I2C1_AVAILABLE
+    REG(IO_BANK0_CTRL(I2C_BUS1_SDA)) = 3;
+    REG(IO_BANK0_CTRL(I2C_BUS1_SCL)) = 3;
+    REG(PADS_BANK0_PAD(I2C_BUS1_SDA)) = 0x5A;
+    REG(PADS_BANK0_PAD(I2C_BUS1_SCL)) = 0x5A;
+#endif
+
+    /* 3. Timing & master mode */
+    rp2350_i2c_init_controller(I2C_BUS0_BASE);
+#if RP2350_I2C1_AVAILABLE
+    rp2350_i2c_init_controller(I2C_BUS1_BASE);
+#endif
+}
+
+static uint32_t g_rp2350_last_abrt_source;
+
+static bool rp2350_i2c_write_bytes_stop(uintptr_t base, uint8_t addr, const uint8_t *src, int len, bool stop) {
+    REG(base + IC_ENABLE_OFFSET) = 0;
+    REG(base + IC_TAR_OFFSET) = addr;
+    REG(base + IC_ENABLE_OFFSET) = 1;
+    (void)REG(base + IC_CLR_TX_ABRT_OFFSET);
 
     bool abort = false;
     for (int i = 0; i < len; i++) {
@@ -211,176 +203,165 @@ static bool i2c_write_bytes_stop(uint8_t addr, const uint8_t *src, int len, bool
         if (last && stop) cmd |= (1u << 9); // STOP bit
 
         int timeout = 10000;
-        while (!(REG(IC_STATUS) & (1u << 1)) && --timeout > 0); // Wait TX Not Full
+        while (!(REG(base + IC_STATUS_OFFSET) & (1u << 1)) && --timeout > 0);
         if (timeout == 0) return false;
 
-        REG(IC_DATA_CMD) = cmd;
+        REG(base + IC_DATA_CMD_OFFSET) = cmd;
 
         timeout = 10000;
         do {
-            if (REG(IC_RAW_INTR_STAT) & (1u << 6)) { // TX_ABRT (bit 6)
+            if (REG(base + IC_RAW_INTR_STAT_OFFSET) & (1u << 6)) {
                 abort = true;
-                (void)REG(IC_CLR_TX_ABRT);
+                g_rp2350_last_abrt_source = REG(base + IC_TX_ABRT_SOURCE_OFFSET);
+                (void)REG(base + IC_CLR_TX_ABRT_OFFSET);
                 break;
             }
-        } while (--timeout > 0 && !(REG(IC_RAW_INTR_STAT) & (1u << 4))); // TX_EMPTY (bit 4)
+        } while (--timeout > 0 && !(REG(base + IC_RAW_INTR_STAT_OFFSET) & (1u << 4)));
 
         if (abort || timeout == 0) return false;
     }
     return !abort;
 }
 
-/* The read half, split out of i2c_read_bytes() so the generic transfer op
- * (I2C_OP_XFER, Q4) can reuse it byte for byte rather than growing a second
- * copy of the same controller sequence. No behaviour change: the RTC path
- * still reaches it through i2c_read_bytes() exactly as before. */
-/* `continuing` means a write phase has just left a transfer open for us, so
- * the controller must not be touched: IC_ENABLE = 0 aborts whatever is in
- * flight on a DW_apb_i2c, which drops the bus without a STOP and takes the
- * repeated START with it. The target address is already right -- it is the
- * same device -- so there is nothing to set. */
-static bool i2c_read_phase_cont(uint8_t addr, uint8_t *dst, int len, bool continuing) {
+static bool rp2350_i2c_read_phase_cont(uintptr_t base, uint8_t addr, uint8_t *dst, int len, bool continuing) {
     if (!continuing) {
-        REG(IC_ENABLE) = 0;
-        REG(IC_TAR) = addr;
-        REG(IC_ENABLE) = 1;
-        (void)REG(IC_CLR_TX_ABRT);
+        REG(base + IC_ENABLE_OFFSET) = 0;
+        REG(base + IC_TAR_OFFSET) = addr;
+        REG(base + IC_ENABLE_OFFSET) = 1;
+        (void)REG(base + IC_CLR_TX_ABRT_OFFSET);
     }
 
     bool abort = false;
     for (int i = 0; i < len; i++) {
         bool last = (i == len - 1);
-        uint32_t cmd = (1u << 8); // READ bit (bit 8)
-        if (last) cmd |= (1u << 9); // STOP bit (bit 9)
+        uint32_t cmd = (1u << 8); // READ bit
+        if (last) cmd |= (1u << 9); // STOP bit
 
         int timeout = 10000;
-        while (!(REG(IC_STATUS) & (1u << 1)) && --timeout > 0); // Wait TX Not Full
+        while (!(REG(base + IC_STATUS_OFFSET) & (1u << 1)) && --timeout > 0);
         if (timeout == 0) return false;
 
-        REG(IC_DATA_CMD) = cmd;
+        REG(base + IC_DATA_CMD_OFFSET) = cmd;
 
         timeout = 10000;
         do {
-            if (REG(IC_RAW_INTR_STAT) & (1u << 6)) { // TX_ABRT (bit 6)
+            if (REG(base + IC_RAW_INTR_STAT_OFFSET) & (1u << 6)) {
                 abort = true;
-                (void)REG(IC_CLR_TX_ABRT);
+                g_rp2350_last_abrt_source = REG(base + IC_TX_ABRT_SOURCE_OFFSET);
+                (void)REG(base + IC_CLR_TX_ABRT_OFFSET);
                 break;
             }
-        } while (--timeout > 0 && (REG(IC_STATUS) & (1u << 3)) == 0); // Wait RX Not Empty (bit 3)
+        } while (--timeout > 0 && (REG(base + IC_STATUS_OFFSET) & (1u << 3)) == 0);
 
         if (abort || timeout == 0) return false;
 
-        dst[i] = (uint8_t)REG(IC_DATA_CMD);
+        dst[i] = (uint8_t)REG(base + IC_DATA_CMD_OFFSET);
     }
     return !abort;
 }
 
-static bool i2c_read_bytes(uint8_t addr, uint8_t reg, uint8_t *dst, int len) {
-    if (!i2c_write_bytes_stop(addr, &reg, 1, false)) return false;
-    return i2c_read_phase_cont(addr, dst, len, true);
-}
-
-/* Q4, plan/phase26_mqtt_and_environment_sensors.md: write `wlen` bytes, then
- * read `rlen`. Either half may be empty.
- *
- * This is every register access an I2C device generally needs, and that is
- * the point of having it: with one generic operation in the shared task, a
- * new part is a self-contained M-mode file rather than another opcode in a
- * U-mode dispatch that every future device would have to grow.
- *
- * It is not a loss of isolation. The U-mode `i2c` task exists to protect the
- * kernel from a bus driver's bugs, not the bus from its callers -- every
- * caller is kernel-side code in this same tree, and a generic opcode gives
- * them nothing they could not have by adding a case. The bound that does
- * matter, request and response size, is enforced by I2C_REQ_CAP/
- * I2C_RESP_CAP exactly as it is for every other op. */
-static bool i2c_xfer_raw(uint8_t addr, const uint8_t *w, int wlen,
-                         uint8_t *r, int rlen) {
-    /* The write half ends in a STOP only when no read follows it; otherwise
-     * the transfer stays open and the read continues it. */
-    if (wlen > 0 && !i2c_write_bytes_stop(addr, w, wlen, rlen == 0)) return false;
-    if (rlen > 0 && !i2c_read_phase_cont(addr, r, rlen, wlen > 0)) return false;
+static bool i2c_xfer_raw_bus(uint8_t bus, uint8_t addr, const uint8_t *w, int wlen,
+                             uint8_t *r, int rlen) {
+    if (bus >= i2c_bus_count()) return false;
+    uintptr_t base = rp2350_i2c_base(bus);
+    if (wlen > 0 && !rp2350_i2c_write_bytes_stop(base, addr, w, wlen, rlen == 0)) return false;
+    if (rlen > 0 && !rp2350_i2c_read_phase_cont(base, addr, r, rlen, wlen > 0)) return false;
     return true;
 }
 
-static bool i2c_probe_addr(uint8_t addr);
-static bool i2c_read_bytes(uint8_t addr, uint8_t reg, uint8_t *dst, int len);
+static bool __attribute__((unused)) i2c_xfer_raw(uint8_t addr, const uint8_t *w, int wlen,
+                         uint8_t *r, int rlen) {
+    return i2c_xfer_raw_bus(0, addr, w, wlen, r, rlen);
+}
 
-/* --- The instrument (phase 30) -----------------------------------------
- *
- * Three address probes and three register reads of one part, each followed by
- * IC_TX_ABRT_SOURCE and IC_STATUS. Kept because it is what turned a day of
- * plausible theories into an answer in one line, and because the answer was
- * not in the software at all.
- *
- * **How to read it.** Three in a row, because one tells you nothing: 1,1,1 is
- * a working part, 0,0,0 with `abrt` bit 0 set is nothing at that address, and
- * 0,0,0 with `abrt == 0` is neither -- no device NACKed, so the transaction
- * simply never finished. That last pattern, with `status` showing
- * MST_ACTIVITY set and both FIFOs empty, means the bus is not being driven
- * the way the controller thinks it is.
- *
- * **What that turned out to be, 2026-09-11.** A marginal ground. Three parts
- * daisy-chained off a Pico 2 W read as present to `i2c scan` and failed every
- * register read; four software hypotheses were written, tested and discarded
- * against it. The fault was the GND jumper, and moving it fixed everything
- * with the driver untouched.
- *
- * The tell was there the whole time and is worth naming: **`i2c scan` worked
- * while everything else failed.** The scan emits a cprintf() between probes,
- * so its transactions are milliseconds apart, and a bus whose reference is
- * floating recovers in the gaps. Anything back-to-back -- the boot probes,
- * this diagnostic -- does not. If you see that split again, check the wiring
- * before reading any more of this file. */
-void i2c_rp2350_diag(uint8_t addr, uint8_t reg) {
-    cprintf("[I2Cdiag] CON=0x%08x TAR=0x%08x ENABLE=0x%08x STATUS=0x%08x RAW=0x%08x\n",
-            (unsigned)REG(IC_CON), (unsigned)REG(IC_TAR),
-            (unsigned)REG(IC_ENABLE), (unsigned)REG(IC_STATUS),
-            (unsigned)REG(IC_RAW_INTR_STAT));
+static bool rp2350_i2c_probe_addr(uintptr_t base, uint8_t addr) {
+    REG(base + IC_ENABLE_OFFSET) = 0;
+    REG(base + IC_TAR_OFFSET) = addr;
+    REG(base + IC_ENABLE_OFFSET) = 1;
+    (void)REG(base + IC_CLR_TX_ABRT_OFFSET);
+    g_rp2350_last_abrt_source = 0;
+
+    // Send READ command + STOP bit
+    uint32_t cmd = (1u << 8) | (1u << 9);
+    REG(base + IC_DATA_CMD_OFFSET) = cmd;
+
+    int timeout = 10000;
+    bool abort = false;
+    do {
+        if (REG(base + IC_RAW_INTR_STAT_OFFSET) & (1u << 6)) { // TX_ABRT
+            abort = true;
+            g_rp2350_last_abrt_source = REG(base + IC_TX_ABRT_SOURCE_OFFSET);
+            (void)REG(base + IC_CLR_TX_ABRT_OFFSET);
+            break;
+        }
+    } while (--timeout > 0 && (REG(base + IC_STATUS_OFFSET) & (1u << 3)) == 0);
+
+    if (!abort && timeout > 0) {
+        (void)REG(base + IC_DATA_CMD_OFFSET); // Drain byte from RX FIFO
+        return true;
+    }
+    return false;
+}
+
+static bool i2c_probe_addr_bus(uint8_t bus, uint8_t addr) {
+    if (bus >= i2c_bus_count()) return false;
+    return rp2350_i2c_probe_addr(rp2350_i2c_base(bus), addr);
+}
+
+static bool __attribute__((unused)) i2c_probe_addr(uint8_t addr) {
+    return i2c_probe_addr_bus(0, addr);
+}
+
+void i2c_rp2350_diag_bus(uint8_t bus, uint8_t addr, uint8_t reg) {
+    if (bus >= i2c_bus_count()) {
+        cprintf("[I2Cdiag] Bus %u not available on this board\n", bus);
+        return;
+    }
+    uintptr_t base = rp2350_i2c_base(bus);
+    uint32_t gpio_in = REG(0xd0000004); // SIO GPIO_IN
+    cprintf("[I2Cdiag] Bus %u GPIO: GP2=%d GP3=%d GP4=%d GP5=%d GP6=%d GP7=%d (raw=0x%08x)\n",
+            bus,
+            (int)((gpio_in >> 2) & 1), (int)((gpio_in >> 3) & 1),
+            (int)((gpio_in >> 4) & 1), (int)((gpio_in >> 5) & 1),
+            (int)((gpio_in >> 6) & 1), (int)((gpio_in >> 7) & 1),
+            (unsigned)gpio_in);
+    cprintf("[I2Cdiag] Bus %u: CON=0x%08x TAR=0x%08x ENABLE=0x%08x STATUS=0x%08x RAW=0x%08x\n",
+            bus,
+            (unsigned)REG(base + IC_CON_OFFSET), (unsigned)REG(base + IC_TAR_OFFSET),
+            (unsigned)REG(base + IC_ENABLE_OFFSET), (unsigned)REG(base + IC_STATUS_OFFSET),
+            (unsigned)REG(base + IC_RAW_INTR_STAT_OFFSET));
     for (int i = 0; i < 3; i++) {
-        bool ok = i2c_probe_addr(addr);
+        bool ok = rp2350_i2c_probe_addr(base, addr);
         cprintf("[I2Cdiag] probe#%d 0x%02x -> %d  abrt=0x%08x status=0x%08x\n",
-                i, addr, (int)ok, (unsigned)REG(IC_TX_ABRT_SOURCE),
-                (unsigned)REG(IC_STATUS));
-        (void)REG(IC_CLR_TX_ABRT);
+                i, addr, (int)ok, (unsigned)g_rp2350_last_abrt_source,
+                (unsigned)REG(base + IC_STATUS_OFFSET));
+        (void)REG(base + IC_CLR_TX_ABRT_OFFSET);
     }
     for (int i = 0; i < 3; i++) {
         uint8_t v = 0xff;
-        bool ok = i2c_read_bytes(addr, reg, &v, 1);
+        bool ok = false;
+        g_rp2350_last_abrt_source = 0;
+        if (rp2350_i2c_write_bytes_stop(base, addr, &reg, 1, false)) {
+            ok = rp2350_i2c_read_phase_cont(base, addr, &v, 1, true);
+        }
         cprintf("[I2Cdiag] read#%d 0x%02x reg 0x%02x -> %d val=0x%02x  "
                 "abrt=0x%08x status=0x%08x\n",
                 i, addr, reg, (int)ok, (unsigned)v,
-                (unsigned)REG(IC_TX_ABRT_SOURCE), (unsigned)REG(IC_STATUS));
-        (void)REG(IC_CLR_TX_ABRT);
+                (unsigned)g_rp2350_last_abrt_source, (unsigned)REG(base + IC_STATUS_OFFSET));
+        (void)REG(base + IC_CLR_TX_ABRT_OFFSET);
     }
 
-    /* Is a register read one transaction or two? Asserted, not assumed.
-     *
-     * Every part on these boards tolerates a STOP between the register write
-     * and the read -- their address pointer survives it -- so no functional
-     * test can tell the two shapes apart, and the defect sat in the tree
-     * unnoticed for exactly that reason. The controller can tell: STOP_DET
-     * says whether a STOP reached the wire.
-     *
-     * Two sides, because either alone can pass for the wrong reason. No STOP
-     * after the write half means the transfer is still open; a STOP after the
-     * read half means it ended, once, where it should. */
-    (void)REG(IC_CLR_TX_ABRT);
-    (void)REG(IC_CLR_STOP_DET);
+    (void)REG(base + IC_CLR_TX_ABRT_OFFSET);
+    (void)REG(base + IC_CLR_STOP_DET_OFFSET);
     uint8_t rv = 0xff;
-    bool wok = i2c_write_bytes_stop(addr, &reg, 1, false);
-    bool open_after_write = (REG(IC_RAW_INTR_STAT) & IC_RAW_STOP_DET) == 0;
-    bool rok = i2c_read_phase_cont(addr, &rv, 1, true);
-    /* Waited for, not sampled. The read returns as soon as a byte is in the
-     * RX FIFO, which is before the STOP it queued has reached the wire -- so
-     * the obvious check reads zero on a perfectly correct transaction, which
-     * is what the first version of this line did. One byte at 100 kHz is
-     * ~90 us; a millisecond is generous and still bounded. */
+    bool wok = rp2350_i2c_write_bytes_stop(base, addr, &reg, 1, false);
+    bool open_after_write = (REG(base + IC_RAW_INTR_STAT_OFFSET) & IC_RAW_STOP_DET) == 0;
+    bool rok = rp2350_i2c_read_phase_cont(base, addr, &rv, 1, true);
     bool stopped_after_read = false;
     for (uint64_t end = time_get_us() + 1000u; time_get_us() < end; ) {
-        if (REG(IC_RAW_INTR_STAT) & IC_RAW_STOP_DET) { stopped_after_read = true; break; }
+        if (REG(base + IC_RAW_INTR_STAT_OFFSET) & IC_RAW_STOP_DET) { stopped_after_read = true; break; }
     }
-    (void)REG(IC_CLR_STOP_DET);
+    (void)REG(base + IC_CLR_STOP_DET_OFFSET);
     cprintf("[I2Cdiag] repeated-start: write=%d open_after_write=%d read=%d "
             "val=0x%02x stop_after_read=%d -> %s\n",
             (int)wok, (int)open_after_write, (int)rok, (unsigned)rv,
@@ -389,31 +370,8 @@ void i2c_rp2350_diag(uint8_t addr, uint8_t reg) {
                 ? "ONE TRANSACTION" : "SPLIT");
 }
 
-static bool i2c_probe_addr(uint8_t addr) {
-    REG(IC_ENABLE) = 0;
-    REG(IC_TAR) = addr;
-    REG(IC_ENABLE) = 1;
-    (void)REG(IC_CLR_TX_ABRT);
-
-    // Send READ command + STOP bit (matching Pico SDK probe)
-    uint32_t cmd = (1u << 8) | (1u << 9);
-    REG(IC_DATA_CMD) = cmd;
-
-    int timeout = 10000;
-    bool abort = false;
-    do {
-        if (REG(IC_RAW_INTR_STAT) & (1u << 6)) { // TX_ABRT
-            abort = true;
-            (void)REG(IC_CLR_TX_ABRT);
-            break;
-        }
-    } while (--timeout > 0 && (REG(IC_STATUS) & (1u << 3)) == 0); // RXFLR / RFNE
-
-    if (!abort && timeout > 0) {
-        (void)REG(IC_DATA_CMD); // Drain byte from RX FIFO
-        return true; // ACK!
-    }
-    return false;
+void i2c_rp2350_diag(uint8_t addr, uint8_t reg) {
+    i2c_rp2350_diag_bus(0, addr, reg);
 }
 #elif defined(CONFIG_BOARD_ESP32P4) || defined(CONFIG_BOARD_ESP32C6)
 /* Espressif's I2C controller: the ESP32-P4's I2C0 (E7, plan/phase27_esp32p4_bringup.md) and, since
@@ -973,25 +931,66 @@ static bool i2c_probe_addr(uint8_t addr) {
     REG(ESP_I2C_COMD(2)) = ESP_CMD(ESP_CMD_STOP, 0, 0, 0);
     return esp_i2c_run();
 }
+
+static bool i2c_xfer_raw_bus(uint8_t bus, uint8_t addr, const uint8_t *w, int wlen,
+                             uint8_t *r, int rlen) {
+    if (bus != 0) return false;
+    return i2c_xfer_raw(addr, w, wlen, r, rlen);
+}
+
+static bool i2c_probe_addr_bus(uint8_t bus, uint8_t addr) {
+    if (bus != 0) return false;
+    return i2c_probe_addr(addr);
+}
 #else
 void i2c_bus_init(void) {}
-static bool i2c_probe_addr(uint8_t addr) { (void)addr; return false; }
-static bool i2c_xfer_raw(uint8_t addr, const uint8_t *w, int wlen,
+static bool __attribute__((unused)) i2c_probe_addr_bus(uint8_t bus, uint8_t addr) { (void)bus; (void)addr; return false; }
+static bool __attribute__((unused)) i2c_probe_addr(uint8_t addr) { (void)addr; return false; }
+static bool __attribute__((unused)) i2c_xfer_raw_bus(uint8_t bus, uint8_t addr, const uint8_t *w, int wlen,
+                             uint8_t *r, int rlen) {
+    (void)bus; (void)addr; (void)w; (void)wlen; (void)r; (void)rlen; return false;
+}
+static bool __attribute__((unused)) i2c_xfer_raw(uint8_t addr, const uint8_t *w, int wlen,
                          uint8_t *r, int rlen) {
     (void)addr; (void)w; (void)wlen; (void)r; (void)rlen; return false;
 }
 #endif
 
-
-
-void i2c_scan_bus(void) {
-    /* An answer to a typed `i2c` command, so it goes to the console stream
-     * (C0). Using printk() put the whole scan table into the kernel log
-     * ring, where it turned up again in `cat /proc/kmsg`. */
+uint8_t i2c_bus_count(void) {
 #if defined(CONFIG_BOARD_RP2350)
-    cprintf("\nI2C Bus Scan (GP%d SDA / GP%d SCL):\n", CONFIG_I2C_RTC_SDA_GPIO, CONFIG_I2C_RTC_SCL_GPIO);
+#if RP2350_I2C1_AVAILABLE
+    return 2;
 #else
-    cprintf("\nI2C Bus Scan:\n");
+    return 1;
+#endif
+#else
+    return 1;
+#endif
+}
+
+void i2c_scan_bus_id(uint8_t bus) {
+    if (bus >= i2c_bus_count()) {
+        cprintf("I2C bus %u not available on this board.\n", bus);
+        return;
+    }
+#if defined(CONFIG_BOARD_RP2350)
+#if RP2350_I2C1_AVAILABLE
+    int sda = (bus == 1) ? I2C_BUS1_SDA : I2C_BUS0_SDA;
+    int scl = (bus == 1) ? I2C_BUS1_SCL : I2C_BUS0_SCL;
+#else
+    int sda = I2C_BUS0_SDA, scl = I2C_BUS0_SCL;
+#endif
+    if (bus == 0) {
+        cprintf("\nI2C Bus Scan (GP%d SDA / GP%d SCL):\n", sda, scl);
+    } else {
+        cprintf("\nI2C Bus %u Scan (GP%d SDA / GP%d SCL):\n", bus, sda, scl);
+    }
+#else
+    if (bus == 0) {
+        cprintf("\nI2C Bus Scan:\n");
+    } else {
+        cprintf("\nI2C Bus %u Scan:\n", bus);
+    }
 #endif
     cprintf("     0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f\n");
 
@@ -1003,7 +1002,7 @@ void i2c_scan_bus(void) {
             if (addr < 0x03 || addr > 0x77) {
                 cprintf("   ");
             } else {
-                if (i2c_probe_addr(addr)) {
+                if (i2c_probe_addr_bus(bus, addr)) {
                     cprintf("%02x ", addr);
                     found_count++;
                 } else {
@@ -1013,7 +1012,18 @@ void i2c_scan_bus(void) {
         }
         cprintf("\n");
     }
-    cprintf("Found %d I2C device(s).\n\n", found_count);
+    cprintf("Found %d I2C device(s) on bus %u.\n\n", found_count, bus);
+}
+
+void i2c_scan_bus(void) {
+    uint8_t n = i2c_bus_count();
+    if (n == 0) {
+        cprintf("\nNo I2C controller on this target.\n\n");
+        return;
+    }
+    for (uint8_t b = 0; b < n; b++) {
+        i2c_scan_bus_id(b);
+    }
 }
 
 /* M4.5, plan/phase12_microkernel_migration.md, Part B: RTC and EEPROM share
@@ -1050,14 +1060,12 @@ void i2c_scan_bus(void) {
  *   response: ok, r[rlen]
  */
 #define I2C_OP_XFER           ((uint8_t)'F')
+#define I2C_OP_XFER_BUS       ((uint8_t)'B')
 
 
-/* Sized by the only operation there is. They used to be sized by the EEPROM's
- * dedicated opcode (5 + 128 bytes), which is where most of the U-mode task's
- * 512-byte stack went: a request and a response buffer, both local to its
- * serve loop. One generic op sized to a page write costs less than half
- * that. */
-#define I2C_REQ_CAP  (4u + I2C_XFER_WMAX)
+/* Sized by the generic transfer operations. Sized to hold opcode, bus,
+ * addr, wlen, rlen and payload up to I2C_XFER_WMAX. */
+#define I2C_REQ_CAP  (5u + I2C_XFER_WMAX)
 #define I2C_RESP_CAP (1u + I2C_XFER_RMAX)
 
 static uint8_t         g_i2c_req[I2C_REQ_CAP];
@@ -1188,37 +1196,37 @@ __attribute__((always_inline)) static inline void i2c_usys_put_i32(uint8_t *p, i
     p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
 }
 
-I2C_UATTR static void i2c_usys_target(uint8_t addr) {
-    REG(IC_ENABLE) = 0;
-    REG(IC_TAR) = addr;
-    REG(IC_ENABLE) = 1;
-    (void)REG(IC_CLR_TX_ABRT);
+I2C_UATTR static void i2c_usys_target(uintptr_t base, uint8_t addr) {
+    REG(base + IC_ENABLE_OFFSET) = 0;
+    REG(base + IC_TAR_OFFSET) = addr;
+    REG(base + IC_ENABLE_OFFSET) = 1;
+    (void)REG(base + IC_CLR_TX_ABRT_OFFSET);
 }
 
 /* Writes len bytes already TAR-targeted by the caller, STOP after the
  * last byte only if stop_at_end -- false is for a register/address
  * prefix that a read phase (i2c_usys_read_reg() below) continues past. */
-I2C_UATTR static bool i2c_usys_write_raw(const uint8_t *data, int len, bool stop_at_end) {
+I2C_UATTR static bool i2c_usys_write_raw(uintptr_t base, const uint8_t *data, int len, bool stop_at_end) {
     for (int i = 0; i < len; i++) {
         bool last = (i == len - 1);
         uint32_t cmd = data[i];
         if (last && stop_at_end) cmd |= (1u << 9);
 
         int timeout = 10000;
-        while (!(REG(IC_STATUS) & (1u << 1)) && --timeout > 0);
+        while (!(REG(base + IC_STATUS_OFFSET) & (1u << 1)) && --timeout > 0);
         if (timeout == 0) return false;
 
-        REG(IC_DATA_CMD) = cmd;
+        REG(base + IC_DATA_CMD_OFFSET) = cmd;
 
         timeout = 10000;
         bool abort = false;
         do {
-            if (REG(IC_RAW_INTR_STAT) & (1u << 6)) {
+            if (REG(base + IC_RAW_INTR_STAT_OFFSET) & (1u << 6)) {
                 abort = true;
-                (void)REG(IC_CLR_TX_ABRT);
+                (void)REG(base + IC_CLR_TX_ABRT_OFFSET);
                 break;
             }
-        } while (--timeout > 0 && !(REG(IC_RAW_INTR_STAT) & (1u << 4)));
+        } while (--timeout > 0 && !(REG(base + IC_RAW_INTR_STAT_OFFSET) & (1u << 4)));
 
         if (abort || timeout == 0) return false;
     }
@@ -1227,62 +1235,47 @@ I2C_UATTR static bool i2c_usys_write_raw(const uint8_t *data, int len, bool stop
 
 /* Sends len bytes to addr, STOP after the last -- RTC's register-pointer
  * + payload writes and EEPROM's 2-byte-address + payload writes alike. */
-I2C_UATTR static bool i2c_usys_write_bytes(uint8_t addr, const uint8_t *data, int len) {
-    i2c_usys_target(addr);
-    return i2c_usys_write_raw(data, len, true);
+I2C_UATTR static bool i2c_usys_write_bytes(uintptr_t base, uint8_t addr, const uint8_t *data, int len) {
+    i2c_usys_target(base, addr);
+    return i2c_usys_write_raw(base, data, len, true);
 }
 
 /* Writes reg_len address/register bytes (no STOP), then re-targets and
  * reads len bytes -- RTC's 1-byte register reads (time at 0x00,
  * temperature at 0x11) and EEPROM's 2-byte address reads alike. */
-I2C_UATTR static bool i2c_usys_read_reg(uint8_t addr, const uint8_t *reg, int reg_len, uint8_t *dst, int len) {
-    i2c_usys_target(addr);
-    if (!i2c_usys_write_raw(reg, reg_len, false)) return false;
+I2C_UATTR static bool i2c_usys_read_reg(uintptr_t base, uint8_t addr, const uint8_t *reg, int reg_len, uint8_t *dst, int len) {
+    i2c_usys_target(base, addr);
+    if (!i2c_usys_write_raw(base, reg, reg_len, false)) return false;
 
-    /* No second i2c_usys_target() here, and that removal is the fix.
-     *
-     * The write above deliberately ends without a STOP so this read can
-     * continue it with a repeated START -- write_raw()'s own comment says as
-     * much. Re-targeting threw that away: i2c_usys_target() does
-     * IC_ENABLE = 0, which aborts the in-flight transfer and leaves the bus
-     * without a STOP. The address has not changed, so the call bought nothing
-     * and cost the transaction its repeated START. */
     for (int i = 0; i < len; i++) {
         bool last = (i == len - 1);
         uint32_t cmd = (1u << 8);
         if (last) cmd |= (1u << 9);
 
         int timeout = 10000;
-        while (!(REG(IC_STATUS) & (1u << 1)) && --timeout > 0);
+        while (!(REG(base + IC_STATUS_OFFSET) & (1u << 1)) && --timeout > 0);
         if (timeout == 0) return false;
 
-        REG(IC_DATA_CMD) = cmd;
+        REG(base + IC_DATA_CMD_OFFSET) = cmd;
 
         timeout = 10000;
         bool abort = false;
         do {
-            if (REG(IC_RAW_INTR_STAT) & (1u << 6)) {
+            if (REG(base + IC_RAW_INTR_STAT_OFFSET) & (1u << 6)) {
                 abort = true;
-                (void)REG(IC_CLR_TX_ABRT);
+                (void)REG(base + IC_CLR_TX_ABRT_OFFSET);
                 break;
             }
-        } while (--timeout > 0 && (REG(IC_STATUS) & (1u << 3)) == 0);
+        } while (--timeout > 0 && (REG(base + IC_STATUS_OFFSET) & (1u << 3)) == 0);
 
         if (abort || timeout == 0) return false;
 
-        dst[i] = (uint8_t)REG(IC_DATA_CMD);
+        dst[i] = (uint8_t)REG(base + IC_DATA_CMD_OFFSET);
     }
     return true;
 }
 
 I2C_UATTR static void i2c_umode_body(void) {
-    /* Not a string literal: a literal lands in ordinary .rodata, outside
-     * every region this task's domain grants -- the bug that hung the
-     * board the first time this exact mechanism ran on real hardware in
-     * M5 Phase 2 (see drivers/tm1638_rp2350.c's own comment on it).
-     * volatile, for the reason kernel/shell.c's user_deputy() already
-     * documents: gcc recognises a run of consecutive stores and turns it
-     * back into a copy from a .rodata blob otherwise. */
     volatile char name[4];
     name[0] = 'i'; name[1] = '2'; name[2] = 'c'; name[3] = '\0';
 
@@ -1299,8 +1292,7 @@ I2C_UATTR static void i2c_umode_body(void) {
         uint32_t resp_len = 0;
         switch (op) {
         case I2C_OP_XFER: {
-            /* i2c_usys_read_reg() already takes a write length, so the
-             * generic op maps straight onto it with nothing new in U-mode. */
+            uintptr_t base = I2C_BUS0_BASE;
             bool ok = false;
             uint32_t rlen = 0;
             if (req_len >= 4) {
@@ -1310,10 +1302,35 @@ I2C_UATTR static void i2c_umode_body(void) {
                 if (wlen <= I2C_XFER_WMAX && rlen <= I2C_XFER_RMAX &&
                     (long)(4u + wlen) <= req_len) {
                     if (rlen) {
-                        ok = i2c_usys_read_reg(addr, &req[4], (int)wlen,
+                        ok = i2c_usys_read_reg(base, addr, &req[4], (int)wlen,
                                                &resp[1], (int)rlen);
                     } else {
-                        ok = i2c_usys_write_bytes(addr, &req[4], (int)wlen);
+                        ok = i2c_usys_write_bytes(base, addr, &req[4], (int)wlen);
+                    }
+                }
+            }
+            if (!ok) rlen = 0;
+            resp[0] = ok ? 1 : 0;
+            resp_len = 1u + rlen;
+            break;
+        }
+        case I2C_OP_XFER_BUS: {
+            bool ok = false;
+            uint32_t rlen = 0;
+            if (req_len >= 5) {
+                uint8_t bus = req[1];
+                uint8_t addr = req[2];
+                uint32_t wlen = req[3];
+                rlen = req[4];
+                uintptr_t base = (bus == 1) ? I2C_BUS1_BASE : I2C_BUS0_BASE;
+                if (bus < 1u + RP2350_I2C1_AVAILABLE &&
+                    wlen <= I2C_XFER_WMAX && rlen <= I2C_XFER_RMAX &&
+                    (long)(5u + wlen) <= req_len) {
+                    if (rlen) {
+                        ok = i2c_usys_read_reg(base, addr, &req[5], (int)wlen,
+                                               &resp[1], (int)rlen);
+                    } else {
+                        ok = i2c_usys_write_bytes(base, addr, &req[5], (int)wlen);
                     }
                 }
             }
@@ -1340,24 +1357,29 @@ static uint8_t      g_i2c_ustack[512] __attribute__((aligned(512)))
 
 /* This task's own kernel-mode entry point: task_create_sized() calls this
  * (ordinary kernel stack, kernel privilege) to build the domain and make
- * the one-way jump into U-mode. Mirrors drivers/tm1638_rp2350.c's
- * tm1638_task_body() shape: the same 3-region domain (own stack, the
- * shared .utext page, one MMIO window -- I2C_RTC_BASE's controller
- * registers here instead of SIO), the same refuse-rather-than-claim-
- * unverified-isolation rule. */
+ * the one-way jump into U-mode. */
 static void i2c_task_body(void *arg) {
     (void)arg;
     while (!g_i2c_ep) sched_yield();
 
-    /* G3, plan/phase30_driver_framework.md. One window: the I2C controller. */
+    /* G3, plan/phase30_driver_framework.md. I2C controller windows. */
     const driver_umode_spec_t spec = {
         .name         = "I2C",
         .fallback     = "RTC/EEPROM stay on direct hardware access.",
         .body         = i2c_umode_body,
         .stack_base   = (uintptr_t)g_i2c_ustack,
         .stack_size   = sizeof(g_i2c_ustack),
-        .regions      = { { I2C_RTC_BASE, 4096, MEM_R | MEM_W } },
+        .regions      = {
+            { I2C_BUS0_BASE, 4096, MEM_R | MEM_W },
+#if RP2350_I2C1_AVAILABLE
+            { I2C_BUS1_BASE, 4096, MEM_R | MEM_W },
+#endif
+        },
+#if RP2350_I2C1_AVAILABLE
+        .region_count = 2,
+#else
         .region_count = 1,
+#endif
     };
     (void)driver_umode_enter(&spec);
 }
@@ -1394,8 +1416,27 @@ static void i2c_task_body(void *arg) {
                 rlen = g_i2c_req[3];
                 if (wlen <= I2C_XFER_WMAX && rlen <= I2C_XFER_RMAX &&
                     (uint32_t)req_len >= 4u + wlen) {
-                    ok = i2c_xfer_raw(addr, &g_i2c_req[4], (int)wlen,
-                                      &g_i2c_resp[1], (int)rlen);
+                    ok = i2c_xfer_raw_bus(0, addr, &g_i2c_req[4], (int)wlen,
+                                          &g_i2c_resp[1], (int)rlen);
+                }
+            }
+            if (!ok) rlen = 0;
+            g_i2c_resp[0] = ok ? 1 : 0;
+            chan_serve_reply(g_i2c_ep, 1 + rlen);
+            break;
+        }
+        case I2C_OP_XFER_BUS: {
+            bool ok = false;
+            uint32_t rlen = 0;
+            if (req_len >= 5) {
+                uint8_t bus = g_i2c_req[1];
+                uint8_t addr = g_i2c_req[2];
+                uint32_t wlen = g_i2c_req[3];
+                rlen = g_i2c_req[4];
+                if (wlen <= I2C_XFER_WMAX && rlen <= I2C_XFER_RMAX &&
+                    (uint32_t)req_len >= 5u + wlen) {
+                    ok = i2c_xfer_raw_bus(bus, addr, &g_i2c_req[5], (int)wlen,
+                                          &g_i2c_resp[1], (int)rlen);
                 }
             }
             if (!ok) rlen = 0;
@@ -1520,20 +1561,22 @@ bool i2c_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) {
 #endif /* CONFIG_BOARD_RP2350 */
 
 
-bool i2c_xfer(uint8_t addr, const uint8_t *w, uint32_t wlen,
-              uint8_t *r, uint32_t rlen) {
+bool i2c_xfer_bus(uint8_t bus, uint8_t addr, const uint8_t *w, uint32_t wlen,
+                  uint8_t *r, uint32_t rlen) {
+    if (bus >= i2c_bus_count()) return false;
     if (wlen > I2C_XFER_WMAX || rlen > I2C_XFER_RMAX) return false;
     if ((wlen && !w) || (rlen && !r)) return false;
 
     if (i2c_task_alive()) {
-        uint8_t req[4 + I2C_XFER_WMAX];
+        uint8_t req[5 + I2C_XFER_WMAX];
         uint8_t resp[1 + I2C_XFER_RMAX];
-        req[0] = I2C_OP_XFER;
-        req[1] = addr;
-        req[2] = (uint8_t)wlen;
-        req[3] = (uint8_t)rlen;
-        if (wlen) memcpy(&req[4], w, wlen);
-        int n = i2c_task_call(req, 4u + wlen, resp, sizeof(resp));
+        req[0] = I2C_OP_XFER_BUS;
+        req[1] = bus;
+        req[2] = addr;
+        req[3] = (uint8_t)wlen;
+        req[4] = (uint8_t)rlen;
+        if (wlen) memcpy(&req[5], w, wlen);
+        int n = i2c_task_call(req, 5u + wlen, resp, sizeof(resp));
         if (n < 1 || resp[0] != 1) return false;
         if (rlen) {
             if ((uint32_t)n < 1u + rlen) return false;
@@ -1541,6 +1584,11 @@ bool i2c_xfer(uint8_t addr, const uint8_t *w, uint32_t wlen,
         }
         return true;
     }
-    return i2c_xfer_raw(addr, w, (int)wlen, r, (int)rlen);
+    return i2c_xfer_raw_bus(bus, addr, w, (int)wlen, r, (int)rlen);
+}
+
+bool i2c_xfer(uint8_t addr, const uint8_t *w, uint32_t wlen,
+              uint8_t *r, uint32_t rlen) {
+    return i2c_xfer_bus(0, addr, w, wlen, r, rlen);
 }
 
