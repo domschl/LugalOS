@@ -719,7 +719,7 @@ Topics published under `lugalos/<node>/` now explicitly identify their origin:
 * `/proc/sensor/` virtual directory:
   * Listed in `ls /proc` as `<DIR>`.
   * `ls /proc/sensor` lists `fused`, `inferred`, and all actively detected device names (`bme680`, `hdc1080`, `ccs811`, `mics6814`, `mhz19b`, etc.).
-  * `/proc/sensor/fused`: Contains the current arbitrated readings (`co2_ppm`, `temperature_c100`, `humidity_rh1000`, `pressure_pa`, etc.).
+  * `/proc/sensor/fused`: Contains the current arbitrated readings (`co2_ppm`, `temperature_c100`, `humidity_rh1000`, `pressure_pa`, etc.), each followed by its own `<metric>_age_s` (e.g. `temperature_age_s`): the values can come from different devices sampled at different times. `/proc/sensor/inferred` does the same.
   * `/proc/sensor/inferred`: Contains mathematical models (`pressure_msl_pa`, `altitude_m`, `dew_point_c100`, `abs_humidity_c100`, `iaq`, `mox_contaminated`, `fresh_air_verified`).
   * `/proc/sensor/<device>`: Contains device-specific identity, address, sample period, validity, and raw transducer measurements.
 

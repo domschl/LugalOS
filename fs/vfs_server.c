@@ -1685,37 +1685,37 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
             int32_t val = 0;
             uint32_t age = 0;
             if (sensor_hub_get(SENSOR_CHAN_CO2, &val, &age)) {
-                used += (uint32_t)ksnprintf(buf + used, cap - used, "co2_ppm=%ld\nage_s=%lu\n", (long)val, (unsigned long)age);
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "co2_ppm=%ld\nco2_age_s=%lu\n", (long)val, (unsigned long)age);
             }
             if (sensor_hub_get(SENSOR_CHAN_TEMP, &val, &age)) {
-                used += (uint32_t)ksnprintf(buf + used, cap - used, "temperature_c100=%ld\nage_s=%lu\n", (long)val, (unsigned long)age);
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "temperature_c100=%ld\ntemperature_age_s=%lu\n", (long)val, (unsigned long)age);
             }
             if (sensor_hub_get(SENSOR_CHAN_PRESSURE, &val, &age)) {
-                used += (uint32_t)ksnprintf(buf + used, cap - used, "pressure_pa=%ld\nage_s=%lu\n", (long)val, (unsigned long)age);
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "pressure_pa=%ld\npressure_age_s=%lu\n", (long)val, (unsigned long)age);
             }
             if (sensor_hub_get(SENSOR_CHAN_HUMIDITY, &val, &age)) {
-                used += (uint32_t)ksnprintf(buf + used, cap - used, "humidity_rh1000=%ld\nage_s=%lu\n", (long)(val * 10), (unsigned long)age);
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "humidity_rh1000=%ld\nhumidity_age_s=%lu\n", (long)(val * 10), (unsigned long)age);
             }
             if (sensor_hub_get(SENSOR_CHAN_LUX, &val, &age)) {
-                used += (uint32_t)ksnprintf(buf + used, cap - used, "lux_c100=%ld\nage_s=%lu\n", (long)val, (unsigned long)age);
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "lux_c100=%ld\nlux_age_s=%lu\n", (long)val, (unsigned long)age);
             }
             if (sensor_hub_get(SENSOR_CHAN_ECO2, &val, &age)) {
-                used += (uint32_t)ksnprintf(buf + used, cap - used, "eco2_ppm=%ld\nage_s=%lu\n", (long)val, (unsigned long)age);
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "eco2_ppm=%ld\neco2_age_s=%lu\n", (long)val, (unsigned long)age);
             }
             if (sensor_hub_get(SENSOR_CHAN_TVOC, &val, &age)) {
-                used += (uint32_t)ksnprintf(buf + used, cap - used, "tvoc_ppb=%ld\nage_s=%lu\n", (long)val, (unsigned long)age);
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "tvoc_ppb=%ld\ntvoc_age_s=%lu\n", (long)val, (unsigned long)age);
             }
             if (sensor_hub_get(SENSOR_CHAN_GAS_RES, &val, &age)) {
-                used += (uint32_t)ksnprintf(buf + used, cap - used, "gas_resistance_ohm=%ld\nage_s=%lu\n", (long)val, (unsigned long)age);
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "gas_resistance_ohm=%ld\ngas_resistance_age_s=%lu\n", (long)val, (unsigned long)age);
             }
             if (sensor_hub_get(SENSOR_CHAN_CO, &val, &age)) {
-                used += (uint32_t)ksnprintf(buf + used, cap - used, "co_c_ppm=%ld\nage_s=%lu\n", (long)val, (unsigned long)age);
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "co_c_ppm=%ld\nco_age_s=%lu\n", (long)val, (unsigned long)age);
             }
             if (sensor_hub_get(SENSOR_CHAN_NO2, &val, &age)) {
-                used += (uint32_t)ksnprintf(buf + used, cap - used, "no2_c_ppm=%ld\nage_s=%lu\n", (long)val, (unsigned long)age);
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "no2_c_ppm=%ld\nno2_age_s=%lu\n", (long)val, (unsigned long)age);
             }
             if (sensor_hub_get(SENSOR_CHAN_NH3, &val, &age)) {
-                used += (uint32_t)ksnprintf(buf + used, cap - used, "nh3_c_ppm=%ld\nage_s=%lu\n", (long)val, (unsigned long)age);
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "nh3_c_ppm=%ld\nnh3_age_s=%lu\n", (long)val, (unsigned long)age);
             }
             return (int)used;
         } else if (strcmp(sub, "inferred") == 0) {
@@ -1727,16 +1727,16 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
                 used += (uint32_t)ksnprintf(buf + used, cap - used, "altitude_m=%ld\n", (long)alt);
             }
             if (sensor_hub_get(SENSOR_CHAN_PRESSURE_MSL, &val, &age)) {
-                used += (uint32_t)ksnprintf(buf + used, cap - used, "pressure_msl_pa=%ld\nage_s=%lu\n", (long)val, (unsigned long)age);
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "pressure_msl_pa=%ld\npressure_msl_age_s=%lu\n", (long)val, (unsigned long)age);
             }
             if (sensor_hub_get(SENSOR_CHAN_DEW_POINT, &val, &age)) {
-                used += (uint32_t)ksnprintf(buf + used, cap - used, "dew_point_c100=%ld\nage_s=%lu\n", (long)val, (unsigned long)age);
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "dew_point_c100=%ld\ndew_point_age_s=%lu\n", (long)val, (unsigned long)age);
             }
             if (sensor_hub_get(SENSOR_CHAN_AH, &val, &age)) {
-                used += (uint32_t)ksnprintf(buf + used, cap - used, "abs_humidity_c100=%ld\nage_s=%lu\n", (long)val, (unsigned long)age);
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "abs_humidity_c100=%ld\nabs_humidity_age_s=%lu\n", (long)val, (unsigned long)age);
             }
             if (sensor_hub_get(SENSOR_CHAN_IAQ, &val, &age)) {
-                used += (uint32_t)ksnprintf(buf + used, cap - used, "iaq=%ld\nage_s=%lu\n", (long)val, (unsigned long)age);
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "iaq=%ld\niaq_age_s=%lu\n", (long)val, (unsigned long)age);
             }
             if (mhz19b_is_detected() && (ccs811_is_detected() || sgp30_is_detected())) {
                 used += (uint32_t)ksnprintf(buf + used, cap - used,

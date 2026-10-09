@@ -161,11 +161,23 @@ void sensor_hub_sample_all(void) {
     int32_t t = 0, h = 0;
     if (sensor_hub_get(SENSOR_CHAN_TEMP, &t, NULL) &&
         sensor_hub_get(SENSOR_CHAN_HUMIDITY, &h, NULL)) {
-        if (ccs811_is_detected()) {
-            ccs811_set_env_data(t, h);
-        }
         if (sgp30_is_detected()) {
             sgp30_set_absolute_humidity(t, h);
+        }
+    }
+    /* The CCS811 wants the air at the sensor, not the room's. An HDC1080
+     * shares the CCS811's daughterboard and reads that air -- several degrees
+     * above the room from the CCS811's own heater, which is why it is the
+     * last choice for the fused temperature and humidity and the first one
+     * here. Without it, the room's values are the best there is. */
+    if (ccs811_is_detected()) {
+        int32_t ct = 0, ch = 0;
+        if (sensor_hub_get_dev(&hdc1080_sensor_dev, SENSOR_CHAN_TEMP, &ct, NULL) &&
+            sensor_hub_get_dev(&hdc1080_sensor_dev, SENSOR_CHAN_HUMIDITY, &ch, NULL)) {
+            ccs811_set_env_data(ct, ch);
+        } else if (sensor_hub_get(SENSOR_CHAN_TEMP, &ct, NULL) &&
+                   sensor_hub_get(SENSOR_CHAN_HUMIDITY, &ch, NULL)) {
+            ccs811_set_env_data(ct, ch);
         }
     }
 
