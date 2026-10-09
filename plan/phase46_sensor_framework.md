@@ -638,3 +638,81 @@ To address this, LugalOS implements a **dual-tier storage model** utilizing the 
    - Lisp:
      - `(sensor-cal)` — returns an alist of active baselines and persistent flags (`saved?`, `eeprom-saved?`, `fresh-air?`).
      - `(sensor-cal 'save-eeprom)` / `(sensor-cal 'restore-eeprom)` / `(sensor-cal 'clear-eeprom)`.
+
+### 7.7 Hierarchical Multi-Sensor State Presentation (Milestone 46.18)
+
+When multiple environmental sensors are deployed simultaneously (e.g. BME680 + HDC1080 for temperature/humidity, MH-Z19B + CCS811 + SGP30 for carbon dioxide, TSL2561/TSL2591 for ambient light), flat metric presentation introduces ambiguity regarding value origin, calibration source, and physical vs inferred transducers.
+
+Milestone 46.18 implements an explicit three-tier presentation hierarchy across all subsystem interfaces:
+1. **Tier 1: Direct Physical Hardware (`hw`)** — Raw transducer measurements tied to a specific silicon device address.
+2. **Tier 2: Inferred Mathematical Models (`inferred`)** — Values synthesized through deterministic physics formulas (Magnus dew point, August-Roche-Magnus absolute humidity, hypsometric MSL barometric pressure, BME680 IAQ heuristic).
+3. **Tier 3: Fused Consensus & Arbitration (`fused`)** — Top-level system arbitration prioritizing optical ground truth (e.g. MH-Z19B NDIR over MOX eCO2) and primary environmental sensors.
+
+#### 1. MQTT Hierarchical Topics
+Topics published under `lugalos/<node>/` now explicitly identify their origin:
+* **Hardware Devices**: `lugalos/<node>/sensor/<device>/<metric>`
+  * `sensor/bme680/temperature`, `sensor/bme680/pressure`, `sensor/bme680/humidity`, `sensor/bme680/gas_resistance`
+  * `sensor/hdc1080/temperature`, `sensor/hdc1080/humidity`
+  * `sensor/ccs811/eco2`, `sensor/ccs811/tvoc`
+  * `sensor/sgp30/eco2`, `sensor/sgp30/tvoc`
+  * `sensor/mhz19b/co2`
+  * `sensor/mics6814/co`, `sensor/mics6814/no2`, `sensor/mics6814/nh3`
+  * `sensor/tsl2591/lux`, `sensor/tsl2561/lux`
+* **Inferred Models**: `lugalos/<node>/sensor/inferred/<metric>`
+  * `sensor/inferred/pressure_msl`
+  * `sensor/inferred/abs_humidity`
+  * `sensor/inferred/dew_point`
+  * `sensor/inferred/iaq`
+* **Fused Consensus**: `lugalos/<node>/sensor/fused/<metric>`
+  * `sensor/fused/co2` (MH-Z19B optical NDIR priority, MOX eCO2 fallback)
+  * `sensor/fused/temperature`, `sensor/fused/humidity`, `sensor/fused/pressure`
+  * `sensor/fused/eco2`, `sensor/fused/tvoc`, `sensor/fused/lux`
+
+#### 2. Lisp Dialect Hierarchy & Provenance Inspection
+* `(sensor-read)` (0 args):
+  Returns a structured 3-tier nested tree:
+  ```lisp
+  ((hw (bme680 (temp . 2450) (pressure . 95800) (humidity . 4520) (gas-res . 34000))
+       (hdc1080 (temp . 2410) (humidity . 4600))
+       (ccs811 (eco2 . 450) (tvoc . 15))
+       (mics6814 (co . 120) (no2 . 15) (nh3 . 30))
+       (mhz19b (co2 . 420)))
+   (inferred (pressure-msl . 101325)
+             (dew-point . 1230)
+             (abs-humidity . 980)
+             (iaq . 55))
+   (fused (co2 . 420)
+          (temp . 2450)
+          (pressure . 95800)
+          (humidity . 4520)
+          (eco2 . 450)
+          (tvoc . 15)))
+  ```
+* Tier Subtree Queries:
+  * `(sensor-read 'hw)` — returns the hardware device tree.
+  * `(sensor-read 'inferred)` — returns the derived metrics alist.
+  * `(sensor-read 'fused)` — returns the arbitrated consensus alist.
+* Device Queries:
+  * `(sensor-read '<dev>)` — returns all channels for that specific device (e.g. `(sensor-read 'hdc1080)` => `((temp . 2410) (humidity . 4600))`).
+  * `(sensor-read '<dev> '<chan> ['age])` — returns the numeric value (or sample age) from that device.
+* Channel Provenance Inspection:
+  * `(sensor-origin '<chan>)` — returns metadata describing origin tier, source device, mathematical model, and physical principle:
+    ```lisp
+    (sensor-origin 'co2)
+    ;; => ((tier . fused) (source . mhz19b) (model . ndir-optical) (desc . "NDIR infrared optical absorption"))
+
+    (sensor-origin 'dew-point)
+    ;; => ((tier . inferred) (source . bme680) (model . magnus-tetens) (desc . "dew point temperature"))
+
+    (sensor-origin 'temp)
+    ;; => ((tier . fused) (source . bme680) (model . hardware-transducer) (desc . "bme680"))
+    ```
+
+#### 3. VFS `/proc` Subdirectory Hierarchy
+* `/proc/sensors`: Maintained as a 100% backward-compatible composite flat key=value file, preventing any breakage of legacy consumers, remote 9P gateways, or `cat /proc/sensors` parsers.
+* `/proc/sensor/` virtual directory:
+  * Listed in `ls /proc` as `<DIR>`.
+  * `ls /proc/sensor` lists `fused`, `inferred`, and all actively detected device names (`bme680`, `hdc1080`, `ccs811`, `mics6814`, `mhz19b`, etc.).
+  * `/proc/sensor/fused`: Contains the current arbitrated readings (`co2_ppm`, `temperature_c100`, `humidity_rh1000`, `pressure_pa`, etc.).
+  * `/proc/sensor/inferred`: Contains mathematical models (`pressure_msl_pa`, `altitude_m`, `dew_point_c100`, `abs_humidity_c100`, `iaq`, `mox_contaminated`, `fresh_air_verified`).
+  * `/proc/sensor/<device>`: Contains device-specific identity, address, sample period, validity, and raw transducer measurements.

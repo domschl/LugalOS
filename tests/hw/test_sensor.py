@@ -114,6 +114,18 @@ def main() -> int:
             assert "mox_contaminated=" in out, "mox_contaminated flag missing from /proc/sensors"
         print("  [PASS] /proc/sensors exposes multichannel gas metrics and derived channels.")
 
+        print("\n--- 3b. /proc/sensor/ Virtual Subdirectory Inspection ---")
+        out = run_cmd(ser, "ls /proc/sensor", 1.0)
+        print(out.strip())
+        assert "fused" in out and "inferred" in out, "subdirectories missing from /proc/sensor"
+        out = run_cmd(ser, "cat /proc/sensor/fused", 1.0)
+        print(out.strip())
+        assert "tier=fused" in out, "tier=fused missing from /proc/sensor/fused"
+        out = run_cmd(ser, "cat /proc/sensor/inferred", 1.0)
+        print(out.strip())
+        assert "tier=inferred" in out, "tier=inferred missing from /proc/sensor/inferred"
+        print("  [PASS] /proc/sensor/ directory and per-node files verified.")
+
         print("\n--- 4. Lisp Sensor Primitives ---")
         out = run_cmd(ser, "(sensor-list)", 0.5)
         print(f"(sensor-list) -> {out.strip()}")
@@ -125,10 +137,31 @@ def main() -> int:
 
         out = run_cmd(ser, "(sensor-read)", 0.5)
         print(f"(sensor-read) -> {out.strip()}")
+        assert "hw" in out and "inferred" in out and "fused" in out, "Tiered hierarchy missing from (sensor-read)"
         assert "co ." in out and "no2 ." in out and "nh3 ." in out
         if has_mhz19b:
             assert "co2 ." in out
         assert "abs-humidity ." in out and "dew-point ." in out
+
+        out = run_cmd(ser, "(sensor-read 'hw)", 0.5)
+        print(f"(sensor-read 'hw) -> {out.strip()}")
+        assert "mics6814" in out
+
+        out = run_cmd(ser, "(sensor-read 'inferred)", 0.5)
+        print(f"(sensor-read 'inferred) -> {out.strip()}")
+        assert "dew-point ." in out and "abs-humidity ." in out
+
+        out = run_cmd(ser, "(sensor-read 'fused)", 0.5)
+        print(f"(sensor-read 'fused) -> {out.strip()}")
+        assert "co ." in out or "temp ." in out
+
+        out = run_cmd(ser, "(sensor-origin 'dew-point)", 0.5)
+        print(f"(sensor-origin 'dew-point) -> {out.strip()}")
+        assert "tier . inferred" in out and "magnus-tetens" in out
+
+        out = run_cmd(ser, "(sensor-origin 'co2)", 0.5)
+        print(f"(sensor-origin 'co2) -> {out.strip()}")
+        assert "tier . fused" in out
 
         out = run_cmd(ser, "(sensor-read 'mics6814 'co)", 0.5)
         print(f"(sensor-read 'mics6814 'co) -> {out.strip()}")

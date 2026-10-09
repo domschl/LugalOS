@@ -51,6 +51,15 @@ typedef enum {
     SENSOR_CHAN_MAX
 } sensor_chan_t;
 
+/* Measurement provenance and inference tier */
+typedef enum {
+    SENSOR_TIER_HW = 0,       /* Direct physical transducer (thermistor, piezoresistor, NDIR, photodiode) */
+    SENSOR_TIER_INFERRED,     /* Inferred physics equations (Magnus, hypsometric, August-Roche-Magnus, IAQ) */
+    SENSOR_TIER_FUSED,        /* Multi-sensor arbitrated consensus (e.g. MH-Z19B NDIR over MOX eCO2) */
+} sensor_tier_t;
+
+const char *sensor_tier_name(sensor_tier_t tier);
+
 struct sensor_dev;
 
 typedef struct sensor_ops {

@@ -43,6 +43,16 @@ bool sensor_hub_get_filtered(sensor_chan_t chan, int32_t *out_val);
 /* Cached read from a specific sensor device */
 bool sensor_hub_get_dev(const sensor_dev_t *dev, sensor_chan_t chan, int32_t *out_val, uint32_t *age_s);
 
+/* Origin and provenance metadata for a channel */
+typedef struct {
+    sensor_tier_t tier;
+    const char   *source_dev;  /* e.g. "mhz19b", "bme680", "hdc1080" */
+    const char   *model_name;  /* e.g. "magnus-tetens", "hypsometric", "ndir-optical", "hardware-transducer" */
+    const char   *desc;        /* Brief description */
+} sensor_origin_t;
+
+bool sensor_hub_get_origin(sensor_chan_t chan, sensor_origin_t *out);
+
 /* Diagnostic selftest running all drivers' math tests against golden vectors */
 uint32_t sensor_hub_selftest(bool report);
 

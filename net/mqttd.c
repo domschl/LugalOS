@@ -218,7 +218,7 @@ typedef struct {
     uint16_t max_age_s;
 } mqttd_file_src_t;
 
-static mqttd_file_src_t g_file_src[MQTTD_MAX_SOURCES];
+static mqttd_file_src_t g_file_src[MQTTD_MAX_FILE_SOURCES];
 
 /* The text after `key=` at the start of a line of `buf`, or NULL. */
 static const char *kv_find(const char *buf, const char *key) {
@@ -277,7 +277,7 @@ int mqttd_add_file_source(const char *name, const char *path, const char *field,
                           uint8_t decimals, uint16_t max_age_s,
                           const mqttd_rule_t *rule) {
     mqttd_file_src_t *fs = NULL;
-    for (uint32_t i = 0; i < MQTTD_MAX_SOURCES && !fs; i++)
+    for (uint32_t i = 0; i < MQTTD_MAX_FILE_SOURCES && !fs; i++)
         if (!g_file_src[i].in_use) fs = &g_file_src[i];
     if (!fs) return -1;
     mqttd_file_src_t tmp;
@@ -298,7 +298,7 @@ int mqttd_add_file_source(const char *name, const char *path, const char *field,
 
 void mqttd_clear_sources(void) {
     g_src_count = 0;
-    for (uint32_t i = 0; i < MQTTD_MAX_SOURCES; i++) g_file_src[i].in_use = false;
+    for (uint32_t i = 0; i < MQTTD_MAX_FILE_SOURCES; i++) g_file_src[i].in_use = false;
 }
 uint32_t mqttd_source_count(void) { return g_src_count; }
 bool mqttd_running(void) { return g.running; }
