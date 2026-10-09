@@ -14,7 +14,7 @@
 #include "kernel/shell.h"
 #include "kernel/time.h"
 #include "kernel/palloc.h"   /* BULK_BSS */
-#include "drivers/psram_rp2350.h"
+#include "drivers/psram.h"
 #include "drivers/i2c_rtc.h"
 #include "drivers/i2c_bus.h"
 #include "drivers/at24c32.h"
@@ -5029,7 +5029,7 @@ static lisp_val_t *prim_mounted(lisp_val_t *args, lisp_val_t *env) {
  * the RAM disk costs no heap, so it is mounted large and unconditionally. */
 static lisp_val_t *prim_psram(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
-#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PSRAM_BYTES)
+#if defined(CONFIG_PSRAM_BYTES)
     return make_int((long)psram_bytes());
 #else
     return make_int(0);

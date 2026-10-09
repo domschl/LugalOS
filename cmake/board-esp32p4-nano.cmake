@@ -215,6 +215,17 @@ set(CONFIG_EMAC_PHY_ID2        0x0C54)
 # follows from it.
 set(CONFIG_L2_CACHE_KB 128)
 
+# --- PSRAM: 32 MB in the package ------------------------------------------
+#
+# 47.3, plan/phase47_esp32p4_lcd7b_ribbon.md -- the same ESP32-P4NRW32 part as
+# the LCD-7B and the same driver (drivers/psram_esp32p4.c), with the v1.3 MPLL
+# programming. Powered by LDO channel 2 (schematic: VFB/VO2, pin 72, to
+# VDD_PSRAM_0/1, pins 59 and 67 -- C48/C49). The chip's MR2 density is checked
+# against this at every boot.
+set(CONFIG_PSRAM_BYTES 33554432)
+set(CONFIG_PALLOC_BULK_PAGES 8192)
+set(CONFIG_RAMDISK_MAX_KB 4096)
+
 # --- The microSD slot: SDMMC slot 0, and the rail that powers it ---------
 #
 # 35.1, plan/phase35_esp32p4_sdmmc.md. Every number here is either the chip's

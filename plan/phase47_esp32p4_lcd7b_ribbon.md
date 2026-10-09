@@ -1,6 +1,6 @@
 # Phase 47 — The ribbon on the ESP32-P4-WIFI6-Touch-LCD-7B
 
-**Status: 47.0, 47.1 and 47.2 done (2026-10-09). Written 2026-10-09.** The kernel
+**Status: 47.0–47.3 done (2026-10-09). Written 2026-10-09.** The kernel
 runs on the board at 40 MHz with its own v3 memory layout. The HIL suite passes
 25/25 there; the BME280 and EMAC tests skip, because the board has neither.
 The NANO passes 25/25 on the same tree.
@@ -198,7 +198,7 @@ sensors on the header.
 *Done when:* `test_esp32p4.py` (or a 7B variant that skips Ethernet; this
 board has none) passes on the 7B.
 
-**47.3 — PSRAM.**
+**47.3 — PSRAM. [DONE 2026-10-09 at 20 MHz, both boards, §6.2; faster speeds are 47.3b]**
 The P4's MSPI PSRAM controller, AP hex-mode device (reference:
 `esp-idf/components/esp_psram/device/esp_psram_impl_ap_hex.c` and the MSPI
 timing tuning it calls), mapped through the cache. Then phase 38's
@@ -517,6 +517,79 @@ pressure as the NANO's BME280 on the same desk. The HIL suite's sensor tests
 now run rather than skip, and all pass, including "stable on the first
 transaction" (probes 1,1,1) and readings over 9P. **LCD-7B: 25/25, and only
 the Ethernet tests skip.**
+
+## 6.2 What 47.3 found (2026-10-09)
+
+**`drivers/psram_esp32p4.c`, one driver for both boards.** Nothing powers or
+initialises the PSRAM before us: the ROM boots our image from flash without
+IDF's second-stage bootloader. So the driver follows IDF's
+`esp_psram_impl_enable()`:
+
+1. **Power.** On both schematics VDDO_PSRAM (pin 72, VFB/VO2) is the only
+   feed to VDD_PSRAM_0/1 (pins 59, 67), and LDO2 was off on both boards
+   (register 0x40200000). It is switched on at 1.8 V from the chip's eFuse
+   calibration. The two chips have different calibrations: NANO dref 10 /
+   mul 3, LCD-7B dref 3 / mul 7.
+2. **Clock.** MPLL at 400 MHz, with IDF's per-revision analog programming
+   (`clk_ll_mpll_set_config_v1` / `_v3`, plus pmu_init's v3-only bias writes)
+   behind `CONFIG_ESP32P4_REV`. The v1 path runs on the NANO, the v3 path on
+   the 7B.
+3. **Controller, device, cache port, MMU.** These follow IDF line by line. The
+   mode registers go through the ROM's user-command routines (identical in both
+   ROMs). The PSRAM MMU maps 32 MB at 0x48000000.
+
+All addresses and fields come from a **generated** header,
+`drivers/include/drivers/esp32p4_psram_regs.h`
+(`tools/gen/p4_regs.py < tools/gen/p4_psram_regs.txt`). The generator
+evaluates IDF's own macros for hw_ver1 *and* hw_ver3 and refuses to emit
+anything if they disagree, so "the same registers on both revisions" is
+checked rather than assumed.
+
+**Results, identical on both boards:** vendor 0x0d (AP Memory), MR2 density
+256 Mbit, known-good-die pass; 32 MB, bring-up 2.7 ms. The bulk zone is
+8175 pages (32.7 MB) above BULK_BSS. `psram test` passes over all 30.6 MB that
+were free (write, write-back, invalidate, read back, twice), with `/ram0`
+intact. Bandwidth at 20 MHz: reads 32 MB/s, writes with write-back 12 MB/s.
+
+**The phase 38 interface is now board-neutral.** `drivers/psram.h` picks the
+board's driver; `kernel/main.c`, the shell, Lisp's `(psram)` and
+`/proc/meminfo` test `CONFIG_PSRAM_BYTES` alone. `linker/esp32p4.ld` gained a
+PSRAM region and the generated `lugalos_bulk.ld`. The P4 zeroes the bulk zone
+through the cache (`uncached_delta` 0); `esp32p4_extmem_writeback/invalidate`
+maintain L1D *and* L2 for DMA buffers.
+
+**The Lisp heap in PSRAM costs nothing measurable.** A/B on one tree, with the
+7B board file with and without PSRAM:
+
+| | pools in PSRAM (20 MHz) | pools in SRAM |
+|---|---|---|
+| `(fib 18)` | 97–100 ms | 95–98 ms |
+| allocation + GC loop | 2448 ms | 2445 ms |
+| `(perft 3 1)` | 2438 ms | 2435 ms |
+
+So the 7B now has the RP2350 terminal's pool sizes (64 K nodes, 3072
+strings), 1.5 MB of BULK_BSS. New shell command: `time CMD`.
+
+**One fault, contained but not explained.** With the 1.5 MB BULK_BSS, every
+boot faulted with a *load access fault on a flash address* (the Lisp builtins
+table, deterministic). This happened after `psram_init` zeroed BULK_BSS through
+the cache, leaving L2 full of dirty PSRAM lines. Writing the range back
+explicitly at the end of `psram_init` removes it. Implicit evictions in
+general are fine: 56 s of allocation and GC over the 1 MB node pool, with
+continuous L2 eviction to PSRAM, ran clean. IDF's P4 rev-3 PSRAM workaround
+(`esp_psram_p4_rev3_workaround`, dummy reads with error responses disabled)
+applies to revision 3.0.0 only and is not ported. Watch for this in 47.5,
+where DMA and the CPU will share PSRAM.
+
+**Flash writes are not a hazard here.** Unlike the RP2350, where PSRAM and
+flash share the QMI, the P4's PSRAM has its own controller, and
+`flash_esp32p4.c` never disables the cache. PSRAM stays usable across an
+erase.
+
+**47.3b (before 47.5): raise the speed.** 20 MHz is IDF's only untuned speed.
+The display needs ~37 MB/s of scan-out on top of CPU traffic, and 80/200 MHz
+need IDF's PSRAM timing tuning (a DQS-phase sweep and a 100-step
+delay-line sweep against a reference pattern, `mspi_timing_psram_tuning()`).
 
 ## 7. Risks
 

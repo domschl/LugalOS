@@ -47,7 +47,7 @@
 #include "drivers/boardprobe.h"
 #include "drivers/clocks_rp2350.h"
 #include "drivers/flash_rp2350.h"
-#include "drivers/psram_rp2350.h"
+#include "drivers/psram.h"
 #include "drivers/lcd7.h"
 #include "drivers/piousb.h"
 #include "drivers/usb_crc.h"
@@ -3564,6 +3564,15 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     if (strcmp(cmd_line, "help") == 0) {
         cmd_help();
         return;
+    } else if (strncmp(cmd_line, "time ", 5) == 0) {
+        /* 47.3, plan/phase47_esp32p4_lcd7b_ribbon.md: `time CMD` runs CMD
+         * (shell or Lisp) and prints the wall time it took -- the instrument
+         * for "did moving the Lisp heap into PSRAM cost anything". */
+        uint64_t t0 = time_get_us();
+        parse_and_eval_cmd(cmd_line + 5);
+        uint64_t dt = time_get_us() - t0;
+        cprintf("time: %lu.%03lu ms\n", (unsigned long)(dt / 1000u), (unsigned long)(dt % 1000u));
+        return;
     } else if (strcmp(cmd_line, "uname") == 0) {
         cmd_uname();
         return;
@@ -3901,6 +3910,13 @@ static void parse_and_eval_cmd(const char *cmd_line) {
          * instrument every later milestone of that phase is checked with. */
         esp32p4_clocks_report();
         return;
+#if defined(CONFIG_PSRAM_BYTES)
+    } else if (strcmp(cmd_line, "psram") == 0 || strncmp(cmd_line, "psram ", 6) == 0) {
+        /* 47.3, plan/phase47_esp32p4_lcd7b_ribbon.md: the RP2350's command,
+         * on the P4's driver (drivers/psram_esp32p4.c). */
+        psram_command(cmd_line + 5);
+        return;
+#endif
     } else if (strcmp(cmd_line, "flashinfo") == 0) {
         cmd_flashinfo();
         return;

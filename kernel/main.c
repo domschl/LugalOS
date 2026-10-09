@@ -1,5 +1,5 @@
 #include "kernel/printk.h"
-#include "drivers/psram_rp2350.h"
+#include "drivers/psram.h"
 #include "kernel/klog.h"
 #include "kernel/console.h"
 #include "drivers/ramscreen.h"
@@ -341,14 +341,14 @@ void kernel_main(void) {
      * root page table through vmm_alloc_page(), which is now backed by the
      * page allocator rather than an unbounded bump pointer. */
     trap_init();
-#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PSRAM_BYTES)
+#if defined(CONFIG_PSRAM_BYTES)
     /* 38.2, plan/phase38_psram.md: before the page allocator, which gains a
      * PSRAM zone in 38.4. Interrupts are still off, which the direct-mode
      * bring-up needs. It only reports; psram_require() below decides. */
     psram_init();
 #endif
     palloc_init((uintptr_t)_kernel_end, (uintptr_t)_heap_end);
-#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PSRAM_BYTES)
+#if defined(CONFIG_PSRAM_BYTES)
     /* 38.4: the bulk page zone is the PSRAM above BULK_BSS. Not brought up
      * when the chip is not: then every bulk request is a fast one, until
      * psram_require() below stops the boot anyway (S1). */
@@ -632,7 +632,7 @@ void kernel_main(void) {
     dcf77_p0log_start();
 #endif
 
-#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PSRAM_BYTES)
+#if defined(CONFIG_PSRAM_BYTES)
     /* Sign-off S1: a persona built for PSRAM does not run without it. Here,
      * once the console, USB and the panel can carry the reason, and before
      * anything that would use PSRAM starts. Returns at once when it is up. */

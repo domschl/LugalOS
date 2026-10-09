@@ -56,6 +56,26 @@ set(CONFIG_CPU_FREQ_MHZ   400)
 # starts LOWRAM at 0x4ff20000. Raising it moves that floor (asserted).
 set(CONFIG_L2_CACHE_KB 128)
 
+# --- PSRAM: 32 MB in the package ------------------------------------------
+#
+# 47.3, plan/phase47_esp32p4_lcd7b_ribbon.md. The ESP32-P4NRW32's AP hex-mode
+# PSRAM, powered by LDO channel 2 [sch: VFB/VO2 pin 72 to VDD_PSRAM_0/1 pins
+# 59/67]. drivers/psram_esp32p4.c checks the chip's own MR2 density against
+# this at every boot and the persona refuses to run without it (phase 38's
+# S1): the display's frame buffer lives here.
+set(CONFIG_PSRAM_BYTES 33554432)
+# The bulk page zone's bitmap capacity, in 4 KB pages: the whole chip.
+set(CONFIG_PALLOC_BULK_PAGES 8192)
+# /ram0's cap, as on the RP2350 terminal.
+set(CONFIG_RAMDISK_MAX_KB 4096)
+# Lisp's pools, the RP2350 terminal's sizes (phase 38's 38.5): BULK_BSS, so
+# they live in PSRAM -- 1 MB of nodes and 144 KB of strings -- and cost SRAM
+# only the 8 KB node mark bitmap. Measured on this board at 20 MHz PSRAM
+# (47.3): (fib 18) 97-100 ms against 95-98 with the pools in SRAM, and an
+# allocation/GC loop 2448 ms against 2445 -- the caches absorb it.
+set(CONFIG_LISP_NODE_POOL 65536)
+set(CONFIG_LISP_STRING_POOL 3072)
+
 # --- microSD: SDMMC slot 0 ------------------------------------------------
 #
 # [sch "MicroSD Card", ws 08_SD_Card] The same six IO_MUX pads as the NANO --

@@ -991,6 +991,10 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
     # not gated out when the feature is off; it stubs itself internally, so
     # fs/vfs_server.c and kernel/board.c need no matching #if.
     list(APPEND SOURCES drivers/sdmmc_esp32p4.c)
+    # 47.3, plan/phase47_esp32p4_lcd7b_ribbon.md: the in-package PSRAM. Same
+    # guard-by-board-file rule as the RP2350's (CONFIG_PSRAM_BYTES); an empty
+    # unit on a board file without one.
+    list(APPEND SOURCES drivers/psram_esp32p4.c)
 elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
     # 45.4, plan/phase45_esp32c6.md. One driver again: the console, on the
     # USB-Serial/JTAG peripheral. No block device and no display -- the same stated

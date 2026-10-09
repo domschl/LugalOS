@@ -395,6 +395,28 @@ void esp32p4_dcache_invalidate(uintptr_t addr, uint32_t size) {
     p4_cache_range(P4_ROM_CACHE_INVALIDATE_ADDR, addr, size);
 }
 
+/* 47.3: external memory (PSRAM) is cached in L1D *and* L2, so maintenance on
+ * it names both (CACHE_MAP_L2_CACHE is BIT(5), esp32p4/rom/cache.h). L2's
+ * line (64 B) is a multiple of L1's, so rounding to L1 lines first and
+ * letting the ROM handle L2 within the same range is what IDF's
+ * cache_hal_writeback_addr() amounts to. */
+#define P4_CACHE_MAP_L2              (1u << 5)
+static void p4_ext_cache_range(uint32_t rom_fn, uintptr_t addr, uint32_t size) {
+    int (*op)(uint32_t, uint32_t, uint32_t) =
+        (int (*)(uint32_t, uint32_t, uint32_t))(uintptr_t)rom_fn;
+    uintptr_t start = addr & ~(uintptr_t)63u;
+    uintptr_t end   = (addr + size + 63u) & ~(uintptr_t)63u;
+    op(P4_CACHE_MAP_L1_DCACHE | P4_CACHE_MAP_L2, (uint32_t)start, (uint32_t)(end - start));
+}
+
+void esp32p4_extmem_writeback(uintptr_t addr, uint32_t size) {
+    p4_ext_cache_range(P4_ROM_CACHE_WRITEBACK_ADDR, addr, size);
+}
+
+void esp32p4_extmem_invalidate(uintptr_t addr, uint32_t size) {
+    p4_ext_cache_range(P4_ROM_CACHE_INVALIDATE_ADDR, addr, size);
+}
+
 static void p4_watch_arm(uintptr_t addr, bool verbose) {
     uintptr_t pattern = (addr & ~(uintptr_t)3) | 1u;   /* 4-byte NAPOT */
     uintptr_t tdata1  = (1u << 6)    /* MACHINE: fire in M-mode        */

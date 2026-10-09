@@ -400,6 +400,25 @@ static bool regi2c_write_bit(uint32_t blk, uint32_t mst_sel, uint8_t reg_addr,
     return regi2c_write(blk, mst_sel, reg_addr, v);
 }
 
+/* 47.3, plan/phase47_esp32p4_lcd7b_ribbon.md: the same bus for the PSRAM
+ * driver's MPLL and BIAS writes. A field write (IDF's REGI2C_WRITE_MASK):
+ * read, replace bits [msb:lsb], write. The analog master's 160 MHz source is
+ * switched on first, as every PLL configuration here needs it. */
+bool esp32p4_regi2c_read(uint8_t blk, uint32_t mst_sel, uint8_t reg, uint8_t *out) {
+    P4_REG(P4_ANA_MST_CLK160M) |= ANA_MST_SEL_160M;
+    return regi2c_read(blk, mst_sel, reg, out);
+}
+
+bool esp32p4_regi2c_write_mask(uint8_t blk, uint32_t mst_sel, uint8_t reg,
+                               unsigned msb, unsigned lsb, uint8_t val) {
+    P4_REG(P4_ANA_MST_CLK160M) |= ANA_MST_SEL_160M;
+    uint8_t v = 0;
+    if (!regi2c_read(blk, mst_sel, reg, &v)) return false;
+    uint8_t m = (uint8_t)(((1u << (msb - lsb + 1u)) - 1u) << lsb);
+    v = (uint8_t)((v & ~m) | ((uint32_t)val << lsb & m));
+    return regi2c_write(blk, mst_sel, reg, v);
+}
+
 static bool regi2c_write_cpll(uint8_t reg_addr, uint8_t val) {
     return regi2c_write(I2C_CPLL_SLAVE, REGI2C_PLL_CPU_MST_SEL, reg_addr, val);
 }

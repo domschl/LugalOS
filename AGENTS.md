@@ -149,10 +149,15 @@ for both roles by itself.
   `tools/p4flash.py --board lcd7b --build build/esp32p4-lcd7b --only boot,os --verify`;
   console with `tools/p4run.py --board lcd7b --run --cmd "..."`.
 * Runs at 400 MHz (v3 ladder 100/200/400) with the core on the external DC-DC.
+* 32 MB PSRAM at 0x48000000 (both P4 boards, `drivers/psram_esp32p4.c`, 20 MHz
+  for now): `psram`, `psram test [MB]`, `psram bench`. BULK_BSS and the bulk
+  page zone live there. Register constants come from the generated
+  `drivers/include/drivers/esp32p4_psram_regs.h` (`tools/gen/p4_regs.py`), which
+  refuses to generate if hw_ver1 and hw_ver3 disagree.
   I2C on GPIO7/8 (PH2.0 header): ES8311 0x18, ES7210 0x40, GT911 0x5D;
   `i2c rd ADDR [REG..] N` reads registers raw (e.g. `i2c rd 5d 81 40 4` → "911").
 * Test: `cd tests/hw && uv run test_esp32p4.py --board lcd7b --build ../../build/esp32p4-lcd7b`
-  (25/25; EMAC tests skip; a BME280 sits on the PH2.0 I2C header at 0x76). NANO: `uv run test_esp32p4.py --board nano`.
+  (27/27; EMAC tests skip; a BME280 sits on the PH2.0 I2C header at 0x76). NANO: `uv run test_esp32p4.py --board nano`.
 
 ---
 

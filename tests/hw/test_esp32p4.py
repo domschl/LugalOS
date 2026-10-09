@@ -923,6 +923,37 @@ def test_sd0_mounted(b: Board) -> tuple[str, bool, str]:
     return name, True, line[0].strip()
 
 
+def test_psram_up(b: Board) -> tuple[str, bool, str]:
+    """47.3, plan/phase47_esp32p4_lcd7b_ribbon.md: the in-package PSRAM is up
+    at the size the board file names, and the bulk page zone is in it."""
+    name = "PSRAM is up, 32 MB, bulk zone in it (47.3)"
+    out = b.console_session.cmd("psram", deadline=10.0)
+    if "Unknown" in out or "not found" in out.lower():
+        return name, True, "SKIPPED (no psram command on this build)"
+    m = re.search(r"psram: (\d+) KB, vendor 0x([0-9a-f]+)", out)
+    if not m:
+        return name, False, f"no size line: {out.strip()[-200:]}"
+    kb, vendor = int(m.group(1)), m.group(2)
+    if kb != 32768:
+        return name, False, f"{kb} KB, expected 32768"
+    z = re.search(r"bulk zone (\d+) pages at 0x48", out)
+    if not z:
+        return name, False, "no bulk zone in PSRAM"
+    return name, True, f"{kb} KB, vendor 0x{vendor}, bulk zone {z.group(1)} pages"
+
+
+def test_psram_pattern(b: Board) -> tuple[str, bool, str]:
+    """47.3: 4 MB of the bulk zone written, written back, invalidated and read
+    back, twice. Allocated from the zone, so /ram0 and the Lisp pools are not
+    disturbed."""
+    name = "PSRAM holds a pattern through the caches (47.3)"
+    out = b.console_session.cmd("psram test 4", deadline=60.0)
+    if "PASS (0 bad words)" in out:
+        t = re.findall(r"pass \d, (\d+) ms", out)
+        return name, True, f"4 MB x2, {'/'.join(t)} ms"
+    return name, False, out.strip()[-200:]
+
+
 def test_sd_write_survives_reboot(b: Board) -> tuple[str, bool, str]:
     """The whole point of the persona: bytes that are still there afterwards.
 
@@ -1005,6 +1036,8 @@ TESTS = [
     test_sd0_mounted,
     test_sd_goes_through_the_task,
     test_sd_write_survives_reboot,
+    test_psram_up,
+    test_psram_pattern,
 ]
 
 

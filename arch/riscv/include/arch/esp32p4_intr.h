@@ -153,4 +153,10 @@ void esp32p4_dcache_writeback(uintptr_t addr, uint32_t size);
  * a bug anywhere else. */
 void esp32p4_dcache_invalidate(uintptr_t addr, uint32_t size);
 
+/* 47.3: the same for external memory (PSRAM), through both L1D and L2.
+ * Writeback before a DMA engine reads a buffer the CPU wrote; invalidate
+ * before the CPU reads what a DMA engine wrote. */
+void esp32p4_extmem_writeback(uintptr_t addr, uint32_t size);
+void esp32p4_extmem_invalidate(uintptr_t addr, uint32_t size);
+
 #endif /* LUGALOS_ARCH_ESP32P4_INTR_H */
