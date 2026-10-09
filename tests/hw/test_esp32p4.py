@@ -991,7 +991,8 @@ TESTS = [
 
 # --- discovery and load ----------------------------------------------------
 
-def discover(port: str | None, reset_port: str | None) -> Board | None:
+def discover(port: str | None, reset_port: str | None,
+             board: str | None = None) -> Board | None:
     """The attached P4, or None meaning "nothing to test".
 
     None rather than an exception, so "no board attached" is a normal outcome
@@ -1001,8 +1002,9 @@ def discover(port: str | None, reset_port: str | None) -> Board | None:
     except Exception:
         return None
     try:
-        console = p4run.console_port(port)
-        reset = p4run.reset_port(reset_port, console)
+        bport, breset = p4run.board_ports(board)
+        console = p4run.console_port(port or bport)
+        reset = p4run.reset_port(reset_port or breset, console)
     except SystemExit:
         # console_port() exits when it finds nothing it recognises.
         return None
@@ -1049,7 +1051,11 @@ def flash_and_boot(b: Board, listen_secs: float) -> bool:
     # invoked by hand. Falling back to a bare interpreter would find no
     # esptool and fail with a FileNotFoundError that names the wrong thing.
     script = REPO_ROOT / "tools" / "p4flash.py"
-    rc = subprocess.call(["uv", "run", str(script)], cwd=str(REPO_ROOT))
+    # The ports this suite already resolved, not a second autodetection:
+    # with two P4 boards attached p4flash.py cannot tell their CH343Ps apart
+    # (47.1) and would refuse, or worse, guess.
+    rc = subprocess.call(["uv", "run", str(script), "--port", b.console,
+                          "--reset-port", b.reset], cwd=str(REPO_ROOT))
     if rc != 0:
         print("    (flashing failed)")
         return False
@@ -1098,6 +1104,8 @@ def flash_and_boot(b: Board, listen_secs: float) -> bool:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--board", help="a board named in ~/.config/lugalos/p4-ports.env "
+                    "(see tools/p4run.py)")
     ap.add_argument("--port", help="console port (default: autodetect by VID:PID)")
     ap.add_argument("--reset-port", help="port whose DTR/RTS reach the board")
     ap.add_argument("--no-load", action="store_true",
@@ -1109,7 +1117,7 @@ def main() -> int:
     print("        LugalOS ESP32-P4 Hardware-in-the-Loop Suite (E8, phase 27)")
     print("======================================================================")
 
-    b = discover(args.port, args.reset_port)
+    b = discover(args.port, args.reset_port, args.board)
     if b is None:
         print("\n[!] No ESP32-P4 found on any USB serial port.")
         print("    Nothing to test -- this is not a failure, just nothing to do.")

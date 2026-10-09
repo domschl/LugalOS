@@ -146,16 +146,66 @@ def console_port(explicit):
 def reset_port(explicit, console):
     """The port whose DTR/RTS reach ESP_EN and GPIO35.
 
-    Defaults to the CH343P when one is present -- on this board it is the only
-    bridge wired to U6 -- and otherwise to the console port, which is the
-    stock single-cable arrangement."""
+    A console that is itself a CH34x is its own reset port: that is the stock
+    single-cable board (the LCD-7B, 47.0). A console on a separate bridge (the
+    NANO's CP2102) needs the CH34x wired to U6 -- and when more than one CH34x
+    is attached, nothing on the bus says which board each belongs to, so this
+    refuses rather than resetting the wrong one (47.1: with the NANO and the
+    LCD-7B both plugged in, the first CH34x was the other board's)."""
     if explicit:
         return explicit
     env = os.environ.get("LUGALOS_P4_RESET_PORT")
     if env:
         return env
-    p = _pick(usb_ports(), [CH34X])
-    return p or console
+    ports = usb_ports()
+    real = os.path.realpath(console)
+    for dev, vid, pid, _ in ports:
+        if os.path.realpath(dev) == real and (vid, pid) in CH34X:
+            return console
+    ch = [dev for dev, vid, pid, _ in ports if (vid, pid) in CH34X]
+    if len(ch) > 1:
+        sys.exit(
+            "%d CH34x bridges attached (%s) and the console %s is not one of "
+            "them: cannot tell which one resets that board.\nPass --board "
+            "(see %s) or --reset-port." % (len(ch), ", ".join(ch), console,
+                                           BOARDS_FILE))
+    return ch[0] if ch else console
+
+
+# Which bridges belong to which board on *this* host, by their by-id paths
+# (47.1). Two CH343Ps are indistinguishable except by serial number, which is
+# a fact about a unit, not about a board type -- so it lives outside the
+# repository. KEY=VALUE lines; the environment overrides the file.
+#
+#   LUGALOS_P4_NANO_PORT=/dev/serial/by-id/usb-Silicon_Labs_CP2102_..-port0
+#   LUGALOS_P4_NANO_RESET_PORT=/dev/serial/by-id/usb-1a86_USB_Single_Serial_..-if00
+#   LUGALOS_P4_LCD7B_PORT=/dev/serial/by-id/usb-1a86_USB_Single_Serial_..-if00
+BOARDS_FILE = os.path.expanduser("~/.config/lugalos/p4-ports.env")
+
+
+def board_ports(name):
+    """(console, reset) for a board named on the command line, or (None, None)
+    when no name was given. Exits if the name is given but not configured."""
+    name = name or os.environ.get("LUGALOS_P4_BOARD")
+    if not name:
+        return None, None
+    cfg = {}
+    try:
+        with open(BOARDS_FILE) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    cfg[k.strip()] = v.strip()
+    except OSError:
+        pass
+    cfg.update({k: v for k, v in os.environ.items() if k.startswith("LUGALOS_P4_")})
+    key = "LUGALOS_P4_%s_" % name.upper().replace("-", "_")
+    console = cfg.get(key + "PORT")
+    if not console:
+        sys.exit("board '%s' has no %sPORT in %s or the environment"
+                 % (name, key, BOARDS_FILE))
+    return console, cfg.get(key + "RESET_PORT") or console
 
 
 def _drive(s, seq):
@@ -663,6 +713,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("image", nargs="?",
                     help="an .elf (the image is regenerated from it) or an .img")
+    ap.add_argument("--board", help="a board named in %s, e.g. nano or lcd7b "
+                    "(or LUGALOS_P4_BOARD)" % BOARDS_FILE)
     ap.add_argument("--port", help="console port (default: autodetect)")
     ap.add_argument("--reset-port",
                     help="port whose DTR/RTS reach ESP_EN and GPIO35 "
@@ -699,8 +751,9 @@ def main():
     if a.ports:
         return cmd_ports()
 
-    port = console_port(a.port)
-    rport = reset_port(a.reset_port, port)
+    bport, brport = board_ports(a.board)
+    port = console_port(a.port or bport)
+    rport = reset_port(a.reset_port or brport, port)
     print("console: %s @ %d%s"
           % (port, BAUD, "" if rport == port else "   reset lines: %s" % rport))
 
