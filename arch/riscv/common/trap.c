@@ -310,14 +310,41 @@ static inline volatile uint8_t *p4_clic_byte(uintptr_t addr) {
 #define P4_CACHE_LINE_64B    3      /* cache_line_size_t */
 #define P4_CACHE_MAP_L2      (1u << 5)  /* CACHE_MAP_L2_CACHE */
 
+/* CACHE_L2_CACHE_CACHESIZE_CONF_REG, DR_REG_CACHE_BASE (0x3ff10000) + 0x278:
+ * one-hot, bit n meaning 2^(n+8) bytes -- the same encoding as cache_size_t,
+ * so bit 9 is 128 KB and bit 10 256 KB. Identical in hw_ver1 and hw_ver3
+ * (47.1). Read before and after the shrink so the boot log can say what the
+ * ROM left, which is the number linker/esp32p4.ld's pre-shrink rule rests on
+ * and which was measured on v1.3 only until 47.1. */
+#define P4_L2_CACHESIZE_CONF  0x3ff10278u
+static uint32_t g_l2_conf_at_boot, g_l2_conf_now;
+
 void esp32p4_l2_cache_shrink(void) {
     void (*set_mode)(int, int, int)   = (void (*)(int, int, int))P4_ROM_CACHE_SET_L2_MODE;
     void (*writeback_all)(uint32_t)   = (void (*)(uint32_t))P4_ROM_CACHE_WRITEBACK_ALL;
     void (*invalidate_all)(uint32_t)  = (void (*)(uint32_t))P4_ROM_CACHE_INVALIDATE_ALL;
 
+    g_l2_conf_at_boot = *(volatile uint32_t *)P4_L2_CACHESIZE_CONF;
     writeback_all(P4_CACHE_MAP_L2);
     set_mode(P4_CACHE_SIZE_SEL, P4_CACHE_8WAYS_ASSOC, P4_CACHE_LINE_64B);
     invalidate_all(P4_CACHE_MAP_L2);
+    g_l2_conf_now = *(volatile uint32_t *)P4_L2_CACHESIZE_CONF;
+}
+
+static uint32_t l2_conf_kb(uint32_t conf) {
+    for (unsigned n = 0; n < 32; n++)
+        if (conf == (1u << n)) return (1u << (n + 8)) >> 10;
+    return 0;
+}
+
+/* After the console exists: what the shrink found and left. */
+void esp32p4_l2_cache_report(void) {
+    printk("[L2] cache %lu KB at boot (CACHESIZE_CONF 0x%03lx), %lu KB now (0x%03lx); "
+           "storage at the %s of L2MEM (chip v%u.%u)\n",
+           (unsigned long)l2_conf_kb(g_l2_conf_at_boot), (unsigned long)g_l2_conf_at_boot,
+           (unsigned long)l2_conf_kb(g_l2_conf_now), (unsigned long)g_l2_conf_now,
+           CONFIG_ESP32P4_REV >= 300 ? "bottom" : "top",
+           (unsigned)(CONFIG_ESP32P4_REV / 100), (unsigned)(CONFIG_ESP32P4_REV % 100));
 }
 
 /* --- L1 data-cache maintenance (Z2, plan/phase28_esp32p4_ethernet.md) ----
@@ -581,6 +608,13 @@ static void p4_clic_init(void) {
      * re-enabling MIE. Same store, same reason, same place in the order. */
     REG(P4_CLIC_THRESH) = 0;
     (void)REG(P4_CLIC_THRESH);
+#ifdef P4_MINTTHRESH_CSR
+    /* 47.1: from v3.0 the threshold that counts is the standard mintthresh
+     * CSR (see arch/esp32p4_intr.h). Its reset value is already 0 -- the tick
+     * ran on the v3.2 board before this line existed -- so this states the
+     * assumption rather than fixing a fault. */
+    __asm__ __volatile__("csrw " P4_MINTTHRESH_CSR ", zero");
+#endif
 }
 
 #else

@@ -63,7 +63,7 @@ set(_optional_keys
     CONFIG_UART0_SCLK_HZ CONFIG_UART0_BAUD
     CONFIG_XTAL_HZ CONFIG_CPU_FREQ_MHZ
     # 47.0, plan/phase47_esp32p4_lcd7b_ribbon.md: the ESP32-P4's silicon
-    # revision as major*100+minor (132 = v1.3, 302 = v3.2). A board fact
+    # revision as major*100+minor (103 = v1.3, 302 = v3.2). A board fact
     # chosen at build time, because v3.x moved the L2 cache, the ROM's data
     # and its entry points; 47.1 makes the code act on it. Absent: v1.3.
     CONFIG_ESP32P4_REV

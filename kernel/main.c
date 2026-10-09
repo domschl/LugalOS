@@ -184,6 +184,30 @@ void kernel_main(void) {
     time_init();
 
 #if defined(CONFIG_BOARD_ESP32P4)
+    esp32p4_l2_cache_report();
+    {
+        /* 47.1: the board file's CONFIG_ESP32P4_REV is a claim the silicon can
+         * check. Across the v3.0 line it decides where the L2 cache and the
+         * ROM's data sit (linker/esp32p4_memory_rev{1,3}.ld) and which CLIC
+         * the core has, so a v1.3 build on v3.x silicon -- or the reverse --
+         * runs with .bss inside the cache and corrupts itself quietly; that is
+         * exactly what 47.1 saw. Stop instead. Within one family a different
+         * minor revision is only worth a line. */
+        extern unsigned esp32p4_chip_rev(void);
+        unsigned chip = esp32p4_chip_rev();
+        if ((chip >= 300u) != (CONFIG_ESP32P4_REV >= 300)) {
+            printk("[Chip] silicon is v%u.%u but this build is for v%u.%u -- the "
+                   "memory map differs across v3.0. Build the board's own preset. "
+                   "Halted.\n", chip / 100u, chip % 100u,
+                   (unsigned)(CONFIG_ESP32P4_REV / 100), (unsigned)(CONFIG_ESP32P4_REV % 100));
+            for (;;) __asm__ __volatile__("wfi");
+        }
+        printk("[Chip] ESP32-P4 v%u.%u%s\n", chip / 100u, chip % 100u,
+               chip == (unsigned)CONFIG_ESP32P4_REV ? "" : " (board file says otherwise; same family)");
+    }
+#endif
+
+#if defined(CONFIG_BOARD_ESP32P4)
     /* 34.3, plan/phase34_esp32p4_pll_bringup.md. The boot ROM leaves the
      * HP_ACTIVE regulator at IDF's *uncalibrated* default of 24 without ever
      * applying this chip's own eFuse trim, which asks for 25. That is free at

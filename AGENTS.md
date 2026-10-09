@@ -138,10 +138,18 @@ for both roles by itself.
   it closes it, so always go through `p4run.py` / `p4flash.py`. Any other
   program (picocom, a bare pyserial open) resets the board.
 * Silicon **revision v3.2** (the NANO is v1.3): L2MEM's cache and ROM data
-  sit at the opposite ends. See plan/phase47 §5.2.
+  sit at the opposite ends, and the CLIC is the standard one. A build for
+  the wrong revision halts at boot with `[Chip] ... Halted.` See plan/phase47 §6.
+* **With both P4 boards attached, always pass `--board nano|lcd7b`.** Two
+  CH343Ps can only be told apart by serial number, so the mapping lives in
+  `~/.config/lugalos/p4-ports.env` (`LUGALOS_P4_<BOARD>_PORT` /
+  `_RESET_PORT`). Without `--board`, detection refuses rather than reset the
+  wrong board.
 * Build `ninja -C build/esp32p4-lcd7b`; flash with
-  `tools/p4flash.py --build build/esp32p4-lcd7b --only boot,os --verify`;
-  console with `tools/p4run.py --run --cmd "..."`.
+  `tools/p4flash.py --board lcd7b --build build/esp32p4-lcd7b --only boot,os --verify`;
+  console with `tools/p4run.py --board lcd7b --run --cmd "..."`.
+* Test: `cd tests/hw && uv run test_esp32p4.py --board lcd7b --build ../../build/esp32p4-lcd7b`
+  (25/25; EMAC and BME280 tests skip). NANO: `uv run test_esp32p4.py --board nano`.
 
 ---
 

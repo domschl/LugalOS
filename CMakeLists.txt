@@ -535,6 +535,21 @@ if(LUGALOS_TARGET STREQUAL "ESP32P4" AND DEFINED LUGALOS_BOARD_FILE)
     endif()
     math(EXPR LUGALOS_P4_L2_CACHE_BYTES "${CONFIG_L2_CACHE_KB} * 1024")
     add_link_options(-Wl,--defsym=CONFIG_L2_CACHE_BYTES=${LUGALOS_P4_L2_CACHE_BYTES})
+    # 47.1, plan/phase47_esp32p4_lcd7b_ribbon.md: where LOWRAM and RAM sit in
+    # L2MEM depends on the silicon revision -- v3.x moved the L2 cache to the
+    # bottom and the ROM's data to the top. linker/esp32p4.ld INCLUDEs
+    # esp32p4_memory.ld; this puts the right one where it will find it.
+    if(NOT DEFINED CONFIG_ESP32P4_REV)
+        set(CONFIG_ESP32P4_REV 103)
+    endif()
+    if(CONFIG_ESP32P4_REV GREATER_EQUAL 300)
+        set(_p4_mem rev3)
+    else()
+        set(_p4_mem rev1)
+    endif()
+    configure_file(${CMAKE_CURRENT_SOURCE_DIR}/linker/esp32p4_memory_${_p4_mem}.ld
+                   ${CMAKE_CURRENT_BINARY_DIR}/esp32p4_memory.ld COPYONLY)
+    add_link_options(-Wl,-L${CMAKE_CURRENT_BINARY_DIR})
 endif()
 
 if(DEFINED LUGALOS_BOARD_FILE)

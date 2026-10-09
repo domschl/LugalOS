@@ -18,9 +18,9 @@
 # not cosmetic: on v3.x the L2 cache sits at the *bottom* of L2MEM and the
 # ROM's data at the top, the reverse of v1.3; the ROM is a different build;
 # the CPU clock ladder is 100/200/400. 47.1 audits every place the kernel
-# depends on this. The NANO-built kernel nevertheless **boots here at 40 MHz**
-# [meas, 2026-10-09]: its RAM half (0x4ff40000..0x4ff9e000) happens to miss
-# both the v3.x cache at the bottom and the ROM's data at the top.
+# depends on this (plan §6). The value picks linker/esp32p4_memory_rev3.ld and
+# the standard-CLIC CSR numbers, and boot checks it against the eFuse wafer
+# version, halting on a family mismatch [meas: "[Chip] ESP32-P4 v3.2"].
 set(CONFIG_ESP32P4_REV 302)
 
 set(CONFIG_PALLOC_MAX_PAGES 128)
@@ -47,8 +47,10 @@ set(CONFIG_XTAL_HZ        40000000)   # [meas: esptool]
 # clk_esp32p4.c's ladder (90/180/360) is v1.3's, and v3.x has 100/200/400.
 set(CONFIG_CPU_FREQ_MHZ   40)
 
-# The L2 cache size. The NANO's measured 128 KB; whether the same figure is
-# right on v3.x (where the cache is at the bottom of L2MEM) is 47.1's.
+# The L2 cache size, at the BOTTOM of L2MEM on v3.x. 128 KB is also what the
+# ROM leaves it at on this chip [meas: the "[L2]" boot line, CACHESIZE_CONF
+# 0x200], so the shrink is a no-op here and linker/esp32p4_memory_rev3.ld
+# starts LOWRAM at 0x4ff20000. Raising it moves that floor (asserted).
 set(CONFIG_L2_CACHE_KB 128)
 
 # --- microSD: SDMMC slot 0 ------------------------------------------------

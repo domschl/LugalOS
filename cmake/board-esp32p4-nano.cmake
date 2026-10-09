@@ -13,7 +13,7 @@
 # Silicon revision v1.3 (esptool, 2026-09-05; ROM "esp32p4-eco2"). Stated
 # rather than defaulted since 47.0 (plan/phase47_esp32p4_lcd7b_ribbon.md):
 # the LCD-7B board is v3.2, and the two differ in memory map and ROM.
-set(CONFIG_ESP32P4_REV 132)
+set(CONFIG_ESP32P4_REV 103)
 
 # 512 KB of heap-and-image, so at most 128 pages of 4 KB even before the
 # kernel's own footprint comes out of it. See linker/esp32p4.ld for why the

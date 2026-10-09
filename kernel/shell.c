@@ -70,6 +70,7 @@
 #include "drivers/spisd.h"
 #elif defined(CONFIG_BOARD_ESP32P4)
 #include "drivers/sdmmc.h"
+#include "arch/esp32p4_intr.h"   /* P4_MINTSTATUS_CSR (47.1) */
 #else
 #include "drivers/virtio_blk.h"
 #endif
@@ -483,7 +484,7 @@ static void cmd_clicdump(void) {
     do { hi = clint[0xBFFC/4]; lo = clint[0xBFF8/4]; } while (hi != clint[0xBFFC/4]);
 
     uintptr_t mintstatus = 0, mstatus = 0;
-    __asm__ __volatile__("csrr %0, 0x346" : "=r"(mintstatus));
+    __asm__ __volatile__("csrr %0, " P4_MINTSTATUS_CSR : "=r"(mintstatus));
     __asm__ __volatile__("csrr %0, mstatus" : "=r"(mstatus));
 
     cprintf("[CLIC] mtime      = 0x%08x%08x\n", (unsigned)hi, (unsigned)lo);
@@ -530,7 +531,7 @@ static void cmd_clicdump(void) {
          * tick work, so a loop that yields would measure nothing. */
         while (time_get_us() - us0 < 2000000ULL) {
             uintptr_t m;
-            __asm__ __volatile__("csrr %0, 0x346" : "=r"(m));
+            __asm__ __volatile__("csrr %0, " P4_MINTSTATUS_CSR : "=r"(m));
             mil_seen |= (m >> 24) & 0xff;
         }
         uintptr_t mst = 0;

@@ -1,10 +1,12 @@
 # Phase 47 — The ribbon on the ESP32-P4-WIFI6-Touch-LCD-7B
 
-**Status: 47.0 done (2026-10-09). Written 2026-10-09.** Nothing here has been
-run on this board under LugalOS yet. The board facts in §2 come from Waveshare's
-own example sources and from one read-only `esptool flash-id` against the
-attached unit. Anything marked *(to read)* is what 47.0 turns into a recorded
-fact before any driver depends on it.
+**Status: 47.0 and 47.1 done (2026-10-09). Written 2026-10-09.** The kernel
+runs on the board at 40 MHz with its own v3 memory layout. The HIL suite passes
+25/25 there; the BME280 and EMAC tests skip, because the board has neither.
+The NANO passes 25/25 on the same tree.
+§2 was written from Waveshare's sources before anything ran; what 47.0 and 47.1
+measured is in §5.2 and §6, and the schematic readings are in
+`cmake/board-esp32p4-lcd7b.cmake`.
 
 **Milestone scheme: `47.0`, `47.1`, …** (as in phases 34 and 45).
 
@@ -177,7 +179,7 @@ wiring. Give `p4run.py`/`p4flash.py` a single-port CH343P profile. Add the
 board without holding it in reset, and `p4flash.py --board lcd7b` writes and
 verifies a minimal image.
 
-**47.1 — v1.3 → v3.2 audit.**
+**47.1 — v1.3 → v3.2 audit. [DONE 2026-10-09, §6]**
 For every hw_ver1 register header and every `eco0_4` ROM symbol the kernel
 uses, diff against hw_ver3 / the v3.x ROM `.ld` and record the result in
 §6. Turn the differences into `CONFIG_ESP32P4_REV`-selected code. Use
@@ -394,20 +396,61 @@ pass.
 * The demo firmware is erased, and `p4flash.py --only boot,os --verify` writes
   and verifies this preset unchanged.
 
-## 6. v1.3 → v3.2 audit table (filled by 47.1)
+## 6. v1.3 → v3.2 audit (47.1, done 2026-10-09)
 
-| Area | File(s) | hw_ver1 vs hw_ver3 / ROM | Decision |
+**Method.** ROM: every `0x4fc0xxxx` address the kernel uses, looked up in both
+`esp32p4.rom.eco0_4.ld` (v1.3) and `esp32p4.rom.ld` (v3.x). Registers: a
+semantic diff of `soc/esp32p4/register/hw_ver1` against `hw_ver3`, comparing
+`#define` values with comments stripped (most of the textual churn is
+documentation), restricted to the blocks the kernel touches. Then
+measurement on the board for everything the diff could not settle.
+
+| Area | File(s) | v1.3 vs v3.2 | Decision |
 |---|---|---|---|
-| Clock tree, CPU ladder | `clk_esp32p4.c` | *(47.1)* | |
-| UART0 | `uart_esp32p4.c` | | |
-| Trap / CLIC / PMP, ROM calls | `trap.c` | | |
-| XIP, cache, L2 size | `xip_esp32p4.c`, `linker/esp32p4.ld` | | |
-| SMP release | `smp_esp32p4.c` | | |
-| Flash (ROM SPI calls) | `flash_esp32p4.c` | | |
-| SDMMC | `sdmmc_esp32p4.c` | | |
-| I2C | `i2c_bus.c` | | |
-| eFuse | `efuse_esp32p4.c` | | |
-| Stage-2 loader | `tools/p4flash.py`, boot image header | | |
+| ROM entry points (flash, cache, SMP, CPU freq, UART) | `flash_esp32p4.c`, `trap.c`, `xip_esp32p4.c`, `smp_esp32p4.c`, `clk_esp32p4.c` | **All 23 called addresses identical.** The two that moved (`ets_clk_get_cpu_freq`, `Cache_Get_IROM_MMU_End`: 0x554/0x560) are only named in a comment explaining why they are avoided. | No change. |
+| UART | `uart_esp32p4.c` | `uart_reg.h` byte-identical | No change. |
+| GPIO, IO_MUX, SDMMC, systimer, timer groups, LP WDT, cache | various | No register moved and no field changed; only additions, and removals the kernel does not use | No change. |
+| I2C | `i2c_bus.c` | No definition changed | No change. |
+| Clock tree | `clk_esp32p4.c` | `hp_sys_clkrst`: no address or field changed (TWAI resets gone, 70 new); `lp_clkrst` identical | No change at 40 MHz; the 100/200/400 ladder is 47.2. |
+| Interrupt matrix | `trap.c` | 537 names gone / 1640 new, but **by address** every source we route or will route is unchanged: UART0 0x7c, USB OTG 0x174/0x178, DSI 0x158/0x160, GDMA 0x60, PPA 0x180, I2C0 0xb0, SDMMC 0x5c, LEDC 0xd0 | No change. |
+| eFuse | `efuse_esp32p4.c`, `clk_esp32p4.c` | Register addresses identical; MAC (BLK1 40..87), ACTIVE_HP_DBIAS (BLK1 144..147) and OPTIONAL_UNIQUE_ID (BLK2) at the same bits in both IDF tables. MAC read on the board matches esptool's. | No change; chip revision now read and checked (below). |
+| **CLIC** | `trap.c`, `shell.c` | **Different.** v1.3 has a pre-standard CLIC: `mintstatus` at CSR 0x346, threshold memory-mapped. v3.x follows the ratified spec: `mintstatus` 0xFB1, threshold in CSR `mintthresh` 0x347 (IDF `soc/interrupt_reg.h`, `riscv/csr_clic.h`). Reading 0x346 on v3.2 traps (illegal instruction) — `clicdump` found it. | `P4_MINTSTATUS_CSR` / `P4_MINTTHRESH_CSR` in `arch/esp32p4_intr.h` by revision; `p4_clic_init` also clears `mintthresh` on v3. Kernel code never read `mintstatus` (only the diagnostic did); the MIL drop via `mcause.MPIL` + `mret` works unchanged: `spin1` +200 ticks. |
+| **L2MEM map** | `linker/esp32p4.ld` | **Different, and the one that corrupted memory.** v3.x puts the L2 cache at the *bottom* and the ROM's data at the *top*. The ROM leaves the cache at **128 KB** on v3.2 (v1.3: 256 KB), measured from `CACHESIZE_CONF` (0x3ff10278, now in the `[L2]` boot line). | `MEMORY` moved to `linker/esp32p4_memory_rev{1,3}.ld`, chosen by CMake from `CONFIG_ESP32P4_REV`; asserts use per-revision bounds (`P4_LOAD_FLOOR`, `P4_RAM_FLOOR`, `P4_RAM_CEIL`, `P4_LOWRAM_CEIL`, `P4_HEAP_FLOOR`). v3: LOWRAM 0x4ff20000 (+252K), RAM 0x4ff5f000..0x4ffa9000, **heap 284 KB** (NANO 372 KB). NANO layout byte-identical to before. |
+| Stage-2 / boot image | `tools/p4flash.py` | ROM loads the RAM half from 0x2000 unchanged | No change. |
+
+**The corruption, for the record.** Under the v1.3 layout the 7B booted, ran the
+shell and the SD card, and passed a marker test. A build that shifted `.bss` by
+a few hundred bytes then put `g_fast_bitmap` (0x4ff03904) on a cache line in use,
+and the page allocator handed out the `uart` task's live stack; palloc's own
+overlap check halted it. A scan of L2MEM for copies of XIP code lines, meant to
+locate the cache directly, *hung* the chip — reading the cache's live storage
+is not survivable — and was removed again.
+
+**The revision is now checked, not just stated.** `esp32p4_chip_rev()` reads
+the wafer version from eFuse (BLK1 bits 64..69 and 87). Boot prints
+`[Chip] ESP32-P4 v3.2`, and if the board file and the silicon disagree across
+v3.0 the kernel halts with the reason. That was exercised by flashing the NANO
+build onto the 7B on purpose.
+
+**Also fixed on the way.**
+* `/proc/meminfo`'s image size has been wrong on *both* boards since phase 32
+  (it reported 261722 KB, because the flash window was counted as part of the
+  image). It now adds the three parts.
+* The `CONFIG_ESP32P4_REV` encoding: the NANO is **103** (major·100+minor),
+  not the 132 that 47.0 wrote.
+* Host tooling: `--board nano|lcd7b` with `~/.config/lugalos/p4-ports.env`.
+  With two CH343Ps attached, detection now refuses to guess. The HIL suite
+  opens and closes ports without touching DTR/RTS, closes its session before
+  a reboot, flashes `--build`, and skips the EMAC tests on a board without
+  Ethernet.
+
+**Still open after 47.1, moved to 47.2:** phantom boot-time I2C detections
+(RTC at 0x68, EEPROM at 0x57 on a bus where `i2c scan` sees neither);
+`minimal_esp32p4.c`'s GPIO20 drive test; the CPU clock ladder; the ROM
+watchdog after a flash boot, which the kernel handles but the minimal image
+does not. Reclaiming the ROM's download buffers (0x4ffa96b8..0x4ffbafc0, about
+72 KB) for heap is possible but unmeasured, because core 1 starts on the ROM's
+CPU1 stack just above them.
 
 ## 7. Risks
 

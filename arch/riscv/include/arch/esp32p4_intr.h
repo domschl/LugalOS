@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+#include "lugalos_config.h"
+
 /* ESP32-P4 interrupt plumbing that a driver has to know about, E3,
  * plan/phase27_esp32p4_bringup.md.
  *
@@ -63,6 +65,29 @@
  * unmasks the line, and the peripheral's own interrupt-enable register is
  * still the driver's business. */
 int esp32p4_intmtx_route(uint32_t src, uint32_t clic_id);
+
+/* 47.1, plan/phase47_esp32p4_lcd7b_ribbon.md: the silicon revision the board
+ * file states, major*100+minor. A board file from before 47.0 is the NANO. */
+#ifndef CONFIG_ESP32P4_REV
+#define CONFIG_ESP32P4_REV 103
+#endif
+
+/* 47.1: the CLIC's status CSR. Below v3.0 the P4's CLIC is a pre-standard
+ * one with mintstatus at 0x346 and the threshold as a memory-mapped register;
+ * from v3.0 it follows the ratified CLIC: mintstatus at 0xFB1 and the
+ * threshold in the mintthresh CSR, 0x347 (IDF soc/esp32p4/include/soc/
+ * interrupt_reg.h and riscv/csr_clic.h, the REV_LESS_V3 split). Reading 0x346
+ * on the v3.2 board is an illegal-instruction trap -- `clicdump` found it.
+ * As strings, because they are only ever used inside asm. */
+#if CONFIG_ESP32P4_REV >= 300
+#define P4_MINTSTATUS_CSR "0xfb1"
+#define P4_MINTTHRESH_CSR "0x347"
+#else
+#define P4_MINTSTATUS_CSR "0x346"
+#endif
+
+/* 47.1: what esp32p4_l2_cache_shrink() found and left, once printk works. */
+void esp32p4_l2_cache_report(void);
 
 /* Arm hardware watchpoint 0 on stores to the 4 bytes at addr. Phase 27 E7
  * debug aid; see arch/riscv/common/trap.c for the encoding and its source. */

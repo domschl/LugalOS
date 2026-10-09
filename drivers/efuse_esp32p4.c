@@ -105,3 +105,20 @@ bool board_unique_id(uint8_t out[8]) {
     memcpy(out + 2, mac, 6);
     return true;
 }
+
+/* 47.1, plan/phase47_esp32p4_lcd7b_ribbon.md: the chip's silicon revision as
+ * major*100+minor, the encoding CONFIG_ESP32P4_REV uses. IDF's eFuse table
+ * (efuse/esp32p4/esp_efuse_table{,_v3.0}.csv): WAFER_VERSION_MINOR is BLK1
+ * bits 64..67, the major version's two low bits are 68..69 and its MSB is bit
+ * 87 -- the same three fields in both tables, the v3.0 one merely leaving the
+ * MSB unnamed. BLK1 word 2 (EFUSE_RD_MAC_SYS_2, base + 0x4c) holds them all:
+ * bits 3..0, 5..4 and 23. Read on the NANO as 103 and on the LCD-7B as 302,
+ * which is what esptool says of each. */
+#define EFUSE_RD_MAC_SYS_2      (EFUSE_BASE + 0x4c)   /* BLK1 bits 95..64 */
+
+unsigned esp32p4_chip_rev(void) {
+    uint32_t w = REG(EFUSE_RD_MAC_SYS_2);
+    unsigned minor = w & 0xfu;
+    unsigned major = ((w >> 4) & 0x3u) | (((w >> 23) & 0x1u) << 2);
+    return major * 100u + minor;
+}
