@@ -14,7 +14,7 @@
  * - Feed for /proc/sensors, shell 'sensor' command, and mqttd
  */
 
-#define SENSOR_HUB_MAX_DEVS     8u
+#define SENSOR_HUB_MAX_DEVS     10u
 #define SENSOR_HUB_DEFAULT_PERIOD_S 60u
 
 /* Registers a sensor driver instance with the hub */
@@ -86,6 +86,7 @@ bool sensor_hub_cal_apply(const sensor_cal_blob_t *cal);
 bool sensor_hub_cal_save(void);
 bool sensor_hub_cal_restore(void);
 bool sensor_hub_cal_clear(void);
+bool sensor_hub_cal_clear_dev(const char *dev_name);
 bool sensor_hub_cal_has_saved(sensor_cal_blob_t *out);
 
 /* EEPROM calibration operations (AT24C32 at 0x57) */

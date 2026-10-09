@@ -768,6 +768,7 @@ set(SOURCES
     drivers/tsl2591.c
     drivers/mics6814.c
     drivers/mhz19b.c
+    drivers/hdc1080.c
     drivers/sensor_hub.c
     fs/p9_chan.c
     libc/string.c

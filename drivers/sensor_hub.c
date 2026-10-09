@@ -7,6 +7,7 @@
 #include "drivers/tsl2591.h"
 #include "drivers/mics6814.h"
 #include "drivers/mhz19b.h"
+#include "drivers/hdc1080.h"
 #include "drivers/at24c32.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
@@ -78,6 +79,7 @@ bool sensor_hub_register(sensor_dev_t *dev) {
 void sensor_hub_init(void) {
     /* Register built-in drivers */
     sensor_hub_register(&mhz19b_sensor_dev);
+    sensor_hub_register(&hdc1080_sensor_dev);
     sensor_hub_register(&mics6814_sensor_dev);
     sensor_hub_register(&tsl2591_sensor_dev);
     sensor_hub_register(&tsl2561_sensor_dev);
@@ -357,6 +359,7 @@ uint32_t sensor_hub_selftest(bool report) {
     uint32_t failed = 0;
     /* Ensure default drivers are registered */
     sensor_hub_register(&mhz19b_sensor_dev);
+    sensor_hub_register(&hdc1080_sensor_dev);
     sensor_hub_register(&mics6814_sensor_dev);
     sensor_hub_register(&bme280_sensor_dev);
     sensor_hub_register(&bme680_sensor_dev);
@@ -600,7 +603,54 @@ bool sensor_hub_cal_restore(void) {
 }
 
 bool sensor_hub_cal_clear(void) {
+    if (at24c32_is_detected()) {
+        (void)sensor_hub_cal_eeprom_clear();
+    }
     return node_identity_clear_sensor_cal() == NODE_ID_OK;
+}
+
+bool sensor_hub_cal_clear_dev(const char *dev_name) {
+    if (!dev_name || strcmp(dev_name, "all") == 0) {
+        return sensor_hub_cal_clear();
+    }
+
+    sensor_cal_blob_t cal;
+    bool had_flash = sensor_hub_cal_has_saved(&cal);
+    if (!had_flash) {
+        if (!sensor_hub_cal_eeprom_has_saved(&cal)) {
+            sensor_hub_cal_get_current(&cal);
+        }
+    }
+
+    if (strcmp(dev_name, "ccs811") == 0) {
+        cal.ccs811_base = 0;
+        if (ccs811_is_detected()) {
+            ccs811_reset();
+        }
+    } else if (strcmp(dev_name, "sgp30") == 0) {
+        cal.sgp30_eco2_base = 0;
+        cal.sgp30_tvoc_base = 0;
+        if (sgp30_is_detected()) {
+            sgp30_init();
+        }
+    } else if (strcmp(dev_name, "mics6814") == 0 || strcmp(dev_name, "mics") == 0) {
+        cal.mics6814_r0_nh3 = 0;
+        cal.mics6814_r0_co = 0;
+        cal.mics6814_r0_no2 = 0;
+        if (mics6814_is_detected()) {
+            mics6814_init();
+        }
+    } else if (strcmp(dev_name, "bme680") == 0) {
+        cal.bme680_r_base = 0;
+        s_bme680_r_base = 0;
+    } else {
+        return false;
+    }
+
+    if (at24c32_is_detected()) {
+        (void)at24c32_write(SENSOR_CAL_EEPROM_ADDR, (const uint8_t *)&cal, sizeof(cal));
+    }
+    return node_identity_set_sensor_cal(&cal) == NODE_ID_OK;
 }
 
 bool sensor_hub_cal_eeprom_has_saved(sensor_cal_blob_t *out) {

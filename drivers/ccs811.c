@@ -107,6 +107,14 @@ bool ccs811_set_baseline(uint16_t baseline) {
     return i2c_reg_write_bytes(g.addr, REG_BASELINE, buf, 2);
 }
 
+bool ccs811_reset(void) {
+    if (!g.detected) return false;
+    static const uint8_t rst_cmd[4] = { 0x11, 0xE5, 0x72, 0x8A };
+    (void)i2c_reg_write_bytes(g.addr, REG_SW_RESET, rst_cmd, 4);
+    time_delay_us(10000); /* 10 ms wait for bootloader reset */
+    return ccs811_init();
+}
+
 bool ccs811_init(void) {
     static const uint8_t s_addrs[] = { CCS811_ADDR_LOW, CCS811_ADDR_HIGH };
     g.detected = false;

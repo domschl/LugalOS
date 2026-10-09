@@ -40,6 +40,7 @@
 #include "drivers/tsl2591.h"
 #include "drivers/mics6814.h"
 #include "drivers/mhz19b.h"
+#include "drivers/hdc1080.h"
 #include "drivers/sensor_hub.h"
 #include "drivers/boardprobe.h"
 #include "drivers/clocks_rp2350.h"
@@ -1277,6 +1278,7 @@ static void cmd_sensor(const char *arg) {
         tsl2591_selftest(true);
         mics6814_selftest(true);
         mhz19b_selftest(true);
+        hdc1080_selftest(true);
         sensor_derived_selftest(true);
         return;
     }
@@ -1336,11 +1338,21 @@ static void cmd_sensor(const char *arg) {
             }
             return;
         }
-        if (strcmp(sub, "clear") == 0) {
-            if (sensor_hub_cal_clear()) {
-                cprintf("sensor cal: stored calibration cleared from persistent identity store\n");
+        if (strncmp(sub, "clear", 5) == 0 || strncmp(sub, "reset", 5) == 0) {
+            const char *dev = sub + 5;
+            while (*dev == ' ') dev++;
+            if (*dev == '\0' || strcmp(dev, "all") == 0) {
+                if (sensor_hub_cal_clear()) {
+                    cprintf("sensor cal: stored calibration cleared across all sensors\n");
+                } else {
+                    cprintf("sensor cal: clear failed\n");
+                }
             } else {
-                cprintf("sensor cal: clear failed\n");
+                if (sensor_hub_cal_clear_dev(dev)) {
+                    cprintf("sensor cal: baseline reset/cleared for '%s'\n", dev);
+                } else {
+                    cprintf("sensor cal: unknown sensor '%s' (valid: ccs811, sgp30, mics6814, bme680, all)\n", dev);
+                }
             }
             return;
         }
@@ -1368,7 +1380,7 @@ static void cmd_sensor(const char *arg) {
             }
             return;
         }
-        cprintf("usage: sensor cal [show | save | restore | clear | eeprom save | eeprom restore | eeprom clear]\n");
+        cprintf("usage: sensor cal [show | save | restore | clear [sensor] | reset [sensor] | eeprom...]\n");
         return;
     }
     if (*arg) { cprintf("usage: sensor [selftest | init | cal [show|save|restore|clear|eeprom...]]\n"); return; }

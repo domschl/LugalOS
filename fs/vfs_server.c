@@ -21,6 +21,7 @@
 #include "drivers/tsl2591.h"
 #include "drivers/mics6814.h"
 #include "drivers/mhz19b.h"
+#include "drivers/hdc1080.h"
 #include "drivers/sensor_hub.h"
 #include "drivers/piousb.h"
 #include "kernel/time.h"
@@ -1549,12 +1550,46 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
             if (lf)
                 used += (uint32_t)ksnprintf(buf + used, cap - used,
                     "last_failure=%s\n", lf);
+        } else if (hdc1080_is_detected()) {
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "part=%s\naddr=0x%02x\nsample_period_s=%lu\n",
+                hdc1080_part_name(), hdc1080_address(),
+                (unsigned long)sensor_hub_sample_period_s());
+
+            hdc1080_reading_t hr;
+            uint32_t h_age = 0;
+            if (!hdc1080_cached(&hr, &h_age)) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "valid=no\n");
+            } else {
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "valid=yes\nage_s=%lu\ntemperature_c100=%ld\nhumidity_rh1000=%lu\n",
+                    (unsigned long)h_age, (long)hr.temp_c100,
+                    (unsigned long)hr.humidity_rh1000);
+            }
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "reads=%lu\nfailures=%lu\n",
+                (unsigned long)hdc1080_read_count(),
+                (unsigned long)hdc1080_fail_count());
+            const char *lf = hdc1080_last_failure();
+            if (lf)
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "last_failure=%s\n", lf);
         } else {
             used += (uint32_t)ksnprintf(buf + used, cap - used, "part=none\n");
             return (int)used;
         }
 
-        if (bme680_is_detected() || bme280_is_detected()) {
+        if (bme680_is_detected() || bme280_is_detected() || hdc1080_is_detected()) {
+            if (hdc1080_is_detected() && (bme680_is_detected() || bme280_is_detected())) {
+                hdc1080_reading_t hr;
+                uint32_t h_age = 0;
+                if (hdc1080_cached(&hr, &h_age)) {
+                    used += (uint32_t)ksnprintf(buf + used, cap - used,
+                        "hdc1080_temperature_c100=%ld\nhdc1080_humidity_rh1000=%lu\nhdc1080_age_s=%lu\n",
+                        (long)hr.temp_c100, (unsigned long)hr.humidity_rh1000,
+                        (unsigned long)h_age);
+                }
+            }
             if (tsl2591_is_detected()) {
                 tsl2591_reading_t tr;
                 uint32_t t_age = 0;

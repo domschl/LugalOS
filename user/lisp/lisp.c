@@ -6068,7 +6068,14 @@ static lisp_val_t *prim_sensor_cal(lisp_val_t *args, lisp_val_t *env) {
             if (strcmp(op, "restore") == 0) {
                 return sensor_hub_cal_restore() ? &true_val : &false_val;
             }
-            if (strcmp(op, "clear") == 0) {
+            if (strcmp(op, "clear") == 0 || strcmp(op, "reset") == 0) {
+                lisp_val_t *cdr = args->u.pair.cdr;
+                if (cdr && cdr->type == LISP_PAIR) {
+                    const char *target = lisp_val_str(cdr->u.pair.car);
+                    if (target) {
+                        return sensor_hub_cal_clear_dev(target) ? &true_val : &false_val;
+                    }
+                }
                 return sensor_hub_cal_clear() ? &true_val : &false_val;
             }
             if (strcmp(op, "save-eeprom") == 0 || strcmp(op, "eeprom-save") == 0) {
