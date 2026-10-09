@@ -64,6 +64,7 @@ Linux, cdc_acm: both work. See plan/phase27_esp32p4_bringup.md.
 """
 
 import argparse
+import contextlib
 import glob
 import os
 import subprocess
@@ -197,8 +198,8 @@ def pulse(port, seq, listen=1.5, watch=None):
             buf.extend(r.read(4096))
     finally:
         if not same:
-            r.close()
-        s.close()
+            close_console(r)
+        close_console(s)
     return bytes(buf).decode("utf-8", "replace")
 
 
@@ -213,29 +214,95 @@ def open_console(port):
 
     Both lines reach the board through U6 -- RTS to ESP_EN, DTR to GPIO35 --
     so a library that helpfully asserts them on open would hold the chip in
-    reset, or strap it into download mode, for as long as we are watching."""
+    reset, or strap it into download mode, for as long as we are watching.
+
+    **RTS goes down before DTR, never the other way round** (47.0,
+    plan/phase47_esp32p4_lcd7b_ribbon.md). Linux's cdc_acm raises both lines
+    on open whatever pyserial was asked for; with both up the transistor pair
+    does nothing. Dropping DTR first passes through RTS-up/DTR-down, which is
+    exactly the state that pulls ESP_EN low. On the NANO that glitch reached
+    only the reset port and went unnoticed. On the LCD-7B the console *is*
+    the reset port, so every reopen to listen reset the chip, and a RAM-loaded
+    image was replaced by a flash boot before it printed anything. RTS first
+    passes through DTR-up/RTS-down instead, which only straps GPIO35 while EN
+    stays high, and that is harmless."""
     s = serial.Serial()
     s.port, s.baudrate, s.timeout = port, BAUD, 0.2
-    s.dtr = False
     s.rts = False
+    s.dtr = False
     s.open()
-    s.dtr = False
     s.rts = False
+    s.dtr = False
     return s
+
+
+def park(s):
+    """Leave the tty at B0, so that the *next* open raises no modem lines.
+
+    47.0, plan/phase47_esp32p4_lcd7b_ribbon.md. Linux raises DTR and RTS on
+    every open of a tty whose baud is not B0 (tty_port_block_til_ready),
+    before any program can say otherwise, and on the ESP32-P4-WIFI6-Touch-
+    LCD-7B that resets the chip: measured 2026-10-09, a plain close + reopen
+    reset it every time, a B0 close + reopen never did. The termios outlive
+    the close (cdc_acm keeps them while the device is plugged in), and
+    leaving B0 for a real rate raises DTR alone, which only straps GPIO35.
+    So every port this script lets go of is parked first."""
+    try:
+        import termios
+        a = termios.tcgetattr(s.fd)
+        a[4] = a[5] = termios.B0
+        termios.tcsetattr(s.fd, termios.TCSANOW, a)
+    except Exception:
+        pass                    # not a POSIX tty (macOS cu.* still is; Windows is not)
+
+
+def close_console(s):
+    if s.is_open:
+        park(s)
+    s.close()
 
 
 class Watcher:
     """Collects console output on a thread while something else happens."""
 
     def __init__(self, port):
+        self.port = port
         self.s = open_console(port)
         self.buf = bytearray()
         self._stop = threading.Event()
+        self._pause = threading.Event()
+        self._idle = threading.Event()
         self._t = threading.Thread(target=self._run, daemon=True)
 
     def _run(self):
         while not self._stop.is_set():
+            if self._pause.is_set():
+                self._idle.set()
+                time.sleep(0.01)
+                continue
+            self._idle.clear()
             self.buf.extend(self.s.read(4096))
+
+    @contextlib.contextmanager
+    def lent(self):
+        """Let another program (esptool) use this same port, then resume.
+
+        47.0: on a single-cable board the watcher keeps its handle open
+        through the load instead of reopening afterwards, because a reopen
+        resets the LCD-7B (see park()). For the duration the reader stops,
+        so it cannot steal the loader's replies, and the tty is parked at B0,
+        so the loader's own open raises nothing. Afterwards the port is
+        reconfigured from this handle, whatever rate the loader left."""
+        self._pause.set()
+        self._idle.wait(1.0)
+        park(self.s)
+        try:
+            yield
+        finally:
+            self.s.baudrate = BAUD          # pyserial reapplies all termios
+            self.s.rts = False
+            self.s.dtr = False
+            self._pause.clear()
 
     def __enter__(self):
         self.s.reset_input_buffer()
@@ -245,7 +312,7 @@ class Watcher:
     def __exit__(self, *exc):
         self._stop.set()
         self._t.join(timeout=2)
-        self.s.close()
+        close_console(self.s)
 
     def drive(self, seq):
         """Drive a reset sequence on the port this watcher already holds.
@@ -421,9 +488,12 @@ def load(port, img, reset, rport=None, driver=None, baud=None):
                   "release BOOT.\n>>> Polling for up to 3 minutes...")
             told = True
         baud_args = ("--baud", str(baud)) if baud else ()
-        r = esptool("--port", port, *baud_args,
-                    "--before", "no-reset", "--after", "no-reset",
-                    "--connect-attempts", "1", "--no-stub", "load-ram", img)
+        lend = (driver.lent() if driver is not None and driver.port == port
+                else contextlib.nullcontext())
+        with lend:
+            r = esptool("--port", port, *baud_args,
+                        "--before", "no-reset", "--after", "no-reset",
+                        "--connect-attempts", "1", "--no-stub", "load-ram", img)
         if r.returncode == 0:
             print("loaded (attempt %d, reset %s via %s)" % (attempt, reset, rport))
             return True
@@ -500,7 +570,7 @@ def cmd_probe(port):
     s.flush()
     time.sleep(1.0)
     got = s.read(4096)
-    s.close()
+    close_console(s)
     print("sent 9 bytes: %r" % b"PROBE123\r")
     print("got %d bytes: %r" % (len(got), got))
     # minimal_esp32p4.c turns a received '\r' into '\n' then '\r', so its echo
@@ -584,7 +654,7 @@ def interactive(port):
                     os.write(1, data)
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, saved)
-        s.close()
+        close_console(s)
         print("\n--- closed ---")
     return 0
 
@@ -687,60 +757,50 @@ def main():
 
     img = image_for(a.image)
 
-    # When the reset lines and the console are different cables, the reset
-    # port's RX is still wired to UART0 -- so it can be held open and read
+    # The reset port's RX is wired to UART0, so it is held open and read
     # *through* the load, and the program's first words survive.
     #
     # That matters more than it sounds. The banner and the CSR dump are
-    # printed once, in the instant after the ROM jumps to us, while esptool
-    # still owns the port it loaded over. On a single-cable host they are
-    # simply lost, which is why minimal_esp32p4.c re-announces itself on a
-    # heartbeat. Here they are not lost, and the CSR dump is the whole
-    # observational point of E1.
-    if rport != port:
-        for tries_left in range(LOAD_TRIES - 1, -1, -1):
-            with Watcher(rport) as w:
-                if not load(port, img, a.reset, rport, driver=w, baud=a.baud):
-                    return 1
-                t0 = time.time()
-                started = w.wait_for(RUNNING_MARKER, a.listen_secs)
-                if started:
-                    # Started is not ready: wait out the rest of the window
-                    # for the prompt, and if it never comes, still give the
-                    # board the time the caller asked for.
-                    left = a.listen_secs - (time.time() - t0)
-                    if left > 0 and not w.wait_for(READY_MARKER, left):
-                        time.sleep(max(0.0, a.listen_secs - (time.time() - t0)))
-                else:
-                    # Give a program with no marker of ours (a bare test
-                    # image) the full listen window it was going to get.
+    # printed once, in the instant after the ROM jumps to us. When the reset
+    # lines and the console are different cables (the NANO), the watcher sits
+    # on the reset port and esptool talks on the other. When they are one
+    # cable (the LCD-7B, 47.0) the watcher lends its port to esptool for the
+    # transfer and keeps reading afterwards on the same handle. It must, not
+    # merely may: reopening the port there resets the chip, and a RAM-loaded
+    # image is gone before it has printed a byte.
+    for tries_left in range(LOAD_TRIES - 1, -1, -1):
+        with Watcher(rport) as w:
+            if not load(port, img, a.reset, rport, driver=w, baud=a.baud):
+                return 1
+            t0 = time.time()
+            started = w.wait_for(RUNNING_MARKER, a.listen_secs)
+            if started:
+                # Started is not ready: wait out the rest of the window
+                # for the prompt, and if it never comes, still give the
+                # board the time the caller asked for.
+                left = a.listen_secs - (time.time() - t0)
+                if left > 0 and not w.wait_for(READY_MARKER, left):
                     time.sleep(max(0.0, a.listen_secs - (time.time() - t0)))
-            if started or not looks_dead(w.text()) or tries_left == 0:
-                break
-            print("loaded, but the image never started (%d bytes, ROM output "
-                  "only) -- reloading, %d attempt(s) left."
-                  % (len(w.buf), tries_left))
-        print("=== %d bytes on %s, across the load ===" % (len(w.buf), rport))
-        print(w.text())
-        # The watcher above reads the reset port, which on this wiring is
-        # receive-only. Anything that has to *type* has to do it on the
-        # console port, and only after the watcher has let go of nothing --
-        # the two are different cables, so there is no handover to get wrong.
-        if a.cmd:
-            run_cmds(port, a.cmd, a.cmd_wait)
-        if a.interactive:
-            return interactive(port)
-        return 0
-
-    if not load(port, img, a.reset, rport, baud=a.baud):
-        return 1
-    # Single cable: listen only after the loader has released the port. The
-    # banner is emitted into that gap and is normally lost.
-    with Watcher(port) as w:
-        time.sleep(a.listen_secs)
-    print("=== %d bytes in %.0fs, nothing sent ===" % (len(w.buf), a.listen_secs))
+            else:
+                # Give a program with no marker of ours (a bare test
+                # image) the full listen window it was going to get.
+                time.sleep(max(0.0, a.listen_secs - (time.time() - t0)))
+        if started or not looks_dead(w.text()) or tries_left == 0:
+            break
+        print("loaded, but the image never started (%d bytes, ROM output "
+              "only) -- reloading, %d attempt(s) left."
+              % (len(w.buf), tries_left))
+    print("=== %d bytes on %s, across the load ===" % (len(w.buf), rport))
     print(w.text())
+    # Typing goes to the console port. On two cables that is the other
+    # one; on one cable it is a reopen of the watcher's port, which is safe
+    # because the watcher parked it at B0 when it let go (park()).
+    if a.cmd:
+        run_cmds(port, a.cmd, a.cmd_wait)
+    if a.interactive:
+        return interactive(port)
     return 0
+
 
 
 if __name__ == "__main__":

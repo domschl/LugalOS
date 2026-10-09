@@ -28,6 +28,12 @@
 #include "arch/esp32p4_intr.h"
 #include "lugalos_config.h"
 
+/* Guard-by-pin-map (47.0, plan/phase47_esp32p4_lcd7b_ribbon.md): the driver
+ * exists only on a board file that declares an EMAC. The ESP32-P4-WIFI6-
+ * Touch-LCD-7B has no Ethernet; it gets the stubs at the end of this file,
+ * so kernel/board.c and the shell need no matching #if. */
+#ifdef CONFIG_EMAC_BASE
+
 #define REG(a) (*(volatile uint32_t *)(uintptr_t)(a))
 
 /* --- Peripheral bases (TRM Table 9.3-2, IDF soc/reg_base.h) -------------- */
@@ -2011,3 +2017,25 @@ static void emac_netif_restarted(void) {
     g_rx_held = NULL;
     g_rx_held_len = 0;
 }
+
+#else /* !CONFIG_EMAC_BASE */
+
+static void no_emac(void) { cprintf("EMAC: this board has no Ethernet\n"); }
+
+int emac_probe(void) { return -1; }
+int emac_mdio_read(uint8_t phy_addr, uint8_t reg) { (void)phy_addr; (void)reg; return -1; }
+int emac_mdio_write(uint8_t phy_addr, uint8_t reg, uint16_t val) { (void)phy_addr; (void)reg; (void)val; return -1; }
+void emac_phy_scan(void) { no_emac(); }
+void emac_loopback_test(void) { no_emac(); }
+void emac_loopback_stress(uint32_t rounds) { (void)rounds; no_emac(); }
+void emac_loopback_phy(uint32_t rounds) { (void)rounds; no_emac(); }
+int emac_phy_autoneg_start(void) { return -1; }
+bool emac_link_poll(emac_link_t *out) { (void)out; return false; }
+void emac_link_report(void) { no_emac(); }
+void emac_link_updown_test(void) { no_emac(); }
+int emac_netif_init(void) { return -1; }
+struct netif *emac_get_netif(void) { return NULL; }
+void emac_stats_report(void) { no_emac(); }
+void emac_set_promiscuous(bool on) { (void)on; no_emac(); }
+
+#endif /* CONFIG_EMAC_BASE */

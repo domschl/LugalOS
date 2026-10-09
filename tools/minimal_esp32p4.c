@@ -49,7 +49,9 @@
  *   0x4ff3afc0 - 0x4ff3fba4  CPU1 stack
  *   0x4ff3fba4 - 0x4ff40000  ROM .bss and .data
  *
- * tools/minimal_esp32p4.ld therefore keeps everything below 0x4ff28000.
+ * That is revision v1.3's map. v3.x moved it to the top of L2MEM and put
+ * the cache at the bottom; tools/minimal_esp32p4.ld says where the image
+ * sits so that it misses both (47.0).
  *
  * Register offsets below are confirmed against BOTH the TRM (§45, registers
  * 45.1 and 45.21) and IDF's soc/esp32p4/register/hw_ver1/soc/uart_reg.h,

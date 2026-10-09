@@ -1,6 +1,6 @@
 # Phase 47 — The ribbon on the ESP32-P4-WIFI6-Touch-LCD-7B
 
-**Status: planned, not started. Written 2026-10-09.** Nothing here has been
+**Status: 47.0 done (2026-10-09). Written 2026-10-09.** Nothing here has been
 run on this board under LugalOS yet. The board facts in §2 come from Waveshare's
 own example sources and from one read-only `esptool flash-id` against the
 attached unit. Anything marked *(to read)* is what 47.0 turns into a recorded
@@ -165,7 +165,7 @@ Also new with this board:
 
 ### Board and silicon
 
-**47.0 — Board facts and host tooling.**
+**47.0 — Board facts and host tooling. [DONE 2026-10-09, §5.2]**
 Read the schematic into `cmake/board-esp32p4-lcd7b.cmake`, with every number
 labelled by its source as in `board-esp32p4-nano.cmake`: UART0 pads, SD power
 polarity (GPIO45 per the owner), USB-A VBUS (believed unswitched; verify), GT911 INT/RST if wired, LED, `BOOT`/`EN`
@@ -347,6 +347,52 @@ preset and flashing procedure.
 *Done when:* the suite passes, `tests/runner.py` is unchanged on QEMU, and
 `test_esp32p4.py` on the NANO and `test_rp2350.py` on the terminal still
 pass.
+
+## 5.2 What 47.0 found (2026-10-09)
+
+* **Console and reset share one port, and opening it resets the chip.**
+  Linux raises DTR and RTS on every open of a tty whose baud is not B0, and on
+  this board's U7 (EMH4T2R) that pulled ESP_EN low every time: a RAM-loaded
+  image was replaced by a flash boot before it printed a byte. Measured: a
+  plain close + reopen reset it every time, and a close at B0 + reopen never
+  did. `tools/p4run.py` now parks the tty at B0 whenever it lets go (`park()`),
+  drops RTS before DTR, and on a single-cable board lends its open handle to
+  esptool for the load and keeps reading afterwards (`Watcher.lent()`). No
+  `--board` flag was needed: with no CP2102 attached, the existing port
+  detection picks the CH343P for both roles. `--reset-test` passes, and so do
+  run and download.
+* **v3.x swapped L2MEM's ends.** On v1.3 the ROM's data and download buffers
+  are at 0x4ff296b8–0x4ff40000 and the L2 cache is at the top. On v3.x the
+  cache starts at **0x4ff00000** and the ROM's data is at
+  **0x4ffa96b8–0x4ffc0000** (IDF `bootloader.memory.ld.in`,
+  `esp_system/ld/esp32p4/memory.ld.in`). `tools/minimal_esp32p4.ld` linked
+  at 0x4ff00000, so it loaded into cache and silently never ran. It now
+  links at 0x4ff40000, which is clear on both revisions.
+* **The NANO-built kernel boots on v3.2 at 40 MHz**, unmodified apart from
+  the board file: XIP, timer, allocators, SMP (two harts), preemption, flash,
+  `/sd0` (4-bit, 20 MHz), I2C and the shell. Its RAM half
+  (0x4ff40000–0x4ff9e000, heap 372 KB) happens to sit between the two
+  regions above. So 47.1 is an audit of what has not been exercised yet,
+  not a rescue.
+* `i2c scan` on GPIO7/8 finds exactly the board's devices: 0x18 (ES8311),
+  0x40 (ES7210), 0x5D (GT911). **The boot-time probes report phantoms**
+  ("DS1307-compatible at 0x68", "AT24C32 at 0x57") that the scan does not
+  see. That is a bug to fix in 47.2.
+* `minimal_esp32p4.c`'s GPIO20 test fails to drive the pad (it reads 0 at
+  both levels; pulls work). GPIO20 is not wired on this board. To check in
+  47.1: v3.x GPIO output enable, or an unconnected pad.
+* After a *flash* boot the minimal image is reset by
+  `HP_SYS_HP_WDT_RESET`. The ROM arms a watchdog that the kernel handles and
+  the minimal image does not. RAM loads are unaffected.
+* `misa` = 0x40903127 on v3.2, which includes the B extension.
+* Schematic facts are recorded in `cmake/board-esp32p4-lcd7b.cmake`: SD power
+  on GPIO45 (high = off, R29 pull-down); USB-A VBUS always on through a
+  DIO7003 current-limited switch; GPIO33 panel reset (held low by R45 until
+  driven); GPIO32 backlight (higher = dimmer); GPIO23 touch reset; touch INT
+  only on test point TP1; no user LED; the C6 on SDIO GPIO14–19 with
+  CHIP_PU on GPIO54.
+* The demo firmware is erased, and `p4flash.py --only boot,os --verify` writes
+  and verifies this preset unchanged.
 
 ## 6. v1.3 → v3.2 audit table (filled by 47.1)
 

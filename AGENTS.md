@@ -128,6 +128,21 @@ console, loading and reset all on it.
 * Quick standalone checks (no kernel): `tools/build_minimal_esp32c6.sh run`,
   `tools/build_umode_probe_esp32c6.sh run`.
 
+#### 4. ESP32-P4-WIFI6-Touch-LCD-7B (`esp32p4-lcd7b`, phase 47)
+One CH343P ("USB TO UART" Type-C) carries **both** UART0 (GPIO37/38) and reset
+(RTS → ESP_EN, DTR → GPIO35). There is no CP2102, so `tools/p4run.py` picks it
+for both roles by itself.
+* Symlink: `/dev/serial/by-id/usb-1a86_USB_Single_Serial_*-if00`
+* **Opening this port resets the chip** unless the tty was left at B0, because
+  Linux raises DTR/RTS on open. `tools/p4run.py` parks the port at B0 whenever
+  it closes it, so always go through `p4run.py` / `p4flash.py`. Any other
+  program (picocom, a bare pyserial open) resets the board.
+* Silicon **revision v3.2** (the NANO is v1.3): L2MEM's cache and ROM data
+  sit at the opposite ends. See plan/phase47 §5.2.
+* Build `ninja -C build/esp32p4-lcd7b`; flash with
+  `tools/p4flash.py --build build/esp32p4-lcd7b --only boot,os --verify`;
+  console with `tools/p4run.py --run --cmd "..."`.
+
 ---
 
 ## 4. Hardware Presets & Agent Requests
@@ -139,6 +154,7 @@ LugalOS supports distinct hardware presets. If a task requires testing against a
 | `rp2350-terminal` | RP2350 Hazard3 RV32 | Waveshare RP2350-LCD-7 (7" LCD terminal, PSRAM, USB console, SD card) |
 | `rp2350-chess` | RP2350 Hazard3 RV32 | Pico 2 with ST7735 LCD, TM1638 keypad, SD card, chess engine |
 | `esp32p4` | ESP32-P4 RV32 | Waveshare ESP32-P4-NANO (dual-core RISC-V @ 360–400 MHz, RMII Ethernet, SDMMC, writable flash) |
+| `esp32p4-lcd7b` | ESP32-P4 RV32 (rev v3.2) | Waveshare ESP32-P4-WIFI6-Touch-LCD-7B (7" 1024×600 MIPI-DSI, GT911 touch, USB-A host, SDMMC, 32 MB PSRAM, C6 on SDIO; phase 47) |
 | `rp2350-clock` | RP2350 LED Clock | Waveshare Pico-Clock-Green (SM16106 LED matrix + DCF77 radio) |
 | `rp2350-gateway` | RP2350 Gateway | Network gateway persona (ENC28J60 Ethernet / USB 9P / UART1 downlink) |
 | `rp2350-wifi` | RP2350 CYW43439 | Raspberry Pi Pico 2 W with CYW43439 Wi-Fi |
