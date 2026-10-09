@@ -8,6 +8,8 @@
 #include "drivers/mics6814.h"
 #include "drivers/mhz19b.h"
 #include "drivers/hdc1080.h"
+#include "drivers/tmp117.h"
+#include "drivers/mcp9808.h"
 #include "drivers/at24c32.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
@@ -78,15 +80,17 @@ bool sensor_hub_register(sensor_dev_t *dev) {
 
 void sensor_hub_init(void) {
     /* Register built-in drivers */
-    sensor_hub_register(&mhz19b_sensor_dev);
+    sensor_hub_register(&tmp117_sensor_dev);
+    sensor_hub_register(&mcp9808_sensor_dev);
+    sensor_hub_register(&bme280_sensor_dev);
+    sensor_hub_register(&bme680_sensor_dev);
     sensor_hub_register(&hdc1080_sensor_dev);
+    sensor_hub_register(&mhz19b_sensor_dev);
     sensor_hub_register(&mics6814_sensor_dev);
     sensor_hub_register(&tsl2591_sensor_dev);
     sensor_hub_register(&tsl2561_sensor_dev);
     sensor_hub_register(&ccs811_sensor_dev);
     sensor_hub_register(&sgp30_sensor_dev);
-    sensor_hub_register(&bme680_sensor_dev);
-    sensor_hub_register(&bme280_sensor_dev);
 
     s_active_count = 0;
     memset(s_caches, 0, sizeof(s_caches));
@@ -305,7 +309,19 @@ bool sensor_hub_get(sensor_chan_t chan, int32_t *out_val, uint32_t *age_s) {
         return false;
     }
 
-    /* 2. For CO2: Prioritize true physical NDIR optical absorption (mhz19b) */
+    /* 2. For Temperature: Prioritize high-accuracy remote sensors away from heat sources */
+    if (chan == SENSOR_CHAN_TEMP) {
+        static const sensor_dev_t *const temp_prio[] = {
+            &tmp117_sensor_dev, &mcp9808_sensor_dev, &bme280_sensor_dev, &bme680_sensor_dev, &hdc1080_sensor_dev
+        };
+        for (size_t p = 0; p < sizeof(temp_prio)/sizeof(temp_prio[0]); p++) {
+            if (sensor_hub_get_dev(temp_prio[p], SENSOR_CHAN_TEMP, out_val, age_s)) {
+                return true;
+            }
+        }
+    }
+
+    /* 3. For CO2: Prioritize true physical NDIR optical absorption (mhz19b) */
     if (chan == SENSOR_CHAN_CO2) {
         if (sensor_hub_get_dev(&mhz19b_sensor_dev, SENSOR_CHAN_CO2, out_val, age_s)) {
             return true;
@@ -314,7 +330,7 @@ bool sensor_hub_get(sensor_chan_t chan, int32_t *out_val, uint32_t *age_s) {
         return sensor_hub_get(SENSOR_CHAN_ECO2, out_val, age_s);
     }
 
-    /* 3. Physical sensor cache search */
+    /* 4. Physical sensor cache search */
     for (uint32_t i = 0; i < s_active_count; i++) {
         dev_cache_t *c = &s_caches[i];
         if (c->valid[chan]) {
@@ -344,7 +360,22 @@ bool sensor_hub_get_filtered(sensor_chan_t chan, int32_t *out_val) {
         return false;
     }
 
-    /* 2. Physical sensor cache search */
+    /* 2. For Temperature: Prioritize high-accuracy remote sensors */
+    if (chan == SENSOR_CHAN_TEMP) {
+        static const sensor_dev_t *const temp_prio[] = {
+            &tmp117_sensor_dev, &mcp9808_sensor_dev, &bme280_sensor_dev, &bme680_sensor_dev, &hdc1080_sensor_dev
+        };
+        for (size_t p = 0; p < sizeof(temp_prio)/sizeof(temp_prio[0]); p++) {
+            for (uint32_t i = 0; i < s_active_count; i++) {
+                if (s_caches[i].dev == temp_prio[p] && s_caches[i].valid[chan]) {
+                    *out_val = s_caches[i].filtered_val[chan];
+                    return true;
+                }
+            }
+        }
+    }
+
+    /* 3. Physical sensor cache search */
     for (uint32_t i = 0; i < s_active_count; i++) {
         dev_cache_t *c = &s_caches[i];
         if (c->valid[chan]) {
@@ -409,6 +440,23 @@ bool sensor_hub_get_origin(sensor_chan_t chan, sensor_origin_t *out) {
         return false;
     }
 
+    if (chan == SENSOR_CHAN_TEMP) {
+        static const sensor_dev_t *const temp_prio[] = {
+            &tmp117_sensor_dev, &mcp9808_sensor_dev, &bme280_sensor_dev, &bme680_sensor_dev, &hdc1080_sensor_dev
+        };
+        for (size_t p = 0; p < sizeof(temp_prio)/sizeof(temp_prio[0]); p++) {
+            for (uint32_t i = 0; i < s_active_count; i++) {
+                if (s_caches[i].dev == temp_prio[p] && s_caches[i].valid[chan]) {
+                    out->tier = SENSOR_TIER_FUSED;
+                    out->source_dev = s_caches[i].dev->name;
+                    out->model_name = "hardware-transducer";
+                    out->desc = s_caches[i].dev->name;
+                    return true;
+                }
+            }
+        }
+    }
+
     for (uint32_t i = 0; i < s_active_count; i++) {
         dev_cache_t *c = &s_caches[i];
         if (c->valid[chan]) {
@@ -425,6 +473,8 @@ bool sensor_hub_get_origin(sensor_chan_t chan, sensor_origin_t *out) {
 uint32_t sensor_hub_selftest(bool report) {
     uint32_t failed = 0;
     /* Ensure default drivers are registered */
+    sensor_hub_register(&tmp117_sensor_dev);
+    sensor_hub_register(&mcp9808_sensor_dev);
     sensor_hub_register(&mhz19b_sensor_dev);
     sensor_hub_register(&hdc1080_sensor_dev);
     sensor_hub_register(&mics6814_sensor_dev);

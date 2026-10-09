@@ -1759,8 +1759,8 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
             if (!dev) return -1;
 
             used += (uint32_t)ksnprintf(buf + used, cap - used,
-                "tier=hw\npart=%s\naddr=0x%02x\nsample_period_s=%lu\n",
-                dev->name, dev->addr, (unsigned long)sensor_hub_sample_period_s());
+                "tier=hw\npart=%s\nbus=%u\naddr=0x%02x\nsample_period_s=%lu\n",
+                dev->name, (unsigned)dev->bus, dev->addr, (unsigned long)sensor_hub_sample_period_s());
 
             bool any_val = false;
             uint32_t min_age = 0;

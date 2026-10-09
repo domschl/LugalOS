@@ -5704,6 +5704,16 @@ def test_bme280_compensation(elf_path: Path, img_path: Path, arch_name: str) -> 
             return (name, False,
                     f"mhz19b selftest did not pass:\n{log[-700:]}")
 
+        m_mcp = re.search(r"mcp9808 selftest: (\d+) case", log)
+        if not m_mcp or int(m_mcp.group(1)) != 0:
+            return (name, False,
+                    f"mcp9808 selftest did not pass:\n{log[-700:]}")
+
+        m_tmp = re.search(r"tmp117 selftest: (\d+) case", log)
+        if not m_tmp or int(m_tmp.group(1)) != 0:
+            return (name, False,
+                    f"tmp117 selftest did not pass:\n{log[-700:]}")
+
         m_derived = re.search(r"sensor_derived selftest: (\d+) case", log)
         if not m_derived or int(m_derived.group(1)) != 0:
             return (name, False,

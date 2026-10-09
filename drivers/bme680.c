@@ -59,6 +59,7 @@ static const uint32_t LOOKUP_TABLE2[16] = {
 static struct {
     bool             detected;
     uint8_t          addr;
+    uint8_t          bus;
     bme680_calib_t   cal;
 
     bme680_reading_t last;
@@ -71,11 +72,11 @@ static struct {
 } g;
 
 static bool rd(uint8_t reg, uint8_t *dst, uint32_t len) {
-    return i2c_reg_read_bytes(g.addr, reg, dst, len);
+    return i2c_reg_read_bytes_bus(g.bus, g.addr, reg, dst, len);
 }
 
 static bool wr(uint8_t reg, uint8_t value) {
-    return i2c_reg_write_u8(g.addr, reg, value);
+    return i2c_reg_write_u8_bus(g.bus, g.addr, reg, value);
 }
 
 static bool fail(const char *where) {
@@ -176,43 +177,48 @@ static bool read_calibration(void) {
 
 bool bme680_init(void) {
     static const uint8_t ADDRS[] = { BME680_ADDR_LOW, BME680_ADDR_HIGH };
-    for (unsigned i = 0; i < sizeof(ADDRS) / sizeof(ADDRS[0]); i++) {
-        g.addr = ADDRS[i];
-        uint8_t chip_id = 0;
-        if (!rd(REG_CHIP_ID, &chip_id, 1u)) continue;
-        if (chip_id != BME680_CHIP_ID) continue;
+    uint8_t buses = i2c_bus_count();
 
-        /* Soft reset */
-        (void)wr(REG_RESET, RESET_CMD);
-        uint64_t until = time_get_ms() + 10u;
-        while (time_get_ms() < until) sched_yield();
+    for (uint8_t b = 0; b < buses; b++) {
+        for (unsigned i = 0; i < sizeof(ADDRS) / sizeof(ADDRS[0]); i++) {
+            g.bus = b;
+            g.addr = ADDRS[i];
+            uint8_t chip_id = 0;
+            if (!rd(REG_CHIP_ID, &chip_id, 1u)) continue;
+            if (chip_id != BME680_CHIP_ID) continue;
 
-        if (!read_calibration()) {
-            printk("[BME680] Found BME680 at 0x%02x but could not read calibration.\n", g.addr);
-            continue;
+            /* Soft reset */
+            (void)wr(REG_RESET, RESET_CMD);
+            uint64_t until = time_get_ms() + 10u;
+            while (time_get_ms() < until) sched_yield();
+
+            if (!read_calibration()) {
+                printk("[BME680] Found BME680 at bus %u 0x%02x but could not read calibration.\n", g.bus, g.addr);
+                continue;
+            }
+
+            /* Configure heater profile 0: 320 °C target for 150 ms */
+            uint8_t rh = bme680_calc_res_heat(320u, 25, &g.cal);
+            uint8_t gw = bme680_calc_gas_wait(150u);
+            (void)wr(REG_RES_HEAT_0, rh);
+            (void)wr(REG_GAS_WAIT_0, gw);
+
+            /* Enable gas conversion on profile 0 (run_gas = 1, nb_conv = 0) */
+            (void)wr(REG_CTRL_GAS_1, 0x10u);
+
+            /* Set humidity oversampling x1 */
+            (void)wr(REG_CTRL_HUM, OSRS_X1);
+
+            /* IIR filter off */
+            (void)wr(REG_CONFIG, 0x00u);
+
+            /* Enter sleep mode until triggered */
+            (void)wr(REG_CTRL_MEAS, CTRL_MEAS_SLEEP);
+
+            g.detected = true;
+            printk("[BME680] BME680 at bus %u 0x%02x on I2C.\n", g.bus, g.addr);
+            return true;
         }
-
-        /* Configure heater profile 0: 320 °C target for 150 ms */
-        uint8_t rh = bme680_calc_res_heat(320u, 25, &g.cal);
-        uint8_t gw = bme680_calc_gas_wait(150u);
-        (void)wr(REG_RES_HEAT_0, rh);
-        (void)wr(REG_GAS_WAIT_0, gw);
-
-        /* Enable gas conversion on profile 0 (run_gas = 1, nb_conv = 0) */
-        (void)wr(REG_CTRL_GAS_1, 0x10u);
-
-        /* Set humidity oversampling x1 */
-        (void)wr(REG_CTRL_HUM, OSRS_X1);
-
-        /* IIR filter off */
-        (void)wr(REG_CONFIG, 0x00u);
-
-        /* Enter sleep mode until triggered */
-        (void)wr(REG_CTRL_MEAS, CTRL_MEAS_SLEEP);
-
-        g.detected = true;
-        printk("[BME680] BME680 at 0x%02x on the shared I2C bus.\n", g.addr);
-        return true;
     }
 
     g.addr = 0;
@@ -435,6 +441,7 @@ void bme680_print_status(void) {
 
 static bool bme680_dev_init(struct sensor_dev *dev) {
     if (!bme680_init()) return false;
+    dev->bus = g.bus;
     dev->addr = g.addr;
     dev->chan_mask = (1u << SENSOR_CHAN_TEMP) |
                      (1u << SENSOR_CHAN_PRESSURE) |

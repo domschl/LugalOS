@@ -65,6 +65,7 @@ bme280_part_t bme280_init(void);
 
 bme280_part_t bme280_part(void);
 uint8_t       bme280_address(void);
+uint8_t       bme280_bus(void);
 const char   *bme280_part_name(void);
 bool          bme280_is_detected(void);
 

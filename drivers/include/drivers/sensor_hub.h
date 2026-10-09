@@ -14,7 +14,7 @@
  * - Feed for /proc/sensors, shell 'sensor' command, and mqttd
  */
 
-#define SENSOR_HUB_MAX_DEVS     10u
+#define SENSOR_HUB_MAX_DEVS     16u
 #define SENSOR_HUB_DEFAULT_PERIOD_S 60u
 
 /* Registers a sensor driver instance with the hub */

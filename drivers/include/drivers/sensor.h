@@ -83,6 +83,7 @@ typedef struct sensor_ops {
 typedef struct sensor_dev {
     const char         *name;       /* e.g. "bme280", "bme680", "tsl2591" */
     uint8_t             addr;       /* Detected I2C address */
+    uint8_t             bus;        /* Detected I2C bus index (0 or 1) */
     uint32_t            chan_mask;  /* Bitmask of (1u << SENSOR_CHAN_*) supported */
     const sensor_ops_t *ops;
     void               *priv;       /* Driver-specific context / calibration */
