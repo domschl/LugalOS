@@ -1,6 +1,6 @@
 # Phase 46 — A Unified I2C Sensor Framework
 
-**Status: active. Milestones 46.1–46.16 concluded with silicon verification on real hardware (RP2350 Pico 2 W + multi-sensor bench). Written 2026-10-06, updated 2026-10-08.**
+**Status: active. Milestones 46.1–46.17 concluded with silicon verification on real hardware (RP2350 Pico 2 W + multi-sensor bench). Written 2026-10-06, updated 2026-10-09.**
 Succeeds `plan/phase26_mqtt_and_environment_sensors.md` (concluded) and stands beside `plan/phase45_esp32c6.md` (planned).
 
 **Milestone scheme: `46.1`, `46.2`, `46.3`, …**
@@ -467,6 +467,22 @@ typedef struct {
 * Lisp primitives: `(sensor-cal ['save | 'restore | 'clear | 'save-eeprom | 'restore-eeprom | 'clear-eeprom])`.
 * Verified on real silicon: active baselines round-tripped and persisted across reboots on both AT24C32 EEPROM and Flash `idstore`.
 
+### 46.17 TI HDC1080 Temp/Humidity Sensor & Per-Sensor Baseline Management [Concluded]
+* Supported combined CCS811 + TI HDC1080 daughterboard on shared I2C bus:
+  - HDC1080 probed at fixed I2C address `0x40`, verified via manufacturer ID `0x5449` ('TI') and device ID `0x1050`.
+  - Implemented `drivers/hdc1080.c` and `drivers/include/drivers/hdc1080.h`.
+  - Sequential 14-bit Temperature ($T_{\text{c100}} = \frac{\text{raw} \times 16500}{65536} - 4000$) and Relative Humidity ($H_{\text{rh1000}} = \frac{\text{raw} \times 100000}{65536}$) acquisition with strict zero-float integer math.
+  - Implemented `hdc1080_selftest()` verifying arithmetic against TI datasheet golden vectors.
+  - Exposed HDC1080 to `/proc/sensors`, `sensor` status report, and Lisp primitives `(sensor-read 'hdc1080 'temp)`, `(sensor-read 'hdc1080 'humidity)`.
+* Implemented Per-Sensor Calibration Reset Protocol:
+  - Added `sensor_hub_cal_clear_dev(const char *dev_name)` to selectively clear an individual sensor's baseline without wiping other devices' stored calibrations across Flash `idstore` and AT24C32 EEPROM.
+  - Added `ccs811_reset()` executing the 4-byte software reset sequence (`0x11, 0xE5, 0x72, 0x8A`) to register `0xFF`, putting replaced sensors back into clean burn-in state.
+  - Added shell commands: `sensor cal clear [sensor]`, `sensor cal reset [sensor]`.
+  - Added Lisp primitives: `(sensor-cal 'clear '[sensor])`, `(sensor-cal 'reset '[sensor])`.
+* Verified on real silicon:
+  - Replaced CCS811 baseline cleared via `sensor cal reset ccs811`.
+  - New CCS811 reads clean ambient baseline: $400\ \text{ppm}\ \text{eCO}_2$, $0\ \text{ppb}\ \text{TVOC}$, with $\text{MOX ratio} = 51\%$ against MH-Z19B true $\text{CO}_2$, completely clearing previous solvent contamination warnings.
+  - HDC1080 actively sampled: reporting $30.98\ ^\circ\text{C}$, $47.78\ \%\text{RH}$ alongside BME680.
 
 ---
 
