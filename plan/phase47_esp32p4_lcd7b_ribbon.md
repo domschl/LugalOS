@@ -198,7 +198,7 @@ sensors on the header.
 *Done when:* `test_esp32p4.py` (or a 7B variant that skips Ethernet; this
 board has none) passes on the 7B.
 
-**47.3 — PSRAM. [DONE 2026-10-09 at 20 MHz, both boards, §6.2; faster speeds are 47.3b]**
+**47.3 — PSRAM. [DONE 2026-10-09, both boards at 200 MHz, §6.2–6.3]**
 The P4's MSPI PSRAM controller, AP hex-mode device (reference:
 `esp-idf/components/esp_psram/device/esp_psram_impl_ap_hex.c` and the MSPI
 timing tuning it calls), mapped through the cache. Then phase 38's
@@ -586,10 +586,44 @@ flash share the QMI, the P4's PSRAM has its own controller, and
 `flash_esp32p4.c` never disables the cache. PSRAM stays usable across an
 erase.
 
-**47.3b (before 47.5): raise the speed.** 20 MHz is IDF's only untuned speed.
-The display needs ~37 MB/s of scan-out on top of CPU traffic, and 80/200 MHz
-need IDF's PSRAM timing tuning (a DQS-phase sweep and a 100-step
-delay-line sweep against a reference pattern, `mspi_timing_psram_tuning()`).
+## 6.3 What 47.3b found: 200 MHz through timing tuning (2026-10-09)
+
+IDF's P4 PSRAM tuning (the DQS scheme, `tuning_scheme_impl/mspi_timing_by_dqs.c`)
+is now ported in `psram_esp32p4.c`:
+1. Write IDF's 128-byte reference pattern at 0x80 at 20 MHz.
+2. Switch both ports to the target speed and read the pattern back under each
+   of the 4 DQS phases. The best phase is the first of the longest passing run.
+3. At that phase, sweep the 31 delay-line pairs, 100 reads each, and choose
+   the middle of the longest run that passes 100/100.
+
+The delay goes into every PSRAM pad's DLC field and both DQS pads'
+DELAY_90/270. These fields are now in the generated register header, again
+checked equal on both revisions. Mode registers and dummy cycles are set for
+the target speed from the start: latency counts clocks, so the same settings
+serve the 20 MHz bring-up. IDF disables the cache around its speed switches
+because they also move the flash clock; this one moves only the PSRAM's,
+before anything has used it. If no phase passes, or the delay-line run is a
+single point, the driver falls back to 20 MHz and logs it.
+`CONFIG_PSRAM_SPEED_MHZ` (20 or 200) is a board-file key; both P4 boards ask
+for 200.
+
+| | NANO (v1.3) | LCD-7B (v3.2) |
+|---|---|---|
+| DQS phases passing | all 4 → phase 0 | all 4 → phase 0 |
+| delay lines passing 100/100 | #5–28 (24) → #16 {data 1, dqs 0} | #4–26 (23) → #15 {0, 0} |
+| full-chip pattern test | PASS, 878 ms/pass (was 3.4 s) | PASS, 735 ms/pass |
+
+The windows are wide (23–24 of 31 configs) and sit one step apart on the two
+boards, which is what per-boot tuning is for.
+
+| bandwidth (1 MB, LCD-7B) | 20 MHz | 200 MHz |
+|---|---|---|
+| read | 32.6 MB/s | 107.9 MB/s |
+| write + write-back | 12.1 MB/s | 80.6 MB/s |
+
+GC churn over the 1 MB Lisp node pool takes 16.6 s at 200 MHz, against 55.9 s
+at 20 MHz. Boot zeroing of BULK_BSS drops from 120 to 65 ms. The display's
+~37 MB/s of scan-out now uses about a third of the read bandwidth.
 
 ## 7. Risks
 

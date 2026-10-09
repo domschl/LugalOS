@@ -180,10 +180,36 @@ static bool mpll_on(void) {
     return ok;
 }
 
+/* 47.3b: the target speed, a board-file choice (CONFIG_PSRAM_SPEED_MHZ): 20,
+ * IDF's untuned SPIRAM_SPEED_20M, or 200, SPIRAM_SPEED_200M, reached through
+ * the DQS timing tuning below. Both from the 400 MHz MPLL. Bring-up and the
+ * tuning's reference write always run at 20; the cache port is switched to
+ * the target only after the sweep has found where to sample. */
+#ifndef CONFIG_PSRAM_SPEED_MHZ
+#define CONFIG_PSRAM_SPEED_MHZ 20
+#endif
+#if CONFIG_PSRAM_SPEED_MHZ != 20 && CONFIG_PSRAM_SPEED_MHZ != 200
+#error "CONFIG_PSRAM_SPEED_MHZ must be 20 or 200 (IDF's SPIRAM_SPEED_20M / _200M)"
+#endif
+#define PSRAM_INIT_MHZ    20u
+#define BUS_DIV_FOR(mhz)  (MPLL_MHZ / (mhz))
+static uint32_t g_speed_mhz = PSRAM_INIT_MHZ;   /* what the bus runs at now */
+
 /* ---- 3. controller -------------------------------------------------------- */
 
-#define PSRAM_SPEED_MHZ   20u
-#define BUS_DIV           (MPLL_MHZ / PSRAM_SPEED_MHZ)     /* 20 */
+/* psram_ctrlr_ll_set_bus_clock() for both ports: N = div-1, H = div/2-1,
+ * L = div-1 (mspi_timing_config_set_psram_clock(): core clock div 1). */
+static void bus_clock(uint32_t mhz) {
+    uint32_t div = BUS_DIV_FOR(mhz);
+    REG(SPI_MEM_S_SRAM_CLK_REG) = ((div - 1u) << SPI_MEM_S_SCLKCNT_N_S) |
+                                  ((div / 2u - 1u) << SPI_MEM_S_SCLKCNT_H_S) |
+                                  ((div - 1u) << SPI_MEM_S_SCLKCNT_L_S);
+    REG(SPI1_MEM_S_CLOCK_REG)   = ((div - 1u) << SPI1_MEM_S_CLKCNT_N_S) |
+                                  ((div / 2u - 1u) << SPI1_MEM_S_CLKCNT_H_S) |
+                                  ((div - 1u) << SPI1_MEM_S_CLKCNT_L_S);
+    g_speed_mhz = mhz;
+}
+
 
 static void ctrl_setup(void) {
     /* psram_ctrlr_ll_enable_module_clock / _reset_module_clock /
@@ -235,16 +261,7 @@ static void ctrl_setup(void) {
     FSET(SPI_MEM_S_SMEM_AC_REG, SPI_MEM_S_SMEM_SPLIT_TRANS_EN, 1);
     FSET(SPI_MEM_S_SMEM_ECC_CTRL_REG, SPI_MEM_S_SMEM_PAGE_SIZE, 3);   /* 2048 */
 
-    /* psram_ctrlr_ll_set_bus_clock() for both ports: N = div-1, H = div/2-1,
-     * L = div-1. */
-    uint32_t bits_s  = ((BUS_DIV - 1u) << SPI_MEM_S_SCLKCNT_N_S) |
-                       ((BUS_DIV / 2u - 1u) << SPI_MEM_S_SCLKCNT_H_S) |
-                       ((BUS_DIV - 1u) << SPI_MEM_S_SCLKCNT_L_S);
-    uint32_t bits_s1 = ((BUS_DIV - 1u) << SPI1_MEM_S_CLKCNT_N_S) |
-                       ((BUS_DIV / 2u - 1u) << SPI1_MEM_S_CLKCNT_H_S) |
-                       ((BUS_DIV - 1u) << SPI1_MEM_S_CLKCNT_L_S);
-    REG(SPI_MEM_S_SRAM_CLK_REG) = bits_s;
-    REG(SPI1_MEM_S_CLOCK_REG)   = bits_s1;
+    bus_clock(PSRAM_INIT_MHZ);
 
     /* psram_ctrlr_ll_enable_dll() for both ports (both fields are SPIMEM2's). */
     FSET(SPI_MEM_S_SMEM_TIMING_CALI_REG, SPI_MEM_S_SMEM_DLL_TIMING_CALI, 1);
@@ -276,19 +293,28 @@ typedef struct {
 #define MSPI3                3
 #define PSRAM_CS_MASK        (1u << 1)
 
-/* AP hex PSRAM commands and the 20 MHz latencies (esp_psram_impl_ap_hex.c,
- * the SPIRAM_SPEED_20M/80M branch). */
+/* AP hex PSRAM commands, and the latencies for the *target* speed
+ * (esp_psram_impl_ap_hex.c): latency is counted in clocks, so the 200 MHz
+ * settings are equally valid while bring-up runs the bus at 20. */
 #define AP_SYNC_READ      0x0000u
 #define AP_SYNC_WRITE     0x8080u
 #define AP_REG_READ       0x4040u
 #define AP_REG_WRITE      0xC0C0u
 #define AP_CMD_BITLEN     16u
 #define AP_ADDR_BITLEN    32u
+#if CONFIG_PSRAM_SPEED_MHZ == 200
+#define AP_RD_DUMMY       (2u * (14u - 1u))
+#define AP_RD_REG_DUMMY   (2u * (7u - 1u))
+#define AP_WR_DUMMY       (2u * (7u - 1u))
+#define AP_RD_LATENCY     4u
+#define AP_WR_LATENCY     1u
+#else
 #define AP_RD_DUMMY       (2u * (10u - 1u))
 #define AP_RD_REG_DUMMY   (2u * (5u - 1u))
 #define AP_WR_DUMMY       (2u * (5u - 1u))
 #define AP_RD_LATENCY     2u
 #define AP_WR_LATENCY     2u
+#endif
 #define AP_REF_DATA       0x5a6b7c8du
 
 static void psram_xfer(uint16_t cmd, uint32_t addr, uint32_t dummy,
@@ -347,6 +373,140 @@ static bool connected_check(void) {
     psram_xfer(AP_SYNC_WRITE, 0x0, AP_WR_DUMMY, &ref, 32, NULL, 0);
     psram_xfer(AP_SYNC_READ, 0x0, AP_RD_DUMMY, NULL, 0, &got, 32);
     return got == ref;
+}
+
+/* ---- 4b. timing tuning (47.3b) ---------------------------------------------
+ *
+ * IDF's mspi_timing_psram_tuning() for the P4, i.e. the DQS scheme
+ * (SOC_MEMSPI_TIMING_TUNING_BY_DQS; tuning_scheme_impl/mspi_timing_by_dqs.c):
+ *
+ *   - write 128 bytes of IDF's reference pattern at 0x80 at the safe speed;
+ *   - at the target speed, read it back under each of the 4 DQS phases
+ *     (67.5, 78.75, 90, 101.25 degrees); the best phase is the FIRST of the
+ *     longest run that read back intact (mspi_timing_psram_select_best_
+ *     tuning_phase: end - length + 1);
+ *   - at that phase, sweep the 31 delay-line pairs {data, dqs} from {0,15}
+ *     down to {0,0} and up to {15,0}, 100 reads each; a config passes only if
+ *     all 100 do; the best is the MIDDLE of the longest passing run
+ *     (end - length/2).
+ *
+ * The delay goes into every PSRAM pad's DLC field (data, CK and CS take the
+ * data value) and both DQS pads' DELAY_90 and DELAY_270 (mspi_timing_ll_set_
+ * delayline). IDF disables the cache around its speed changes because they
+ * also move the *flash* clock; this moves only the PSRAM's, before anything
+ * has used it, while the kernel keeps executing from flash. */
+static const uint32_t s_ref[32] = {
+    0x7f786655, 0xa5ff005a, 0x3f3c33aa, 0xa5ff5a00, 0x1f1e9955, 0xa5005aff, 0x0f0fccaa, 0xa55a00ff,
+    0x07876655, 0xffa55a00, 0x03c333aa, 0xff00a55a, 0x01e19955, 0xff005aa5, 0x00f0ccaa, 0xff5a00a5,
+    0x80786655, 0x00a5ff5a, 0xc03c33aa, 0x00a55aff, 0xe01e9355, 0x00ff5aa5, 0xf00fccaa, 0x005affa5,
+    0xf8876655, 0x5aa5ff00, 0xfcc333aa, 0x5affa500, 0xfee19955, 0x5a00a5ff, 0x11f0ccaa, 0x5a00ffa5,
+};
+#define TUNE_ADDR        0x80u
+#define TUNE_DL_NUM      31u
+#define TUNE_DL_REPEATS  100u
+
+static uint8_t  g_tune_phase_ok;           /* bit i: phase i passed */
+static uint32_t g_tune_dl_ok;              /* bit i: delay-line config i passed 100/100 */
+static int8_t   g_tune_phase = -1, g_tune_dl = -1;
+
+static void dqs_phase(unsigned ph) {
+    FSET(IOMUX_MSPI_PIN_PSRAM_DQS_0_PIN0_REG, IOMUX_MSPI_PIN_REG_PSRAM_DQS_0_PHASE, ph);
+    FSET(IOMUX_MSPI_PIN_PSRAM_DQS_1_PIN0_REG, IOMUX_MSPI_PIN_REG_PSRAM_DQS_1_PHASE, ph);
+}
+
+static void delaylines(unsigned data, unsigned dqs) {
+    static const uint32_t pads[][2] = {
+        { IOMUX_MSPI_PIN_PSRAM_D_PIN0_REG,    IOMUX_MSPI_PIN_REG_PSRAM_D_DLC_S },
+        { IOMUX_MSPI_PIN_PSRAM_Q_PIN0_REG,    IOMUX_MSPI_PIN_REG_PSRAM_Q_DLC_S },
+        { IOMUX_MSPI_PIN_PSRAM_WP_PIN0_REG,   IOMUX_MSPI_PIN_REG_PSRAM_WP_DLC_S },
+        { IOMUX_MSPI_PIN_PSRAM_HOLD_PIN0_REG, IOMUX_MSPI_PIN_REG_PSRAM_HOLD_DLC_S },
+        { IOMUX_MSPI_PIN_PSRAM_DQ4_PIN0_REG,  IOMUX_MSPI_PIN_REG_PSRAM_DQ4_DLC_S },
+        { IOMUX_MSPI_PIN_PSRAM_DQ5_PIN0_REG,  IOMUX_MSPI_PIN_REG_PSRAM_DQ5_DLC_S },
+        { IOMUX_MSPI_PIN_PSRAM_DQ6_PIN0_REG,  IOMUX_MSPI_PIN_REG_PSRAM_DQ6_DLC_S },
+        { IOMUX_MSPI_PIN_PSRAM_DQ7_PIN0_REG,  IOMUX_MSPI_PIN_REG_PSRAM_DQ7_DLC_S },
+        { IOMUX_MSPI_PIN_PSRAM_CK_PIN0_REG,   IOMUX_MSPI_PIN_REG_PSRAM_CK_DLC_S },
+        { IOMUX_MSPI_PIN_PSRAM_CS_PIN0_REG,   IOMUX_MSPI_PIN_REG_PSRAM_CS_DLC_S },
+        { IOMUX_MSPI_PIN_PSRAM_DQ8_PIN0_REG,  IOMUX_MSPI_PIN_REG_PSRAM_DQ8_DLC_S },
+        { IOMUX_MSPI_PIN_PSRAM_DQ9_PIN0_REG,  IOMUX_MSPI_PIN_REG_PSRAM_DQ9_DLC_S },
+        { IOMUX_MSPI_PIN_PSRAM_DQ10_PIN0_REG, IOMUX_MSPI_PIN_REG_PSRAM_DQ10_DLC_S },
+        { IOMUX_MSPI_PIN_PSRAM_DQ11_PIN0_REG, IOMUX_MSPI_PIN_REG_PSRAM_DQ11_DLC_S },
+        { IOMUX_MSPI_PIN_PSRAM_DQ12_PIN0_REG, IOMUX_MSPI_PIN_REG_PSRAM_DQ12_DLC_S },
+        { IOMUX_MSPI_PIN_PSRAM_DQ13_PIN0_REG, IOMUX_MSPI_PIN_REG_PSRAM_DQ13_DLC_S },
+        { IOMUX_MSPI_PIN_PSRAM_DQ14_PIN0_REG, IOMUX_MSPI_PIN_REG_PSRAM_DQ14_DLC_S },
+        { IOMUX_MSPI_PIN_PSRAM_DQ15_PIN0_REG, IOMUX_MSPI_PIN_REG_PSRAM_DQ15_DLC_S },
+    };
+    for (unsigned i = 0; i < sizeof(pads) / sizeof(pads[0]); i++)
+        field_set(pads[i][0], pads[i][1], 0xFu, data);
+    FSET(IOMUX_MSPI_PIN_PSRAM_DQS_0_PIN0_REG, IOMUX_MSPI_PIN_REG_PSRAM_DQS_0_DELAY_90, dqs);
+    FSET(IOMUX_MSPI_PIN_PSRAM_DQS_0_PIN0_REG, IOMUX_MSPI_PIN_REG_PSRAM_DQS_0_DELAY_270, dqs);
+    FSET(IOMUX_MSPI_PIN_PSRAM_DQS_1_PIN0_REG, IOMUX_MSPI_PIN_REG_PSRAM_DQS_1_DELAY_90, dqs);
+    FSET(IOMUX_MSPI_PIN_PSRAM_DQS_1_PIN0_REG, IOMUX_MSPI_PIN_REG_PSRAM_DQS_1_DELAY_270, dqs);
+}
+
+/* IDF's s_test_delayline_config: {0,15} .. {0,1}, {0,0}, {1,0} .. {15,0}. */
+static void dl_config(unsigned i, unsigned *data, unsigned *dqs) {
+    if (i < 15u) { *data = 0; *dqs = 15u - i; }
+    else         { *data = i - 15u; *dqs = 0; }
+}
+
+/* 128 bytes through the register port in the controller's 64-byte FIFO
+ * chunks (PSRAM_CTRLR_LL_FIFO_MAX_BYTES). */
+static bool tune_read_ok(void) {
+    uint32_t buf[32];
+    for (unsigned off = 0; off < 128u; off += 64u)
+        psram_xfer(AP_SYNC_READ, TUNE_ADDR + off, AP_RD_DUMMY, NULL, 0, &buf[off / 4u], 512);
+    return memcmp(buf, s_ref, sizeof(buf)) == 0;
+}
+
+/* Longest run of set bits in `mask` over `n` positions: its length and the
+ * index of its last bit (s_find_max_consecutive_success_points). */
+static void longest_run(uint32_t mask, unsigned n, unsigned *len, unsigned *end) {
+    unsigned best = 0, bend = 0, run = 0;
+    for (unsigned i = 0; i < n; i++) {
+        if (mask & (1u << i)) { run++; if (run > best) { best = run; bend = i; } }
+        else run = 0;
+    }
+    *len = best; *end = bend;
+}
+
+static bool tune(uint32_t target_mhz) {
+    for (unsigned off = 0; off < 128u; off += 64u)
+        psram_xfer(AP_SYNC_WRITE, TUNE_ADDR + off, AP_WR_DUMMY,
+                   (uint32_t *)&s_ref[off / 4u], 512, NULL, 0);
+
+    /* mspi_timing_psram_init(): fixed dummy on the register port, target clock. */
+    FSET(SPI1_MEM_S_DDR_REG, SPI1_MEM_S_FMEM_VAR_DUMMY, 0);
+    bus_clock(target_mhz);
+
+    delaylines(0, 0);
+    g_tune_phase_ok = 0;
+    for (unsigned ph = 0; ph < 4u; ph++) {
+        dqs_phase(ph);
+        if (tune_read_ok()) g_tune_phase_ok |= (uint8_t)(1u << ph);
+    }
+    unsigned len, end;
+    longest_run(g_tune_phase_ok, 4, &len, &end);
+    if (len == 0) return false;
+    g_tune_phase = (int8_t)(end - len + 1u);
+    dqs_phase((unsigned)g_tune_phase);
+
+    g_tune_dl_ok = 0;
+    for (unsigned i = 0; i < TUNE_DL_NUM; i++) {
+        unsigned d, q;
+        dl_config(i, &d, &q);
+        delaylines(d, q);
+        unsigned good = 0;
+        for (unsigned r = 0; r < TUNE_DL_REPEATS; r++) good += tune_read_ok() ? 1u : 0u;
+        if (good == TUNE_DL_REPEATS) g_tune_dl_ok |= 1u << i;
+    }
+    longest_run(g_tune_dl_ok, TUNE_DL_NUM, &len, &end);
+    /* select_best_tuning_delayline(): a run of one is no margin at all. */
+    g_tune_dl = (int8_t)(len <= 1u ? 0u : end - len / 2u);
+    if (len <= 1u) return false;
+    unsigned d, q;
+    dl_config((unsigned)g_tune_dl, &d, &q);
+    delaylines(d, q);
+    return true;
 }
 
 /* ---- 5. cache port and MMU -------------------------------------------------- */
@@ -424,6 +584,17 @@ void psram_init(void) {
         goto fail;
     }
     g_bytes = (uint32_t)CONFIG_PSRAM_BYTES;   /* what the linker was told */
+    if (CONFIG_PSRAM_SPEED_MHZ != PSRAM_INIT_MHZ && !tune(CONFIG_PSRAM_SPEED_MHZ)) {
+        /* No window, or no margin: stay at the speed that needs none, and
+         * say so -- a board quietly at 20 MHz is a thing to find in the log. */
+        printk("[PSRAM] timing tuning found no safe window at %u MHz (phases 0x%x, "
+               "delay lines 0x%08lx); staying at %u MHz\n",
+               (unsigned)CONFIG_PSRAM_SPEED_MHZ, (unsigned)g_tune_phase_ok,
+               (unsigned long)g_tune_dl_ok, (unsigned)PSRAM_INIT_MHZ);
+        dqs_phase(0);
+        delaylines(0, 0);
+        bus_clock(PSRAM_INIT_MHZ);
+    }
     cache_port_setup();
     mmu_map(g_bytes);
 
@@ -435,7 +606,7 @@ void psram_init(void) {
     g_reason = "up";
     printk("[PSRAM] %lu MB at 0x%08lx, vendor 0x%02x, hex DDR %u MHz, LDO2 dref %u mul %u (%s), "
            "%lu us\n", (unsigned long)(g_bytes >> 20), (unsigned long)PSRAM_CACHED_BASE,
-           (unsigned)(g_mr[1] & 0x1Fu), (unsigned)PSRAM_SPEED_MHZ,
+           (unsigned)(g_mr[1] & 0x1Fu), (unsigned)g_speed_mhz,
            (unsigned)g_ldo_dref, (unsigned)g_ldo_mul, g_ldo_from_efuse ? "eFuse" : "default",
            (unsigned long)(time_get_us() - t0));
     return;
@@ -461,7 +632,7 @@ int psram_meminfo(char *buf, uint32_t cap) {
     if (!g_up) return ksnprintf(buf, cap, "PSRAM: not up (%s)\n", g_reason);
     return ksnprintf(buf, cap, "PSRAM: %lu KB at 0x%08lx, hex DDR %u MHz, BULK_BSS %lu KB\n",
                      (unsigned long)(g_bytes / 1024), (unsigned long)PSRAM_CACHED_BASE,
-                     (unsigned)PSRAM_SPEED_MHZ,
+                     (unsigned)g_speed_mhz,
                      (unsigned long)((uintptr_t)(_bulk_bss_end - _bulk_bss_start) / 1024));
 }
 
@@ -556,8 +727,15 @@ void psram_command(const char *args) {
                 (unsigned long)(g_bytes / 1024), (unsigned)(g_mr[1] & 0x1Fu),
                 g_mr[0], g_mr[1], g_mr[2], g_mr[3], g_mr[4], g_mr[5], g_mr[6], g_mr[7], g_mr[8]);
         cprintf("       hex DDR, %u MHz (MPLL %u / %u), LDO2 dref %u mul %u (%s)\n",
-                (unsigned)PSRAM_SPEED_MHZ, (unsigned)MPLL_MHZ, (unsigned)BUS_DIV,
+                (unsigned)g_speed_mhz, (unsigned)MPLL_MHZ, (unsigned)BUS_DIV_FOR(g_speed_mhz),
                 (unsigned)g_ldo_dref, (unsigned)g_ldo_mul, g_ldo_from_efuse ? "eFuse" : "default");
+        if (g_tune_phase >= 0) {
+            unsigned d = 0, q = 0;
+            if (g_tune_dl >= 0) dl_config((unsigned)g_tune_dl, &d, &q);
+            cprintf("       tuning: phases ok 0x%x -> phase %d; delay lines ok 0x%08lx -> #%d {data %u, dqs %u}\n",
+                    (unsigned)g_tune_phase_ok, (int)g_tune_phase,
+                    (unsigned long)g_tune_dl_ok, (int)g_tune_dl, d, q);
+        }
         cprintf("       cached 0x%08lx; BULK_BSS %lu KB at 0x%08lx\n",
                 (unsigned long)PSRAM_CACHED_BASE,
                 (unsigned long)((uintptr_t)(_bulk_bss_end - _bulk_bss_start) / 1024),

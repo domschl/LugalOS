@@ -66,6 +66,9 @@ set(CONFIG_L2_CACHE_KB 128)
 set(CONFIG_PSRAM_BYTES 33554432)
 # The bulk page zone's bitmap capacity, in 4 KB pages: the whole chip.
 set(CONFIG_PALLOC_BULK_PAGES 8192)
+# The PSRAM's bus speed (47.3b): 200 MHz hex DDR, reached through IDF's DQS
+# timing tuning at every boot; 20 needs none and is the fallback.
+set(CONFIG_PSRAM_SPEED_MHZ 200)
 # /ram0's cap, as on the RP2350 terminal.
 set(CONFIG_RAMDISK_MAX_KB 4096)
 # Lisp's pools, the RP2350 terminal's sizes (phase 38's 38.5): BULK_BSS, so

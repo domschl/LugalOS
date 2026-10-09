@@ -225,6 +225,8 @@ set(CONFIG_L2_CACHE_KB 128)
 set(CONFIG_PSRAM_BYTES 33554432)
 set(CONFIG_PALLOC_BULK_PAGES 8192)
 set(CONFIG_RAMDISK_MAX_KB 4096)
+# 200 MHz hex DDR via DQS timing tuning at boot (47.3b); 20 is the fallback.
+set(CONFIG_PSRAM_SPEED_MHZ 200)
 
 # --- The microSD slot: SDMMC slot 0, and the rail that powers it ---------
 #

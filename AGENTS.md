@@ -149,8 +149,10 @@ for both roles by itself.
   `tools/p4flash.py --board lcd7b --build build/esp32p4-lcd7b --only boot,os --verify`;
   console with `tools/p4run.py --board lcd7b --run --cmd "..."`.
 * Runs at 400 MHz (v3 ladder 100/200/400) with the core on the external DC-DC.
-* 32 MB PSRAM at 0x48000000 (both P4 boards, `drivers/psram_esp32p4.c`, 20 MHz
-  for now): `psram`, `psram test [MB]`, `psram bench`. BULK_BSS and the bulk
+* 32 MB PSRAM at 0x48000000 (both P4 boards, `drivers/psram_esp32p4.c`), 200 MHz
+  hex DDR via IDF's DQS timing tuning at every boot (`CONFIG_PSRAM_SPEED_MHZ`;
+  falls back to 20 and logs it if no window is found): `psram` (shows the tuning
+  window), `psram test [MB]`, `psram bench`. BULK_BSS and the bulk
   page zone live there. Register constants come from the generated
   `drivers/include/drivers/esp32p4_psram_regs.h` (`tools/gen/p4_regs.py`), which
   refuses to generate if hw_ver1 and hw_ver3 disagree.

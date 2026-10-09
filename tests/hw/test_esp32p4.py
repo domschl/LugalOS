@@ -939,7 +939,15 @@ def test_psram_up(b: Board) -> tuple[str, bool, str]:
     z = re.search(r"bulk zone (\d+) pages at 0x48", out)
     if not z:
         return name, False, "no bulk zone in PSRAM"
-    return name, True, f"{kb} KB, vendor 0x{vendor}, bulk zone {z.group(1)} pages"
+    # 47.3b: both P4 board files ask for 200 MHz; a tuning that found no
+    # window falls back to 20 and says so in the boot log -- here it fails.
+    sp = re.search(r"hex DDR, (\d+) MHz", out)
+    if not sp or sp.group(1) != "200":
+        return name, False, f"bus at {sp.group(1) if sp else '?'} MHz, expected 200 (tuning fell back?)"
+    tw = re.search(r"delay lines ok 0x([0-9a-f]+) -> #(\d+)", out)
+    window = bin(int(tw.group(1), 16)).count("1") if tw else 0
+    return name, True, (f"{kb} KB, vendor 0x{vendor}, 200 MHz, tuning window {window}/31 "
+                        f"-> #{tw.group(2) if tw else '?'}, bulk zone {z.group(1)} pages")
 
 
 def test_psram_pattern(b: Board) -> tuple[str, bool, str]:

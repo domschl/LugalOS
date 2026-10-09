@@ -163,6 +163,9 @@ set(_optional_keys
     # the RAM above the fast zone, so the suite runs the zone code. Absent:
     # no bulk zone, and the bulk calls are the fast ones.
     CONFIG_PALLOC_BULK_PAGES
+    # 47.3b, plan/phase47_esp32p4_lcd7b_ribbon.md: the ESP32-P4 PSRAM's bus
+    # speed, 20 (untuned) or 200 (DQS timing tuning at boot). Absent: 20.
+    CONFIG_PSRAM_SPEED_MHZ
     # 38.6: the largest /ram0 a mount may ask for, in KB, when a board wants
     # other than drivers/ramdisk.c's per-target default.
     CONFIG_RAMDISK_MAX_KB
