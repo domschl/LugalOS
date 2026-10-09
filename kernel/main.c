@@ -229,6 +229,11 @@ void kernel_main(void) {
                    (unsigned)dbias_from, (unsigned)dbias_to,
                    (unsigned)dbias_ind);
         }
+        /* 47.2: and the DC-DC, unconditionally, as IDF does -- see
+         * esp32p4_core_onto_dcdc() for why it used to depend on the above. */
+        extern uint32_t esp32p4_core_onto_dcdc(void);
+        uint32_t vset = esp32p4_core_onto_dcdc();
+        printk("[PMU] core on the external DC-DC, DCM_VSET %u\n", (unsigned)vset);
     }
 
     /* 34.4: and only now the clock, because raising a frequency against an

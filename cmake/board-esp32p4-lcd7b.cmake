@@ -43,9 +43,12 @@ set(CONFIG_UART0_SCLK_HZ  40000000)
 set(CONFIG_UART0_BAUD     115200)
 set(CONFIG_XTAL_HZ        40000000)   # [meas: esptool]
 
-# The CPU clock. **40**, the crystal, until 47.2 brings up the PLL on v3.x:
-# clk_esp32p4.c's ladder (90/180/360) is v1.3's, and v3.x has 100/200/400.
-set(CONFIG_CPU_FREQ_MHZ   40)
+# The CPU clock: **400**, the top of v3.x's ladder (100/200/400 from a 400 MHz
+# CPLL; 40 stays selectable as the control). 47.2 [meas]: CPLL 320 -> 400
+# (div 10), CPU measured 400.000 MHz, MEM 200, SYS 200, APB 100, with the core
+# on the external DC-DC (DCM_VSET 27) -- which this board had never been on
+# until 47.2 decoupled that handover from the dbias step.
+set(CONFIG_CPU_FREQ_MHZ   400)
 
 # The L2 cache size, at the BOTTOM of L2MEM on v3.x. 128 KB is also what the
 # ROM leaves it at on this chip [meas: the "[L2]" boot line, CACHESIZE_CONF
@@ -78,8 +81,9 @@ set(CONFIG_SDMMC_FREQ_KHZ  20000)
 # --- Not declared yet: facts read, each waiting for the milestone that drives it.
 #
 # I2C [sch "7inch Display", ws]: SDA GPIO7, SCL GPIO8 (ESP_I2C_SDA/SCL), shared
-#   by the GT911 (0x5D or 0x14), ES8311 (0x18), ES7210 (0x40) and the PH2.0 I2C
-#   header. 47.2.
+#   by the GT911, ES8311 (0x18), ES7210 (0x40) and the PH2.0 I2C header -- the
+#   same pads drivers/i2c_bus.c uses on the NANO, so nothing to declare.
+#   [meas 47.2] `i2c scan`: 0x18 (chip id 0x83), 0x40, 0x5D (GT911, "911").
 #
 # Panel [sch, ws] (47.4): EK79007, 1024x600, MIPI-DSI 2 lanes at 1 Gbps on the
 #   dedicated DSI pads (DSI_CLK/D0/D1 to connector P2). DSI PHY supply: on-chip

@@ -1,6 +1,6 @@
 # Phase 47 — The ribbon on the ESP32-P4-WIFI6-Touch-LCD-7B
 
-**Status: 47.0 and 47.1 done (2026-10-09). Written 2026-10-09.** The kernel
+**Status: 47.0, 47.1 and 47.2 done (2026-10-09; header sensors pending). Written 2026-10-09.** The kernel
 runs on the board at 40 MHz with its own v3 memory layout. The HIL suite passes
 25/25 there; the BME280 and EMAC tests skip, because the board has neither.
 The NANO passes 25/25 on the same tree.
@@ -189,7 +189,7 @@ first, as in phase 27's E1/E2.
 *Done when:* `tools/build_minimal_esp32p4.sh` prints on the 7B, and the
 NANO's `test_esp32p4.py` still passes.
 
-**47.2 — The kernel boots on the 7B.**
+**47.2 — The kernel boots on the 7B. [DONE 2026-10-09, §6.1; header sensors pending]**
 Stage 2, XIP from flash, the shell on UART0, SMP, CLIC/PMP, then the PLL at
 100 → 200 → 400 MHz in steps (phase 34's method: each step a config, with
 40 MHz always available as the control). SDMMC on the same pads, I2C on
@@ -451,6 +451,67 @@ watchdog after a flash boot, which the kernel handles but the minimal image
 does not. Reclaiming the ROM's download buffers (0x4ffa96b8..0x4ffbafc0, about
 72 KB) for heap is possible but unmeasured, because core 1 starts on the ROM's
 CPU1 stack just above them.
+
+## 6.1 What 47.2 found (2026-10-09)
+
+**Core power: the DC-DC handover was never running on this board.** IDF moves
+the core from the internal LDO onto the external DC-DC on every P4 boot, and
+phase 34 found 360 MHz impossible without it. Here the handover lived at the
+end of `esp32p4_regulator_apply_efuse_dbias()`, which returns early when the
+eFuse trim would *lower* the dbias. The NANO's trim asks for 25 against a reset
+value of 24, so it always ran there. The 7B's asks for 23, so on this board the
+handover never happened, and nothing said so. It is now its own function,
+`esp32p4_core_onto_dcdc()`, called unconditionally, with the logged result
+`[PMU] core on the external DC-DC, DCM_VSET 27`. Chips **above v3.01** get
+IDF's extra steps: `PMU_DCDC_FB_RES_FORCE_PD` held across the switch, then
+`LP_FIB_SEL` = 0xEF (digital feedback register) and the force released. All
+three were read back on the board. The LDO's XPD bit drops, so the DC-DC
+carries the core.
+
+**Clock: 100 / 200 / 400 MHz.** On v3 the CPLL runs at 400 MHz (IDF's div 10
+above ECO1; the ROM leaves it at 320, as on v1.3). The divider shapes are
+v1.3's scaled up: 400 = CPU÷1, MEM÷2, APB÷2 (MEM 200, APB 100), keeping IDF's
+"MEM ≤ 200, APB ≤ 100" limits. `CPLL_NOMINAL_HZ` and the divider table are
+selected by `CONFIG_ESP32P4_REV`. Measured on one image with `cpufreq`:
+99.999 / 199.995 / 400.004 MHz. The board now **boots at 400 MHz**:
+`(perft 3 1)` gives 75 depths, 0 errors, **2420 ms** (NANO at 360: 2563 ms
+in phase 34, 2666 ms today). Core 1's probe (`smpstart`) counts 8.0 M per
+100 ms against the NANO's 7.2 M, matching the clock ratio. Core 1 in the
+kernel is not started at boot on either board; that is unchanged from phase 34.
+
+**I2C: phantom devices, and a touch controller that went missing.**
+* *Phantoms.* After a NACKed register read, the next read of an empty address
+  reported success with 0xff (`TRANS_COMPLETE` without `NACK`). This is how
+  boot announced a DS1307 at 0x68 and an EEPROM at 0x57 on a bus that has
+  neither. Cause: the NACK interrupt fires *before* the transfer ends, because
+  the controller still clocks out its STOP. The driver reset the FSM straight
+  away, inside that window. Every failure captured SR with BUS_BUSY set; the
+  phantom success had it clear. Fix: wait for BUS_BUSY to clear before acting
+  on any result, which is what IDF's master does.
+* *The GT911 vanishing.* With that fixed, `i2c scan` stopped finding the GT911
+  (0x5D), and a register read after a scan failed too, although the part is
+  there: `i2c rd 5d 81 40 4` → "911". Cause: the driver ran the 9-pulse bus
+  clear after *every* NACK, i.e. at every empty address of a scan, and the
+  GT911 does not tolerate that. IDF clears the bus only after a timeout or
+  when it finds the bus busy, never for a NACK. Same policy now: a clean NACK
+  gets nothing beyond the next transaction's FSM/FIFO reset (which the NANO's
+  stale-controller fix needs).
+* Result: boot reports "No RTC at 0x68" and "No EEPROM at 0x57", and the scan
+  shows 0x18 (ES8311, chip id 0x83), 0x40 (ES7210) and 0x5D (GT911, "911")
+  every time. New bring-up command: `i2c rd ADDR [REG..] N`.
+
+**GPIO20 in the minimal image.** Not a v3 register difference (the whole
+output path is identical in both headers). The test read the pad straight
+after writing it; on v3.2 that is too soon. From the kernel, with time between
+poke and peek, GPIO2 and GPIO20 both follow. A short settle fixed the test,
+which now passes on both boards.
+
+**Not done, deliberately:** the ROM watchdog after a *flash* boot of the
+minimal image (a RAM-load tool; the kernel handles the watchdog); reclaiming
+the ROM's download buffers for heap (unmeasured, see §6).
+
+**Waiting for the owner:** environmental sensors on the PH2.0 I2C header, to
+run the suite's sensor tests and phase 46's `/proc/sensor` on this board.
 
 ## 7. Risks
 

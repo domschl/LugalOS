@@ -118,7 +118,13 @@
  * nomenclature disagrees -- the register header comment says "2'd1:
  * cpll_400m" and the adjacent gate is named HP_CPLL_400M_CLK_EN. The 400 is
  * a name; 360 is the documented frequency for this silicon. */
+/* 47.2: and 400 on v3.x, where IDF's ladder is 100/200/400 from a 400 MHz
+ * CPLL (rtc_clk.c's !REV_LESS_V3 branches). */
+#if CONFIG_ESP32P4_REV >= 300
+#define CPLL_NOMINAL_HZ         400000000u
+#else
 #define CPLL_NOMINAL_HZ         360000000u
+#endif
 #define RC_FAST_NOMINAL_HZ      20000000u   /* "fosc_20m", untrimmed */
 
 #define P4_REG(a) (*(volatile uint32_t *)(uintptr_t)(a))
@@ -461,13 +467,19 @@ static bool regi2c_write_cpll(uint8_t reg_addr, uint8_t val) {
  */
 #define CPLL_REG_REF_DIV_BYTE   0x50u
 #define CPLL_REG_DIV_360        0x09u
+#define CPLL_REG_DIV_400        0x0Au   /* 47.2: IDF's div7_0 = 10 above ECO1 */
+#if CONFIG_ESP32P4_REV >= 300
+#define CPLL_REG_DIV_TARGET     CPLL_REG_DIV_400
+#else
+#define CPLL_REG_DIV_TARGET     CPLL_REG_DIV_360
+#endif
 #define CPLL_REG_DCUR_BYTE      0x73u
 #define CPU_PLL_CAL_STOP_B      (1u << 3)
 
 /* 0 = configured, otherwise the step that failed. Reported rather than
  * retried: a PLL that will not calibrate is a finding, and the board must
  * stay on the crystal and keep its console rather than spin. */
-static int cpll_configure_360(void) {
+static int cpll_configure_target(void) {
     /* The analog master's source clock, first. IDF does this before every
      * PLL configuration and the first attempt here did not -- see the
      * constant's comment for what that cost. */
@@ -477,7 +489,7 @@ static int cpll_configure_360(void) {
     P4_REG(P4_ANA_PLL_CTRL0) &= ~CPU_PLL_CAL_STOP_B;
 
     if (!regi2c_write_cpll(I2C_CPLL_REG_REF_DIV, CPLL_REG_REF_DIV_BYTE)) return 1;
-    if (!regi2c_write_cpll(I2C_CPLL_REG_DIV_7_0, CPLL_REG_DIV_360))      return 2;
+    if (!regi2c_write_cpll(I2C_CPLL_REG_DIV_7_0, CPLL_REG_DIV_TARGET))   return 2;
     if (!regi2c_write_cpll(I2C_CPLL_REG_DCUR,    CPLL_REG_DCUR_BYTE))    return 3;
 
     /* CAL_END, bounded. 10 ms is four orders of magnitude over the ~10 us
@@ -536,6 +548,11 @@ static int cpll_configure_360(void) {
 #define P4_PMU_DCM_CTRL         (P4_PMU_BASE + 0x204)
 #define PMU_DCDC_ON_REQ         (1u << 0)
 #define PMU_DCDC_DONE_FORCE     (1u << 7)
+#define PMU_DCDC_FB_RES_FORCE_PD (1u << 11)            /* 47.2, v3.02+ */
+/* LP_SYSTEM_REG_SYS_CTRL_REG: DR_REG_LP_SYS_BASE (= LPAON, 0x50110000) + 8. */
+#define P4_LP_SYS_CTRL          0x50110008UL
+#define LP_FIB_SEL_S            21
+#define LP_FIB_SEL_M            0xFFu
 
 /* IDF's HP_CALI_ACTIVE_DCM_VSET_DEFAULT, "For DCDC, about 1.25v". */
 #define HP_CALI_ACTIVE_DCM_VSET 27u
@@ -985,9 +1002,31 @@ bool esp32p4_regulator_apply_efuse_dbias(uint32_t *from, uint32_t *to,
     reg0 |= (want & PMU_DBIAS_FIELD_M) << PMU_HP_ACT_REG_DBIAS_S;
     P4_REG(P4_PMU_HP_ACT_REGULATOR0) = reg0;
 
-    /* --- and the core moves onto the external DC-DC -------------------
-     *
-     * This is what 34.5 found the LDO could not do. With the regulator under
+    /* Both, because they disagree and hiding either would be the wrong kind
+     * of tidy: `to` is the control as it now reads, `indicated` is what the
+     * regulator says it is delivering. */
+    uint32_t after = P4_REG(P4_PMU_HP_ACT_REGULATOR0);
+    *to = (after >> PMU_HP_ACT_REG_DBIAS_S) & PMU_DBIAS_FIELD_M;
+    if (indicated) *indicated = (after >> PMU_HP_DBIAS_VOL_S) & PMU_DBIAS_FIELD_M;
+    return true;
+}
+
+/* --- the core onto the external DC-DC ------------------------------------
+ *
+ * Its own function since 47.2 (plan/phase47_esp32p4_lcd7b_ribbon.md). It used
+ * to be the tail of esp32p4_regulator_apply_efuse_dbias(), and so it ran only
+ * when that function got as far as writing a dbias -- on the NANO, whose trim
+ * asks for 25 over the reset 24, it always did. The LCD-7B's v3.2 part has
+ * trim 7, i.e. 23, which the "never step down" rule declines, so its core
+ * never left the LDO, silently. IDF does this unconditionally on every boot;
+ * so does this now. Returns the DCM_VSET it programmed. */
+uint32_t esp32p4_core_onto_dcdc(void) {
+    P4_REG(P4_ANA_MST_CLK160M) |= ANA_MST_SEL_160M;
+    if (!regulator_force_register_control()) {
+        printk("[PMU] regi2c: could not put the regulator under register "
+               "control\n");
+    }
+    /* This is what 34.5 found the LDO could not do. With the regulator under
      * register control at this chip's eFuse trim -- verified by reading the
      * analog bits back -- 360 MHz still failed, while 180 was fine. The LDO's
      * calibration target is ~1.15 V; the DC-DC's active setting is ~1.25 V,
@@ -1024,6 +1063,18 @@ bool esp32p4_regulator_apply_efuse_dbias(uint32_t *from, uint32_t *to,
                    & PMU_DBIAS_FIELD_M;
     uint32_t vset = (pvt > HP_CALI_ACTIVE_DCM_VSET) ? pvt : HP_CALI_ACTIVE_DCM_VSET;
 
+    /* 47.2: chips above v3.01 hold the DC-DC's feedback resistor powered down
+     * across the handover, and afterwards select the digital rather than the
+     * analog feedback register -- rtc_clk_init.c's
+     * `ESP_CHIP_REV_ABOVE(chip_version, 301)` blocks, in their positions.
+     * PMU_DCDC_FB_RES_FORCE_PD is DCM_CTRL bit 11 and LP_FIB_SEL is
+     * LP_SYSTEM SYS_CTRL [28:21] (both identical in hw_ver1 and hw_ver3). */
+#if CONFIG_ESP32P4_REV >= 300
+    extern unsigned esp32p4_chip_rev(void);
+    bool fb_res_dance = esp32p4_chip_rev() > 301u;
+    if (fb_res_dance) P4_REG(P4_PMU_DCM_CTRL) |= PMU_DCDC_FB_RES_FORCE_PD;
+#endif
+
     P4_REG(P4_PMU_DCM_CTRL) &= ~PMU_DCDC_DONE_FORCE;
     P4_REG(P4_PMU_DCM_CTRL) |= PMU_DCDC_ON_REQ;
 
@@ -1042,17 +1093,21 @@ bool esp32p4_regulator_apply_efuse_dbias(uint32_t *from, uint32_t *to,
     uint64_t t0 = time_get_us();
     while (time_get_us() - t0 < 1000u) { }
 
+#if CONFIG_ESP32P4_REV >= 300
+    if (fb_res_dance) {
+        uint32_t sc = P4_REG(P4_LP_SYS_CTRL);
+        sc &= ~(LP_FIB_SEL_M << LP_FIB_SEL_S);
+        sc |= (uint32_t)0xEFu << LP_FIB_SEL_S;    /* bit 4 clear: dig_fib_reg */
+        P4_REG(P4_LP_SYS_CTRL) = sc;
+        P4_REG(P4_PMU_DCM_CTRL) &= ~PMU_DCDC_FB_RES_FORCE_PD;
+        t0 = time_get_us();
+        while (time_get_us() - t0 < 10u) { }
+    }
+#endif
+
     /* The LDO off, last, with the converter carrying the core. */
     P4_REG(P4_PMU_HP_ACT_REGULATOR0) &= ~PMU_HP_ACT_REGULATOR_XPD;
-
-
-    /* Both, because they disagree and hiding either would be the wrong kind
-     * of tidy: `to` is the control as it now reads, `indicated` is what the
-     * regulator says it is delivering. */
-    uint32_t after = P4_REG(P4_PMU_HP_ACT_REGULATOR0);
-    *to = (after >> PMU_HP_ACT_REG_DBIAS_S) & PMU_DBIAS_FIELD_M;
-    if (indicated) *indicated = (after >> PMU_HP_DBIAS_VOL_S) & PMU_DBIAS_FIELD_M;
-    return true;
+    return vset;
 }
 
 
@@ -1201,10 +1256,19 @@ bool esp32p4_cpu_freq_set(uint32_t mhz, uint32_t *measured_hz) {
         return true;
     }
 
+    /* The same three shapes on both revisions, scaled by the CPLL: MEM and
+     * APB must stay within 200 / 100 MHz (IDF's "MEM_CLK <= 200MHz,
+     * APB_CLK <= 100MHz"), which is what the mem and apb dividers buy. */
     switch (mhz) {
+#if CONFIG_ESP32P4_REV >= 300
+    case 100: cpu_div = 4u; mem_div = 1u; apb_div = 1u; break;
+    case 200: cpu_div = 2u; mem_div = 1u; apb_div = 2u; break;
+    case 400: cpu_div = 1u; mem_div = 2u; apb_div = 2u; break;
+#else
     case 90:  cpu_div = 4u; mem_div = 1u; apb_div = 1u; break;
     case 180: cpu_div = 2u; mem_div = 1u; apb_div = 2u; break;
     case 360: cpu_div = 1u; mem_div = 2u; apb_div = 2u; break;
+#endif
     default:  return false;               /* refuse; see the header */
     }
 
@@ -1212,17 +1276,17 @@ bool esp32p4_cpu_freq_set(uint32_t mhz, uint32_t *measured_hz) {
      * under anyone's feet. The ROM leaves it at 320 MHz (34.4 measured it),
      * which would make every entry in the divider table 8/9 of its nominal;
      * at 360 the table's names and the board's frequencies finally agree. */
-    if (cpll_hz() != 360000000u) {
+    if (cpll_hz() != CPLL_NOMINAL_HZ) {
         uint32_t was = cpll_hz() / 1000000u;
-        int rc = cpll_configure_360();
+        int rc = cpll_configure_target();
         printk("[CLK] CPLL %u -> %u MHz (rc=%d)\n", (unsigned)was,
                (unsigned)(cpll_hz() / 1000000u), rc);
         if (rc != 0) {
             /* Stay on the crystal. A board at 40 MHz with a console is worth
              * far more than one at 360 without, and the step number says
              * which half failed: 1-3 are the analog bus, 4 is the PLL. */
-            printk("[CLK] CPLL would not take 360 MHz (step %d); staying on "
-                   "the crystal\n", rc);
+            printk("[CLK] CPLL would not take %u MHz (step %d); staying on "
+                   "the crystal\n", (unsigned)(CPLL_NOMINAL_HZ / 1000000u), rc);
             return false;
         }
     }
