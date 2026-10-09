@@ -1,6 +1,6 @@
 # Phase 47 — The ribbon on the ESP32-P4-WIFI6-Touch-LCD-7B
 
-**Status: 47.0, 47.1 and 47.2 done (2026-10-09; header sensors pending). Written 2026-10-09.** The kernel
+**Status: 47.0, 47.1 and 47.2 done (2026-10-09). Written 2026-10-09.** The kernel
 runs on the board at 40 MHz with its own v3 memory layout. The HIL suite passes
 25/25 there; the BME280 and EMAC tests skip, because the board has neither.
 The NANO passes 25/25 on the same tree.
@@ -189,7 +189,7 @@ first, as in phase 27's E1/E2.
 *Done when:* `tools/build_minimal_esp32p4.sh` prints on the 7B, and the
 NANO's `test_esp32p4.py` still passes.
 
-**47.2 — The kernel boots on the 7B. [DONE 2026-10-09, §6.1; header sensors pending]**
+**47.2 — The kernel boots on the 7B. [DONE 2026-10-09, §6.1]**
 Stage 2, XIP from flash, the shell on UART0, SMP, CLIC/PMP, then the PLL at
 100 → 200 → 400 MHz in steps (phase 34's method: each step a config, with
 40 MHz always available as the control). SDMMC on the same pads, I2C on
@@ -510,8 +510,13 @@ which now passes on both boards.
 minimal image (a RAM-load tool; the kernel handles the watchdog); reclaiming
 the ROM's download buffers for heap (unmeasured, see §6).
 
-**Waiting for the owner:** environmental sensors on the PH2.0 I2C header, to
-run the suite's sensor tests and phase 46's `/proc/sensor` on this board.
+**Header sensors (owner connected a BME280, 2026-10-09).** Found at 0x76
+(chip ID 0x60), sampled by `sensor_hub`, and present in phase 46's
+`/proc/sensor/{fused,inferred,bme280}`: 24.7 °C, 957.5 hPa, 41 % RH, the same
+pressure as the NANO's BME280 on the same desk. The HIL suite's sensor tests
+now run rather than skip, and all pass, including "stable on the first
+transaction" (probes 1,1,1) and readings over 9P. **LCD-7B: 25/25, and only
+the Ethernet tests skip.**
 
 ## 7. Risks
 
