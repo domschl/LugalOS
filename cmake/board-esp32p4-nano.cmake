@@ -10,6 +10,11 @@
 # Espressif part (section 3.2 of the phase plan, and the 0x88888888 bug
 # phase 24 paid for).
 
+# Silicon revision v1.3 (esptool, 2026-09-05; ROM "esp32p4-eco2"). Stated
+# rather than defaulted since 47.0 (plan/phase47_esp32p4_lcd7b_ribbon.md):
+# the LCD-7B board is v3.2, and the two differ in memory map and ROM.
+set(CONFIG_ESP32P4_REV 103)
+
 # 512 KB of heap-and-image, so at most 128 pages of 4 KB even before the
 # kernel's own footprint comes out of it. See linker/esp32p4.ld for why the
 # figure is 512 and not the chip's 768.
@@ -209,6 +214,19 @@ set(CONFIG_EMAC_PHY_ID2        0x0C54)
 # esp32p4/rom/cache.h). Changing this is the only edit needed: the RAM region
 # follows from it.
 set(CONFIG_L2_CACHE_KB 128)
+
+# --- PSRAM: 32 MB in the package ------------------------------------------
+#
+# 47.3, plan/phase47_esp32p4_lcd7b_ribbon.md -- the same ESP32-P4NRW32 part as
+# the LCD-7B and the same driver (drivers/psram_esp32p4.c), with the v1.3 MPLL
+# programming. Powered by LDO channel 2 (schematic: VFB/VO2, pin 72, to
+# VDD_PSRAM_0/1, pins 59 and 67 -- C48/C49). The chip's MR2 density is checked
+# against this at every boot.
+set(CONFIG_PSRAM_BYTES 33554432)
+set(CONFIG_PALLOC_BULK_PAGES 8192)
+set(CONFIG_RAMDISK_MAX_KB 4096)
+# 200 MHz hex DDR via DQS timing tuning at boot (47.3b); 20 is the fallback.
+set(CONFIG_PSRAM_SPEED_MHZ 200)
 
 # --- The microSD slot: SDMMC slot 0, and the rail that powers it ---------
 #

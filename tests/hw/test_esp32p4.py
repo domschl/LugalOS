@@ -44,6 +44,7 @@ that is not working, not a sensor that is missing.
 from __future__ import annotations
 
 import argparse
+import functools
 import importlib.util
 import re
 import subprocess
@@ -59,7 +60,24 @@ sys.path.insert(0, str(REPO_ROOT / "host" / "p9lib" / "src"))
 import p9lib  # noqa: E402
 from p9lib import connect_serial, connect_tcp  # noqa: E402
 
-BUILD_DIR = REPO_ROOT / "build" / "esp32p4"
+BUILD_DIR = REPO_ROOT / "build" / "esp32p4"   # --build overrides
+
+
+def open_port(dev: str, timeout: float = 0.2) -> serial.Serial:
+    """Open a console without touching DTR/RTS -- p4run's open_console().
+
+    47.1: on the ESP32-P4-WIFI6-Touch-LCD-7B the console *is* the reset port,
+    and a plain serial.Serial() open resets the chip (Linux raises both
+    modem lines on open). On the NANO's CP2102 the lines reach nothing, so
+    this is the same as before there."""
+    s = _load_p4run().open_console(dev)
+    s.timeout = timeout
+    return s
+
+
+def close_port(s: serial.Serial) -> None:
+    """Close, leaving the tty at B0 so the next open resets nothing."""
+    _load_p4run().close_console(s)
 BAUD = 115200
 
 # The BME280's own address, and the board's soldered-down audio codec. See the
@@ -68,8 +86,9 @@ BME280_ADDR = 0x76
 ES8311_ADDR = 0x18
 
 
+@functools.cache
 def _load_p4run():
-    """tools/p4run.py as a module.
+    """tools/p4run.py as a module, loaded once.
 
     Imported rather than re-implemented: it already owns VID:PID detection,
     the reset sequences, the image regeneration and the load-actually-ran
@@ -105,12 +124,12 @@ class Console:
     PROMPT = "lsh>"
 
     def __init__(self, port: str):
-        self.ser = serial.Serial(port, BAUD, timeout=0.2)
+        self.ser = open_port(port)
         self.ser.reset_input_buffer()
 
     def close(self):
         try:
-            self.ser.close()
+            close_port(self.ser)
         except Exception:
             pass
 
@@ -481,6 +500,8 @@ def test_emac_loopback(b: Board) -> tuple[str, bool, str]:
     driver in the tree whose device writes memory behind the CPU's cache."""
     name = "EMAC loopback: rings and cache discipline (Z2)"
     out = b.console_session.cmd("emac loopback", deadline=25.0)
+    if NO_EMAC in out:
+        return name, True, "SKIPPED (this board has no Ethernet)"
     m = re.search(r"EMAC loopback: (\d+) passed, (\d+) failed", out)
     if not m:
         return name, False, f"no result line: {out.strip()[-200:]}"
@@ -521,10 +542,7 @@ def test_flash_write_while_executing(b: Board) -> tuple[str, bool, str]:
             return name, False, f"{path} read back wrong before reboot"
 
     # Reboot and re-read: the bytes have to have reached the chip.
-    b.p4run.pulse(b.reset, b.p4run.SEQ_RUN, listen=0.1)
-    time.sleep(1.5)
-    b.console_session = Console(b.console)
-    c = b.console_session
+    c = reboot(b)
     c.cmd("", deadline=10.0)
     for path, text in payloads.items():
         out = c.cmd(f"cat {path}", deadline=15.0)
@@ -547,6 +565,8 @@ def test_emac_link(b: Board) -> tuple[str, bool, str]:
     is not a regression."""
     name = "EMAC link negotiates, and notices going down (Z3)"
     out = b.console_session.cmd("emac link", deadline=20.0)
+    if NO_EMAC in out:
+        return name, True, "SKIPPED (this board has no Ethernet)"
     if "link DOWN" in out:
         return name, True, "SKIPPED (no carrier -- cable out?)"
     m = re.search(r"link UP, (\d+) Mbit/s (\w+) duplex", out)
@@ -606,6 +626,8 @@ def test_emac_phy(b: Board) -> tuple[str, bool, str]:
     it on every run is what keeps it honest."""
     name = "the EMAC's PHY answers over MDIO (Z1)"
     out = b.console_session.cmd("emac scan", deadline=15.0)
+    if NO_EMAC in out:
+        return name, True, "SKIPPED (this board has no Ethernet)"
     if "probe failed" in out:
         return name, False, "MAC software reset never completed -- no RMII reference clock?"
     if "OUI 00-90-c3" not in out:
@@ -901,6 +923,45 @@ def test_sd0_mounted(b: Board) -> tuple[str, bool, str]:
     return name, True, line[0].strip()
 
 
+def test_psram_up(b: Board) -> tuple[str, bool, str]:
+    """47.3, plan/phase47_esp32p4_lcd7b_ribbon.md: the in-package PSRAM is up
+    at the size the board file names, and the bulk page zone is in it."""
+    name = "PSRAM is up, 32 MB, bulk zone in it (47.3)"
+    out = b.console_session.cmd("psram", deadline=10.0)
+    if "Unknown" in out or "not found" in out.lower():
+        return name, True, "SKIPPED (no psram command on this build)"
+    m = re.search(r"psram: (\d+) KB, vendor 0x([0-9a-f]+)", out)
+    if not m:
+        return name, False, f"no size line: {out.strip()[-200:]}"
+    kb, vendor = int(m.group(1)), m.group(2)
+    if kb != 32768:
+        return name, False, f"{kb} KB, expected 32768"
+    z = re.search(r"bulk zone (\d+) pages at 0x48", out)
+    if not z:
+        return name, False, "no bulk zone in PSRAM"
+    # 47.3b: both P4 board files ask for 200 MHz; a tuning that found no
+    # window falls back to 20 and says so in the boot log -- here it fails.
+    sp = re.search(r"hex DDR, (\d+) MHz", out)
+    if not sp or sp.group(1) != "200":
+        return name, False, f"bus at {sp.group(1) if sp else '?'} MHz, expected 200 (tuning fell back?)"
+    tw = re.search(r"delay lines ok 0x([0-9a-f]+) -> #(\d+)", out)
+    window = bin(int(tw.group(1), 16)).count("1") if tw else 0
+    return name, True, (f"{kb} KB, vendor 0x{vendor}, 200 MHz, tuning window {window}/31 "
+                        f"-> #{tw.group(2) if tw else '?'}, bulk zone {z.group(1)} pages")
+
+
+def test_psram_pattern(b: Board) -> tuple[str, bool, str]:
+    """47.3: 4 MB of the bulk zone written, written back, invalidated and read
+    back, twice. Allocated from the zone, so /ram0 and the Lisp pools are not
+    disturbed."""
+    name = "PSRAM holds a pattern through the caches (47.3)"
+    out = b.console_session.cmd("psram test 4", deadline=60.0)
+    if "PASS (0 bad words)" in out:
+        t = re.findall(r"pass \d, (\d+) ms", out)
+        return name, True, f"4 MB x2, {'/'.join(t)} ms"
+    return name, False, out.strip()[-200:]
+
+
 def test_sd_write_survives_reboot(b: Board) -> tuple[str, bool, str]:
     """The whole point of the persona: bytes that are still there afterwards.
 
@@ -921,10 +982,7 @@ def test_sd_write_survives_reboot(b: Board) -> tuple[str, bool, str]:
         if text not in out:
             return name, False, f"{path} read back wrong before reboot"
 
-    b.p4run.pulse(b.reset, b.p4run.SEQ_RUN, listen=0.1)
-    time.sleep(1.5)
-    b.console_session = Console(b.console)
-    c = b.console_session
+    c = reboot(b)
     c.cmd("", deadline=10.0)
     for path, text in payloads.items():
         out = c.cmd(f"cat {path}", deadline=15.0)
@@ -986,12 +1044,15 @@ TESTS = [
     test_sd0_mounted,
     test_sd_goes_through_the_task,
     test_sd_write_survives_reboot,
+    test_psram_up,
+    test_psram_pattern,
 ]
 
 
 # --- discovery and load ----------------------------------------------------
 
-def discover(port: str | None, reset_port: str | None) -> Board | None:
+def discover(port: str | None, reset_port: str | None,
+             board: str | None = None) -> Board | None:
     """The attached P4, or None meaning "nothing to test".
 
     None rather than an exception, so "no board attached" is a normal outcome
@@ -1001,8 +1062,9 @@ def discover(port: str | None, reset_port: str | None) -> Board | None:
     except Exception:
         return None
     try:
-        console = p4run.console_port(port)
-        reset = p4run.reset_port(reset_port, console)
+        bport, breset = p4run.board_ports(board)
+        console = p4run.console_port(port or bport)
+        reset = p4run.reset_port(reset_port or breset, console)
     except SystemExit:
         # console_port() exits when it finds nothing it recognises.
         return None
@@ -1021,12 +1083,34 @@ def discover(port: str | None, reset_port: str | None) -> Board | None:
         if not dev:
             continue
         try:
-            serial.Serial(dev, BAUD, timeout=0.1).close()
+            close_port(open_port(dev, 0.1))
         except Exception as e:
             print(f"\n[!] The {role} port {dev} cannot be opened: {e}")
             return None
 
     return Board(console=console, reset=reset, p4run=p4run)
+
+
+# What drivers/emac_esp32p4.c's stubs say on a board file with no EMAC (the
+# LCD-7B, 47.0) -- a fact about the board, so the EMAC tests skip on it.
+NO_EMAC = "this board has no Ethernet"
+
+
+def reboot(b: Board) -> "Console":
+    """Reset the board into flash and return a fresh console session.
+
+    The old session is closed *first*. On the NANO the reset lines are a
+    different cable and it would not matter; on the LCD-7B (47.1) they are
+    the console's own tty, and pulse() opening and parking that tty under a
+    still-open session left the session deaf for the rest of the suite --
+    every test after the first reboot read nothing."""
+    if b.console_session is not None:
+        b.console_session.close()
+        b.console_session = None
+    b.p4run.pulse(b.reset, b.p4run.SEQ_RUN, listen=0.1)
+    time.sleep(1.5)
+    b.console_session = Console(b.console)
+    return b.console_session
 
 
 def flash_and_boot(b: Board, listen_secs: float) -> bool:
@@ -1049,7 +1133,12 @@ def flash_and_boot(b: Board, listen_secs: float) -> bool:
     # invoked by hand. Falling back to a bare interpreter would find no
     # esptool and fail with a FileNotFoundError that names the wrong thing.
     script = REPO_ROOT / "tools" / "p4flash.py"
-    rc = subprocess.call(["uv", "run", str(script)], cwd=str(REPO_ROOT))
+    # The ports this suite already resolved, not a second autodetection:
+    # with two P4 boards attached p4flash.py cannot tell their CH343Ps apart
+    # (47.1) and would refuse, or worse, guess.
+    rc = subprocess.call(["uv", "run", str(script), "--build", str(BUILD_DIR),
+                          "--port", b.console, "--reset-port", b.reset],
+                         cwd=str(REPO_ROOT))
     if rc != 0:
         print("    (flashing failed)")
         return False
@@ -1072,7 +1161,7 @@ def flash_and_boot(b: Board, listen_secs: float) -> bool:
     ser = None
     while time.time() < deadline and ser is None:
         try:
-            ser = serial.Serial(b.console, BAUD, timeout=0.2)
+            ser = open_port(b.console)
         except Exception:
             time.sleep(0.3)
     if ser is None:
@@ -1093,23 +1182,30 @@ def flash_and_boot(b: Board, listen_secs: float) -> bool:
         print("    (flashed, but the board did not reach a banner)")
         return False
     finally:
-        ser.close()
+        close_port(ser)
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--board", help="a board named in ~/.config/lugalos/p4-ports.env "
+                    "(see tools/p4run.py)")
+    ap.add_argument("--build", type=Path, help="build directory to flash "
+                    "(default build/esp32p4; build/esp32p4-lcd7b for the LCD-7B)")
     ap.add_argument("--port", help="console port (default: autodetect by VID:PID)")
     ap.add_argument("--reset-port", help="port whose DTR/RTS reach the board")
     ap.add_argument("--no-load", action="store_true",
                     help="test whatever is already running")
     ap.add_argument("--listen-secs", type=float, default=8.0)
     args = ap.parse_args()
+    if args.build:
+        global BUILD_DIR
+        BUILD_DIR = args.build.resolve()
 
     print("======================================================================")
     print("        LugalOS ESP32-P4 Hardware-in-the-Loop Suite (E8, phase 27)")
     print("======================================================================")
 
-    b = discover(args.port, args.reset_port)
+    b = discover(args.port, args.reset_port, args.board)
     if b is None:
         print("\n[!] No ESP32-P4 found on any USB serial port.")
         print("    Nothing to test -- this is not a failure, just nothing to do.")

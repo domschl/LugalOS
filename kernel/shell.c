@@ -47,7 +47,7 @@
 #include "drivers/boardprobe.h"
 #include "drivers/clocks_rp2350.h"
 #include "drivers/flash_rp2350.h"
-#include "drivers/psram_rp2350.h"
+#include "drivers/psram.h"
 #include "drivers/lcd7.h"
 #include "drivers/piousb.h"
 #include "drivers/usb_crc.h"
@@ -70,6 +70,7 @@
 #include "drivers/spisd.h"
 #elif defined(CONFIG_BOARD_ESP32P4)
 #include "drivers/sdmmc.h"
+#include "arch/esp32p4_intr.h"   /* P4_MINTSTATUS_CSR (47.1) */
 #else
 #include "drivers/virtio_blk.h"
 #endif
@@ -483,7 +484,7 @@ static void cmd_clicdump(void) {
     do { hi = clint[0xBFFC/4]; lo = clint[0xBFF8/4]; } while (hi != clint[0xBFFC/4]);
 
     uintptr_t mintstatus = 0, mstatus = 0;
-    __asm__ __volatile__("csrr %0, 0x346" : "=r"(mintstatus));
+    __asm__ __volatile__("csrr %0, " P4_MINTSTATUS_CSR : "=r"(mintstatus));
     __asm__ __volatile__("csrr %0, mstatus" : "=r"(mstatus));
 
     cprintf("[CLIC] mtime      = 0x%08x%08x\n", (unsigned)hi, (unsigned)lo);
@@ -530,7 +531,7 @@ static void cmd_clicdump(void) {
          * tick work, so a loop that yields would measure nothing. */
         while (time_get_us() - us0 < 2000000ULL) {
             uintptr_t m;
-            __asm__ __volatile__("csrr %0, 0x346" : "=r"(m));
+            __asm__ __volatile__("csrr %0, " P4_MINTSTATUS_CSR : "=r"(m));
             mil_seen |= (m >> 24) & 0xff;
         }
         uintptr_t mst = 0;
@@ -3563,6 +3564,15 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     if (strcmp(cmd_line, "help") == 0) {
         cmd_help();
         return;
+    } else if (strncmp(cmd_line, "time ", 5) == 0) {
+        /* 47.3, plan/phase47_esp32p4_lcd7b_ribbon.md: `time CMD` runs CMD
+         * (shell or Lisp) and prints the wall time it took -- the instrument
+         * for "did moving the Lisp heap into PSRAM cost anything". */
+        uint64_t t0 = time_get_us();
+        parse_and_eval_cmd(cmd_line + 5);
+        uint64_t dt = time_get_us() - t0;
+        cprintf("time: %lu.%03lu ms\n", (unsigned long)(dt / 1000u), (unsigned long)(dt % 1000u));
+        return;
     } else if (strcmp(cmd_line, "uname") == 0) {
         cmd_uname();
         return;
@@ -3871,7 +3881,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
             cprintf("[CLK] CPU now %u MHz (measured %u Hz)\n",
                     (unsigned)((got + 500000u) / 1000000u), (unsigned)got);
         } else {
-            cprintf("[CLK] refused: cpufreq takes 40, 90, 180 or 360\n");
+#if CONFIG_ESP32P4_REV >= 300
+            cprintf("[CLK] refused: cpufreq takes 40, 100, 200 or 400 on this revision\n");
+#else
+            cprintf("[CLK] refused: cpufreq takes 40, 90, 180 or 360 on this revision\n");
+#endif
         }
         return;
     } else if (strcmp(cmd_line, "smpstart") == 0) {
@@ -3896,6 +3910,13 @@ static void parse_and_eval_cmd(const char *cmd_line) {
          * instrument every later milestone of that phase is checked with. */
         esp32p4_clocks_report();
         return;
+#if defined(CONFIG_PSRAM_BYTES)
+    } else if (strcmp(cmd_line, "psram") == 0 || strncmp(cmd_line, "psram ", 6) == 0) {
+        /* 47.3, plan/phase47_esp32p4_lcd7b_ribbon.md: the RP2350's command,
+         * on the P4's driver (drivers/psram_esp32p4.c). */
+        psram_command(cmd_line + 5);
+        return;
+#endif
     } else if (strcmp(cmd_line, "flashinfo") == 0) {
         cmd_flashinfo();
         return;
@@ -4036,6 +4057,43 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "i2c") == 0 || strcmp(cmd_line, "i2c scan") == 0) {
         i2c_scan_bus();
+        return;
+    } else if (strncmp(cmd_line, "i2c rd ", 7) == 0) {
+        /* 47.2, plan/phase47_esp32p4_lcd7b_ribbon.md: a raw register read on
+         * bus 0, for the parts no driver knows yet. `i2c rd 5d 81 40 4`
+         * writes 0x81 0x40 and reads four bytes back (all hex; the last
+         * number is the count). A scan only says an address ACKs, and that
+         * claim is what 47.2 found the controller could get wrong -- reading
+         * a known register is what tells a part from a phantom. */
+        uint32_t v[34];
+        unsigned n = 0;
+        const char *p = &cmd_line[7];
+        while (*p && n < 34) {
+            while (*p == ' ') p++;
+            if (!*p) break;
+            uint32_t x = 0;
+            bool any = false;
+            for (; (*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f'); p++, any = true)
+                x = x * 16u + (uint32_t)(*p <= '9' ? *p - '0' : *p - 'a' + 10);
+            if (!any || (*p && *p != ' ')) { n = 0; break; }
+            v[n++] = x;
+        }
+        if (n < 2 || v[0] > 0x7f || v[n - 1] == 0 || v[n - 1] > 30) {
+            cprintf("usage: i2c rd ADDR [REG BYTES...] COUNT   (hex, COUNT 1..1e)\n");
+            return;
+        }
+        uint8_t w[32], r[30];
+        unsigned wlen = n - 2, rlen = v[n - 1];
+        for (unsigned i = 0; i < wlen; i++) w[i] = (uint8_t)v[1 + i];
+        if (!i2c_xfer((uint8_t)v[0], w, wlen, r, rlen)) {
+            cprintf("i2c rd: 0x%02x did not answer\n", (unsigned)v[0]);
+            return;
+        }
+        cprintf("0x%02x:", (unsigned)v[0]);
+        for (unsigned i = 0; i < rlen; i++) cprintf(" %02x", (unsigned)r[i]);
+        cprintf("   |");
+        for (unsigned i = 0; i < rlen; i++) cprintf("%c", r[i] >= 32 && r[i] < 127 ? r[i] : '.');
+        cprintf("|\n");
         return;
     } else if (strncmp(cmd_line, "i2c scan ", 9) == 0) {
         const char *p = &cmd_line[9];

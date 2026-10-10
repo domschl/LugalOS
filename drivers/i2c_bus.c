@@ -416,6 +416,7 @@ void i2c_rp2350_diag(uint8_t addr, uint8_t reg) {
 #define ESP_I2C_SCL_LOW     (ESP_I2C_BASE + 0x00)
 #define ESP_I2C_CTR         (ESP_I2C_BASE + 0x04)
 #define ESP_I2C_SR          (ESP_I2C_BASE + 0x08)
+#define ESP_I2C_SR_BUS_BUSY (1u << 4)   /* I2C_BUS_BUSY, hw_ver1 and hw_ver3 alike */
 #define ESP_I2C_TO          (ESP_I2C_BASE + 0x0c)
 #define ESP_I2C_FIFO_ST     (ESP_I2C_BASE + 0x14)
 #define ESP_I2C_FIFO_CONF   (ESP_I2C_BASE + 0x18)
@@ -796,13 +797,45 @@ static bool esp_i2c_run(void) {
     g_esp_i2c_last_int = st;
     g_esp_i2c_last_sr  = REG(ESP_I2C_SR);
 
+    /* 47.2, plan/phase47_esp32p4_lcd7b_ribbon.md: a NACK is *reported* before
+     * the transfer is over. The command list still runs on to its STOP, and
+     * the bus stays busy until that has gone out; IDF's master waits for
+     * exactly this (`while (i2c_ll_is_bus_busy(...))` after an event) before
+     * it touches the controller again. Resetting the FSM inside that window
+     * -- which esp_i2c_recover() did, immediately -- leaves the next
+     * transaction to inherit a half-sent STOP. On the v3.2 board that showed
+     * as a *false ACK* every other read of an empty address (id 0xff,
+     * TRANS_COMPLETE without NACK), which is how the boot announced a DS1307
+     * at 0x68 and an EEPROM at 0x57 on a bus with neither. Every failure
+     * captured SR with BUS_BUSY set; the phantom success had it clear. */
+    {
+        uint64_t idle_by = time_get_us() + 2000u;
+        while ((REG(ESP_I2C_SR) & ESP_I2C_SR_BUS_BUSY) && time_get_us() < idle_by) { }
+    }
+
     bool ok = (st & (ESP_I2C_INT_TRANS_COMPLETE | ESP_I2C_INT_END_DETECT)) != 0 &&
               (st & (ESP_I2C_INT_NACK | ESP_I2C_INT_TIME_OUT | ESP_I2C_INT_ARB_LOST)) == 0;
-    /* Every failure, including the deadline expiring with no bit set at all,
-     * leaves the FSM somewhere this driver did not put it. See
-     * esp_i2c_recover(): without this, one absent address makes the whole bus
-     * absent. */
-    if (!ok) esp_i2c_recover();
+    /* A failure that is not a clean NACK -- a timeout, lost arbitration, the
+     * deadline expiring with no bit set, or a bus still busy after the wait
+     * above -- leaves the FSM, and possibly a slave, somewhere this driver did
+     * not put it. See esp_i2c_recover(): without it, one wedged transfer makes
+     * the whole bus absent.
+     *
+     * 47.2: a *clean* NACK (bus idle again) gets nothing more. That is IDF's
+     * policy too -- its master resets and clears the bus only on a timeout or
+     * a bus found busy, never for a NACK -- and the reason it matters showed
+     * on the LCD-7B: running the nine-pulse bus clear after every NACK, i.e.
+     * at every empty address of a scan, left the GT911 touch controller
+     * NACKing its own address until some other part's transfer went through,
+     * so `i2c scan` reported no touch controller on a board that has one. The
+     * next transaction's esp_i2c_begin() still resets the FSM and FIFOs, which
+     * is what the NANO's stale-controller fix needed. */
+    if (!ok) {
+        bool clean_nack = (st & ESP_I2C_INT_NACK) &&
+                          !(st & (ESP_I2C_INT_TIME_OUT | ESP_I2C_INT_ARB_LOST)) &&
+                          !(REG(ESP_I2C_SR) & ESP_I2C_SR_BUS_BUSY);
+        if (!clean_nack) esp_i2c_recover();
+    }
     return ok;
 }
 

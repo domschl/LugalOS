@@ -128,6 +128,39 @@ console, loading and reset all on it.
 * Quick standalone checks (no kernel): `tools/build_minimal_esp32c6.sh run`,
   `tools/build_umode_probe_esp32c6.sh run`.
 
+#### 4. ESP32-P4-WIFI6-Touch-LCD-7B (`esp32p4-lcd7b`, phase 47)
+One CH343P ("USB TO UART" Type-C) carries **both** UART0 (GPIO37/38) and reset
+(RTS → ESP_EN, DTR → GPIO35). There is no CP2102, so `tools/p4run.py` picks it
+for both roles by itself.
+* Symlink: `/dev/serial/by-id/usb-1a86_USB_Single_Serial_*-if00`
+* **Opening this port resets the chip** unless the tty was left at B0, because
+  Linux raises DTR/RTS on open. `tools/p4run.py` parks the port at B0 whenever
+  it closes it, so always go through `p4run.py` / `p4flash.py`. Any other
+  program (picocom, a bare pyserial open) resets the board.
+* Silicon **revision v3.2** (the NANO is v1.3): L2MEM's cache and ROM data
+  sit at the opposite ends, and the CLIC is the standard one. A build for
+  the wrong revision halts at boot with `[Chip] ... Halted.` See plan/phase47 §6.
+* **With both P4 boards attached, always pass `--board nano|lcd7b`.** Two
+  CH343Ps can only be told apart by serial number, so the mapping lives in
+  `~/.config/lugalos/p4-ports.env` (`LUGALOS_P4_<BOARD>_PORT` /
+  `_RESET_PORT`). Without `--board`, detection refuses rather than reset the
+  wrong board.
+* Build `ninja -C build/esp32p4-lcd7b`; flash with
+  `tools/p4flash.py --board lcd7b --build build/esp32p4-lcd7b --only boot,os --verify`;
+  console with `tools/p4run.py --board lcd7b --run --cmd "..."`.
+* Runs at 400 MHz (v3 ladder 100/200/400) with the core on the external DC-DC.
+* 32 MB PSRAM at 0x48000000 (both P4 boards, `drivers/psram_esp32p4.c`), 200 MHz
+  hex DDR via IDF's DQS timing tuning at every boot (`CONFIG_PSRAM_SPEED_MHZ`;
+  falls back to 20 and logs it if no window is found): `psram` (shows the tuning
+  window), `psram test [MB]`, `psram bench`. BULK_BSS and the bulk
+  page zone live there. Register constants come from the generated
+  `drivers/include/drivers/esp32p4_psram_regs.h` (`tools/gen/p4_regs.py`), which
+  refuses to generate if hw_ver1 and hw_ver3 disagree.
+  I2C on GPIO7/8 (PH2.0 header): ES8311 0x18, ES7210 0x40, GT911 0x5D;
+  `i2c rd ADDR [REG..] N` reads registers raw (e.g. `i2c rd 5d 81 40 4` → "911").
+* Test: `cd tests/hw && uv run test_esp32p4.py --board lcd7b --build ../../build/esp32p4-lcd7b`
+  (27/27; EMAC tests skip; a BME280 sits on the PH2.0 I2C header at 0x76). NANO: `uv run test_esp32p4.py --board nano`.
+
 ---
 
 ## 4. Hardware Presets & Agent Requests
@@ -139,6 +172,7 @@ LugalOS supports distinct hardware presets. If a task requires testing against a
 | `rp2350-terminal` | RP2350 Hazard3 RV32 | Waveshare RP2350-LCD-7 (7" LCD terminal, PSRAM, USB console, SD card) |
 | `rp2350-chess` | RP2350 Hazard3 RV32 | Pico 2 with ST7735 LCD, TM1638 keypad, SD card, chess engine |
 | `esp32p4` | ESP32-P4 RV32 | Waveshare ESP32-P4-NANO (dual-core RISC-V @ 360–400 MHz, RMII Ethernet, SDMMC, writable flash) |
+| `esp32p4-lcd7b` | ESP32-P4 RV32 (rev v3.2) | Waveshare ESP32-P4-WIFI6-Touch-LCD-7B (7" 1024×600 MIPI-DSI, GT911 touch, USB-A host, SDMMC, 32 MB PSRAM, C6 on SDIO; phase 47) |
 | `rp2350-clock` | RP2350 LED Clock | Waveshare Pico-Clock-Green (SM16106 LED matrix + DCF77 radio) |
 | `rp2350-gateway` | RP2350 Gateway | Network gateway persona (ENC28J60 Ethernet / USB 9P / UART1 downlink) |
 | `rp2350-wifi` | RP2350 CYW43439 | Raspberry Pi Pico 2 W with CYW43439 Wi-Fi |

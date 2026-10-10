@@ -119,6 +119,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--build", type=pathlib.Path, default=DEFAULT_BUILD)
+    ap.add_argument("--board", help="a board named in ~/.config/lugalos/p4-ports.env "
+                    "(nano, lcd7b; see tools/p4run.py)")
     ap.add_argument("--port", help="console port (esptool talks over this)")
     ap.add_argument("--reset-port", help="port whose DTR/RTS reach the board's reset")
     ap.add_argument("--baud", type=int, default=921600)
@@ -168,8 +170,9 @@ def main() -> int:
 
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
     import p4run  # ports and reset live there; one implementation, not two
-    port = a.port or p4run.console_port(None)
-    rport = a.reset_port or p4run.reset_port(None, port)
+    bport, brport = p4run.board_ports(a.board)
+    port = a.port or p4run.console_port(bport)
+    rport = a.reset_port or p4run.reset_port(brport, port)
 
     # Into download mode first, and this is not optional: a board running the
     # kernel is writing to UART0 continuously, and esptool reports that as

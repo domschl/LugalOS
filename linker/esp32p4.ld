@@ -56,65 +56,29 @@
 
 OUTPUT_FORMAT(elf32-littleriscv)
 
+/* LOWRAM and RAM -- where in L2MEM the kernel lives -- are a fact about the
+ * silicon revision, not about this script: v3.x swapped which end of L2MEM
+ * the L2 cache and the ROM's data occupy (47.1,
+ * plan/phase47_esp32p4_lcd7b_ribbon.md). CMake copies the matching
+ * linker/esp32p4_memory_rev{1,3}.ld to the build directory as
+ * esp32p4_memory.ld, chosen by the board file's CONFIG_ESP32P4_REV. That file
+ * also defines the bounds the ASSERTs at the bottom check against:
+ *
+ *   P4_LOAD_FLOOR    lowest address a *loadable* byte may have
+ *   P4_LOWRAM_CEIL   LOWRAM must end at or below this
+ *   P4_RAM_FLOOR     nothing of ours below this (the cache, on v3.x)
+ *   P4_RAM_CEIL      RAM must end at or below this
+ *
+ * ld treats several MEMORY commands as one, so XIP stays here. */
+INCLUDE esp32p4_memory.ld
+
 MEMORY
 {
-    /* NOLOAD SECTIONS ONLY. See the header comment: this range overlaps the
-     * ROM's download-mode buffers, so anything the loader has to write into
-     * it would corrupt the loader that is doing the writing. ld enforces the
-     * *size*; the ASSERTs at the bottom enforce the rule.
-     *
-     * 252K, not 256K, and the missing 4 KB is the whole point (E6).
-     *
-     * E2 read the ROM's map out of IDF's own bootloader.memory.ld.in and
-     * recorded `0x4ff3fba4`-`0x4ff40000` as "ROM .bss/.data", then placed the
-     * boot stack across it anyway, reasoning that NOLOAD sections are safe in
-     * the ROM's area because the ROM's buffers only matter while the loader
-     * is writing. That is true of the *download buffers* -- region 1 of that
-     * appendix -- and false of regions 4 and 5, which it labels "shared
-     * memory used in startup code **and when IDF runs**" and "the 'interface'
-     * data with constant addresses".
-     *
-     * It cost nothing until E6 called a ROM routine. `rom_spiflash_legacy_data`
-     * and `_funcs` -- the pointers every ROM flash function dereferences --
-     * live at 0x4ff3ffe8 and 0x4ff3ffec on this chip revision, inside the
-     * boot stack, which entry.S paints with 0xA5A5A5A5. The first call into
-     * ROM flash code faulted at `epc` inside the ROM, dereferencing
-     * 0xa5a5a5a5: we had painted over the ROM's own function table.
-     *
-     * Note the revision dependency, because it is a trap. IDF ships two ROM
-     * symbol files and this project uses the `eco0_4` one (chip v1.3). The
-     * flash *function* addresses are identical in both; the *data* addresses
-     * differ by 0x80000 -- 0x4ff3ffe8 here against 0x4ffbffe8 for r > ECO4.
-     * Checking the functions and generalising would have given the wrong
-     * answer with every appearance of having been verified.
-     *
-     * Shortening the region is what makes this structural: nothing the linker
-     * can place is able to reach the reserved bytes, rather than nothing
-     * happening to. 4 KB rather than the 1116 bytes strictly needed, because
-     * a page is a rounder thing to reason about and LOWRAM has room. */
-    LOWRAM (rw)  : ORIGIN = 0x4ff00000, LENGTH = 252K
-
-    /* Everything loadable, and the heap after it.
-     *
-     * 384K, not the 512K that reaches L2MEM's end at 0x4ffc0000, and the
-     * difference is the whole of E7's memory corruption.
-     *
-     * The L2 cache on this part is carved out of L2MEM itself, at the top, so
-     * whatever is reserved for it is not RAM. The boot ROM leaves it at 256 KB
-     * -- measured, by painting the heap and watching where the paint stopped
-     * surviving: everything from 0x4ff80000 up decayed to zero, with no store
-     * to blame and the page allocator provably innocent. ESP-IDF's own layout
-     * states the relationship, for a chip below v3 as this v1.3 part is
-     * (components/esp_system/ld/esp32p4/memory.ld.in):
-     *
-     *     #define SRAM_HIGH_START  0x4FF40000
-     *     #define SRAM_HIGH_SIZE   0x80000 - CONFIG_CACHE_L2_CACHE_SIZE
-     *
-     * kernel_main() calls esp32p4_l2_cache_shrink() before touching the heap,
-     * which asks the ROM for a 128 KB cache -- IDF's own default -- moving the
-     * boundary to 0x4ffa0000. This length and that call are one change: the
-     * ASSERT below is what keeps them from drifting apart. */
-    RAM    (rwx) : ORIGIN = 0x4ff40000, LENGTH = 384K
+    /* 47.3: the in-package PSRAM, mapped by drivers/psram_esp32p4.c's MMU
+     * setup at SOC_EXTRAM_LOW. Declared on both P4 boards and used only where
+     * lugalos_bulk.ld places .bulk_bss in it (the board names a PSRAM). 32 MB
+     * is the P4NRW32's; the board's own size is checked by that file. */
+    PSRAM  (rw)  : ORIGIN = 0x48000000, LENGTH = 32M
 
     /* Flash, mapped into the CPU's address space and executed in place.
      * U1, plan/phase32_esp32p4_execute_in_place.md.
@@ -312,6 +276,13 @@ SECTIONS
         _ustacks_end = .;
     } > LOWRAM
 
+    /* 47.3: BULK_BSS objects -- a NOLOAD section at the start of the PSRAM
+     * window on a board file that names one, nothing otherwise (then .bss's
+     * `.bss.*` below takes them into LOWRAM). Generated by
+     * cmake/gen_config.cmake, exactly as for the RP2350 terminal; it must
+     * come before .bss, whose wildcard would otherwise claim `.bss.bulk`. */
+    INCLUDE lugalos_bulk.ld
+
     .bss (NOLOAD) : {
         . = ALIGN(4);
         _bss_start = .;
@@ -371,8 +342,12 @@ SECTIONS
     /* Nothing may reach the ROM's constant-address data at the top of L2MEM.
      * LOWRAM's length already makes this unreachable; the ASSERT is what says
      * so if someone lengthens it again. */
-    ASSERT(ORIGIN(LOWRAM) + LENGTH(LOWRAM) <= 0x4ff3f000,
-           "linker/esp32p4.ld: LOWRAM reaches the ROM's reserved data at 0x4ff3fba4-0x4ff40000; the ROM flash routines dereference pointers there")
+    ASSERT(ORIGIN(LOWRAM) + LENGTH(LOWRAM) <= P4_LOWRAM_CEIL,
+           "linker/esp32p4.ld: LOWRAM reaches the ROM's reserved data (P4_LOWRAM_CEIL); the ROM flash routines dereference pointers there")
+    /* 47.1: and nothing may sit in the L2 cache's storage, which on v3.x is
+     * the bottom of L2MEM -- where v1.3's LOWRAM used to start. */
+    ASSERT(ORIGIN(LOWRAM) >= P4_RAM_FLOOR && ORIGIN(RAM) >= P4_RAM_FLOOR,
+           "linker/esp32p4.ld: LOWRAM or RAM starts inside the L2 cache's storage (P4_RAM_FLOOR) -- see linker/esp32p4_memory_rev3.ld")
 
     /* The rule from the header comment, as a link error rather than as a
      * corrupt load. Every loadable section is assigned `> RAM` above, so
@@ -392,10 +367,10 @@ SECTIONS
      * A MEMORY block cannot reference a symbol, so RAM's LENGTH above is
      * still a literal; what this ASSERT does is make a disagreement between
      * the two a link error rather than a corruption. */
-    ASSERT(ORIGIN(RAM) + LENGTH(RAM) <= 0x4ffc0000 - CONFIG_L2_CACHE_BYTES,
-           "linker/esp32p4.ld: RAM reaches into the L2 cache's own storage at the top of L2MEM -- RAM's LENGTH and CONFIG_L2_CACHE_KB disagree; see esp32p4_l2_cache_shrink()")
-    ASSERT(ORIGIN(RAM) >= 0x4ff40000,
-           "loadable sections would overlap the ROM's download-mode buffers (0x4ff296b8..0x4ff40000) -- see the header comment")
+    ASSERT(ORIGIN(RAM) + LENGTH(RAM) <= P4_RAM_CEIL,
+           "linker/esp32p4.ld: RAM reaches the L2 cache's storage (v1.3) or the ROM's data (v3.x) -- P4_RAM_CEIL; RAM's LENGTH and CONFIG_L2_CACHE_KB disagree; see esp32p4_l2_cache_shrink()")
+    ASSERT(ORIGIN(RAM) >= P4_LOAD_FLOOR,
+           "loadable sections would land where the ROM is still using memory while it loads us (P4_LOAD_FLOOR) -- see the header comment")
     /* .text used to be checked against that boundary too. After U1 it is not
      * in RAM at all, so the check that matters is the opposite one: that it
      * really did land in the flash window and did not quietly fall back into
@@ -406,14 +381,14 @@ SECTIONS
      * mean jumping to an address that is not mapped yet -- the one failure
      * this whole arrangement exists to avoid, and one with no console to
      * report it. */
-    ASSERT(ADDR(.boot) >= 0x4ff40000 && ADDR(.boot) < 0x4ffc0000,
+    ASSERT(ADDR(.boot) >= P4_LOAD_FLOOR && ADDR(.boot) < 0x4ffc0000,
            "linker/esp32p4.ld: .boot is not in L2MEM -- the code that maps flash cannot itself live in flash")
 
     /* U3: the same check for the write-while-executing code. A .ramfunc that
      * drifted into the flash window would work perfectly until the first
      * erase, and then fetch its own next instruction out of a flash chip that
      * is busy erasing. */
-    ASSERT(ADDR(.ramfunc) >= 0x4ff40000 && ADDR(.ramfunc) < 0x4ffc0000,
+    ASSERT(ADDR(.ramfunc) >= P4_LOAD_FLOOR && ADDR(.ramfunc) < 0x4ffc0000,
            "linker/esp32p4.ld: .ramfunc is not in L2MEM -- code that runs while flash is busy cannot live in flash")
 
     ASSERT(ADDR(.text) >= 0x40000000 && ADDR(.text) < 0x44000000,
@@ -497,8 +472,11 @@ SECTIONS
      * RP2350's 38-page (152 KB) whole-system peak with two U-mode programs
      * resident. So this board cannot host that peak, and the way to buy room
      * back is .text: 171 KB of it, against 63 KB of .rodata. */
-    ASSERT(_heap_end - _kernel_end >= 360K,
-           "ESP32-P4 heap has fallen below its 360 KB floor -- something grew .boot, .utext or .data; see plan/phase32_esp32p4_execute_in_place.md")
+    /* 47.1: the figure is per revision (P4_HEAP_FLOOR, in esp32p4_memory.ld):
+     * 360 KB on v1.3 as argued above, less on v3.x, whose ROM data takes the
+     * top of L2MEM -- see linker/esp32p4_memory_rev3.ld. */
+    ASSERT(_heap_end - _kernel_end >= P4_HEAP_FLOOR,
+           "ESP32-P4 heap has fallen below its floor (P4_HEAP_FLOOR) -- something grew .boot, .utext or .data; see plan/phase32_esp32p4_execute_in_place.md")
 
     /* The whole writable region, so /proc/meminfo reports the heap and the
      * stack as fractions of something real, taken from the MEMORY block
@@ -532,7 +510,13 @@ SECTIONS
        noticing: every epc in the XIP window failed the range test, so the
        fatal handler silently skipped the instruction readback on the one
        target whose faults were hardest to reproduce. */
-    _image_bytes = (_bss_end - _ram_start) + (_kernel_end - _text_start);
+    /* 47.1: three runs, not two. Since phase 32, .text and .rodata are in the
+     * XIP window at 0x40000000, so `_kernel_end - _text_start` spanned the
+     * whole gap between flash and L2MEM and /proc/meminfo reported a
+     * 261722 KB image (on both boards). The RAM-loaded half is counted from
+     * RAM's origin, the flash-resident half from the window's. */
+    _image_bytes = (_bss_end - ORIGIN(LOWRAM)) + (_kernel_end - ORIGIN(RAM))
+                 + (_xip_end - _xip_start);
     _inst_lo     = _xip_start;
     _inst_hi     = _ram_end;
 

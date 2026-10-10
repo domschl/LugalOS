@@ -49,7 +49,9 @@
  *   0x4ff3afc0 - 0x4ff3fba4  CPU1 stack
  *   0x4ff3fba4 - 0x4ff40000  ROM .bss and .data
  *
- * tools/minimal_esp32p4.ld therefore keeps everything below 0x4ff28000.
+ * That is revision v1.3's map. v3.x moved it to the top of L2MEM and put
+ * the cache at the bottom; tools/minimal_esp32p4.ld says where the image
+ * sits so that it misses both (47.0).
  *
  * Register offsets below are confirmed against BOTH the TRM (§45, registers
  * 45.1 and 45.21) and IDF's soc/esp32p4/register/hw_ver1/soc/uart_reg.h,
@@ -185,6 +187,17 @@ static bool gpio_read(unsigned pin) {
     return (REG(GPIO_IN_REG) >> pin) & 1u;
 }
 
+/* Between a write and the read-back. 47.2, plan/phase47_esp32p4_lcd7b_ribbon.md:
+ * on the v3.2 LCD-7B "drive 1 reads 0" with the read issued straight after
+ * the write, while the same pad, driven from the kernel's shell with
+ * milliseconds between poke and peek, followed perfectly -- and the
+ * registers involved are identical in hw_ver1 and hw_ver3. The pad edge and
+ * the input synchroniser simply take longer than one MMIO round trip there.
+ * v1.3 happened to be fast enough; a test should not depend on that. */
+static void gpio_settle(void) {
+    for (volatile unsigned i = 0; i < 200u; i++) { }
+}
+
 /* Release the pin and let a weak internal resistor decide its level.
  *
  * This exists to falsify the obvious objection to the drive test above: that
@@ -256,8 +269,10 @@ void minimal_main(void) {
      * heartbeat that cannot fail. */
     gpio_out_init(GPIO_TOGGLE_PIN);
     gpio_write(GPIO_TOGGLE_PIN, true);
+    gpio_settle();
     bool hi = gpio_read(GPIO_TOGGLE_PIN);
     gpio_write(GPIO_TOGGLE_PIN, false);
+    gpio_settle();
     bool lo = gpio_read(GPIO_TOGGLE_PIN);
     uart_puts("  gpio20  = drive 1 reads ");
     uart_putc(hi ? '1' : '0');

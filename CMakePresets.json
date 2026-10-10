@@ -148,6 +148,28 @@
       }
     },
     {
+      "name": "esp32p4-lcd7b",
+      "displayName": "ESP32-P4 (Waveshare ESP32-P4-WIFI6-Touch-LCD-7B) \u2014 terminal persona",
+      "description": "47.0, plan/phase47_esp32p4_lcd7b_ribbon.md. The NANO's target, drivers and linker script on a different board: a 7\" 1024x600 MIPI-DSI panel (EK79007), GT911 touch, USB 2.0 HS host on a Type-A port, microSD on the same SDMMC pads, 32 MB PSRAM, an ESP32-C6 on SDIO, and no Ethernet. Silicon revision v3.2, not the NANO's v1.3: it boots to the shell at 40 MHz as of 47.0; 47.1 audits the rest. Console on UART0 through the on-board CH343P, which also carries reset -- use tools/p4run.py.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/esp32p4-lcd7b",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-esp32p4.cmake",
+        "LUGALOS_ENABLE_SMP": "ON",
+        "LUGALOS_ENABLE_CC": "ON",
+        "LUGALOS_ENABLE_ED": "OFF",
+        "LUGALOS_ENABLE_SPISD": "OFF",
+        "LUGALOS_ENABLE_SDMMC": "ON",
+        "LUGALOS_ENABLE_ST7735": "OFF",
+        "LUGALOS_ENABLE_TM1638": "OFF",
+        "LUGALOS_ENABLE_CHESS": "ON",
+        "LUGALOS_ENABLE_PICO_CLOCK_GREEN": "OFF",
+        "LUGALOS_ENABLE_DCF77": "OFF",
+        "LUGALOS_ENABLE_GPS": "OFF",
+        "LUGALOS_BOARD_FILE": "${sourceDir}/cmake/board-esp32p4-lcd7b.cmake"
+      }
+    },
+    {
       "name": "rv64-smp",
       "displayName": "QEMU RV64 (Sv39 MMU) - SMP, two harts",
       "description": "X1, plan/phase23_multicore_scheduling.md: the rv64-mmu build with CONFIG_ENABLE_SMP. Run it with qemu-system-riscv64 -M virt -smp 2. A separate preset rather than a flag on rv64-mmu so the single-hart build every other test uses stays exactly what it was.",
@@ -227,6 +249,10 @@
     {
       "name": "esp32p4",
       "configurePreset": "esp32p4"
+    },
+    {
+      "name": "esp32p4-lcd7b",
+      "configurePreset": "esp32p4-lcd7b"
     },
     {
       "name": "rv64-smp",

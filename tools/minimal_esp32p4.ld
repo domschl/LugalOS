@@ -17,15 +17,26 @@
  * them corrupts the loader that is in the middle of loading us -- a failure
  * that would look like a bad image rather than like what it is.
  *
- * So everything here lives in [0x4ff00000, 0x4ff28000): 160 KB, ending a
- * comfortable 6 KB below the ROM's buffers. The program needs about one
- * page of that; the margin is free and the alternative is a debugging
- * session.
+ * Originally everything lived in [0x4ff00000, 0x4ff28000), just below the
+ * ROM's buffers on the NANO's revision v1.3.
+ *
+ * **Silicon revision v3.x moved both neighbours** (47.0,
+ * plan/phase47_esp32p4_lcd7b_ribbon.md; IDF's bootloader.memory.ld.in and
+ * esp_system/ld/esp32p4/memory.ld.in, CONFIG_ESP32P4_SELECTS_REV_LESS_V3):
+ *
+ *                  L2 cache                    ROM data + download buffers
+ *   rev < v3.0     top:    0x4ff80000..        0x4ff296b8 .. 0x4ff40000
+ *   rev >= v3.0    bottom: 0x4ff00000..+size   0x4ffa96b8 .. 0x4ffc0000
+ *
+ * So the old origin is *cache* on the LCD-7B's v3.2: the load "succeeded"
+ * and nothing ran. [0x4ff40000, 0x4ff68000) is clear of both maps, given the
+ * ROM's 256 KB default cache, so one image serves both boards. The program
+ * needs about one page of the 160 KB.
  */
 
 MEMORY
 {
-    RAM (rwx) : ORIGIN = 0x4ff00000, LENGTH = 160K
+    RAM (rwx) : ORIGIN = 0x4ff40000, LENGTH = 160K
 }
 
 ENTRY(_start)

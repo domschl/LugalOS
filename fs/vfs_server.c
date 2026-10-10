@@ -4,7 +4,7 @@
 #include "fs/p9_link.h"
 #include "fs/p9_chan.h"
 #include "drivers/block.h"
-#include "drivers/psram_rp2350.h"
+#include "drivers/psram.h"
 #include "drivers/flashdisk.h"
 #include "drivers/uart.h"
 #include "drivers/at24c32.h"
@@ -780,7 +780,7 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
             used += (uint32_t)ksnprintf(buf + used, cap - used,
                 "Flash: %u KB of %u KB\n", flash_used / 1024, flash_total / 1024);
         }
-#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PSRAM_BYTES)
+#if defined(CONFIG_PSRAM_BYTES)
         used += (uint32_t)psram_meminfo(buf + used, cap - used);
 #endif
         /* 38.4: the bulk page zone, where there is one. SRAM fallbacks should

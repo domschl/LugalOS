@@ -1,5 +1,5 @@
 #include "kernel/printk.h"
-#include "drivers/psram_rp2350.h"
+#include "drivers/psram.h"
 #include "kernel/klog.h"
 #include "kernel/console.h"
 #include "drivers/ramscreen.h"
@@ -184,6 +184,30 @@ void kernel_main(void) {
     time_init();
 
 #if defined(CONFIG_BOARD_ESP32P4)
+    esp32p4_l2_cache_report();
+    {
+        /* 47.1: the board file's CONFIG_ESP32P4_REV is a claim the silicon can
+         * check. Across the v3.0 line it decides where the L2 cache and the
+         * ROM's data sit (linker/esp32p4_memory_rev{1,3}.ld) and which CLIC
+         * the core has, so a v1.3 build on v3.x silicon -- or the reverse --
+         * runs with .bss inside the cache and corrupts itself quietly; that is
+         * exactly what 47.1 saw. Stop instead. Within one family a different
+         * minor revision is only worth a line. */
+        extern unsigned esp32p4_chip_rev(void);
+        unsigned chip = esp32p4_chip_rev();
+        if ((chip >= 300u) != (CONFIG_ESP32P4_REV >= 300)) {
+            printk("[Chip] silicon is v%u.%u but this build is for v%u.%u -- the "
+                   "memory map differs across v3.0. Build the board's own preset. "
+                   "Halted.\n", chip / 100u, chip % 100u,
+                   (unsigned)(CONFIG_ESP32P4_REV / 100), (unsigned)(CONFIG_ESP32P4_REV % 100));
+            for (;;) __asm__ __volatile__("wfi");
+        }
+        printk("[Chip] ESP32-P4 v%u.%u%s\n", chip / 100u, chip % 100u,
+               chip == (unsigned)CONFIG_ESP32P4_REV ? "" : " (board file says otherwise; same family)");
+    }
+#endif
+
+#if defined(CONFIG_BOARD_ESP32P4)
     /* 34.3, plan/phase34_esp32p4_pll_bringup.md. The boot ROM leaves the
      * HP_ACTIVE regulator at IDF's *uncalibrated* default of 24 without ever
      * applying this chip's own eFuse trim, which asks for 25. That is free at
@@ -205,6 +229,11 @@ void kernel_main(void) {
                    (unsigned)dbias_from, (unsigned)dbias_to,
                    (unsigned)dbias_ind);
         }
+        /* 47.2: and the DC-DC, unconditionally, as IDF does -- see
+         * esp32p4_core_onto_dcdc() for why it used to depend on the above. */
+        extern uint32_t esp32p4_core_onto_dcdc(void);
+        uint32_t vset = esp32p4_core_onto_dcdc();
+        printk("[PMU] core on the external DC-DC, DCM_VSET %u\n", (unsigned)vset);
     }
 
     /* 34.4: and only now the clock, because raising a frequency against an
@@ -312,14 +341,14 @@ void kernel_main(void) {
      * root page table through vmm_alloc_page(), which is now backed by the
      * page allocator rather than an unbounded bump pointer. */
     trap_init();
-#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PSRAM_BYTES)
+#if defined(CONFIG_PSRAM_BYTES)
     /* 38.2, plan/phase38_psram.md: before the page allocator, which gains a
      * PSRAM zone in 38.4. Interrupts are still off, which the direct-mode
      * bring-up needs. It only reports; psram_require() below decides. */
     psram_init();
 #endif
     palloc_init((uintptr_t)_kernel_end, (uintptr_t)_heap_end);
-#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PSRAM_BYTES)
+#if defined(CONFIG_PSRAM_BYTES)
     /* 38.4: the bulk page zone is the PSRAM above BULK_BSS. Not brought up
      * when the chip is not: then every bulk request is a fast one, until
      * psram_require() below stops the boot anyway (S1). */
@@ -603,7 +632,7 @@ void kernel_main(void) {
     dcf77_p0log_start();
 #endif
 
-#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PSRAM_BYTES)
+#if defined(CONFIG_PSRAM_BYTES)
     /* Sign-off S1: a persona built for PSRAM does not run without it. Here,
      * once the console, USB and the panel can carry the reason, and before
      * anything that would use PSRAM starts. Returns at once when it is up. */
