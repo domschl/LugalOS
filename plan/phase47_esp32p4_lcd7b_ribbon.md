@@ -574,7 +574,7 @@ strings), 1.5 MB of BULK_BSS. New shell command: `time CMD`.
 boot faulted with a *load access fault on a flash address* (the Lisp builtins
 table, deterministic). This happened after `psram_init` zeroed BULK_BSS through
 the cache, leaving L2 full of dirty PSRAM lines. Writing the range back
-explicitly at the end of `psram_init` removes it. Implicit evictions in
+explicitly at the end of `psram_init` removes it. *(Explained in 47.4b, §6.5: not the dirty lines but the flash interface, which `spi_flash_attach()` had dropped to 10 MHz single-line, so the burst of misses that followed the zeroing hit the CPU's DBUS timeout. The write-back stays as ordinary coherence hygiene.)* Implicit evictions in
 general are fine: 56 s of allocation and GC over the 1 MB node pool, with
 continuous L2 eviction to PSRAM, ran clean. IDF's P4 rev-3 PSRAM workaround
 (`esp_psram_p4_rev3_workaround`, dummy reads with error responses disabled)
@@ -658,28 +658,81 @@ gives the same results as IDF's `roundf()` for every value above.
   (0x0A) made in command mode right after sleep-out, which should give 0x9C.
   Writes are acknowledged. Reads are not needed for the display, and nothing
   here relies on them. Waveshare's code never reads the panel either.
-* **A latent flash-load fault, layout-dependent (47.4b, high priority).**
-  The first 47.4 image faulted in two ways. Flashed `--only os`, its boot
-  jumped through a garbage function pointer read from `.rodata` in
-  `sensor_hub_init`. Flashed `boot,os`, it booted, and then the first shell
-  command whose `strcmp` chain reached the literal "sensor" at 0x40060fb8
-  took a load access fault (cause 5). The fault is imprecise (`epc` points
-  two instructions past the `lbu`), so it was the cache's error response,
-  not a missing mapping. It was deterministic: `cat /proc/version` or
-  `sensor` as the first command faulted every time. `peek` on the same
-  address worked, and any command after another one (`net`) worked too.
-  The DSI driver never ran in any of these boots. A trap-time dump of the
-  cache's access-fail registers and the MSPI interrupt status
-  (`trap.c`, "[Trap Cache]") moved `.rodata` by 232 bytes, and the fault
-  disappeared: both boards then ran 28/28. It is the same family as 47.3's
-  "load access fault on a flash address after BULK_BSS zeroing" (§6.2),
-  which an explicit write-back hid rather than explained. Next: rebuild the
-  failing layout with the diagnostic in SRAM, so `.text` and `.rodata` don't
-  move, and read the cache's own reason.
+* The latent flash-load fault the first 47.4 image hit is found and fixed:
+  §6.5.
 * The owner saw the panel dim slowly to black while the board was being
   reflashed (P4 in reset, link stopped, GPIO32 floating). That is expected,
   but it means the backlight pin needs a defined level whenever the kernel
   is not driving it. That belongs to 47.11 (LEDC dimming).
+
+## 6.5 What 47.4b found: our own `spi_flash_attach()` slowed flash 8× (2026-10-10)
+
+**Symptom.** The first 47.4 image faulted deterministically. The first shell
+command whose `strcmp` chain reached the literal "sensor" (0x40060fb8)
+took an imprecise load access fault (cause 5; `epc` two instructions after
+the `lbu`). A different layout hid it.
+
+**How it was found.** By the reference method (the memory note on tracing
+the reference first):
+1. An IDF image for the 7B (`ref7b`: XIP from flash, PSRAM 200 MHz, L2 128
+   KB) dumped the cache controller, both MSPI controllers, HP_SYSTEM and the
+   MMU entries. Our kernel's `peek` dumped the same blocks, and the two were
+   diffed.
+2. The failing layout was rebuilt with `.text`/`.rodata` byte-for-byte in
+   place, the trap reporter moved to SRAM, and a pad restoring `.rodata`'s
+   address. That gave a deterministic reproducer with a diagnosis line:
+   ```
+   [Trap Cache] L1 fail raw 0x0 ... MSPI flash int 0x18, psram int 0x18 ...
+                core timeout raw 0x10
+   ```
+   Bit 4 is `HP_CORE0_DBUS_TIMEOUT_INT`. The load waited longer than the HP
+   CPU's DBUS timeout (`HP_SYSTEM_CORE_DBUS_TIMEOUT_REG`: enabled, 0xffff
+   cycles, ~164 µs at 400 MHz), and the timeout protection answered it with
+   an error response.
+
+**Why a flash load took that long.**
+
+| | `SPI_MEM_C_CTRL` | `_CLOCK` | read command | per 64 B line |
+|---|---|---|---|---|
+| ROM boot (our header: QIO) | 0x012c200c | XTAL/2 = 20 MHz | 0xEB, QIO | |
+| after `flash_p4_init()`'s `spi_flash_attach()` | 0x00200000 | /4 = 10 MHz | 0x03, 1 line | ~55 µs (measured) |
+| IDF app | 0x012c200c | 80 MHz (SPLL/6, undivided) | 0xEB, QIO | |
+| 47.4b | 0x012c200c | 80 MHz | 0xEB, QIO | ~2.3 µs |
+
+`flash_p4_init()` called the ROM's `spi_flash_attach()`, a leftover from
+phase 27's `esptool load-ram` boot. It ran while the kernel was executing
+from flash, and it reset the live interface to plain single-line READ at
+10 MHz. A burst of cache misses (the shell's literal chain, or 47.3's
+builtins table right after BULK_BSS zeroing) then outlasted the timeout.
+The control run settles it: the failing layout without the `attach()` call
+doesn't fault either.
+
+**Fix**, as IDF does it:
+* `flash_esp32p4.c` no longer calls `attach()`.
+* The stage-2 stub (`xip_esp32p4.c`, `flash_clock_80m()`) moves the MSPI
+  core clock to SPLL/6 = 80 MHz (`bootloader_init_mspi_clock()`) and sets
+  divider 1 for SPI0 and SPI1 with the ROM's `config_clk`. It keeps the
+  ROM's read mode, QIO.
+
+`SPI_MEM_C` now matches IDF register for register, except CS setup/hold
+(ours 1/2 cycles, IDF 0). `psram evict` (a new stress test: dirty 256 KB of
+PSRAM, then stream the whole flash image, every fill evicting a dirty line)
+dropped from 481 ms to 20 ms per pass. The same fix runs on the NANO (same
+ROM jump table).
+
+**Also learned.**
+* The `--only os` boot that faulted in `sensor_hub_init` is a separate,
+  explained effect: the stage-2 image carries `.data`'s initial values, so a
+  new OS image under an old boot image reads stale `.data`. Always flash
+  `boot,os` together.
+* `clk_esp32p4.c` said IDF never programs `FLASH_CLK_SRC_SEL`. Wrong:
+  `bootloader_init_mspi_clock()` does. Corrected.
+* The trap dump now carries a `[Trap Cache]` line on access faults: L1/L2
+  fail status, both MSPI controllers' interrupt status, and the core bus
+  timeout status. The first version compared the raw `mcause` (CLIC bits
+  included) and never printed. It now uses the cause code.
+* Differences from IDF that remain and are deliberate: no preload strategy
+  (`undef_op`), and no cache/PSRAM fail interrupts enabled.
 
 ## 7. Risks
 

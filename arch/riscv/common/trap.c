@@ -1604,7 +1604,7 @@ void trap_handler(trap_frame_t *frame) {
          * address and requester, and the flash (C) and PSRAM (S) controllers'
          * raw interrupt status. Addresses from tools/gen/p4_regs.py, equal
          * in hw_ver1 and hw_ver3. */
-        if (cause == 1 || cause == 5 || cause == 7) {
+        if (code == 1 || code == 5 || code == 7) {
             #define P4R(a) (*(volatile uint32_t *)(uintptr_t)(a))
             printk_critical("[Trap Cache] L1 fail raw 0x%lx, L1D fail id/attr 0x%08lx addr 0x%08lx; "
                             "L2 fail raw 0x%lx id/attr 0x%08lx addr 0x%08lx; "

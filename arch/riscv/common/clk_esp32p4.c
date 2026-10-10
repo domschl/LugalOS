@@ -278,8 +278,11 @@ uint32_t esp32p4_clint_measure_hz(uint32_t window_us) {
  * the phase plan's third question -- see 34.2's write-up for what follows
  * from it.
  *
- * Nothing in ESP-IDF ever programs this field; a grep of the whole tree finds
- * it only in the register header. Whatever the ROM left is what runs.
+ * Correction, 47.4b (plan/phase47 §6.4): ESP-IDF does program it -- its
+ * bootloader's bootloader_init_mspi_clock() selects SPLL with an 80 MHz core
+ * clock through _mspi_timing_ll_set_flash_clk_src(), which the grep above
+ * missed. The ROM leaves XTAL. arch/riscv/common/xip_esp32p4.c's stage-2 stub
+ * now does what IDF's bootloader does, so this reads SPLL from 47.4b on.
  */
 
 /* LP_I2C_ANA_MST: LPPERIPH (0x50120000) + 0x4000. */

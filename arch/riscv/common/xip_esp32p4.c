@@ -178,6 +178,57 @@ typedef int  (*rom_mmu_set_t)(uint32_t sensitive, uint32_t vaddr, uint32_t paddr
  * the board visibly does not reach a console. The diagnosis lives in
  * plan/phase32_esp32p4_execute_in_place.md, and the recovery is the ROM's
  * download mode, which no flash content can take away. */
+
+/* ---- 47.4b: the flash clock IDF runs at, which the ROM does not set ------
+ *
+ * The ROM boots this stage in the read mode our image header names (QIO,
+ * command 0xEB -- the same CTRL/USER1 IDF's app runs with), but on its own
+ * boot clock: the MSPI core clock from XTAL, divided by 2, so 20 MHz. IDF's
+ * bootloader moves the core clock to SPLL (480 MHz) / 6 = 80 MHz
+ * (bootloader_init_mspi_clock(), bootloader_flash_config_esp32p4.c) and the
+ * app runs the flash undivided at that: SPI_MEM_C_CLOCK = CLK_EQU_SYSCLK.
+ * This does the same, and changes nothing else -- the read mode stays the
+ * ROM's.
+ *
+ * Why it matters (plan/phase47 §6.4): every XIP cache miss is a flash read,
+ * and the HP CPU's DBUS timeout (HP_SYSTEM_CORE_DBUS_TIMEOUT_REG, 0xffff
+ * cycles, ~164 us at 400 MHz) turns a load that waits too long into an
+ * imprecise load access fault. Until 47.4b drivers/flash_esp32p4.c also
+ * called the ROM's spi_flash_attach(), which dropped the interface to plain
+ * READ (0x03) on one line at 10 MHz -- ~55 us per 64-byte line -- and a burst
+ * of misses on a freshly booted shell then outlasted the timeout
+ * (HP_CORE0_DBUS_TIMEOUT_INT_RAW set at the trap).
+ *
+ * The ROM's config_clk sets divider 1 on SPI0 (the cache's port) and SPI1
+ * (the port flash_esp32p4.c erases and programs /flash0 through). Its entry
+ * point is the same in the eco0_4 (v1.3) and v3 ROMs (a jump table). L2 is
+ * disabled around this by the caller, and this code runs from L2MEM. */
+#define ROM_SPIFLASH_CONFIG_CLK       0x4fc00180u   /* esp_rom_spiflash_config_clk(freqdiv, spi) */
+#define P4_SOC_CLK_CTRL0              0x500e6014u
+#define  FLASH_SYS_CLK_EN             (1u << 30)
+#define P4_PERI_CLK_CTRL00            0x500e6030u   /* SRC_SEL [1:0], PLL_EN [2], CORE_EN [3], DIV_NUM [11:4] */
+#define  FLASH_CLK_SRC_SPLL           1u            /* 0 XTAL, 1 SPLL, 2 CPLL */
+#define  FLASH_CORE_DIV_80M           6u            /* MSPI_TIMING_LL_LP_FLASH_CORE_CLK_DIV */
+
+typedef int (*rom_spiflash_config_clk_t)(uint32_t freqdiv, uint32_t spi);
+
+BOOT_TEXT static void flash_clock_80m(void) {
+    volatile uint32_t *const clk0 = (volatile uint32_t *)(uintptr_t)P4_SOC_CLK_CTRL0;
+    volatile uint32_t *const clk  = (volatile uint32_t *)(uintptr_t)P4_PERI_CLK_CTRL00;
+    rom_spiflash_config_clk_t config_clk = (rom_spiflash_config_clk_t)(uintptr_t)ROM_SPIFLASH_CONFIG_CLK;
+
+    *clk0 |= FLASH_SYS_CLK_EN;
+    uint32_t v = *clk;
+    v |= (1u << 2);                                          /* FLASH_PLL_CLK_EN */
+    v = (v & ~0x3u) | FLASH_CLK_SRC_SPLL;
+    v = (v & ~(0xffu << 4)) | ((FLASH_CORE_DIV_80M - 1u) << 4);
+    v |= (1u << 3);                                          /* FLASH_CORE_CLK_EN */
+    *clk = v;
+
+    (void)config_clk(1u, 0u);
+    (void)config_clk(1u, 1u);
+}
+
 BOOT_TEXT void esp32p4_xip_map(void) {
     rom_cache_op_t     dis_l2 = (rom_cache_op_t)(uintptr_t)ROM_CACHE_DISABLE_L2_CACHE;
     rom_cache_op_t     en_l2  = (rom_cache_op_t)(uintptr_t)ROM_CACHE_ENABLE_L2_CACHE;
@@ -213,6 +264,9 @@ BOOT_TEXT void esp32p4_xip_map(void) {
      * `cache_hal_disable(CACHE_LL_LEVEL_EXT_MEM, ...)`, and EXT_MEM is level
      * 2. The L2 is what caches flash, and the L2 is all that has to stop. */
     dis_l2();
+
+    /* 47.4b: before the mapping, while nothing is fetched from flash. */
+    flash_clock_80m();
 
     /* vaddr and paddr are both 64 KB-aligned, which is the MMU's real
      * constraint (paddr % 64KB == vaddr % 64KB). ESP-IDF offsets its own

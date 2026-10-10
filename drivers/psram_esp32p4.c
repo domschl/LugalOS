@@ -708,6 +708,37 @@ static void psram_bench(void) {
             (unsigned long)sum);
 }
 
+/* 47.4b: the flash-fill-versus-dirty-PSRAM-eviction stress. Each round
+ * dirties 256 KB of PSRAM (twice the L2) without a write-back, then reads the
+ * whole XIP image one cache line at a time, so every flash fill has to evict
+ * a dirty PSRAM line. The flash checksum must be the same every round: a
+ * fault traps ("[Trap Cache]"), a wrong fill shows as a different sum. */
+extern char _xip_start[], _xip_end[];
+
+static void psram_evict(uint32_t rounds) {
+    enum { PAGES = 64u, BYTES = PAGES * 4096u };
+    uint8_t *mem = bulk_claim(PAGES, "psram evict");
+    if (!mem) return;
+    volatile uint32_t *p = (volatile uint32_t *)mem;
+    const uintptr_t f0 = (uintptr_t)_xip_start, f1 = (uintptr_t)_xip_end;
+    uint32_t first = 0, bad = 0;
+    uint64_t t0 = time_get_us();
+    for (uint32_t r = 0; r < rounds; r++) {
+        for (uint32_t i = 0; i < BYTES / 4u; i += 16u) p[i] = r + i;   /* one store per 64 B line */
+        uint32_t sum = 0;
+        for (uintptr_t a = f0; a < f1; a += 64u) sum += *(volatile uint32_t *)a;
+        if (r == 0) first = sum;
+        else if (sum != first && bad++ < 4)
+            cprintf("  round %lu: flash sum %08lx, expected %08lx\n", (unsigned long)r,
+                    (unsigned long)sum, (unsigned long)first);
+    }
+    esp32p4_extmem_writeback((uintptr_t)mem, BYTES);
+    palloc_free(mem, PAGES);
+    cprintf("psram evict: %lu rounds, %lu KB flash per round, %lu ms: %s (%lu bad rounds)\n",
+            (unsigned long)rounds, (unsigned long)((f1 - f0) / 1024u),
+            (unsigned long)((time_get_us() - t0) / 1000u), bad ? "FAIL" : "PASS", (unsigned long)bad);
+}
+
 void psram_command(const char *args) {
     while (*args == ' ') args++;
     if (!g_up) {
@@ -722,6 +753,12 @@ void psram_command(const char *args) {
         psram_test(mb);
     } else if (strcmp(args, "bench") == 0) {
         psram_bench();
+    } else if (strncmp(args, "evict", 5) == 0) {
+        const char *q = args + 5;
+        uint32_t n = 0;
+        while (*q == ' ') q++;
+        while (*q >= '0' && *q <= '9') n = n * 10u + (uint32_t)(*q++ - '0');
+        psram_evict(n ? n : 100u);
     } else if (*args == '\0') {
         cprintf("psram: %lu KB, vendor 0x%02x, MR0-8 %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
                 (unsigned long)(g_bytes / 1024), (unsigned)(g_mr[1] & 0x1Fu),

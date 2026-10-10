@@ -162,9 +162,13 @@ for both roles by itself.
   1 Gbps. It comes up on the first `lcd pattern [bars|hbars|ber|off]`, not at
   boot. `lcd` reports the link, `lcd bl on|off` the backlight (GPIO32,
   active low), `lcd cmd CC [PP..]` sends a DCS write. DCS reads return 0
-  (open, plan §6.4). A layout-dependent flash-load fault through the L2
-  cache is open (47.4b, plan §6.4): an access fault's "[Trap Cache]" line
-  is the evidence to keep.
+  (open, plan §6.4).
+* Flash runs at IDF's 80 MHz QIO (stage 2, `xip_esp32p4.c`). Never call the
+  ROM's `spi_flash_attach()` from the running kernel: it drops XIP to
+  10 MHz single-line, and cache misses then hit the CPU's DBUS timeout
+  (imprecise load access faults; plan §6.5). On an access fault, the
+  `[Trap Cache]` line names the reason ("core timeout raw" bit 4 = DBUS
+  timeout).
 * Test: `cd tests/hw && uv run test_esp32p4.py --board lcd7b --build ../../build/esp32p4-lcd7b`
   (28/28; EMAC tests skip; a BME280 sits on the PH2.0 I2C header at 0x76). NANO: `uv run test_esp32p4.py --board nano`.
 

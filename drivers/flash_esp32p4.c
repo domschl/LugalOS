@@ -50,7 +50,6 @@
 
 /* --- the ROM entry points ---------------------------------------------- */
 
-#define ROM_SPI_FLASH_ATTACH        0x4fc001e8UL  /* spi_flash_attach        */
 #define ROM_SPIFLASH_ERASE_SECTOR   0x4fc0014cUL
 #define ROM_SPIFLASH_WRITE          0x4fc00154UL
 #define ROM_SPIFLASH_READ           0x4fc00158UL
@@ -60,7 +59,6 @@
 /* ESP_ROM_SPIFLASH_RESULT_OK is 0 in IDF's enum. */
 #define ROM_OK 0
 
-typedef void (*rom_attach_fn)(uint32_t ishspi, bool legacy);
 typedef int  (*rom_erase_sector_fn)(uint32_t sector_num);
 typedef int  (*rom_write_fn)(uint32_t dest_addr, const uint32_t *src, int32_t len);
 typedef int  (*rom_read_fn)(uint32_t src_addr, uint32_t *dest, int32_t len);
@@ -69,7 +67,6 @@ typedef int  (*rom_config_param_fn)(uint32_t deviceId, uint32_t chip_size,
                                     uint32_t block_size, uint32_t sector_size,
                                     uint32_t page_size, uint32_t status_mask);
 
-#define rom_attach        ((rom_attach_fn)ROM_SPI_FLASH_ATTACH)
 #define rom_erase_sector  ((rom_erase_sector_fn)ROM_SPIFLASH_ERASE_SECTOR)
 #define rom_write         ((rom_write_fn)ROM_SPIFLASH_WRITE)
 #define rom_read          ((rom_read_fn)ROM_SPIFLASH_READ)
@@ -112,14 +109,14 @@ bool flash_p4_init(void) {
 
     ylock_init(&g_flash_ylock);
 
-    /* Attach first: after `esptool load-ram` the ROM is in download mode and
-     * has not necessarily configured the SPI pins for flash at all, so this
-     * cannot be assumed from a normal boot's leftovers -- the same argument
-     * drivers/uart_esp32p4.c makes about the console.
-     *
-     * ishspi = 0 selects the standard flash pins; legacy = false is what
-     * IDF's own bootloader passes on this part. */
-    rom_attach(0, false);
+    /* No spi_flash_attach() any more (47.4b, plan/phase47 §6.4). It was here
+     * for `esptool load-ram`, when the ROM sat in download mode with the
+     * flash pins unconfigured. Since phase 32 the kernel boots from flash:
+     * the ROM has attached, the stage-2 stub has set IDF's 80 MHz clock
+     * (arch/riscv/common/xip_esp32p4.c), and the kernel is executing from
+     * flash while this runs. attach() reset that live interface to plain
+     * READ on one line at 10 MHz, slow enough that a burst of cache misses
+     * outlasted the CPU's DBUS timeout. IDF's app never calls it either. */
 
     if (rom_config_param(FLASH_P4_DEVICE_ID, (uint32_t)LUGALOS_P4_FLASH_SIZE,
                          FLASH_P4_BLOCK_SIZE, FLASH_P4_SECTOR_SIZE,
