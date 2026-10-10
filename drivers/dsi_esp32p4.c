@@ -44,7 +44,12 @@
 #endif
 
 #include "drivers/esp32p4_dsi_regs.h"
+#include "drivers/font8x16.h"
+#include "arch/esp32p4_intr.h"
+#include "arch/trap.h"
 #include "kernel/console.h"
+#include "kernel/devirq.h"
+#include "kernel/palloc.h"
 #include "kernel/printk.h"
 #include "kernel/sched.h"
 #include "kernel/time.h"
@@ -353,6 +358,21 @@ static bool dsi_bus_init(void) {
 
 /* ---- 4. the video side: esp_lcd_new_panel_dpi() minus DMA and interrupts -- */
 
+/* The bridge's input pixel format and frame size: mipi_dsi_brg_ll_set_num_
+ * pixel_bits() and _set_input_color_format() (v3 branch). raw_type 0 =
+ * RGB888, 2 = RGB565, 12 = GRAY8; the output to the host is always RGB888
+ * (dpi_type 0), so the bridge expands gray to R = G = B. */
+static void bridge_format(uint32_t bpp, uint32_t raw_type) {
+    uint32_t bits = DSI_LCD_H_RES * DSI_LCD_V_RES * bpp;
+    FSET(DSI_BRG_RAW_NUM_CFG_REG, DSI_BRG_RAW_NUM_TOTAL, (bits + 63u) / 64u);
+    FSET(DSI_BRG_RAW_NUM_CFG_REG, DSI_BRG_UNALIGN_64BIT_EN, (bits % 64u) ? 1 : 0);
+    FSET(DSI_BRG_RAW_NUM_CFG_REG, DSI_BRG_RAW_NUM_TOTAL_SET, 1);
+    FSET(DSI_BRG_PIXEL_TYPE_REG, DSI_BRG_RAW_TYPE, raw_type);
+    FSET(DSI_BRG_PIXEL_TYPE_REG, DSI_BRG_DATA_IN_TYPE, 0);
+    FSET(DSI_BRG_PIXEL_TYPE_REG, DSI_BRG_DPI_TYPE, 0);
+    FSET(DSI_BRG_PIXEL_TYPE_REG, DSI_BRG_DPI_CONFIG, 0);
+}
+
 static void dpi_config(void) {
     /* The DPI clock: PLL_F240M (gate opened) / roundf(240 / 52) = 5, so 48
      * MHz real against 52 expected; the timings below absorb the difference
@@ -415,18 +435,12 @@ static void dpi_config(void) {
     FSET(DSI_BRG_DPI_V_CFG1_REG, DSI_BRG_VSYNC, VSW);
     FSET(DSI_BRG_DPI_V_CFG1_REG, DSI_BRG_VBANK, VBP);
 
-    /* The bridge: a whole RGB888 frame per DMA block (47.5 supplies the DMA),
-     * RGB888 in and out, the DMA as flow controller, IDF's burst and
-     * threshold. The DPI output stays off: the pattern generator needs none. */
-    uint32_t bits = DSI_LCD_H_RES * DSI_LCD_V_RES * 24u;
-    FSET(DSI_BRG_RAW_NUM_CFG_REG, DSI_BRG_RAW_NUM_TOTAL, (bits + 63u) / 64u);
-    FSET(DSI_BRG_RAW_NUM_CFG_REG, DSI_BRG_UNALIGN_64BIT_EN, (bits % 64u) ? 1 : 0);
-    FSET(DSI_BRG_RAW_NUM_CFG_REG, DSI_BRG_RAW_NUM_TOTAL_SET, 1);
+    /* The bridge: a whole frame per DMA block, the DMA as flow controller,
+     * IDF's burst and threshold; the input format is bridge_format()'s
+     * (RGB888 until 47.5's frame buffer picks one). The DPI output stays
+     * off: the pattern generator needs none. */
+    bridge_format(24u, 0u);
     FSET(DSI_BRG_DPI_MISC_CONFIG_REG, DSI_BRG_FIFO_UNDERRUN_DISCARD_VCNT, DSI_LCD_H_RES);
-    FSET(DSI_BRG_PIXEL_TYPE_REG, DSI_BRG_RAW_TYPE, 0);
-    FSET(DSI_BRG_PIXEL_TYPE_REG, DSI_BRG_DATA_IN_TYPE, 0);
-    FSET(DSI_BRG_PIXEL_TYPE_REG, DSI_BRG_DPI_TYPE, 0);
-    FSET(DSI_BRG_PIXEL_TYPE_REG, DSI_BRG_DPI_CONFIG, 0);
     FSET(DSI_BRG_DMA_FLOW_CTRL_REG, DSI_BRG_DSI_DMA_FLOW_CONTROLLER, 0);
     FSET(DSI_BRG_DMA_FLOW_CTRL_REG, DSI_BRG_DMA_FLOW_MULTIBLK_NUM, 1);
     FSET(DSI_BRG_DMA_FRAME_INTERVAL_REG, DSI_BRG_DMA_MULTIBLK_EN, 0);
@@ -589,6 +603,289 @@ static void set_pattern(pattern_t p) {
     }
 }
 
+
+/* ---- 8. scan-out from a PSRAM frame: DW-GDMA into the bridge (47.5) --------
+ *
+ * IDF's esp_lcd_new_panel_dpi() / dpi_panel_init() / dw_gdma.c, with one
+ * frame buffer: a single link-list item carries the whole frame from PSRAM
+ * (memory master port 1) to the bridge's FIFO window (master port 0,
+ * MIPI_DSI_BRG_MEM_BASE), 64-bit beats, the bridge's hardware handshake,
+ * the DMA as flow controller. The item is marked last, so the channel stops
+ * after each frame and the transfer-done interrupt re-arms it -- IDF's
+ * mipi_dsi_dma_trans_done_cb(), with ~0.9 ms of vertical blanking plus the
+ * bridge FIFO to do it in.
+ *
+ * The item lives in L2MEM and is only ever touched through the non-cached
+ * alias (SOC_NON_CACHEABLE_OFFSET_SRAM, as IDF's DW_GDMA_GET_NON_CACHE_ADDR),
+ * so the write-back L1 data cache never holds a stale copy of what the DMA
+ * reads. The frame buffer is cached PSRAM: whoever draws writes it back
+ * (dsi_lcd_fb_flush()) before the DMA can be trusted to see it. */
+
+#define MIPI_DSI_BRG_MEM_BASE      0x50105000u   /* hw_ver3/soc/reg_base.h */
+#define SRAM_NONCACHE_OFFSET       0x40000000u   /* SOC_NON_CACHEABLE_OFFSET_SRAM */
+#define GDMA_INTR_SOURCE           24u           /* ETS_DW_GDMA_INTR_SOURCE */
+#define GDMA_CH                    0u            /* "CH1" in the register names */
+
+/* dw_gdma_ll.h: channel events. */
+#define GDMA_EV_BLOCK_TFR_DONE     (1u << 0)
+#define GDMA_EV_DMA_TFR_DONE       (1u << 1)
+#define GDMA_EV_ERRORS             (0x3fe0u)     /* bits 5..13: decode/slave/LLI errors */
+
+/* CTL0 (ctrl_lo) and CTL1 (ctrl_hi) of the item, from IDF's dpi_panel_init()
+ * transfer config: src memory port 1, increment, 64-bit, burst 512; dst DSI
+ * port 0, fixed, 64-bit, burst 256; AXI burst length 16 both ways. */
+#define LLI_CTL0  ((1u << 0) /* SMS = memory */ | (0u << 2) /* DMS = DSI */ | \
+                   (0u << 4) /* SINC inc */ | (1u << 6) /* DINC fixed */ | \
+                   (3u << 8) /* SRC 64-bit */ | (3u << 11) /* DST 64-bit */ | \
+                   (8u << 14) /* SRC_MSIZE 512 */ | (7u << 18) /* DST_MSIZE 256 */)
+#define LLI_CTL1  ((1u << 6) | (16u << 7) /* ARLEN 16 */ | (1u << 15) | (16u << 16) /* AWLEN 16 */ | \
+                   (1u << 30) /* LAST */ | (1u << 31) /* VALID */)
+
+typedef struct {
+    uint32_t sar_lo, sar_hi, dar_lo, dar_hi;
+    uint32_t block_ts, reserved_14;
+    uint32_t llp_lo, llp_hi;
+    uint32_t ctl_lo, ctl_hi;
+    uint32_t sstat, dstat, status_lo, status_hi;
+    uint32_t reserved_38, reserved_3c;
+} gdma_lli_t;
+_Static_assert(sizeof(gdma_lli_t) == 64, "DW_GDMA_LL_LINK_LIST_ALIGNMENT");
+
+static gdma_lli_t g_lli_mem __attribute__((aligned(64)));
+#define LLI_NC ((volatile gdma_lli_t *)((uintptr_t)&g_lli_mem + SRAM_NONCACHE_OFFSET))
+
+typedef enum { FB_NONE = 0, FB_GRAY8, FB_RGB565 } fb_fmt_t;
+static fb_fmt_t          g_fb_fmt;
+static uint8_t          *g_fb;
+static uint32_t          g_fb_bytes, g_fb_pages, g_fb_bpp;
+static volatile uint32_t g_frames, g_dma_errs, g_dma_last_err;
+static volatile bool     g_stop_at_frame_end;   /* ISR: finish this frame, do not re-arm */
+static bool              g_gdma_ready;
+
+static void lli_arm(void) {
+    volatile gdma_lli_t *l = LLI_NC;
+    l->sar_lo = (uint32_t)(uintptr_t)g_fb;
+    l->sar_hi = 0;
+    l->dar_lo = MIPI_DSI_BRG_MEM_BASE;
+    l->dar_hi = 0;
+    l->block_ts = g_fb_bytes / 8u - 1u;          /* 64-bit items */
+    l->llp_lo = 1u;                              /* LMS = memory port; next = none */
+    l->llp_hi = 0;
+    l->ctl_lo = LLI_CTL0;
+    l->ctl_hi = LLI_CTL1;
+}
+
+/* The re-arm, IDF's mipi_dsi_dma_trans_done_cb(): valid and last again (the
+ * DMA clears VALID as it consumes the item), the head pointer, enable. */
+static void gdma_restart(void) {
+    LLI_NC->ctl_hi = LLI_CTL1;
+    REG(DMAC_CH1_LLP0_REG) = ((uint32_t)(uintptr_t)&g_lli_mem & ~0x3fu) | 1u;   /* LOC0, LMS = memory */
+    REG(DMAC_CH1_LLP1_REG) = 0;
+    REG(DMAC_CHEN0_REG) = 0x101u << GDMA_CH;
+}
+
+static void gdma_isr(void *ctx) {
+    (void)ctx;
+    uint32_t st = REG(DMAC_CH1_INTSTATUS0_REG);
+    REG(DMAC_CH1_INTCLEAR0_REG) = st;
+    if (st & GDMA_EV_ERRORS) { g_dma_errs++; g_dma_last_err = st; }
+    if (st & GDMA_EV_DMA_TFR_DONE) {
+        g_frames++;
+        if (g_fb && !g_stop_at_frame_end) gdma_restart();
+    }
+}
+
+/* esp_lcd's dw_gdma_new_channel() for the DPI panel, once. */
+static void gdma_init(void) {
+    if (g_gdma_ready) return;
+    /* The item was zeroed with .bss, through L1D: push that line out and
+     * drop it, so no cached copy can later be evicted over what is written
+     * through the non-cached alias (IDF's esp_cache_msync(C2M | INVALIDATE)
+     * in dw_gdma_new_link_list()). */
+    esp32p4_dcache_writeback((uintptr_t)&g_lli_mem, sizeof g_lli_mem);
+    esp32p4_dcache_invalidate((uintptr_t)&g_lli_mem, sizeof g_lli_mem);
+    FSET(HP_SYS_CLKRST_SOC_CLK_CTRL0_REG, HP_SYS_CLKRST_REG_GDMA_CPU_CLK_EN, 1);
+    FSET(HP_SYS_CLKRST_SOC_CLK_CTRL1_REG, HP_SYS_CLKRST_REG_GDMA_SYS_CLK_EN, 1);
+    FSET(HP_SYS_CLKRST_HP_RST_EN0_REG, HP_SYS_CLKRST_REG_RST_EN_GDMA, 1);
+    FSET(HP_SYS_CLKRST_HP_RST_EN0_REG, HP_SYS_CLKRST_REG_RST_EN_GDMA, 0);
+    FSET(DMAC_RESET0_REG, DMAC_DMAC_RST, 1);
+    uint64_t t0 = time_get_us();
+    while (FGET(DMAC_RESET0_REG, DMAC_DMAC_RST) && time_get_us() - t0 < 1000u) { }
+    FSET(DMAC_CFG0_REG, DMAC_DMAC_EN, 1);
+    FSET(DMAC_CFG0_REG, DMAC_INT_EN, 1);
+
+    FSET(DMAC_CH1_CFG1_REG, DMAC_CH1_TT_FC, 1);              /* memory -> peripheral, DMA controls */
+    FSET(DMAC_CH1_CFG0_REG, DMAC_CH1_SRC_MULTBLK_TYPE, 3);   /* link list */
+    FSET(DMAC_CH1_CFG0_REG, DMAC_CH1_DST_MULTBLK_TYPE, 3);
+    FSET(DMAC_CH1_CFG1_REG, DMAC_CH1_HS_SEL_SRC, 0);         /* hardware handshake */
+    FSET(DMAC_CH1_CFG1_REG, DMAC_CH1_HS_SEL_DST, 0);
+    FSET(DMAC_CH1_CFG1_REG, DMAC_CH1_DST_PER, 0);            /* the DSI bridge */
+    FSET(DMAC_CH1_CFG1_REG, DMAC_CH1_CH_PRIOR, 1);
+    FSET(DMAC_CH1_CFG1_REG, DMAC_CH1_SRC_OSR_LMT, 5u - 1u);
+    FSET(DMAC_CH1_CFG1_REG, DMAC_CH1_DST_OSR_LMT, 2u - 1u);
+    REG(DMAC_CH1_INTSTATUS_ENABLE0_REG) = 0xffffffffu;
+    REG(DMAC_CH1_INTCLEAR0_REG) = 0xffffffffu;
+    REG(DMAC_CH1_INTSIGNAL_ENABLE0_REG) = GDMA_EV_DMA_TFR_DONE | GDMA_EV_ERRORS;
+
+    if (esp32p4_intmtx_route(GDMA_INTR_SOURCE, ESP32P4_CLIC_IRQ_GDMA) == 0 &&
+        devirq_attach(ESP32P4_CLIC_IRQ_GDMA, gdma_isr, NULL) == 0) {
+        arch_irq_enable(ESP32P4_CLIC_IRQ_GDMA);
+        g_gdma_ready = true;
+    }
+}
+
+static void gdma_stop(void) {
+    REG(DMAC_CHEN0_REG) = 0x100u << GDMA_CH;                 /* disable, with write-enable */
+    uint64_t t0 = time_get_us();
+    while ((REG(DMAC_CHEN0_REG) & (1u << GDMA_CH)) && time_get_us() - t0 < 50000u) { }
+}
+
+/* Write back [y0, y1) of the frame so the DMA sees it (§4: the CPU writes
+ * PSRAM through L1D and L2; the DMA reads the chip). */
+void dsi_lcd_fb_flush(unsigned y0, unsigned y1) {
+    if (!g_fb || y0 >= y1) return;
+    if (y1 > DSI_LCD_V_RES) y1 = DSI_LCD_V_RES;
+    uint32_t row = DSI_LCD_H_RES * g_fb_bpp / 8u;
+    esp32p4_extmem_writeback((uintptr_t)g_fb + y0 * row, (y1 - y0) * row);
+}
+
+uint8_t *dsi_lcd_fb(void) { return g_fb; }
+
+/* dpi_panel_init() for one frame buffer: frame in PSRAM, bridge format, the
+ * item, channel on, bridge DPI output on, pattern generator off. */
+static bool fb_start(fb_fmt_t fmt) {
+    if (!dsi_lcd_init()) return false;
+    gdma_init();
+    if (!g_gdma_ready) { cprintf("lcd: the DW-GDMA interrupt could not be routed\n"); return false; }
+
+    /* Stop whatever runs, at a frame boundary: the bridge has no notion of
+     * where a frame starts other than "the next byte after the last one",
+     * so a DMA cut off mid-frame leaves the rest in its FIFO and every
+     * later frame comes out shifted by that remainder (seen: the rightmost
+     * 2-3 pixels wrapped to the left edge after a GRAY8 -> RGB565 -> GRAY8
+     * switch). So: let the running frame finish, let the bridge drain its
+     * FIFO onto the glass, and only then stop the DPI stream. */
+    uint8_t *old = g_fb; uint32_t old_pages = g_fb_pages;
+    if (old) {
+        g_stop_at_frame_end = true;
+        uint32_t f0 = g_frames;
+        uint64_t t0 = time_get_us();
+        while (g_frames == f0 && time_get_us() - t0 < 50000u) { }
+        t0 = time_get_us();
+        while (FGET(DSI_BRG_FIFO_FLOW_STATUS_REG, DSI_BRG_RAW_BUF_DEPTH) && time_get_us() - t0 < 20000u) { }
+    }
+    g_fb = NULL;
+    gdma_stop();
+    g_stop_at_frame_end = false;
+    FSET(DSI_BRG_DPI_MISC_CONFIG_REG, DSI_BRG_DPI_EN, 0);
+    FSET(DSI_BRG_DPI_CONFIG_UPDATE_REG, DSI_BRG_DPI_CONFIG_UPDATE, 1);
+    if (old) palloc_free(old, old_pages);
+
+    uint32_t bpp = (fmt == FB_RGB565) ? 16u : 8u;
+    uint32_t bytes = DSI_LCD_H_RES * DSI_LCD_V_RES * bpp / 8u;
+    uint32_t pages = (bytes + 4095u) / 4096u;
+    uint8_t *fb = palloc_pages_bulk(pages);
+    if (!fb || !palloc_is_bulk(fb)) {
+        if (fb) palloc_free(fb, pages);
+        cprintf("lcd: no %lu KB run of PSRAM for the frame\n", (unsigned long)(bytes / 1024u));
+        g_fb_fmt = FB_NONE;
+        return false;
+    }
+    memset(fb, 0, bytes);
+    esp32p4_extmem_writeback((uintptr_t)fb, bytes);
+
+    g_fb_bpp = bpp; g_fb_bytes = bytes; g_fb_pages = pages; g_fb_fmt = fmt;
+    bridge_format(bpp, fmt == FB_RGB565 ? 2u : 12u);
+    g_fb = fb;
+    lli_arm();
+    REG(DMAC_CH1_INTCLEAR0_REG) = 0xffffffffu;
+    gdma_restart();
+
+    FSET(DSI_HOST_VID_MODE_CFG_REG, DSI_HOST_VPG_EN, 0);
+    g_pattern = "none (frame buffer)";
+    FSET(DSI_BRG_DPI_MISC_CONFIG_REG, DSI_BRG_DPI_EN, 1);
+    FSET(DSI_BRG_DPI_CONFIG_UPDATE_REG, DSI_BRG_DPI_CONFIG_UPDATE, 1);
+    REG(DSI_BRG_INT_CLR_REG) = 0xffffffffu;
+    return true;
+}
+
+/* ---- 9. drawing for the tests: gray levels, into whichever format runs ---- */
+
+static inline void px(unsigned x, unsigned y, uint8_t g) {
+    if (g_fb_fmt == FB_RGB565) {
+        uint16_t v = (uint16_t)(((g >> 3) << 11) | ((g >> 2) << 5) | (g >> 3));
+        ((uint16_t *)g_fb)[y * DSI_LCD_H_RES + x] = v;
+    } else {
+        g_fb[y * DSI_LCD_H_RES + x] = g;
+    }
+}
+
+static void fill(uint8_t g) {
+    if (g_fb_fmt == FB_RGB565) {
+        for (unsigned y = 0; y < DSI_LCD_V_RES; y++)
+            for (unsigned x = 0; x < DSI_LCD_H_RES; x++) px(x, y, g);
+    } else {
+        memset(g_fb, g, g_fb_bytes);
+    }
+}
+
+static void rect(unsigned x0, unsigned y0, unsigned w, unsigned h, uint8_t g) {
+    for (unsigned y = y0; y < y0 + h && y < DSI_LCD_V_RES; y++)
+        for (unsigned x = x0; x < x0 + w && x < DSI_LCD_H_RES; x++) px(x, y, g);
+}
+
+/* Glyph rows are LSB-first: bit 0 is the leftmost pixel, the order the
+ * RP2350's PIO scans canvas1_t bytes in (fbtext copies glyph bytes straight
+ * into that buffer). 47.5's first text page read them MSB-first and drew
+ * every letter mirrored. */
+static void text(unsigned col, unsigned row, const char *s, uint8_t fg, uint8_t bg) {
+    for (; *s; s++, col++) {
+        unsigned c = (uint8_t)*s;
+        if (c < FONT8X16_FIRST || c > FONT8X16_LAST) c = FONT8X16_REPLACEMENT;
+        const uint8_t *gl = font8x16_glyphs[c - FONT8X16_FIRST];
+        for (unsigned r = 0; r < FONT8X16_H; r++)
+            for (unsigned b = 0; b < 8u; b++)
+                px(col * 8u + b, row * FONT8X16_H + r, (gl[r] & (1u << b)) ? fg : bg);
+    }
+}
+
+/* The patterns, as functions of (x, y) where that is cheap, so `lcd verify`
+ * can recompute what should be there. */
+static uint8_t pat_checker(unsigned x, unsigned y) { return (((x >> 3) ^ (y >> 3)) & 1u) ? 0xffu : 0x00u; }
+static uint8_t pat_grid(unsigned x, unsigned y) {
+    if (x == 0 || y == 0 || x == DSI_LCD_H_RES - 1u || y == DSI_LCD_V_RES - 1u) return 0xffu;
+    if ((x % 32u) == 0 || (y % 32u) == 0) return 0xffu;
+    if (x == y) return 0xffu;                                 /* a 45-degree line: 1-px steps */
+    return 0x00u;
+}
+
+typedef uint8_t (*pat_fn)(unsigned x, unsigned y);
+static pat_fn g_last_pat;
+
+static void draw(pat_fn f) {
+    for (unsigned y = 0; y < DSI_LCD_V_RES; y++)
+        for (unsigned x = 0; x < DSI_LCD_H_RES; x++) px(x, y, f(x, y));
+    g_last_pat = f;
+}
+
+static void draw_text_page(void) {
+    fill(0x00);
+    static const char *const lines[] = {
+        "LugalOS 47.5 -- frame buffer in PSRAM, DW-GDMA into the DSI bridge, EK79007 1024x600",
+        "The quick brown fox jumps over the lazy dog.  0123456789  !\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~",
+        "126 x 37 cells of 8x16 Spleen -- the RP2350-LCD-7's font, one byte per pixel here.",
+    };
+    for (unsigned i = 0; i < sizeof lines / sizeof lines[0]; i++) text(1, 1 + i, lines[i], 0xffu, 0x00u);
+    for (unsigned r = 5; r < DSI_LCD_V_RES / FONT8X16_H; r++) {
+        char ln[DSI_LCD_H_RES / 8u + 1u];
+        for (unsigned c = 0; c < DSI_LCD_H_RES / 8u; c++) ln[c] = (char)(0x21u + (r * 7u + c) % 94u);
+        ln[DSI_LCD_H_RES / 8u] = '\0';
+        text(0, r, ln, (r & 1u) ? 0xffu : 0xc0u, 0x00u);
+    }
+    rect(0, 4u * FONT8X16_H + 6u, DSI_LCD_H_RES, 4u, 0x80u);   /* a mid-gray rule */
+    g_last_pat = NULL;
+}
+
 /* ---- the whole bring-up --------------------------------------------------- */
 
 bool dsi_lcd_init(void) {
@@ -672,6 +969,68 @@ static void report(void) {
             FGET(DSI_HOST_MODE_CFG_REG, DSI_HOST_CMD_VIDEO_MODE) ? "command" : "video",
             (unsigned long)REG(DSI_HOST_VID_MODE_CFG_REG), (unsigned long)REG(DSI_BRG_VER_DATE_REG),
             (unsigned long)REG(DSI_BRG_INT_RAW_REG));
+    if (g_fb)
+        cprintf("     frame: %s %lu KB at 0x%08lx; %lu frames, %lu DMA errors (last 0x%lx); "
+                "bridge underrun %s\n",
+                g_fb_fmt == FB_RGB565 ? "RGB565" : "GRAY8", (unsigned long)(g_fb_bytes / 1024u),
+                (unsigned long)(uintptr_t)g_fb, (unsigned long)g_frames, (unsigned long)g_dma_errs,
+                (unsigned long)g_dma_last_err,
+                FGET(DSI_BRG_INT_RAW_REG, DSI_BRG_UNDERRUN_INT_RAW) ? "SEEN" : "none");
+}
+
+static void cmd_fps(void) {
+    uint32_t f0 = g_frames;
+    uint64_t t0 = time_get_us();
+    task_sleep_ms(1000);
+    uint32_t f1 = g_frames;
+    uint64_t dt = time_get_us() - t0;
+    uint32_t mhz100 = (uint32_t)((uint64_t)(f1 - f0) * 100000000ull / (dt ? dt : 1u));
+    cprintf("lcd: %lu frames in %lu ms = %lu.%02lu Hz; DMA errors %lu; bridge underrun %s\n",
+            (unsigned long)(f1 - f0), (unsigned long)(dt / 1000u), (unsigned long)(mhz100 / 100u),
+            (unsigned long)(mhz100 % 100u), (unsigned long)g_dma_errs,
+            FGET(DSI_BRG_INT_RAW_REG, DSI_BRG_UNDERRUN_INT_RAW) ? "SEEN" : "none");
+}
+
+/* CPU fill rate: a full-frame memset plus write-back, and a full redraw of
+ * the grid through px(). */
+static void cmd_bench(void) {
+    uint64_t t0 = time_get_us();
+    fill(0x00);
+    uint64_t t1 = time_get_us();
+    dsi_lcd_fb_flush(0, DSI_LCD_V_RES);
+    uint64_t t2 = time_get_us();
+    draw(pat_grid);
+    dsi_lcd_fb_flush(0, DSI_LCD_V_RES);
+    uint64_t t3 = time_get_us();
+    uint32_t kb = g_fb_bytes / 1024u;
+    cprintf("lcd: fill %lu KB %lu us (%lu MB/s), write-back %lu us, per-pixel grid redraw + write-back %lu us\n",
+            (unsigned long)kb, (unsigned long)(t1 - t0),
+            (unsigned long)((uint64_t)g_fb_bytes / ((t1 - t0) ? (t1 - t0) : 1u)),
+            (unsigned long)(t2 - t1), (unsigned long)(t3 - t2));
+}
+
+/* "Screenshot-style readback": write back, drop every cached copy, read the
+ * frame from the chip and compare with what the pattern says should be
+ * there. */
+static void cmd_verify(void) {
+    if (!g_last_pat) { cprintf("lcd verify: draw `lcd test checker` or `grid` first\n"); return; }
+    dsi_lcd_fb_flush(0, DSI_LCD_V_RES);
+    esp32p4_extmem_invalidate((uintptr_t)g_fb, g_fb_bytes);
+    uint32_t bad = 0;
+    for (unsigned y = 0; y < DSI_LCD_V_RES; y++)
+        for (unsigned x = 0; x < DSI_LCD_H_RES; x++) {
+            uint8_t g = g_last_pat(x, y);
+            bool ok;
+            if (g_fb_fmt == FB_RGB565) {
+                uint16_t v = (uint16_t)(((g >> 3) << 11) | ((g >> 2) << 5) | (g >> 3));
+                ok = ((uint16_t *)g_fb)[y * DSI_LCD_H_RES + x] == v;
+            } else {
+                ok = g_fb[y * DSI_LCD_H_RES + x] == g;
+            }
+            if (!ok && bad++ < 4) cprintf("  (%u,%u) differs\n", x, y);
+        }
+    cprintf("lcd verify: %s, %lu of %u pixels differ\n", bad ? "FAIL" : "PASS", (unsigned long)bad,
+            DSI_LCD_H_RES * DSI_LCD_V_RES);
 }
 
 void dsi_lcd_command(const char *args) {
@@ -699,7 +1058,63 @@ void dsi_lcd_command(const char *args) {
         cprintf("lcd: backlight %s\n", g_bl_on ? "on" : "off");
         return;
     }
+    if (strncmp(args, "fb", 2) == 0) {
+        const char *p = skip_ws(args + 2);
+        fb_fmt_t f = FB_GRAY8;
+        if (strcmp(p, "rgb565") == 0) f = FB_RGB565;
+        else if (*p && strcmp(p, "gray") != 0) { cprintf("usage: lcd fb [gray|rgb565]\n"); return; }
+        if (!fb_start(f)) { cprintf("lcd: frame buffer not started\n"); return; }
+        draw(pat_grid);
+        dsi_lcd_fb_flush(0, DSI_LCD_V_RES);
+        cprintf("lcd: frame buffer %s, %lu KB at 0x%08lx, scanning out (grid drawn)\n",
+                f == FB_RGB565 ? "RGB565" : "GRAY8", (unsigned long)(g_fb_bytes / 1024u),
+                (unsigned long)(uintptr_t)g_fb);
+        return;
+    }
     if (!g_up) { cprintf("lcd: not up -- %s\n", g_reason); return; }
+    if (strcmp(args, "fps") == 0 || strncmp(args, "test", 4) == 0 || strcmp(args, "bench") == 0 ||
+        strcmp(args, "verify") == 0 || strncmp(args, "wbtest", 6) == 0) {
+        if (!g_fb) { cprintf("lcd: no frame buffer -- `lcd fb [gray|rgb565]` first\n"); return; }
+    }
+    if (strcmp(args, "fps") == 0) { cmd_fps(); return; }
+    if (strcmp(args, "bench") == 0) { cmd_bench(); return; }
+    if (strcmp(args, "verify") == 0) { cmd_verify(); return; }
+    if (strncmp(args, "test", 4) == 0) {
+        const char *p = skip_ws(args + 4);
+        if (strcmp(p, "checker") == 0) draw(pat_checker);
+        else if (strcmp(p, "grid") == 0) draw(pat_grid);
+        else if (strcmp(p, "text") == 0) draw_text_page();
+        else if (strcmp(p, "white") == 0) { fill(0xff); g_last_pat = NULL; }
+        else if (strcmp(p, "black") == 0) { fill(0x00); g_last_pat = NULL; }
+        else if (strcmp(p, "ramp") == 0) {
+            for (unsigned y = 0; y < DSI_LCD_V_RES; y++)
+                for (unsigned x = 0; x < DSI_LCD_H_RES; x++) px(x, y, (uint8_t)(x * 256u / DSI_LCD_H_RES));
+            g_last_pat = NULL;
+        } else { cprintf("usage: lcd test checker|grid|text|ramp|white|black\n"); return; }
+        dsi_lcd_fb_flush(0, DSI_LCD_V_RES);
+        cprintf("lcd: drawn and written back\n");
+        return;
+    }
+    if (strncmp(args, "wbtest", 6) == 0) {
+        /* §4's coherence test, both ways: white, written back; then a black
+         * box drawn *without* write-back -- the glass should not show it (or
+         * only the lines L1/L2 happened to evict); then the write-back, and
+         * the box appears. */
+        const char *q = skip_ws(args + 6);
+        unsigned secs = 0;
+        while (*q >= '0' && *q <= '9') secs = secs * 10u + (unsigned)(*q++ - '0');
+        if (!secs) secs = 10;
+        fill(0xff);
+        dsi_lcd_fb_flush(0, DSI_LCD_V_RES);
+        task_sleep_ms(5000);
+        rect(312, 150, 400, 300, 0x00);
+        cprintf("lcd wbtest: black 400x300 box drawn, NOT written back -- look now (%u s)\n", secs);
+        task_sleep_ms(secs * 1000u);
+        dsi_lcd_fb_flush(0, DSI_LCD_V_RES);
+        cprintf("lcd wbtest: written back -- the box is complete now\n");
+        g_last_pat = NULL;
+        return;
+    }
 
     if (strncmp(args, "cmd", 3) == 0) {
         /* `lcd cmd CC [PP..]`: one DCS write, sent in LP mode between frames. */
@@ -732,7 +1147,8 @@ void dsi_lcd_command(const char *args) {
         cprintf("%s\n", got ? "" : " (nothing)");
         return;
     }
-    cprintf("usage: lcd [pattern bars|hbars|ber|off | bl on|off | cmd CC [PP..] | id | rd CC [N]]\n");
+    cprintf("usage: lcd [pattern bars|hbars|ber|off | fb [gray|rgb565] | test checker|grid|text|ramp|white|black |\n"
+            "            fps | bench | verify | wbtest [s] | bl on|off | cmd CC [PP..] | id | rd CC [N]]\n");
 }
 
 #endif

@@ -14,6 +14,10 @@ def load(ver):
         t = re.sub(r"//[^\n]*", "", t)
         for m in re.finditer(r"^#define\s+(\w+)\s+(.+?)\s*$", t, re.M):
             d.setdefault(m.group(1), m.group(2))
+    # dw_gdma_reg.h is written against DR_REG_DMAC_BASE, which no IDF header
+    # defines; IDF reaches the block through the linker symbol DW_GDMA =
+    # 0x50081000 (ld/esp32p4.peripherals.ld), i.e. DR_REG_GDMA_BASE.
+    d.setdefault("DR_REG_DMAC_BASE", "DR_REG_GDMA_BASE")
     return d
 def ev(d, name, depth=0):
     e = d[name]

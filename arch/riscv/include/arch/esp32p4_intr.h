@@ -49,6 +49,10 @@
  * (89 GMII_PHY, 90 LPI, 91 PMT, 92 ETH_MAC); only ETH_MAC carries frame and
  * DMA events, so only it is routed, and one line is enough. */
 #define ESP32P4_CLIC_IRQ_EMAC   17u
+/* 47.5, plan/phase47_esp32p4_lcd7b_ribbon.md: the DW-GDMA (matrix source 24,
+ * ETS_DW_GDMA_INTR_SOURCE), whose transfer-done event re-arms the DSI frame
+ * every 16.6 ms -- IDF's mipi_dsi_dma_trans_done_cb(). */
+#define ESP32P4_CLIC_IRQ_GDMA   18u
 
 /* Routes peripheral interrupt source `src` (an interrupt-matrix source
  * number from TRM Table 13.4-1) to CLIC interrupt `clic_id` on the calling

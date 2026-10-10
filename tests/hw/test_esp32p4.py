@@ -1042,6 +1042,31 @@ def test_dsi_pattern(b: Board) -> tuple[str, bool, str]:
     return name, True, f"PLL locked (PHY status 0x{st.group(1)}), 0 init errors, VPG on"
 
 
+def test_dsi_framebuffer(b: Board) -> tuple[str, bool, str]:
+    """47.5: a GRAY8 frame in PSRAM scanned out by the DW-GDMA at ~60 Hz,
+    re-armed every frame by its interrupt, with no DMA error and no bridge
+    underrun, and a drawn pattern reading back exactly from the chip."""
+    name = "DSI frame buffer from PSRAM, 60 Hz, readback exact (47.5)"
+    out = b.console_session.cmd("lcd fb gray", deadline=15.0)
+    if "Unknown" in out or "Unbound" in out or "not found" in out.lower():
+        return name, True, "SKIPPED (no display on this board)"
+    if "scanning out" not in out:
+        return name, False, f"frame buffer: {out.strip()[-200:]}"
+    out = b.console_session.cmd("lcd fps", deadline=10.0)
+    m = re.search(r"(\d+) frames in (\d+) ms = ([\d.]+) Hz; DMA errors (\d+); bridge underrun (\w+)", out)
+    if not m:
+        return name, False, f"no fps line: {out.strip()[-200:]}"
+    hz, errs, under = float(m.group(3)), int(m.group(4)), m.group(5)
+    if not 58.0 <= hz <= 62.5 or errs or under != "none":
+        return name, False, f"{hz} Hz, {errs} DMA errors, underrun {under}"
+    b.console_session.cmd("lcd test checker", deadline=10.0)
+    out = b.console_session.cmd("lcd verify", deadline=20.0)
+    if "verify: PASS" not in out:
+        return name, False, f"readback: {out.strip()[-200:]}"
+    b.console_session.cmd("lcd test grid", deadline=10.0)
+    return name, True, f"GRAY8, {hz} Hz, 0 DMA errors, no underrun, checker reads back exactly"
+
+
 TESTS = [
     test_boots,
     test_proc_readable,
@@ -1071,6 +1096,7 @@ TESTS = [
     test_psram_up,
     test_psram_pattern,
     test_dsi_pattern,
+    test_dsi_framebuffer,
 ]
 
 

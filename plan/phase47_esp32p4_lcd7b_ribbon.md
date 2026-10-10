@@ -41,7 +41,7 @@ new board supplies the scan-out, the keyboard transport and the memory.
 |---|---|---|
 | D1 | One preset for both P4 boards, or a new one? | **Confirmed.** A new preset `esp32p4-lcd7b` with its own board file `cmake/board-esp32p4-lcd7b.cmake`. Same `LUGALOS_TARGET`, linker script and driver sources as `esp32p4`. The silicon revision is a board-file fact (`CONFIG_ESP32P4_REV`), chosen at build time, not probed at run time (§3). The NANO (v1.3) must keep building and passing `tests/hw/test_esp32p4.py` at every milestone. |
 | D2 | Monochrome or colour? | **Confirmed: monochrome, pixel-identical to the RP2350-LCD-7** for this phase. Colour is evaluated later (e.g. for games) and is out of scope here. The 1-bpp `canvas1_t` model, the zebra title bars and the grey dither all stay. The scan-out format (D3) is picked so that colour can come later without redoing 47.4–47.7. |
-| D3 | Scan-out format | **To be measured in 47.5, with GRAY8 as the leading candidate.** The DSI bridge takes `raw_type` 12 = gray (`mipi_dsi_bridge_reg.h`, hw_ver3), so a 1024 × 600 frame is 600 KB and 37 MB/s at 60 Hz. RGB565 doubles both and is the fallback if GRAY8 misbehaves on this panel. Either way the frame lives in PSRAM: 1-bpp has no DPI format, and even GRAY8 does not fit in the ~370 KB heap. |
+| D3 | Scan-out format | **Decided in 47.5: GRAY8** (§6.6). The DSI bridge takes `raw_type` 12 = gray and expands it to R = G = B. A 1024 × 600 frame is 600 KB of PSRAM and 37 MB/s of scan-out at 60 Hz, about a third of the measured PSRAM read bandwidth. RGB565 runs too (1.2 MB, 74 MB/s, also tested clean); it's a runtime switch for colour later. |
 | D4 | Keyboard | **Confirmed, priority 1: a USB boot keyboard on the Type-A port** (USB 2.0 OTG HS, DWC2 core). A keyboard is already plugged in. It gets a bare-metal host-controller driver built from permissively licensed sources (§5.1). Above the controller it reuses phase 36's portable `usbkbd.c` (enumeration, hub, boot report, keymap). Touch (GT911) is priority 2 or later (47.12). |
 | D5 | Console | **Confirmed: UART0 through the on-board CH343P** ("USB TO UART" Type-C), 115200 baud, like the NANO's UART0. The board's other Type-C (P4 USB-Serial/JTAG, "USB1.1 FS direct") is kept free for the 9P link (47.13). |
 | D6 | The on-board ESP32-C6 | **Left alone.** It runs its factory ESP-Hosted slave and LugalOS does not touch `C6_CHIP_PU` or the SDIO pins in this phase. The C6 belongs to step 2 (§9). |
@@ -223,7 +223,7 @@ LEDC later). New file: `drivers/dsi_esp32p4.c`.
 references are diffed against `esp_lcd_mipi_dsi_bus.c` /
 `esp_lcd_panel_dpi.c` register writes (hw_ver3) where they disagree.
 
-**47.5 — Framebuffer scan-out from PSRAM.**
+**47.5 — Framebuffer scan-out from PSRAM. [DONE 2026-10-10, §6.6; D3: GRAY8]**
 DW-GDMA linked-list reading a PSRAM frame into the bridge. Try GRAY8 first,
 then RGB565 (D3). Show a checkerboard, a 1-px grid and a text page drawn
 directly into the frame, and test the cache write-back (§4) both ways. Measure
@@ -733,6 +733,63 @@ ROM jump table).
   included) and never printed. It now uses the cause code.
 * Differences from IDF that remain and are deliberate: no preload strategy
   (`undef_op`), and no cache/PSRAM fail interrupts enabled.
+
+## 6.6 What 47.5 found: a PSRAM frame on the glass at 60 Hz (2026-10-10)
+
+`drivers/dsi_esp32p4.c` gained IDF's DPI scan-out with one frame buffer:
+* **The frame:** 600 KB GRAY8 (or 1.2 MB RGB565) from the PSRAM bulk zone.
+* **The transfer:** a single DW-GDMA link-list item carries the whole frame
+  from memory (master port 1, increment, 64-bit, burst 512) to the bridge
+  window `MIPI_DSI_BRG_MEM_BASE` (master port 0, fixed, burst 256), with the
+  bridge's hardware handshake and the DMA as flow controller.
+* **Per frame:** the item is marked last, and the transfer-done interrupt
+  (matrix source 24 → CLIC 18, `ESP32P4_CLIC_IRQ_GDMA`) re-arms it each
+  frame, as IDF's `mipi_dsi_dma_trans_done_cb()` does.
+* **The item:** it lives in L2MEM and is written only through the non-cached
+  alias (+0x40000000). Its `.bss` line is written back and invalidated once
+  first, as IDF's `esp_cache_msync(C2M | INVALIDATE)` does.
+* **Registers:** GDMA constants come from the generated header (identical in
+  hw_ver1/3). IDF's `dw_gdma_reg.h` uses `DR_REG_DMAC_BASE`, which no IDF
+  header defines; the generator aliases it to `DR_REG_GDMA_BASE` (IDF itself
+  uses the linker symbol `DW_GDMA = 0x50081000`).
+
+| measured on the 7B | GRAY8 | RGB565 |
+|---|---|---|
+| frame rate (frame-done interrupts / s) | 60.0–61.0 Hz | 61.0 Hz |
+| DMA errors, bridge underruns | 0, none | 0, none |
+| `lcd verify` (write back, invalidate, read the chip, compare 614,400 px) | PASS | PASS |
+| full-frame memset | 7.2 ms (85 MB/s) | — (per-pixel loop) |
+| write-back of the whole frame | 0.44 ms | 0.50 ms |
+
+Seen on the glass by the owner:
+* **Grid:** the 1-px grid is sharp, and its border lines at x 0/1023 and
+  y 0/599 sit at the very edge. This panel has no bezel column (the RP2350
+  panel had one).
+* **Text page:** crisp, with white and light-gray rows and a mid-gray rule.
+* **Gray ramp:** black to white, left to right.
+* **Coherence test** (`lcd wbtest`): a black box drawn without write-back
+  showed only scattered lines, the ones the caches happened to evict, and
+  came out complete after the write-back. §4's rule holds both ways.
+
+**Found on the way:**
+* **Font bit order.** `font8x16` glyph rows are **LSB-first**: bit 0 is
+  the leftmost pixel, the order the RP2350's PIO scans `canvas1_t` bytes in.
+  The first text page read them MSB-first and mirrored every letter. 47.7's
+  1-bpp → GRAY8 conversion must use the same order.
+* **Restart must happen at a frame boundary.** Switching format live
+  (GRAY8 → RGB565) by stopping the DMA mid-frame left the rest of the old
+  stream in the bridge FIFO, and every later frame came out shifted. The
+  owner saw the rightmost 2–3 pixels wrapped to the left edge. The bridge
+  knows no frame start other than "the next byte". RGB565 straight after
+  boot was clean, which ruled out the format itself. Now `fb_start()` lets
+  the ISR finish the running frame without re-arming, waits for the bridge
+  FIFO (`RAW_BUF_DEPTH`) to drain, and only then stops the DPI stream. Five
+  live switches in a row stayed clean.
+* **The panel stays dark between bring-up and `lcd fb`.** The kernel brings
+  the panel up on first use; 47.7 moves the frame start to boot.
+
+API for 47.7: `dsi_lcd_fb()` (the frame, stride 1024 px) and
+`dsi_lcd_fb_flush(y0, y1)` (write back rows).
 
 ## 7. Risks
 

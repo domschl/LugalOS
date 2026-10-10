@@ -1,4 +1,5 @@
-/* ESP32-P4 register addresses and fields used by drivers/dsi_esp32p4.c.
+/* ESP32-P4 register addresses and fields used by drivers/dsi_esp32p4.c (DSI host,
+ * DSI bridge, DW-GDMA).
  * 47.4, plan/phase47_esp32p4_lcd7b_ribbon.md.
  *
  * GENERATED -- do not edit by hand. Regenerate with
@@ -12,14 +13,16 @@
  * the DSI clock control changed in v3, and this driver only runs on the
  * LCD-7B's v3.2 (CONFIG_ESP32P4_REV >= 300). Names are IDF's. */
 #ifndef LUGALOS_DRIVERS_ESP32P4_DSI_REGS_H
-#define LUGALOS_DRIVERS_ESP32P4_DSI_REGS_H
-
 #define HP_SYS_CLKRST_SOC_CLK_CTRL1_REG              0x500e6018u
 #define HP_SYS_CLKRST_REG_DSI_SYS_CLK_EN_S           12u
 #define HP_SYS_CLKRST_REG_DSI_SYS_CLK_EN_V           0x1u
+#define HP_SYS_CLKRST_REG_GDMA_SYS_CLK_EN_S          5u
+#define HP_SYS_CLKRST_REG_GDMA_SYS_CLK_EN_V          0x1u
 #define HP_SYS_CLKRST_HP_RST_EN0_REG                 0x500e60c0u
 #define HP_SYS_CLKRST_REG_RST_EN_DSI_BRG_S           26u
 #define HP_SYS_CLKRST_REG_RST_EN_DSI_BRG_V           0x1u
+#define HP_SYS_CLKRST_REG_RST_EN_GDMA_S              21u
+#define HP_SYS_CLKRST_REG_RST_EN_GDMA_V              0x1u
 #define HP_SYS_CLKRST_REF_CLK_CTRL1_REG              0x500e6028u
 #define HP_SYS_CLKRST_REG_REF_240M_CLK_EN_S          30u
 #define HP_SYS_CLKRST_REG_REF_240M_CLK_EN_V          0x1u
@@ -346,6 +349,10 @@
 #define DSI_BRG_HOST_CTRL_REG                        0x500a0880u
 #define DSI_BRG_DSI_CFG_REF_CLK_EN_S                 0u
 #define DSI_BRG_DSI_CFG_REF_CLK_EN_V                 0x1u
+/* v3 only: DSI_BRG_FIFO_FLOW_STATUS_REG's fields as hw_ver3 has them */
+#define DSI_BRG_FIFO_FLOW_STATUS_REG                 0x500a0814u
+#define DSI_BRG_RAW_BUF_DEPTH_S                      0u
+#define DSI_BRG_RAW_BUF_DEPTH_V                      0x3fffu
 /* v3 only: DSI_BRG_DMA_FLOW_CTRL_REG's fields as hw_ver3 has them */
 #define DSI_BRG_DMA_FLOW_CTRL_REG                    0x500a0888u
 #define DSI_BRG_DSI_DMA_FLOW_CONTROLLER_S            0u
@@ -358,5 +365,52 @@
 #define DSI_BRG_DSI_RAW_BUF_ALMOST_EMPTY_THRD_V      0x7ffu
 /* v3 only: DSI_BRG_VER_DATE_REG's fields as hw_ver3 has them */
 #define DSI_BRG_VER_DATE_REG                         0x500a0900u
+#define HP_SYS_CLKRST_SOC_CLK_CTRL0_REG              0x500e6014u
+#define HP_SYS_CLKRST_REG_GDMA_CPU_CLK_EN_S          13u
+#define HP_SYS_CLKRST_REG_GDMA_CPU_CLK_EN_V          0x1u
+#define DMAC_ID0_REG                                 0x50081000u
+#define DMAC_CFG0_REG                                0x50081010u
+#define DMAC_DMAC_EN_S                               0u
+#define DMAC_DMAC_EN_V                               0x1u
+#define DMAC_INT_EN_S                                1u
+#define DMAC_INT_EN_V                                0x1u
+#define DMAC_CHEN0_REG                               0x50081018u
+#define DMAC_INTSTATUS0_REG                          0x50081030u
+#define DMAC_RESET0_REG                              0x50081058u
+#define DMAC_DMAC_RST_S                              0u
+#define DMAC_DMAC_RST_V                              0x1u
+#define DMAC_CH1_CTL0_REG                            0x50081118u
+#define DMAC_CH1_CTL1_REG                            0x5008111cu
+#define DMAC_CH1_CFG0_REG                            0x50081120u
+#define DMAC_CH1_SRC_MULTBLK_TYPE_S                  0u
+#define DMAC_CH1_SRC_MULTBLK_TYPE_V                  0x3u
+#define DMAC_CH1_DST_MULTBLK_TYPE_S                  2u
+#define DMAC_CH1_DST_MULTBLK_TYPE_V                  0x3u
+#define DMAC_CH1_CFG1_REG                            0x50081124u
+#define DMAC_CH1_TT_FC_S                             0u
+#define DMAC_CH1_TT_FC_V                             0x7u
+#define DMAC_CH1_HS_SEL_SRC_S                        3u
+#define DMAC_CH1_HS_SEL_SRC_V                        0x1u
+#define DMAC_CH1_HS_SEL_DST_S                        4u
+#define DMAC_CH1_HS_SEL_DST_V                        0x1u
+#define DMAC_CH1_DST_PER_S                           12u
+#define DMAC_CH1_DST_PER_V                           0x3u
+#define DMAC_CH1_CH_PRIOR_S                          17u
+#define DMAC_CH1_CH_PRIOR_V                          0x7u
+#define DMAC_CH1_SRC_OSR_LMT_S                       23u
+#define DMAC_CH1_SRC_OSR_LMT_V                       0xfu
+#define DMAC_CH1_DST_OSR_LMT_S                       27u
+#define DMAC_CH1_DST_OSR_LMT_V                       0xfu
+#define DMAC_CH1_LLP0_REG                            0x50081128u
+#define DMAC_CH1_LMS_S                               0u
+#define DMAC_CH1_LMS_V                               0x1u
+#define DMAC_CH1_LOC0_S                              6u
+#define DMAC_CH1_LOC0_V                              0x3ffffffu
+#define DMAC_CH1_LLP1_REG                            0x5008112cu
+#define DMAC_CH1_STATUS0_REG                         0x50081130u
+#define DMAC_CH1_INTSTATUS_ENABLE0_REG               0x50081180u
+#define DMAC_CH1_INTSIGNAL_ENABLE0_REG               0x50081190u
+#define DMAC_CH1_INTSTATUS0_REG                      0x50081188u
+#define DMAC_CH1_INTCLEAR0_REG                       0x50081198u
 
 #endif

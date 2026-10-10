@@ -163,6 +163,12 @@ for both roles by itself.
   boot. `lcd` reports the link, `lcd bl on|off` the backlight (GPIO32,
   active low), `lcd cmd CC [PP..]` sends a DCS write. DCS reads return 0
   (open, plan §6.4).
+  Frame buffer (47.5): `lcd fb [gray|rgb565]` starts a 1024×600 frame in
+  PSRAM (GRAY8 = 600 KB, the chosen format), scanned out by the DW-GDMA at
+  60 Hz and re-armed by its interrupt (CLIC 18). `lcd test
+  checker|grid|text|ramp`, `lcd verify` (exact readback), `lcd fps`,
+  `lcd bench`, `lcd wbtest` (cache coherence, needs eyes). Drawing must end
+  with `dsi_lcd_fb_flush()`. Font glyph rows are LSB-first (bit 0 = left).
 * Flash runs at IDF's 80 MHz QIO (stage 2, `xip_esp32p4.c`). Never call the
   ROM's `spi_flash_attach()` from the running kernel: it drops XIP to
   10 MHz single-line, and cache misses then hit the CPU's DBUS timeout
@@ -170,7 +176,7 @@ for both roles by itself.
   `[Trap Cache]` line names the reason ("core timeout raw" bit 4 = DBUS
   timeout).
 * Test: `cd tests/hw && uv run test_esp32p4.py --board lcd7b --build ../../build/esp32p4-lcd7b`
-  (28/28; EMAC tests skip; a BME280 sits on the PH2.0 I2C header at 0x76). NANO: `uv run test_esp32p4.py --board nano`.
+  (29/29; EMAC tests skip; a BME280 sits on the PH2.0 I2C header at 0x76). NANO: `uv run test_esp32p4.py --board nano`.
 
 ---
 
