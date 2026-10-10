@@ -1,0 +1,136 @@
+# Maintainer: dsc <dsc@localhost>
+# Bare-metal ("elf") RISC-V cross toolchain built the Arch way:
+#   binutils -> GCC (pass 1) -> newlib -> GCC (libgcc/libstdc++)
+# Everything installs under /usr with triplet riscv64-unknown-elf-*
+# (plus riscv64-elf-* convenience symlinks), managed by pacman.
+
+_binutils=2.47
+_gcc=16.2.0
+_newlib=4.6.0.20260123
+_tgt=riscv64-unknown-elf
+
+pkgname=riscv64-elf-toolchain
+pkgver=${_binutils}.${_gcc}.${_newlib}
+pkgrel=1
+pkgdesc="Bare-metal RISC-V cross toolchain (${_tgt}): GCC, binutils and newlib"
+arch=(aarch64 x86_64)
+url="https://sourceware.org/newlib/"
+license=(GPL2 GPL3 LGPL2.1 LGPL3 FSFAP custom)
+depends=(gmp mpfr libmpc libisl zlib zstd)
+makedepends=(gcc make patch texinfo)
+# staticlibs: keep the target .a files (libc.a, libm.a, ...); otherwise
+# makepkg's default !staticlibs would delete them.
+options=(staticlibs)
+source=(
+  https://ftp.gnu.org/gnu/binutils/binutils-${_binutils}.tar.xz
+  https://ftp.gnu.org/gnu/gcc/gcc-${_gcc}/gcc-${_gcc}.tar.xz
+  https://sourceware.org/pub/newlib/newlib-${_newlib}.tar.gz
+)
+b2sums=('329cae8792c500c71d8cce03aab127e8d77f1d409f74872082e64df5163e5c730fe585f8f9c21905cb6227cae18e6675ae4caed653223a26b5d9d4fdb90910ea'
+        'ab3ffe16e042da767f3f1eac170da518d6d7de3b0f92e068f79e3bf25fdc0bdf56eea0cd586bd4b9b6e9baebadd110c2ebd77b75c99c45853814f4bea5a98ef0'
+        '025c002701c8b2bdf19a84ba32dcd193216b7e0376915b172bb60047646c675228c9abb058d45518c09ccf9f948c1e84aacabe02053587e45902a995d2c6fb6d')
+
+# No test suite is run; upstream tests need a simulator or target hardware.
+check() { :; }
+
+build() {
+  # Fake install root used during the build. All components are configured
+  # with --prefix=$_prefix so the build-tree GCC finds newlib while building
+  # libgcc/libstdc++. Installed cross toolchains are relocatable, so the
+  # final package works from /usr regardless.
+  local _root="$srcdir/.cross"
+  local _prefix="$_root/usr"
+  export PATH="$_prefix/bin:$PATH"
+  local conf=(
+    --target=$_tgt
+    --prefix="$_prefix"
+    --disable-nls
+    --with-system-zlib
+    --with-pkgversion="Arch Linux riscv64-elf-toolchain $pkgver-$pkgrel"
+    --with-bugurl="https://github.com/riscv-collab/riscv-gnu-toolchain/issues"
+  )
+
+  # ------------------------------------------------------------------ binutils
+  msg2 "binutils ${_binutils}"
+  mkdir -p "$srcdir/build-binutils"
+  pushd "$srcdir/build-binutils" > /dev/null
+  ../binutils-${_binutils}/configure \
+    "${conf[@]}" \
+    --enable-64-bit-bfd \
+    --enable-plugins \
+    --enable-lto \
+    --disable-werror
+  make
+  make install
+  popd > /dev/null
+
+  # ------------------------------------------------------------------ GCC 1/2
+  msg2 "GCC ${_gcc} (cross compiler, pass 1)"
+  mkdir -p "$srcdir/build-gcc"
+  pushd "$srcdir/build-gcc" > /dev/null
+  # Arch's hardened host flags (-Werror=format-security) break building
+  # GCC's own libcpp with recent host compilers; downgrade to a warning.
+  local CFLAGS="${CFLAGS/-Werror=format-security/}"
+  local CXXFLAGS="${CXXFLAGS/-Werror=format-security/}"
+  ../gcc-${_gcc}/configure \
+    "${conf[@]}" \
+    --enable-languages=c,c++ \
+    --with-newlib \
+    --without-headers \
+    --enable-__cxa_atexit \
+    --disable-shared \
+    --disable-libssp \
+    --disable-libgomp \
+    --disable-libitm \
+    --disable-libstdcxx-pch \
+    --disable-dependency-tracking \
+    --disable-werror
+  make all-gcc
+  make install-gcc
+  popd > /dev/null
+
+  # ------------------------------------------------------------------ newlib
+  msg2 "newlib ${_newlib}"
+  mkdir -p "$srcdir/build-newlib"
+  pushd "$srcdir/build-newlib" > /dev/null
+  ../newlib-${_newlib}/configure \
+    --target=$_tgt \
+    --prefix="$_prefix" \
+    --disable-nls \
+    --enable-newlib-io-long-long \
+    --with-newlib
+  make
+  make install
+  popd > /dev/null
+
+  # ------------------------------------------------------------- GCC 2/2
+  msg2 "GCC ${_gcc} (libgcc / libstdc++, pass 2)"
+  pushd "$srcdir/build-gcc" > /dev/null
+  # full "make" (not just all-target-*): install also needs c++tools etc.
+  make
+  make install
+  popd > /dev/null
+}
+
+package() {
+  local _root="$srcdir/.cross"
+  cp -a "$_root"/. "$pkgdir"/
+
+  # Prune host-side components that would conflict with the native
+  # binutils/gcc packages (generic info pages, man7 licenses, libcc1,
+  # the host binutils libdep plugin, python helpers).
+  rm -rf "$pkgdir/usr/share/info"
+  rm -rf "$pkgdir/usr/share/gcc-${_gcc}"
+  rm -rf "$pkgdir/usr/share/man/man7"
+  rm -f  "$pkgdir"/usr/lib/libcc1.so*
+  rm -rf "$pkgdir/usr/lib/bfd-plugins"
+
+  # convenience aliases: riscv64-elf-gcc -> riscv64-unknown-elf-gcc
+  local short=${_tgt/-unknown-/-}
+  local f name
+  for f in "$pkgdir"/usr/bin/${_tgt}-*; do
+    [[ -e $f || -L $f ]] || continue
+    name=${f##*/}
+    ln -s "$name" "$pkgdir/usr/bin/${short}-${name#"${_tgt}-"}"
+  done
+}

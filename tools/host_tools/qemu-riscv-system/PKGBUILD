@@ -1,0 +1,68 @@
+# Maintainer: dsc <dsc@localhost>
+# Minimal QEMU: system emulation for riscv32/riscv64 only (the "virt"
+# machine is what LugalOS tests drive). Built from upstream because the
+# ALARM qemu-system-riscv packages currently have dependency problems.
+# Headless: no GTK/SDL/VNC; keeps slirp user networking and socket netdev.
+
+_realname=qemu
+pkgbase=qemu-riscv-system
+pkgname=qemu-riscv-system
+pkgver=11.1.1
+pkgrel=1
+pkgdesc="QEMU system emulation for RISC-V (riscv32/riscv64 virt machine), headless"
+arch=(aarch64 x86_64)
+url="https://www.qemu.org"
+license=(GPL2 LGPL2.1)
+depends=(glib2 pixman zlib zstd libcap-ng libslirp)
+makedepends=(meson ninja python gcc pkgconf glib2 pixman)
+optdepends=('qemu-firmware: option ROMs and EFI firmware blobs')
+provides=('qemu-system-riscv')
+conflicts=('qemu-system-riscv')
+options=(!debug)
+source=(https://download.qemu.org/qemu-${pkgver}.tar.xz)
+b2sums=('86f3094c0e43af8ccb822c79cb17bd1c15450c261164a7b0e106cec8fe057f5d7159a0bc163d63d013f27963bd698d05c34465fb7a2b906f48b8c49d01d9bc44')
+
+build() {
+  cd "$srcdir/$_realname-$pkgver"
+  # QEMU manages _FORTIFY_SOURCE itself; Arch's setting trips warnings.
+  CFLAGS="${CFLAGS/-Wp,-D_FORTIFY_SOURCE=3/}"
+  CPPFLAGS="${CPPFLAGS/-D_FORTIFY_SOURCE=3/}"
+  ./configure \
+    --prefix=/usr \
+    --target-list=riscv32-softmmu,riscv64-softmmu \
+    --python=python3 \
+    --disable-werror \
+    --disable-docs \
+    --disable-guest-agent \
+    --disable-tools \
+    --disable-vnc \
+    --disable-sdl \
+    --disable-gtk \
+    --disable-curses \
+    --disable-opengl \
+    --disable-virglrenderer \
+    --disable-alsa --disable-pa \
+    --disable-tpm \
+    --enable-slirp \
+    --enable-pie
+  make
+}
+
+package() {
+  cd "$srcdir/$_realname-$pkgver"
+  make DESTDIR="$pkgdir" install
+  # Only the RISC-V system emulators belong to this package; drop shared
+  # bits we do not use to keep it small and conflict-free.
+  rm -rf "$pkgdir/usr/share/applications" \
+         "$pkgdir/usr/share/icons" \
+         "$pkgdir/usr/share/systemtap" \
+         "$pkgdir/etc"
+  rm -f "$pkgdir"/usr/bin/qemu-img \
+        "$pkgdir"/usr/bin/qemu-io \
+        "$pkgdir"/usr/bin/qemu-nbd \
+        "$pkgdir"/usr/bin/qemu-pr-helper \
+        "$pkgdir"/usr/bin/qemu-storage-daemon
+  rm -f "$pkgdir"/usr/share/man/man1/qemu-storage-daemon.1.gz \
+        "$pkgdir"/usr/share/man/man7/qemu-*.7.gz \
+        "$pkgdir"/usr/share/man/man8/*
+}
