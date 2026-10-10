@@ -1,0 +1,362 @@
+/* ESP32-P4 register addresses and fields used by drivers/dsi_esp32p4.c.
+ * 47.4, plan/phase47_esp32p4_lcd7b_ribbon.md.
+ *
+ * GENERATED -- do not edit by hand. Regenerate with
+ *
+ *     python3 tools/gen/p4_regs.py < tools/gen/p4_dsi_regs.txt
+ *
+ * which evaluates ESP-IDF's own macros (components/soc/esp32p4/register/
+ * hw_ver1 and hw_ver3, bases included) and fails if the two revisions
+ * disagree on any address, shift or mask listed -- except the registers
+ * marked "v3 only", which are taken from hw_ver3 alone: the DSI bridge and
+ * the DSI clock control changed in v3, and this driver only runs on the
+ * LCD-7B's v3.2 (CONFIG_ESP32P4_REV >= 300). Names are IDF's. */
+#ifndef LUGALOS_DRIVERS_ESP32P4_DSI_REGS_H
+#define LUGALOS_DRIVERS_ESP32P4_DSI_REGS_H
+
+#define HP_SYS_CLKRST_SOC_CLK_CTRL1_REG              0x500e6018u
+#define HP_SYS_CLKRST_REG_DSI_SYS_CLK_EN_S           12u
+#define HP_SYS_CLKRST_REG_DSI_SYS_CLK_EN_V           0x1u
+#define HP_SYS_CLKRST_HP_RST_EN0_REG                 0x500e60c0u
+#define HP_SYS_CLKRST_REG_RST_EN_DSI_BRG_S           26u
+#define HP_SYS_CLKRST_REG_RST_EN_DSI_BRG_V           0x1u
+#define HP_SYS_CLKRST_REF_CLK_CTRL1_REG              0x500e6028u
+#define HP_SYS_CLKRST_REG_REF_240M_CLK_EN_S          30u
+#define HP_SYS_CLKRST_REG_REF_240M_CLK_EN_V          0x1u
+#define HP_SYS_CLKRST_REG_REF_20M_CLK_DIV_NUM_S      16u
+#define HP_SYS_CLKRST_REG_REF_20M_CLK_DIV_NUM_V      0xffu
+#define HP_SYS_CLKRST_REF_CLK_CTRL2_REG              0x500e602cu
+#define HP_SYS_CLKRST_REG_REF_20M_CLK_EN_S           8u
+#define HP_SYS_CLKRST_REG_REF_20M_CLK_EN_V           0x1u
+#define HP_SYS_CLKRST_PERI_CLK_CTRL02_REG            0x500e6038u
+#define HP_SYS_CLKRST_REG_MIPI_DSI_DPHY_CLK_SRC_SEL_S 30u
+#define HP_SYS_CLKRST_REG_MIPI_DSI_DPHY_CLK_SRC_SEL_V 0x3u
+/* v3 only: HP_SYS_CLKRST_PERI_CLK_CTRL03_REG's fields as hw_ver3 has them */
+#define HP_SYS_CLKRST_PERI_CLK_CTRL03_REG            0x500e603cu
+#define HP_SYS_CLKRST_REG_MIPI_DSI_DPHY_CFG_CLK_EN_S 0u
+#define HP_SYS_CLKRST_REG_MIPI_DSI_DPHY_CFG_CLK_EN_V 0x1u
+#define HP_SYS_CLKRST_REG_MIPI_DSI_DPHY_PLL_REFCLK_EN_S 1u
+#define HP_SYS_CLKRST_REG_MIPI_DSI_DPHY_PLL_REFCLK_EN_V 0x1u
+#define HP_SYS_CLKRST_REG_MIPI_DSI_DPICLK_SRC_SEL_S  5u
+#define HP_SYS_CLKRST_REG_MIPI_DSI_DPICLK_SRC_SEL_V  0x3u
+#define HP_SYS_CLKRST_REG_MIPI_DSI_DPICLK_EN_S       7u
+#define HP_SYS_CLKRST_REG_MIPI_DSI_DPICLK_EN_V       0x1u
+#define HP_SYS_CLKRST_REG_MIPI_DSI_DPICLK_DIV_NUM_S  8u
+#define HP_SYS_CLKRST_REG_MIPI_DSI_DPICLK_DIV_NUM_V  0xffu
+#define HP_SYS_CLKRST_REG_MIPI_DSI_DPHY_PLL_REFCLK_SRC_SEL_S 16u
+#define HP_SYS_CLKRST_REG_MIPI_DSI_DPHY_PLL_REFCLK_SRC_SEL_V 0x7u
+#define HP_SYS_CLKRST_REG_MIPI_DSI_DPHY_PLL_REFCLK_DIV_NUM_S 19u
+#define HP_SYS_CLKRST_REG_MIPI_DSI_DPHY_PLL_REFCLK_DIV_NUM_V 0xffu
+#define PMU_EXT_LDO_P0_0P2A_REG                      0x501151c0u
+#define PMU_0P2A_FORCE_TIEH_SEL_0_S                  7u
+#define PMU_0P2A_FORCE_TIEH_SEL_0_V                  0x1u
+#define PMU_0P2A_XPD_0_S                             8u
+#define PMU_0P2A_XPD_0_V                             0x1u
+#define PMU_0P2A_TIEH_SEL_0_S                        9u
+#define PMU_0P2A_TIEH_SEL_0_V                        0x7u
+#define PMU_0P2A_TIEH_0_S                            14u
+#define PMU_0P2A_TIEH_0_V                            0x1u
+#define PMU_EXT_LDO_P0_0P2A_ANA_REG                  0x501151c4u
+#define PMU_ANA_0P2A_MUL_0_S                         23u
+#define PMU_ANA_0P2A_MUL_0_V                         0x7u
+#define PMU_ANA_0P2A_EN_VDET_0_S                     26u
+#define PMU_ANA_0P2A_EN_VDET_0_V                     0x1u
+#define PMU_ANA_0P2A_EN_CUR_LIM_0_S                  27u
+#define PMU_ANA_0P2A_EN_CUR_LIM_0_V                  0x1u
+#define PMU_ANA_0P2A_DREF_0_S                        28u
+#define PMU_ANA_0P2A_DREF_0_V                        0xfu
+#define DSI_HOST_VERSION_REG                         0x500a0000u
+#define DSI_HOST_PWR_UP_REG                          0x500a0004u
+#define DSI_HOST_SHUTDOWNZ_S                         0u
+#define DSI_HOST_SHUTDOWNZ_V                         0x1u
+#define DSI_HOST_CLKMGR_CFG_REG                      0x500a0008u
+#define DSI_HOST_TX_ESC_CLK_DIVISION_S               0u
+#define DSI_HOST_TX_ESC_CLK_DIVISION_V               0xffu
+#define DSI_HOST_TO_CLK_DIVISION_S                   8u
+#define DSI_HOST_TO_CLK_DIVISION_V                   0xffu
+#define DSI_HOST_DPI_VCID_REG                        0x500a000cu
+#define DSI_HOST_DPI_VCID_S                          0u
+#define DSI_HOST_DPI_VCID_V                          0x3u
+#define DSI_HOST_DPI_COLOR_CODING_REG                0x500a0010u
+#define DSI_HOST_DPI_COLOR_CODING_S                  0u
+#define DSI_HOST_DPI_COLOR_CODING_V                  0xfu
+#define DSI_HOST_DPI_CFG_POL_REG                     0x500a0014u
+#define DSI_HOST_PCKHDL_CFG_REG                      0x500a002cu
+#define DSI_HOST_EOTP_TX_EN_S                        0u
+#define DSI_HOST_EOTP_TX_EN_V                        0x1u
+#define DSI_HOST_BTA_EN_S                            2u
+#define DSI_HOST_BTA_EN_V                            0x1u
+#define DSI_HOST_ECC_RX_EN_S                         3u
+#define DSI_HOST_ECC_RX_EN_V                         0x1u
+#define DSI_HOST_CRC_RX_EN_S                         4u
+#define DSI_HOST_CRC_RX_EN_V                         0x1u
+#define DSI_HOST_EOTP_TX_LP_EN_S                     5u
+#define DSI_HOST_EOTP_TX_LP_EN_V                     0x1u
+#define DSI_HOST_GEN_VCID_REG                        0x500a0030u
+#define DSI_HOST_GEN_VCID_RX_S                       0u
+#define DSI_HOST_GEN_VCID_RX_V                       0x3u
+#define DSI_HOST_MODE_CFG_REG                        0x500a0034u
+#define DSI_HOST_CMD_VIDEO_MODE_S                    0u
+#define DSI_HOST_CMD_VIDEO_MODE_V                    0x1u
+#define DSI_HOST_VID_MODE_CFG_REG                    0x500a0038u
+#define DSI_HOST_VID_MODE_TYPE_S                     0u
+#define DSI_HOST_VID_MODE_TYPE_V                     0x3u
+#define DSI_HOST_LP_VSA_EN_S                         8u
+#define DSI_HOST_LP_VSA_EN_V                         0x1u
+#define DSI_HOST_LP_VBP_EN_S                         9u
+#define DSI_HOST_LP_VBP_EN_V                         0x1u
+#define DSI_HOST_LP_VFP_EN_S                         10u
+#define DSI_HOST_LP_VFP_EN_V                         0x1u
+#define DSI_HOST_LP_VACT_EN_S                        11u
+#define DSI_HOST_LP_VACT_EN_V                        0x1u
+#define DSI_HOST_LP_HBP_EN_S                         12u
+#define DSI_HOST_LP_HBP_EN_V                         0x1u
+#define DSI_HOST_LP_HFP_EN_S                         13u
+#define DSI_HOST_LP_HFP_EN_V                         0x1u
+#define DSI_HOST_FRAME_BTA_ACK_EN_S                  14u
+#define DSI_HOST_FRAME_BTA_ACK_EN_V                  0x1u
+#define DSI_HOST_LP_CMD_EN_S                         15u
+#define DSI_HOST_LP_CMD_EN_V                         0x1u
+#define DSI_HOST_VPG_EN_S                            16u
+#define DSI_HOST_VPG_EN_V                            0x1u
+#define DSI_HOST_VPG_MODE_S                          20u
+#define DSI_HOST_VPG_MODE_V                          0x1u
+#define DSI_HOST_VPG_ORIENTATION_S                   24u
+#define DSI_HOST_VPG_ORIENTATION_V                   0x1u
+#define DSI_HOST_VID_PKT_SIZE_REG                    0x500a003cu
+#define DSI_HOST_VID_PKT_SIZE_S                      0u
+#define DSI_HOST_VID_PKT_SIZE_V                      0x3fffu
+#define DSI_HOST_VID_NUM_CHUNKS_REG                  0x500a0040u
+#define DSI_HOST_VID_NUM_CHUNKS_S                    0u
+#define DSI_HOST_VID_NUM_CHUNKS_V                    0x1fffu
+#define DSI_HOST_VID_NULL_SIZE_REG                   0x500a0044u
+#define DSI_HOST_VID_NULL_SIZE_S                     0u
+#define DSI_HOST_VID_NULL_SIZE_V                     0x1fffu
+#define DSI_HOST_VID_HSA_TIME_REG                    0x500a0048u
+#define DSI_HOST_VID_HSA_TIME_S                      0u
+#define DSI_HOST_VID_HSA_TIME_V                      0xfffu
+#define DSI_HOST_VID_HBP_TIME_REG                    0x500a004cu
+#define DSI_HOST_VID_HBP_TIME_S                      0u
+#define DSI_HOST_VID_HBP_TIME_V                      0xfffu
+#define DSI_HOST_VID_HLINE_TIME_REG                  0x500a0050u
+#define DSI_HOST_VID_HLINE_TIME_S                    0u
+#define DSI_HOST_VID_HLINE_TIME_V                    0x7fffu
+#define DSI_HOST_VID_VSA_LINES_REG                   0x500a0054u
+#define DSI_HOST_VSA_LINES_S                         0u
+#define DSI_HOST_VSA_LINES_V                         0x3ffu
+#define DSI_HOST_VID_VBP_LINES_REG                   0x500a0058u
+#define DSI_HOST_VBP_LINES_S                         0u
+#define DSI_HOST_VBP_LINES_V                         0x3ffu
+#define DSI_HOST_VID_VFP_LINES_REG                   0x500a005cu
+#define DSI_HOST_VFP_LINES_S                         0u
+#define DSI_HOST_VFP_LINES_V                         0x3ffu
+#define DSI_HOST_VID_VACTIVE_LINES_REG               0x500a0060u
+#define DSI_HOST_V_ACTIVE_LINES_S                    0u
+#define DSI_HOST_V_ACTIVE_LINES_V                    0x3fffu
+#define DSI_HOST_CMD_MODE_CFG_REG                    0x500a0068u
+#define DSI_HOST_TEAR_FX_EN_S                        0u
+#define DSI_HOST_TEAR_FX_EN_V                        0x1u
+#define DSI_HOST_ACK_RQST_EN_S                       1u
+#define DSI_HOST_ACK_RQST_EN_V                       0x1u
+#define DSI_HOST_GEN_SW_0P_TX_S                      8u
+#define DSI_HOST_GEN_SW_0P_TX_V                      0x1u
+#define DSI_HOST_GEN_SW_1P_TX_S                      9u
+#define DSI_HOST_GEN_SW_1P_TX_V                      0x1u
+#define DSI_HOST_GEN_SW_2P_TX_S                      10u
+#define DSI_HOST_GEN_SW_2P_TX_V                      0x1u
+#define DSI_HOST_GEN_SR_0P_TX_S                      11u
+#define DSI_HOST_GEN_SR_0P_TX_V                      0x1u
+#define DSI_HOST_GEN_SR_1P_TX_S                      12u
+#define DSI_HOST_GEN_SR_1P_TX_V                      0x1u
+#define DSI_HOST_GEN_SR_2P_TX_S                      13u
+#define DSI_HOST_GEN_SR_2P_TX_V                      0x1u
+#define DSI_HOST_GEN_LW_TX_S                         14u
+#define DSI_HOST_GEN_LW_TX_V                         0x1u
+#define DSI_HOST_DCS_SW_0P_TX_S                      16u
+#define DSI_HOST_DCS_SW_0P_TX_V                      0x1u
+#define DSI_HOST_DCS_SW_1P_TX_S                      17u
+#define DSI_HOST_DCS_SW_1P_TX_V                      0x1u
+#define DSI_HOST_DCS_SR_0P_TX_S                      18u
+#define DSI_HOST_DCS_SR_0P_TX_V                      0x1u
+#define DSI_HOST_DCS_LW_TX_S                         19u
+#define DSI_HOST_DCS_LW_TX_V                         0x1u
+#define DSI_HOST_MAX_RD_PKT_SIZE_S                   24u
+#define DSI_HOST_MAX_RD_PKT_SIZE_V                   0x1u
+#define DSI_HOST_GEN_HDR_REG                         0x500a006cu
+#define DSI_HOST_GEN_PLD_DATA_REG                    0x500a0070u
+#define DSI_HOST_CMD_PKT_STATUS_REG                  0x500a0074u
+#define DSI_HOST_GEN_CMD_EMPTY_S                     0u
+#define DSI_HOST_GEN_CMD_EMPTY_V                     0x1u
+#define DSI_HOST_GEN_CMD_FULL_S                      1u
+#define DSI_HOST_GEN_CMD_FULL_V                      0x1u
+#define DSI_HOST_GEN_PLD_W_EMPTY_S                   2u
+#define DSI_HOST_GEN_PLD_W_EMPTY_V                   0x1u
+#define DSI_HOST_GEN_PLD_W_FULL_S                    3u
+#define DSI_HOST_GEN_PLD_W_FULL_V                    0x1u
+#define DSI_HOST_GEN_PLD_R_EMPTY_S                   4u
+#define DSI_HOST_GEN_PLD_R_EMPTY_V                   0x1u
+#define DSI_HOST_GEN_RD_CMD_BUSY_S                   6u
+#define DSI_HOST_GEN_RD_CMD_BUSY_V                   0x1u
+#define DSI_HOST_TO_CNT_CFG_REG                      0x500a0078u
+#define DSI_HOST_LPRX_TO_CNT_S                       0u
+#define DSI_HOST_LPRX_TO_CNT_V                       0xffffu
+#define DSI_HOST_HSTX_TO_CNT_S                       16u
+#define DSI_HOST_HSTX_TO_CNT_V                       0xffffu
+#define DSI_HOST_HS_RD_TO_CNT_REG                    0x500a007cu
+#define DSI_HOST_LP_RD_TO_CNT_REG                    0x500a0080u
+#define DSI_HOST_HS_WR_TO_CNT_REG                    0x500a0084u
+#define DSI_HOST_LP_WR_TO_CNT_REG                    0x500a0088u
+#define DSI_HOST_BTA_TO_CNT_REG                      0x500a008cu
+#define DSI_HOST_LPCLK_CTRL_REG                      0x500a0094u
+#define DSI_HOST_PHY_TXREQUESTCLKHS_S                0u
+#define DSI_HOST_PHY_TXREQUESTCLKHS_V                0x1u
+#define DSI_HOST_AUTO_CLKLANE_CTRL_S                 1u
+#define DSI_HOST_AUTO_CLKLANE_CTRL_V                 0x1u
+#define DSI_HOST_PHY_TMR_LPCLK_CFG_REG               0x500a0098u
+#define DSI_HOST_PHY_CLKLP2HS_TIME_S                 0u
+#define DSI_HOST_PHY_CLKLP2HS_TIME_V                 0x3ffu
+#define DSI_HOST_PHY_CLKHS2LP_TIME_S                 16u
+#define DSI_HOST_PHY_CLKHS2LP_TIME_V                 0x3ffu
+#define DSI_HOST_PHY_TMR_CFG_REG                     0x500a009cu
+#define DSI_HOST_PHY_LP2HS_TIME_S                    0u
+#define DSI_HOST_PHY_LP2HS_TIME_V                    0x3ffu
+#define DSI_HOST_PHY_HS2LP_TIME_S                    16u
+#define DSI_HOST_PHY_HS2LP_TIME_V                    0x3ffu
+#define DSI_HOST_PHY_RSTZ_REG                        0x500a00a0u
+#define DSI_HOST_PHY_SHUTDOWNZ_S                     0u
+#define DSI_HOST_PHY_SHUTDOWNZ_V                     0x1u
+#define DSI_HOST_PHY_RSTZ_S                          1u
+#define DSI_HOST_PHY_RSTZ_V                          0x1u
+#define DSI_HOST_PHY_ENABLECLK_S                     2u
+#define DSI_HOST_PHY_ENABLECLK_V                     0x1u
+#define DSI_HOST_PHY_FORCEPLL_S                      3u
+#define DSI_HOST_PHY_FORCEPLL_V                      0x1u
+#define DSI_HOST_PHY_IF_CFG_REG                      0x500a00a4u
+#define DSI_HOST_N_LANES_S                           0u
+#define DSI_HOST_N_LANES_V                           0x3u
+#define DSI_HOST_PHY_STOP_WAIT_TIME_S                8u
+#define DSI_HOST_PHY_STOP_WAIT_TIME_V                0xffu
+#define DSI_HOST_PHY_STATUS_REG                      0x500a00b0u
+#define DSI_HOST_PHY_LOCK_S                          0u
+#define DSI_HOST_PHY_LOCK_V                          0x1u
+#define DSI_HOST_PHY_STOPSTATECLKLANE_S              2u
+#define DSI_HOST_PHY_STOPSTATECLKLANE_V              0x1u
+#define DSI_HOST_PHY_STOPSTATE0LANE_S                4u
+#define DSI_HOST_PHY_STOPSTATE0LANE_V                0x1u
+#define DSI_HOST_PHY_STOPSTATE1LANE_S                7u
+#define DSI_HOST_PHY_STOPSTATE1LANE_V                0x1u
+#define DSI_HOST_PHY_TST_CTRL0_REG                   0x500a00b4u
+#define DSI_HOST_PHY_TESTCLR_S                       0u
+#define DSI_HOST_PHY_TESTCLR_V                       0x1u
+#define DSI_HOST_PHY_TESTCLK_S                       1u
+#define DSI_HOST_PHY_TESTCLK_V                       0x1u
+#define DSI_HOST_PHY_TST_CTRL1_REG                   0x500a00b8u
+#define DSI_HOST_PHY_TESTDIN_S                       0u
+#define DSI_HOST_PHY_TESTDIN_V                       0xffu
+#define DSI_HOST_PHY_TESTEN_S                        16u
+#define DSI_HOST_PHY_TESTEN_V                        0x1u
+#define DSI_HOST_INT_ST0_REG                         0x500a00bcu
+#define DSI_HOST_INT_ST1_REG                         0x500a00c0u
+#define DSI_HOST_TO_LP_RX_S                          1u
+#define DSI_HOST_TO_LP_RX_V                          0x1u
+#define DSI_HOST_PHY_TMR_RD_CFG_REG                  0x500a00f4u
+#define DSI_HOST_MAX_RD_TIME_S                       0u
+#define DSI_HOST_MAX_RD_TIME_V                       0x7fffu
+/* v3 only: DSI_BRG_CLK_EN_REG's fields as hw_ver3 has them */
+#define DSI_BRG_CLK_EN_REG                           0x500a0800u
+#define DSI_BRG_CLK_EN_S                             0u
+#define DSI_BRG_CLK_EN_V                             0x1u
+/* v3 only: DSI_BRG_EN_REG's fields as hw_ver3 has them */
+#define DSI_BRG_EN_REG                               0x500a0804u
+#define DSI_BRG_DSI_EN_S                             0u
+#define DSI_BRG_DSI_EN_V                             0x1u
+#define DSI_BRG_DSI_BRIG_RST_S                       1u
+#define DSI_BRG_DSI_BRIG_RST_V                       0x1u
+/* v3 only: DSI_BRG_DMA_REQ_CFG_REG's fields as hw_ver3 has them */
+#define DSI_BRG_DMA_REQ_CFG_REG                      0x500a0808u
+#define DSI_BRG_DMA_BURST_LEN_S                      0u
+#define DSI_BRG_DMA_BURST_LEN_V                      0xfffu
+/* v3 only: DSI_BRG_RAW_NUM_CFG_REG's fields as hw_ver3 has them */
+#define DSI_BRG_RAW_NUM_CFG_REG                      0x500a080cu
+#define DSI_BRG_RAW_NUM_TOTAL_S                      0u
+#define DSI_BRG_RAW_NUM_TOTAL_V                      0x3fffffu
+#define DSI_BRG_UNALIGN_64BIT_EN_S                   22u
+#define DSI_BRG_UNALIGN_64BIT_EN_V                   0x1u
+#define DSI_BRG_RAW_NUM_TOTAL_SET_S                  31u
+#define DSI_BRG_RAW_NUM_TOTAL_SET_V                  0x1u
+/* v3 only: DSI_BRG_PIXEL_TYPE_REG's fields as hw_ver3 has them */
+#define DSI_BRG_PIXEL_TYPE_REG                       0x500a0818u
+#define DSI_BRG_RAW_TYPE_S                           0u
+#define DSI_BRG_RAW_TYPE_V                           0xfu
+#define DSI_BRG_DPI_CONFIG_S                         4u
+#define DSI_BRG_DPI_CONFIG_V                         0x3u
+#define DSI_BRG_DATA_IN_TYPE_S                       6u
+#define DSI_BRG_DATA_IN_TYPE_V                       0x1u
+#define DSI_BRG_DPI_TYPE_S                           7u
+#define DSI_BRG_DPI_TYPE_V                           0xfu
+/* v3 only: DSI_BRG_DPI_V_CFG0_REG's fields as hw_ver3 has them */
+#define DSI_BRG_DPI_V_CFG0_REG                       0x500a0830u
+#define DSI_BRG_VTOTAL_S                             0u
+#define DSI_BRG_VTOTAL_V                             0xfffu
+#define DSI_BRG_VDISP_S                              16u
+#define DSI_BRG_VDISP_V                              0xfffu
+/* v3 only: DSI_BRG_DPI_V_CFG1_REG's fields as hw_ver3 has them */
+#define DSI_BRG_DPI_V_CFG1_REG                       0x500a0834u
+#define DSI_BRG_VBANK_S                              0u
+#define DSI_BRG_VBANK_V                              0xfffu
+#define DSI_BRG_VSYNC_S                              16u
+#define DSI_BRG_VSYNC_V                              0xfffu
+/* v3 only: DSI_BRG_DPI_H_CFG0_REG's fields as hw_ver3 has them */
+#define DSI_BRG_DPI_H_CFG0_REG                       0x500a0838u
+#define DSI_BRG_HTOTAL_S                             0u
+#define DSI_BRG_HTOTAL_V                             0xfffu
+#define DSI_BRG_HDISP_S                              16u
+#define DSI_BRG_HDISP_V                              0xfffu
+/* v3 only: DSI_BRG_DPI_H_CFG1_REG's fields as hw_ver3 has them */
+#define DSI_BRG_DPI_H_CFG1_REG                       0x500a083cu
+#define DSI_BRG_HBANK_S                              0u
+#define DSI_BRG_HBANK_V                              0xfffu
+#define DSI_BRG_HSYNC_S                              16u
+#define DSI_BRG_HSYNC_V                              0xfffu
+/* v3 only: DSI_BRG_DPI_MISC_CONFIG_REG's fields as hw_ver3 has them */
+#define DSI_BRG_DPI_MISC_CONFIG_REG                  0x500a0840u
+#define DSI_BRG_DPI_EN_S                             0u
+#define DSI_BRG_DPI_EN_V                             0x1u
+#define DSI_BRG_FIFO_UNDERRUN_DISCARD_VCNT_S         4u
+#define DSI_BRG_FIFO_UNDERRUN_DISCARD_VCNT_V         0xfffu
+/* v3 only: DSI_BRG_DPI_CONFIG_UPDATE_REG's fields as hw_ver3 has them */
+#define DSI_BRG_DPI_CONFIG_UPDATE_REG                0x500a0844u
+#define DSI_BRG_DPI_CONFIG_UPDATE_S                  0u
+#define DSI_BRG_DPI_CONFIG_UPDATE_V                  0x1u
+/* v3 only: DSI_BRG_INT_ENA_REG's fields as hw_ver3 has them */
+#define DSI_BRG_INT_ENA_REG                          0x500a0850u
+/* v3 only: DSI_BRG_INT_CLR_REG's fields as hw_ver3 has them */
+#define DSI_BRG_INT_CLR_REG                          0x500a0854u
+/* v3 only: DSI_BRG_INT_RAW_REG's fields as hw_ver3 has them */
+#define DSI_BRG_INT_RAW_REG                          0x500a0858u
+#define DSI_BRG_UNDERRUN_INT_RAW_S                   0u
+#define DSI_BRG_UNDERRUN_INT_RAW_V                   0x1u
+#define DSI_BRG_VSYNC_INT_RAW_S                      1u
+#define DSI_BRG_VSYNC_INT_RAW_V                      0x1u
+/* v3 only: DSI_BRG_DMA_FRAME_INTERVAL_REG's fields as hw_ver3 has them */
+#define DSI_BRG_DMA_FRAME_INTERVAL_REG               0x500a086cu
+#define DSI_BRG_DMA_MULTIBLK_EN_S                    28u
+#define DSI_BRG_DMA_MULTIBLK_EN_V                    0x1u
+/* v3 only: DSI_BRG_HOST_CTRL_REG's fields as hw_ver3 has them */
+#define DSI_BRG_HOST_CTRL_REG                        0x500a0880u
+#define DSI_BRG_DSI_CFG_REF_CLK_EN_S                 0u
+#define DSI_BRG_DSI_CFG_REF_CLK_EN_V                 0x1u
+/* v3 only: DSI_BRG_DMA_FLOW_CTRL_REG's fields as hw_ver3 has them */
+#define DSI_BRG_DMA_FLOW_CTRL_REG                    0x500a0888u
+#define DSI_BRG_DSI_DMA_FLOW_CONTROLLER_S            0u
+#define DSI_BRG_DSI_DMA_FLOW_CONTROLLER_V            0x1u
+#define DSI_BRG_DMA_FLOW_MULTIBLK_NUM_S              4u
+#define DSI_BRG_DMA_FLOW_MULTIBLK_NUM_V              0xfu
+/* v3 only: DSI_BRG_RAW_BUF_ALMOST_EMPTY_THRD_REG's fields as hw_ver3 has them */
+#define DSI_BRG_RAW_BUF_ALMOST_EMPTY_THRD_REG        0x500a088cu
+#define DSI_BRG_DSI_RAW_BUF_ALMOST_EMPTY_THRD_S      0u
+#define DSI_BRG_DSI_RAW_BUF_ALMOST_EMPTY_THRD_V      0x7ffu
+/* v3 only: DSI_BRG_VER_DATE_REG's fields as hw_ver3 has them */
+#define DSI_BRG_VER_DATE_REG                         0x500a0900u
+
+#endif

@@ -158,8 +158,15 @@ for both roles by itself.
   refuses to generate if hw_ver1 and hw_ver3 disagree.
   I2C on GPIO7/8 (PH2.0 header): ES8311 0x18, ES7210 0x40, GT911 0x5D;
   `i2c rd ADDR [REG..] N` reads registers raw (e.g. `i2c rd 5d 81 40 4` → "911").
+* Display (47.4, `drivers/dsi_esp32p4.c`): EK79007 over 2-lane MIPI-DSI at
+  1 Gbps. It comes up on the first `lcd pattern [bars|hbars|ber|off]`, not at
+  boot. `lcd` reports the link, `lcd bl on|off` the backlight (GPIO32,
+  active low), `lcd cmd CC [PP..]` sends a DCS write. DCS reads return 0
+  (open, plan §6.4). A layout-dependent flash-load fault through the L2
+  cache is open (47.4b, plan §6.4): an access fault's "[Trap Cache]" line
+  is the evidence to keep.
 * Test: `cd tests/hw && uv run test_esp32p4.py --board lcd7b --build ../../build/esp32p4-lcd7b`
-  (27/27; EMAC tests skip; a BME280 sits on the PH2.0 I2C header at 0x76). NANO: `uv run test_esp32p4.py --board nano`.
+  (28/28; EMAC tests skip; a BME280 sits on the PH2.0 I2C header at 0x76). NANO: `uv run test_esp32p4.py --board nano`.
 
 ---
 

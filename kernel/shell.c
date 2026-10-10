@@ -48,6 +48,7 @@
 #include "drivers/clocks_rp2350.h"
 #include "drivers/flash_rp2350.h"
 #include "drivers/psram.h"
+#include "drivers/dsi_esp32p4.h"
 #include "drivers/lcd7.h"
 #include "drivers/piousb.h"
 #include "drivers/usb_crc.h"
@@ -3915,6 +3916,12 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         /* 47.3, plan/phase47_esp32p4_lcd7b_ribbon.md: the RP2350's command,
          * on the P4's driver (drivers/psram_esp32p4.c). */
         psram_command(cmd_line + 5);
+        return;
+#endif
+#if defined(CONFIG_DSI_LCD_RST_GPIO)
+    } else if (strcmp(cmd_line, "lcd") == 0 || strncmp(cmd_line, "lcd ", 4) == 0) {
+        /* 47.4, plan/phase47_esp32p4_lcd7b_ribbon.md: the LCD-7B's panel. */
+        dsi_lcd_command(cmd_line + 3);
         return;
 #endif
     } else if (strcmp(cmd_line, "flashinfo") == 0) {

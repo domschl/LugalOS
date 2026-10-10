@@ -166,6 +166,10 @@ set(_optional_keys
     # 47.3b, plan/phase47_esp32p4_lcd7b_ribbon.md: the ESP32-P4 PSRAM's bus
     # speed, 20 (untuned) or 200 (DQS timing tuning at boot). Absent: 20.
     CONFIG_PSRAM_SPEED_MHZ
+    # 47.4, plan/phase47_esp32p4_lcd7b_ribbon.md: the LCD-7B's MIPI-DSI
+    # panel -- its reset and backlight GPIOs. Absent: no display, and
+    # drivers/dsi_esp32p4.c is an empty unit.
+    CONFIG_DSI_LCD_RST_GPIO CONFIG_DSI_LCD_BL_GPIO
     # 38.6: the largest /ram0 a mount may ask for, in KB, when a board wants
     # other than drivers/ramdisk.c's per-target default.
     CONFIG_RAMDISK_MAX_KB

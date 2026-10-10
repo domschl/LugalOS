@@ -101,16 +101,13 @@ set(CONFIG_SDMMC_PWR_GPIO  45)
 set(CONFIG_SDMMC_BUS_WIDTH 4)
 set(CONFIG_SDMMC_FREQ_KHZ  20000)
 
-# --- Not declared yet: facts read, each waiting for the milestone that drives it.
+# --- Display: EK79007 on MIPI-DSI -----------------------------------------
 #
-# I2C [sch "7inch Display", ws]: SDA GPIO7, SCL GPIO8 (ESP_I2C_SDA/SCL), shared
-#   by the GT911, ES8311 (0x18), ES7210 (0x40) and the PH2.0 I2C header -- the
-#   same pads drivers/i2c_bus.c uses on the NANO, so nothing to declare.
-#   [meas 47.2] `i2c scan`: 0x18 (chip id 0x83), 0x40, 0x5D (GT911, "911").
-#
-# Panel [sch, ws] (47.4): EK79007, 1024x600, MIPI-DSI 2 lanes at 1 Gbps on the
-#   dedicated DSI pads (DSI_CLK/D0/D1 to connector P2). DSI PHY supply: on-chip
-#   LDO channel 3 at 2500 mV [ws 07_color_panel].
+# 47.4, drivers/dsi_esp32p4.c. [sch, ws] EK79007, 1024x600, MIPI-DSI 2 lanes
+# at 1 Gbps on the dedicated DSI pads (DSI_CLK/D0/D1 to connector P2). DSI PHY
+# supply: on-chip LDO channel 3 at 2500 mV [ws 07_color_panel]. The panel's
+# timing and init sequence live in the driver (they are the panel's, not
+# the board's wiring).
 #   GPIO33 -> RESET_LCD (R42 0R), pulled DOWN by R45 10K (R41 not fitted): the
 #     panel is held in reset until we drive GPIO33 high.
 #   GPIO32 -> BL_CTRL (R48 0R) -> R87 10K / R85 68K into the feedback node of
@@ -118,6 +115,15 @@ set(CONFIG_SDMMC_FREQ_KHZ  20000)
 #     a DIMMER backlight [ws: "active low", LEDC 5 kHz 10-bit inverted].
 #   Panel 1.8 V (U10 RT9193-18) and AVDD/VGH/VGL (U9 AP3012) have no GPIO
 #     enable: they are on whenever the board is.
+set(CONFIG_DSI_LCD_RST_GPIO 33)
+set(CONFIG_DSI_LCD_BL_GPIO  32)
+
+# --- Not declared yet: facts read, each waiting for the milestone that drives it.
+#
+# I2C [sch "7inch Display", ws]: SDA GPIO7, SCL GPIO8 (ESP_I2C_SDA/SCL), shared
+#   by the GT911, ES8311 (0x18), ES7210 (0x40) and the PH2.0 I2C header -- the
+#   same pads drivers/i2c_bus.c uses on the NANO, so nothing to declare.
+#   [meas 47.2] `i2c scan`: 0x18 (chip id 0x83), 0x40, 0x5D (GT911, "911").
 #
 # Touch [sch J3] (47.12): GT911 on the I2C bus above. GPIO23 -> RESET_TP
 #   (R54 0R). INT_TP reaches only test point TP1 -- no GPIO -- so touch is

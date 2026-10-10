@@ -1018,6 +1018,30 @@ def test_sd_goes_through_the_task(b: Board) -> tuple[str, bool, str]:
     return name, True, f"{m0.group(1)} -> {m1.group(1)} calls served"
 
 
+def test_dsi_pattern(b: Board) -> tuple[str, bool, str]:
+    """47.4, plan/phase47_esp32p4_lcd7b_ribbon.md: the LCD-7B's DSI link comes
+    up -- PHY PLL locked, every EK79007 init command sent without a host
+    error -- and the host runs in video mode with its pattern generator on.
+    What the glass shows is the owner's to see; this checks what the chip
+    says about it."""
+    name = "DSI link up, panel init clean, colour bars (47.4)"
+    out = b.console_session.cmd("lcd pattern bars", deadline=10.0)
+    if "Unknown" in out or "Unbound" in out or "not found" in out.lower():
+        return name, True, "SKIPPED (no display on this board)"
+    if "vertical colour bars" not in out:
+        return name, False, f"bring-up: {out.strip()[-200:]}"
+    out = b.console_session.cmd("lcd", deadline=10.0)
+    errs = re.search(r"(\d+) command errors", out)
+    st = re.search(r"status 0x([0-9a-f]+)", out)
+    if not errs or errs.group(1) != "0":
+        return name, False, f"panel init errors: {errs.group(1) if errs else '?'}"
+    if not st or not (int(st.group(1), 16) & 1):
+        return name, False, f"PHY PLL not locked (status {st.group(1) if st else '?'})"
+    if "mode video" not in out or not re.search(r"vid_mode_cfg 0x0*1[0-9a-f]{4}\b", out):
+        return name, False, "not in video mode with the pattern generator on"
+    return name, True, f"PLL locked (PHY status 0x{st.group(1)}), 0 init errors, VPG on"
+
+
 TESTS = [
     test_boots,
     test_proc_readable,
@@ -1046,6 +1070,7 @@ TESTS = [
     test_sd_write_survives_reboot,
     test_psram_up,
     test_psram_pattern,
+    test_dsi_pattern,
 ]
 
 

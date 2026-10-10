@@ -1597,6 +1597,26 @@ void trap_handler(trap_frame_t *frame) {
                    (unsigned long)klo, (unsigned long)khi);
         }
 
+#if defined(CONFIG_BOARD_ESP32P4)
+        /* 47.4: an access fault on the P4 is usually the cache's answer, not
+         * the core's (an error response on a fill or an eviction), and the
+         * cache says why: its L1/L2 "access fail" status with the failing
+         * address and requester, and the flash (C) and PSRAM (S) controllers'
+         * raw interrupt status. Addresses from tools/gen/p4_regs.py, equal
+         * in hw_ver1 and hw_ver3. */
+        if (cause == 1 || cause == 5 || cause == 7) {
+            #define P4R(a) (*(volatile uint32_t *)(uintptr_t)(a))
+            printk_critical("[Trap Cache] L1 fail raw 0x%lx, L1D fail id/attr 0x%08lx addr 0x%08lx; "
+                            "L2 fail raw 0x%lx id/attr 0x%08lx addr 0x%08lx; "
+                            "MSPI flash int 0x%08lx, psram int 0x%08lx\n",
+                            (unsigned long)P4R(0x3ff10174u), (unsigned long)P4R(0x3ff10230u),
+                            (unsigned long)P4R(0x3ff10234u), (unsigned long)P4R(0x3ff102f4u),
+                            (unsigned long)P4R(0x3ff10390u), (unsigned long)P4R(0x3ff10394u),
+                            (unsigned long)P4R(0x5008c0c8u), (unsigned long)P4R(0x5008e0c8u));
+            #undef P4R
+        }
+#endif
+
         /* Which task, and what it was standing on.
          *
          * Added while chasing phase 27's E4 priostress fault, where the whole

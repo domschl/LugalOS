@@ -212,7 +212,7 @@ test over 32 MB passes, and the bandwidth numbers are recorded here.
 
 ### Display
 
-**47.4 — DSI link up, hardware test pattern.**
+**47.4 — DSI link up, hardware test pattern. [DONE 2026-10-10, §6.4]**
 LDO3 at 2.5 V, DSI PHY and PLL for 1 Gbps × 2 lanes, the DSI host in command
 mode for the EK79007 init sequence (§2.2), GPIO33 reset, then video mode with
 the DSI bridge's built-in **pattern generator** (IDF's
@@ -624,6 +624,62 @@ boards, which is what per-boot tuning is for.
 GC churn over the 1 MB Lisp node pool takes 16.6 s at 200 MHz, against 55.9 s
 at 20 MHz. Boot zeroing of BULK_BSS drops from 120 to 65 ms. The display's
 ~37 MB/s of scan-out now uses about a third of the read bandwidth.
+
+## 6.4 What 47.4 found: colour bars on the glass (2026-10-10)
+
+`drivers/dsi_esp32p4.c` follows IDF's DSI driver call by call, from
+`esp_ldo_acquire_channel` through `esp_lcd_new_dsi_bus` +
+`mipi_dsi_hal.c`, `esp_lcd_new_panel_io_dbi` and `esp_lcd_new_panel_dpi`
+(without DMA and interrupts) to `esp_lcd_dpi_panel_set_pattern`, taking the
+LL layers at their v3 branches. In between, it sends Waveshare's EK79007
+sequence. Register constants come from a second generated header,
+`esp32p4_dsi_regs.h` (`tools/gen/p4_regs.py < tools/gen/p4_dsi_regs.txt`). The
+generator now accepts `v3!` lines. Those are registers taken from hw_ver3
+alone: the DSI bridge, which gained a reset bit and GRAY8 input, and the DSI
+clock control, which gained the PLL reference select. The DSI host itself is
+identical in hw_ver1 and hw_ver3. The panel is brought up on the first
+`lcd pattern`, not at boot, so a failing link cannot stop a boot. 47.5 moves
+it to boot.
+
+| | value | where it comes from |
+|---|---|---|
+| LDO channel 3 | 2500 mV → dref 13, mul 3 | IDF's search over the eFuse-calibrated K 1014, Vos 3, C 999 (BLK1) |
+| PHY PLL | XTAL 40 MHz × 50 / 2 = 1000 Mbps, hsfreqrange 0x2a; locks, lanes stop | v3 uses XTAL as the reference (`_DEFAULT`, not `_LEGACY` F20M) |
+| DPI clock | PLL_F240M / 5 = 48 MHz (52 asked for) | host hsa 24, hbp 385, hline 3255 byte clocks; bridge hfp 56 → 26.04 µs per line on both sides, 60.4 Hz |
+| panel init | 9 DCS writes in LP mode, 0 host errors | B2 10 (2 lanes), 80–86 vendor registers, 11 + 120 ms |
+| bring-up time | 253 ms | mostly the reset (10 + 120 ms) and sleep-out (120 ms) waits |
+
+Seen on the glass by the owner: vertical colour bars (`lcd pattern bars`)
+and horizontal ones (`lcd pattern hbars`), both correct. Integer arithmetic
+gives the same results as IDF's `roundf()` for every value above.
+
+**Open:**
+* DCS reads (`lcd id`, `lcd rd`) return 0x00. That includes a power-mode read
+  (0x0A) made in command mode right after sleep-out, which should give 0x9C.
+  Writes are acknowledged. Reads are not needed for the display, and nothing
+  here relies on them. Waveshare's code never reads the panel either.
+* **A latent flash-load fault, layout-dependent (47.4b, high priority).**
+  The first 47.4 image faulted in two ways. Flashed `--only os`, its boot
+  jumped through a garbage function pointer read from `.rodata` in
+  `sensor_hub_init`. Flashed `boot,os`, it booted, and then the first shell
+  command whose `strcmp` chain reached the literal "sensor" at 0x40060fb8
+  took a load access fault (cause 5). The fault is imprecise (`epc` points
+  two instructions past the `lbu`), so it was the cache's error response,
+  not a missing mapping. It was deterministic: `cat /proc/version` or
+  `sensor` as the first command faulted every time. `peek` on the same
+  address worked, and any command after another one (`net`) worked too.
+  The DSI driver never ran in any of these boots. A trap-time dump of the
+  cache's access-fail registers and the MSPI interrupt status
+  (`trap.c`, "[Trap Cache]") moved `.rodata` by 232 bytes, and the fault
+  disappeared: both boards then ran 28/28. It is the same family as 47.3's
+  "load access fault on a flash address after BULK_BSS zeroing" (§6.2),
+  which an explicit write-back hid rather than explained. Next: rebuild the
+  failing layout with the diagnostic in SRAM, so `.text` and `.rodata` don't
+  move, and read the cache's own reason.
+* The owner saw the panel dim slowly to black while the board was being
+  reflashed (P4 in reset, link stopped, GPIO32 floating). That is expected,
+  but it means the backlight pin needs a defined level whenever the kernel
+  is not driving it. That belongs to 47.11 (LEDC dimming).
 
 ## 7. Risks
 
