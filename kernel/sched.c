@@ -256,6 +256,28 @@ int task_set_affinity(int pid, int hart) {
     return 0;
 }
 
+/* See sched.h: lock-free on purpose, serialised by the caller. */
+void sched_hold_current_on_hart(void) {
+    if (!g_active) return;
+    int pid = cur();
+    if (pid < 0 || pid >= MAX_TASKS) return;
+    task_t *t = &g_tasks[pid];
+    if (t->hart_held) return;
+    t->held_affinity = t->hart_affinity;
+    t->hart_held = true;
+    *(volatile int *)&t->hart_affinity = (int)hart_id();
+}
+
+void sched_release_hart_holds(unsigned hart) {
+    if (!g_active) return;
+    for (int i = 0; i < MAX_TASKS; i++) {
+        task_t *t = &g_tasks[i];
+        if (!t->hart_held || t->hart_affinity != (int)hart) continue;
+        t->hart_held = false;
+        *(volatile int *)&t->hart_affinity = t->held_affinity;
+    }
+}
+
 int task_get_vterm(int pid) {
     if (pid < 0 || pid >= MAX_TASKS) return 0;
     return g_tasks[pid].vterm_id;
@@ -297,6 +319,7 @@ int sched_secondary_init(void) {
     g_tasks[slot].stack_pages = 0;
     g_tasks[slot].priority = TASK_PRIO_IDLE;
     g_tasks[slot].hart_affinity = (int)hart_id();
+    g_tasks[slot].hart_held = false;
     g_tasks[slot].domain = NULL;
     set_cur(slot);
     spin_unlock_irqrestore(&g_sched_lock, flags);
@@ -469,6 +492,7 @@ static int task_create_full(const char *name, void (*entry)(void *), void *arg,
      * pinned to a hart would silently pin this one too. A new task is
      * hart-agnostic unless this creation asked otherwise. */
     t->hart_affinity = hart;
+    t->hart_held = false;          /* nor a hold left by the last occupant */
     t->exit_clean = false;
     t->priority = TASK_PRIO_NORMAL; /* M3: raised/lowered via task_set_priority() */
     t->wake_at_ms = 0;

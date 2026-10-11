@@ -122,6 +122,10 @@ typedef struct task {
      * from the start so that doing so is a call to task_set_affinity() and
      * not a second mechanism. */
     int          hart_affinity;
+    /* A hold (sched_hold_current_on_hart()): hart_affinity as it was before,
+     * kept while the task is held on its hart. */
+    bool         hart_held;
+    int          held_affinity;
     /* Phase 44: virtual terminal ID (0 = root/default console). */
     int          vterm_id;
     /* The wake token (task_prepare_block()): armed by the task before it
@@ -370,6 +374,25 @@ uint32_t sched_handoff_faults(void);
  * creation leaves a window in which another hart can claim the task, which
  * X5 observed happening. */
 int  task_set_affinity(int pid, int hart);
+
+/* Holds: keeping a task on the hart whose per-hart state holds something of
+ * its. The console's TX batches are per hart (phase 23 X7): a task that
+ * printed half a line on hart 0 and was then moved to hart 1 finished the
+ * line -- and flushed it -- from hart 1's batch, while the first half still
+ * sat in hart 0's. 47.8 met it as 9P replies over a shared wire whose closing
+ * SLIP END arrived before their last bytes.
+ *
+ * sched_hold_current_on_hart() pins the calling task to the hart it runs on,
+ * remembering its affinity (a second hold is a no-op); sched_release_hart_
+ * holds(h) gives every task held on `h` its affinity back. Neither takes
+ * g_sched_lock -- a printk made under it must be able to reach a batch --
+ * so the caller serialises them under its own lock (the batch's), and the
+ * affinity is one aligned word the scheduler reads either way: a release
+ * seen late leaves a task on its hart a pick longer, never somewhere wrong.
+ * Before sched_init() and with no current task both do nothing. A task that
+ * changes its own affinity while held gets the old one back at release. */
+void sched_hold_current_on_hart(void);
+void sched_release_hart_holds(unsigned hart);
 
 /* Creates a task already pinned to `hart` (-1 = any), with the affinity in
  * place before it is ever READY. The general form of task_create_driver()

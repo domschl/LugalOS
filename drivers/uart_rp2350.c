@@ -1009,18 +1009,18 @@ static uint32_t g_tx_batch_len[MAX_HARTS];
  * rather than which file it lives in. */
 static spinlock_t g_tx_batch_lock;
 
-void uart_flush(void) {
-    char local[UART_TX_BATCH_CAP];
-    uintptr_t flags = spin_lock_irqsave(&g_tx_batch_lock);
-    unsigned h = hart_id();
-    uint32_t len = g_tx_batch_len[h];
-    if (len > 0) {
-        memcpy(local, g_tx_batch[h], len);
-        g_tx_batch_len[h] = 0;
-    }
-    spin_unlock_irqrestore(&g_tx_batch_lock, flags);
-    if (len == 0) return;
+/* What keeps one task's bytes in order across harts (47.8). The batches being
+ * per hart, a task moved between harts mid-line -- or mid-SLIP-frame -- used
+ * to leave the first part in one hart's batch and send the rest, flushed,
+ * from the other's: on the LCD-7B, 9P replies whose closing END overtook
+ * their last bytes. So uart_putc() holds its caller on the hart
+ * (sched_hold_current_on_hart()) and the holds on a hart are given back once
+ * that hart has nothing batched and nothing in flight: a copy taken by
+ * uart_flush() counts here until it is sent, or the owner could be released
+ * and overtake it from the other hart. */
+static uint32_t g_tx_inflight[MAX_HARTS];
 
+static void uart_tx_send(const char *local, uint32_t len) {
     if (uart_demux_is_enabled() || !uart_task_alive()) {
         for (uint32_t i = 0; i < len; i++) {
             uart_hw_putc(local[i]);
@@ -1066,6 +1066,26 @@ void uart_flush(void) {
     }
 }
 
+void uart_flush(void) {
+    char local[UART_TX_BATCH_CAP];
+    uintptr_t flags = spin_lock_irqsave(&g_tx_batch_lock);
+    unsigned h = hart_id();
+    uint32_t len = g_tx_batch_len[h];
+    if (len > 0) {
+        memcpy(local, g_tx_batch[h], len);
+        g_tx_batch_len[h] = 0;
+        g_tx_inflight[h]++;
+    }
+    spin_unlock_irqrestore(&g_tx_batch_lock, flags);
+    if (len == 0) return;
+    uart_tx_send(local, len);
+
+    flags = spin_lock_irqsave(&g_tx_batch_lock);
+    g_tx_inflight[h]--;
+    if (g_tx_batch_len[h] == 0 && g_tx_inflight[h] == 0) sched_release_hart_holds(h);
+    spin_unlock_irqrestore(&g_tx_batch_lock, flags);
+}
+
 void uart_putc(char c) {
     uintptr_t flags = spin_lock_irqsave(&g_tx_batch_lock);
     while (g_tx_batch_len[hart_id()] >= UART_TX_BATCH_CAP) {
@@ -1078,6 +1098,7 @@ void uart_putc(char c) {
         flags = spin_lock_irqsave(&g_tx_batch_lock);
     }
     g_tx_batch[hart_id()][g_tx_batch_len[hart_id()]++] = c;
+    sched_hold_current_on_hart();
     spin_unlock_irqrestore(&g_tx_batch_lock, flags);
 }
 
