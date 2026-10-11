@@ -19,6 +19,14 @@
 ;;;   (matrix-det A)               - Exact determinant det(A)
 ;;;   (matrix-inv A)               - Exact matrix inverse A^-1
 ;;;   (matrix-solve A B)           - Solve linear system A * X = B
+;;;   (matrix-conjugate A)         - Element-wise complex conjugate
+;;;   (matrix-adjoint A)           - Hermitian conjugate transpose A*
+;;;   (matrix-hermitian A)         - Alias for matrix-adjoint
+;;;   (matrix-trace A)             - Trace tr(A)
+;;;   (vector-conjugate v)         - Element-wise complex conjugate of vector
+;;;   (vector-hermitian-dot u v)   - Hermitian inner product u* v
+;;;   (matrix-hermitian? A)        - Test if A is Hermitian (A = A*)
+;;;   (matrix-unitary? A)          - Test if A is unitary (A* A = I)
 ;;;
 
 ;;; --- 1. Dimension & Basic Utilities ---
@@ -266,3 +274,57 @@
                                           row-i row-k)))
                                (elim-other (+ i 1)
                                            (matrix-replace-row cur-M i new-row-i)))))))))))))))
+
+
+;;; --- 8. Complex Matrix Operations & Hermitian Geometry ---
+
+(define (matrix-conjugate A)
+  (map (lambda (row)
+         (map (lambda (x) (cas-conjugate x)) row))
+       A))
+
+(define (matrix-adjoint A)
+  (matrix-transpose (matrix-conjugate A)))
+
+(define (matrix-hermitian A)
+  (matrix-adjoint A))
+
+(define (vector-conjugate v)
+  (if (vector? v)
+      (list->vector (map cas-conjugate (vector->list v)))
+      (map cas-conjugate v)))
+
+(define (vector-hermitian-dot u v)
+  (vector-dot (vector-conjugate u) v))
+
+(define (matrix-trace A)
+  (let ((n (min (matrix-rows A) (matrix-cols A))))
+    (let loop ((i 0) (sum 0))
+      (if (>= i n)
+          (simplify sum)
+          (loop (+ i 1)
+                (simplify (list '+ sum (matrix-ref A i i))))))))
+
+(define (matrix-zero? M)
+  (let loop-r ((rows M))
+    (if (null? rows)
+        #t
+        (let loop-c ((cols (car rows)))
+          (if (null? cols)
+              (loop-r (cdr rows))
+              (if (equal? (simplify (car cols)) 0)
+                  (loop-c (cdr cols))
+                  #f))))))
+
+(define (matrix-hermitian? A)
+  (let ((n (matrix-rows A))
+        (m (matrix-cols A)))
+    (and (= n m)
+         (matrix-zero? (matrix-sub A (matrix-adjoint A))))))
+
+(define (matrix-unitary? A)
+  (let ((n (matrix-rows A))
+        (m (matrix-cols A)))
+    (and (= n m)
+         (matrix-zero? (matrix-sub (matrix-mul (matrix-adjoint A) A)
+                                   (matrix-identity n))))))

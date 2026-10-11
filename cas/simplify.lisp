@@ -633,6 +633,12 @@
          (simplify (cons '+ (map cas-conjugate (cdr expr)))))
         ((eq? (car expr) '*)
          (simplify (cons '* (map cas-conjugate (cdr expr)))))
+        ((eq? (car expr) '-)
+         (simplify (cons '- (map cas-conjugate (cdr expr)))))
+        ((eq? (car expr) '/)
+         (simplify (cons '/ (map cas-conjugate (cdr expr)))))
+        ((or (eq? (car expr) '^) (eq? (car expr) 'expt))
+         (simplify (list '^ (cas-conjugate (cadr expr)) (caddr expr))))
         (else expr)))
 
 (define (cas-complex-abs expr)

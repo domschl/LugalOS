@@ -179,8 +179,8 @@
 ;;; --- 2. Tokenizer ---
 
 (define cf-fn-names '("sin" "cos" "tan" "exp" "ln" "log" "sqrt" "abs" "asin" "acos" "atan"
-                      "diff" "integrate" "expand" "simplify" "solve"))
-(define cf-known-names (append cf-fn-names '("pi" "e")))
+                      "diff" "integrate" "expand" "simplify" "solve" "limit" "limes"))
+(define cf-known-names (append cf-fn-names '("pi" "e" "inf" "infinity" "right" "left")))
 
 (define cf-err #f)
 
@@ -372,7 +372,7 @@
 
 ;;; --- 4. Command evaluation: calc / math ---
 
-(define cf-commands '(diff integrate expand simplify solve))
+(define cf-commands '(diff integrate expand simplify solve limit limes))
 
 (define (cf-apply-cmd cmd args)
   (let ((real (cond ((and (eq? cmd 'integrate) (= (length args) 4)) 'integrate-def)

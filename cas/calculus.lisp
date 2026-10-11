@@ -8,6 +8,8 @@
 ;;;   (integrate expr var)         - Indefinite integral with respect to var
 ;;;   (integrate-def expr var a b) - Definite integral: F(b) - F(a)
 ;;;   (taylor expr var order [x0]) - Taylor / Maclaurin series expansion
+;;;   (limit expr var point [dir]) - Symbolic limits / limes (two-sided, left, right)
+;;;   (limes expr var point [dir]) - Alias for limit
 ;;;
 
 ;;; --- 1. Variable Occurrence & Pattern Helpers ---
@@ -468,3 +470,252 @@
                                  coeff
                                  (simplify (list '* coeff pow-term)))))
                   (loop (+ k 1) (diff cur-d var) (cons term terms)))))))))
+
+
+;;; --- 6. Symbolic Limits / Limes (Milestone 48.3f) ---
+
+(define (cas-infinity? pt)
+  (or (eq? pt 'infinity)
+      (eq? pt 'inf)
+      (eq? pt '+inf)
+      (eq? pt '+infinity)))
+
+(define (cas-neg-infinity? pt)
+  (or (eq? pt '-infinity)
+      (eq? pt '-inf)
+      (equal? pt '(* -1 infinity))
+      (equal? pt '(* -1 inf))))
+
+(define (cas-norm-direction dir)
+  (cond ((or (eq? dir 'right) (eq? dir '+) (eq? dir '>)) 'right)
+        ((or (eq? dir 'left) (eq? dir '-) (eq? dir '<)) 'left)
+        (else 'two-sided)))
+
+(define (cas-pure-poly? expr var)
+  (cond
+    ((not (cas-has-var? expr var)) #t)
+    ((eq? expr var) #t)
+    ((pair? expr)
+     (let ((op (car expr)))
+       (cond
+         ((or (eq? op '+) (eq? op '-) (eq? op '*))
+          (let check-args ((args (cdr expr)))
+            (if (null? args)
+                #t
+                (and (cas-pure-poly? (car args) var)
+                     (check-args (cdr args))))))
+         ((or (eq? op '^) (eq? op 'expt))
+          (and (cas-pure-poly? (cadr expr) var)
+               (integer? (caddr expr))
+               (>= (caddr expr) 0)))
+         (else #f))))
+    (else #f)))
+
+(define (cas-fraction-split-single s)
+  (cond
+    ((and (pair? s) (eq? (car s) '/))
+     (list (cadr s) (caddr s)))
+    ((and (pair? s) (or (eq? (car s) '^) (eq? (car s) 'expt)) (number? (caddr s)) (< (caddr s) 0))
+     (let ((p (- (caddr s))))
+       (list 1 (if (= p 1) (cadr s) (list '^ (cadr s) p)))))
+    ((and (pair? s) (eq? (car s) '*))
+     (let loop ((factors (cdr s)) (num '()) (den '()))
+       (if (null? factors)
+           (list (cond ((null? num) 1)
+                       ((null? (cdr num)) (car num))
+                       (else (simplify (cons '* (reverse num)))))
+                 (cond ((null? den) 1)
+                       ((null? (cdr den)) (car den))
+                       (else (simplify (cons '* (reverse den))))))
+           (let ((f (car factors)))
+             (cond
+               ((and (pair? f) (eq? (car f) '/))
+                (loop (cdr factors) (cons (cadr f) num) (cons (caddr f) den)))
+               ((and (pair? f) (or (eq? (car f) '^) (eq? (car f) 'expt)) (number? (caddr f)) (< (caddr f) 0))
+                (let ((p (- (caddr f))))
+                  (loop (cdr factors) num (cons (if (= p 1) (cadr f) (list '^ (cadr f) p)) den))))
+               (else
+                (loop (cdr factors) (cons f num) den)))))))
+    (else
+     (list s 1))))
+
+(define (cas-fraction-add f1 f2)
+  (let ((n1 (car f1)) (d1 (cadr f1))
+        (n2 (car f2)) (d2 (cadr f2)))
+    (if (equal? d1 d2)
+        (list (simplify (list '+ n1 n2)) d1)
+        (list (simplify (list '+ (list '* n1 d2) (list '* n2 d1)))
+              (simplify (list '* d1 d2))))))
+
+(define (cas-fraction-split expr)
+  (let ((s (simplify expr)))
+    (cond
+      ((and (pair? s) (eq? (car s) '+))
+       (let loop ((terms (cdr s)) (acc '(0 1)))
+         (if (null? terms)
+             acc
+             (loop (cdr terms)
+                   (cas-fraction-add acc (cas-fraction-split-single (car terms)))))))
+      (else
+       (cas-fraction-split-single s)))))
+
+;; Finds lowest derivative order k >= 1 such that d^k/dx^k D(x0) != 0.
+;; Returns (cons k value) or #f.
+(define (cas-vanishing-order-and-lead expr var x0 max-order)
+  (let loop ((k 1) (d (diff expr var)))
+    (if (> k max-order)
+        #f
+        (let ((val (simplify (cas-subst d var x0))))
+          (if (and (number? val) (not (= val 0)))
+              (cons k val)
+              (loop (+ k 1) (diff d var)))))))
+
+;; Directional limit at a pole where den(point) = 0 and num(point) != 0.
+(define (cas-limit-pole num den var point dir)
+  (let ((N0 (simplify (cas-subst num var point))))
+    (let ((sign-N (cond ((cas-is-negative? N0) -1)
+                        ((and (number? N0) (> N0 0)) 1)
+                        (else #f))))
+      (if (not sign-N)
+          'undefined
+          (let ((lead-info (cas-vanishing-order-and-lead den var point 6)))
+            (if (not lead-info)
+                'undefined
+                (let* ((k (car lead-info))
+                       (A (cdr lead-info)))
+                  (if (not (number? A))
+                      'undefined
+                      (let* ((sign-A (if (> A 0) 1 -1))
+                             (sign-right (* sign-N sign-A))
+                             (sign-left (* sign-N (* sign-A (if (= (modulo k 2) 0) 1 -1))))
+                             (lim-right (if (> sign-right 0) 'infinity '-infinity))
+                             (lim-left (if (> sign-left 0) 'infinity '-infinity)))
+                        (cond
+                          ((eq? dir 'right) lim-right)
+                          ((eq? dir 'left) lim-left)
+                          (else
+                           (if (eq? lim-right lim-left)
+                               lim-right
+                               'undefined))))))))))))
+
+;; Rational function limit at +inf or -inf.
+(define (cas-limit-rational-inf num den var point)
+  (let* ((n (poly-degree num var))
+         (d (poly-degree den var))
+         (lc-n (poly-lead-coeff num var))
+         (lc-d (poly-lead-coeff den var)))
+    (cond
+      ((< n d) 0)
+      ((= n d)
+       (simplify (list '/ lc-n lc-d)))
+      (else
+       ;; n > d: infinite limit
+       (let ((ratio (simplify (list '/ lc-n lc-d)))
+             (k (- n d)))
+         (if (number? ratio)
+             (let* ((sign-ratio (if (> ratio 0) 1 -1))
+                    (sign-term
+                     (if (cas-infinity? point)
+                         1
+                         (if (= (modulo k 2) 0) 1 -1)))
+                    (final-sign (* sign-ratio sign-term)))
+               (if (> final-sign 0) 'infinity '-infinity))
+             'infinity))))))
+
+;; Polynomial factor cancellation for removable roots (x - point).
+(define (cas-limit-poly-cancel num den var point dir depth)
+  (let* ((factor (if (equal? point 0) var (list '- var point)))
+         (div-N (poly-div num factor var))
+         (div-D (poly-div den factor var)))
+    (if (and div-N div-D
+             (equal? (simplify (cadr div-N)) 0)
+             (equal? (simplify (cadr div-D)) 0))
+        (cas-limit-quotient (car div-N) (car div-D) var point dir (+ depth 1))
+        #f)))
+
+;; General quotient limit.
+(define (cas-limit-quotient num den var point dir depth)
+  (if (> depth 6)
+      'undefined
+      (let ((N0 (simplify (cas-subst num var point)))
+            (D0 (simplify (cas-subst den var point))))
+        (cond
+          ;; Case 1: Denominator is non-zero (continuous point)
+          ((and (number? D0) (not (= D0 0)))
+           (simplify (list '/ N0 D0)))
+          ((and (not (number? D0)) (not (equal? D0 0)) (not (cas-has-var? D0 var)))
+           (simplify (list '/ N0 D0)))
+
+          ;; Case 2: Indeterminate 0/0 form
+          ((and (equal? N0 0) (equal? D0 0))
+           (let ((poly-res (if (and (cas-pure-poly? num var) (cas-pure-poly? den var))
+                               (cas-limit-poly-cancel num den var point dir depth)
+                               #f)))
+             (if poly-res
+                 poly-res
+                 (let* ((dN (simplify (diff num var)))
+                        (dD (simplify (diff den var))))
+                   (cas-limit-quotient dN dD var point dir (+ depth 1))))))
+
+          ;; Case 3: Pole (D0 = 0, N0 != 0)
+          ((and (equal? D0 0) (not (equal? N0 0)))
+           (cas-limit-pole num den var point dir))
+
+          (else
+           'undefined)))))
+
+;; Power indeterminate form u^v: exp(limit(v * ln(u))).
+(define (cas-limit-power u v var point dir)
+  (let* ((v-log-u (simplify (list '* v (list 'log u))))
+         (L (limit v-log-u var point dir)))
+    (cond
+      ((eq? L 'undefined) 'undefined)
+      ((cas-infinity? L) 'infinity)
+      ((cas-neg-infinity? L) 0)
+      (else (simplify (list 'exp L))))))
+
+;; Main symbolic limit procedure: (limit expr var point [direction])
+(define (limit expr var point . rest)
+  (let* ((dir (if (null? rest) 'two-sided (cas-norm-direction (car rest))))
+         (s (simplify expr)))
+    (cond
+      ;; If expression does not contain variable, it is constant
+      ((not (cas-has-var? s var))
+       s)
+
+      ;; Limit at +infinity
+      ((cas-infinity? point)
+       (let ((frac (cas-fraction-split s)))
+         (let ((num (car frac))
+               (den (cadr frac)))
+           (if (and (cas-pure-poly? num var) (cas-pure-poly? den var))
+               (cas-limit-rational-inf num den var 'infinity)
+               ;; General function at +inf: substitute var -> 1/_u as _u -> 0+
+               (let* ((sub-expr (simplify (cas-subst s var '(/ 1 _u)))))
+                 (limit sub-expr '_u 0 'right))))))
+
+      ;; Limit at -infinity
+      ((cas-neg-infinity? point)
+       (let ((frac (cas-fraction-split s)))
+         (let ((num (car frac))
+               (den (cadr frac)))
+           (if (and (cas-pure-poly? num var) (cas-pure-poly? den var))
+               (cas-limit-rational-inf num den var '-infinity)
+               ;; General function at -inf: substitute var -> 1/_u as _u -> 0-
+               (let* ((sub-expr (simplify (cas-subst s var '(/ 1 _u)))))
+                 (limit sub-expr '_u 0 'left))))))
+
+      ;; Indeterminate powers u^v where both base and exponent depend on var
+      ((and (pair? s) (or (eq? (car s) '^) (eq? (car s) 'expt))
+            (cas-has-var? (cadr s) var)
+            (cas-has-var? (caddr s) var))
+       (cas-limit-power (cadr s) (caddr s) var point dir))
+
+      ;; Finite point: fraction split and quotient analysis
+      (else
+       (let ((frac (cas-fraction-split s)))
+         (cas-limit-quotient (car frac) (cadr frac) var point dir 0))))))
+
+;; Alias: (limes expr var point [direction])
+(define (limes expr var point . rest)
+  (apply limit (cons expr (cons var (cons point rest)))))

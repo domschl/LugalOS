@@ -247,6 +247,35 @@ To expand Lisp's capabilities (macros, vectors, hardware control, CAS power seri
     - Verified on ESP32-P4-LCD-7B silicon: verified live on hardware via `p4run.py`.
     - Both hardware test suites (`test_rp2350.py` 32/32, `test_esp32p4.py` 30/30) passing 100%.
 
+#### 48.3f: Symbolic Limits & Limes (`limit`, `limes`) — **COMPLETED**
+* **Goal:** Extend the LugalOS Computer Algebra System (`cas/`) with comprehensive symbolic limit and limes handling, complementing differentiation (`diff`), integration (`integrate`), and power series expansions (`taylor`).
+* **Design & Status:**
+  - Implemented in [`cas/calculus.lisp`](file:///home/dsc/Source/gith/domschl/lugalos/cas/calculus.lisp):
+    - `(limit expr var point [direction])` and alias `(limes expr var point [direction])`.
+    - `cas-infinity?` and `cas-neg-infinity?`: recognizes `'infinity`, `'inf`, `'+inf`, `'-infinity`, `'-inf`.
+    - `cas-norm-direction`: normalizes direction arguments (`'right`, `'+`, `'>`, `'left`, `'-`, `'<`, `'two-sided`).
+    - `cas-fraction-split`: extracts numerator $N$ and denominator $D$ from products, negative powers, single fractions, and recursively combines sums and differences of fractions over common denominators (`cas-fraction-add`).
+    - **Continuous Substitution:** evaluates continuous functions directly when denominator $D(x_0) \neq 0$.
+    - **Removable Algebraic Singularities:** `cas-limit-poly-cancel` uses synthetic polynomial division (`poly-div`) by $(x - x_0)$ to cancel common roots of any multiplicity algebraically.
+    - **Indeterminate $0/0$ & $\infty/\infty$:** applies L'Hôpital's rule by differentiating numerator and denominator recursively ($N' / D'$) up to depth 6; resolves dominant terms for transcendental forms ($\frac{\sin x}{x} \to 1$, $\frac{1-\cos x}{x^2} \to 1/2$, $\frac{x-\sin x}{x^3} \to 1/6$, $\frac{e^x-1}{x} \to 1$, $\frac{\ln(1+x)}{x} \to 1$, $\frac{\tan x}{x} \to 1$).
+    - **Limits at Infinity ($\pm\infty$):**
+      - `cas-limit-rational-inf`: rational function degree comparison: $n < d \to 0$, $n = d \to \text{lead}(N)/\text{lead}(D)$, and $n > d \to \pm\infty$ with exact sign determination from leading coefficient signs and $(-1)^{n-d}$.
+      - General transcendentals at $\pm\infty$: substitution $x = 1/u$ as $u \to 0^+$ (or $u \to 0^-$).
+    - **Directional Limits & Vertical Poles:**
+      - `cas-vanishing-order-and-lead` finds the lowest derivative order $k \ge 1$ where $D^{(k)}(x_0) \neq 0$.
+      - `cas-limit-pole` determines denominator sign near $x_0$: $\text{sgn}(D) = \text{sgn}(A)$ on right ($x \to x_0^+$), and $\text{sgn}(A) \cdot (-1)^k$ on left ($x \to x_0^-$).
+      - Returns `'infinity`, `'-infinity`, or `'undefined` if left and right limits disagree (e.g. $\lim_{x \to 0} 1/x = \text{undefined}$, $\lim_{x \to 0^+} 1/x = \text{infinity}$, $\lim_{x \to 0^-} 1/x = -\text{infinity}$, $\lim_{x \to 0} 1/x^2 = \text{infinity}$).
+    - **Indeterminate Powers ($u^v$):** `cas-limit-power` transforms $1^\infty, 0^0, \infty^0$ into $\exp(\lim (v \ln u))$.
+  - Integrated into infix math environment [`cas/format.lisp`](file:///home/dsc/Source/gith/domschl/lugalos/cas/format.lisp):
+    - Added `"limit"` and `"limes"` to `cf-fn-names`.
+    - Added `"inf"`, `"infinity"`, `"right"`, `"left"` to `cf-known-names` for natural infix tokenization.
+    - Added `limit` and `limes` to `cf-commands`.
+    - Infix usage: `calc("limit(sin(x) / x, x, 0)") => 1`, `calc("limit((x^2 - 1)/(x - 1), x, 1)") => 2`, `calc("limit(1/x^2, x, 0)") => infinity`.
+  - **Verification:**
+    - Dedicated test suite [`tests/test_limits.py`](file:///home/dsc/Source/gith/domschl/lugalos/tests/test_limits.py): all 32/32 tests passing 100% on QEMU `rv32`.
+    - Regression test suites: `test_complex.py` (49/49), `test_cas_simplify.py` (65/65).
+    - Synced to physical hardware SD card via 9P (`p9sync.py`).
+
 ---
 
 ### Milestone 48.4: Advanced Core: Macros, Vectors & Standard Libraries (Phase D)

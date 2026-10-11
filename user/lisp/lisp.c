@@ -203,6 +203,7 @@ static bool eval_depth_exceeded_warned = false;
  * these for the full mechanism. */
 static uint8_t eval_poll_count = 0;      /* wraps: the clock every 256 calls */
 static bool lisp_interrupted = false;
+static bool lisp_exit_requested = false;
 static uint32_t interrupt_poll_us;      /* when the console was last asked */
 static bool lisp_poll_interrupt(void);
 
@@ -5420,6 +5421,17 @@ static lisp_val_t *prim_exec(lisp_val_t *args, lisp_val_t *env) {
     return make_int(res);
 }
 
+static lisp_val_t *prim_exit(lisp_val_t *args, lisp_val_t *env) {
+    (void)args;
+    (void)env;
+    lisp_exit_requested = true;
+    return &nil_val;
+}
+
+static lisp_val_t *prim_quit(lisp_val_t *args, lisp_val_t *env) {
+    return prim_exit(args, env);
+}
+
 /* /proc/<name> files are real byte streams now (A1, vfs_open()/vfs_pread()),
  * not a printk() side effect -- read and print the actual content instead
  * of relying on vfs_read()/vfs_ls() to have printed it themselves. */
@@ -8290,7 +8302,7 @@ lisp_val_t *lisp_eval(lisp_val_t *val, lisp_val_t *env) {
          * never gets back to 0). */
         eval_poll_count = 0;
     }
-    if (lisp_interrupted) {
+    if (lisp_interrupted || lisp_exit_requested) {
         return &nil_val;
     }
     uintptr_t stack_lo, stack_hi;
@@ -8347,7 +8359,14 @@ void lisp_repl(void) {
         int idx = readline_ex("lisp> ", buf, 512, NULL);
         if (idx < 0) continue;
 
-        if (streq(buf, "exit")) break;
+        char *trimmed = buf;
+        while (*trimmed == ' ' || *trimmed == '\t') trimmed++;
+        int tlen = strlen(trimmed);
+        while (tlen > 0 && (trimmed[tlen - 1] == ' ' || trimmed[tlen - 1] == '\t' || trimmed[tlen - 1] == '\r' || trimmed[tlen - 1] == '\n')) {
+            trimmed[--tlen] = '\0';
+        }
+        if (streq(trimmed, "exit") || streq(trimmed, "(exit)") ||
+            streq(trimmed, "quit") || streq(trimmed, "(quit)")) break;
         if (idx == 0) continue;
 
         /* S3: the safe point for the interactive session -- see
@@ -8371,6 +8390,11 @@ void lisp_repl(void) {
         const char *ptr = buf;
         lisp_val_t *ast = lisp_read(&ptr);
         lisp_val_t *result = lisp_eval(ast, global_env);
+        if (lisp_exit_requested) {
+            lisp_exit_requested = false;
+            lisp_unlock();
+            break;
+        }
         cprintf("=> ");
         lisp_print(result);
         cprintf("\n");

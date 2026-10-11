@@ -99,6 +99,17 @@ def run_tests() -> int:
             ("Factor x^4 - 1 over C", "(poly-factor-complex '(+ (^ x 4) -1) 'x)", "(* (+ -1 x) (+ 1 x) (+ (* -1 i) x) (+ i x))"),
             ("Factor x^2 + 2x + 2 over C", "(poly-factor-complex '(+ (^ x 2) (* 2 x) 2) 'x)", "(* (+ 1 i x) (+ 1 (* -1 i) x))"),
             ("Factor 3(x^2 + 9) over C", "(poly-factor-complex '(* 3 (+ (^ x 2) 9)) 'x)", "(* (+ (* 3 i) x) (+ (* -3 i) x) 3)"),
+            # --- 5. Complex Linear Algebra & Matrices ---
+            ("Matrix conjugate", "(matrix-conjugate '((1+2i 3) (4-5i 6i)))", "((1-2i 3) (4+5i -6i))"),
+            ("Matrix adjoint", "(matrix-adjoint '((1+2i 3) (4-5i 6i)))", "((1-2i 4+5i) (3 -6i))"),
+            ("Matrix trace", "(matrix-trace '((1+2i 3) (4-5i 6i)))", "1+8i"),
+            ("Vector conjugate", "(vector-conjugate '(1+i 2-i))", "(1-i 2+i)"),
+            ("Hermitian dot", "(vector-hermitian-dot '(1+i 2) '(1+i 3))", "8"),
+            ("Hermitian matrix test #t", "(matrix-hermitian? '((2 1-i) (1+i 3)))", "#t"),
+            ("Hermitian matrix test #f", "(matrix-hermitian? '((2 1-i) (1-i 3)))", "#f"),
+            ("Unitary Pauli-Y test", "(matrix-unitary? '((0 (* -1 i)) (i 0)))", "#t"),
+            ("Unitary non-unitary test", "(matrix-unitary? '((1 1) (0 1)))", "#f"),
+            ("Complex matrix inverse", "(matrix-inv '((1 i) (0 1)))", "((1 (* -1 i)) (0 1))"),
         ]
 
         print("\n--- Running Complex Tests ---")
