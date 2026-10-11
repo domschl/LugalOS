@@ -1040,11 +1040,11 @@ int lock_selftest(void) {
          * holds a spinlock there. With a second hart, klogd may still be
          * awake on it from the records printed just before (the burst
          * sends no wake, but needs none to be overtaken): it drains
-         * concurrently and is lapped once per pass, and each lap is
-         * reported as a gap of its own. Seen on rv64-smp, 2026-10-11:
-         * three gaps, at records 1->3, 3->12 and 12->1125, and the check
-         * failed for reporting the loss three times. At least one is the
-         * claim there. */
+         * concurrently and can be lapped more than once, each lap a gap of
+         * its own -- at least one is the claim there. This check found, on
+         * rv64-smp (2026-10-11), that a lap in mid-pass went unreported:
+         * records 4..1124 missing from the stream and no gap counted.
+         * klog_take() now counts it where the cursor jumps. */
         uint32_t gaps = klog_gaps() - gaps_before;
         check("log burst: the producer never blocked, and the loss is reported",
               (smp_harts_online() > 1 ? gaps >= 1 : gaps == 1) && klog_gap_bytes() > 0);

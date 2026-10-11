@@ -321,12 +321,26 @@ static uint32_t klog_read_locked(uint64_t abs_offset, char *buf, uint32_t count)
  * `buf` needs room for the largest record plus its rendered timestamp; the
  * callers size it from KLOG_REC_MAX. A record too big for `buf` is truncated
  * rather than skipped -- losing the tail of one line beats losing the line. */
-static uint32_t klog_take(char *buf, uint32_t cap) {
+static uint32_t klog_take(char *buf, uint32_t cap, uint64_t *lost) {
+    *lost = 0;
     uintptr_t flags = spin_lock_irqsave_bottom(&g_klog_lock);
 
+    /* Lapped: what we had not reached was evicted. Counted here, under the
+     * lock and at the moment the cursor jumps, and handed back for the note in
+     * the stream. It used to be counted only at the start of a drain pass,
+     * with this jump silent -- which on one hart is the same thing, since a
+     * producer cannot run while a pass does, but on two harts klogd drains
+     * *while* the producer writes, and a lap in mid-pass lost records without
+     * a word (rv64-smp lockselftest, 2026-10-11: records 4..1124 gone, no
+     * gap counted). */
     if (g_cursor_spos < g_stored_oldest) {
+        *lost = g_render_oldest > g_cursor ? g_render_oldest - g_cursor : 0u;
+        g_gap_bytes += *lost;
+        g_gaps++;
         g_cursor_spos = g_stored_oldest;
         g_cursor      = g_render_oldest;
+        spin_unlock_irqrestore(&g_klog_lock, flags);
+        return 0;
     }
 
     while (g_cursor_spos < g_stored_total) {
@@ -393,36 +407,33 @@ void klog_drain(void) {
 
     console_lock();
 
-    /* Bytes that were evicted before we reached them. Reported in the stream,
-     * at the position where they were lost, rather than stored as a record --
-     * a record would have to go at the *end* of the ring, which is the one
-     * place the gap did not happen. `klog` reports the totals afterwards. */
-    if (g_cursor < klog_oldest()) {
-        uint64_t lost = klog_oldest() - g_cursor;
-        g_gap_bytes += lost;
-        g_gaps++;
-        g_cursor = klog_oldest();
-
-        char note[80];
-        uint32_t n = 0;
-        const char *a = "\n[klogd] ";
-        while (*a) note[n++] = *a++;
-        char d[24]; uint32_t dn = 0;
-        uint64_t v = lost;
-        if (v == 0) d[dn++] = '0';
-        while (v > 0) { d[dn++] = (char)('0' + (uint32_t)(v % 10u)); v /= 10u; }
-        while (dn > 0) note[n++] = d[--dn];
-        const char *b = " bytes of log were dropped (ring too small for the burst)\n";
-        while (*b) note[n++] = *b++;
-        sinks_write(note, n);
-    }
-
     /* Whole records, in order, until caught up. The chunk is a stack buffer
      * rather than the whole remainder: a consumer that tried to take the
-     * entire backlog at once would need a buffer the size of the ring. */
+     * entire backlog at once would need a buffer the size of the ring.
+     *
+     * Bytes that were evicted before we reached them are reported in the
+     * stream, at the position where they were lost, rather than stored as a
+     * record -- a record would have to go at the *end* of the ring, which is
+     * the one place the gap did not happen. `klog` reports the totals
+     * afterwards. */
     char chunk[KLOG_REC_MAX + 16];
     for (;;) {
-        uint32_t n = klog_take(chunk, sizeof(chunk));
+        uint64_t lost;
+        uint32_t n = klog_take(chunk, sizeof(chunk), &lost);
+        if (lost) {
+            char note[80];
+            uint32_t k = 0;
+            const char *a = "\n[klogd] ";
+            while (*a) note[k++] = *a++;
+            char d[24]; uint32_t dn = 0;
+            uint64_t v = lost;
+            while (v > 0) { d[dn++] = (char)('0' + (uint32_t)(v % 10u)); v /= 10u; }
+            while (dn > 0) note[k++] = d[--dn];
+            const char *b = " bytes of log were dropped (ring too small for the burst)\n";
+            while (*b) note[k++] = *b++;
+            sinks_write(note, k);
+            continue;
+        }
         if (n == 0) break;
         sinks_write(chunk, n);
     }
