@@ -317,6 +317,22 @@ _Static_assert(PIX_ORG + sizeof(k_pixel_prog) / 2u <= 32u, "lcd7: PIO2 has 32 in
 #define FB_WORDS             (FB_WORDS_PER_LINE * LCD_V_ACTIVE)
 #define FB_BYTES             (FB_WORDS * 4u)
 #define FB_PAGES             ((FB_BYTES + 4095u) / 4096u)
+
+/* Turned by 180 degrees (CONFIG_LCD_ROTATE_180, 47.8): the same frame, read
+ * backwards. The frame DMA starts at the last word and decrements
+ * (INCR_READ_REV, RP2350's addition to the DMA), and the pixel SM shifts left,
+ * taking each word's bit 31 first -- the frame's bottom-right pixel becomes the
+ * panel's top-left. Everything that draws, and every screenshot, still sees
+ * the frame as it was; only the glass shows it the other way up. */
+#if defined(CONFIG_LCD_ROTATE_180) && CONFIG_LCD_ROTATE_180
+#define FB_SCAN_START(fb)    ((uint32_t)(uintptr_t)&(fb)[FB_WORDS - 1u])
+#define FB_DMA_REV           (1u << 5)        /* INCR_READ_REV */
+#define PIX_SHIFT_RIGHT      0u               /* OUT_SHIFTDIR left: bit 31 first */
+#else
+#define FB_SCAN_START(fb)    ((uint32_t)(uintptr_t)(fb))
+#define FB_DMA_REV           0u
+#define PIX_SHIFT_RIGHT      (1u << 19)       /* OUT_SHIFTDIR right: bit 0 first */
+#endif
 _Static_assert(LCD_H_ACTIVE % 32u == 0, "lcd7: a line must be whole words");
 
 static uint16_t *g_table;         /* one heap page, never freed while the panel runs */
@@ -502,7 +518,7 @@ int lcd7_init(void) {
     }
     build_table();
     fb_fill(0);
-    g_fb_start = (uint32_t)(uintptr_t)g_fb;
+    g_fb_start = FB_SCAN_START(g_fb);
 
     /* PIO2: both programs, both state machines, all pins. */
     REG(PIO_CTRL) = 0;
@@ -530,7 +546,7 @@ int lcd7_init(void) {
      * first `out` autopulls framebuffer data rather than that count. */
     REG(PIO_SM1_CLKDIV) = 1u << 16;
     REG(PIO_SM1_EXECCTRL) = (PIX_WRAP_TOP << 12) | (PIX_WRAP_BOTTOM << 7);
-    REG(PIO_SM1_SHIFTCTRL) = (1u << 30) | (1u << 19) | (1u << 17);
+    REG(PIO_SM1_SHIFTCTRL) = (1u << 30) | PIX_SHIFT_RIGHT | (1u << 17);
     REG(PIO_SM1_PINCTRL) = (16u << 20) | ((uint32_t)PIN_DE << 15) | (uint32_t)PIN_DATA0;
     REG(PIO_SM1_INSTR) = 0xa06b;       /* mov pindirs, ~null : the 16 data pins out */
     REG(PIO_TXF1) = LCD_H_ACTIVE - 1u;
@@ -572,7 +588,7 @@ int lcd7_init(void) {
     REG(DMA_CH_REG(FB_CH, 0x0)) = g_fb_start;
     REG(DMA_CH_REG(FB_CH, 0x4)) = PIO_TXF1;
     REG(DMA_CH_REG(FB_CH, 0x8)) = FB_WORDS;
-    REG(DMA_CH_REG(FB_CH, 0xc)) = 1u | (2u << 2) | (1u << 4) | (RL_CH << 13) | (DREQ_PIO2_TX1 << 17);
+    REG(DMA_CH_REG(FB_CH, 0xc)) = 1u | (2u << 2) | (1u << 4) | FB_DMA_REV | (RL_CH << 13) | (DREQ_PIO2_TX1 << 17);
 
     REG(PIO_FDEBUG) = FDEBUG_TXSTALL_SM0 | FDEBUG_TXSTALL_SM1;   /* clear, then start */
     REG(PIO_CTRL) = 3u;                                          /* SM0 + SM1 */
@@ -596,7 +612,7 @@ int lcd7_init(void) {
                            ((LCD_H_PULSE + LCD_H_BACK + LCD_H_ACTIVE + LCD_H_FRONT) * LCD_LINES)),
            (unsigned long)((CONFIG_CLK_SYS_HZ / LCD_CYCLES_PER_PCLK * 10u /
                            ((LCD_H_PULSE + LCD_H_BACK + LCD_H_ACTIVE + LCD_H_FRONT) * LCD_LINES)) % 10u),
-           (unsigned long)g_fb_start);
+           (unsigned long)(uintptr_t)g_fb);
     return 0;
 }
 
@@ -613,11 +629,12 @@ void lcd7_report(void) {
             (fdebug & FDEBUG_TXSTALL_SM0) ? "SEEN" : "none",
             (unsigned long)(REG(PIO_SM1_ADDR) & 0x1fu),
             (fdebug & FDEBUG_TXSTALL_SM1) ? "SEEN" : "none");
-    cprintf("lcd: table DMA at 0x%08lx; frame DMA at 0x%08lx (%lu words left), fb 0x%08lx..0x%08lx\n",
+    cprintf("lcd: table DMA at 0x%08lx; frame DMA at 0x%08lx (%lu words left), fb 0x%08lx..0x%08lx%s\n",
             (unsigned long)REG(DMA_READ_ADDR),
             (unsigned long)REG(DMA_CH_REG(FB_CH, 0x0)),
             (unsigned long)(REG(DMA_CH_REG(FB_CH, 0x8)) & 0x0fffffffu),
-            (unsigned long)g_fb_start, (unsigned long)(g_fb_start + FB_BYTES));
+            (unsigned long)(uintptr_t)g_fb, (unsigned long)((uintptr_t)g_fb + FB_BYTES),
+            FB_DMA_REV ? ", scanned turned 180 degrees" : "");
 }
 
 #else

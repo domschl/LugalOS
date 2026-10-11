@@ -148,6 +148,9 @@ set(_optional_keys
     # builds drivers/lcd7_rp2350.c's content.
     CONFIG_LCD_DE_GPIO CONFIG_LCD_PCLK_GPIO CONFIG_LCD_DATA0_GPIO
     CONFIG_LCD_RST_GPIO CONFIG_LCD_BL_GPIO CONFIG_LCD_EN_GPIO
+    # 47.8: the panel scanned out turned by 180 degrees (1), for a board
+    # whose glass is mounted the other way up from its inscriptions.
+    CONFIG_LCD_ROTATE_180
     # 37.3a, plan/phase37_screen_layouts_and_apps.md: Lisp's node pool, when a
     # board wants other than user/lisp/lisp.c's per-target default.
     CONFIG_LISP_NODE_POOL

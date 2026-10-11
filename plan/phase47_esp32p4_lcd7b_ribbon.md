@@ -1004,6 +1004,39 @@ input.
   (section 10), not in a separate `lcd7b_esp32p4.c`: it needs the frame,
   the format switch and the scan-out control that file owns.
 
+## 6.9 What 47.8 found so far (2026-10-11)
+
+**The shared wire reordered bytes.** 47.8's screenshot tool fetches its
+shots over 9P on the console's own wire (`p9share`). Large reads failed
+about one time in two: a 1035-byte Rread arrived as two pieces whose
+lengths added up to 1035. The raw capture showed the reply's closing END
+arriving *before* its last bytes. Not noise and not baud error: the TX path
+reordered bytes. There were two causes, both in the console's per-hart TX
+batches (phase 23 X7), and both are now fixed in `drivers/uart_esp32p4.c`
+(the migration half in all three UART drivers):
+* **Migration.** A task moved from one hart to the other mid-frame left the
+  first part in the old hart's batch, then flushed the rest, END included,
+  from the new one. `uart_putc()` now *holds* its caller on its hart
+  (`sched_hold_current_on_hart()`, a saved affinity, without
+  `g_sched_lock`). The holds on a hart are given back once that hart has
+  nothing batched and nothing in flight.
+* **Two flushers on one hart.** The demux path writes the FIFO directly and
+  yields when it is full. The shell's idle `uart_has_char()` flushed the
+  batch too: it copied the first part of a reply, yielded, and the reply's
+  owner flushed the tail and the END past it. That path now drains the
+  batch in place, popping under the lock, so bytes leave in batch order
+  whoever drains them.
+* **Measured:** 10 of 10 fetches of 3 × 77 KB, against 1 of 8 before.
+  QEMU 484/484 (rv64-smp included), NANO 30/30, 7B 30/30.
+
+**The RP2350 panel turned by 180°** (owner, 2026-10-11: the glass was
+upside down relative to the board's inscriptions). `CONFIG_LCD_ROTATE_180`
+in the board file makes the scan-out read the frame backwards: the frame DMA
+decrements (`INCR_READ_REV`) and the pixel SM shifts MSB-first. The frame,
+the drawing code and the screenshots are unchanged. The 47.6 shot scenario is
+identical to the baseline, `test_rp2350` 32/32, and the owner confirmed the
+orientation on the glass.
+
 ## 7. Risks
 
 | Risk | Impact | Mitigation |

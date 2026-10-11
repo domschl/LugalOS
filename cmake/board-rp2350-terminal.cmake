@@ -130,6 +130,11 @@ set(CONFIG_LCD_DATA0_GPIO 24)
 set(CONFIG_LCD_RST_GPIO   41)
 set(CONFIG_LCD_BL_GPIO    44)
 set(CONFIG_LCD_EN_GPIO    45)
+# The panel's line 0 is at the edge with the board's inscriptions upside
+# down: read the right way round, the image has to be turned by 180 degrees
+# (the owner, 2026-10-11). Done in the scan-out (drivers/lcd7_rp2350.c): the
+# frame stays as drawn, so screenshots and everything that draws are unchanged.
+set(CONFIG_LCD_ROTATE_180 1)
 
 # Not declared yet, each with a pin already reserved by the board:
 #   UART1 GP8/9  -- hard-wired to the SP3485 RS485 transceiver (plan §7)
