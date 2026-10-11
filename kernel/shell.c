@@ -689,6 +689,11 @@ static void cmd_help(void) {
     cprintf("  usbkbdselftest  - USB descriptor parsing and keyboard report diffing (36.8)\n");
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)
     cprintf("  usbprobe        - Reset the PIO-USB port and read the device descriptor (if kbd is not running)\n");
+#endif
+#if defined(CONFIG_BOARD_ESP32P4) && defined(CONFIG_USBHOST_DWC2)
+    cprintf("  usb [regs]      - The OTG HS host port: controller, port, the last device's descriptors\n");
+#endif
+#if defined(USBKBD_HOST_PRESENT)
     cprintf("  kbd             - The USB keyboard task: devices found, hub ports, counters\n");
     cprintf("  kbdlog [s]      - Print key make/break events for s seconds (default 30)\n");
 #endif
@@ -3677,6 +3682,13 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "usbprobe loop") == 0) {
         piousb_loopback();
         return;
+#endif
+#if defined(CONFIG_BOARD_ESP32P4) && defined(CONFIG_USBHOST_DWC2)
+    } else if (strcmp(cmd_line, "usb") == 0 || strncmp(cmd_line, "usb ", 4) == 0) {
+        usbhost_command(cmd_line + 3);
+        return;
+#endif
+#if defined(USBKBD_HOST_PRESENT)
     } else if (strcmp(cmd_line, "kbd") == 0) {
         usbkbd_report();
         return;

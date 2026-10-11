@@ -692,6 +692,10 @@ set(SOURCES
     # 36.8: a boot keyboard above the transaction interface -- descriptor
     # parsing and report diffing, checked on QEMU by `usbkbdselftest`.
     drivers/usbkbd.c
+    # 47.9: enumeration, the hub, the boot keyboard and its console input
+    # above any transaction port (drivers/usbkbd_task.h); empty but for the
+    # reports where no board declares a port.
+    drivers/usbkbd_host.c
     # D1 (plan/phase17_clock_ui_and_dcf77.md): the DCF-77 frame decoder is
     # target-independent -- it consumes timestamped samples, never a register
     # -- so it is built and self-tested on every target, including the QEMU
@@ -1002,6 +1006,10 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
     list(APPEND SOURCES drivers/dsi_esp32p4.c)
     # 47.7: the panel terminal (portable since 47.6) on that panel.
     list(APPEND SOURCES drivers/lcdterm.c)
+    # 47.9: the OTG HS controller as a USB host, a port for
+    # drivers/usbkbd_host.c. Empty unit unless the board file asks for it
+    # (CONFIG_USBHOST_DWC2).
+    list(APPEND SOURCES drivers/usbhost_esp32p4.c)
 elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
     # 45.4, plan/phase45_esp32c6.md. One driver again: the console, on the
     # USB-Serial/JTAG peripheral. No block device and no display -- the same stated
@@ -1109,6 +1117,7 @@ set_source_files_properties(
     drivers/piousb_rp2350.c
     # 36.8: the kbd task's U-mode code.
     drivers/usbkbd.c
+    drivers/usbkbd_host.c
     drivers/usbkbd_rp2350.c
     PROPERTIES COMPILE_OPTIONS -fno-jump-tables)
 

@@ -173,6 +173,10 @@ set(_optional_keys
     # panel -- its reset and backlight GPIOs. Absent: no display, and
     # drivers/dsi_esp32p4.c is an empty unit.
     CONFIG_DSI_LCD_RST_GPIO CONFIG_DSI_LCD_BL_GPIO
+    # 47.9: the ESP32-P4's OTG HS controller as a USB host (the LCD-7B's
+    # Type-A port), and the keyboard task on it. Absent: no USB host, and
+    # drivers/usbhost_esp32p4.c is an empty unit.
+    CONFIG_USBHOST_DWC2
     # 38.6: the largest /ram0 a mount may ask for, in KB, when a board wants
     # other than drivers/ramdisk.c's per-target default.
     CONFIG_RAMDISK_MAX_KB

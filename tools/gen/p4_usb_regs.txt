@@ -1,0 +1,9 @@
+# drivers/usbhost_esp32p4.c, 47.9. `python3 tools/gen/p4_regs.py < tools/gen/p4_usb_regs.txt`
+# The OTG HS core's bus clock and the UTMI PHY's reference clock and resets
+# (IDF hal/usb_utmi_ll.h: _usb_utmi_ll_enable_bus_clock, _reset_register).
+HP_SYS_CLKRST_SOC_CLK_CTRL1_REG: HP_SYS_CLKRST_REG_USB_OTG20_SYS_CLK_EN
+LP_CLKRST_HP_USB_CLKRST_CTRL1_REG: LP_CLKRST_RST_EN_USB_OTG20_PHY LP_CLKRST_RST_EN_USB_OTG20 LP_CLKRST_USB_OTG20_PHYREF_CLK_SRC_SEL LP_CLKRST_USB_OTG20_PHYREF_CLK_EN
+# usb_utmi_ll_enable_precise_detection(): the PHY's SUSPENDM, not tied high on the P4
+v3! HP_SYSTEM_SYS_USBOTG20_CTRL_REG: HP_SYSTEM_SYS_OTG_SUSPENDM
+# v3+: the 15k D+/D- pulldowns of host mode are software's (usb_utmi_ll_enable_data_pulldowns)
+v3! LP_SYSTEM_REG_HP_USB_OTGHS_PHY_CTRL_REG: LP_SYSTEM_REG_HP_UTMIOTG_DPPULLDOWN LP_SYSTEM_REG_HP_UTMIOTG_DMPULLDOWN

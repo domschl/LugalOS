@@ -1036,8 +1036,18 @@ int lock_selftest(void) {
          * different and far more serious claim. The assertion is unchanged. */
         for (int i = 0; i < 400 && klog_gaps() == gaps_before; i++) task_sleep_ms(5);
 
+        /* Exactly one gap on one hart: nothing can drain while the burst
+         * holds a spinlock there. With a second hart, klogd may still be
+         * awake on it from the records printed just before (the burst
+         * sends no wake, but needs none to be overtaken): it drains
+         * concurrently and is lapped once per pass, and each lap is
+         * reported as a gap of its own. Seen on rv64-smp, 2026-10-11:
+         * three gaps, at records 1->3, 3->12 and 12->1125, and the check
+         * failed for reporting the loss three times. At least one is the
+         * claim there. */
+        uint32_t gaps = klog_gaps() - gaps_before;
         check("log burst: the producer never blocked, and the loss is reported",
-              klog_gaps() == gaps_before + 1 && klog_gap_bytes() > 0);
+              (smp_harts_online() > 1 ? gaps >= 1 : gaps == 1) && klog_gap_bytes() > 0);
     }
 
     /* The fault total includes the three this selftest caused on purpose,

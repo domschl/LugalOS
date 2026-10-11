@@ -136,6 +136,8 @@ set(CONFIG_DSI_LCD_BL_GPIO  32)
 #   pads (USBD_N/USBD_P). VBUS_OUT comes from U2, a DIO7003 current-limited
 #   load switch fed from Core_5V, whose EN is pulled up to its input by R2 10K
 #   (R11 not fitted): the port's 5 V is ALWAYS ON, with no GPIO.
+#   The OTG HS core as host, and the `kbd` task on it (drivers/usbhost_esp32p4.c).
+set(CONFIG_USBHOST_DWC2 1)
 #
 # USB1.1 Type-C [sch H2] (47.13): the P4's USB 1.1 FS pads (USB1P1_N/P), i.e.
 #   USB-Serial/JTAG or OTG FS.

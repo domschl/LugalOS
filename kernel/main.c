@@ -79,12 +79,13 @@
 #include "arch/clk_esp32p4.h"    /* 34.3: the regulator trim */
 #endif
 
+#include "drivers/usbkbd_task.h"
+
 #if defined(CONFIG_BOARD_RP2350)
 #include "arch/riscv/rp2350/binary_info.h"
 #include "drivers/clocks_rp2350.h"
 #include "drivers/lcd7.h"
 #include "drivers/piousb.h"
-#include "drivers/usbkbd_task.h"
 
 extern int  heartbeat_task_start(void);
 extern char __binary_info_start;
@@ -569,8 +570,9 @@ void kernel_main(void) {
      * scanned-out frame at most once per frame from here on. */
     (void)dsi_lcd_term_task_start();
 #endif
-#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)
-    /* 36.8: the USB keyboard, as its own U-mode task over the engine. */
+#if defined(USBKBD_HOST_PRESENT)
+    /* 36.8: the USB keyboard, as its own U-mode task over the engine; 47.9:
+     * a kernel task over the OTG HS controller on the LCD-7B. */
     (void)usbkbd_start();
 #endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638

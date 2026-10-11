@@ -277,8 +277,8 @@ apart from width.
 
 ### Keyboard
 
-**47.9 — USB OTG HS host controller (DWC2), bare-metal.** *(Priority 1 after
-the GUI; sources in §5.1.)*
+**47.9 — USB OTG HS host controller (DWC2), bare-metal.** **DONE 2026-10-11
+(§6.10).** *(Priority 1 after the GUI; sources in §5.1.)*
 Power and clock the OTG HS core and its UTMI PHY, then do host-mode init,
 port reset, speed detection (LS/FS keyboards behind the HS root port need
 split transactions only through a hub; a directly attached LS/FS keyboard
@@ -294,7 +294,7 @@ path are shared and not copied.
 prints its device and configuration descriptors (parsed by the existing
 `usb_parse_config()`).
 
-**47.10 — Keyboard into the ribbon.**
+**47.10 — Keyboard into the ribbon.** **DONE 2026-10-11 (§6.10).**
 The `kbd` task on the new transport: boot protocol, keymap, auto-repeat, and
 the `Cmd`/Super hotkeys of phase 44 §3.1, delivered to the focused window's
 `rx_fifo` as on the RP2350. A hub with a keyboard behind it is a stretch
@@ -1084,6 +1084,124 @@ decrements (`INCR_READ_REV`) and the pixel SM shifts MSB-first. The frame,
 the drawing code and the screenshots are unchanged. The 47.6 shot scenario is
 identical to the baseline, `test_rp2350` 32/32, and the owner confirmed the
 orientation on the glass.
+
+## 6.10 What 47.9 found: the keyboard enumerates on the first flash (2026-10-11)
+
+**The controller.** OTG HS core 4.30a, 16 host channels, 896 words of FIFO
+RAM (GHWCFG2/3), at 0x50000000. The bring-up is IDF's sequence, step by
+step:
+1. **Clocks and resets.** The core's bus clock goes on, and so does the
+   UTMI PHY's 48 MHz reference. The core and the PHY are pulsed out of
+   reset.
+2. **SUSPENDM** is forced high in HP_SYSTEM. It is not tied high in
+   hardware, and without it a detach goes unseen (IDF-9953).
+3. **UTMI `fc_06`:** LS in parallel mode, with keep-alives.
+4. **The 15k D+/D- pulldowns.** On v3 these belong to LP_SYSTEM, not to the
+   controller, and host mode needs them.
+5. **The core:** soft reset (from v4.20a, CSRST_DONE says it is over); no
+   B-valid override; PHY clock running; UTMI+ at 16 bits, with 5 clocks of
+   timeout calibration; forced host mode; FIFOs of 128/64/64 words; port
+   power on.
+
+The system registers are generated
+(`tools/gen/p4_usb_regs.txt` → `drivers/include/drivers/esp32p4_usb_regs.h`).
+SUSPENDM and the pulldowns are `v3!` registers: v1 names SUSPENDM's register
+differently and has no software pulldowns.
+
+**One transaction per channel, polled, slave mode.** The phase 36 host
+above the RP2350's PIO-USB engine speaks transactions: SETUP, IN with an
+expected toggle, OUT, and a root reset. Each comes back as ACK/DATA, NAK,
+STALL, timeout or toggle error. A DWC2 channel set up for one packet with
+the given PID, and stopped at its first outcome, gives exactly that. So the
+port interface is that one call (`usbkbd_port_xfer()`), plus a clock, a
+sleep, and "is the port still up".
+
+Channel 0 does every transaction. HCINT maps onto the answers: XferCompl is
+OK, NAK is NAK, STALL is STALL, XactErr is a timeout, DTErr is a toggle
+error, and babble is a protocol error. The keyboard's interrupt endpoint is
+polled through the non-periodic queue, programmed as bulk: the task's own
+clock keeps bInterval, and on the wire an IN is an IN.
+
+On the HS root port, FS/LS needs nothing set: IDF leaves HCFG/HFIR alone
+for the UTMI PHY. LSPDDEV is only for an LS device behind an FS hub. A
+device behind an HS hub needs split transactions, which is still open
+(47.10 stretch goal).
+
+**Shared, not copied.** Everything above the transaction moved out of
+`drivers/usbkbd_rp2350.c` into `drivers/usbkbd_host.c`, byte for byte:
+enumeration, the hub, boot-report polling, the console input source,
+`kbd` / `kbd desc` / `kbdlog`. `usbkbd_rp2350.c` is now the PIO-USB port
+only. On the RP2350 the shared half still runs in U-mode from `.kbdtext`:
+* `check_umode_text.py`: 16 functions, all inside.
+* Its relocations are calls and branches only, with no data references.
+* The section is 3544 of 8192 bytes, 36 more than before.
+
+On the P4 the task is a kernel task, because the P4 has no U-mode text
+region yet (as with lcdterm, §6.8).
+
+**Plan deviation.** §5.1 said to take TinyUSB's `dwc2_type.h` verbatim. It
+needs TinyUSB's `TU_ATTR_PACKED` / `TU_VERIFY_STATIC`, so the offsets and
+bits this driver uses are `#define`s at the top of `usbhost_esp32p4.c`
+instead. They cite `dwc2_type.h` (MIT) and IDF's `usb_dwc_ll.h`.
+
+**On the glass, first flash:**
+```
+usb: OTG HS core 4.30a, 16 host channels, FIFO 896 words; slave mode, polled
+usb: port connected, enabled, full speed
+kbd:   addr 1 at the root: 04d9:0141 class 00, full speed BOOT KEYBOARD iface 0 ep 1, 8 bytes every 1 ms
+usb:   USB 1.10, class 00/00/00, EP0 64 bytes, 04d9:0141 release 1.16, 1 configuration(s)
+usb:   configuration 1: 91 bytes, 3 interface(s), bus-powered, remote wakeup, 100 mA
+usb:   boot keyboard: interface 0, interrupt IN endpoint 1, 8 bytes every 1 ms
+```
+The keyboard is a Holtek 04d9:0141, full speed, with three HID interfaces;
+the boot keyboard is interface 0. Idle, it NAKs every 1 ms poll.
+**Cost:** a polled transaction takes 9 µs from programming the channel to
+its halt. At bInterval 1 ms that is 0.43% of hart 0 (`usb` reports it).
+`usb regs` dumps the core and the system registers, for a diff against an
+IDF build if a later device stalls. Not needed so far.
+
+**Regressions:**
+* 7B 30/30, NANO 30/30, RP2350 32/32.
+* The RP2350's PIO-USB port finds a device that never answers
+  `GET_DESCRIPTOR(device, 8)` (status 3, timeout). The previous commit's
+  build does the same, so this is not a regression. It is whatever is
+  plugged in there now.
+
+**47.10 came with it.** The shared host brought the RP2350's kernel half
+along: the event ring is translated by `drivers/usbkbd.c` (US keymap,
+typematic, compose), queued as console input, and the hotkeys go to
+`console_hotkey()`. So the keyboard was the 7B's console input from the 47.9
+build on, with no code of its own. The owner checked it on the board
+(2026-10-11), and all of it worked:
+* typing at `lsh>`, with auto-repeat;
+* Cmd+Enter, Cmd+Left/Right, Cmd+Ctrl+Right, Cmd+1 and Cmd+W in the ribbon;
+* unplugging the keyboard and plugging it back in.
+
+What the counters recorded afterwards:
+* One root detach and two enumerations.
+* One failure: the poll in flight at the unplug (status 3, a timeout,
+  which ends the session).
+* 92 reports, 100 key events, 0 rollovers.
+* About 1.07 million polls, almost all NAKs, at 10 µs each: 0.99% of
+  hart 0 since boot.
+
+`usbkbdselftest` and `keyselftest` pass in the QEMU suite.
+
+Still open: a keyboard behind a high-speed hub (split transactions, the
+stretch goal).
+
+**A self-test fixed on the way.** With these changes the QEMU suite
+failed twice, on rv64-smp's `lockselftest` log burst. HEAD alone passed
+(484/484), and the SMP target alone passed 3/3 on both builds. The check
+assumes "no consumer running" during the burst, but its spinlock masks
+interrupts only on hart 0. `klogd`, still awake on hart 1 from the
+previous check's records, drained concurrently and was lapped three times
+(gaps at records 1→3, 3→12 and 12→1125). It reported the loss three times,
+and the check demanded exactly one gap. Now it demands exactly one on a
+single hart and at least one with more than one hart (`kernel/lock.c`). The
+moved image layout only made the overlap likelier.
+
+Afterwards: QEMU 484/484, 7B 30/30, NANO 30/30, RP2350 32/32.
 
 ## 7. Risks
 

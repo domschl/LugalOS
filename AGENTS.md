@@ -187,6 +187,13 @@ for both roles by itself.
   checker|grid|text|ramp`, `lcd verify` (exact readback), `lcd fps`,
   `lcd bench`, `lcd wbtest` (cache coherence, needs eyes). Drawing must end
   with `dsi_lcd_fb_flush()`. Font glyph rows are LSB-first (bit 0 = left).
+* USB host (47.9, `drivers/usbhost_esp32p4.c`): the Type-A port is the OTG HS
+  core (DWC2 4.30a), polled, slave mode, one transaction per channel; it is
+  a *port* for the shared keyboard host `drivers/usbkbd_host.c` (also the
+  RP2350's, over PIO-USB). `usb` shows the controller, the port and the last
+  device's descriptors; `usb regs` dumps registers for an IDF diff; `kbd`,
+  `kbdlog [s]` as on the RP2350. Devices behind a high-speed hub need split
+  transactions, not done yet.
 * Flash runs at IDF's 80 MHz QIO (stage 2, `xip_esp32p4.c`). Never call the
   ROM's `spi_flash_attach()` from the running kernel: it drops XIP to
   10 MHz single-line, and cache misses then hit the CPU's DBUS timeout
