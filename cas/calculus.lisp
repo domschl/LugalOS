@@ -242,6 +242,38 @@
                     (cons '+ (map (lambda (t) (cas-integrate-term t var)) (cdr expanded)))
                     (list 'integrate (list '* u v) var))))))))
 
+(define (cas-integrate-quadratic-frac num den var)
+  (let* ((deg-d (poly-degree den var))
+         (deg-n (poly-degree num var)))
+    (if (and (= deg-d 2) (<= deg-n 1))
+        (let* ((cs-d (poly-coeffs den var))
+               (cs-n (poly-coeffs num var))
+               (ad (car cs-d))
+               (bd (cadr cs-d))
+               (cd (caddr cs-d))
+               (B (if (= deg-n 1) (car cs-n) 0))
+               (C (if (= deg-n 1) (cadr cs-n) (car cs-n))))
+          (if (and (equal? bd 0) (number? ad) (> ad 0) (number? cd) (> cd 0))
+              (let* ((a2 (/ cd ad))
+                     (a-root (isqrt a2))
+                     (exact-a? (and (= (* a-root a-root) a2) (> a-root 0)))
+                     (a-val (if exact-a? a-root (list 'sqrt a2)))
+                     (term-log (if (not (equal? B 0))
+                                   (list '* (list '/ B (list '* 2 ad))
+                                         (list 'log den))
+                                   0))
+                     (term-atan (if (not (equal? C 0))
+                                    (list '* (list '/ C (list '* ad a-val))
+                                          (list 'atan (list '/ var a-val)))
+                                    0)))
+                (cond ((and (not (equal? B 0)) (not (equal? C 0)))
+                       (list '+ term-log term-atan))
+                      ((not (equal? B 0)) term-log)
+                      ((not (equal? C 0)) term-atan)
+                      (else 0)))
+              #f))
+        #f)))
+
 (define (cas-integrate-term term var)
   (cond
     ;; Constant with respect to var
@@ -272,20 +304,7 @@
          ((not (cas-has-var? exp var))
           (cond
             ((equal? exp -1)
-             (let ((lin (cas-match-linear base var)))
-               (cond
-                 (lin
-                  (list '/ (list 'log base) (car lin)))
-                 ;; 1 / (x^2 + 1) or 1 / (1 + x^2) -> atan(x)
-                 ((or (equal? base (list '+ 1 (list '^ var 2)))
-                      (equal? base (list '+ (list '^ var 2) 1)))
-                  (list 'atan var))
-                 ;; 1 / sqrt(1 - x^2) -> asin(x)
-                 ((or (equal? base (list 'sqrt (list '+ 1 (list '* -1 (list '^ var 2)))))
-                      (equal? base (list 'sqrt (list '- 1 (list '^ var 2)))))
-                  (list 'asin var))
-                 (else
-                  (list 'integrate term var)))))
+             (cas-integrate-term (list '/ 1 base) var))
             (else
              (let ((lin (cas-match-linear base var)))
                (if lin
@@ -314,18 +333,27 @@
             (cond
               (lin
                (list '/ (list 'log den) (car lin)))
-              ;; 1 / (x^2 + 1) or 1 / (1 + x^2) -> atan(x)
-              ((or (equal? den (list '+ 1 (list '^ var 2)))
-                   (equal? den (list '+ (list '^ var 2) 1)))
-               (list 'atan var))
               ;; 1 / sqrt(1 - x^2) -> asin(x)
               ((or (equal? den (list 'sqrt (list '+ 1 (list '* -1 (list '^ var 2)))))
                    (equal? den (list 'sqrt (list '- 1 (list '^ var 2)))))
                (list 'asin var))
               (else
-               (list 'integrate term var)))))
+               (let ((qf (cas-integrate-quadratic-frac num den var)))
+                 (if qf
+                     qf
+                     ;; Try partial fraction decomposition
+                     (let ((ap (apart num den var)))
+                       (if (and (pair? ap) (not (and (eq? (car ap) '/) (equal? (caddr ap) den))))
+                           (cas-integrate-term ap var)
+                           (list 'integrate term var)))))))))
          (else
-          (list 'integrate term var)))))
+          (let ((qf (cas-integrate-quadratic-frac num den var)))
+            (if qf
+                qf
+                (let ((ap (apart num den var)))
+                  (if (and (pair? ap) (not (and (eq? (car ap) '/) (equal? (caddr ap) den))))
+                      (cas-integrate-term ap var)
+                      (list 'integrate term var)))))))))
 
     ;; Exponentials (exp u)
     ((and (pair? term) (eq? (car term) 'exp))

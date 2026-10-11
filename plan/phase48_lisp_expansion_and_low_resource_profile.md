@@ -202,10 +202,26 @@ To expand Lisp's capabilities (macros, vectors, hardware control, CAS power seri
   - Enhanced C `prim_map` and `prim_for_each` in [`user/lisp/lisp.c`](file:///home/dsc/Source/gith/domschl/lugalos/user/lisp/lisp.c) to support parallel multi-list mapping.
   - Verified on QEMU `rv32` and live RP2350 silicon.
 
-#### 48.3d: Partial Fractions & Calculus Enhancements
-* **Design:**
-  - `(apart P Q var)`: Heuristic rational decomposition for $\frac{P(x)}{Q(x)}$ with linear and quadratic irreducible factors.
-  - `(integrate expr var)` extension: Enables exact symbolic integration of rational functions resulting in $\ln |x - a|$ or $\arctan(x)$.
+#### 48.3d: Partial Fractions, Higher-Order Polynomials & Rational Calculus — **COMPLETED**
+* **Design & Status:**
+  - Implemented in [`cas/poly.lisp`](file:///home/dsc/Source/gith/domschl/lugalos/cas/poly.lisp):
+    - `(cas-divisors n)`: exact integer factorization of lead and constant terms.
+    - `(cas-poly-clear-denoms coeffs)`: fractional denominator clearance via built-in `gcd`, `numerator`, `denominator`.
+    - `(cas-poly-rational-roots p var)`: Rational Root Theorem (Gauss's Lemma) with synthetic division / Horner's rule (`poly-eval-horner`) for exact rational root finding.
+    - `(cas-poly-biquadratic? p var)` and `(cas-factor-biquadratic p var)`: degree-4 biquadratic factoring ($x^4 + ax^2 + b$).
+    - `(cas-poly-factor-list p var)` and `(poly-factor expr var)`: factors polynomials into linear and irreducible quadratic factors over $\mathbb{Q}$ and $\mathbb{R}$.
+    - `(cas-gauss-elim M n)`: exact rational Gauss-Jordan elimination for linear systems.
+    - `(apart expr [var])`: general partial fraction decomposition:
+      - Distinct linear factors fast-path via Heaviside cover-up method.
+      - General Method of Evaluation / Interpolation: evaluates basis cofactor polynomials $\frac{D(x)}{F_j^p(x)}$ at $m$ sample points to solve undetermined coefficients for degrees 3, 4, and higher, completely avoiding expensive AST expansion and symbol naming collisions.
+  - Implemented in [`cas/calculus.lisp`](file:///home/dsc/Source/gith/domschl/lugalos/cas/calculus.lisp):
+    - `(cas-integrate-quadratic-frac num den var)`: integrates $\frac{1}{x^2 + a^2} \to \frac{1}{a}\arctan(x/a)$ and $\frac{x}{x^2 + a^2} \to \frac{1}{2}\ln(x^2 + a^2)$.
+    - `cas-integrate-term` for rational expressions and negative powers ($(\dots)^{-1}$): decomposes rational functions via `apart` and integrates each term into exact $\ln$ and $\arctan$ expressions.
+  - Implemented in [`cas/solve.lisp`](file:///home/dsc/Source/gith/domschl/lugalos/cas/solve.lisp):
+    - `(solve-cubic eq var)`: reduces cubic equations via rational root discovery to quadratic equations.
+    - `(solve-quartic eq var)`: solves biquadratic equations and reduces quartic equations via rational root discovery to cubic equations.
+    - Extended `solve` dispatch to handle degrees 3, 4, and higher.
+  - Verified on QEMU `rv32` (all 72 suite tests passing) and flashed and verified on live RP2350-terminal silicon.
 
 ---
 

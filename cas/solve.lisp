@@ -78,7 +78,87 @@
                      (list (cons var sol2) (cons var sol1))
                      (list (cons var sol1) (cons var sol2)))))))))))
 
-;;; --- 4. General Univariate Solver Dispatch ---
+;;; --- 4. Cubic & Quartic Univariate Solvers ---
+
+(define (solve-cubic E var)
+  (let ((rts (cas-poly-rational-roots E var)))
+    (if (pair? rts)
+        (let* ((r (car rts))
+               (lin (if (= r 0) var (list '- var r)))
+               (div-res (poly-div E lin var))
+               (Q (car div-res))
+               (sub-sols (solve-quadratic Q var)))
+          (cons (cons var r) sub-sols))
+        ;; Check pure power a * var^3 + d = 0
+        (let ((coeffs (poly-coeffs E var)))
+          (if (and (= (length coeffs) 4)
+                   (equal? (list-ref coeffs 1) 0)
+                   (equal? (list-ref coeffs 2) 0))
+              (let* ((lead (car coeffs))
+                     (const-term (list-ref coeffs 3))
+                     (sol (simplify (list '^ (list '/ (list '* -1 const-term) lead) 1/3))))
+                (list (cons var sol)))
+              (list 'solve E var))))))
+
+(define (solve-quartic E var)
+  (cond
+    ;; Biquadratic: a * var^4 + b * var^2 + c = 0
+    ((cas-poly-biquadratic? E var)
+     (let* ((coeffs (poly-coeffs E var))
+            (a (list-ref coeffs 0))
+            (b (list-ref coeffs 2))
+            (c (list-ref coeffs 4))
+            (quad-eq (list '+ (list '* a (list '^ 'u_bi 2)) (list '* b 'u_bi) c))
+            (u-sols (solve-quadratic quad-eq 'u_bi)))
+       (let loop ((sols u-sols) (acc '()))
+         (if (null? sols)
+             acc
+             (let ((u-val (cdar sols)))
+               (cond
+                 ((equal? u-val 0)
+                  (loop (cdr sols) (cons (cons var 0) acc)))
+                 ((and (number? u-val) (> u-val 0))
+                  (let ((s (isqrt u-val)))
+                    (if (= (* s s) u-val)
+                        (loop (cdr sols) (cons (cons var s) (cons (cons var (- s)) acc)))
+                        (loop (cdr sols) (cons (cons var (list 'sqrt u-val))
+                                               (cons (cons var (list '* -1 (list 'sqrt u-val))) acc))))))
+                 ((and (number? u-val) (< u-val 0))
+                  (let* ((pos (- u-val))
+                         (s (isqrt pos)))
+                    (if (= (* s s) pos)
+                        (loop (cdr sols) (cons (cons var (list '* s 'i))
+                                               (cons (cons var (list '* (- s) 'i)) acc)))
+                        (loop (cdr sols) (cons (cons var (list '* 'i (list 'sqrt pos)))
+                                               (cons (cons var (list '* -1 (list '* 'i (list 'sqrt pos)))) acc))))))
+                 (else
+                  (loop (cdr sols) (cons (cons var (list 'sqrt u-val))
+                                         (cons (cons var (list '* -1 (list 'sqrt u-val))) acc))))))))))
+    (else
+     ;; Rational root search
+     (let ((rts (cas-poly-rational-roots E var)))
+       (if (pair? rts)
+           (let* ((r (car rts))
+                  (lin (if (= r 0) var (list '- var r)))
+                  (div-res (poly-div E lin var))
+                  (C (car div-res))
+                  (sub-sols (solve-cubic C var)))
+             (cons (cons var r) sub-sols))
+           ;; Check pure power a * var^4 + d = 0
+           (let* ((coeffs (poly-coeffs E var))
+                  (lead (car coeffs))
+                  (const-term (car (reverse coeffs)))
+                  (all-mid-zero? (let check ((m (cdr (reverse (cdr coeffs)))))
+                                   (cond ((null? m) #t)
+                                         ((not (equal? (car m) 0)) #f)
+                                         (else (check (cdr m)))))))
+             (if all-mid-zero?
+                 (let* ((base (simplify (list '/ (list '* -1 const-term) lead)))
+                        (root (simplify (list '^ base 1/4))))
+                   (list (cons var root) (cons var (list '* -1 root))))
+                 (list 'solve E var))))))))
+
+;;; --- 5. General Univariate Solver Dispatch ---
 
 (define (solve eq var)
   (let* ((E (simplify (expand (cas-normalize-eq eq))))
@@ -87,22 +167,21 @@
            (solve-linear E var))
           ((= deg 2)
            (solve-quadratic E var))
+          ((= deg 3)
+           (solve-cubic E var))
+          ((= deg 4)
+           (solve-quartic E var))
           ((= deg 0)
            (if (equal? E 0) 'all 'none))
           (else
-           ;; Check for simple monomial power: a * var^n + c = 0
-           (let ((coeffs (poly-coeffs E var)))
-             (let ((lead (car coeffs))
-                   (const-term (car (reverse coeffs)))
-                   (mid-zeros?
-                    (let loop ((rest (cdr (reverse (cdr coeffs)))))
-                      (cond ((null? rest) #t)
-                            ((not (equal? (car rest) 0)) #f)
-                            (else (loop (cdr rest)))))))
-               (if mid-zeros?
-                   (let ((sol (simplify (list '^ (list '/ (list '* -1 const-term) lead) (list '/ 1 deg)))))
-                     (list (cons var sol)))
-                   (list 'solve eq var))))))))
+           (let ((rts (cas-poly-rational-roots E var)))
+             (if (pair? rts)
+                 (let* ((r (car rts))
+                        (lin (if (= r 0) var (list '- var r)))
+                        (div-res (poly-div E lin var))
+                        (sub-sols (solve (car div-res) var)))
+                   (cons (cons var r) sub-sols))
+                 (list 'solve eq var)))))))
 
 ;;; --- 5. Linear Systems & Exact Gaussian Elimination ---
 

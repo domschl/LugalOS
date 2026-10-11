@@ -134,11 +134,22 @@ def run_tests() -> int:
             "(matrix-solve '((1 2) (3 4)) '(5 11))\n"
             "(vector-dot '(1 2 3) '(4 5 6))\n"
             "(vector-cross '(1 0 0) '(0 1 0))\n"
+            ";; --- 16. Higher Order Polynomials (48.3d) ---\n"
+            "(load \"/sd0/cas/solve.lisp\")\n"
+            "(apart '(/ 1 (* (- x 1) (- x 2))) 'x)\n"
+            "(apart '(/ 1 (* (- x 1) (- x 2) (- x 3))) 'x)\n"
+            "(apart '(/ 1 (- (^ x 4) 1)) 'x)\n"
+            "(poly-factor '(- (^ x 3) (* 6 (^ x 2)) (* -11 x) 6) 'x)\n"
+            "(poly-factor '(- (^ x 4) 1) 'x)\n"
+            "(solve '(= (+ (^ x 3) (* -6 (^ x 2)) (* 11 x) -6) 0) 'x)\n"
+            "(solve '(= (+ (^ x 4) (* -5 (^ x 2)) 4) 0) 'x)\n"
+            "(integrate '(/ 1 (- (^ x 4) 1)) 'x)\n"
+            "(integrate '(/ 1 (- (^ x 3) x)) 'x)\n"
             "(display \"TEST_PHASE48_DONE\\n\")\n"
             "exit\n"
         )
 
-        ok, raw_log = session.send_and_expect(test_script, r"TEST_PHASE48_DONE", timeout=20.0)
+        ok, raw_log = session.send_and_expect(test_script, r"TEST_PHASE48_DONE", timeout=25.0)
         if not ok:
             print("FAILED: Did not receive TEST_PHASE48_DONE sentinel.")
             print("Log snippet:\n", raw_log[-2000:] if len(raw_log) > 2000 else raw_log)
@@ -217,6 +228,16 @@ def run_tests() -> int:
             ("matrix-solve", r"=> \(1 2\)"),
             ("vector-dot", r"=> 32"),
             ("vector-cross", r"=> \(0 0 1\)"),
+            # Milestone 48.3d Higher Order Polynomials
+            ("apart deg 2", r"\(\^ \(\+ -2 x\) -1\).*(\* -1 \(\^ \(\+ -1 x\) -1\))"),
+            ("apart deg 3 cubic", r"1/2 \(\^ \(\+ -3 x\) -1\).*-1 \(\^ \(\+ -2 x\) -1\).*1/2 \(\^ \(\+ -1 x\) -1\)"),
+            ("apart deg 4 quartic", r"1/4 \(\^ \(\+ -1 x\) -1\).*-1/4 \(\^ \(\+ 1 x\) -1\).*-1/2 \(\^ \(\+ 1 \(\^ x 2\)\) -1\)"),
+            ("poly-factor cubic", r"\(\* \(\+ -3 x\) \(- x 2\) \(- x 1\)"),
+            ("poly-factor quartic", r"\(\* \(\+ 1 \(\^ x 2\)\) \(- x 1\) \(- x -1\)"),
+            ("solve cubic", r"=> \(\(x \. 1\) \(x \. 2\) \(x \. 3\)\)"),
+            ("solve quartic biquadratic", r"=> \(\(x \. 2\) \(x \. -2\) \(x \. 1\) \(x \. -1\)\)"),
+            ("integrate quartic rational", r"-1/2 \(atan x\).*1/4 \(log \(\+ -1 x\)\).*-1/4 \(log \(\+ 1 x\)\)"),
+            ("integrate cubic rational", r"-1 \(log x\).*1/2 \(log \(\+ -1 x\)\).*1/2 \(log \(\+ 1 x\)\)"),
         ]
 
         print("\n--- Test Results ---")
