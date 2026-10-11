@@ -598,6 +598,10 @@ static void gc_drain(int *sp) {
                 gc_push(sp, v->u.ratio.num);
                 gc_push(sp, v->u.ratio.den);
                 break;
+            case LISP_COMPLEX:
+                gc_push(sp, v->u.complex.real);
+                gc_push(sp, v->u.complex.imag);
+                break;
             case LISP_PAIR:
                 gc_push(sp, v->u.pair.car);
                 gc_push(sp, v->u.pair.cdr);
@@ -1309,7 +1313,7 @@ static lisp_val_t *lisp_apply(lisp_val_t *fn, lisp_val_t *args, lisp_val_t *env)
 #define BIGNUM_MAX_LIMBS 64
 
 static inline bool is_number_val(const lisp_val_t *v) {
-    return v && (v->type == LISP_INT || v->type == LISP_BIGNUM || v->type == LISP_RATIO);
+    return v && (v->type == LISP_INT || v->type == LISP_BIGNUM || v->type == LISP_RATIO || v->type == LISP_COMPLEX);
 }
 
 static inline int bn_normalize(const uint32_t *limbs, int len) {
@@ -1964,6 +1968,7 @@ static bool num_is_zero(const lisp_val_t *v) {
     if (v->type == LISP_INT) return v->u.i == 0;
     if (v->type == LISP_BIGNUM) return v->u.bignum.len == 0;
     if (v->type == LISP_RATIO) return num_is_zero(v->u.ratio.num);
+    if (v->type == LISP_COMPLEX) return num_is_zero(v->u.complex.real) && num_is_zero(v->u.complex.imag);
     return false;
 }
 
@@ -1975,7 +1980,25 @@ static bool num_is_negative(const lisp_val_t *v) {
     return false;
 }
 
+static inline bool is_real_val(const lisp_val_t *v) {
+    if (!v) return false;
+    if (v->type == LISP_INT || v->type == LISP_BIGNUM || v->type == LISP_RATIO) return true;
+    if (v->type == LISP_COMPLEX) return num_is_zero(v->u.complex.imag);
+    return false;
+}
+
 static lisp_val_t *num_neg(lisp_val_t *v);
+
+lisp_val_t *make_complex(lisp_val_t *real, lisp_val_t *imag) {
+    if (!real || !imag) return &nil_val;
+    if (real->type == LISP_COMPLEX) real = real->u.complex.real;
+    if (imag->type == LISP_COMPLEX) imag = imag->u.complex.real;
+    if (num_is_zero(imag)) return real;
+    lisp_val_t *v = alloc_node(LISP_COMPLEX);
+    v->u.complex.real = real;
+    v->u.complex.imag = imag;
+    return v;
+}
 
 static lisp_val_t *make_ratio(lisp_val_t *num, lisp_val_t *den) {
     if (!num || !den) return &nil_val;
@@ -2035,6 +2058,9 @@ static lisp_val_t *num_neg(lisp_val_t *v) {
     }
     if (v->type == LISP_RATIO) {
         return make_ratio(num_neg(v->u.ratio.num), v->u.ratio.den);
+    }
+    if (v->type == LISP_COMPLEX) {
+        return make_complex(num_neg(v->u.complex.real), num_neg(v->u.complex.imag));
     }
     return v;
 }
@@ -2125,7 +2151,69 @@ static lisp_val_t *ratio_div(lisp_val_t *a, lisp_val_t *b) {
     return ratio_mul(a, inv_b);
 }
 
+static lisp_val_t *num_add(lisp_val_t *a, lisp_val_t *b);
+static lisp_val_t *num_sub(lisp_val_t *a, lisp_val_t *b);
+static lisp_val_t *num_mul(lisp_val_t *a, lisp_val_t *b);
+static lisp_val_t *num_div(lisp_val_t *a, lisp_val_t *b);
+
+static lisp_val_t *complex_add(lisp_val_t *a, lisp_val_t *b) {
+    lisp_val_t *ar = (a->type == LISP_COMPLEX) ? a->u.complex.real : a;
+    lisp_val_t *ai = (a->type == LISP_COMPLEX) ? a->u.complex.imag : make_int(0);
+    lisp_val_t *br = (b->type == LISP_COMPLEX) ? b->u.complex.real : b;
+    lisp_val_t *bi = (b->type == LISP_COMPLEX) ? b->u.complex.imag : make_int(0);
+    return make_complex(num_add(ar, br), num_add(ai, bi));
+}
+
+static lisp_val_t *complex_sub(lisp_val_t *a, lisp_val_t *b) {
+    lisp_val_t *ar = (a->type == LISP_COMPLEX) ? a->u.complex.real : a;
+    lisp_val_t *ai = (a->type == LISP_COMPLEX) ? a->u.complex.imag : make_int(0);
+    lisp_val_t *br = (b->type == LISP_COMPLEX) ? b->u.complex.real : b;
+    lisp_val_t *bi = (b->type == LISP_COMPLEX) ? b->u.complex.imag : make_int(0);
+    return make_complex(num_sub(ar, br), num_sub(ai, bi));
+}
+
+static lisp_val_t *complex_mul(lisp_val_t *a, lisp_val_t *b) {
+    lisp_val_t *ar = (a->type == LISP_COMPLEX) ? a->u.complex.real : a;
+    lisp_val_t *ai = (a->type == LISP_COMPLEX) ? a->u.complex.imag : make_int(0);
+    lisp_val_t *br = (b->type == LISP_COMPLEX) ? b->u.complex.real : b;
+    lisp_val_t *bi = (b->type == LISP_COMPLEX) ? b->u.complex.imag : make_int(0);
+    lisp_val_t *t1 = num_mul(ar, br);
+    lisp_val_t *t2 = num_mul(ai, bi);
+    lisp_val_t *nr = num_sub(t1, t2);
+    lisp_val_t *t3 = num_mul(ar, bi);
+    lisp_val_t *t4 = num_mul(ai, br);
+    lisp_val_t *ni = num_add(t3, t4);
+    return make_complex(nr, ni);
+}
+
+static lisp_val_t *complex_div(lisp_val_t *a, lisp_val_t *b) {
+    lisp_val_t *ar = (a->type == LISP_COMPLEX) ? a->u.complex.real : a;
+    lisp_val_t *ai = (a->type == LISP_COMPLEX) ? a->u.complex.imag : make_int(0);
+    lisp_val_t *br = (b->type == LISP_COMPLEX) ? b->u.complex.real : b;
+    lisp_val_t *bi = (b->type == LISP_COMPLEX) ? b->u.complex.imag : make_int(0);
+    lisp_val_t *denom = num_add(num_mul(br, br), num_mul(bi, bi));
+    if (num_is_zero(denom)) {
+        printk("[Lisp Error] Division by zero\n");
+        return &nil_val;
+    }
+    lisp_val_t *t1 = num_mul(ar, br);
+    lisp_val_t *t2 = num_mul(ai, bi);
+    lisp_val_t *nr = num_div(num_add(t1, t2), denom);
+    lisp_val_t *t3 = num_mul(ai, br);
+    lisp_val_t *t4 = num_mul(ar, bi);
+    lisp_val_t *ni = num_div(num_sub(t3, t4), denom);
+    return make_complex(nr, ni);
+}
+
 static int num_cmp(const lisp_val_t *a, const lisp_val_t *b) {
+    if (a->type == LISP_COMPLEX || b->type == LISP_COMPLEX) {
+        lisp_val_t *ar = (a->type == LISP_COMPLEX) ? a->u.complex.real : (lisp_val_t *)a;
+        lisp_val_t *ai = (a->type == LISP_COMPLEX) ? a->u.complex.imag : make_int(0);
+        lisp_val_t *br = (b->type == LISP_COMPLEX) ? b->u.complex.real : (lisp_val_t *)b;
+        lisp_val_t *bi = (b->type == LISP_COMPLEX) ? b->u.complex.imag : make_int(0);
+        if (num_cmp(ar, br) == 0 && num_cmp(ai, bi) == 0) return 0;
+        return 1;
+    }
     if (a->type == LISP_INT && b->type == LISP_INT) {
         return a->u.i > b->u.i ? 1 : (a->u.i < b->u.i ? -1 : 0);
     }
@@ -2153,6 +2241,9 @@ static int num_cmp(const lisp_val_t *a, const lisp_val_t *b) {
 
 static lisp_val_t *num_add(lisp_val_t *a, lisp_val_t *b) {
     if (!is_number_val(a) || !is_number_val(b)) return &nil_val;
+    if (a->type == LISP_COMPLEX || b->type == LISP_COMPLEX) {
+        return complex_add(a, b);
+    }
     if (a->type == LISP_INT && b->type == LISP_INT) {
         long res;
         if (!__builtin_add_overflow(a->u.i, b->u.i, &res)) {
@@ -2167,6 +2258,9 @@ static lisp_val_t *num_add(lisp_val_t *a, lisp_val_t *b) {
 
 static lisp_val_t *num_sub(lisp_val_t *a, lisp_val_t *b) {
     if (!is_number_val(a) || !is_number_val(b)) return &nil_val;
+    if (a->type == LISP_COMPLEX || b->type == LISP_COMPLEX) {
+        return complex_sub(a, b);
+    }
     if (a->type == LISP_INT && b->type == LISP_INT) {
         long res;
         if (!__builtin_sub_overflow(a->u.i, b->u.i, &res)) {
@@ -2181,6 +2275,9 @@ static lisp_val_t *num_sub(lisp_val_t *a, lisp_val_t *b) {
 
 static lisp_val_t *num_mul(lisp_val_t *a, lisp_val_t *b) {
     if (!is_number_val(a) || !is_number_val(b)) return &nil_val;
+    if (a->type == LISP_COMPLEX || b->type == LISP_COMPLEX) {
+        return complex_mul(a, b);
+    }
     if (a->type == LISP_INT && b->type == LISP_INT) {
         long res;
         if (!__builtin_mul_overflow(a->u.i, b->u.i, &res)) {
@@ -2197,6 +2294,9 @@ static lisp_val_t *num_div(lisp_val_t *a, lisp_val_t *b) {
     if (!is_number_val(a) || !is_number_val(b)) return &nil_val;
     if (num_is_zero(b)) {
         return &nil_val;
+    }
+    if (a->type == LISP_COMPLEX || b->type == LISP_COMPLEX) {
+        return complex_div(a, b);
     }
     if (a->type == LISP_RATIO || b->type == LISP_RATIO) {
         return ratio_div(a, b);
@@ -2361,6 +2461,89 @@ static lisp_val_t *parse_number_token(const char **str) {
     }
 
     return numerator;
+}
+
+static bool is_complex_token(const char *str) {
+    if (!str || *str == '\0') return false;
+    const char *p = str;
+
+    /* +i, -i, +I, -I */
+    if ((p[0] == '+' || p[0] == '-') && (p[1] == 'i' || p[1] == 'I') && is_delimiter(p[2])) {
+        return true;
+    }
+
+    /* Has real or first imag part */
+    if (*p == '+' || *p == '-') p++;
+    if (*p < '0' || *p > '9') return false;
+
+    while (*p >= '0' && *p <= '9') p++;
+    if (*p == '/') {
+        p++;
+        if (*p < '0' || *p > '9') return false;
+        while (*p >= '0' && *p <= '9') p++;
+    }
+
+    /* Pure imag: e.g. 2i, -3i, 1/2i */
+    if ((*p == 'i' || *p == 'I') && is_delimiter(p[1])) {
+        return true;
+    }
+
+    /* Real part followed by imaginary part: e.g. 3+4i, 3-4i, 3+i, 3-i */
+    if (*p == '+' || *p == '-') {
+        p++;
+        if ((*p == 'i' || *p == 'I') && is_delimiter(p[1])) {
+            return true;
+        }
+        if (*p >= '0' && *p <= '9') {
+            while (*p >= '0' && *p <= '9') p++;
+            if (*p == '/') {
+                p++;
+                if (*p < '0' || *p > '9') return false;
+                while (*p >= '0' && *p <= '9') p++;
+            }
+            if ((*p == 'i' || *p == 'I') && is_delimiter(p[1])) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+static lisp_val_t *parse_complex_token(const char **str) {
+    if ((**str == '+' || **str == '-') && ((*str)[1] == 'i' || (*str)[1] == 'I')) {
+        int im_sign = (**str == '-') ? -1 : 1;
+        (*str) += 2;
+        return make_complex(make_int(0), make_int(im_sign));
+    }
+
+    /* Parse first part (either real part or pure imaginary coefficient) */
+    lisp_val_t *part1 = parse_number_token(str);
+    if (!part1) return NULL;
+
+    /* If followed immediately by 'i' or 'I': pure imaginary number (e.g. 2i, -3/4i) */
+    if (**str == 'i' || **str == 'I') {
+        (*str)++;
+        return make_complex(make_int(0), part1);
+    }
+
+    /* Real part followed by sign and imag part: e.g. 3+4i, 3-4i, 3+i, 3-i */
+    if (**str == '+' || **str == '-') {
+        int im_sign = (**str == '-') ? -1 : 1;
+        (*str)++;
+        if (**str == 'i' || **str == 'I') {
+            (*str)++;
+            return make_complex(part1, make_int(im_sign));
+        }
+        lisp_val_t *part2 = parse_number_token(str);
+        if (!part2) return NULL;
+        if (im_sign < 0) part2 = num_neg(part2);
+        if (**str == 'i' || **str == 'I') {
+            (*str)++;
+            return make_complex(part1, part2);
+        }
+    }
+
+    return part1;
 }
 
 static bool lisp_values_equal(lisp_val_t *a, lisp_val_t *b) {
@@ -3064,7 +3247,116 @@ static lisp_val_t *prim_integer_p(lisp_val_t *args, lisp_val_t *env) {
 static lisp_val_t *prim_rational_p(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     lisp_val_t *a = lisp_list_ref(args, 0);
+    return is_real_val(a) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_real_p(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    return is_real_val(a) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_complex_p(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
     return is_number_val(a) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_make_rectangular(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (lisp_list_len(args) != 2) {
+        printk("[Lisp Error] make-rectangular requires 2 arguments\n");
+        return &nil_val;
+    }
+    lisp_val_t *re = lisp_list_ref(args, 0);
+    lisp_val_t *im = lisp_list_ref(args, 1);
+    if (!is_real_val(re) || !is_real_val(im)) {
+        printk("[Lisp Error] make-rectangular: arguments must be real numbers\n");
+        return &nil_val;
+    }
+    return make_complex(re, im);
+}
+
+static lisp_val_t *prim_real_part(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *z = lisp_list_ref(args, 0);
+    if (!is_number_val(z)) {
+        printk("[Lisp Error] real-part requires a number\n");
+        return &nil_val;
+    }
+    if (z->type == LISP_COMPLEX) return z->u.complex.real;
+    return z;
+}
+
+static lisp_val_t *prim_imag_part(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *z = lisp_list_ref(args, 0);
+    if (!is_number_val(z)) {
+        printk("[Lisp Error] imag-part requires a number\n");
+        return &nil_val;
+    }
+    if (z->type == LISP_COMPLEX) return z->u.complex.imag;
+    return make_int(0);
+}
+
+static lisp_val_t *prim_magnitude_squared(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *z = lisp_list_ref(args, 0);
+    if (!is_number_val(z)) return &nil_val;
+    if (z->type == LISP_COMPLEX) {
+        lisp_val_t *r = z->u.complex.real;
+        lisp_val_t *i = z->u.complex.imag;
+        return num_add(num_mul(r, r), num_mul(i, i));
+    }
+    return num_mul(z, z);
+}
+
+static lisp_val_t *prim_magnitude(lisp_val_t *args, lisp_val_t *env) {
+    lisp_val_t *z = lisp_list_ref(args, 0);
+    if (!is_number_val(z)) return &nil_val;
+    if (z->type != LISP_COMPLEX) {
+        return num_is_negative(z) ? num_neg(z) : z;
+    }
+    lisp_val_t *sq = prim_magnitude_squared(args, env);
+    if (sq->type == LISP_INT) {
+        lisp_val_t *r = num_isqrt(sq);
+        if (num_cmp(num_mul(r, r), sq) == 0) return r;
+    } else if (sq->type == LISP_RATIO) {
+        lisp_val_t *n = sq->u.ratio.num;
+        lisp_val_t *d = sq->u.ratio.den;
+        if (n->type == LISP_INT && d->type == LISP_INT) {
+            lisp_val_t *rn = num_isqrt(n);
+            lisp_val_t *rd = num_isqrt(d);
+            if (num_cmp(num_mul(rn, rn), n) == 0 && num_cmp(num_mul(rd, rd), d) == 0) {
+                return make_ratio(rn, rd);
+            }
+        }
+    }
+    return prim_math_sqrt(make_pair(sq, &nil_val), env);
+}
+
+static lisp_val_t *prim_conjugate(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *z = lisp_list_ref(args, 0);
+    if (!is_number_val(z)) return &nil_val;
+    if (z->type == LISP_COMPLEX) {
+        return make_complex(z->u.complex.real, num_neg(z->u.complex.imag));
+    }
+    return z;
+}
+
+static lisp_val_t *prim_make_polar(lisp_val_t *args, lisp_val_t *env) {
+    if (lisp_list_len(args) != 2) return &nil_val;
+    lisp_val_t *r = lisp_list_ref(args, 0);
+    lisp_val_t *th = lisp_list_ref(args, 1);
+    if (num_is_zero(th)) {
+        return r;
+    }
+    lisp_val_t *cos_val = prim_math_cos(make_pair(th, &nil_val), env);
+    lisp_val_t *sin_val = prim_math_sin(make_pair(th, &nil_val), env);
+    lisp_val_t *re = num_mul(r, cos_val);
+    lisp_val_t *im = num_mul(r, sin_val);
+    return make_complex(re, im);
 }
 
 static lisp_val_t *prim_exact_p(lisp_val_t *args, lisp_val_t *env) {
@@ -6901,6 +7193,27 @@ void lisp_print(lisp_val_t *val) {
             cprintf("%s", buf);
             break;
         }
+        case LISP_COMPLEX: {
+            lisp_val_t *re = val->u.complex.real;
+            lisp_val_t *im = val->u.complex.imag;
+            if (!num_is_zero(re)) {
+                lisp_print(re);
+                if (!num_is_negative(im)) {
+                    cprintf("+");
+                }
+            } else if (!num_is_negative(im)) {
+                cprintf("+");
+            }
+            if (im->type == LISP_INT && im->u.i == 1) {
+                cprintf("i");
+            } else if (im->type == LISP_INT && im->u.i == -1) {
+                cprintf("-i");
+            } else {
+                lisp_print(im);
+                cprintf("i");
+            }
+            break;
+        }
         case LISP_STRING:
             cprintf("\"%s\"", val->u.str);
             break;
@@ -7105,6 +7418,12 @@ lisp_val_t *lisp_read(const char **str) {
         return head ? head : &nil_val;
     }
 
+    /* Complex Number Literals (e.g. 3+4i, +i, -i, 2i, 1/2-3/4i) */
+    if (is_complex_token(*str)) {
+        lisp_val_t *res = parse_complex_token(str);
+        return res ? res : &nil_val;
+    }
+
     /* Numbers & Digit-Prefixed Token Validation (Standard Scheme Syntax Rule) */
     if ((**str >= '0' && **str <= '9') || (**str == '0' && ((*str)[1] == 'x' || (*str)[1] == 'X'))) {
         if (!is_number_token(*str)) {
@@ -7149,6 +7468,13 @@ lisp_val_t *lisp_read(const char **str) {
         return res ? res : &nil_val;
     }
 
+    /* Unexpected closing parenthesis */
+    if (**str == ')') {
+        cprintf("[Lisp Error] Unexpected ')'\n");
+        (*str)++;
+        return NULL;
+    }
+
     /* Symbols */
     char buf[32];
     int i = 0;
@@ -7157,6 +7483,10 @@ lisp_val_t *lisp_read(const char **str) {
         (*str)++;
     }
     buf[i] = '\0';
+    if (i == 0) {
+        if (**str != '\0') (*str)++;
+        return NULL;
+    }
     return make_sym(buf);
 }
 
@@ -7386,7 +7716,11 @@ tail_call:
         lisp_val_t *res = env_get_sym(env, val);
         if (!res) res = builtin_get(val->u.sym);       /* 37.3a: the built-ins */
         if (res) return res;
-        cprintf("Unbound symbol: %s\n", val->u.sym);
+        if (!val->u.sym || !val->u.sym[0]) {
+            cprintf("Unbound symbol: (empty)\n");
+        } else {
+            cprintf("Unbound symbol: %s\n", val->u.sym);
+        }
         return &nil_val;
     }
 
@@ -7724,7 +8058,11 @@ tail_call:
                         lisp_val_t *binding = env_binding_sym(refresh_global_tail(env, env, was_global), name);
                         if (!binding) binding = env_binding_sym(global_env, name);
                         if (!binding) {
-                            cprintf("set!: unbound variable %s\n", name->u.sym);
+                            if (!name->u.sym || !name->u.sym[0]) {
+                                cprintf("set!: unbound variable (empty)\n");
+                            } else {
+                                cprintf("set!: unbound variable %s\n", name->u.sym);
+                            }
                             return &nil_val;
                         }
                         binding->u.pair.cdr = v;
@@ -7747,7 +8085,11 @@ tail_call:
             fn = env_get_sym(refresh_global_tail(env, env, was_global), op);
             if (!fn) fn = builtin_get(op->u.sym);
             if (!fn) {
-                cprintf("Unbound function: %s\n", op->u.sym);
+                if (!op->u.sym || !op->u.sym[0]) {
+                    cprintf("Unbound function: (empty)\n");
+                } else {
+                    cprintf("Unbound function: %s\n", op->u.sym);
+                }
                 return &nil_val;
             }
         } else {

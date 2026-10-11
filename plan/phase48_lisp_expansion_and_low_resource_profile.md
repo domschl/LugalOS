@@ -1,6 +1,6 @@
 # Phase 48 — Lisp Language Expansion, Hardware Telemetry & Dual Resource Profiles
 
-**Status: IN PROGRESS (Milestones 48.1, 48.2a, 48.4a, 48.4c–e Completed & Verified on Hardware).**  
+**Status: IN PROGRESS (Milestones 48.1, 48.2, 48.3a–e, 48.4a–e Completed & Verified on Hardware).**  
 Branch: `lisp_expansion`  
 Follows: Phase 42 (Lisp Symbolic Foundations), Phase 43 (Lisp CAS & Plotting), Phase 46 (Sensor Framework), Phase 47 (ESP32-P4 LCD7B & Ribbon Window System).
 
@@ -223,6 +223,34 @@ To expand Lisp's capabilities (macros, vectors, hardware control, CAS power seri
     - Extended `solve` dispatch to handle degrees 3, 4, and higher.
   - Verified on QEMU `rv32` (all 72 suite tests passing) and flashed and verified on live RP2350-terminal silicon.
 
+#### 48.3e: Exact Complex Numbers & Polynomial Solving over $\mathbb{C}$ — **COMPLETED**
+* **Goal:** Extend LugalOS with exact Gaussian rational arithmetic $\mathbb{Q}(i)$ at the C engine level (Layer 2) and full symbolic complex algebraic simplification, Euler's formula, and polynomial solving/factorization over $\mathbb{C}$ in the CAS (Layer 1)—strictly preserving freestanding zero-float M-mode constraints.
+* **Design & Status:**
+  - **Layer 2 (Core Numeric Gaussian Rationals $\mathbb{Q}(i)$ in C):**
+    - Added `LISP_COMPLEX` to `lisp_type_t` in [`user/lisp/include/lisp.h`](file:///home/dsc/Source/gith/domschl/lugalos/user/lisp/include/lisp.h) with `struct { struct lisp_val *real; struct lisp_val *imag; } complex;`. Size of `lisp_val_t` remains unchanged (2 words, identical to `pair`).
+    - Canonical demotion: `make_complex(re, im)` checks `num_is_zero(im)` and demotes to real number automatically.
+    - Exact arithmetic: `num_add`, `num_sub`, `num_mul`, `num_div`, `num_cmp`, `num_neg` seamlessly handle integers, bignums, rationals, and Gaussian rationals.
+    - Reader & Printer: parses literals `3+4i`, `3-4i`, `+i`, `-i`, `2i`, `-3i`, `1/2+3/4i`, `0+1i` and prints in standard format.
+    - Scheme R7RS built-in primitives in Flash `.rodata` (`user/lisp/builtins_table.h`):
+      `complex?`, `real?`, `make-rectangular`, `make-polar`, `real-part`, `imag-part`, `magnitude`, `magnitude-squared`, `conjugate`.
+  - **Layer 1 (Symbolic CAS Complex Engine & Algebraic Factorization):**
+    - Radical extraction of negative values in `simplify-sqrt`: $\sqrt{-1} \to i$, $\sqrt{-4} \to 2i$, $\sqrt{-x} \to i\sqrt{x}$, $\sqrt{i} \to \frac{\sqrt{2}}{2}(1+i)$, $\sqrt{-i} \to \frac{\sqrt{2}}{2}(1-i)$.
+    - Powers of imaginary unit $i$ in `simplify-pow`: $i^k \to i^{k \pmod 4} \in \{1, i, -1, -i\}$.
+    - Product simplification in `simplify-mul`: reduces products with $i$, factors $i^2 \to -1$, cancels scalars, distributes over sums $(a + bi)/c \to (a/c) + (b/c)i$.
+    - Euler's identity in `simplify-exp`: $e^{i\pi} \to -1$, $e^{\pi i} \to -1$, $e^{i\theta} \to \cos\theta + i\sin\theta$.
+    - Cartesian and conjugate operations: `cas-has-i?`, `cas-real-part`, `cas-imag-part`, `cas-conjugate`, `cas-complex-abs`.
+    - Polynomial solver in [`cas/solve.lisp`](file:///home/dsc/Source/gith/domschl/lugalos/cas/solve.lisp):
+      - `solve-quadratic`: negative discriminant roots simplified into canonical Cartesian $a \pm bi$ form.
+      - `solve-cubic`: pure power cubics $ax^3 + d = 0$ return all 3 roots ($r, r \cdot \frac{-1 \pm i\sqrt{3}}{2}$).
+      - `solve-quartic`: biquadratics ($x^4 \pm 1 = 0$) discover all 4 roots over $\mathbb{C}$.
+    - Complete factorization over $\mathbb{C}$ in [`cas/poly.lisp`](file:///home/dsc/Source/gith/domschl/lugalos/cas/poly.lisp):
+      - `(poly-factor-complex p var)`: factors polynomials completely into linear factors over $\mathbb{C}$, automatically resolving repeated root multiplicities without requiring complex-coefficient polynomial long division.
+  - **Verification:**
+    - Dedicated test suite `tests/test_complex.py`: 49/49 unit tests passed in QEMU.
+    - Verified on RP2350-terminal silicon: `(+ 1+2i 3+4i) => 4+6i`, `(poly-factor-complex '(+ (^ x 4) -1) 'x) => (* (+ -1 x) (+ 1 x) (+ (* -1 i) x) (+ i x))`.
+    - Verified on ESP32-P4-LCD-7B silicon: verified live on hardware via `p4run.py`.
+    - Both hardware test suites (`test_rp2350.py` 32/32, `test_esp32p4.py` 30/30) passing 100%.
+
 ---
 
 ### Milestone 48.4: Advanced Core: Macros, Vectors & Standard Libraries (Phase D)
@@ -339,10 +367,12 @@ To expand Lisp's capabilities (macros, vectors, hardware control, CAS power seri
 | **6** | **48.2e** (Sensor Plotting) | `/sd0/system/lib/chart.lisp` | On-demand filesystem | 48.1b, 48.2a | **Done** (Filesystem staged & synced) |
 | **7** | **48.3a–b** (Taylor & Trig) | `cas/calculus.lisp`, `cas/simplify.lisp` | On-demand filesystem | 48.1a | **Done** (QEMU & Silicon verified) |
 | **8** | **48.3c** (Matrix Algebra) | `cas/matrix.lisp` | On-demand filesystem | None | **Done** (QEMU & Silicon verified) |
-| **9** | **48.4a** (`define-macro`) | `user/lisp/lisp.c`, `user/lisp/include/lisp.h` | 0 B SRAM (Flash) | None | **Done** (QEMU & Silicon verified) |
-| **10**| **48.4b** (`LISP_VECTOR`) | `user/lisp/lisp.c`, `user/lisp/include/lisp.h` | Drastically reduces SRAM | 48.4a | **Done** (QEMU & Silicon verified) |
-| **11**| **48.4c–e** (Stdlib Modules) | `/sd0/system/lib/{macros,seq,str,dict}.lisp` | Modular filesystem | 48.4a | **Done** (QEMU & Silicon verified) |
-| **12**| **48.5** (Verification) | `tests/test_lisp_expansion.py`, `tests/hw/*.py` | N/A | All steps | **In Progress** (67/67 unit, 32/32 HW passed) |
+| **9** | **48.3d** (Poly/Fractions) | `cas/poly.lisp`, `cas/calculus.lisp`, `cas/solve.lisp` | On-demand filesystem | None | **Done** (QEMU & Silicon verified) |
+| **10**| **48.3e** (Complex & $\mathbb{C}$ Solve) | `user/lisp/lisp.c`, `builtins_table.h`, `cas/*` | 0 B SRAM (Flash / Q(i)) | None | **Done** (QEMU, RP2350 & P4 verified) |
+| **11**| **48.4a** (`define-macro`) | `user/lisp/lisp.c`, `user/lisp/include/lisp.h` | 0 B SRAM (Flash) | None | **Done** (QEMU & Silicon verified) |
+| **12**| **48.4b** (`LISP_VECTOR`) | `user/lisp/lisp.c`, `user/lisp/include/lisp.h` | Drastically reduces SRAM | 48.4a | **Done** (QEMU & Silicon verified) |
+| **13**| **48.4c–e** (Stdlib Modules) | `/sd0/system/lib/{macros,seq,str,dict}.lisp` | Modular filesystem | 48.4a | **Done** (QEMU & Silicon verified) |
+| **14**| **48.5** (Verification) | `tests/test_complex.py`, `tests/hw/*.py` | N/A | All steps | **In Progress** (49/49 complex, 32/32 RP2350, 30/30 P4 passed) |
 
 ---
 
