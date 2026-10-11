@@ -165,16 +165,24 @@ To expand Lisp's capabilities (macros, vectors, hardware control, CAS power seri
 
 * **Goal:** Expand LugalOS CAS with power series expansions, trigonometric/exponential identity rewriting, exact linear algebra, and complex number arithmetic/polynomial solving over $\mathbb{C}$—adhering strictly to zero-floating-point M-mode rules.
 
-#### 48.3a: Symbolic Taylor & Maclaurin Power Series (`taylor`) — **COMPLETED**
+#### 48.3a: Symbolic Taylor & Maclaurin Power Series and Laurent Expansions (`taylor`) — **COMPLETED**
 * **Design & Status:**
   - Implemented `(taylor expr var order [center])` and `(cas-factorial n)` in [`cas/calculus.lisp`](file:///home/dsc/Source/gith/domschl/lugalos/cas/calculus.lisp).
   - Formula:
     $$P_n(x) = \sum_{k=0}^{n} \frac{f^{(k)}(x_0)}{k!} (x - x_0)^k$$
   - Computes repeated symbolic derivatives via `diff`, substitutes center via `cas-subst`, and normalizes exact rational coefficients.
+  - **Laurent Pole & Removable Singularity Handling:**
+    - Detects when the denominator $D(x)$ vanishes at the expansion center $x_0 \in \mathbb{C}$ (e.g. at 0, or at complex roots $x_0 = i$).
+    - Factors out $(x - x_0)^p$ via synthetic polynomial division (`poly-div`) where $p \ge 1$, leaving an analytic reduced denominator $D_{rem}(x)$.
+    - Computes Taylor series for regular quotient $g(x) = N(x) / D_{rem}(x)$ up to order $n + p$, then multiplies each term by $(x - x_0)^{-p}$.
+    - **Removable Singularities:** Cancels $0/0$ automatically without division-by-zero traps (e.g. $\frac{\sin x}{x} \to 1 - \frac{x^2}{6} + \frac{x^4}{120}$).
+    - **Principal Parts:** Generates negative power Laurent terms $(x - x_0)^{-m}$ for poles of order $p$ (e.g. $\frac{e^x}{x} \to \frac{1}{x} + 1 + \frac{x}{2} + \frac{x^2}{6}$).
+    - **Complex Centers & Poles:** Expands meromorphic functions around complex poles $x_0 \in \mathbb{C}$ (e.g. $\frac{1}{x^2 + 1}$ around $x_0 = i \to \frac{-i/2}{x - i} + \frac{1}{4} + \frac{i}{8}(x - i)$).
   - Low-resource safety clamp ($\le 10$) prevents AST explosion on 1,024-node targets.
-  - Verified on QEMU `rv32` and live RP2350 silicon.
+  - Formatted cleanly in prefix AST and infix output (`to-infix` renders negative powers as fractions `1/x`).
+  - Verified on QEMU `rv32` and live RP2350 and ESP32-P4-LCD-7B silicon.
 
-#### 48.3b: Advanced Trigonometric & Exponential Simplification Rules — **COMPLETED**
+#### 48.3b: Advanced Trigonometric, Hyperbolic & Complex Exponential Simplification Rules — **COMPLETED**
 * **Design & Status:**
   - Added transformation rules in [`cas/simplify.lisp`](file:///home/dsc/Source/gith/domschl/lugalos/cas/simplify.lisp):
     - $\sin^2(u) + \cos^2(u) \to 1$ via `cas-reduce-pythagorean` in `simplify-add`.
@@ -182,10 +190,27 @@ To expand Lisp's capabilities (macros, vectors, hardware control, CAS power seri
     - Power of exponential: $(e^a)^b \to e^{a \cdot b}$ in `simplify-pow`.
     - Invertible transformations: $\ln(e^x) \to x$ and $e^{\ln(x)} \to x$ in `simplify-exp` and `simplify-log`.
     - Trigonometric odd/even symmetries: $\sin(-u) = -\sin(u)$, $\cos(-u) = \cos(u)$, $\tan(-u) = -\tan(u)$.
+    - Hyperbolic symmetries: $\sinh(-u) = -\sinh(u)$, $\cosh(-u) = \cosh(u)$, $\tanh(-u) = -\tanh(u)$, $\sinh(0) = 0$, $\cosh(0) = 1$, $\tanh(0) = 0$.
+    - **Hyperbolic Calculus:**
+      - $\frac{d}{dx}\sinh(u) = \cosh(u)u'$, $\frac{d}{dx}\cosh(u) = \sinh(u)u'$, $\frac{d}{dx}\tanh(u) = (1 - \tanh^2(u))u'$.
+      - $\int \sinh(ax+b) dx = \frac{\cosh(ax+b)}{a}$, $\int \cosh(ax+b) dx = \frac{\sinh(ax+b)}{a}$.
+    - **Euler Complex Relations over $\mathbb{C}$:**
+      - $\sin(i u) \to i\sinh(u)$, $\cos(i u) \to \cosh(u)$, $\tan(i u) \to i\tanh(u)$.
+      - $\sinh(i u) \to i\sin(u)$, $\cosh(i u) \to \cos(u)$, $\tanh(i u) \to i\tan(u)$.
+    - **Special Angle Evaluations & Euler Identities:**
+      - $e^{i\pi} \to -1$, $e^{\pi i} \to -1$, $e^{i\pi/2} \to i$, $e^{-i\pi/2} \to -i$, $e^{2\pi i} \to 1$.
+      - Cartesian exponential splitting: $e^{x + iy} \to e^x e^{iy}$ when $y$ contains imaginary unit $i$ (e.g. $e^{1 + i\pi} \to -e$).
+    - **Complex Logarithm (Principal Branch):**
+      - $\ln(-1) \to i\pi$, $\ln(i) \to \frac{1}{2}i\pi$, $\ln(-i) \to -\frac{1}{2}i\pi$, $\ln(-c) \to \ln(c) + i\pi$ for positive real $c > 0$.
+    - **Complex Powers:**
+      - $i^i \to e^{-\pi/2}$, $i^{-i} \to e^{\pi/2}$.
+    - **Form Conversions:**
+      - `(to-exp expr)`: rewrites trigonometric and hyperbolic forms into their complex exponential equivalents ($\cos u \to \frac{e^{iu} + e^{-iu}}{2}$, $\sin u \to \frac{e^{iu} - e^{-iu}}{2i}$, $\cosh u \to \frac{e^u + e^{-u}}{2}$, $\sinh u \to \frac{e^u - e^{-u}}{2}$).
+      - `(to-trig expr)`: rewrites complex exponentials $e^{iu}$ into $\cos u + i\sin u$.
     - `(trig-simplify expr)` transformation function: converts $1 + \tan^2(u) \to \sec^2(u)$, $\sin(2u) \to 2\sin(u)\cos(u)$, and $\cosh^2(u) - \sinh^2(u) \to 1$.
-  - Verified on QEMU `rv32` and live RP2350 silicon.
+  - Verified on QEMU `rv32` and live RP2350 and ESP32-P4-LCD-7B silicon.
 
-#### 48.3c: Exact Symbolic Linear Algebra (`cas/matrix.lisp`) — **COMPLETED**
+#### 48.3c: Exact Symbolic Linear Algebra over $\mathbb{R}$ and $\mathbb{C}$ (`cas/matrix.lisp`) — **COMPLETED**
 * **Design & Status:**
   - Created [`cas/matrix.lisp`](file:///home/dsc/Source/gith/domschl/lugalos/cas/matrix.lisp) and [`/sd0/system/lib/matrix.lisp`](file:///home/dsc/Source/gith/domschl/lugalos/tools/sd_root/system/lib/matrix.lisp):
     - `(matrix-rows A)`, `(matrix-cols A)`, `(matrix-ref A r c)`, `(matrix-zero r c)`, `(matrix-identity n)`
@@ -195,8 +220,16 @@ To expand Lisp's capabilities (macros, vectors, hardware control, CAS power seri
     - `(matrix-det A)`: exact determinant via row swaps and Gaussian elimination
     - `(matrix-inv A)`: exact matrix inverse via Gauss-Jordan elimination on $[A | I]$
     - `(matrix-solve A B)`: generalized exact linear system solver $A X = B$
+    - **Complex Matrix Extensions:**
+      - `(matrix-conjugate A)`: complex conjugate matrix $A^*$.
+      - `(matrix-adjoint A)` (alias `matrix-hermitian`): conjugate transpose $A^\dagger = (A^*)^T$.
+      - `(matrix-trace A)`: sum of diagonal entries $\text{Tr}(A)$.
+      - `(vector-conjugate v)`: complex conjugate vector.
+      - `(vector-hermitian-dot u v)`: sesquilinear inner product $u^\dagger v = \sum u_i^* v_i$.
+      - `(matrix-hermitian? A)`: verifies self-adjointness $A = A^\dagger$.
+      - `(matrix-unitary? A)`: verifies unitarity $A^\dagger A = I$ (e.g. Pauli matrices $\sigma_x, \sigma_y, \sigma_z$, Hadamard $H$).
   - Enhanced C `prim_map` and `prim_for_each` in [`user/lisp/lisp.c`](file:///home/dsc/Source/gith/domschl/lugalos/user/lisp/lisp.c) to support parallel multi-list mapping.
-  - Verified on QEMU `rv32` and live RP2350 silicon.
+  - Verified on QEMU `rv32` and live RP2350 and ESP32-P4-LCD-7B silicon.
 
 #### 48.3d: Partial Fractions, Higher-Order Polynomials & Rational Calculus — **COMPLETED**
 * **Design & Status:**

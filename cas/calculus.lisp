@@ -156,6 +156,18 @@
               ;; d/dx tan(u) = (1 + tan(u)^2) * u'
               (let ((u (car args)))
                 (list '* (list '+ 1 (list '^ (list 'tan u) 2)) (cas-diff-1 u var))))
+             ((eq? op 'sinh)
+              ;; d/dx sinh(u) = cosh(u) * u'
+              (let ((u (car args)))
+                (list '* (list 'cosh u) (cas-diff-1 u var))))
+             ((eq? op 'cosh)
+              ;; d/dx cosh(u) = sinh(u) * u'
+              (let ((u (car args)))
+                (list '* (list 'sinh u) (cas-diff-1 u var))))
+             ((eq? op 'tanh)
+              ;; d/dx tanh(u) = (1 - tanh(u)^2) * u'
+              (let ((u (car args)))
+                (list '* (list '- 1 (list '^ (list 'tanh u) 2)) (cas-diff-1 u var))))
              ((eq? op 'asin)
               ;; d/dx asin(u) = u' / sqrt(1 - u^2)
               (let ((u (car args)))
@@ -378,6 +390,20 @@
            (list '/ (list '* -1 (list 'cos (cadr term))) (car lin))
            (list 'integrate term var))))
 
+    ;; Hyperbolic sine (sinh u)
+    ((and (pair? term) (eq? (car term) 'sinh))
+     (let ((lin (cas-match-linear (cadr term) var)))
+       (if lin
+           (list '/ (list 'cosh (cadr term)) (car lin))
+           (list 'integrate term var))))
+
+    ;; Hyperbolic cosine (cosh u)
+    ((and (pair? term) (eq? (car term) 'cosh))
+     (let ((lin (cas-match-linear (cadr term) var)))
+       (if lin
+           (list '/ (list 'sinh (cadr term)) (car lin))
+           (list 'integrate term var))))
+
     ;; Logarithm (log u)
     ((and (pair? term) (eq? (car term) 'log))
      (let ((u (cadr term)))
@@ -433,63 +459,6 @@
         (let ((Fb (simplify (cas-subst F var b)))
               (Fa (simplify (cas-subst F var a))))
           (simplify (list '- Fb Fa))))))
-
-;;; --- 5. Taylor & Maclaurin Power Series Expansion (taylor) ---
-
-(define (cas-factorial n)
-  (let loop ((k n) (acc 1))
-    (if (<= k 1)
-        acc
-        (loop (- k 1) (* acc k)))))
-
-(define (taylor expr var order . opt-center)
-  (let* ((center (if (null? opt-center) 0 (car opt-center)))
-         ;; Low-resource safety: clamp order <= 10
-         (n (if (> order 10) 10 (if (< order 0) 0 order))))
-    (let loop ((k 0) (cur-d expr) (terms '()))
-      (if (> k n)
-          (if (null? terms)
-              0
-              (simplify (cons '+ (reverse terms))))
-          (let* ((f-val (simplify (cas-subst cur-d var center)))
-                 (fact (cas-factorial k))
-                 (coeff (simplify (list '/ f-val fact))))
-            (if (equal? coeff 0)
-                (loop (+ k 1) (diff cur-d var) terms)
-                (let* ((pow-term
-                        (cond ((= k 0) 1)
-                              ((= k 1)
-                               (if (equal? center 0)
-                                   var
-                                   (list '- var center)))
-                              (else
-                               (if (equal? center 0)
-                                   (list '^ var k)
-                                   (list '^ (list '- var center) k)))))
-                       (term (if (= k 0)
-                                 coeff
-                                 (simplify (list '* coeff pow-term)))))
-                  (loop (+ k 1) (diff cur-d var) (cons term terms)))))))))
-
-
-;;; --- 6. Symbolic Limits / Limes (Milestone 48.3f) ---
-
-(define (cas-infinity? pt)
-  (or (eq? pt 'infinity)
-      (eq? pt 'inf)
-      (eq? pt '+inf)
-      (eq? pt '+infinity)))
-
-(define (cas-neg-infinity? pt)
-  (or (eq? pt '-infinity)
-      (eq? pt '-inf)
-      (equal? pt '(* -1 infinity))
-      (equal? pt '(* -1 inf))))
-
-(define (cas-norm-direction dir)
-  (cond ((or (eq? dir 'right) (eq? dir '+) (eq? dir '>)) 'right)
-        ((or (eq? dir 'left) (eq? dir '-) (eq? dir '<)) 'left)
-        (else 'two-sided)))
 
 (define (cas-pure-poly? expr var)
   (cond
@@ -558,6 +527,125 @@
                    (cas-fraction-add acc (cas-fraction-split-single (car terms)))))))
       (else
        (cas-fraction-split-single s)))))
+
+;;; --- 5. Taylor & Laurent Power Series Expansion (taylor) ---
+
+(define (cas-factorial n)
+  (let loop ((k n) (acc 1))
+    (if (<= k 1)
+        acc
+        (loop (- k 1) (* acc k)))))
+
+(define (cas-taylor-regular-terms expr var n center)
+  (let loop ((k 0) (cur-d expr) (acc '()))
+    (if (> k n)
+        (reverse acc)
+        (let* ((f-val (simplify (cas-subst cur-d var center)))
+               (fact (cas-factorial k))
+               (coeff (simplify (list '/ f-val fact))))
+          (loop (+ k 1) (diff cur-d var) (cons (cons k coeff) acc))))))
+
+(define (cas-taylor-regular expr var n center)
+  (let loop ((k 0) (cur-d expr) (terms '()))
+    (if (> k n)
+        (if (null? terms)
+            0
+            (simplify (cons '+ (reverse terms))))
+        (let* ((f-val (simplify (cas-subst cur-d var center)))
+               (fact (cas-factorial k))
+               (coeff (simplify (list '/ f-val fact))))
+          (if (equal? coeff 0)
+              (loop (+ k 1) (diff cur-d var) terms)
+              (let* ((pow-term
+                      (cond ((= k 0) 1)
+                            ((= k 1)
+                             (if (equal? center 0)
+                                 var
+                                 (list '- var center)))
+                            (else
+                             (if (equal? center 0)
+                                 (list '^ var k)
+                                 (list '^ (list '- var center) k)))))
+                     (term (if (= k 0)
+                               coeff
+                               (simplify (list '* coeff pow-term)))))
+                (loop (+ k 1) (diff cur-d var) (cons term terms))))))))
+
+(define (taylor expr var order . opt-center)
+  (let* ((center (if (null? opt-center) 0 (car opt-center)))
+         ;; Low-resource safety: clamp order <= 10
+         (n (if (> order 10) 10 (if (< order 0) 0 order)))
+         (frac (cas-fraction-split expr))
+         (num (car frac))
+         (den (cadr frac)))
+    (if (and (cas-has-var? den var)
+             (equal? (simplify (cas-subst den var center)) 0)
+             (cas-pure-poly? den var))
+        ;; Denominator vanishes at center: factor out (var - center)^p
+        (let* ((lin (simplify (list '- var center)))
+               (factor-out
+                (let find-p ((p 0) (cur-d den))
+                  (let* ((res (poly-div cur-d lin var))
+                         (q (car res))
+                         (r (cadr res)))
+                    (if (and (equal? r 0) (not (equal? q 0)))
+                        (find-p (+ p 1) q)
+                        (cons p cur-d)))))
+               (p (car factor-out))
+               (den-rem (cdr factor-out)))
+          (if (> p 0)
+              ;; Expand regular part g = num / den-rem up to order min(n + p, 12)
+              (let* ((g (simplify (list '/ num den-rem)))
+                     (max-k (let ((tot (+ n p))) (if (> tot 12) 12 tot)))
+                     (reg-terms (cas-taylor-regular-terms g var max-k center)))
+                (let ((shifted
+                       (filter (lambda (term) (not (equal? term 0)))
+                               (map (lambda (k-coeff)
+                                      (let* ((k (car k-coeff))
+                                             (c (cdr k-coeff))
+                                             (m (- k p)))
+                                        (cond
+                                          ((equal? c 0) 0)
+                                          ((= m 0) c)
+                                          ((> m 0)
+                                           (let ((pow-term
+                                                  (if (= m 1)
+                                                      (if (equal? center 0) var lin)
+                                                      (if (equal? center 0) (list '^ var m) (list '^ lin m)))))
+                                             (simplify (list '* c pow-term))))
+                                          (else
+                                           ;; m < 0: Laurent pole term
+                                           (let* ((pos-m (- m))
+                                                  (pow-term
+                                                   (if (= pos-m 1)
+                                                       (if (equal? center 0) var lin)
+                                                       (if (equal? center 0) (list '^ var pos-m) (list '^ lin pos-m)))))
+                                             (simplify (list '/ c pow-term)))))))
+                                    reg-terms))))
+                  (cond ((null? shifted) 0)
+                        ((null? (cdr shifted)) (car shifted))
+                        (else (simplify (cons '+ shifted))))))
+              (cas-taylor-regular expr var n center)))
+        (cas-taylor-regular expr var n center))))
+
+;;; --- 6. Symbolic Limits / Limes (Milestone 48.3f) ---
+
+(define (cas-infinity? pt)
+  (or (eq? pt 'infinity)
+      (eq? pt 'inf)
+      (eq? pt '+inf)
+      (eq? pt '+infinity)))
+
+(define (cas-neg-infinity? pt)
+  (or (eq? pt '-infinity)
+      (eq? pt '-inf)
+      (equal? pt '(* -1 infinity))
+      (equal? pt '(* -1 inf))))
+
+(define (cas-norm-direction dir)
+  (cond ((or (eq? dir 'right) (eq? dir '+) (eq? dir '>)) 'right)
+        ((or (eq? dir 'left) (eq? dir '-) (eq? dir '<)) 'left)
+        (else 'two-sided)))
 
 ;; Finds lowest derivative order k >= 1 such that d^k/dx^k D(x0) != 0.
 ;; Returns (cons k value) or #f.

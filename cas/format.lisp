@@ -178,8 +178,8 @@
 
 ;;; --- 2. Tokenizer ---
 
-(define cf-fn-names '("sin" "cos" "tan" "exp" "ln" "log" "sqrt" "abs" "asin" "acos" "atan"
-                      "diff" "integrate" "expand" "simplify" "solve" "limit" "limes"))
+(define cf-fn-names '("sin" "cos" "tan" "sinh" "cosh" "tanh" "exp" "ln" "log" "sqrt" "abs" "asin" "acos" "atan"
+                      "diff" "integrate" "expand" "simplify" "solve" "limit" "limes" "taylor" "to_exp" "to_trig"))
 (define cf-known-names (append cf-fn-names '("pi" "e" "inf" "infinity" "right" "left")))
 
 (define cf-err #f)
