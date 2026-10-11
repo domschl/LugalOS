@@ -106,6 +106,14 @@ KBD_UTEXT static void dev_clear(usbkbd_dev_t *d) {
     for (uint32_t i = 0; i < sizeof(*d); i++) p[i] = 0;
 }
 
+/* Who the next transactions are for: its speed, and the hub port in front of
+ * it (0 for the root device and the hub itself). */
+KBD_UTEXT static void talk_to(usbkbd_state_t *k, uint32_t ls, uint32_t hs, uint32_t port) {
+    k->ls = (uint8_t)ls;
+    k->hs = (uint8_t)hs;
+    k->tt_port = (uint8_t)port;
+}
+
 /* Enumerate whatever answers at address 0 -- the root device, or the one a
  * hub port was just reset for -- and give it `addr`. */
 KBD_UTEXT static uint32_t enumerate(usbkbd_state_t *k, usbkbd_dev_t *d, uint32_t addr, uint32_t port) {
@@ -130,6 +138,7 @@ KBD_UTEXT static uint32_t enumerate(usbkbd_state_t *k, usbkbd_dev_t *d, uint32_t
     d->addr = (uint8_t)addr;
     d->hub_port = (uint8_t)port;
     d->full_speed = (uint8_t)!k->ls;
+    d->high_speed = k->hs;
     d->mps0 = (uint8_t)mps0;
     d->dev_class = k->buf[4];
     d->vid = (uint16_t)(k->buf[8] | (k->buf[9] << 8));
@@ -174,7 +183,7 @@ KBD_UTEXT static uint32_t enumerate(usbkbd_state_t *k, usbkbd_dev_t *d, uint32_t
 
 KBD_UTEXT static uint32_t hub_req(usbkbd_state_t *k, uint32_t type, uint32_t req, uint32_t val, uint32_t port) {
     uint8_t su[8];
-    k->ls = 0;                                  /* the hub itself is full speed */
+    talk_to(k, 0, 0, 0);                        /* the hub itself */
     setup(su, (uint8_t)type, (uint8_t)req, (uint16_t)val, (uint16_t)port, 0);
     return control(k, k->hub_addr, 64, su, k->buf, 0, 0);
 }
@@ -182,7 +191,7 @@ KBD_UTEXT static uint32_t hub_req(usbkbd_state_t *k, uint32_t type, uint32_t req
 KBD_UTEXT static uint32_t port_status(usbkbd_state_t *k, uint32_t port, uint32_t *status, uint32_t *change) {
     uint8_t su[8], b[4];
     uint32_t got = 0;
-    k->ls = 0;
+    talk_to(k, 0, 0, 0);
     setup(su, 0xA3, 0, 0, (uint16_t)port, 4);   /* GET_STATUS(port) */
     uint32_t st = control(k, k->hub_addr, 64, su, b, 4, &got);
     if (st != PIOUSB_OK || got < 4) return st ? st : PIOUSB_PROTOCOL;
@@ -227,14 +236,14 @@ KBD_UTEXT static void hub_port(usbkbd_state_t *k, uint32_t port) {
     if (!nd) return;
     /* Low speed (bit 9): every host packet to it goes out behind a PRE, which
      * the engine does when the slot says low_speed. */
-    k->ls = (uint8_t)((status >> 9) & 1u);
+    talk_to(k, (status >> 9) & 1u, (status >> 10) & 1u, port);
     if (k->ls) k->lowspeed_seen++;
     uint32_t addr = k->next_addr;
     k->next_addr = (uint8_t)(addr >= 126u ? 2u : addr + 1u);
     /* A failed enumeration leaves nothing behind: the slot is freed, and the
      * main loop's once-a-second retry takes the port from the top. */
     if (enumerate(k, nd, addr, port) != PIOUSB_OK) dev_clear(nd);
-    k->ls = 0;
+    talk_to(k, 0, 0, 0);
 }
 
 KBD_UTEXT static void hub_setup(usbkbd_state_t *k, usbkbd_dev_t *hub) {
@@ -260,7 +269,7 @@ KBD_UTEXT static void hub_setup(usbkbd_state_t *k, usbkbd_dev_t *hub) {
 KBD_UTEXT static void hub_poll(usbkbd_state_t *k, usbkbd_dev_t *hub) {
     uint8_t b[2] = { 0, 0 };
     uint32_t n = 0;
-    k->ls = 0;
+    talk_to(k, 0, 0, 0);
     uint32_t st = usbkbd_port_xfer(k, PIOUSB_OP_IN, hub->addr, hub->hub_ep, hub->toggle, 0, 0, b, 2, &n);
     if (st == PIOUSB_TOGGLE) return;
     if (st != PIOUSB_OK) return;
@@ -274,9 +283,9 @@ KBD_UTEXT static void kbd_poll(usbkbd_state_t *k, usbkbd_dev_t *d) {
     uint8_t r[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
     uint32_t n = 0;
     k->phase = USBKBD_PH_RUNNING;
-    k->ls = (uint8_t)!d->full_speed;
+    talk_to(k, !d->full_speed, d->high_speed, d->hub_port);
     uint32_t st = usbkbd_port_xfer(k, PIOUSB_OP_IN, d->addr, d->kbd_ep, d->toggle, 0, 0, r, 8, &n);
-    k->ls = 0;
+    talk_to(k, 0, 0, 0);
     k->polls++;
     if (st == PIOUSB_NAK) { k->naks++; return; }
     if (st == PIOUSB_TOGGLE) return;            /* a repeat of what we have */
@@ -301,15 +310,16 @@ KBD_UTEXT void usbkbd_host_forget(usbkbd_state_t *k) {
     k->hub_ports = 0;
     k->hub_addr = 0;
     k->next_addr = 2;
+    talk_to(k, 0, 0, 0);
 }
 
 KBD_UTEXT bool usbkbd_host_session(usbkbd_state_t *k) {
     k->phase = USBKBD_PH_ROOTRESET;
+    talk_to(k, 0, 0, 0);                        /* the port's RESET may say otherwise */
     uint32_t st = usbkbd_port_xfer(k, PIOUSB_OP_RESET, 0, 0, 0, 0, 0, 0, 0, 0);
     k->root_resets++;
     if (st != PIOUSB_OK) { note_error(k, USBKBD_PH_ROOTRESET, st, 0); usbkbd_port_sleep(1000); return false; }
     usbkbd_port_sleep(20);
-    k->ls = 0;
     usbkbd_dev_t *root = &k->dev[0];
     if (enumerate(k, root, 1, 0) != PIOUSB_OK) { usbkbd_port_sleep(1000); return false; }
     if (root->is_hub) hub_setup(k, root);
@@ -461,7 +471,7 @@ void usbkbd_report(void) {
         if (d->hub_port) cprintf("kbd:   addr %u on hub port %u:", d->addr, d->hub_port);
         else             cprintf("kbd:   addr %u at the root:", d->addr);
         cprintf(" %04x:%04x class %02x, %s speed%s%s", d->vid, d->pid, d->dev_class,
-                d->full_speed ? "full" : "low", d->is_hub ? " (hub)" : "", d->is_kbd ? " BOOT KEYBOARD" : "");
+                d->high_speed ? "high" : d->full_speed ? "full" : "low", d->is_hub ? " (hub)" : "", d->is_kbd ? " BOOT KEYBOARD" : "");
         if (d->is_kbd) cprintf(" iface %u ep %u, %u bytes every %u ms", d->kbd_iface, d->kbd_ep, d->kbd_mps, d->kbd_interval);
         cprintf("\n");
     }

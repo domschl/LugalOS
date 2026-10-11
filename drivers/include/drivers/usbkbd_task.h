@@ -44,7 +44,9 @@ typedef struct {
     uint16_t vid, pid;
     uint8_t  mps0, cfg_value, is_hub, hub_ep;
     uint8_t  is_kbd, kbd_iface, kbd_ep, kbd_mps;
-    uint8_t  kbd_interval, toggle, _pad[2];
+    uint8_t  kbd_interval, toggle;
+    uint8_t  high_speed;     /* 47.9: a high-speed device (a USB 2.0 hub) */
+    uint8_t  _pad;
     uint32_t last_poll;      /* ms */
 } usbkbd_dev_t;
 
@@ -57,6 +59,12 @@ typedef struct {
     volatile uint32_t polls, reports, naks, rollovers, lowspeed_seen, xfers, retries;
     uint8_t           hub_ports, hub_addr, next_addr;
     uint8_t           ls;            /* the device being talked to is low speed */
+    /* 47.9: and where it is -- 0 at the root (or the hub itself), else the
+     * hub port in front of it -- and whether it is high speed. A full- or
+     * low-speed device behind a high-speed hub is reached through the hub's
+     * transaction translator (split transactions, drivers/usbhost_esp32p4.c);
+     * the RP2350's full-speed engine has no use for either. */
+    uint8_t           tt_port, hs, _pad2[2];
     uint16_t          port_status[USBKBD_MAX_PORTS];
     usbkbd_dev_t      dev[USBKBD_MAX_DEV];
     uint8_t           report[8];     /* the last boot report */
@@ -88,8 +96,10 @@ void usbkbd_log(uint32_t seconds);
 
 /* One transaction: PIOUSB_OP_SETUP (8 bytes, DATA0), _IN (expect DATA1 if
  * `data1`; up to in_max bytes into in[], *in_len says how many), _OUT (`len`
- * bytes, DATA1 if `data1`), or _RESET (the root port). k->ls asks for a
- * low-speed device behind a full-speed hub. Returns PIOUSB_*: a NAK is
+ * bytes, DATA1 if `data1`), or _RESET (the root port). k->ls says the device
+ * is low speed, k->hs high speed, and k->tt_port which port of the hub at
+ * k->hub_addr it is behind (0: the root port, or the hub itself). A port's
+ * RESET may set k->ls/k->hs for the root device. Returns PIOUSB_*: a NAK is
  * PIOUSB_NAK, never retried here. */
 uint32_t usbkbd_port_xfer(usbkbd_state_t *k, uint32_t op, uint32_t addr, uint32_t ep, uint32_t data1,
                           const uint8_t *data, uint32_t len, uint8_t *in, uint32_t in_max, uint32_t *in_len);

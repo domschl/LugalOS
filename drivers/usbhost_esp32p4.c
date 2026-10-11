@@ -143,6 +143,10 @@
 #define HCCHAR_CHENA            (1u << 31)
 #define EPTYP_CONTROL           0u
 #define EPTYP_BULK              2u
+#define HCSPLT_SPLITEN          (1u << 31)
+#define HCSPLT_COMPSPLT         (1u << 16)
+#define HCSPLT_XACTPOS_ALL      (3u << 14)
+#define HCSPLT_HUBADDR_POS      7u
 #define HCTSIZ_PKTCNT_1         (1u << 19)
 #define HCTSIZ_PID_POS          29u
 #define PID_DATA0               0u
@@ -181,6 +185,7 @@ typedef struct {
     uint32_t snpsid, hwcfg2, hwcfg3, hwcfg4;
     uint32_t speed;                 /* HPRT_SPEED_* of the last port reset */
     uint32_t resets, xfers, naks, stalls, xacterrs, toggles, babbles, stuck, halts_late;
+    uint32_t splits, nyets;
     uint32_t last_hcint;
     uint64_t busy_us;               /* spent inside transactions (they poll) */
 } usbhost_t;
@@ -314,6 +319,40 @@ static void channel_stop(uint8_t *in, uint32_t in_max, uint32_t *got) {
     rx_drain(in, in_max, got);
 }
 
+/* One phase on channel 0 -- a whole transaction, or one half of a split --
+ * programmed, an OUT's data pushed, run to the first of `until`, stopped.
+ * Returns what HCINT said (0: nothing within 20 ms). */
+static uint32_t phase(uint32_t hcchar, uint32_t hcsplt, uint32_t size, uint32_t pid, const uint8_t *out,
+                      uint8_t *in, uint32_t in_max, uint32_t *got, uint32_t until) {
+    if (OTG(HCCHAR(CH)) & HCCHAR_CHENA) channel_stop(0, 0, 0);   /* left over: should not happen */
+    OTG(HCINT(CH)) = 0xFFFFFFFFu;
+    OTG(HCINTMSK(CH)) = HCINT_OUTCOME | HCINT_HALTED | HCINT_ACK | HCINT_NYET;
+    OTG(HCSPLT(CH)) = hcsplt;
+    OTG(HCCHAR(CH)) = hcchar;
+    OTG(HCTSIZ(CH)) = size | HCTSIZ_PKTCNT_1 | (pid << HCTSIZ_PID_POS);
+    OTG(HCCHAR(CH)) = hcchar | HCCHAR_CHENA;
+    if (out && size) {
+        /* A free non-periodic TX FIFO has room for a whole packet. */
+        for (uint32_t i = 0; i < size; i += 4) {
+            uint32_t w = 0;
+            for (uint32_t b = 0; b < 4 && i + b < size; b++) w |= (uint32_t)out[i + b] << (8 * b);
+            REG(OTG_BASE + FIFO(CH)) = w;
+        }
+    }
+    uint32_t hcint = 0;
+    uint64_t end = time_get_us() + 20000;
+    for (;;) {
+        rx_drain(in, in_max, got);
+        hcint = OTG(HCINT(CH));
+        if (hcint & until) break;
+        if (time_get_us() > end) break;
+    }
+    channel_stop(in, in_max, got);
+    hcint |= OTG(HCINT(CH));
+    OTG(HCINT(CH)) = 0xFFFFFFFFu;
+    return hcint;
+}
+
 uint32_t usbkbd_port_xfer(usbkbd_state_t *k, uint32_t op, uint32_t addr, uint32_t ep, uint32_t data1,
                           const uint8_t *data, uint32_t len, uint8_t *in, uint32_t in_max, uint32_t *in_len) {
     if (in_len) *in_len = 0;
@@ -333,6 +372,8 @@ uint32_t usbkbd_port_xfer(usbkbd_state_t *k, uint32_t op, uint32_t addr, uint32_
         OTG(HPRT) = (hprt & ~HPRT_W1C) | (hprt & (HPRT_CONN_DETECT | HPRT_ENABLE_CHANGE | HPRT_OVER_CURRENT_CHANGE));
         g_host.speed = HPRT_SPEED(hprt);
         g_host.resets++;
+        k->ls = (uint8_t)(g_host.speed == HPRT_SPEED_LOW);
+        k->hs = (uint8_t)(g_host.speed == HPRT_SPEED_HIGH);
         return PIOUSB_OK;
     }
     if (!(hprt & HPRT_CONN_STATUS) || !(hprt & HPRT_ENABLE)) return PIOUSB_NODEV;
@@ -341,39 +382,48 @@ uint32_t usbkbd_port_xfer(usbkbd_state_t *k, uint32_t op, uint32_t addr, uint32_
     bool is_in = op == PIOUSB_OP_IN;
     uint32_t pid = op == PIOUSB_OP_SETUP ? PID_SETUP : (data1 ? PID_DATA1 : PID_DATA0);
     uint32_t type = ep == 0 ? EPTYP_CONTROL : EPTYP_BULK;
-    bool ls_via_fs_hub = k->ls && g_host.speed == HPRT_SPEED_FULL;
+    /* LSPDDEV: a low-speed device the root port does not already run at low
+     * speed -- behind a full-speed hub (PRE) or a high-speed one (the TT). */
+    bool lsdev = k->ls && g_host.speed != HPRT_SPEED_LOW;
+    bool split = k->tt_port && !k->hs && g_host.speed == HPRT_SPEED_HIGH;
     uint32_t hcchar = MPS | ((ep & 0xFu) << HCCHAR_EPNUM_POS) | (is_in ? HCCHAR_EPDIR_IN : 0u) |
-                      (ls_via_fs_hub ? HCCHAR_LSDEV : 0u) | (type << HCCHAR_EPTYP_POS) | HCCHAR_MC_1 |
+                      (lsdev ? HCCHAR_LSDEV : 0u) | (type << HCCHAR_EPTYP_POS) | HCCHAR_MC_1 |
                       ((addr & 0x7Fu) << HCCHAR_DAD_POS);
     uint32_t size = is_in ? MPS : (len > MPS ? MPS : len);
+    uint32_t got = 0, hcint;
+    bool ok = false;
 
-    if (OTG(HCCHAR(CH)) & HCCHAR_CHENA) channel_stop(0, 0, 0);   /* left over: should not happen */
-    OTG(HCINT(CH)) = 0xFFFFFFFFu;
-    OTG(HCINTMSK(CH)) = HCINT_OUTCOME | HCINT_HALTED | HCINT_ACK;
-    OTG(HCSPLT(CH)) = 0;
-    OTG(HCCHAR(CH)) = hcchar;
-    OTG(HCTSIZ(CH)) = size | HCTSIZ_PKTCNT_1 | (pid << HCTSIZ_PID_POS);
-    OTG(HCCHAR(CH)) = hcchar | HCCHAR_CHENA;
-    if (!is_in && size) {
-        /* A free non-periodic TX FIFO has room for a whole packet. */
-        for (uint32_t i = 0; i < size; i += 4) {
-            uint32_t w = 0;
-            for (uint32_t b = 0; b < 4 && i + b < size; b++) w |= (uint32_t)data[i + b] << (8 * b);
-            REG(OTG_BASE + FIFO(CH)) = w;
+    if (!split) {
+        hcint = phase(hcchar, 0, size, pid, is_in ? 0 : data, in, in_max, &got, HCINT_OUTCOME | HCINT_NYET);
+        /* A high-speed OUT answered NYET was accepted (the endpoint just
+         * may not take the next one yet: PING, which we do not need). */
+        ok = (hcint & HCINT_XFRC) || (!is_in && (hcint & HCINT_NYET));
+    } else {
+        /* Start split: the hub's TT takes the token (and an OUT's data) and
+         * ACKs; NAK means its buffer is busy. Complete split: the device's
+         * answer, or NYET while the TT is still waiting for it. Size 0 for an
+         * OUT's complete split -- the data went with the start (Linux dwc2). */
+        uint32_t sp = HCSPLT_SPLITEN | HCSPLT_XACTPOS_ALL | ((uint32_t)k->hub_addr << HCSPLT_HUBADDR_POS) |
+                      (k->tt_port & 0x7Fu);
+        g_host.splits++;
+        hcint = phase(hcchar, sp, size, pid, is_in ? 0 : data, 0, 0, &got,
+                      HCINT_OUTCOME | HCINT_ACK | HCINT_NYET);
+        if ((hcint & HCINT_ACK) && !(hcint & (HCINT_STALL | HCINT_NAK | HCINT_XACTERR | HCINT_BBLERR))) {
+            uint64_t end = time_get_us() + 10000;
+            uint32_t errs = 0;
+            for (;;) {
+                hcint = phase(hcchar, sp | HCSPLT_COMPSPLT, is_in ? MPS : 0, pid, 0, in, in_max, &got,
+                              HCINT_OUTCOME | HCINT_NYET);
+                if (hcint & (HCINT_XFRC | HCINT_STALL | HCINT_NAK | HCINT_BBLERR | HCINT_DTERR)) break;
+                if ((hcint & HCINT_XACTERR) && ++errs >= 3) break;
+                if (hcint & HCINT_NYET) g_host.nyets++;
+                if (time_get_us() > end) break;
+            }
+            ok = (hcint & HCINT_XFRC) != 0 ||
+                 (!is_in && (hcint & HCINT_ACK) && !(hcint & (HCINT_STALL | HCINT_NAK)));
         }
     }
 
-    uint32_t got = 0, hcint = 0;
-    uint64_t end = time_get_us() + 20000;
-    for (;;) {
-        rx_drain(in, in_max, &got);
-        hcint = OTG(HCINT(CH));
-        if (hcint & HCINT_OUTCOME) break;
-        if (time_get_us() > end) break;
-    }
-    channel_stop(in, in_max, &got);
-    hcint |= OTG(HCINT(CH));
-    OTG(HCINT(CH)) = 0xFFFFFFFFu;
     g_host.last_hcint = hcint;
     g_host.xfers++;
     k->xfers++;
@@ -382,7 +432,7 @@ uint32_t usbkbd_port_xfer(usbkbd_state_t *k, uint32_t op, uint32_t addr, uint32_
     if (hcint & HCINT_STALL)   { g_host.stalls++;  return PIOUSB_STALL; }
     if (hcint & HCINT_BBLERR)  { g_host.babbles++; return PIOUSB_PROTOCOL; }
     if (hcint & HCINT_DTERR)   { g_host.toggles++; return PIOUSB_TOGGLE; }
-    if (hcint & HCINT_XFRC)    return PIOUSB_OK;
+    if (ok)                    return PIOUSB_OK;
     if (hcint & HCINT_NAK)     { g_host.naks++;    return PIOUSB_NAK; }
     if (hcint & (HCINT_XACTERR | HCINT_FRMOR)) { g_host.xacterrs++; return PIOUSB_TIMEOUT; }
     if (hcint & HCINT_AHBERR)  return PIOUSB_ENGINE;
@@ -500,6 +550,9 @@ void usbhost_command(const char *args) {
             (unsigned long)g_host.resets, (unsigned long)g_host.xfers, (unsigned long)g_host.naks,
             (unsigned long)g_host.stalls, (unsigned long)g_host.xacterrs, (unsigned long)g_host.toggles,
             (unsigned long)g_host.babbles, (unsigned long)g_host.stuck);
+    if (g_host.splits)
+        cprintf("usb: %lu split transactions through the hub's TT, %lu NYETs\n",
+                (unsigned long)g_host.splits, (unsigned long)g_host.nyets);
     if (g_host.xfers) {
         uint64_t up = time_get_us();
         cprintf("usb: %lu us per transaction; %lu.%02lu%% of the time since boot spent in them\n",

@@ -192,8 +192,9 @@ for both roles by itself.
   a *port* for the shared keyboard host `drivers/usbkbd_host.c` (also the
   RP2350's, over PIO-USB). `usb` shows the controller, the port and the last
   device's descriptors; `usb regs` dumps registers for an IDF diff; `kbd`,
-  `kbdlog [s]` as on the RP2350. Devices behind a high-speed hub need split
-  transactions, not done yet.
+  `kbdlog [s]` as on the RP2350. Devices behind a high-speed hub are reached
+  with split transactions through its TT (the owner's keyboard has a built-in
+  USB 2.0 hub; it has a battery, and unplugging it browns the board out).
 * Flash runs at IDF's 80 MHz QIO (stage 2, `xip_esp32p4.c`). Never call the
   ROM's `spi_flash_attach()` from the running kernel: it drops XIP to
   10 MHz single-line, and cache misses then hit the CPU's DBUS timeout

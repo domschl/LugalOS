@@ -1187,8 +1187,54 @@ What the counters recorded afterwards:
 
 `usbkbdselftest` and `keyselftest` pass in the QEMU suite.
 
-Still open: a keyboard behind a high-speed hub (split transactions, the
-stretch goal).
+**Split transactions: a keyboard behind a high-speed hub (2026-10-11).**
+The owner's second keyboard has a built-in USB 2.0 hub (1a40:0801, high
+speed). It also has a battery, and pulling it browns the board out. On the
+47.9 build the hub enumerated and its port 1 showed a device, but every
+transaction to that device failed: a full- or low-speed device behind a
+high-speed hub is reached only through the hub's transaction translator.
+
+What changed:
+* **The shared host** now says where the device is. `talk_to(k, ls, hs,
+  port)` replaces the bare `k->ls` assignments: its speed, and the hub port
+  in front of it (`k->tt_port`, 0 for the root and the hub itself). The
+  root reset reports the root device's speed. The RP2350 port ignores the
+  new fields; its U-mode check still passes.
+* **The P4 port** runs each such transaction as a start split, then
+  complete splits until the device answers:
+  * `HCSPLT`: XACTPOS ALL, the hub address, the port.
+  * On ACK, complete splits are retried while the hub answers NYET.
+  * An OUT's complete split has size 0 (as in Linux's dwc2).
+  * LSPDDEV is set for any low-speed device the root port does not already
+    run at low speed.
+* **A plain high-speed OUT answered NYET** now counts as accepted.
+
+Result: the keyboard (258a:01af, full speed, port 1) and a mouse
+(046a:b092, low speed, port 3) both enumerate through the TT. The mouse is
+listed, not used. The owner confirmed typing and the hotkeys. A poll is 16 µs
+with the splits, 0.7% of hart 0. `usb` counts splits and NYETs.
+
+**A kernel log bug, found by the full QEMU suite.** rv64-smp's lockselftest
+log burst failed three times out of four. A consumer lapped by the producer
+was counted as a gap only at the start of a drain pass; `klog_take()`
+resynced silently. On one hart that is enough, because the burst holds a
+spinlock. On two harts klogd drains *during* the burst, from hart 1, and a
+lap in mid-pass lost records 4..1124 with no note and no gap counted. The
+loss is now counted and reported where the cursor jumps, under the ring
+lock (`kernel/klog.c`). The self-test asks for exactly one gap on one hart
+and at least one with more (several laps are possible there).
+
+**The 7B's microSD card stopped mounting** in the same session. It now
+identifies as a 30 MB byte-addressed card ("SD032", serial 0xffffffff,
+2/2006) instead of the 30436 MB SDHC card it was. This happens on every
+boot, and also with baf11be, the build that had passed 30/30 an hour
+earlier, so it is not code. A 250 ms power cycle of the card through GPIO45
+at init did not change it; that was tried and not kept. Suspects: the hub
+keyboard's power draw and brown-outs, or a damaged card. The suite's three
+SD checks fail on the 7B until it is resolved.
+
+Still open: hubs behind hubs, interrupt endpoints on the periodic schedule,
+and the mouse.
 
 **A self-test fixed on the way.** With these changes the QEMU suite
 failed twice, on rv64-smp's `lockselftest` log burst. HEAD alone passed
