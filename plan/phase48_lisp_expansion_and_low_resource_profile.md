@@ -161,13 +161,9 @@ To expand Lisp's capabilities (macros, vectors, hardware control, CAS power seri
 
 ---
 
-### Milestone 48.3: Symbolic Math Expansion (`cas/`) (Phase C)
-
-* **Goal:** Expand LugalOS CAS with power series expansions, trigonometric/exponential identity rewriting, and exact linear algebra—adhering strictly to zero-floating-point M-mode rules.
-
 ### Milestone 48.3: Symbolic Math Expansion (`cas/`) (Phase C) — **COMPLETED**
 
-* **Goal:** Expand LugalOS CAS with power series expansions, trigonometric/exponential identity rewriting, and exact linear algebra—adhering strictly to zero-floating-point M-mode rules.
+* **Goal:** Expand LugalOS CAS with power series expansions, trigonometric/exponential identity rewriting, exact linear algebra, and complex number arithmetic/polynomial solving over $\mathbb{C}$—adhering strictly to zero-floating-point M-mode rules.
 
 #### 48.3a: Symbolic Taylor & Maclaurin Power Series (`taylor`) — **COMPLETED**
 * **Design & Status:**
