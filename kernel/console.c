@@ -1,3 +1,4 @@
+#include "kernel/time.h"
 #include "kernel/console.h"
 #include "kernel/screenshot.h"
 #include "drivers/screen.h"
@@ -74,7 +75,60 @@ bool console_pixels(const uint8_t **fb, unsigned *w, unsigned *h, unsigned *stri
 
 static volatile unsigned g_hotkey;
 
+/* --- 47.11: idle blanking ------------------------------------------------
+ *
+ * Input is the only activity that counts: a program printing to a blanked
+ * panel leaves it blanked. Checked from the pump, which every task waiting
+ * for input -- or polling for Ctrl-C -- runs, so a system with a shell at a
+ * prompt anywhere checks it all the time. */
+static volatile uint32_t g_blank_after_s;       /* 0: never */
+static volatile uint64_t g_last_input_ms;
+static volatile bool     g_blanked;
+static uint32_t          g_blankings, g_wakes, g_wakes_swallowed;
+
+static void blank_hook(bool off) {
+    if (g_screen && g_screen->blank) g_screen->blank(off);
+}
+
+/* An input arrived. True if it only woke the panel and should be dropped. */
+static bool note_input(bool local) {
+    g_last_input_ms = time_get_ms();
+    if (!g_blanked) return false;
+    g_blanked = false;
+    blank_hook(false);
+    g_wakes++;
+    if (local) g_wakes_swallowed++;
+    return local;
+}
+
+static void blank_check(void) {
+    uint32_t after = g_blank_after_s;
+    if (!after || g_blanked) return;
+    if (time_get_ms() - g_last_input_ms < (uint64_t)after * 1000u) return;
+    g_blanked = true;
+    blank_hook(true);
+    g_blankings++;
+}
+
+void console_blank_set(uint32_t seconds) {
+    g_last_input_ms = time_get_ms();
+    g_blank_after_s = seconds;
+    if (g_blanked) { g_blanked = false; blank_hook(false); }
+}
+
+uint32_t console_blank_after(void) { return g_blank_after_s; }
+bool console_blanked(void) { return g_blanked; }
+
+void console_blank_counts(uint32_t *blankings, uint32_t *wakes, uint32_t *swallowed) {
+    *blankings = g_blankings;
+    *wakes = g_wakes;
+    *swallowed = g_wakes_swallowed;
+}
+
 void console_hotkey(unsigned code) {
+    /* Only the panel's keyboard makes hotkeys; one that wakes it does
+     * nothing else. */
+    if (note_input(true)) return;
     g_hotkey = code;
 }
 
@@ -512,6 +566,7 @@ static void console_pump(void) {
      * allows. There is no fairness to arrange: a person types on one of
      * them at a time, and a script sending a block on another is exactly
      * what the ring bound above already handles. */
+    blank_check();
     for (unsigned i = 0; i < g_ninputs; i++) {
         const console_input_t *src = g_inputs[i];
         if (act) {
@@ -520,12 +575,14 @@ static void console_pump(void) {
             while (vterm_has_room(act) && src->has_char()) {
                 int c = src->getc();
                 if (c < 0) break;
+                if (note_input(src->local)) continue;
                 if (!vterm_feed_char(act, (char)c)) break;
             }
         } else {
             while (!pushback_full() && src->has_char()) {
                 int c = src->getc();
                 if (c < 0) break;
+                if (note_input(src->local)) continue;
                 if (c == 0x03) g_interrupt_pending = true;
                 pushback_put((char)c);
             }

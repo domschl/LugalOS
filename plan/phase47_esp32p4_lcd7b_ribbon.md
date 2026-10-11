@@ -334,7 +334,7 @@ LugalOS is MIT-licensed. All three candidates below are compatible with that.
 
 ### Polish and test
 
-**47.11 — Backlight and panel power.**
+**47.11 — Backlight and panel power.** **DONE 2026-10-11 (§6.11).**
 LEDC PWM on GPIO32 (inverted), `lcd backlight <percent>`, and blanking after
 idle if wanted.
 
@@ -1248,6 +1248,59 @@ single hart and at least one with more than one hart (`kernel/lock.c`). The
 moved image layout only made the overlap likelier.
 
 Afterwards: QEMU 484/484, 7B 30/30, NANO 30/30, RP2350 32/32.
+
+## 6.11 What 47.11 found: brightness and idle blanking on both panels (2026-10-11)
+
+**The RP2350 panel already had brightness.** `lcd backlight <0-100>` has
+driven its LCD_BL since phase 36: PWM10 A, inverted, because the pin feeds
+the AP3032 boost converter's feedback and a higher level is dimmer. 0 also
+drops LCD_EN. The LCD-7B's GPIO32 is wired the same way (the board file,
+and Waveshare's "LEDC 5 kHz 10-bit inverted"). So 47.11 brought the 7B up
+to the RP2350's command, and added blanking to both.
+
+**The 7B's backlight PWM** (`drivers/dsi_esp32p4.c`) comes from the LEDC,
+in IDF's sequence (`ledc_ll.h`, `ledc.c`):
+* Bus clock and reset; the function clock from XTAL; the register clock
+  gate.
+* Timer 0: 10 bits, divider 7.8125 (8 fraction bits), 5 kHz.
+* Channel 0 routed to GPIO32 through the GPIO matrix, inverted, so the duty
+  *is* the brightness.
+
+**On the P4 a plain duty goes through the channel's fade table:**
+`ledc_set_duty()` writes entry 0 of LEDC_GAMMA_RAM (0x500D3400) as "one
+step of one cycle" and sets the entry count to 1. The registers come from
+`tools/gen/p4_ledc_regs.txt` → `esp32p4_ledc_regs.h`, which checks that v1
+and v3 agree.
+
+`lcd backlight [0-100]` behaves as on the RP2350, and `lcd bl on` returns
+to the last level that was not 0. With no argument it reads back the
+channel's duty in force (`DUTY_R`) and the moving timer: duty 307/1024 at
+30%, 1024/1024 at 100%. The owner saw the brightness change.
+
+**Idle blanking, portable:** `lcd blank [min|Ns|off]`, default off.
+* `kernel/console.c` records the time of each input byte and each hotkey,
+  as the input pump takes it. It blanks from the pump: every task waiting
+  for input, or polling for Ctrl-C, runs it.
+* Only input counts as activity; a program printing to a dark panel leaves
+  it dark.
+* The hook is new on both structs: `console_screen_t.blank`, through to
+  `lcdterm_backend_t.blank`. The RP2350 backend drives its PWM and LCD_EN;
+  the 7B backend drives its LEDC. Neither forgets the level that was set.
+* **Waking.** A source marked `local` (the USB keyboard, the person at the
+  panel) has the waking key swallowed, so a blind Enter runs nothing. Other
+  sources (the serial line, scripts) wake the panel and keep their bytes.
+* `lcd blank` alone reports the setting and how often the panel blanked
+  and woke.
+
+Checked over serial on both panels: one blanking in a 5 s idle window, and
+the next command woke the panel unswallowed. The owner checked by eye on
+both: dark after 10 s, a keyboard key brings it back and does not reach the
+prompt. The RP2350 here is a new terminal board with touch (for the next
+phase), flashed with this build.
+
+QEMU 484/484, 7B 30/30 (its SD card works again after a full power cycle:
+the earlier failure was a hub-keyboard brown-out), NANO 30/30, RP2350
+32/32.
 
 ## 7. Risks
 

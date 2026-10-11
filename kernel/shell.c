@@ -593,6 +593,7 @@ static void cmd_help(void) {
     cprintf("  lcd             - Panel scan-out state: PIO pc, underrun flag, DMA position\n");
     cprintf("  lcd colour <hex> - Fill the panel with one RGB565 colour (e.g. f800 red, 07e0 green)\n");
     cprintf("  lcd backlight <0-100> - Backlight level; 0 switches the converter off\n");
+    cprintf("  lcd blank [min|Ns|off] - Backlight off after that long without input; a key wakes it\n");
     cprintf("  lcd colours <fg> <bg> - Framebuffer colours, RGB565 hex (default 0000 ffff)\n");
     cprintf("  lcd test <clear|border|ruler|stripes|checker|grid|invert|text> - Diagnostic patterns\n");
     cprintf("  lcd scroll [n]  - Scroll n numbered lines of text (default 1000), timing each scroll\n");
@@ -3845,6 +3846,27 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         extern void fmt_selftest(void);
         fmt_selftest();
         return;
+#if defined(LCDTERM_PRESENT)
+    } else if (strncmp(cmd_line, "lcd blank", 9) == 0 && (cmd_line[9] == 0 || cmd_line[9] == ' ')) {
+        /* 47.11: idle blanking, on either panel. `lcd blank 10` is ten
+         * minutes, `lcd blank 30s` thirty seconds, `off` (or 0) never. */
+        const char *p = cmd_line + 9;
+        while (*p == ' ') p++;
+        if (*p) {
+            uint32_t v = 0;
+            while (*p >= '0' && *p <= '9') v = v * 10u + (uint32_t)(*p++ - '0');
+            console_blank_set(*p == 's' ? v : v * 60u);
+        }
+        uint32_t s = console_blank_after();
+        if (!s) cprintf("lcd: never blanks\n");
+        else if (s % 60u) cprintf("lcd: blanks after %lu s without input\n", (unsigned long)s);
+        else cprintf("lcd: blanks after %lu min without input\n", (unsigned long)(s / 60u));
+        uint32_t nb, nw, ns;
+        console_blank_counts(&nb, &nw, &ns);
+        cprintf("lcd: blanked %lu times, woken %lu (%lu by a panel key, swallowed)\n",
+                (unsigned long)nb, (unsigned long)nw, (unsigned long)ns);
+        return;
+#endif
 #if defined(CONFIG_BOARD_ESP32P4)
     } else if (strcmp(cmd_line, "emac linktest") == 0) {
         /* Z3: proves link-down is noticed, not just link-up. */

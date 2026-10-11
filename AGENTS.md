@@ -187,6 +187,11 @@ for both roles by itself.
   checker|grid|text|ramp`, `lcd verify` (exact readback), `lcd fps`,
   `lcd bench`, `lcd wbtest` (cache coherence, needs eyes). Drawing must end
   with `dsi_lcd_fb_flush()`. Font glyph rows are LSB-first (bit 0 = left).
+* Backlight (47.11): `lcd backlight [0-100]` (LEDC PWM on GPIO32, inverted;
+  no argument reads the duty back), `lcd bl on|off`. Both panels:
+  `lcd blank [min|Ns|off]` turns the backlight off after that long without
+  input (default off). A USB-keyboard key that wakes it is swallowed; serial
+  input wakes it and is kept.
 * USB host (47.9, `drivers/usbhost_esp32p4.c`): the Type-A port is the OTG HS
   core (DWC2 4.30a), polled, slave mode, one transaction per channel; it is
   a *port* for the shared keyboard host `drivers/usbkbd_host.c` (also the

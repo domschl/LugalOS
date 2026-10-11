@@ -44,6 +44,7 @@
 #endif
 
 #include "drivers/esp32p4_dsi_regs.h"
+#include "drivers/esp32p4_ledc_regs.h"
 #include "drivers/font8x16.h"
 #include "drivers/lcdterm.h"
 #include "arch/esp32p4_intr.h"
@@ -138,6 +139,8 @@ static uint32_t    g_host_hsa, g_host_hbp, g_host_hline, g_brg_hfp;
 static uint32_t    g_cmd_errs;
 static uint32_t    g_init_us;
 static bool        g_bl_on;
+static unsigned    g_bl_level = 100;      /* percent; what `on` returns to */
+static bool        g_bl_pwm;              /* the LEDC drives the pin (47.11) */
 static int         g_pwr_mode = -1;  /* DCS 0x0A after sleep out, read in command mode */
 static const char *g_pattern = "none";
 
@@ -568,8 +571,78 @@ static bool panel_init(void) {
     return ok;
 }
 
+/* 47.11: the backlight's brightness, PWM from the LEDC.
+ *
+ * GPIO32 feeds the AP3032 boost converter's feedback, so a *higher* level is
+ * a dimmer backlight (the board file; Waveshare drive it "inverted", LEDC
+ * 5 kHz 10-bit). The same arrangement as the RP2350-LCD-7's LCD_BL. So the
+ * GPIO matrix inverts the LEDC's signal, and the duty is the brightness:
+ * duty 0 is a pin held high, dark; full duty a pin held low, full
+ * brightness, which is what the plain GPIO did before.
+ *
+ * The sequence is IDF's (esp_hal_ledc/esp32p4/include/hal/ledc_ll.h,
+ * esp_driver_ledc/src/ledc.c): bus clock and reset, the function clock from
+ * XTAL, the register clock gate, timer 0 (resolution, divider, update,
+ * reset), channel 0 on it. On the P4 even a plain duty goes through the
+ * channel's fade table (ledc_set_duty() writes entry 0 as "one step of one
+ * cycle" and the entry count 1) -- without it the channel never takes the
+ * duty. The table is LEDC_GAMMA_RAM, 0x500D3400, 16 words per channel
+ * (ld/esp32p4.peripherals.ld, ledc_struct.h). */
+#define LEDC_GAMMA_RAM_CH0     0x500D3400u
+#define LEDC_CH0_DUTY_R_REG    0x500D3010u  /* ledc_reg.h: the duty in force */
+#define LEDC_TIMER0_VALUE_REG  0x500D30A4u  /* ledc_reg.h: timer 0's counter */
+#define LEDC_SIG_OUT0_IDX      126u        /* LEDC_LS_SIG_OUT_PAD_OUT0_IDX */
+#define BL_PWM_HZ              5000u
+#define BL_DUTY_RES            10u
+#define BL_XTAL_HZ             40000000u
+
+static void bl_pwm_init(void) {
+    REG(HP_SYS_CLKRST_SOC_CLK_CTRL3_REG) |= 1u << HP_SYS_CLKRST_REG_LEDC_APB_CLK_EN_S;
+    REG(HP_SYS_CLKRST_HP_RST_EN1_REG) |= 1u << HP_SYS_CLKRST_REG_RST_EN_LEDC_S;
+    REG(HP_SYS_CLKRST_HP_RST_EN1_REG) &= ~(1u << HP_SYS_CLKRST_REG_RST_EN_LEDC_S);
+    uint32_t c = REG(HP_SYS_CLKRST_PERI_CLK_CTRL22_REG);
+    c &= ~(HP_SYS_CLKRST_REG_LEDC_CLK_SRC_SEL_V << HP_SYS_CLKRST_REG_LEDC_CLK_SRC_SEL_S);   /* 0: XTAL */
+    c |= 1u << HP_SYS_CLKRST_REG_LEDC_CLK_EN_S;
+    REG(HP_SYS_CLKRST_PERI_CLK_CTRL22_REG) = c;
+    REG(LEDC_CONF_REG) |= 1u << LEDC_CLK_EN_S;
+
+    /* 40 MHz / (5 kHz * 1024) = 7.8125: the divider has 8 fraction bits. */
+    uint32_t div = (uint32_t)(((uint64_t)BL_XTAL_HZ << 8) / ((uint64_t)BL_PWM_HZ << BL_DUTY_RES));
+    REG(LEDC_TIMER0_CONF_REG) = (BL_DUTY_RES << LEDC_TIMER0_DUTY_RES_S) | (div << LEDC_CLK_DIV_TIMER0_S);
+    REG(LEDC_TIMER0_CONF_REG) |= 1u << LEDC_TIMER0_PARA_UP_S;
+    REG(LEDC_TIMER0_CONF_REG) |= 1u << LEDC_TIMER0_RST_S;
+    REG(LEDC_TIMER0_CONF_REG) &= ~(1u << LEDC_TIMER0_RST_S);
+
+    REG(LEDC_CH0_HPOINT_REG) = 0;
+    REG(LEDC_CH0_CONF0_REG) = (0u << LEDC_TIMER_SEL_CH0_S) | (0u << LEDC_IDLE_LV_CH0_S);
+    for (unsigned i = 0; i < 16; i++) REG(LEDC_GAMMA_RAM_CH0 + 4u * i) = 0;
+    g_bl_pwm = true;
+}
+
+/* 0..100; 0 is dark. Routes the pin to the LEDC on first use. */
+static void bl_set(unsigned percent) {
+    if (percent > 100u) percent = 100u;
+    if (!g_bl_pwm) bl_pwm_init();
+    uint32_t duty = ((1u << BL_DUTY_RES) * percent) / 100u;
+    REG(LEDC_CH0_DUTY_REG) = duty << 4;                     /* 4 fraction bits */
+    /* Fade entry 0: increase 1, cycle 1, scale 0, steps 1 -- ledc_set_duty(). */
+    REG(LEDC_GAMMA_RAM_CH0) = 1u | (1u << 1) | (0u << 11) | (1u << 21);
+    REG(LEDC_CH0_GAMMA_CONF_REG) = 1u << LEDC_CH0_GAMMA_ENTRY_NUM_S;
+    REG(LEDC_CH0_CONF0_REG) |= 1u << LEDC_SIG_OUT_EN_CH0_S;
+    REG(LEDC_CH0_CONF1_REG) = 1u << LEDC_DUTY_START_CH0_S;
+    REG(LEDC_CH0_CONF0_REG) |= 1u << LEDC_PARA_UP_CH0_S;
+    /* The pad: GPIO function, its output from the matrix, inverted. */
+    uint32_t pad = REG(IOMUX_PAD(BL_GPIO));
+    pad &= ~(IOMUX_MCU_SEL_M | IOMUX_FUN_PU | IOMUX_FUN_PD);
+    pad |= (IOMUX_FUNC_GPIO << IOMUX_MCU_SEL_S);
+    REG(IOMUX_PAD(BL_GPIO)) = pad;
+    REG(GPIO_OUT_SEL(BL_GPIO)) = (LEDC_SIG_OUT0_IDX << GPIO_FUNC0_OUT_SEL_S) |
+                                 (1u << GPIO_FUNC0_OUT_INV_SEL_S);
+    REG(GPIO_ENABLE_W1TS_HI) = 1u << (BL_GPIO - 32u);
+}
+
 static void backlight(bool on) {
-    gpio_out(BL_GPIO, !on);          /* active low: low = full brightness */
+    bl_set(on ? g_bl_level : 0u);
     g_bl_on = on;
 }
 
@@ -1033,6 +1106,12 @@ static void term_convert(unsigned y0, unsigned y1) {
     if (us > g_t_us_max) g_t_us_max = us;
 }
 
+/* 47.11: idle blanking -- dark, or back to what `lcd backlight` / `lcd bl`
+ * last set, without changing either. */
+static void term_blank(bool off) {
+    bl_set(off || !g_bl_on ? 0u : g_bl_level);
+}
+
 static lcdterm_backend_t g_tbe = {
     .name            = "LCD-7B",
     .text_test_title = "LugalOS on the LCD-7B: Spleen 8x16, 128 x 37 cells, 1-bpp to GRAY8 over DSI at 60 Hz",
@@ -1041,6 +1120,7 @@ static lcdterm_backend_t g_tbe = {
     .stride          = T_STRIDE,
     .fb_region_count = 0,              /* the terminal draws from the kernel here (lcdterm.h) */
     .flush           = term_flush,
+    .blank           = term_blank,
 };
 
 /* The whole terminal again, from its 1-bpp frame -- after a test pattern
@@ -1354,6 +1434,30 @@ void dsi_lcd_command(const char *args) {
         if (!dsi_lcd_init()) { cprintf("lcd: bring-up failed: %s\n", g_reason); return; }
         set_pattern(pat);
         cprintf("lcd: %s\n", g_pattern);
+        return;
+    }
+    if (strncmp(args, "backlight", 9) == 0) {           /* before "bl", which it starts with */
+        const char *p = skip_ws(args + 9);
+        if (*p < '0' || *p > '9') {
+            cprintf("lcd: backlight %u%%%s\n", g_bl_on ? g_bl_level : 0u, g_bl_on ? "" : " (off)");
+            if (g_bl_pwm) {
+                /* What the channel really runs (DUTY_R, 4 fraction bits), and
+                 * the timer moving: two reads of its counter. */
+                uint32_t t0 = REG(LEDC_TIMER0_VALUE_REG), t1 = REG(LEDC_TIMER0_VALUE_REG);
+                cprintf("lcd:   LEDC ch0: duty %lu/%u at %u Hz (inverted on GPIO%u), timer %lu -> %lu\n",
+                        (unsigned long)(REG(LEDC_CH0_DUTY_R_REG) >> 4), 1u << BL_DUTY_RES, BL_PWM_HZ,
+                        (unsigned)BL_GPIO, (unsigned long)(t0 & 0xFFFFFu), (unsigned long)(t1 & 0xFFFFFu));
+            }
+            return;
+        }
+        unsigned v = 0;
+        while (*p >= '0' && *p <= '9') v = v * 10u + (unsigned)(*p++ - '0');
+        if (v > 100u) v = 100u;
+        /* The RP2350's semantics (lcd7_set_backlight()): 0 is off, and `bl on`
+         * then comes back at the last level that was not 0. */
+        if (v) g_bl_level = v;
+        backlight(v != 0);
+        cprintf("lcd: backlight %u%%\n", v);
         return;
     }
     if (strncmp(args, "bl", 2) == 0) {

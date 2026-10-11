@@ -451,12 +451,17 @@ static bool lcdterm_pixels(const uint8_t **fb, unsigned *w, unsigned *h, unsigne
     return true;
 }
 
+static void lcdterm_blank(bool off) {
+    if (g_be && g_be->blank) g_be->blank(off);
+}
+
 static const console_screen_t g_console_screen = {
     .flush     = lcdterm_console_flush,
     .size      = lcdterm_console_size,
     .set_title = lcdterm_set_title,
     .canvas    = lcdterm_canvas,
     .pixels    = lcdterm_pixels,
+    .blank     = lcdterm_blank,
 };
 
 const console_screen_t *lcdterm_console_screen(void) {

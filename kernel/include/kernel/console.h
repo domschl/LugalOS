@@ -97,6 +97,9 @@ typedef struct {
     /* 37.5a: the whole 1-bpp frame, for a screenshot -- drivers/fbtext.h's
      * format (leftmost pixel in bit 0); false if there is none yet. */
     bool (*pixels)(const uint8_t **fb, unsigned *w, unsigned *h, unsigned *stride);
+    /* 47.11: the backlight off (true) or back at its level (false), for idle
+     * blanking; NULL where the panel cannot. */
+    void (*blank)(bool off);
 } console_screen_t;
 
 void console_set_screen(const console_screen_t *screen);
@@ -175,7 +178,20 @@ typedef struct {
     int  (*getc)(void);
     bool (*peek_interrupt)(void);
     const char *(*indicator)(void);
+    /* 47.11: the person at the panel types on this (the USB keyboard): a key
+     * from it that wakes a blanked panel is swallowed, so a blind Enter runs
+     * nothing. Other sources (a serial line, a script) wake it and keep
+     * their bytes. */
+    bool local;
 } console_input_t;
+
+/* 47.11: idle blanking. After `seconds` without input the panel's backlight
+ * goes off; the next input brings it back. 0 is never (the default). */
+void     console_blank_set(uint32_t seconds);
+uint32_t console_blank_after(void);
+bool     console_blanked(void);
+/* How often it blanked, woke, and woke on a swallowed panel key. */
+void     console_blank_counts(uint32_t *blankings, uint32_t *wakes, uint32_t *swallowed);
 
 #define CONSOLE_INPUT_MAX 4
 int console_input_register(const console_input_t *src);

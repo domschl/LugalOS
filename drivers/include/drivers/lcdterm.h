@@ -46,6 +46,8 @@ typedef struct {
     /* Rows [y0, y1) of the frame changed. NULL when the scan-out reads the
      * frame itself (RP2350); a converting backend (47.7) does its work here. */
     void      (*flush)(unsigned y0, unsigned y1);
+    /* 47.11: the backlight off, or back at its level (idle blanking). */
+    void      (*blank)(bool off);
 } lcdterm_backend_t;
 
 /* Takes the backend (kept by pointer: it must outlive the terminal), finds

@@ -345,6 +345,14 @@ static unsigned  g_brightness;
 /* 47.6: the frame as drivers/lcdterm.c sees it; fb and its regions are
  * filled in by lcd7_init() once the frame is allocated. No flush: the pixel
  * SM reads the frame itself, every frame. */
+/* 47.11: idle blanking -- dark without forgetting the level `lcd backlight`
+ * set, and back to it. */
+static void lcd7_blank(bool off) {
+    unsigned keep = g_brightness;
+    lcd7_set_backlight(off ? 0u : keep);
+    g_brightness = keep;
+}
+
 static lcdterm_backend_t g_backend = {
     .name            = "RP2350-LCD-7",
     .text_test_title = "LugalOS on the RP2350-LCD-7: Spleen 8x16, 100 x 30 cells, 1-bpp at 56 Hz",
@@ -353,6 +361,7 @@ static lcdterm_backend_t g_backend = {
     .stride          = LCD_H_ACTIVE / 8u,
     .fb_region_count = 2,
     .flush           = NULL,
+    .blank           = lcd7_blank,
 };
 
 static void unreset(uint32_t mask) {

@@ -427,7 +427,7 @@ static const char *kbd_indicator(void) {
     return g_kbd_hint;
 }
 
-static const console_input_t g_in_kbd = { "kbd", kbd_has_char, kbd_getc, kbd_peek_interrupt, kbd_indicator };
+static const console_input_t g_in_kbd = { "kbd", kbd_has_char, kbd_getc, kbd_peek_interrupt, kbd_indicator, true };
 
 void usbkbd_host_attach(usbkbd_state_t *k) {
     g_k = k;
