@@ -43,7 +43,7 @@ new board supplies the scan-out, the keyboard transport and the memory.
 | D2 | Monochrome or colour? | **Confirmed: monochrome, pixel-identical to the RP2350-LCD-7** for this phase. Colour is evaluated later (e.g. for games) and is out of scope here. The 1-bpp `canvas1_t` model, the zebra title bars and the grey dither all stay. The scan-out format (D3) is picked so that colour can come later without redoing 47.4–47.7. |
 | D3 | Scan-out format | **Decided in 47.5: GRAY8** (§6.6). The DSI bridge takes `raw_type` 12 = gray and expands it to R = G = B. A 1024 × 600 frame is 600 KB of PSRAM and 37 MB/s of scan-out at 60 Hz, about a third of the measured PSRAM read bandwidth. RGB565 runs too (1.2 MB, 74 MB/s, also tested clean); it's a runtime switch for colour later. |
 | D4 | Keyboard | **Confirmed, priority 1: a USB boot keyboard on the Type-A port** (USB 2.0 OTG HS, DWC2 core). A keyboard is already plugged in. It gets a bare-metal host-controller driver built from permissively licensed sources (§5.1). Above the controller it reuses phase 36's portable `usbkbd.c` (enumeration, hub, boot report, keymap). Touch (GT911) is priority 2 or later (47.12). |
-| D5 | Console | **Confirmed: UART0 through the on-board CH343P** ("USB TO UART" Type-C), 115200 baud, like the NANO's UART0. The board's other Type-C (P4 USB-Serial/JTAG, "USB1.1 FS direct") is kept free for the 9P link (47.13). |
+| D5 | Console | **Confirmed: UART0 through the on-board CH343P** ("USB TO UART" Type-C), 115200 baud, like the NANO's UART0 (**921600 on both P4 boards since 2026-10-11**, §6.8). The board's other Type-C (P4 USB-Serial/JTAG, "USB1.1 FS direct") is kept free for the 9P link (47.13). |
 | D6 | The on-board ESP32-C6 | **Left alone.** It runs its factory ESP-Hosted slave and LugalOS does not touch `C6_CHIP_PU` or the SDIO pins in this phase. The C6 belongs to step 2 (§9). |
 | D7 | Ribbon width presets on a 126-column screen | **Confirmed: derived from the screen width, not hard-coded.** Today's 38/48/64/98 are 800-px numbers spread across `screen.c` (`text_cols = 38/48/64`), `ribbon.c` (`800u` defaults) and `console.c` (`48` for a new canvas). 47.6 moves them to a geometry table computed from `w`, so that "half", "third" and "two-thirds" tile exactly, including the 10-px gaps, at both 800 and 1024. The RP2350 must come out with exactly today's numbers. |
 
@@ -974,6 +974,19 @@ in `canvas1`/`fbtext` and PSRAM has room for the second 75 KB.
   `lcd colours` hand the glass back.
 * **`lcd colours` parsed the wrong character** to tell "colours" from
   "colors" and lost the first colour. Caught on the glass: black on amber.
+
+**The console at 921600 (owner's suggestion, 2026-10-11).** With the
+terminal frame-paced, the tee to UART0 at 115,200 baud was what limited a
+busy console, at about 205 lines/s of 55 characters.
+* **Where it is set:** `CONFIG_UART0_BAUD` is 921600 in both P4 board files
+  (divisor 43 + 6/16 → 922,190 baud, +0.06%), and `tools/p4run.py`'s
+  `BAUD` matches; the test suite takes its rate from there.
+* **Limits:** the NANO's CP2102 goes to 1 Mbaud, the 7B's CH343P to 6. The
+  ROM and the stage-2 stub still speak 115,200 until the kernel sets the
+  UART, so a boot's first lines arrive garbled; nothing waits for them.
+* **Measured** (`lcd termbench`): 200 lines with the tee in 123 ms = 1,625
+  lines/s (≈ 91 KB/s, the wire's full rate), against 2,000 lines/s with no
+  tee at all.
 
 **Not done here, deliberately:**
 * **The U-mode `lcdterm` task on the P4.** It needs a code region (32 KB of

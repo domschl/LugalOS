@@ -40,7 +40,10 @@ set(CONFIG_UART0_BASE     0x500CA000)
 set(CONFIG_UART0_TX_GPIO  37)
 set(CONFIG_UART0_RX_GPIO  38)
 set(CONFIG_UART0_SCLK_HZ  40000000)
-set(CONFIG_UART0_BAUD     115200)
+# 921600 since 47.7's follow-up (8x 115200): the shell on the panel was
+# paced by its tee to this UART. Divisor 40 MHz / 921600 = 43 + 6/16, i.e.
+# 922190 baud, +0.06%. tools/p4run.py's BAUD must match.
+set(CONFIG_UART0_BAUD     921600)
 set(CONFIG_XTAL_HZ        40000000)   # [meas: esptool]
 
 # The CPU clock: **400**, the top of v3.x's ladder (100/200/400 from a 400 MHz

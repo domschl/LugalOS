@@ -86,7 +86,7 @@ RP2350 devices running LugalOS expose **two CDC-ACM USB serial ports**:
 
 #### 2. ESP32-P4-NANO (`esp32p4`)
 ESP32-P4-NANO connects via **two separate serial bridges**:
-* **CP2102 Bridge (`/dev/ttyUSB*`):** Connected to ESP32-P4 UART0 (interactive console).
+* **CP2102 Bridge (`/dev/ttyUSB*`):** Connected to ESP32-P4 UART0 (interactive console, **921600 baud** since 47.7; `tools/p4run.py` `BAUD`).
   * Symlink: `/dev/serial/by-id/usb-Silicon_Labs_CP2102_*-port0`
 * **CH34x Bridge (`/dev/ttyACM*`):** Connected to hardware control lines:
   * `RTS` controls `ESP_EN` (hardware chip reset).
@@ -149,6 +149,8 @@ for both roles by itself.
   `tools/p4flash.py --board lcd7b --build build/esp32p4-lcd7b --only boot,os --verify`;
   console with `tools/p4run.py --board lcd7b --run --cmd "..."`.
 * Runs at 400 MHz (v3 ladder 100/200/400) with the core on the external DC-DC.
+* Console (both P4 boards): UART0 at **921600 baud** (`CONFIG_UART0_BAUD`, matched by
+  `tools/p4run.py`'s `BAUD`). The ROM's first boot lines are at 115200 and arrive garbled.
 * 32 MB PSRAM at 0x48000000 (both P4 boards, `drivers/psram_esp32p4.c`), 200 MHz
   hex DDR via IDF's DQS timing tuning at every boot (`CONFIG_PSRAM_SPEED_MHZ`;
   falls back to 20 and logs it if no window is found): `psram` (shows the tuning

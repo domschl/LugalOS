@@ -57,7 +57,10 @@ set(CONFIG_UART0_RX_GPIO  38)
 # 115200 is the ROM's own rate, so the same host command that watches the
 # boot ROM's banner watches ours.
 set(CONFIG_UART0_SCLK_HZ  40000000)
-set(CONFIG_UART0_BAUD     115200)
+# 921600 since 47.7's follow-up (8x 115200): the shell on the panel was
+# paced by its tee to this UART. Divisor 40 MHz / 921600 = 43 + 6/16, i.e.
+# 922190 baud, +0.06%. tools/p4run.py's BAUD must match.
+set(CONFIG_UART0_BAUD     921600)
 
 # The crystal itself. Separate from CONFIG_UART0_SCLK_HZ even though the two
 # are the same number today, because they are different facts: one is a

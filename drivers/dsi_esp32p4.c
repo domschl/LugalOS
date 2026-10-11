@@ -1136,11 +1136,22 @@ static void term_bench(void) {
         console_flush();
     }
     uint32_t lines_us = (uint32_t)(time_get_us() - t1);
+    /* The same with the tee as it was: what a busy console actually gets. */
+    lcdterm_set_tee(tee);
+    uint64_t t2 = time_get_us();
+    for (unsigned i = 0; i < 200u; i++) {
+        for (unsigned k = 0; k < 55u; k++) console_putc((char)('a' + (i + k) % 26u));
+        console_putc('\n');
+        console_flush();
+    }
+    uint32_t tee_us = (uint32_t)(time_get_us() - t2);
     console_unlock();
     task_sleep_ms(40);                 /* let the pacer show the last of it */
-    lcdterm_set_tee(tee);
-    cprintf("lcd termbench: 200 lines of 55 in %lu ms = %lu lines/s (%s)\n", (unsigned long)(lines_us / 1000u),
-            (unsigned long)(200000000ull / (lines_us ? lines_us : 1u)), paced ? "frame-paced" : "unpaced");
+    cprintf("lcd termbench: 200 lines of 55 in %lu ms = %lu lines/s (%s); with the tee to %s: %lu ms = %lu lines/s\n",
+            (unsigned long)(lines_us / 1000u),
+            (unsigned long)(200000000ull / (lines_us ? lines_us : 1u)), paced ? "frame-paced" : "unpaced",
+            tee == LCD_TEE_OFF ? "nowhere" : "UART0", (unsigned long)(tee_us / 1000u),
+            (unsigned long)(200000000ull / (tee_us ? tee_us : 1u)));
     cprintf("lcd termbench: a character %lu us (best %lu, worst %lu); a scroll %lu us (best %lu, worst %lu); "
             "last flush %lu rows\n",
             (unsigned long)(ch_sum / CH), (unsigned long)ch_best, (unsigned long)ch_worst,

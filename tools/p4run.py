@@ -74,7 +74,13 @@ import time
 
 import serial
 
-BAUD = 115200
+# The console's rate, once the kernel runs: CONFIG_UART0_BAUD in both P4
+# board files (cmake/board-esp32p4-{nano,lcd7b}.cmake). 921600 since 47.7's
+# follow-up: 8x the old 115200, standard, and inside both bridges' range
+# (CP2102 1 Mbaud, CH343P 6 Mbaud). The ROM and the stage-2 stub still talk
+# at 115200 until the kernel sets the UART, so the first lines of a boot
+# arrive garbled here -- nothing in this tool waits for them.
+BAUD = 921600
 
 # USB identities rather than device-name globs. On Linux the CH343P and the
 # P4's native USB-Serial-JTAG both arrive as /dev/ttyACM*, so a glob cannot
@@ -721,12 +727,9 @@ def main():
                          "(default: the CH34x bridge, else the console port)")
     ap.add_argument("--reset", choices=["auto", "none"], default="auto")
     ap.add_argument("--baud", type=int,
-                    help="baud rate for the load transfer only, e.g. 921600. "
-                         "The console stays at %d, because the program being "
-                         "loaded sets its own rate and the ROM's is only in "
-                         "force until it does. Worth using from E2 onward: a "
-                         "kernel image is ~227 KB against E1's 1.2 KB, which "
-                         "is about 40 s at the default rate." % BAUD)
+                    help="baud rate for the load transfer only, e.g. 921600 "
+                         "(esptool's own default otherwise). The console is "
+                         "read at %d, the kernel's rate." % BAUD)
     ap.add_argument("--cmd", action="append", default=[], metavar="LINE",
                     help="after loading (or with --run / --listen), send LINE to the "
                          "console and print what comes back. Repeatable, in "

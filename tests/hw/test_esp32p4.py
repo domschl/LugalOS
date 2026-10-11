@@ -78,7 +78,7 @@ def open_port(dev: str, timeout: float = 0.2) -> serial.Serial:
 def close_port(s: serial.Serial) -> None:
     """Close, leaving the tty at B0 so the next open resets nothing."""
     _load_p4run().close_console(s)
-BAUD = 115200
+
 
 # The BME280's own address, and the board's soldered-down audio codec. See the
 # module docstring for why the second one is in a sensor suite.
@@ -100,6 +100,9 @@ def _load_p4run():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+BAUD = _load_p4run().BAUD     # the console's rate: one place, tools/p4run.py
 
 
 @dataclass
