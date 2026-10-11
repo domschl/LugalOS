@@ -558,6 +558,7 @@ static void cmd_help(void) {
     cprintf("  df -r           - Recount free space from the FAT (repairs a stale FSInfo)\n");
     cprintf("  top             - System process, memory & storage monitor\n");
     cprintf("  date [YYYY-MM-DD HH:MM:SS] - Get or set system date and RTC time\n");
+    cprintf("  rtc             - Display RTC status, model (DS1307/DS3231), time and temperature\n");
     cprintf("  ls [path]       - List directory (/flash0/, /sd0/, /ram0/, /proc/, /dev/, /srv/)\n");
     cprintf("  cat <path>      - Read and display path (/sd0/file, /proc/ps, /dev/uart)\n");
     cprintf("  touch <file>    - Create a new empty file\n");
@@ -4143,6 +4144,60 @@ static void parse_and_eval_cmd(const char *cmd_line) {
             i2c_scan_bus_id(bus);
         } else {
             cprintf("usage: i2c scan [bus]\n");
+        }
+        return;
+    } else if (strncmp(cmd_line, "i2c wr ", 7) == 0) {
+        uint32_t v[34];
+        unsigned n = 0;
+        const char *p = &cmd_line[7];
+        while (*p && n < 34) {
+            while (*p == ' ') p++;
+            if (!*p) break;
+            uint32_t x = 0;
+            bool any = false;
+            for (; (*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f'); p++, any = true)
+                x = x * 16u + (uint32_t)(*p <= '9' ? *p - '0' : *p - 'a' + 10);
+            if (!any || (*p && *p != ' ')) { n = 0; break; }
+            v[n++] = x;
+        }
+        if (n < 2 || v[0] > 0x7f) {
+            cprintf("usage: i2c wr ADDR BYTE [BYTES...]   (hex)\n");
+            return;
+        }
+        uint8_t w[32];
+        unsigned wlen = n - 1;
+        for (unsigned i = 0; i < wlen; i++) w[i] = (uint8_t)v[1 + i];
+        if (!i2c_xfer((uint8_t)v[0], w, wlen, NULL, 0)) {
+            cprintf("i2c wr: 0x%02x did not answer\n", (unsigned)v[0]);
+            return;
+        }
+        cprintf("i2c wr: wrote %u byte(s) to 0x%02x\n", wlen, (unsigned)v[0]);
+        return;
+    } else if (strcmp(cmd_line, "rtc") == 0) {
+        if (!i2c_rtc_is_detected()) {
+            cprintf("No RTC module detected at 0x68\n");
+            return;
+        }
+        const char *model = i2c_rtc_get_model_name();
+        cprintf("RTC Model: %s (at 0x68)\n", model);
+        cprintf("Oscillator status: %s\n",
+                i2c_rtc_lost_power()
+                    ? (i2c_rtc_get_type() == RTC_TYPE_DS3231 ? "stopped (OSF set)" : "halted (CH set)")
+                    : "running");
+        rtc_time_t tm;
+        if (i2c_rtc_read_time(&tm)) {
+            char isostr[32];
+            time_format_iso(&tm, isostr, sizeof(isostr));
+            cprintf("RTC Time (UTC): %s\n", isostr);
+        } else {
+            cprintf("RTC Time: unreadable (oscillator halted or uninitialized)\n");
+        }
+        int temp_c;
+        if (i2c_rtc_read_temperature_c(&temp_c)) {
+            cprintf("Temperature: %d C\n", temp_c);
+        } else {
+            cprintf("Temperature: %s\n",
+                    (i2c_rtc_get_type() == RTC_TYPE_DS1307) ? "none (DS1307 has no sensor)" : "not available");
         }
         return;
     } else if (strcmp(cmd_line, "date") == 0) {

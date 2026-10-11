@@ -13,17 +13,25 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+typedef enum {
+    RTC_TYPE_NONE = 0,
+    RTC_TYPE_DS1307,
+    RTC_TYPE_DS3231,
+} rtc_chip_type_t;
+
 void i2c_rtc_init(void);
 bool i2c_rtc_read_time(rtc_time_t *tm);
-/* True when the RTC reports that its oscillator stopped -- a DS3231 setting
- * OSF, which is what a power loss with no working backup cell looks like from
- * software. The stored time is meaningless while this holds, and meaningless
- * in a way that *passes every range check*: a reset DS3231 reads
- * 2000-01-01 00:00:00. Writing the time clears it. */
+/* True when the RTC reports that its oscillator stopped -- on a DS3231 this
+ * is OSF in status register 0x0F; on a DS1307 this is CH (clock halt, bit 7 of
+ * seconds register 0x00). Both indicate power loss with no working backup
+ * cell, or a stopped oscillator. Writing the time clears it (and starts the
+ * DS1307 oscillator). */
 bool i2c_rtc_lost_power(void);
 
 bool i2c_rtc_write_time(const rtc_time_t *tm);
 bool i2c_rtc_is_detected(void);
+rtc_chip_type_t i2c_rtc_get_type(void);
+const char *i2c_rtc_get_model_name(void);
 
 /* DS3231-only (registers 0x11/0x12; a DS1307 has no temperature sensor and
  * this returns false for one). Rounded to the nearest whole degree C --

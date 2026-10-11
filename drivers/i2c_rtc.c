@@ -17,6 +17,7 @@
 
 #define DS1307_DS3231_I2C_ADDR 0x68
 static bool g_rtc_detected = false;
+static rtc_chip_type_t g_rtc_type = RTC_TYPE_NONE;
 
 static inline uint8_t bcd2dec(uint8_t val) {
     return ((val >> 4) * 10) + (val & 0x0F);
@@ -60,39 +61,78 @@ static bool i2c_rtc_hw_read_temperature_c(int *temp_c);
 
 /* Which of the two parts is on the bus, decided once at init.
  *
- * They share an address and a time-register layout, which is why one driver
- * has always served both -- but **the registers this file reaches beyond the
- * clock are not the same registers on the two parts**, and treating them as
- * equal is actively harmful rather than merely inaccurate:
+ * They share an address (0x68) and a time-register layout (0x00-0x06), which
+ * is why one driver has always served both -- but the registers beyond the
+ * clock differ fundamentally:
  *
- *   0x0F : DS3231 status (OSF). On a DS1307 this is **user NVRAM** -- the
- *          part has 56 battery-backed bytes at 0x08-0x3F. Reading it returns
- *          whatever the owner stored, so a byte with bit 7 set would be
- *          reported as a stopped oscillator forever; and *clearing* OSF after
- *          a write would silently corrupt one of those bytes. That second one
- *          is data loss in someone else's data.
- *   0x11 : DS3231 temperature. NVRAM again on a DS1307, so the temperature
- *          this driver has always reported on such a board was two arbitrary
- *          bytes formatted as degrees. Pre-existing, and gated here too.
- *   0x00 bit 7 : DS1307 CH (clock halt). Unused and always 0 on a DS3231, so
- *          checking it is harmless on both and meaningful on one.
+ *   0x00 bit 7: On DS1307, this is CH (Clock Halt). 1 = oscillator stopped.
+ *               On DS3231, bit 7 is always 0.
+ *   0x0F      : DS3231 status (OSF, bits 6:4 reserved as 0).
+ *               On DS1307, this is battery-backed user NVRAM (56 bytes at 0x08-0x3F).
+ *   0x11/0x12 : DS3231 temperature sensor (MSB integer deg C, LSB fraction).
+ *               Crucially, on DS3231 registers 0x11/0x12 are hardware READ-ONLY,
+ *               and fraction bits 5:0 are always 0.
+ *               On DS1307, 0x11/0x12 are user NVRAM (read/write SRAM).
  *
- * Identified from invariants rather than from a part number, because neither
- * part has one to read. Two independent DS3231-only facts have to hold: the
- * status register's bits 6:4 are always zero, and the temperature fraction
- * byte's bits 5:0 are always zero. NVRAM satisfying both by chance is one
- * count in 2^12 per byte pair, and a DS1307 whose NVRAM happens to is left
- * doing exactly what it did before this check existed. */
-static bool g_is_ds3231;
-
+ * Differentiation strategy:
+ * 1. Read register 0x00. If 0x68 does not ACK, neither chip is present.
+ * 2. If reg 0x00 bit 7 (CH) is 1, it is definitively a DS1307 (DS3231 bit 7 is always 0).
+ * 3. Otherwise (when clock is running), test whether register 0x11 is writable SRAM
+ *    or read-only temperature:
+ *    Read original byte, write (orig ^ 0x5A), read back, and immediately restore orig.
+ *    If readback matches (orig ^ 0x5A), register 0x11 is RAM -> DS1307.
+ *    If readback does not match, register 0x11 is read-only -> DS3231.
+ * 4. Verify DS3231 invariants: status 0x0F bits 6:4 == 0, temp fraction 0x12 bits 5:0 == 0.
+ */
 static void i2c_rtc_identify_part(void) {
-    g_is_ds3231 = false;
-    uint8_t st, temp[2];
-    if (!rtc_rd(DS3231_REG_STATUS, &st, 1)) return;
-    if (!rtc_rd(DS3231_REG_TEMP, temp, 2)) return;
-    if (st & 0x70) return;          /* reserved in the DS3231's status */
-    if (temp[1] & 0x3F) return;     /* only bits 7:6 of the fraction exist */
-    g_is_ds3231 = true;
+    g_rtc_type = RTC_TYPE_NONE;
+
+    uint8_t reg0 = 0;
+    if (!rtc_rd(0x00, &reg0, 1)) {
+        return; /* No device answered at 0x68 */
+    }
+
+    /* If bit 7 of reg 0 is set, CH is active: this is a halted DS1307. */
+    if (reg0 & 0x80) {
+        g_rtc_type = RTC_TYPE_DS1307;
+        return;
+    }
+
+    /* Probe register 0x11: on DS1307 it is writable battery-backed SRAM.
+     * On DS3231 it is the read-only temperature MSB register. */
+    uint8_t orig11 = 0;
+    if (rtc_rd(0x11, &orig11, 1)) {
+        uint8_t test_val = (uint8_t)(orig11 ^ 0x5A);
+        uint8_t wr_buf[2] = { 0x11, test_val };
+        rtc_wr(wr_buf, 2);
+
+        uint8_t rb = 0;
+        rtc_rd(0x11, &rb, 1);
+
+        /* Immediately restore original NVRAM content */
+        uint8_t restore_buf[2] = { 0x11, orig11 };
+        rtc_wr(restore_buf, 2);
+
+        if (rb == test_val) {
+            /* 0x11 stored and returned the written byte: NVRAM -> DS1307 */
+            g_rtc_type = RTC_TYPE_DS1307;
+            return;
+        }
+    }
+
+    /* 0x11 ignored the write. Verify DS3231 register invariants:
+     * - Status 0x0F bits 6:4 are 0
+     * - Temp fraction 0x12 bits 5:0 are 0 */
+    uint8_t st = 0, temp[2] = { 0 };
+    if (rtc_rd(DS3231_REG_STATUS, &st, 1) && rtc_rd(DS3231_REG_TEMP, temp, 2)) {
+        if ((st & 0x70) == 0 && (temp[1] & 0x3F) == 0) {
+            g_rtc_type = RTC_TYPE_DS3231;
+            return;
+        }
+    }
+
+    /* Fallback if 0x68 answered but DS3231 invariants were not met */
+    g_rtc_type = RTC_TYPE_DS1307;
 }
 
 void i2c_rtc_init(void) {
@@ -104,93 +144,76 @@ void i2c_rtc_init(void) {
     i2c_rtc_identify_part();
 
     rtc_time_t tm;
-    g_rtc_detected = false;
+    g_rtc_detected = (g_rtc_type != RTC_TYPE_NONE);
+
+    if (!g_rtc_detected) {
+        if (I2C_HAVE_CONTROLLER) {
+#if defined(CONFIG_BOARD_RP2350)
+            printk("[I2C RTC] No DS1307/DS3231 RTC module found at 0x68 (GP%d/GP%d); "
+                   "using the system software clock.\n",
+                   CONFIG_I2C_RTC_SDA_GPIO, CONFIG_I2C_RTC_SCL_GPIO);
+#else
+            printk("[I2C RTC] No DS1307/DS3231 RTC module answered at 0x68; "
+                   "using the system software clock.\n");
+#endif
+        } else {
+            printk("[I2C RTC] No controller; kernel clock is software-only.\n");
+        }
+        return;
+    }
+
+    const char *model = (g_rtc_type == RTC_TYPE_DS3231) ? "DS3231" : "DS1307";
 
     /* A chip that answers but has lost its oscillator is a *detected* chip
-     * with an unusable time -- a distinction the old code could not draw,
-     * because it only ever asked for the time and a stopped DS3231 hands back
-     * a plausible one. Detecting it here is what lets the clock be written
-     * (which clears OSF) instead of the board deciding there is no RTC. */
+     * with an unusable time. Detecting it here is what lets the clock be written
+     * (which clears OSF on DS3231, or clears CH and starts the oscillator on DS1307)
+     * instead of the board deciding there is no RTC. */
     if (i2c_rtc_lost_power()) {
-        /* The chip answered, so it is detected -- but its time is unverified
-         * and does not become this system's clock. A DS3231 that lost its
-         * oscillator reads 2000-01-01 00:00:00, which passes every range
-         * check, so seeding from it would replace a known-unset clock with a
-         * confidently wrong one. Nothing is worse to boot with.
-         *
-         * Not a diagnosis of the backup cell. OSF is sticky and this tree has
-         * never cleared it, so on any board that has run before today it may
-         * be reporting something old. Setting the clock -- by hand, from NTP,
-         * or from the radio -- clears it, and from then on it means what it
-         * says. */
-        g_rtc_detected = true;
-        printk("[I2C RTC] DS3231 at 0x68 answered, but OSF is set: its time is "
-               "unverified and was not used. Set the clock to clear it "
-               "(the flag is sticky and may be reporting an old event).\n");
+        if (g_rtc_type == RTC_TYPE_DS3231) {
+            printk("[I2C RTC] DS3231 at 0x68 answered, but OSF is set: its time is "
+                   "unverified and was not used. Set the clock to clear it "
+                   "(the flag is sticky and may be reporting an old event).\n");
+        } else {
+            printk("[I2C RTC] DS1307 at 0x68 answered, but CH (clock halt) is set: its "
+                   "oscillator is stopped. Set the clock with 'date' to start it.\n");
+        }
         return;
     } else if (i2c_rtc_hw_read_time(&tm)) {
-        if (tm.month >= 1 && tm.month <= 12 && tm.day >= 1 && tm.day <= 31 && tm.hour <= 23 && tm.min <= 59 && tm.sec <= 59) {
-            g_rtc_detected = true;
-            /* The DS3231 holds UTC, not local time (user, 2026-08-23). It is
-             * storage for a clock that runs on UTC, and storing local time
-             * there would make the hour that repeats every October
-             * unrecoverable after a reset. A chip written by an older build
-             * therefore reads an hour or two out until the next `date` or
-             * (dcf-sync ... 1) rewrites it. */
+        if (tm.month >= 1 && tm.month <= 12 && tm.day >= 1 && tm.day <= 31 &&
+            tm.hour <= 23 && tm.min <= 59 && tm.sec <= 59) {
             time_set_utc(&tm);
             char isostr[32];
             time_format_iso(&tm, isostr, sizeof(isostr));
 #if defined(CONFIG_BOARD_RP2350)
             printk("[I2C RTC] %s detected at 0x68 (GP%d/GP%d)! Synced UTC: %s\n",
-                   g_is_ds3231 ? "DS3231" : "DS1307-compatible",
-                   CONFIG_I2C_RTC_SDA_GPIO, CONFIG_I2C_RTC_SCL_GPIO, isostr);
+                   model, CONFIG_I2C_RTC_SDA_GPIO, CONFIG_I2C_RTC_SCL_GPIO, isostr);
 #else
             printk("[I2C RTC] %s detected at 0x68! Synced UTC: %s\n",
-                   g_is_ds3231 ? "DS3231" : "DS1307-compatible", isostr);
+                   model, isostr);
 #endif
             return;
+        } else {
+            printk("[I2C RTC] %s at 0x68 answered, but stored time is out of range. "
+                   "Set the clock to update it.\n", model);
+            return;
         }
-    }
-
-    /* Two different absences, and saying which is the whole point.
-     *
-     * "Not found at 0x68" claims a probe. Where there is no controller
-     * compiled in, i2c_probe_addr() and i2c_rtc_hw_read_time() are the stubs a
-     * few hundred lines up, which return false without touching a wire, and
-     * the sentence describes something that did not happen -- the same class
-     * of line as the two the ESP32-P4's first boot caught in E2
-     * (plan/phase27_esp32p4_bringup.md): drivers/at24c32.c announcing a "4KB
-     * I2C EEPROM detected at 0x57!" from a build with no bus, and
-     * drivers/usb_cdc.c naming two host device nodes from a stub.
-     *
-     * The gate was `#if defined(CONFIG_BOARD_RP2350)`, which was the same
-     * thing as "has a controller" right up until E7 gave the P4 one -- after
-     * which that board answered a full bus scan while printing "No I2C
-     * controller on this target". Both sentences were true when written and
-     * one of them stopped being true without changing. I2C_HAVE_CONTROLLER
-     * (drivers/i2c_rtc.h) is the fact each site actually wanted.
-     *
-     * On the P4 the honest line still is "nothing at 0x68": that board has no
-     * RTC chip at all. What it has is the LP domain's own counter and a
-     * 32.768 kHz crystal, which is a real clock and nothing this driver has
-     * ever heard of -- see E7 in the phase plan for why that is a different
-     * device class rather than a second implementation of this one. */
-    if (I2C_HAVE_CONTROLLER) {
-#if defined(CONFIG_BOARD_RP2350)
-        printk("[I2C RTC] No DS1307/DS3231 RTC module found at 0x68 (GP%d/GP%d); "
-               "using the system software clock.\n",
-               CONFIG_I2C_RTC_SDA_GPIO, CONFIG_I2C_RTC_SCL_GPIO);
-#else
-        printk("[I2C RTC] No DS1307/DS3231 RTC module answered at 0x68; "
-               "using the system software clock.\n");
-#endif
-    } else {
-        printk("[I2C RTC] No controller; kernel clock is software-only.\n");
     }
 }
 
 bool i2c_rtc_is_detected(void) {
     return g_rtc_detected;
+}
+
+rtc_chip_type_t i2c_rtc_get_type(void) {
+    return g_rtc_type;
+}
+
+const char *i2c_rtc_get_model_name(void) {
+    switch (g_rtc_type) {
+    case RTC_TYPE_DS3231: return "DS3231";
+    case RTC_TYPE_DS1307: return "DS1307";
+    default:              return "none";
+    }
 }
 
 
@@ -217,33 +240,35 @@ static bool rtc_wr(const uint8_t *buf, uint32_t len) {
 }
 
 static bool i2c_rtc_hw_read_time(rtc_time_t *tm) {
-    if (!tm) return false;
+    if (!tm || !g_rtc_detected) return false;
     uint8_t buf[7];
     if (!rtc_rd(0x00, buf, 7)) {
         return false;
     }
 
-    /* CH is current state -- the DS1307's oscillator is halted *now* -- so a
-     * read is genuinely meaningless and fails.
+    /* On DS1307, CH (bit 7 of register 0) is current state: the oscillator
+     * is halted *now*, so the time registers are not running and the read fails.
      *
-     * OSF deliberately does NOT fail the read, and the distinction cost a
-     * wrong conclusion before it was understood: **OSF is sticky**. The
-     * DS3231 sets it when the oscillator stops and leaves it set until
-     * software clears it, which nothing in this tree ever did -- so every
-     * board here has it set, reporting an event that may be months old on a
-     * chip that has kept perfect time ever since. Failing reads on it would
-     * declare every working RTC in the fleet unusable.
-     *
-     * What it does mean is "this time has not been verified since the last
-     * time the oscillator stopped", which is a caller's judgement to make:
-     * i2c_rtc_init() declines to seed the *kernel* clock from it, and the
-     * clock face lights a lamp. Writing the time clears the flag, so from
-     * then on it means what it says. */
-    if (buf[0] & 0x80) return false;              /* DS1307 CH: halted right now */
+     * On DS3231, OSF in status register 0x0F is sticky (see i2c_rtc_init comment);
+     * it does not fail this read. */
+    if (g_rtc_type == RTC_TYPE_DS1307 && (buf[0] & 0x80)) {
+        return false;
+    }
 
     tm->sec  = bcd2dec(buf[0] & 0x7F);
     tm->min  = bcd2dec(buf[1] & 0x7F);
-    tm->hour = bcd2dec(buf[2] & 0x3F); // 24-hr mode
+
+    /* 12-hour vs 24-hour mode (bit 6 of reg 0x02) */
+    if (buf[2] & 0x40) {
+        uint8_t h = bcd2dec(buf[2] & 0x1F);
+        bool pm = (buf[2] & 0x20) != 0;
+        if (pm && h < 12) h += 12;
+        else if (!pm && h == 12) h = 0;
+        tm->hour = h;
+    } else {
+        tm->hour = bcd2dec(buf[2] & 0x3F);
+    }
+
     // buf[3] is day of week (1-7)
     tm->day   = bcd2dec(buf[4] & 0x3F);
     tm->month = bcd2dec(buf[5] & 0x1F);
@@ -253,48 +278,41 @@ static bool i2c_rtc_hw_read_time(rtc_time_t *tm) {
 }
 
 static bool i2c_rtc_hw_write_time(const rtc_time_t *tm) {
-    if (!tm) return false;
+    if (!tm || !g_rtc_detected) return false;
     uint8_t reg_buf[8];
     reg_buf[0] = 0x00; // Register index
-    reg_buf[1] = dec2bcd(tm->sec);
-    reg_buf[2] = dec2bcd(tm->min);
-    reg_buf[3] = dec2bcd(tm->hour);
+    /* Bit 7 = 0: on DS1307, writing bit 7 = 0 clears CH and starts the oscillator.
+     * On DS3231, bit 7 is always 0. */
+    reg_buf[1] = dec2bcd(tm->sec) & 0x7F;
+    reg_buf[2] = dec2bcd(tm->min) & 0x7F;
+    reg_buf[3] = dec2bcd(tm->hour) & 0x3F; // 24-hr mode
     reg_buf[4] = 1; // Day of week default
-    reg_buf[5] = dec2bcd(tm->day);
-    reg_buf[6] = dec2bcd(tm->month);
+    reg_buf[5] = dec2bcd(tm->day) & 0x3F;
+    reg_buf[6] = dec2bcd(tm->month) & 0x1F;
     reg_buf[7] = dec2bcd((uint8_t)(tm->year >= 2000 ? (tm->year - 2000) : tm->year));
 
-    if (!g_rtc_detected) return false;
     if (!rtc_wr(reg_buf, 8)) return false;
 
-    /* Clear OSF now that the registers hold a real time again.
-     *
-     * The chip sets it and never clears it itself, so leaving it set would
-     * make every subsequent read fail on a clock that is now correct -- the
-     * flag would outlive the condition it reports. The datasheet prescribes
-     * exactly this: write the time, then clear the flag.
-     *
-     * Best-effort: a part with no status register (a DS1307) NAKs the write
-     * and the time is still set, which is the outcome that matters. */
-    uint8_t st;
-    if (g_is_ds3231 &&
-        rtc_rd(DS3231_REG_STATUS, &st, 1) &&
-        (st & DS3231_STATUS_OSF)) {
-        uint8_t clear_buf[2] = { DS3231_REG_STATUS,
-                                 (uint8_t)(st & (uint8_t)~DS3231_STATUS_OSF) };
-        rtc_wr(clear_buf, 2);
+    /* For DS3231: clear OSF in status register now that real time is loaded.
+     * For DS1307: writing bit 7 = 0 to register 0x00 above already cleared CH. */
+    if (g_rtc_type == RTC_TYPE_DS3231) {
+        uint8_t st;
+        if (rtc_rd(DS3231_REG_STATUS, &st, 1) && (st & DS3231_STATUS_OSF)) {
+            uint8_t clear_buf[2] = { DS3231_REG_STATUS,
+                                     (uint8_t)(st & (uint8_t)~DS3231_STATUS_OSF) };
+            rtc_wr(clear_buf, 2);
+        }
     }
     return true;
 }
 
 static bool i2c_rtc_hw_read_temperature_c(int *temp_c) {
     if (!temp_c || !g_rtc_detected) return false;
-    /* A DS1307 has no thermometer; 0x11 is two bytes of its NVRAM. This used
-     * to format them as degrees. */
-    if (!g_is_ds3231) return false;
+    /* A DS1307 has no thermometer; 0x11 is user NVRAM. */
+    if (g_rtc_type != RTC_TYPE_DS3231) return false;
 
     uint8_t buf[2];
-    if (!rtc_rd(0x11, buf, 2)) {
+    if (!rtc_rd(DS3231_REG_TEMP, buf, 2)) {
         return false;
     }
 
@@ -329,21 +347,20 @@ bool i2c_rtc_read_time(rtc_time_t *tm) {
 }
 
 bool i2c_rtc_lost_power(void) {
-    /* DS3231 only. On a DS1307 the address is user NVRAM and the answer would
-     * be whatever the owner put there. */
-    if (!g_is_ds3231) return false;
+    if (!g_rtc_detected) return false;
 
-    /* Through the driver task once it exists, like every other public
-     * accessor in this file.
-     *
-     * This used to touch the bus directly, breaking the rule stated above
-     * i2c_rtc_hw_read_time(): only i2c_rtc_init() (before the task exists)
-     * and the task itself may do that. Called from the clock application's
-     * own task it raced the driver for the bus. A rule only some callers
-     * follow is not a rule. */
-    uint8_t st;
-    if (!rtc_rd(DS3231_REG_STATUS, &st, 1)) return false;
-    return (st & DS3231_STATUS_OSF) != 0;
+    if (g_rtc_type == RTC_TYPE_DS3231) {
+        uint8_t st;
+        if (!rtc_rd(DS3231_REG_STATUS, &st, 1)) return false;
+        return (st & DS3231_STATUS_OSF) != 0;
+    } else if (g_rtc_type == RTC_TYPE_DS1307) {
+        /* DS1307: bit 7 of register 0x00 is CH (Clock Halt).
+         * 1 = oscillator stopped / lost power. */
+        uint8_t sec;
+        if (!rtc_rd(0x00, &sec, 1)) return false;
+        return (sec & 0x80) != 0;
+    }
+    return false;
 }
 
 bool i2c_rtc_write_time(const rtc_time_t *tm) {
