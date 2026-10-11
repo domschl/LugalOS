@@ -56,6 +56,7 @@
 #include "drivers/usb_crc.h"
 #include "drivers/usbkbd.h"
 #include "drivers/usbkbd_task.h"
+#include "drivers/touch.h"
 #include "drivers/vtterm.h"
 #include "drivers/ribbon.h"
 #include "drivers/dcf77_decode.h"
@@ -694,6 +695,9 @@ static void cmd_help(void) {
 #endif
 #if defined(CONFIG_BOARD_ESP32P4) && defined(CONFIG_USBHOST_DWC2)
     cprintf("  usb [regs]      - The OTG HS host port: controller, port, the last device's descriptors\n");
+#endif
+#if defined(TOUCH_PRESENT)
+    cprintf("  ts [log [s]]    - The touch panel: controller, counters; log shows presses and gestures\n");
 #endif
 #if defined(USBKBD_HOST_PRESENT)
     cprintf("  kbd             - The USB keyboard task: devices found, hub ports, counters\n");
@@ -3688,6 +3692,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
 #if defined(CONFIG_BOARD_ESP32P4) && defined(CONFIG_USBHOST_DWC2)
     } else if (strcmp(cmd_line, "usb") == 0 || strncmp(cmd_line, "usb ", 4) == 0) {
         usbhost_command(cmd_line + 3);
+        return;
+#endif
+#if defined(TOUCH_PRESENT)
+    } else if (strcmp(cmd_line, "ts") == 0 || strncmp(cmd_line, "ts ", 3) == 0) {
+        touch_command(cmd_line + 2);
         return;
 #endif
 #if defined(USBKBD_HOST_PRESENT)

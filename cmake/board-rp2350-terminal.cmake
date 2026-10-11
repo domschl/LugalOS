@@ -102,6 +102,10 @@ set(CONFIG_SPI1_CS_GPIO   15)
 # probes find nothing and say so once. An RP2350 build needs *some* I2C bus
 # declared (drivers/i2c_bus.c), and this is the only one the board brings
 # out. I2C1, not I2C0: GP6/7 are I2C1 in the function table.
+# 47.12: the touch version's GT911 sits here at 0x5D (RST GP19, INT GP18,
+# neither needed: it answers after power-up and is polled). On the version
+# without touch the probe finds nothing and says so once.
+set(CONFIG_TOUCH_GT911 1)
 set(CONFIG_I2C_RTC_BASE     0x40098000) # I2C1
 set(CONFIG_I2C_RTC_SDA_GPIO 6)
 set(CONFIG_I2C_RTC_SCL_GPIO 7)

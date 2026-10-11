@@ -80,6 +80,7 @@
 #endif
 
 #include "drivers/usbkbd_task.h"
+#include "drivers/touch.h"
 
 #if defined(CONFIG_BOARD_RP2350)
 #include "arch/riscv/rp2350/binary_info.h"
@@ -569,6 +570,10 @@ void kernel_main(void) {
     /* 47.7: the LCD-7B's frame pacer -- the terminal converted into the
      * scanned-out frame at most once per frame from here on. */
     (void)dsi_lcd_term_task_start();
+#endif
+#if defined(TOUCH_PRESENT)
+    /* 47.12: the touch panel, polled over the I2C task's bus. */
+    (void)touch_start();
 #endif
 #if defined(USBKBD_HOST_PRESENT)
     /* 36.8: the USB keyboard, as its own U-mode task over the engine; 47.9:

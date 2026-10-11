@@ -696,6 +696,9 @@ set(SOURCES
     # above any transaction port (drivers/usbkbd_task.h); empty but for the
     # reports where no board declares a port.
     drivers/usbkbd_host.c
+    # 47.12: a GT911 touch controller, polled; empty unless the board file
+    # declares one (CONFIG_TOUCH_GT911).
+    drivers/touch_gt911.c
     # D1 (plan/phase17_clock_ui_and_dcf77.md): the DCF-77 frame decoder is
     # target-independent -- it consumes timestamped samples, never a register
     # -- so it is built and self-tested on every target, including the QEMU

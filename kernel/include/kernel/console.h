@@ -151,7 +151,14 @@ bool console_pixels(const uint8_t **fb, unsigned *w, unsigned *h, unsigned *stri
 #define CONSOLE_HOTKEY_CLOSE        10u /* Super+W : close active window */
 #define CONSOLE_HOTKEY_JUMP_BASE    11u /* Super+1 .. Super+9 (codes 11..19) */
 #define CONSOLE_HOTKEY_JUMP(n)      (CONSOLE_HOTKEY_JUMP_BASE + ((unsigned)(n) - 1u))
+#define CONSOLE_HOTKEY_TAP          20u /* 47.12: a touch tap, at console_touch_tap()'s point */
 void console_hotkey(unsigned code);
+
+/* 47.12: a tap on the panel at (x, y), screen pixels: focuses the window
+ * under it, or on the menu bar the one its minimap block stands for. Runs
+ * like a hotkey (from an input wait), and like one it only wakes a blanked
+ * panel. Swipes are hotkeys proper: CONSOLE_HOTKEY_FOCUS_LEFT/_RIGHT. */
+void console_touch_tap(unsigned x, unsigned y);
 
 /* 36.9, plan/phase36_rp2350_lcd7_terminal.md §4.4: where console input comes
  * from. Each source is polled by the console pump, in registration order,

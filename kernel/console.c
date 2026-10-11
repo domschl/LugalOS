@@ -125,6 +125,14 @@ void console_blank_counts(uint32_t *blankings, uint32_t *wakes, uint32_t *swallo
     *swallowed = g_wakes_swallowed;
 }
 
+static volatile uint32_t g_tap_xy;     /* x << 16 | y */
+
+void console_touch_tap(unsigned x, unsigned y) {
+    if (note_input(true)) return;
+    g_tap_xy = ((uint32_t)x << 16) | (y & 0xFFFFu);
+    g_hotkey = CONSOLE_HOTKEY_TAP;
+}
+
 void console_hotkey(unsigned code) {
     /* Only the panel's keyboard makes hotkeys; one that wakes it does
      * nothing else. */
@@ -198,6 +206,13 @@ static void run_hotkey(void) {
         if (console_canvas(req, 2, reply) && reply[0] == 0) {
             vterm_set_active(reply[1]);
         }
+        return;
+    }
+    if (hk == CONSOLE_HOTKEY_TAP) {
+        uint32_t xy = g_tap_xy;
+        uint8_t req[5] = { 'P', (uint8_t)(xy >> 16), (uint8_t)(xy >> 24), (uint8_t)xy, (uint8_t)(xy >> 8) };
+        uint8_t reply[SCREEN_REPLY_LEN];
+        if (console_canvas(req, 5, reply) && reply[0] == 0) vterm_set_active(reply[1]);
         return;
     }
     if (hk == CONSOLE_HOTKEY_SWAP) {

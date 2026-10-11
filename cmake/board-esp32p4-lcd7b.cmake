@@ -131,6 +131,12 @@ set(CONFIG_DSI_LCD_BL_GPIO  32)
 # Touch [sch J3] (47.12): GT911 on the I2C bus above. GPIO23 -> RESET_TP
 #   (R54 0R). INT_TP reaches only test point TP1 -- no GPIO -- so touch is
 #   polled, as Waveshare's own examples do.
+#   The touch layer is turned against the picture: both axes run backwards
+#   [ws: gt911.cpp, mirror_x = 1, mirror_y = 1; owner, 47.12: taps landed on
+#   the other window and swipes went the wrong way without it].
+set(CONFIG_TOUCH_GT911 1)
+set(CONFIG_TOUCH_MIRROR_X 1)
+set(CONFIG_TOUCH_MIRROR_Y 1)
 #
 # USB-A [sch "POWER", J1] (47.9): the P4's USB 2.0 OTG HS on its dedicated PHY
 #   pads (USBD_N/USBD_P). VBUS_OUT comes from U2, a DIO7003 current-limited

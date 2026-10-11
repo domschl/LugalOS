@@ -177,6 +177,12 @@ set(_optional_keys
     # Type-A port), and the keyboard task on it. Absent: no USB host, and
     # drivers/usbhost_esp32p4.c is an empty unit.
     CONFIG_USBHOST_DWC2
+    # 47.12: a GT911 touch controller at 0x5D on the board's I2C bus, polled
+    # by drivers/touch_gt911.c (tap to focus, swipe to move the ribbon).
+    CONFIG_TOUCH_GT911
+    # How its touch layer sits on the panel: its X / Y run against the
+    # picture's. Absent: with it.
+    CONFIG_TOUCH_MIRROR_X CONFIG_TOUCH_MIRROR_Y
     # 38.6: the largest /ram0 a mount may ask for, in KB, when a board wants
     # other than drivers/ramdisk.c's per-target default.
     CONFIG_RAMDISK_MAX_KB

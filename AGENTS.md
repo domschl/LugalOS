@@ -192,6 +192,11 @@ for both roles by itself.
   `lcd blank [min|Ns|off]` turns the backlight off after that long without
   input (default off). A USB-keyboard key that wakes it is swallowed; serial
   input wakes it and is kept.
+* Touch (47.12, both the LCD-7B and the RP2350 touch terminal): GT911 at 0x5D,
+  polled (`drivers/touch_gt911.c`). Tap a window to focus it, tap the menu
+  bar's minimap to jump, swipe sideways to move the ribbon. `ts` shows it,
+  `ts log [s]` prints presses and gestures. Orientation is in the board file
+  (`CONFIG_TOUCH_MIRROR_X/_Y`; the 7B's are both set).
 * USB host (47.9, `drivers/usbhost_esp32p4.c`): the Type-A port is the OTG HS
   core (DWC2 4.30a), polled, slave mode, one transaction per channel; it is
   a *port* for the shared keyboard host `drivers/usbkbd_host.c` (also the

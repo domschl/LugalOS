@@ -138,6 +138,28 @@ LCDTERM_UTEXT static void draw_icon16(const canvas1_t *cv, int x, int y, int w, 
 /* The menu bar: white, the rule, the system name in bold on the left, and
  * the indicators ending 16 px from the right edge. The indicators win when
  * the two do not fit. Glyph rows 0..15 from y 2. */
+/* 47.12: the menu bar's layout -- where the clock starts (rx), the indicator
+ * icons' left edge, and where the ribbon's minimap starts (sx) -- and one
+ * minimap block's width. Shared by draw_menu() and a tap's hit test
+ * (minimap_hit()), so that a finger lands on what is drawn. */
+LCDTERM_UTEXT static void menu_geometry(const screen_t *scr, int *rx_out, int *icon_left_out, int *sx_out) {
+    int w = scr->cv.w;
+    uint32_t rn = cstr_len(scr->right);
+    unsigned rlen = canvas1_text_len(scr->right, rn);
+    int rx = w - 16 - 8 * (int)rlen;
+    if (rx < 8) rx = 8;
+    int icon_left = rx;
+    if (scr->status_flags & SCREEN_STATUS_P9) icon_left -= (14 + 6);
+    if (scr->status_flags & SCREEN_STATUS_SD) icon_left -= (11 + 6);
+    *rx_out = rx;
+    *icon_left_out = icon_left;
+    *sx_out = 8 + 8 * (int)cstr_len(scr->name) + 16;
+}
+
+LCDTERM_UTEXT static int minimap_block_w(const ribbon_win_t *win) {
+    return (win->cols >= 90) ? 22 : (win->cols >= 60) ? 15 : (win->cols >= 45) ? 11 : 8;
+}
+
 LCDTERM_UTEXT static void draw_menu(screen_t *scr) {
     const canvas1_t *cv = &scr->cv;
     int w = cv->w;
@@ -179,9 +201,7 @@ LCDTERM_UTEXT static void draw_menu(screen_t *scr) {
 
             for (uint8_t i = 0; i < scr->ribbon.count; i++) {
                 const ribbon_win_t *win = &scr->ribbon.wins[i];
-                int bw = (win->cols >= 90) ? 22 :
-                         (win->cols >= 60) ? 15 :
-                         (win->cols >= 45) ? 11 : 8;
+                int bw = minimap_block_w(win);
                 if (cur_bx + bw > rx - 16) break;
 
                 int32_t x0 = win->rx0 - scr->ribbon.x_view;
@@ -1051,6 +1071,36 @@ LCDTERM_UTEXT void screen_text_size(const screen_t *scr, unsigned *cols, unsigne
 
 /* --- The canvas protocol (37.3b) ------------------------------------------ */
 
+/* 47.12: which ribbon window a tap at menu-bar x means -- the minimap block
+ * nearest to it, if x is within a finger's width of the minimap at all. The
+ * blocks are 8-22 px wide and a fingertip is ~40, so "nearest" rather than
+ * "inside". -1 for none. */
+LCDTERM_UTEXT static int minimap_hit(const screen_t *scr, int x) {
+    int rx, icon_left, sx;
+    menu_geometry(scr, &rx, &icon_left, &sx);
+    if (scr->ribbon.count == 0 || icon_left - 16 - sx <= 20) return -1;
+    int best = -1, best_d = 0, cur = sx, last_x1 = sx;
+    for (uint8_t i = 0; i < scr->ribbon.count; i++) {
+        int bw = minimap_block_w(&scr->ribbon.wins[i]);
+        if (cur + bw > rx - 16) break;
+        int d = x - (cur + bw / 2);
+        if (d < 0) d = -d;
+        if (best < 0 || d < best_d) { best = i; best_d = d; }
+        last_x1 = cur + bw - 1;
+        cur += bw + 3;
+    }
+    if (x < sx - 20 || x > last_x1 + 20) return -1;
+    return best;
+}
+
+/* 47.12: the ribbon window under screen x (below the menu bar), or -1. */
+LCDTERM_UTEXT static int window_at(const screen_t *scr, int x) {
+    int32_t rx = (int32_t)x + scr->ribbon.x_view;
+    for (uint8_t i = 0; i < scr->ribbon.count; i++)
+        if (rx >= scr->ribbon.wins[i].rx0 && rx <= scr->ribbon.wins[i].rx1) return i;
+    return -1;
+}
+
 LCDTERM_UTEXT static int arg16(const uint8_t *req, uint32_t n, uint32_t i) {
     uint32_t at = 1u + 2u * i;
     if (at + 2u > n) return 0;
@@ -1294,6 +1344,22 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
         /* Phase 44: Jump directly to window N (Cmd+1..9) */
         uint8_t target = (n >= 2) ? req[1] : 0;
         if (ribbon_focus(&scr->ribbon, target)) {
+            scr->ribbon.x_view = scr->ribbon.x_target;
+            (void)place(scr, scr->layout);
+            draw_all_from(scr, true);
+            status = 0;
+        } else {
+            status = 1;
+        }
+    } else if (op == 'P') {
+        /* 47.12: a tap at (x, y) in screen pixels. On the menu bar: the
+         * minimap block nearest to it; below: the window under it. Focuses
+         * that window; tapping the focused one is a no-op that succeeds. */
+        int px = arg16(req, n, 0), py = arg16(req, n, 1);
+        int idx = py < SCREEN_MENU_H ? minimap_hit(scr, px) : window_at(scr, px);
+        if (idx >= 0 && idx == (int)scr->ribbon.active_idx) {
+            status = 0;
+        } else if (idx >= 0 && ribbon_focus(&scr->ribbon, (uint8_t)idx)) {
             scr->ribbon.x_view = scr->ribbon.x_target;
             (void)place(scr, scr->layout);
             draw_all_from(scr, true);

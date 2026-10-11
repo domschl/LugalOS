@@ -338,7 +338,8 @@ LugalOS is MIT-licensed. All three candidates below are compatible with that.
 LEDC PWM on GPIO32 (inverted), `lcd backlight <percent>`, and blanking after
 idle if wanted.
 
-**47.12 — Touch as secondary input (GT911, polled). Priority 2 or later; may
+**47.12 — Touch as secondary input (GT911, polled).** **DONE 2026-10-11
+(§6.12), on the LCD-7B and the RP2350 touch terminal.** Priority 2 or later; may
 move to a later phase.**
 Tap a window to focus it, swipe horizontally to scroll the ribbon, and tap the
 minimap to jump. No pointer or text-selection model, and nothing that would
@@ -1301,6 +1302,58 @@ phase), flashed with this build.
 QEMU 484/484, 7B 30/30 (its SD card works again after a full power cycle:
 the earlier failure was a hub-keyboard brown-out), NANO 30/30, RP2350
 32/32.
+
+## 6.12 What 47.12 found: touch on both panels (2026-10-11)
+
+**The same controller on both boards.** The owner swapped the RP2350
+terminal for the touch version for this milestone. Both have a Goodix GT911
+at 0x5D, and both answer after power-up without the INT/RST address dance:
+* **RP2350:** on I2C1 (GP6/7), the bus the board file already declared.
+  RST is GP19 and INT GP18, neither needed. `i2c rd 5d 81 40 4` → "911";
+  the configured resolution reads 800×480.
+* **LCD-7B:** on its shared I2C bus at 1024×600. INT reaches only a test
+  point.
+
+So one portable, polled driver serves both: `drivers/touch_gt911.c`. A
+kernel task reads the status register every 20 ms through the I2C task
+(about 50 polls/s measured); when the controller says it has a report, it
+reads point 1 and acknowledges.
+
+**Three gestures, from press to release of the first point:**
+* **A tap** (under 24 px of movement, within 600 ms) becomes
+  `console_touch_tap(x, y)`. It runs from an input wait like a hotkey, as
+  screen op `'P'`. On the menu bar it picks the minimap block nearest the
+  finger, within a finger's width of the minimap. The blocks are 8–22 px
+  wide and a fingertip is about 40, so "nearest", not "inside". Below the
+  menu bar it picks the window under the finger. That window gets the
+  focus.
+* **A horizontal swipe** (at least 1/8 of the width, twice as far sideways
+  as down) becomes Cmd+Right or Cmd+Left. The finger drags the ribbon:
+  moving left brings the right-hand window into view.
+* **Anything else** is nothing. A touch also wakes a blanked panel (47.11),
+  and the waking touch does nothing more.
+
+The minimap's layout is now one helper (`menu_geometry()`,
+`minimap_block_w()`), shared by the drawing and the hit test.
+
+**Orientation is a board fact.**
+* `CONFIG_TOUCH_MIRROR_X/_Y` say how the touch layer sits on the panel.
+  The LCD-7B's runs against its picture in both axes: Waveshare's own
+  `gt911.cpp` sets `mirror_x = 1, mirror_y = 1`. The owner found it on
+  the first try: taps chose the other window, and swipes and the minimap
+  ran backwards.
+* `CONFIG_LCD_ROTATE_180` (the RP2350's picture turn) turns the touch
+  with it.
+
+The owner confirmed taps, minimap and swipes on both boards. `ts` reports
+the controller, the mapping and the counters. `ts log [s]` prints presses,
+releases and the gestures they made (`touch` was taken: it creates files).
+
+**Regression.** The RP2350 terminal scenario against `shots_rot` differs
+only in 53 pixels in the menu bar's right corner (x 727–782). The new board
+has an RTC, so its menu bar shows a clock, and the SD icon moves left to
+make room. The tool masks the clock but not the shifted icon. Nothing
+outside the menu bar changed.
 
 ## 7. Risks
 
