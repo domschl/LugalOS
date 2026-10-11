@@ -220,6 +220,8 @@ static const lisp_val_t sym_while = { .type = LISP_SYMBOL, .u.sym = "while" };
 static const lisp_val_t sym_cond = { .type = LISP_SYMBOL, .u.sym = "cond" };
 static const lisp_val_t sym_set_bang = { .type = LISP_SYMBOL, .u.sym = "set!" };
 static const lisp_val_t sym_define = { .type = LISP_SYMBOL, .u.sym = "define" };
+static const lisp_val_t sym_define_macro = { .type = LISP_SYMBOL, .u.sym = "define-macro" };
+static const lisp_val_t sym_defmacro = { .type = LISP_SYMBOL, .u.sym = "defmacro" };
 static const lisp_val_t sym_else = { .type = LISP_SYMBOL, .u.sym = "else" };
 static const lisp_val_t sym_quasiquote = { .type = LISP_SYMBOL, .u.sym = "quasiquote" };
 static const lisp_val_t sym_unquote = { .type = LISP_SYMBOL, .u.sym = "unquote" };
@@ -598,6 +600,7 @@ static void gc_drain(int *sp) {
                 gc_push(sp, v->u.pair.cdr);
                 break;
             case LISP_LAMBDA:
+            case LISP_MACRO:
                 gc_push(sp, v->u.lambda.params);
                 gc_push(sp, v->u.lambda.body);
                 /* NULL means "resolve against live global_env at call
@@ -3806,6 +3809,46 @@ static lisp_val_t *prim_apply(lisp_val_t *args, lisp_val_t *env) {
     return lisp_apply(fn, head, env);
 }
 
+static lisp_val_t *prim_error(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    cprintf("[Lisp Error] ");
+    for (lisp_val_t *c = args; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
+        lisp_val_t *v = c->u.pair.car;
+        if (!v) continue;
+        if (v->type == LISP_STRING) {
+            cprintf("%s", v->u.str);
+        } else if (v->type == LISP_SYMBOL) {
+            cprintf("%s", v->u.sym);
+        } else {
+            lisp_print(v);
+        }
+        if (c->u.pair.cdr && c->u.pair.cdr->type == LISP_PAIR) {
+            cprintf(" ");
+        }
+    }
+    cprintf("\n");
+    lisp_interrupted = true;
+    return &nil_val;
+}
+
+static lisp_val_t *prim_sleep_ms(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &false_val;
+    lisp_val_t *v = args->u.pair.car;
+    if (!v || v->type != LISP_INT) return &false_val;
+    long ms = v->u.i;
+    if (ms > 0) {
+        task_sleep_ms((uint32_t)ms);
+    }
+    return &true_val;
+}
+
+static lisp_val_t *prim_macro_p(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a = lisp_list_ref(args, 0);
+    return (a && a->type == LISP_MACRO) ? &true_val : &false_val;
+}
+
 /* (eval expr) -- always against global_env: this engine has no first-class
  * environment object to evaluate against another one, matching the scope
  * of everything else here. */
@@ -6005,10 +6048,80 @@ static lisp_val_t *prim_led(lisp_val_t *args, lisp_val_t *env) {
 }
 #endif
 
+/* (i2c-read addr reg len) -> list of integer bytes, or #f on failure */
+static lisp_val_t *prim_i2c_read(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    int nargs = lisp_list_len(args);
+    if (nargs < 2) return &false_val;
+    long addr = arg_int(args, 0, -1);
+    long reg = arg_int(args, 1, -1);
+    long len = (nargs >= 3) ? arg_int(args, 2, 1) : 1;
+    if (addr < 0 || addr > 0x7F || len <= 0 || len > (long)I2C_XFER_RMAX) return &false_val;
+
+    uint8_t reg_b = (uint8_t)reg;
+    uint8_t rx_buf[I2C_XFER_RMAX];
+    bool ok;
+    if (reg >= 0) {
+        ok = i2c_xfer((uint8_t)addr, &reg_b, 1, rx_buf, (uint32_t)len);
+    } else {
+        ok = i2c_xfer((uint8_t)addr, NULL, 0, rx_buf, (uint32_t)len);
+    }
+    if (!ok) return &false_val;
+
+    lisp_val_t *head = &nil_val;
+    lisp_val_t *tail = NULL;
+    for (long i = 0; i < len; i++) {
+        lisp_val_t *cell = make_pair(make_int((long)rx_buf[i]), &nil_val);
+        if (!tail) { head = cell; tail = cell; } else { tail->u.pair.cdr = cell; tail = cell; }
+    }
+    return head;
+}
+
 static lisp_val_t *prim_i2c_scan(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
     i2c_scan_bus();
     return &nil_val;
+}
+
+/* (i2c-write addr reg '(byte1 byte2 ...)) -> #t on success, #f on failure
+ * or (i2c-write addr '(byte1 byte2 ...)) if reg is omitted */
+static lisp_val_t *prim_i2c_write(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    int nargs = lisp_list_len(args);
+    if (nargs < 2) return &false_val;
+    long addr = arg_int(args, 0, -1);
+    if (addr < 0 || addr > 0x7F) return &false_val;
+
+    uint8_t tx_buf[I2C_XFER_WMAX];
+    uint32_t tx_len = 0;
+
+    lisp_val_t *a1 = lisp_list_ref(args, 1);
+    if (nargs >= 3) {
+        long reg = arg_int(args, 1, -1);
+        if (reg >= 0 && reg <= 0xFF) {
+            tx_buf[tx_len++] = (uint8_t)reg;
+        }
+        lisp_val_t *data_list = lisp_list_ref(args, 2);
+        for (lisp_val_t *c = data_list; c && c->type == LISP_PAIR && tx_len < I2C_XFER_WMAX; c = c->u.pair.cdr) {
+            if (c->u.pair.car && c->u.pair.car->type == LISP_INT) {
+                tx_buf[tx_len++] = (uint8_t)(c->u.pair.car->u.i & 0xFF);
+            }
+        }
+    } else if (a1 && a1->type == LISP_PAIR) {
+        /* (i2c-write addr '(byte1 byte2 ...)) */
+        for (lisp_val_t *c = a1; c && c->type == LISP_PAIR && tx_len < I2C_XFER_WMAX; c = c->u.pair.cdr) {
+            if (c->u.pair.car && c->u.pair.car->type == LISP_INT) {
+                tx_buf[tx_len++] = (uint8_t)(c->u.pair.car->u.i & 0xFF);
+            }
+        }
+    } else if (a1 && a1->type == LISP_INT) {
+        /* Single byte write */
+        tx_buf[tx_len++] = (uint8_t)(a1->u.i & 0xFF);
+    }
+
+    if (tx_len == 0) return &false_val;
+    bool ok = i2c_xfer((uint8_t)addr, tx_buf, tx_len, NULL, 0);
+    return ok ? &true_val : &false_val;
 }
 
 static lisp_val_t *prim_usb_status(lisp_val_t *args, lisp_val_t *env) {
@@ -6346,6 +6459,7 @@ static lisp_val_t *prim_help(lisp_val_t *args, lisp_val_t *env) {
         if (v) {
             if (v->type == LISP_PRIMITIVE) kind = "primitive";
             else if (v->type == LISP_LAMBDA) kind = "closure";
+            else if (v->type == LISP_MACRO) kind = "macro";
         }
         cprintf("  %s -- %s\n", k->u.sym, kind);
         count++;
@@ -6459,6 +6573,9 @@ void lisp_print(lisp_val_t *val) {
             break;
         case LISP_LAMBDA:
             cprintf("<#closure>");
+            break;
+        case LISP_MACRO:
+            cprintf("<#macro>");
             break;
         case LISP_PAIR: {
             /* S4 (plan/phase13_lisp_engine_extensions.md): now that `cons`
@@ -6754,7 +6871,7 @@ static lisp_val_t *lisp_apply(lisp_val_t *fn, lisp_val_t *args, lisp_val_t *env)
         return fn->u.prim(args, env);
     }
 
-    if (fn->type == LISP_LAMBDA) {
+    if (fn->type == LISP_LAMBDA || fn->type == LISP_MACRO) {
         lisp_val_t *local_env = fn->u.lambda.env ? fn->u.lambda.env : global_env;
         bool was_global = (local_env == global_env);
         lisp_val_t *original_tail = local_env;
@@ -6880,7 +6997,7 @@ tail_call:
     if (!val) return &nil_val;
 
     if (val->type == LISP_INT || val->type == LISP_STRING || val->type == LISP_PRIMITIVE ||
-        val->type == LISP_LAMBDA || val->type == LISP_BIGNUM || val->type == LISP_RATIO) {
+        val->type == LISP_LAMBDA || val->type == LISP_MACRO || val->type == LISP_BIGNUM || val->type == LISP_RATIO) {
         return val;
     }
 
@@ -7147,8 +7264,41 @@ tail_call:
                     break;
 
                 case 'd':
-                    /* Special form: define */
-                    if (op == &sym_define || streq(op->u.sym, "define")) {
+                    /* Special form: define-macro / defmacro */
+                    if (op == &sym_define_macro || streq(op->u.sym, "define-macro") ||
+                        op == &sym_defmacro || streq(op->u.sym, "defmacro")) {
+                        if (args && args->type == LISP_PAIR) {
+                            lisp_val_t *target = args->u.pair.car;
+                            lisp_val_t *rest = args->u.pair.cdr;
+
+                            if (target && target->type == LISP_PAIR) {
+                                lisp_val_t *name_sym = target->u.pair.car;
+                                if (!name_sym || name_sym->type != LISP_SYMBOL) {
+                                    printk("[Lisp Error] define-macro: macro name must be a symbol\n");
+                                    return &nil_val;
+                                }
+                                lisp_val_t *mac = alloc_node(LISP_MACRO);
+                                mac->u.lambda.params = target->u.pair.cdr;
+                                mac->u.lambda.body = rest;
+                                mac->u.lambda.env = (env == global_env) ? NULL : env;
+                                env_set_sym(&global_env, name_sym, mac);
+                                return name_sym;
+                            }
+
+                            if (!target || target->type != LISP_SYMBOL) {
+                                printk("[Lisp Error] define-macro: expected a symbol or (name arg...)\n");
+                                return &nil_val;
+                            }
+
+                            lisp_val_t *eval_val = (rest && rest->type == LISP_PAIR)
+                                ? lisp_eval(rest->u.pair.car, env) : &nil_val;
+                            if (eval_val && eval_val->type == LISP_LAMBDA) {
+                                eval_val->type = LISP_MACRO;
+                            }
+                            env_set_sym(&global_env, target, eval_val);
+                            return target;
+                        }
+                    } else if (op == &sym_define || streq(op->u.sym, "define")) {
                         if (args && args->type == LISP_PAIR) {
                             lisp_val_t *target = args->u.pair.car;
                             lisp_val_t *rest = args->u.pair.cdr;
@@ -7235,6 +7385,15 @@ tail_call:
          * importantly, breaks the documented contract that an aborted
          * evaluation degrades to nil (see lisp_eval()'s own comments). */
         if (node_pool_exhausted_warned || lisp_interrupted) return &nil_val;
+
+        if (fn->type == LISP_MACRO) {
+            /* Macros receive raw, unevaluated arguments */
+            lisp_val_t *expanded = lisp_apply(fn, args, env);
+            if (node_pool_exhausted_warned || lisp_interrupted) return &nil_val;
+            val = expanded;
+            env = refresh_global_tail(env, env, was_global);
+            goto tail_call;
+        }
 
         /* Calling what is not a function is an error, before any argument
          * is evaluated. It used to hand back the form itself, unevaluated:
@@ -7508,6 +7667,7 @@ lisp_val_t *lisp_eval_string(const char *str) {
         lisp_val_t *ast = lisp_read(&ptr);
         if (!ast) break;
         res = lisp_eval(ast, global_env);
+        if (lisp_interrupted) break;
     }
     return res;
 }

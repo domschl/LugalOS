@@ -13,6 +13,7 @@ typedef enum {
     LISP_PAIR,
     LISP_PRIMITIVE,
     LISP_LAMBDA,
+    LISP_MACRO,
     LISP_BIGNUM,
     LISP_RATIO
 } lisp_type_t;

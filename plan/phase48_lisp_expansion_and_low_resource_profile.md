@@ -1,6 +1,6 @@
 # Phase 48 — Lisp Language Expansion, Hardware Telemetry & Dual Resource Profiles
 
-**Status: DRAFT / PLANNED.**  
+**Status: IN PROGRESS (Milestones 48.1, 48.2a, 48.4a, 48.4c–e Completed & Verified on Hardware).**  
 Branch: `lisp_expansion`  
 Follows: Phase 42 (Lisp Symbolic Foundations), Phase 43 (Lisp CAS & Plotting), Phase 46 (Sensor Framework), Phase 47 (ESP32-P4 LCD7B & Ribbon Window System).
 
@@ -65,65 +65,69 @@ To expand Lisp's capabilities (macros, vectors, hardware control, CAS power seri
 
 ## 3. Detailed Milestones
 
-### Milestone 48.1: Language Foundations, Immediate Fixes & Dual-Profile Core (Phase A)
+### Milestone 48.1: Language Foundations, Immediate Fixes & Dual-Profile Core (Phase A) — **COMPLETED**
 
 * **Goal:** Fix latent runtime faults in the CAS and shell, introduce essential execution primitives (`error`, `sleep-ms`), and establish the dual-profile library loading architecture.
 
-#### 48.1a: Builtin `error` Primitive
+#### 48.1a: Builtin `error` Primitive — **COMPLETED**
 * **Problem:** In [`cas/solve.lisp:51`](file:///home/dsc/Source/gith/domschl/lugalos/cas/solve.lisp#L51), [`cas/solve.lisp:178`](file:///home/dsc/Source/gith/domschl/lugalos/cas/solve.lisp#L178), and [`cas/calculus.lisp:177`](file:///home/dsc/Source/gith/domschl/lugalos/cas/calculus.lisp#L177), error branches call `(error "...")`. However, `error` is not defined anywhere in LugalOS. Invoking an error branch triggers an unhandled `Unbound symbol: error` fault.
-* **Design:**
-  - Add `prim_error(args, env)` in [`user/lisp/lisp.c`](file:///home/dsc/Source/gith/domschl/lugalos/user/lisp/lisp.c).
+* **Design & Status:**
+  - Implemented `prim_error(args, env)` in [`user/lisp/lisp.c`](file:///home/dsc/Source/gith/domschl/lugalos/user/lisp/lisp.c).
   - Signature: `(error message [datum])`.
-  - Behavior: Formats the error to the active console via `printk("[Lisp Error] ...\n")`, aborts current evaluation cleanly, and unwinds to the REPL prompt or enclosing catch context without leaking nodes.
-  - Register in `builtins_table.h` in Flash `.rodata`.
+  - Behavior: Formats the error to the active console via `printk("[Lisp Error] ...\n")`, aborts current evaluation cleanly, and unwinds without leaking nodes.
+  - Registered in `builtins_table.h` in Flash `.rodata`. Verified in QEMU `rv32` and on RP2350 silicon.
 
-#### 48.1b: Scheduler Sleep Primitive (`sleep-ms`)
+#### 48.1b: Scheduler Sleep Primitive (`sleep`, `sleep-ms`) — **COMPLETED**
 * **Problem:** The kernel provides [`task_sleep_ms(uint32_t ms)`](file:///home/dsc/Source/gith/domschl/lugalos/kernel/include/kernel/sched.h#L271), but Lisp has no sleep primitive. Delay loops currently spin on the CPU, wasting power and starving lower-priority background tasks (such as `klogd` or network packet pumps).
-* **Design:**
-  - Add `prim_sleep_ms(args, env)` in `user/lisp/lisp.c`.
-  - Signature: `(sleep-ms integer-milliseconds)`.
+* **Design & Status:**
+  - Implemented `prim_sleep_ms(args, env)` in `user/lisp/lisp.c`.
+  - Signature: `(sleep ms)` and `(sleep-ms ms)`.
   - Calls `task_sleep_ms((uint32_t)val)` which places the current task in `TASK_BLOCKED` with an exact deadline in the monotonic scheduler timer wheel.
-  - Returns `#t`.
+  - Registered in `builtins_table.h` in Flash `.rodata`. Returns `#t`. Verified on QEMU and RP2350 silicon.
 
-#### 48.1c: Dual-Profile Configuration & Modular `require`
+#### 48.1c: Dual-Profile Configuration & Modular `require` — **COMPLETED**
 * **Problem:** Loading large Lisp scripts at boot creates persistent nodes in `global_env` that cannot be garbage collected. On non-PSRAM MCUs (1,024 nodes), this exhausts memory before the user runs their first program.
-* **Design:**
-  - Introduce `(require 'feature)` and `*modules*` tracking list.
-  - Modular directory layout:
+* **Design & Status:**
+  - Implemented `(require 'feature)` and `*modules*` tracking list in [`stdlib.lisp`](file:///home/dsc/Source/gith/domschl/lugalos/tools/sd_root/system/etc/stdlib.lisp).
+  - Modular directory layout created in `tools/sd_root/system/lib/`:
     ```
     /sd0/system/lib/ (and /flash0/system/lib/)
-      ├── seq.lisp     ; fold, zip, iota, filter-map, partition
-      ├── str.lisp     ; string-split, string-join, string-trim
-      ├── dict.lisp    ; alist & plist helpers
-      ├── matrix.lisp  ; linear algebra
-      └── chart.lisp   ; canvas telemetry widgets
+      ├── macros.lisp  ; dotimes, dolist, inc!, dec!, push!, pop!
+      ├── seq.lisp     ; fold-left, fold-right, iota, range, take, drop, zip, partition, every, any, flatten
+      ├── str.lisp     ; string-split, string-join, string-trim, string-prefix?, string-suffix?, string-contains?
+      ├── dict.lisp    ; alist-ref, alist-set, alist-delete, plist-get, plist-put
+      ├── matrix.lisp  ; linear algebra (Milestone 48.3c)
+      └── chart.lisp   ; canvas telemetry widgets (Milestone 48.2e)
     ```
   - Standard boot behavior:
     - **Low-Resource Profile (`CONFIG_LISP_PROFILE_MINIMAL`, default on Pico 2 & ESP32-C6):** [`init.lisp`](file:///home/dsc/Source/gith/domschl/lugalos/tools/sd_root/system/etc/init.lisp) loads only `stdlib.lisp` (core essentials: `not`, `print`, `when`, `unless`). `cas.lisp` is NOT loaded at boot. Headroom remains $> 850$ free nodes in SRAM.
     - **Full Profile (`CONFIG_LISP_PROFILE_FULL`, on RP2350-LCD-7 and ESP32-P4):** Full libraries and CAS loaded on demand or at boot.
 
-#### 48.1d: Core Syntactic Macros in Minimal Standard Library
-* **Design:** Add zero-cost syntactic control constructs to [`stdlib.lisp`](file:///home/dsc/Source/gith/domschl/lugalos/tools/sd_root/system/etc/stdlib.lisp):
+#### 48.1d: Core Syntactic Macros in Minimal Standard Library — **COMPLETED**
+* **Design & Status:** Implemented zero-cost syntactic control constructs as true syntactic macros in [`stdlib.lisp`](file:///home/dsc/Source/gith/domschl/lugalos/tools/sd_root/system/etc/stdlib.lisp) using the Milestone 48.4a macro system:
   ```scheme
   (define not (lambda (x) (if x #f #t)))
   (define print (lambda (msg) (begin (display msg) (newline))))
-  (define when (lambda (test thunk) (if test (thunk) #f)))
-  (define unless (lambda (test thunk) (if (not test) (thunk) #f)))
+  (define-macro (when test . body)
+    (list 'if test (cons 'begin body) #f))
+  (define-macro (unless test . body)
+    (list 'if test #f (cons 'begin body)))
   ```
-  *(Once Milestone 48.4 adds `define-macro`, these transition to true non-evaluating macros).*
+  Verified on QEMU `rv32` and live on RP2350-terminal hardware.
 
 ---
 
-### Milestone 48.2: Hardware Integration & Sensor Telemetry (Phase B)
+### Milestone 48.2: Hardware Integration & Sensor Telemetry (Phase B) — **IN PROGRESS**
 
 * **Goal:** Connect LugalOS Lisp directly to physical buses (I2C, GPIO, ADC, RTC) and bridge the Sensor Framework ([`plan/phase46_sensor_framework.md`](file:///home/dsc/Source/gith/domschl/lugalos/plan/phase46_sensor_framework.md)) to the 1-bpp/RGB Canvas subsystem.
 
-#### 48.2a: Raw I2C Master Primitives
+#### 48.2a: Raw I2C Master Primitives — **COMPLETED**
 * **Problem:** Lisp only exposes `i2c-scan`. Developers cannot read registers or send commands to custom I2C devices (OLEDs, DACs, motor controllers, or the DS1307/DS3231 RTC) from the REPL without writing a C driver.
-* **Design:**
-  - `(i2c-read addr reg len)`: Reads `len` bytes from device `addr` starting at sub-register `reg`. Returns a list of byte integers `(b0 b1 ... bn)`.
+* **Design & Status:**
+  - Implemented `prim_i2c_read(args, env)` and `prim_i2c_write(args, env)` in [`user/lisp/lisp.c`](file:///home/dsc/Source/gith/domschl/lugalos/user/lisp/lisp.c).
+  - `(i2c-read addr reg len)`: Reads `len` bytes from device `addr` starting at sub-register `reg`. Returns a list of byte integers `(b0 b1 ... bn)`, or `#f` on NAK / bus failure.
   - `(i2c-write addr reg '(b0 b1 ...))`: Writes a byte payload. Returns `#t` on ACK, `#f` on NAK.
-  - Built with Flash-resident C wrappers calling `drivers/i2c.h` (`i2c_write()`, `i2c_read()`). Zero SRAM impact.
+  - Built with Flash-resident C wrappers calling `drivers/i2c.h` (`i2c_xfer()`). Consumes 0 bytes of SRAM. Verified on QEMU and RP2350 silicon.
 
 #### 48.2b: GPIO Pin Primitives
 * **Design:**
@@ -205,34 +209,18 @@ To expand Lisp's capabilities (macros, vectors, hardware control, CAS power seri
 
 * **Goal:** Deliver macro metaprogramming and flat vector memory structures to eliminate node churn and complete the standard library ecosystem.
 
-#### 48.4a: Syntactic Macro System (`define-macro`)
+#### 48.4a: Syntactic Macro System (`define-macro`, `defmacro`, `macro?`) — **COMPLETED**
 * **Problem:** Lisp functions evaluate their arguments eagerly. Without macros, control structures like `when`, `unless`, `dotimes`, `dolist`, and `case` cannot be defined in pure Lisp; they either require wrapping bodies in `(lambda () ...)` or writing hardcoded C special forms.
-* **Design:**
-  1. Add `LISP_MACRO` type to `lisp_type_t` in [`user/lisp/include/lisp.h`](file:///home/dsc/Source/gith/domschl/lugalos/user/lisp/include/lisp.h).
-  2. Implement `define-macro` special form in `lisp_eval_step()` in [`user/lisp/lisp.c`](file:///home/dsc/Source/gith/domschl/lugalos/user/lisp/lisp.c).
+* **Design & Status:**
+  1. Added `LISP_MACRO` type to `lisp_type_t` in [`user/lisp/include/lisp.h`](file:///home/dsc/Source/gith/domschl/lugalos/user/lisp/include/lisp.h).
+  2. Implemented `define-macro` and `defmacro` special forms in `lisp_eval_step()` in [`user/lisp/lisp.c`](file:///home/dsc/Source/gith/domschl/lugalos/user/lisp/lisp.c).
   3. When an operator in `lisp_eval_step()` evaluates to `LISP_MACRO`:
-     - Arguments are passed **unevaluated** to the macro's lambda transformer.
+     - Arguments are passed **unevaluated** to the macro transformer.
      - The returned AST (expansion) replaces the original form and is evaluated in the caller's environment (`tail_call` trampoline).
-  4. Define standard control macros in `/sd0/system/lib/macros.lisp`:
-     ```scheme
-     (define-macro (when test . body)
-       `(if ,test (begin ,@body) #f))
-
-     (define-macro (unless test . body)
-       `(if (not ,test) (begin ,@body) #f))
-
-     (define-macro (dotimes (var count) . body)
-       `(let loop ((,var 0))
-          (if (< ,var ,count)
-              (begin ,@body (loop (+ ,var 1))))))
-
-     (define-macro (dolist (var lst) . body)
-       `(let loop ((_rest ,lst))
-          (if (pair? _rest)
-              (let ((,var (car _rest)))
-                ,@body
-                (loop (cdr _rest))))))
-     ```
+  4. Implemented `(macro? val)` primitive in Flash `.rodata` `builtins_table.h`.
+  5. Created standard control macros in [`/sd0/system/lib/macros.lisp`](file:///home/dsc/Source/gith/domschl/lugalos/tools/sd_root/system/lib/macros.lisp):
+     - `dotimes`, `dolist`, `inc!`, `dec!`, `push!`, `pop!`.
+  6. Verified in QEMU `rv32` and live on RP2350-terminal hardware.
 
 #### 48.4b: Contiguous Fixed-Size Vector Type (`LISP_VECTOR`)
 * **Problem:** In a linked list, each element requires one `LISP_PAIR` cons node (24 bytes on RV32). A 1,000-element list consumes 24,000 bytes and 1,000 node pool slots! On non-PSRAM systems with 1,024 total nodes, lists of even modest size exhaust the pool. Furthermore, indexing is $O(N)$.
@@ -256,8 +244,8 @@ To expand Lisp's capabilities (macros, vectors, hardware control, CAS power seri
      - The `elems` array is allocated from the string/byte pool or `palloc` page zone, consuming **zero pair nodes**.
      - Provides huge relief to the GC during matrix operations, telemetry buffering, and image/canvas manipulation.
 
-#### 48.4c: Standard Sequence Library (`/sd0/system/lib/seq.lisp`)
-* Add standard functional utilities (SRFI-1 subset):
+#### 48.4c: Standard Sequence Library (`/sd0/system/lib/seq.lisp`) — **COMPLETED**
+* Added standard functional utilities (SRFI-1 subset) in [`tools/sd_root/system/lib/seq.lisp`](file:///home/dsc/Source/gith/domschl/lugalos/tools/sd_root/system/lib/seq.lisp):
   - `(fold-left kons knil lst)` and `(fold-right kons knil lst)` (tail-recursive)
   - `(zip lst1 lst2 ...)` and `(unzip lst)`
   - `(iota count [start] [step])` / `(range start end [step])`
@@ -265,21 +253,24 @@ To expand Lisp's capabilities (macros, vectors, hardware control, CAS power seri
   - `(partition pred lst)`
   - `(every pred lst)` / `(any pred lst)`
   - `(flatten lst)`
+  - Verified on QEMU and RP2350 silicon.
 
-#### 48.4d: Standard String Library (`/sd0/system/lib/str.lisp`)
-* Add string manipulation utilities (SRFI-13 subset):
+#### 48.4d: Standard String Library (`/sd0/system/lib/str.lisp`) — **COMPLETED**
+* Added string manipulation utilities (SRFI-13 subset) in [`tools/sd_root/system/lib/str.lisp`](file:///home/dsc/Source/gith/domschl/lugalos/tools/sd_root/system/lib/str.lisp):
   - `(string-split str delim)` $\to$ list of substrings.
   - `(string-join str-list delim)` $\to$ concatenated string.
   - `(string-trim str)` $\to$ strips whitespace.
   - `(string-prefix? prefix str)` / `(string-suffix? suffix str)`
   - `(string-contains? needle haystack)`
+  - Verified on QEMU and RP2350 silicon.
 
-#### 48.4e: Association & Property List Library (`/sd0/system/lib/dict.lisp`)
-* Add dictionary abstractions:
+#### 48.4e: Association & Property List Library (`/sd0/system/lib/dict.lisp`) — **COMPLETED**
+* Added dictionary abstractions in [`tools/sd_root/system/lib/dict.lisp`](file:///home/dsc/Source/gith/domschl/lugalos/tools/sd_root/system/lib/dict.lisp):
   - `(alist-ref alist key [default])`
   - `(alist-set alist key val)`
   - `(alist-delete alist key)`
   - `(plist-get plist key [default])` / `(plist-put plist key val)`
+  - Verified on QEMU and RP2350 silicon.
 
 ---
 
@@ -315,19 +306,20 @@ To expand Lisp's capabilities (macros, vectors, hardware control, CAS power seri
 
 ## 4. Implementation Phasing & Task Dependency Matrix
 
-| Step | Milestone | Files Modified | Memory Impact | Dependencies |
-| :--- | :--- | :--- | :--- | :--- |
-| **1** | **48.1a** (`error`) | `user/lisp/lisp.c`, `user/lisp/builtins_table.h` | 0 B SRAM (Flash) | None |
-| **2** | **48.1b** (`sleep-ms`) | `user/lisp/lisp.c`, `user/lisp/builtins_table.h` | 0 B SRAM (Flash) | `kernel/sched.h` |
-| **3** | **48.1c** (Modular Loader) | `tools/sd_root/system/etc/init.lisp`, `stdlib.lisp` | Saves ~150 B SRAM on boot | None |
-| **4** | **48.2a–d** (I2C/GPIO/RTC) | `user/lisp/lisp.c`, `builtins_table.h` | 0 B SRAM (Flash) | `drivers/i2c.h`, `gpio.h` |
-| **5** | **48.2e** (Sensor Plotting) | `/sd0/system/lib/chart.lisp` | On-demand filesystem | 48.1b, 48.2a |
-| **6** | **48.3a–b** (Taylor & Trig) | `cas/calculus.lisp`, `cas/simplify.lisp` | On-demand filesystem | 48.1a |
-| **7** | **48.3c** (Matrix Algebra) | `cas/matrix.lisp` | On-demand filesystem | None |
-| **8** | **48.4a** (`define-macro`) | `user/lisp/lisp.c`, `user/lisp/include/lisp.h` | 0 B SRAM (Flash) | None |
-| **9** | **48.4b** (`LISP_VECTOR`) | `user/lisp/lisp.c`, `user/lisp/include/lisp.h` | Drastically reduces SRAM | 48.4a |
-| **10**| **48.4c–e** (Stdlib Modules) | `/sd0/system/lib/{seq,str,dict}.lisp` | Modular filesystem | 48.4a |
-| **11**| **48.5** (Verification) | `tests/test_lisp_cas.py`, `tests/hw/*.py` | N/A | All steps |
+| Step | Milestone | Files Modified | Memory Impact | Dependencies | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **1** | **48.1a** (`error`) | `user/lisp/lisp.c`, `user/lisp/builtins_table.h` | 0 B SRAM (Flash) | None | **Done** (QEMU & Silicon verified) |
+| **2** | **48.1b** (`sleep-ms`) | `user/lisp/lisp.c`, `user/lisp/builtins_table.h` | 0 B SRAM (Flash) | `kernel/sched.h` | **Done** (QEMU & Silicon verified) |
+| **3** | **48.1c** (Modular Loader) | `tools/sd_root/system/etc/init.lisp`, `stdlib.lisp` | Saves ~150 B SRAM on boot | None | **Done** (QEMU & Silicon verified) |
+| **4** | **48.2a** (I2C Master) | `user/lisp/lisp.c`, `builtins_table.h` | 0 B SRAM (Flash) | `drivers/i2c.h` | **Done** (QEMU & Silicon verified) |
+| **5** | **48.2b–d** (GPIO/ADC/RTC) | `user/lisp/lisp.c`, `builtins_table.h` | 0 B SRAM (Flash) | `drivers/gpio.h`, `adc.h` | Planned |
+| **6** | **48.2e** (Sensor Plotting) | `/sd0/system/lib/chart.lisp` | On-demand filesystem | 48.1b, 48.2a | Planned |
+| **7** | **48.3a–b** (Taylor & Trig) | `cas/calculus.lisp`, `cas/simplify.lisp` | On-demand filesystem | 48.1a | Planned |
+| **8** | **48.3c** (Matrix Algebra) | `cas/matrix.lisp` | On-demand filesystem | None | Planned |
+| **9** | **48.4a** (`define-macro`) | `user/lisp/lisp.c`, `user/lisp/include/lisp.h` | 0 B SRAM (Flash) | None | **Done** (QEMU & Silicon verified) |
+| **10**| **48.4b** (`LISP_VECTOR`) | `user/lisp/lisp.c`, `user/lisp/include/lisp.h` | Drastically reduces SRAM | 48.4a | Planned |
+| **11**| **48.4c–e** (Stdlib Modules) | `/sd0/system/lib/{macros,seq,str,dict}.lisp` | Modular filesystem | 48.4a | **Done** (QEMU & Silicon verified) |
+| **12**| **48.5** (Verification) | `tests/test_lisp_expansion.py`, `tests/hw/*.py` | N/A | All steps | **In Progress** |
 
 ---
 
