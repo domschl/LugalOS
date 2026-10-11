@@ -245,7 +245,7 @@ void console_putc(char c) {
     if (vt) vterm_write(vt, &c, 1);
     else vt = vterm_get(0);
     if (vt && !vt->active) {
-#if defined(CONFIG_LCD_PCLK_GPIO)
+#if defined(LCDTERM_PRESENT)
         lcdterm_screen_putc_vterm(vt->id, c);
 #endif
         return;

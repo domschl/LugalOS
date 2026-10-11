@@ -1063,8 +1063,38 @@ def test_dsi_framebuffer(b: Board) -> tuple[str, bool, str]:
     out = b.console_session.cmd("lcd verify", deadline=20.0)
     if "verify: PASS" not in out:
         return name, False, f"readback: {out.strip()[-200:]}"
-    b.console_session.cmd("lcd test grid", deadline=10.0)
+    b.console_session.cmd("lcd repaint", deadline=10.0)     # 47.7: the terminal back on the glass
     return name, True, f"GRAY8, {hz} Hz, 0 DMA errors, no underrun, checker reads back exactly"
+
+
+def test_lcd_terminal(b: Board) -> tuple[str, bool, str]:
+    """47.7: the shell's terminal is on the panel from boot -- 126 x 34 cells
+    in its window, converted from the 1-bpp frame into the scanned-out one at
+    most once per frame -- fast enough for a busy console, and `lcd colours`
+    switches a coloured pair to RGB565 and a gray one back to GRAY8."""
+    name = "the terminal on the panel: 126 x 34, frame-paced, colours (47.7)"
+    out = b.console_session.cmd("lcd", deadline=10.0)
+    if "Unknown" in out or "Unbound" in out or "not found" in out.lower():
+        return name, True, "SKIPPED (no display on this board)"
+    if "text window 126 x 34" not in out:
+        return name, False, f"no 126 x 34 terminal: {out.strip()[-300:]}"
+    if "frame-paced" not in out:
+        return name, False, "the conversion is not frame-paced (no lcdflush task?)"
+    out = b.console_session.cmd("lcd termbench", deadline=30.0)
+    m = re.search(r"200 lines of 55 in (\d+) ms = (\d+) lines/s", out)
+    c = re.search(r"a character (\d+) us", out)
+    if not m or not c:
+        return name, False, f"no termbench figures: {out.strip()[-300:]}"
+    lps, ch = int(m.group(2)), int(c.group(1))
+    if lps < 1000 or ch > 5000:
+        return name, False, f"{lps} lines/s, a character {ch} us"
+    out_a = b.console_session.cmd("lcd colours fd20 0000", deadline=15.0)
+    amber = "frame RGB565" in out_a
+    out_g = b.console_session.cmd("lcd colours 0000 ffff", deadline=15.0)
+    gray = "frame GRAY8" in out_g
+    if not (amber and gray):
+        return name, False, f"colours: amber -> {out_a.strip()[-400:]!r}; default -> {out_g.strip()[-4000:]}"
+    return name, True, f"{lps} lines/s, a character {ch} us, colours switch RGB565/GRAY8"
 
 
 TESTS = [
@@ -1097,6 +1127,7 @@ TESTS = [
     test_psram_pattern,
     test_dsi_pattern,
     test_dsi_framebuffer,
+    test_lcd_terminal,
 ]
 
 

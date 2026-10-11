@@ -1000,6 +1000,8 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
     # 47.4: the MIPI-DSI host and the LCD-7B's EK79007 panel. Empty unit
     # unless the board file names the panel (CONFIG_DSI_LCD_RST_GPIO).
     list(APPEND SOURCES drivers/dsi_esp32p4.c)
+    # 47.7: the panel terminal (portable since 47.6) on that panel.
+    list(APPEND SOURCES drivers/lcdterm.c)
 elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
     # 45.4, plan/phase45_esp32c6.md. One driver again: the console, on the
     # USB-Serial/JTAG peripheral. No block device and no display -- the same stated

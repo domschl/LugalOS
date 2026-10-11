@@ -241,7 +241,7 @@ static const dev_driver_t dev_uart = {
     .name = "uart", .kind = DEV_KIND_CONSOLE, .wire = DEV_WIRE_UART0, .get = get_uart_console,
 };
 
-#if defined(CONFIG_LCD_PCLK_GPIO)
+#if defined(LCDTERM_PRESENT)
 /* 36.6, plan/phase36_rp2350_lcd7_terminal.md: the RP2350-LCD-7's panel as a
  * console. It tees everything to the UART path, so it holds UART0 exactly as
  * `uart` does -- which keeps `p9serve` off a wire that console text is being
@@ -397,7 +397,7 @@ void board_register_devices(void) {
     dev_register(&dev_eeprom);
     dev_register(&dev_usb);
     dev_register(&dev_uart);
-#if defined(CONFIG_LCD_PCLK_GPIO)
+#if defined(LCDTERM_PRESENT)
     dev_register(&dev_lcd);
 #endif
     dev_register(&dev_uartslip);

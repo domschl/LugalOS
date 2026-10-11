@@ -249,7 +249,7 @@ expectations unchanged.
 diff), and a QEMU `ramscreen` at 1024 × 600 passes `ribbonselftest` with
 the derived widths.
 
-**47.7 — `lcdterm` on the 7B.**
+**47.7 — `lcdterm` on the 7B. [DONE 2026-10-11, §6.8]**
 The ESP32-P4 backend (`drivers/lcd7b_esp32p4.c`): a 1-bpp buffer in SRAM,
 dirty-row conversion into the PSRAM frame (§4), and frame-paced flushing. Boot
 into the TEXT layout with the menu bar. Console output is teed to the panel as
@@ -903,6 +903,86 @@ It is noted as flaky, not as fixed.
 * **A shell scenario has to wait for the prompt, not for silence.**
   `(ca …)` computes silently for seconds. And a USB "kick" (a newline) is a
   keystroke: it shows up as extra prompts and makes runs differ.
+
+## 6.8 What 47.7 found: the shell on the LCD-7B's glass (2026-10-11)
+
+**At boot.** After palloc's bulk zone, `dsi_lcd_term_start()` brings the
+panel up (250 ms, busy-waiting, since there is no scheduler yet), starts the
+GRAY8 frame, and hands `drivers/lcdterm.c` a backend:
+* a 1-bpp frame of 1024 × 600 in PSRAM, with a shadow copy of it;
+* `term_flush()` as the flush.
+
+The kernel then binds the console to `lcd` (teeing to UART0), registers the
+screen-only log sink and sets the screen hooks, exactly as the RP2350 does.
+Input stays on UART0. Measured: the shell runs in a **126 × 34** window
+(128 × 37 cells of glass); the owner saw it sharp, frame and shadow
+included.
+
+**Changed rows: a diff against the shadow, not a dirty bitmap.** The flush
+compares each 128-byte row with its shadow and converts only the rows that
+differ. That is the plan's fallback (§4), chosen because it needs no hook
+in `canvas1`/`fbtext` and PSRAM has room for the second 75 KB.
+
+**Conversion and pacing:**
+* **The conversion:** a table, 1 byte → 8 GRAY8 bytes (one 64-bit store)
+  or 8 RGB565 pixels, leftmost pixel in bit 0.
+* **Frame pacing:** since the scheduler runs, a flush only marks the frame
+  due. The `lcdflush` task converts at most once per frame (every 16 ms),
+  under `console_lock`. That was the fix for the owner's "clean but not very
+  fast".
+
+| measured (`lcd termbench`, tee off) | |
+|---|---|
+| a character, through `console_putc` + flush, conversion included | 1.56 ms (3.2 with libc's byte-wise `memcmp`; 64-bit compares halved it) |
+| a scroll (≈ 550 rows converted, 0.65 ms of it the 1-bpp memmove) | 5.3 ms |
+| 200 lines of 55 characters, frame-paced | 100 ms = **2,000 lines/s** (≈ 150/s converting at every flush) |
+| the floor of the diff: 2 × 75 KB of PSRAM per flush | ≈ 1.4 ms; a per-row dirty bitmap would take it to ~0.1 ms if it is ever needed |
+
+**What the owner saw:**
+* **Scrolling:** 1,500 and 5,000 lines of real terminal output, clean, with
+  no tearing, though the frame is written while it is scanned out. Fast
+  once frame-paced.
+* **Colours:** `lcd colours fd20 0000` gives amber on black (the frame
+  switches to RGB565); `lcd colours 0000 ffff` goes back to black on white
+  in GRAY8. Same meaning and syntax as on the RP2350.
+* **Patterns:** `lcd pattern bars`, then `pattern off`, brings the terminal
+  back unshifted.
+
+**Found on the way:**
+* **Raw drawing tests leave debris outside the window.** `lcd scroll N`, as
+  on the RP2350, draws raw text across the whole frame, ignoring the
+  window. The strip under the last text row kept remnants until `lcd
+  repaint`. Expected: they are diagnostics, and `lcd repaint` restores the
+  terminal (on the P4 it forces a full conversion too).
+* **The pattern generator must also stop the scan-out at a frame boundary.**
+  Since 47.7 a frame always runs, and `lcd pattern` used to cut the DMA
+  stream mid-frame (§6.6's shift). `scan_stop()` / `scan_start()` are now
+  the one way in and out, for format changes and patterns alike.
+* **A race between a frame switch and the pacer.** The HIL run crashed
+  twice in two runs with a store fault at 0xad000 in the `lcdflush` task:
+  that is `NULL` + row 346 × 2048 bytes of an RGB565 frame. `lcd colours`
+  had swapped the frame (`fb_start()`, frame pointer `NULL` in between)
+  while the task was converting. By hand it never showed; the suite's
+  timing hit it every time. Every frame switch now holds `console_lock`, as
+  the conversion does, and the conversion reads the frame pointer once.
+  Afterwards: HIL 30/30, and 20 colour switches in a row with output in
+  between, clean.
+* **The 47.5 tests and the terminal both write the frame.** `lcd verify`
+  failed (241,451 pixels): the terminal's scroll had converted over the
+  checkerboard. Test commands now put the terminal on hold (it keeps
+  drawing its 1-bpp frame but converts nothing), and `lcd repaint` /
+  `lcd colours` hand the glass back.
+* **`lcd colours` parsed the wrong character** to tell "colours" from
+  "colors" and lost the first colour. Caught on the glass: black on amber.
+
+**Not done here, deliberately:**
+* **The U-mode `lcdterm` task on the P4.** It needs a code region (32 KB of
+  SRAM, or PMP over the XIP flash window). The P4 terminal draws from the
+  kernel, the fallback the RP2350 also has before its task starts.
+  `LCDTERM_UMODE` marks the boards that have one.
+* **The plan's file name.** The backend lives in `drivers/dsi_esp32p4.c`
+  (section 10), not in a separate `lcd7b_esp32p4.c`: it needs the frame,
+  the format switch and the scan-out control that file owns.
 
 ## 7. Risks
 

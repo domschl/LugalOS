@@ -26,6 +26,15 @@ bool dsi_lcd_is_up(void);
 uint8_t *dsi_lcd_fb(void);
 void dsi_lcd_fb_flush(unsigned y0, unsigned y1);
 
+/* 47.7: the panel, a GRAY8 frame and the terminal (drivers/lcdterm.h) on
+ * it, at boot. 0, or -1 if any of it is missing (the board then keeps its
+ * serial console and RAM screen). */
+int dsi_lcd_term_start(void);
+
+/* 47.7: after sched_init(): the task that converts the terminal at most once
+ * per frame. Until it runs, every flush converts. */
+int dsi_lcd_term_task_start(void);
+
 /* `lcd`, `lcd pattern bars|hbars|ber|off`, `lcd bl on|off`, `lcd cmd ..`,
  * `lcd id`. */
 void dsi_lcd_command(const char *args);

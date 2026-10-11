@@ -25,6 +25,15 @@
 #define LCDTERM_PRESENT 1
 #endif
 
+/* Where the terminal can run as the U-mode `lcdterm` task: boards whose
+ * linker script gives its code a region (.lcdtermtext, board_lcdterm_text_
+ * region()). The RP2350 since 36.6a. Elsewhere -- the LCD-7B, 47.7 -- the
+ * terminal draws from the kernel, the fallback it always had; a P4 text
+ * region (32 KB of SRAM, or PMP over the XIP window) is a later step. */
+#if defined(LCDTERM_PRESENT) && defined(CONFIG_BOARD_RP2350)
+#define LCDTERM_UMODE 1
+#endif
+
 #define LCDTERM_MAX_FB_REGIONS 2u
 
 typedef struct {

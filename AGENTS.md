@@ -168,6 +168,12 @@ for both roles by itself.
   come from the screen width (`RIBBON_COLS_*(w)` in `drivers/ribbon.h`, D7).
   On targets without a panel, `ramscreen W H` sets the RAM screen's size
   (QEMU tests layouts at 1024x600 with it).
+  Since 47.7 the LCD-7B boots into the shell on its panel (126x34; console
+  device `lcd`, tee to UART0, input still UART0); `lcd colours FG BG` (RGB565
+  hex; a coloured pair switches the frame to RGB565), `lcd repaint` (after a
+  test pattern), `lcd termbench`, `lcd tee uart|off`. The terminal draws from
+  the kernel there (no U-mode lcdterm task on the P4 yet); a 16 ms `lcdflush`
+  task converts changed 1-bpp rows into the frame.
   Frame buffer (47.5): `lcd fb [gray|rgb565]` starts a 1024×600 frame in
   PSRAM (GRAY8 = 600 KB, the chosen format), scanned out by the DW-GDMA at
   60 Hz and re-armed by its interrupt (CLIC 18). `lcd test
@@ -181,7 +187,7 @@ for both roles by itself.
   `[Trap Cache]` line names the reason ("core timeout raw" bit 4 = DBUS
   timeout).
 * Test: `cd tests/hw && uv run test_esp32p4.py --board lcd7b --build ../../build/esp32p4-lcd7b`
-  (29/29; EMAC tests skip; a BME280 sits on the PH2.0 I2C header at 0x76). NANO: `uv run test_esp32p4.py --board nano`.
+  (30/30; EMAC tests skip; a BME280 sits on the PH2.0 I2C header at 0x76). NANO: `uv run test_esp32p4.py --board nano`.
 
 ---
 

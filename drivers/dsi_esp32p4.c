@@ -45,6 +45,7 @@
 
 #include "drivers/esp32p4_dsi_regs.h"
 #include "drivers/font8x16.h"
+#include "drivers/lcdterm.h"
 #include "arch/esp32p4_intr.h"
 #include "arch/trap.h"
 #include "kernel/console.h"
@@ -547,18 +548,22 @@ static const struct { uint8_t cmd, n, p, delay_ms; } k_ek79007_init[] = {
     {0x11, 0, 0x00, 120},
 };
 
+/* 47.7: the bring-up runs at boot, before the scheduler, so it waits by the
+ * clock; ~250 ms once. */
+static void wait_ms(uint32_t ms) { time_delay_us((uint64_t)ms * 1000u); }
+
 static void panel_reset(void) {
     gpio_out(RST_GPIO, false);
-    task_sleep_ms(10);
+    wait_ms(10);
     gpio_out(RST_GPIO, true);
-    task_sleep_ms(120);
+    wait_ms(120);
 }
 
 static bool panel_init(void) {
     bool ok = true;
     for (size_t i = 0; i < sizeof k_ek79007_init / sizeof k_ek79007_init[0]; i++) {
         ok &= dcs_write(k_ek79007_init[i].cmd, &k_ek79007_init[i].p, k_ek79007_init[i].n);
-        if (k_ek79007_init[i].delay_ms) task_sleep_ms(k_ek79007_init[i].delay_ms);
+        if (k_ek79007_init[i].delay_ms) wait_ms(k_ek79007_init[i].delay_ms);
     }
     return ok;
 }
@@ -572,10 +577,17 @@ static void backlight(bool on) {
 
 typedef enum { PAT_NONE, PAT_BARS, PAT_HBARS, PAT_BER } pattern_t;
 
+static void scan_stop(void);
+static void scan_start(void);
+static uint8_t *g_fb;
+
 static void set_pattern(pattern_t p) {
-    /* The bridge's DPI stream off whenever the generator is on. */
-    FSET(DSI_BRG_DPI_MISC_CONFIG_REG, DSI_BRG_DPI_EN, 0);
-    FSET(DSI_BRG_DPI_CONFIG_UPDATE_REG, DSI_BRG_DPI_CONFIG_UPDATE, 1);
+    /* The bridge's DPI stream off whenever the generator is on -- and since
+     * 47.7 a frame is always being scanned out, so it stops at a frame
+     * boundary (§6.6: a stream cut mid-frame shifts every later frame). */
+    if (p != PAT_NONE) {
+        scan_stop();
+    }
     switch (p) {
     case PAT_BARS:
         FSET(DSI_HOST_VID_MODE_CFG_REG, DSI_HOST_VPG_MODE, 0);
@@ -596,9 +608,11 @@ static void set_pattern(pattern_t p) {
         g_pattern = "BER pattern";
         break;
     case PAT_NONE:
-        /* No frame source until 47.5: what the panel shows is undefined. */
+        /* Back to the frame, if there is one (47.5); without, what the
+         * panel shows is undefined. */
         FSET(DSI_HOST_VID_MODE_CFG_REG, DSI_HOST_VPG_EN, 0);
         g_pattern = "none";
+        if (g_fb) scan_start();
         break;
     }
 }
@@ -656,7 +670,6 @@ static gdma_lli_t g_lli_mem __attribute__((aligned(64)));
 
 typedef enum { FB_NONE = 0, FB_GRAY8, FB_RGB565 } fb_fmt_t;
 static fb_fmt_t          g_fb_fmt;
-static uint8_t          *g_fb;
 static uint32_t          g_fb_bytes, g_fb_pages, g_fb_bpp;
 static volatile uint32_t g_frames, g_dma_errs, g_dma_last_err;
 static volatile bool     g_stop_at_frame_end;   /* ISR: finish this frame, do not re-arm */
@@ -753,32 +766,55 @@ uint8_t *dsi_lcd_fb(void) { return g_fb; }
 
 /* dpi_panel_init() for one frame buffer: frame in PSRAM, bridge format, the
  * item, channel on, bridge DPI output on, pattern generator off. */
-static bool fb_start(fb_fmt_t fmt) {
-    if (!dsi_lcd_init()) return false;
-    gdma_init();
-    if (!g_gdma_ready) { cprintf("lcd: the DW-GDMA interrupt could not be routed\n"); return false; }
-
-    /* Stop whatever runs, at a frame boundary: the bridge has no notion of
+/* The scan-out, stopped at a frame boundary and started at the frame's
+ * first byte.
+ *
+ * Stop: the bridge has no notion of
      * where a frame starts other than "the next byte after the last one",
      * so a DMA cut off mid-frame leaves the rest in its FIFO and every
      * later frame comes out shifted by that remainder (seen: the rightmost
      * 2-3 pixels wrapped to the left edge after a GRAY8 -> RGB565 -> GRAY8
      * switch). So: let the running frame finish, let the bridge drain its
      * FIFO onto the glass, and only then stop the DPI stream. */
-    uint8_t *old = g_fb; uint32_t old_pages = g_fb_pages;
-    if (old) {
+static bool g_scanning;
+
+static void scan_stop(void) {
+    if (g_scanning) {
         g_stop_at_frame_end = true;
         uint32_t f0 = g_frames;
         uint64_t t0 = time_get_us();
         while (g_frames == f0 && time_get_us() - t0 < 50000u) { }
         t0 = time_get_us();
         while (FGET(DSI_BRG_FIFO_FLOW_STATUS_REG, DSI_BRG_RAW_BUF_DEPTH) && time_get_us() - t0 < 20000u) { }
+        gdma_stop();
+        g_stop_at_frame_end = false;
+        g_scanning = false;
     }
-    g_fb = NULL;
-    gdma_stop();
-    g_stop_at_frame_end = false;
     FSET(DSI_BRG_DPI_MISC_CONFIG_REG, DSI_BRG_DPI_EN, 0);
     FSET(DSI_BRG_DPI_CONFIG_UPDATE_REG, DSI_BRG_DPI_CONFIG_UPDATE, 1);
+}
+
+static void scan_start(void) {
+    if (!g_fb) return;
+    lli_arm();
+    REG(DMAC_CH1_INTCLEAR0_REG) = 0xffffffffu;
+    gdma_restart();
+    FSET(DSI_HOST_VID_MODE_CFG_REG, DSI_HOST_VPG_EN, 0);
+    g_pattern = "none (frame buffer)";
+    FSET(DSI_BRG_DPI_MISC_CONFIG_REG, DSI_BRG_DPI_EN, 1);
+    FSET(DSI_BRG_DPI_CONFIG_UPDATE_REG, DSI_BRG_DPI_CONFIG_UPDATE, 1);
+    REG(DSI_BRG_INT_CLR_REG) = 0xffffffffu;
+    g_scanning = true;
+}
+
+static bool fb_start(fb_fmt_t fmt) {
+    if (!dsi_lcd_init()) return false;
+    gdma_init();
+    if (!g_gdma_ready) { cprintf("lcd: the DW-GDMA interrupt could not be routed\n"); return false; }
+
+    uint8_t *old = g_fb; uint32_t old_pages = g_fb_pages;
+    scan_stop();
+    g_fb = NULL;
     if (old) palloc_free(old, old_pages);
 
     uint32_t bpp = (fmt == FB_RGB565) ? 16u : 8u;
@@ -797,15 +833,7 @@ static bool fb_start(fb_fmt_t fmt) {
     g_fb_bpp = bpp; g_fb_bytes = bytes; g_fb_pages = pages; g_fb_fmt = fmt;
     bridge_format(bpp, fmt == FB_RGB565 ? 2u : 12u);
     g_fb = fb;
-    lli_arm();
-    REG(DMAC_CH1_INTCLEAR0_REG) = 0xffffffffu;
-    gdma_restart();
-
-    FSET(DSI_HOST_VID_MODE_CFG_REG, DSI_HOST_VPG_EN, 0);
-    g_pattern = "none (frame buffer)";
-    FSET(DSI_BRG_DPI_MISC_CONFIG_REG, DSI_BRG_DPI_EN, 1);
-    FSET(DSI_BRG_DPI_CONFIG_UPDATE_REG, DSI_BRG_DPI_CONFIG_UPDATE, 1);
-    REG(DSI_BRG_INT_CLR_REG) = 0xffffffffu;
+    scan_start();
     return true;
 }
 
@@ -886,6 +914,270 @@ static void draw_text_page(void) {
     g_last_pat = NULL;
 }
 
+
+/* ---- 10. the terminal's backend (47.7) -----------------------------------
+ *
+ * drivers/lcdterm.c draws the terminal into a 1-bpp frame -- the RP2350's
+ * format, leftmost pixel in bit 0 -- and calls term_flush() when it has
+ * drawn. Here that frame lives in PSRAM with a shadow of what was last
+ * converted; a flush compares each 128-byte row with its shadow and converts
+ * only the rows that differ into the scanned-out frame, then writes those
+ * rows back for the DMA. The plan's fallback to a per-row dirty bitmap in
+ * canvas1_t (§4): no hook in the drawing code, 75 KB of PSRAM for the
+ * shadow, and a compare of 75 KB per flush.
+ *
+ * The conversion is a table: an input byte is 8 pixels, so 8 output bytes
+ * (GRAY8: one 64-bit store) or 8 RGB565 pixels. Foreground and background
+ * are any two RGB565 colours, as `lcd colours` on the RP2350: a gray pair
+ * runs in GRAY8, a coloured one switches the frame to RGB565 (47.5 §6.6). */
+
+#define T_STRIDE   (DSI_LCD_H_RES / 8u)
+#define T_BYTES    (T_STRIDE * DSI_LCD_V_RES)
+
+static uint8_t  *g_t1, *g_t1_shadow;            /* 1-bpp frame, its shadow: PSRAM */
+static bool      g_t_force;                      /* convert every row next time */
+static uint16_t  g_t_fg = 0x0000, g_t_bg = 0xffff;   /* black on white, the RP2350's */
+static uint64_t  g_lut8[256];                    /* GRAY8: 8 pixels per byte */
+static uint16_t (*g_lut565)[8];                  /* RGB565: 4 KB, one bulk page */
+static uint32_t  g_t_flushes, g_t_rows, g_t_us_last, g_t_us_max, g_t_rows_last;
+
+static uint8_t gray_of(uint16_t c, bool *is_gray) {
+    unsigned r = ((c >> 11) & 0x1fu) * 255u / 31u, g = ((c >> 5) & 0x3fu) * 255u / 63u,
+             b = (c & 0x1fu) * 255u / 31u;
+    unsigned mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
+    unsigned mn = r < g ? (r < b ? r : b) : (g < b ? g : b);
+    *is_gray = (mx - mn) <= 8u;
+    return (uint8_t)((r + g + b) / 3u);
+}
+
+static void lut_build(void) {
+    bool gf, gb;
+    uint8_t f8 = gray_of(g_t_fg, &gf), b8 = gray_of(g_t_bg, &gb);
+    for (unsigned v = 0; v < 256u; v++) {
+        uint64_t w = 0;
+        for (unsigned bit = 0; bit < 8u; bit++)
+            w |= (uint64_t)((v >> bit) & 1u ? f8 : b8) << (8u * bit);   /* bit 0 = leftmost = lowest byte */
+        g_lut8[v] = w;
+        if (g_lut565)
+            for (unsigned bit = 0; bit < 8u; bit++) g_lut565[v][bit] = ((v >> bit) & 1u) ? g_t_fg : g_t_bg;
+    }
+}
+
+/* A row against its shadow, 64 bits at a time: libc's memcmp goes byte by
+ * byte, and this runs over all 600 rows at every flush -- it was most of a
+ * character's 3.2 ms (47.7). Both buffers are page-aligned. */
+static inline bool row_same(const uint8_t *a, const uint8_t *b) {
+    const uint64_t *x = (const uint64_t *)(const void *)a, *y = (const uint64_t *)(const void *)b;
+    uint64_t d = 0;
+    for (unsigned i = 0; i < T_STRIDE / 8u; i++) d |= x[i] ^ y[i];
+    return d == 0;
+}
+
+/* 47.7: frame pacing. Once the lcdflush task runs, a flush only marks the
+ * frame due, and the task converts at most once per frame: the panel shows
+ * 60 frames a second, so converting a scroll more often than that is work
+ * nobody sees -- and fast output scrolls far more often (the owner's "not
+ * very fast", 2026-10-11). Before the scheduler, at boot, flushes convert
+ * at once. */
+static volatile bool g_t_due;
+/* 47.7: a test owns the frame (`lcd test`, `fb`, `wbtest`, `bench`): the
+ * terminal keeps drawing into its 1-bpp frame but converts nothing until
+ * `lcd repaint` (or `lcd colours`) hands the glass back -- otherwise the
+ * next scroll converts over the test's pixels, and `lcd verify` fails. */
+static bool          g_t_hold;
+static bool          g_t_paced;
+static uint32_t      g_t_paced_passes;
+
+static void term_convert(unsigned y0, unsigned y1);
+
+static void term_flush(unsigned y0, unsigned y1) {
+    if (g_t_paced) { g_t_due = true; return; }
+    term_convert(y0, y1);
+}
+
+static void term_convert(unsigned y0, unsigned y1) {
+    /* The frame once: every switch of it (fb_start(), from `lcd colours` or
+     * `lcd fb`) holds console_lock, as this does -- the lcdflush task once
+     * converted into a frame that `lcd colours` had just set to NULL (a
+     * store to 0xad000, row 346 of an RGB565 frame; 47.7's HIL run). */
+    uint8_t *const fb = g_fb;
+    const fb_fmt_t fmt = g_fb_fmt;
+    if (!fb || !g_t1 || fmt == FB_NONE || g_t_hold) return;
+    if (y1 > DSI_LCD_V_RES) y1 = DSI_LCD_V_RES;
+    uint64_t t0 = time_get_us();
+    bool all = g_t_force && y0 == 0 && y1 == DSI_LCD_V_RES;
+    int lo = -1, hi = -1;
+    uint32_t n = 0;
+    for (unsigned y = y0; y < y1; y++) {
+        const uint8_t *src = g_t1 + y * T_STRIDE;
+        uint8_t *sh = g_t1_shadow + y * T_STRIDE;
+        if (!g_t_force && row_same(src, sh)) continue;
+        memcpy(sh, src, T_STRIDE);
+        if (fmt == FB_RGB565) {
+            uint16_t *dst = (uint16_t *)fb + (size_t)y * DSI_LCD_H_RES;
+            for (unsigned b = 0; b < T_STRIDE; b++) memcpy(dst + 8u * b, g_lut565[sh[b]], 16u);
+        } else {
+            uint64_t *dst = (uint64_t *)(fb + (size_t)y * DSI_LCD_H_RES);
+            for (unsigned b = 0; b < T_STRIDE; b++) dst[b] = g_lut8[sh[b]];
+        }
+        if (lo < 0) lo = (int)y;
+        hi = (int)y;
+        n++;
+    }
+    if (all) g_t_force = false;
+    if (n) dsi_lcd_fb_flush((unsigned)lo, (unsigned)hi + 1u);
+    uint32_t us = (uint32_t)(time_get_us() - t0);
+    g_t_flushes++;
+    g_t_rows += n;
+    if (n) { g_t_us_last = us; g_t_rows_last = n; }
+    if (us > g_t_us_max) g_t_us_max = us;
+}
+
+static lcdterm_backend_t g_tbe = {
+    .name            = "LCD-7B",
+    .text_test_title = "LugalOS on the LCD-7B: Spleen 8x16, 128 x 37 cells, 1-bpp to GRAY8 over DSI at 60 Hz",
+    .w               = DSI_LCD_H_RES,
+    .h               = DSI_LCD_V_RES,
+    .stride          = T_STRIDE,
+    .fb_region_count = 0,              /* the terminal draws from the kernel here (lcdterm.h) */
+    .flush           = term_flush,
+};
+
+/* The whole terminal again, from its 1-bpp frame -- after a test pattern
+ * drew over the glass, or a colour or format change. */
+static void term_redraw(void) {
+    console_lock();
+    g_t_hold = false;
+    g_t_force = true;
+    term_convert(0, DSI_LCD_V_RES);
+    console_unlock();
+}
+
+/* Every 16 ms: if anything was drawn since the last pass, convert it. Under
+ * console_lock, which every writer of the 1-bpp frame holds. */
+static void term_flush_task(void *arg) {
+    (void)arg;
+    for (;;) {
+        task_sleep_ms(16);
+        if (!g_t_due) continue;
+        console_lock();
+        g_t_due = false;
+        term_convert(0, DSI_LCD_V_RES);
+        g_t_paced_passes++;
+        console_unlock();
+    }
+}
+
+int dsi_lcd_term_task_start(void) {
+    if (!g_t1) return -1;
+    int pid = task_create("lcdflush", term_flush_task, NULL);
+    if (pid < 0) {
+        printk("[LCD] no lcdflush task; the terminal converts at every flush\n");
+        return -1;
+    }
+    g_t_paced = true;
+    return pid;
+}
+
+/* `lcd colours FG BG`: RGB565 hex, as on the RP2350. */
+static void term_colours(uint16_t fg, uint16_t bg) {
+    bool gf, gb;
+    (void)gray_of(fg, &gf);
+    (void)gray_of(bg, &gb);
+    fb_fmt_t want = (gf && gb) ? FB_GRAY8 : FB_RGB565;
+    console_lock();                     /* the lcdflush task converts under it */
+    g_t_fg = fg;
+    g_t_bg = bg;
+    if (want == FB_RGB565 && !g_lut565) {
+        g_lut565 = (uint16_t (*)[8])palloc_pages_bulk(1);
+        if (!g_lut565) { console_unlock(); cprintf("lcd: no page for the RGB565 table\n"); return; }
+    }
+    if (want != g_fb_fmt && !fb_start(want)) { console_unlock(); return; }
+    lut_build();
+    term_redraw();
+    console_unlock();
+}
+
+/* `lcd termbench`: what a character and a scroll cost on the glass, through
+ * the real console path (console_putc, then the flush that runs at every
+ * write boundary), conversion and write-back included. The tee is off
+ * meanwhile: at 115200 baud the UART would be what is measured. */
+static void term_bench(void) {
+    unsigned tee = lcdterm_tee();
+    lcdterm_set_tee(LCD_TEE_OFF);
+    bool paced = g_t_paced;
+    g_t_paced = false;                 /* the cost of one, not the pacing */
+    uint32_t ch_best = 0xffffffffu, ch_worst = 0, ch_sum = 0;
+    uint32_t sc_best = 0xffffffffu, sc_worst = 0, sc_sum = 0;
+    enum { CH = 60, SC = 40 };
+    console_lock();
+    console_putc('\n');
+    console_flush();
+    for (unsigned i = 0; i < CH; i++) {
+        uint64_t t0 = time_get_us();
+        console_putc((char)('a' + i % 26u));
+        console_flush();
+        uint32_t d = (uint32_t)(time_get_us() - t0);
+        ch_sum += d; if (d < ch_best) ch_best = d; if (d > ch_worst) ch_worst = d;
+    }
+    for (unsigned i = 0; i < SC; i++) {
+        uint64_t t0 = time_get_us();
+        console_putc('\n');
+        console_flush();
+        uint32_t d = (uint32_t)(time_get_us() - t0);
+        sc_sum += d; if (d < sc_best) sc_best = d; if (d > sc_worst) sc_worst = d;
+    }
+    /* And throughput: 200 lines of 55 characters, paced as normally. */
+    g_t_paced = paced;
+    uint64_t t1 = time_get_us();
+    for (unsigned i = 0; i < 200u; i++) {
+        for (unsigned k = 0; k < 55u; k++) console_putc((char)('A' + (i + k) % 26u));
+        console_putc('\n');
+        console_flush();
+    }
+    uint32_t lines_us = (uint32_t)(time_get_us() - t1);
+    console_unlock();
+    task_sleep_ms(40);                 /* let the pacer show the last of it */
+    lcdterm_set_tee(tee);
+    cprintf("lcd termbench: 200 lines of 55 in %lu ms = %lu lines/s (%s)\n", (unsigned long)(lines_us / 1000u),
+            (unsigned long)(200000000ull / (lines_us ? lines_us : 1u)), paced ? "frame-paced" : "unpaced");
+    cprintf("lcd termbench: a character %lu us (best %lu, worst %lu); a scroll %lu us (best %lu, worst %lu); "
+            "last flush %lu rows\n",
+            (unsigned long)(ch_sum / CH), (unsigned long)ch_best, (unsigned long)ch_worst,
+            (unsigned long)(sc_sum / SC), (unsigned long)sc_best, (unsigned long)sc_worst,
+            (unsigned long)g_t_rows_last);
+}
+
+static void term_report(void) {
+    if (!g_t1) return;
+    cprintf("     terminal: 1-bpp frame 0x%08lx, fg 0x%04x bg 0x%04x; %lu conversions (%s, %lu paced passes), "
+            "%lu rows converted, last %lu rows in %lu us, worst %lu us\n",
+            (unsigned long)(uintptr_t)g_t1, (unsigned)g_t_fg, (unsigned)g_t_bg, (unsigned long)g_t_flushes,
+            g_t_paced ? "frame-paced" : "at every flush", (unsigned long)g_t_paced_passes,
+            (unsigned long)g_t_rows, (unsigned long)g_t_rows_last, (unsigned long)g_t_us_last,
+            (unsigned long)g_t_us_max);
+    lcdterm_report();
+}
+
+int dsi_lcd_term_start(void) {
+    if (!fb_start(FB_GRAY8)) return -1;
+    uint32_t pages = (2u * T_BYTES + 4095u) / 4096u;
+    uint8_t *m = palloc_pages_bulk(pages);
+    if (!m) { printk("[LCD] no PSRAM for the terminal's 1-bpp frame\n"); return -1; }
+    memset(m, 0, 2u * T_BYTES);
+    g_t1 = m;
+    g_t1_shadow = m + T_BYTES;
+    g_tbe.fb = g_t1;
+    lut_build();
+    g_t_force = true;
+    if (lcdterm_init(&g_tbe) != 0) return -1;
+    term_redraw();
+    printk("[LCD] terminal on the panel: %u x %u cells, 1-bpp frame at 0x%08lx, GRAY8 frame at 0x%08lx\n",
+           DSI_LCD_H_RES / FONT8X16_W, DSI_LCD_V_RES / FONT8X16_H,
+           (unsigned long)(uintptr_t)g_t1, (unsigned long)(uintptr_t)g_fb);
+    return 0;
+}
+
 /* ---- the whole bring-up --------------------------------------------------- */
 
 bool dsi_lcd_init(void) {
@@ -949,6 +1241,8 @@ static int parse_hex(const char **sp) {
     return digits ? v : -1;
 }
 
+static void term_report(void);
+
 static void report(void) {
     cprintf("lcd: %s -- EK79007 %ux%u, %u lanes x %u Mbps\n", g_up ? "up" : "down", DSI_LCD_H_RES,
             DSI_LCD_V_RES, LANES, LANE_MBPS);
@@ -976,6 +1270,7 @@ static void report(void) {
                 (unsigned long)(uintptr_t)g_fb, (unsigned long)g_frames, (unsigned long)g_dma_errs,
                 (unsigned long)g_dma_last_err,
                 FGET(DSI_BRG_INT_RAW_REG, DSI_BRG_UNDERRUN_INT_RAW) ? "SEEN" : "none");
+    term_report();
 }
 
 static void cmd_fps(void) {
@@ -1063,7 +1358,11 @@ void dsi_lcd_command(const char *args) {
         fb_fmt_t f = FB_GRAY8;
         if (strcmp(p, "rgb565") == 0) f = FB_RGB565;
         else if (*p && strcmp(p, "gray") != 0) { cprintf("usage: lcd fb [gray|rgb565]\n"); return; }
-        if (!fb_start(f)) { cprintf("lcd: frame buffer not started\n"); return; }
+        g_t_hold = (g_t1 != NULL);
+        console_lock();                 /* as term_colours(): no conversion mid-switch */
+        bool started = fb_start(f);
+        console_unlock();
+        if (!started) { cprintf("lcd: frame buffer not started\n"); return; }
         draw(pat_grid);
         dsi_lcd_fb_flush(0, DSI_LCD_V_RES);
         cprintf("lcd: frame buffer %s, %lu KB at 0x%08lx, scanning out (grid drawn)\n",
@@ -1072,25 +1371,75 @@ void dsi_lcd_command(const char *args) {
         return;
     }
     if (!g_up) { cprintf("lcd: not up -- %s\n", g_reason); return; }
+
+    /* 47.7: the terminal's commands, as on the RP2350. */
+    if (strncmp(args, "colours", 7) == 0 || strncmp(args, "colors", 6) == 0) {
+        const char *h = skip_ws(args + (args[4] == 'u' ? 7 : 6));   /* "colours" vs "colors" */
+        uint32_t v[2] = { 0, 0 };
+        for (int k = 0; k < 2; k++) {
+            h = skip_ws(h);
+            for (; *h && *h != ' '; h++) {
+                char c = *h;
+                if (c >= '0' && c <= '9') v[k] = v[k] * 16u + (uint32_t)(c - '0');
+                else if (c >= 'a' && c <= 'f') v[k] = v[k] * 16u + (uint32_t)(c - 'a' + 10);
+                else if (c >= 'A' && c <= 'F') v[k] = v[k] * 16u + (uint32_t)(c - 'A' + 10);
+            }
+        }
+        if (!g_t1) { cprintf("lcd: no terminal on the panel\n"); return; }
+        term_colours((uint16_t)v[0], (uint16_t)v[1]);
+        cprintf("lcd: fg 0x%04x bg 0x%04x, frame %s\n", (unsigned)(v[0] & 0xffffu),
+                (unsigned)(v[1] & 0xffffu), g_fb_fmt == FB_RGB565 ? "RGB565" : "GRAY8");
+        return;
+    }
+    if (strcmp(args, "termbench") == 0) {
+        if (!g_t1) { cprintf("lcd: no terminal on the panel\n"); return; }
+        term_bench();
+        return;
+    }
+    if (strcmp(args, "repaint") == 0) {
+        lcdterm_repaint();
+        term_redraw();
+        return;
+    }
+    if (strcmp(args, "test text") == 0) {
+        if (lcdterm_text_test() != 0) cprintf("lcd test text: no terminal on the panel\n");
+        return;
+    }
+    if (strncmp(args, "scroll", 6) == 0) {
+        const char *q = skip_ws(args + 6);
+        unsigned n = 0;
+        while (*q >= '0' && *q <= '9') n = n * 10u + (unsigned)(*q++ - '0');
+        lcdterm_scroll_test(n);
+        return;
+    }
+    if (strncmp(args, "tee", 3) == 0) {
+        const char *m = skip_ws(args + 3);
+        if (strcmp(m, "uart") == 0) lcdterm_set_tee(LCD_TEE_UART);
+        else if (strcmp(m, "off") == 0) lcdterm_set_tee(LCD_TEE_OFF);
+        else if (*m) { cprintf("lcd tee: uart or off\n"); return; }
+        cprintf("lcd tee: %s\n", lcdterm_tee() == LCD_TEE_OFF ? "off" : "uart (UART0)");
+        return;
+    }
     if (strcmp(args, "fps") == 0 || strncmp(args, "test", 4) == 0 || strcmp(args, "bench") == 0 ||
         strcmp(args, "verify") == 0 || strncmp(args, "wbtest", 6) == 0) {
         if (!g_fb) { cprintf("lcd: no frame buffer -- `lcd fb [gray|rgb565]` first\n"); return; }
     }
     if (strcmp(args, "fps") == 0) { cmd_fps(); return; }
-    if (strcmp(args, "bench") == 0) { cmd_bench(); return; }
+    if (strcmp(args, "bench") == 0) { g_t_hold = (g_t1 != NULL); cmd_bench(); return; }
     if (strcmp(args, "verify") == 0) { cmd_verify(); return; }
     if (strncmp(args, "test", 4) == 0) {
         const char *p = skip_ws(args + 4);
+        g_t_hold = (g_t1 != NULL);
         if (strcmp(p, "checker") == 0) draw(pat_checker);
         else if (strcmp(p, "grid") == 0) draw(pat_grid);
-        else if (strcmp(p, "text") == 0) draw_text_page();
+        else if (strcmp(p, "page") == 0) draw_text_page();   /* 47.5's; `test text` is the terminal's */
         else if (strcmp(p, "white") == 0) { fill(0xff); g_last_pat = NULL; }
         else if (strcmp(p, "black") == 0) { fill(0x00); g_last_pat = NULL; }
         else if (strcmp(p, "ramp") == 0) {
             for (unsigned y = 0; y < DSI_LCD_V_RES; y++)
                 for (unsigned x = 0; x < DSI_LCD_H_RES; x++) px(x, y, (uint8_t)(x * 256u / DSI_LCD_H_RES));
             g_last_pat = NULL;
-        } else { cprintf("usage: lcd test checker|grid|text|ramp|white|black\n"); return; }
+        } else { cprintf("usage: lcd test checker|grid|page|ramp|white|black|text\n"); return; }
         dsi_lcd_fb_flush(0, DSI_LCD_V_RES);
         cprintf("lcd: drawn and written back\n");
         return;
@@ -1104,6 +1453,7 @@ void dsi_lcd_command(const char *args) {
         unsigned secs = 0;
         while (*q >= '0' && *q <= '9') secs = secs * 10u + (unsigned)(*q++ - '0');
         if (!secs) secs = 10;
+        g_t_hold = (g_t1 != NULL);
         fill(0xff);
         dsi_lcd_fb_flush(0, DSI_LCD_V_RES);
         task_sleep_ms(5000);
@@ -1147,7 +1497,8 @@ void dsi_lcd_command(const char *args) {
         cprintf("%s\n", got ? "" : " (nothing)");
         return;
     }
-    cprintf("usage: lcd [pattern bars|hbars|ber|off | fb [gray|rgb565] | test checker|grid|text|ramp|white|black |\n"
+    cprintf("usage: lcd [colours FG BG | repaint | termbench | test text | scroll N | tee uart|off |\n"
+            "            pattern bars|hbars|ber|off | fb [gray|rgb565] | test checker|grid|page|ramp|white|black |\n"
             "            fps | bench | verify | wbtest [s] | bl on|off | cmd CC [PP..] | id | rd CC [N]]\n");
 }
 

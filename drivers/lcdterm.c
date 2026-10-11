@@ -43,6 +43,9 @@
 #if defined(CONFIG_BOARD_RP2350)
 #include "drivers/usb_cdc.h"
 #endif
+#if defined(CONFIG_BOARD_ESP32P4)
+#include "drivers/uart.h"
+#endif
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -133,6 +136,7 @@ static bool lcdterm_alive(void) {
     return st != TASK_UNUSED && st != TASK_DEAD;
 }
 
+#if defined(LCDTERM_UMODE)
 /* Hand-rolled per file, as every U-mode driver here does: an LCDTERM_UTEXT
  * function must not call anything outside its own region. */
 __attribute__((always_inline)) static inline long lcdterm_usys_serve_wait(const char *name, uint8_t *buf, long max) {
@@ -240,6 +244,10 @@ int lcdterm_task_start(void) {
     printk("[LCD] terminal running as U-mode task #%d, reachable via chan_call(\"lcdterm\", ...)\n", pid);
     return pid;
 }
+
+#else /* no U-mode text region on this board: the kernel draws (47.7) */
+int lcdterm_task_start(void) { return -1; }
+#endif
 
 uint32_t lcdterm_task_call_count(void) { return g_lcdterm_calls; }
 
@@ -455,6 +463,7 @@ const console_screen_t *lcdterm_console_screen(void) {
     return g_vt_ready ? &g_console_screen : NULL;
 }
 
+#if defined(LCDTERM_UMODE)
 /* `lcdtermisotest`: the lcdterm domain, but a body that stores into kernel
  * memory. Must fault, and the canary must survive -- the check every isolated
  * driver here has (st7735isotest, blkisotest, ...). */
@@ -502,6 +511,13 @@ bool lcdterm_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) {
     palloc_free(ustack, 1);
     return g_lcdterm_intruder_entered;
 }
+
+#else
+bool lcdterm_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) {
+    (void)out_canary; (void)out_exited_clean;
+    return false;
+}
+#endif
 
 /* The `lcd` console device: the screen, plus a tee so a host sees what the
  * screen shows. Where the tee goes is a setting (`lcd tee`), because the

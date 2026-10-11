@@ -71,6 +71,9 @@
 #include "drivers/gps_pps.h"
 #endif
 
+#include "drivers/lcdterm.h"       /* 47.6: the panel terminal, wherever there is a panel */
+#include "drivers/dsi_esp32p4.h"   /* 47.7: the LCD-7B's (empty elsewhere) */
+
 #if defined(CONFIG_BOARD_ESP32P4)
 #include "arch/esp32p4_intr.h"   /* esp32p4_l2_cache_shrink() */
 #include "arch/clk_esp32p4.h"    /* 34.3: the regulator trim */
@@ -80,7 +83,6 @@
 #include "arch/riscv/rp2350/binary_info.h"
 #include "drivers/clocks_rp2350.h"
 #include "drivers/lcd7.h"
-#include "drivers/lcdterm.h"
 #include "drivers/piousb.h"
 #include "drivers/usbkbd_task.h"
 
@@ -128,7 +130,7 @@ static void klog_terminal_sink(char c) {
     console_emit(uart_putc, c);
 }
 
-#if defined(CONFIG_LCD_PCLK_GPIO)
+#if defined(LCDTERM_PRESENT)
 /* 36.6: the same log onto the panel, CRLF included -- a terminal is a
  * terminal whichever glass it is. Screen only: the UART has the sink above. */
 static void klog_lcd_sink(char c) {
@@ -398,8 +400,22 @@ void kernel_main(void) {
 
 #if !defined(CONFIG_LCD_PCLK_GPIO)
     /* 37.3b: no panel, so Lisp's canvas draws into a screen in RAM, which
-     * costs nothing until it is first used (drivers/ramscreen.c). */
+     * costs nothing until it is first used (drivers/ramscreen.c). 47.7: the
+     * LCD-7B replaces it below once its panel is up. */
     console_set_screen(ramscreen_console());
+#endif
+#if defined(CONFIG_BOARD_ESP32P4) && defined(CONFIG_DSI_LCD_RST_GPIO)
+    /* 47.7, plan/phase47_esp32p4_lcd7b_ribbon.md: the LCD-7B's panel and its
+     * frame in PSRAM (after palloc's bulk zone, above), then the terminal on
+     * it -- as the RP2350's below: a screen-only log sink, the console stream
+     * on the `lcd` device (teeing to UART0), the screen hooks. Input stays on
+     * UART0. If the glass does not come up the board keeps its RAM screen
+     * and the serial console, as before 47.7. */
+    if (dsi_lcd_term_start() == 0) {
+        klog_sink_register("lcd", klog_lcd_sink);
+        console_bind_device("lcd");
+        console_set_screen(lcdterm_console_screen());
+    }
 #endif
 
 #if defined(CONFIG_BOARD_RP2350)
@@ -547,6 +563,11 @@ void kernel_main(void) {
     /* 36.6a: the screen terminal moves into its own U-mode task. Until this
      * runs -- and if it fails -- the lcd facade draws from the kernel. */
     (void)lcdterm_task_start();
+#endif
+#if defined(CONFIG_BOARD_ESP32P4) && defined(CONFIG_DSI_LCD_RST_GPIO)
+    /* 47.7: the LCD-7B's frame pacer -- the terminal converted into the
+     * scanned-out frame at most once per frame from here on. */
+    (void)dsi_lcd_term_task_start();
 #endif
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)
     /* 36.8: the USB keyboard, as its own U-mode task over the engine. */
