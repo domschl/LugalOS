@@ -212,7 +212,10 @@ for both roles by itself.
   `[Trap Cache]` line names the reason ("core timeout raw" bit 4 = DBUS
   timeout).
 * Test: `cd tests/hw && uv run test_esp32p4.py --board lcd7b --build ../../build/esp32p4-lcd7b`
-  (30/30; EMAC tests skip; a BME280 sits on the PH2.0 I2C header at 0x76). NANO: `uv run test_esp32p4.py --board nano`.
+  (36/36 since 47.13: backlight, blanking, USB keyboard, touch, RTC and the
+  ribbon's hotkeys included, each skipping where a board lacks it; EMAC tests
+  skip; a BME280 sits on the PH2.0 I2C header at 0x76). NANO: `uv run
+  test_esp32p4.py --board nano` (36/36, the 7B's checks skipping).
 
 ---
 

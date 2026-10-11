@@ -1443,7 +1443,12 @@ void dsi_lcd_command(const char *args) {
             if (g_bl_pwm) {
                 /* What the channel really runs (DUTY_R, 4 fraction bits), and
                  * the timer moving: two reads of its counter. */
-                uint32_t t0 = REG(LEDC_TIMER0_VALUE_REG), t1 = REG(LEDC_TIMER0_VALUE_REG);
+                /* 37 us apart: ~190 counts at 5.12 MHz, never a whole
+                 * 1024-count period, so a running timer always reads two
+                 * different values (back to back can land inside one count). */
+                uint32_t t0 = REG(LEDC_TIMER0_VALUE_REG);
+                time_delay_us(37);
+                uint32_t t1 = REG(LEDC_TIMER0_VALUE_REG);
                 cprintf("lcd:   LEDC ch0: duty %lu/%u at %u Hz (inverted on GPIO%u), timer %lu -> %lu\n",
                         (unsigned long)(REG(LEDC_CH0_DUTY_R_REG) >> 4), 1u << BL_DUTY_RES, BL_PWM_HZ,
                         (unsigned)BL_GPIO, (unsigned long)(t0 & 0xFFFFFu), (unsigned long)(t1 & 0xFFFFFu));

@@ -1103,6 +1103,168 @@ def test_lcd_terminal(b: Board) -> tuple[str, bool, str]:
     return name, True, f"{lps} lines/s, a character {ch} us, colours switch RGB565/GRAY8"
 
 
+# --- 47.8-47.12: the LCD-7B's own features ----------------------------------
+#
+# Each skips where the board has no such feature (the NANO: no panel, no
+# USB-A, no touch), so the suite stays one file for both P4 boards.
+
+def _no_display(out: str) -> bool:
+    return "Unknown" in out or "Unbound" in out or "not found" in out.lower()
+
+
+def test_backlight_pwm(b: Board) -> tuple[str, bool, str]:
+    """47.11: the backlight is the LEDC's PWM on GPIO32. Set to 30 %, the
+    channel's duty in force reads 307/1024 and its timer moves; then back to
+    100 %."""
+    name = "backlight PWM: 30 % is duty 307/1024, timer running (47.11)"
+    out = b.console_session.cmd("lcd backlight 30", deadline=10.0)
+    if _no_display(out):
+        return name, True, "SKIPPED (no display on this board)"
+    out = b.console_session.cmd("lcd backlight", deadline=10.0)
+    b.console_session.cmd("lcd backlight 100", deadline=10.0)
+    m = re.search(r"duty (\d+)/(\d+) at (\d+) Hz .*timer (\d+) -> (\d+)", out)
+    if not m:
+        return name, False, f"no LEDC readback: {out.strip()[-300:]}"
+    duty, full, hz, t0, t1 = (int(g) for g in m.groups())
+    if duty != 307 or full != 1024 or t0 == t1:
+        return name, False, f"duty {duty}/{full} at {hz} Hz, timer {t0} -> {t1}"
+    return name, True, f"duty {duty}/{full} at {hz} Hz, timer {t0} -> {t1}"
+
+
+def test_idle_blank(b: Board) -> tuple[str, bool, str]:
+    """47.11: `lcd blank 2s` blanks the panel after two quiet seconds, and the
+    next input (this suite's command, over the serial line) wakes it without
+    being swallowed -- the command still runs."""
+    name = "idle blanking: blanks when quiet, serial input wakes it (47.11)"
+    def counts(text: str) -> tuple[int, int] | None:
+        m = re.search(r"blanked (\d+) times, woken (\d+)", text)
+        return (int(m.group(1)), int(m.group(2))) if m else None
+    out = b.console_session.cmd("lcd blank 2s", deadline=10.0)
+    before = counts(out)
+    if before is None:
+        if _no_display(out):
+            return name, True, "SKIPPED (no display on this board)"
+        return name, False, f"no blank counters: {out.strip()[-300:]}"
+    time.sleep(4.0)                                   # quiet: nothing typed
+    after = counts(b.console_session.cmd("lcd blank", deadline=10.0))
+    b.console_session.cmd("lcd blank off", deadline=10.0)
+    if after is None:
+        return name, False, "the command after the blank did not run (was it swallowed?)"
+    if after[0] != before[0] + 1 or after[1] != before[1] + 1:
+        return name, False, f"blanked {before[0]} -> {after[0]}, woken {before[1]} -> {after[1]}"
+    return name, True, f"blanked once in 4 s, woken by the next command"
+
+
+def test_usb_keyboard(b: Board) -> tuple[str, bool, str]:
+    """47.9/47.10: the OTG HS core is up and the keyboard on the Type-A port is
+    enumerated as a boot keyboard -- directly, or behind a hub (split
+    transactions). Skips with nothing plugged in."""
+    name = "USB host: a boot keyboard on the Type-A port (47.9/47.10)"
+    out = b.console_session.cmd("usb", deadline=10.0)
+    if _no_display(out) or "no USB host port" in out:
+        return name, True, "SKIPPED (no USB host on this board)"
+    if "OTG HS core" not in out:
+        return name, False, f"controller not up: {out.strip()[-300:]}"
+    if "port empty" in out:
+        return name, True, "SKIPPED (nothing plugged into the Type-A port)"
+    if "BOOT KEYBOARD" not in out:
+        # Enumeration takes a moment after boot (a hub powers its ports).
+        time.sleep(3.0)
+        out = b.console_session.cmd("usb", deadline=10.0)
+    m = re.search(r"addr \d+ (?:at the root|on hub port \d+): ([0-9a-f]{4}:[0-9a-f]{4}) .*BOOT KEYBOARD", out)
+    if not m:
+        return name, False, f"no boot keyboard: {out.strip()[-500:]}"
+    if re.search(r"(\d+) stuck", out) and re.search(r"(\d+) stuck", out).group(1) != "0":
+        return name, False, "a channel got stuck"
+    where = "behind a hub" if "on hub port" in m.group(0) else "at the root"
+    return name, True, f"keyboard {m.group(1)} {where}"
+
+
+def test_touch(b: Board) -> tuple[str, bool, str]:
+    """47.12: the GT911 answered at boot with the panel's resolution, is
+    polled every 20 ms (the poll count moves), and the bus has no errors."""
+    name = "touch: GT911 found, polled, no I2C errors (47.12)"
+    out = b.console_session.cmd("ts", deadline=10.0)
+    if _no_display(out) or "no touch controller" in out or "no GT911" in out:
+        return name, True, "SKIPPED (no touch controller on this board)"
+    m = re.search(r"GT911 at 0x5d, (\d+)x(\d+)", out)
+    p0 = re.search(r"(\d+) polls", out)
+    if not m or not p0:
+        return name, False, f"no GT911: {out.strip()[-300:]}"
+    time.sleep(1.0)
+    out2 = b.console_session.cmd("ts", deadline=10.0)
+    p1 = re.search(r"(\d+) polls", out2)
+    e = re.search(r"(\d+) I2C errors", out2)
+    polls = int(p1.group(1)) - int(p0.group(1)) if p1 else 0
+    if polls < 20 or not e or e.group(1) != "0":
+        return name, False, f"{polls} polls in ~1 s, I2C errors {e.group(1) if e else '?'}"
+    return name, True, f"{m.group(1)}x{m.group(2)}, {polls} polls in ~1 s, 0 I2C errors"
+
+
+def test_rtc(b: Board) -> tuple[str, bool, str]:
+    """47.7 and the DS1307 merge: an RTC module on the I2C header is told
+    apart (DS3231 or DS1307), its oscillator runs, and its time is readable.
+    Skips without a module."""
+    name = "RTC: model identified, oscillator running (47.7)"
+    out = b.console_session.cmd("rtc", deadline=10.0)
+    if "No RTC module" in out or _no_display(out):
+        return name, True, "SKIPPED (no RTC module on the I2C header)"
+    m = re.search(r"RTC Model: (DS\d+)", out)
+    if not m:
+        return name, False, f"no model: {out.strip()[-300:]}"
+    if "Oscillator status: running" not in out:
+        return name, True, f"SKIPPED ({m.group(1)} found, but its time was never set)"
+    t = re.search(r"RTC Time \(UTC\): (\S+ \S+)", out)
+    if not t:
+        return name, False, f"{m.group(1)}: time unreadable"
+    return name, True, f"{m.group(1)}, running, {t.group(1)} UTC"
+
+
+def _ribbon(b: Board) -> tuple[int, int]:
+    out = b.console_session.cmd("ribbon", deadline=10.0)
+    m = re.search(r"Ribbon Status: (\d+) windows, active idx (\d+)", out)
+    return (int(m.group(1)), int(m.group(2))) if m else (-1, -1)
+
+
+def _raw(b: Board, data: bytes, settle: float = 1.0) -> None:
+    b.console_session.ser.write(data)
+    b.console_session.ser.flush()
+    time.sleep(settle)
+    b.console_session.drain(quiet=0.3, deadline=3.0)
+
+
+def test_ribbon_hotkeys(b: Board) -> tuple[str, bool, str]:
+    """47.8: phase 44's window management over the serial line, with the
+    keyboard's own Cmd sequences (kernel/keyseq.c) -- Cmd+Enter opens a second
+    terminal, Cmd+Left / Cmd+Right move the focus, Cmd+W closes the focused
+    terminal, and one window is left."""
+    name = "ribbon: Cmd+Enter, Cmd+Left/Right, Cmd+W over serial (47.8)"
+    n0, _ = _ribbon(b)
+    if n0 < 0:
+        return name, True, "SKIPPED (no ribbon on this board)"
+    if n0 != 1:
+        return name, False, f"{n0} windows at the start, expected 1"
+    steps = []
+    _raw(b, b"\x1b[13;9u", 2.0)                     # Cmd+Enter
+    steps.append(_ribbon(b))
+    _raw(b, b"\x1b[1;9D")                           # Cmd+Left
+    steps.append(_ribbon(b))
+    _raw(b, b"\x1b[1;9C")                           # Cmd+Right
+    steps.append(_ribbon(b))
+    _raw(b, b"\x1b[119;9u", 2.0)                    # Cmd+W: closes terminal 1
+    steps.append(_ribbon(b))
+    want = [(2, 1), (2, 0), (2, 1), (1, 0)]
+    if steps != want:
+        # Leave one window behind for whatever runs next.
+        for _ in range(3):
+            n, _a = _ribbon(b)
+            if n <= 1:
+                break
+            _raw(b, b"\x1b[119;9u", 2.0)
+        return name, False, f"(windows, focus) after each step {steps}, expected {want}"
+    return name, True, "2 windows, focus 1 -> 0 -> 1, closed back to 1"
+
+
 TESTS = [
     test_boots,
     test_proc_readable,
@@ -1134,6 +1296,12 @@ TESTS = [
     test_dsi_pattern,
     test_dsi_framebuffer,
     test_lcd_terminal,
+    test_backlight_pwm,
+    test_idle_blank,
+    test_usb_keyboard,
+    test_touch,
+    test_rtc,
+    test_ribbon_hotkeys,
 ]
 
 

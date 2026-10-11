@@ -345,7 +345,10 @@ Tap a window to focus it, swipe horizontally to scroll the ribbon, and tap the
 minimap to jump. No pointer or text-selection model, and nothing that would
 make touch a requirement.
 
-**47.13 — USB-Serial/JTAG as the 9P link, and the test suite.**
+**47.13 — USB-Serial/JTAG as the 9P link, and the test suite.** **Test suite
+DONE 2026-10-11 (§6.13); the USB-Serial/JTAG 9P link is deferred (owner,
+2026-10-11: the C6 will bring 9P over Wi-Fi, which makes it mostly
+redundant).**
 The P4's USB-Serial/JTAG is the same IP as the C6's (`drivers/usbjtag_esp32c6.c`)
 at a different base. Bring it up as the `link_usb_cdc`-equivalent so
 `tools/p9sync.py` can update `/sd0` without pulling the card, as on the
@@ -1354,6 +1357,48 @@ only in 53 pixels in the menu bar's right corner (x 727–782). The new board
 has an RTC, so its menu bar shows a clock, and the SD icon moves left to
 make room. The tool masks the clock but not the shifted icon. Nothing
 outside the menu bar changed.
+
+## 6.13 What 47.13 did: the LCD-7B in the suite; the second USB-C deferred (2026-10-11)
+
+**Deferred: the P4's USB-Serial/JTAG as a 9P link.** The board's second
+Type-C is a *device* port (the chip's USB-Serial/JTAG), not a second host
+port. What it would buy:
+* 9P on its own wire, without `p9share`'s multiplexing of the console;
+* probably several times the console's ~90 KB/s;
+* a JTAG port.
+
+The owner decided against it for now. `p9sync.py --p4` works over the
+console today, and once the board's ESP32-C6 is up, 9P over Wi-Fi (TCP,
+as on the networked boards) is faster and needs no cable. A USB link would
+then only matter when the network is down, and `p9share` covers that.
+Kept on the ideas list.
+
+**The suite.** `tests/hw/test_esp32p4.py` already ran on the 7B (boot,
+PSRAM, SD, DSI, the terminal), so the 7B's own features joined it as six
+more checks rather than a second file. Each skips where a board lacks the
+feature:
+* **Backlight PWM:** at 30 % the LEDC's duty in force reads 307/1024 and
+  its timer moves. The first version read the counter twice back to back,
+  which can land inside one 0.2 µs count; the reads are now 37 µs apart.
+* **Idle blanking:** `lcd blank 2s`, then 4 quiet seconds. The panel
+  blanks once, and the next serial command wakes it and still runs.
+* **USB host:** a boot keyboard on the Type-A port, at the root or behind
+  a hub. Skips when the port is empty.
+* **Touch:** the GT911 at the panel's resolution, about 50 polls/s, no I2C
+  errors.
+* **RTC:** DS3231 or DS1307 identified, its oscillator running and its time
+  readable. Skips without a module, or when its time was never set.
+* **The ribbon over serial:** Cmd+Enter makes 2 windows, Cmd+Left/Right
+  move the focus 1 → 0 → 1, and Cmd+W leaves 1.
+
+Results:
+* **7B:** 36/36, twice.
+* **NANO:** 36/36. The panel, USB and touch checks skip. Its DS3231 has
+  never had its time set, so the RTC check skips too. The ribbon check
+  passes there as well, on the NANO's RAM screen.
+
+The pictures stay with `tests/hw/lcdterm_shots.py`: `--board lcd7b`, with
+the terminal and ribbon scenarios of 47.6/47.8.
 
 ## 7. Risks
 
