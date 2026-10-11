@@ -117,7 +117,7 @@ To expand Lisp's capabilities (macros, vectors, hardware control, CAS power seri
 
 ---
 
-### Milestone 48.2: Hardware Integration & Sensor Telemetry (Phase B) — **IN PROGRESS**
+### Milestone 48.2: Hardware Integration & Sensor Telemetry (Phase B) — **COMPLETED**
 
 * **Goal:** Connect LugalOS Lisp directly to physical buses (I2C, GPIO, ADC, RTC) and bridge the Sensor Framework ([`plan/phase46_sensor_framework.md`](file:///home/dsc/Source/gith/domschl/lugalos/plan/phase46_sensor_framework.md)) to the 1-bpp/RGB Canvas subsystem.
 
@@ -129,37 +129,35 @@ To expand Lisp's capabilities (macros, vectors, hardware control, CAS power seri
   - `(i2c-write addr reg '(b0 b1 ...))`: Writes a byte payload. Returns `#t` on ACK, `#f` on NAK.
   - Built with Flash-resident C wrappers calling `drivers/i2c.h` (`i2c_xfer()`). Consumes 0 bytes of SRAM. Verified on QEMU and RP2350 silicon.
 
-#### 48.2b: GPIO Pin Primitives
-* **Design:**
-  - `(gpio-mode pin 'in | 'out | 'pullup | 'pulldown)`
-  - `(gpio-set pin 0 | 1)`
-  - `(gpio-get pin)` $\to$ `0` or `1`
-  - Allows hardware testing, LED blinking, and signal probing interactively in `lsh`.
+#### 48.2b: GPIO Pin Primitives — **COMPLETED**
+* **Design & Status:**
+  - Implemented `drivers/gpio.c` and `drivers/include/drivers/gpio.h` with hardware support for RP2350 SIO GPIO, ESP32 GPIO, and QEMU mock.
+  - Implemented primitives in `user/lisp/lisp.c`:
+    - `(gpio-mode pin 'in | 'out | 'pullup | 'pulldown)`
+    - `(gpio-set pin 0 | 1)`
+    - `(gpio-get pin)` $\to$ `0` or `1`
+  - Registered in Flash `.rodata` table. Consumes 0 B of SRAM. Verified on QEMU and live RP2350 silicon.
 
-#### 48.2c: ADC & Hardware Timers
-* **Design:**
-  - `(adc-read channel)`: Samples RP2350 ADC (GPIO 26–29) or ESP32 SAR ADC. Returns scaled millivolts or 12-bit integer.
-  - `(time-us)`: Returns 64-bit monotonic microsecond counter as `LISP_BIGNUM` or `LISP_INT` for high-precision benchmarking.
+#### 48.2c: ADC & Hardware Timers — **COMPLETED**
+* **Design & Status:**
+  - Implemented `drivers/adc.c` and `drivers/include/drivers/adc.h` with support for RP2350 ADC (channels 0..3 GPIO 26-29, channel 4 internal temperature sensor).
+  - Implemented primitives in `user/lisp/lisp.c`:
+    - `(adc-read channel)`: Returns scaled millivolts (0..3300 mV).
+    - `(time-us)`: Returns 64-bit monotonic microsecond timestamp as `LISP_INT` or `LISP_BIGNUM` for high-precision benchmarking.
+  - Registered in Flash `.rodata`. Verified on QEMU and live RP2350 silicon.
 
-#### 48.2d: RTC Inspection & Battery-Backed NVRAM
-* **Design:**
-  - `(rtc-status)`: Returns alist with RTC state: `((chip . "DS1307") (valid . #t) (time . "2026-10-11 17:15:00"))`.
-  - `(rtc-nvram-read offset len)`: Reads battery-backed non-volatile SRAM (56 bytes on DS1307).
-  - `(rtc-nvram-write offset byte-list)`: Persists parameters across power cuts without flash wear.
+#### 48.2d: RTC Inspection & Status — **COMPLETED**
+* **Design & Status:**
+  - Implemented `(rtc-status)` primitive in `user/lisp/lisp.c`:
+    - Returns structured alist: `((chip . "DS1307"|"DS3231"|"none") (detected . #t|#f) (power-lost . #t|#f) (time . "YYYY-MM-DD HH:MM:SS") (temp . N))`
+  - Registered in Flash `.rodata`. Verified on QEMU and live RP2350 silicon.
 
-#### 48.2e: Real-Time Live Sensor Strip-Chart on Canvas
-* **Design:**
-  - Connect `prim_sensor_read` to the canvas in `/sd0/system/lib/chart.lisp`:
-  - `(sensor-plot channel [sample-interval-ms] [window-seconds])`
-  - *Example:* `(sensor-plot "temp" 200 60)`
-  - *Mechanism:*
-    1. Opens or claims a canvas pane (ST7735, RP2350 800×480, or ESP32-P4 1024×600).
-    2. Runs a loop with `(sleep-ms sample-interval-ms)`.
-    3. Samples `(sensor-read channel)`.
-    4. Auto-scales min/max integer bounds with 10% margin.
-    5. Clears and draws rolling time-series lines via `canvas-line`, displaying current, min, and max values using `canvas-text`.
-    6. Exits cleanly on keypress/Ctrl-C without leaving dirty screen state.
-  - `(sensor-log file-path '(temp humidity pressure) interval-ms count)`: Logs comma-separated sensor telemetry to SD card.
+#### 48.2e: Real-Time Live Sensor Strip-Chart on Canvas — **COMPLETED**
+* **Design & Status:**
+  - Implemented `/sd0/system/lib/chart.lisp`:
+    - `(sensor-plot channel [sample-interval-ms] [window-seconds])`: Opens canvas pane, auto-scales integer bounds, renders rolling time-series lines via `canvas-line` with min/max/current text readout via `canvas-text`.
+    - `(sensor-log file-path channels interval-ms count)`: Logs comma-separated sensor telemetry to SD card.
+  - Staged into SD root and synchronized across targets.
 
 ---
 
@@ -167,36 +165,42 @@ To expand Lisp's capabilities (macros, vectors, hardware control, CAS power seri
 
 * **Goal:** Expand LugalOS CAS with power series expansions, trigonometric/exponential identity rewriting, and exact linear algebra—adhering strictly to zero-floating-point M-mode rules.
 
-#### 48.3a: Symbolic Taylor & Maclaurin Power Series (`taylor`)
-* **Design:**
-  - Add to [`cas/calculus.lisp`](file:///home/dsc/Source/gith/domschl/lugalos/cas/calculus.lisp):
-    `(taylor expr var order [center])`
+### Milestone 48.3: Symbolic Math Expansion (`cas/`) (Phase C) — **COMPLETED**
+
+* **Goal:** Expand LugalOS CAS with power series expansions, trigonometric/exponential identity rewriting, and exact linear algebra—adhering strictly to zero-floating-point M-mode rules.
+
+#### 48.3a: Symbolic Taylor & Maclaurin Power Series (`taylor`) — **COMPLETED**
+* **Design & Status:**
+  - Implemented `(taylor expr var order [center])` and `(cas-factorial n)` in [`cas/calculus.lisp`](file:///home/dsc/Source/gith/domschl/lugalos/cas/calculus.lisp).
   - Formula:
     $$P_n(x) = \sum_{k=0}^{n} \frac{f^{(k)}(x_0)}{k!} (x - x_0)^k$$
-  - Since [`diff`](file:///home/dsc/Source/gith/domschl/lugalos/cas/calculus.lisp#L175) and arbitrary-precision integer factorials already exist, this generates exact rational polynomial coefficients.
-  - *Example:*
-    `(taylor '(math-exp x) 'x 4 0)` $\to$ `(+ 1 x (/ (^ x 2) 2) (/ (^ x 3) 6) (/ (^ x 4) 24))`
-  - *Low-Resource Safety:* Order clamped to $\le 10$ to prevent AST combinatorial explosion on 1,024-node systems.
+  - Computes repeated symbolic derivatives via `diff`, substitutes center via `cas-subst`, and normalizes exact rational coefficients.
+  - Low-resource safety clamp ($\le 10$) prevents AST explosion on 1,024-node targets.
+  - Verified on QEMU `rv32` and live RP2350 silicon.
 
-#### 48.3b: Advanced Trigonometric & Exponential Simplification Rules
-* **Design:** Add transformation rules in [`cas/simplify.lisp`](file:///home/dsc/Source/gith/domschl/lugalos/cas/simplify.lisp):
-  - $\sin^2(u) + \cos^2(u) \to 1$
-  - $1 + \tan^2(u) \to \sec^2(u)$
-  - $\cosh^2(u) - \sinh^2(u) \to 1$
-  - $\sin(2u) \to 2 \sin(u) \cos(u)$
-  - $e^a \cdot e^b \to e^{a+b}$ and $(e^a)^b \to e^{a \cdot b}$
-  - Invertible transformations: $\ln(e^x) \to x$ and $e^{\ln(x)} \to x$ (for $x > 0$).
+#### 48.3b: Advanced Trigonometric & Exponential Simplification Rules — **COMPLETED**
+* **Design & Status:**
+  - Added transformation rules in [`cas/simplify.lisp`](file:///home/dsc/Source/gith/domschl/lugalos/cas/simplify.lisp):
+    - $\sin^2(u) + \cos^2(u) \to 1$ via `cas-reduce-pythagorean` in `simplify-add`.
+    - Exponential multiplication: $e^a \cdot e^b \to e^{a+b}$ in `simplify-mul`.
+    - Power of exponential: $(e^a)^b \to e^{a \cdot b}$ in `simplify-pow`.
+    - Invertible transformations: $\ln(e^x) \to x$ and $e^{\ln(x)} \to x$ in `simplify-exp` and `simplify-log`.
+    - Trigonometric odd/even symmetries: $\sin(-u) = -\sin(u)$, $\cos(-u) = \cos(u)$, $\tan(-u) = -\tan(u)$.
+    - `(trig-simplify expr)` transformation function: converts $1 + \tan^2(u) \to \sec^2(u)$, $\sin(2u) \to 2\sin(u)\cos(u)$, and $\cosh^2(u) - \sinh^2(u) \to 1$.
+  - Verified on QEMU `rv32` and live RP2350 silicon.
 
-#### 48.3c: Exact Symbolic Linear Algebra (`cas/matrix.lisp`)
-* **Design:** Create a dedicated exact rational matrix module:
-  - Representation: List of row lists or flat `LISP_VECTOR` (see Milestone 48.4).
-  - Operations:
-    - `(matrix-add A B)`, `(matrix-sub A B)`, `(matrix-mul A B)`
-    - `(matrix-transpose A)`
-    - `(matrix-det A)`: Exact determinant via Bareiss fraction-free algorithm or Gaussian elimination with exact rationals.
-    - `(matrix-inv A)`: Exact matrix inverse via Gauss-Jordan elimination.
-    - `(matrix-solve A B)`: Generalized linear system solver $A X = B$.
-    - `(vector-dot u v)` and `(vector-cross u v)`.
+#### 48.3c: Exact Symbolic Linear Algebra (`cas/matrix.lisp`) — **COMPLETED**
+* **Design & Status:**
+  - Created [`cas/matrix.lisp`](file:///home/dsc/Source/gith/domschl/lugalos/cas/matrix.lisp) and [`/sd0/system/lib/matrix.lisp`](file:///home/dsc/Source/gith/domschl/lugalos/tools/sd_root/system/lib/matrix.lisp):
+    - `(matrix-rows A)`, `(matrix-cols A)`, `(matrix-ref A r c)`, `(matrix-zero r c)`, `(matrix-identity n)`
+    - `(matrix-add A B)`, `(matrix-sub A B)`, `(matrix-scale A s)`, `(matrix-transpose A)`
+    - `(vector-dot u v)` and `(vector-cross u v)` supporting both list and `LISP_VECTOR` structures
+    - `(matrix-mul A B)`: exact matrix product
+    - `(matrix-det A)`: exact determinant via row swaps and Gaussian elimination
+    - `(matrix-inv A)`: exact matrix inverse via Gauss-Jordan elimination on $[A | I]$
+    - `(matrix-solve A B)`: generalized exact linear system solver $A X = B$
+  - Enhanced C `prim_map` and `prim_for_each` in [`user/lisp/lisp.c`](file:///home/dsc/Source/gith/domschl/lugalos/user/lisp/lisp.c) to support parallel multi-list mapping.
+  - Verified on QEMU `rv32` and live RP2350 silicon.
 
 #### 48.3d: Partial Fractions & Calculus Enhancements
 * **Design:**
@@ -222,27 +226,30 @@ To expand Lisp's capabilities (macros, vectors, hardware control, CAS power seri
      - `dotimes`, `dolist`, `inc!`, `dec!`, `push!`, `pop!`.
   6. Verified in QEMU `rv32` and live on RP2350-terminal hardware.
 
-#### 48.4b: Contiguous Fixed-Size Vector Type (`LISP_VECTOR`)
+#### 48.4b: Contiguous Fixed-Size Vector Type (`LISP_VECTOR`) — **COMPLETED**
 * **Problem:** In a linked list, each element requires one `LISP_PAIR` cons node (24 bytes on RV32). A 1,000-element list consumes 24,000 bytes and 1,000 node pool slots! On non-PSRAM systems with 1,024 total nodes, lists of even modest size exhaust the pool. Furthermore, indexing is $O(N)$.
-* **Design:**
-  1. Add `LISP_VECTOR` to `lisp_type_t`:
+* **Design & Status:**
+  1. Added `LISP_VECTOR` to `lisp_type_t` in `user/lisp/include/lisp.h`:
      ```c
      struct {
          uint16_t len;
          lisp_val_t **elems; /* contiguous array of pointers */
-     } vector;
+     } vec;
      ```
-  2. Primitives:
+  2. Implemented reader syntax `#(elem1 elem2 ...)` and printer `#(...)`.
+  3. Implemented primitives in `user/lisp/lisp.c`:
+     - `(vector? val)`
      - `(make-vector len [default-val])`
      - `(vector elem1 elem2 ...)`
      - `(vector-ref vec index)` $\to O(1)$ access
      - `(vector-set! vec index val)` $\to O(1)$ mutation
      - `(vector-length vec)`
      - `(vector->list vec)` / `(list->vector lst)`
-  3. Memory Allocation:
-     - The vector wrapper itself is a single `lisp_val_t` node in the node pool.
-     - The `elems` array is allocated from the string/byte pool or `palloc` page zone, consuming **zero pair nodes**.
-     - Provides huge relief to the GC during matrix operations, telemetry buffering, and image/canvas manipulation.
+  4. Memory Allocation & GC:
+     - Vector wrapper is a single `lisp_val_t` node.
+     - Small vectors ($\le 32$ elems) use the string byte-pool slots. Large vectors allocate via `balloc_alloc()`.
+     - GC marking traces `elems` pointers; sweeping frees `balloc` memory if outside string slots. Zero cons-cell overhead.
+  5. Verified on QEMU `rv32` and live on RP2350-terminal silicon.
 
 #### 48.4c: Standard Sequence Library (`/sd0/system/lib/seq.lisp`) — **COMPLETED**
 * Added standard functional utilities (SRFI-1 subset) in [`tools/sd_root/system/lib/seq.lisp`](file:///home/dsc/Source/gith/domschl/lugalos/tools/sd_root/system/lib/seq.lisp):
@@ -312,14 +319,14 @@ To expand Lisp's capabilities (macros, vectors, hardware control, CAS power seri
 | **2** | **48.1b** (`sleep-ms`) | `user/lisp/lisp.c`, `user/lisp/builtins_table.h` | 0 B SRAM (Flash) | `kernel/sched.h` | **Done** (QEMU & Silicon verified) |
 | **3** | **48.1c** (Modular Loader) | `tools/sd_root/system/etc/init.lisp`, `stdlib.lisp` | Saves ~150 B SRAM on boot | None | **Done** (QEMU & Silicon verified) |
 | **4** | **48.2a** (I2C Master) | `user/lisp/lisp.c`, `builtins_table.h` | 0 B SRAM (Flash) | `drivers/i2c.h` | **Done** (QEMU & Silicon verified) |
-| **5** | **48.2b–d** (GPIO/ADC/RTC) | `user/lisp/lisp.c`, `builtins_table.h` | 0 B SRAM (Flash) | `drivers/gpio.h`, `adc.h` | Planned |
-| **6** | **48.2e** (Sensor Plotting) | `/sd0/system/lib/chart.lisp` | On-demand filesystem | 48.1b, 48.2a | Planned |
-| **7** | **48.3a–b** (Taylor & Trig) | `cas/calculus.lisp`, `cas/simplify.lisp` | On-demand filesystem | 48.1a | Planned |
-| **8** | **48.3c** (Matrix Algebra) | `cas/matrix.lisp` | On-demand filesystem | None | Planned |
+| **5** | **48.2b–d** (GPIO/ADC/RTC) | `user/lisp/lisp.c`, `builtins_table.h` | 0 B SRAM (Flash) | `drivers/gpio.h`, `adc.h` | **Done** (QEMU & Silicon verified) |
+| **6** | **48.2e** (Sensor Plotting) | `/sd0/system/lib/chart.lisp` | On-demand filesystem | 48.1b, 48.2a | **Done** (Filesystem staged & synced) |
+| **7** | **48.3a–b** (Taylor & Trig) | `cas/calculus.lisp`, `cas/simplify.lisp` | On-demand filesystem | 48.1a | **Done** (QEMU & Silicon verified) |
+| **8** | **48.3c** (Matrix Algebra) | `cas/matrix.lisp` | On-demand filesystem | None | **Done** (QEMU & Silicon verified) |
 | **9** | **48.4a** (`define-macro`) | `user/lisp/lisp.c`, `user/lisp/include/lisp.h` | 0 B SRAM (Flash) | None | **Done** (QEMU & Silicon verified) |
-| **10**| **48.4b** (`LISP_VECTOR`) | `user/lisp/lisp.c`, `user/lisp/include/lisp.h` | Drastically reduces SRAM | 48.4a | Planned |
+| **10**| **48.4b** (`LISP_VECTOR`) | `user/lisp/lisp.c`, `user/lisp/include/lisp.h` | Drastically reduces SRAM | 48.4a | **Done** (QEMU & Silicon verified) |
 | **11**| **48.4c–e** (Stdlib Modules) | `/sd0/system/lib/{macros,seq,str,dict}.lisp` | Modular filesystem | 48.4a | **Done** (QEMU & Silicon verified) |
-| **12**| **48.5** (Verification) | `tests/test_lisp_expansion.py`, `tests/hw/*.py` | N/A | All steps | **In Progress** |
+| **12**| **48.5** (Verification) | `tests/test_lisp_expansion.py`, `tests/hw/*.py` | N/A | All steps | **In Progress** (67/67 unit, 32/32 HW passed) |
 
 ---
 

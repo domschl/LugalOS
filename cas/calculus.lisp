@@ -7,6 +7,7 @@
 ;;;   (diff expr var [n])          - Symbolic n-th order derivative d^n/dvar^n
 ;;;   (integrate expr var)         - Indefinite integral with respect to var
 ;;;   (integrate-def expr var a b) - Definite integral: F(b) - F(a)
+;;;   (taylor expr var order [x0]) - Taylor / Maclaurin series expansion
 ;;;
 
 ;;; --- 1. Variable Occurrence & Pattern Helpers ---
@@ -402,3 +403,40 @@
         (let ((Fb (simplify (cas-subst F var b)))
               (Fa (simplify (cas-subst F var a))))
           (simplify (list '- Fb Fa))))))
+
+;;; --- 5. Taylor & Maclaurin Power Series Expansion (taylor) ---
+
+(define (cas-factorial n)
+  (let loop ((k n) (acc 1))
+    (if (<= k 1)
+        acc
+        (loop (- k 1) (* acc k)))))
+
+(define (taylor expr var order . opt-center)
+  (let* ((center (if (null? opt-center) 0 (car opt-center)))
+         ;; Low-resource safety: clamp order <= 10
+         (n (if (> order 10) 10 (if (< order 0) 0 order))))
+    (let loop ((k 0) (cur-d expr) (terms '()))
+      (if (> k n)
+          (if (null? terms)
+              0
+              (simplify (cons '+ (reverse terms))))
+          (let* ((f-val (simplify (cas-subst cur-d var center)))
+                 (fact (cas-factorial k))
+                 (coeff (simplify (list '/ f-val fact))))
+            (if (equal? coeff 0)
+                (loop (+ k 1) (diff cur-d var) terms)
+                (let* ((pow-term
+                        (cond ((= k 0) 1)
+                              ((= k 1)
+                               (if (equal? center 0)
+                                   var
+                                   (list '- var center)))
+                              (else
+                               (if (equal? center 0)
+                                   (list '^ var k)
+                                   (list '^ (list '- var center) k)))))
+                       (term (if (= k 0)
+                                 coeff
+                                 (simplify (list '* coeff pow-term)))))
+                  (loop (+ k 1) (diff cur-d var) (cons term terms)))))))))

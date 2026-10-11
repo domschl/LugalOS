@@ -12,6 +12,7 @@
 ;;;   (simplify-mul args)         - Simplifies multiplicative expressions (* ...)
 ;;;   (simplify-pow base exp)     - Simplifies exponentiation (^ base exp)
 ;;;   (simplify-sqrt x)           - Exact radical extraction & simplification
+;;;   (trig-simplify expr)        - Trigonometric & hyperbolic identity transformation
 ;;;
 
 ;;; --- 1. Total Ordering & Sorting ---
@@ -164,6 +165,8 @@
          (let ((b (cadr base))
                (p1 (caddr base)))
            (simplify (list '^ b (simplify (list '* p1 exp))))))
+        ((and (pair? base) (eq? (car base) 'exp))
+         (simplify (list 'exp (simplify (list '* (cadr base) exp)))))
         ((and (pair? base) (eq? (car base) '*) (integer? exp))
          (simplify (cons '* (map (lambda (f) (list '^ f exp)) (cdr base)))))
         ((equal? exp 1/2)
@@ -178,6 +181,22 @@
       (cons (cadr f) (caddr f))
       (cons f 1)))
 
+(define (cas-collect-exps factors)
+  (let loop ((rest factors) (exp-args '()) (other '()))
+    (if (null? rest)
+        (cond ((null? exp-args) other)
+              ((null? (cdr exp-args)) (cons (list 'exp (car exp-args)) other))
+              (else
+               (let ((sum (simplify (cons '+ exp-args))))
+                 (if (equal? sum 0)
+                     other
+                     (cons (list 'exp sum) other)))))
+        (let ((f (car rest)))
+          (cond ((and (pair? f) (eq? (car f) 'exp))
+                 (loop (cdr rest) (cons (cadr f) exp-args) other))
+                (else
+                 (loop (cdr rest) exp-args (cons f other))))))))
+
 (define (simplify-mul raw-args)
   (let* ((args (cas-flatten-op '* raw-args))
          (num-parts '())
@@ -187,11 +206,12 @@
                     (set! num-parts (cons x num-parts))
                     (set! var-parts (cons x var-parts))))
               args)
-    (let ((c-prod (apply * (cons 1 num-parts))))
+    (let* ((c-prod (apply * (cons 1 num-parts)))
+           (var-parts-exp (cas-collect-exps var-parts)))
       (cond ((= c-prod 0) 0)
-            ((null? var-parts) c-prod)
+            ((null? var-parts-exp) c-prod)
             (else
-             (let* ((decomposed (map cas-mul-decompose-factor var-parts))
+             (let* ((decomposed (map cas-mul-decompose-factor var-parts-exp))
                     (sorted (cas-sort decomposed (lambda (p1 p2) (cas-expr<? (car p1) (car p2)))))
                     (collected-rev
                      (let collect-factors ((sorted-pairs (cdr sorted))
@@ -241,6 +261,52 @@
             (cons 1 t)))
       (cons 1 t)))
 
+(define (cas-is-sq-trig? base trig-op)
+  (and (pair? base)
+       (or (eq? (car base) '^) (eq? (car base) 'expt))
+       (pair? (cdr base))
+       (pair? (cadr base))
+       (eq? (car (cadr base)) trig-op)
+       (pair? (cddr base))
+       (equal? (caddr base) 2)
+       (pair? (cdr (cadr base)))
+       (cadr (cadr base))))
+
+(define (cas-reduce-pythagorean pairs)
+  (let loop ((rest pairs) (seen '()))
+    (if (null? rest)
+        (cons 0 pairs)
+        (let* ((p (car rest))
+               (c (car p))
+               (u-sin (cas-is-sq-trig? (cdr p) 'sin)))
+          (if u-sin
+              (let ((match-cos (let find-cos ((l pairs))
+                                 (if (null? l) #f
+                                     (let ((p2 (car l)))
+                                       (if (and (not (eq? p2 p))
+                                                (equal? (car p2) c)
+                                                (equal? (cas-is-sq-trig? (cdr p2) 'cos) u-sin))
+                                           p2
+                                           (find-cos (cdr l))))))))
+                (if match-cos
+                    (let ((remaining (let rem ((l pairs))
+                                       (cond ((null? l) '())
+                                             ((or (eq? (car l) p) (eq? (car l) match-cos))
+                                              (rem (cdr l)))
+                                             (else (cons (car l) (rem (cdr l))))))))
+                      (let ((next-red (cas-reduce-pythagorean remaining)))
+                        (cons (+ c (car next-red)) (cdr next-red))))
+                    (loop (cdr rest) (cons p seen))))
+              (loop (cdr rest) (cons p seen)))))))
+
+(define (cas-pair->term p)
+  (let ((c (car p))
+        (b (cdr p)))
+    (cond ((equal? c 1) b)
+          ((and (pair? b) (eq? (car b) '*))
+           (cons '* (cons c (cdr b))))
+          (else (list '* c b)))))
+
 (define (simplify-add raw-args)
   (let* ((args (cas-flatten-op '+ raw-args))
          (num-parts '())
@@ -284,14 +350,17 @@
                                                  (cons (cons '* (cons sc (cdr current-base))) acc))
                                                 (else (cons (list '* sc current-base) acc)))))
                                      (collect-terms (cdr sorted-pairs) b c new-acc)))))))))
-                 (terms (reverse collected-rev)))
-            (cond ((null? terms) c-sum)
-                  ((= c-sum 0)
-                   (if (null? (cdr terms))
-                       (car terms)
-                       (cons '+ terms)))
+                 (terms (reverse collected-rev))
+                 (pyth (cas-reduce-pythagorean (map cas-add-decompose-term terms)))
+                 (final-c-sum (+ c-sum (car pyth)))
+                 (final-terms (map cas-pair->term (cdr pyth))))
+            (cond ((null? final-terms) final-c-sum)
+                  ((= final-c-sum 0)
+                   (if (null? (cdr final-terms))
+                       (car final-terms)
+                       (cons '+ final-terms)))
                   (else
-                   (cons '+ (cons c-sum terms)))))))))
+                   (cons '+ (cons final-c-sum final-terms)))))))))
 
 ;;; --- 7. Subtraction & Division ---
 
@@ -313,8 +382,19 @@
 
 ;;; --- 8. Transcendental & Special Functions ---
 
+(define (cas-is-negative? x)
+  (cond ((number? x) (< x 0))
+        ((and (pair? x) (eq? (car x) '*) (pair? (cdr x)) (number? (cadr x)))
+         (< (cadr x) 0))
+        (else #f)))
+
+(define (cas-negate x)
+  (simplify (list '* -1 x)))
+
 (define (simplify-exp x)
   (cond ((equal? x 0) 1)
+        ((and (pair? x) (eq? (car x) 'log))
+         (cadr x))
         (else (list 'exp x))))
 
 (define (simplify-log x)
@@ -325,14 +405,20 @@
 
 (define (simplify-sin x)
   (cond ((equal? x 0) 0)
+        ((cas-is-negative? x)
+         (simplify (list '* -1 (list 'sin (cas-negate x)))))
         (else (list 'sin x))))
 
 (define (simplify-cos x)
   (cond ((equal? x 0) 1)
+        ((cas-is-negative? x)
+         (list 'cos (cas-negate x)))
         (else (list 'cos x))))
 
 (define (simplify-tan x)
   (cond ((equal? x 0) 0)
+        ((cas-is-negative? x)
+         (simplify (list '* -1 (list 'tan (cas-negate x)))))
         (else (list 'tan x))))
 
 (define (simplify-abs x)
@@ -398,3 +484,66 @@
           (if (equal? cur next)
               cur
               (loop next (- count 1)))))))
+
+;;; --- 10. Trigonometric & Hyperbolic Transformation Rules (trig-simplify) ---
+
+(define (trig-simplify expr)
+  (let ((s (simplify expr)))
+    (cond ((not (pair? s)) s)
+          ;; sin(2u) -> 2 sin(u) cos(u)
+          ((and (eq? (car s) 'sin)
+                (pair? (cdr s))
+                (pair? (cadr s))
+                (eq? (car (cadr s)) '*)
+                (pair? (cdr (cadr s)))
+                (equal? (cadr (cadr s)) 2))
+           (let ((u (simplify (cons '* (cddr (cadr s))))))
+             (simplify (list '* 2 (list 'sin u) (list 'cos u)))))
+          ;; 1 + tan^2(u) -> sec^2(u)
+          ((and (eq? (car s) '+)
+                (member 1 (cdr s)))
+           (let ((tan-sq (let find-tan ((l (cdr s)))
+                           (if (null? l) #f
+                               (if (cas-is-sq-trig? (car l) 'tan)
+                                   (car l)
+                                   (find-tan (cdr l)))))))
+             (if tan-sq
+                 (let* ((u (cas-is-sq-trig? tan-sq 'tan))
+                        (other (let rem ((l (cdr s)) (r-1 #f) (r-t #f))
+                                 (cond ((null? l) '())
+                                       ((and (not r-1) (equal? (car l) 1))
+                                        (rem (cdr l) #t r-t))
+                                       ((and (not r-t) (equal? (car l) tan-sq))
+                                        (rem (cdr l) r-1 #t))
+                                       (else (cons (car l) (rem (cdr l) r-1 r-t)))))))
+                   (simplify (cons '+ (cons (list '^ (list 'sec u) 2) other))))
+                 (cons '+ (map trig-simplify (cdr s))))))
+          ;; cosh^2(u) - sinh^2(u) -> 1
+          ((eq? (car s) '+)
+           (let loop ((terms (cdr s)) (cosh-t #f) (sinh-t #f))
+             (cond ((null? terms)
+                    (if (and cosh-t sinh-t)
+                        (let ((u (cas-is-sq-trig? cosh-t 'cosh)))
+                          (if (and u (equal? u (cas-is-sq-trig? (caddr sinh-t) 'sinh)))
+                              (let ((other (let rem ((l (cdr s)) (r-c #f) (r-s #f))
+                                             (cond ((null? l) '())
+                                                   ((and (not r-c) (equal? (car l) cosh-t))
+                                                    (rem (cdr l) #t r-s))
+                                                   ((and (not r-s) (equal? (car l) sinh-t))
+                                                    (rem (cdr l) r-c #t))
+                                                   (else (cons (car l) (rem (cdr l) r-c r-s)))))))
+                                (simplify (cons '+ (cons 1 other))))
+                              (cons '+ (map trig-simplify (cdr s)))))
+                        (cons '+ (map trig-simplify (cdr s)))))
+                   (else
+                    (let ((t (car terms)))
+                      (cond ((cas-is-sq-trig? t 'cosh)
+                             (loop (cdr terms) t sinh-t))
+                            ((and (pair? t) (eq? (car t) '*)
+                                  (pair? (cdr t)) (equal? (cadr t) -1)
+                                  (pair? (cddr t)) (cas-is-sq-trig? (caddr t) 'sinh))
+                             (loop (cdr terms) cosh-t t))
+                            (else
+                             (loop (cdr terms) cosh-t sinh-t))))))))
+          (else
+           (cons (car s) (map trig-simplify (cdr s)))))))

@@ -91,11 +91,54 @@ def run_tests() -> int:
             ";; --- 10. Raw I2C Bus Primitives ---\n"
             "(i2c-read 85 0 2)\n"
             "(i2c-write 85 0 '(1 2))\n"
+            ";; --- 11. Vectors (48.4b) ---\n"
+            "(vector? #(1 2 3))\n"
+            "(vector? '(1 2 3))\n"
+            "(make-vector 3 42)\n"
+            "(vector 10 20 30)\n"
+            "(vector-length #(10 20 30))\n"
+            "(vector-ref #(10 20 30) 1)\n"
+            "(let ((v (vector 1 2 3))) (vector-set! v 1 99) v)\n"
+            "(vector->list #(1 2 3))\n"
+            "(list->vector '(4 5 6))\n"
+            ";; --- 12. GPIO, ADC, Timers & RTC (48.2b-d) ---\n"
+            "(gpio-mode 0 'out)\n"
+            "(gpio-set 0 1)\n"
+            "(gpio-get 0)\n"
+            "(> (time-us) 0)\n"
+            "(number? (adc-read 0))\n"
+            "(pair? (rtc-status))\n"
+            ";; --- 13. CAS Taylor Series (48.3a) ---\n"
+            "(load \"/sd0/cas/simplify.lisp\")\n"
+            "(load \"/sd0/cas/poly.lisp\")\n"
+            "(load \"/sd0/cas/calculus.lisp\")\n"
+            "(taylor '(exp x) 'x 4 0)\n"
+            "(taylor '(sin x) 'x 3 0)\n"
+            ";; --- 14. CAS Trig & Exp Simplification (48.3b) ---\n"
+            "(simplify '(+ (^ (sin x) 2) (^ (cos x) 2)))\n"
+            "(simplify '(* (exp a) (exp b)))\n"
+            "(simplify '(^ (exp x) 2))\n"
+            "(simplify '(exp (log x)))\n"
+            "(simplify '(sin (* -1 x)))\n"
+            "(simplify '(cos (* -1 x)))\n"
+            "(trig-simplify '(sin (* 2 x)))\n"
+            "(trig-simplify '(+ 1 (^ (tan x) 2)))\n"
+            "(trig-simplify '(- (^ (cosh x) 2) (^ (sinh x) 2)))\n"
+            ";; --- 15. Exact Matrix Algebra (48.3c) ---\n"
+            "(require 'matrix)\n"
+            "(matrix-add '((1 2) (3 4)) '((10 20) (30 40)))\n"
+            "(matrix-mul '((1 2) (3 4)) '((2 0) (1 2)))\n"
+            "(matrix-transpose '((1 2 3) (4 5 6)))\n"
+            "(matrix-det '((1 2) (3 4)))\n"
+            "(matrix-inv '((1 2) (3 4)))\n"
+            "(matrix-solve '((1 2) (3 4)) '(5 11))\n"
+            "(vector-dot '(1 2 3) '(4 5 6))\n"
+            "(vector-cross '(1 0 0) '(0 1 0))\n"
             "(display \"TEST_PHASE48_DONE\\n\")\n"
             "exit\n"
         )
 
-        ok, raw_log = session.send_and_expect(test_script, r"TEST_PHASE48_DONE", timeout=12.0)
+        ok, raw_log = session.send_and_expect(test_script, r"TEST_PHASE48_DONE", timeout=20.0)
         if not ok:
             print("FAILED: Did not receive TEST_PHASE48_DONE sentinel.")
             print("Log snippet:\n", raw_log[-2000:] if len(raw_log) > 2000 else raw_log)
@@ -135,6 +178,45 @@ def run_tests() -> int:
             ("plist-get", r"=> \"rv32\""),
             ("i2c-read nak returns #f", r"=> #f"),
             ("i2c-write nak returns #f", r"=> #f"),
+            # Vectors
+            ("vector? on vector", r"=> #t"),
+            ("vector? on list", r"=> #f"),
+            ("make-vector", r"=> #\(42 42 42\)"),
+            ("vector constructor", r"=> #\(10 20 30\)"),
+            ("vector-length", r"=> 3"),
+            ("vector-ref", r"=> 20"),
+            ("vector-set!", r"=> #\(1 99 3\)"),
+            ("vector->list", r"=> \(1 2 3\)"),
+            ("list->vector", r"=> #\(4 5 6\)"),
+            # GPIO, Timers, ADC, RTC
+            ("gpio-mode", r"=> #t"),
+            ("gpio-set", r"=> #t"),
+            ("gpio-get", r"=> [01]"),
+            ("time-us > 0", r"=> #t"),
+            ("adc-read is number", r"=> #t"),
+            ("rtc-status is pair", r"=> #t"),
+            # CAS Taylor series
+            ("taylor exp(x)", r"=> \(\+ 1 x \(\* 1/2 \(\^ x 2\)\) \(\* 1/6 \(\^ x 3\)\) \(\* 1/24 \(\^ x 4\)\)\)"),
+            ("taylor sin(x)", r"=> \(\+ x \(\* -1/6 \(\^ x 3\)\)\)"),
+            # CAS Trig / Exp
+            ("sin^2 + cos^2 = 1", r"=> 1"),
+            ("exp(a)*exp(b) = exp(a+b)", r"=> \(exp \(\+ a b\)\)"),
+            ("(exp(x))^2 = exp(2x)", r"=> \(exp \(\* 2 x\)\)"),
+            ("exp(log(x)) = x", r"=> x"),
+            ("sin(-x) = -sin(x)", r"=> \(\* -1 \(sin x\)\)"),
+            ("cos(-x) = cos(x)", r"=> \(cos x\)"),
+            ("trig-simplify sin(2x)", r"=> \(\* 2"),
+            ("trig-simplify 1 + tan^2(x)", r"=> \(\^ \(sec x\) 2\)"),
+            ("trig-simplify cosh^2(x) - sinh^2(x)", r"=> 1"),
+            # Matrix Algebra
+            ("matrix-add", r"=> \(\(11 22\) \(33 44\)\)"),
+            ("matrix-mul", r"=> \(\(4 4\) \(10 8\)\)"),
+            ("matrix-transpose", r"=> \(\(1 4\) \(2 5\) \(3 6\)\)"),
+            ("matrix-det", r"=> -2"),
+            ("matrix-inv", r"=> \(\(-2 1\) \(3/2 -1/2\)\)"),
+            ("matrix-solve", r"=> \(1 2\)"),
+            ("vector-dot", r"=> 32"),
+            ("vector-cross", r"=> \(0 0 1\)"),
         ]
 
         print("\n--- Test Results ---")

@@ -15,7 +15,8 @@ typedef enum {
     LISP_LAMBDA,
     LISP_MACRO,
     LISP_BIGNUM,
-    LISP_RATIO
+    LISP_RATIO,
+    LISP_VECTOR
 } lisp_type_t;
 
 struct lisp_val;
@@ -51,6 +52,10 @@ typedef struct lisp_val {
             struct lisp_val *num; /* LISP_INT or LISP_BIGNUM */
             struct lisp_val *den; /* LISP_INT or LISP_BIGNUM (> 1) */
         } ratio;
+        struct {
+            uint32_t len;
+            struct lisp_val **elems;
+        } vec;
         lisp_prim_fn prim;
         struct {
             struct lisp_val *params;
@@ -81,6 +86,7 @@ lisp_val_t *make_str(const char *str);
 lisp_val_t *make_sym(const char *sym);
 lisp_val_t *make_pair(lisp_val_t *car, lisp_val_t *cdr);
 lisp_val_t *make_prim(lisp_prim_fn fn);
+lisp_val_t *make_vector(uint32_t len, lisp_val_t *fill);
 
 /* Safe argument-list accessors for primitives (see user/lisp/lisp.c for the
  * rationale). Every primitive should read its arguments through these rather

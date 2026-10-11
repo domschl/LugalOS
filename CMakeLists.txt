@@ -723,6 +723,8 @@ set(SOURCES
     drivers/i2c_bus.c
     drivers/i2c_rtc.c
     drivers/at24c32.c
+    drivers/gpio.c
+    drivers/adc.c
     drivers/loopback_net.c
     drivers/uart_net.c
     drivers/usb_cdc.c

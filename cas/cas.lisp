@@ -10,3 +10,4 @@
 (load (string-append *cas-dir* "solve.lisp"))
 (load (string-append *cas-dir* "format.lisp"))
 (load (string-append *cas-dir* "plot.lisp"))
+(load (string-append *cas-dir* "matrix.lisp"))

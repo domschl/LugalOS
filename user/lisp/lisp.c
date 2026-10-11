@@ -14,6 +14,9 @@
 #include "kernel/shell.h"
 #include "kernel/time.h"
 #include "kernel/palloc.h"   /* BULK_BSS */
+#include "kernel/balloc.h"
+#include "drivers/gpio.h"
+#include "drivers/adc.h"
 #include "drivers/psram.h"
 #include "drivers/i2c_rtc.h"
 #include "drivers/i2c_bus.h"
@@ -608,6 +611,18 @@ static void gc_drain(int *sp) {
                  * already this collection's root. */
                 if (v->u.lambda.env) gc_push(sp, v->u.lambda.env);
                 break;
+            case LISP_VECTOR:
+                if (v->u.vec.elems) {
+                    if (string_slot_index((const char *)v->u.vec.elems) >= 0) {
+                        gc_mark_string_slot((const char *)v->u.vec.elems);
+                    }
+                    for (uint32_t j = 0; j < v->u.vec.len; j++) {
+                        if (v->u.vec.elems[j]) {
+                            gc_push(sp, v->u.vec.elems[j]);
+                        }
+                    }
+                }
+                break;
             default:
                 break; /* LISP_INT, LISP_PRIMITIVE, LISP_NIL: no children */
         }
@@ -798,6 +813,13 @@ static void gc_collect_from_timed(uintptr_t stack_top) {
     for (int i = 0; i < node_pool_idx; i++) {
         uint8_t bit = (uint8_t)(1u << (i % 8));
         if (!(node_mark_bits[i / 8] & bit)) {
+            if (node_pool[i].type == LISP_VECTOR) {
+                if (node_pool[i].u.vec.elems &&
+                    string_slot_index((const char *)node_pool[i].u.vec.elems) < 0) {
+                    balloc_free(node_pool[i].u.vec.elems);
+                    node_pool[i].u.vec.elems = NULL;
+                }
+            }
             node_pool[i].u.pair.cdr = node_free_list;
             node_free_list = &node_pool[i];
             node_free_count++;
@@ -1103,6 +1125,55 @@ lisp_val_t *make_pair(lisp_val_t *car, lisp_val_t *cdr) {
 lisp_val_t *make_prim(lisp_prim_fn fn) {
     lisp_val_t *v = alloc_node(LISP_PRIMITIVE);
     v->u.prim = fn;
+    return v;
+}
+
+static lisp_val_t **alloc_vec_elems(uint32_t len) {
+    if (len == 0) return NULL;
+    uint32_t bytes = len * (uint32_t)sizeof(lisp_val_t *);
+    lisp_val_t **elems = NULL;
+    if (bytes <= STRING_SMALL_LEN) {
+        int idx = take_small();
+        if (idx < 0) idx = take_large();
+        if (idx < 0 && gc_collect_in_form()) {
+            idx = take_small();
+            if (idx < 0) idx = take_large();
+        }
+        if (idx >= 0) elems = (lisp_val_t **)(void *)slot_at(idx);
+    } else if (bytes <= STRING_SLOT_LEN) {
+        int idx = take_large();
+        if (idx < 0 && gc_collect_in_form()) {
+            idx = take_large();
+        }
+        if (idx >= 0) elems = (lisp_val_t **)(void *)slot_at(idx);
+    } else {
+        elems = (lisp_val_t **)balloc_alloc(bytes);
+        if (!elems && gc_collect_in_form()) {
+            elems = (lisp_val_t **)balloc_alloc(bytes);
+        }
+    }
+    return elems;
+}
+
+lisp_val_t *make_vector(uint32_t len, lisp_val_t *fill) {
+    if (len > 65535u) {
+        printk("[Lisp Error] make-vector: length %u exceeds maximum 65535\n", (unsigned)len);
+        return &nil_val;
+    }
+    lisp_val_t *v = alloc_node(LISP_VECTOR);
+    v->u.vec.len = len;
+    v->u.vec.elems = NULL;
+    if (len > 0) {
+        lisp_val_t **elems = alloc_vec_elems(len);
+        if (!elems) {
+            printk("[Lisp Error] make-vector: out of memory for vector of length %u\n", (unsigned)len);
+            return &nil_val;
+        }
+        for (uint32_t i = 0; i < len; i++) {
+            elems[i] = fill ? fill : &nil_val;
+        }
+        v->u.vec.elems = elems;
+    }
     return v;
 }
 
@@ -2328,6 +2399,12 @@ static bool lisp_equal_p(lisp_val_t *a, lisp_val_t *b) {
             return strcmp(a->u.str, b->u.str) == 0;
         case LISP_SYMBOL:
             return a == b || streq(a->u.sym, b->u.sym);
+        case LISP_VECTOR:
+            if (a->u.vec.len != b->u.vec.len) return false;
+            for (uint32_t i = 0; i < a->u.vec.len; i++) {
+                if (!lisp_equal_p(a->u.vec.elems[i], b->u.vec.elems[i])) return false;
+            }
+            return true;
         default:
             return a == b;
     }
@@ -3349,17 +3426,52 @@ static lisp_val_t *prim_list_ref(lisp_val_t *args, lisp_val_t *env) {
 }
 
 static lisp_val_t *prim_map(lisp_val_t *args, lisp_val_t *env) {
-    lisp_val_t *fn = lisp_list_ref(args, 0);
-    lisp_val_t *lst = lisp_list_ref(args, 1);
-    if (!fn) return &nil_val;
+    if (!args || args->type != LISP_PAIR) return &nil_val;
+    lisp_val_t *fn = args->u.pair.car;
+    lisp_val_t *lists = args->u.pair.cdr;
+    if (!lists || lists->type != LISP_PAIR || !fn) return &nil_val;
+
+    /* Fast path for single list */
+    if (lists->u.pair.cdr == &nil_val) {
+        lisp_val_t *lst = lists->u.pair.car;
+        lisp_val_t *head = &nil_val;
+        lisp_val_t *tail = NULL;
+        int guard = 0;
+        for (lisp_val_t *c = lst; c && c->type == LISP_PAIR && guard < NODE_POOL_SIZE; c = c->u.pair.cdr, guard++) {
+            lisp_val_t *call_args = make_pair(c->u.pair.car, &nil_val);
+            lisp_val_t *result = lisp_apply(fn, call_args, env);
+            lisp_val_t *new_p = make_pair(result, &nil_val);
+            if (!tail) { head = new_p; tail = new_p; } else { tail->u.pair.cdr = new_p; tail = new_p; }
+        }
+        return head;
+    }
+
+    /* Multi-list map: collect list pointers */
+    int num_lists = 0;
+    lisp_val_t *curs[16];
+    for (lisp_val_t *c = lists; c && c->type == LISP_PAIR && num_lists < 16; c = c->u.pair.cdr) {
+        curs[num_lists++] = c->u.pair.car;
+    }
+
     lisp_val_t *head = &nil_val;
     lisp_val_t *tail = NULL;
     int guard = 0;
-    for (lisp_val_t *c = lst; c && c->type == LISP_PAIR && guard < NODE_POOL_SIZE; c = c->u.pair.cdr, guard++) {
-        lisp_val_t *call_args = make_pair(c->u.pair.car, &nil_val);
+    while (guard < NODE_POOL_SIZE) {
+        for (int i = 0; i < num_lists; i++) {
+            if (!curs[i] || curs[i]->type != LISP_PAIR) return head;
+        }
+        lisp_val_t *call_args = &nil_val;
+        lisp_val_t *arg_tail = NULL;
+        for (int i = 0; i < num_lists; i++) {
+            lisp_val_t *arg_p = make_pair(curs[i]->u.pair.car, &nil_val);
+            if (!arg_tail) { call_args = arg_p; arg_tail = arg_p; }
+            else { arg_tail->u.pair.cdr = arg_p; arg_tail = arg_p; }
+            curs[i] = curs[i]->u.pair.cdr;
+        }
         lisp_val_t *result = lisp_apply(fn, call_args, env);
         lisp_val_t *new_p = make_pair(result, &nil_val);
         if (!tail) { head = new_p; tail = new_p; } else { tail->u.pair.cdr = new_p; tail = new_p; }
+        guard++;
     }
     return head;
 }
@@ -3382,13 +3494,43 @@ static lisp_val_t *prim_filter(lisp_val_t *args, lisp_val_t *env) {
 }
 
 static lisp_val_t *prim_for_each(lisp_val_t *args, lisp_val_t *env) {
-    lisp_val_t *fn = lisp_list_ref(args, 0);
-    lisp_val_t *lst = lisp_list_ref(args, 1);
-    if (!fn) return &nil_val;
+    if (!args || args->type != LISP_PAIR) return &nil_val;
+    lisp_val_t *fn = args->u.pair.car;
+    lisp_val_t *lists = args->u.pair.cdr;
+    if (!lists || lists->type != LISP_PAIR || !fn) return &nil_val;
+
+    /* Fast path for single list */
+    if (lists->u.pair.cdr == &nil_val) {
+        lisp_val_t *lst = lists->u.pair.car;
+        int guard = 0;
+        for (lisp_val_t *c = lst; c && c->type == LISP_PAIR && guard < NODE_POOL_SIZE; c = c->u.pair.cdr, guard++) {
+            lisp_val_t *call_args = make_pair(c->u.pair.car, &nil_val);
+            lisp_apply(fn, call_args, env);
+        }
+        return &nil_val;
+    }
+
+    int num_lists = 0;
+    lisp_val_t *curs[16];
+    for (lisp_val_t *c = lists; c && c->type == LISP_PAIR && num_lists < 16; c = c->u.pair.cdr) {
+        curs[num_lists++] = c->u.pair.car;
+    }
+
     int guard = 0;
-    for (lisp_val_t *c = lst; c && c->type == LISP_PAIR && guard < NODE_POOL_SIZE; c = c->u.pair.cdr, guard++) {
-        lisp_val_t *call_args = make_pair(c->u.pair.car, &nil_val);
+    while (guard < NODE_POOL_SIZE) {
+        for (int i = 0; i < num_lists; i++) {
+            if (!curs[i] || curs[i]->type != LISP_PAIR) return &nil_val;
+        }
+        lisp_val_t *call_args = &nil_val;
+        lisp_val_t *arg_tail = NULL;
+        for (int i = 0; i < num_lists; i++) {
+            lisp_val_t *arg_p = make_pair(curs[i]->u.pair.car, &nil_val);
+            if (!arg_tail) { call_args = arg_p; arg_tail = arg_p; }
+            else { arg_tail->u.pair.cdr = arg_p; arg_tail = arg_p; }
+            curs[i] = curs[i]->u.pair.cdr;
+        }
         lisp_apply(fn, call_args, env);
+        guard++;
     }
     return &nil_val;
 }
@@ -3877,6 +4019,203 @@ static lisp_val_t *prim_poke(lisp_val_t *args, lisp_val_t *env) {
     uint32_t val = (uint32_t)a2->u.i;
     *(volatile uint32_t *)addr = val;
     return &true_val;
+}
+
+/* --- Milestone 48.4b Vector Primitives --- */
+static lisp_val_t *prim_vector_p(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *v = lisp_list_ref(args, 0);
+    return (v && v->type == LISP_VECTOR) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_make_vector(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    long len = arg_int(args, 0, -1);
+    if (len < 0) {
+        printk("[Lisp Error] make-vector: length must be non-negative\n");
+        return &nil_val;
+    }
+    lisp_val_t *fill = lisp_list_ref(args, 1);
+    if (!fill) fill = &nil_val;
+    return make_vector((uint32_t)len, fill);
+}
+
+static lisp_val_t *prim_vector(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    int len = lisp_list_len(args);
+    lisp_val_t *v = make_vector((uint32_t)len, &nil_val);
+    if (!v || v->type != LISP_VECTOR) return &nil_val;
+    int idx = 0;
+    for (lisp_val_t *c = args; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
+        v->u.vec.elems[idx++] = c->u.pair.car;
+    }
+    return v;
+}
+
+static lisp_val_t *prim_vector_length(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *v = lisp_list_ref(args, 0);
+    if (!v || v->type != LISP_VECTOR) {
+        printk("[Lisp Error] vector-length: expected vector\n");
+        return &nil_val;
+    }
+    return make_int((long)v->u.vec.len);
+}
+
+static lisp_val_t *prim_vector_ref(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *v = lisp_list_ref(args, 0);
+    long idx = arg_int(args, 1, -1);
+    if (!v || v->type != LISP_VECTOR) {
+        printk("[Lisp Error] vector-ref: expected vector\n");
+        return &nil_val;
+    }
+    if (idx < 0 || (uint32_t)idx >= v->u.vec.len) {
+        printk("[Lisp Error] vector-ref: index %ld out of bounds (length %u)\n", idx, (unsigned)v->u.vec.len);
+        return &nil_val;
+    }
+    return v->u.vec.elems[idx];
+}
+
+static lisp_val_t *prim_vector_set(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *v = lisp_list_ref(args, 0);
+    long idx = arg_int(args, 1, -1);
+    lisp_val_t *val = lisp_list_ref(args, 2);
+    if (!v || v->type != LISP_VECTOR) {
+        printk("[Lisp Error] vector-set!: expected vector\n");
+        return &nil_val;
+    }
+    if (idx < 0 || (uint32_t)idx >= v->u.vec.len) {
+        printk("[Lisp Error] vector-set!: index %ld out of bounds (length %u)\n", idx, (unsigned)v->u.vec.len);
+        return &nil_val;
+    }
+    v->u.vec.elems[idx] = val ? val : &nil_val;
+    return val ? val : &nil_val;
+}
+
+static lisp_val_t *prim_vector_to_list(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *v = lisp_list_ref(args, 0);
+    if (!v || v->type != LISP_VECTOR) {
+        printk("[Lisp Error] vector->list: expected vector\n");
+        return &nil_val;
+    }
+    lisp_val_t *head = &nil_val;
+    for (int i = (int)v->u.vec.len - 1; i >= 0; i--) {
+        head = make_pair(v->u.vec.elems[i], head);
+    }
+    return head;
+}
+
+static lisp_val_t *prim_list_to_vector(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *lst = lisp_list_ref(args, 0);
+    if (lst && lst->type != LISP_PAIR && lst->type != LISP_NIL) {
+        printk("[Lisp Error] list->vector: expected list\n");
+        return &nil_val;
+    }
+    int len = lisp_list_len(lst);
+    lisp_val_t *v = make_vector((uint32_t)len, &nil_val);
+    if (!v || v->type != LISP_VECTOR) return &nil_val;
+    int idx = 0;
+    for (lisp_val_t *c = lst; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
+        v->u.vec.elems[idx++] = c->u.pair.car;
+    }
+    return v;
+}
+
+/* --- Milestone 48.2b–d GPIO, ADC, Timers & RTC Primitives --- */
+static lisp_val_t *prim_gpio_mode(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    long pin = arg_int(args, 0, -1);
+    if (pin < 0 || pin > 47) return &false_val;
+    lisp_val_t *m = lisp_list_ref(args, 1);
+    int mode = GPIO_MODE_IN;
+    if (m) {
+        const char *name = (m->type == LISP_SYMBOL) ? m->u.sym :
+                           (m->type == LISP_STRING) ? m->u.str : "";
+        if (streq(name, "out")) mode = GPIO_MODE_OUT;
+        else if (streq(name, "pullup")) mode = GPIO_MODE_PULLUP;
+        else if (streq(name, "pulldown")) mode = GPIO_MODE_PULLDOWN;
+        else if (streq(name, "in")) mode = GPIO_MODE_IN;
+        else if (m->type == LISP_INT) mode = (int)m->u.i;
+    }
+    return (gpio_set_mode((uint32_t)pin, mode) == 0) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_gpio_set(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    long pin = arg_int(args, 0, -1);
+    if (pin < 0 || pin > 47) return &false_val;
+    lisp_val_t *v = lisp_list_ref(args, 1);
+    int val = 0;
+    if (v == &true_val) val = 1;
+    else if (v && v->type == LISP_INT && v->u.i != 0) val = 1;
+    return (gpio_write_pin((uint32_t)pin, val) == 0) ? &true_val : &false_val;
+}
+
+static lisp_val_t *prim_gpio_get(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    long pin = arg_int(args, 0, -1);
+    if (pin < 0 || pin > 47) return &false_val;
+    int val = gpio_read_pin((uint32_t)pin);
+    if (val < 0) return &false_val;
+    return make_int(val);
+}
+
+static lisp_val_t *prim_time_us(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    uint64_t u = time_get_us();
+#if __SIZEOF_LONG__ == 8
+    if (u <= (uint64_t)LONG_MAX) return make_int((long)u);
+#else
+    if (u <= (uint64_t)LONG_MAX) return make_int((long)u);
+#endif
+    int cap;
+    uint32_t *limbs = alloc_limbs(2, &cap);
+    if (!limbs) return make_int(0);
+    limbs[0] = (uint32_t)(u & 0xFFFFFFFFUL);
+    limbs[1] = (uint32_t)(u >> 32);
+    return bn_demote_if_possible(1, 2, cap, limbs);
+}
+
+static lisp_val_t *prim_adc_read(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    long ch = arg_int(args, 0, 0);
+    if (ch < 0 || ch > 4) {
+        printk("[Lisp Error] adc-read: channel must be 0..4\n");
+        return &nil_val;
+    }
+    int mv = adc_read_channel_mv((uint32_t)ch);
+    if (mv < 0) return &false_val;
+    return make_int(mv);
+}
+
+static lisp_val_t *prim_rtc_status(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    bool detected = i2c_rtc_is_detected();
+    const char *model = i2c_rtc_get_model_name();
+    bool lost_pwr = i2c_rtc_lost_power();
+    rtc_time_t tm;
+    bool tm_ok = i2c_rtc_read_time(&tm);
+    int temp_c = 0;
+    bool temp_ok = i2c_rtc_read_temperature_c(&temp_c);
+
+    lisp_val_t *res = &nil_val;
+    if (temp_ok) {
+        res = make_pair(make_pair(make_sym("temp"), make_int(temp_c)), res);
+    }
+    if (tm_ok) {
+        char buf[32];
+        ksnprintf(buf, sizeof(buf), "%04u-%02u-%02u %02u:%02u:%02u",
+                  tm.year, tm.month, tm.day, tm.hour, tm.min, tm.sec);
+        res = make_pair(make_pair(make_sym("time"), make_str(buf)), res);
+    }
+    res = make_pair(make_pair(make_sym("power-lost"), lost_pwr ? &true_val : &false_val), res);
+    res = make_pair(make_pair(make_sym("detected"), detected ? &true_val : &false_val), res);
+    res = make_pair(make_pair(make_sym("chip"), make_str(model ? model : "none")), res);
+    return res;
 }
 
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
@@ -6577,6 +6916,15 @@ void lisp_print(lisp_val_t *val) {
         case LISP_MACRO:
             cprintf("<#macro>");
             break;
+        case LISP_VECTOR: {
+            cprintf("#(");
+            for (uint32_t j = 0; j < val->u.vec.len; j++) {
+                if (j > 0) cprintf(" ");
+                lisp_print(val->u.vec.elems[j]);
+            }
+            cprintf(")");
+            break;
+        }
         case LISP_PAIR: {
             /* S4 (plan/phase13_lisp_engine_extensions.md): now that `cons`
              * exists, an improper (dotted) pair -- (cons 1 2), whose cdr is
@@ -6674,6 +7022,37 @@ lisp_val_t *lisp_read(const char **str) {
         if (**str == '"') (*str)++; // skip closing quote
         buf[i] = '\0';
         return make_str(buf);
+    }
+
+    /* Vector Syntax #(elem1 elem2 ...) */
+    if (**str == '#' && (*str)[1] == '(') {
+        (*str) += 2; // skip '#('
+        skip_whitespace(str);
+        if (**str == ')') {
+            (*str)++;
+            return make_vector(0, &nil_val);
+        }
+        lisp_val_t *head = NULL;
+        lisp_val_t *tail = NULL;
+        int count = 0;
+        while (**str != ')' && **str != '\0') {
+            lisp_val_t *elem = lisp_read(str);
+            if (!elem) break;
+            lisp_val_t *cell = make_pair(elem, &nil_val);
+            if (!head) { head = cell; tail = cell; }
+            else { tail->u.pair.cdr = cell; tail = cell; }
+            count++;
+            skip_whitespace(str);
+        }
+        if (**str == ')') (*str)++;
+        lisp_val_t *vec = make_vector((uint32_t)count, &nil_val);
+        if (vec && vec->type == LISP_VECTOR && vec->u.vec.elems) {
+            int idx = 0;
+            for (lisp_val_t *c = head; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
+                vec->u.vec.elems[idx++] = c->u.pair.car;
+            }
+        }
+        return vec;
     }
 
     if (**str == '(') {
@@ -6997,7 +7376,8 @@ tail_call:
     if (!val) return &nil_val;
 
     if (val->type == LISP_INT || val->type == LISP_STRING || val->type == LISP_PRIMITIVE ||
-        val->type == LISP_LAMBDA || val->type == LISP_MACRO || val->type == LISP_BIGNUM || val->type == LISP_RATIO) {
+        val->type == LISP_LAMBDA || val->type == LISP_MACRO || val->type == LISP_BIGNUM ||
+        val->type == LISP_RATIO || val->type == LISP_VECTOR) {
         return val;
     }
 
