@@ -4,6 +4,13 @@
 Walks a local staging tree (such as build/rp2350-terminal/sd_root) and synchronizes
 directories and files to a remote 9P mount on a connected LugalOS target (typically /sd0),
 preserving existing files not present in the local source.
+
+An ESP32-P4 board has no second port: `--p4 nano|lcd7b` puts 9P on its console
+wire (`p9share`, SLIP-framed beside the console), syncs, and takes it off again.
+The port comes from tools/p4run.py's board map and is opened only the way
+p4run opens it -- a plain open resets the LCD-7B.
+
+    tools/p9sync.py --p4 lcd7b --src build/esp32p4-lcd7b/sd_root
 """
 
 from __future__ import annotations
@@ -13,6 +20,7 @@ import glob
 import os
 from pathlib import Path
 import sys
+import time
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "host" / "p9lib" / "src"))
@@ -28,6 +36,23 @@ def find_default_serial() -> str | None:
         if os.path.exists(cand):
             return cand
     return None
+
+
+def p4_shell(port: str, line: str) -> None:
+    """One console line on a P4 board, through p4run's open (no reset)."""
+    import p4run
+    ser = p4run.open_console(port)
+    try:
+        ser.timeout = 0.5
+        ser.write(line.encode() + b"\r")
+        ser.flush()
+        end = time.time() + 5.0
+        out = b""
+        while time.time() < end and b"lsh>" not in out.split(line.encode(), 1)[-1]:
+            out += ser.read(4096)
+    finally:
+        p4run.close_console(ser)
+    time.sleep(0.3)
 
 
 def find_default_src() -> Path | None:
@@ -143,6 +168,11 @@ def main() -> int:
         help="serial baud rate (default: 115200)",
     )
     parser.add_argument(
+        "--p4",
+        metavar="BOARD",
+        help="an ESP32-P4 board (nano|lcd7b): 9P on its console wire via p9share",
+    )
+    parser.add_argument(
         "--src",
         type=Path,
         default=find_default_src(),
@@ -171,13 +201,23 @@ def main() -> int:
 
     args = parser.parse_args()
 
+    if args.p4:
+        sys.path.insert(0, str(REPO_ROOT / "tools"))
+        import p4run
+        args.serial, _ = p4run.board_ports(args.p4)
     if not args.serial:
         sys.exit("Error: no 9P serial port specified or auto-detected.")
     if not args.src or not args.src.is_dir():
         sys.exit(f"Error: source directory '{args.src}' does not exist.")
 
+    if args.p4:
+        p4_shell(args.serial, "p9share")
     print(f"Connecting to 9P server on {args.serial}...")
-    client = p9lib.connect_serial(args.serial, baudrate=args.baud)
+    if args.p4:
+        client = p9lib.connect_open_serial(p4run.open_console(args.serial), framing="slip",
+                                           timeout=20.0, closer=p4run.close_console)
+    else:
+        client = p9lib.connect_serial(args.serial, baudrate=args.baud)
     try:
         with p9lib.Session(client, aname="/") as sess:
             print(f"Syncing local '{args.src}' -> remote '{args.dst}' {'[DRY RUN]' if args.dry_run else ''}...")
@@ -195,6 +235,12 @@ def main() -> int:
             print(f"  Files unchanged:     {skipped}")
     finally:
         client.close()
+        if client.console_text:
+            print("Console output during the sync:")
+            print(client.console_text.decode("utf-8", "replace").rstrip())
+        if args.p4:
+            time.sleep(0.3)
+            p4_shell(args.serial, "p9share off")
 
     return 0
 

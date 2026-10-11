@@ -264,7 +264,7 @@ coloured pair (amber, green phosphor) switches the frame to RGB565 (§6.6:
 proven, a runtime switch). The command keeps the RP2350's meaning and syntax
 (RGB565 hex).
 
-**47.8 — Ribbon, multi-terminal, multi-canvas.**
+**47.8 — Ribbon, multi-terminal, multi-canvas.** **DONE 2026-10-11 (§6.9).**
 Phase 44's whole surface: `ribbon`, `canvas`, vterms, the minimap, and four
 PSRAM canvas slots. They are now 1024-wide, i.e. 77 KB each, so the slot size
 becomes a function of `w`. Drive it from the UART console (`ribbon focus`,
@@ -1004,7 +1004,7 @@ input.
   (section 10), not in a separate `lcd7b_esp32p4.c`: it needs the frame,
   the format switch and the scan-out control that file owns.
 
-## 6.9 What 47.8 found so far (2026-10-11)
+## 6.9 What 47.8 found: phase 44 on the 7B, over the serial line (2026-10-11)
 
 **The shared wire reordered bytes.** 47.8's screenshot tool fetches its
 shots over 9P on the console's own wire (`p9share`). Large reads failed
@@ -1028,6 +1028,54 @@ batches (phase 23 X7), and both are now fixed in `drivers/uart_esp32p4.c`
   whoever drains them.
 * **Measured:** 10 of 10 fetches of 3 × 77 KB, against 1 of 8 before.
   QEMU 484/484 (rv64-smp included), NANO 30/30, 7B 30/30.
+
+**Phase 44's surface on the 7B, driven over UART0.** The serial line carries
+the keyboard's own Cmd hotkeys: `kernel/keyseq.c` decodes xterm's modifier
+form (`ESC [ 1 ; 9 D` is Cmd+Left) and CSI-u (`ESC [ cp ; 9 u` is Cmd+cp).
+So the whole ribbon is reachable before USB host exists, including from
+inside `chess>`. `tests/hw/lcdterm_shots.py --scenario ribbon` plays phase
+44's `verify_multicanvas` / `verify_switch` cases on either board:
+1. Rule 90 on terminal 0's canvas.
+2. A second terminal (Cmd+Enter), with rule 30 on its canvas.
+3. `(chess)` on terminal 0's canvas, with Lisp at the `chess>` prompt.
+4. Navigation away from the board and back, checked pixel for pixel.
+5. `canvas close` / `canvas split`, then Cmd+Ctrl+Right.
+6. `lorenz`, then a CAS `plot`.
+7. Cleanup: terminal 1 exits, and exactly one window must remain.
+
+Windows are addressed by what the last `ribbon` listing says (`FOCUS:`),
+not by fixed numbers, since phase 44 inserts a terminal right of the
+focused window and a canvas right of its terminal. The phase 44 artefacts
+named in the done-condition (`verify_*.py`, `shot_*.png`) are not in the
+tree; this scenario is their replacement, run on both boards.
+* **Result:** both boards pass. The two runs match step for step apart from
+  width (window columns 48/38/58 at 800 px, 62/49/75 at 1024 px, D7).
+  Getting `/sd0/demos` and `/sd0/cas` onto the 7B needed
+  `p9sync.py --p4 lcd7b`.
+
+**Three phase 44 defects, found by that scenario and fixed in shared code:**
+* **An exiting terminal left its canvas behind.** The canvas stayed in the
+  ribbon with no owner, and the next terminal given that vterm number
+  inherited it, picture and all. `close_window()` now takes a terminal's
+  canvas with it.
+* **`canvas close` closed another terminal's canvas.** It happened when the
+  asking terminal had none left (chess's `quit` had already closed it):
+  `screen_set_layout_vterm(TEXT)` used `canvas_for()`'s drawing fallbacks
+  (the focused canvas, else the first). Closing now only ever means the
+  asking terminal's own canvas.
+* **Chess drew its board over whatever was on the canvas** (rule 90's
+  triangles). It now fills the canvas first (`'F' 0`).
+
+**Two tool fixes on the way:**
+* **p9lib and the shared wire.** On a shared wire, console text between
+  frames (a kernel log line during a `Tcreate`) is skipped and kept in
+  `P9Client.console_text`, instead of failing the session.
+* **Opening the port without resetting the LCD-7B.**
+  `p9lib.connect_open_serial()` takes a port the caller opened, plus the
+  caller's close function: the LCD-7B resets on pyserial's own open (RTS is
+  its EN) and on the next open after a plain close. `p9sync.py --p4`, the
+  shot tool and the P4 suite's 9P test now go through `p4run`'s
+  open/close. The suite had been rebooting the board after its 9P test.
 
 **The RP2350 panel turned by 180°** (owner, 2026-10-11: the glass was
 upside down relative to the board's inscriptions). `CONFIG_LCD_ROTATE_180`

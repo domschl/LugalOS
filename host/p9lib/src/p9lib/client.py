@@ -193,6 +193,7 @@ class P9Client:
         self._sock = sock
         self._next_tag = 1
         self._framing = framing
+        self.console_text = bytearray()   # console bytes between SLIP frames (shared wire)
         self._pending = bytearray()  # unprocessed bytes, SLIP framing only
         # What Tversion last agreed with this server. Until version() runs
         # there is no connection, so the request default stands in.
@@ -252,12 +253,20 @@ class P9Client:
         resp_body) without checking the tag -- _roundtrip() does that,
         since it may need to read (and discard) more than one frame."""
         if self._framing == "slip":
-            rest = self._recv_slip_frame()
-            if len(rest) < 7:
-                raise P9Error(f"malformed reply: {len(rest)} bytes < 7")
-            size = struct.unpack_from("<I", rest, 0)[0]
-            if size != len(rest):
-                raise P9Error(f"declared size {size} != decoded length {len(rest)}")
+            # On a wire the console shares (`p9share`, drivers/uart_net.c's
+            # demux) the board's console text goes out raw between our
+            # frames -- a kernel log line while a Tcreate runs, say -- and
+            # a SLIP decoder hands over everything between two ENDs. A reply
+            # declares its own length; what does not is that text, kept in
+            # console_text and skipped (47.8). Nothing else may fail this
+            # check: a split reply was the TX path reordering bytes, fixed
+            # on the board (drivers/uart_esp32p4.c), not something to skip.
+            while True:
+                rest = self._recv_slip_frame()
+                if len(rest) >= 7 and struct.unpack_from("<I", rest, 0)[0] == len(rest):
+                    break
+                self.console_text += rest
+                del self.console_text[:-4096]
             resp_type, resp_tag = struct.unpack_from("<BH", rest, 4)
             resp_body = rest[7:]
         else:

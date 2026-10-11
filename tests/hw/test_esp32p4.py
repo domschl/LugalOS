@@ -58,7 +58,7 @@ import serial
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "host" / "p9lib" / "src"))
 import p9lib  # noqa: E402
-from p9lib import connect_serial, connect_tcp  # noqa: E402
+from p9lib import connect_tcp  # noqa: E402
 
 BUILD_DIR = REPO_ROOT / "build" / "esp32p4"   # --build overrides
 
@@ -464,8 +464,11 @@ def test_9p_over_the_wire(b: Board) -> tuple[str, bool, str]:
         c.close()   # the client needs the port to itself
         time.sleep(0.3)
         try:
-            client = connect_serial(b.console, baudrate=BAUD, framing="slip",
-                                    timeout=20.0)
+            # p4run's open and close: a plain pyserial open raises RTS (EN on
+            # the LCD-7B), and a plain close resets it at the next open.
+            p4run = _load_p4run()
+            client = p9lib.connect_open_serial(p4run.open_console(b.console), framing="slip",
+                                               timeout=20.0, closer=p4run.close_console)
         except Exception as e:
             return name, False, f"could not attach a 9P client: {type(e).__name__}: {e}"
         try:

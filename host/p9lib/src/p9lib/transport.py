@@ -23,8 +23,9 @@ class SerialSocketAdapter:
     has exactly what it asked for, which silently breaks (a struct.unpack
     on a too-long buffer) if a naive adapter over-delivers past `n`."""
 
-    def __init__(self, ser) -> None:
+    def __init__(self, ser, closer=None) -> None:
         self._s = ser
+        self._closer = closer       # how the port is let go of, if not plainly
 
     def sendall(self, data: bytes) -> None:
         self._s.write(data)
@@ -43,7 +44,10 @@ class SerialSocketAdapter:
         self._s.timeout = t
 
     def close(self) -> None:
-        self._s.close()
+        if self._closer:
+            self._closer(self._s)
+        else:
+            self._s.close()
 
 
 def connect_unix(path: str, timeout: float = 5.0, framing: str = "raw") -> P9Client:
@@ -116,6 +120,23 @@ def connect_serial(port: str, baudrate: int = 115200, timeout: float = 30.0,
     client = P9Client(adapter, framing=framing)
     if warm_up and not warm_up_9p(client, adapter, settle_timeout=timeout):
         raise P9Error(f"no Rversion from {port} after warm-up retries")
+    return client
+
+
+def connect_open_serial(ser, framing: str = "raw", timeout: float = 30.0,
+                        warm_up: bool = True, closer=None) -> P9Client:
+    """A serial port the caller has already opened, and the caller's way of
+    closing it. For boards where *how* a port is opened and closed matters:
+    the ESP32-P4 LCD-7B resets on a plain pyserial open (RTS is its EN) and
+    on the next open after a plain close, so tools/p4run.py's open_console()
+    and close_console() are passed in here (47.8). Nothing about a board is
+    assumed in this library."""
+    ser.timeout = timeout
+    ser.reset_input_buffer()
+    adapter = SerialSocketAdapter(ser, closer=closer)
+    client = P9Client(adapter, framing=framing)
+    if warm_up and not warm_up_9p(client, adapter, settle_timeout=timeout):
+        raise P9Error(f"no Rversion from {getattr(ser, 'port', ser)} after warm-up retries")
     return client
 
 

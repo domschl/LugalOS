@@ -32,7 +32,7 @@ from .client import (
     slip_decode,
     slip_encode,
 )
-from .transport import SerialSocketAdapter, connect_serial, connect_tcp, connect_unix, warm_up_9p
+from .transport import SerialSocketAdapter, connect_open_serial, connect_serial, connect_tcp, connect_unix, warm_up_9p
 
 __all__ = [
     "P9Client",
@@ -53,6 +53,7 @@ __all__ = [
     "slip_encode",
     "slip_decode",
     "connect_unix",
+    "connect_open_serial",
     "connect_serial",
     "connect_tcp",
     "warm_up_9p",

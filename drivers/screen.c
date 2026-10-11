@@ -913,15 +913,11 @@ LCDTERM_UTEXT bool screen_set_layout_vterm(screen_t *scr, uint8_t vid, unsigned 
     if (has_canvas(scr)) store_save(scr);
 
     if (layout == SCREEN_LAYOUT_TEXT) {
+        /* Only the asking terminal's own canvas. canvas_for()'s fallbacks
+         * (the focused canvas, else the first) suit drawing, not closing:
+         * `canvas close` from a terminal whose canvas had already gone --
+         * chess's `quit` closes it -- closed another terminal's (47.8). */
         int cid = screen_find_canvas_by_vterm(scr, vid);
-        if (cid < 0 && scr->ribbon.active_idx < scr->ribbon.count &&
-            scr->ribbon.wins[scr->ribbon.active_idx].type == RIBBON_WIN_CANVAS) {
-            cid = (int)scr->ribbon.wins[scr->ribbon.active_idx].vterm_id;
-        }
-        if (cid < 0) {
-            int c_any = ribbon_find_canvas(&scr->ribbon);
-            if (c_any >= 0) cid = (int)scr->ribbon.wins[c_any].vterm_id;
-        }
 
         if (cid >= 0) {
             int c_idx = ribbon_find_canvas_slot(&scr->ribbon, (uint8_t)cid);
@@ -1106,15 +1102,27 @@ LCDTERM_UTEXT static uint8_t window_vterm(const screen_t *scr, uint8_t idx) {
 
 /* Closes window `idx` ('C', 'Q'). The root terminal's window stays: its
  * shell is the boot shell, and without a window it had nowhere to draw.
- * Neither does the last window go. */
+ * Neither does the last window go. A terminal takes its canvas with it: left
+ * behind, it stayed in the ribbon with no terminal to draw on it or close it,
+ * and the next terminal given that vterm number inherited it, picture and all
+ * (47.8). */
 LCDTERM_UTEXT static bool close_window(screen_t *scr, uint8_t idx, uint8_t *reply) {
     if (idx >= scr->ribbon.count || scr->ribbon.count <= 1) return false;
     uint8_t closed_type = scr->ribbon.wins[idx].type;
     uint8_t closed_id = scr->ribbon.wins[idx].vterm_id;
     if (closed_type == RIBBON_WIN_TERM && closed_id == 0) return false;
     if (!ribbon_remove(&scr->ribbon, idx)) return false;
-    if (closed_type == RIBBON_WIN_TERM) screen_free_term(scr, closed_id);
-    else if (closed_type == RIBBON_WIN_CANVAS) screen_free_canvas(scr, closed_id);
+    if (closed_type == RIBBON_WIN_TERM) {
+        int cid = screen_find_canvas_by_vterm(scr, closed_id);
+        if (cid >= 0) {
+            int c_idx = ribbon_find_canvas_slot(&scr->ribbon, (uint8_t)cid);
+            if (c_idx >= 0) (void)ribbon_remove(&scr->ribbon, (uint8_t)c_idx);
+            screen_free_canvas(scr, (uint8_t)cid);
+        }
+        screen_free_term(scr, closed_id);
+    } else if (closed_type == RIBBON_WIN_CANVAS) {
+        screen_free_canvas(scr, closed_id);
+    }
     if (ribbon_find_canvas(&scr->ribbon) < 0) scr->layout = SCREEN_LAYOUT_TEXT;
     if (scr->ribbon.count == 1 && scr->ribbon.wins[0].type == RIBBON_WIN_TERM) {
         scr->ribbon.wins[0].cols = scr->full_cols;

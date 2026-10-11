@@ -255,6 +255,10 @@ uv run --project host/p9lib python3 tools/p9sync.py \
     --src build/rp2350-terminal/sd_root \
     --dst /sd0
 ```
+* **ESP32-P4 boards** (one console wire, no 9P port): `tools/p9sync.py --p4 lcd7b
+  --src build/esp32p4-lcd7b/sd_root` (or `--p4 nano`) puts 9P on the console with
+  `p9share`, syncs over SLIP and turns it off again, opening the port only the way
+  `p4run.py` does (a plain pyserial open or close resets the LCD-7B).
 * **Preservation Policy:** `tools/p9sync.py` is additive and idempotent. It creates missing directories (e.g. `/sd0/cas/`), updates files that differ in size, and **strictly preserves user files** (such as `/sd0/CHESS/` games and `/sd0/SYSTEM/HISTORY.LIS`).
 
 ### Flashing & Running ESP32-P4-NANO
@@ -304,6 +308,15 @@ Located in `tests/hw/` (safe to run speculatively; skips rather than fails when 
   `--out DIR` records, `--compare OLDDIR` diffs pixel by pixel (clock masked).
   Record before a change to the terminal/screen/ribbon code, compare after.
   `/sd0` keeps 8.3 names only -- long names sharing a prefix collide.
+  47.8: `--scenario ribbon` plays phase 44's multi-terminal / multi-canvas
+  checks (two terminals, rule 30 + rule 90, chess, canvas close/reopen, moves,
+  Lorenz, a CAS plot) with the keyboard's own Cmd sequences over the console,
+  checks the chess board survives navigation pixel for pixel and that exits
+  leave one window; `--board lcd7b` runs either scenario on the LCD-7B
+  (needs `/sd0/demos` and `/sd0/cas`: sync them with `p9sync.py --p4 lcd7b`).
+* From a serial line the Cmd hotkeys are `ESC [ 1 ; 9 C/D` (Cmd+Right/Left,
+  `;13` adds Ctrl) and `ESC [ cp ; 9 u` (Cmd+character, e.g. Cmd+1 is
+  `ESC [ 49 ; 9 u`) -- kernel/keyseq.h.
 * With an ESP32-P4-NANO attached, run `test_rp2350.py --no-uart`: its CP2102 is
   the NANO's console, not an RP2350 UART dongle.
 

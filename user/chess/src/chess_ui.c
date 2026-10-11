@@ -2796,6 +2796,10 @@ static void canvas_board_begin(const Position *pos) {
         (void)console_canvas(req, 6, reply);
         req[0] = 'K'; req[1] = 1;               /* 37.5a: the board fits only this split */
         (void)console_canvas(req, 2, reply);
+        /* A terminal's canvas keeps what was drawn on it (38.8's stores):
+         * after `(ca 90 4)` the board sat on rule 90's triangles (47.8). */
+        req[0] = 'F'; req[1] = 0;
+        (void)console_canvas(req, 2, reply);
     }
     canvas_board_draw(pos);
 }
