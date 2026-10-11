@@ -988,6 +988,13 @@ busy console, at about 205 lines/s of 55 characters.
   lines/s (≈ 91 KB/s, the wire's full rate), against 2,000 lines/s with no
   tee at all.
 
+**The menu bar's clock.** The owner added a DS3231 module to the 7B's I2C
+header (2026-10-11). Fresh, its oscillator-stop flag was set, so the kernel
+refused its time and the bar showed no clock, as designed. `date` with the
+host's local time set it and cleared OSF. After a reboot the kernel synced
+from it, and the owner saw HH:MM in the bar, moving on at the minute without
+input.
+
 **Not done here, deliberately:**
 * **The U-mode `lcdterm` task on the P4.** It needs a code region (32 KB of
   SRAM, or PMP over the XIP flash window). The P4 terminal draws from the

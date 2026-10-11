@@ -160,6 +160,11 @@ for both roles by itself.
   refuses to generate if hw_ver1 and hw_ver3 disagree.
   I2C on GPIO7/8 (PH2.0 header): ES8311 0x18, ES7210 0x40, GT911 0x5D;
   `i2c rd ADDR [REG..] N` reads registers raw (e.g. `i2c rd 5d 81 40 4` → "911").
+  A DS3231 RTC module (0x68, with its AT24C32 EEPROM at 0x57) sits on the 7B's
+  PH2.0 I2C header too (2026-10-11): the kernel syncs from it at boot, and the
+  menu bar shows HH:MM once the time is valid. A fresh module has OSF set and
+  is ignored ("time is unverified") until `date YYYY-MM-DD HH:MM:SS` (local
+  time) sets it, which also clears OSF.
 * Display (47.4, `drivers/dsi_esp32p4.c`): EK79007 over 2-lane MIPI-DSI at
   1 Gbps. It comes up on the first `lcd pattern [bars|hbars|ber|off]`, not at
   boot. `lcd` reports the link, `lcd bl on|off` the backlight (GPIO32,
