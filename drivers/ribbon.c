@@ -61,7 +61,7 @@ LCDTERM_UTEXT void ribbon_layout(ribbon_t *r) {
     for (uint8_t i = 0; i < r->count; i++) {
         ribbon_win_t *w = &r->wins[i];
         uint8_t cols = w->cols;
-        if (w->type == RIBBON_WIN_TERM && cols < 20) cols = 20;
+        if (w->type == RIBBON_WIN_TERM && cols < RIBBON_TERM_MIN_COLS) cols = RIBBON_TERM_MIN_COLS;
         else if (cols < 1) cols = 1;
         uint8_t max_cols = (uint8_t)(r->screen_w / 8u - 2u);
         if (cols > max_cols) cols = max_cols;
@@ -215,17 +215,20 @@ LCDTERM_UTEXT bool ribbon_resize_active(ribbon_t *r, bool expand) {
     ribbon_win_t *w = &r->wins[r->active_idx];
     uint8_t cur = w->cols;
     uint8_t next = cur;
-    uint8_t max_cols = (uint8_t)(r->screen_w / 8u - 2u);
+    uint8_t max_cols = RIBBON_COLS_FULL(r->screen_w);
+    uint8_t c2_5 = RIBBON_COLS_TWO_FIFTHS(r->screen_w);
+    uint8_t c1_2 = RIBBON_COLS_HALF(r->screen_w);
+    uint8_t c2_3 = RIBBON_COLS_TWO_THIRDS(r->screen_w);
 
     if (expand) {
-        if (cur < RIBBON_COLS_38) next = RIBBON_COLS_38;
-        else if (cur < RIBBON_COLS_48) next = RIBBON_COLS_48;
-        else if (cur < RIBBON_COLS_64) next = RIBBON_COLS_64;
+        if (cur < c2_5) next = c2_5;
+        else if (cur < c1_2) next = c1_2;
+        else if (cur < c2_3) next = c2_3;
         else if (cur < max_cols) next = max_cols;
     } else {
-        if (cur > RIBBON_COLS_64) next = RIBBON_COLS_64;
-        else if (cur > RIBBON_COLS_48) next = RIBBON_COLS_48;
-        else if (cur > RIBBON_COLS_38) next = RIBBON_COLS_38;
+        if (cur > c2_3) next = c2_3;
+        else if (cur > c1_2) next = c1_2;
+        else if (cur > c2_5) next = c2_5;
     }
 
     if (next == cur) return false;
@@ -425,6 +428,45 @@ void ribbon_selftest(void) {
               removed && r.count == 2, &fails);
     st_expect("remaining windows re-laid out: win0 rx0=4, win1 rx0=404",
               r.wins[0].rx0 == 4 && r.wins[1].rx0 == 404 && r.wins[1].rx1 == 794, &fails);
+
+    /* 8. D7, 47.6: the presets from the width. Today's numbers at 800 (the
+     * RP2350 must keep them), the LCD-7B's at 1024; and at both widths every
+     * split -- a text share and the rest of the pair -- fills the screen to
+     * the pixel, as does one full window. */
+    st_expect("D7 at 800: full 98, 2/3 64, half 48, 2/5 38",
+              RIBBON_COLS_FULL(800) == 98 && RIBBON_COLS_TWO_THIRDS(800) == 64 &&
+              RIBBON_COLS_HALF(800) == 48 && RIBBON_COLS_TWO_FIFTHS(800) == 38, &fails);
+    st_expect("D7 at 1024: full 126, 2/3 82, half 62, 2/5 49",
+              RIBBON_COLS_FULL(1024) == 126 && RIBBON_COLS_TWO_THIRDS(1024) == 82 &&
+              RIBBON_COLS_HALF(1024) == 62 && RIBBON_COLS_TWO_FIFTHS(1024) == 49, &fails);
+    static const uint16_t widths[2] = { 800, 1024 };
+    for (unsigned wi = 0; wi < 2u; wi++) {
+        uint16_t w = widths[wi];
+        bool tiles = true;
+        ribbon_init(&r, w, 480);
+        (void)ribbon_insert(&r, 0, RIBBON_WIN_TERM, 0, RIBBON_COLS_FULL(w), "Full");
+        tiles &= r.wins[0].rx1 == (int32_t)w - 6 && ribbon_total_width(&r) == (int32_t)w;
+        const uint8_t shares[3] = { RIBBON_COLS_TWO_FIFTHS(w), RIBBON_COLS_HALF(w), RIBBON_COLS_TWO_THIRDS(w) };
+        for (unsigned k = 0; k < 3u; k++) {
+            ribbon_init(&r, w, 480);
+            (void)ribbon_insert(&r, 0, RIBBON_WIN_TERM, 0, shares[k], "Text");
+            (void)ribbon_insert(&r, 1, RIBBON_WIN_CANVAS, 0,
+                                (uint8_t)(RIBBON_COLS_PAIR(w) - shares[k]), "Canvas");
+            tiles &= r.wins[1].rx1 == (int32_t)w - 6 && ribbon_total_width(&r) == (int32_t)w;
+        }
+        st_expect(w == 800 ? "D7 at 800: full and every split fill the screen"
+                           : "D7 at 1024: full and every split fill the screen", tiles, &fails);
+    }
+    ribbon_init(&r, 1024, 600);
+    (void)ribbon_insert(&r, 0, RIBBON_WIN_TERM, 0, RIBBON_COLS_HALF(1024), "Term");
+    ribbon_resize_active(&r, false);
+    bool c49 = r.wins[0].cols == 49;
+    ribbon_resize_active(&r, true);
+    ribbon_resize_active(&r, true);
+    bool c82 = r.wins[0].cols == 82;
+    ribbon_resize_active(&r, true);
+    st_expect("D7 at 1024: resize steps 62 -> 49, then 62 -> 82 -> 126",
+              c49 && c82 && r.wins[0].cols == 126 && r.wins[0].rx1 == 1018, &fails);
 
     if (fails == 0) {
         cprintf("ribbon geometry selftest: PASSED\n");

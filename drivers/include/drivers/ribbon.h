@@ -7,7 +7,8 @@
 /* Phase 44: Horizontal Scrollable Tiling Window System (Niri-inspired).
  *
  * Windows are organized in a 1D non-overlapping horizontal ribbon.
- * Each window has a column width (38, 48, 64, or 98 columns on an 800x480 panel).
+ * Each window has a column width from the table below: 38, 48, 64 or 98
+ * columns on the RP2350's 800 px, 49, 62, 82 or 126 on the LCD-7B's 1024.
  * The viewport x_view slides horizontally across the ribbon to bring active
  * windows into view without overlapping.
  */
@@ -17,11 +18,34 @@
 #define RIBBON_BORDER_PAD    4   /* 4 px margin before first window */
 #define RIBBON_TITLE_MAX     32u /* a window title's bytes, with the NUL */
 
-/* Preset column widths */
-#define RIBBON_COLS_38       38u
-#define RIBBON_COLS_48       48u
-#define RIBBON_COLS_64       64u
-#define RIBBON_COLS_FULL     98u
+/* D7, 47.6 (plan/phase47_esp32p4_lcd7b_ribbon.md): the preset widths, from
+ * the screen width `w` instead of 800-px constants.
+ *
+ * A window `c` columns wide is a frame 8c + 7 px wide; the first starts at
+ * RIBBON_BORDER_PAD, windows are RIBBON_GAP apart, and the last leaves 2 px
+ * of shadow and the pad. So one window fills the screen at w/8 - 2 columns,
+ * and two side by side share exactly w/8 - 4 (the "pair"): text and canvas
+ * in a split always add up to it. The presets are shares of the pair:
+ *
+ *                            800 px   1024 px
+ *   FULL        w/8 - 2         98       126   one window, the whole screen
+ *   TWO_THIRDS  2 * pair / 3    64        82   the narrow canvas's text side
+ *   HALF        pair / 2        48        62   two equal halves
+ *   TWO_FIFTHS  2 * pair / 5    38        49   the wide canvas's text side
+ *
+ * Exactly today's 98/64/48/38 at 800, which is what the RP2350 must keep.
+ * Macros, not functions: lcdterm's U-mode code uses them, and an out-of-line
+ * copy in the kernel's .text would be outside its domain. */
+/* A terminal is never narrower than this (ribbon_layout() widens it). A
+ * split's text share below it is raised to it, and the canvas gets what is
+ * left of the pair, or the split is refused: only on screens far smaller
+ * than either panel -- at 800 and 1024 the smallest share is 38. */
+#define RIBBON_TERM_MIN_COLS       20u
+#define RIBBON_COLS_FULL(w)        ((uint8_t)((unsigned)(w) / 8u - 2u))
+#define RIBBON_COLS_PAIR(w)        ((unsigned)(w) / 8u - 4u)
+#define RIBBON_COLS_TWO_THIRDS(w)  ((uint8_t)(2u * RIBBON_COLS_PAIR(w) / 3u))
+#define RIBBON_COLS_HALF(w)        ((uint8_t)(RIBBON_COLS_PAIR(w) / 2u))
+#define RIBBON_COLS_TWO_FIFTHS(w)  ((uint8_t)(2u * RIBBON_COLS_PAIR(w) / 5u))
 
 typedef enum {
     RIBBON_WIN_EMPTY  = 0,

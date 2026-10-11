@@ -3529,6 +3529,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
                 break
         results.append(("The Narrow Split, And A Screenshot To The SD Card (37.5a)", shot_ok, shot_log))
 
+
         # 37.5b: the editor. Its own selftest (wrapping, movement over wrapped
         # rows and UTF-8, undo, search, the safe save), then the real thing
         # through key bytes. Steps that leave `e` running send no sentinel,
@@ -4132,6 +4133,38 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             detail = f"inconsistent figures: {', '.join(failed)}\n{log}"
         results.append(("/proc/meminfo Reports Measured Heap, Stack And RAM Map",
                         ok and not failed, detail))
+
+        # 47.6 (plan/phase47_esp32p4_lcd7b_ribbon.md, D7): the same layouts on
+        # a 1024 x 600 RAM screen -- the LCD-7B's size -- with the widths
+        # derived from it: text 49/62/82 of the 124-column pair, so canvases
+        # of 75/62/42 columns (8c + 5 px), and 126 for the canvas alone. The
+        # screenshot is 76 812 bytes, past the 800-px row buffer screenshot.c
+        # had until 47.6. Back to the panel's 800 x 480 after.
+        #
+        # Late in the session on purpose: resizing frees the RAM screen with
+        # its canvases, which the ribbon and window tests above build on; and
+        # the shot goes to /ram0, because by now the QEMU SD image is too full
+        # for 76 KB (the first run wrote it to /sd0 and every editor save after
+        # it failed).
+        steps = [("ramscreen 1024 600", r"ramscreen: 1024 x 600"),
+                 ("(canvas-window 'split)", r"=> #t"), ("(canvas-size)", r"=> \(605 546\)"),
+                 ("(canvas-window 'split-half)", r"=> #t"), ("(canvas-size)", r"=> \(501 546\)"),
+                 ("(canvas-window 'split-narrow)", r"=> #t"), ("(canvas-size)", r"=> \(341 546\)"),
+                 ("(canvas-window 'canvas)", r"=> #t"), ("(canvas-size)", r"=> \(1013 546\)"),
+                 ("(canvas-window 'text)", r"=> #t"),
+                 ("ramscreen 800 480", r"ramscreen: 800 x 480")]
+        if arch_name != "rv32":
+            # RV32's /ram0 is too small for 76 KB (see fsbench's 40 KB above);
+            # the wide-row path is the same code on both, so RV64 covers it.
+            steps[9:9] = [('(screenshot "/ram0/s1024.pbm")', r'=> "/ram0/s1024.pbm"'),
+                          ('(rm "/ram0/s1024.pbm")', r"=> #t")]
+        wide_ok, wide_log = True, ""
+        for cmd, pat in steps:
+            ok, log = session.send_and_expect(cmd, pat, timeout=20.0)
+            if not ok:
+                wide_ok, wide_log = False, f"{cmd!r} did not give {pat!r}:\n{log}"
+                break
+        results.append(("Layouts On A 1024 x 600 Screen, Widths Derived From It (47.6, D7)", wide_ok, wide_log))
 
         # 21b. Exhausting the node pool must not take the machine down.
         #

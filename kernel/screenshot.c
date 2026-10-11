@@ -10,7 +10,8 @@
 #include <string.h>
 
 #define SHOT_DIR   "/sd0/screenshots"
-#define SHOT_ROWS  8u               /* pixel rows per write: 800 bytes */
+#define SHOT_BUF   800u             /* bytes per write: 8 rows at 800 px, 6 at 1024 */
+#define SHOT_MAX_ROW_BYTES 200u     /* 1600 px, the RAM screen's widest (47.6) */
 
 static uint8_t reverse8(uint8_t b) {
     b = (uint8_t)((b & 0xf0u) >> 4 | (b & 0x0fu) << 4);
@@ -43,11 +44,14 @@ int screenshot_save(const char *path, char *out, uint32_t cap) {
     uint64_t off = 0;
     bool ok = vfs_pwrite(fd, hdr, (uint32_t)hn, off) == hn;
     off += (uint64_t)hn;
-    uint8_t buf[SHOT_ROWS * 100u];
+    uint8_t buf[SHOT_BUF];
     unsigned row_bytes = (w + 7u) / 8u;
-    if (row_bytes > 100u) ok = false;            /* wider than the buffer: not this panel */
-    for (unsigned y = 0; ok && y < h; y += SHOT_ROWS) {
-        unsigned rows = h - y < SHOT_ROWS ? h - y : SHOT_ROWS, n = 0;
+    if (row_bytes > SHOT_MAX_ROW_BYTES) ok = false;   /* wider than any screen here */
+    /* As many whole rows per write as fit: 800 bytes held up to 47.6, when
+     * the buffer was 8 rows of the RP2350's 100 and refused anything wider. */
+    unsigned per = ok ? SHOT_BUF / row_bytes : 1u;
+    for (unsigned y = 0; ok && y < h; y += per) {
+        unsigned rows = h - y < per ? h - y : per, n = 0;
         for (unsigned r = 0; r < rows; r++)
             for (unsigned b = 0; b < row_bytes; b++) buf[n++] = reverse8(fb[(y + r) * stride + b]);
         ok = vfs_pwrite(fd, buf, n, off) == (int)n;

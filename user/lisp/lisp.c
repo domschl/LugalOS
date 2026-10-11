@@ -4029,8 +4029,10 @@ static lisp_val_t *prim_canvas_size(lisp_val_t *args, lisp_val_t *env) {
 }
 
 /* (canvas-window 'text | 'canvas | 'split | 'split-half | 'split-narrow)
- * -> #t, or #f if refused. The splits by their text tile: 'split 38 columns
- * (the widest canvas), 'split-half 48, 'split-narrow 64 (§1.2, 37.5a);
+ * -> #t, or #f if refused. The splits by their text tile, as shares of the
+ * columns two windows share (D7, drivers/ribbon.h): 'split two-fifths (the
+ * widest canvas; 38 columns at 800 px), 'split-half half (48), 'split-narrow
+ * two-thirds (64) (§1.2, 37.5a);
  * Super+[ and Super+] step between them on the panel. */
 static lisp_val_t *prim_canvas_window(lisp_val_t *args, lisp_val_t *env) {
     (void)env;

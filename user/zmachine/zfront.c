@@ -71,7 +71,7 @@ struct zfront_ctx {
 
 /* Every write under console_lock(), as cprintf() and the line editor do:
  * console_putc() alone does not take it, and the LCD's output batch
- * (lcd7_screen_putc_vterm()) is shared by every terminal's writers on the
+ * (lcdterm_screen_putc_vterm()) is shared by every terminal's writers on the
  * strength of that lock -- an unlocked writer racing a locked one can step
  * its length past the flush check and off the end of the batch. */
 static void zout(const char *s)

@@ -9,4 +9,11 @@
  * other screen. */
 const console_screen_t *ramscreen_console(void);
 
+/* 47.6: the RAM screen's size, 800 x 480 by default. Setting it frees the
+ * screen built so far (its canvases with it); the next canvas request builds
+ * one at the new size. w a multiple of 32, 320..1600; h 240..1200. -1 if
+ * refused. */
+int ramscreen_set_size(unsigned w, unsigned h);
+void ramscreen_size(unsigned *w, unsigned *h);
+
 #endif /* LUGALOS_DRIVERS_RAMSCREEN_H */

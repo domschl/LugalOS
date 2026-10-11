@@ -11,6 +11,7 @@
 #include "kernel/sched.h"
 #include "kernel/vterm.h"
 #include "drivers/lcd7.h"
+#include "drivers/lcdterm.h"
 #include <string.h>
 
 /* See kernel/include/kernel/console.h. The formatting engine lives in
@@ -93,7 +94,9 @@ static void run_hotkey(void) {
     if (hk == CONSOLE_HOTKEY_NEW_TERM) {
         int vid = shell_spawn_terminal(NULL);
         if (vid >= 0) {
-            uint8_t req[3] = { 'N', (uint8_t)vid, 48 }, reply[SCREEN_REPLY_LEN];
+            /* 0 columns: the screen's own half (drivers/ribbon.h, D7) --
+             * 48 on the RP2350's 800 px, 62 on the LCD-7B's 1024. */
+            uint8_t req[3] = { 'N', (uint8_t)vid, 0 }, reply[SCREEN_REPLY_LEN];
             (void)console_canvas(req, 3, reply);
             vterm_set_active(vid);
         }
@@ -243,7 +246,7 @@ void console_putc(char c) {
     else vt = vterm_get(0);
     if (vt && !vt->active) {
 #if defined(CONFIG_LCD_PCLK_GPIO)
-        lcd7_screen_putc_vterm(vt->id, c);
+        lcdterm_screen_putc_vterm(vt->id, c);
 #endif
         return;
     }

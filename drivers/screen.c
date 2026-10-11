@@ -953,13 +953,15 @@ LCDTERM_UTEXT bool screen_set_layout_vterm(screen_t *scr, uint8_t vid, unsigned 
 
     int C = (int)(scr->cv.w / 8u);
     uint8_t text_cols = 0;
+    /* D7: the text side's share of the pair (drivers/ribbon.h). */
     if (layout == SCREEN_LAYOUT_SPLIT_WIDE) {
-        text_cols = 38;
+        text_cols = RIBBON_COLS_TWO_FIFTHS(scr->cv.w);
     } else if (layout == SCREEN_LAYOUT_SPLIT_HALF) {
-        text_cols = 48;
+        text_cols = RIBBON_COLS_HALF(scr->cv.w);
     } else if (layout != SCREEN_LAYOUT_CANVAS) {
-        text_cols = 64;
+        text_cols = RIBBON_COLS_TWO_THIRDS(scr->cv.w);
     }
+    if (text_cols && text_cols < RIBBON_TERM_MIN_COLS) text_cols = RIBBON_TERM_MIN_COLS;
     if (layout != SCREEN_LAYOUT_CANVAS) {
         if (8 * (C - 1 - (int)text_cols) - 14 < 4 + 24) return false;   /* no room for a canvas */
     }
@@ -1201,7 +1203,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
     } else if (op == 'N') {
         /* Phase 44: Insert a new window in the ribbon (Cmd+Enter) */
         uint8_t n_vid = (n >= 2) ? req[1] : 0;
-        uint8_t cols = (n >= 3 && req[2]) ? req[2] : 48;
+        uint8_t cols = (n >= 3 && req[2]) ? req[2] : RIBBON_COLS_HALF(scr->cv.w);
         /* The title is the request's tail, n - 3 bytes with no NUL of its
          * own: in the lcdterm task it was read on into whatever the
          * buffer held from the request before -- usually a terminal's
@@ -1222,8 +1224,8 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
             def_title[6] = ']'; def_title[7] = '\0';
             title = def_title;
         }
-        if (scr->ribbon.count == 1 && scr->ribbon.wins[0].cols > 48) {
-            scr->ribbon.wins[0].cols = 48;
+        if (scr->ribbon.count == 1 && scr->ribbon.wins[0].cols > RIBBON_COLS_HALF(scr->cv.w)) {
+            scr->ribbon.wins[0].cols = RIBBON_COLS_HALF(scr->cv.w);
         }
         int idx = ribbon_insert(&scr->ribbon, (uint8_t)(scr->ribbon.active_idx + 1u),
                                 RIBBON_WIN_TERM, n_vid, cols, title);

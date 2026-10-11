@@ -806,18 +806,21 @@ int vtterm_selftest(void) {
         unsigned c, r;
         screen_text_size(scr, &c, &r);
         /* Phase 44: the canvas opens to the right of its terminal, a
-         * ribbon gap after the text's frame (4 + 8 * 38 + 6 = 314, then
-         * 324..394); 37.5a had it on the left. */
-        bool split = rp[0] == 0 && rp[8] == SCREEN_LAYOUT_SPLIT_WIDE && RW == 69 && RH == 66 &&
+         * ribbon gap after the text's frame; 37.5a had it on the left.
+         * D7 (47.6): the text share is 2/5 of the pair, 2/5 of 46 = 18 on
+         * this 400-px screen -- under a terminal's 20-column minimum, so 20
+         * (until 47.6 a fixed 38). Frame 4 + 8 * 20 + 6 = 170, the canvas
+         * the other 26 columns at 180..394, 8 * 26 + 5 = 213 px wide. */
+        bool split = rp[0] == 0 && rp[8] == SCREEN_LAYOUT_SPLIT_WIDE && RW == 213 && RH == 66 &&
                      rp[1] == 0 && scr->ribbon.wins[scr->ribbon.active_idx].type == RIBBON_WIN_TERM &&
-                     RD == d0 + 1 && c == 38 && r == 4 && scr->fx0 == 4 && scr->fx1 == 314 &&
-                     scr->cx0 == 324 && scr->cx1 == 394 &&
+                     RD == d0 + 1 && c == 20 && r == 4 && scr->fx0 == 4 && scr->fx1 == 170 &&
+                     scr->cx0 == 180 && scr->cx1 == 394 &&
                      grid_cell_is(&scr->vt.text, 0, 0, '0', false) &&
-                     grid_cell_is(&scr->vt.text, 37, 0, '7', false) &&
+                     grid_cell_is(&scr->vt.text, 19, 0, '9', false) &&
                      scr->vt.text.fb == cx.buf + 40u * (ST_LW / 8u) + 1u;
         REQ('L', 9);
         bool bad = rp[0] == 1 && rp[8] == SCREEN_LAYOUT_SPLIT_WIDE;
-        st_check(&cx, "37.3b: the wide split: canvas size, text 38 wide keeping each row's left part, damage moves",
+        st_check(&cx, "37.3b: the wide split: canvas size, text 2/5 of the pair (20 at least) keeping each row's left part, damage moves",
                  no_canvas && split && bad);
 
         const uint32_t stride = ST_LW / 8u;
@@ -841,8 +844,8 @@ int vtterm_selftest(void) {
          * the frame, its shadow, the desktop beside it and the text tile
          * are untouched. */
         REQ('l', I16(-100), I16(-50), I16(500), I16(200), I16(1));
-        bool clip = PXL(324, 60) && !PXL(325, 22 + 17 + 1) && PXL(395, 60) &&
-                    PXL(396, 60) == ((396 + 60) & 1u) && PXL(324, 22) && !PXL(4 + 2, 60 + 40);
+        bool clip = PXL(180, 60) && !PXL(181, 22 + 17 + 1) && PXL(395, 60) &&
+                    PXL(396, 60) == ((396 + 60) & 1u) && PXL(180, 22) && !PXL(4 + 2, 60 + 40);
         st_check(&cx, "37.3b: canvas line, circle, row (and scaled), rectangle, invert, text; all clipped to the tile",
                  line && circle && row && scaled && inv && text && clip);
 
@@ -871,10 +874,11 @@ int vtterm_selftest(void) {
                  full && cleared && back && titled);
 
         /* Phase 44: Super+[ and ] ('w') step the focused window through
-         * the column presets -- 38, 48, 64, the screen's width -- and stop
-         * at either end; the canvas beside it keeps its width. (37.5a's
-         * divider stepped the split through five layouts instead.) On a
-         * 72-cell screen: 70 columns at most. */
+         * the column presets and stop at either end; the canvas beside it
+         * keeps its width. (37.5a's divider stepped the split through five
+         * layouts instead.) D7 (47.6): the presets are shares of the pair --
+         * on this 576-px screen (72 cells, pair 68) 2/5 = 27, half 34,
+         * 2/3 45 and the full 70; 38/48/64/70 until 47.6. */
         screen_init(scr, cx.buf, ST_WW / 8u, ST_WW, ST_LH);
         REQ('L', SCREEN_LAYOUT_SPLIT_WIDE);
         unsigned wide_w = RW;
@@ -886,7 +890,7 @@ int vtterm_selftest(void) {
             st[k] = rp[0];
             cols[k] = c;
         }
-        bool wider = st[0] == 0 && cols[0] == 48 && st[1] == 0 && cols[1] == 64 &&
+        bool wider = st[0] == 0 && cols[0] == 34 && st[1] == 0 && cols[1] == 45 &&
                      st[2] == 0 && cols[2] == 70 && st[3] == 1 && cols[3] == 70 && RW == wide_w;
         for (unsigned k = 0; k < 4; k++) {
             REQ('w', -1);
@@ -894,9 +898,9 @@ int vtterm_selftest(void) {
             st[4 + k] = rp[0];
             cols[4 + k] = c;
         }
-        bool narrower = st[4] == 0 && cols[4] == 64 && st[5] == 0 && cols[5] == 48 &&
-                        st[6] == 0 && cols[6] == 38 && st[7] == 1 && cols[7] == 38 && RW == wide_w;
-        st_check(&cx, "44: Super+[ and ] step the focused window through 38/48/64/full columns, and stop",
+        bool narrower = st[4] == 0 && cols[4] == 45 && st[5] == 0 && cols[5] == 34 &&
+                        st[6] == 0 && cols[6] == 27 && st[7] == 1 && cols[7] == 27 && RW == wide_w;
+        st_check(&cx, "44: Super+[ and ] step the focused window through 2/5, half, 2/3 of the pair and full, and stop",
                  wider && narrower);
 
         /* Phase 44's swap: the terminal and its canvas trade places, and
@@ -916,7 +920,7 @@ int vtterm_selftest(void) {
         bool released = rp[0] == 0 && rp[8] == SCREEN_LAYOUT_TEXT && RW == 0 && !scr->vt.hidden;
         REQ('X');
         screen_text_size(scr, &c, &r);
-        bool opened = rp[0] == 0 && rp[8] == SCREEN_LAYOUT_SPLIT_HALF && RW > 0 && c == 48;
+        bool opened = rp[0] == 0 && rp[8] == SCREEN_LAYOUT_SPLIT_HALF && RW > 0 && c == 34;   /* half of 68 */
         REQ('X');
         bool unlocked = rp[0] == 0 && rp[9] == 1;
         REQ('L', SCREEN_LAYOUT_TEXT);
@@ -992,7 +996,9 @@ int vtterm_selftest(void) {
         }
         screen_set_store(scr, 0, 0);
 
-        /* A split is refused where there is no room for a canvas. */
+        /* A split is refused where there is no room for a canvas: on 192 px
+         * (pair 20) the half share, 10, is raised to a terminal's 20, which
+         * leaves the canvas nothing (D7, 47.6). */
         screen_init(scr, cx.buf, ST_SW / 8u, ST_SW, ST_SH);
         REQ('L', SCREEN_LAYOUT_SPLIT_HALF);
         st_check(&cx, "37.3b: a split the screen is too narrow for is refused", rp[0] == 1 && rp[8] == 0);

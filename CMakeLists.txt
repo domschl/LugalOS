@@ -898,7 +898,9 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
     # 36.1: clk_sys read back and measured (`clocks`), on every RP2350 persona.
     list(APPEND SOURCES drivers/clocks_rp2350.c)
     # 36.3: the RP2350-LCD-7's RGB panel; guard-by-pin-map (CONFIG_LCD_*).
-    list(APPEND SOURCES drivers/lcd7_rp2350.c)
+    # 47.6: the terminal on it is drivers/lcdterm.c's, portable; stubs where
+    # no panel is declared (LCDTERM_PRESENT, drivers/lcdterm.h).
+    list(APPEND SOURCES drivers/lcd7_rp2350.c drivers/lcdterm.c)
     # 36.7: the PIO-USB host engine on core 1; guard-by-pin-map again
     # (CONFIG_PIOUSB_DP_GPIO), stubs elsewhere.
     list(APPEND SOURCES drivers/piousb_rp2350.c)

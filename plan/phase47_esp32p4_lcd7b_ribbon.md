@@ -235,7 +235,7 @@ have its own), the D3 format is chosen and recorded here, and
 
 ### The terminal stack
 
-**47.6 — Separate the portable terminal from the RP2350 panel.**
+**47.6 — Separate the portable terminal from the RP2350 panel. [DONE 2026-10-11, §6.7]**
 `drivers/lcd7_rp2350.c` holds two things: the PIO scan-out, and the `lcdterm`
 task with its channel, `console_screen_t` hookup, status tick, tee and tests.
 Split it into `drivers/lcdterm.c` (portable, U-mode task as today) and a
@@ -256,6 +256,13 @@ into the TEXT layout with the menu bar. Console output is teed to the panel as
 on the RP2350 (`lcd7_set_tee` semantics kept). Input is still UART0 only.
 *Done when:* the shell runs on the panel at 126 × 34 cells, `ls -l /sd0`
 scrolls without tearing, and per-char and per-scroll flush times are recorded.
+*Colours (owner's question, 2026-10-11):* the RP2350 driver has `lcd colours
+FG BG`, a two-colour palette for the whole screen made with per-pin output
+overrides, so the frame stays 1 bpp. Here the 1-bpp → frame lookup table
+gives the same thing: bit 1 → FG, bit 0 → BG. A gray pair runs in GRAY8; a
+coloured pair (amber, green phosphor) switches the frame to RGB565 (§6.6:
+proven, a runtime switch). The command keeps the RP2350's meaning and syntax
+(RGB565 hex).
 
 **47.8 — Ribbon, multi-terminal, multi-canvas.**
 Phase 44's whole surface: `ribbon`, `canvas`, vterms, the minimap, and four
@@ -790,6 +797,112 @@ Seen on the glass by the owner:
 
 API for 47.7: `dsi_lcd_fb()` (the frame, stride 1024 px) and
 `dsi_lcd_fb_flush(y0, y1)` (write back rows).
+
+## 6.7 What 47.6 found: the terminal is portable, the RP2350 unchanged to the pixel (2026-10-11)
+
+**The split.**
+* **`drivers/lcdterm.c`** (new, portable) now holds what had grown inside
+  `lcd7_rp2350.c` over phases 36–38 and 44: the screen state block and canvas
+  stores, the U-mode `lcdterm` task and its channel, the batch, the menu
+  bar's title and status, canvas requests, the tee, the console's screen
+  hooks, `lcdtermisotest`, and `lcd test text` / `lcd scroll`.
+* **`drivers/lcd7_rp2350.c`** keeps only the panel: PIO timing, pixel SM,
+  DMA, colours, backlight and test patterns.
+* **The backend interface** (`drivers/lcdterm.h`) describes the 1-bpp frame
+  (pointer, w, h, stride), the naturally aligned pieces of it the task's PMP
+  domain is granted, and an optional `flush(y0, y1)`. The RP2350 has none
+  (its PIO reads the frame itself); 47.7's converting backend will.
+* **Renames:** the `lcd7_*` terminal calls in `console.c`, `main.c`,
+  `board.c` and the shell became `lcdterm_*`.
+* **Sizing:** the state block and stores are sized from w/h as the smallest
+  power-of-two block, never smaller than before, which gives exactly the old
+  16 and 64 pages at 800 × 480.
+* **Tee:** USB only where there is a USB device stack (RP2350); UART0
+  elsewhere.
+
+**D7, the geometry table** (`drivers/ribbon.h`). The presets are shares of
+the *pair*, the w/8 − 4 columns two windows side by side share:
+
+| preset | formula | 800 px | 1024 px |
+|---|---|---|---|
+| full | w/8 − 2 | 98 | 126 |
+| two-thirds (narrow canvas's text) | 2·pair/3 | 64 | 82 |
+| half | pair/2 | 48 | 62 |
+| two-fifths (wide canvas's text) | 2·pair/5 | 38 | 49 |
+
+Exactly today's numbers at 800. They are macros because the U-mode
+`lcdterm` code uses them, and an out-of-line copy in the kernel's `.text`
+would sit outside its domain. The constant 48s in `console.c` (Super+Enter)
+and the shell's `ribbon new` now send 0, meaning "the screen's half".
+`ribbonselftest` gains five checks: the table at 800 and at 1024, every
+split and the full window tiling both widths to the pixel, and the resize
+steps at 1024.
+
+**Regression, as the plan asked.** `tests/hw/lcdterm_shots.py` (new) plays
+a fixed scenario on the RP2350 terminal and takes 8 PBM screenshots, fetched
+over 9P:
+* text and Lisp output;
+* rule 90 (`ca.lisp`) in all three splits, the ribbon resizes, the canvas
+  alone, back to text.
+
+`--compare` diffs two runs pixel by pixel, masking only the clock. Two runs
+on the old firmware were identical. The 47.6 firmware was identical to that
+baseline in all 8 shots, both after the split and after D7. The console
+output of the self-tests matched too, and `lcdtermisotest` still passes.
+`test_rp2350.py`: 31/31.
+
+**QEMU at 1024 × 600.** The RAM screen's size is now settable (`ramscreen W
+H`). A new runner test sets 1024 × 600 and checks every layout with the
+derived widths:
+
+| layout | canvas size |
+|---|---|
+| split | 605 × 546 |
+| split-half | 501 × 546 |
+| split-narrow | 341 × 546 |
+| canvas | 1013 × 546 |
+
+Canvas width is 8·cols + 5 px. The test then takes a screenshot (to
+`/ram0`, rv64 only) and goes back to 800 × 480.
+* **Placement:** it runs late in its session. Resizing frees the RAM screen
+  with its canvases, and the ribbon and window tests build on them.
+* **Where the shot goes:** the first version wrote the shot to `/sd0`, which
+  filled the QEMU SD image, so every editor save after it failed.
+* **rv32:** its `/ram0` is too small for 76 KB.
+
+`tests/runner.py`: 484/484.
+
+The two-hart target hung once at `(chess-selftest 1 32 6)` with corrupted
+page tables. That didn't reproduce in three standalone runs (20/20, 19/20
+with a scheduler-contention flake, and 20/20 on the pre-47.6 baseline), nor
+in the final suite. Nothing in 47.6 touches the scheduler, the MMU or chess.
+It is noted as flaky, not as fixed.
+
+**Found on the way:**
+* **A derived share can fall under a terminal's minimum.** The ribbon never
+  lays a terminal out narrower than 20 columns. On the self-test's small RAM
+  grids a derived share fell below that (2/5 of the 46-column pair on 400
+  px is 18), the ribbon widened it on its own, and the split no longer
+  tiled. `vtselftest` caught it: 5 of 36 failed in the first QEMU run.
+  * **The rule now:** a split's text share is at least
+    `RIBBON_TERM_MIN_COLS` (20); the canvas gets the rest of the pair, or the
+    split is refused. At 800 and 1024 px the smallest share is 38, so the
+    panels never meet it.
+  * **`vtselftest`'s small-screen expectations** were the old absolute
+    38/48/64. They now state the derived ones, each explained in a comment:
+    400 px wide split 20 + 26 columns; 576 px steps 27 → 34 → 45 → 70; the
+    192-px half split still refused, now for the right reason.
+* **`screenshot` refused screens wider than 800 px.** Its write buffer was
+  8 rows of 100 bytes. It now writes as many whole rows as fit in the same
+  800 bytes: 8 rows at 800 px, 6 at 1024. The RP2350's output is unchanged.
+* **Long file names collide on `/sd0`.** The FAT32 driver keeps 8.3 short
+  names, so `lcdshot-split-wide.pbm` and its siblings were all one file.
+  The tool uses `LS0.PBM` …
+* **`test_rp2350.py` takes any CP2102 as "its" UART dongle.** With a NANO
+  attached that is the NANO's console. New `--no-uart`.
+* **A shell scenario has to wait for the prompt, not for silence.**
+  `(ca …)` computes silently for seconds. And a USB "kick" (a newline) is a
+  keystroke: it shows up as extra prompts and makes runs differ.
 
 ## 7. Risks
 

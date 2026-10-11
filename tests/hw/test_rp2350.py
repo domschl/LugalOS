@@ -2117,6 +2117,9 @@ def main() -> int:
     parser.add_argument("--net", help="Override auto-detected ACM1 net (link_usb_cdc) port")
     parser.add_argument("--uart", help="Override auto-detected CP2102 UART dongle port")
     parser.add_argument("--skip-qemu-bridge", action="store_true", help="Skip the T3 QEMU bridge test")
+    parser.add_argument("--no-uart", action="store_true",
+                        help="Use no UART dongle even if one is found -- with an ESP32-P4-NANO attached, "
+                             "the CP2102 found is its console, not the RP2350's (47.6)")
     args = parser.parse_args()
 
     print("======================================================================")
@@ -2128,6 +2131,8 @@ def main() -> int:
         print("\n[!] No RP2350 detected (need two CDC-ACM ports: console + link_usb_cdc net).")
         print("    Nothing to test -- this is not a failure, just nothing to do.")
         return 0
+    if args.no_uart:
+        ports.uart = None
 
     print(f"\nDetected RP2350: console={ports.console} net={ports.net} uart={ports.uart or '(none)'}")
 

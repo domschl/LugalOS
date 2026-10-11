@@ -50,6 +50,8 @@
 #include "drivers/psram.h"
 #include "drivers/dsi_esp32p4.h"
 #include "drivers/lcd7.h"
+#include "drivers/lcdterm.h"
+#include "drivers/ramscreen.h"
 #include "drivers/piousb.h"
 #include "drivers/usb_crc.h"
 #include "drivers/usbkbd.h"
@@ -3397,7 +3399,7 @@ static void cmd_vterm(const char *cmd_line) {
         while (*t == ' ') t++;
         int vid = shell_spawn_terminal(*t ? t : NULL);
         if (vid >= 0) {
-            uint8_t req[32] = { 'N', (uint8_t)vid, 48 };
+            uint8_t req[32] = { 'N', (uint8_t)vid, 0 };   /* 0: the screen's half (D7) */
             uint32_t req_len = 3;
             if (*t) {
                 while (*t && req_len < 31) req[req_len++] = (uint8_t)*t++;
@@ -3588,6 +3590,25 @@ static void parse_and_eval_cmd(const char *cmd_line) {
             cprintf("reboot: not supported on this target\n");
         }
         return;
+#if !defined(CONFIG_LCD_PCLK_GPIO)
+    } else if (strcmp(cmd_line, "ramscreen") == 0 || strncmp(cmd_line, "ramscreen ", 10) == 0) {
+        /* 47.6: the RAM screen's size (drivers/ramscreen.h), so layouts can
+         * be checked at the LCD-7B's 1024 x 600 on QEMU. Resizing drops the
+         * screen built so far, canvases and all. */
+        const char *a = cmd_line + 9;
+        unsigned w = 0, h = 0;
+        while (*a == ' ') a++;
+        while (*a >= '0' && *a <= '9') w = w * 10u + (unsigned)(*a++ - '0');
+        while (*a == ' ' || *a == 'x') a++;
+        while (*a >= '0' && *a <= '9') h = h * 10u + (unsigned)(*a++ - '0');
+        if (w && ramscreen_set_size(w, h) != 0) {
+            cprintf("ramscreen: refused -- width a multiple of 32 in 320..1600, height 240..1200\n");
+            return;
+        }
+        ramscreen_size(&w, &h);
+        cprintf("ramscreen: %u x %u\n", w, h);
+        return;
+#endif
     } else if (strcmp(cmd_line, "clear") == 0) {
         console_lock();
         console_puts("\033[2J\033[H");   /* the console, so the screen clears too */
@@ -4224,7 +4245,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
          * canary must survive. */
         uintptr_t canary = 0;
         bool exited_clean = false;
-        bool entered = lcd7_isolation_test(&canary, &exited_clean);
+        bool entered = lcdterm_isolation_test(&canary, &exited_clean);
         if (!entered) cprintf("[LcdtermIso] probe never reached U-mode: INCONCLUSIVE\n");
         else if (canary == 0xC0FFEE && exited_clean)
             cprintf("[LcdtermIso] out-of-domain store faulted, canary intact: LCDTERM_ISOLATION_OK\n");
@@ -4248,10 +4269,10 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "lcd repaint") == 0) {
         /* 37.1a, plan/phase37_screen_layouts_and_apps.md. */
-        lcd7_repaint();
+        lcdterm_repaint();
     } else if (strcmp(cmd_line, "lcd test text") == 0) {
         /* 36.5 */
-        if (lcd7_text_test() != 0) cprintf("lcd test text: panel not running\n");
+        if (lcdterm_text_test() != 0) cprintf("lcd test text: panel not running\n");
         return;
     } else if (strcmp(cmd_line, "lcd outbench") == 0) {
         /* 36.6: 20 full lines through the real console path (console_putc,
@@ -4272,15 +4293,15 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strncmp(cmd_line, "lcd tee", 7) == 0) {
         const char *m = cmd_line + 7;
         while (*m == ' ') m++;
-        if (strcmp(m, "uart") == 0) lcd7_set_tee(LCD_TEE_UART);
-        else if (strcmp(m, "usb") == 0) lcd7_set_tee(LCD_TEE_USB);
-        else if (strcmp(m, "off") == 0) lcd7_set_tee(LCD_TEE_OFF);
+        if (strcmp(m, "uart") == 0) lcdterm_set_tee(LCD_TEE_UART);
+        else if (strcmp(m, "usb") == 0) lcdterm_set_tee(LCD_TEE_USB);
+        else if (strcmp(m, "off") == 0) lcdterm_set_tee(LCD_TEE_OFF);
         else if (*m) { cprintf("lcd tee: uart, usb or off\n"); return; }
         static const char *const names[] = { "uart (UART0 + USB mirror)", "usb (ACM0 only)", "off" };
-        cprintf("lcd tee: %s\n", names[lcd7_tee()]);
+        cprintf("lcd tee: %s\n", names[lcdterm_tee()]);
         return;
     } else if (strncmp(cmd_line, "lcd scroll", 10) == 0) {
-        lcd7_scroll_test(shell_trailing_uint(&cmd_line[10]));
+        lcdterm_scroll_test(shell_trailing_uint(&cmd_line[10]));
         return;
     } else if (strncmp(cmd_line, "lcd test ", 9) == 0) {
         /* 36.4: patterns that fail in a way that names the fault. */

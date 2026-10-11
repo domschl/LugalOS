@@ -4,6 +4,7 @@
 #include "drivers/uart_net.h"
 #include "drivers/usb_cdc.h"
 #include "drivers/lcd7.h"
+#include "drivers/lcdterm.h"
 #include "drivers/i2c_rtc.h"
 #include "drivers/i2c_bus.h"
 #include "drivers/bme280.h"
@@ -245,9 +246,9 @@ static const dev_driver_t dev_uart = {
  * console. It tees everything to the UART path, so it holds UART0 exactly as
  * `uart` does -- which keeps `p9serve` off a wire that console text is being
  * written to. No probe: the registry is probed before the panel starts, and
- * lcd7_console_putc() draws nothing until then. The kernel binds to it once
+ * lcdterm_console_putc() draws nothing until then. The kernel binds to it once
  * lcd7_init() succeeds (kernel/main.c). */
-static console_dev_t g_lcd_console = { .putc = lcd7_console_putc };
+static console_dev_t g_lcd_console = { .putc = lcdterm_console_putc };
 static void *get_lcd_console(void) { return &g_lcd_console; }
 static const dev_driver_t dev_lcd = {
     .name = "lcd", .kind = DEV_KIND_CONSOLE, .wire = DEV_WIRE_UART0, .get = get_lcd_console,

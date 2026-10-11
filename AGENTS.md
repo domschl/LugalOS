@@ -163,6 +163,11 @@ for both roles by itself.
   boot. `lcd` reports the link, `lcd bl on|off` the backlight (GPIO32,
   active low), `lcd cmd CC [PP..]` sends a DCS write. DCS reads return 0
   (open, plan §6.4).
+  The panel terminal is `drivers/lcdterm.c` (portable, 47.6); a panel driver
+  only describes its 1-bpp frame to it (`lcdterm_backend_t`). Window widths
+  come from the screen width (`RIBBON_COLS_*(w)` in `drivers/ribbon.h`, D7).
+  On targets without a panel, `ramscreen W H` sets the RAM screen's size
+  (QEMU tests layouts at 1024x600 with it).
   Frame buffer (47.5): `lcd fb [gray|rgb565]` starts a 1024×600 frame in
   PSRAM (GRAY8 = 600 KB, the chosen format), scanned out by the DW-GDMA at
   60 Hz and re-armed by its interrupt (CLIC 18). `lcd test
@@ -281,6 +286,13 @@ Located in `tests/hw/` (safe to run speculatively; skips rather than fails when 
 * `tests/hw/test_rp2350.py`: Silicon verification suite for RP2350 peripherals, memory pools, and console.
 * `tests/hw/test_esp32p4.py`: Comprehensive silicon test suite for ESP32-P4 CLIC, PMP, I2C, and SDMMC.
 * `tests/hw/test_wifi.py`: CYW43 Wi-Fi and network interface testing.
+* `tests/hw/lcdterm_shots.py` (47.6): the panel terminal's regression check on the
+  RP2350 terminal -- a fixed shell scenario, 8 PBM screenshots fetched over 9P;
+  `--out DIR` records, `--compare OLDDIR` diffs pixel by pixel (clock masked).
+  Record before a change to the terminal/screen/ribbon code, compare after.
+  `/sd0` keeps 8.3 names only -- long names sharing a prefix collide.
+* With an ESP32-P4-NANO attached, run `test_rp2350.py --no-uart`: its CP2102 is
+  the NANO's console, not an RP2350 UART dongle.
 
 ---
 
