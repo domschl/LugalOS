@@ -55,6 +55,8 @@ typedef struct {
 /* Binds the stack to an interface. Without an address it will answer ARP for
  * nothing and route nothing; that is deliberate (see net_set_address). */
 int net_stack_attach(netif_t *nif);
+/* 49.2: the inverse -- the interface goes to someone else (an LLP bridge). */
+void net_stack_detach(void);
 
 /* Applies an address. A zero gateway means "no router on this segment", which
  * is a legitimate configuration and not an error. Sends a gratuitous ARP so

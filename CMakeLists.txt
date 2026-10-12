@@ -1070,6 +1070,10 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
 else()
     # QEMU targets: VirtIO block device + 16550 UART + VirtIO console (9P link, A3)
     list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c drivers/virtio_console.c)
+    # 49.2 (plan/phase49_c6_network_nodes.md): an LLP node over the
+    # virtio-console -- two guests, one as the radio bridging its virtio-net,
+    # one as the host with wlan0. QEMU-only until a board has a channel (49.3).
+    list(APPEND SOURCES kernel/llp_node.c)
     # I2 (plan/phase21_identity_and_authentication.md): the second virtio-blk
     # device, dedicated to the identity store -- QEMU's analogue of I7's
     # RP2350 flash sector (§3.1: "QEMU has no silicon to bind to").

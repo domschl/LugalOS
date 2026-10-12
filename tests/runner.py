@@ -4299,6 +4299,128 @@ def test_lisp_reader_after_node_exhaustion(elf_path: Path, img_path: Path, arch_
         session.close()
 
 
+def test_llp_two_nodes(radio_elf: Path, host_elf: Path, build_dir: Path) -> tuple[str, bool, str]:
+    """49.2 (plan/phase49_c6_network_nodes.md): two guests, one LLP link.
+
+    The radio (rv32) has the network -- QEMU's slirp LAN on virtio-net, with
+    the host's port 564 forwarded to 10.0.2.15 -- and gives it to the link:
+    `llp radio`. The host (rv64) has no network device at all: `llp host`
+    gains wlan0 over the link, with the radio's MAC, and its DHCP client takes
+    a lease from slirp *through* the radio. Their virtio-consoles are joined
+    by a unix socket, carrying LLP's serial binding (doc/llp.md §7.1).
+
+    Then, from outside, an authenticated 9P session to the host's own TCP/564
+    (every byte through the radio's bridge): the host's /proc/cpuinfo (S-mode:
+    rv64) and a file big enough to take many frames; and through the host's
+    /c6 -- the radio mounted over LLP's 9P frames -- the radio's own
+    /proc/cpuinfo (M-mode: rv32). The radio, meanwhile, has no interface, no
+    address and no connection of its own: the host's traffic only passes
+    through it.
+    """
+    import shutil
+    import socket as _socket
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "host" / "p9lib" / "src"))
+    import p9lib
+
+    name = "LLP: Two Nodes, One Link -- wlan0, DHCP And 9P Through The Radio, /c6 Mounted (49.2)"
+    key = bytes(range(16, 32))
+    sock = f"/tmp/lugalos-llp-{os.getpid()}.sock"
+    probe = _socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+
+    radio_img = build_dir / "rv32" / "test_rv32_llp_radio_sd.img"
+    host_img = build_dir / "rv64" / "test_rv64_llp_host_sd.img"
+    shutil.copyfile(build_dir / "rv32" / "lugalos_sd.img", radio_img)
+    shutil.copyfile(build_dir / "rv64" / "lugalos_sd.img", host_img)
+    radio = QemuSession(radio_elf, radio_img, "rv32")
+    host = QemuSession(host_elf, host_img, "rv64")
+    try:
+        radio.start(extra_qemu_args=[
+            "-netdev", f"user,id=n0,hostfwd=tcp:127.0.0.1:{port}-10.0.2.15:564",
+            "-device", "virtio-net-device,netdev=n0",
+            "-device", "virtio-serial-device", "-device", "virtconsole,chardev=llp",
+            "-chardev", f"socket,id=llp,path={sock},server=on,wait=off"])
+        ok, log = radio.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, "radio did not boot:\n" + log[-600:])
+        host.start(extra_qemu_args=[
+            "-device", "virtio-serial-device", "-device", "virtconsole,chardev=llp",
+            "-chardev", f"socket,id=llp,path={sock}"])
+        ok, log = host.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, "host did not boot:\n" + log[-600:])
+
+        ok, log = radio.send_and_expect("llp radio", r"llp: radio", timeout=5.0)
+        if not ok:
+            return (name, False, "`llp radio` did not start:\n" + log[-800:])
+        ok, log = host.send_and_expect("llp host", r"\[LLP\] link up: peer radio.*mac 52:54:00:12:34:56"
+                                                    r".*wlan0 registered.*\[DHCP\] 10\.0\.2\.15", timeout=20.0)
+        if not ok:
+            return (name, False, "no handshake, wlan0 or lease through the radio:\n" + log[-1200:])
+
+        ok, log = host.send_and_expect(f"p9key {key.hex()}", r"console key set \(16 bytes\)", timeout=5.0)
+        if not ok:
+            return (name, False, "the host did not take the key:\n" + log[-500:])
+        ok, log = host.send_and_expect('lisp\n(mount-remote "c6" "llp")\nexit', r"Mounted remote 9P namespace on /c6/.*=> #t",
+                                       timeout=10.0)
+        if not ok:
+            return (name, False, "the host could not mount the radio at /c6:\n" + log[-800:])
+
+        client = p9lib.connect_tcp("127.0.0.1", port, timeout=15.0)
+        with p9lib.Session(client, key=key) as sess:
+            own = sess.read("/proc/cpuinfo")
+            if b"priv:        S" not in own:
+                return (name, False, f"the host's /proc/cpuinfo is not the rv64 host's: {own[:200]!r}")
+            init = sess.read("/sd0/system/etc/init.lisp")
+            if init != expected_init_lisp():
+                return (name, False, f"init.lisp came back {len(init)} bytes, not the source's")
+            radio_cpu = sess.read("/c6/proc/cpuinfo")
+            if b"priv:        M" not in radio_cpu:
+                return (name, False, f"/c6/proc/cpuinfo is not the rv32 radio's: {radio_cpu[:200]!r}")
+            # Volume, both ways the link carries it: tens of KB as Ethernet
+            # frames through the bridge, and tens of KB as 9P frames over LLP.
+            # Not a flow-control test: 9P keeps one request in flight and our
+            # TCP's 4 KB window about three frames, so the receive window never
+            # fills (the result line reports "held for credit", 0 so far).
+            # Credits under pressure are tests/host/llp_host.c's soak.
+            cas = Path(__file__).resolve().parent.parent / "cas"
+            for path, src in (("/sd0/cas/simplify.lisp", cas / "simplify.lisp"),
+                              ("/c6/sd0/cas/calculus.lisp", cas / "calculus.lisp")):
+                got = sess.read(path)
+                if got != src.read_bytes():
+                    return (name, False, f"{path} came back {len(got)} bytes, not the source's {src.stat().st_size}")
+
+        ok, log = radio.send_and_expect("cat /proc/net", r"interface: none", timeout=5.0)
+        if not ok:
+            return (name, False, "the radio kept a network interface of its own:\n" + log[-600:])
+        ok, rlog = radio.send_and_expect("llp", r"bridge: virtio-net, \d+ frames to the link, \d+ to the interface",
+                                         timeout=5.0)
+        ok2, hlog = host.send_and_expect("llp", r"queues:", timeout=5.0)
+        if not (ok and ok2):
+            return (name, False, "no status:\n" + rlog[-600:] + hlog[-600:])
+        for who, lg in (("radio", rlog), ("host", hlog)):
+            m = re.search(r"serial: \d+ frames, crc (\d+), runt (\d+), bad-len (\d+), overflow (\d+)", lg)
+            q = re.search(r"\(full (\d+)\).*\(full (\d+)\).*\(full (\d+)\).*\(full (\d+)\)", lg)
+            if not m or any(int(g) for g in m.groups()) or not q or any(int(g) for g in q.groups()):
+                return (name, False, f"the {who} counted damage or overflow on a clean link:\n" + lg[-700:])
+        fwd = re.search(r"bridge: virtio-net, (\d+) frames to the link, (\d+) to the interface", rlog)
+        held = [re.search(r"held for credit (\d+)", lg) for lg in (rlog, hlog)]
+        return (name, True, (f"radio bridged {fwd.group(1)}/{fwd.group(2)} frames; held for credit: "
+                             f"radio {held[0].group(1) if held[0] else '?'}, host {held[1].group(1) if held[1] else '?'}")
+                if fwd else "")
+    except Exception as e:
+        return (name, False, f"{type(e).__name__}: {e}")
+    finally:
+        host.close()
+        radio.close()
+        for f in (radio_img, host_img):
+            f.unlink(missing_ok=True)
+        if os.path.exists(sock):
+            os.unlink(sock)
+
+
 def test_qemu_architecture_with_retry(
     elf_path: Path, img_path: Path, arch_name: str, max_attempts: int = 3,
 ) -> list[tuple[str, bool, str]]:
@@ -8865,6 +8987,8 @@ def main() -> int:
 
         _run_single(test_terminal_crlf(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_lisp_reader_after_node_exhaustion(rv32_elf, img_for("rv32"), "rv32"))
+        if rv64_elf.exists():
+            _run_single(test_llp_two_nodes(rv32_elf, rv64_elf, build_dir))
         _run_single(test_9p_virtio_link(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_crud_via_p9lib(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_iounit(rv32_elf, img_for("rv32"), "rv32"))

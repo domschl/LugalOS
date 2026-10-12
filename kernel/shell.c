@@ -1,4 +1,5 @@
 #include "kernel/shell.h"
+#include "kernel/llp_node.h"
 #if defined(CONFIG_BOARD_ESP32C6)
 #include "drivers/ws2812.h"
 #include "kernel/radio_c6.h"
@@ -4610,6 +4611,17 @@ static void parse_and_eval_cmd(const char *cmd_line) {
             }
             cprintf("wifi: blinked\n");
         }
+        return;
+#endif
+#if !defined(CONFIG_BOARD_RP2350) && !defined(CONFIG_BOARD_ESP32P4) && !defined(CONFIG_BOARD_ESP32C6)
+    } else if (strcmp(cmd_line, "llp") == 0) {
+        llp_node_print_status();
+        return;
+    } else if (strcmp(cmd_line, "llp host") == 0) {
+        llp_node_start(LLP_NODE_HOST);
+        return;
+    } else if (strcmp(cmd_line, "llp radio") == 0 || strcmp(cmd_line, "llp modem") == 0) {
+        llp_node_start(LLP_NODE_RADIO);
         return;
 #endif
     } else if (strcmp(cmd_line, "p9key") == 0) {

@@ -27,6 +27,7 @@
 
 #if !defined(CONFIG_BOARD_RP2350) && !defined(CONFIG_BOARD_ESP32P4) && !defined(CONFIG_BOARD_ESP32C6)
 #include "drivers/virtio_console.h"
+#include "kernel/llp_node.h"
 #include "drivers/virtio_blk.h"
 #include "drivers/virtio_net.h"
 #endif
@@ -212,6 +213,7 @@ static int   probe_virtio_blk(void)     { return virtio_blk_init(); }
 static void *get_virtio_blk(void)       { return virtio_blk_get_device(); }
 static int   probe_virtio_net(void)     { return virtio_net_init(); }
 static void *get_virtio_net(void)       { return virtio_net_get_netif(); }
+static void *get_llp(void)              { return llp_node_p9_link(); }
 #endif
 
 /* --- The tables ---
@@ -348,6 +350,12 @@ static const dev_driver_t dev_vconsole = {
     .name = "vconsole", .kind = DEV_KIND_P9LINK, .flags = DEV_F_BACKGROUND_9P, .wire = DEV_WIRE_VIRTIO,
     .probe = probe_virtio_console, .get = get_virtio_console,
 };
+/* 49.2: 9P over LLP, once `llp host|radio` has started the node -- until
+ * then get() returns NULL and the name resolves to nothing. Same wire as
+ * `vconsole`: LLP takes the channel over, and the claim says so. */
+static const dev_driver_t dev_llp = {
+    .name = "llp", .kind = DEV_KIND_P9LINK, .wire = DEV_WIRE_VIRTIO, .get = get_llp,
+};
 static const dev_driver_t dev_vblk = {
     .name = "vblk", .kind = DEV_KIND_BLOCK,
     .probe = probe_virtio_blk, .get = get_virtio_blk,
@@ -421,6 +429,7 @@ void board_register_devices(void) {
     dev_register(&dev_sdmmc);
 #else
     dev_register(&dev_vconsole);
+    dev_register(&dev_llp);
     dev_register(&dev_vblk);
     dev_register(&dev_vnet);
 #endif

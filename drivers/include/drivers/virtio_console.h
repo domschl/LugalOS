@@ -19,4 +19,11 @@ int virtio_console_init(void);
 /* NULL if virtio_console_init() hasn't succeeded. */
 p9_link_t *virtio_console_get_link(void);
 
+/* 49.2: the channel as raw bytes, for LLP's serial binding. read() never
+ * blocks (returns what is buffered, 0..max); write() blocks until the device
+ * has taken every byte. -1 if the device is absent. Take the channel off the
+ * 9P pump before using these: both consume the same receive ring. */
+int virtio_console_read(uint8_t *buf, uint32_t max);
+int virtio_console_write(const uint8_t *buf, uint32_t len);
+
 #endif /* LUGALOS_DRIVERS_VIRTIO_CONSOLE_H */

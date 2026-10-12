@@ -214,7 +214,7 @@ brief:
  ───────────────                                  ───────────────
  net/ (DHCP,TCP,9P,MQTT,NTP)                      radio domain (U-mode, blob)
    │ netif_t "wlan0"                                 │ RX/TX frame rings (45.7)
- drivers/llp_netif.c ─┐                            ┌─ kernel/llp_bridge.c   (modem persona: rings ⇄ ETH frames)
+ kernel/llp_node.c ───┐                            ┌─ kernel/llp_node.c     (radio role: interface ⇄ ETH frames)
  fs/p9_link (/c6) ────┤                            ├─ fs/p9_link (/p4 optional, 49.9)
                       ▼                            ▼
               kernel/llp.c  (framing, HELLO, credits, PROBE — shared, host-tested)
@@ -434,19 +434,44 @@ without USB.
     `PROBE` added; CRC-32 instead of CRC-16; frame-vs-9P priority moved to the
     bindings (49.2).
 
-* **49.2 Two QEMU nodes, one channel.** A "modem" node (rv32, virtio-net as its
-  stand-in radio) and a "host" node (no NIC) joined by virtio-console carrying
-  LLP: `kernel/llp_bridge.c` on the first, `drivers/llp_netif.c` (`wlan0`) on the
-  second. The host node gets a DHCP lease from QEMU's user network *through* the
-  modem node, answers 9P on 564 from the outside, and mounts the modem at `/c6`.
-  Runs in `tests/runner.py`. *Done when:* the multi-node test passes 20 runs in a
-  row (the phase-5 lesson: one-in-three races only show up on repetition), and
-  the modem node holds no TCP state for the host's traffic.
+* **49.2 Two QEMU nodes, one channel — DONE 2026-10-12.** An rv32 *radio*
+  (virtio-net on slirp, its stand-in Wi-Fi) and an rv64 *host* (no network
+  device) joined by their virtio-consoles through a unix socket, carrying LLP's
+  serial binding. `kernel/llp_node.c` is both roles in one file, not the
+  `llp_bridge.c` / `llp_netif.c` pair sketched here: they share the pump, the
+  queues and the 9P link, and differ only in where an Ethernet frame goes.
+  * **`llp radio`**: the node's stack lets go of its interface
+    (`net_stack_detach()`, new), every frame goes over the link both ways, and
+    the interface's MAC goes to the host in HELLO and its link state in STATE.
+  * **`llp host`**: on the first handshake the node registers `wlan0` with the
+    radio's MAC, attaches its stack and starts DHCP; the lease comes from slirp
+    *through* the radio (10.0.2.15).
+  * **Both** serve 9P over LLP's P9 frames: the `llp` link, a device on the same
+    wire as `vconsole` (whose 9P pump gives the channel up). The host mounts the
+    radio with the existing `(mount-remote "c6" "llp")`.
+  * **One task owns the link** (`llp`). Everyone else only queues frames for it
+    under a spinlock, P9 before ETH: the binding's priority rule (§3). The
+    credit window is the smaller of the two receive queues' room (8 ETH, 4 P9
+    slots), because LLP's credits count frames, not types.
+  * **The test** (`test_llp_two_nodes`, runner): handshake with the radio's MAC,
+    `wlan0`, the lease, `/c6` mounted. Then, from outside, an authenticated 9P
+    session to the host's own TCP/564 (every frame through the radio): the
+    host's `/proc/cpuinfo` (S-mode, rv64), `init.lisp` and a 34 KB CAS file
+    byte for byte; and through the host's `/c6`, the radio's `/proc/cpuinfo`
+    (M-mode, rv32) and a 33 KB file from the radio's card, a 9P request
+    crossing TCP, the bridge and LLP. The radio reports no interface of its own;
+    neither side counts CRC errors, losses or full queues. **20 of 20 runs
+    pass, about 1.3 s each, ~210 frames bridged per run.**
+  * **What it does not test:** flow control under pressure. 9P keeps one
+    request in flight and our TCP's 4 KB window about three frames, so the
+    receive window never fills here ("held for credit": 0, reported in the
+    result line). The host harness's soak (`llp_host.c`) is where credits run
+    out and recover; a UART (49.3, 49.10) is where they will matter on a wire.
 
 ### The C6 as a NIC, on the C6-Zero
 
 * **49.3 C6-Zero modem persona over serial** (= 45.13). Persona selection (D4),
-  `llp_bridge.c` on the real rings, `/c6/wlan/*` files, the STA MAC handed over in
+  `llp_node.c`'s radio role on the real rings, `/c6/wlan/*` files, the STA MAC handed over in
   `HELLO`. First wire: the C6-Zero's USB-Serial/JTAG with the console and LLP
   demultiplexed (as `p9share` does), the Python reference as the host — it takes
   a DHCP lease with the C6's MAC and pings the gateway; with privileges, an
@@ -494,7 +519,7 @@ without USB.
 
 ### Scenario 1 — networking for the P4 boards
 
-* **49.7 `wlan0` on the P4** (= 45.16). `llp_netif.c` over SDIO; credentials
+* **49.7 `wlan0` on the P4** (= 45.16). `llp_node.c`'s host role over SDIO; credentials
   from the P4's identity record (D5); DHCP with the C6's MAC (D3); on the NANO,
   `eth0` and `wlan0` side by side with a stated rule for which carries the
   default route. Everything in §1.1 (a)–(e) over Wi-Fi: authenticated 9P from the
@@ -536,7 +561,7 @@ without USB.
   over SLIP + CRC on the RP2350's UART1 (`drivers/uart1_link_rp2350.c`'s pins,
   today 115200 baud). Bandwidth first: the highest baud both PL011 and the C6's
   UART hold without loss over the actual wiring. The RP2350's stack and its 2 KB
-  msize stay as they are; `wlan0` reuses `llp_netif.c`. *Done when:*
+  msize stay as they are; `wlan0` is `llp_node.c`'s host role. *Done when:*
   `test_rp2350.py` gains a Wi-Fi check through the C6-Zero, and the terminal's
   suite and `lcdterm_shots.py` are unchanged.
 
