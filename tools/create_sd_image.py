@@ -10,7 +10,10 @@ import struct
 import sys
 
 SECTOR_SIZE: int = 512
-NUM_SECTORS: int = 1024  # 512 KB image size
+NUM_SECTORS: int = 2048  # 1024 KB (1 MB) image size
+RESERVED_SECTORS: int = 32
+FAT_SIZE_SECTORS: int = 16
+DATA_START_SECTOR: int = RESERVED_SECTORS + 2 * FAT_SIZE_SECTORS  # Sector 64
 
 
 def filename_to_83(name: str) -> bytes:
@@ -28,7 +31,7 @@ def build_fat32_image(output_path: str, src_dir: str | None = None) -> None:
     img[3:11] = b"LUGALOS "  # OEM Name
     struct.pack_into("<H", img, 11, SECTOR_SIZE)  # Bytes per sector
     img[13] = 1  # Sectors per cluster
-    struct.pack_into("<H", img, 14, 32)  # Reserved sectors
+    struct.pack_into("<H", img, 14, RESERVED_SECTORS)  # Reserved sectors
     img[16] = 2  # Number of FATs
     struct.pack_into("<H", img, 17, 0)  # Root entries (0 for FAT32)
     struct.pack_into("<H", img, 19, 0)  # Total sectors 16 (0 for FAT32)
@@ -38,7 +41,7 @@ def build_fat32_image(output_path: str, src_dir: str | None = None) -> None:
     struct.pack_into("<H", img, 26, 255)  # Number of heads
     struct.pack_into("<I", img, 28, 0)  # Hidden sectors
     struct.pack_into("<I", img, 32, NUM_SECTORS)  # Total sectors 32
-    struct.pack_into("<I", img, 36, 8)  # FAT size 32 (8 sectors per FAT)
+    struct.pack_into("<I", img, 36, FAT_SIZE_SECTORS)  # FAT size 32 (16 sectors per FAT)
     struct.pack_into("<H", img, 40, 0)  # Ext flags
     struct.pack_into("<H", img, 42, 0)  # FS version
     struct.pack_into("<I", img, 44, 2)  # Root cluster (Cluster 2)
@@ -53,13 +56,13 @@ def build_fat32_image(output_path: str, src_dir: str | None = None) -> None:
     # FSInfo Sector (Sector 1)
     struct.pack_into("<I", img, 512, 0x41615252)  # Lead Sig
     struct.pack_into("<I", img, 512 + 484, 0x61417272)  # Struct Sig
-    struct.pack_into("<I", img, 512 + 488, NUM_SECTORS - 48)  # Free clusters
+    struct.pack_into("<I", img, 512 + 488, NUM_SECTORS - DATA_START_SECTOR)  # Free clusters
     struct.pack_into("<I", img, 512 + 492, 2)  # Next free cluster
     img[512 + 510 : 512 + 512] = b"\x55\xaa"  # Trail Sig
 
-    # FAT 1 & FAT 2 Base Offsets (Sectors 32 & 40)
-    fat1_base: int = 32 * SECTOR_SIZE
-    fat2_base: int = 40 * SECTOR_SIZE
+    # FAT 1 & FAT 2 Base Offsets
+    fat1_base: int = RESERVED_SECTORS * SECTOR_SIZE
+    fat2_base: int = (RESERVED_SECTORS + FAT_SIZE_SECTORS) * SECTOR_SIZE
 
     def set_fat_entry(clus: int, val: int) -> None:
         struct.pack_into("<I", img, fat1_base + clus * 4, val)
@@ -78,7 +81,7 @@ def build_fat32_image(output_path: str, src_dir: str | None = None) -> None:
             return
 
         entries: list[str] = sorted(os.listdir(dir_path))
-        dir_lba: int = 48 + (parent_cluster - 2)
+        dir_lba: int = DATA_START_SECTOR + (parent_cluster - 2)
         dir_offset_base: int = dir_lba * SECTOR_SIZE
 
         # Determine starting entry index (if parent_cluster != 2, index starts after '.' and '..')
@@ -112,7 +115,7 @@ def build_fat32_image(output_path: str, src_dir: str | None = None) -> None:
                 struct.pack_into("<I", img, entry_offset + 28, 0)
 
                 # Initialize sub_cluster with '.' and '..'
-                sub_lba: int = 48 + (sub_cluster - 2)
+                sub_lba: int = DATA_START_SECTOR + (sub_cluster - 2)
                 sub_base: int = sub_lba * SECTOR_SIZE
 
                 # Entry 0: '.'
@@ -148,7 +151,7 @@ def build_fat32_image(output_path: str, src_dir: str | None = None) -> None:
                 # Write file content to clusters & update FAT chain
                 for c in range(clusters_needed):
                     cur_cluster: int = start_cluster + c
-                    data_lba: int = 48 + (cur_cluster - 2)
+                    data_lba: int = DATA_START_SECTOR + (cur_cluster - 2)
                     chunk_start: int = c * SECTOR_SIZE
                     chunk_end: int = min(file_size, chunk_start + SECTOR_SIZE)
                     chunk_data: bytes = content[chunk_start:chunk_end]
@@ -173,7 +176,7 @@ def build_fat32_image(output_path: str, src_dir: str | None = None) -> None:
         populate_dir(src_dir, 2)
 
     # Update FSInfo free cluster count & next free cluster pointer
-    struct.pack_into("<I", img, 512 + 488, (NUM_SECTORS - 48) - (current_free_cluster - 2))
+    struct.pack_into("<I", img, 512 + 488, (NUM_SECTORS - DATA_START_SECTOR) - (current_free_cluster - 2))
     struct.pack_into("<I", img, 512 + 492, current_free_cluster)
 
     with open(output_path, "wb") as f:

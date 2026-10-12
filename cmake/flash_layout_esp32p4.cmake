@@ -89,7 +89,7 @@ set(LUGALOS_P4_OSIMAGE_BASE   0x00010000)
 set(LUGALOS_P4_OSIMAGE_SIZE   0x00100000)   # 1 MB
 
 set(LUGALOS_P4_FLASHFS_BASE   0x00110000)
-set(LUGALOS_P4_FLASHFS_SIZE   0x00080000)   # 512 KB -- must match the FAT32 image
+set(LUGALOS_P4_FLASHFS_SIZE   0x00100000)   # 1 MB -- must match the FAT32 image
 
 # The floor every write in drivers/flash_esp32p4.c is checked against.
 #
