@@ -235,8 +235,9 @@ for both roles by itself.
   `sdio rd53 fn addr len`, `sdio bench [kb fn addr len]`, `sdio reset`. 10 MHz is the tested speed.
   The C6's SDIO slave hardware answers whatever the C6 runs. Flash the P4 with both halves
   (`--only boot,os`): an `os`-only flash pairs a new XIP half with an old RAM half and traps at boot.
-  With both CP2102s attached (the NANO console and a C6 UART adapter) their by-id links collide:
-  give `--port /dev/serial/by-path/...` explicitly.
+  With both CP2102s attached (the NANO console and a C6 UART adapter) their by-id links collide
+  (all serial "0001"), so `p4-ports.env` names the NANO's console by USB path (hub port 4.2).
+  The 7B's other Type-C is its P4's USB-Serial/JTAG (flashable, but not the LugalOS console).
 * Test: `cd tests/hw && uv run test_esp32p4.py --board lcd7b --build ../../build/esp32p4-lcd7b`
   (36/36 since 47.13: backlight, blanking, USB keyboard, touch, RTC and the
   ribbon's hotkeys included, each skipping where a board lacks it; EMAC tests
