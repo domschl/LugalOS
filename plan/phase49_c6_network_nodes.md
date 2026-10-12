@@ -386,6 +386,18 @@ without USB.
   first boot after the backup it rewrote its PHY calibration ("checksum
   failure"), so the backup's `nvs`/`phy_init` no longer match the chip
   byte for byte. That is harmless: both are regenerated.
+* **Wiring B works, with the factory firmware running** (a cut USB cable on
+  P2 21/23/25, 2026-10-12): the C6 enumerates as `303a:1001`,
+  `/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_58:E6:C5:D8:D4:3C-if00`
+  (serial = the base MAC). Over it, esptool's default reset puts the C6 into download
+  mode with no jumper and no pin 13 (`chip-id`, `USB mode: USB-Serial/JTAG`), and
+  `--after hard-reset` returns it to the factory app. Over the same link the
+  backup's boot loader + partition table (0x0–0x9000) and `ota_0` were checked
+  on the chip: **`verify-flash` digests match**. So 49.5 can use `c6run.py` /
+  `c6flash.py` and the existing USB console as on the C6-Zero. With the C6-Zero
+  also attached, `c6run.py` refuses to guess and wants `--port` (or
+  `LUGALOS_C6_PORT`). A `--board zero|nano` mapping in the style of
+  `p4-ports.env` is a convenience for 49.5.
 
 ---
 
