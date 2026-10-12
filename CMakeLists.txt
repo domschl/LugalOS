@@ -645,6 +645,14 @@ set(SOURCES
     # Target-independent like sha256.c/random.c above: a parser and a CRC
     # should not be debugged by flashing a board.
     kernel/idstore.c
+    # 49.1 (plan/phase49_c6_network_nodes.md): the CRC-32 idstore.c used to
+    # keep to itself, now shared with LLP's serial binding.
+    kernel/crc32.c
+    # 49.1: LLP, the link protocol between two LugalOS nodes on one board (a
+    # P4 and its C6): framing, the serial binding, the HELLO/credit state
+    # machine. Built everywhere and host-tested (tests/host/llp_host.c) --
+    # a protocol's state machine should not be debugged by flashing.
+    kernel/llp.c
     kernel/ipc.c
     kernel/devirq.c
     kernel/sched.c
@@ -727,6 +735,8 @@ set(SOURCES
     drivers/adc.c
     drivers/loopback_net.c
     drivers/uart_net.c
+    # 49.1: SLIP on its own, so LLP does not need a UART driver to get it.
+    drivers/slip.c
     drivers/usb_cdc.c
     # Empty on RP2350 -- see the flash-fs block above; the image is its own
     # flash segment there, not a translation unit.

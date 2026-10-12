@@ -1,4 +1,5 @@
 #include "kernel/idstore.h"
+#include "kernel/crc32.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
 #include "kernel/palloc.h"
@@ -19,25 +20,6 @@ static uint32_t rd_u32le(const uint8_t *p) {
 static void wr_u16le(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
 static void wr_u32le(uint8_t *p, uint32_t v) {
     p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
-}
-
-/* --- CRC-32, bitwise (no table: this runs on at most 4 KB, occasionally,
- * and a 1 KB rodata table buys nothing worth the space on RP2350). */
-
-static uint32_t crc32_update(uint32_t crc, const void *data, uint32_t len) {
-    const uint8_t *p = (const uint8_t *)data;
-    for (uint32_t i = 0; i < len; i++) {
-        crc ^= p[i];
-        for (int k = 0; k < 8; k++) {
-            uint32_t mask = (uint32_t)(-(int32_t)(crc & 1u));
-            crc = (crc >> 1) ^ (0xEDB88320u & mask);
-        }
-    }
-    return crc;
-}
-
-uint32_t crc32_compute(const void *data, uint32_t len) {
-    return ~crc32_update(0xFFFFFFFFu, data, len);
 }
 
 /* The record's CRC covers the header up to (but not including) the CRC

@@ -174,39 +174,38 @@ files plus moving MQTT/NTP onto the C6 is the fallback — not A2.
 
 ---
 
-## 3. The channel protocol (LLP v1) — what 49.1 specifies
+## 3. The channel protocol (LLP v1)
 
-Properties carried from phase 45 §6, revised by §1:
+**Specified in `doc/llp.md` (49.1); that document is authoritative.** In
+brief:
 
-* **Channel-agnostic framing, channel-specific flow control.**
-  A frame is `u8 type, u8 flags, u16 len, payload` (little-endian, as 9P).
-  Types:
-
-  | Type | Payload | Notes |
-  |---|---|---|
-  | `LINK` | `HELLO {version, role, mtu, max_frames, mac}`, `RESET`, `CREDIT n`, `STATE {link_up, rssi}` | link management only |
-  | `ETH` | one Ethernet frame, ≤ 1514 B, no FCS (`NETIF_FRAME_MAX`) | the data path |
-  | `P9` | one 9P message, T or R, either direction | demuxed by `fs/p9_link.c`'s existing T/R parity rule |
-
-* **SDIO** (P4 ↔ C6-MINI): the slave's hardware does the flow control —
-  receive-buffer tokens (the host may write only as many packets as the C6 has
-  loaded buffers), a packet-length register for host reads, an 8-bit interrupt
-  vector each way, and shared registers that carry link state without a frame.
-  Several LLP frames are packed per CMD53 transfer, 4-byte aligned, padded to
-  the block (512 B); the bus CRC covers integrity.
-* **UART** (C6-Zero ↔ RP2350 or a PC): SLIP framing (`drivers/uart_net.c`'s
-  `slip_feed()`, as `p9share` and the UART1 downlink use) plus a CRC-16 per
-  frame, and explicit `CREDIT` frames.
-* **Versioned and resettable.** `HELLO` carries a major/minor; a major mismatch
-  is refused loudly, on both sides, with both versions printed (the two dies are
-  separate builds and will be flashed apart). Either side may send `RESET`; the
-  P4 can also hard-reset the C6 (GPIO54), and the C6 must treat a host that
-  vanished mid-transfer as normal.
-* **Priorities:** `LINK` and `P9` ahead of `ETH` in each direction, so a full
-  frame queue cannot starve control.
-* **Not in v1:** multiple logical 9P sessions per channel (one is enough: a
-  board has one P4 and one C6), compression, encryption (the wire is a PCB
-  trace).
+* **Frame:** `u8 type, u8 seq, u16 len (LE), payload`. Types: `LINK` (link
+  management, never flow-controlled), `ETH` (one Ethernet frame, 14–1514 B, no
+  FCS), `P9` (one 9P message, T or R, either direction, demuxed by
+  `fs/p9_link.c`'s T/R parity rule). Payload ceiling 4096; each side announces
+  its own, at least 1514.
+* **LINK operations:** `HELLO` (version, role, flags, session ids, max payload,
+  window, MAC), `CREDIT` (ack, window), `PROBE` (next seq), `STATE` (Wi-Fi link,
+  RSSI).
+* **Sessions instead of a RESET message:** each start picks a random session
+  id. A peer whose id changes is a restarted peer, and everything about the old
+  session is dropped in both directions. A major-version mismatch parks the link
+  in MISMATCH, loudly, on both sides, until the peer restarts.
+* **Flow control per channel:** SDIO has it in hardware. A UART gets LLP
+  credits (cumulative `ack` + `window` ≤ 64), with `PROBE` so a lost data frame
+  cannot hold its credit forever. A binding may send LINK frames ahead of queued
+  data, **except PROBE**, which must not overtake data sent before it.
+* **Liveness:** a keepalive after 1 s of silence, and DOWN after 3 s without a
+  frame. A peer that was only cut off comes back with its session intact.
+* **Serial binding:** `SLIP(header | payload | CRC-32 LE)`, the zlib/Ethernet
+  CRC (not the CRC-16 sketched here before; the tree already had CRC-32).
+* **SDIO binding:** frames packed per CMD53, 4-byte aligned, no LLP CRC. Fixed
+  in 49.6.
+* **Priorities** (LINK and P9 ahead of ETH) are a binding's queueing policy,
+  not part of `llp.c`. They arrive with the first binding that has queues
+  (49.2).
+* **Not in v1:** several 9P sessions per channel, compression, encryption
+  (the wire is a PCB trace).
 
 ## 4. Shape of the code
 
@@ -218,7 +217,7 @@ Properties carried from phase 45 §6, revised by §1:
  drivers/llp_netif.c ─┐                            ┌─ kernel/llp_bridge.c   (modem persona: rings ⇄ ETH frames)
  fs/p9_link (/c6) ────┤                            ├─ fs/p9_link (/p4 optional, 49.9)
                       ▼                            ▼
-              kernel/llp.c  (framing, HELLO, credits, priorities — shared, host-tested)
+              kernel/llp.c  (framing, HELLO, credits, PROBE — shared, host-tested)
                       │                            │
  drivers/sdio_host_esp32p4.c (slot 1)   drivers/sdio_slave_esp32c6.c
                       └──────── SDIO 4-bit, GPIO14–19 ─┘
@@ -358,21 +357,82 @@ without USB.
    this factory C6.** Only then 49.5 writes LugalOS (wiring B if it works,
    otherwise A).
 
+**Done 2026-10-12, steps 1 and 2 (wiring A):**
+* The ROM banner: `ESP-ROM:esp32c6-20220919`, `rst:0x1 (POWERON),boot:0x4
+  (DOWNLOAD(USB/UART0/SDIO_FEI_FEO))`, `waiting for download`, so USB, UART0
+  and SDIO download are all enabled on this part. `chip-id`: **ESP32-C6FH4
+  (QFN32) rev v0.2, 4 MB embedded flash**, 40 MHz crystal, base MAC
+  `58:e6:c5:d8:d4:3c`.
+* **Factory flash backed up** to `~/Source/gith/esp/p4nano-c6-factory-flash/`
+  (README there: sha256, a restore command). It is ESP-Hosted-MCU
+  `network_adapter` `release/ng-v1.0.2-330-g83efce6` (built 2024-10-18) in
+  `ota_0`, with `ota_1` erased. The boot loader's and the app's own checksum and
+  SHA-256 validate offline (`esptool image-info`). An on-chip `verify-flash`
+  could not reconnect, because the stub stays at the read's 460800 baud and a
+  new connection starts at 115200: verify in the same esptool call, or after a
+  reset.
+* What cost time: TX/RX were crossed the wrong way round (the first attempts
+  were silent in both directions). The board was reset by a power cycle of the
+  NANO's own USB.
+* **Step 3, and the pin-13 reset, confirmed:** with the jumper out, touching
+  P2 13 to GND resets the C6 (`rst:0x1 (POWERON)` — EN low is a power-up to this
+  chip), so **R54 is fitted** and GPIO54 can reset the C6 in 49.4. The factory
+  log, as a reference for 49.4: IDF `v5.4-dev-3602-ga97a7b0962`, flash DIO
+  80 MHz; `ESP-Hosted-MCU Slave FW version :: 0.0.6`, `Transport used :: SDIO
+  only`, WLAN + BLE-HCI over SDIO; `SDIO_SLAVE: sending mode:
+  SDIO_SLAVE_SEND_STREAM`, `RxQ[20] timing[0]` (stream mode for slave→host, 20
+  receive buffers, default sampling edge). BT MAC = base + 2 (`…d4:3e`). On its
+  first boot after the backup it rewrote its PHY calibration ("checksum
+  failure"), so the backup's `nvs`/`phy_init` no longer match the chip
+  byte for byte. That is harmless: both are regenerated.
+* **Wiring B works, with the factory firmware running** (a cut USB cable on
+  P2 21/23/25, 2026-10-12): the C6 enumerates as `303a:1001`,
+  `/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_58:E6:C5:D8:D4:3C-if00`
+  (serial = the base MAC). Over it, esptool's default reset puts the C6 into download
+  mode with no jumper and no pin 13 (`chip-id`, `USB mode: USB-Serial/JTAG`), and
+  `--after hard-reset` returns it to the factory app. Over the same link the
+  backup's boot loader + partition table (0x0–0x9000) and `ota_0` were checked
+  on the chip: **`verify-flash` digests match**. So 49.5 can use `c6run.py` /
+  `c6flash.py` and the existing USB console as on the C6-Zero. With the C6-Zero
+  also attached, `c6run.py` refuses to guess and wants `--port` (or
+  `LUGALOS_C6_PORT`). A `--board zero|nano` mapping in the style of
+  `p4-ports.env` is a convenience for 49.5.
+
 ---
 
 ## 6. Milestones
 
 ### Protocol, without hardware
 
-* **49.1 LLP v1: spec and reference.** §3 written out as `doc/llp.md` (frame
-  layouts, state machines for `HELLO`/`RESET`/credits, versioning rules);
-  `kernel/llp.c` with a host harness (`tests/host/llp_host.c`, ASan/UBSan:
-  framing, SLIP + CRC, credit exhaustion and recovery, a `RESET` mid-frame, a
-  version mismatch refused, frames interleaved with 9P under priority) —
-  mutation-tested like the other host harnesses; and a Python reference
-  (`host/llp/`, `uv`, `pyrefly`-clean) that speaks LLP over a serial port.
-  *Done when:* the harness and the Python reference agree on a shared vector
-  file of frames, both directions.
+* **49.1 LLP v1: spec and reference — DONE 2026-10-12.** `doc/llp.md` (the
+  specification); `kernel/llp.c` + `kernel/include/kernel/llp.h` (framing, the
+  serial binding, the HELLO/credit/PROBE/keepalive state machine; no
+  allocation, no clock, no I/O; 5.8 KB of text on rv32, built for every
+  target); `host/llp/` (the Python reference, a `uv` project, `pyrefly`-clean,
+  5 tests including a lossy-line soak); `tests/host/llp_vectors.txt`
+  (generated by the reference); `tests/host/llp_host.c` (replays the vectors,
+  fuzzes, soaks); and a runner check that the vectors are current.
+  *Done when* is met: C and Python agree on 9 frame vectors, 8 receiver
+  streams and 11 two-link scenarios, every emitted byte, event and delivery.
+  * **The soak** (two links over a simulated 3 Mbit/s UART, bit flips, lost
+    bytes, a 5 s outage, data both ways): every delivered frame intact, in
+    order, never duplicated; the receive buffer never overflowed; both sides
+    noticed the outage and came back by themselves. 2000 fuzzed streams under
+    ASan/UBSan, nothing found.
+  * **Mutation-tested:** six deliberate bugs, all caught. They were: credits
+    ignoring the receiver's free space, a HELLO always answered, PROBE not
+    skipping lost frames, stale frames accepted, the old SLIP overflow, and a
+    CRC missing a byte. The stale-frame mutation was missed at first (a serial
+    line never duplicates), which is why the `duplicates` scenario exists.
+  * **Found on the way:** `slip_feed()` (now `drivers/slip.c`) handed up the
+    *tail* of an oversized frame as a frame of its own, despite its comment
+    saying the frame was dropped. Fixed: the whole frame is now discarded up to
+    the next END. The console demux, which detected overflow by the length
+    dropping to 0, now checks `SLIP_DISCARDING`. The CRC-32 moved from
+    `kernel/idstore.c` to `kernel/crc32.c`, so LLP shares it.
+  * **Changed from §3's sketch:** no `RESET` message (session ids do that);
+    `PROBE` added; CRC-32 instead of CRC-16; frame-vs-9P priority moved to the
+    bindings (49.2).
 
 * **49.2 Two QEMU nodes, one channel.** A "modem" node (rv32, virtio-net as its
   stand-in radio) and a "host" node (no NIC) joined by virtio-console carrying
@@ -412,7 +472,13 @@ without USB.
 * **49.5 LugalOS on the C6-MINI.** The board facts of §5.2; the
   `esp32c6-mini` preset and 4 MB flash map; first flash through header P2
   (§5.3: wiring B with `c6flash.py` if the USB pair works, else wiring A with
-  the IO9 jumper). The radio, the join and
+  the IO9 jumper). Two small pieces of kernel work come with it. First, the C6 kernel's only console
+  is the USB-Serial/JTAG (`drivers/usbjtag_esp32c6.c`): with wiring A alone,
+  a UART0 console driver (GPIO16/17; probably the P4's `uart_esp32p4.c` IP) is
+  needed first. Second, `reboot download` sets `LP_AON_FORCE_DOWNLOAD_BOOT`
+  (`LP_AON_SYS_CFG_REG` bit 30) and resets, so a running C6 enters the ROM's
+  download mode without the IO9 jumper, which is then only for recovery.
+  The radio, the join and
   the stand-alone persona as on the C6-Zero, with the module's antenna. *Done
   when:* `test_esp32c6.py` passes on the NANO's C6 (its non-applicable checks —
   LED, I2C sensors — skipping), and the LCD-7B's C6 is still factory.

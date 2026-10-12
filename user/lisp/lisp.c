@@ -231,6 +231,11 @@ static const lisp_val_t sym_quasiquote = { .type = LISP_SYMBOL, .u.sym = "quasiq
 static const lisp_val_t sym_unquote = { .type = LISP_SYMBOL, .u.sym = "unquote" };
 static const lisp_val_t sym_unquote_splicing = { .type = LISP_SYMBOL, .u.sym = "unquote-splicing" };
 
+/* What make_sym() returns when the node pool is dry: never in the symbol
+ * table, never in the pool, so the collector and the table's pruning both
+ * leave it alone. */
+static lisp_val_t sym_out_of_nodes = { .type = LISP_SYMBOL, .u.sym = "#<out-of-nodes>" };
+
 #define SYM_HASH_SIZE 128
 static lisp_val_t *sym_hash_table[SYM_HASH_SIZE];
 
@@ -264,7 +269,10 @@ static int gc_free_nodes(void);
 static unsigned long gc_in_form_count;
 
 /* Node allocation */
-static lisp_val_t *alloc_node(lisp_type_t type) {
+/* A node, or NULL when the pool is dry and collecting found nothing to give
+ * back. On NULL the exhaustion flag is set and reported once. Callers that
+ * can fail cleanly use this; everyone else takes alloc_node()'s clamp. */
+static lisp_val_t *alloc_node_or_null(lisp_type_t type) {
     /* S3: reuse a reclaimed cell before ever touching the bump cursor.
      * Always safe to do here regardless of *when* alloc_node() is called
      * (mid-expression or not) -- unlike running a collection itself (see
@@ -330,15 +338,32 @@ static lisp_val_t *alloc_node(lisp_type_t type) {
          * The clamp is kept -- allocation still has to return something
          * writable -- but it is no longer load-bearing, because lisp_eval()
          * refuses to descend once this flag is set. Nothing gets built out of
-         * the aliased node. */
+         * the aliased node.
+         *
+         * Not quite nothing, it turned out (2026-10-12): the *reader* is not
+         * lisp_eval(), and it kept interning symbols. make_sym() linked the
+         * clamped slot into the symbol table, again and again, until it
+         * headed a bucket it was already in and pointed at itself -- and the
+         * next lookup in that bucket spun forever. That was the runner's
+         * long-standing RV64 "stall", read off the live guest. make_sym() now
+         * uses alloc_node_or_null() and never links a clamped slot. */
         if (!node_pool_exhausted_warned) {
             printk("[Lisp Error] Node pool exhausted! Further evaluation will "
                    "produce wrong results until the shell restarts.\n");
             node_pool_exhausted_warned = true;
         }
-        node_pool_idx = NODE_POOL_SIZE - 1;
+        return NULL;
     }
     lisp_val_t *v = &node_pool[node_pool_idx++];
+    v->type = type;
+    return v;
+}
+
+static lisp_val_t *alloc_node(lisp_type_t type) {
+    lisp_val_t *v = alloc_node_or_null(type);
+    if (v) return v;
+    /* The clamp (see above): the pool's last slot, aliased. */
+    v = &node_pool[NODE_POOL_SIZE - 1];
     v->type = type;
     return v;
 }
@@ -1111,7 +1136,14 @@ lisp_val_t *make_sym(const char *sym) {
         }
     }
 
-    lisp_val_t *v = alloc_node(LISP_SYMBOL);
+    /* Out of nodes: hand back one static, uninterned symbol rather than a
+     * clamped pool slot. Linking the clamped slot into a chain would, on the
+     * second time round, make it point at itself (alloc_node_or_null()'s
+     * comment); writing its name would overwrite whatever live symbol owns
+     * that slot. Nothing evaluates the result -- the exhaustion flag is set
+     * -- so its only job is to be a harmless, distinct value. */
+    lisp_val_t *v = alloc_node_or_null(LISP_SYMBOL);
+    if (!v) return &sym_out_of_nodes;
     char *slot = intern_string(sym);
     v->u.sym = slot;
     v->u.sym_next = sym_hash_table[bucket];

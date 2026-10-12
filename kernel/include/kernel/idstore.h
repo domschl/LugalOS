@@ -176,11 +176,10 @@ int idstore_writer_add_field(idstore_writer_t *w, uint8_t type, const void *val,
  * to `dev`. Returns 0, or -1 if the device write failed. */
 int idstore_writer_commit(idstore_writer_t *w, block_dev_t *dev);
 
-/* CRC-32 (the IEEE 802.3 polynomial, init/final 0xFFFFFFFF -- the same
- * construction as zip and Ethernet, so any host tool can check a record
- * without a bespoke implementation). Exposed for tools/provision.py (I2) and
- * for I7's "corrupt a byte and confirm the CRC catches it" verification. */
-uint32_t crc32_compute(const void *data, uint32_t len);
+/* crc32_compute() -- the record's CRC -- lives in kernel/crc32.h since 49.1
+ * (the LLP serial binding uses it too). Still reached through this header by
+ * I7's "corrupt a byte and confirm the CRC catches it" verification. */
+#include "kernel/crc32.h"
 
 /* I3, §4: "the identity store must join [p9_auth_path_is_secret()'s guard],
  * and the test for that belongs with the store rather than with the server."
