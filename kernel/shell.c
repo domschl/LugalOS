@@ -789,6 +789,7 @@ static void cmd_help_summary(void) {
     cprintf("  e [file]        - Full-screen Emacs-style editor\n");
     cprintf("  ed [file]       - Teletype line editor\n");
     cprintf("  lisp            - Interactive Scheme / Lisp REPL\n");
+    cprintf("  (help)          - List bound Lisp primitives (works from 'lisp' or shell)\n");
     cprintf("  chess           - Play chess (appliance & canvas ribbon)\n");
     cprintf("  canvas [split|full|close] - Manage graphics canvas\n");
     cprintf("  cc <src> <dst>  - Compile C11 source to RISC-V ELF (chibicc)\n");
