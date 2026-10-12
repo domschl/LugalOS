@@ -61,6 +61,8 @@ struct zmap_state {
 
     uint16_t edge_count;
     struct zmap_edge edges[ZMAP_MAX_EDGES];
+
+    bool zoom_mode;
 };
 
 /* Lifecycle */
@@ -71,6 +73,17 @@ void zmap_close(struct zmap_state *s);
 /* Turn hooks */
 void zmap_on_turn(struct zmap_state *s, struct z_vm *vm);
 void zmap_record_command(struct zmap_state *s, const uint8_t *line, int len);
+
+/* Serialization & Persistence */
+uint32_t zmap_serialize(const struct zmap_state *s, uint8_t *buf, uint32_t cap);
+int zmap_deserialize(struct zmap_state *s, const uint8_t *buf, uint32_t len);
+int zmap_save(const struct zmap_state *s, const char *path);
+int zmap_load(struct zmap_state *s, const char *path);
+
+/* Zoom control */
+void zmap_toggle_zoom(struct zmap_state *s);
+void zmap_set_zoom(struct zmap_state *s, bool zoom);
+bool zmap_get_zoom(const struct zmap_state *s);
 
 /* Render */
 void zmap_render(struct zmap_state *s);

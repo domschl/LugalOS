@@ -10,6 +10,7 @@
 #include <string.h>
 
 #ifdef ZMACHINE_HOST
+#include <stdio.h>
 static inline bool console_canvas(const uint8_t *req, uint32_t n, uint8_t *reply)
 {
     (void)req; (void)n; (void)reply;
@@ -22,6 +23,7 @@ static inline bool console_canvas(const uint8_t *req, uint32_t n, uint8_t *reply
 #include "kernel/console.h"
 #include "kernel/printk.h"
 #include "drivers/screen.h"
+#include "fs/vfs.h"
 #endif
 
 /* Grid geometry */
@@ -235,6 +237,71 @@ static void resolve_placement(struct zmap_state *s, int16_t base_gx, int16_t bas
 /* Lifecycle                                                          */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* Helpers for big-endian serialization & initials                    */
+/* ------------------------------------------------------------------ */
+
+static void p16(uint8_t **p, uint16_t v)
+{
+    *(*p)++ = (uint8_t)(v >> 8);
+    *(*p)++ = (uint8_t)(v & 0xFFu);
+}
+
+static uint16_t g16(const uint8_t **p)
+{
+    uint16_t v = (uint16_t)((uint16_t)(*(*p)) << 8);
+    v = (uint16_t)(v | (*(*p + 1u)));
+    *p += 2u;
+    return v;
+}
+
+static void get_room_initials(const char *name, char out[3])
+{
+    out[0] = '?'; out[1] = '?'; out[2] = '\0';
+    if (!name || !name[0]) return;
+
+    /* Skip leading articles "The ", "the ", "A ", "An " */
+    if (strncmp(name, "The ", 4) == 0 || strncmp(name, "the ", 4) == 0) name += 4;
+    else if (strncmp(name, "A ", 2) == 0 || strncmp(name, "a ", 2) == 0) name += 2;
+    else if (strncmp(name, "An ", 3) == 0 || strncmp(name, "an ", 3) == 0) name += 3;
+
+    while (*name == ' ' || *name == '\t') name++;
+    if (!*name) return;
+
+    char c1 = *name++;
+    if (c1 >= 'a' && c1 <= 'z') c1 = (char)(c1 - 'a' + 'A');
+    out[0] = c1;
+
+    /* Look for second word (skipping "of ", "the ", "and ") */
+    char c2 = '\0';
+    const char *p = name;
+    while (*p) {
+        if (*p == ' ' || *p == '\t') {
+            while (*p == ' ' || *p == '\t') p++;
+            if (*p && strncmp(p, "of ", 3) != 0 && strncmp(p, "the ", 4) != 0 &&
+                strncmp(p, "and ", 4) != 0) {
+                c2 = *p;
+                if (c2 >= 'a' && c2 <= 'z') c2 = (char)(c2 - 'a' + 'A');
+                break;
+            }
+        } else {
+            p++;
+        }
+    }
+
+    if (c2 != '\0') {
+        out[1] = c2;
+    } else {
+        char sc = *name;
+        if (sc >= 'a' && sc <= 'z') sc = (char)(sc - 'a' + 'A');
+        out[1] = sc ? sc : ' ';
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Lifecycle                                                          */
+/* ------------------------------------------------------------------ */
+
 bool zmap_init(struct zmap_state *s)
 {
     uint8_t req[8] = { 'L', SCREEN_LAYOUT_SPLIT_HALF }, reply[SCREEN_REPLY_LEN];
@@ -254,6 +321,7 @@ bool zmap_init(struct zmap_state *s)
     s->current_room = 0;
     s->last_room = 0;
     s->last_dir = ZMAP_DIR_NONE;
+    s->zoom_mode = false;
 
     canvas_clear();
     return true;
@@ -267,6 +335,7 @@ void zmap_reset(struct zmap_state *s)
     s->current_room = 0;
     s->last_room = 0;
     s->last_dir = ZMAP_DIR_NONE;
+    s->zoom_mode = false;
     if (s->active) {
         canvas_clear();
     }
@@ -279,6 +348,340 @@ void zmap_close(struct zmap_state *s)
         (void)console_canvas(req, 2, reply);
         s->active = false;
     }
+}
+
+void zmap_toggle_zoom(struct zmap_state *s)
+{
+    if (!s) return;
+    s->zoom_mode = !s->zoom_mode;
+}
+
+void zmap_set_zoom(struct zmap_state *s, bool zoom)
+{
+    if (!s) return;
+    s->zoom_mode = zoom;
+}
+
+bool zmap_get_zoom(const struct zmap_state *s)
+{
+    return s ? s->zoom_mode : false;
+}
+
+/* ------------------------------------------------------------------ */
+/* Serialization & Persistence                                        */
+/* ------------------------------------------------------------------ */
+
+uint32_t zmap_serialize(const struct zmap_state *s, uint8_t *buf, uint32_t cap)
+{
+    if (!s || !buf) return 0;
+    uint32_t needed = 18u + (uint32_t)s->room_count * 43u + (uint32_t)s->edge_count * 6u;
+    if (cap < needed) return 0;
+
+    uint8_t *p = buf;
+    *p++ = 'Z'; *p++ = 'M'; *p++ = 'A'; *p++ = 'P';
+    p16(&p, 1u); /* version 1 */
+    p16(&p, s->zoom_mode ? 1u : 0u);
+    p16(&p, s->room_count);
+    p16(&p, s->edge_count);
+    p16(&p, s->current_room);
+    p16(&p, s->last_room);
+    *p++ = s->last_dir;
+    *p++ = 0; /* reserved */
+
+    for (uint16_t i = 0; i < s->room_count; i++) {
+        p16(&p, s->rooms[i].obj_id);
+        p16(&p, (uint16_t)s->rooms[i].gx);
+        p16(&p, (uint16_t)s->rooms[i].gy);
+        *p++ = s->rooms[i].visited;
+        memcpy(p, s->rooms[i].name, ZMAP_NAME_MAX);
+        p += ZMAP_NAME_MAX;
+    }
+
+    for (uint16_t i = 0; i < s->edge_count; i++) {
+        p16(&p, s->edges[i].from_obj);
+        p16(&p, s->edges[i].to_obj);
+        *p++ = s->edges[i].dir;
+        *p++ = 0;
+    }
+
+    return (uint32_t)(p - buf);
+}
+
+int zmap_deserialize(struct zmap_state *s, const uint8_t *buf, uint32_t len)
+{
+    if (!s || !buf || len < 18u) return -1;
+    const uint8_t *p = buf;
+    if (p[0] != 'Z' || p[1] != 'M' || p[2] != 'A' || p[3] != 'P') return -1;
+    p += 4;
+    uint16_t ver = g16(&p);
+    if (ver != 1u) return -1;
+    uint16_t zoom = g16(&p);
+    uint16_t rc = g16(&p);
+    uint16_t ec = g16(&p);
+    uint16_t cur = g16(&p);
+    uint16_t last = g16(&p);
+    uint8_t ldir = *p++;
+    p++; /* reserved */
+
+    if (rc > ZMAP_MAX_ROOMS || ec > ZMAP_MAX_EDGES) return -1;
+    uint32_t needed = 18u + (uint32_t)rc * 43u + (uint32_t)ec * 6u;
+    if (len < needed) return -1;
+
+    s->zoom_mode = (zoom != 0u);
+    s->room_count = rc;
+    s->edge_count = ec;
+    s->current_room = cur;
+    s->last_room = last;
+    s->last_dir = ldir;
+
+    for (uint16_t i = 0; i < rc; i++) {
+        s->rooms[i].obj_id = g16(&p);
+        s->rooms[i].gx = (int16_t)g16(&p);
+        s->rooms[i].gy = (int16_t)g16(&p);
+        s->rooms[i].visited = *p++;
+        memcpy(s->rooms[i].name, p, ZMAP_NAME_MAX);
+        s->rooms[i].name[ZMAP_NAME_MAX - 1] = '\0';
+        p += ZMAP_NAME_MAX;
+    }
+
+    for (uint16_t i = 0; i < ec; i++) {
+        s->edges[i].from_obj = g16(&p);
+        s->edges[i].to_obj = g16(&p);
+        s->edges[i].dir = *p++;
+        p++; /* pad */
+    }
+
+    return 0;
+}
+
+int zmap_save(const struct zmap_state *s, const char *path)
+{
+    if (!s || !path) return -1;
+#ifdef ZMACHINE_HOST
+    FILE *f = fopen(path, "wb");
+    if (!f) return -1;
+    uint8_t hdr[18];
+    uint8_t *p = hdr;
+    *p++ = 'Z'; *p++ = 'M'; *p++ = 'A'; *p++ = 'P';
+    p16(&p, 1u);
+    p16(&p, s->zoom_mode ? 1u : 0u);
+    p16(&p, s->room_count);
+    p16(&p, s->edge_count);
+    p16(&p, s->current_room);
+    p16(&p, s->last_room);
+    *p++ = s->last_dir;
+    *p++ = 0;
+    if (fwrite(hdr, 1, sizeof(hdr), f) != sizeof(hdr)) {
+        fclose(f);
+        return -1;
+    }
+    for (uint16_t i = 0; i < s->room_count; i++) {
+        uint8_t rbuf[43];
+        p = rbuf;
+        p16(&p, s->rooms[i].obj_id);
+        p16(&p, (uint16_t)s->rooms[i].gx);
+        p16(&p, (uint16_t)s->rooms[i].gy);
+        *p++ = s->rooms[i].visited;
+        memcpy(p, s->rooms[i].name, ZMAP_NAME_MAX);
+        if (fwrite(rbuf, 1, sizeof(rbuf), f) != sizeof(rbuf)) {
+            fclose(f);
+            return -1;
+        }
+    }
+    for (uint16_t i = 0; i < s->edge_count; i++) {
+        uint8_t ebuf[6];
+        p = ebuf;
+        p16(&p, s->edges[i].from_obj);
+        p16(&p, s->edges[i].to_obj);
+        *p++ = s->edges[i].dir;
+        *p++ = 0;
+        if (fwrite(ebuf, 1, sizeof(ebuf), f) != sizeof(ebuf)) {
+            fclose(f);
+            return -1;
+        }
+    }
+    fclose(f);
+    return 0;
+#else
+    int fd = vfs_open(path, VFS_O_WRITE | VFS_O_CREATE | VFS_O_TRUNC);
+    if (fd < 0) return -1;
+    uint8_t hdr[18];
+    uint8_t *p = hdr;
+    *p++ = 'Z'; *p++ = 'M'; *p++ = 'A'; *p++ = 'P';
+    p16(&p, 1u);
+    p16(&p, s->zoom_mode ? 1u : 0u);
+    p16(&p, s->room_count);
+    p16(&p, s->edge_count);
+    p16(&p, s->current_room);
+    p16(&p, s->last_room);
+    *p++ = s->last_dir;
+    *p++ = 0;
+    int off = 0;
+    if (vfs_pwrite(fd, hdr, sizeof(hdr), off) != (int)sizeof(hdr)) {
+        vfs_close(fd);
+        return -1;
+    }
+    off += (int)sizeof(hdr);
+    for (uint16_t i = 0; i < s->room_count; i++) {
+        uint8_t rbuf[43];
+        p = rbuf;
+        p16(&p, s->rooms[i].obj_id);
+        p16(&p, (uint16_t)s->rooms[i].gx);
+        p16(&p, (uint16_t)s->rooms[i].gy);
+        *p++ = s->rooms[i].visited;
+        memcpy(p, s->rooms[i].name, ZMAP_NAME_MAX);
+        if (vfs_pwrite(fd, rbuf, sizeof(rbuf), off) != (int)sizeof(rbuf)) {
+            vfs_close(fd);
+            return -1;
+        }
+        off += (int)sizeof(rbuf);
+    }
+    for (uint16_t i = 0; i < s->edge_count; i++) {
+        uint8_t ebuf[6];
+        p = ebuf;
+        p16(&p, s->edges[i].from_obj);
+        p16(&p, s->edges[i].to_obj);
+        *p++ = s->edges[i].dir;
+        *p++ = 0;
+        if (vfs_pwrite(fd, ebuf, sizeof(ebuf), off) != (int)sizeof(ebuf)) {
+            vfs_close(fd);
+            return -1;
+        }
+        off += (int)sizeof(ebuf);
+    }
+    vfs_close(fd);
+    return 0;
+#endif
+}
+
+int zmap_load(struct zmap_state *s, const char *path)
+{
+    if (!s || !path) return -1;
+#ifdef ZMACHINE_HOST
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    uint8_t hdr[18];
+    if (fread(hdr, 1, sizeof(hdr), f) != sizeof(hdr)) {
+        fclose(f);
+        return -1;
+    }
+    const uint8_t *p = hdr;
+    if (p[0] != 'Z' || p[1] != 'M' || p[2] != 'A' || p[3] != 'P') {
+        fclose(f);
+        return -1;
+    }
+    p += 4;
+    if (g16(&p) != 1u) { fclose(f); return -1; }
+    uint16_t zoom = g16(&p);
+    uint16_t rc = g16(&p);
+    uint16_t ec = g16(&p);
+    uint16_t cur = g16(&p);
+    uint16_t last = g16(&p);
+    uint8_t ldir = *p++;
+
+    if (rc > ZMAP_MAX_ROOMS || ec > ZMAP_MAX_EDGES) {
+        fclose(f);
+        return -1;
+    }
+    s->zoom_mode = (zoom != 0u);
+    s->room_count = rc;
+    s->edge_count = ec;
+    s->current_room = cur;
+    s->last_room = last;
+    s->last_dir = ldir;
+
+    for (uint16_t i = 0; i < rc; i++) {
+        uint8_t rbuf[43];
+        if (fread(rbuf, 1, sizeof(rbuf), f) != sizeof(rbuf)) {
+            fclose(f);
+            return -1;
+        }
+        p = rbuf;
+        s->rooms[i].obj_id = g16(&p);
+        s->rooms[i].gx = (int16_t)g16(&p);
+        s->rooms[i].gy = (int16_t)g16(&p);
+        s->rooms[i].visited = *p++;
+        memcpy(s->rooms[i].name, p, ZMAP_NAME_MAX);
+        s->rooms[i].name[ZMAP_NAME_MAX - 1] = '\0';
+    }
+    for (uint16_t i = 0; i < ec; i++) {
+        uint8_t ebuf[6];
+        if (fread(ebuf, 1, sizeof(ebuf), f) != sizeof(ebuf)) {
+            fclose(f);
+            return -1;
+        }
+        p = ebuf;
+        s->edges[i].from_obj = g16(&p);
+        s->edges[i].to_obj = g16(&p);
+        s->edges[i].dir = *p++;
+    }
+    fclose(f);
+    return 0;
+#else
+    int fd = vfs_open(path, VFS_O_READ);
+    if (fd < 0) return -1;
+    uint8_t hdr[18];
+    int off = 0;
+    if (vfs_pread(fd, hdr, sizeof(hdr), off) != (int)sizeof(hdr)) {
+        vfs_close(fd);
+        return -1;
+    }
+    off += (int)sizeof(hdr);
+    const uint8_t *p = hdr;
+    if (p[0] != 'Z' || p[1] != 'M' || p[2] != 'A' || p[3] != 'P') {
+        vfs_close(fd);
+        return -1;
+    }
+    p += 4;
+    if (g16(&p) != 1u) { vfs_close(fd); return -1; }
+    uint16_t zoom = g16(&p);
+    uint16_t rc = g16(&p);
+    uint16_t ec = g16(&p);
+    uint16_t cur = g16(&p);
+    uint16_t last = g16(&p);
+    uint8_t ldir = *p++;
+
+    if (rc > ZMAP_MAX_ROOMS || ec > ZMAP_MAX_EDGES) {
+        vfs_close(fd);
+        return -1;
+    }
+    s->zoom_mode = (zoom != 0u);
+    s->room_count = rc;
+    s->edge_count = ec;
+    s->current_room = cur;
+    s->last_room = last;
+    s->last_dir = ldir;
+
+    for (uint16_t i = 0; i < rc; i++) {
+        uint8_t rbuf[43];
+        if (vfs_pread(fd, rbuf, sizeof(rbuf), off) != (int)sizeof(rbuf)) {
+            vfs_close(fd);
+            return -1;
+        }
+        off += (int)sizeof(rbuf);
+        p = rbuf;
+        s->rooms[i].obj_id = g16(&p);
+        s->rooms[i].gx = (int16_t)g16(&p);
+        s->rooms[i].gy = (int16_t)g16(&p);
+        s->rooms[i].visited = *p++;
+        memcpy(s->rooms[i].name, p, ZMAP_NAME_MAX);
+        s->rooms[i].name[ZMAP_NAME_MAX - 1] = '\0';
+    }
+    for (uint16_t i = 0; i < ec; i++) {
+        uint8_t ebuf[6];
+        if (vfs_pread(fd, ebuf, sizeof(ebuf), off) != (int)sizeof(ebuf)) {
+            vfs_close(fd);
+            return -1;
+        }
+        off += (int)sizeof(ebuf);
+        p = ebuf;
+        s->edges[i].from_obj = g16(&p);
+        s->edges[i].to_obj = g16(&p);
+        s->edges[i].dir = *p++;
+    }
+    vfs_close(fd);
+    return 0;
+#endif
 }
 
 /* ------------------------------------------------------------------ */
@@ -342,14 +745,20 @@ void zmap_render(struct zmap_state *s)
     int16_t cam_gy = cur ? cur->gy : 0;
 
     /* 1. Header Banner */
-    char banner[48];
+    char banner[64];
     banner[0] = 'M'; banner[1] = 'A'; banner[2] = 'P'; banner[3] = ':'; banner[4] = ' ';
     size_t blen = 5;
     if (cur && cur->name[0]) {
         size_t nlen = strlen(cur->name);
-        if (nlen > sizeof(banner) - 6) nlen = sizeof(banner) - 6;
+        if (nlen > 24) nlen = 24;
         memcpy(banner + blen, cur->name, nlen);
         blen += nlen;
+    }
+    const char *tag = s->zoom_mode ? " [Tab:Detail]" : " [Tab:Zoom]";
+    size_t tlen = strlen(tag);
+    if (blen + tlen < sizeof(banner) - 1) {
+        memcpy(banner + blen, tag, tlen);
+        blen += tlen;
     }
     banner[blen] = '\0';
     canvas_text(8, 4, 0, banner);
@@ -359,70 +768,95 @@ void zmap_render(struct zmap_state *s)
     int cx = s->canvas_w / 2;
     int cy = TOP_BANNER_H + (s->canvas_h - TOP_BANNER_H) / 2;
 
+    int box_w = s->zoom_mode ? 26 : BOX_W;
+    int box_h = s->zoom_mode ? 16 : BOX_H;
+    int sp_x  = s->zoom_mode ? 42 : CELL_SPACING_X;
+    int sp_y  = s->zoom_mode ? 26 : CELL_SPACING_Y;
+
     /* 3. Draw Edges first */
     for (uint16_t i = 0; i < s->edge_count; i++) {
         struct zmap_room *r1 = find_room(s, s->edges[i].from_obj);
         struct zmap_room *r2 = find_room(s, s->edges[i].to_obj);
         if (!r1 || !r2) continue;
 
-        int x1 = cx + (r1->gx - cam_gx) * CELL_SPACING_X;
-        int y1 = cy + (r1->gy - cam_gy) * CELL_SPACING_Y;
-        int x2 = cx + (r2->gx - cam_gx) * CELL_SPACING_X;
-        int y2 = cy + (r2->gy - cam_gy) * CELL_SPACING_Y;
+        int x1 = cx + (r1->gx - cam_gx) * sp_x;
+        int y1 = cy + (r1->gy - cam_gy) * sp_y;
+        int x2 = cx + (r2->gx - cam_gx) * sp_x;
+        int y2 = cy + (r2->gy - cam_gy) * sp_y;
 
         /* Skip if completely outside canvas */
-        if ((x1 < -BOX_W && x2 < -BOX_W) || (x1 > s->canvas_w + BOX_W && x2 > s->canvas_w + BOX_W) ||
-            (y1 < 0 && y2 < 0) || (y1 > s->canvas_h + BOX_H && y2 > s->canvas_h + BOX_H)) {
+        if ((x1 < -box_w && x2 < -box_w) || (x1 > s->canvas_w + box_w && x2 > s->canvas_w + box_w) ||
+            (y1 < 0 && y2 < 0) || (y1 > s->canvas_h + box_h && y2 > s->canvas_h + box_h)) {
             continue;
         }
 
         canvas_line(x1, y1, x2, y2, 1);
 
-        /* Draw elevation badge if vertical exit */
-        if (s->edges[i].dir == ZMAP_DIR_UP) {
-            canvas_text((x1 + x2) / 2 - 4, (y1 + y2) / 2 - 8, 0, "^");
-        } else if (s->edges[i].dir == ZMAP_DIR_DOWN) {
-            canvas_text((x1 + x2) / 2 - 4, (y1 + y2) / 2 - 8, 0, "v");
+        /* Draw elevation badge if vertical exit and in normal mode */
+        if (!s->zoom_mode) {
+            if (s->edges[i].dir == ZMAP_DIR_UP) {
+                canvas_text((x1 + x2) / 2 - 4, (y1 + y2) / 2 - 8, 0, "^");
+            } else if (s->edges[i].dir == ZMAP_DIR_DOWN) {
+                canvas_text((x1 + x2) / 2 - 4, (y1 + y2) / 2 - 8, 0, "v");
+            }
         }
     }
 
     /* 4. Draw Room Boxes */
     for (uint16_t i = 0; i < s->room_count; i++) {
         struct zmap_room *r = &s->rooms[i];
-        int rx = cx + (r->gx - cam_gx) * CELL_SPACING_X;
-        int ry = cy + (r->gy - cam_gy) * CELL_SPACING_Y;
-        int bx = rx - BOX_W / 2;
-        int by = ry - BOX_H / 2;
+        int rx = cx + (r->gx - cam_gx) * sp_x;
+        int ry = cy + (r->gy - cam_gy) * sp_y;
+        int bx = rx - box_w / 2;
+        int by = ry - box_h / 2;
 
         /* Clip to canvas bounds */
-        if (bx + BOX_W < 0 || bx >= s->canvas_w || by + BOX_H < TOP_BANNER_H || by >= s->canvas_h) {
+        if (bx + box_w < 0 || bx >= s->canvas_w || by + box_h < TOP_BANNER_H || by >= s->canvas_h) {
             continue;
         }
 
-        /* 8-character label, skipping leading articles */
-        const char *display_name = r->name;
-        if (strncmp(display_name, "The ", 4) == 0) display_name += 4;
-        else if (strncmp(display_name, "the ", 4) == 0) display_name += 4;
-        else if (strncmp(display_name, "A ", 2) == 0) display_name += 2;
-        else if (strncmp(display_name, "An ", 3) == 0) display_name += 3;
+        if (s->zoom_mode) {
+            char inits[3];
+            get_room_initials(r->name, inits);
 
-        char label[10];
-        size_t nlen = strlen(display_name);
-        if (nlen > 8) nlen = 8;
-        memcpy(label, display_name, nlen);
-        label[nlen] = '\0';
-
-        if (r->obj_id == s->current_room) {
-            /* Current room: White fill, draw text, then invert interior for crisp white-on-black */
-            canvas_rect(bx, by, BOX_W, BOX_H, 0);
-            canvas_text(bx + 6, by + 5, 0, label);
-            canvas_invert(bx, by, BOX_W, BOX_H);
-            canvas_frame(bx - 2, by - 2, BOX_W + 4, BOX_H + 4, 1);
+            if (r->obj_id == s->current_room) {
+                /* Current room in overview: inverted box with outer frame */
+                canvas_rect(bx, by, box_w, box_h, 0);
+                canvas_text(bx + 5, by, 0, inits);
+                canvas_invert(bx, by, box_w, box_h);
+                canvas_frame(bx - 2, by - 2, box_w + 4, box_h + 4, 1);
+            } else {
+                /* Visited room in overview: white rect with black frame */
+                canvas_rect(bx, by, box_w, box_h, 0);
+                canvas_frame(bx, by, box_w, box_h, 1);
+                canvas_text(bx + 5, by, 0, inits);
+            }
         } else {
-            /* Visited room: White fill with black outline */
-            canvas_rect(bx, by, BOX_W, BOX_H, 0);
-            canvas_frame(bx, by, BOX_W, BOX_H, 1);
-            canvas_text(bx + 6, by + 5, 0, label);
+            /* 8-character label, skipping leading articles */
+            const char *display_name = r->name;
+            if (strncmp(display_name, "The ", 4) == 0) display_name += 4;
+            else if (strncmp(display_name, "the ", 4) == 0) display_name += 4;
+            else if (strncmp(display_name, "A ", 2) == 0) display_name += 2;
+            else if (strncmp(display_name, "An ", 3) == 0) display_name += 3;
+
+            char label[10];
+            size_t nlen = strlen(display_name);
+            if (nlen > 8) nlen = 8;
+            memcpy(label, display_name, nlen);
+            label[nlen] = '\0';
+
+            if (r->obj_id == s->current_room) {
+                /* Current room: White fill, draw text, then invert interior for crisp white-on-black */
+                canvas_rect(bx, by, box_w, box_h, 0);
+                canvas_text(bx + 6, by + 5, 0, label);
+                canvas_invert(bx, by, box_w, box_h);
+                canvas_frame(bx - 2, by - 2, box_w + 4, box_h + 4, 1);
+            } else {
+                /* Visited room: White fill with black outline */
+                canvas_rect(bx, by, box_w, box_h, 0);
+                canvas_frame(bx, by, box_w, box_h, 1);
+                canvas_text(bx + 6, by + 5, 0, label);
+            }
         }
     }
 }
