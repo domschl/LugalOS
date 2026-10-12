@@ -4221,6 +4221,84 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
     return results
 
 
+def _lisp_sym_bucket(name: str, buckets: int = 128) -> int:
+    """user/lisp/lisp.c's sym_hash() (FNV-1a, 32-bit) and SYM_HASH_SIZE."""
+    h = 2166136261
+    for c in name.encode():
+        h = ((h ^ c) * 16777619) & 0xFFFFFFFF
+    return h % buckets
+
+
+def test_lisp_reader_after_node_exhaustion(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """The reader must not corrupt the symbol table once the node pool is dry.
+
+    Found 2026-10-12 as the suite's RV64 "stall": the Phase 48 CAS filled the
+    pool with live definitions, and every form typed after that was *read*
+    while it was exhausted. alloc_node() then clamps to the pool's last slot,
+    and lisp_eval() refusing to descend did not stop make_sym() -- the reader
+    -- from linking that one slot into the symbol table over and over, until
+    it headed a bucket it was already in and pointed at itself. The next
+    lookup in that bucket never returned (read off the live guest: three
+    buckets headed by node 32767, sym_next == itself).
+
+    Deterministic, not probabilistic: the symbols read while exhausted are
+    chosen to share one hash bucket, so the clamped slot would be inserted
+    into a bucket it already heads. Before the fix this hangs on that line;
+    after it, the REPL answers, and once the live data is released the table
+    still finds `+`.
+    """
+    name = f"Lisp Reader Survives A Dry Node Pool: No Symbol-Table Cycle ({arch_name})"
+
+    # The reading has to happen *inside* the form that ran the pool dry:
+    # between top-level forms the safe-point collector frees that form's
+    # garbage and the reader is fed again. lisp_eval_string() -- `load`, and
+    # the boot's stdlib.lisp/init.lisp -- reads on after a form has exhausted
+    # the pool, which is how the CAS loads hit it. And the collector that
+    # declared exhaustion still hands out what it freed (up to 1/32 of the
+    # pool), so the reader only reaches the clamp once those are gone: the
+    # file must carry more symbols than that. Hence a file of its own, on an
+    # image of its own -- far beyond what a 256-byte Lisp string can write.
+    target = _lisp_sym_bucket("zq0000")
+    same = [n for n in (f"zq{i:04d}" for i in range(20000)) if _lisp_sym_bucket(n) == target][:8]
+    lines = ["(fill)"]
+    for k in range(60):
+        lines.append("'(" + " ".join(f"y{k:02d}x{j:02d}" for j in range(50)) + ")")
+    lines.append("'(" + " ".join(same) + ")")
+    # An image holding only this file: nothing on the usual card is needed,
+    # and that card is already close to the image's 512 KB.
+    arch_img = img_path.with_name(f"test_{arch_name}_lispexh_sd.img")
+    with tempfile.TemporaryDirectory(dir=img_path.parent) as tmp:
+        stage = Path(tmp) / "sd_root"
+        stage.mkdir()
+        (stage / "exh.lsp").write_text("\n".join(lines) + "\n")
+        r = subprocess.run([sys.executable, str(Path(__file__).resolve().parent.parent / "tools" / "create_sd_image.py"),
+                            str(arch_img), str(stage)], capture_output=True, text=True)
+        if r.returncode != 0:
+            return (name, False, "could not build the test image:\n" + r.stdout + r.stderr)
+
+    session = QemuSession(elf_path, arch_img, arch_name)
+    try:
+        session.start()
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=5.0)
+        if not ok:
+            return (name, False, "no boot:\n" + log)
+        ok, log = session.send_and_expect(
+            "lisp\n(define keep '())\n(define (fill) (set! keep (cons 1 keep)) (fill))",
+            r"=> ", timeout=10.0)
+        if not ok:
+            return (name, False, "no Lisp prompt:\n" + log[-1500:])
+        ok, log = session.send_and_expect('(load "/sd0/exh.lsp")', r"Node pool exhausted.*=> ", timeout=60.0)
+        if not ok:
+            return (name, False, "the load never came back after the pool ran dry "
+                                 "(symbol-table cycle?):\n" + log[-1500:])
+        ok, log = session.send_and_expect("(set! keep '())\n(+ 1 2)", r"=> 3\b", timeout=20.0)
+        if not ok:
+            return (name, False, "after releasing the pool, (+ 1 2) did not answer 3:\n" + log[-1500:])
+        return (name, True, "")
+    finally:
+        session.close()
+
+
 def test_qemu_architecture_with_retry(
     elf_path: Path, img_path: Path, arch_name: str, max_attempts: int = 3,
 ) -> list[tuple[str, bool, str]]:
@@ -8719,6 +8797,7 @@ def main() -> int:
                 print(f"  [FAIL] {name}\n    Log Output:\n{log}")
 
         _run_single(test_terminal_crlf(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_lisp_reader_after_node_exhaustion(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_virtio_link(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_crud_via_p9lib(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_9p_iounit(rv64_elf, img_for("rv64"), "rv64"))
@@ -8766,6 +8845,7 @@ def main() -> int:
                 print(f"  [FAIL] {name}\n    Log Output:\n{log}")
 
         _run_single(test_terminal_crlf(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_lisp_reader_after_node_exhaustion(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_virtio_link(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_crud_via_p9lib(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_9p_iounit(rv32_elf, img_for("rv32"), "rv32"))
