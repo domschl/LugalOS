@@ -45,3 +45,7 @@ tools/picotool
 
 # Hardware-specific test/bench outputs
 tests/lisp_bench*hw*.json
+
+# Obsidian editor state
+.obsidian/
+

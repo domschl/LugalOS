@@ -1,4 +1,4 @@
-# LugalOS Computer Algebra System (CAS) — Student & User Manual
+q# LugalOS Computer Algebra System (CAS) — Student & User Manual
 
 LugalOS features a self-contained, exact Computer Algebra System (CAS) written in compact Scheme-like Lisp. It runs in freestanding, zero-floating-point environments across RISC-V microcontrollers (such as the RP2350 Hazard3 and ESP32-P4) and virtual machines.
 
@@ -217,11 +217,11 @@ Consider the cubic polynomial $f(x) = x^3 - 3x$:
 
 *Figure 4.1: Real roots and extrema of $f(x) = x^3 - 3x$ plotted on an 800×480 LugalOS canvas ribbon.*
 
-To graph this cubic function interactively:
+To graph this cubic function across the full screen:
 ```lisp
 (load "/sd0/cas/plot.lisp")
-(plot '(- (^ x 3) (* 3 x)) '(x -2.5 2.5)
-      '((title . "Roots & Extrema: x^3 - 3x") (samples . 60)))
+(plot "x^3 - 3*x" '(x -5/2 5/2)
+      '((title . "Roots & Extrema: x^3 - 3x") (samples . 60) (layout . canvas)))
 ```
 
 ---
@@ -328,13 +328,13 @@ Consider $f(x) = x \sin(x)$:
 
 ![Function and Symbolic Derivative of x sin(x)](../assets/screenshots/cas_diff_plot.png)
 
-*Figure 6.1: The function $f(x) = x \sin(x)$ plotted alongside its symbolic derivative $f'(x) = \sin(x) + x \cos(x)$ on $x \in [-7, 7]$.*
+*Figure 6.1: The function $f(x) = x \sin(x)$ plotted alongside its symbolic derivative $f'(x) = \sin(x) + x \cos(x)$ on $x \in [-6, 6]$.*
 
-To plot a function and its symbolic derivative:
+To plot a function and its symbolic derivative across the full screen:
 ```lisp
 (load "/sd0/cas/plot.lisp")
-(plot-diff '(* x (sin x)) '(x -7 7)
-           '((title . "f(x) = x*sin(x) & f'(x)") (samples . 70)))
+(plot-diff "x*sin(x)" '(x -6 6)
+           '((title . "f(x) = x*sin(x) & df/dx") (samples . 70) (layout . canvas)))
 ```
 
 ---
@@ -413,11 +413,11 @@ LugalOS's plotting engine evaluates removable singularities cleanly using CAS li
 
 *Figure 7.1: The sinc function $f(x) = \frac{\sin x}{x}$ plotted across $x \in [-12, 12]$, smoothly crossing the removable singularity at $(0, 1)$.*
 
-To plot this function:
+To plot this function across the full screen:
 ```lisp
 (load "/sd0/cas/plot.lisp")
-(plot '(/ (sin x) x) '(x -12 12)
-      '((title . "sinc(x) = sin(x)/x") (samples . 80)))
+(plot "sin(x)/x" '(x -12 12)
+      '((title . "sinc(x) = sin(x)/x") (samples . 80) (layout . canvas)))
 ```
 
 ---
@@ -481,13 +481,13 @@ Using `plot-multi`, you can graph a transcendental function alongside several of
 
 ![Taylor Series Convergence for sin(x)](../assets/screenshots/cas_taylor_plot.png)
 
-*Figure 8.1: $\sin(x)$ compared against its 1st-degree tangent $T_1(x) = x$ and 3rd-degree Taylor polynomial $T_3(x) = x - x^3/6$ across $x \in [-4, 4]$.*
+*Figure 8.1: $\sin(x)$ compared against its 1st-degree tangent $T_1(x) = x$ and 3rd-degree Taylor polynomial $T_3(x) = x - x^3/6$ across $x \in [-3, 3]$.*
 
-To overlay these curves:
+To overlay these curves across the full screen:
 ```lisp
 (load "/sd0/cas/plot.lisp")
-(plot-multi (list '(sin x) 'x '(- x (/ (^ x 3) 6))) '(x -4 4)
-            '((title . "sin(x) vs Taylor T1, T3") (samples . 70)))
+(plot-multi (list '(sin x) 'x '(- x (/ (^ x 3) 6))) '(x -3 3)
+            '((title . "sin(x) vs Taylor T1, T3") (samples . 70) (layout . canvas)))
 ```
 
 ---
@@ -707,6 +707,7 @@ Options are passed as an association list:
 * `'samples`: Number of intervals sampled across the domain (default: 40–50).
 * `'color`: Curve color index (default: 1).
 * `'ymin`, `'ymax`: Explicit overrides for vertical axis bounds (bypasses auto-scaling).
+* `'layout`: Screen layout mode: `'canvas` for full-screen display (hides the console window), or `'split` (default) to share the screen with the text terminal. You can also toggle layouts interactively at any time with `(canvas-window 'canvas)` or `(canvas-window 'split)`.
 
 ### Parametric Curves: Exact Unit Circle
 Parametric plotting maps an independent parameter $t \in [t_{\min}, t_{\max}]$ to coordinate pairs $(x(t), y(t))$. A canonical example is the unit circle:
@@ -714,13 +715,13 @@ $$x(t) = \cos(t), \quad y(t) = \sin(t), \quad t \in [0, 2\pi]$$
 
 ![Parametric Unit Circle Plot](../assets/screenshots/cas_parametric_circle.png)
 
-*Figure 12.1: Parametric unit circle $(x(t), y(t)) = (\cos t, \sin t)$ plotted for $t \in [0, 7]$ on an 800×480 LugalOS canvas.*
+*Figure 12.1: Parametric unit circle $(x(t), y(t)) = (\cos t, \sin t)$ plotted for $t \in [0, 7]$ across the full 800×480 LugalOS screen.*
 
-To generate this parametric curve interactively:
+To generate this parametric curve across the full screen:
 ```lisp
 (load "/sd0/cas/plot.lisp")
 (plot-parametric '(cos t) '(sin t) '(t 0 7)
-                 '((title . "Parametric: (cos t, sin t)") (samples . 60)))
+                 '((title . "Parametric: (cos t, sin t)") (samples . 60) (layout . canvas)))
 ```
 
 ---
