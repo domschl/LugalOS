@@ -45,6 +45,8 @@
 
 #include "drivers/sdmmc.h"
 #include "drivers/driver_task.h"
+#include "drivers/sdhost_esp32p4.h"
+#include "kernel/lock.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
 #include "kernel/time.h"
@@ -176,6 +178,12 @@
  * is arithmetic on this, and a wrong value here is a card that initialises at
  * the wrong bus clock rather than one that fails. */
 #define SDMMC_SRC_HZ            160000000u
+/* The host-side divider both slots share, fixed since 49.4: 160/8 = 20 MHz,
+ * which the microSD takes undivided and from which each card's own divider
+ * (CLKDIV, 2n) makes the rest -- 400 kHz for identification is 20 MHz/(2*25).
+ * Changing it per card would change the other slot's clock under it. */
+#define SDMMC_HOST_DIV          8u
+#define SDMMC_BASE_HZ           (SDMMC_SRC_HZ / SDMMC_HOST_DIV)
 
 /* --- IO_MUX and the GPIO matrix (TRM chapter 10) ------------------------
  *
@@ -243,7 +251,7 @@
 #define  CLKENA_CCLK_EN_0       (1u << 0)
 #define SD_TMOUT            (SD_BASE + 0x014)   /* [7:0] response, [31:8] data */
 #define SD_CTYPE            (SD_BASE + 0x018)
-#define  CTYPE_WIDTH4_0         (1u << 0)
+#define  CTYPE_WIDTH4_0         (1u << 0)    /* card n: bit n */
 #define SD_BLKSIZ           (SD_BASE + 0x01c)
 #define SD_BYTCNT           (SD_BASE + 0x020)
 #define SD_INTMASK          (SD_BASE + 0x024)
@@ -285,6 +293,7 @@
 #define  CMD_WRITE              (1u << 10)   /* 0 = read from card */
 #define  CMD_WAIT_PRVDATA       (1u << 13)
 #define  CMD_SEND_INIT          (1u << 15)   /* the 80 clocks before CMD0 */
+#define  CMD_CARD_NUM_S         16           /* [20:16]: which card (slot) */
 #define  CMD_UPDATE_CLK_ONLY    (1u << 21)
 #define  CMD_USE_HOLD_REG       (1u << 29)
 #define  CMD_START              (1u << 31)
@@ -308,6 +317,34 @@
 #define  INT_CMD_ERRORS         (INT_RESP_ERR | INT_RCRC | INT_RTO)
 #define  INT_DATA_ERRORS        (INT_DCRC | INT_DRTO | INT_HTO | INT_FRUN | \
                                  INT_SBE | INT_EBE)
+
+/* --- One controller, two slots (49.4, plan/phase49_c6_network_nodes.md) ---
+ *
+ * Slot 0 is the microSD card (this file); slot 1 is the C6 on SDIO
+ * (drivers/sdio_esp32p4.c). They share the command path, the status
+ * registers, the IDMAC and the host-side clock divider, so every operation
+ * runs under g_host_lock with g_card saying which card it is for: the card
+ * number goes into every command, and the per-card bits of CLKENA, CLKSRC,
+ * CLKDIV, CTYPE and RST_N are touched only for that card. A ylock, because a
+ * transfer polls for milliseconds and the other slot's user should yield, and
+ * re-entrant, because card init calls its own locked block reads. */
+static ylock_t  g_host_lock;
+static uint32_t g_card;           /* the card the lock holder is driving */
+
+void sdhost_acquire(uint32_t card) {
+    ylock_acquire(&g_host_lock);
+    g_card = card;
+}
+
+void sdhost_release(void) {
+    ylock_release(&g_host_lock);
+}
+
+/* The current card's bus width: CTYPE bit n is card n's 4-bit mode. */
+void sdhost_set_width4(bool four) {
+    if (four) REG(SD_CTYPE) |= (1u << g_card);
+    else      REG(SD_CTYPE) &= ~(1u << g_card);
+}
 
 /* --- What this driver remembers about the card in the slot --------------- */
 
@@ -474,7 +511,7 @@ static void sdmmc_clk_init(void) {
      * before it is used. Two, which is IDF's SDMMC_LL_DEFAULT_DIV at exactly
      * this point in its own bring-up; sdmmc_set_bus_clock() replaces it with
      * the identification-mode value moments later. */
-    sdmmc_set_host_div(2);
+    sdmmc_set_host_div(SDMMC_HOST_DIV);
 }
 
 /* --- Commands ------------------------------------------------------------
@@ -494,7 +531,7 @@ static int sdmmc_cmd_start(uint32_t cmd, uint32_t arg) {
         if (time_get_us() > deadline) return -1;
     }
     REG(SD_CMDARG) = arg;
-    REG(SD_CMD) = cmd | CMD_START | CMD_USE_HOLD_REG;
+    REG(SD_CMD) = cmd | ((g_card & 0x1fu) << CMD_CARD_NUM_S) | CMD_START | CMD_USE_HOLD_REG;
     while (REG(SD_CMD) & CMD_START) {
         if (time_get_us() > deadline) return -1;
     }
@@ -516,42 +553,29 @@ static int sdmmc_clock_update(void) {
  * and 20 MHz as 160/8 with the second stage bypassed. Both are exact. */
 static uint32_t sdmmc_set_bus_clock(uint32_t want_khz) {
     uint32_t want_hz = want_khz * 1000u;
-    uint32_t host_div = 2, card_div = 0;
-
-    uint32_t total = (SDMMC_SRC_HZ + want_hz - 1u) / want_hz;
-    if (total <= 16u) {
-        host_div = (total < 2u) ? 2u : total;
-        card_div = 0;
-    } else {
-        for (uint32_t h = 2; h <= 16u; h++) {
-            uint32_t inter = SDMMC_SRC_HZ / h;
-            uint32_t c = (inter + 2u * want_hz - 1u) / (2u * want_hz);
-            if (c < 1u) c = 1u;
-            if (c <= 255u) { host_div = h; card_div = c; break; }
-        }
+    uint32_t c = g_card;
+    /* The card's own divider: SDMMC_BASE_HZ / (2 * div), 0 = undivided. */
+    uint32_t card_div = 0;
+    if (want_hz < SDMMC_BASE_HZ) {
+        card_div = (SDMMC_BASE_HZ + 2u * want_hz - 1u) / (2u * want_hz);
+        if (card_div > 255u) card_div = 255u;
     }
 
-    REG(SD_CLKENA) = 0;
+    REG(SD_CLKENA) &= ~(1u << c);
     if (sdmmc_clock_update() != 0) return 0;
 
-    REG(SD_CLKSRC) = 0;                    /* card 0 takes divider 0 */
-    REG(SD_CLKDIV) = card_div;
-    sdmmc_set_host_div(host_div);
+    REG(SD_CLKSRC) = (REG(SD_CLKSRC) & ~(3u << (2u * c))) | (c << (2u * c));   /* card c: divider c */
+    REG(SD_CLKDIV) = (REG(SD_CLKDIV) & ~(0xffu << (8u * c))) | (card_div << (8u * c));
     if (sdmmc_clock_update() != 0) return 0;
 
-    REG(SD_CLKENA) = CLKENA_CCLK_EN_0;
+    REG(SD_CLKENA) |= (1u << c);
     if (sdmmc_clock_update() != 0) return 0;
 
-    uint32_t real_hz = SDMMC_SRC_HZ / host_div / (card_div ? (2u * card_div) : 1u);
+    uint32_t real_hz = SDMMC_BASE_HZ / (card_div ? (2u * card_div) : 1u);
 
-    /* Timeouts, in card-clock cycles, so they follow the clock rather than
-     * being a constant that means different things at 400 kHz and 20 MHz.
-     * 100 ms of data timeout is what IDF uses and is far longer than any
-     * single-block read; the response timeout field is only 8 bits, and 255
-     * cycles is generous for a response that must arrive within 64. */
-    uint32_t data_timeout = (real_hz / 1000u) * 100u;
-    if (data_timeout > 0xffffffu) data_timeout = 0xffffffu;
-    REG(SD_TMOUT) = (data_timeout << 8) | 0xffu;
+    /* Timeouts: one register for both cards, so the longest -- the polled
+     * waits above every transfer have their own, shorter deadlines. */
+    REG(SD_TMOUT) = (0xffffffu << 8) | 0xffu;
 
     return real_hz / 1000u;
 }
@@ -576,13 +600,13 @@ static int sdmmc_host_reset(void) {
  * share R1's shape; R3 (the OCR, from ACMD41) is the one that must NOT be
  * CRC-checked, because the card does not compute one for it -- asking the
  * controller to check it turns every ACMD41 into an RCRC error. */
-typedef enum {
-    RESP_NONE = 0,
-    RESP_R1,      /* and R6, R7 */
-    RESP_R1B,     /* R1 plus the card holding DAT0 low while it works */
-    RESP_R2,      /* 136-bit: CID, CSD */
-    RESP_R3,      /* OCR, no CRC */
-} sd_resp_t;
+/* sdhost_resp_t (drivers/sdhost_esp32p4.h), under this file's older names. */
+typedef sdhost_resp_t sd_resp_t;
+#define RESP_NONE SDHOST_RESP_NONE
+#define RESP_R1   SDHOST_RESP_R1
+#define RESP_R1B  SDHOST_RESP_R1B
+#define RESP_R2   SDHOST_RESP_R2
+#define RESP_R3   SDHOST_RESP_R3
 
 /* Sends one command and collects its response. Returns 0, or -1 with the raw
  * status left in *out_status for the caller to report -- this function
@@ -602,7 +626,7 @@ static int sd_command(uint8_t index, uint32_t arg, sd_resp_t rt,
     }
     cmd |= data_flags | CMD_WAIT_PRVDATA;
 
-    REG(SD_RINTSTS) = 0xffffffffu;     /* raw status is write-1-to-clear */
+    REG(SD_RINTSTS) = 0x0000ffffu;     /* raw, write-1-to-clear; [31:16] are the cards' SDIO interrupts, left alone */
     if (sdmmc_cmd_start(cmd, arg) != 0) {
         if (out_status) *out_status = 0;
         return -1;
@@ -750,13 +774,7 @@ static uint32_t sd_csd_blocks(const uint32_t *csd) {
 #define DESC_LD             (1u << 2)    /* last descriptor of a transfer */
 #define DESC_DIC            (1u << 1)    /* no interrupt on completion */
 
-typedef struct {
-    volatile uint32_t des0;
-    volatile uint32_t des1;   /* buffer sizes: [12:0] and [25:13] */
-    volatile uint32_t des2;   /* buffer 1 address */
-    volatile uint32_t des3;   /* chained: the next descriptor's address */
-    uint32_t pad[12];         /* one descriptor per cache line, see above */
-} sdmmc_desc_t;
+typedef sdhost_desc_t sdmmc_desc_t;   /* drivers/sdhost_esp32p4.h */
 
 static sdmmc_desc_t g_desc  __attribute__((aligned(ESP32P4_L1_CACHE_LINE)));
 static uint8_t g_dma_buf[512] __attribute__((aligned(ESP32P4_L1_CACHE_LINE)));
@@ -768,7 +786,7 @@ static uint32_t sdmmc_fifo_count(void) {
 /* Arms the IDMAC on the bounce buffer for one 512-byte transfer. The caller
  * has already put the data there (a write) or is about to read it out (a
  * read); this only hands the buffer over. */
-static void sdmmc_dma_arm(void) {
+static void sdmmc_dma_arm_on(sdmmc_desc_t *d, uint8_t *buf, uint32_t len, uint32_t blksz) {
     /* The bounded wait below reports nothing if it expires, and that is
      * deliberate: the only way these bits stay set is a module with no clock,
      * which sdmmc_host_init() has already refused to proceed past. If one
@@ -784,19 +802,25 @@ static void sdmmc_dma_arm(void) {
     REG(SD_IDSTS) = 0xffffffffu;      /* write-1-to-clear, like RINTSTS */
     REG(SD_IDINTEN) = 0;              /* polled; nothing reaches the CLIC */
 
-    g_desc.des0 = DESC_OWN | DESC_CH | DESC_FS | DESC_LD | DESC_DIC;
-    g_desc.des1 = 512u;
-    g_desc.des2 = (uint32_t)(uintptr_t)g_dma_buf;
-    g_desc.des3 = (uint32_t)(uintptr_t)&g_desc;   /* chained back to itself */
-    esp32p4_dcache_writeback((uintptr_t)&g_desc, sizeof(g_desc));
+    /* One descriptor carries up to 8191 bytes (DES1[12:0]), so a multi-block
+     * SDIO transfer of a few KB needs no ring. */
+    d->des0 = DESC_OWN | DESC_CH | DESC_FS | DESC_LD | DESC_DIC;
+    d->des1 = len;
+    d->des2 = (uint32_t)(uintptr_t)buf;
+    d->des3 = (uint32_t)(uintptr_t)d;              /* chained back to itself */
+    esp32p4_dcache_writeback((uintptr_t)d, sizeof(*d));
 
     REG(SD_CTRL) |= CTRL_DMA_ENABLE | CTRL_USE_INTERNAL_DMA;
-    REG(SD_DBADDR) = (uint32_t)(uintptr_t)&g_desc;
+    REG(SD_DBADDR) = (uint32_t)(uintptr_t)d;
     REG(SD_BMOD) = BMOD_DE | BMOD_FB;
     REG(SD_PLDMND) = 1;
 
-    REG(SD_BLKSIZ) = 512;
-    REG(SD_BYTCNT) = 512;
+    REG(SD_BLKSIZ) = blksz;
+    REG(SD_BYTCNT) = len;
+}
+
+static void sdmmc_dma_arm(void) {
+    sdmmc_dma_arm_on(&g_desc, g_dma_buf, 512u, 512u);
 }
 
 /* Waits for the data phase and reports what went wrong if it did. Both status
@@ -887,16 +911,18 @@ static int sdmmc_hw_write_block(uint32_t lba, const uint8_t *src) {
  * still initialising. */
 static bool g_hw_ready;
 
-static void sdmmc_host_init(void) {
-    if (g_hw_ready) return;
+/* The controller's half: clocks, reset, polled mode, watermarks. Shared with
+ * the SDIO slot (49.4), so idempotent and independent of the card's power and
+ * pads, which are slot 0's alone. */
+static bool g_ctrl_ready;
 
-    sdmmc_power_on();
-    sdmmc_pads_init();
+int sdhost_controller_init(void) {
+    if (g_ctrl_ready) return 0;
     sdmmc_clk_init();
 
     if (sdmmc_host_reset() != 0) {
         printk("[SDMMC] controller reset never completed -- no module clock?\n");
-        return;
+        return -1;
     }
 
     /* Polled, start to finish: no interrupt is routed, INTMASK stays clear so
@@ -926,13 +952,41 @@ static void sdmmc_host_init(void) {
 
     /* The card's reset output, which the NANO does not wire to anything --
      * the socket has no reset pin. Left released, which is its reset value. */
-    REG(SD_RST_N) |= RST_N_CARD_RESET_0;
+    REG(SD_RST_N) |= RST_N_CARD_RESET_0 | (RST_N_CARD_RESET_0 << 1);   /* both cards released */
+    g_ctrl_ready = true;
+    return 0;
+}
 
-    REG(SD_CTYPE) = 0;                       /* 1-bit until ACMD6 says otherwise */
+static void sdmmc_host_init(void) {
+    if (g_hw_ready) return;
+
+    sdmmc_power_on();
+    sdmmc_pads_init();
+    if (sdhost_controller_init() != 0) return;
+
+    sdhost_set_width4(false);                /* 1-bit until ACMD6 says otherwise */
     g_bus_width = 1;
     g_bus_khz = sdmmc_set_bus_clock(400);    /* identification mode */
     g_hw_ready = true;
 }
+
+/* --- The slot-1 user's entry points (drivers/sdhost_esp32p4.h) ------------ */
+
+uint32_t sdhost_set_clock(uint32_t khz) { return sdmmc_set_bus_clock(khz); }
+
+int sdhost_cmd(uint8_t index, uint32_t arg, sdhost_resp_t rt, uint32_t flags,
+               uint32_t *resp, uint32_t *status) {
+    return sd_command(index, arg, rt, flags, resp, status);
+}
+
+void sdhost_dma_arm(sdhost_desc_t *d, uint8_t *buf, uint32_t len, uint32_t blksz) {
+    sdmmc_dma_arm_on(d, buf, len, blksz);
+}
+
+int sdhost_dma_wait(uint32_t tag, const char *what) { return sdmmc_dma_wait(tag, what); }
+
+uint32_t sdhost_raw_status(void) { return REG(SD_RINTSTS); }
+void sdhost_clear_status(uint32_t bits) { REG(SD_RINTSTS) = bits; }
 
 /* Switches the bus to 4 bits and proves it, or stays at 1.
  *
@@ -954,7 +1008,7 @@ static void sdmmc_set_bus_width(void) {
 
     if (want == 4u) {
         if (sd_acommand(6, 2, RESP_R1, NULL, &status) == 0) {
-            REG(SD_CTYPE) = CTYPE_WIDTH4_0;
+            sdhost_set_width4(true);
             g_bus_width = 4;
         } else {
             printk("[SDMMC] ACMD6 refused 4-bit (status 0x%x); staying 1-bit\n",
@@ -969,7 +1023,7 @@ static void sdmmc_set_bus_width(void) {
     if (g_bus_width == 4u) {
         printk("[SDMMC] 4-bit bus did not read back; falling back to 1-bit\n");
         if (sd_acommand(6, 0, RESP_R1, NULL, &status) == 0) {
-            REG(SD_CTYPE) = 0;
+            sdhost_set_width4(false);
             g_bus_width = 1;
             if (sdmmc_hw_read_block(0, g_probe_block) == 0) return;
         }
@@ -983,7 +1037,16 @@ static void sdmmc_set_bus_width(void) {
            (unsigned)g_bus_khz, (unsigned)g_bus_width);
 }
 
+static int sdmmc_card_init_locked(void);
+
 static int sdmmc_card_init(void) {
+    sdhost_acquire(0);
+    int rc = sdmmc_card_init_locked();
+    sdhost_release();
+    return rc;
+}
+
+static int sdmmc_card_init_locked(void) {
     uint32_t resp[4] = {0, 0, 0, 0};
     uint32_t status = 0;
 
@@ -997,7 +1060,7 @@ static int sdmmc_card_init(void) {
 
     /* Back to identification mode for the retry case: a second probe on a
      * card that was already initialised must start where the first one did. */
-    REG(SD_CTYPE) = 0;
+    sdhost_set_width4(false);
     g_bus_width = 1;
     g_bus_khz = sdmmc_set_bus_clock(400);
 
@@ -1142,18 +1205,24 @@ static void be32_store(uint8_t *p, uint32_t v) {
 
 static int sdmmc_hw_read_blocks(uint32_t lba, uint32_t count, uint8_t *dst) {
     if (!g_present) return -1;
-    for (uint32_t i = 0; i < count; i++) {
-        if (sdmmc_hw_read_block(lba + i, dst + (size_t)i * 512u) != 0) return -1;
+    int rc = 0;
+    sdhost_acquire(0);
+    for (uint32_t i = 0; i < count && rc == 0; i++) {
+        if (sdmmc_hw_read_block(lba + i, dst + (size_t)i * 512u) != 0) rc = -1;
     }
-    return 0;
+    sdhost_release();
+    return rc;
 }
 
 static int sdmmc_hw_write_blocks(uint32_t lba, uint32_t count, const uint8_t *src) {
     if (!g_present) return -1;
-    for (uint32_t i = 0; i < count; i++) {
-        if (sdmmc_hw_write_block(lba + i, src + (size_t)i * 512u) != 0) return -1;
+    int rc = 0;
+    sdhost_acquire(0);
+    for (uint32_t i = 0; i < count && rc == 0; i++) {
+        if (sdmmc_hw_write_block(lba + i, src + (size_t)i * 512u) != 0) rc = -1;
     }
-    return 0;
+    sdhost_release();
+    return rc;
 }
 
 /* This callback, and only this callback, touches the controller while the

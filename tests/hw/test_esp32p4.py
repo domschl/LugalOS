@@ -873,6 +873,40 @@ def test_lan_node(b: Board) -> tuple[str, bool, str]:
                         f"9P over TCP read /proc/kmsg ({len(kmsg)} B, {lines} lines)")
 
 
+def test_sdio_slot1(b: Board) -> tuple[str, bool, str]:
+    """49.4, plan/phase49_c6_network_nodes.md: the SD/MMC host's slot 1, SDIO
+    toward the board's ESP32-C6.
+
+    The C6's SDIO slave answers CMD5, CMD52 and its CCCR/CIS in hardware, whatever
+    the C6 is running, so this needs nothing of the C6's firmware: the bring-up
+    (CMD5 -> CMD3 -> CMD7), Espressif's vendor id from the CIS, a 4-bit bus at
+    10 MHz, and a CMD53 read of the CCCR that must agree byte for byte with what
+    CMD52 said -- the data path, through the DMA. 10 MHz, because that is where
+    the C6 ROM's falling-edge timing still holds through the GPIO matrix; 20 MHz
+    is 49.6's, against our own slave. Run after the microSD checks and before
+    another one: the two slots share the controller."""
+    name = "SDIO slot 1: the C6 enumerates, 4-bit, CMD53 agrees with CMD52 (49.4)"
+    out = b.console_session.cmd("sdio probe 2710", deadline=20.0)
+    if "no slot 1" in out:
+        return name, True, "SKIPPED (no SDIO slot 1 on this board)"
+    if ": up" not in out:
+        return name, False, f"probe did not come up: {out.strip()[-250:]}"
+    m = re.search(r"vendor 0x([0-9a-f]{4}) device 0x([0-9a-f]{4})", out)
+    if not m or m.group(1) != "0092":
+        return name, False, f"not Espressif's CIS: {out.strip()[-200:]}"
+    if "bus 4-bit at 10000 kHz" not in out:
+        return name, False, f"bus not 4-bit at 10 MHz: {out.strip()[-200:]}"
+    rev = re.search(r"CCCR rev 0x([0-9a-f]{2}), SD rev 0x([0-9a-f]{2}), caps 0x([0-9a-f]{2})", out)
+    dump = b.console_session.cmd("sdio rd53 0 0 10", deadline=10.0)
+    d = re.search(r"00000:((?: [0-9a-f]{2}){16})", dump)
+    if not rev or not d:
+        return name, False, f"no CMD53 dump: {dump.strip()[-200:]}"
+    by = d.group(1).split()
+    if (by[0], by[1], by[8]) != (rev.group(1), rev.group(2), rev.group(3)):
+        return name, False, f"CMD53 {by[0]} {by[1]} {by[8]} != CMD52 {rev.groups()}"
+    return name, True, f"vendor 0x0092 device 0x{m.group(2)}, CCCR rev 0x{by[0]} via CMD53"
+
+
 def test_sd_card_present(b: Board) -> tuple[str, bool, str]:
     """35.5, plan/phase35_esp32p4_sdmmc.md.
 
@@ -1287,6 +1321,7 @@ TESTS = [
     test_node_identity_from_silicon,
     test_lan_node,
     test_sd_card_present,
+    test_sdio_slot1,
     test_sd_bus_is_four_bit,
     test_sd0_mounted,
     test_sd_goes_through_the_task,

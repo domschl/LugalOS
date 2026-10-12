@@ -1,5 +1,8 @@
 #include "kernel/shell.h"
 #include "kernel/llp_node.h"
+#if defined(CONFIG_BOARD_ESP32P4)
+#include "drivers/sdio_esp32p4.h"
+#endif
 #if defined(CONFIG_BOARD_ESP32C6)
 #include "drivers/ws2812.h"
 #include "kernel/radio_c6.h"
@@ -1706,6 +1709,80 @@ static void identity_print_report(void) {
  * loop is not shared with fs/9p.c's hexval()+p9_auth_key_for() either: three
  * short, independent parsers cost less than the coupling a shared one would
  * add between the auth gate, the console key and this command. */
+#if defined(CONFIG_BOARD_ESP32P4)
+/* `sdio ...` (49.4, plan/phase49_c6_network_nodes.md): the SD/MMC host's slot 1
+ * toward the board's ESP32-C6. Numbers are hex, with or without 0x. */
+static const char *sdio_word(const char *p, uint32_t *v) {
+    while (*p == ' ') p++;
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
+    uint32_t n = 0;
+    bool any = false;
+    for (;; p++) {
+        char c = *p;
+        uint32_t d = (c >= '0' && c <= '9') ? (uint32_t)(c - '0') :
+                     (c >= 'a' && c <= 'f') ? (uint32_t)(c - 'a' + 10) :
+                     (c >= 'A' && c <= 'F') ? (uint32_t)(c - 'A' + 10) : 16u;
+        if (d > 15u) break;
+        n = n * 16u + d;
+        any = true;
+    }
+    *v = n;
+    return any ? p : NULL;
+}
+
+static void cmd_sdio(const char *arg) {
+    while (*arg == ' ') arg++;
+    uint32_t a = 0, b = 0, c = 0;
+    if (!*arg) {
+        sdio_report();
+    } else if (strncmp(arg, "probe", 5) == 0) {
+        const char *p = sdio_word(arg + 5, &a);
+        uint32_t khz = p ? a : 0u;      /* hex, like every number here: 190 = 400 kHz */
+        sdio_probe(khz);
+        sdio_report();
+    } else if (strcmp(arg, "reset") == 0) {
+        sdio_c6_reset(20);
+        cprintf("sdio: the C6 was held in reset 20 ms and released\n");
+    } else if (strncmp(arg, "rd52 ", 5) == 0) {
+        const char *p = sdio_word(arg + 5, &a);
+        if (!p || !sdio_word(p, &b)) { cprintf("usage: sdio rd52 <fn> <addr>\n"); return; }
+        uint8_t v = 0;
+        if (sdio_cmd52(false, a, b, 0, &v) == 0) cprintf("fn%u 0x%05x: 0x%02x\n", (unsigned)a, (unsigned)b, v);
+        else cprintf("sdio rd52: failed\n");
+    } else if (strncmp(arg, "wr52 ", 5) == 0) {
+        const char *p = sdio_word(arg + 5, &a);
+        const char *q = p ? sdio_word(p, &b) : NULL;
+        if (!q || !sdio_word(q, &c)) { cprintf("usage: sdio wr52 <fn> <addr> <byte>\n"); return; }
+        cprintf(sdio_cmd52(true, a, b, (uint8_t)c, NULL) == 0 ? "ok\n" : "sdio wr52: failed\n");
+    } else if (strncmp(arg, "rd53 ", 5) == 0) {
+        const char *p = sdio_word(arg + 5, &a);
+        const char *q = p ? sdio_word(p, &b) : NULL;
+        if (!q || !sdio_word(q, &c) || c == 0 || c > 512u) {
+            cprintf("usage: sdio rd53 <fn> <addr> <len, hex, at most 200>\n");
+            return;
+        }
+        static uint8_t buf[512];
+        if (sdio_cmd53(false, a, b, buf, c) != 0) { cprintf("sdio rd53: failed\n"); return; }
+        for (uint32_t i = 0; i < c; i++) {
+            if (i % 16u == 0) cprintf("%s%05x:", i ? "\n" : "", (unsigned)(b + i));
+            cprintf(" %02x", buf[i]);
+        }
+        cprintf("\n");
+    } else if (strncmp(arg, "bench", 5) == 0) {
+        /* sdio bench [kb [fn [addr [len]]]], hex; the ROM's slave (49.4) only
+         * serves its register windows, e.g. `sdio bench 100 0 0 100`. */
+        uint32_t kb = 0x100u, fn = 1, addr = 0, len = 0;
+        const char *p = sdio_word(arg + 5, &kb);
+        if (!p) kb = 0x100u;
+        if (p && (p = sdio_word(p, &fn)) != NULL && (p = sdio_word(p, &addr)) != NULL) (void)sdio_word(p, &len);
+        sdio_bench(kb, fn, addr, len);
+    } else {
+        cprintf("usage: sdio [probe [khz-hex] | reset | rd52 fn addr | wr52 fn addr byte |\n"
+                "             rd53 fn addr len | bench [kb [fn [addr [len]]]]] (all hex)\n");
+    }
+}
+#endif
+
 static uint32_t parse_hex_bytes(const char *s, uint8_t *out, uint32_t cap) {
     uint32_t len = 0;
     for (const char *h = s; h[0] && h[1] && len < cap; h += 2) {
@@ -3917,6 +3994,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
          * actually on a bus. */
         emac_phy_scan();
         return;
+#if defined(CONFIG_BOARD_ESP32P4)
+    } else if (strcmp(cmd_line, "sdio") == 0 || strncmp(cmd_line, "sdio ", 5) == 0) {
+        cmd_sdio(cmd_line + 4);
+        return;
+#endif
     } else if (strcmp(cmd_line, "sdinfo") == 0) {
         /* 35.5, plan/phase35_esp32p4_sdmmc.md. `emac scan`'s shape and its
          * reason: a table a human asked for, re-read from the card and the

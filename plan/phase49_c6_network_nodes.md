@@ -525,17 +525,72 @@ without USB.
 
 ### SDIO
 
-* **49.4 P4 SDIO host, against the factory slave** (= 45.14). Slot 1 on
-  GPIO14–19 via the GPIO matrix, the controller shared with the microSD slot
-  (§4), GPIO54 reset (open-drain, §5.1; `c6 reset`). NANO first, its C6
-  still factory and backed up (§5.3). CMD0/CMD5/CMD3/CMD7, CCCR/FBR/CIS through CMD52, 4-bit
-  bus, CMD53 byte and block mode, the card interrupt on DAT1. Reference: IDF's
-  ESP-Hosted host built for the P4 (toolchain in `~/.espressif`), register and
-  bus traces diffed against ours. `sdio` shell command: card info, CIS, a raw
-  CMD53 read of the slave's registers. *Done when:* the factory C6 enumerates
-  from cold and warm reset on both boards, the microSD still works with both
-  slots in use (`sdbench` unchanged), and CMD53 throughput at the highest stable
-  clock is recorded.
+* **49.4 P4 SDIO host — DONE 2026-10-12, on the NANO** (= 45.14).
+  `drivers/sdio_esp32p4.c`: slot 1 of the SD/MMC host on GPIO14–19 through the
+  GPIO matrix (CLK 18, CMD 19, D0–D3 14–17, from the schematic and identical to
+  ESP-Hosted's P4 defaults). The C6's reset on GPIO54, open-drain only.
+  * **One controller, two slots.** `drivers/sdmmc_esp32p4.c` keeps the
+    controller and slot 0 (the microSD) and exports a small API
+    (`drivers/sdhost_esp32p4.h`). Every use runs under a re-entrant ylock with a
+    current card, which goes into each command. Each card's bits of `CLKENA`,
+    `CLKSRC`, `CLKDIV`, `CTYPE` and `RST_N` are its own. Status clears spare
+    `[31:16]` (the cards' SDIO interrupts). The host divider is fixed at
+    160/8 = 20 MHz, which the microSD takes undivided; 400 kHz is 20/(2×25),
+    and each card picks its own second stage. **The microSD is unaffected:**
+    `sdbench` 1610–1617 KB/s (phase 35: 1547), and the P4 suite's SD checks
+    pass with both slots in use.
+  * **The bring-up:** an I/O reset (CCCR RES) first, since a card that already
+    has an address ignores CMD5. Then CMD5 until ready, CMD3, CMD7; the CCCR;
+    the CIS's MANFID; function 1 enabled; 512-byte blocks; 4-bit. CMD52, and
+    CMD53 in byte and block mode through one IDMAC descriptor (up to 4 KB, a
+    bounce buffer of its own). Shell: `sdio`, `sdio probe [khz]`, `reset`,
+    `rd52`, `wr52`, `rd53`, `bench` (numbers in hex).
+  * **The reference was the C6 itself, not ESP-Hosted** (D7 amended): the 7B
+    was not attached, and the NANO's factory image had been replaced in 49.5.
+    Two things answered as known-good Espressif slaves:
+    * the ROM's download mode (`reboot download`), whose CIS says device
+      **0x100d**;
+    * **the SDIO slave hardware itself.** With LugalOS on the C6, CMD5, CMD52
+      and the CCCR/CIS still answer (device **0x6666**, the hardware default),
+      so the host can be tested whatever the C6 runs.
+  * **On the silicon:** OCR `0xa0ffff00` (2 functions), CCCR rev 0x32 (SDIO
+    3.0), caps 0x17, vendor **0x0092** (Espressif), function 1 ready, 4-bit.
+    A CMD53 read of the CCCR agrees byte for byte with CMD52.
+  * **Speed:**
+    * **10 MHz works, 20 MHz does not:** commands pass at 20 MHz but no data
+      phase completes. The ROM samples and drives on the falling edge
+      (`SDIO_FEI_FEO`; MTMS/MTDI read low on this module, C6 datasheet
+      Table 3-4) and slot 1 adds the GPIO matrix's delay.
+    * **CMD53 throughput at 10 MHz, 4-bit: 1675 KB/s** in 256-byte reads (603
+      KB/s in 16-byte ones: per-command cost). 2.5 MHz: 444 KB/s.
+    * 49.6 sets our own slave's edges, which the C6's SDIO slave allows, and
+      tunes the P4's sample phase.
+  * **`test_esp32p4.py` gains `test_sdio_slot1`:** probe at 10 MHz, vendor
+    0x0092, 4-bit, CMD53 = CMD52. **37/37 on the NANO.**
+  * **Two bugs found on the way, fixed:**
+    1. **The C6's USB console died on every cold boot** (power-on, or EN pulled
+       by the P4). `drivers/usbjtag_esp32c6.c`'s "host gone" path dropped its
+       byte count without committing the FIFO (`WR_DONE`). After a power-on
+       reset re-enumerates the port, the boot log filled the FIFO before the
+       host read it, and a FIFO full of uncommitted bytes never drains. The
+       kernel ran on (Wi-Fi, DHCP, ping) with a silent console. A USB reset
+       keeps the host reading, so no test ever saw it. Fixed (commit, keep
+       committing while full); 3/3 cold boots answer. **This is also phase
+       45's open "stall at breadcrumb 0x61"** (2026-10-06): 0x61 is where a
+       *healthy* radio ends up after a reconnect (`radio_plat_phy_enable()`
+       writes 0x60/0x61 and takes the calibrated path with no further
+       breadcrumbs), and the silence was this console.
+    2. **`lcdterm.c`** declared a buffer only the U-mode terminal uses on
+       boards without one (a warning on the 7B since 47.7).
+  * **Kept as instruments:**
+    * the C6's console is copied to its **UART0** (bounded, never waits: the
+      ROM has it at 115200; header P2 pin 22 on the NANO). That is how the
+      cold boot was read when USB said nothing.
+    * the tick breadcrumbs gain the return address and task (LP_AON stores 5
+      and 6) beside the PC.
+  * **Not done:** the LCD-7B (not attached); the card interrupt (49.6).
+    Concurrent use of both slots is serialised by the lock but has not been
+    exercised under load (the shell runs one command at a time).
 
 * **49.5 LugalOS on the C6-MINI — DONE 2026-10-12, on the NANO.** The NANO's
   C6 runs LugalOS from its own flash, joins Wi-Fi from its own identity record
@@ -656,7 +711,7 @@ without USB.
 
 | What | Value | Milestone |
 |---|---|---|
-| CMD53 throughput, factory slave | — | 49.4 |
+| CMD53 throughput (ROM/hardware slave, 10 MHz 4-bit, 256 B reads) | 1675 KB/s | 49.4 |
 | LLP loopback over SDIO, each way | — | 49.6 |
 | C6 heap free, modem persona | — | 49.3 / 49.7 |
 | 9P file read host → P4: via `wlan0` / via C6 `/p4` proxy | — / — | 49.9 |
