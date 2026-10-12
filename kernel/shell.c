@@ -549,211 +549,356 @@ static void cmd_clicdump(void) {
 }
 #endif
 
-static void cmd_help(void) {
+#define HELP_STACK_MAX 8
+static char s_help_stack[HELP_STACK_MAX][32];
+static int  s_help_depth = 0;
+
+static int detect_screen_rows(void) {
+#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_LCD_PCLK_GPIO)
+    return 30;
+#elif defined(CONFIG_BOARD_ESP32P4) && defined(CONFIG_DSI_PRESENT)
+    return 30;
+#else
+    return 22;
+#endif
+}
+
+static bool resolve_help_path(const char *topic, char *out_path, size_t out_sz) {
+    if (!topic || !*topic) return false;
+
+    ksnprintf(out_path, out_sz, "/sd0/help/%s.txt", topic);
+    int fd = vfs_open(out_path, VFS_O_READ);
+    if (fd >= 0) { vfs_close(fd); return true; }
+
+    ksnprintf(out_path, out_sz, "/flash0/help/%s.txt", topic);
+    fd = vfs_open(out_path, VFS_O_READ);
+    if (fd >= 0) { vfs_close(fd); return true; }
+
+    ksnprintf(out_path, out_sz, "/sd0/help/%s", topic);
+    fd = vfs_open(out_path, VFS_O_READ);
+    if (fd >= 0) { vfs_close(fd); return true; }
+
+    ksnprintf(out_path, out_sz, "/flash0/help/%s", topic);
+    fd = vfs_open(out_path, VFS_O_READ);
+    if (fd >= 0) { vfs_close(fd); return true; }
+
+    return false;
+}
+
+static bool find_link_target(int fd, char link_digit, char *out_target, size_t target_sz) {
+    char pattern[5];
+    pattern[0] = '[';
+    pattern[1] = link_digit;
+    pattern[2] = ']';
+    pattern[3] = '\0';
+
+    char buf[512];
+    uint64_t offset = 0;
+    for (;;) {
+        int n = vfs_pread(fd, buf, sizeof(buf) - 1, offset);
+        if (n <= 0) break;
+        buf[n] = '\0';
+
+        char *p = strstr(buf, pattern);
+        if (p) {
+            p += 3;
+            while (*p == ' ' || *p == '\t') p++;
+            size_t k = 0;
+            while (*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r' && *p != '-' && k < target_sz - 1) {
+                out_target[k++] = *p++;
+            }
+            out_target[k] = '\0';
+            return k > 0;
+        }
+        if (n < (int)sizeof(buf) - 1) break;
+        offset += (uint64_t)(n - 16);
+    }
+    return false;
+}
+
+static void pager_view_file(const char *path, bool is_topic, const char *topic_name) {
+    int max_rows = detect_screen_rows();
+    char current_topic[32];
+    if (topic_name) {
+        strncpy(current_topic, topic_name, sizeof(current_topic) - 1);
+        current_topic[sizeof(current_topic) - 1] = '\0';
+    } else {
+        current_topic[0] = '\0';
+    }
+
+    char cur_path[128];
+    strncpy(cur_path, path, sizeof(cur_path) - 1);
+    cur_path[sizeof(cur_path) - 1] = '\0';
+
+    while (cur_path[0]) {
+        int fd = vfs_open(cur_path, VFS_O_READ);
+        if (fd < 0) {
+            cprintf("pager: cannot open %s\n", cur_path);
+            return;
+        }
+
+        uint64_t file_offset = 0;
+        int row_count = 0;
+        char line_buf[256];
+        int line_pos = 0;
+        bool quit = false;
+        bool reload_topic = false;
+
+        char read_buf[512];
+        for (;;) {
+            int n = vfs_pread(fd, read_buf, sizeof(read_buf), file_offset);
+            if (n <= 0) {
+                if (line_pos > 0) {
+                    line_buf[line_pos] = '\0';
+                    cprintf("%s\n", line_buf);
+                    line_pos = 0;
+                }
+                cprintf("\n-- End of %s (%sb: Back, q: Quit, 1..9: Link) -- ",
+                        is_topic ? current_topic : cur_path,
+                        s_help_depth > 0 ? "" : "");
+                for (;;) {
+                    char c = console_getc();
+                    if (c == 'q' || c == 'Q' || c == 27 || c == '\n' || c == '\r') {
+                        quit = true;
+                        break;
+                    }
+                    if ((c == 'b' || c == 'B') && s_help_depth > 0) {
+                        s_help_depth--;
+                        strncpy(current_topic, s_help_stack[s_help_depth], sizeof(current_topic) - 1);
+                        current_topic[sizeof(current_topic) - 1] = '\0';
+                        if (resolve_help_path(current_topic, cur_path, sizeof(cur_path))) {
+                            reload_topic = true;
+                        }
+                        break;
+                    }
+                    if (is_topic && c >= '1' && c <= '9') {
+                        char target[32];
+                        if (find_link_target(fd, c, target, sizeof(target))) {
+                            char new_path[128];
+                            if (resolve_help_path(target, new_path, sizeof(new_path))) {
+                                if (s_help_depth < HELP_STACK_MAX) {
+                                    strncpy(s_help_stack[s_help_depth++], current_topic, 31);
+                                }
+                                strncpy(current_topic, target, sizeof(current_topic) - 1);
+                                current_topic[sizeof(current_topic) - 1] = '\0';
+                                strncpy(cur_path, new_path, sizeof(cur_path) - 1);
+                                reload_topic = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                cprintf("\r\033[K");
+                break;
+            }
+
+            for (int i = 0; i < n; i++) {
+                char ch = read_buf[i];
+                if (ch == '\r') continue;
+                if (ch == '\n') {
+                    line_buf[line_pos] = '\0';
+                    cprintf("%s\n", line_buf);
+                    line_pos = 0;
+                    row_count++;
+
+                    if (row_count >= max_rows) {
+                        cprintf("-- More (Space: Next, Enter: Line, b: Back, q: Quit%s) -- ",
+                                is_topic ? ", 1..9: Link" : "");
+                        for (;;) {
+                            char c = console_getc();
+                            if (c == 'q' || c == 'Q' || c == 27) {
+                                quit = true;
+                                break;
+                            }
+                            if (c == ' ') {
+                                row_count = 0;
+                                break;
+                            }
+                            if (c == '\n' || c == '\r') {
+                                row_count = max_rows - 1;
+                                break;
+                            }
+                            if ((c == 'b' || c == 'B') && is_topic && s_help_depth > 0) {
+                                s_help_depth--;
+                                strncpy(current_topic, s_help_stack[s_help_depth], sizeof(current_topic) - 1);
+                                current_topic[sizeof(current_topic) - 1] = '\0';
+                                if (resolve_help_path(current_topic, cur_path, sizeof(cur_path))) {
+                                    reload_topic = true;
+                                }
+                                break;
+                            }
+                            if (is_topic && c >= '1' && c <= '9') {
+                                char target[32];
+                                if (find_link_target(fd, c, target, sizeof(target))) {
+                                    char new_path[128];
+                                    if (resolve_help_path(target, new_path, sizeof(new_path))) {
+                                        if (s_help_depth < HELP_STACK_MAX) {
+                                            strncpy(s_help_stack[s_help_depth++], current_topic, 31);
+                                        }
+                                        strncpy(current_topic, target, sizeof(current_topic) - 1);
+                                        current_topic[sizeof(current_topic) - 1] = '\0';
+                                        strncpy(cur_path, new_path, sizeof(cur_path) - 1);
+                                        reload_topic = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        cprintf("\r\033[K");
+                        if (quit || reload_topic) break;
+                    }
+                } else if (line_pos < (int)sizeof(line_buf) - 1) {
+                    line_buf[line_pos++] = ch;
+                }
+            }
+
+            if (quit || reload_topic) break;
+            file_offset += (uint64_t)n;
+        }
+
+        vfs_close(fd);
+        if (quit || !reload_topic) break;
+    }
+}
+
+static void cmd_help_summary(void) {
     cprintf("\nAvailable LugalOS Shell Commands (Plan 9 Model):\n");
-    cprintf("  help            - Display command manual\n");
-    cprintf("  uname           - Show OS build target and architecture details\n");
-    cprintf("  ps              - Alias for 'cat /proc/ps'\n");
-    cprintf("  meminfo         - Alias for 'cat /proc/meminfo'\n");
-    cprintf("  df              - Alias for 'cat /proc/df'\n");
-    cprintf("  df -r           - Recount free space from the FAT (repairs a stale FSInfo)\n");
-    cprintf("  top             - System process, memory & storage monitor\n");
-    cprintf("  date [YYYY-MM-DD HH:MM:SS] - Get or set system date and RTC time\n");
-    cprintf("  rtc             - Display RTC status, model (DS1307/DS3231), time and temperature\n");
-    cprintf("  ls [path]       - List directory (/flash0/, /sd0/, /ram0/, /proc/, /dev/, /srv/)\n");
-    cprintf("  cat <path>      - Read and display path (/sd0/file, /proc/ps, /dev/uart)\n");
+    cprintf("------------------------------------------------------------\n");
+    cprintf("Filesystem:\n");
+    cprintf("  ls [path]       - List directory (/flash0, /sd0, /ram0, /proc, /dev)\n");
+    cprintf("  cat <path>      - Display file contents\n");
+    cprintf("  more <path>     - View file with terminal-height paging\n");
     cprintf("  touch <file>    - Create a new empty file\n");
     cprintf("  mkdir <path>    - Create a new directory\n");
     cprintf("  rmdir <path>    - Remove an empty directory\n");
-    cprintf("  cp <src> <dst>  - Copy file from source path to destination path\n");
-    cprintf("  write <p> <txt> - Write payload to a file, /dev/uart, or a /srv/ service endpoint\n");
-    cprintf("  rm <file>       - Delete file from disk\n");
-    cprintf("  format <path>   - Initialize a blank/corrupt volume as FAT32 (/sd0 or /ram0; DESTROYS existing data)\n");
-#if CONFIG_ENABLE_CC
-    cprintf("  cc <src> <dst>  - Compile C11 source file to native RISC-V ELF binary (chibicc)\n");
-#endif
-    cprintf("  exec <elf>      - Run a RISC-V ELF binary as a U-mode task, confined to its own pages\n");
-    cprintf("  <name>          - Run <vol>/system/bin/<name>.elf from the first volume on the\n");
-    cprintf("                    search path that has it (see 'cat /proc/path'); a path with a\n");
-    cprintf("                    '/' in it is always taken literally\n");
-    cprintf("  e [file]        - Launch Emacs-style full-screen editor\n");
-#if CONFIG_ENABLE_ED
-    cprintf("  ed [file]       - Launch teletype line editor\n");
-#endif
-#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_SPISD
-    cprintf("  sdbench [kb]    - SD sequential read rate through the block device (read-only)\n");
-#endif
-    cprintf("  sdbench w [kb]  - Write, read back and verify /sd0/sdbench.tmp, then remove it\n");
-    cprintf("  fsbench dir [kb] - The same on any volume: dir/fsbench.tmp (e.g. fsbench /ram0 1024)\n");
-    cprintf("  edbench [kb] [dir] - Editor costs for a kb document: save, load, key, find, frame scans\n");
-    cprintf("  lisp            - Enter interactive Scheme / Lisp REPL environment\n");
-    cprintf("  p9serve         - Headless 9P server over UART/SLIP (does not return; reset to exit)\n");
-    cprintf("  p9share [off]   - Share this UART between the console and 9P (SLIP demux)\n");
-#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_LCD_PCLK_GPIO)
-    cprintf("  lcdtermisotest  - Same, under the real lcdterm task's own domain (stack, code+font, framebuffer)\n");
-    cprintf("  lcd             - Panel scan-out state: PIO pc, underrun flag, DMA position\n");
-    cprintf("  lcd colour <hex> - Fill the panel with one RGB565 colour (e.g. f800 red, 07e0 green)\n");
-    cprintf("  lcd backlight <0-100> - Backlight level; 0 switches the converter off\n");
-    cprintf("  lcd blank [min|Ns|off] - Backlight off after that long without input; a key wakes it\n");
-    cprintf("  lcd colours <fg> <bg> - Framebuffer colours, RGB565 hex (default 0000 ffff)\n");
-    cprintf("  lcd test <clear|border|ruler|stripes|checker|grid|invert|text> - Diagnostic patterns\n");
-    cprintf("  lcd scroll [n]  - Scroll n numbered lines of text (default 1000), timing each scroll\n");
-    cprintf("  lcd repaint     - Redraw the whole screen, the text from the terminal's cell shadow\n");
-    cprintf("  lcd tee <uart|usb|off> - Where the lcd console also writes (uart = UART0 + USB mirror)\n");
-#endif
-#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)
-    cprintf("  boardprobe      - Die stepping, what is on the PIO-USB port, GP0 (PSRAM /CS) untouched\n");
-#endif
-#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_UART1_BASE)
-    cprintf("  uart1test [ms]  - Raw UART1 downlink test: registers, a burst, then listen\n");
-    cprintf("  uart1pins       - Continuity between the downlink pins, using plain GPIO\n");
-#endif
-    cprintf("  net             - Network interfaces: MAC, link, frame counters\n");
-    cprintf("  net txtest [n]  - Emit n test frames (default 1) on the first interface\n");
-    cprintf("  net rxtest [n]  - Wait for n frames (default 1) and report what arrived\n");
-    cprintf("  net udpecho [p] - Bind UDP port p (default 7) and echo what arrives\n");
-    cprintf("  net listen [p]  - Listen for 9P over TCP on port p (default 564; 0 = stop)\n");
-    cprintf("  net echotest <ip> <port> [bytes] - Round-trip bytes through a TCP echo server\n");
-    cprintf("  netcfg [<ip> <mask> [gw]|clear] - Address this board comes up on (kept in the identity record)\n");
-    cprintf("  ntp [server]    - Set the clock from an NTP server (default: the gateway)\n");
-    cprintf("  mqtt [selftest|connect <ip>[:port] [user [pass]]|pub <topic> <msg>\n");
-    cprintf("       |sub <filter>|unsub <filter>|disconnect]\n");
-    cprintf("  sensor [selftest] - BMP280/BME280: temperature, pressure, humidity\n");
-    cprintf("  mqttd [start <ip>[:port] [sample_s]|stop|fake|rule <n> <min> <max> <delta>\n");
-    cprintf("        |file <n> <path> <field> [dec] [max_age]]\n");
-    cprintf("  mqttcfg [<ip>[:port] [sample_s] [user [pass]]|clear] - broker kept in the record\n");
-#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_ETH_CS_GPIO)
-    cprintf("  net regs        - ENC28J60: raw EIE/EIR/ESTAT/ECON1/2, EPKTCNT, RX pointers\n");
-#endif
-#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_WL_CS_GPIO)
-    cprintf("  wifi probe      - CYW43439: bus, firmware upload and CLM -- brings the chip up\n");
-    cprintf("  wifi led [on|off] - Blink the user LED (on the wireless chip's own GPIO 0)\n");
-    cprintf("  wifi join [<ssid> <psk-hex>] - Join a WPA2 network; no args uses the stored record\n");
-    cprintf("  wifi leave      - Leave the network (the supervisor rejoins it)\n");
-    cprintf("  wifi stats      - CYW43439: RX ring high-water mark and drops\n");
-    cprintf("  wifi trace [on|off] - Print every decoded firmware event (link, auth, handshake)\n");
-#endif
-    cprintf("  p9auth [<link> on|off] - Require 9P authentication on a link (no args: list)\n");
-    cprintf("  p9key [<hex>|clear] - Set this boot's 9P auth key from the console (no args: status)\n");
-    cprintf("  p9authselftest  - The auth gate's pure logic: path guard, MAC binding\n");
-    cprintf("  klog [attach|detach <sink>] - Kernel log sinks; read the log via /proc/kmsg\n");
-    cprintf("  write /srv/console <txt>    - Emit via the console server (a channel service)\n");
-    cprintf("  vterm [list|new|switch|close|selftest] - Virtual terminals & multi-console subsystem\n");
-    cprintf("  ribbon [selftest]           - Window ribbon geometry manager & tests\n");
-    cprintf("  taskdemo        - Spawn two cooperative tasks and show them interleave\n");
-    cprintf("  preempttest     - Prove the timer preempts a task that never yields\n");
-    cprintf("  priotest        - Prove a high-priority task wins the next reschedule over hogs\n");
-    cprintf("  priostress      - Prove two same-tier busy tasks share the CPU fairly\n");
-    cprintf("  pmpinfo         - Report this core's usable PMP regions and granularity\n");
-    cprintf("  pmpdump         - Per-register PMP dump (reset value, readback, verdict)\n");
-    cprintf("  usertest        - Run a task in U-mode and syscall back into the kernel\n");
-    cprintf("  isolationtest [hart]\n");
-    cprintf("                  - U-mode task stores into kernel memory; must fault. With a hart id,\n");
-    cprintf("                    the probe is pinned there, so the fault is taken on that hart (X5)\n");
+    cprintf("  cp <src> <dst>  - Copy file\n");
+    cprintf("  rm <file>       - Delete file\n");
+    cprintf("  df [-r]         - Filesystem disk usage (-r recounts FAT)\n");
+    cprintf("  format <vol>    - Format volume as FAT32 (/sd0, /ram0)\n");
+    cprintf("\nSystem & Diagnostics:\n");
+    cprintf("  uname           - Show OS build target and architecture\n");
+    cprintf("  ps              - List processes and isolation domains (/proc/ps)\n");
+    cprintf("  top             - Real-time system monitor\n");
+    cprintf("  meminfo         - Physical memory and page pool status\n");
+    cprintf("  date [ISO]      - Show or set date and RTC time\n");
+    cprintf("  rtc             - Display RTC status and temperature\n");
+    cprintf("  klog [attach|detach] - Kernel log ring (/proc/kmsg)\n");
+    cprintf("  reboot          - Restart board\n");
+    cprintf("  clear           - Clear terminal screen\n");
+    cprintf("\nApplications & Programming:\n");
+    cprintf("  e [file]        - Full-screen Emacs-style editor\n");
+    cprintf("  ed [file]       - Teletype line editor\n");
+    cprintf("  lisp            - Interactive Scheme / Lisp REPL\n");
+    cprintf("  chess           - Play chess (appliance & canvas ribbon)\n");
+    cprintf("  canvas [split|full|close] - Manage graphics canvas\n");
+    cprintf("  cc <src> <dst>  - Compile C11 source to RISC-V ELF (chibicc)\n");
+    cprintf("  exec <elf>      - Run ELF binary confined to U-mode domain\n");
+    cprintf("\nNetwork & 9P:\n");
+    cprintf("  net             - Network interfaces and counters\n");
+    cprintf("  wifi join <ssid> <psk> - Associate with Wi-Fi network\n");
+    cprintf("  sensor          - Read I2C environmental telemetry\n");
+    cprintf("  mqtt [connect|pub|sub] - MQTT 3.1.1 client\n");
+    cprintf("  p9share         - Share serial port with 9P file server\n");
+    cprintf("------------------------------------------------------------\n");
+    cprintf("  help <topic>    - Interactive topic manual (or: man <topic>)\n");
+    cprintf("  help test       - List internal hardware selftests & isolation checks\n\n");
+}
+
+static void cmd_help_test(void) {
+    cprintf("\nLugalOS Hardware Tests, Benchmarks & Isolation Checks:\n");
+    cprintf("------------------------------------------------------------\n");
+    cprintf("Scheduler & Memory Domains:\n");
+    cprintf("  taskdemo        - Spawn cooperative tasks and verify interleaving\n");
+    cprintf("  preempttest     - Verify timer preemption of non-yielding CPU hog\n");
+    cprintf("  priotest        - Verify high-priority task preempts lower tiers\n");
+    cprintf("  priostress      - Verify same-tier fair CPU sharing\n");
+    cprintf("  pmpinfo         - Report usable PMP regions and granularity\n");
+    cprintf("  pmpdump         - Per-register PMP configuration dump\n");
+    cprintf("  usertest        - Run U-mode task and syscall back to kernel\n");
+    cprintf("  isolationtest [hart] - U-mode task writes kernel RAM (must fault)\n");
+    cprintf("  deputytest      - U-mode asks kernel to write kernel RAM (refused)\n");
+    cprintf("  chanechotest    - chan_call() echo into real U-mode server\n");
+    cprintf("  trapselftest    - Execute illegal instruction (test fault handler)\n");
+    cprintf("\nDriver Task PMP Isolation Fault Checks:\n");
 #if defined(CONFIG_BOARD_RP2350)
-    cprintf("  heartbeatisotest - Same, under the real heartbeat driver task's own SIO-window domain\n");
+    cprintf("  heartbeatisotest - Heartbeat driver task domain check\n");
+    cprintf("  uartisotest     - UART0 driver task domain check\n");
+    cprintf("  usbisotest      - USB CDC driver task domain check\n");
+    cprintf("  i2cisotest      - I2C controller driver task domain check\n");
 #endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
-    cprintf("  tm1638isotest   - Same, under the real tm1638 driver task's own SIO-window domain\n");
-#endif
-#if defined(CONFIG_BOARD_RP2350)
-    cprintf("  i2cisotest      - Same, under the real i2c driver task's own I2C-controller-window domain\n");
+    cprintf("  tm1638isotest   - TM1638 keypad driver task domain check\n");
 #endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
-    cprintf("  st7735isotest   - Same, under the real st7735 driver task's own SIO+SPI0-window domain\n");
+    cprintf("  st7735isotest   - ST7735 SPI display driver task domain check\n");
 #endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_SPISD
-    cprintf("  blkisotest      - Same, under the real blk driver task's own SIO+SPI1-window domain\n");
+    cprintf("  blkisotest      - Block SD/SPI driver task domain check\n");
 #endif
-#if defined(CONFIG_BOARD_RP2350)
-    cprintf("  uartisotest     - Same, under the real uart driver task's own UART0-window domain\n");
-    cprintf("  usbisotest      - Same, under the real usb_cdc driver task's own DPRAM+USBCTRL+state domain\n");
+#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_LCD_PCLK_GPIO)
+    cprintf("  lcdtermisotest  - LCD terminal emulator domain check\n");
 #endif
-#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_PICO_CLOCK_GREEN
-    cprintf("  clockisotest    - Same, under the real clock driver task's own SIO+ADC+TIMER0(ro)+state domain\n");
-#endif
-    cprintf("  deputytest      - U-mode task asks the kernel to WRITE kernel memory; must be refused\n");
-    cprintf("  chanechotest    - Client blocks on chan_call() into a real U-mode server; must echo back\n");
-    cprintf("  hmacselftest    - SHA-256/HMAC-SHA-256 against the FIPS and RFC 4231 vectors\n");
-    cprintf("  lockselftest    - Cross-hart locks: atomic gate, real interrupt masking, ylock re-entry\n");
-#if defined(CONFIG_KOBJ)
-    cprintf("  kobjselftest    - Kernel semaphores/mutexes/queues/events/timers under real tasks (45.3b)\n");
-    cprintf("  kobjutest       - The same objects from a U-mode task in a PMP/Sv39 domain (45.3b)\n");
-    cprintf("  radioosi        - The Wi-Fi OS-table shim, called as the blob will, in a U-mode domain (45.3b)\n");
-#endif
-    cprintf("  memselftest     - libc memcpy/memmove/memset against a byte reference, every alignment\n");
-    cprintf("  fmtselftest     - printk/ksnprintf formatting against fixed strings\n");
-    cprintf("  zonetest        - The bulk page zone: placement, alignment, free by address, fallback\n");
-    cprintf("  vtselftest      - The screen's terminal emulator against a RAM grid, pixel by pixel\n");
-    cprintf("  keyselftest     - The key-sequence parser every text input uses (37.5a)\n");
-    cprintf("  screenshot [file] - The screen as a PBM, to /sd0/screenshots/ (or Super+Shift+3)\n");
-    cprintf("  canvas [split|half|wide|narrow|full|close] - Manage graphics canvas window layout\n");
-    cprintf("  usbselftest     - USB CRC5/CRC16 against known packets (36.7)\n");
-    cprintf("  usbkbdselftest  - USB descriptor parsing and keyboard report diffing (36.8)\n");
-#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)
-    cprintf("  usbprobe        - Reset the PIO-USB port and read the device descriptor (if kbd is not running)\n");
-#endif
-#if defined(CONFIG_BOARD_ESP32P4) && defined(CONFIG_USBHOST_DWC2)
-    cprintf("  usb [regs]      - The OTG HS host port: controller, port, the last device's descriptors\n");
-#endif
-#if defined(TOUCH_PRESENT)
-    cprintf("  ts [log [s]]    - The touch panel: controller, counters; log shows presses and gestures\n");
-#endif
-#if defined(USBKBD_HOST_PRESENT)
-    cprintf("  kbd             - The USB keyboard task: devices found, hub ports, counters\n");
-    cprintf("  kbdlog [s]      - Print key make/break events for s seconds (default 30)\n");
-#endif
-    cprintf("  umodetest       - Enter U-mode under a domain, then prove an access outside it is refused\n");
-    cprintf("  trapselftest [fatal] - Execute an illegal instruction; 'fatal' does NOT recover (halts)\n");
-#if defined(CONFIG_BOARD_RP2350)
-    cprintf("  clocks          - clk_sys from PLL_SYS registers, measured against TIMER0, vs CONFIG_CLK_SYS_HZ\n");
-    cprintf("  xipcycle        - XIP exit/re-entry as a flash write does it (nothing written); QSPI restored?\n");
-#if defined(CONFIG_PSRAM_BYTES)
-    cprintf("  psram [test|bench] - The PSRAM: status, a destructive pattern test, the rate bench\n");
-#endif
-#endif
-#if defined(CONFIG_BOARD_ESP32P4)
-    cprintf("  clicdump        - CLINT/CLIC state, and whether the tick survives a task switch\n");
-    cprintf("  clocks          - Root/CPU/MEM/SYS/APB, read from registers, against the ROM and the tick\n");
-    cprintf("  cpufreq <mhz>   - Switch the CPU clock live (40/90/180/360); a measurement tool, not a feature\n");
-    cprintf("  smpinfo         - What core 1 would start from: its icache, branch predictor, clock, reset, stall\n");
-    cprintf("  smpstart        - Launch core 1 on a counter and report whether it moved (34.9)\n");
-    cprintf("  smpstart join   - Launch core 1 into the kernel: its own stack, trap vector and task (34.10)\n");
-    cprintf("  sdinfo          - What is in the microSD slot, and at what width and clock (35.5)\n");
-    cprintf("  sdbench [KB]    - Sequential read throughput from the card, default 1 MB (35.5)\n");
-#endif
-    cprintf("  pinall          - Pin every unpinned task to hart 0 (X7 bisect)\n");
-    cprintf("  flashpark       - Ask core 1 to park out of the XIP window, and time it (X7)\n");
-    cprintf("  smpstart [join|locktest|stage1|stage2|stage3]\n");
-    cprintf("                  - Launch RP2350 core 1. Bare: X3's counter. 'join': core 1 enters\n");
-    cprintf("                    the scheduler (X7). 'locktest': cross-core mutual exclusion\n");
-    cprintf("  smptest         - Two-hart concurrency: lost updates through the lock, and which harts ran\n");
-    cprintf("  smpload [start|stop]\n");
-    cprintf("                  - Background load on every hart, so the isolation suite runs against\n");
-    cprintf("                    a machine where another hart is mid-task when a fault lands (X5)\n");
-    cprintf("  randtest [bits] - Measure the raw entropy source (bias, correlation, runs)\n");
-    cprintf("  timeselftest    - Microsecond wall clock: round trip, sub-ms detail, rtc_time_t view\n");
-    cprintf("  edgecapselftest - GPIO edge-capture ring: order, wrap, drop-the-new policy\n");
-    cprintf("  idstoreselftest - Identity record: states, corruption, unknown fields, round trip\n");
-    cprintf("  identity [name <name>|provision [--force]|key <hex>|--generate]\n");
-    cprintf("                  - report uid/name/mac/key fingerprint, or set/provision/key (no args: report)\n");
-    cprintf("  peers [add <name> <hex> [<aname>] [ro|rw]|remove <name>]\n");
-    cprintf("                  - list grants (name/fingerprint/aname/mode), or add/remove one\n");
-    cprintf("  wlan [<ssid> <psk-hex>|clear]\n");
-    cprintf("                  - report ssid/psk fingerprint, or install a credential (derived PSK, not a passphrase)\n");
-    cprintf("  dcf77selftest   - DCF-77 frame decoder against synthetic frames (no radio needed)\n");
-    cprintf("  clockuiselftest - Pico-Clock-Green menu against synthetic key presses\n");
-    cprintf("  date [ISO]      - show or set the clock in local time (kernel keeps UTC)\n");
-    cprintf("  tz [POSIX TZ]   - show or set the timezone rule, e.g. CET-1CEST,M3.5.0,M10.5.0/3\n");
-    cprintf("  tzselftest      - timezone rules against known DST transitions\n");
-    cprintf("  i2c [scan]      - Scan the I2C bus for devices\n");
-    cprintf("  time            - Show system uptime\n");
-    cprintf("  version         - Alias for 'cat /proc/version'\n");
-    cprintf("  (which \"name\")   - Where a bare name resolves to, without running it\n");
-    cprintf("  (path-set \"a b\") - Reorder the search path (usually set in system/etc/init.lisp)\n");
-    cprintf("  (help)          - List every bound Lisp primitive (works from 'lisp' or as a (...) line here)\n");
-    cprintf("  reboot          - Restart the board (works even if the evaluator is inert)\n");
-    cprintf("  clear           - Clear terminal screen\n\n");
+    cprintf("\nMulticore SMP & Concurrency Checks:\n");
+    cprintf("  lockselftest    - Atomic spinlocks, interrupt masking, ylock\n");
+    cprintf("  smpstart [join] - Launch secondary CPU core\n");
+    cprintf("  smptest         - Multi-hart atomic counter and lock race test\n");
+    cprintf("  smpload         - Background CPU load across all online harts\n");
+    cprintf("\nBenchmarks & Subsystem Selftests:\n");
+    cprintf("  sdbench [kb]    - SD card sequential read throughput benchmark\n");
+    cprintf("  fsbench <dir>   - Filesystem write/read/verify benchmark\n");
+    cprintf("  hmacselftest    - SHA-256 and HMAC-SHA-256 against RFC vectors\n");
+    cprintf("  memselftest     - libc memcpy/memmove/memset byte reference\n");
+    cprintf("  fmtselftest     - printk/ksnprintf format engine selftest\n");
+    cprintf("------------------------------------------------------------\n\n");
+}
+
+static void cmd_help_topic(const char *topic) {
+    char path[128];
+    if (resolve_help_path(topic, path, sizeof(path))) {
+        s_help_depth = 0;
+        pager_view_file(path, true, topic);
+    } else {
+        cprintf("help: topic '%s' not found.\n", topic);
+        cprintf("Available topics:\n");
+        cprintf("  shell        - Shell commands, paths & virtual filesystems\n");
+        cprintf("  editors      - Full-screen (e) and line (ed) text editors\n");
+        cprintf("  ribbon       - Window ribbon, touch gestures & canvases\n");
+        cprintf("  chess        - Chess computer & Lazy SMP engine\n");
+        cprintf("  cas          - Computer Algebra System (symbolic math)\n");
+        cprintf("  sensors      - Environmental telemetry & autonomous MQTT\n");
+        cprintf("  presets      - Supported hardware targets & memory profiles\n");
+        cprintf("  flashing     - Hardware programming (picotool, p4flash, c6flash)\n");
+        cprintf("  networking   - Plan 9 file sharing (9P), p9sync, Wi-Fi & Ethernet\n");
+        cprintf("  c_programming - On-device C compilation (chibicc) & syscall ABI\n");
+        cprintf("  lisp         - Lisp machine runtime, zero-SRAM builtins & stdlib\n\n");
+    }
+}
+
+static void cmd_help(const char *arg) {
+    if (!arg || !*arg) {
+        cmd_help_summary();
+    } else if (strcmp(arg, "test") == 0) {
+        cmd_help_test();
+    } else {
+        cmd_help_topic(arg);
+    }
+}
+
+static void cmd_man(const char *topic) {
+    if (!topic || !*topic) {
+        cmd_help_summary();
+    } else {
+        cmd_help_topic(topic);
+    }
+}
+
+static void cmd_more(const char *path) {
+    if (!path || !*path) {
+        cprintf("Usage: more <file_path>\n");
+        return;
+    }
+    s_help_depth = 0;
+    pager_view_file(path, false, NULL);
 }
 
 static void cmd_uname(void) {
@@ -3576,7 +3721,25 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     if (*cmd_line == '\0') return;
 
     if (strcmp(cmd_line, "help") == 0) {
-        cmd_help();
+        cmd_help(NULL);
+        return;
+    } else if (strncmp(cmd_line, "help ", 5) == 0) {
+        const char *arg = cmd_line + 5;
+        while (*arg == ' ') arg++;
+        cmd_help(arg);
+        return;
+    } else if (strcmp(cmd_line, "man") == 0) {
+        cmd_help(NULL);
+        return;
+    } else if (strncmp(cmd_line, "man ", 4) == 0) {
+        const char *arg = cmd_line + 4;
+        while (*arg == ' ') arg++;
+        cmd_man(arg);
+        return;
+    } else if (strncmp(cmd_line, "more ", 5) == 0) {
+        const char *arg = cmd_line + 5;
+        while (*arg == ' ') arg++;
+        cmd_more(arg);
         return;
     } else if (strncmp(cmd_line, "time ", 5) == 0) {
         /* 47.3, plan/phase47_esp32p4_lcd7b_ribbon.md: `time CMD` runs CMD

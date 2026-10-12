@@ -24,7 +24,7 @@ set(LUGALOS_FLASH_BASE      0x10000000)   # XIP window, and the OS image's origi
 set(LUGALOS_FLASH_SIZE      0x00400000)   # 4 MB of flash on the Pico 2 / 2 W
 
 set(LUGALOS_FLASHFS_BASE    0x10180000)
-set(LUGALOS_FLASHFS_SIZE    0x00080000)   # 512 KB -- must match the FAT32 image
+set(LUGALOS_FLASHFS_SIZE    0x00100000)   # 1 MB -- must match the FAT32 image
 
 set(LUGALOS_IDENTITY_BASE   0x103FF000)
 set(LUGALOS_IDENTITY_SIZE   0x00001000)   # one 4 KB sector (I7b fills it in)

@@ -182,6 +182,7 @@ static const builtin_t builtins[] = {
     BUILTIN_PRIM("devices", prim_devices),
     BUILTIN_PRIM("df", prim_df),
     BUILTIN_PRIM("display", prim_display),
+    BUILTIN_PRIM("doc", prim_help),
     BUILTIN_PRIM("eeprom-read", prim_eeprom_read),
     BUILTIN_PRIM("eeprom-write", prim_eeprom_write),
     BUILTIN_PRIM("eq?", prim_eq_p),

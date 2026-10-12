@@ -7088,7 +7088,34 @@ static lisp_val_t *prim_help(lisp_val_t *args, lisp_val_t *env);
  * never drift out of sync with what's actually bound the way cmd_help() in
  * kernel/shell.c had. */
 static lisp_val_t *prim_help(lisp_val_t *args, lisp_val_t *env) {
-    (void)args; (void)env;
+    if (args && args->type == LISP_PAIR && args->u.pair.car && args->u.pair.car != &nil_val) {
+        lisp_val_t *sym = args->u.pair.car;
+        const char *name = (sym->type == LISP_SYMBOL) ? sym->u.sym :
+                           (sym->type == LISP_STRING) ? sym->u.str : NULL;
+        if (name) {
+            char path[64];
+            ksnprintf(path, sizeof(path), "/sd0/help/%s.txt", name);
+            vfs_stat_t st;
+            if (vfs_stat(path, &st) != 0) {
+                ksnprintf(path, sizeof(path), "/flash0/help/%s.txt", name);
+            }
+            if (vfs_stat(path, &st) == 0 && st.size > 0) {
+                lisp_val_t arg_val;
+                memset(&arg_val, 0, sizeof(arg_val));
+                arg_val.type = LISP_STRING;
+                arg_val.u.str = path;
+                lisp_val_t p;
+                memset(&p, 0, sizeof(p));
+                p.type = LISP_PAIR;
+                p.u.pair.car = &arg_val;
+                p.u.pair.cdr = &nil_val;
+                return prim_cat(&p, env);
+            }
+            cprintf("doc: topic '%s' not found.\n", name);
+            return &nil_val;
+        }
+    }
+    (void)env;
     cprintf("\nLugalOS Lisp Machine -- Bound Globals:\n");
     cprintf("-------------------------------------------------\n");
     int count = 0;
