@@ -456,8 +456,8 @@ over GPIO54, which is exactly what an ESP-Hosted bring-up needs and is not
 something to discover later; and GPIO6 reaches C6 IO2, which is free for a
 handshake. Whether the C6's UART lands on P4 pins — which would have offered a slow but
 far simpler transport — is **now closed, and the answer is no**: `C6_U0RXD`
-and `C6_U0TXD` go to pin header **P2** (pins 19 and 20), alongside `C6_IO9`
-and the C6's USB pair, not to the P4. They are there to flash and talk to the
+and `C6_U0TXD` go to pin header **P2** (pins 20 and 22; corrected 2026-10-12, phase 49 §5.1), alongside `C6_IO9`
+(pin 24) and the C6's USB pair (IO12/IO13 on pins 21/23), not to the P4. They are there to flash and talk to the
 co-processor from outside. So SDIO really is the only P4-to-C6 path, and any
 future Wi-Fi work needs a genuine SDIO host driver with no fallback.
 

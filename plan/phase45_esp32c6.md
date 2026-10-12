@@ -799,6 +799,10 @@ by flashing*.
 
 ### Expansion (planned only far enough to avoid foreclosing it — §7)
 
+**Superseded by `plan/phase49_c6_network_nodes.md` (2026-10-12)**, which plans
+45.12–45.17 in detail (mapping in its §9) and revises §6 below: control moves
+to 9P files over the same channel as the frames.
+
 * **45.12 Modem protocol spec** (§6) and a host-side reference (Python) so it
   is testable without a second chip.
 * **45.13 C6 as a modem:** the C6 persona that bridges the Wi-Fi `netif` to
