@@ -22,8 +22,8 @@ A standalone physical chess computer built with:
   * Storage: MicroSD card over SPI (/sd0/CHESS/) holding opening books and
     game history.
 
-!LugalOS Chess Appliance [2] LugalOS running isolated driver tasks for TFT,
-TM1638 keypad, and chess engine on RP2350.
+[Illustration: LugalOS Chess Appliance] LugalOS running isolated driver tasks
+for TFT, TM1638 keypad, and chess engine on RP2350.
 
 [Graphical Ribbon Mode (rp2350-terminal, esp32p4-lcd7b)]
 
@@ -93,4 +93,3 @@ On the physical appliance:
 ------------------------------------------------------------------------------
 SEE ALSO (Press 1..9 to jump, 'b' to go back):
   [1] ribbon           - window ribbon
-  [2] lugalos_chess    - LugalOS Chess Appliance

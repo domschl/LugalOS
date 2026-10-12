@@ -83,7 +83,7 @@ def capture_qemu_screenshot(
 
             for cmd in commands:
                 print(f"Sending: {cmd}")
-                ok, log = session.send_and_expect(cmd, r"(lsh>|chess>|=>)", timeout=30.0)
+                ok, log = session.send_and_expect(cmd, r"(lsh>|chess>|lisp>|=>)", timeout=30.0)
                 if not ok:
                     print(f"Warning: command {cmd!r} timed out or unexpected reply:\n{log}")
 

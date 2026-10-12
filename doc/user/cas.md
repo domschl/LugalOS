@@ -19,7 +19,8 @@ All computations are carried out using exact algebraic techniques: exact integer
 9. [Trigonometric, Hyperbolic & Exponential Transformations](#9-trigonometric-hyperbolic--exponential-transformations)
 10. [Exact Linear Algebra over $\mathbb{R}$ and $\mathbb{C}$](#10-exact-linear-algebra-over-mathbfr-and-mathbbc)
 11. [Natural Infix Calculator Mode](#11-natural-infix-calculator-mode)
-12. [Quick Reference Summary](#12-quick-reference-summary)
+12. [Mathematical Plotting & Canvas Visualization (`plot`)](#12-mathematical-plotting--canvas-visualization-plot)
+13. [Quick Reference Summary](#13-quick-reference-summary)
 
 ---
 
@@ -205,6 +206,24 @@ The solver finds exact solutions to equations of the form $f(x) = 0$ or $f(x) = 
 ;; => ((x . 1) (x . -1) (x . i) (x * -1 i))
 ```
 
+### Graphical Visualization: Polynomial Roots & Critical Points
+Solving polynomials algebraically corresponds geometrically to finding zero crossings along the real axis. In addition, finding the roots of the derivative $f'(x) = 0$ identifies the function's local extrema (peaks and valleys).
+
+Consider the cubic polynomial $f(x) = x^3 - 3x$:
+* **Roots:** Factoring $x^3 - 3x = x(x^2 - 3) = 0$ yields exact roots at $x = 0$ and $x = \pm\sqrt{3} \approx \pm 1.732$.
+* **Extrema:** $f'(x) = 3x^2 - 3 = 0 \implies x = \pm 1$, with local maximum at $(-1, 2)$ and local minimum at $(1, -2)$.
+
+![Polynomial Roots and Extrema of x^3 - 3x](../assets/screenshots/cas_poly_roots.png)
+
+*Figure 4.1: Real roots and extrema of $f(x) = x^3 - 3x$ plotted on an 800×480 LugalOS canvas ribbon.*
+
+To graph this cubic function interactively:
+```lisp
+(load "/sd0/cas/plot.lisp")
+(plot '(- (^ x 3) (* 3 x)) '(x -2.5 2.5)
+      '((title . "Roots & Extrema: x^3 - 3x") (samples . 60)))
+```
+
 ---
 
 ## 5. Partial Fraction Decomposition (`apart`)
@@ -299,6 +318,25 @@ $$\frac{P(x)}{(x - r_1)(x - r_2) \cdots} = \sum_{j} \frac{A_j}{x - r_j}$$
 ;; => 1/3
 ```
 
+### Graphical Visualization: Function vs. Symbolic Derivative (`plot-diff`)
+Understanding the relationship between a function $f(x)$ and its derivative $f'(x)$ is central to calculus. When $f'(x) > 0$, the function is strictly increasing; when $f'(x) = 0$, the function reaches a horizontal tangent or critical point; and when $f'(x) < 0$, the function is strictly decreasing.
+
+LugalOS provides `plot-diff`, which symbolically computes the exact derivative $f'(x) = \frac{d}{dx}f(x)$ using CAS differentiation rules and renders both curves side by side on shared coordinate axes.
+
+Consider $f(x) = x \sin(x)$:
+* Product rule: $f'(x) = \frac{d}{dx}[x] \cdot \sin(x) + x \cdot \frac{d}{dx}[\sin(x)] = \sin(x) + x \cos(x)$.
+
+![Function and Symbolic Derivative of x sin(x)](../assets/screenshots/cas_diff_plot.png)
+
+*Figure 6.1: The function $f(x) = x \sin(x)$ plotted alongside its symbolic derivative $f'(x) = \sin(x) + x \cos(x)$ on $x \in [-7, 7]$.*
+
+To plot a function and its symbolic derivative:
+```lisp
+(load "/sd0/cas/plot.lisp")
+(plot-diff '(* x (sin x)) '(x -7 7)
+           '((title . "f(x) = x*sin(x) & f'(x)") (samples . 70)))
+```
+
 ---
 
 ## 7. Symbolic Limits & Limes (`limit`, `limes`)
@@ -365,6 +403,23 @@ The limit $\lim_{x \to x_0} f(x)$ models the behavior of a function near a point
 ;; => 3/2
 ```
 
+### Graphical Visualization: Removable Discontinuity & Limits (`plot`)
+A fundamental triumph of calculus is resolving indeterminate forms such as $0/0$. The cardinal sine function $\text{sinc}(x) = \frac{\sin x}{x}$ is undefined under naive arithmetic evaluation at $x = 0$. However, L'Hôpital's rule and Taylor expansion prove that the limit is well-defined and equals 1:
+$$\lim_{x \to 0} \frac{\sin x}{x} = \lim_{x \to 0} \frac{\cos x}{1} = 1$$
+
+LugalOS's plotting engine evaluates removable singularities cleanly using CAS limit rules and continuous rational approximations, rendering a smooth curve without divide-by-zero crashes.
+
+![Removable Discontinuity of sinc(x)](../assets/screenshots/cas_sinc_plot.png)
+
+*Figure 7.1: The sinc function $f(x) = \frac{\sin x}{x}$ plotted across $x \in [-12, 12]$, smoothly crossing the removable singularity at $(0, 1)$.*
+
+To plot this function:
+```lisp
+(load "/sd0/cas/plot.lisp")
+(plot '(/ (sin x) x) '(x -12 12)
+      '((title . "sinc(x) = sin(x)/x") (samples . 80)))
+```
+
 ---
 
 ## 8. Taylor Series & Laurent Expansions (`taylor`)
@@ -414,6 +469,25 @@ The limit $\lim_{x \to x_0} f(x)$ models the behavior of a function near a point
 ;; x^2 + 1 = (x - i)(x + i), pole of order 1 at i:
 (taylor '(/ 1 (+ (^ x 2) 1)) 'x 1 'i)
 ;; => (+ 1/4 (* (* -1/2 i) (^ (+ (* -1 i) x) -1)) (* (* 1/8 i) (+ (* -1 i) x)))
+```
+
+### Graphical Visualization: Polynomial Convergence (`plot-multi`)
+Taylor's theorem asserts that an analytic function can be approximated near an expansion point $x_0$ by its Taylor polynomials $T_n(x)$. As the degree $n$ increases, the polynomial matches progressively higher derivatives of the target function, expanding the neighborhood over which the polynomial closely resembles the transcendental curve.
+
+Using `plot-multi`, you can graph a transcendental function alongside several of its symbolic Taylor polynomials on shared axes:
+* Target function: $f(x) = \sin(x)$
+* Linear tangent: $T_1(x) = x$
+* Cubic approximation: $T_3(x) = x - \frac{x^3}{6}$
+
+![Taylor Series Convergence for sin(x)](../assets/screenshots/cas_taylor_plot.png)
+
+*Figure 8.1: $\sin(x)$ compared against its 1st-degree tangent $T_1(x) = x$ and 3rd-degree Taylor polynomial $T_3(x) = x - x^3/6$ across $x \in [-4, 4]$.*
+
+To overlay these curves:
+```lisp
+(load "/sd0/cas/plot.lisp")
+(plot-multi (list '(sin x) 'x '(- x (/ (^ x 3) 6))) '(x -4 4)
+            '((title . "sin(x) vs Taylor T1, T3") (samples . 70)))
 ```
 
 ---
@@ -609,7 +683,49 @@ LugalOS includes an infix tokenizer and precedence-climbing parser (`format.lisp
 
 ---
 
-## 12. Quick Reference Summary
+## 12. Mathematical Plotting & Canvas Visualization (`plot`)
+
+### Mathematical & Architectural Background
+LugalOS provides a hardware-accelerated 2D function and curve plotting subsystem (`/sd0/cas/plot.lisp`) that renders directly into graphical terminal canvases across RISC-V targets:
+* **Zero Floating-Point in M-Mode:** All sampling intervals, range auto-scaling, coordinate projections, and axis ticks are computed using exact rational arithmetic $\mathbb{Q}$ and 32-bit fixed-point math ($10^6$ scale for trigonometric functions).
+* **Ribbon Window Integration:** Invoking any plotting function automatically allocates a graphics canvas window on the horizontal ribbon (`canvas-window 'split'`) alongside your interactive shell or Lisp REPL.
+* **Auto-Scaling Axes:** Analyzes sampled ranges to determine optimal bounding boxes $[x_{\min}, x_{\max}] \times [y_{\min}, y_{\max}]$ with protective padding, coordinate axes ($x=0, y=0$), numerical tick labels, and title banners.
+* **CAS Synergy:** Integrates seamlessly with `diff` to graph symbolic derivatives (`plot-diff`) and `simplify` to evaluate composite algebraic expressions.
+
+### Available Commands
+
+| Function | Signature | Description |
+| :--- | :--- | :--- |
+| `plot` | `(plot expr (var min max) [opts])` | Graphs a single function $y = f(x)$ over $[x_{\min}, x_{\max}]$. |
+| `plot-diff` | `(plot-diff expr (var min max) [opts])` | Graphs $f(x)$ and its symbolic derivative $f'(x)$ on shared axes. |
+| `plot-multi` | `(plot-multi expr-list (var min max) [opts])` | Overlays multiple functions on shared coordinate axes. |
+| `plot-parametric` | `(plot-parametric x-expr y-expr (t min max) [opts])` | Graphs a parametric curve $(x(t), y(t))$ for $t \in [t_{\min}, t_{\max}]$. |
+
+#### Plot Options (`opts`)
+Options are passed as an association list:
+* `'title`: Header string displayed above the plot (e.g. `'((title . "Harmonic Oscillator"))`).
+* `'samples`: Number of intervals sampled across the domain (default: 40–50).
+* `'color`: Curve color index (default: 1).
+* `'ymin`, `'ymax`: Explicit overrides for vertical axis bounds (bypasses auto-scaling).
+
+### Parametric Curves: Exact Unit Circle
+Parametric plotting maps an independent parameter $t \in [t_{\min}, t_{\max}]$ to coordinate pairs $(x(t), y(t))$. A canonical example is the unit circle:
+$$x(t) = \cos(t), \quad y(t) = \sin(t), \quad t \in [0, 2\pi]$$
+
+![Parametric Unit Circle Plot](../assets/screenshots/cas_parametric_circle.png)
+
+*Figure 12.1: Parametric unit circle $(x(t), y(t)) = (\cos t, \sin t)$ plotted for $t \in [0, 7]$ on an 800×480 LugalOS canvas.*
+
+To generate this parametric curve interactively:
+```lisp
+(load "/sd0/cas/plot.lisp")
+(plot-parametric '(cos t) '(sin t) '(t 0 7)
+                 '((title . "Parametric: (cos t, sin t)") (samples . 60)))
+```
+
+---
+
+## 13. Quick Reference Summary
 
 | Operation | Prefix Syntax | Infix Equivalent (`calc`) |
 | :--- | :--- | :--- |
@@ -624,6 +740,10 @@ LugalOS includes an infix tokenizer and precedence-climbing parser (`format.lisp
 | **Definite Integral** | `(integrate-def expr 'x a b)` | `(integrate-def ...)` |
 | **Limit / Limes** | `(limit expr 'x point [dir])` | `calc("limit(expr, x, point)")` |
 | **Taylor / Laurent** | `(taylor expr 'x order [x0])` | `calc("taylor(expr, x, order)")` |
+| **Function Plot** | `(plot expr '(x min max) [opts])` | `(plot ...)` |
+| **Derivative Plot** | `(plot-diff expr '(x min max) [opts])` | `(plot-diff ...)` |
+| **Multi Plot** | `(plot-multi '(f1 f2) '(x min max) [opts])` | `(plot-multi ...)` |
+| **Parametric Plot** | `(plot-parametric fx fy '(t min max) [opts])` | `(plot-parametric ...)` |
 | **Trig Simplification** | `(trig-simplify expr)` | `(trig-simplify ...)` |
 | **Form to Exponential** | `(to-exp expr)` | `(to-exp ...)` |
 | **Form to Trig** | `(to-trig expr)` | `(to-trig ...)` |

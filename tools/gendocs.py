@@ -25,13 +25,36 @@ from pathlib import Path
 DEFAULT_LINE_WIDTH = 78
 
 
+def strip_markdown_images(text: str) -> str:
+    """Replaces ![alt](url) with [Illustration: alt] or empty string if no alt."""
+    pattern = re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
+
+    def replacer(m: re.Match) -> str:
+        alt = m.group(1).strip()
+        if alt:
+            return f"[Illustration: {alt}]"
+        return ""
+
+    return pattern.sub(replacer, text)
+
+
 def clean_markdown_links(text: str, link_registry: list[tuple[str, str]]) -> str:
     """Extracts markdown links [text](url), replaces with 'text [N]' if link is internal topic."""
-    pattern = re.compile(r'\[([^\]]+)\]\(([^)]+)\)')
+    text = strip_markdown_images(text)
+    pattern = re.compile(r'(?<!\!)\[([^\]]+)\]\(([^)]+)\)')
+
+    non_doc_exts = (
+        ".png", ".jpg", ".jpeg", ".gif", ".svg", ".bmp", ".webp",
+        ".pdf", ".uf2", ".bin", ".hex", ".elf", ".iso", ".img",
+    )
 
     def replacer(m: re.Match) -> str:
         anchor = m.group(1).strip()
         url = m.group(2).strip()
+
+        # Exclude binary media assets and external urls
+        if any(url.lower().endswith(ext) for ext in non_doc_exts) or url.startswith("http"):
+            return anchor
 
         # If it's a link to another doc (.md) or external topic (not internal anchor #...)
         if (url.endswith(".md") or ("/" in url and not url.startswith("#"))) and not url.startswith("http"):
