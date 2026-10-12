@@ -186,14 +186,17 @@ the mechanism was proven outside QEMU.
 Non-zero means the broker accepted and the fault is above the socket; zero
 means nothing arrived.
 
-**2026-10-12, a different shape (rv64, 1 in ~5 full runs that day, 8/8 alone
-on retry):** the subscribe test's broken-framing case. The client *counted* the
-malformed Remaining Length (`protocol errors 1`) but its state stayed
-`CONNECTED`, `reconnects 0`, for the test's whole 20 s poll. So the bytes arrived
-and the parser saw them: the fault is in the close that should follow a protocol
-error, not the transport. Next: read `net/mqtt.c`'s error path for a case that
-counts without closing (a close deferred to a pump turn that a busy rx loop
-skips?).
+**2026-10-12: one cause found and fixed** (net/tcp.c, `tcp_emit()`). A
+subscribe-test failure whose client counted the malformed packet yet still read
+`CONNECTED`: the status print read the state first and the counters after, and
+the error landed in between, ~20 s late. The bytes were late because a window
+update was lost. `tcp_emit()` read the advertised window and *then* cleared
+`need_ack`, so a stream read on another task in between had its update
+request erased while the segment carried the stale, closed window, and the peer
+waited on its persist timer. Now cleared before the window is read. Not
+reproduced on demand (40 runs, 4 in parallel), so the fix rests on the code and
+the 20 s signature. Whether this entry's older flakes were the same race is
+open: if they stop, delete the entry.
 
 ## `lockselftest`'s log-burst case flakes on rv64-smp (~1 in 8, lately more)
 
