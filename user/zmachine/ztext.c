@@ -112,3 +112,35 @@ void ztext_print(struct z_vm *vm, uint32_t byte_addr)
 {
     z_decode_text(vm, byte_addr, 0u);
 }
+
+struct ztext_buf_sink {
+    char *buf;
+    size_t cap;
+    size_t len;
+};
+
+static void ztext_buf_putc(void *user, uint8_t ch)
+{
+    struct ztext_buf_sink *s = (struct ztext_buf_sink *)user;
+    if (s->len + 1 < s->cap) {
+        if (ch == '\n' || ch == '\r') {
+            ch = ' ';
+        }
+        s->buf[s->len++] = (char)ch;
+        s->buf[s->len] = '\0';
+    }
+}
+
+void ztext_decode_to_buf(struct z_vm *vm, uint32_t byte_addr, char *buf, size_t cap)
+{
+    if (cap == 0) return;
+    buf[0] = '\0';
+    struct ztext_buf_sink sink = { .buf = buf, .cap = cap, .len = 0 };
+    void (*orig_putc)(void *, uint8_t) = vm->io.putc;
+    void *orig_user = vm->io.user;
+    vm->io.putc = ztext_buf_putc;
+    vm->io.user = &sink;
+    ztext_print(vm, byte_addr);
+    vm->io.putc = orig_putc;
+    vm->io.user = orig_user;
+}

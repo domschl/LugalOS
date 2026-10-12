@@ -250,6 +250,10 @@ int zvm_aread(struct z_vm *vm, uint16_t text_buf, uint16_t parse_buf)
         max_chars = Z_LINE_MAX - 1;
     }
 
+    if (vm->io.turn != NULL) {
+        vm->io.turn(vm->io.user, vm);
+    }
+
     for (;;) {
         if (vm->io.getc == NULL) {
             return ZVM_STOP_ERROR;
@@ -294,6 +298,10 @@ int zvm_aread(struct z_vm *vm, uint16_t text_buf, uint16_t parse_buf)
             z_write_byte(&vm->m, (uint32_t)text_buf + 1u + (uint32_t)i, c);
         }
         z_write_byte(&vm->m, (uint32_t)text_buf + 1u + (uint32_t)len, 0);
+    }
+
+    if (vm->io.cmd != NULL) {
+        vm->io.cmd(vm->io.user, line, len);
     }
 
     if (parse_buf != 0u) {

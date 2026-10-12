@@ -866,7 +866,8 @@ if(LUGALOS_ENABLE_ZMACHINE)
         user/zmachine/ztext.c
         user/zmachine/zparse.c
         user/zmachine/zsave.c
-        user/zmachine/zfront.c)
+        user/zmachine/zfront.c
+        user/zmachine/zmap.c)
 endif()
 
 if(LUGALOS_TARGET STREQUAL "RP2350")

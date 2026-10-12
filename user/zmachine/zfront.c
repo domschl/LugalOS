@@ -27,6 +27,7 @@
 #include "zfront.h"
 
 #include "zvm.h"
+#include "zmap.h"
 
 #include "fs/vfs.h"
 #include "kernel/console.h"
@@ -63,6 +64,8 @@ struct zfront_ctx {
     uint32_t col;
     uint32_t lisp_len;
     char lisp_line[256];
+
+    struct zmap_state *map;
 };
 
 /* ------------------------------------------------------------------ */
@@ -196,6 +199,22 @@ static int zfront_restore(void *user, uint8_t *data, uint32_t cap,
     return 0;
 }
 
+static void zfront_turn(void *user, struct z_vm *vm)
+{
+    struct zfront_ctx *ctx = (struct zfront_ctx *)user;
+    if (ctx && ctx->map != NULL) {
+        zmap_on_turn(ctx->map, vm);
+    }
+}
+
+static void zfront_cmd(void *user, const uint8_t *line, int len)
+{
+    struct zfront_ctx *ctx = (struct zfront_ctx *)user;
+    if (ctx && ctx->map != NULL) {
+        zmap_record_command(ctx->map, line, len);
+    }
+}
+
 /* ------------------------------------------------------------------ */
 /* Path resolution                                                      */
 /* ------------------------------------------------------------------ */
@@ -257,8 +276,10 @@ int zmachine_run(const char *name)
     uint8_t *space = NULL;    /* the 128 KB Z-machine address space   */
     uint8_t *image = NULL;    /* story, resident for RESTART          */
     struct z_vm *vm = NULL;
+    struct zmap_state *map = NULL;
     uint32_t fsize = 0;       /* story bytes; doubles as image size   */
     uint32_t space_pages = Z_PAGES(Z_SPACE_BYTES);
+    uint32_t map_pages = Z_PAGES(sizeof(struct zmap_state));
 
     int reason = ZVM_OK;
     int rc = 1;               /* until a clean exit rewrites it        */
@@ -304,6 +325,20 @@ int zmachine_run(const char *name)
     vm->m.mem = space;
     vm->m.mem_size = Z_SPACE_BYTES;
 
+    map = (struct zmap_state *)palloc_pages_bulk(map_pages);
+    if (map != NULL) {
+        memset(map, 0, sizeof(*map));
+        if (zmap_init(map)) {
+            ctx.map = map;
+        } else {
+            palloc_free(map, map_pages);
+            map = NULL;
+            ctx.map = NULL;
+        }
+    } else {
+        ctx.map = NULL;
+    }
+
     struct z_io io;
     io.user = &ctx;
     ctx.lisp_mode = false;
@@ -313,15 +348,18 @@ int zmachine_run(const char *name)
     io.getc = zfront_getc;
     io.save = zfront_save;
     io.restore = zfront_restore;
+    io.turn = zfront_turn;
+    io.cmd  = zfront_cmd;
 
     if (zvm_init(vm, image, fsize, &io) != Z_OK) {
         cprintf("zmachine: %s is not a playable v3 story\n", ctx.story_path);
         goto done;
     }
 
-    cprintf("zmachine: %s — v%u rel %u, %u bytes (PSRAM: %s)\n",
+    cprintf("zmachine: %s — v%u rel %u, %u bytes (PSRAM: %s, map: %s)\n",
             ctx.story_path, z_version(&vm->m), z_release(&vm->m), fsize,
-            palloc_is_bulk(space) ? "yes" : "no (fallback: SRAM)");
+            palloc_is_bulk(space) ? "yes" : "no (fallback: SRAM)",
+            map ? "active" : "off");
 
     while (true) {
         if (console_interrupt_requested()) {
@@ -334,6 +372,9 @@ int zmachine_run(const char *name)
             if (reinit_vm(vm, image, fsize, &io) != Z_OK) {
                 reason = ZVM_STOP_ERROR;
             } else {
+                if (map != NULL) {
+                    zmap_reset(map);
+                }
                 continue;
             }
         }
@@ -350,6 +391,10 @@ int zmachine_run(const char *name)
     }
 
 done:
+    if (map != NULL) {
+        zmap_close(map);
+        palloc_free(map, map_pages);
+    }
     if (space != NULL) {
         palloc_free(space, space_pages);
     }
