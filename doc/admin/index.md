@@ -1,0 +1,30 @@
+# LugalOS Administrator Manual
+
+The **LugalOS Administrator Manual** provides complete instructions for system provisioning, board configuration, hardware flashing, networking setup, and filesystem management across all supported RISC-V targets.
+
+---
+
+## Manual Chapters
+
+1. **[Hardware Presets & Capabilities Matrix](presets.md)**
+   * Complete catalog of all supported hardware presets: RP2350 (Pico 2, LCD-7, Chess, Clock, Gateway), ESP32-P4 (LCD-7B, NANO), ESP32-C6 (Zero), and QEMU (RV32, RV64, RV64-SMP).
+2. **[Firmware Flashing & Toolchains](flashing.md)**
+   * Toolchain prerequisites (`riscv32-unknown-elf-gcc`, `picotool`, `p4flash.py`, `c6flash.py`).
+   * Bootloader stages, XIP flash layout, and UF2 generation.
+3. **[Consoles, Ports & Modem Control](consoles.md)**
+   * Host serial topology: dual-CDC-ACM USB ports, CP2102, CH343P.
+   * Identifying interfaces via `/dev/serial/by-id/`.
+   * High-speed baud rates (921600 baud on ESP32-P4) and preventing inadvertent reset via DTR/RTS modem signals.
+4. **[Plan 9 Networking & Host Integration](networking.md)**
+   * Serving and mounting 9P filesystems over USB CDC, SLIP, and TCP.
+   * Synchronizing MicroSD cards via `tools/p9sync.py`.
+   * Mounting LugalOS namespaces on Linux hosts via `fuse-p9`.
+   * Wi-Fi and Ethernet network configuration.
+5. **[Identity, Provisioning & Credentials](identity.md)**
+   * Secure board identity storage (`idstore`).
+   * Deriving Wi-Fi PSK hex secrets without storing raw passwords in plain text (`wifi.env`).
+   * 9P authentication and HMAC message signing.
+6. **[Storage & Filesystems](storage.md)**
+   * FAT32 partition requirements on MicroSD cards.
+   * Flashfs embedded ROM disk generation.
+   * RAM disk sizing and formatting (`/ram0/`).

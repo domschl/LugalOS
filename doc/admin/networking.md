@@ -1,0 +1,79 @@
+# LugalOS Plan 9 Networking & Host Integration
+
+LugalOS implements native Plan 9 file protocol (9P2000) services and an embedded IPv4 network stack. This enables bidirectional filesystem sharing, live MicroSD card synchronization without removing physical media, and network appliance operation.
+
+---
+
+## 1. MicroSD Synchronization via 9P (`tools/p9sync.py`)
+
+`tools/p9sync.py` synchronizes local host directories directly with the board's `/sd0` MicroSD card over serial links without interrupting running tasks:
+
+### Synchronizing RP2350 Hardware
+On RP2350 devices, 9P runs over the secondary USB CDC interface (`if02`):
+
+```bash
+uv run --project host/p9lib python3 tools/p9sync.py \
+    --serial /dev/serial/by-id/usb-LugalOS_*_Dual_CDC_ACM_*-if02 \
+    --src build/rp2350-terminal/sd_root \
+    --dst /sd0
+```
+
+### Synchronizing ESP32-P4 Boards
+On ESP32-P4 boards (which have a single console port), `p9sync.py` uses `p9share` to multiplex 9P over the console UART using SLIP framing:
+
+```bash
+python3 tools/p9sync.py --p4 lcd7b --src build/esp32p4-lcd7b/sd_root
+```
+
+### Preservation Policy
+`tools/p9sync.py` is strictly additive and idempotent:
+* Creates missing directories on the board (e.g. `/sd0/cas/`, `/sd0/help/`).
+* Updates files that differ in size or timestamp.
+* **Preserves user data**: Never overwrites existing user games (`/sd0/CHESS/`) or history files.
+
+---
+
+## 2. Mounting LugalOS on Linux via `fuse-p9`
+
+The `host/fuse-p9` utility mounts a running LugalOS filesystem directly into the Linux host directory tree:
+
+```bash
+# Mount LugalOS over TCP (e.g. Wi-Fi node)
+mkdir -p /mnt/lugalos
+./host/fuse-p9/fuse-p9 -s 192.168.1.50:564 /mnt/lugalos
+
+# Files on the microcontroller are now accessible on the host:
+ls -la /mnt/lugalos/sd0
+```
+
+---
+
+## 3. Network Interfaces & Wi-Fi Configuration
+
+### Querying Network State
+From the LugalOS shell:
+```text
+lsh> net
+Interfaces:
+  eth0: MAC 02:4c:75:67:01:00, Link UP, 100 Mbps Full-Duplex
+  rx: 1420 frames, tx: 850 frames
+```
+
+### Joining a Wi-Fi Network
+For wireless presets (`rp2350-wifi`, `esp32c6`):
+1. Derive the 64-character hex WPA2 PSK on the host:
+   ```bash
+   wpa_passphrase "MySSID" "MyPassword"
+   ```
+2. Join the network from the board:
+   ```text
+   lsh> wifi join MySSID <64-char-hex-psk>
+   ```
+3. Assign a static IP address or let the supervisor auto-configure:
+   ```text
+   lsh> netcfg 192.168.1.50 255.255.255.0 192.168.1.1
+   ```
+4. Start the 9P TCP file server:
+   ```text
+   lsh> net listen 564
+   ```
