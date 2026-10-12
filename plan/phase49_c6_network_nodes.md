@@ -358,6 +358,25 @@ without USB.
    this factory C6.** Only then 49.5 writes LugalOS (wiring B if it works,
    otherwise A).
 
+**Done 2026-10-12, steps 1 and 2 (wiring A):**
+* The ROM banner: `ESP-ROM:esp32c6-20220919`, `rst:0x1 (POWERON),boot:0x4
+  (DOWNLOAD(USB/UART0/SDIO_FEI_FEO))`, `waiting for download`, so USB, UART0
+  and SDIO download are all enabled on this part. `chip-id`: **ESP32-C6FH4
+  (QFN32) rev v0.2, 4 MB embedded flash**, 40 MHz crystal, base MAC
+  `58:e6:c5:d8:d4:3c`.
+* **Factory flash backed up** to `~/Source/gith/esp/p4nano-c6-factory-flash/`
+  (README there: sha256, a restore command). It is ESP-Hosted-MCU
+  `network_adapter` `release/ng-v1.0.2-330-g83efce6` (built 2024-10-18) in
+  `ota_0`, with `ota_1` erased. The boot loader's and the app's own checksum and
+  SHA-256 validate offline (`esptool image-info`). An on-chip `verify-flash`
+  could not reconnect, because the stub stays at the read's 460800 baud and a
+  new connection starts at 115200: verify in the same esptool call, or after a
+  reset.
+* What cost time: TX/RX were crossed the wrong way round (the first attempts
+  were silent in both directions). The board was reset by a power cycle of the
+  NANO's own USB. **A reset through pin 13 (GPIO54 → R54 → EN) is still
+  unproven**, so confirm it before 49.4 relies on it.
+
 ---
 
 ## 6. Milestones
@@ -412,7 +431,13 @@ without USB.
 * **49.5 LugalOS on the C6-MINI.** The board facts of §5.2; the
   `esp32c6-mini` preset and 4 MB flash map; first flash through header P2
   (§5.3: wiring B with `c6flash.py` if the USB pair works, else wiring A with
-  the IO9 jumper). The radio, the join and
+  the IO9 jumper). Two small pieces of kernel work come with it. First, the C6 kernel's only console
+  is the USB-Serial/JTAG (`drivers/usbjtag_esp32c6.c`): with wiring A alone,
+  a UART0 console driver (GPIO16/17; probably the P4's `uart_esp32p4.c` IP) is
+  needed first. Second, `reboot download` sets `LP_AON_FORCE_DOWNLOAD_BOOT`
+  (`LP_AON_SYS_CFG_REG` bit 30) and resets, so a running C6 enters the ROM's
+  download mode without the IO9 jumper, which is then only for recovery.
+  The radio, the join and
   the stand-alone persona as on the C6-Zero, with the module's antenna. *Done
   when:* `test_esp32c6.py` passes on the NANO's C6 (its non-applicable checks —
   LED, I2C sensors — skipping), and the LCD-7B's C6 is still factory.
