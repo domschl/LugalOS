@@ -104,106 +104,9 @@ p9_link_t *uart_slip_get_link(void) {
     return &g_uart_slip_link;
 }
 
-/* Incremental SLIP decode: one received byte at a time, straight into the
- * frame buffer (C5, plan/phase6_memory_and_processes.md).
- *
- * Both receive paths used to accumulate the *escaped* bytes in a raw[] buffer
- * and hand the whole thing to slip_decode() on SLIP_END. That was the right
- * first move -- it reused an already-tested decoder rather than writing a
- * second one -- but it cost a second buffer per context, sized at twice
- * P9_MAX_MSIZE because escaping can double a frame. Two contexts, 8 KB each,
- * on a board with 512 KB of SRAM.
- *
- * The state a SLIP decoder needs between bytes is one boolean, so the buffer
- * was never buying anything but the shape of the call. Returns 1 when a
- * complete frame is ready in `frame`, 0 otherwise.
- *
- * Behaviour matches the buffered version exactly, including the two cases
- * worth naming: a SLIP_END with nothing accumulated is a leading or duplicate
- * delimiter and is ignored, and an overflowing frame is dropped so the link
- * resynchronises on the next delimiter rather than emitting a truncated
- * message. */
 #endif /* !CONFIG_BOARD_ESP32C6: the SLIP link */
 
-int slip_feed(uint8_t c, uint8_t *frame, uint32_t frame_cap,
-              uint32_t *frame_len, bool *escaping) {
-    if (c == SLIP_END) {
-        *escaping = false;
-        if (*frame_len == 0) return 0;   /* leading/duplicate delimiter */
-        return 1;
-    }
-
-    if (*escaping) {
-        *escaping = false;
-        if (c == SLIP_ESC_END) c = SLIP_END;
-        else if (c == SLIP_ESC_ESC) c = SLIP_ESC;
-    } else if (c == SLIP_ESC) {
-        *escaping = true;
-        return 0;
-    }
-
-    if (*frame_len >= frame_cap) {
-        *frame_len = 0;                  /* overflow: resync on the next END */
-        return 0;
-    }
-    frame[(*frame_len)++] = c;
-    return 0;
-}
-
-int slip_encode(const uint8_t *src, uint32_t len, uint8_t *dst, uint32_t dst_max) {
-    if (!src || !dst || dst_max < 2) return -1;
-
-    uint32_t out = 0;
-    dst[out++] = SLIP_END;
-
-    for (uint32_t i = 0; i < len; i++) {
-        uint8_t c = src[i];
-        if (c == SLIP_END) {
-            if (out + 2 >= dst_max) return -1;
-            dst[out++] = SLIP_ESC;
-            dst[out++] = SLIP_ESC_END;
-        } else if (c == SLIP_ESC) {
-            if (out + 2 >= dst_max) return -1;
-            dst[out++] = SLIP_ESC;
-            dst[out++] = SLIP_ESC_ESC;
-        } else {
-            if (out + 1 >= dst_max) return -1;
-            dst[out++] = c;
-        }
-    }
-
-    if (out + 1 > dst_max) return -1;
-    dst[out++] = SLIP_END;
-    return (int)out;
-}
-
-int slip_decode(const uint8_t *src, uint32_t len, uint8_t *dst, uint32_t dst_max) {
-    if (!src || !dst || len == 0) return -1;
-
-    uint32_t out = 0;
-    bool escaping = false;
-
-    for (uint32_t i = 0; i < len; i++) {
-        uint8_t c = src[i];
-        if (c == SLIP_END) {
-            if (out > 0) break; // Frame completed
-            continue;
-        }
-
-        if (escaping) {
-            if (c == SLIP_ESC_END) c = SLIP_END;
-            else if (c == SLIP_ESC_ESC) c = SLIP_ESC;
-            escaping = false;
-        } else if (c == SLIP_ESC) {
-            escaping = true;
-            continue;
-        }
-
-        if (out >= dst_max) return -1;
-        dst[out++] = c;
-    }
-    return (int)out;
-}
+/* slip_feed(), slip_encode(), slip_decode(): drivers/slip.c since 49.1. */
 
 #if !defined(CONFIG_BOARD_ESP32C6)
 /* --- link_uart_demux (A3b) ---
@@ -266,14 +169,16 @@ static void demux_route_byte(uint8_t c) {
     }
 
     if (g_demux.in_frame) {
-        uint32_t before = g_demux.frame_len;
         (void)slip_feed(c, g_demux.frame, sizeof(g_demux.frame),
                         &g_demux.frame_len, &g_demux.escaping);
-        /* slip_feed() zeroes the length on overflow; the demux additionally
-         * has to leave frame mode so subsequent bytes go back to the console
-         * rather than being silently eaten until the next delimiter. */
-        if (before > 0 && g_demux.frame_len == 0 && !g_demux.escaping) {
+        /* On overflow slip_feed() starts discarding the frame; the demux
+         * additionally has to leave frame mode so subsequent bytes go back to
+         * the console rather than being silently eaten until the next
+         * delimiter. */
+        if (g_demux.frame_len == SLIP_DISCARDING) {
             g_demux.in_frame = false;
+            g_demux.frame_len = 0;
+            g_demux.escaping = false;
         }
     } else {
         demux_console_push(c);

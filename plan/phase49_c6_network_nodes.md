@@ -174,39 +174,38 @@ files plus moving MQTT/NTP onto the C6 is the fallback — not A2.
 
 ---
 
-## 3. The channel protocol (LLP v1) — what 49.1 specifies
+## 3. The channel protocol (LLP v1)
 
-Properties carried from phase 45 §6, revised by §1:
+**Specified in `doc/llp.md` (49.1); that document is authoritative.** In
+brief:
 
-* **Channel-agnostic framing, channel-specific flow control.**
-  A frame is `u8 type, u8 flags, u16 len, payload` (little-endian, as 9P).
-  Types:
-
-  | Type | Payload | Notes |
-  |---|---|---|
-  | `LINK` | `HELLO {version, role, mtu, max_frames, mac}`, `RESET`, `CREDIT n`, `STATE {link_up, rssi}` | link management only |
-  | `ETH` | one Ethernet frame, ≤ 1514 B, no FCS (`NETIF_FRAME_MAX`) | the data path |
-  | `P9` | one 9P message, T or R, either direction | demuxed by `fs/p9_link.c`'s existing T/R parity rule |
-
-* **SDIO** (P4 ↔ C6-MINI): the slave's hardware does the flow control —
-  receive-buffer tokens (the host may write only as many packets as the C6 has
-  loaded buffers), a packet-length register for host reads, an 8-bit interrupt
-  vector each way, and shared registers that carry link state without a frame.
-  Several LLP frames are packed per CMD53 transfer, 4-byte aligned, padded to
-  the block (512 B); the bus CRC covers integrity.
-* **UART** (C6-Zero ↔ RP2350 or a PC): SLIP framing (`drivers/uart_net.c`'s
-  `slip_feed()`, as `p9share` and the UART1 downlink use) plus a CRC-16 per
-  frame, and explicit `CREDIT` frames.
-* **Versioned and resettable.** `HELLO` carries a major/minor; a major mismatch
-  is refused loudly, on both sides, with both versions printed (the two dies are
-  separate builds and will be flashed apart). Either side may send `RESET`; the
-  P4 can also hard-reset the C6 (GPIO54), and the C6 must treat a host that
-  vanished mid-transfer as normal.
-* **Priorities:** `LINK` and `P9` ahead of `ETH` in each direction, so a full
-  frame queue cannot starve control.
-* **Not in v1:** multiple logical 9P sessions per channel (one is enough: a
-  board has one P4 and one C6), compression, encryption (the wire is a PCB
-  trace).
+* **Frame:** `u8 type, u8 seq, u16 len (LE), payload`. Types: `LINK` (link
+  management, never flow-controlled), `ETH` (one Ethernet frame, 14–1514 B, no
+  FCS), `P9` (one 9P message, T or R, either direction, demuxed by
+  `fs/p9_link.c`'s T/R parity rule). Payload ceiling 4096; each side announces
+  its own, at least 1514.
+* **LINK operations:** `HELLO` (version, role, flags, session ids, max payload,
+  window, MAC), `CREDIT` (ack, window), `PROBE` (next seq), `STATE` (Wi-Fi link,
+  RSSI).
+* **Sessions instead of a RESET message:** each start picks a random session
+  id. A peer whose id changes is a restarted peer, and everything about the old
+  session is dropped in both directions. A major-version mismatch parks the link
+  in MISMATCH, loudly, on both sides, until the peer restarts.
+* **Flow control per channel:** SDIO has it in hardware. A UART gets LLP
+  credits (cumulative `ack` + `window` ≤ 64), with `PROBE` so a lost data frame
+  cannot hold its credit forever. A binding may send LINK frames ahead of queued
+  data, **except PROBE**, which must not overtake data sent before it.
+* **Liveness:** a keepalive after 1 s of silence, and DOWN after 3 s without a
+  frame. A peer that was only cut off comes back with its session intact.
+* **Serial binding:** `SLIP(header | payload | CRC-32 LE)`, the zlib/Ethernet
+  CRC (not the CRC-16 sketched here before; the tree already had CRC-32).
+* **SDIO binding:** frames packed per CMD53, 4-byte aligned, no LLP CRC. Fixed
+  in 49.6.
+* **Priorities** (LINK and P9 ahead of ETH) are a binding's queueing policy,
+  not part of `llp.c`. They arrive with the first binding that has queues
+  (49.2).
+* **Not in v1:** several 9P sessions per channel, compression, encryption
+  (the wire is a PCB trace).
 
 ## 4. Shape of the code
 
@@ -218,7 +217,7 @@ Properties carried from phase 45 §6, revised by §1:
  drivers/llp_netif.c ─┐                            ┌─ kernel/llp_bridge.c   (modem persona: rings ⇄ ETH frames)
  fs/p9_link (/c6) ────┤                            ├─ fs/p9_link (/p4 optional, 49.9)
                       ▼                            ▼
-              kernel/llp.c  (framing, HELLO, credits, priorities — shared, host-tested)
+              kernel/llp.c  (framing, HELLO, credits, PROBE — shared, host-tested)
                       │                            │
  drivers/sdio_host_esp32p4.c (slot 1)   drivers/sdio_slave_esp32c6.c
                       └──────── SDIO 4-bit, GPIO14–19 ─┘
@@ -405,15 +404,35 @@ without USB.
 
 ### Protocol, without hardware
 
-* **49.1 LLP v1: spec and reference.** §3 written out as `doc/llp.md` (frame
-  layouts, state machines for `HELLO`/`RESET`/credits, versioning rules);
-  `kernel/llp.c` with a host harness (`tests/host/llp_host.c`, ASan/UBSan:
-  framing, SLIP + CRC, credit exhaustion and recovery, a `RESET` mid-frame, a
-  version mismatch refused, frames interleaved with 9P under priority) —
-  mutation-tested like the other host harnesses; and a Python reference
-  (`host/llp/`, `uv`, `pyrefly`-clean) that speaks LLP over a serial port.
-  *Done when:* the harness and the Python reference agree on a shared vector
-  file of frames, both directions.
+* **49.1 LLP v1: spec and reference — DONE 2026-10-12.** `doc/llp.md` (the
+  specification); `kernel/llp.c` + `kernel/include/kernel/llp.h` (framing, the
+  serial binding, the HELLO/credit/PROBE/keepalive state machine; no
+  allocation, no clock, no I/O; 5.8 KB of text on rv32, built for every
+  target); `host/llp/` (the Python reference, a `uv` project, `pyrefly`-clean,
+  5 tests including a lossy-line soak); `tests/host/llp_vectors.txt`
+  (generated by the reference); `tests/host/llp_host.c` (replays the vectors,
+  fuzzes, soaks); and a runner check that the vectors are current.
+  *Done when* is met: C and Python agree on 9 frame vectors, 8 receiver
+  streams and 11 two-link scenarios, every emitted byte, event and delivery.
+  * **The soak** (two links over a simulated 3 Mbit/s UART, bit flips, lost
+    bytes, a 5 s outage, data both ways): every delivered frame intact, in
+    order, never duplicated; the receive buffer never overflowed; both sides
+    noticed the outage and came back by themselves. 2000 fuzzed streams under
+    ASan/UBSan, nothing found.
+  * **Mutation-tested:** six deliberate bugs, all caught. They were: credits
+    ignoring the receiver's free space, a HELLO always answered, PROBE not
+    skipping lost frames, stale frames accepted, the old SLIP overflow, and a
+    CRC missing a byte. The stale-frame mutation was missed at first (a serial
+    line never duplicates), which is why the `duplicates` scenario exists.
+  * **Found on the way:** `slip_feed()` (now `drivers/slip.c`) handed up the
+    *tail* of an oversized frame as a frame of its own, despite its comment
+    saying the frame was dropped. Fixed: the whole frame is now discarded up to
+    the next END. The console demux, which detected overflow by the length
+    dropping to 0, now checks `SLIP_DISCARDING`. The CRC-32 moved from
+    `kernel/idstore.c` to `kernel/crc32.c`, so LLP shares it.
+  * **Changed from §3's sketch:** no `RESET` message (session ids do that);
+    `PROBE` added; CRC-32 instead of CRC-16; frame-vs-9P priority moved to the
+    bindings (49.2).
 
 * **49.2 Two QEMU nodes, one channel.** A "modem" node (rv32, virtio-net as its
   stand-in radio) and a "host" node (no NIC) joined by virtio-console carrying

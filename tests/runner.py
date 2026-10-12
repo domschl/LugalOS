@@ -5096,6 +5096,34 @@ def test_host_wpa2_psk_derivation() -> tuple[bool, str]:
     return (failures == 0, "" if failures == 0 else f"{failures} check(s) failed -- see the printed detail above")
 
 
+def test_host_llp_reference() -> tuple[bool, str]:
+    """49.1, doc/llp.md: the Python reference of LLP (host/llp) -- its own tests,
+    and that tests/host/llp_vectors.txt is still what it generates. The C side
+    replays that file in tests/host/llp_host.c (the sanitizer harnesses above),
+    so together they say the two implementations agree. Skipped where uv is
+    missing."""
+    import shutil
+    if not shutil.which("uv"):
+        return True, "skipped: no uv"
+    root = Path(__file__).resolve().parent.parent
+    proj = root / "host" / "llp"
+    vec = root / "tests" / "host" / "llp_vectors.txt"
+    try:
+        r1 = subprocess.run(["uv", "run", "--project", str(proj), "llp-vectors", "--check", str(vec)],
+                            capture_output=True, text=True, timeout=300, cwd=proj)
+        if r1.returncode != 0:
+            return False, (r1.stdout + r1.stderr).strip()[-2000:] + \
+                "\n(regenerate: cd host/llp && uv run llp-vectors > ../../tests/host/llp_vectors.txt)"
+        r2 = subprocess.run(["uv", "run", "--project", str(proj), "pytest", "-q"],
+                            capture_output=True, text=True, timeout=300, cwd=proj)
+    except subprocess.TimeoutExpired:
+        return False, "host/llp did not finish in 300 s"
+    out = (r2.stdout + r2.stderr).strip()
+    if r2.returncode != 0:
+        return False, out[-3000:]
+    return True, out.splitlines()[-1] if out else "ok"
+
+
 def test_netif_virtio_net(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
     """R1, plan/phase19_ip_stack_and_ethernet.md: the netif_t seam and its
     first implementation, verified against a packet-level peer.
@@ -8649,6 +8677,15 @@ def main() -> int:
     ok, info = test_host_sanitizer_harnesses()
     total_tests += 1
     name = "Host Harnesses: FAT32, cc, 9P, IP And The Radio Shim Under ASan/UBSan (tests/host)"
+    if ok:
+        passed_tests += 1
+        print(f"  [PASS] {name}")
+    else:
+        print(f"  [FAIL] {name}\n    Log Output:\n{info}")
+
+    ok, info = test_host_llp_reference()
+    total_tests += 1
+    name = "LLP Python Reference And Its Vectors Agree (host/llp, 49.1)"
     if ok:
         passed_tests += 1
         print(f"  [PASS] {name}")
