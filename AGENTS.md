@@ -123,6 +123,10 @@ console, loading and reset all on it.
   `test_esp32c6.py` (from `~/.config/lugalos/c6-ports.env`); e.g.
   `tools/c6flash.py build/esp32c6-mini --board nano`,
   `cd tests/hw && uv run test_esp32c6.py --board nano --build ../../build/esp32c6-mini`.
+* The C6's console is also copied to its UART0 (115200; NANO header P2 pin 22): when the USB console
+  is silent (a hang, early boot), that copy still shows what the kernel says. Silent-boot breadcrumbs
+  in LP_AON (read with esptool `read-mem`): 0x600B1000 stage, 0x600B1004 ticks, 0x600B1008/0x600B100C
+  last trap cause/pc, 0x600B1014/0x600B1018 ra/task at the last tick.
 * `reboot` restarts a C6; `reboot download` restarts it into the ROM's download mode (no BOOT
   strap needed; then esptool `--before no-reset`). After a `c6run.py` RAM load even a plain
   `reboot` lands in download mode (the boot strap was latched that way); a flash-booted C6

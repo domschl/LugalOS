@@ -59,14 +59,48 @@ static void hw_flush(void) {
     }
 }
 
+/* --- A copy of the console on UART0 (49.4) ---
+ *
+ * The USB console is silent exactly when it is needed most: before the host
+ * has the port open, after a reset re-enumerates it, and when the board hangs.
+ * UART0 has neither problem, and the boot ROM has already set it up at 115200
+ * for its own banner. So every console byte is also put into UART0's FIFO --
+ * never waited for: a byte that finds the FIFO full is dropped, so a UART with
+ * nothing attached costs nothing. Pins: the board file's CONFIG_UART0_TX_GPIO
+ * (GPIO16; header P2 pin 22 on the NANO, a header pad on the C6-Zero). */
+#define UART0_FIFO      (CONFIG_UART0_BASE + 0x00u)
+#define UART0_STATUS    (CONFIG_UART0_BASE + 0x1cu)
+#define UART0_TXCNT(v)  (((v) >> 16) & 0xffu)
+
+static void uart0_tee(char c) {
+    if (UART0_TXCNT(REG(UART0_STATUS)) < 120u) REG(UART0_FIFO) = (uint32_t)(uint8_t)c;
+}
+
 static void hw_putc(char c) {
+    uart0_tee(c);
+    /* "Nobody is reading" must still *commit* what is in the FIFO (WR_DONE).
+     * It used to drop the count without it, and a FIFO full of uncommitted
+     * bytes never drains -- IN_FREE stays clear, every later byte takes the
+     * one-look path, and the console is dead for good while the kernel runs
+     * on. That is what a cold boot did (49.4, 2026-10-12): a power-on reset
+     * re-enumerates the port, the host takes about a second to configure it,
+     * and the first lines of the boot log filled the FIFO before anyone read.
+     * A warm reset over USB keeps the host reading and never showed it. */
     if (g_host_gone) {
-        if (!(REG(USJ_EP1_CONF(g_base)) & USJ_IN_FREE)) return;     /* still nobody: one look, no spin */
+        if (!(REG(USJ_EP1_CONF(g_base)) & USJ_IN_FREE)) {           /* still nobody: one look, no spin */
+            REG(USJ_EP1_CONF(g_base)) = USJ_WR_DONE;                /* and the FIFO stays committed */
+            return;
+        }
         g_host_gone = false;
     } else {
         unsigned n = 0;
         while (!(REG(USJ_EP1_CONF(g_base)) & USJ_IN_FREE)) {
-            if (++n >= TX_SPIN_LIMIT) { g_host_gone = true; g_pending = 0; return; }
+            if (++n >= TX_SPIN_LIMIT) {
+                REG(USJ_EP1_CONF(g_base)) = USJ_WR_DONE;
+                g_host_gone = true;
+                g_pending = 0;
+                return;
+            }
         }
     }
     REG(USJ_EP1(g_base)) = (uint32_t)(uint8_t)c;

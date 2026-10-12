@@ -745,6 +745,9 @@ by flashing*.
     so what keeps the board alive is ordinary tasks still being scheduled. The boot reports the
     ROM's reset cause (`wdt`, `[WDT] last reset: ...`). `wdt test` withholds the feed: verified --
     the board reset, came back as "watchdog (MWDT0, system)" and rejoined by itself.
+  - *Resolved 2026-10-12 (phase 49, 49.4): not a radio stall.* 0x61 is the breadcrumb a healthy
+    radio ends on after a reconnect, and "console silent, kernel ticking" was the USB console's
+    host-gone deadlock (drivers/usbjtag_esp32c6.c), now fixed. The original note, kept for the record:
   - *Open: one boot stalled in the radio's PHY bring-up* (2026-10-06, after `identity altitude`
     and a restart): console silent, kernel still ticking (283 s), breadcrumb 0x61 -- i.e. in the
     U-mode repeat of the RF O-code write, whose IDF analog-I2C helper (`regi2c_impl.c`) waits for the

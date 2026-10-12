@@ -989,6 +989,11 @@ void trap_handler(trap_frame_t *frame) {
             ticker_count_tick();
 #if defined(CONFIG_BOARD_ESP32C6)
             { static uint32_t n; *(volatile uint32_t *)0x600B1004u = ++n; }   /* LP_AON store 1: ticks since boot, survives a reset */
+            /* 49.4: and who was running at the tick -- the return address (store 5) and
+             * the task (store 6) -- so a boot that hangs silently says which task spins,
+             * not only where. Store 4 is the ROM's print control, so not that one. */
+            *(volatile uint32_t *)0x600B1014u = (uint32_t)frame->ra;
+            *(volatile uint32_t *)0x600B1018u = (uint32_t)sched_current_pid();
             { /* 45.6 hang finder: with `radio trace on`, once a second report where the
                * interrupted code was. A spinning loop shows up here; a bus stall shows nothing. */
               extern volatile int g_kobj_trace;
