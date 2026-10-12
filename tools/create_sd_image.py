@@ -186,10 +186,17 @@ def build_fat32_image(output_path: str, src_dir: str | None = None) -> None:
 
 
 def newer_than_image(sd_root: str, out_file: str) -> bool:
-    """Is anything in the staging directory newer than the built image?"""
+    """Is anything in the staging directory -- or this builder -- newer than
+    the built image?
+
+    The builder counts: when the image's geometry changed (512 KB -> 1 MB),
+    an image whose staged files had not changed was kept in the old layout,
+    and nothing said so."""
     try:
         img_mtime = os.path.getmtime(out_file)
     except OSError:
+        return True
+    if os.path.getmtime(os.path.abspath(__file__)) > img_mtime:
         return True
     for root, _dirs, files in os.walk(sd_root):
         for f in files:

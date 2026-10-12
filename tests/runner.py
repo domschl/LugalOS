@@ -8372,21 +8372,40 @@ def test_host_fat32_image(img_path: Path) -> tuple[bool, str]:
         if img[510:512] != b"\x55\xAA":
             return False, "Invalid FAT32 boot sector signature"
 
-        # Check Root Directory LBA 48 (Cluster 2) for entries
-        root_lba = 48
+        # The root directory, where the boot sector says it is. This used to
+        # read a hardcoded LBA 48 -- right for the 512 KB image's geometry,
+        # wrong once the image grew to 1 MB (data from LBA 64) -- and still
+        # passed, reading FAT entries as names, because it only asked for
+        # *some* non-zero bytes. So: geometry from the BPB, and names that
+        # must be valid 8.3 and must include the card's SYSTEM directory.
+        bytes_per_sec = int.from_bytes(img[11:13], "little")
+        sec_per_clus = img[13]
+        reserved = int.from_bytes(img[14:16], "little")
+        nfats = img[16]
+        fat_size = int.from_bytes(img[36:40], "little")
+        root_clus = int.from_bytes(img[44:48], "little")
+        if bytes_per_sec != 512 or sec_per_clus == 0 or nfats == 0 or fat_size == 0 or root_clus < 2:
+            return False, (f"implausible BPB: {bytes_per_sec} B/sector, {sec_per_clus} sectors/cluster, "
+                           f"{nfats} FATs of {fat_size} sectors, root cluster {root_clus}")
+        root_lba = reserved + nfats * fat_size + (root_clus - 2) * sec_per_clus
         root_sec = img[root_lba * 512 : (root_lba + 1) * 512]
+        valid = set(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 !#$%&'()-@^_`{}~")
         entries_found: list[str] = []
         for i in range(16):
             entry = root_sec[i * 32 : (i + 1) * 32]
             if entry[0] == 0:
                 break
-            if entry[0] == 0xE5:
+            if entry[0] == 0xE5 or entry[11] == 0x0F:   # deleted, or a long-name part
                 continue
-            name = entry[0:11].decode("ascii", errors="ignore")
-            entries_found.append(name.strip())
+            if not all(c in valid for c in entry[0:11]):
+                return False, f"root entry {i} at LBA {root_lba} is not an 8.3 name: {entry[0:11]!r}"
+            entries_found.append(entry[0:8].decode("ascii").strip() +
+                                 ("." + entry[8:11].decode("ascii").strip() if entry[8:11].strip() else ""))
 
         if not entries_found:
-            return False, "No directory entries found in FAT32 root sector"
+            return False, f"No directory entries found in the FAT32 root (LBA {root_lba})"
+        if "SYSTEM" not in entries_found:
+            return False, f"no SYSTEM directory in the root (LBA {root_lba}): {entries_found}"
 
         return True, f"Verified FAT32 Boot Record & Root Entries: {', '.join(entries_found[:5])}"
 
