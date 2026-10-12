@@ -353,3 +353,36 @@ Located in `tests/hw/` (safe to run speculatively; skips rather than fails when 
   * Stored in `cas/` in the repository root.
   * Automatically staged by CMake into `SD_STAGE/cas` and embedded in `lugalos_sd.img` and `flashfs.bin` as `/sd0/cas` and `/flash0/cas`.
   * Core entry point: `(load "/sd0/cas/simplify.lisp")` followed by `(simplify expr)`.
+  * For full documentation, see [`doc/user/cas.md`](file:///home/dsc/Source/gith/domschl/lugalos/doc/user/cas.md).
+
+---
+
+## 8. Documentation System & Code Commentary Rules
+
+LugalOS maintains a unified documentation architecture under `doc/` and strict rules for source code comments. Agents modifying or creating code must adhere to these policies:
+
+### Detailed Topic Documentation Pointers
+* **User Manual:** [`doc/user/`](file:///home/dsc/Source/gith/domschl/lugalos/doc/user/) — Shell commands, editors (`e`, `ed`), ribbon window manager, chess engine, CAS, sensor telemetry.
+* **Administrator Manual:** [`doc/admin/`](file:///home/dsc/Source/gith/domschl/lugalos/doc/admin/) — Hardware presets, flashing protocols, serial console baud rates, 9P networking, authentication, FAT32 storage.
+* **Developer Manual:** [`doc/dev/`](file:///home/dsc/Source/gith/domschl/lugalos/doc/dev/) — On-device C & Lisp programming, microkernel IPC, memory domains, scheduler & SMP lock hand-off, tokenized dictionary logging, testing guide.
+* **Architecture Decision Records (ADRs):** [`doc/history/adr/`](file:///home/dsc/Source/gith/domschl/lugalos/doc/history/adr/) — Durable architectural decisions.
+
+### Source Code Commentary Standard
+Source code comments must have a high signal-to-noise ratio:
+1. **What to Include in Comments:**
+   * **Invariants & Contracts:** Preconditions, postconditions, pointer nullability, and buffer ownership (who allocates and who frees).
+   * **Hardware Quirks & Errata:** Silicon errata, register timing delays, revision differences (e.g. ESP32-P4 v1.3 vs v3.2).
+   * **Concurrency & Memory Isolation:** Which lock guards what, why a lock is held across context switches, PMP granularity and alignment rules.
+   * **Non-Obvious Algorithms:** Mathematical derivations, pure fixed-point scaling rationale.
+2. **What NEVER to Include in Comments:**
+   * **No Milestone or Phase References:** Never write `/* M3, plan/phase12... */` or `/* Phase 48 */`.
+   * **No Historical Narratives / Archaeology:** Never document obsolete shims ("Replaces the pre-B2 shim which did nothing...").
+   * **No Changelogs in Code:** Avoid "Fixed bug where X happened". Use git commit messages for history.
+   * **No Dead Code:** Delete obsolete or commented-out code.
+
+### Documentation as Code (Agent PR Rules)
+* Whenever adding or altering shell commands, update [`doc/user/shell.md`](file:///home/dsc/Source/gith/domschl/lugalos/doc/user/shell.md).
+* Whenever adding or modifying Lisp primitives, update [`doc/dev/on_device/lisp_scripting.md`](file:///home/dsc/Source/gith/domschl/lugalos/doc/dev/on_device/lisp_scripting.md).
+* Whenever updating documentation in `doc/`, run `python3 tools/gendocs.py --all` to regenerate on-device plain-text help files in `tools/sd_root/help/`.
+* Run `python3 tools/gendocs.py --check` before committing to verify zero documentation drift.
+
