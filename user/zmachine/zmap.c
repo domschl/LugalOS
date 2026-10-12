@@ -43,10 +43,16 @@ static void put16(uint8_t *b, int v)
     b[1] = (uint8_t)(((unsigned)v >> 8) & 0xffu);
 }
 
-static void canvas_clear(void)
+static void canvas_clear(struct zmap_state *s)
 {
     uint8_t req[3] = { 'F', 0, 0 }, reply[SCREEN_REPLY_LEN];
-    (void)console_canvas(req, sizeof(req), reply);
+    if (console_canvas(req, sizeof(req), reply)) {
+        int w = (int)(reply[2] | (reply[3] << 8));
+        int h = (int)(reply[4] | (reply[5] << 8));
+        if (w > 0) s->canvas_w = w;
+        if (h > 0) s->canvas_h = h;
+        s->last_damage = (uint16_t)(reply[6] | (reply[7] << 8));
+    }
 }
 
 static void canvas_rect(int x, int y, int w, int h, int color)
@@ -316,6 +322,7 @@ bool zmap_init(struct zmap_state *s)
         s->canvas_w = 400;
         s->canvas_h = 440;
     }
+    s->last_damage = (uint16_t)(reply[6] | (reply[7] << 8));
     s->room_count = 0;
     s->edge_count = 0;
     s->current_room = 0;
@@ -323,7 +330,7 @@ bool zmap_init(struct zmap_state *s)
     s->last_dir = ZMAP_DIR_NONE;
     s->zoom_mode = false;
 
-    canvas_clear();
+    canvas_clear(s);
     return true;
 }
 
@@ -337,7 +344,7 @@ void zmap_reset(struct zmap_state *s)
     s->last_dir = ZMAP_DIR_NONE;
     s->zoom_mode = false;
     if (s->active) {
-        canvas_clear();
+        canvas_clear(s);
     }
 }
 
@@ -737,7 +744,7 @@ void zmap_render(struct zmap_state *s)
 {
     if (!s || !s->active) return;
 
-    canvas_clear();
+    canvas_clear(s);
 
     /* Find current room for camera centering and title */
     struct zmap_room *cur = find_room(s, s->current_room);
@@ -858,5 +865,35 @@ void zmap_render(struct zmap_state *s)
                 canvas_text(bx + 6, by + 5, 0, label);
             }
         }
+    }
+}
+
+void zmap_poll(struct zmap_state *s)
+{
+    if (!s || !s->active) return;
+
+    uint8_t req[1] = { 'S' }, reply[SCREEN_REPLY_LEN];
+    if (!console_canvas(req, 1, reply) || reply[0] != 0) return;
+
+    int w = (int)(reply[2] | (reply[3] << 8));
+    int h = (int)(reply[4] | (reply[5] << 8));
+    uint16_t damage = (uint16_t)(reply[6] | (reply[7] << 8));
+
+    bool changed = false;
+    if (w > 0 && w != s->canvas_w) {
+        s->canvas_w = w;
+        changed = true;
+    }
+    if (h > 0 && h != s->canvas_h) {
+        s->canvas_h = h;
+        changed = true;
+    }
+    if (damage != s->last_damage) {
+        s->last_damage = damage;
+        changed = true;
+    }
+
+    if (changed) {
+        zmap_render(s);
     }
 }

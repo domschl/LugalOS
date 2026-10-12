@@ -33,6 +33,7 @@
 #include "kernel/console.h"
 #include "kernel/palloc.h"
 #include "kernel/printk.h"
+#include "kernel/sched.h"
 #include "lisp.h"
 
 #include <string.h>
@@ -96,6 +97,13 @@ static int zfront_getc(void *user)
 {
     struct zfront_ctx *ctx = (struct zfront_ctx *)user;
     for (;;) {
+        if (ctx->map != NULL && ctx->map->active) {
+            zmap_poll(ctx->map);
+        }
+        if (!console_has_char()) {
+            sched_yield();
+            continue;
+        }
         int c = (int)(uint8_t)console_getc();
         if (c == 0x03) {
             /* Ctrl-C: the console has latched it as an interrupt as well.

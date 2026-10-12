@@ -51,6 +51,7 @@ struct zmap_edge {
 struct zmap_state {
     bool active;
     int canvas_w, canvas_h;
+    uint16_t last_damage;
 
     uint16_t current_room;
     uint16_t last_room;
@@ -84,6 +85,9 @@ int zmap_load(struct zmap_state *s, const char *path);
 void zmap_toggle_zoom(struct zmap_state *s);
 void zmap_set_zoom(struct zmap_state *s, bool zoom);
 bool zmap_get_zoom(const struct zmap_state *s);
+
+/* Poll for resize / damage events */
+void zmap_poll(struct zmap_state *s);
 
 /* Render */
 void zmap_render(struct zmap_state *s);
