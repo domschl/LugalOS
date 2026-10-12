@@ -470,15 +470,58 @@ without USB.
 
 ### The C6 as a NIC, on the C6-Zero
 
-* **49.3 C6-Zero modem persona over serial** (= 45.13). Persona selection (D4),
-  `llp_node.c`'s radio role on the real rings, `/c6/wlan/*` files, the STA MAC handed over in
-  `HELLO`. First wire: the C6-Zero's USB-Serial/JTAG with the console and LLP
-  demultiplexed (as `p9share` does), the Python reference as the host — it takes
-  a DHCP lease with the C6's MAC and pings the gateway; with privileges, an
-  optional TAP bridge gives the PC a `wlan` interface through the C6. *Done
-  when:* `test_esp32c6.py` gains a modem check (lease + ping through the bridge),
-  the stand-alone checks still pass with no host attached, and the C6's heap in
-  the modem persona is recorded against the 60 KB of 45.11.
+* **49.3 C6-Zero radio role over its USB port — DONE 2026-10-12** (= 45.13).
+  The C6-Zero, with real Wi-Fi, is the network card of a host on the other end
+  of its one USB cable: this PC, played by the Python reference.
+  * **One cable, two users.** `drivers/usbjtag_esp32c6.c` gains a
+    demultiplexer, armed by `llp radio` and off until then. Inbound bytes from
+    one SLIP END to the next go to LLP, everything else to the console.
+    Outbound, LLP's pump is the only writer to the FIFO: console text from every
+    other task is queued and written *between* frames. No console byte lands in
+    a frame, and nothing masks interrupts for a frame's length; the radio's
+    interrupt path runs on this core. Fatal-path output stays direct.
+  * **`llp_node.c` on the C6:** its radio role bridges the Wi-Fi netif exactly
+    as it bridged virtio-net in 49.2. Buffers now come from pages at start,
+    sized by role: the C6 has no Ethernet queues, two 9P slots in and one out,
+    and a one-page task. Frames are streamed to the FIFO
+    (`llp_serial_emit()`, new, checked byte for byte against the encoder by the
+    host harness) instead of encoded into a 3-page buffer.
+  * **The host side:** `host/llp` gains `SerialNode`, a pump thread owning the
+    port, with the same console/frame split and 9P before Ethernet. It also
+    gains `net.Host`, enough of an IP stack for DHCP, ARP and ping, built by
+    hand. Its `P9Socket` lets `p9lib` run over LLP's P9 frames, and the
+    `llp host --port … --arm --dhcp --ping N --cat PATH --cmd LINE` CLI ties
+    them together. **Lesson:** the host must not send its first HELLO until
+    the radio has armed LLP. The first attempt's HELLOs reached the C6's line
+    editor as keystrokes, where an escape byte recalled history.
+  * **On the silicon** (`test_esp32c6.py`, now **21/21**, the LLP check last
+    because the role lasts until reset; the twenty stand-alone checks pass with
+    no host attached): `llp radio`; the handshake carries the board's station
+    MAC; STATE says Wi-Fi up; a DHCP lease **for the board's MAC** from the home
+    router through the bridge (192.168.178.161); the gateway answers 3/3; and
+    `/proc/version` (with its `tainted` line) and `/proc/node` read over 9P on
+    the same link. No CRC errors, losses or overflows on either side.
+  * **Measured:**
+    * **Heap in the radio role: 8–16 KB free**, down from 36–44 KB before
+      arming. LLP takes 24 KB of buffers plus a 4 KB stack. This is far below
+      45.11's 60 KB, which no longer holds, because the kernel has grown since.
+      It is the tightest number in this phase and 49.5 has to watch it: the
+      C6-MINI runs the same kernel plus an SDIO slave.
+    * **Ping to the gateway through the bridge: 37–96 ms.** For comparison,
+      the same PC pinging the C6's *own* stack over Wi-Fi gets 13–104 ms
+      (average 29). Wi-Fi latency dominates; the bridge adds perhaps 10–20 ms
+      (polled USB). That is for 49.9 to measure properly.
+  * **Not done here, deliberately:**
+    * **`/c6/wlan/*` control files** move to 49.7, where a P4 first hands the
+      C6 its credentials (D5). Today the C6 joins from its own identity record,
+      and its whole `/proc` is already readable over LLP's 9P.
+    * **Persona selection on HELLO (D4)** moves to 49.6. On the C6-Zero the
+      shared port is a human's console, so LLP is armed explicitly. On the
+      C6-MINI, SDIO is a dedicated channel and arming at boot is natural.
+    * **The optional TAP bridge.** `net.Host` proves the frames pass without
+      needing root.
+  * "Held for credit" now counts episodes, not retries, in C and Python. A
+    radio whose host has gone counted 28 000 in a minute.
 
 ### SDIO
 

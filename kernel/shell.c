@@ -4613,7 +4613,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         }
         return;
 #endif
-#if !defined(CONFIG_BOARD_RP2350) && !defined(CONFIG_BOARD_ESP32P4) && !defined(CONFIG_BOARD_ESP32C6)
+#if !defined(CONFIG_BOARD_RP2350) && !defined(CONFIG_BOARD_ESP32P4)
     } else if (strcmp(cmd_line, "llp") == 0) {
         llp_node_print_status();
         return;

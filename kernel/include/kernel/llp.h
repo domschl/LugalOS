@@ -92,6 +92,13 @@ int llp_frame_parse(const uint8_t *buf, uint32_t n, llp_frame_t *out);
 int llp_serial_encode(const uint8_t hdr[LLP_HDR_LEN], const uint8_t *payload, uint16_t len,
                       uint8_t *dst, uint32_t cap);
 
+/* The same bytes as llp_serial_encode(), handed to `put` one at a time
+ * instead of written to a buffer: for a channel that takes bytes, on a board
+ * that cannot spare a frame-sized buffer twice over (the C6, 49.3). */
+typedef void (*llp_put_fn)(void *ctx, uint8_t byte);
+void llp_serial_emit(const uint8_t hdr[LLP_HDR_LEN], const uint8_t *payload, uint16_t len,
+                     llp_put_fn put, void *ctx);
+
 typedef struct {
     uint8_t *buf;       /* the binding's: LLP_HDR_LEN + max_payload + LLP_CRC_LEN */
     uint32_t cap;
@@ -141,7 +148,7 @@ typedef struct {
     uint32_t tx_frames, rx_frames;      /* data frames */
     uint32_t tx_link, rx_link;          /* LINK frames */
     uint32_t tx_refused;                /* send callback said no */
-    uint32_t tx_no_credit;              /* llp_link_send() held back for credit */
+    uint32_t tx_no_credit;              /* times sending was held back for credit (episodes) */
     uint32_t rx_lost;                   /* data frames missing from the sequence */
     uint32_t rx_stale;                  /* data frames behind the sequence (dropped) */
     uint32_t rx_not_up;                 /* data while not up (dropped) */

@@ -66,6 +66,9 @@ static void data_payload(uint8_t type, uint8_t *p, uint32_t n) {
 /* --- 1a. frame and rx vectors ------------------------------------------------- */
 
 static uint8_t g_a[2 * WIRE_CAP], g_b[2 * WIRE_CAP], g_c[2 * WIRE_CAP];
+static uint8_t g_emit[2 * WIRE_CAP];
+static uint32_t g_emit_len;
+static void emit_put(void *ctx, uint8_t b) { (void)ctx; if (g_emit_len < sizeof g_emit) g_emit[g_emit_len++] = b; }
 
 static void vec_frame(char *rest) {
     char name[64], pay[2 * WIRE_CAP], wire[4 * WIRE_CAP];
@@ -77,6 +80,9 @@ static void vec_frame(char *rest) {
     llp_hdr_put(hdr, (uint8_t)type, (uint8_t)seq, (uint16_t)pn);
     int n = llp_serial_encode(hdr, g_a, (uint16_t)pn, g_c, sizeof g_c);
     CHECK(n == wn && memcmp(g_c, g_b, (size_t)wn) == 0, "%s: encode differs (%d vs %d bytes)", name, n, wn);
+    g_emit_len = 0;
+    llp_serial_emit(hdr, g_a, (uint16_t)pn, emit_put, NULL);
+    CHECK(g_emit_len == (uint32_t)wn && memcmp(g_emit, g_b, (size_t)wn) == 0, "%s: emit differs from encode", name);
 
     static uint8_t rb[RXBUF_CAP];
     llp_serial_rx_t rx;

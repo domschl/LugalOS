@@ -342,9 +342,74 @@ def test_still_alive(c: Console):
     return _t("no watchdog or crash reset in a minute (the kernel clock keeps counting)", t > 65, "up %.0f s" % t)
 
 
+def test_llp_modem(c: Console):
+    """49.3 (plan/phase49_c6_network_nodes.md): the C6 as a host's network card. This PC plays the
+    host -- host/llp's reference node -- over the board's one USB port, LLP's frames sharing it with
+    the console: `llp radio`, the handshake (the station MAC must be the board's, its Wi-Fi up), a DHCP
+    lease *for the board's MAC* from the router through the bridge, the gateway pinged, a file read from
+    the board over 9P on the same link, and the heap left in the radio role.
+
+    Last in the suite: the role lasts until the next reset, so every stand-alone check above has run
+    with no host attached. Skips without Wi-Fi."""
+    if _wifi_credentials() is None and _record_ssid(c) is None:
+        return _t("LLP radio role (skipped: no Wi-Fi credentials)", True, "skipped")
+    ok, out = c.run("cat /proc/net", r"arp cache[^\n]*", 8)
+    m = re.search(r"mac: ([0-9a-f:]{17})", out)
+    if not (ok and m and re.search(r"link: up", out)):
+        return _t("LLP radio role (skipped: Wi-Fi not up)", True, "skipped")
+    mac = bytes.fromhex(m.group(1).replace(":", ""))
+    sys.path.insert(0, str(REPO_ROOT / "host" / "llp" / "src"))
+    sys.path.insert(0, str(REPO_ROOT / "host" / "p9lib" / "src"))
+    from llp.net import Host, ip_str
+    from llp.node import SerialNode
+    import p9lib
+
+    node = SerialNode(c.s)
+    try:
+        node.type_line("")
+        node.type_line("llp radio")
+        if not node.wait_console("llp: radio", 5.0):
+            return _t("LLP radio role: `llp radio` arms", False, node.console_text()[-200:])
+        lk = node.start()
+        if not node.wait_up(10.0):
+            return _t("LLP radio role: handshake", False, node.console_text()[-200:])
+        if lk.peer_mac != mac:
+            return _t("LLP radio role: the station MAC in HELLO", False, lk.peer_mac.hex(":"))
+        t = time.time() + 10
+        while not lk.peer_link and time.time() < t:
+            time.sleep(0.05)
+        if not lk.peer_link:
+            return _t("LLP radio role: STATE says Wi-Fi up", False, "link down")
+        host = Host(mac, node.send_eth, node.recv_eth, log=lambda s: None)
+        lease = host.dhcp()
+        if lease is None:
+            return _t("LLP radio role: a DHCP lease through the bridge", False, "no lease")
+        rtts = host.ping(lease.gw, count=3)
+        if len(rtts) < 2:
+            return _t("LLP radio role: the gateway answers through the bridge", False,
+                      "%s, %d/3 replies" % (ip_str(lease.ip), len(rtts)))
+        client = p9lib.P9Client(node.p9_socket(), framing="raw")
+        client.version()
+        client.attach(1)
+        version = client.cat("/proc/version")
+        if b"tainted" not in version:
+            return _t("LLP radio role: 9P over the link", False, repr(version[:60]))
+        mark = len(node.console)
+        node.type_line("cat /proc/meminfo")
+        time.sleep(1.5)
+        heap = re.search(r"Heap Free: (\d+) KB", node.console[mark:].decode("utf-8", "replace"))
+        st = lk.st
+        return _t("LLP radio role: lease, ping and 9P through the board, for its MAC", True,
+                  "%s, ping %.0f ms, %d/%d frames, %s KB heap free" % (
+                      ip_str(lease.ip), min(rtts), st.tx_frames, st.rx_frames, heap.group(1) if heap else "?"))
+    finally:
+        node.close()
+
+
 TESTS = [test_boots, test_heap, test_tick_rate, test_preemption, test_locks, test_priostress,
          test_pmp, test_umode, test_isolation, test_deputy, test_kobj_kernel, test_kobj_umode,
-         test_radio_shim, test_led, test_radio_scan_or_join, test_radio_ip, test_i2c_sensors, test_taint, test_watchdog, test_still_alive]
+         test_radio_shim, test_led, test_radio_scan_or_join, test_radio_ip, test_i2c_sensors, test_taint, test_watchdog, test_still_alive,
+         test_llp_modem]   # last: the radio role lasts until the next reset
 
 
 def main() -> int:

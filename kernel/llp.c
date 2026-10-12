@@ -60,6 +60,27 @@ int llp_serial_encode(const uint8_t hdr[LLP_HDR_LEN], const uint8_t *payload, ui
     return (int)out;
 }
 
+static void emit_escaped(const uint8_t *p, uint32_t n, llp_put_fn put, void *ctx) {
+    for (uint32_t i = 0; i < n; i++) {
+        if (p[i] == SLIP_END) { put(ctx, SLIP_ESC); put(ctx, SLIP_ESC_END); }
+        else if (p[i] == SLIP_ESC) { put(ctx, SLIP_ESC); put(ctx, SLIP_ESC_ESC); }
+        else put(ctx, p[i]);
+    }
+}
+
+void llp_serial_emit(const uint8_t hdr[LLP_HDR_LEN], const uint8_t *payload, uint16_t len,
+                     llp_put_fn put, void *ctx) {
+    uint32_t crc = crc32_update(0xFFFFFFFFu, hdr, LLP_HDR_LEN);
+    crc = ~crc32_update(crc, payload, len);
+    uint8_t crc_le[LLP_CRC_LEN];
+    put32(crc_le, crc);
+    put(ctx, SLIP_END);
+    emit_escaped(hdr, LLP_HDR_LEN, put, ctx);
+    emit_escaped(payload, len, put, ctx);
+    emit_escaped(crc_le, LLP_CRC_LEN, put, ctx);
+    put(ctx, SLIP_END);
+}
+
 void llp_serial_rx_init(llp_serial_rx_t *rx, uint8_t *buf, uint32_t cap) {
     memset(rx, 0, sizeof(*rx));
     rx->buf = buf;
@@ -300,10 +321,10 @@ int llp_link_send(llp_link_t *l, uint8_t type, const uint8_t *payload, uint16_t 
     if (l->state != LLP_UP) return -1;
     if ((type != LLP_T_ETH && type != LLP_T_P9) || len > l->peer_max_payload) return -3;
     if (!llp_link_can_send(l)) {
-        l->st.tx_no_credit++;
-        if (!l->blocked) {
+        if (!l->blocked) {          /* counted once per episode, not per retry */
             l->blocked = true;
             l->last_probe = now;
+            l->st.tx_no_credit++;
         }
         return -2;
     }

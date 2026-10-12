@@ -14,25 +14,57 @@
 #include "net/netif.h"
 #include "net/ip.h"
 #include "fs/9p.h"
-#include "drivers/virtio_console.h"
+#include "kernel/palloc.h"
 #include <string.h>
 
 /* --- The channel ----------------------------------------------------------------
- * The serial binding's byte stream. QEMU's virtio-console today; the only two
- * calls a new channel has to provide. */
+ * The serial binding's byte stream: what a board has to provide. QEMU: its
+ * virtio-console, taken off the 9P pump. The C6-Zero: its one USB port, shared
+ * with the console (drivers/usbjtag_esp32c6.c, 49.3). */
 
-static int chan_read(uint8_t *buf, uint32_t max) { return virtio_console_read(buf, max); }
-static int chan_write(const uint8_t *buf, uint32_t len) { return virtio_console_write(buf, len); }
+#if defined(CONFIG_BOARD_ESP32C6)
+#include "drivers/usbjtag_esp32c6.h"
+static int  chan_read(uint8_t *buf, uint32_t max) { return usbjtag_llp_read(buf, max); }
+static bool chan_present(void) { return true; }
+static void chan_claim(void) { usbjtag_llp_arm(true); }
+static void chan_service(void) { usbjtag_llp_service(); }
+/* Frames are streamed to the FIFO rather than encoded into a buffer first:
+ * the buffer would be 3 of the ~11 pages a C6 has free with the radio up. */
+#define CHAN_STREAMS 1
+static void chan_put(void *ctx, uint8_t b) { (void)ctx; usbjtag_llp_putc(b); }
+static void chan_end(void) { usbjtag_llp_end(); }
+/* The C6 is only ever the radio, and its SRAM is the tightest budget here:
+ * no Ethernet queues (frames go straight to the radio), two 9P slots in and
+ * one out (its 9P server answers one request at a time), a one-page task. */
+#define ETH_SLOTS    0u
+#define P9_SLOTS     2u
+#define P9_TX_SLOTS  1u
+#define PUMP_PAGES   1u
+#else
+#include "drivers/virtio_console.h"
+static int  chan_read(uint8_t *buf, uint32_t max) { return virtio_console_read(buf, max); }
+static int  chan_write(const uint8_t *buf, uint32_t len) { return virtio_console_write(buf, len); }
 static bool chan_present(void) { return virtio_console_get_link() != NULL; }
+/* The channel is LLP's now, not the 9P pump's (they share its ring). */
+static void chan_claim(void) {
+    p9_link_t *vlink = virtio_console_get_link();
+    if (vlink) p9_link_unregister_background(vlink);
+    dev_release("vconsole");
+    if (dev_claim("llp") != 0) cprintf("llp: the channel's wire is held by someone else\n");
+}
+static void chan_service(void) {}
+#define CHAN_STREAMS 0
+#define ETH_SLOTS    8u
+#define P9_SLOTS     4u
+#define P9_TX_SLOTS  4u
+#define PUMP_PAGES   2u
+#endif
 
 /* --- Frame queues ----------------------------------------------------------------
  * Fixed slots, one producer side and one consumer side each. The receive
  * queues are filled by the pump alone; the transmit queues have several
  * producers (the stack's task, the DHCP client, 9P server and clients), so
  * their put is under a spinlock, and the pump alone takes from them. */
-
-#define ETH_SLOTS 8u
-#define P9_SLOTS  4u
 
 typedef struct {
     uint8_t          *mem;
@@ -67,15 +99,31 @@ static void fq_drop(fq_t *q) {
     q->tail++;
 }
 
-static uint8_t  g_eth_rx_mem[ETH_SLOTS][NETIF_FRAME_MAX], g_eth_tx_mem[ETH_SLOTS][NETIF_FRAME_MAX];
-static uint8_t  g_p9_rx_mem[P9_SLOTS][P9_MAX_MSIZE], g_p9_tx_mem[P9_SLOTS][P9_MAX_MSIZE];
-static uint16_t g_eth_rx_len[ETH_SLOTS], g_eth_tx_len[ETH_SLOTS], g_p9_rx_len[P9_SLOTS], g_p9_tx_len[P9_SLOTS];
-
-static fq_t g_eth_rx = { &g_eth_rx_mem[0][0], g_eth_rx_len, NETIF_FRAME_MAX, ETH_SLOTS, 0, 0, 0 };
-static fq_t g_eth_tx = { &g_eth_tx_mem[0][0], g_eth_tx_len, NETIF_FRAME_MAX, ETH_SLOTS, 0, 0, 0 };
-static fq_t g_p9_rx  = { &g_p9_rx_mem[0][0],  g_p9_rx_len,  P9_MAX_MSIZE,    P9_SLOTS,  0, 0, 0 };
-static fq_t g_p9_tx  = { &g_p9_tx_mem[0][0],  g_p9_tx_len,  P9_MAX_MSIZE,    P9_SLOTS,  0, 0, 0 };
+/* The slots come from pages when the node starts, sized for its role (a
+ * radio has no Ethernet queues): nothing is spent on a board that never runs
+ * LLP. The length arrays are small enough to keep. */
+static uint16_t g_eth_rx_len[ETH_SLOTS ? ETH_SLOTS : 1], g_eth_tx_len[ETH_SLOTS ? ETH_SLOTS : 1];
+static uint16_t g_p9_rx_len[P9_SLOTS], g_p9_tx_len[P9_TX_SLOTS];
+static fq_t g_eth_rx = { NULL, g_eth_rx_len, NETIF_FRAME_MAX, 0, 0, 0, 0 };
+static fq_t g_eth_tx = { NULL, g_eth_tx_len, NETIF_FRAME_MAX, 0, 0, 0, 0 };
+static fq_t g_p9_rx  = { NULL, g_p9_rx_len,  P9_MAX_MSIZE,    0, 0, 0, 0 };
+static fq_t g_p9_tx  = { NULL, g_p9_tx_len,  P9_MAX_MSIZE,    0, 0, 0, 0 };
 static spinlock_t g_tx_lock = SPINLOCK_INIT;
+static uint32_t g_pages;        /* what the node took, for `llp` */
+
+static uint8_t *take(uint32_t bytes) {
+    uint32_t n = (bytes + PAGE_SIZE - 1u) / PAGE_SIZE;
+    uint8_t *p = (uint8_t *)palloc_pages(n);
+    if (p) g_pages += n;
+    return p;
+}
+
+static bool fq_alloc(fq_t *q, uint32_t nslots) {
+    q->nslots = nslots;
+    if (!nslots) return true;
+    q->mem = take(q->slot * nslots);
+    return q->mem != NULL;
+}
 
 static bool tx_put(fq_t *q, const uint8_t *d, uint32_t n) {
     uintptr_t f = spin_lock_irqsave(&g_tx_lock);
@@ -89,15 +137,16 @@ static bool tx_put(fq_t *q, const uint8_t *d, uint32_t n) {
 static llp_node_role_t g_role;
 static llp_link_t      g_link;
 static llp_serial_rx_t g_srx;
-static uint8_t         g_srx_buf[LLP_HDR_LEN + LLP_MAX_PAYLOAD + LLP_CRC_LEN];
-static uint8_t         g_wire[LLP_SERIAL_WIRE_MAX(LLP_MAX_PAYLOAD)];
+static uint8_t        *g_wire;
+#define SRX_BYTES  (LLP_HDR_LEN + LLP_MAX_PAYLOAD + LLP_CRC_LEN)
+#define WIRE_BYTES LLP_SERIAL_WIRE_MAX(LLP_MAX_PAYLOAD)
 static volatile bool   g_ev_up, g_ev_down;
 static uint32_t        g_chan_errors;
 
 /* Radio role: the interface the link stands in for, and a frame read from it
  * that is waiting for credit. */
 static netif_t        *g_bridged;
-static uint8_t         g_pending[NETIF_FRAME_MAX];
+static uint8_t        *g_pending;              /* one frame */
 static uint32_t        g_pending_len;
 static int             g_sent_link = -1;      /* last STATE link value sent */
 static uint32_t        g_fwd_to_link, g_fwd_to_if;
@@ -111,8 +160,13 @@ static uint32_t now_ms(void) { return (uint32_t)time_get_ms(); }
 
 static int on_send(void *ctx, const uint8_t hdr[LLP_HDR_LEN], const uint8_t *payload, uint16_t len) {
     (void)ctx;
-    int n = llp_serial_encode(hdr, payload, len, g_wire, sizeof g_wire);
+#if CHAN_STREAMS
+    llp_serial_emit(hdr, payload, len, chan_put, NULL);
+    chan_end();
+#else
+    int n = llp_serial_encode(hdr, payload, len, g_wire, WIRE_BYTES);
     if (n < 0 || chan_write(g_wire, (uint32_t)n) < 0) { g_chan_errors++; return -1; }
+#endif
     return 0;
 }
 
@@ -244,7 +298,7 @@ static void radio_forward(uint32_t now) {
     for (int k = 0; k < 8; k++) {
         if (!g_pending_len) {
             if (netif_poll(g_bridged) != 1) return;
-            int n = netif_recv(g_bridged, g_pending, sizeof g_pending);
+            int n = netif_recv(g_bridged, g_pending, NETIF_FRAME_MAX);
             if (n <= 0) continue;
             g_pending_len = (uint32_t)n;
         }
@@ -301,6 +355,7 @@ static void pump(void *arg) {
         drain(&g_p9_tx, LLP_T_P9, now);
         drain(&g_eth_tx, LLP_T_ETH, now);
         llp_link_tick(&g_link, now);
+        chan_service();
         sched_yield();
     }
 }
@@ -323,33 +378,42 @@ int llp_node_start(llp_node_role_t role) {
         cfg.role = LLP_ROLE_HOST;
     }
     cfg.max_payload = LLP_MAX_PAYLOAD;
-    cfg.rx_window = ETH_SLOTS;
+    /* The window LLP may advertise: the radio only queues 9P (Ethernet goes
+     * straight to its interface), the host queues both. */
+    cfg.rx_window = (uint8_t)(role == LLP_NODE_RADIO ? P9_SLOTS : (ETH_SLOTS < P9_SLOTS ? ETH_SLOTS : P9_SLOTS));
     cfg.send = on_send;
     cfg.rx_free = on_rx_free;
     cfg.event = on_event;
 
-    /* The channel is LLP's now, not the 9P pump's (they share its ring). */
-    p9_link_t *vlink = virtio_console_get_link();
-    if (vlink) p9_link_unregister_background(vlink);
-    dev_release("vconsole");
-    if (dev_claim("llp") != 0) cprintf("llp: the channel's wire is held by someone else\n");
+    uint32_t eth = (role == LLP_NODE_HOST) ? ETH_SLOTS : 0u;
+    if (role == LLP_NODE_HOST && eth == 0) { cprintf("llp: this board cannot be the host\n"); return -1; }
+    uint8_t *srx = take(SRX_BYTES);
+    if (!CHAN_STREAMS) g_wire = take(WIRE_BYTES);
+    if (role == LLP_NODE_RADIO) g_pending = take(NETIF_FRAME_MAX);
+    if (!srx || (!CHAN_STREAMS && !g_wire) || (role == LLP_NODE_RADIO && !g_pending) ||
+        !fq_alloc(&g_eth_rx, eth) || !fq_alloc(&g_eth_tx, eth) ||
+        !fq_alloc(&g_p9_rx, P9_SLOTS) || !fq_alloc(&g_p9_tx, P9_TX_SLOTS)) {
+        cprintf("llp: out of memory (%u pages taken; they stay with the node)\n", (unsigned)g_pages);
+        return -1;
+    }
 
+    chan_claim();
     if (role == LLP_NODE_RADIO) net_stack_detach();
 
     uint32_t session = 0;
     while (session == 0) random_bytes(&session, sizeof session);
-    llp_serial_rx_init(&g_srx, g_srx_buf, sizeof g_srx_buf);
+    llp_serial_rx_init(&g_srx, srx, SRX_BYTES);
     g_role = role;
     llp_link_init(&g_link, &cfg, session, now_ms());
 
     p9_link_register_background(&g_p9);
-    if (task_create_sized("llp", pump, NULL, 2) < 0) {
+    if (task_create_sized("llp", pump, NULL, PUMP_PAGES) < 0) {
         cprintf("llp: could not start the pump task\n");
         return -1;
     }
-    cprintf("llp: %s, session %08x, waiting for the peer\n",
+    cprintf("llp: %s, session %08x, %u KB, waiting for the peer\n",
             role == LLP_NODE_RADIO ? "radio (bridging the network interface)" : "host",
-            (unsigned)session);
+            (unsigned)session, (unsigned)(g_pages * PAGE_SIZE / 1024u));
     return 0;
 }
 
@@ -383,11 +447,18 @@ void llp_node_print_status(void) {
     cprintf("  serial: %u frames, crc %u, runt %u, bad-len %u, overflow %u, channel errors %u\n",
             (unsigned)g_srx.frames, (unsigned)g_srx.crc_err, (unsigned)g_srx.runt,
             (unsigned)g_srx.bad_len, (unsigned)g_srx.overflow, (unsigned)g_chan_errors);
-    cprintf("  queues: eth rx %u/%u (full %u), eth tx %u/%u (full %u), p9 rx %u/%u (full %u), p9 tx %u/%u (full %u)\n",
-            (unsigned)fq_used(&g_eth_rx), ETH_SLOTS, (unsigned)g_eth_rx.drops,
-            (unsigned)fq_used(&g_eth_tx), ETH_SLOTS, (unsigned)g_eth_tx.drops,
-            (unsigned)fq_used(&g_p9_rx), P9_SLOTS, (unsigned)g_p9_rx.drops,
-            (unsigned)fq_used(&g_p9_tx), P9_SLOTS, (unsigned)g_p9_tx.drops);
+    cprintf("  queues: eth rx %u/%u (full %u), eth tx %u/%u (full %u), p9 rx %u/%u (full %u), p9 tx %u/%u (full %u); %u KB\n",
+            (unsigned)fq_used(&g_eth_rx), (unsigned)g_eth_rx.nslots, (unsigned)g_eth_rx.drops,
+            (unsigned)fq_used(&g_eth_tx), (unsigned)g_eth_tx.nslots, (unsigned)g_eth_tx.drops,
+            (unsigned)fq_used(&g_p9_rx), (unsigned)g_p9_rx.nslots, (unsigned)g_p9_rx.drops,
+            (unsigned)fq_used(&g_p9_tx), (unsigned)g_p9_tx.nslots, (unsigned)g_p9_tx.drops,
+            (unsigned)(g_pages * PAGE_SIZE / 1024u));
+#if defined(CONFIG_BOARD_ESP32C6)
+    uint32_t lr, cr, ct;
+    usbjtag_llp_counts(&lr, &cr, &ct);
+    cprintf("  usb: llp rx overflow %u, console rx overflow %u, console tx overflow %u\n",
+            (unsigned)lr, (unsigned)cr, (unsigned)ct);
+#endif
     if (g_role == LLP_NODE_RADIO)
         cprintf("  bridge: %s, %u frames to the link, %u to the interface\n",
                 g_bridged ? g_bridged->name : "-", (unsigned)g_fwd_to_link, (unsigned)g_fwd_to_if);

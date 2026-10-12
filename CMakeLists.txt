@@ -1067,6 +1067,9 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
     # The boot-time flash mapping and watchdogs, in .boot.text (SRAM): it is what
     # makes the flash window exist, so it cannot live in it.
     list(APPEND SOURCES arch/riscv/common/xip_esp32c6.c)
+    # 49.3 (plan/phase49_c6_network_nodes.md): the C6 as a host's network card,
+    # LLP sharing the USB port with the console (drivers/usbjtag_esp32c6.c).
+    list(APPEND SOURCES kernel/llp_node.c)
 else()
     # QEMU targets: VirtIO block device + 16550 UART + VirtIO console (9P link, A3)
     list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c drivers/virtio_console.c)

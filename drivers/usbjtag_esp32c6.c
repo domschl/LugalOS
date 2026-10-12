@@ -31,6 +31,8 @@
 
 #include "drivers/uart.h"
 #include "kernel/sched.h"
+#include "kernel/lock.h"
+#include "drivers/usbjtag_esp32c6.h"
 #include "lugalos_config.h"
 #include <stdint.h>
 #include <stdbool.h>
@@ -71,22 +73,167 @@ static void hw_putc(char c) {
     if (++g_pending >= FIFO_BYTES || c == '\n') hw_flush();
 }
 
+/* --- Sharing the port with LLP (49.3, plan/phase49_c6_network_nodes.md) ---
+ *
+ * The C6-Zero has one cable. To be a host's network card over it, LLP's
+ * serial frames (SLIP: END ... END, doc/llp.md §7.1) share the port with the
+ * console, as `p9share` shares a UART with 9P:
+ *
+ * * **In**, every byte is routed: from a SLIP_END to the next one, to LLP;
+ *   anything outside a frame, to the console. Typed text never contains 0xC0
+ *   (it is not valid UTF-8 either).
+ * * **Out**, LLP's pump is the only writer to the FIFO while LLP is armed.
+ *   Console output from every other task goes into a queue the pump writes
+ *   between frames -- so no console byte can land inside a frame, and nothing
+ *   masks interrupts for the length of one (the radio's interrupt path runs on
+ *   this core). Fatal-path output (uart_critical_putc) stays direct: when the
+ *   machine is going down, a mangled frame is the lesser loss.
+ *
+ * Off by default: until `llp radio` arms it, this driver is byte for byte what
+ * it was. */
+
+#define LLP_RX_CAP   4096u
+#define CON_RX_CAP   256u
+#define CON_TX_CAP   2048u
+
+typedef struct { uint8_t *buf; uint32_t cap, head, tail; uint32_t drops; } bring_t;
+
+static uint8_t g_llp_rx_mem[LLP_RX_CAP], g_con_rx_mem[CON_RX_CAP], g_con_tx_mem[CON_TX_CAP];
+static bring_t g_llp_rx = { g_llp_rx_mem, LLP_RX_CAP, 0, 0, 0 };
+static bring_t g_con_rx = { g_con_rx_mem, CON_RX_CAP, 0, 0, 0 };
+static bring_t g_con_tx = { g_con_tx_mem, CON_TX_CAP, 0, 0, 0 };
+static volatile bool g_llp_armed;
+static bool g_in_frame;
+static spinlock_t g_mux_lock = SPINLOCK_INIT;
+
+static void br_put(bring_t *r, uint8_t c) {
+    if (r->head - r->tail >= r->cap) { r->drops++; return; }
+    r->buf[r->head++ % r->cap] = c;
+}
+static bool br_get(bring_t *r, uint8_t *c) {
+    if (r->head == r->tail) return false;
+    *c = r->buf[r->tail++ % r->cap];
+    return true;
+}
+
+/* Everything the host has sent, routed. Caller holds g_mux_lock. */
+static void drain_rx_locked(void) {
+    while (REG(USJ_EP1_CONF(g_base)) & USJ_OUT_AVAIL) {
+        uint8_t c = (uint8_t)(REG(USJ_EP1(g_base)) & 0xffu);
+        if (c == 0xC0) {                      /* SLIP_END: opens a frame, or closes the open one */
+            br_put(&g_llp_rx, c);
+            g_in_frame = !g_in_frame;
+        } else if (g_in_frame) {
+            br_put(&g_llp_rx, c);
+        } else {
+            br_put(&g_con_rx, c);
+        }
+    }
+}
+
+void usbjtag_llp_arm(bool on) {
+    uintptr_t f = spin_lock_irqsave(&g_mux_lock);
+    g_llp_armed = on;
+    g_in_frame = false;
+    spin_unlock_irqrestore(&g_mux_lock, f);
+}
+
+int usbjtag_llp_read(uint8_t *buf, uint32_t max) {
+    uintptr_t f = spin_lock_irqsave(&g_mux_lock);
+    drain_rx_locked();
+    uint32_t n = 0;
+    while (n < max && br_get(&g_llp_rx, &buf[n])) n++;
+    spin_unlock_irqrestore(&g_mux_lock, f);
+    return (int)n;
+}
+
+/* The pump's turn at the FIFO: console text first (it was waiting), then the
+ * frame, then flush. Only the pump calls this, so the FIFO has one writer. */
+static void con_tx_flush(void) {
+    for (;;) {
+        uint8_t c;
+        uintptr_t f = spin_lock_irqsave(&g_mux_lock);
+        bool have = br_get(&g_con_tx, &c);
+        spin_unlock_irqrestore(&g_mux_lock, f);
+        if (!have) break;
+        hw_putc((char)c);
+    }
+}
+
+int usbjtag_llp_write(const uint8_t *buf, uint32_t len) {
+    con_tx_flush();
+    for (uint32_t i = 0; i < len; i++) hw_putc((char)buf[i]);
+    hw_flush();
+    return (int)len;
+}
+
+/* A frame streamed byte by byte (llp_serial_emit()): the first byte of a frame
+ * is its SLIP_END, which is where waiting console text goes out first. */
+static bool g_streaming;
+
+void usbjtag_llp_putc(uint8_t b) {
+    if (!g_streaming) { con_tx_flush(); g_streaming = true; }
+    hw_putc((char)b);
+}
+
+void usbjtag_llp_end(void) {
+    hw_flush();
+    g_streaming = false;
+}
+
+void usbjtag_llp_service(void) {
+    con_tx_flush();
+    hw_flush();
+}
+
+void usbjtag_llp_counts(uint32_t *llp_rx_drops, uint32_t *con_rx_drops, uint32_t *con_tx_drops) {
+    *llp_rx_drops = g_llp_rx.drops;
+    *con_rx_drops = g_con_rx.drops;
+    *con_tx_drops = g_con_tx.drops;
+}
+
 void uart_init(uintptr_t base_addr) {
     (void)base_addr;            /* CONFIG_UART0_BASE is the chip's UART0, not this port */
 }
 
 int uart_task_start(void) { return -1; }
 
-void uart_putc(char c) { hw_putc(c); }
+void uart_putc(char c) {
+    if (g_llp_armed) {
+        uintptr_t f = spin_lock_irqsave(&g_mux_lock);
+        br_put(&g_con_tx, (uint8_t)c);
+        spin_unlock_irqrestore(&g_mux_lock, f);
+        return;
+    }
+    hw_putc(c);
+}
 
-void uart_flush(void) { hw_flush(); }
+void uart_flush(void) { if (!g_llp_armed) hw_flush(); }
 
 bool uart_has_char(void) {
+    if (g_llp_armed) {
+        uintptr_t f = spin_lock_irqsave(&g_mux_lock);
+        drain_rx_locked();
+        bool have = g_con_rx.head != g_con_rx.tail;
+        spin_unlock_irqrestore(&g_mux_lock, f);
+        return have;
+    }
     hw_flush();
     return (REG(USJ_EP1_CONF(g_base)) & USJ_OUT_AVAIL) != 0;
 }
 
 char uart_getc(void) {
+    if (g_llp_armed) {
+        for (;;) {
+            uint8_t c;
+            uintptr_t f = spin_lock_irqsave(&g_mux_lock);
+            drain_rx_locked();
+            bool have = br_get(&g_con_rx, &c);
+            spin_unlock_irqrestore(&g_mux_lock, f);
+            if (have) return (char)c;
+            sched_yield();
+        }
+    }
     hw_flush();
     while (!(REG(USJ_EP1_CONF(g_base)) & USJ_OUT_AVAIL)) sched_yield();
     return (char)(REG(USJ_EP1(g_base)) & 0xffu);

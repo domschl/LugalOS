@@ -1,3 +1,4 @@
+#include "kernel/llp_node.h"
 #include "kernel/device.h"
 #include "lugalos_config.h"
 #include "drivers/uart.h"
@@ -27,7 +28,6 @@
 
 #if !defined(CONFIG_BOARD_RP2350) && !defined(CONFIG_BOARD_ESP32P4) && !defined(CONFIG_BOARD_ESP32C6)
 #include "drivers/virtio_console.h"
-#include "kernel/llp_node.h"
 #include "drivers/virtio_blk.h"
 #include "drivers/virtio_net.h"
 #endif
@@ -326,7 +326,12 @@ static const dev_driver_t dev_enc28j60 = {
 };
 #endif
 #elif defined(CONFIG_BOARD_ESP32C6)
-/* 45.4: a stated emptiness, as the P4's was at E2 -- see the declarations above. */
+/* 45.4: a stated emptiness, as the P4's was at E2 -- see the declarations above.
+ * 49.3: except 9P over LLP, once `llp radio` has armed it on the USB port. */
+static void *get_llp(void) { return llp_node_p9_link(); }
+static const dev_driver_t dev_llp = {
+    .name = "llp", .kind = DEV_KIND_P9LINK, .get = get_llp,
+};
 #elif defined(CONFIG_BOARD_ESP32P4)
 /* E2, plan/phase27_esp32p4_bringup.md, amended by phase 28's Z4: this board
  * had no device table of its own at all until the EMAC arrived. The entries
@@ -423,7 +428,8 @@ void board_register_devices(void) {
     dev_register(&dev_enc28j60);
 #endif
 #elif defined(CONFIG_BOARD_ESP32C6)
-    /* Nothing beyond the unconditional entries above (45.4). */
+    /* Nothing beyond the unconditional entries above (45.4), and LLP (49.3). */
+    dev_register(&dev_llp);
 #elif defined(CONFIG_BOARD_ESP32P4)
     dev_register(&dev_emac);
     dev_register(&dev_sdmmc);

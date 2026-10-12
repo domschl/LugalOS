@@ -7,13 +7,17 @@ dependencies = []
 
 [project.optional-dependencies]
 serial = ["pyserial>=3.5"]
+p9 = ["p9lib"]                 # 9P over LLP (`llp host --cat`)
 
 [project.scripts]
 llp = "llp.cli:main"
 llp-vectors = "llp.vectors:main"
 
+[tool.uv.sources]
+p9lib = { path = "../p9lib", editable = true }
+
 [dependency-groups]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "types-pyserial"]
 
 [build-system]
 requires = ["hatchling"]

@@ -112,10 +112,15 @@ console, loading and reset all on it.
   ```
 * Leave it running by itself (stage 2 at `0x0` + the OS image, verified, then reset):
   `tools/c6flash.py build/esp32c6`
-* Test it: `python3 tests/hw/test_esp32c6.py` (loads the kernel itself; `--no-load` tests
-  what is running). 19 checks (with WLAN credentials in the identity record the board
-  joins by itself at boot and the radio-start tests watch that instead); skips when no board is attached. Wi-Fi checks read
+* Test it: `cd tests/hw && uv run test_esp32c6.py --port <C6-Zero>` (loads the kernel itself;
+  `--no-load` tests what is running). 21 checks (with WLAN credentials in the identity record the
+  board joins by itself at boot and the radio-start tests watch that instead); skips when no board
+  is attached. The last check (49.3) arms LLP's radio role and stays in it until reset. Wi-Fi checks read
   `~/.config/lugalos/wifi.env` (never print it; only the derived 64-hex PSK goes to the board).
+* LLP radio role (49.3): `llp radio` at the C6's console shares the USB port between the console
+  and LLP frames; `cd host/llp && uv run --extra serial --extra p9 llp host --port <C6-Zero> --arm
+  --dhcp --ping 3 --cat /proc/version` plays the host. With the NANO's C6 also on USB (P2 21/23),
+  two Espressif ports exist: always pass `--port`.
 * I2C on the C6-Zero: GPIO0 = SDA, GPIO1 = SCL (100 kHz); `i2c scan`, `sensor`, `/proc/sensors`.
 * The hardware watchdog (MWDT0, 30 s) is armed at boot; `wdt` shows it and the last reset's
   cause, `wdt test` stops feeding it (the board resets -- only when that is the point).
