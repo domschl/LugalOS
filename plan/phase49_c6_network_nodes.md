@@ -374,8 +374,18 @@ without USB.
   reset.
 * What cost time: TX/RX were crossed the wrong way round (the first attempts
   were silent in both directions). The board was reset by a power cycle of the
-  NANO's own USB. **A reset through pin 13 (GPIO54 → R54 → EN) is still
-  unproven**, so confirm it before 49.4 relies on it.
+  NANO's own USB.
+* **Step 3, and the pin-13 reset, confirmed:** with the jumper out, touching
+  P2 13 to GND resets the C6 (`rst:0x1 (POWERON)` — EN low is a power-up to this
+  chip), so **R54 is fitted** and GPIO54 can reset the C6 in 49.4. The factory
+  log, as a reference for 49.4: IDF `v5.4-dev-3602-ga97a7b0962`, flash DIO
+  80 MHz; `ESP-Hosted-MCU Slave FW version :: 0.0.6`, `Transport used :: SDIO
+  only`, WLAN + BLE-HCI over SDIO; `SDIO_SLAVE: sending mode:
+  SDIO_SLAVE_SEND_STREAM`, `RxQ[20] timing[0]` (stream mode for slave→host, 20
+  receive buffers, default sampling edge). BT MAC = base + 2 (`…d4:3e`). On its
+  first boot after the backup it rewrote its PHY calibration ("checksum
+  failure"), so the backup's `nvs`/`phy_init` no longer match the chip
+  byte for byte. That is harmless: both are regenerated.
 
 ---
 
