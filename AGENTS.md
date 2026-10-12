@@ -232,14 +232,14 @@ for both roles by itself.
   timeout).
 * SDIO toward the C6 (49.4): slot 1 of the SD/MMC host (GPIO14-19 via the matrix; C6 reset GPIO54,
   open-drain). `sdio probe [khz-hex]` (e.g. `sdio probe 2710` = 10 MHz), `sdio`, `sdio rd52 fn addr`,
-  `sdio rd53 fn addr len`, `sdio bench [kb fn addr len]`, `sdio reset`. 10 MHz is the tested speed.
+  `sdio rd53 fn addr len`, `sdio bench [kb fn addr len]`, `sdio reset`. 10 MHz on the NANO; the 7B also carries data at 20 MHz.
   The C6's SDIO slave hardware answers whatever the C6 runs. Flash the P4 with both halves
   (`--only boot,os`): an `os`-only flash pairs a new XIP half with an old RAM half and traps at boot.
   With both CP2102s attached (the NANO console and a C6 UART adapter) their by-id links collide
   (all serial "0001"), so `p4-ports.env` names the NANO's console by USB path (hub port 4.2).
   The 7B's other Type-C is its P4's USB-Serial/JTAG (flashable, but not the LugalOS console).
 * Test: `cd tests/hw && uv run test_esp32p4.py --board lcd7b --build ../../build/esp32p4-lcd7b`
-  (36/36 since 47.13: backlight, blanking, USB keyboard, touch, RTC and the
+  (37/37 since 49.4's SDIO check; 47.13: backlight, blanking, USB keyboard, touch, RTC and the
   ribbon's hotkeys included, each skipping where a board lacks it; EMAC tests
   skip; a BME280 sits on the PH2.0 I2C header at 0x76). NANO: `uv run
   test_esp32p4.py --board nano` (37/37 with 49.4's SDIO check, the 7B's skipping).

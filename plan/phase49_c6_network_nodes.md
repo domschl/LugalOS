@@ -588,7 +588,15 @@ without USB.
       cold boot was read when USB said nothing.
     * the tick breadcrumbs gain the return address and task (LP_AON stores 5
       and 6) beside the PC.
-  * **Not done:** the LCD-7B (not attached); the card interrupt (49.6).
+  * **The LCD-7B (2026-10-12, same build, P4 rev v3.2):** up at the first probe
+    against its on-board C6 (vendor 0x0092, device 0x6666, CCCR rev 0x32, 4-bit).
+    1646 KB/s at 10 MHz, as on the NANO -- **and 20 MHz carries data there:
+    2823 KB/s**, the CIS reads byte-identical at 10 and 20 MHz. The NANO's
+    data phase does not at 20 MHz, with the same driver and the same C6 slave
+    hardware. So the limit is the board (or the v1.3 silicon's matrix/pad
+    timing), not the protocol. Which one is not yet known: 49.6 tunes the
+    sample phase on both. `test_esp32p4.py --board lcd7b`: 37/37.
+  * **Not done:** the card interrupt (49.6).
     Concurrent use of both slots is serialised by the lock but has not been
     exercised under load (the shell runs one command at a time).
 
@@ -711,7 +719,7 @@ without USB.
 
 | What | Value | Milestone |
 |---|---|---|
-| CMD53 throughput (ROM/hardware slave, 10 MHz 4-bit, 256 B reads) | 1675 KB/s | 49.4 |
+| CMD53 throughput (hardware slave, 4-bit, 256 B reads) | 1675 KB/s at 10 MHz (NANO); 2823 KB/s at 20 MHz (7B) | 49.4 |
 | LLP loopback over SDIO, each way | — | 49.6 |
 | C6 heap free, modem persona | — | 49.3 / 49.7 |
 | 9P file read host → P4: via `wlan0` / via C6 `/p4` proxy | — / — | 49.9 |
