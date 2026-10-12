@@ -3591,6 +3591,10 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "uname") == 0) {
         cmd_uname();
         return;
+    } else if (strcmp(cmd_line, "reboot download") == 0) {
+        cprintf("[Reboot] Restarting into the ROM's download mode...\n");
+        if (!board_reset_download()) cprintf("reboot download: not supported on this target\n");
+        return;
     } else if (strcmp(cmd_line, "reboot") == 0) {
         /* A builtin, and its position in this chain is the point: it is
          * handled here, before the Lisp fallthrough, so it still works when

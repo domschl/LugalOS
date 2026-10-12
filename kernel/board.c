@@ -444,9 +444,39 @@ void board_register_devices(void) {
 /* See kernel/device.h. Only RP2350 has something to ask; the QEMU targets have
  * no reset path this kernel can reach, and saying so is better than pretending
  * to reboot and continuing. */
+#if defined(CONFIG_BOARD_ESP32C6)
+/* 49.5: the C6's ROM restarts the whole system -- IDF's
+ * esp_rom_software_reset_system(), `software_reset` in esp_rom's
+ * esp32c6.rom.ld (0x40000090). The ROM's own address on purpose, not a linked
+ * symbol: the radio's ROM scripts rename what they import (45.6), and this is
+ * the kernel's, used once, on the way down. */
+#define C6_ROM_SOFTWARE_RESET 0x40000090u
+/* LP_AON_SYS_CFG_REG (lp_aon_reg.h): always-on, so it survives the reset, and
+ * bit 30 tells the ROM to enter its download mode instead of booting -- what a
+ * board with no reachable BOOT strap (the C6-MINI behind a P4) needs. */
+#define C6_LP_AON_SYS_CFG      0x600B1034u
+#define C6_FORCE_DOWNLOAD_BOOT (1u << 30)
+
+static void c6_reset(bool download) {
+    if (download) *(volatile uint32_t *)C6_LP_AON_SYS_CFG |= C6_FORCE_DOWNLOAD_BOOT;
+    uart_flush_critical();
+    ((void (*)(void))C6_ROM_SOFTWARE_RESET)();
+}
+
+bool board_reset_download(void) {
+    c6_reset(true);
+    return false;                      /* not reached */
+}
+#else
+bool board_reset_download(void) { return false; }
+#endif
+
 bool board_reset(void) {
 #if defined(CONFIG_BOARD_RP2350)
     return rp2350_reboot();
+#elif defined(CONFIG_BOARD_ESP32C6)
+    c6_reset(false);
+    return false;                      /* not reached */
 #else
     return false;
 #endif

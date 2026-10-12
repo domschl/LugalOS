@@ -415,22 +415,26 @@ TESTS = [test_boots, test_heap, test_tick_rate, test_preemption, test_locks, tes
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--port")
+    ap.add_argument("--board", help="zero, nano, ... -- a port from ~/.config/lugalos/c6-ports.env")
     ap.add_argument("--no-load", action="store_true", help="test whatever is running")
+    ap.add_argument("--build", type=Path, default=BUILD_DIR,
+                    help="the build to load (default build/esp32c6; the NANO's C6: build/esp32c6-mini)")
     a = ap.parse_args()
+    build = a.build if a.build.is_absolute() else (Path.cwd() / a.build).resolve()
 
     c6run = _load_c6run()
     try:
-        port = c6run.find_port(a.port)
+        port = c6run.find_port(a.port, a.board)
     except SystemExit as e:
         print("SKIP: %s" % e)
         return 0
 
     if not a.no_load:
-        if not (BUILD_DIR / "lugalos-ram.elf").exists():
-            print("SKIP: build/esp32c6 is not built (ninja -C build/esp32c6)")
+        if not (build / "lugalos-ram.elf").exists():
+            print("SKIP: %s is not built (ninja -C %s)" % (build, build))
             return 0
-        c6run.kernel_flash_if_changed(port, str(BUILD_DIR))
-        if not c6run.load(port, c6run.image_for(str(BUILD_DIR / "lugalos-ram.elf"))):
+        c6run.kernel_flash_if_changed(port, str(build))
+        if not c6run.load(port, c6run.image_for(str(build / "lugalos-ram.elf"))):
             print("FAIL: could not load the kernel")
             return 1
         time.sleep(1.5)

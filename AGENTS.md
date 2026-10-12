@@ -117,6 +117,16 @@ console, loading and reset all on it.
   board joins by itself at boot and the radio-start tests watch that instead); skips when no board
   is attached. The last check (49.3) arms LLP's radio role and stays in it until reset. Wi-Fi checks read
   `~/.config/lugalos/wifi.env` (never print it; only the derived 64-hex PSK goes to the board).
+* The C6-MINI beside the P4 on the NANO (49.5): preset `esp32c6-mini` (4 MB map:
+  `cmake/flash_layout_esp32c6_mini.cmake`), console on the C6's own USB through header P2
+  pins 21/23. Pick boards by name: `--board zero|nano` on `c6run.py`, `c6flash.py` and
+  `test_esp32c6.py` (from `~/.config/lugalos/c6-ports.env`); e.g.
+  `tools/c6flash.py build/esp32c6-mini --board nano`,
+  `cd tests/hw && uv run test_esp32c6.py --board nano --build ../../build/esp32c6-mini`.
+* `reboot` restarts a C6; `reboot download` restarts it into the ROM's download mode (no BOOT
+  strap needed; then esptool `--before no-reset`). After a `c6run.py` RAM load even a plain
+  `reboot` lands in download mode (the boot strap was latched that way); a flash-booted C6
+  reboots into LugalOS.
 * LLP radio role (49.3): `llp radio` at the C6's console shares the USB port between the console
   and LLP frames; `cd host/llp && uv run --extra serial --extra p9 llp host --port <C6-Zero> --arm
   --dhcp --ping 3 --cat /proc/version` plays the host. With the NANO's C6 also on USB (P2 21/23),

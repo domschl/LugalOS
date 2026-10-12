@@ -81,7 +81,12 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
                             CONFIG_BOARD_ESP32C6=1 CONFIG_BOARD_ESP=1)
     # The flash map: one definition, reaching the boot code (where the OS image
     # is) here and tools/c6flash.py (the same numbers) through the manifest below.
-    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/flash_layout_esp32c6.cmake)
+    # 49.5: the C6-MINI module (beside the P4s) has 4 MB, the C6-Zero 8 MB.
+    if(LUGALOS_C6_MODULE STREQUAL "MINI")
+        include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/flash_layout_esp32c6_mini.cmake)
+    else()
+        include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/flash_layout_esp32c6.cmake)
+    endif()
     add_compile_definitions(
         LUGALOS_C6_FLASH_SIZE=${LUGALOS_C6_FLASH_SIZE}
         LUGALOS_C6_OSIMAGE_BASE=${LUGALOS_C6_OSIMAGE_BASE}
@@ -1323,7 +1328,7 @@ endif()
 # flash.manifest. Columns: name, base, reserved size, artifact.
 if(LUGALOS_TARGET STREQUAL "ESP32C6")
     file(GENERATE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/flash.manifest
-         CONTENT "stage2 ${LUGALOS_C6_STAGE2_BASE} ${LUGALOS_C6_STAGE2_SIZE} lugalos-ram.img\nosimage ${LUGALOS_C6_OSIMAGE_BASE} ${LUGALOS_C6_OSIMAGE_SIZE} lugalos-xip.bin\n")
+         CONTENT "flash 0x0 ${LUGALOS_C6_FLASH_SIZE} -\nstage2 ${LUGALOS_C6_STAGE2_BASE} ${LUGALOS_C6_STAGE2_SIZE} lugalos-ram.img\nosimage ${LUGALOS_C6_OSIMAGE_BASE} ${LUGALOS_C6_OSIMAGE_SIZE} lugalos-xip.bin\n")
 endif()
 
 # UF2 converter: official uf2conv.py with RP2350 RISC-V family support

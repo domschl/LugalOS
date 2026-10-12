@@ -537,19 +537,48 @@ without USB.
   slots in use (`sdbench` unchanged), and CMD53 throughput at the highest stable
   clock is recorded.
 
-* **49.5 LugalOS on the C6-MINI.** The board facts of §5.2; the
-  `esp32c6-mini` preset and 4 MB flash map; first flash through header P2
-  (§5.3: wiring B with `c6flash.py` if the USB pair works, else wiring A with
-  the IO9 jumper). Two small pieces of kernel work come with it. First, the C6 kernel's only console
-  is the USB-Serial/JTAG (`drivers/usbjtag_esp32c6.c`): with wiring A alone,
-  a UART0 console driver (GPIO16/17; probably the P4's `uart_esp32p4.c` IP) is
-  needed first. Second, `reboot download` sets `LP_AON_FORCE_DOWNLOAD_BOOT`
-  (`LP_AON_SYS_CFG_REG` bit 30) and resets, so a running C6 enters the ROM's
-  download mode without the IO9 jumper, which is then only for recovery.
-  The radio, the join and
-  the stand-alone persona as on the C6-Zero, with the module's antenna. *Done
-  when:* `test_esp32c6.py` passes on the NANO's C6 (its non-applicable checks —
-  LED, I2C sensors — skipping), and the LCD-7B's C6 is still factory.
+* **49.5 LugalOS on the C6-MINI — DONE 2026-10-12, on the NANO.** The NANO's
+  C6 runs LugalOS from its own flash, joins Wi-Fi from its own identity record
+  at boot, and passes the whole C6 suite: **21/21, flash-booted, `--no-load`.**
+  * **Preset `esp32c6-mini`** (`cmake/board-esp32c6-mini.cmake`): the chip
+    facts are the C6-Zero's (an ESP32-C6FH4, rev v0.2). The **4 MB map**
+    (`cmake/flash_layout_esp32c6_mini.cmake`, selected by
+    `LUGALOS_C6_MODULE=MINI`, since the map is read before the board file):
+    stage 2 128 KB, OS slot A 1.5 MB, **slot B 1.5 MB reserved now for 49.8**,
+    832 KB spare, identity at `0x3F0000`. The OS image is 1.0 MB. No `/flash0`;
+    the C6 does not mount one. The persona follows from the board file's name.
+  * **Console:** the C6's own USB on header P2 21/23 (§5.3, wiring B), so
+    `c6run.py`/`c6flash.py`/the suite work unchanged. `c6flash.py` now takes
+    the flash size from the manifest (a new `flash` line) instead of assuming
+    8 MB.
+  * **`--board zero|nano`** for `c6run.py`, `c6flash.py` and
+    `test_esp32c6.py`, from `~/.config/lugalos/c6-ports.env` (serial = MAC),
+    as the P4's `p4-ports.env`. With both C6s attached, no tool guesses.
+  * **Provisioned** `nano-c6` with the WLAN credentials, through the suite's own
+    helpers (only the derived PSK reaches the board; nothing printed). The
+    record lands at the new map's `0x3F0000` and survives the flash boot.
+  * **`reboot` works on the C6 now** (it said "not supported": `board_reset()`
+    had no C6 arm). It calls the ROM's system reset (`software_reset`,
+    0x40000090). **`reboot download`** sets `LP_AON_SYS_CFG.FORCE_DOWNLOAD_BOOT`
+    first. Verified: the ROM waits in download mode, and esptool connects with
+    `--before no-reset`. This is what a C6 behind a P4 needs, since the P4
+    cannot reach its BOOT strap. **One trap, found and understood:** a kernel
+    started by `c6run.py` (a USB reset *into* download mode, then `load-ram`)
+    has its boot mode latched as download, so even a plain `reboot` comes back
+    in download mode. A flash-booted C6 reboots into LugalOS (verified on the
+    Zero). That is the chip's strap latch, not this code: IDF's restart behaves
+    the same.
+  * **The module's quirks are harmless:** GPIO8 (the Zero's LED) is a strap
+    with a pull-up here; the RMT frame completes with nothing attached.
+    GPIO0/1 (the Zero's I2C) are unconnected; the scan finds nothing and the
+    sensor check skips.
+  * **Measured, radio role on the MINI: 44 KB heap free** (no sensors or MQTT,
+    unlike the Zero's 8–16 KB). This is the budget 49.6's SDIO slave comes out
+    of. Ping to the gateway through the bridge: 31 ms.
+  * **D7 note:** this overwrote the NANO's factory ESP-Hosted, the planned SDIO
+    reference for 49.4. It is backed up and verified on the chip
+    (`~/Source/gith/esp/p4nano-c6-factory-flash/`); the **LCD-7B's C6 is still
+    factory** and is now 49.4's reference.
 
 * **49.6 C6 SDIO slave + LLP over SDIO** (= 45.15). Packet mode, DMA
   descriptors, receive tokens as LLP's credits, interrupts both ways, link state

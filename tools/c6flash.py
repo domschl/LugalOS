@@ -39,6 +39,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("build", help="a LugalOS build directory (build/esp32c6)")
     ap.add_argument("--port")
+    ap.add_argument("--board", help="zero, nano, ... -- a port from ~/.config/lugalos/c6-ports.env")
     ap.add_argument("--only", choices=["stage2", "osimage"], help="write just one image")
     ap.add_argument("--no-reset", action="store_true", help="leave the chip in the bootloader")
     a = ap.parse_args()
@@ -48,13 +49,16 @@ def main():
         f = line.split()
         if len(f) == 4:
             man[f[0]] = (int(f[1], 0), int(f[2], 0), f[3])
-    port = c6run.find_port(a.port)
+    port = c6run.find_port(a.port, a.board)
+    # The chip's flash size from the manifest (49.5: the C6-MINI has 4 MB, the
+    # C6-Zero 8 MB); an older manifest without the line means the Zero.
+    flash_mb = "%dMB" % ((man["flash"][1] if "flash" in man else 0x800000) >> 20)
 
     # Stage 2: the RAM half as the ROM's image format. Flash parameters go in its header.
     ram_elf = os.path.join(a.build, "lugalos-ram.elf")
     stage2 = os.path.join(a.build, man["stage2"][2])
     r = c6run.esptool("elf2image", "--flash-mode", "dio", "--flash-freq", "40m",
-                      "--flash-size", "8MB", "-o", stage2, ram_elf)
+                      "--flash-size", flash_mb, "-o", stage2, ram_elf)
     if r.returncode != 0:
         sys.exit("elf2image failed:\n" + (r.stderr or r.stdout)[-600:])
     if os.path.getsize(stage2) > man["stage2"][1]:
@@ -71,7 +75,7 @@ def main():
         args += ["%#x" % base, path]
         print("  %-8s %#08x  %s (%d bytes)" % (name, base, art, os.path.getsize(path)))
 
-    cmd = ["--port", port, "write-flash", "--flash-mode", "dio", "--flash-freq", "40m", "--flash-size", "8MB"] + args
+    cmd = ["--port", port, "write-flash", "--flash-mode", "dio", "--flash-freq", "40m", "--flash-size", flash_mb] + args
     r = c6run.esptool(*cmd, timeout=600)
     sys.stdout.write(r.stdout[-400:])
     if r.returncode != 0:
