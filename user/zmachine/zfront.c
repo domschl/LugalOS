@@ -28,6 +28,7 @@
 
 #include "zvm.h"
 #include "zmap.h"
+#include "zwrap.h"
 
 #include "fs/vfs.h"
 #include "kernel/console.h"
@@ -68,6 +69,7 @@ struct zfront_ctx {
     char lisp_line[256];
 
     struct zmap_state *map;
+    struct z_wrap wrap;
 };
 
 /* ------------------------------------------------------------------ */
@@ -86,16 +88,41 @@ static void zout(const char *s)
     console_unlock();
 }
 
+static void zfront_wrap_out(void *user, const char *s, size_t len)
+{
+    (void)user;
+    char tmp[ZWRAP_BUF_MAX + 1];
+    if (len >= sizeof(tmp)) {
+        len = sizeof(tmp) - 1;
+    }
+    memcpy(tmp, s, len);
+    tmp[len] = '\0';
+    console_lock();
+    console_puts(tmp);
+    console_unlock();
+}
+
+static int zfront_wrap_width(void *user)
+{
+    (void)user;
+    unsigned cols, rows;
+    if (console_size(&cols, &rows) && cols > 0) {
+        return (int)cols;
+    }
+    return 80;
+}
+
 static void zfront_putc(void *user, uint8_t ch)
 {
-    char s[2] = { (char)ch, '\0' };
-    (void)user;
-    zout(s);
+    struct zfront_ctx *ctx = (struct zfront_ctx *)user;
+    zwrap_putc(&ctx->wrap, ch);
 }
 
 static int zfront_getc(void *user)
 {
     struct zfront_ctx *ctx = (struct zfront_ctx *)user;
+    zwrap_flush(&ctx->wrap);
+    ctx->wrap.in_input = true;
     for (;;) {
         if (ctx->map != NULL && ctx->map->active) {
             zmap_poll(ctx->map);
@@ -112,6 +139,7 @@ static int zfront_getc(void *user)
             ctx->lisp_mode = false;
             ctx->lisp_len = 0;
             ctx->col = 0;
+            zwrap_reset(&ctx->wrap);
             return '\n';
         }
         if (c == '\t' || c == 0x0F) {
@@ -149,6 +177,7 @@ static int zfront_getc(void *user)
                     }
                     lisp_unlock();
                 }
+                ctx->wrap.col = 0;
                 return '\n';       /* end the game's aread on empty input */
             }
             if (c == 0x7f || c == 0x08) {
@@ -316,8 +345,11 @@ static int zfront_restore(void *user, uint8_t *data, uint32_t cap,
 static void zfront_turn(void *user, struct z_vm *vm)
 {
     struct zfront_ctx *ctx = (struct zfront_ctx *)user;
-    if (ctx && ctx->map != NULL) {
-        zmap_on_turn(ctx->map, vm);
+    if (ctx) {
+        zwrap_flush(&ctx->wrap);
+        if (ctx->map != NULL) {
+            zmap_on_turn(ctx->map, vm);
+        }
     }
 }
 
@@ -455,6 +487,7 @@ int zmachine_run(const char *name)
 
     struct z_io io;
     io.user = &ctx;
+    zwrap_init(&ctx.wrap, zfront_wrap_out, zfront_wrap_width, &ctx);
     ctx.lisp_mode = false;
     ctx.col = 0;
     ctx.lisp_len = 0;
@@ -567,6 +600,8 @@ int zmachine_run(const char *name)
     } else {
         rc = 0;                 /* QUIT, RESTART-to-nothing, Ctrl-C */
     }
+
+    zwrap_flush(&ctx.wrap);
 
 done:
     if (map != NULL) {

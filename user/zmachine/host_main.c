@@ -14,12 +14,14 @@
  * as [zstr $addr] markers until the M3 text backend lands.
  */
 #include "zvm.h"
+#include "zwrap.h"
 
 #include <errno.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -30,11 +32,40 @@
 /* Host I/O adapters (libc lives ONLY in this file)                       */
 /* ---------------------------------------------------------------------- */
 
+static struct z_wrap host_wrap;
+
+static void host_wrap_out(void *user, const char *s, size_t len)
+{
+    (void)user;
+    fwrite(s, 1, len, stdout);
+    fflush(stdout);
+}
+
+static int host_wrap_width(void *user)
+{
+    (void)user;
+    const char *col_env = getenv("COLUMNS");
+    if (col_env != NULL) {
+        int c = atoi(col_env);
+        if (c > 0) return c;
+    }
+    struct winsize ws;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0) {
+        return (int)ws.ws_col;
+    }
+    return 80;
+}
+
 static void host_putc(void *user, uint8_t ch)
 {
     (void)user;
-    fputc((int)ch, stdout);
-    fflush(stdout);
+    zwrap_putc(&host_wrap, ch);
+}
+
+static void host_turn(void *user, struct z_vm *vm)
+{
+    (void)user; (void)vm;
+    zwrap_flush(&host_wrap);
 }
 
 /* Interactive input: the INTERPRETER echoes typed characters (per the
@@ -101,6 +132,8 @@ static int host_getc(void *user)
 {
     int c;
     (void)user;
+    zwrap_flush(&host_wrap);
+    host_wrap.in_input = true;
     fflush(stdout);
     if (tc_saved == 0 && isatty(0) != 0) {
         if (tcgetattr(0, &saved_tc) == 0) {
@@ -342,6 +375,7 @@ int main(int argc, char **argv)
     vm.m.mem = mem;
     vm.m.mem_size = Z_HOST_MEM_SIZE;
 
+    zwrap_init(&host_wrap, host_wrap_out, host_wrap_width, NULL);
     {
         struct z_io io;
         io.user = NULL;
@@ -357,7 +391,7 @@ int main(int argc, char **argv)
             io.getc = host_getc;
             io.save = host_save;
             io.restore = host_restore;
-            io.turn = NULL;
+            io.turn = host_turn;
             io.cmd  = NULL;
         }
         err = zvm_init(&vm, image, image_len, &io);
@@ -438,11 +472,12 @@ int main(int argc, char **argv)
                 io.turn = host_compat_turn;
                 io.cmd  = NULL;
             } else {
+                zwrap_reset(&host_wrap);
                 io.putc = host_putc;
                 io.getc = host_getc;
                 io.save = host_save;
                 io.restore = host_restore;
-                io.turn = NULL;
+                io.turn = host_turn;
                 io.cmd  = NULL;
             }
             if (zvm_init(&vm, image, image_len, &io) != Z_OK) {
@@ -475,6 +510,7 @@ int main(int argc, char **argv)
         return (run_ok && map_ok) ? 0 : 1;
     }
 
+    zwrap_flush(&host_wrap);
     first_op = z_read_byte(&vm.m, vm.pc);
     fprintf(stderr,
             "stop: %s%s%s after %lu instructions at $%05x ($%02x %s)\n",

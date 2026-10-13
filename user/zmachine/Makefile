@@ -13,9 +13,9 @@ CC      ?= cc
 CFLAGS  ?= -std=c17 -Wall -Wextra -Werror -O2 -g -fsanitize=address,undefined -DZMACHINE_HOST
 LDFLAGS ?= -fsanitize=address,undefined
 
-CORE_SRCS = zmem.c zvm.c ztext.c zparse.c zsave.c zmap.c
+CORE_SRCS = zmem.c zvm.c ztext.c zparse.c zsave.c zmap.c zwrap.c
 HOST_SRCS = host_main.c
-HDRS      = zmem.h zvm.h ztext.h zparse.h zmap.h
+HDRS      = zmem.h zvm.h ztext.h zparse.h zmap.h zwrap.h
 
 TARGET = zork-host
 
