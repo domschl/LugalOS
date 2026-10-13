@@ -4,6 +4,7 @@
 #include "drivers/sdio_esp32p4.h"
 #endif
 #if defined(CONFIG_BOARD_ESP32C6)
+#include "drivers/sdio_slave_esp32c6.h"
 #include "drivers/ws2812.h"
 #include "kernel/radio_c6.h"
 #include "drivers/watchdog.h"
@@ -2571,6 +2572,16 @@ static void cmd_sdio(const char *arg) {
 }
 #endif
 
+/* The next decimal word at *p (0 when there is none); *p moves past it. */
+static __attribute__((unused)) uint32_t dec_word(const char **p) {
+    const char *s = *p;
+    while (*s == ' ') s++;
+    uint32_t v = 0;
+    while (*s >= '0' && *s <= '9') v = v * 10u + (uint32_t)(*s++ - '0');
+    *p = s;
+    return v;
+}
+
 static uint32_t parse_hex_bytes(const char *s, uint8_t *out, uint32_t cap) {
     uint32_t len = 0;
     for (const char *h = s; h[0] && h[1] && len < cap; h += 2) {
@@ -4906,7 +4917,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
          * inserted since boot. */
         sdmmc_info_report();
         return;
-    } else if (strncmp(cmd_line, "sdbench", 7) == 0) {
+    } else if (strncmp(cmd_line, "sdbench", 7) == 0 && strncmp(cmd_line, "sdbench w", 9) != 0) {
         /* 35.5. The instrument the phase plan's §7 asks for: a rate with a
          * sample size attached, because a rate without one is not a
          * measurement. */
@@ -4983,6 +4994,16 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "flashtest") == 0) {
         cmd_flashtest();
+        return;
+#endif
+#if defined(CONFIG_SDIO_SLAVE)
+    } else if (strcmp(cmd_line, "sdio") == 0) {
+        sdio_slave_report();
+        return;
+    } else if (strncmp(cmd_line, "sdio timing ", 12) == 0) {
+        const char *p = cmd_line + 12;
+        sdio_slave_set_timing(dec_word(&p));
+        sdio_slave_report();
         return;
 #endif
     } else if (strcmp(cmd_line, "trapselftest") == 0 ||
@@ -5595,9 +5616,18 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         }
         return;
 #endif
-#if !defined(CONFIG_BOARD_RP2350) && !defined(CONFIG_BOARD_ESP32P4)
+#if !defined(CONFIG_BOARD_RP2350)
     } else if (strcmp(cmd_line, "llp") == 0) {
         llp_node_print_status();
+        return;
+    } else if (strcmp(cmd_line, "llp loop on") == 0 || strcmp(cmd_line, "llp loop off") == 0) {
+        llp_node_set_loop(cmd_line[10] == 'n');
+        return;
+    } else if (strcmp(cmd_line, "llp bench") == 0 || strncmp(cmd_line, "llp bench ", 10) == 0) {
+        /* llp bench [count [size]], decimal */
+        const char *p = cmd_line + 9;
+        uint32_t count = dec_word(&p), size = dec_word(&p);
+        llp_node_bench(count ? count : 1000u, size ? size : 1514u);
         return;
     } else if (strcmp(cmd_line, "llp host") == 0) {
         llp_node_start(LLP_NODE_HOST);

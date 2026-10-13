@@ -651,6 +651,51 @@ without USB.
   GPIO54 hard reset mid-stream both recover without a P4 reboot, and throughput
   is ≥ 5 MB/s each way (two orders above what the stack needs; the margin is the
   point).
+  * **In progress 2026-10-13, on the LCD-7B** (the NANO was not attached).
+    The owner chose to give up the 7B's factory C6 (§7's "keep it factory"
+    is overridden). It is backed up first (`~/Source/gith/esp/p4lcd7b-c6-factory-flash/`:
+    boot loader, partition table and `ota_0` byte-identical to the NANO's
+    backup). Then `esp32c6-mini` was flashed over header H4 (UART0 + IO9).
+    * **The 7B's C6 console is UART0**, since H4 has no USB pair: the C6's
+      console now also *reads* UART0, and waits for room on it when no USB
+      host reads. Reflashing needs no jumper: `reboot download`, then
+      `c6flash.py --board lcd7b`.
+    * **The binding** (`doc/dev/protocols/llp.md` §7.2, `kernel/include/kernel/llp_sdio.h`):
+      packet mode, polled on both sides. 12 × 512 B receive buffers (tokens
+      are the host → C6 flow control), `PKT_LEN` for C6 → host, frames
+      packed and 4-byte aligned, no `FLOW`. Shared bytes carry the `LLP`
+      magic, a generation, link/RSSI. Bit 0 of `0x8D` asks for a channel
+      reset.
+    * **`llp_node.c` gains a packet channel** beside the serial one. The P4
+      builds it (host role, `wlan0`); the C6-MINI uses SDIO instead of USB.
+      The P4's pump sleeps 1 ms when a round moved nothing.
+    * **Three things found on the way:**
+      1. **The APM.** The TEE puts the SDIO slave's DMA in REE2, and region
+         0's reset attributes deny it silently: transfers "complete" and
+         nothing moves. Now the slave is in REE1 and region 1 grants it
+         exactly its channel block: the fence §4 asked for. The radio opens
+         region 0 for REE0 and REE2 only (`0x707`, was `0x777`).
+      2. **The host → slave interrupt byte** (`CONF_W7[15:8]`) is a plain
+         register that keeps the interrupt raised. The slave must clear it.
+         Until it did, every poll reset the channel.
+      3. **A slot-1 data phase that never finished poisoned slot 0.** The
+         microSD's next CMD17 failed. Failed CMD53s now end with an SDIO I/O
+         abort (a stop/abort command) and a FIFO/DMA reset, then a channel
+         reset.
+    * **Measured:** link up within a second. `/c6` mounted on the P4 over
+      the channel, `/proc/version` (taint line) and `/proc/node` read.
+      **Loopback 2000 × 1514 B: 3163 KB/s each way, 0 lost, 0 damaged**
+      (20 MHz 4-bit); 2000 × 64 B: 310 KB/s.
+    * **Recovery checked:** a GPIO54 reset of the C6 with the link up. The
+      P4 noticed the slave was gone, followed its new generation, and the
+      link came back with the restarted C6's session, with no P4 reboot. The
+      next bench passed 1000/1000. A `/c6` mount does not survive it: the
+      C6's fids are gone, and `(unmount "c6")` + `(mount-remote "c6" "llp")`
+      is needed. Re-attaching on a new peer session is 49.8's.
+    * **Still open for *done when*:** the 10-minute soak, a reset
+      mid-*bench*, ≥ 5 MB/s (a C6-side copy and the 1 ms poll
+      are the first suspects), the card interrupt (DAT1) instead of polling,
+      the NANO at 10 MHz, persona-at-boot (D4).
 
 ### Scenario 1 — networking for the P4 boards
 
@@ -664,6 +709,77 @@ without USB.
   9P read, MQTT message seen by the broker) passing on both boards, the 30-minute
   soak of 45.11 repeated on the 7B (no rejoin, no reset), and a `radio rejoin` on
   the C6 does not drop an open 9P session on the P4.
+  * **In progress 2026-10-13, on the LCD-7B.** Everything up to Wi-Fi itself
+    works; the join waits for credentials on this host (`~/.config/lugalos/wifi.env`).
+    * **D5 built.** The P4 gained an identity store
+      (`drivers/idstore_esp32p4.c`, one sector at `0x00FFF000`, through
+      `flash_esp32p4.c`'s guarded routines), so `wlan SSID PSKHEX` works on
+      the P4. At every link-up a `c6attach` task mounts the C6 at `/c6`
+      afresh, and writes `join SSID PSKHEX` to `/c6/dev/wlan` while the
+      radio is not associated. `/dev/wlan` is a new ctl file on the C6
+      (`radio_c6_ctl_*`), which starts the radio through the same
+      join-and-supervise task the boot autostart uses. The key stays in RAM
+      only. Checked with a dummy network: given, `starting`, cleared again.
+    * **D4, as far as the 7B needs it:** the C6-MINI arms `llp radio` at boot.
+      It bridges its interface only once a host's HELLO has brought the link
+      up; until then it stays a node of its own. An LCD-7B starts `llp host`
+      at boot. The NANO (with `eth0`) stays manual until the default-route
+      rule exists. Result: power on, and the link, `wlan0` and `/c6` are
+      there with nothing typed.
+    * **Found:** the 9P attach under `vfs_mount_remote()` goes **9.1 KB
+      deep**. A default 8 KB task ran into the stack below it (a
+      `[Sched BUG]` on the next switch to `dhcpc`). `c6attach` has 16 KB. The
+      shell never showed it, because its stack is large.
+    * **Wi-Fi up, 2026-10-13** (credentials entered on the P4 with `wlan`):
+      the P4 gets a lease for the C6's MAC (192.168.178.160). This PC pings
+      it, 16–30 ms. **Authenticated 9P over Wi-Fi** reads the P4's
+      `/proc/version` and, through the P4's server, the C6's
+      `/c6/proc/version` (49.8's arrangement: the PC authenticates to the P4
+      only). After a C6 reset, with nothing typed, the 7B answers pings
+      again in ~15 s.
+    * **Found on the way, fixed:**
+      1. **Two readers on the radio's RX ring.** When the credentials arrive
+         after the link is up, the radio's start path attached the C6's own
+         stack (and DHCP) to the interface while the bridge was adopting it.
+         The ring's reader overtook the writer (`466/3190428`) and replayed
+         stale slots: 1.9 GB "received", 122 MB of it flooded to the P4, real
+         DHCP offers drowned. Now one lock decides who reads the interface
+         (`llp_node_offer_netif()`). A detached stack stays detached (no late
+         binding by a DHCP lease). The ring reader counts `head - tail` and
+         resynchronises instead of reading forever.
+      2. **`sdinfo` read the microSD's block 0 without the controller's
+         lock,** so with the LLP pump on slot 1 its CMD17 went to the C6 (R5
+         `ILLEGAL_COMMAND` on the next CMD53).
+    * **Two microSD cards corrupted on the 7B** (both new SanDisks; the
+      second identified afterwards as "SD032, 30 MB, 2006, serial
+      ffffffff", a card in a failure state, with block 0 all zeros).
+      Investigated 2026-10-13:
+      * **A real hazard on the shared controller, now closed.** A transfer a
+        driver gives up on (500 ms) keeps the controller's data state machine
+        busy until the hardware data timeout (~0.84 s at 20 MHz). Before the
+        fix the controller could be handed to the other slot in that window,
+        and a microSD write started there could send whatever the FIFO held.
+        That happened at least once today, while the C6's reset storm made
+        SDIO reads time out (`CMD17 ... failed (status 0x30c)` followed).
+        Now `sdhost_data_reset()` waits for the state machine (or resets the
+        controller), every failed transfer on either slot goes through it,
+        and every data command refuses to start over a busy data path
+        (counted in `sdinfo`).
+      * **Brown-outs are the likelier cause of a card's own failure.** The
+        card's switch (Q1) is fed from `ESP_3V3`, the C6's rail, and the C6
+        transmits since today. Nothing in LugalOS arms the P4's brown-out
+        detector (its reset enable defaults to 0; IDF arms it in every app),
+        so a sag does not reset the P4 cleanly. The boot now logs the reset
+        cause (`[Chip] last reset: ...`, BROWN-OUT = 15). Arming the detector
+        needs the BOD threshold over REGI2C (only `clk_esp32p4.c` has
+        REGI2C access today).
+      * **Checked under load:** 4 × 1 MB FAT32 write + read-back verified
+        (`fsbench /sd0`) during ~23 MB of SDIO traffic each way from a Wi-Fi
+        ping flood: all verified, 0 SDIO failures, 0 busy-path resets.
+      * Also fixed: `sdbench w` ran the read-only benchmark on the P4 (the
+        board's `sdbench` matched first).
+    * **Next:** `p9sync.py` over TCP, MQTT, NTP; the Wi-Fi checks in `test_esp32p4.py`; the 30-minute
+      soak; a cold power cycle (both chips from off).
 
 ### Scenario 2 — full 9P integration
 
@@ -720,7 +836,7 @@ without USB.
 | What | Value | Milestone |
 |---|---|---|
 | CMD53 throughput (hardware slave, 4-bit, 256 B reads) | 1675 KB/s at 10 MHz (NANO); 2823 KB/s at 20 MHz (7B) | 49.4 |
-| LLP loopback over SDIO, each way | — | 49.6 |
+| LLP loopback over SDIO, each way (1514 B frames) | 3163 KB/s (7B, 20 MHz 4-bit, polled) | 49.6 |
 | C6 heap free, modem persona | — | 49.3 / 49.7 |
 | 9P file read host → P4: via `wlan0` / via C6 `/p4` proxy | — / — | 49.9 |
 | Session survives `radio rejoin`: frames / proxy | — / — | 49.9 |

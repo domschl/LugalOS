@@ -28,6 +28,9 @@
 #include "kernel/printk.h"
 #include "kernel/console.h"
 #include "kernel/clipboard.h"
+#if defined(CONFIG_BOARD_ESP32C6)
+#include "kernel/radio_c6.h"
+#endif
 #include "kernel/klog.h"
 #include "kernel/device.h"
 #include "net/ip.h"
@@ -2121,7 +2124,13 @@ static const char *g_proc_names[] = { "ps", "meminfo", "version", "cpuinfo", "df
 /* 37.5a: `clipboard` is the machine's clipboard (kernel/clipboard.h), as a
  * file -- Plan 9's /dev/snarf -- so cat, Lisp's file functions and any 9P
  * client read and write it with nothing new to learn. */
-static const char *g_dev_names[]  = { "uart", "null", "zero", "eeprom", "clipboard" };
+static const char *g_dev_names[]  = { "uart", "null", "zero", "eeprom", "clipboard",
+#if defined(CONFIG_BOARD_ESP32C6)
+    /* the radio's ctl file (kernel/radio_c6.c): how an LLP host hands this
+     * node the network to join, as /c6/dev/wlan */
+    "wlan",
+#endif
+};
 #define DEV_COUNT ((int)(sizeof(g_dev_names) / sizeof(g_dev_names[0])))
 
 /* Opens `path` into a fresh handle, returning a small non-negative fd (index
@@ -2304,6 +2313,16 @@ int vfs_pread(int fd, void *buf, uint32_t count, uint64_t offset) {
                 if (k > count) k = count;
                 memcpy(buf, d + offset, k);
                 return (int)k;
+#if defined(CONFIG_BOARD_ESP32C6)
+            } else if (strcmp(h->rel_path, "wlan") == 0) {
+                char line[32];
+                uint32_t len = radio_c6_ctl_read(line, sizeof line);
+                if (offset >= len) return 0;
+                uint32_t k = len - (uint32_t)offset;
+                if (k > count) k = count;
+                memcpy(buf, line + offset, k);
+                return (int)k;
+#endif
             }
             return -1;
         case MOUNT_REMOTE9P:
@@ -2340,6 +2359,10 @@ int vfs_pwrite(int fd, const void *buf, uint32_t count, uint64_t offset) {
                 return (int)count;
             } else if (strcmp(h->rel_path, "clipboard") == 0) {
                 return clipboard_write_at((const char *)buf, count, (uint32_t)offset);
+#if defined(CONFIG_BOARD_ESP32C6)
+            } else if (strcmp(h->rel_path, "wlan") == 0) {
+                return radio_c6_ctl_write((const char *)buf, count);
+#endif
             }
             return -1;
         case MOUNT_REMOTE9P:

@@ -259,6 +259,7 @@
 #define SD_RINTSTS          (SD_BASE + 0x044)
 #define SD_STATUS           (SD_BASE + 0x048)
 #define  STATUS_DATA_BUSY       (1u << 9)
+#define  STATUS_DATA_FSM_BUSY   (1u << 10)   /* the controller's data state machine is mid-transfer */
 #define  STATUS_FIFO_COUNT_S    17           /* [29:17], in 32-bit words */
 #define  STATUS_FIFO_COUNT_M    0x1fffu
 #define SD_FIFOTH           (SD_BASE + 0x04c)
@@ -290,6 +291,7 @@
 #define  CMD_DATA_EXPECTED      (1u << 9)
 #define  CMD_WRITE              (1u << 10)   /* 0 = read from card */
 #define  CMD_WAIT_PRVDATA       (1u << 13)
+#define  CMD_STOP_ABORT         (1u << 14)   /* stops a data transfer: must not wait for it */
 #define  CMD_SEND_INIT          (1u << 15)   /* the 80 clocks before CMD0 */
 #define  CMD_CARD_NUM_S         16           /* [20:16]: which card (slot) */
 #define  CMD_UPDATE_CLK_ONLY    (1u << 21)
@@ -328,6 +330,7 @@
  * re-entrant, because card init calls its own locked block reads. */
 static ylock_t  g_host_lock;
 static uint32_t g_card;           /* the card the lock holder is driving */
+static uint32_t g_stale_transfers;  /* data commands that found the data path still busy */
 
 void sdhost_acquire(uint32_t card) {
     ylock_acquire(&g_host_lock);
@@ -611,6 +614,8 @@ typedef sdhost_resp_t sd_resp_t;
  * deliberately prints nothing, because its callers know which failures are
  * expected (CMD8 timing out is how an SDv1 card announces itself) and which
  * are not. */
+void sdhost_data_reset(void);
+
 static int sd_command(uint8_t index, uint32_t arg, sd_resp_t rt,
                       uint32_t data_flags, uint32_t *resp, uint32_t *out_status) {
     uint32_t cmd = (uint32_t)index & CMD_INDEX_M;
@@ -622,7 +627,19 @@ static int sd_command(uint8_t index, uint32_t arg, sd_resp_t rt,
         case RESP_R2:   cmd |= CMD_RESP_EXPECT | CMD_RESP_LONG | CMD_CHECK_RESP_CRC; break;
         case RESP_R3:   cmd |= CMD_RESP_EXPECT; break;
     }
-    cmd |= data_flags | CMD_WAIT_PRVDATA;
+    cmd |= data_flags;
+    if (!(data_flags & CMD_STOP_ABORT)) cmd |= CMD_WAIT_PRVDATA;
+
+    /* No data command starts while an earlier transfer is still running --
+     * on either slot. A transfer the driver gave up on keeps the data state
+     * machine busy until the hardware data timeout, and a write started
+     * behind it can send the card whatever the FIFO holds. */
+    if ((data_flags & CMD_DATA_EXPECTED) && (REG(SD_STATUS) & STATUS_DATA_FSM_BUSY)) {
+        g_stale_transfers++;
+        printk("[SDMMC] card %u: data path still busy from an earlier transfer; resetting it first\n",
+               (unsigned)g_card);
+        sdhost_data_reset();
+    }
 
     REG(SD_RINTSTS) = 0x0000ffffu;     /* raw, write-1-to-clear; [31:16] are the cards' SDIO interrupts, left alone */
     if (sdmmc_cmd_start(cmd, arg) != 0) {
@@ -860,7 +877,7 @@ static int sdmmc_hw_read_block(uint32_t lba, uint8_t *dst) {
                (unsigned)lba, (unsigned)status);
         return -1;
     }
-    if (sdmmc_dma_wait(lba, "read") != 0) return -1;
+    if (sdmmc_dma_wait(lba, "read") != 0) { sdhost_data_reset(); return -1; }
 
     esp32p4_dcache_invalidate((uintptr_t)g_dma_buf, sizeof(g_dma_buf));
     memcpy(dst, g_dma_buf, 512);
@@ -879,7 +896,7 @@ static int sdmmc_hw_write_block(uint32_t lba, const uint8_t *src) {
                (unsigned)lba, (unsigned)status);
         return -1;
     }
-    if (sdmmc_dma_wait(lba, "write") != 0) return -1;
+    if (sdmmc_dma_wait(lba, "write") != 0) { sdhost_data_reset(); return -1; }
 
     /* The card programs its flash with DAT0 held low, and may hold it for
      * milliseconds. Busy-polled, like the RP2350 driver's own write path:
@@ -982,6 +999,29 @@ void sdhost_dma_arm(sdhost_desc_t *d, uint8_t *buf, uint32_t len, uint32_t blksz
 }
 
 int sdhost_dma_wait(uint32_t tag, const char *what) { return sdmmc_dma_wait(tag, what); }
+
+void sdhost_data_reset(void) {
+    /* First let the data state machine finish: a transfer the card never
+     * completes ends at the hardware data timeout (TMOUT, ~0.84 s at
+     * 20 MHz), which is longer than the drivers' own deadlines. Releasing the
+     * controller before that is what lets the next transfer -- possibly the
+     * other slot's write -- start into a busy data path. */
+    uint64_t deadline = time_get_us() + 1500000u;
+    while ((REG(SD_STATUS) & STATUS_DATA_FSM_BUSY) && time_get_us() < deadline) { }
+    if (REG(SD_STATUS) & STATUS_DATA_FSM_BUSY) {
+        printk("[SDMMC] data state machine stuck; resetting the controller\n");
+        REG(SD_CTRL) |= CTRL_RESET | CTRL_FIFO_RESET | CTRL_DMA_RESET;
+        deadline = time_get_us() + 100000u;
+        while ((REG(SD_CTRL) & (CTRL_RESET | CTRL_FIFO_RESET | CTRL_DMA_RESET)) && time_get_us() < deadline) { }
+        (void)sdmmc_clock_update();
+    }
+    REG(SD_CTRL) |= CTRL_DMA_RESET | CTRL_FIFO_RESET;
+    deadline = time_get_us() + 10000u;
+    while ((REG(SD_CTRL) & (CTRL_DMA_RESET | CTRL_FIFO_RESET)) && time_get_us() < deadline) { }
+    REG(SD_BMOD) = BMOD_SWR;
+    REG(SD_IDSTS) = 0xffffffffu;
+    REG(SD_RINTSTS) = 0x0000ffffu;
+}
 
 uint32_t sdhost_raw_status(void) { return REG(SD_RINTSTS); }
 void sdhost_clear_status(uint32_t bits) { REG(SD_RINTSTS) = bits; }
@@ -1437,6 +1477,8 @@ void sdmmc_info_report(void) {
             (unsigned)REG(SD_STATUS),
             blk_task_alive() ? "serving" : "not running",
             (unsigned)blk_task_call_count());
+    cprintf("  shared data path: %u data commands found it busy and reset it first\n",
+            (unsigned)g_stale_transfers);
 
     /* Block 0, re-read now, and the reason this is in a status command rather
      * than in a debugging patch somebody deleted afterwards: "the card
@@ -1445,7 +1487,10 @@ void sdmmc_info_report(void) {
      * bytes -- and they are indistinguishable from every other line above.
      * Sixteen bytes and the signature separate them: a blank card reads as
      * zeros or 0xff with no 55 aa, and a broken path reads as neither. */
-    if (sdmmc_hw_read_block(0, g_probe_block) != 0) {
+    sdhost_acquire(0);
+    int rd = sdmmc_hw_read_block(0, g_probe_block);
+    sdhost_release();
+    if (rd != 0) {
         cprintf("  block0 UNREADABLE\n");
         return;
     }

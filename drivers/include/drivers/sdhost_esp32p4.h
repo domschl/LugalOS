@@ -38,6 +38,7 @@ typedef enum {
 #define SDHOST_DATA        (1u << 9)    /* a data phase follows */
 #define SDHOST_WRITE       (1u << 10)   /* host to card */
 #define SDHOST_SEND_INIT   (1u << 15)   /* 80 clocks before this command */
+#define SDHOST_STOP_ABORT  (1u << 14)   /* ends a data transfer; does not wait for it */
 
 /* One command; 0, or -1 with the raw status in *status. Under the lock. */
 int sdhost_cmd(uint8_t index, uint32_t arg, sdhost_resp_t rt, uint32_t flags,
@@ -54,6 +55,12 @@ typedef struct {
  * the caller sends the data command and waits. Under the lock. */
 void sdhost_dma_arm(sdhost_desc_t *d, uint8_t *buf, uint32_t len, uint32_t blksz);
 int  sdhost_dma_wait(uint32_t tag, const char *what);
+
+/* After a data phase that never finished (a card that stopped answering
+ * mid-transfer): the FIFO and the IDMAC back to idle and the status cleared,
+ * so the next command on either slot starts clean. The card's side of the
+ * abort is the caller's. Under the lock. */
+void sdhost_data_reset(void);
 
 /* Raw status [31:16]: card n's SDIO interrupt is bit 16+n. Read, and clear. */
 uint32_t sdhost_raw_status(void);

@@ -49,8 +49,15 @@ uint32_t net_take_unclaimed(uint8_t *out) {
     return len;
 }
 
+/* Set by net_stack_detach(): the interface belongs to someone else (an LLP
+ * bridge), so nothing may bind the stack to it again behind that owner's back
+ * -- not a DHCP lease landing late (net_set_address() below). Two readers on
+ * one interface's receive ring corrupt it. Cleared by an explicit attach. */
+static bool g_released;
+
 int net_stack_attach(netif_t *nif) {
     if (!nif) return -1;
+    g_released = false;
     if (!g_frames) {
         g_frames = (uint8_t *)palloc_pages(1);
         if (!g_frames) {
@@ -72,6 +79,7 @@ int net_stack_attach(netif_t *nif) {
  * only ones. The stack's task keeps running and finds nothing to do. */
 void net_stack_detach(void) {
     memset(&g_net, 0, sizeof(g_net));
+    g_released = true;
 }
 
 bool net_configured(void) { return g_net.configured && g_net.nif != NULL; }
@@ -84,7 +92,7 @@ int net_set_address(const uint8_t ip[IPV4_LEN], const uint8_t mask[IPV4_LEN],
          * anything has attached an interface, and on a board that has none it
          * never will. Take the default now if there is one. */
         netif_t *nif = netif_default();
-        if (!nif) return -1;
+        if (!nif || g_released) return -1;
         net_stack_attach(nif);
     }
     if (!ip || !mask) return -1;

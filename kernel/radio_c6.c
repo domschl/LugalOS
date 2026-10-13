@@ -21,6 +21,7 @@
  * exists and `radio` says so. */
 
 #include "kernel/radio_c6.h"
+#include "kernel/llp_node.h"
 #include "kernel/sched.h"
 #include "kernel/time.h"
 #include "kernel/radio_intr.h"
@@ -73,7 +74,9 @@ static int g_rpid = -1;
  * zeros to reads and dropping writes*, silently. The radio's first reads of the modem
  * block showed it: M-mode saw 0x7e600000 where U-mode saw 0. The PMP is the finer fence
  * and the one that is ours (it grants the radio exactly three peripheral windows), so
- * the APM is opened for all three REE modes (R/W/X each); the PMP still decides. */
+ * the APM is opened for REE0 (the CPU in U-mode) and REE2 (the modem's DMA, and every other master at its
+ * reset mode), R/W/X each; the PMP still decides for the CPU. REE1 stays closed: it is the SDIO slave's,
+ * fenced to its channel buffers by a region of its own (drivers/sdio_slave_esp32c6.c). */
 #define HP_APM_REGION0_PMS_ATTR (*(volatile uint32_t *)0x6009900cu)
 /* The LP APM fences the LP peripherals (PMU, LP clock/reset, LP_AON) the same way, and its reset state is
  * just as closed. The PHY library switches the RF blocks' power (PMU_RF_PWC: the TX/RX, clock-generator and
@@ -91,7 +94,7 @@ static void radio_task(void *arg) {
     ctx->arena_bytes = ARENA_PAGES * 4096u;
     ctx->stage = RADIO_STAGE_NONE;
 
-    HP_APM_REGION0_PMS_ATTR = 0x777u;
+    HP_APM_REGION0_PMS_ATTR = 0x707u;
     LP_APM_REGION0_PMS_ATTR = 0x777u;
     /* The chip's boot-time clock setup (drivers/radio/plat_esp32c6.c) runs here, in M-mode, not in the
      * radio's domain: part of it writes the LP_CLKRST block, which is behind the LP APM -- a second
@@ -218,9 +221,13 @@ int radio_c6_start(const char *ssid, const char *psk) {
      * the association (kernel/radio_netif_c6.c), so DHCP and netsrv simply wait for it. */
     if (ctx->join && ctx->stage >= RADIO_STAGE_STARTED && radio_netif_register((radio_ctx_t *)g_rstack) == 0) {
         cprintf("radio: wlan0 registered (%s)\n", ctx->connected ? "link up" : "link down");
-        net_stack_attach(radio_c6_netif());
-        net_task_start();
-        dhcp_start();
+        /* With an LLP host up, the interface is the bridge's and this node's
+         * stack never touches it; otherwise the stack takes it, and the
+         * bridge takes it over later (kernel/llp_node.c). */
+        if (!llp_node_offer_netif(radio_c6_netif())) {
+            net_task_start();
+            dhcp_start();
+        }
     }
     return ctx->stage >= RADIO_STAGE_STARTED ? 0 : 1;
 }
@@ -275,23 +282,19 @@ void radio_c6_rejoin(void) {
 #define RX_SILENCE_MS (5u * 60u * 1000u)
 
 #if defined(CONFIG_RADIO_C6)
-static void wlan_autostart_task(void *arg) {
-    (void)arg;
-    char ssid[NODE_WLAN_SSID_MAX + 1];
-    uint8_t psk[NODE_WLAN_PSK_LEN];
-    if (!node_wlan_ssid(ssid, sizeof(ssid)) || !node_wlan_psk(psk)) {
-        memset(psk, 0, sizeof(psk));
-        task_set_exit_status(0);
-        return;                                  /* no credentials: not meant to join anything */
-    }
-    char hex[2 * NODE_WLAN_PSK_LEN + 1];
-    static const char digits[] = "0123456789abcdef";
-    for (unsigned i = 0; i < NODE_WLAN_PSK_LEN; i++) { hex[2 * i] = digits[psk[i] >> 4]; hex[2 * i + 1] = digits[psk[i] & 15]; }
-    hex[2 * NODE_WLAN_PSK_LEN] = 0;
-    memset(psk, 0, sizeof(psk));
-    printk("[wlan] joining \"%s\" from the identity record\n", ssid);
-    int rc = radio_c6_start(ssid, hex);
-    memset(hex, 0, sizeof(hex));
+/* The network the `wlan` task joins: from the identity record at boot, or from
+ * an LLP host that holds the credentials itself (radio_c6_join()). The key is
+ * kept only until the radio has it. */
+static char g_join_ssid[NODE_WLAN_SSID_MAX + 1];
+static char g_join_psk[2 * NODE_WLAN_PSK_LEN + 1];
+static volatile bool g_join_busy;
+
+/* Starts the radio on g_join_*, then supervises the link for the life of the
+ * board. `arg` non-NULL: the credentials came from the LLP host. */
+static void wlan_join_task(void *arg) {
+    printk("[wlan] joining \"%s\" %s\n", g_join_ssid, arg ? "for the LLP host" : "from the identity record");
+    int rc = radio_c6_start(g_join_ssid, g_join_psk);
+    memset(g_join_psk, 0, sizeof(g_join_psk));
     const radio_ctx_t *c = (const radio_ctx_t *)g_rstack;
     if (rc != 0 || !c || c->stage < RADIO_STAGE_STARTED) {
         printk("[wlan] the radio did not start -- nothing to supervise\n");
@@ -311,7 +314,90 @@ static void wlan_autostart_task(void *arg) {
         }
     }
 }
+
+static void wlan_autostart_task(void *arg) {
+    (void)arg;
+    uint8_t psk[NODE_WLAN_PSK_LEN];
+    if (!node_wlan_ssid(g_join_ssid, sizeof(g_join_ssid)) || !node_wlan_psk(psk)) {
+        memset(psk, 0, sizeof(psk));
+        task_set_exit_status(0);
+        return;                                  /* no credentials: not meant to join anything */
+    }
+    static const char digits[] = "0123456789abcdef";
+    for (unsigned i = 0; i < NODE_WLAN_PSK_LEN; i++) {
+        g_join_psk[2 * i] = digits[psk[i] >> 4];
+        g_join_psk[2 * i + 1] = digits[psk[i] & 15];
+    }
+    g_join_psk[2 * NODE_WLAN_PSK_LEN] = 0;
+    memset(psk, 0, sizeof(psk));
+    g_join_busy = true;
+    wlan_join_task(NULL);
+}
 #endif
+
+int radio_c6_join(const char *ssid, const char *psk_hex) {
+#if defined(CONFIG_RADIO_C6)
+    if (g_rpid >= 0 || g_join_busy) return -1;
+    size_t n = strlen(ssid), k = strlen(psk_hex);
+    if (n == 0 || n > NODE_WLAN_SSID_MAX || k != 2u * NODE_WLAN_PSK_LEN) return -1;
+    for (size_t i = 0; i < k; i++) {
+        char ch = psk_hex[i];
+        if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F'))) return -1;
+    }
+    memcpy(g_join_ssid, ssid, n + 1);
+    memcpy(g_join_psk, psk_hex, k + 1);
+    g_join_busy = true;
+    if (task_create("wlan", wlan_join_task, (void *)1) < 0) {
+        memset(g_join_psk, 0, sizeof(g_join_psk));
+        g_join_busy = false;
+        return -1;
+    }
+    return 0;
+#else
+    (void)ssid; (void)psk_hex;
+    return -1;
+#endif
+}
+
+/* /dev/wlan (fs/vfs_server.c): a Plan 9 ctl file. `join SSID PSKHEX` and
+ * `rejoin` are written to it; reading it says where the radio is. */
+int radio_c6_ctl_write(const char *buf, uint32_t len) {
+    char line[128];
+    uint32_t n = len;
+    if (n >= sizeof(line)) return -1;
+    memcpy(line, buf, n);
+    line[n] = 0;
+    while (n && (line[n - 1] == '\n' || line[n - 1] == '\r' || line[n - 1] == ' ')) line[--n] = 0;
+    int rc = -1;
+    if (strncmp(line, "join ", 5) == 0) {
+        char *ssid = line + 5;
+        while (*ssid == ' ') ssid++;
+        char *psk = ssid;
+        while (*psk && *psk != ' ') psk++;
+        if (*psk) {
+            *psk++ = 0;
+            while (*psk == ' ') psk++;
+            rc = radio_c6_join(ssid, psk);
+        }
+    } else if (strcmp(line, "rejoin") == 0) {
+#if defined(CONFIG_RADIO_C6)
+        radio_ctx_t *c = (radio_ctx_t *)g_rstack;
+        if (c && c->join) { c->rejoin_req = 1; rc = 0; }
+#endif
+    }
+    memset(line, 0, sizeof(line));
+    return rc == 0 ? (int)len : -1;
+}
+
+uint32_t radio_c6_ctl_read(char *out, uint32_t cap) {
+    netif_t *nif = radio_c6_netif();
+    const char *state = !radio_c6_started() ? "idle" : !nif ? "starting" :
+                        netif_link_up(nif) ? "joined" : "not joined";
+    uint32_t n = 0;
+    while (state[n] && n + 1 < cap) { out[n] = state[n]; n++; }
+    if (n < cap) out[n++] = '\n';
+    return n;
+}
 
 void radio_c6_autostart(void) {
 #if defined(CONFIG_RADIO_C6)

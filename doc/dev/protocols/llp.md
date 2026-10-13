@@ -142,8 +142,8 @@ sequence-number garbage and is dropped as stale or counted as lost.
 ### 5.1 Who needs it
 
 * **SDIO** has flow control in hardware: the C6 slave's receive-buffer tokens
-  and its packet-length register. Neither side sets `FLOW`, and LLP sends data
-  whenever the channel takes it.
+  and its packet-length register (§7.2). Neither side sets `FLOW`, and LLP
+  sends data whenever the channel takes it.
 * **A UART** has none. The receiver sets `FLOW` and LLP's credits apply.
 
 A sender applies credits when the *peer's* HELLO had `FLOW` set.
@@ -241,18 +241,45 @@ SLIP_END  escape( header | payload | crc32 )  SLIP_END
 * The receiver sets `FLOW`. Its `window` is the number of frames its binding
   can buffer, at most 64.
 
-### 7.2 SDIO (P4 host ↔ C6 slave): outline, fixed in 49.6
+### 7.2 SDIO (P4 host ↔ C6 slave)
 
-* Frames are packed back to back in one CMD53 transfer, each padded to a
-  4-byte boundary. The transfer is padded to the 512-byte block. The bus CRC
-  covers integrity, so there is no LLP CRC.
-* Host → C6: the host writes only as many packets as the slave's
-  receive-buffer token count allows. That is the flow control, so `FLOW` is
-  not set.
-* C6 → host: the slave raises its interrupt and the host reads the pending
-  length.
-* The radio's `link` and `rssi` are also kept in a slave shared register, so
-  the host can read them without a frame.
+The C6's SDIO slave in packet mode, used the way Espressif's own hosts use it
+(the "ESP SDIO slave protocol"). `kernel/include/kernel/llp_sdio.h` holds the
+numbers both sides share; `drivers/sdio_esp32p4.c` is the host,
+`drivers/sdio_slave_esp32c6.c` the slave.
+
+* **Packets.** One CMD53 transfer (or a block part and a byte part) carries one
+  packet: one or more LLP frames back to back, each (header + payload) padded
+  with zeros to a multiple of 4 bytes, at most 4608 bytes in all. A receiver
+  stops at the end of the packet or at a zero type byte. No LLP CRC: the bus
+  has its own.
+* **The FIFO.** A transfer to function 1 address `0x1F800 − n` moves a packet
+  of `n` bytes. Whole 512-byte blocks go in block mode, the rest in byte mode,
+  each command addressed by what is still to come.
+* **Host → C6.** The slave loads receive buffers of 512 bytes (12 of them) and
+  counts them in its token register (`0x44`, bits 27:16, cumulative mod 4096).
+  A packet of `n` bytes uses ⌈n/512⌉. The host never writes more than the count
+  allows: that is the flow control, so `FLOW` is not set and no credits flow.
+  A receiver that cannot take a data frame yet leaves it in the channel.
+* **C6 → host.** The slave offers one packet at a time and counts the bytes
+  offered in `PKT_LEN` (`0x60`, bits 19:0, cumulative). The host reads the
+  difference to what it has read. It polls one status window, `0x44`–`0x73`,
+  per round: tokens, `PKT_LEN` and the shared bytes.
+* **Shared bytes** (`0x6C`–`0x73`, written by the slave): `'L' 'L' 'P'`, a
+  generation, the radio's `link` and `rssi` (as in STATE), the number of
+  receive buffers, the buffer size / 64.
+* **Channel reset.** The host writes bit 0 of `0x8D` (a host → slave
+  interrupt). The slave drops everything in both directions, restarts both
+  counters and publishes a new generation (never 0). The host adopts the
+  counters when the generation changes. That happens after its own reset
+  request, which it sends when it starts and after any failed transfer, and
+  equally when the C6 restarted by itself. The LLP session above sees a
+  restarted channel as lost frames, and a restarted peer as a new session
+  (§4.3).
+* **Recovery on the host.** A data phase that never completes is ended with an
+  I/O abort of function 1 (CCCR `0x06`, sent as a stop/abort command), then the
+  controller's FIFO and DMA are reset. The microSD on the same controller's
+  other slot is not affected.
 
 ## 8. Conformance
 

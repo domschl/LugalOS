@@ -101,3 +101,9 @@ set(LUGALOS_P4_FLASHFS_SIZE   0x00100000)   # 1 MB -- must match the FAT32 image
 # second writable segment added later widens the filesystem without widening
 # what a stray write can reach.
 set(LUGALOS_P4_FLASH_WRITABLE_FLOOR 0x00110000)
+
+# The identity record (drivers/idstore_esp32p4.c): one 4 KB sector, the last
+# below 16 MB -- the top of the spare, so nothing growing upwards from the
+# filesystem reaches it before the whole spare is used. Written by the device
+# (`wlan`, `p9key`, ...), never by a flashing tool.
+set(LUGALOS_P4_IDENTITY_BASE  0x00FFF000)

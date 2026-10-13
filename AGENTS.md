@@ -238,6 +238,16 @@ for both roles by itself.
   With both CP2102s attached (the NANO console and a C6 UART adapter) their by-id links collide
   (all serial "0001"), so `p4-ports.env` names the NANO's console by USB path (hub port 4.2).
   The 7B's other Type-C is its P4's USB-Serial/JTAG (flashable, but not the LugalOS console).
+* The 7B's C6 runs LugalOS (`esp32c6-mini`; factory image backed up in
+  `~/Source/gith/esp/p4lcd7b-c6-factory-flash/`). Its only console is UART0 on header H4
+  "C6-UART" (SH1.0: 1 IO9, 2 GND, 3 U0RXD, 4 U0TXD) through a CP2102 at 115200:
+  `tools/c6run.py --board lcd7b` / `c6flash.py --board lcd7b` (`c6-ports.env`). No USB pair, so
+  to reflash: `reboot download` at its console, then `c6flash.py` (`--before` reset is harmless,
+  the adapter has no DTR/RTS wired); afterwards `sdio reset` on the P4 boots it. A dead C6 needs
+  H4 pin 1 to pin 2 and an `sdio reset`. That CP2102 reports serial 0001 like the NANO's console.
+* LLP over SDIO starts at boot on the 7B (C6: radio role; P4: host role, no Ethernet on this
+  board): link up, `wlan0`, `/c6` mounted, and the P4's `wlan` credentials handed to
+  `/c6/dev/wlan`. `llp` shows both ends; `llp loop on` (C6) + `llp bench` (P4) measures the channel.
 * Test: `cd tests/hw && uv run test_esp32p4.py --board lcd7b --build ../../build/esp32p4-lcd7b`
   (37/37 since 49.4's SDIO check; 47.13: backlight, blanking, USB keyboard, touch, RTC and the
   ribbon's hotkeys included, each skipping where a board lacks it; EMAC tests

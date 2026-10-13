@@ -120,6 +120,7 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
         LUGALOS_P4_FLASHFS_BASE=${LUGALOS_P4_FLASHFS_BASE}
         LUGALOS_P4_FLASHFS_SIZE=${LUGALOS_P4_FLASHFS_SIZE}
         LUGALOS_P4_FLASH_WRITABLE_FLOOR=${LUGALOS_P4_FLASH_WRITABLE_FLOOR}
+        LUGALOS_P4_IDENTITY_BASE=${LUGALOS_P4_IDENTITY_BASE}
         # U0/U2: where the execute-in-place OS image lives. The boot-time
         # mapping in arch/riscv/common/xip_esp32p4.c points the flash window
         # at this address, and tools/p4flash.py writes it there -- one
@@ -1022,6 +1023,10 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
     # the same controller's slot 1,
     # SDIO toward the board's ESP32-C6.
     list(APPEND SOURCES drivers/sdio_esp32p4.c)
+    # the identity record in one flash sector (drivers/idstore_esp32p4.c).
+    list(APPEND SOURCES drivers/idstore_esp32p4.c)
+    # LLP's host role over that slot: wlan0 through the board's C6.
+    list(APPEND SOURCES kernel/llp_node.c)
     # the in-package PSRAM. Same
     # guard-by-board-file rule as the RP2350's (CONFIG_PSRAM_BYTES); an empty
     # unit on a board file without one.
@@ -1077,9 +1082,10 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
     # The boot-time flash mapping and watchdogs, in .boot.text (SRAM): it is what
     # makes the flash window exist, so it cannot live in it.
     list(APPEND SOURCES arch/riscv/common/xip_esp32c6.c)
-    # the C6 as a host's network card,
-    # LLP sharing the USB port with the console (drivers/usbjtag_esp32c6.c).
-    list(APPEND SOURCES kernel/llp_node.c)
+    # the C6 as a host's network card: LLP over the USB port shared with the
+    # console (drivers/usbjtag_esp32c6.c), or over SDIO to a P4 on a module
+    # that has one (drivers/sdio_slave_esp32c6.c, empty without CONFIG_SDIO_SLAVE).
+    list(APPEND SOURCES kernel/llp_node.c drivers/sdio_slave_esp32c6.c)
 else()
     # QEMU targets: VirtIO block device + 16550 UART + VirtIO console (9P link, A3)
     list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c drivers/virtio_console.c)

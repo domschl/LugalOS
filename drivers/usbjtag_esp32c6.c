@@ -49,7 +49,6 @@
 
 static uintptr_t g_base = CONFIG_USBJTAG_BASE;
 static volatile unsigned g_pending;     /* bytes written since the last WR_DONE */
-static volatile bool g_host_gone;       /* the last wait timed out: do not spin again until there is room */
 
 static void hw_flush(void) {
     if (g_pending) {
@@ -58,25 +57,46 @@ static void hw_flush(void) {
     }
 }
 
-/* --- A copy of the console on UART0 (49.4) ---
+/* --- The console on UART0 too ---
  *
  * The USB console is silent exactly when it is needed most: before the host
  * has the port open, after a reset re-enumerates it, and when the board hangs.
  * UART0 has neither problem, and the boot ROM has already set it up at 115200
- * for its own banner. So every console byte is also put into UART0's FIFO --
- * never waited for: a byte that finds the FIFO full is dropped, so a UART with
- * nothing attached costs nothing. Pins: the board file's CONFIG_UART0_TX_GPIO
- * (GPIO16; header P2 pin 22 on the NANO, a header pad on the C6-Zero). */
+ * for its own banner. So every console byte also goes to UART0, and every
+ * byte UART0 receives is console input beside the USB's. While a USB host
+ * reads, UART0 is a copy and a byte that finds its FIFO full is dropped; once
+ * nobody reads the USB (g_host_gone), UART0 is the console and waits for
+ * room -- a bounded wait, since a UART drains whether or not anything is
+ * attached (128 bytes at 115200 is 11 ms). On the LCD-7B's C6 UART0 is the
+ * only console: its header H4 carries IO9, GND and UART0, not the USB pair.
+ * LLP's frames go to the USB only. Pins: the board file's
+ * CONFIG_UART0_TX/RX_GPIO (GPIO16/17, the ROM's U0TXD/U0RXD, with the ROM's
+ * pull-up on RX, so an open header reads idle). */
 #define UART0_FIFO      (CONFIG_UART0_BASE + 0x00u)
 #define UART0_STATUS    (CONFIG_UART0_BASE + 0x1cu)
+#define UART0_RXCNT(v)  ((v) & 0xffu)
 #define UART0_TXCNT(v)  (((v) >> 16) & 0xffu)
+#define UART0_TX_ROOM   120u
+#define UART0_SPIN_LIMIT 2000000u
 
-static void uart0_tee(char c) {
-    if (UART0_TXCNT(REG(UART0_STATUS)) < 120u) REG(UART0_FIFO) = (uint32_t)(uint8_t)c;
+static volatile bool g_host_gone;       /* the last USB wait timed out: do not spin again until there is room */
+
+static void uart0_put(char c) {
+    if (g_host_gone) {
+        unsigned n = 0;
+        while (UART0_TXCNT(REG(UART0_STATUS)) >= UART0_TX_ROOM)
+            if (++n >= UART0_SPIN_LIMIT) return;
+    } else if (UART0_TXCNT(REG(UART0_STATUS)) >= UART0_TX_ROOM) {
+        return;
+    }
+    REG(UART0_FIFO) = (uint32_t)(uint8_t)c;
 }
 
-static void hw_putc(char c) {
-    uart0_tee(c);
+static bool uart0_rx_avail(void) { return UART0_RXCNT(REG(UART0_STATUS)) != 0u; }
+static uint8_t uart0_rx_get(void) { return (uint8_t)(REG(UART0_FIFO) & 0xffu); }
+
+/* One byte to the USB FIFO only. */
+static void usj_putc(char c) {
     /* "Nobody is reading" must still *commit* what is in the FIFO (WR_DONE).
      * It used to drop the count without it, and a FIFO full of uncommitted
      * bytes never drains -- IN_FREE stays clear, every later byte takes the
@@ -104,6 +124,12 @@ static void hw_putc(char c) {
     }
     REG(USJ_EP1(g_base)) = (uint32_t)(uint8_t)c;
     if (++g_pending >= FIFO_BYTES || c == '\n') hw_flush();
+}
+
+/* One console byte: both wires. */
+static void hw_putc(char c) {
+    usj_putc(c);
+    uart0_put(c);
 }
 
 /* --- Sharing the port with LLP ---
@@ -162,6 +188,7 @@ static void drain_rx_locked(void) {
             br_put(&g_con_rx, c);
         }
     }
+    while (uart0_rx_avail()) br_put(&g_con_rx, uart0_rx_get());   /* UART0 never carries LLP */
 }
 
 void usbjtag_llp_arm(bool on) {
@@ -195,7 +222,7 @@ static void con_tx_flush(void) {
 
 int usbjtag_llp_write(const uint8_t *buf, uint32_t len) {
     con_tx_flush();
-    for (uint32_t i = 0; i < len; i++) hw_putc((char)buf[i]);
+    for (uint32_t i = 0; i < len; i++) usj_putc((char)buf[i]);
     hw_flush();
     return (int)len;
 }
@@ -206,7 +233,7 @@ static bool g_streaming;
 
 void usbjtag_llp_putc(uint8_t b) {
     if (!g_streaming) { con_tx_flush(); g_streaming = true; }
-    hw_putc((char)b);
+    usj_putc((char)b);
 }
 
 void usbjtag_llp_end(void) {
@@ -252,7 +279,7 @@ bool uart_has_char(void) {
         return have;
     }
     hw_flush();
-    return (REG(USJ_EP1_CONF(g_base)) & USJ_OUT_AVAIL) != 0;
+    return (REG(USJ_EP1_CONF(g_base)) & USJ_OUT_AVAIL) != 0 || uart0_rx_avail();
 }
 
 char uart_getc(void) {
@@ -268,8 +295,11 @@ char uart_getc(void) {
         }
     }
     hw_flush();
-    while (!(REG(USJ_EP1_CONF(g_base)) & USJ_OUT_AVAIL)) sched_yield();
-    return (char)(REG(USJ_EP1(g_base)) & 0xffu);
+    for (;;) {
+        if (REG(USJ_EP1_CONF(g_base)) & USJ_OUT_AVAIL) return (char)(REG(USJ_EP1(g_base)) & 0xffu);
+        if (uart0_rx_avail()) return (char)uart0_rx_get();
+        sched_yield();
+    }
 }
 
 /* A FIFO cannot be inspected without consuming: kernel/console.c's pump keeps

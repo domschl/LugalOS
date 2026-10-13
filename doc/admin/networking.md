@@ -77,3 +77,42 @@ For wireless presets (`rp2350-wifi`, `esp32c6`):
    ```text
    lsh> net listen 564
    ```
+
+## 4. Wi-Fi Through the Board's ESP32-C6 (ESP32-P4 Boards)
+
+The ESP32-P4 boards (`esp32p4`, `esp32p4-lcd7b`) have an ESP32-C6 beside the P4,
+wired to it over SDIO. Running LugalOS on both (`esp32c6-mini` on the C6), the
+C6 is the P4's network card: the [LugalOS Link Protocol](../dev/protocols/llp.md)
+carries Ethernet frames and 9P between them, and the P4 gets `wlan0` with the
+C6's station MAC.
+
+* **At boot** the C6 (`esp32c6-mini`) arms the radio role and waits for a
+  host, and an LCD-7B (whose only network is its C6) starts the host role.
+  On the NANO, which has Ethernet as well, type `llp host` on the P4. By hand
+  on either side: `llp radio` (C6), `llp host` (P4).
+* **Link up** (within a second of both running): the P4 registers `wlan0`
+  with the C6's station MAC and asks for a DHCP lease once the radio is
+  associated. The C6 gives its interface to the link only now. A C6 with no
+  host stays a node of its own, with its own IP.
+* **`/c6`.** At every link-up the P4 mounts the C6's namespace at `/c6`, afresh
+  after a C6 restart (9P over the same channel, no authentication: it is a
+  cable). `cat /c6/proc/version`, `cat /c6/proc/node`.
+* **Credentials stay on the P4.** Store them once on the P4 with
+  `wlan SSID PSKHEX` (the derived 64-hex key, see above). At each link-up,
+  while the radio is not associated, the P4 writes `join SSID PSKHEX` to
+  `/c6/dev/wlan`. The C6 holds the key in RAM only, and reading
+  `/c6/dev/wlan` says `idle`, `starting`, `not joined` or `joined`.
+
+Checks of the channel itself:
+
+| Command | Where | What it does |
+| :--- | :--- | :--- |
+| `llp` | either | role, link state, peer, counters, SDIO channel state |
+| `llp loop on` / `llp loop off` | C6 | send the host's Ethernet frames back instead of to the radio |
+| `llp bench [count] [size]` | P4 | `count` frames of `size` bytes (default 1000 × 1514) to a C6 in loop mode, each checked on return; prints KB/s each way |
+| `sdio` | C6 | the SDIO slave: generation, timing, receive buffers, packets in and out |
+| `sdio timing 0..3` | C6 | the slave's edges (0: send and sample on the rising edge) |
+| `sdio`, `sdio probe`, `sdio reset` | P4 | the host side; `sdio reset` pulses the C6's `CHIP_PU` |
+
+Measured on the LCD-7B at 20 MHz, 4-bit: 3.1 MB/s each way with 1514-byte
+frames, nothing lost or damaged.

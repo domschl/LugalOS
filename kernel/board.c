@@ -328,6 +328,11 @@ static const dev_driver_t dev_emac = {
 static const dev_driver_t dev_sdmmc = {
     .name = "sdblk", .kind = DEV_KIND_BLOCK, .get = get_sdmmc,
 };
+/* 9P over LLP to the board's C6, once `llp host` has started the node. */
+static void *get_llp(void) { return llp_node_p9_link(); }
+static const dev_driver_t dev_llp = {
+    .name = "llp", .kind = DEV_KIND_P9LINK, .get = get_llp,
+};
 #else
 static const dev_driver_t dev_vconsole = {
     .name = "vconsole", .kind = DEV_KIND_P9LINK, .flags = DEV_F_BACKGROUND_9P, .wire = DEV_WIRE_VIRTIO,
@@ -406,6 +411,7 @@ void board_register_devices(void) {
 #elif defined(CONFIG_BOARD_ESP32P4)
     dev_register(&dev_emac);
     dev_register(&dev_sdmmc);
+    dev_register(&dev_llp);
 #else
     dev_register(&dev_vconsole);
     dev_register(&dev_llp);

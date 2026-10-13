@@ -7,8 +7,8 @@
  * What it does: the SDIO bring-up (CMD5 until the card is ready, CMD3, CMD7),
  * CMD52 (one byte, any function), CMD53 (byte and block mode, through the
  * controller's DMA), the card's CIS (who it is), 4-bit mode, function 1, and
- * the C6's reset line. Not yet: the card interrupt, and anything that knows
- * what the C6 *is* -- that is 49.6, LLP over SDIO.
+ * the C6's reset line, and the host side of LLP's SDIO binding. Not yet: the
+ * card interrupt -- the LLP pump polls.
  *
  * ## Proven against Espressif's own slave first
  *
@@ -25,6 +25,7 @@
 
 #include "drivers/sdio_esp32p4.h"
 #include "drivers/sdhost_esp32p4.h"
+#include "kernel/llp_sdio.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
 #include "kernel/time.h"
@@ -144,6 +145,17 @@ int sdio_cmd52(bool write, uint32_t fn, uint32_t addr, uint8_t in, uint8_t *out)
     return rc;
 }
 
+/* A data phase that did not finish leaves the controller waiting for it, and
+ * the next command on either slot -- the microSD's too -- would meet that. The
+ * SDIO way out: an I/O abort of the function (CCCR 0x06), sent as a
+ * stop/abort command so that it does not wait for the data that is not
+ * coming, then the FIFO and the DMA. */
+static void abort_locked(uint32_t fn) {
+    uint32_t r = 0, st = 0;
+    (void)sdhost_cmd(52, CMD52_WRITE | (0x06u << 9) | (fn & 7u), SDHOST_RESP_R1, SDHOST_STOP_ABORT, &r, &st);
+    sdhost_data_reset();
+}
+
 /* `len` bytes at `addr` of function `fn`: byte mode up to the function's block
  * size, block mode (whole blocks) above it. Incrementing address. */
 static int cmd53_locked(bool write, uint32_t fn, uint32_t addr, uint8_t *data, uint32_t len) {
@@ -172,7 +184,11 @@ static int cmd53_locked(bool write, uint32_t fn, uint32_t addr, uint8_t *data, u
                (unsigned)fn, (unsigned)addr, (unsigned)len, (unsigned)st, (unsigned)r);
         return -1;
     }
-    if (sdhost_dma_wait(addr, write ? "sdio write" : "sdio read") != 0) { g_info.errors++; return -1; }
+    if (sdhost_dma_wait(addr, write ? "sdio write" : "sdio read") != 0) {
+        g_info.errors++;
+        abort_locked(fn);
+        return -1;
+    }
     if (!write) {
         esp32p4_dcache_invalidate((uintptr_t)g_buf, span);
         memcpy(data, g_buf, len);
@@ -322,6 +338,190 @@ int sdio_probe(uint32_t khz) {
 
 const sdio_info_t *sdio_info(void) { return &g_info; }
 
+/* --- LLP's SDIO binding, host side ------------------------------------------------------
+ * kernel/include/kernel/llp_sdio.h is the contract; drivers/sdio_slave_esp32c6.c
+ * the other half. The host keeps two counters against the slave's: receive
+ * buffers it has used (TOKEN counts those loaded) and bytes it has read
+ * (PKT_LEN counts those offered). Both start from zero whenever the slave's
+ * generation changes -- after the reset this side asks for, or after the C6
+ * restarted by itself. */
+
+static struct {
+    bool     up;                /* an LLP slave answered and the counters are in step */
+    bool     need_reset;        /* a transfer failed: start the channel over */
+    uint8_t  gen;
+    uint32_t used;              /* receive buffers written into, mod 4096 */
+    uint32_t read;              /* bytes read, mod 2^20 */
+    uint32_t token, pkt_len;    /* the slave's, as last polled */
+    uint8_t  shared[8];
+    uint32_t polls, writes, reads, wbytes, rbytes, no_room, resyncs, failures;
+} g_llp;
+
+static uint32_t le32(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+/* One packet through the FIFO: whole blocks while 512 or more remain, then the
+ * rest in byte mode, each CMD53 addressed so that the slave sees how much is
+ * still to come (FIFO_END - remaining). `len` is a multiple of 4. */
+static int fifo_xfer_locked(bool write, uint8_t *buf, uint32_t len) {
+    uint32_t done = 0;
+    while (done < len) {
+        uint32_t rem = len - done;
+        uint32_t n = rem >= g_info.block_size ? (rem / g_info.block_size) * g_info.block_size : rem;
+        if (n > SDIO_XFER_MAX) n = SDIO_XFER_MAX;
+        if (cmd53_locked(write, LLP_SDIO_FN, LLP_SDIO_FIFO_END - rem, buf + done, n) != 0) return -1;
+        done += n;
+    }
+    return 0;
+}
+
+static int status_locked(void) {
+    uint8_t st[LLP_SDIO_STATUS_LEN];
+    if (cmd53_locked(false, LLP_SDIO_FN, LLP_SDIO_STATUS_ADDR, st, sizeof st) != 0) return -1;
+    g_llp.polls++;
+    g_llp.token = le32(st + (LLP_SDIO_REG_TOKEN - LLP_SDIO_STATUS_ADDR));
+    g_llp.pkt_len = le32(st + (LLP_SDIO_REG_PKT_LEN - LLP_SDIO_STATUS_ADDR)) & LLP_SDIO_LEN_MASK;
+    memcpy(g_llp.shared, st + (LLP_SDIO_REG_SHARED - LLP_SDIO_STATUS_ADDR), 8);
+    return 0;
+}
+
+static bool magic_ok(void) {
+    return g_llp.shared[LLP_SDIO_SH_MAGIC0] == 'L' && g_llp.shared[LLP_SDIO_SH_MAGIC1] == 'L' &&
+           g_llp.shared[LLP_SDIO_SH_MAGIC2] == 'P' && g_llp.shared[LLP_SDIO_SH_GEN] != 0;
+}
+
+/* The slave's counters restarted (its generation is new): start ours over. */
+static void adopt_gen(void) {
+    g_llp.gen = g_llp.shared[LLP_SDIO_SH_GEN];
+    g_llp.used = 0;
+    g_llp.read = 0;
+    g_llp.up = true;
+}
+
+/* Asks the slave to start the channel over and waits for its new
+ * generation. 0, or -1 (no LLP slave, or it did not answer in time). */
+static int channel_reset_locked(void) {
+    g_llp.up = false;
+    if (status_locked() != 0 || !magic_ok()) return -1;
+    uint8_t old = g_llp.shared[LLP_SDIO_SH_GEN];
+    if (cmd52_locked(true, LLP_SDIO_FN, LLP_SDIO_REG_SLV_INT, LLP_SDIO_SLV_RESET, NULL) != 0) return -1;
+    uint64_t deadline = time_get_ms() + 500u;
+    while (time_get_ms() < deadline) {
+        if (status_locked() == 0 && magic_ok() && g_llp.shared[LLP_SDIO_SH_GEN] != old) {
+            adopt_gen();
+            g_llp.need_reset = false;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+int sdio_llp_open(void) {
+    sdhost_acquire(1);
+    int rc = -1;
+    if (g_info.present || probe_locked((uint32_t)CONFIG_SDIO_FREQ_KHZ) == 0) rc = channel_reset_locked();
+    if (rc != 0) g_llp.need_reset = true;
+    sdhost_release();
+    return rc;
+}
+
+/* One status read. A slave that stopped answering is probed again, at most
+ * once a second; one that restarted by itself is followed. 0 when up, 1 when
+ * up with both counters just restarted (whatever was in flight is gone), -1
+ * when down. */
+int sdio_llp_poll(void) {
+    static uint64_t next_probe;
+    sdhost_acquire(1);
+    int rc = -1;
+    if (!g_info.present) {
+        uint64_t now = time_get_ms();
+        if (now < next_probe) goto out;
+        next_probe = now + 1000u;
+        if (probe_locked((uint32_t)CONFIG_SDIO_FREQ_KHZ) != 0) goto out;
+    }
+    if (status_locked() != 0) {
+        g_llp.failures++;
+        g_info.present = false;
+        g_llp.up = false;
+        goto out;
+    }
+    if (!magic_ok()) { g_llp.up = false; goto out; }
+    if (g_llp.need_reset) {
+        if (channel_reset_locked() != 0) goto out;
+        g_llp.resyncs++;
+        rc = 1;
+        goto out;
+    }
+    rc = 0;
+    if (!g_llp.up || g_llp.shared[LLP_SDIO_SH_GEN] != g_llp.gen) {
+        if (g_llp.up) g_llp.resyncs++;
+        adopt_gen();
+        rc = 1;
+    }
+out:
+    sdhost_release();
+    return rc;
+}
+
+bool sdio_llp_up(void) { return g_llp.up; }
+
+uint32_t sdio_llp_readable(void) {
+    return g_llp.up ? ((g_llp.pkt_len - g_llp.read) & LLP_SDIO_LEN_MASK) : 0u;
+}
+
+bool sdio_llp_room(uint32_t len) {
+    uint32_t free = (LLP_SDIO_TOKEN(g_llp.token) - g_llp.used) & (LLP_SDIO_TOKEN_MOD - 1u);
+    return g_llp.up && (len + LLP_SDIO_BUF - 1u) / LLP_SDIO_BUF <= free;
+}
+
+int sdio_llp_write(const uint8_t *pkt, uint32_t len) {
+    if (!g_llp.up || len == 0 || len % 4u || len > LLP_SDIO_PKT_MAX) return -1;
+    if (!sdio_llp_room(len)) { g_llp.no_room++; return -2; }
+    sdhost_acquire(1);
+    int rc = fifo_xfer_locked(true, (uint8_t *)(uintptr_t)pkt, len);
+    if (rc == 0) {
+        g_llp.used = (g_llp.used + (len + LLP_SDIO_BUF - 1u) / LLP_SDIO_BUF) & (LLP_SDIO_TOKEN_MOD - 1u);
+        g_llp.writes++;
+        g_llp.wbytes += len;
+    } else {
+        g_llp.failures++;
+        g_llp.need_reset = true;
+    }
+    sdhost_release();
+    return rc;
+}
+
+int sdio_llp_read(uint8_t *buf, uint32_t cap) {
+    uint32_t n = sdio_llp_readable();
+    if (n == 0) return 0;
+    if (n > cap || n % 4u) {
+        /* Not a packet this binding sends: start the channel over. */
+        g_llp.failures++;
+        g_llp.need_reset = true;
+        return -1;
+    }
+    sdhost_acquire(1);
+    int rc = fifo_xfer_locked(false, buf, n);
+    sdhost_release();
+    if (rc != 0) { g_llp.failures++; g_llp.need_reset = true; return -1; }
+    g_llp.read = (g_llp.read + n) & LLP_SDIO_LEN_MASK;
+    g_llp.reads++;
+    g_llp.rbytes += n;
+    return (int)n;
+}
+
+void sdio_llp_report(void) {
+    cprintf("  sdio: %s, gen %u, slave link %u rssi %d, %u x %u B receive buffers\n",
+            g_llp.up ? "up" : "down", g_llp.gen, g_llp.shared[LLP_SDIO_SH_LINK],
+            (int)(int8_t)g_llp.shared[LLP_SDIO_SH_RSSI], g_llp.shared[LLP_SDIO_SH_NBUF],
+            g_llp.shared[LLP_SDIO_SH_BUF64] * 64u);
+    cprintf("  sdio: %u polls, out %u packets %u B (no room %u), in %u packets %u B, resyncs %u, failures %u, bus errors %u\n",
+            (unsigned)g_llp.polls, (unsigned)g_llp.writes, (unsigned)g_llp.wbytes, (unsigned)g_llp.no_room,
+            (unsigned)g_llp.reads, (unsigned)g_llp.rbytes, (unsigned)g_llp.resyncs, (unsigned)g_llp.failures,
+            (unsigned)g_info.errors);
+}
+
 /* --- Shell --------------------------------------------------------------------------- */
 
 static const char *const stage_names[] = {
@@ -374,5 +574,13 @@ int sdio_cmd52(bool w, uint32_t fn, uint32_t a, uint8_t in, uint8_t *out) { (voi
 int sdio_cmd53(bool w, uint32_t fn, uint32_t a, uint8_t *d, uint32_t l) { (void)w; (void)fn; (void)a; (void)d; (void)l; return -1; }
 void sdio_c6_reset(uint32_t ms) { (void)ms; }
 void sdio_bench(uint32_t kb, uint32_t fn, uint32_t addr, uint32_t len) { (void)kb; (void)fn; (void)addr; (void)len; sdio_report(); }
+int sdio_llp_open(void) { return -1; }
+int sdio_llp_poll(void) { return -1; }
+bool sdio_llp_up(void) { return false; }
+uint32_t sdio_llp_readable(void) { return 0; }
+bool sdio_llp_room(uint32_t len) { (void)len; return false; }
+int sdio_llp_write(const uint8_t *pkt, uint32_t len) { (void)pkt; (void)len; return -1; }
+int sdio_llp_read(uint8_t *buf, uint32_t cap) { (void)buf; (void)cap; return -1; }
+void sdio_llp_report(void) {}
 
 #endif

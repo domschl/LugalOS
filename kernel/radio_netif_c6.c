@@ -19,17 +19,32 @@ static radio_ctx_t *g_ctx;
 static netif_t g_nif;
 static bool g_registered;
 
+/* Frames waiting: head - tail, never just "head != tail". A count outside
+ * 0..RN_RX_SLOTS means the reader went wrong (two readers on this ring, which
+ * the stack/bridge hand-over exists to prevent); it is put back at the head
+ * rather than left to read stale slots for ever. */
+static uint32_t rn_pending(rn_rings_t *r) {
+    uint32_t n = r->rx.head - r->rx.tail;
+    if (n > RN_RX_SLOTS) {
+        printk("[radio] wlan0 receive ring out of step (%u/%u): resynchronised\n",
+               (unsigned)r->rx.head, (unsigned)r->rx.tail);
+        r->rx.tail = r->rx.head;
+        return 0;
+    }
+    return n;
+}
+
 static int rn_poll(netif_t *nif) {
     (void)nif;
     fence();
-    return g_ctx->rings->rx.head != g_ctx->rings->rx.tail;
+    return rn_pending(g_ctx->rings) != 0;
 }
 
 static int rn_recv(netif_t *nif, uint8_t *buf, uint32_t max_len) {
     (void)nif;
     rn_rings_t *r = g_ctx->rings;
     fence();
-    if (r->rx.head == r->rx.tail) return -1;
+    if (rn_pending(r) == 0) return -1;
     const rn_slot_t *s = &r->rx_slot[r->rx.tail % RN_RX_SLOTS];
     uint32_t n = s->len;
     int rc = -1;

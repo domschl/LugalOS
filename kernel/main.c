@@ -37,7 +37,8 @@
 #endif
 #include "drivers/uart_net.h"   /* uart1_link_init(), N5 */
 #include "drivers/cyw43.h"    /* cyw43_autostart_task_start() */
-#include "kernel/radio_c6.h"    /* radio_c6_autostart() */
+#include "kernel/radio_c6.h"
+#include "kernel/llp_node.h"    /* radio_c6_autostart() */
 #include "drivers/watchdog.h"   /* watchdog_start() */
 #include "kernel/taint.h"       /* the boot banner's taint, 45.9 */
 #include "net/ip.h"
@@ -209,6 +210,17 @@ void kernel_main(void) {
         }
         printk("[Chip] ESP32-P4 v%u.%u%s\n", chip / 100u, chip % 100u,
                chip == (unsigned)CONFIG_ESP32P4_REV ? "" : " (board file says otherwise; same family)");
+
+        /* Why this boot happened: LP_CLKRST_RESET_CAUSE_REG, core 0's cause in
+         * [12:7], the ROM's reset-reason numbering (esp_rom rtc.h). A board
+         * that browns out says so here rather than looking like a power-on. */
+        uint32_t cause = ((*(volatile uint32_t *)0x50111010u) >> 7) & 0x3Fu;
+        const char *why = cause == 1u ? "power-on" : cause == 3u ? "software (system)" :
+                          cause == 12u ? "software (cpu)" : cause == 15u ? "BROWN-OUT" :
+                          (cause == 7u || cause == 9u || cause == 11u || cause == 13u ||
+                           cause == 16u || cause == 18u) ? "watchdog" :
+                          cause == 19u ? "glitch" : cause == 22u || cause == 23u ? "USB" : "other";
+        printk("[Chip] last reset: %s (%u)\n", why, (unsigned)cause);
     }
 #endif
 
@@ -639,6 +651,13 @@ void kernel_main(void) {
      * its firmware is the same case as a router that has not come back, and
      * one code path handles both. */
     mqttd_autostart();
+
+#if !defined(CONFIG_BOARD_RP2350)
+    /* The link to a radio beside this chip, where the board has one wired
+     * (kernel/llp_node.c): after the stack, so the radio's own interface
+     * is attached until a host takes it over. */
+    llp_node_autostart();
+#endif
 
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_GPS
     /* P3b: the transfer standard. Brought up here, polled from the clock
