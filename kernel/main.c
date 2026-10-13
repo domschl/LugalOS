@@ -221,6 +221,7 @@ void kernel_main(void) {
                            cause == 16u || cause == 18u) ? "watchdog" :
                           cause == 19u ? "glitch" : cause == 22u || cause == 23u ? "USB" : "other";
         printk("[Chip] last reset: %s (%u)\n", why, (unsigned)cause);
+        esp32p4_brownout_arm();
     }
 #endif
 

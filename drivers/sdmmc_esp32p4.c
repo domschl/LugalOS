@@ -118,12 +118,11 @@
  * state of this board is "SD powered as soon as VO4 is up" and the only way
  * to break it is to drive GPIO45 high.
  *
- * Which is exactly why this driver drives it low explicitly, and does so
- * *before* enabling the regulator rather than after: if the ROM (or anything
- * else that ran first) left GPIO45 as an output driving high, the switch
- * would open the moment the rail it is switching came up, and the symptom
- * would be a card that never answers CMD0 on a board whose PMU registers all
- * read back correctly. */
+ * This driver drives it explicitly once the rail is up (the pad's own IO
+ * domain is VO4): high for a deliberate power cycle of the card, then low. So
+ * whatever the ROM or anything else left on GPIO45, the card ends powered and
+ * freshly reset -- a GPIO45 left high would otherwise be a card that never
+ * answers CMD0 on a board whose PMU registers all read back correctly. */
 #define SD_PWR_GPIO             ((uint32_t)CONFIG_SDMMC_PWR_GPIO)
 
 /* --- Clock and reset -----------------------------------------------------
@@ -215,6 +214,7 @@
 #define GPIO_OUT_W1TS_HI    (GPIO_BASE + 0x14)
 #define GPIO_OUT_W1TC_HI    (GPIO_BASE + 0x18)
 #define GPIO_ENABLE_W1TS_HI (GPIO_BASE + 0x30)
+#define GPIO_ENABLE_W1TC_HI (GPIO_BASE + 0x34)
 
 /* The matrix's two constant sources (IDF soc/gpio_pins.h) and the three
  * per-slot inputs that are never pads on this board. Slot 0's numbers, from
@@ -359,8 +359,9 @@ static uint32_t g_cid[4];         /* kept for `sdinfo` -- who this card is */
 
 /* --- Power ---------------------------------------------------------------
  *
- * The order here is the point; see PMU_EXT_LDO_VO4's comment above for why
- * the switch is settled before the rail it switches.
+ * The order here is the point: the rail (which also powers the pads, the
+ * switch's included), then the card off and on again -- see SD_PWR_GPIO's
+ * comment above and sdmmc_power_on() below.
  *
  * The regulator sequence itself is TRM §15.4.2.9.3's, minus the two steps
  * that only make sense with interrupts (it suggests waiting on the waiting
@@ -370,16 +371,8 @@ static uint32_t g_cid[4];         /* kept for `sdinfo` -- who this card is */
  * mode and owner set, ripple suppression on, XPD, current limit off, then a
  * delay long enough for the rail and the card's own 10 µF to settle. */
 static void sdmmc_power_on(void) {
-    /* The switch first, and as a plain GPIO output driving low. */
-    uint32_t pad = REG(IOMUX_PAD(SD_PWR_GPIO));
-    pad &= ~(IOMUX_MCU_SEL_M | IOMUX_FUN_PU | IOMUX_FUN_PD);
-    pad |= (IOMUX_FUNC_GPIO << IOMUX_MCU_SEL_S);
-    REG(IOMUX_PAD(SD_PWR_GPIO)) = pad;
-    REG(GPIO_OUT_SEL(SD_PWR_GPIO)) = GPIO_OUT_SEL_GPIO;
-    REG(GPIO_OUT_W1TC_HI) = 1u << (SD_PWR_GPIO - 32u);      /* gate low = ON */
-    REG(GPIO_ENABLE_W1TS_HI) = 1u << (SD_PWR_GPIO - 32u);
-
-    /* Then the rail. */
+    /* The rail first: LDO channel 4 also powers the GPIO39-45 bank, so the
+     * switch's own pin can only be driven once it is up. */
     REG(PMU_EXT_LDO_VO4_ANA) |= LDO_ANA_EN_CUR_LIM;
 
     uint32_t ctrl = REG(PMU_EXT_LDO_VO4);
@@ -391,6 +384,45 @@ static void sdmmc_power_on(void) {
     REG(PMU_EXT_LDO_VO4_ANA) |= LDO_ANA_EN_VDET;
     REG(PMU_EXT_LDO_VO4) |= LDO_XPD;
     REG(PMU_EXT_LDO_VO4_ANA) &= ~LDO_ANA_EN_CUR_LIM;
+
+    /* Then the card, off and on again. Its switch is held ON by a pull-down
+     * through every chip reset, so without this the card never starts over:
+     * a reset in the middle of a write leaves it mid-transfer, holding DAT0,
+     * and the next boot's CMD0 waits on that line for ever ("CMD0 was not
+     * accepted") or reads garbled CID/CSD. Both were seen; the card itself
+     * was fine every time. While it is off its six lines are driven low, so
+     * the 10K pull-ups to VO4 cannot keep it half-powered through its pins,
+     * and it stays off long enough for the 10 uF on its VDD to fall below the
+     * 0.5 V the SD physical layer asks for. */
+    static const uint8_t lines[6] = {
+        CONFIG_SDMMC_CLK_GPIO, CONFIG_SDMMC_CMD_GPIO, CONFIG_SDMMC_D0_GPIO,
+        CONFIG_SDMMC_D1_GPIO, CONFIG_SDMMC_D2_GPIO, CONFIG_SDMMC_D3_GPIO,
+    };
+    uint32_t mask = 0;
+    for (unsigned i = 0; i < 6u; i++) {
+        uint32_t g = lines[i];
+        uint32_t pad = REG(IOMUX_PAD(g));
+        pad &= ~(IOMUX_MCU_SEL_M | IOMUX_FUN_PU | IOMUX_FUN_PD);
+        pad |= (IOMUX_FUNC_GPIO << IOMUX_MCU_SEL_S);
+        REG(IOMUX_PAD(g)) = pad;
+        REG(GPIO_OUT_SEL(g)) = GPIO_OUT_SEL_GPIO;
+        mask |= 1u << (g - 32u);
+    }
+    REG(GPIO_OUT_W1TC_HI) = mask;
+    REG(GPIO_ENABLE_W1TS_HI) = mask;
+
+    uint32_t pad = REG(IOMUX_PAD(SD_PWR_GPIO));
+    pad &= ~(IOMUX_MCU_SEL_M | IOMUX_FUN_PU | IOMUX_FUN_PD);
+    pad |= (IOMUX_FUNC_GPIO << IOMUX_MCU_SEL_S);
+    REG(IOMUX_PAD(SD_PWR_GPIO)) = pad;
+    REG(GPIO_OUT_SEL(SD_PWR_GPIO)) = GPIO_OUT_SEL_GPIO;
+    REG(GPIO_OUT_W1TS_HI) = 1u << (SD_PWR_GPIO - 32u);      /* gate high = OFF */
+    REG(GPIO_ENABLE_W1TS_HI) = 1u << (SD_PWR_GPIO - 32u);
+    time_delay_us(200000);
+    REG(GPIO_OUT_W1TC_HI) = 1u << (SD_PWR_GPIO - 32u);      /* gate low = ON */
+
+    /* The lines go back to the controller in sdmmc_pads_init(). */
+    REG(GPIO_ENABLE_W1TC_HI) = mask;
 
     /* The card's VDD pin has 10 µF + 0.1 µF on it (schematic C7/C8) and the
      * SD physical-layer spec gives a card 1 ms of supply ramp before it will

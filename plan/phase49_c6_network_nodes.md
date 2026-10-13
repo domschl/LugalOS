@@ -778,6 +778,22 @@ without USB.
         ping flood: all verified, 0 SDIO failures, 0 busy-path resets.
       * Also fixed: `sdbench w` ran the read-only benchmark on the P4 (the
         board's `sdbench` matched first).
+      * **The real cause, found next day-part:** the "corrupted" card read
+        fine on a Linux PC (`fsck.fat` only reported the boot sector's dirty
+        byte, 0x41, which LugalOS never writes). The card was healthy;
+        LugalOS could not initialise it. Its power switch is held ON through
+        every P4 reset, so the card never starts over. A P4 reset in the
+        middle of a write (a boot loop, or just reflashing) leaves it
+        mid-transfer, and the next boot fails: "CMD0 was not accepted" in 2
+        of 6 resets during `fsbench`, a garbled CID/CSD in the case seen
+        earlier. **Fixed:** every boot power-cycles the card (lines driven
+        low, 200 ms off). 10 of 10 resets during writes then mounted. A write
+        cut off still leaves a partial file (FAT32 has no journal), but the
+        card comes back.
+      * **The brown-out reset is armed** (`arch/riscv/common/bod_esp32p4.c`,
+        IDF's sequence, level 7 ≈ 2.6 V, the threshold over REGI2C through
+        `esp32p4_regi2c_write_field()`), so a supply dip now ends in a clean
+        reset that the next boot names.
     * **Next:** `p9sync.py` over TCP, MQTT, NTP; the Wi-Fi checks in `test_esp32p4.py`; the 30-minute
       soak; a cold power cycle (both chips from off).
 

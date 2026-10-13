@@ -997,6 +997,8 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
     # lands in 34.3-34.5 -- the code that changes these clocks and the code
     # that reports them belong in one file.
     list(APPEND SOURCES arch/riscv/common/clk_esp32p4.c)
+    # the brown-out detector, armed to reset the chip on a supply dip.
+    list(APPEND SOURCES arch/riscv/common/bod_esp32p4.c)
     # the second HP core. Its own
     # file rather than kernel/smp.c's, because that file's SMP paths are
     # RP2350's bootrom handshake and QEMU's release-from-a-spin-loop, and this

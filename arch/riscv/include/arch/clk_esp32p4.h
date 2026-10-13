@@ -37,6 +37,17 @@ typedef struct {
 /* Reads the registers. Touches nothing else and writes nothing. */
 void esp32p4_clocks_read(esp32p4_clocks_t *c);
 
+/* Writes bits [msb:lsb] of register `reg_addr` of analog block `blk` (its
+ * slave id), selected by `mst_sel` in the analog master's ANA_CONF2.
+ * Read-modify-write; false if the master is gated or never went idle. */
+bool esp32p4_regi2c_write_field(uint8_t blk, uint32_t mst_sel, uint8_t reg_addr,
+                                unsigned msb, unsigned lsb, uint8_t value);
+
+/* The brown-out detector, armed to reset the chip on a supply dip
+ * (arch/riscv/common/bod_esp32p4.c). Once, early at boot. */
+void esp32p4_brownout_arm(void);
+bool esp32p4_brownout_armed(void);
+
 /* What the boot ROM believes the CPU frequency is, in MHz.
  *
  * Bookkeeping, not a measurement: the ROM keeps this figure so its own

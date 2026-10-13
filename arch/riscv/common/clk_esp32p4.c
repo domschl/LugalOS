@@ -390,6 +390,18 @@ static bool regi2c_write(uint32_t blk, uint32_t mst_sel, uint8_t reg_addr,
     return regi2c_wait_idle();
 }
 
+/* A field [msb:lsb] of one analog register, read-modify-write
+ * (IDF's REGI2C_WRITE_MASK), for analog blocks other than the clocks' -- the
+ * brown-out detector's threshold (arch/riscv/common/bod_esp32p4.c). */
+bool esp32p4_regi2c_write_field(uint8_t blk, uint32_t mst_sel, uint8_t reg_addr,
+                                unsigned msb, unsigned lsb, uint8_t value) {
+    uint8_t v = 0;
+    if (!regi2c_read(blk, mst_sel, reg_addr, &v)) return false;
+    uint8_t m = (uint8_t)(((1u << (msb - lsb + 1u)) - 1u) << lsb);
+    v = (uint8_t)((v & ~m) | (((uint32_t)value << lsb) & m));
+    return regi2c_write(blk, mst_sel, reg_addr, v);
+}
+
 /* Read-modify-write of one bit, which is what ESP-IDF's REGI2C_WRITE_MASK
  * reduces to for every field this file touches. The read and the write are
  * separate transactions on the same selected block. */
