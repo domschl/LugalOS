@@ -654,6 +654,13 @@ uint32_t klog_read(uint64_t abs_offset, char *buf, uint32_t count) {
     return n;
 }
 
+void klog_clear(void) {
+    uintptr_t flags = spin_lock_irqsave_bottom(&g_klog_lock);
+    g_stored_oldest = g_stored_total;
+    g_render_oldest = g_render_total;
+    spin_unlock_irqrestore(&g_klog_lock, flags);
+}
+
 /* The body, with the ring lock already held -- klog_take() needs to read and
  * advance the cursor in one critical section, and could not do that if the
  * read took the lock itself. */

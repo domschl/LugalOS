@@ -229,4 +229,7 @@ uint64_t klog_oldest(void);
  * cannot feed back into the read and never terminate. */
 uint32_t klog_read(uint64_t abs_offset, char *buf, uint32_t count);
 
+/* Clears the retained log window, advancing the oldest position to the current total. */
+void klog_clear(void);
+
 #endif /* LUGALOS_KERNEL_KLOG_H */

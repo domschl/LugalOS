@@ -557,6 +557,10 @@ static char s_help_stack[HELP_STACK_MAX][32];
 static int  s_help_depth = 0;
 
 static int detect_screen_rows(void) {
+    unsigned cols = 80, rows = 24;
+    if (console_size(&cols, &rows) && rows > 4) {
+        return (int)rows;
+    }
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_LCD_PCLK_GPIO)
     return 30;
 #elif defined(CONFIG_BOARD_ESP32P4) && defined(CONFIG_DSI_PRESENT)
@@ -709,7 +713,7 @@ static void pager_view_file(const char *path, bool is_topic, const char *topic_n
                                 is_topic ? ", 1..9: Link" : "");
                         for (;;) {
                             char c = console_getc();
-                            if (c == 'q' || c == 'Q' || c == 27) {
+                            if (c == 'q' || c == 'Q' || c == 27 || c == 3) {
                                 quit = true;
                                 break;
                             }
@@ -717,8 +721,12 @@ static void pager_view_file(const char *path, bool is_topic, const char *topic_n
                                 row_count = 0;
                                 break;
                             }
-                            if (c == '\n' || c == '\r') {
+                            if (c == '\n' || c == '\r' || c == 'j' || c == 'J') {
                                 row_count = max_rows - 1;
+                                break;
+                            }
+                            if (c == 'd' || c == 'D' || c == 4) {
+                                row_count = max_rows / 2;
                                 break;
                             }
                             if ((c == 'b' || c == 'B') && is_topic && s_help_depth > 0) {
@@ -766,11 +774,16 @@ static void pager_view_file(const char *path, bool is_topic, const char *topic_n
 
 static void cmd_help_summary(void) {
     cprintf("\nAvailable LugalOS Shell Commands (Plan 9 Model):\n");
-    cprintf("------------------------------------------------------------\n");
+    console_print_divider('-');
     cprintf("Filesystem:\n");
     cprintf("  ls [path]       - List directory (/flash0, /sd0, /ram0, /proc, /dev)\n");
     cprintf("  cat <path>      - Display file contents\n");
-    cprintf("  more <path>     - View file with terminal-height paging\n");
+    cprintf("  more [path]     - View file or stream with terminal paging\n");
+    cprintf("  grep [-i|-v] pat [f] - Filter matching lines from stream or file\n");
+    cprintf("  head [-n N] [file] - Emit first N lines (default 10)\n");
+    cprintf("  tail [-n N] [file] - Emit last N lines (default 10)\n");
+    cprintf("  wc [-l|-w|-c] [file] - Count lines, words, bytes\n");
+    cprintf("  echo [text]     - Print text to stdout\n");
     cprintf("  touch <file>    - Create a new empty file\n");
     cprintf("  mkdir <path>    - Create a new directory\n");
     cprintf("  rmdir <path>    - Remove an empty directory\n");
@@ -785,7 +798,9 @@ static void cmd_help_summary(void) {
     cprintf("  meminfo         - Physical memory and page pool status\n");
     cprintf("  date [ISO]      - Show or set date and RTC time\n");
     cprintf("  rtc             - Display RTC status and temperature\n");
+    cprintf("  dmesg [-c|-f]   - Dump kernel log ring (-c clear, -f follow)\n");
     cprintf("  klog [attach|detach] - Kernel log ring (/proc/kmsg)\n");
+    cprintf("  history [clear] - Command history (!n, !! to repeat)\n");
     cprintf("  reboot          - Restart board\n");
     cprintf("  clear           - Clear terminal screen\n");
     cprintf("\nApplications & Programming:\n");
@@ -803,14 +818,14 @@ static void cmd_help_summary(void) {
     cprintf("  sensor          - Read I2C environmental telemetry\n");
     cprintf("  mqtt [connect|pub|sub] - MQTT 3.1.1 client\n");
     cprintf("  p9share         - Share serial port with 9P file server\n");
-    cprintf("------------------------------------------------------------\n");
+    console_print_divider('-');
     cprintf("  help <topic>    - Interactive topic manual (or: man <topic>)\n");
     cprintf("  help test       - List internal hardware selftests & isolation checks\n\n");
 }
 
 static void cmd_help_test(void) {
     cprintf("\nLugalOS Hardware Tests, Benchmarks & Isolation Checks:\n");
-    cprintf("------------------------------------------------------------\n");
+    console_print_divider('-');
     cprintf("Scheduler & Memory Domains:\n");
     cprintf("  taskdemo        - Spawn cooperative tasks and verify interleaving\n");
     cprintf("  preempttest     - Verify timer preemption of non-yielding CPU hog\n");
@@ -853,7 +868,8 @@ static void cmd_help_test(void) {
     cprintf("  hmacselftest    - SHA-256 and HMAC-SHA-256 against RFC vectors\n");
     cprintf("  memselftest     - libc memcpy/memmove/memset byte reference\n");
     cprintf("  fmtselftest     - printk/ksnprintf format engine selftest\n");
-    cprintf("------------------------------------------------------------\n\n");
+    console_print_divider('-');
+    cprintf("\n");
 }
 
 static void cmd_help_topic(const char *topic) {
@@ -896,13 +912,640 @@ static void cmd_man(const char *topic) {
     }
 }
 
+static const char *g_pipe_in = NULL;
+static size_t      g_pipe_in_len = 0;
+
+static void parse_and_eval_cmd(const char *cmd_line);
+
+static void pager_view_buf(const char *buf, size_t len) {
+    if (!buf || len == 0) return;
+    int max_rows = detect_screen_rows();
+    if (max_rows < 4) max_rows = 24;
+
+    size_t pos = 0;
+    int row_count = 0;
+    char line_buf[256];
+    int line_pos = 0;
+    bool quit = false;
+
+    while (pos < len && !quit) {
+        char ch = buf[pos++];
+        if (ch == '\r') continue;
+        if (ch == '\n') {
+            line_buf[line_pos] = '\0';
+            cprintf("%s\n", line_buf);
+            line_pos = 0;
+            row_count++;
+
+            if (row_count >= max_rows - 1 && pos < len) {
+                cprintf("-- More (Space: Next, Enter: Line, q: Quit) -- ");
+                for (;;) {
+                    char c = console_getc();
+                    if (c == 'q' || c == 'Q' || c == 27 || c == 3) {
+                        quit = true;
+                        break;
+                    }
+                    if (c == ' ') {
+                        row_count = 0;
+                        break;
+                    }
+                    if (c == '\n' || c == '\r' || c == 'j' || c == 'J') {
+                        row_count = max_rows - 2;
+                        break;
+                    }
+                    if (c == 'd' || c == 'D' || c == 4) {
+                        row_count = max_rows / 2;
+                        break;
+                    }
+                }
+                cprintf("\r\033[K");
+            }
+        } else if (line_pos < (int)sizeof(line_buf) - 1) {
+            line_buf[line_pos++] = ch;
+        }
+    }
+    if (!quit && line_pos > 0) {
+        line_buf[line_pos] = '\0';
+        cprintf("%s\n", line_buf);
+    }
+}
+
 static void cmd_more(const char *path) {
+    if (g_pipe_in != NULL && g_pipe_in_len > 0) {
+        pager_view_buf(g_pipe_in, g_pipe_in_len);
+        return;
+    }
     if (!path || !*path) {
-        cprintf("Usage: more <file_path>\n");
+        cprintf("Usage: more <file_path> (or cmd | more)\n");
         return;
     }
     s_help_depth = 0;
     pager_view_file(path, false, NULL);
+}
+
+static void cmd_dmesg(const char *arg) {
+    bool do_clear = false;
+    bool do_follow = false;
+    if (arg) {
+        while (*arg == ' ') arg++;
+        if (strcmp(arg, "-c") == 0) do_clear = true;
+        else if (strcmp(arg, "-f") == 0) do_follow = true;
+        else if (*arg != '\0') {
+            cprintf("Usage: dmesg [-c] [-f]\n");
+            return;
+        }
+    }
+
+    uint64_t offset = klog_oldest();
+    char buf[512];
+    for (;;) {
+        uint64_t total = klog_total();
+        while (offset < total) {
+            uint32_t want = (uint32_t)((total - offset > sizeof(buf) - 1) ? sizeof(buf) - 1 : total - offset);
+            uint32_t n = klog_read(offset, buf, want);
+            if (n == 0) break;
+            buf[n] = '\0';
+            cprintf("%s", buf);
+            offset += n;
+        }
+        if (!do_follow) break;
+        if (console_has_char()) {
+            char c = console_getc();
+            if (c == 'q' || c == 'Q' || c == 27 || c == 3) break;
+        }
+        if (console_interrupt_requested()) {
+            console_interrupt_clear();
+            break;
+        }
+        time_delay_us(50000);
+        sched_yield();
+    }
+    if (do_clear) {
+        klog_clear();
+    }
+}
+
+static void cmd_echo(const char *arg) {
+    if (arg) {
+        while (*arg == ' ') arg++;
+        size_t len = strlen(arg);
+        if (len >= 2 && ((arg[0] == '"' && arg[len - 1] == '"') ||
+                         (arg[0] == '\'' && arg[len - 1] == '\''))) {
+            char unquoted[256];
+            size_t copy_len = len - 2;
+            if (copy_len >= sizeof(unquoted)) copy_len = sizeof(unquoted) - 1;
+            memcpy(unquoted, arg + 1, copy_len);
+            unquoted[copy_len] = '\0';
+            cprintf("%s\n", unquoted);
+            return;
+        }
+        cprintf("%s\n", arg);
+    } else {
+        cprintf("\n");
+    }
+}
+
+typedef bool (*line_cb_t)(void *ctx, const char *line);
+
+static bool stream_lines(const char *file_path, line_cb_t cb, void *ctx) {
+    char line_buf[512];
+    int line_pos = 0;
+
+    if (g_pipe_in != NULL) {
+        const char *p = g_pipe_in;
+        const char *end = g_pipe_in + g_pipe_in_len;
+        while (p < end) {
+            char c = *p++;
+            if (c == '\r') continue;
+            if (c == '\n') {
+                line_buf[line_pos] = '\0';
+                if (!cb(ctx, line_buf)) return true;
+                line_pos = 0;
+            } else if (line_pos < (int)sizeof(line_buf) - 1) {
+                line_buf[line_pos++] = c;
+            }
+        }
+        if (line_pos > 0) {
+            line_buf[line_pos] = '\0';
+            cb(ctx, line_buf);
+        }
+        return true;
+    }
+
+    if (!file_path || !*file_path) return false;
+
+    int fd = vfs_open(file_path, VFS_O_READ);
+    if (fd < 0) {
+        cprintf("cannot open %s\n", file_path);
+        return true;
+    }
+
+    uint64_t offset = 0;
+    char read_buf[512];
+    bool stop = false;
+    for (;;) {
+        int n = vfs_pread(fd, read_buf, sizeof(read_buf), offset);
+        if (n <= 0) break;
+        for (int i = 0; i < n; i++) {
+            char c = read_buf[i];
+            if (c == '\r') continue;
+            if (c == '\n') {
+                line_buf[line_pos] = '\0';
+                if (!cb(ctx, line_buf)) {
+                    stop = true;
+                    break;
+                }
+                line_pos = 0;
+            } else if (line_pos < (int)sizeof(line_buf) - 1) {
+                line_buf[line_pos++] = c;
+            }
+        }
+        if (stop) break;
+        offset += (uint64_t)n;
+    }
+    if (!stop && line_pos > 0) {
+        line_buf[line_pos] = '\0';
+        cb(ctx, line_buf);
+    }
+    vfs_close(fd);
+    return true;
+}
+
+static char to_lower(char c) {
+    if (c >= 'A' && c <= 'Z') return c + ('a' - 'A');
+    return c;
+}
+
+static const char *str_casestr(const char *haystack, const char *needle) {
+    if (!*needle) return haystack;
+    for (; *haystack; haystack++) {
+        const char *h = haystack;
+        const char *n = needle;
+        while (*h && *n && to_lower(*h) == to_lower(*n)) {
+            h++;
+            n++;
+        }
+        if (!*n) return haystack;
+    }
+    return NULL;
+}
+
+static bool grep_line_match(const char *line, const char *pat, bool case_insens) {
+    if (!pat || !*pat) return true;
+    if (case_insens) return str_casestr(line, pat) != NULL;
+    return strstr(line, pat) != NULL;
+}
+
+typedef struct {
+    const char *pat;
+    bool case_insens;
+    bool invert;
+} grep_ctx_t;
+
+static bool grep_cb(void *ctx, const char *line) {
+    grep_ctx_t *gc = (grep_ctx_t *)ctx;
+    bool match = grep_line_match(line, gc->pat, gc->case_insens);
+    if (match != gc->invert) {
+        cprintf("%s\n", line);
+    }
+    return true;
+}
+
+static void cmd_grep(const char *arg_str) {
+    if (!arg_str) {
+        cprintf("Usage: grep [-i] [-v] <pattern> [file]\n");
+        return;
+    }
+    bool case_insens = false;
+    bool invert = false;
+    char pat_buf[64];
+    pat_buf[0] = '\0';
+    char file_buf[128];
+    file_buf[0] = '\0';
+
+    char token[128];
+    const char *p = arg_str;
+    while (*p) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p) break;
+        int tlen = 0;
+        bool quoted = (*p == '"' || *p == '\'');
+        char qchar = quoted ? *p++ : '\0';
+        while (*p && tlen < (int)sizeof(token) - 1) {
+            if (quoted && *p == qchar) { p++; break; }
+            if (!quoted && (*p == ' ' || *p == '\t')) break;
+            token[tlen++] = *p++;
+        }
+        token[tlen] = '\0';
+        if (token[0] == '-' && !quoted) {
+            for (int k = 1; token[k]; k++) {
+                if (token[k] == 'i') case_insens = true;
+                else if (token[k] == 'v') invert = true;
+            }
+        } else if (pat_buf[0] == '\0') {
+            strncpy(pat_buf, token, sizeof(pat_buf) - 1);
+            pat_buf[sizeof(pat_buf) - 1] = '\0';
+        } else if (file_buf[0] == '\0') {
+            strncpy(file_buf, token, sizeof(file_buf) - 1);
+            file_buf[sizeof(file_buf) - 1] = '\0';
+        }
+    }
+
+    if (pat_buf[0] == '\0') {
+        cprintf("Usage: grep [-i] [-v] <pattern> [file]\n");
+        return;
+    }
+
+    grep_ctx_t gc = {
+        .pat = pat_buf,
+        .case_insens = case_insens,
+        .invert = invert
+    };
+    if (!stream_lines(file_buf[0] ? file_buf : NULL, grep_cb, &gc)) {
+        cprintf("Usage: grep [-i] [-v] <pattern> [file]\n");
+    }
+}
+
+typedef struct {
+    int max_lines;
+    int cur_lines;
+} head_ctx_t;
+
+static bool head_cb(void *ctx, const char *line) {
+    head_ctx_t *hc = (head_ctx_t *)ctx;
+    if (hc->cur_lines < hc->max_lines) {
+        cprintf("%s\n", line);
+        hc->cur_lines++;
+        return hc->cur_lines < hc->max_lines;
+    }
+    return false;
+}
+
+static void cmd_head(const char *arg_str) {
+    int max_lines = 10;
+    char file_buf[128];
+    file_buf[0] = '\0';
+
+    if (arg_str) {
+        const char *p = arg_str;
+        while (*p) {
+            while (*p == ' ' || *p == '\t') p++;
+            if (!*p) break;
+            if (strncmp(p, "-n", 2) == 0) {
+                p += 2;
+                while (*p == ' ' || *p == '\t') p++;
+                int val = 0;
+                while (*p >= '0' && *p <= '9') val = val * 10 + (*p++ - '0');
+                if (val > 0) max_lines = val;
+            } else if (*p == '-' && p[1] >= '0' && p[1] <= '9') {
+                p++;
+                int val = 0;
+                while (*p >= '0' && *p <= '9') val = val * 10 + (*p++ - '0');
+                if (val > 0) max_lines = val;
+            } else {
+                int flen = 0;
+                while (*p && *p != ' ' && *p != '\t' && flen < (int)sizeof(file_buf) - 1) {
+                    file_buf[flen++] = *p++;
+                }
+                file_buf[flen] = '\0';
+            }
+        }
+    }
+
+    head_ctx_t hc = { .max_lines = max_lines, .cur_lines = 0 };
+    if (!stream_lines(file_buf[0] ? file_buf : NULL, head_cb, &hc)) {
+        cprintf("Usage: head [-n lines] [file]\n");
+    }
+}
+
+static void print_tail_from_buf(const char *buf, size_t len, int max_lines) {
+    if (!buf || len == 0 || max_lines <= 0) return;
+    const char *p = buf + len - 1;
+    int count = 0;
+    if (*p == '\n') p--;
+    while (p >= buf) {
+        if (*p == '\n') {
+            count++;
+            if (count >= max_lines) {
+                p++;
+                break;
+            }
+        }
+        p--;
+    }
+    if (p < buf) p = buf;
+    cprintf("%s", p);
+    if (len > 0 && buf[len - 1] != '\n') cprintf("\n");
+}
+
+static void cmd_tail(const char *arg_str) {
+    int max_lines = 10;
+    char file_buf[128];
+    file_buf[0] = '\0';
+
+    if (arg_str) {
+        const char *p = arg_str;
+        while (*p) {
+            while (*p == ' ' || *p == '\t') p++;
+            if (!*p) break;
+            if (strncmp(p, "-n", 2) == 0) {
+                p += 2;
+                while (*p == ' ' || *p == '\t') p++;
+                int val = 0;
+                while (*p >= '0' && *p <= '9') val = val * 10 + (*p++ - '0');
+                if (val > 0) max_lines = val;
+            } else if (*p == '-' && p[1] >= '0' && p[1] <= '9') {
+                p++;
+                int val = 0;
+                while (*p >= '0' && *p <= '9') val = val * 10 + (*p++ - '0');
+                if (val > 0) max_lines = val;
+            } else {
+                int flen = 0;
+                while (*p && *p != ' ' && *p != '\t' && flen < (int)sizeof(file_buf) - 1) {
+                    file_buf[flen++] = *p++;
+                }
+                file_buf[flen] = '\0';
+            }
+        }
+    }
+
+    if (g_pipe_in != NULL) {
+        print_tail_from_buf(g_pipe_in, g_pipe_in_len, max_lines);
+        return;
+    }
+
+    if (file_buf[0] == '\0') {
+        cprintf("Usage: tail [-n lines] [file]\n");
+        return;
+    }
+
+    int fd = vfs_open(file_buf, VFS_O_READ);
+    if (fd < 0) {
+        cprintf("tail: cannot open %s\n", file_buf);
+        return;
+    }
+
+    vfs_stat_t st;
+    if (vfs_fstat(fd, &st) != 0 || st.size == 0) {
+        vfs_close(fd);
+        return;
+    }
+
+    uint32_t read_bytes = (st.size > 8192) ? 8192 : (uint32_t)st.size;
+    uint64_t offset = st.size - read_bytes;
+
+    scratch_t sc = {0};
+    if (!scratch_acquire(&sc, read_bytes + 1)) {
+        vfs_close(fd);
+        return;
+    }
+    char *buf = (char *)sc.base;
+    int n = vfs_pread(fd, buf, read_bytes, offset);
+    vfs_close(fd);
+    if (n > 0) {
+        buf[n] = '\0';
+        print_tail_from_buf(buf, (size_t)n, max_lines);
+    }
+    scratch_release(&sc);
+}
+
+static void cmd_wc(const char *arg_str) {
+    bool opt_l = false, opt_w = false, opt_c = false;
+    char file_buf[128];
+    file_buf[0] = '\0';
+
+    if (arg_str) {
+        const char *p = arg_str;
+        while (*p) {
+            while (*p == ' ' || *p == '\t') p++;
+            if (!*p) break;
+            if (*p == '-') {
+                p++;
+                while (*p && *p != ' ' && *p != '\t') {
+                    if (*p == 'l') opt_l = true;
+                    else if (*p == 'w') opt_w = true;
+                    else if (*p == 'c') opt_c = true;
+                    p++;
+                }
+            } else {
+                int flen = 0;
+                while (*p && *p != ' ' && *p != '\t' && flen < (int)sizeof(file_buf) - 1) {
+                    file_buf[flen++] = *p++;
+                }
+                file_buf[flen] = '\0';
+            }
+        }
+    }
+
+    bool show_all = (!opt_l && !opt_w && !opt_c);
+
+    int lines = 0, words = 0, bytes = 0;
+    bool in_word = false;
+
+    if (g_pipe_in != NULL) {
+        bytes = (int)g_pipe_in_len;
+        for (size_t i = 0; i < g_pipe_in_len; i++) {
+            char c = g_pipe_in[i];
+            if (c == '\n') lines++;
+            if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+                in_word = false;
+            } else if (!in_word) {
+                in_word = true;
+                words++;
+            }
+        }
+    } else if (file_buf[0] != '\0') {
+        int fd = vfs_open(file_buf, VFS_O_READ);
+        if (fd < 0) {
+            cprintf("wc: cannot open %s\n", file_buf);
+            return;
+        }
+        uint64_t offset = 0;
+        char buf[512];
+        for (;;) {
+            int n = vfs_pread(fd, buf, sizeof(buf), offset);
+            if (n <= 0) break;
+            bytes += n;
+            for (int i = 0; i < n; i++) {
+                char c = buf[i];
+                if (c == '\n') lines++;
+                if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+                    in_word = false;
+                } else if (!in_word) {
+                    in_word = true;
+                    words++;
+                }
+            }
+            offset += (uint64_t)n;
+        }
+        vfs_close(fd);
+    } else {
+        cprintf("Usage: wc [-l] [-w] [-c] [file]\n");
+        return;
+    }
+
+    if (show_all) {
+        cprintf("%6d %6d %6d%s%s\n", lines, words, bytes, file_buf[0] ? " " : "", file_buf);
+    } else {
+        if (opt_l) cprintf("%d ", lines);
+        if (opt_w) cprintf("%d ", words);
+        if (opt_c) cprintf("%d ", bytes);
+        if (file_buf[0]) cprintf("%s", file_buf);
+        cprintf("\n");
+    }
+}
+
+static bool has_unquoted_pipe(const char *s) {
+    bool in_sq = false;
+    bool in_dq = false;
+    for (const char *p = s; *p; p++) {
+        if (*p == '\'' && !in_dq) in_sq = !in_sq;
+        else if (*p == '"' && !in_sq) in_dq = !in_dq;
+        else if (*p == '|' && !in_sq && !in_dq) return true;
+    }
+    return false;
+}
+
+#define MAX_PIPE_STAGES 8
+
+static void execute_pipeline(const char *cmd_line) {
+    char stage_buf[512];
+    strncpy(stage_buf, cmd_line, sizeof(stage_buf) - 1);
+    stage_buf[sizeof(stage_buf) - 1] = '\0';
+
+    char *stages[MAX_PIPE_STAGES];
+    int num_stages = 0;
+
+    bool in_sq = false, in_dq = false;
+    char *p = stage_buf;
+    char *stage_start = p;
+
+    while (*p) {
+        if (*p == '\'' && !in_dq) in_sq = !in_sq;
+        else if (*p == '"' && !in_sq) in_dq = !in_dq;
+        else if (*p == '|' && !in_sq && !in_dq) {
+            *p = '\0';
+            while (*stage_start == ' ' || *stage_start == '\t') stage_start++;
+            char *end = p - 1;
+            while (end >= stage_start && (*end == ' ' || *end == '\t')) *end-- = '\0';
+            if (*stage_start && num_stages < MAX_PIPE_STAGES) {
+                stages[num_stages++] = stage_start;
+            }
+            stage_start = p + 1;
+        }
+        p++;
+    }
+    while (*stage_start == ' ' || *stage_start == '\t') stage_start++;
+    char *end = p - 1;
+    while (end >= stage_start && (*end == ' ' || *end == '\t')) *end-- = '\0';
+    if (*stage_start && num_stages < MAX_PIPE_STAGES) {
+        stages[num_stages++] = stage_start;
+    }
+
+    if (num_stages <= 1) {
+        if (num_stages == 1) parse_and_eval_cmd(stages[0]);
+        return;
+    }
+
+    scratch_t sc_a = {0}, sc_b = {0};
+    uint32_t pipe_buf_size = 16384;
+    if (!scratch_acquire(&sc_a, pipe_buf_size) || !scratch_acquire(&sc_b, pipe_buf_size)) {
+        scratch_release(&sc_a);
+        scratch_release(&sc_b);
+        pipe_buf_size = 4096;
+        if (!scratch_acquire(&sc_a, pipe_buf_size) || !scratch_acquire(&sc_b, pipe_buf_size)) {
+            scratch_release(&sc_a);
+            scratch_release(&sc_b);
+            cprintf("pipe: out of memory\n");
+            return;
+        }
+    }
+    char *buf_a = (char *)sc_a.base;
+    char *buf_b = (char *)sc_b.base;
+
+    char *cur_in = NULL;
+    size_t cur_in_len = 0;
+    char *cur_out = buf_a;
+
+    for (int i = 0; i < num_stages; i++) {
+        bool is_last = (i == num_stages - 1);
+        g_pipe_in = cur_in;
+        g_pipe_in_len = cur_in_len;
+
+        if (!is_last) {
+            console_capture(cur_out, pipe_buf_size - 1);
+            parse_and_eval_cmd(stages[i]);
+            uint32_t out_len = console_capture_end();
+            cur_out[out_len] = '\0';
+            cur_in = cur_out;
+            cur_in_len = (size_t)out_len;
+            cur_out = (cur_out == buf_a) ? buf_b : buf_a;
+        } else {
+            parse_and_eval_cmd(stages[i]);
+        }
+    }
+
+    g_pipe_in = NULL;
+    g_pipe_in_len = 0;
+    scratch_release(&sc_a);
+    scratch_release(&sc_b);
+}
+
+static void cmd_history(const char *arg) {
+    if (arg && strcmp(arg, "clear") == 0) {
+        line_editor_clear_history();
+        cprintf("history: cleared\n");
+        return;
+    }
+    int count = line_editor_history_count();
+    if (count == 0) {
+        cprintf("history: empty\n");
+        return;
+    }
+    for (int i = 0; i < count; i++) {
+        const char *item = line_editor_history_get(i);
+        if (item) cprintf(" %2d  %s\n", i + 1, item);
+    }
 }
 
 static void cmd_uname(void) {
@@ -3798,6 +4441,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     while (*cmd_line == ' ' || *cmd_line == '\t') cmd_line++;
     if (*cmd_line == '\0') return;
 
+    if (!g_pipe_in && cmd_line[0] != '(' && has_unquoted_pipe(cmd_line)) {
+        execute_pipeline(cmd_line);
+        return;
+    }
+
     if (strcmp(cmd_line, "help") == 0) {
         cmd_help(NULL);
         return;
@@ -3814,10 +4462,61 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         while (*arg == ' ') arg++;
         cmd_man(arg);
         return;
+    } else if (strcmp(cmd_line, "more") == 0) {
+        cmd_more(NULL);
+        return;
     } else if (strncmp(cmd_line, "more ", 5) == 0) {
         const char *arg = cmd_line + 5;
         while (*arg == ' ') arg++;
         cmd_more(arg);
+        return;
+    } else if (strcmp(cmd_line, "dmesg") == 0) {
+        cmd_dmesg(NULL);
+        return;
+    } else if (strncmp(cmd_line, "dmesg ", 6) == 0) {
+        const char *arg = cmd_line + 6;
+        while (*arg == ' ') arg++;
+        cmd_dmesg(arg);
+        return;
+    } else if (strcmp(cmd_line, "echo") == 0) {
+        cmd_echo(NULL);
+        return;
+    } else if (strncmp(cmd_line, "echo ", 5) == 0) {
+        const char *arg = cmd_line + 5;
+        while (*arg == ' ') arg++;
+        cmd_echo(arg);
+        return;
+    } else if (strcmp(cmd_line, "grep") == 0) {
+        cmd_grep(NULL);
+        return;
+    } else if (strncmp(cmd_line, "grep ", 5) == 0) {
+        const char *arg = cmd_line + 5;
+        while (*arg == ' ') arg++;
+        cmd_grep(arg);
+        return;
+    } else if (strcmp(cmd_line, "head") == 0) {
+        cmd_head(NULL);
+        return;
+    } else if (strncmp(cmd_line, "head ", 5) == 0) {
+        const char *arg = cmd_line + 5;
+        while (*arg == ' ') arg++;
+        cmd_head(arg);
+        return;
+    } else if (strcmp(cmd_line, "tail") == 0) {
+        cmd_tail(NULL);
+        return;
+    } else if (strncmp(cmd_line, "tail ", 5) == 0) {
+        const char *arg = cmd_line + 5;
+        while (*arg == ' ') arg++;
+        cmd_tail(arg);
+        return;
+    } else if (strcmp(cmd_line, "wc") == 0) {
+        cmd_wc(NULL);
+        return;
+    } else if (strncmp(cmd_line, "wc ", 3) == 0) {
+        const char *arg = cmd_line + 3;
+        while (*arg == ' ') arg++;
+        cmd_wc(arg);
         return;
     } else if (strncmp(cmd_line, "time ", 5) == 0) {
         /* `time CMD` runs CMD
@@ -3827,6 +4526,43 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         parse_and_eval_cmd(cmd_line + 5);
         uint64_t dt = time_get_us() - t0;
         cprintf("time: %lu.%03lu ms\n", (unsigned long)(dt / 1000u), (unsigned long)(dt % 1000u));
+        return;
+    } else if (strcmp(cmd_line, "history") == 0) {
+        cmd_history(NULL);
+        return;
+    } else if (strncmp(cmd_line, "history ", 8) == 0) {
+        const char *arg = cmd_line + 8;
+        while (*arg == ' ') arg++;
+        cmd_history(arg);
+        return;
+    } else if (cmd_line[0] == '!' && cmd_line[1] >= '1' && cmd_line[1] <= '9') {
+        int idx = 0;
+        const char *p = cmd_line + 1;
+        while (*p >= '0' && *p <= '9') {
+            idx = idx * 10 + (*p++ - '0');
+        }
+        idx--;
+        const char *item = line_editor_history_get(idx);
+        if (item && item[0] != '!') {
+            cprintf("%s\n", item);
+            line_editor_add_history(item);
+            parse_and_eval_cmd(item);
+        } else {
+            cprintf("history: event not found: %s\n", cmd_line);
+        }
+        return;
+    } else if (strcmp(cmd_line, "!!") == 0) {
+        int count = line_editor_history_count();
+        for (int i = count - 1; i >= 0; i--) {
+            const char *item = line_editor_history_get(i);
+            if (item && item[0] != '!') {
+                cprintf("%s\n", item);
+                line_editor_add_history(item);
+                parse_and_eval_cmd(item);
+                return;
+            }
+        }
+        cprintf("history: no previous command\n");
         return;
     } else if (strcmp(cmd_line, "uname") == 0) {
         cmd_uname();
@@ -5297,28 +6033,14 @@ static void parse_and_eval_cmd(const char *cmd_line) {
 void shell_run(void) {
     char buf[512];
     line_editor_init();
+    line_editor_load_history(10);
+
+    /* Hand the console to the log consumer and drain all boot logs before the shell banner */
+    klogd_start();
+    klog_drain();
+
     cprintf("\nLugalOS Interactive Console Shell (`lsh`)\n");
     cprintf("Type 'help' for commands, 'cat /proc/ps' for tasks, 'ls /dev/' for devices.\n");
-
-    /* Hand the console to the log
-     * consumer, and with it printk()'s ability to block.
-     *
-     * Here rather than in kernel_main() for two reasons. The first is that
-     * kernel_main()'s tail is unreachable -- init.lisp's (shell) enters this
-     * function from inside lisp_eval() and never returns. The second is that
-     * this is the last line of boot: everything above went out through
-     * klog_emit()'s synchronous inline fan-out, so the whole power-up burst
-     * is *delivered* rather than merely stored, and nothing is left to
-     * deliver late.
-     *
-     * That ordering matters more than it sounds. klogd is woken with
-     * task_unblock(), which makes it READY, not running -- and the boot task
-     * never yields between its printk()s. Handing over any earlier put the
-     * rest of boot behind the shell prompt: nothing lost, order wrong.
-     *
-     * Idempotent, so the second entry to shell_run() (a nested shell) is a
-     * no-op. */
-    klogd_start();
 
     /* 37.5a: while the prompt waits for a key, a program that lost its
      * canvas (a hotkey changed the split) redraws it -- not only after the
@@ -5341,6 +6063,7 @@ void shell_run(void) {
          * evaluation. */
         lisp_gc_safepoint();
         parse_and_eval_cmd(buf);
+        klog_drain();
     }
 }
 

@@ -93,6 +93,6 @@ int klogd_start(void) {
     /* Registered last: klog_emit() stops fanning out the moment this is set,
      * so the task it hands the work to has to exist first. */
     klog_set_consumer(pid);
-    printk("[klogd] Log consumer running as task #%d; printk() no longer blocks.\n", pid);
+    printk("[klogd] Log consumer online (task #%d).\n", pid);
     return pid;
 }

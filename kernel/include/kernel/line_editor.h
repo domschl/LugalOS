@@ -58,5 +58,12 @@ bool readline_poll_active(void);
  * Ctrl-X Ctrl-E hands the text back (its length; 0 if the user left). */
 int edit_multiline_box(const char *initial_filename, char *out_buf, int max_len);
 
+/* Command history persistence and management (Phase 51) */
+void line_editor_add_history(const char *line);
+void line_editor_load_history(int max_entries);
+int  line_editor_history_count(void);
+const char *line_editor_history_get(int idx);
+void line_editor_clear_history(void);
+
 #endif /* LUGALOS_KERNEL_LINE_EDITOR_H */
 

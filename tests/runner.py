@@ -4215,6 +4215,37 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Node Pool Exhaustion Degrades Instead Of Hanging (P6 §6.4)",
                         ok, log if not ok else ""))
 
+        # Phase 51: Shell Usability, Composability & Pipelines
+        cmd_p51 = (
+            "history clear\n"
+            "echo first_cmd\n"
+            "echo second_cmd\n"
+            "history\n"
+        )
+        ok, log = session.send_and_expect(cmd_p51, r"1\s+echo first_cmd.*2\s+echo second_cmd", timeout=5.0)
+        results.append(("Shell Persistent History and Enumeration (Phase 51, M51.1)", ok, log if not ok else ""))
+
+        ok, log = session.send_and_expect("!1", r"first_cmd", timeout=5.0)
+        results.append(("Shell Event Recall (!n) (Phase 51, M51.1)", ok, log if not ok else ""))
+
+        ok, log = session.send_and_expect("!!", r"first_cmd", timeout=5.0)
+        results.append(("Shell Previous Command Repeat (!!) (Phase 51, M51.1)", ok, log if not ok else ""))
+
+        ok, log = session.send_and_expect('echo "alpha beta gamma" | wc -w', r"3", timeout=5.0)
+        results.append(("Shell Pipe and Word Count (echo | wc -w) (Phase 51, M51.4/M51.5)", ok, log if not ok else ""))
+
+        ok, log = session.send_and_expect('echo "apple\nbanana\ncherry" | grep banana', r"banana", timeout=5.0)
+        results.append(("Shell Pipe and Pattern Filter (echo | grep) (Phase 51, M51.4/M51.5)", ok, log if not ok else ""))
+
+        ok, log = session.send_and_expect('help | head -n 3', r"Plan 9", timeout=5.0)
+        results.append(("Shell Pipe and Head Filter (help | head) (Phase 51, M51.4/M51.5)", ok, log if not ok else ""))
+
+        ok, log = session.send_and_expect('help | tail -n 3', r"help test", timeout=5.0)
+        results.append(("Shell Pipe and Tail Filter (help | tail) (Phase 51, M51.4/M51.5)", ok, log if not ok else ""))
+
+        ok, log = session.send_and_expect("dmesg | grep -i Sched", r"Sched", timeout=5.0)
+        results.append(("Shell Diagnostic Ring Dump (dmesg | grep) (Phase 51, M51.2)", ok, log if not ok else ""))
+
     finally:
         session.close()
 

@@ -85,22 +85,64 @@ LugalOS supports multiple mounted FAT32 volumes:
 
 ------------------------------------------------------------------------------
 
-4. KERNEL LOGGING & DIAGNOSTICS
--------------------------------
+4. SHELL HISTORY & COMMAND EXPANSION
+------------------------------------
 
-LugalOS features a ring buffer kernel logging subsystem (logging [1]):
-  * cat /proc/kmsg: Reads current kernel logs.
-  * klog: Displays kernel log statistics, total emitted bytes, and
-    attached output sinks.
-  * klog detach console: Detaches the interactive console from kernel log
-    broadcasts (silences background driver logs during interactive
-    typing).
-  * klog attach console: Re-enables kernel log echoing to the interactive
-    console.
+LugalOS maintains persistent, bounded command history preserved across reboots
+and power cycles in /sd0/system/history.lisp:
+  * Interactive Navigation: Use Up-Arrow and Down-Arrow at the shell
+    prompt to recall previously entered commands across boot cycles (last
+    10 entries retained).
+  * history: Displays numbered command history entries.
+  * history clear: Clears in-memory and on-disk history log.
+  * !n: Re-executes command number n from history (e.g. !1).
+  * !!: Re-executes the most recent command.
 
 ------------------------------------------------------------------------------
 
-5. BUILT-IN APPLICATIONS & LANGUAGES
+5. SHELL PIPELINES & TEXT FILTERS
+---------------------------------
+
+LugalOS supports Unix-style composability via the pipe operator (|). Commands
+run in sequential buffered stages:
+
+    lsh> help | more
+    lsh> dmesg | grep -i wlan
+    lsh> cat /proc/meminfo | grep Heap
+    lsh> ps | wc -l
+
+[Core Text Utilities]
+
+  Command | Description | Example
+  --------------------------------------------------------------------------
+  grep [-i] [-v]  [f] | Filter lines matching pattern (-i case-insensitive, -v invert) | `dmesg \ | grep klogd`
+  head [-n N] [file] | Emit first N lines (default: 10) | `cat /sd0/log.txt \ | head -n 5`
+  tail [-n N] [file] | Emit last N lines (default: 10) | `dmesg \ | tail -n 15`
+  `wc [-l\ | -w\ | -c] [file]` | Count lines (-l), words (-w), or bytes (-c) | `ls /sd0 \ | wc -l`
+  echo [text] | Output text to console or pipeline stream | `echo "hello world" \ | wc -w`
+  more [file] | View file or pipeline stream with terminal paging | `help \ | more`
+
+------------------------------------------------------------------------------
+
+6. KERNEL LOGGING & DIAGNOSTICS
+-------------------------------
+
+LugalOS features a ring buffer kernel logging subsystem (logging [1]):
+  * dmesg: Displays kernel diagnostic ring messages. Background logs are
+    silenced at the interactive prompt to keep typing clean.
+  * dmesg -c: Dumps and clears the kernel log ring.
+  * dmesg -f: Live follow mode (streams new kernel logs until q or
+    Ctrl-C).
+  * cat /proc/kmsg: Reads current kernel logs from the synthetic VFS.
+  * klog: Displays kernel log statistics, total emitted bytes, and
+    attached output sinks.
+  * klog detach console: Detaches console sink permanently.
+  * klog attach console: Re-enables unconditional kernel log echoing to
+    the console.
+
+------------------------------------------------------------------------------
+
+7. BUILT-IN APPLICATIONS & LANGUAGES
 ------------------------------------
 
 From lsh, you can immediately invoke native applications:

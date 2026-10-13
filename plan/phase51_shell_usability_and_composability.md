@@ -1,6 +1,6 @@
 # Phase 51 — LugalOS Shell Usability, Composability & Pipeline Architecture
 
-**Status: DRAFT / PLANNED.** Follows Phase 50 (Documentation System & Codebase Rationalization).  
+**Status: COMPLETE / VERIFIED.** Follows Phase 50 (Documentation System & Codebase Rationalization).  
 **Target Version:** 0.18.0  
 **Primary Focus:** Interactive Shell Polish, Persistent History, Clean Diagnostic Routing, Unix Pipeline Composability, Generalized Pager, and Responsive Terminal Layouts.
 
@@ -305,3 +305,37 @@ Phase 51 is complete when:
 5. `help` and large file reads page cleanly without runaway terminal scrolling.
 6. Dividers and tables render responsively without visual line wrapping on compact displays.
 7. All regression tests in `tests/runner.py` pass 100% with zero memory leaks or regressions.
+
+---
+
+## 5. Execution & Verification Summary
+
+All milestones (M51.1 through M51.6) have been implemented and verified:
+
+1. **Persistent Bounded History (M51.1)**:
+   - Implemented bounded history loading (`line_editor_load_history(10)`) in `kernel/line_editor.c` and disk rotation capping at 4 KB (~100 entries).
+   - Preserved `/sd0/system/history.lisp` on boot in `tools/sd_root/system/etc/init.lisp`.
+   - Added `history`, `history clear`, and `!n` / `!!` history recall without recursive loops in `kernel/shell.c`.
+
+2. **Clean Diagnostic Routing & `dmesg` (M51.2)**:
+   - Spliced console sinks during interactive `readline_interactive` to prevent background logs (WLAN, DHCP, NTP, USB, WDT) from interrupting the user prompt. Sinks temporarily re-attach during foreground command execution for selftest compatibility.
+   - Added `cmd_dmesg()` supporting standard dump, `-c` (clear buffer via `klog_clear()`), and `-f` (live follow).
+   - Scrubbed obsolete remarks (`"printk() no longer blocks"`) from `kernel/klogd.c`.
+
+3. **Universal Pager & Responsive Dividers (M51.3)**:
+   - Added `console_print_divider(char ch)` in `kernel/console.c` using dynamic terminal width (`cols - 1`, capped at 72).
+   - Generalized pager in `kernel/shell.c` with `pager_view_buf()` and `pager_view_file()`, featuring smooth line scroll (`j`/`J`/`Enter`), half-page scroll (`d`/`D`), and quit (`q`/`ESC`/`Ctrl-C`).
+   - Integrated dynamic divider and terminal-height-aware paging in `cmd_help()`.
+
+4. **Piping & Core Filters (M51.4 & M51.5)**:
+   - Extended `kernel/console.c` capture engine (`console_capture`) to guarantee head retention and null-termination on buffer saturation.
+   - Implemented pipeline execution engine in `kernel/shell.c` ping-ponging across 16 KB (or fallback 4 KB) scratch buffers.
+   - Implemented standalone and filter utilities: `grep` (`-i`, `-v`), `head` (`-n N`), `tail` (`-n N`), `wc` (`-l`, `-w`, `-c`), and `echo`.
+   - Connected `cmd | more` end-to-end.
+
+5. **Documentation, Tooling & Silicon Verification (M51.6)**:
+   - Updated User Manual in `doc/user/shell.md`.
+   - Regenerated on-device help in `tools/sd_root/help/shell.txt` via `tools/gendocs.py`.
+   - Added automated regression tests to `tests/runner.py`.
+   - Silicon verified on RP2350 hardware (`rp2350-terminal`): 32/32 tests passed (100%).
+

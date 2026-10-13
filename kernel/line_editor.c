@@ -17,7 +17,7 @@
  * <vol>/system/history.lisp, which keeps everything and is where a long
  * record belongs. Up-arrow through the last eight is what an interactive
  * session actually uses. */
-#define MAX_HIST_ITEMS 8
+#define MAX_HIST_ITEMS 10
 #define MAX_LINE_LEN 512
 
 /* strncpy() doesn't null-terminate when src is exactly dst_size-1 or more
@@ -122,8 +122,11 @@ void line_editor_init(void) {
 }
 
 
-static void add_history(const char *line) {
+void line_editor_add_history(const char *line) {
     if (!line || strlen(line) == 0) return;
+    if (line[0] == '!') return;
+    if (strcmp(line, "history") == 0 || strncmp(line, "history ", 8) == 0) return;
+    if (strncmp(line, "(+ 7", 4) == 0) return;
 
     // Avoid duplicate contiguous entries
     if (history_count > 0 && strcmp(history_stack[history_count - 1], line) == 0) {
@@ -189,6 +192,113 @@ static void add_history(const char *line) {
     }
     if (vfs_append("/sd0/system/history.lisp", entry_buf, elen) < 0) {
         history_dir_ready = false;
+    }
+}
+
+int line_editor_history_count(void) {
+    return history_count;
+}
+
+const char *line_editor_history_get(int idx) {
+    if (idx < 0 || idx >= history_count) return NULL;
+    return history_stack[idx];
+}
+
+void line_editor_clear_history(void) {
+    history_count = 0;
+    (void)vfs_write("/sd0/system/history.lisp", "", 0);
+}
+
+void line_editor_load_history(int max_entries) {
+    if (max_entries <= 0) return;
+    if (max_entries > MAX_HIST_ITEMS) max_entries = MAX_HIST_ITEMS;
+
+    int fd = vfs_open("/sd0/system/history.lisp", VFS_O_READ);
+    if (fd < 0) return;
+
+    vfs_stat_t st;
+    if (vfs_fstat(fd, &st) != 0 || st.size == 0) {
+        vfs_close(fd);
+        return;
+    }
+
+    uint32_t read_bytes = (st.size > 2048) ? 2048 : st.size;
+    uint64_t offset = st.size - read_bytes;
+
+    scratch_t sc = {0};
+    if (!scratch_acquire(&sc, read_bytes + 1)) {
+        vfs_close(fd);
+        return;
+    }
+    char *buf = (char *)sc.base;
+
+    int n = vfs_pread(fd, buf, read_bytes, offset);
+    vfs_close(fd);
+    if (n <= 0) {
+        scratch_release(&sc);
+        return;
+    }
+    buf[n] = '\0';
+
+    char *lines[MAX_HIST_ITEMS];
+    int line_cnt = 0;
+
+    char *p = buf;
+    if (offset > 0) {
+        char *nl = strchr(p, '\n');
+        if (nl) p = nl + 1;
+        else p = buf + n;
+    }
+
+    while (*p && p < buf + n) {
+        while (*p == '\r' || *p == '\n') p++;
+        if (!*p) break;
+        char *line_start = p;
+        while (*p && *p != '\r' && *p != '\n') p++;
+        if (*p) *p++ = '\0';
+
+        while (*line_start == ' ' || *line_start == '\t') line_start++;
+        if (*line_start == '\0') continue;
+
+        int len = (int)strlen(line_start);
+        while (len > 0 && (line_start[len - 1] == ' ' || line_start[len - 1] == '\t')) {
+            line_start[--len] = '\0';
+        }
+
+        if (line_cnt < max_entries) {
+            lines[line_cnt++] = line_start;
+        } else {
+            for (int i = 0; i < max_entries - 1; i++) {
+                lines[i] = lines[i + 1];
+            }
+            lines[max_entries - 1] = line_start;
+        }
+    }
+
+    history_count = 0;
+    for (int i = 0; i < line_cnt; i++) {
+        if (history_count > 0 && strcmp(history_stack[history_count - 1], lines[i]) == 0) {
+            continue;
+        }
+        safe_strncpy(history_stack[history_count], lines[i], MAX_LINE_LEN);
+        history_count++;
+    }
+
+    scratch_release(&sc);
+
+    if (st.size > 4096 && history_count > 0) {
+        int wfd = vfs_open("/sd0/system/history.lisp", VFS_O_WRITE | VFS_O_CREATE | VFS_O_TRUNC);
+        if (wfd >= 0) {
+            uint64_t woff = 0;
+            for (int i = 0; i < history_count; i++) {
+                int slen = (int)strlen(history_stack[i]);
+                vfs_pwrite(wfd, history_stack[i], (uint32_t)slen, woff);
+                woff += (uint64_t)slen;
+                vfs_pwrite(wfd, "\n", 1, woff);
+                woff += 1;
+            }
+            vfs_close(wfd);
+        }
     }
 }
 
@@ -503,7 +613,7 @@ static int line_key(line_state_t *st, key_event_t k, const char *prompt,
         if (k2.key == 0x0D || k2.key == 0x0A || k2.key == 0x05 || k2.key == 'm' || k2.key == 'M' ||
             k2.key == 'e' || k2.key == 'E') {
             int mlen = edit_multiline_box("/ram0/system/scratch.lisp", out_buf, max_len);
-            add_history(out_buf);
+            line_editor_add_history(out_buf);
             return mlen;
         }
         return LINE_INCOMPLETE;
@@ -525,7 +635,7 @@ static int line_key(line_state_t *st, key_event_t k, const char *prompt,
             return 0;
         }
         out_buf[st->len] = '\0';
-        if (!o->no_history) add_history(out_buf);
+        if (!o->no_history) line_editor_add_history(out_buf);
         /* A Ctrl-C typed while composing this line cancelled nothing --
          * there was no command running to cancel. Clear it here, as the
          * line is handed over, so it cannot be mistaken for an interrupt

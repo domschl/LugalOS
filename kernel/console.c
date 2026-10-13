@@ -61,6 +61,17 @@ bool console_size(unsigned *cols, unsigned *rows) {
     return g_screen && g_screen->size && g_screen->size(cols, rows);
 }
 
+void console_print_divider(char ch) {
+    unsigned cols = 80, rows = 24;
+    if (!console_size(&cols, &rows) || cols == 0) cols = 80;
+    if (cols > 72) cols = 72;
+    if (cols > 2) cols -= 1;
+    console_lock();
+    for (unsigned i = 0; i < cols; i++) console_putc(ch);
+    console_putc('\n');
+    console_unlock();
+}
+
 void console_set_title(const char *title) {
     if (g_screen && g_screen->set_title) g_screen->set_title(title);
 }
@@ -268,8 +279,16 @@ void console_capture(char *buf, uint32_t cap) {
 }
 
 uint32_t console_capture_end(void) {
+    uint32_t len = g_cap_len;
+    if (g_cap) {
+        if (g_cap_len < g_cap_max) {
+            g_cap[g_cap_len] = '\0';
+        } else if (g_cap_max > 0) {
+            g_cap[g_cap_max - 1] = '\0';
+        }
+    }
     g_cap = NULL;
-    return g_cap_len;
+    return len;
 }
 
 /* The terminal the running task writes to and reads from. Its
@@ -300,12 +319,9 @@ static char closed_terminal_wait(void) {
 
 void console_putc(char c) {
     if (g_cap && sched_current_pid() == g_cap_pid) {
-        if (g_cap_len == g_cap_max) {           /* full: keep the newer half */
-            uint32_t h = g_cap_max / 2u;
-            memmove(g_cap, g_cap + h, g_cap_max - h);
-            g_cap_len = g_cap_max - h;
+        if (g_cap_len < g_cap_max) {
+            g_cap[g_cap_len++] = c;
         }
-        g_cap[g_cap_len++] = c;
         return;
     }
     bool closed;

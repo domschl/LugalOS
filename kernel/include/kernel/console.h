@@ -108,6 +108,7 @@ void console_set_screen(const console_screen_t *screen);
  * rows a program may use. False when the console cannot say (a serial line:
  * the far end's size is not known here), and the caller keeps its default. */
 bool console_size(unsigned *cols, unsigned *rows);
+void console_print_divider(char ch);
 
 /* 37.1: what the screen's status bar names as the running program. A no-op
  * where there is no screen, so callers need not ask. Nothing is written to
