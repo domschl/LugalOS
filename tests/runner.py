@@ -5324,6 +5324,78 @@ def test_host_llp_reference() -> tuple[bool, str]:
     return True, out.splitlines()[-1] if out else "ok"
 
 
+def test_host_documentation_links() -> tuple[bool, str]:
+    """Verifies that all internal links and illustrations in documentation resolve."""
+    root = Path(__file__).resolve().parent.parent
+    md_files = list(root.glob("doc/**/*.md")) + [root / "README.md", root / "AGENTS.md"]
+    broken: list[str] = []
+    checked = 0
+
+    link_re = re.compile(r"(?<!\!)\[([^\]]+)\]\(([^)]+)\)")
+    img_re = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+
+    for md in md_files:
+        if not md.exists():
+            continue
+        text = md.read_text(encoding="utf-8")
+
+        for anchor, url in link_re.findall(text):
+            url = url.strip()
+            if url.startswith(("http://", "https://", "mailto:", "javascript:")):
+                continue
+            if url.startswith("file://"):
+                target_p = Path(url[7:].split("#")[0])
+                if not target_p.exists():
+                    broken.append(f"{md.relative_to(root)}: {url} (file not found)")
+                checked += 1
+                continue
+            if url.startswith("#"):
+                checked += 1
+                continue
+            target_file = url.split("#")[0]
+            if not target_file:
+                continue
+            target_path = (md.parent / target_file).resolve()
+            if not target_path.exists():
+                target_path_root = (root / target_file).resolve()
+                if not target_path_root.exists():
+                    broken.append(f"{md.relative_to(root)}: {url} -> target not found")
+            checked += 1
+
+        for alt, url in img_re.findall(text):
+            url = url.strip()
+            if url.startswith(("http://", "https://")):
+                continue
+            target_path = (md.parent / url).resolve()
+            if not target_path.exists():
+                target_path_root = (root / url).resolve()
+                if not target_path_root.exists():
+                    broken.append(f"{md.relative_to(root)}: {url} (image not found)")
+            checked += 1
+
+    if broken:
+        return False, f"{len(broken)} broken link(s):\n" + "\n".join(broken[:10])
+    return True, f"Verified {checked} documentation references across {len(md_files)} files"
+
+
+def test_host_documentation_parity() -> tuple[bool, str]:
+    """Verifies that generated on-device help files match documentation sources (tools/gendocs.py)."""
+    root = Path(__file__).resolve().parent.parent
+    gendocs = root / "tools" / "gendocs.py"
+    if not gendocs.exists():
+        return False, f"{gendocs} missing"
+    try:
+        r = subprocess.run([sys.executable, str(gendocs), "--check"],
+                           capture_output=True, text=True, timeout=30, cwd=root)
+        if r.returncode != 0:
+            out = (r.stdout + r.stderr).strip()
+            return False, f"Help files drift detected:\n{out}\n(Run 'python3 tools/gendocs.py --all' to synchronize)"
+    except subprocess.TimeoutExpired:
+        return False, "gendocs.py check timed out"
+    return True, "On-device help files in tools/sd_root/help agree with documentation"
+
+
+
 def test_netif_virtio_net(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
     """R1, plan/phase19_ip_stack_and_ethernet.md: the netif_t seam and its
     first implementation, verified against a packet-level peer.
@@ -8881,9 +8953,8 @@ def main() -> int:
     else:
         print(f"  [FAIL] {info}")
 
-    # I6, plan/phase21_identity_and_authentication.md: the host half of the
-    # WLAN PBKDF2-HMAC-SHA1 derivation, no QEMU involved -- same shape as
-    # the FAT32 inspection just above.
+    # The host half of the WLAN PBKDF2-HMAC-SHA1 derivation, no QEMU involved --
+    # same shape as the FAT32 inspection just above.
     ok, info = test_host_wpa2_psk_derivation()
     total_tests += 1
     name = "WPA2 PSK Derivation Against The IEEE 802.11i Worked Example (I6)"
@@ -8911,7 +8982,7 @@ def main() -> int:
     else:
         print(f"  [FAIL] {name}\n    Log Output:\n{info}")
 
-    # 45.3b: the radio shim must not call anything outside its own text -- a
+    # The radio shim must not call anything outside its own text -- a
     # compiler helper or libc call from U-mode is an instruction fault at run
     # time that the linker never reports. Read off the objects of every build
     # that has them.
@@ -8924,6 +8995,25 @@ def main() -> int:
         print(f"  [PASS] {name}")
     else:
         print(f"  [FAIL] {name}\n    Log Output:\n{chk.stdout}{chk.stderr}")
+
+    # Documentation integrity: markdown links, images, and on-device help parity
+    ok, info = test_host_documentation_links()
+    total_tests += 1
+    name = "Documentation Integrity: All Internal Markdown Links And Images Resolve"
+    if ok:
+        passed_tests += 1
+        print(f"  [PASS] {name}")
+    else:
+        print(f"  [FAIL] {name}\n    Log Output:\n{info}")
+
+    ok, info = test_host_documentation_parity()
+    total_tests += 1
+    name = "On-Device Help Parity: tools/sd_root/help Matches Documentation (gendocs.py)"
+    if ok:
+        passed_tests += 1
+        print(f"  [PASS] {name}")
+    else:
+        print(f"  [FAIL] {name}\n    Log Output:\n{info}")
 
     # 2. RV64 Target
     if rv64_elf.exists():

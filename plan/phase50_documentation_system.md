@@ -1,6 +1,6 @@
 # Phase 50 — Unified Documentation System, On-Device Help, and Codebase Comment Rationalization
 
-**Status: IN PROGRESS.** Milestones M50.1–M50.4 completed and merged to `main` (shipped as 0.17.0). Milestone M50.5 (Comment Scrubbing) next.  
+**Status: COMPLETE.** Milestones M50.1–M50.6 completed, verified, and merged to `main` (shipped as 0.17.0). Full regression test suite passing (490/490 tests, 100%).  
 Branch: `main` (version 0.17.0).  
 Follows: Phase 47 (ESP32-P4 LCD7B Ribbon), Phase 48 (Lisp Expansion), Phase 49 (C6 Network Nodes).
 

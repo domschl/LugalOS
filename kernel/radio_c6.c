@@ -235,6 +235,18 @@ int radio_c6_start(const char *ssid, const char *psk) {
     return 1;
 }
 
+bool radio_c6_started(void) { return false; }
+
+bool radio_c6_rf_on(void) { return false; }
+
+void radio_c6_probe(void) {
+    cprintf("probe: this build has no Wi-Fi blob\n");
+}
+
+void radio_c6_stats(void) {
+    cprintf("radio: this build has no Wi-Fi blob\n");
+}
+
 #endif
 
 /* `radio rejoin`: drop the association and join again, as the supervisor below does on its own. */
