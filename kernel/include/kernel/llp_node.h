@@ -5,7 +5,7 @@
 #include "fs/p9_link.h"
 
 /* An LLP node (49.2, plan/phase49_c6_network_nodes.md; protocol in
- * doc/llp.md, kernel/llp.c): one end of the link between a host (the node
+ * doc/dev/protocols/llp.md, kernel/llp.c): one end of the link between a host (the node
  * that owns the IP address -- a P4, an RP2350) and a radio (a C6).
  *
  * * As the **radio** ("modem"), the node gives its network interface to the

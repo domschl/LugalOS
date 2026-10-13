@@ -1,7 +1,7 @@
 [project]
 name = "llp"
 version = "0.1.0"
-description = "Reference implementation of LLP, the LugalOS link protocol (doc/llp.md)"
+description = "Reference implementation of LLP, the LugalOS link protocol (doc/dev/protocols/llp.md)"
 requires-python = ">=3.11"
 dependencies = []
 

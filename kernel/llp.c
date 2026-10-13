@@ -1,6 +1,6 @@
 /* LLP, the LugalOS link protocol (49.1, plan/phase49_c6_network_nodes.md).
- * doc/llp.md is the specification; kernel/include/kernel/llp.h says what this
- * file is and is not. Every rule below names the section of doc/llp.md it
+ * doc/dev/protocols/llp.md is the specification; kernel/include/kernel/llp.h says what this
+ * file is and is not. Every rule below names the section of doc/dev/protocols/llp.md it
  * implements, and host/llp/src/llp/link.py is the same state machine in
  * Python -- tests/host/llp_vectors.txt is how the two are kept equal. */
 

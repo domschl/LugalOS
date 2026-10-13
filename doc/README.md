@@ -29,6 +29,7 @@ Guides for operating LugalOS interactively via terminals and serial consoles:
 * **[Chess Computer](user/chess.md)**: Operating the chess engine on RP2350 and display terminals, Lazy SMP dual-core search, TM1638 keypad controls, and game history.
 * **[Computer Algebra System (CAS)](user/cas.md)**: Exact symbolic mathematics, canonical polynomial simplification, equation solving, series expansion, and plotting.
 * **[Environmental Sensors & Telemetry](user/sensors.md)**: Autonomous sensor node operation, I2C environmental telemetry (BME280/BMP280), and MQTT 3.1.1 publishing.
+* **[Z-Machine & Interactive Fiction](user/zmachine.md)**: Playing Infocom and v3 stories, split-screen canvas auto-mapper, and save slot persistence.
 
 ---
 
@@ -62,6 +63,9 @@ Guides for developing user-space applications and extending the LugalOS kernel:
 
 ### Part C: Testing Framework & QA
 * **[Testing Guide](dev/testing.md)**: Unit tests, ASan/UBSan host harnesses, automated QEMU regression runner (`tests/runner.py`), and hardware-in-the-loop silicon suites (`tests/hw/`).
+
+### Part D: Wire & Interconnect Protocols
+* **[LugalOS Link Protocol (LLP)](dev/protocols/llp.md)**: Point-to-point link protocol multiplexing 9P filesystem calls and raw 802.3 Ethernet frames between coprocessors with credit-based flow control.
 
 ---
 

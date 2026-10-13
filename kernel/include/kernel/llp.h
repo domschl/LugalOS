@@ -5,7 +5,7 @@
 #include <stdbool.h>
 
 /* LLP -- the LugalOS link protocol (49.1, plan/phase49_c6_network_nodes.md;
- * the specification is doc/llp.md, and that document wins where they differ).
+ * the specification is doc/dev/protocols/llp.md, and that document wins where they differ).
  *
  * The link between two LugalOS nodes on one board -- an ESP32-P4 and its
  * ESP32-C6 over SDIO, or an RP2350 and a C6-Zero over a UART. It carries two

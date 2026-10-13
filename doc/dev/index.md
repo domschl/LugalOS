@@ -17,6 +17,8 @@ doc/dev/
 │   ├── logging.md         # Tokenized kernel logging macro system, klogd, rodata dictionary
 │   ├── drivers.md         # Confined U-mode driver framework, PMP register grants, IRQs
 │   └── porting.md         # Board bringup: linker scripts, clock trees, XIP flash
+├── protocols/          # Part D: Interconnect & Wire Protocols
+│   └── llp.md             # LugalOS Link Protocol (LLP): framing, flow control, 9P/Ethernet mux
 └── testing.md          # Part C: Testing Framework & QA
     ├── Unit tests & pure algorithmic verifiers
     ├── Host harnesses with ASan/UBSan (FAT32, cc, 9P, IP)
@@ -43,3 +45,8 @@ doc/dev/
 
 ## 3. [Part C: Testing Framework & QA](testing.md)
 * **[Testing Guide](testing.md)**: How to run and extend the LugalOS test suite across unit tests, host harnesses with AddressSanitizer, automated QEMU regression tests, and physical hardware-in-the-loop tests.
+
+---
+
+## 4. [Part D: Interconnect & Wire Protocols](protocols/llp.md)
+* **[LugalOS Link Protocol (LLP)](protocols/llp.md)**: Point-to-point interconnect protocol multiplexing 9P filesystem calls and 802.3 Ethernet frames between coprocessors (e.g. ESP32-P4 and ESP32-C6) with credit-based flow control, session negotiation, and link liveness.

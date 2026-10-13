@@ -1,4 +1,4 @@
-/* Host harness for LLP (49.1, plan/phase49_c6_network_nodes.md; doc/llp.md).
+/* Host harness for LLP (49.1, plan/phase49_c6_network_nodes.md; doc/dev/protocols/llp.md).
  *
  * Three parts:
  *

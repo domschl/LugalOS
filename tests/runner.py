@@ -4307,7 +4307,7 @@ def test_llp_two_nodes(radio_elf: Path, host_elf: Path, build_dir: Path) -> tupl
     `llp radio`. The host (rv64) has no network device at all: `llp host`
     gains wlan0 over the link, with the radio's MAC, and its DHCP client takes
     a lease from slirp *through* the radio. Their virtio-consoles are joined
-    by a unix socket, carrying LLP's serial binding (doc/llp.md §7.1).
+    by a unix socket, carrying LLP's serial binding (doc/dev/protocols/llp.md §7.1).
 
     Then, from outside, an authenticated 9P session to the host's own TCP/564
     (every byte through the radio's bridge): the host's /proc/cpuinfo (S-mode:
@@ -5297,7 +5297,7 @@ def test_host_wpa2_psk_derivation() -> tuple[bool, str]:
 
 
 def test_host_llp_reference() -> tuple[bool, str]:
-    """49.1, doc/llp.md: the Python reference of LLP (host/llp) -- its own tests,
+    """49.1, doc/dev/protocols/llp.md: the Python reference of LLP (host/llp) -- its own tests,
     and that tests/host/llp_vectors.txt is still what it generates. The C side
     replays that file in tests/host/llp_host.c (the sanitizer harnesses above),
     so together they say the two implementations agree. Skipped where uv is

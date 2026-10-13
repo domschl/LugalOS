@@ -14,13 +14,18 @@
 
 | Dedicated Chess Appliance | Horizontal Window Ribbon (7" LCD) |
 | :---: | :---: |
-| ![LugalOS Chess Hardware](doc/assets/images/LugalOS_chess.jpg) | ![Window Ribbon Terminal](doc/assets/images/chess.png) |
-| *RP2350 Hazard3 dual-core with ST7735 color TFT, TM1638 keypad, and opening book.* | *Horizontal tiling window ribbon with interactive shells, canvases, and CAS plots.* |
+| ![LugalOS Chess Hardware](doc/assets/images/LugalOS_chess.jpg) | ![Window Ribbon Terminal](doc/assets/screenshots/ribbon_terminal.png) |
+| *RP2350 Hazard3 dual-core with ST7735 color TFT, TM1638 keypad, and opening book.* | *RP2350-LCD-7 horizontal window ribbon with split-screen shell, graphical canvases, and status bar.* |
 
 | Waveshare ESP32-P4-WIFI6-Touch-LCD-7B | Waveshare ESP32-C6-Zero Wireless Node |
 | :---: | :---: |
-| *[Photo Placeholder: ESP32-P4 7" Touch LCD Station]* | *[Photo Placeholder: ESP32-C6-Zero Minimal Node]* |
-| *400 MHz dual-core RV32, 1024×600 MIPI-DSI, GT911 touch, 32 MB PSRAM, USB host.* | *160 MHz RV32IMAC, 512 KB SRAM, 802.11ax Wi-Fi 6, USB-Serial/JTAG console.* |
+| ![ESP32-P4 7" Touch LCD Station](doc/assets/images/esp32-p4-terminal.jpg) | ![ESP32-C6-Zero Sensor Node](doc/assets/images/esp32-c6-sensor.jpg) |
+| *400 MHz dual-core RV32, 1024×600 MIPI-DSI, GT911 touch, 32 MB PSRAM, USB host.* | *160 MHz RV32IMAC, 512 KB SRAM, 802.11ax Wi-Fi 6, BME280 & TSL2591 telemetry.* |
+
+| Waveshare Pico-Clock-Green Radio Clock | Z-Machine & Canvas Auto-Mapper |
+| :---: | :---: |
+| ![Waveshare Pico-Clock-Green](doc/assets/images/pico-clock-green.jpg) | ![Z-Machine Auto-Mapper](doc/assets/screenshots/zmachine_automap.png) |
+| *RP2350 with SM16106 LED matrix, DCF77 longwave radio receiver, and hardware RTC.* | *Infocom Version 3 interpreter with real-time directed graph room mapper on the window ribbon.* |
 
 </div>
 
