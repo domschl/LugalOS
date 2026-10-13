@@ -75,7 +75,7 @@ If a board (such as the RP2350-LCD-7 terminal) is plugged in via USB:
 
 Or invoke the 9P synchronization tool directly:
 ```bash
-python3 tools/p9sync.py --src user/zmachine/additional_games --dst /sd0/games
+uv run --project host/p9lib python3 tools/p9sync.py --src user/zmachine/additional_games --dst /sd0/games
 ```
 
 Once transferred, launch any game from the LugalOS interactive shell prompt (`lsh`):

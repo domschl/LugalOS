@@ -23,8 +23,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+P9LIB_DIR="$REPO_ROOT/host/p9lib"
 ADDITIONAL_DIR="$SCRIPT_DIR/additional_games"
 ZDATA_DIR="$SCRIPT_DIR/z-data"
+PYTHON_BIN=""
 
 # Format: name | relative_path | sha256 | url | description
 GAMES=(
@@ -103,23 +105,90 @@ fetch_one() {
   echo "  [DONE] $name: verified -> $file"
 }
 
+ensure_python_env() {
+  local mode="${1:-}"
+  if [[ -n "$PYTHON_BIN" ]]; then
+    return 0
+  fi
+
+  local p9_venv="$P9LIB_DIR/.venv/bin/python"
+  local root_venv="$REPO_ROOT/.venv/bin/python"
+
+  # 1. Check existing virtual environment in host/p9lib
+  if [[ -x "$p9_venv" ]] && "$p9_venv" -c "import serial" 2>/dev/null; then
+    PYTHON_BIN="$p9_venv"
+    return 0
+  fi
+
+  # 2. Check existing virtual environment in repository root
+  if [[ -x "$root_venv" ]] && "$root_venv" -c "import serial" 2>/dev/null; then
+    PYTHON_BIN="$root_venv"
+    return 0
+  fi
+
+  # 3. If uv is available, initialize/sync host/p9lib virtual environment
+  if command -v uv >/dev/null 2>&1; then
+    if [[ "$mode" != "quiet" ]]; then
+      echo "Initializing Python environment for 9P utilities via uv (host/p9lib)..." >&2
+    fi
+    if uv sync --project "$P9LIB_DIR" >&2; then
+      if [[ -x "$p9_venv" ]] && "$p9_venv" -c "import serial" 2>/dev/null; then
+        PYTHON_BIN="$p9_venv"
+        return 0
+      fi
+    fi
+  fi
+
+  # 4. Fall back to system python3 if pyserial is installed
+  if command -v python3 >/dev/null 2>&1 && python3 -c "import serial" 2>/dev/null; then
+    PYTHON_BIN="python3"
+    return 0
+  fi
+
+  # 5. Missing environment: silent for background probes, actionable error otherwise
+  if [[ "$mode" == "quiet" ]]; then
+    return 1
+  fi
+
+  echo "ERROR: A Python environment with 'pyserial' is required for 9P file transmission." >&2
+  if ! command -v uv >/dev/null 2>&1; then
+    echo "  'uv' is not installed or not in PATH." >&2
+    echo "  To install uv, see https://docs.astral.sh/uv/ or run:" >&2
+    echo "      curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
+    echo "  Then re-run this script to automatically initialize the environment." >&2
+    echo "  Alternatively, create a virtual environment in host/p9lib or install 'pyserial':" >&2
+    echo "      python3 -m venv host/p9lib/.venv && host/p9lib/.venv/bin/pip install pyserial" >&2
+  else
+    echo "  Failed to initialize host/p9lib virtual environment with 'uv sync --project host/p9lib'." >&2
+  fi
+  return 1
+}
+
 check_connected_board() {
-  python3 -c "import sys; sys.path.insert(0, '$REPO_ROOT/tools'); import p9sync; p = p9sync.find_default_serial(); sys.exit(0 if p else 1)" 2>/dev/null
+  local mode="${1:-}"
+  if ! ensure_python_env "$mode"; then
+    return 1
+  fi
+  "$PYTHON_BIN" -c "import sys; sys.path.insert(0, '$REPO_ROOT/tools'); import p9sync; p = p9sync.find_default_serial(); sys.exit(0 if p else 1)" 2>/dev/null
 }
 
 sync_to_sd() {
   echo "Synchronizing additional games and README to connected LugalOS board..."
+  if ! ensure_python_env; then
+    return 1
+  fi
   if ! check_connected_board; then
     echo "ERROR: No connected LugalOS 9P interface detected." >&2
     echo "Ensure board is attached via USB (CDC-ACM interface 02)." >&2
     return 1
   fi
-  python3 "$REPO_ROOT/tools/p9sync.py" --src "$ADDITIONAL_DIR" --dst /sd0/games
+  "$PYTHON_BIN" "$REPO_ROOT/tools/p9sync.py" --src "$ADDITIONAL_DIR" --dst /sd0/games
 }
 
 verify_compat() {
   echo "Verifying game compatibility with LugalOS Z-Machine & Auto-Mapper..."
-  python3 "$REPO_ROOT/tests/test_zmachine_compat.py"
+  ensure_python_env quiet || true
+  "${PYTHON_BIN:-python3}" "$REPO_ROOT/tests/test_zmachine_compat.py"
 }
 
 # --- Argument dispatch ---
@@ -138,7 +207,7 @@ if [[ $# -eq 0 ]]; then
   echo ""
   echo "Download complete."
 
-  if check_connected_board; then
+  if check_connected_board quiet; then
     echo ""
     read -r -p "Connected LugalOS board detected. Sync games to SD card (/sd0/games)? [y/N]: " ans || ans="n"
     if [[ "$ans" =~ ^[Yy]$ ]]; then
