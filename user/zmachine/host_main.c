@@ -14,11 +14,14 @@
  * as [zstr $addr] markers until the M3 text backend lands.
  */
 #include "zvm.h"
+#include "zwrap.h"
 
 #include <errno.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -29,11 +32,40 @@
 /* Host I/O adapters (libc lives ONLY in this file)                       */
 /* ---------------------------------------------------------------------- */
 
+static struct z_wrap host_wrap;
+
+static void host_wrap_out(void *user, const char *s, size_t len)
+{
+    (void)user;
+    fwrite(s, 1, len, stdout);
+    fflush(stdout);
+}
+
+static int host_wrap_width(void *user)
+{
+    (void)user;
+    const char *col_env = getenv("COLUMNS");
+    if (col_env != NULL) {
+        int c = atoi(col_env);
+        if (c > 0) return c;
+    }
+    struct winsize ws;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0) {
+        return (int)ws.ws_col;
+    }
+    return 80;
+}
+
 static void host_putc(void *user, uint8_t ch)
 {
     (void)user;
-    fputc((int)ch, stdout);
-    fflush(stdout);
+    zwrap_putc(&host_wrap, ch);
+}
+
+static void host_turn(void *user, struct z_vm *vm)
+{
+    (void)user; (void)vm;
+    zwrap_flush(&host_wrap);
 }
 
 /* Interactive input: the INTERPRETER echoes typed characters (per the
@@ -100,6 +132,8 @@ static int host_getc(void *user)
 {
     int c;
     (void)user;
+    zwrap_flush(&host_wrap);
+    host_wrap.in_input = true;
     fflush(stdout);
     if (tc_saved == 0 && isatty(0) != 0) {
         if (tcgetattr(0, &saved_tc) == 0) {
@@ -115,6 +149,30 @@ static int host_getc(void *user)
     }
     c = fgetc(stdin);
     return (c == EOF) ? -1 : c;
+}
+
+static int compat_mode = 0;
+static uint16_t compat_room_id = 0;
+static char compat_room_name[64] = "";
+
+static void host_compat_putc(void *user, uint8_t ch)
+{
+    (void)user; (void)ch;
+}
+
+static int host_compat_getc(void *user)
+{
+    (void)user;
+    return -1;
+}
+
+static void host_compat_turn(void *user, struct z_vm *vm)
+{
+    (void)user;
+    compat_room_id = z_read_word(&vm->m, vm->m.global_base);
+    if (compat_room_id != 0) {
+        z_object_get_name(vm, compat_room_id, compat_room_name, sizeof(compat_room_name));
+    }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -282,6 +340,9 @@ int main(int argc, char **argv)
             trace = 1;
         } else if (strcmp(argv[i], "-q") == 0) {
             quiet = 1;
+        } else if (strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "--compat") == 0) {
+            compat_mode = 1;
+            quiet = 1;
         } else if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) {
             max_inst = strtoul(argv[++i], NULL, 10);
         } else {
@@ -314,18 +375,40 @@ int main(int argc, char **argv)
     vm.m.mem = mem;
     vm.m.mem_size = Z_HOST_MEM_SIZE;
 
+    zwrap_init(&host_wrap, host_wrap_out, host_wrap_width, NULL);
     {
         struct z_io io;
         io.user = NULL;
-        io.putc = host_putc;
-        io.getc = host_getc;
-        io.save = host_save;
-        io.restore = host_restore;
+        if (compat_mode) {
+            io.putc = host_compat_putc;
+            io.getc = host_compat_getc;
+            io.save = NULL;
+            io.restore = NULL;
+            io.turn = host_compat_turn;
+            io.cmd  = NULL;
+        } else {
+            io.putc = host_putc;
+            io.getc = host_getc;
+            io.save = host_save;
+            io.restore = host_restore;
+            io.turn = host_turn;
+            io.cmd  = NULL;
+        }
         err = zvm_init(&vm, image, image_len, &io);
     }
     if (err != Z_OK) {
-        fprintf(stderr, "%s: zvm_init failed: %s\n",
-                story_path, load_error_name(err));
+        if (compat_mode) {
+            uint8_t raw_ver = image_len > 0 ? image[0] : 0;
+            printf("[compat] story:       %s\n", story_path);
+            printf("[compat] version:     v%u\n", raw_ver);
+            printf("[compat] size:        %u bytes\n", image_len);
+            printf("[compat] error:       %s\n", load_error_name(err));
+            printf("[compat] auto-mapper: INCOMPATIBLE\n");
+            printf("[compat] result:      UNSUPPORTED\n");
+        } else {
+            fprintf(stderr, "%s: zvm_init failed: %s\n",
+                    story_path, load_error_name(err));
+        }
         free(image);
         free(mem);
         return 1;
@@ -346,12 +429,18 @@ int main(int argc, char **argv)
                 vm.m.checksum == computed_checksum ? "OK" : "MISMATCH");
     }
 
+    if (compat_mode && max_inst == 0u) {
+        max_inst = 500000u;
+    }
+
     vm.trace = trace;
     executed = 0;
     reason = ZVM_OK;
     while (reason == ZVM_OK) {
         if (max_inst != 0u && executed >= max_inst) {
-            fprintf(stderr, "\n[instruction limit %lu reached]\n", max_inst);
+            if (!compat_mode) {
+                fprintf(stderr, "\n[instruction limit %lu reached]\n", max_inst);
+            }
             reason = ZVM_OK;
             break;
         }
@@ -375,10 +464,22 @@ int main(int argc, char **argv)
             vm.m.mem = mem;
             vm.m.mem_size = Z_HOST_MEM_SIZE;
             io.user = NULL;
-            io.putc = host_putc;
-            io.getc = host_getc;
-            io.save = host_save;
-            io.restore = host_restore;
+            if (compat_mode) {
+                io.putc = host_compat_putc;
+                io.getc = host_compat_getc;
+                io.save = NULL;
+                io.restore = NULL;
+                io.turn = host_compat_turn;
+                io.cmd  = NULL;
+            } else {
+                zwrap_reset(&host_wrap);
+                io.putc = host_putc;
+                io.getc = host_getc;
+                io.save = host_save;
+                io.restore = host_restore;
+                io.turn = host_turn;
+                io.cmd  = NULL;
+            }
             if (zvm_init(&vm, image, image_len, &io) != Z_OK) {
                 reason = ZVM_STOP_ERROR;
                 break;
@@ -388,6 +489,28 @@ int main(int argc, char **argv)
         }
     }
 
+    if (compat_mode) {
+        bool map_ok = (compat_room_id > 0 && compat_room_name[0] != '\0');
+        bool run_ok = (reason == ZVM_STOP_QUIT || reason == ZVM_OK);
+        z_serial(&vm.m, serial);
+        printf("[compat] story:       %s\n", story_path);
+        printf("[compat] version:     v%u\n", z_version(&vm.m));
+        printf("[compat] release:     %u\n", z_release(&vm.m));
+        printf("[compat] serial:      %s\n", serial);
+        printf("[compat] size:        %u bytes\n", vm.m.file_len);
+        printf("[compat] checksum:    $%04x (%s)\n", vm.m.checksum,
+               vm.m.checksum == z_checksum(&vm.m) ? "OK" : "MISMATCH");
+        printf("[compat] boot_insts:  %lu\n", executed);
+        printf("[compat] room_id:     %u\n", compat_room_id);
+        printf("[compat] room_name:   \"%s\"\n", compat_room_name);
+        printf("[compat] auto-mapper: %s\n", map_ok ? "COMPATIBLE" : "NOT_DETECTED");
+        printf("[compat] result:      %s\n", (run_ok && map_ok) ? "PASS" : (run_ok ? "PASS_NO_MAP" : "FAIL"));
+        free(image);
+        free(mem);
+        return (run_ok && map_ok) ? 0 : 1;
+    }
+
+    zwrap_flush(&host_wrap);
     first_op = z_read_byte(&vm.m, vm.pc);
     fprintf(stderr,
             "stop: %s%s%s after %lu instructions at $%05x ($%02x %s)\n",

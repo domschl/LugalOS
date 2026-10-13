@@ -124,7 +124,9 @@ static bool      g_vt_ready;
 #define LCDTERM_OP_CANVAS 'C'       /* 37.3b: a canvas request; the reply comes back */
 static uint8_t          g_batch[LCDTERM_BATCH];
 static uint32_t         g_batch_len;
-static uint8_t          g_lcdterm_req[2u + LCDTERM_BATCH];
+#if defined(LCDTERM_UMODE)
+static uint8_t          g_lcdterm_req[2u + LCDTERM_BATCH];   /* the U-mode task's request buffer */
+#endif
 static uint8_t          g_lcdterm_resp[SCREEN_REPLY_LEN];
 static chan_endpoint_t *g_lcdterm_ep;
 static int              g_lcdterm_pid = -1;

@@ -200,4 +200,9 @@ void board_register_devices(void);
  * entry point, the same one the BOOTSEL touch uses with a different type flag. */
 bool board_reset(void);
 
+/* Restarts into the chip's ROM download mode, where the board has one (the
+ * ESP32-C6: `reboot download`, 49.5), so it can be flashed without its BOOT
+ * strap. Returns false where there is none; does not return where there is. */
+bool board_reset_download(void);
+
 #endif /* LUGALOS_KERNEL_DEVICE_H */

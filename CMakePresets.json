@@ -211,6 +211,29 @@
         "LUGALOS_ENABLE_DCF77": "OFF",
         "LUGALOS_ENABLE_GPS": "OFF"
       }
+    },
+    {
+      "name": "esp32c6-mini",
+      "displayName": "ESP32-C6-MINI-1 (beside the P4 on the ESP32-P4-NANO / LCD-7B)",
+      "description": "49.5, plan/phase49_c6_network_nodes.md. The esp32c6 kernel for the C6-MINI-1 module wired to a P4: 4 MB flash map (cmake/flash_layout_esp32c6_mini.cmake), console on the C6's own USB through the NANO's header P2 (pins 21/23), SDIO slave toward the P4 (49.6).",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/esp32c6-mini",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-esp32c6.cmake",
+        "LUGALOS_ENABLE_SMP": "OFF",
+        "LUGALOS_ENABLE_CC": "OFF",
+        "LUGALOS_ENABLE_ED": "OFF",
+        "LUGALOS_ENABLE_SPISD": "OFF",
+        "LUGALOS_ENABLE_SDMMC": "OFF",
+        "LUGALOS_ENABLE_ST7735": "OFF",
+        "LUGALOS_ENABLE_TM1638": "OFF",
+        "LUGALOS_ENABLE_CHESS": "OFF",
+        "LUGALOS_ENABLE_PICO_CLOCK_GREEN": "OFF",
+        "LUGALOS_ENABLE_DCF77": "OFF",
+        "LUGALOS_ENABLE_GPS": "OFF",
+        "LUGALOS_C6_MODULE": "MINI",
+        "LUGALOS_BOARD_FILE": "${sourceDir}/cmake/board-esp32c6-mini.cmake"
+      }
     }
   ],
   "buildPresets": [
@@ -265,6 +288,10 @@
     {
       "name": "esp32c6",
       "configurePreset": "esp32c6"
+    },
+    {
+      "name": "esp32c6-mini",
+      "configurePreset": "esp32c6-mini"
     }
   ]
 }

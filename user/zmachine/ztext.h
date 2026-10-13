@@ -21,8 +21,13 @@
 
 #include "zvm.h"
 
+#include <stddef.h>
+
 /* Print the Z-encoded string starting at the given BYTE address. */
 void ztext_print(struct z_vm *vm, uint32_t byte_addr);
+
+/* Decode the Z-encoded string into a NUL-terminated buffer. */
+void ztext_decode_to_buf(struct z_vm *vm, uint32_t byte_addr, char *buf, size_t cap);
 
 /* Output one ZSCII character (ASCII/Latin-1 passthrough, 13 = newline). */
 void ztext_put_zscii(struct z_vm *vm, uint16_t zscii);

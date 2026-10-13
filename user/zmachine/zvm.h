@@ -50,6 +50,9 @@ struct z_io {
      * sets *len, returns 0 on success; nonzero means "no save here". */
     int (*save)(void *user, const uint8_t *data, uint32_t len);
     int (*restore)(void *user, uint8_t *data, uint32_t cap, uint32_t *len);
+    /* Auto-mapper turn and command hooks */
+    void (*turn)(void *user, struct z_vm *vm);
+    void (*cmd)(void *user, const uint8_t *line, int len);
 };
 
 /* ------------------------------------------------------------------------
@@ -118,5 +121,8 @@ int zvm_run(struct z_vm *vm);
 uint32_t zvm_serialize(struct z_vm *vm, uint8_t *buf, uint32_t cap,
                        uint32_t saved_pc);
 int zvm_deserialize(struct z_vm *vm, const uint8_t *buf, uint32_t len);
+
+/* Object introspection */
+int z_object_get_name(struct z_vm *vm, uint16_t obj, char *buf, size_t cap);
 
 #endif /* USER_ZMACHINE_ZVM_H */

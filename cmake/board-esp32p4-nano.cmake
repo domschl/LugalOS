@@ -292,3 +292,18 @@ set(CONFIG_SDMMC_BUS_WIDTH 4)
 # FIFO path will sustain -- so the next real speed-up is multi-block
 # transfers, not a faster clock. See plan/phase35_esp32p4_sdmmc.md §5.
 set(CONFIG_SDMMC_FREQ_KHZ  20000)
+
+# 49.4 (plan/phase49_c6_network_nodes.md): the ESP32-C6-MINI-1 on the SD/MMC
+# host's slot 1, through the GPIO matrix (slot 1 has no IO_MUX pads). Read off
+# the schematic (C6 IO19 = SDIO CLK, IO18 = CMD, IO20..23 = D0..D3, each with a
+# 51 kOhm pull-up) and identical to ESP-Hosted's own P4 defaults. CHIP_PU is
+# the C6's EN, through a 0 Ohm link; driven open-drain only (pull low, or let
+# go to its 10 kOhm pull-up), so nothing else on the net is ever fought.
+set(CONFIG_SDIO_CLK_GPIO   18)
+set(CONFIG_SDIO_CMD_GPIO   19)
+set(CONFIG_SDIO_D0_GPIO    14)
+set(CONFIG_SDIO_D1_GPIO    15)
+set(CONFIG_SDIO_D2_GPIO    16)
+set(CONFIG_SDIO_D3_GPIO    17)
+set(CONFIG_SDIO_FREQ_KHZ   20000)
+set(CONFIG_C6_CHIP_PU_GPIO 54)

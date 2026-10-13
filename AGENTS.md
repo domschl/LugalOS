@@ -112,10 +112,29 @@ console, loading and reset all on it.
   ```
 * Leave it running by itself (stage 2 at `0x0` + the OS image, verified, then reset):
   `tools/c6flash.py build/esp32c6`
-* Test it: `python3 tests/hw/test_esp32c6.py` (loads the kernel itself; `--no-load` tests
-  what is running). 19 checks (with WLAN credentials in the identity record the board
-  joins by itself at boot and the radio-start tests watch that instead); skips when no board is attached. Wi-Fi checks read
+* Test it: `cd tests/hw && uv run test_esp32c6.py --port <C6-Zero>` (loads the kernel itself;
+  `--no-load` tests what is running). 21 checks (with WLAN credentials in the identity record the
+  board joins by itself at boot and the radio-start tests watch that instead); skips when no board
+  is attached. The last check (49.3) arms LLP's radio role and stays in it until reset. Wi-Fi checks read
   `~/.config/lugalos/wifi.env` (never print it; only the derived 64-hex PSK goes to the board).
+* The C6-MINI beside the P4 on the NANO (49.5): preset `esp32c6-mini` (4 MB map:
+  `cmake/flash_layout_esp32c6_mini.cmake`), console on the C6's own USB through header P2
+  pins 21/23. Pick boards by name: `--board zero|nano` on `c6run.py`, `c6flash.py` and
+  `test_esp32c6.py` (from `~/.config/lugalos/c6-ports.env`); e.g.
+  `tools/c6flash.py build/esp32c6-mini --board nano`,
+  `cd tests/hw && uv run test_esp32c6.py --board nano --build ../../build/esp32c6-mini`.
+* The C6's console is also copied to its UART0 (115200; NANO header P2 pin 22): when the USB console
+  is silent (a hang, early boot), that copy still shows what the kernel says. Silent-boot breadcrumbs
+  in LP_AON (read with esptool `read-mem`): 0x600B1000 stage, 0x600B1004 ticks, 0x600B1008/0x600B100C
+  last trap cause/pc, 0x600B1014/0x600B1018 ra/task at the last tick.
+* `reboot` restarts a C6; `reboot download` restarts it into the ROM's download mode (no BOOT
+  strap needed; then esptool `--before no-reset`). After a `c6run.py` RAM load even a plain
+  `reboot` lands in download mode (the boot strap was latched that way); a flash-booted C6
+  reboots into LugalOS.
+* LLP radio role (49.3): `llp radio` at the C6's console shares the USB port between the console
+  and LLP frames; `cd host/llp && uv run --extra serial --extra p9 llp host --port <C6-Zero> --arm
+  --dhcp --ping 3 --cat /proc/version` plays the host. With the NANO's C6 also on USB (P2 21/23),
+  two Espressif ports exist: always pass `--port`.
 * I2C on the C6-Zero: GPIO0 = SDA, GPIO1 = SCL (100 kHz); `i2c scan`, `sensor`, `/proc/sensors`.
 * The hardware watchdog (MWDT0, 30 s) is armed at boot; `wdt` shows it and the last reset's
   cause, `wdt test` stops feeding it (the board resets -- only when that is the point).
@@ -211,11 +230,19 @@ for both roles by itself.
   (imprecise load access faults; plan §6.5). On an access fault, the
   `[Trap Cache]` line names the reason ("core timeout raw" bit 4 = DBUS
   timeout).
+* SDIO toward the C6 (49.4): slot 1 of the SD/MMC host (GPIO14-19 via the matrix; C6 reset GPIO54,
+  open-drain). `sdio probe [khz-hex]` (e.g. `sdio probe 2710` = 10 MHz), `sdio`, `sdio rd52 fn addr`,
+  `sdio rd53 fn addr len`, `sdio bench [kb fn addr len]`, `sdio reset`. 10 MHz on the NANO; the 7B also carries data at 20 MHz.
+  The C6's SDIO slave hardware answers whatever the C6 runs. Flash the P4 with both halves
+  (`--only boot,os`): an `os`-only flash pairs a new XIP half with an old RAM half and traps at boot.
+  With both CP2102s attached (the NANO console and a C6 UART adapter) their by-id links collide
+  (all serial "0001"), so `p4-ports.env` names the NANO's console by USB path (hub port 4.2).
+  The 7B's other Type-C is its P4's USB-Serial/JTAG (flashable, but not the LugalOS console).
 * Test: `cd tests/hw && uv run test_esp32p4.py --board lcd7b --build ../../build/esp32p4-lcd7b`
-  (36/36 since 47.13: backlight, blanking, USB keyboard, touch, RTC and the
+  (37/37 since 49.4's SDIO check; 47.13: backlight, blanking, USB keyboard, touch, RTC and the
   ribbon's hotkeys included, each skipping where a board lacks it; EMAC tests
   skip; a BME280 sits on the PH2.0 I2C header at 0x76). NANO: `uv run
-  test_esp32p4.py --board nano` (36/36, the 7B's checks skipping).
+  test_esp32p4.py --board nano` (37/37 with 49.4's SDIO check, the 7B's skipping).
 
 ---
 

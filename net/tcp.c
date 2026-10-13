@@ -222,6 +222,20 @@ static int tcp_emit(tcp_conn_t *c, uint8_t flags, uint32_t seq,
     uint8_t *seg = net_tx_payload() + IPV4_HDR_LEN;
     uint32_t hdr = TCP_HDR_MIN + (with_mss ? 4u : 0u);
 
+    /* Clear "the peer should hear from us" *before* reading the window this
+     * segment will carry, never after. A reader (tcp_stream_read(),
+     * link_recv_frame()) runs on another task and sets need_ack when it frees
+     * buffer space. If it ran between our window computation and a clear at
+     * the end -- preempted by the tick, or on the other hart -- this segment
+     * carried the old, closed window *and* its request for an update was
+     * erased: the peer waited on its persist timer, which over slirp backs off
+     * to ~20 s. That was the MQTT subscribe test's rare "malformed packet left
+     * the connection open" (2026-10-12): the bytes arrived 20 s late. Cleared
+     * first, a read that lands after the clear leaves the flag set and the next
+     * pump sends the fresh window. */
+    c->need_ack = false;
+    __asm__ __volatile__("fence w, r" ::: "memory");   /* the clear, then the window's loads */
+
     wr16(seg + 0, c->local_port);
     wr16(seg + 2, c->peer_port);
     wr32(seg + 4, seq);
@@ -242,7 +256,6 @@ static int tcp_emit(tcp_conn_t *c, uint8_t flags, uint32_t seq,
     uint16_t ck = tcp_checksum(net_state()->ip, c->peer_ip, seg, total);
     wr16(seg + 16, ck);
 
-    c->need_ack = false;
     return ip_send(IP_PROTO_TCP, c->peer_ip, total);
 }
 
@@ -353,7 +366,10 @@ static int link_recv_frame(p9_link_t *link, uint8_t *buf, uint32_t max_len) {
     c->rx_len -= declared;
     if (c->rx_len) memmove(c->rx, c->rx + declared, c->rx_len);
     /* The window just reopened. Saying so promptly is what keeps a peer that
-     * filled the buffer from waiting on its own persist timer. */
+     * filled the buffer from waiting on its own persist timer. Ordered after
+     * the buffer update, and safe against the pump because tcp_emit() clears
+     * the flag before it reads the window (see there). */
+    __asm__ __volatile__("fence w, w" ::: "memory");
     c->need_ack = true;
     return (int)declared;
 }
@@ -724,8 +740,13 @@ int tcp_stream_read(tcp_stream_t *s, uint8_t *buf, uint32_t max) {
     /* The window just reopened, and saying so promptly is what keeps a peer
      * that filled the buffer from waiting on its own persist timer -- the
      * same reason link_recv_frame() does it. A plain store from the owner's
-     * task: the pump may clear it in the same breath, which costs one pump of
-     * delay and never a wrong window. */
+     * task, safe because tcp_emit() clears the flag *before* it reads the
+     * window: whichever way the two interleave, either the segment being built
+     * already carries the reopened window or the flag survives for the next
+     * pump. (This comment used to say the pump "may clear it in the same
+     * breath, at the cost of one pump" -- with the clear after the read, it
+     * lost the update outright; see tcp_emit().) */
+    __asm__ __volatile__("fence w, w" ::: "memory");   /* rx_head, then the flag */
     c->need_ack = true;
     return (int)n;
 }

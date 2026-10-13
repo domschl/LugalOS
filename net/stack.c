@@ -65,6 +65,15 @@ int net_stack_attach(netif_t *nif) {
     return 0;
 }
 
+/* 49.2 (plan/phase49_c6_network_nodes.md): give the interface back. A radio
+ * node that becomes the host's network card forwards its interface's frames
+ * over LLP instead of reading them itself, and keeps no address, no ARP
+ * entries and no connections of its own on that segment -- the host's are the
+ * only ones. The stack's task keeps running and finds nothing to do. */
+void net_stack_detach(void) {
+    memset(&g_net, 0, sizeof(g_net));
+}
+
 bool net_configured(void) { return g_net.configured && g_net.nif != NULL; }
 const net_state_t *net_state(void) { return &g_net; }
 

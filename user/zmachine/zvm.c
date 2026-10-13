@@ -19,6 +19,7 @@
 #include "zvm.h"
 #include "zparse.h"
 #include "ztext.h"
+#include <string.h>
 
 /* ------------------------------------------------------------------------
  * Small helpers
@@ -869,6 +870,20 @@ int zvm_init(struct z_vm *vm, const uint8_t *image, uint32_t image_len,
         vm->io.user = NULL;
         vm->io.putc = NULL;
         vm->io.getc = NULL;
+        vm->io.turn = NULL;
+        vm->io.cmd  = NULL;
     }
     return Z_OK;
+}
+
+int z_object_get_name(struct z_vm *vm, uint16_t obj, char *buf, size_t cap)
+{
+    if (vm == NULL || obj == 0 || buf == NULL || cap == 0) {
+        if (buf != NULL && cap > 0) buf[0] = '\0';
+        return 0;
+    }
+    uint32_t entry = z_object_entry(vm, obj);
+    uint32_t q = z_read_word(&vm->m, entry + Z_OBJ_PROPS_OFF);
+    ztext_decode_to_buf(vm, q + 1u, buf, cap);
+    return (int)strlen(buf);
 }

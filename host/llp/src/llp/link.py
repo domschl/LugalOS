@@ -309,10 +309,10 @@ class Link:
         if type_ not in (wire.T_ETH, wire.T_P9) or len(payload) > self.peer_max_payload:
             return -3
         if not self.can_send():
-            self.st.tx_no_credit += 1
-            if not self.blocked:
+            if not self.blocked:            # counted once per episode, not per retry
                 self.blocked = True
                 self.last_probe = now
+                self.st.tx_no_credit += 1
             return -2
         if not self._emit(type_, self.tx_seq, payload, now):
             return -4

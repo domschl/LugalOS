@@ -1,0 +1,31 @@
+# Per-board facts for the ESP32-C6-MINI-1 module beside the P4 on the Waveshare
+# ESP32-P4-NANO (and the same module on the ESP32-P4-WIFI6-Touch-LCD-7B). 49.5,
+# plan/phase49_c6_network_nodes.md.
+#
+# The same chip as the C6-Zero (ESP32-C6FH4 here, rev v0.2, read with esptool
+# 2026-10-12), so every chip fact below is cmake/board-esp32c6-zero.cmake's;
+# what differs is the module and what it is wired to:
+#
+# * 4 MB of in-package flash, not 8: its own map,
+#   cmake/flash_layout_esp32c6_mini.cmake (the preset selects it).
+# * The console is the same USB-Serial/JTAG, reached on the NANO through
+#   header P2 pins 21 (D-) and 23 (D+) -- tools/c6run.py and c6flash.py work
+#   unchanged (§5.3 of the plan).
+# * IO18..IO23 are the SDIO slave's pins, wired to the P4 (49.6).
+# * No LED: GPIO8 is only a strapping pin with a pull-up here, so `led` drives
+#   nothing. No sensors: GPIO0/1, the C6-Zero's I2C pins, are not connected.
+
+set(CONFIG_PALLOC_MAX_PAGES 124)
+set(CONFIG_BALLOC_ARENA_PAGES 4)
+
+# UART0 (header P2 pins 20/22 on the NANO: C6_U0RXD/U0TXD). Not the console.
+set(CONFIG_UART0_BASE     0x60000000)
+set(CONFIG_UART0_TX_GPIO  16)
+set(CONFIG_UART0_RX_GPIO  17)
+set(CONFIG_UART0_SCLK_HZ  40000000)
+set(CONFIG_UART0_BAUD     115200)
+
+set(CONFIG_XTAL_HZ        40000000)
+set(CONFIG_USBJTAG_BASE   0x6000F000)
+set(CONFIG_SYSTIMER_BASE  0x6000A000)
+set(CONFIG_CPU_FREQ_MHZ   160)

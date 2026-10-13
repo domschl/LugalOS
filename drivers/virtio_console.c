@@ -180,6 +180,30 @@ static int virtio_console_send(const uint8_t *data, uint32_t len) {
     return (int)len;
 }
 
+/* --- Raw bytes (49.2, plan/phase49_c6_network_nodes.md) ---
+ *
+ * For a protocol that frames its own bytes: LLP's serial binding (kernel/
+ * llp_node.c) uses this channel as the wire between two QEMU nodes. Whoever
+ * uses these takes the channel off the 9P pump first (the `llp` device claims
+ * the same wire as `vconsole`), since both read from the same ring. */
+int virtio_console_read(uint8_t *buf, uint32_t max) {
+    if (!g_mmio_base || !buf) return -1;
+    virtio_console_drain_rx();
+    return (int)ring_pop(&g_rx_ring, buf, max);
+}
+
+/* Blocking, like the frame path: chunked to the transmit buffer. */
+int virtio_console_write(const uint8_t *buf, uint32_t len) {
+    if (!g_mmio_base || !buf) return -1;
+    uint32_t done = 0;
+    while (done < len) {
+        uint32_t n = len - done < TX_BUF_SIZE ? len - done : TX_BUF_SIZE;
+        if (virtio_console_send(buf + done, n) < 0) return -1;
+        done += n;
+    }
+    return (int)len;
+}
+
 /* --- p9_link_t glue --- */
 
 static int link_poll(p9_link_t *link) {

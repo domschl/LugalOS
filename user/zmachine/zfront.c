@@ -27,11 +27,14 @@
 #include "zfront.h"
 
 #include "zvm.h"
+#include "zmap.h"
+#include "zwrap.h"
 
 #include "fs/vfs.h"
 #include "kernel/console.h"
 #include "kernel/palloc.h"
 #include "kernel/printk.h"
+#include "kernel/sched.h"
 #include "lisp.h"
 
 #include <string.h>
@@ -50,7 +53,8 @@
  * and is handed to the io callbacks as `user`. */
 struct zfront_ctx {
     char story_path[96];
-    char save_path[104];
+    char story_base[96];
+    int  last_slot;
 
     /* Lisp-line interception (the chess console's convention, chess_ui.c's
      * `else if (line[0] == '(')`): a game-prompt line that starts with
@@ -63,6 +67,9 @@ struct zfront_ctx {
     uint32_t col;
     uint32_t lisp_len;
     char lisp_line[256];
+
+    struct zmap_state *map;
+    struct z_wrap wrap;
 };
 
 /* ------------------------------------------------------------------ */
@@ -81,17 +88,49 @@ static void zout(const char *s)
     console_unlock();
 }
 
+static void zfront_wrap_out(void *user, const char *s, size_t len)
+{
+    (void)user;
+    char tmp[ZWRAP_BUF_MAX + 1];
+    if (len >= sizeof(tmp)) {
+        len = sizeof(tmp) - 1;
+    }
+    memcpy(tmp, s, len);
+    tmp[len] = '\0';
+    console_lock();
+    console_puts(tmp);
+    console_unlock();
+}
+
+static int zfront_wrap_width(void *user)
+{
+    (void)user;
+    unsigned cols, rows;
+    if (console_size(&cols, &rows) && cols > 0) {
+        return (int)cols;
+    }
+    return 80;
+}
+
 static void zfront_putc(void *user, uint8_t ch)
 {
-    char s[2] = { (char)ch, '\0' };
-    (void)user;
-    zout(s);
+    struct zfront_ctx *ctx = (struct zfront_ctx *)user;
+    zwrap_putc(&ctx->wrap, ch);
 }
 
 static int zfront_getc(void *user)
 {
     struct zfront_ctx *ctx = (struct zfront_ctx *)user;
+    zwrap_flush(&ctx->wrap);
+    ctx->wrap.in_input = true;
     for (;;) {
+        if (ctx->map != NULL && ctx->map->active) {
+            zmap_poll(ctx->map);
+        }
+        if (!console_has_char()) {
+            sched_yield();
+            continue;
+        }
         int c = (int)(uint8_t)console_getc();
         if (c == 0x03) {
             /* Ctrl-C: the console has latched it as an interrupt as well.
@@ -100,7 +139,16 @@ static int zfront_getc(void *user)
             ctx->lisp_mode = false;
             ctx->lisp_len = 0;
             ctx->col = 0;
+            zwrap_reset(&ctx->wrap);
             return '\n';
+        }
+        if (c == '\t' || c == 0x0F) {
+            /* Tab key or Ctrl-O: toggle map zoom between detail and overview */
+            if (ctx->map != NULL && ctx->map->active) {
+                zmap_toggle_zoom(ctx->map);
+                zmap_render(ctx->map);
+            }
+            continue;
         }
         if (ctx->lisp_mode) {
             if (c == '\r' || c == '\n') {
@@ -113,14 +161,23 @@ static int zfront_getc(void *user)
                 ctx->lisp_mode = false;
                 ctx->lisp_len = 0;
                 ctx->col = 0;
-                lisp_lock();
-                lisp_val_t *res = lisp_eval_string(line);
-                if (res && res->type != LISP_NIL) {
-                    cprintf("=> ");
-                    lisp_print(res);
-                    cprintf("\n");
+                if (strcmp(line, "(zoom)") == 0 || strcmp(line, "(map)") == 0) {
+                    if (ctx->map != NULL && ctx->map->active) {
+                        zmap_toggle_zoom(ctx->map);
+                        zmap_render(ctx->map);
+                        cprintf("=> %s\n", ctx->map->zoom_mode ? "overview" : "detail");
+                    }
+                } else {
+                    lisp_lock();
+                    lisp_val_t *res = lisp_eval_string(line);
+                    if (res && res->type != LISP_NIL) {
+                        cprintf("=> ");
+                        lisp_print(res);
+                        cprintf("\n");
+                    }
+                    lisp_unlock();
                 }
-                lisp_unlock();
+                ctx->wrap.col = 0;
                 return '\n';       /* end the game's aread on empty input */
             }
             if (c == 0x7f || c == 0x08) {
@@ -160,31 +217,111 @@ static int zfront_getc(void *user)
     }
 }
 
+static void get_slot_paths(const struct zfront_ctx *ctx, int slot,
+                           char *sav_path, size_t sav_cap,
+                           char *map_path, size_t map_cap)
+{
+    if (slot >= 0 && slot <= 9) {
+        ksnprintf(sav_path, sav_cap, "%s_%d.sav", ctx->story_base, slot);
+        ksnprintf(map_path, map_cap, "%s_%d.map", ctx->story_base, slot);
+    } else {
+        /* Autosave slot (-1) */
+        ksnprintf(sav_path, sav_cap, "%s_auto.sav", ctx->story_base);
+        ksnprintf(map_path, map_cap, "%s_auto.map", ctx->story_base);
+    }
+}
+
+static int prompt_slot(const char *action, int default_slot)
+{
+    cprintf("\n%s slot [0-9, default %d]: ", action, default_slot);
+    for (;;) {
+        int c = (int)(uint8_t)console_getc();
+        if (c == 0x03 || c == 0x1B) { /* Ctrl-C or ESC */
+            cprintf("cancelled\n");
+            return -1;
+        }
+        if (c == '\r' || c == '\n') {
+            cprintf("%d\n", default_slot);
+            return default_slot;
+        }
+        if (c >= '0' && c <= '9') {
+            int slot = c - '0';
+            cprintf("%d\n", slot);
+            return slot;
+        }
+    }
+}
+
 static int zfront_save(void *user, const uint8_t *data, uint32_t len)
 {
     struct zfront_ctx *ctx = (struct zfront_ctx *)user;
-    int fd = vfs_open(ctx->save_path,
-                      VFS_O_WRITE | VFS_O_CREATE | VFS_O_TRUNC);
+    int slot = prompt_slot("Save", ctx->last_slot);
+    if (slot < 0) {
+        return -1;
+    }
+    char sav_path[104], map_path[104];
+    get_slot_paths(ctx, slot, sav_path, sizeof(sav_path),
+                   map_path, sizeof(map_path));
+
+    int fd = vfs_open(sav_path, VFS_O_WRITE | VFS_O_CREATE | VFS_O_TRUNC);
     if (fd < 0) {
+        cprintf("zmachine: cannot create %s\n", sav_path);
         return -1;
     }
     int rc = (vfs_pwrite(fd, data, len, 0) == (int)len) ? 0 : -1;
     vfs_close(fd);
-    return rc;
+    if (rc != 0) {
+        cprintf("zmachine: write failed on %s\n", sav_path);
+        return -1;
+    }
+
+    if (ctx->map != NULL && ctx->map->active) {
+        (void)zmap_save(ctx->map, map_path);
+    }
+
+    ctx->last_slot = slot;
+    cprintf("[Saved slot %d: %s]\n", slot, sav_path);
+    return 0;
 }
 
 static int zfront_restore(void *user, uint8_t *data, uint32_t cap,
                           uint32_t *len_out)
 {
     struct zfront_ctx *ctx = (struct zfront_ctx *)user;
-    vfs_stat_t st;
-    int fd = vfs_open(ctx->save_path, VFS_O_READ);
-    if (fd < 0) {
+    int slot = prompt_slot("Restore", ctx->last_slot);
+    if (slot < 0) {
         return -1;
     }
-    if (vfs_fstat(fd, &st) != 0 || st.size == 0 || st.is_dir
-        || st.size > cap) {
-        vfs_close(fd);
+    char sav_path[104], map_path[104];
+    get_slot_paths(ctx, slot, sav_path, sizeof(sav_path),
+                   map_path, sizeof(map_path));
+
+    vfs_stat_t st;
+    if (vfs_stat(sav_path, &st) != 0 || st.size == 0 || st.is_dir) {
+        /* Backward compatibility for slot 0: check legacy "<story>.sav" */
+        if (slot == 0) {
+            char legacy[104];
+            ksnprintf(legacy, sizeof(legacy), "%s.sav", ctx->story_base);
+            if (vfs_stat(legacy, &st) == 0 && st.size > 0 && !st.is_dir) {
+                ksnprintf(sav_path, sizeof(sav_path), "%s", legacy);
+                ksnprintf(map_path, sizeof(map_path), "%s.map", ctx->story_base);
+            } else {
+                cprintf("zmachine: slot %d not found (%s)\n", slot, sav_path);
+                return -1;
+            }
+        } else {
+            cprintf("zmachine: slot %d not found (%s)\n", slot, sav_path);
+            return -1;
+        }
+    }
+
+    if (st.size > cap) {
+        cprintf("zmachine: save file too large (%u bytes)\n", st.size);
+        return -1;
+    }
+
+    int fd = vfs_open(sav_path, VFS_O_READ);
+    if (fd < 0) {
         return -1;
     }
     int got = vfs_pread(fd, data, st.size, 0);
@@ -193,7 +330,35 @@ static int zfront_restore(void *user, uint8_t *data, uint32_t cap,
         return -1;
     }
     *len_out = st.size;
+
+    if (ctx->map != NULL && ctx->map->active) {
+        if (zmap_load(ctx->map, map_path) == 0) {
+            zmap_render(ctx->map);
+        }
+    }
+
+    ctx->last_slot = slot;
+    cprintf("[Restored slot %d: %s]\n", slot, sav_path);
     return 0;
+}
+
+static void zfront_turn(void *user, struct z_vm *vm)
+{
+    struct zfront_ctx *ctx = (struct zfront_ctx *)user;
+    if (ctx) {
+        zwrap_flush(&ctx->wrap);
+        if (ctx->map != NULL) {
+            zmap_on_turn(ctx->map, vm);
+        }
+    }
+}
+
+static void zfront_cmd(void *user, const uint8_t *line, int len)
+{
+    struct zfront_ctx *ctx = (struct zfront_ctx *)user;
+    if (ctx && ctx->map != NULL) {
+        zmap_record_command(ctx->map, line, len);
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -228,10 +393,6 @@ static void resolve_path(struct zfront_ctx *ctx, const char *name)
         ksnprintf(ctx->story_path, sizeof(ctx->story_path), "%s%s.z3",
                   Z_DIR_DEFAULT, name);
     }
-    /* The story's name with its extension replaced, never appended to:
-     * "zork1.z3.lzs" has two dots, and the FAT driver's 8.3 conversion
-     * keeps the first one inside the base name (ZORK1.Z3 + LZS), a short
-     * name no other FAT implementation accepts. */
     size_t n = strlen(ctx->story_path), dot = n;
     for (size_t i = n; i > 0 && ctx->story_path[i - 1] != '/'; i--) {
         if (ctx->story_path[i - 1] == '.') {
@@ -239,8 +400,12 @@ static void resolve_path(struct zfront_ctx *ctx, const char *name)
             break;
         }
     }
-    memcpy(ctx->save_path, ctx->story_path, dot);   /* 96 < 104 - 4 */
-    memcpy(ctx->save_path + dot, ".sav", 5);
+    if (dot > sizeof(ctx->story_base) - 1) {
+        dot = sizeof(ctx->story_base) - 1;
+    }
+    memcpy(ctx->story_base, ctx->story_path, dot);
+    ctx->story_base[dot] = '\0';
+    ctx->last_slot = 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -257,8 +422,10 @@ int zmachine_run(const char *name)
     uint8_t *space = NULL;    /* the 128 KB Z-machine address space   */
     uint8_t *image = NULL;    /* story, resident for RESTART          */
     struct z_vm *vm = NULL;
+    struct zmap_state *map = NULL;
     uint32_t fsize = 0;       /* story bytes; doubles as image size   */
     uint32_t space_pages = Z_PAGES(Z_SPACE_BYTES);
+    uint32_t map_pages = Z_PAGES(sizeof(struct zmap_state));
 
     int reason = ZVM_OK;
     int rc = 1;               /* until a clean exit rewrites it        */
@@ -304,8 +471,23 @@ int zmachine_run(const char *name)
     vm->m.mem = space;
     vm->m.mem_size = Z_SPACE_BYTES;
 
+    map = (struct zmap_state *)palloc_pages_bulk(map_pages);
+    if (map != NULL) {
+        memset(map, 0, sizeof(*map));
+        if (zmap_init(map)) {
+            ctx.map = map;
+        } else {
+            palloc_free(map, map_pages);
+            map = NULL;
+            ctx.map = NULL;
+        }
+    } else {
+        ctx.map = NULL;
+    }
+
     struct z_io io;
     io.user = &ctx;
+    zwrap_init(&ctx.wrap, zfront_wrap_out, zfront_wrap_width, &ctx);
     ctx.lisp_mode = false;
     ctx.col = 0;
     ctx.lisp_len = 0;
@@ -313,15 +495,62 @@ int zmachine_run(const char *name)
     io.getc = zfront_getc;
     io.save = zfront_save;
     io.restore = zfront_restore;
+    io.turn = zfront_turn;
+    io.cmd  = zfront_cmd;
 
     if (zvm_init(vm, image, fsize, &io) != Z_OK) {
         cprintf("zmachine: %s is not a playable v3 story\n", ctx.story_path);
         goto done;
     }
 
-    cprintf("zmachine: %s — v%u rel %u, %u bytes (PSRAM: %s)\n",
+    cprintf("zmachine: %s — v%u rel %u, %u bytes (PSRAM: %s, map: %s)\n",
             ctx.story_path, z_version(&vm->m), z_release(&vm->m), fsize,
-            palloc_is_bulk(space) ? "yes" : "no (fallback: SRAM)");
+            palloc_is_bulk(space) ? "yes" : "no (fallback: SRAM)",
+            map ? "active" : "off");
+
+    /* Check for autosave from previous session */
+    char auto_sav[104], auto_map[104];
+    get_slot_paths(&ctx, -1, auto_sav, sizeof(auto_sav),
+                   auto_map, sizeof(auto_map));
+    vfs_stat_t auto_st;
+    if (vfs_stat(auto_sav, &auto_st) == 0 && auto_st.size > 0 && !auto_st.is_dir) {
+        cprintf("Resume previous game? (y/n) [y]: ");
+        bool resume = false;
+        for (;;) {
+            int c = (int)(uint8_t)console_getc();
+            if (c == '\r' || c == '\n' || c == 'y' || c == 'Y') {
+                cprintf("y\n");
+                resume = true;
+                break;
+            }
+            if (c == 'n' || c == 'N' || c == 0x03 || c == 0x1B) {
+                cprintf("n\n");
+                resume = false;
+                break;
+            }
+        }
+        if (resume) {
+            int fd = vfs_open(auto_sav, VFS_O_READ);
+            if (fd >= 0) {
+                int got = vfs_pread(fd, vm->savebuf, auto_st.size, 0);
+                vfs_close(fd);
+                if (got == (int)auto_st.size &&
+                    zvm_deserialize(vm, vm->savebuf, auto_st.size) == 0) {
+                    cprintf("[Resumed from %s]\n", auto_sav);
+                    if (ctx.map != NULL && ctx.map->active) {
+                        if (zmap_load(ctx.map, auto_map) == 0) {
+                            zmap_render(ctx.map);
+                        }
+                    }
+                } else {
+                    cprintf("zmachine: autosave file corrupted\n");
+                }
+            }
+        } else {
+            vfs_remove(auto_sav);
+            vfs_remove(auto_map);
+        }
+    }
 
     while (true) {
         if (console_interrupt_requested()) {
@@ -334,12 +563,35 @@ int zmachine_run(const char *name)
             if (reinit_vm(vm, image, fsize, &io) != Z_OK) {
                 reason = ZVM_STOP_ERROR;
             } else {
+                if (map != NULL) {
+                    zmap_reset(map);
+                }
                 continue;
             }
         }
         if (reason != ZVM_OK) {
             break;
         }
+    }
+
+    /* Autosave handling on exit */
+    if (reason == ZVM_OK || reason == ZVM_STOP_AREAD) {
+        uint32_t n = zvm_serialize(vm, vm->savebuf, sizeof(vm->savebuf), vm->pc);
+        if (n > 0) {
+            int fd = vfs_open(auto_sav, VFS_O_WRITE | VFS_O_CREATE | VFS_O_TRUNC);
+            if (fd >= 0) {
+                if (vfs_pwrite(fd, vm->savebuf, n, 0) == (int)n) {
+                    cprintf("[Autosaved to %s]\n", auto_sav);
+                    if (ctx.map != NULL && ctx.map->active) {
+                        (void)zmap_save(ctx.map, auto_map);
+                    }
+                }
+                vfs_close(fd);
+            }
+        }
+    } else if (reason == ZVM_STOP_QUIT) {
+        vfs_remove(auto_sav);
+        vfs_remove(auto_map);
     }
 
     if (reason == ZVM_STOP_ERROR || reason == ZVM_STOP_UNIMPL) {
@@ -349,7 +601,13 @@ int zmachine_run(const char *name)
         rc = 0;                 /* QUIT, RESTART-to-nothing, Ctrl-C */
     }
 
+    zwrap_flush(&ctx.wrap);
+
 done:
+    if (map != NULL) {
+        zmap_close(map);
+        palloc_free(map, map_pages);
+    }
     if (space != NULL) {
         palloc_free(space, space_pages);
     }

@@ -81,7 +81,12 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
                             CONFIG_BOARD_ESP32C6=1 CONFIG_BOARD_ESP=1)
     # The flash map: one definition, reaching the boot code (where the OS image
     # is) here and tools/c6flash.py (the same numbers) through the manifest below.
-    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/flash_layout_esp32c6.cmake)
+    # 49.5: the C6-MINI module (beside the P4s) has 4 MB, the C6-Zero 8 MB.
+    if(LUGALOS_C6_MODULE STREQUAL "MINI")
+        include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/flash_layout_esp32c6_mini.cmake)
+    else()
+        include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/flash_layout_esp32c6.cmake)
+    endif()
     add_compile_definitions(
         LUGALOS_C6_FLASH_SIZE=${LUGALOS_C6_FLASH_SIZE}
         LUGALOS_C6_OSIMAGE_BASE=${LUGALOS_C6_OSIMAGE_BASE}
@@ -861,7 +866,9 @@ if(LUGALOS_ENABLE_ZMACHINE)
         user/zmachine/ztext.c
         user/zmachine/zparse.c
         user/zmachine/zsave.c
-        user/zmachine/zfront.c)
+        user/zmachine/zfront.c
+        user/zmachine/zmap.c
+        user/zmachine/zwrap.c)
 endif()
 
 if(LUGALOS_TARGET STREQUAL "RP2350")
@@ -1012,6 +1019,9 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
     # not gated out when the feature is off; it stubs itself internally, so
     # fs/vfs_server.c and kernel/board.c need no matching #if.
     list(APPEND SOURCES drivers/sdmmc_esp32p4.c)
+    # 49.4 (plan/phase49_c6_network_nodes.md): the same controller's slot 1,
+    # SDIO toward the board's ESP32-C6.
+    list(APPEND SOURCES drivers/sdio_esp32p4.c)
     # 47.3, plan/phase47_esp32p4_lcd7b_ribbon.md: the in-package PSRAM. Same
     # guard-by-board-file rule as the RP2350's (CONFIG_PSRAM_BYTES); an empty
     # unit on a board file without one.
@@ -1067,9 +1077,16 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
     # The boot-time flash mapping and watchdogs, in .boot.text (SRAM): it is what
     # makes the flash window exist, so it cannot live in it.
     list(APPEND SOURCES arch/riscv/common/xip_esp32c6.c)
+    # 49.3 (plan/phase49_c6_network_nodes.md): the C6 as a host's network card,
+    # LLP sharing the USB port with the console (drivers/usbjtag_esp32c6.c).
+    list(APPEND SOURCES kernel/llp_node.c)
 else()
     # QEMU targets: VirtIO block device + 16550 UART + VirtIO console (9P link, A3)
     list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c drivers/virtio_console.c)
+    # 49.2 (plan/phase49_c6_network_nodes.md): an LLP node over the
+    # virtio-console -- two guests, one as the radio bridging its virtio-net,
+    # one as the host with wlan0. QEMU-only until a board has a channel (49.3).
+    list(APPEND SOURCES kernel/llp_node.c)
     # I2 (plan/phase21_identity_and_authentication.md): the second virtio-blk
     # device, dedicated to the identity store -- QEMU's analogue of I7's
     # RP2350 flash sector (§3.1: "QEMU has no silicon to bind to").
@@ -1316,7 +1333,7 @@ endif()
 # flash.manifest. Columns: name, base, reserved size, artifact.
 if(LUGALOS_TARGET STREQUAL "ESP32C6")
     file(GENERATE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/flash.manifest
-         CONTENT "stage2 ${LUGALOS_C6_STAGE2_BASE} ${LUGALOS_C6_STAGE2_SIZE} lugalos-ram.img\nosimage ${LUGALOS_C6_OSIMAGE_BASE} ${LUGALOS_C6_OSIMAGE_SIZE} lugalos-xip.bin\n")
+         CONTENT "flash 0x0 ${LUGALOS_C6_FLASH_SIZE} -\nstage2 ${LUGALOS_C6_STAGE2_BASE} ${LUGALOS_C6_STAGE2_SIZE} lugalos-ram.img\nosimage ${LUGALOS_C6_OSIMAGE_BASE} ${LUGALOS_C6_OSIMAGE_SIZE} lugalos-xip.bin\n")
 endif()
 
 # UF2 converter: official uf2conv.py with RP2350 RISC-V family support

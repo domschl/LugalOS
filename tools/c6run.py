@@ -42,15 +42,45 @@ import serial
 BYID = "/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_*-if00"
 
 
-def find_port(explicit):
-    p = explicit or os.environ.get("LUGALOS_C6_PORT")
+# Which C6 is which on *this* host (49.5): a C6-Zero and the C6-MINI beside a
+# P4 are both USB-Serial/JTAG ports, told apart only by serial number (the
+# chip's MAC) -- a fact about a unit, so it lives outside the repository, as
+# the P4's ~/.config/lugalos/p4-ports.env does. KEY=VALUE lines:
+#
+#   LUGALOS_C6_ZERO_PORT=/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_AC:EB:..-if00
+#   LUGALOS_C6_NANO_PORT=/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_58:E6:..-if00
+BOARDS_FILE = os.path.expanduser("~/.config/lugalos/c6-ports.env")
+
+
+def board_port(name):
+    """The port configured for `name` (zero, nano, ...), or exit saying where to put it."""
+    cfg = {}
+    try:
+        with open(BOARDS_FILE) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    cfg[k.strip()] = v.strip()
+    except OSError:
+        pass
+    cfg.update({k: v for k, v in os.environ.items() if k.startswith("LUGALOS_C6_")})
+    key = "LUGALOS_C6_%s_PORT" % name.upper().replace("-", "_")
+    if key not in cfg:
+        sys.exit("board '%s' has no %s in %s or the environment" % (name, key, BOARDS_FILE))
+    return cfg[key]
+
+
+def find_port(explicit, board=None):
+    p = explicit or (board_port(board) if board else None) or os.environ.get("LUGALOS_C6_PORT")
     if p:
         return p
     found = sorted(glob.glob(BYID))
     if not found:
         sys.exit("no USB-Serial/JTAG device found (looked for %s)" % BYID)
     if len(found) > 1:
-        sys.exit("several candidates, pick one with --port:\n  " + "\n  ".join(found))
+        sys.exit("several candidates, pick one with --board (%s) or --port:\n  %s"
+                 % (BOARDS_FILE, "\n  ".join(found)))
     return found[0]
 
 
@@ -154,6 +184,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("image", nargs="?", help=".elf or .img to load into RAM and run")
     ap.add_argument("--port")
+    ap.add_argument("--board", help="zero, nano, ... -- a port from ~/.config/lugalos/c6-ports.env")
     ap.add_argument("--kernel", metavar="BUILD_DIR", help="a LugalOS build directory (build/esp32c6)")
     ap.add_argument("--listen", action="store_true", help="watch the console and exit")
     ap.add_argument("--cmd", action="append", default=[], metavar="LINE", help="type LINE at the console after the listen window (repeatable)")
@@ -166,7 +197,7 @@ def main():
     if a.ports:
         print("\n".join(sorted(glob.glob(BYID))) or "(none)")
         return
-    port = find_port(a.port)
+    port = find_port(a.port, a.board)
     if a.kernel:
         kernel_flash_if_changed(port, a.kernel)
         a.image = os.path.join(a.kernel, "lugalos-ram.elf")

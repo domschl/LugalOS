@@ -1,3 +1,4 @@
+#include "kernel/llp_node.h"
 #include "kernel/device.h"
 #include "lugalos_config.h"
 #include "drivers/uart.h"
@@ -212,6 +213,7 @@ static int   probe_virtio_blk(void)     { return virtio_blk_init(); }
 static void *get_virtio_blk(void)       { return virtio_blk_get_device(); }
 static int   probe_virtio_net(void)     { return virtio_net_init(); }
 static void *get_virtio_net(void)       { return virtio_net_get_netif(); }
+static void *get_llp(void)              { return llp_node_p9_link(); }
 #endif
 
 /* --- The tables ---
@@ -324,7 +326,12 @@ static const dev_driver_t dev_enc28j60 = {
 };
 #endif
 #elif defined(CONFIG_BOARD_ESP32C6)
-/* 45.4: a stated emptiness, as the P4's was at E2 -- see the declarations above. */
+/* 45.4: a stated emptiness, as the P4's was at E2 -- see the declarations above.
+ * 49.3: except 9P over LLP, once `llp radio` has armed it on the USB port. */
+static void *get_llp(void) { return llp_node_p9_link(); }
+static const dev_driver_t dev_llp = {
+    .name = "llp", .kind = DEV_KIND_P9LINK, .get = get_llp,
+};
 #elif defined(CONFIG_BOARD_ESP32P4)
 /* E2, plan/phase27_esp32p4_bringup.md, amended by phase 28's Z4: this board
  * had no device table of its own at all until the EMAC arrived. The entries
@@ -347,6 +354,12 @@ static const dev_driver_t dev_sdmmc = {
 static const dev_driver_t dev_vconsole = {
     .name = "vconsole", .kind = DEV_KIND_P9LINK, .flags = DEV_F_BACKGROUND_9P, .wire = DEV_WIRE_VIRTIO,
     .probe = probe_virtio_console, .get = get_virtio_console,
+};
+/* 49.2: 9P over LLP, once `llp host|radio` has started the node -- until
+ * then get() returns NULL and the name resolves to nothing. Same wire as
+ * `vconsole`: LLP takes the channel over, and the claim says so. */
+static const dev_driver_t dev_llp = {
+    .name = "llp", .kind = DEV_KIND_P9LINK, .wire = DEV_WIRE_VIRTIO, .get = get_llp,
 };
 static const dev_driver_t dev_vblk = {
     .name = "vblk", .kind = DEV_KIND_BLOCK,
@@ -415,12 +428,14 @@ void board_register_devices(void) {
     dev_register(&dev_enc28j60);
 #endif
 #elif defined(CONFIG_BOARD_ESP32C6)
-    /* Nothing beyond the unconditional entries above (45.4). */
+    /* Nothing beyond the unconditional entries above (45.4), and LLP (49.3). */
+    dev_register(&dev_llp);
 #elif defined(CONFIG_BOARD_ESP32P4)
     dev_register(&dev_emac);
     dev_register(&dev_sdmmc);
 #else
     dev_register(&dev_vconsole);
+    dev_register(&dev_llp);
     dev_register(&dev_vblk);
     dev_register(&dev_vnet);
 #endif
@@ -429,9 +444,39 @@ void board_register_devices(void) {
 /* See kernel/device.h. Only RP2350 has something to ask; the QEMU targets have
  * no reset path this kernel can reach, and saying so is better than pretending
  * to reboot and continuing. */
+#if defined(CONFIG_BOARD_ESP32C6)
+/* 49.5: the C6's ROM restarts the whole system -- IDF's
+ * esp_rom_software_reset_system(), `software_reset` in esp_rom's
+ * esp32c6.rom.ld (0x40000090). The ROM's own address on purpose, not a linked
+ * symbol: the radio's ROM scripts rename what they import (45.6), and this is
+ * the kernel's, used once, on the way down. */
+#define C6_ROM_SOFTWARE_RESET 0x40000090u
+/* LP_AON_SYS_CFG_REG (lp_aon_reg.h): always-on, so it survives the reset, and
+ * bit 30 tells the ROM to enter its download mode instead of booting -- what a
+ * board with no reachable BOOT strap (the C6-MINI behind a P4) needs. */
+#define C6_LP_AON_SYS_CFG      0x600B1034u
+#define C6_FORCE_DOWNLOAD_BOOT (1u << 30)
+
+static void c6_reset(bool download) {
+    if (download) *(volatile uint32_t *)C6_LP_AON_SYS_CFG |= C6_FORCE_DOWNLOAD_BOOT;
+    uart_flush_critical();
+    ((void (*)(void))C6_ROM_SOFTWARE_RESET)();
+}
+
+bool board_reset_download(void) {
+    c6_reset(true);
+    return false;                      /* not reached */
+}
+#else
+bool board_reset_download(void) { return false; }
+#endif
+
 bool board_reset(void) {
 #if defined(CONFIG_BOARD_RP2350)
     return rp2350_reboot();
+#elif defined(CONFIG_BOARD_ESP32C6)
+    c6_reset(false);
+    return false;                      /* not reached */
 #else
     return false;
 #endif

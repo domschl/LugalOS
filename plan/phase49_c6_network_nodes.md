@@ -214,7 +214,7 @@ brief:
  ───────────────                                  ───────────────
  net/ (DHCP,TCP,9P,MQTT,NTP)                      radio domain (U-mode, blob)
    │ netif_t "wlan0"                                 │ RX/TX frame rings (45.7)
- drivers/llp_netif.c ─┐                            ┌─ kernel/llp_bridge.c   (modem persona: rings ⇄ ETH frames)
+ kernel/llp_node.c ───┐                            ┌─ kernel/llp_node.c     (radio role: interface ⇄ ETH frames)
  fs/p9_link (/c6) ────┤                            ├─ fs/p9_link (/p4 optional, 49.9)
                       ▼                            ▼
               kernel/llp.c  (framing, HELLO, credits, PROBE — shared, host-tested)
@@ -434,54 +434,214 @@ without USB.
     `PROBE` added; CRC-32 instead of CRC-16; frame-vs-9P priority moved to the
     bindings (49.2).
 
-* **49.2 Two QEMU nodes, one channel.** A "modem" node (rv32, virtio-net as its
-  stand-in radio) and a "host" node (no NIC) joined by virtio-console carrying
-  LLP: `kernel/llp_bridge.c` on the first, `drivers/llp_netif.c` (`wlan0`) on the
-  second. The host node gets a DHCP lease from QEMU's user network *through* the
-  modem node, answers 9P on 564 from the outside, and mounts the modem at `/c6`.
-  Runs in `tests/runner.py`. *Done when:* the multi-node test passes 20 runs in a
-  row (the phase-5 lesson: one-in-three races only show up on repetition), and
-  the modem node holds no TCP state for the host's traffic.
+* **49.2 Two QEMU nodes, one channel — DONE 2026-10-12.** An rv32 *radio*
+  (virtio-net on slirp, its stand-in Wi-Fi) and an rv64 *host* (no network
+  device) joined by their virtio-consoles through a unix socket, carrying LLP's
+  serial binding. `kernel/llp_node.c` is both roles in one file, not the
+  `llp_bridge.c` / `llp_netif.c` pair sketched here: they share the pump, the
+  queues and the 9P link, and differ only in where an Ethernet frame goes.
+  * **`llp radio`**: the node's stack lets go of its interface
+    (`net_stack_detach()`, new), every frame goes over the link both ways, and
+    the interface's MAC goes to the host in HELLO and its link state in STATE.
+  * **`llp host`**: on the first handshake the node registers `wlan0` with the
+    radio's MAC, attaches its stack and starts DHCP; the lease comes from slirp
+    *through* the radio (10.0.2.15).
+  * **Both** serve 9P over LLP's P9 frames: the `llp` link, a device on the same
+    wire as `vconsole` (whose 9P pump gives the channel up). The host mounts the
+    radio with the existing `(mount-remote "c6" "llp")`.
+  * **One task owns the link** (`llp`). Everyone else only queues frames for it
+    under a spinlock, P9 before ETH: the binding's priority rule (§3). The
+    credit window is the smaller of the two receive queues' room (8 ETH, 4 P9
+    slots), because LLP's credits count frames, not types.
+  * **The test** (`test_llp_two_nodes`, runner): handshake with the radio's MAC,
+    `wlan0`, the lease, `/c6` mounted. Then, from outside, an authenticated 9P
+    session to the host's own TCP/564 (every frame through the radio): the
+    host's `/proc/cpuinfo` (S-mode, rv64), `init.lisp` and a 34 KB CAS file
+    byte for byte; and through the host's `/c6`, the radio's `/proc/cpuinfo`
+    (M-mode, rv32) and a 33 KB file from the radio's card, a 9P request
+    crossing TCP, the bridge and LLP. The radio reports no interface of its own;
+    neither side counts CRC errors, losses or full queues. **20 of 20 runs
+    pass, about 1.3 s each, ~210 frames bridged per run.**
+  * **What it does not test:** flow control under pressure. 9P keeps one
+    request in flight and our TCP's 4 KB window about three frames, so the
+    receive window never fills here ("held for credit": 0, reported in the
+    result line). The host harness's soak (`llp_host.c`) is where credits run
+    out and recover; a UART (49.3, 49.10) is where they will matter on a wire.
 
 ### The C6 as a NIC, on the C6-Zero
 
-* **49.3 C6-Zero modem persona over serial** (= 45.13). Persona selection (D4),
-  `llp_bridge.c` on the real rings, `/c6/wlan/*` files, the STA MAC handed over in
-  `HELLO`. First wire: the C6-Zero's USB-Serial/JTAG with the console and LLP
-  demultiplexed (as `p9share` does), the Python reference as the host — it takes
-  a DHCP lease with the C6's MAC and pings the gateway; with privileges, an
-  optional TAP bridge gives the PC a `wlan` interface through the C6. *Done
-  when:* `test_esp32c6.py` gains a modem check (lease + ping through the bridge),
-  the stand-alone checks still pass with no host attached, and the C6's heap in
-  the modem persona is recorded against the 60 KB of 45.11.
+* **49.3 C6-Zero radio role over its USB port — DONE 2026-10-12** (= 45.13).
+  The C6-Zero, with real Wi-Fi, is the network card of a host on the other end
+  of its one USB cable: this PC, played by the Python reference.
+  * **One cable, two users.** `drivers/usbjtag_esp32c6.c` gains a
+    demultiplexer, armed by `llp radio` and off until then. Inbound bytes from
+    one SLIP END to the next go to LLP, everything else to the console.
+    Outbound, LLP's pump is the only writer to the FIFO: console text from every
+    other task is queued and written *between* frames. No console byte lands in
+    a frame, and nothing masks interrupts for a frame's length; the radio's
+    interrupt path runs on this core. Fatal-path output stays direct.
+  * **`llp_node.c` on the C6:** its radio role bridges the Wi-Fi netif exactly
+    as it bridged virtio-net in 49.2. Buffers now come from pages at start,
+    sized by role: the C6 has no Ethernet queues, two 9P slots in and one out,
+    and a one-page task. Frames are streamed to the FIFO
+    (`llp_serial_emit()`, new, checked byte for byte against the encoder by the
+    host harness) instead of encoded into a 3-page buffer.
+  * **The host side:** `host/llp` gains `SerialNode`, a pump thread owning the
+    port, with the same console/frame split and 9P before Ethernet. It also
+    gains `net.Host`, enough of an IP stack for DHCP, ARP and ping, built by
+    hand. Its `P9Socket` lets `p9lib` run over LLP's P9 frames, and the
+    `llp host --port … --arm --dhcp --ping N --cat PATH --cmd LINE` CLI ties
+    them together. **Lesson:** the host must not send its first HELLO until
+    the radio has armed LLP. The first attempt's HELLOs reached the C6's line
+    editor as keystrokes, where an escape byte recalled history.
+  * **On the silicon** (`test_esp32c6.py`, now **21/21**, the LLP check last
+    because the role lasts until reset; the twenty stand-alone checks pass with
+    no host attached): `llp radio`; the handshake carries the board's station
+    MAC; STATE says Wi-Fi up; a DHCP lease **for the board's MAC** from the home
+    router through the bridge (192.168.178.161); the gateway answers 3/3; and
+    `/proc/version` (with its `tainted` line) and `/proc/node` read over 9P on
+    the same link. No CRC errors, losses or overflows on either side.
+  * **Measured:**
+    * **Heap in the radio role: 8–16 KB free**, down from 36–44 KB before
+      arming. LLP takes 24 KB of buffers plus a 4 KB stack. This is far below
+      45.11's 60 KB, which no longer holds, because the kernel has grown since.
+      It is the tightest number in this phase and 49.5 has to watch it: the
+      C6-MINI runs the same kernel plus an SDIO slave.
+    * **Ping to the gateway through the bridge: 37–96 ms.** For comparison,
+      the same PC pinging the C6's *own* stack over Wi-Fi gets 13–104 ms
+      (average 29). Wi-Fi latency dominates; the bridge adds perhaps 10–20 ms
+      (polled USB). That is for 49.9 to measure properly.
+  * **Not done here, deliberately:**
+    * **`/c6/wlan/*` control files** move to 49.7, where a P4 first hands the
+      C6 its credentials (D5). Today the C6 joins from its own identity record,
+      and its whole `/proc` is already readable over LLP's 9P.
+    * **Persona selection on HELLO (D4)** moves to 49.6. On the C6-Zero the
+      shared port is a human's console, so LLP is armed explicitly. On the
+      C6-MINI, SDIO is a dedicated channel and arming at boot is natural.
+    * **The optional TAP bridge.** `net.Host` proves the frames pass without
+      needing root.
+  * "Held for credit" now counts episodes, not retries, in C and Python. A
+    radio whose host has gone counted 28 000 in a minute.
 
 ### SDIO
 
-* **49.4 P4 SDIO host, against the factory slave** (= 45.14). Slot 1 on
-  GPIO14–19 via the GPIO matrix, the controller shared with the microSD slot
-  (§4), GPIO54 reset (open-drain, §5.1; `c6 reset`). NANO first, its C6
-  still factory and backed up (§5.3). CMD0/CMD5/CMD3/CMD7, CCCR/FBR/CIS through CMD52, 4-bit
-  bus, CMD53 byte and block mode, the card interrupt on DAT1. Reference: IDF's
-  ESP-Hosted host built for the P4 (toolchain in `~/.espressif`), register and
-  bus traces diffed against ours. `sdio` shell command: card info, CIS, a raw
-  CMD53 read of the slave's registers. *Done when:* the factory C6 enumerates
-  from cold and warm reset on both boards, the microSD still works with both
-  slots in use (`sdbench` unchanged), and CMD53 throughput at the highest stable
-  clock is recorded.
+* **49.4 P4 SDIO host — DONE 2026-10-12, on the NANO** (= 45.14).
+  `drivers/sdio_esp32p4.c`: slot 1 of the SD/MMC host on GPIO14–19 through the
+  GPIO matrix (CLK 18, CMD 19, D0–D3 14–17, from the schematic and identical to
+  ESP-Hosted's P4 defaults). The C6's reset on GPIO54, open-drain only.
+  * **One controller, two slots.** `drivers/sdmmc_esp32p4.c` keeps the
+    controller and slot 0 (the microSD) and exports a small API
+    (`drivers/sdhost_esp32p4.h`). Every use runs under a re-entrant ylock with a
+    current card, which goes into each command. Each card's bits of `CLKENA`,
+    `CLKSRC`, `CLKDIV`, `CTYPE` and `RST_N` are its own. Status clears spare
+    `[31:16]` (the cards' SDIO interrupts). The host divider is fixed at
+    160/8 = 20 MHz, which the microSD takes undivided; 400 kHz is 20/(2×25),
+    and each card picks its own second stage. **The microSD is unaffected:**
+    `sdbench` 1610–1617 KB/s (phase 35: 1547), and the P4 suite's SD checks
+    pass with both slots in use.
+  * **The bring-up:** an I/O reset (CCCR RES) first, since a card that already
+    has an address ignores CMD5. Then CMD5 until ready, CMD3, CMD7; the CCCR;
+    the CIS's MANFID; function 1 enabled; 512-byte blocks; 4-bit. CMD52, and
+    CMD53 in byte and block mode through one IDMAC descriptor (up to 4 KB, a
+    bounce buffer of its own). Shell: `sdio`, `sdio probe [khz]`, `reset`,
+    `rd52`, `wr52`, `rd53`, `bench` (numbers in hex).
+  * **The reference was the C6 itself, not ESP-Hosted** (D7 amended): the 7B
+    was not attached, and the NANO's factory image had been replaced in 49.5.
+    Two things answered as known-good Espressif slaves:
+    * the ROM's download mode (`reboot download`), whose CIS says device
+      **0x100d**;
+    * **the SDIO slave hardware itself.** With LugalOS on the C6, CMD5, CMD52
+      and the CCCR/CIS still answer (device **0x6666**, the hardware default),
+      so the host can be tested whatever the C6 runs.
+  * **On the silicon:** OCR `0xa0ffff00` (2 functions), CCCR rev 0x32 (SDIO
+    3.0), caps 0x17, vendor **0x0092** (Espressif), function 1 ready, 4-bit.
+    A CMD53 read of the CCCR agrees byte for byte with CMD52.
+  * **Speed:**
+    * **10 MHz works, 20 MHz does not:** commands pass at 20 MHz but no data
+      phase completes. The ROM samples and drives on the falling edge
+      (`SDIO_FEI_FEO`; MTMS/MTDI read low on this module, C6 datasheet
+      Table 3-4) and slot 1 adds the GPIO matrix's delay.
+    * **CMD53 throughput at 10 MHz, 4-bit: 1675 KB/s** in 256-byte reads (603
+      KB/s in 16-byte ones: per-command cost). 2.5 MHz: 444 KB/s.
+    * 49.6 sets our own slave's edges, which the C6's SDIO slave allows, and
+      tunes the P4's sample phase.
+  * **`test_esp32p4.py` gains `test_sdio_slot1`:** probe at 10 MHz, vendor
+    0x0092, 4-bit, CMD53 = CMD52. **37/37 on the NANO.**
+  * **Two bugs found on the way, fixed:**
+    1. **The C6's USB console died on every cold boot** (power-on, or EN pulled
+       by the P4). `drivers/usbjtag_esp32c6.c`'s "host gone" path dropped its
+       byte count without committing the FIFO (`WR_DONE`). After a power-on
+       reset re-enumerates the port, the boot log filled the FIFO before the
+       host read it, and a FIFO full of uncommitted bytes never drains. The
+       kernel ran on (Wi-Fi, DHCP, ping) with a silent console. A USB reset
+       keeps the host reading, so no test ever saw it. Fixed (commit, keep
+       committing while full); 3/3 cold boots answer. **This is also phase
+       45's open "stall at breadcrumb 0x61"** (2026-10-06): 0x61 is where a
+       *healthy* radio ends up after a reconnect (`radio_plat_phy_enable()`
+       writes 0x60/0x61 and takes the calibrated path with no further
+       breadcrumbs), and the silence was this console.
+    2. **`lcdterm.c`** declared a buffer only the U-mode terminal uses on
+       boards without one (a warning on the 7B since 47.7).
+  * **Kept as instruments:**
+    * the C6's console is copied to its **UART0** (bounded, never waits: the
+      ROM has it at 115200; header P2 pin 22 on the NANO). That is how the
+      cold boot was read when USB said nothing.
+    * the tick breadcrumbs gain the return address and task (LP_AON stores 5
+      and 6) beside the PC.
+  * **The LCD-7B (2026-10-12, same build, P4 rev v3.2):** up at the first probe
+    against its on-board C6 (vendor 0x0092, device 0x6666, CCCR rev 0x32, 4-bit).
+    1646 KB/s at 10 MHz, as on the NANO -- **and 20 MHz carries data there:
+    2823 KB/s**, the CIS reads byte-identical at 10 and 20 MHz. The NANO's
+    data phase does not at 20 MHz, with the same driver and the same C6 slave
+    hardware. So the limit is the board (or the v1.3 silicon's matrix/pad
+    timing), not the protocol. Which one is not yet known: 49.6 tunes the
+    sample phase on both. `test_esp32p4.py --board lcd7b`: 37/37.
+  * **Not done:** the card interrupt (49.6).
+    Concurrent use of both slots is serialised by the lock but has not been
+    exercised under load (the shell runs one command at a time).
 
-* **49.5 LugalOS on the C6-MINI.** The board facts of §5.2; the
-  `esp32c6-mini` preset and 4 MB flash map; first flash through header P2
-  (§5.3: wiring B with `c6flash.py` if the USB pair works, else wiring A with
-  the IO9 jumper). Two small pieces of kernel work come with it. First, the C6 kernel's only console
-  is the USB-Serial/JTAG (`drivers/usbjtag_esp32c6.c`): with wiring A alone,
-  a UART0 console driver (GPIO16/17; probably the P4's `uart_esp32p4.c` IP) is
-  needed first. Second, `reboot download` sets `LP_AON_FORCE_DOWNLOAD_BOOT`
-  (`LP_AON_SYS_CFG_REG` bit 30) and resets, so a running C6 enters the ROM's
-  download mode without the IO9 jumper, which is then only for recovery.
-  The radio, the join and
-  the stand-alone persona as on the C6-Zero, with the module's antenna. *Done
-  when:* `test_esp32c6.py` passes on the NANO's C6 (its non-applicable checks —
-  LED, I2C sensors — skipping), and the LCD-7B's C6 is still factory.
+* **49.5 LugalOS on the C6-MINI — DONE 2026-10-12, on the NANO.** The NANO's
+  C6 runs LugalOS from its own flash, joins Wi-Fi from its own identity record
+  at boot, and passes the whole C6 suite: **21/21, flash-booted, `--no-load`.**
+  * **Preset `esp32c6-mini`** (`cmake/board-esp32c6-mini.cmake`): the chip
+    facts are the C6-Zero's (an ESP32-C6FH4, rev v0.2). The **4 MB map**
+    (`cmake/flash_layout_esp32c6_mini.cmake`, selected by
+    `LUGALOS_C6_MODULE=MINI`, since the map is read before the board file):
+    stage 2 128 KB, OS slot A 1.5 MB, **slot B 1.5 MB reserved now for 49.8**,
+    832 KB spare, identity at `0x3F0000`. The OS image is 1.0 MB. No `/flash0`;
+    the C6 does not mount one. The persona follows from the board file's name.
+  * **Console:** the C6's own USB on header P2 21/23 (§5.3, wiring B), so
+    `c6run.py`/`c6flash.py`/the suite work unchanged. `c6flash.py` now takes
+    the flash size from the manifest (a new `flash` line) instead of assuming
+    8 MB.
+  * **`--board zero|nano`** for `c6run.py`, `c6flash.py` and
+    `test_esp32c6.py`, from `~/.config/lugalos/c6-ports.env` (serial = MAC),
+    as the P4's `p4-ports.env`. With both C6s attached, no tool guesses.
+  * **Provisioned** `nano-c6` with the WLAN credentials, through the suite's own
+    helpers (only the derived PSK reaches the board; nothing printed). The
+    record lands at the new map's `0x3F0000` and survives the flash boot.
+  * **`reboot` works on the C6 now** (it said "not supported": `board_reset()`
+    had no C6 arm). It calls the ROM's system reset (`software_reset`,
+    0x40000090). **`reboot download`** sets `LP_AON_SYS_CFG.FORCE_DOWNLOAD_BOOT`
+    first. Verified: the ROM waits in download mode, and esptool connects with
+    `--before no-reset`. This is what a C6 behind a P4 needs, since the P4
+    cannot reach its BOOT strap. **One trap, found and understood:** a kernel
+    started by `c6run.py` (a USB reset *into* download mode, then `load-ram`)
+    has its boot mode latched as download, so even a plain `reboot` comes back
+    in download mode. A flash-booted C6 reboots into LugalOS (verified on the
+    Zero). That is the chip's strap latch, not this code: IDF's restart behaves
+    the same.
+  * **The module's quirks are harmless:** GPIO8 (the Zero's LED) is a strap
+    with a pull-up here; the RMT frame completes with nothing attached.
+    GPIO0/1 (the Zero's I2C) are unconnected; the scan finds nothing and the
+    sensor check skips.
+  * **Measured, radio role on the MINI: 44 KB heap free** (no sensors or MQTT,
+    unlike the Zero's 8–16 KB). This is the budget 49.6's SDIO slave comes out
+    of. Ping to the gateway through the bridge: 31 ms.
+  * **D7 note:** this overwrote the NANO's factory ESP-Hosted, the planned SDIO
+    reference for 49.4. It is backed up and verified on the chip
+    (`~/Source/gith/esp/p4nano-c6-factory-flash/`); the **LCD-7B's C6 is still
+    factory** and is now 49.4's reference.
 
 * **49.6 C6 SDIO slave + LLP over SDIO** (= 45.15). Packet mode, DMA
   descriptors, receive tokens as LLP's credits, interrupts both ways, link state
@@ -494,7 +654,7 @@ without USB.
 
 ### Scenario 1 — networking for the P4 boards
 
-* **49.7 `wlan0` on the P4** (= 45.16). `llp_netif.c` over SDIO; credentials
+* **49.7 `wlan0` on the P4** (= 45.16). `llp_node.c`'s host role over SDIO; credentials
   from the P4's identity record (D5); DHCP with the C6's MAC (D3); on the NANO,
   `eth0` and `wlan0` side by side with a stated rule for which carries the
   default route. Everything in §1.1 (a)–(e) over Wi-Fi: authenticated 9P from the
@@ -536,7 +696,7 @@ without USB.
   over SLIP + CRC on the RP2350's UART1 (`drivers/uart1_link_rp2350.c`'s pins,
   today 115200 baud). Bandwidth first: the highest baud both PL011 and the C6's
   UART hold without loss over the actual wiring. The RP2350's stack and its 2 KB
-  msize stay as they are; `wlan0` reuses `llp_netif.c`. *Done when:*
+  msize stay as they are; `wlan0` is `llp_node.c`'s host role. *Done when:*
   `test_rp2350.py` gains a Wi-Fi check through the C6-Zero, and the terminal's
   suite and `lcdterm_shots.py` are unchanged.
 
@@ -559,7 +719,7 @@ without USB.
 
 | What | Value | Milestone |
 |---|---|---|
-| CMD53 throughput, factory slave | — | 49.4 |
+| CMD53 throughput (hardware slave, 4-bit, 256 B reads) | 1675 KB/s at 10 MHz (NANO); 2823 KB/s at 20 MHz (7B) | 49.4 |
 | LLP loopback over SDIO, each way | — | 49.6 |
 | C6 heap free, modem persona | — | 49.3 / 49.7 |
 | 9P file read host → P4: via `wlan0` / via C6 `/p4` proxy | — / — | 49.9 |
