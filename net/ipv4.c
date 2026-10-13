@@ -3,7 +3,7 @@
 #include "net/tcp.h"
 #include <string.h>
 
-/* IPv4 (R2, plan/phase19_ip_stack_and_ethernet.md).
+/* IPv4.
  *
  * Unicast in and out, the header checksum, and a hard refusal to reassemble.
  * §2 of the plan states the trade: a fragment is counted and dropped, and we

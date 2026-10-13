@@ -1,4 +1,4 @@
-/* USB boot keyboard, portable half -- 36.8, plan/phase36_rp2350_lcd7_terminal.md.
+/* USB boot keyboard, portable half.
  * See drivers/include/drivers/usbkbd.h.
  *
  * Everything above the selftest runs in the U-mode `kbd` task on the
@@ -320,7 +320,7 @@ uint32_t usbkbd_translate(usbkbd_xlate_t *x, uint32_t ev, uint32_t now_ms, uint8
         if (u == x->repeat_usage) x->repeat_usage = 0;
         return 0;
     }
-    /* 37.5a & Phase 44: the window manager / screen's keys, before anything else sees them. */
+    /* the window manager / screen's keys, before anything else sees them. */
     if (x->mods & MOD_GUI) {
         bool sh = (x->mods & MOD_SHIFT) != 0;
         bool ct = (x->mods & MOD_CTRL) != 0;

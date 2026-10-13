@@ -2,7 +2,7 @@
  * arch/riscv/include/arch/rp2350_clocks.h -- the RP2350's clk_sys, as one
  * board fact instead of a literal in every driver.
  *
- * 36.1, plan/phase36_rp2350_lcd7_terminal.md §3.3. Until this existed,
+ * 36.1, . Until this existed,
  * `150000000` (or "150 MHz" in a comment beside a hand-computed divider) was
  * written into boot_header.S, uart_rp2350.c, uart1_link_rp2350.c,
  * gps_pps_rp2350.c, i2c_bus.c, spisd_rp2350.c and pico_clock_green_rp2350.c

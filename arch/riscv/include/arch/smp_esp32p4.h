@@ -1,5 +1,5 @@
 /* The ESP32-P4's second HP core. 34.9,
- * plan/phase34_esp32p4_pll_bringup.md.
+ * .
  *
  * At 34.9 core 1's entire program is a counter, which is the point -- see
  * the .c file for why proving that separately from everything above it is

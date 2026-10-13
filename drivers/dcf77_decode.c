@@ -1,5 +1,5 @@
 /*
- * DCF-77 frame decoder (D1, plan/phase17_clock_ui_and_dcf77.md).
+ * DCF-77 frame decoder.
  * See drivers/include/drivers/dcf77_decode.h for the protocol and the API.
  */
 

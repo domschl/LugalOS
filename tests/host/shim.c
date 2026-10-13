@@ -1,6 +1,6 @@
 /*
  * The kernel services the host harnesses' modules call, implemented on the
- * host C library (phase 40 review). Just enough for the modules under test to
+ * host C library. Just enough for the modules under test to
  * link: output, locks that do nothing (the harnesses are single-threaded),
  * pages from the C heap, and a tiny in-memory file table standing in for the
  * VFS. A module that needs more gets a stub in its own harness, so this file

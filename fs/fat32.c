@@ -257,7 +257,7 @@ static uint32_t fat_alloc_cluster(fat32_fs_t *fs) {
          * the next one". A failed read empties the FAT cache, so with the
          * card pulled every cluster of the volume cost its own failed SD
          * read: the shell's history mkdir after the pull spun for the best
-         * part of an hour on the LCD-7 (phase 40 item 3, 2026-10-04). */
+         * part of an hour on the LCD-7. */
         uint32_t v;
         if (!fat_read_entry(fs, c, &v)) {
             fs->alloc_io_error = true;
@@ -301,7 +301,7 @@ typedef bool (*fat32_dir_scan_fn)(fat32_fs_t *fs, uint32_t sector_lba,
  * using one correct implementation everywhere instead of seven hand-rolled
  * ones. */
 /*
- * A damaged chain ends the scan (phase 40 review, found by
+ * A damaged chain ends the scan (review, found by
  * tests/host/fat32_host.c on corrupted images). The walk used to stop only
  * at an end-of-chain marker, so a FAT entry pointing back into its own chain
  * -- one flipped bit on a card -- looped forever: the shape of "pulling the
@@ -398,7 +398,7 @@ static uint32_t fat32_get_parent_cluster(fat32_fs_t *fs, const char *path, char 
     if (strlen(path) >= sizeof(path_copy)) return 0;
     safe_strncpy(path_copy, path, sizeof(path_copy));
 
-    /* "system/" names "system" (phase 40, item 4). The trailing separators
+    /* "system/" names "system". The trailing separators
      * used to leave an empty final component, so `ls /flash0/system/` said
      * "not found" while `ls /flash0/system` worked. Whether the name must
      * then be a directory is the caller's check (fat32_find_file()). */
@@ -437,7 +437,7 @@ int fat32_format(block_dev_t *dev) {
     return fat32_format_quiet(dev, false);
 }
 
-/* The layout is sized from the volume (38.6, plan/phase38_psram.md). It used
+/* The layout is sized from the volume. It used
  * to be fixed -- 512-byte clusters and an 8-sector FAT -- which addresses
  * 1022 clusters, 511 KB: the whole of every RAM disk while the cap was
  * 512 KB, and a quarter of the LCD-7's 2 MB one, which mounted at "75 %
@@ -579,7 +579,7 @@ int fat32_init_quiet(fat32_fs_t *fs, block_dev_t *dev, bool quiet) {
     if (fat_entries >= 2 && fs->total_clusters > fat_entries - 2) fs->total_clusters = fat_entries - 2;
 
     /* A boot sector this driver cannot use is refused, with the reason
-     * (phase 40 review). Everything here assumes 512-byte sectors and walks
+     *. Everything here assumes 512-byte sectors and walks
      * the FAT from fat_sz32, so a card with 4 KB sectors, or a FAT16 volume,
      * used to mount and then read the wrong bytes everywhere; a cluster size
      * of 0, no FAT, or a root directory outside the volume mounted a

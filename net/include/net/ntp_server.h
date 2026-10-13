@@ -3,7 +3,7 @@
 
 /*
  * Serving time to the segment (P6,
- * plan/phase24_dcf77_precision_and_ntp_server.md).
+ * ).
  *
  * **The design principle is §4's, and it is the whole reason the protocol half
  * is not merely mechanical: a server that advertises a confidence it cannot

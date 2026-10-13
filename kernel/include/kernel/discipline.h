@@ -2,8 +2,7 @@
 #define KERNEL_DISCIPLINE_H
 
 /*
- * Disciplining the wall clock from a phase reference (P5,
- * plan/phase24_dcf77_precision_and_ntp_server.md).
+ * Disciplining the wall clock from a phase reference.
  *
  * **Every accepted frame is a phase measurement; a run of them is a frequency
  * measurement.** That sentence is the whole design. A clock set once a night

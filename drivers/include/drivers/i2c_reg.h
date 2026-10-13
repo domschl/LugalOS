@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* I2C Register & Command Helpers (Layer 1, phase 46 §3).
+/* I2C Register & Command Helpers.
  *
  * Provides standard register read/write and command transfer operations
  * layered on top of the Category E bus arbiter i2c_xfer() (drivers/i2c_bus.h).

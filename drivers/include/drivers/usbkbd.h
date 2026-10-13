@@ -7,7 +7,6 @@
 #include "drivers/kbd_attr.h"
 
 /* A USB boot keyboard, above the transaction interface -- 36.8,
- * plan/phase36_rp2350_lcd7_terminal.md §3.2.
  *
  * Portable: nothing here touches hardware. drivers/usbkbd_rp2350.c's `kbd`
  * task feeds it descriptors and reports from the PIO-USB engine; QEMU feeds
@@ -45,15 +44,14 @@ int usbkbd_diff(const uint8_t prev[8], const uint8_t cur[8], uint32_t *ev, uint3
 /* --- Key events to terminal bytes (36.9): kernel side, not U-mode ------------
  *
  * US layout only (plan §4.4): Shift and Ctrl change a byte. Since 37.5a
- * (plan/phase37_screen_layouts_and_apps.md) the other modifiers send what a
+ * the other modifiers send what a
  * modern terminal sends, so that kernel/keyseq.c reads the panel's keyboard
  * and a host's terminal alike: Alt is an ESC prefix; Shift, Alt, Ctrl or
  * Super with an arrow, Home, End or a ~ key is xterm's ESC [ 1 ; m X or
  * ESC [ n ; m ~ (m = 1 + Shift 1 + Alt 2 + Ctrl 4 + Super 8); Super with
  * anything else is CSI-u, ESC [ cp ; m u with the unshifted key's code
  * point; Ctrl-Space is NUL. Super+[ , Super+] , Super+\\ and Super+Shift+3
- * are the screen's (USBKBD_HOTKEY_*) and send nothing. **Caps Lock is the compose key** (37.2,
- * plan/phase37_screen_layouts_and_apps.md §3.2): Caps, then two keys, gives
+ * are the screen's (USBKBD_HOTKEY_*) and send nothing. **Caps Lock is the compose key**: Caps, then two keys, gives
  * one character as UTF-8 -- `Caps " a` is ä, `Caps = e` is € -- by X11's
  * compose conventions, in either order. An unknown pair gives nothing; Esc
  * or Caps again cancels; any other key (Enter, an arrow) cancels and does

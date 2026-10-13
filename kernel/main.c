@@ -58,10 +58,10 @@
 #include "drivers/virtio_console.h"
 #include "drivers/virtio_blk.h"
 #elif defined(CONFIG_BOARD_ESP32C6)
-/* 45.4, plan/phase45_esp32c6.md: no virtio, no RP2350 drivers, and no block
+/* ESP32-C6: no virtio, no RP2350 drivers, and no block
  * device at all yet -- the C6 has no card slot, and /flash0 waits for 45.4.3. */
 #elif defined(CONFIG_BOARD_ESP32P4)
-/* E2, plan/phase27_esp32p4_bringup.md: neither set of headers. This board has
+/* ESP32-P4: neither set of headers. This board has
  * no virtio (it is not QEMU) and none of the RP2350 drivers below -- 35.3's
  * SD/MMC card is its own, and is the one storage header it does take. */
 #include "drivers/sdmmc.h"
@@ -213,10 +213,10 @@ void kernel_main(void) {
 #endif
 
 #if defined(CONFIG_BOARD_ESP32P4)
-    /* 34.3, plan/phase34_esp32p4_pll_bringup.md. The boot ROM leaves the
+    /* The boot ROM leaves the
      * HP_ACTIVE regulator at IDF's *uncalibrated* default of 24 without ever
      * applying this chip's own eFuse trim, which asks for 25. That is free at
-     * 40 MHz and is precisely the margin phase 34 goes on to spend, so the
+     * 40 MHz and is precisely the margin the clock ladder spends, so the
      * trim is applied before any milestone raises a clock against it.
      *
      * Here rather than beside esp32p4_l2_cache_shrink() above because this
@@ -224,7 +224,7 @@ void kernel_main(void) {
      * accepts the write without moving is a thing to find in a boot log
      * rather than in a hang three milestones later. A few hundred
      * milliseconds at the old setting costs nothing -- the board has booted
-     * that way since phase 27. */
+     * that way on this platform. */
     {
         uint32_t dbias_from = 0, dbias_to = 0, dbias_ind = 0;
         if (esp32p4_regulator_apply_efuse_dbias(&dbias_from, &dbias_to,
@@ -261,7 +261,7 @@ void kernel_main(void) {
     }
 #endif
 
-    /* Y5a, plan/phase31_concurrency_hierarchy.md: one line, not three, and no
+    /* One line, not three, and no
      * 50-character rules around it. The banner was 170 bytes of which 102
      * were '=' -- affordable while the log ring was only history, not while
      * it is the transport and the boot burst is the one guaranteed to have no
@@ -306,28 +306,23 @@ void kernel_main(void) {
            node_name_source(), node_mac_source());
 
     dev_probe_all();
-    /* ST7735 canvas + TM1638 keypad/7-segment (H1/H2,
-     * plan/phase9_chess_computer.md): dedicated, always-wired hardware for
-     * this board persona, so both are initialized eagerly here rather than
-     * lazily on first Lisp call, the same shape as the LED init above rather
-     * than spisd's lazy pattern (which exists because a MicroSD card is
-     * optional/hot-pluggable; neither of these is). Independently gated
-     * (H3) -- a board persona might want the keypad/LEDs without the
-     * display, or vice versa. */
+    /* ST7735 canvas + TM1638 keypad/7-segment: dedicated, always-wired
+     * hardware for this board persona, so both are initialized eagerly
+     * rather than lazily on first Lisp call. Independently gated. */
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
     st7735_init();
 #endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
     tm1638_init();
 #endif
-    /* SM16106/SM5166P LED matrix + LDR (L2, plan/phase11_pico_clock_green.md):
+    /* SM16106/SM5166P LED matrix + LDR :
      * dedicated, always-wired hardware for the Pico-Clock-Green board
      * persona specifically -- same eager-init rationale as ST7735/TM1638
      * above, not this driver's own invention. */
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_PICO_CLOCK_GREEN
     pico_clock_green_init();
 #endif
-    /* DCF-77 receiver pins (D2, plan/phase17_clock_ui_and_dcf77.md). Init
+    /* DCF-77 receiver pins . Init
      * only: this leaves the module powered *down* (PON released), so an
      * unpopulated GP27/GP28 pair costs nothing and a populated one draws
      * nothing until something asks for a sync or a probe. */
@@ -347,7 +342,7 @@ void kernel_main(void) {
      * page allocator rather than an unbounded bump pointer. */
     trap_init();
 #if defined(CONFIG_PSRAM_BYTES)
-    /* 38.2, plan/phase38_psram.md: before the page allocator, which gains a
+    /* Before the page allocator, which gains a
      * PSRAM zone in 38.4. Interrupts are still off, which the direct-mode
      * bring-up needs. It only reports; psram_require() below decides. */
     psram_init();
@@ -363,7 +358,7 @@ void kernel_main(void) {
                          PSRAM_UNCACHED_BASE - PSRAM_CACHED_BASE);
     }
 #endif
-    /* M1, plan/phase12_microkernel_migration.md: reserves its arena out of
+    /* Reserves its arena out of
      * what palloc_init() just brought up, so it must follow it and nothing
      * needs to follow *it* -- no other subsystem below depends on balloc
      * yet. */
@@ -407,7 +402,7 @@ void kernel_main(void) {
     console_set_screen(ramscreen_console());
 #endif
 #if defined(CONFIG_BOARD_ESP32P4) && defined(CONFIG_DSI_LCD_RST_GPIO)
-    /* 47.7, plan/phase47_esp32p4_lcd7b_ribbon.md: the LCD-7B's panel and its
+    /* The LCD-7B's panel and its
      * frame in PSRAM (after palloc's bulk zone, above), then the terminal on
      * it -- as the RP2350's below: a screen-only log sink, the console stream
      * on the `lcd` device (teeing to UART0), the screen hooks. Input stays on
@@ -455,7 +450,7 @@ void kernel_main(void) {
     (void)ticker_init(100);
     C6_BREADCRUMB(0x32);
 
-    /* Two facts, separated (G1, plan/phase30_driver_framework.md).
+    /* Two facts, separated.
      *
      * "The interrupt controller is up" and "there is a preemption tick" are
      * different things, and this line used to be inside `if (ticker_init())`
@@ -476,7 +471,7 @@ void kernel_main(void) {
     irq_restore(IRQ_ENABLE_BIT); /* from here on, anything can be preempted */
     C6_BREADCRUMB(0x33);
 
-    /* X1, plan/phase23_multicore_scheduling.md: let any secondary harts into
+    /* Let any secondary harts into
      * the kernel.
      *
      * Here and not earlier: a secondary's first act is to arm its own timer
@@ -487,7 +482,7 @@ void kernel_main(void) {
     smp_release_secondaries();
 
 #if defined(CONFIG_BOARD_RP2350)
-    /* M4.5, plan/phase12_microkernel_migration.md, Part B: usb_cdc.c's own
+    /* usb_cdc driver task:
      * background servicing task, started before uart_task_start() below --
      * RP2350's console mirrors every write to USB CDC, so the task that
      * drains it should already exist by the time that starts happening,
@@ -497,18 +492,18 @@ void kernel_main(void) {
     usb_cdc_task_start();
 #endif
 
-    /* M4, plan/phase12_microkernel_migration.md: the uart driver as a task,
+    /* The uart driver as a task,
      * the first one converted from "library called synchronously by
      * whoever needs them" to "long-lived task reachable via chan_call()".
      * Must follow sched_init() (task_create() needs a table) and precede
      * anything that does real console output, so as little boot text as
-     * possible falls back to the pre-M4 direct-access path for no reason
+     * possible falls back to direct hardware access for no reason
      * other than the task not existing yet. */
     uart_task_start();
     C6_BREADCRUMB(0x34);
 
 #if defined(CONFIG_BOARD_RP2350)
-    /* M4.5, plan/phase12_microkernel_migration.md, Part B: the GP16
+    /* The GP16
      * heartbeat LED as its own task, not a side effect of console polling
      * -- a live, on-the-board visual check that the scheduler is actually
      * giving every READY task a turn, independent of a serial connection.
@@ -516,7 +511,7 @@ void kernel_main(void) {
     heartbeat_task_start();
 #endif
 
-    /* M4.5, plan/phase12_microkernel_migration.md, Part B: the SD/block
+    /* The SD/block
      * storage driver as a task -- the lowest-risk conversion in the
      * remaining driver list, since a read_blocks()/write_blocks() call was
      * already exactly one message's worth of work, no batching redesign
@@ -532,7 +527,7 @@ void kernel_main(void) {
 #elif defined(CONFIG_BOARD_ESP32C6)
     /* No block device on this board yet (45.4); nothing to start. */
 #elif defined(CONFIG_BOARD_ESP32P4)
-    /* 35.3, plan/phase35_esp32p4_sdmmc.md: the microSD card on the SD/MMC
+    /* The microSD card on the SD/MMC
      * host. Same endpoint name and same batching as the two above, and the
      * same ordering rule: vfs_server_init() has already mounted the volume
      * through direct hardware access, and this only changes the path for
@@ -543,7 +538,7 @@ void kernel_main(void) {
     virtio_blk_task_start();
 #endif
 
-    /* M4.5, plan/phase12_microkernel_migration.md, Part B: RTC + EEPROM as
+    /* RTC + EEPROM as
      * one shared "i2c" task -- both devices sit on the same physical I2C
      * bus (see drivers/i2c_rtc.h), so one task, not two. Must follow
      * sched_init(); dev_probe_all() above already detected both devices via
@@ -551,7 +546,7 @@ void kernel_main(void) {
      * path if this fails or hasn't run yet. */
     i2c_task_start();
 
-    /* M4.5, plan/phase12_microkernel_migration.md, Part B: display/keypad as
+    /* display/keypad as
      * tasks. Independently gated the same way their init calls above are
      * (H3) -- a board persona might have the keypad without the display, or
      * vice versa; the Pico-Clock-Green persona has neither of these and its
@@ -587,7 +582,7 @@ void kernel_main(void) {
     pico_clock_green_task_start();
 #endif
 
-    /* E7, plan/phase27_esp32p4_bringup.md: keep /proc/sensors worth reading.
+    /* Keep /proc/sensors worth reading.
      *
      * A no-op on every board where dev_probe_all() found no part, so it is
      * unconditional rather than guarded by a persona -- the same argument the
@@ -621,7 +616,7 @@ void kernel_main(void) {
     radio_c6_autostart();                 /* the same policy for the C6's radio (45.8) */
 #endif
 
-    /* R2, plan/phase19_ip_stack_and_ethernet.md: the IP stack, on whatever
+    /* The IP stack, on whatever
      * interface dev_probe_all() found. Both calls are no-ops on a board with
      * no netif, which is every board in this tree until R4 -- so this is
      * unconditional rather than guarded, and `net` reports "no interfaces"
@@ -637,7 +632,7 @@ void kernel_main(void) {
         net_task_start();
     }
 
-    /* Q6, plan/phase26_mqtt_and_environment_sensors.md: a stored broker is
+    /* A stored broker is
      * the intent to publish, exactly as stored WLAN credentials are the
      * intent to join. Started here rather than after the network is up --
      * mqttd retries forever with backoff, so a radio that is still uploading
@@ -653,7 +648,7 @@ void kernel_main(void) {
 #endif
 
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DCF77 && CONFIG_DCF77_P0_LOG
-    /* P0 (plan/phase24_dcf77_precision_and_ntp_server.md). Started here
+    /* Started here
      * rather than from a boot script because the board it measures has to be
      * carried to where the reception is, which means a power cycle -- an
      * instrument that needs someone to type a command after every move is not

@@ -1,6 +1,6 @@
 /*
  * The IP stack's receive path (net/arp.c, ipv4.c, icmp.c, udp.c, tcp.c) on
- * the host, under ASan/UBSan or valgrind (phase 40 review).
+ * the host, under ASan/UBSan or valgrind.
  *
  * Every frame on the wire reaches ip_input() or arp_input() -- from a gateway
  * on Ethernet, or anyone on the same WLAN -- before anything has decided it is

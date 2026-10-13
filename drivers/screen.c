@@ -1,6 +1,6 @@
 /*
  * The screen: a menu bar, the desktop, and the terminal and a canvas in
- * framed tiles -- 37.1/37.1a/37.3b, plan/phase37_screen_layouts_and_apps.md
+ * framed tiles -- 37.1/37.1a/37.3b, 
  * §1. See drivers/screen.h for the geometry and the canvas protocol.
  *
  * Everything but screen_init() runs in the U-mode `lcdterm` task on the
@@ -186,7 +186,7 @@ LCDTERM_UTEXT static void draw_menu(screen_t *scr) {
     if (room > 0)
         canvas1_text(cv, 8, 2, scr->name, cstr_len(scr->name), (unsigned)room, 0, FONT8X16_H, true);
 
-    /* Phase 44: Ribbon visualization stripe in the menu bar */
+    /* Ribbon visualization stripe in the menu bar */
     if (scr->ribbon.count > 0) {
         int sx = 8 + 8 * (int)cstr_len(scr->name) + 16;
         int max_w = icon_left - 16 - sx;
@@ -375,7 +375,7 @@ LCDTERM_UTEXT static void draw_text_title(screen_t *scr) {
  * framebuffer's own order, but from the tile's left edge rather than the
  * screen's, so the same slot restores a split at either side. */
 
-/* Phase 44: the layout stores and the canvases' backings share these four
+/* the layout stores and the canvases' backings share these four
  * slots -- layout L's store is slot L - 1, canvas i's backing is slot i --
  * so the two can only both be right while canvas 0 is the only canvas.
  * With a second one, saving canvas 0 in a split wrote it over the other
@@ -1259,7 +1259,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
             }
         }
     } else if (op == 'N') {
-        /* Phase 44: Insert a new window in the ribbon (Cmd+Enter) */
+        /* Insert a new window in the ribbon (Cmd+Enter) */
         uint8_t n_vid = (n >= 2) ? req[1] : 0;
         uint8_t cols = (n >= 3 && req[2]) ? req[2] : RIBBON_COLS_HALF(scr->cv.w);
         /* The title is the request's tail, n - 3 bytes with no NUL of its
@@ -1301,7 +1301,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
             status = 1;
         }
     } else if (op == '<') {
-        /* Phase 44: Focus left window (Cmd+Left) */
+        /* Focus left window (Cmd+Left) */
         if (ribbon_focus_step(&scr->ribbon, -1)) {
             scr->ribbon.x_view = scr->ribbon.x_target;
             (void)place(scr, scr->layout);
@@ -1311,7 +1311,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
             status = 1;
         }
     } else if (op == '>') {
-        /* Phase 44: Focus right window (Cmd+Right) */
+        /* Focus right window (Cmd+Right) */
         if (ribbon_focus_step(&scr->ribbon, 1)) {
             scr->ribbon.x_view = scr->ribbon.x_target;
             (void)place(scr, scr->layout);
@@ -1321,7 +1321,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
             status = 1;
         }
     } else if (op == '[') {
-        /* Phase 44: Move active window left (Cmd+Ctrl+Left) */
+        /* Move active window left (Cmd+Ctrl+Left) */
         if (ribbon_move(&scr->ribbon, scr->ribbon.active_idx, -1)) {
             scr->ribbon.x_view = scr->ribbon.x_target;
             (void)place(scr, scr->layout);
@@ -1331,7 +1331,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
             status = 1;
         }
     } else if (op == ']') {
-        /* Phase 44: Move active window right (Cmd+Ctrl+Right) */
+        /* Move active window right (Cmd+Ctrl+Right) */
         if (ribbon_move(&scr->ribbon, scr->ribbon.active_idx, 1)) {
             scr->ribbon.x_view = scr->ribbon.x_target;
             (void)place(scr, scr->layout);
@@ -1341,7 +1341,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
             status = 1;
         }
     } else if (op == 'J') {
-        /* Phase 44: Jump directly to window N (Cmd+1..9) */
+        /* Jump directly to window N (Cmd+1..9) */
         uint8_t target = (n >= 2) ? req[1] : 0;
         if (ribbon_focus(&scr->ribbon, target)) {
             scr->ribbon.x_view = scr->ribbon.x_target;
@@ -1368,7 +1368,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
             status = 1;
         }
     } else if (op == 'V') {
-        /* Phase 44: Focus window by vterm ID */
+        /* Focus window by vterm ID */
         uint8_t f_vid = (n >= 2) ? req[1] : 0;
         int idx = ribbon_find_vterm(&scr->ribbon, f_vid);
         if (idx >= 0 && ribbon_focus(&scr->ribbon, (uint8_t)idx)) {
@@ -1380,7 +1380,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
             status = 1;
         }
     } else if (op == 'R') {
-        /* Phase 44: the ribbon. Bare: the window count, the focus and the
+        /* the ribbon. Bare: the window count, the focus and the
          * viewport. With an index: that window -- one per request, because
          * the reply is SCREEN_REPLY_LEN bytes and seven of them after the
          * header left no room for even one window, so `ribbon` listed none. */
@@ -1411,10 +1411,10 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
         reply[6] = (uint8_t)((scr->ribbon.x_target >> 8) & 0xff);
         return;
     } else if (op == 'C') {
-        /* Phase 44: Close active window (Cmd+W) */
+        /* Close active window (Cmd+W) */
         status = close_window(scr, scr->ribbon.active_idx, reply) ? 0 : 1;
     } else if (op == 'Q') {
-        /* Phase 44: close terminal `vid`'s window -- its vterm is gone
+        /* close terminal `vid`'s window -- its vterm is gone
          * (vterm_destroy()), however it went: `exit`, `vterm close`. */
         int idx = (n >= 2) ? ribbon_find_vterm(&scr->ribbon, req[1]) : -1;
         status = (idx >= 0 && close_window(scr, (uint8_t)idx, reply)) ? 0 : 1;

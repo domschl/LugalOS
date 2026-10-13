@@ -1,6 +1,6 @@
 /*
  * Vendored verbatim from ~/gith/domschl/LugalChess (engine/include/position.h),
- * H4, plan/phase9_chess_computer.md.
+ * H4, .
  */
 
 #ifndef POSITION_H

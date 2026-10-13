@@ -13,7 +13,7 @@
 
 /* Where the FAT32 image lives, and it is not the same answer on every target.
  *
- * I7a, plan/phase21_identity_and_authentication.md §3.3: on RP2350 the image
+ * I7a, : on RP2350 the image
  * is flashed to its own region (LUGALOS_FLASHFS_BASE, from
  * cmake/flash_layout.cmake, reaching this file as a compile definition) and is
  * read straight out of the XIP window. It is deliberately *not* linked into
@@ -32,7 +32,7 @@
 static const uint8_t *const g_flash_fs_start = (const uint8_t *)(uintptr_t)LUGALOS_FLASHFS_BASE;
 static const uint32_t g_flash_fs_size = (uint32_t)LUGALOS_FLASHFS_SIZE;
 #elif defined(CONFIG_BOARD_ESP32P4)
-/* E6, plan/phase27_esp32p4_bringup.md. E2 left this arm with a size of zero
+/* E6, . E2 left this arm with a size of zero
  * and no flash map; E6 supplies both, and one thing besides.
  *
  * **There is no pointer here, because there is no XIP window.** RP2350 reads
@@ -49,7 +49,7 @@ static const uint32_t g_flash_fs_size = (uint32_t)LUGALOS_FLASHFS_SIZE;
  * "read-only" on every target including RP2350. */
 static const uint32_t g_flash_fs_size = (uint32_t)LUGALOS_P4_FLASHFS_SIZE;
 #elif defined(CONFIG_BOARD_ESP32C6)
-/* 45.4, plan/phase45_esp32c6.md: the RAM-resident first form has no /flash0 --
+/* the RAM-resident first form has no /flash0 --
  * the image is delivered by load-ram and the filesystem has nowhere to live
  * until 45.4.3 boots from flash and lays out a map. The size is zero, so
  * flashdisk_get_device() below declines and `df` says so, rather than pointing

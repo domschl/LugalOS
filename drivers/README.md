@@ -1,9 +1,7 @@
 # Writing a driver for LugalOS
 
-**Read this before adding hardware support.** G0,
-`plan/phase30_driver_framework.md`. The companion document is
-`plan/hardware_seams.md`, the maintained inventory of every seam this tree
-already has and what the ESP32-P4 bringup proved about each.
+**Read this before adding hardware support.** The companion documentation in
+`doc/dev/` provides driver guidelines and architecture details.
 
 ---
 
@@ -14,9 +12,9 @@ already has and what the ESP32-P4 bringup proved about each.
 Two copies is evidence that something recurs. Three is a design.
 
 The corollary matters as much: **at the second implementation, do nothing but
-note it.** When phase 27 added a second UART driver, extracting then would
+note it.** When a second UART driver was added, extracting then would
 have meant changing two drivers that worked, on two boards, to make room for
-a third that had never run. Refusing was right. When E3 added the third, the
+a third that had never run. Refusing was right. When the third was added, the
 shape was obvious and the extraction was mechanical.
 
 This rule is not a style preference. It is what would have caught the I2C bus
@@ -37,8 +35,8 @@ Different silicon, different registers. The failure mode of sharing is not a
 merge conflict, it is a plausible-looking wrong value that costs a hardware
 session to find.
 
-Per-board files, per-board provenance, **recorded in the file**. Phase 27's
-record: `UART0_SYS_CLK_EN` and `UART0_APB_CLK_EN` were written as bits 24 and
+Per-board files, per-board provenance, **recorded in the file**. During ESP32-P4
+bringup: `UART0_SYS_CLK_EN` and `UART0_APB_CLK_EN` were written as bits 24 and
 25, reasoned from where UART0 sits in the peripheral list, and are actually 18
 and 7 — in two different registers that order their fields differently. There
 was no position to infer.
@@ -61,11 +59,7 @@ design decision and belongs in a phase plan first.
 The serve loop, endpoint registration, the retry wrapper, the liveness check,
 U-mode domain construction, the ISR→`task_unblock()` waiter slots.
 
-Zero board-specific content, and currently nine near-identical copies of the
-serve loop and seven of the U-mode domain. This is what
-`plan/phase30_driver_framework.md` is extracting into a shared
-`driver_task.c` (G2 — not written yet). Until it lands, copy the closest
-existing driver and say in a comment which one you copied.
+Zero board-specific content: extracted into the shared `drivers/driver_task.c` framework.
 
 ### D. Device-class contracts — **already abstracted, just implement one**
 
@@ -97,8 +91,7 @@ right width.
   the indirect jump through it takes a load access fault. Add your file to the
   `set_source_files_properties(... -fno-jump-tables)` list in `CMakeLists.txt`.
   Found on real hardware, not in review.
-* **`printk()` does not block — `cprintf()` does.** This inverted in phase 31
-  (Y5), and stale comments elsewhere in the tree may still say otherwise.
+* **`printk()` does not block — `cprintf()` does.**
   `printk()` formats into your stack and appends a record to the log ring
   under a leaf spinlock; it reaches no blocking primitive, so it is safe
   mid-context-switch, mid-exit, under `g_sched_lock`, in an ISR, and from
@@ -115,12 +108,12 @@ right width.
   checked leaves: `kernel/lock.c` faults if you block
   while holding one. If you need a lock you can hold across a block, that is
   `ylock_t`, and it participates in the wait-for graph. See
-  `plan/phase31_concurrency_hierarchy.md`.
+  `doc/dev/kernel/` and `kernel/lock.h`.
 * **Fix every compiler and linker diagnostic, including pre-existing ones.**
   The tree builds ten presets with zero warnings and that is load-bearing: one
   tolerated warning hides the next real one.
-* **A new board must satisfy the linker-symbol contract** in
-  `plan/hardware_seams.md` §3, or it will not link. That is intentional.
+* **A new board must satisfy the linker-symbol contract**, or it will not link.
+  That is intentional.
 
 ## Before you claim it works
 

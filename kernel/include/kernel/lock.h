@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* Cross-hart locks (S1, plan/phase22_smp_locking_foundation.md).
+/* Cross-hart locks.
  *
  * ## What this replaces, and why it is not a style change
  *
@@ -135,19 +135,18 @@ int  ylock_owner(const ylock_t *l);
 int  ylock_depth(const ylock_t *l);
 
 /* How many ylocks task `pid` holds right now, each counted once however
- * deeply it re-entered. Phase 44: whether a task whose terminal was closed
+ * deeply it re-entered. Whether a task whose terminal was closed
  * can be ended at an input wait without taking a lock down with it. */
 int  ylock_held_by(int pid);
 
-/* --- The hierarchy, and the check that keeps it honest (Y2,
- * plan/phase31_concurrency_hierarchy.md) -----------------------------------
+/* --- The hierarchy, and the check that keeps it honest --------------------
  *
  * ## The rule, in one line
  *
  * **A `spinlock_t` is a leaf: while one is held, nothing may be acquired and
  * nothing may block.**
  *
- * That is stronger than the graduated level system phase 31 first proposed,
+ * This lock ordering prevents deadlocks:
  * and it is what the tree already does. Y0 walked every critical section in
  * `kernel/`, `drivers/`, `fs/` and `net/`: each one calls only pure helpers --
  * `bit_get`/`bit_set`, `hart_id`, `memcpy`, `node_parent` -- and where a
@@ -185,7 +184,7 @@ int  ylock_held_by(int pid);
  *
  * Reports and continues, like `handoff_check()`'s fault counter and unlike
  * `sched_check_free_range()`'s halt. The report is emitted *before* the
- * acquisition that would hang, so the failure phase 31 exists to prevent --
+ * acquisition that would hang; the failure mode this prevents --
  * a board that stops dead with no clue -- becomes a named diagnostic followed
  * by the same hang. Halting instead would turn a latent ordering bug into a
  * dead board on the strength of a check that has not yet earned that trust.
@@ -209,16 +208,11 @@ bool lock_check_may_block_named(const char *what, const char *name,
 
 /* --- No console output from inside a driver serve callback -----------------
  *
- * Added by G2 (plan/phase30_driver_framework.md) as a rule about printk(),
- * narrowed by Y5 (plan/phase31_concurrency_hierarchy.md §5.6) to what it was
- * always really about. The history is worth one paragraph, because the rule
- * inverted:
+ * The lock rule regarding console output from serve callbacks:
  *
- *   **printk() from a serve callback is now safe.** It formats into the
+ *   **printk() from a serve callback is safe.** It formats into the
  *   caller's stack and appends a record to the log ring under a leaf
- *   spinlock. It reaches no blocking primitive, from any context. Y5c is what
- *   made that true; before it, printk() went to the console synchronously and
- *   a driver task doing it could deadlock against its own caller.
+ *   spinlock. It reaches no blocking primitive, from any context.
  *
  *   **cprintf() from a serve callback is not.** The console stream still
  *   reaches the uart task through chan_call(), so a driver task writing the
@@ -253,7 +247,7 @@ const char *lock_serve_what(void);
 /* The real entry points. The macros below capture the lock's name and the
  * calling function at the call site, which costs .rodata (flash on RP2350)
  * rather than a field in every spinlock_t. */
-/* The bottom of the lock order (Y5c, plan/phase31_concurrency_hierarchy.md).
+/* The bottom of the lock order.
  *
  * A spinlock_t is a leaf: taking a second one is reported, because the second
  * take is where an ordering bug becomes a deadlock. There is exactly one lock
@@ -294,7 +288,7 @@ void      ylock_acquire_at(ylock_t *l, const char *name, const char *site);
 #define spin_unlock_irqrestore(l, f)     spin_unlock_irqrestore_at((l), (f))
 #define ylock_acquire(l)                 ylock_acquire_at((l), #l, __func__)
 
-/* --- One wait-for graph (Y3, plan/phase31_concurrency_hierarchy.md) -------
+/* --- One wait-for graph ---------------------------------------------------
  *
  * `waitfor[pid]` is the task `pid` is currently blocked waiting for, or -1.
  * **Every blocking primitive that waits on a task contributes an edge**, so a

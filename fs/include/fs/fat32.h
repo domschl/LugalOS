@@ -141,7 +141,7 @@ void fat32_sync(fat32_fs_t *fs);
 uint32_t fat32_recount(fat32_fs_t *fs);
 
 /* Same, without the "no valid volume" line on failure (Y5a,
- * plan/phase31_concurrency_hierarchy.md).
+ * ).
  *
  * For the one caller where a blank volume is the *expected* state rather than
  * a problem: vfs_mount_ramdisk(), whose RAM disk starts empty on every boot
@@ -169,7 +169,7 @@ void fat32_list_dir(fat32_fs_t *fs, const char *path);
 int fat32_statfs(fat32_fs_t *fs, uint32_t *total_blocks, uint32_t *free_blocks);
 
 /* Offset-addressed read/write, underlying fs/vfs_server.c's handle-based
- * vfs_pread()/vfs_pwrite() (see A1 in plan/phase5_distributed_design.md).
+ * vfs_pread()/vfs_pwrite().
  * fat32_read_file() and fat32_append_file() are now thin wrappers over
  * these two. */
 /* `cur` may be NULL (walk from the start, as before 38.0); a handle passes

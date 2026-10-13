@@ -8,7 +8,6 @@
 #include <string.h>
 
 /* AMS CCS811 Ultra-Low Power Digital Gas Sensor Driver.
- * Phase 46, plan/phase46_sensor_framework.md §4.7 & §4.9.
  *
  * Implements:
  * - Bootloader to application state transition (APP_START 0xF4)

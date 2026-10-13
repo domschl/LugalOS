@@ -5,11 +5,10 @@
 #include <stdbool.h>
 
 /*
- * SHA-256 (FIPS 180-4) and HMAC-SHA-256 (RFC 2104) — N1,
- * plan/phase18_networking_and_auth.md.
+ * SHA-256 (FIPS 180-4) and HMAC-SHA-256 (RFC 2104) .
  *
  * The first cryptography in this tree, and it exists for exactly one reason:
- * phase 18's `Tauth` gate proves a client knows a pre-shared key without
+ * the `Tauth` gate proves a client knows a pre-shared key without
  * sending it, which is an HMAC over a server-chosen nonce. Nothing else here
  * needs a hash, and this header should not grow into a "crypto library"
  * without a caller asking for it first.
@@ -60,8 +59,7 @@ void hmac_sha256(const void *key, uint32_t key_len,
 bool sha256_verify(const void *a, const void *b, uint32_t len);
 
 /* The first 8 bytes of SHA-256 over `key`, rendered as 16 lowercase hex
- * characters plus a terminating NUL (I3/§5.1,
- * plan/phase21_identity_and_authentication.md). A secret you cannot display
+ * characters plus a terminating NUL . A secret you cannot display
  * is a secret you cannot confirm you installed correctly; a fingerprint is
  * the part safe to display -- an operator compares it against their notes,
  * and neither end ever prints the key itself. */

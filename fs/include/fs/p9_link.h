@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* Transport-agnostic 9P link (A3, plan/phase5_distributed_design.md) -- the
+/* Transport-agnostic 9P link -- the
  * 9P server (fs/9p.c, A2) never knows what wire it's running over. A
  * backend (drivers/virtio_console.c, drivers/uart_net.c's SLIP link, ...)
  * fills in a p9_link_t and hands it to p9_link_service()/the background
@@ -22,14 +22,14 @@ typedef struct p9_link {
     int (*recv_frame)(struct p9_link *link, uint8_t *buf, uint32_t max_len);
     void *ctx;
 
-    /* N2, plan/phase18_networking_and_auth.md: must an attach arriving here
+    /* N2, : must an attach arriving here
      * authenticate first?
      *
      * A property of the wire, which is why it lives on the link rather than
      * in the server: a local channel and a cable between two boards on one
      * desk are trusted by the same argument that trusts the boards, and a
      * network link is not. Default false, so an existing transport keeps
-     * behaving exactly as it did; a network link sets it (phase 19's R3 is
+     * behaving exactly as it did; a network link sets it (R3 is
      * the next one to), and `p9auth` can set it on any link for testing or
      * for a cable someone does not trust.
      *
@@ -72,7 +72,7 @@ void p9_link_background_poll(void);
  * is no second local-only protocol to build. See fs/p9_link.c. */
 int p9_server_task_start(void);
 
-/* Link-agnostic synchronous 9P client (A4, plan/phase5_distributed_design.md):
+/* Link-agnostic synchronous 9P client:
  * attaches at "/", walks to `path` (split on '/'), opens it for read, reads
  * the whole file into `out_buf`, clunks. Works over any p9_link_t, not just
  * loopback -- e.g. a node fetching a file from whatever peer is bridged
@@ -82,7 +82,7 @@ int p9_server_task_start(void);
  * (matches drivers/virtio_blk.c's own busy-wait-until-done convention). */
 int p9_link_cat(p9_link_t *link, const char *path, char *out_buf, uint32_t out_max);
 
-/* --- Persistent remote 9P connection (A5, plan/phase5_distributed_design.md) ---
+/* --- Persistent remote 9P connection ---
  * Unlike p9_link_cat() above (which does its own fresh Tversion + Tattach on
  * every call -- p9_server_process()'s Tversion handler resets *all*
  * server-side fid state, by design, as a connection reset), a mounted

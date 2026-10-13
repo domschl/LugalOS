@@ -24,8 +24,7 @@ typedef struct trap_frame {
 void trap_init(void);
 void trap_handler(trap_frame_t *frame);
 
-/* --- Fault-tolerant hardware probing (B3 prep) ---
- *
+/* --- Fault-tolerant hardware probing --- *
  * Discovering what a chip actually implements sometimes means executing an
  * instruction that may not be legal on it. Reading an unimplemented PMP CSR
  * is the motivating case: the RISC-V privileged spec says unimplemented PMP
@@ -52,7 +51,7 @@ bool arch_probe_faulted(void);
 /* Unmasks external IRQ `irq_num` at the interrupt-controller level -- not
  * the peripheral's own registers, which stay the driver's business, but the
  * layer between them that trap_handler() reads to know an IRQ fired at all
- * (M2, plan/phase12_microkernel_migration.md). RP2350 sets the bit in
+ *. RP2350 sets the bit in
  * Hazard3's Xh3irq `meiea` array; QEMU sets the PLIC's per-context enable
  * bit and gives the IRQ a nonzero priority (0 means "never interrupt" in
  * the PLIC spec). A driver calls this once at init, after devirq_attach()

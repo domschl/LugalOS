@@ -6,7 +6,7 @@
 #include "net/ip.h"
 #include "fs/p9_link.h"
 
-/* Server-side TCP (R3, plan/phase19_ip_stack_and_ethernet.md).
+/* Server-side TCP.
  *
  * The largest correctness surface in this project's history: a state machine
  * with ten states, parsing attacker-controlled bytes, whose bugs present as
@@ -73,7 +73,7 @@ void tcp_close(p9_link_t *link);
  * buffers ensure_bufs() already allocates, so a board that dials a broker
  * pays nothing it did not already pay to serve 9P. The flip side is that the
  * two-slot limit is now shared between the two: a board serving 9P to two
- * peers cannot also dial one. plan/phase26 §2 records that.
+ * peers cannot also dial one.  records that.
  *
  * **A stream connection has no p9_link_t face at all** -- conn_init_link()
  * is never called for one. Relying on `is_client` to keep the 9P server away

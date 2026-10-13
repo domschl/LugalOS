@@ -1,6 +1,5 @@
 /*
- * LugalOS Hardware Driver: Waveshare Pico-Clock-Green LED matrix (L2,
- * plan/phase11_pico_clock_green.md).
+ * LugalOS Hardware Driver: Waveshare Pico-Clock-Green LED matrix.
  *
  * Two SM16106 column shift registers + one SM5166P row-address decoder
  * driving an 8-row x 24-column LED matrix, plus an LDR (GP26/ADC0) for
@@ -43,7 +42,7 @@ typedef enum {
 /* Key events are returned by the frame op (`clock_hw_scan_frame()`, the
  * appliance's own seam in drivers/pico_clock_internal.h) rather than polled
  * from out here: they exist only while something is scanning, and whatever is
- * scanning is the thing that should be given them. Phase 17b removed the
+ * scanning is the thing that should be given them. Removed the
  * standalone `pico_clock_green_pop_key()`, which had no caller outside the
  * driver and no way to be correct for one. */
 
@@ -100,7 +99,7 @@ void pico_clock_green_show_text(const char *str, unsigned secs);
 /* The DCF-77 signal monitor on the panel (D3): 24 columns, one per second,
  * newest on the right, height from that second's quality score, with the DCF
  * indicator LED following the pulse. The instrument for the interference
- * measurement in plan/phase17_clock_ui_and_dcf77.md section 3 -- it runs with
+ * measurement in  section 3 -- it runs with
  * the display ON by definition, because it *is* the display. Behind
  * `(dcf-monitor [secs] [dark])`.
  *
@@ -136,10 +135,10 @@ void pico_clock_green_boot_mark(unsigned stage);
  * so LDR polarity and the auto-brightness ladder's thresholds
  * (`AUTO_DARKER_AT[]`) can be checked against real ambient light on real
  * hardware instead of assumed correct from the register-level port
- * (plan/phase11_pico_clock_green.md L2, and phase 17 section 10). */
+ *. */
 uint16_t pico_clock_green_read_light(void);
 
-/* L4 (plan/phase11_pico_clock_green.md): the blocking appliance loop behind
+/* L4: the blocking appliance loop behind
  * the `(clock)` Lisp primitive. Alternates the display between time (most
  * of the time) and temperature (briefly, only when the DS3231 is actually
  * detected), driving the ~1kHz row scan continuously. Returns on Ctrl-C,
@@ -148,9 +147,9 @@ uint16_t pico_clock_green_read_light(void);
  * Allocates nothing on the heap, so there is nothing to free on return
  * ([[heap_stateless_user_programs]] is satisfied trivially, not by effort).
  *
- * Phase 17b, plan/phase17b_clock_task_split.md: this loop runs in the
+ * this loop runs in the
  * CALLER's task -- the shell/Lisp task, exactly where chess's UI loop runs --
- * and reaches the panel through one chan_call() per ~8 ms frame. Under M4.5
+ * and reaches the panel through one chan_call() per ~8 ms frame. Under the driver task
  * it was the other way round: the whole loop was served inside the clock
  * task as a single long call, which is why `clockstats` used to read
  * `calls=1` for an entire session and now advances ~125 times a second.
@@ -163,8 +162,7 @@ void pico_clock_green_run(void);
 
 /* Light one row of the matrix as a pure DC load: shifted out once, latched,
  * OE held open, no multiplexing and no PWM -- current without switching
- * noise. Used as the quiet-sync indicator (plan/phase17_clock_ui_and_dcf77.md
- * section 3, M5) and by that phase's M0 experiment, which needs to raise the
+ * noise. Used as the quiet-sync indicator and by that phase's experiment, which needs to raise the
  * 3V3 load on a Pico 2 W -- where the regulator's PWM-mode pin sits behind
  * the wireless chip -- without adding a single switching edge for the
  * receiver to hear. Direct hardware access, like pico_clock_green_init():
@@ -176,7 +174,7 @@ void pico_clock_green_static_load(bool on);
  * task's pid, or -1. */
 int pico_clock_green_task_start(void);
 
-// M4.5 verify: how many chan_call()s the shared "clock" task has served
+// Verify: how many chan_call()s the shared "clock" task has served
 // since boot -- see drivers/spisd_rp2350.c's g_blk_calls comment.
 uint32_t pico_clock_green_task_call_count(void);
 

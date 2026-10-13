@@ -1,7 +1,7 @@
 #ifndef LUGALOS_DRIVERS_LCDTERM_H
 #define LUGALOS_DRIVERS_LCDTERM_H
 
-/* The panel terminal, portable (47.6, plan/phase47_esp32p4_lcd7b_ribbon.md):
+/* The panel terminal, portable:
  * the screen_t (drivers/screen.h) on a 1-bpp frame, run by the U-mode
  * `lcdterm` task, fed in batches by the console and the kernel log, with the
  * menu bar's title and status, the tee to a host, and the console's screen

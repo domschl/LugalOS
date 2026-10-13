@@ -1,6 +1,6 @@
 /*
  * Vendored verbatim from ~/gith/domschl/LugalChess (engine/src/movegen.c),
- * H4, plan/phase9_chess_computer.md. No platform dependency at all.
+ * H4, . No platform dependency at all.
  */
 
 #include "movegen.h"

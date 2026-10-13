@@ -54,7 +54,7 @@ static int history_count = 0;
  * Held across the writes and nothing else -- never across console_getc(),
  * which waits for a human. A ylock is the right primitive precisely because
  * a console write ends in a block (kernel/console.c). */
-/* 37.2, plan/phase37_screen_layouts_and_apps.md §3.3: the line is UTF-8.
+/* The line is UTF-8.
  * It stays a byte buffer, but the cursor only ever stands on a character
  * boundary: every movement and deletion steps over a whole character, and a
  * multi-byte character typed in is collected and inserted whole (line_feed).
@@ -158,8 +158,7 @@ static void add_history(const char *line) {
     }
     entry_buf[elen++] = '\n';
 
-    /* A card fresh out of the packet has no /system (36.0a,
-     * plan/phase36_rp2350_lcd7_terminal.md). The append used to fail on every
+    /* A card fresh out of the packet may have no /system. The append used to fail on every
      * single command, and each failure logged fat32.c's "no directory to
      * create 'system/history.lisp' in" -- a board with a new card printed that
      * line after everything anyone typed, forever. The directory belongs to
@@ -195,7 +194,7 @@ static void add_history(const char *line) {
 
 
 
-/* `e` and the Ctrl-X box live in kernel/editor.c since 37.5b. */
+/* `e` and the Ctrl-X box live in kernel/editor.c. */
 
 /* --- The editing state machine, and its two drivers ---
  *
@@ -219,12 +218,12 @@ static void add_history(const char *line) {
  * of an escape sequence in the same burst. The wait is for bytes already in
  * flight -- microseconds -- never for the user to press something.
  *
- * (§"chess_next_event", plan/phase15_memory_reclamation.md.) */
+ * */
 
 #define LINE_INCOMPLETE (-1)
 #define LINE_CANCELLED  (-2)
 
-/* 37.5a, plan/phase37_screen_layouts_and_apps.md: the line is edited with
+/* The line is edited with
  * keys from kernel/keyseq.c -- one parser for every text input -- and has a
  * selection and the machine's clipboard (kernel/clipboard.h).
  *

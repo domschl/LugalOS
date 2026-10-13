@@ -6,7 +6,6 @@
 #include "drivers/sensor.h"
 
 /* AMS TSL2591 High Dynamic Range Light-to-Digital Converter.
- * Phase 46, plan/phase46_sensor_framework.md §4.6 (Milestone 46.6).
  *
  * Measures ambient light illuminance (Lux) across a 600,000,000:1 dynamic range
  * using dual photodiodes (broadband visible+IR and infrared-only).

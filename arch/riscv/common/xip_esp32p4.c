@@ -1,5 +1,5 @@
 /* Mapping the ESP32-P4's flash into the CPU's address space, at boot.
- * U2, plan/phase32_esp32p4_execute_in_place.md.
+ * U2, .
  *
  * This file runs before the kernel exists. Everything in it is in `.boot.text`
  * and therefore in L2MEM, because until the function below returns there is
@@ -87,10 +87,9 @@ extern char _xip_pages[];
 /* --- the flash-boot watchdogs ------------------------------------------
  *
  * The ROM arms two watchdogs before jumping to a second-stage image, and they
- * exist to reset a board whose bootloader never finishes. Nothing in this
- * kernel fed them before phase 32, because nothing in this kernel was ever a
- * second-stage image -- `load-ram` hands control over by a different path
- * that arms nothing.
+ * exist to reset a board whose bootloader never finishes. When booting from
+ * flash as a second-stage image, they must be disarmed early (unlike RAM loading
+ * which arms nothing).
  *
  * Measured, and worth recording because the symptom points away from the
  * cause: with these left armed the kernel booted **completely** -- shell
@@ -176,7 +175,7 @@ typedef int  (*rom_mmu_set_t)(uint32_t sensitive, uint32_t vaddr, uint32_t paddr
  * from here. What makes that acceptable is that the failure is not silent
  * either -- a wrong mapping means the jump into flash fetches garbage, and
  * the board visibly does not reach a console. The diagnosis lives in
- * plan/phase32_esp32p4_execute_in_place.md, and the recovery is the ROM's
+ * , and the recovery is the ROM's
  * download mode, which no flash content can take away. */
 
 /* ---- 47.4b: the flash clock IDF runs at, which the ROM does not set ------
@@ -190,7 +189,7 @@ typedef int  (*rom_mmu_set_t)(uint32_t sensitive, uint32_t vaddr, uint32_t paddr
  * This does the same, and changes nothing else -- the read mode stays the
  * ROM's.
  *
- * Why it matters (plan/phase47 §6.4): every XIP cache miss is a flash read,
+ * Why it matters: every XIP cache miss is a flash read,
  * and the HP CPU's DBUS timeout (HP_SYSTEM_CORE_DBUS_TIMEOUT_REG, 0xffff
  * cycles, ~164 us at 400 MHz) turns a load that waits too long into an
  * imprecise load access fault. Until 47.4b drivers/flash_esp32p4.c also
@@ -252,7 +251,7 @@ BOOT_TEXT void esp32p4_xip_map(void) {
     const uint32_t inval_map = CACHE_MAP_L1_ICACHE_0 | CACHE_MAP_L2_CACHE;
 
     /* **Only L2.** Disabling the L1 caches here is fatal, and the reason is
-     * the same fact phase 28 Z2 is built on: on this part internal memory is
+     * the same fact Z2 is built on: on this part internal memory is
      * reached *through* the L1 cache (SOC_CACHE_INTERNAL_MEM_VIA_L1CACHE).
      * This code is executing from L2MEM, so turning off the L1 instruction
      * cache stops instruction fetch for the very code doing the turning off.
@@ -302,7 +301,7 @@ BOOT_TEXT void esp32p4_xip_map(void) {
  *
  * Order matters and is not symmetric. Write back **first**, so the loader's
  * bytes actually reach memory, and only then invalidate -- and invalidate the
- * *instruction* cache only. Phase 32 U2 established the other half of this
+ * *instruction* cache only. U2 established the other half of this
  * the hard way: invalidating L1 D discards dirty lines rather than writing
  * them back, which threw away the live stack and killed the board. After a
  * writeback-all nothing is dirty, so this is safe either way; naming just the

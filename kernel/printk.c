@@ -9,7 +9,7 @@
 #include <string.h>
 #include "kernel/lock.h"
 
-/* Y5b, plan/phase31_concurrency_hierarchy.md: the destination carries a
+/* The destination carries a
  * context pointer.
  *
  * This is what lets printk() format into a buffer on its *own stack* before
@@ -24,9 +24,8 @@
 typedef void (*putc_fn)(void *ctx, char);
 typedef void (*puts_fn)(void *ctx, const char *);
 
-/* One printk/cprintf/printk_debug call -- and, since M4, one console_putc()/
- * console_puts() call -- emits as one uninterrupted run (B6, revised M2.5,
- * extended M4 -- plan/phase12_microkernel_migration.md).
+/* One printk/cprintf/printk_debug call -- and one console_putc()/
+ * console_puts() call -- emits as one uninterrupted run.
  *
  * Preemption made a message a shared resource. Two tasks formatting at once
  * interleave character by character, and the result is not merely untidy: it
@@ -34,15 +33,14 @@ typedef void (*puts_fn)(void *ctx, const char *);
  * arrives cut in half and the test fails for a reason that has nothing to do
  * with what it was testing. The RP2350 hardware suite hit exactly that.
  *
- * M4 turned uart_putc() from a direct hardware write into a chan_call() to
- * the uart task -- a real task_block()/task_unblock() round trip on every
+ * uart_putc() calls the uart driver task -- a real task_block()/task_unblock() round trip on every
  * single character, not merely a slim window an interrupt could land in.
  * kernel/console.c's console_putc()/console_puts() (the line editor's
  * redraws, SYS_PUTNUM/SYS_PUTCHAR's raw numeric output) called this
- * unprotected, on the pre-M4 assumption that a character write was too fast
+ * unprotected, on the assumption that a character write was too fast
  * to interleave with anything. Once every character write is a guaranteed
  * scheduling point, that assumption is false on every call, not just an
- * unlucky one -- which is why M4 widened this lock's callers rather than
+ * unlucky one -- which is why this lock's callers were widened rather than
  * giving console.c one of its own: two different locks guarding the same
  * wire would not stop each other's holders from interleaving.
  *
@@ -50,15 +48,10 @@ typedef void (*puts_fn)(void *ctx, const char *);
  * why: "the region is short... and printk() is reachable from the trap
  * handler -- where a lock that could block would be a deadlock rather than a
  * wait." That was correct as long as nothing inside the region could ever
- * block. M2 (plan/phase12_microkernel_migration.md) broke exactly that
- * invariant: uart_putc() started calling task_block() when TX backpressures,
- * and irq_save()/irq_restore() is a single global CPU bit, not a per-task
- * saved context -- masking across a context switch leaves interrupts off for
- * whichever *other* task now runs, not just the one that asked, with no
- * record of who still owes an irq_restore(). That is what actually produced
- * the interleaving this comment used to attribute to preemption alone:
- * preemption could never fire *during* a masked printk() before M2, because
- * nothing inside it yielded.
+ * block. When uart_putc() began calling task_block() when TX backpressures,
+ * masking interrupts across context switches proved dangerous:
+ * irq_save()/irq_restore() is a single global CPU bit, not a per-task
+ * saved context.
  *
  * console_lock()/console_unlock() (kernel/console.h) replace the mask with what the B6
  * comment said a lock would need to not be: one that can be held across a
@@ -77,8 +70,7 @@ typedef void (*puts_fn)(void *ctx, const char *);
  * ring-buffer append (RP2350's USB CDC) or a QEMU MMIO store, so the window
  * is already short and the extra buffer would cost stack in the trap path. */
 
-/* printk_lock()/printk_unlock() are gone (Y5d,
- * plan/phase31_concurrency_hierarchy.md).
+/* Console output serialisation:
  *
  * They were a third blocking primitive, hand-rolled: a single owner, a single
  * waiter slot, a re-entrancy depth, a polling fallback for a hart with no
@@ -338,7 +330,7 @@ static int vprintk_src(putc_fn pc, puts_fn ps, void *ctx,
                 p++;
             }
         }
-        /* Without 'l' the argument was an int (phase 40 review). It is
+        /* Without 'l' the argument was an int. It is
          * still fetched as a long -- the capture blob stores every integer
          * that way -- so it is narrowed back here. On RV64 the ABI passes a
          * 32-bit value sign-extended in a 64-bit register, so an unsigned
@@ -496,9 +488,8 @@ int printk(const char *fmt, ...) {
 
     va_list args;
     va_start(args, fmt);
-    /* No lock at all (Y5c, plan/phase31_concurrency_hierarchy.md).
-     *
-     * There is nothing left for it to protect. Formatting happens in `buf` on
+    /* No lock at all: formatting happens in `buf` on this stack, the append
+     * is atomic under the ring's leaf spinlock, and fan-out is handled by klogd.
      * this stack, the append is atomic under the ring's own leaf spinlock,
      * and the fan-out -- the part that could block, and the reason a lock had
      * to be held across the whole message -- belongs to klogd now.

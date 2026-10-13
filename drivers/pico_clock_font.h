@@ -1,9 +1,8 @@
 /*
- * A 7-row proportional font for the Pico-Clock-Green matrix (C2,
- * plan/phase17_clock_ui_and_dcf77.md). Driver-private: nothing outside
+ * A 7-row proportional font for the Pico-Clock-Green matrix. Driver-private: nothing outside
  * drivers/pico_clock_*.c has any use for a glyph.
  *
- * Format, chosen to match the digits phase 11 already validated on hardware
+ * Format, chosen to match the digits previously already validated on hardware
  * rather than to be tidy: seven bytes, one per row, top row first, and within
  * a byte **bit 0 is the LEFTMOST column**. That is the order the SM16106
  * shift registers want and the order drivers/pico_clock_green_rp2350.c's
@@ -18,7 +17,7 @@
  * column too wide.
  *
  * The digits, the colon, the minus and the combined degree-C glyph are the
- * ones transcribed from the vendor's ziku.h in phase 11 -- unchanged, because
+ * ones transcribed from the vendor's ziku.h -- unchanged, because
  * the clock face's fixed column layout was validated against them. Everything
  * else (A-Z and the punctuation) is authored here: ziku.h only ever had
  * A-F H L N P U.
@@ -32,7 +31,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* Phase 17b, plan/phase17b_clock_task_split.md: the clock server renders text
+/* the clock server renders text
  * from inside its U-mode domain, so this font -- code and tables both -- has
  * to live in the one executable page that domain grants (.clocktext,
  * board_clock_text_region()). Two macros rather than one because GCC refuses

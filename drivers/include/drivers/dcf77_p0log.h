@@ -1,8 +1,8 @@
 /*
- * P0, plan/phase24_dcf77_precision_and_ntp_server.md: the instrument that
+ * P0, : the instrument that
  * measures the DCF-77 path before anything about it is changed.
  *
- * Two numbers have to exist before phase 24 can design anything: **this
+ * Two numbers have to exist previously can design anything: **this
  * board's crystal error in ppm**, and **the DCF path's mean offset and
  * standard deviation** against a reference. Both are measured here, against
  * the GPS-disciplined stratum-1 named by CONFIG_DCF77_P0_NTP, and both are

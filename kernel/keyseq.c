@@ -1,5 +1,5 @@
 /*
- * Bytes from a terminal to keys -- 37.5a, plan/phase37_screen_layouts_and_apps.md.
+ * Bytes from a terminal to keys.
  * See kernel/include/kernel/keyseq.h for the forms understood.
  */
 

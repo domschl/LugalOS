@@ -1,5 +1,5 @@
 /*
- * `e` -- the editor, and the writer. 37.5b, plan/phase37_screen_layouts_and_apps.md.
+ * `e` -- the editor, and the writer.
  * See kernel/include/kernel/editor.h for what it does and its keys.
  *
  * **The buffer** is one run of UTF-8 bytes on the heap, grown by doubling.
@@ -266,7 +266,7 @@ static bool text_ext(const char *f) {
 /* --- The buffer, and undo ---------------------------------------------- */
 
 /* The text's pages -- the buffer, undo and an inserted file's staging --
- * are the bulk class (38.7, plan/phase38_psram.md): PSRAM on the LCD-7.
+ * are the bulk class : PSRAM on the LCD-7.
  * `edbench 200` there: a keystroke at the start of the text 28 ms (5 in
  * SRAM), a frame's line counts 3 us, a search to the end 63 ms (50).
  * The state (ed_t) stays in SRAM: it is small and touched on every key. */
@@ -1664,7 +1664,7 @@ int editor_selftest(void) {
     return fails;
 }
 
-/* `edbench [kb] [dir]` (38.7, plan/phase38_psram.md): what a document of
+/* `edbench [kb] [dir]` : what a document of
  * `kb` costs the editor where its buffer lives -- the save and load (the
  * file I/O itself, as ed_save()/ed_load() do it), a keystroke at the start
  * (one memmove of the whole text), a search that runs to the end, and the

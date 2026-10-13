@@ -5,14 +5,13 @@
 #include <stdbool.h>
 #include "kernel/kobj_abi.h"
 
-/* Kernel-owned synchronisation objects for a confined runtime (45.3b,
- * plan/phase45_esp32c6.md §4.5).
+/* Kernel-owned synchronisation objects for a confined runtime.
  *
  * The Espressif Wi-Fi blob reaches its operating system through a table of
  * ~127 function pointers: counting semaphores, recursive mutexes, queues,
  * event groups, one-shot and periodic timers. This kernel has none of those --
  * it has block/unblock-by-pid, ylocks and synchronous channels -- and the
- * radio runs in U-mode (45.3a), so whatever implements them must also be
+ * radio runs in U-mode , so whatever implements them must also be
  * somewhere the blob cannot scribble on. A semaphore whose count lives in the
  * blob's own memory is a semaphore a stray store can corrupt into a deadlock;
  * one in a kernel table is reachable only through a handle.

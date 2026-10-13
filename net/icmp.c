@@ -2,7 +2,7 @@
 #include "net/net_internal.h"
 #include <string.h>
 
-/* ICMP (R2, plan/phase19_ip_stack_and_ethernet.md): echo reply, and
+/* ICMP: echo reply, and
  * destination-unreachable for a port nobody bound.
  *
  * Fifty lines that pay for themselves the first time somebody asks whether

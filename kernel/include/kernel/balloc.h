@@ -3,13 +3,12 @@
 
 #include <stdint.h>
 
-/* Buddy allocator (M1, plan/phase12_microkernel_migration.md).
+/* Buddy allocator.
  *
  * `palloc.h` is deliberately page-granular -- correct for task stacks and
  * page tables, wrong for anything smaller, and the gap raw_ideas.md's "True
  * allocator" line and plan/redesign_eval.md both named. This is that
- * allocator, with one constraint neither of those asked for but that M4/M5
- * of the migration plan need: **every block this returns is power-of-two
+ * allocator, with one constraint: **every block this returns is power-of-two
  * sized and naturally aligned in absolute address space**, the same NAPOT
  * shape a PMP region requires (kernel/mem_domain.h). A generic first-fit
  * heap cannot promise that -- an arbitrary-offset block from a dense arena
@@ -17,21 +16,16 @@
  * enough that an overrun corrupts a live neighbour instead of hitting a gap.
  * A buddy allocator only ever splits a power-of-two range in half, so every
  * block it hands out, at every level, is self-aligned by construction.
- * (Rule 6, plan/phase12_microkernel_migration.md §"Design rules".)
  *
  * ## Arena, not the whole heap
  *
  * balloc does not replace palloc_pages()/palloc_pages_aligned() or their
- * callers -- those are untouched by M1. Instead balloc_init() reserves a
+ * callers. Instead balloc_init() reserves a
  * fixed, self-aligned slice of the page heap (BALLOC_ARENA_PAGES, itself a
  * power of two so the slice's *base* address is aligned to its own size --
  * without that, "offset-aligned within the arena" would not imply
  * "address-aligned in absolute terms", and the whole NAPOT guarantee above
- * would be false) and buddy-manages only that slice. Deliberately modest for
- * M1 (64 KB): nothing in the tree depends on this allocator yet, so sizing
- * it generously now would just be memory nobody can use, not memory anyone
- * needs. M4/M5 raise it once real callers (driver task stacks, chan
- * endpoint buffers) exist to size it against.
+ * would be false) and buddy-manages only that slice. Sized conservatively: 64 KB on QEMU, 16 KB on RP2350.
  *
  * ## Floor
  *
@@ -67,8 +61,7 @@
  * Per-board, from cmake/board-*.cmake, for the reason palloc.h's own
  * CONFIG_PALLOC_MAX_PAGES gives: which board gets which value is a board
  * fact, not something an #ifdef here should decide. 16 pages (64 KB) on the
- * QEMU targets, 4 (16 KB) on RP2350 -- see §1.1 of
- * plan/phase15_memory_reclamation.md, and the two costs below.
+ * QEMU targets, 4 (16 KB) on RP2350 -- see the two costs below.
  *
  * ## This constant is paid twice, and only one half is lazy
  *
@@ -88,16 +81,8 @@
 
 /* Marks the allocator ready to reserve. Must run after palloc_init().
  *
- * Deliberately does NOT reserve the arena (M1 did; §1.1 of
- * plan/phase15_memory_reclamation.md is why it stopped). M1 sized the arena
- * for the callers M4/M5 were expected to bring -- driver task stacks, chan
- * endpoint buffers -- and those callers never arrived: as of this writing
- * the only balloc_alloc() in the tree is kernel/shell.c's `ballocdemo`, and
- * an eager reservation was handing 64 KB of RP2350's 212 KB heap to a
- * command nobody runs outside the QEMU test suite. Reserving on first use
- * instead makes an unused allocator genuinely free rather than nearly free,
- * and means the same thing cannot recur if a future arena is sized for
- * callers that again do not materialise.
+ * Deliberately does NOT reserve the arena eagerly: reserving on first use
+ * makes an unused allocator genuinely free rather than taking heap at boot.
  *
  * Call exactly once, from kernel/main.c, the way palloc_init() is: a second
  * call after something has allocated would abandon a live arena. */

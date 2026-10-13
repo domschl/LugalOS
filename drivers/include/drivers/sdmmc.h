@@ -3,7 +3,7 @@
  *
  * The microSD slot on the Waveshare ESP32-P4-NANO, on SDMMC slot 0's IO_MUX
  * pads (GPIO39-44), presented to the rest of the system as the FAT32 volume
- * at /sd0/. 35.1-35.5, plan/phase35_esp32p4_sdmmc.md.
+ * at /sd0/. 35.1-35.5, .
  *
  * The RP2350 analogue is drivers/spisd.h, and the two are deliberately NOT a
  * shared driver: that one speaks SD's SPI mode over a PL022, this one speaks

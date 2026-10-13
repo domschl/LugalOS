@@ -1,6 +1,6 @@
 # Per-board facts for RP2350 (Pico 2 / Pico 2 W), populated for the
 # Waveshare Pico-Clock-Green baseboard persona (L1,
-# plan/phase11_pico_clock_green.md). Same RP2350 silicon/arch/linker script
+# ). Same RP2350 silicon/arch/linker script
 # as cmake/board-rp2350.cmake -- this is a second board file, not a second
 # LUGALOS_TARGET, selected via -DLUGALOS_BOARD_FILE=cmake/board-rp2350-clock.cmake
 # (see CMakeLists.txt) because the baseboard's soldered GPIO wiring collides
@@ -18,7 +18,7 @@ set(CONFIG_PALLOC_MAX_PAGES 128)
 # (64 KB) on the QEMU targets.
 #
 # This board is the reason the constant is per-board at all (§1.1,
-# plan/phase15_memory_reclamation.md). It is paid twice: the arena itself
+# ). It is paid twice: the arena itself
 # comes out of the heap on first use, and the buddy tree is permanent .bss
 # whose size scales with this number -- 2046 bytes at 4 pages, 8190 at 16 --
 # and on RP2350 .bss and the heap are the same 512 KB budget. 4 pages still
@@ -94,7 +94,7 @@ set(CONFIG_DCF77_AUTO_MIN       17)
 set(CONFIG_DCF77_AUTO_ENABLED    1)
 
 # GP3 is the DS3231's square-wave output on this baseboard. It gets no config
-# key, only this comment: nothing reads it, and phase 11 L1's rule is that a
+# key, only this comment: nothing reads it, and L1's rule is that a
 # board fact earns a key when something consumes it. It becomes one the day a
 # 1 Hz display tick or a hardware second-reference for the DCF-77 decoder
 # actually wants it.
@@ -105,7 +105,7 @@ set(CONFIG_DCF77_AUTO_ENABLED    1)
 # branch. Deliberately no CONFIG_SPI0_*/CONFIG_ST7735_*/CONFIG_TM1638_*
 # either: this persona has neither the chess TFT nor the TM1638 keypad.
 
-# L2 (plan/phase11_pico_clock_green.md): SM16106 x2 (column shift
+# L2: SM16106 x2 (column shift
 # registers) + SM5166P (row address decoder) driving the 8x24 LED matrix,
 # plus the LDR for auto-brightness. Pin numbers straight from
 # ~/gith/Pico-Clock-Green/define.h (OE/SDI/CLK/LE/A0-A2/ADC_Light) -- the
@@ -119,7 +119,7 @@ set(CONFIG_CLOCK_A1_GPIO         18)
 set(CONFIG_CLOCK_A2_GPIO         22)
 set(CONFIG_CLOCK_ADC_LIGHT_GPIO  26)
 
-# L3 (plan/phase11_pico_clock_green.md): DS3231 RTC on GP6/GP7 -- the
+# L3: DS3231 RTC on GP6/GP7 -- the
 # vendor's own wiring (~/gith/Pico-Clock-Green/define.h: SDA=6, SCL=7,
 # i2c1). RP2350's GPIO-to-controller mapping alternates every 4 pins, so
 # GP6/GP7 land on the I2C1 peripheral instance, not the I2C0 instance
@@ -130,7 +130,7 @@ set(CONFIG_I2C_RTC_BASE     0x40098000) # I2C1
 set(CONFIG_I2C_RTC_SDA_GPIO 6)
 set(CONFIG_I2C_RTC_SCL_GPIO 7)
 
-# D2 (plan/phase17_clock_ui_and_dcf77.md): DCF-77 longwave receiver module,
+# D2: DCF-77 longwave receiver module,
 # soldered to the two free header pins farthest from the display's GP10-13
 # (the LED matrix's switching lines are the loudest interferer this board
 # has -- phase17 section 3). GP27 = header pin 32, GP28 = header pin 34;
@@ -174,7 +174,7 @@ set(CONFIG_DCF77_PON_ACTIVE_LOW   1)
 # only for whatever part of this has not already elapsed since boot.
 set(CONFIG_DCF77_WARMUP_MS     5000)
 
-# --- GPS/PPS: phase 24's transfer standard (P3b) -----------------------------
+# --- GPS/PPS: transfer standard (P3b) -----------------------------
 #
 # A GPS module read for its pulse per second, to calibrate the DCF-77 path
 # against something better than a network reference (§3.4). TEMPORARY in the
@@ -193,8 +193,7 @@ set(CONFIG_DCF77_WARMUP_MS     5000)
 #
 # LUGALOS_ENABLE_GPS is OFF in CMakePresets.json for this persona, and that is
 # the shipping configuration: the GPS was a transfer standard, attached to
-# calibrate CONFIG_DCF77_DELAY_US against and removed afterwards (phase 24
-# §3.4). The clock serves time from the radio alone.
+# calibrate CONFIG_DCF77_DELAY_US against and removed afterwards (# §3.4). The clock serves time from the radio alone.
 #
 # Turn it back ON to re-calibrate, or to re-run P4/P5's independent check of
 # the disciplined clock. Building it OFF is worth doing even when it is on,
@@ -228,7 +227,7 @@ set(CONFIG_GPS_UBX_TIMEPULSE 1)
 set(CONFIG_GPS_UBX_PERSIST 1)
 
 # The DCF-77 receiver's delay, measured rather than fitted (P4,
-# plan/phase24_dcf77_precision_and_ntp_server.md). The interval from the GPS
+# ). The interval from the GPS
 # pulse that begins a second to this receiver's mark for that same second:
 # propagation from Mainflingen, the module's filters, its AGC and its
 # demodulator, all together.
@@ -240,7 +239,7 @@ set(CONFIG_GPS_UBX_PERSIST 1)
 # confirmation as this board can produce.
 #
 # A board fact, not a driver constant: it belongs to this module and this
-# antenna. A second receiver will have its own, and phase 17's D5 baseline
+# antenna. A second receiver will have its own, and D5 baseline
 # measured a different one on different hardware.
 set(CONFIG_DCF77_DELAY_US 37886)
 
@@ -250,7 +249,7 @@ set(CONFIG_DCF77_DELAY_US 37886)
 # not listening states that more clearly than one that is listening to say no.
 set(CONFIG_ENABLE_NTP_SERVER 1)
 
-# --- P0: the measurement instrument (phase 24) -------------------------------
+# --- P0: the measurement instrument -------------------------------
 #
 # TEMPORARY, and it should go back to 0 the day P0 concludes. While this is 1
 # the persona is an instrument rather than an appliance: it never sets its own
@@ -278,7 +277,7 @@ set(CONFIG_DCF77_P0_PERIOD_S  60)
 #
 # The board under the Pico-Clock-Green baseboard is a Pico 2 W, so the radio
 # has been sitting there unused. Enabling it is what lets this persona stop
-# being a clock that has to be told the time: an NTP client (phase 19's R6),
+# being a clock that has to be told the time: an NTP client (R6),
 # or the inverse -- a DCF77-disciplined clock *serving* time to the segment.
 #
 # Same four pins as cmake/board-rp2350-wifi.cmake, and they cost this

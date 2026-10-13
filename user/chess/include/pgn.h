@@ -1,6 +1,5 @@
 /*
- * PGN save/load for LugalOS chess (14b, plan/phase14_networking_and_host_tooling.md;
- * built in phase 16).
+ * PGN save/load for LugalOS chess.
  *
  * Not vendored from LugalChess -- upstream has no PGN support; this is
  * LugalOS's own, written against the vendored engine's Position/Move types.

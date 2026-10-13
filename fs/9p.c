@@ -214,7 +214,7 @@ static int p9_pack_stat(uint8_t *out, uint32_t out_max, const char *name, uint64
     return (int)total;
 }
 
-/* --- Fid table (A2, plan/phase5_distributed_design.md) ---
+/* --- Fid table ---
  * Real state per fid, wired to the VFS handle API from A1, replacing the
  * single 2KB global echo buffer this file used to have. Bounded and
  * flat -- P9_MAX_FIDS is small on purpose (this server has one peer at a
@@ -283,7 +283,7 @@ static void p9_fid_reset_all(void) {
     for (int i = 0; i < P9_MAX_FIDS; i++) p9_fid_release(&g_fid_table[i]);
 }
 
-/* --- The auth gate (N2, plan/phase18_networking_and_auth.md §6) --------- */
+/* --- The auth gate --------- */
 
 /* Longest pre-shared key this reads out of a key file. 64 bytes is HMAC's
  * block length: beyond it RFC 2104 hashes the key first, so a longer one buys
@@ -317,7 +317,7 @@ static int p9_read_small_file(const char *path, char *buf, uint32_t cap) {
  * subtree this peer may attach at), `mode` ("ro" or "rw"). Whitespace-
  * separated, one entry per line; blank lines and lines beginning with '#'
  * are ignored. The last two columns are optional -- a line with only a
- * name and a key (phase 18's original 2-column format) reads as
+ * name and a key (original 2-column format) reads as
  * aname="/", read_only=false: unrestricted, exactly what a bare "uname
  * hexkey" line has always meant. A line can be deleted to revoke an
  * identity, which is the whole reason this is a list rather than one
@@ -415,7 +415,7 @@ static bool p9_grants_find(const char *uname, p9_grant_t *out) {
 
         /* `*` matches any uname. Explicit, never implied: since R3's
          * identity work every node attaches under its own name
-         * ("rp2350-gateway-3f2a"), which is what makes phase 18 §6's
+         * ("rp2350-gateway-3f2a"), which is what makes §6's
          * "multiple keys identify who" real -- and which also means a
          * keys file written when every node was "lugal" stops matching.
          * A segment that genuinely shares one key writes one line and
@@ -475,7 +475,7 @@ uint32_t p9_grants_list(p9_grant_t *out, uint32_t cap) {
      * nowhere to keep a grant at all, so it refused every authenticated
      * attach forever with no way to authorise anyone -- networked 9P simply
      * could not work on it. The record is per-board, survives a reflash, and
-     * is already the place phase 21 §5.2 argued grants belong.
+     * is already the place §5.2 argued grants belong.
      *
      * The file stays, and stays first-class, because a gateway with a card
      * can be administered by editing a text file, which is worth keeping. The
@@ -770,7 +770,7 @@ bool p9_auth_have_keys(void) {
  * the file: someone holding the board already has the flash. */
 static bool p9_path_is_secret(const char *path) {
     if (!path) return false;
-    /* I3, plan/phase21_identity_and_authentication.md §4: "the identity
+    /* I3, : "the identity
      * store must join it" -- the same guard, not a second one, so a path
      * refused here is refused for exactly one reason regardless of which
      * secret it would have served. */
@@ -976,7 +976,7 @@ static void p9_handle_tattach(const p9_msg_t *req, p9_msg_t *resp) {
         /* I5, §5.2: does this uname's grant (if any) allow attaching here?
          * A key checked via the console or the flash fallback -- neither
          * of which predates grants -- has no entry here and is
-         * unrestricted, matching phase 18's original behaviour exactly. A
+         * unrestricted, matching original behaviour exactly. A
          * verified identity with no matching grant line, on a link that
          * DOES have grants configured for other names, still gets no
          * restriction: §5.2 describes an allow-list of *scopes*, not a

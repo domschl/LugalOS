@@ -1,5 +1,5 @@
 /* The handful of libc and libm functions the Wi-Fi blob calls that the chip's ROM
- * does not provide (45.6, plan/phase45_esp32c6.md). They are *the radio
+ * does not provide. They are *the radio
  * domain's own*, linked into its text with the rest of the shim: the blob runs
  * in U-mode, where a call into the kernel's libc is an instruction access fault,
  * and the list is exactly what `tools/c6_blob_spike/link.sh` reports unresolved.

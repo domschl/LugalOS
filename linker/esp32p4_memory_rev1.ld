@@ -1,5 +1,5 @@
 /* L2MEM layout for ESP32-P4 silicon revisions below v3.0 -- the NANO's v1.3.
- * INCLUDEd by linker/esp32p4.ld (47.1, plan/phase47_esp32p4_lcd7b_ribbon.md);
+ * INCLUDEd by linker/esp32p4.ld;
  * the blocks below are unchanged from when they lived there.
  *
  * On this revision the ROM's data and download buffers sit LOW in L2MEM

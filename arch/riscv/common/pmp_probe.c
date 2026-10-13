@@ -3,7 +3,7 @@
 #include "kernel/printk.h"
 
 /* Discovers what PMP this silicon actually implements (B3 prep,
- * plan/phase5_distributed_design.md §5.4 / D2).
+ *  / D2).
  *
  * D2 chose "PMP early, NOMMU leads": RV32/RP2350 gets U-mode plus PMP
  * enforcement in B3, before Sv39 in B5. How many isolated servers a NOMMU
@@ -151,7 +151,7 @@ void pmp_probe(pmp_info_t *out) {
     /* And the other direction, because low bits can be fixed at *either*
      * value and the test above only sees one of them.
      *
-     * The ESP32-P4 is the case that showed this up (phase 27 E5): writing all
+     * The ESP32-P4 is the case that showed this up: writing all
      * ones to pmpaddr0 reads back 0x3fffffe0, so bits [4:0] cannot be *set*,
      * while the write-zero readback is plain 0 and the loop above counts no
      * stuck bits at all. The probe then reported the 8-byte default -- not a

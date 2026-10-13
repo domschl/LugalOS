@@ -36,7 +36,7 @@ static int compile_inner(const char *src_path, const char *dst_elf_path);
  * than released at each `return` inside: compile_inner() has half a dozen
  * failure exits, and one of them forgetting would leak 112 KB on a 160 KB
  * heap -- a bug that only shows up on the *next* command. */
-/* One compile at a time (phase 44). The compiler is its globals and one
+/* One compile at a time. The compiler is its globals and one
  * arena, and with a shell in every terminal two of them can run `cc` at
  * once: the second used to find the arena held, take it for a nested
  * compile and share it -- and whichever finished first freed it under the

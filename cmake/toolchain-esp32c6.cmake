@@ -1,5 +1,5 @@
 # Toolchain for the ESP32-C6 (Waveshare ESP32-C6-Zero, and the C6-MINI on the
-# ESP32-P4-NANO) -- 45.1, plan/phase45_esp32c6.md.
+# ESP32-P4-NANO) -- 45.1, .
 #
 # The C6's HP core is RV32IMAC (datasheet: no F, no FPU), so the generic RISC-V
 # cross-compiler already used for every other target in this tree builds it,

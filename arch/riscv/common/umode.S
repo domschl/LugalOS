@@ -1,4 +1,4 @@
-/* Entry into U-mode (B3, plan/phase5_distributed_design.md §5.4).
+/* Entry into U-mode.
  *
  * Written in assembly because the transition cannot survive a compiler's
  * view of the world: the stack pointer is replaced and control leaves via

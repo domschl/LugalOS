@@ -1,6 +1,6 @@
 /*
  * Vendored verbatim from ~/gith/domschl/LugalChess (engine/include/tt.h),
- * H4, plan/phase9_chess_computer.md.
+ * H4, .
  */
 
 #ifndef TT_H

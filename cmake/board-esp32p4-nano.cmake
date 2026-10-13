@@ -1,6 +1,6 @@
 # Per-board facts for the Waveshare ESP32-P4-NANO, consumed by
 # cmake/gen_config.cmake to produce lugalos_config.h (K0,
-# plan/phase7_kernel_config.md). E2, plan/phase27_esp32p4_bringup.md.
+# ). E2, .
 #
 # Flat list of numbers, reviewable as "is this number right" rather than
 # "does this expand correctly" -- the schema lives in gen_config.cmake.
@@ -8,10 +8,10 @@
 # Every address here was read out of the ESP32-P4 TRM and cross-checked
 # against ESP-IDF's own generated headers, never inferred from another
 # Espressif part (section 3.2 of the phase plan, and the 0x88888888 bug
-# phase 24 paid for).
+# paid for).
 
 # Silicon revision v1.3 (esptool, 2026-09-05; ROM "esp32p4-eco2"). Stated
-# rather than defaulted since 47.0 (plan/phase47_esp32p4_lcd7b_ribbon.md):
+# rather than defaulted since 47.0:
 # the LCD-7B board is v3.2, and the two differ in memory map and ROM.
 set(CONFIG_ESP32P4_REV 103)
 
@@ -69,10 +69,10 @@ set(CONFIG_UART0_BAUD     921600)
 # rate from this one (TRM 16.4: CNT_CLK is XTAL_CLK scaled by 2.5).
 set(CONFIG_XTAL_HZ        40000000)
 
-# The CPU clock, 34.4 (plan/phase34_esp32p4_pll_bringup.md).
+# The CPU clock, 34.4.
 #
 # One of **40, 90, 180, 360**, and nothing else: 40 keeps HP_ROOT_CLK on the
-# crystal exactly as every milestone before phase 34 ran, and the other three
+# crystal exactly as every milestone before ran, and the other three
 # are the only CPLL-derived steps ESP-IDF enumerates for silicon below
 # revision v3.0 -- which this board, at v1.3, is. The 100/200/400 ladder
 # belongs to rev >= 3.0 parts. arch/riscv/common/clk_esp32p4.c refuses
@@ -87,7 +87,7 @@ set(CONFIG_CPU_FREQ_MHZ   360)
 
 # --- Ethernet: the EMAC and the IP101GRI on RMII ------------------------
 #
-# Z0, plan/phase28_esp32p4_ethernet.md. Every number below is read from the
+# Z0, . Every number below is read from the
 # TRM, the NANO schematic or ESP-IDF's generated headers under ~/gith/esp/ --
 # the §3.2 rule, which on this chip has already caught two clock-gate bits
 # that "obvious" reasoning got wrong.
@@ -107,7 +107,7 @@ set(CONFIG_EMAC_BASE       0x50098000)
 #
 # Measured and recorded, but NOT currently routed: the driver is polled, not
 # interrupt-driven, because net/netif.h's poll() may not block and netsrv is
-# already the pump (phase 28 Z6 argues this at length). The number stays here
+# already the pump (Z6 argues this at length). The number stays here
 # because it is a board fact that took reading Table 13.4-1 to establish, and
 # an interrupt-driven receive path would need it on day one.
 set(CONFIG_EMAC_INTR_SRC   92)
@@ -136,7 +136,7 @@ set(CONFIG_EMAC_INTR_SRC   92)
 # (components/esp_eth/include/esp_eth_mac_esp.h), corroborated for *this*
 # board by Waveshare's own
 # ~/gith/esp/ESP32-P4-Platform/examples/esp-idf/15_eth2ap/sdkconfig.defaults,
-# whose MDC/MDIO/reset overrides are the three numbers phase 27 §1 recorded.
+# whose MDC/MDIO/reset overrides are the three numbers §1 recorded.
 
 # Station-management (MDIO/clause-22), routed through the GPIO matrix.
 set(CONFIG_EMAC_MDC_GPIO       31)
@@ -180,18 +180,18 @@ set(CONFIG_EMAC_PHY_ADDR       1)
 
 # What that PHY must identify as, so a swapped or dead part is caught rather
 # than silently tolerated. Checked by emac_phy_scan(); see the Z1 entry in
-# plan/phase28_esp32p4_ethernet.md.
+# .
 set(CONFIG_EMAC_PHY_ID1        0x0243)
 set(CONFIG_EMAC_PHY_ID2        0x0C54)
 
 # --- The L2 cache, which is carved out of L2MEM and is therefore not RAM ---
 #
-# U5, plan/phase32_esp32p4_execute_in_place.md. This number is paid twice and
+# U5, . This number is paid twice and
 # in two languages: arch/riscv/common/trap.c asks the ROM for a cache of this
 # size, and linker/esp32p4.ld must stop the RAM region where that cache's
 # storage begins. Getting them out of step does not fail at link or at boot --
 # it gives a heap whose top bytes accept stores and lose them, which is the
-# whole of phase 27's E7. So cmake passes this one definition to both, and the
+# whole of E7. So cmake passes this one definition to both, and the
 # linker asserts on it.
 #
 # 128 KB rather than the ROM's 256 KB default, and **measured rather than
@@ -203,7 +203,7 @@ set(CONFIG_EMAC_PHY_ID2        0x0C54)
 # Doubling it changed nothing measurable and cost 128 KB of heap.
 #
 # That first result only covered boot, which might not be L2-bound. Enabling
-# the chess engine on this board (also phase 32) provided the CPU-bound
+# the chess engine on this board provided the CPU-bound
 # instrument the measurement had been missing, and it agrees -- `(perft 3)`
 # node rates across six positions, 128 KB against 256 KB:
 #
@@ -220,7 +220,7 @@ set(CONFIG_L2_CACHE_KB 128)
 
 # --- PSRAM: 32 MB in the package ------------------------------------------
 #
-# 47.3, plan/phase47_esp32p4_lcd7b_ribbon.md -- the same ESP32-P4NRW32 part as
+# 47.3,  -- the same ESP32-P4NRW32 part as
 # the LCD-7B and the same driver (drivers/psram_esp32p4.c), with the v1.3 MPLL
 # programming. Powered by LDO channel 2 (schematic: VFB/VO2, pin 72, to
 # VDD_PSRAM_0/1, pins 59 and 67 -- C48/C49). The chip's MR2 density is checked
@@ -233,7 +233,7 @@ set(CONFIG_PSRAM_SPEED_MHZ 200)
 
 # --- The microSD slot: SDMMC slot 0, and the rail that powers it ---------
 #
-# 35.1, plan/phase35_esp32p4_sdmmc.md. Every number here is either the chip's
+# 35.1, . Every number here is either the chip's
 # (from the TRM and IDF's generated headers) or this board's (from
 # ~/gith/esp/datasheet/ESP32-P4-NANO-schematic.pdf, sheet "MicroSD Card"),
 # and each is labelled below with which.
@@ -290,10 +290,10 @@ set(CONFIG_SDMMC_BUS_WIDTH 4)
 # a re-timed sampling phase, and a card that is allowed to refuse. 20 MHz on
 # four lines is 10 MB/s of bus, which is already well beyond what the CPU-side
 # FIFO path will sustain -- so the next real speed-up is multi-block
-# transfers, not a faster clock. See plan/phase35_esp32p4_sdmmc.md §5.
+# transfers, not a faster clock. See .
 set(CONFIG_SDMMC_FREQ_KHZ  20000)
 
-# 49.4 (plan/phase49_c6_network_nodes.md): the ESP32-C6-MINI-1 on the SD/MMC
+# the ESP32-C6-MINI-1 on the SD/MMC
 # host's slot 1, through the GPIO matrix (slot 1 has no IO_MUX pads). Read off
 # the schematic (C6 IO19 = SDIO CLK, IO18 = CMD, IO20..23 = D0..D3, each with a
 # 51 kOhm pull-up) and identical to ESP-Hosted's own P4 defaults. CHIP_PU is

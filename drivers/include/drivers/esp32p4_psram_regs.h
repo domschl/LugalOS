@@ -1,5 +1,4 @@
 /* ESP32-P4 register addresses and fields used by drivers/psram_esp32p4.c.
- * 47.3, plan/phase47_esp32p4_lcd7b_ribbon.md.
  *
  * GENERATED -- do not edit by hand. Regenerate with
  *

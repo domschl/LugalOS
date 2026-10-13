@@ -56,10 +56,10 @@ static void note_rx_overrun(void) {
 #define UART_IER_ETBEI 0x02 // Enable Transmitter Holding Register Empty interrupt
 
 /* QEMU virt's ns16550, IRQ 10 -- verified against qemu/include/hw/riscv/virt.h
- * rather than assumed (M2, plan/phase12_microkernel_migration.md). */
+ * rather than assumed. */
 #define UART0_IRQ 10u
 
-/* M2, revised M2.5: the ISR-driven wake this file lacked entirely before --
+/* the ISR-driven wake this file lacked entirely before --
  * both directions. See kernel/printk.c for why TX blocking is safe now.
  *
  * The 16550's RX/TX-ready conditions are level-triggered on FIFO fill
@@ -70,7 +70,7 @@ static void note_rx_overrun(void) {
  * the duration of an actual wait, by whichever task is about to block, and
  * disabled again by the ISR the moment it has served that one waiter.
  *
- * M4: these two slots are shared between the uart task's own service loop
+ * these two slots are shared between the uart task's own service loop
  * (the common case, once it is up) and the direct-access fallback paths
  * below (bootstrap, `p9share`, or a dead uart task) -- both go through the
  * same uart_hw_*_blocking() primitives, so at most one waiter per direction
@@ -124,8 +124,7 @@ static uint8_t hw_uart_getc(void) {
     return uart_base[UART_RBR];
 }
 
-/* The actual hardware wait/transfer, M4 (plan/phase12_microkernel_migration.md):
- * pulled out of uart_putc()/uart_getc() so both the uart task's own service
+/* The actual hardware wait/transfer,  * pulled out of uart_putc()/uart_getc() so both the uart task's own service
  * loop and the direct-access fallback paths share one implementation rather
  * than two copies of the same continuous-irq_save() logic drifting apart.
  * Whoever calls these currently owns the hardware -- normally the uart
@@ -206,7 +205,7 @@ static uint8_t uart_hw_getc_blocking(void) {
     return hw_uart_getc();
 }
 
-/* --- M4: the uart driver task ---
+/* --- UART driver task ---
  *
  * A minimal wire protocol over the "uart" task-owned channel
  * (kernel/chan.h). Single opcode byte, then a variable-length payload.
@@ -242,7 +241,7 @@ static uint8_t       g_uart_req[UART_REQ_CAP];
 static uint8_t       g_uart_resp[1];
 static driver_task_t g_uart_task;
 
-/* M4 verify: counts UART_REQ_WRITE calls actually served -- one per
+/* Verify: counts UART_REQ_WRITE calls actually served -- one per
  * uart_flush() that reached the task (not per character, and not per
  * uart_putc()), so a test can check IPC volume tracks *lines/messages*
  * instead of guessing from timing. See uart_write_call_count(). */
@@ -255,7 +254,7 @@ uint32_t uart_irq_tx_arms(void) { return g_uart_irq_tx_arms; }
 uint32_t uart_irq_tx_wakes(void) { return g_uart_irq_tx_wakes; }
 uint32_t uart_irq_tx_seen(void) { return g_uart_irq_tx_seen; }
 
-/* M4.5, found while bringing up drivers/uart_rp2350.c's own uart task on
+/* Found while bringing up drivers/uart_rp2350.c's own uart task on
  * real hardware -- see that file's own comment on this same flag for the
  * full account. True only while UART_REQ_WRITE below is actually pushing
  * bytes to the hardware, false at every other time (including the whole
@@ -291,7 +290,7 @@ static bool uart_task_alive(void) { return driver_task_alive(&g_uart_task); }
  * to forbid printk() outright, because printk() reached the console through
  * this very endpoint -- a caller blocked here while holding the output lock,
  * and this task taking that same lock to log, is a deadlock against itself.
- * Y4 (plan/phase31_concurrency_hierarchy.md) made that cycle *named* rather
+ * Y4 made that cycle *named* rather
  * than silent; Y5c removed it. printk() is a ring append that reaches no
  * blocking primitive from any context, so this loop may log freely.
  *
@@ -336,7 +335,7 @@ static uint32_t uart_serve(void *ctx, const uint8_t *req, uint32_t req_len,
  * fatal: every caller's facade function falls back to direct hardware
  * access whenever uart_task_alive() is false, so a board that could not
  * start this task for some reason keeps working exactly as it did before
- * M4, just without the isolation the task provides. */
+ * Just without the isolation the task provides. */
 int uart_task_start(void) {
     const driver_task_spec_t spec = {
         .name        = "uart",
@@ -347,7 +346,7 @@ int uart_task_start(void) {
         /* An empty request is answered, not served: it reaches no hardware
          * and is not a call. */
         .min_req_len = 1,
-        /* M0: shallow call depth, 1 page is generous. */
+        /* shallow call depth, 1 page is generous. */
         .stack_pages = 1,
         /* TASK_PRIO_INTERRUPT: a caller that chan_call()s "uart" unblocks
          * this task, then blocks itself (kernel/chan.c's chan_call_task())
@@ -372,8 +371,7 @@ void uart_init(uintptr_t base_addr) {
     arch_irq_enable(UART0_IRQ);
 }
 
-/* The bounded retry moved to driver_task_call() (G2,
- * plan/phase30_driver_framework.md), which every driver task shares. Why
+/* The bounded retry moved to driver_task_call(), which every driver task shares. Why
  * bounded and yielding rather than blocking or falling straight back to a
  * hardware access that would race the request already in flight is written
  * there. What was specific to this driver was only the reason busy is rare
@@ -382,7 +380,7 @@ void uart_init(uintptr_t base_addr) {
  *
  * uart_flush() below does NOT use it -- see its own comment. */
 
-/* M4: batches characters into a chunk and sends one chan_call() per chunk
+/* batches characters into a chunk and sends one chan_call() per chunk
  * (or per uart_flush()) instead of one per character. This -- not the
  * task/endpoint mechanism, which was already correct -- is what fixes the
  * first attempt's actual defect: every printk()/cprintf() call formats
@@ -406,7 +404,7 @@ void uart_init(uintptr_t base_addr) {
  * a single flush attempt would overrun it. Re-checking under the lock each
  * time closes that. */
 #define UART_TX_BATCH_CAP 256
-/* One batch per hart (phase 23 X7).
+/* One batch per hart.
  *
  * It was a single shared buffer, and on two cores that spliced messages
  * together character by character: console_unlock() releases the output lock
@@ -425,10 +423,9 @@ void uart_init(uintptr_t base_addr) {
  * on that hart, which is what it was added for. */
 static char     g_tx_batch[MAX_HARTS][UART_TX_BATCH_CAP];
 static uint32_t g_tx_batch_len[MAX_HARTS];
-/* Guards g_tx_batch/g_tx_batch_len (X2,
- * plan/phase23_multicore_scheduling.md).
+/* Guards g_tx_batch/g_tx_batch_len.
  *
- * X2 pins every driver task to hart 0, and phase 22's S5 left the UART
+ * X2 pins every driver task to hart 0, and S5 left the UART
  * paths unconverted on the strength of that. Checking the claim rather than
  * inheriting it -- which is what X2 is for -- shows it covers less than S5
  * assumed. It is true of the *waiter* path below: uart_hw_putc_blocking()
@@ -518,7 +515,7 @@ void uart_putc(char c) {
 // longer read the hardware register directly -- some of what's waiting
 // there may be 9P frame bytes. uart_demux_console_has_char() pumps the
 // hardware and returns only the console-routed subset; disabled (the
-// default), this now asks the uart task the same question M2.5 asked the
+// default), this now asks the uart task the same question previously asked the
 // register directly (see uart_flush()'s comment for why "task not alive"
 // falls back rather than failing). Flushed first: an outstanding write
 // (a prompt, most often) should be visible before anything checks for or

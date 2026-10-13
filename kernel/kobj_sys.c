@@ -1,5 +1,4 @@
 /* The syscall surface of the kernel objects. See kernel/include/kernel/kobj_abi.h.
- * 45.3b, plan/phase45_esp32c6.md.
  *
  * Three rules, each of which is what makes this a boundary and not a hole:
  *
@@ -35,7 +34,7 @@ static inline uintptr_t caller_domain(void) {
  * critical sections ("disable interrupts around this") become mutual
  * exclusion among the domain's own threads. The hardware interrupt itself
  * only ever runs a kernel stub; the handler logic runs in a thread of the
- * domain (plan/phase45 §4.5), so excluding that thread is excluding the
+ * domain , so excluding that thread is excluding the
  * interrupt. Few domains use it, so a tiny table is enough. */
 #define CRIT_MAX 4
 static struct { uintptr_t owner; kh_t m; } g_crit[CRIT_MAX];

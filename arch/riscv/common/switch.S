@@ -1,4 +1,4 @@
-/* Cooperative context switch (B2, plan/phase5_distributed_design.md §5.4).
+/* Cooperative context switch.
  *
  * Saves the callee-saved register set on the outgoing task's own stack,
  * parks its sp, loads the incoming task's sp, and restores. Because this is

@@ -1,6 +1,6 @@
 /*
  * The in-kernel C compiler (user/chibicc) on the host, under ASan/UBSan or
- * valgrind (phase 40 review).
+ * valgrind.
  *
  * `cc` compiles whatever file it is pointed at, inside the kernel, so no
  * input may make it touch memory it does not own or never return. This

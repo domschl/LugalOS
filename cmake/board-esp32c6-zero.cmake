@@ -1,6 +1,6 @@
 # Per-board facts for the Waveshare ESP32-C6-Zero (and the C6 itself),
 # consumed by cmake/gen_config.cmake to produce lugalos_config.h. 45.4,
-# plan/phase45_esp32c6.md.
+# .
 #
 # Every address was read from IDF's generated register headers
 # (components/soc/esp32c6/register/soc/*.h, 2026-10-05) and, where the kernel

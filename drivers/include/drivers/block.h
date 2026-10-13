@@ -10,7 +10,7 @@ typedef struct block_dev {
     uint32_t num_blocks;   // e.g., 1024 blocks = 512 KB
     int (*read_blocks)(struct block_dev *dev, void *buf, uint32_t lba, uint32_t count);
     int (*write_blocks)(struct block_dev *dev, const void *buf, uint32_t lba, uint32_t count);
-    /* Phase 40 item 3, a card pulled from under its mount. Optional: 0 when
+    /* a card pulled from under its mount. Optional: 0 when
      * the medium answers, -1 when it does not; NULL means always there. */
     int (*probe)(struct block_dev *dev);
     /* The medium went away while mounted. Set by its driver after repeated

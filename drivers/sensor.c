@@ -3,7 +3,7 @@
 #include "kernel/console.h"
 #include <string.h>
 
-/* Uniform sensor channel descriptors (Phase 46 §7.2) */
+/* Uniform sensor channel descriptors */
 static const sensor_chan_desc_t s_descriptors[SENSOR_CHAN_MAX] = {
     [SENSOR_CHAN_TEMP]         = { SENSOR_CHAN_TEMP,         "temperature",    "C",    2, 100 },
     [SENSOR_CHAN_PRESSURE]     = { SENSOR_CHAN_PRESSURE,     "pressure",       "hPa",  2, 100 },
@@ -85,7 +85,7 @@ size_t sensor_format_channel(sensor_chan_t chan, int32_t raw_val, char *buf, siz
 
 /* --- Derived Metrics Calculations (Zero-Float Invariant) --- */
 
-/* Sea-level pressure (phase 40 item 11, phase 46 §7.3):
+/* Sea-level pressure:
  * p0 / p = (1 - x) ** -5.257, x = L h / (T + L h + 273.15), L = 0.0065 K/m.
  * Evaluated as exp(5.257 * -ln(1 - x)) with series in Q30 arithmetic. */
 int32_t sensor_calc_sea_level_pa(int32_t pa, int32_t t_c100, int32_t alt_m) {
@@ -156,7 +156,7 @@ int32_t sensor_calc_dew_point_c100(int32_t t_c100, int32_t rh_c100) {
 }
 
 /* Open-source BME680 IAQ (0-500 index) from raw gas resistance, temperature, and humidity.
- * Eliminates proprietary Bosch BSEC binary blob (Phase 46 §7.4). */
+ * Eliminates proprietary Bosch BSEC binary blob. */
 int32_t sensor_calc_bme680_iaq(int32_t gas_res_ohm, int32_t t_c100, int32_t rh_c100, int32_t *inout_r_base) {
     (void)t_c100;
     if (gas_res_ohm <= 0) return 0;

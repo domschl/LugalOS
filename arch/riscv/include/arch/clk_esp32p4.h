@@ -1,5 +1,5 @@
 /* The ESP32-P4's clock tree, read back from its own registers.
- * 34.1, plan/phase34_esp32p4_pll_bringup.md.
+ * 34.1, .
  *
  * Read-only at 34.1. This header is where the PLL switch will land in
  * 34.3-34.5, which is why the file exists now rather than the reporting

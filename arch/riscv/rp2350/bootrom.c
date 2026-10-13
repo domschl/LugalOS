@@ -78,7 +78,7 @@ bool rp2350_reboot_to_bootsel(void) {
 /* Arms a reboot `ms` from now and RETURNS -- the same bootrom entry point as
  * rp2350_reboot() below, minus NO_RETURN_ON_SUCCESS.
  *
- * A deadman for experiments that can hang the machine (phase 23 X7's core-1
+ * A deadman for experiments that can hang the machine (X7's core-1
  * bring-up). Three attempts at that milestone each left a board whose USB
  * console never came back, and each one cost a physical BOOTSEL press and
  * took the evidence with it. A scheduled reboot converts that into a board

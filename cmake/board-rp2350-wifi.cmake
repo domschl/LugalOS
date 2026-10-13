@@ -1,12 +1,11 @@
 # Per-board facts for RP2350W ("Pico 2 W"), populated for the **wireless
-# netif** persona (R5, plan/phase19_ip_stack_and_ethernet.md): a bare Pico 2 W
+# netif** persona: a bare Pico 2 W
 # carrying an SD card on SPI1 and nothing else -- the wireless counterpart to
 # cmake/board-rp2350-gateway.cmake's wired one.
 #
 # A *different* physical Pico 2 W than the one under the Pico-Clock-Green
-# baseboard (cmake/board-rp2350-clock.cmake, phase 11): that board's CYW43439
-# pins are already fully documented (phase17 §1's pin table, confirmed against
-# the vendor schematic) and reused here rather than rediscovered --
+# baseboard (cmake/board-rp2350-clock.cmake): that board's CYW43439
+# pins are reused here --
 # GP23/24/25/29 are internal to the Pico 2 W module on *every* board carrying
 # one, not something this specific board's wiring could vary.
 #
@@ -24,7 +23,7 @@
 set(CONFIG_PALLOC_MAX_PAGES 128)
 
 # Same 4 pages (16 KB) as every other RP2350 persona (§1.1,
-# plan/phase15_memory_reclamation.md) -- this board has nothing unusually
+# ) -- this board has nothing unusually
 # heavy on the buddy allocator either.
 set(CONFIG_BALLOC_ARENA_PAGES 4)
 

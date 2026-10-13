@@ -23,7 +23,7 @@ static Macro *macros;
 static int macro_cnt = 0;
 
 /* Set by any error; preprocess() then returns NULL and the compile stops
- * (phase 40 review). Every one of these used to print and carry on -- a
+ *. Every one of these used to print and carry on -- a
  * missing header, a 300-character line split mid-token, a program past the
  * 16 KB output silently cut off -- and the compile went ahead on text that
  * was not the program, or, worse, succeeded. */
@@ -113,7 +113,7 @@ static bool is_ident_body(char c) {
 
 #define PREPROC_BUF_SIZE 16384
 static char *preproc_buf;
-/* Headers being read, as a stack (phase 40, item 5): a header is read in
+/* Headers being read, as a stack: a header is read in
  * above the ones that include it and popped when it is done. This used to be
  * one 2 KB buffer for every level, so a header that included another had the
  * rest of its own text overwritten by the inner one mid-parse. The region is
@@ -209,7 +209,7 @@ static void expand_macros_and_emit(const char *line) {
 static void preprocess_internal(const char *src, int depth) {
 
     const char *p = src;
-    /* Conditionals (phase 40 review): `cond_depth` counts the open #if*
+    /* Conditionals: `cond_depth` counts the open #if*
      * blocks of this file, `skip_level` is the depth at which skipping
      * started (0 = not skipping). A skip used to be a counter that only
      * conditions *false* at the time pushed, so a true #ifdef nested in a

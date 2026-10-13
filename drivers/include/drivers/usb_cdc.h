@@ -24,7 +24,7 @@ void usb_cdc_task(void);
 void usb_cdc_debug_dump(void);
 bool usb_cdc_is_connected(void);
 
-// M4.5, plan/phase12_microkernel_migration.md, Part B: starts a dedicated
+// starts a dedicated
 // background task that services usb_cdc_task() on its own continuous
 // schedule, replacing the "whatever happens to be busy-waiting" opportunistic
 // polling this driver used to depend on -- no chan_call() endpoint, same
@@ -54,7 +54,7 @@ bool usb_cdc_peek_interrupt(void);
 int usb_cdc_write_net(const uint8_t *buf, size_t len);
 int usb_cdc_read_net(uint8_t *buf, size_t max_len);
 
-// A3b link_usb_cdc (plan/phase5_distributed_design.md): a p9_link_t backed
+// A3b link_usb_cdc: a p9_link_t backed
 // by ACM1/EP4's bulk data path. Unlike the shared-UART demux, this is a
 // dedicated, physically separate channel (its own USB endpoint pair), so it
 // needs no RX demultiplexing -- the same reasoning drivers/virtio_console.c

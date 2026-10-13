@@ -14,7 +14,7 @@ static uint64_t g_boot_us_offset = 0;
  * representation with no correct answer during the hour that repeats every
  * October. Local time is computed on demand from kernel/timezone.c and is
  * never stored. */
-/* Microseconds, since P2 (plan/phase24_dcf77_precision_and_ntp_server.md).
+/* Microseconds.
  *
  * The pair was milliseconds until a measurement ran into the floor: P0's own
  * noise came out at 3.7 ms against 5.0 ms of total scatter, so the instrument
@@ -31,7 +31,7 @@ static int64_t  g_base_epoch_us = 1785931200000000LL; /* 2026-08-05 12:00:00 UTC
 static uint64_t g_base_mono_us = 0;
 
 /* The wall clock's rate, as a correction to the monotonic counter in parts per
- * billion (P5, plan/phase24_dcf77_precision_and_ntp_server.md).
+ * billion .
  *
  * Parts per *billion* rather than million because the quantity being corrected
  * is smaller than a part per million: this board's crystal measured -0.46 ppm,
@@ -70,7 +70,7 @@ static bool g_clock_set = false;
 /* ESP32-P4 and ESP32-C6: the system timer (P4 TRM chapter 16, C6 TRM chapter
  * 'System Timer'; the register layout is the same family), UNIT0.
  *
- * The C6 (45.4, plan/phase45_esp32c6.md) differs in two things only: the base
+ * The ESP32-C6 differs in two things only: the base
  * address, which comes from the board file (CONFIG_SYSTIMER_BASE, 0x6000A000),
  * and that its clock tree needs no gating here -- the ROM leaves the timer
  * running and 45.1 measured it against the CPU cycle counter (160 MHz CPU over
@@ -98,7 +98,7 @@ static bool g_clock_set = false;
  * average holds "in two counting cycles". Any single reading can therefore
  * be off by one tick, i.e. 62.5 ns, which is below this clock's stated 1 us
  * resolution and irrelevant to every caller here. It will matter to E4 and
- * to phase 29's PTP, and it is written down now so that it is a known
+ * to PTP, and it is written down now so that it is a known
  * property rather than a surprise then. */
 #if defined(CONFIG_BOARD_ESP32C6)
 #define SYSTIMER_BASE           ((uintptr_t)CONFIG_SYSTIMER_BASE)
@@ -131,7 +131,7 @@ static bool g_clock_set = false;
 /* QEMU RV32 (M-mode): the same CLINT kernel/ticker.c already reads for its
  * preemption deadline, at the same documented 10 MHz virt-machine rate
  * (ticker.c's own TICK_HZ). Found and fixed 2026-08-12
- * (plan/phase10_chess_completion.md J0): this branch used to be a bare call
+ *: this branch used to be a bare call
  * counter (`++g_soft_us * 100`), entirely decoupled from real elapsed time
  * -- every read advanced it by a fixed 100 "microseconds" regardless of how
  * much wall-clock time had actually passed, so any caller measuring a time
@@ -399,7 +399,7 @@ void time_set_utc(const rtc_time_t *tm) {
     time_set_epoch_us(time_to_epoch(tm) * 1000000LL + (int64_t)tm->ms * 1000LL);
 }
 
-/* P2's own check (plan/phase24_dcf77_precision_and_ntp_server.md).
+/* Timekeeper verification.
  *
  * Every assertion here would have passed on the millisecond clock this
  * replaced except the two that matter -- sub-millisecond values surviving a

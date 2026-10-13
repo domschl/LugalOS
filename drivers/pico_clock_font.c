@@ -3,13 +3,13 @@
  *
  * All of it is `const`, so it lives in flash and costs zero .bss -- which on
  * this board is the same 512 KB budget the heap comes out of
- * (plan/phase15_memory_reclamation.md). A 40-glyph table is ~360 bytes of
+ *. A 40-glyph table is ~360 bytes of
  * .rodata.
  */
 
 #include "pico_clock_font.h"
 
-/* Digits are the phase 11 glyphs, whose 4-column cell the clock face's fixed
+/* Digits are the previously glyphs, whose 4-column cell the clock face's fixed
  * layout is built around; letters match them (see FONT_ALPHA); punctuation is
  * as narrow as it reads. Written out as one literal per glyph rather than a
  * packed blob: the bits ARE the picture, and a table you can read is a table

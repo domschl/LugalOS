@@ -1,5 +1,5 @@
 /* A GT911 touch controller, polled, and the ribbon's three touch gestures --
- * 47.12, plan/phase47_esp32p4_lcd7b_ribbon.md. The interface and what the
+ * 47.12, . The interface and what the
  * gestures do are drivers/include/drivers/touch.h.
  *
  * The controller (Goodix GT911; register map as Waveshare's

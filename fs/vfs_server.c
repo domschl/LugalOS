@@ -82,7 +82,7 @@ typedef struct {
 static service_entry_t g_services[MAX_SERVICES];
 static int g_num_services = 0;
 
-/* --- Mount table (A5, plan/phase5_distributed_design.md) ---
+/* --- Mount table ---
  * Replaces the old parse_prefix()'s hardcoded if-chain, which defaulted
  * *any* unrecognized path to /flash0/ -- silent, surprising fall-through
  * that broke Plan 9's "namespaces are explicit" semantics (review finding
@@ -131,7 +131,7 @@ typedef struct {
 #define MAX_MOUNTS 10
 static mount_entry_t g_mounts[MAX_MOUNTS];
 
-/* --- Handle table (A1, plan/phase5_distributed_design.md) ---
+/* --- Handle table ---
  * A flat array, not a union: at 8 handles this is a few KB (dominated by
  * the 512-byte proc_buf per slot), affordable even on RP2350's SRAM
  * budget. `kind` mirrors the owning mount's mount_kind_t, plus a
@@ -163,7 +163,7 @@ typedef struct {
      *
      *     PALLOC_MAX_PAGES=128\nUART0_BASE=0x40070000\n...DCF77_WARMUP_MS=5000\n
      *
-     * That was 690 before D2 (plan/phase17_clock_ui_and_dcf77.md) added
+     * That was 690 before D2 added
      * ENABLE_DCF77 plus four DCF77_* pin lines -- 95 bytes, which is what
      * took it past the old 768 and would have silently truncated the tail of
      * /proc/config all over again. 896 gives headroom without padding
@@ -238,7 +238,7 @@ static void mount_table_init(void) {
      * at the VFS instead of a failed write three layers down.
      *
      * The ESP32-P4 is the first target where it is genuinely writable: E6
-     * (plan/phase27_esp32p4_bringup.md) puts the segment in real flash and
+     * puts the segment in real flash and
      * gives flashdisk a read-modify-erase-write path through the boot ROM. So
      * the flag follows the hardware rather than the filename. */
 #if defined(CONFIG_BOARD_ESP32P4)
@@ -353,10 +353,10 @@ void vfs_server_init(void) {
         }
     }
 #elif defined(CONFIG_BOARD_ESP32C6)
-    /* 45.4, plan/phase45_esp32c6.md: no block device on this board (no card slot;
+    /* no block device on this board (no card slot;
      * /flash0 arrives with 45.4.3), so /sd0 stays unmounted and `df` says so. */
 #elif defined(CONFIG_BOARD_ESP32P4)
-    /* 35.2, plan/phase35_esp32p4_sdmmc.md: the microSD card in the NANO's
+    /* the microSD card in the NANO's
      * own slot, on the SD/MMC host controller rather than on a SPI bus.
      * Where E2 had nothing to mount here, an empty slot now reports itself
      * the same way an unformatted card does -- /sd0 stays unmounted and `df`
@@ -485,7 +485,7 @@ int vfs_mount_ramdisk(int size_kb) {
             return -1;
         }
         /* Quiet, because a blank RAM disk is the expected state on every
-         * boot, not a fault (Y5a, plan/phase31_concurrency_hierarchy.md).
+         * boot, not a fault.
          * This used to narrate one expected event in four lines; the
          * "Mounted ... on /ram0/" line below is the one that is news.
          *
@@ -578,20 +578,13 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
     uint32_t used = 0;
 
     if (strcmp(rel, "ps") == 0) {
-        /* B2: the real task table. This used to be a hardcoded string
-         * listing four tasks that did not exist -- kernel/sched.c was
-         * bookkeeping only and nothing was ever scheduled.
+        /* Task table formatted for /proc/ps.
          *
-         * M6: "Isol" makes the vision statement at the top of
-         * plan/phase12_microkernel_migration.md a thing you can point at
-         * rather than describe -- whether each task actually runs under
+         * The "Isol" column reports whether each task actually runs under
          * hardware-enforced isolation (task_set_domain() was called on
-         * it) rather than just "is alive". Every M5 driver task shows the
-         * real backend name once it enters U-mode (PMP on the RP2350/
-         * RV32_NOMMU builds, Sv39 on RV64_MMU); the kernel task itself
-         * and anything not yet converted (M4.5's own p9srv) correctly
-         * show "-". Same shape on both backends -- the one thing that
-         * differs is which name appears, not whether the column exists. */
+         * it) rather than in kernel mode. Driver and user tasks show the
+         * real backend name once they enter U-mode (PMP on RV32/RP2350,
+         * Sv39 on RV64_MMU); kernel tasks show "-". */
         /* "Isol" trails Exit rather than sitting between Name and Exit --
          * tests/hw and tests/runner.py both have existing patterns
          * (`uprog\s+42`, `uprog\s+killed`) asserting Name is immediately
@@ -631,7 +624,7 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
             /* X2: which hart this task may run on. "any" is the default and
              * the common case; a number means it is pinned, which for a
              * driver task is load-bearing rather than decorative -- several
-             * of phase 22's S5 dispositions rest on it. */
+             * of S5 dispositions rest on it. */
             {
                 char hbuf[8];
                 int aff = task_affinity(pid);
@@ -640,7 +633,7 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
                 used = append_col(buf, used, cap, hbuf, 6);
             }
             /* Stack high-water against the size it was given (§6,
-             * plan/phase15_memory_reclamation.md). "-" for the boot task,
+             * ). "-" for the boot task,
              * whose stack is the linker's and is reported by the Boot Stack
              * line in /proc/meminfo instead. */
             {
@@ -738,7 +731,7 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
             "  Image (text+data+bss): %u KB\n", map.image_bytes / 1024);
 #endif
         /* The static side in the parts it is made of (§6,
-         * plan/phase15_memory_reclamation.md). The one Image figure above
+         * ). The one Image figure above
          * shows that it moved; these show what moved -- and on this board
          * every byte of them is a heap byte nothing else can have. */
         used += (uint32_t)ksnprintf(buf + used, cap - used,
@@ -827,7 +820,7 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
         netif_mac_str(node_mac(), mac);
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "mac: %s\nmac source: %s\n", mac, node_mac_source());
-        /* I2 (plan/phase21_identity_and_authentication.md): the device-scope
+        /* the device-scope
          * UID, absent unless silicon or a provisioned record supplied one --
          * "unset" would claim more than is known, so this says "none". */
         uint8_t uid[NODE_UID_LEN];
@@ -925,7 +918,7 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
             "9P uname: %s\n", node_name());
         return (int)used;
     } else if (strcmp(rel, "net") == 0) {
-        /* R2, plan/phase19_ip_stack_and_ethernet.md: the interface, its
+        /* the interface, its
          * address, its ARP cache and every counter the stack keeps.
          *
          * **A file under /proc rather than a `/net` mount**, which is where
@@ -938,7 +931,7 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
          * for exactly this, and `cat /proc/net` debugs the stack today.
          * Promoting it is a later phase's job, with a user to justify it.
          *
-         * Every drop is a separate line for the reason phase 18 learned
+         * Every drop is a separate line for the reason learned
          * expensively: "the network does not work" is not a diagnosis, and a
          * single total cannot become one. */
         const net_state_t *ns = net_state();
@@ -1100,7 +1093,7 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
             LUGALOS_TAINTED ? " tainted: " : "", LUGALOS_TAINTED ? LUGALOS_TAINT : "");
         return (int)used;
     } else if (strcmp(rel, "cpuinfo") == 0) {
-        /* S0, plan/phase22_smp_locking_foundation.md §6.2: which hart is
+        /* S0, : which hart is
          * executing, read back from the record `tp` points at.
          *
          * This exists because the claim it reports is not one the rest of
@@ -1171,7 +1164,7 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
 #endif
         return (int)used;
     } else if (strcmp(rel, "config") == 0) {
-        /* Board config (K3, plan/phase7_kernel_config.md): the generated
+        /* Board config: the generated
          * platform-default and pin-map values actually baked into this
          * image, so a wrong value in cmake/board-*.cmake is visible from a
          * running board -- including over 9P from a remote node -- rather
@@ -1226,15 +1219,14 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
             "TM1638_STB_GPIO=%d\nTM1638_CLK_GPIO=%d\nTM1638_DIO_GPIO=%d\n",
             CONFIG_TM1638_STB_GPIO, CONFIG_TM1638_CLK_GPIO, CONFIG_TM1638_DIO_GPIO);
 #endif
-        /* N5 (plan/phase18_networking_and_auth.md): the gateway persona's
+        /* the gateway persona's
          * UART1 downlink. Keyed on the pins being defined rather than on a
          * feature flag -- the pin map is a board fact and is worth reporting
          * from the moment it exists, which on this persona was one milestone
          * before the driver that uses it. Reported for exactly the reason
          * this file exists: a board should be able to say what it thinks it
          * is wired to, so that a wrong number is a line of output rather than
-         * an afternoon. (An Ethernet pin block sat here too until phase 19's
-         * R0; R4's ENC28J60 restores one.) */
+         * an afternoon. (An Ethernet pin block sat here too until          * R0; R4's ENC28J60 restores one.) */
 #ifdef CONFIG_UART1_BASE
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "UART1_BASE=0x%lx\nUART1_TX_GPIO=%d\nUART1_RX_GPIO=%d\n",
@@ -1260,7 +1252,7 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
 #endif
 #endif
 #ifdef CONFIG_LCD_PCLK_GPIO
-        /* 36.x, plan/phase36_rp2350_lcd7_terminal.md: the RP2350-LCD-7's panel
+        /* the RP2350-LCD-7's panel
          * and its PIO-USB host port. Keyed on the pins, like UART1 above. Only
          * this persona has them, and it has none of the ST7735/TM1638/clock/
          * DCF77 blocks, so proc_buf's all-flags worst case does not grow. */
@@ -1299,7 +1291,7 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
     }
 #endif
     else if (strcmp(rel, "sensors") == 0) {
-        /* E7, plan/phase27_esp32p4_bringup.md: the environment sensor, for a
+        /* the environment sensor, for a
          * reader that is not on this board.
          *
          * Served entirely from drivers/bme280.c's cache. This function runs on
@@ -1376,7 +1368,7 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
                     "valid=yes\nage_s=%lu\ntemperature_c100=%ld\npressure_pa=%lu\n",
                     (unsigned long)age_s, (long)r.temperature_c100,
                     (unsigned long)(r.pressure_pa256 >> 8));
-                /* Phase 40, item 11: reduced to sea level, where the node knows
+                /* reduced to sea level, where the node knows
                  * its altitude -- so a gateway republishing this file
                  * (`mqttd file`) can publish what weather services quote. */
                 int32_t alt;
@@ -1976,7 +1968,7 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DCF77
 #if CONFIG_DCF77_P0_LOG
     else if (strcmp(rel, "dcf77log") == 0) {
-        /* P0's raw output (plan/phase24_dcf77_precision_and_ntp_server.md).
+        /* P0's raw output.
          * The two accumulated results first, so they are correct however
          * little of the series a collector actually saw, then the recent
          * samples -- which is the split that makes an appliance at the far
@@ -1986,7 +1978,7 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
 #endif
     else if (strcmp(rel, "dcf77") == 0) {
         /* The radio's health, without a serial console (D4,
-         * plan/phase17_clock_ui_and_dcf77.md). The clock persona's only other
+         * ). The clock persona's only other
          * window on this is a 24-column LED panel, so a 9P-attached host
          * reading this file is how the receiver gets watched over days rather
          * than minutes -- which is the timescale reception problems actually
@@ -2082,7 +2074,7 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
 }
 
 /* Says so when the answer did not fit, instead of handing back a plausible
- * prefix (X5, plan/phase23_multicore_scheduling.md).
+ * prefix.
  *
  * proc_buf is a fixed 896 bytes and several of these files are generated
  * from tables that grow: /proc/ps runs out at about thirteen tasks against
@@ -2340,7 +2332,7 @@ int vfs_pwrite(int fd, const void *buf, uint32_t count, uint64_t offset) {
             if (strcmp(h->rel_path, "uart") == 0) {
                 const char *str = (const char *)buf;
                 for (uint32_t i = 0; i < count; i++) uart_putc(str[i]);
-                uart_flush(); /* M4: this write is its own message; nothing else here would */
+                uart_flush(); /* this write is its own message; nothing else here would */
                 return (int)count;
             } else if (strcmp(h->rel_path, "eeprom") == 0) {
                 return at24c32_write((uint16_t)offset, (const uint8_t *)buf, count);

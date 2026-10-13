@@ -105,8 +105,8 @@ static inline long uticks(void) {
     return usyscall(SYS_TICKS, 0, 0, 0);
 }
 
-/* Cooperative yield -- no pointer, no privileged state returned. M5, plan/
- * phase12_microkernel_migration.md: what a long-lived U-mode driver task's
+/* Cooperative yield -- no pointer, no privileged state returned:
+ * what a long-lived U-mode driver task's
  * own poll/serve loop needs in place of calling sched_yield() directly. */
 static inline void uyield(void) {
     (void)usyscall(SYS_YIELD, 0, 0, 0);
@@ -120,8 +120,8 @@ static inline long utime_ms(void) {
 
 /* Busy-delays the calling task for `us` microseconds, run inside the
  * kernel rather than U-mode (kernel/time.c's time_delay_us() touches
- * hardware no U-mode domain has ever needed direct access to). M5 Phase 2,
- * plan/phase12_microkernel_migration.md: what a bit-bang driver task's
+ * hardware no U-mode domain has ever needed direct access to):
+ * what a bit-bang driver task's
  * timing-sensitive pulses need in place of calling time_delay_us()
  * directly -- SYS_TIME_MS's millisecond granularity is too coarse. */
 static inline void udelay_us(long us) {
@@ -129,7 +129,7 @@ static inline void udelay_us(long us) {
 }
 
 /* The server half of the channel API SYS_CHAN_CALL (via uchan_call()
- * above) has had since C3. M5 Phase 2: what a U-mode *driver* task's own
+ * above): what a U-mode *driver* task's own
  * serve loop needs in place of calling chan_serve_wait()/chan_serve_reply()
  * directly -- those are kernel code manipulating another task's endpoint
  * state, off limits from U-mode the same way task_exit() is (see uexit()

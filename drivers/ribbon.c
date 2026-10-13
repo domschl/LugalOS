@@ -1,5 +1,5 @@
 /*
- * Phase 44: Horizontal Scrollable Tiling Window Ribbon Geometry Manager
+ * Horizontal Scrollable Tiling Window Ribbon Geometry Manager
  *
  * Implements a 1D non-overlapping horizontal ribbon of windows (Niri-inspired).
  * Portable and freestanding, suitable for execution both in kernel mode

@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* Per-task memory domains (B3, plan/phase5_distributed_design.md §5.4).
+/* Per-task memory domains.
  *
  * A domain is the set of address ranges a task may touch, and the mechanism
  * that enforces it is the one thing that differs between builds: PMP regions
@@ -130,7 +130,7 @@ bool mem_domain_permits(const mem_domain_t *d, uintptr_t base, uintptr_t len,
  * target until B5 lands Sv39 -- so a caller can report "unenforced" honestly
  * rather than implying isolation that is not there. */
 /* Releases whatever the backend cached for this domain and leaves it empty
- * (C2, plan/phase6_memory_and_processes.md).
+ *.
  *
  * The Sv39 backend builds a page table on first activation and caches it in
  * arch_priv; nothing could return it, which is why the loader had a single
@@ -145,7 +145,7 @@ void mem_domain_destroy(mem_domain_t *d);
 
 bool mem_domain_enforced(void);
 
-/* M6: "PMP" or "Sv39" -- which backend this build's domains are enforced by,
+/* "PMP" or "Sv39" -- which backend this build's domains are enforced by,
  * so a reporting surface (`ps`'s own "Isol" column) can say which kind of
  * hardware-backed isolation a task actually has, not just that it has one.
  * A compile-time fact (CONFIG_MODE_M vs CONFIG_MODE_S), so this is one

@@ -1,5 +1,4 @@
 /* The ESP32-P4's MIPI-DSI host and the LCD-7B's EK79007 panel. 47.4,
- * plan/phase47_esp32p4_lcd7b_ribbon.md.
  *
  * ## What this milestone does
  *

@@ -5,7 +5,6 @@
 #include <stdint.h>
 
 /* Text on a 1-bpp framebuffer: 8x16 glyphs on a cell grid -- 36.5,
- * plan/phase36_rp2350_lcd7_terminal.md.
  *
  * Portable, with no hardware in it: the buffer is any byte-addressed 1-bpp
  * bitmap whose byte x/8 of a pixel row holds pixels x..x+7 with the leftmost

@@ -1,4 +1,4 @@
-/* LLP, the LugalOS link protocol (49.1, plan/phase49_c6_network_nodes.md).
+/* LLP, the LugalOS link protocol (doc/dev/protocols/llp.md).
  * doc/dev/protocols/llp.md is the specification; kernel/include/kernel/llp.h says what this
  * file is and is not. Every rule below names the section of doc/dev/protocols/llp.md it
  * implements, and host/llp/src/llp/link.py is the same state machine in

@@ -1,5 +1,5 @@
 # Per-board facts for the Waveshare ESP32-P4-WIFI6-Touch-LCD-7B, consumed by
-# cmake/gen_config.cmake. 47.0, plan/phase47_esp32p4_lcd7b_ribbon.md.
+# cmake/gen_config.cmake. 47.0, .
 #
 # Same LUGALOS_TARGET, driver sources and linker script as the NANO
 # (cmake/board-esp32p4-nano.cmake). Read that file for why each chip-level
@@ -61,11 +61,10 @@ set(CONFIG_L2_CACHE_KB 128)
 
 # --- PSRAM: 32 MB in the package ------------------------------------------
 #
-# 47.3, plan/phase47_esp32p4_lcd7b_ribbon.md. The ESP32-P4NRW32's AP hex-mode
+# 47.3, . The ESP32-P4NRW32's AP hex-mode
 # PSRAM, powered by LDO channel 2 [sch: VFB/VO2 pin 72 to VDD_PSRAM_0/1 pins
 # 59/67]. drivers/psram_esp32p4.c checks the chip's own MR2 density against
-# this at every boot and the persona refuses to run without it (phase 38's
-# S1): the display's frame buffer lives here.
+# this at every boot and the persona refuses to run without it (# S1): the display's frame buffer lives here.
 set(CONFIG_PSRAM_BYTES 33554432)
 # The bulk page zone's bitmap capacity, in 4 KB pages: the whole chip.
 set(CONFIG_PALLOC_BULK_PAGES 8192)
@@ -74,7 +73,7 @@ set(CONFIG_PALLOC_BULK_PAGES 8192)
 set(CONFIG_PSRAM_SPEED_MHZ 200)
 # /ram0's cap, as on the RP2350 terminal.
 set(CONFIG_RAMDISK_MAX_KB 4096)
-# Lisp's pools, the RP2350 terminal's sizes (phase 38's 38.5): BULK_BSS, so
+# Lisp's pools, the RP2350 terminal's sizes (38.5): BULK_BSS, so
 # they live in PSRAM -- 1 MB of nodes and 144 KB of strings -- and cost SRAM
 # only the 8 KB node mark bitmap. Measured on this board at 20 MHz PSRAM
 # (47.3): (fib 18) 97-100 ms against 95-98 with the pools in SRAM, and an
@@ -148,7 +147,7 @@ set(CONFIG_USBHOST_DWC2 1)
 # USB1.1 Type-C [sch H2] (47.13): the P4's USB 1.1 FS pads (USB1P1_N/P), i.e.
 #   USB-Serial/JTAG or OTG FS.
 #
-# ESP32-C6-MINI-1 [sch "ESP32-C6"] (phase 47's step 2, not this phase):
+# ESP32-C6-MINI-1 [sch "ESP32-C6"] (step 2, not this phase):
 #   SDIO on P4 GPIO14-19 (C6 IO18-23, 51K pull-ups to ESP_3V3); C6_CHIP_PU
 #   from P4 GPIO54 (R33 0R); C6_IO2 from P4 GPIO6 (R31 0R); the C6's own UART0
 #   and IO9 (its BOOT strap) on header H4 "C6-UART".
@@ -161,7 +160,7 @@ set(CONFIG_USBHOST_DWC2 1)
 #
 # No Ethernet: no CONFIG_EMAC_*, and drivers/emac_esp32p4.c builds its stubs.
 
-# 49.4 (plan/phase49_c6_network_nodes.md): the ESP32-C6-MINI-1 on the SD/MMC
+# the ESP32-C6-MINI-1 on the SD/MMC
 # host's slot 1, through the GPIO matrix (slot 1 has no IO_MUX pads). Read off
 # the schematic (C6 IO19 = SDIO CLK, IO18 = CMD, IO20..23 = D0..D3, each with a
 # 51 kOhm pull-up) and identical to ESP-Hosted's own P4 defaults. CHIP_PU is

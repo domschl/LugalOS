@@ -6,7 +6,6 @@
 #include "drivers/sensor.h"
 
 /* Texas Instruments HDC1080 High Accuracy Digital Humidity & Temperature Sensor.
- * Phase 46, plan/phase46_sensor_framework.md (Milestone 46.17).
  *
  * Characteristics:
  * - Fixed I2C Address: 0x40

@@ -1,6 +1,5 @@
 /*
- * LugalOS Hardware Driver: DCF-77 longwave time-signal receiver (D2,
- * plan/phase17_clock_ui_and_dcf77.md).
+ * LugalOS Hardware Driver: DCF-77 longwave time-signal receiver.
  *
  * A 4-wire receiver module (VDD/GND/OUT/PON) on two free RP2350 header pins.
  * OUT carries the demodulated second pulse -- the 77.5 kHz carrier from
@@ -10,7 +9,7 @@
  *
  * This header is the pin/power/raw-level layer only. The frame decoder (D1)
  * is deliberately a separate, target-independent file so it can be tested on
- * QEMU without a radio -- see plan/phase17_clock_ui_and_dcf77.md D1.
+ * QEMU without a radio -- D1.
  */
 
 #ifndef DRIVERS_DCF77_H
@@ -50,7 +49,7 @@ bool dcf77_pon_asserted(void);
 bool dcf77_pon_active_low(void);
 bool dcf77_out_pulse_is_high(void);
 
-/* D0-in-system (plan/phase17_clock_ui_and_dcf77.md): power the receiver up,
+/* D0-in-system: power the receiver up,
  * work out both polarities from what the pin actually does, then print every
  * pulse it sees -- width, spacing, and the bit that width would decode to --
  * for `secs` seconds, followed by a summary. Console output (cprintf, like
@@ -122,7 +121,7 @@ void dcf77_drive_test(void);
  * arrives and a progress line every 10 s -- the tool for an antenna that has
  * to be moved around while someone watches a number. `with_load` lights one
  * matrix row as a pure DC load (no multiplexing, no switching edges), which
- * is the M0 experiment from plan/phase17_clock_ui_and_dcf77.md section 3: the
+ * is the experiment from  section 3: the
  * Pico's buck regulator idles in PFM at light load and its ripple is a
  * documented killer for this module, and on a Pico 2 W the PWM-mode pin is
  * behind the CYW43 chip where this tree cannot reach it. `secs` is clamped to

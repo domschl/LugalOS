@@ -39,7 +39,7 @@ int vfs_register_service(const char *service_name, int target_pid);
  * fs/vfs_server.c for why there is deliberately no separate local path. */
 int vfs_mount_local(const char *name);
 
-/* --- Handle-based file API (A1, plan/phase5_distributed_design.md) ---
+/* --- Handle-based file API ---
  *
  * Real, offset-addressed file handles across the whole namespace (/flash0,
  * /sd0, /ram0, /proc, /dev, and the root "/" mount table), so a caller (and
@@ -90,7 +90,7 @@ int vfs_format(const char *path);
 void vfs_fat_recount(void);   /* `df -r`, 38.0 */
 void vfs_ls(const char *path);
 
-/* --- Mount table (A5, plan/phase5_distributed_design.md) ---
+/* --- Mount table ---
  * Attaches a remote 9P namespace at /<name>/, turning "9P works" into
  * "distributed namespace works" -- once mounted, /<name>/ behaves like any
  * other mount for every function above (vfs_open/vfs_read/vfs_write/

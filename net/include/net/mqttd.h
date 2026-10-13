@@ -6,7 +6,7 @@
 #include "net/ip.h"
 
 /* `mqttd` -- the task that makes a sensor node an appliance (Q5,
- * plan/phase26_mqtt_and_environment_sensors.md).
+ * ).
  *
  * Everything Q1-Q4 built is driven by hand: someone types `mqtt connect`, then
  * `sensor`, then `mqtt pub`. This is the part that does it by itself, forever,
@@ -119,7 +119,7 @@ typedef struct {
 int  mqttd_add_source(const char *name, mqttd_sample_fn fn, void *ctx,
                       uint8_t decimals, const mqttd_rule_t *rule);
 
-/* A source read from a file (phase 40, item 10): a gateway that has mounted
+/* A source read from a file: a gateway that has mounted
  * a sensor node's namespace can republish what the node measures, with no
  * code for that sensor on the gateway. Each sample reads `path` through the
  * VFS -- so a 9P mount is no different from a local file -- and takes the

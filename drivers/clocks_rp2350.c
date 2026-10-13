@@ -1,8 +1,7 @@
 /*
  * The RP2350's clock tree, read back and measured -- 36.1,
- * plan/phase36_rp2350_lcd7_terminal.md.
  *
- * The counterpart of esp32p4_clocks_report() (phase 34.1), with the same
+ * The counterpart of esp32p4_clocks_report(), with the same
  * rule: a frequency is reported from what the registers say and what a
  * counter measures, never from the constant that asked for it. After 36.1
  * clk_sys is a board fact (CONFIG_CLK_SYS_HZ), so there are now two ways to
@@ -161,8 +160,8 @@ void rp2350_clocks_report(void) {
     cprintf("config:   CONFIG_CLK_SYS_HZ = %lu%s\n", (unsigned long)CONFIG_CLK_SYS_HZ,
             from_regs == (uint32_t)CONFIG_CLK_SYS_HZ ? " -- agrees with the registers"
                                                      : " -- DISAGREES with the registers");
-    /* 38.1: the QSPI windows. A flash write used to leave M0 at the bootrom's
-     * serial 03h read until the next reset, which nothing here showed. */
+    /* QSPI windows: report QMI configuration. A flash write used to leave QMI window M0
+     * at the bootrom's serial 03h read until the next reset. */
     flash_rp2350_qmi_report();
 }
 

@@ -125,7 +125,7 @@ void *dev_next_with_flags(uint32_t *cursor, dev_kind_t kind, uint32_t flags) {
 }
 
 
-/* --- Exclusive use of a wire (C8, plan/phase6_memory_and_processes.md) ---
+/* --- Exclusive use of a wire ----------------------------------------------
  *
  * One holder per wire. The table is indexed by dev_wire_t and stores the
  * holding device's name, which is what makes a refusal informative: "uart is

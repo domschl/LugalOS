@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* Phase 44: Horizontal Scrollable Tiling Window System (Niri-inspired).
+/* Horizontal Scrollable Tiling Window System (Niri-inspired).
  *
  * Windows are organized in a 1D non-overlapping horizontal ribbon.
  * Each window has a column width from the table below: 38, 48, 64 or 98
@@ -18,7 +18,7 @@
 #define RIBBON_BORDER_PAD    4   /* 4 px margin before first window */
 #define RIBBON_TITLE_MAX     32u /* a window title's bytes, with the NUL */
 
-/* D7, 47.6 (plan/phase47_esp32p4_lcd7b_ribbon.md): the preset widths, from
+/* D7, 47.6: the preset widths, from
  * the screen width `w` instead of 800-px constants.
  *
  * A window `c` columns wide is a frame 8c + 7 px wide; the first starts at

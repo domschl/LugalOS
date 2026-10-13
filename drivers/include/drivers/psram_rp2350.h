@@ -1,7 +1,7 @@
 #ifndef LUGALOS_DRIVERS_PSRAM_RP2350_H
 #define LUGALOS_DRIVERS_PSRAM_RP2350_H
 
-/* The RP2350's QSPI PSRAM on QMI window 1 -- 38.2, plan/phase38_psram.md.
+/* The RP2350's QSPI PSRAM on QMI window 1.
  *
  * Built where the board file names one (CONFIG_PSRAM_CS_GPIO and
  * CONFIG_PSRAM_BYTES: today only the RP2350-LCD-7). On every other build

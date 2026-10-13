@@ -1,6 +1,6 @@
 /*
  * Vendored from ~/gith/domschl/LugalChess (engine/include/bitboard.h), H4,
- * plan/phase9_chess_computer.md, with one real change: on RISC-V without
+ * , with one real change: on RISC-V without
  * the Zbb extension (every LugalOS target -- RP2350's march is
  * rv32imac_zicsr_zbs, Zbs only, no hardware ctz/clz/popcount), GCC lowers
  * __builtin_ctz/__builtin_popcount to a libgcc call (__ctzsi2, which

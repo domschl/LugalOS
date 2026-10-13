@@ -8,7 +8,7 @@
  * address -- 0x3FF000 for the last sector, not 0x103FF000 -- matching the
  * bootrom's own convention. `data` must point at 4096 bytes of SRAM: not
  * flash, which is switched off while it is read, and not PSRAM, which shares
- * the same interface (H2, plan/phase38_psram.md §2).
+ * the same interface.
  *
  * Returns 0, or -1 if the offset is not sector-aligned, `data` is NULL or
  * outside SRAM, the bootrom's flash functions could not be resolved, core 1

@@ -29,7 +29,7 @@
     {
       "name": "rp2350-chess",
       "displayName": "RP2350 (Pico 2) \u2014 chess-computer persona",
-      "description": "Raspberry Pi Pico 2, default board persona: SD card via SPI1, ST7735 TFT + TM1638 keypad + chess engine all built in (plan/phase9_chess_computer.md).",
+      "description": "Raspberry Pi Pico 2, default board persona: SD card via SPI1, ST7735 TFT + TM1638 keypad + chess engine all built in.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/rp2350",
       "cacheVariables": {
@@ -39,7 +39,7 @@
     {
       "name": "rp2350-clock",
       "displayName": "RP2350 (Pico 2 / Pico 2 W) \u2014 Pico-Clock-Green persona",
-      "description": "Waveshare Pico-Clock-Green baseboard (plan/phase11_pico_clock_green.md). GP10-13 drive the SM16106 LED matrix instead of the SD card, so SPI1/SD, the ST7735 TFT and the TM1638 keypad are all built out.",
+      "description": "Waveshare Pico-Clock-Green baseboard. GP10-13 drive the SM16106 LED matrix instead of the SD card, so SPI1/SD, the ST7735 TFT and the TM1638 keypad are all built out.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/rp2350-clock",
       "cacheVariables": {
@@ -57,7 +57,7 @@
     {
       "name": "rp2350-gateway",
       "displayName": "RP2350 (Pico 2) \u2014 network gateway persona",
-      "description": "Bare Pico 2 with an SD card on SPI1 and SPI0 reserved for Ethernet (plan/phase19_ip_stack_and_ethernet.md). No display, keypad, matrix or radio. NO ETHERNET PART IS FITTED: the W5500 was cancelled and removed in phase 19 R0, and R4 fits an ENC28J60 on the reserved pins. Until then this persona is a headless file server over USB 9P plus a UART1 downlink. NOTE: GP16 is the Ethernet MISO pin, so the heartbeat LED stays on GP25.",
+      "description": "Bare Pico 2 with an SD card on SPI1 and SPI0 for ENC28J60 Ethernet. Headless file server over USB 9P plus a UART1 downlink.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/rp2350-gateway",
       "cacheVariables": {
@@ -75,7 +75,7 @@
     {
       "name": "rp2350-wifi",
       "displayName": "RP2350W (Pico 2 W) \u2014 wireless netif persona",
-      "description": "Bare Pico 2 W with an SD card on SPI1, CYW43439 pins (GP23/24/25/29) reserved (plan/phase19_ip_stack_and_ethernet.md R5). No display, keypad or matrix. Carries drivers/cyw43_rp2350.c (R5); the gSPI bus layer is in progress and not yet answering, so this persona is still a headless USB 9P node in practice. A different physical Pico 2 W than the one under the Pico-Clock-Green baseboard (rp2350-clock).",
+      "description": "Bare Pico 2 W with an SD card on SPI1, CYW43439 Wi-Fi on GP23/24/25/29.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/rp2350-wifi",
       "cacheVariables": {
@@ -93,7 +93,7 @@
     {
       "name": "rp2350-sensor",
       "displayName": "RP2350W (Pico 2 W) \u2014 environment sensor persona",
-      "description": "Bare Pico 2 W with a BME280 on I2C0 (GP4/GP5) and nothing else -- no SD card, no display, no keypad, no RTC (plan/phase26_mqtt_and_environment_sensors.md Q7). Joins its WiFi, samples, and publishes to an MQTT broker from a USB charger with nothing typed. The filesystem is /flash0 alone.",
+      "description": "Bare Pico 2 W with a BME280 on I2C0 (GP4/GP5). Joins Wi-Fi, samples environmental data, and publishes to an MQTT broker. Filesystem is /flash0 alone.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/rp2350-sensor",
       "cacheVariables": {
@@ -111,7 +111,7 @@
     {
       "name": "rp2350-terminal",
       "displayName": "RP2350B (Waveshare RP2350-LCD-7) \u2014 terminal / workstation persona",
-      "description": "36.0, plan/phase36_rp2350_lcd7_terminal.md. The Waveshare RP2350-LCD-7 (non-touch): an RP2350B with a 7-inch 800x480 RGB panel, 16 MB flash, a microSD socket, and a PIO-USB host port for a keyboard. The panel is the terminal screen and the keyboard its input, and the board is also a stand-alone machine for Lisp, chess and writing to the SD card. UART0 is on GP16/17 (header H7), NOT GP0/1: GP0 is the PSRAM chip select on this board. No user LED, so no heartbeat. The keyboard goes on the PIO-USB port (J7) before power-up: that port is not hot-pluggable.",
+      "description": "Waveshare RP2350-LCD-7: RP2350B with 7-inch 800x480 RGB panel, 16 MB flash, microSD socket, PIO-USB host keyboard port, PSRAM, Lisp and chess.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/rp2350-terminal",
       "cacheVariables": {
@@ -129,7 +129,7 @@
     {
       "name": "esp32p4",
       "displayName": "ESP32-P4 (Waveshare ESP32-P4-NANO) \u2014 network-storage persona",
-      "description": "E2, plan/phase27_esp32p4_bringup.md, grown by phase 32. The second silicon this project runs on. It boots from its own flash: .text and .rodata execute in place from the XIP window and the ROM loads a small RAM half from 0x2000, so the board powers on into LugalOS with nothing attached -- flash it with `uv run tools/p4flash.py`, not `esptool load-ram`. UART0 console, printk, shell and /proc, a writable /flash0, I2C with a BME280, and Ethernet: an EMAC driving an IP101G over RMII at 100 Mbit/s, registered as `eth0` under the eFuse MAC and serving 9P over TCP (phase 28). chibicc and the chess engine are ON as of phase 32: they were off while this board had a 128 KB heap and RAM-resident .text, and U2 took the heap to 372 KB with 4x headroom in the flash segment, so the reason expired. Phase 35 adds the microSD slot on the SD/MMC host (4-bit, 20 MHz, GPIO39-44) as /sd0, reading at 1547 KB/s, which is what makes this the network-storage persona rather than a second preset: those pads collide with nothing else on this board, so there is no version of it without a card slot. No display, no radio.",
+      "description": "Waveshare ESP32-P4-NANO (rev v1.3): dual-core RISC-V @ 360-400 MHz, XIP flash, 32 MB PSRAM, RMII Ethernet (100 Mbit/s), SD/MMC microSD socket (/sd0), I2C, chibicc and chess.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/esp32p4",
       "cacheVariables": {
@@ -150,7 +150,7 @@
     {
       "name": "esp32p4-lcd7b",
       "displayName": "ESP32-P4 (Waveshare ESP32-P4-WIFI6-Touch-LCD-7B) \u2014 terminal persona",
-      "description": "47.0, plan/phase47_esp32p4_lcd7b_ribbon.md. The NANO's target, drivers and linker script on a different board: a 7\" 1024x600 MIPI-DSI panel (EK79007), GT911 touch, USB 2.0 HS host on a Type-A port, microSD on the same SDMMC pads, 32 MB PSRAM, an ESP32-C6 on SDIO, and no Ethernet. Silicon revision v3.2, not the NANO's v1.3: it boots to the shell at 40 MHz as of 47.0; 47.1 audits the rest. Console on UART0 through the on-board CH343P, which also carries reset -- use tools/p4run.py.",
+      "description": "Waveshare ESP32-P4-WIFI6-Touch-LCD-7B (rev v3.2): 7\" 1024x600 MIPI-DSI panel, GT911 touch, USB 2.0 host, microSD socket, 32 MB PSRAM, ESP32-C6 on SDIO.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/esp32p4-lcd7b",
       "cacheVariables": {
@@ -172,7 +172,7 @@
     {
       "name": "rv64-smp",
       "displayName": "QEMU RV64 (Sv39 MMU) - SMP, two harts",
-      "description": "X1, plan/phase23_multicore_scheduling.md: the rv64-mmu build with CONFIG_ENABLE_SMP. Run it with qemu-system-riscv64 -M virt -smp 2. A separate preset rather than a flag on rv64-mmu so the single-hart build every other test uses stays exactly what it was.",
+      "description": "QEMU virt machine, 64-bit RISC-V, Sv39 MMU, dual-core SMP with CONFIG_ENABLE_SMP.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/rv64-smp",
       "cacheVariables": {
@@ -183,7 +183,7 @@
     {
       "name": "rp2350-smp",
       "displayName": "RP2350 (Pico 2) \u2014 chess persona, both cores",
-      "description": "X3, plan/phase23_multicore_scheduling.md: the chess persona with CONFIG_ENABLE_SMP, which adds the SIO-FIFO launch for core 1 and the `smpstart` command. A separate preset rather than a flag on rp2350-chess so every shipping persona keeps booting single-core.",
+      "description": "Raspberry Pi Pico 2 dual-core SMP build with SIO-FIFO launch for core 1.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/rp2350-smp",
       "cacheVariables": {
@@ -194,7 +194,7 @@
     {
       "name": "esp32c6",
       "displayName": "ESP32-C6 (Waveshare ESP32-C6-Zero)",
-      "description": "45.4, plan/phase45_esp32c6.md. LugalOS on the C6: the whole kernel RAM-resident in the 496 KB of SRAM below the ROM's data, console on the USB-Serial/JTAG port, delivered by `tools/c6run.py` (esptool load-ram; nothing is written to flash). The first form is cooperative and polled; 45.4.2 adds the interrupt controller and the tick, 45.4.3 boots from flash and executes in place, 45.4.4 brings up U-mode. No Wi-Fi yet.",
+      "description": "Waveshare ESP32-C6-Zero: RV32IMAC @ 160 MHz, 512 KB SRAM, 8 MB flash, native USB-Serial/JTAG console.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/esp32c6",
       "cacheVariables": {
@@ -215,7 +215,7 @@
     {
       "name": "esp32c6-mini",
       "displayName": "ESP32-C6-MINI-1 (beside the P4 on the ESP32-P4-NANO / LCD-7B)",
-      "description": "49.5, plan/phase49_c6_network_nodes.md. The esp32c6 kernel for the C6-MINI-1 module wired to a P4: 4 MB flash map (cmake/flash_layout_esp32c6_mini.cmake), console on the C6's own USB through the NANO's header P2 (pins 21/23), SDIO slave toward the P4 (49.6).",
+      "description": "ESP32-C6-MINI-1 module on ESP32-P4: 4 MB flash, USB console on header P2, SDIO slave to P4.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/esp32c6-mini",
       "cacheVariables": {

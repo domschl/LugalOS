@@ -15,7 +15,7 @@
 
 void spinlock_init(spinlock_t *l) { if (l) l->word = 0; }
 
-/* --- The leaf check (Y2, plan/phase31_concurrency_hierarchy.md) ---------
+/* --- The leaf check -------------------------------------------------------
  *
  * Per-hart, for the reason kernel/lock.h gives: g_sched_lock is handed from
  * one task to another across ctx_switch(), so its acquire and its release
@@ -220,13 +220,9 @@ static uintptr_t spin_lock_common(spinlock_t *l, const char *name,
         }
 
         /* Test-and-TEST-and-set: wait with plain loads, and only attempt the
-         * atomic again once the word looks free (X7,
-         * plan/phase23_multicore_scheduling.md).
+         * atomic again once the word looks free.
          *
-         * Spinning on the atomic itself is what this used to do, and the old
-         * comment defended it -- "the holder is either running on another
-         * hart, so waiting is exactly right". Waiting is right; *how* was
-         * not. Every amoswap takes exclusive ownership of the cache line, so
+         * Spinning on the atomic itself takes exclusive ownership of the cache line, so
          * a waiter hammering it can keep the holder from getting the line
          * back to release with. On QEMU the harts are host threads the OS
          * timeslices and it never shows. On RP2350's two cores and one bus
@@ -423,7 +419,7 @@ void ylock_acquire_at(ylock_t *l, const char *name, const char *site) {
          * holds the lock and still says it waits for the last holder: a timer
          * tick there let that holder run, find the lock taken, and see a cycle
          * that was already over -- "[Lock BUG] task 0 waiting for task 6", on
-         * every few commands once two shells polled g_input_lock (phase 44's
+         * every few commands once two shells polled g_input_lock (multiple
          * terminals). waitfor_leave() takes a leaf spinlock with its own
          * irqsave, so it nests here. */
         if (arch_lock_try_acquire(&l->word)) {
@@ -552,7 +548,7 @@ int ylock_held_by(int pid) {
  *
  * What can and cannot be proven here is worth being exact about. Every target
  * runs one hart, so nothing below observes real contention between two harts
- * -- that first happens at phase 23's X1. What these do prove is that the
+ * on multicore. What these do prove is that the
  * primitives behave correctly under the concurrency this kernel actually has
  * today (preemption and yielding), which is the property S2-S6 are about to
  * build on. */
@@ -654,7 +650,7 @@ int lock_selftest(void) {
          * three answers, so this does NOT distinguish an atomic swap from
          * the non-atomic flag it replaces. Atomicity is only observable when
          * two harts race the same word, which no target here can do until
-         * phase 23's X1. What this pins down is the contract and the
+         * multicore brings it up. What this pins down is the contract and the
          * release: a gate that stayed set, or one that let a second acquire
          * through, fails here rather than at the first real contention. */
         spinlock_t l;
@@ -751,7 +747,7 @@ int lock_selftest(void) {
          * statement. With a second hart the contender is already inside the
          * lock by the time this line executes, so the snapshot legitimately
          * reads depth 1 owned by someone else, and the test failed on a
-         * kernel that was behaving perfectly (found by phase 23's X1,
+         * kernel that was behaving perfectly (found on multicore,
          * 2026-09-04).
          *
          * It was also redundant: the release is proven by the contender

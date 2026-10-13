@@ -1,5 +1,5 @@
 /*
- * Microchip ENC28J60 on SPI0 -- R4, plan/phase19_ip_stack_and_ethernet.md.
+ * Microchip ENC28J60 on SPI0.
  * See drivers/include/drivers/enc28j60.h for what this is and where it sits.
  *
  * Register access is the chip's simple SPI command set (datasheet §4): a
@@ -225,7 +225,7 @@
  * context sets EWRPT for a write, the scheduler preempts, the other reads a
  * pointer register expecting its own prior write to still be in effect.
  *
- * A ylock_t (phase 40, item 2), for the reasons drivers/cyw43_rp2350.c's
+ * A ylock_t, for the reasons drivers/cyw43_rp2350.c's
  * bus lock is one: re-entrant for its owner, and an edge in the wait-for
  * graph, where the flag and yield loop it replaces was neither. */
 static ylock_t g_lock;

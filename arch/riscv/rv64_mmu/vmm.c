@@ -4,7 +4,7 @@
 #include "kernel/printk.h"
 #include <string.h>
 
-/* Sv39 paging (B5, plan/phase5_distributed_design.md §5.4).
+/* Sv39 paging.
  *
  * What this replaces was a stub in every way that mattered: vmm_map_page()
  * was `return 0;`, satp was never written, and vmm_switch_space() was never
@@ -114,7 +114,7 @@ int vmm_map_range(uintptr_t *root, uintptr_t va, uintptr_t pa, uintptr_t size,
 uintptr_t *vmm_kernel_root(void) { return kernel_page_table; }
 
 /* Returns a page-table tree to the allocator (C2,
- * plan/phase6_memory_and_processes.md).
+ * ).
  *
  * Its absence was the documented blocker for running more than one user
  * program: mem_domain_activate() builds a table per domain and caches it, so
@@ -194,7 +194,7 @@ void vmm_init(void) {
 }
 
 /* Brings a secondary hart into the address space the primary built (X1,
- * plan/phase23_multicore_scheduling.md).
+ * ).
  *
  * satp and sstatus are per-hart CSRs, so a hart that never executes this
  * runs in bare mode -- physical addressing -- while every other hart is

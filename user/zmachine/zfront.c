@@ -5,7 +5,7 @@
  *
  * Shape borrowed from user/chess: the interpreter core never allocates;
  * this front owns three page-granular blocks, all from the *bulk* class
- * (PSRAM on boards that have it — plan/phase38_psram.md), claimed in
+ * (PSRAM on boards that have it — ), claimed in
  * zmachine_run() and released on every exit path:
  *
  *   address space   128 KB  (Z-machine v1-v4 flat space, 0x20000)

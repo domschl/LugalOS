@@ -151,7 +151,7 @@ Token *tokenize(char *p) {
         // Numbers (Decimal & Hexadecimal)
         if (is_digit(*p)) {
             char *start = p;
-            /* Unsigned and capped (phase 40 review): a literal past LONG_MAX
+            /* Unsigned and capped: a literal past LONG_MAX
              * overflowed a signed accumulator, which is undefined. Anything
              * over 32 bits is refused -- codegen could not load it anyway. */
             unsigned long val = 0;

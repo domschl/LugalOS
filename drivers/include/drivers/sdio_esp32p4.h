@@ -5,7 +5,7 @@
 #include <stdbool.h>
 
 /* The P4's SDIO host on the SD/MMC controller's slot 1, toward the board's
- * ESP32-C6 (49.4, plan/phase49_c6_network_nodes.md). See
+ * ESP32-C6. See
  * drivers/sdio_esp32p4.c. */
 
 #define SDIO_XFER_MAX 4096u     /* one CMD53, through one DMA descriptor */

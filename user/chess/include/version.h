@@ -1,12 +1,12 @@
 /*
  * Vendored verbatim from ~/gith/domschl/LugalChess (engine/include/version.h),
- * H4, plan/phase9_chess_computer.md. LUGALCHESS_EMBEDDED's guard --
+ * H4, . LUGALCHESS_EMBEDDED's guard --
  * `defined(__riscv) && !defined(__linux__) && !defined(__unix__) &&
  * !defined(__APPLE__) && !defined(_WIN32)` -- fires correctly on LugalOS's
  * bare-metal freestanding RISC-V build with no changes needed: the
  * cross-compiler predefines __riscv, and none of the hosted-OS macros are
  * ever defined on a -ffreestanding -nostdlib build. See H0's note in
- * plan/phase9_chess_computer.md.
+ * .
  */
 
 #ifndef VERSION_H

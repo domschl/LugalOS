@@ -5,7 +5,7 @@
 #include <stdbool.h>
 #include "drivers/sensor.h"
 
-/* Bosch BME680 environmental & gas sensor (Phase 46, plan/phase46_sensor_framework.md).
+/* Bosch BME680 environmental & gas sensor.
  *
  * Four measurements in one sensor: Temperature, Pressure, Humidity, and
  * metal-oxide (MOX) Gas Resistance (VOC).

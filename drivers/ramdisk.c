@@ -4,7 +4,7 @@
 #include <string.h>
 
 /* The RAM disk's storage, taken from the page allocator rather than reserved
- * in .bss (C5, plan/phase6_memory_and_processes.md).
+ * in .bss.
  *
  * It used to be a fixed array -- 64 KB on RP2350, 512 KB elsewhere -- which
  * made it the single largest static object in the image and, on a board with

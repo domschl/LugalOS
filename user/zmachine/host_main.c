@@ -8,10 +8,7 @@
  *   -n N      stop after at most N instructions (default: no limit)
  *   -t        trace every instruction (pc + opcode)
  *   -q        quiet: suppress the header report
- *
- * M2 acceptance: zork1.zip runs from the initial PC through its boot
- * setup to the first aread() prompt without errors.  Text output shows
- * as [zstr $addr] markers until the M3 text backend lands.
+ * Runs story files (e.g. zork1.zip) through execution.
  */
 #include "zvm.h"
 #include "zwrap.h"

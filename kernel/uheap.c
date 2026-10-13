@@ -1,4 +1,4 @@
-/* See kernel/include/kernel/uheap.h. 45.3b, plan/phase45_esp32c6.md.
+/* See kernel/include/kernel/uheap.h.
  *
  * Block layout (all sizes in bytes, multiples of 8, offsets from h->base):
  *

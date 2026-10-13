@@ -1,6 +1,6 @@
 /*
  * kernel/uheap.c on the host, under ASan/UBSan or valgrind (45.3b,
- * plan/phase45_esp32c6.md).
+ * ).
  *
  * The radio's heap lives in memory the blob can overrun, so what has to hold is
  * (a) the allocator is correct when its client is, and (b) uheap_check()

@@ -54,7 +54,7 @@ SECTIONS
         . = _utext_start + 4096;
     } > RAM
 
-    /* 45.3b: U-mode code that is not a driver -- the `kobjutest` and `radioosi`
+    /* U-mode code that is not a driver -- the `kobjutest` and `radioosi`
      * tasks, and the radio shim they exercise (drivers/radio/*, kernel/uheap.c),
      * which is linked into the domain's own text exactly as it will be on the C6:
      * code and read-only data in one region the domain may execute, its writable
@@ -125,7 +125,7 @@ SECTIONS
     _ram_start = ORIGIN(RAM);
     _ram_end   = ORIGIN(RAM) + LENGTH(RAM);
 
-    /* G1, plan/phase30_driver_framework.md: two facts kernel/meminfo.c and
+    /* G1, : two facts kernel/meminfo.c and
        arch/riscv/common/trap.c used to hold as per-board #if arms.
 
        _image_bytes -- how much RAM the resident image occupies. Computed by

@@ -1,5 +1,5 @@
 # Generates lugalos_config.h from a per-board cmake/board-*.cmake file (K0,
-# plan/phase7_kernel_config.md).
+# ).
 #
 # Run as a build-time step (not just at configure time), same shape as
 # gen_build_id.cmake, so an edited board file is picked up without a
@@ -14,8 +14,8 @@
 # Inputs: BOARD (path to the board-*.cmake file), OUT (header path to write),
 # ENABLE_CC / ENABLE_ED / ENABLE_ST7735 / ENABLE_TM1638 / ENABLE_CHESS /
 # ENABLE_SPISD / ENABLE_SDMMC / ENABLE_PICO_CLOCK_GREEN / ENABLE_DCF77 (ON/OFF feature
-# flags, F0 plan/phase8_feature_flags.md, H3 plan/phase9_chess_computer.md,
-# L1/L2 plan/phase11_pico_clock_green.md, D2 plan/phase17_clock_ui_and_
+# flags, F0 , H3 ,
+# L1/L2 , D2 
 # dcf77.md -- build persona choices, not board facts, so they arrive as
 # generator inputs rather than living in the board file). The last six are
 # meaningful only on RP2350 (no display/keypad/chess/spisd/clockdisplay/
@@ -55,19 +55,19 @@ endforeach()
 # devices have no pins to describe.
 set(_optional_keys
     CONFIG_UART0_TX_GPIO CONFIG_UART0_RX_GPIO
-    # E2, plan/phase27_esp32p4_bringup.md: the console UART's source clock
+    # the console UART's source clock
     # and baud rate. Optional like the pin maps -- a board whose UART is a
     # 16550 at a fixed emulated rate has neither to state -- and separate
     # from CONFIG_XTAL_HZ below, which is the crystal rather than the clock
     # this kernel chooses to drive the UART from.
     CONFIG_UART0_SCLK_HZ CONFIG_UART0_BAUD
     CONFIG_XTAL_HZ CONFIG_CPU_FREQ_MHZ
-    # 47.0, plan/phase47_esp32p4_lcd7b_ribbon.md: the ESP32-P4's silicon
+    # the ESP32-P4's silicon
     # revision as major*100+minor (103 = v1.3, 302 = v3.2). A board fact
     # chosen at build time, because v3.x moved the L2 cache, the ROM's data
     # and its entry points; 47.1 makes the code act on it. Absent: v1.3.
     CONFIG_ESP32P4_REV
-    # 45.4, plan/phase45_esp32c6.md: the C6's console peripheral and its clock.
+    # the C6's console peripheral and its clock.
     CONFIG_USBJTAG_BASE CONFIG_SYSTIMER_BASE
     CONFIG_SPI1_BASE CONFIG_SPI1_SCK_GPIO CONFIG_SPI1_MOSI_GPIO
     CONFIG_SPI1_MISO_GPIO CONFIG_SPI1_CS_GPIO
@@ -81,14 +81,14 @@ set(_optional_keys
     CONFIG_CLOCK_BUZZER_GPIO
     CONFIG_CLOCK_TEMP_OFFSET_C CONFIG_CLOCK_COLON_BLINK CONFIG_CLOCK_BOOT_BEACON
     CONFIG_I2C_RTC_BASE CONFIG_I2C_RTC_SDA_GPIO CONFIG_I2C_RTC_SCL_GPIO
-    # N5, plan/phase18_networking_and_auth.md: the gateway persona's UART1
+    # N5, : the gateway persona's UART1
     # downlink. Optional like everything else here -- a board with no second
     # UART simply does not set them. (The W5500's own pins lived here too,
-    # until phase 19's R0 removed the part.)
+    # until R0 removed the part.)
     CONFIG_UART1_BASE CONFIG_UART1_TX_GPIO CONFIG_UART1_RX_GPIO
     # MH-Z19B NDIR CO2 sensor via UART
     CONFIG_MHZ19B_UART_BASE CONFIG_MHZ19B_TX_GPIO CONFIG_MHZ19B_RX_GPIO
-    # Z0, plan/phase28_esp32p4_ethernet.md: the P4's EMAC and the IP101GRI
+    # the P4's EMAC and the IP101GRI
     # it drives over RMII. Optional like every pin map here -- the three
     # boards in this tree that have no MAC simply do not set them, and
     # drivers/emac_esp32p4.c compiles only for the one that does. The pin
@@ -100,10 +100,10 @@ set(_optional_keys
     CONFIG_EMAC_TX_EN_GPIO CONFIG_EMAC_TXD0_GPIO CONFIG_EMAC_TXD1_GPIO
     CONFIG_EMAC_CRS_DV_GPIO CONFIG_EMAC_RXD0_GPIO CONFIG_EMAC_RXD1_GPIO
     CONFIG_EMAC_PHY_ADDR CONFIG_EMAC_PHY_ID1 CONFIG_EMAC_PHY_ID2
-    # U5: the L2 cache size in KB. Read by arch/riscv/common/trap.c, and
+    # the L2 cache size in KB. Read by arch/riscv/common/trap.c, and
     # passed separately to the linker so the two cannot drift.
     CONFIG_L2_CACHE_KB
-    # 35.1, plan/phase35_esp32p4_sdmmc.md: the P4's SD/MMC host and the
+    # the P4's SD/MMC host and the
     # microSD socket the NANO hangs off it. Optional like every pin map here.
     # CONFIG_SDMMC_PWR_GPIO is not one of the bus's signals -- it is this
     # board's power switch, and the board file says what it switches.
@@ -112,12 +112,12 @@ set(_optional_keys
     CONFIG_SDMMC_D0_GPIO CONFIG_SDMMC_D1_GPIO
     CONFIG_SDMMC_D2_GPIO CONFIG_SDMMC_D3_GPIO
     CONFIG_SDMMC_PWR_GPIO CONFIG_SDMMC_BUS_WIDTH CONFIG_SDMMC_FREQ_KHZ
-    # 49.4, plan/phase49_c6_network_nodes.md: the same controller's slot 1,
+    # the same controller's slot 1,
     # wired to the board's ESP32-C6 over SDIO, and the C6's reset (CHIP_PU).
     CONFIG_SDIO_CLK_GPIO CONFIG_SDIO_CMD_GPIO
     CONFIG_SDIO_D0_GPIO CONFIG_SDIO_D1_GPIO CONFIG_SDIO_D2_GPIO CONFIG_SDIO_D3_GPIO
     CONFIG_SDIO_FREQ_KHZ CONFIG_C6_CHIP_PU_GPIO
-    # R4, plan/phase19_ip_stack_and_ethernet.md: the ENC28J60 on SPI0.
+    # R4, : the ENC28J60 on SPI0.
     CONFIG_ETH_SCK_GPIO CONFIG_ETH_MOSI_GPIO CONFIG_ETH_MISO_GPIO
     CONFIG_ETH_CS_GPIO CONFIG_ETH_RST_GPIO CONFIG_ETH_INT_GPIO
     CONFIG_DCF77_OUT_GPIO CONFIG_DCF77_PON_GPIO CONFIG_DCF77_PON_ACTIVE_LOW
@@ -138,63 +138,63 @@ set(_optional_keys
     CONFIG_DCF77_P0_PORT
     CONFIG_DCF77_PON_PRESENT
     CONFIG_DCF77_AUTO_HOUR CONFIG_DCF77_AUTO_MIN CONFIG_DCF77_AUTO_ENABLED
-    # R5, plan/phase19_ip_stack_and_ethernet.md: the CYW43439 wireless
+    # R5, : the CYW43439 wireless
     # module's gSPI bus, bit-banged over PIO0. GP23/24/25/29 on every
     # Pico 2 W, whichever persona carries one.
     CONFIG_WL_ON_GPIO CONFIG_WL_DATA_GPIO CONFIG_WL_CS_GPIO CONFIG_WL_CLK_GPIO
-    # 36.0, plan/phase36_rp2350_lcd7_terminal.md: the RP2350-LCD-7's PIO-driven
+    # the RP2350-LCD-7's PIO-driven
     # USB host port (J7). Optional like every pin map here; its presence is what
     # builds drivers/boardprobe_rp2350.c's content.
     CONFIG_PIOUSB_DP_GPIO CONFIG_PIOUSB_DM_GPIO
-    # 36.1: the RP2350's clk_sys in Hz. Optional; arch/rp2350_clocks.h
+    # the RP2350's clk_sys in Hz. Optional; arch/rp2350_clocks.h
     # defaults it to the 150 MHz every persona ran at before it existed.
     CONFIG_CLK_SYS_HZ
-    # 36.3: the RP2350-LCD-7's RGB panel. Guard-by-pin-map: their presence
+    # the RP2350-LCD-7's RGB panel. Guard-by-pin-map: their presence
     # builds drivers/lcd7_rp2350.c's content.
     CONFIG_LCD_DE_GPIO CONFIG_LCD_PCLK_GPIO CONFIG_LCD_DATA0_GPIO
     CONFIG_LCD_RST_GPIO CONFIG_LCD_BL_GPIO CONFIG_LCD_EN_GPIO
-    # 47.8: the panel scanned out turned by 180 degrees (1), for a board
+    # the panel scanned out turned by 180 degrees (1), for a board
     # whose glass is mounted the other way up from its inscriptions.
     CONFIG_LCD_ROTATE_180
-    # 37.3a, plan/phase37_screen_layouts_and_apps.md: Lisp's node pool, when a
+    # Lisp's node pool, when a
     # board wants other than user/lisp/lisp.c's per-target default.
     CONFIG_LISP_NODE_POOL
-    # 38.5, plan/phase38_psram.md: and its string pool (slots, both tiers),
+    # and its string pool (slots, both tiers),
     # likewise when a board wants other than the per-target default.
     CONFIG_LISP_STRING_POOL
-    # 38.2, plan/phase38_psram.md: a QSPI PSRAM on the QMI's second chip
+    # a QSPI PSRAM on the QMI's second chip
     # select, and its size. Guard-by-pin-map: their presence builds
     # drivers/psram_rp2350.c's content and makes the persona require it (S1).
     CONFIG_PSRAM_CS_GPIO CONFIG_PSRAM_BYTES
-    # 38.4: the bulk page zone's bitmap capacity, in pages. On a board with
+    # the bulk page zone's bitmap capacity, in pages. On a board with
     # PSRAM it covers the chip; on QEMU it sizes a stand-in zone carved from
     # the RAM above the fast zone, so the suite runs the zone code. Absent:
     # no bulk zone, and the bulk calls are the fast ones.
     CONFIG_PALLOC_BULK_PAGES
-    # 47.3b, plan/phase47_esp32p4_lcd7b_ribbon.md: the ESP32-P4 PSRAM's bus
+    # the ESP32-P4 PSRAM's bus
     # speed, 20 (untuned) or 200 (DQS timing tuning at boot). Absent: 20.
     CONFIG_PSRAM_SPEED_MHZ
-    # 47.4, plan/phase47_esp32p4_lcd7b_ribbon.md: the LCD-7B's MIPI-DSI
+    # the LCD-7B's MIPI-DSI
     # panel -- its reset and backlight GPIOs. Absent: no display, and
     # drivers/dsi_esp32p4.c is an empty unit.
     CONFIG_DSI_LCD_RST_GPIO CONFIG_DSI_LCD_BL_GPIO
-    # 47.9: the ESP32-P4's OTG HS controller as a USB host (the LCD-7B's
+    # the ESP32-P4's OTG HS controller as a USB host (the LCD-7B's
     # Type-A port), and the keyboard task on it. Absent: no USB host, and
     # drivers/usbhost_esp32p4.c is an empty unit.
     CONFIG_USBHOST_DWC2
-    # 47.12: a GT911 touch controller at 0x5D on the board's I2C bus, polled
+    # a GT911 touch controller at 0x5D on the board's I2C bus, polled
     # by drivers/touch_gt911.c (tap to focus, swipe to move the ribbon).
     CONFIG_TOUCH_GT911
     # How its touch layer sits on the panel: its X / Y run against the
     # picture's. Absent: with it.
     CONFIG_TOUCH_MIRROR_X CONFIG_TOUCH_MIRROR_Y
-    # 38.6: the largest /ram0 a mount may ask for, in KB, when a board wants
+    # the largest /ram0 a mount may ask for, in KB, when a board wants
     # other than drivers/ramdisk.c's per-target default.
     CONFIG_RAMDISK_MAX_KB
-    # 38.7: the chess transposition table, in KB, when a board wants other
+    # the chess transposition table, in KB, when a board wants other
     # than the 32 KB default (sign-off S4).
     CONFIG_CHESS_TT_KB
-    # 38.9: the chess engine's hot files execute from SRAM, their tables in
+    # the chess engine's hot files execute from SRAM, their tables in
     # SRAM too (the lugalos_text/rodata/ramcode.ld fragments below).
     CONFIG_CHESS_HOT_RAM
 )
@@ -204,7 +204,7 @@ set(_optional_keys
 # board file because a timezone is not a board fact -- the same hardware works
 # anywhere -- but every build needs one, and the kernel clock runs on UTC
 # (kernel/timezone.h) so this only ever affects what a human is shown.
-# P0 (plan/phase24_dcf77_precision_and_ntp_server.md). Off everywhere unless a
+# P0. Off everywhere unless a
 # board file turns it on: it is an instrument, not a feature, and it costs an
 # NTP query a minute for as long as it runs.
 if(NOT DEFINED CONFIG_ENABLE_NTP_SERVER)
@@ -238,7 +238,7 @@ endif()
 if(NOT DEFINED CONFIG_TIMEZONE)
     set(CONFIG_TIMEZONE "CET-1CEST,M3.5.0,M10.5.0/3")   # Europe/Berlin
 endif()
-# --- Node identity (plan/phase19_ip_stack_and_ethernet.md) ---
+# --- Node identity ---
 #
 # Every node needs a name and a MAC that are its own. A board file may pin
 # either; when it does not, both are *derived* here.
@@ -300,7 +300,7 @@ foreach(_key ${_string_keys})
 endforeach()
 string(APPEND _content "\n#endif /* LUGALOS_CONFIG_H */\n")
 
-# 38.4, plan/phase38_psram.md §3.2: lugalos_bulk.ld, INCLUDEd by
+# lugalos_bulk.ld, INCLUDEd by
 # linker/rp2350.ld just before .bss. GNU ld cannot pick a memory region
 # conditionally, so the choice is made here, where the board's keys are known.
 # With PSRAM, `.bss.bulk` (BULK_BSS in kernel/palloc.h) gets its own NOLOAD
@@ -319,7 +319,7 @@ if(DEFINED CONFIG_PSRAM_BYTES)
     _bulk_bss_end = .;
 } > PSRAM
 ASSERT(_bulk_bss_end - ORIGIN(PSRAM) <= ${CONFIG_PSRAM_BYTES} / 2,
-       \"BULK_BSS has outgrown half the PSRAM -- the bulk page zone needs the rest; see plan/phase38_psram.md\")
+       \"BULK_BSS has outgrown half the PSRAM -- the bulk page zone needs the rest\")
 ")
 else()
     set(_bulk_ld "/* Generated by cmake/gen_config.cmake from ${BOARD} -- do not edit. */
@@ -336,7 +336,7 @@ if(NOT _bulk_old STREQUAL _bulk_ld)
     file(WRITE "${_out_dir}/lugalos_bulk.ld" "${_bulk_ld}")
 endif()
 
-# 38.9, plan/phase38_psram.md: the chess engine's hot path in SRAM. ld gives
+# the chess engine's hot path in SRAM. ld gives
 # an input section to the first rule in script order that matches it, and
 # .text's `*(.text .text.*)` comes long before .data -- so moving whole files
 # means the .text and .rodata rules must exclude them, and the RAM-code part
@@ -359,9 +359,9 @@ if(DEFINED CONFIG_CHESS_HOT_RAM AND CONFIG_CHESS_HOT_RAM)
     list(TRANSFORM _hot_list PREPEND "*chess/src/")
     list(TRANSFORM _hot_list APPEND ".c.obj")
     list(JOIN _hot_list " " _hot)
-    set(_text_ld "${_hdr}/* 38.9: the chess hot path is in .data's RAM code instead. */\nEXCLUDE_FILE(${_hot}) *(.text .text.*)\n")
+    set(_text_ld "${_hdr}/* the chess hot path is in .data's RAM code instead. */\nEXCLUDE_FILE(${_hot}) *(.text .text.*)\n")
     set(_rodata_ld "${_hdr}EXCLUDE_FILE(${_hot}) *(.rodata)\n*(.rodata.*)\n")
-    set(_ramcode_ld "${_hdr}/* 38.9: the chess engine's hot files and their tables, from SRAM. */\n__chess_ram_start = .;\n")
+    set(_ramcode_ld "${_hdr}/* the chess engine's hot files and their tables, from SRAM. */\n__chess_ram_start = .;\n")
     foreach(_f ${_hot_list})
         string(APPEND _ramcode_ld "${_f}(.text .text.* .rodata)\n")
     endforeach()

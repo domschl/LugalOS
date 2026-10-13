@@ -4,8 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* The ESP32-P4's SD/MMC host controller as a shared resource (49.4,
- * plan/phase49_c6_network_nodes.md): slot 0 is the microSD card
+/* The ESP32-P4's SD/MMC host controller as a shared resource: slot 0 is the microSD card
  * (drivers/sdmmc_esp32p4.c, which owns the controller), slot 1 the ESP32-C6
  * on SDIO (drivers/sdio_esp32p4.c). One command path, one IDMAC, one host
  * clock: every use is bracketed by sdhost_acquire(card) / sdhost_release(),

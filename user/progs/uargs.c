@@ -1,7 +1,7 @@
 #include "usys.h"
 
 /* A user program that reads its own arguments (C3,
- * plan/phase6_memory_and_processes.md).
+ * ).
  *
  * Entered as `int _start(int argc, char **argv)` with no crt: the loader puts
  * argc in a0 and argv in a1, and the RISC-V calling convention already says

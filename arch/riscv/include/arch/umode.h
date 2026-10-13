@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-/* U-mode entry (B3, plan/phase5_distributed_design.md §5.4).
+/* U-mode entry.
  *
  * Drops to user mode at `entry` with `user_sp` as the stack and `user_ra` in
  * ra, after parking the caller's kernel stack pointer in the trap path's
@@ -24,7 +24,7 @@
  *
  * `argv` must be an address inside the task's *own* domain. The loader builds
  * the vector at the top of the program's stack page for exactly that reason
- * (C3, plan/phase6_memory_and_processes.md): passing a kernel address would
+ *: passing a kernel address would
  * hand U-mode a pointer it cannot read, and copying the strings somewhere the
  * kernel owns would be worse -- a pointer into kernel memory is the one thing
  * the whole domain mechanism exists to prevent. Callers with no arguments

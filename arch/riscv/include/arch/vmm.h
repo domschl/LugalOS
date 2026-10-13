@@ -39,7 +39,7 @@ uintptr_t *vmm_kernel_root(void);
  * Frees only the tables, never the memory they map; see the Sv39
  * implementation for why that distinction is the R/W/X bits. A no-op on the
  * NOMMU backend, which has no tables -- callers do not branch on the memory
- * model (Rule 0, plan/phase5_distributed_design.md §5.1). */
+ * model. */
 void vmm_free_table(uintptr_t *root);
 
 /* False if paging could not be brought up, so callers can report honestly

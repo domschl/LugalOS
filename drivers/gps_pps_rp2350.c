@@ -390,7 +390,7 @@ void gps_init(void) {
      *
      * **The pull follows the polarity, and the polarity is a board fact**
      * (CONFIG_GPS_PPS_ACTIVE_LOW), configured rather than inferred -- the
-     * same decision phase 17 made for the DCF-77 pin after inference was
+     * same decision previously made for the DCF-77 pin after inference was
      * shown to need a good signal exactly when there is not one. It matters
      * more than it looks: a module driving PPS push-pull idles low and pulses
      * high, while an open-collector one idles high (through this pull-up) and

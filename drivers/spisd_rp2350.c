@@ -1,8 +1,6 @@
 /*
  * LugalOS Hardware Driver: SPI MicroSD Card Driver for RP2350 (Pico 2)
- * Hardware Mapping (K2, plan/phase7_kernel_config.md -- the numbers
- * themselves live in cmake/board-rp2350.cmake now, this is documentation,
- * not the source of truth):
+ * Hardware Mapping:
  *   GP10 : SPI1 SCK (Clock, Function 6)
  *   GP11 : SPI1 TX  (MOSI, Function 6)
  *   GP12 : SPI1 RX  (MISO, Function 6)
@@ -29,8 +27,7 @@
 #include <string.h>
 #include "arch/rp2350_clocks.h"
 
-/* Some RP2350 board personas (e.g. the Pico-Clock-Green baseboard, phase11,
- * plan/phase11_pico_clock_green.md) wire GP10-13 to different hardware
+/* Some RP2350 board personas wire GP10-13 to different hardware
  * entirely and build with LUGALOS_ENABLE_SPISD=OFF, so cmake/board-*.cmake
  * for those personas doesn't define CONFIG_SPI1_* at all. Stubbed here
  * rather than gated out of CMakeLists.txt's source list so
@@ -63,10 +60,10 @@
 
 #define REG(addr) (*(volatile uint32_t *)(addr))
 
-/* M5 Phase 5, plan/phase12_microkernel_migration.md: RP2350's Secure/
+/* RP2350's Secure/
  * Non-secure split -- see drivers/uart_rp2350.c's ACCESSCTRL_GPIO_NSMASK0
- * comment (Phase 1) for the datasheet citation, and drivers/i2c_rtc.c's
- * ACCESSCTRL_I2C_RTC comment (Phase 3) for the write-password one. SPI1
+ * comment for the datasheet citation, and drivers/i2c_rtc.c's
+ * ACCESSCTRL_I2C_RTC comment for the write-password one. SPI1
  * is the same per-peripheral register shape as SPI0/I2C0/I2C1 -- checked
  * directly against ~/gith/pico/pico-sdk's accessctrl.h -- and so needs
  * the same 0xacce0000 write-password prefix those did; the GPIO mask
@@ -197,7 +194,7 @@ static int spisd_init_hardware(void) {
     REG(SIO_GPIO_OE_SET) = CS_MASK;
     cs_deselect();
 
-    /* M5 Phase 5: CS and SPI1 need to be Non-secure-accessible for the
+    /* CS and SPI1 need to be Non-secure-accessible for the
      * U-mode task's own serve loop below to actually touch them -- must
      * happen here, from M-mode, before the task exists. See
      * ACCESSCTRL_SPI1's own comment above. */
@@ -334,7 +331,7 @@ static int spisd_init_hardware(void) {
     return 0;
 }
 
-/* M4.5, plan/phase12_microkernel_migration.md, Part B: the actual SPI/SD
+/* the actual SPI/SD
  * hardware access, pulled out of the block_dev_t function pointers so both
  * the "sdblk" task's serve loop below and the direct-access fallback (task
  * not alive yet -- true for every read during boot, since vfs_server_init()
@@ -426,7 +423,7 @@ static int spisd_hw_write_blocks(uint32_t lba, uint32_t count, const void *buf) 
     return 0;
 }
 
-/* --- M4.5 Part B: the "sdblk" driver task ---
+/* --- driver task design: the "sdblk" driver task ---
  *
  * Wire protocol, one opcode byte then a fixed 8-byte lba+count header:
  *   'R', lba(4 BE), count(4 BE)          -> resp: status(1), data(count*512)
@@ -434,8 +431,8 @@ static int spisd_hw_write_blocks(uint32_t lba, uint32_t count, const void *buf) 
  * status is 0 for success, 1 for failure -- matches read_blocks()/
  * write_blocks()'s own 0/-1 contract, just not signed (the wire is bytes).
  *
- * BLK_MAX_COUNT bounds both buffers and, as of M5 Phase 5,
- * plan/phase12_microkernel_migration.md, is capped at a single sector:
+ * BLK_MAX_COUNT bounds both buffers and, as of U-mode,
+ * , is capped at a single sector:
  * every real caller in this tree (fs/fat32.c) only ever requests count=1
  * (checked directly: this codebase's own fat32_format() always uses
  * sec_per_clus = 1) -- this file's own prior comment already said the
@@ -462,7 +459,7 @@ static uint8_t         g_blk_resp[BLK_RESP_CAP];
 static chan_endpoint_t *g_blk_ep;
 static int              g_blk_task_pid = -1;
 
-/* M4.5 verify: counts chan_call()s actually served -- see
+/* Verify: counts chan_call()s actually served -- see
  * drivers/uart_16550.c's g_uart_write_calls comment for the reasoning
  * (a nonzero, growing count is what distinguishes "the task is genuinely
  * serving requests" from "every caller silently fell back to direct
@@ -482,8 +479,7 @@ static void be32_store(uint8_t *p, uint32_t v) {
     p[2] = (uint8_t)(v >> 8);  p[3] = (uint8_t)v;
 }
 
-/* ---- U-mode implementation, M5 Phase 5, plan/phase12_microkernel_migration.md ----
- *
+/* ---- U-mode implementation ---- *
  * A second, independent copy of the SD/SPI primitives above (cs_select/
  * cs_deselect, spi_transfer, sd_send_cmd, and spisd_hw_read_blocks/
  * _write_blocks' own logic), tagged BLK_UATTR and reachable only from the
@@ -629,14 +625,14 @@ __attribute__((always_inline)) static inline uint32_t blk_usys_be32(const uint8_
 
 BLK_UATTR static void blk_umode_body(uintptr_t is_sdhc) {
     /* Not a string literal: see drivers/tm1638_rp2350.c's own comment for
-     * why (M5 Phase 2's first board-hanging bug) -- a literal lands in
+     * why -- a literal lands in
      * ordinary .rodata, outside every region this task's domain grants.
      * volatile so gcc doesn't recognise the stores and reconstruct a
      * .rodata copy anyway. */
     volatile char name[6];
     name[0]='s'; name[1]='d'; name[2]='b'; name[3]='l'; name[4]='k'; name[5]='\0';
 
-    /* Only two real cases -- an if/else, never a switch. M5 Phase 4 found
+    /* Only two real cases -- an if/else, never a switch. U-mode found
      * that a UATTR dispatch with enough cases compiles to a jump table
      * GCC stores outside the granted section (see
      * drivers/st7735_rp2350.c's st7735_umode_body() comment); two cases
@@ -680,7 +676,7 @@ BLK_UATTR static void blk_umode_body(uintptr_t is_sdhc) {
     }
 }
 
-/* M5 heap-reclaim, plan/phase12_microkernel_migration.md: 2048 bytes, not
+/* Task stack: 2048 bytes, not
  * 4096 -- blk_umode_body()'s deepest call chain (through
  * u_sd_send_cmd.constprop.0 -> u_spi_transfer) measures 1104 bytes on the
  * real disassembly. See drivers/uart_rp2350.c's g_heartbeat_ustack
@@ -696,7 +692,7 @@ static void blk_task_body(void *arg) {
     (void)arg;
     while (!g_blk_ep) sched_yield();
 
-    /* G3, plan/phase30_driver_framework.md. The only one of the seven that
+    /* G3, . The only one of the seven that
      * passes an argument: blk_umode_body() takes is_sdhc as a real parameter
      * rather than the `void (*)(void)` the others use, because its U-mode
      * half cannot read the kernel-side flag. The ABI lands `arg` in a0
@@ -743,7 +739,7 @@ static int blk_call_with_retry(const uint8_t *req, uint32_t req_len,
                                uint8_t *resp, uint32_t resp_max) {
     for (int attempt = 0; attempt < 8; attempt++) {
         int n = chan_call(g_blk_ep, req, req_len, resp, resp_max);
-        /* M5 Phase 5: counted here, on the client side -- see
+        /* counted here, on the client side -- see
          * drivers/st7735_rp2350.c's st7735_call_with_retry() comment,
          * same reasoning: a U-mode server cannot touch g_blk_calls, an
          * ordinary kernel .bss global no domain grants it. */
@@ -783,7 +779,7 @@ static int blk_write_chunk(uint32_t lba, uint32_t count, const void *buf) {
     return -1;
 }
 
-/* Phase 40 item 3: consecutive requests the card did not serve. Three in a
+/* consecutive requests the card did not serve. Three in a
  * row and the card is taken for gone (block_dev_t's `lost`): with it pulled,
  * every request failed after its full SPI timeout, forever. */
 #define SPISD_LOST_AFTER 3u
@@ -869,7 +865,7 @@ static int spisd_write_blocks_raw(block_dev_t *dev, const void *buf, uint32_t lb
     return spisd_hw_write_blocks(lba + done, count - done, src + (size_t)done * 512u);
 }
 
-/* M5 Phase 5's own "Verify" deliverable: does the real blk domain shape
+/* Domain verification: does the real blk domain shape
  * (stack + .utext + SIO + SPI1) actually confine the task to its own
  * hardware, or does one of the two MMIO grants' width accidentally cover
  * more? Modeled directly on drivers/st7735_rp2350.c's

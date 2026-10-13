@@ -1,5 +1,5 @@
 /*
- * DCF-77 frame decoder (D1, plan/phase17_clock_ui_and_dcf77.md).
+ * DCF-77 frame decoder.
  *
  * Target-independent by construction: it consumes timestamped samples of a
  * pin level, never a register, so it builds and is tested on QEMU exactly as
@@ -63,7 +63,7 @@ typedef struct {
     uint32_t glitches;          /* transitions rejected by the debounce, total */
     /* Every score ever pushed, not just the 24 still in the ring: the mean of
      * these is the single number that makes two reception conditions
-     * comparable (plan/phase17_clock_ui_and_dcf77.md D5). */
+     * comparable. */
     uint32_t quality_sum, quality_total;
     /* Longest unbroken run of seconds that held bit alignment. A frame needs
      * 59 consecutive ones, so this says directly whether reception is capable
@@ -188,7 +188,7 @@ void dcf77_feed(dcf77_t *d, bool raw_level, uint64_t now_ms);
  * that moment is not the mark: a transition is only confirmed once
  * DEBOUNCE_MS has passed at the new level, and the caller only learns of it
  * on its next sample, so "now" runs about 25-35 ms behind the second it
- * describes. Between phase 17 and P1 of phase 24 every radio-set clock in
+ * describes. Previously every radio-set clock in
  * this tree was that much slow, silently, because this function had nothing
  * to hand back but a date -- and the decoder had the right number the whole
  * time. Measured before the fix: -65.5 ms against a GPS reference, of which

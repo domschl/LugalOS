@@ -1,6 +1,5 @@
 /*
- * LugalOS Hardware Driver: Waveshare Pico-Clock-Green LED matrix (L2,
- * plan/phase11_pico_clock_green.md).
+ * LugalOS Hardware Driver: Waveshare Pico-Clock-Green LED matrix.
  *
  * Hardware Mapping (cmake/board-rp2350-clock.cmake is the source of truth):
  *   GP10 : SM16106 CLK  (column shift clock, Function 5 - SIO GPIO)
@@ -18,7 +17,7 @@
  * SM5166P row addressing, LDR-threshold dimming) reverse-engineered from
  * the vendor firmware at ~/gith/Pico-Clock-Green (Pico-Clock-Green.c
  * send_data()/display_char()/repeating_timer_callback_ms()/_us(), ziku.h) --
- * see plan/phase11_pico_clock_green.md's L0 section for exact citations.
+ *'s L0 section for exact citations.
  *
  * ADC register facts (base address, CS/RESULT layout, RESETS bit) verified
  * against ~/gith/pico/pico-sdk/src/rp2350/hardware_regs/include/hardware/
@@ -68,15 +67,14 @@
 #define PADS_BANK0_BASE         0x40038000UL
 #define PADS_BANK0_PAD(n)       (PADS_BANK0_BASE + 0x004 + (n) * 4)
 
-/* RP2350's Secure/Non-secure split, and the third time this project has had
- * to learn it (M5 Phase 1 for GPIO, Phase 3 for I2C, Phase 6 for UART0 --
+/* RP2350's Secure/Non-secure split:
+ * (U-mode for GPIO, I2C, UART0 --
  * drivers/uart_rp2350.c and drivers/i2c_rtc.c carry the datasheet citations).
  * It is a filter entirely upstream of PMP that a U-mode task's own domain
  * cannot grant its way around: the peripheral has to be marked Non-secure
  * accessible from M-mode, before the task exists.
  *
- * Phase 17b needed all three shapes at once, which is what made this the
- * expensive lesson it was:
+ * Handling all three shapes at once:
  *
  *   - **GPIO** is per-pin (GPIO_NSMASK0, one bit per GPIO, no password) and
  *     fails SILENTLY: writes to a pin whose bit is clear are ignored and the
@@ -148,7 +146,7 @@
 #define A1_MASK  (1u << A1_PIN)
 #define A2_MASK  (1u << A2_PIN)
 
-/* The driver's own clock, and deliberately not kernel/time.h's (phase 17b).
+/* The driver's own clock, and deliberately not kernel/time.h's.
  *
  * Everything below this comment is the server half: from S2 it runs in U-mode
  * under a five-region domain, where `time_get_ms()` is not reachable -- it is
@@ -236,8 +234,8 @@ CLOCK_UATTR static inline uint32_t srv_raw_us(void) { return TIMER0_TIMERAWL; }
  * 1000 us row period, and the ambient-light readings that pick one of them
  * when brightness is automatic.
  *
- * The levels are geometric, not linear. Phase 11 used level * 140 us and
- * phase 17 shipped it that way; on real hardware in a dark room the bottom
+ * The levels are geometric, not linear. Previously used level * 140 us and
+ * previously shipped it that way; on real hardware in a dark room the bottom
  * of that ramp is still glaring (user, 2026-08-24), because a 14% duty cycle
  * is nowhere near 1/7th of the perceived brightness of a 100% one -- the eye
  * is roughly logarithmic in luminance, so evenly spaced duty cycles bunch up
@@ -262,7 +260,7 @@ CLOCK_UDATA static const uint16_t LEVEL_ON_US[LEVEL_MAX] = { 8, 18, 40, 90, 200,
  *
  * 2800 is the vendor firmware's own dimming threshold (repeating_timer_
  * callback_us(), Pico-Clock-Green.c) on the same physical LDR and divider,
- * and it stays put as the boundary where dimming begins; what phase 11
+ * and it stays put as the boundary where dimming begins; what previously
  * ported was the single threshold and its single 330 us dim duty, so
  * automatic brightness was a two-state affair -- full, or one fixed dim. The
  * rest of the ladder is this driver's, so that "automatic" tracks the room
@@ -312,7 +310,7 @@ CLOCK_UDATA static const uint16_t AUTO_DARKER_AT[LEVEL_MAX - 1] = {
 /* ======================================= the server's memory ============
  *
  * Every mutable byte the server half touches, in one place, because from
- * phase 17b it runs in U-mode and a PMP domain grants *regions*, not
+ * previously it runs in U-mode and a PMP domain grants *regions*, not
  * variables. Scattered `static` globals in ordinary `.bss` would each need
  * their own grant; there is a budget of five for the whole task and three are
  * already spoken for by SIO, ADC and TIMER0.
@@ -336,7 +334,7 @@ CLOCK_UDATA static const uint16_t AUTO_DARKER_AT[LEVEL_MAX - 1] = {
  *
  * `.ustacks2048` is a NOLOAD section outside `__bss_start..__bss_end`, so
  * boot_header.S never clears it -- the fault that made both personas fail to
- * start from a bare USB charger until phase 17 §9 found it in usb_cdc's own
+ * start from a bare USB charger until previously §9 found it in usb_cdc's own
  * region. pico_clock_green_init() zeroes this explicitly, by hand, and the
  * `-1` and `LEVEL_MAX` seeds below are applied there rather than being
  * initialisers the loader would have to honour.
@@ -374,7 +372,7 @@ typedef struct {
 
     uint8_t  row;            /* which row the scan is on */
     uint16_t dim_on_us;      /* 0 = full brightness (no PWM pulse needed) */
-    /* -1 = the LDR decides, as phase 11 shipped it; 1..7 = a fixed level from
+    /* -1 = the LDR decides, as previously shipped it; 1..7 = a fixed level from
      * the menu, which suspends the LDR entirely (clock_hw_set_brightness). */
     /* The *floor* the automatic brightness may not go below, 1..LEVEL_MAX.
      * Brightness is always automatic now; this bounds it rather than
@@ -655,7 +653,7 @@ CLOCK_UATTR static void draw_cols(int dest, const uint8_t *cols, unsigned n) {
 /* `text_cols` (with the rest of the server state, above) is wide enough for
  * the longest label the menu will scroll -- "TEMPERATURE" is 65 columns --
  * with room over. In the state region rather than on the stack, which from
- * phase 17b is 1536 bytes and shares its PMP region with that very state. */
+ * previously is 1536 bytes and shares its PMP region with that very state. */
 
 /* Clear only the text area, leaving the LEDs alone -- the full clear() wipes
  * everything and then re-applies them, which is right when the whole screen
@@ -781,7 +779,7 @@ void pico_clock_green_init(void) {
      * .ustacks2048, a NOLOAD section outside the range boot_header.S clears,
      * so on a cold start it holds whatever SRAM held. That is not a
      * hypothetical -- it is the exact fault that kept both personas from
-     * booting on a bare USB charger until phase 17 §9 found it in usb_cdc's
+     * booting on a bare USB charger until previously §9 found it in usb_cdc's
      * own region. A byte loop rather than memset(): this is the one place
      * that touches the region before the server owns it, and a call into libc
      * here would be the only reason to keep one linked in reach. */
@@ -858,7 +856,7 @@ CLOCK_UATTR static void pico_clock_green_hw_indicator(clock_indicator_t ind, boo
 }
 
 CLOCK_UATTR static void pico_clock_green_clear(void) {
-    /* A byte loop, not memset(): this runs in U-mode from phase 17b, where a
+    /* A byte loop, not memset(): this runs in U-mode from previously, where a
      * call out of .clocktext faults -- and under -fno-builtin (this tree's
      * flags) memset() is a real call, not an inlined store loop. */
     for (unsigned i = 0; i < sizeof(g_disp_buf); i++) g_disp_buf[i] = 0;
@@ -899,10 +897,10 @@ CLOCK_UATTR static void pico_clock_green_show_temperature_c(int temp_c) {
  * it draws real current (tens of mA through 24 LEDs) while radiating
  * essentially nothing.
  *
- * Two users, both from plan/phase17_clock_ui_and_dcf77.md. The first is the
- * quiet-sync indicator (section 3, M5): the only way to light anything on
- * this board without running the multiplexer. The second is the M0
- * experiment -- the Pico's buck regulator idles in PFM/power-save at light
+ * Two purposes: The first is the
+ * quiet-sync indicator: the only way to light anything on
+ * this board without running the multiplexer. The second is the
+ * noise reduction experiment -- the Pico's buck regulator idles in PFM/power-save at light
  * load, and its variable-frequency ripple is a known DCF-77 killer; on a
  * Pico 2 W the PWM-mode pin is behind the wireless chip and unreachable, so
  * raising the load is the one lever left. This separates "more current on
@@ -959,7 +957,7 @@ CLOCK_UDATA static const uint8_t BTN_PIN[CLOCK_KEY_COUNT] = {
  * prefix of what happened, in order, rather than a gap in the middle of it.
  * The drop count is kept because a silent drop in an input path is the kind
  * of bug that gets blamed on the hardware. */
-/* Two bytes an entry since phase 17b: the event, and how long the button was
+/* Two bytes an entry since previously: the event, and how long the button was
  * held. The duration belongs to the event, not to the button -- by the time a
  * frame's worth of events is drained the same key may be down again -- so it
  * travels with it rather than being looked up per key afterwards. */
@@ -1127,11 +1125,11 @@ CLOCK_UATTR static void scan_row(void) {
  * It ends with OE closed, and that closing line is load-bearing. scan_row()
  * leaves the row it lit switched ON -- the next row's scan_step() is what
  * normally turns it off -- so whatever row is current when the scanning stops
- * keeps burning for however long the gap lasts. Before phase 17b the gap was
+ * keeps burning for however long the gap lasts. Before previously the gap was
  * the appliance's once-a-second I2C read, landing on a different row each
  * time because the row index kept advancing: the panel showed a slightly
  * brighter line that crawled up the display once a second (reported on
- * hardware in phase 11 and lived with). After the split the gap moved to the
+ * hardware and lived with). After the split the gap moved to the
  * end of the frame op, so it always landed on row 7 -- the same crawl, now
  * pinned to the bottom line, which is more noticeable rather than less
  * (user, 2026-08-24).
@@ -1258,7 +1256,7 @@ void pico_clock_green_boot_mark(unsigned stage) {
  * left below is the hardware half of drivers/pico_clock_internal.h: draw
  * this, read that, one frame of scan. No policy.
  *
- * Phase 17b moved the *client* half of that header out from under this
+ * Previously moved the *client* half of that header out from under this
  * comment as well: what follows is what runs INSIDE the task, and the
  * `clock_hw_*` functions the app calls are further down, past the wire.
  */
@@ -1347,7 +1345,7 @@ CLOCK_UATTR static void pico_clock_green_hw_beep(unsigned ms) {
  * The loop that walks `dest` used to live here (`scroll_text()`), together
  * with its 45 ms step, its Ctrl-C check and its "any keypress skips the
  * animation" rule. All three are policy, all three need the console or the
- * key queue, and phase 17b moved them to drivers/pico_clock_app.c where both
+ * key queue, and previously moved them to drivers/pico_clock_app.c where both
  * are legal. What is left is the pixels. */
 CLOCK_UATTR static void pico_clock_green_hw_draw_text_at(int dest, const char *s) {
     unsigned n = clock_font_render(s, g_text_cols, TEXT_COLS_MAX);
@@ -1383,16 +1381,16 @@ CLOCK_UATTR static void pico_clock_green_hw_draw_bars(const uint8_t *scores, uns
 
 /* ================================================== the wire ============
  *
- * M4.5 (plan/phase12_microkernel_migration.md) made this driver a task and
+ * Making this driver a task and
  * gave it two ops, one of which -- 'R' run -- was the entire appliance loop
- * served as a single call. Phase 17b (plan/phase17b_clock_task_split.md)
+ * served as a single call. Previously
  * takes that back out: the appliance runs in the caller's task now, exactly
  * where chess's UI loop runs, and what crosses this wire is one logical
  * hardware operation per call.
  *
  * The op that makes that affordable is 'F': eight rows of scan, ~8 ms,
  * buttons polled per row, key events returned. ~125 calls a second, not the
- * ~1000 a per-row op would have cost -- which is the number M4.5 was right
+ * ~1000 a per-row op would have cost -- which is the number previously right
  * to refuse. Every microsecond-sensitive loop stays on this side.
  *
  *   'F' scan frame  req: [op]                     resp: [n, (ev, held16) * n]
@@ -1446,8 +1444,8 @@ static int              g_clock_task_pid = -1;
 /* Counts chan_call()s actually served -- see drivers/uart_16550.c's
  * g_uart_write_calls comment for the reasoning.
  *
- * The number this reports changed meaning in phase 17b, which is worth
- * knowing before reading it as a regression: under M4.5 a whole clock session
+ * The number this reports changed meaning in previously, which is worth
+ * knowing before reading it as a regression: under the driver task model a whole clock session
  * was ONE served call ('R'), so `clockstats` read `calls=1` no matter how
  * long the clock ran. It now advances ~125 times a second while the appliance
  * is up, because that is the frame op doing its job. */
@@ -1486,8 +1484,8 @@ __attribute__((always_inline)) static inline long clock_usys_chan_serve_reply(co
  * everything it touches is either the granted state region, one of the three
  * granted MMIO windows, or its own stack.
  *
- * Since phase 17b it calls nothing outside this file at all: no i2c, no
- * dcf77, no console, no printk. The cross-task call chain M4.5 documented
+ * Since previously it calls nothing outside this file at all: no i2c, no
+ * dcf77, no console, no printk. The cross-task call chain documented
  * here (clock -> i2c) left with the appliance loop and now runs in the
  * caller's task, where it is shell/lisp -> i2c and shell/lisp -> clock: two
  * independent top-down calls rather than a chain.
@@ -1502,7 +1500,7 @@ __attribute__((always_inline)) static inline long clock_usys_chan_serve_reply(co
 CLOCK_UATTR static void clock_umode_body(void) {
     /* Not a string literal: a literal lands in ordinary .rodata, outside
      * every region this task's domain grants -- the bug that hung the board
-     * the first time this mechanism ran on hardware (M5 Phase 2). volatile,
+     * the first time this mechanism ran on hardware (U-mode). volatile,
      * because gcc otherwise recognises the run of stores and turns it back
      * into a copy from a .rodata blob. */
     volatile char name[8];
@@ -1583,7 +1581,7 @@ CLOCK_UATTR static void clock_umode_body(void) {
 /* This task's own kernel-mode entry point: task_create_sized() calls this
  * (ordinary kernel stack, kernel privilege) to build the domain and make the
  * one-way jump into U-mode. Five regions, which is exactly
- * MEM_DOMAIN_MAX_REGIONS on RP2350 -- see plan/phase17b_clock_task_split.md
+ * MEM_DOMAIN_MAX_REGIONS on RP2350 --
  * for why the stack and the state share the first of them.
  *
  * TIMER0 is granted READ ONLY. The server needs to know the time and has no
@@ -1593,7 +1591,7 @@ static void clock_task_body(void *arg) {
     (void)arg;
     while (!g_clock_ep) sched_yield();
 
-    /* G3, plan/phase30_driver_framework.md. The one whose granted region is
+    /* G3, . The one whose granted region is
      * not a bare stack: g_clock_region is stack *and* state, so the R/W grant
      * covers the struct and execution starts inside its stack member. */
     const driver_umode_spec_t spec = {
@@ -1624,7 +1622,7 @@ static void clock_task_body(void *arg) {
     (void)driver_umode_enter(&spec);
 }
 
-/* Phase 17b's own "Verify" deliverable, and the thing phase 17's C7 asked for
+/* Previously's own "Verify" deliverable, and the thing C7 asked for
  * and could not have: does the real clock domain (stack+state, .clocktext,
  * SIO, ADC, TIMER0-read-only) actually confine the task? Modeled directly on
  * drivers/st7735_rp2350.c's st7735_isolation_test() -- same idea (a deliberate
@@ -1699,7 +1697,7 @@ bool clock_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) {
 
 /* Called from kernel/main.c, after sched_init(). Not fatal if it fails:
  * every client call below falls back to direct hardware access whenever the
- * task is not alive, same as every other M4.5 conversion. */
+ * task is not alive, same as every other driver-task conversion. */
 int pico_clock_green_task_start(void) {
     int pid = task_create_driver("clock", clock_task_body, NULL, 1);
     if (pid < 0) {
@@ -1881,7 +1879,7 @@ void pico_clock_green_indicator(clock_indicator_t ind, bool on) { clock_hw_indic
 
 void pico_clock_green_run(void) {
     /* Straight into the appliance loop, in this caller's own task. Under
-     * M4.5 this was a chan_call() that blocked for the whole session; the
+     * previously this was a chan_call() that blocked for the whole session; the
      * loop is on this side of the wire now, which is the phase-17b change in
      * one line. */
     clock_app_run();
@@ -2076,11 +2074,11 @@ void pico_clock_green_show_text(const char *str, unsigned secs) {
  * person doing the moving is usually not the person at the keyboard.
  *
  * Runs with the display ON by definition: it *is* the display. That makes it
- * the instrument for the interference measurement in phase 17's section 3 --
+ * the instrument for the interference measurement in section 3 --
  * compare a minute of it against the same minute with `dark`, and the
  * difference is the display's contribution.
  *
- * It is also, since phase 17b, the instrument for that phase's own open
+ * It is also, since previously, the instrument for that phase's own open
  * question: with the display on, the decoder is now fed once per frame
  * (~125 Hz) instead of once per row (~1 kHz), because the caller is blocked
  * in the frame op in between. That is inside dcf77_service_feed()'s stated

@@ -1,5 +1,5 @@
 /*
- * LugalOS chess UI (H4, plan/phase9_chess_computer.md) -- NOT vendored.
+ * LugalOS chess UI -- NOT vendored.
  * ~/gith/domschl/LugalChess's own UI (engine/src/console.c, 1637 lines) is a
  * hybrid text-console/UCI-protocol/TM1638+ST7735 driver deeply tied to
  * stdio and a menu system this phase doesn't need; porting it mechanically
@@ -18,7 +18,7 @@
  *     works both ways: prove the *logic* fast and cheap on QEMU first).
  *   - chess_run(): the actual interactive game, TM1638 for move entry,
  *     ST7735 for the board. RP2350 hardware only. Runs until Ctrl-C or the
- *     TM1638 STOP key (J2, plan/phase10_chess_completion.md -- chess_run()
+ *     TM1638 STOP key (J2,  -- chess_run()
  *     had no software exit at all before that, only a physical board
  *     reset), then returns cleanly to the shell.
  */
@@ -76,7 +76,7 @@ static Position *g_chess_scratch = NULL;
 static uint32_t g_chess_scratch_pages = 0;
 
 /* The same scratch, reached from search.c (§1.3,
- * plan/phase15_memory_reclamation.md).
+ * ).
  *
  * search.c had a third permanent `static Position` of its own, for walking
  * the principal variation while printing it. Three such statics existed --
@@ -126,7 +126,7 @@ static int g_search_root_side = 0; /* pos->side snapshotted once at the
     who's on move. */
 
 /* Returns false only if search_pools_init() (J0,
- * plan/phase10_chess_completion.md) hits genuine page-allocator exhaustion
+ * ) hits genuine page-allocator exhaustion
  * -- everything else here (bitboards/zobrist tables, the transposition
  * table) is either a fixed small cost or already tolerates its own failure
  * internally (init_tt() degrades to "no TT" rather than crashing if it
@@ -140,7 +140,7 @@ static int g_search_root_side = 0; /* pos->side snapshotted once at the
  * static-array writes, no allocation), so redoing it on every session is not
  * worth special-casing around. init_zobrist() used to sit beside it and no
  * longer exists at all: its tables are const in flash now (section 3.2,
- * plan/phase15_memory_reclamation.md), so there is nothing to initialise. */
+ * ), so there is nothing to initialise. */
 static bool chess_ensure_init(void) {
     if (g_chess_ready) return true;
     init_bitboards();
@@ -291,7 +291,7 @@ static ChessAbort chess_abort_requested(void) {
 }
 
 /* --- One session, two input devices (§"chess_next_event",
- *     plan/phase15_memory_reclamation.md) ---
+ *     ) ---
  *
  * Before this, the keypad and the terminal were two separate programs over
  * one game: `(chess)` entered the TM1638 loop and `(chess-console)` the text
@@ -332,7 +332,7 @@ typedef struct {
 
 typedef enum { CHESS_CMD_OK = 0, CHESS_CMD_QUIT } ChessCmdResult;
 
-/* --- One state change, every output (phase 16) ---
+/* --- One state change, every output ---
  *
  * The session has two input devices and up to three output devices, and until
  * now which outputs got updated depended on *which loop noticed the change*
@@ -353,8 +353,7 @@ typedef enum { CHESS_CMD_OK = 0, CHESS_CMD_QUIT } ChessCmdResult;
  *     is equally right after an undo, a redo, a `fen`, a load or a new game --
  *     none of which have a "move just made" to pass.
  *
- * The output side is now symmetric with the input side that phase 15's
- * chess_next_event() already made symmetric. */
+ * The output side is now symmetric with the input side that  * chess_next_event() already made symmetric. */
 static void chess_show(const Position *pos);
 #if !(defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735)
 static void canvas_board_begin(const Position *pos);    /* 37.4, defined beside chess_show() */
@@ -570,7 +569,7 @@ static void tm_format_score_compact(int score, int searching_side, char *out) {
  * it settled on -- the same two-step "callback, then TT fallback" shape
  * upstream's make_engine_move() uses, since search_position() itself only
  * prints a UCI bestmove line, it never returns the move directly.
- * max_depth is a J1 addition (plan/phase10_chess_completion.md) for the
+ * max_depth is a J1 addition for the
  * console's `go depth N` -- chess_selftest()/chess_run() both still pass 64
  * (their only ever value), so this isn't a behavior change for them. */
 static Move chess_think(Position *pos, int max_depth, int time_limit_ms) {
@@ -670,7 +669,7 @@ void chess_selftest_bench(int cores, int fixed_depth) {
     chess_session_end();
 }
 
-/* J4 (plan/phase10_chess_completion.md): perft.c's own move-generation
+/* perft.c's own move-generation
  * correctness suite, exposed the same no-hardware-dependency, heap-
  * stateless way chess_selftest() is above -- `max_depth <= 0` gets
  * run_perft_tests_depth()'s own documented default (5), matching
@@ -696,7 +695,7 @@ void chess_perft_cores(int max_depth, int cores) {
 }
 
 /* ------------------------------------------------------------------ *
- * J2 (plan/phase10_chess_completion.md): game-outcome detection --   *
+ * J2: game-outcome detection --   *
  * checkmate/stalemate/draw -- and check status. Pure position logic, *
  * no stdio, built entirely from primitives H4 already vendored       *
  * (generate_moves, make_move/unmake_move, is_square_attacked).       *
@@ -770,7 +769,7 @@ static ChessOutcome chess_game_outcome(Position *pos) {
 }
 
 /* ------------------------------------------------------------------ *
- * J1 (plan/phase10_chess_completion.md): the plain-terminal console  *
+ * J1: the plain-terminal console  *
  * REPL -- LugalChess's own scenario 1.1, the baseline that had no    *
  * LugalOS equivalent at all before this. No hardware dependency,     *
  * unlike chess_run() below: builds and is fully testable on every    *
@@ -782,7 +781,7 @@ static ChessOutcome chess_game_outcome(Position *pos) {
  * -- the plain-REPL command set only. save/load are the one command  *
  * pair that couldn't port as-is: upstream writes a raw QSPI flash    *
  * sector (hardware/flash.h), which doesn't exist on LugalOS at all;  *
- * this uses LugalOS's own VFS instead (H0, plan/phase9_chess_computer*
+ * this uses LugalOS's own VFS instead (H0, *
  * .md, flagged this exact incompatibility as the reason console.c    *
  * wasn't vendored wholesale).                                        *
  * ------------------------------------------------------------------ */
@@ -1254,7 +1253,7 @@ static void console_list_moves(Position *pos) {
  * actually running -- chess_run() dispatches console lines through exactly
  * this function, so `level 4`, `fen ...`, `save` and a typed move behave
  * identically whether the keypad or the terminal is driving the session.
- * (§"chess_next_event", plan/phase15_memory_reclamation.md.)
+ * (§"chess_next_event", .)
  *
  * `quit` no longer returns out of the REPL directly; it reports
  * CHESS_CMD_QUIT and lets the caller decide what leaving means, since that
@@ -1587,7 +1586,7 @@ static int append_uint(char *buf, int pos, unsigned v) {
 static int tm_wait_key(void) {
     int iters;
 
-    /* The per-keypress traces this used to print are gone (phase 16). They were
+    /* The per-keypress traces this used to print are gone. They were
      * scaffolding from when the key protocol itself was being worked out --
      * H4 found the "hang" reports that way -- and reading them cost nothing
      * while the terminal was a debugging channel. It is now the session's
@@ -1602,7 +1601,7 @@ static int tm_wait_key(void) {
      * single change: the console is pumped in all three phases below, so a
      * typed `level 6` or `save` lands whether the UI is between moves, mid
      * square-selection, or inside a menu. (§"chess_next_event",
-     * plan/phase15_memory_reclamation.md.) */
+     * .) */
     iters = 0;
     while (tm1638_get_key() != -1) {
         ChessAbort a = chess_abort_requested();
@@ -2033,7 +2032,7 @@ static int tm_level_select(void) {
             tm1638_display_string(tm_level_names[k]);
             /* Worded exactly as the console's own `level` command, so a
              * session driven from both devices reads as one transcript
-             * whichever one changed the setting (phase 16). */
+             * whichever one changed the setting. */
             if (level_times_ms[k] != -1) {
                 cprintf("Search level set to %d (%ds per move).\n",
                         k + 1, level_times_ms[k] / 1000);
@@ -2583,8 +2582,7 @@ void chess_run(void) {
                 time_delay_us(700000);
                 continue;
             }
-            g_console_max_history_ply = g_chess_pos.history_ply; /* J3:
-                new move played -- the redo boundary advances, same as
+            g_console_max_history_ply = g_chess_pos.history_ply; /*                 new move played -- the redo boundary advances, same as
                 J1's own console_execute_move()/console_engine_reply()
                 do. */
             tm_format_move4(mv, mover_slot);
@@ -2601,7 +2599,7 @@ void chess_run(void) {
             draw_chess_board(&g_chess_pos);
             draw_chess_status(&g_chess_pos, last_move_buf, false);
             /* And the terminal, which until now saw only tm_wait_key()'s raw
-             * key codes while a game was played on the board (phase 16). The
+             * key codes while a game was played on the board. The
              * TFT/7-segment writes above stay explicit rather than deferring
              * to chess_show(): this path has a real `last_move_buf` for the
              * status line, which chess_show() -- built for the state changes
@@ -2658,7 +2656,7 @@ void chess_run(void) {
         char *other_slot = (mover_side == WHITE) ? g_tm_black_slot : g_tm_white_slot;
         for (int i = 0; i < 4; i++) g_tm_frozen_slot[i] = other_slot[i];
         draw_chess_status(&g_chess_pos, last_move_buf, true);
-        /* J3: the level J1's console REPL and this menu's key-12 level
+        /* the level J1's console REPL and this menu's key-12 level
          * select both set (g_console_search_level) -- was a hardcoded
          * 5000ms before this milestone gave chess_run() a level concept
          * at all. */
@@ -2682,7 +2680,7 @@ void chess_run(void) {
         tm_format_move4(engine_move, last_move_buf);
         draw_chess_board(&g_chess_pos);
         draw_chess_status(&g_chess_pos, last_move_buf, false);
-        /* The engine's own reply, on the terminal too (phase 16), and named
+        /* The engine's own reply, on the terminal too, and named
          * the way the console REPL names it so a session driven from both
          * devices reads as one transcript rather than two. */
         cprintf("Engine plays: %s (Score: %s%d)\n",
@@ -2702,7 +2700,7 @@ void chess_run(void) {
 #if !(defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735)
 /* --- 37.4: the board on the canvas ------------------------------------------
  *
- * plan/phase37_screen_layouts_and_apps.md §1.2, phase 36 §4.7: an 8 x 52 px
+ * , §4.7: an 8 x 52 px
  * board centred in the wide split's canvas tile, beside the text tile where
  * the console session goes on. Light squares white, dark squares the 50 %
  * grey pattern; the pieces are piece_bitmaps[] scaled 3x to 48 px, with a

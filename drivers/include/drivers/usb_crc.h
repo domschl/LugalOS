@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-/* USB's two CRCs -- 36.7, plan/phase36_rp2350_lcd7_terminal.md.
+/* USB's two CRCs.
  *
  * Portable, with no hardware in it, so `usbselftest` checks them on QEMU
  * against known packets before the PIO-USB engine (drivers/piousb_rp2350.c)

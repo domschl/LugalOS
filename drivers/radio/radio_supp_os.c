@@ -1,5 +1,5 @@
 /* What IDF's wpa_supplicant expects of its OS port (utils/os.h, port/os_xtensa.c), as the
- * radio domain's own (45.7, plan/phase45_esp32c6.md). The supplicant is compiled into the
+ * radio domain's own. The supplicant is compiled into the
  * radio's text; these are the few services it reaches for, served from the shim:
  * time and randomness through the kernel by ecall, nothing else. */
 

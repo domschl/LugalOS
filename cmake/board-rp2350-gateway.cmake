@@ -1,13 +1,13 @@
 # Per-board facts for RP2350 (Pico 2), populated for the **network gateway**
-# persona (N3, plan/phase18_networking_and_auth.md): a bare Pico 2 carrying an
+# persona: a bare Pico 2 carrying an
 # Ethernet module on SPI0 and an SD card on SPI1, and nothing else.
 #
 # **No Ethernet part is fitted right now.** The W5500 this persona was built
-# around was cancelled (phase 18's STATUS section: bad parts, and TCP in
+# around was cancelled (STATUS section: bad parts, and TCP in
 # silicon was never the bare-metal answer) and its driver and pin block were
-# removed by phase 19's R0. What is left is a headless Pico 2 with an SD card,
+# removed by R0. What is left is a headless Pico 2 with an SD card,
 # a console, a USB 9P link and a UART1 downlink -- all of which still work.
-# Phase 19's R4 fits an ENC28J60 on the same SPI0 pins reserved below.
+# R4 fits an ENC28J60 on the same SPI0 pins reserved below.
 #
 # Same RP2350 silicon, arch and linker script as cmake/board-rp2350.cmake --
 # a third board file, not a third LUGALOS_TARGET, selected via
@@ -21,7 +21,7 @@
 set(CONFIG_PALLOC_MAX_PAGES 128)
 
 # Same 4 pages (16 KB) as the other two RP2350 personas, and for the same
-# reason (§1.1, plan/phase15_memory_reclamation.md): the arena comes out of
+# reason: the arena comes out of
 # the heap on first use and the buddy tree is permanent .bss, both on the same
 # 512 KB budget. Nothing on this persona is a heavy balloc caller.
 set(CONFIG_BALLOC_ARENA_PAGES 4)
@@ -50,7 +50,7 @@ set(CONFIG_UART0_RX_GPIO  1)
 set(CONFIG_LED_EXT_GPIO   25)
 
 # SPI1: the SD card, on the chess persona's own already-proven GP10-13.
-# Phase 18 §3 argues why a gateway has a card at all: it turns a router into a
+# §3 argues why a gateway has a card at all: it turns a router into a
 # file server, it is where the auth keys and the network config live, and it
 # gives the hardware tests something real to read and write.
 set(CONFIG_SPI1_BASE      0x40088000)
@@ -59,7 +59,7 @@ set(CONFIG_SPI1_MOSI_GPIO 11)
 set(CONFIG_SPI1_MISO_GPIO 12)
 set(CONFIG_SPI1_CS_GPIO   13)
 
-# SPI0: **the ENC28J60 (R4, plan/phase19_ip_stack_and_ethernet.md).**
+# SPI0: **the ENC28J60.**
 #
 # GP16-19 is the standard SPI0 grouping on RP2350 (RX=16, CSn=17, SCK=18,
 # TX=19 are all valid function-1 assignments for that controller); RSTn and
@@ -102,7 +102,7 @@ set(CONFIG_ETH_INT_GPIO   21)
 #                                        -> not connected. Nothing downstream
 #                 needs a clock source from this chip.
 #
-# Decoupling before power-on (phase 19 §5's lesson, paid for once already):
+# Decoupling before power-on (§5's lesson, paid for once already):
 # 220 uF bulk plus 100 nF ceramic across the module's own VCC/GND pins, short
 # SPI leads, and a ground return run alongside them rather than a shared
 # return elsewhere on the board.

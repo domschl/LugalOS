@@ -41,10 +41,10 @@
 #define REG(addr) (*(volatile uint32_t *)(uintptr_t)(addr))
 #endif
 
-/* M5 Phase 5, plan/phase12_microkernel_migration.md: SYS_CHAN_SERVE_WAIT/
+/* SYS_CHAN_SERVE_WAIT/
  * _REPLY's own kernel-side scratch buffer, shared by every U-mode driver
  * task's serve loop (SYS_CHAN_SERVE_WAIT/_REPLY cases below). Grown from
- * the original 256 bytes (M5 Phase 2) because drivers/spisd_rp2350.c's
+ * the original 256 bytes (U-mode) because drivers/spisd_rp2350.c's
  * blk moves whole 512-byte SD sectors -- even a single sector already
  * overflows 256 bytes before counting its 9-byte header. Sized to one
  * sector (512) plus 64 bytes of header/opcode headroom, comfortably
@@ -57,7 +57,7 @@
  * was staged in a 512-byte static buffer. */
 #define SYS_FILE_DATA_MAX 512u
 
-/* M2, plan/phase12_microkernel_migration.md: identifying which external IRQ
+/* identifying which external IRQ
  * fired is genuinely different hardware on each target -- there is no Rule 0
  * to apply here, only real controllers. What sits above this (devirq.h) is
  * arch-independent; this is the seam.
@@ -96,7 +96,7 @@ static inline uint32_t meinext_irq(bool *valid) {
     return (uint32_t)((v >> 2) & 0x1ffu);
 }
 #elif defined(CONFIG_BOARD_ESP32C6)
-/* ESP32-C6: the interrupt matrix and "PLIC_MX", 45.4.3 (plan/phase45_esp32c6.md).
+/* ESP32-C6: the interrupt matrix and "PLIC_MX", 45.4.3.
  * See arch/esp32c6_intr.h for the shape of it. Register layout from IDF's
  * soc/esp32c6/register/soc/plic_reg.h and interrupt_matrix_reg.h.
  *
@@ -120,7 +120,7 @@ int esp32c6_intmtx_route(uint32_t src, uint32_t line) {
     return 0;
 }
 #elif defined(CONFIG_BOARD_ESP32P4)
-/* ESP32-P4: the CLIC, E3 (plan/phase27_esp32p4_bringup.md).
+/* ESP32-P4: the CLIC, E3.
  *
  * Not the standard one. IDF gates on CONFIG_ESP32P4_SELECTS_REV_LESS_V3 and
  * this board is v1.3, so: the interrupt threshold is a memory-mapped
@@ -182,8 +182,7 @@ int esp32c6_intmtx_route(uint32_t src, uint32_t line) {
  * Unlike the CLIC, this block is *not* self-relative: there is no window
  * that means "my core". A core writing CORE0's registers routes interrupts
  * to core 0 no matter which core executed the write, so the base has to be
- * chosen from hart_id() rather than assumed -- the same mistake phase 23's
- * X1 found in the PLIC path here, avoided in advance this time. */
+ * chosen from hart_id() rather than assumed -- the same mistake  * X1 found in the PLIC path here, avoided in advance this time. */
 #define P4_INTMTX_CORE0     0x500D6000UL
 #define P4_INTMTX_CORE_STEP 0x800UL
 
@@ -196,7 +195,7 @@ static inline volatile uint8_t *p4_clic_byte(uintptr_t addr) {
 }
 
 /* See arch/esp32p4_intr.h. */
-/* A hardware store watchpoint, for the phase 27 E7 hunt.
+/* A hardware store watchpoint, for the E7 hunt.
  *
  * The RISC-V debug triggers, used from M-mode rather than from a debugger.
  * The ESP32-P4's HP core implements three (SOC_CPU_WATCHPOINTS_NUM in
@@ -249,7 +248,7 @@ static inline volatile uint8_t *p4_clic_byte(uintptr_t addr) {
  * So asking for 128 KB moves the boundary from 0x4ff80000 to 0x4ffa0000 and
  * gives back the 128 KB that linker/esp32p4.ld now stops at.
  *
- * **Measured, phase 32 U5, and the answer is "keep the 128 KB".** Once .text
+ * **Measured, U5, and the answer is "keep the 128 KB".** Once .text
  * executes in place from flash (U2) the L2 cache stops being free -- it is
  * what caches the code the CPU is now fetching over SPI -- so shrinking it
  * became a trade rather than a gift, and the plan required a measurement
@@ -263,7 +262,7 @@ static inline volatile uint8_t *p4_clic_byte(uintptr_t addr) {
  * the cache bought nothing measurable and cost 128 KB of heap.
  *
  * That result only covered boot, which might not be L2-bound -- so it was
- * re-asked against the chess engine once phase 32 enabled it here, which is
+ * re-asked against the chess engine once enabled it here, which is
  * the CPU-bound instrument the first measurement lacked. `(perft 3)` node
  * rates across six positions differ by under 0.1% between 128 KB and 256 KB
  * (figures in cmake/board-esp32p4-nano.cmake). The 16 KB L1 instruction
@@ -347,7 +346,7 @@ void esp32p4_l2_cache_report(void) {
            (unsigned)(CONFIG_ESP32P4_REV / 100), (unsigned)(CONFIG_ESP32P4_REV % 100));
 }
 
-/* --- L1 data-cache maintenance (Z2, plan/phase28_esp32p4_ethernet.md) ----
+/* --- L1 data-cache maintenance ----
  *
  * Through the boot ROM, like the flash routines in drivers/flash_esp32p4.c
  * and the L2 mode change above, and for the same reason: these sequences are
@@ -658,7 +657,7 @@ static void p4_clic_init(void) {
 /* The PLIC context of the hart executing this, by the convention documented
  * above: hart N's M-mode context is 2N and its S-mode context is 2N+1.
  *
- * X1, plan/phase23_multicore_scheduling.md §6.1. This used to be the
+ * X1, . This used to be the
  * constant 1 (or 0), i.e. hart 0's context, baked into three separate
  * address computations -- the claim/complete register, the priority
  * threshold written at init, and the per-IRQ enable bit. §1 of that plan
@@ -693,7 +692,7 @@ static inline void plic_complete(uint32_t irq_num) {
 void trap_init(void) {
 #if defined(CONFIG_BOARD_RP2350)
     /* Clear this core's external-interrupt FORCE array before enabling
-     * anything (phase 23 X7).
+     * anything.
      *
      * meifa (0xbe2) is "a read-write bit for every interrupt request; writing
      * a 1 causes the corresponding bit to become pending in meipa" -- a
@@ -728,7 +727,7 @@ void trap_init(void) {
     __asm__ __volatile__("csrw mie, %0" :: "r"((uintptr_t)(1u << 11)));
 
     /* The global interrupt enable is NOT here (G1,
-     * plan/phase30_driver_framework.md). This arm used to set mstatus.MIE
+     * ). This arm used to set mstatus.MIE
      * itself, because main.c turned interrupts on only if ticker_init()
      * succeeded and that coupling was not this file's to argue with.
      * kernel/main.c now enables them unconditionally, once, after the
@@ -794,7 +793,7 @@ void trap_init(void) {
      * enabled, pending and unmasked was still never delivered. The workaround
      * was right and its cause was in main.c, which G1 fixed there. */
 #else
-    /* M2, plan/phase12_microkernel_migration.md: the arch-global gate for
+    /* the arch-global gate for
      * QEMU's PLIC path (both targets -- see the CONFIG_MODE_S/M split above
      * for why this is one branch, not two), mirroring ticker.c's own STIE
      * enable for the same reason: unmasking the *source* here is what makes
@@ -896,7 +895,7 @@ void arch_irq_enable(uint32_t irq_num) {
      * flat interrupt level. */
     *(volatile uint32_t *)(QEMU_PLIC_BASE + 4u * irq_num) = 1;
     /* The *calling* hart's context. Device drivers all initialise on hart 0,
-     * so this enables where it always did -- and phase 23's X2 pins driver
+     * so this enables where it always did -- and X2 pins driver
      * tasks there deliberately, so routing a device IRQ to a second hart is
      * a policy decision that belongs with X2 rather than a side effect of
      * whoever happened to call this. */
@@ -1023,9 +1022,8 @@ void trap_handler(trap_frame_t *frame) {
         }
 
         /* External (device) interrupt. Same CONFIG_BOARD_RP2350 discriminator
-         * as the controller code above -- not CONFIG_MODE_M, for the same
-         * reason: QEMU RV32 is CONFIG_MODE_M without being RP2350. M2,
-         * plan/phase12_microkernel_migration.md. */
+         * as the controller code above -- not CONFIG_MODE_M, because
+         * QEMU RV32 is CONFIG_MODE_M without being RP2350. */
 #if defined(CONFIG_BOARD_RP2350)
         if (code == 11) {
             bool valid;
@@ -1095,7 +1093,7 @@ void trap_handler(trap_frame_t *frame) {
                     /* SYS_CHAN_CALL(name, req, req_len, resp, resp_max)
                      *
                      * U-mode's route to a service (C3,
-                     * plan/phase6_memory_and_processes.md). Until this existed
+                     * ). Until this existed
                      * a user program could read and write files and print, and
                      * nothing else -- so "extract a kernel subsystem into a
                      * process" had no way for the result to be reachable. That
@@ -1125,8 +1123,7 @@ void trap_handler(trap_frame_t *frame) {
                     if (!ep) { ret = -1; break; }
 
                     /* Straight between the caller's memory and the endpoint's
-                     * own buffers, while the endpoint is claimed (phase 40
-                     * review). This staged through static kreq/kresp buffers,
+                     * own buffers, while the endpoint is claimed (                     * review). This staged through static kreq/kresp buffers,
                      * which two harts could fill at once -- and a caller that
                      * blocked here could resume on the other hart. Copied out
                      * only after the call succeeded, and only as many bytes as
@@ -1145,7 +1142,7 @@ void trap_handler(trap_frame_t *frame) {
                         break;
                     }
                     /* console_puts(), not printk() (Y5c,
-                     * plan/phase31_concurrency_hierarchy.md).
+                     * ).
                      *
                      * The same argument SYS_PUTNUM below already makes -- a
                      * user program's output is not kernel diagnostics and does
@@ -1192,7 +1189,7 @@ void trap_handler(trap_frame_t *frame) {
                         /* The magnitude in unsigned arithmetic: negating
                          * LONG_MIN, which any program can pass, is undefined
                          * -- under UBSan a halt of the whole kernel by an
-                         * unprivileged program (phase 40 review). */
+                         * unprivileged program. */
                         long sval = (long)frame->a1;
                         unsigned long val = (unsigned long)sval;
                         if (sval < 0) val = 0UL - val;
@@ -1223,7 +1220,7 @@ void trap_handler(trap_frame_t *frame) {
                     console_putc((char)frame->a1);
                     console_unlock();
                     /* Flush at the end of a line, not of a character (Y5d,
-                     * plan/phase31_concurrency_hierarchy.md).
+                     * ).
                      *
                      * The UART's TX batch is per hart, and printk_unlock()
                      * used to be the only thing that emptied it. printk() no
@@ -1234,8 +1231,7 @@ void trap_handler(trap_frame_t *frame) {
                      * looked like a second-hart bug rather than a missing
                      * flush.
                      *
-                     * Per *syscall* was the first version and it undid M4: a
-                     * program printing character by character made one
+                     * Flushing per-line rather than per-syscall avoids making one
                      * chan_call() per character, which is the defect batching
                      * exists to prevent. The line is the unit. A program that
                      * ends without a newline is covered by SYS_UEXIT below,
@@ -1259,37 +1255,29 @@ void trap_handler(trap_frame_t *frame) {
                     break;
                 case SYS_YIELD:
                     /* No pointer, no privileged state to hand out -- a plain
-                     * cooperative yield. M5, plan/phase12_microkernel_migration.md:
-                     * the first syscall a U-mode *driver* task (as opposed to
-                     * a one-shot user program) needs, since its serve/poll
-                     * loop must yield the way every kernel-mode driver task
-                     * already does via sched_yield(). Completes case 0's own
-                     * apparent original intent (see that case's comment)
-                     * without touching it -- a new, unambiguous number costs
-                     * nothing and leaves 0's existing (if dead) behavior
-                     * alone. */
+                     * cooperative yield: what a U-mode *driver* task needs,
+                     * since its serve/poll loop must yield the way every
+                     * kernel-mode driver task does via sched_yield(). */
                     sched_yield();
                     ret = 0;
                     break;
                 case SYS_TIME_MS:
                     /* A value, not a pointer -- same shape as SYS_TICKS
-                     * above, just wall-clock-ish milliseconds instead of the
-                     * raw preemption-tick count. M5: what a U-mode driver
-                     * task's own pacing loop (e.g. the heartbeat LED's
-                     * on/off timing) needs in place of calling time_get_ms()
-                     * directly. */
+                     * above, just wall-clock milliseconds instead of the
+                     * raw preemption-tick count: what a U-mode driver
+                     * task's pacing loop (e.g. heartbeat LED on/off timing)
+                     * needs in place of calling time_get_ms() directly. */
                     ret = (long)time_get_ms();
                     break;
                 case SYS_SLEEP_MS:
-                    /* 36.8: see kernel/include/kernel/ipc.h. A value, no
+                    /* See kernel/include/kernel/ipc.h. A value, no
                      * pointer; capped at a minute so a garbage argument
                      * cannot park a driver for weeks. */
                     task_sleep_ms((uint32_t)frame->a1 > 60000u ? 60000u : (uint32_t)frame->a1);
                     ret = 0;
                     break;
                 case SYS_DELAY_US:
-                    /* M5 Phase 2, plan/phase12_microkernel_migration.md:
-                     * SYS_TIME_MS's millisecond granularity is useless for a
+                    /*                      * SYS_TIME_MS's millisecond granularity is useless for a
                      * bit-bang protocol's microsecond-wide pulses (tm1638's
                      * ~3us clock high/low times). time_delay_us() itself
                      * reads RP2350's TIMER0 peripheral directly and, on this
@@ -1308,7 +1296,7 @@ void trap_handler(trap_frame_t *frame) {
                     break;
                 case SYS_CHAN_SERVE_WAIT: {
                     /* SYS_CHAN_SERVE_WAIT(name, buf, buf_max) -> request
-                     * length, or -1. M5 Phase 2: the server half of the
+                     * length, or -1. U-mode: the server half of the
                      * channel API SYS_CHAN_CALL's client half has had since
                      * C3 -- what a U-mode *driver* task needs to receive the
                      * request a chan_call() sent it. Blocks (via
@@ -1334,8 +1322,7 @@ void trap_handler(trap_frame_t *frame) {
                     uint32_t buf_max = (uint32_t)frame->a3;
                     if (buf_max > CHAN_SERVE_KBUF_CAP) buf_max = CHAN_SERVE_KBUF_CAP;
                     /* Copied straight from the endpoint's request buffer, not
-                     * through a static one shared by every server (phase 40
-                     * review, as SYS_CHAN_CALL). */
+                     * through a static one shared by every server (                     * review, as SYS_CHAN_CALL). */
                     int err;
                     uint32_t len = chan_serve_wait_user(ep, frame->a2, buf_max, &err);
                     /* Truncation is a failure, not a short read -- same
@@ -1371,7 +1358,7 @@ void trap_handler(trap_frame_t *frame) {
                      * load-bearing: this is still an ordinary task context
                      * where blocking is allowed, and console_flush() ends in
                      * chan_call() to the uart task. Inside task_exit() the
-                     * same call is what phase 27 E4 proved fatal. A U-mode
+                     * same call is what E4 proved fatal. A U-mode
                      * program whose last output has no newline -- the
                      * `user_probe` in kernel/shell.c prints "UMODE_OK" and
                      * exits -- reaches the wire because of this line. */
@@ -1410,7 +1397,7 @@ void trap_handler(trap_frame_t *frame) {
 #endif
                     break;
                 /* SYS_READ_FILE/SYS_WRITE_FILE stage the data through a page
-                 * of this call's own (phase 40 review). It was a static
+                 * of this call's own. It was a static
                  * buffer per syscall -- too big for the trap stack -- shared
                  * by every caller: two harts could fill it at once, and on
                  * one hart a read that blocked in a driver task (the SD card)
@@ -1554,7 +1541,7 @@ void trap_handler(trap_frame_t *frame) {
          * point of getting here -- would never be printed.
          *
          * The window comes from the board's own linker script (G1,
-         * plan/phase30_driver_framework.md). It used to be a hardcoded
+         * ). It used to be a hardcoded
          * 0x10000000..0x20082000 -- RP2350's XIP flash through its SRAM, and
          * QEMU virt's RAM -- with a CONFIG_BOARD_ESP32P4 arm bolted on when
          * that board turned out to link at 0x4FF00000 and would otherwise
@@ -1624,7 +1611,7 @@ void trap_handler(trap_frame_t *frame) {
 
         /* Which task, and what it was standing on.
          *
-         * Added while chasing phase 27's E4 priostress fault, where the whole
+         * Added while chasing E4 priostress fault, where the whole
          * dump was "ra=0, epc=0, sp=<an address>" and the first question --
          * whose stack is that? -- took a reproduction run to answer by
          * arithmetic. ctx_switch() restores ra from the word at the incoming

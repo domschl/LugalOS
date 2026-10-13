@@ -1,5 +1,4 @@
-/* The ESP32-C6's WS2812 output: RMT transmit channel 0 to GPIO8 (45.5,
- * plan/phase45_esp32c6.md). The Waveshare ESP32-C6-Zero's one LED is on GPIO8.
+/* The ESP32-C6's WS2812 output: RMT transmit channel 0 to GPIO8. The Waveshare ESP32-C6-Zero's one LED is on GPIO8.
  *
  * The RMT is a pulse generator: 48 words of (level, duration) x2 in its own RAM,
  * clocked from the 40 MHz crystal divided to 10 MHz, played out on a pad through

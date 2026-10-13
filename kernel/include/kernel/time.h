@@ -32,8 +32,7 @@ void time_set_utc(const rtc_time_t *tm);
 
 /* The wall clock as microseconds since 1970, and the way to set it.
  *
- * The primitive the rtc_time_t accessors are built on (P2,
- * plan/phase24_dcf77_precision_and_ntp_server.md). rtc_time_t carries only
+ * The primitive the rtc_time_t accessors are built on . rtc_time_t carries only
  * milliseconds and deliberately still does; anything comparing two instants
  * finely -- an NTP offset, a DCF-77 mark against a GPS pulse -- wants these
  * instead. Signed, because every quantity derived from them is a difference

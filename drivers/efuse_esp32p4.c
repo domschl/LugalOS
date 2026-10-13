@@ -1,7 +1,7 @@
 /* The ESP32-P4's eFuse, read-only, for the two things this kernel wants from
  * silicon: a unique id for the node, and the factory MAC address.
  *
- * Z5, plan/phase28_esp32p4_ethernet.md §1.5. Until this file existed the P4
+ * Z5,  Until this file existed the P4
  * had no board_unique_id(), so kernel/identity.c fell through to derive_mac()
  * and the board answered ARP with a locally-administered address derived from
  * a build seed -- which two P4s flashed from one build would *share*. There
@@ -9,8 +9,7 @@
  *
  * Every address and bit position below comes from ESP-IDF's generated
  * headers, not from inference -- the same rule the EMAC driver follows and
- * for the same reason (plan/phase27_esp32p4_bringup.md, and the two
- * clock-gate bits that were nearly wrong from a plausible guess):
+ * for the same reason:
  *
  *   eFuse base            soc/esp32p4/.../reg_base.h:
  *                         DR_REG_EFUSE_BASE = DR_REG_LPPERIPH_BASE + 0xD000,
@@ -106,7 +105,7 @@ bool board_unique_id(uint8_t out[8]) {
     return true;
 }
 
-/* 47.1, plan/phase47_esp32p4_lcd7b_ribbon.md: the chip's silicon revision as
+/* the chip's silicon revision as
  * major*100+minor, the encoding CONFIG_ESP32P4_REV uses. IDF's eFuse table
  * (efuse/esp32p4/esp_efuse_table{,_v3.0}.csv): WAFER_VERSION_MINOR is BLK1
  * bits 64..67, the major version's two low bits are 68..69 and its MSB is bit

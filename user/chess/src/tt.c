@@ -1,6 +1,6 @@
 /*
  * Vendored from ~/gith/domschl/LugalChess (engine/src/tt.c), H4,
- * plan/phase9_chess_computer.md. Only change from upstream: malloc()/free()
+ * . Only change from upstream: malloc()/free()
  * don't exist on LugalOS -- there is no general heap, only palloc_pages()'s
  * page-granular allocator (see kernel/palloc.h). LUGALCHESS_EMBEDDED always
  * requests a fixed 32 KB table here (exactly 8 pages at PAGE_SIZE=4096), so
@@ -44,7 +44,7 @@ void init_tt(int size_mb) {
      * 2048 entries, which is what RP2350's heap can spare; 512 KB on the
      * LCD-7, in PSRAM (38.7, CONFIG_CHESS_TT_KB).
      *
-     * Settable since X8b (plan/phase23_multicore_scheduling.md), because it
+     * Settable since X8b, because it
      * is the variable that decides whether Lazy SMP is worth anything: the
      * helper's only contribution is TT entries the primary then finds
      * already filled, so a table two searchers can thrash caps the gain at
@@ -87,7 +87,7 @@ void free_tt(void) {
     tt_size_entries = 0;
 }
 
-/* --- Lockless safety for a shared table (X8b) ----------------------------
+/* --- Lockless safety for a shared table ----------------------------
  *
  * A TTEntry is a 64-bit key plus move, score, depth, flags and age -- six
  * fields, written and read without a lock. On one core that is fine. On two

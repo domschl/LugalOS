@@ -1,5 +1,5 @@
 # Per-board facts for RP2350W ("Pico 2 W"), populated for the **environment
-# sensor** persona (Q7, plan/phase26_mqtt_and_environment_sensors.md): a bare
+# sensor** persona: a bare
 # Pico 2 W with a BME280 on I2C0 and nothing else at all.
 #
 # Minimal hardware, and that is the point of it being its own persona rather
@@ -13,7 +13,7 @@
 # task): because it is the board with nothing else on it.
 #
 # **This comment used to claim the persona was what made mqttd autostart, and
-# Q6 made that wrong.** The rule phase 11 set -- a program starts by itself
+# Q6 made that wrong.** The rule set -- a program starts by itself
 # only on an appliance persona -- is about programs that own a display or a
 # keypad. Publishing follows the *other* rule this tree already had, R5's: a
 # stored credential is the intent to use it, so a board with a broker in its

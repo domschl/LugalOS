@@ -124,8 +124,7 @@ static int64_t wall_ms(void) {
 /* One sample, broadcast to the segment as text.
  *
  * The board can also be *read* at /proc/dcf77log, and on the bench that is
- * the better channel -- but 9P over TCP requires authentication (phase 18's
- * gate, by design) and this board has no persistent device key, while its
+ * the better channel -- but 9P over TCP requires authentication ( * gate, by design) and this board has no persistent device key, while its
  * console is owned by the clock application. So a board carried to wherever
  * the reception is has no inbound channel at all, and the only way to hear
  * from it is to let it speak.
@@ -209,7 +208,7 @@ static void p0_body(void *arg) {
      * was never scheduled again: the startup line appeared in /proc/kmsg at
      * t=0.63 s while the loop counter was still 0 seventy seconds later.
      *
-     * That is phase 19's R5 lesson arriving from the other side. R5 recorded
+     * That is R5 lesson arriving from the other side. R5 recorded
      * that starting `wifiup` at BACKGROUND was wrong because "the clock app is
      * a continuous loop, so a strictly lower task gets only the slices it
      * leaves and the 231 KB upload never finished at all". The slices it

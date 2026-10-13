@@ -1,6 +1,6 @@
 /*
  * Vendored from ~/gith/domschl/LugalChess (engine/src/search.c), H4,
- * plan/phase9_chess_computer.md. Changes from upstream:
+ * . Changes from upstream:
  *   - stripped <sys/time.h>/<time.h>/<stdlib.h>/<string.h>/<stdio.h> and the
  *     LUGALCHESS_EMBEDDED pico-sdk includes; kernel/time.h stands in.
  *   - get_time_ms()'s embedded branch calls kernel/time.h's time_get_ms()
@@ -30,11 +30,11 @@
  *     It now borrows chess_ui.c's already-existing on-demand scratch via
  *     chess_scratch_position(), declared extern at the call site the same way
  *     search_progress_callback()/search_poll_stop_callback() already are --
- *     see §1.3 of plan/phase15_memory_reclamation.md, and that function's own
+ *     see §1.3 of , and that function's own
  *     comment in chess_ui.c for why sharing one scratch between the engine
  *     and the UI cannot race.
  *   - search_pv_movelists/search_q_movelists (~65 KB combined) were plain
- *     `static` arrays until J0 (plan/phase10_chess_completion.md): permanent
+ *     `static` arrays until J0: permanent
  *     .bss on every board with chess enabled (the default), whether or not
  *     it was ever played -- dropped RP2350's managed heap from 78 to 48
  *     pages (H4's own finding, phase9). search_pools_init() now allocates
@@ -67,7 +67,7 @@ long start_search_time_ms = 0;
  * X8b's helper runs on hart 1 and this flag is the ONLY thing that stops it;
  * every other cross-hart word in this file (g_helper_active, g_helper_done,
  * g_helper_nodes) is already volatile, so this was the odd one out rather
- * than a decision. Phase 33 made g_domain_activations volatile for the same
+ * than a decision. made g_domain_activations volatile for the same
  * reason and documented it as hygiene; here it is load-bearing.
  *
  * Today's codegen happens to be safe -- every read of this in pv_search() and
@@ -81,7 +81,7 @@ volatile bool stop_search = false;
 long nodes_searched = 0;
 
 // Move ordering heuristic tables
-/* --- Per-hart search state (X8b, plan/phase23_multicore_scheduling.md) ---
+/* --- Per-hart search state ---
  *
  * Everything a search mutates as it runs, gathered so a second core can have
  * its own copy: the move-ordering heuristics, the insertion-sort scratch, and
@@ -177,7 +177,7 @@ static const BookEntry book_entries[] = {
  * the guards in pv_search()/quiescence() below, the hard ceiling on how far
  * ahead a search may look at all.
  *
- * Board-scoped (§2.1, plan/phase15_memory_reclamation.md): the pools are
+ * Board-scoped: the pools are
  * `2 * MAX_SEARCH_PLYS * sizeof(MoveList)` bytes taken from the page
  * allocator, which at 64 is 66,048 bytes -- 17 of RP2350's pages, by a wide
  * margin the largest single thing chess asks the heap for. 32 makes it 9.
@@ -280,7 +280,7 @@ bool search_state_init(unsigned hart) {
 /* Mirrors tt.c's free_tt() -- added when chess_ui.c grew a real
  * acquire/release lifecycle (revising J0's original "never freed for the
  * process lifetime" choice once J1 gave chess a session boundary to free
- * at, plan/phase10_chess_completion.md). Safe to call whether or not
+ * at, ). Safe to call whether or not
  * search_pools_init() ever ran. `search_pools_pages` is stored rather than
  * recomputed at free time -- same reason tt.c stores `tt_pages` instead of
  * recomputing it -- so init and free can never compute a different page
@@ -618,7 +618,7 @@ static int score_move(const Position *pos, Move move, Move tt_move, int ply) {
 /* Insertion sort for move list (fast for small arrays).
  *
  * Takes the array and its length rather than a list struct: since §2.1
- * (plan/phase15_memory_reclamation.md) there are two list types, MoveList and
+ * there are two list types, MoveList and
  * the narrower CaptureList, and this function only ever reads and permutes
  * `moves[]` -- it never needs to know which struct the array came out of, and
  * it never changes the count. */
@@ -856,7 +856,7 @@ int pv_search(Position *pos, int depth, int ply, int alpha, int beta, bool null_
  * the default; anything more is opt-in, per session, from the shell. */
 int g_search_cores = 1;
 
-/* --- Lazy SMP (X8b) ------------------------------------------------------
+/* --- Lazy SMP ------------------------------------------------------
  *
  * The helper searches the same root, to its own schedule, sharing only the
  * transposition table. It does not report a move and its result is discarded:
@@ -1101,7 +1101,7 @@ void search_position(Position *pos, int depth, int time_limit_ms) {
         long time_spent = now_ms - start_search_time_ms;
         long last_iter_time_ms = now_ms - iter_start_time_ms;
 
-        /* Found live while smoke-testing J0 (plan/phase10_chess_completion.md),
+        /* Found live while smoke-testing J0,
          * not caused by it: on a 32-bit `long` target (rv32/RP2350's ILP32,
          * not rv64's LP64), `nodes_searched * 1000` overflows a signed 32-bit
          * int once nodes_searched passes ~2.1M -- reached mid-search on real
@@ -1178,7 +1178,7 @@ void search_position(Position *pos, int depth, int time_limit_ms) {
         // Dynamic time-based cutoff:
         // Estimate time required for the next depth iteration (d + 1) based on effective branching factor b
         //
-        // Found and fixed 2026-08-12 (plan/phase10_chess_completion.md J1):
+        // Found and fixed 2026-08-12 ( J1):
         // this was `double` arithmetic until now, which built and ran fine
         // on every target this engine had actually been exercised on
         // (RV32 QEMU + real RP2350 hardware, both ilp32/soft-float -- no

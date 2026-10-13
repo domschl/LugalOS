@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* Device registry (B0, plan/phase5_distributed_design.md §5.4).
+/* Device registry.
  *
  * Before this, kernel_main() was a fixed init sequence with
  * `#if defined(CONFIG_BOARD_RP2350)` blocks inline: which hardware exists,
@@ -35,9 +35,9 @@ typedef enum {
     DEV_KIND_EEPROM,    /* small byte-addressable persistent store */
     DEV_KIND_BLOCK,     /* block device (get() returns block_dev_t *) */
     DEV_KIND_SENSOR,    /* environment sensor -- Q4,
-                           plan/phase26_mqtt_and_environment_sensors.md */
+                           sensor telemetry */
     DEV_KIND_NETIF,     /* frame source (get() returns netif_t *) -- R1,
-                         * plan/phase19_ip_stack_and_ethernet.md. Registered
+                         * network interface. Registered
                          * here as well as in net/netif.c's own table so that
                          * `cat /proc/devices` can say whether a board has a
                          * network at all, which is the first question asked
@@ -59,8 +59,7 @@ typedef enum {
 
 #define DEV_MAX 14
 
-/* Which physical resource a device drives (C8,
- * plan/phase6_memory_and_processes.md).
+/* Which physical resource a device drives.
  *
  * Several *names* can be the same *wire*. The PL011 appears three times --
  * `uart` as a console, `uartslip` as dedicated SLIP-framed 9P, `uartdemux` as
@@ -151,7 +150,7 @@ uintptr_t board_uart_base(void);
 /* Power-of-two, self-aligned executable region for U-mode tasks (B3). */
 void board_text_region(uintptr_t *base, uintptr_t *size);
 
-/* M5 Phase 4, plan/phase12_microkernel_migration.md: st7735's own
+/* st7735's own
  * dedicated U-mode-executable page (linker: .st7735text), separate from
  * board_text_region()'s shared .utext -- which ran out of room once
  * st7735's font table and draw functions needed to fit alongside
@@ -159,21 +158,21 @@ void board_text_region(uintptr_t *base, uintptr_t *size);
  * that uses it. */
 void board_st7735_text_region(uintptr_t *base, uintptr_t *size);
 
-/* 36.6a, plan/phase36_rp2350_lcd7_terminal.md: the screen terminal's U-mode
+/* The screen terminal's U-mode
  * code and font (drivers/lcdterm_attr.h). RP2350 only. */
 void board_lcdterm_text_region(uintptr_t *base, uintptr_t *size);
 
 /* 36.8: the USB keyboard task's U-mode code (drivers/kbd_attr.h). RP2350 only. */
 void board_kbd_text_region(uintptr_t *base, uintptr_t *size);
 
-/* M5 Phase 5, plan/phase12_microkernel_migration.md: blk's own dedicated
+/* blk's own dedicated
  * U-mode-executable page (linker: .blktext), same reasoning as
  * board_st7735_text_region() above -- the shared .utext page overflowed
  * once blk's SD/SPI primitives joined it. RP2350-only, like the driver
  * that uses it. */
 void board_blk_text_region(uintptr_t *base, uintptr_t *size);
 
-/* M5 Phase 7, plan/phase12_microkernel_migration.md: usb_cdc's own
+/* usb_cdc's own
  * dedicated U-mode-executable page (linker: .usbtext), same reasoning as
  * board_st7735_text_region()/board_blk_text_region() above -- the shared
  * .utext page overflowed once usb_cdc's dispatch (EP0 enumeration,
@@ -181,7 +180,7 @@ void board_blk_text_region(uintptr_t *base, uintptr_t *size);
  * like the driver that uses it. */
 void board_usb_text_region(uintptr_t *base, uintptr_t *size);
 
-/* Phase 17b, plan/phase17b_clock_task_split.md: the clock server's own
+/* The clock server's own
  * dedicated U-mode-executable page (linker: .clocktext), same reasoning as
  * the three above -- it carries the row scan, the frame-buffer writers, the
  * button state machine and the whole proportional font, which on its own is

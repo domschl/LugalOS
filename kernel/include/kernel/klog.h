@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* Kernel log ring + output sink registry (B0, plan/phase5_distributed_design.md §5.4).
+/* Kernel log ring + output sink registry.
  *
  * Before this existed, printk() called uart_putc() directly, so kernel log
  * output had exactly one destination decided at compile time and no history:
@@ -29,7 +29,7 @@
  * section the moment two tasks can printk() concurrently.
  */
 
-/* 8 KB since Y5a (plan/phase31_concurrency_hierarchy.md §5.3), and the size
+/* 8 KB ring buffer: the size
  * is a measurement rather than a round number.
  *
  * At 4096 this ring had already wrapped *before the board finished booting*:
@@ -66,8 +66,7 @@
 
 /* A record's timestamp, in milliseconds since boot, or KLOG_NO_TS.
  *
- * Stored as four binary bytes and rendered only when the log is read (Y5b,
- * plan/phase31_concurrency_hierarchy.md §5.7). The rendered form
+ * Stored as four binary bytes and rendered only when the log is read . The rendered form
  * "[    0.010] " is twelve bytes on every line -- 456 of rv32's 2645-byte
  * boot, 17% of the ring -- spent on a number that fits in four.
  *
@@ -98,11 +97,10 @@ void klog_emit(uint32_t ms, const char *text, uint32_t len);
 /* The smallest a record can be: its header alone, with an empty payload.
  * Public so a test can size a burst from the ring rather than from a number
  * that happened to overflow it once -- see kernel/lock.c's burst check, which
- * stopped overflowing when Y5f made records denser. */
+ * stopped overflowing with dense tokenized records. */
 #define KLOG_REC_MIN 6u
 
-/* Appends a *tokenised* record (Y5f, plan/phase31_concurrency_hierarchy.md
- * §5.9): the format string's address and the arguments printk() captured,
+/* Appends a *tokenised* record: the format string's address and the arguments printk() captured,
  * instead of the text they render to.
  *
  * `render_len` is the length that text would have, which the ring needs
@@ -147,7 +145,7 @@ uint32_t klog_truncations(void);
  * could hold. Distinct from eviction, which is normal and silent. */
 uint32_t klog_drops(void);
 
-/* --- The consumer (Y5c, plan/phase31_concurrency_hierarchy.md §5.4) -------
+/* --- The consumer ---------------------------------------------------------
  *
  * Registering one changes what klog_emit() does: instead of fanning the
  * record out to the sinks on the producer's own stack -- which ends in a

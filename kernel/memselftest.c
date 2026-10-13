@@ -1,5 +1,5 @@
 /*
- * `memselftest` -- 38.3, plan/phase38_psram.md.
+ * `memselftest`.
  *
  * libc's memcpy/memmove/memset became word loops with byte heads and tails,
  * and everything links against them, so they are checked exhaustively over

@@ -7,7 +7,7 @@
 
 static bool g_at24c32_detected = false;
 
-/* --- Bus access (phase 30 category E) ---------------------------------
+/* --- Bus access ---------------------------------
  *
  * Every transfer goes through i2c_xfer(), the one generic operation the
  * shared bus offers. This file used to carry **its own copy of the RP2350
@@ -69,7 +69,7 @@ static bool i2c_read_at24(uint16_t mem_addr, uint8_t *dst, size_t len) {
 void at24c32_init(void) {
 #if I2C_HAVE_CONTROLLER
     /* A real probe now, on every board that has a bus, rather than only on
-     * RP2350 (phase 30 category E). The ESP32-P4 has an I2C controller and
+     * RP2350. The ESP32-P4 has an I2C controller and
      * announced a synthetic buffer regardless, so an EEPROM wired to it was
      * simply never used. */
     uint8_t dummy = 0;
@@ -83,8 +83,7 @@ void at24c32_init(void) {
 #else
     /* No bus at all, so nothing to probe and nothing that could fail one --
      * which is how a board with no I2C controller once came to announce "4KB
-     * I2C EEPROM detected at 0x57!" on its first boot (E2,
-     * plan/phase27_esp32p4_bringup.md).
+     * I2C EEPROM detected at 0x57!" on its first boot.
      *
      * `detected` stays true, and that is not a compromise: /dev/eeprom, the
      * `eeprom-read`/`eeprom-write` primitives and the identity store all work
@@ -132,7 +131,7 @@ int at24c32_hw_write(uint16_t addr, const uint8_t *buf, size_t len) {
 }
 
 /* The public facade. Once a device is an i2c_xfer() client there is nothing
- * left for it to do (phase 30 category E).
+ * left for it to do.
  *
  * This used to be ninety lines: a second wire protocol ('R'/'X' opcodes,
  * addr/len marshalling, an int32 result), two chunking loops bounded by

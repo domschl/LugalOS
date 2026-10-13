@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include "arch/csr.h"
 
-/* Interrupt-masking critical sections (B6, plan/phase5_distributed_design.md §5.4).
+/* Interrupt-masking critical sections.
  *
  * Every "no locking needed" note in this kernel -- kernel/palloc.h,
  * kernel/sched.h, kernel/chan.h, kernel/klog.h -- rests on the same premise:

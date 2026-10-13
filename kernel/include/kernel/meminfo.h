@@ -135,7 +135,7 @@ typedef struct {
     uint32_t  stack_bytes;
     uint32_t  heap_bytes;
     /* The static footprint broken into the parts it is actually made of
-     * (§6, plan/phase15_memory_reclamation.md).
+     *.
      *
      * image_bytes above is one number covering everything below _kernel_end,
      * which is enough to see *that* the static side moved and useless for

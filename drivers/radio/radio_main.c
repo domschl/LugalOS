@@ -1,4 +1,4 @@
-/* The radio's main thread (45.6, plan/phase45_esp32c6.md): the U-mode code that
+/* The radio's main thread: the U-mode code that
  * calls into Espressif's blob. It does what IDF's esp_wifi_init() does, minus
  * everything that is IDF's OS (the event loop, esp_netif, the power-management
  * locks, sleep retention), in the same order.

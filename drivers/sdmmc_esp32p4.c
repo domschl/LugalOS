@@ -1,9 +1,7 @@
 /* The ESP32-P4's SD/MMC host controller, and the microSD slot the
- * ESP32-P4-NANO wires to it. 35.1-35.5, plan/phase35_esp32p4_sdmmc.md.
+ * ESP32-P4-NANO wires to it. 35.1-35.5, .
  *
- * Provenance, because on this chip it is the whole ballgame (the rule is
- * plan/phase27_esp32p4_bringup.md §3.2, and drivers/emac_esp32p4.c's header
- * says why): every register offset and bit position below was taken from the
+ * Provenance, because on this chip it is the whole ballgame: every register offset and bit position below was taken from the
  * ESP32-P4 TRM and cross-checked against ESP-IDF's generated headers under
  * ~/gith/esp/esp-idf/components/soc/esp32p4/register/hw_ver1/soc/ -- the
  * hw_ver1 set, because this board is silicon revision v1.3. Where a fact is
@@ -318,7 +316,7 @@
 #define  INT_DATA_ERRORS        (INT_DCRC | INT_DRTO | INT_HTO | INT_FRUN | \
                                  INT_SBE | INT_EBE)
 
-/* --- One controller, two slots (49.4, plan/phase49_c6_network_nodes.md) ---
+/* --- One controller, two slots ---
  *
  * Slot 0 is the microSD card (this file); slot 1 is the C6 on SDIO
  * (drivers/sdio_esp32p4.c). They share the command path, the status
@@ -438,7 +436,7 @@ static void sdmmc_pads_init(void) {
      * The SDIO interrupt is constant 1 because that input is
      * ~(int_n | card_int | card_detect) and a 0 there would assert it
      * permanently; this driver never enables the interrupt, but leaving a
-     * peripheral input floating on a matrix default is how phase 28's RX pad
+     * peripheral input floating on a matrix default is how RX pad
      * lists became a warning in the board file. */
     REG(GPIO_IN_SEL(SIG_SD_CARD_DETECT_N)) = GPIO_MATRIX_CONST_ZERO | GPIO_IN_SEL_ROUTE;
     REG(GPIO_IN_SEL(SIG_SD_CARD_WRITE_PRT)) = GPIO_MATRIX_CONST_ZERO | GPIO_IN_SEL_ROUTE;
@@ -928,7 +926,7 @@ int sdhost_controller_init(void) {
     /* Polled, start to finish: no interrupt is routed, INTMASK stays clear so
      * nothing reaches the interrupt controller, and RINTSTS (which is raw and
      * set regardless) is what this driver reads. The EMAC made the same call
-     * for the same reason -- see plan/phase28's Z6. */
+     * for the same reason --'s Z6. */
     REG(SD_INTMASK) = 0;
     REG(SD_CTRL) &= ~CTRL_INT_ENABLE;
     REG(SD_RINTSTS) = 0xffffffffu;

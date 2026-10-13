@@ -1,5 +1,5 @@
 /*
- * fs/fat32.c on the host, under ASan/UBSan or valgrind (phase 40 review).
+ * fs/fat32.c on the host, under ASan/UBSan or valgrind.
  *
  * Two parts:
  *
@@ -342,7 +342,7 @@ static void corrupt_images(int iterations, uint64_t seed) {
            iterations, (unsigned long long)seed, mounted);
 }
 
-/* --- Part 3: the card pulled from a mounted volume (phase 40 item 3) ---
+/* --- Part 3: the card pulled from a mounted volume ---
  * Every access fails from then on. What the shell does next -- its history
  * append, and the mkdir that follows when that fails -- must fail after a
  * handful of device calls, not one per cluster: a failed read empties the

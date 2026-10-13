@@ -8,7 +8,6 @@
 #include <string.h>
 
 /* Grove Multichannel Gas Sensor Driver (SGX Sensortech MiCS-6814).
- * Phase 46, plan/phase46_sensor_framework.md.
  *
  * Implements:
  * - Dual-firmware auto-detection (V1 4-byte checksum protocol, V2 2-byte register protocol)

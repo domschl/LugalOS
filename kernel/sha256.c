@@ -1,5 +1,5 @@
 /*
- * SHA-256 and HMAC-SHA-256 — N1, plan/phase18_networking_and_auth.md.
+ * SHA-256 and HMAC-SHA-256.
  * See kernel/include/kernel/sha256.h for why this exists and what it is not.
  *
  * A direct transcription of FIPS 180-4 §6.2 and RFC 2104, chosen to be
@@ -51,7 +51,7 @@ static void sha256_compress(sha256_ctx_t *ctx, const uint8_t block[64]) {
      * can roll through a 16-word window: 64 bytes of stack instead of 256.
      *
      * That matters here specifically. This runs inside the 9P server task,
-     * and phase 17b's U-mode work is a standing reminder that stacks in this
+     * and stacks in this
      * kernel are 4 KB and sometimes 1.5 KB -- 192 bytes is not nothing when
      * the call chain underneath is a protocol handler. The indexing is the
      * standard's, modulo 16. */

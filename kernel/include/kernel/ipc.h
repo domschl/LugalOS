@@ -26,7 +26,7 @@
  * kernel code manipulating kernel state. */
 #define SYS_UEXIT 20
 
-/* M5, plan/phase12_microkernel_migration.md: the first two syscalls a
+/* The first two syscalls a
  * long-lived U-mode *driver* task needs that a one-shot U-mode user program
  * never did -- a cooperative yield and a pacing clock, both value-only (no
  * pointer, nothing to validate against a domain). See arch/riscv/common/
@@ -34,8 +34,7 @@
 #define SYS_YIELD    22
 #define SYS_TIME_MS  23
 
-/* M5 Phase 2, plan/phase12_microkernel_migration.md: what a U-mode driver
- * task needs beyond Phase 1's heartbeat -- a microsecond-granular delay for
+/* A microsecond-granular delay for a U-mode driver task --
  * timing-sensitive bit-bang protocols (SYS_TIME_MS is millisecond-granular,
  * useless for a few-microsecond pulse width), and the server half of the
  * channel API (chan_serve_wait()/chan_serve_reply() have no U-mode route
@@ -45,7 +44,7 @@
 #define SYS_CHAN_SERVE_WAIT  25
 #define SYS_CHAN_SERVE_REPLY 26
 
-/* M5 Phase 7, plan/phase12_microkernel_migration.md: drivers/usb_cdc.c's
+/* drivers/usb_cdc.c's
  * U-mode task can detect the "1200-baud touch" BOOTSEL condition (the
  * host dropped DTR after configuring 1200 baud) but cannot act on it --
  * rp2350_reboot_to_bootsel() (arch/riscv/rp2350/bootrom.c) is a bootrom
@@ -57,7 +56,7 @@
  * function it wraps. */
 #define SYS_REBOOT_BOOTSEL   27
 
-/* 36.8, plan/phase36_rp2350_lcd7_terminal.md: sleep, blocked, for `a1`
+/* Sleep, blocked, for `a1`
  * milliseconds -- task_sleep_ms() for a U-mode driver. SYS_YIELD keeps a
  * waiting task runnable, so a driver that waits most of the time (the
  * keyboard task between polls, a hub's power-good time) would take a slice of

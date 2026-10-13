@@ -1,7 +1,7 @@
 /* The USB keyboard host above a transaction port: enumeration, a hub, the
  * boot keyboard behind it, the keyboard as console input, and the reports --
- * 36.8/36.9 (plan/phase36_rp2350_lcd7_terminal.md §3.2), shared since 47.9
- * (plan/phase47_esp32p4_lcd7b_ribbon.md) between the RP2350's PIO-USB engine
+ * 36.8/36.9, shared since 47.9
+ * between the RP2350's PIO-USB engine
  * (drivers/usbkbd_rp2350.c) and the ESP32-P4's OTG HS core
  * (drivers/usbhost_esp32p4.c). The port interface is
  * drivers/include/drivers/usbkbd_task.h.

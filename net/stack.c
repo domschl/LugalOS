@@ -12,7 +12,7 @@
 
 /* The stack's state, its single transmit buffer, and the Ethernet-level
  * dispatch that feeds ARP and IPv4 (R2,
- * plan/phase19_ip_stack_and_ethernet.md). */
+ * ). */
 
 static net_state_t g_net;
 
@@ -25,9 +25,9 @@ static net_state_t g_net;
  * **On the heap, not in .bss**, and taken only at attach time. Together they
  * are 3028 bytes, which fits in one page with room to spare -- but as statics
  * they were 3424 bytes of .bss on *every* persona, and on the RP2350 .bss and
- * the heap are the same budget (plan/phase15_memory_reclamation.md). That
+ * the heap are the same budget. That
  * cost the chess persona a whole heap page for a stack it has no interface to
- * run. Phase 15's rule applies exactly: memory taken only while it is used. A
+ * run. rule applies exactly: memory taken only while it is used. A
  * board with no netif never attaches, so it never pays. */
 static uint8_t *g_frames;
 static uint8_t *g_tx;
@@ -65,7 +65,7 @@ int net_stack_attach(netif_t *nif) {
     return 0;
 }
 
-/* 49.2 (plan/phase49_c6_network_nodes.md): give the interface back. A radio
+/* give the interface back. A radio
  * node that becomes the host's network card forwards its interface's frames
  * over LLP instead of reading them itself, and keeps no address, no ARP
  * entries and no connections of its own on that segment -- the host's are the
@@ -217,27 +217,14 @@ uint32_t net_poll(uint32_t budget) {
  * ping flood and a 9P transfer both arrive in bursts and a strict
  * one-per-scheduling-quantum is a throughput ceiling for no benefit.
  *
- * **Not yet a U-mode task in its own memory domain, and the reason is
- * sequencing rather than reluctance.** The plan's §3 asks for one, on the
- * grounds that a stack parsing attacker-controlled bytes is the last place to
- * make an exception to this kernel's isolation rules -- which is right. But
- * the isolation machinery (PMP domains for driver tasks, phase 12's M5) lives
- * on the RP2350 personas, and *those have no network at all until R4*. The
- * only target with a netif today is QEMU, where no driver is domained:
- * drivers/virtio_blk.c and drivers/virtio_console.c are both plain kernel
- * code. Domaining the stack here would mean inventing the QEMU-side driver
- * isolation pattern for a device that exists only in an emulator, and then
- * redoing it against real silicon anyway.
- *
- * R4 is where both halves exist at once: an ENC28J60 driver written as a
- * U-mode driver task in the M5 style, with the stack above it in its own
- * domain. Recorded here rather than in a plan file alone, because the next
- * person to read this function will ask. */
+ * Note: Scheduled kernel task rather than a U-mode service. A stack parsing
+ * network frames would benefit from running in its own domain when driver
+ * isolation is extended to networking targets. */
 /* Network autoconfig: if this board's identity record carries an address,
  * apply it once, here, on the stack task's first pass.
  *
- * Storing the address in the record rather than in init.lisp is the point --
- * since I7a the filesystem image is byte-identical on every board, and a
+ * Storing the address in the record rather than in init.lisp is intentional:
+ * the filesystem image is byte-identical on every board, and a
  * per-board address in a boot script would have cost that. The boot script
  * stays the same everywhere; the per-board part lives beside the SSID and
  * PSK it is reached with.

@@ -1,4 +1,4 @@
-/* See drivers/radio/nvs_ram.h. 45.3b, plan/phase45_esp32c6.md. */
+/* See drivers/radio/nvs_ram.h. 45.3b, . */
 
 #include "nvs_ram.h"
 

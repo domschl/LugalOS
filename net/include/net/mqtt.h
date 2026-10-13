@@ -5,7 +5,7 @@
 #include <stdbool.h>
 #include "net/ip.h"
 
-/* MQTT 3.1.1 client (Q1, plan/phase26_mqtt_and_environment_sensors.md).
+/* MQTT 3.1.1 client.
  *
  * The first protocol in this tree to run over a TCP *byte stream* rather than
  * over 9P framing, which is what Q0 built the stream for. It exists so a
@@ -16,7 +16,7 @@
  * speaks by default and what every broker still speaks; 5.0's additions --
  * properties, reason strings, topic aliases, session expiry -- are all things
  * a node with four topics does not use, at the price of a larger CONNECT and
- * a second packet grammar. The phase 26 plan's §8 records that as a decision
+ * a second packet grammar. The plan's §8 records that as a decision
  * rather than an omission.
  *
  * **What this deliberately is not.** No TLS (see below), no QoS 2 ever, no
@@ -34,7 +34,7 @@
  * board. Anyone with a packet capture on the segment -- or on the WiFi, if
  * the AP is open -- has the password and can replay it.
  *
- * That is phase 18 §1's threat model inherited without change: auth proves
+ * That is §1's threat model inherited without change: auth proves
  * who is talking and does not hide what they say. It was true of 9P over TCP
  * and it is true here. Give each node its own password, make it one that
  * means nothing anywhere else, and use the broker's ACLs to bound what that

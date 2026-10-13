@@ -78,7 +78,7 @@ _start:
 
 #if defined(CONFIG_BOARD_ESP32P4)
 #if CONFIG_ENABLE_SMP
-    /* Hart 0 only. 34.10, plan/phase34_esp32p4_pll_bringup.md.
+    /* Hart 0 only. 34.10, .
      *
      * Core 1 enters here too -- its boot address is `_start`, so it takes the
      * same path and the same secondary branch below. It must not take *this*
@@ -93,7 +93,7 @@ _start:
     bnez tp, .Lp4_skip_boot_setup
 #endif
     /* Map flash into the CPU's address space, before anything else.
-     * U2, plan/phase32_esp32p4_execute_in_place.md.
+     * U2, .
      *
      * On this board .text and .rodata are not in RAM -- they are fetched
      * from the flash window at 0x40000000, which nothing has pointed at the
@@ -122,7 +122,7 @@ _start:
 #endif
 
 #if defined(CONFIG_BOARD_ESP32C6)
-    /* 45.4.2, plan/phase45_esp32c6.md: the C6 boots like the P4's U2 -- one boot
+    /* the C6 boots like the P4's U2 -- one boot
      * path with new first steps, not a second stage with its own entry.
      *
      * .text and .rodata are in the flash window at 0x42000000, which nothing has
@@ -275,7 +275,7 @@ s_mode_start:
     j 3b
 
 #if CONFIG_ENABLE_SMP && !defined(CONFIG_BOARD_RP2350)
-/* --- Secondary hart entry (X1, plan/phase23_multicore_scheduling.md) ---
+/* --- Secondary hart entry ---
  *
  * Reached with this hart's own CSRs configured, its own stack, and the raw
  * hart id still in tp. It must not touch memory the primary has not finished
@@ -307,7 +307,7 @@ s_mode_start:
 
 /* --- Trap CSR names, by privilege mode ---
  * The two builds differ only in which CSR set they use, never in structure:
- * Rule 0 (plan/phase5_distributed_design.md §5.1) applied to the trap path. */
+ * Rule 0 applied to the trap path. */
 #if defined(CONFIG_MODE_S)
 #define CSR_SCRATCH sscratch
 #define CSR_EPC     sepc
@@ -343,7 +343,7 @@ s_mode_start:
  * it is zero we were already in the kernel and the swap is simply undone. No
  * separate "am I in user mode" flag exists to get out of sync with reality.
  *
- * S0 (plan/phase22_smp_locking_foundation.md §6.2) changed *what* the CSR
+ * S0 changed *what* the CSR
  * points at -- the kernel sp used to sit in the register itself and now sits
  * in the record's first word -- and nothing about the shape of the test. The
  * substance got slightly stronger on the way past: the non-zero value being
@@ -520,7 +520,7 @@ trap_vector_entry:
 .Ltrap_exit_kernel:
     /* Returning to kernel mode: tp is left exactly as it is, deliberately
      * NOT reloaded from the frame (X1,
-     * plan/phase23_multicore_scheduling.md).
+     * ).
      *
      * The frame's copy was written when this trap was taken, and names
      * whichever hart took it. A task can be preempted on one hart and

@@ -64,7 +64,7 @@ int _start(void) {
         uprint("USPIN_NOT_PREEMPTED\n");
     }
 
-    /* M5, plan/phase12_microkernel_migration.md: exercises SYS_YIELD/
+    /* exercises SYS_YIELD/
      * SYS_TIME_MS from U-mode -- the two syscalls a long-lived U-mode driver
      * task's own poll loop needs (this program otherwise has no reason to
      * touch either). Cheap, QEMU-side proof that both round-trip correctly
@@ -80,7 +80,7 @@ int _start(void) {
     uputnum(t1 - t0);
     uputchar('\n');
 
-    /* M5 Phase 2, plan/phase12_microkernel_migration.md: exercises the
+    /* exercises the
      * three syscalls a U-mode driver task with a real chan_call() endpoint
      * needs, before the tm1638-to-U-mode conversion that depends on them
      * touches real hardware.

@@ -1,6 +1,6 @@
 /*
  * kernel/kobj.c on the host, under ASan/UBSan or valgrind (45.3b,
- * plan/phase45_esp32c6.md).
+ * ).
  *
  * The module is a set of state machines that never block, so its semantics can
  * be checked without a scheduler: this plays a handful of scripted "tasks"
@@ -306,7 +306,7 @@ typedef struct { bool waiting; kwaiter_t w; uint32_t slot; } ftask_t;
 static uint64_t g_rs;
 static uint32_t rnd(uint32_t n) { return host_rand(&g_rs) % n; }
 
-/* ---- semaphore against (count, FIFO of task numbers) ---- */
+/* --- - semaphore against ---- */
 static void fuzz_semaphore(int iters) {
     kobj_init_();
     const uint32_t max = 1 + rnd(4);
@@ -353,7 +353,7 @@ static void fuzz_semaphore(int iters) {
     CHECK(wk.n == nf, "delete wakes exactly the remaining waiters");
 }
 
-/* ---- mutex against (owner, depth, FIFO) ---- */
+/* --- - mutex against ---- */
 static void fuzz_mutex(int iters) {
     kobj_init_();
     bool rec = rnd(2);

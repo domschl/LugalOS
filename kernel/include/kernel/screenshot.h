@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-/* The screen to a file -- 37.5a, plan/phase37_screen_layouts_and_apps.md,
+/* The screen to a file,
  * the owner's request "for documentation purposes".
  *
  * A binary PBM (P4): a two-line text header and the 1-bpp frame, rows packed

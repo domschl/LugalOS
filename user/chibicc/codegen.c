@@ -17,7 +17,7 @@
 
 static int code_idx = 0;
 
-/* Phase 40 review: codegen checks what it emits. It used to ignore the size
+/* codegen checks what it emits. It used to ignore the size
  * of its output buffer -- `(void)max_size` -- so a program whose code passed
  * 4 KB was written on past the end, into the kernel heap; and every constant,
  * stack offset and branch was cast to its instruction field whatever its
@@ -409,7 +409,7 @@ static void gen_expr_inner(Node *node, uint8_t *code_buf) {
         case ND_NEG:
             /* Unary minus had no case at all: `-x` emitted nothing and
              * evaluated to whatever a0 held -- `x = -5;` stored the previous
-             * value (phase 40 review). */
+             * value. */
             gen_expr(node->lhs, code_buf);
             code_idx = emit_word(code_buf, code_idx, encode_sub(10, 0, 10));
             return;

@@ -5,7 +5,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-/* On-demand working memory (§3.1, plan/phase15_memory_reclamation.md).
+/* On-demand working memory.
  *
  * The pattern this generalises had been reinvented four times before it was
  * named: user/chibicc/pools.c's compile-time arena, user/chess/src/search.c's

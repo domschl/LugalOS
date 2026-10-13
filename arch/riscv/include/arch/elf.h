@@ -81,7 +81,7 @@ typedef struct {
 int elf_load_and_run(const char *path);
 
 /* Loads and starts `path` without waiting for it, returning its pid or -1
- * (C2, plan/phase6_memory_and_processes.md).
+ *.
  *
  * This is what makes "more than one user program at a time" observable rather
  * than merely structural: elf_load_and_run() spins until its program is dead,

@@ -1,11 +1,11 @@
 #include "drivers/slip.h"
 
-/* Moved from drivers/uart_net.c in 49.1 (plan/phase49_c6_network_nodes.md):
+/* Moved from drivers/uart_net.c in 49.1:
  * LLP's serial binding needs SLIP and must build for the host harness without
  * a UART driver behind it. */
 
 /* Incremental SLIP decode: one received byte at a time, straight into the
- * frame buffer (C5, plan/phase6_memory_and_processes.md).
+ * frame buffer.
  *
  * Both receive paths used to accumulate the *escaped* bytes in a raw[] buffer
  * and hand the whole thing to slip_decode() on SLIP_END. That was the right

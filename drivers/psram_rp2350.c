@@ -1,5 +1,5 @@
 /*
- * The RP2350's QSPI PSRAM -- 38.2, plan/phase38_psram.md.
+ * The RP2350's QSPI PSRAM.
  *
  * The RP2350-LCD-7 carries an APS6404-class QSPI PSRAM on the same QSPI bus
  * as its flash, selected by GP0 as the QMI's second chip select (XIP_CS1).
@@ -10,7 +10,7 @@
  *   0x11000000  cached, through the 16 KB XIP cache shared with flash
  *   0x15000000  uncached, the same chip
  *
- * Measured at 72 MHz SCK (plan/phase38_preliminaries.md §2): ~25 MB/s
+ * Measured at 72 MHz SCK: ~25 MB/s
  * sequential read (flash is 19.5), 31 MB/s uncached write, ~500 ns for a
  * missed load against ~35 for SRAM. Storage, not a frame buffer.
  *
@@ -286,7 +286,7 @@ void psram_require(void) {
     if (g_up) return;
     for (;;) {
         cprintf("\n[PSRAM] HALTED: this persona is built for its %lu KB PSRAM, and %s "
-                "(KGD 0x%02x). Nothing else will start (plan/phase38_psram.md, S1). "
+                "(KGD 0x%02x). Nothing else will start. "
                 "The board can still be reflashed over USB.\n",
                 (unsigned long)(CONFIG_PSRAM_BYTES / 1024), g_reason, g_kgd);
         task_sleep_ms(5000);

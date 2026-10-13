@@ -1,6 +1,5 @@
 /*
  * The RP2350-LCD-7's 800x480 RGB panel (ST7262) -- 36.3,
- * plan/phase36_rp2350_lcd7_terminal.md §3.1.
  *
  * An RGB panel has no frame memory: it must be sent every pixel of every
  * frame, with HSYNC/VSYNC/DE framing and a continuous pixel clock. This file
@@ -571,7 +570,7 @@ int lcd7_init(void) {
     for (unsigned g = CONFIG_LCD_DATA0_GPIO; g < CONFIG_LCD_DATA0_GPIO + 16u; g++) {
         REG(PADS_BANK0(g)) = PAD_OUT_8MA_FAST;
     }
-    /* Black on white: the Macintosh's default, and phase 36 §7.1's. */
+    /* Black on white: default palette. */
     lcd7_set_colours(0x0000, 0xffff);
 
     /* DMA 0: the timing table into SM0, forever. */

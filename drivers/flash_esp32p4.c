@@ -1,6 +1,5 @@
 /*
  * LugalOS driver: SPI flash on the ESP32-P4 -- E6,
- * plan/phase27_esp32p4_bringup.md.
  *
  * ## Why this calls the boot ROM instead of driving the MSPI
  *
@@ -89,7 +88,7 @@ static bool       g_ready;
  * milliseconds. A ylock_t rather than a spinlock_t: the wait can be long
  * enough that spinning through it would deny the CPU to everything else, and
  * kernel/lock.h is explicit that "a spinlock_t taken where a ylock_t was
- * needed deadlocks on one hart" -- and since phase 31 Y2 it also refuses the
+ * needed deadlocks on one hart" -- and Y2 it also refuses the
  * mistake at run time rather than only describing it. */
 static ylock_t g_flash_ylock;
 
@@ -109,9 +108,9 @@ bool flash_p4_init(void) {
 
     ylock_init(&g_flash_ylock);
 
-    /* No spi_flash_attach() any more (47.4b, plan/phase47 §6.4). It was here
+    /* No spi_flash_attach() any more. It was here
      * for `esptool load-ram`, when the ROM sat in download mode with the
-     * flash pins unconfigured. Since phase 32 the kernel boots from flash:
+     * flash pins unconfigured. the kernel boots from flash:
      * the ROM has attached, the stage-2 stub has set IDF's 80 MHz clock
      * (arch/riscv/common/xip_esp32p4.c), and the kernel is executing from
      * flash while this runs. attach() reset that live interface to plain
@@ -159,7 +158,7 @@ bool flash_p4_init(void) {
  *
  * --- writing flash while executing from it (U3) --------------------------
  *
- * plan/phase32_esp32p4_execute_in_place.md §2. Before phase 32 this file had
+ *  previously this file had
  * no such problem: the kernel was loaded into L2MEM and flash was only ever a
  * transfer. Now `.text` and `.rodata` are fetched from the XIP window, and an
  * erase or program makes the flash chip stop answering reads for as long as

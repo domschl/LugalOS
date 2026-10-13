@@ -1,4 +1,4 @@
-# The ESP32-C6-MINI-1's flash map -- 49.5, plan/phase49_c6_network_nodes.md.
+# The ESP32-C6-MINI-1's flash map -- 49.5, .
 # Selected by the esp32c6-mini preset (LUGALOS_C6_MODULE=MINI) in place of
 # cmake/flash_layout_esp32c6.cmake, whose map assumes the C6-Zero's 8 MB.
 #

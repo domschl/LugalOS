@@ -1,5 +1,5 @@
 /*
- * The panel terminal, portable -- 47.6, plan/phase47_esp32p4_lcd7b_ribbon.md.
+ * The panel terminal, portable.
  *
  * Moved out of drivers/lcd7_rp2350.c, where it grew in phases 36-38 and 44:
  * the screen_t on a 1-bpp frame, run by the U-mode `lcdterm` task (36.6a),
@@ -75,7 +75,7 @@ static void damage(unsigned y0, unsigned y1);
 #define STATE_PAGES_MIN      16u
 static uint32_t g_state_bytes;
 
-/* 38.8, plan/phase38_psram.md: with PSRAM, the state block grows into a
+/* with PSRAM, the state block grows into a
  * 256 KB naturally aligned run of the bulk zone -- the state, then the
  * canvas stores (drivers/screen.h, 4 x 48 000 bytes). Still one region, so
  * the domain stays at five: the budget had no room for a sixth, and this

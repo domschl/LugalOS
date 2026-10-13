@@ -1,5 +1,5 @@
 /* Linker script for LugalOS on the ESP32-C6 (Waveshare ESP32-C6-Zero) --
- * 45.4, plan/phase45_esp32c6.md.
+ * 45.4, .
  *
  * ## Why the kernel executes from flash
  *
@@ -295,7 +295,7 @@ SECTIONS
     ASSERT(_xip_end - _xip_start <= 0x200000,
            "the OS image has outgrown its 2 MB flash partition -- see cmake/flash_layout_esp32c6.cmake")
 
-    /* The heap floor (phase 15 §6): 256 KB, the RP2350's figure, with the 16 KB of
+    /* The heap floor: 256 KB, the RP2350's figure, with the 16 KB of
      * ROM data already excluded from the region. */
     ASSERT(_heap_end - _kernel_end >= 128K,
            "ESP32-C6 heap has fallen below its 128 KB floor -- something grew .bss or .data; see the header comment")

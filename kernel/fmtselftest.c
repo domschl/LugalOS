@@ -1,5 +1,5 @@
 /*
- * `fmtselftest` -- phase 40 review.
+ * `fmtselftest`.
  *
  * The kernel's own printf engine (kernel/printk.c) against fixed expected
  * strings, through ksnprintf(), which renders with the same code as printk()

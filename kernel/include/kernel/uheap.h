@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* A heap over one caller-supplied arena (45.3b, plan/phase45_esp32c6.md).
+/* A heap over one caller-supplied arena.
  *
  * The Wi-Fi blob allocates constantly -- 59 call sites of its `_free`, 21
  * of `_wifi_malloc`, buffers from 100 bytes to ~1.7 KB -- through the

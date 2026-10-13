@@ -1,6 +1,6 @@
 /*
  * The DCF-77 service: the receiver as a background time source rather than a
- * diagnostic (D3/D4, plan/phase17_clock_ui_and_dcf77.md).
+ * diagnostic.
  *
  * Everything DCF-77 in this tree until now has been something you *run* --
  * (dcf-raw), (dcf-listen), (dcf-sync) -- each owning the console and blocking

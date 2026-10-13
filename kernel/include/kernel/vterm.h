@@ -7,7 +7,7 @@
 #include "drivers/vtterm.h"
 
 /*
- * Virtual Terminals (Phase 44.1, plan/phase44_horizontal_tiling_window_system.md).
+ * Virtual Terminals.
  *
  * Each virtual terminal encapsulates:
  *   - An independent input queue (rx_buf ring buffer) with its own lock

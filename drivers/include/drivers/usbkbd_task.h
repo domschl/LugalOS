@@ -10,7 +10,7 @@
  * lives in the task's own 1 KB grant; the kernel only reads it (`kbd`,
  * `kbdlog`, and 36.9's console input, which consumes the event ring).
  *
- * 47.9 (plan/phase47_esp32p4_lcd7b_ribbon.md): what is above the bus --
+ * 47.9: what is above the bus --
  * enumeration, the hub, the boot keyboard, the console input and the
  * reports -- is drivers/usbkbd_host.c, shared; a board brings a *port*, the
  * five functions at the end, which speak one USB transaction at a time in

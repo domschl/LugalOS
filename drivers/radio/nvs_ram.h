@@ -5,7 +5,7 @@
 #include <stddef.h>
 
 /* A key/value store in RAM, with the semantics of the subset of ESP-IDF's NVS
- * that the Wi-Fi blob and its PHY use (45.3b, plan/phase45_esp32c6.md).
+ * that the Wi-Fi blob and its PHY use.
  *
  * The blob persists little: PHY calibration data, a few Wi-Fi settings. What it
  * needs from the store is not durability but the *protocol* -- above all that a

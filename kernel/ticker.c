@@ -13,7 +13,7 @@
 static bool     g_enabled;
 static uint32_t g_hz;
 static uint64_t g_measured_hz;   /* 0 = the nominal TICK_HZ was used */
-/* Per-hart, not global (X1/X4, plan/phase23_multicore_scheduling.md).
+/* Per-hart, not global.
  *
  * Every reader asks the same question -- "how many times was *I* preempted"
  * -- and none of them wants a system-wide total: kernel/shell.c's priostress
@@ -24,7 +24,7 @@ static uint64_t g_measured_hz;   /* 0 = the nominal TICK_HZ was used */
  * interrupts off on this hart and asserts the tick counter is frozen; with a
  * single global counter the *other* hart's timer keeps incrementing it, so
  * the check failed on a kernel whose masking was perfectly correct. S5
- * (plan/phase22 §S5) recorded g_ticks as racy-on-two-harts and handed the
+ * g_ticks is protected against two-hart races and handed the
  * choice between "one atomic counter" and "one per hart" to X4. X1 answered
  * it by needing the answer: per hart, because that is what the question
  * means. A global count of ticks across all harts is a number nothing in
@@ -152,7 +152,7 @@ static bool arch_ticker_init(void) {
 /* --- ESP32-P4: the core-local CLINT, behind the CLIC ------------------ */
 #elif defined(CONFIG_BOARD_ESP32P4)
 
-/* E4, plan/phase27_esp32p4_bringup.md.
+/* ESP32-P4 timer configuration.
  *
  * Registers from TRM section 2.9.3.5's summary; the layout below is the
  * *core-local* window, "CLINT (self)", so hart 0 and hart 1 each address
@@ -200,7 +200,7 @@ static bool arch_ticker_init(void) {
  * CLINT_BASE constant, 0x02000000, is the generic RISC-V one and unrelated
  * to this window).
  *
- * **It follows the CPU clock**, established by phase 34 rather than by
+ * **It follows the CPU clock**, established by the PLL rather than by
  * reading: at 40 MHz the crystal and the CPU were the same number and the
  * question could not be asked, and the moment 34.4 put HP_ROOT_CLK on the
  * PLL this counter moved with it -- measured 79 964 535 Hz at 80 MHz and
@@ -227,7 +227,7 @@ static bool arch_ticker_init(void) {
  *
  * That is invisible for the first wrap of uptime, and only then. The low
  * half wraps at 2^32 ticks -- 107 seconds at 40 MHz, and **11.9 seconds at
- * the 360 MHz phase 34 took this board to**, since this counter follows the
+ * the higher CPU clock**, since this counter follows the
  * CPU. Until it wraps the high half
  * is 0 and a stale 0 is indistinguishable from a fresh one. After the wrap a
  * mixed read can return a value 2^32 ticks -- 107 seconds -- away from the
@@ -294,16 +294,14 @@ static bool arch_ticker_init(void) {
      * reason. */
     /* Warm the measurement path before opening the window.
      *
-     * Not a superstition and not padding: **measured on the board, 34.1 and
-     * the fix in 34.2a** (plan/phase34_esp32p4_pll_bringup.md). The same
-     * 2 ms window, on the same silicon, reads
+     * Measured on the board: the same 2 ms window on the same silicon reads:
      *
      *     41 118 086 Hz   from here, at boot
      *     39 999 500 Hz   from a shell command, warm
      *     40 000 029 Hz   over a full second, warm
      *
      * so the window length was never the problem. The bias is the *first*
-     * call's instruction fetch. Since phase 32 this code executes from flash
+     * call's instruction fetch. This code executes from flash
      * over a 20 MHz MSPI, and `t0 = now()` is sampled before the first
      * `time_get_us()` -- so the cold fetch of that first call lands *inside*
      * the tick window and *outside* the microsecond window. The two windows
@@ -357,7 +355,7 @@ static bool arch_ticker_init(void) {
 /* --- ESP32-C6: system timer comparator 0, through the interrupt matrix --- */
 #elif defined(CONFIG_BOARD_ESP32C6)
 
-/* 45.4.3, plan/phase45_esp32c6.md. The tick is the system timer's TARGET0
+/* The tick is the system timer's TARGET0
  * comparator against UNIT0 -- the same counter kernel/time.c reads for the clock
  * -- raised as INTMTX source 57 and routed to CPU line ESP32C6_IRQ_TICK
  * (arch/esp32c6_intr.h), where trap_handler() recognises it. Not the CLINT: the
@@ -482,20 +480,14 @@ void ticker_next(void) {
     set_deadline(now() + g_interval);
 }
 
-/* Arms the calling hart's own preemption deadline (X1,
- * plan/phase23_multicore_scheduling.md).
+/* Arms the calling hart's own preemption deadline.
  *
  * Split out of ticker_init() because those two do different kinds of work.
- * ticker_init() programs shared hardware and *measures* the tick rate -- on
+ * ticker_init() programs shared hardware and measures the tick rate -- on
  * RP2350 it enables a chip-wide tick generator and calibrates it against a
- * busy loop, which a second hart must never re-run (S5's disposition,
- * plan/phase22 §S5). What is genuinely per-hart is only the comparator and
- * the interrupt-enable bit, which is all this does, reusing the interval the
- * primary already established.
- *
- * X4 owns the RP2350 half of this: whether each Hazard3 core has its own
- * mtimecmp is a datasheet question, and until it is answered this is
- * QEMU-only. */
+ * busy loop, which a second hart must never re-run. What is genuinely
+ * per-hart is only the comparator and the interrupt-enable bit, which is all
+ * this does, reusing the interval the primary already established. */
 void ticker_arm_this_hart(void) {
     if (!g_enabled) return;
     set_deadline(now() + g_interval);
@@ -507,7 +499,7 @@ void ticker_arm_this_hart(void) {
      *
      * Written when it was unreachable -- CONFIG_ENABLE_SMP was off on this
      * board -- and **reached, and correct, since 34.10**
-     * (plan/phase34_esp32p4_pll_bringup.md). Core 1 calls this through
+     * Core 1 calls this through
      * ticker_arm_this_hart() on its way into the scheduler, and what proves
      * it works is not that the call returns: it is that preemption holds on
      * both harts afterwards, which 34.12's two-core perft depends on to

@@ -331,7 +331,7 @@ uint32_t bme280_read_count(void) { return g.read_count; }
 uint32_t bme280_fail_count(void) { return g.fail_count; }
 const char *bme280_last_failure(void) { return g.last_fail; }
 
-/* --- Sea-level pressure (phase 40, item 11) ---
+/* --- Sea-level pressure ---
  *
  * p0 / p = (1 - x) ** -5.257, x = L h / (T + L h + 273.15), L = 0.0065 K/m.
  *
@@ -402,7 +402,7 @@ uint32_t bme280_selftest(bool report) {
         if (report) cprintf("  temperature changed when humidity was disabled\n");
     }
 
-    /* Sea-level reduction (phase 40, item 11) against the floating-point
+    /* Sea-level reduction against the floating-point
      * formula in tools/bme280_reference.py, to within the 1 Pa its rounding
      * can differ by. */
     static const struct { int32_t pa, t_c100, alt_m, want; } msl[] = {
@@ -483,7 +483,7 @@ static bool src_humidity(int32_t *out, void *ctx) {
 static int32_t g_alt_m;
 static bool    g_have_alt;
 
-/* Phase 40, item 11: the same pressure reduced to sea level, which is what
+/* the same pressure reduced to sea level, which is what
  * every weather service quotes -- 963.69 hPa measured at 520 m is 1023.45 at
  * sea level, and the difference looked like a permanent storm. Published
  * beside the measurement, not instead of it: `pressure` stays what the sensor
@@ -563,7 +563,7 @@ bool bme280_altitude(int32_t *alt_m) {
     return g_have_alt;
 }
 
-/* --- The sampler (E7, plan/phase27_esp32p4_bringup.md) ---
+/* --- The sampler ---
  *
  * One task, whose only job is to keep the cache above from going stale.
  *
@@ -576,7 +576,7 @@ bool bme280_altitude(int32_t *alt_m) {
  * and exits at boot, and a reading nobody ever takes is not a measurement.
  *
  * Started only where a part was actually found, so a board without one pays
- * neither a task slot nor a stack. Deliberately not a driver task in the M4.5
+ * neither a task slot nor a stack. Deliberately not a driver task 
  * sense: it owns no hardware and serves no endpoint -- it is a *client* of the
  * "i2c" task, like any other caller of bme280_read(). */
 

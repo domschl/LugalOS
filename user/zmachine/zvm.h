@@ -61,9 +61,9 @@ struct z_io {
 #define ZVM_OK              0   /* continue / keep stepping            */
 #define ZVM_STOP_QUIT       1   /* quit instruction                    */
 #define ZVM_STOP_RESTART    2   /* restart instruction                 */
-#define ZVM_STOP_AREAD      3   /* aread reached (M4 implements)       */
-#define ZVM_STOP_SAVE       4   /* save reached (M5 implements)        */
-#define ZVM_STOP_RESTORE    5   /* restore reached (M5 implements)     */
+#define ZVM_STOP_AREAD      3   /* aread reached */
+#define ZVM_STOP_SAVE       4   /* save reached */
+#define ZVM_STOP_RESTORE    5   /* restore reached */
 #define ZVM_STOP_UNIMPL     6   /* unimplemented opcode (msg set)      */
 #define ZVM_STOP_ERROR      7   /* runtime error (msg set)             */
 

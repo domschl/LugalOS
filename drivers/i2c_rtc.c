@@ -218,7 +218,7 @@ const char *i2c_rtc_get_model_name(void) {
 
 
 
-/* --- The DS3231/DS1307 as an ordinary bus client (phase 30 category E) ---
+/* --- The DS3231/DS1307 as an ordinary bus client ---
  *
  * Every register access below goes through i2c_xfer(), exactly as
  * drivers/bme280.c's does. That is the whole of what "the RTC is a device on
@@ -335,7 +335,7 @@ static bool i2c_rtc_hw_read_temperature_c(int *temp_c) {
  * dispatchers -- and fall back to the direct helper when the task was not
  * running. All of that was the *bus's* job, and i2c_xfer() already does it:
  * routed through the task when one is alive, direct before it exists
- * (phase 30 category E).
+ *.
  *
  * What that deletes is the reason this file had two copies of the DS3231's
  * register map, one of them in .utext for U-mode. The rule those comments

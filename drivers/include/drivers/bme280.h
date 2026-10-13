@@ -5,8 +5,7 @@
 #include <stdbool.h>
 #include "drivers/sensor.h"
 
-/* Bosch BMP280 / BME280 environment sensors (Q4,
- * plan/phase26_mqtt_and_environment_sensors.md).
+/* Bosch BMP280 / BME280 environment sensors.
  *
  * Two parts, one driver: they are register-compatible except that the BME280
  * adds humidity, so this probes and adapts rather than being configured for
@@ -18,7 +17,7 @@
  * sleep. That is the right mode for a node that samples once a minute, and
  * it matters for *accuracy* rather than for power: a continuously converting
  * BME280 self-heats, and the temperature reading is the first casualty.
- * Phase 17 spent real time on a 1-4 C offset in the DS3231's die sensor for
+ * Note: a 1-4 C offset in the DS3231's die sensor for
  * exactly this class of reason; here it is avoidable by construction.
  *
  * **The compensation is the fiddly part, so it is pure and testable.** The
@@ -92,7 +91,7 @@ const bme280_calib_t *bme280_calibration(void);
  * prints each when `report` is true. Needs no sensor and no bus. */
 uint32_t bme280_selftest(bool report);
 
-/* Station pressure reduced to sea level (phase 40, item 11): the barometric
+/* Station pressure reduced to sea level: the barometric
  * formula p0 = p * (1 - 0.0065 h / (T + 0.0065 h + 273.15)) ** -5.257, with
  * the measured temperature, in integer arithmetic -- the kernel has neither
  * an FPU nor libm. `pa` in pascals, `t_c100` in hundredths of a degree,
@@ -113,8 +112,7 @@ void bme280_register_sources(void);
  * pressure_msl topic. */
 void bme280_altitude_reload(void);
 
-/* --- The cache, and the task that fills it (E7,
- * plan/phase27_esp32p4_bringup.md) ---
+/* --- The cache, and the task that fills it ---
  *
  * bme280_read() blocks on the bus for the length of a conversion, so the 9P
  * task -- which serves /proc -- must not call it. The rule and its reasoning

@@ -1,6 +1,6 @@
 # Host harnesses: kernel modules built for the development machine and run
 # under AddressSanitizer + UndefinedBehaviorSanitizer, and under valgrind
-# (phase 40 review). See README.md.
+#. See README.md.
 #
 #   make            build both variants
 #   make check      run every harness under ASan/UBSan, then under valgrind

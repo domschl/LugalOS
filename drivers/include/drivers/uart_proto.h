@@ -1,7 +1,7 @@
 #ifndef LUGALOS_DRIVERS_UART_PROTO_H
 #define LUGALOS_DRIVERS_UART_PROTO_H
 
-/* The console UART's wire protocol (G4, plan/phase30_driver_framework.md).
+/* The console UART's wire protocol.
  *
  * Three drivers serve a console UART over chan_call() -- uart_16550.c (QEMU),
  * uart_rp2350.c and uart_esp32p4.c -- and all three had these three opcodes

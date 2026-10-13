@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 /* Drawing on a 1-bpp buffer at any pixel -- 37.1a,
- * plan/phase37_screen_layouts_and_apps.md §1.1. The buffer format is
+ *  The buffer format is
  * fbtext.h's: byte x/8 of a pixel row holds pixels x..x+7, the leftmost in
  * bit 0, 1 = foreground.
  *

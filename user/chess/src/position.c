@@ -1,6 +1,6 @@
 /*
  * Vendored from ~/gith/domschl/LugalChess (engine/src/position.c), H4,
- * plan/phase9_chess_computer.md. Two changes from upstream:
+ * . Two changes from upstream:
  *   - print_position_info()'s hash line reformatted the same way
  *     bitboard.c's print_bitboard() was (no %llx -- see chess_platform.h).
  *   - generate_fen()'s single snprintf() call replaced with a small

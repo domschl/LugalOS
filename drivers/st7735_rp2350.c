@@ -1,7 +1,6 @@
 /*
  * LugalOS Hardware Driver: ST7735 SPI TFT Canvas for RP2350 (Pico 2)
- * Vendored and adapted from ~/gith/domschl/LugalChess (firmware/st7735.c, H1,
- * plan/phase9_chess_computer.md).
+ * Vendored and adapted from ~/gith/domschl/LugalChess.
  *
  * Hardware Mapping (cmake/board-rp2350.cmake is the source of truth):
  *   GP18 : SPI0 SCK  (Clock, Function 1)
@@ -12,7 +11,7 @@
  *
  * SPI0 (0x40080000) is a second, independent PL022 controller from SPI1
  * (0x40088000, the SD card, drivers/spisd_rp2350.c) -- no bus contention, no
- * arbitration needed (see H0's feasibility note, plan/phase9_chess_computer.md).
+ * arbitration needed.
  * The panel is write-only (no MISO wired), so unlike spisd's spi_transfer()
  * this driver never needs the received byte, only the RX-FIFO drain that
  * keeps the PL022 from overrunning.
@@ -59,10 +58,10 @@
 
 #define REG(addr) (*(volatile uint32_t *)(addr))
 
-/* M5 Phase 4, plan/phase12_microkernel_migration.md: RP2350's Secure/
+/* RP2350's Secure/
  * Non-secure split -- see drivers/uart_rp2350.c's ACCESSCTRL_GPIO_NSMASK0
- * comment (Phase 1) for the datasheet citation, and drivers/i2c_rtc.c's
- * ACCESSCTRL_I2C_RTC comment (Phase 3) for the write-password one. SPI0
+ * comment for the datasheet citation, and drivers/i2c_rtc.c's
+ * ACCESSCTRL_I2C_RTC comment for the write-password one. SPI0
  * is the same per-peripheral register shape as I2C0/I2C1 -- checked
  * directly against ~/gith/pico/pico-sdk's accessctrl.h -- and so needs
  * the same 0xacce0000 write-password prefix I2C0/I2C1 did; the GPIO mask
@@ -169,7 +168,7 @@ static int st7735_init_hardware(void) {
     dc_command();
     REG(SIO_GPIO_OUT_SET) = RST_MASK;
 
-    /* M5 Phase 4: CS/DC/RST and SPI0 need to be Non-secure-accessible for
+    /* CS/DC/RST and SPI0 need to be Non-secure-accessible for
      * the U-mode task's own serve loop below to actually touch them --
      * must happen here, from M-mode, before the task exists. See
      * ACCESSCTRL_SPI0's own comment above. */
@@ -362,7 +361,7 @@ static void st7735_hw_draw_bitmap_mono(int x, int y, int w, int h, const uint16_
     st7735_write_data_buf(buffer, (size_t)(w * h * 2));
 }
 
-/* M5 Phase 4, plan/phase12_microkernel_migration.md: this file's own
+/* this file's own
  * dedicated U-mode-executable page (linker: .st7735text,
  * board_st7735_text_region() -- kernel/board.c) rather than the shared
  * .utext heartbeat/tm1638/i2c already use, which ran out of room once
@@ -461,7 +460,7 @@ static void st7735_hw_draw_string(int x, int y, const char *str, uint16_t color,
     }
 }
 
-/* M4.5, plan/phase12_microkernel_migration.md, Part B: the driver as a task.
+/* the driver as a task.
  * Unlike RTC/EEPROM's low-frequency wire, a full chess-board redraw makes
  * ~64 of these calls back to back (one draw_bitmap_mono or draw_rect per
  * square) -- still nowhere near uart's original per-character mistake (a
@@ -517,7 +516,7 @@ static uint8_t         g_st7735_resp[ST7735_RESP_CAP];
 static chan_endpoint_t *g_st7735_ep;
 static int              g_st7735_task_pid = -1;
 
-/* M4.5 verify: counts chan_call()s actually served -- see
+/* Verify: counts chan_call()s actually served -- see
  * drivers/uart_16550.c's g_uart_write_calls comment for the reasoning. */
 static uint32_t g_st7735_calls;
 
@@ -532,8 +531,7 @@ static bool st7735_task_alive(void) {
 static void put_i16(uint8_t *p, int v) { uint16_t u = (uint16_t)(int16_t)v; p[0] = (uint8_t)(u >> 8); p[1] = (uint8_t)u; }
 static void put_u16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)(v >> 8); p[1] = (uint8_t)v; }
 
-/* ---- U-mode implementation, M5 Phase 4, plan/phase12_microkernel_migration.md ----
- *
+/* ---- U-mode implementation ---- *
  * A second, independent copy of the SPI/GPIO helpers above
  * (cs_select/cs_deselect/dc_command/dc_data, spi_write_byte/spi_write_buf,
  * st7735_write_cmd/_data/_data_buf, st7735_set_window) and the six
@@ -739,7 +737,7 @@ ST7735_UATTR static void st7735_umode_body(void) {
     /* Not a string literal: a literal lands in ordinary .rodata, outside
      * every region this task's domain grants -- the bug that hung the
      * board the first time this exact mechanism ran on real hardware in
-     * M5 Phase 2 (see drivers/tm1638_rp2350.c's own comment). volatile,
+     * U-mode (see drivers/tm1638_rp2350.c's own comment). volatile,
      * for the reason kernel/shell.c's user_deputy() already documents:
      * gcc recognises a run of consecutive stores and turns it back into
      * a copy from a .rodata blob otherwise. */
@@ -803,7 +801,7 @@ ST7735_UATTR static void st7735_umode_body(void) {
                  * build flags), a memcpy() call is not inlined -- it
                  * compiles to a real call outside .st7735text. Found
                  * this exact class of bug in drivers/tm1638_rp2350.c
-                 * (M5 Phase 2); written out explicitly here from the
+                 * (U-mode); written out explicitly here from the
                  * start instead of rediscovering it. */
                 char str[ST7735_STR_MAX + 1];
                 uint32_t len = (uint32_t)req_len - 9;
@@ -818,7 +816,7 @@ ST7735_UATTR static void st7735_umode_body(void) {
     }
 }
 
-/* M5 heap-reclaim, plan/phase12_microkernel_migration.md: 2048 bytes, not
+/* Task stack: 2048 bytes, not
  * 4096 -- st7735_umode_body()'s deepest call chain (through u_draw_char
  * -> u_draw_rect -> u_set_window -> u_write_cmd/u_write_data ->
  * u_spi_write_byte) measures 1392 bytes on the real disassembly. See
@@ -829,14 +827,14 @@ static uint8_t      g_st7735_ustack[2048] __attribute__((aligned(2048)))
 /* This task's own kernel-mode entry point: task_create_sized() calls this
  * (ordinary kernel stack, kernel privilege) to build the domain and make
  * the one-way jump into U-mode. Mirrors drivers/i2c_rtc.c's
- * i2c_task_body() shape, with a fourth region: this is the first M5
+ * i2c_task_body() shape, with a fourth region: this is the first U-mode
  * driver needing both an SIO grant (CS/DC/RST) and a hardware-controller
  * grant (SPI0) at once. */
 static void st7735_task_body(void *arg) {
     (void)arg;
     while (!g_st7735_ep) sched_yield();
 
-    /* G3, plan/phase30_driver_framework.md. Its own .utext region, not the
+    /* G3, . Its own .utext region, not the
      * shared one -- see board_st7735_text_region() in kernel/board.c. */
     const driver_umode_spec_t spec = {
         .name         = "ST7735",
@@ -876,7 +874,7 @@ static int st7735_call_with_retry(const uint8_t *req, uint32_t req_len) {
     uint8_t resp[ST7735_RESP_CAP];
     for (int attempt = 0; attempt < 8; attempt++) {
         int n = chan_call(g_st7735_ep, req, req_len, resp, sizeof(resp));
-        /* M5 Phase 4: counted here, on the client side -- see
+        /* counted here, on the client side -- see
          * drivers/tm1638_rp2350.c's tm1638_call_with_retry() comment,
          * same reasoning: a U-mode server cannot touch g_st7735_calls,
          * an ordinary kernel .bss global no domain grants it. */
@@ -886,7 +884,7 @@ static int st7735_call_with_retry(const uint8_t *req, uint32_t req_len) {
     return -1;
 }
 
-/* M5 Phase 4's own "Verify" deliverable: does the real st7735 domain
+/* Domain verification: does the real st7735 domain
  * shape (stack + .st7735text + SIO + SPI0) actually confine the task to
  * its own hardware, or does one of the two MMIO grants' width
  * accidentally cover more? Modeled directly on drivers/i2c_rtc.c's

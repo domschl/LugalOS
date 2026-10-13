@@ -8,7 +8,7 @@
 
 /* See kernel/include/kernel/klog.h for the rationale. */
 
-/* Y5b, plan/phase31_concurrency_hierarchy.md §5.7: the ring stores *records*,
+/* The ring stores *records*,
  * not a byte stream.
  *
  * Each record is a 6-byte header -- 4 bytes of milliseconds (or KLOG_NO_TS)
@@ -60,7 +60,7 @@ static klog_sink_t g_sinks[KLOG_MAX_SINKS];
  * sink that logs about its own failures). Without this, such a sink would
  * recurse until the stack died. Not a concurrency lock -- see below.
  *
- * S5 (plan/phase22_smp_locking_foundation.md) makes it per-hart, which is
+ * Per-hart buffer, which is
  * what it always meant. The thing it guards against is a sink's putc()
  * reaching printk() and coming back here *on the same call stack*, and a
  * call stack belongs to a hart. A single flag shared by two harts would
@@ -71,8 +71,8 @@ static bool g_in_fanout[MAX_HARTS];
 /* Guards the ring and its counter, and nothing else (S5).
  *
  * Not the fanout below: a sink's putc() is a UART write that can block
- * (M2), and a spinlock_t held across a block is the deadlock its own header
- * warns about -- and, since phase 31 Y2, refuses: the blocking primitives
+ * and a spinlock_t held across a block is the deadlock its own header
+ * warns about -- and refuses: the blocking primitives
  * check for a held spinlock and say so. So the two halves of this function are protected by
  * different things for different reasons -- the ring by a lock because two
  * harts writing g_ring[g_total % SIZE] would interleave characters and tear

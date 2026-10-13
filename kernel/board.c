@@ -32,7 +32,7 @@
 #include "drivers/virtio_net.h"
 #endif
 
-/* Per-board device tables (B0, plan/phase5_distributed_design.md §5.4).
+/* Per-board device tables.
  *
  * This file exists so that "which hardware does this board have" is a table
  * in one place rather than `#if defined(CONFIG_BOARD_RP2350)` blocks spliced
@@ -73,7 +73,7 @@ void board_st7735_text_region(uintptr_t *base, uintptr_t *size) {
 extern char _lcdtermtext_start[];
 
 /* 36.6a: the screen terminal's region, linker/rp2350.ld's .lcdtermtext. 32 KB
- * since Phase 44 (16 KB in 37.1a), a NAPOT size, and the linker asserts the code and font fit. */
+ * NAPOT aligned (16 KB), a NAPOT size, and the linker asserts the code and font fit. */
 void board_lcdterm_text_region(uintptr_t *base, uintptr_t *size) {
     *base = (uintptr_t)_lcdtermtext_start;
     *size = 32768;
@@ -109,11 +109,7 @@ void board_clock_text_region(uintptr_t *base, uintptr_t *size) {
 }
 #endif
 
-/* K2, plan/phase7_kernel_config.md: this used to be its own independent
- * #ifdef ladder, hand-typing the same 0x40070000 that drivers/uart_rp2350.c
- * separately hand-typed as its own UART0_BASE -- two copies of one fact,
- * with nothing keeping them in sync. Both now read CONFIG_UART0_BASE from
- * the generated per-board header (cmake/board-rp2350.cmake and friends). */
+/* Returns the board-configured UART0 base address (CONFIG_UART0_BASE). */
 uintptr_t board_uart_base(void) {
     return CONFIG_UART0_BASE;
 }
@@ -181,30 +177,20 @@ static void *get_usb_net(void) { return usb_cdc_get_net_link(); }
 static void *get_spisd(void) { return spisd_get_device(); }
 #endif
 #if defined(CONFIG_ETH_CS_GPIO)
-/* R4, plan/phase19_ip_stack_and_ethernet.md: the ENC28J60 on the gateway
- * persona's SPI0 -- the wire an Ethernet 9P link used to sit on directly
- * (N4's `w5500net`, removed with the part in R0). This is a netif now, not
- * a p9_link_t: everything above it (TCP, the 9P server) is net/stack.c's
- * job, reached through DEV_KIND_NETIF the same way dev_vnet feeds it on
- * QEMU. */
+/* The ENC28J60 on the gateway persona's SPI0. A netif: everything above it
+ * (TCP, the 9P server) is handled by net/stack.c, reached through DEV_KIND_NETIF. */
 static int   probe_enc28j60(void) { return enc28j60_init(); }
 static void *get_enc28j60(void)   { return enc28j60_get_netif(); }
 #endif
 #elif defined(CONFIG_BOARD_ESP32C6)
-/* 45.4, plan/phase45_esp32c6.md: no virtio, no netif and no block device yet;
- * the Wi-Fi radio is a netif of its own when it arrives (45.7). */
+/* ESP32-C6 network interface. */
 #elif defined(CONFIG_BOARD_ESP32P4)
-/* Z4, plan/phase28_esp32p4_ethernet.md: the P4's own Ethernet MAC and the
- * IP101GRI it drives over RMII. A netif exactly like the ENC28J60 above --
- * the part is on the SoC rather than on a SPI bus, which changes the driver
- * and nothing at this seam. */
+/* The P4's Ethernet MAC and the IP101GRI it drives over RMII. A netif like
+ * ENC28J60 above. */
 static int   probe_emac(void) { return emac_netif_init(); }
 static void *get_emac(void)   { return emac_get_netif(); }
-/* 35.3, plan/phase35_esp32p4_sdmmc.md: the microSD card in the NANO's slot,
- * and this board's first block device. The accessor pattern is the RP2350
- * card's (get_spisd() above) rather than the netif's: no probe hook, because
- * the driver initialises the card on first ask and kernel_main() has already
- * asked by the time dev_probe_all() runs. */
+/* The microSD card in the NANO's slot, and this board's block device.
+ * The driver initialises the card on first ask. */
 static void *get_sdmmc(void)  { return sdmmc_get_device(); }
 #else
 static int   probe_virtio_console(void) { return virtio_console_init(); }
@@ -244,7 +230,7 @@ static const dev_driver_t dev_uart = {
 };
 
 #if defined(LCDTERM_PRESENT)
-/* 36.6, plan/phase36_rp2350_lcd7_terminal.md: the RP2350-LCD-7's panel as a
+/* The RP2350-LCD-7's panel as a
  * console. It tees everything to the UART path, so it holds UART0 exactly as
  * `uart` does -- which keeps `p9serve` off a wire that console text is being
  * written to. No probe: the registry is probed before the panel starts, and
@@ -271,7 +257,7 @@ static const dev_driver_t dev_uartdemux = {
 
 #if defined(CONFIG_BOARD_RP2350)
 /* ACM1 as a *console*, in addition to `usbnet` which is the same wire as a 9P
- * link (C8). Both paths already existed in drivers/usb_cdc.c -- EP4 has a
+ * link . Both paths already existed in drivers/usb_cdc.c -- EP4 has a
  * write for 9P frames and this wraps it a byte at a time -- so the interface
  * that was only ever a network port can now be handed the terminal instead.
  * The two are mutually exclusive by construction: same wire, one holder.
@@ -309,7 +295,7 @@ static const dev_driver_t dev_uart1 = {
 };
 #endif
 /* An Ethernet 9P link was registered here directly (N4's `w5500net`) and
- * went with the part in phase 19's R0 -- the W5500 terminated TCP itself,
+ * went with the part when the W5500 was removed,
  * so its device WAS a p9_link_t. The ENC28J60 (dev_enc28j60, below) hands
  * over Ethernet frames instead, registers as DEV_KIND_NETIF, and TCP is
  * net/stack.c's job from there; an accepted connection becomes a
@@ -333,16 +319,8 @@ static const dev_driver_t dev_llp = {
     .name = "llp", .kind = DEV_KIND_P9LINK, .get = get_llp,
 };
 #elif defined(CONFIG_BOARD_ESP32P4)
-/* E2, plan/phase27_esp32p4_bringup.md, amended by phase 28's Z4: this board
- * had no device table of its own at all until the EMAC arrived. The entries
- * board_register_devices() registers unconditionally still cover the rest --
- * the RTC, sensor and EEPROM probes, the USB CDC stub, and UART0 with its two
- * 9P links. Phase 35's `sdblk` joined them; there is still no second console.
- *
- * The arm exists so this is a stated content rather than a fall-through. The
- * #else below is the QEMU one, and it registers virtio devices; a P4 build
- * reaching it would probe virtio-mmio addresses that are not virtio-mmio on
- * this chip. */
+/* ESP32-P4 device table: registers the EMAC network interface and SDMMC block
+ * device. Unconditionally registered devices cover the rest. */
 static const dev_driver_t dev_emac = {
     .name = "eth0", .kind = DEV_KIND_NETIF,
     .probe = probe_emac, .get = get_emac,
@@ -365,19 +343,14 @@ static const dev_driver_t dev_vblk = {
     .name = "vblk", .kind = DEV_KIND_BLOCK,
     .probe = probe_virtio_blk, .get = get_virtio_blk,
 };
-/* R1, plan/phase19_ip_stack_and_ethernet.md: the first netif. Its probe
- * matches on virtio device id 1, so it cannot claim the block or console
- * slot regardless of probe order -- the same argument the comment above
- * makes for those two. Absent `-netdev`/`-device virtio-net-device` the
- * probe finds nothing and says nothing, which is the ordinary case for
- * every existing test in tests/runner.py. */
+/* VirtIO network interface. Matches virtio device id 1. */
 static const dev_driver_t dev_vnet = {
     .name = "vnet", .kind = DEV_KIND_NETIF,
     .probe = probe_virtio_net, .get = get_virtio_net,
 };
 #endif
 
-/* 36.9 (plan/phase36_rp2350_lcd7_terminal.md §4.4): console input sources.
+/* Console input sources.
  * The RP2350's uart_has_char()/uart_getc() used to open-code two sources, the
  * serial UART and USB CDC; they are registered separately here, in the order
  * the old code polled them, so the console pump reads them exactly as before

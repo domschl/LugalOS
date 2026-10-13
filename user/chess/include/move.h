@@ -1,6 +1,6 @@
 /*
  * Vendored verbatim from ~/gith/domschl/LugalChess (engine/include/move.h),
- * H4, plan/phase9_chess_computer.md. No platform dependency at all.
+ * H4, . No platform dependency at all.
  */
 
 #ifndef MOVE_H

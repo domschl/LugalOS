@@ -1,7 +1,7 @@
 #ifndef LUGALOS_DRIVERS_XIP_CACHE_H
 #define LUGALOS_DRIVERS_XIP_CACHE_H
 
-/* The RP2350's XIP cache, maintained by address -- 38.4, plan/phase38_psram.md
+/* The RP2350's XIP cache, maintained by address.md
  * H1. The one 16 KB cache sits in front of both QMI windows (flash and
  * PSRAM), and the same PSRAM byte is reachable through it (0x11000000) and
  * around it (0x15000000):

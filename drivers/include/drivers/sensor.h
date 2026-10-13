@@ -5,7 +5,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-/* Environmental Sensor Device-Class Contract (Category D, phase 46 §4).
+/* Environmental Sensor Device-Class Contract.
  *
  * All environmental and light sensors in LugalOS implement this interface.
  *

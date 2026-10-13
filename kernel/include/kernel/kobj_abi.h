@@ -2,7 +2,7 @@
 #define LUGALOS_KERNEL_KOBJ_ABI_H
 
 /* The U-mode face of kernel/kobj_sched.h: syscall numbers and conventions
- * (45.3b, plan/phase45_esp32c6.md). Shared by the kernel's dispatcher
+ *. Shared by the kernel's dispatcher
  * (kernel/kobj_sys.c) and by U-mode code, which therefore includes nothing but
  * this.
  *

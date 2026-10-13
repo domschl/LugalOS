@@ -1,5 +1,5 @@
 /*
- * LugalOS chess engine platform shim (H4, plan/phase9_chess_computer.md).
+ * LugalOS chess engine platform shim.
  *
  * The vendored engine (~/gith/domschl/LugalChess, under engine/src) is hosted C11
  * written against a real libc (printf-family, atoi, rand/srand, malloc). This

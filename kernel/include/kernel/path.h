@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-/* The search path (C1, plan/phase6_memory_and_processes.md).
+/* The search path.
  *
  * A volume may carry two well-known directories:
  *

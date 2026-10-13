@@ -4,7 +4,7 @@
  * chess session start by init_zobrist(), into 6.8 KB of .bss; on RP2350
  * .bss and the heap are the same budget, so that was 6.8 KB of heap held
  * against a table whose contents are a mathematical constant. See
- * plan/phase15_memory_reclamation.md, section 3.2.
+ * , section 3.2.
  *
  * Measured before committing to flash rather than assumed: perft on real
  * RP2350 silicon runs 188.6K nps with these in flash against 185.5K with

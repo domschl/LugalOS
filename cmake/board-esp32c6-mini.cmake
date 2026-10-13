@@ -1,6 +1,6 @@
 # Per-board facts for the ESP32-C6-MINI-1 module beside the P4 on the Waveshare
 # ESP32-P4-NANO (and the same module on the ESP32-P4-WIFI6-Touch-LCD-7B). 49.5,
-# plan/phase49_c6_network_nodes.md.
+# .
 #
 # The same chip as the C6-Zero (ESP32-C6FH4 here, rev v0.2, read with esptool
 # 2026-10-12), so every chip fact below is cmake/board-esp32c6-zero.cmake's;

@@ -5,27 +5,24 @@
 #include <stdbool.h>
 #include "net/ip.h"
 
-/* SNTP client (R6, plan/phase19_ip_stack_and_ethernet.md).
+/* SNTP client.
  *
  * The first thing that makes this network useful to a *persona* rather than
- * to a host: the phase 17 clock can set its own time from the segment instead
+ * to a host: the clock can set its own time from the segment instead
  * of being told it. UDP has been waiting for exactly this since R2 --
  * net/udp.c's own comment names an NTP client as one of the four bindings it
  * reserved.
  *
- * Client only, and unicast only. A server (this board answering, disciplined
- * by DCF-77) is phase 24, not this: it needs a continuously disciplined clock
- * rather than a protocol, and the protocol is the small half.
+ * Client only, and unicast only. Server functionality is implemented separately
+ * (net/include/net/ntp_server.h) using precision local time disciplining.
  *
  * **What this deliberately is not.** No polling loop, no clock filter, no
  * frequency discipline, no server selection among several, no broadcast or
  * manycast mode, no NTS or symmetric-key authentication. This asks one
  * server once, applies the answer as a step, and says what it did. That is
- * what RFC 4330 calls an SNTP client, and stating the limit here is the
- * point -- an unstated limit gets credited as a feature (§7 of the phase 19
- * plan).
+ * what RFC 4330 calls an SNTP client.
  *
- * **Resolution is microseconds since P2** (phase 24). It was milliseconds,
+ * **Resolution is microseconds**. It was originally milliseconds,
  * on the reasoning that the round trip is tens of milliseconds anyway so the
  * representation was not the limit -- which stopped being true the moment a
  * measurement had to settle a 5 ms question with a 6-9 ms round trip. The

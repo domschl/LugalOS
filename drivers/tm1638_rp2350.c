@@ -1,7 +1,6 @@
 /*
  * LugalOS Hardware Driver: QYF-TM1638 8-Digit 7-Segment Display + 4x4 Keypad
- * Vendored and adapted from ~/gith/domschl/LugalChess (firmware/tm1638.c, H2,
- * plan/phase9_chess_computer.md).
+ * Vendored and adapted from ~/gith/domschl/LugalChess.
  *
  * Hardware Mapping (cmake/board-rp2350.cmake is the source of truth):
  *   GP6 : STB (Strobe, Function 5 - SIO GPIO)
@@ -43,7 +42,7 @@
 
 #define REG(addr) (*(volatile uint32_t *)(addr))
 
-/* M5 Phase 2, plan/phase12_microkernel_migration.md: RP2350's Secure/
+/* RP2350's Secure/
  * Non-secure SIO split, first found and fixed for heartbeat's own GPIO
  * (drivers/uart_rp2350.c) -- a Non-secure (U-mode) SIO bus access is
  * filtered per-GPIO by ACCESSCTRL's GPIO_NSMASK0, and defaults to
@@ -61,7 +60,7 @@
 #define CLK_MASK (1u << CLK_PIN)
 #define DIO_MASK (1u << DIO_PIN)
 
-/* M5 Phase 2, plan/phase12_microkernel_migration.md: the same attribute
+/* the same attribute
  * heartbeat's own U-mode conversion established (drivers/uart_rp2350.c),
  * defined here (rather than later, next to the functions that need it) so
  * font7seg below -- read by both the kernel-mode fallback path and the new
@@ -180,7 +179,7 @@ void tm1638_init(void) {
 
     REG(SIO_GPIO_OE_SET) = STB_MASK | CLK_MASK | DIO_MASK;
 
-    /* M5 Phase 2: STB/CLK/DIO need to be Non-secure-accessible for the
+    /* STB/CLK/DIO need to be Non-secure-accessible for the
      * U-mode task's own serve loop below to actually toggle them -- must
      * happen here, from M-mode, before the task exists. See
      * ACCESSCTRL_GPIO_NSMASK0's own comment above. */
@@ -295,7 +294,7 @@ static int tm1638_hw_get_key(void) {
     return -1;
 }
 
-/* M4.5, plan/phase12_microkernel_migration.md, Part B: the driver as a task.
+/* the driver as a task.
  * tm1638_hw_get_key() is polled from user/chess/src/chess_ui.c's tm_wait_key()
  * at a paced 20ms interval (~50/sec while actively waiting on a human, never
  * a tight loop) -- no batching redesign needed, one call already carries one
@@ -324,7 +323,7 @@ static uint8_t         g_tm1638_resp[TM1638_RESP_CAP];
 static chan_endpoint_t *g_tm1638_ep;
 static int              g_tm1638_task_pid = -1;
 
-/* M4.5 verify: counts chan_call()s actually served -- see
+/* Verify: counts chan_call()s actually served -- see
  * drivers/uart_16550.c's g_uart_write_calls comment for the reasoning. */
 static uint32_t g_tm1638_calls;
 
@@ -336,8 +335,7 @@ static bool tm1638_task_alive(void) {
     return st != TASK_UNUSED && st != TASK_DEAD;
 }
 
-/* ---- U-mode implementation, M5 Phase 2, plan/phase12_microkernel_migration.md ----
- *
+/* ---- U-mode implementation ---- *
  * A second, independent copy of the bit-bang protocol above
  * (tm1638_write_byte/read_byte/send_command/flush/hw_display_string/
  * hw_set_leds/hw_get_key), tagged TM1638_UATTR and reachable only from the
@@ -360,7 +358,7 @@ static bool tm1638_task_alive(void) {
  * bytes of the task's own dedicated stack page -- already RW-granted,
  * already page-aligned, and actual stack usage (a handful of small local
  * buffers) stays nowhere near that boundary. */
-/* M5 heap-reclaim, plan/phase12_microkernel_migration.md: 256 bytes, not
+/* Task stack: 256 bytes, not
  * 4096 -- tm1638_umode_body()'s deepest call chain (through
  * tm1638_usys_flush -> tm1638_usys_write_byte) measures 112 bytes on the
  * real disassembly. 256 - TM1638_URAM_SIZE(16) = 240 bytes usable for the
@@ -587,7 +585,7 @@ static void tm1638_task_body(void *arg) {
     (void)arg;
     while (!g_tm1638_ep) sched_yield();
 
-    /* G3, plan/phase30_driver_framework.md: the domain, the refusal and the
+    /* the domain, the refusal and the
      * drop to U-mode are driver_umode_enter()'s. What is left here is the
      * part that is actually this driver's -- which window it needs, and the
      * fact that its stack top is not where its stack region ends. */
@@ -627,7 +625,7 @@ int tm1638_task_start(void) {
     return pid;
 }
 
-/* M5 Phase 2's own "Verify" deliverable: does the real tm1638 domain shape
+/* Domain verification: does the real tm1638 domain shape
  * (stack + .utext + a 4096-byte SIO window) actually confine the task to
  * GPIO, or does the SIO grant's width accidentally cover more? Modeled
  * directly on drivers/uart_rp2350.c's heartbeat_isolation_test() -- same
@@ -706,7 +704,7 @@ static int tm1638_call_with_retry(const uint8_t *req, uint32_t req_len,
                                   uint8_t *resp, uint32_t resp_max) {
     for (int attempt = 0; attempt < 8; attempt++) {
         int n = chan_call(g_tm1638_ep, req, req_len, resp, resp_max);
-        /* M5 Phase 2: counted here, on the client side, rather than in the
+        /* counted here, on the client side, rather than in the
          * server's own serve loop as it was before that loop moved to
          * U-mode -- a U-mode task cannot touch g_tm1638_calls, an ordinary
          * kernel .bss global no domain grants it. Every successful

@@ -1,5 +1,5 @@
 /*
- * Unpredictable bytes — N1, plan/phase18_networking_and_auth.md.
+ * Unpredictable bytes.
  * See kernel/include/kernel/random.h for the contract and why it is honest
  * about targets that have no entropy source.
  */

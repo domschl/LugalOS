@@ -1,7 +1,7 @@
 /*
  * Vendored from ~/gith/domschl/LugalChess (engine/include/movegen.h), H4,
- * plan/phase9_chess_computer.md. Changes from upstream (§2.1,
- * plan/phase15_memory_reclamation.md):
+ * . Changes from upstream (§2.1,
+ * ):
  *   - CaptureList, a narrower list type for generate_captures(), which cannot
  *     produce anything near MAX_MOVES entries; quiescence keeps one per ply,
  *     so the width was being multiplied by MAX_SEARCH_PLYS for nothing. See

@@ -6,7 +6,6 @@
 #include "drivers/sensor.h"
 
 /* AMS CCS811 Ultra-Low Power Digital Gas Sensor for Indoor Air Quality Monitoring.
- * Phase 46, plan/phase46_sensor_framework.md §4.7 (Milestone 46.7).
  *
  * Measures:
  * - Equivalent Carbon Dioxide (eCO2) in ppm (parts-per-million)

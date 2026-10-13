@@ -5,15 +5,11 @@
 #include <stdbool.h>
 #include "drivers/block.h"
 
-/* Who this node is (plan/phase19_ip_stack_and_ethernet.md).
+/* Who this node is.
  *
  * A name and a MAC address, resolved once at boot. Both matter the moment a
- * second board joins a segment, and phase 18 got this wrong in a way worth
- * recording: its plan described deriving a MAC from the RP2350's unique id,
- * and what actually shipped was the constant 02:4C:47:00:00:01 in the W5500
- * driver -- so any two boards would have collided, and the design vanished
- * with the driver when the part was cancelled. Identity is not a driver's
- * business. It lives here, above every wire.
+ * second board joins a segment. Identity is not a driver's business; it lives
+ * here, above every wire.
  *
  * **Resolution order, most specific first.**
  *
@@ -79,7 +75,7 @@ bool board_unique_id(uint8_t out[8]);
  * administered address from one build seed. */
 bool board_factory_mac(uint8_t out[6]);
 
-/* The device-scope UID (I2/§2, plan/phase21_identity_and_authentication.md):
+/* The device-scope UID:
  * silicon (board_unique_id()) when this board has one, else the identity
  * store's provisioned UID field, else absent. Returns false and leaves `out`
  * untouched when neither source has one -- an unprovisioned QEMU node has no
@@ -93,14 +89,12 @@ const char *node_uid_source(void);
  * this symbol for their own target. */
 block_dev_t *identity_store_device(void);
 
-/* --- I3, plan/phase21_identity_and_authentication.md: the on-device
+/* --- The on-device
  * toolset's data layer. kernel/shell.c's `identity` command and
  * user/lisp/lisp.c's Lisp equivalents are thin wrappers over these -- the
  * argument parsing lives in each presentation layer, not here. */
 
-/* Matches fs/9p.h's P9_AUTH_KEY_MAX: the two need not be the same constant,
- * but a device key is exactly the same kind of pre-shared secret phase 18's
- * key store already bounds, so there is no reason for a second number. */
+/* Matches fs/9p.h's P9_AUTH_KEY_MAX: bounds the device pre-shared key. */
 #define NODE_DEVKEY_MAX 64
 
 /* The grants text's ceiling in the record. P9_GRANTS_MAX is 8 entries and a
@@ -167,9 +161,8 @@ node_id_result_t node_identity_set_key(const uint8_t *key, uint32_t key_len);
  * on success. */
 node_id_result_t node_identity_generate_key(void);
 
-/* --- I6, §5.3: WLAN credentials. Lands with phase 19's R5 (the CYW43
- * driver) and is unused before it -- this is storage and the toolset, not
- * a radio, same shape as the device key was between I3 and I4. */
+/* --- WLAN credentials ---
+ * Storage and toolset for WLAN credentials (SSID and pre-shared key). */
 
 #define NODE_WLAN_SSID_MAX 32  /* 802.11's own limit */
 #define NODE_WLAN_PSK_LEN  32  /* WPA2's PSK is always 256 bits -- never a variable length */
@@ -239,7 +232,7 @@ bool node_grants(char *out, uint32_t cap, uint32_t *len_out);
  * to would be a worse failure than not having one. */
 node_id_result_t node_identity_set_grants(const char *text, uint32_t len);
 
-/* --- Q6, plan/phase26_mqtt_and_environment_sensors.md: where this node
+/* --- MQTT configuration: where this node
  * publishes ---
  *
  * The same argument the address itself settled (README §4b): the identity
@@ -282,7 +275,7 @@ bool node_mqtt(node_mqtt_t *out);
  * board retry forever against nothing. */
 node_id_result_t node_identity_set_mqtt(const node_mqtt_t *cfg);
 
-/* Phase 40, item 11: the installation altitude in metres, which turns the
+/* Installation altitude in metres, which turns the
  * pressure a sensor measures into the sea-level pressure every weather
  * service quotes. node_altitude() is false when none is stored; the setter
  * takes -500..9000 m (the Dead Sea to above any station a board would sit
@@ -305,7 +298,7 @@ node_id_result_t node_identity_set_ipv4(const uint8_t ip[NODE_IPV4_LEN],
  * moving a board to DHCP later means removing this, not replacing it. */
 node_id_result_t node_identity_clear_ipv4(void);
 
-/* Phase 46: persistent sensor calibration */
+/* Persistent sensor calibration */
 struct sensor_cal_blob;
 bool node_sensor_cal(struct sensor_cal_blob *out);
 node_id_result_t node_identity_set_sensor_cal(const struct sensor_cal_blob *cal);

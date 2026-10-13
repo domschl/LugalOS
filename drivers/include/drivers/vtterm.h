@@ -7,7 +7,7 @@
 #include "drivers/fbtext.h"
 
 /* A terminal emulator for the 1-bpp screen: exactly the escape sequences this
- * tree emits -- 36.6, plan/phase36_rp2350_lcd7_terminal.md §4.3.
+ * tree emits.
  *
  * Portable: it draws through drivers/fbtext.h into any 1-bpp buffer, so it
  * runs, and is tested (`vtselftest`), on QEMU against plain RAM.
@@ -37,7 +37,7 @@
  * printed: printing an unknown sequence is how a terminal fills with
  * `[1;36m`.
  *
- * **The cell shadow** (37.1, plan/phase37_screen_layouts_and_apps.md §2.1):
+ * **The cell shadow**:
  * when given one, every cell's glyph code and attribute is kept beside the
  * pixels, so vtterm_repaint() can redraw the text after something else drew
  * over it. One uint16_t per cell, row-major over cols: the code in the low
@@ -77,8 +77,8 @@ typedef struct {
     char      osc[VT_OSC_MAX];
     char      title[VT_TITLE_MAX];  /* the last OSC 0/2, NUL-terminated */
     uint32_t  title_seq;        /* bumped whenever `title` changes */
-    uint16_t  col_offset;       /* Phase 44: horizontal scroll offset into shadow */
-    uint16_t  logical_cols;     /* Phase 44: text column wrapping width */
+    uint16_t  col_offset;       /* horizontal scroll offset into shadow */
+    uint16_t  logical_cols;     /* text column wrapping width */
 } vtterm_t;
 
 /* Takes over `text`'s grid: clears it and homes the cursor. `shadow` holds

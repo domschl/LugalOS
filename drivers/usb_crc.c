@@ -1,4 +1,4 @@
-/* USB CRC5 and CRC16 -- 36.7, plan/phase36_rp2350_lcd7_terminal.md.
+/* USB CRC5 and CRC16.
  * See drivers/include/drivers/usb_crc.h. Both are the reflected forms USB
  * sends LSB first: CRC5 polynomial x^5+x^2+1 (0x05, reflected 0x14), CRC16
  * x^16+x^15+x^2+1 (0x8005, reflected 0xA001), both starting all-ones and

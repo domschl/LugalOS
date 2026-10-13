@@ -5,21 +5,17 @@
 #include <stdbool.h>
 #include "drivers/block.h"
 
-/* The identity record, and the block_dev_t seam it lives on -- I1,
- * plan/phase21_identity_and_authentication.md §4.
+/* The identity record, and the block_dev_t seam it lives on.
  *
  * A fixed-size (§3.2's "last 4 KB sector") record: magic, version, length,
  * CRC32, then typed (TLV) fields. Typed fields rather than a fixed struct so
- * that a later milestone (I4's device key, I5's peer list, I6's WLAN
- * credential) can add a field type without invalidating a record an earlier
+ * that a later milestone (device key, peer list, WLAN credential) can add a field type without invalidating a record an earlier
  * build wrote -- a reader that does not recognise a type skips it by length
  * and counts it, rather than refusing the whole record.
  *
  * Target-independent on purpose, the same argument kernel/sha256.c and
  * kernel/random.c already make: this is a parser and a CRC, and neither
- * should be debugged by flashing a board. I2 supplies the QEMU virtio-blk
- * device this reads from; I7 supplies the RP2350 flash sector. Until then,
- * anything implementing block_dev_t -- including a QEMU target's own
+ * should be debugged by flashing a board. Anything implementing block_dev_t -- including a QEMU target's own
  * ramdisk, or the fake device idstore_selftest() builds in memory -- is a
  * valid backing store to develop and test this against.
  *
@@ -94,14 +90,12 @@ typedef enum {
                                     * read-only and byte-identical across boards, so *networked
                                     * 9P could never work on such a board*: it would refuse
                                     * every attach, forever, with no way to authorise anyone.
-                                    * Phase 21 §5.2 already argued grants belong to identity;
-                                    * this is where that becomes true rather than aspirational.
+                                    * Grants belong to the identity store so that access control is preserved across reboots.
                                     *
                                     * Secret-adjacent rather than secret: the keys in it are
                                     * bearer tokens for *other* nodes, so it is covered by the
                                     * same never-served guard as the rest of the record. */
-    IDSTORE_FIELD_MQTT      = 8,  /* instance scope, secret-bearing (Q6,
-                                    * plan/phase26_mqtt_and_environment_sensors.md): where this
+    IDSTORE_FIELD_MQTT      = 8,  /* instance scope, secret-bearing: where this
                                     * node publishes, and as whom.
                                     *
                                     *   ip[4]  port_be16  sample_be16  keepalive_be16
@@ -116,16 +110,15 @@ typedef enum {
                                     *
                                     * It holds a password **in the clear**, like the WLAN PSK
                                     * beside it. That is a property of an unencrypted store on
-                                    * a device someone can pick up, phase 21's "what it does
-                                    * not defend" already covers it, and net/mqtt.h says the
+                                    * a device someone can pick up, and net/mqtt.h says the
                                     * same password crosses the LAN in the clear anyway -- so
                                     * the record is not the weak link. `mqttcfg` and
                                     * /proc/node print it as `set`, never as its value. */
-    IDSTORE_FIELD_ALTITUDE  = 9,  /* instance scope (phase 40, item 11): the installation's
+    IDSTORE_FIELD_ALTITUDE  = 9,  /* instance scope: the installation's
                                     * height above sea level in whole metres, int16 big-endian.
                                     * What the BME280's sea-level pressure is reduced with; a
                                     * board without it publishes station pressure only. */
-    IDSTORE_FIELD_SENSOR_CAL = 10, /* instance scope (phase 46): persistent multi-sensor calibration blob */
+    IDSTORE_FIELD_SENSOR_CAL = 10, /* instance scope: persistent multi-sensor calibration blob */
 } idstore_field_type_t;
 
 typedef struct {
@@ -195,8 +188,7 @@ bool idstore_path_is_secret(const char *path);
 
 /* Self-test: the three states, unknown-field skipping, and a byte-identical
  * round trip -- all against an in-memory fake block_dev_t, so it needs
- * neither hardware nor a mounted filesystem (I1's verify list,
- * plan/phase21_identity_and_authentication.md). */
+ * neither hardware nor a mounted filesystem  */
 int idstore_selftest(void);
 
 #endif /* LUGALOS_KERNEL_IDSTORE_H */

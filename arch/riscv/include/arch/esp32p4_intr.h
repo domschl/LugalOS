@@ -6,7 +6,7 @@
 #include "lugalos_config.h"
 
 /* ESP32-P4 interrupt plumbing that a driver has to know about, E3,
- * plan/phase27_esp32p4_bringup.md.
+ * .
  *
  * Everything else about this chip's interrupt controller lives inside
  * arch/riscv/common/trap.c beside the Hazard3 and PLIC arms, because that is
@@ -45,11 +45,11 @@
  * kernel allocation and lives here. The two are deliberately not the same
  * number and must not be conflated. */
 #define ESP32P4_CLIC_IRQ_UART0  16u
-/* Z0, plan/phase28_esp32p4_ethernet.md. The EMAC raises four matrix sources
+/* Z0, . The EMAC raises four matrix sources
  * (89 GMII_PHY, 90 LPI, 91 PMT, 92 ETH_MAC); only ETH_MAC carries frame and
  * DMA events, so only it is routed, and one line is enough. */
 #define ESP32P4_CLIC_IRQ_EMAC   17u
-/* 47.5, plan/phase47_esp32p4_lcd7b_ribbon.md: the DW-GDMA (matrix source 24,
+/* the DW-GDMA (matrix source 24,
  * ETS_DW_GDMA_INTR_SOURCE), whose transfer-done event re-arms the DSI frame
  * every 16.6 ms -- IDF's mipi_dsi_dma_trans_done_cb(). */
 #define ESP32P4_CLIC_IRQ_GDMA   18u
@@ -70,7 +70,7 @@
  * still the driver's business. */
 int esp32p4_intmtx_route(uint32_t src, uint32_t clic_id);
 
-/* 47.1, plan/phase47_esp32p4_lcd7b_ribbon.md: the silicon revision the board
+/* the silicon revision the board
  * file states, major*100+minor. A board file from before 47.0 is the NANO. */
 #ifndef CONFIG_ESP32P4_REV
 #define CONFIG_ESP32P4_REV 103
@@ -93,7 +93,7 @@ int esp32p4_intmtx_route(uint32_t src, uint32_t clic_id);
 /* 47.1: what esp32p4_l2_cache_shrink() found and left, once printk works. */
 void esp32p4_l2_cache_report(void);
 
-/* Arm hardware watchpoint 0 on stores to the 4 bytes at addr. Phase 27 E7
+/* Arm hardware watchpoint 0 on stores to the 4 bytes at addr. E7
  * debug aid; see arch/riscv/common/trap.c for the encoding and its source. */
 /* Shrink the L2 cache to 128 KB, which is what makes the memory above
  * 0x4ff80000 real RAM. Must run before the heap is used; see the long comment
@@ -120,7 +120,7 @@ void esp32p4_clic_timer_enable(void);
 
 /* --- L1 data-cache maintenance for bus-master DMA -----------------------
  *
- * Z2, plan/phase28_esp32p4_ethernet.md. These live here rather than in the
+ * Z2, . These live here rather than in the
  * driver that needs them for the same reason esp32p4_l2_cache_shrink() does:
  * this chip's caches are not what they look like, and everything this kernel
  * knows about that belongs in one place.
@@ -130,7 +130,7 @@ void esp32p4_clic_timer_enable(void);
  * bus-master peripheral reaches it directly. So memory the CPU wrote may
  * still be sitting in cache when the device reads it, and memory the device
  * wrote may be stale in cache when the CPU reads it. Nothing in this tree
- * needed that before phase 28 -- the ENC28J60 and CYW43 move bytes over SPI
+ * needed that before -- the ENC28J60 and CYW43 move bytes over SPI
  * with the CPU touching every one, and QEMU's virtio has no cache in the
  * path.
  *

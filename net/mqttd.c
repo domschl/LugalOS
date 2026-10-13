@@ -145,7 +145,7 @@ const mqttd_rule_t *mqttd_get_rule(const char *name) {
 
 /* y += (x - y) / 2^k, carried on an accumulator scaled by 2^k.
  *
- * Scaled by multiplying, in 64 bits (phase 40 review). It was `x << k` on
+ * Scaled by multiplying, in 64 bits. It was `x << k` on
  * an int32_t: undefined for any negative reading -- the first sample below
  * zero halted a QEMU guest under UBSan, and only the compiler's goodwill
  * kept a frozen sensor node on the RP2350 working -- and an overflow for a
@@ -208,7 +208,7 @@ static bool due(const mqttd_source_state_t *st, uint64_t now) {
            since >= (uint64_t)st->rule.max_interval_s * 1000u;   /* heartbeat */
 }
 
-/* --- File-backed sources (phase 40, item 10) --- */
+/* --- File-backed sources --- */
 
 typedef struct {
     bool     in_use;

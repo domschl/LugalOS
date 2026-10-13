@@ -6,7 +6,7 @@
 
 void uart_init(uintptr_t base_addr);
 
-// M4/M4.5, plan/phase12_microkernel_migration.md: starts the dedicated uart
+// starts the dedicated uart
 // task, which becomes the sole owner of the hardware for uart_putc()/
 // uart_getc()/uart_has_char() below. Must run after sched_init() -- unlike
 // uart_init(), which only brings the hardware itself up and runs long
@@ -14,7 +14,7 @@ void uart_init(uintptr_t base_addr);
 // not be started (not fatal: the facade functions below fall back to
 // direct hardware access whenever the task is not alive). Both
 // drivers/uart_16550.c (QEMU) and drivers/uart_rp2350.c (real hardware,
-// converted in M4.5 Part B -- the extra USB CDC mirror and the A3b demux
+// converted in driver task design -- the extra USB CDC mirror and the A3b demux
 // bypass are that file's own, not duplicated here) implement this.
 int uart_task_start(void);
 
@@ -37,7 +37,7 @@ bool uart_serial_has_char(void);
 int uart_serial_getc(void);
 void uart_puts(const char *s);
 
-// M4/M4.5 verify: how many batched-write chan_call()s the uart task has
+// Verify: how many batched-write chan_call()s the uart task has
 // served since boot -- see drivers/uart_16550.c's g_uart_write_calls
 // comment.
 uint32_t uart_write_call_count(void);
@@ -51,7 +51,7 @@ uint32_t uart_write_call_count(void);
 // two are indistinguishable from the far end of the cable. A count that
 // grows is the evidence.
 //
-// Written on ESP32-P4 bringup (E3, plan/phase27_esp32p4_bringup.md), where
+// Written on ESP32-P4 bringup, where
 // the question was live -- the interrupt controller was new that day -- and
 // implemented on all three console drivers so `uartstats` means the same
 // thing on every target rather than one.
@@ -123,20 +123,19 @@ void uart_flush(void);
 // deadlock, and a fatal handler that blocks never prints the dump that would
 // explain it.
 //
-// What *did* change is who reaches these. printk() no longer does: since Y5c
-// (plan/phase31_concurrency_hierarchy.md) it appends a record to the log ring
+// What *did* change is who reaches these. printk() no longer does:
+// it appends a record to the log ring
 // and returns, and klogd is the task that carries it down here. So the three
 // contexts above may printk() freely; they may not cprintf(), and they use
 // printk_critical() when the line has to be on the wire before the machine
 // stops.
 //
-// Of those three, only "while holding a lock" is machine-checked (phase 31
-// Y2). **Interrupt context, mid-switch and mid-exit are still convention**,
+// Of those three, only "while holding a lock" is machine-checked.
+// **Interrupt context, mid-switch and mid-exit are still convention**,
 // because this kernel has no in-interrupt flag to check and cannot trivially
 // grow one: preemption works by calling sched_yield() *inside* the timer
 // handler, so a naive flag would mark every legitimate preemptive switch as
-// interrupt context. That gap is recorded in
-// plan/phase31_concurrency_hierarchy.md's Y4, not forgotten.
+// interrupt context.
 //
 // This spins on the transmit FIFO for a bounded number of iterations and
 // then **drops the byte**. Dropping is the point: output is worth less than

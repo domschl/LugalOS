@@ -1,5 +1,5 @@
 /* The blocking face of kernel/kobj.c. See kernel/include/kernel/kobj_sched.h.
- * 45.3b, plan/phase45_esp32c6.md. */
+ */
 
 #include "kernel/kobj_sched.h"
 #include "kernel/sched.h"

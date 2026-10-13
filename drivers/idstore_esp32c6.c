@@ -1,6 +1,6 @@
 /*
  * LugalOS driver: the identity store on the ESP32-C6 -- 45.8,
- * plan/phase45_esp32c6.md; the record itself is plan/phase21_identity_and_
+ * ; the record itself is 
  * authentication.md's, unchanged.
  *
  * One 4 KB flash sector at LUGALOS_C6_IDENTITY_BASE (cmake/flash_layout_
@@ -207,7 +207,7 @@ static int idflash_write(block_dev_t *dev, const void *buf, uint32_t lba, uint32
         if (guarded(&f, OP_WRITE, base + off, tmp, CHUNK_BYTES, 0) != 0) rc = -1;
     }
     /* Read back what landed: a store that reports success without having stored
-     * anything is the failure that matters most for a key (phase 21 §7). */
+     * anything is the failure that matters most for a key. */
     for (uint32_t off = 0; rc == 0 && off < SECTOR_BYTES; off += CHUNK_BYTES) {
         uint32_t tmp[CHUNK_BYTES / 4];
         if (guarded(&f, OP_READ, base + off, tmp, CHUNK_BYTES, 0) != 0 || memcmp(tmp, in + off, CHUNK_BYTES) != 0) {

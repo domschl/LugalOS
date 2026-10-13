@@ -7,7 +7,6 @@
 #include <string.h>
 
 /* MH-Z19B NDIR Infrared Carbon Dioxide Sensor.
- * Phase 46, plan/phase46_sensor_framework.md.
  *
  * Implements:
  * - 9600 baud 8N1 UART command/response query protocol (PL011 UART1 on RP2350)

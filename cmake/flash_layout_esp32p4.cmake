@@ -1,4 +1,4 @@
-# The ESP32-P4-NANO flash map -- U0, plan/phase32_esp32p4_execute_in_place.md.
+# The ESP32-P4-NANO flash map -- U0, .
 #
 # Same job, and the same reason, as cmake/flash_layout.cmake does for RP2350:
 # these numbers are the *only* definition of where each segment lives, and
@@ -14,7 +14,7 @@
 # 0x00E00000 for no reason a later reader could derive, above 13 MB labelled
 # NEVER TOUCHED.
 #
-# Phase 32 retires the factory image on purpose (the decision E6's version of
+# retires the factory image on purpose (the decision E6's version of
 # this file explicitly required be a decision, not a side effect) because U4
 # needs offset 0x2000, which is inside it. **LugalOS owns all 16 MB.** The
 # backup at ~/gith/esp/p4nano-factory-flash/ stops being a constraint on this

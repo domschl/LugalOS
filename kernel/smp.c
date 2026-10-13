@@ -18,14 +18,13 @@
 #include <stddef.h>
 #include <stdbool.h>
 
-/* Secondary hart bring-up (X1, plan/phase23_multicore_scheduling.md).
+/* Secondary hart bring-up.
  *
  * All of this is inert unless CONFIG_ENABLE_SMP. With the gate off,
- * arch/riscv/common/entry.S parks secondary harts exactly as it did before
- * phase 23, smp_release_secondaries() does nothing, and secondary_main() is
- * never reached -- so every existing board persona boots on one hart with
- * this file compiled in and doing nothing, which is what makes the gate
- * worth having rather than a second build to maintain.
+ * arch/riscv/common/entry.S parks secondary harts, smp_release_secondaries()
+ * does nothing, and secondary_main() is never reached -- so every existing
+ * board persona boots on one hart with this file compiled in and doing nothing,
+ * which is what makes the gate worth having rather than a second build to maintain.
  */
 
 /* Read by entry.S's .Lsecondary_wait spin loop. Lives in .bss, which is why
@@ -57,7 +56,7 @@ void smp_mark(uint32_t step);
 static inline void smp_mark(uint32_t step) { (void)step; }
 #endif
 
-/* 36.7, plan/phase36_rp2350_lcd7_terminal.md: core 1 can be launched without
+/* Core 1 can be launched without
  * SMP. The RP2350-LCD-7 persona gives its second core to the PIO-USB host
  * engine (drivers/piousb_rp2350.c), which never joins the scheduler -- so it
  * needs the launch handshake and core 1's stack below, and none of the rest.
@@ -142,7 +141,7 @@ volatile uint32_t g_core1_mode = CORE1_MODE_PROBE;
  * no interrupts (mstatus is zeroed in core1_entry). Just proof of life.
  *
  * The printk half is now a choice rather than a requirement: since Y5c
- * (plan/phase31_concurrency_hierarchy.md) printk() appends a record and
+ * printk() appends a record and
  * returns instead of reaching core 0's pinned uart task, so it would not
  * block here. It stays out because this probe's whole claim is that it
  * touches nothing -- and because nobody has run it that way on the silicon. */
@@ -400,7 +399,7 @@ bool smp_launch_core1_engine(void) {
  *
  * Shared by the two boards that execute from flash, because the hazard is
  * theirs jointly and the mechanism is not specific to either. 34.11,
- * plan/phase34_esp32p4_pll_bringup.md, generalised what X7 wrote for RP2350.
+ * generalised for ESP32-P4 and RP2350.
  *
  * The *reasons* differ and the shape does not:
  *
@@ -796,7 +795,7 @@ void smp_release_secondaries(void) {
 #if CONFIG_ENABLE_SMP
 void secondary_main(void) {
 #if defined(CONFIG_BOARD_ESP32P4)
-    /* 34.10, plan/phase34_esp32p4_pll_bringup.md. Per-hart state that core 0
+    /* Per-hart state that core 0
      * having does not give core 1: the branch predictor is a CSR, and a core
      * running without it does not say so. Before everything, because it costs
      * two instructions and every instruction after it benefits. */
@@ -931,7 +930,7 @@ void secondary_main(void) {
  *      executing on hart 1 -- rather than inferred from timing.
  *   2. A counter incremented under the lock lost nothing. On one hart this
  *      passes trivially; under real contention it is the whole claim of
- *      phase 22, checked for the first time against an actual second hart
+ *      multicore bringup verified
  *      rather than by argument.
  *
  * A second counter is incremented *without* the lock, deliberately, and its

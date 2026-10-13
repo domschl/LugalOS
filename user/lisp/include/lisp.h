@@ -80,7 +80,7 @@ typedef struct lisp_val {
 
 void lisp_init(void);
 
-/* 37.3b, plan/phase37_screen_layouts_and_apps.md §2.2: at a prompt, call
+/* at a prompt, call
  * the program's (canvas-on-redraw f) if the canvas was lost since it last
  * drew; and put the screen back to text (after an `exec`'d program or a
  * chess session). Both no-ops where Lisp's canvas is the ST7735's. */
@@ -107,7 +107,7 @@ lisp_val_t *lisp_read(const char **str);
 void lisp_print(lisp_val_t *val);
 void lisp_repl(void);
 
-/* S3 (plan/phase13_lisp_engine_extensions.md): the collector's one safe
+/* the collector's one safe
  * point, exposed so any genuinely top-level, non-nested per-command
  * dispatch loop can call it between commands -- not just lisp_repl()'s own
  * loop internally. kernel/shell.c's POSIX-shell command loop
@@ -118,7 +118,7 @@ void lisp_repl(void);
  * collection is only exact right here and nowhere mid-expression. */
 void lisp_gc_safepoint(void);
 
-/* Phase 44: held around every evaluation from outside the engine, from
+/* held around every evaluation from outside the engine, from
  * lisp_eval_string() to the lisp_print() of its value -- the value is
  * garbage to the next collection until printed. Re-entrant per task. See
  * g_lisp_lock in user/lisp/lisp.c. */

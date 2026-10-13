@@ -1,6 +1,5 @@
 /* The two operating-system tables the ESP32-C6 Wi-Fi blob is built against,
- * filled with the radio domain's implementations (45.3b,
- * plan/phase45_esp32c6.md §4.5).
+ * filled with the radio domain's implementations.
  *
  * **This is the only file in the radio shim that includes Espressif's headers**,
  * and that is deliberate: every initialiser below is assigned to a field of

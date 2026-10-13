@@ -1,11 +1,11 @@
 /*
  * Vendored from ~/gith/domschl/LugalChess (engine/include/defs.h), H4,
- * plan/phase9_chess_computer.md. <stdio.h>/<stdlib.h> don't exist on
+ * . <stdio.h>/<stdlib.h> don't exist on
  * LugalOS's freestanding build -- chess_platform.h stands in for both, and
  * <string.h> is LugalOS's own (libc/include/string.h). USE_MAGIC_BITBOARDS
  * hardcoded off rather than left as a compile-time override: magic
  * bitboards need ~840 KB for the attack tables, far past what an RP2350
- * board can spare (see H0, plan/phase9_chess_computer.md).
+ * board can spare.
  */
 
 #ifndef DEFS_H
@@ -84,7 +84,7 @@ typedef uint16_t Move;
  * MAX_SEARCH_PLYS: at 256 wide the quiescence pool cost as much as the
  * full-width pool beside it, for lists that cannot come close to filling.
  * On RP2350 that was 8 of the heap's 62 pages against 3 (§2.1,
- * plan/phase15_memory_reclamation.md).
+ * ).
  *
  * 96 was chosen against a measurement, not a guess: instrumenting
  * generate_captures() across tactical positions (Kiwipete and friends, to

@@ -1,6 +1,6 @@
 /*
  * Infineon/Cypress CYW43439 wireless chip -- R5 milestone 1,
- * plan/phase19_ip_stack_and_ethernet.md. See drivers/include/drivers/cyw43.h
+ * . See drivers/include/drivers/cyw43.h
  * for what this is and where it sits.
  *
  * This file is the bus layer only: RP2350's PIO0 block, programmed by hand
@@ -403,10 +403,10 @@ static uint32_t g_bp_window = BP_WINDOW_INVALID;
  * join failing on an iovar and then `wifi probe` no longer finding the
  * test pattern at all, on a bus that had been working.
  *
- * A ylock_t (phase 40, item 2). It was a flag and a yield loop: no owner,
+ * A ylock_t. It was a flag and a yield loop: no owner,
  * so not re-entrant -- a gratuitous ARP under net_set_address() re-took the
  * bus a frame below its holder and deadlocked `wifi probe` -- and no edge in
- * phase 31's wait-for graph, so a cycle through it could not be seen. The
+ * wait-for graph, so a cycle through it could not be seen. The
  * ylock is re-entrant for its owner, in the graph, and reports being taken
  * under a spinlock. */
 static ylock_t g_bus_lock;
@@ -1718,8 +1718,7 @@ bool cyw43_is_ready(void) { return g_fw_ready; }
 /* --- association ---------------------------------------------------------
  *
  * WPA2-PSK only, and with a *pre-hashed* key: this node stores the derived
- * 32-byte PSK, never the passphrase (I6, plan/phase21_identity_and_
- * authentication.md §5.3, written with exactly this moment in mind). The
+ * 32-byte PSK, never the passphrase. The
  * firmware takes either -- a passphrase gets flag 1 and is hashed on the
  * chip -- so handing it the PMK with flag 0 is the same join with one less
  * secret at rest. */
@@ -2243,7 +2242,7 @@ static bool cyw43_associated_locked(uint8_t bssid[6]) {
     return assoc;
 }
 
-/* Leaves the BSS, if the firmware holds one (phase 40 item 9). The plain
+/* Leaves the BSS, if the firmware holds one. The plain
  * WLC_DISASSOC the reference sends; checked by asking again, since a join
  * over a live association is what failed -- `mfp` refused, then an AUTH
  * failure the join reported as a wrong PSK. Measured on a Pico 2 W

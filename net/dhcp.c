@@ -1,4 +1,4 @@
-/* A DHCP client (45.7, plan/phase45_esp32c6.md): the first address a sensor node gets on a network
+/* A DHCP client: the first address a sensor node gets on a network
  * whose router hands them out, instead of one provisioned into its identity record.
  *
  * DISCOVER -> OFFER -> REQUEST -> ACK, RFC 2131, with only the options a station needs: subnet mask,

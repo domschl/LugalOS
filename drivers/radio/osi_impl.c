@@ -1,4 +1,4 @@
-/* See drivers/radio/osi_impl.h. 45.3b, plan/phase45_esp32c6.md §4.5.
+/* See drivers/radio/osi_impl.h. 45.3b, 
  *
  * U-mode code. It calls nothing outside its own text -- no libc, no kernel
  * function -- so it is built -fno-jump-tables, has no string literal that is
@@ -180,7 +180,7 @@ RADIO_TEXT void radio_osi_spin_lock_delete(void *lock) { r_free(lock); }
 /* The blob's critical section ("interrupts off around this") is exclusion among
  * the domain's own threads, which is all an interrupt is here: the hardware
  * interrupt runs only a kernel stub, and the handler is a thread
- * (plan/phase45 §4.5). One lock for every mux the blob passes. */
+ *. One lock for every mux the blob passes. */
 RADIO_TEXT uint32_t radio_osi_wifi_int_disable(void *mux) { (void)mux; K(KOBJ_OP_CRIT_ENTER, 0, 0, 0, 0, 0); return 0; }
 RADIO_TEXT void radio_osi_wifi_int_restore(void *mux, uint32_t tmp) { (void)mux; (void)tmp; K(KOBJ_OP_CRIT_LEAVE, 0, 0, 0, 0, 0); }
 

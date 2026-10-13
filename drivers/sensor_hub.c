@@ -18,7 +18,7 @@
 #include "kernel/identity.h"
 #include <string.h>
 
-/* Centralized Sensor Hub (Category D, phase 46 §5 & §7).
+/* Centralized Sensor Hub.
  *
  * Keeps cached readings and staleness timers for all probed environmental
  * sensors. Bus-free readers (such as /proc/sensors and 9P) read from this cache.
@@ -155,7 +155,7 @@ void sensor_hub_sample_all(void) {
         }
     }
 
-    /* Cross-Sensor Compensation Pipeline (Phase 46 §5.2 / §4.9):
+    /* Cross-Sensor Compensation Pipeline:
      * If ambient temperature and humidity are available from BME280/BME680,
      * feed them into gas sensors (such as CCS811) for real-time baseline tuning. */
     int32_t t = 0, h = 0;
@@ -181,7 +181,7 @@ void sensor_hub_sample_all(void) {
         }
     }
 
-    /* --- Derived Metrics Pipeline (Phase 46 §7.3 & §7.4) --- */
+    /* --- Derived Metrics Pipeline --- */
     uint64_t now = time_get_ms();
 
     /* 1. Mean Sea Level Pressure (P_msl / QNH) */
@@ -227,7 +227,7 @@ void sensor_hub_sample_all(void) {
         s_derived[SENSOR_CHAN_IAQ].last_sample_ms = now;
     }
 
-    /* 4. Ground-Truth Calibration & Contamination Disambiguation (Phase 46 §7.5) */
+    /* 4. Ground-Truth Calibration & Contamination Disambiguation */
     int32_t co2_ndir = 0;
     int32_t eco2 = 0;
     int32_t tvoc = 0;
@@ -656,7 +656,7 @@ void sensor_hub_print_status(void) {
     }
 }
 
-/* --- Calibration Operations (Phase 46) --- */
+/* --- Calibration Operations --- */
 
 bool sensor_hub_cal_get_current(sensor_cal_blob_t *out) {
     if (!out) return false;
@@ -814,7 +814,7 @@ bool sensor_hub_cal_eeprom_clear(void) {
     return w == (int)sizeof(zeros);
 }
 
-/* --- Publishing the hub's channels (Phase 45 §11, Phase 46 §7.2, Milestone 46.18) --- */
+/* --- Publishing the hub's channels --- */
 #include "net/mqttd.h"
 
 typedef struct {

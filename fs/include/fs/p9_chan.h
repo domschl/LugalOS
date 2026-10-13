@@ -4,7 +4,7 @@
 #include "fs/p9_link.h"
 
 /* The local 9P server, reachable as a channel endpoint and exposed as an
- * ordinary p9_link_t (B1, plan/phase5_distributed_design.md §5.1).
+ * ordinary p9_link_t.
  *
  * Registers the "p9" endpoint (visible as /srv/p9) whose handler is
  * p9_server_process(). Everything above sees a p9_link_t indistinguishable

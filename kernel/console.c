@@ -236,7 +236,7 @@ void console_emit(console_putc_fn out, char c) {
     out(c);
 }
 
-/* Y5c, plan/phase31_concurrency_hierarchy.md: the console stream flushes the
+/* The console stream flushes the
  * kernel log before writing -- but only at the start of a whole write, never
  * between two characters of one.
  *
@@ -258,7 +258,7 @@ void console_emit(console_putc_fn out, char c) {
  * of shown. */
 static char    *g_cap;
 static uint32_t g_cap_max, g_cap_len;
-static int      g_cap_pid = -1;     /* phase 44: only its writes are kept */
+static int      g_cap_pid = -1;     /* Only its writes are kept */
 
 void console_capture(char *buf, uint32_t cap) {
     g_cap_len = 0;
@@ -272,7 +272,7 @@ uint32_t console_capture_end(void) {
     return g_cap_len;
 }
 
-/* Phase 44: the terminal the running task writes to and reads from. Its
+/* The terminal the running task writes to and reads from. Its
  * vterm for any terminal but the root console; NULL for the root console
  * (vterm 0: the boot shell and what it started) -- and NULL with *closed set
  * for a task whose terminal was closed under it (task_orphan_vterm()). */
@@ -427,7 +427,7 @@ int console_bind_device(const char *name) {
 
 const char *console_bound_device(void) { return g_bound_name; }
 
-/* --- Ctrl-C interrupt (J2, plan/phase10_chess_completion.md) --- */
+/* --- Ctrl-C interrupt --- */
 
 static volatile bool g_interrupt_pending = false;
 
@@ -543,7 +543,7 @@ static void console_pump(void) {
      * uart_peek_interrupt() answers without consuming, so this neither eats
      * input nor depends on having room to store it. Where a device cannot be
      * inspected that way it answers false, and the old behaviour stands. */
-    /* Phase 44: the latch belongs to the terminal being typed into. */
+    /* The latch belongs to the terminal being typed into. */
     vterm_t *act = vterm_active();
     if (act && act->id <= 0) act = NULL;
     for (unsigned i = 0; i < g_ninputs; i++) {

@@ -164,7 +164,7 @@ static uint16_t g_listen_port;
 static bool g_listening;
 static uint32_t g_accepted_total, g_reset_total;
 /* Not a secure ISN. A LAN-local server behind a pre-shared-key auth gate
- * (phase 18 §1's threat model) does not defend against an off-path attacker
+ * (§1's threat model) does not defend against an off-path attacker
  * guessing sequence numbers; saying so is better than implying otherwise
  * with a hash nobody audited. */
 static uint32_t g_iss_counter = 0x1000;
@@ -324,7 +324,7 @@ static void conn_abort(tcp_conn_t *c) {
 
 /* --- p9_link_t glue: an accepted connection *is* a link ---
  *
- * This is what makes phase 18 a sunk cost of days rather than weeks. The auth
+ * This is what makes a sunk cost of days rather than weeks. The auth
  * gate, `auth_required`, the background service, `p9auth` and the entire host
  * side connect to a byte stream, and TCP is one. */
 
@@ -393,7 +393,7 @@ static int link_send_frame(p9_link_t *link, const uint8_t *buf, uint32_t len) {
      * correctly, and the request already dequeued by the pump that lost the
      * race was gone for good (p9_route_frame() never retries). Reproduced
      * on hardware with a burst of pipelined requests; see
-     * plan/phase19_ip_stack_and_ethernet.md's R4 notes for the full account. */
+     * R4 notes for the full account. */
     if (c->tx_len) return -1;
 
     memcpy(c->tx, buf, len);
@@ -408,7 +408,7 @@ static void conn_init_link(tcp_conn_t *c) {
     c->link.send_frame = link_send_frame;
     c->link.recv_frame = link_recv_frame;
     c->link.ctx = (void *)(uintptr_t)c->epoch;
-    /* A network link, so the gate applies (phase 18 N2). This is the whole
+    /* A network link, so the gate applies. This is the whole
      * reason `auth_required` lives on the link rather than in the server. */
     c->link.auth_required = true;
 }
@@ -964,7 +964,7 @@ void tcp_input(const uint8_t src[IPV4_LEN], const uint8_t *ip_hdr,
              * links -- the comment removed here made the same claim for
              * server ones, which turned out not to hold once both paths were
              * traced under real timing rather than assumed non-overlapping).
-             * See plan/phase19_ip_stack_and_ethernet.md's R4 notes. */
+             * See R4 notes. */
             break;
         case TCP_FIN_WAIT_1:
             if (c->fin_sent && c->snd_una == c->snd_nxt) c->state = TCP_FIN_WAIT_2;

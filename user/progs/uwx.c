@@ -1,7 +1,7 @@
 #include "usys.h"
 
 /* W^X, from the program's own point of view (C4,
- * plan/phase6_memory_and_processes.md).
+ * ).
  *
  * Worth its own program because C4 changed where the answer comes from. The
  * loader used to grant page 0 as R|X and page 1 as R|W by position -- it knew

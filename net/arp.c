@@ -4,7 +4,7 @@
 #include "kernel/printk.h"
 #include <string.h>
 
-/* ARP (R2, plan/phase19_ip_stack_and_ethernet.md).
+/* ARP.
  *
  * Request, reply, a fixed cache, and a gratuitous announcement on address
  * change. No proxy ARP, and -- see arp_resolve() in net/ip.h -- no queue of

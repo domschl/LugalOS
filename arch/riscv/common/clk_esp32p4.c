@@ -1,5 +1,5 @@
 /* Reading the ESP32-P4's clock tree. 34.1,
- * plan/phase34_esp32p4_pll_bringup.md.
+ * .
  *
  * This file writes nothing. That is the whole of 34.1: before any milestone
  * moves a clock on this board, there has to be a way to say what the clocks
@@ -13,7 +13,7 @@
  *
  * ## Where these register definitions come from
  *
- * Two independent ESP-IDF sources, which is the bar plan/phase34 34.2 sets
+ * Two independent ESP-IDF sources, which is the bar  34.2 sets
  * and this file already meets for the four registers it reads:
  *
  *   * the field shifts and widths from components/soc/esp32p4/register/
@@ -25,9 +25,8 @@
  * **hw_ver1 and hw_ver3 were diffed, not assumed equal.** This board is
  * revision v1.3, so hw_ver1 is the right map; the two headers turn out to
  * agree exactly on all four of these registers and on every field used here.
- * That check is not ceremony -- plan/phase28_esp32p4_ethernet.md established
- * that the two maps must be diffed rather than assumed equal, and phase 29's
- * planning found a PTP pad that exists in one and not the other.
+ * That check is not ceremony --  established
+ * that the two maps must be diffed rather than assumed equal, and  * planning found a PTP pad that exists in one and not the other.
  *
  * The TRM cross-check is 34.2's milestone, not this one's. What makes it
  * acceptable to land the reads first is that this code has a known answer to
@@ -265,7 +264,7 @@ uint32_t esp32p4_clint_measure_hz(uint32_t window_us) {
  *     plausible divider is a block with its power and its I2C alive, and the
  *     divider gives the frequency; and
  *   * what the flash is clocked from. This matters more than it looks:
- *     since phase 32 the CPU fetches `.text` over the MSPI, so if
+ *     since the CPU fetches `.text` over the MSPI, so if
  *     FLASH_CLK_SRC_SEL names a PLL then that PLL is demonstrably running --
  *     the evidence is that this function's own instructions arrived.
  *
@@ -278,7 +277,7 @@ uint32_t esp32p4_clint_measure_hz(uint32_t window_us) {
  * the phase plan's third question -- see 34.2's write-up for what follows
  * from it.
  *
- * Correction, 47.4b (plan/phase47 §6.4): ESP-IDF does program it -- its
+ * Correction, 47.4b: ESP-IDF does program it -- its
  * bootloader's bootloader_init_mspi_clock() selects SPLL with an 80 MHz core
  * clock through _mspi_timing_ll_set_flash_clk_src(), which the grep above
  * missed. The ROM leaves XTAL. arch/riscv/common/xip_esp32p4.c's stage-2 stub
@@ -313,7 +312,7 @@ uint32_t esp32p4_clint_measure_hz(uint32_t window_us) {
 #define I2C_CPLL_REG_DCUR       6u
 
 /* REGI2C write. Same transaction as the read, plus WR_CNTL and the data
- * byte -- this is the first thing in phase 34 to write the analog bus.
+ * byte -- this is the first thing in to write the analog bus.
  *
  * Deliberately a whole-byte write rather than IDF's read-modify-write mask
  * form: every field this file sets is one the CPLL configuration owns
@@ -403,7 +402,7 @@ static bool regi2c_write_bit(uint32_t blk, uint32_t mst_sel, uint8_t reg_addr,
     return regi2c_write(blk, mst_sel, reg_addr, v);
 }
 
-/* 47.3, plan/phase47_esp32p4_lcd7b_ribbon.md: the same bus for the PSRAM
+/* the same bus for the PSRAM
  * driver's MPLL and BIAS writes. A field write (IDF's REGI2C_WRITE_MASK):
  * read, replace bits [msb:lsb], write. The analog master's 160 MHz source is
  * switched on first, as every PLL configuration here needs it. */
@@ -839,8 +838,7 @@ void esp32p4_clocks_report(void) {
  * efuse to ensure that the hp_active_voltage is close to 1.15V"* -- so a
  * part whose trim says 25 is a part that needs 25 to reach the voltage the
  * silicon is characterised at. Leaving it at 24 leaves this chip slightly
- * *below* that, which is free at 40 MHz and is exactly the margin phase 34
- * intends to spend.
+ * *below* that, which is free at 40 MHz and is exactly the margin  * intends to spend.
  *
  * ## Why the DCDC is deliberately not touched
  *
@@ -1035,7 +1033,7 @@ bool esp32p4_regulator_apply_efuse_dbias(uint32_t *from, uint32_t *to,
 
 /* --- the core onto the external DC-DC ------------------------------------
  *
- * Its own function since 47.2 (plan/phase47_esp32p4_lcd7b_ribbon.md). It used
+ * Its own function since 47.2. It used
  * to be the tail of esp32p4_regulator_apply_efuse_dbias(), and so it ran only
  * when that function got as far as writing a dbias -- on the NANO, whose trim
  * asks for 25 over the reset 24, it always did. The LCD-7B's v3.2 part has
@@ -1322,7 +1320,7 @@ bool esp32p4_cpu_freq_set(uint32_t mhz, uint32_t *measured_hz) {
     /* Drain the console before the mux moves.
      *
      * The UART's *baud* is immune -- it is clocked from the crystal, which is
-     * the whole reason phase 34 can debug itself (§2). Its APB-side register
+     * the whole reason can debug itself (§2). Its APB-side register
      * interface is not: APB goes 10 -> 90 MHz at this instant, and a
      * character already in the transmit path comes out mangled.
      *

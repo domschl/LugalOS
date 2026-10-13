@@ -1,6 +1,6 @@
 /*
  * LugalOS Hardware Driver: DCF-77 longwave time-signal receiver, RP2350 pin
- * layer + bring-up probe (D2, plan/phase17_clock_ui_and_dcf77.md).
+ * layer + bring-up probe.
  *
  * Hardware Mapping (cmake/board-rp2350-clock.cmake is the source of truth):
  *   GP27 : OUT  (demodulated second pulse, digital input, header pin 32)
@@ -15,7 +15,7 @@
  * What this file deliberately does NOT contain: the DCF-77 frame decoder.
  * That is target-independent (it consumes timestamped samples, not
  * registers) and lives in its own file so it can be tested on QEMU without a
- * radio -- see plan/phase17_clock_ui_and_dcf77.md D1. This file's job is to
+ * radio -- D1. This file's job is to
  * make the pin talk and to prove, on real hardware, which way round the two
  * polarities actually are.
  *
@@ -105,7 +105,7 @@
 #define PAD_ADC_NOPULL   0x80  /* OD */
 
 /* PON is a static enable line: 2 mA drive is plenty, it is quieter than the
- * 4 mA default next to a longwave receiver (phase17 section 3, M2), and it
+ * 4 mA default next to a longwave receiver, and it
  * limits the current if pin 34 turns out to be bridged to the AGND pad
  * beside it. IE stays set so the pin's *actual* level can be read back --
  * SIO_GPIO_IN reads 0 for any pad whose input buffer is disabled, which
@@ -1029,9 +1029,9 @@ void dcf77_free_pin_survey(void) {
  * switching noise for the receiver to hear.
  *
  * Note the side effect, since it confounds one experiment with another: a lit
- * row is also tens of milliamps of extra 3V3 load, which is exactly M0's
- * variable (plan/phase17_clock_ui_and_dcf77.md section 3). While OUT is low
- * the row is dark and the load is not there, so this is not a clean M0 test
+ * row is also tens of milliamps of extra 3V3 load, which is
+ * variable. While OUT is low
+ * the row is dark and the load is not there, so this is not a clean test
  * -- (dcf-listen secs 1) is.
  */
 void dcf77_mirror(unsigned secs) {
@@ -1261,7 +1261,7 @@ void dcf77_power_on_capture(unsigned secs) {
                 "  board can take it: the module is not producing an output at all.\n"
                 "  Two modules behaving identically makes a pair of dead modules\n"
                 "  unlikely, so the remaining suspects are the supply's switching\n"
-                "  noise (M0 -- unreachable in software on a Pico 2 W) and the\n"
+                "  noise (unreachable in software on a Pico 2 W) and the\n"
                 "  antenna/location. The battery test settles it: module on cells,\n"
                 "  well away from this board, meter on OUT in DC volts. A receiver\n"
                 "  producing pulses averages ~0.3-0.6 V; a flat 0.00 V convicts it.\n",
@@ -1374,7 +1374,7 @@ void dcf77_drive_test(void) {
  *
  * `with_load` lights one row of the LED matrix as a pure DC load
  * (pico_clock_green_static_load(), no multiplexing, no switching edges).
- * That is the M0 experiment from plan/phase17_clock_ui_and_dcf77.md section
+ * That is the experiment from  section
  * 3: the Pico's buck regulator idles in PFM/power-save at light load, and
  * its variable-frequency ripple is a documented killer for exactly this
  * module. On a Pico 2 W the regulator's PWM-mode pin is behind the CYW43
@@ -1924,8 +1924,7 @@ void dcf77_sync(unsigned secs, bool set_rtc) {
                 "  by what the transmitter stated, not by any rule of ours.\n",
                 st.is_dst ? "CEST" : "CET", st.utc_offset_min / 60);
         if (set_rtc) {
-            /* Carried forward from the decoder's mark to *now* (P1,
-             * plan/phase24_dcf77_precision_and_ntp_server.md). Setting `got`
+            /* Carried forward from the decoder's mark to *now*. Setting `got`
              * directly, as this did, asserts that no time has passed since
              * the second it names -- and by this point a good deal has: the
              * debounce that confirmed the mark, the loop iteration that

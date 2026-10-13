@@ -1,5 +1,5 @@
 /*
- * drivers/radio/nvs_ram.c on the host (45.3b, plan/phase45_esp32c6.md): the
+ * drivers/radio/nvs_ram.c on the host: the
  * protocol the Wi-Fi blob depends on, under ASan so a blob that leaks or
  * double-frees through it is a failure here.
  *

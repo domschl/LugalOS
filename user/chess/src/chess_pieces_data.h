@@ -1,4 +1,4 @@
-/* Generated high-resolution 48x48 chess piece masks for canvas board (Phase 44 aesthetic enhancement) */
+/* Generated high-resolution 48x48 chess piece masks for canvas board */
 #ifndef CHESS_PIECES_DATA_H
 #define CHESS_PIECES_DATA_H
 

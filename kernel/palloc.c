@@ -9,7 +9,7 @@
 /* See kernel/include/kernel/palloc.h for the rationale. */
 
 /* A zone is one contiguous range of pages and its bitmap. There are two
- * (38.4, plan/phase38_psram.md §3.1): the fast zone, which is SRAM and
+ * : the fast zone, which is SRAM and
  * everything this allocator was before, and the bulk zone -- PSRAM on a
  * board with one, a stand-in range on QEMU, absent elsewhere. Each keeps its
  * own counters; one lock covers both, since nothing here is held long. */
@@ -52,8 +52,7 @@ static zone_t  g_bulk = { .bitmap = g_bulk_bitmap, .max_pages = CONFIG_PALLOC_BU
  * that should stay 0, and /proc/meminfo says so when it does not. */
 static uint32_t g_bulk_fallbacks;
 
-/* Guards both bitmaps and their counters (S4,
- * plan/phase22_smp_locking_foundation.md). Zero-initialised, which is a free
+/* Guards both bitmaps and their counters. Zero-initialised, which is a free
  * spinlock_t -- and on RP2350 that also keeps it in .bss where
  * tools/sizereport.py can see it (see kernel/lock.h). */
 static spinlock_t g_palloc_lock;

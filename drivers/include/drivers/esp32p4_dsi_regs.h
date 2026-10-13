@@ -1,6 +1,5 @@
 /* ESP32-P4 register addresses and fields used by drivers/dsi_esp32p4.c (DSI host,
  * DSI bridge, DW-GDMA).
- * 47.4, plan/phase47_esp32p4_lcd7b_ribbon.md.
  *
  * GENERATED -- do not edit by hand. Regenerate with
  *

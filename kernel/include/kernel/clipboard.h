@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* The clipboard -- 37.5a, plan/phase37_screen_layouts_and_apps.md.
+/* The clipboard.
  *
  * One, for the whole machine: what the line editor cuts, `e` pastes, Lisp
  * reads and a 9P client sees as /dev/clipboard (Plan 9's /dev/snarf). Up to

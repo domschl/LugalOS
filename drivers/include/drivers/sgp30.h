@@ -6,7 +6,6 @@
 #include "drivers/sensor.h"
 
 /* Sensirion SGP30 Multi-Pixel Gas Sensor.
- * Phase 46, plan/phase46_sensor_framework.md §4.8 (Milestone 46.8).
  *
  * Measures:
  * - Equivalent Carbon Dioxide (eCO2) in ppm (400 - 60000 ppm)

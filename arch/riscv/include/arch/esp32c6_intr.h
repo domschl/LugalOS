@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 /* ESP32-C6 interrupt plumbing a driver has to know about (45.4.3,
- * plan/phase45_esp32c6.md).
+ * ).
  *
  * The C6 is neither the P4's CLIC nor the QEMU PLIC. A peripheral raises one of
  * ~80 *sources*; the **interrupt matrix** (INTMTX, 0x60010000) routes each to one

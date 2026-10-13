@@ -8,7 +8,6 @@
 #include <string.h>
 
 /* Texas Instruments HDC1080 High Accuracy Humidity & Temperature Sensor.
- * Phase 46, plan/phase46_sensor_framework.md §4.
  *
  * Implements pure fixed-point arithmetic without FPU instructions.
  */
@@ -180,7 +179,7 @@ uint32_t hdc1080_selftest(bool report) {
     return failed;
 }
 
-/* --- Environmental Sensor Device-Class Integration (Category D, Phase 46) --- */
+/* --- Environmental Sensor Device-Class Integration --- */
 
 static bool hdc1080_dev_init(sensor_dev_t *dev) {
     if (!hdc1080_init()) return false;

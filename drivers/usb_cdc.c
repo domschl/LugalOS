@@ -121,7 +121,7 @@ static spinlock_t g_usb_tx_lock;
 #define REG(addr) (*(volatile uint32_t *)(addr))
 #define USB_BUF_CTRL_AVAIL    (1u << 10)
 
-/* M5 Phase 7, plan/phase12_microkernel_migration.md: same per-peripheral
+/* same per-peripheral
  * register shape as every non-GPIO ACCESSCTRL register this project has
  * touched -- checked directly against ~/gith/pico/pico-sdk's
  * accessctrl.h: offset 0x48, needs the 0xacce0000 write-password
@@ -134,7 +134,7 @@ static spinlock_t g_usb_tx_lock;
 #define ACCESSCTRL_USBCTRL_NSU   (1u << 0)
 #define ACCESSCTRL_WRITE_PASSWORD 0xacce0000UL
 
-/* M5 Phase 7: same section/no_sanitize shape every other driver's own
+/* same section/no_sanitize shape every other driver's own
  * UATTR macro uses. USB_UDATA is separate from USB_UATTR for the same
  * reason drivers/tm1638_rp2350.c's TM1638_UDATA is separate from
  * TM1638_UATTR -- GCC forbids mixing code and const data in one section,
@@ -241,7 +241,7 @@ USB_UDATA static const uint8_t g_usb_line_coding[] = { 0x00, 0xC2, 0x01, 0x00, 0
 #define USB_EP2_TX_RING_SIZE 4096
 #define USB_EP2_RX_RING_SIZE 512
 #define USB_EP4_TX_RING_SIZE 4096
-/* M5 Phase 7: was 8192 before this phase's own combined-state region
+/* was 8192 before this phase's own combined-state region
  * (below) forced a hard tradeoff -- the region's NAPOT alignment costs
  * not just its own padded size but also, empirically, up to one full
  * region-size's worth of *preceding* linker padding to reach that
@@ -253,7 +253,7 @@ USB_UDATA static const uint8_t g_usb_line_coding[] = { 0x00, 0xC2, 0x01, 0x00, 0
  * the region to 16384 by trimming this ring keeps real headroom above
  * P9_MAX_MSIZE (4096) for an in-flight partial frame while roughly
  * halving both costs at once. Revisit only alongside the deferred
- * heap/static-buffer analysis (plan/phase12_microkernel_migration.md),
+ * heap/static-buffer analysis,
  * not in isolation. */
 #define USB_EP4_RX_RING_SIZE 6144
 
@@ -261,7 +261,7 @@ USB_UDATA static const uint8_t g_usb_line_coding[] = { 0x00, 0xC2, 0x01, 0x00, 0
 #define USB_STR_SERIAL_CHARS 24u
 #define USB_STR_SERIAL_BYTES (2u + 2u * USB_STR_SERIAL_CHARS)
 
-/* M5 Phase 7, plan/phase12_microkernel_migration.md: every mutable
+/* every mutable
  * global this driver has -- EP0's own in-flight control-transfer state,
  * both CDC interfaces' byte-ring buffers and bookkeeping -- bundled
  * into one struct, ~15KB total (see USB_EP4_RX_RING_SIZE's own comment on
@@ -939,7 +939,7 @@ void usb_cdc_init(void) {
     }
     usb_serial_from_chip();
 
-    /* M5 Phase 7: both MMIO windows this driver uses need to be
+    /* both MMIO windows this driver uses need to be
      * Non-secure-accessible for the "usbcdc" task's own U-mode serve
      * loop further below -- must happen here, from M-mode, before the
      * task exists. See ACCESSCTRL_USBCTRL's own comment above. */
@@ -1053,20 +1053,20 @@ void usb_cdc_putc(char c) {
     // a user program whose output simply never appeared while the kernel's
     // did. printk() now masks around a whole message (kernel/printk.c), but
     // this is the lower-level guarantee and other callers reach it directly.
-    /* S5, plan/phase22_smp_locking_foundation.md: a kernel-side spinlock_t,
+    /* a kernel-side spinlock_t,
      * and where it lives is the interesting part.
      *
      * The hazard this closes is *multiple producers*: usb_cdc_putc() is
      * kernel code (no USB_UATTR) reached from the printk path by whichever
      * task is printing, plus drivers/uart_rp2350.c's fallback -- so "the USB
-     * driver task owns this" was never true, and phase 23's plan to pin
+     * driver task owns this" was never true, and plan to pin
      * driver tasks to core 0 would not have covered it.
      *
      * The lock is deliberately NOT inside g_usb. That struct lives in
      * .ustacks16384, the region PMP-granted to the U-mode USB driver task,
      * and a lock word there could be corrupted by a driver bug into a word
      * that never reads as free -- turning "a broken driver corrupts its own
-     * ring", which phase 12's isolation contains, into "a broken driver
+     * ring", which isolation contains, into "a broken driver
      * hangs the kernel in a spin", which it does not. Ordinary kernel .bss
      * keeps the escalation off the table.
      *
@@ -1095,7 +1095,7 @@ void usb_cdc_putc(char c) {
 }
 
 /* As usb_cdc_putc(), but waits for room instead of dropping -- 36.6,
- * plan/phase36_rp2350_lcd7_terminal.md. usb_cdc_putc() discards a byte when
+ * . usb_cdc_putc() discards a byte when
  * the ring is full, which is fine where the producer is paced (through the
  * UART console path it never is faster than 115200 baud), and was not for the
  * RP2350-LCD-7's screen console, which writes as fast as it draws: the host
@@ -1198,7 +1198,7 @@ static uint32_t ep4_rx_pop(uint8_t *out, uint32_t max) {
  * frame) used to leave the stream wedged *permanently*: this same 4-byte
  * window would keep failing the same check forever, since nothing ever
  * advanced past it, and only a real USB bus reset (unplug/replug) cleared
- * it. Found reproducing it directly while bringing up the M4.5 uart task on
+ * it. Found reproducing it directly while bringing up the uart task on
  * real hardware -- a manual probe script's own stray writes desynced this
  * exact link mid-session.
  *
@@ -1272,7 +1272,7 @@ static int ep4_link_send_frame(p9_link_t *link, const uint8_t *buf, uint32_t len
     while (sent < len) {
         uint32_t next = (g_usb.ep4_tx_head + 1) % USB_EP4_TX_RING_SIZE;
         if (next == g_usb.ep4_tx_tail) {
-            /* M5 Phase 7: once the real polling loop is usb_cdc_umode_body()'s
+            /* once the real polling loop is usb_cdc_umode_body()'s
              * own infinite U-mode loop, calling usb_cdc_task() (the
              * kernel-mode copy) inline here would run alongside it rather
              * than draining the same ring the U-mode task already owns --
@@ -1330,8 +1330,7 @@ void usb_cdc_debug_dump(void) {
 #endif
 }
 
-/* ---- U-mode implementation, M5 Phase 7, plan/phase12_microkernel_migration.md ----
- *
+/* ---- U-mode implementation ---- *
  * A second, independent copy of usb_cdc_task()'s own logic, tagged
  * USB_UATTR and reachable only from the U-mode task's own serve loop
  * below -- not a refactor of usb_cdc_task() (kept, see its own comment
@@ -1743,7 +1742,7 @@ USB_UATTR static void usb_cdc_umode_body(void) {
     }
 }
 
-/* M5 Phase 7: same idea as drivers/uart_rp2350.c's own uart_isolation_test()
+/* same idea as drivers/uart_rp2350.c's own uart_isolation_test()
  * -- does the real usb_cdc domain shape (stack + text + USB_DPRAM_BASE +
  * USB_BASE + the combined g_usb_region state) actually confine the task,
  * or does one of the grants accidentally cover more? A separate canary
@@ -1812,7 +1811,7 @@ bool usb_cdc_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) {
     return g_usb_intruder_entered;
 }
 
-/* M4.5, plan/phase12_microkernel_migration.md, Part B: unlike every other
+/* unlike every other
  * driver in this milestone, usb_cdc_task() is not exclusive-hardware-access
  * that needed a chan_call() endpoint to isolate -- EP2 (console) is already
  * exclusively touched by the "uart" task (drivers/uart_rp2350.c) and EP4
@@ -1852,7 +1851,7 @@ bool usb_cdc_task_alive(void) {
     return st != TASK_UNUSED && st != TASK_DEAD;
 }
 
-/* M5 heap-reclaim, plan/phase12_microkernel_migration.md: 256 bytes, not
+/* Task stack: 256 bytes, not
  * 4096 -- usb_cdc_umode_body()'s own deepest call chain (through
  * u_ep0_send -> u_ep0_send_next_chunk -> u_ep_buf_ctrl_write, the only
  * calls it makes that don't inline away at -Os) measures 64 bytes on the
@@ -1882,7 +1881,7 @@ static uint8_t      g_usb_ustack[256] __attribute__((aligned(256)))
 static void usb_cdc_task_body(void *arg) {
     (void)arg;
 
-    /* G3, plan/phase30_driver_framework.md. The widest of the seven: two MMIO
+    /* G3, . The widest of the seven: two MMIO
      * windows plus the shared data region its kernel half also touches.
      *
      * The refusal *action* stays here rather than moving into the framework,
@@ -1944,8 +1943,7 @@ void usb_cdc_init(void) {
      * is real either. Not harmless on the ESP32-P4, where those two device
      * names are the actual cables carrying the console and the reset lines,
      * so the kernel appeared to be claiming the port its operator was
-     * reading it on. Found on the first boot of that board (E2,
-     * plan/phase27_esp32p4_bringup.md). */
+     * reading it on. Found on the first boot of that board. */
     printk_debug("[USB CDC] Not built for this target.\n");
 }
 

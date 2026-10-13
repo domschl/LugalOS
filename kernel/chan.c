@@ -8,14 +8,14 @@
 
 /* See kernel/include/kernel/chan.h for the rationale, especially why the
  * two copies below are deliberate rather than wasteful, and for the
- * task-owned endpoint design (M4). */
+ * task-owned endpoint design. */
 
 struct chan_endpoint {
     const char     *name;
     /* Inline-handler endpoints (B1: p9, console): handler != NULL. */
     chan_handler_fn handler;
     void           *ctx;
-    /* Task-owned endpoints (M4): owner_pid >= 0, handler == NULL. */
+    /* Task-owned endpoints: owner_pid >= 0, handler == NULL. */
     int             owner_pid;
     int             caller_pid;      /* who chan_call_task() is blocking, -1 if none */
     uint32_t        req_len;         /* valid once request_pending */
@@ -33,16 +33,14 @@ struct chan_endpoint {
      * in-flight request. See chan_call(). */
     bool            busy;
     /* Guards the check-and-set of `busy` above, and nothing else -- a
-     * handful of instructions that never block (S3,
-     * plan/phase22_smp_locking_foundation.md). */
+     * handful of instructions that never block . */
     spinlock_t      lock;
 };
 
 static chan_endpoint_t g_endpoints[CHAN_MAX_ENDPOINTS];
 static uint32_t        g_num_endpoints;
 
-/* The anti-cycle guard lives in kernel/lock.c now (Y3,
- * plan/phase31_concurrency_hierarchy.md): one wait-for graph fed by every
+/* The anti-cycle guard lives in kernel/lock.c now : one wait-for graph fed by every
  * blocking primitive, rather than a channel-only one here.
  *
  * This file kept its own array and walked it with no lock, which made
@@ -132,7 +130,7 @@ chan_endpoint_t *chan_lookup(const char *name) {
 
 /* The task-owned half of chan_call(). Everything from setting up the
  * request through task_block() runs under one continuous irq_save() -- the
- * same requirement M2's UART TX/RX waiters have, and for the same reason:
+ * same requirement UART TX/RX waiters have, and for the same reason:
  * releasing the mask before task_block() actually runs would let a
  * scheduling event land in the gap, where the owner task could be woken
  * (found not yet BLOCKED, a no-op) before the caller ever blocks, losing
@@ -208,7 +206,7 @@ static int chan_call_impl(chan_endpoint_t *ep, const void *req, uintptr_t ureq,
     if (!ep || !ep->in_use || (!user && !req) || req_len == 0) return -1;
     if (req_len > ep->req_cap) return -1;
 
-    /* Y2, plan/phase31_concurrency_hierarchy.md: this call blocks until the
+    /* This call blocks until the
      * owner replies, so a spinlock_t held across it is the cycle §0.3
      * describes -- the owner may need the very lock the caller is holding.
      *
@@ -225,7 +223,7 @@ static int chan_call_impl(chan_endpoint_t *ep, const void *req, uintptr_t ureq,
      * a recursive local 9P mount is the concrete way to reach this.
      *
      * Check-then-set, so it must be atomic against a timer tick landing
-     * between the two (M3 preemption): without the mask, two callers whose
+     * between the two : without the mask, two callers whose
      * check-and-set straddle a preemption both see busy == false and both
      * proceed, and their memcpy()s below race on the same ep->req_buf. */
     /* S3: the lock covers these three lines and stops. It is deliberately
@@ -234,7 +232,7 @@ static int chan_call_impl(chan_endpoint_t *ep, const void *req, uintptr_t ureq,
      *
      *   - `busy` is held across chan_call_task(), which calls task_block().
      *     A spinlock_t held across a block is the deadlock its own header
-     *     warns about -- and now refuses (phase 31 Y2): the holder cannot run
+     *     warns about -- and now refuses : the holder cannot run
      *     to release it, and this function checks for one before it blocks.
      *   - Contention here must *refuse*, not wait. A caller that finds the
      *     endpoint busy gets -1 and decides for itself; spinning or

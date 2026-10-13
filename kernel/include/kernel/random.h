@@ -5,9 +5,9 @@
 #include <stdbool.h>
 
 /*
- * Unpredictable bytes — N1, plan/phase18_networking_and_auth.md.
+ * Unpredictable bytes.
  *
- * This exists for the nonce in phase 18's `Tauth` challenge, and a
+ * This exists for the nonce in 9P authentication challenges, and a
  * challenge-response is only as good as its nonce: repeat one and a captured
  * response replays forever. That is the whole reason this is a kernel service
  * with a measurement attached rather than three lines inside the auth code.

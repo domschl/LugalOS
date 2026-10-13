@@ -1,4 +1,4 @@
-/* See drivers/radio/uprintf.h. 45.3b, plan/phase45_esp32c6.md. */
+/* See drivers/radio/uprintf.h. 45.3b, . */
 
 #include "uprintf.h"
 #include <stdbool.h>

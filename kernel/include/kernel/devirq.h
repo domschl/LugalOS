@@ -3,17 +3,16 @@
 
 #include <stdint.h>
 
-/* Device interrupt dispatch (M2, plan/phase12_microkernel_migration.md).
+/* Device interrupt dispatch.
  *
- * Every blocking wait in this tree, before M2, was a `while (!ready)
- * sched_yield();` spin -- `task_block()`/`task_unblock()` (B2) had zero
+ * Blocking waits in device drivers use a cooperative dispatch table rather than a busy `while (!ready)
+ * sched_yield();` spin -- `task_block()`/`task_unblock()` had zero
  * call sites outside kernel/sched.c itself. This is the missing half: a
  * place for a peripheral's own interrupt handler to call task_unblock() on
  * whoever is waiting for it, so a driver can actually sleep instead of
  * polling every scheduler tick.
  *
- * Arch-independent by construction, per Rule 0 (§5.1,
- * plan/phase5_distributed_design.md): this table only knows "IRQ number ->
+ * Arch-independent by construction: this table only knows "IRQ number ->
  * handler". *Identifying* which IRQ number fired is a different problem on
  * every target -- QEMU's PLIC claim/complete register vs. RP2350's Hazard3
  * Xh3irq `meinext` CSR share no mechanism at all -- so that part stays in

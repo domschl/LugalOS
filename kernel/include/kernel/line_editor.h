@@ -6,7 +6,7 @@
 void line_editor_init(void);
 int readline_interactive(const char *prompt, char *out_buf, int max_len);
 
-/* 37.5a, plan/phase37_screen_layouts_and_apps.md: the same editor for every
+/* The line editor for interactive
  * other text input -- `ed`'s lines, the `lisp` REPL, `e`'s prompts -- so that
  * all of them have the same keys, UTF-8, selection and the clipboard.
  *

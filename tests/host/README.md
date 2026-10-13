@@ -1,6 +1,6 @@
 # Host harnesses: kernel code under ASan, UBSan and valgrind
 
-Phase 40's review of the usual C failure modes — out-of-bounds access,
+review of the usual C failure modes — out-of-bounds access,
 use of uninitialised memory, unbounded recursion and loops, arithmetic
 overflow. The modules that parse input someone else controls are built for
 the development machine and driven with that input, valid and corrupted,
@@ -57,7 +57,7 @@ a failure (a cyclic cluster chain, say), not a slow test.
 
 ## What it found
 
-The first runs found, and phase 40 fixed: a FAT32 directory scan that
+The first runs found, and fixed: a FAT32 directory scan that
 looped forever on a cyclic chain; a boot sector accepted whatever its
 geometry; a C parser that dereferenced NULL after a syntax error, recursed
 without bound on the kernel stack, and wrote binaries for programs it had

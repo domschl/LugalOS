@@ -1,4 +1,4 @@
-/* The kernel log's consumer (Y5c, plan/phase31_concurrency_hierarchy.md).
+/* The kernel log's consumer.
  *
  * Y5b made a log record atomic to store. This is the half that makes the
  * *producer* free: once this task is registered, klog_emit() appends a record
@@ -10,7 +10,7 @@
  * **The consumer may block; the producer may not.** This task takes
  * console_lock() around its fan-out and will happily wait behind cprintf();
  * that is harmless precisely because nothing is waiting on this task. A
- * producer that waited would be a cycle, which is what phase 31 exists to
+ * producer that waited would be a cycle, which would cause a deadlock
  * prevent and what §0.4 measured the cost of.
  *
  * ## Why a wake rather than a poll

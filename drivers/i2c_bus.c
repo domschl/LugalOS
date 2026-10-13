@@ -158,7 +158,7 @@ void i2c_bus_init(void) {
     int timeout = 10000;
     while ((REG(RESETS_RESET_DONE) & rst_mask) != rst_mask && --timeout > 0);
 
-    /* M5 Phase 3: the controllers need to be Non-secure-accessible for the
+    /* the controllers need to be Non-secure-accessible for the
      * U-mode task's serve loop to touch them -- from M-mode, before the task
      * exists. Every ACCESSCTRL register except GPIO_NSMASK0/1 needs 0xacce
      * in the write's upper 16 bits, or the write bus-faults. */
@@ -374,8 +374,8 @@ void i2c_rp2350_diag(uint8_t addr, uint8_t reg) {
     i2c_rp2350_diag_bus(0, addr, reg);
 }
 #elif defined(CONFIG_BOARD_ESP32P4) || defined(CONFIG_BOARD_ESP32C6)
-/* Espressif's I2C controller: the ESP32-P4's I2C0 (E7, plan/phase27_esp32p4_bringup.md) and, since
- * 45.10, the ESP32-C6's (plan/phase45_esp32c6.md). The C6's register map, bit positions and command
+/* Espressif's I2C controller: the ESP32-P4's I2C0 and, since
+ * 45.10, the ESP32-C6's. The C6's register map, bit positions and command
  * opcodes are the P4's to the bit (checked against IDF's soc/esp32c6/register/soc/i2c_reg.h and
  * esp_hal_i2c/esp32c6 i2c_ll.h); what differs is in the per-chip block below -- the base, the clock
  * and reset, the GPIO matrix's offsets, the pins and signal numbers. Everything else -- the command
@@ -797,7 +797,7 @@ static bool esp_i2c_run(void) {
     g_esp_i2c_last_int = st;
     g_esp_i2c_last_sr  = REG(ESP_I2C_SR);
 
-    /* 47.2, plan/phase47_esp32p4_lcd7b_ribbon.md: a NACK is *reported* before
+    /* a NACK is *reported* before
      * the transfer is over. The command list still runs on to its STOP, and
      * the bus stays busy until that has gone out; IDF's master waits for
      * exactly this (`while (i2c_ll_is_bus_busy(...))` after an event) before
@@ -1059,7 +1059,7 @@ void i2c_scan_bus(void) {
     }
 }
 
-/* M4.5, plan/phase12_microkernel_migration.md, Part B: RTC and EEPROM share
+/* RTC and EEPROM share
  * one physical I2C bus, so this one "i2c" task serves both -- see i2c_rtc.h
  * for the fuller reasoning. Wire protocol, one opcode byte then a
  * fixed-shape payload per op; unlike drivers/spisd_rp2350.c's BLK_REQ_*
@@ -1073,14 +1073,11 @@ void i2c_scan_bus(void) {
  *   'R' (EEPROM read)      req: [op] + addr(2) + len(2)  resp: [result:int32(4)] + data
  *   'X' (EEPROM write)     req: [op] + addr(2) + len(2) + data  resp: [result:int32(4)]
  *
- * The EEPROM ops' buffers were originally sized to the whole 4KB AT24C32
- * device; M5 Phase 3, plan/phase12_microkernel_migration.md, capped a
- * single EEPROM read/write at AT24C32_CHUNK_MAX (drivers/at24c32.h) bytes
- * instead -- far more than a syscall-sized U-mode buffer should carry, and
- * the reason i2c was deferred when tm1638 converted to U-mode in Phase 2.
- * drivers/at24c32.c's at24c32_read()/at24c32_write() loop internally in
- * chunks this size for anything larger, so this is invisible to every
- * existing caller. */
+ * The EEPROM ops' buffers cap a single EEPROM read/write at
+ * AT24C32_CHUNK_MAX (drivers/at24c32.h) bytes -- an appropriately bounded
+ * syscall-sized U-mode buffer. drivers/at24c32.c's at24c32_read()/at24c32_write()
+ * loop internally in chunks this size for anything larger, so this is
+ * transparent to every caller. */
 /* The DS3231's status register, for OSF. Its own op rather than a field
  * bolted onto the time read: the face reads the time once a second and only
  * consults the flag when deciding whether to trust it. */
@@ -1106,7 +1103,7 @@ static uint8_t         g_i2c_resp[I2C_RESP_CAP];
 static chan_endpoint_t *g_i2c_ep;
 static int              g_i2c_task_pid = -1;
 
-/* M4.5 verify: counts chan_call()s actually served -- see
+/* Verify: counts chan_call()s actually served -- see
  * drivers/uart_16550.c's g_uart_write_calls comment for the reasoning. */
 static uint32_t g_i2c_calls;
 
@@ -1152,15 +1149,14 @@ bool i2c_task_alive(void) {
 #define RTC_WIRE_LEN 9u
 
 /* Only RP2350 has real I2C hardware to isolate -- the #else branch below
- * (QEMU rv64/rv32) keeps the plain kernel-mode server every M4.5 driver
- * task had before M5, unchanged. Unlike drivers/uart_rp2350.c/
+ * (QEMU rv64/rv32) keeps the plain kernel-mode server every driver-task driver
+ * task had previously, unchanged. Unlike drivers/uart_rp2350.c/
 
  * tm1638_rp2350.c (entirely separate, RP2350-only files), i2c_rtc.c is
  * shared across every target, so the split lives inside this one file. */
 #if defined(CONFIG_BOARD_RP2350)
 
-/* ---- U-mode implementation, M5 Phase 3, plan/phase12_microkernel_migration.md ----
- *
+/* ---- U-mode implementation ---- *
  * A second, independent implementation of the I2C register handshake
  * above (i2c_write_bytes/i2c_read_bytes) and drivers/at24c32.c's
  * (i2c_write_at24/i2c_read_at24, at24c32_hw_write()'s page-boundary
@@ -1380,7 +1376,7 @@ I2C_UATTR static void i2c_umode_body(void) {
     }
 }
 
-/* M5 heap-reclaim, plan/phase12_microkernel_migration.md: 512 bytes, not
+/* Task stack: 512 bytes, not
  * 4096 -- i2c_umode_body()'s deepest call chain (through
  * i2c_usys_read_reg -> i2c_usys_target/i2c_usys_write_raw) measures 384
  * bytes on the real disassembly. See drivers/uart_rp2350.c's
@@ -1395,7 +1391,7 @@ static void i2c_task_body(void *arg) {
     (void)arg;
     while (!g_i2c_ep) sched_yield();
 
-    /* G3, plan/phase30_driver_framework.md. I2C controller windows. */
+    /* G3, . I2C controller windows. */
     const driver_umode_spec_t spec = {
         .name         = "I2C",
         .fallback     = "RTC/EEPROM stay on direct hardware access.",
@@ -1417,8 +1413,8 @@ static void i2c_task_body(void *arg) {
     (void)driver_umode_enter(&spec);
 }
 
-#else /* !CONFIG_BOARD_RP2350: plain kernel-mode server, as every M4.5
-       * driver task had it before M5 -- no real I2C hardware to isolate
+#else /* !CONFIG_BOARD_RP2350: plain kernel-mode server, as every driver-task
+       * driver task had it previously -- no real I2C hardware to isolate
        * on QEMU, so no reason to build a domain for it. */
 
 /* This task, and only this task, may call the *_hw_* functions in this file
@@ -1512,7 +1508,7 @@ int i2c_task_start(void) {
 int i2c_task_call(const uint8_t *req, uint32_t req_len, uint8_t *resp, uint32_t resp_max) {
     for (int attempt = 0; attempt < 8; attempt++) {
         int n = chan_call(g_i2c_ep, req, req_len, resp, resp_max);
-        /* M5 Phase 3: counted here, on the client side -- see
+        /* counted here, on the client side -- see
          * drivers/tm1638_rp2350.c's tm1638_call_with_retry() comment,
          * same reasoning: a U-mode server cannot touch g_i2c_calls, an
          * ordinary kernel .bss global no domain grants it. */
@@ -1523,7 +1519,7 @@ int i2c_task_call(const uint8_t *req, uint32_t req_len, uint8_t *resp, uint32_t 
 }
 
 #if defined(CONFIG_BOARD_RP2350)
-/* M5 Phase 3's own "Verify" deliverable: does the real i2c domain shape
+/* Domain verification: does the real i2c domain shape
  * (stack + .utext + a 4096-byte I2C_RTC_BASE window) actually confine the
  * task to the I2C controller, or does the grant's width accidentally
  * cover more? Modeled directly on drivers/tm1638_rp2350.c's

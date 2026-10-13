@@ -1,11 +1,10 @@
 /*
- * A GPS module read for its pulse per second (P3b,
- * plan/phase24_dcf77_precision_and_ntp_server.md).
+ * A GPS module read for its pulse per second.
  *
  * **A transfer standard, not a time source, and the distinction is the
  * phase.** This exists to calibrate the DCF-77 path: DCF says *which* second
  * it is, PPS says *exactly when* that second began, and the difference is the
- * receiver's group delay measured directly rather than fitted. Phase 24 §3.4
+ * receiver's group delay measured directly rather than fitted. the specification
  * settles why the module is attached for the calibration and taken off
  * afterwards -- a board that depends on GPS is a satellite clock with a
  * longwave hobby, and the whole point of the phase is a clock that keeps time

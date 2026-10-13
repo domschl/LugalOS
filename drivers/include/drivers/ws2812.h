@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 /* One WS2812 ("NeoPixel") on a single data line, driven by a peripheral's
- * pulse generator (45.5, plan/phase45_esp32c6.md).
+ * pulse generator.
  *
  * The protocol is a 800 kHz self-clocked bit stream: every bit is a high pulse
  * then a low one, and the *width* of the high pulse is the data (about 0.3 us

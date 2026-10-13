@@ -1,5 +1,5 @@
 /* The `kbd` task on the RP2350's PIO-USB engine -- 36.8,
- * plan/phase36_rp2350_lcd7_terminal.md §3.2. Since 47.9 this file is only the
+ *  Since 47.9 this file is only the
  * *port* (drivers/include/drivers/usbkbd_task.h): one transaction through the
  * engine's ring, the task's clock, and the task itself. Enumeration, the hub,
  * the boot keyboard and the console input above it are drivers/usbkbd_host.c,

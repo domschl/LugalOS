@@ -4,7 +4,6 @@
 #include "lugalos_config.h"
 
 /* Where the screen terminal's code and constant data live -- 36.6a,
- * plan/phase36_rp2350_lcd7_terminal.md.
  *
  * On the RP2350-LCD-7 the terminal emulator runs as the U-mode `lcdterm`
  * task, and a U-mode task can execute and read only what its domain grants:

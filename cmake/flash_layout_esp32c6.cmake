@@ -1,4 +1,4 @@
-# The ESP32-C6-Zero flash map -- 45.4.2, plan/phase45_esp32c6.md.
+# The ESP32-C6-Zero flash map -- 45.4.2, .
 #
 # The only definition of where each segment lives, reaching the C code (compile
 # definitions) and the flashing tool (the generated manifest) so the two cannot
@@ -15,7 +15,7 @@
 #
 # The identity sector is the node's own (kernel/identity.c): written by the device,
 # never by a flashing tool -- it is deliberately absent from flash.manifest, as the
-# RP2350's is from every UF2 (plan/phase21_identity_and_authentication.md §3.3).
+# RP2350's is from every UF2.
 #
 # 0x0 is not a choice: the C6's boot ROM reads its second-stage image from flash
 # offset 0 (IDF components/esp_rom/esp32c6/include/esp_rom_caps.h,

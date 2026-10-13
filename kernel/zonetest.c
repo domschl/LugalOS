@@ -1,5 +1,5 @@
 /*
- * `zonetest` -- 38.4, plan/phase38_psram.md §3.1: the bulk page zone, on
+ * `zonetest`: the bulk page zone, on
  * whatever backs it (PSRAM on the LCD-7, a stand-in range of RAM on QEMU).
  *
  *   1. a bulk allocation lands in the bulk zone, a fast one does not;

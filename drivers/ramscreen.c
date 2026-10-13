@@ -1,6 +1,5 @@
 /*
  * A screen in RAM, for the targets without one -- 37.3b,
- * plan/phase37_screen_layouts_and_apps.md §2.
  *
  * It exists so that Lisp's canvas -- and the canvas protocol, and the
  * layouts behind it -- run, and are tested, on QEMU exactly as on the

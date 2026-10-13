@@ -1,6 +1,6 @@
 /*
  * Drawing on a 1-bpp buffer at any pixel -- 37.1a,
- * plan/phase37_screen_layouts_and_apps.md §1.1. See drivers/canvas1.h.
+ *  See drivers/canvas1.h.
  *
  * In the lcdterm task's U-mode section on the RP2350-LCD-7: no libc and no
  * string literals (a literal is .rodata, outside the task's domain).

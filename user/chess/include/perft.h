@@ -1,6 +1,6 @@
 /*
  * Vendored verbatim from ~/gith/domschl/LugalChess (engine/include/perft.h),
- * J4, plan/phase10_chess_completion.md. No platform dependency at all -- see
+ * J4, . No platform dependency at all -- see
  * perft.c for what actually needed adapting.
  */
 
@@ -18,7 +18,7 @@
 uint64_t run_perft(Position *pos, int depth);
 
 /* Same answer as run_perft(), computed across up to `workers` cores by
- * splitting the root move list (X8, plan/phase23_multicore_scheduling.md).
+ * splitting the root move list.
  * The identity with run_perft() is the point: the published node counts in
  * perft.c's own table verify the parallel path exactly, with no argument
  * about whether a concurrency change was correct.

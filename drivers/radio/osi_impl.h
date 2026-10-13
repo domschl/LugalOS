@@ -7,7 +7,7 @@
 #include <stdint.h>
 
 /* The radio domain's side of the Wi-Fi blob's operating-system interface
- * (45.3b, plan/phase45_esp32c6.md §4.5).
+ *.
  *
  * Espressif's blob reaches its OS through `wifi_osi_funcs_t`: ~127 function
  * pointers whose types are fixed by IDF's header. This is the *implementation*

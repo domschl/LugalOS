@@ -43,7 +43,7 @@ void uart1_wire_test(unsigned listen_ms);
  * to be. */
 void uart1_pin_test(void);
 
-// --- A3b: shared-wire demux (plan/phase5_distributed_design.md) ---
+// --- A3b: shared-wire demux ---
 //
 // Lets the interactive console and SLIP-framed 9P traffic coexist on one
 // physical UART -- the single-cable RP2350/CP2102 story A3a's headless mode

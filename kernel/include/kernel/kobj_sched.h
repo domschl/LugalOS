@@ -5,7 +5,7 @@
 
 /* The blocking face of kernel/kobj.h: the same objects, with the waiting,
  * timeouts and wake-ups the pure state machines leave to the scheduler
- * (45.3b, plan/phase45_esp32c6.md). Each call is made on behalf of the
+ *. Each call is made on behalf of the
  * *calling task*; the syscall layer wraps these for U-mode.
  *
  * Timeouts are in milliseconds: 0 polls, KOS_FOREVER waits without limit.

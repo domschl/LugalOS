@@ -2,7 +2,7 @@
 #define LUGALOS_DRIVERS_TOUCH_H
 
 /* A GT911 touch controller, polled, and three gestures for the ribbon --
- * 47.12, plan/phase47_esp32p4_lcd7b_ribbon.md. Portable: it talks to the
+ * 47.12, . Portable: it talks to the
  * controller through drivers/i2c_bus.h, and to the screen through the
  * console's hotkeys (kernel/console.h), so the LCD-7B and the RP2350
  * touch terminal run the same code.

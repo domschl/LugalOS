@@ -1,5 +1,5 @@
 /* `kobjutest`: every kernel-object syscall, from a real U-mode task confined
- * to a real PMP/Sv39 domain (45.3b, plan/phase45_esp32c6.md).
+ * to a real PMP/Sv39 domain .
  *
  * kobjselftest checks the objects from kernel tasks; what this adds is the
  * boundary. The task below runs in U-mode in a domain of exactly two regions --

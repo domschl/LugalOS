@@ -1,7 +1,7 @@
 #include "usys.h"
 
 /* A user program that does not fit the old two-page image (C4,
- * plan/phase6_memory_and_processes.md).
+ * ).
  *
  * Its .bss alone is 20 KB, so with the text page the image spans six pages and
  * is rounded to an eight-page NAPOT run. Under the model this replaces it

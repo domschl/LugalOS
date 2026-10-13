@@ -1,5 +1,5 @@
 /*
- * drivers/radio/uprintf.c on the host (45.3b, plan/phase45_esp32c6.md).
+ * drivers/radio/uprintf.c on the host.
  *
  * Differential: the same format and arguments through the C library's snprintf
  * and through ku_snprintf, over every flag, width, precision and length

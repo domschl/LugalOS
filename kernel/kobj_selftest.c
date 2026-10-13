@@ -1,5 +1,5 @@
 /* `kobjselftest`: the kernel objects under real tasks, real preemption and
- * real timeouts (45.3b, plan/phase45_esp32c6.md).
+ * real timeouts .
  *
  * tests/host/kobj_host.c checks the state machines against reference models
  * with scripted tasks. What it cannot check is the glue: that a wake arriving

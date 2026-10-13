@@ -1,9 +1,7 @@
 /* The ESP32-P4's Ethernet MAC: clocks, pads, PHY reset and MDIO.
- * Z1, plan/phase28_esp32p4_ethernet.md.
+ * Z1, .
  *
- * Provenance, because on this chip it is the whole ballgame (the rule is
- * plan/phase27_esp32p4_bringup.md §3.2, and it has already caught two
- * clock-gate bits that plausible reasoning got wrong): every register offset
+ * Provenance, because on this chip it is the whole ballgame: every register offset
  * and bit position below was read off the ESP32-P4 TRM's own bit diagrams and
  * cross-checked against ESP-IDF's generated headers under
  * ~/gith/esp/esp-idf/components/soc/esp32p4/register/hw_ver1/soc/. Where a
@@ -28,7 +26,7 @@
 #include "arch/esp32p4_intr.h"
 #include "lugalos_config.h"
 
-/* Guard-by-pin-map (47.0, plan/phase47_esp32p4_lcd7b_ribbon.md): the driver
+/* Guard-by-pin-map: the driver
  * exists only on a board file that declares an EMAC. The ESP32-P4-WIFI6-
  * Touch-LCD-7B has no Ethernet; it gets the stubs at the end of this file,
  * so kernel/board.c and the shell need no matching #if. */
@@ -55,7 +53,7 @@
  * source-selects are in HP_SYS_CLKRST_PERI_CLK_CTRL00/01; the pad's own
  * always-on gate and the EMAC's peripheral reset are in LP_CLKRST, a
  * different peripheral in a different power domain. There is no position to
- * infer here and no pattern to follow -- this is the same trap phase 27
+ * infer here and no pattern to follow -- this is the same trap previously
  * recorded for the UART, whose two gates are SOC_CLK_CTRL1 bit 18 and
  * SOC_CLK_CTRL2 bit 7.
  *
@@ -128,9 +126,8 @@
  * EMAC_CR selects MDC as a division of the CSR clock, which on this chip is
  * the system clock (IDF emac_ll_get_csr_clk_src(): SOC_MOD_CLK_SYS).
  *
- * **This kernel now does configure the P4's clock tree** -- phase 34 -- so
- * the sentence that used to stand here ("the system clock is whatever the
- * boot ROM left, and this file does not know it") is no longer true. SYS_CLK
+ * **This kernel configures the P4's clock tree**, so
+ * the system clock is known from the hardware configuration. SYS_CLK
  * is 20 MHz on the crystal and 180 MHz at the 360 MHz this board runs at;
  * `clocks` reports it from the registers.
  *
@@ -140,7 +137,7 @@
  * 25 MHz, so a divider that is too small breaks the bus while one that is
  * too large only makes each transaction slower. Across every frequency this
  * board now supports that is 161 kHz (SYS 20 MHz) to 1.45 MHz (SYS 180 MHz)
- * -- comfortably inside the cap at both ends, which is why phase 34 moved
+ * -- comfortably inside the cap at both ends, which is why we moved
  * the system clock by 9x and this file needed no edit beyond this comment.
  * A scan of 32 addresses costs microseconds either way.
  *
@@ -523,7 +520,7 @@ typedef struct {
     volatile uint32_t next;     /* chained mode: address of the next descriptor */
     volatile uint32_t ext;      /* RDES4 extended status; unused in TX */
     volatile uint32_t rsvd;
-    volatile uint32_t ts_lo;    /* IEEE 1588 timestamp -- phase 29, not read here */
+    volatile uint32_t ts_lo;    /* IEEE 1588 timestamp (not read here) */
     volatile uint32_t ts_hi;
     uint8_t pad[ESP32P4_L1_CACHE_LINE - 32];
 } emac_desc_t;
@@ -765,7 +762,7 @@ static volatile bool g_diag_owns_rings;
 
 /* Brings the DMA and MAC up. `loopback` selects the MAC's internal loopback,
  * which is what lets Z2 prove the rings with no PHY and no cable in the
- * picture -- one candidate cause per failure, which is phase 27 §0's rule. */
+ * picture -- one candidate cause per failure, which is the design rule. */
 static void emac_start(bool loopback) {
     /* Enhanced (32-byte) descriptors, mixed and fixed bursts, aligned beats,
      * burst length 32. */
@@ -833,7 +830,7 @@ static void emac_start(bool loopback) {
      *   PCF = 00 MAC control frames (pause) are handled by the MAC and never
      *            reach us, which is what we want with flow control off
      *
-     * That is precisely phase 28 Z4's requirement -- our unicast plus
+     * That is precisely the requirement -- our unicast plus
      * broadcast -- with the hardware doing the comparison instead of a
      * memcmp() on every arriving frame. */
     REG(EMAC_MACFRAMEFILTER) = loopback ? FILTER_RA : 0u;

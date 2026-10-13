@@ -16,7 +16,7 @@
  * The condition is about the *class* of target, not about any one board, and
  * it did not used to say so. It tested `CONFIG_BOARD_RP2350` alone, which was
  * correct while that was the only microcontroller in the tree and quietly
- * wrong the moment a second one arrived: phase 32 enabled chibicc on the
+ * wrong the moment a second one arrived: enabled chibicc on the
  * ESP32-P4 and it asked for a **304 KB** arena -- the QEMU figure -- against
  * 272 KB of free heap, and refused to compile anything. A board with *more*
  * heap than the RP2350 failed where the RP2350 succeeds, which is the shape
@@ -24,7 +24,7 @@
  *
  * QEMU keeps the generous numbers because it has 128 MB and because the
  * larger pools compile larger programs; the hardware targets share the
- * figures phase 10 measured on the RP2350. */
+ * figures measured on the RP2350. */
 #if defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32P4) || defined(CONFIG_BOARD_ESP32C6)
 #define MAX_NODES 256
 #define MAX_OBJS 128

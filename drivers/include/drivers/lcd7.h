@@ -6,7 +6,7 @@
 
 #include "kernel/console.h"
 
-/* The RP2350-LCD-7's 800x480 RGB panel (ST7262), plan/phase36 36.3 onward.
+/* The RP2350-LCD-7's 800x480 RGB panel (ST7262),  36.3 onward.
  * Stubs everywhere else; the real body is built where the board file
  * declares CONFIG_LCD_PCLK_GPIO. */
 

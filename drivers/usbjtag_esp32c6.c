@@ -1,5 +1,4 @@
-/* The ESP32-C6's console: the USB-Serial/JTAG peripheral (45.4,
- * plan/phase45_esp32c6.md). The same interface drivers/uart.h gives every other
+/* The ESP32-C6's console: the USB-Serial/JTAG peripheral. The same interface drivers/uart.h gives every other
  * target, so the console, the shell and printk() above it are unchanged.
  *
  * The Waveshare C6-Zero has no UART bridge: its one USB-C connector is wired
@@ -14,7 +13,7 @@
  * documents as the contract ("not fatal"). The interrupt line exists in the
  * peripheral (INTMTX source 48) and 45.4.2 brings the controller up and moves
  * the receive side onto it; until then a task that waits for a key yields in a
- * loop, like every console in this tree did before M4.
+ * loop, like every console in this tree did previously.
  *
  * ## Transmit is bounded, always
  *
@@ -107,7 +106,7 @@ static void hw_putc(char c) {
     if (++g_pending >= FIFO_BYTES || c == '\n') hw_flush();
 }
 
-/* --- Sharing the port with LLP (49.3, plan/phase49_c6_network_nodes.md) ---
+/* --- Sharing the port with LLP ---
  *
  * The C6-Zero has one cable. To be a host's network card over it, LLP's
  * serial frames (SLIP: END ... END, doc/llp.md §7.1) share the port with the

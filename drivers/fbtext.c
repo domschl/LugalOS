@@ -1,5 +1,5 @@
 /*
- * Text on a 1-bpp framebuffer -- 36.5, plan/phase36_rp2350_lcd7_terminal.md.
+ * Text on a 1-bpp framebuffer.
  * See drivers/fbtext.h for the buffer format and the contract.
  *
  * Deliberately byte-oriented. With 8-pixel cells and the leftmost pixel in

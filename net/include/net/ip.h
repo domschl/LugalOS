@@ -5,11 +5,11 @@
 #include <stdbool.h>
 #include "net/netif.h"
 
-/* IPv4, ARP, ICMP and UDP (R2, plan/phase19_ip_stack_and_ethernet.md).
+/* IPv4, ARP, ICMP and UDP.
  *
- * The layer phase 18 deliberately did not write, because the W5500 contained
+ * The layer deliberately did not write, because the W5500 contained
  * one in silicon. Every part that replaced it hands over Ethernet frames, so
- * this is now the product rather than a scaffold -- see the phase 19 plan's
+ * this is now the product rather than a scaffold -- see the plan's
  * §0 for why that argument inverted rather than being overturned.
  *
  * **Addresses are byte arrays in network order throughout**, never packed
@@ -38,7 +38,7 @@ typedef struct {
     uint8_t gw[IPV4_LEN];
 
     /* Counters. Every drop below is a distinct decision the stack made, and
-     * they are separate for the reason phase 18 learned the hard way: "the
+     * they are separate for the reason learned the hard way: "the
      * network does not work" is not a diagnosis, and a single `dropped` total
      * cannot become one. */
     uint32_t rx_arp, rx_ip, rx_icmp, rx_udp, rx_tcp;
@@ -55,7 +55,7 @@ typedef struct {
 /* Binds the stack to an interface. Without an address it will answer ARP for
  * nothing and route nothing; that is deliberate (see net_set_address). */
 int net_stack_attach(netif_t *nif);
-/* 49.2: the inverse -- the interface goes to someone else (an LLP bridge). */
+/* the inverse -- the interface goes to someone else (an LLP bridge). */
 void net_stack_detach(void);
 
 /* Applies an address. A zero gateway means "no router on this segment", which

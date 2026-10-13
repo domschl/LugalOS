@@ -5,7 +5,7 @@
 
 /* QEMU-only virtio-serial (device id 3, non-multiport: RX = queue 0,
  * TX = queue 1) MMIO driver, dedicated entirely to carrying 9P traffic
- * (A3, plan/phase5_distributed_design.md) -- a clean channel separate from
+ * -- a clean channel separate from
  * the UART console, so it needs no RX demultiplexing (that's link_uart_slip's
  * problem, deferred as A3b). Probes the same 0x10001000..0x10008000 MMIO
  * slot range as drivers/virtio_blk.c.

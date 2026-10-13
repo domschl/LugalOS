@@ -1,5 +1,5 @@
 /* The ESP32-P4's SDIO host: the SD/MMC controller's slot 1, wired to the
- * board's ESP32-C6 (49.4, plan/phase49_c6_network_nodes.md). The controller
+ * board's ESP32-C6. The controller
  * itself belongs to drivers/sdmmc_esp32p4.c (slot 0, the microSD card); this
  * file is a client of it through drivers/sdhost_esp32p4.h, and everything it
  * does is under that controller's lock with card 1 selected.

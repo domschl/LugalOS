@@ -1,7 +1,6 @@
 /* Kernel-owned synchronisation objects: the state machines.
  * See kernel/include/kernel/kobj.h for the contract and why this file never
- * blocks, never touches the scheduler and never reads a clock. 45.3b,
- * plan/phase45_esp32c6.md. */
+ * blocks, never touches the scheduler and never reads a clock. */
 
 #include "kernel/kobj.h"
 #include <stddef.h>

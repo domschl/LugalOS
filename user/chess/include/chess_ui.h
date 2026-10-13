@@ -1,6 +1,6 @@
 /*
  * Public entry points for the LugalOS chess UI (H4,
- * plan/phase9_chess_computer.md). See chess_ui.c for the rationale.
+ * ). See chess_ui.c for the rationale.
  */
 
 #ifndef LUGALOS_CHESS_UI_H
@@ -14,7 +14,7 @@
  * every target, including QEMU. */
 void chess_selftest(void);
 
-/* J4 (plan/phase10_chess_completion.md): move-generation correctness
+/* move-generation correctness
  * suite (perft.c's own test-case table). `max_depth <= 0` uses
  * run_perft_tests_depth()'s own documented default (5). No hardware
  * dependency, same as chess_selftest() above. */
@@ -28,21 +28,21 @@ void chess_selftest_bench(int cores, int fixed_depth);
 void chess_perft(int max_depth);
 
 /* As above, with each position's perft split across `cores` (X8,
- * plan/phase23_multicore_scheduling.md). One core is the pre-X8 behaviour. */
+ * ). One core is the pre-X8 behaviour. */
 void chess_perft_cores(int max_depth, int cores);
 
-/* The plain-terminal console REPL (J1, plan/phase10_chess_completion.md) --
+/* The plain-terminal console REPL --
  * scenario 1.1, no hardware dependency. Builds and runs on every target.
  * Returns on 'quit', same as chess_run() below on Ctrl-C/STOP. */
 void chess_console_run(void);
 
-/* 37.4, plan/phase37_screen_layouts_and_apps.md: the canvas board (the
+/* the canvas board (the
  * RP2350-LCD-7's, or a RAM screen's on QEMU) drawn from the starting
  * position and checked pixel by pixel. Prints CHESSBOARD_SELFTEST_OK/_FAIL;
  * returns the failures. On a build whose board is the ST7735, nothing to do. */
 int chess_canvas_selftest(void);
 
-/* The session's shared scratch Position (phase 15 §1.3). Non-NULL only
+/* The session's shared scratch Position (§1.3). Non-NULL only
  * between chess_ensure_init() and chess_session_end(). Declared here now that
  * pgn.c wants it too -- search.c still reaches it with its own `extern` at the
  * call site, matching how it reaches the other two engine/UI seam functions. */

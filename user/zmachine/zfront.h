@@ -1,7 +1,7 @@
 /* zfront.h — LugalOS kernel front for the Z-machine interpreter
  *
  * Session model (mirrors the chess engine's memory discipline,
- * plan/phase38_psram.md): nothing is allocated at boot, nothing lives in
+ * ): nothing is allocated at boot, nothing lives in
  * .bss/.data.  Everything heavy — the 128 KB address space, the story
  * image kept for RESTART, and the VM struct itself (~52 KB) — is claimed
  * from palloc_pages_bulk() (PSRAM on boards that have it; the fallback

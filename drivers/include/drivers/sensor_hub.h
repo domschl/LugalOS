@@ -5,7 +5,7 @@
 #include <stdbool.h>
 #include "drivers/sensor.h"
 
-/* Sensor Hub & Centralized Cache (Category D, phase 46 §5).
+/* Sensor Hub & Centralized Cache.
  *
  * Coordinates environmental and light sensors across LugalOS:
  * - Autonomous background sampler task
@@ -65,7 +65,7 @@ void sensor_hub_register_sources(void);
 /* Human-readable status report for the shell 'sensor' command */
 void sensor_hub_print_status(void);
 
-/* Ground-truth cross-calibration status (Phase 46 §7.5) */
+/* Ground-truth cross-calibration status */
 bool    sensor_hub_is_mox_contaminated(void);
 bool    sensor_hub_is_fresh_air_verified(void);
 int32_t sensor_hub_co2_ratio_pct(void);

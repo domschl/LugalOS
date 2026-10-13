@@ -23,7 +23,7 @@ static task_t  g_tasks[MAX_TASKS];
 
 /* Which task each hart is running, as an index into g_tasks.
  *
- * S6 (plan/phase22_smp_locking_foundation.md): per-hart and lock-free by
+ * per-hart and lock-free by
  * construction. "Which task am I running" is not shared state -- only the
  * hart itself ever writes its own slot, and it does so while holding the
  * scheduler lock anyway. Making this an array is what lets the *shared*
@@ -187,7 +187,7 @@ bool sched_task_info(uint32_t index, int *pid, int *state, const char **name) {
  * handler killed, which an exit status alone cannot: 0 is a perfectly ordinary
  * return value and also what an uninitialised field holds. Both are only
  * meaningful once the task is DEAD; for a live task the status is reported as
- * 0 and `exited_clean` as false. `has_domain` is M6's own addition: whether
+ * 0 and `exited_clean` as false. `has_domain` indicates whether
  * this task ever had task_set_domain() called on it, i.e. whether it runs
  * under real hardware-enforced isolation rather than unrestricted kernel
  * privilege -- see this function's own header comment for the fuller
@@ -222,7 +222,7 @@ int task_set_domain(int pid, mem_domain_t *domain) {
     return 0;
 }
 
-/* Sets a task's scheduling tier (M3). Separate from task_create() for the
+/* Sets a task's scheduling tier. Separate from task_create() for the
  * same reason task_set_domain() is: a caller usually only knows what a task
  * *is* -- a driver, a background server -- once it exists, and this can be
  * called any time after, not just once at birth. Takes effect at the next
@@ -415,7 +415,7 @@ void task_start(void (*entry)(void *), void *arg) {
      * Guarded, so a body that already reported a status through
      * task_set_exit_status() keeps it: overwriting a deliberate 42 with a
      * default 0 on the way out would break exactly the check that reads it
-     * (`uargs` in phase 12's C3 suite). */
+     * (`uargs`). */
     if (!g_tasks[cur()].exit_clean) task_set_exit_status(0);
     task_exit();
 }
@@ -461,7 +461,7 @@ static int task_create_full(const char *name, void (*entry)(void *), void *arg,
          * printk()s while it is mid-switch, mid-exit, holding g_sched_lock,
          * or in interrupt context".
          *
-         * That rule is retired (Y5c, plan/phase31_concurrency_hierarchy.md).
+         * That rule is retired.
          * printk() appends a record and returns from any context, so no
          * exception is needed and none of these is special. What survives is
          * about *delivery*: the fatal paths below still use printk_critical()
@@ -494,7 +494,7 @@ static int task_create_full(const char *name, void (*entry)(void *), void *arg,
     t->hart_affinity = hart;
     t->hart_held = false;          /* nor a hold left by the last occupant */
     t->exit_clean = false;
-    t->priority = TASK_PRIO_NORMAL; /* M3: raised/lowered via task_set_priority() */
+    t->priority = TASK_PRIO_NORMAL; /* Raised/lowered via task_set_priority() */
     t->wake_at_ms = 0;
     t->wait_armed = false;
     t->wake_pending = false;
@@ -502,7 +502,7 @@ static int task_create_full(const char *name, void (*entry)(void *), void *arg,
     t->vterm_id = (cpid >= 0 && cpid < MAX_TASKS) ? g_tasks[cpid].vterm_id : 0;
 
     /* Paint it before priming, so a high-water mark can be recovered later
-     * (§6, plan/phase15_memory_reclamation.md).
+     *.
      *
      * The boot stack has had this since entry.S started painting it, and
      * reading it is what found that the RP2350 boot path had been running on
@@ -541,12 +541,12 @@ static int task_create_full(const char *name, void (*entry)(void *), void *arg,
     t->state = TASK_READY;
     spin_unlock_irqrestore(&g_sched_lock, pub);
 
-    /* Y5a, plan/phase31_concurrency_hierarchy.md: the stack *address* used to
+    /* The stack *address* used to
      * ride along here too, ten times over on a full RP2350 persona. It is
      * derivable and better placed -- /proc/meminfo reports the heap base
      * these are allocated from, in order -- so it goes.
      *
-     * The size stays. It is not decoration: tests/runner.py's M0 check reads
+     * The size stays. It is not decoration: the test suite reads
      * it to prove task_create_sized() honoured a non-default page count, and
      * the task in question has already exited by the time /proc/ps could be
      * asked. What cannot be recovered afterwards is the *sequence*, so the
@@ -571,14 +571,14 @@ int task_create_pinned(const char *name, void (*entry)(void *), void *arg,
     return task_create_full(name, entry, arg, TASK_STACK_PAGES, hart);
 }
 
-/* Highest-priority runnable task, or -1 if none (M3,
- * plan/phase12_microkernel_migration.md). The current task counts as
+/* Highest-priority runnable task, or -1 if none:
+ * The current task counts as
  * runnable only if it is still RUNNING -- so a task that just blocked or
  * exited is never picked again here.
  *
  * One linear scan from `from`, tracking the best candidate seen so far and
  * replacing it only on a *strictly* higher priority -- which is what makes
- * this collapse to exactly the pre-M3 round-robin scan whenever every ready
+ * this collapse to exactly the round-robin scan whenever every ready
  * task shares one tier (equal priority never replaces the earlier find, so
  * the first READY task found after `from` wins, same as before). */
 static int next_runnable(int from) {
@@ -696,7 +696,7 @@ uint32_t sched_stack_size(int pid) {
 /* One slot **per hart**, declared early for sched_check_incoming().
  *
  * Per-hart rather than global, and that is what makes the slot's invariant
- * structural instead of defended (phase 31 Y1/F2 -- see the fuller argument
+ * structural instead of defended (see the fuller argument
  * at task_exit()'s claim). A dead task's successor always runs on the same
  * hart the task died on, and every path that starts running a task on a hart
  * reaps first: sched_yield() calls sched_reap() before it picks anything, and
@@ -707,7 +707,7 @@ uint32_t sched_stack_size(int pid) {
 static void    *g_reap_stack[MAX_HARTS];
 static uint32_t g_reap_pages[MAX_HARTS];
 
-/* Debug guard for phase 27 E4's priostress fault: does the task we are about
+/* Debug guard: does the task we are about
  * to resume have a parked sp that could possibly be a context frame?
  *
  * ctx_switch() restores ra from the first word at the incoming sp. A task
@@ -717,17 +717,14 @@ static uint32_t g_reap_pages[MAX_HARTS];
  * register already destroyed. Halting here instead keeps the table intact
  * and says who was switching to whom. */
 /* Runs with g_sched_lock HELD, which is why every line below is
- * printk_critical() -- though the reason changed under it (Y5c,
- * plan/phase31_concurrency_hierarchy.md).
+ * printk_critical().
  *
- * It used to be that printk() here would block while holding the lock the
- * task it waits for needs: a deadlock rather than a slow dump. printk() no
- * longer blocks anywhere, so that is gone. What remains is delivery: this is
- * a fatal dump, the next thing that happens is a halt, and a record in the
- * log ring is read by klogd on a board that is not going to run klogd again.
- * printk_critical() is on the wire before the halt; printk() is not.
+ * printk() no longer blocks anywhere, but this is a fatal dump before a halt;
+ * a record in the log ring is read by klogd on a board that is not going to
+ * run klogd again. printk_critical() is on the wire before the halt;
+ * printk() is not.
  *
- * Since phase 31 Y2 a *cprintf()* here would also be caught -- it reaches the
+ * A *cprintf()* here would be refused: it reaches the
  * console through chan_call(), which refuses outright when a spinlock is
  * held. That turns this from a rule someone has to have read into one the
  * kernel states at the moment it is broken, which matters here more than
@@ -769,7 +766,7 @@ static void sched_check_incoming(int prev, int next) {
      * own, not as a side effect of a debug guard". It has now been done on its
      * own, because testing for zero specifically was not enough.
      *
-     * Zero was the failure phase 27 E4 left behind, so zero was what this
+     * Zero was an illegal value, so zero was what this
      * checked. The failure that outlived it is a parked ra pointing into
      * .rodata: non-zero, so the guard waved it through, and the hart then ran
      * .rodata as instructions until something decoded as illegal. What
@@ -826,7 +823,7 @@ static void sched_check_incoming(int prev, int next) {
     }
     /* And how much stack each task has actually used, because "the frame is
      * gone" and "the stack was too small" produce the same dump otherwise.
-     * sched_stack_full() had existed since phase 15 with no callers at all,
+     * sched_stack_full() was previously unused,
      * while its own comment recorded that an overflowing stack had once
      * "presented as broken hardware" -- exactly the shape of E7's hunt, which
      * is why it is wired up here now.
@@ -848,7 +845,7 @@ static void sched_check_incoming(int prev, int next) {
 }
 
 /* The whole table, for a fatal path that has already lost the registers.
- * Phase 27 E4 debug aid; see sched_check_incoming() above. */
+ * Debug aid; see sched_check_incoming() above. */
 void sched_dump_table(void) {
     printk_critical("[Sched Table] reap[hart %u]=0x%lx pages=%u handoff_faults=%u\n",
            (unsigned)hart_id(),
@@ -946,7 +943,7 @@ static int sched_switch(bool block) {
      *
      * Pre-existing and not an SMP bug: on one hart it needs a sleeping task
      * whose deadline expired while nothing else was READY, which the shell
-     * and p9srv normally prevent by being runnable. Phase 23's X1 made it
+     * and p9srv normally prevent by being runnable. Multicore made it
      * routine, because a second hart runs out of work far more often. Found
      * 2026-09-04 by a double-schedule detector reporting a task as already
      * running on the very hart that was about to switch to it. */
@@ -990,7 +987,7 @@ static int sched_switch(bool block) {
 void task_block(void) {
     if (!g_active) return;
 
-    /* A hart with no task cannot block. Before phase 23's identity fix this
+    /* A hart with no task cannot block. Previously this
      * did not return -- cur() answered 0 on a bring-up hart, so this marked
      * the *boot task* BLOCKED, on a hart that was not running it, and nothing
      * would ever wake it. That is a wedged shell, produced by a secondary
@@ -1002,7 +999,7 @@ void task_block(void) {
      * block. */
     if (!sched_has_task()) return;
 
-    /* Y2: a spinlock_t held here is the cross-mechanism deadlock phase 31
+    /* A spinlock_t held here would cause a deadlock that
      * exists to catch -- the holder cannot run to release it, and on one hart
      * that is fatal immediately. Reported, not refused: a caller that wanted
      * to wait has nothing useful to do with a refusal, and the diagnostic is
@@ -1126,7 +1123,7 @@ void task_sleep_ms(uint32_t ms) {
  * One slot suffices, but not for the reason this comment used to give.
  *
  * It said "a task can only exit while running, and the next task reaps before
- * anything else can exit". The second clause is false (phase 31 Y1):
+ * anything else can exit". The second clause is false :
  * task_exit() runs with interrupts *enabled* until it takes g_sched_lock, and
  * printk_critical() sits in that window -- a bounded spin on the UART FIFO,
  * which at 115200 baud is milliseconds for one line, far longer than a 10 ms
@@ -1139,7 +1136,7 @@ void task_sleep_ms(uint32_t ms) {
  * before the lock was released, so whoever released it is not the first. */
 
 /* Does a range about to be handed back to the allocator overlap a stack some
- * live task is standing on? Phase 27 E4/E7 guard.
+ * live task is standing on? Stack isolation guard.
  *
  * A free of the wrong range is invisible at the moment it happens --
  * palloc_free() only clears bitmap bits, it does not touch the memory -- and
@@ -1182,7 +1179,7 @@ static void sched_check_free_range(void *stack, uint32_t pages, const char *who)
  *
  * It used to say something stronger -- that taking g_sched_lock here would
  * create the palloc->sched ordering sched_reap() avoids -- and that stopped
- * being true with phase 31's F2. There is no sched->palloc ordering left
+ * being true . There is no sched->palloc ordering left
  * anywhere: task_exit() no longer frees under the lock, and task_create()
  * calls palloc_pages() having already released it. So this *could* now take
  * g_sched_lock and scan the table properly, which would make a diagnostic
@@ -1247,14 +1244,14 @@ void task_exit(void) {
     task_t *t = &g_tasks[cur()];
 
     /* printk(), and this line is a small monument to Y5c
-     * (plan/phase31_concurrency_hierarchy.md).
+     *.
      *
      * It was printk_critical() for a concrete reason: printk() reached the
      * console through uart_flush() -> chan_call() -> task_block(), so a task
      * announcing its own death switched away in the middle of dying, and a
      * second task could enter task_exit() behind it -- breaking the one-slot
      * reaper's assumption two comments below, and faulting. Found on the
-     * ESP32-P4 the day preemption started working there (phase 27 E4).
+     * ESP32-P4 the day preemption started working there .
      * Nothing here may block until the switch below has happened, and that
      * has not changed.
      *
@@ -1267,14 +1264,14 @@ void task_exit(void) {
      * caught exactly that. */
     printk("[Sched] Task #%d '%s' exited\n", t->pid, t->name);
 
-    /* M5 Phase 2: if this task owned a chan endpoint with a request
+    /* If this task owned a chan endpoint with a request
      * pending, its caller would otherwise block forever waiting for a
      * reply nothing will ever send -- see chan_owner_exited()'s own
      * comment for why this stopped being a theoretical gap. Before
      * next_runnable() below, so an unblocked caller is eligible to be
      * picked as the very next task to run.
      *
-     * **Outside the lock, and that is the whole point** (phase 31 Y1). This
+     * **Outside the lock, and that is the whole point** . This
      * call used to sit under g_sched_lock, where it deadlocked the kernel:
      * chan_owner_exited() calls task_unblock(), task_unblock() takes
      * g_sched_lock, and spinlock_t is not re-entrant -- so the hart spun
@@ -1318,7 +1315,7 @@ void task_exit(void) {
      * still executing on it.
      *
      * **This hart's slot is empty, and that is a property of the code rather
-     * than a hope** (phase 31 Y1/F2). The successor of a dead task runs on
+     * than a hope** . The successor of a dead task runs on
      * the hart the task died on, and every path that starts running a task on
      * a hart reaps first -- sched_yield() calls sched_reap() before it picks
      * anything and again after ctx_switch() returns, and task_start() calls

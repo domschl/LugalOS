@@ -5,7 +5,7 @@
 #include <string.h>
 
 /* The local 9P server as a channel endpoint (B1,
- * plan/phase5_distributed_design.md §5.1).
+ * ).
  *
  * This is the concrete payoff of Rule 2 ("9P *is* the service IPC"): the
  * local filesystem server is reached through exactly the same p9_link_t

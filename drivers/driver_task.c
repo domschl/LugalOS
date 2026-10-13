@@ -1,6 +1,6 @@
 /* The driver-as-task serve loop, once. See
  * drivers/include/drivers/driver_task.h for the contract and the three
- * invariants, and plan/phase30_driver_framework.md §2.1 for why this exists
+ * invariants, and  for why this exists
  * at all (nine copies, zero board-specific content). */
 
 #include "drivers/driver_task.h"
@@ -125,7 +125,7 @@ int driver_task_call(driver_task_t *dt, const uint8_t *req, uint32_t req_len,
 }
 
 
-/* --- The U-mode domain (G3, plan/phase30_driver_framework.md §2.2) -------- */
+/* --- The U-mode domain -------- */
 
 /* One per driver that enters U-mode, and they are not concurrent: a task
  * builds its domain once, on its own first pass through its body, and never

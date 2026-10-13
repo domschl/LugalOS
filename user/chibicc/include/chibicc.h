@@ -166,7 +166,7 @@ extern Obj *globals;
 extern bool chibicc_pool_exhausted;
 
 /* Set by the first syntax error, or by nesting deeper than
- * CHIBICC_MAX_NEST (phase 40 review). The parser used to print an error and
+ * CHIBICC_MAX_NEST. The parser used to print an error and
  * carry on -- `cc` then wrote a binary for whatever it had made of the rest,
  * or walked off the end of the token list -- so a typo could produce a
  * program, or a kernel fault. Now the rest of the parse is cut short and
@@ -191,7 +191,7 @@ Function *parse(Token *tok);
 int codegen(Function *prog, uint8_t *code_buf, int max_size);
 int chibicc_compile(const char *src_path, const char *dst_elf_path);
 
-/* --- Working memory (C6, plan/phase6_memory_and_processes.md) ---
+/* --- Working memory ---
  *
  * chibicc's pools live on the heap for the duration of a compile and are
  * returned afterwards, so an idle compiler costs nothing. See

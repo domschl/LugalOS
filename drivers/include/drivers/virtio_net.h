@@ -3,14 +3,14 @@
 
 #include "net/netif.h"
 
-/* virtio-net over virtio-mmio (R1, plan/phase19_ip_stack_and_ethernet.md).
+/* virtio-net over virtio-mmio.
  *
  * The first netif_t, and the one the IP stack is developed against: it
  * delivers whole Ethernet frames, which is exactly what every remaining
  * candidate part does (the ENC28J60, the CYW43439, the ESP32-P4's EMAC) and
- * exactly what the cancelled W5500 did not. Phase 18 §0 declined to build
+ * exactly what the cancelled W5500 did not. Declined to build
  * against virtio-net for a reason that stopped being true when the part that
- * terminated TCP in silicon went away -- see the phase 19 plan's §0.
+ * terminated TCP in silicon went away -- see the network specification.
  *
  * Probes the same QEMU MMIO slot range as drivers/virtio_blk.c and
  * drivers/virtio_console.c, matching on device id 1. Registers itself with

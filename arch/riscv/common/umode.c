@@ -2,7 +2,7 @@
 #include "arch/csr.h"
 #include "kernel/printk.h"
 
-/* U-mode support (B3, plan/phase5_distributed_design.md §5.4).
+/* U-mode support.
  *
  * ## Why a PMP grant is needed *before* the first U-mode instruction
  *

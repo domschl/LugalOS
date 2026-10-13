@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-/* `e` -- the editor, and the writer. 37.5b, plan/phase37_screen_layouts_and_apps.md.
+/* `e` -- the editor, and the writer.
  *
  * Full screen in the text tile: it fills whatever size the console reports
  * (80 x 24 on a serial line, which reports none), follows a resize -- the

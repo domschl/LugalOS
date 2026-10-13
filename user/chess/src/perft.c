@@ -1,6 +1,6 @@
 /*
  * Vendored from ~/gith/domschl/LugalChess (engine/src/perft.c), J4,
- * plan/phase10_chess_completion.md. run_perft() itself is unchanged --
+ * . run_perft() itself is unchanged --
  * pure generate_moves()/make_move()/unmake_move() recursion, no stdio, no
  * timing. run_perft_tests_depth() needed three platform edits:
  *
@@ -50,7 +50,7 @@
 #include "kernel/hart.h"
 #include "kernel/console.h"
 
-/* Ctrl-C (36.9, plan/phase36_rp2350_lcd7_terminal.md): perft never polled for
+/* Ctrl-C: perft never polled for
  * it, so `(perft 4 1)` ran to the end whatever was typed -- a minute and more
  * on RP2350, found typing on the RP2350-LCD-7's own keyboard. Polled every
  * 4096 nodes and only on hart 0, as search.c polls its stop callback (the
@@ -70,7 +70,7 @@ static uint32_t      g_perft_poll;
  * has exactly MAX_HARTS of them. */
 #define PERFT_MAX_WORKERS MAX_HARTS
 
-/* One of these per worker (X8, plan/phase23_multicore_scheduling.md).
+/* One of these per worker.
  *
  * `perft_movelists` and `perft_ply` used to be plain file-statics, which is
  * correct for one caller and fatal for two: the ply index selects which
@@ -121,7 +121,7 @@ static void perft_pools_free(void) { perft_ctx_free(&perft_main); }
 
 static uint64_t perft_rec(perft_ctx_t *c, Position *pos, int depth); /* below */
 
-/* --- Root splitting across cores (X8) ------------------------------------
+/* --- Root splitting across cores ------------------------------------
  *
  * Perft is the honest first use of a second core, and the reason is the test
  * table below: the node counts are exact and published, so a parallel run is

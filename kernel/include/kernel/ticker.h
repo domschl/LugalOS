@@ -47,7 +47,7 @@ void     ticker_count_tick(void);
 
 /* The source clock's rate in Hz, as *measured* at init against the
  * microsecond timer -- 0 if the nominal TICK_HZ was used instead because no
- * measurement was taken (34.1, plan/phase34_esp32p4_pll_bringup.md).
+ * measurement was taken .
  *
  * Exposed because on the ESP32-P4 this is the only figure on the board that
  * is measured rather than derived from a divider, which makes it the

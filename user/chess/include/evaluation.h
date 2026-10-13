@@ -1,6 +1,6 @@
 /*
  * Vendored verbatim from ~/gith/domschl/LugalChess (engine/include/evaluation.h),
- * H4, plan/phase9_chess_computer.md.
+ * H4, .
  */
 
 #ifndef EVALUATION_H

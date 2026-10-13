@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* Copy-always message channels (B1, plan/phase5_distributed_design.md §5.1).
+/* Copy-always message channels.
  *
  * This is the kernel's only IPC primitive: a named server endpoint that
  * consumes a request *message* and produces a response *message*. Messages
@@ -30,9 +30,8 @@
  * coincidence: an address-space boundary and a network boundary impose the
  * *same* requirement -- no shared pointers, everything explicitly
  * serialized. Code written to survive the first already survives the second.
- * Track A is the existing proof (a 9P server across a USB cable), and B1's
- * local channel deliberately reuses that same machinery rather than
- * shortcutting past it.
+ * A 9P server across a USB cable uses this same discipline, and local
+ * channels deliberately reuse that same machinery rather than shortcutting past it.
  *
  * ## Shape
  *
@@ -40,7 +39,7 @@
  * still single-call-stack (kernel/sched.c is a bookkeeping shim), so a
  * message can never sit waiting for a receiver that is not already running.
  * A depth-N ring would be untestable capacity today, which is a liability
- * rather than a feature. **B2 must revisit this** -- once tasks exist,
+ * rather than a feature. Once tasks exist,
  * chan_call() splits into a real blocking send/receive rendezvous and the
  * busy flag below becomes a wait queue.
  *
@@ -49,7 +48,7 @@
  * keeps this layer free of any assumption about how large a message any
  * particular protocol needs.
  *
- * ## Task-owned endpoints (M4, plan/phase12_microkernel_migration.md)
+ * ## Task-owned endpoints
  *
  * An endpoint registered with chan_register() runs its handler *inline, on
  * the caller's own stack* -- fine for a stateless protocol like local 9P,
@@ -62,7 +61,7 @@
  * task instead of a function pointer, the caller genuinely blocks
  * (task_block()), and the owning task calls chan_serve_wait() /
  * chan_serve_reply() to receive and answer it on its *own* stack, in its
- * own scheduling and (from M5) memory-domain context. Rule 1 still holds --
+ * own scheduling and memory-domain context. Rule 1 still holds --
  * both sides only ever touch the endpoint's own buffers, never a caller's
  * or a server's raw pointer.
  *
@@ -92,11 +91,11 @@
  * blocked calling which) and refuses any call that would close a cycle in
  * it, before touching the endpoint. Keep new driver-task conversions
  * strictly layered underneath their callers (uart, then SD/SPI, then
- * display/keypad/RTC/EEPROM, per the M4 plan) precisely so this check is
+ * display/keypad/RTC/EEPROM) precisely so this check is
  * never the thing standing between a caller and its answer.
  */
 
-/* M0, plan/phase12_microkernel_migration.md: raised from 4 for headroom as
+/* Raised from 4 for headroom as
  * more services register endpoints of their own. Cost is a static array of
  * chan_endpoint_t (~40 bytes each); the buffers a registrant supplies are
  * the real per-endpoint cost and are unaffected by this constant. */
@@ -119,7 +118,7 @@ int chan_register(const char *name, chan_handler_fn handler, void *ctx,
 
 chan_endpoint_t *chan_lookup(const char *name);
 
-/* Registers a task-owned endpoint (M4): `owner_pid` -- not a handler
+/* Registers a task-owned endpoint: `owner_pid` -- not a handler
  * function -- is what chan_call() wakes. `owner_pid` must already exist
  * (task_create() first); it does not need to have reached its serve loop
  * yet. Same buffer-ownership rules as chan_register(). */
@@ -154,10 +153,9 @@ uint32_t chan_serve_wait(chan_endpoint_t *ep);
  * blocked caller with that response. */
 void chan_serve_reply(chan_endpoint_t *ep, uint32_t resp_len);
 
-/* M5 Phase 2, plan/phase12_microkernel_migration.md: the same two
- * operations, for a server that cannot hold a raw pointer into the
- * endpoint's own req_buf/resp_buf -- a U-mode driver task, reaching these
- * through SYS_CHAN_SERVE_WAIT/SYS_CHAN_SERVE_REPLY (arch/riscv/common/
+/* Server operations for a task that cannot hold a raw pointer into the
+ * endpoint's own req_buf/resp_buf -- such as a U-mode driver task reaching
+ * these through SYS_CHAN_SERVE_WAIT/SYS_CHAN_SERVE_REPLY (arch/riscv/common/
  * trap.c). chan_endpoint_t stays opaque; both copy through a caller-owned
  * buffer instead, the same shape chan_call() already uses for its own
  * copy-in/copy-out.
@@ -175,7 +173,7 @@ uint32_t chan_serve_wait_copy(chan_endpoint_t *ep, uint8_t *out, uint32_t out_ma
  * chan_serve_reply() does. */
 void chan_serve_reply_copy(chan_endpoint_t *ep, const uint8_t *in, uint32_t resp_len);
 
-/* The syscall forms (phase 40 review): the same three operations, copying
+/* The syscall forms: the same three operations, copying
  * straight between the calling U-mode task's memory -- validated against its
  * domain -- and the endpoint's own buffers, while the endpoint is claimed.
  * They replace staging through static kernel buffers in the trap handler,
@@ -195,14 +193,13 @@ int      chan_serve_reply_user(chan_endpoint_t *ep, uintptr_t uin, uint32_t resp
  * exhausted. */
 bool chan_info(uint32_t index, const char **name_out, bool *busy_out);
 
-/* M5 Phase 2, plan/phase12_microkernel_migration.md: called from
+/* Called from
  * task_exit() (kernel/sched.c) for every exiting task, clean or faulted.
  * chan_call_task()'s owner-liveness check only covers a caller *starting*
  * a call against an already-dead owner -- its own comment names the gap
  * this closes: "does not close the race where the owner dies after this
  * check but before it replies". That race stopped being rare the moment a
- * driver task's own code could take a real PMP fault (U-mode conversions,
- * M5): a caller mid-chan_call() into a task that then faults would
+ * driver task's own code could take a real PMP fault (U-mode tasks): a caller mid-chan_call() into a task that then faults would
  * otherwise block forever, since nothing else will ever call
  * chan_serve_reply() on its behalf. Found this exact way on real
  * hardware -- a faulted tm1638 task left the calling shell task
@@ -218,7 +215,7 @@ bool chan_info(uint32_t index, const char **name_out, bool *busy_out);
  * mid-request, not just when it never started. */
 void chan_owner_exited(int owner_pid);
 
-/* M5 Phase 6, plan/phase12_microkernel_migration.md: exposes ep->busy
+/* Exposes ep->busy
  * (chan_call()'s own request-in-flight flag, kernel/chan.c) to a single
  * named endpoint a caller already holds a pointer to -- chan_info()
  * above only offers it by enumeration index. Added so

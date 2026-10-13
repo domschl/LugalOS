@@ -19,7 +19,7 @@
  * 68 years. This code assumes era 0 and will read 2036 as 1900. Written down
  * rather than guarded, because the guard is a *policy* -- "assume the era
  * nearest our own clock" -- and this board's clock can be unset, which is
- * exactly the case where that policy has nothing to lean on. Phase 24 owns
+ * exactly the case where that policy has nothing to lean on. owns
  * it if it still matters then. */
 #define NTP_EPOCH_OFFSET  2208988800LL
 
@@ -40,7 +40,7 @@ static uint32_t be32(const uint8_t *p) {
 }
 
 /* Our wall clock as microseconds since 1970 (P2,
- * plan/phase24_dcf77_precision_and_ntp_server.md).
+ * ).
  *
  * This used to go through rtc_time_t, which carries milliseconds, so the four
  * timestamps NTP's arithmetic subtracts were each quantised to 1 ms before

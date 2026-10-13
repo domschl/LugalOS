@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* A frame source (R1, plan/phase19_ip_stack_and_ethernet.md).
+/* A frame source.
  *
  * The seam below the IP stack, and deliberately the same shape as
  * `p9_link_t` (fs/include/fs/p9_link.h): a name, a non-blocking `poll()`, a
@@ -23,9 +23,9 @@
  *     netif_t              <- HERE
  *     drivers/virtio_net.c | drivers/enc28j60.c | drivers/cyw43.c
  *
- * Phase 18's W5500 skipped every layer between the driver and `p9_link_t` by
+ * W5500 skipped every layer between the driver and `p9_link_t` by
  * terminating TCP in silicon. Nothing else will, which is why this seam
- * exists at all -- see the phase 19 plan's §0.
+ * exists at all -- see the plan's §0.
  */
 
 /* 1500 bytes of payload, 14 of Ethernet II header, no FCS: neither virtio-net

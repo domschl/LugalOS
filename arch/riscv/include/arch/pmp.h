@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 /* RISC-V Physical Memory Protection discovery (B3 prep, D2 in
- * plan/phase5_distributed_design.md).
+ * ).
  *
  * D2 resolved to "PMP early, NOMMU leads": RV32/RP2350 gets U-mode plus PMP
  * enforcement in B3, ahead of Sv39 in B5. The region count bounds how many

@@ -1,5 +1,5 @@
 /*
- * The clipboard -- 37.5a, plan/phase37_screen_layouts_and_apps.md. See
+ * The clipboard. See
  * kernel/include/kernel/clipboard.h.
  */
 

@@ -1,5 +1,5 @@
 /*
- * UART1 as a 9P downlink — N5, plan/phase18_networking_and_auth.md §4.
+ * UART1 as a 9P downlink.
  *
  * The gateway's cable to a chess or clock board: three wires, SLIP-framed 9P,
  * and the link this project already proved over its console UART (A3a). What

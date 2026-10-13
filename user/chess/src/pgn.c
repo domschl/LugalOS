@@ -1,7 +1,6 @@
 /*
  * PGN save/load. See user/chess/include/pgn.h for why SAN is the substance of
- * this file. 14b (plan/phase14_networking_and_host_tooling.md), built in
- * phase 16.
+ * this file.
  */
 
 #include "pgn.h"

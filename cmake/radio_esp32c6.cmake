@@ -1,4 +1,4 @@
-# The Wi-Fi radio of the ESP32-C6 (45.6, plan/phase45_esp32c6.md): Espressif's
+# The Wi-Fi radio of the ESP32-C6: Espressif's
 # precompiled blob, the open code around it, and what it takes to compile and
 # link them into the kernel image.
 #

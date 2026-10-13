@@ -27,7 +27,7 @@
  *     therefore incremental and never assumes a packet arrives whole.
  */
 
-/* --- Packet types (the high nibble of byte 0) --- */
+/* --- Packet types ---*/
 #define MQTT_CONNECT      0x10
 #define MQTT_CONNACK      0x20
 #define MQTT_PUBLISH      0x30

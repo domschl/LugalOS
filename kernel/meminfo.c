@@ -54,7 +54,7 @@ void meminfo_ram_map(mem_ram_map_t *out) {
     out->ram_end      = (uintptr_t)_ram_end;
     out->total_bytes  = (uint32_t)((uintptr_t)_ram_end - (uintptr_t)_ram_start);
     /* How much RAM the image occupies, stated by the linker script rather
-     * than recomputed here (G1, plan/phase30_driver_framework.md).
+     * than recomputed here .
      *
      * This was `_bss_end - _ram_start` plus a CONFIG_BOARD_ESP32P4 arm, because
      * that expression assumes the image is one contiguous run from the bottom
@@ -74,7 +74,7 @@ void meminfo_ram_map(mem_ram_map_t *out) {
     /* Both boards carry U-mode task stacks in their own NAPOT-aligned
      * sections, which are neither .data nor .bss and were invisible in the
      * image figure until they were reported here. The ESP32-P4 gained one in
-     * E5 (plan/phase27_esp32p4_bringup.md). */
+     * E5 . */
     {
         extern char _ustacks_start[];
         extern char _ustacks_end[];

@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* Cooperative tasks (B2, plan/phase5_distributed_design.md §5.4).
+/* Cooperative tasks.
  *
  * Replaces the pre-B2 shim, which was bookkeeping only: task_create()
  * discarded its entry-point argument and sched_yield() just printed a
@@ -34,7 +34,7 @@
 #define TASK_BLOCKED 3
 #define TASK_DEAD    4
 
-/* M3, plan/phase12_microkernel_migration.md: a handful of static tiers, not
+/* Priority tiers: a handful of static tiers, not
  * a numeric range -- "a handful of tiers... covers everything in the tree
  * today" was the milestone's own scope, and a wider range would be
  * precision this scheduler has no way to use yet (no priority inheritance,
@@ -45,7 +45,7 @@
  * momentary history.
  *
  * TASK_PRIO_NORMAL is every task's default until told otherwise, which is
- * what keeps every pre-M3 caller of task_create()/task_create_sized()
+ * what keeps callers of task_create()/task_create_sized()
  * unaffected: with nothing yet assigned a different tier, next_runnable()'s
  * tie-break (see kernel/sched.c) reduces to exactly the round-robin order
  * this tree already tests (taskdemo's A1 B1 A2 B2 A3 B3 interleaving). */
@@ -54,7 +54,7 @@
 #define TASK_PRIO_NORMAL     2
 #define TASK_PRIO_INTERRUPT  3
 
-/* M0, plan/phase12_microkernel_migration.md: raised from 8 so that a fully
+/* Raised from 8 so that a fully
  * decomposed board persona (one task per driver, per Rule 4) doesn't hit the
  * slot ceiling on its own drivers alone -- chess's persona reached 8 using
  * only its own devices plus the shell, before any of RTC/EEPROM/net existed
@@ -74,8 +74,7 @@
  *
  * Not every task needs this much -- a driver task that only scans a keypad
  * or reads an RTC register has nowhere near this call depth. task_create_sized()
- * (M0) lets such a caller ask for fewer pages; task_create() keeps this
- * default so every pre-M0 caller is unaffected. */
+ * lets a caller ask for fewer pages. */
 #define TASK_STACK_PAGES 2
 
 #include "kernel/mem_domain.h" /* B3: per-task restriction set */
@@ -99,15 +98,14 @@ typedef struct task {
      * return value. */
     long         exit_status;
     bool         exit_clean;
-    /* M3: TASK_PRIO_NORMAL by default (task_create_sized() sets it), raised
+    /* TASK_PRIO_NORMAL by default (task_create_sized() sets it), raised
      * or lowered only via task_set_priority(). */
     int          priority;
     /* When a sleeping task becomes runnable again, in monotonic ms; 0 when it
      * is not sleeping. A BLOCKED task with this set is woken by the scheduler
      * itself rather than by another task calling task_unblock(). */
     uint64_t     wake_at_ms;
-    /* Which hart may run this task: -1 for any, otherwise a hart id (X1,
-     * plan/phase23_multicore_scheduling.md).
+    /* Which hart may run this task: -1 for any, otherwise a hart id .
      *
      * X1 needs this for correctness, not tuning, which is why it arrives
      * before X2's driver pinning rather than with it. Almost every task here
@@ -126,7 +124,7 @@ typedef struct task {
      * kept while the task is held on its hart. */
     bool         hart_held;
     int          held_affinity;
-    /* Phase 44: virtual terminal ID (0 = root/default console). */
+    /* Virtual terminal ID (0 = root/default console). */
     int          vterm_id;
     /* The wake token (task_prepare_block()): armed by the task before it
      * publishes what it will wait for, set by a task_unblock() that finds
@@ -140,7 +138,7 @@ typedef struct task {
  * always a valid "current task" to switch away from. */
 void sched_init(void);
 
-/* Phase 44: Virtual terminal association. */
+/* Virtual terminal association. */
 int  task_get_vterm(int pid);
 void task_set_vterm(int pid, int vterm_id);
 /* Every task on terminal `vterm_id` (> 0) is told it is gone: its vterm
@@ -149,21 +147,18 @@ void task_orphan_vterm(int vterm_id);
 
 /* Creates a READY task with its own kernel stack of `stack_pages` pages.
  * Returns the pid, or -1 if the table is full, `stack_pages` is 0, or no
- * stack could be allocated. The primitive M4 (plan/phase12_microkernel_migration.md)
- * needs: a driver task that never gets near TASK_STACK_PAGES's depth
+ * stack could be allocated. Useful for a driver task that never gets near TASK_STACK_PAGES's depth
  * shouldn't have to pay for it. */
 int task_create_sized(const char *name, void (*entry)(void *), void *arg,
                       uint32_t stack_pages);
 
 /* Creates a READY task with the default (TASK_STACK_PAGES) kernel stack.
- * Thin wrapper over task_create_sized() -- every caller from before M0
- * keeps this and is unaffected by it existing. */
+ * Thin wrapper over task_create_sized(). */
 int task_create(const char *name, void (*entry)(void *), void *arg);
 
 /* Round-robin to the next READY task. A no-op when nothing else can run, so
  * it is safe to call from any busy-wait, including before any task exists. */
-/* A task's stack high-water mark and its total size, in bytes (§6,
- * plan/phase15_memory_reclamation.md). 0 for an unused slot or the boot task,
+/* A task's stack high-water mark and its total size, in bytes . 0 for an unused slot or the boot task,
  * whose stack is the linker's and is reported by meminfo.c instead.
  *
  * The figure is a true high-water, not a current depth: task_create_sized()
@@ -203,7 +198,7 @@ void task_start(void (*entry)(void *), void *arg);
 int task_set_domain(int pid, mem_domain_t *domain);
 
 /* Sets a task's scheduling tier to one of the TASK_PRIO_* constants above
- * (M3). Takes effect at the next call to next_runnable() -- immediately if
+ * Takes effect at the next call to next_runnable() -- immediately if
  * `pid` is not currently RUNNING, at the next preemption or yield if it is.
  * Returns -1 for an out-of-range pid, an unused slot, or a value outside
  * [TASK_PRIO_IDLE, TASK_PRIO_INTERRUPT]. */
@@ -285,7 +280,7 @@ void task_block_until_ms(uint64_t deadline_ms);
  *
  * The -1 case is real, and used to be silently answered as 0. A secondary
  * hart executes kernel code from its reset vector until sched_secondary_init()
- * gives it a slot, and before phase 23's identity fix this function reported
+ * gives it a slot, and previously this function reported
  * that hart as task 0 -- the boot task, which is running on a *different*
  * hart at the same instant. Anything that then acted on the answer acted on
  * the wrong task: task_block() blocked the shell, and the output lock's
@@ -340,13 +335,11 @@ bool        sched_task_info(uint32_t index, int *pid, int *state, const char **n
  * cannot tell those apart -- 0 is both an ordinary return value and what a
  * killed task leaves behind. Both are only meaningful once the task is DEAD.
  *
- * M6: plus whether the task has a memory domain attached at all
- * (task_set_domain() was called on it) -- true for every U-mode driver
- * task once M5 gave it a real one, and for a loaded user program while
- * it runs; false for the kernel task itself and for any task that still
- * runs kernel-mode only (M4.5's own p9srv, still unconverted). This is
- * what makes `ps`'s "Isol" column a fact about the running system rather
- * than a claim: it reads the same field mem_domain_activate() reads. */
+ * Reports whether the task has a memory domain attached
+ * (task_set_domain() was called on it) -- true for U-mode driver
+ * tasks and loaded user programs; false for tasks that run in kernel-mode only.
+ * This is what powers `ps`'s "Isol" column: it reads the field
+ * mem_domain_activate() inspects. */
 bool        sched_task_info_ex(uint32_t index, int *pid, int *state, const char **name,
                                long *exit_status, bool *exited_clean, bool *has_domain);
 
@@ -356,8 +349,7 @@ bool        sched_task_info_ex(uint32_t index, int *pid, int *state, const char 
 bool sched_active(void);
 
 /* How many times a hart resumed from a context switch *without* holding the
- * scheduler lock its predecessor should have handed it (S6,
- * plan/phase22_smp_locking_foundation.md).
+ * scheduler lock its predecessor should have handed it .
  *
  * Must be zero. It is the canary for the one rule this milestone turns on --
  * that the lock is held across ctx_switch() and released on the incoming
@@ -376,7 +368,7 @@ uint32_t sched_handoff_faults(void);
 int  task_set_affinity(int pid, int hart);
 
 /* Holds: keeping a task on the hart whose per-hart state holds something of
- * its. The console's TX batches are per hart (phase 23 X7): a task that
+ * its. The console's TX batches are per hart : a task that
  * printed half a line on hart 0 and was then moved to hart 1 finished the
  * line -- and flushed it -- from hart 1's batch, while the first half still
  * sat in hart 0's. 47.8 met it as 9P replies over a shared wire whose closing
@@ -405,7 +397,7 @@ int  task_create_pinned(const char *name, void (*entry)(void *), void *arg,
 /* A task's hart pinning: -1 for any hart, otherwise the hart it is bound to.
  * -1 for an out-of-range pid or an unused slot. Reported by `ps` so X2's
  * pinning is a fact about the running system rather than a claim about the
- * source -- the same argument phase 12's M6 made for the Isol column. */
+ * source . */
 int  task_affinity(int pid);
 
 /* Turns the calling secondary hart's boot context into a task, so it has
@@ -413,14 +405,12 @@ int  task_affinity(int pid);
  * or -1 if the table is full. */
 int  sched_secondary_init(void);
 
-/* Creates a task pinned to the boot hart (X2,
- * plan/phase23_multicore_scheduling.md).
+/* Creates a task pinned to the boot hart .
  *
  * For tasks that own a piece of hardware. A driver task's state is not just
  * "shared data that happens to have one writer" -- it is device registers,
  * a bus claim, an interrupt armed on a particular hart's controller context.
- * Phase 22's S5 audit left several such sites unconverted *specifically*
- * because this pinning exists (the UART wait paths, uart_net's demux,
+ * Several sites rely on this pinning (the UART wait paths, uart_net's demux,
  * enc28j60's and cyw43's bus flags), so the pinning is load-bearing rather
  * than tidy: relaxing it means going back and converting them first.
  *

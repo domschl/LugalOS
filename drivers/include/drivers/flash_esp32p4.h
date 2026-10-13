@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* SPI flash on the ESP32-P4, E6 (plan/phase27_esp32p4_bringup.md).
+/* SPI flash on the ESP32-P4, E6.
  *
  * Reads and writes go through the boot ROM's own flash routines rather than a
  * driver written against the MSPI controller. That is the same choice RP2350

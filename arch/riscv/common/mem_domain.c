@@ -227,7 +227,7 @@ static uintptr_t napot_encode(uintptr_t base, uintptr_t size) {
 }
 
 int mem_domain_activate(const mem_domain_t *d) {
-    /* X2, plan/phase23_multicore_scheduling.md: which harts have actually
+    /* which harts have actually
      * activated a restricted domain.
      *
      * The milestone asks whether per-task isolation still holds "regardless
@@ -435,7 +435,7 @@ static uintptr_t *build_space(const mem_domain_t *d) {
 }
 
 int mem_domain_activate(const mem_domain_t *d) {
-    /* X2, plan/phase23_multicore_scheduling.md: which harts have actually
+    /* which harts have actually
      * activated a restricted domain.
      *
      * The milestone asks whether per-task isolation still holds "regardless
@@ -469,8 +469,7 @@ bool mem_domain_enforced(void) { return vmm_paging_enabled(); }
 
 const char *mem_domain_backend_name(void) { return "Sv39"; }
 
-/* Builds the domain's page tables now, if they are not built yet (phase 40
- * review). They used to be built at the domain's first *activation* -- and
+/* Builds the domain's page tables now, if they are not built yet ( * review). They used to be built at the domain's first *activation* -- and
  * the first activation of a new program's domain is the context switch into
  * it, inside sched_yield() under g_sched_lock. Every page-table page was
  * then allocated with the scheduler lock held: the sched -> palloc nesting

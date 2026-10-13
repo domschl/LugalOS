@@ -1,5 +1,5 @@
 # Per-board facts for RP2350 (Pico 2), consumed by cmake/gen_config.cmake to
-# produce lugalos_config.h (K0, plan/phase7_kernel_config.md).
+# produce lugalos_config.h.
 #
 # Flat list of numbers, reviewable the same way kernel/board.c's device
 # tables are: "is this number right", not "does this expand correctly". The
@@ -16,7 +16,7 @@ set(CONFIG_PALLOC_MAX_PAGES 128)
 # (64 KB) on the QEMU targets.
 #
 # This board is the reason the constant is per-board at all (§1.1,
-# plan/phase15_memory_reclamation.md). It is paid twice: the arena itself
+# ). It is paid twice: the arena itself
 # comes out of the heap on first use, and the buddy tree is permanent .bss
 # whose size scales with this number -- 2046 bytes at 4 pages, 8190 at 16 --
 # and on RP2350 .bss and the heap are the same 512 KB budget. 4 pages still
@@ -31,7 +31,7 @@ set(CONFIG_UART0_RX_GPIO  1)
 
 # SPI1: the SD card bus. Not a dev_wire_t entry -- nothing else ever
 # contends for it, so it was never a claimable/arbitrated wire (see
-# plan/phase7_kernel_config.md's namespace note).
+# namespace note).
 set(CONFIG_SPI1_BASE      0x40088000)
 set(CONFIG_SPI1_SCK_GPIO  10)
 set(CONFIG_SPI1_MOSI_GPIO 11)
@@ -42,7 +42,7 @@ set(CONFIG_SPI1_CS_GPIO   13)
 set(CONFIG_LED_ONBOARD_GPIO 25)
 set(CONFIG_LED_EXT_GPIO     16)
 
-# SPI0: the ST7735 TFT canvas bus (phase9 H1, plan/phase9_chess_computer.md).
+# SPI0: the ST7735 TFT canvas bus.
 # A second, independent PL022 controller from SPI1 above -- no contention, so
 # same as SPI1 this is not a dev_wire_t entry.
 set(CONFIG_SPI0_BASE        0x40080000)
@@ -61,7 +61,7 @@ set(CONFIG_TM1638_CLK_GPIO 7)
 set(CONFIG_TM1638_DIO_GPIO 8)
 
 # DS1307/DS3231 RTC (drivers/i2c_rtc.c). GP4/GP5 land on the I2C0
-# peripheral instance on RP2350 (L3, plan/phase11_pico_clock_green.md --
+# peripheral instance on RP2350 (L3,  --
 # the GPIO-to-controller mapping alternates every 4 pins, it isn't a
 # software choice). The Pico-Clock-Green baseboard's own board file uses
 # GP6/GP7/I2C1 instead, since that's what its RTC is physically wired to.

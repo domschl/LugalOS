@@ -2,7 +2,7 @@
 #define DRIVERS_I2C_RTC_H
 
 /* The DS3231/DS1307 real-time clock: a device on the I2C bus, and nothing
- * more (category E, plan/phase30_driver_framework.md).
+ * more.
  *
  * The bus it sits on is drivers/i2c_bus.h, which is where the controller, the
  * owning task and i2c_xfer() live. They used to live here, which is why a
@@ -35,7 +35,7 @@ const char *i2c_rtc_get_model_name(void);
 
 /* DS3231-only (registers 0x11/0x12; a DS1307 has no temperature sensor and
  * this returns false for one). Rounded to the nearest whole degree C --
- * L2/plan/phase11_pico_clock_green.md's display only ever wants a plain
+ * L2/'s display only ever wants a plain
  * int, so the quarter-degree register precision is collapsed here rather
  * than pushed onto every caller. */
 bool i2c_rtc_read_temperature_c(int *temp_c);
@@ -48,7 +48,7 @@ bool i2c_rtc_cached_temperature_c(int *temp_c, uint32_t *age_s);
 
 
 
-/* Q4, plan/phase26_mqtt_and_environment_sensors.md: one generic transfer for
+/* one generic transfer for
  * any device on this bus -- write `wlen` bytes, then read `rlen`; either half
  * may be empty. Routed through the shared "i2c" task when it is running, so a
  * caller never contends with the RTC or the EEPROM for the bus, and taken

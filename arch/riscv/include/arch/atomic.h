@@ -5,7 +5,7 @@
 #include <stdbool.h>
 
 /* The one hart-count-sensitive operation in the locking layer (S1/§6.3,
- * plan/phase22_smp_locking_foundation.md).
+ * ).
  *
  * ## Why this is a seam and not just an inline `amoswap`
  *
@@ -26,7 +26,7 @@
  * So the shape here is "try to take this lock word / release it" rather than
  * "swap this integer": a SIO-spinlock implementation can map a word to a
  * hardware lock index, which a bare `amoswap` hook could not express. If
- * phase 23's X3 finds that Hazard3's AMOs do not do what the ISA says across
+ * X3 finds that Hazard3's AMOs do not do what the ISA says across
  * two live cores, the fix is this file and nothing else -- not one call site
  * in kernel/, fs/ or drivers/.
  *
@@ -47,7 +47,7 @@
 /* Is the word free, by a plain load rather than an atomic?
  *
  * The read half of a test-and-test-and-set (X7,
- * plan/phase23_multicore_scheduling.md). A waiter that keeps issuing
+ * ). A waiter that keeps issuing
  * amoswap takes exclusive ownership of the line on every attempt, and on
  * RP2350 -- two cores, one bus, no fairness guarantee -- that is enough for
  * the spinning core to starve the *holder* out of releasing. Both cores then

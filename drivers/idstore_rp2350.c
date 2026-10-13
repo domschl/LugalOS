@@ -1,23 +1,21 @@
 /*
- * LugalOS Driver: the RP2350 identity store backend -- I7b,
- * plan/phase21_identity_and_authentication.md §3.2/§3.3.
+ * LugalOS Driver: the RP2350 identity store backend.
  *
- * This is the one hook the rest of phase 21 was written around. Everything
+ * Provides the hardware-specific identity store backend. Everything
  * above it -- the record format, the toolset, the auth wiring, grants, WLAN
- * credentials -- already worked against QEMU's virtio backend
- * (drivers/virtio_blk_id.c) and does not change for this file to exist.
+ * credentials -- works against this backend or QEMU's virtio backend
+ * (drivers/virtio_blk_id.c).
  *
  * Two pieces of silicon, for two different questions:
  *
  *   - **What is this board?** OTP's CHIPID rows, a factory-programmed 64-bit
  *     identifier. Read, never written, so the UID needs no provisioning at
- *     all on this target (§3.1) -- which is a better answer than the flash
- *     chip's id phase 19 sketched, and the reason board_unique_id() finally
- *     returns true on hardware.
+ *     all on this target -- which is a better answer than the flash
+ *     chip unique id, and the reason board_unique_id() returns true on hardware.
  *
  *   - **What has this board been told?** The reserved 4 KB sector at
  *     LUGALOS_IDENTITY_BASE, read straight from XIP and written through
- *     drivers/flash_rp2350.c. It is its own flash segment (I7a), so no UF2
+ *     drivers/flash_rp2350.c. It is its own flash segment, so no UF2
  *     this build emits covers it and an OS reflash leaves it alone --
  *     measured, not assumed.
  */
@@ -88,7 +86,7 @@ static int idstore_flash_write(block_dev_t *dev, const void *buf, uint32_t lba, 
      * oversight worth hiding. Flash erases 4 KB at a time, so a partial write
      * means read-modify-write, and the 4 KB staging buffer that needs would be
      * permanent .bss on a board where .bss comes straight out of the page
-     * allocator's heap (phase 15's rule). Nothing asks for it:
+     * allocator's heap (rule). Nothing asks for it:
      * idstore_writer_commit() is the only writer and always writes all
      * IDSTORE_BLOCKS at lba 0. Refused loudly rather than silently
      * mis-serviced, so if a future caller does want it, it says so here
@@ -121,11 +119,11 @@ static int idstore_flash_write(block_dev_t *dev, const void *buf, uint32_t lba, 
         return -1;
     }
 
-    /* No reboot after the write, since 2026-10-04 (phase 40 item 12).
+    /* No reboot after the write, since 2026-10-04.
      *
      * There used to be one, for two reasons. flash_rp2350_write_sector()
      * left XIP in the bootrom's generic 03h read mode until a reset -- fixed
-     * by 38.1 (plan/phase38_psram.md), which puts the QSPI interface back as
+     * by 38.1, which puts the QSPI interface back as
      * it found it. And the USB console did not survive the ~100 ms with
      * interrupts off: the first `identity provision` on hardware (2026-09-01)
      * wrote its record and went silent until a physical BOOTSEL.

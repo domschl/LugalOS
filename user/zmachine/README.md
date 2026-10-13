@@ -135,9 +135,8 @@ so the same sources build for RV32 firmware.
   exactly where it stopped.  The debug builtin `(console-hotkey n)`
   injects a console hotkey (5 = new terminal, 6/7 focus, 10 close,
   11..19 jump) the same way the USB keyboard's Super chords do, which
-  makes this sequence scriptable.  See
-  plan/phase31_concurrency_hierarchy.md, "Terminals".
-* **Memory contract (chess's discipline, plan/phase38_psram.md):**
+  makes this sequence scriptable.
+* **Memory contract (dynamic bulk allocation):**
   idle cost is **zero** — nothing in `.bss`, nothing allocated at boot
   (verified: `-DLUGALOS_ENABLE_ZMACHINE=OFF` differs only in `.text`,
   `bss` is byte-identical).  While a game runs, the 128 KB address
@@ -161,12 +160,12 @@ so the same sources build for RV32 firmware.
 
 ## Status
 
-* **M1 — memory & header model: DONE.** `zmem.c` loads `zork1.z3`,
+* **Memory & header model: DONE.** `zmem.c` loads `zork1.z3`,
   validates the v3 header, verifies the checksum ($bf44 OK), and
   resolves the geometry: initial PC `$50d5`, dictionary `$3899`,
   objects `$3e6`, globals `$2b0`, dynamic end `$2c12`, abbrev table
   `$1f0` (all raw byte addresses).
-* **M2 — `zvm.c`: DONE.** Full Version 3 instruction set (61 opcodes),
+* **Instruction set execution (`zvm.c`): DONE.** Full Version 3 instruction set (61 opcodes),
   long/short/variable operand forms, routine stack with v3 frame
   discipline (locals from routine header words, accumulator = value
   stack: store→0 pushes, reading `$00` pops), branches (offset-0/1
@@ -176,26 +175,26 @@ so the same sources build for RV32 firmware.
   **Verified instruction-by-instruction against frotz 2.55** (patched
   with a PC trace): the first 407 instructions — game boot through the
   banner to the first `aread` prompt — match frotz's trace exactly.
-* **M3 — `ztext.c`: DONE.** Z-character decoding (A0/A1/A2 + shift +
+* **Text decoding (`ztext.c`): DONE.** Z-character decoding (A0/A1/A2 + shift +
   extended 10-bit ZSCII), abbreviation table (header `$18` as a raw
   byte address; entries are word addresses), `print`/`print_ret`/
   `print_obj`/`print_addr`/`print_paddr`, full game text output.
-* **M4 — `zparse.c` + `aread`: DONE.** Line input (interpreter echo,
+* **Parser & input (`zparse.c` + `aread`): DONE.** Line input (interpreter echo,
   raw-mode stdin in the host harness), lower-case store, v3 parse
   buffer (byte 1 = word count; 4-byte entries: dictionary byte
   address | char count | text offset), separator handling, dictionary
   binary search with the v3 word encoding (see note 5).
   **Differential test vs frotz 2.55: identical game prose** for a
   multi-room session (mailbox, leaflet, house entry, lamp, grue death).
-* **M5a — save/restore/restart: DONE.** v3 `SAVE`/`RESTORE` (0OP $5/
+* **Save, restore, and restart: DONE.** v3 `SAVE`/`RESTORE` (0OP $5/
   $6) via `io.save`/`io.restore` transport callbacks; host writes
   `<story>.lzs` in LugalOS's own format (zsave.c: full state — PC,
   RNG, value stack, call frames, dynamic memory). v3 semantics per
   zmach06e: save success branches; restore success resumes execution
   *after the SAVE instruction* of the saved game. `RESTART` reinitial
- izes from the story image (XIP-friendly: the firmware path reloads
+  izes from the story image (XIP-friendly: the firmware path reloads
   from flash).
-* **M5b — console callbacks + build preset: DONE.** Zork plays on the
+* **Console callbacks & terminal integration: DONE.** Zork plays on the
   rp2350-terminal board: `zmachine` boots `/sd0/games/zork1.z3` (the
   MIT build, p9sync'd to the card) with the bulk zone on the real 8 MB
   QPI PSRAM (`PSRAM: yes`, `SRAM fallbacks 0`); move/look/read work,

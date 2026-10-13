@@ -1,5 +1,5 @@
 /* The ESP32-P4's USB 2.0 OTG HS controller as a host, polled, and the LCD-7B's
- * Type-A port on it -- 47.9, plan/phase47_esp32p4_lcd7b_ribbon.md §5.1.
+ * Type-A port on it.
  *
  * This is a *port* for drivers/usbkbd_host.c (the interface is
  * drivers/include/drivers/usbkbd_task.h): it does one USB transaction at a

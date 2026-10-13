@@ -78,10 +78,10 @@
 #define NODE_POOL_SIZE CONFIG_LISP_NODE_POOL
 #elif defined(CONFIG_BOARD_RP2350)
 /* 512 was already close to the ceiling a full hardware test-suite run
- * reaches within one boot session -- H1+H2 (plan/phase9_chess_computer.md)
+ * reaches within one boot session -- H1+H2
  * added 7 new global primitive bindings (canvas-*, tm-*) and tipped it into
  * exhaustion partway through tests/hw/test_rp2350.py. 768 restored
- * headroom then; S4 (plan/phase13_lisp_engine_extensions.md) tipped it
+ * headroom then; S4 tipped it
  * again by registering ~38 new stdlib primitives, found live the same way
  * H1+H2 was -- test_rp2350.py's C2 failed with "Node pool exhausted"
  * partway through an unrelated command, not because of anything wrong with
@@ -98,14 +98,13 @@
  * RAM address, and _kernel_end (.bss's own end, palloc_init()'s heap
  * *start*) moves up as .bss grows -- so growing this array shrinks the
  * managed heap by exactly its own growth, page for page. Confirmed the
- * hard way (this file's own plan/phase13_lisp_engine_extensions.md's
- * chess-won't-start regression): STRING_POOL_SIZE below scaling 1:1 with this
+ * hard way (this file's own  * chess-won't-start regression): STRING_POOL_SIZE below scaling 1:1 with this
  * constant's own past growth (512->768->1024) had, by the time chess's
  * own on-demand move-list pools (user/chess/src/search.c) needed to
  * allocate, quietly eaten enough of the heap that they no longer fit. */
 #define NODE_POOL_SIZE 1024
 #elif defined(CONFIG_BOARD_ESP32P4) || defined(CONFIG_BOARD_ESP32C6)
-/* E2, plan/phase27_esp32p4_bringup.md (and 45.4, the C6, whose SRAM is smaller
+/* E2,  (and 45.4, the C6, whose SRAM is smaller
  * still: 496 KB with the ROM's 16 KB fenced off): the RP2350 figure, for the RP2350
  * reason, on a board with the same shape of budget.
  *
@@ -124,10 +123,10 @@
  * one would put a gate no other target exercises across a dozen call sites
  * in common code, and the size problem is a *pool sizing* problem that this
  * file already has the mechanism for. The 1024 figure is not new either --
- * it is the one phase 13's S4 arrived at empirically on hardware, on a board
+ * it is the one S4 arrived at empirically on hardware, on a board
  * with 520 KB.
  *
- * **Phase 32 raised it for the P4 and left the RP2350 alone**, because the
+ * **raised it for the P4 and left the RP2350 alone**, because the
  * constraint was memory and only one of the two boards lost it. That board's
  * heap went from 128 KB to 372 KB when .text moved to flash, and 1024 nodes
  * is visibly too few for it: `(fib 14)` -- 1,219 calls, each allocating
@@ -140,7 +139,7 @@
  * keeps *alive*, not what it allocates.)
  *
  * 2048 and not more, and the ceiling is not the heap. node_pool is .bss, and
- * after phase 32 split the image .bss lives in LOWRAM's 252 KB while the heap
+ * after split the image .bss lives in LOWRAM's 252 KB while the heap
  * lives elsewhere entirely -- so on this board the pool competes with the
  * boot stack, not with palloc. Measured headroom between _bss_end and
  * _stack_bottom: 44 KB at 2048 nodes, 24 KB at 3072, and **3.6 KB at 4096**,
@@ -158,7 +157,7 @@
 
 
 
-/* 38.5, plan/phase38_psram.md: the pools are BULK_BSS -- PSRAM on a board
+/* the pools are BULK_BSS -- PSRAM on a board
  * that has one (the LCD-7: 65 536 nodes, 1 MB, measured 1.7x slower than
  * SRAM and accepted for the size), ordinary .bss everywhere else. The mark
  * bitmaps further down stay in SRAM: they are small and hit at random. */
@@ -167,7 +166,7 @@ static lisp_val_t node_pool[NODE_POOL_SIZE] BULK_BSS;
 static int node_pool_idx = 0;
 static bool node_pool_exhausted_warned = false;
 
-/* S3 (plan/phase13_lisp_engine_extensions.md): free-list head for reclaimed
+/* free-list head for reclaimed
  * node_pool cells, threaded through the existing pair.cdr field (no extra
  * storage) -- see gc_collect() further down for how cells get here. NULL
  * means empty, i.e. every collection so far has reclaimed nothing new. */
@@ -189,13 +188,13 @@ static int string_large_free_count;
 /* What lisp_eval() leaves below itself when it refuses to go deeper: the
  * refusal's printk(), the primitive the last level was about to call, and a
  * trap frame if the timer lands there. In words, not bytes -- 2 KB flat left
- * 536 bytes of a 16 KB stack unused on rv64 (phase 44's second terminal,
+ * 536 bytes of a 16 KB stack unused on rv64 (second terminal,
  * measured 2026-10-04), where every frame is twice as wide. */
 #define LISP_STACK_MARGIN (512u * sizeof(void *))
 static int eval_depth = 0;
 static bool eval_depth_exceeded_warned = false;
 
-/* J2 (plan/phase10_chess_completion.md): Ctrl-C for a run-away-but-legal
+/* Ctrl-C for a run-away-but-legal
  * evaluation -- eval_depth above only catches unbounded *recursion*, not a
  * legitimately bounded-depth call that is simply expensive (an
  * exponential-blowup recursive definition well under the depth-100
@@ -273,7 +272,7 @@ static unsigned long gc_in_form_count;
  * back. On NULL the exhaustion flag is set and reported once. Callers that
  * can fail cleanly use this; everyone else takes alloc_node()'s clamp. */
 static lisp_val_t *alloc_node_or_null(lisp_type_t type) {
-    /* S3: reuse a reclaimed cell before ever touching the bump cursor.
+    /* reuse a reclaimed cell before ever touching the bump cursor.
      * Always safe to do here regardless of *when* alloc_node() is called
      * (mid-expression or not) -- unlike running a collection itself (see
      * gc_collect()'s comment for why that's restricted to safe points),
@@ -460,7 +459,7 @@ static inline uint32_t slot_capacity(int idx) {
     return slot_is_small(idx) ? STRING_SMALL_LEN : STRING_SLOT_LEN;
 }
 
-/* S3: free-list head for reclaimed string_pool slots, threaded through the
+/* free-list head for reclaimed string_pool slots, threaded through the
  * slot's own leading bytes (reinterpreted as an int index, -1 = end of
  * list) rather than a separate side array -- a slot is either on this
  * list (its content is the "next free" index) or handed out (its content
@@ -547,7 +546,7 @@ static char *intern_string(const char *src) {
     return slot;
 }
 
-/* S3 (plan/phase13_lisp_engine_extensions.md): mark-sweep collector, per
+/* mark-sweep collector, per
  * the design and host-timing prototype recorded in S0. Precise, cooperative,
  * safe-point-only collection -- see lisp_eval()'s own call site (near the
  * bottom of this file) for exactly where "safe point" applies and why it
@@ -887,7 +886,7 @@ static void gc_collect(void) {
     gc_collect_from(0);
 }
 
-/* 37.3a, plan/phase37_screen_layouts_and_apps.md: collection *inside* a
+/* collection *inside* a
  * form, when a pool has run dry. The precise collector cannot run there --
  * the values a half-evaluated form is working on live in C locals, not in
  * global_env (gc_collect_from()'s comment above). So this one also takes
@@ -969,7 +968,7 @@ static bool gc_headroom_low(void) {
  * The flags are still tested, and first: they mean a form has *already*
  * failed, which is worth a collection whatever the headroom arithmetic
  * says. */
-/* Phase 44: one engine, a shell in every terminal. The heap, the
+/* one engine, a shell in every terminal. The heap, the
  * environment and the evaluator's globals are shared, and a collection
  * scans only the stack of the task that runs it -- so a shell collecting
  * while another terminal's form was half evaluated freed that form's
@@ -1322,7 +1321,7 @@ static long arg_int(lisp_val_t *args, int n, long default_val) {
     return (v && v->type == LISP_INT) ? v->u.i : default_val;
 }
 
-/* S4 (plan/phase13_lisp_engine_extensions.md): the truthiness rule `if`/
+/* the truthiness rule `if`/
  * `cond`/`while` each already had inline and identically -- anything except
  * #f (either the true_val/false_val singletons or a freshly read/quoted
  * symbol whose text is "#f", per the `(= #t #t)` comment on prim_eq below)
@@ -1340,7 +1339,7 @@ static bool lisp_truthy(lisp_val_t *v) {
 static lisp_val_t *lisp_apply(lisp_val_t *fn, lisp_val_t *args, lisp_val_t *env);
 
 /* =========================================================================
- * Phase 42.7: Arbitrary-Precision Bignums and Exact Rationals From Scratch
+ * Arbitrary-Precision Bignums and Exact Rationals From Scratch
  * ========================================================================= */
 
 #define BIGNUM_MAX_LIMBS 64
@@ -3880,7 +3879,7 @@ static lisp_val_t *prim_string_append(lisp_val_t *args, lisp_val_t *env) {
     return make_str(buf);
 }
 
-/* 37.2, plan/phase37_screen_layouts_and_apps.md §3.3: strings are UTF-8, and
+/* strings are UTF-8, and
  * the functions that count or index *characters* count code points: a
  * character starts at every byte that is not a continuation byte
  * (10xxxxxx). A stray continuation byte therefore belongs to the character
@@ -4544,7 +4543,7 @@ static lisp_val_t *prim_rtc_status(lisp_val_t *args, lisp_val_t *env) {
 }
 
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
-/* Canvas primitives over the ST7735 TFT (H1, plan/phase9_chess_computer.md).
+/* Canvas primitives over the ST7735 TFT.
  * Deliberately generic -- raw RGB565 ints in, no chess-specific vocabulary --
  * so any future display consumer (not just H4's chess engine) can use them. */
 static lisp_val_t *prim_canvas_fill(lisp_val_t *args, lisp_val_t *env) {
@@ -4588,7 +4587,7 @@ static lisp_val_t *prim_canvas_text(lisp_val_t *args, lisp_val_t *env) {
 void lisp_canvas_poll(void) { }
 void lisp_canvas_reset(void) { }
 #else
-/* 37.3b, plan/phase37_screen_layouts_and_apps.md: the canvas on every build
+/* the canvas on every build
  * without the ST7735 -- the RP2350-LCD-7's panel, or a screen in RAM on the
  * others (drivers/ramscreen.c), which is what makes these testable on QEMU.
  * Each call is one request in drivers/screen.h's protocol, sent through
@@ -4847,7 +4846,7 @@ void lisp_canvas_reset(void) {
 #endif
 
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
-/* TM1638 primitives (H2, plan/phase9_chess_computer.md). */
+/* TM1638 primitives. */
 static lisp_val_t *prim_tm_display(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     tm1638_display_string(get_str_val(lisp_list_ref(args, 0)));
@@ -4867,7 +4866,7 @@ static lisp_val_t *prim_tm_get_key(lisp_val_t *args, lisp_val_t *env) {
 #endif
 
 #if CONFIG_ENABLE_CHESS
-/* Chess primitives (H4, plan/phase9_chess_computer.md). chess-selftest has
+/* Chess primitives. chess-selftest has
  * no hardware dependency (builds/runs on every target); chess-run needs
  * the display and keypad both present, matching chess_ui.h's own guard. */
 /* SAN/PGN notation self-test (14b). Separate from chess-selftest, which
@@ -4880,7 +4879,7 @@ static lisp_val_t *prim_chess_san_selftest(lisp_val_t *args, lisp_val_t *env) {
 }
 
 /* `(chess-selftest [cores])` -- `cores` added by X8b
- * (plan/phase23_multicore_scheduling.md), defaulting to 1, which is exactly
+ *, defaulting to 1, which is exactly
  * the pre-X8b path. The command reports cores requested, harts online and
  * helper nodes alongside the usual result, so a run that silently fell back
  * to one core cannot be mistaken for a two-core one. */
@@ -4906,8 +4905,8 @@ static lisp_val_t *prim_chess_selftest(lisp_val_t *args, lisp_val_t *env) {
     return &true_val;
 }
 
-/* `(perft [n] [cores])` (J4, plan/phase10_chess_completion.md; `cores` added
- * by X8, plan/phase23_multicore_scheduling.md) -- move-generation correctness
+/* `(perft [n] [cores])` (J4, ; `cores` added
+ * by X8, ) -- move-generation correctness
  * suite, `n` defaulting to 0 (chess_perft()'s own "<=0 means the documented
  * default depth" convention, matching upstream's own `run_perft_tests()`
  * no-argument wrapper) when omitted.
@@ -4953,7 +4952,7 @@ static lisp_val_t *prim_chess_console(lisp_val_t *args, lisp_val_t *env) {
     return &true_val;
 }
 
-/* `chess` (J0/J1, plan/phase10_chess_completion.md): the by-default,
+/* `chess` (J0/J1, ): the by-default,
  * always-discoverable entry point the user's own proposal names --
  * dispatches to chess_run() where the hardware for it exists (same as
  * `chess-run` above), otherwise to J1's text console REPL
@@ -5015,7 +5014,7 @@ static lisp_val_t *prim_zmachine(lisp_val_t *args, lisp_val_t *env) {
 #endif
 
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_PICO_CLOCK_GREEN
-/* `clock` (L4, plan/phase11_pico_clock_green.md): the Pico-Clock-Green
+/* `clock`: the Pico-Clock-Green
  * appliance loop. Unlike chess -- a general-purpose program also useful
  * interactively on non-dedicated boards, so it stays opt-in via
  * usr_init.lisp -- this hardware has no other purpose, so it's the one
@@ -5160,7 +5159,7 @@ static lisp_val_t *prim_clock_light(lisp_val_t *args, lisp_val_t *env) {
 #endif
 
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_DCF77
-/* `(dcf-raw [secs])` (D2, plan/phase17_clock_ui_and_dcf77.md): power the
+/* `(dcf-raw [secs])`: power the
  * DCF-77 receiver up, work out its PON and OUT polarities from what the pin
  * actually does, and print every pulse it sees for `secs` seconds (default
  * 30). The bring-up diagnostic -- it answers "is the module wired right and
@@ -5176,7 +5175,7 @@ static lisp_val_t *prim_dcf_raw(lisp_val_t *args, lisp_val_t *env) {
     return &true_val;
 }
 
-/* `(dcf-pins)` (D2, plan/phase17_clock_ui_and_dcf77.md): the electrical
+/* `(dcf-pins)`: the electrical
  * diagnostic behind dcf77_pin_report() -- what voltage each DCF-77 pin is
  * actually sitting at, and what that implies about the wiring. Runs in a
  * couple of seconds and decodes nothing; it answers "is this thing connected
@@ -5209,7 +5208,7 @@ static lisp_val_t *prim_dcf_pinscan(lisp_val_t *args, lisp_val_t *env) {
 /* `(dcf-listen [secs] [load])`: watch the receiver for minutes, printing every
  * pulse and a progress line every 10 s, so an antenna can be moved around
  * while someone watches. A non-zero second argument lights one matrix row as
- * a pure DC load -- the M0 experiment: more current on 3V3 may push the
+ * a pure DC load -- the noise experiment: more current on 3V3 may push the
  * Pico's regulator out of power-save mode, whose ripple is a documented
  * problem for this module. */
 /* `(dcf-mirror [secs])`: light a matrix row whenever the DCF-77 OUT line is
@@ -5468,7 +5467,7 @@ static lisp_val_t *prim_quit(lisp_val_t *args, lisp_val_t *env) {
  * not a printk() side effect -- read and print the actual content instead
  * of relying on vfs_read()/vfs_ls() to have printed it themselves. */
 /* Streamed rather than read in one gulp, which is how it was written until
- * X5 (plan/phase23_multicore_scheduling.md).
+ * X5.
  *
  * A single vfs_read() into a fixed 512-byte buffer silently truncated every
  * /proc file that outgrew it -- and did so invisibly: no error, no marker,
@@ -5713,7 +5712,7 @@ static lisp_val_t *prim_arch(lisp_val_t *args, lisp_val_t *env) {
 #endif
 }
 
-/* `(boot-program)` (L4, plan/phase11_pico_clock_green.md): the name of the
+/* `(boot-program)`: the name of the
  * program init.lisp should auto-start for this build persona, or "" for
  * none (plain interactive shell). A build-time fact, the same shape as
  * (board)/(arch) above -- not a runtime setting, and deliberately not tied
@@ -5745,7 +5744,7 @@ static lisp_val_t *prim_mounted(lisp_val_t *args, lisp_val_t *env) {
 }
 
 /* (psram) -- bytes of PSRAM this board brought up, 0 where there is none.
- * init.lisp asks it to size /ram0 (38.6, plan/phase38_psram.md): with PSRAM
+ * init.lisp asks it to size /ram0: with PSRAM
  * the RAM disk costs no heap, so it is mounted large and unconditionally. */
 static lisp_val_t *prim_psram(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
@@ -5979,8 +5978,8 @@ static lisp_val_t *prim_p9_remote_cat(lisp_val_t *args, lisp_val_t *env) {
  * needs the identical check, and two copies would agree only until one is
  * fixed. */
 
-/* `(net-config "ip" "mask" ["gateway"])` -- phase 18 N4 §3, wired to the IP
- * stack by phase 19's R2.
+/* `(net-config "ip" "mask" ["gateway"])` -- N4 §3, wired to the IP
+ * stack by R2.
  *
  * The address comes from the SD card using the boot path that already exists:
  * /sd0/system/etc/usr_init.lisp is loaded at boot when present, so the
@@ -6028,8 +6027,8 @@ static lisp_val_t *prim_net_config(lisp_val_t *args, lisp_val_t *env) {
     return &true_val;
 }
 
-/* `(mqttd-file "name" "path" "field" [decimals [max-age-s]])` -- phase 40,
- * item 10: publish a value read from a file, typically a mounted node's
+/* `(mqttd-file "name" "path" "field" [decimals [max-age-s]])`:
+ * Publish a value read from a file, typically a mounted node's
  * /proc/sensors, so a gateway's usr_init.lisp can republish its nodes. The
  * same as the shell's `mqttd file`; see mqttd_add_file_source(). */
 static lisp_val_t *prim_mqttd_file(lisp_val_t *args, lisp_val_t *env) {
@@ -6060,7 +6059,7 @@ static lisp_val_t *prim_mqttd_file(lisp_val_t *args, lisp_val_t *env) {
  * needs looking at. #f on any failure, never an error: a boot script must not
  * abort because a time server was switched off.
  *
- * There is no retry and no schedule here. Phase 24 owns a clock that keeps
+ * There is no retry and no schedule here. owns a clock that keeps
  * itself disciplined; this sets it once, when asked. */
 static lisp_val_t *prim_ntp_sync(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
@@ -6117,9 +6116,9 @@ static lisp_val_t *prim_net_status(lisp_val_t *args, lisp_val_t *env) {
 }
 
 /* `(net-mount "name" "1.2.3.4" [port])` -- dial a peer and mount its
- * namespace at /name (R3b, plan/phase19_ip_stack_and_ethernet.md).
+ * namespace at /name.
  *
- * The distributed story phase 5 designed, finally over a network rather than
+ * The distributed story designed, finally over a network rather than
  * a cable: `mount-remote` has always worked over any p9_link_t, and since
  * R3b an outbound TCP connection is one. Authentication is not a separate
  * step -- p9_remote_mount_open() authenticates with this node's own key when
@@ -6191,7 +6190,7 @@ static lisp_val_t *prim_net_identity(lisp_val_t *args, lisp_val_t *env) {
 }
 
 /* --- `identity`, `identity-name`, `identity-provision`, `identity-key` --
- * I3, plan/phase21_identity_and_authentication.md §6: the same four
+ * I3, : the same four
  * subcommands as kernel/shell.c's `identity` command, over the same typed
  * functions in kernel/identity.c, so /sd0/system/etc/usr_init.lisp can drive
  * provisioning the same way it already drives (net-identity ...). */
@@ -6473,7 +6472,7 @@ static lisp_val_t *prim_net_mount(lisp_val_t *args, lisp_val_t *env) {
         return &false_val;
     }
 
-    /* Bounded, for the same reason phase 18's N5 client wait is: a peer that
+    /* Bounded, for the same reason N5 client wait is: a peer that
      * is switched off must cost a few seconds, not the session. */
     int ready = 0;
     for (uint32_t spin = 0; spin < 400000u; spin++) {
@@ -6845,7 +6844,7 @@ static const char *lisp_val_str(const lisp_val_t *v) {
     return NULL;
 }
 
-/* `(sensor-cal ['save | 'restore | 'clear])` -- Phase 46:
+/* `(sensor-cal ['save | 'restore | 'clear])`:
  * Queries or persists multi-sensor calibration baselines. */
 static lisp_val_t *prim_sensor_cal(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
@@ -7310,7 +7309,7 @@ void lisp_print(lisp_val_t *val) {
             break;
         }
         case LISP_PAIR: {
-            /* S4 (plan/phase13_lisp_engine_extensions.md): now that `cons`
+            /* now that `cons`
              * exists, an improper (dotted) pair -- (cons 1 2), whose cdr is
              * neither a pair nor nil -- is reachable for the first time.
              * Previously every pair the reader or the evaluator built was
@@ -7513,7 +7512,7 @@ lisp_val_t *lisp_read(const char **str) {
         return res ? res : &nil_val;
     }
 
-    /* S4 (plan/phase13_lisp_engine_extensions.md): a leading sign
+    /* a leading sign
      * immediately followed by a digit is a signed number literal (-5,
      * +3) -- found missing while testing `abs`/`modulo`/`number->string`
      * on negative numbers, all of which need to be typeable as literals
@@ -7561,7 +7560,7 @@ lisp_val_t *lisp_read(const char **str) {
     return make_sym(buf);
 }
 
-/* S2 (plan/phase13_lisp_engine_extensions.md), fixing a bug found while
+/* S2, fixing a bug found while
  * testing `while`, pre-existing since long before S1/S2 and not specific
  * to either: `define` always writes into the *global_env* variable itself
  * (env_set(&global_env, ...) reassigns it to a new pointer) rather than
@@ -7628,7 +7627,7 @@ static lisp_val_t *eval_all_but_last(lisp_val_t *body, lisp_val_t *env, lisp_val
     return c->u.pair.car;
 }
 
-/* S2 (plan/phase13_lisp_engine_extensions.md): applies an already-resolved
+/* applies an already-resolved
  * callable `fn` to an already-evaluated `args` list -- the shape `map`/
  * `filter`/`for-each`/a future `apply` primitive need (they hold a function
  * value and a list of values, not raw call syntax to evaluate), factored
@@ -7975,7 +7974,7 @@ tail_call:
                             goto tail_call;
                         }
                     } else if (op == &sym_let_star || streq(op->u.sym, "let*")) {
-                        /* Special form: let* (S2, plan/phase13_lisp_engine_extensions.md) */
+                        /* Special form: let* */
                         if (args && args->type == LISP_PAIR) {
                             lisp_val_t *bindings = args->u.pair.car;
                             lisp_val_t *body = args->u.pair.cdr;
@@ -8008,7 +8007,7 @@ tail_call:
                     break;
 
                 case 'w':
-                    /* Special form: while (S2, plan/phase13_lisp_engine_extensions.md) */
+                    /* Special form: while */
                     if (op == &sym_while || streq(op->u.sym, "while")) {
                         if (args && args->type == LISP_PAIR) {
                             lisp_val_t *cond_expr = args->u.pair.car;
@@ -8330,7 +8329,7 @@ lisp_val_t *lisp_eval(lisp_val_t *val, lisp_val_t *env) {
      * until it restarts, which is what the warning already promised -- rather
      * than taking the machine down with it. */
     if (eval_depth == 0) {
-        /* S3: one of the collector's safe points (see lisp_gc_safepoint()'s
+        /* one of the collector's safe points (see lisp_gc_safepoint()'s
          * declaration in lisp.h, and gc_collect()'s own comment, for why
          * nowhere mid-expression qualifies). eval_depth==0 genuinely
          * happens during boot -- lisp_init() evaluates stdlib.lisp/
@@ -8428,7 +8427,7 @@ void lisp_repl(void) {
             streq(trimmed, "quit") || streq(trimmed, "(quit)")) break;
         if (idx == 0) continue;
 
-        /* S3: the safe point for the interactive session -- see
+        /* the safe point for the interactive session -- see
          * gc_collect()'s comment for why a collection is only exact
          * between complete top-level forms, and lisp_eval()'s own
          * eval_depth==0 check for why *that* check alone never fires here

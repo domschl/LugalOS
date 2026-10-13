@@ -28,12 +28,10 @@ __attribute__((weak)) bool board_unique_id(uint8_t out[8]) {
 }
 
 /* Weak, so a target that has one can plug in its identity store's block
- * device without this file having to know virtio-blk exists (I2,
- * plan/phase21_identity_and_authentication.md). QEMU's is
- * drivers/virtio_blk_id.c; the RP2350's reserved-flash-sector backend (I7)
+ * device without this file having to know virtio-blk exists. QEMU uses
+ * drivers/virtio_blk_id.c; the RP2350 reserved-flash-sector backend
  * overrides the same symbol. The default -- no backend at all -- is what
- * every board answers until one of those lands, or on any board persona
- * that never gets one. */
+ * every board answers until a backend is configured. */
 __attribute__((weak)) block_dev_t *identity_store_device(void) { return NULL; }
 
 /* Weak, so a board with a factory MAC in its silicon can supply it. The
@@ -261,10 +259,8 @@ int node_set_name(const char *name) {
     return 0;
 }
 
-/* --- I3, plan/phase21_identity_and_authentication.md: the toolset's data
- * layer -- read-modify-write onto the identity store, plus §5.1's key
- * validation. See kernel/include/kernel/identity.h for what each of these
- * is for; the reasoning lives there, next to the declarations. */
+/* --- Toolset data layer: read-modify-write onto the identity store,
+ * plus key validation. See kernel/include/kernel/identity.h. */
 
 bool node_devkey(uint8_t *out, uint32_t cap, uint32_t *len_out) {
     block_dev_t *dev = identity_store_device();
@@ -313,10 +309,10 @@ typedef struct {
     /* Q6: the MQTT broker blob, same carry-forward/explicit-clear pair. */
     const uint8_t *mqtt;    uint32_t mqtt_len;
     bool           clear_mqtt;
-    /* Phase 40, item 11: the altitude, two bytes big-endian; same pair. */
+    /* The altitude, two bytes big-endian. */
     const uint8_t *altitude;
     bool           clear_altitude;
-    /* Phase 46: multi-sensor calibration blob */
+    /* Multi-sensor calibration blob. */
     const uint8_t *sensor_cal; uint32_t sensor_cal_len;
     bool           clear_sensor_cal;
 } identity_patch_t;
@@ -604,7 +600,7 @@ node_id_result_t node_identity_set_key(const uint8_t *key, uint32_t key_len) {
 const char *node_id_result_str(node_id_result_t rc) {
     switch (rc) {
         case NODE_ID_OK:               return "ok";
-        case NODE_ID_ERR_NO_BACKEND:   return "no identity store on this target (plan/phase21_identity_and_authentication.md, I7 brings one to RP2350)";
+        case NODE_ID_ERR_NO_BACKEND:   return "no identity store on this target";
         case NODE_ID_ERR_POPULATED:    return "already provisioned; use --force to overwrite";
         case NODE_ID_ERR_BAD_INPUT:    return "rejected (bad name/ssid, or a key that's empty, oversized, or trivially patterned)";
         case NODE_ID_ERR_NO_ENTROPY:   return "no hardware entropy source on this target; install a key by hand instead";
@@ -622,10 +618,7 @@ node_id_result_t node_identity_generate_key(void) {
     return rc;
 }
 
-/* --- I6, plan/phase21_identity_and_authentication.md §5.3: WLAN
- * credentials. Lands with phase 19's R5 (the CYW43 driver) and is unused
- * before it, same as the device key was between I3 and I4 -- this is
- * storage and the toolset, not a radio. */
+/* --- WLAN credentials: storage and toolset for SSID and PSK. --- */
 
 bool node_wlan_ssid(char *out, uint32_t cap) {
     block_dev_t *dev = identity_store_device();

@@ -1,6 +1,5 @@
 /*
  * The seam between the Pico-Clock-Green's hardware and its user interface
- * (C3, plan/phase17_clock_ui_and_dcf77.md).
  *
  * drivers/pico_clock_green_rp2350.c owns the pins, the row scan, the buttons
  * and the frame buffer. drivers/pico_clock_app.c owns what is on the screen
@@ -9,8 +8,7 @@
  * drivers/include/drivers/pico_clock_green.h keeps only what the rest of the
  * system uses.
  *
- * Everything here is the CLIENT side of the clock task's wire (phase 17b,
- * plan/phase17b_clock_task_split.md). It used to be the `_hw_` layer, called
+ * Everything here is the CLIENT side of the clock task's wire. It used to be the `_hw_` layer, called
  * from inside the task itself; now the appliance loop runs in the caller's
  * task and each of these routes through `chan_call("clock", ...)`, falling
  * back to direct hardware access whenever the task is not alive. Nothing here
@@ -28,12 +26,12 @@
 /* One whole frame of the matrix: eight rows, ~8 ms, with the buttons polled
  * on the same cadence they always were. The heartbeat everything else hangs
  * off -- any loop that holds the display must call this or the panel goes
- * dark -- and, since phase 17b, the unit of work that keeps the row timing
+ * dark -- and, since previously, the unit of work that keeps the row timing
  * inside the driver while the policy lives out here.
  *
  * A frame rather than a row because a row is ~1 ms and this is a channel
  * call: one call per row would put `chan_call()` on a ~1 kHz hot path, which
- * is exactly what phase 12's M4.5 refused to do -- and answered by moving the
+ * is exactly what was refused to do -- and answered by moving the
  * whole appliance INTO the task instead. Eight rows per call is ~125 calls a
  * second, and every microsecond-sensitive loop stays on the far side of it.
  *

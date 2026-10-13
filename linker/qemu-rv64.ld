@@ -54,7 +54,7 @@ SECTIONS
         . = _utext_start + 4096;
     } > RAM
 
-    /* 45.3b: U-mode code that is not a driver -- the `kobjutest` and `radioosi`
+    /* U-mode code that is not a driver -- the `kobjutest` and `radioosi`
      * tasks, and the radio shim they exercise (drivers/radio/*, kernel/uheap.c),
      * which is linked into the domain's own text exactly as it will be on the C6:
      * code and read-only data in one region the domain may execute, its writable
@@ -109,7 +109,7 @@ SECTIONS
         _stack_top = .;
 
         /* Secondary hart boot stack (X1,
-         * plan/phase23_multicore_scheduling.md §2).
+         * ).
          *
          * 16 KB, and this is a **guess, not a measurement** -- §2 asks for
          * the latter and X1 cannot yet supply it, because nothing has run

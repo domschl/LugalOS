@@ -1,5 +1,4 @@
-/* An LLP node: the binding between kernel/llp.c and this kernel (49.2,
- * plan/phase49_c6_network_nodes.md). kernel/include/kernel/llp_node.h says
+/* An LLP node: the binding between kernel/llp.c and this kernel (protocol in doc/dev/protocols/llp.md). kernel/include/kernel/llp_node.h says
  * what it does; this file is how. */
 
 #include "kernel/llp_node.h"

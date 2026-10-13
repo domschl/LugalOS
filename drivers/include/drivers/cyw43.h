@@ -8,7 +8,7 @@
 
 /*
  * Infineon/Cypress CYW43439 wireless chip on the Pico 2 W's internal gSPI
- * bus -- R5, plan/phase19_ip_stack_and_ethernet.md.
+ * bus.
  *
  * Unlike R4's ENC28J60, this part terminates nothing itself: it is a bus
  * (gSPI, bit-banged over RP2350's PIO0 because the wire protocol needs a
@@ -41,8 +41,7 @@ bool cyw43_gspi_probe(void);
 bool cyw43_led_set(bool on);
 
 /* Associate with a WPA2-PSK network, using the *derived* 32-byte PSK
- * rather than a passphrase -- which is what this node stores (I6,
- * plan/phase21_identity_and_authentication.md). The firmware would accept
+ * rather than a passphrase -- which is what this node stores. The firmware would accept
  * a passphrase and hash it itself; handing it the PMK is the same join
  * with one less secret at rest. Blocks until associated or the attempt
  * times out. */

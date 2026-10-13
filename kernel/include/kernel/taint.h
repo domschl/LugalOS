@@ -1,7 +1,7 @@
 #ifndef LUGALOS_KERNEL_TAINT_H
 #define LUGALOS_KERNEL_TAINT_H
 
-/* The node's taint (45.9, plan/phase45_esp32c6.md §2): a node that links code it cannot audit says
+/* The node's taint: a node that links code it cannot audit says
  * so, as Linux does in /proc/sys/kernel/tainted. Set at build time by what is linked -- CONFIG_TAINT_BLOB
  * comes from the build that links Espressif's Wi-Fi libraries (cmake/radio_esp32c6.cmake via
  * CMakeLists.txt) and from nowhere else -- so it cannot be wrong at run time.

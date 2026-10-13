@@ -1,5 +1,5 @@
 /*
- * The RP2350's XIP cache maintenance by address -- 38.4, plan/phase38_psram.md
+ * The RP2350's XIP cache maintenance by address.md
  * H1. See drivers/include/drivers/xip_cache.h for when to use which.
  *
  * pico-sdk's hardware_xip_cache (xip_cache.c), reduced to what is used: a

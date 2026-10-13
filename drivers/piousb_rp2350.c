@@ -1,4 +1,4 @@
-/* PIO-USB host engine -- 36.7, plan/phase36_rp2350_lcd7_terminal.md §3.2.
+/* PIO-USB host engine.
  *
  * A full-speed USB host port made from two PIO blocks and the second core:
  *
@@ -14,7 +14,7 @@
  *             RAM with interrupts off and never touches flash, so a flash
  *             write on core 0 does not disturb it (§3.2.1), and nothing else
  *             can delay the ACK it owes a device ~1.3 us after a DATA packet.
- *             **Nor PSRAM** (phase 38 H2): the flash write also takes the
+ *             **Nor PSRAM**: the flash write also takes the
  *             PSRAM window away, and tools/check_core1_ram.py checks where
  *             code lives, not where its data does -- so the ring and every
  *             buffer core 1 reads or writes stay in SRAM, as a rule.

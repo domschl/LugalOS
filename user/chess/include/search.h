@@ -1,7 +1,7 @@
 /*
  * Vendored from ~/gith/domschl/LugalChess (engine/include/search.h), H4,
- * plan/phase9_chess_computer.md. search_pools_init()/search_pools_free()
- * are LugalOS-only additions, J0/J1 (plan/phase10_chess_completion.md) --
+ * . search_pools_init()/search_pools_free()
+ * are LugalOS-only additions, J0/J1 --
  * see search.c's header comment.
  */
 

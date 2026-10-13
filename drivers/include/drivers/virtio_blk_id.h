@@ -3,7 +3,7 @@
 
 #include "drivers/block.h"
 
-/* I2, plan/phase21_identity_and_authentication.md: the second virtio-blk
+/* the second virtio-blk
  * device, dedicated to the identity store (kernel/idstore.h). QEMU has no
  * silicon to bind an identity to (§3.1), so a second, small virtio-blk
  * device is the honest analogue -- everything above this seam (parsing,

@@ -8,7 +8,6 @@
 #include <string.h>
 
 /* Sensirion SGP30 Multi-Pixel Gas Sensor Driver.
- * Phase 46, plan/phase46_sensor_framework.md §4.8 (Milestone 46.8).
  *
  * Implements:
  * - 16-bit command protocol and CRC-8 validation (Sensirion polynomial 0x31)

@@ -1,6 +1,6 @@
 /*
  * The 9P server (fs/9p.c) on the host, under ASan/UBSan or valgrind
- * (phase 40 review).
+ *.
  *
  * Every byte a 9P peer sends arrives here, over USB, a UART or the network,
  * so the codec and the server behind it must survive any frame. This runs a

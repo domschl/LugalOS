@@ -1,5 +1,5 @@
 # Toolchain for the ESP32-P4 (Waveshare ESP32-P4-NANO) -- E2,
-# plan/phase27_esp32p4_bringup.md.
+# .
 #
 # Byte-identical to cmake/toolchain-rp2350.cmake apart from LUGALOS_TARGET,
 # and that is the finding rather than laziness: the P4's HP cores are

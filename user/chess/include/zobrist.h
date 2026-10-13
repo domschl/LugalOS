@@ -1,7 +1,7 @@
 /*
  * Vendored from ~/gith/domschl/LugalChess (engine/include/zobrist.h), H4,
- * plan/phase9_chess_computer.md. Changed from upstream (section 3.2,
- * plan/phase15_memory_reclamation.md): the keys are const data in flash
+ * . Changed from upstream (section 3.2,
+ * ): the keys are const data in flash
  * instead of .bss filled at run time, and init_zobrist() is gone with
  * nothing left for it to do.
  */

@@ -180,7 +180,7 @@ static int virtio_console_send(const uint8_t *data, uint32_t len) {
     return (int)len;
 }
 
-/* --- Raw bytes (49.2, plan/phase49_c6_network_nodes.md) ---
+/* --- Raw bytes ---
  *
  * For a protocol that frames its own bytes: LLP's serial binding (kernel/
  * llp_node.c) uses this channel as the wire between two QEMU nodes. Whoever

@@ -1,7 +1,7 @@
 #include "usys.h"
 
 /* A user program that reaches a *service* rather than a syscall (C3,
- * plan/phase6_memory_and_processes.md).
+ * ).
  *
  * This is the capability the phase exists to establish. Before SYS_CHAN_CALL a
  * U-mode program could print, read files and write files, and nothing else --

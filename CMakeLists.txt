@@ -58,7 +58,7 @@ elseif(LUGALOS_TARGET STREQUAL "RP2350")
     set(ARCH_MABI "ilp32")
     set(LINKER_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/linker/rp2350.ld")
     add_compile_definitions(CONFIG_TARGET_RV32=1 CONFIG_NOMMU=1 CONFIG_MODE_M=1 CONFIG_BOARD_RP2350=1)
-    # I7a, plan/phase21_identity_and_authentication.md §3.3. One definition of
+    # I7a, . One definition of
     # the flash map, reaching the compiler here and the linker below as
     # --defsym, so drivers/flashdisk.c and linker/rp2350.ld cannot disagree
     # about where the filesystem segment starts.
@@ -69,7 +69,7 @@ elseif(LUGALOS_TARGET STREQUAL "RP2350")
         LUGALOS_IDENTITY_BASE=${LUGALOS_IDENTITY_BASE}
         LUGALOS_IDENTITY_SIZE=${LUGALOS_IDENTITY_SIZE})
 elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
-    # 45.4, plan/phase45_esp32c6.md. The C6's HP core is RV32IMAC (datasheet:
+    # 45.4, . The C6's HP core is RV32IMAC (datasheet:
     # no F, no FPU), M and U with no S-mode (misa 0x40903105, read off this
     # silicon in 45.1), so the P4's recipe applies as it stands: CONFIG_MODE_M,
     # CONFIG_NOMMU, the generic RISC-V cross compiler (cmake/toolchain-
@@ -81,7 +81,7 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
                             CONFIG_BOARD_ESP32C6=1 CONFIG_BOARD_ESP=1)
     # The flash map: one definition, reaching the boot code (where the OS image
     # is) here and tools/c6flash.py (the same numbers) through the manifest below.
-    # 49.5: the C6-MINI module (beside the P4s) has 4 MB, the C6-Zero 8 MB.
+    # the C6-MINI module (beside the P4s) has 4 MB, the C6-Zero 8 MB.
     if(LUGALOS_C6_MODULE STREQUAL "MINI")
         include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/flash_layout_esp32c6_mini.cmake)
     else()
@@ -94,7 +94,7 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
         LUGALOS_C6_IDENTITY_BASE=${LUGALOS_C6_IDENTITY_BASE}
         LUGALOS_C6_IDENTITY_SIZE=${LUGALOS_C6_IDENTITY_SIZE})
 elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
-    # E2, plan/phase27_esp32p4_bringup.md. The P4's HP cores are RV32IMAFC
+    # E2, . The P4's HP cores are RV32IMAFC
     # (datasheet section 4.1.1.1), and we compile the IMAC subset: no float,
     # because nothing in this kernel uses one and a soft-float ABI keeps the
     # image and the trap frame the size they are on every other RV32 target;
@@ -110,7 +110,7 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
     set(LINKER_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/linker/esp32p4.ld")
     add_compile_definitions(CONFIG_TARGET_RV32=1 CONFIG_NOMMU=1 CONFIG_MODE_M=1 CONFIG_BOARD_ESP32P4=1 CONFIG_BOARD_ESP=1)
 
-    # E6: the flash map, on the same principle as RP2350's above -- one
+    # the flash map, on the same principle as RP2350's above -- one
     # definition, reaching the driver as compile definitions and the flashing
     # step below as generated arguments, so drivers/flash_esp32p4.c and the
     # esptool invocation cannot disagree about where the segment is.
@@ -187,7 +187,7 @@ if(ENABLE_SANITIZERS)
     endif()
 endif()
 
-# Software feature flags (F0, plan/phase8_feature_flags.md): which optional,
+# Software feature flags: which optional,
 # self-contained subsystems get built in at all. A build persona choice
 # ("sensor node doesn't need cc"), orthogonal to which board, so these are
 # plain cache options rather than facts in cmake/board-*.cmake. Default ON
@@ -196,18 +196,18 @@ endif()
 # #if CONFIG_ENABLE_CC regardless of target.
 option(LUGALOS_ENABLE_CC "Build the in-kernel C compiler (cc, chibicc)" ON)
 
-# X1, plan/phase23_multicore_scheduling.md §2: waking a second hart, behind a
+# waking a second hart, behind a
 # build-time gate that is OFF by default.
 #
 # The gate is the point, not a formality. Every board persona in this tree
 # boots on one hart today, and a regression in second-hart bring-up must not
-# be able to put that at risk -- the same reasoning phase 8 built this
+# be able to put that at risk -- the same reasoning built this
 # mechanism for. With it off, arch/riscv/common/entry.S parks secondary harts
-# exactly as it did before phase 23 existed.
-option(LUGALOS_ENABLE_SMP "Wake secondary harts (phase 23; QEMU RV64 only so far)" OFF)
+# exactly as it did before existed.
+option(LUGALOS_ENABLE_SMP "Wake secondary harts (SMP multi-core support)" OFF)
 option(LUGALOS_ENABLE_ED "Build the ed line editor" ON)
 
-# Same mechanism, RP2350-only hardware (H3, plan/phase9_chess_computer.md).
+# Same mechanism, RP2350-only hardware.
 # Three independent flags, not one -- the TM1638 keypad/7-segment/LEDs are
 # useful on their own in a board persona with no display attached, so it
 # would be wrong to bundle it with the canvas driver. CONFIG_ENABLE_CHESS is
@@ -224,7 +224,7 @@ option(LUGALOS_ENABLE_CHESS "Build the chess engine (RP2350 only; H4, not yet im
 # is staged to /sd0/games/ (MIT-built from in-tree ZIL source).
 option(LUGALOS_ENABLE_ZMACHINE "Build the Z-machine v3 interpreter (user/zmachine)" ON)
 
-# Same mechanism again (L1, plan/phase11_pico_clock_green.md): the
+# Same mechanism again: the
 # Pico-Clock-Green baseboard persona wires GP10-13 (SPI1/SD card on every
 # other RP2350 persona) to its own display hardware instead, so that persona
 # builds with this OFF. Default ON -- unlike ENABLE_ST7735/TM1638/CHESS
@@ -233,7 +233,7 @@ option(LUGALOS_ENABLE_ZMACHINE "Build the Z-machine v3 interpreter (user/zmachin
 # fs/vfs_server.c's spisd_get_device() call sites need no matching #if.
 option(LUGALOS_ENABLE_SPISD "Build SD-card support via SPI1 (RP2350 only)" ON)
 
-# 35.1, plan/phase35_esp32p4_sdmmc.md: the ESP32-P4's own SD/MMC host, which
+# the ESP32-P4's own SD/MMC host, which
 # is a different peripheral from the SPI card reader above and so a different
 # flag -- the two are never both meaningful on one board. Default ON and
 # stubbed internally rather than gated out of the source list, exactly like
@@ -243,7 +243,7 @@ option(LUGALOS_ENABLE_SPISD "Build SD-card support via SPI1 (RP2350 only)" ON)
 # when someone deliberately wants the pads back.
 option(LUGALOS_ENABLE_SDMMC "Build SD-card support via the SD/MMC host controller (ESP32-P4 only)" ON)
 
-# L2 (plan/phase11_pico_clock_green.md): the SM16106/SM5166P LED matrix +
+# L2: the SM16106/SM5166P LED matrix +
 # LDR driver for the Pico-Clock-Green baseboard persona specifically.
 # Default OFF, opposite of ENABLE_ST7735/TM1638/CHESS/SPISD above -- those
 # four all have their pin facts defined in the *default* board file
@@ -253,19 +253,19 @@ option(LUGALOS_ENABLE_SDMMC "Build SD-card support via the SD/MMC host controlle
 # something actually consumed those undefined macros.
 option(LUGALOS_ENABLE_PICO_CLOCK_GREEN "Build the Pico-Clock-Green SM16106/SM5166P LED matrix driver (RP2350 only)" OFF)
 
-# D2 (plan/phase17_clock_ui_and_dcf77.md): the DCF-77 longwave receiver wired
+# D2: the DCF-77 longwave receiver wired
 # to GP27/GP28 on the Pico-Clock-Green persona. Default OFF for the same
 # reason ENABLE_PICO_CLOCK_GREEN is: its CONFIG_DCF77_* pin facts exist only
 # in cmake/board-rp2350-clock.cmake, so defaulting it ON would break every
 # other persona's build the moment something consumed those macros.
 option(LUGALOS_ENABLE_DCF77 "Build the DCF-77 longwave time-signal receiver driver (RP2350 only)" OFF)
-# P3b (plan/phase24_dcf77_precision_and_ntp_server.md): a GPS module read for
+# P3b: a GPS module read for
 # its pulse per second, as a transfer standard for calibrating the DCF-77
 # path. Its own flag rather than DCF77's -- a board could want one without the
 # other, and only the calibration wants both.
 option(LUGALOS_ENABLE_GPS "Build the GPS/PPS reference driver (RP2350 only)" OFF)
 
-# --- U-mode user programs (B6, plan/phase5_distributed_design.md §5.4) ------
+# --- U-mode user programs ------
 #
 # Separately linked binaries, loaded from the filesystem and run in U-mode by
 # arch/riscv/common/elf.c. They are built here rather than checked in because
@@ -317,7 +317,7 @@ set(SD_STAGE_COMMANDS
     COMMAND ${CMAKE_COMMAND} -E rm -rf ${SD_STAGE}
     COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/tools/sd_root ${SD_STAGE})
 # Staged into system/bin/, which is where the shell's search path looks (C1,
-# plan/phase6_memory_and_processes.md). Putting them at the volume root would
+# ). Putting them at the volume root would
 # still work when named by full path, but then nothing on any volume would be
 # reachable by bare name and the convention would exist only on paper.
 list(APPEND SD_STAGE_COMMANDS
@@ -333,7 +333,7 @@ foreach(uprog ${USER_PROG_STAGED})
                 ${SD_STAGE}/system/bin/${uprog}.elf)
 endforeach()
 
-# Phase 43: Symbolic Computer Algebra System (CAS) library
+# Symbolic Computer Algebra System (CAS) library
 list(APPEND SD_STAGE_COMMANDS
     COMMAND ${CMAKE_COMMAND} -E copy_directory ${CMAKE_CURRENT_SOURCE_DIR}/cas ${SD_STAGE}/cas)
 
@@ -372,7 +372,7 @@ set(STORY_FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/user/zmachine/games/zork2/zork2-mit.z3
     ${CMAKE_CURRENT_SOURCE_DIR}/user/zmachine/games/zork3/zork3-mit.z3)
 
-# I7a, plan/phase21_identity_and_authentication.md §3.3: two forms of the same
+# two forms of the same
 # image, and which one is built is the whole point of the milestone.
 #
 #   RP2350  -- a raw flashfs.bin, flashed to its own region as flashfs.uf2.
@@ -387,7 +387,7 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
     set(FLASH_FS_SOURCE "")
     set(FLASH_FS_COMMENT "Generating flashfs.bin (its own flash segment, not linked in)")
 elseif(LUGALOS_TARGET STREQUAL "ESP32P4" OR LUGALOS_TARGET STREQUAL "ESP32C6")
-    # E2, plan/phase27_esp32p4_bringup.md (and 45.4 for the C6): built as a raw image, and linked
+    # E2,  (and 45.4 for the C6): built as a raw image, and linked
     # into nothing, because there is nowhere to put it yet.
     #
     # The QEMU form below is a 512 KB C array. This kernel is delivered by
@@ -429,7 +429,7 @@ endif()
 # Build-id header, regenerated (write-if-changed) before every build so it
 # tracks commits without a re-configure. See cmake/gen_build_id.cmake.
 #
-# M4.5, plan/phase12_microkernel_migration.md: the OBJECT_DEPENDS fix below
+# the OBJECT_DEPENDS fix below
 # (fs/vfs_server.c PROPERTIES OBJECT_DEPENDS ${LUGALOS_BUILD_ID_HEADER})
 # turned out not to fully close the staleness gap it was written to close --
 # found recurring again, months later, on a build that had nothing to do
@@ -485,17 +485,17 @@ add_custom_target(lugalos_build_id ALL DEPENDS ${LUGALOS_BUILD_ID_HEADER})
 # only get by accident of GCC's own header-scanning already having seen a
 # newer mtime by the time it ran.
 set_source_files_properties(fs/vfs_server.c PROPERTIES OBJECT_DEPENDS ${LUGALOS_BUILD_ID_HEADER})
-# 38.3: libc's word loops must not be turned back into calls to themselves.
+# libc's word loops must not be turned back into calls to themselves.
 # -fno-builtin does not prevent that; this does (the user programs above pass
 # the same flag for the same reason).
 set_source_files_properties(libc/string.c PROPERTIES COMPILE_OPTIONS -fno-tree-loop-distribute-patterns)
 
-# Per-board config header (K0, plan/phase7_kernel_config.md): platform
+# Per-board config header: platform
 # defaults and, where the board has real GPIO pins, a pin map -- generated
 # write-if-changed before every build, same shape as lugalos_build_id above.
 # K210 has no board file yet (no real drivers reference it today); config
 # generation is skipped there rather than inventing placeholder data.
-# Overridable (L1, plan/phase11_pico_clock_green.md): a single LUGALOS_TARGET
+# Overridable: a single LUGALOS_TARGET
 # can have more than one board persona sharing the same arch/ABI/linker
 # script -- e.g. RP2350's default chess-computer persona vs. the
 # Pico-Clock-Green baseboard persona, which wires several of the same pins
@@ -517,7 +517,7 @@ if(NOT DEFINED LUGALOS_BOARD_FILE)
     endif()
 endif()
 
-# U5, plan/phase32_esp32p4_execute_in_place.md: the P4's L2 cache size has to
+# the P4's L2 cache size has to
 # reach the linker as well as the C code.
 #
 # The board file is handed to cmake/gen_config.cmake as a *script*, not
@@ -531,7 +531,7 @@ endif()
 # linker/esp32p4.ld is still a literal -- but the ASSERT beside it can check
 # that literal against the configured cache size. A disagreement becomes a
 # link error instead of a heap whose top bytes accept stores and then lose
-# them, which is phase 27's E7 and cost a session to find.
+# them, which is E7 and cost a session to find.
 if(LUGALOS_TARGET STREQUAL "ESP32P4" AND DEFINED LUGALOS_BOARD_FILE)
     include(${LUGALOS_BOARD_FILE})
     if(NOT DEFINED CONFIG_L2_CACHE_KB)
@@ -540,7 +540,7 @@ if(LUGALOS_TARGET STREQUAL "ESP32P4" AND DEFINED LUGALOS_BOARD_FILE)
     endif()
     math(EXPR LUGALOS_P4_L2_CACHE_BYTES "${CONFIG_L2_CACHE_KB} * 1024")
     add_link_options(-Wl,--defsym=CONFIG_L2_CACHE_BYTES=${LUGALOS_P4_L2_CACHE_BYTES})
-    # 47.1, plan/phase47_esp32p4_lcd7b_ribbon.md: where LOWRAM and RAM sit in
+    # where LOWRAM and RAM sit in
     # L2MEM depends on the silicon revision -- v3.x moved the L2 cache to the
     # bottom and the ROM's data to the top. linker/esp32p4.ld INCLUDEs
     # esp32p4_memory.ld; this puts the right one where it will find it.
@@ -577,7 +577,7 @@ if(DEFINED LUGALOS_BOARD_FILE)
     # before the final *link*, never before an individual compile.
     #
     # Found 2026-08-22 while board-scaling CONFIG_BALLOC_ARENA_PAGES (§1.1,
-    # plan/phase15_memory_reclamation.md): editing only cmake/board-*.cmake
+    # ): editing only cmake/board-*.cmake
     # and rebuilding produced a binary whose kernel/balloc.c.obj had been
     # compiled against the *previous* config -- the boot log reported the old
     # 64 KB arena while build/rv32/lugalos_config.h on disk already said 4
@@ -632,28 +632,28 @@ set(SOURCES
     kernel/time.c
     kernel/discipline.c
     kernel/timezone.c
-    # N1 (plan/phase18_networking_and_auth.md): SHA-256/HMAC-SHA-256 for the
+    # N1: SHA-256/HMAC-SHA-256 for the
     # 9P Tauth gate. Target-independent and built everywhere, including the
     # QEMU targets that will never have a network cable -- an auth exchange's
     # fiddly part is its arithmetic, and arithmetic should not be debugged by
     # flashing (same argument as drivers/dcf77_decode.c above).
     kernel/sha256.c
-    # R3/R4 (plan/phase19_ip_stack_and_ethernet.md): who this node is -- a
-    # name and a MAC of its own. Above every wire on purpose: phase 18 put
+    # R3/R4: who this node is -- a
+    # name and a MAC of its own. Above every wire on purpose: put
     # the MAC inside a driver, and the design went with the part.
     kernel/identity.c
     # N1: the nonce source for that gate, plus the measurement that says
     # whether the ring oscillator behind it is worth trusting.
     kernel/random.c
-    # I1 (plan/phase21_identity_and_authentication.md): the identity record
+    # the identity record
     # -- magic, version, CRC32, typed fields -- and its block_dev_t seam.
     # Target-independent like sha256.c/random.c above: a parser and a CRC
     # should not be debugged by flashing a board.
     kernel/idstore.c
-    # 49.1 (plan/phase49_c6_network_nodes.md): the CRC-32 idstore.c used to
+    # the CRC-32 idstore.c used to
     # keep to itself, now shared with LLP's serial binding.
     kernel/crc32.c
-    # 49.1: LLP, the link protocol between two LugalOS nodes on one board (a
+    # LLP, the link protocol between two LugalOS nodes on one board (a
     # P4 and its C6): framing, the serial binding, the HELLO/credit state
     # machine. Built everywhere and host-tested (tests/host/llp_host.c) --
     # a protocol's state machine should not be debugged by flashing.
@@ -661,17 +661,17 @@ set(SOURCES
     kernel/ipc.c
     kernel/devirq.c
     kernel/sched.c
-    # 45.3b (plan/phase45_esp32c6.md): kernel-owned semaphores, mutexes, queues,
+    # kernel-owned semaphores, mutexes, queues,
     # event groups and timers for a confined runtime. QEMU only until a board
     # needs them: the tables are ~7 KB of .bss, which RP2350's heap cannot spare.
     ${KOBJ_SOURCES}
     kernel/shell.c
     kernel/line_editor.c
     kernel/editor.c
-    # 37.5a: one parser for every text input's keys, and the clipboard.
+    # one parser for every text input's keys, and the clipboard.
     kernel/keyseq.c
     kernel/clipboard.c
-    # 37.5a: the screen to a PBM file.
+    # the screen to a PBM file.
     kernel/screenshot.c
     kernel/ubsan.c
 
@@ -685,52 +685,52 @@ set(SOURCES
     arch/riscv/common/pmp_probe.c
     arch/riscv/common/elf.c
     drivers/ramdisk.c
-    # 36.5: text on a 1-bpp framebuffer, and its font. Portable, so on every
+    # text on a 1-bpp framebuffer, and its font. Portable, so on every
     # target: the RP2350-LCD-7 draws with it, and QEMU tests it (36.6).
     drivers/fbtext.c
     drivers/font8x16.c
-    # 36.6: the terminal emulator on top of it, and its `vtselftest`.
+    # the terminal emulator on top of it, and its `vtselftest`.
     drivers/vtterm.c
-    # 37.1: the screen around it -- the menu bar, the framed tile, and later
+    # the screen around it -- the menu bar, the framed tile, and later
     # the layouts -- and 37.1a's drawing at any pixel, which Lisp's canvas
     # extends in 37.3.
     drivers/screen.c
     drivers/canvas1.c
     drivers/ribbon.c
-    # 37.3b: the same screen in RAM, for Lisp's canvas where there is no panel.
+    # the same screen in RAM, for Lisp's canvas where there is no panel.
     drivers/ramscreen.c
-    # 36.7: USB's CRC5/CRC16, portable so `usbselftest` checks them on QEMU
+    # USB's CRC5/CRC16, portable so `usbselftest` checks them on QEMU
     # before the PIO-USB engine puts them on a wire.
     drivers/usb_crc.c
-    # 36.8: a boot keyboard above the transaction interface -- descriptor
+    # a boot keyboard above the transaction interface -- descriptor
     # parsing and report diffing, checked on QEMU by `usbkbdselftest`.
     drivers/usbkbd.c
-    # 47.9: enumeration, the hub, the boot keyboard and its console input
+    # enumeration, the hub, the boot keyboard and its console input
     # above any transaction port (drivers/usbkbd_task.h); empty but for the
     # reports where no board declares a port.
     drivers/usbkbd_host.c
-    # 47.12: a GT911 touch controller, polled; empty unless the board file
+    # a GT911 touch controller, polled; empty unless the board file
     # declares one (CONFIG_TOUCH_GT911).
     drivers/touch_gt911.c
-    # D1 (plan/phase17_clock_ui_and_dcf77.md): the DCF-77 frame decoder is
+    # D1: the DCF-77 frame decoder is
     # target-independent -- it consumes timestamped samples, never a register
     # -- so it is built and self-tested on every target, including the QEMU
     # ones that will never have a radio attached. That is the point: the frame
     # logic is the fiddly part and it should not be debugged by flashing.
     drivers/dcf77_decode.c
-    # C3 (plan/phase17_clock_ui_and_dcf77.md): same reasoning, same shape --
+    # C3: same reasoning, same shape --
     # the menu state machine takes key events and returns screen descriptions,
     # so it builds and self-tests on targets with neither buttons nor a panel.
     drivers/pico_clock_ui.c
     drivers/flashdisk.c
     # The driver-as-task serve loop, shared by every driver that runs as a
-    # task (category C, plan/phase30_driver_framework.md). Built for every
+    # task. Built for every
     # target: the pattern has no board-specific content, which is the whole
     # reason it could be extracted.
     drivers/driver_task.c
     # The I2C bus: the controller, the task that owns it and the one generic
     # transfer every device on it uses (category E,
-    # plan/phase30_driver_framework.md). Separate from i2c_rtc.c since phase
+    # ). Separate from i2c_rtc.c since phase
     # 30 -- it used to be part of the RTC driver, which is why a pressure
     # sensor had to include a clock's header to reach the bus.
     drivers/i2c_bus.c
@@ -740,7 +740,7 @@ set(SOURCES
     drivers/adc.c
     drivers/loopback_net.c
     drivers/uart_net.c
-    # 49.1: SLIP on its own, so LLP does not need a UART driver to get it.
+    # SLIP on its own, so LLP does not need a UART driver to get it.
     drivers/slip.c
     drivers/usb_cdc.c
     # Empty on RP2350 -- see the flash-fs block above; the image is its own
@@ -751,7 +751,7 @@ set(SOURCES
     fs/9p.c
     fs/p9_link.c
 
-    # R1 (plan/phase19_ip_stack_and_ethernet.md): the frame-source seam below
+    # R1: the frame-source seam below
     # the IP stack. Built for every target, like fs/ above -- a board with no
     # interface registers none, and the registry is then empty rather than
     # absent, which is what lets `net` and /proc/devices answer "no network"
@@ -766,7 +766,7 @@ set(SOURCES
     net/icmp.c
     net/udp.c
     # R3: server-side TCP. An accepted connection is a p9_link_t, so
-    # everything phase 18 built above a byte stream works over it unchanged.
+    # everything built above a byte stream works over it unchanged.
     net/tcp.c
     # R6: the SNTP client. Built everywhere for the same reason the layers
     # under it are -- the fixed-point and epoch arithmetic is the fiddly part,
@@ -774,7 +774,7 @@ set(SOURCES
     net/ntp.c
     net/dhcp.c
     net/ntp_server.c
-    # Q1 (plan/phase26_mqtt_and_environment_sensors.md): the MQTT 3.1.1
+    # Q1: the MQTT 3.1.1
     # client. Built for every target for the same reason the SNTP client
     # above is -- the byte counting and the Remaining Length varint are the
     # fiddly part, and `mqtt selftest` exercises them with no network at all.
@@ -784,12 +784,12 @@ set(SOURCES
     # so a QEMU target exercises the whole publish/reconnect/will machinery
     # with a synthetic source and no sensor.
     net/mqttd.c
-    # P3 (plan/phase24_dcf77_precision_and_ntp_server.md): timestamped GPIO
+    # P3: timestamped GPIO
     # edge capture. Built for every target because the ring is portable and is
     # where the off-by-one lives; the interrupt half compiles away on anything
     # that is not RP2350.
     drivers/edgecap.c
-    # Q4 (plan/phase26_mqtt_and_environment_sensors.md): the BMP280/BME280
+    # Q4: the BMP280/BME280
     # environment sensors. Built for every target because the datasheet's
     # fixed-point compensation is the fiddly part and `sensor selftest`
     # exercises it with no sensor present; the bus access underneath goes
@@ -797,7 +797,7 @@ set(SOURCES
     # controller. Deliberately NOT in the -fno-jump-tables list below: it has
     # no UATTR code, since it rides the shared i2c task rather than being one.
     drivers/bme280.c
-    # Phase 46 (plan/phase46_sensor_framework.md): I2C register and command helpers.
+    # I2C register and command helpers.
     drivers/i2c_reg.c
     drivers/sensor.c
     drivers/bme680.c
@@ -813,16 +813,16 @@ set(SOURCES
     drivers/sensor_hub.c
     fs/p9_chan.c
     libc/string.c
-    # 38.3: the exhaustive check behind libc's word loops (`memselftest`).
+    # the exhaustive check behind libc's word loops (`memselftest`).
     kernel/memselftest.c
-    # Phase 40 review: the printf engine's integer and string forms.
+    # review: the printf engine's integer and string forms.
     kernel/fmtselftest.c
-    # 38.4: the bulk page zone's checks (`zonetest`).
+    # the bulk page zone's checks (`zonetest`).
     kernel/zonetest.c
     user/lisp/lisp.c
 )
 
-# Optional subsystems (F1/F2, plan/phase8_feature_flags.md): each is a
+# Optional subsystems (F1/F2, ): each is a
 # self-contained leaf with exactly one outside touchpoint, gated to match in
 # lisp.c/shell.c via the CONFIG_ENABLE_CC/CONFIG_ENABLE_ED generated defines.
 if(LUGALOS_ENABLE_CC)
@@ -838,7 +838,7 @@ if(LUGALOS_ENABLE_ED)
     list(APPEND SOURCES user/ed/ed.c)
 endif()
 if(LUGALOS_ENABLE_CHESS)
-    # H4 (plan/phase9_chess_computer.md): engine core is portable (builds on
+    # H4: engine core is portable (builds on
     # every target, not just RP2350) so it's testable fast on QEMU before
     # ever touching real hardware; chess_ui.c's interactive TM1638/ST7735
     # game loop is itself internally guarded to RP2350 + those two flags,
@@ -873,7 +873,7 @@ endif()
 
 if(LUGALOS_TARGET STREQUAL "RP2350")
     set(SOURCES arch/riscv/rp2350/boot_header.S ${SOURCES} drivers/uart_rp2350.c drivers/spisd_rp2350.c arch/riscv/rp2350/bootrom.c)
-    # H1/H2 (plan/phase9_chess_computer.md): independently toggleable, per H3
+    # H1/H2: independently toggleable, per H3
     # -- the TM1638 keypad/7-segment/LEDs are useful without the display
     # attached at all, so they don't share a flag.
     if(LUGALOS_ENABLE_ST7735)
@@ -882,23 +882,23 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
     if(LUGALOS_ENABLE_TM1638)
         list(APPEND SOURCES drivers/tm1638_rp2350.c)
     endif()
-    # L2 (plan/phase11_pico_clock_green.md): Pico-Clock-Green persona only
+    # L2: Pico-Clock-Green persona only
     # (LUGALOS_ENABLE_PICO_CLOCK_GREEN defaults OFF -- see the option() above).
     if(LUGALOS_ENABLE_PICO_CLOCK_GREEN)
         list(APPEND SOURCES drivers/pico_clock_green_rp2350.c)
-        # C2 (plan/phase17_clock_ui_and_dcf77.md): the font is all .rodata and
+        # C2: the font is all .rodata and
         # has no hardware in it, but it has no other consumer either, so it
         # follows the display flag rather than becoming a target-wide source.
         list(APPEND SOURCES drivers/pico_clock_font.c)
         list(APPEND SOURCES drivers/pico_clock_app.c)
     endif()
-    # D2 (plan/phase17_clock_ui_and_dcf77.md): independent of the display
+    # D2: independent of the display
     # flag above -- the receiver is a separate module on separate pins, and
     # the probe diagnostic is most useful with the display *not* running.
     if(LUGALOS_ENABLE_DCF77)
         list(APPEND SOURCES drivers/dcf77_rp2350.c)
         list(APPEND SOURCES drivers/dcf77_service.c)
-        # P0 (plan/phase24_dcf77_precision_and_ntp_server.md): the measurement
+        # P0: the measurement
         # instrument. Built with the receiver, started only where the board
         # file sets CONFIG_DCF77_P0_LOG.
         list(APPEND SOURCES drivers/dcf77_p0log.c)
@@ -909,30 +909,30 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
     if(LUGALOS_ENABLE_GPS)
         list(APPEND SOURCES drivers/gps_pps_rp2350.c)
     endif()
-    # N5 (plan/phase18_networking_and_auth.md): the gateway's UART1 downlink
+    # N5: the gateway's UART1 downlink
     # to a chess or clock board. Guarded by the board file defining its pins
     # rather than by a feature flag of its own -- the driver is meaningless
     # without a pin map, and the pin map is what says the wire exists.
     #
     # An Ethernet driver used to sit beside it here (the W5500, N4) and was
-    # removed with the part; phase 19's R4 puts an ENC28J60 back on the same
+    # removed with the part; R4 puts an ENC28J60 back on the same
     # SPI0 pins, under the same guard-by-pin-map rule.
     list(APPEND SOURCES drivers/uart1_link_rp2350.c drivers/enc28j60_rp2350.c)
-    # 36.0 (plan/phase36_rp2350_lcd7_terminal.md): same guard-by-pin-map rule,
+    # same guard-by-pin-map rule,
     # keyed on the board declaring a PIO-USB port (CONFIG_PIOUSB_DP_GPIO).
     list(APPEND SOURCES drivers/boardprobe_rp2350.c)
-    # 36.1: clk_sys read back and measured (`clocks`), on every RP2350 persona.
+    # clk_sys read back and measured (`clocks`), on every RP2350 persona.
     list(APPEND SOURCES drivers/clocks_rp2350.c)
-    # 36.3: the RP2350-LCD-7's RGB panel; guard-by-pin-map (CONFIG_LCD_*).
-    # 47.6: the terminal on it is drivers/lcdterm.c's, portable; stubs where
+    # the RP2350-LCD-7's RGB panel; guard-by-pin-map (CONFIG_LCD_*).
+    # the terminal on it is drivers/lcdterm.c's, portable; stubs where
     # no panel is declared (LCDTERM_PRESENT, drivers/lcdterm.h).
     list(APPEND SOURCES drivers/lcd7_rp2350.c drivers/lcdterm.c)
-    # 36.7: the PIO-USB host engine on core 1; guard-by-pin-map again
+    # the PIO-USB host engine on core 1; guard-by-pin-map again
     # (CONFIG_PIOUSB_DP_GPIO), stubs elsewhere.
     list(APPEND SOURCES drivers/piousb_rp2350.c)
-    # 36.8: the `kbd` task on top of it (U-mode, .kbdtext).
+    # the `kbd` task on top of it (U-mode, .kbdtext).
     list(APPEND SOURCES drivers/usbkbd_rp2350.c)
-    # R5 (plan/phase19_ip_stack_and_ethernet.md): the CYW43439 wireless
+    # R5: the CYW43439 wireless
     # bus, same guard-by-pin-map rule -- meaningless without GP23/24/25/29
     # wired, which only the wifi/clock persona board files declare.
     list(APPEND SOURCES drivers/cyw43_rp2350.c)
@@ -963,19 +963,19 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
         )
         list(APPEND SOURCES ${CMAKE_CURRENT_BINARY_DIR}/cyw43_fw.c)
     endif()
-    # I7b (plan/phase21_identity_and_authentication.md): the identity store's
+    # the identity store's
     # RP2350 backend -- OTP CHIPID for the UID, the reserved flash sector for
     # the record, and the bootrom write path underneath it. The QEMU analogue
     # is drivers/virtio_blk_id.c in the branch below; exactly one of the two
     # is ever built, which is what lets both define identity_store_device()
     # strongly over kernel/identity.c's weak default.
     list(APPEND SOURCES drivers/flash_rp2350.c drivers/idstore_rp2350.c)
-    # 38.2, plan/phase38_psram.md: empty unless the board file names a PSRAM.
+    # empty unless the board file names a PSRAM.
     list(APPEND SOURCES drivers/psram_rp2350.c)
-    # 38.4: XIP cache clean/invalidate by address (H1), used by the bulk zone.
+    # XIP cache clean/invalidate by address (H1), used by the bulk zone.
     list(APPEND SOURCES drivers/xip_cache_rp2350.c)
 elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
-    # E2, plan/phase27_esp32p4_bringup.md. One driver, and the shortness of
+    # E2, . One driver, and the shortness of
     # this list is the milestone: no block device, no netif, no identity
     # backend, no display. A board with none of those registers none of them,
     # and /proc/devices then says "no block device" rather than the kernel
@@ -987,71 +987,71 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
     # weak default answers and the node's name and MAC come from the derived
     # CONFIG_NODE_SEED. E6 is where the flash gives it something better.
     list(APPEND SOURCES drivers/uart_esp32p4.c drivers/flash_esp32p4.c)
-    # U2, plan/phase32_esp32p4_execute_in_place.md: the boot-time flash
+    # the boot-time flash
     # mapping. Lives in .boot.text (L2MEM) because it is what makes the flash
     # window exist -- see the file's own header.
     list(APPEND SOURCES arch/riscv/common/xip_esp32p4.c)
-    # 34.1, plan/phase34_esp32p4_pll_bringup.md: the clock tree, read back
+    # the clock tree, read back
     # from its own registers. Read-only at 34.1 and the place the PLL switch
     # lands in 34.3-34.5 -- the code that changes these clocks and the code
     # that reports them belong in one file.
     list(APPEND SOURCES arch/riscv/common/clk_esp32p4.c)
-    # 34.9, plan/phase34_esp32p4_pll_bringup.md: the second HP core. Its own
+    # the second HP core. Its own
     # file rather than kernel/smp.c's, because that file's SMP paths are
     # RP2350's bootrom handshake and QEMU's release-from-a-spin-loop, and this
     # board's is neither -- a stall register, a reset bit and a ROM call.
     list(APPEND SOURCES arch/riscv/common/smp_esp32p4.c)
-    # Z1, plan/phase28_esp32p4_ethernet.md: the EMAC. Built only for this
+    # the EMAC. Built only for this
     # board, because its registers are this chip's and nobody else's -- the
     # category A rule in plan/hardware_seams.md §1. At Z1 it registers no
     # netif and serves nothing; it exists so that `emac scan` can prove the
     # PHY is there before Z2 builds descriptor rings against it.
     list(APPEND SOURCES drivers/emac_esp32p4.c)
-    # Z5, plan/phase28_esp32p4_ethernet.md §1.5: the factory MAC and a real
+    # the factory MAC and a real
     # board_unique_id(), read from eFuse. Without it this board derives a
     # locally-administered MAC from a build seed, which two boards flashed
     # from one build would share.
     list(APPEND SOURCES drivers/efuse_esp32p4.c)
-    # 35.1, plan/phase35_esp32p4_sdmmc.md: the SD/MMC host, and with it this
+    # the SD/MMC host, and with it this
     # board's first block device. Built only here -- the registers are this
     # chip's, and the RP2350's SD card is a different peripheral entirely
     # (SPI mode over a PL022, drivers/spisd_rp2350.c). Like that file it is
     # not gated out when the feature is off; it stubs itself internally, so
     # fs/vfs_server.c and kernel/board.c need no matching #if.
     list(APPEND SOURCES drivers/sdmmc_esp32p4.c)
-    # 49.4 (plan/phase49_c6_network_nodes.md): the same controller's slot 1,
+    # the same controller's slot 1,
     # SDIO toward the board's ESP32-C6.
     list(APPEND SOURCES drivers/sdio_esp32p4.c)
-    # 47.3, plan/phase47_esp32p4_lcd7b_ribbon.md: the in-package PSRAM. Same
+    # the in-package PSRAM. Same
     # guard-by-board-file rule as the RP2350's (CONFIG_PSRAM_BYTES); an empty
     # unit on a board file without one.
     list(APPEND SOURCES drivers/psram_esp32p4.c)
-    # 47.4: the MIPI-DSI host and the LCD-7B's EK79007 panel. Empty unit
+    # the MIPI-DSI host and the LCD-7B's EK79007 panel. Empty unit
     # unless the board file names the panel (CONFIG_DSI_LCD_RST_GPIO).
     list(APPEND SOURCES drivers/dsi_esp32p4.c)
-    # 47.7: the panel terminal (portable since 47.6) on that panel.
+    # the panel terminal (portable since 47.6) on that panel.
     list(APPEND SOURCES drivers/lcdterm.c)
-    # 47.9: the OTG HS controller as a USB host, a port for
+    # the OTG HS controller as a USB host, a port for
     # drivers/usbkbd_host.c. Empty unit unless the board file asks for it
     # (CONFIG_USBHOST_DWC2).
     list(APPEND SOURCES drivers/usbhost_esp32p4.c)
 elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
-    # 45.4, plan/phase45_esp32c6.md. One driver again: the console, on the
+    # 45.4, . One driver again: the console, on the
     # USB-Serial/JTAG peripheral. No block device and no display -- the same stated
     # emptiness as the P4's E2: a board with none of those registers none of them.
-    # 45.8: the identity store, one flash sector (drivers/idstore_esp32c6.c).
+    # the identity store, one flash sector (drivers/idstore_esp32c6.c).
     list(APPEND SOURCES drivers/usbjtag_esp32c6.c drivers/idstore_esp32c6.c drivers/wdt_esp32c6.c)
-    # 45.8: the hardware watchdog (drivers/wdt_esp32c6.c).
-    # 45.5: the board's one WS2812 (GPIO8) through the RMT pulse generator.
+    # the hardware watchdog (drivers/wdt_esp32c6.c).
+    # the board's one WS2812 (GPIO8) through the RMT pulse generator.
     list(APPEND SOURCES drivers/ws2812.c drivers/ws2812_esp32c6.c)
-    # 45.6: the Wi-Fi radio. The kernel half is always built (it says so when there
+    # the Wi-Fi radio. The kernel half is always built (it says so when there
     # is no blob); the rest only with an ESP-IDF tree to take headers and archives
     # from (cmake/radio_esp32c6.cmake).
     list(APPEND SOURCES kernel/radio_c6.c kernel/radio_intr.c kernel/radio_netif_c6.c)
     include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/radio_esp32c6.cmake)
     if(LUGALOS_RADIO_C6)
         add_compile_definitions(CONFIG_RADIO_C6=1)
-        # 45.9: this build links code it cannot audit, and says so (kernel/include/kernel/taint.h).
+        # this build links code it cannot audit, and says so (kernel/include/kernel/taint.h).
         add_compile_definitions(CONFIG_TAINT_BLOB=1)
         set(RADIO_C6_SOURCES drivers/radio/esp32c6_osi_table.c drivers/radio/radio_main.c
             drivers/radio/radio_libc.c drivers/radio/plat_esp32c6.c drivers/radio/radio_supp_os.c drivers/radio/radio_netif.c)
@@ -1077,17 +1077,17 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
     # The boot-time flash mapping and watchdogs, in .boot.text (SRAM): it is what
     # makes the flash window exist, so it cannot live in it.
     list(APPEND SOURCES arch/riscv/common/xip_esp32c6.c)
-    # 49.3 (plan/phase49_c6_network_nodes.md): the C6 as a host's network card,
+    # the C6 as a host's network card,
     # LLP sharing the USB port with the console (drivers/usbjtag_esp32c6.c).
     list(APPEND SOURCES kernel/llp_node.c)
 else()
     # QEMU targets: VirtIO block device + 16550 UART + VirtIO console (9P link, A3)
     list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c drivers/virtio_console.c)
-    # 49.2 (plan/phase49_c6_network_nodes.md): an LLP node over the
+    # an LLP node over the
     # virtio-console -- two guests, one as the radio bridging its virtio-net,
     # one as the host with wlan0. QEMU-only until a board has a channel (49.3).
     list(APPEND SOURCES kernel/llp_node.c)
-    # I2 (plan/phase21_identity_and_authentication.md): the second virtio-blk
+    # the second virtio-blk
     # device, dedicated to the identity store -- QEMU's analogue of I7's
     # RP2350 flash sector (§3.1: "QEMU has no silicon to bind to").
     list(APPEND SOURCES drivers/virtio_blk_id.c)
@@ -1104,14 +1104,14 @@ else()
     list(APPEND SOURCES arch/riscv/rv64_mmu/vmm.c)
 endif()
 
-# M5, plan/phase12_microkernel_migration.md: -fno-jump-tables for every
+# -fno-jump-tables for every
 # driver file with UATTR-tagged U-mode code (kernel/shell.c's own probes
 # are small enough to have never triggered this, but every driver's
 # dispatch loop is squarely at risk). user/progs/${uprog}.elf's own
 # COMMON_CFLAGS comment already names the reason ("a switch table is
 # absolute addresses in .rodata") for a different motivation
 # (position-independence); the same fact bites UATTR code for its own
-# reason -- a switch (or, found on real hardware in M5 Phase 4, an
+# reason -- a switch (or, found on real hardware in U-mode, an
 # if/else chain GCC's switch-conversion pass reconstructs into a table
 # just the same) compiles into a jump table stored in ordinary .rodata,
 # outside the .utext/.st7735text page the U-mode domain actually grants,
@@ -1124,8 +1124,8 @@ endif()
 set_source_files_properties(
     drivers/uart_rp2350.c
     drivers/tm1638_rp2350.c
-    # i2c_bus.c, not i2c_rtc.c: the U-mode half moved there with the bus in
-    # phase 30, and the RTC driver has no UATTR code left at all.
+    # i2c_bus.c, not i2c_rtc.c: the U-mode half lives with the bus,
+    # and the RTC driver has no UATTR code left at all.
     drivers/i2c_bus.c
     drivers/st7735_rp2350.c
     drivers/spisd_rp2350.c
@@ -1135,7 +1135,7 @@ set_source_files_properties(
     kernel/umode_probe.c
     kernel/kobj_utest.c
     kernel/radio_osi_test.c
-    # 36.6a: the screen terminal's U-mode path (drivers/lcdterm_attr.h).
+    # the screen terminal's U-mode path (drivers/lcdterm_attr.h).
     # vtterm.c's parser is exactly the switch-heavy code this list exists for.
     drivers/lcd7_rp2350.c
     drivers/vtterm.c
@@ -1143,17 +1143,17 @@ set_source_files_properties(
     drivers/screen.c
     drivers/canvas1.c
     drivers/ribbon.c
-    # 36.7: not U-mode, but the same hazard from the other side -- the USB
+    # not U-mode, but the same hazard from the other side -- the USB
     # engine runs on core 1 from RAM and must never read flash, where a jump
     # table's .rodata would be.
     drivers/piousb_rp2350.c
-    # 36.8: the kbd task's U-mode code.
+    # the kbd task's U-mode code.
     drivers/usbkbd.c
     drivers/usbkbd_host.c
     drivers/usbkbd_rp2350.c
     PROPERTIES COMPILE_OPTIONS -fno-jump-tables)
 
-# 45.3b: the radio shim is U-mode code: placed in its own domain's text by
+# the radio shim is U-mode code: placed in its own domain's text by
 # linker/qemu-rv*.ld, so it may not call into the kernel -- which includes the
 # UBSan handlers every other file here is instrumented with.
 set_source_files_properties(
@@ -1183,7 +1183,7 @@ if(DEFINED LUGALOS_BOARD_FILE)
         PROPERTIES OBJECT_DEPENDS "${LUGALOS_CONFIG_HEADER};${LUGALOS_BUILD_ID_HEADER}")
 endif()
 
-# `sizereport` (§6, plan/phase15_memory_reclamation.md): where static RAM went,
+# `sizereport`: where static RAM went,
 # per source file, and what that leaves for the heap.
 #
 # A companion to the ASSERT in linker/rp2350.ld rather than a substitute. The
@@ -1255,7 +1255,7 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
         -Wl,--defsym=__identity_base=${LUGALOS_IDENTITY_BASE}
         -Wl,--defsym=__identity_size=${LUGALOS_IDENTITY_SIZE})
     target_link_options(lugalos.elf PRIVATE ${LUGALOS_FLASH_MAP_DEFSYMS})
-    # I7b: .ramfunc puts executable code inside .data (see linker/rp2350.ld for
+    # .ramfunc puts executable code inside .data (see linker/rp2350.ld for
     # why it lives there), so that PT_LOAD is genuinely RWX and ld says so.
     #
     # This is NOT the same situation as the one linker/rp2350.ld annotates
@@ -1294,7 +1294,7 @@ if(LUGALOS_TARGET STREQUAL "ESP32P4")
     # file here either, so without this nothing builds it.
     add_dependencies(lugalos.elf flashfs_image)
 
-    # E6: the flash address the image belongs at, written into the build
+    # the flash address the image belongs at, written into the build
     # directory rather than typed into a command.
     #
     # This is the same discipline cmake/flash_layout.cmake exists for on
@@ -1310,7 +1310,7 @@ if(LUGALOS_TARGET STREQUAL "ESP32P4")
     file(GENERATE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/flashfs.addr
          CONTENT "${LUGALOS_P4_FLASHFS_BASE} ${LUGALOS_P4_FLASHFS_SIZE}\n")
 
-    # U2: the whole map, as one manifest, for the same reason flashfs.addr
+    # the whole map, as one manifest, for the same reason flashfs.addr
     # existed -- tools/p4flash.py reads it rather than taking addresses on
     # the command line, so the only way to flash to the wrong place is to
     # edit the layout and rebuild, which also rebuilds the kernel that reads
@@ -1387,7 +1387,7 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
     add_custom_target(flashfs_uf2 ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/flashfs.uf2)
 endif()
 
-# U1, plan/phase32_esp32p4_execute_in_place.md: on the P4 the image now has
+# on the P4 the image now has
 # two halves that live 255 MB apart in the address space -- .text/.rodata in
 # the flash XIP window at 0x40000000, .utext/.data in L2MEM at 0x4ff40000.
 #
@@ -1445,7 +1445,7 @@ else()
         COMMAND ${CMAKE_OBJCOPY} -O binary lugalos.elf lugalos.bin)
 endif()
 
-# 36.7 (plan/phase36_rp2350_lcd7_terminal.md §3.2.1): on a persona whose
+# on a persona whose
 # core 1 is the PIO-USB engine, the build fails if anything reachable from
 # core1_main could touch flash -- the engine keeps running while core 0 has XIP
 # off, so that is a hang waiting for a flash write. Checked on the compiled
@@ -1455,7 +1455,7 @@ if(DEFINED CONFIG_PIOUSB_DP_GPIO)
 else()
     set(CORE1_RAM_COMMANDS COMMAND ${CMAKE_COMMAND} -E true)
 endif()
-# 36.8: the same idea for the PMP-confined U-mode tasks -- everything reachable
+# the same idea for the PMP-confined U-mode tasks -- everything reachable
 # from a task's U-mode entry must stay inside its own text section, or it
 # faults the first time that path runs (tools/check_umode_text.py).
 set(UMODE_TEXT_PAIRS "")

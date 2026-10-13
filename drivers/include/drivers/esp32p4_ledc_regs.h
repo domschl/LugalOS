@@ -1,6 +1,5 @@
 /* ESP32-P4 register addresses and fields used by drivers/dsi_esp32p4.c's
  * backlight PWM (the LEDC, its clocks, the GPIO matrix).
- * 47.11, plan/phase47_esp32p4_lcd7b_ribbon.md.
  *
  * GENERATED -- do not edit by hand. Regenerate with
  *

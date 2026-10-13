@@ -1,5 +1,5 @@
 /*
- * boardprobe -- 36.0, plan/phase36_rp2350_lcd7_terminal.md.
+ * boardprobe.
  *
  * Three questions, answered from the board rather than assumed:
  *

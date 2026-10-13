@@ -1,6 +1,5 @@
 /*
- * The Pico-Clock-Green appliance loop (C3, plan/phase17_clock_ui_and_
- * dcf77.md): buttons in, pixels out, and the menu state machine in between.
+ * The Pico-Clock-Green appliance loop: buttons in, pixels out, and the menu state machine in between.
  *
  * This file is the only place the three halves meet. It owns no policy --
  * drivers/pico_clock_ui.c decides what should be on the panel -- and it owns
@@ -8,8 +7,7 @@
  * loop, the ~1 ms cadence, and the I2C reads the state machine is not allowed
  * to perform for itself.
  *
- * The 542-line driver was already the wrong place for a menu, and phase 11's
- * comment saying so is why this file exists rather than another 400 lines
+ * The 542-line driver was already the wrong place for a menu, and  * comment saying so is why this file exists rather than another 400 lines
  * being added there.
  */
 
@@ -40,12 +38,12 @@
 #endif
 
 /* One turn of the loop is one frame of scan: eight rows, ~8 ms, taken in a
- * single call into the clock task (phase 17b). Before the split this loop ran
+ * single call into the clock task. Before the split this loop ran
  * a row at a time inside that task; the cadence a person can see is the same,
  * and the thing that changed is which side of the channel it runs on. */
 
 /* The scroll animation's step, and **abortable by a keypress**. Both are
- * corrections from phase 17's first hardware run: "TEMPERATURE" is 55
+ * corrections from first hardware run: "TEMPERATURE" is 55
  * columns, which at the vendor's 60 ms/column is 4.6 seconds, and the first
  * version did not sample the buttons at all while it ran -- so backing out of
  * the TEMPERATURE item looked like SET-long doing nothing. The first event
@@ -54,7 +52,7 @@
 #define SCROLL_STEP_MS   45u
 
 /* How often to go to the RTC over I2C -- deliberately *not* every scan step.
- * Found on real hardware in phase 11, not predicted: a 100 kHz transaction
+ * Found on real hardware in previously, not predicted: a 100 kHz transaction
  * blocks for the best part of a millisecond, which against a 1 ms row period
  * is a visible stutter on whichever row it lands on. Once a second means one
  * row in a thousand pays it.

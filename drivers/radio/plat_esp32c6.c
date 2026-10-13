@@ -1,5 +1,4 @@
-/* The chip side of the Wi-Fi radio: power, clocks, reset, PHY (45.6,
- * plan/phase45_esp32c6.md). Behind drivers/radio/plat.h; runs in the radio's
+/* The chip side of the Wi-Fi radio: power, clocks, reset, PHY. Behind drivers/radio/plat.h; runs in the radio's
  * U-mode domain, with the modem/PMU/PCR register windows granted.
  *
  * 45.6.1: stubs that say they were called. The real bodies are 45.6.2, written

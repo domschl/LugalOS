@@ -4,7 +4,7 @@
 #include <stdarg.h>
 #include <stdint.h>
 
-/* A printf for confined U-mode code (45.3b, plan/phase45_esp32c6.md).
+/* A printf for confined U-mode code.
  *
  * The Wi-Fi blob logs through its OS table with a C format string and a
  * va_list. The kernel's own formatter cannot be reached from U-mode, and the

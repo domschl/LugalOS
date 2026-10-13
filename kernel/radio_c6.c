@@ -1,4 +1,4 @@
-/* The kernel's half of the ESP32-C6 Wi-Fi radio (45.6, plan/phase45_esp32c6.md):
+/* The kernel's half of the ESP32-C6 Wi-Fi radio:
  * build the radio's memory domain, start its main thread in U-mode, and report
  * what happened.
  *

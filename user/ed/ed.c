@@ -11,7 +11,7 @@ static void ed_main_inner(const char *filename);
 #define MAX_ED_LINES 256
 #define MAX_LINE_LEN 128
 
-/* Heap-on-demand (C6/C7, plan/phase6_memory_and_processes.md): the editor's
+/* Heap-on-demand (C6/C7, ): the editor's
  * buffers are taken while it is running and returned when it exits, so an
  * editor nobody has opened costs nothing. 44 KB on a 512 KB board is most of
  * a user program's worth of memory to reserve for a text editor. */

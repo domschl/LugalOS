@@ -6,7 +6,7 @@ extern char _kernel_end[];
 static uintptr_t current_heap;
 
 /* Nothing to join on a NOMMU target (X3,
- * plan/phase23_multicore_scheduling.md).
+ * ).
  *
  * The RV64 counterpart puts a secondary hart into the kernel's Sv39 address
  * space, because satp is per-hart and a hart that never writes it runs in

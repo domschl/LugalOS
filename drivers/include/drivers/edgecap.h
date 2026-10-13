@@ -1,6 +1,5 @@
 /*
- * Timestamped GPIO edge capture (P3,
- * plan/phase24_dcf77_precision_and_ntp_server.md).
+ * Timestamped GPIO edge capture.
  *
  * An interrupt on a pin, a TIMER0 read, and a bounded ring. That is the whole
  * of it, and it is a shared module rather than a part of the DCF-77 driver

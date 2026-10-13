@@ -1,8 +1,7 @@
 #ifndef LUGALOS_KERNEL_HART_H
 #define LUGALOS_KERNEL_HART_H
 
-/* Per-hart state, and the one register that points at it (S0,
- * plan/phase22_smp_locking_foundation.md §6.2).
+/* Per-hart state, and the one register that points at it.
  *
  * ## The problem this exists to solve
  *
@@ -45,7 +44,7 @@
  * ## Scope
  *
  * MAX_HARTS is 2 because RP2350 has exactly two cores. Nothing here wakes a
- * second one -- that is phase 23 -- and on every target today g_harts[1] is
+ * second one, and on single-hart targets g_harts[1] is
  * simply never touched. The point of landing this first is that it is
  * behaviour-preserving on one hart by construction, in the same way the
  * original irq_save()/irq_restore() work was landed before preemption could
@@ -56,8 +55,7 @@
 #define MAX_HARTS 2
 
 /* The value the primary hart writes to g_smp_release once the kernel is far
- * enough along for a secondary to run C code (X1,
- * plan/phase23_multicore_scheduling.md).
+ * enough along for a secondary to run C code .
  *
  * A magic value rather than a plain flag, because a secondary spins on this
  * word while the primary is still *clearing .bss*, where the word lives.
@@ -187,7 +185,7 @@ uint32_t smp_core1_stack_used(void);
 #define CORE1_MODE_PROBE    0u
 #define CORE1_MODE_JOIN     1u
 /* Cross-core mutual exclusion, with no scheduler and no traps on core 1 --
- * the §6.3 question phase 22 left open and everything above depends on.
+ * the design invariant everything above depends on.
  * Shaped like X3: run the smallest thing that can answer it. */
 #define CORE1_MODE_LOCKTEST 2u
 /* Staged bring-up: core 1 performs secondary_main()'s first N steps and then

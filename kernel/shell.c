@@ -168,7 +168,7 @@ static inline void execute_illegal_instruction(void) {
 
 /* Two halves of one question: does an exception reach the trap vector?
  *
- * Written for phase 27's E3, where the answer was genuinely unknown -- the
+ * The timing margin was initially unknown -- the
  * ESP32-P4 runs its trap vector in CLIC mode, where mtvec's low bits are the
  * mode field rather than address bits and a misaligned vector base points
  * into the middle of the handler. But nothing in it is board-specific, and
@@ -213,8 +213,7 @@ static void cmd_trapselftest(bool fatal) {
             "(halts the system).\n");
 }
 
-/* `sdbench w [kb]` -- 36.2, plan/phase36_rp2350_lcd7_terminal.md; and
- * `fsbench <dir> [kb]` (38.6, plan/phase38_psram.md), the same on any volume,
+/* `sdbench w [kb]` and `fsbench <dir> [kb]`: benchmark filesystem throughput,
  * which is how /ram0 in SRAM and in PSRAM were compared.
  *
  * The file-level counterpart of the read-only `sdbench`: what the writer app
@@ -477,7 +476,7 @@ static void cmd_flashtest(void) {
  * could have caught the bug. */
 
 /* Long enough to still be READY when the sampling loop below finishes, so
- * phase 1 really does have somewhere to switch to. Never yields. */
+ * the scheduler has somewhere to switch to. Never yields. */
 static void clic_probe_spinner(void *arg) {
     (void)arg;
     for (volatile uint32_t i = 0; i < 40000000u; i++) { }
@@ -513,7 +512,7 @@ static void cmd_clicdump(void) {
     cprintf("[CLIC] ticks      = %lu  enabled=%u\n",
             (unsigned long)ticker_ticks(), (unsigned)ticker_enabled());
 
-    /* Phase 2: the same three registers, sampled from *inside* a loop that
+    /* Sample three registers, sampled from *inside* a loop that
      * never yields -- which is the one state the dump above cannot reach,
      * and the only state in which the tick is known to stop.
      *
@@ -924,7 +923,7 @@ static void cmd_uname(void) {
     cprintf("Namespace: Universal Path Resolver (/flash0/, /sd0/, /ram0/, /proc/, /dev/, /srv/)\n");
 }
 
-/* A3a "headless" 9P mode (plan/phase5_distributed_design.md): dedicates
+/* Headless 9P mode: dedicates
  * this UART entirely to SLIP-framed 9P traffic and never returns to the
  * shell. This is the low-risk way to get a real 9P wire over a plain UART
  * (QEMU serial, RP2350 UART, a CP2102 dongle) without the RX
@@ -941,7 +940,7 @@ static void cmd_p9serve(void) {
     }
 }
 
-/* A3b "shared-wire" mode (plan/phase5_distributed_design.md): unlike
+/* Shared-wire 9P mode: unlike
  * p9serve above, this returns to the shell immediately. It arms
  * drivers/uart_net.c's RX demux (off by default -- see its own doc
  * comments for the tradeoff this opts into) and registers the demuxed link
@@ -950,7 +949,7 @@ static void cmd_p9serve(void) {
  * routes it to the right place. This is the single-cable story A3a's
  * headless mode doesn't cover (a real CP2102/RP2350 deployment with only
  * one wire back to the host). `p9share off` reverses both steps. */
-/* N2, plan/phase18_networking_and_auth.md: which links demand a key.
+/* Which links demand a key.
  *
  * Per link, because the policy is a property of the wire: the same server,
  * the same namespace, and a different answer depending on whether the request
@@ -997,9 +996,9 @@ static void cmd_p9auth(const char *arg) {
 }
 
 /* --- `net`: what interfaces this board has, and what they have seen ---
- * R1, plan/phase19_ip_stack_and_ethernet.md.
+ * Network interface configuration.
  *
- * The command name is the one phase 18's W5500 driver used, and it is
+ * The command name is the the network driver used, and it is
  * deliberately reused rather than renamed: `net` answering "no interfaces"
  * on a board that has none is a better answer than an unknown command, and
  * from R4 it answers about a real wire again.
@@ -1288,7 +1287,7 @@ static void cmd_net_echotest(const char *arg) {
 static void shell_mqtt_message(const char *topic, const uint8_t *payload,
                                uint32_t len, bool retained, void *ctx);
 
-/* `mqtt ...` -- Q2, plan/phase26_mqtt_and_environment_sensors.md.
+/* `mqtt ...`.
  *
  *   mqtt                              what the client is doing
  *   mqtt selftest                     the varint boundary vector; no network
@@ -1427,7 +1426,7 @@ static void cmd_mqtt(const char *arg) {
     cprintf("            | sub <filter> | unsub <filter> | disconnect]\n");
 }
 
-/* `sensor [selftest]` -- Q4, plan/phase26_mqtt_and_environment_sensors.md.
+/* `sensor [selftest]`.
  *
  * With no argument: one forced-mode measurement, compensated, in units a
  * person reads. `sensor selftest` runs the compensation arithmetic against a
@@ -1565,7 +1564,7 @@ static void cmd_sensor(const char *arg) {
  *   mqttd rule <name> <min_s> <max_s> <delta> [alpha_shift]
  *   mqttd file <name> <path> <field> [decimals] [max_age_s]
  *                                  a source read from a file, e.g. a mounted
- *                                  node's /proc/sensors (phase 40, item 10)
+ *                                  node's /proc/sensors 
  *
  * `sample_s` is how often a source is *read*; how often it is published is
  * the source's own rule, which is the point of having one.
@@ -1806,7 +1805,7 @@ static void cmd_p9key(const char *arg) {
     cprintf("p9key: console key set (%u bytes), this boot only\n", (unsigned)len);
 }
 
-/* --- `identity`: I3, plan/phase21_identity_and_authentication.md §6 ---
+/* --- `identity` -----------------------------------------------------------
  *
  * uid, name, both their sources, MAC, and a key fingerprint -- never the key
  * itself. `identity name`/`provision`/`key` are the only things in this
@@ -1856,7 +1855,7 @@ static void identity_print_report(void) {
  * short, independent parsers cost less than the coupling a shared one would
  * add between the auth gate, the console key and this command. */
 #if defined(CONFIG_BOARD_ESP32P4)
-/* `sdio ...` (49.4, plan/phase49_c6_network_nodes.md): the SD/MMC host's slot 1
+/* `sdio ...`: the SD/MMC host's slot 1
  * toward the board's ESP32-C6. Numbers are hex, with or without 0x. */
 static const char *sdio_word(const char *p, uint32_t *v) {
     while (*p == ' ') p++;
@@ -2001,7 +2000,7 @@ static void cmd_identity(const char *arg) {
     }
 
     if (strcmp(sub, "altitude") == 0) {
-        /* Phase 40, item 11: metres above sea level, for the BME280's
+        /* Metres above sea level, for the BME280's
          * sea-level pressure. Read when the sensor's sources are registered,
          * at boot. */
         node_id_result_t rc;
@@ -2032,7 +2031,7 @@ static void cmd_identity(const char *arg) {
             "                | altitude <metres>|clear]\n");
 }
 
-/* --- `peers`: I5, plan/phase21_identity_and_authentication.md §5.2/§6 ---
+/* --- `peers` --------------------------------------------------------------
  *
  * The grants list -- deliberately not built in I3 alongside `identity`,
  * since before I5 there was nothing here for it to enforce (see that
@@ -2135,12 +2134,12 @@ static void cmd_peers(const char *arg) {
     cprintf("usage: peers [add <name> <hex> [<aname>] [ro|rw] | remove <name>]\n");
 }
 
-/* --- `wlan`: I6, plan/phase21_identity_and_authentication.md §5.3/§6 ---
+/* --- `wlan` ---------------------------------------------------------------
  *
  * Installs a network credential -- the *derived* PSK
  * (tools/provision.py's derive_wpa2_psk() on the host), never a
  * passphrase; this command has no way to accept one, on purpose. Lands
- * with phase 19's R5 (the CYW43 driver) and is unused before it, same
+ * for CYW43, same
  * shape as `identity key` was between I3 and I4. Fingerprint-only, same
  * discipline as `identity`/`peers`: the SSID prints in full (it is not a
  * secret -- every AP broadcasts it in its own beacon frames), the PSK
@@ -2225,7 +2224,7 @@ static void cmd_netcfg(const char *arg) {
  *
  * Mirrors `netcfg` down to the shape of its report, because they answer the
  * same kind of question about the same record. The password is printed as
- * `set`, never as its value -- the same rule §6 of phase 21 applies to the
+ * `set`, never as its value -- the same rule applies to the
  * device key. */
 static void mqttcfg_print_report(void) {
     node_mqtt_t m;
@@ -2357,7 +2356,7 @@ static void cmd_p9share(const char *arg) {
     }
 }
 
-/* B0 (plan/phase5_distributed_design.md §5.4): inspect and rebind kernel log
+/* Inspect and rebind kernel log
  * output sinks at runtime. `klog` lists them; `klog detach console` stops
  * kernel output reaching this terminal -- which is what makes handing this
  * UART to 9P (`p9serve`) or, later, to a login shell non-destructive: the
@@ -2574,7 +2573,7 @@ UATTR static void user_deputy(void) {
  * so a sub-page region would silently hand U-mode the rest of the page. Taking
  * the stricter of the two keeps a single description working on both.
  *
- * §3.1 (plan/phase15_memory_reclamation.md): taken from the heap for the
+ * taken from the heap for the
  * duration of the probe rather than held in .bss for the life of the board.
  * `usertest` is a diagnostic command; this page spent every boot reserved
  * against someone typing it. palloc_pages() returns page-aligned memory on
@@ -2601,7 +2600,7 @@ static volatile int g_user_hart = -1;
 
 static void user_task_common(void (*entry)(void)) {
     /* A static domain reused by every run: the previous run's page tables
-     * are returned first (phase 40 review). mem_domain_init() zeroes the
+     * are returned first . mem_domain_init() zeroes the
      * struct, so on rv64 it used to drop them -- four pages a run, 14 -> 30
      * over four `usertest`s. Refused if a live task is still in it. */
     if (sched_domain_in_use(&g_user_domain)) {
@@ -2749,7 +2748,7 @@ static void cmd_deputytest(int hart) {
                                          : "OVERWRITTEN VIA THE KERNEL");
 }
 
-/* M5 Phase 2, plan/phase12_microkernel_migration.md: does a real client
+/* Verifies if a real client
  * blocking on chan_call() into a real U-mode server -- which itself blocks
  * mid-ecall-trap inside SYS_CHAN_SERVE_WAIT, waiting to be woken by that
  * same call -- actually work? Everything about SYS_CHAN_CALL's own client-
@@ -2819,7 +2818,7 @@ static void echo_task_body(void *arg) {
     while (!g_echo_ep) sched_yield();
 
     /* A static domain reused by every run: the previous run's page tables
-     * are returned first (phase 40 review). mem_domain_init() zeroes the
+     * are returned first . mem_domain_init() zeroes the
      * struct, so on rv64 it used to drop them -- four pages a run, 14 -> 30
      * over four `usertest`s. Refused if a live task is still in it. */
     if (sched_domain_in_use(&g_echo_domain)) {
@@ -2945,7 +2944,7 @@ static void cmd_usertest_isolation(int hart) {
 }
 
 #if defined(CONFIG_BOARD_RP2350)
-/* M5 phase 1, plan/phase12_microkernel_migration.md: the same isolation
+/* Isolation verification:
  * claim as isolationtest above, but against the real heartbeat driver
  * task's own domain shape (drivers/uart_rp2350.c) rather than the generic
  * 2-region usertest domain -- proving the SIO GPIO window a real,
@@ -2974,7 +2973,7 @@ static void cmd_heartbeat_isolation_test(void) {
 #endif
 
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
-/* M5 Phase 2, plan/phase12_microkernel_migration.md: same idea as
+/* Driver task verification:
  * heartbeatisotest above, against tm1638's own domain shape
  * (drivers/tm1638_rp2350.c) -- the first driver task converted to U-mode
  * that also serves a real chan_call() endpoint (heartbeat has none). */
@@ -3001,7 +3000,7 @@ static void cmd_tm1638_isolation_test(void) {
 #endif
 
 #if defined(CONFIG_BOARD_RP2350)
-/* M5 Phase 3, plan/phase12_microkernel_migration.md: same idea as
+/* Driver task verification:
  * heartbeatisotest/tm1638isotest above, against i2c's own domain shape
  * (drivers/i2c_rtc.c) -- the first driver task converted to U-mode that
  * talks to a real hardware controller (I2C0/I2C1) rather than bit-banged
@@ -3030,7 +3029,7 @@ static void cmd_i2c_isolation_test(void) {
 #endif
 
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_PICO_CLOCK_GREEN
-/* Phase 17b, plan/phase17b_clock_task_split.md: same idea as
+/* Driver task verification:
  * heartbeatisotest/tm1638isotest/i2cisotest above, against the clock
  * server's own domain shape (drivers/pico_clock_green_rp2350.c) -- the
  * last RP2350 driver task to reach U-mode, and the one that had to be
@@ -3062,7 +3061,7 @@ static void cmd_clock_isolation_test(void) {
 #endif
 
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
-/* M5 Phase 4, plan/phase12_microkernel_migration.md: same idea as
+/* Driver task verification:
  * heartbeatisotest/tm1638isotest/i2cisotest above, against st7735's own
  * domain shape (drivers/st7735_rp2350.c) -- the first driver task
  * converted to U-mode needing both an SIO grant (CS/DC/RST) and a
@@ -3090,7 +3089,7 @@ static void cmd_st7735_isolation_test(void) {
 #endif
 
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_SPISD
-/* M5 Phase 5, plan/phase12_microkernel_migration.md: same idea as
+/* Driver task verification:
  * heartbeatisotest/tm1638isotest/i2cisotest/st7735isotest above, against
  * blk's own domain shape (drivers/spisd_rp2350.c) -- SIO (CS) + SPI1
  * (the SD card's own PL022 controller, a second independent instance
@@ -3118,7 +3117,7 @@ static void cmd_blk_isolation_test(void) {
 #endif
 
 #if defined(CONFIG_BOARD_RP2350)
-/* M5 Phase 6, plan/phase12_microkernel_migration.md: same idea as
+/* Driver task verification:
  * heartbeatisotest/tm1638isotest/i2cisotest/st7735isotest/blkisotest
  * above, against uart's own domain shape (drivers/uart_rp2350.c) --
  * stack + text + UART0_BASE, no SIO grant (uart's runtime hot path
@@ -3145,7 +3144,7 @@ static void cmd_uart_isolation_test(void) {
            exited_clean ? "yes" : "no");
 }
 
-/* M5 Phase 7, plan/phase12_microkernel_migration.md: same idea as
+/* Driver task verification:
  * heartbeatisotest/tm1638isotest/i2cisotest/st7735isotest/blkisotest/
  * uartisotest above, against usb_cdc's own domain shape
  * (drivers/usb_cdc.c) -- stack + text + USB_DPRAM_BASE + USB_BASE + the
@@ -3217,7 +3216,7 @@ static void cmd_preempttest(void) {
                            : "NOT PREEMPTED");
 }
 
-/* M3, plan/phase12_microkernel_migration.md: proves next_runnable() picks by
+/* Proves next_runnable() picks by
  * priority tier, not merely by ring position. Four never-yielding hogs are
  * created first specifically to sit in the ring between the boot task and
  * "urgent" -- under the old plain round-robin, urgent would have to wait its
@@ -3303,10 +3302,10 @@ static void cmd_priotest(void) {
                                                 : "NOT BOUNDED");
 }
 
-/* M4.5, plan/phase12_microkernel_migration.md, Part A: priotest above only
+/* Priority test:
  * ever proves one TASK_PRIO_INTERRUPT task against a field of NORMAL-tier
  * hogs -- it says nothing about what happens when *two* INTERRUPT-tier
- * tasks are both genuinely busy at once, which M4's driver-task
+ * tasks are both genuinely busy at once, which driver-task
  * conversions are about to make a real, not hypothetical, situation (more
  * than one driver task plausibly wants this tier). That case has never
  * actually been exercised: `uart` is the only TASK_PRIO_INTERRUPT task
@@ -3440,7 +3439,7 @@ static void cmd_taskdemo(void) {
            before_free, after_free);
 }
 
-/* M0, plan/phase12_microkernel_migration.md: proves task_create_sized() works
+/* Proves task_create_sized() works
  * at a stack size other than TASK_STACK_PAGES, and that palloc_free() is
  * called for exactly the number of pages that were actually allocated (not
  * TASK_STACK_PAGES, which sched.c's task_exit()/sched_reap() path used to be
@@ -3478,7 +3477,7 @@ static void cmd_sizedtaskdemo(void) {
            before_free, after_free);
 }
 
-/* M1, plan/phase12_microkernel_migration.md: exercises balloc_alloc()/
+/* Exercises balloc_alloc()/
  * balloc_free() -- rounding to the next power of two, self-alignment to
  * that size (Rule 6: this is what makes a block usable as a PMP region
  * later), and coalescing all the way back to one arena-sized free block
@@ -3821,7 +3820,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         cmd_more(arg);
         return;
     } else if (strncmp(cmd_line, "time ", 5) == 0) {
-        /* 47.3, plan/phase47_esp32p4_lcd7b_ribbon.md: `time CMD` runs CMD
+        /* `time CMD` runs CMD
          * (shell or Lisp) and prints the wall time it took -- the instrument
          * for "did moving the Lisp heap into PSRAM cost anything". */
         uint64_t t0 = time_get_us();
@@ -3978,12 +3977,12 @@ static void parse_and_eval_cmd(const char *cmd_line) {
             cprintf("screenshot: nothing saved (no screen yet, or no card)\n");
         return;
     } else if (strcmp(cmd_line, "keyselftest") == 0) {
-        /* 37.5a, plan/phase37_screen_layouts_and_apps.md: the key parser
+        /* The key parser
          * every text input uses, against byte strings. */
         (void)keyseq_selftest();
         return;
     } else if (strcmp(cmd_line, "vtselftest") == 0) {
-        /* 36.6, plan/phase36_rp2350_lcd7_terminal.md: portable, so it runs on
+        /* Terminal selftest runs on
          * QEMU as well as on the board with the panel. */
         (void)vtterm_selftest();
         return;
@@ -4087,17 +4086,17 @@ static void parse_and_eval_cmd(const char *cmd_line) {
 #endif
         return;
     } else if (strcmp(cmd_line, "zonetest") == 0) {
-        /* 38.4, plan/phase38_psram.md: the bulk page zone. */
+        /* The bulk page zone. */
         extern void zone_selftest(void);
         zone_selftest();
         return;
     } else if (strcmp(cmd_line, "memselftest") == 0) {
-        /* 38.3, plan/phase38_psram.md: libc's word loops. */
+        /* Libc word loops. */
         extern void mem_selftest(void);
         mem_selftest();
         return;
     } else if (strcmp(cmd_line, "fmtselftest") == 0) {
-        /* Phase 40 review: the printf engine. */
+        /* The printf engine. */
         extern void fmt_selftest(void);
         fmt_selftest();
         return;
@@ -4153,7 +4152,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         emac_loopback_test();
         return;
     } else if (strcmp(cmd_line, "emac") == 0 || strcmp(cmd_line, "emac scan") == 0) {
-        /* Z1, plan/phase28_esp32p4_ethernet.md. Spelled like `i2c scan` and
+        /* Spelled like `i2c scan` and
          * for the same reason: a table a human asked for about what is
          * actually on a bus. */
         emac_phy_scan();
@@ -4164,7 +4163,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
 #endif
     } else if (strcmp(cmd_line, "sdinfo") == 0) {
-        /* 35.5, plan/phase35_esp32p4_sdmmc.md. `emac scan`'s shape and its
+        /* `emac scan`'s shape and its
          * reason: a table a human asked for, re-read from the card and the
          * controller on every run, so it is a claim rather than a comment.
          * Probes an empty slot before answering -- a card may have been
@@ -4181,7 +4180,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         cmd_clicdump();
         return;
     } else if (strncmp(cmd_line, "cpufreq ", 8) == 0) {
-        /* 34.6, plan/phase34_esp32p4_pll_bringup.md. The measurement tool the
+        /* Measurement tool:
          * phase's own rule demands: "compare one image at two clocks, never
          * two builds", because a rebuild moves perft by ~3% (34.3) and that
          * is the same size as the effects 34.6 is trying to see.
@@ -4206,7 +4205,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         }
         return;
     } else if (strcmp(cmd_line, "smpstart") == 0) {
-        /* 34.9, plan/phase34_esp32p4_pll_bringup.md. Explicit rather than a
+        /* Explicit rather than a
          * boot step, for the reason kernel/smp.c gives about RP2350's: a
          * board that boots is a board that can be reflashed. */
         esp32p4_core1_probe_report();
@@ -4219,24 +4218,24 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         }
         return;
     } else if (strcmp(cmd_line, "smpinfo") == 0) {
-        /* 34.8, plan/phase34_esp32p4_pll_bringup.md. Read-only. */
+        /* Read-only. */
         esp32p4_smpinfo_report();
         return;
     } else if (strcmp(cmd_line, "clocks") == 0) {
-        /* 34.1, plan/phase34_esp32p4_pll_bringup.md. Read-only, and the
+        /* Read-only, and the
          * instrument every later milestone of that phase is checked with. */
         esp32p4_clocks_report();
         return;
 #if defined(CONFIG_PSRAM_BYTES)
     } else if (strcmp(cmd_line, "psram") == 0 || strncmp(cmd_line, "psram ", 6) == 0) {
-        /* 47.3, plan/phase47_esp32p4_lcd7b_ribbon.md: the RP2350's command,
+        /* The PSRAM command,
          * on the P4's driver (drivers/psram_esp32p4.c). */
         psram_command(cmd_line + 5);
         return;
 #endif
 #if defined(CONFIG_DSI_LCD_RST_GPIO)
     } else if (strcmp(cmd_line, "lcd") == 0 || strncmp(cmd_line, "lcd ", 4) == 0) {
-        /* 47.4, plan/phase47_esp32p4_lcd7b_ribbon.md: the LCD-7B's panel. */
+        /* The LCD-7B panel. */
         dsi_lcd_command(cmd_line + 3);
         return;
 #endif
@@ -4258,7 +4257,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         /* X7 step 6: exercise the park handshake without turning XIP off.
          *
          * The only real flash writer in this tree is the identity store
-         * (phase 21's I7), and provisioning to test a lock would destroy the
+         * , and provisioning to test a lock would destroy the
          * record it writes. What is new here is the handshake -- core 1
          * noticing the request from sched_yield() and acknowledging from a
          * .ramfunc spin -- and that is exactly what this measures. The
@@ -4382,7 +4381,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         i2c_scan_bus();
         return;
     } else if (strncmp(cmd_line, "i2c rd ", 7) == 0) {
-        /* 47.2, plan/phase47_esp32p4_lcd7b_ribbon.md: a raw register read on
+        /* A raw register read on
          * bus 0, for the parts no driver knows yet. `i2c rd 5d 81 40 4`
          * writes 0x81 0x40 and reads four bytes back (all hex; the last
          * number is the count). A scan only says an address ACKs, and that
@@ -4568,18 +4567,17 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
 #if defined(CONFIG_BOARD_RP2350)
     } else if (strcmp(cmd_line, "clocks") == 0) {
-        /* 36.1, plan/phase36_rp2350_lcd7_terminal.md. Read-only. */
+        /* Read-only. */
         rp2350_clocks_report();
         return;
     } else if (strcmp(cmd_line, "xipcycle") == 0) {
-        /* 38.1, plan/phase38_psram.md. Writes nothing -- unlike the P4's
+        /* Writes nothing -- unlike the P4's
          * `flashtest` above, which erases and programs a test sector; hence
          * a different name. */
         flash_rp2350_selftest();
         return;
 #if defined(CONFIG_PSRAM_BYTES)
     } else if (strcmp(cmd_line, "psram") == 0 || strncmp(cmd_line, "psram ", 6) == 0) {
-        /* 38.2, plan/phase38_psram.md. */
         psram_command(cmd_line + 5);
         return;
 #endif
@@ -4617,7 +4615,6 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         cprintf("lcd: colour 0x%04x\n", (unsigned)(v & 0xffffu));
         return;
     } else if (strcmp(cmd_line, "lcd repaint") == 0) {
-        /* 37.1a, plan/phase37_screen_layouts_and_apps.md. */
         lcdterm_repaint();
     } else if (strcmp(cmd_line, "lcd test text") == 0) {
         /* 36.5 */
@@ -4813,8 +4810,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         char ssid[NODE_WLAN_SSID_MAX + 1];
         uint8_t psk[NODE_WLAN_PSK_LEN];
         if (!node_wlan_ssid(ssid, sizeof(ssid))) {
-            cprintf("wifi: no SSID stored (this board has no identity store yet -- "
-                    "phase 21's I7). Use: wifi join <ssid> <64-hex psk>\n");
+            cprintf("wifi: no SSID stored (this board has no identity store). Use: wifi join <ssid> <64-hex psk>\n");
             return;
         }
         if (!node_wlan_psk(psk)) {
@@ -4979,7 +4975,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         cmd_ballocdemo();
         return;
     } else if (strcmp(cmd_line, "uartstats") == 0) {
-        /* M4 verify, plan/phase12_microkernel_migration.md: exposes
+        /* Driver task verify: exposes
          * uart_write_call_count() so a test can confirm console output
          * generates chan_call() traffic on the order of messages/lines,
          * not characters -- the property the batching redesign exists to
@@ -4996,8 +4992,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         printk("[UartStats] rx_overruns=%u\n", uart_rx_overruns());
         return;
     } else if (strcmp(cmd_line, "blkstats") == 0) {
-        /* M4.5 verify, plan/phase12_microkernel_migration.md, Part B:
-         * exposes blk_task_call_count() so a test can confirm the sdblk/blk
+        /* Driver task verify: exposes blk_task_call_count() so a test can confirm the sdblk/blk
          * task is genuinely serving requests (a nonzero, growing count)
          * rather than every caller silently using the direct-hardware
          * fallback the whole time.
@@ -5043,15 +5038,14 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
 #endif
     } else if (strcmp(cmd_line, "i2cstats") == 0) {
-        /* M4.5 verify, plan/phase12_microkernel_migration.md, Part B:
-         * exposes i2c_task_call_count() so a test can confirm the shared
+        /* Driver task verify: exposes i2c_task_call_count() so a test can confirm the shared
          * RTC/EEPROM task is genuinely serving requests, same reasoning as
          * blkstats above. */
         printk("[I2cStats] calls=%u\n", i2c_task_call_count());
         return;
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
     } else if (strcmp(cmd_line, "st7735stats") == 0) {
-        // M4.5 verify, plan/phase12_microkernel_migration.md, Part B: same
+        // Driver task verify: same
         // reasoning as blkstats/i2cstats above.
         printk("[St7735Stats] calls=%u\n", st7735_task_call_count());
         return;
@@ -5306,7 +5300,7 @@ void shell_run(void) {
     cprintf("\nLugalOS Interactive Console Shell (`lsh`)\n");
     cprintf("Type 'help' for commands, 'cat /proc/ps' for tasks, 'ls /dev/' for devices.\n");
 
-    /* Y5c, plan/phase31_concurrency_hierarchy.md: hand the console to the log
+    /* Hand the console to the log
      * consumer, and with it printk()'s ability to block.
      *
      * Here rather than in kernel_main() for two reasons. The first is that
@@ -5338,7 +5332,7 @@ void shell_run(void) {
         lisp_canvas_poll();
         int idx = readline_interactive("lsh> ", buf, sizeof(buf));
         if (idx == 0) continue;
-        /* S3 (plan/phase13_lisp_engine_extensions.md): the Lisp engine's
+        /* The Lisp engine's
          * one safe point to collect garbage at -- see lisp_gc_safepoint()'s
          * declaration in user/lisp/include/lisp.h. This loop qualifies for
          * the same reason lisp_repl()'s own loop does: a fresh top-level

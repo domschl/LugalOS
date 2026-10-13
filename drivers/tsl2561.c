@@ -8,7 +8,6 @@
 #include <string.h>
 
 /* AMS / TAOS TSL2561 Light-to-Digital Converter.
- * Phase 46, plan/phase46_sensor_framework.md §4.6 (Milestone 46.6).
  *
  * Implements pure integer illuminance (Lux) calculation without FPU instructions.
  */

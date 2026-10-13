@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* The PIO-USB host engine -- 36.7, plan/phase36_rp2350_lcd7_terminal.md §3.2.
+/* The PIO-USB host engine.
  *
  * Core 1 runs the bus: SOF every millisecond, bus reset, and one transaction
  * at a time. It knows nothing about descriptors, hubs or HID. Core 0 hands it

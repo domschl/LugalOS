@@ -1,6 +1,5 @@
 /* `radioosi`: the radio shim's OS-table entries, called as the blob will call
- * them, from threads of a real U-mode domain (45.3b,
- * plan/phase45_esp32c6.md §4.5).
+ * them, from threads of a real U-mode domain.
  *
  * The shim (drivers/radio/osi_impl.c and the heap, formatter and key/value store
  * under it) is linked into the domain's own text by the linker script, and its

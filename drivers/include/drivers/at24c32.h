@@ -9,7 +9,7 @@
 #define AT24C32_SIZE_BYTES 4096
 #define AT24C32_PAGE_SIZE 32
 
-/* M5 Phase 3, plan/phase12_microkernel_migration.md: the largest single
+/* the largest single
  * EEPROM read/write the "i2c" task's chan_call() wire protocol carries in
  * one message -- far smaller than the whole AT24C32_SIZE_BYTES address
  * space, so a U-mode task's buffers stay syscall-sized. drivers/at24c32.c's
@@ -25,7 +25,7 @@ bool at24c32_is_detected(void);
 int at24c32_read(uint16_t addr, uint8_t *buf, size_t len);
 int at24c32_write(uint16_t addr, const uint8_t *buf, size_t len);
 
-/* M4.5, plan/phase12_microkernel_migration.md, Part B: direct-hardware
+/* direct-hardware
  * access (bounds clamp + page-boundary write chunking, unchanged), used by
  * at24c32_read()/write() above whenever the shared "i2c" task (see
  * drivers/i2c_rtc.h) is not alive, and by that task's body when it is. Not

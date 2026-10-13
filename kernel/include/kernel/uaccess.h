@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-/* The syscall boundary (B3, plan/phase5_distributed_design.md §5.4).
+/* The syscall boundary.
  *
  * Before this, trap.c passed `frame->a1` and `frame->a2` straight into
  * printk(), vfs_read() and vfs_write(). With a task in U-mode that is a

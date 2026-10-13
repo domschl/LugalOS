@@ -1,6 +1,6 @@
 /*
  * Vendored verbatim from ~/gith/domschl/LugalChess (engine/src/evaluation.c),
- * H4, plan/phase9_chess_computer.md. All-integer arithmetic throughout; the
+ * H4, . All-integer arithmetic throughout; the
  * only libc dependency is abs() (2 call sites), which chess_platform.h
  * covers with a macro.
  */

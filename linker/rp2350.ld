@@ -7,7 +7,7 @@ MEMORY
     RAM   (rwx)    : ORIGIN = 0x20000000, LENGTH = 512k
     SCRATCH_X (rwx): ORIGIN = 0x20080000, LENGTH = 4k
     SCRATCH_Y (rwx): ORIGIN = 0x20081000, LENGTH = 4k
-    /* QMI window 1, cached alias (38.4, plan/phase38_psram.md). Declared on
+    /* QMI window 1, cached alias. Declared on
      * every RP2350 board and used only where lugalos_bulk.ld places
      * .bulk_bss in it -- i.e. where the board file names a PSRAM. 16 MB is
      * the window; the chip's own size is checked by that file's ASSERT. */
@@ -40,7 +40,7 @@ SECTIONS
         . = _utext_start + 4096;
     } > FLASH
 
-    /* M5 Phase 4, plan/phase12_microkernel_migration.md: st7735's own
+    /* st7735's own
      * dedicated U-mode-executable page -- the shared .utext page above
      * ran out of room (font5x7[96][5] alone is 480 bytes, more than what
      * was left after heartbeat/tm1638/i2c). Same shape as .utext, a
@@ -52,7 +52,7 @@ SECTIONS
         . = _st7735text_start + 4096;
     } > FLASH
 
-    /* 36.6a, plan/phase36_rp2350_lcd7_terminal.md: the screen terminal's own
+    /* the screen terminal's own
      * U-mode region -- vtterm's putc path, fbtext and the font tables
      * (drivers/lcdterm_attr.h). Code and the font's constant data come from two
      * input sections, so GCC never sees code and data in one section of one
@@ -60,7 +60,7 @@ SECTIONS
      * lcdterm domain still grants a single R/X text region like every other
      * driver. Only the RP2350-LCD-7 persona has anything here; on the others
      * the section is empty and reserves nothing. */
-    /* 32 KB since Phase 44 (16 KB in 37.1a, 8 KB in 36.6a): the full glyph table,
+    /* 32 KB since (16 KB in 37.1a, 8 KB in 36.6a): the full glyph table,
      * the screen's chrome, ribbon window manager and canvas1.c's drawing. */
     .lcdtermtext : ALIGN(32768) {
         _lcdtermtext_start = .;
@@ -74,7 +74,7 @@ SECTIONS
     _lcdtermtext_used = _lcdtermtext_content_end - _lcdtermtext_start;
     ASSERT(_lcdtermtext_used <= 32768, "lcdterm's U-mode code and font outgrew their 32 KB region")
 
-    /* 36.8: the USB keyboard task's own U-mode region -- drivers/usbkbd.c's
+    /* the USB keyboard task's own U-mode region -- drivers/usbkbd.c's
      * portable half and drivers/usbkbd_rp2350.c's task (drivers/kbd_attr.h).
      * Same shape as .lcdtermtext above: empty and zero-size where there is
      * no PIO-USB port. */
@@ -88,7 +88,7 @@ SECTIONS
     _kbdtext_used = _kbdtext_content_end - _kbdtext_start;
     ASSERT(_kbdtext_used <= 8192, "the kbd task's U-mode code outgrew its 8 KB region")
 
-    /* M5 Phase 5, plan/phase12_microkernel_migration.md: blk's own
+    /* blk's own
      * dedicated U-mode-executable page, same reasoning as .st7735text
      * above -- the shared .utext page overflowed by 84 bytes once blk's
      * SD/SPI primitives (cs_select/spi_transfer/sd_send_cmd and the
@@ -101,7 +101,7 @@ SECTIONS
         . = _blktext_start + 4096;
     } > FLASH
 
-    /* M5 Phase 7, plan/phase12_microkernel_migration.md: usb_cdc's own
+    /* usb_cdc's own
      * dedicated U-mode-executable page, same reasoning as .st7735text/
      * .blktext above -- the shared .utext page overflowed once usb_cdc's
      * dispatch (by far the largest of any driver converted so far: EP0
@@ -115,7 +115,7 @@ SECTIONS
         . = _usbtext_start + 4096;
     } > FLASH
 
-    /* Phase 17b, plan/phase17b_clock_task_split.md: the clock server's own
+    /* The clock server's own
      * dedicated U-mode-executable page, same shape and same reasoning as
      * .st7735text/.blktext/.usbtext above. It carries the row scan, the
      * frame buffer writers, the button state machine, the glyphs and the
@@ -154,12 +154,12 @@ SECTIONS
     __binary_info_start = ADDR(.binary_info);
     __binary_info_end = ADDR(.binary_info) + SIZEOF(.binary_info);
 
-    /* M5 heap-reclaim (plan/phase12_microkernel_migration.md): every
+    /* every
      * RP2350-only driver's own NAPOT-aligned static region -- U-mode
      * stacks plus usb_cdc's combined-state region -- grouped by required
      * alignment and packed contiguously, largest first, instead of
-     * scattered across .bss in link order. Found on real hardware in M5
-     * Phase 7: a NAPOT `aligned(N)` object costs not just its own size but
+     * scattered across .bss in link order. On real hardware,
+     * a NAPOT `aligned(N)` object costs not just its own size but
      * (empirically) up to another N-1 bytes of *preceding* linker padding
      * to reach that alignment wherever it happens to land -- across all
      * eight of these objects that padding totalled ~51 KB, more than the
@@ -225,7 +225,7 @@ SECTIONS
         *(.data .data.*)
         *(.sdata .sdata.*)
         /* Code that must not be executing from flash while flash is being
-         * written (I7b, plan/phase21_identity_and_authentication.md §3.2).
+         * written.
          *
          * Inside .data rather than in a section of its own, for two reasons
          * that both turned out to matter. It is already copied to RAM by
@@ -237,8 +237,7 @@ SECTIONS
          * ld union them into a single RWX PT_LOAD and say so, the same
          * complaint .binary_info above is annotated READONLY to avoid.
          *
-         * NOT `.scratch_x`, which earlier drafts of the plan assumed: phase 15
-         * §1.2 gave both scratch banks to the page allocator and the ASSERT
+         * NOT `.scratch_x`, which earlier drafts of the plan assumed:          * §1.2 gave both scratch banks to the page allocator and the ASSERT
          * below still forbids placing there. It would also have cost 8 KB of
          * heap rather than this code's actual size, since the heap is one
          * contiguous range and excluding SCRATCH_X strands SCRATCH_Y above it.
@@ -252,7 +251,7 @@ SECTIONS
         *(.ramfunc .ramfunc.*)
         . = ALIGN(4);
         __ramfunc_end = .;
-        /* 38.9, plan/phase38_psram.md: the chess engine's hot files, code
+        /* the chess engine's hot files, code
          * and tables, on a board that spends the SRAM PSRAM gave back --
          * empty elsewhere. Here for the same reasons as .ramfunc above. */
         INCLUDE lugalos_ramcode.ld
@@ -265,7 +264,7 @@ SECTIONS
     __data_load_ptr = LOADADDR(.data);
     _sidata = LOADADDR(.data);
 
-    /* 38.4: BULK_BSS objects -- a NOLOAD section in PSRAM on a board that has
+    /* BULK_BSS objects -- a NOLOAD section in PSRAM on a board that has
      * one, nothing here otherwise (then .bss's `.bss.*` below takes them).
      * Generated per board by cmake/gen_config.cmake; it must come before
      * .bss, whose wildcard would otherwise claim `.bss.bulk` first. */
@@ -299,7 +298,7 @@ SECTIONS
         _stack_top = .;
     } > RAM
 
-    /* Core 1's stack (X7, plan/phase23_multicore_scheduling.md). Same size
+    /* Core 1's stack. Same size
      * and same region as core 0's above, for the same reason -- see the
      * note further down where SCRATCH_Y used to serve this purpose, and the
      * hardware failure that moved it here.
@@ -315,7 +314,7 @@ SECTIONS
         _stack1_top = .;
     } > RAM
 
-    /* X3 probe (plan/phase23_multicore_scheduling.md): a word no boot path
+    /* X3 probe: a word no boot path
      * writes.
      *
      * Deliberately outside every region the RP2350 boot code touches --
@@ -386,7 +385,7 @@ SECTIONS
      * at 0x20080000 and SRAM9 at 0x20081000 -- **contiguous with main RAM in
      * the address map**, which is what lets one page bitmap span all of it
      * with no special case in palloc.c. (§1.2,
-     * plan/phase15_memory_reclamation.md.)
+     * .)
      *
      * The bootrom's own initial stack pointer is SRAM_END, this same address
      * (boot_header.S's IMAGE_DEF, `.word SRAM_END`), so the bootrom does push
@@ -424,7 +423,7 @@ SECTIONS
      * does not outrank not corrupting the heap. */
     _heap_end = ORIGIN(SCRATCH_Y) + LENGTH(SCRATCH_Y);
 
-    /* --- The heap floor (§6, plan/phase15_memory_reclamation.md) ---
+    /* --- The heap floor ---
      *
      * Every heap regression this project has had was discovered the same way:
      * a board failing to do something, days or weeks after the commit that
@@ -455,7 +454,7 @@ SECTIONS
      * cmake/board-rp2350-clock.cmake's persona shares this script, so it is
      * covered too. */
     ASSERT(_heap_end - _kernel_end >= 256K,
-           "RP2350 heap has fallen below its 256 KB floor -- something grew .bss; see plan/phase15_memory_reclamation.md")
+           "RP2350 heap has fallen below its 256 KB floor -- something grew .bss")
 
     /* The scratch banks are the heap's now, so nothing may be placed into
      * them -- an object here would be handed out as heap memory and silently
@@ -468,14 +467,14 @@ SECTIONS
      * heap-adjacent and unclaimed; the guard narrows to it rather than
      * being dropped. */
     ASSERT(SIZEOF(.scratch_x) == 0,
-           "something now places into a scratch bank, but _heap_end hands both to the page allocator -- see plan/phase15_memory_reclamation.md")
+           "something now places into a scratch bank, but _heap_end hands both to the page allocator")
 
     /* The whole writable region, so /proc/meminfo can report the heap and the
      * stack as fractions of something real. Taken from the MEMORY block rather
      * than written down again in C: the point of these numbers is that they
      * come from the board's memory map, not from a constant that can drift
      * away from it. Now includes SCRATCH_X/Y, because as of §1.2
-     * (plan/phase15_memory_reclamation.md) the heap does -- this used to stop
+     * the heap does -- this used to stop
      * at the end of main RAM and describe the two scratch banks as "8 KB that
      * exist on the die but that nothing on this board currently places into",
      * which was true and was precisely the argument for giving them to the
@@ -487,7 +486,7 @@ SECTIONS
      * image is the embedded FAT32 payload, and the two are worth telling
      * apart. */
     /* --- The three-segment flash map (I7a, §3.3 of
-     * plan/phase21_identity_and_authentication.md) ---
+     * ) ---
      *
      * __flashfs_base / __identity_base and their sizes arrive as --defsym
      * from cmake/flash_layout.cmake, which is the single definition of this
@@ -517,7 +516,7 @@ SECTIONS
     _flash_start = ORIGIN(FLASH);
     _flash_end   = ORIGIN(FLASH) + LENGTH(FLASH);
 
-    /* G1, plan/phase30_driver_framework.md. Below the memory map because
+    /* G1, . Below the memory map because
        they are derived from it: a linker script assignment sees only symbols
        already assigned above it.
 

@@ -5,7 +5,7 @@
 #include <stdbool.h>
 
 /* The ESP32-P4's Ethernet MAC, and the IP101GRI it drives over RMII.
- * Z1, plan/phase28_esp32p4_ethernet.md.
+ * Z1, .
  *
  * At Z1 this is a bring-up surface and nothing more: it brings the clocks,
  * pads, PHY reset and station-management interface up far enough to talk to

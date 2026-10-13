@@ -4,8 +4,7 @@
 #include <stdint.h>
 
 /* What the Wi-Fi blob's OS table asks of the *chip*, rather than of an OS: the
- * power, clock and reset state of the radio, and the PHY's calibration (45.6,
- * plan/phase45_esp32c6.md).
+ * power, clock and reset state of the radio, and the PHY's calibration.
  *
  * These are the entries behind which Espressif's open code sits -- esp_phy's
  * esp_phy_enable(), modem_clock_module_*(), the PMU setup -- about 5 000 lines

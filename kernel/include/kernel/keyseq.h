@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* Bytes from a terminal to keys -- 37.5a, plan/phase37_screen_layouts_and_apps.md.
+/* Bytes from a terminal to keys.
  *
  * One parser for every text input, so that every one understands the same
  * keys. It reads what a modern terminal sends -- and since 37.5a what the

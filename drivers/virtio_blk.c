@@ -145,7 +145,7 @@ static int virtio_blk_transfer(uint32_t type, void *buf, uint32_t lba, uint32_t 
     return (g_req_status == 0) ? 0 : -1;
 }
 
-/* --- M4.5, plan/phase12_microkernel_migration.md, Part B: the "blk"
+/* -.md, Part B: the "blk"
  * driver task ---
  *
  * Same wire protocol and BLK_MAX_COUNT reasoning as spisd_rp2350.c's
@@ -163,7 +163,7 @@ static uint8_t       g_blk_req[BLK_REQ_CAP];
 static uint8_t       g_blk_resp[BLK_RESP_CAP];
 static driver_task_t g_blk_task;
 
-/* M4.5 verify: counts chan_call()s actually served -- see
+/* Verify: counts chan_call()s actually served -- see
  * drivers/uart_16550.c's g_uart_write_calls comment for the reasoning
  * (a nonzero, growing count is what distinguishes "the task is genuinely
  * serving requests" from "every caller silently fell back to direct

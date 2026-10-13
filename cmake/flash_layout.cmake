@@ -1,4 +1,4 @@
-# The RP2350 flash map, in one place -- I7a, plan/phase21_identity_and_authentication.md §3.3.
+# The RP2350 flash map, in one place -- I7a, .
 #
 # These four numbers are the *only* definition of where the three segments
 # live. They reach the linker script as --defsym symbols and the C code as

@@ -17,7 +17,7 @@
  * p9_link_cat()'s own comment below on why that's safe), so servicing N
  * links in one p9_link_background_poll() sweep carries no new race that
  * servicing 1 didn't already have. */
-/* Four since R3 (plan/phase19_ip_stack_and_ethernet.md): a board can now
+/* Four: a board can now
  * carry its own dedicated link plus up to two accepted TCP connections, each
  * of which registers here on establishment and unregisters on close. The
  * table is four pointers; the old limit of two was sized when links were only
@@ -75,20 +75,10 @@ static p9_link_t *g_background_links[P9_LINK_MAX_BACKGROUND];
  * chan_call()'s single-slot re-entrancy check, which rejects the inner call
  * exactly as it did before preemption existed.
  *
- * S2 (plan/phase22_smp_locking_foundation.md): this file used to define that
- * lock itself -- a `p9_lock_t` with a `volatile bool held`, taken under
- * irq_save(). Every property above is unchanged; what changed is that the
- * type now lives in kernel/lock.h and the test-and-set is a real atomic
- * rather than a plain read-then-write that was only indivisible because
- * interrupt masking kept a *second access from the same hart* out. Masking
- * hart 0's interrupts does nothing to hart 1, so that version was correct
- * exactly as long as there was one hart -- which is the whole of phase 22.
- *
- * This was the first of the three independent reinventions of the same lock
- * the plan found, and the only one written under real pressure: preemption
- * turned an intermittent, roughly-one-run-in-three failure in the two-node
- * 9P tests into a bug report. Those same tests are this conversion's
- * regression check, unchanged. */
+ * That lock uses `ylock_t` from kernel/lock.h with test-and-set atomics
+ * rather than a plain read-then-write that was only indivisible on a single hart.
+ * Masking interrupts on one hart does nothing to other harts, so a proper atomic
+ * spinlock is required for multi-core SMP safety. */
 static ylock_t g_pump_lock;
 static ylock_t g_client_lock;
 
@@ -202,8 +192,7 @@ void p9_link_unregister_background(p9_link_t *link) {
     }
 }
 
-/* --- The 9P server as a task (B4, resolving D4) ---
- *
+/* --- The 9P server as a task --- *
  * Until now the server ran opportunistically: p9_link_background_poll() was
  * called from inside uart_getc()'s busy-wait, so inbound 9P was serviced only
  * while the console happened to be blocked on a keystroke. That was the only
@@ -315,7 +304,7 @@ static int p9_link_roundtrip(p9_link_t *link, const p9_msg_t *req, p9_msg_t *res
         return -1;
     }
 
-    /* Bounded, since N5 (plan/phase18_networking_and_auth.md §9's own risk
+    /* Bounded, since N5 (own risk
      * entry, met on hardware the first time a downlink cable was tried).
      *
      * This used to wait forever, matching drivers/virtio_blk.c's
@@ -343,7 +332,7 @@ static int p9_link_roundtrip(p9_link_t *link, const p9_msg_t *req, p9_msg_t *res
          * the server task has not been scheduled yet. It takes the *pump* lock,
          * not this one, so the two never deadlock against each other.
          *
-         * That claim is checked rather than asserted since phase 31 Y3: a
+         * That claim is checked rather than asserted since Y3: a
          * contended ylock_acquire() records a wait-for edge, so a task holding
          * one of these two and waiting for the other is visible in the same
          * graph as a channel call, and a cycle between them is named at the
@@ -366,7 +355,7 @@ static int p9_link_roundtrip(p9_link_t *link, const p9_msg_t *req, p9_msg_t *res
 /* Splits `path` into wname[] components in `out` (each NUL-terminated),
  * skipping empty ones. Returns the count, or -1 when the path cannot be
  * walked as written: more than P9_MAX_WALK_ELEM components, or a component
- * of P9_MAX_NAME_LEN bytes or more (phase 40 review).
+ * of P9_MAX_NAME_LEN bytes or more.
  *
  * It used to truncate instead, in three ways at once: the path to 127 bytes,
  * the walk to 16 components, and each name with strncpy() into an
@@ -393,7 +382,7 @@ int p9_link_cat(p9_link_t *link, const char *path, char *out_buf, uint32_t out_m
     if (!link || !link->poll || !link->send_frame || !link->recv_frame || !path) return -1;
     while (*path == '/') path++;
 
-    /* §3.1 (plan/phase15_memory_reclamation.md): on-demand, not .bss.
+    /* §3.1: on-demand, not .bss.
      *
      * This is the *client* side -- one `p9cat` against a peer, start to
      * finish -- so it is exactly the "not live at boot, not on a hot path"
@@ -414,7 +403,7 @@ int p9_link_cat(p9_link_t *link, const char *path, char *out_buf, uint32_t out_m
     if (p9_link_roundtrip(link, &req, &resp, tx, rx, P9_MAX_MSIZE) < 0 || resp.type != P9_RVERSION) { scratch_release(&sc); return -1; }
 
     /* What the peer agreed to, which may be less than we asked for -- an
-     * RP2350 node answers 2048 (§2.3, plan/phase15_memory_reclamation.md).
+     * RP2350 node answers 2048.
      * The Tread chunk below is sized from this rather than from a constant,
      * so it cannot outgrow what the far side will accept. The reply is
      * clamped to our own maximum too: a peer is free to answer with more
@@ -484,8 +473,7 @@ int p9_link_cat(p9_link_t *link, const char *path, char *out_buf, uint32_t out_m
     return read_failed ? -1 : (int)total;
 }
 
-/* --- Persistent remote 9P connection (A5) ---
- *
+/* --- Persistent remote 9P connection --- *
  * A fixed pool, not dynamic allocation (this kernel has none): one mount
  * per real remote peer is the expected usage (see p9_remote_mount_open()'s
  * doc comment in the header for why mounting the same underlying link
@@ -530,9 +518,9 @@ static int p9_remote_xchg(p9_remote_mount_t *m, const p9_msg_t *req, p9_msg_t *r
 }
 
 /* --- The client half of the auth exchange (R3b,
- * plan/phase19_ip_stack_and_ethernet.md) ---
+ * ) ---
  *
- * Phase 18 built the gate and the host-side client for it; the *in-kernel*
+ * built the gate and the host-side client for it; the *in-kernel*
  * client never had one, because until R3b no node could dial another over a
  * network. Now one can, and a node that cannot authenticate can only mount
  * peers that ask nothing -- which is to say, not the gateway, and not

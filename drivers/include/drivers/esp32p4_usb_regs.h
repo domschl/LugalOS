@@ -1,6 +1,5 @@
 /* ESP32-P4 register addresses and fields used by drivers/usbhost_esp32p4.c (the
  * OTG HS core's clocks and resets, its UTMI PHY's control bits).
- * 47.9, plan/phase47_esp32p4_lcd7b_ribbon.md.
  *
  * GENERATED -- do not edit by hand. Regenerate with
  *

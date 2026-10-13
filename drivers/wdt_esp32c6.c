@@ -1,5 +1,5 @@
 /*
- * LugalOS driver: the hardware watchdog on the ESP32-C6 -- 45.8, plan/phase45_esp32c6.md.
+ * LugalOS driver: the hardware watchdog on the ESP32-C6.
  *
  * An unattended node must not stay hung. MWDT0 (timer group 0's watchdog) is armed with one stage:
  * no feed for WDT_TIMEOUT_MS and it resets the whole digital system. A task at normal priority feeds

@@ -2,9 +2,7 @@
  * LugalOS Hardware Driver: PL011 UART0 + Dual Onboard/External LEDs for RP2350 (Pico 2)
  * Adopted from working bare-metal RP2350 driver (rp2350_cld).
  *
- * Hardware Map (K2, plan/phase7_kernel_config.md -- the numbers themselves
- * live in cmake/board-rp2350.cmake now, this is documentation, not the
- * source of truth):
+ * Hardware Map:
  *   GP0  : UART0 TX (Function 2)
  *   GP1  : UART0 RX (Function 2)
  *   GP25 : Onboard LED (Function 5 - SIO)
@@ -52,7 +50,7 @@
 #define SIO_GPIO_OUT_CLR        (SIO_BASE + 0x020)
 #define SIO_GPIO_OE_SET         (SIO_BASE + 0x038)
 
-/* M5, plan/phase12_microkernel_migration.md: RP2350's Arm TrustZone-style
+/* RP2350's Arm TrustZone-style
  * Secure/Non-secure split, mapped onto RISC-V M-mode/U-mode -- found in
  * ~/gith/pico/datasheet's RP2350 datasheet (Section 3.1.1, "Secure and
  * Non-secure SIO") after the heartbeat-to-U-mode conversion below wrote to
@@ -71,7 +69,7 @@
 #define ACCESSCTRL_BASE          0x40060000UL
 #define ACCESSCTRL_GPIO_NSMASK0  (ACCESSCTRL_BASE + 0x0c) /* GPIO 0-31 */
 
-/* M5 Phase 6, plan/phase12_microkernel_migration.md: same per-peripheral
+/* same per-peripheral
  * register shape as every non-GPIO ACCESSCTRL register this project has
  * touched (SPI0/SPI1/I2C0/I2C1) -- checked directly against
  * ~/gith/pico/pico-sdk's accessctrl.h: offset 0xa0, needs the
@@ -94,7 +92,7 @@
 #elif defined(CONFIG_LED_EXT_GPIO)
 #define LED_MASK  (1u << CONFIG_LED_EXT_GPIO)
 #else
-/* 36.0, plan/phase36_rp2350_lcd7_terminal.md §1.4: the Waveshare
+/* the Waveshare
  * RP2350-LCD-7 has no user LED on any GPIO (Led1/Led2 are power and charge
  * indicators), so its board file sets neither key. No LED then means no
  * heartbeat task and no pin claimed -- not a write to whatever pin a default
@@ -121,7 +119,7 @@ void led_off(void) {
 
 /* Heartbeat on GP16: 0.5 Hz, brief flash.
  *
- * M4.5, plan/phase12_microkernel_migration.md, Part B: this used to be a
+ * this used to be a
  * two-state machine stepped as a side effect of uart_has_char()/
  * uart_getc()'s console-polling loop (a function called gp16_alive_tick(),
  * folded into that poll specifically so a blocking spin here could not
@@ -136,7 +134,7 @@ void led_off(void) {
  * A real, independently-scheduled task: it blinks at its own rate
  * regardless of what any other task is doing, which is what makes it an
  * actual live, on-the-board check that the scheduler is working -- exactly
- * the M4.5 Part A question (does every READY task get a turn), but
+ * the driver task design question (does every READY task get a turn), but
  * continuously, visually, and without a serial connection. TASK_PRIO_
  * NORMAL, not TASK_PRIO_INTERRUPT: the point is to reflect ordinary
  * scheduling health, including whether NORMAL-tier tasks get their turn
@@ -146,14 +144,14 @@ void led_off(void) {
  * indicator has no business burning CPU that another READY task could use
  * while it waits out 2 seconds of mostly being off.
  *
- * M5, plan/phase12_microkernel_migration.md: this task's own loop runs in
- * real U-mode now, not kernel mode like every other M4.5 driver task --
+ * this task's own loop runs in
+ * real U-mode now, not kernel mode like every other driver task --
  * the deliberate first (and, for this milestone, only) instance of that,
  * chosen because it needs no chan_call() endpoint and touches exactly one
  * register pair, so it exercises the new mechanism without also needing
  * the chan_serve_wait()/reply() syscalls every *other* driver task would.
  * See that milestone's own plan notes for why a domain attached to a
- * kernel-mode task (M5 as originally, too narrowly, scoped) enforces
+ * kernel-mode task enforces
  * nothing at all on this board: PMP does not restrict M-mode, which is
  * where every other driver task in this tree still runs.
  *
@@ -161,7 +159,7 @@ void led_off(void) {
  * probes already use (not the separately linked ELF-loader path C4 built --
  * that is for programs loaded from a file after the filesystem exists;
  * this task starts long before vfs_server_init() runs, same boot-ordering
- * constraint every other M4.5 driver task already has). Unlike those
+ * constraint every other driver task already has). Unlike those
  * probes, this task never exits, so it gets its own dedicated stack rather
  * than sharing kernel/shell.c's g_user_stack (which assumes exactly one
  * such probe is ever in flight at a time). */
@@ -227,8 +225,8 @@ HEARTBEAT_UATTR static void heartbeat_umode_body(void) {
 }
 
 /* Own dedicated stack, not shared with kernel/shell.c's one-shot test
- * probes (see this section's own comment above for why). M5 heap-reclaim
- * (plan/phase12_microkernel_migration.md): 256 bytes, not a full page --
+ * probes (see this section's own comment above for why). heap reclaim
+ *: 256 bytes, not a full page --
  * heartbeat_umode_body() makes no calls at all post-inlining (measured
  * deepest stack use: 0 bytes), so 256 is pure headroom. This file is
  * RP2350-only, so (unlike kernel/shell.c's g_user_stack) there is no
@@ -243,7 +241,7 @@ static uint8_t g_heartbeat_ustack[256] __attribute__((aligned(256)))
 static void heartbeat_task_body(void *arg) {
     (void)arg;
 
-    /* G3, plan/phase30_driver_framework.md.
+    /* G3, .
      *
      * The device window is a full page, and the reason is worth keeping.
      * SIO_GPIO_OUT_SET (+0x18) and _CLR (+0x20) must land in one region --
@@ -293,7 +291,7 @@ int heartbeat_task_start(void) {
 }
 #endif
 
-/* M5 phase 1's own "Verify" deliverable: does the real heartbeat domain
+/* Domain verification: does the real heartbeat domain
  * shape (stack + .utext + a 4096-byte SIO window) actually confine the
  * task to GPIO, or does the SIO grant's width accidentally cover more?
  * Modeled directly on kernel/shell.c's user_intruder()/g_kernel_canary --
@@ -392,9 +390,9 @@ static bool hw_uart_has_char(void);
 static int hw_uart_read(void);
 static uint8_t hw_uart_getc(void);
 
-/* M2, revised M2.5 (plan/phase12_microkernel_migration.md): PL011 UART0's
+/* PL011 UART0's
  * own IRQ line (RP2350 datasheet §2.1 IRQ table, confirmed against the Pico
- * SDK's hardware/regs/intctrl.h). Wired up in M2, unwired the same
+ * SDK's hardware/regs/intctrl.h). Wired up, unwired the same
  * milestone after hardware testing showed it corrupting console output, and
  * back now that kernel/console.c's console_lock()/console_unlock() make a
  * whole message atomic across a block rather than just across a spin -- see
@@ -406,10 +404,7 @@ static uint8_t hw_uart_getc(void);
  * "block with timeout" or "wait on any of N sources" primitive yet. That
  * reasoning is unrelated to the printk fix above and unchanged by it: RX
  * stays exactly as it was until a future milestone gives USB CDC its own
- * interrupt path or this tree gains a real multi-wait primitive. (The
- * heartbeat LED used to be a third thing stepped from this same poll --
- * M4.5, plan/phase12_microkernel_migration.md, Part B gave it its own
- * task instead, so it is no longer part of this reasoning.) */
+ * interrupt path or this tree gains a real multi-wait primitive. */
 #define UART0_IRQ 33u
 
 /* At most one TX waiter: every caller now arrives through console_lock()
@@ -491,7 +486,7 @@ void uart_init(uintptr_t base_addr) {
     REG(PADS_BANK0_PAD(CONFIG_LED_EXT_GPIO)) = 0x56;
     REG(SIO_GPIO_OE_SET) = LED_MASK;
 
-    /* M5, plan/phase12_microkernel_migration.md: GP16 specifically (not the
+    /* GP16 specifically (not the
      * onboard LED, which only ever runs from kernel/M-mode code) needs to
      * be Non-secure-accessible, since heartbeat_task_body() below drives it
      * from real U-mode. Must happen here, from M-mode -- see
@@ -502,7 +497,7 @@ void uart_init(uintptr_t base_addr) {
     REG(ACCESSCTRL_GPIO_NSMASK0) |= (1u << CONFIG_LED_EXT_GPIO);
 #endif
 
-    /* M5 Phase 6: UART0 itself needs the same Non-secure grant, for the
+    /* UART0 itself needs the same Non-secure grant, for the
      * "uart" task's own U-mode serve loop further below -- see
      * ACCESSCTRL_UART0's own comment above. */
     REG(ACCESSCTRL_UART0) = ACCESSCTRL_WRITE_PASSWORD | REG(ACCESSCTRL_UART0)
@@ -551,9 +546,9 @@ void uart_init(uintptr_t base_addr) {
     uart_puts("\r\n[RP2350 Hardware UART0 Online] LugalOS Microkernel Starting...\r\n");
 }
 
-/* M2.5, plan/phase12_microkernel_migration.md: safe now that every caller
+/* safe now that every caller
  * arrives through console_lock() (kernel/console.c) or is otherwise the sole
- * writer -- see that file's comment for the full story of what M2's first
+ * writer -- see that file's comment for the full story of what the original
  * attempt at this got wrong (real hardware caught `[Sche5d]` where `[Sched]`
  * should have been -- interleaved output, not a PMP failure, despite the
  * symptom initially reading like one). Same continuous-irq_save()
@@ -642,9 +637,9 @@ static int hw_uart_read(void) {
     return (dr & ((1u << 8) | (1u << 10))) ? -1 : (int)(dr & 0xFFu);
 }
 
-/* --- M4.5/M5, plan/phase12_microkernel_migration.md: the uart task ---
+/* --- UART driver task ---
  *
- * M5 Phase 6 narrowed this task's own duty to physical UART0 only -- see
+ * U-mode narrowed this task's own duty to physical UART0 only -- see
  * this milestone's own plan notes ("split the duty across the privilege
  * boundary") for the full reasoning. The USB CDC mirror/read that used to
  * happen server-side now happens in the client facades below
@@ -656,7 +651,7 @@ static int hw_uart_read(void) {
  *   'H'      -> has-char query, physical UART0 only, non-consuming.
  *               resp: 1 byte, 0 or 1.
  *   'R'      -> read-if-ready, physical UART0 only, non-blocking (unlike
- *               the pre-M5-Phase-6 version, which blocked here for as
+ *               the previous version, which blocked here for as
  *               long as a human took to press a key -- U-mode code
  *               cannot task_block()/irq_save(), so waiting now happens
  *               in the client's own loop instead, see uart_getc()
@@ -682,10 +677,10 @@ static uint8_t         g_uart_resp[UART_RESP_CAP];
 static chan_endpoint_t *g_uart_ep;
 static int              g_uart_task_pid = -1;
 
-/* M4.5 verify: counts UART_REQ_WRITE calls actually served -- one per
+/* Verify: counts UART_REQ_WRITE calls actually served -- one per
  * uart_flush() that reached the task, not per character -- see
  * drivers/uart_16550.c's g_uart_write_calls comment for the reasoning.
- * M5 Phase 6: counted client-side now (uart_flush() below), matching
+ * counted client-side now (uart_flush() below), matching
  * every other U-mode driver's own g_*_calls -- a U-mode server cannot
  * touch this ordinary kernel .bss global. */
 static uint32_t g_uart_write_calls;
@@ -705,8 +700,7 @@ static bool uart_task_alive(void) {
     return st != TASK_UNUSED && st != TASK_DEAD;
 }
 
-/* ---- U-mode implementation, M5 Phase 6, plan/phase12_microkernel_migration.md ----
- *
+/* ---- U-mode implementation ---- *
  * A second, independent copy of the UART0 TX fast-path and RX peek/read,
  * tagged UART_UATTR and reachable only from the U-mode task's own serve
  * loop below -- not a refactor of uart_hw_putc()/hw_uart_has_char()/
@@ -783,7 +777,7 @@ __attribute__((always_inline)) static inline long uart_usys_chan_serve_reply(con
 
 UART_UATTR static void uart_umode_body(void) {
     /* Not a string literal: see drivers/tm1638_rp2350.c's own comment for
-     * why (M5 Phase 2's first board-hanging bug) -- a literal lands in
+     * why -- a literal lands in
      * ordinary .rodata, outside every region this task's domain grants.
      * volatile so gcc doesn't recognise the stores and reconstruct a
      * .rodata copy anyway. */
@@ -822,7 +816,7 @@ UART_UATTR static void uart_umode_body(void) {
     }
 }
 
-/* M5 heap-reclaim, plan/phase12_microkernel_migration.md: 512 bytes, not
+/* Task stack: 512 bytes, not
  * 4096 -- uart_umode_body() makes no calls post-inlining (measured
  * deepest stack use: 272 bytes). See g_heartbeat_ustack's own comment
  * above and .ustacks512's in linker/rp2350.ld. */
@@ -839,7 +833,7 @@ static void uart_task_body(void *arg) {
     (void)arg;
     while (!g_uart_ep) sched_yield();
 
-    /* G3, plan/phase30_driver_framework.md. Last of the seven, and the one
+    /* G3, . Last of the seven, and the one
      * that owns the console: if this refuses, the message it prints is the
      * only way anyone finds out, which is why the refusal path is shared
      * rather than retyped. */
@@ -868,7 +862,7 @@ int uart_task_start(void) {
     /* TASK_PRIO_INTERRUPT: matches drivers/uart_16550.c's own uart task --
      * a caller that chan_call()s "uart" should not sit behind an arbitrary
      * NORMAL-tier queue for what is meant to be a near-instant handoff.
-     * M5 Phase 6: every op this task now serves is small and bounded (no
+     * every op this task now serves is small and bounded (no
      * more open-ended READ wait), so unlike the pre-Phase-6 version there
      * is no priority-drop dance needed inside the loop -- INTERRUPT tier
      * the whole time is simply correct now. */
@@ -894,7 +888,7 @@ static int uart_call_with_retry(const uint8_t *req, uint32_t req_len,
     return -1;
 }
 
-/* M5 Phase 6's own "Verify" deliverable: does the real uart domain shape
+/* Domain verification: does the real uart domain shape
  * (stack + .utext + a 4096-byte UART0_BASE window) actually confine the
  * task to UART0, or does the MMIO grant's width accidentally cover more?
  * Modeled directly on drivers/blk's/st7735's own isolation tests -- same
@@ -965,14 +959,14 @@ bool uart_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) {
     return g_uart_intruder_entered;
 }
 
-/* M4.5: batches characters and sends one chan_call() per chunk (or per
+/* batches characters and sends one chan_call() per chunk (or per
  * uart_flush()) instead of one per character -- same reasoning and same
  * shape as drivers/uart_16550.c's own uart_putc()/uart_flush(), including
  * the while (not if) loop below (see that file's comment for why: without
  * it, a task that finds the batch full, releases the lock to flush, and
  * gets preempted before re-appending would let a second task refill the
  * just-flushed batch in the gap). */
-/* One batch per hart (phase 23 X7).
+/* One batch per hart.
  *
  * It was a single shared buffer, and on two cores that spliced messages
  * together character by character: console_unlock() releases the output lock
@@ -991,10 +985,9 @@ bool uart_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) {
  * on that hart, which is what it was added for. */
 static char     g_tx_batch[MAX_HARTS][UART_TX_BATCH_CAP];
 static uint32_t g_tx_batch_len[MAX_HARTS];
-/* Guards g_tx_batch/g_tx_batch_len (X2,
- * plan/phase23_multicore_scheduling.md).
+/* Guards g_tx_batch/g_tx_batch_len.
  *
- * X2 pins every driver task to hart 0, and phase 22's S5 left the UART
+ * X2 pins every driver task to hart 0, and S5 left the UART
  * paths unconverted on the strength of that. Checking the claim rather than
  * inheriting it -- which is what X2 is for -- shows it covers less than S5
  * assumed. It is true of the *waiter* path below: uart_hw_putc_blocking()
@@ -1040,7 +1033,7 @@ static void uart_tx_send(const char *local, uint32_t len) {
      * falling back promptly when the endpoint is merely busy with some
      * other, near-instant op instead.
      *
-     * M5 Phase 6: chan_endpoint_busy(g_uart_ep) (kernel/chan.c) replaces
+     * chan_endpoint_busy(g_uart_ep) (kernel/chan.c) replaces
      * the old server-set g_uart_write_in_flight flag -- a U-mode server
      * cannot write an ordinary kernel .bss global, but chan_call()
      * itself already tracks exactly this window (ep->busy, true from
@@ -1166,7 +1159,7 @@ void uart_debug_putc(char c) {
 // conversion. Flushed first: an outstanding write (a prompt, most often)
 // should be visible before anything checks for or waits on the reply it
 // usually precedes -- same reasoning as drivers/uart_16550.c's equivalent.
-/* M5 Phase 6: when uart_task_alive(), physical UART0 is checked through
+/* when uart_task_alive(), physical UART0 is checked through
  * chan_call() only -- see "this task, and only this task, may call
  * uart_hw_putc()/hw_uart_has_char()/hw_uart_getc() while alive" above;
  * hw_uart_has_char()/hw_uart_getc() are reached directly only when the
@@ -1216,7 +1209,7 @@ int uart_serial_getc(void) {
  * "console input" directly. The console itself polls the two as separate
  * sources since 36.9. */
 bool uart_has_char(void) {
-    /* M4.5: the "usbcdc" background task (drivers/usb_cdc.c) now services
+    /* the "usbcdc" background task (drivers/usb_cdc.c) now services
      * this on its own schedule; only pump it directly here as a fallback
      * for the (untested-in-practice) case that task failed to start. */
     if (!usb_cdc_task_alive()) usb_cdc_task();
@@ -1232,7 +1225,7 @@ char uart_getc(void) {
         }
         return uart_demux_console_getc();
     }
-    /* M5 Phase 6: the wait that used to live server-side (blocking inside
+    /* the wait that used to live server-side (blocking inside
      * the task's own READ handler for as long as a human took to press a
      * key) moves here -- U-mode code cannot task_block(), so the U-mode
      * READ op is now a single non-blocking check (see uart_umode_body()

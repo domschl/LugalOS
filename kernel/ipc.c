@@ -9,7 +9,7 @@
  * makes a local service and a service on another machine the same code path,
  * and what a U-mode task now reaches through SYS_CHAN_CALL.
  *
- * Deleted in C3 (plan/phase6_memory_and_processes.md) together with the
+ * Deleted together with the
  * ipc_msg_t register-message struct, in the same change that gave U-mode the
  * channel syscall. Removing them alone would have left user programs exactly
  * as unable to reach a service as they were before, which is the opposite of

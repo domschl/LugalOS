@@ -1,17 +1,14 @@
 #include "string.h"
 
-/* 38.3, plan/phase38_psram.md: word-wide copies and fills.
+/* Word-wide copies and fills.
  *
- * These were byte loops, which cost a 46 KB text scroll 2.0 ms against 693 us
- * as words (phase 36, 36.5) and copied out of PSRAM at 9.6 MB/s where the bus
- * gives ~22 (plan/phase38_preliminaries.md §2). Words are used when the two
+ * Word transfers accelerate memory copies and fills in PSRAM and SRAM.
+ * Words are used when the two
  * pointers share their alignment within a word -- then a byte head brings
  * both to a word boundary at once, and a byte tail finishes.
  *
- * Pointers that differ in alignment were left on the byte loop until 38.7,
- * as "more code than the cases that hit it are worth". The editor is such a
- * case: a keystroke moves the rest of the text by one byte, which took
- * 37 ms for 200 KB in PSRAM. Now the destination is aligned by a byte head,
+ * When pointers differ in alignment (e.g. editor single-byte insert/delete),
+ * the destination is aligned by a byte head,
  * the source is read as aligned words, and each stored word is two of them
  * shifted together (little-endian; the RP2350's Hazard3 traps on a
  * misaligned word access). Every word read holds at least one byte that is

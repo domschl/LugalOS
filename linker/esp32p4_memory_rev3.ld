@@ -1,6 +1,6 @@
 /* L2MEM layout for ESP32-P4 silicon revision v3.0 and later -- the
  * ESP32-P4-WIFI6-Touch-LCD-7B's v3.2. INCLUDEd by linker/esp32p4.ld; chosen by
- * CMake from CONFIG_ESP32P4_REV. 47.1, plan/phase47_esp32p4_lcd7b_ribbon.md.
+ * CMake from CONFIG_ESP32P4_REV. 47.1, .
  *
  * ## What v3 changed
  *

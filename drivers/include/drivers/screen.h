@@ -9,7 +9,7 @@
 #include "drivers/ribbon.h"
 
 /* The whole 1-bpp screen as the terminal sees it -- 37.1/37.1a/37.3b,
- * plan/phase37_screen_layouts_and_apps.md §1: a menu bar, the grey
+ * : a menu bar, the grey
  * desktop, and one or two framed tiles with striped title bars -- the
  * terminal, a canvas, or both side by side.
  *
@@ -45,7 +45,7 @@
  * 789, 469 or 389 x 434 px. Nothing is drawn on x 799 (under the bezel).
  *
  * **The canvas is stored once per layout, where there is memory for it**
- * (38.8, plan/phase38_psram.md; screen_set_store()). A layout change saves
+ *). A layout change saves
  * the canvas it leaves and restores the one it enters -- without bumping
  * `damage` -- if nothing has been drawn since that one was saved; otherwise,
  * and always without a store, the canvas comes back blank and `damage`
@@ -91,7 +91,7 @@ typedef struct {
 typedef struct {
     canvas1_t cv;                       /* the whole buffer */
     canvas1_t cc;                       /* the canvas tile's drawable area */
-    canvas1_t c_backing;                /* Phase 44: persistent backing store for primary canvas */
+    canvas1_t c_backing;                /* persistent backing store for primary canvas */
     uint8_t   layout;
     uint8_t   full_cols;                /* the text window's width in TEXT */
     uint8_t   locked;                   /* 37.5a: 'w' and 'X' may not change the split */
@@ -110,14 +110,14 @@ typedef struct {
     char      name[SCREEN_NAME_MAX];    /* the menu bar's left */
     char      right[SCREEN_RIGHT_MAX];  /* its indicators */
     char      ctitle[SCREEN_CTITLE_MAX];/* the canvas tile's title */
-    ribbon_t  ribbon;                   /* Phase 44: 1D horizontal window ribbon */
-    screen_canvas_slot_t canvases[SCREEN_MAX_CANVASES]; /* Phase 44.2: concurrent canvas backing stores */
+    ribbon_t  ribbon;                   /* 1D horizontal window ribbon */
+    screen_canvas_slot_t canvases[SCREEN_MAX_CANVASES]; /* concurrent canvas backing stores */
     vtterm_t  vt;                       /* legacy reference to active terminal */
     struct {
         vtterm_t vt;
         uint8_t  vterm_id;
         bool     in_use;
-    } terms[SCREEN_MAX_TERMS];          /* Phase 44: up to 8 concurrent terminal window instances */
+    } terms[SCREEN_MAX_TERMS];          /* up to 8 concurrent terminal window instances */
     uint16_t  shadow[];                 /* shadow buffers for all 8 terminals (8 * cols * rows) */
 } screen_t;
 

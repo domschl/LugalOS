@@ -4,8 +4,7 @@
 #include <stdarg.h>
 #include <stdint.h>
 
-/* Compiler-checked format strings (Y5f, plan/phase31_concurrency_hierarchy.md
- * §5.9).
+/* Compiler-checked format strings.
  *
  * This family had no `format(printf, ...)` attribute at all, so `-Wall
  * -Wextra` checked nothing across the whole tree -- and kernel/printk.c's
@@ -61,7 +60,7 @@ int printk_debug(const char *fmt, ...) LUGALOS_PRINTF(1, 2);
  * drops rather than waits.
  *
  * Not "for contexts where printk() would block" any more -- printk() does not
- * block anywhere (Y5c, plan/phase31_concurrency_hierarchy.md). The remaining
+ * block anywhere . The remaining
  * distinction is delivery: a printk() record reaches the console when klogd
  * next runs, and if the next thing that happens is a halt, a fault dump or a
  * hang, klogd never runs. Use this where the value is that the line arrived
@@ -75,7 +74,7 @@ int printk_critical(const char *fmt, ...) LUGALOS_PRINTF(1, 2);
 // precision). Always NUL-terminates within `cap` and returns the number of
 // bytes written (excluding the NUL), clamped to `cap - 1`. Used by
 // fs/vfs_server.c to generate real, readable /proc file content instead of
-// printk()'ing it directly (see A1 in plan/phase5_distributed_design.md).
+// printk()'ing it directly .
 //
 // Note: like printk(), a literal '\n' in the format string itself becomes
 // "\r\n" in the output (this reuses printk's own engine unmodified) -- so
@@ -86,8 +85,7 @@ int printk_critical(const char *fmt, ...) LUGALOS_PRINTF(1, 2);
 // remote client that expects LF-only text.
 int ksnprintf(char *buf, uint32_t cap, const char *fmt, ...) LUGALOS_PRINTF(3, 4);
 
-/* Renders a log record captured by printk() (Y5f,
- * plan/phase31_concurrency_hierarchy.md §5.9): the format string it was given
+/* Renders a log record captured by printk() : the format string it was given
  * and the arguments it stored, replayed through the same engine that would
  * have formatted them at the time.
  *

@@ -1,6 +1,5 @@
 /*
- * The Pico-Clock-Green menu, as a pure state machine (C3,
- * plan/phase17_clock_ui_and_dcf77.md).
+ * The Pico-Clock-Green menu, as a pure state machine.
  *
  * Nothing in this file or its implementation touches hardware, reads a clock,
  * or allocates. A key event goes in, the state changes, and a *description*

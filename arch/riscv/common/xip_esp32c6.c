@@ -1,5 +1,5 @@
 /* Mapping the ESP32-C6's flash into the CPU's address space, at boot.
- * 45.4.2, plan/phase45_esp32c6.md. The C6 counterpart of
+ * 45.4.2, . The C6 counterpart of
  * arch/riscv/common/xip_esp32p4.c, and everything that file says about why this
  * is deliberately dull applies here.
  *
@@ -86,7 +86,7 @@ BOOT_TEXT void esp32c6_xip_map(void) {
  *
  * A board booted from flash has two watchdogs armed by the ROM for the
  * second-stage image it just loaded; nothing in this kernel feeds them (the P4's
- * phase 32 recorded the symptom: a kernel that boots completely, reaches its
+ * recorded the symptom: a kernel that boots completely, reaches its
  * shell, and then resets with a watchdog reason). `load-ram` arms nothing, so
  * this is a no-op on the development loop and essential on the final one. The
  * same three steps as IDF's bootloader_config_wdt() and bootloader_super_wdt_

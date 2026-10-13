@@ -1,5 +1,5 @@
 /* Starting the ESP32-P4's second HP core. 34.9,
- * plan/phase34_esp32p4_pll_bringup.md.
+ * .
  *
  * ## Why this milestone is a counter and nothing else
  *

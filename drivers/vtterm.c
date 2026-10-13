@@ -1,6 +1,6 @@
 /*
  * A terminal emulator for the 1-bpp screen -- 36.6,
- * plan/phase36_rp2350_lcd7_terminal.md §4.3. See drivers/vtterm.h for what it
+ *  See drivers/vtterm.h for what it
  * understands and why it is exactly that much.
  *
  * The cursor is an XOR underline (fbtext_cursor_xor()). It is taken off the
@@ -805,7 +805,7 @@ int vtterm_selftest(void) {
         REQ('L', SCREEN_LAYOUT_SPLIT_WIDE);
         unsigned c, r;
         screen_text_size(scr, &c, &r);
-        /* Phase 44: the canvas opens to the right of its terminal, a
+        /* the canvas opens to the right of its terminal, a
          * ribbon gap after the text's frame; 37.5a had it on the left.
          * D7 (47.6): the text share is 2/5 of the pair, 2/5 of 46 = 18 on
          * this 400-px screen -- under a terminal's 20-column minimum, so 20
@@ -873,7 +873,7 @@ int vtterm_selftest(void) {
                       "back to text with the line past the narrow split's edge intact (37.5a)",
                  full && cleared && back && titled);
 
-        /* Phase 44: Super+[ and ] ('w') step the focused window through
+        /* Super+[ and ] ('w') step the focused window through
          * the column presets and stop at either end; the canvas beside it
          * keeps its width. (37.5a's divider stepped the split through five
          * layouts instead.) D7 (47.6): the presets are shares of the pair --
@@ -903,7 +903,7 @@ int vtterm_selftest(void) {
         st_check(&cx, "44: Super+[ and ] step the focused window through 2/5, half, 2/3 of the pair and full, and stop",
                  wider && narrower);
 
-        /* Phase 44's swap: the terminal and its canvas trade places, and
+        /* swap: the terminal and its canvas trade places, and
          * back; a locked canvas holds its place and its layout until text
          * releases it; with no canvas the swap opens the half split. */
         REQ('X');

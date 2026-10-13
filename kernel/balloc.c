@@ -102,14 +102,11 @@ void *balloc_alloc(uint32_t size) {
      * check above already rejected anything that could overflow here. */
     uint32_t leaves_needed = next_pow2(size) / BALLOC_MIN_BLOCK;
 
-    /* The lock starts here, not at the top of the function (S5,
-     * plan/phase22_smp_locking_foundation.md). Everything above it either
-     * touches nothing shared or is balloc_reserve(), which calls
-     * palloc_pages_aligned() -- itself lock-taking since S4 -- and printk(),
-     * which can block. A spinlock_t across either would be the deadlock
-     * kernel/lock.h warns about; across both it would be two. Since phase 31
-     * Y2 that header does more than warn: a spinlock_t is a leaf, and taking
-     * one across a block is refused and named rather than left to this
+    /* The lock starts here, not at the top of the function.
+     * Everything above it either touches nothing shared or is balloc_reserve(),
+     * which calls palloc_pages_aligned() and printk(), which can block. A
+     * spinlock_t is a leaf: taking one across a blocking operation is refused
+     * rather than left to this
      * comment.
      *
      * From here down is pure tree arithmetic over g_longest[] with no call

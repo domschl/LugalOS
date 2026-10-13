@@ -1,8 +1,7 @@
 #ifndef LUGALOS_DRIVERS_DRIVER_TASK_H
 #define LUGALOS_DRIVERS_DRIVER_TASK_H
 
-/* What a driver is in this kernel, and how to write one (G5,
- * plan/phase30_driver_framework.md).
+/* What a driver is in this kernel, and how to write one.
  *
  * Read this file before writing a driver. It should answer the question
  * without your having to read nine existing ones; if it does not, that is a
@@ -115,8 +114,7 @@
  * 1. **printk() freely; never cprintf() from inside the serve callback.**
  *    This inverted, and the half that inverted is worth knowing. printk() is
  *    a ring append that reaches no blocking primitive from any context, so a
- *    serve callback may log as freely as anything else (Y5c,
- *    plan/phase31_concurrency_hierarchy.md). The *console* stream still
+ *    serve callback may log as freely as anything else. The *console* stream still
  *    reaches the uart task through chan_call(), so a callback writing it
  *    while a caller is blocked on this endpoint closes the cycle -- the
  *    original hazard, in the one place it survives.
@@ -202,7 +200,7 @@ typedef struct {
     chan_endpoint_t   *ep;
     int                pid;
 
-    /* Requests handed to the serve callback since boot. M4.5's verification
+    /* Requests handed to the serve callback since boot. Verification
      * question -- "is the task genuinely serving requests, or did every
      * caller silently fall back to direct access?" -- is answered by this
      * being nonzero and growing, and several tests assert exactly that. */
@@ -246,7 +244,7 @@ static inline chan_endpoint_t *driver_task_endpoint(const driver_task_t *dt) {
     return dt ? dt->ep : NULL;
 }
 
-/* --- The U-mode domain (G3, plan/phase30_driver_framework.md §2.2) ---------
+/* --- The U-mode domain ---------
  *
  * ## Read this before reaching for it
  *
@@ -254,8 +252,7 @@ static inline chan_endpoint_t *driver_task_endpoint(const driver_task_t *dt) {
  * *only* place a memory domain means anything -- PMP restricts privilege
  * levels below the one that programs it, and the RP2350 kernel runs in
  * M-mode, so a domain attached to a kernel-mode task confines nothing and
- * "activates" successfully while doing it (plan/phase12_microkernel_migration
- * .md's M5 opens by retracting its own scope over exactly this).
+ * "activates" successfully while doing it.
  *
  * So the choice is real isolation or a kernel-mode task, and it is a choice,
  * because U-mode takes things away that a serve loop may have been relying
@@ -273,7 +270,7 @@ static inline chan_endpoint_t *driver_task_endpoint(const driver_task_t *dt) {
  *     -fno-jump-tables list).
  *   - **It cannot call another driver's kernel .text.** Anything your task
  *     did by calling into a different driver has to move to the facade,
- *     which still runs in kernel mode. That is what M5 Phase 6 did to the
+ *     which still runs in kernel mode. That is what U-mode did to the
  *     RP2350 UART's USB mirror.
  *
  * A U-mode driver therefore cannot use driver_task_start()'s serve loop; it

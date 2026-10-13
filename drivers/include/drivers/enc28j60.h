@@ -5,11 +5,10 @@
 
 /*
  * Microchip ENC28J60 Ethernet controller on SPI0 -- R4,
- * plan/phase19_ip_stack_and_ethernet.md.
  *
  * MAC + PHY, no TCP anywhere in it: it hands `netif_t` whole Ethernet
  * frames and nothing more, which is exactly the seam net/stack.c already
- * expects (unlike phase 18's cancelled W5500, which terminated TCP in
+ * expects (unlike cancelled W5500, which terminated TCP in
  * silicon and needed no seam at all).
  *
  * Board: a HanRun V823 HR911105A module (the common ten-pin SPI breakout,

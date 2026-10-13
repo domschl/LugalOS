@@ -65,8 +65,7 @@ static bool        g_radio_at_us_ok;
  *
  * The decoder is deliberately *not* moved onto these. It stays sample-driven
  * because its quality score's glitch term is sample-based and is the one
- * measurement that varies continuously with antenna orientation (phase 17,
- * D5) -- converting it would invalidate every D5 number as a baseline. What
+ * measurement that varies continuously with antenna orientation ( * D5) -- converting it would invalidate every D5 number as a baseline. What
  * changes is only the *instant* a completed frame is stamped with: the
  * decoder still decides which edge is the minute mark, and this supplies when
  * that edge actually happened.
@@ -335,7 +334,7 @@ void dcf77_service_feed(uint64_t now_ms) {
             }
 #endif /* CONFIG_ENABLE_GPS */
         }
-        /* P1 (plan/phase24_dcf77_precision_and_ntp_server.md): the decoder's
+        /* P1: the decoder's
          * own mark, not this call's `now`.
          *
          * They are not the same instant and the difference is not small. A

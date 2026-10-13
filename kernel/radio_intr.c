@@ -1,4 +1,4 @@
-/* The kernel's side of the radio's interrupts (45.6, plan/phase45_esp32c6.md §4.5).
+/* The kernel's side of the radio's interrupts.
  *
  * The Wi-Fi blob asks for its interrupts through the OS table: "route this source to
  * CPU interrupt n" (`_set_intr`), "run f(arg) for interrupt n" (`_set_isr`), "enable

@@ -1,6 +1,5 @@
 /*
  * LugalOS driver: UART0 on the ESP32-P4 -- E2,
- * plan/phase27_esp32p4_bringup.md.
  *
  * The console, and in E2 the only wire this board has.
  *
@@ -489,7 +488,7 @@ static uint8_t uart_hw_getc_blocking(void) {
     return hw_uart_getc();
 }
 
-/* --- the uart driver task (M4, plan/phase12_microkernel_migration.md) ----
+/* --- the uart driver task ----
  *
  * The same wire protocol drivers/uart_16550.c serves, byte for byte:
  *
@@ -531,7 +530,7 @@ static bool uart_task_alive(void) { return driver_task_alive(&g_uart_task); }
  * The rule used to cover printk() too, because printk() reached the console
  * through this very endpoint: a caller blocked here while holding the output
  * lock, and this task taking the same lock to log, deadlocks against itself.
- * Y5c (plan/phase31_concurrency_hierarchy.md) made printk() a ring append
+ * Y5c made printk() a ring append
  * that reaches no blocking primitive, so that half is gone. The console
  * stream still ends at the wire, so the other half stands, and
  * drivers/driver_task.c's bracket plus console_lock() check it rather than
@@ -569,7 +568,7 @@ int uart_task_start(void) {
      * this point a task blocking on the console really sleeps. */
     arch_irq_enable(ESP32P4_CLIC_IRQ_UART0);
 
-    /* G4, plan/phase30_driver_framework.md: the same spec uart_16550.c uses,
+    /* the same spec uart_16550.c uses,
      * because these two are the same driver in every respect the framework
      * cares about -- a kernel-mode task, serving the same three opcodes, at
      * the same priority, for the same reason. */

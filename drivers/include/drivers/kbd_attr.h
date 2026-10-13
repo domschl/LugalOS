@@ -4,7 +4,7 @@
 #include "lugalos_config.h"
 
 /* Where the USB keyboard task's code and constant data live -- 36.8,
- * plan/phase36_rp2350_lcd7_terminal.md. The same arrangement as
+ * . The same arrangement as
  * drivers/lcdterm_attr.h: on the RP2350-LCD-7 the `kbd` task runs in U-mode
  * and can execute and read only its own section, `.kbdtext`
  * (linker/rp2350.ld); everywhere else the attributes are empty and the

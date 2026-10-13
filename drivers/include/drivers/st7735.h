@@ -4,8 +4,7 @@
  * pico-sdk hardware_spi/hardware_gpio calls replaced with the bare-metal
  * register style already established by drivers/spisd_rp2350.c. Chess-board
  * rendering (st7735_draw_board/draw_status, piece bitmaps) stays in
- * LugalChess; this is the generic canvas primitive only (H1,
- * plan/phase9_chess_computer.md), usable by any future display consumer.
+ * LugalChess; this is the generic canvas primitive only, usable by any future display consumer.
  */
 
 #ifndef LUGALOS_DRIVERS_ST7735_H
@@ -35,14 +34,14 @@ void st7735_draw_bitmap_mono(int x, int y, int w, int h, const uint16_t *bitmap,
 void st7735_draw_char(int x, int y, char c, uint16_t color, int size);
 void st7735_draw_string(int x, int y, const char *str, uint16_t color, int size);
 
-/* M4.5, plan/phase12_microkernel_migration.md, Part B: the driver as a task,
+/* the driver as a task,
  * reachable only via chan_call() -- every function above routes through it
  * when alive, falling back to direct SPI access otherwise. Must run after
  * sched_init(); st7735_init() itself stays a direct-hardware call (it runs
  * before a task table exists). Returns the task's pid, or -1. */
 int st7735_task_start(void);
 
-// M4.5 verify: how many chan_call()s the shared "st7735" task has served
+// Verify: how many chan_call()s the shared "st7735" task has served
 // since boot -- see drivers/spisd_rp2350.c's g_blk_calls comment.
 uint32_t st7735_task_call_count(void);
 

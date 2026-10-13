@@ -6,7 +6,6 @@
 #include <stdint.h>
 
 /* The I2C bus itself: one controller, one owning task, one generic transfer
- * (category E, plan/phase30_driver_framework.md).
  *
  * ## Why this is its own file
  *
@@ -45,7 +44,7 @@
  * at each site, because that is what those sites meant and it stopped being
  * what it said the moment a second board grew a controller: the ESP32-P4
  * spent E7 announcing "No I2C controller on this target" while answering a
- * bus scan (plan/phase27_esp32p4_bringup.md E7). A board that gains one adds
+ * bus scan. A board that gains one adds
  * itself here, once. */
 #if defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32P4) || defined(CONFIG_BOARD_ESP32C6)
 #define I2C_HAVE_CONTROLLER 1
@@ -89,7 +88,7 @@ void i2c_scan_bus(void);
 
 /* The owning task. Must run after sched_init(); every device keeps working
  * through direct hardware access if this fails or has not run yet, same as
- * every other M4.5 driver-task conversion. Returns the task's pid, or -1. */
+ * every other driver-task conversion. Returns the task's pid, or -1. */
 int  i2c_task_start(void);
 
 /* How many chan_call()s the task has served since boot -- see

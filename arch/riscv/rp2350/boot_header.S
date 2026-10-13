@@ -220,7 +220,7 @@ _reset_handler:
     wfi
     j 3b
 
-/* --- Core 1 entry (X3, plan/phase23_multicore_scheduling.md) ---
+/* --- Core 1 entry ---
  *
  * The bootrom jumps here after core 0 completes the SIO-FIFO launch
  * sequence (see smp_launch_core1() in kernel/smp.c), with sp already set to

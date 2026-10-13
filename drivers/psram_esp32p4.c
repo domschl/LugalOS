@@ -1,4 +1,4 @@
-/* The ESP32-P4's in-package PSRAM. 47.3, plan/phase47_esp32p4_lcd7b_ribbon.md.
+/* The ESP32-P4's in-package PSRAM. 47.3, .
  *
  * Both P4 boards carry an ESP32-P4NRW32: 32 MB of AP Memory hex-mode PSRAM in
  * the package, on its own MSPI controller (SPI_MEM_S, "MSPI2/3") -- not the
@@ -621,7 +621,7 @@ void psram_require(void) {
     if (g_up) return;
     for (;;) {
         cprintf("\n[PSRAM] HALTED: this persona is built for its %lu KB PSRAM, and %s. "
-                "Nothing else will start (plan/phase38_psram.md, S1). "
+                "Nothing else will start. "
                 "The board can still be reflashed over USB.\n",
                 (unsigned long)(CONFIG_PSRAM_BYTES / 1024), g_reason);
         task_sleep_ms(5000);

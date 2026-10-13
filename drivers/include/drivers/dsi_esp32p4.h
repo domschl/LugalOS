@@ -2,7 +2,7 @@
 #define LUGALOS_DRIVERS_DSI_ESP32P4_H
 
 /* The ESP32-P4's MIPI-DSI host and the LCD-7B's EK79007 panel, 47.4,
- * plan/phase47_esp32p4_lcd7b_ribbon.md. Built where the board file names the
+ * . Built where the board file names the
  * panel's reset pin (CONFIG_DSI_LCD_RST_GPIO) on v3 silicon. */
 
 #include "lugalos_config.h"

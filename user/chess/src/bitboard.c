@@ -1,6 +1,6 @@
 /*
  * Vendored from ~/gith/domschl/LugalChess (engine/src/bitboard.c), H4,
- * plan/phase9_chess_computer.md. Two changes from upstream:
+ * . Two changes from upstream:
  *   - dropped the unused `#include <time.h>` (nothing in this file calls
  *     time()/clock(); LugalOS has no <time.h> at all)
  *   - print_bitboard()'s hash line reformatted: cprintf has no %llx (a

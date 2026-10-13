@@ -2,7 +2,7 @@
 #define LUGALOS_DRIVERS_PSRAM_ESP32P4_H
 
 /* The ESP32-P4's in-package PSRAM (AP hex-mode, 32 MB on the P4NRW32), 47.3,
- * plan/phase47_esp32p4_lcd7b_ribbon.md. The same interface as
+ * . The same interface as
  * drivers/psram_rp2350.h, so kernel/main.c, the shell, Lisp and /proc use one
  * set of calls; drivers/include/drivers/psram.h picks the board's. */
 

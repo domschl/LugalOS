@@ -4,7 +4,7 @@
 #include <string.h>
 
 /* chibicc's working memory, taken from the heap only while it is compiling
- * (C6, plan/phase6_memory_and_processes.md).
+ *.
  *
  * It used to be eleven static arrays across four files -- token and node and
  * type pools, the macro table, the preprocessor buffer, the source and output
@@ -90,7 +90,7 @@ bool chibicc_pools_acquire(void) {
                     preprocess_pools_bytes() + main_pools_bytes() + 128u;
     g_pages = (want + (uint32_t)PAGE_SIZE - 1) / (uint32_t)PAGE_SIZE;
 
-    /* The bulk class (38.7, plan/phase38_psram.md): PSRAM on the LCD-7,
+    /* The bulk class: PSRAM on the LCD-7,
      * where five compiles of multi.c took ~165 ms against ~135 from SRAM. */
     g_arena = (uint8_t *)palloc_pages_bulk(g_pages);
     if (!g_arena) {

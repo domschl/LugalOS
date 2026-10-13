@@ -1,6 +1,6 @@
 # Per-board facts for the Waveshare RP2350-LCD-7 (non-touch), populated for
 # the **terminal / stand-alone workstation** persona
-# (plan/phase36_rp2350_lcd7_terminal.md).
+#.
 #
 # An RP2350**B** (QFN-80, GPIO0-47) on one board with a 7" 800x480 RGB panel
 # (ST7262), 16 MB flash, 8 MB PSRAM, a microSD socket, RS485, CAN and two
@@ -30,10 +30,10 @@ set(CONFIG_CLK_SYS_HZ 144000000)
 # showcase's cellular automaton, at about 20 KB -- five heap pages -- of SRAM.
 set(CONFIG_LISP_NODE_POOL 65536)
 
-# 38.5 (plan/phase38_psram.md, sign-off S2): the pools are BULK_BSS, so on
+# 38.5 (, sign-off S2): the pools are BULK_BSS, so on
 # this board they live in PSRAM and the 2048 above became 65 536 -- 1 MB of
 # nodes, 256 KB of GC work stack. Measured ~1.7x slower than SRAM per node
-# touched (plan/phase38_preliminaries.md §3), accepted for "basically
+# touched, accepted for "basically
 # unlimited" nodes. The node mark bitmap stays in SRAM: 8 KB at this size.
 # The string pool at eight times the RP2350 default of 384 slots (both
 # tiers: 2560 x 32 B and 512 x 128 B, 144 KB).
@@ -54,8 +54,8 @@ set(CONFIG_UART0_TX_GPIO  16)
 set(CONFIG_UART0_RX_GPIO  17)
 
 # The PSRAM, on GP0 as the QMI's second chip select (38.2,
-# plan/phase38_psram.md). **8 MB**: an APS6404-class part (KGD 0x5D, EID
-# 0x53), measured by aliasing in the phase 38 preliminaries -- this file said
+# ). **8 MB**: an APS6404-class part (KGD 0x5D, EID
+# 0x53), measured by aliasing in the preliminaries -- this file said
 # 2 MB until then, which is what the board's listing says too. Checked at
 # every boot; a size smaller than this is refused. Setting these makes the
 # persona *require* PSRAM: without it the board halts with the reason (S1).
@@ -102,7 +102,7 @@ set(CONFIG_SPI1_CS_GPIO   15)
 # probes find nothing and say so once. An RP2350 build needs *some* I2C bus
 # declared (drivers/i2c_bus.c), and this is the only one the board brings
 # out. I2C1, not I2C0: GP6/7 are I2C1 in the function table.
-# 47.12: the touch version's GT911 sits here at 0x5D (RST GP19, INT GP18,
+# the touch version's GT911 sits here at 0x5D (RST GP19, INT GP18,
 # neither needed: it answers after power-up and is polled). On the version
 # without touch the probe finds nothing and says so once.
 set(CONFIG_TOUCH_GT911 1)

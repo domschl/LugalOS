@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* Page allocator (B2, plan/phase5_distributed_design.md §5.4).
+/* Page allocator.
  *
  * B2 needs per-task kernel stacks, which means memory that can be handed out
  * *and given back*. What existed before could do neither safely: each arch's
@@ -21,8 +21,7 @@
  * Deliberately a *page* allocator, not a malloc: everything B2 needs is
  * page-granular (task stacks, and later page tables for B5's Sv39), and a
  * bitmap over a fixed page range is small enough to be obviously correct.
- * A general heap can come later if something actually needs one -- that
- * need arrived at M1 (plan/phase12_microkernel_migration.md); see
+ * A general heap can come later if something actually needs one -- see
  * kernel/balloc.h for the sub-page allocator built on top of this one.
  *
  * Rule 0 (§5.1): identical on both builds. NOMMU has no reason to allocate
@@ -50,8 +49,7 @@
  * moves it is visible rather than inferred. QEMU has 128 MB, far more than
  * anything here needs, so it is capped rather than fully mapped.
  *
- * Sourced from the generated per-board config (K1,
- * plan/phase7_kernel_config.md) rather than an #ifdef here -- the value
+ * Sourced from the generated per-board config  rather than an #ifdef here -- the value
  * itself, and which board gets which value, live in cmake/board-*.cmake. */
 #include "lugalos_config.h"
 #define PALLOC_MAX_PAGES CONFIG_PALLOC_MAX_PAGES
@@ -85,7 +83,7 @@ void *palloc_pages_aligned(uint32_t n, uint32_t align_pages);
  * never be freed into the fast bitmap or the other way round. */
 void  palloc_free(void *p, uint32_t n);
 
-/* ---- The bulk class (38.4, plan/phase38_psram.md §3.1) ------------------
+/* ---- The bulk class ------------------------------------------------------
  *
  * Memory that is large and tolerant of latency -- the Lisp heap, /ram0, the
  * editor's buffer -- asks for the bulk class; everything else (stacks, DMA
@@ -144,7 +142,7 @@ void palloc_stats(uint32_t *total_pages, uint32_t *free_pages);
 void palloc_extra_stats(uint32_t *peak_used_pages, uint32_t *largest_free_run);
 
 /* The allocation-side half of the live-stack invariant: "no page belonging to
- * a live task's stack is ever handed out". Phase 27 E7 / phase 31.
+ * a live task's stack is ever handed out". 
  *
  * The free side (kernel/sched.c's sched_check_free_range) catches a bad free
  * at the moment it happens, but only if the free is the thing that is wrong.

@@ -2,7 +2,7 @@
 #include "net/net_internal.h"
 #include <string.h>
 
-/* UDP (R2, plan/phase19_ip_stack_and_ethernet.md).
+/* UDP.
  *
  * Small enough to be nearly free once IPv4 exists, and it is what a later NTP
  * client (R6) or a DHCP client for a sensor node (§7) would be built on. Both

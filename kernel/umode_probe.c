@@ -1,4 +1,4 @@
-/* E5, plan/phase27_esp32p4_bringup.md: does hardware isolation actually
+/* Verifies that hardware isolation actually
  * isolate, on this board, today?
  *
  * The question is not answered by a driver running in U-mode. A driver that
@@ -25,7 +25,7 @@
  * Everything tagged UPROBE_UATTR is compiled into `.utext` -- the one page
  * `board_text_region()` grants U-mode execute on -- and this whole
  * translation unit is built with `-fno-jump-tables` (CMakeLists.txt). That is
- * not caution, it is the sixth bug from phase 12's M5: GCC compiles a switch
+ * not caution, GCC compiles a switch
  * with enough cases into a jump table stored in ordinary `.rodata`, which is
  * outside every granted region, and the disassembly check that greps for
  * `jal` targets does not catch it because the jump goes through a loaded
@@ -155,7 +155,7 @@ UPROBE_UATTR static void uprobe_umode_body(void) {
 
 /* Kernel-mode half: build the domain, then make the one-way jump.
  *
- * Same shape as every M5 driver task (drivers/tm1638_rp2350.c is the
+ * Same shape as driver tasks (drivers/tm1638_rp2350.c is the
  * smallest), including the refusal: if task_set_domain() cannot enforce the
  * domain, this does *not* enter U-mode and pretend. An unenforced "U-mode"
  * task would sail through the illegal access and report a pass. */
@@ -163,7 +163,7 @@ static void uprobe_task_body(void *arg) {
     (void)arg;
 
     /* A static domain reused by every run: the previous run's page tables
-     * are returned first (phase 40 review). mem_domain_init() zeroes the
+     * are returned first . mem_domain_init() zeroes the
      * struct, so on rv64 it used to drop them -- four pages a run, 14 -> 30
      * over four `usertest`s. Refused if a live task is still in it. */
     if (sched_domain_in_use(&g_uprobe_domain)) {

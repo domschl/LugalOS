@@ -5,7 +5,7 @@
 #include "kernel/printk.h"
 #include <stdbool.h>
 
-/* The console stream (B4, plan/phase5_distributed_design.md §5.4).
+/* The console stream.
  *
  * B0 gave the kernel log a ring and detachable sinks, and recorded a
  * limitation it could not fix at the time: printk() carried *two* unrelated
@@ -44,7 +44,7 @@ typedef struct {
  * state (the device was handed to something else), not an error. */
 void console_bind(console_putc_fn putc);
 
-/* --- The output lock (Y5d, plan/phase31_concurrency_hierarchy.md) ---------
+/* --- The output lock ------------------------------------------------------
  *
  * One message, one uninterrupted run. This is what printk_lock() used to be,
  * and it is a plain `ylock_t` now rather than a third hand-rolled blocking
@@ -104,7 +104,7 @@ typedef struct {
 
 void console_set_screen(const console_screen_t *screen);
 
-/* 37.1, plan/phase37_screen_layouts_and_apps.md §2.4: how many columns and
+/* Terminal dimensions: how many columns and
  * rows a program may use. False when the console cannot say (a serial line:
  * the far end's size is not known here), and the caller keeps its default. */
 bool console_size(unsigned *cols, unsigned *rows);
@@ -114,7 +114,7 @@ bool console_size(unsigned *cols, unsigned *rows);
  * the byte stream: a host terminal on the tee keeps its own title. */
 void console_set_title(const char *title);
 
-/* 37.3b, plan/phase37_screen_layouts_and_apps.md §2: a canvas request, as
+/* A canvas request, as
  * drivers/screen.h describes them, to whatever screen there is -- the
  * RP2350-LCD-7's panel, or a RAM screen elsewhere (drivers/ramscreen.c).
  * `reply` holds SCREEN_REPLY_LEN bytes. False when there is no canvas at
@@ -160,7 +160,7 @@ void console_hotkey(unsigned code);
  * panel. Swipes are hotkeys proper: CONSOLE_HOTKEY_FOCUS_LEFT/_RIGHT. */
 void console_touch_tap(unsigned x, unsigned y);
 
-/* 36.9, plan/phase36_rp2350_lcd7_terminal.md §4.4: where console input comes
+/* Where console input comes
  * from. Each source is polled by the console pump, in registration order,
  * into the one pushback ring every reader uses. The RP2350 has two today --
  * the serial UART (or its demux) and USB CDC -- and the RP2350-LCD-7 adds the
@@ -216,7 +216,7 @@ void console_puts(const char *s);
  * called it mid-message and the splices that produced. */
 void console_sync(void);
 
-/* --- Where the CRLF convention lives (C0, plan/phase6_memory_and_processes.md §6.1) ---
+/* --- Where the CRLF convention lives --------------------------------------
  *
  * A terminal needs CR before LF; a 9P frame must not have one inserted into
  * it. Those two facts decide the layer this belongs to, and it is not the one
@@ -281,7 +281,7 @@ int console_bind_device(const char *name);
 /* The name currently bound, or "(none)". */
 const char *console_bound_device(void);
 
-/* --- Ctrl-C interrupt (J2, plan/phase10_chess_completion.md) ---
+/* --- Ctrl-C interrupt -----------------------------------------------------
  *
  * General kernel infrastructure, not chess-specific -- the input-side
  * counterpart to this file's output stream above, added because chess's
@@ -315,7 +315,7 @@ const char *console_bound_device(void);
  * ahead did not merely fail to queue, it was consumed and destroyed by the
  * interrupt check itself. The push-back the old comment said did not exist
  * is now the few lines below it, and typing during a long command works.
- * (§"input-eater", plan/phase15_memory_reclamation.md.) */
+ * */
 bool console_interrupt_requested(void);
 
 /* Clears a latched interrupt. Call once after a poll loop has acted on a

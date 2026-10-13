@@ -6,7 +6,6 @@
 #include "drivers/sensor.h"
 
 /* Grove Multichannel Gas Sensor V1.0 (MiCS-6814).
- * Phase 46, plan/phase46_sensor_framework.md.
  *
  * Senses:
  * - Carbon Monoxide (CO) in 0.01 ppm (centi-ppm)

@@ -1,6 +1,5 @@
 /*
  * LugalOS Driver: RP2350 internal flash writes -- I7b,
- * plan/phase21_identity_and_authentication.md §3.2.
  *
  * One operation, deliberately: erase a 4 KB sector and program 4 KB into it.
  * That is the whole shape of what the identity store needs
@@ -36,7 +35,7 @@
  *
  * ## What the bootrom sequence breaks, and how it is put back (38.1)
  *
- * plan/phase38_psram.md §2 H3/H4 and plan/phase38_preliminaries.md §4,
+ *  H3/H4 and ,
  * measured on the RP2350-LCD-7. connect_internal_flash / flash_exit_xip /
  * flash_enter_cmd_xip reset **both** QMI windows to the ROM's own generic
  * read (serial 03h at CLKDIV 12) and flush the XIP cache:
@@ -221,7 +220,7 @@ static int flash_rom_op(uint32_t flash_offs, const uint8_t *data, qspi_state_t *
     /* X7: get the *other* core out of the XIP window first.
      *
      * Masking interrupts below protects this core. It does nothing for core
-     * 1, which -- once it joins the scheduler (phase 23 X7) -- is executing
+     * 1, which -- once it joins the scheduler -- is executing
      * flash-resident code at this instant, and would fetch into a window
      * that is about to stop answering. The failure is a hung board with
      * nothing left running to report it, which is why this is a handshake

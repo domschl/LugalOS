@@ -12,7 +12,7 @@
  * p9_link.c and 9p.c, so this constant is multiplied by ten in .bss -- 48 KB
  * at 4096, which on RP2350 is 12 of the heap's 62 pages, since .bss and the
  * heap are the same budget there (§2.3,
- * plan/phase15_memory_reclamation.md).
+ * ).
  *
  * Board-scoped for that reason, the same way user/lisp/lisp.c's pools and
  * search.c's MAX_SEARCH_PLYS are. It costs round trips, not correctness:
@@ -136,7 +136,7 @@ void p9_init(void);
 
 // Serialization & Deserialization -- both fully bounds-checked against
 // buf_size/len (see B11 in plan/completed/2026-08-07_review_and_remediation.md
-// and the A2 completion notes in plan/phase5_distributed_design.md): every
+// and the A2 completion notes in ): every
 // field read is checked against the remaining frame before it's consumed,
 // and every field written is checked against the remaining output space
 // before it's produced. Malformed input yields -1, never an out-of-bounds
@@ -149,7 +149,7 @@ int p9_deserialize(const uint8_t *buf, uint32_t len, p9_msg_t *msg);
 // handle API (fs/include/fs/vfs.h, A1), not a single shared buffer.
 //
 // `policy` says whether an attach arriving on THIS transport has to prove it
-// knows a key (N2, plan/phase18_networking_and_auth.md). It is a parameter
+// knows a key. It is a parameter
 // rather than a global because it is a property of the wire the request came
 // off, and every caller knows which wire that is: a local channel and an
 // attached cable do not require it, an Ethernet link does. Passing it
@@ -159,7 +159,7 @@ int p9_server_process(const uint8_t *req_buf, uint32_t req_len,
                       uint8_t *resp_buf, uint32_t resp_max,
                       p9_auth_policy_t policy);
 
-/* --- The auth gate (N2, plan/phase18_networking_and_auth.md §6) ---
+/* --- The auth gate ---
  *
  * 9P-native, through Tauth and an afid, because that is the extension point
  * the protocol already has for exactly this. The exchange:
@@ -177,8 +177,7 @@ int p9_server_process(const uint8_t *req_buf, uint32_t req_len,
  * authenticated identity gets the same namespace. See the plan's §1.
  */
 
-/* Where the keys live. I4, plan/phase21_identity_and_authentication.md
- * moved this node's own key off the SD card and into its identity record
+/* Where the keys live.  * moved this node's own key off the SD card and into its identity record
  * (kernel/idstore.h's IDSTORE_FIELD_DEVKEY, via kernel/identity.c's
  * node_devkey()) -- checked ahead of both files below in
  * p9_auth_key_for()'s search order, since it is now the primary,
@@ -270,7 +269,7 @@ bool p9_auth_have_keys(void);
 
 /* The key THIS node proves itself with, as a client -- console key, then
  * the identity record (I4). Exported for fs/p9_link.c's client-side auth
- * exchange (R3b, plan/phase19_ip_stack_and_ethernet.md). Deliberately
+ * exchange. Deliberately
  * separate from p9_auth_key_for() below since I5: "who may attach to me"
  * and "how do I prove who I am" stopped being the same question the
  * moment the grants list started carrying scope (§1.2) -- this function

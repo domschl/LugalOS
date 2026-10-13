@@ -17,7 +17,7 @@
 void esp32p4_icache_sync(void);
 #endif
 
-/* Loading and running a user program (B6, plan/phase5_distributed_design.md §5.4).
+/* Loading and running a user program.
  *
  * ## What changed, and why it is the point of the milestone
  *
@@ -177,7 +177,7 @@ static int reap_finished(void) {
 }
 
 /* Grants [first_page, first_page + count) of the image, in NAPOT pieces
- * (C4, plan/phase6_memory_and_processes.md).
+ *.
  *
  * A PMP region must be power-of-two sized and self-aligned, and a segment's
  * page count is under no obligation to be either. The standard decomposition
@@ -220,7 +220,7 @@ static int grant_napot_span(mem_domain_t *d, uintptr_t base, uint32_t first,
 }
 
 /* Lays out argc/argv at the top of the program's own stack page and leaves
- * `user_sp` below it (C3, plan/phase6_memory_and_processes.md).
+ * `user_sp` below it.
  *
  * The stack page, not the data page, for two reasons. The data page holds the
  * program's .data and .bss, and a program that happens to use all of it would
@@ -316,7 +316,7 @@ static user_proc_t *proc_alloc(uint32_t image_pages) {
      * k-page-aligned address, and on a small heap the alignment binds long
      * before the free page count does -- which is the whole reason C5 ran
      * before C4. */
-    /* The bulk class (38.7, plan/phase38_psram.md): on the LCD-7 the image
+    /* The bulk class: on the LCD-7 the image
      * runs from PSRAM through the XIP cache, under the same PMP regions --
      * a compute-bound program measured 279 ms there against 299 ms from
      * SRAM, which shares its bus with the panel's scan-out. Where the bulk
@@ -844,7 +844,7 @@ int elf_load_and_run_argv(const char *path, int argc, const char *const *argv) {
      *            then says what. RUNNING means it is genuinely still
      *            computing, on this hart or another.
      *   waitfor  the task it is waiting for, or -1. A number here turns
-     *            "stuck" into a named edge, which is what phase 31's graph is
+     *            "stuck" into a named edge, which is what graph is
      *            for.
      *   stack    how much of its stack it has touched. Near zero means it was
      *            created and never executed an instruction; anything
@@ -864,8 +864,7 @@ int elf_load_and_run_argv(const char *path, int argc, const char *const *argv) {
          * thing running, so nothing else drained the CDC TX ring for the
          * duration -- a spinning program's own output never appeared at
          * all, initially mistaken for a preemption failure rather than a
-         * missing poll. M4.5 (plan/phase12_microkernel_migration.md, Part
-         * B) closed this structurally instead: drivers/usb_cdc.c now runs
+         * missing poll. drivers/usb_cdc.c now runs
          * its own background task guaranteed a scheduled turn regardless of
          * what this loop does, so sched_yield() alone is enough for it (and
          * everything else) to get serviced. */
