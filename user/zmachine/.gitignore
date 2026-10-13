@@ -3,6 +3,11 @@
 z-data/*
 !z-data/README.md
 
+# Additional games downloaded from historicalsource
+additional_games/*
+!additional_games/README.md
+
 # Host development build artifact
 zork-host
 *.lzs
+
