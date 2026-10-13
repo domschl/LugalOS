@@ -1,4 +1,4 @@
-q# LugalOS Computer Algebra System (CAS) — Student & User Manual
+# LugalOS Computer Algebra System (CAS) — Student & User Manual
 
 LugalOS features a self-contained, exact Computer Algebra System (CAS) written in compact Scheme-like Lisp. It runs in freestanding, zero-floating-point environments across RISC-V microcontrollers (such as the RP2350 Hazard3 and ESP32-P4) and virtual machines.
 
