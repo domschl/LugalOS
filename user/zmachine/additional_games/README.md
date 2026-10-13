@@ -22,7 +22,6 @@ This directory holds additional interactive fiction games downloaded from the hi
 | **Enchanter** (Zork IV) (1983) | `enchanter.z3` | 111 KB | v3 | **Fantasy Magic** (Marc Blank & Dave Lebling): Set in the Zork universe (originally conceived as Zork IV). A novice magic user is sent by the Circle of Enchanters to defeat the evil warlock Krill using learned spell scrolls. | Supported |
 | **Starcross** (1982) | `starcross.z3` | 85 KB | v3 | **Hard Sci-Fi** (Dave Lebling): Asteroid prospector in deep space aboard the *Mined-Out* in 2186 discovers a massive, derelict alien cylinder ship in Solar orbit and must explore its complex biosphere. | Supported |
 | **Stationfall** (1987) | `stationfall.z3` | 129 KB | v3 | **Sci-Fi Adventure** (Steve Meretzky): The sequel to Planetfall, set five years later. Promoted to Lieutenant, you and Floyd are sent on a dull bureaucratic errand to Space Station Gamma Delta Gamma, only to find it deserted and silent. | Supported |
-| **Trinity** (1986) | `trinity.z4` | 261 KB | v4 | **Literary Historical Fantasy** (Brian Moriarty): Masterpiece spanning wartime London, a magical realm accessed via the Gnomon, and the New Mexico desert at the dawn of the atomic age. | v4 (Requires v4 engine) |
 
 ---
 
@@ -40,7 +39,6 @@ Use the unified fetch script in `user/zmachine/`:
 ./fetch-games.sh enchanter
 ./fetch-games.sh starcross
 ./fetch-games.sh stationfall
-./fetch-games.sh trinity
 ```
 
 The script verifies SHA-256 checksums automatically and is idempotent (already-verified files are preserved).
@@ -51,7 +49,6 @@ The script verifies SHA-256 checksums automatically and is idempotent (already-v
 
 - **Z-Machine Spec**: LugalOS implements the Version 3 (`.z3`) specification with flat 128 KB address space. All `.z3` titles (Planetfall, Hitchhiker's Guide, Enchanter, Starcross, Stationfall) are 100% compatible.
 - **Auto-Mapper Compatibility**: In Infocom Version 3 games compiled with ZIL, global variable `G00` (`HERE`) tracks the current room object number. The auto-mapper hook detects player movement and decodes room names dynamically, plotting the directed graph on the split-screen canvas in real time.
-- **Version 4 Notes**: *Trinity* is a 261 KB Version 4 (`.z4`) title. The LugalOS loader detects the Version 4 header byte and safely reports `unsupported Z-machine version (v3 only)`.
 
 ---
 

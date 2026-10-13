@@ -37,7 +37,6 @@ GAMES=(
   "enchanter|additional_games/enchanter.z3|bc9b99be980a1aa67c1aef89d4e5878f1f03edab62fe43ae23b2f7e2c41b1dc8|https://raw.githubusercontent.com/historicalsource/enchanter/master/COMPILED/enchanter.z3|Enchanter (Zork IV) (1983, Marc Blank & Dave Lebling) - Fantasy Magic [v3]"
   "starcross|additional_games/starcross.z3|c7dac463c3a51170f82d68e389202a9ab7cc385ebf2239b83e721986e9522768|https://raw.githubusercontent.com/historicalsource/starcross/master/COMPILED/starcross.z3|Starcross (1982, Dave Lebling) - Hard Sci-Fi [v3]"
   "stationfall|additional_games/stationfall.z3|55983c43da044e4b49206012c0fe536fbcd9aa1f291f60431d02b836e8cc9094|https://raw.githubusercontent.com/historicalsource/stationfall/master/COMPILED/s6.z3%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20|Stationfall (1987, Steve Meretzky) - Sci-Fi Adventure [v3]"
-  "trinity|additional_games/trinity.z4|8a647c645eee603ff469cd364277508a15f7b7f1c1363a0028ff28f6837d6149|https://raw.githubusercontent.com/historicalsource/trinity/master/COMPILED/tr.z4|Trinity (1986, Brian Moriarty) - Literary Historical Fantasy [v4]"
 )
 
 resolve_alias() {
