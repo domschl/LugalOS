@@ -25,6 +25,10 @@ Welcome to the **LugalOS User Manual**. This guide covers interactive usage, dai
 6. **[Environmental Sensors & Telemetry](sensors.md)**
    * Reading I2C temperature, humidity, pressure, and gas sensors.
    * Configuring autonomous telemetry nodes, filtering rules, and publishing over MQTT 3.1.1.
+7. **[Z-Machine & Interactive Fiction](zmachine.md)**
+   * Playing Infocom and modern Version 3 (.z3) interactive fiction classics.
+   * Real-time split-screen auto-mapper (`zmap`): dynamic graph discovery, room positioning, detail and zoom overview modes.
+   * Save slots (0–9), autosave, persistent sidecar `.map` files, and Lisp expression evaluation at the game prompt.
 
 ---
 

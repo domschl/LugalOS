@@ -78,6 +78,7 @@ From `lsh`, you can immediately invoke native applications:
 * `e [file]`: Opens the full-screen Emacs editor ([editors](doc/user/editors.md)).
 * `ed [file]`: Opens the teletype line editor ([editors](doc/user/editors.md)).
 * `chess`: Launches the chess computer UI ([chess](doc/user/chess.md)).
+* `zmachine [story]`: Launches the Z-machine Version 3 interactive fiction interpreter with canvas auto-mapping ([interactive fiction](doc/user/zmachine.md)).
 * `cc <src> <dst>`: Compiles a C11 source file on-device to a native RISC-V ELF binary using `chibicc` ([C programming](doc/dev/on_device/c_programming.md)).
 * `exec <elf>`: Loads and executes a RISC-V ELF binary confined to a U-mode PMP memory domain.
 

@@ -253,6 +253,7 @@ DOC_MAPPINGS: dict[str, str] = {
     "doc/user/chess.md": "tools/sd_root/help/chess.txt",
     "doc/user/cas.md": "tools/sd_root/help/cas.txt",
     "doc/user/sensors.md": "tools/sd_root/help/sensors.txt",
+    "doc/user/zmachine.md": "tools/sd_root/help/zmachine.txt",
     "doc/admin/presets.md": "tools/sd_root/help/presets.txt",
     "doc/admin/flashing.md": "tools/sd_root/help/flashing.txt",
     "doc/admin/networking.md": "tools/sd_root/help/networking.txt",

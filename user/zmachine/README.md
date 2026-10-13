@@ -58,6 +58,8 @@ prose/behavior-level.
 | `ztext.c`   | Z-character decoding, abbreviations, print          |
 | `zparse.c`  | `aread`: line input + dictionary tokenize           |
 | `zsave.c`   | Save/restore state serialization (LZS3 format)      |
+| `zmap.c/h`  | Real-time split-screen auto-mapper for v3 stories   |
+| `zwrap.c/h` | Whitespace boundary terminal word wrapper           |
 | `host_main.c` | Host test harness (the only libc-dependent file)  |
 | `games/`      | MIT-source games: `src/`, `build.sh`, committed `.z3` (see `games/README.md`) |
 | `pkgbuild/`   | Fixed AUR PKGBUILD for the ZILF/ZAPF toolchain        |
@@ -106,15 +108,22 @@ so the same sources build for RV32 firmware.
   `(zmachine "zork3")`.  `QUIT` or Ctrl-C
   (polled between instructions, the chess J2 mechanism; one typed at
   the game prompt ends the pending read) ends the session.
-  `save`/`restore` use `<story-name>.sav` next to the story file
-  (`ZORK1.SAV`) -- the story's extension replaced, not appended to,
-  because a two-dot name is not a valid FAT short name.  (The host
-  harness keeps `<story>.lzs`.)
+  `save`/`restore` prompt for slots 0–9 (saving `<story>_<slot>.sav` and
+  discovered map `<story>_<slot>.map`). Autosave checkpoints
+  `<story>_auto.sav` and `<story>_auto.map` upon exit and prompts to resume
+  on next launch.
+* **Canvas Auto-Mapper (`zmap.c`) & Word Wrapping (`zwrap.c`):** on display
+  terminals, `zmachine` starts in split-screen mode (`SCREEN_LAYOUT_SPLIT_HALF`)
+  with the game text cleanly wrapped on whitespace boundaries on the left, and
+  a live room graph on the right. Tracks room object ID via Global 0 (`HERE`),
+  resolves placement collisions, draws connection links and elevation badges.
+  `Tab` or `Ctrl-O` toggles between 8-char detail mode and compact 2-char zoom
+  overview mode.
 * **Lisp at the game prompt (chess's convention):** a line starting with
   `(` is collected by the front, evaluated by Lisp, and its value
   printed — the game's `aread` receives an empty line (rooms re-describe,
-  harmless in every v3 game).  `(screenshot)` at the prompt is the
-  working end-to-end test.
+  harmless in every v3 game).  `(zoom)` / `(map)` toggles map mode;
+  `(screenshot)` at the prompt saves an authentic PBM frame of both panes.
 * **Terminal semantics (fixed 2026-10-04/05):** the session is
   *parked* (`lisp_park()`, user/lisp/include/lisp.h): it releases
   `g_lisp_lock` for its duration, so another terminal's commands do not
