@@ -55,6 +55,13 @@ void llp_node_print_status(void);
  * reads its own as /proc/llp and its radio's as /c6/proc/llp. */
 uint32_t llp_node_proc_render(char *buf, uint32_t cap);
 
+/* Radio role, `llp bridge off|on`: off, the link carries 9P only and the
+ * network interface is this node's own (its stack, its DHCP lease on the
+ * station MAC) even with a host up -- the host reaches the network through
+ * this node's 9P server instead of through frames. On (the default), the
+ * interface is bridged whenever a host is up. */
+void llp_node_set_bridge(bool on);
+
 /* Radio role: Ethernet frames from the host go back to it instead of to the
  * radio (`llp loop on|off`), for llp_node_bench() on the host. */
 void llp_node_set_loop(bool on);

@@ -134,6 +134,7 @@ Checks of the channel itself:
   Command | Where | What it does
   --------------------------------------------------------------------------
   llp | either | role, link state, peer, counters, SDIO channel state (/proc/llp: the same as key=value)
+  llp bridge off / llp bridge on | C6 | off: the link carries 9P only, the interface is the C6's own (its stack, its lease on the station MAC); the host's wlan0 rests. On (the default): bridged whenever a host is up
   llp loop on / llp loop off | C6 | send the host's Ethernet frames back instead of to the radio
   llp bench [count] [size] | P4 | count frames of size bytes (default 1000 × 1514) to a C6 in loop mode, each checked on return; prints KB/s each way
   sdio | C6 | the SDIO slave: generation, timing, receive buffers, packets in and out

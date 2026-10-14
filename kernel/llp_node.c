@@ -519,11 +519,14 @@ static void drain(fq_t *q, uint8_t type, uint32_t now) {
  * (llp_node_offer_netif()), or the link coming up (radio_adopt()). */
 static spinlock_t g_own_lock = SPINLOCK_INIT;
 static netif_t   *g_stack_nif;     /* the interface the stack was given, if any */
+/* `llp bridge off`: the link carries 9P only, and the interface stays this
+ * node's own -- its stack, its address -- with a host up or not. */
+static volatile bool g_no_bridge;
 
 /* A host is there: the interface is bridged from now on. A radio with no host
  * stays a node of its own: it is a host's HELLO that makes it a network card. */
 static void radio_adopt(void) {
-    if (g_bridged || g_link.state != LLP_UP) return;
+    if (g_bridged || g_no_bridge || g_link.state != LLP_UP) return;
     netif_t *nif = NULL;
     uintptr_t f = spin_lock_irqsave(&g_own_lock);
     if (g_stack_nif) {
@@ -534,10 +537,37 @@ static void radio_adopt(void) {
     if (nif) printk("[LLP] bridging %s\n", nif->name);
 }
 
+void llp_node_set_bridge(bool on) {
+    if (on) {
+        g_no_bridge = false;                    /* radio_adopt() takes it at the next round */
+        cprintf("llp: bridging again once the link is up\n");
+        return;
+    }
+    netif_t *nif = NULL;
+    uintptr_t f = spin_lock_irqsave(&g_own_lock);
+    g_no_bridge = true;
+    if (g_bridged) {
+        nif = g_stack_nif = g_bridged;
+        g_bridged = NULL;
+    }
+    spin_unlock_irqrestore(&g_own_lock, f);
+    if (nif) {
+        /* The interface back to this node's own stack, with a lease of its own
+         * (the station MAC's). STATE now says no link, so the host's wlan0 rests. */
+        if (net_stack_attach(nif) == 0) {
+            net_task_start();
+            dhcp_start();
+        }
+        cprintf("llp: %s is this node's again; the link carries 9P only\n", nif->name);
+    } else {
+        cprintf("llp: the link carries 9P only\n");
+    }
+}
+
 bool llp_node_offer_netif(netif_t *nif) {
     bool taken = false;
     uintptr_t f = spin_lock_irqsave(&g_own_lock);
-    if (g_role == LLP_NODE_RADIO && g_link.state == LLP_UP && !g_bridged) {
+    if (g_role == LLP_NODE_RADIO && g_link.state == LLP_UP && !g_bridged && !g_no_bridge) {
         g_bridged = nif;
         taken = true;
     } else {
@@ -902,7 +932,8 @@ uint32_t llp_node_proc_render(char *buf, uint32_t cap) {
     if (g_role == LLP_NODE_HOST)
         PUT("radio_mounted=%s\n", g_c6_mounted ? "/c6" : "no");
     else
-        PUT("bridge=%s\nto_link=%u\nto_interface=%u\nloop=%s\n", g_bridged ? g_bridged->name : "none",
+        PUT("mode=%s\nbridge=%s\nto_link=%u\nto_interface=%u\nloop=%s\n", g_no_bridge ? "9p-only" : "bridge",
+            g_bridged ? g_bridged->name : "none",
             (unsigned)g_fwd_to_link, (unsigned)g_fwd_to_if, g_loop ? "on" : "off");
 #undef PUT
     return n < cap ? n : cap;

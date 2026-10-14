@@ -5620,6 +5620,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "llp") == 0) {
         llp_node_print_status();
         return;
+    } else if (strcmp(cmd_line, "llp bridge on") == 0 || strcmp(cmd_line, "llp bridge off") == 0) {
+        llp_node_set_bridge(cmd_line[12] == 'n');
+        return;
     } else if (strcmp(cmd_line, "llp loop on") == 0 || strcmp(cmd_line, "llp loop off") == 0) {
         llp_node_set_loop(cmd_line[10] == 'n');
         return;

@@ -1043,6 +1043,30 @@ without USB.
     RP2350 gets its own `wlan0` (frames, as the P4), with 9P for the C6's
     state; the 9P-only persona stays 49.9's, for the measurement. 49.8a holds
     either way.
+  * **Done 2026-10-14, on the LCD-7B** (the C6-Zero as the stand-alone
+    baseline). The 9P-only persona is `llp bridge off` on the radio: the
+    interface goes back to the C6's own stack (its DHCP lease on the station
+    MAC -- the same address the P4 had), STATE says no link so the P4's
+    `wlan0` rests, and LLP carries 9P only; `(mount-remote "p4" "llp")` on
+    the C6 gives `/p4`. `llp bridge on` hands it back. Measured with
+    `tests/hw/p9_paths.py` (same file, `/sd0/bench.bin` on the P4, 256 KB
+    written and read back three times, each read identical; 20 small reads),
+    results in §8:
+    * **Frames win on every axis measured.** Reads 108 vs 82 KB/s, writes
+      54 vs 46 KB/s, a small read 102 vs 218 ms: the forwarding hop over LLP
+      adds ~90 ms per four-RPC read (the C6's own server alone answers in
+      126 ms, the Zero's in 130 ms -- the hop, not the C6's server, is the
+      cost; its remote reads also go in 1 KB pieces, `p9_remote_read_chunk()`).
+    * **9P-only costs the C6 36 KB** of the 60 KB it has free while bridging
+      (its own stack's task and frame page, DHCP, the mount): 24 KB left.
+    * **A session through the C6's server dies with the C6**; one to the P4
+      read again 20 s after a C6 restart.
+    * Not measured: the C6's CPU load -- the kernel has no per-task CPU
+      accounting.
+    * **§1.5 stands:** frames (C) for the network path, 9P for the C6's
+      state. Nothing here argues for A1 beyond "it works": it is slower,
+      dearer in the C6's RAM and loses sessions. The tentative 49.10 shape
+      (the RP2350 with its own `wlan0`) follows from the same numbers.
 
 ### The RP2350 terminal
 
@@ -1076,8 +1100,12 @@ without USB.
 | CMD53 throughput (hardware slave, 4-bit, 256 B reads) | 1675 KB/s at 10 MHz (NANO); 2823 KB/s at 20 MHz (7B) | 49.4 |
 | LLP loopback over SDIO, each way (1514 B frames) | 3163 KB/s (7B, 20 MHz 4-bit, polled) | 49.6 |
 | C6 heap free, modem persona | — | 49.3 / 49.7 |
-| 9P file read host → P4: via `wlan0` / via C6 `/p4` proxy | — / — | 49.9 |
-| Session survives `radio rejoin`: frames / proxy | — / — | 49.9 |
+| 9P read of a 256 KB P4 file, host → P4: via `wlan0` (frames) / via the C6's `/p4` (9P-only) | 108 / 82 KB/s | 49.9 |
+| 9P write of the same file: frames / 9P-only | 54 / 46 KB/s | 49.9 |
+| Small 9P read (walk, open, read, clunk) of the P4's `/proc/version`: frames / 9P-only | 102 / 218 ms median | 49.9 |
+| Small 9P read from a C6's own server: the 7B's C6 / the stand-alone C6-Zero | 126 / 130 ms median | 49.9 |
+| C6 pages free (of 61), frames / 9P-only (its own stack, the `/p4` mount) | 15 (60 KB) / 6 (24 KB) | 49.9 |
+| Session survives a C6 restart: frames / 9P-only | yes / no | 49.9 |
 | UART1 LLP throughput, RP2350 ↔ C6-Zero | — | 49.10 |
 
 ## 9. Mapping from phase 45

@@ -296,9 +296,11 @@ static void net_task_body(void *arg) {
 }
 
 int net_task_start(void) {
+    static int pid = -1;
+    if (pid >= 0) return pid;                   /* one stack task, however often an interface comes */
     if (!g_net.nif) return -1;
 
-    int pid = task_create_sized("netsrv", net_task_body, NULL, 3);
+    pid = task_create_sized("netsrv", net_task_body, NULL, 3);
     if (pid < 0) printk("[Net] Could not start the stack task.\n");
     return pid;
 }
