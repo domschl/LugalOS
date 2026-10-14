@@ -6,8 +6,8 @@
  * Bump here; nowhere else in C source should hardcode a version number. */
 #define LUGALOS_VERSION_MAJOR 0
 #define LUGALOS_VERSION_MINOR 17
-#define LUGALOS_VERSION_PATCH 0
-#define LUGALOS_VERSION "0.17.0"
+#define LUGALOS_VERSION_PATCH 1
+#define LUGALOS_VERSION "0.17.1"
 
 /* Git-derived build identifier: "<commit-count>.<short-hash>", with a '+'
  * suffix when the tree had uncommitted changes. Generated per build by

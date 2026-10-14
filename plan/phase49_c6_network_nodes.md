@@ -1,7 +1,18 @@
 # Phase 49 — The C6 as the P4's network node: one channel, frames and 9P
 
-**Status: planned, not started. Written 2026-10-12; §1's verdict and all of
-§2's decisions confirmed by the owner the same day. The NANO goes first.** Expands phase 45's
+**Status: open (0.17.1, 2026-10-14).** 49.1–49.10 built and measured on
+hardware: LLP over USB, SDIO and UART; `wlan0` through a C6 on the LCD-7B, the
+NANO and the RP2350 terminal; `/c6` in the host's namespace; OTA updates over 9P
+with a C6 loader; frames versus 9P-only measured (§1.5 stands). Still open, in
+this order: on the 7B, 49.6's DAT1 card interrupt instead of polling, then
+throughput (≥ 5 MB/s) and the 10-minute SDIO soak with a reset mid-bench;
+49.7's Wi-Fi checks in `test_esp32p4.py`, `radio rejoin` under an open 9P
+session, the 30-minute soak, a cold power cycle of both chips; then on the NANO
+49.6 at 10 MHz, D4 at boot with a default-route rule for `eth0` beside `wlan0`,
+and 49.7's checks there; `p9sync.py` over TCP (49.7); `lcdterm_shots.py` for
+49.10.
+Written 2026-10-12; §1's verdict and all of §2's decisions confirmed by the
+owner the same day. Expands phase 45's
 "Expansion" milestones 45.12–45.17 (`plan/phase45_esp32c6.md` §5–§7), which
 were deliberately left as sketches until the stand-alone C6 worked. It works
 (45.1–45.11 done: WPA2-PSK, DHCP, authenticated 9P over Wi-Fi, MQTT sensor
@@ -1117,8 +1128,10 @@ without USB.
       down; the board's 5 V test point as the C6's supply kept the terminal
       from booting); pings 37 ms in the suite, but under load the C6's
       transmit bursts on that rail cost Wi-Fi quality (-73 dBm against -58 on
-      USB, pings up to 0.8 s). A C6 powered from its own USB charger (no
-      host: it still arms on UART0) is the setup to recommend.
+      USB, pings up to 0.8 s). **Decided (2026-10-14): two supplies** -- the
+      C6 on its own USB charger (no host: it still arms on UART0), only
+      GND/TX/RX to H7. Less tidy than one cable, but it works; a single
+      supply needs a stronger 3V3 than the terminal's.
     * `test_rp2350.py` gained the check (30/33 with the C6 on H7; the three
       failures -- PSRAM rates, `/ram0`, `Editor` -- fail on the pre-49.10
       build too, measured the same day; 31/33 without the C6, as the

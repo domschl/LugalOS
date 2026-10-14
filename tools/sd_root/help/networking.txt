@@ -155,7 +155,7 @@ namespace is the terminal's /c6, as on the P4 boards (section 4).
 
   H7 pin | Signal | C6-Zero pin
   --------------------------------------------------------------------------
-  1 | 3V3 | 3V3 (only while the C6 has no USB cable)
+  1 | 3V3 | not connected
   2 | GND | GND
   3 | RXD0 (GP17) | TX (GPIO16)
   4 | TXD0 (GP16) | RX (GPIO17)
@@ -171,12 +171,12 @@ esp32c6-zero.cmake: they must agree). The terminal hands its WLAN credentials
   * While LLP holds H7 the terminal's console stays on USB and the panel;
 lcd tee uart is refused. /proc/llp shows the wire, the rate and the UART's
 receive errors; /c6/proc/llp the C6's.
-  * Power. The C6 draws up to ~350 mA in transmit bursts. From H7's 3V3 it
-works without a USB keyboard on J7; with the keyboard (or a large capacitor
-added at the C6) the terminal's rail cannot carry both, and under load the
-C6's Wi-Fi suffers even without. The better supply is the C6's own USB-C from
-a charger -- with no USB host there it still arms LLP on UART0; connect only
-GND, TX and RX to H7 then.
+  * Two power supplies: the terminal from its own USB, the C6 from its
+own USB-C, on a charger. The C6 draws up to ~350 mA in transmit bursts, more
+than the terminal's 3V3 rail has to spare: from H7's 3V3 the C6 joins only
+with no USB keyboard on J7, and its Wi-Fi suffers under load even then. On a
+charger the C6 sees no USB host and arms LLP on UART0 as before; on a PC's USB
+port it would not (see below).
   * Debugging both ends: with the C6's USB attached to a PC it does not
     arm
 by itself, and the terminal's traffic on H7 arrives at the C6's console as
