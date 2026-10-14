@@ -33,6 +33,7 @@
 #include "drivers/watchdog.h"
 #endif
 #include "kernel/llp_node.h"
+#include "kernel/ota.h"
 #include "kernel/klog.h"
 #include "kernel/device.h"
 #include "net/ip.h"
@@ -2159,6 +2160,10 @@ static const char *g_dev_names[]  = { "uart", "null", "zero", "eeprom", "clipboa
     /* `reboot` or `download` written restarts the board (board_reset_later()) */
     "reboot",
 #endif
+#if defined(CONFIG_OTA)
+    /* updating this node's image (kernel/ota.h): the ctl file and the image */
+    "ota", "otaimage",
+#endif
 };
 #define DEV_COUNT ((int)(sizeof(g_dev_names) / sizeof(g_dev_names[0])))
 
@@ -2333,8 +2338,18 @@ int vfs_pread(int fd, void *buf, uint32_t count, uint64_t offset) {
             } else if (strcmp(h->rel_path, "eeprom") == 0) {
                 return at24c32_read((uint16_t)offset, (uint8_t *)buf, count);
             } else if (strcmp(h->rel_path, "null") == 0 || strcmp(h->rel_path, "zero") == 0 ||
-                       strcmp(h->rel_path, "reboot") == 0) {
+                       strcmp(h->rel_path, "reboot") == 0 || strcmp(h->rel_path, "otaimage") == 0) {
                 return 0;
+#if defined(CONFIG_OTA)
+            } else if (strcmp(h->rel_path, "ota") == 0) {
+                char st[512];
+                uint32_t len = ota_ctl_read(st, sizeof st);
+                if (offset >= len) return 0;
+                uint32_t k = len - (uint32_t)offset;
+                if (k > count) k = count;
+                memcpy(buf, st + offset, k);
+                return (int)k;
+#endif
             } else if (strcmp(h->rel_path, "clipboard") == 0) {
                 uint32_t len;
                 const char *d = clipboard_data(&len);
@@ -2392,6 +2407,12 @@ int vfs_pwrite(int fd, const void *buf, uint32_t count, uint64_t offset) {
 #if defined(CONFIG_BOARD_ESP32C6)
             } else if (strcmp(h->rel_path, "wlan") == 0) {
                 return radio_c6_ctl_write((const char *)buf, count);
+#endif
+#if defined(CONFIG_OTA)
+            } else if (strcmp(h->rel_path, "ota") == 0) {
+                return ota_ctl_write((const char *)buf, count);
+            } else if (strcmp(h->rel_path, "otaimage") == 0) {
+                return ota_image_write(buf, count, offset);
 #endif
 #if defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32C6)
             } else if (strcmp(h->rel_path, "reboot") == 0) {

@@ -257,6 +257,7 @@ DOC_MAPPINGS: dict[str, str] = {
     "doc/admin/presets.md": "tools/sd_root/help/presets.txt",
     "doc/admin/flashing.md": "tools/sd_root/help/flashing.txt",
     "doc/admin/networking.md": "tools/sd_root/help/networking.txt",
+    "doc/admin/updates.md": "tools/sd_root/help/updates.txt",
     "doc/dev/on_device/c_programming.md": "tools/sd_root/help/c_programming.txt",
     "doc/dev/on_device/lisp_scripting.md": "tools/sd_root/help/lisp.txt",
 }

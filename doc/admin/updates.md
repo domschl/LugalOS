@@ -1,0 +1,79 @@
+# Updating Nodes over 9P
+
+A node that supports updates takes a new image through two files in its own
+namespace, keeps the old image until the new one has proven itself, and goes
+back to the old one by itself if it does not. Because it is only 9P, any path
+to the node works: a host on the LAN, a P4 reaching its C6 through `/c6`, or
+the console's SLIP link.
+
+Supported so far: **the ESP32-C6** (`esp32c6`, `esp32c6-mini`). The P4 and the
+RP2350 follow (plan/phase52_remote_admin.md).
+
+## The files
+
+| File | Read | Write |
+| :--- | :--- | :--- |
+| `/dev/ota` | `board`, `chip`, `running` (slot `a`/`b`), `trial`, `fell_back`, `slot_a`/`slot_b` (build id or `empty`), `active`, `pending`, `tried`, `failed` (the boot record), `state` (`idle`, `receiving`, `received`, `committed`, `error`), `received`, `error` | `begin SIZE`, `commit`, `reboot`, `confirm`, `abort` |
+| `/dev/otaimage` | — | the update image, in order from offset 0, after `begin` |
+
+1. `begin SIZE`: the image's length in bytes.
+2. The image into `/dev/otaimage`. Its 256-byte header names the board and the
+   chip: an image for another board is refused when its header arrives, before
+   anything is erased. Then the slot this boot is *not* running from is
+   emptied and the image goes into it, one 4 KB sector at a time.
+3. `commit`: the node reads the slot back and checks its SHA-256 against the
+   header; only then does it write the slot's header (a slot cut off half-way
+   has none, and is never booted) and ask the next boot to try the slot once.
+4. `reboot`: the new image boots **on trial**. It confirms itself once the
+   board calls itself healthy (on a C6 beside a P4: the link to the P4 is up;
+   on its own: joined to its network) after 10 s. A trial that hangs, crashes
+   or does not confirm within 60 s is reset by a watchdog the loader armed
+   (a whole-chip reset: `last_reset=watchdog (RTC, ...)`), and the loader
+   boots the old slot again (`fell_back=yes`).
+
+`confirm` confirms by hand; `abort` drops an update in progress.
+
+## `tools/lota.py`
+
+```bash
+# The image from a build directory (also written by c6flash.py):
+uv run tools/lota.py image build/esp32c6-mini
+
+# The C6 beside an LCD-7B, through the P4's console and its /c6:
+uv run tools/lota.py push build/esp32c6-mini --p4 lcd7b --prefix /c6 --reboot --wait
+
+# The same over Wi-Fi, through the P4's own 9P server (authenticated; for a
+# session, a key set at the P4's console with `p9key HEX` will do):
+uv run tools/lota.py push build/esp32c6-mini --tcp 192.168.178.160 --keyfile KEYFILE \
+        --prefix /c6 --reboot --wait
+
+# A C6 on its own (the C6-Zero): its own 9P server. Its reboot ends the
+# session, so check the result on its console (`cat /dev/ota`):
+uv run tools/lota.py push build/esp32c6 --tcp 192.168.178.162 --keyfile KEYFILE --reboot
+
+uv run tools/lota.py status --p4 lcd7b --prefix /c6
+```
+
+`--wait` follows `/dev/ota` until the new image has confirmed (exit 0) or the
+node has fallen back (exit 2). `--break` sends an image with 64 KB of the
+kernel's code zeroed -- it passes every check, boots and dies, which is how the
+fall-back is tested. `--no-board-check` sends an image for another board, to
+test the node's own refusal. `--rate KB/S` slows the upload down, for cutting
+the power in the middle of one by hand.
+
+## The ESP32-C6's flash
+
+| Offset (C6-MINI) | What |
+| :--- | :--- |
+| `0x000000` | the loader (`arch/riscv/esp32c6/loader.c`), 2 KB: the image the boot ROM starts. Written only through the header pins (`c6flash.py`). |
+| `0x010000` | the boot records: two 4 KB sectors |
+| `0x020000` | slot A, 1.5 MB: the image header, the kernel's RAM half at +4 KB, its XIP half at +128 KB |
+| `0x1A0000` | slot B, the same |
+| `0x3F0000` | the identity sector |
+
+The C6-Zero's map is the same with 2 MB slots (`cmake/flash_layout_esp32c6.cmake`).
+The loader prints one line on the C6's UART0 at every boot, e.g.
+`[loader] slot B, 881.dbc5629e+ (trial)`.
+
+A kernel loaded into RAM by `c6run.py` was not started by the loader: it
+cannot update (`running=-`), and says so if asked.

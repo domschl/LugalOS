@@ -135,6 +135,13 @@ _start:
     /* Boot breadcrumbs: LP_AON store register 0 (0x600B1000) survives a reset, so after a boot that
      * says nothing -- no console, no LED -- `peek 600b1000` from a RAM-loaded kernel says how far
      * this one got: 0x10 entry, 0x11 watchdogs off, 0x12 flash mapped, then kernel/main.c's. */
+    /* What the loader passed (drivers/include/drivers/ota_esp32c6.h): a0 its
+     * magic, a1 the XIP half's flash address, a2 flags, a3 the slot. Kept in
+     * saved registers across the watchdog call, then handed to the mapping. */
+    mv s2, a0
+    mv s3, a1
+    mv s4, a2
+    mv s5, a3
     li t1, 0x600B1000
     li t2, 0x10
     sw t2, 0(t1)
@@ -142,6 +149,10 @@ _start:
     li t1, 0x600B1000
     li t2, 0x11
     sw t2, 0(t1)
+    mv a0, s2
+    mv a1, s3
+    mv a2, s4
+    mv a3, s5
     call esp32c6_xip_map
     li t1, 0x600B1000
     li t2, 0x12

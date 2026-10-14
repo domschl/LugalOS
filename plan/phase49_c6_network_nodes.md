@@ -927,6 +927,98 @@ without USB.
   generic files and `lota.py`; a wrong-board image is refused before any
   erase; a deliberately broken image (one that never confirms) is rolled back
   by itself; a power cut during the write leaves the old slot booting.
+  * **Done 2026-10-14 on the LCD-7B's C6.** Built as planned, with these
+    decisions on the way:
+    * **Files:** `/dev/ota` (ctl; `begin SIZE`, `commit`, `reboot`,
+      `confirm`, `abort`; status as `key=value`) and `/dev/otaimage`. The
+      SHA-256 is in the image header, not an argument of `begin`.
+    * **Nothing is erased before the header has arrived** and names this
+      board (from the board file: `esp32c6-mini`) and chip; the slot's header
+      sector goes first, the parts follow a 4 KB sector at a time (erase,
+      program, yield), and the header is written back only at `commit`,
+      after the SHA-256 of what is in flash matched. A slot cut off half-way
+      has no header and is never booted.
+    * **The loader** (`arch/riscv/esp32c6/loader.c`, 2.4 KB, at
+      `0x40870000`, on the ROM's stack) passes the slot to the kernel in
+      a0..a3; `esp32c6_xip_map()` maps that slot's XIP half. A RAM-loaded
+      kernel (`c6run.py`) is not loader-booted and cannot update. On a trial
+      the loader sets the RTC watchdog's own enable (60 s, system reset); the
+      kernel's early boot clears only the ROM's flash-boot bit, so it keeps
+      running until the confirm disarms it.
+    * **Health** on the C6: the LLP link up when the node runs LLP, else
+      associated when it has credentials, else just running; confirmed 10 s
+      in at the earliest, given up 10 s before the watchdog.
+    * Shared pieces: `kernel/ota.c` (generic), `kernel/ota_image.c` (format
+      and boot-record logic, also in the loader; `tests/host/ota_host.c`
+      under ASan/UBSan), `drivers/flash_esp32c6.c` (the identity store's
+      guarded ROM calls, now with a write guard: identity, boot records, the
+      slot not running), `drivers/ota_esp32c6.c`, `tools/lota.py`;
+      `c6flash.py` writes the loader, erases the records and puts the same
+      image into slot A.
+    * **Verified on hardware** (through the P4's console and `/c6`): 1 MB at
+      68 KB/s, Wi-Fi associated throughout the erases; trial on slot B
+      confirmed after 10 s; a `--break` image (64 KB of kernel code zeroed)
+      booted, died, was reset by the RTC watchdog (`last_reset=watchdog (RTC,
+      system)`) and the loader fell back by itself (`tried`, `failed`,
+      `fell_back=yes`); a C6 reset in the middle of a write booted the old
+      slot normally, with the new slot empty; an `esp32c6-zero` image was
+      refused at its header with the other slot untouched; a further update
+      after all of that confirmed. LCD-7B `test_esp32p4.py` 38/38 (the `/c6`
+      check reads `/c6/dev/ota` too).
+    * **Power cut, by hand:** the 7B's power pulled 524 KB into a 1 MB
+      update (`lota.py push --rate 4`, slot A's XIP half being written). Both
+      chips came back by themselves: the C6 reported `last_reset=brown-out`,
+      booted slot B without a trial, slot A `empty`; the P4 remounted `/c6`
+      and the radio rejoined. The next update confirmed.
+    * **Over Wi-Fi:** to the 7B's C6 through the P4's authenticated TCP
+      9P server (console key set with `p9key` for the session) and SDIO:
+      33 KB/s, confirmed; the 9P session to the P4 survived the C6's reboot
+      (which takes the P4's Wi-Fi with it for a few seconds).
+    * **The C6-Zero** (sensor persona: MQTT, BME280, its own IP): converted
+      once with `c6flash.py` (its identity, credentials and MQTT settings
+      kept), then updated over its own TCP 9P server, 40 KB/s, confirmed
+      after 10 s (joined Wi-Fi). `test_esp32c6.py --no-load` 21/21 on the
+      loader-booted kernel. It found two loader bugs:
+      1. **The ROM's chip-size record says 2 MB** until told otherwise, and
+         bounds-checks every read: the Zero's slot B at 0x220000 read as "no
+         image" and every update there fell back. The loader now sets the
+         record from the flash map first (the MINI's slot B header sits below
+         2 MB, which is why the 7B never showed it).
+      2. **The RTC watchdog's settings survive a system reset**, so the image
+         booted after a failed trial inherited the armed watchdog and was
+         reset every 60 s; and a watchdog *system* reset left the Zero's
+         USB-Serial/JTAG unusable from the host (EPROTO on every open, the
+         chip running on, a power cycle to recover). Now the watchdog does an
+         RTC (whole-chip) reset, as IDF's bootloader and panic handler do,
+         the loader disarms it on every non-trial boot, and so does the kernel
+         (`ota_board_boot()`). Rollback re-verified on both boards: the 7B's
+         C6 `rst:0x10 (LP_WDT_SYS)`, the Zero `last_reset=watchdog (RTC,
+         system and RTC)` with its USB re-enumerated; no further resets
+         (120 pings over two minutes).
+    * **Open, not in the update logic:** 2 of ~12 updates sent over the
+      P4's *console* (`--p4`, 9P on the console wire) died mid-way with
+      "connection closed while reading a SLIP frame", and the P4 had then
+      been reset (`power-on`, i.e. EN). Likely the failed session's port was
+      closed without parking it, so the next open reset the LCD-7B; not
+      confirmed. None over TCP.
+    * **The NANO** (2026-10-14): its C6 converted once over its own USB
+      (`c6flash.py --board nano`), its P4 flashed with the current build;
+      through the P4 (`llp host`, `lota.py push --p4 nano --prefix /c6`):
+      update 66 KB/s, confirmed; `--break` fell back by itself
+      (`last_reset=watchdog (RTC, system and RTC)`, USB intact).
+      `test_esp32p4.py --board nano` 38/38 (the `/c6` check now starts
+      `llp host` itself on a NANO). `test_esp32c6.py --board nano --no-load`
+      20/21: its USB LLP-host check now skips on a C6 that arms the radio
+      role at boot toward its P4 (49.7) -- this PC cannot play the host over
+      a USB that carries no LLP.
+    * **Open: the C6-MINI's memory in the radio role.** `kobjselftest` fails
+      on the NANO's C6 ("waiter 2 never started", "workers finished: 2 of
+      3"): with the radio role armed at boot, 6 pages (24 KB) of 61 are
+      free, and the role itself holds 24 KB (`memory_kb` in `/proc/llp`) plus
+      its pump's stack -- the selftest's third task finds no stack. The
+      stand-alone C6-Zero passes it. Not from 49.8 (nothing there holds pages
+      outside an update); the §7 risk "C6 RAM in the modem persona", made
+      real by 49.7's radio role at boot.
 
 ### Checking the verdict
 

@@ -28,3 +28,6 @@ The **LugalOS Administrator Manual** provides complete instructions for system p
    * FAT32 partition requirements on MicroSD cards.
    * Flashfs embedded ROM disk generation.
    * RAM disk sizing and formatting (`/ram0/`).
+7. **[Updating Nodes over 9P](updates.md)**
+   * A/B slots, a permanent loader, trial boots that confirm themselves or fall back.
+   * `tools/lota.py`: building an update image and sending it over any 9P path (e.g. to a P4's C6 through `/c6`).

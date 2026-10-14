@@ -421,6 +421,8 @@ static bool p9_new_peer(void) {
 
 p9_link_t *llp_node_p9_link(void) { return g_role != LLP_NODE_OFF ? &g_p9 : NULL; }
 
+bool llp_node_link_up(void) { return g_role != LLP_NODE_OFF && g_link.state == LLP_UP; }
+
 /* --- The pump --------------------------------------------------------------------- */
 
 static bool is_bench(const llp_frame_t *f) {

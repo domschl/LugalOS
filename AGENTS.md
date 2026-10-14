@@ -110,8 +110,10 @@ console, loading and reset all on it.
   ninja -C build/esp32c6
   tools/c6run.py --kernel build/esp32c6 --cmd "preempttest" --cmd-wait 8
   ```
-* Leave it running by itself (stage 2 at `0x0` + the OS image, verified, then reset):
-  `tools/c6flash.py build/esp32c6`
+* Leave it running by itself (the loader at `0x0`, the boot records erased, the build in slot A,
+  verified, then reset): `tools/c6flash.py build/esp32c6`. After that, new builds go over 9P
+  into the other slot, boot on trial and confirm or fall back by themselves
+  (`tools/lota.py push`, doc/admin/updates.md); the loader prints `[loader] slot X, BUILD` on UART0.
 * Test it: `cd tests/hw && uv run test_esp32c6.py --port <C6-Zero>` (loads the kernel itself;
   `--no-load` tests what is running). 21 checks (with WLAN credentials in the identity record the
   board joins by itself at boot and the radio-start tests watch that instead); skips when no board
@@ -241,9 +243,11 @@ for both roles by itself.
 * The 7B's C6 runs LugalOS (`esp32c6-mini`; factory image backed up in
   `~/Source/gith/esp/p4lcd7b-c6-factory-flash/`). Its only console is UART0 on header H4
   "C6-UART" (SH1.0: 1 IO9, 2 GND, 3 U0RXD, 4 U0TXD) through a CP2102 at 115200:
-  `tools/c6run.py --board lcd7b` / `c6flash.py --board lcd7b` (`c6-ports.env`). No USB pair, so
-  to reflash: `reboot download` at its console, then `c6flash.py` (`--before` reset is harmless,
-  the adapter has no DTR/RTS wired); afterwards `sdio reset` on the P4 boots it. A dead C6 needs
+  `tools/c6run.py --board lcd7b` / `c6flash.py --board lcd7b` (`c6-ports.env`). Update it over
+  9P through the P4: `uv run tools/lota.py push build/esp32c6-mini --p4 lcd7b --prefix /c6
+  --reboot --wait`. Through the header (the loader, or a C6 that does not boot): `reboot download`
+  at its console, then `c6flash.py` (`--before` reset is harmless, the adapter has no DTR/RTS
+  wired); afterwards `sdio reset` on the P4 boots it. A dead C6 needs
   H4 pin 1 to pin 2 and an `sdio reset`. That CP2102 reports serial 0001 like the NANO's console.
 * LLP over SDIO starts at boot on the 7B (C6: radio role; P4: host role, no Ethernet on this
   board): link up, `wlan0`, `/c6` mounted, and the P4's `wlan` credentials handed to

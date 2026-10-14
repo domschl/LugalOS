@@ -89,8 +89,12 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
     endif()
     add_compile_definitions(
         LUGALOS_C6_FLASH_SIZE=${LUGALOS_C6_FLASH_SIZE}
-        LUGALOS_C6_OSIMAGE_BASE=${LUGALOS_C6_OSIMAGE_BASE}
-        LUGALOS_C6_OSIMAGE_SIZE=${LUGALOS_C6_OSIMAGE_SIZE}
+        LUGALOS_C6_LOADER_BASE=${LUGALOS_C6_LOADER_BASE}
+        LUGALOS_C6_LOADER_SIZE=${LUGALOS_C6_LOADER_SIZE}
+        LUGALOS_C6_BOOTREC_BASE=${LUGALOS_C6_BOOTREC_BASE}
+        LUGALOS_C6_SLOT_A_BASE=${LUGALOS_C6_SLOT_A_BASE}
+        LUGALOS_C6_SLOT_B_BASE=${LUGALOS_C6_SLOT_B_BASE}
+        LUGALOS_C6_SLOT_SIZE=${LUGALOS_C6_SLOT_SIZE}
         LUGALOS_C6_IDENTITY_BASE=${LUGALOS_C6_IDENTITY_BASE}
         LUGALOS_C6_IDENTITY_SIZE=${LUGALOS_C6_IDENTITY_SIZE})
 elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
@@ -517,6 +521,17 @@ if(NOT DEFINED LUGALOS_BOARD_FILE)
         set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-esp32c6-zero.cmake")
     endif()
 endif()
+
+# The board's name, from its board file (cmake/board-esp32c6-mini.cmake ->
+# "esp32c6-mini"): what an update image names as the board it is for, and
+# what a node compares it with before it accepts one (kernel/ota.c).
+if(DEFINED LUGALOS_BOARD_FILE)
+    get_filename_component(LUGALOS_BOARD_ID "${LUGALOS_BOARD_FILE}" NAME_WE)
+    string(REGEX REPLACE "^board-" "" LUGALOS_BOARD_ID "${LUGALOS_BOARD_ID}")
+else()
+    set(LUGALOS_BOARD_ID "${LUGALOS_TARGET}")
+endif()
+add_compile_definitions(LUGALOS_BOARD_ID="${LUGALOS_BOARD_ID}")
 
 # the P4's L2 cache size has to
 # reach the linker as well as the C code.
@@ -1048,6 +1063,10 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
     # emptiness as the P4's E2: a board with none of those registers none of them.
     # the identity store, one flash sector (drivers/idstore_esp32c6.c).
     list(APPEND SOURCES drivers/usbjtag_esp32c6.c drivers/idstore_esp32c6.c drivers/wdt_esp32c6.c)
+    # its flash, written while executing from it, and updates through the
+    # namespace (kernel/ota.c) into the slot the loader did not boot.
+    list(APPEND SOURCES drivers/flash_esp32c6.c drivers/ota_esp32c6.c kernel/ota.c kernel/ota_image.c)
+    add_compile_definitions(CONFIG_OTA=1)
     # the hardware watchdog (drivers/wdt_esp32c6.c).
     # the board's one WS2812 (GPIO8) through the RMT pulse generator.
     list(APPEND SOURCES drivers/ws2812.c drivers/ws2812_esp32c6.c)
@@ -1335,13 +1354,36 @@ fs ${LUGALOS_P4_FLASHFS_BASE} ${LUGALOS_P4_FLASHFS_SIZE} flashfs.bin exact
 ")
 endif()
 
-# 45.4.2: the C6's flash manifest, for tools/c6run.py and tools/c6flash.py. One
-# definition of the map (cmake/flash_layout_esp32c6.cmake), read by the tool
-# rather than retyped on a command line -- the same discipline as the P4's
-# flash.manifest. Columns: name, base, reserved size, artifact.
+# The C6's flash manifest, for tools/c6run.py, tools/c6flash.py and
+# tools/lota.py. One definition of the map (cmake/flash_layout_esp32c6*.cmake),
+# read by the tools rather than retyped on a command line -- the same
+# discipline as the P4's flash.manifest. Columns: name, base, reserved size,
+# artifact. `osimage` is slot A's XIP half, where c6run's RAM-loaded kernel
+# finds its flash half; `parts` gives where an image's two parts sit in a slot
+# (drivers/include/drivers/ota_esp32c6.h); `board` and `chip` are what the
+# image header names.
 if(LUGALOS_TARGET STREQUAL "ESP32C6")
+    math(EXPR _c6_osimage "${LUGALOS_C6_SLOT_A_BASE} + 0x20000" OUTPUT_FORMAT HEXADECIMAL)
+    math(EXPR _c6_ossize "${LUGALOS_C6_SLOT_SIZE} - 0x20000" OUTPUT_FORMAT HEXADECIMAL)
     file(GENERATE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/flash.manifest
-         CONTENT "flash 0x0 ${LUGALOS_C6_FLASH_SIZE} -\nstage2 ${LUGALOS_C6_STAGE2_BASE} ${LUGALOS_C6_STAGE2_SIZE} lugalos-ram.img\nosimage ${LUGALOS_C6_OSIMAGE_BASE} ${LUGALOS_C6_OSIMAGE_SIZE} lugalos-xip.bin\n")
+         CONTENT "flash 0x0 ${LUGALOS_C6_FLASH_SIZE} -
+loader ${LUGALOS_C6_LOADER_BASE} ${LUGALOS_C6_LOADER_SIZE} lugalos-loader.img
+bootrec ${LUGALOS_C6_BOOTREC_BASE} 0x2000 -
+slot_a ${LUGALOS_C6_SLOT_A_BASE} ${LUGALOS_C6_SLOT_SIZE} lugalos-ota.img
+slot_b ${LUGALOS_C6_SLOT_B_BASE} ${LUGALOS_C6_SLOT_SIZE} -
+osimage ${_c6_osimage} ${_c6_ossize} lugalos-xip.bin
+parts 0x1000 0x20000 -
+board ${LUGALOS_BOARD_ID} esp32c6
+")
+    # The loader (arch/riscv/esp32c6/loader.c): its own small image, the one the
+    # boot ROM loads from offset 0. tools/c6flash.py turns it into the ROM's
+    # format, as it does the kernel's RAM half.
+    add_executable(lugalos-loader.elf arch/riscv/esp32c6/loader_entry.S arch/riscv/esp32c6/loader.c kernel/ota_image.c)
+    target_compile_options(lugalos-loader.elf PRIVATE -Os -fno-jump-tables)
+    target_link_options(lugalos-loader.elf PRIVATE -T${CMAKE_CURRENT_SOURCE_DIR}/linker/esp32c6_loader.ld
+                        -nostdlib -static -Wl,--no-relax -Wl,--build-id=none -Wl,--no-warn-rwx-segments)
+    set_target_properties(lugalos-loader.elf PROPERTIES LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/linker/esp32c6_loader.ld)
+    add_dependencies(lugalos.elf lugalos-loader.elf)
 endif()
 
 # UF2 converter: official uf2conv.py with RP2350 RISC-V family support

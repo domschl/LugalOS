@@ -62,16 +62,23 @@ python3 tools/p4flash.py --board nano --build build/esp32p4 --only boot,os --ver
 The ESP32-C6 uses the chip's native USB-Serial/JTAG controller (`303a:1001`). The kernel consists of two parts: `.text`/`.rodata` executing in place from flash at `0x42000000`, with remaining data living in SRAM.
 
 ### Development Loop (Load to RAM & Flash)
-To load without touching persistent stage-2 bootrom:
+To run a kernel without writing the loader or a slot's RAM half (the XIP half
+goes to slot A's, the RAM half is loaded over USB):
 ```bash
 ninja -C build/esp32c6
 tools/c6run.py --kernel build/esp32c6 --run
 ```
 
 ### Permanent Flash Programming
-To permanently flash the second-stage bootloader and OS image:
+The C6's flash holds a small permanent **loader** at `0x0` (what the boot ROM
+starts), two **boot records**, and two **slots**, each with one update image
+(see [Updating Nodes over 9P](updates.md)). Through the header pins (or the
+C6-Zero's USB), `c6flash.py` writes the loader, erases the boot records and
+puts the build into slot A:
 ```bash
 ninja -C build/esp32c6
 tools/c6flash.py build/esp32c6
+tools/c6flash.py build/esp32c6 --only slot     # slot A only, the loader kept
 ```
 The script opens the port with DTR high and RTS low (opening with DTR low resets the chip) and verifies written blocks.
+After that, new builds go over 9P with `tools/lota.py push`, without the header.

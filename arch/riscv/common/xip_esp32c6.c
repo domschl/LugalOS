@@ -26,6 +26,7 @@
 
 #include <stdint.h>
 #include "lugalos_config.h"
+#include "drivers/ota_esp32c6.h"
 
 #if defined(CONFIG_BOARD_ESP32C6)
 
@@ -59,7 +60,25 @@ typedef void     (*rom_void_u32_t)(uint32_t);
  * fault in whatever landed past the end, with no console to say so). */
 extern char _xip_pages[];
 
-BOOT_TEXT void esp32c6_xip_map(void) {
+/* Which slot this boot came from, for the update backend (drivers/ota_esp32c6.c).
+ * In .data, not .bss: it is written before the kernel clears .bss. */
+__attribute__((section(".data"))) c6_boot_info_t g_c6_boot = { 0, 0, 0, 0 };
+
+/* `magic` == OTA_C6_BOOT_MAGIC: the loader booted this kernel and names the
+ * XIP half to map; otherwise (a direct ROM boot, esptool's load-ram) slot A's. */
+BOOT_TEXT void esp32c6_xip_map(uint32_t magic, uint32_t xip_base, uint32_t flags, uint32_t slot) {
+    if (magic != OTA_C6_BOOT_MAGIC || xip_base % 0x10000u ||
+        (xip_base != (uint32_t)LUGALOS_C6_SLOT_A_BASE + OTA_C6_PART1_OFF &&
+         xip_base != (uint32_t)LUGALOS_C6_SLOT_B_BASE + OTA_C6_PART1_OFF)) {
+        magic = 0;
+        xip_base = (uint32_t)LUGALOS_C6_SLOT_A_BASE + OTA_C6_PART1_OFF;
+        flags = 0;
+        slot = 0;
+    }
+    g_c6_boot.magic = magic;
+    g_c6_boot.xip_base = xip_base;
+    g_c6_boot.flags = flags;
+    g_c6_boot.slot = slot;
     ROM_SPI_FLASH_BOOT_ATTACH();
 
     ROM_CACHE_DISABLE_ICACHE();
@@ -71,7 +90,7 @@ BOOT_TEXT void esp32c6_xip_map(void) {
     }
 
     uint32_t pages = (uint32_t)(uintptr_t)_xip_pages;
-    uint32_t first = (uint32_t)LUGALOS_C6_OSIMAGE_BASE >> 16;
+    uint32_t first = xip_base >> 16;
     for (uint32_t p = 0; p < pages; p++) {
         REG(MMU_ITEM_INDEX) = p;
         REG(MMU_ITEM_CONTENT) = (first + p) | MMU_VALID;

@@ -911,8 +911,8 @@ def test_c6_namespace(b: Board) -> tuple[str, bool, str]:
     """49.8a, plan/phase49_c6_network_nodes.md: the C6's state as files under
     /c6, and /c6 surviving a C6 restart.
 
-    Needs the LLP link up (the LCD-7B starts it at boot; on a NANO, `llp host`
-    by hand -- skipped otherwise). Reads the C6's /dev/wlan, /proc/llp,
+    Needs the LLP link up: the LCD-7B starts it at boot, a NANO gets `llp host`
+    here. Reads the C6's /dev/wlan, /proc/llp,
     /proc/radio, /proc/wdt and /proc/wlanscan through /c6, then restarts the C6
     through its own /dev/reboot: the P4 must mount the new C6 by itself (and,
     if the radio was associated, see it associated again with the credentials
@@ -934,8 +934,12 @@ def test_c6_namespace(b: Board) -> tuple[str, bool, str]:
         return False, out
 
     out = c.cmd("cat /proc/llp", deadline=8.0)
-    if "role=off" in out or "cannot" in out:
-        return name, True, "SKIPPED (no LLP host running on this board)"
+    if "cannot" in out:
+        return name, True, "SKIPPED (no LLP on this board)"
+    if "role=off" in out:
+        # A NANO starts the host role by hand (it has Ethernet too); after the LAN checks
+        # above, a second interface changes nothing they test.
+        c.cmd("llp host", deadline=8.0)
     ok, out = llp_state(30.0)
     if not ok:
         return name, False, f"link not up with /c6 mounted: {out.strip()[-300:]}"
@@ -948,6 +952,8 @@ def test_c6_namespace(b: Board) -> tuple[str, bool, str]:
         "/c6/proc/radio": r"blob=yes",
         "/c6/proc/wdt": r"armed=yes.*last_reset=",
         "/c6/proc/wlanscan": r"aps=\d+",
+        # 49.8b: started by the loader, from a slot, able to take an update
+        "/c6/dev/ota": r"board=esp32c6-mini.*running=[ab].*state=",
     }
     seen = {}
     for path, pattern in files.items():
@@ -983,7 +989,7 @@ def test_c6_namespace(b: Board) -> tuple[str, bool, str]:
         else:
             return name, False, "the restarted C6 did not associate again"
     rssi = re.search(r"rssi=(-?\d+)", seen["/c6/dev/wlan"])
-    return name, True, (f"5 files read; rebooted through /c6/dev/reboot, mounted again within {back_s:.1f} s"
+    return name, True, (f"{len(files)} files read; rebooted through /c6/dev/reboot, mounted again within {back_s:.1f} s"
                         f"{rejoined}; rssi {rssi.group(1) if rssi else '?'} dBm")
 
 

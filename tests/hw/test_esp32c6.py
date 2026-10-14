@@ -358,6 +358,11 @@ def test_llp_modem(c: Console):
     if not (ok and m and re.search(r"link: up", out)):
         return _t("LLP radio role (skipped: Wi-Fi not up)", True, "skipped")
     mac = bytes.fromhex(m.group(1).replace(":", ""))
+    # A C6 beside a P4 (the C6-MINI) arms the radio role at boot, over SDIO toward its P4:
+    # its USB carries no LLP, so this PC cannot play the host there.
+    ok, out = c.run("llp", r"llp: [^\n]*", 5)
+    if "llp: off" not in out:
+        return _t("LLP radio role (skipped: armed at boot toward the board's P4, not over USB)", True, "skipped")
     sys.path.insert(0, str(REPO_ROOT / "host" / "llp" / "src"))
     sys.path.insert(0, str(REPO_ROOT / "host" / "p9lib" / "src"))
     from llp.net import Host, ip_str

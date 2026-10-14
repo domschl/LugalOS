@@ -81,14 +81,25 @@ at 0x42000000, with remaining data living in SRAM.
 
 [Development Loop (Load to RAM & Flash)]
 
-To load without touching persistent stage-2 bootrom:
+To run a kernel without writing the loader or a slot's RAM half (the XIP half
+goes to slot A's, the RAM half is loaded over USB):
     ninja -C build/esp32c6
     tools/c6run.py --kernel build/esp32c6 --run
 
 [Permanent Flash Programming]
 
-To permanently flash the second-stage bootloader and OS image:
+The C6's flash holds a small permanent loader at 0x0 (what the boot ROM
+starts), two boot records, and two slots, each with one update image (see
+Updating Nodes over 9P [1]). Through the header pins (or the C6-Zero's USB),
+c6flash.py writes the loader, erases the boot records and puts the build into
+slot A:
     ninja -C build/esp32c6
     tools/c6flash.py build/esp32c6
+    tools/c6flash.py build/esp32c6 --only slot     # slot A only, the loader kept
 The script opens the port with DTR high and RTS low (opening with DTR low
-resets the chip) and verifies written blocks.
+resets the chip) and verifies written blocks. After that, new builds go over
+9P with tools/lota.py push, without the header.
+
+------------------------------------------------------------------------------
+SEE ALSO (Press 1..9 to jump, 'b' to go back):
+  [1] updates          - Updating Nodes over 9P

@@ -38,6 +38,7 @@
 #include "drivers/uart_net.h"   /* uart1_link_init(), N5 */
 #include "drivers/cyw43.h"    /* cyw43_autostart_task_start() */
 #include "kernel/radio_c6.h"
+#include "kernel/ota.h"
 #include "kernel/llp_node.h"    /* radio_c6_autostart() */
 #include "drivers/watchdog.h"   /* watchdog_start() */
 #include "kernel/taint.h"       /* the boot banner's taint, 45.9 */
@@ -658,6 +659,9 @@ void kernel_main(void) {
      * (kernel/llp_node.c): after the stack, so the radio's own interface
      * is attached until a host takes it over. */
     llp_node_autostart();
+#if defined(CONFIG_OTA)
+    ota_start();
+#endif
 #endif
 
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_GPS

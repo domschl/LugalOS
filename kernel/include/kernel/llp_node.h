@@ -45,6 +45,9 @@ bool llp_node_offer_netif(struct netif *nif);
 /* The 9P link over LLP, or NULL when the node is not running. */
 p9_link_t *llp_node_p9_link(void);
 
+/* True while the node runs and its link to the peer is up. */
+bool llp_node_link_up(void);
+
 /* `llp` in the shell: role, link state, peer, counters. */
 void llp_node_print_status(void);
 
