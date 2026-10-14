@@ -45,8 +45,10 @@ from __future__ import annotations
 
 import argparse
 import functools
+import hashlib
 import importlib.util
 import re
+import secrets
 import subprocess
 import sys
 import time
@@ -59,6 +61,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "host" / "p9lib" / "src"))
 import p9lib  # noqa: E402
 from p9lib import connect_tcp  # noqa: E402
+sys.path.insert(0, str(REPO_ROOT / "tests"))
+from mqttbroker import MqttBroker  # noqa: E402
 
 BUILD_DIR = REPO_ROOT / "build" / "esp32p4"   # --build overrides
 
@@ -993,6 +997,179 @@ def test_c6_namespace(b: Board) -> tuple[str, bool, str]:
                         f"{rejoined}; rssi {rssi.group(1) if rssi else '?'} dBm")
 
 
+def _wifi_credentials() -> tuple[str, str] | None:
+    """(ssid, 64-hex derived PSK) from ~/.config/lugalos/wifi.env, as test_esp32c6.py reads it,
+    or None. Never printed: only the derived key goes to the board."""
+    try:
+        text = (Path.home() / ".config" / "lugalos" / "wifi.env").read_text()
+    except OSError:
+        return None
+    ssid = re.search(r'ssid\s*=\s*"([^"]*)"', text)
+    psk = re.search(r'psk\s*=\s*("[^"]*"|[0-9a-fA-F]{64})', text)
+    if not ssid or not psk:
+        return None
+    key = psk.group(1)
+    if key.startswith('"'):
+        key = hashlib.pbkdf2_hmac("sha1", key.strip('"').encode(), ssid.group(1).encode(), 4096, 32).hex()
+    return ssid.group(1), key
+
+
+def _wlan0_addr(c: "Console") -> str | None:
+    """wlan0's address from /proc/net (one block per interface), or None until it has one."""
+    out = c.cmd("cat /proc/net", deadline=10.0)
+    for block in out.split("interface: ")[1:]:
+        if block.startswith("wlan0"):
+            m = re.search(r"address: (\d+\.\d+\.\d+\.\d+)", block)
+            if m and m.group(1) != "0.0.0.0":
+                return m.group(1)
+    return None
+
+
+def _c6_wlan(c: "Console") -> dict:
+    return kv(c.cmd("cat /c6/dev/wlan", deadline=10.0))
+
+
+def _wifi_up(b: Board, deadline_s: float = 90.0) -> tuple[str | None, str]:
+    """The LLP link up, the C6 joined and a lease on wlan0: the address, or None and why.
+
+    A NANO starts the host role by hand. Without credentials in the P4's identity record (which
+    the P4 hands its C6 by itself), the ones in ~/.config/lugalos/wifi.env go straight to the C6's
+    /dev/wlan, in its RAM only -- that line carries the key and is never echoed into a result."""
+    c = b.console_session
+    out = c.cmd("cat /proc/llp", deadline=8.0)
+    if "cannot" in out:
+        return None, "SKIPPED (no LLP on this board)"
+    if "role=off" in out:
+        c.cmd("llp host", deadline=8.0)
+    end = time.monotonic() + deadline_s
+    handed = False
+    while time.monotonic() < end:
+        llp = c.cmd("cat /proc/llp", deadline=8.0)
+        if re.search(r"state=up.*radio_mounted=/c6", llp, re.DOTALL):
+            w = _c6_wlan(c)
+            if w.get("state") == "joined":
+                addr = _wlan0_addr(c)
+                if addr:
+                    return addr, ""
+            elif not w.get("ssid") and not handed:
+                cred = _wifi_credentials()
+                if cred is None:
+                    return None, "SKIPPED (no WLAN credentials on the board or in ~/.config/lugalos/wifi.env)"
+                c.cmd('(write-file "/c6/dev/wlan" "join %s %s")' % cred, deadline=10.0)
+                handed = True
+        time.sleep(2.0)
+    w = _c6_wlan(c)
+    return None, f"no lease on wlan0 in {deadline_s:.0f} s (C6 wlan state={w.get('state')}, joins={w.get('joins')})"
+
+
+def _host_ip_towards(addr: str) -> str | None:
+    """This host's own address on the route to `addr`."""
+    try:
+        out = subprocess.run(["ip", "route", "get", addr], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"\bsrc (\d+\.\d+\.\d+\.\d+)", out)
+    return m.group(1) if m else None
+
+
+def test_wifi_through_c6(b: Board) -> tuple[str, bool, str]:
+    """49.7, plan/phase49_c6_network_nodes.md: the P4 on Wi-Fi through its C6.
+
+    Joined, a lease on wlan0 (the C6's station MAC), 20 echoes from this host, an authenticated 9P
+    session over TCP reading the P4's /proc/version and, through the P4's own server, the C6's
+    /c6/proc/version, and an MQTT message published on the P4 arriving at a broker on this host
+    (tests/mqttbroker.py, listening on the LAN for the length of the check). Up to two echoes may
+    go missing: this is a shared radio channel, not test_lan_node's wire."""
+    name = "Wi-Fi through the C6: lease, echoes, 9P over TCP, MQTT to this host (49.7)"
+    c = b.console_session
+    addr, why = _wifi_up(b)
+    if addr is None:
+        return name, why.startswith("SKIPPED"), why
+    r = subprocess.run(["ping", "-c", "20", "-i", "0.2", "-W", "2", addr], capture_output=True, text=True)
+    m = re.search(r"(\d+) received", r.stdout)
+    got = int(m.group(1)) if m else 0
+    rtt = re.search(r"= [\d.]+/([\d.]+)/", r.stdout)
+    if got < 18:
+        return name, False, f"{addr}: {got}/20 echoes"
+
+    key = secrets.token_hex(16)
+    c.cmd(f"p9key {key}", deadline=10.0)
+    try:
+        sess = p9lib.Session(connect_tcp(addr, 564, timeout=20.0), key=bytes.fromhex(key))
+    except OSError as e:
+        return name, False, f"{addr}: {got}/20 echoes, but 9P would not connect: {e}"
+    try:
+        p4v = sess.read("/proc/version").decode(errors="replace")
+        c6v = sess.read("/c6/proc/version").decode(errors="replace")
+    finally:
+        sess.close()
+    if "LugalOS" not in p4v or "blob(espressif-wifi)" not in c6v:
+        return name, False, f"9P reads look wrong: {p4v[:60]!r} / {c6v[:80]!r}"
+
+    host_ip = _host_ip_towards(addr)
+    if host_ip is None:
+        return name, False, f"no route from this host to {addr}"
+    broker = MqttBroker(host="0.0.0.0")
+    topic, payload = f"lugalos/test/{secrets.token_hex(4)}", f"wifi-{secrets.token_hex(4)}"
+    try:
+        c.cmd(f"mqtt connect {host_ip}:{broker.port}", deadline=20.0)
+        c.cmd(f"mqtt pub {topic} {payload}", deadline=15.0)
+        seen = broker.wait_for_publish(timeout=15.0)
+        c.cmd("mqtt disconnect", deadline=10.0)
+        pubs = [(p.topic, p.payload.decode(errors="replace")) for p in broker.publishes]
+    finally:
+        broker.close()
+    if not seen or (topic, payload) not in pubs:
+        return name, False, (f"{addr}: echoes and 9P fine, but the broker at {host_ip}:{broker.port} saw "
+                             f"{pubs or 'nothing'} ({broker.connections} connections; a firewall?)")
+    return name, True, (f"{addr}: {got}/20 echoes, {rtt.group(1) if rtt else '?'} ms; 9P read /proc/version "
+                        f"and /c6/proc/version; MQTT {topic} reached {host_ip}")
+
+
+def test_rejoin_keeps_9p(b: Board) -> tuple[str, bool, str]:
+    """49.7: a rejoin on the C6 does not end a 9P session on the P4.
+
+    A session over TCP from this host reads the P4's /proc/version, the C6 is told to rejoin
+    (`rejoin` to its /dev/wlan: the association dropped and made again), and once it has joined
+    again the *same* session reads once more. The P4's address and its TCP state live on the P4,
+    so nothing above the radio should notice more than a pause."""
+    name = "a rejoin on the C6 keeps an open 9P session on the P4 (49.7)"
+    c = b.console_session
+    addr, why = _wifi_up(b)
+    if addr is None:
+        return name, why.startswith("SKIPPED"), why
+    joins = int(_c6_wlan(c).get("joins", "0") or 0)
+    key = secrets.token_hex(16)
+    c.cmd(f"p9key {key}", deadline=10.0)
+    try:
+        sess = p9lib.Session(connect_tcp(addr, 564, timeout=30.0), key=bytes.fromhex(key))
+    except OSError as e:
+        return name, False, f"9P would not connect to {addr}: {e}"
+    try:
+        sess.read("/proc/version")
+        if "#t" not in c.cmd('(write-file "/c6/dev/wlan" "rejoin")', deadline=10.0):
+            return name, False, "the C6's /dev/wlan refused `rejoin`"
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < 60.0:
+            w = _c6_wlan(c)
+            if int(w.get("joins", "0") or 0) > joins and w.get("state") == "joined":
+                break
+            time.sleep(1.0)
+        else:
+            w = _c6_wlan(c)
+            return name, False, f"the C6 did not join again in 60 s (state={w.get('state')}, joins={w.get('joins')})"
+        back_s = time.monotonic() - t0
+        try:
+            again = sess.read("/proc/version").decode(errors="replace")
+        except Exception as e:  # noqa: BLE001
+            return name, False, f"rejoined after {back_s:.0f} s, but the open session failed: {e}"
+    finally:
+        sess.close()
+    if "LugalOS" not in again:
+        return name, False, f"the second read looks wrong: {again[:80]!r}"
+    return name, True, f"rejoined after {back_s:.0f} s; the open session read /proc/version again"
+
+
 def test_sd_card_present(b: Board) -> tuple[str, bool, str]:
     """35.5, plan/phase35_esp32p4_sdmmc.md.
 
@@ -1407,6 +1584,8 @@ TESTS = [
     test_node_identity_from_silicon,
     test_lan_node,
     test_c6_namespace,
+    test_wifi_through_c6,
+    test_rejoin_keeps_9p,
     test_sd_card_present,
     test_sdio_slot1,
     test_sd_bus_is_four_bit,

@@ -53,6 +53,9 @@
  * ETS_DW_GDMA_INTR_SOURCE), whose transfer-done event re-arms the DSI frame
  * every 16.6 ms -- IDF's mipi_dsi_dma_trans_done_cb(). */
 #define ESP32P4_CLIC_IRQ_GDMA   18u
+/* The SD/MMC host (matrix source 23, ETS_SDIO_HOST_INTR_SOURCE): only the
+ * SDIO slot's card interrupt is unmasked (drivers/sdio_esp32p4.c). */
+#define ESP32P4_CLIC_IRQ_SDHOST 19u
 
 /* Routes peripheral interrupt source `src` (an interrupt-matrix source
  * number from TRM Table 13.4-1) to CLIC interrupt `clic_id` on the calling

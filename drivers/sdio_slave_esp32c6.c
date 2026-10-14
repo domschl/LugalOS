@@ -8,7 +8,10 @@
  * bytes). The SLC names are the host's: SLC "tx" moves host -> slave, which
  * this file calls receiving; SLC "rx" moves slave -> host, sending.
  *
- * Polled, no interrupt: the LLP pump calls in, and the host polls too.
+ * Polled on this side: the LLP pump calls in. The host is told of every
+ * change it would otherwise poll for -- a packet offered, buffers loaded, a
+ * reset -- by the to-host bit LLP_SDIO_INT_CHANGED, raised after the change
+ * (tell_host()).
  *
  * ## Receiving
  *
@@ -96,6 +99,7 @@
 #define  SLC_LINK_STOP           (1u << 28)
 #define  SLC_LINK_START          (1u << 29)
 #define  SLC_LINK_RESTART        (1u << 30)
+#define SLC_INTVEC_TOHOST    (SLC_BASE + 0x05Cu)  /* write bit n: raise the host's to-host bit n */
 #define SLC_TOKEN1           (SLC_BASE + 0x064u)
 #define  SLC_TOKEN_WDATA_S       0
 #define  SLC_TOKEN_WR            (1u << 12)
@@ -201,6 +205,8 @@ void sdio_slave_set_timing(uint32_t t) {
     REG(SLCHOST_CONF) = v;
 }
 
+static void tell_host(void) { REG(SLC_INTVEC_TOHOST) = LLP_SDIO_INT_CHANGED; }
+
 /* --- Receive ring ------------------------------------------------------------- */
 
 static void token_inc(void) {
@@ -260,6 +266,7 @@ int sdio_slave_recv(uint8_t *buf, uint32_t cap) {
     }
     g_rx_head = (g_rx_head + n) % NRX;
     REG(SLC_INT_CLR) = SLC_INT_TX_DONE;
+    tell_host();                          /* the buffers are loaded again */
     if (!fits) { g_st.rx_too_big++; return -1; }
     g_st.rx_pkts++;
     g_st.rx_bytes += total;
@@ -298,6 +305,7 @@ int sdio_slave_send(const uint8_t *buf, uint32_t len) {
     /* Only now does the host learn there is something to read. */
     g_tx_total = (g_tx_total + len) & LLP_SDIO_LEN_MASK;
     REG(SLC_LEN_CONF) = g_tx_total | SLC_LEN_WR;
+    tell_host();
     g_tx_busy = true;
     g_st.tx_pkts++;
     g_st.tx_bytes += len;
@@ -316,6 +324,7 @@ static void channel_reset(void) {
     do { g_gen++; } while (g_gen == 0);
     g_shared[LLP_SDIO_SH_GEN] = g_gen;
     put_shared();
+    tell_host();
 }
 
 bool sdio_slave_poll(void) {

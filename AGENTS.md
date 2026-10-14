@@ -238,11 +238,15 @@ for both roles by itself.
   timeout).
 * SDIO toward the C6 (49.4): slot 1 of the SD/MMC host (GPIO14-19 via the matrix; C6 reset GPIO54,
   open-drain). `sdio probe [khz-hex]` (e.g. `sdio probe 2710` = 10 MHz), `sdio`, `sdio rd52 fn addr`,
-  `sdio rd53 fn addr len`, `sdio bench [kb fn addr len]`, `sdio reset`. 10 MHz on the NANO; the 7B also carries data at 20 MHz.
+  `sdio rd53 fn addr len`, `sdio bench [kb fn addr len]` (all hex), `sdio reset` (GPIO54), `sdio resync` (LLP's
+  channel reset). Both boards run it at 40 MHz in SDIO high speed (the microSD stays at 20 MHz on its own divider
+  of the shared 40 MHz base); the C6 raises the card interrupt and the P4's LLP pump waits for it.
+  `llp soak [s] [size]` is the loopback bench as a background task (C6: `llp loop on`; results in `dmesg`).
   The C6's SDIO slave hardware answers whatever the C6 runs. Flash the P4 with both halves
   (`--only boot,os`): an `os`-only flash pairs a new XIP half with an old RAM half and traps at boot.
-  With both CP2102s attached (the NANO console and a C6 UART adapter) their by-id links collide
-  (all serial "0001"), so `p4-ports.env` names the NANO's console by USB path (hub port 4.2).
+  With several CP2102s attached (the NANO console, the 7B's C6 on H4, the NANO's C6 UART0) their by-id
+  links collide (all serial "0001"), so `p4-ports.env` and `c6-ports.env` name them by USB path
+  (/dev/serial/by-path/...); check with a newline at 115200/921600 when the hub wiring changes.
   The 7B's other Type-C is its P4's USB-Serial/JTAG (flashable, but not the LugalOS console).
 * The 7B's C6 runs LugalOS (`esp32c6-mini`; factory image backed up in
   `~/Source/gith/esp/p4lcd7b-c6-factory-flash/`). Its only console is UART0 on header H4
@@ -257,10 +261,11 @@ for both roles by itself.
   board): link up, `wlan0`, `/c6` mounted, and the P4's `wlan` credentials handed to
   `/c6/dev/wlan`. `llp` shows both ends; `llp loop on` (C6) + `llp bench` (P4) measures the channel.
 * Test: `cd tests/hw && uv run test_esp32p4.py --board lcd7b --build ../../build/esp32p4-lcd7b`
-  (37/37 since 49.4's SDIO check; 47.13: backlight, blanking, USB keyboard, touch, RTC and the
+  (40/40 since 49.7's Wi-Fi and rejoin checks, which need this host's firewall to let the test's
+  MQTT broker take a connection; 47.13: backlight, blanking, USB keyboard, touch, RTC and the
   ribbon's hotkeys included, each skipping where a board lacks it; EMAC tests
   skip; a BME280 sits on the PH2.0 I2C header at 0x76). NANO: `uv run
-  test_esp32p4.py --board nano` (37/37 with 49.4's SDIO check, the 7B's skipping).
+  test_esp32p4.py --board nano` (40/40, the 7B's skipping).
 
 ---
 

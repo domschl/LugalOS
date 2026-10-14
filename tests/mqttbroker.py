@@ -131,7 +131,7 @@ class MqttBroker:
 
     def __init__(self, connack_rc: int = 0, split_headers: bool = False,
                  stall_after: int | None = None, keep_listening: bool = True,
-                 port: int = 0):
+                 port: int = 0, host: str = "127.0.0.1"):
         self.connack_rc = connack_rc
         self.split_headers = split_headers
         self.stall_after = stall_after
@@ -155,7 +155,8 @@ class MqttBroker:
         # port=0 lets the OS choose; a specific port is what a reconnect test
         # needs, since the client is already dialling the old one. SO_REUSEADDR
         # above is what makes re-binding it immediately possible.
-        self._sock.bind(("127.0.0.1", port))
+        # 127.0.0.1 for QEMU's slirp; a hardware test on the LAN passes "0.0.0.0".
+        self._sock.bind((host, port))
         # Backlog of 8, not 1: with a one-deep queue a retry that arrives
         # while the previous connection is still being accepted gets a reset.
         self._sock.listen(8)

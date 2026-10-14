@@ -136,11 +136,13 @@ Checks of the channel itself:
 | `llp` | either | role, link state, peer, counters, SDIO channel state (`/proc/llp`: the same as `key=value`) |
 | `llp loop on` / `llp loop off` | C6 | send the host's Ethernet frames back instead of to the radio |
 | `llp bench [count] [size]` | P4, RP2350 | `count` frames of `size` bytes (default 1000 × 1514) to a C6 in loop mode, each checked on return; prints KB/s each way |
+| `llp soak [seconds] [size]` | P4, RP2350 | the same for `seconds` (default 600) as a background task, so the console stays free; progress each minute and the result in the kernel log (`dmesg`). It pauses while the link is down and stops if the C6 restarts, whose bridge would put the frames on the air |
 | `llp host [baud]` | P4, RP2350 | the host role; on the RP2350 terminal on UART0 (H7) at `baud` (default the board file's) |
 | `llp radio uart [baud]` | C6 | the radio role on UART0 (the header's TX/RX) instead of the USB, at `baud` (default 115200) |
 | `sdio` | C6 | the SDIO slave: generation, timing, receive buffers, packets in and out |
 | `sdio timing 0..3` | C6 | the slave's edges (0: send and sample on the rising edge) |
 | `sdio`, `sdio probe`, `sdio reset` | P4 | the host side; `sdio reset` pulses the C6's `CHIP_PU` |
+| `sdio resync` | P4 | ask the C6 to restart LLP's SDIO channel (both counters, a new generation) at the next poll |
 
 Measured on the LCD-7B at 20 MHz, 4-bit: 3.1 MB/s each way with 1514-byte
 frames, nothing lost or damaged.

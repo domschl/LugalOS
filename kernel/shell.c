@@ -2532,6 +2532,9 @@ static void cmd_sdio(const char *arg) {
     } else if (strcmp(arg, "reset") == 0) {
         sdio_c6_reset(20);
         cprintf("sdio: the C6 was held in reset 20 ms and released\n");
+    } else if (strcmp(arg, "resync") == 0) {
+        sdio_llp_resync();
+        cprintf("sdio: LLP's channel starts over at the next poll\n");
     } else if (strncmp(arg, "rd52 ", 5) == 0) {
         const char *p = sdio_word(arg + 5, &a);
         if (!p || !sdio_word(p, &b)) { cprintf("usage: sdio rd52 <fn> <addr>\n"); return; }
@@ -2566,7 +2569,7 @@ static void cmd_sdio(const char *arg) {
         if (p && (p = sdio_word(p, &fn)) != NULL && (p = sdio_word(p, &addr)) != NULL) (void)sdio_word(p, &len);
         sdio_bench(kb, fn, addr, len);
     } else {
-        cprintf("usage: sdio [probe [khz-hex] | reset | rd52 fn addr | wr52 fn addr byte |\n"
+        cprintf("usage: sdio [probe [khz-hex] | reset | resync | rd52 fn addr | wr52 fn addr byte |\n"
                 "             rd53 fn addr len | bench [kb [fn [addr [len]]]]] (all hex)\n");
     }
 }
@@ -5633,6 +5636,12 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         const char *p = cmd_line + 9;
         uint32_t count = dec_word(&p), size = dec_word(&p);
         llp_node_bench(count ? count : 1000u, size ? size : 1514u);
+        return;
+    } else if (strncmp(cmd_line, "llp soak ", 9) == 0) {
+        /* llp soak seconds [size], decimal */
+        const char *p = cmd_line + 8;
+        uint32_t secs = dec_word(&p), size = dec_word(&p);
+        llp_node_soak(secs ? secs : 600u, size ? size : 1514u);
         return;
     } else if (strcmp(cmd_line, "llp host") == 0 || strncmp(cmd_line, "llp host ", 9) == 0) {
         /* llp host [baud]: a rate for a serial channel (the RP2350's UART0) */

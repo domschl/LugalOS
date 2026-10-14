@@ -99,8 +99,12 @@ static bool pkt_can_send(uint32_t len) { return sdio_llp_room(len); }
 static int  pkt_send(const uint8_t *buf, uint32_t len) { return sdio_llp_write(buf, len); }
 static void pkt_set_link(uint8_t up) { (void)up; }
 static void pkt_report(void) { sdio_llp_report(); }
-static bool pkt_up(void) { return sdio_llp_up(); }
 static uint8_t *pkt_tx_buf(unsigned i) { (void)i; return NULL; }   /* the node's own */
+/* The pump waits for the C6's card interrupt (sdio_llp_set_waker()). */
+#define PUMP_WAITS   1
+static bool chan_up(void) { return sdio_llp_up(); }
+static bool chan_wake_pending(void) { return sdio_llp_irq_pending(); }
+static void chan_set_waker(int pid) { sdio_llp_set_waker(pid); }
 /* The write is done when sdio_llp_write() returns. */
 #define PKT_DOUBLE   0
 #define ETH_SLOTS    8u
@@ -113,7 +117,6 @@ static uint8_t *pkt_tx_buf(unsigned i) { (void)i; return NULL; }   /* the node's
 #include <string.h>
 #define CHAN_PACKET  0
 static uint8_t *take(uint32_t bytes);
-static volatile int g_pump_pid = -1;
 static int  chan_read(uint8_t *buf, uint32_t max) { return uart_raw_read(buf, max); }
 static int  chan_write(const uint8_t *buf, uint32_t len) { return uart_raw_write(buf, len); }
 static bool chan_present(void) { return true; }
@@ -133,6 +136,11 @@ static void chan_claim(void) {
     if (!ring || uart_raw_open(ring, RAW_RX_BYTES, baud) != 0) cprintf("llp: UART0 did not open at %u baud\n", (unsigned)baud);
 }
 static void chan_service(void) {}
+/* The pump waits for the UART's receive interrupt (uart_raw_set_waker()). */
+#define PUMP_WAITS   1
+static bool chan_up(void) { return true; }
+static bool chan_wake_pending(void) { return uart_raw_pending(); }
+static void chan_set_waker(int pid) { uart_raw_set_waker(pid); }
 #define CHAN_STREAMS 0
 /* The host role only, on the RP2350's memory: half the QEMU host's Ethernet
  * queues; 9P frames are its 2 KB msize. */
@@ -160,6 +168,14 @@ static void chan_service(void) {}
 #define P9_TX_SLOTS  4u
 #define PUMP_PAGES   2u
 #endif
+
+#ifndef PUMP_WAITS
+#define PUMP_WAITS   0
+#endif
+/* A pump that waits (PUMP_WAITS) is woken by its channel's interrupt and by
+ * tx_put(); g_tx_seq tells it whether a frame was queued during its round. */
+static volatile int      g_pump_pid = -1;
+static volatile uint32_t g_tx_seq;
 
 /* --- Frame queues ----------------------------------------------------------------
  * Fixed slots, one producer side and one consumer side each. The receive
@@ -235,10 +251,9 @@ static bool fq_alloc(fq_t *q, uint32_t nslots) {
 static bool tx_put(fq_t *q, const uint8_t *d, uint32_t n) {
     uintptr_t f = spin_lock_irqsave(&g_tx_lock);
     bool ok = fq_put(q, d, n);
+    if (ok) g_tx_seq++;
     spin_unlock_irqrestore(&g_tx_lock, f);
-#if defined(CONFIG_BOARD_RP2350)
-    if (ok && g_pump_pid >= 0) task_unblock(g_pump_pid);   /* the pump may be waiting for work */
-#endif
+    if (ok && PUMP_WAITS && g_pump_pid >= 0) task_unblock(g_pump_pid);
     return ok;
 }
 
@@ -725,8 +740,8 @@ static void handle_events(uint32_t now) {
     }
 }
 
-/* Anything moved this round? A host that polls its channel (SDIO) sleeps a
- * millisecond when nothing did, rather than keep the bus and a core busy. */
+/* Anything moved this round? A pump that waits (PUMP_WAITS) does so only
+ * when nothing did. */
 static uint32_t activity(void) {
     const llp_stats_t *s = &g_link.st;
     return s->tx_frames + s->rx_frames + s->tx_link + s->rx_link;
@@ -737,6 +752,7 @@ static void pump(void *arg) {
     for (;;) {
         uint32_t now = now_ms();
         uint32_t before = activity();
+        uint32_t seq = g_tx_seq;
 #if CHAN_PACKET
         if (pkt_poll()) pkt_restarted();
 #endif
@@ -754,22 +770,24 @@ static void pump(void *arg) {
 #else
         chan_service();
 #endif
-#if CHAN_PACKET && defined(CONFIG_BOARD_ESP32P4)
-        if (activity() == before && !g_txp_len) { task_sleep_ms(pkt_up() ? 1u : 50u); continue; }
-#elif defined(CONFIG_BOARD_RP2350)
-        /* One core shared with the panel, USB and the shell: an idle pump
-         * waits to be woken -- by the UART's interrupt when bytes arrive, by
-         * tx_put() when a frame is queued -- or 20 ms for LLP's timers. Waking
-         * every millisecond instead cost the panel and the shell measurably. */
+#if PUMP_WAITS
+        /* Nothing moved: what could move waits on the peer -- bytes, a
+         * packet, credits, receive buffers -- and the channel's interrupt
+         * says when that changes; a new frame here comes with tx_put()'s
+         * wake. 20 ms bounds LLP's timers and a peer that changed without a
+         * word (a C6 that restarted, one that raises no interrupt). Polling
+         * every millisecond instead cost a core shared with a panel and a
+         * shell measurably. A channel that is down is probed every 50 ms. */
         if (activity() == before) {
+            if (!chan_up()) { task_sleep_ms(50u); continue; }
             task_prepare_block();
-            if (!uart_raw_pending() && !fq_used(&g_p9_tx) && !fq_used(&g_eth_tx))
-                task_block_until_ms(time_get_ms() + 20u);
+            if (!chan_wake_pending() && g_tx_seq == seq) task_block_until_ms(time_get_ms() + 20u);
             task_wait_done();
             continue;
         }
 #else
         (void)before;
+        (void)seq;
 #endif
         sched_yield();
     }
@@ -862,9 +880,9 @@ int llp_node_start(llp_node_role_t role) {
         cprintf("llp: could not start the pump task\n");
         return -1;
     }
-#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_LLP_UART_BAUD)
+#if PUMP_WAITS
     g_pump_pid = pump_pid;
-    uart_raw_set_waker(pump_pid);
+    chan_set_waker(pump_pid);
 #endif
     cprintf("llp: %s, session %08x, %u KB, waiting for the peer\n",
             role == LLP_NODE_RADIO ? "radio (bridges its network interface once a host is up)" : "host",
@@ -954,6 +972,78 @@ void llp_node_bench(uint32_t count, uint32_t size) {
             (unsigned)sent, (unsigned)size, (unsigned)g_bench_rx, (unsigned)g_bench_bad,
             (unsigned)(sent - g_bench_rx - g_bench_bad), (unsigned)(us / 1000u),
             (unsigned)(bytes * 1000000u / 1024u / us));
+}
+
+/* The soak: the bench as a task, for minutes, with the console free meanwhile
+ * (to reset the radio or the channel under it). It sends only while the link
+ * is up with the peer it started with: a radio that restarted has left loop
+ * mode, and its bridge would put the frames -- broadcasts -- on the air. */
+static uint32_t g_soak_s, g_soak_size;
+static volatile bool g_soak_running;
+
+static void soak_task(void *arg) {
+    (void)arg;
+    static uint8_t frame[NETIF_FRAME_MAX];
+    uint32_t size = g_soak_size;
+    memset(frame, 0xFF, 6);
+    memcpy(frame + 6, g_wlan.mac, 6);
+    frame[12] = (uint8_t)(BENCH_ETHERTYPE >> 8);
+    frame[13] = (uint8_t)BENCH_ETHERTYPE;
+    for (uint32_t i = 14; i < size; i++) frame[i] = (uint8_t)i;
+    g_bench_rx = 0;
+    g_bench_bad = 0;
+    uint32_t peer = g_link.peer_session, sent = 0, downs = 0;
+    bool was_up = true;
+    uint32_t t0 = now_ms(), next_report = t0 + 60000u;
+    const char *why = "done";
+    while (now_ms() - t0 < g_soak_s * 1000u) {
+        bool up = g_link.state == LLP_UP;
+        if (up && g_link.peer_session != peer) { why = "the radio restarted (new session): stopped"; break; }
+        if (!up) {
+            if (was_up) { downs++; printk("[LLP] soak: link down at %u s, waiting\n", (unsigned)((now_ms() - t0) / 1000u)); }
+            was_up = false;
+            task_sleep_ms(10);
+            continue;
+        }
+        if (!was_up) printk("[LLP] soak: link up again at %u s\n", (unsigned)((now_ms() - t0) / 1000u));
+        was_up = true;
+        if (tx_put(&g_eth_tx, frame, size)) sent++;   /* a full queue paces it */
+        else sched_yield();
+        if ((int32_t)(now_ms() - next_report) >= 0) {
+            next_report += 60000u;
+            uint32_t ms = now_ms() - t0;
+            printk("[LLP] soak %u s: %u sent, %u back intact, %u damaged, %u KB/s each way\n",
+                   (unsigned)(ms / 1000u), (unsigned)sent, (unsigned)g_bench_rx, (unsigned)g_bench_bad,
+                   (unsigned)((uint64_t)g_bench_rx * size / (ms ? ms : 1u) * 1000u / 1024u));
+        }
+    }
+    task_sleep_ms(500);                         /* the last frames back */
+    uint32_t ms = now_ms() - t0;
+    printk("[LLP] soak %s after %u s: %u frames of %u B sent, %u back intact, %u damaged, %u lost, %u link drops, %u KB/s each way\n",
+           why, (unsigned)(ms / 1000u), (unsigned)sent, (unsigned)size, (unsigned)g_bench_rx, (unsigned)g_bench_bad,
+           (unsigned)(sent - g_bench_rx - g_bench_bad), (unsigned)downs,
+           (unsigned)((uint64_t)g_bench_rx * size / (ms ? ms : 1u) * 1000u / 1024u));
+    g_soak_running = false;
+}
+
+void llp_node_soak(uint32_t seconds, uint32_t size) {
+    if (g_role != LLP_NODE_HOST || g_link.state != LLP_UP) {
+        cprintf("llp soak: needs `llp host` with the link up, and `llp loop on` on the radio\n");
+        return;
+    }
+    if (g_soak_running) { cprintf("llp soak: one is running\n"); return; }
+    if (size < 64u) size = 64u;
+    if (size > NETIF_FRAME_MAX) size = NETIF_FRAME_MAX;
+    g_soak_s = seconds;
+    g_soak_size = size;
+    g_soak_running = true;
+    if (task_create("llpsoak", soak_task, NULL) < 0) {
+        g_soak_running = false;
+        cprintf("llp soak: could not start the task\n");
+        return;
+    }
+    cprintf("llp soak: %u s of %u B frames; progress every minute in the kernel log\n",
+            (unsigned)seconds, (unsigned)size);
 }
 
 /* --- Status ------------------------------------------------------------------------ */

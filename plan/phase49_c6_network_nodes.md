@@ -3,14 +3,13 @@
 **Status: open (0.17.1, 2026-10-14).** 49.1–49.10 built and measured on
 hardware: LLP over USB, SDIO and UART; `wlan0` through a C6 on the LCD-7B, the
 NANO and the RP2350 terminal; `/c6` in the host's namespace; OTA updates over 9P
-with a C6 loader; frames versus 9P-only measured (§1.5 stands). Still open, in
-this order: on the 7B, 49.6's DAT1 card interrupt instead of polling, then
-throughput (≥ 5 MB/s) and the 10-minute SDIO soak with a reset mid-bench;
-49.7's Wi-Fi checks in `test_esp32p4.py`, `radio rejoin` under an open 9P
-session, the 30-minute soak, a cold power cycle of both chips; then on the NANO
-49.6 at 10 MHz, D4 at boot with a default-route rule for `eth0` beside `wlan0`,
-and 49.7's checks there; `p9sync.py` over TCP (49.7); `lcdterm_shots.py` for
-49.10.
+with a C6 loader; frames versus 9P-only measured (§1.5 stands). 49.6 done on
+both boards (card interrupt, 40 MHz, 10-minute soak, resets mid-stream; ~4 MB/s
+accepted in place of 5), 49.7's checks and the 7B's 30-minute soak done. Still
+open: a cold power cycle of the 7B; the NANO's LLP at boot with a failover rule
+(the stack on `eth0` while it has a carrier, else `wlan0`); `p9sync.py` over
+TCP (49.7); the RP2350 terminal re-tested with the shared pump wait, and
+`lcdterm_shots.py` for 49.10.
 Written 2026-10-12; §1's verdict and all of §2's decisions confirmed by the
 owner the same day. Expands phase 45's
 "Expansion" milestones 45.12–45.17 (`plan/phase45_esp32c6.md` §5–§7), which
@@ -707,6 +706,50 @@ without USB.
       mid-*bench*, ≥ 5 MB/s (a C6-side copy and the 1 ms poll
       are the first suspects), the card interrupt (DAT1) instead of polling,
       the NANO at 10 MHz, persona-at-boot (D4).
+  * **2026-10-14, both boards:**
+    * **The card interrupt.** The C6 raises its to-host bit 0 after each
+      change the host polls for (a packet offered, buffers loaded, a channel
+      reset); the P4 enables it (slave `0xDC`, CCCR IENM/IEN1), routes the
+      controller's card-1 SDIO interrupt (source 23, CLIC 19), and its pump
+      blocks until that or a queued frame wakes it, with 20 ms as the floor
+      (LLP's timers, a C6 that restarted silently or raises nothing). Clear
+      before read: the bit is cleared on the slave before the status is read,
+      so a change during the read raises it again. Idle status reads on the
+      7B: ~1000/s -> ~60/s. The RP2350's UART pump shares the same wait.
+    * **40 MHz, SDIO high speed, both boards.** The shared host divider is
+      now 160/4 = 40 MHz: the C6's slot takes it undivided (CCCR EHS set when
+      the card has SHS), the microSD stays at 20 MHz on its own divider
+      (verified: mount, `sdbench`, a 1 MB `fsbench` write verified, on both).
+      **The NANO carries data at 10, 20 and 40 MHz with our slave** -- 49.4's
+      "20 MHz does not" was the boot ROM's slave timing, not the board.
+    * **Loopback, 1514 B frames each way** (7B / NANO): polled at 20 MHz
+      2938 / -, interrupt at 20 MHz 3121 / 3066, at 10 MHz - / 1883, **at
+      40 MHz 4039 / 4095 KB/s** (64 B frames: ~1.05 MB/s, command-bound).
+    * **≥ 5 MB/s: not reached.** At 20 MHz it is out of reach on arithmetic
+      alone (4-bit at 20 MHz: ~4.8 MB/s each way with zero overhead). At
+      40 MHz the bus moves 61 MB in ~3.1 s of a 7.2 s run of 20000 frames;
+      ~44000 commands (~3 per packet, ~18 us each) explain under a second.
+      The rest is the C6's turnaround: it copies each packet out of its DMA
+      ring, loops it, copies it into its send buffer, and offers one packet at
+      a time. Cutting those copies is the next step if the figure matters.
+      **Decided (owner, 2026-10-14): ~4 MB/s each way is the measured result
+      and stands for *done when*** -- ~40x what Wi-Fi delivers through the C6
+      (~100 KB/s); no more SDIO tuning in this phase.
+    * **One CMD53 per packet, rounded up to whole blocks, is not this
+      slave's:** it stopped answering commands after the first one (a GPIO54
+      reset recovered it). IDF's host splits the same way we do; the binding
+      says so now (`llp_sdio.h`, `doc/dev/protocols/llp.md` §7.2).
+    * **Soak, 10 minutes each** (`llp soak 600`, a task, so the console stays
+      free): 7B 1,640,661 frames, NANO 1,663,834, every one back intact, 0
+      damaged, 0 lost, 0 link drops, ~4.04 / 4.10 MB/s each way throughout.
+    * **Resets mid-stream, both boards:** two `sdio resync` (the channel
+      reset) in a 90 s soak: 15-19 frames lost in flight, 0 damaged, no link
+      drop, traffic continued. A GPIO54 reset (`sdio reset`) mid-soak: two
+      status reads time out, the link drops and is up again with the C6's new
+      session within ~1 s, `/c6` remounted, credentials handed over again,
+      the soak stops by design (a restarted C6 has left loop mode); the next
+      20000-frame bench passes, and the microSD's shared data path never
+      needed a reset. No P4 reboot anywhere.
 
 ### Scenario 1 — networking for the P4 boards
 
@@ -807,6 +850,30 @@ without USB.
         reset that the next boot names.
     * **Next:** `p9sync.py` over TCP, MQTT, NTP; the Wi-Fi checks in `test_esp32p4.py`; the 30-minute
       soak; a cold power cycle (both chips from off).
+  * **2026-10-14:**
+    * **`test_esp32p4.py` gains two checks** (40 on each board):
+      `test_wifi_through_c6` -- the link and `/c6`, the C6 joined (handed
+      `~/.config/lugalos/wifi.env`'s derived key in RAM when the P4's record
+      has none), a lease on `wlan0`, 20 echoes from this host, authenticated
+      9P over TCP reading `/proc/version` and `/c6/proc/version`, an MQTT
+      message published on the P4 arriving at `tests/mqttbroker.py` on this
+      host (it now binds the LAN; this host's firewall must let it); and
+      `test_rejoin_keeps_9p` -- `rejoin` to `/c6/dev/wlan` with a 9P session
+      open: rejoined in 3 s, the same session read again. **7B 40/40, NANO
+      40/40** (the NANO's Ethernet checks skip without a cable).
+    * **30-minute soak on the 7B** (`test_wifi.py --soak-minutes 30`): 951/951
+      echoes, 317 authenticated sessions, 0 failed; neither LLP session
+      changed (no restart on either chip), the C6's join count unchanged (no
+      rejoin), no SDIO error in the P4's log.
+    * **Seen once, not reproduced:** right after the NANO's C6 had restarted
+      and rejoined, its pings ran 150 ms average with spikes to 8 s (22 in
+      flight) at a 0.3 s interval, and 80 ms at 0.05 s; no queue backed up on
+      either end. Ten minutes later both boards ran 20 ms side by side. The
+      AP had just set up Block Ack sessions (64-frame windows) with it: a hole
+      in a reorder window at a low packet rate is the suspect, in the blob.
+    * **The NANO's default route** is a stack question: `net/stack.c` serves
+      one interface (one address, one gateway), and `llp host` moves it from
+      `eth0` to `wlan0`. Side by side needs a multi-interface stack.
 
 ### Scenario 2 — full 9P integration
 

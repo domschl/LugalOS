@@ -70,4 +70,9 @@ void llp_node_set_loop(bool on);
  * checked when it comes back; prints the throughput (`llp bench`). */
 void llp_node_bench(uint32_t count, uint32_t size);
 
+/* Host role: the same for `seconds`, as a task (`llp soak`): the console stays
+ * free, progress goes to the kernel log each minute. It pauses while the link
+ * is down and stops if the radio restarts. */
+void llp_node_soak(uint32_t seconds, uint32_t size);
+
 #endif

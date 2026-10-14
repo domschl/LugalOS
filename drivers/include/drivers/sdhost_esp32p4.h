@@ -18,7 +18,7 @@ void sdhost_release(void);
 int sdhost_controller_init(void);
 
 /* The current card's clock, as close to `khz` as SDMMC_BASE_HZ / (2n) allows
- * (20 MHz undivided); returns what it got, in kHz. Under the lock. */
+ * (40 MHz undivided); returns what it got, in kHz. Under the lock. */
 uint32_t sdhost_set_clock(uint32_t khz);
 
 /* The current card's bus width: 4 bits or 1. Under the lock. */
@@ -61,6 +61,11 @@ int  sdhost_dma_wait(uint32_t tag, const char *what);
  * so the next command on either slot starts clean. The card's side of the
  * abort is the caller's. Under the lock. */
 void sdhost_data_reset(void);
+
+/* Card n's SDIO interrupt to the CPU (INTMASK bit 16+n and the controller's
+ * interrupt output), on or off; everything else stays masked, the drivers poll
+ * RINTSTS. Safe from an interrupt handler. */
+void sdhost_sdio_irq(uint32_t card, bool on);
 
 /* Raw status [31:16]: card n's SDIO interrupt is bit 16+n. Read, and clear. */
 uint32_t sdhost_raw_status(void);

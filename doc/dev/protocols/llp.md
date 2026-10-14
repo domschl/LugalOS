@@ -262,7 +262,8 @@ numbers both sides share; `drivers/sdio_esp32p4.c` is the host,
   has its own.
 * **The FIFO.** A transfer to function 1 address `0x1F800 − n` moves a packet
   of `n` bytes. Whole 512-byte blocks go in block mode, the rest in byte mode,
-  each command addressed by what is still to come.
+  each command addressed by what is still to come. Not one command rounded up
+  to whole blocks: the slave stops answering commands after it.
 * **Host → C6.** The slave loads receive buffers of 512 bytes (12 of them) and
   counts them in its token register (`0x44`, bits 27:16, cumulative mod 4096).
   A packet of `n` bytes uses ⌈n/512⌉. The host never writes more than the count
@@ -270,8 +271,19 @@ numbers both sides share; `drivers/sdio_esp32p4.c` is the host,
   A receiver that cannot take a data frame yet leaves it in the channel.
 * **C6 → host.** The slave offers one packet at a time and counts the bytes
   offered in `PKT_LEN` (`0x60`, bits 19:0, cumulative). The host reads the
-  difference to what it has read. It polls one status window, `0x44`–`0x73`,
+  difference to what it has read. It reads one status window, `0x44`–`0x73`,
   per round: tokens, `PKT_LEN` and the shared bytes.
+* **The card interrupt.** After every change the host would otherwise poll
+  for -- a packet offered, receive buffers loaded, a channel reset -- the slave
+  raises its to-host bit 0 (`SLCINTVEC_TOHOST`), which the host has enabled in
+  `0xDC` (and CCCR `0x04`, IENM and IEN1): the SDIO card interrupt on DAT1. The
+  host clears it (`0xD4`) *before* it reads the status window, so a change
+  during the read raises it again, and waits for it between rounds instead of
+  polling; it still reads the status every 20 ms, for a slave that restarted
+  without a word or raises no interrupt.
+* **Clock.** 40 MHz with the card in SDIO high-speed timing (CCCR `0x13`, EHS)
+  on the LCD-7B; the host enables high speed only for a clock above 25 MHz,
+  when the card supports it (SHS).
 * **Shared bytes** (`0x6C`–`0x73`, written by the slave): `'L' 'L' 'P'`, a
   generation, the radio's `link` and `rssi` (as in STATE), the number of
   receive buffers, the buffer size / 64.

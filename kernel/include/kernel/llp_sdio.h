@@ -11,8 +11,10 @@
  *
  * * Function 1 addresses below 0x200 are the slave's SLCHOST registers.
  * * The FIFO: a CMD53 to address LLP_SDIO_FIFO_END - n moves a packet of n
- *   bytes ("requested length"). A transfer longer than n (a whole block, a
- *   byte count rounded up) is zero-filled on reads and cut off on writes.
+ *   bytes ("requested length"), split as IDF's host splits it: whole blocks
+ *   while a block or more remains (each addressed FIFO_END - remaining), then
+ *   the rest in byte mode, rounded up to 4. A packet rounded up to whole
+ *   blocks in one CMD53 is not this slave's: it stops answering commands.
  * * Host -> slave: the slave loads receive buffers of LLP_SDIO_BUF bytes
  *   and counts them in TOKEN (cumulative, 12 bits). A packet of n bytes uses
  *   ceil(n / LLP_SDIO_BUF) of them; the host never writes more than the count
@@ -20,6 +22,13 @@
  * * Slave -> host: PKT_LEN counts the bytes the slave has offered
  *   (cumulative, 20 bits); the host reads the difference to what it has read.
  *   The slave offers one packet at a time.
+ *
+ * Slave -> host interrupt: the slave raises LLP_SDIO_INT_CHANGED (its
+ *   to-host bit 0, the SDIO card interrupt on DAT1) *after* each change the
+ *   host polls for -- a packet offered, receive buffers loaded, a channel
+ *   reset. The host enables it in INT_ENA, clears it in INT_CLR *before* it
+ *   reads the status, so a change during the read raises it again. A host
+ *   that never enables it polls, as before.
  *
  * A packet carries one or more LLP frames back to back, each (header +
  * payload) padded with zeros to a multiple of 4 bytes, at most LLP_SDIO_PKT_MAX
@@ -39,7 +48,10 @@
 #define LLP_SDIO_REG_PKT_LEN  0x060u    /* [19:0] bytes offered, mod 2^20 */
 #define LLP_SDIO_REG_SHARED   0x06Cu    /* the shared bytes below: CONF_W0, CONF_W1 */
 #define LLP_SDIO_REG_SLV_INT  0x08Du    /* host -> slave interrupt bits */
-#define LLP_SDIO_REG_INT_CLR  0x0D4u
+#define LLP_SDIO_REG_INT_CLR  0x0D4u    /* write 1 to clear INT_ST's bits */
+#define LLP_SDIO_REG_INT_ENA  0x0DCu    /* which of them raise the card interrupt */
+
+#define LLP_SDIO_INT_CHANGED  0x01u     /* the slave's state changed: poll */
 
 /* What the host reads in one CMD53 per poll: TOKEN through the shared bytes. */
 #define LLP_SDIO_STATUS_ADDR  LLP_SDIO_REG_TOKEN

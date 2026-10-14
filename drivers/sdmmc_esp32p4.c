@@ -44,6 +44,7 @@
 #include "drivers/sdmmc.h"
 #include "drivers/driver_task.h"
 #include "drivers/sdhost_esp32p4.h"
+#include "kernel/irq.h"
 #include "kernel/lock.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
@@ -175,11 +176,13 @@
  * is arithmetic on this, and a wrong value here is a card that initialises at
  * the wrong bus clock rather than one that fails. */
 #define SDMMC_SRC_HZ            160000000u
-/* The host-side divider both slots share, fixed since 49.4: 160/8 = 20 MHz,
- * which the microSD takes undivided and from which each card's own divider
- * (CLKDIV, 2n) makes the rest -- 400 kHz for identification is 20 MHz/(2*25).
- * Changing it per card would change the other slot's clock under it. */
-#define SDMMC_HOST_DIV          8u
+/* The host-side divider both slots share: 160/4 = 40 MHz, which the SDIO
+ * slot takes undivided and from which each card's own divider (CLKDIV, 2n)
+ * makes the rest -- the microSD's 20 MHz is 40/(2*1), 400 kHz for
+ * identification 40/(2*50). Changing it per card would change the other
+ * slot's clock under it. The drive and sample edges (PERI_CLK_CTRL02) are
+ * shared too, and count in this clock's period. */
+#define SDMMC_HOST_DIV          4u
 #define SDMMC_BASE_HZ           (SDMMC_SRC_HZ / SDMMC_HOST_DIV)
 
 /* --- IO_MUX and the GPIO matrix (TRM chapter 10) ------------------------
@@ -580,10 +583,9 @@ static int sdmmc_clock_update(void) {
  *
  * Two stages, as TRM §57.5 and IDF both describe them: a host divider of
  * 2..16 on PLL_F160M, then the controller's own divider, which divides by
- * 2*n (n = 0 bypasses it). The search below takes the smallest host divider
- * that lets the second stage reach the target, which keeps the intermediate
- * clock high and the quantisation fine: 400 kHz comes out as 160/2/(2*100)
- * and 20 MHz as 160/8 with the second stage bypassed. Both are exact. */
+ * 2*n (n = 0 bypasses it). The host divider is fixed (SDMMC_HOST_DIV), so
+ * only the card's own divider is chosen here: 40 MHz bypasses it, 20 MHz is
+ * n = 1, 400 kHz n = 50. All three are exact. */
 static uint32_t sdmmc_set_bus_clock(uint32_t want_khz) {
     uint32_t want_hz = want_khz * 1000u;
     uint32_t c = g_card;
@@ -972,10 +974,11 @@ int sdhost_controller_init(void) {
         return -1;
     }
 
-    /* Polled, start to finish: no interrupt is routed, INTMASK stays clear so
-     * nothing reaches the interrupt controller, and RINTSTS (which is raw and
-     * set regardless) is what this driver reads. The EMAC made the same call
-     * for the same reason --'s Z6. */
+    /* Polled, start to finish: INTMASK stays clear so nothing of the card's
+     * reaches the interrupt controller, and RINTSTS (which is raw and set
+     * regardless) is what this driver reads. The one interrupt ever unmasked
+     * is the SDIO slot's card interrupt (sdhost_sdio_irq()), which the SDIO
+     * driver turns on again after this. */
     REG(SD_INTMASK) = 0;
     REG(SD_CTRL) &= ~CTRL_INT_ENABLE;
     REG(SD_RINTSTS) = 0xffffffffu;
@@ -1035,7 +1038,7 @@ int sdhost_dma_wait(uint32_t tag, const char *what) { return sdmmc_dma_wait(tag,
 void sdhost_data_reset(void) {
     /* First let the data state machine finish: a transfer the card never
      * completes ends at the hardware data timeout (TMOUT, ~0.84 s at
-     * 20 MHz), which is longer than the drivers' own deadlines. Releasing the
+     * a 20 MHz card clock), which is longer than the drivers' own deadlines. Releasing the
      * controller before that is what lets the next transfer -- possibly the
      * other slot's write -- start into a busy data path. */
     uint64_t deadline = time_get_us() + 1500000u;
@@ -1053,6 +1056,17 @@ void sdhost_data_reset(void) {
     REG(SD_BMOD) = BMOD_SWR;
     REG(SD_IDSTS) = 0xffffffffu;
     REG(SD_RINTSTS) = 0x0000ffffu;
+}
+
+void sdhost_sdio_irq(uint32_t card, bool on) {
+    uintptr_t f = irq_save();
+    if (on) {
+        REG(SD_INTMASK) |= 1u << (16u + card);
+        REG(SD_CTRL) |= CTRL_INT_ENABLE;
+    } else {
+        REG(SD_INTMASK) &= ~(1u << (16u + card));
+    }
+    irq_restore(f);
 }
 
 uint32_t sdhost_raw_status(void) { return REG(SD_RINTSTS); }
