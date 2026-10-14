@@ -889,6 +889,12 @@ endif()
 
 if(LUGALOS_TARGET STREQUAL "RP2350")
     set(SOURCES arch/riscv/rp2350/boot_header.S ${SOURCES} drivers/uart_rp2350.c drivers/spisd_rp2350.c arch/riscv/rp2350/bootrom.c)
+    # LLP toward a radio on UART0, on a board whose file names the rate
+    # (CONFIG_LLP_UART_BAUD: the terminal's header H7 and a C6 beside it).
+    file(STRINGS "${LUGALOS_BOARD_FILE}" _llp_uart REGEX "^set\\(CONFIG_LLP_UART_BAUD")
+    if(_llp_uart)
+        list(APPEND SOURCES kernel/llp_node.c)
+    endif()
     # H1/H2: independently toggleable, per H3
     # -- the TM1638 keypad/7-segment/LEDs are useful without the display
     # attached at all, so they don't share a flag.
@@ -1242,6 +1248,11 @@ if(DEFINED LUGALOS_BOARD_FILE)
                 --check ${LUGALOS_SIZE_BASELINE}
         DEPENDS lugalos.elf
         USES_TERMINAL)
+endif()
+
+# Every build with an LLP node says so (kernel/llp_node.c: its shell commands, /proc/llp).
+if("kernel/llp_node.c" IN_LIST SOURCES)
+    add_compile_definitions(CONFIG_LLP=1)
 endif()
 
 # Executable Output

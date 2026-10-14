@@ -1084,6 +1084,45 @@ without USB.
   msize stay as they are; `wlan0` is `llp_node.c`'s host role. *Done when:*
   `test_rp2350.py` gains a Wi-Fi check through the C6-Zero, and the terminal's
   suite and `lcdterm_shots.py` are unchanged.
+  * **Done 2026-10-14, frames as tentatively decided** (the RP2350 has its
+    own `wlan0`; 9P for the C6's state). **Not UART1:** on the terminal UART1
+    (GP8/9) is the RS485 transceiver's; the link is **UART0 on header H7**
+    (GP16/17; pin 1 3V3, 2 GND, 3 RXD0, 4 TXD0), crossed to the C6-Zero's
+    TX/RX (GPIO16/17, its UART0), the C6 powered from H7's 3V3.
+    * **Both ends start at boot**, nothing typed: the terminal (a board file
+      with `CONFIG_LLP_UART_BAUD`) takes UART0 for LLP's host role at boot --
+      left to the console, the C6's boot log and LLP's frames arrived as
+      keystrokes; the C6 arms the radio role on UART0 when it boots with no
+      USB host (no start-of-frame on its USB in 20 ms, 2 s after boot). Then
+      `/c6`, the credentials from the terminal's identity record, the join,
+      a lease: ~11 s from power-on.
+    * **921600 baud**, in both board files (LLP does not negotiate it).
+      Loopback bench, 1500-byte frames: 9 KB/s each way at 115200, 69 at
+      921600, 103 at 2 Mbaud (a CRC error per ~400 frames), 3 Mbaud overran
+      the C6's FIFO.
+    * **Found:** (1) the C6 polled UART0 and lost half of the 1500-byte
+      frames when its pump waited behind the radio: it drains in an interrupt
+      now (line 20, source 43). (2) The RP2350's PL011 FIFO is 32 bytes: its
+      receive is an interrupt-fed 8 KB ring (`drivers/uart_raw.h`). (3) On the
+      RP2350, `uart_putc()`'s batch is also the USB console's mirror, and the
+      console's poll is what flushes it: raw mode keeps both, minus UART0. (4)
+      An LLP pump that only yields, or sleeps 1 ms, cost the panel and the
+      shell enough to fail timing checks: it blocks until the UART's
+      interrupt or a queued frame wakes it, or 20 ms.
+    * **Power is the limit, not the link.** On USB power the C6 bridged
+      cleanly at 921600 under load (25 ms pings, 9P 33/22 KB/s read/write
+      to the terminal over Wi-Fi). From H7's 3V3 it works with no USB
+      keyboard on J7 and no extra capacitor (the keyboard -- with its
+      battery and hub -- or a 470 µF capacitor's inrush took the joins
+      down; the board's 5 V test point as the C6's supply kept the terminal
+      from booting); pings 37 ms in the suite, but under load the C6's
+      transmit bursts on that rail cost Wi-Fi quality (-73 dBm against -58 on
+      USB, pings up to 0.8 s). A C6 powered from its own USB charger (no
+      host: it still arms on UART0) is the setup to recommend.
+    * `test_rp2350.py` gained the check (30/33 with the C6 on H7; the three
+      failures -- PSRAM rates, `/ram0`, `Editor` -- fail on the pre-49.10
+      build too, measured the same day; 31/33 without the C6, as the
+      baseline). `lcdterm_shots.py` was not run.
 
 ## 7. Risks
 
@@ -1113,7 +1152,8 @@ without USB.
 | Small 9P read from a C6's own server: the 7B's C6 / the stand-alone C6-Zero | 126 / 130 ms median | 49.9 |
 | C6 pages free (of 61), frames / 9P-only (its own stack, the `/p4` mount) | 15 (60 KB) / 6 (24 KB) | 49.9 |
 | Session survives a C6 restart: frames / 9P-only | yes / no | 49.9 |
-| UART1 LLP throughput, RP2350 ↔ C6-Zero | — | 49.10 |
+| UART0 (H7) LLP loopback, RP2350 ↔ C6-Zero, 1500-byte frames | 9 KB/s at 115200, 69 KB/s at 921600 (chosen), 103 KB/s at 2 Mbaud | 49.10 |
+| 9P over Wi-Fi to the terminal through the C6 (C6 on USB power / on H7's 3V3) | 33 / 7.8 KB/s read, 25 / 505 ms ping | 49.10 |
 
 ## 9. Mapping from phase 45
 

@@ -307,6 +307,14 @@ static const dev_driver_t dev_usbnet = {
     .name = "usbnet", .kind = DEV_KIND_P9LINK, .flags = DEV_F_BACKGROUND_9P, .wire = DEV_WIRE_ACM1,
     .get = get_usb_net,
 };
+#if defined(CONFIG_LLP)
+/* 9P over LLP to a radio on UART0 (header H7), once `llp host` has started the
+ * node: it takes the wire over from the console. */
+static void *get_llp(void) { return llp_node_p9_link(); }
+static const dev_driver_t dev_llp = {
+    .name = "llp", .kind = DEV_KIND_P9LINK, .wire = DEV_WIRE_UART0, .get = get_llp,
+};
+#endif
 #if defined(CONFIG_ETH_CS_GPIO)
 static const dev_driver_t dev_enc28j60 = {
     .name = "enc0", .kind = DEV_KIND_NETIF,
@@ -406,6 +414,9 @@ void board_register_devices(void) {
 #endif
 #if defined(CONFIG_ETH_CS_GPIO)
     dev_register(&dev_enc28j60);
+#endif
+#if defined(CONFIG_LLP)
+    dev_register(&dev_llp);
 #endif
 #elif defined(CONFIG_BOARD_ESP32C6)
     /* Nothing beyond the unconditional entries above (45.4), and LLP (49.3). */

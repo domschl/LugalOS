@@ -654,14 +654,14 @@ void kernel_main(void) {
      * one code path handles both. */
     mqttd_autostart();
 
-#if !defined(CONFIG_BOARD_RP2350)
+#if defined(CONFIG_LLP)
     /* The link to a radio beside this chip, where the board has one wired
      * (kernel/llp_node.c): after the stack, so the radio's own interface
      * is attached until a host takes it over. */
     llp_node_autostart();
+#endif
 #if defined(CONFIG_OTA)
     ota_start();
-#endif
 #endif
 
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_GPS

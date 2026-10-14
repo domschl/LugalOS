@@ -29,6 +29,9 @@
  *   frames packed back to back, 4-byte aligned, no CRC, flow control in the
  *   hardware. The P4 as the SDIO host, the C6-MINI beside it as the slave. */
 
+/* A serial channel's rate on a UART (llp_node_set_uart_baud()); 0: the board's default wire. */
+static uint32_t g_uart_baud;
+
 #if defined(CONFIG_BOARD_ESP32C6)
 #include "kernel/radio_c6.h"
 /* The station's signal, for STATE (dBm; -127 while not associated). */
@@ -63,7 +66,13 @@ static uint8_t *pkt_tx_buf(unsigned i) { return sdio_slave_tx_buf(i); }
 #define CHAN_PACKET  0
 static int  chan_read(uint8_t *buf, uint32_t max) { return usbjtag_llp_read(buf, max); }
 static bool chan_present(void) { return true; }
-static void chan_claim(void) { usbjtag_llp_arm(true); }
+/* The USB port, shared with the console; or, with a rate set, UART0 (the
+ * header's TX/RX) alone -- a C6 that is another board's radio over wires. */
+static void chan_claim(void) {
+    if (g_uart_baud && usbjtag_llp_use_uart(g_uart_baud) != 0)
+        cprintf("llp: UART0 cannot run at %u baud; staying on the USB\n", (unsigned)g_uart_baud);
+    usbjtag_llp_arm(true);
+}
 static void chan_service(void) { usbjtag_llp_service(); }
 /* Frames are streamed to the FIFO rather than encoded into a buffer first:
  * the buffer would be 3 of the ~11 pages a C6 has free with the radio up. */
@@ -95,6 +104,39 @@ static uint8_t *pkt_tx_buf(unsigned i) { (void)i; return NULL; }   /* the node's
 /* The write is done when sdio_llp_write() returns. */
 #define PKT_DOUBLE   0
 #define ETH_SLOTS    8u
+#define P9_SLOTS     4u
+#define P9_TX_SLOTS  4u
+#define PUMP_PAGES   2u
+#elif defined(CONFIG_BOARD_RP2350) && defined(CONFIG_LLP_UART_BAUD)
+#include "drivers/uart_raw.h"
+#include "drivers/lcdterm.h"
+#include <string.h>
+#define CHAN_PACKET  0
+static uint8_t *take(uint32_t bytes);
+static volatile int g_pump_pid = -1;
+static int  chan_read(uint8_t *buf, uint32_t max) { return uart_raw_read(buf, max); }
+static int  chan_write(const uint8_t *buf, uint32_t len) { return uart_raw_write(buf, len); }
+static bool chan_present(void) { return true; }
+/* UART0 (header H7) becomes LLP's: the panel console only tees to USB here,
+ * so its claim on the wire is let go -- unless it tees to UART0, which keeps
+ * it. Received bytes are buffered in an interrupt (drivers/uart_raw.h). */
+#define RAW_RX_BYTES 8192u
+static void chan_claim(void) {
+    const char *owner = dev_wire_owner("llp");
+    if (owner && strcmp(owner, "lcd") == 0 && lcdterm_tee() != LCD_TEE_UART) dev_release("lcd");
+    if (dev_claim("llp") != 0) {
+        cprintf("llp: UART0 is held by %s\n", dev_wire_owner("llp"));
+        return;
+    }
+    uint32_t baud = g_uart_baud ? g_uart_baud : (uint32_t)CONFIG_LLP_UART_BAUD;
+    uint8_t *ring = take(RAW_RX_BYTES);
+    if (!ring || uart_raw_open(ring, RAW_RX_BYTES, baud) != 0) cprintf("llp: UART0 did not open at %u baud\n", (unsigned)baud);
+}
+static void chan_service(void) {}
+#define CHAN_STREAMS 0
+/* The host role only, on the RP2350's memory: half the QEMU host's Ethernet
+ * queues; 9P frames are its 2 KB msize. */
+#define ETH_SLOTS    4u
 #define P9_SLOTS     4u
 #define P9_TX_SLOTS  4u
 #define PUMP_PAGES   2u
@@ -194,6 +236,9 @@ static bool tx_put(fq_t *q, const uint8_t *d, uint32_t n) {
     uintptr_t f = spin_lock_irqsave(&g_tx_lock);
     bool ok = fq_put(q, d, n);
     spin_unlock_irqrestore(&g_tx_lock, f);
+#if defined(CONFIG_BOARD_RP2350)
+    if (ok && g_pump_pid >= 0) task_unblock(g_pump_pid);   /* the pump may be waiting for work */
+#endif
     return ok;
 }
 
@@ -711,6 +756,18 @@ static void pump(void *arg) {
 #endif
 #if CHAN_PACKET && defined(CONFIG_BOARD_ESP32P4)
         if (activity() == before && !g_txp_len) { task_sleep_ms(pkt_up() ? 1u : 50u); continue; }
+#elif defined(CONFIG_BOARD_RP2350)
+        /* One core shared with the panel, USB and the shell: an idle pump
+         * waits to be woken -- by the UART's interrupt when bytes arrive, by
+         * tx_put() when a frame is queued -- or 20 ms for LLP's timers. Waking
+         * every millisecond instead cost the panel and the shell measurably. */
+        if (activity() == before) {
+            task_prepare_block();
+            if (!uart_raw_pending() && !fq_used(&g_p9_tx) && !fq_used(&g_eth_tx))
+                task_block_until_ms(time_get_ms() + 20u);
+            task_wait_done();
+            continue;
+        }
 #else
         (void)before;
 #endif
@@ -800,21 +857,55 @@ int llp_node_start(llp_node_role_t role) {
     llp_link_init(&g_link, &cfg, session, now_ms());
 
     p9_link_register_background(&g_p9);
-    if (task_create_sized("llp", pump, NULL, PUMP_PAGES) < 0) {
+    int pump_pid = task_create_sized("llp", pump, NULL, PUMP_PAGES);
+    if (pump_pid < 0) {
         cprintf("llp: could not start the pump task\n");
         return -1;
     }
+#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_LLP_UART_BAUD)
+    g_pump_pid = pump_pid;
+    uart_raw_set_waker(pump_pid);
+#endif
     cprintf("llp: %s, session %08x, %u KB, waiting for the peer\n",
             role == LLP_NODE_RADIO ? "radio (bridges its network interface once a host is up)" : "host",
             (unsigned)session, (unsigned)(g_pages * PAGE_SIZE / 1024u));
     return 0;
 }
 
+void llp_node_set_uart_baud(uint32_t baud) { g_uart_baud = baud; }
+
+#if defined(CONFIG_BOARD_ESP32C6) && !defined(CONFIG_SDIO_SLAVE)
+/* A C6-Zero with no USB host at boot is another board's radio over its UART0
+ * (the RP2350 terminal's H7): nothing reads its console, and its header's TX/RX
+ * lead to that board. With a host on the USB it is a node of its own, LLP left
+ * to `llp radio` as before. The look waits for the host to configure the port.
+ * The rate is the board file's, and the other board's must match it. */
+#if defined(CONFIG_LLP_UART_BAUD)
+#define UART_RADIO_BAUD ((uint32_t)CONFIG_LLP_UART_BAUD)
+#else
+#define UART_RADIO_BAUD 115200u
+#endif
+static void uart_radio_task(void *arg) {
+    (void)arg;
+    task_sleep_ms(2000);
+    if (usbjtag_host_present()) return;
+    llp_node_set_uart_baud(UART_RADIO_BAUD);
+    (void)llp_node_start(LLP_NODE_RADIO);
+}
+#endif
+
 void llp_node_autostart(void) {
 #if defined(CONFIG_BOARD_ESP32C6) && defined(CONFIG_SDIO_SLAVE)
     /* The C6 beside a P4: the channel is dedicated, so the radio role is
      * armed at boot and waits for a host. */
     (void)llp_node_start(LLP_NODE_RADIO);
+#elif defined(CONFIG_BOARD_ESP32C6)
+    if (task_create_sized("llpuart", uart_radio_task, NULL, 1) < 0) printk("[LLP] could not start the UART look\n");
+#elif defined(CONFIG_BOARD_RP2350) && defined(CONFIG_LLP_UART_BAUD)
+    /* A board whose UART0 header leads to its radio (the terminal's H7): the
+     * wire is LLP's from boot. Left to the console, whatever the radio sends --
+     * its boot log, LLP's frames -- arrives as keystrokes. */
+    (void)llp_node_start(LLP_NODE_HOST);
 #elif defined(CONFIG_BOARD_ESP32P4) && defined(CONFIG_SDIO_CLK_GPIO) && !defined(CONFIG_EMAC_BASE)
     /* A P4 whose only network is its C6 (the LCD-7B). A board with Ethernet
      * as well starts `llp host` by hand until a rule says which interface
@@ -893,6 +984,26 @@ uint32_t llp_node_proc_render(char *buf, uint32_t cap) {
         (unsigned)st->probes, (unsigned)st->tx_no_credit, (unsigned)st->tx_refused,
         (unsigned)st->ups, (unsigned)st->downs);
     PUT("p9_generation=%u\n", (unsigned)g_p9.generation);
+#if CHAN_PACKET
+    PUT("pkt_bad=%u\nchannel_restarts=%u\n", (unsigned)g_pkt_bad, (unsigned)g_chan_resets);
+#else
+    PUT("serial_frames=%u\nserial_crc=%u\nserial_runt=%u\nserial_overflow=%u\n",
+        (unsigned)g_srx.frames, (unsigned)g_srx.crc_err, (unsigned)g_srx.runt, (unsigned)g_srx.overflow);
+#endif
+#if defined(CONFIG_BOARD_ESP32C6) && !CHAN_PACKET
+    {
+        uint32_t lr, cr, ct;
+        usbjtag_llp_counts(&lr, &cr, &ct);
+        PUT("wire=%s\nwire_rx_overflow=%u\n", usbjtag_llp_on_uart() ? "uart0" : "usb", (unsigned)lr);
+    }
+#elif defined(CONFIG_BOARD_RP2350)
+    {
+        uint32_t rd, ro;
+        uart_raw_counts(&rd, &ro);
+        PUT("wire=uart0\nuart_baud=%u\nuart_rx_dropped=%u\nuart_rx_overruns=%u\n",
+            (unsigned)(g_uart_baud ? g_uart_baud : (uint32_t)CONFIG_LLP_UART_BAUD), (unsigned)rd, (unsigned)ro);
+    }
+#endif
     PUT("queue_eth_rx=%u/%u\nqueue_eth_tx=%u/%u\nqueue_p9_rx=%u/%u\nqueue_p9_tx=%u/%u\n",
         (unsigned)fq_used(&g_eth_rx), (unsigned)g_eth_rx.nslots, (unsigned)fq_used(&g_eth_tx), (unsigned)g_eth_tx.nslots,
         (unsigned)fq_used(&g_p9_rx), (unsigned)g_p9_rx.nslots, (unsigned)fq_used(&g_p9_tx), (unsigned)g_p9_tx.nslots);
@@ -950,8 +1061,13 @@ void llp_node_print_status(void) {
 #if defined(CONFIG_BOARD_ESP32C6) && !CHAN_PACKET
     uint32_t lr, cr, ct;
     usbjtag_llp_counts(&lr, &cr, &ct);
-    cprintf("  usb: llp rx overflow %u, console rx overflow %u, console tx overflow %u\n",
-            (unsigned)lr, (unsigned)cr, (unsigned)ct);
+    cprintf("  %s: llp rx overflow %u, console rx overflow %u, console tx overflow %u\n",
+            usbjtag_llp_on_uart() ? "uart0" : "usb", (unsigned)lr, (unsigned)cr, (unsigned)ct);
+#elif defined(CONFIG_BOARD_RP2350)
+    uint32_t rd, ro;
+    uart_raw_counts(&rd, &ro);
+    cprintf("  uart0: %u baud, rx ring full %u, rx overrun %u\n",
+            (unsigned)(g_uart_baud ? g_uart_baud : (uint32_t)CONFIG_LLP_UART_BAUD), (unsigned)rd, (unsigned)ro);
 #endif
     if (g_role == LLP_NODE_RADIO)
         cprintf("  bridge: %s, %u frames to the link, %u to the interface; loop %s, %u looped\n",

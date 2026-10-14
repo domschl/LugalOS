@@ -40,3 +40,8 @@ set(CONFIG_SYSTIMER_BASE  0x6000A000)
 # The CPU clock as the ROM leaves it, measured in 45.1 (160 MHz, no PLL work
 # needed).
 set(CONFIG_CPU_FREQ_MHZ   160)
+
+# LLP on UART0 (the header's TX/RX) at this rate, armed at boot when no USB host
+# is attached: the C6-Zero as another board's Wi-Fi, e.g. the RP2350 terminal's
+# on its header H7 (cmake/board-rp2350-terminal.cmake: the two must agree).
+set(CONFIG_LLP_UART_BAUD  921600)

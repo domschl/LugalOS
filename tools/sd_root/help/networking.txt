@@ -135,13 +135,52 @@ Checks of the channel itself:
   --------------------------------------------------------------------------
   llp | either | role, link state, peer, counters, SDIO channel state (/proc/llp: the same as key=value)
   llp loop on / llp loop off | C6 | send the host's Ethernet frames back instead of to the radio
-  llp bench [count] [size] | P4 | count frames of size bytes (default 1000 × 1514) to a C6 in loop mode, each checked on return; prints KB/s each way
+  llp bench [count] [size] | P4, RP2350 | count frames of size bytes (default 1000 × 1514) to a C6 in loop mode, each checked on return; prints KB/s each way
+  llp host [baud] | P4, RP2350 | the host role; on the RP2350 terminal on UART0 (H7) at baud (default the board file's)
+  llp radio uart [baud] | C6 | the radio role on UART0 (the header's TX/RX) instead of the USB, at baud (default 115200)
   sdio | C6 | the SDIO slave: generation, timing, receive buffers, packets in and out
   sdio timing 0..3 | C6 | the slave's edges (0: send and sample on the rising edge)
   sdio, sdio probe, sdio reset | P4 | the host side; sdio reset pulses the C6's CHIP_PU
 
 Measured on the LCD-7B at 20 MHz, 4-bit: 3.1 MB/s each way with 1514-byte
 frames, nothing lost or damaged.
+
+5. WI-FI FOR THE RP2350 TERMINAL: A C6-ZERO ON HEADER H7
+--------------------------------------------------------
+
+The RP2350 terminal (rp2350-terminal) gets Wi-Fi from an ESP32-C6-Zero wired
+to its UART header H7, with LLP over UART0 between them: the terminal owns the
+IP address (wlan0, the C6's station MAC), the C6 bridges frames, and the C6's
+namespace is the terminal's /c6, as on the P4 boards (section 4).
+
+  H7 pin | Signal | C6-Zero pin
+  --------------------------------------------------------------------------
+  1 | 3V3 | 3V3 (only while the C6 has no USB cable)
+  2 | GND | GND
+  3 | RXD0 (GP17) | TX (GPIO16)
+  4 | TXD0 (GP16) | RX (GPIO17)
+
+  * Flash the C6 once over its USB (tools/c6flash.py build/esp32c6); after
+that it updates over 9P through the terminal's /c6 (doc/admin/updates.md).
+  * Nothing to type. The terminal takes H7 for LLP at boot; the C6,
+    booting
+with no USB host, arms LLP on its UART0 after 2 s. Both run at 921600 baud
+(CONFIGLLPUART_BAUD in cmake/board-rp2350-terminal.cmake and cmake/board-
+esp32c6-zero.cmake: they must agree). The terminal hands its WLAN credentials
+(wlan SSID PSKHEX) to the C6; about 11 s after power-on wlan0 has a lease.
+  * While LLP holds H7 the terminal's console stays on USB and the panel;
+lcd tee uart is refused. /proc/llp shows the wire, the rate and the UART's
+receive errors; /c6/proc/llp the C6's.
+  * Power. The C6 draws up to ~350 mA in transmit bursts. From H7's 3V3 it
+works without a USB keyboard on J7; with the keyboard (or a large capacitor
+added at the C6) the terminal's rail cannot carry both, and under load the
+C6's Wi-Fi suffers even without. The better supply is the C6's own USB-C from
+a charger -- with no USB host there it still arms LLP on UART0; connect only
+GND, TX and RX to H7 then.
+  * Debugging both ends: with the C6's USB attached to a PC it does not
+    arm
+by itself, and the terminal's traffic on H7 arrives at the C6's console as
+input; park the terminal (BOOTSEL) to type llp radio uart 921600 at the C6.
 
 ------------------------------------------------------------------------------
 SEE ALSO (Press 1..9 to jump, 'b' to go back):

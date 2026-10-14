@@ -32,8 +32,15 @@ typedef enum { LLP_NODE_OFF = 0, LLP_NODE_HOST = 1, LLP_NODE_RADIO = 2 } llp_nod
 int llp_node_start(llp_node_role_t role);
 
 /* At boot: the role a board's wiring implies, if any -- the radio on a C6
- * with an SDIO slave, the host on a P4 whose only network is its C6. */
+ * with an SDIO slave, the host on a P4 whose only network is its C6, and the
+ * radio on UART0 for a C6 that boots with no USB host (the RP2350 terminal's
+ * Wi-Fi, on its header H7). */
 void llp_node_autostart(void);
+
+/* The rate for a serial channel on a UART, before llp_node_start(): the
+ * RP2350's UART0 (default CONFIG_LLP_UART_BAUD), or the C6's UART0 instead of
+ * its USB (0, the default, keeps the USB). Both ends must agree. */
+void llp_node_set_uart_baud(uint32_t baud);
 
 /* The radio's start path, with its new interface: true when an LLP host is
  * up and the bridge takes the interface (the node's own stack must not touch

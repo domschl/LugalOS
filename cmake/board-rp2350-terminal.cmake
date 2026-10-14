@@ -53,6 +53,16 @@ set(CONFIG_UART0_BASE     0x40070000)
 set(CONFIG_UART0_TX_GPIO  16)
 set(CONFIG_UART0_RX_GPIO  17)
 
+# H7 is also where a C6-Zero goes as the terminal's Wi-Fi (49.10): LLP's
+# host role takes UART0 over at boot, at this rate. The C6 arms at the same
+# rate when it boots with no USB host (cmake/board-esp32c6-zero.cmake: the two
+# must agree; LLP does not negotiate it). 921600 measured clean (0 CRC errors
+# in ~430 frames each way, 69 KB/s with 1500-byte frames); 2 Mbaud showed a CRC
+# error per ~400 frames, 3 Mbaud overran the C6's receive FIFO.
+# Pins crossed: H7 TXD0 to the C6's RX (GPIO17), H7 RXD0 to its TX (GPIO16),
+# GND to GND; 3V3 to its 3V3 while it has no USB cable.
+set(CONFIG_LLP_UART_BAUD  921600)
+
 # The PSRAM, on GP0 as the QMI's second chip select (38.2,
 # ). **8 MB**: an APS6404-class part (KGD 0x5D, EID
 # 0x53), measured by aliasing in the preliminaries -- this file said

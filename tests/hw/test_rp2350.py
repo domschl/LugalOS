@@ -1060,6 +1060,20 @@ def test_uart_task(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     generous bound (200) stays far below "character-scale" while clearing
     the much smaller call count batching actually produces."""
     name = "uart task: console output is batched over chan_call(), not per-character, on real silicon (M4.5)"
+    # While LLP owns UART0 (a C6 on the terminal's H7, 49.10) console output
+    # goes to the USB mirror only and never through this task.
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+            ser.write(b"cat /proc/llp\n")
+            ser.flush()
+            llp = rp2350.drain(ser, quiet=1.0, deadline=5.0).decode("utf-8", "replace")
+        if "wire=uart0" in llp:
+            return (name, True, "SKIPPED: UART0 is LLP's (a radio on H7): console output does not use this task")
+    except Exception:
+        pass
     try:
         with serial.Serial(ports.console, 115200, timeout=2) as ser:
             ser.dtr = True
@@ -2111,6 +2125,62 @@ def test_board_config(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         return (name, False, str(e))
 
 
+def test_c6_wifi(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """49.10 (plan/phase49_c6_network_nodes.md): Wi-Fi through a C6-Zero on the
+    terminal's header H7 -- LLP over UART0, both ends started at boot.
+
+    The link up with the C6 as the radio, its namespace at /c6, the C6 joined
+    (with the credentials this board's identity record handed it), a lease on
+    wlan0, and this PC's pings answered through the C6. SKIPPED on a build
+    without LLP, and on a board with no C6 answering on H7."""
+    name = "49.10: Wi-Fi through a C6 on H7 (LLP over UART0)"
+
+    def ask(ser: serial.Serial, line: str, deadline: float = 20.0) -> str:
+        """Until the prompt comes back: a read under /c6 crosses the UART twice
+        and the C6's 9P server, and can be silent for seconds first."""
+        ser.reset_input_buffer()
+        ser.write(line.encode() + b"\n")
+        ser.flush()
+        out, end = b"", time.time() + deadline
+        while time.time() < end:
+            out += ser.read(4096)
+            if out.count(b"lsh>") and len(out) > len(line) + 20:
+                break
+        return out.decode("utf-8", "replace")
+
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            llp = ask(ser, "cat /proc/llp")
+            if "role=" not in llp:
+                return (name, True, "SKIPPED: this build has no LLP")
+            if "state=up" not in llp or "peer_role=radio" not in llp:
+                return (name, True, "SKIPPED: no C6 answering on H7")
+            fields = dict(re.findall(r"^([a-z_0-9]+)=(\S+)", llp, re.M))
+            if fields.get("radio_mounted") != "/c6":
+                return (name, False, f"the link is up but /c6 is not mounted:\n{llp[-500:]}")
+            wlan = ask(ser, "cat /c6/dev/wlan")
+            if "state=joined" not in wlan:
+                return (name, False, f"the C6 has not joined: {wlan.strip()[-200:]}")
+            rssi = re.search(r"rssi=(-?\d+)", wlan)
+            net = ask(ser, "cat /proc/net")
+            m = re.search(r"address: (\d+\.\d+\.\d+\.\d+)", net)
+            if not m:
+                return (name, False, f"no lease on wlan0:\n{net[-300:]}")
+        ping = subprocess.run(["ping", "-c", "5", "-W", "3", m.group(1)], capture_output=True, text=True)
+        got = re.search(r"(\d+) received", ping.stdout)
+        if not got or int(got.group(1)) < 3:
+            return (name, False, f"{m.group(1)} answered {got.group(1) if got else 0} of 5 pings")
+        rtt = re.search(r"= [\d.]+/([\d.]+)/", ping.stdout)
+        return (name, True, f"{m.group(1)} via the C6 ({rssi.group(1) if rssi else '?'} dBm), "
+                            f"{got.group(1)}/5 pings, {rtt.group(1) if rtt else '?'} ms; "
+                            f"UART {fields.get('uart_baud', '?')} baud, {fields.get('serial_crc', '?')} CRC errors "
+                            f"in {fields.get('serial_frames', '?')} frames")
+    except Exception as e:
+        return (name, False, str(e))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--console", help="Override auto-detected ACM0 console port")
@@ -2225,6 +2295,7 @@ def main() -> int:
     tests.append(test_type_ahead)
     tests.append(test_balloc_arena)
     tests.append(test_memory_margins)
+    tests.append(test_c6_wifi)
     # Last, and it has to stay last: it deliberately exhausts the Lisp node
     # pool, which leaves the evaluator returning nil until the board reboots.
     # Every other test here drives the board through its shell, and the shell

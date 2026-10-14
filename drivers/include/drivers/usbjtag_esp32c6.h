@@ -9,6 +9,13 @@
  * bytes and LLP's SLIP frames share the port, and LLP's pump becomes the only
  * writer to it: it calls usbjtag_llp_write() for frames and
  * usbjtag_llp_service() every turn, which writes out queued console text. */
+/* LLP on UART0 (GPIO16/17, the header's TX/RX) at `baud` instead of on the USB:
+ * call before arming. UART0 is then LLP's alone and the console stays on the
+ * USB. 0, or -1 for a rate the divider cannot make. */
+int  usbjtag_llp_use_uart(uint32_t baud);
+bool usbjtag_llp_on_uart(void);
+/* A USB host is attached and sending frames (20 ms look). */
+bool usbjtag_host_present(void);
 void usbjtag_llp_arm(bool on);
 int  usbjtag_llp_read(uint8_t *buf, uint32_t max);
 int  usbjtag_llp_write(const uint8_t *buf, uint32_t len);

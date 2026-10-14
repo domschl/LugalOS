@@ -19,6 +19,7 @@
 #include "kernel/palloc.h"
 #include "kernel/time.h"
 #include "kernel/devirq.h"
+#include "drivers/uart_raw.h"
 #include "kernel/irq.h"
 #include "kernel/lock.h"
 #include "kernel/chan.h"
@@ -448,9 +449,101 @@ uint32_t uart_rx_overruns(void) {
 #define UART0_FR_TXFF (1u << 5)
 #define UART0_IMSC_TXIM (1u << 5)
 
+/* --- UART0 as a raw byte channel (drivers/include/drivers/uart_raw.h) ---
+ * LLP's wire on a board whose UART0 header leads to a radio (the terminal's
+ * H7). Received bytes go from the FIFO into a ring here, in the interrupt:
+ * the PL011's FIFO holds 32 bytes, under 3 ms at 115200, and a frame is up to
+ * 1.5 KB. While raw, nothing else touches UART0 but a fatal-path message:
+ * console output still reaches the USB mirror (uart_tx_send()) and nothing
+ * else, and the console's UART0 input reads as empty. */
+#define UART0_IFLS   (UART0_BASE + 0x34)
+#define UART0_ICR    (UART0_BASE + 0x44)
+#define UART0_FR_RXFE (1u << 4)
+#define UART0_IMSC_RXIM (1u << 4)
+#define UART0_IMSC_RTIM (1u << 6)
+#define UART0_DR_OE  (1u << 11)
+
+static uint8_t *volatile g_raw_ring;
+static uint32_t g_raw_cap;
+static volatile uint32_t g_raw_head, g_raw_tail;
+static volatile uint32_t g_raw_drops, g_raw_overruns;
+static volatile int g_raw_waker = -1;           /* woken when bytes arrive (uart_raw_open()) */
+
+static void raw_rx_drain(void) {
+    while (!(REG(UART0_FR) & UART0_FR_RXFE)) {
+        uint32_t dr = REG(UART0_BASE + 0x00);
+        if (dr & UART0_DR_OE) g_raw_overruns++;
+        if (g_raw_head - g_raw_tail < g_raw_cap) g_raw_ring[g_raw_head % g_raw_cap] = (uint8_t)dr;
+        else { g_raw_drops++; continue; }
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        g_raw_head++;
+    }
+}
+
+static void set_baud(uint32_t baud) {
+    const uint32_t div64 = (uint32_t)((4ull * CONFIG_CLK_SYS_HZ) / baud);
+    REG(UART0_BASE + 0x30) = 0;                                   /* UARTCR: off while it changes */
+    REG(UART0_BASE + 0x24) = div64 / 64u;                         /* UARTIBRD */
+    REG(UART0_BASE + 0x28) = div64 % 64u;                         /* UARTFBRD */
+    REG(UART0_BASE + 0x2C) = (3u << 5) | (1u << 4);               /* UARTLCR_H: 8N1, FIFOs; latches the divisor */
+    REG(UART0_BASE + 0x30) = (1u << 0) | (1u << 8) | (1u << 9);   /* UARTCR: on, TX, RX */
+}
+
+void uart_raw_set_waker(int pid) { g_raw_waker = pid; }
+
+int uart_raw_open(uint8_t *ring, uint32_t cap, uint32_t baud) {
+    if (!ring || !cap || baud < 1200u || baud > CONFIG_CLK_SYS_HZ / 16u) return -1;
+    uintptr_t flags = irq_save();
+    set_baud(baud);
+    while (!(REG(UART0_FR) & UART0_FR_RXFE)) (void)REG(UART0_BASE + 0x00);   /* what came before is not ours */
+    g_raw_cap = cap;
+    g_raw_head = g_raw_tail = 0;
+    g_raw_ring = ring;
+    REG(UART0_IFLS) = (REG(UART0_IFLS) & ~(7u << 3)) | (1u << 3);  /* RX interrupt at 1/4 full (8 bytes) */
+    REG(UART0_ICR) = UART0_IMSC_RXIM | UART0_IMSC_RTIM;
+    REG(UART0_IMSC) |= UART0_IMSC_RXIM | UART0_IMSC_RTIM;
+    irq_restore(flags);
+    return 0;
+}
+
+bool uart_raw_active(void) { return g_raw_ring != NULL; }
+
+bool uart_raw_pending(void) { return g_raw_ring && g_raw_head != g_raw_tail; }
+
+int uart_raw_read(uint8_t *buf, uint32_t max) {
+    if (!g_raw_ring) return -1;
+    uint32_t n = 0;
+    while (n < max && g_raw_tail != g_raw_head) {
+        buf[n++] = g_raw_ring[g_raw_tail % g_raw_cap];
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        g_raw_tail++;
+    }
+    return (int)n;
+}
+
+int uart_raw_write(const uint8_t *buf, uint32_t len) {
+    if (!g_raw_ring) return -1;
+    for (uint32_t i = 0; i < len; i++) {
+        while (REG(UART0_FR) & UART0_FR_TXFF) sched_yield();
+        REG(UART0_BASE + 0x00) = buf[i];
+    }
+    return (int)len;
+}
+
+void uart_raw_counts(uint32_t *drops, uint32_t *overruns) {
+    *drops = g_raw_drops;
+    *overruns = g_raw_overruns;
+}
+
 static void uart_isr(void *ctx) {
     (void)ctx;
     g_uart_irq_count++;
+    if (g_raw_ring) {
+        uint32_t before = g_raw_head;
+        raw_rx_drain();
+        REG(UART0_ICR) = UART0_IMSC_RXIM | UART0_IMSC_RTIM;
+        if (g_raw_head != before && g_raw_waker >= 0) task_unblock(g_raw_waker);
+    }
     if (!(REG(UART0_FR) & UART0_FR_TXFF)) g_uart_irq_tx_seen++;
     if (!(REG(UART0_FR) & UART0_FR_TXFF) && g_tx_waiter >= 0) {
         REG(UART0_IMSC) &= ~UART0_IMSC_TXIM;
@@ -1014,6 +1107,10 @@ static spinlock_t g_tx_batch_lock;
 static uint32_t g_tx_inflight[MAX_HARTS];
 
 static void uart_tx_send(const char *local, uint32_t len) {
+    if (g_raw_ring) {                           /* UART0 is a raw channel's: the USB mirror only */
+        for (uint32_t i = 0; i < len; i++) usb_cdc_putc(local[i]);
+        return;
+    }
     if (uart_demux_is_enabled() || !uart_task_alive()) {
         for (uint32_t i = 0; i < len; i++) {
             uart_hw_putc(local[i]);
@@ -1150,6 +1247,7 @@ void uart_flush_critical(void) {
 }
 
 void uart_debug_putc(char c) {
+    if (g_raw_ring) return;  // UART0 is a raw channel's
     uart_hw_putc(c); // kernel debug log: physical UART only, no USB mirror, no batching
 }
 
@@ -1183,7 +1281,8 @@ bool uart_peek_interrupt(void) {
  * demux's console channel when UART0 carries the multiplexed link -- as its
  * own console input source (kernel/board.c). USB CDC is the other source. */
 bool uart_serial_has_char(void) {
-    uart_flush();
+    uart_flush();                               /* the console's poll is what drains the output batch */
+    if (g_raw_ring) return false;
     if (uart_demux_is_enabled()) return uart_demux_console_has_char();
     if (uart_task_alive()) {
         uint8_t req[1] = { UART_REQ_HASCHAR };
@@ -1194,6 +1293,7 @@ bool uart_serial_has_char(void) {
 }
 
 int uart_serial_getc(void) {
+    if (g_raw_ring) return -1;
     if (uart_demux_is_enabled())
         return uart_demux_console_has_char() ? (int)(unsigned char)uart_demux_console_getc() : -1;
     if (uart_task_alive()) {

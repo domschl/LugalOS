@@ -42,9 +42,12 @@
 /* The allocation. */
 #define ESP32C6_IRQ_TICK     10u    /* the preemption tick: system timer comparator 0 */
 #define ESP32C6_IRQ_USBJTAG  11u    /* the console: USB-Serial/JTAG */
+/* 12..19: the radio's (kernel/radio_intr.c, RI_FIRST_LINE + slot) */
+#define ESP32C6_IRQ_UART0    20u    /* UART0 receiving for LLP (drivers/usbjtag_esp32c6.c) */
 
 /* Interrupt-matrix source numbers (soc/interrupts.h, confirmed against the
  * INTMTX_CORE0_*_MAP_REG offsets in interrupt_matrix_reg.h: register / 4). */
+#define ESP32C6_SRC_UART0                  43u
 #define ESP32C6_SRC_USB_SERIAL_JTAG        48u
 #define ESP32C6_SRC_SYSTIMER_TARGET0       57u
 

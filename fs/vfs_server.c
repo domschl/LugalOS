@@ -1296,7 +1296,7 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
         return piousb_proc_render(buf, cap);
     }
 #endif
-#if !defined(CONFIG_BOARD_RP2350)
+#if defined(CONFIG_LLP)
     else if (strcmp(rel, "llp") == 0) {
         /* The link to this node's LLP peer, both roles (kernel/llp_node.c). */
         return (int)llp_node_proc_render(buf, cap);
@@ -2131,7 +2131,7 @@ static const char *g_proc_names[] = { "ps", "meminfo", "version", "cpuinfo", "df
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)
     "usbhost",
 #endif
-#if !defined(CONFIG_BOARD_RP2350)
+#if defined(CONFIG_LLP)
     "llp",
 #endif
 #if defined(CONFIG_BOARD_ESP32C6)

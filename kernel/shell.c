@@ -5396,6 +5396,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strncmp(cmd_line, "lcd tee", 7) == 0) {
         const char *m = cmd_line + 7;
         while (*m == ' ') m++;
+        const char *uart_holder = dev_wire_owner("uart");
+        if (strcmp(m, "uart") == 0 && uart_holder && strcmp(uart_holder, "llp") == 0) {
+            cprintf("lcd tee: UART0 is LLP's (the radio on H7) until a reset\n");
+            return;
+        }
         if (strcmp(m, "uart") == 0) lcdterm_set_tee(LCD_TEE_UART);
         else if (strcmp(m, "usb") == 0) lcdterm_set_tee(LCD_TEE_USB);
         else if (strcmp(m, "off") == 0) lcdterm_set_tee(LCD_TEE_OFF);
@@ -5616,7 +5621,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         }
         return;
 #endif
-#if !defined(CONFIG_BOARD_RP2350)
+#if defined(CONFIG_LLP)
     } else if (strcmp(cmd_line, "llp") == 0) {
         llp_node_print_status();
         return;
@@ -5629,10 +5634,21 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         uint32_t count = dec_word(&p), size = dec_word(&p);
         llp_node_bench(count ? count : 1000u, size ? size : 1514u);
         return;
-    } else if (strcmp(cmd_line, "llp host") == 0) {
+    } else if (strcmp(cmd_line, "llp host") == 0 || strncmp(cmd_line, "llp host ", 9) == 0) {
+        /* llp host [baud]: a rate for a serial channel (the RP2350's UART0) */
+        const char *p = cmd_line + 8;
+        uint32_t baud = dec_word(&p);
+        if (baud) llp_node_set_uart_baud(baud);
         llp_node_start(LLP_NODE_HOST);
         return;
     } else if (strcmp(cmd_line, "llp radio") == 0 || strcmp(cmd_line, "llp modem") == 0) {
+        llp_node_start(LLP_NODE_RADIO);
+        return;
+    } else if (strcmp(cmd_line, "llp radio uart") == 0 || strncmp(cmd_line, "llp radio uart ", 15) == 0) {
+        /* llp radio uart [baud]: the C6's UART0 (TX/RX) instead of its USB */
+        const char *p = cmd_line + 14;
+        uint32_t baud = dec_word(&p);
+        llp_node_set_uart_baud(baud ? baud : 115200u);
         llp_node_start(LLP_NODE_RADIO);
         return;
 #endif

@@ -155,6 +155,9 @@ set(_optional_keys
     # builds drivers/lcd7_rp2350.c's content.
     CONFIG_LCD_DE_GPIO CONFIG_LCD_PCLK_GPIO CONFIG_LCD_DATA0_GPIO
     CONFIG_LCD_RST_GPIO CONFIG_LCD_BL_GPIO CONFIG_LCD_EN_GPIO
+    # LLP on UART0 at this rate, toward a radio beside the board (the
+    # terminal's header H7 and a C6-Zero). Its presence builds kernel/llp_node.c.
+    CONFIG_LLP_UART_BAUD
     # the panel scanned out turned by 180 degrees (1), for a board
     # whose glass is mounted the other way up from its inscriptions.
     CONFIG_LCD_ROTATE_180

@@ -32,9 +32,13 @@
 #include "kernel/sched.h"
 #include "kernel/lock.h"
 #include "drivers/usbjtag_esp32c6.h"
+#include "arch/esp32c6_intr.h"
+#include "arch/trap.h"
+#include "kernel/devirq.h"
 #include "lugalos_config.h"
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 #define REG(addr) (*(volatile uint32_t *)(uintptr_t)(addr))
 
@@ -73,6 +77,16 @@ static void hw_flush(void) {
  * CONFIG_UART0_TX/RX_GPIO (GPIO16/17, the ROM's U0TXD/U0RXD, with the ROM's
  * pull-up on RX, so an open header reads idle). */
 #define UART0_FIFO      (CONFIG_UART0_BASE + 0x00u)
+#define UART0_INT_RAW   (CONFIG_UART0_BASE + 0x04u)
+#define UART0_INT_CLR   (CONFIG_UART0_BASE + 0x10u)
+#define UART0_RXFIFO_OVF (1u << 4)
+#define UART0_RXFIFO_FULL (1u << 0)
+#define UART0_RXFIFO_TOUT (1u << 8)
+#define UART0_INT_ENA   (CONFIG_UART0_BASE + 0x0cu)
+#define UART0_CONF1     (CONFIG_UART0_BASE + 0x24u)    /* RX FIFO full threshold, 7:0 */
+#define UART0_TOUT_CONF (CONFIG_UART0_BASE + 0x64u)    /* RX timeout: enable bit 0, threshold 11:2 (bit times) */
+#define UART0_CLKDIV    (CONFIG_UART0_BASE + 0x14u)   /* integer 11:0, fraction 23:20 */
+#define UART0_REG_UPDATE (CONFIG_UART0_BASE + 0x98u)
 #define UART0_STATUS    (CONFIG_UART0_BASE + 0x1cu)
 #define UART0_RXCNT(v)  ((v) & 0xffu)
 #define UART0_TXCNT(v)  (((v) >> 16) & 0xffu)
@@ -80,6 +94,9 @@ static void hw_flush(void) {
 #define UART0_SPIN_LIMIT 2000000u
 
 static volatile bool g_host_gone;       /* the last USB wait timed out: do not spin again until there is room */
+/* LLP on UART0 instead of the USB (usbjtag_llp_use_uart()): UART0 is then LLP's
+ * alone -- no console copy goes out on it, and everything it receives is LLP's. */
+static volatile bool g_llp_on_uart;
 
 static void uart0_put(char c) {
     if (g_host_gone) {
@@ -126,10 +143,19 @@ static void usj_putc(char c) {
     if (++g_pending >= FIFO_BYTES || c == '\n') hw_flush();
 }
 
-/* One console byte: both wires. */
+/* One console byte: both wires, or only the USB while UART0 is LLP's. */
 static void hw_putc(char c) {
     usj_putc(c);
-    uart0_put(c);
+    if (!g_llp_on_uart) uart0_put(c);
+}
+
+/* An LLP byte to UART0: a UART drains whether or not anything listens, so this
+ * waits for room (bounded) rather than drop part of a frame. */
+static void uart0_put_llp(uint8_t b) {
+    unsigned n = 0;
+    while (UART0_TXCNT(REG(UART0_STATUS)) >= UART0_TX_ROOM)
+        if (++n >= UART0_SPIN_LIMIT) return;
+    REG(UART0_FIFO) = (uint32_t)b;
 }
 
 /* --- Sharing the port with LLP ---
@@ -175,8 +201,43 @@ static bool br_get(bring_t *r, uint8_t *c) {
     return true;
 }
 
+static uint32_t g_uart_overflows;           /* RX FIFO overflows while UART0 is LLP's */
+
+/* UART0 for LLP is drained in its interrupt: the FIFO holds 128 bytes, 11 ms
+ * at 115200, and the pump is one task among the radio's -- polled, frames of
+ * a few hundred bytes were lost (measured on the RP2350 terminal's H7: half of
+ * the 1500-byte ones). The interrupt fires at 32 bytes waiting, or when the
+ * line has been idle for 10 bit times with anything waiting. Single core: the
+ * readers take g_mux_lock with interrupts off, so this never runs inside them. */
+static void uart0_isr(void *ctx) {
+    (void)ctx;
+    uint32_t raw = REG(UART0_INT_RAW);
+    if (raw & UART0_RXFIFO_OVF) g_uart_overflows++;
+    while (uart0_rx_avail()) br_put(&g_llp_rx, uart0_rx_get());
+    REG(UART0_INT_CLR) = UART0_RXFIFO_FULL | UART0_RXFIFO_TOUT | UART0_RXFIFO_OVF;
+}
+
+static void uart0_rx_interrupt_on(void) {
+    REG(UART0_CONF1) = (REG(UART0_CONF1) & ~0xffu) | 32u;
+    REG(UART0_TOUT_CONF) = (REG(UART0_TOUT_CONF) & ~0xfffu) | (10u << 2) | 1u;
+    REG(UART0_REG_UPDATE) = 1u;
+    for (unsigned n = 0; (REG(UART0_REG_UPDATE) & 1u) && n < 100000u; n++) { }
+    REG(UART0_INT_CLR) = 0xffffffffu;
+    if (esp32c6_intmtx_route(ESP32C6_SRC_UART0, ESP32C6_IRQ_UART0) != 0) return;
+    devirq_attach(ESP32C6_IRQ_UART0, uart0_isr, NULL);
+    REG(UART0_INT_ENA) = UART0_RXFIFO_FULL | UART0_RXFIFO_TOUT | UART0_RXFIFO_OVF;
+    arch_irq_enable(ESP32C6_IRQ_UART0);
+}
+
 /* Everything the host has sent, routed. Caller holds g_mux_lock. */
 static void drain_rx_locked(void) {
+    if (g_llp_on_uart) {
+        /* Two wires, one job each: the USB is the console, UART0 is LLP. */
+        while (REG(USJ_EP1_CONF(g_base)) & USJ_OUT_AVAIL) br_put(&g_con_rx, (uint8_t)(REG(USJ_EP1(g_base)) & 0xffu));
+        if (REG(UART0_INT_RAW) & UART0_RXFIFO_OVF) { g_uart_overflows++; REG(UART0_INT_CLR) = UART0_RXFIFO_OVF; }
+        while (uart0_rx_avail()) br_put(&g_llp_rx, uart0_rx_get());
+        return;
+    }
     while (REG(USJ_EP1_CONF(g_base)) & USJ_OUT_AVAIL) {
         uint8_t c = (uint8_t)(REG(USJ_EP1(g_base)) & 0xffu);
         if (c == 0xC0) {                      /* SLIP_END: opens a frame, or closes the open one */
@@ -189,6 +250,50 @@ static void drain_rx_locked(void) {
         }
     }
     while (uart0_rx_avail()) br_put(&g_con_rx, uart0_rx_get());   /* UART0 never carries LLP */
+}
+
+/* UART0's divider for `baud`, scaled from the one the boot ROM left for 115200:
+ * the clock behind it need not be known. Taken once, before any change. */
+static uint32_t g_div16_115200;
+
+static bool uart0_set_baud(uint32_t baud) {
+    if (!g_div16_115200) {
+        uint32_t v = REG(UART0_CLKDIV);
+        g_div16_115200 = ((v & 0xfffu) << 4) | ((v >> 20) & 0xfu);
+    }
+    if (baud == 0) return false;
+    uint32_t d16 = (uint32_t)(((uint64_t)g_div16_115200 * 115200u + baud / 2u) / baud);
+    if (d16 < 16u || (d16 >> 4) > 0xfffu) return false;
+    REG(UART0_CLKDIV) = (REG(UART0_CLKDIV) & ~((0xfffu) | (0xfu << 20))) | (d16 >> 4) | ((d16 & 0xfu) << 20);
+    REG(UART0_REG_UPDATE) = 1u;
+    for (unsigned n = 0; (REG(UART0_REG_UPDATE) & 1u) && n < 100000u; n++) { }
+    return true;
+}
+
+int usbjtag_llp_use_uart(uint32_t baud) {
+    if (!uart0_set_baud(baud)) return -1;
+    uintptr_t f = spin_lock_irqsave(&g_mux_lock);
+    g_llp_on_uart = true;
+    spin_unlock_irqrestore(&g_mux_lock, f);
+    uart0_rx_interrupt_on();
+    return 0;
+}
+
+bool usbjtag_llp_on_uart(void) { return g_llp_on_uart; }
+
+/* A host on the USB sends a start-of-frame every millisecond; with none in
+ * 20 ms, nothing is attached (or nothing has configured the port). */
+#define USJ_INT_RAW(b)  ((b) + 0x8)
+#define USJ_INT_CLR(b)  ((b) + 0x14)
+#define USJ_SOF         (1u << 1)
+
+bool usbjtag_host_present(void) {
+    REG(USJ_INT_CLR(g_base)) = USJ_SOF;
+    for (int i = 0; i < 20; i++) {
+        task_sleep_ms(1);
+        if (REG(USJ_INT_RAW(g_base)) & USJ_SOF) return true;
+    }
+    return false;
 }
 
 void usbjtag_llp_arm(bool on) {
@@ -222,7 +327,10 @@ static void con_tx_flush(void) {
 
 int usbjtag_llp_write(const uint8_t *buf, uint32_t len) {
     con_tx_flush();
-    for (uint32_t i = 0; i < len; i++) usj_putc((char)buf[i]);
+    for (uint32_t i = 0; i < len; i++) {
+        if (g_llp_on_uart) uart0_put_llp(buf[i]);
+        else usj_putc((char)buf[i]);
+    }
     hw_flush();
     return (int)len;
 }
@@ -233,7 +341,8 @@ static bool g_streaming;
 
 void usbjtag_llp_putc(uint8_t b) {
     if (!g_streaming) { con_tx_flush(); g_streaming = true; }
-    usj_putc((char)b);
+    if (g_llp_on_uart) uart0_put_llp(b);
+    else usj_putc((char)b);
 }
 
 void usbjtag_llp_end(void) {
@@ -247,7 +356,7 @@ void usbjtag_llp_service(void) {
 }
 
 void usbjtag_llp_counts(uint32_t *llp_rx_drops, uint32_t *con_rx_drops, uint32_t *con_tx_drops) {
-    *llp_rx_drops = g_llp_rx.drops;
+    *llp_rx_drops = g_llp_rx.drops + g_uart_overflows;
     *con_rx_drops = g_con_rx.drops;
     *con_tx_drops = g_con_tx.drops;
 }

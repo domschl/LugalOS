@@ -138,6 +138,10 @@ console, loading and reset all on it.
   --dhcp --ping 3 --cat /proc/version` plays the host. With the NANO's C6 also on USB (P2 21/23),
   two Espressif ports exist: always pass `--port`.
 * I2C on the C6-Zero: GPIO0 = SDA, GPIO1 = SCL (100 kHz); `i2c scan`, `sensor`, `/proc/sensors`.
+* As the RP2350 terminal's Wi-Fi (49.10): the C6-Zero on the terminal's header H7 (UART0,
+  crossed TX/RX, 921600 baud, LLP), both ends starting at boot; a C6 that boots with no USB
+  host arms LLP on its UART0 by itself. doc/admin/networking.md §5 has the wiring and the
+  power caveats (no USB keyboard on J7 while H7's 3V3 feeds the C6).
 * The hardware watchdog (MWDT0, 30 s) is armed at boot; `wdt` shows it and the last reset's
   cause, `wdt test` stops feeding it (the board resets -- only when that is the point).
 * A cold chip and a warm one differ: PMU/LP registers survive a chip reset, so radio
