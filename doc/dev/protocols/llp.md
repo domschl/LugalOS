@@ -129,6 +129,13 @@ drops everything about the old session and handshakes again. Nothing about a
 session survives it: a frame in flight from the old session arrives as
 sequence-number garbage and is dropped as stale or counted as lost.
 
+The same holds above LLP, for 9P (`kernel/llp_node.c`): on a new peer session
+the node drops the 9P messages it still had queued in both directions, and
+advances its 9P link's `generation`. A reply awaited across the change fails,
+and a remote mount opened before it refuses every operation until it is
+mounted again; the host mounts a new radio again by itself. A peer that was
+only cut off (same session) keeps its fids, and nothing is remounted.
+
 ### 4.4 Versions
 
 * **Major** differs: no data passes, and both sides say so (event *mismatch*,

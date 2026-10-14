@@ -55,6 +55,38 @@ extern void rom_update_cpu_frequency(uint32_t ticks_per_us) __asm__("radio_ets_u
 
 #define RLOG(...) radio_osi_log_write(3, "radio", __VA_ARGS__)
 
+/* One scan's records, as the blob returns them (one scan at a time: the boot scan, then the
+ * kernel's requests). */
+static wifi_ap_record_t g_recs[RADIO_SCAN_MAX];
+
+/* The scan's records into the context, for the kernel (the seqlock is described there). */
+static void scan_publish(radio_ctx_t *ctx, const wifi_ap_record_t *recs, uint16_t got) {
+    ctx->scan_seq++;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    uint32_t n = got < RADIO_SCAN_MAX ? got : RADIO_SCAN_MAX;
+    for (uint32_t i = 0; i < n; i++) {
+        radio_ap_t *a = &ctx->scan[i];
+        for (int k = 0; k < 32; k++) a->ssid[k] = (char)recs[i].ssid[k];
+        a->ssid[32] = 0;
+        for (int k = 0; k < 6; k++) a->bssid[k] = recs[i].bssid[k];
+        a->chan = recs[i].primary;
+        a->rssi = recs[i].rssi;
+        a->auth = (uint8_t)recs[i].authmode;
+    }
+    ctx->scan_n = n;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    ctx->scan_seq++;
+}
+
+/* The associated AP's signal, channel and BSSID. */
+static void sample_ap(radio_ctx_t *ctx) {
+    wifi_ap_record_t ap;
+    if (esp_wifi_sta_get_ap_info(&ap) != 0) return;
+    ctx->rssi = ap.rssi;
+    ctx->chan = ap.primary;
+    for (int k = 0; k < 6; k++) ctx->bssid[k] = ap.bssid[k];
+}
+
 static void radio_exit(void) {
     register long a0 __asm__("a0") = SYS_UEXIT;        /* returning from the entry would jump to 0 */
     __asm__ volatile("ecall" : "+r"(a0) :: "memory");
@@ -116,10 +148,12 @@ void radio_main(uintptr_t arg) {
         esp_wifi_scan_get_ap_num(&n);
         ctx->ap_count = n;
         RLOG("scan found %u access points", (unsigned)n);
-        static wifi_ap_record_t recs[16];
-        uint16_t got = n < 16 ? n : 16;
+        wifi_ap_record_t *recs = g_recs;
+        uint16_t got = n < RADIO_SCAN_MAX ? n : RADIO_SCAN_MAX;
         ctx->best_rssi = -127;
+        ctx->rssi = -127;
         if (esp_wifi_scan_get_ap_records(&got, recs) == 0) {
+            scan_publish(ctx, recs, got);
             for (uint16_t i = 0; i < got; i++)
                 RLOG("  %-32s ch%2u %4d dBm  auth %u  %02x:%02x:%02x:%02x:%02x:%02x", (char *)recs[i].ssid,
                      (unsigned)recs[i].primary, (int)recs[i].rssi, (unsigned)recs[i].authmode,
@@ -177,7 +211,7 @@ void radio_main(uintptr_t arg) {
         }
         RLOG("join %s; radio heap free %u of %u", ctx->connected ? "succeeded" : "FAILED",
              (unsigned)radio_osi_get_free_heap_size(), (unsigned)ctx->arena_bytes);
-        if (ctx->connected) ctx->stage = RADIO_STAGE_JOINED;
+        if (ctx->connected) { ctx->stage = RADIO_STAGE_JOINED; sample_ap(ctx); }
     }
     ctx->done = 1;
 
@@ -214,6 +248,17 @@ void radio_main(uintptr_t arg) {
                         RLOG("bssid pin dropped: %d", esp_wifi_set_config(WIFI_IF_STA, &wc));
                     }
                 }
+            }
+            if (ctx->connected && (tick % 25) == 0) sample_ap(ctx);          /* every 5 s */
+            if (ctx->scan_req) {
+                /* A blocking scan of every channel, beside the association: the blob leaves the
+                 * channel between beacons, so the link stays up. */
+                ctx->scan_req = 0;
+                wifi_scan_config_t sc = { 0 };
+                uint16_t got = RADIO_SCAN_MAX;
+                int sr = esp_wifi_scan_start(&sc, true);
+                if (sr == 0 && esp_wifi_scan_get_ap_records(&got, g_recs) == 0) scan_publish(ctx, g_recs, got);
+                else RLOG("scan failed: 0x%x", sr);
             }
             if (ctx->rejoin_req) {
                 ctx->rejoin_req = 0;

@@ -907,6 +907,86 @@ def test_sdio_slot1(b: Board) -> tuple[str, bool, str]:
     return name, True, f"vendor 0x0092 device 0x{m.group(2)}, CCCR rev 0x{by[0]} via CMD53"
 
 
+def test_c6_namespace(b: Board) -> tuple[str, bool, str]:
+    """49.8a, plan/phase49_c6_network_nodes.md: the C6's state as files under
+    /c6, and /c6 surviving a C6 restart.
+
+    Needs the LLP link up (the LCD-7B starts it at boot; on a NANO, `llp host`
+    by hand -- skipped otherwise). Reads the C6's /dev/wlan, /proc/llp,
+    /proc/radio, /proc/wdt and /proc/wlanscan through /c6, then restarts the C6
+    through its own /dev/reboot: the P4 must mount the new C6 by itself (and,
+    if the radio was associated, see it associated again with the credentials
+    the P4 hands it). Runs before the SDIO probe, which takes the slot from the
+    link."""
+    name = "/c6: the C6's state as files, remounted after a C6 restart (49.8a)"
+    c = b.console_session
+
+    def llp_state(deadline_s: float, min_gen: int = 0) -> tuple[bool, str]:
+        """Waits for the link up, /c6 mounted, and the 9P generation at least `min_gen`."""
+        end = time.monotonic() + deadline_s
+        out = ""
+        while time.monotonic() < end:
+            out = c.cmd("cat /proc/llp", deadline=8.0)
+            g = re.search(r"p9_generation=(\d+)", out)
+            if re.search(r"state=up.*radio_mounted=/c6", out, re.DOTALL) and g and int(g.group(1)) >= min_gen:
+                return True, out
+            time.sleep(1.0)
+        return False, out
+
+    out = c.cmd("cat /proc/llp", deadline=8.0)
+    if "role=off" in out or "cannot" in out:
+        return name, True, "SKIPPED (no LLP host running on this board)"
+    ok, out = llp_state(30.0)
+    if not ok:
+        return name, False, f"link not up with /c6 mounted: {out.strip()[-300:]}"
+    gen = re.search(r"p9_generation=(\d+)", out)
+    if not gen:
+        return name, False, f"no p9_generation in /proc/llp: {out.strip()[-300:]}"
+    files = {
+        "/c6/dev/wlan": r"state=.*mac=([0-9a-f]{2}:){5}[0-9a-f]{2}",
+        "/c6/proc/llp": r"role=radio.*state=up.*peer_role=host",
+        "/c6/proc/radio": r"blob=yes",
+        "/c6/proc/wdt": r"armed=yes.*last_reset=",
+        "/c6/proc/wlanscan": r"aps=\d+",
+    }
+    seen = {}
+    for path, pattern in files.items():
+        got = c.cmd(f"cat {path}", deadline=10.0)
+        if not re.search(pattern, got, re.DOTALL):
+            return name, False, f"{path}: {got.strip()[-300:]}"
+        seen[path] = got
+    was_joined = "state=joined" in seen["/c6/dev/wlan"]
+
+    got = c.cmd('(write-file "/c6/dev/reboot" "reboot")', deadline=10.0)
+    if "#t" not in got:
+        return name, False, f"/c6/dev/reboot refused the write: {got.strip()[-200:]}"
+    # A flash-booted C6 is back with a new session within a second or so (its
+    # HELLO then ends the old one at once), so there is rarely a gap to
+    # observe; the QEMU test (tests/runner.py, test_llp_two_nodes) measures
+    # the failure while a peer is really gone.
+    t0 = time.monotonic()
+    ok, out = llp_state(45.0, int(gen.group(1)) + 1)
+    back_s = time.monotonic() - t0
+    if not ok:
+        return name, False, f"the P4 did not mount the restarted C6: {out.strip()[-300:]}"
+    got = c.cmd("cat /c6/proc/wdt", deadline=10.0)
+    if "last_reset=software" not in got:
+        return name, False, f"the C6 does not report the software reset: {got.strip()[-200:]}"
+    rejoined = ""
+    if was_joined:
+        end = time.monotonic() + 45.0
+        while time.monotonic() < end:
+            if "state=joined" in c.cmd("cat /c6/dev/wlan", deadline=10.0):
+                rejoined = ", associated again"
+                break
+            time.sleep(2.0)
+        else:
+            return name, False, "the restarted C6 did not associate again"
+    rssi = re.search(r"rssi=(-?\d+)", seen["/c6/dev/wlan"])
+    return name, True, (f"5 files read; rebooted through /c6/dev/reboot, mounted again within {back_s:.1f} s"
+                        f"{rejoined}; rssi {rssi.group(1) if rssi else '?'} dBm")
+
+
 def test_sd_card_present(b: Board) -> tuple[str, bool, str]:
     """35.5, plan/phase35_esp32p4_sdmmc.md.
 
@@ -1320,6 +1400,7 @@ TESTS = [
     test_emac_frames,
     test_node_identity_from_silicon,
     test_lan_node,
+    test_c6_namespace,
     test_sd_card_present,
     test_sdio_slot1,
     test_sd_bus_is_four_bit,

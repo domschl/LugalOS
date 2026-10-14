@@ -843,6 +843,34 @@ without USB.
   under `/c6` from the P4's shell and from the LAN through the P4;
   `test_esp32p4.py` checks that, and that a C6 reset during an open LAN session
   yields prompt errors and a working `/c6` again within ~15 s.
+  * **Done 2026-10-14.** Files (all `key=value`, documented in
+    `doc/admin/networking.md` §4): `/dev/wlan` (state, ssid, bssid, channel,
+    rssi, mac, joins, last_disconnect; `join`, `rejoin`, `scan`),
+    `/proc/wlanscan`, `/proc/radio`, `/proc/wdt`, `/proc/llp` (both nodes),
+    `/dev/reboot` (`reboot`, `download`; RP2350 and C6). The radio samples the
+    AP every 5 s and sends real RSSI in STATE (`peer_rssi`). The 9P link got
+    `up()` and `generation` (`fs/p9_link.h`): requests fail at once while the
+    link is down, a new peer session flushes queued 9P both ways, remote mounts
+    take fid numbers no earlier mount used, and a mount is never re-entered
+    over the link its request came in on. `/c6` is attached on any channel and
+    retried every 5 s while unmounted.
+    * **Found and fixed on the way: the 9P server had one fid table for all
+      clients, and every Tversion emptied it** — a second LAN client, or the
+      C6 mounting the P4, cost every other client its fids. Fids and the
+      negotiated msize are now per connection (`p9_server_process_conn()`,
+      the link a request came in on).
+    * Verified: QEMU `test_llp_two_nodes` (both `/proc/llp`s through the
+      host; the radio's Tversion on the host leaves the LAN session's fids
+      alone; `/c6/p4/...` refused in < 3 s; radio killed: `/c6` fails after
+      2.4 s instead of 10 s; a new radio is remounted by itself and reached
+      from the LAN). Full QEMU suite 506/506. LCD-7B `test_esp32p4.py` 38/38
+      with the new `/c6` check: 5 files read, rebooted through
+      `/c6/dev/reboot`, remounted within 1.8 s, associated again, −64 dBm. A
+      flash-booted C6 is back with a new session so fast that the P4 sees the
+      new HELLO before the old link times out.
+    * Not done here: `/dev/wlan` and `/proc/wlanscan` on the RP2350W's CYW43
+      (the same names, for 52 or 49.10); the NANO (it starts `llp host` by
+      hand) and a C6-Zero were not attached.
 
   **49.8b — OTA, generic shape; the C6 as its first backend.** **Found
   2026-10-14: the image the boot ROM loads is not a loader, it is the kernel's

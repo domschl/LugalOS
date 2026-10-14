@@ -159,6 +159,14 @@ int p9_server_process(const uint8_t *req_buf, uint32_t req_len,
                       uint8_t *resp_buf, uint32_t resp_max,
                       p9_auth_policy_t policy);
 
+/* The same, for a server with several clients at once: `conn` (the link the
+ * request came in on; any stable pointer) scopes fid numbers and the
+ * negotiated msize, so one client's Tversion resets only its own fids.
+ * p9_server_process() is this with conn NULL. */
+int p9_server_process_conn(const void *conn, const uint8_t *req_buf, uint32_t req_len,
+                           uint8_t *resp_buf, uint32_t resp_max,
+                           p9_auth_policy_t policy);
+
 /* --- The auth gate ---
  *
  * 9P-native, through Tauth and an afid, because that is the extension point

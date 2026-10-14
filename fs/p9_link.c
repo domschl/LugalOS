@@ -94,6 +94,13 @@ typedef struct {
 
 static p9_waiter_t g_waiters[P9_LINK_MAX_WAITERS];
 
+/* The link whose request is being served, and the task serving it (see
+ * p9_route_frame()); NULL/-1 outside a request. */
+static p9_link_t *g_serving_link;
+static int g_serving_pid = -1;
+
+static bool link_up(p9_link_t *link) { return !link->up || link->up(link); }
+
 static p9_waiter_t *waiter_begin(p9_link_t *link, uint16_t tag) {
     for (int i = 0; i < P9_LINK_MAX_WAITERS; i++) {
         if (!g_waiters[i].link) {
@@ -139,11 +146,19 @@ static int p9_route_frame(p9_link_t *link, const uint8_t *buf, uint32_t len) {
         return 1;
     }
 
-    /* T-message: a genuine request for this node's server. */
+    /* T-message: a genuine request for this node's server. Which link it
+     * came in on is recorded for p9_remote_xchg()'s loop check, per task:
+     * another task's client calls are not this request's. */
     static uint8_t resp_buf[P9_MAX_MSIZE];
-    int resp_len = p9_server_process(buf, len, resp_buf, sizeof(resp_buf),
-                                     link->auth_required ? P9_AUTH_REQUIRED
-                                                         : P9_AUTH_NOT_REQUIRED);
+    p9_link_t *outer_link = g_serving_link;
+    int outer_pid = g_serving_pid;
+    g_serving_link = link;
+    g_serving_pid = sched_current_pid();
+    int resp_len = p9_server_process_conn(link, buf, len, resp_buf, sizeof(resp_buf),
+                                          link->auth_required ? P9_AUTH_REQUIRED
+                                                              : P9_AUTH_NOT_REQUIRED);
+    g_serving_link = outer_link;
+    g_serving_pid = outer_pid;
     if (resp_len < 7) return -1;
     if (link->send_frame(link, resp_buf, (uint32_t)resp_len) < 0) return -1;
     return 1;
@@ -290,6 +305,8 @@ static int p9_link_roundtrip(p9_link_t *link, const p9_msg_t *req, p9_msg_t *res
 
     int tx_len = p9_serialize(req, tx, cap);
     if (tx_len < 7) { ylock_release(&g_client_lock); return -1; }
+    if (!link_up(link)) { ylock_release(&g_client_lock); return -1; }
+    uint32_t gen = link->generation;
 
     p9_waiter_t *w = waiter_begin(link, req->tag);
     if (!w) {
@@ -339,6 +356,13 @@ static int p9_link_roundtrip(p9_link_t *link, const p9_msg_t *req, p9_msg_t *res
          * moment it closes. Ordering the pair correctly is still this
          * function's job; noticing when it has not been is no longer. */
         if (p9_link_pump(link) < 0) { waiter_end(w); ylock_release(&g_client_lock); return -1; }
+        /* The peer went away, or is a new one: whatever it answers now is
+         * not the answer to this. */
+        if (!link_up(link) || link->generation != gen) {
+            waiter_end(w);
+            ylock_release(&g_client_lock);
+            return -1;
+        }
         if (time_get_ms() > deadline) {
             printk("[9P Link] No reply on '%s' within %d ms (tag %d) -- peer not "
                    "serving, or the wire is not connected\n",
@@ -484,6 +508,7 @@ int p9_link_cat(p9_link_t *link, const char *path, char *out_buf, uint32_t out_m
 struct p9_remote_mount {
     bool in_use;
     p9_link_t *link;
+    uint32_t generation;          /* the link's, when this mount was opened */
     uint32_t root_fid;
     uint32_t next_fid;
     uint16_t next_tag;
@@ -495,6 +520,7 @@ struct p9_remote_mount {
 };
 
 static p9_remote_mount_t g_remote_mounts[P9_REMOTE_MAX_MOUNTS];
+static uint32_t g_mount_serial;
 static uint8_t g_remote_tx[P9_MAX_MSIZE];
 static uint8_t g_remote_rx[P9_MAX_MSIZE];
 
@@ -514,6 +540,8 @@ static uint16_t p9_remote_next_tag(p9_remote_mount_t *m) {
 }
 
 static int p9_remote_xchg(p9_remote_mount_t *m, const p9_msg_t *req, p9_msg_t *resp) {
+    if (m->link->generation != m->generation) return -1;
+    if (m->link == g_serving_link && g_serving_pid == sched_current_pid()) return -1;
     return p9_link_roundtrip(m->link, req, resp, g_remote_tx, g_remote_rx, sizeof(g_remote_tx));
 }
 
@@ -619,7 +647,10 @@ p9_remote_mount_t *p9_remote_mount_open(p9_link_t *link) {
 
     memset(m, 0, sizeof(*m));
     m->link = link;
-    m->next_fid = 1;
+    m->generation = link->generation;
+    /* Fid numbers no earlier mount used: a request still queued from a
+     * mount that is gone cannot name a fid of this one. */
+    m->next_fid = (++g_mount_serial << 16) | 1u;
     m->next_tag = 1;
 
     p9_msg_t req, resp;

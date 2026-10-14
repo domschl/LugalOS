@@ -221,6 +221,7 @@ static int p9_pack_stat(uint8_t *out, uint32_t out_max, const char *name, uint64
  * time today; a real multi-client story is Track A's later milestones),
  * so linear search is fine. */
 typedef struct {
+    const void *conn;           // the connection this fid number belongs to
     bool in_use;
     uint32_t fid_value;
     char path[128];             // resolved absolute VFS path
@@ -250,11 +251,19 @@ typedef struct {
     char     auth_aname[P9_MAX_NAME_LEN];
 } p9_fid_entry_t;
 
+/* One table for every connection, each entry tagged with the connection it
+ * belongs to: a fid number means something only to the client that chose it,
+ * so lookups, allocation and Tversion's reset all go by (connection, fid). A
+ * connection is the link a request came in on (p9_server_process_conn()). */
 static p9_fid_entry_t g_fid_table[P9_MAX_FIDS];
+
+/* The connection of the request being processed (NULL: the only one). */
+static const void *g_conn;
 
 static p9_fid_entry_t *p9_fid_lookup(uint32_t fid) {
     for (int i = 0; i < P9_MAX_FIDS; i++) {
-        if (g_fid_table[i].in_use && g_fid_table[i].fid_value == fid) return &g_fid_table[i];
+        if (g_fid_table[i].in_use && g_fid_table[i].conn == g_conn && g_fid_table[i].fid_value == fid)
+            return &g_fid_table[i];
     }
     return NULL;
 }
@@ -271,6 +280,7 @@ static p9_fid_entry_t *p9_fid_alloc(uint32_t fid) {
         if (!g_fid_table[i].in_use) {
             memset(&g_fid_table[i], 0, sizeof(g_fid_table[i]));
             g_fid_table[i].in_use = true;
+            g_fid_table[i].conn = g_conn;
             g_fid_table[i].fid_value = fid;
             g_fid_table[i].vfs_fd = -1;
             return &g_fid_table[i];
@@ -281,6 +291,12 @@ static p9_fid_entry_t *p9_fid_alloc(uint32_t fid) {
 
 static void p9_fid_reset_all(void) {
     for (int i = 0; i < P9_MAX_FIDS; i++) p9_fid_release(&g_fid_table[i]);
+}
+
+/* Tversion: this connection starts over; the others keep their fids. */
+static void p9_fid_reset_conn(void) {
+    for (int i = 0; i < P9_MAX_FIDS; i++)
+        if (g_fid_table[i].in_use && g_fid_table[i].conn == g_conn) p9_fid_release(&g_fid_table[i]);
 }
 
 /* --- The auth gate --------- */
@@ -791,8 +807,8 @@ bool p9_auth_path_is_secret(const char *path) { return p9_path_is_secret(path); 
 
 /* The policy in force for the request being processed. Set once per call from
  * p9_server_process()'s argument; a static rather than a parameter threaded
- * through nine handlers, which is honest for a server that has one connection
- * at a time (Tversion resets all fid state precisely because of that). */
+ * through nine handlers, which is honest for a server that processes one
+ * request at a time (g_conn below is set the same way). */
 static p9_auth_policy_t g_auth_policy = P9_AUTH_NOT_REQUIRED;
 
 static void p9_handle_tauth(const p9_msg_t *req, p9_msg_t *resp) {
@@ -1674,23 +1690,37 @@ int p9_deserialize(const uint8_t *buf, uint32_t len, p9_msg_t *msg) {
     return 0;
 }
 
-/* The msize agreed with the current peer, as answered in the last Rversion.
- *
- * One global, matching the connection model this server already has: the fid
- * table (g_fid_table) is global too, and Tversion resets it, so "the
- * connection" is singular here by construction. If this server ever serves
- * two peers at once, this and the fid table become per-connection together.
- *
- * Starts at this node's own maximum so a peer that skips Tversion -- which
- * is a protocol error, but should not produce a nonsense iounit -- is
- * answered with something legal. */
-static uint32_t g_negotiated_msize = P9_MAX_MSIZE;
+/* The msize agreed with each connection, as answered in its last Rversion --
+ * per connection, as the fids are. A full table forgets the oldest entry; a
+ * connection with none (it skipped Tversion, a protocol error) is answered
+ * with this node's own maximum, which is at least legal. */
+#define P9_MSIZE_CONNS 6
+static struct { const void *conn; uint32_t msize; uint32_t age; } g_msize[P9_MSIZE_CONNS];
+static uint32_t g_msize_age;
+
+static void msize_set(uint32_t msize) {
+    int slot = 0;
+    for (int i = 0; i < P9_MSIZE_CONNS; i++) {
+        if (g_msize[i].msize && g_msize[i].conn == g_conn) { slot = i; break; }
+        if (!g_msize[i].msize || g_msize[i].age < g_msize[slot].age) slot = i;
+    }
+    g_msize[slot].conn = g_conn;
+    g_msize[slot].msize = msize;
+    g_msize[slot].age = ++g_msize_age;
+}
+
+static uint32_t msize_get(void) {
+    for (int i = 0; i < P9_MSIZE_CONNS; i++)
+        if (g_msize[i].msize && g_msize[i].conn == g_conn) return g_msize[i].msize;
+    return P9_MAX_MSIZE;
+}
 
 /* What an Ropen/Rcreate may advertise as its iounit: the largest payload one
  * Tread/Twrite can carry within the agreed msize. Never larger than the
  * connection can actually deliver -- see P9_IOHDRSZ. */
 uint32_t p9_negotiated_iounit(void) {
-    return (g_negotiated_msize > P9_IOHDRSZ) ? (g_negotiated_msize - P9_IOHDRSZ) : 0;
+    uint32_t msize = msize_get();
+    return (msize > P9_IOHDRSZ) ? (msize - P9_IOHDRSZ) : 0;
 }
 
 static uint64_t g_p9_last_activity_us = 0;
@@ -1707,6 +1737,12 @@ bool p9_is_connected(void) {
 
 int p9_server_process(const uint8_t *req_buf, uint32_t req_len, uint8_t *resp_buf,
                       uint32_t resp_max, p9_auth_policy_t policy) {
+    return p9_server_process_conn(NULL, req_buf, req_len, resp_buf, resp_max, policy);
+}
+
+int p9_server_process_conn(const void *conn, const uint8_t *req_buf, uint32_t req_len,
+                           uint8_t *resp_buf, uint32_t resp_max, p9_auth_policy_t policy) {
+    g_conn = conn;
     g_p9_last_activity_us = time_get_us();
     g_auth_policy = policy;
     p9_msg_t req;
@@ -1729,13 +1765,13 @@ int p9_server_process(const uint8_t *req_buf, uint32_t req_len, uint8_t *resp_bu
 
     switch (req.type) {
         case P9_TVERSION:
-            p9_fid_reset_all(); // Tversion (re)initializes the connection
+            p9_fid_reset_conn(); // Tversion (re)initializes this connection
             resp.type = P9_RVERSION;
             resp.msize = (req.msize > 0 && req.msize < P9_MAX_MSIZE) ? req.msize : P9_MAX_MSIZE;
             /* Remember what was agreed. It used to be computed here, sent,
              * and forgotten, which left p9_serialize() with nothing to
              * derive an honest iounit from -- so it hardcoded one. */
-            g_negotiated_msize = resp.msize;
+            msize_set(resp.msize);
             break;
         case P9_TAUTH:
             p9_handle_tauth(&req, &resp);

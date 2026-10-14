@@ -204,4 +204,10 @@ bool board_reset(void);
  * strap. Returns false where there is none; does not return where there is. */
 bool board_reset_download(void);
 
+/* /dev/reboot: the same, `ms` from now, from a task of its own -- so that the
+ * answer to the write that asked for it (a 9P reply, over whatever link) has
+ * left before the board goes. False where the board cannot do what was asked,
+ * or no task could be started. */
+bool board_reset_later(bool download, uint32_t ms);
+
 #endif /* LUGALOS_KERNEL_DEVICE_H */

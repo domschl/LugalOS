@@ -33,6 +33,15 @@ typedef struct {
     rn_slot_t tx_slot[RN_TX_SLOTS];
 } rn_rings_t;
 
+#define RADIO_SCAN_MAX 16
+typedef struct {
+    char    ssid[33];
+    uint8_t bssid[6];
+    uint8_t chan;
+    int8_t  rssi;
+    uint8_t auth;                       /* IDF's wifi_auth_mode_t */
+} radio_ap_t;
+
 typedef struct {
     void    *arena;            /* the radio heap, in the radio's domain */
     uint32_t arena_bytes;
@@ -55,6 +64,16 @@ typedef struct {
     volatile uint32_t disc_reason;
     volatile uint32_t rejoin_req;       /* kernel -> radio: drop the association and join again (a link that carries nothing) */
     volatile uint32_t joins;            /* successful associations since start, for `radio stats` */
+    /* The associated AP, sampled every few seconds while connected (rssi -127: none yet). */
+    volatile int32_t  rssi;
+    volatile uint8_t  bssid[6];
+    volatile uint8_t  chan;
+    /* The last scan, compact. A seqlock: odd while the radio writes it; the kernel copies it and
+     * keeps the copy only if scan_seq was even and unchanged across the copy. */
+    volatile uint32_t scan_req;         /* kernel -> radio: scan again (serviced while joined) */
+    volatile uint32_t scan_seq;
+    uint32_t scan_n;
+    radio_ap_t scan[RADIO_SCAN_MAX];
 } radio_ctx_t;
 
 void radio_main(uintptr_t arg);

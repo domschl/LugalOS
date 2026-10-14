@@ -36,6 +36,21 @@ typedef struct p9_link {
      * A link that requires auth but has no keys configured refuses every
      * attach -- see p9_auth_have_keys(). */
     bool auth_required;
+
+    /* Optional, for a link whose peer can be absent or restart (an LLP
+     * channel). NULL: always up, and the peer never restarts.
+     *
+     * `up()` false: no request is sent, and a client waiting for a reply
+     * fails at once rather than after P9_CLIENT_TIMEOUT_MS -- a synchronous
+     * server that is itself the client (a remote mount re-exported) must not
+     * stall every one of its own clients for that long.
+     *
+     * `generation` is advanced by the transport whenever the peer is a new
+     * one (it restarted). Fids and tags belong to the peer they were sent
+     * to: a reply awaited across a change fails, and a remote mount opened
+     * before it refuses every operation until it is mounted again. */
+    bool (*up)(struct p9_link *link);
+    volatile uint32_t generation;
 } p9_link_t;
 
 /* Services exactly one pending request on `link`, if poll() reports one
@@ -108,6 +123,13 @@ typedef struct {
  * operations against an already-open mount. */
 p9_remote_mount_t *p9_remote_mount_open(p9_link_t *link);
 void p9_remote_mount_close(p9_remote_mount_t *mount);
+
+/* Every operation below fails, without a message on the wire, once the
+ * mount's peer has restarted (the link's `generation` moved on: mount it
+ * again), and while its link is down. It also fails on a mount whose link is
+ * the one the request being served came in on: a node serving its peer never
+ * forwards back to that same peer (/c6/p4/c6/... would recurse through both
+ * servers until a stack gave out). */
 
 /* File-handle operations against an established mount, mirroring
  * fs/include/fs/vfs.h's vfs_open()/vfs_pread()/vfs_pwrite()/vfs_readdir()/

@@ -164,6 +164,11 @@ void radio_c6_probe(void) {
 
 bool radio_c6_started(void) { return g_rpid >= 0; }
 
+static const char *stage_name(uint32_t stage) {
+    static const char *const names[] = { "not started", "FAILED", "OS shim up", "coexistence up", "esp_wifi_init_internal returned 0", "esp_wifi_start returned 0", "scan found access points", "joined (4-way handshake done)" };
+    return stage < 8 ? names[stage] : "?";
+}
+
 bool radio_c6_rf_on(void) {
 #if defined(CONFIG_RADIO_C6)
     const radio_ctx_t *c = (const radio_ctx_t *)g_rstack;
@@ -211,9 +216,8 @@ int radio_c6_start(const char *ssid, const char *psk) {
     for (int i = 0; i < 40000 && sched_task_state(g_rpid) != TASK_DEAD && !((const radio_ctx_t *)g_rstack)->done; i++) task_sleep_ms(1);
     radio_intr_report();
     const radio_ctx_t *ctx = (const radio_ctx_t *)g_rstack;
-    static const char *const names[] = { "not started", "FAILED", "OS shim up", "coexistence up", "esp_wifi_init_internal returned 0", "esp_wifi_start returned 0", "scan found access points", "joined (4-way handshake done)" };
     cprintf("radio: stage %u (%s), esp_wifi_init rc=0x%x, start rc=0x%x, task %s\n", (unsigned)ctx->stage,
-            ctx->stage < 8 ? names[ctx->stage] : "?", (unsigned)ctx->rc_init, (unsigned)ctx->rc_start,
+            stage_name(ctx->stage), (unsigned)ctx->rc_init, (unsigned)ctx->rc_start,
             sched_task_state(g_rpid) == TASK_DEAD ? "ended" : "still running");
     /* wlan0 exists whenever a join was intended and the radio is up -- not only when the first
      * attempt already succeeded: a node booting before its router (the power-cut case) joins later,
@@ -384,6 +388,13 @@ int radio_c6_ctl_write(const char *buf, uint32_t len) {
         radio_ctx_t *c = (radio_ctx_t *)g_rstack;
         if (c && c->join) { c->rejoin_req = 1; rc = 0; }
 #endif
+    } else if (strcmp(line, "scan") == 0) {
+        /* Serviced by the radio's supervision loop, so only once it joins a network; the results
+         * replace /proc/wlanscan's a few seconds later. */
+#if defined(CONFIG_RADIO_C6)
+        radio_ctx_t *c = (radio_ctx_t *)g_rstack;
+        if (c && c->join) { c->scan_req = 1; rc = 0; }
+#endif
     }
     memset(line, 0, sizeof(line));
     return rc == 0 ? (int)len : -1;
@@ -393,10 +404,85 @@ uint32_t radio_c6_ctl_read(char *out, uint32_t cap) {
     netif_t *nif = radio_c6_netif();
     const char *state = !radio_c6_started() ? "idle" : !nif ? "starting" :
                         netif_link_up(nif) ? "joined" : "not joined";
-    uint32_t n = 0;
-    while (state[n] && n + 1 < cap) { out[n] = state[n]; n++; }
-    if (n < cap) out[n++] = '\n';
+    uint32_t n = (uint32_t)ksnprintf(out, cap, "state=%s\n", state);
+#if defined(CONFIG_RADIO_C6)
+    const radio_ctx_t *c = (const radio_ctx_t *)g_rstack;
+    if (c && n < cap) {
+        const volatile uint8_t *b = c->bssid;
+        bool joined = c->connected && c->rssi > -127;
+        n += (uint32_t)ksnprintf(out + n, cap - n,
+            "ssid=%s\nbssid=%02x:%02x:%02x:%02x:%02x:%02x\nchannel=%u\nrssi=%d\n"
+            "mac=%02x:%02x:%02x:%02x:%02x:%02x\njoins=%u\nlast_disconnect=%u\n",
+            c->join ? c->ssid : "",
+            joined ? b[0] : 0, joined ? b[1] : 0, joined ? b[2] : 0, joined ? b[3] : 0, joined ? b[4] : 0, joined ? b[5] : 0,
+            joined ? (unsigned)c->chan : 0u, joined ? (int)c->rssi : -127,
+            c->mac[0], c->mac[1], c->mac[2], c->mac[3], c->mac[4], c->mac[5],
+            (unsigned)c->joins, (unsigned)c->disc_reason);
+    }
+#endif
+    return n < cap ? n : cap;
+}
+
+int radio_c6_rssi(void) {
+#if defined(CONFIG_RADIO_C6)
+    const radio_ctx_t *c = (const radio_ctx_t *)g_rstack;
+    if (c && c->connected) return (int)c->rssi;
+#endif
+    return -127;
+}
+
+uint32_t radio_c6_scan_render(char *out, uint32_t cap) {
+#if defined(CONFIG_RADIO_C6)
+    const radio_ctx_t *c = (const radio_ctx_t *)g_rstack;
+    if (!c) return (uint32_t)ksnprintf(out, cap, "aps=0\n");
+    static radio_ap_t aps[RADIO_SCAN_MAX];
+    uint32_t count = 0;
+    for (int tries = 0; tries < 8; tries++) {         /* the radio publishes rarely: a retry is enough */
+        uint32_t seq = c->scan_seq;
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        if (seq & 1u) { task_sleep_ms(5); continue; }
+        count = c->scan_n < RADIO_SCAN_MAX ? c->scan_n : RADIO_SCAN_MAX;
+        memcpy(aps, (const void *)c->scan, count * sizeof aps[0]);
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        if (c->scan_seq == seq) break;
+        count = 0;
+    }
+    uint32_t n = (uint32_t)ksnprintf(out, cap, "aps=%u\n", (unsigned)count);
+    for (uint32_t i = 0; i < count; i++) {
+        char line[80];
+        const radio_ap_t *a = &aps[i];
+        uint32_t k = (uint32_t)ksnprintf(line, sizeof line, "%02x:%02x:%02x:%02x:%02x:%02x %u %d %u %s\n",
+                                         a->bssid[0], a->bssid[1], a->bssid[2], a->bssid[3], a->bssid[4], a->bssid[5],
+                                         (unsigned)a->chan, (int)a->rssi, (unsigned)a->auth, a->ssid);
+        if (k >= sizeof line || n + k >= cap) break;
+        memcpy(out + n, line, k);
+        n += k;
+    }
+    if (n < cap) out[n] = 0;
     return n;
+#else
+    return (uint32_t)ksnprintf(out, cap, "aps=0\n");
+#endif
+}
+
+uint32_t radio_c6_proc_render(char *out, uint32_t cap) {
+#if defined(CONFIG_RADIO_C6)
+    const radio_ctx_t *c = (const radio_ctx_t *)g_rstack;
+    if (!c) return (uint32_t)ksnprintf(out, cap, "blob=yes\nstarted=no\n");
+    uint32_t n = (uint32_t)ksnprintf(out, cap,
+        "blob=yes\nstarted=yes\nstage=%u (%s)\nrc_init=0x%x\nrc_start=0x%x\naps_at_boot=%u\n"
+        "connected=%u\njoins=%u\nlast_disconnect=%u\nrx_frames=%u\nrx_dropped=%u\ntx_frames=%u\ntx_errors=%u\n",
+        (unsigned)c->stage, stage_name(c->stage), (unsigned)c->rc_init, (unsigned)c->rc_start, (unsigned)c->ap_count,
+        (unsigned)c->connected, (unsigned)c->joins, (unsigned)c->disc_reason, (unsigned)c->rx_calls,
+        (unsigned)c->rx_dropped, (unsigned)c->tx_sent, (unsigned)c->tx_errors);
+    if (n < cap && c->rings)
+        n += (uint32_t)ksnprintf(out + n, cap - n, "ring_rx=%u/%u\nring_tx=%u/%u\n",
+                                 (unsigned)c->rings->rx.head, (unsigned)c->rings->rx.tail,
+                                 (unsigned)c->rings->tx.head, (unsigned)c->rings->tx.tail);
+    return n < cap ? n : cap;
+#else
+    return (uint32_t)ksnprintf(out, cap, "blob=no\n");
+#endif
 }
 
 void radio_c6_autostart(void) {

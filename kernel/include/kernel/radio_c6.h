@@ -25,10 +25,19 @@ void radio_c6_autostart(void);
  * derived PSK, held in RAM only until the radio has them. Returns at once; 0, or -1 when the radio
  * has already started (or is starting) in this boot, or the arguments are malformed. */
 int radio_c6_join(const char *ssid, const char *psk_hex);
-/* /dev/wlan, a ctl file: `join SSID PSKHEX` or `rejoin` written (the count, or -1); reading gives
- * one line, idle / starting / not joined / joined. */
+/* /dev/wlan, a ctl file: `join SSID PSKHEX`, `rejoin` or `scan` written (the count, or -1); reading
+ * gives the station's state as key=value lines (state, ssid, bssid, channel, rssi, mac, joins,
+ * last_disconnect). The same names wherever a node has a Wi-Fi station. */
 int radio_c6_ctl_write(const char *buf, uint32_t len);
 uint32_t radio_c6_ctl_read(char *out, uint32_t cap);
+/* /proc/wlanscan: the last scan, one access point per line ("bssid channel rssi auth ssid"),
+ * after a line `aps=N`. As many lines as fit in `cap`; whole lines only. */
+uint32_t radio_c6_scan_render(char *out, uint32_t cap);
+/* /proc/radio: this radio's own state -- how far it started, its return codes, frame counters
+ * and rings -- as key=value lines. */
+uint32_t radio_c6_proc_render(char *out, uint32_t cap);
+/* The associated AP's signal in dBm, or -127 when not associated (for LLP's STATE). */
+int radio_c6_rssi(void);
 /* The wlan0 interface, once the radio has joined a network (NULL before). */
 struct netif;
 struct netif *radio_c6_netif(void);

@@ -36,13 +36,15 @@ static chan_endpoint_t *g_ep;
  * in endpoint-owned memory. p9_server_process() already has exactly this
  * shape, which is not a coincidence -- it was written to be driven from a
  * wire (A3's p9_link_service() calls it identically). */
+static p9_link_t g_link;            /* defined below; the handler names it as its connection */
+
 static int p9_chan_handler(void *ctx, const uint8_t *req, uint32_t req_len,
                            uint8_t *resp, uint32_t resp_max) {
     (void)ctx;
     /* The local channel endpoint: same address space, same trust as the
      * caller, and the one path that must never require a key -- it is how a
      * program on this board reaches its own namespace. */
-    return p9_server_process(req, req_len, resp, resp_max, P9_AUTH_NOT_REQUIRED);
+    return p9_server_process_conn(&g_link, req, req_len, resp, resp_max, P9_AUTH_NOT_REQUIRED);
 }
 
 static int p9_chan_send(p9_link_t *link, const uint8_t *buf, uint32_t len) {

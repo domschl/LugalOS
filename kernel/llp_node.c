@@ -29,6 +29,14 @@
  *   frames packed back to back, 4-byte aligned, no CRC, flow control in the
  *   hardware. The P4 as the SDIO host, the C6-MINI beside it as the slave. */
 
+#if defined(CONFIG_BOARD_ESP32C6)
+#include "kernel/radio_c6.h"
+/* The station's signal, for STATE (dBm; -127 while not associated). */
+static int radio_rssi(void) { return radio_c6_rssi(); }
+#else
+static int radio_rssi(void) { return 0; }
+#endif
+
 #if defined(CONFIG_BOARD_ESP32C6) && defined(CONFIG_SDIO_SLAVE)
 #include "drivers/sdio_slave_esp32c6.h"
 #include "kernel/llp_sdio.h"
@@ -150,6 +158,12 @@ static void fq_drop(fq_t *q) {
     q->tail++;
 }
 
+/* Consumer side only: everything queued is dropped. */
+static void fq_flush(fq_t *q) {
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    q->tail = q->head;
+}
+
 /* The slots come from pages when the node starts, sized for its role (a
  * radio has no Ethernet queues): nothing is spent on a board that never runs
  * LLP. The length arrays are small enough to keep. */
@@ -215,6 +229,8 @@ static netif_t        *g_bridged;
 static uint8_t        *g_pending;              /* one frame */
 static uint32_t        g_pending_len;
 static int             g_sent_link = -1;      /* last STATE link value sent */
+static int             g_sent_rssi;           /* ... its rssi, and when */
+static uint32_t        g_sent_state_at;
 static uint32_t        g_fwd_to_link, g_fwd_to_if;
 static volatile bool   g_loop;
 static uint32_t        g_looped;
@@ -339,10 +355,24 @@ static netif_t g_wlan = {
 /* --- The 9P link over LLP ---------------------------------------------------------
  * A cable, not a network: no authentication (fs/p9_link.h, auth_required). */
 
-static int p9_poll(p9_link_t *link) { (void)link; return fq_used(&g_p9_rx) ? 1 : 0; }
+/* Frames received from a peer session that has since ended, up to this mark,
+ * are dropped unread. Set by the pump (the queue's producer), acted on here
+ * (its consumer): only the consumer moves the tail. */
+static volatile uint32_t g_p9_rx_stale;
+
+static void p9_drop_stale(void) {
+    while ((int32_t)(g_p9_rx_stale - g_p9_rx.tail) > 0 && fq_used(&g_p9_rx)) fq_drop(&g_p9_rx);
+}
+
+static int p9_poll(p9_link_t *link) {
+    (void)link;
+    p9_drop_stale();
+    return fq_used(&g_p9_rx) ? 1 : 0;
+}
 
 static int p9_recv(p9_link_t *link, uint8_t *buf, uint32_t max_len) {
     (void)link;
+    p9_drop_stale();
     uint32_t n;
     const uint8_t *p = fq_peek(&g_p9_rx, &n);
     if (!p) return -1;
@@ -364,10 +394,30 @@ static int p9_send(p9_link_t *link, const uint8_t *buf, uint32_t len) {
     return (int)len;
 }
 
+static bool p9_up(p9_link_t *link) { (void)link; return g_link.state == LLP_UP; }
+
 static p9_link_t g_p9 = {
     .name = "llp", .poll = p9_poll, .send_frame = p9_send, .recv_frame = p9_recv,
-    .auth_required = false,
+    .auth_required = false, .up = p9_up,
 };
+
+/* The peer session the 9P side belongs to. A peer that was only cut off comes
+ * back with its session, and its fids with it; a new session is a peer that
+ * restarted, and nothing sent to the old one means anything to it. */
+static uint32_t g_p9_session;
+
+/* Called by the pump on every handshake, before it sends anything. True when
+ * the peer is a new one. */
+static bool p9_new_peer(void) {
+    if (g_link.peer_session == g_p9_session) return false;
+    g_p9_session = g_link.peer_session;
+    g_p9.generation++;
+    g_p9_rx_stale = g_p9_rx.head;
+    uintptr_t f = spin_lock_irqsave(&g_tx_lock);
+    fq_flush(&g_p9_tx);
+    spin_unlock_irqrestore(&g_tx_lock, f);
+    return true;
+}
 
 p9_link_t *llp_node_p9_link(void) { return g_role != LLP_NODE_OFF ? &g_p9 : NULL; }
 
@@ -513,19 +563,34 @@ static void radio_forward(uint32_t now) {
     }
 }
 
-#if CHAN_PACKET
-/* Host role, after every handshake (the radio may have restarted, and its 9P
- * fids with it): the radio's namespace at /c6, afresh, and -- when this node's
- * identity record holds WLAN credentials and the radio is not associated --
- * the network for it to join, written to its /dev/wlan. The credentials live
+/* Host role, after a handshake with a new radio, and every few seconds while
+ * /c6 is not mounted and the link is up: the radio's namespace at /c6,
+ * afresh, and -- when this node's identity record holds WLAN credentials and
+ * the radio is not associated -- the network for it to join, written to its
+ * /dev/wlan. The credentials live
  * here, and the radio holds them in RAM only: its image carries a binary blob,
  * and a key it never stores is one it cannot leak. Its own task: the mount
  * talks 9P over this link, which only the pump moves. */
+static volatile bool g_c6_mounted, g_c6_attaching;
+static uint32_t g_c6_attach_at;                /* when the last attempt started */
+static bool g_c6_fail_said;                    /* a failure is said once per radio */
+#define C6_ATTACH_RETRY_MS 5000u
+
 static void c6_attach_task(void *arg) {
     (void)arg;
+    uint32_t gen = g_p9.generation;
     (void)vfs_unmount("c6");
-    if (vfs_mount_remote("c6", &g_p9) != 0) {
-        printk("[LLP] could not mount the radio at /c6\n");
+    bool ok = vfs_mount_remote("c6", &g_p9) == 0;
+    /* A radio that restarted during the attach makes it one of the old peer:
+     * the pump tries again. */
+    g_c6_mounted = ok && gen == g_p9.generation;
+    g_c6_attaching = false;
+    if (!g_c6_mounted) {
+        if (!ok && !g_c6_fail_said) {
+            printk("[LLP] could not mount the radio at /c6 (trying again every %u s)\n",
+                   (unsigned)(C6_ATTACH_RETRY_MS / 1000u));
+            g_c6_fail_said = true;
+        }
         return;
     }
     printk("[LLP] the radio's namespace is at /c6\n");
@@ -554,7 +619,6 @@ static void c6_attach_task(void *arg) {
     if (rc == (int)n) printk("[LLP] the radio was given \"%s\" to join\n", ssid);
     else printk("[LLP] the radio refused the network (already started, or no radio)\n");
 }
-#endif
 
 static void handle_events(uint32_t now) {
     if (g_ev_down) {
@@ -564,6 +628,7 @@ static void handle_events(uint32_t now) {
     }
     if (g_ev_up) {
         g_ev_up = false;
+        bool new_peer = p9_new_peer();
         char mac[18];
         netif_mac_str(g_link.peer_mac, mac);
         printk("[LLP] link up: peer %s, LLP %u.%u, mac %s\n",
@@ -580,23 +645,35 @@ static void handle_events(uint32_t now) {
                     printk("[LLP] could not register wlan0\n");
                 }
             }
-#if CHAN_PACKET
-            /* 16 KB: the 9P attach under vfs_mount_remote() goes 9.1 KB deep
-             * (measured), past the default 8 KB -- and an overflow here lands
-             * silently in the stack below. */
-            if (task_create_sized("c6attach", c6_attach_task, NULL, 4) < 0) printk("[LLP] could not start c6attach\n");
-#endif
+            if (new_peer) { g_c6_mounted = false; g_c6_attach_at = 0; g_c6_fail_said = false; }
         }
     }
-    /* The radio's link state, sent when it changes and after every handshake. */
+    if (g_role == LLP_NODE_HOST && g_link.state == LLP_UP && !g_c6_mounted && !g_c6_attaching &&
+        (g_c6_attach_at == 0 || now - g_c6_attach_at >= C6_ATTACH_RETRY_MS)) {
+        g_c6_attaching = true;
+        g_c6_attach_at = now ? now : 1u;
+        /* 16 KB: the 9P attach under vfs_mount_remote() goes 9.1 KB deep
+         * (measured), past the default 8 KB -- and an overflow here lands
+         * silently in the stack below. */
+        if (task_create_sized("c6attach", c6_attach_task, NULL, 4) < 0) {
+            g_c6_attaching = false;
+            printk("[LLP] could not start c6attach\n");
+        }
+    }
+    /* The radio's link state, sent when it changes and after every handshake;
+     * its signal too, when that moved by 3 dB or more (at most every 5 s). */
     if (g_role == LLP_NODE_RADIO && g_link.state == LLP_UP) {
         int up = (g_bridged && netif_link_up(g_bridged)) ? 1 : 0;
-        if (up != g_sent_link) {
-            llp_link_send_state(&g_link, (uint8_t)up, 0, now);
+        int rssi = up ? radio_rssi() : 0;
+        int drift = rssi - g_sent_rssi;
+        if (up != g_sent_link || ((drift >= 3 || drift <= -3) && now - g_sent_state_at >= 5000u)) {
+            llp_link_send_state(&g_link, (uint8_t)up, (int8_t)rssi, now);
 #if CHAN_PACKET
             pkt_set_link((uint8_t)up);
 #endif
             g_sent_link = up;
+            g_sent_rssi = rssi;
+            g_sent_state_at = now;
         }
     }
 }
@@ -787,6 +864,47 @@ void llp_node_bench(uint32_t count, uint32_t size) {
 }
 
 /* --- Status ------------------------------------------------------------------------ */
+
+uint32_t llp_node_proc_render(char *buf, uint32_t cap) {
+    static const char *const states[] = { "down", "up", "mismatch" };
+    const llp_link_t *l = &g_link;
+    uint32_t n = 0;
+#define PUT(...) do { if (n < cap) n += (uint32_t)ksnprintf(buf + n, cap - n, __VA_ARGS__); } while (0)
+    PUT("role=%s\n", g_role == LLP_NODE_OFF ? "off" : g_role == LLP_NODE_RADIO ? "radio" : "host");
+    if (g_role == LLP_NODE_OFF) return n < cap ? n : cap;
+    PUT("state=%s\nsession=%08x\n", states[l->state], (unsigned)l->session);
+    if (l->peer_session) {
+        char mac[18];
+        netif_mac_str(l->peer_mac, mac);
+        PUT("peer_role=%s\npeer_session=%08x\npeer_version=%u.%u\npeer_max_payload=%u\npeer_mac=%s\n",
+            l->peer_role == LLP_ROLE_RADIO ? "radio" : "host", (unsigned)l->peer_session,
+            l->peer_major, l->peer_minor, l->peer_max_payload, mac);
+        if (l->peer_role == LLP_ROLE_RADIO)
+            PUT("peer_wifi=%s\npeer_rssi=%d\n", l->peer_link ? "up" : "down", l->peer_rssi);
+    }
+    const llp_stats_t *st = &l->st;
+    PUT("tx_frames=%u\nrx_frames=%u\nrx_lost=%u\nrx_stale=%u\nrx_not_up=%u\nrx_bad=%u\nrx_too_big=%u\n",
+        (unsigned)st->tx_frames, (unsigned)st->rx_frames, (unsigned)st->rx_lost, (unsigned)st->rx_stale,
+        (unsigned)st->rx_not_up, (unsigned)st->rx_bad, (unsigned)st->rx_too_big);
+    PUT("tx_link=%u\nrx_link=%u\nhellos=%u\ncredits=%u\nprobes=%u\nheld_for_credit=%u\nrefused=%u\nups=%u\ndowns=%u\n",
+        (unsigned)st->tx_link, (unsigned)st->rx_link, (unsigned)st->hellos, (unsigned)st->credits,
+        (unsigned)st->probes, (unsigned)st->tx_no_credit, (unsigned)st->tx_refused,
+        (unsigned)st->ups, (unsigned)st->downs);
+    PUT("p9_generation=%u\n", (unsigned)g_p9.generation);
+    PUT("queue_eth_rx=%u/%u\nqueue_eth_tx=%u/%u\nqueue_p9_rx=%u/%u\nqueue_p9_tx=%u/%u\n",
+        (unsigned)fq_used(&g_eth_rx), (unsigned)g_eth_rx.nslots, (unsigned)fq_used(&g_eth_tx), (unsigned)g_eth_tx.nslots,
+        (unsigned)fq_used(&g_p9_rx), (unsigned)g_p9_rx.nslots, (unsigned)fq_used(&g_p9_tx), (unsigned)g_p9_tx.nslots);
+    PUT("queue_full=%u\nmemory_kb=%u\n",
+        (unsigned)(g_eth_rx.drops + g_eth_tx.drops + g_p9_rx.drops + g_p9_tx.drops),
+        (unsigned)(g_pages * PAGE_SIZE / 1024u));
+    if (g_role == LLP_NODE_HOST)
+        PUT("radio_mounted=%s\n", g_c6_mounted ? "/c6" : "no");
+    else
+        PUT("bridge=%s\nto_link=%u\nto_interface=%u\nloop=%s\n", g_bridged ? g_bridged->name : "none",
+            (unsigned)g_fwd_to_link, (unsigned)g_fwd_to_if, g_loop ? "on" : "off");
+#undef PUT
+    return n < cap ? n : cap;
+}
 
 void llp_node_print_status(void) {
     if (g_role == LLP_NODE_OFF) {

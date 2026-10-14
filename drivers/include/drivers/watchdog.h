@@ -2,6 +2,7 @@
 #define LUGALOS_DRIVERS_WATCHDOG_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 /* The hardware watchdog (45.8; drivers/wdt_esp32c6.c is the one backend so far). Armed once the
  * scheduler exists, fed by a task at normal priority: the board resets itself when ordinary tasks
@@ -9,6 +10,9 @@
 void watchdog_start(void);
 /* `wdt`: armed or not, feeds, and the cause of the last reset. */
 void watchdog_report(void);
+/* /proc/wdt: the same as key=value lines (armed, timeout_s, feeds, withheld, last_reset,
+ * last_reset_code, restarted_itself). */
+uint32_t watchdog_proc_render(char *out, uint32_t cap);
 /* `wdt test`: stop feeding, to prove the reset path. */
 void watchdog_withhold(void);
 /* The cause of the last reset, as the ROM reports it. */

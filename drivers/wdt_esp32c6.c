@@ -130,6 +130,15 @@ void watchdog_report(void) {
     printk("last reset: %s (0x%02x)\n", watchdog_reset_reason(), (unsigned)g_reason);
 }
 
+uint32_t watchdog_proc_render(char *out, uint32_t cap) {
+    int n = ksnprintf(out, cap, "armed=%s\ntimeout_s=%u\nfeeds=%u\nwithheld=%s\nlast_reset=%s\n"
+                      "last_reset_code=0x%02x\nrestarted_itself=%s\n",
+                      g_armed ? "yes" : "no", (unsigned)(WDT_TIMEOUT_MS / 1000), (unsigned)g_feeds,
+                      g_withhold ? "yes" : "no", watchdog_reset_reason(), (unsigned)g_reason,
+                      watchdog_last_reset_was_watchdog() ? "yes" : "no");
+    return (uint32_t)n < cap ? (uint32_t)n : cap;
+}
+
 /* `wdt test`: stop feeding, as a hung scheduler would. The board resets within the timeout and the
  * next boot reports a watchdog reset -- the whole path, proven on the hardware. */
 void watchdog_withhold(void) {

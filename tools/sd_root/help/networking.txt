@@ -95,20 +95,45 @@ either side: llp radio (C6), llp host (P4).
 with the C6's station MAC and asks for a DHCP lease once the radio is
 associated. The C6 gives its interface to the link only now. A C6 with no host
 stays a node of its own, with its own IP.
-  * /c6. At every link-up the P4 mounts the C6's namespace at /c6, afresh
-after a C6 restart (9P over the same channel, no authentication: it is a
-cable). cat /c6/proc/version, cat /c6/proc/node.
+  * /c6. When the link comes up the P4 mounts the C6's namespace at /c6
+(9P over the same channel, no authentication: it is a cable), and again after
+a C6 restart; while the link is up and /c6 is not mounted it retries every 5
+s. The LAN sees /c6 through the P4's own 9P server, so a host that
+authenticated to the P4 reads the C6 too. While the link is down, anything
+under /c6 fails at once (within the link's 3 s liveness) rather than waiting
+for the 9P client's 10 s timeout, and files opened before a C6 restart fail
+instead of reaching a different file.
   * Credentials stay on the P4. Store them once on the P4 with
 wlan SSID PSKHEX (the derived 64-hex key, see above). At each link-up, while
 the radio is not associated, the P4 writes join SSID PSKHEX to /c6/dev/wlan.
-The C6 holds the key in RAM only, and reading /c6/dev/wlan says idle,
-starting, not joined or joined.
+The C6 holds the key in RAM only.
+
+What the C6 exports, read through /c6 on the P4 (or on the C6 itself without
+the prefix). Status files are key=value lines:
+
+  File | Read | Write
+  --------------------------------------------------------------------------
+  /c6/dev/wlan | state (idle, starting, not joined, joined), ssid, bssid, channel, rssi, mac, joins, last_disconnect (IEEE reason code) | join SSID PSKHEX, rejoin, scan
+  /c6/proc/wlanscan | the last scan: aps=N, then one line per access point: bssid channel rssi auth ssid (as many as fit) | —
+  /c6/proc/radio | how far the radio started (stage), its return codes, frame counters and rings | —
+  /c6/proc/llp | the C6's end of the link (the P4's own is /proc/llp) | —
+  /c6/proc/wdt | the watchdog: armed, timeouts, feeds, lastreset, restarted_itself | —
+  /c6/dev/reboot | — | reboot, or download (into the ROM's download mode)
+  /c6/proc/version | the C6's version, with its tainted: blob line | —
+
+scan is carried out by the radio's supervision loop, so only once the C6 has a
+network to join. The radio samples the associated AP's rssi, channel and bssid
+every 5 s, and reports rssi to the P4 in LLP's STATE (peer_rssi in /proc/llp).
+
+A remote mount is never re-entered over the link it came from: if the C6
+mounts the P4 back ((mount-remote "p4" "llp") on the C6), /c6/p4/... on the P4
+is refused rather than looping through both servers.
 
 Checks of the channel itself:
 
   Command | Where | What it does
   --------------------------------------------------------------------------
-  llp | either | role, link state, peer, counters, SDIO channel state
+  llp | either | role, link state, peer, counters, SDIO channel state (/proc/llp: the same as key=value)
   llp loop on / llp loop off | C6 | send the host's Ethernet frames back instead of to the radio
   llp bench [count] [size] | P4 | count frames of size bytes (default 1000 × 1514) to a C6 in loop mode, each checked on return; prints KB/s each way
   sdio | C6 | the SDIO slave: generation, timing, receive buffers, packets in and out

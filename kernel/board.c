@@ -13,6 +13,8 @@
 #include "drivers/at24c32.h"
 #include "drivers/block.h"
 #include "kernel/console.h"
+#include "kernel/sched.h"
+#include "kernel/printk.h"
 #if defined(CONFIG_BOARD_RP2350)
 #include "arch/rp2350_bootrom.h"
 #if CONFIG_ENABLE_SPISD
@@ -457,6 +459,32 @@ bool board_reset(void) {
     c6_reset(false);
     return false;                      /* not reached */
 #else
+    return false;
+#endif
+}
+
+static bool g_reset_download;
+static uint32_t g_reset_ms;
+
+static void reset_task(void *arg) {
+    (void)arg;
+    task_sleep_ms(g_reset_ms);
+    printk("[Reboot] Restarting%s, as /dev/reboot was asked to...\n",
+           g_reset_download ? " into the ROM's download mode" : "");
+    if (g_reset_download) (void)board_reset_download();
+    else (void)board_reset();
+}
+
+bool board_reset_later(bool download, uint32_t ms) {
+#if defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32C6)
+#if !defined(CONFIG_BOARD_ESP32C6)
+    if (download) return false;
+#endif
+    g_reset_download = download;
+    g_reset_ms = ms;
+    return task_create("reboot", reset_task, NULL) >= 0;
+#else
+    (void)download; (void)ms; (void)reset_task;
     return false;
 #endif
 }

@@ -30,7 +30,9 @@
 #include "kernel/clipboard.h"
 #if defined(CONFIG_BOARD_ESP32C6)
 #include "kernel/radio_c6.h"
+#include "drivers/watchdog.h"
 #endif
+#include "kernel/llp_node.h"
 #include "kernel/klog.h"
 #include "kernel/device.h"
 #include "net/ip.h"
@@ -1293,6 +1295,23 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
         return piousb_proc_render(buf, cap);
     }
 #endif
+#if !defined(CONFIG_BOARD_RP2350)
+    else if (strcmp(rel, "llp") == 0) {
+        /* The link to this node's LLP peer, both roles (kernel/llp_node.c). */
+        return (int)llp_node_proc_render(buf, cap);
+    }
+#endif
+#if defined(CONFIG_BOARD_ESP32C6)
+    else if (strcmp(rel, "radio") == 0) {
+        return (int)radio_c6_proc_render(buf, cap);
+    }
+    else if (strcmp(rel, "wlanscan") == 0) {
+        return (int)radio_c6_scan_render(buf, cap);
+    }
+    else if (strcmp(rel, "wdt") == 0) {
+        return (int)watchdog_proc_render(buf, cap);
+    }
+#endif
     else if (strcmp(rel, "sensors") == 0) {
         /* the environment sensor, for a
          * reader that is not on this board.
@@ -2111,6 +2130,12 @@ static const char *g_proc_names[] = { "ps", "meminfo", "version", "cpuinfo", "df
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)
     "usbhost",
 #endif
+#if !defined(CONFIG_BOARD_RP2350)
+    "llp",
+#endif
+#if defined(CONFIG_BOARD_ESP32C6)
+    "radio", "wlanscan", "wdt",
+#endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_GPS
     "gps",
 #endif
@@ -2129,6 +2154,10 @@ static const char *g_dev_names[]  = { "uart", "null", "zero", "eeprom", "clipboa
     /* the radio's ctl file (kernel/radio_c6.c): how an LLP host hands this
      * node the network to join, as /c6/dev/wlan */
     "wlan",
+#endif
+#if defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32C6)
+    /* `reboot` or `download` written restarts the board (board_reset_later()) */
+    "reboot",
 #endif
 };
 #define DEV_COUNT ((int)(sizeof(g_dev_names) / sizeof(g_dev_names[0])))
@@ -2303,7 +2332,8 @@ int vfs_pread(int fd, void *buf, uint32_t count, uint64_t offset) {
                 return 1;
             } else if (strcmp(h->rel_path, "eeprom") == 0) {
                 return at24c32_read((uint16_t)offset, (uint8_t *)buf, count);
-            } else if (strcmp(h->rel_path, "null") == 0 || strcmp(h->rel_path, "zero") == 0) {
+            } else if (strcmp(h->rel_path, "null") == 0 || strcmp(h->rel_path, "zero") == 0 ||
+                       strcmp(h->rel_path, "reboot") == 0) {
                 return 0;
             } else if (strcmp(h->rel_path, "clipboard") == 0) {
                 uint32_t len;
@@ -2315,7 +2345,7 @@ int vfs_pread(int fd, void *buf, uint32_t count, uint64_t offset) {
                 return (int)k;
 #if defined(CONFIG_BOARD_ESP32C6)
             } else if (strcmp(h->rel_path, "wlan") == 0) {
-                char line[32];
+                char line[256];
                 uint32_t len = radio_c6_ctl_read(line, sizeof line);
                 if (offset >= len) return 0;
                 uint32_t k = len - (uint32_t)offset;
@@ -2362,6 +2392,16 @@ int vfs_pwrite(int fd, const void *buf, uint32_t count, uint64_t offset) {
 #if defined(CONFIG_BOARD_ESP32C6)
             } else if (strcmp(h->rel_path, "wlan") == 0) {
                 return radio_c6_ctl_write((const char *)buf, count);
+#endif
+#if defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32C6)
+            } else if (strcmp(h->rel_path, "reboot") == 0) {
+                /* 300 ms: time for this write's reply to leave, over any link. */
+                const char *b = (const char *)buf;
+                uint32_t k = count;
+                while (k && (b[k - 1] == '\n' || b[k - 1] == '\r' || b[k - 1] == ' ')) k--;
+                bool download = k == 8 && memcmp(b, "download", 8) == 0;
+                if (!download && !(k == 6 && memcmp(b, "reboot", 6) == 0)) return -1;
+                return board_reset_later(download, 300) ? (int)count : -1;
 #endif
             }
             return -1;

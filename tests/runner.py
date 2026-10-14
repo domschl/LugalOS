@@ -4343,61 +4343,81 @@ def test_llp_two_nodes(radio_elf: Path, host_elf: Path, build_dir: Path) -> tupl
     Then, from outside, an authenticated 9P session to the host's own TCP/564
     (every byte through the radio's bridge): the host's /proc/cpuinfo (S-mode:
     rv64) and a file big enough to take many frames; and through the host's
-    /c6 -- the radio mounted over LLP's 9P frames -- the radio's own
+    /c6 -- the radio, mounted by the host itself at link-up -- the radio's own
     /proc/cpuinfo (M-mode: rv32). The radio, meanwhile, has no interface, no
     address and no connection of its own: the host's traffic only passes
     through it.
+
+    49.8a, the radio's namespace as part of the host's:
+    * /proc/llp on both nodes, side by side through the host;
+    * the radio mounting the host back (/p4) does not cost the LAN session its
+      fids (they are per connection), and /c6/p4/... is refused at once rather
+      than recursing through both servers;
+    * the radio killed: /c6 fails within the link's 3 s liveness, not after
+      the 9P client's 10 s timeout;
+    * a new radio: the host mounts it again by itself, and the LAN reaches it.
     """
     import shutil
     import socket as _socket
+    import time as _time
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "host" / "p9lib" / "src"))
     import p9lib
 
-    name = "LLP: Two Nodes, One Link -- wlan0, DHCP And 9P Through The Radio, /c6 Mounted (49.2)"
+    name = "LLP: Two Nodes, One Link -- wlan0, DHCP And 9P Through The Radio, /c6 Mounted And Remounted (49.2, 49.8a)"
     key = bytes(range(16, 32))
     sock = f"/tmp/lugalos-llp-{os.getpid()}.sock"
-    probe = _socket.socket()
-    probe.bind(("127.0.0.1", 0))
-    port = probe.getsockname()[1]
-    probe.close()
+
+    def free_port() -> int:
+        probe = _socket.socket()
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+        probe.close()
+        return port
 
     radio_img = build_dir / "rv32" / "test_rv32_llp_radio_sd.img"
     host_img = build_dir / "rv64" / "test_rv64_llp_host_sd.img"
     shutil.copyfile(build_dir / "rv32" / "lugalos_sd.img", radio_img)
     shutil.copyfile(build_dir / "rv64" / "lugalos_sd.img", host_img)
-    radio = QemuSession(radio_elf, radio_img, "rv32")
     host = QemuSession(host_elf, host_img, "rv64")
-    try:
-        radio.start(extra_qemu_args=[
+    radios: list[QemuSession] = []
+
+    def start_radio(port: int) -> tuple[bool, str]:
+        """A radio, connected to the host's end of the socket: the host is the
+        server, so a radio can be killed and a new one connect."""
+        r = QemuSession(radio_elf, radio_img, "rv32")
+        radios.append(r)
+        r.start(extra_qemu_args=[
             "-netdev", f"user,id=n0,hostfwd=tcp:127.0.0.1:{port}-10.0.2.15:564",
             "-device", "virtio-net-device,netdev=n0",
             "-device", "virtio-serial-device", "-device", "virtconsole,chardev=llp",
-            "-chardev", f"socket,id=llp,path={sock},server=on,wait=off"])
-        ok, log = radio.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+            "-chardev", f"socket,id=llp,path={sock}"])
+        ok, log = r.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
         if not ok:
-            return (name, False, "radio did not boot:\n" + log[-600:])
+            return False, "radio did not boot:\n" + log[-600:]
+        ok, log = r.send_and_expect("llp radio", r"llp: radio", timeout=5.0)
+        return ok, ("" if ok else "`llp radio` did not start:\n" + log[-800:])
+
+    try:
         host.start(extra_qemu_args=[
             "-device", "virtio-serial-device", "-device", "virtconsole,chardev=llp",
-            "-chardev", f"socket,id=llp,path={sock}"])
+            "-chardev", f"socket,id=llp,path={sock},server=on,wait=off"])
         ok, log = host.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
         if not ok:
             return (name, False, "host did not boot:\n" + log[-600:])
-
-        ok, log = radio.send_and_expect("llp radio", r"llp: radio", timeout=5.0)
+        port = free_port()
+        ok, why = start_radio(port)
         if not ok:
-            return (name, False, "`llp radio` did not start:\n" + log[-800:])
+            return (name, False, why)
+        radio = radios[0]
         ok, log = host.send_and_expect("llp host", r"\[LLP\] link up: peer radio.*mac 52:54:00:12:34:56"
-                                                    r".*wlan0 registered.*\[DHCP\] 10\.0\.2\.15", timeout=20.0)
+                                                    r"(?=.*wlan0 registered)(?=.*\[DHCP\] 10\.0\.2\.15)"
+                                                    r"(?=.*the radio's namespace is at /c6)", timeout=20.0)
         if not ok:
-            return (name, False, "no handshake, wlan0 or lease through the radio:\n" + log[-1200:])
+            return (name, False, "no handshake, wlan0, lease through the radio or /c6:\n" + log[-1200:])
 
         ok, log = host.send_and_expect(f"p9key {key.hex()}", r"console key set \(16 bytes\)", timeout=5.0)
         if not ok:
             return (name, False, "the host did not take the key:\n" + log[-500:])
-        ok, log = host.send_and_expect('lisp\n(mount-remote "c6" "llp")\nexit', r"Mounted remote 9P namespace on /c6/.*=> #t",
-                                       timeout=10.0)
-        if not ok:
-            return (name, False, "the host could not mount the radio at /c6:\n" + log[-800:])
 
         client = p9lib.connect_tcp("127.0.0.1", port, timeout=15.0)
         with p9lib.Session(client, key=key) as sess:
@@ -4423,6 +4443,37 @@ def test_llp_two_nodes(radio_elf: Path, host_elf: Path, build_dir: Path) -> tupl
                 if got != src.read_bytes():
                     return (name, False, f"{path} came back {len(got)} bytes, not the source's {src.stat().st_size}")
 
+            # Both ends' link state, side by side, from one place.
+            mine = sess.read("/proc/llp").decode(errors="replace")
+            theirs = sess.read("/c6/proc/llp").decode(errors="replace")
+            for want in ("role=host", "state=up", "radio_mounted=/c6", "peer_role=radio"):
+                if want not in mine:
+                    return (name, False, f"/proc/llp lacks {want!r}:\n{mine}")
+            for want in ("role=radio", "state=up", "bridge=virtio-net", "peer_role=host"):
+                if want not in theirs:
+                    return (name, False, f"/c6/proc/llp lacks {want!r}:\n{theirs}")
+
+            # The radio mounts the host back. Its Tversion reaches the host's
+            # server while this session holds fids there: they must survive.
+            ok, log = radio.send_and_expect('lisp\n(mount-remote "p4" "llp")\nexit',
+                                            r"Mounted remote 9P namespace on /p4/.*=> #t", timeout=10.0)
+            if not ok:
+                return (name, False, "the radio could not mount the host at /p4:\n" + log[-800:])
+            if b"priv:        S" not in sess.read("/proc/cpuinfo"):
+                return (name, False, "the LAN session lost its fids when the radio attached to the host")
+            ok, log = radio.send_and_expect("cat /p4/proc/cpuinfo", r"priv:\s+S", timeout=8.0)
+            if not ok:
+                return (name, False, "the radio cannot read the host through /p4:\n" + log[-600:])
+            # ...but the host's /c6/p4 would lead back over the same link.
+            t0 = _time.monotonic()
+            try:
+                looped = sess.read("/c6/p4/proc/cpuinfo")
+                return (name, False, f"/c6/p4/proc/cpuinfo was served ({len(looped)} bytes): a mount loop")
+            except Exception:
+                pass
+            if _time.monotonic() - t0 > 3.0:
+                return (name, False, f"/c6/p4 took {_time.monotonic() - t0:.1f} s to be refused")
+
         ok, log = radio.send_and_expect("cat /proc/net", r"interface: none", timeout=5.0)
         if not ok:
             return (name, False, "the radio kept a network interface of its own:\n" + log[-600:])
@@ -4438,19 +4489,51 @@ def test_llp_two_nodes(radio_elf: Path, host_elf: Path, build_dir: Path) -> tupl
                 return (name, False, f"the {who} counted damage or overflow on a clean link:\n" + lg[-700:])
         fwd = re.search(r"bridge: virtio-net, (\d+) frames to the link, (\d+) to the interface", rlog)
         held = [re.search(r"held for credit (\d+)", lg) for lg in (rlog, hlog)]
+
+        # The radio goes away. /c6 fails within the link's liveness (3 s).
+        radio.close()
+        _time.sleep(0.5)
+        t0 = _time.monotonic()
+        ok, log = host.send_and_expect("cat /c6/proc/version", r"cannot (open|read path).*/c6/proc/version", timeout=9.0)
+        gone_s = _time.monotonic() - t0
+        if not ok:
+            return (name, False, "/c6 did not fail with the radio gone:\n" + log[-600:])
+        if gone_s > 5.0:
+            return (name, False, f"/c6 took {gone_s:.1f} s to fail with the radio gone")
+        ok, log = host.send_and_expect("cat /proc/llp", r"state=down", timeout=5.0)
+        if not ok:
+            return (name, False, "the host's /proc/llp does not say the link is down:\n" + log[-600:])
+
+        # A new radio (a new session): the host mounts it again by itself.
+        port2 = free_port()
+        ok, why = start_radio(port2)
+        if not ok:
+            return (name, False, "second radio: " + why)
+        # The remount may well be done before the second radio's boot is: ask.
+        deadline = _time.monotonic() + 20.0
+        while True:
+            ok, log = host.send_and_expect("cat /proc/llp", r"p9_generation=2.*radio_mounted=/c6", timeout=3.0)
+            if ok:
+                break
+            if _time.monotonic() > deadline:
+                return (name, False, "the host did not mount the new radio:\n" + log[-800:])
+        client = p9lib.connect_tcp("127.0.0.1", port2, timeout=15.0)
+        with p9lib.Session(client, key=key) as sess:
+            again = sess.read("/c6/proc/llp").decode(errors="replace")
+            if "role=radio" not in again or "state=up" not in again:
+                return (name, False, f"/c6/proc/llp of the new radio:\n{again}")
         return (name, True, (f"radio bridged {fwd.group(1)}/{fwd.group(2)} frames; held for credit: "
-                             f"radio {held[0].group(1) if held[0] else '?'}, host {held[1].group(1) if held[1] else '?'}")
+                             f"radio {held[0].group(1) if held[0] else '?'}, host {held[1].group(1) if held[1] else '?'}; "
+                             f"/c6 failed {gone_s:.1f} s after the radio went")
                 if fwd else "")
     except Exception as e:
         return (name, False, f"{type(e).__name__}: {e}")
     finally:
         host.close()
-        radio.close()
+        for r in radios:
+            r.close()
         for f in (radio_img, host_img):
             f.unlink(missing_ok=True)
-        if os.path.exists(sock):
-            os.unlink(sock)
-
 
 def test_qemu_architecture_with_retry(
     elf_path: Path, img_path: Path, arch_name: str, max_attempts: int = 3,

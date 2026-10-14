@@ -48,6 +48,10 @@ p9_link_t *llp_node_p9_link(void);
 /* `llp` in the shell: role, link state, peer, counters. */
 void llp_node_print_status(void);
 
+/* /proc/llp: the same as key=value lines, for a reader anywhere -- the P4
+ * reads its own as /proc/llp and its radio's as /c6/proc/llp. */
+uint32_t llp_node_proc_render(char *buf, uint32_t cap);
+
 /* Radio role: Ethernet frames from the host go back to it instead of to the
  * radio (`llp loop on|off`), for llp_node_bench() on the host. */
 void llp_node_set_loop(bool on);

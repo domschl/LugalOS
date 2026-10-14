@@ -1,4 +1,6 @@
-q# LugalOS Computer Algebra System (CAS) — Student & User Manual
+=============================================================
+LUGALOS COMPUTER ALGEBRA SYSTEM (CAS) — STUDENT & USER MANUAL
+=============================================================
 
 LugalOS features a self-contained, exact Computer Algebra System (CAS) written
 in compact Scheme-like Lisp. It runs in freestanding, zero-floating-point
