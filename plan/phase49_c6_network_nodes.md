@@ -1067,6 +1067,13 @@ without USB.
       state. Nothing here argues for A1 beyond "it works": it is slower,
       dearer in the C6's RAM and loses sessions. The tentative 49.10 shape
       (the RP2350 with its own `wlan0`) follows from the same numbers.
+    * **The 9P-only persona was removed again** right after the
+      measurement: slower, dearer in the C6's RAM, sessions lost, and its
+      runtime switch leaves the C6 and the P4 claiming one address (one
+      MAC), with nothing to use it. Mounting the host from the C6 works
+      without it (bridged, as in QEMU's two-node test). To measure again:
+      `git show 5392bea -- kernel/llp_node.c kernel/shell.c` brings back
+      `llp bridge off|on`; `tests/hw/p9_paths.py` stayed.
 
 ### The RP2350 terminal
 
