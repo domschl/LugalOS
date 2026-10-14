@@ -167,7 +167,7 @@ files plus moving MQTT/NTP onto the C6 is the fallback — not A2.
 | D3 | Address and MAC | **The P4 owns the board's IP address, using the C6's station MAC.** In the modem persona the C6 has no IP on Wi-Fi; it is reached as `/c6` through the P4. (Two IPs on one MAC with distinct DHCP client-ids is possible but depends on the router's lease keying; not attempted.) |
 | D4 | One C6 image, two roles | **Persona chosen at run time:** a host's `HELLO` on the channel makes the C6 a NIC; no host within a few seconds of boot and it is phase 45's stand-alone node (own stack, own IP, own MQTT). Same kernel; presets differ only by board (§5.2). |
 | D5 | Credentials | **The P4's identity record holds the WLAN SSID/PSK** (the `wlan` command, as on the C6-Zero and RP2350W), and writes the derived PSK to `/c6/wlan/ctl` at each link-up. The C6 holds it in RAM — it must, it runs the supplicant. **9P peer keys never reach the C6.** |
-| D6 | Flashing the C6-MINI | **Once through its header** (user action, §5.3); after that **over 9P from the P4**, A/B slots, the stage 2 never rewritten remotely (49.8). |
+| D6 | Flashing the C6-MINI | **Once through its header** (user action, §5.3); after that **over 9P from the P4**, A/B slots, the stage 2 never rewritten remotely (49.8). *Amended 2026-10-14:* the ROM-loaded image is the kernel's RAM half, not a loader; "never rewritten remotely" applies to a new permanent loader at `0x0`, installed once through the header, and each slot carries both halves (49.8b). |
 | D7 | SDIO bring-up order | **Host first, against the factory ESP-Hosted slave** still on the C6 (phase 47 D6 left the 7B's untouched): a known-good peer isolates host-driver bugs from slave-driver bugs (the "trace the reference first" rule). One board keeps its factory C6 until our slave enumerates. |
 | D8 | ESP-Hosted compatibility | **Still no** (phase 45 D3). It is a reference for 49.4 only. |
 | D9 | Name | The protocol is **LLP** (LugalOS link protocol), not "modem protocol": it links two LugalOS nodes, one of which happens to have a radio. |
@@ -800,17 +800,105 @@ without USB.
 ### Scenario 2 — full 9P integration
 
 * **49.8 `/c6` in the P4's namespace, and updates through it.** The C6's
-  namespace mounted at `/c6` over the channel's `P9` type: `/c6/wlan/*`,
-  `/c6/proc/*` (its `taint` line included), `/c6/flash/os-a|os-b`. The LAN sees
-  `/c6` through the P4's server (the host authenticates to the P4; the C6 trusts
-  the channel as a cable, `P9_AUTH_NOT_REQUIRED`, which is the existing policy
-  for attached links). **C6 update:** the P4 writes an image into the inactive
-  slot, the C6 checks its SHA-256 (`kernel/sha256.c`) before marking it, the P4
-  resets it via GPIO54, and the C6's stage 2 falls back to the old slot if the
-  new one does not `HELLO` within N seconds. A host tool (`tools/c6update.py`, or
-  a `--c6` mode of `p9sync.py`) wraps it. *Done when:* a C6 image goes from the
-  build directory to the NANO's C6 over Wi-Fi-then-SDIO with no header attached,
-  and a deliberately broken image is rolled back by itself.
+  namespace mounted at `/c6` over the channel's `P9` type. The LAN sees `/c6`
+  through the P4's server (the host authenticates to the P4; the C6 trusts the
+  channel as a cable, `P9_AUTH_NOT_REQUIRED`, which is the existing policy for
+  attached links). **Main objective: everything known about the C6 is a file,
+  and nothing about reaching it is P4- or SDIO-specific** — 49.10 integrates a
+  C6 with the RP2350 by 9P alone, through the same files. Re-cut 2026-10-14
+  after reading what 49.7 left in place; three parts, in this order.
+
+  **49.8a — a complete, robust `/c6`.** Mounting already works (49.7: the
+  `c6attach` task after every handshake; `/c6/proc/version` read from the LAN
+  through the P4). Missing:
+  1. **State as files.** Today the C6 exports the generic `/proc/*` (the taint
+     is on `/proc/version`) and one ctl file, `/dev/wlan`, whose read is a
+     single word (`idle|starting|joined|not joined`). Still shell-only:
+     `radio stats`, `wdt` (and the last reset cause), `llp` (both ends), the
+     scan, SSID/BSSID/channel/RSSI (RSSI is not even sourced:
+     `llp_link_send_state()` always sends 0), `reboot [download]`, `llp loop`.
+     Make `/dev/wlan`'s read `key value` lines (state, ssid, bssid, channel,
+     rssi, mac, joins, rejoins); add `/proc/radio`, `/proc/llp`, `/proc/wdt`
+     and a reboot ctl. `/proc/llp` exists on both nodes, so `/proc/llp` and
+     `/c6/proc/llp` read side by side. **The same names on every radio node**
+     (the RP2350W's CYW43 too), so a client never needs to know which radio a
+     node has. This settles the names: the `/c6/wlan/{ctl,status,scan,mac}`
+     sketched here earlier becomes `/dev/wlan` plus `/proc/*`.
+  2. **A dead link fails fast.** Every RPC to an absent C6 waits
+     `P9_CLIENT_TIMEOUT_MS` (10 s), and the P4's 9P server is synchronous: one
+     LAN client touching `/c6` during a C6 reset stalls the P4's whole 9P
+     service, 10 s per request. On LLP DOWN the mount answers Rerror at once;
+     LAN fids into `/c6` held across a C6 restart get errors, never another
+     file.
+  3. **Flush on a new peer session.** `llp.c` drops the old session's state,
+     but `llp_node.c`'s `g_p9_tx`/`g_p9_rx` keep queued T-messages, which then
+     reach the restarted C6.
+  4. **No mount cycles.** Once the C6 can mount its host (49.9), `/c6/p4/c6/…`
+     is a loop between two synchronous servers: a deadlock until the timeout.
+     A remote mount is not served back over the link it came from.
+  5. **Attach on any channel.** `c6_attach_task` is under `#if CHAN_PACKET`
+     (SDIO only); the RP2350's UART binding (49.10) must mount `/c6` too.
+
+  *Done when:* every fact `radio`, `wdt` and `llp` print on the C6 is readable
+  under `/c6` from the P4's shell and from the LAN through the P4;
+  `test_esp32p4.py` checks that, and that a C6 reset during an open LAN session
+  yields prompt errors and a working `/c6` again within ~15 s.
+
+  **49.8b — OTA, generic shape; the C6 as its first backend.** **Found
+  2026-10-14: the image the boot ROM loads is not a loader, it is the kernel's
+  RAM half** (`0x0` on the C6, `0x2000` on the P4), and it carries slot A's
+  flash offset as a compile-time constant (`xip_esp32c6.c`, `MMU_ITEM_CONTENT`
+  from `LUGALOS_C6_OSIMAGE_BASE`). Writing slot B alone would pair a new XIP
+  half with an old RAM half — the same trap an `os`-only flash springs on the
+  P4. So D6's "the stage 2 never rewritten remotely" needs a real loader
+  first. And since the P4 and the RP2350 need A/B updates just as much, the
+  part above the boot mechanism is built once, for every node:
+
+  * **Files** (every OTA-capable node, names to settle in the code): an image
+    file, written sequentially, erasing ahead of itself; a ctl file — read:
+    active slot, the other slot's state (`empty | written | verified | trial |
+    confirmed`), each slot's build-id; write: `begin SIZE SHA256`, `commit`,
+    `reboot`, `confirm`, `abort`. Pure 9P, so every path works unchanged: LAN
+    → node, LAN → P4 → `/c6`, RP2350 → C6 over UART, the console's SLIP
+    `p9share`. An RP2350 can update a C6 knowing nothing about ESP chips.
+  * **One update image format:** header (magic, board/preset, **chip
+    revision**, build-id, SHA-256 via `kernel/sha256.c`, section sizes), then
+    the payload — both halves on the ESP chips, the IMAGE_DEF image on the
+    RP2350. The header lets a node refuse a wrong image *before* erasing
+    anything (a 7B build halts on a NANO at boot today; in a slot it would be
+    worse). Room for a signature later; authenticity today is 9P
+    authentication to the node.
+  * **One state machine** (`kernel/ota.c`), board backends behind it
+    (`drivers/ota_<chip>.c`). Semantics everywhere are the RP2350 bootrom's
+    "try before you buy" (datasheet §5.1.17): the new slot boots *once* on
+    trial, the kernel confirms itself (default: N seconds up plus a
+    role-specific check — on the C6, a host's HELLO or joined Wi-Fi), the
+    watchdog catches hangs (MWDT0 30 s on the C6), and an unconfirmed trial
+    falls back to the old slot. **Rollback is the node's own business**: no
+    GPIO54 from the P4, so it works behind an RP2350 or stand-alone.
+  * **One host tool** (`tools/lota.py`, working name) over any 9P path;
+    `c6flash.py`/`p4flash.py`/picotool remain the recovery route.
+  * **The C6 backend:** a small permanent loader at `0x0` (ROM-loaded; reads
+    the boot record, loads the chosen slot's RAM half into SRAM, maps that
+    slot's pages at `0x42000000` — the XIP half is unchanged by which slot it
+    sits in, only the MMU entries differ), both halves in each slot, a boot
+    record that survives power loss at every step (advance its state by
+    clearing bits, which needs no erase; confirm by switching to the second
+    copy). Layouts: the C6-MINI's already has slot B (§5.2); the C6-Zero's
+    8 MB map needs one (it has the room). The loader goes on once per board
+    through the header (one more §5.3 user action); after that, never.
+  * **Risk to measure first:** erasing ~1 MB runs with the flash cache off
+    for tens of ms per sector, and the Wi-Fi blob executes from flash. Sector
+    by sector with yields (or erase suspend), checked with Wi-Fi up.
+
+  The P4 and RP2350 backends, and the rest of remote administration, are
+  `plan/phase52_remote_admin.md`.
+
+  *Done when:* a C6 image goes from the build directory to the 7B's C6 (and
+  the NANO's) over Wi-Fi-then-SDIO with no header attached, through the
+  generic files and `lota.py`; a wrong-board image is refused before any
+  erase; a deliberately broken image (one that never confirms) is rolled back
+  by itself; a power cut during the write leaves the old slot booting.
 
 ### Checking the verdict
 
@@ -821,6 +909,20 @@ without USB.
   throughput and round-trip latency for both, the C6's heap and CPU load in each,
   and session survival across a C6 restart. Record in §8. *Done when:* the
   numbers are in this plan and §1.5 is either confirmed or rewritten.
+  * **Found 2026-10-14: not measurable on one board as written.** While it
+    bridges, the C6's own stack is detached (49.7), so no LAN host reaches
+    the C6's server; giving it an IP beside `wlan0` would be two addresses
+    on one MAC, which D3 rules out. A1 needs a third persona: LLP up, 9P
+    only, no bridge, the C6 keeping its own stack and IP. That persona is
+    also what a pure-9P RP2350 integration (49.10) would be — the C6 the LAN
+    node, the RP2350 a subtree of it — so it is worth building as a function,
+    with the measurement as its by-product. Its costs: the LAN then
+    authenticates to the tainted C6 (against D5's "peer keys never reach the
+    C6"), and the C6 needs a 16 KB task for a remote attach (9.1 KB deep).
+    **Tentative (2026-10-14), to be reviewed before 49.10 starts:** the
+    RP2350 gets its own `wlan0` (frames, as the P4), with 9P for the C6's
+    state; the 9P-only persona stays 49.9's, for the measurement. 49.8a holds
+    either way.
 
 ### The RP2350 terminal
 
@@ -875,10 +977,14 @@ without USB.
 * A socket filesystem (`/net`) on any node (§1.5).
 * IP forwarding or NAT between `eth0` and `wlan0` on the NANO.
 * ESP-Hosted compatibility (D8); returning a C6 to factory firmware.
-* BLE, 802.15.4, SoftAP, WPA3, low-power modes (phase 45 §8 stands).
+* BLE, 802.15.4, WPA3, low-power modes (phase 45 §8 stands).
+  SoftAP for first-time setup is `plan/phase52_remote_admin.md`'s.
+* OTA backends for the P4 and the RP2350, and a web admin interface
+  (`plan/phase52_remote_admin.md`; 49.8b builds the generic OTA shape and the
+  C6 backend only).
 * The P4's USB-Serial/JTAG as a 9P link (deferred in 47.13; 49.7 makes it less
   needed still).
-* TLS.
+* TLS (`plan/phase52_remote_admin.md` §1.5).
 
 ## 11. References
 

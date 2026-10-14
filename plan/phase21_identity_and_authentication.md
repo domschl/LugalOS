@@ -649,6 +649,13 @@ one and matches how `p9key` already works. Provisioning over the network is
 refused, not merely discouraged: a device that will accept a new identity from
 the network is a device with no identity.
 
+*Amended 2026-10-14 (`plan/phase52_remote_admin.md` §1.3):* too strict for
+hardware shipped to end users. The record splits into a factory part
+(console or host tool only, as above) and an owner part. An *unclaimed* node
+(empty owner part, built with `CONFIG_NETWORK_CLAIM`) accepts its owner part
+once over a setup access point keyed with a per-device secret; claiming
+closes that path, and only a physical reset reopens it.
+
 ## 7. Security implications, stated plainly
 
 Written here because an unstated limit gets credited as a feature -- the same
