@@ -86,6 +86,14 @@ def main():
     for name, base, path in writes:
         args += ["%#x" % base, str(path)]
         print("  %-8s %#08x  %s (%d bytes)" % (name, base, path.name, path.stat().st_size))
+    # A chip that came here through `reboot download` has bit 30 of LP_AON_SYS_CFG set; it is
+    # always-on, and a reset over USB-JTAG keeps it, so the board would only ever restart into
+    # the ROM's download mode. Cleared first: esptool's reset after write-flash is the one that
+    # reliably restarts the chip (one issued later, from its flasher stub, did not).
+    r = c6run.esptool("--port", port, "--after", "no-reset",
+                      "write-mem", "0x600B1034", "0", "0x40000000", timeout=60)
+    if r.returncode != 0:
+        print("note: could not clear the force-download bit:", (r.stderr or r.stdout)[-200:])
     cmd = ["--port", port, "write-flash", "--flash-mode", "dio", "--flash-freq", "40m", "--flash-size", flash_mb]
     if a.no_reset:
         cmd = ["--port", port, "--after", "no-reset", "write-flash", "--flash-mode", "dio",

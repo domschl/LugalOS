@@ -147,6 +147,15 @@ Checks of the channel itself:
 Measured on the LCD-7B at 20 MHz, 4-bit: 3.1 MB/s each way with 1514-byte
 frames, nothing lost or damaged.
 
+### The NANO: Ethernet and Wi-Fi
+
+The ESP32-P4-NANO has both `eth0` and its C6's `wlan0`, and one IP stack: it
+serves `eth0` while the Ethernet cable has a carrier, otherwise `wlan0`
+(`CONFIG_NET_PREFER_WIRED` in its board file), decided again once a second. A
+move drops the address and open TCP connections; DHCP runs again on the new
+interface, and an address in the identity record applies to `eth0` only. LLP's
+host role starts at boot, as on the LCD-7B.
+
 ## 5. Wi-Fi for the RP2350 Terminal: a C6-Zero on Header H7
 
 The RP2350 terminal (`rp2350-terminal`) gets Wi-Fi from an ESP32-C6-Zero wired

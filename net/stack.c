@@ -7,6 +7,7 @@
 #include "fs/9p.h"
 #include "kernel/identity.h"
 #include "kernel/sched.h"
+#include "kernel/time.h"
 #include "kernel/palloc.h"
 #include <string.h>
 
@@ -55,9 +56,13 @@ uint32_t net_take_unclaimed(uint8_t *out) {
  * one interface's receive ring corrupt it. Cleared by an explicit attach. */
 static bool g_released;
 
+/* net_autoconfig_once() has run for the interface the stack is on. */
+static bool g_autoconf_done;
+
 int net_stack_attach(netif_t *nif) {
     if (!nif) return -1;
     g_released = false;
+    g_autoconf_done = false;
     if (!g_frames) {
         g_frames = (uint8_t *)palloc_pages(1);
         if (!g_frames) {
@@ -265,12 +270,14 @@ uint32_t net_poll(uint32_t budget) {
  * ran before carrier arrived, g_net.configured is already set and this leaves
  * it alone. */
 static void net_autoconfig_once(void) {
-    static bool done;
-    if (done) return;
+    if (g_autoconf_done) return;
     if (!g_net.nif || !netif_link_up(g_net.nif)) return;   /* not yet -- try again next pass */
-    done = true;
+    g_autoconf_done = true;
 
     if (g_net.configured) return;
+    /* The record's address is the boot interface's: the board's own wire, not
+     * a radio interface that came later and gets its address by DHCP. */
+    if (g_net.nif != netif_at(0)) return;
     uint8_t ip[NODE_IPV4_LEN], mask[NODE_IPV4_LEN], gw[NODE_IPV4_LEN];
     if (!node_ipv4(ip, mask, gw)) return;
     if (net_set_address(ip, mask, gw) != 0) return;
@@ -280,9 +287,37 @@ static void net_autoconfig_once(void) {
 
 }
 
+#if defined(CONFIG_NET_PREFER_WIRED)
+/* Two interfaces, one stack (g_net has one address, one gateway, one ARP
+ * cache): it serves the first registered interface that has a link -- the
+ * board's wire, registered at boot, while its cable has a carrier; the radio's
+ * wlan0, registered when its link came up, otherwise. Moving drops the
+ * address, the ARP cache and every TCP connection on the old one; the DHCP
+ * client follows (net/dhcp.c), the record's address returns with the wire. */
+static void net_select_interface(void) {
+    static uint64_t next;
+    uint64_t now = time_get_ms();
+    if (now < next || g_released) return;
+    next = now + 1000u;
+    for (uint32_t i = 0; i < netif_count(); i++) {
+        netif_t *nif = netif_at(i);
+        if (!netif_link_up(nif)) continue;
+        if (nif != g_net.nif) {
+            printk("[Net] %s has a link: the stack moves %s%s\n", nif->name,
+                   g_net.nif ? "from " : "to it", g_net.nif ? g_net.nif->name : "");
+            (void)net_stack_attach(nif);
+        }
+        return;
+    }
+}
+#endif
+
 static void net_task_body(void *arg) {
     (void)arg;
     for (;;) {
+#if defined(CONFIG_NET_PREFER_WIRED)
+        net_select_interface();
+#endif
         /* Cheap once it has run: a single bool test. Inside the loop rather
          * than before it because it waits for carrier, which on a wireless
          * board arrives long after this task starts. */

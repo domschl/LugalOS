@@ -5,11 +5,12 @@ hardware: LLP over USB, SDIO and UART; `wlan0` through a C6 on the LCD-7B, the
 NANO and the RP2350 terminal; `/c6` in the host's namespace; OTA updates over 9P
 with a C6 loader; frames versus 9P-only measured (§1.5 stands). 49.6 done on
 both boards (card interrupt, 40 MHz, 10-minute soak, resets mid-stream; ~4 MB/s
-accepted in place of 5), 49.7's checks and the 7B's 30-minute soak done. Still
-open: a cold power cycle of the 7B; the NANO's LLP at boot with a failover rule
-(the stack on `eth0` while it has a carrier, else `wlan0`); `p9sync.py` over
-TCP (49.7); the RP2350 terminal re-tested with the shared pump wait, and
-`lcdterm_shots.py` for 49.10.
+accepted in place of 5), 49.7's checks, the 7B's 30-minute soak and cold power
+cycle done, the NANO's LLP at boot with its failover rule, the terminal re-tested
+and `lcdterm_shots.py` for 49.10 done. Still open: the NANO's move to `eth0` and
+back with a cable; `p9sync.py` over TCP (49.7); on the terminal, the LLP link
+dropping under load, one microSD dropout and one image that did not boot cold
+(49.10's notes).
 Written 2026-10-12; §1's verdict and all of §2's decisions confirmed by the
 owner the same day. Expands phase 45's
 "Expansion" milestones 45.12–45.17 (`plan/phase45_esp32c6.md` §5–§7), which
@@ -874,6 +875,17 @@ without USB.
     * **The NANO's default route** is a stack question: `net/stack.c` serves
       one interface (one address, one gateway), and `llp host` moves it from
       `eth0` to `wlan0`. Side by side needs a multi-interface stack.
+      **Decided (owner): a failover rule** (`CONFIG_NET_PREFER_WIRED`, the
+      NANO's board file): the stack's task serves the first registered
+      interface with a link, once a second -- `eth0` while its cable has a
+      carrier, else `wlan0`; the DHCP client follows a move, the identity
+      record's address belongs to the boot interface only. The NANO now starts
+      `llp host` at boot like the 7B. Without a cable: link 0.66 s, `wlan0`
+      leased at 1.4 s, nothing typed. Moving to `eth0` and back needs a cable
+      (not yet tried).
+    * **Cold power cycle of the 7B (both chips from off):** P4 `power-on`,
+      link 1.9 s, lease 2.6 s, `/c6` mounted, the C6 `power-on` on its
+      confirmed slot B and joined, 10/10 echoes -- nothing typed.
 
 ### Scenario 2 — full 9P integration
 
@@ -1199,6 +1211,21 @@ without USB.
       C6 on its own USB charger (no host: it still arms on UART0), only
       GND/TX/RX to H7. Less tidy than one cable, but it works; a single
       supply needs a stronger 3V3 than the terminal's.
+    * **2026-10-14, re-checked with the shared pump wait:** `test_rp2350.py`
+      31/33 with the C6-Zero on its own supply (the same two as before,
+      49.10's check passing); `lcdterm_shots.py` against the pre-49.10 build
+      (`422d71d`): the terminal scenario identical (8/8), the ribbon one
+      identical but for where kernel log lines land. With the C6 attached
+      and LLP's log lines on the panel (`/c6` attach retries), the canvas
+      reopened after `canvas close` came back blank instead of with a stale
+      picture: the layout stores and the canvas backings share slots, and
+      drawing in between changes what they hold -- not a rendering change.
+      **Open on the terminal:** the C6-Zero (on a PC's USB, armed by hand)
+      counted its link down every 3-15 s while the terminal ran the
+      scenario (the terminal silent > 3 s under load), so `/c6` kept failing
+      to mount; the terminal's microSD stopped answering once; and once a
+      terminal image did not boot from power-on until BOOTSEL rewrote it
+      (the current build boots cold).
     * `test_rp2350.py` gained the check (30/33 with the C6 on H7; the three
       failures -- PSRAM rates, `/ram0`, `Editor` -- fail on the pre-49.10
       build too, measured the same day; 31/33 without the C6, as the

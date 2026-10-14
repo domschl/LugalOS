@@ -158,6 +158,9 @@ set(_optional_keys
     # LLP on UART0 at this rate, toward a radio beside the board (the
     # terminal's header H7 and a C6-Zero). Its presence builds kernel/llp_node.c.
     CONFIG_LLP_UART_BAUD
+    # a board with a wired and a radio interface (the NANO: eth0 and its C6's
+    # wlan0): the stack serves the wired one while it has a carrier (net/stack.c).
+    CONFIG_NET_PREFER_WIRED
     # the panel scanned out turned by 180 degrees (1), for a board
     # whose glass is mounted the other way up from its inscriptions.
     CONFIG_LCD_ROTATE_180

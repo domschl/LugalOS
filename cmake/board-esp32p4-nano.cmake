@@ -306,4 +306,7 @@ set(CONFIG_SDIO_D1_GPIO    15)
 set(CONFIG_SDIO_D2_GPIO    16)
 set(CONFIG_SDIO_D3_GPIO    17)
 set(CONFIG_SDIO_FREQ_KHZ   40000)   # SDIO high speed; the C6's slave answers at it
+# Two interfaces, one stack: eth0 while its cable has a carrier, else the C6's
+# wlan0 -- re-decided once a second. LLP's host role starts at boot as on the 7B.
+set(CONFIG_NET_PREFER_WIRED 1)
 set(CONFIG_C6_CHIP_PU_GPIO 54)

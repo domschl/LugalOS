@@ -168,6 +168,7 @@ static void dhcp_task(void *arg) {
         for (uint32_t s = 0; s < wait; s++) {
             task_sleep_ms(1000);
             if (!netif_link_up(nif)) break;                                /* link lost: acquire again when it is back */
+            if (net_state()->nif != nif) break;                            /* the stack moved: acquire on the new one */
         }
     }
 }

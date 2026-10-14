@@ -130,9 +130,11 @@ console, loading and reset all on it.
   in LP_AON (read with esptool `read-mem`): 0x600B1000 stage, 0x600B1004 ticks, 0x600B1008/0x600B100C
   last trap cause/pc, 0x600B1014/0x600B1018 ra/task at the last tick.
 * `reboot` restarts a C6; `reboot download` restarts it into the ROM's download mode (no BOOT
-  strap needed; then esptool `--before no-reset`). After a `c6run.py` RAM load even a plain
-  `reboot` lands in download mode (the boot strap was latched that way); a flash-booted C6
-  reboots into LugalOS.
+  strap needed; then esptool `--before no-reset`). That sets bit 30 of LP_AON_SYS_CFG
+  (0x600B1034), which survives every reset but a power cycle or CHIP_PU: a plain `reboot` and
+  `c6flash.py` clear it; by hand, esptool `write-mem 0x600B1034 0 0x40000000` with its default
+  reset before and after. An esptool session opened with `--before no-reset` restarts the chip
+  into download mode again whatever the bit says (DTR stays asserted: the USB-JTAG's BOOT strap).
 * LLP radio role (49.3): `llp radio` at the C6's console shares the USB port between the console
   and LLP frames; `cd host/llp && uv run --extra serial --extra p9 llp host --port <C6-Zero> --arm
   --dhcp --ping 3 --cat /proc/version` plays the host. With the NANO's C6 also on USB (P2 21/23),

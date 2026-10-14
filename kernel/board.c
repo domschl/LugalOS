@@ -445,12 +445,15 @@ void board_register_devices(void) {
 #define C6_ROM_SOFTWARE_RESET 0x40000090u
 /* LP_AON_SYS_CFG_REG (lp_aon_reg.h): always-on, so it survives the reset, and
  * bit 30 tells the ROM to enter its download mode instead of booting -- what a
- * board with no reachable BOOT strap (the C6-MINI behind a P4) needs. */
+ * board with no reachable BOOT strap (the C6-MINI behind a P4) needs. Nothing
+ * but a power cycle or a CHIP_PU reset clears it by itself -- not the ROM, not
+ * esptool's reset over USB-JTAG -- so a plain reboot clears it explicitly. */
 #define C6_LP_AON_SYS_CFG      0x600B1034u
 #define C6_FORCE_DOWNLOAD_BOOT (1u << 30)
 
 static void c6_reset(bool download) {
     if (download) *(volatile uint32_t *)C6_LP_AON_SYS_CFG |= C6_FORCE_DOWNLOAD_BOOT;
+    else *(volatile uint32_t *)C6_LP_AON_SYS_CFG &= ~C6_FORCE_DOWNLOAD_BOOT;
     uart_flush_critical();
     ((void (*)(void))C6_ROM_SOFTWARE_RESET)();
 }

@@ -698,7 +698,15 @@ static void handle_events(uint32_t now) {
         if (g_role == LLP_NODE_HOST) {
             memcpy(g_wlan.mac, g_link.peer_mac, NETIF_MAC_LEN);
             if (!g_wlan_registered) {
-                if (netif_register(&g_wlan) == 0 && net_stack_attach(&g_wlan) == 0) {
+#if defined(CONFIG_NET_PREFER_WIRED)
+                /* The stack stays on a wire that has a carrier; net/stack.c moves
+                 * it here when there is none. */
+                const netif_t *cur = net_state()->nif;
+                bool take = !cur || !netif_link_up((netif_t *)cur);
+#else
+                bool take = true;
+#endif
+                if (netif_register(&g_wlan) == 0 && (!take || net_stack_attach(&g_wlan) == 0)) {
                     g_wlan_registered = true;
                     net_task_start();
                     dhcp_start();
@@ -924,10 +932,10 @@ void llp_node_autostart(void) {
      * wire is LLP's from boot. Left to the console, whatever the radio sends --
      * its boot log, LLP's frames -- arrives as keystrokes. */
     (void)llp_node_start(LLP_NODE_HOST);
-#elif defined(CONFIG_BOARD_ESP32P4) && defined(CONFIG_SDIO_CLK_GPIO) && !defined(CONFIG_EMAC_BASE)
-    /* A P4 whose only network is its C6 (the LCD-7B). A board with Ethernet
-     * as well starts `llp host` by hand until a rule says which interface
-     * carries the default route. */
+#elif defined(CONFIG_BOARD_ESP32P4) && defined(CONFIG_SDIO_CLK_GPIO) && \
+      (!defined(CONFIG_EMAC_BASE) || defined(CONFIG_NET_PREFER_WIRED))
+    /* A P4 whose network is its C6 (the LCD-7B), or that has a wire as well and
+     * a rule for which one the stack serves (the NANO, net/stack.c). */
     (void)llp_node_start(LLP_NODE_HOST);
 #endif
 }
