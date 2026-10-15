@@ -1,0 +1,76 @@
+# C Programming on LugalOS: Compiler, Libc & Syscall ABI
+
+LugalOS provides a complete C programming environment for user applications. Programs can be compiled directly on the target hardware using the native chibicc C11 compiler or cross-compiled on a host computer.
+
+## 1. On-Device Compilation with chibicc
+
+On targets with sufficient memory (rp2350-terminal, esp32p4-lcd7b, esp32p4, and QEMU), the C compiler is built into the shell:
+
+```text
+# Compile source to native RISC-V ELF binary
+lsh> cc /sd0/hello.c /sd0/system/bin/hello.elf
+
+# Execute the resulting binary
+lsh> hello
+Hello from native RISC-V user space!
+```
+
+### Memory Efficiency
+The compiler allocates its syntax tree, tokenizer buffers, and code generation pools dynamically from the physical page heap (palloc) and releases all memory immediately upon compilation completion.
+
+## 2. The lugal.h Header & Standard Library Subset
+
+User programs include ` (available at /sd0/lugal.h` and embedded in the compiler's include path):
+
+```c
+#include <lugal.h>
+
+int main(int argc, char **argv) {
+    printf("Arguments received: %d\n", argc);
+    for (int i = 0; i < argc; i++) {
+        printf("  argv[%d] = %s\n", i, argv[i]);
+    }
+    return 0;
+}
+```
+
+### Supported C Standard Library Subset
+* Memory & Strings: malloc(), free(), memcpy(), memmove(), memset(), strlen(), strcmp(), strncmp(), strcpy(), strncpy(), strcat().
+* Standard I/O: printf(), snprintf(), puts(), putchar(), getchar().
+* File Operations: open(path, flags), read(fd, buf, count), write(fd, buf, count), close(fd), stat(path, st).
+* System Utilities: exit(status), timems(), sleepms(ms).
+
+## 3. System Call ABI & Memory Confinement
+
+User applications execute in unprivileged RISC-V User-Mode (U-Mode).
+
+### U-Mode Memory Isolation
+* Hardware Enforcement: Programs are confined via Physical Memory Protection (PMP) on NOMMU microcontrollers, and Sv39 page tables on RV64.
+* Segment Confinement (W^X):
+* Text segment: Read-only, Executable (R | X).
+* Data/BSS segment: Read/Write, Non-Executable (R | W).
+* User stack: Read/Write, Non-Executable (R | W).
+* Safe Argument Passing: argc and argv strings are constructed entirely within the application's private stack page. Zero kernel pointers cross into user space.
+* Fault Containment: If a user program dereferences a NULL pointer or writes outside its granted memory domain, hardware triggers an access fault. The kernel traps the fault, terminates the task, reclaims its allocated pages, and reports the error in lsh without crashing the operating system.
+
+### System Call Interface (ecall)
+User programs communicate with the microkernel via the RISC-V ecall instruction using register conventions:
+* a7: Syscall number.
+* a0–a5: Arguments.
+* a0: Return value.
+
+```
+| Number | Name | Arguments | Description |
+| :--- | :--- | :--- | :--- |
+| 1 | SYS_EXIT | a0 = status | Terminate running task |
+| 2 | SYS_PUTC | a0 = char | Write character to console |
+| 3 | SYS_GETC | - | Read character from console |
+| 4 | SYS_READ | a0 = fd, a1 = buf, a2 = count | Read bytes from file descriptor |
+| 5 | SYS_WRITE | a0 = fd, a1 = buf, a2 = count | Write bytes to file descriptor |
+| 6 | SYS_OPEN | a0 = path, a1 = flags | Open file or endpoint |
+| 7 | SYS_CLOSE | a0 = fd | Close open file descriptor |
+| 10 | SYSCHANCALL | a0 = chan_id, a1 = in, a2 = out | Copy-always IPC service call |
+| 15 | SYSTIMEMS | - | Return uptime in milliseconds |
+```
+
+All user pointers passed into syscalls are strictly validated against the task's granted memory domain before access.

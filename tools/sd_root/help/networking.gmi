@@ -1,0 +1,154 @@
+# LugalOS Plan 9 Networking & Host Integration
+
+LugalOS implements native Plan 9 file protocol (9P2000) services and an embedded IPv4 network stack. This enables bidirectional filesystem sharing, live MicroSD card synchronization without removing physical media, and network appliance operation.
+
+## 1. MicroSD Synchronization via 9P (tools/p9sync.py)
+
+tools/p9sync.py synchronizes local host directories directly with the board's /sd0 MicroSD card over serial links without interrupting running tasks:
+
+### Synchronizing RP2350 Hardware
+On RP2350 devices, 9P runs over the secondary USB CDC interface (if02):
+
+```bash
+uv run --project host/p9lib python3 tools/p9sync.py \
+    --serial /dev/serial/by-id/usb-LugalOS_*_Dual_CDC_ACM_*-if02 \
+    --src build/rp2350-terminal/sd_root \
+    --dst /sd0
+```
+
+### Synchronizing ESP32-P4 Boards
+On ESP32-P4 boards (which have a single console port), p9sync.py uses p9share to multiplex 9P over the console UART using SLIP framing:
+
+```bash
+python3 tools/p9sync.py --p4 lcd7b --src build/esp32p4-lcd7b/sd_root
+```
+
+### Preservation Policy
+tools/p9sync.py is strictly additive and idempotent:
+* Creates missing directories on the board (e.g. /sd0/cas/, /sd0/help/).
+* Updates files that differ in size or timestamp.
+* Preserves user data: Never overwrites existing user games (/sd0/CHESS/) or history files.
+
+## 2. Mounting LugalOS on Linux via fuse-p9
+
+The host/fuse-p9 utility mounts a running LugalOS filesystem directly into the Linux host directory tree:
+
+```bash
+# Mount LugalOS over TCP (e.g. Wi-Fi node)
+mkdir -p /mnt/lugalos
+./host/fuse-p9/fuse-p9 -s 192.168.1.50:564 /mnt/lugalos
+
+# Files on the microcontroller are now accessible on the host:
+ls -la /mnt/lugalos/sd0
+```
+
+## 3. Network Interfaces & Wi-Fi Configuration
+
+### Querying Network State
+From the LugalOS shell:
+```text
+lsh> net
+Interfaces:
+  eth0: MAC 02:4c:75:67:01:00, Link UP, 100 Mbps Full-Duplex
+  rx: 1420 frames, tx: 850 frames
+```
+
+### Joining a Wi-Fi Network
+For wireless presets (rp2350-wifi, esp32c6):
+1. Derive the 64-character hex WPA2 PSK on the host:
+```bash
+   wpa_passphrase "MySSID" "MyPassword"
+```
+2. Join the network from the board:
+```text
+   lsh> wifi join MySSID <64-char-hex-psk>
+```
+3. Assign a static IP address or let the supervisor auto-configure:
+```text
+   lsh> netcfg 192.168.1.50 255.255.255.0 192.168.1.1
+```
+4. Start the 9P TCP file server:
+```text
+   lsh> net listen 564
+```
+
+## 4. Wi-Fi Through the Board's ESP32-C6 (ESP32-P4 Boards)
+
+The ESP32-P4 boards (esp32p4, esp32p4-lcd7b) have an ESP32-C6 beside the P4, wired to it over SDIO. Running LugalOS on both (esp32c6-mini on the C6), the C6 is the P4's network card: the LugalOS Link Protocol carries Ethernet frames and 9P between them, and the P4 gets wlan0 with the C6's station MAC.
+
+* At boot the C6 (esp32c6-mini) arms the radio role and waits for a
+host, and an LCD-7B (whose only network is its C6) starts the host role. On the NANO, which has Ethernet as well, type llp host on the P4. By hand on either side: llp radio (C6), llp host (P4).
+* Link up (within a second of both running): the P4 registers wlan0
+with the C6's station MAC and asks for a DHCP lease once the radio is associated. The C6 gives its interface to the link only now. A C6 with no host stays a node of its own, with its own IP.
+* /c6. When the link comes up the P4 mounts the C6's namespace at /c6
+(9P over the same channel, no authentication: it is a cable), and again after a C6 restart; while the link is up and /c6 is not mounted it retries every 5 s. The LAN sees /c6 through the P4's own 9P server, so a host that authenticated to the P4 reads the C6 too. While the link is down, anything under /c6 fails at once (within the link's 3 s liveness) rather than waiting for the 9P client's 10 s timeout, and files opened before a C6 restart fail instead of reaching a different file.
+* Credentials stay on the P4. Store them once on the P4 with
+wlan SSID PSKHEX (the derived 64-hex key, see above). At each link-up, while the radio is not associated, the P4 writes join SSID PSKHEX to /c6/dev/wlan. The C6 holds the key in RAM only.
+
+What the C6 exports, read through /c6 on the P4 (or on the C6 itself without the prefix). Status files are key=value lines:
+
+```
+| File | Read | Write |
+| :--- | :--- | :--- |
+| /c6/dev/wlan | state (idle, starting, not joined, joined), ssid, bssid, channel, rssi, mac, joins, last_disconnect (IEEE reason code) | join SSID PSKHEX, rejoin, scan |
+| /c6/proc/wlanscan | the last scan: aps=N, then one line per access point: bssid channel rssi auth ssid (as many as fit) | — |
+| /c6/proc/radio | how far the radio started (stage), its return codes, frame counters and rings | — |
+| /c6/proc/llp | the C6's end of the link (the P4's own is /proc/llp) | — |
+| /c6/proc/wdt | the watchdog: armed, timeouts, feeds, lastreset, restarted_itself | — |
+| /c6/dev/reboot | — | reboot, or download (into the ROM's download mode) |
+| /c6/proc/version | the C6's version, with its tainted: blob line | — |
+```
+
+scan is carried out by the radio's supervision loop, so only once the C6 has a network to join. The radio samples the associated AP's rssi, channel and bssid every 5 s, and reports rssi to the P4 in LLP's STATE (peer_rssi in /proc/llp).
+
+A remote mount is never re-entered over the link it came from: if the C6 mounts the P4 back ((mount-remote "p4" "llp") on the C6), /c6/p4/... on the P4 is refused rather than looping through both servers.
+
+Checks of the channel itself:
+
+```
+| Command | Where | What it does |
+| :--- | :--- | :--- |
+| llp | either | role, link state, peer, counters, SDIO channel state (/proc/llp: the same as key=value) |
+| llp loop on / llp loop off | C6 | send the host's Ethernet frames back instead of to the radio |
+| llp bench [count] [size] | P4, RP2350 | count frames of size bytes (default 1000 × 1514) to a C6 in loop mode, each checked on return; prints KB/s each way |
+| llp soak [seconds] [size] | P4, RP2350 | the same for seconds (default 600) as a background task, so the console stays free; progress each minute and the result in the kernel log (dmesg). It pauses while the link is down and stops if the C6 restarts, whose bridge would put the frames on the air |
+| llp host [baud] | P4, RP2350 | the host role; on the RP2350 terminal on UART0 (H7) at baud (default the board file's) |
+| llp radio uart [baud] | C6 | the radio role on UART0 (the header's TX/RX) instead of the USB, at baud (default 115200) |
+| sdio | C6 | the SDIO slave: generation, timing, receive buffers, packets in and out |
+| sdio timing 0..3 | C6 | the slave's edges (0: send and sample on the rising edge) |
+| sdio, sdio probe, sdio reset | P4 | the host side; sdio reset pulses the C6's CHIP_PU |
+| sdio resync | P4 | ask the C6 to restart LLP's SDIO channel (both counters, a new generation) at the next poll |
+```
+
+Measured on the LCD-7B at 20 MHz, 4-bit: 3.1 MB/s each way with 1514-byte frames, nothing lost or damaged.
+
+### The NANO: Ethernet and Wi-Fi
+
+The ESP32-P4-NANO has both eth0 and its C6's wlan0, and one IP stack: it serves eth0 while the Ethernet cable has a carrier, otherwise wlan0 (CONFIGNETPREFER_WIRED in its board file), decided again once a second. A move drops the address and open TCP connections; DHCP runs again on the new interface, and an address in the identity record applies to eth0 only. LLP's host role starts at boot, as on the LCD-7B.
+
+## 5. Wi-Fi for the RP2350 Terminal: a C6-Zero on Header H7
+
+The RP2350 terminal (rp2350-terminal) gets Wi-Fi from an ESP32-C6-Zero wired to its UART header H7, with LLP over UART0 between them: the terminal owns the IP address (wlan0, the C6's station MAC), the C6 bridges frames, and the C6's namespace is the terminal's /c6, as on the P4 boards (section 4).
+
+```
+| H7 pin | Signal | C6-Zero pin |
+| :--- | :--- | :--- |
+| 1 | 3V3 | not connected |
+| 2 | GND | GND |
+| 3 | RXD0 (GP17) | TX (GPIO16) |
+| 4 | TXD0 (GP16) | RX (GPIO17) |
+```
+
+* Flash the C6 once over its USB (tools/c6flash.py build/esp32c6); after
+that it updates over 9P through the terminal's /c6 (doc/admin/updates.md).
+* Nothing to type. The terminal takes H7 for LLP at boot; the C6, booting
+with no USB host, arms LLP on its UART0 after 2 s. Both run at 921600 baud (CONFIGLLPUART_BAUD in cmake/board-rp2350-terminal.cmake and cmake/board-esp32c6-zero.cmake: they must agree). The terminal hands its WLAN credentials (wlan SSID PSKHEX) to the C6; about 11 s after power-on wlan0 has a lease.
+* While LLP holds H7 the terminal's console stays on USB and the panel;
+lcd tee uart is refused. /proc/llp shows the wire, the rate and the UART's receive errors; /c6/proc/llp the C6's.
+* Two power supplies: the terminal from its own USB, the C6 from its
+own USB-C, on a charger. The C6 draws up to ~350 mA in transmit bursts, more than the terminal's 3V3 rail has to spare: from H7's 3V3 the C6 joins only with no USB keyboard on J7, and its Wi-Fi suffers under load even then. On a charger the C6 sees no USB host and arms LLP on UART0 as before; on a PC's USB port it would not (see below).
+* Debugging both ends: with the C6's USB attached to a PC it does not arm
+by itself, and the terminal's traffic on H7 arrives at the C6's console as input; park the terminal (BOOTSEL) to type llp radio uart 921600 at the C6.
+
+### Related Topics
+=> llp.gmi LugalOS Link Protocol

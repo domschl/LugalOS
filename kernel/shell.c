@@ -95,6 +95,7 @@
 #include "fs/vfs.h"
 #include "fs/p9_link.h"
 #include "fs/9p.h"
+#include "fs/gemtext.h"
 #include "net/netif.h"
 #include "net/ip.h"
 #include "net/tcp.h"
@@ -574,19 +575,44 @@ static int detect_screen_rows(void) {
 static bool resolve_help_path(const char *topic, char *out_path, size_t out_sz) {
     if (!topic || !*topic) return false;
 
-    ksnprintf(out_path, out_sz, "/sd0/help/%s.txt", topic);
+    char clean[64];
+    strncpy(clean, topic, sizeof(clean) - 1);
+    clean[sizeof(clean) - 1] = '\0';
+    char *dot = NULL;
+    for (char *p = clean; *p; p++) {
+        if (*p == '.') dot = p;
+    }
+    if (dot && (strcmp(dot, ".gmi") == 0 || strcmp(dot, ".txt") == 0)) {
+        *dot = '\0';
+    }
+
+    /* 1. Try .gmi on /sd0 */
+    ksnprintf(out_path, out_sz, "/sd0/help/%s.gmi", clean);
     int fd = vfs_open(out_path, VFS_O_READ);
     if (fd >= 0) { vfs_close(fd); return true; }
 
-    ksnprintf(out_path, out_sz, "/flash0/help/%s.txt", topic);
+    /* 2. Try .gmi on /flash0 */
+    ksnprintf(out_path, out_sz, "/flash0/help/%s.gmi", clean);
     fd = vfs_open(out_path, VFS_O_READ);
     if (fd >= 0) { vfs_close(fd); return true; }
 
+    /* 3. Try exact path on /sd0 */
     ksnprintf(out_path, out_sz, "/sd0/help/%s", topic);
     fd = vfs_open(out_path, VFS_O_READ);
     if (fd >= 0) { vfs_close(fd); return true; }
 
+    /* 4. Try exact path on /flash0 */
     ksnprintf(out_path, out_sz, "/flash0/help/%s", topic);
+    fd = vfs_open(out_path, VFS_O_READ);
+    if (fd >= 0) { vfs_close(fd); return true; }
+
+    /* 5. Fallback for legacy .txt on /sd0 */
+    ksnprintf(out_path, out_sz, "/sd0/help/%s.txt", clean);
+    fd = vfs_open(out_path, VFS_O_READ);
+    if (fd >= 0) { vfs_close(fd); return true; }
+
+    /* 6. Fallback for legacy .txt on /flash0 */
+    ksnprintf(out_path, out_sz, "/flash0/help/%s.txt", clean);
     fd = vfs_open(out_path, VFS_O_READ);
     if (fd >= 0) { vfs_close(fd); return true; }
 
@@ -594,39 +620,120 @@ static bool resolve_help_path(const char *topic, char *out_path, size_t out_sz) 
 }
 
 static bool find_link_target(int fd, char link_digit, char *out_target, size_t target_sz) {
-    char pattern[5];
-    pattern[0] = '[';
-    pattern[1] = link_digit;
-    pattern[2] = ']';
-    pattern[3] = '\0';
+    if (link_digit < '1' || link_digit > '9') return false;
+    int target_idx = link_digit - '0';
+    int current_idx = 0;
 
     char buf[512];
-    uint64_t offset = 0;
-    for (;;) {
-        int n = vfs_pread(fd, buf, sizeof(buf) - 1, offset);
-        if (n <= 0) break;
-        buf[n] = '\0';
+    uint64_t file_offset = 0;
+    char line[GEM_LINE_MAX];
+    size_t line_pos = 0;
+    bool in_pre = false;
+    gem_line_t parsed;
 
-        char *p = strstr(buf, pattern);
-        if (p) {
-            p += 3;
-            while (*p == ' ' || *p == '\t') p++;
-            size_t k = 0;
-            while (*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r' && *p != '-' && k < target_sz - 1) {
-                out_target[k++] = *p++;
+    for (;;) {
+        int n = vfs_pread(fd, buf, sizeof(buf), file_offset);
+        if (n <= 0) break;
+        file_offset += (uint64_t)n;
+
+        for (int i = 0; i < n; i++) {
+            char ch = buf[i];
+            if (ch == '\r') continue;
+            if (ch == '\n') {
+                line[line_pos] = '\0';
+                line_pos = 0;
+                if (gemtext_parse_line(line, &in_pre, &parsed)) {
+                    if (parsed.type == GEM_LINE_LINK) {
+                        current_idx++;
+                        if (current_idx == target_idx) {
+                            strncpy(out_target, parsed.url, target_sz - 1);
+                            out_target[target_sz - 1] = '\0';
+                            return true;
+                        }
+                    }
+                }
+            } else if (line_pos < sizeof(line) - 1) {
+                line[line_pos++] = ch;
             }
-            out_target[k] = '\0';
-            return k > 0;
         }
-        if (n < (int)sizeof(buf) - 1) break;
-        offset += (uint64_t)(n - 16);
     }
+
+    if (line_pos > 0) {
+        line[line_pos] = '\0';
+        if (gemtext_parse_line(line, &in_pre, &parsed)) {
+            if (parsed.type == GEM_LINE_LINK) {
+                current_idx++;
+                if (current_idx == target_idx) {
+                    strncpy(out_target, parsed.url, target_sz - 1);
+                    out_target[target_sz - 1] = '\0';
+                    return true;
+                }
+            }
+        }
+    }
+
     return false;
+}
+
+static void pager_print_gem_line(const char *raw, bool is_gmi, bool *in_pre, int *link_idx) {
+    if (!is_gmi) {
+        cprintf("%s\n", raw);
+        return;
+    }
+    gem_line_t gem;
+    if (!gemtext_parse_line(raw, in_pre, &gem)) {
+        cprintf("%s\n", raw);
+        return;
+    }
+
+    switch (gem.type) {
+    case GEM_LINE_H1:
+        cprintf("\033[1;36m# %s\033[0m\n", gem.text);
+        break;
+    case GEM_LINE_H2:
+        cprintf("\033[1;32m## %s\033[0m\n", gem.text);
+        break;
+    case GEM_LINE_H3:
+        cprintf("\033[1;33m### %s\033[0m\n", gem.text);
+        break;
+    case GEM_LINE_LIST:
+        cprintf("  • %s\n", gem.text);
+        break;
+    case GEM_LINE_QUOTE:
+        cprintf("  │ \033[3m%s\033[0m\n", gem.text);
+        break;
+    case GEM_LINE_PRE_TOGGLE:
+        if (*in_pre) {
+            if (gem.alt[0]) cprintf("\033[2m```%s\033[0m\n", gem.alt);
+            else cprintf("\033[2m```\033[0m\n");
+        } else {
+            cprintf("\033[2m```\033[0m\n");
+        }
+        break;
+    case GEM_LINE_PRE_TEXT:
+        cprintf("  %s\n", gem.text);
+        break;
+    case GEM_LINE_LINK:
+        (*link_idx)++;
+        if (*link_idx <= 9) {
+            cprintf("  \033[1;33m[%d]\033[0m ➔ %s \033[2m(%s)\033[0m\n", *link_idx, gem.label, gem.url);
+        } else {
+            cprintf("  \033[1;33m[=>]\033[0m ➔ %s \033[2m(%s)\033[0m\n", gem.label, gem.url);
+        }
+        break;
+    case GEM_LINE_BLANK:
+        cprintf("\n");
+        break;
+    case GEM_LINE_TEXT:
+    default:
+        cprintf("%s\n", gem.text);
+        break;
+    }
 }
 
 static void pager_view_file(const char *path, bool is_topic, const char *topic_name) {
     int max_rows = detect_screen_rows();
-    char current_topic[32];
+    char current_topic[64];
     if (topic_name) {
         strncpy(current_topic, topic_name, sizeof(current_topic) - 1);
         current_topic[sizeof(current_topic) - 1] = '\0';
@@ -647,10 +754,13 @@ static void pager_view_file(const char *path, bool is_topic, const char *topic_n
 
         uint64_t file_offset = 0;
         int row_count = 0;
-        char line_buf[256];
+        char line_buf[GEM_LINE_MAX];
         int line_pos = 0;
         bool quit = false;
         bool reload_topic = false;
+        bool is_gmi = (strstr(cur_path, ".gmi") != NULL) || is_topic;
+        bool in_pre = false;
+        int link_idx = 0;
 
         char read_buf[512];
         for (;;) {
@@ -658,12 +768,13 @@ static void pager_view_file(const char *path, bool is_topic, const char *topic_n
             if (n <= 0) {
                 if (line_pos > 0) {
                     line_buf[line_pos] = '\0';
-                    cprintf("%s\n", line_buf);
+                    pager_print_gem_line(line_buf, is_gmi, &in_pre, &link_idx);
                     line_pos = 0;
                 }
-                cprintf("\n-- End of %s (%sb: Back, q: Quit, 1..9: Link) -- ",
+                cprintf("\n-- End of %s (%sb: Back, q: Quit%s) -- ",
                         is_topic ? current_topic : cur_path,
-                        s_help_depth > 0 ? "" : "");
+                        s_help_depth > 0 ? "" : "",
+                        is_gmi ? ", 1..9: Link" : "");
                 for (;;) {
                     char c = console_getc();
                     if (c == 'q' || c == 'Q' || c == 27 || c == '\n' || c == '\r') {
@@ -672,26 +783,31 @@ static void pager_view_file(const char *path, bool is_topic, const char *topic_n
                     }
                     if ((c == 'b' || c == 'B') && s_help_depth > 0) {
                         s_help_depth--;
-                        strncpy(current_topic, s_help_stack[s_help_depth], sizeof(current_topic) - 1);
+                        strncpy(cur_path, s_help_stack[s_help_depth], sizeof(cur_path) - 1);
+                        cur_path[sizeof(cur_path) - 1] = '\0';
+                        strncpy(current_topic, cur_path, sizeof(current_topic) - 1);
                         current_topic[sizeof(current_topic) - 1] = '\0';
-                        if (resolve_help_path(current_topic, cur_path, sizeof(cur_path))) {
-                            reload_topic = true;
-                        }
+                        reload_topic = true;
                         break;
                     }
-                    if (is_topic && c >= '1' && c <= '9') {
-                        char target[32];
+                    if (c >= '1' && c <= '9') {
+                        char target[128];
                         if (find_link_target(fd, c, target, sizeof(target))) {
                             char new_path[128];
-                            if (resolve_help_path(target, new_path, sizeof(new_path))) {
-                                if (s_help_depth < HELP_STACK_MAX) {
-                                    strncpy(s_help_stack[s_help_depth++], current_topic, 31);
+                            if (resolve_help_path(target, new_path, sizeof(new_path)) ||
+                                gemtext_resolve_url(cur_path, target, new_path, sizeof(new_path))) {
+                                int tfd = vfs_open(new_path, VFS_O_READ);
+                                if (tfd >= 0) {
+                                    vfs_close(tfd);
+                                    if (s_help_depth < HELP_STACK_MAX) {
+                                        strncpy(s_help_stack[s_help_depth++], cur_path, sizeof(s_help_stack[0]) - 1);
+                                    }
+                                    strncpy(current_topic, target, sizeof(current_topic) - 1);
+                                    current_topic[sizeof(current_topic) - 1] = '\0';
+                                    strncpy(cur_path, new_path, sizeof(cur_path) - 1);
+                                    reload_topic = true;
+                                    break;
                                 }
-                                strncpy(current_topic, target, sizeof(current_topic) - 1);
-                                current_topic[sizeof(current_topic) - 1] = '\0';
-                                strncpy(cur_path, new_path, sizeof(cur_path) - 1);
-                                reload_topic = true;
-                                break;
                             }
                         }
                     }
@@ -705,13 +821,13 @@ static void pager_view_file(const char *path, bool is_topic, const char *topic_n
                 if (ch == '\r') continue;
                 if (ch == '\n') {
                     line_buf[line_pos] = '\0';
-                    cprintf("%s\n", line_buf);
                     line_pos = 0;
+                    pager_print_gem_line(line_buf, is_gmi, &in_pre, &link_idx);
                     row_count++;
 
                     if (row_count >= max_rows) {
                         cprintf("-- More (Space: Next, Enter: Line, b: Back, q: Quit%s) -- ",
-                                is_topic ? ", 1..9: Link" : "");
+                                is_gmi ? ", 1..9: Link" : "");
                         for (;;) {
                             char c = console_getc();
                             if (c == 'q' || c == 'Q' || c == 27 || c == 3) {
@@ -730,28 +846,33 @@ static void pager_view_file(const char *path, bool is_topic, const char *topic_n
                                 row_count = max_rows / 2;
                                 break;
                             }
-                            if ((c == 'b' || c == 'B') && is_topic && s_help_depth > 0) {
+                            if ((c == 'b' || c == 'B') && s_help_depth > 0) {
                                 s_help_depth--;
-                                strncpy(current_topic, s_help_stack[s_help_depth], sizeof(current_topic) - 1);
+                                strncpy(cur_path, s_help_stack[s_help_depth], sizeof(cur_path) - 1);
+                                cur_path[sizeof(cur_path) - 1] = '\0';
+                                strncpy(current_topic, cur_path, sizeof(current_topic) - 1);
                                 current_topic[sizeof(current_topic) - 1] = '\0';
-                                if (resolve_help_path(current_topic, cur_path, sizeof(cur_path))) {
-                                    reload_topic = true;
-                                }
+                                reload_topic = true;
                                 break;
                             }
-                            if (is_topic && c >= '1' && c <= '9') {
-                                char target[32];
+                            if (c >= '1' && c <= '9') {
+                                char target[128];
                                 if (find_link_target(fd, c, target, sizeof(target))) {
                                     char new_path[128];
-                                    if (resolve_help_path(target, new_path, sizeof(new_path))) {
-                                        if (s_help_depth < HELP_STACK_MAX) {
-                                            strncpy(s_help_stack[s_help_depth++], current_topic, 31);
+                                    if (resolve_help_path(target, new_path, sizeof(new_path)) ||
+                                        gemtext_resolve_url(cur_path, target, new_path, sizeof(new_path))) {
+                                        int tfd = vfs_open(new_path, VFS_O_READ);
+                                        if (tfd >= 0) {
+                                            vfs_close(tfd);
+                                            if (s_help_depth < HELP_STACK_MAX) {
+                                                strncpy(s_help_stack[s_help_depth++], cur_path, sizeof(s_help_stack[0]) - 1);
+                                            }
+                                            strncpy(current_topic, target, sizeof(current_topic) - 1);
+                                            current_topic[sizeof(current_topic) - 1] = '\0';
+                                            strncpy(cur_path, new_path, sizeof(cur_path) - 1);
+                                            reload_topic = true;
+                                            break;
                                         }
-                                        strncpy(current_topic, target, sizeof(current_topic) - 1);
-                                        current_topic[sizeof(current_topic) - 1] = '\0';
-                                        strncpy(cur_path, new_path, sizeof(cur_path) - 1);
-                                        reload_topic = true;
-                                        break;
                                     }
                                 }
                             }
@@ -805,6 +926,7 @@ static void cmd_help_summary(void) {
     cprintf("  reboot          - Restart board\n");
     cprintf("  clear           - Clear terminal screen\n");
     cprintf("\nApplications & Programming:\n");
+    cprintf("  gem [file|topic] - View Gemtext (.gmi) hypertext document\n");
     cprintf("  e [file]        - Full-screen Emacs-style editor\n");
     cprintf("  ed [file]       - Teletype line editor\n");
     cprintf("  lisp            - Interactive Scheme / Lisp REPL\n");
@@ -911,6 +1033,42 @@ static void cmd_man(const char *topic) {
     } else {
         cmd_help_topic(topic);
     }
+}
+
+static void cmd_gem(const char *arg) {
+    if (!arg || !*arg) {
+        cprintf("Usage: gem <file.gmi | topic>\n");
+        return;
+    }
+
+    /* Check direct file path */
+    int fd = vfs_open(arg, VFS_O_READ);
+    if (fd >= 0) {
+        vfs_close(fd);
+        s_help_depth = 0;
+        pager_view_file(arg, false, arg);
+        return;
+    }
+
+    /* Check help topic */
+    char resolved[128];
+    if (resolve_help_path(arg, resolved, sizeof(resolved))) {
+        s_help_depth = 0;
+        pager_view_file(resolved, true, arg);
+        return;
+    }
+
+    /* Check relative path on /sd0 or /flash0 */
+    ksnprintf(resolved, sizeof(resolved), "/sd0/%s", arg);
+    fd = vfs_open(resolved, VFS_O_READ);
+    if (fd >= 0) {
+        vfs_close(fd);
+        s_help_depth = 0;
+        pager_view_file(resolved, false, arg);
+        return;
+    }
+
+    cprintf("gem: cannot open '%s'\n", arg);
 }
 
 static const char *g_pipe_in = NULL;
@@ -4475,6 +4633,14 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         const char *arg = cmd_line + 4;
         while (*arg == ' ') arg++;
         cmd_man(arg);
+        return;
+    } else if (strcmp(cmd_line, "gem") == 0) {
+        cmd_gem(NULL);
+        return;
+    } else if (strncmp(cmd_line, "gem ", 4) == 0) {
+        const char *arg = cmd_line + 4;
+        while (*arg == ' ') arg++;
+        cmd_gem(arg);
         return;
     } else if (strcmp(cmd_line, "more") == 0) {
         cmd_more(NULL);

@@ -766,6 +766,7 @@ set(SOURCES
     fs/vfs_server.c
     fs/9p.c
     fs/p9_link.c
+    fs/gemtext.c
 
     # R1: the frame-source seam below
     # the IP stack. Built for every target, like fs/ above -- a board with no
