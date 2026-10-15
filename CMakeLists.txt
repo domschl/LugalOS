@@ -801,6 +801,8 @@ set(SOURCES
     # so a QEMU target exercises the whole publish/reconnect/will machinery
     # with a synthetic source and no sensor.
     net/mqttd.c
+    # Phase 53: Spartan network client and sandboxed daemon
+    net/spartan.c
     # P3: timestamped GPIO
     # edge capture. Built for every target because the ring is portable and is
     # where the off-by-one lives; the interrupt half compiles away on anything

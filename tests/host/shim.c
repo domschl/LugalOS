@@ -119,6 +119,89 @@ int vfs_write(const char *path, const void *buf, uint32_t len) {
     return 0;
 }
 
+int vfs_open(const char *path, int flags) {
+    (void)flags;
+    for (int i = 0; i < HOST_FILES; i++) {
+        if (g_files[i].data && strcmp(g_files[i].path, path) == 0) {
+            return i + 1;
+        }
+    }
+    if (flags & 0x02) { /* VFS_O_WRITE / VFS_O_CREATE */
+        host_file_put(path, "", 0);
+        for (int i = 0; i < HOST_FILES; i++) {
+            if (g_files[i].data && strcmp(g_files[i].path, path) == 0) {
+                return i + 1;
+            }
+        }
+    }
+    return -1;
+}
+
+int vfs_close(int fd) {
+    (void)fd;
+    return 0;
+}
+
+int vfs_pread(int fd, void *buf, uint32_t count, uint64_t offset) {
+    if (fd < 1 || fd > HOST_FILES) return -1;
+    int slot = fd - 1;
+    if (!g_files[slot].data) return -1;
+    if (offset >= g_files[slot].len) return 0;
+    uint32_t avail = g_files[slot].len - (uint32_t)offset;
+    uint32_t n = count < avail ? count : avail;
+    memcpy(buf, g_files[slot].data + offset, n);
+    return (int)n;
+}
+
+int vfs_pwrite(int fd, const void *buf, uint32_t count, uint64_t offset) {
+    if (fd < 1 || fd > HOST_FILES) return -1;
+    int slot = fd - 1;
+    if (!g_files[slot].data) return -1;
+    uint32_t req_len = (uint32_t)offset + count;
+    if (req_len > g_files[slot].len) {
+        g_files[slot].data = realloc(g_files[slot].data, req_len ? req_len : 1);
+        g_files[slot].len = req_len;
+    }
+    memcpy(g_files[slot].data + offset, buf, count);
+    return (int)count;
+}
+
 /* Weak: a harness whose module runs timers supplies a clock it can move. */
 __attribute__((weak)) uint64_t time_get_ms(void) { return 0; }
 __attribute__((weak)) uint64_t time_get_us(void) { return 0; }
+__attribute__((weak)) void sched_yield(void) {}
+__attribute__((weak)) bool console_interrupt_requested(void) { return false; }
+__attribute__((weak)) int tcp_listen(uint16_t port) { (void)port; return 0; }
+__attribute__((weak)) void tcp_unlisten(void) {}
+__attribute__((weak)) void tcp_unlisten_port(uint16_t port) { (void)port; }
+__attribute__((weak)) int tcp_stream_open(void *s, const uint8_t *ip, uint16_t port) {
+    (void)s; (void)ip; (void)port; return -1;
+}
+__attribute__((weak)) int tcp_stream_ready(void *s) { (void)s; return -1; }
+__attribute__((weak)) int tcp_stream_read(void *s, uint8_t *buf, uint32_t max) {
+    (void)s; (void)buf; (void)max; return -1;
+}
+__attribute__((weak)) int tcp_stream_write(void *s, const uint8_t *buf, uint32_t len) {
+    (void)s; (void)buf; (void)len; return -1;
+}
+__attribute__((weak)) bool tcp_stream_peer_closed(void *s) { (void)s; return true; }
+__attribute__((weak)) void tcp_stream_close(void *s) { (void)s; }
+__attribute__((weak)) bool ipv4_parse(const char *s, uint8_t out[4]) {
+    if (!s || !out) return false;
+    unsigned part = 0, val = 0, digits = 0;
+    for (;; s++) {
+        if (*s >= '0' && *s <= '9') {
+            val = val * 10u + (unsigned)(*s - '0');
+            if (++digits > 3 || val > 255) return false;
+        } else if (*s == '.' || *s == '\0') {
+            if (digits == 0 || part > 3) return false;
+            out[part++] = (uint8_t)val;
+            val = 0; digits = 0;
+            if (*s == '\0') break;
+        } else {
+            return false;
+        }
+    }
+    return part == 4;
+}
+

@@ -1,0 +1,15 @@
+# LugalOS Spartan Capsule
+
+Welcome to the autonomous LugalOS node Spartan capsule.
+
+## Available Manuals & Guides
+=> /help/shell.gmi Shell & Command Manual
+=> /help/editors.gmi Text Editors (e & ed)
+=> /help/c_programming.gmi C Programming & Compiler
+=> /help/lisp.gmi Lisp Engine & Standard Library
+=> /help/networking.gmi Networking, 9P & Wireless
+=> /help/cas.gmi Computer Algebra System (CAS)
+
+## About LugalOS
+LugalOS is a lightweight, capability-based operating system designed for RISC-V microcontrollers and display terminals.
+Zero permanent SRAM footprint, pure fixed-point mathematics, and native Plan 9 / Gemini / Spartan network capabilities.

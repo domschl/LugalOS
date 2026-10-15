@@ -36,11 +36,8 @@
  * connections' buffers on first call (from palloc, like the stack's own
  * frames -- a board that never listens never pays). Returns 0 on success. */
 int tcp_listen(uint16_t port);
-
-/* Stops listening. Established connections are left alone: a server that
- * drops live sessions when its listener closes is surprising, and closing
- * them is what a reset is for. */
 void tcp_unlisten(void);
+void tcp_unlisten_port(uint16_t port);
 
 /* The one call the pump makes: timers, then 9P service, then transmit. */
 void tcp_service(void);

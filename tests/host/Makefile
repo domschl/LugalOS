@@ -22,8 +22,9 @@ BASE    := -std=gnu11 -g -fno-omit-frame-pointer $(INC) $(WARN) -DLUGALOS_HOST_T
 ASAN    := -O1 -fsanitize=address,undefined -fno-sanitize-recover=all
 PLAIN   := -O1
 
-HARNESSES := fat32_host chibicc_host p9_host net_host kobj_host uheap_host uprintf_host nvs_host ws2812_host llp_host ota_host gemtext_host
+HARNESSES := fat32_host chibicc_host p9_host net_host kobj_host uheap_host uprintf_host nvs_host ws2812_host llp_host ota_host gemtext_host spartan_host
 
+spartan_host_SRC := spartan_host.c $(ROOT)/net/spartan.c $(ROOT)/fs/gemtext.c
 gemtext_host_SRC := gemtext_host.c $(ROOT)/fs/gemtext.c
 fat32_host_SRC   := fat32_host.c $(ROOT)/fs/fat32.c
 chibicc_host_SRC := chibicc_host.c $(wildcard $(ROOT)/user/chibicc/*.c)

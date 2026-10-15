@@ -40,6 +40,20 @@ def run_host_tests() -> bool:
     if res.returncode != 0:
         print(f"Host test failed:\n{res.stderr}")
         return False
+
+    print("[Phase 53] 1b. Running Host ASan/UBSan Spartan Protocol Test...")
+    cmd = ["make", "-C", str(REPO_ROOT / "tests" / "host"), "../../build/host/asan/spartan_host"]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        print(f"Host build failed:\n{res.stderr}")
+        return False
+
+    exe = REPO_ROOT / "build" / "host" / "asan" / "spartan_host"
+    res = subprocess.run([str(exe)], capture_output=True, text=True)
+    print(res.stdout)
+    if res.returncode != 0:
+        print(f"Spartan host test failed:\n{res.stderr}")
+        return False
     return True
 
 
@@ -87,7 +101,7 @@ def run_qemu_tests() -> bool:
 
         # Test 1: 'gem' usage banner
         print("  Checking 'gem' usage...")
-        ok, log = session.send_and_expect("gem", r"Usage: gem <file\.gmi \| topic>", timeout=4.0)
+        ok, log = session.send_and_expect("gem", r"Usage: gem <file\.gmi \| topic \| spartan://host\[:port\]/path>", timeout=4.0)
         if ok:
             print("    [PASS] gem usage banner")
         else:
@@ -141,6 +155,42 @@ def run_qemu_tests() -> bool:
 
         # Exit viewer
         send_key(b"q", r"lsh>", timeout=3.0)
+
+        # Test 7: spartand daemon status (stopped initially)
+        print("  Checking 'spartand status'...")
+        ok, log = session.send_and_expect("spartand status", r"spartand: stopped.*sandbox:  /sd0/pub", timeout=4.0)
+        if ok:
+            print("    [PASS] spartand initial status (stopped)")
+        else:
+            print(f"    [FAIL] spartand status:\n{log}")
+            all_passed = False
+
+        # Test 8: spartand daemon start
+        print("  Checking 'spartand start'...")
+        ok, log = session.send_and_expect("spartand start", r"spartand: started on port 300", timeout=4.0)
+        if ok:
+            print("    [PASS] spartand started on port 300")
+        else:
+            print(f"    [FAIL] spartand start:\n{log}")
+            all_passed = False
+
+        # Test 9: spartand daemon status (running)
+        print("  Checking 'spartand status' (running)...")
+        ok, log = session.send_and_expect("spartand status", r"spartand: running on port 300", timeout=4.0)
+        if ok:
+            print("    [PASS] spartand reports running on port 300")
+        else:
+            print(f"    [FAIL] spartand status running:\n{log}")
+            all_passed = False
+
+        # Test 10: spartand daemon stop
+        print("  Checking 'spartand stop'...")
+        ok, log = session.send_and_expect("spartand stop", r"spartand: stopped", timeout=4.0)
+        if ok:
+            print("    [PASS] spartand stopped cleanly")
+        else:
+            print(f"    [FAIL] spartand stop:\n{log}")
+            all_passed = False
 
     finally:
         session.close()

@@ -1,4 +1,5 @@
 #include "net/tcp.h"
+#include "net/spartan.h"
 #include "net/net_internal.h"
 #include "fs/p9_link.h"
 #include "fs/9p.h"
@@ -160,8 +161,9 @@ typedef struct {
 
 static tcp_conn_t g_conns[TCP_MAX_CONNS];
 static uint8_t *g_bufs;                /* one palloc run, carved per connection */
-static uint16_t g_listen_port;
-static bool g_listening;
+#define TCP_MAX_LISTENERS 4
+static uint16_t g_listen_ports[TCP_MAX_LISTENERS];
+static uint32_t g_num_listeners;
 static uint32_t g_accepted_total, g_reset_total;
 /* Not a secure ISN. A LAN-local server behind a pre-shared-key auth gate
  * (§1's threat model) does not defend against an off-path attacker
@@ -519,12 +521,14 @@ static uint32_t parse_mss(const uint8_t *seg, uint32_t hdr_len) {
  * still holds it and decides when it ends. Linux reuses TIME_WAIT for a new SYN too (RFC 6191).
  * conn_release() bumps the slot's epoch, so anything still holding the old link sees it go stale. */
 static tcp_conn_t *recycle_finished(void) {
-    static const tcp_state_t order[] = { TCP_TIME_WAIT, TCP_LAST_ACK, TCP_CLOSING, TCP_CLOSE_WAIT };
+    static const tcp_state_t order[] = {
+        TCP_TIME_WAIT, TCP_FIN_WAIT_2, TCP_FIN_WAIT_1, TCP_LAST_ACK, TCP_CLOSING, TCP_CLOSE_WAIT
+    };
     for (uint32_t k = 0; k < sizeof order / sizeof order[0]; k++) {
         for (uint32_t i = 0; i < TCP_MAX_CONNS; i++) {
             tcp_conn_t *c = &g_conns[i];
             if (!c->in_use || c->state != order[k]) continue;
-            if (order[k] == TCP_CLOSE_WAIT && c->is_stream) continue;
+            if (c->is_stream && (order[k] == TCP_CLOSE_WAIT || order[k] == TCP_FIN_WAIT_1 || order[k] == TCP_FIN_WAIT_2)) continue;
             conn_abort(c);                 /* an RST where the state still owes the peer one */
             return c;
         }
@@ -862,7 +866,11 @@ void tcp_input(const uint8_t src[IPV4_LEN], const uint8_t *ip_hdr,
 
     tcp_conn_t *c = find_conn(src, sport, dport);
     if (!c) {
-        if ((flags & TCP_SYN) && !(flags & TCP_ACK) && g_listening && dport == g_listen_port) {
+        bool port_match = false;
+        for (uint32_t i = 0; i < g_num_listeners; i++) {
+            if (g_listen_ports[i] == dport) { port_match = true; break; }
+        }
+        if ((flags & TCP_SYN) && !(flags & TCP_ACK) && port_match) {
             accept_syn(src, seg, sport, dport, hdr_len);
         } else {
             tcp_reset_stray(src, seg, len, data_len);
@@ -1066,12 +1074,37 @@ void tcp_service(void) {
             tcp_retransmit(c);
         }
 
-        /* Service 9P only when the send buffer is empty, which is what lets
+        /* Service 9P or Spartan server only when the send buffer is empty, which is what lets
          * link_send_frame() be non-blocking: the reply always has somewhere
          * to go. */
         if (c->state == TCP_ESTABLISHED && c->tx_len == 0 &&
             !c->is_client && !c->is_stream) {
-            p9_link_service(&c->link);
+            if (c->local_port == 564) {
+                p9_link_service(&c->link);
+            } else if (spartan_server_running(NULL) && c->local_port == spartan_server_port()) {
+                uint32_t consumed = 0;
+                uint32_t out_len = 0;
+                bool close_after = false;
+                if (c->rx_len > 0) {
+                    int rc = spartan_process_request(c->rx, c->rx_len, &consumed,
+                                                    c->tx, P9_MAX_MSIZE, &out_len, &close_after);
+                    if (rc == 0) {
+                        if (consumed > 0 && consumed <= c->rx_len) {
+                            memmove(c->rx, c->rx + consumed, c->rx_len - consumed);
+                            c->rx_len -= consumed;
+                            c->need_ack = true;
+                        }
+                        if (out_len > 0) {
+                            c->tx_seq = c->snd_nxt;
+                            c->tx_len = out_len;
+                            tcp_transmit(c);
+                        }
+                        if (close_after) {
+                            c->close_pending = true;
+                        }
+                    }
+                }
+            }
         }
 
         /* A stream whose owner closed while bytes were still buffered: the
@@ -1121,16 +1154,31 @@ static int ensure_bufs(void) {
 int tcp_listen(uint16_t port) {
     if (port == 0) return -1;
     if (ensure_bufs() != 0) return -1;
-    g_listen_port = port;
-    g_listening = true;
+    for (uint32_t i = 0; i < g_num_listeners; i++) {
+        if (g_listen_ports[i] == port) return 0;
+    }
+    if (g_num_listeners >= TCP_MAX_LISTENERS) return -1;
+    g_listen_ports[g_num_listeners++] = port;
     return 0;
 }
 
-void tcp_unlisten(void) { g_listening = false; }
+void tcp_unlisten(void) { g_num_listeners = 0; }
+
+void tcp_unlisten_port(uint16_t port) {
+    for (uint32_t i = 0; i < g_num_listeners; i++) {
+        if (g_listen_ports[i] == port) {
+            for (uint32_t j = i; j + 1 < g_num_listeners; j++) {
+                g_listen_ports[j] = g_listen_ports[j + 1];
+            }
+            g_num_listeners--;
+            break;
+        }
+    }
+}
 
 bool tcp_listening(uint16_t *port_out) {
-    if (port_out && g_listening) *port_out = g_listen_port;
-    return g_listening;
+    if (port_out && g_num_listeners > 0) *port_out = g_listen_ports[0];
+    return g_num_listeners > 0;
 }
 
 uint32_t tcp_conn_count(void) {

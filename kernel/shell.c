@@ -99,6 +99,7 @@
 #include "net/netif.h"
 #include "net/ip.h"
 #include "net/tcp.h"
+#include "net/spartan.h"
 #include "net/ntp.h"
 #include "net/mqtt.h"
 #include "net/mqttd.h"
@@ -554,8 +555,15 @@ static void cmd_clicdump(void) {
 }
 #endif
 
+static unsigned shell_trailing_uint(const char *s);
+
+typedef struct {
+    char resource[128];
+    char title[64];
+} pager_stack_entry_t;
+
 #define HELP_STACK_MAX 8
-static char s_help_stack[HELP_STACK_MAX][32];
+static pager_stack_entry_t s_help_stack[HELP_STACK_MAX];
 static int  s_help_depth = 0;
 
 static int detect_screen_rows(void) {
@@ -731,24 +739,101 @@ static void pager_print_gem_line(const char *raw, bool is_gmi, bool *in_pre, int
     }
 }
 
-static void pager_view_file(const char *path, bool is_topic, const char *topic_name) {
-    int max_rows = detect_screen_rows();
-    char current_topic[64];
-    if (topic_name) {
-        strncpy(current_topic, topic_name, sizeof(current_topic) - 1);
-        current_topic[sizeof(current_topic) - 1] = '\0';
-    } else {
-        current_topic[0] = '\0';
+static bool pager_follow_link(int fd, char link_digit, const char *base_url,
+                             char *out_resource, size_t out_resource_sz,
+                             char *out_title, size_t out_title_sz) {
+    char target[128];
+    if (!find_link_target(fd, link_digit, target, sizeof(target))) return false;
+
+    char new_target[128];
+    /* Check if target is spartan:// or relative on spartan:// */
+    bool is_spartan = false;
+    if (strncmp(target, "spartan://", 10) == 0 || strncmp(target, "SPARTAN://", 10) == 0) {
+        strncpy(new_target, target, sizeof(new_target) - 1);
+        new_target[sizeof(new_target) - 1] = '\0';
+        is_spartan = true;
+    } else if (base_url && (strncmp(base_url, "spartan://", 10) == 0 || strncmp(base_url, "SPARTAN://", 10) == 0)) {
+        if (gemtext_resolve_url(base_url, target, new_target, sizeof(new_target))) {
+            is_spartan = true;
+        }
     }
 
-    char cur_path[128];
-    strncpy(cur_path, path, sizeof(cur_path) - 1);
-    cur_path[sizeof(cur_path) - 1] = '\0';
+    if (is_spartan) {
+        strncpy(out_resource, new_target, out_resource_sz - 1);
+        out_resource[out_resource_sz - 1] = '\0';
+        strncpy(out_title, target, out_title_sz - 1);
+        out_title[out_title_sz - 1] = '\0';
+        return true;
+    }
 
-    while (cur_path[0]) {
-        int fd = vfs_open(cur_path, VFS_O_READ);
+    /* Check help manual or local filesystem path */
+    char new_path[128];
+    if (resolve_help_path(target, new_path, sizeof(new_path)) ||
+        (base_url && gemtext_resolve_url(base_url, target, new_path, sizeof(new_path)))) {
+        int tfd = vfs_open(new_path, VFS_O_READ);
+        if (tfd >= 0) {
+            vfs_close(tfd);
+            strncpy(out_resource, new_path, out_resource_sz - 1);
+            out_resource[out_resource_sz - 1] = '\0';
+            strncpy(out_title, target, out_title_sz - 1);
+            out_title[out_title_sz - 1] = '\0';
+            return true;
+        }
+    }
+    return false;
+}
+
+static void pager_view_file(const char *initial_resource, bool is_topic, const char *initial_title) {
+    int max_rows = detect_screen_rows();
+    char cur_resource[128];
+    strncpy(cur_resource, initial_resource, sizeof(cur_resource) - 1);
+    cur_resource[sizeof(cur_resource) - 1] = '\0';
+
+    char cur_title[64];
+    if (initial_title) {
+        strncpy(cur_title, initial_title, sizeof(cur_title) - 1);
+        cur_title[sizeof(cur_title) - 1] = '\0';
+    } else {
+        strncpy(cur_title, initial_resource, sizeof(cur_title) - 1);
+        cur_title[sizeof(cur_title) - 1] = '\0';
+    }
+
+    while (cur_resource[0]) {
+        char open_path[128];
+        bool is_spartan = (strncmp(cur_resource, "spartan://", 10) == 0 ||
+                           strncmp(cur_resource, "SPARTAN://", 10) == 0);
+        if (is_spartan) {
+            char redir[128] = {0};
+            char err[128] = {0};
+            cprintf("\r\033[KFetching %s ...\n", cur_resource);
+            int rc = spartan_fetch(cur_resource, "/ram0/spartan.gmi", redir, sizeof(redir), err, sizeof(err));
+            if (rc == SPARTAN_REDIRECT && redir[0]) {
+                cprintf("\r\033[KRedirected to %s ...\n", redir);
+                strncpy(cur_resource, redir, sizeof(cur_resource) - 1);
+                cur_resource[sizeof(cur_resource) - 1] = '\0';
+                rc = spartan_fetch(cur_resource, "/ram0/spartan.gmi", NULL, 0, err, sizeof(err));
+            }
+            if (rc != SPARTAN_OK) {
+                cprintf("gem: error fetching '%s': %s\n", cur_resource, err[0] ? err : "unknown error");
+                if (s_help_depth > 0) {
+                    s_help_depth--;
+                    strncpy(cur_resource, s_help_stack[s_help_depth].resource, sizeof(cur_resource) - 1);
+                    cur_resource[sizeof(cur_resource) - 1] = '\0';
+                    strncpy(cur_title, s_help_stack[s_help_depth].title, sizeof(cur_title) - 1);
+                    cur_title[sizeof(cur_title) - 1] = '\0';
+                    continue;
+                }
+                return;
+            }
+            strncpy(open_path, "/ram0/spartan.gmi", sizeof(open_path) - 1);
+        } else {
+            strncpy(open_path, cur_resource, sizeof(open_path) - 1);
+        }
+        open_path[sizeof(open_path) - 1] = '\0';
+
+        int fd = vfs_open(open_path, VFS_O_READ);
         if (fd < 0) {
-            cprintf("pager: cannot open %s\n", cur_path);
+            cprintf("pager: cannot open %s\n", open_path);
             return;
         }
 
@@ -758,7 +843,8 @@ static void pager_view_file(const char *path, bool is_topic, const char *topic_n
         int line_pos = 0;
         bool quit = false;
         bool reload_topic = false;
-        bool is_gmi = (strstr(cur_path, ".gmi") != NULL) || is_topic;
+        bool is_gmi = (strstr(open_path, ".gmi") != NULL) || is_topic ||
+                      (strstr(cur_resource, ".gmi") != NULL) || is_spartan;
         bool in_pre = false;
         int link_idx = 0;
 
@@ -772,7 +858,7 @@ static void pager_view_file(const char *path, bool is_topic, const char *topic_n
                     line_pos = 0;
                 }
                 cprintf("\n-- End of %s (%sb: Back, q: Quit%s) -- ",
-                        is_topic ? current_topic : cur_path,
+                        cur_title[0] ? cur_title : cur_resource,
                         s_help_depth > 0 ? "" : "",
                         is_gmi ? ", 1..9: Link" : "");
                 for (;;) {
@@ -783,32 +869,30 @@ static void pager_view_file(const char *path, bool is_topic, const char *topic_n
                     }
                     if ((c == 'b' || c == 'B') && s_help_depth > 0) {
                         s_help_depth--;
-                        strncpy(cur_path, s_help_stack[s_help_depth], sizeof(cur_path) - 1);
-                        cur_path[sizeof(cur_path) - 1] = '\0';
-                        strncpy(current_topic, cur_path, sizeof(current_topic) - 1);
-                        current_topic[sizeof(current_topic) - 1] = '\0';
+                        strncpy(cur_resource, s_help_stack[s_help_depth].resource, sizeof(cur_resource) - 1);
+                        cur_resource[sizeof(cur_resource) - 1] = '\0';
+                        strncpy(cur_title, s_help_stack[s_help_depth].title, sizeof(cur_title) - 1);
+                        cur_title[sizeof(cur_title) - 1] = '\0';
                         reload_topic = true;
                         break;
                     }
                     if (c >= '1' && c <= '9') {
-                        char target[128];
-                        if (find_link_target(fd, c, target, sizeof(target))) {
-                            char new_path[128];
-                            if (resolve_help_path(target, new_path, sizeof(new_path)) ||
-                                gemtext_resolve_url(cur_path, target, new_path, sizeof(new_path))) {
-                                int tfd = vfs_open(new_path, VFS_O_READ);
-                                if (tfd >= 0) {
-                                    vfs_close(tfd);
-                                    if (s_help_depth < HELP_STACK_MAX) {
-                                        strncpy(s_help_stack[s_help_depth++], cur_path, sizeof(s_help_stack[0]) - 1);
-                                    }
-                                    strncpy(current_topic, target, sizeof(current_topic) - 1);
-                                    current_topic[sizeof(current_topic) - 1] = '\0';
-                                    strncpy(cur_path, new_path, sizeof(cur_path) - 1);
-                                    reload_topic = true;
-                                    break;
-                                }
+                        char new_resource[128];
+                        char new_title[64];
+                        if (pager_follow_link(fd, c, cur_resource, new_resource, sizeof(new_resource), new_title, sizeof(new_title))) {
+                            if (s_help_depth < HELP_STACK_MAX) {
+                                strncpy(s_help_stack[s_help_depth].resource, cur_resource, sizeof(s_help_stack[0].resource) - 1);
+                                s_help_stack[s_help_depth].resource[sizeof(s_help_stack[0].resource) - 1] = '\0';
+                                strncpy(s_help_stack[s_help_depth].title, cur_title, sizeof(s_help_stack[0].title) - 1);
+                                s_help_stack[s_help_depth].title[sizeof(s_help_stack[0].title) - 1] = '\0';
+                                s_help_depth++;
                             }
+                            strncpy(cur_resource, new_resource, sizeof(cur_resource) - 1);
+                            cur_resource[sizeof(cur_resource) - 1] = '\0';
+                            strncpy(cur_title, new_title, sizeof(cur_title) - 1);
+                            cur_title[sizeof(cur_title) - 1] = '\0';
+                            reload_topic = true;
+                            break;
                         }
                     }
                 }
@@ -848,32 +932,30 @@ static void pager_view_file(const char *path, bool is_topic, const char *topic_n
                             }
                             if ((c == 'b' || c == 'B') && s_help_depth > 0) {
                                 s_help_depth--;
-                                strncpy(cur_path, s_help_stack[s_help_depth], sizeof(cur_path) - 1);
-                                cur_path[sizeof(cur_path) - 1] = '\0';
-                                strncpy(current_topic, cur_path, sizeof(current_topic) - 1);
-                                current_topic[sizeof(current_topic) - 1] = '\0';
+                                strncpy(cur_resource, s_help_stack[s_help_depth].resource, sizeof(cur_resource) - 1);
+                                cur_resource[sizeof(cur_resource) - 1] = '\0';
+                                strncpy(cur_title, s_help_stack[s_help_depth].title, sizeof(cur_title) - 1);
+                                cur_title[sizeof(cur_title) - 1] = '\0';
                                 reload_topic = true;
                                 break;
                             }
                             if (c >= '1' && c <= '9') {
-                                char target[128];
-                                if (find_link_target(fd, c, target, sizeof(target))) {
-                                    char new_path[128];
-                                    if (resolve_help_path(target, new_path, sizeof(new_path)) ||
-                                        gemtext_resolve_url(cur_path, target, new_path, sizeof(new_path))) {
-                                        int tfd = vfs_open(new_path, VFS_O_READ);
-                                        if (tfd >= 0) {
-                                            vfs_close(tfd);
-                                            if (s_help_depth < HELP_STACK_MAX) {
-                                                strncpy(s_help_stack[s_help_depth++], cur_path, sizeof(s_help_stack[0]) - 1);
-                                            }
-                                            strncpy(current_topic, target, sizeof(current_topic) - 1);
-                                            current_topic[sizeof(current_topic) - 1] = '\0';
-                                            strncpy(cur_path, new_path, sizeof(cur_path) - 1);
-                                            reload_topic = true;
-                                            break;
-                                        }
+                                char new_resource[128];
+                                char new_title[64];
+                                if (pager_follow_link(fd, c, cur_resource, new_resource, sizeof(new_resource), new_title, sizeof(new_title))) {
+                                    if (s_help_depth < HELP_STACK_MAX) {
+                                        strncpy(s_help_stack[s_help_depth].resource, cur_resource, sizeof(s_help_stack[0].resource) - 1);
+                                        s_help_stack[s_help_depth].resource[sizeof(s_help_stack[0].resource) - 1] = '\0';
+                                        strncpy(s_help_stack[s_help_depth].title, cur_title, sizeof(s_help_stack[0].title) - 1);
+                                        s_help_stack[s_help_depth].title[sizeof(s_help_stack[0].title) - 1] = '\0';
+                                        s_help_depth++;
                                     }
+                                    strncpy(cur_resource, new_resource, sizeof(cur_resource) - 1);
+                                    cur_resource[sizeof(cur_resource) - 1] = '\0';
+                                    strncpy(cur_title, new_title, sizeof(cur_title) - 1);
+                                    cur_title[sizeof(cur_title) - 1] = '\0';
+                                    reload_topic = true;
+                                    break;
                                 }
                             }
                         }
@@ -926,7 +1008,7 @@ static void cmd_help_summary(void) {
     cprintf("  reboot          - Restart board\n");
     cprintf("  clear           - Clear terminal screen\n");
     cprintf("\nApplications & Programming:\n");
-    cprintf("  gem [file|topic] - View Gemtext (.gmi) hypertext document\n");
+    cprintf("  gem [target]    - Gemtext viewer (local .gmi, topic, spartan:// URL)\n");
     cprintf("  e [file]        - Full-screen Emacs-style editor\n");
     cprintf("  ed [file]       - Teletype line editor\n");
     cprintf("  lisp            - Interactive Scheme / Lisp REPL\n");
@@ -940,6 +1022,7 @@ static void cmd_help_summary(void) {
     cprintf("  wifi join <ssid> <psk> - Associate with Wi-Fi network\n");
     cprintf("  sensor          - Read I2C environmental telemetry\n");
     cprintf("  mqtt [connect|pub|sub] - MQTT 3.1.1 client\n");
+    cprintf("  spartand [start|stop|status] - Spartan hypertext daemon (port 300, /sd0/pub)\n");
     cprintf("  p9share         - Share serial port with 9P file server\n");
     console_print_divider('-');
     cprintf("  help <topic>    - Interactive topic manual (or: man <topic>)\n");
@@ -1037,7 +1120,14 @@ static void cmd_man(const char *topic) {
 
 static void cmd_gem(const char *arg) {
     if (!arg || !*arg) {
-        cprintf("Usage: gem <file.gmi | topic>\n");
+        cprintf("Usage: gem <file.gmi | topic | spartan://host[:port]/path>\n");
+        return;
+    }
+
+    /* Check Spartan protocol URL */
+    if (strncmp(arg, "spartan://", 10) == 0 || strncmp(arg, "SPARTAN://", 10) == 0) {
+        s_help_depth = 0;
+        pager_view_file(arg, false, arg);
         return;
     }
 
@@ -1069,6 +1159,38 @@ static void cmd_gem(const char *arg) {
     }
 
     cprintf("gem: cannot open '%s'\n", arg);
+}
+
+static void cmd_spartand(const char *arg) {
+    if (!arg || !*arg || strcmp(arg, "status") == 0) {
+        uint16_t port = 0;
+        bool running = spartan_server_running(&port);
+        uint32_t reqs = 0, served = 0, errs = 0;
+        spartan_server_stats(&reqs, &served, &errs);
+        cprintf("spartand: %s%s%u\n", running ? "running on port " : "stopped",
+                running ? "" : "", running ? port : 0);
+        cprintf("  sandbox:  %s\n", SPARTAN_PUB_ROOT);
+        cprintf("  requests: %u (served: %u, errors: %u)\n", reqs, served, errs);
+        return;
+    }
+    if (strncmp(arg, "start", 5) == 0) {
+        const char *p = arg + 5;
+        while (*p == ' ') p++;
+        uint16_t port = (uint16_t)shell_trailing_uint(p);
+        if (port == 0) port = SPARTAN_DEFAULT_PORT;
+        if (spartan_server_start(port) == 0) {
+            cprintf("spartand: started on port %u\n", port);
+        } else {
+            cprintf("spartand: failed to start on port %u\n", port);
+        }
+        return;
+    }
+    if (strcmp(arg, "stop") == 0) {
+        spartan_server_stop();
+        cprintf("spartand: stopped\n");
+        return;
+    }
+    cprintf("Usage: spartand [start [port] | stop | status]\n");
 }
 
 static const char *g_pipe_in = NULL;
@@ -4641,6 +4763,14 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         const char *arg = cmd_line + 4;
         while (*arg == ' ') arg++;
         cmd_gem(arg);
+        return;
+    } else if (strcmp(cmd_line, "spartand") == 0) {
+        cmd_spartand(NULL);
+        return;
+    } else if (strncmp(cmd_line, "spartand ", 9) == 0) {
+        const char *arg = cmd_line + 9;
+        while (*arg == ' ') arg++;
+        cmd_spartand(arg);
         return;
     } else if (strcmp(cmd_line, "more") == 0) {
         cmd_more(NULL);
