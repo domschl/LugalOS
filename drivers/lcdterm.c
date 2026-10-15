@@ -692,6 +692,10 @@ canvas1_t *lcdterm_get_reader_backing(uint8_t rid) {
     return &g_scr->readers[rid].backing;
 }
 
+bool lcdterm_is_animating(void) {
+    return g_scr && g_scr->animating;
+}
+
 void lcdterm_sync_pre(void) {
     if (g_be && g_be->sync_pre) g_be->sync_pre();
 }
@@ -721,6 +725,7 @@ void lcdterm_scroll_test(unsigned n) { (void)n; }
 void lcdterm_report(void) { }
 canvas1_t *lcdterm_get_canvas_backing(uint8_t cid) { (void)cid; return NULL; }
 canvas1_t *lcdterm_get_reader_backing(uint8_t rid) { (void)rid; return NULL; }
+bool lcdterm_is_animating(void) { return false; }
 void lcdterm_sync_pre(void) { }
 void lcdterm_sync_post(void) { }
 

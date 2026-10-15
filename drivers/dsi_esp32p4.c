@@ -1117,22 +1117,25 @@ static void term_blank(bool off) {
     bl_set(off || !g_bl_on ? 0u : g_bl_level);
 }
 
-/* Display synchronization hook for intermediate animation frames:
- * wait for the bridge VSYNC so intermediate rendering begins at VBLANK. */
-static void term_sync_pre(void) {
-    if (!g_scanning) return;
-    REG(DSI_BRG_INT_CLR_REG) = (1u << DSI_BRG_VSYNC_INT_RAW_S);
-    uint64_t t0 = time_get_us();
-    while ((REG(DSI_BRG_INT_RAW_REG) & (1u << DSI_BRG_VSYNC_INT_RAW_S)) == 0) {
-        if (time_get_us() - t0 > 25000u) break;
-    }
-}
+/* Display synchronization hooks for intermediate animation frames:
+ * 1-bpp rendering into SRAM is off-screen. In term_sync_post, we wait for
+ * the bridge VSYNC immediately before converting to g_fb in PSRAM, so that
+ * DW-GDMA scanout is at row 0 when conversion starts and the CPU stays ahead
+ * of the beam throughout the frame, eliminating desync and tearing. */
+static void term_sync_pre(void) { }
 
-/* Post-sync hook: converts the updated 1-bpp rows into GRAY8 in g_fb and
- * flushes them to PSRAM for immediate DW-GDMA scanout. */
 static void term_sync_post(void) {
+    if (g_scanning) {
+        REG(DSI_BRG_INT_CLR_REG) = (1u << DSI_BRG_VSYNC_INT_RAW_S);
+        uint64_t t0 = time_get_us();
+        while ((REG(DSI_BRG_INT_RAW_REG) & (1u << DSI_BRG_VSYNC_INT_RAW_S)) == 0) {
+            if (time_get_us() - t0 > 25000u) break;
+        }
+    }
+    console_lock();
     term_convert(0, DSI_LCD_V_RES);
     g_t_due = false;
+    console_unlock();
 }
 
 static lcdterm_backend_t g_tbe = {
@@ -1164,7 +1167,7 @@ static void term_flush_task(void *arg) {
     (void)arg;
     for (;;) {
         task_sleep_ms(16);
-        if (!g_t_due) continue;
+        if (!g_t_due || lcdterm_is_animating()) continue;
         console_lock();
         g_t_due = false;
         term_convert(0, DSI_LCD_V_RES);

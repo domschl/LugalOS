@@ -693,6 +693,68 @@ LCDTERM_UTEXT static void clear_ribbon_background(const screen_t *scr) {
     }
 }
 
+/* During animation: clear only desktop areas outside visible windows,
+ * strictly preserving window interiors so the screen never blackens out. */
+LCDTERM_UTEXT static void clear_ribbon_gaps(const screen_t *scr) {
+    const canvas1_t *cv = &scr->cv;
+    int w = (int)cv->w;
+    int h = (int)cv->h;
+    if (h <= SCREEN_MENU_H) return;
+    int tile_y1 = SCREEN_TEXT_Y + 16 * (int)SCREEN_TEXT_ROWS(cv->h) + 1;
+    if (tile_y1 >= h) tile_y1 = h - 1;
+
+    /* The thin strip between menu bar and window tiles (rows 18..21) */
+    if (SCREEN_TILE_Y > SCREEN_MENU_H) {
+        canvas1_fill(cv, 0, SCREEN_MENU_H, w - 1, SCREEN_TILE_Y - 1, CANVAS1_GREY);
+    }
+
+    int32_t xv = scr->ribbon.x_view;
+    struct { int x0, x1; } spans[RIBBON_MAX_WINDOWS];
+    uint8_t nspans = 0;
+    for (uint8_t i = 0; i < scr->ribbon.count && nspans < RIBBON_MAX_WINDOWS; i++) {
+        int32_t x0 = scr->ribbon.wins[i].rx0 - xv;
+        int32_t x1 = scr->ribbon.wins[i].rx1 - xv + 1; /* include shadow */
+        if (x1 < 0 || x0 >= w) continue;
+        if (x0 < 0) x0 = 0;
+        if (x1 >= w) x1 = w - 1;
+        spans[nspans].x0 = (int)x0;
+        spans[nspans].x1 = (int)x1;
+        nspans++;
+    }
+
+    /* Insertion sort by x0 */
+    for (uint8_t i = 1; i < nspans; i++) {
+        int k0 = spans[i].x0, k1 = spans[i].x1;
+        int j = (int)i - 1;
+        while (j >= 0 && spans[j].x0 > k0) {
+            spans[j + 1] = spans[j];
+            j--;
+        }
+        spans[j + 1].x0 = k0;
+        spans[j + 1].x1 = k1;
+    }
+
+    /* Fill horizontal gaps between window spans from SCREEN_TILE_Y to tile_y1 + 1 */
+    int fill_y1 = tile_y1 + 1 < h ? tile_y1 + 1 : h - 1;
+    int cur_x = 0;
+    for (uint8_t i = 0; i < nspans; i++) {
+        if (spans[i].x0 > cur_x) {
+            canvas1_fill(cv, cur_x, SCREEN_TILE_Y, spans[i].x0 - 1, fill_y1, CANVAS1_GREY);
+        }
+        if (spans[i].x1 + 1 > cur_x) {
+            cur_x = spans[i].x1 + 1;
+        }
+    }
+    if (cur_x < w) {
+        canvas1_fill(cv, cur_x, SCREEN_TILE_Y, w - 1, fill_y1, CANVAS1_GREY);
+    }
+
+    /* Bottom margin below window tiles, if any */
+    if (tile_y1 + 2 < h) {
+        canvas1_fill(cv, 0, tile_y1 + 2, w - 1, h - 1, CANVAS1_GREY);
+    }
+}
+
 LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout);
 
 /* Every pixel again. The canvas comes back blank, so its damage moves on --
@@ -700,7 +762,11 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout);
 LCDTERM_UTEXT static void draw_all_from(screen_t *scr, bool restore) {
     const canvas1_t *cv = &scr->cv;
     (void)place(scr, scr->layout);
-    clear_ribbon_background(scr);
+    if (scr->animating) {
+        clear_ribbon_gaps(scr);
+    } else {
+        clear_ribbon_background(scr);
+    }
 
     if (scr->ribbon.count > 0) {
         int32_t xv = scr->ribbon.x_view;
@@ -999,7 +1065,7 @@ LCDTERM_UTEXT static void screen_animate_ribbon(screen_t *scr,
         return;
     }
 
-    const int STEPS = 6;
+    const int STEPS = 4;
     scr->animating = true;
     for (int s = 1; s <= STEPS; s++) {
         int rem = STEPS - s;
