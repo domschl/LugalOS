@@ -10,6 +10,8 @@ bool reader_open(const char *resource);
 void reader_close(void);
 void reader_scroll(int delta_y);
 bool reader_tap(int client_x, int client_y);
+void reader_feed_key(int c);
+bool reader_follow_link_num(int num);
 void reader_draw(const canvas1_t *c, int w, int h);
 const char *reader_get_title(void);
 const char *reader_get_path(void);

@@ -1,0 +1,56 @@
+# Ribbon Reader Window Guide
+
+The LugalOS Ribbon Reader (`RIBBON_WIN_READER`) is a dedicated long-form document viewer integrated into the horizontal window ribbon. It is designed for comfortable reading of system documentation, manuals, books, and network hypermedia capsules.
+
+## Proportional Typography
+
+Unlike standard terminal windows that use fixed-pitch monospace fonts, the Reader window features:
+* **Proportional Serif Typography**: Rendered in a high-legibility 15-pixel variable-pitch serif font with balanced 1-pixel vertical stems.
+* **Proportional Word Wrapping**: Flowing paragraph text dynamically wrapped at word boundaries according to window geometry.
+* **Monospace Code Blocks**: Automatic fallback to 8x16 monospace font for preformatted code and ASCII diagrams.
+* **Structural Hierarchy**: Bold section headings (H1, H2, H3), bulleted lists, and indented blockquotes.
+
+## Opening Documents
+
+Open local Gemtext (`.gmi`) files or remote Spartan capsules directly from the shell:
+
+```
+lsh> reader /sd0/help/shell.gmi
+lsh> reader /sd0/help/spartan.gmi
+lsh> reader spartan://spartan.mozz.us/
+```
+
+If a reader window is already open in the ribbon, issuing `reader <target>` updates the existing reader window and focuses it.
+
+## Keyboard Navigation
+
+When the Reader window has focus, standard keyboard navigation shortcuts are active:
+
+* **Vertical Scrolling**:
+  * `Up Arrow` / `k` / `Ctrl-P`: Scroll up by one line (32 px).
+  * `Down Arrow` / `j` / `Ctrl-N`: Scroll down by one line (32 px).
+  * `PageUp` / `Alt-V`: Scroll up by one full page.
+  * `PageDown` / `Space` / `Ctrl-V`: Scroll down by one full page.
+  * `Home` / `g`: Jump to top of document.
+  * `End` / `G`: Jump to bottom of document.
+* **Link Navigation**:
+  * `1` .. `9`: Follow the corresponding numbered link visible on the page.
+  * `b` / `Left Arrow`: Navigate back in document history.
+* **Help & Controls**:
+  * `Ctrl-H` / `?` / `h`: Open this Reader Help manual.
+  * `r`: Reload and redraw the current document.
+  * `q` / `Cmd-W`: Close the reader window and return focus to the terminal.
+
+## Touch & Gestures
+
+On touchscreen-equipped hardware (such as the Waveshare ESP32-P4 Touch LCD 7B and RP2350-LCD-7):
+
+* **Tap on Link**: Tapping anywhere within a link line follows the link target immediately.
+* **Swipe Up / Down**: Vertical touch dragging pans the document smoothly.
+* **Minimap Tap**: Tapping a window thumbnail in the top menu bar jumps directly to that window.
+
+## Related Topics
+
+=> spartan.gmi Spartan Protocol & Gemtext Guide
+=> shell.gmi Shell & Console Manual
+=> ribbon.gmi Window Ribbon Architecture

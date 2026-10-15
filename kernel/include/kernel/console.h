@@ -121,6 +121,8 @@ void console_set_title(const char *title);
  * `reply` holds SCREEN_REPLY_LEN bytes. False when there is no canvas at
  * all; the reply's own status says whether this request was refused. */
 bool console_canvas(const uint8_t *req, uint32_t n, uint8_t *reply);
+void console_set_active_win_type(uint8_t type);
+uint8_t console_active_win_type(void);
 
 /* 37.5b: everything written through console_putc() -- cprintf(), a Lisp
  * program's output, lisp_print() -- goes into `buf` instead of the screen

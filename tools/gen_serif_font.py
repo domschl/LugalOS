@@ -13,14 +13,24 @@ import sys
 from pathlib import Path
 from PIL import Image, ImageFont, ImageDraw
 
-FONT_PATH = "/usr/share/fonts/noto/NotoSerif-Regular.ttf"
+FONT_PATHS = [
+    "/usr/share/fonts/liberation/LiberationSerif-Regular.ttf",
+    "/usr/share/fonts/noto/NotoSerif-Regular.ttf",
+]
 FIRST = 0x20
 LAST = 0x7E
 CELL_H = 16
 
 def main():
     repo_root = Path(__file__).resolve().parent.parent
-    font = ImageFont.truetype(FONT_PATH, 13)
+    font_path = None
+    for p in FONT_PATHS:
+        if Path(p).exists():
+            font_path = p
+            break
+    if not font_path:
+        sys.exit(f"No suitable serif font found in {FONT_PATHS}")
+    font = ImageFont.truetype(font_path, 15)
 
     widths = []
     glyphs = []

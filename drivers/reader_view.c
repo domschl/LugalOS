@@ -20,7 +20,7 @@
 #include "fs/gemtext.h"
 #include "fs/vfs.h"
 #include "net/spartan.h"
-#include "kernel/printk.h"
+#include "kernel/vterm.h"
 #include <string.h>
 
 #define READER_LINKS_MAX   16
@@ -30,6 +30,7 @@
 
 typedef struct {
     int  y0, y1;         /* client area y bounds */
+    int  num;            /* 1-based index (e.g. 1..9) */
     char url[128];
 } reader_link_t;
 
@@ -241,6 +242,189 @@ bool reader_tap(int client_x, int client_y) {
     return false;
 }
 
+bool reader_follow_link_num(int num) {
+    if (!s_reader.active) return false;
+    for (int i = 0; i < s_reader.link_count; i++) {
+        if (s_reader.links[i].num == num) {
+            char target[128];
+            strncpy(target, s_reader.links[i].url, sizeof(target) - 1);
+            target[sizeof(target) - 1] = '\0';
+
+            char resolved[128];
+            bool ok = false;
+            if (gemtext_resolve_url(s_reader.path, target, resolved, sizeof(resolved)) ||
+                resolve_doc_path(target, resolved, sizeof(resolved))) {
+                ok = reader_open(resolved);
+            } else {
+                ok = reader_open(target);
+            }
+            if (ok) reader_update();
+            return ok;
+        }
+    }
+    return false;
+}
+
+void reader_feed_key(int c) {
+    if (!s_reader.active) return;
+    static int esc_state = 0;
+    static int esc_arg = 0;
+
+    int win_h = s_reader.win_h > 0 ? s_reader.win_h : 480;
+    int page_dy = win_h - 40;
+    if (page_dy < 40) page_dy = 40;
+
+    if (esc_state == 0) {
+        if (c == 0x1b) {
+            esc_state = 1;
+            return;
+        }
+        if (c == 0x08 || c == '?' || c == 'h') {
+            /* Emacs Ctrl-H or '?' / 'h' -> open Reader Help */
+            reader_open("/sd0/help/reader.gmi");
+            reader_update();
+            return;
+        }
+        if (c == 'q' || c == 0x03) {
+            /* Close reader window */
+            uint8_t req[1] = { 'C' }, reply[SCREEN_REPLY_LEN];
+            if (console_canvas(req, 1, reply) && reply[0] == 0) {
+                vterm_set_active(reply[1]);
+            }
+            reader_close();
+            console_set_active_win_type(1 /* RIBBON_WIN_TERM */);
+            return;
+        }
+        if (c == 'b' || c == 0x7f) {
+            /* Back in history */
+            reader_back();
+            return;
+        }
+        if (c == ' ' || c == 0x16 /* Ctrl-V */) {
+            /* Page down */
+            reader_scroll(page_dy);
+            return;
+        }
+        if (c == 'j' || c == 0x0e /* Ctrl-N */ || c == '\r' || c == '\n') {
+            /* Line down */
+            reader_scroll(32);
+            return;
+        }
+        if (c == 'k' || c == 0x10 /* Ctrl-P */) {
+            /* Line up */
+            reader_scroll(-32);
+            return;
+        }
+        if (c == 'd' || c == 0x04 /* Ctrl-D */) {
+            /* Half page down */
+            reader_scroll(page_dy / 2);
+            return;
+        }
+        if (c == 'u' || c == 0x15 /* Ctrl-U */) {
+            /* Half page up */
+            reader_scroll(-page_dy / 2);
+            return;
+        }
+        if (c == 'g') {
+            /* Top of document */
+            s_reader.scroll_y = 0;
+            reader_update();
+            return;
+        }
+        if (c == 'G') {
+            /* Bottom of document */
+            int max_scroll = s_reader.total_h - 120;
+            s_reader.scroll_y = max_scroll > 0 ? max_scroll : 0;
+            reader_update();
+            return;
+        }
+        if (c == 'r' || c == 0x12 /* Ctrl-R */) {
+            /* Reload / Redraw */
+            reader_update();
+            return;
+        }
+        if (c >= '1' && c <= '9') {
+            /* Follow visible link */
+            reader_follow_link_num(c - '0');
+            return;
+        }
+        return;
+    } else if (esc_state == 1) {
+        if (c == '[') {
+            esc_state = 2;
+            esc_arg = 0;
+            return;
+        }
+        if (c == 'v' || c == 'V') {
+            /* Alt-V: Page up (Emacs) */
+            reader_scroll(-page_dy);
+            esc_state = 0;
+            return;
+        }
+        esc_state = 0;
+        return;
+    } else if (esc_state == 2) {
+        if (c == 'A') {
+            /* Up Arrow */
+            reader_scroll(-32);
+            esc_state = 0;
+            return;
+        }
+        if (c == 'B') {
+            /* Down Arrow */
+            reader_scroll(32);
+            esc_state = 0;
+            return;
+        }
+        if (c == 'C') {
+            /* Right Arrow */
+            reader_scroll(page_dy);
+            esc_state = 0;
+            return;
+        }
+        if (c == 'D') {
+            /* Left Arrow */
+            reader_back();
+            esc_state = 0;
+            return;
+        }
+        if (c >= '0' && c <= '9') {
+            esc_arg = esc_arg * 10 + (c - '0');
+            esc_state = 3;
+            return;
+        }
+        esc_state = 0;
+        return;
+    } else if (esc_state == 3) {
+        if (c == '~') {
+            if (esc_arg == 5) {
+                /* Page Up */
+                reader_scroll(-page_dy);
+            } else if (esc_arg == 6) {
+                /* Page Down */
+                reader_scroll(page_dy);
+            } else if (esc_arg == 1 || esc_arg == 7) {
+                /* Home */
+                s_reader.scroll_y = 0;
+                reader_update();
+            } else if (esc_arg == 4 || esc_arg == 8) {
+                /* End */
+                int max_scroll = s_reader.total_h - 120;
+                s_reader.scroll_y = max_scroll > 0 ? max_scroll : 0;
+                reader_update();
+            }
+            esc_state = 0;
+            return;
+        }
+        if (c >= '0' && c <= '9') {
+            esc_arg = esc_arg * 10 + (c - '0');
+            return;
+        }
+        esc_state = 0;
+        return;
+    }
+}
+
 const char *reader_get_title(void) {
     return s_reader.title[0] ? s_reader.title : "Reader";
 }
@@ -420,6 +604,7 @@ void reader_draw(const canvas1_t *c, int w, int h) {
                         if (s_reader.link_count < READER_LINKS_MAX) {
                             s_reader.links[s_reader.link_count].y0 = screen_y;
                             s_reader.links[s_reader.link_count].y1 = screen_y + 18;
+                            s_reader.links[s_reader.link_count].num = link_idx;
                             strncpy(s_reader.links[s_reader.link_count].url, gem.url, sizeof(s_reader.links[0].url) - 1);
                             s_reader.links[s_reader.link_count].url[sizeof(s_reader.links[0].url) - 1] = '\0';
                             s_reader.link_count++;

@@ -81,12 +81,13 @@ def build_fat32_image(output_path: str, src_dir: str | None = None) -> None:
             return
 
         entries: list[str] = sorted(os.listdir(dir_path))
-        dir_lba: int = DATA_START_SECTOR + (parent_cluster - 2)
+        curr_cluster: int = parent_cluster
+        dir_lba: int = DATA_START_SECTOR + (curr_cluster - 2)
         dir_offset_base: int = dir_lba * SECTOR_SIZE
 
         # Determine starting entry index (if parent_cluster != 2, index starts after '.' and '..')
         entry_idx: int = 0
-        if parent_cluster != 2:
+        if curr_cluster != 2:
             # Check existing entries
             for i in range(16):
                 if img[dir_offset_base + i * 32] == 0:
@@ -96,8 +97,14 @@ def build_fat32_image(output_path: str, src_dir: str | None = None) -> None:
         for name in entries:
             full_path: str = os.path.join(dir_path, name)
             if entry_idx >= 16:
-                print(f"[SD Image] Warning: Directory sector full in '{dir_path}'")
-                break
+                next_cluster: int = current_free_cluster
+                current_free_cluster += 1
+                set_fat_entry(curr_cluster, next_cluster)
+                set_fat_entry(next_cluster, 0x0FFFFFFF)
+                curr_cluster = next_cluster
+                dir_lba = DATA_START_SECTOR + (curr_cluster - 2)
+                dir_offset_base = dir_lba * SECTOR_SIZE
+                entry_idx = 0
 
             entry_offset: int = dir_offset_base + entry_idx * 32
             name83: bytes = filename_to_83(name)

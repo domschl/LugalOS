@@ -224,6 +224,8 @@ DOC_MAPPINGS: dict[str, str] = {
     "doc/admin/updates.md": "tools/sd_root/help/updates.gmi",
     "doc/dev/on_device/c_programming.md": "tools/sd_root/help/c_programming.gmi",
     "doc/dev/on_device/lisp_scripting.md": "tools/sd_root/help/lisp.gmi",
+    "doc/user/reader.md": "tools/sd_root/help/reader.gmi",
+    "doc/user/spartan.md": "tools/sd_root/help/spartan.gmi",
 }
 
 
@@ -253,6 +255,11 @@ def generate_all(repo_root: Path, check_only: bool = False) -> bool:
             dst_path.parent.mkdir(parents=True, exist_ok=True)
             dst_path.write_text(generated, encoding="utf-8")
             print(f"[GEN] {src_rel} -> {dst_rel} ({len(generated)} bytes)")
+            
+            # Mirror to pub/help for Spartan capsule
+            pub_dst = repo_root / "tools/sd_root/pub/help" / dst_path.name
+            pub_dst.parent.mkdir(parents=True, exist_ok=True)
+            pub_dst.write_text(generated, encoding="utf-8")
 
     return all_ok
 

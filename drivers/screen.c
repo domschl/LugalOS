@@ -1623,6 +1623,15 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
     reply[6] = (uint8_t)scr->damage; reply[7] = (uint8_t)(scr->damage >> 8);
     reply[8] = scr->layout;
     reply[9] = scr->swapped;
+    if (op != 'C') {
+        if (scr->ribbon.count > 0 && scr->ribbon.active_idx < scr->ribbon.count) {
+            reply[10] = scr->ribbon.wins[scr->ribbon.active_idx].type;
+            reply[11] = scr->ribbon.wins[scr->ribbon.active_idx].vterm_id;
+        } else {
+            reply[10] = 0;
+            reply[11] = 0;
+        }
+    }
 }
 
 LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, uint8_t *reply) {

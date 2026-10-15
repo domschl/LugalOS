@@ -4,6 +4,8 @@ Welcome to the autonomous LugalOS node Spartan capsule.
 
 ## Available Manuals & Guides
 => /help/shell.gmi Shell & Command Manual
+=> /help/reader.gmi Ribbon Reader & Typographic Viewer
+=> /help/spartan.gmi Spartan Protocol & Gemtext Architecture
 => /help/editors.gmi Text Editors (e & ed)
 => /help/c_programming.gmi C Programming & Compiler
 => /help/lisp.gmi Lisp Engine & Standard Library

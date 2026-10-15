@@ -911,12 +911,27 @@ static void pager_view_file(const char *initial_resource, bool is_topic, const c
                     row_count++;
 
                     if (row_count >= max_rows) {
-                        cprintf("-- More (Space: Next, Enter: Line, b: Back, q: Quit%s) -- ",
+                        cprintf("-- More (Space: Next, Enter: Line, b: Back, Ctrl-H/?: Help, q: Quit%s) -- ",
                                 is_gmi ? ", 1..9: Link" : "");
                         for (;;) {
                             char c = console_getc();
                             if (c == 'q' || c == 'Q' || c == 27 || c == 3) {
                                 quit = true;
+                                break;
+                            }
+                            if (c == 0x08 || c == '?' || c == 'h' || c == 'H') {
+                                if (s_help_depth < HELP_STACK_MAX) {
+                                    strncpy(s_help_stack[s_help_depth].resource, cur_resource, sizeof(s_help_stack[0].resource) - 1);
+                                    s_help_stack[s_help_depth].resource[sizeof(s_help_stack[0].resource) - 1] = '\0';
+                                    strncpy(s_help_stack[s_help_depth].title, cur_title, sizeof(s_help_stack[0].title) - 1);
+                                    s_help_stack[s_help_depth].title[sizeof(s_help_stack[0].title) - 1] = '\0';
+                                    s_help_depth++;
+                                }
+                                strncpy(cur_resource, "/sd0/help/reader.gmi", sizeof(cur_resource) - 1);
+                                cur_resource[sizeof(cur_resource) - 1] = '\0';
+                                strncpy(cur_title, "Reader Guide", sizeof(cur_title) - 1);
+                                cur_title[sizeof(cur_title) - 1] = '\0';
+                                reload_topic = true;
                                 break;
                             }
                             if (c == ' ') {
@@ -1024,6 +1039,8 @@ static void cmd_help_summary(void) {
     cprintf("  sensor          - Read I2C environmental telemetry\n");
     cprintf("  mqtt [connect|pub|sub] - MQTT 3.1.1 client\n");
     cprintf("  spartand [start|stop|status] - Spartan hypertext daemon (port 300, /sd0/pub)\n");
+    cprintf("  gem <file|url>  - Gemtext & Spartan terminal hypertext viewer\n");
+    cprintf("  reader [path|url] - Open Gemtext/Spartan reader in window ribbon\n");
     cprintf("  p9share         - Share serial port with 9P file server\n");
     console_print_divider('-');
     cprintf("  help <topic>    - Interactive topic manual (or: man <topic>)\n");
@@ -1090,6 +1107,8 @@ static void cmd_help_topic(const char *topic) {
         cprintf("  shell        - Shell commands, paths & virtual filesystems\n");
         cprintf("  editors      - Full-screen (e) and line (ed) text editors\n");
         cprintf("  ribbon       - Window ribbon, touch gestures & canvases\n");
+        cprintf("  reader       - Ribbon Reader window & proportional serif typography\n");
+        cprintf("  spartan      - Spartan hypermedia protocol & Gemtext format\n");
         cprintf("  chess        - Chess computer & Lazy SMP engine\n");
         cprintf("  cas          - Computer Algebra System (symbolic math)\n");
         cprintf("  sensors      - Environmental telemetry & autonomous MQTT\n");
@@ -1175,6 +1194,7 @@ static void cmd_reader(const char *arg) {
         if (reader_open(arg)) {
             reader_set_target(cid, w, h);
             reader_update();
+            console_set_active_win_type(3 /* RIBBON_WIN_READER */);
             cprintf("reader: opened '%s' in ribbon\n", arg);
         } else {
             cprintf("reader: cannot open '%s'\n", arg);
@@ -1190,9 +1210,11 @@ static void cmd_spartand(const char *arg) {
         uint16_t port = 0;
         bool running = spartan_server_running(&port);
         uint32_t reqs = 0, served = 0, errs = 0;
-        spartan_server_stats(&reqs, &served, &errs);
-        cprintf("spartand: %s%s%u\n", running ? "running on port " : "stopped",
-                running ? "" : "", running ? port : 0);
+        if (running) {
+            cprintf("spartand: running on port %u\n", port);
+        } else {
+            cprintf("spartand: stopped\n");
+        }
         cprintf("  sandbox:  %s\n", SPARTAN_PUB_ROOT);
         cprintf("  requests: %u (served: %u, errors: %u)\n", reqs, served, errs);
         return;
@@ -4665,17 +4687,26 @@ static void cmd_ribbon(const char *cmd_line) {
             return;
         }
         uint8_t req[2] = { 'J', (uint8_t)idx }, reply[SCREEN_REPLY_LEN];
-        if (console_canvas(req, 2, reply) && reply[0] == 0) vterm_set_active(reply[1]);
+        if (console_canvas(req, 2, reply) && reply[0] == 0) {
+            if (reply[10] != 0) console_set_active_win_type(reply[10]);
+            vterm_set_active(reply[1]);
+        }
         return;
     }
     if (strcmp(args, "left") == 0) {
         uint8_t req[1] = { '<' }, reply[SCREEN_REPLY_LEN];
-        if (console_canvas(req, 1, reply) && reply[0] == 0) vterm_set_active(reply[1]);
+        if (console_canvas(req, 1, reply) && reply[0] == 0) {
+            if (reply[10] != 0) console_set_active_win_type(reply[10]);
+            vterm_set_active(reply[1]);
+        }
         return;
     }
     if (strcmp(args, "right") == 0) {
         uint8_t req[1] = { '>' }, reply[SCREEN_REPLY_LEN];
-        if (console_canvas(req, 1, reply) && reply[0] == 0) vterm_set_active(reply[1]);
+        if (console_canvas(req, 1, reply) && reply[0] == 0) {
+            if (reply[10] != 0) console_set_active_win_type(reply[10]);
+            vterm_set_active(reply[1]);
+        }
         return;
     }
     if (strcmp(args, "move left") == 0) {

@@ -85,6 +85,16 @@ bool console_pixels(const uint8_t **fb, unsigned *w, unsigned *h, unsigned *stri
     return g_screen && g_screen->pixels && g_screen->pixels(fb, w, h, stride);
 }
 
+static volatile uint8_t g_active_win_type = 1; /* 1 = RIBBON_WIN_TERM */
+
+void console_set_active_win_type(uint8_t type) {
+    g_active_win_type = type;
+}
+
+uint8_t console_active_win_type(void) {
+    return g_active_win_type;
+}
+
 static volatile unsigned g_hotkey;
 
 /* --- 47.11: idle blanking ------------------------------------------------
@@ -172,6 +182,7 @@ static void run_hotkey(void) {
              * 48 on the RP2350's 800 px, 62 on the LCD-7B's 1024. */
             uint8_t req[3] = { 'N', (uint8_t)vid, 0 }, reply[SCREEN_REPLY_LEN];
             (void)console_canvas(req, 3, reply);
+            g_active_win_type = 1;
             vterm_set_active(vid);
         }
         return;
@@ -179,6 +190,7 @@ static void run_hotkey(void) {
     if (hk == CONSOLE_HOTKEY_FOCUS_LEFT) {
         uint8_t req[1] = { '<' }, reply[SCREEN_REPLY_LEN];
         if (console_canvas(req, 1, reply) && reply[0] == 0) {
+            if (reply[10] != 0) g_active_win_type = reply[10];
             vterm_set_active(reply[1]);
         }
         return;
@@ -186,6 +198,7 @@ static void run_hotkey(void) {
     if (hk == CONSOLE_HOTKEY_FOCUS_RIGHT) {
         uint8_t req[1] = { '>' }, reply[SCREEN_REPLY_LEN];
         if (console_canvas(req, 1, reply) && reply[0] == 0) {
+            if (reply[10] != 0) g_active_win_type = reply[10];
             vterm_set_active(reply[1]);
         }
         return;
@@ -208,6 +221,10 @@ static void run_hotkey(void) {
             if (closed_type == 1 /* RIBBON_WIN_TERM */ && closed_vid > 0) {
                 vterm_destroy(closed_vid);
             }
+            if (closed_type == 3 /* RIBBON_WIN_READER */) {
+                reader_close();
+                g_active_win_type = 1;
+            }
             vterm_set_active(reply[1]);
         }
         return;
@@ -216,6 +233,7 @@ static void run_hotkey(void) {
         uint8_t target_idx = (uint8_t)(hk - CONSOLE_HOTKEY_JUMP_BASE);
         uint8_t req[2] = { 'J', target_idx }, reply[SCREEN_REPLY_LEN];
         if (console_canvas(req, 2, reply) && reply[0] == 0) {
+            if (reply[10] != 0) g_active_win_type = reply[10];
             vterm_set_active(reply[1]);
         }
         return;
@@ -225,6 +243,7 @@ static void run_hotkey(void) {
         uint8_t req[5] = { 'P', (uint8_t)(xy >> 16), (uint8_t)(xy >> 24), (uint8_t)xy, (uint8_t)(xy >> 8) };
         uint8_t reply[SCREEN_REPLY_LEN];
         if (console_canvas(req, 5, reply) && reply[0] == 0) {
+            if (reply[10] != 0) g_active_win_type = reply[10];
             vterm_set_active(reply[1]);
             int cx = (int)(reply[2] | (reply[3] << 8));
             int cy = (int)(reply[4] | (reply[5] << 8));
@@ -616,7 +635,14 @@ static void console_pump(void) {
     blank_check();
     for (unsigned i = 0; i < g_ninputs; i++) {
         const console_input_t *src = g_inputs[i];
-        if (act) {
+        if (src->local && g_active_win_type == 3 /* RIBBON_WIN_READER */ && reader_is_active()) {
+            while (src->has_char()) {
+                int c = src->getc();
+                if (c < 0) break;
+                if (note_input(src->local)) continue;
+                reader_feed_key(c);
+            }
+        } else if (act) {
             /* Room first, as for the ring: a byte taken from the device and
              * then refused by a full queue was lost. */
             while (vterm_has_room(act) && src->has_char()) {
