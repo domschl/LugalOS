@@ -826,12 +826,18 @@ static void gdma_stop(void) {
 }
 
 /* Write back [y0, y1) of the frame so the DMA sees it (§4: the CPU writes
- * PSRAM through L1D and L2; the DMA reads the chip). */
+ * PSRAM through L1D and L2; the DMA reads the chip). Chunked into 32-row
+ * blocks so the extmem writeback does not starve DW-GDMA of PSRAM bandwidth. */
 void dsi_lcd_fb_flush(unsigned y0, unsigned y1) {
     if (!g_fb || y0 >= y1) return;
     if (y1 > DSI_LCD_V_RES) y1 = DSI_LCD_V_RES;
     uint32_t row = DSI_LCD_H_RES * g_fb_bpp / 8u;
-    esp32p4_extmem_writeback((uintptr_t)g_fb + y0 * row, (y1 - y0) * row);
+    const unsigned CHUNK = 32;
+    for (unsigned y = y0; y < y1; y += CHUNK) {
+        unsigned end_y = y + CHUNK;
+        if (end_y > y1) end_y = y1;
+        esp32p4_extmem_writeback((uintptr_t)g_fb + y * row, (end_y - y) * row);
+    }
 }
 
 uint8_t *dsi_lcd_fb(void) { return g_fb; }
@@ -1112,14 +1118,19 @@ static void term_blank(bool off) {
 }
 
 /* Display synchronization hook for intermediate animation frames:
- * converts the updated 1-bpp rows into GRAY8 in g_fb and flushes them to PSRAM
- * for immediate DW-GDMA scanout, checking for any bridge underrun. */
-static void term_sync_post(void) {
-    if (FGET(DSI_BRG_INT_RAW_REG, DSI_BRG_UNDERRUN_INT_RAW)) {
-        REG(DSI_BRG_INT_CLR_REG) = 0xffffffffu;
-        scan_stop();
-        scan_start();
+ * wait for the bridge VSYNC so intermediate rendering begins at VBLANK. */
+static void term_sync_pre(void) {
+    if (!g_scanning) return;
+    REG(DSI_BRG_INT_CLR_REG) = (1u << DSI_BRG_VSYNC_INT_RAW_S);
+    uint64_t t0 = time_get_us();
+    while ((REG(DSI_BRG_INT_RAW_REG) & (1u << DSI_BRG_VSYNC_INT_RAW_S)) == 0) {
+        if (time_get_us() - t0 > 25000u) break;
     }
+}
+
+/* Post-sync hook: converts the updated 1-bpp rows into GRAY8 in g_fb and
+ * flushes them to PSRAM for immediate DW-GDMA scanout. */
+static void term_sync_post(void) {
     term_convert(0, DSI_LCD_V_RES);
     g_t_due = false;
 }
@@ -1133,7 +1144,7 @@ static lcdterm_backend_t g_tbe = {
     .fb_region_count = 0,              /* the terminal draws from the kernel here (lcdterm.h) */
     .flush           = term_flush,
     .blank           = term_blank,
-    .sync_pre        = NULL,
+    .sync_pre        = term_sync_pre,
     .sync_post       = term_sync_post,
 };
 
@@ -1144,9 +1155,6 @@ static void term_redraw(void) {
     g_t_hold = false;
     g_t_force = true;
     term_convert(0, DSI_LCD_V_RES);
-    /* Resynchronize scan-out to guarantee alignment */
-    scan_stop();
-    scan_start();
     console_unlock();
 }
 
@@ -1156,13 +1164,6 @@ static void term_flush_task(void *arg) {
     (void)arg;
     for (;;) {
         task_sleep_ms(16);
-        if (FGET(DSI_BRG_INT_RAW_REG, DSI_BRG_UNDERRUN_INT_RAW)) {
-            console_lock();
-            REG(DSI_BRG_INT_CLR_REG) = 0xffffffffu;
-            scan_stop();
-            scan_start();
-            console_unlock();
-        }
         if (!g_t_due) continue;
         console_lock();
         g_t_due = false;

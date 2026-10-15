@@ -359,9 +359,9 @@ static void lcd7_blank(bool off) {
 static void lcd7_wait_vsync(void) {
     if (!g_running) return;
     REG(DMA_BASE + 0x400) = (1u << FB_CH);
-    uint32_t timeout = 100000;
-    while ((REG(DMA_BASE + 0x400) & (1u << FB_CH)) == 0 && --timeout) {
-        /* spin */
+    uint64_t t0 = time_get_us();
+    while ((REG(DMA_BASE + 0x400) & (1u << FB_CH)) == 0) {
+        if (time_get_us() - t0 > 25000u) break;
     }
 }
 

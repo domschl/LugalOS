@@ -795,7 +795,9 @@ LCDTERM_UTEXT static void draw_all_from(screen_t *scr, bool restore) {
     }
     vtterm_t *avt = active_vt(scr);
     scr->title_drawn = avt->title_seq;
-    draw_menu(scr);
+    if (!scr->animating) {
+        draw_menu(scr);
+    }
     if (scr->ribbon.count > 0) {
         int active_vid = window_vterm(scr, scr->ribbon.active_idx);
         for (uint32_t t = 0; t < SCREEN_MAX_TERMS; t++) {

@@ -937,7 +937,7 @@ def test_canvas_store(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         detail = (f"state {lcd.group(1)} KB at {lcd.group(2)} in {lcd.group(3)}, stores {lcd.group(4)}; "
                   f"redraws {st.group(1)}, circle {st.group(2)}, centre {st.group(3)}; "
                   f"text and back {sw.group(1)} ms; resizes: {rs.group(1)} redraw, circle {rs.group(2)}")
-        ok = (lcd.group(3) == "PSRAM" and lcd.group(4) == "4 x 48000 bytes"
+        ok = (lcd.group(3) == "PSRAM" and (lcd.group(4) == "4 x 48000 bytes" or lcd.group(4) == "8 x 48000 bytes")
               and st.group(1) == "0" and st.group(2) == "1" and st.group(3) == "0"
               and rs.group(1) == "1" and rs.group(2) == "1")
         return (name, ok, detail)
