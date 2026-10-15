@@ -2,6 +2,13 @@
 
 The LugalOS Ribbon Reader (`RIBBON_WIN_READER`) is a dedicated long-form document viewer integrated into the horizontal window ribbon. It is designed for comfortable reading of system documentation, manuals, books, and network hypermedia capsules.
 
+## Multi-Instance Reader Architecture
+
+LugalOS supports up to 4 concurrent Reader windows (`READER_MAX_INSTANCES = 4`) tiled side-by-side on the horizontal window ribbon. Each Reader instance operates completely independently with its own document buffer, scroll offset, history stack, and link table:
+* **Multiple Open Manuals**: Keep multiple documentation files open simultaneously (e.g. `reader /sd0/help/shell.gmi` and `reader /sd0/help/spartan.gmi`).
+* **Instance Management**: Running `reader list` in `lsh` lists all active Reader instances and their loaded paths.
+* **Smart Window Reuse**: Issuing `reader <path>` focuses the existing Reader window if that exact document is already open, or allocates a new Reader pane on the ribbon if available.
+
 ## Proportional Typography
 
 Unlike standard terminal windows that use fixed-pitch monospace fonts, the Reader window features:
@@ -18,13 +25,19 @@ Open local Gemtext (`.gmi`) files or remote Spartan capsules directly from the s
 lsh> reader /sd0/help/shell.gmi
 lsh> reader /sd0/help/spartan.gmi
 lsh> reader spartan://spartan.mozz.us/
+lsh> reader list
 ```
 
-If a reader window is already open in the ribbon, issuing `reader <target>` updates the existing reader window and focuses it.
+## Window Controls & Macintosh Close Box
+
+Every Reader window includes a classic Macintosh-style close box (`[■]`) at the left edge of its title bar:
+* **Close Box Tap / Click**: Tapping or clicking the close box closes that specific Reader instance immediately, releasing its PSRAM backing store and refocusing the ribbon.
+* **Maximize / Restore**: Pressing `Super+\` / `Cmd+\` toggles the focused Reader window between half-screen and full-screen ribbon width.
+* **Keyboard Close**: Pressing `q` or `Cmd-W` closes the active Reader window and returns focus to the terminal.
 
 ## Keyboard Navigation
 
-When the Reader window has focus, standard keyboard navigation shortcuts are active:
+When the Reader window has focus, standard keyboard navigation shortcuts are active (routing from either the physical USB keyboard or UART serial console):
 
 * **Vertical Scrolling**:
   * `Up Arrow` / `k` / `Ctrl-P`: Scroll up by one line (32 px).
@@ -39,12 +52,14 @@ When the Reader window has focus, standard keyboard navigation shortcuts are act
 * **Help & Controls**:
   * `Ctrl-H` / `?` / `h`: Open this Reader Help manual.
   * `r`: Reload and redraw the current document.
+  * `Super+\` / `Cmd+\`: Toggle Maximize / Restore window width.
   * `q` / `Cmd-W`: Close the reader window and return focus to the terminal.
 
 ## Touch & Gestures
 
 On touchscreen-equipped hardware (such as the Waveshare ESP32-P4 Touch LCD 7B and RP2350-LCD-7):
 
+* **Tap Close Box**: Closes the window.
 * **Tap on Link**: Tapping anywhere within a link line follows the link target immediately.
 * **Swipe Up / Down**: Vertical touch dragging pans the document smoothly.
 * **Minimap Tap**: Tapping a window thumbnail in the top menu bar jumps directly to that window.

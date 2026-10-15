@@ -86,5 +86,6 @@ int lcdterm_text_test(void);
 void lcdterm_scroll_test(unsigned n);
 void lcdterm_report(void);
 canvas1_t *lcdterm_get_canvas_backing(uint8_t cid);
+canvas1_t *lcdterm_get_reader_backing(uint8_t rid);
 
 #endif /* LUGALOS_DRIVERS_LCDTERM_H */

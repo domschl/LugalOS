@@ -191,6 +191,7 @@ static void run_hotkey(void) {
         uint8_t req[1] = { '<' }, reply[SCREEN_REPLY_LEN];
         if (console_canvas(req, 1, reply) && reply[0] == 0) {
             if (reply[10] != 0) g_active_win_type = reply[10];
+            if (reply[10] == 3 /* RIBBON_WIN_READER */) reader_set_active_instance(reply[11]);
             vterm_set_active(reply[1]);
         }
         return;
@@ -199,6 +200,7 @@ static void run_hotkey(void) {
         uint8_t req[1] = { '>' }, reply[SCREEN_REPLY_LEN];
         if (console_canvas(req, 1, reply) && reply[0] == 0) {
             if (reply[10] != 0) g_active_win_type = reply[10];
+            if (reply[10] == 3 /* RIBBON_WIN_READER */) reader_set_active_instance(reply[11]);
             vterm_set_active(reply[1]);
         }
         return;
@@ -222,7 +224,7 @@ static void run_hotkey(void) {
                 vterm_destroy(closed_vid);
             }
             if (closed_type == 3 /* RIBBON_WIN_READER */) {
-                reader_close();
+                reader_close_instance(closed_vid);
                 g_active_win_type = 1;
             }
             vterm_set_active(reply[1]);
@@ -234,6 +236,7 @@ static void run_hotkey(void) {
         uint8_t req[2] = { 'J', target_idx }, reply[SCREEN_REPLY_LEN];
         if (console_canvas(req, 2, reply) && reply[0] == 0) {
             if (reply[10] != 0) g_active_win_type = reply[10];
+            if (reply[10] == 3 /* RIBBON_WIN_READER */) reader_set_active_instance(reply[11]);
             vterm_set_active(reply[1]);
         }
         return;
@@ -243,7 +246,21 @@ static void run_hotkey(void) {
         uint8_t req[5] = { 'P', (uint8_t)(xy >> 16), (uint8_t)(xy >> 24), (uint8_t)xy, (uint8_t)(xy >> 8) };
         uint8_t reply[SCREEN_REPLY_LEN];
         if (console_canvas(req, 5, reply) && reply[0] == 0) {
+            if (reply[8] == 0xCC) {
+                uint8_t closed_type = reply[10];
+                uint8_t closed_vid = reply[11];
+                if (closed_type == 1 /* RIBBON_WIN_TERM */ && closed_vid > 0) {
+                    vterm_destroy(closed_vid);
+                }
+                if (closed_type == 3 /* RIBBON_WIN_READER */) {
+                    reader_close_instance(closed_vid);
+                    g_active_win_type = 1;
+                }
+                vterm_set_active(reply[1]);
+                return;
+            }
             if (reply[10] != 0) g_active_win_type = reply[10];
+            if (reply[10] == 3 /* RIBBON_WIN_READER */) reader_set_active_instance(reply[11]);
             vterm_set_active(reply[1]);
             int cx = (int)(reply[2] | (reply[3] << 8));
             int cy = (int)(reply[4] | (reply[5] << 8));
@@ -261,8 +278,8 @@ static void run_hotkey(void) {
         if (reader_is_active()) reader_scroll(80);
         return;
     }
-    if (hk == CONSOLE_HOTKEY_SWAP) {
-        uint8_t req[1] = { 'X' }, reply[SCREEN_REPLY_LEN];
+    if (hk == CONSOLE_HOTKEY_TOGGLE_MAX) {
+        uint8_t req[1] = { 'M' }, reply[SCREEN_REPLY_LEN];
         (void)console_canvas(req, 1, reply);
         return;
     }
@@ -635,7 +652,7 @@ static void console_pump(void) {
     blank_check();
     for (unsigned i = 0; i < g_ninputs; i++) {
         const console_input_t *src = g_inputs[i];
-        if (src->local && g_active_win_type == 3 /* RIBBON_WIN_READER */ && reader_is_active()) {
+        if (g_active_win_type == 3 /* RIBBON_WIN_READER */ && reader_is_active()) {
             while (src->has_char()) {
                 int c = src->getc();
                 if (c < 0) break;

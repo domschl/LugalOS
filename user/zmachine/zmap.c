@@ -308,13 +308,57 @@ static void get_room_initials(const char *name, char out[3])
 /* Lifecycle                                                          */
 /* ------------------------------------------------------------------ */
 
+static bool zmap_check_canvas(struct zmap_state *s)
+{
+    uint8_t req[1] = { 'S' }, reply[SCREEN_REPLY_LEN];
+    if (console_canvas(req, 1, reply) && reply[0] == 0 && reply[8] != SCREEN_LAYOUT_TEXT) {
+        int w = (int)(reply[2] | (reply[3] << 8));
+        int h = (int)(reply[4] | (reply[5] << 8));
+        if (w > 0) s->canvas_w = w;
+        if (h > 0) s->canvas_h = h;
+        return true;
+    }
+    return false;
+}
+
+static bool zmap_ensure_canvas(struct zmap_state *s)
+{
+    if (zmap_check_canvas(s)) return true;
+    uint8_t req[16];
+    req[0] = 'L';
+    req[1] = SCREEN_LAYOUT_SPLIT_HALF;
+    memcpy(req + 2, "map", 4);
+    uint8_t reply[SCREEN_REPLY_LEN];
+    if (!console_canvas(req, 6, reply) || reply[0] != 0) {
+        return false;
+    }
+    req[0] = 'T'; req[1] = 'M'; req[2] = 'a'; req[3] = 'p';
+    (void)console_canvas(req, 4, reply);
+    int w = (int)(reply[2] | (reply[3] << 8));
+    int h = (int)(reply[4] | (reply[5] << 8));
+    if (w > 0) s->canvas_w = w;
+    if (h > 0) s->canvas_h = h;
+    if (s->canvas_w <= 0 || s->canvas_h <= 0) {
+        s->canvas_w = 400;
+        s->canvas_h = 440;
+    }
+    s->last_damage = (uint16_t)(reply[6] | (reply[7] << 8));
+    return true;
+}
+
 bool zmap_init(struct zmap_state *s)
 {
-    uint8_t req[8] = { 'L', SCREEN_LAYOUT_SPLIT_HALF }, reply[SCREEN_REPLY_LEN];
-    if (!console_canvas(req, 2, reply) || reply[0] != 0) {
+    uint8_t req[16];
+    req[0] = 'L';
+    req[1] = SCREEN_LAYOUT_SPLIT_HALF;
+    memcpy(req + 2, "map", 4);
+    uint8_t reply[SCREEN_REPLY_LEN];
+    if (!console_canvas(req, 6, reply) || reply[0] != 0) {
         s->active = false;
         return false;
     }
+    req[0] = 'T'; req[1] = 'M'; req[2] = 'a'; req[3] = 'p';
+    (void)console_canvas(req, 4, reply);
     s->active = true;
     s->canvas_w = (int)(reply[2] | (reply[3] << 8));
     s->canvas_h = (int)(reply[4] | (reply[5] << 8));
@@ -351,8 +395,12 @@ void zmap_reset(struct zmap_state *s)
 void zmap_close(struct zmap_state *s)
 {
     if (s && s->active) {
-        uint8_t req[2] = { 'L', SCREEN_LAYOUT_TEXT }, reply[SCREEN_REPLY_LEN];
-        (void)console_canvas(req, 2, reply);
+        uint8_t req[16];
+        req[0] = 'L';
+        req[1] = SCREEN_LAYOUT_TEXT;
+        memcpy(req + 2, "map", 4);
+        uint8_t reply[SCREEN_REPLY_LEN];
+        (void)console_canvas(req, 6, reply);
         s->active = false;
     }
 }
@@ -743,6 +791,7 @@ void zmap_on_turn(struct zmap_state *s, struct z_vm *vm)
 void zmap_render(struct zmap_state *s)
 {
     if (!s || !s->active) return;
+    if (!zmap_ensure_canvas(s)) return;
 
     canvas_clear(s);
 
@@ -873,7 +922,7 @@ void zmap_poll(struct zmap_state *s)
     if (!s || !s->active) return;
 
     uint8_t req[1] = { 'S' }, reply[SCREEN_REPLY_LEN];
-    if (!console_canvas(req, 1, reply) || reply[0] != 0) return;
+    if (!console_canvas(req, 1, reply) || reply[0] != 0 || reply[8] == SCREEN_LAYOUT_TEXT) return;
 
     int w = (int)(reply[2] | (reply[3] << 8));
     int h = (int)(reply[4] | (reply[5] << 8));

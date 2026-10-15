@@ -4740,16 +4740,109 @@ static lisp_val_t *prim_canvas_size(lisp_val_t *args, lisp_val_t *env) {
  * widest canvas; 38 columns at 800 px), 'split-half half (48), 'split-narrow
  * two-thirds (64) (§1.2, 37.5a);
  * Super+[ and Super+] step between them on the panel. */
+/* (canvas-window 'text | 'canvas | 'split | 'split-half | 'split-narrow [name])
+ * -> #t, or #f if refused. The splits by their text tile, as shares of the
+ * columns two windows share (D7, drivers/ribbon.h): 'split two-fifths (the
+ * widest canvas; 38 columns at 800 px), 'split-half half (48), 'split-narrow
+ * two-thirds (64) (§1.2, 37.5a);
+ * Super+[ and Super+] step between them on the panel. */
 static lisp_val_t *prim_canvas_window(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     const char *w = get_str_val(lisp_list_ref(args, 0));
-    uint8_t req[2] = { 'L', 0xff }, reply[SCREEN_REPLY_LEN];
+    uint8_t req[SCREEN_CTITLE_MAX + 3];
+    req[0] = 'L';
+    req[1] = 0xff;
     if (streq(w, "text")) req[1] = SCREEN_LAYOUT_TEXT;
     else if (streq(w, "canvas")) req[1] = SCREEN_LAYOUT_CANVAS;
     else if (streq(w, "split") || streq(w, "split-wide")) req[1] = SCREEN_LAYOUT_SPLIT_WIDE;
     else if (streq(w, "split-half") || streq(w, "ribbon")) req[1] = SCREEN_LAYOUT_SPLIT_HALF;
     else if (streq(w, "split-narrow")) req[1] = SCREEN_LAYOUT_SPLIT_NARROW;   /* 37.5a */
-    return canvas_call(req, sizeof(req), reply, false) ? &true_val : &false_val;
+
+    const char *name = NULL;
+    lisp_val_t *arg1 = lisp_list_ref(args, 1);
+    if (arg1 && (arg1->type == LISP_STRING || arg1->type == LISP_SYMBOL)) {
+        name = get_str_val(arg1);
+    } else if (req[1] != SCREEN_LAYOUT_TEXT) {
+        name = "plot";
+    }
+
+    uint32_t req_len = 2;
+    if (name && name[0]) {
+        size_t nlen = strlen(name);
+        if (nlen > SCREEN_CTITLE_MAX - 1) nlen = SCREEN_CTITLE_MAX - 1;
+        memcpy(req + 2, name, nlen);
+        req[2 + nlen] = '\0';
+        req_len = 3 + (uint32_t)nlen;
+    }
+
+    uint8_t reply[SCREEN_REPLY_LEN];
+    return canvas_call(req, req_len, reply, false) ? &true_val : &false_val;
+}
+
+/* (canvas-open [name [layout]]) -- opens or attaches a named canvas */
+static lisp_val_t *prim_canvas_open(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    const char *name = "plot";
+    uint8_t layout = SCREEN_LAYOUT_SPLIT_HALF;
+    lisp_val_t *a0 = lisp_list_ref(args, 0);
+    if (a0 && (a0->type == LISP_STRING || a0->type == LISP_SYMBOL)) {
+        name = get_str_val(a0);
+    }
+    lisp_val_t *a1 = lisp_list_ref(args, 1);
+    if (a1 && (a1->type == LISP_STRING || a1->type == LISP_SYMBOL)) {
+        const char *w = get_str_val(a1);
+        if (streq(w, "split") || streq(w, "split-wide")) layout = SCREEN_LAYOUT_SPLIT_WIDE;
+        else if (streq(w, "split-narrow")) layout = SCREEN_LAYOUT_SPLIT_NARROW;
+        else if (streq(w, "canvas") || streq(w, "full")) layout = SCREEN_LAYOUT_CANVAS;
+    }
+    uint8_t req[SCREEN_CTITLE_MAX + 3];
+    req[0] = 'L';
+    req[1] = layout;
+    size_t nlen = strlen(name);
+    if (nlen > SCREEN_CTITLE_MAX - 1) nlen = SCREEN_CTITLE_MAX - 1;
+    memcpy(req + 2, name, nlen);
+    req[2 + nlen] = '\0';
+    uint8_t reply[SCREEN_REPLY_LEN];
+    return canvas_call(req, 3 + (uint32_t)nlen, reply, false) ? &true_val : &false_val;
+}
+
+/* (canvas-close [name]) -- closes named canvas, or focused canvas */
+static lisp_val_t *prim_canvas_close(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    const char *name = NULL;
+    lisp_val_t *a0 = lisp_list_ref(args, 0);
+    if (a0 && (a0->type == LISP_STRING || a0->type == LISP_SYMBOL)) {
+        name = get_str_val(a0);
+    }
+    uint8_t req[SCREEN_CTITLE_MAX + 3];
+    req[0] = 'L';
+    req[1] = SCREEN_LAYOUT_TEXT;
+    uint32_t req_len = 2;
+    if (name && name[0]) {
+        size_t nlen = strlen(name);
+        if (nlen > SCREEN_CTITLE_MAX - 1) nlen = SCREEN_CTITLE_MAX - 1;
+        memcpy(req + 2, name, nlen);
+        req[2 + nlen] = '\0';
+        req_len = 3 + (uint32_t)nlen;
+    }
+    uint8_t reply[SCREEN_REPLY_LEN];
+    return canvas_call(req, req_len, reply, false) ? &true_val : &false_val;
+}
+
+/* (canvas-select name) -- attaches/focuses a canvas by name */
+static lisp_val_t *prim_canvas_select(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    const char *name = get_str_val(lisp_list_ref(args, 0));
+    if (!name || !name[0]) return &false_val;
+    uint8_t req[SCREEN_CTITLE_MAX + 3];
+    req[0] = 'L';
+    req[1] = SCREEN_LAYOUT_SPLIT_HALF;
+    size_t nlen = strlen(name);
+    if (nlen > SCREEN_CTITLE_MAX - 1) nlen = SCREEN_CTITLE_MAX - 1;
+    memcpy(req + 2, name, nlen);
+    req[2 + nlen] = '\0';
+    uint8_t reply[SCREEN_REPLY_LEN];
+    return canvas_call(req, 3 + (uint32_t)nlen, reply, false) ? &true_val : &false_val;
 }
 
 /* (canvas-swap) -- 37.5a: canvas and text change sides in a split, or with
@@ -4948,7 +5041,6 @@ static lisp_val_t *prim_chess_console(lisp_val_t *args, lisp_val_t *env) {
     lisp_park(&park);
     chess_console_run(); /* returns on 'quit' */
     lisp_unpark(&park);
-    lisp_canvas_reset();    /* 37.3b */
     return &true_val;
 }
 
@@ -4980,7 +5072,6 @@ static lisp_val_t *prim_chess(lisp_val_t *args, lisp_val_t *env) {
 #endif
     lisp_unpark(&park);
     g_search_cores = 1;
-    lisp_canvas_reset();    /* 37.3b */
     return &true_val;
 }
 #endif

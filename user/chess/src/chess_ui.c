@@ -212,10 +212,13 @@ static void chess_session_end(void) {
     }
     g_chess_ready = false;
 #if !(defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735)
-    uint8_t req[2] = { 'K', 0 }, reply[SCREEN_REPLY_LEN];
+    uint8_t req[16];
+    req[0] = 'K'; req[1] = 0;
+    uint8_t reply[SCREEN_REPLY_LEN];
     (void)console_canvas(req, 2, reply);
     req[0] = 'L'; req[1] = SCREEN_LAYOUT_TEXT;
-    (void)console_canvas(req, 2, reply);
+    memcpy(req + 2, "chess", 6);
+    (void)console_canvas(req, 8, reply);
 #endif
 }
 
@@ -2739,7 +2742,26 @@ static bool cb_canvas(int *w, int *h) {
 
 static void canvas_board_draw(const Position *pos) {
     int w, h;
-    if (!cb_canvas(&w, &h)) return;
+    if (!cb_canvas(&w, &h)) {
+        unsigned cols, rows;
+        if (console_size(&cols, &rows)) {
+            uint8_t req[16];
+            req[0] = 'L';
+            req[1] = SCREEN_LAYOUT_SPLIT_WIDE;
+            memcpy(req + 2, "chess", 6);
+            uint8_t reply[SCREEN_REPLY_LEN];
+            if (!console_canvas(req, 8, reply) || reply[0] != 0) return;
+            req[0] = 'T'; req[1] = 'B'; req[2] = 'o'; req[3] = 'a'; req[4] = 'r'; req[5] = 'd';
+            (void)console_canvas(req, 6, reply);
+            req[0] = 'K'; req[1] = 1;
+            (void)console_canvas(req, 2, reply);
+            req[0] = 'F'; req[1] = 0;
+            (void)console_canvas(req, 2, reply);
+            if (!cb_canvas(&w, &h)) return;
+        } else {
+            return;
+        }
+    }
     int x0 = (w - CB_N) / 2, y0 = (h - CB_N) / 2;
     uint8_t req[9 + CB_N / 8], reply[SCREEN_REPLY_LEN];
     req[0] = 'o';
@@ -2788,8 +2810,12 @@ static void canvas_board_draw(const Position *pos) {
 static void canvas_board_begin(const Position *pos) {
     unsigned cols, rows;
     if (console_size(&cols, &rows)) {
-        uint8_t req[8] = { 'L', SCREEN_LAYOUT_SPLIT_WIDE }, reply[SCREEN_REPLY_LEN];
-        (void)console_canvas(req, 2, reply);
+        uint8_t req[16];
+        req[0] = 'L';
+        req[1] = SCREEN_LAYOUT_SPLIT_WIDE;
+        memcpy(req + 2, "chess", 6);
+        uint8_t reply[SCREEN_REPLY_LEN];
+        (void)console_canvas(req, 8, reply);
         req[0] = 'T'; req[1] = 'B'; req[2] = 'o'; req[3] = 'a'; req[4] = 'r'; req[5] = 'd';
         (void)console_canvas(req, 6, reply);
         req[0] = 'K'; req[1] = 1;               /* 37.5a: the board fits only this split */
@@ -2822,8 +2848,10 @@ int chess_canvas_selftest(void) {
         cprintf("CHESSBOARD_SELFTEST_FAIL (chess did not initialise)\n");
         return 1;
     }
-    uint8_t req[8] = { 'L', SCREEN_LAYOUT_SPLIT_WIDE }, reply[SCREEN_REPLY_LEN];
-    if (!console_canvas(req, 2, reply) || reply[0] != 0) {
+    uint8_t req[16] = { 'L', SCREEN_LAYOUT_SPLIT_WIDE };
+    memcpy(req + 2, "chess", 6);
+    uint8_t reply[SCREEN_REPLY_LEN];
+    if (!console_canvas(req, 8, reply) || reply[0] != 0) {
         cprintf("CHESSBOARD_SELFTEST_FAIL (no canvas)\n");
         return 1;
     }
@@ -2861,6 +2889,8 @@ int chess_canvas_selftest(void) {
     cprintf("  [%s] white knight: white body, black rim\n", wknight ? "ok" : "FAIL"); fails += !wknight;
     cprintf("  [%s] the board's frame\n", frame ? "ok" : "FAIL"); fails += !frame;
     req[0] = 'L'; req[1] = SCREEN_LAYOUT_TEXT;
+    memcpy(req + 2, "chess", 6);
+    (void)console_canvas(req, 8, reply);
     (void)console_canvas(req, 2, reply);
     cprintf("%s\n", fails ? "CHESSBOARD_SELFTEST_FAIL" : "CHESSBOARD_SELFTEST_OK");
     return fails;

@@ -48,6 +48,9 @@ static const builtin_t builtins[] = {
 #if !(defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735)
     BUILTIN_PRIM("canvas-circle", prim_canvas_circle),
 #endif
+#if !(defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735)
+    BUILTIN_PRIM("canvas-close", prim_canvas_close),
+#endif
     BUILTIN_PRIM("canvas-fill", prim_canvas_fill),
 #if !(defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735)
     BUILTIN_PRIM("canvas-frame", prim_canvas_frame),
@@ -64,10 +67,16 @@ static const builtin_t builtins[] = {
 #if !(defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735)
     BUILTIN_PRIM("canvas-on-redraw", prim_canvas_on_redraw),
 #endif
+#if !(defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735)
+    BUILTIN_PRIM("canvas-open", prim_canvas_open),
+#endif
     BUILTIN_PRIM("canvas-pixel", prim_canvas_pixel),
     BUILTIN_PRIM("canvas-rect", prim_canvas_rect),
 #if !(defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735)
     BUILTIN_PRIM("canvas-row", prim_canvas_row),
+#endif
+#if !(defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735)
+    BUILTIN_PRIM("canvas-select", prim_canvas_select),
 #endif
 #if !(defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735)
     BUILTIN_PRIM("canvas-size", prim_canvas_size),

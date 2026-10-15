@@ -1182,20 +1182,65 @@ static void cmd_gem(const char *arg) {
 }
 
 static void cmd_reader(const char *arg) {
+    if (arg && strcmp(arg, "list") == 0) {
+        cprintf("Active Reader Windows:\n");
+        int count = 0;
+        for (int i = 0; i < READER_MAX_INSTANCES; i++) {
+            if (reader_instance_is_active(i)) {
+                cprintf("  [%d] '%s' (%s)\n", i, reader_get_title_instance(i), reader_get_path_instance(i));
+                count++;
+            }
+        }
+        if (count == 0) cprintf("  (none)\n");
+        return;
+    }
+
     if (!arg || !*arg) {
         arg = "shell.gmi";
     }
-    uint8_t req[2] = { 'O', 0 };
+
+    /* Check if already open with this document */
+    int existing_rid = reader_find_by_path(arg);
+    if (existing_rid >= 0) {
+        /* Focus existing reader window */
+        uint8_t rreq[2] = { 'R', 0 }, rreply[SCREEN_REPLY_LEN];
+        if (console_canvas(rreq, 1, rreply) && rreply[0] == 0) {
+            uint8_t wcount = rreply[1];
+            for (uint8_t w = 0; w < wcount; w++) {
+                rreq[1] = w;
+                if (console_canvas(rreq, 2, rreply) && rreply[0] == 0) {
+                    if (rreply[1] == 3 /* RIBBON_WIN_READER */ && rreply[2] == (uint8_t)existing_rid) {
+                        uint8_t jreq[2] = { 'J', w };
+                        (void)console_canvas(jreq, 2, rreply);
+                        reader_set_active_instance((uint8_t)existing_rid);
+                        console_set_active_win_type(3 /* RIBBON_WIN_READER */);
+                        cprintf("reader: focused existing window [%d] '%s'\n", existing_rid, arg);
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    /* Allocate and open reader window in ribbon */
+    uint8_t req[128];
+    req[0] = 'O';
+    req[1] = 0; /* default cols */
+    uint32_t arg_len = (uint32_t)strlen(arg);
+    if (arg_len > sizeof(req) - 3) arg_len = sizeof(req) - 3;
+    memcpy(req + 2, arg, arg_len);
+    req[2 + arg_len] = '\0';
     uint8_t reply[SCREEN_REPLY_LEN];
-    if (console_canvas(req, sizeof(req), reply) && reply[0] == 0) {
-        uint8_t cid = reply[1];
+    if (console_canvas(req, 3 + arg_len, reply) && reply[0] == 0) {
+        uint8_t rid = reply[1];
         int w = (int)(reply[2] | (reply[3] << 8));
         int h = (int)(reply[4] | (reply[5] << 8));
-        if (reader_open(arg)) {
-            reader_set_target(cid, w, h);
-            reader_update();
+        if (reader_open_instance(rid, arg) >= 0) {
+            reader_set_target(rid, w, h);
+            reader_update_instance(rid);
+            reader_set_active_instance(rid);
             console_set_active_win_type(3 /* RIBBON_WIN_READER */);
-            cprintf("reader: opened '%s' in ribbon\n", arg);
+            cprintf("reader: opened '%s' in reader [%d]\n", arg, rid);
         } else {
             cprintf("reader: cannot open '%s'\n", arg);
         }
@@ -4754,9 +4799,126 @@ static void cmd_canvas(const char *cmd_line) {
     const char *args = cmd_line + 6;
     while (*args == ' ' || *args == '\t') args++;
     if (*args == '\0') {
-        cprintf("Usage: canvas [split|half|wide|narrow|full|close]\n");
+        cprintf("Usage: canvas [list | open <name> | attach <name> | close [name] | clear [name] | split | half | wide | narrow | full]\n");
         return;
     }
+
+    if (strcmp(args, "list") == 0) {
+        /* List ribbon windows and detail all canvases */
+        uint8_t rreq[2] = { 'R', 0 }, rreply[SCREEN_REPLY_LEN];
+        if (console_canvas(rreq, 1, rreply) && rreply[0] == 0) {
+            uint8_t count = rreply[1];
+            uint8_t active = rreply[2];
+            cprintf("Canvases on Ribbon:\n");
+            int c_found = 0;
+            for (uint8_t i = 0; i < count; i++) {
+                rreq[1] = i;
+                if (!console_canvas(rreq, 2, rreply) || rreply[0] != 0) break;
+                if (rreply[1] == 2 /* RIBBON_WIN_CANVAS */) {
+                    uint8_t cid = rreply[2], cols = rreply[3];
+                    cprintf("  [%d] Canvas slot %d (%d cols)%s\n",
+                            i, cid, cols, (i == active) ? " (focused)" : "");
+                    c_found++;
+                }
+            }
+            if (c_found == 0) cprintf("  (no canvas windows open)\n");
+            return;
+        }
+        cprintf("canvas list: no screen available\n");
+        return;
+    }
+
+    if (strncmp(args, "open ", 5) == 0) {
+        const char *name = args + 5;
+        while (*name == ' ' || *name == '\t') name++;
+        if (!*name) {
+            cprintf("Usage: canvas open <name>\n");
+            return;
+        }
+        char name_buf[SCREEN_CTITLE_MAX];
+        uint32_t nl = 0;
+        while (name[nl] && name[nl] != ' ' && nl + 1 < sizeof(name_buf)) {
+            name_buf[nl] = name[nl];
+            nl++;
+        }
+        name_buf[nl] = '\0';
+
+        uint8_t req[SCREEN_CTITLE_MAX + 3];
+        req[0] = 'L';
+        req[1] = SCREEN_LAYOUT_SPLIT_HALF;
+        memcpy(req + 2, name_buf, nl + 1);
+        uint8_t reply[SCREEN_REPLY_LEN];
+        if (console_canvas(req, 3 + nl, reply) && reply[0] == 0) {
+            cprintf("canvas: opened/attached '%s'\n", name_buf);
+        } else {
+            cprintf("canvas: failed to open '%s'\n", name_buf);
+        }
+        return;
+    }
+
+    if (strncmp(args, "attach ", 7) == 0) {
+        const char *name = args + 7;
+        while (*name == ' ' || *name == '\t') name++;
+        if (!*name) {
+            cprintf("Usage: canvas attach <name>\n");
+            return;
+        }
+        char name_buf[SCREEN_CTITLE_MAX];
+        uint32_t nl = 0;
+        while (name[nl] && name[nl] != ' ' && nl + 1 < sizeof(name_buf)) {
+            name_buf[nl] = name[nl];
+            nl++;
+        }
+        name_buf[nl] = '\0';
+
+        uint8_t req[SCREEN_CTITLE_MAX + 3];
+        req[0] = 'L';
+        req[1] = SCREEN_LAYOUT_SPLIT_HALF;
+        memcpy(req + 2, name_buf, nl + 1);
+        uint8_t reply[SCREEN_REPLY_LEN];
+        if (console_canvas(req, 3 + nl, reply) && reply[0] == 0) {
+            cprintf("canvas: attached to '%s'\n", name_buf);
+        } else {
+            cprintf("canvas: failed to attach to '%s'\n", name_buf);
+        }
+        return;
+    }
+
+    if (strcmp(args, "close") == 0 || strncmp(args, "close ", 6) == 0) {
+        const char *name = (args[5] == ' ') ? args + 6 : NULL;
+        if (name) while (*name == ' ' || *name == '\t') name++;
+        uint8_t req[SCREEN_CTITLE_MAX + 3];
+        req[0] = 'L';
+        req[1] = SCREEN_LAYOUT_TEXT;
+        uint32_t req_len = 2;
+        if (name && *name) {
+            uint32_t nl = 0;
+            while (name[nl] && name[nl] != ' ' && nl + 1 < SCREEN_CTITLE_MAX) {
+                req[2 + nl] = (uint8_t)name[nl];
+                nl++;
+            }
+            req[2 + nl] = '\0';
+            req_len = 3 + nl;
+        }
+        uint8_t reply[SCREEN_REPLY_LEN];
+        if (console_canvas(req, req_len, reply) && reply[0] == 0) {
+            cprintf("canvas: closed\n");
+        } else {
+            cprintf("canvas: close failed\n");
+        }
+        return;
+    }
+
+    if (strcmp(args, "clear") == 0 || strncmp(args, "clear ", 6) == 0) {
+        uint8_t req[3] = { 'F', 0, 0 }, reply[SCREEN_REPLY_LEN];
+        if (console_canvas(req, sizeof(req), reply) && reply[0] == 0) {
+            cprintf("canvas: cleared\n");
+        } else {
+            cprintf("canvas: clear failed\n");
+        }
+        return;
+    }
+
     uint8_t layout = SCREEN_LAYOUT_TEXT;
     if (strcmp(args, "split") == 0 || strcmp(args, "half") == 0) {
         layout = SCREEN_LAYOUT_SPLIT_HALF;
@@ -4766,22 +4928,16 @@ static void cmd_canvas(const char *cmd_line) {
         layout = SCREEN_LAYOUT_SPLIT_NARROW;
     } else if (strcmp(args, "full") == 0) {
         layout = SCREEN_LAYOUT_CANVAS;
-    } else if (strcmp(args, "close") == 0) {
-        layout = SCREEN_LAYOUT_TEXT;
     } else {
-        cprintf("canvas: unknown layout '%s' (choose split, half, wide, narrow, full, close)\n", args);
+        cprintf("canvas: unknown option '%s'\n", args);
         return;
     }
     uint8_t req[2] = { 'L', layout };
     uint8_t reply[SCREEN_REPLY_LEN];
-    if (console_canvas(req, 2, reply)) {
-        if (reply[0] == 0) {
-            cprintf("canvas layout set to %s\n", args);
-        } else {
-            cprintf("canvas layout failed (status %d)\n", reply[0]);
-        }
+    if (console_canvas(req, 2, reply) && reply[0] == 0) {
+        cprintf("canvas layout set to %s\n", args);
     } else {
-        cprintf("canvas: no screen canvas available\n");
+        cprintf("canvas layout failed\n");
     }
 }
 

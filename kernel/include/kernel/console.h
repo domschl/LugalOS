@@ -145,7 +145,7 @@ bool console_pixels(const uint8_t **fb, unsigned *w, unsigned *h, unsigned *stri
 #define CONSOLE_HOTKEY_LEFT         1u  /* Super+[ : shrink window column / divider left */
 #define CONSOLE_HOTKEY_RIGHT        2u  /* Super+] : expand window column / divider right */
 #define CONSOLE_HOTKEY_SCREENSHOT   3u  /* Super+Shift+3 : save screenshot */
-#define CONSOLE_HOTKEY_SWAP         4u  /* Super+\ : swap active window with neighbor */
+#define CONSOLE_HOTKEY_TOGGLE_MAX   4u  /* Super+\ : toggle maximize / restore active window */
 #define CONSOLE_HOTKEY_NEW_TERM     5u  /* Super+Enter : spawn new terminal window */
 #define CONSOLE_HOTKEY_FOCUS_LEFT   6u  /* Super+Left : focus left window */
 #define CONSOLE_HOTKEY_FOCUS_RIGHT  7u  /* Super+Right : focus right window */

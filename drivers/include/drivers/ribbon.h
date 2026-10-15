@@ -132,6 +132,9 @@ int ribbon_find_reader(const ribbon_t *r);
 /* Find window index of type RIBBON_WIN_CANVAS matching canvas_id slot, or -1 if none. */
 int ribbon_find_canvas_slot(const ribbon_t *r, uint8_t canvas_id);
 
+/* Find window index of type RIBBON_WIN_READER matching reader_id slot, or -1 if none. */
+int ribbon_find_reader_slot(const ribbon_t *r, uint8_t reader_id);
+
 /* Identify range of windows intersecting visible screen viewport [x_view, x_view + screen_w].
  * Returns count of visible windows, writing indices to *first_idx and *last_idx if found. */
 int ribbon_visible_range(const ribbon_t *r, int32_t x_view, uint8_t *first_idx, uint8_t *last_idx);
@@ -139,6 +142,9 @@ int ribbon_visible_range(const ribbon_t *r, int32_t x_view, uint8_t *first_idx, 
 /* Perform one animation step moving x_view towards x_target.
  * Returns true if x_view changed (needs redraw), false if already at target. */
 bool ribbon_step_scroll(ribbon_t *r, int32_t step_px);
+
+/* Toggle active window width between FULL and HALF presets. */
+bool ribbon_toggle_maximize(ribbon_t *r);
 
 /* Standalone selftest */
 void ribbon_selftest(void);

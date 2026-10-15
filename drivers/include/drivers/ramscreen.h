@@ -17,5 +17,6 @@ const console_screen_t *ramscreen_console(void);
 int ramscreen_set_size(unsigned w, unsigned h);
 void ramscreen_size(unsigned *w, unsigned *h);
 canvas1_t *ramscreen_get_canvas_backing(uint8_t cid);
+canvas1_t *ramscreen_get_reader_backing(uint8_t rid);
 
 #endif /* LUGALOS_DRIVERS_RAMSCREEN_H */

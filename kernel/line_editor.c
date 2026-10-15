@@ -525,7 +525,7 @@ static int line_key(line_state_t *st, key_event_t k, const char *prompt,
         else if (key == 'w' || key == 'W') console_hotkey(CONSOLE_HOTKEY_CLOSE);
         else if (key == '[') console_hotkey(CONSOLE_HOTKEY_LEFT);
         else if (key == ']') console_hotkey(CONSOLE_HOTKEY_RIGHT);
-        else if (key == '\\') console_hotkey(CONSOLE_HOTKEY_SWAP);
+        else if (key == '\\') console_hotkey(CONSOLE_HOTKEY_TOGGLE_MAX);
         else if (shift && key == '3') console_hotkey(CONSOLE_HOTKEY_SCREENSHOT);   /* before the jumps */
         else if (!shift && key >= '1' && key <= '9') console_hotkey(CONSOLE_HOTKEY_JUMP((unsigned)(key - '0')));
         else return LINE_INCOMPLETE;            /* other Super keys: not ours */

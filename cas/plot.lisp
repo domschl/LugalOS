@@ -303,7 +303,7 @@
          (color (plot-opt-get opts 'color 1))
          (layout (plot-opt-get opts 'layout 'split))
          (curves (list (cons pts color))))
-    (canvas-window layout)
+    (canvas-window layout "plot")
     (canvas-on-redraw (lambda () (plot-draw-scene title xmin xmax ymin ymax curves)))
     (plot-draw-scene title xmin xmax ymin ymax curves)))
 
@@ -327,7 +327,7 @@
          (title (plot-opt-get opts 'title title-dflt))
          (layout (plot-opt-get opts 'layout 'split))
          (curves (list (cons pts-f 1) (cons pts-df 1))))
-    (canvas-window layout)
+    (canvas-window layout "plot")
     (canvas-on-redraw (lambda () (plot-draw-scene title xmin xmax ymin ymax curves)))
     (plot-draw-scene title xmin xmax ymin ymax curves)))
 
@@ -346,7 +346,7 @@
          (title (plot-opt-get opts 'title "Multi Plot"))
          (layout (plot-opt-get opts 'layout 'split))
          (curves (map (lambda (pts) (cons pts 1)) pts-list)))
-    (canvas-window layout)
+    (canvas-window layout "plot")
     (canvas-on-redraw (lambda () (plot-draw-scene title xmin xmax ymin ymax curves)))
     (plot-draw-scene title xmin xmax ymin ymax curves)))
 
@@ -381,6 +381,6 @@
          (title (plot-opt-get opts 'title "Parametric Plot"))
          (layout (plot-opt-get opts 'layout 'split))
          (curves (list (cons pts 1))))
-    (canvas-window layout)
+    (canvas-window layout "plot")
     (canvas-on-redraw (lambda () (plot-draw-scene title xmin xmax ymin ymax curves)))
     (plot-draw-scene title xmin xmax ymin ymax curves)))

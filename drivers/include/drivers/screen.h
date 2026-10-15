@@ -75,15 +75,25 @@ enum {
 
 #define SCREEN_MAX_TERMS 8u
 #define SCREEN_MAX_CANVASES 4u
+#define SCREEN_MAX_READERS  4u
+#define SCREEN_STORES       (SCREEN_MAX_CANVASES + SCREEN_MAX_READERS)
 
 typedef struct {
     canvas1_t backing;                  /* persistent backing store in PSRAM */
-    uint8_t   vterm_id;                 /* owner terminal ID */
+    uint8_t   vterm_id;                 /* creator terminal ID */
     bool      in_use;
     bool      locked;                   /* canvas layout locked for this slot */
     uint16_t  drawn_w;                  /* the window width `backing` was drawn at; 0: none */
+    char      name[SCREEN_CTITLE_MAX];  /* unique canvas name (e.g. "plot", "chess", "map") */
     char      title[SCREEN_CTITLE_MAX]; /* canvas window title */
 } screen_canvas_slot_t;
+
+typedef struct {
+    canvas1_t backing;                  /* persistent backing store in PSRAM */
+    bool      in_use;
+    char      path[128];                /* document path / URL */
+    char      title[SCREEN_CTITLE_MAX]; /* reader window title */
+} screen_reader_slot_t;
 
 #define SCREEN_STATUS_SD    (1u << 0)
 #define SCREEN_STATUS_P9    (1u << 1)
@@ -104,7 +114,7 @@ typedef struct {
     uint8_t  *store;                    /* 38.8: SCREEN_STORES slots, or NULL */
     uint32_t  store_slot;               /* bytes per slot */
     uint32_t  draw_gen;                 /* bumped by every drawing request */
-    uint32_t  store_gen[4];             /* draw_gen when each slot was saved */
+    uint32_t  store_gen[SCREEN_STORES]; /* draw_gen when each slot was saved */
     int16_t   fx0, fy0, fx1, fy1;       /* the text tile's frame */
     int16_t   cx0, cy0, cx1, cy1;       /* the canvas tile's frame */
     uint32_t  title_drawn;              /* vt.title_seq the title bar shows */
@@ -113,6 +123,7 @@ typedef struct {
     char      ctitle[SCREEN_CTITLE_MAX];/* the canvas tile's title */
     ribbon_t  ribbon;                   /* 1D horizontal window ribbon */
     screen_canvas_slot_t canvases[SCREEN_MAX_CANVASES]; /* concurrent canvas backing stores */
+    screen_reader_slot_t readers[SCREEN_MAX_READERS];   /* concurrent reader backing stores */
     vtterm_t  vt;                       /* legacy reference to active terminal */
     struct {
         vtterm_t vt;
@@ -122,10 +133,7 @@ typedef struct {
     uint16_t  shadow[];                 /* shadow buffers for all 8 terminals (8 * cols * rows) */
 } screen_t;
 
-/* 38.8: the canvas stores -- one per layout with a canvas (CANVAS and the
- * three splits), each room for a whole frame of w x h, packed tile-local:
- * a swapped split restores at its new place. */
-#define SCREEN_STORES 4u
+/* Backing stores: SCREEN_MAX_CANVASES for canvases, plus SCREEN_MAX_READERS for readers. */
 #define SCREEN_STORE_BYTES(w, h) (SCREEN_STORES * ((uint32_t)(w) / 8u) * (uint32_t)(h))
 
 /* What a screen of w x h pixels needs, shadow included for all 4 terminals. */
@@ -157,6 +165,7 @@ void screen_repaint(screen_t *scr);
  * the layout already showing changes nothing, the canvas included. */
 bool screen_set_layout(screen_t *scr, unsigned layout);
 bool screen_set_layout_vterm(screen_t *scr, uint8_t vterm_id, unsigned layout);
+bool screen_set_layout_vterm_named(screen_t *scr, uint8_t vterm_id, unsigned layout, const char *name);
 
 /* The text window's size, which is what a program may use. */
 void screen_text_size(const screen_t *scr, unsigned *cols, unsigned *rows);

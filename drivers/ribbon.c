@@ -246,6 +246,21 @@ LCDTERM_UTEXT bool ribbon_resize_active(ribbon_t *r, bool expand) {
     return true;
 }
 
+LCDTERM_UTEXT bool ribbon_toggle_maximize(ribbon_t *r) {
+    if (!r || r->count == 0 || r->active_idx >= r->count) return false;
+    ribbon_win_t *w = &r->wins[r->active_idx];
+    uint8_t full_cols = RIBBON_COLS_FULL(r->screen_w);
+    uint8_t half_cols = RIBBON_COLS_HALF(r->screen_w);
+    if (w->cols >= full_cols) {
+        w->cols = half_cols;
+    } else {
+        w->cols = full_cols;
+    }
+    ribbon_layout(r);
+    r->x_target = ribbon_compute_viewport(r, r->active_idx, r->x_view);
+    return true;
+}
+
 LCDTERM_UTEXT void ribbon_set_title(ribbon_t *r, uint8_t idx, const char *title) {
     if (!r || idx >= r->count) return;
     cstr_copy(r->wins[idx].title, title, sizeof(r->wins[idx].title));
@@ -300,8 +315,17 @@ LCDTERM_UTEXT int ribbon_find_reader(const ribbon_t *r) {
 LCDTERM_UTEXT int ribbon_find_canvas_slot(const ribbon_t *r, uint8_t canvas_id) {
     if (!r) return -1;
     for (uint8_t i = 0; i < r->count; i++) {
-        if ((r->wins[i].type == RIBBON_WIN_CANVAS || r->wins[i].type == RIBBON_WIN_READER) &&
-            r->wins[i].vterm_id == canvas_id) {
+        if (r->wins[i].type == RIBBON_WIN_CANVAS && r->wins[i].vterm_id == canvas_id) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+LCDTERM_UTEXT int ribbon_find_reader_slot(const ribbon_t *r, uint8_t reader_id) {
+    if (!r) return -1;
+    for (uint8_t i = 0; i < r->count; i++) {
+        if (r->wins[i].type == RIBBON_WIN_READER && r->wins[i].vterm_id == reader_id) {
             return (int)i;
         }
     }

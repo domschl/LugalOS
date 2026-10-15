@@ -95,3 +95,8 @@ canvas1_t *ramscreen_get_canvas_backing(uint8_t cid) {
     if (!g_rs || cid >= SCREEN_MAX_CANVASES || !g_rs->canvases[cid].in_use) return NULL;
     return &g_rs->canvases[cid].backing;
 }
+
+canvas1_t *ramscreen_get_reader_backing(uint8_t rid) {
+    if (!g_rs || rid >= SCREEN_MAX_READERS || !g_rs->readers[rid].in_use) return NULL;
+    return &g_rs->readers[rid].backing;
+}

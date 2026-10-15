@@ -48,7 +48,8 @@ typedef struct {
     int           history_depth;
 } reader_state_t;
 
-static reader_state_t s_reader;
+static reader_state_t s_readers[READER_MAX_INSTANCES];
+static uint8_t        s_active_reader_rid = 0;
 
 static bool resolve_doc_path(const char *topic, char *out_path, size_t out_sz) {
     if (!topic || !*topic) return false;
@@ -98,8 +99,9 @@ static bool resolve_doc_path(const char *topic, char *out_path, size_t out_sz) {
     return false;
 }
 
-static bool reader_open_internal(const char *resource, bool push_history) {
-    if (!resource || !*resource) return false;
+static bool reader_open_internal(uint8_t rid, const char *resource, bool push_history) {
+    if (!resource || !*resource || rid >= READER_MAX_INSTANCES) return false;
+    reader_state_t *r = &s_readers[rid];
 
     char resolved[128];
     if (!resolve_doc_path(resource, resolved, sizeof(resolved))) {
@@ -107,25 +109,27 @@ static bool reader_open_internal(const char *resource, bool push_history) {
         resolved[sizeof(resolved) - 1] = '\0';
     }
 
-    if (push_history && s_reader.path[0] && s_reader.history_depth < READER_STACK_MAX) {
-        strncpy(s_reader.history[s_reader.history_depth++], s_reader.path, sizeof(s_reader.history[0]) - 1);
+    if (push_history && r->path[0] && r->history_depth < READER_STACK_MAX) {
+        strncpy(r->history[r->history_depth++], r->path, sizeof(r->history[0]) - 1);
     }
 
     bool is_spartan = (strncmp(resolved, "spartan://", 10) == 0 || strncmp(resolved, "SPARTAN://", 10) == 0);
     if (is_spartan) {
         char redir[128] = {0};
         char err[128] = {0};
-        int rc = spartan_fetch(resolved, "/ram0/spartan.gmi", redir, sizeof(redir), err, sizeof(err));
+        char tmp_path[32];
+        ksnprintf(tmp_path, sizeof(tmp_path), "/ram0/spartan%d.gmi", (int)rid);
+        int rc = spartan_fetch(resolved, tmp_path, redir, sizeof(redir), err, sizeof(err));
         if (rc == SPARTAN_REDIRECT && redir[0]) {
-            rc = spartan_fetch(redir, "/ram0/spartan.gmi", NULL, 0, err, sizeof(err));
+            rc = spartan_fetch(redir, tmp_path, NULL, 0, err, sizeof(err));
         }
         if (rc != SPARTAN_OK) {
             return false;
         }
     }
 
-    strncpy(s_reader.path, resolved, sizeof(s_reader.path) - 1);
-    s_reader.path[sizeof(s_reader.path) - 1] = '\0';
+    strncpy(r->path, resolved, sizeof(r->path) - 1);
+    r->path[sizeof(r->path) - 1] = '\0';
 
     /* Set default title from filename */
     const char *slash = NULL;
@@ -133,109 +137,168 @@ static bool reader_open_internal(const char *resource, bool push_history) {
         if (*sp == '/') slash = sp;
     }
     const char *name = slash ? slash + 1 : resolved;
-    strncpy(s_reader.title, name, sizeof(s_reader.title) - 1);
-    s_reader.title[sizeof(s_reader.title) - 1] = '\0';
+    strncpy(r->title, name, sizeof(r->title) - 1);
+    r->title[sizeof(r->title) - 1] = '\0';
 
-    s_reader.scroll_y = 0;
-    s_reader.total_h = 0;
-    s_reader.link_count = 0;
-    s_reader.active = true;
+    r->scroll_y = 0;
+    r->total_h = 0;
+    r->link_count = 0;
+    r->active = true;
     return true;
 }
 
 void reader_init(void) {
-    memset(&s_reader, 0, sizeof(s_reader));
+    memset(s_readers, 0, sizeof(s_readers));
+    s_active_reader_rid = 0;
+}
+
+int reader_open_instance(uint8_t rid, const char *resource) {
+    if (rid >= READER_MAX_INSTANCES) return -1;
+    if (reader_open_internal(rid, resource, true)) {
+        s_active_reader_rid = rid;
+        return (int)rid;
+    }
+    return -1;
 }
 
 bool reader_open(const char *resource) {
-    return reader_open_internal(resource, true);
+    return reader_open_instance(s_active_reader_rid, resource) >= 0;
+}
+
+void reader_close_instance(uint8_t rid) {
+    if (rid < READER_MAX_INSTANCES) {
+        s_readers[rid].active = false;
+        s_readers[rid].path[0] = '\0';
+        s_readers[rid].title[0] = '\0';
+    }
 }
 
 void reader_close(void) {
-    s_reader.active = false;
-    s_reader.path[0] = '\0';
+    reader_close_instance(s_active_reader_rid);
 }
 
-static canvas1_t *get_reader_canvas(void) {
+static canvas1_t *get_reader_canvas(uint8_t rid) {
+    if (rid >= READER_MAX_INSTANCES) return 0;
 #if defined(LCDTERM_PRESENT)
-    canvas1_t *c = lcdterm_get_canvas_backing(s_reader.target_cid);
+    canvas1_t *c = lcdterm_get_reader_backing(rid);
     if (c) return c;
 #endif
-    return ramscreen_get_canvas_backing(s_reader.target_cid);
+    return ramscreen_get_reader_backing(rid);
 }
 
-void reader_set_target(uint8_t cid, int w, int h) {
-    s_reader.target_cid = cid;
-    if (w > 0) s_reader.win_w = w;
-    if (h > 0) s_reader.win_h = h;
+void reader_set_target(uint8_t rid, int w, int h) {
+    if (rid >= READER_MAX_INSTANCES) return;
+    if (w > 0) s_readers[rid].win_w = w;
+    if (h > 0) s_readers[rid].win_h = h;
 }
 
-void reader_update(void) {
-    if (!s_reader.active) return;
-    canvas1_t *c = get_reader_canvas();
+void reader_update_instance(uint8_t rid) {
+    if (rid >= READER_MAX_INSTANCES || !s_readers[rid].active) return;
+    canvas1_t *c = get_reader_canvas(rid);
     if (!c) return;
-    int w = s_reader.win_w > 0 ? s_reader.win_w : (int)c->w;
-    int h = s_reader.win_h > 0 ? s_reader.win_h : (int)c->h;
-    reader_draw(c, w, h);
+    int w = s_readers[rid].win_w > 0 ? s_readers[rid].win_w : (int)c->w;
+    int h = s_readers[rid].win_h > 0 ? s_readers[rid].win_h : (int)c->h;
+    reader_draw(rid, c, w, h);
 
-    /* Update title on ribbon canvas window */
-    const char *title = reader_get_title();
+    /* Update title on ribbon reader window */
+    const char *title = reader_get_title_instance(rid);
     uint8_t req[SCREEN_CTITLE_MAX + 2];
     req[0] = 'T';
-    req[1] = s_reader.target_cid;
     uint32_t tl = (uint32_t)strlen(title);
-    if (tl > sizeof(req) - 3) tl = sizeof(req) - 3;
-    memcpy(req + 2, title, tl);
-    req[2 + tl] = '\0';
+    if (tl > sizeof(req) - 2) tl = sizeof(req) - 2;
+    memcpy(req + 1, title, tl);
+    req[1 + tl] = '\0';
     uint8_t reply[SCREEN_REPLY_LEN];
-    (void)console_canvas(req, 3 + tl, reply);
+    (void)console_canvas(req, 2 + tl, reply);
 #if defined(LCDTERM_PRESENT)
     lcdterm_repaint();
 #endif
 }
 
-void reader_scroll(int delta_y) {
-    if (!s_reader.active) return;
-    s_reader.scroll_y += delta_y;
-    if (s_reader.scroll_y < 0) s_reader.scroll_y = 0;
-    int max_scroll = s_reader.total_h - 120;
-    if (max_scroll < 0) max_scroll = 0;
-    if (s_reader.scroll_y > max_scroll) s_reader.scroll_y = max_scroll;
-    reader_update();
+void reader_update(void) {
+    reader_update_instance(s_active_reader_rid);
 }
 
-bool reader_back(void) {
-    if (s_reader.history_depth > 0) {
-        s_reader.history_depth--;
+void reader_scroll_instance(uint8_t rid, int delta_y) {
+    if (rid >= READER_MAX_INSTANCES || !s_readers[rid].active) return;
+    s_readers[rid].scroll_y += delta_y;
+    if (s_readers[rid].scroll_y < 0) s_readers[rid].scroll_y = 0;
+    int max_scroll = s_readers[rid].total_h - 120;
+    if (max_scroll < 0) max_scroll = 0;
+    if (s_readers[rid].scroll_y > max_scroll) s_readers[rid].scroll_y = max_scroll;
+    reader_update_instance(rid);
+}
+
+void reader_scroll(int delta_y) {
+    reader_scroll_instance(s_active_reader_rid, delta_y);
+}
+
+bool reader_back_instance(uint8_t rid) {
+    if (rid >= READER_MAX_INSTANCES) return false;
+    if (s_readers[rid].history_depth > 0) {
+        s_readers[rid].history_depth--;
         char prev[128];
-        strncpy(prev, s_reader.history[s_reader.history_depth], sizeof(prev) - 1);
+        strncpy(prev, s_readers[rid].history[s_readers[rid].history_depth], sizeof(prev) - 1);
         prev[sizeof(prev) - 1] = '\0';
-        bool ok = reader_open_internal(prev, false);
-        if (ok) reader_update();
+        bool ok = reader_open_internal(rid, prev, false);
+        if (ok) reader_update_instance(rid);
         return ok;
     }
     return false;
 }
 
-bool reader_tap(int client_x, int client_y) {
-    (void)client_x;
-    if (!s_reader.active) return false;
+bool reader_back(void) {
+    return reader_back_instance(s_active_reader_rid);
+}
 
-    for (int i = 0; i < s_reader.link_count; i++) {
-        if (client_y >= s_reader.links[i].y0 && client_y <= s_reader.links[i].y1) {
+bool reader_tap_instance(uint8_t rid, int client_x, int client_y) {
+    (void)client_x;
+    if (rid >= READER_MAX_INSTANCES || !s_readers[rid].active) return false;
+    reader_state_t *r = &s_readers[rid];
+
+    for (int i = 0; i < r->link_count; i++) {
+        if (client_y >= r->links[i].y0 && client_y <= r->links[i].y1) {
             char target[128];
-            strncpy(target, s_reader.links[i].url, sizeof(target) - 1);
+            strncpy(target, r->links[i].url, sizeof(target) - 1);
             target[sizeof(target) - 1] = '\0';
 
             char resolved[128];
             bool ok = false;
-            if (gemtext_resolve_url(s_reader.path, target, resolved, sizeof(resolved)) ||
+            if (gemtext_resolve_url(r->path, target, resolved, sizeof(resolved)) ||
                 resolve_doc_path(target, resolved, sizeof(resolved))) {
-                ok = reader_open(resolved);
+                ok = reader_open_internal(rid, resolved, true);
             } else {
-                ok = reader_open(target);
+                ok = reader_open_internal(rid, target, true);
             }
-            if (ok) reader_update();
+            if (ok) reader_update_instance(rid);
+            return ok;
+        }
+    }
+    return false;
+}
+
+bool reader_tap(int client_x, int client_y) {
+    return reader_tap_instance(s_active_reader_rid, client_x, client_y);
+}
+
+bool reader_follow_link_num_instance(uint8_t rid, int num) {
+    if (rid >= READER_MAX_INSTANCES || !s_readers[rid].active) return false;
+    reader_state_t *r = &s_readers[rid];
+    for (int i = 0; i < r->link_count; i++) {
+        if (r->links[i].num == num) {
+            char target[128];
+            strncpy(target, r->links[i].url, sizeof(target) - 1);
+            target[sizeof(target) - 1] = '\0';
+
+            char resolved[128];
+            bool ok = false;
+            if (gemtext_resolve_url(r->path, target, resolved, sizeof(resolved)) ||
+                resolve_doc_path(target, resolved, sizeof(resolved))) {
+                ok = reader_open_internal(rid, resolved, true);
+            } else {
+                ok = reader_open_internal(rid, target, true);
+            }
+            if (ok) reader_update_instance(rid);
             return ok;
         }
     }
@@ -243,34 +306,18 @@ bool reader_tap(int client_x, int client_y) {
 }
 
 bool reader_follow_link_num(int num) {
-    if (!s_reader.active) return false;
-    for (int i = 0; i < s_reader.link_count; i++) {
-        if (s_reader.links[i].num == num) {
-            char target[128];
-            strncpy(target, s_reader.links[i].url, sizeof(target) - 1);
-            target[sizeof(target) - 1] = '\0';
-
-            char resolved[128];
-            bool ok = false;
-            if (gemtext_resolve_url(s_reader.path, target, resolved, sizeof(resolved)) ||
-                resolve_doc_path(target, resolved, sizeof(resolved))) {
-                ok = reader_open(resolved);
-            } else {
-                ok = reader_open(target);
-            }
-            if (ok) reader_update();
-            return ok;
-        }
-    }
-    return false;
+    return reader_follow_link_num_instance(s_active_reader_rid, num);
 }
 
 void reader_feed_key(int c) {
-    if (!s_reader.active) return;
+    uint8_t rid = s_active_reader_rid;
+    if (rid >= READER_MAX_INSTANCES || !s_readers[rid].active) return;
+    reader_state_t *r = &s_readers[rid];
     static int esc_state = 0;
     static int esc_arg = 0;
+    static int esc_mod = 0;
 
-    int win_h = s_reader.win_h > 0 ? s_reader.win_h : 480;
+    int win_h = r->win_h > 0 ? r->win_h : 480;
     int page_dy = win_h - 40;
     if (page_dy < 40) page_dy = 40;
 
@@ -281,71 +328,75 @@ void reader_feed_key(int c) {
         }
         if (c == 0x08 || c == '?' || c == 'h') {
             /* Emacs Ctrl-H or '?' / 'h' -> open Reader Help */
-            reader_open("/sd0/help/reader.gmi");
-            reader_update();
+            reader_open_instance(rid, "/sd0/help/reader.gmi");
+            reader_update_instance(rid);
             return;
         }
         if (c == 'q' || c == 0x03) {
             /* Close reader window */
             uint8_t req[1] = { 'C' }, reply[SCREEN_REPLY_LEN];
             if (console_canvas(req, 1, reply) && reply[0] == 0) {
+                uint8_t closed_type = reply[10];
+                uint8_t closed_vid = reply[11];
+                if (closed_type == 3) {
+                    reader_close_instance(closed_vid);
+                }
                 vterm_set_active(reply[1]);
             }
-            reader_close();
             console_set_active_win_type(1 /* RIBBON_WIN_TERM */);
             return;
         }
         if (c == 'b' || c == 0x7f) {
             /* Back in history */
-            reader_back();
+            reader_back_instance(rid);
             return;
         }
         if (c == ' ' || c == 0x16 /* Ctrl-V */) {
             /* Page down */
-            reader_scroll(page_dy);
+            reader_scroll_instance(rid, page_dy);
             return;
         }
         if (c == 'j' || c == 0x0e /* Ctrl-N */ || c == '\r' || c == '\n') {
             /* Line down */
-            reader_scroll(32);
+            reader_scroll_instance(rid, 32);
             return;
         }
         if (c == 'k' || c == 0x10 /* Ctrl-P */) {
             /* Line up */
-            reader_scroll(-32);
+            reader_scroll_instance(rid, -32);
             return;
         }
         if (c == 'd' || c == 0x04 /* Ctrl-D */) {
             /* Half page down */
-            reader_scroll(page_dy / 2);
+            reader_scroll_instance(rid, page_dy / 2);
             return;
         }
         if (c == 'u' || c == 0x15 /* Ctrl-U */) {
             /* Half page up */
-            reader_scroll(-page_dy / 2);
+            reader_scroll_instance(rid, -page_dy / 2);
             return;
         }
         if (c == 'g') {
             /* Top of document */
-            s_reader.scroll_y = 0;
-            reader_update();
+            r->scroll_y = 0;
+            reader_update_instance(rid);
             return;
         }
         if (c == 'G') {
             /* Bottom of document */
-            int max_scroll = s_reader.total_h - 120;
-            s_reader.scroll_y = max_scroll > 0 ? max_scroll : 0;
-            reader_update();
+            int max_scroll = r->total_h - 120;
+            r->scroll_y = max_scroll > 0 ? max_scroll : 0;
+            reader_update_instance(rid);
             return;
         }
         if (c == 'r' || c == 0x12 /* Ctrl-R */) {
             /* Reload / Redraw */
-            reader_update();
+            reader_update_instance(rid);
             return;
         }
         if (c >= '1' && c <= '9') {
             /* Follow visible link */
-            reader_follow_link_num(c - '0');
+            reader_follow_link_num_instance(rid, c - '0');
             return;
         }
         return;
@@ -353,11 +404,12 @@ void reader_feed_key(int c) {
         if (c == '[') {
             esc_state = 2;
             esc_arg = 0;
+            esc_mod = 0;
             return;
         }
         if (c == 'v' || c == 'V') {
             /* Alt-V: Page up (Emacs) */
-            reader_scroll(-page_dy);
+            reader_scroll_instance(rid, -page_dy);
             esc_state = 0;
             return;
         }
@@ -366,25 +418,25 @@ void reader_feed_key(int c) {
     } else if (esc_state == 2) {
         if (c == 'A') {
             /* Up Arrow */
-            reader_scroll(-32);
+            reader_scroll_instance(rid, -32);
             esc_state = 0;
             return;
         }
         if (c == 'B') {
             /* Down Arrow */
-            reader_scroll(32);
+            reader_scroll_instance(rid, 32);
             esc_state = 0;
             return;
         }
         if (c == 'C') {
             /* Right Arrow */
-            reader_scroll(page_dy);
+            reader_scroll_instance(rid, page_dy);
             esc_state = 0;
             return;
         }
         if (c == 'D') {
             /* Left Arrow */
-            reader_back();
+            reader_back_instance(rid);
             esc_state = 0;
             return;
         }
@@ -396,22 +448,27 @@ void reader_feed_key(int c) {
         esc_state = 0;
         return;
     } else if (esc_state == 3) {
+        if (c == ';') {
+            esc_state = 4;
+            esc_mod = 0;
+            return;
+        }
         if (c == '~') {
             if (esc_arg == 5) {
                 /* Page Up */
-                reader_scroll(-page_dy);
+                reader_scroll_instance(rid, -page_dy);
             } else if (esc_arg == 6) {
                 /* Page Down */
-                reader_scroll(page_dy);
+                reader_scroll_instance(rid, page_dy);
             } else if (esc_arg == 1 || esc_arg == 7) {
                 /* Home */
-                s_reader.scroll_y = 0;
-                reader_update();
+                r->scroll_y = 0;
+                reader_update_instance(rid);
             } else if (esc_arg == 4 || esc_arg == 8) {
                 /* End */
-                int max_scroll = s_reader.total_h - 120;
-                s_reader.scroll_y = max_scroll > 0 ? max_scroll : 0;
-                reader_update();
+                int max_scroll = r->total_h - 120;
+                r->scroll_y = max_scroll > 0 ? max_scroll : 0;
+                reader_update_instance(rid);
             }
             esc_state = 0;
             return;
@@ -422,19 +479,99 @@ void reader_feed_key(int c) {
         }
         esc_state = 0;
         return;
+    } else if (esc_state == 4) {
+        if (c >= '0' && c <= '9') {
+            esc_mod = esc_mod * 10 + (c - '0');
+            return;
+        }
+        if (c == 'u') {
+            if (esc_mod == 9) {
+                /* Super (Cmd) modifier */
+                if (esc_arg >= '1' && esc_arg <= '9') {
+                    console_hotkey(CONSOLE_HOTKEY_JUMP((unsigned)(esc_arg - '0')));
+                } else if (esc_arg == 'w' || esc_arg == 'W') {
+                    console_hotkey(CONSOLE_HOTKEY_CLOSE);
+                } else if (esc_arg == '\\') {
+                    console_hotkey(CONSOLE_HOTKEY_TOGGLE_MAX);
+                }
+            } else if (esc_mod == 10 && esc_arg == '3') {
+                console_hotkey(CONSOLE_HOTKEY_SCREENSHOT);
+            }
+            esc_state = 0;
+            return;
+        }
+        if (c == 'C') {
+            if (esc_mod == 9) {
+                console_hotkey(CONSOLE_HOTKEY_FOCUS_RIGHT);
+            } else {
+                reader_scroll_instance(rid, page_dy);
+            }
+            esc_state = 0;
+            return;
+        }
+        if (c == 'D') {
+            if (esc_mod == 9) {
+                console_hotkey(CONSOLE_HOTKEY_FOCUS_LEFT);
+            } else {
+                reader_back_instance(rid);
+            }
+            esc_state = 0;
+            return;
+        }
+        esc_state = 0;
+        return;
     }
 }
 
+const char *reader_get_title_instance(uint8_t rid) {
+    if (rid >= READER_MAX_INSTANCES) return "Reader";
+    return s_readers[rid].title[0] ? s_readers[rid].title : "Reader";
+}
+
 const char *reader_get_title(void) {
-    return s_reader.title[0] ? s_reader.title : "Reader";
+    return reader_get_title_instance(s_active_reader_rid);
+}
+
+const char *reader_get_path_instance(uint8_t rid) {
+    if (rid >= READER_MAX_INSTANCES) return "";
+    return s_readers[rid].path;
 }
 
 const char *reader_get_path(void) {
-    return s_reader.path;
+    return reader_get_path_instance(s_active_reader_rid);
+}
+
+bool reader_instance_is_active(uint8_t rid) {
+    return (rid < READER_MAX_INSTANCES && s_readers[rid].active);
 }
 
 bool reader_is_active(void) {
-    return s_reader.active;
+    return reader_instance_is_active(s_active_reader_rid);
+}
+
+uint8_t reader_get_active_instance(void) {
+    return s_active_reader_rid;
+}
+
+void reader_set_active_instance(uint8_t rid) {
+    if (rid < READER_MAX_INSTANCES) {
+        s_active_reader_rid = rid;
+    }
+}
+
+int reader_find_by_path(const char *path) {
+    if (!path || !*path) return -1;
+    char resolved[128];
+    if (!resolve_doc_path(path, resolved, sizeof(resolved))) {
+        strncpy(resolved, path, sizeof(resolved) - 1);
+        resolved[sizeof(resolved) - 1] = '\0';
+    }
+    for (int i = 0; i < READER_MAX_INSTANCES; i++) {
+        if (s_readers[i].active && (strcmp(s_readers[i].path, path) == 0 || strcmp(s_readers[i].path, resolved) == 0)) {
+            return i;
+        }
+    }
+    return -1;
 }
 
 /* Word wrapping and proportional text rendering */
@@ -469,20 +606,23 @@ static int render_wrapped_serif_line(const canvas1_t *c, int x0, int max_w,
     return cur_y;
 }
 
-void reader_draw(const canvas1_t *c, int w, int h) {
-    if (!c || w <= 0 || h <= 0) return;
+void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
+    if (!c || w <= 0 || h <= 0 || rid >= READER_MAX_INSTANCES) return;
+    reader_state_t *r = &s_readers[rid];
 
     /* Fill background */
     canvas1_fill(c, 0, 0, w - 1, h - 1, CANVAS1_WHITE);
 
-    if (!s_reader.active || !s_reader.path[0]) {
+    if (!r->active || !r->path[0]) {
         canvas1_serif_text(c, READER_MARGIN_X, 32, "No document loaded. Use 'reader <file.gmi>' to open.", 52, false);
         return;
     }
 
-    const char *file_to_open = s_reader.path;
-    if (strncmp(s_reader.path, "spartan://", 10) == 0 || strncmp(s_reader.path, "SPARTAN://", 10) == 0) {
-        file_to_open = "/ram0/spartan.gmi";
+    const char *file_to_open = r->path;
+    char spartan_tmp[32];
+    if (strncmp(r->path, "spartan://", 10) == 0 || strncmp(r->path, "SPARTAN://", 10) == 0) {
+        ksnprintf(spartan_tmp, sizeof(spartan_tmp), "/ram0/spartan%d.gmi", (int)rid);
+        file_to_open = spartan_tmp;
     }
 
     int fd = vfs_open(file_to_open, VFS_O_READ);
@@ -498,9 +638,9 @@ void reader_draw(const canvas1_t *c, int w, int h) {
     if (max_w < 60) max_w = 60;
 
     int doc_y = 16;
-    int scroll_y = s_reader.scroll_y;
+    int scroll_y = r->scroll_y;
     int link_idx = 0;
-    s_reader.link_count = 0;
+    r->link_count = 0;
 
     uint64_t file_offset = 0;
     char read_buf[512];
@@ -601,13 +741,13 @@ void reader_draw(const canvas1_t *c, int w, int h) {
                 case GEM_LINE_LINK:
                     link_idx++;
                     if (screen_y + 20 >= 0 && screen_y < h) {
-                        if (s_reader.link_count < READER_LINKS_MAX) {
-                            s_reader.links[s_reader.link_count].y0 = screen_y;
-                            s_reader.links[s_reader.link_count].y1 = screen_y + 18;
-                            s_reader.links[s_reader.link_count].num = link_idx;
-                            strncpy(s_reader.links[s_reader.link_count].url, gem.url, sizeof(s_reader.links[0].url) - 1);
-                            s_reader.links[s_reader.link_count].url[sizeof(s_reader.links[0].url) - 1] = '\0';
-                            s_reader.link_count++;
+                        if (r->link_count < READER_LINKS_MAX) {
+                            r->links[r->link_count].y0 = screen_y;
+                            r->links[r->link_count].y1 = screen_y + 18;
+                            r->links[r->link_count].num = link_idx;
+                            strncpy(r->links[r->link_count].url, gem.url, sizeof(r->links[0].url) - 1);
+                            r->links[r->link_count].url[sizeof(r->links[0].url) - 1] = '\0';
+                            r->link_count++;
                         }
 
                         char prefix[16];
@@ -635,15 +775,15 @@ void reader_draw(const canvas1_t *c, int w, int h) {
     }
 
     vfs_close(fd);
-    s_reader.total_h = doc_y + 32;
+    r->total_h = doc_y + 32;
 
     /* Render right scrollbar if document exceeds window height */
-    if (s_reader.total_h > h) {
+    if (r->total_h > h) {
         int sb_w = 4;
         int sb_x = w - sb_w - 2;
-        int thumb_h = (h * h) / s_reader.total_h;
+        int thumb_h = (h * h) / r->total_h;
         if (thumb_h < 16) thumb_h = 16;
-        int thumb_y = (s_reader.scroll_y * (h - thumb_h)) / (s_reader.total_h - h);
+        int thumb_y = (r->scroll_y * (h - thumb_h)) / (r->total_h - h);
         canvas1_fill(c, sb_x, 0, sb_x + sb_w, h - 1, CANVAS1_GREY);
         canvas1_fill(c, sb_x, thumb_y, sb_x + sb_w, thumb_y + thumb_h, CANVAS1_BLACK);
     }
