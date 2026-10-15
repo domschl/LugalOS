@@ -153,6 +153,8 @@ bool console_pixels(const uint8_t **fb, unsigned *w, unsigned *h, unsigned *stri
 #define CONSOLE_HOTKEY_JUMP_BASE    11u /* Super+1 .. Super+9 (codes 11..19) */
 #define CONSOLE_HOTKEY_JUMP(n)      (CONSOLE_HOTKEY_JUMP_BASE + ((unsigned)(n) - 1u))
 #define CONSOLE_HOTKEY_TAP          20u /* 47.12: a touch tap, at console_touch_tap()'s point */
+#define CONSOLE_HOTKEY_SCROLL_UP    21u /* Vertical swipe / scroll up */
+#define CONSOLE_HOTKEY_SCROLL_DOWN  22u /* Vertical swipe / scroll down */
 void console_hotkey(unsigned code);
 
 /* 47.12: a tap on the panel at (x, y), screen pixels: focuses the window

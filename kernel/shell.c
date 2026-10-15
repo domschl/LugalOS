@@ -64,6 +64,7 @@
 #include "drivers/touch.h"
 #include "drivers/vtterm.h"
 #include "drivers/ribbon.h"
+#include "drivers/reader_view.h"
 #include "drivers/dcf77_decode.h"
 #include "drivers/pico_clock_ui.h"
 #include "kernel/timezone.h"
@@ -1159,6 +1160,29 @@ static void cmd_gem(const char *arg) {
     }
 
     cprintf("gem: cannot open '%s'\n", arg);
+}
+
+static void cmd_reader(const char *arg) {
+    if (!arg || !*arg) {
+        arg = "shell.gmi";
+    }
+    uint8_t req[2] = { 'O', 0 };
+    uint8_t reply[SCREEN_REPLY_LEN];
+    if (console_canvas(req, sizeof(req), reply) && reply[0] == 0) {
+        uint8_t cid = reply[1];
+        int w = (int)(reply[2] | (reply[3] << 8));
+        int h = (int)(reply[4] | (reply[5] << 8));
+        if (reader_open(arg)) {
+            reader_set_target(cid, w, h);
+            reader_update();
+            cprintf("reader: opened '%s' in ribbon\n", arg);
+        } else {
+            cprintf("reader: cannot open '%s'\n", arg);
+        }
+    } else {
+        /* Fallback to terminal viewer if graphical ribbon is absent */
+        cmd_gem(arg);
+    }
 }
 
 static void cmd_spartand(const char *arg) {
@@ -4683,6 +4707,9 @@ static void cmd_ribbon(const char *cmd_line) {
             if (type == RIBBON_WIN_CANVAS)
                 cprintf("  [%d] Canvas (slot %d of vterm %d, %d cols, rx %ld..%ld)%s\n",
                         i, id, reply[8], cols, (long)rx0, (long)rx1, (i == active) ? " *" : "");
+            else if (type == RIBBON_WIN_READER)
+                cprintf("  [%d] Reader (slot %d, %d cols, rx %ld..%ld)%s\n",
+                        i, id, cols, (long)rx0, (long)rx1, (i == active) ? " *" : "");
             else
                 cprintf("  [%d] Term   (vterm %d, %d cols, rx %ld..%ld)%s\n",
                         i, id, cols, (long)rx0, (long)rx1, (i == active) ? " *" : "");
@@ -4763,6 +4790,14 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         const char *arg = cmd_line + 4;
         while (*arg == ' ') arg++;
         cmd_gem(arg);
+        return;
+    } else if (strcmp(cmd_line, "reader") == 0) {
+        cmd_reader(NULL);
+        return;
+    } else if (strncmp(cmd_line, "reader ", 7) == 0) {
+        const char *arg = cmd_line + 7;
+        while (*arg == ' ') arg++;
+        cmd_reader(arg);
         return;
     } else if (strcmp(cmd_line, "spartand") == 0) {
         cmd_spartand(NULL);

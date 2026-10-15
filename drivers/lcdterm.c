@@ -682,6 +682,11 @@ void lcdterm_report(void) {
             g_lcdterm_pid, (unsigned long)g_lcdterm_calls);
 }
 
+canvas1_t *lcdterm_get_canvas_backing(uint8_t cid) {
+    if (!g_scr || cid >= SCREEN_MAX_CANVASES || !g_scr->canvases[cid].in_use) return NULL;
+    return &g_scr->canvases[cid].backing;
+}
+
 #else /* no panel */
 
 int lcdterm_init(const lcdterm_backend_t *be) { (void)be; return -1; }
@@ -701,5 +706,6 @@ bool lcdterm_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) { (vo
 int lcdterm_text_test(void) { return -1; }
 void lcdterm_scroll_test(unsigned n) { (void)n; }
 void lcdterm_report(void) { }
+canvas1_t *lcdterm_get_canvas_backing(uint8_t cid) { (void)cid; return NULL; }
 
 #endif /* LCDTERM_PRESENT */

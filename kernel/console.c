@@ -13,6 +13,7 @@
 #include "kernel/vterm.h"
 #include "drivers/lcd7.h"
 #include "drivers/lcdterm.h"
+#include "drivers/reader_view.h"
 #include <string.h>
 
 /* See kernel/include/kernel/console.h. The formatting engine lives in
@@ -223,7 +224,22 @@ static void run_hotkey(void) {
         uint32_t xy = g_tap_xy;
         uint8_t req[5] = { 'P', (uint8_t)(xy >> 16), (uint8_t)(xy >> 24), (uint8_t)xy, (uint8_t)(xy >> 8) };
         uint8_t reply[SCREEN_REPLY_LEN];
-        if (console_canvas(req, 5, reply) && reply[0] == 0) vterm_set_active(reply[1]);
+        if (console_canvas(req, 5, reply) && reply[0] == 0) {
+            vterm_set_active(reply[1]);
+            int cx = (int)(reply[2] | (reply[3] << 8));
+            int cy = (int)(reply[4] | (reply[5] << 8));
+            if ((cx != 0 || cy != 0) && reader_is_active()) {
+                (void)reader_tap(cx, cy);
+            }
+        }
+        return;
+    }
+    if (hk == CONSOLE_HOTKEY_SCROLL_UP) {
+        if (reader_is_active()) reader_scroll(-80);
+        return;
+    }
+    if (hk == CONSOLE_HOTKEY_SCROLL_DOWN) {
+        if (reader_is_active()) reader_scroll(80);
         return;
     }
     if (hk == CONSOLE_HOTKEY_SWAP) {

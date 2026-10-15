@@ -119,7 +119,7 @@ int vfs_write(const char *path, const void *buf, uint32_t len) {
     return 0;
 }
 
-int vfs_open(const char *path, int flags) {
+__attribute__((weak)) int vfs_open(const char *path, int flags) {
     (void)flags;
     for (int i = 0; i < HOST_FILES; i++) {
         if (g_files[i].data && strcmp(g_files[i].path, path) == 0) {
@@ -137,12 +137,12 @@ int vfs_open(const char *path, int flags) {
     return -1;
 }
 
-int vfs_close(int fd) {
+__attribute__((weak)) int vfs_close(int fd) {
     (void)fd;
     return 0;
 }
 
-int vfs_pread(int fd, void *buf, uint32_t count, uint64_t offset) {
+__attribute__((weak)) int vfs_pread(int fd, void *buf, uint32_t count, uint64_t offset) {
     if (fd < 1 || fd > HOST_FILES) return -1;
     int slot = fd - 1;
     if (!g_files[slot].data) return -1;
@@ -153,7 +153,7 @@ int vfs_pread(int fd, void *buf, uint32_t count, uint64_t offset) {
     return (int)n;
 }
 
-int vfs_pwrite(int fd, const void *buf, uint32_t count, uint64_t offset) {
+__attribute__((weak)) int vfs_pwrite(int fd, const void *buf, uint32_t count, uint64_t offset) {
     if (fd < 1 || fd > HOST_FILES) return -1;
     int slot = fd - 1;
     if (!g_files[slot].data) return -1;

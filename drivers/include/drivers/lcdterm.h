@@ -17,6 +17,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "drivers/canvas1.h"
 #include "kernel/console.h"
 #include "lugalos_config.h"
 
@@ -84,5 +85,6 @@ bool lcdterm_isolation_test(uintptr_t *out_canary, bool *out_exited_clean);
 int lcdterm_text_test(void);
 void lcdterm_scroll_test(unsigned n);
 void lcdterm_report(void);
+canvas1_t *lcdterm_get_canvas_backing(uint8_t cid);
 
 #endif /* LUGALOS_DRIVERS_LCDTERM_H */

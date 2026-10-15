@@ -639,16 +639,21 @@ LCDTERM_UTEXT static void draw_all_from(screen_t *scr, bool restore) {
                     if (t >= 0 && scr->terms[t].vt.title[0]) {
                         title = scr->terms[t].vt.title;
                     }
+                } else if (w->type == RIBBON_WIN_READER) {
+                    uint8_t cid = w->vterm_id;
+                    if (cid < SCREEN_MAX_CANVASES && scr->canvases[cid].title[0]) {
+                        title = scr->canvases[cid].title;
+                    }
                 }
                 bool active = (i == scr->ribbon.active_idx);
                 draw_tile(cv, (int)x0, SCREEN_TILE_Y, (int)x1, tile_y1, title, active);
             }
         }
 
-        /* Blit backing stores for all visible canvas windows */
+        /* Blit backing stores for all visible canvas and reader windows */
         for (uint8_t i = 0; i < scr->ribbon.count; i++) {
             const ribbon_win_t *w = &scr->ribbon.wins[i];
-            if (w->type == RIBBON_WIN_CANVAS) {
+            if (w->type == RIBBON_WIN_CANVAS || w->type == RIBBON_WIN_READER) {
                 uint8_t cid = w->vterm_id;
                 int32_t cx0 = w->rx0 - xv;
                 int32_t cx1 = w->rx1 - xv;
@@ -661,15 +666,6 @@ LCDTERM_UTEXT static void draw_all_from(screen_t *scr, bool restore) {
                         if (restore) {
                             restored = store_restore(scr);
                         }
-                        /* A canvas the same width as when its backing was
-                         * drawn comes back from it, without damage: moving
-                         * the focus, scrolling the ribbon or opening a
-                         * terminal is not a reason to lose the picture. It
-                         * used to be blanked whenever the layout's store was
-                         * stale -- after any drawing at all -- so a plot
-                         * from a program with no redraw hook was gone once
-                         * scrolled out of view and back. A new width still
-                         * blanks it and moves the damage on (38.8). */
                         if (restored || (backed && (!restore || scr->canvases[cid].drawn_w == (uint16_t)cw_w))) {
                             blit_canvas_backing(scr, cid, (int)cx0 + 1, SCREEN_TILE_Y + 17, cw_w, cw_h);
                             if (backed) scr->canvases[cid].drawn_w = (uint16_t)cw_w;
@@ -1180,7 +1176,7 @@ LCDTERM_UTEXT static bool close_window(screen_t *scr, uint8_t idx, uint8_t *repl
             screen_free_canvas(scr, (uint8_t)cid);
         }
         screen_free_term(scr, closed_id);
-    } else if (closed_type == RIBBON_WIN_CANVAS) {
+    } else if (closed_type == RIBBON_WIN_CANVAS || closed_type == RIBBON_WIN_READER) {
         screen_free_canvas(scr, closed_id);
     }
     if (ribbon_find_canvas(&scr->ribbon) < 0) scr->layout = SCREEN_LAYOUT_TEXT;
@@ -1368,6 +1364,18 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
         int px = arg16(req, n, 0), py = arg16(req, n, 1);
         int idx = py < SCREEN_MENU_H ? minimap_hit(scr, px) : window_at(scr, px);
         if (idx >= 0 && idx == (int)scr->ribbon.active_idx) {
+            const ribbon_win_t *w = &scr->ribbon.wins[idx];
+            if (w->type == RIBBON_WIN_READER) {
+                int cx = px - (w->rx0 - scr->ribbon.x_view);
+                int cy = py - (SCREEN_TILE_Y + 17);
+                reply[0] = 0;
+                reply[1] = w->vterm_id;
+                reply[2] = (uint8_t)(cx & 0xff);
+                reply[3] = (uint8_t)((cx >> 8) & 0xff);
+                reply[4] = (uint8_t)(cy & 0xff);
+                reply[5] = (uint8_t)((cy >> 8) & 0xff);
+                return;
+            }
             status = 0;
         } else if (idx >= 0 && ribbon_focus(&scr->ribbon, (uint8_t)idx)) {
             scr->ribbon.x_view = scr->ribbon.x_target;
@@ -1376,6 +1384,64 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
             status = 0;
         } else {
             status = 1;
+        }
+    } else if (op == 'O') {
+        /* Open or focus reader window:
+         * req[1] = desired cols (0 = default)
+         * Returns: reply[1]=cid, reply[2..3]=width, reply[4..5]=height */
+        int r_win = ribbon_find_reader(&scr->ribbon);
+        if (r_win >= 0) {
+            ribbon_focus(&scr->ribbon, (uint8_t)r_win);
+            scr->ribbon.x_view = scr->ribbon.x_target;
+            (void)place(scr, scr->layout);
+            draw_all_from(scr, true);
+            reply[0] = 0;
+            reply[1] = scr->ribbon.wins[r_win].vterm_id;
+            const ribbon_win_t *rw = &scr->ribbon.wins[r_win];
+            int r_w = (int)(rw->rx1 - rw->rx0 - 1);
+            int r_h = (int)(SCREEN_TEXT_Y + 16 * (int)SCREEN_TEXT_ROWS(scr->cv.h) + 1 - (SCREEN_TILE_Y + 17));
+            reply[2] = (uint8_t)(r_w & 0xff); reply[3] = (uint8_t)((r_w >> 8) & 0xff);
+            reply[4] = (uint8_t)(r_h & 0xff); reply[5] = (uint8_t)((r_h >> 8) & 0xff);
+            return;
+        }
+        int cid = screen_alloc_canvas(scr, 0);
+        if (cid < 0) {
+            status = 1;
+        } else {
+            uint8_t text_cols = RIBBON_COLS_HALF(scr->cv.w);
+            uint8_t reader_cols = (n >= 2 && req[1]) ? req[1] : (uint8_t)(scr->full_cols - text_cols - 2u);
+            int t_win = ribbon_find_vterm(&scr->ribbon, vid);
+            if (t_win >= 0) {
+                scr->ribbon.wins[t_win].cols = text_cols;
+            } else if (scr->ribbon.active_idx < scr->ribbon.count) {
+                scr->ribbon.wins[scr->ribbon.active_idx].cols = text_cols;
+                t_win = (int)scr->ribbon.active_idx;
+            }
+            uint8_t insert_idx = (t_win >= 0) ? (uint8_t)(t_win + 1) : scr->ribbon.count;
+            char def_title[8];
+            def_title[0] = 'R'; def_title[1] = 'e'; def_title[2] = 'a';
+            def_title[3] = 'd'; def_title[4] = 'e'; def_title[5] = 'r';
+            def_title[6] = '\0';
+            for (uint32_t i = 0; i < 7; i++) scr->canvases[cid].title[i] = def_title[i];
+            int idx = ribbon_insert(&scr->ribbon, insert_idx, RIBBON_WIN_READER, (uint8_t)cid, reader_cols, def_title);
+            if (idx >= 0) {
+                ribbon_focus(&scr->ribbon, (uint8_t)idx);
+                scr->ribbon.x_view = scr->ribbon.x_target;
+                (void)place(scr, scr->layout);
+                draw_all_from(scr, true);
+                status = 0;
+                reply[0] = 0;
+                reply[1] = (uint8_t)cid;
+                const ribbon_win_t *rw = &scr->ribbon.wins[idx];
+                int r_w = (int)(rw->rx1 - rw->rx0 - 1);
+                int r_h = (int)(SCREEN_TEXT_Y + 16 * (int)SCREEN_TEXT_ROWS(scr->cv.h) + 1 - (SCREEN_TILE_Y + 17));
+                reply[2] = (uint8_t)(r_w & 0xff); reply[3] = (uint8_t)((r_w >> 8) & 0xff);
+                reply[4] = (uint8_t)(r_h & 0xff); reply[5] = (uint8_t)((r_h >> 8) & 0xff);
+                return;
+            } else {
+                screen_free_canvas(scr, (uint8_t)cid);
+                status = 1;
+            }
         }
     } else if (op == 'V') {
         /* Focus window by vterm ID */

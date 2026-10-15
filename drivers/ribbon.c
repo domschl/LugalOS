@@ -130,6 +130,14 @@ LCDTERM_UTEXT int ribbon_insert(ribbon_t *r, uint8_t idx, uint8_t type, uint8_t 
         r->wins[idx].title[4] = 'a';
         r->wins[idx].title[5] = 's';
         r->wins[idx].title[6] = '\0';
+    } else if (type == RIBBON_WIN_READER) {
+        r->wins[idx].title[0] = 'R';
+        r->wins[idx].title[1] = 'e';
+        r->wins[idx].title[2] = 'a';
+        r->wins[idx].title[3] = 'd';
+        r->wins[idx].title[4] = 'e';
+        r->wins[idx].title[5] = 'r';
+        r->wins[idx].title[6] = '\0';
     } else {
         r->wins[idx].title[0] = 'T';
         r->wins[idx].title[1] = 'e';
@@ -276,10 +284,24 @@ LCDTERM_UTEXT int ribbon_find_canvas(const ribbon_t *r) {
     return -1;
 }
 
+LCDTERM_UTEXT int ribbon_find_reader(const ribbon_t *r) {
+    if (!r || r->count == 0) return -1;
+    if (r->active_idx < r->count && r->wins[r->active_idx].type == RIBBON_WIN_READER) {
+        return (int)r->active_idx;
+    }
+    for (uint8_t i = 0; i < r->count; i++) {
+        if (r->wins[i].type == RIBBON_WIN_READER) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
 LCDTERM_UTEXT int ribbon_find_canvas_slot(const ribbon_t *r, uint8_t canvas_id) {
     if (!r) return -1;
     for (uint8_t i = 0; i < r->count; i++) {
-        if (r->wins[i].type == RIBBON_WIN_CANVAS && r->wins[i].vterm_id == canvas_id) {
+        if ((r->wins[i].type == RIBBON_WIN_CANVAS || r->wins[i].type == RIBBON_WIN_READER) &&
+            r->wins[i].vterm_id == canvas_id) {
             return (int)i;
         }
     }

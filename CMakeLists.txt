@@ -712,6 +712,8 @@ set(SOURCES
     # extends in 37.3.
     drivers/screen.c
     drivers/canvas1.c
+    drivers/font_serif.c
+    drivers/reader_view.c
     drivers/ribbon.c
     # the same screen in RAM, for Lisp's canvas where there is no panel.
     drivers/ramscreen.c

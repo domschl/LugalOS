@@ -1562,6 +1562,28 @@ def test_ribbon_hotkeys(b: Board) -> tuple[str, bool, str]:
     return name, True, "2 windows, focus 1 -> 0 -> 1, closed back to 1"
 
 
+def test_gemtext_reader_window(b: Board) -> tuple[str, bool, str]:
+    """53.6: Dedicated Ribbon Reader window with proportional typography."""
+    name = "gemtext: Ribbon Reader window opening and ribbon split (53.6)"
+    n0, _ = _ribbon(b)
+    if n0 < 0:
+        return name, True, "SKIPPED (no ribbon on this board)"
+    out = b.console_session.cmd("reader /sd0/help/shell.gmi", deadline=5.0)
+    if "opened '/sd0/help/shell.gmi' in ribbon" not in out:
+        return name, False, f"reader command failed: {out.strip()}"
+    n1, act = _ribbon(b)
+    if n1 != 2 or act != 1:
+        return name, False, f"expected (2, 1), got ({n1}, {act})"
+    rlist = b.console_session.cmd("ribbon list", deadline=5.0)
+    if "Reader" not in rlist:
+        return name, False, f"ribbon list does not report Reader window:\n{rlist}"
+    _raw(b, b"\x1b[119;9u", 2.0)
+    n2, _ = _ribbon(b)
+    if n2 != 1:
+        return name, False, f"expected 1 window after closing reader, got {n2}"
+    return name, True, "reader window opened in ribbon, reported as Reader, closed cleanly"
+
+
 TESTS = [
     test_boots,
     test_proc_readable,
@@ -1603,6 +1625,7 @@ TESTS = [
     test_touch,
     test_rtc,
     test_ribbon_hotkeys,
+    test_gemtext_reader_window,
 ]
 
 

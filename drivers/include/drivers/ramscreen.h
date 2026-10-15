@@ -2,6 +2,7 @@
 #define LUGALOS_DRIVERS_RAMSCREEN_H
 
 #include "kernel/console.h"
+#include "drivers/canvas1.h"
 
 /* 37.3b: a canvas-only screen in RAM for the targets without a panel, so that
  * Lisp's canvas runs and is tested on QEMU as on the RP2350-LCD-7. See
@@ -15,5 +16,6 @@ const console_screen_t *ramscreen_console(void);
  * refused. */
 int ramscreen_set_size(unsigned w, unsigned h);
 void ramscreen_size(unsigned *w, unsigned *h);
+canvas1_t *ramscreen_get_canvas_backing(uint8_t cid);
 
 #endif /* LUGALOS_DRIVERS_RAMSCREEN_H */

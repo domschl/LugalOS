@@ -37,7 +37,7 @@ uprintf_host_SRC := uprintf_host.c $(ROOT)/drivers/radio/uprintf.c
 uheap_host_SRC   := uheap_host.c $(ROOT)/kernel/uheap.c
 kobj_host_SRC    := kobj_host.c $(ROOT)/kernel/kobj.c
 net_host_SRC     := net_host.c $(ROOT)/net/arp.c $(ROOT)/net/ipv4.c $(ROOT)/net/icmp.c \
-                    $(ROOT)/net/udp.c $(OUT)/gen/tcp.c
+                    $(ROOT)/net/udp.c $(ROOT)/net/spartan.c $(OUT)/gen/tcp.c
 
 # net/tcp.c orders its buffer writes with RISC-V fences; the host gets the
 # equivalent C11 fence, in a copy, so the source itself stays as it is.

@@ -105,6 +105,10 @@ static void gesture(int x0, int y0, int x1, int y1, uint32_t ms) {
          * the right into view, as Cmd+Right does. */
         g_t.swipes++;
         console_hotkey(dx < 0 ? CONSOLE_HOTKEY_FOCUS_RIGHT : CONSOLE_HOTKEY_FOCUS_LEFT);
+    } else if (ady >= swipe_px && ady >= 2 * adx) {
+        /* Vertical swipe: scroll document up/down */
+        g_t.swipes++;
+        console_hotkey(dy < 0 ? CONSOLE_HOTKEY_SCROLL_DOWN : CONSOLE_HOTKEY_SCROLL_UP);
     } else if (adx < TAP_PX && ady < TAP_PX && ms <= TAP_MS) {
         g_t.taps++;
         console_touch_tap((unsigned)x0, (unsigned)y0);

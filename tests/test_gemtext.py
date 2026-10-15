@@ -192,6 +192,23 @@ def run_qemu_tests() -> bool:
             print(f"    [FAIL] spartand stop:\n{log}")
             all_passed = False
 
+        # Test 11: Dedicated Ribbon Reader window
+        print("  Checking 'reader /sd0/help/shell.gmi' in ribbon...")
+        ok, log = session.send_and_expect("reader /sd0/help/shell.gmi", r"reader: opened .* in ribbon", timeout=4.0)
+        if ok:
+            print("    [PASS] reader opened in ribbon")
+        else:
+            print(f"    [FAIL] reader in ribbon:\n{log}")
+            all_passed = False
+
+        print("  Checking 'ribbon list' reflects Reader window...")
+        ok, log = session.send_and_expect("ribbon list", r"Ribbon Status: 2 windows", timeout=4.0)
+        if ok and "Reader" in log:
+            print("    [PASS] ribbon list shows 2 windows including reader window")
+        else:
+            print(f"    [FAIL] ribbon list:\n{log}")
+            all_passed = False
+
     finally:
         session.close()
         if arch_img.exists():

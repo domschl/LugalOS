@@ -90,3 +90,8 @@ static const console_screen_t g_ramscreen = { .canvas = rs_canvas, .pixels = rs_
 const console_screen_t *ramscreen_console(void) {
     return &g_ramscreen;
 }
+
+canvas1_t *ramscreen_get_canvas_backing(uint8_t cid) {
+    if (!g_rs || cid >= SCREEN_MAX_CANVASES || !g_rs->canvases[cid].in_use) return NULL;
+    return &g_rs->canvases[cid].backing;
+}
