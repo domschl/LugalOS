@@ -17,6 +17,9 @@ configures it with nothing but a phone. Phase 21 §6 ruled that out
 ("provisioning over the network is refused"). §1.3 replaces that rule with
 one that allows it without giving up what it protected.
 
+**Added section Architectural Review Required:** to evaluate the support of
+the Espressif default-firmware update-protocol for easier initial installation.
+
 ---
 
 ## 1. Topics
@@ -234,3 +237,23 @@ through it end to end.
    is genuine)?
 7. For §1.6: certificate-based TLS or TLS-PSK on the sensor nodes, and which
    brokers have to work.
+
+### 3.1 Architectural review required (added 2026-10-15)
+
+1. For P4-C6 systems, initial installation requires multiple USB
+   connections to individually flash each component. On some systems,
+   the C6 flash interfaces are not easily accessible (hardware like
+   M5Stack Tab 5, a tablet-like P4-C6 that would require mainboard
+   modifications to access the flash ports with hight probability of
+   breaking things)
+2. Evaluate to support the "ESP-Hosted Transport OTA (implemented via the
+   host_performs_slave_ota framework)" (see ESP-IDF SDK, https://components.espressif.com/components/espressif/esp_hosted/versions/2.9.6/examples/host_performs_slave_ota?language= ), since that is what is
+   already factory-installed on C6:
+   2.1 Possible to make our approch and Espressif's implementation
+   compatible? We also need to use the same A/B firmware partition layout.
+   2.2 Alternative: both update-systems co-exist, and both directions are
+   supported: LugalOS <-> ESP-Hosted OTA
+   2.3: Testing: on easily accessible systems (P4-Nano, Waveshare P4 Wifi
+   terminal) we test both directions of updates between the different
+   firmware versions, and once things work, we progress towards more
+   closed, higher-risk systems like the M5Stack Tab 5.

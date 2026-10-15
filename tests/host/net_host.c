@@ -42,6 +42,7 @@ static uint32_t g_last_tx_len;
 net_state_t *net_mutable_state(void) { return &g_net; }
 const net_state_t *net_state(void) { return &g_net; }
 bool net_configured(void) { return g_net.configured; }
+bool wifi_is_connected(void) { return false; }
 const uint8_t *net_broadcast_mac(void) {
     static const uint8_t b[NETIF_MAC_LEN] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
     return b;

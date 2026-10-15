@@ -85,8 +85,9 @@ typedef struct {
     char      title[SCREEN_CTITLE_MAX]; /* canvas window title */
 } screen_canvas_slot_t;
 
-#define SCREEN_STATUS_SD  (1u << 0)
-#define SCREEN_STATUS_P9  (1u << 1)
+#define SCREEN_STATUS_SD    (1u << 0)
+#define SCREEN_STATUS_P9    (1u << 1)
+#define SCREEN_STATUS_WIFI  (1u << 2)
 
 typedef struct {
     canvas1_t cv;                       /* the whole buffer */
@@ -99,7 +100,7 @@ typedef struct {
     uint16_t  damage;                   /* bumped whenever the canvas is lost */
     uint8_t   store_ok;                 /* 38.8: bit L-1 -- layout L's store holds its canvas */
     uint8_t   redrawing;                /* 38.8: between 'D' 1 and 'D' 0 */
-    uint8_t   status_flags;             /* Top bar indicators: SD mounted, 9P active */
+    uint8_t   status_flags;             /* Top bar indicators: SD mounted, 9P active, Wi-Fi connected */
     uint8_t  *store;                    /* 38.8: SCREEN_STORES slots, or NULL */
     uint32_t  store_slot;               /* bytes per slot */
     uint32_t  draw_gen;                 /* bumped by every drawing request */

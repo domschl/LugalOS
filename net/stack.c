@@ -90,6 +90,14 @@ void net_stack_detach(void) {
 bool net_configured(void) { return g_net.configured && g_net.nif != NULL; }
 const net_state_t *net_state(void) { return &g_net; }
 
+bool wifi_is_connected(void) {
+    if (!g_net.nif || !g_net.configured) return false;
+    if (strcmp(g_net.nif->name, "wlan0") != 0) return false;
+    if (!netif_link_up(g_net.nif)) return false;
+    if (g_net.ip[0] == 0 && g_net.ip[1] == 0 && g_net.ip[2] == 0 && g_net.ip[3] == 0) return false;
+    return true;
+}
+
 int net_set_address(const uint8_t ip[IPV4_LEN], const uint8_t mask[IPV4_LEN],
                     const uint8_t gw[IPV4_LEN]) {
     if (!g_net.nif) {

@@ -39,6 +39,7 @@
 #include "kernel/vterm.h"
 #include "fs/vfs.h"
 #include "fs/9p.h"
+#include "net/ip.h"
 
 #if defined(CONFIG_BOARD_RP2350)
 #include "drivers/usb_cdc.h"
@@ -421,6 +422,7 @@ static void status_tick(void) {
     uint8_t flags = 0;
     if (vfs_volume_mounted("sd0")) flags |= SCREEN_STATUS_SD;
     if (p9_is_connected()) flags |= SCREEN_STATUS_P9;
+    if (wifi_is_connected()) flags |= SCREEN_STATUS_WIFI;
     if (strcmp(right, g_scr->right) != 0 || flags != g_scr->status_flags) {
         char payload[1 + SCREEN_RIGHT_MAX];
         payload[0] = (char)flags;

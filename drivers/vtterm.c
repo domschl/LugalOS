@@ -765,6 +765,11 @@ int vtterm_selftest(void) {
         bool initial = geometry && rule && menu_blank && desktop && frame && stripes && title;
 
         screen_write(scr, "\033]2;Lisp\007", 9);
+        screen_set_right(scr, SCREEN_STATUS_WIFI, "12:34", 5);
+        /* rx = 192 - 16 - 40 = 136. icon_left = 136 - 18 = 118.
+         * icon_wifi has 0x3fc0 on row 0 (y=4): col 2..9 are black, col 0..1 white.
+         * row 9 (y=13) has 0x0600: col 5..6 black. */
+        bool wifi_icon_ok = PX(118 + 2, 4) && !PX(118 + 0, 4) && PX(118 + 5, 4 + 9);
         screen_set_right(scr, 0, "12:34", 5);
         screen_write(scr, "1\r\n2\r\n3\r\n4\r\n5", 14);
         fbtext_t clock;                       /* the clock: at x = 192 - 16 - 40 = 136, y = 2 */
@@ -777,7 +782,7 @@ int vtterm_selftest(void) {
         st_check(&cx, "37.1a: the screen's chrome: menu bar, desktop, frame, shadow, title bar",
                  initial);
         st_check(&cx, "37.1a: a new title is re-centred, the clock sits 16 px from the edge, text scrolls in its tile",
-                 menu && retitled && text_ok);
+                 menu && retitled && text_ok && wifi_icon_ok);
 
         const uint32_t sbytes = ST_SW / 8u * ST_SH;
         for (uint32_t i = 0; i < sbytes; i++) cx.copy[i] = cx.buf[i];

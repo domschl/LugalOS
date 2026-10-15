@@ -113,7 +113,7 @@ LCDTERM_UTEXT static void screen_free_canvas(screen_t *scr, uint8_t cid) {
     }
 }
 
-/* Top bar indicator icons: SD card (11x12) and 9P network badge (14x10) */
+/* Top bar indicator icons: SD card (11x12), 9P network badge (14x10), and Wi-Fi (12x10) */
 LCDTERM_URODATA static const uint16_t icon_sd[12] = {
     0xff80, 0x80c0, 0xaa60, 0xaa20, 0x8020, 0x9b20,
     0x92a0, 0x9aa0, 0x8aa0, 0x9b20, 0x8020, 0xffe0
@@ -122,6 +122,11 @@ LCDTERM_URODATA static const uint16_t icon_sd[12] = {
 LCDTERM_URODATA static const uint16_t icon_p9[10] = {
     0x7ff8, 0xfffc, 0xce7c, 0xd14c, 0xd17c,
     0xcf4c, 0xc14c, 0xce4c, 0xfffc, 0x7ff8
+};
+
+LCDTERM_URODATA static const uint16_t icon_wifi[10] = {
+    0x3fc0, 0x6060, 0xc030, 0x0000, 0x0f00, 0x1980,
+    0x0000, 0x0600, 0x0f00, 0x0600
 };
 
 LCDTERM_UTEXT static void draw_icon16(const canvas1_t *cv, int x, int y, int w, int h, const uint16_t *rows) {
@@ -150,6 +155,7 @@ LCDTERM_UTEXT static void menu_geometry(const screen_t *scr, int *rx_out, int *i
     if (rx < 8) rx = 8;
     int icon_left = rx;
     if (scr->status_flags & SCREEN_STATUS_P9) icon_left -= (14 + 6);
+    if (scr->status_flags & SCREEN_STATUS_WIFI) icon_left -= (12 + 6);
     if (scr->status_flags & SCREEN_STATUS_SD) icon_left -= (11 + 6);
     *rx_out = rx;
     *icon_left_out = icon_left;
@@ -176,6 +182,10 @@ LCDTERM_UTEXT static void draw_menu(screen_t *scr) {
     if (scr->status_flags & SCREEN_STATUS_P9) {
         icon_left -= (14 + 6);
         draw_icon16(cv, icon_left, 4, 14, 10, icon_p9);
+    }
+    if (scr->status_flags & SCREEN_STATUS_WIFI) {
+        icon_left -= (12 + 6);
+        draw_icon16(cv, icon_left, 4, 12, 10, icon_wifi);
     }
     if (scr->status_flags & SCREEN_STATUS_SD) {
         icon_left -= (11 + 6);

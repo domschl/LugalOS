@@ -66,6 +66,9 @@ int net_set_address(const uint8_t ip[IPV4_LEN], const uint8_t mask[IPV4_LEN],
 
 bool net_configured(void);
 
+/* True when a wireless interface ("wlan0") is attached, its link is up, and it holds a configured IP address. */
+bool wifi_is_connected(void);
+
 /* Parses one dotted quad into four bytes. False on anything else -- see the
  * implementation for why a strict parser matters here. */
 bool ipv4_parse(const char *s, uint8_t out[IPV4_LEN]);
