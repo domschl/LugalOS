@@ -177,6 +177,14 @@ Moved here from phase 49 §10.
 * **A benefit specific to this tree:** with TLS ending on the P4, the tainted
   C6 forwards only ciphertext. The Espressif blob can't read admin traffic or
   credentials.
+* **Gemini protocol and Client mTLS:** The Gemini protocol (`gemini://`, port 1965)
+  mandates TLS 1.2/1.3 and uses Client TLS Certificates (mTLS, status codes 60–62)
+  as its sole standard user authentication mechanism. Implementing a full Gemini
+  client and server (following Phase 53's Spartan foundation) directly depends on
+  this TLS infrastructure and the LugalOS CA issuing and verifying client mTLS
+  certificates mapped to `peers` grants. Spartan (port 300, plain TCP) serves as
+  the intermediate, zero-crypto hypertext transport in Phase 53 until this TLS
+  stack is operational.
 
 ### 1.6 Crypto on C6 sensor nodes (to investigate)
 
