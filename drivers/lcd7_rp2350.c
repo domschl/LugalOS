@@ -352,6 +352,19 @@ static void lcd7_blank(bool off) {
     g_brightness = keep;
 }
 
+/* Wait until the frame transfer completes (entering vertical blanking).
+ * FB_CH sets its completion flag in DMA_INTR (0x50000400) when line 479 finishes;
+ * clearing and waiting for bit FB_CH synchronizes rendering with VBLANK,
+ * completely eliminating screen tearing during ribbon movement and animations. */
+static void lcd7_wait_vsync(void) {
+    if (!g_running) return;
+    REG(DMA_BASE + 0x400) = (1u << FB_CH);
+    uint32_t timeout = 100000;
+    while ((REG(DMA_BASE + 0x400) & (1u << FB_CH)) == 0 && --timeout) {
+        /* spin */
+    }
+}
+
 static lcdterm_backend_t g_backend = {
     .name            = "RP2350-LCD-7",
     .text_test_title = "LugalOS on the RP2350-LCD-7: Spleen 8x16, 100 x 30 cells, 1-bpp at 56 Hz",
@@ -361,6 +374,8 @@ static lcdterm_backend_t g_backend = {
     .fb_region_count = 2,
     .flush           = NULL,
     .blank           = lcd7_blank,
+    .sync_pre        = lcd7_wait_vsync,
+    .sync_post       = NULL,
 };
 
 static void unreset(uint32_t mask) {

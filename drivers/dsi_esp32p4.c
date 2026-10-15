@@ -1111,6 +1111,19 @@ static void term_blank(bool off) {
     bl_set(off || !g_bl_on ? 0u : g_bl_level);
 }
 
+/* Display synchronization hook for intermediate animation frames:
+ * converts the updated 1-bpp rows into GRAY8 in g_fb and flushes them to PSRAM
+ * for immediate DW-GDMA scanout, checking for any bridge underrun. */
+static void term_sync_post(void) {
+    if (FGET(DSI_BRG_INT_RAW_REG, DSI_BRG_UNDERRUN_INT_RAW)) {
+        REG(DSI_BRG_INT_CLR_REG) = 0xffffffffu;
+        scan_stop();
+        scan_start();
+    }
+    term_convert(0, DSI_LCD_V_RES);
+    g_t_due = false;
+}
+
 static lcdterm_backend_t g_tbe = {
     .name            = "LCD-7B",
     .text_test_title = "LugalOS on the LCD-7B: Spleen 8x16, 128 x 37 cells, 1-bpp to GRAY8 over DSI at 60 Hz",
@@ -1120,6 +1133,8 @@ static lcdterm_backend_t g_tbe = {
     .fb_region_count = 0,              /* the terminal draws from the kernel here (lcdterm.h) */
     .flush           = term_flush,
     .blank           = term_blank,
+    .sync_pre        = NULL,
+    .sync_post       = term_sync_post,
 };
 
 /* The whole terminal again, from its 1-bpp frame -- after a test pattern
@@ -1129,6 +1144,9 @@ static void term_redraw(void) {
     g_t_hold = false;
     g_t_force = true;
     term_convert(0, DSI_LCD_V_RES);
+    /* Resynchronize scan-out to guarantee alignment */
+    scan_stop();
+    scan_start();
     console_unlock();
 }
 
@@ -1138,6 +1156,13 @@ static void term_flush_task(void *arg) {
     (void)arg;
     for (;;) {
         task_sleep_ms(16);
+        if (FGET(DSI_BRG_INT_RAW_REG, DSI_BRG_UNDERRUN_INT_RAW)) {
+            console_lock();
+            REG(DSI_BRG_INT_CLR_REG) = 0xffffffffu;
+            scan_stop();
+            scan_start();
+            console_unlock();
+        }
         if (!g_t_due) continue;
         console_lock();
         g_t_due = false;

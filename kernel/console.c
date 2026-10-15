@@ -162,6 +162,30 @@ void console_hotkey(unsigned code) {
     g_hotkey = code;
 }
 
+static void console_sync_readers(void) {
+    uint8_t req[2] = { 'R', 0 };
+    uint8_t reply[SCREEN_REPLY_LEN];
+    if (!console_canvas(req, 1, reply) || reply[0] != 0) return;
+    uint8_t count = reply[1];
+    for (uint8_t i = 0; i < count; i++) {
+        req[0] = 'R';
+        req[1] = i;
+        if (console_canvas(req, 2, reply) && reply[0] == 0) {
+            if (reply[1] == 3 /* RIBBON_WIN_READER */) {
+                uint8_t rid = reply[2];
+                int rx0 = (int)(reply[4] | (reply[5] << 8));
+                int rx1 = (int)(reply[6] | (reply[7] << 8));
+                int rw = rx1 - rx0 - 1;
+                if (rw > 0) {
+                    if (reader_set_target(rid, rw, 0)) {
+                        reader_update_instance(rid);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /* From an input wait only: a hotkey draws (a layout change) or writes 48 KB
  * to the SD card (a screenshot), neither of which belongs inside a print. */
 static void run_hotkey(void) {
@@ -184,6 +208,7 @@ static void run_hotkey(void) {
             (void)console_canvas(req, 3, reply);
             g_active_win_type = 1;
             vterm_set_active(vid);
+            console_sync_readers();
         }
         return;
     }
@@ -228,6 +253,7 @@ static void run_hotkey(void) {
                 g_active_win_type = 1;
             }
             vterm_set_active(reply[1]);
+            console_sync_readers();
         }
         return;
     }
@@ -257,6 +283,7 @@ static void run_hotkey(void) {
                     g_active_win_type = 1;
                 }
                 vterm_set_active(reply[1]);
+                console_sync_readers();
                 return;
             }
             if (reply[10] != 0) g_active_win_type = reply[10];
@@ -281,10 +308,12 @@ static void run_hotkey(void) {
     if (hk == CONSOLE_HOTKEY_TOGGLE_MAX) {
         uint8_t req[1] = { 'M' }, reply[SCREEN_REPLY_LEN];
         (void)console_canvas(req, 1, reply);
+        console_sync_readers();
         return;
     }
     uint8_t req[2] = { 'w', (uint8_t)(hk == CONSOLE_HOTKEY_RIGHT ? 1 : -1) }, reply[SCREEN_REPLY_LEN];
     (void)console_canvas(req, 2, reply);
+    console_sync_readers();
 }
 
 void console_bind(console_putc_fn putc) {
@@ -652,7 +681,7 @@ static void console_pump(void) {
     blank_check();
     for (unsigned i = 0; i < g_ninputs; i++) {
         const console_input_t *src = g_inputs[i];
-        if (g_active_win_type == 3 /* RIBBON_WIN_READER */ && reader_is_active()) {
+        if (src->local && g_active_win_type == 3 /* RIBBON_WIN_READER */ && reader_is_active()) {
             while (src->has_char()) {
                 int c = src->getc();
                 if (c < 0) break;

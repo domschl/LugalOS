@@ -922,10 +922,11 @@ void zmap_poll(struct zmap_state *s)
     if (!s || !s->active) return;
 
     uint8_t req[1] = { 'S' }, reply[SCREEN_REPLY_LEN];
-    if (!console_canvas(req, 1, reply) || reply[0] != 0 || reply[8] == SCREEN_LAYOUT_TEXT) return;
+    if (!console_canvas(req, 1, reply) || reply[0] != 0) return;
 
     int w = (int)(reply[2] | (reply[3] << 8));
     int h = (int)(reply[4] | (reply[5] << 8));
+    if (w <= 0 || h <= 0) return;
     uint16_t damage = (uint16_t)(reply[6] | (reply[7] << 8));
 
     bool changed = false;

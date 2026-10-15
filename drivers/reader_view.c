@@ -186,10 +186,18 @@ static canvas1_t *get_reader_canvas(uint8_t rid) {
     return ramscreen_get_reader_backing(rid);
 }
 
-void reader_set_target(uint8_t rid, int w, int h) {
-    if (rid >= READER_MAX_INSTANCES) return;
-    if (w > 0) s_readers[rid].win_w = w;
-    if (h > 0) s_readers[rid].win_h = h;
+bool reader_set_target(uint8_t rid, int w, int h) {
+    if (rid >= READER_MAX_INSTANCES) return false;
+    bool changed = false;
+    if (w > 0 && s_readers[rid].win_w != w) {
+        s_readers[rid].win_w = w;
+        changed = true;
+    }
+    if (h > 0 && s_readers[rid].win_h != h) {
+        s_readers[rid].win_h = h;
+        changed = true;
+    }
+    return changed;
 }
 
 void reader_update_instance(uint8_t rid) {
@@ -493,6 +501,10 @@ void reader_feed_key(int c) {
                     console_hotkey(CONSOLE_HOTKEY_CLOSE);
                 } else if (esc_arg == '\\') {
                     console_hotkey(CONSOLE_HOTKEY_TOGGLE_MAX);
+                } else if (esc_arg == '[') {
+                    console_hotkey(CONSOLE_HOTKEY_LEFT);
+                } else if (esc_arg == ']') {
+                    console_hotkey(CONSOLE_HOTKEY_RIGHT);
                 }
             } else if (esc_mod == 10 && esc_arg == '3') {
                 console_hotkey(CONSOLE_HOTKEY_SCREENSHOT);

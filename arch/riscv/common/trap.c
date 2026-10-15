@@ -12,6 +12,7 @@
 #include "kernel/devirq.h"
 #include "kernel/time.h"
 #include "kernel/palloc.h"
+#include "drivers/lcdterm.h"
 #include <stdbool.h>
 #include "fs/vfs.h"
 #if defined(CONFIG_KOBJ)
@@ -1274,6 +1275,14 @@ void trap_handler(trap_frame_t *frame) {
                      * pointer; capped at a minute so a garbage argument
                      * cannot park a driver for weeks. */
                     task_sleep_ms((uint32_t)frame->a1 > 60000u ? 60000u : (uint32_t)frame->a1);
+                    ret = 0;
+                    break;
+                case SYS_LCD_SYNC:
+                    if (frame->a1 == 0) {
+                        lcdterm_sync_pre();
+                    } else {
+                        lcdterm_sync_post();
+                    }
                     ret = 0;
                     break;
                 case SYS_DELAY_US:

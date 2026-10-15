@@ -1240,7 +1240,7 @@ static void cmd_reader(const char *arg) {
             reader_update_instance(rid);
             reader_set_active_instance(rid);
             console_set_active_win_type(3 /* RIBBON_WIN_READER */);
-            cprintf("reader: opened '%s' in reader [%d]\n", arg, rid);
+            cprintf("reader: opened '%s' in ribbon [%d]\n", arg, rid);
         } else {
             cprintf("reader: cannot open '%s'\n", arg);
         }

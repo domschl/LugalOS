@@ -360,6 +360,9 @@ typedef enum { CHESS_CMD_OK = 0, CHESS_CMD_QUIT } ChessCmdResult;
 static void chess_show(const Position *pos);
 #if !(defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735)
 static void canvas_board_begin(const Position *pos);    /* 37.4, defined beside chess_show() */
+static void chess_canvas_poll(void);
+#else
+static inline void chess_canvas_poll(void) { }
 #endif
 
 static ChessCmdResult console_dispatch_line(const char *line);
@@ -385,6 +388,7 @@ static ChessEventKind chess_next_event(ChessEvent *ev, int timeout_ms,
     ev->line = NULL;
 
     for (;;) {
+        chess_canvas_poll();
         ChessAbort a = chess_abort_requested();
         if (a != CHESS_ABORT_NONE) {
             ev->kind = CHESS_EVENT_ABORT;
@@ -2734,9 +2738,10 @@ static void cb_put16(uint8_t *b, int v) {
  * *w, *h. */
 static bool cb_canvas(int *w, int *h) {
     uint8_t req[1] = { 'S' }, reply[SCREEN_REPLY_LEN];
-    if (!console_canvas(req, 1, reply) || reply[8] == SCREEN_LAYOUT_TEXT) return false;
+    if (!console_canvas(req, 1, reply)) return false;
     *w = cb_u16(reply, 2);
     *h = cb_u16(reply, 4);
+    if (*w <= 0 || *h <= 0) return false;
     return true;
 }
 
@@ -2761,6 +2766,9 @@ static void canvas_board_draw(const Position *pos) {
         } else {
             return;
         }
+    } else {
+        uint8_t clr_req[2] = { 'F', 0 }, clr_reply[SCREEN_REPLY_LEN];
+        (void)console_canvas(clr_req, 2, clr_reply);
     }
     int x0 = (w - CB_N) / 2, y0 = (h - CB_N) / 2;
     uint8_t req[9 + CB_N / 8], reply[SCREEN_REPLY_LEN];
@@ -2806,8 +2814,38 @@ static void canvas_board_draw(const Position *pos) {
     }
 }
 
+#if !(defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735)
+static int g_chess_damage = -1;
+static int g_chess_last_w = -1, g_chess_last_h = -1;
+
+static void chess_canvas_poll(void) {
+    int w, h;
+    if (!cb_canvas(&w, &h)) return;
+    uint8_t req[1] = { 'S' }, reply[SCREEN_REPLY_LEN];
+    if (!console_canvas(req, 1, reply)) return;
+    int dmg = (int)cb_u16(reply, 6);
+    if (g_chess_damage < 0) {
+        g_chess_damage = dmg;
+        g_chess_last_w = w;
+        g_chess_last_h = h;
+        return;
+    }
+    if (dmg != g_chess_damage || w != g_chess_last_w || h != g_chess_last_h) {
+        g_chess_damage = dmg;
+        g_chess_last_w = w;
+        g_chess_last_h = h;
+        canvas_board_draw(&g_chess_pos);
+    }
+}
+#endif
+
 /* A session starts: on a real screen, the board goes beside the text. */
 static void canvas_board_begin(const Position *pos) {
+#if !(defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735)
+    g_chess_damage = -1;
+    g_chess_last_w = -1;
+    g_chess_last_h = -1;
+#endif
     unsigned cols, rows;
     if (console_size(&cols, &rows)) {
         uint8_t req[16];

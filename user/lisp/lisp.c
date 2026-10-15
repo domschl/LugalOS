@@ -4916,7 +4916,9 @@ static void canvas_poll_locked(void) {
     lisp_val_t *f = env_get(global_env, CANVAS_REDRAW_SYM);
     if (!f || (f->type != LISP_LAMBDA && f->type != LISP_PRIMITIVE)) return;
     uint8_t req[1] = { 'S' };
-    if (!console_canvas(req, 1, reply) || reply[8] == SCREEN_LAYOUT_TEXT) return;
+    if (!console_canvas(req, 1, reply)) return;
+    int sw = (int)(reply[2] | (reply[3] << 8));
+    if (reply[8] == SCREEN_LAYOUT_TEXT && sw <= 0) return;
     if (reply16(reply, 6) == g_canvas_seen) return;
     g_canvas_seen = reply16(reply, 6);
     uint8_t begin[2] = { 'D', 1 }, end[2] = { 'D', 0 };

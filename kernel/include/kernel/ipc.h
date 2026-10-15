@@ -62,6 +62,7 @@
  * keyboard task between polls, a hub's power-good time) would take a slice of
  * every scheduler round doing nothing; this lets it block instead. */
 #define SYS_SLEEP_MS         28
+#define SYS_LCD_SYNC         29
 
 void ipc_init(void);
 

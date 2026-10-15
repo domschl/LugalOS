@@ -28,7 +28,7 @@ bool reader_is_active(void);
 bool reader_instance_is_active(uint8_t rid);
 bool reader_back(void);
 bool reader_back_instance(uint8_t rid);
-void reader_set_target(uint8_t rid, int w, int h);
+bool reader_set_target(uint8_t rid, int w, int h);
 void reader_update(void);
 void reader_update_instance(uint8_t rid);
 uint8_t reader_get_active_instance(void);

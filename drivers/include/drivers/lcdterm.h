@@ -49,6 +49,11 @@ typedef struct {
     void      (*flush)(unsigned y0, unsigned y1);
     /* 47.11: the backlight off, or back at its level (idle blanking). */
     void      (*blank)(bool off);
+    /* Display synchronization hooks: sync_pre before rendering intermediate
+     * frame (e.g. wait for VBLANK to eliminate tearing on RP2350); sync_post
+     * after rendering intermediate frame (e.g. convert & flush to PSRAM on P4). */
+    void      (*sync_pre)(void);
+    void      (*sync_post)(void);
 } lcdterm_backend_t;
 
 /* Takes the backend (kept by pointer: it must outlive the terminal), finds
@@ -87,5 +92,7 @@ void lcdterm_scroll_test(unsigned n);
 void lcdterm_report(void);
 canvas1_t *lcdterm_get_canvas_backing(uint8_t cid);
 canvas1_t *lcdterm_get_reader_backing(uint8_t rid);
+void lcdterm_sync_pre(void);
+void lcdterm_sync_post(void);
 
 #endif /* LUGALOS_DRIVERS_LCDTERM_H */

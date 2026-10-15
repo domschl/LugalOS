@@ -130,6 +130,7 @@ typedef struct {
         uint8_t  vterm_id;
         bool     in_use;
     } terms[SCREEN_MAX_TERMS];          /* up to 8 concurrent terminal window instances */
+    bool      animating;
     uint16_t  shadow[];                 /* shadow buffers for all 8 terminals (8 * cols * rows) */
 } screen_t;
 
