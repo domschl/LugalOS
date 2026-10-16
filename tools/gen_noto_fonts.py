@@ -20,12 +20,12 @@ from pathlib import Path
 from PIL import Image, ImageFont, ImageDraw
 
 MONO_PATHS = [
-    "/usr/share/fonts/noto/NotoSansMono-CondensedMedium.ttf",
-    "/usr/share/fonts/truetype/noto/NotoSansMono-CondensedMedium.ttf",
     "/usr/share/fonts/noto/NotoSansMono-Medium.ttf",
     "/usr/share/fonts/truetype/noto/NotoSansMono-Medium.ttf",
     "/usr/share/fonts/noto/NotoSansMono-Regular.ttf",
     "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
+    "/usr/share/fonts/noto/NotoSansMono-CondensedMedium.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSansMono-CondensedMedium.ttf",
 ]
 
 SERIF_PATHS = [
@@ -219,7 +219,7 @@ def generate_mono():
                 # Typographic characters from font (euro, quotes, bullet, ellipsis)
                 img_l = Image.new('L', (16, CELL_H), color=0)
                 draw_l = ImageDraw.Draw(img_l)
-                draw_l.text((1, -3), chr(cp), font=font, fill=255)
+                draw_l.text((0, -4), chr(cp), font=font, fill=255)
 
                 g_1 = []
                 for y in range(CELL_H):
@@ -242,7 +242,7 @@ def generate_mono():
             ch = chr(code)
             img_l = Image.new('L', (16, CELL_H), color=0)
             draw_l = ImageDraw.Draw(img_l)
-            draw_l.text((1, -3), ch, font=font, fill=255)
+            draw_l.text((0, -4), ch, font=font, fill=255)
 
             g_1 = []
             for y in range(CELL_H):

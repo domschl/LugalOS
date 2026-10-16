@@ -37,7 +37,7 @@
 #if defined(CONFIG_FONT_HIDPI) || (defined(CONFIG_FONT_CELL_H) && (CONFIG_FONT_CELL_H == 32))
 #define READER_IS_HIDPI    1
 #define READER_MARGIN_X    36
-#define READER_LINE_H      38
+#define READER_LINE_H      30
 #else
 #define READER_IS_HIDPI    0
 #define READER_MARGIN_X    24
@@ -965,11 +965,7 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
                     /* Process line */
                     if (gem.type == GEM_LINE_TEXT) {
                         render_wrapped_serif_line(&rd, margin_x, max_w, gem.text, false, READER_LINE_H, scroll_y, h, &doc_y);
-#if READER_IS_HIDPI
-                        doc_y += 8;
-#else
                         doc_y += 4;
-#endif
                     }
                 }
             }
@@ -991,11 +987,11 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
                 switch (gem.type) {
                 case GEM_LINE_H1:
 #if READER_IS_HIDPI
-                    if (screen_y + 44 >= 0 && screen_y < h) {
+                    if (screen_y + 40 >= 0 && screen_y < h) {
                         rdraw_serif_text(&rd, margin_x, screen_y, gem.text, strlen(gem.text), true);
-                        rdraw_hline(&rd, margin_x, margin_x + max_w, screen_y + 36, READER_RULE_GRAY8, CANVAS1_BLACK);
+                        rdraw_hline(&rd, margin_x, margin_x + max_w, screen_y + 32, READER_RULE_GRAY8, CANVAS1_BLACK);
                     }
-                    doc_y += 52;
+                    doc_y += 44;
 #else
                     if (screen_y + 26 >= 0 && screen_y < h) {
                         rdraw_serif_text(&rd, margin_x, screen_y, gem.text, strlen(gem.text), true);
@@ -1007,10 +1003,10 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
 
                 case GEM_LINE_H2:
 #if READER_IS_HIDPI
-                    if (screen_y + 38 >= 0 && screen_y < h) {
+                    if (screen_y + 34 >= 0 && screen_y < h) {
                         rdraw_serif_text(&rd, margin_x, screen_y, gem.text, strlen(gem.text), true);
                     }
-                    doc_y += 44;
+                    doc_y += 38;
 #else
                     if (screen_y + 22 >= 0 && screen_y < h) {
                         rdraw_serif_text(&rd, margin_x, screen_y, gem.text, strlen(gem.text), true);
@@ -1021,10 +1017,10 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
 
                 case GEM_LINE_H3:
 #if READER_IS_HIDPI
-                    if (screen_y + 36 >= 0 && screen_y < h) {
+                    if (screen_y + 32 >= 0 && screen_y < h) {
                         rdraw_serif_text(&rd, margin_x, screen_y, gem.text, strlen(gem.text), false);
                     }
-                    doc_y += 40;
+                    doc_y += 34;
 #else
                     if (screen_y + 20 >= 0 && screen_y < h) {
                         rdraw_serif_text(&rd, margin_x, screen_y, gem.text, strlen(gem.text), false);
@@ -1035,7 +1031,7 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
 
                 case GEM_LINE_BLANK:
 #if READER_IS_HIDPI
-                    doc_y += 20;
+                    doc_y += 14;
 #else
                     doc_y += 12;
 #endif
@@ -1043,11 +1039,11 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
 
                 case GEM_LINE_LIST:
 #if READER_IS_HIDPI
-                    if (screen_y + 32 >= 0 && screen_y < h) {
-                        rdraw_fill(&rd, margin_x + 8, screen_y + 14, margin_x + 14, screen_y + 20, READER_FG_GRAY8, CANVAS1_BLACK);
+                    if (screen_y + 30 >= 0 && screen_y < h) {
+                        rdraw_fill(&rd, margin_x + 8, screen_y + 12, margin_x + 14, screen_y + 18, READER_FG_GRAY8, CANVAS1_BLACK);
                     }
                     render_wrapped_serif_line(&rd, margin_x + 28, max_w - 28, gem.text, false, READER_LINE_H, scroll_y, h, &doc_y);
-                    doc_y += 8;
+                    doc_y += 4;
 #else
                     if (screen_y + 16 >= 0 && screen_y < h) {
                         rdraw_fill(&rd, margin_x + 6, screen_y + 6, margin_x + 9, screen_y + 9, READER_FG_GRAY8, CANVAS1_BLACK);
@@ -1152,11 +1148,7 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
                 case GEM_LINE_TEXT:
                 default:
                     render_wrapped_serif_line(&rd, margin_x, max_w, gem.text, false, READER_LINE_H, scroll_y, h, &doc_y);
-#if READER_IS_HIDPI
-                    doc_y += 8;
-#else
                     doc_y += 4;
-#endif
                     break;
                 }
             } else if (line_pos < (int)sizeof(line_buf) - 1) {

@@ -173,8 +173,8 @@ All tables reside in Flash `.rodata` (XIP):
 * **Bug Fixes & Refinements**:
   - Fix typed character visibility: explicit interactive damage trigger in `lcdterm_console_flush()`; batched character writes during bulk output flush on newlines only.
   - Fix Reader kinetic scroll clipping: updated visible window row bounds in `lcdterm_get_visible_readers()` and `lcdterm_get_visible_canvases565()` to use `(int)FONT_CELL_H * text_rows`.
-  - Reader Typography Upgrade: switched proportional font to `Gentium Book` at 26pt (`GentiumBook-Regular.ttf`, 95 ASCII glyphs with FreeType grayscale thresholding >= 96), delivering classic book typography with optical proportion matching 280 DPI.
-  - Terminal Shell Typography & Spacing: generated `Noto Sans Mono Condensed Medium` at 26pt (`NotoSansMono-CondensedMedium.ttf`); analyzed character-spacing metrics across 16x32 grid (advance 13.78 px vs 16 px cell width).
+  - Reader Typography Upgrade: switched proportional font to `Gentium Book` at 26pt (`GentiumBook-Regular.ttf`, 95 ASCII glyphs with FreeType grayscale thresholding >= 96), delivering classic book typography with optical proportion matching 280 DPI; tightened line height from 38 px to 30 px ($1.15\times$ classic print leading) and calibrated heading/paragraph breaks.
+  - Terminal Shell Typography: set `Noto Sans Mono Medium` at 26pt (`NotoSansMono-Medium.ttf`), achieving natural advance width (15.59 px matching the 16x32 cell) with cohesive 2-3 px inter-character gaps and zero horizontal tracking distortion.
 * **M5Stack Tab5 Live Hardware Verification**:
   - Verify visual legibility of $16 \times 32$ terminal shell in Landscape ($1280 \times 720$, $78 \times 21$ cells).
   - Verify reading comfort of Gentium Book 26pt Gemtext reader in Portrait ($720 \times 1280$, $43 \times 38$ cells) and Landscape split ribbon.
