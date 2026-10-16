@@ -29,7 +29,9 @@
 ;;    always mounted (sign-off S3, plan/phase38_psram.md).
 (if (> (psram) 0)
     (mount-ramdisk 2048)
-(if (= (board) "rp2350")
+(if (or (= (board) "rp2350")
+        (and (>= (string-length (board)) 6)
+             (= (substring (board) 0 6) "rp2350")))
     (if (mounted? "/sd0")
         (display "[Init] /sd0 is writable; no RAM disk needed\n")
         (mount-ramdisk 64))

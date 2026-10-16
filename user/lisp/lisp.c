@@ -5786,8 +5786,14 @@ static lisp_val_t *prim_ports(lisp_val_t *args, lisp_val_t *env) {
 
 static lisp_val_t *prim_board(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
-#if defined(CONFIG_BOARD_RP2350)
+#if defined(LUGALOS_BOARD_ID)
+    return make_str(LUGALOS_BOARD_ID);
+#elif defined(CONFIG_BOARD_RP2350)
     return make_str("rp2350");
+#elif defined(CONFIG_BOARD_ESP32P4)
+    return make_str("esp32p4");
+#elif defined(CONFIG_BOARD_ESP32C6)
+    return make_str("esp32c6");
 #elif defined(CONFIG_BOARD_K210)
     return make_str("k210");
 #else
