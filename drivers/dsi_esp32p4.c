@@ -884,7 +884,11 @@ void dsi_lcd_flip(bool wait_vsync) {
     g_flip_pending = true;
     if (wait_vsync) {
         uint64_t t0 = time_get_us();
-        while (g_flip_pending && time_get_us() - t0 < 50000u) { }
+        while (g_flip_pending && time_get_us() - t0 < 50000u) {
+            if (REG(DMAC_CH1_INTSTATUS0_REG) & (GDMA_EV_DMA_TFR_DONE | GDMA_EV_ERRORS)) {
+                gdma_isr(NULL);
+            }
+        }
     }
 }
 
@@ -1359,7 +1363,13 @@ static void term_sync_post(void) {
     term_convert(0, DSI_LCD_V_RES);
     g_t_due = false;
     if (g_double_buffered) {
-        dsi_lcd_flip(true);
+        /* Wait for the flip armed by term_convert to complete at hardware VSYNC */
+        uint64_t t0 = time_get_us();
+        while (g_flip_pending && time_get_us() - t0 < 50000u) {
+            if (REG(DMAC_CH1_INTSTATUS0_REG) & (GDMA_EV_DMA_TFR_DONE | GDMA_EV_ERRORS)) {
+                gdma_isr(NULL);
+            }
+        }
     }
     console_unlock();
 }

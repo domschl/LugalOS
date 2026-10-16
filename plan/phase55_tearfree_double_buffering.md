@@ -166,23 +166,15 @@ CPU / Rendering Engine (lcdterm, screen.c)
 * **Automated Hardware Suite**:
   * Add double-buffering integrity test to `tests/hw/test_esp32p4.py` and `tests/hw/test_rp2350.py`.
 
-### Milestone 55.7: RP2350 2-bpp Grayscale Mode & Configurable SRAM Feature Flag
-* **Feature Flag (`LUGALOS_RP2350_LCD_2BPP`)**:
-  * Configurable via CMake / board preset (default: `OFF`, strictly preserving existing SRAM budgets and test suites).
-  * **When OFF (1-bpp Default)**:
-    * Single buffer: 48 KB (12 SRAM pages).
-    * Double buffer: 96 KB (24 SRAM pages).
-    * Maximum SRAM headroom for concurrent interactive shells, compilation, and Lisp sessions.
-  * **When ON (2-bpp Grayscale Mode)**:
-    * Single buffer: 96 KB (24 SRAM pages).
-    * Double buffer: 192 KB (48 SRAM pages).
-    * 4 levels of grayscale (00 = white paper, 01 = light gray, 10 = medium gray, 11 = dark charcoal text), enabling 4-level anti-aliased serif fonts in the Reader view.
-* **PIO2 & DMA Pipeline for 2-bpp**:
-  * PIO2 SM1 shifts 2 bits per pixel at 24 MHz PCLK (50 words per 800-pixel line).
-  * DMA streaming bandwidth from SRAM: $96\text{ KB} \times 60\text{ Hz} = 5.76\text{ MB/s}$ (only ~1.1% of RP2350 crossbar SRAM bandwidth, zero bus contention with Flash XIP).
-  * Maps 2-bit values to 4 pre-configured RGB565 palette colors in hardware registers.
-* **SRAM vs. Typography Trade-Off**:
-  * Users can explicitly trade 48–96 KB of SRAM heap for e-reader quality typography on RP2350.
+### Milestone 55.7: RP2350 2-bpp Grayscale Mode -- NOT PLANNED (Declined)
+* **Status**: **NOT PLANNED (Architectural Decision: Declined)**.
+* **Decision Rationale**:
+  * **Resource Constraints**: A 2-bpp frame buffer on RP2350 consumes 96 KB for a single buffer or 192 KB for double-buffering. Out of 520 KB total SRAM (with ~330 KB available after kernel and stacks), allocating up to 192 KB for display buffers would reduce available SRAM for interactive terminal sessions, Lisp heaps, and C compilers by more than half.
+  * **Demo-Only Utility vs. Real Work**: Beyond a graphical visual demo, a 2-bpp setup on RP2350 would leave the machine too memory-constrained to run real multitasking workloads, causing existing memory-intensive tests to fail.
+  * **Variant Proliferation**: Introducing another build variant and display mode multiplies test matrices and maintenance overhead across RP2350 personas without sufficient practical payoff.
+* **Conclusion**:
+  * The RP2350-LCD-7 target remains committed to its proven, ultra-efficient **1-bpp monochrome architecture** (48 KB single / 96 KB double-buffered), preserving maximum SRAM for user workloads, Lisp objects, and concurrent shells.
+  * Enhanced 4-bpp / 16-level grayscale typography and 16-bit color canvases are reserved for targets with dedicated high-capacity PSRAM (ESP32-P4 with 32 MB PSRAM).
 
 ---
 
@@ -206,6 +198,7 @@ CPU / Rendering Engine (lcdterm, screen.c)
 | **55.3** | **DONE** | 4-bpp / 16-level serif typography, integer alpha-blend, Netpbm PGM/PPM screenshot export | 43/43 tests, `shot-004.png` |
 | **55.4** | **DONE** | Dual format canvas (`CANVAS_FMT_RGB565`), hybrid ribbon compositing, Lisp color primitives | 44/44 tests, `shot-005.png` |
 | **55.5** | **DONE** | VSYNC-paced 5-step ease-out deceleration curve, Reader smooth vertical scrolling with touch momentum | 45/45 tests, 100% pass |
+| **55.7** | **DECLINED** | RP2350 2-bpp grayscale mode & SRAM feature flag analysis | Not Planned (SRAM preservation) |
 
 ---
 

@@ -1220,6 +1220,7 @@ LCDTERM_UTEXT static inline void lcdterm_delay_us(uint32_t us) {
 #endif
 }
 
+#if defined(CONFIG_BOARD_RP2350)
 LCDTERM_UTEXT static inline void lcdterm_sync_pre(void) {
 #if defined(__riscv)
     register long r_a0 __asm__("a0") = SYS_LCD_SYNC;
@@ -1235,6 +1236,9 @@ LCDTERM_UTEXT static inline void lcdterm_sync_post(void) {
     __asm__ __volatile__("ecall" : "+r"(r_a0) : "r"(r_a1) : "memory");
 #endif
 }
+#else
+#include "drivers/lcdterm.h"
+#endif
 
 LCDTERM_UTEXT static void screen_animate_ribbon(screen_t *scr,
                                                 uint8_t win_a, int32_t a_start_rx0, int32_t a_start_rx1,
