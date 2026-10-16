@@ -340,6 +340,7 @@ uint32_t usbkbd_translate(usbkbd_xlate_t *x, uint32_t ev, uint32_t now_ms, uint8
                 else if (u == 0x50) hk = USBKBD_HOTKEY_FOCUS_LEFT;  /* Left: focus left */
                 else if (u == 0x4f) hk = USBKBD_HOTKEY_FOCUS_RIGHT; /* Right: focus right */
                 else if (u == 0x1a) hk = USBKBD_HOTKEY_CLOSE;       /* 'w' / 'W': close window */
+                else if (u == 0x12) hk = USBKBD_HOTKEY_ORIENT;      /* 'o' / 'O': toggle orientation */
                 else if (u == 0x2f) hk = USBKBD_HOTKEY_LEFT;        /* '[': shrink column */
                 else if (u == 0x30) hk = USBKBD_HOTKEY_RIGHT;       /* ']': expand column */
                 else if (u == 0x31) hk = USBKBD_HOTKEY_SWAP;        /* '\': swap */
@@ -557,14 +558,17 @@ int usbkbd_selftest(void) {
     uint8_t hk_cr = c.hotkey; c.hotkey = 0;
     (void)KEY(0x1a, 0x08);                      /* Super-w */
     uint8_t hk_w = c.hotkey; c.hotkey = 0;
+    (void)KEY(0x12, 0x08);                      /* Super-o */
+    uint8_t hk_o = c.hotkey; c.hotkey = 0;
     (void)KEY(0x1e, 0x08);                      /* Super-1 */
     uint8_t hk_1 = c.hotkey; c.hotkey = 0;
-    CHECK("Super window hotkeys: Enter/Left/Right/Ctrl-Left/Right/w/1/screenshot",
+    CHECK("Super window hotkeys: Enter/Left/Right/Ctrl-Left/Right/w/o/1/screenshot",
           m == 0 && m2 == 0 && m6 == 0 && hk1 == USBKBD_HOTKEY_LEFT &&
           hk2 == USBKBD_HOTKEY_RIGHT && hk6 == USBKBD_HOTKEY_SCREENSHOT &&
           hk_ent == USBKBD_HOTKEY_NEW_TERM && hk_l == USBKBD_HOTKEY_FOCUS_LEFT &&
           hk_r == USBKBD_HOTKEY_FOCUS_RIGHT && hk_cl == USBKBD_HOTKEY_MOVE_LEFT &&
           hk_cr == USBKBD_HOTKEY_MOVE_RIGHT && hk_w == USBKBD_HOTKEY_CLOSE &&
+          hk_o == USBKBD_HOTKEY_ORIENT &&
           hk_1 == USBKBD_HOTKEY_JUMP(1));
 #undef SEQ_IS
 #undef KEY

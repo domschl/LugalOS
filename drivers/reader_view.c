@@ -540,15 +540,7 @@ void reader_feed_key(int c) {
         }
         if (c == 'o' || c == 'O') {
             /* Toggle display orientation between Portrait (0) and Landscape (270) */
-#if defined(CONFIG_BOARD_TAB5)
-            int cur_rot = dsi_lcd_get_orientation();
-            int new_rot = (cur_rot == 0) ? 270 : 0;
-            dsi_lcd_set_orientation(new_rot);
-            console_sync_readers();
-            reader_update_instance(rid);
-            reader_set_active_instance(rid);
-            console_set_active_win_type(3 /* RIBBON_WIN_READER */);
-#endif
+            console_hotkey(CONSOLE_HOTKEY_ORIENT);
             return;
         }
         if (c >= '1' && c <= '9') {

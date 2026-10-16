@@ -91,6 +91,7 @@ typedef struct {
 #define USBKBD_HOTKEY_CLOSE        10u  /* Super+W : close active window */
 #define USBKBD_HOTKEY_JUMP_BASE    11u  /* Super+1 .. Super+9 (codes 11..19) */
 #define USBKBD_HOTKEY_JUMP(n)      (USBKBD_HOTKEY_JUMP_BASE + ((unsigned)(n) - 1u))
+#define USBKBD_HOTKEY_ORIENT       23u  /* Super+O : toggle display orientation (landscape/portrait) */
 /* The same numbers as kernel/console.h's CONSOLE_HOTKEY_*, which the
  * keyboard source hands them to unchanged. */
 

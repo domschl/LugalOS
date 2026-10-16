@@ -41,6 +41,7 @@ Every non-root window on the ribbon (terminals, canvases, and readers) features 
 | `Cmd+Right` | `ESC [ 1 ; 9 C` | Pan ribbon right, focusing next window |
 | `Cmd+Left` | `ESC [ 1 ; 9 D` | Pan ribbon left, focusing previous window |
 | `Cmd+\` / `Super+\` | `ESC [ 92 ; 9 u` | Toggle Maximize / Restore width of active window |
+| `Cmd+O` / `Super+O` | `ESC [ 111 ; 9 u` | Toggle display orientation between Portrait and Landscape (Tab5) |
 | `Cmd+W` / `Super+W` | `ESC [ 119 ; 9 u` | Close focused non-root window |
 | `Cmd+1`..`Cmd+9` | `ESC [ 49 ; 9 u` | Jump directly to window index 1..9 |
 | `Cmd+Shift+3` | `Super+Shift+3` | Capture full-screen PBM screenshot to `/sd0/screenshots/` |

@@ -14,6 +14,7 @@
 #include "drivers/lcd7.h"
 #include "drivers/lcdterm.h"
 #include "drivers/reader_view.h"
+#include "drivers/dsi_esp32p4.h"
 #include <string.h>
 
 /* See kernel/include/kernel/console.h. The formatting engine lives in
@@ -336,6 +337,18 @@ static void run_hotkey(void) {
         uint8_t req[1] = { 'M' }, reply[SCREEN_REPLY_LEN];
         (void)console_canvas(req, 1, reply);
         console_sync_readers();
+        return;
+    }
+    if (hk == CONSOLE_HOTKEY_ORIENT) {
+#if defined(CONFIG_BOARD_TAB5)
+        int cur = dsi_lcd_get_orientation();
+        int next = (cur == 0) ? 270 : 0;
+        dsi_lcd_set_orientation(next);
+        console_sync_readers();
+        if (reader_is_active()) {
+            reader_update();
+        }
+#endif
         return;
     }
     uint8_t req[2] = { 'w', (uint8_t)(hk == CONSOLE_HOTKEY_RIGHT ? 1 : -1) }, reply[SCREEN_REPLY_LEN];

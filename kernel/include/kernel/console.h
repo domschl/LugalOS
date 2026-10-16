@@ -167,6 +167,7 @@ bool console_pixels_format(const uint8_t **fb, unsigned *w, unsigned *h, unsigne
 #define CONSOLE_HOTKEY_TAP          20u /* 47.12: a touch tap, at console_touch_tap()'s point */
 #define CONSOLE_HOTKEY_SCROLL_UP    21u /* Vertical swipe / scroll up */
 #define CONSOLE_HOTKEY_SCROLL_DOWN  22u /* Vertical swipe / scroll down */
+#define CONSOLE_HOTKEY_ORIENT       23u /* Super+O : toggle display orientation (landscape/portrait) */
 void console_hotkey(unsigned code);
 
 /* 47.12: a tap on the panel at (x, y), screen pixels: focuses the window

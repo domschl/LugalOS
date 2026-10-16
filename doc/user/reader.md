@@ -52,6 +52,7 @@ When the Reader window has focus, standard keyboard navigation shortcuts are act
 * **Help & Controls**:
   * `Ctrl-H` / `?` / `h`: Open this Reader Help manual.
   * `r`: Reload and redraw the current document.
+  * `Super+O` / `Cmd+O` / `o`: Toggle display orientation between Portrait and Landscape (Tab5).
   * `Super+\` / `Cmd+\`: Toggle Maximize / Restore window width.
   * `q` / `Cmd-W`: Close the reader window and return focus to the terminal.
 

@@ -1738,7 +1738,16 @@ def test_tab5_orientation(b: Board) -> tuple[str, bool, str]:
     out_check2 = b.console_session.cmd("lcd orient", deadline=10.0)
     if "270 deg (Landscape)" not in out_check2:
         return name, False, f"did not report landscape: {out_check2.strip()[-200:]}"
-    return name, True, "switched to 0 deg Portrait and back to 270 deg Landscape"
+    # Test Super+O global hotkey over serial (CSI-u \x1b[111;9u)
+    _raw(b, b"\x1b[111;9u\r", 1.0)
+    out_hk_p = b.console_session.cmd("lcd orient", deadline=10.0)
+    if "0 deg (Portrait)" not in out_hk_p:
+        return name, False, f"Super+O did not toggle to portrait: {out_hk_p.strip()[-200:]}"
+    _raw(b, b"\x1b[111;9u\r", 1.0)
+    out_hk_l = b.console_session.cmd("lcd orient", deadline=10.0)
+    if "270 deg (Landscape)" not in out_hk_l:
+        return name, False, f"Super+O did not toggle to landscape: {out_hk_l.strip()[-200:]}"
+    return name, True, "switched to 0 deg Portrait and back to 270 deg Landscape (command & Super+O hotkey)"
 
 
 TESTS = [
