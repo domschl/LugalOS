@@ -100,6 +100,8 @@ typedef struct {
     /* 47.11: the backlight off (true) or back at its level (false), for idle
      * blanking; NULL where the panel cannot. */
     void (*blank)(bool off);
+    /* 55.3: format-aware frame pixels callback */
+    bool (*pixels_format)(const uint8_t **fb, unsigned *w, unsigned *h, unsigned *stride, unsigned *format);
 } console_screen_t;
 
 void console_set_screen(const console_screen_t *screen);
@@ -133,8 +135,15 @@ uint8_t console_active_win_type(void);
 void console_capture(char *buf, uint32_t cap);
 uint32_t console_capture_end(void);
 
+enum {
+    SCREEN_FORMAT_1BPP   = 0,
+    SCREEN_FORMAT_GRAY8  = 1,
+    SCREEN_FORMAT_RGB565 = 2,
+};
+
 /* 37.5a: the frame, for kernel/screenshot.c; false where there is none. */
 bool console_pixels(const uint8_t **fb, unsigned *w, unsigned *h, unsigned *stride);
+bool console_pixels_format(const uint8_t **fb, unsigned *w, unsigned *h, unsigned *stride, unsigned *format);
 
 /* 37.5a: keys the screen takes before any program sees them -- the USB
  * keyboard's Super+[ , Super+] , Super+\\ and Super+Shift+3. An input source hands one

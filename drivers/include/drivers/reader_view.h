@@ -34,5 +34,6 @@ void reader_update_instance(uint8_t rid);
 uint8_t reader_get_active_instance(void);
 void reader_set_active_instance(uint8_t rid);
 int reader_find_by_path(const char *path);
+uint8_t *reader_get_aa_backing(uint8_t rid, uint32_t *out_stride, int *out_w, int *out_h);
 
 #endif /* LUGALOS_DRIVERS_READER_VIEW_H */

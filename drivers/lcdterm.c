@@ -455,17 +455,29 @@ static bool lcdterm_pixels(const uint8_t **fb, unsigned *w, unsigned *h, unsigne
     return true;
 }
 
+static bool lcdterm_pixels_format(const uint8_t **fb, unsigned *w, unsigned *h, unsigned *stride, unsigned *format) {
+    if (!g_be) return false;
+    if (g_be->capture && g_be->capture(fb, w, h, stride, format)) return true;
+    *fb = g_be->fb;
+    *w = g_be->w;
+    *h = g_be->h;
+    *stride = g_be->stride;
+    if (format) *format = SCREEN_FORMAT_1BPP;
+    return true;
+}
+
 static void lcdterm_blank(bool off) {
     if (g_be && g_be->blank) g_be->blank(off);
 }
 
 static const console_screen_t g_console_screen = {
-    .flush     = lcdterm_console_flush,
-    .size      = lcdterm_console_size,
-    .set_title = lcdterm_set_title,
-    .canvas    = lcdterm_canvas,
-    .pixels    = lcdterm_pixels,
-    .blank     = lcdterm_blank,
+    .flush         = lcdterm_console_flush,
+    .size          = lcdterm_console_size,
+    .set_title     = lcdterm_set_title,
+    .canvas        = lcdterm_canvas,
+    .pixels        = lcdterm_pixels,
+    .blank         = lcdterm_blank,
+    .pixels_format = lcdterm_pixels_format,
 };
 
 const console_screen_t *lcdterm_console_screen(void) {
@@ -704,6 +716,33 @@ void lcdterm_sync_post(void) {
     if (g_be && g_be->sync_post) g_be->sync_post();
 }
 
+int lcdterm_get_visible_readers(uint8_t *out_rids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins) {
+    if (!g_scr || max_wins <= 0) return 0;
+    int count = 0;
+    int sw = (int)g_scr->cv.w;
+    int sh = (int)g_scr->cv.h;
+    int text_rows = (int)SCREEN_TEXT_ROWS(sh);
+    int tile_y0 = SCREEN_TILE_Y + 17;
+    int tile_y1 = SCREEN_TEXT_Y + 16 * text_rows - 1;
+
+    for (uint8_t i = 0; i < g_scr->ribbon.count && count < max_wins; i++) {
+        const ribbon_win_t *w = &g_scr->ribbon.wins[i];
+        if (w->type == RIBBON_WIN_READER) {
+            int cx0 = (int)w->rx0 - (int)g_scr->ribbon.x_view + 1;
+            int cx1 = (int)w->rx1 - (int)g_scr->ribbon.x_view - 1;
+            if (cx1 >= 0 && cx0 < sw) {
+                if (out_rids) out_rids[count] = w->vterm_id;
+                if (out_x0) out_x0[count] = cx0;
+                if (out_y0) out_y0[count] = tile_y0;
+                if (out_x1) out_x1[count] = cx1;
+                if (out_y1) out_y1[count] = tile_y1;
+                count++;
+            }
+        }
+    }
+    return count;
+}
+
 #else /* no panel */
 
 int lcdterm_init(const lcdterm_backend_t *be) { (void)be; return -1; }
@@ -728,5 +767,9 @@ canvas1_t *lcdterm_get_reader_backing(uint8_t rid) { (void)rid; return NULL; }
 bool lcdterm_is_animating(void) { return false; }
 void lcdterm_sync_pre(void) { }
 void lcdterm_sync_post(void) { }
+int lcdterm_get_visible_readers(uint8_t *out_rids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins) {
+    (void)out_rids; (void)out_x0; (void)out_y0; (void)out_x1; (void)out_y1; (void)max_wins;
+    return 0;
+}
 
 #endif /* LCDTERM_PRESENT */

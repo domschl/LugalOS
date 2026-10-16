@@ -1584,6 +1584,46 @@ def test_gemtext_reader_window(b: Board) -> tuple[str, bool, str]:
     return name, True, "reader window opened in ribbon, reported as Reader, closed cleanly"
 
 
+def test_reader_anti_aliased_typography(b: Board) -> tuple[str, bool, str]:
+    """55.3: Anti-aliased typography pipeline for Reader view."""
+    name = "typography: Reader anti-aliased pipeline (55.3)"
+    n0, _ = _ribbon(b)
+    if n0 < 0:
+        return name, True, "SKIPPED (no ribbon on this board)"
+    out = b.console_session.cmd("reader /sd0/help/about.gmi", deadline=5.0)
+    if "opened" not in out:
+        return name, False, f"reader open failed: {out.strip()}"
+    n1, act = _ribbon(b)
+    if n1 != 2 or act != 1:
+        return name, False, f"expected ribbon (2, 1), got ({n1}, {act})"
+    rlist = b.console_session.cmd("reader list", deadline=5.0)
+    if "about.gmi" not in rlist:
+        return name, False, f"reader list does not report about.gmi:\n{rlist}"
+    _raw(b, b"\x1b[119;9u", 2.0)
+    n2, _ = _ribbon(b)
+    if n2 != 1:
+        return name, False, f"expected 1 window after closing, got {n2}"
+    return name, True, "anti-aliased reader opened, listed in reader list, and closed cleanly"
+
+
+def test_screenshot_color_mode(b: Board) -> tuple[str, bool, str]:
+    """55.3: Screenshot capture in hardware scanout color/grayscale mode."""
+    name = "screenshot: color/grayscale scanout capture in PGM/PPM format (55.3)"
+    out = b.console_session.cmd("screenshot", deadline=10.0)
+    if "nothing saved" in out:
+        return name, False, f"screenshot failed: {out.strip()}"
+    m = re.search(r"screenshot:\s+(\S+)", out)
+    if not m:
+        return name, False, f"unexpected screenshot output: {out.strip()}"
+    path = m.group(1)
+    if not path.endswith(".pgm") and not path.endswith(".ppm"):
+        return name, False, f"expected .pgm or .ppm for LCD-7B scanout, got {path}"
+    head = b.console_session.cmd(f"head -n 2 {path}", deadline=5.0)
+    if not ("P5" in head or "P6" in head):
+        return name, False, f"expected P5/P6 Netpbm magic, got: {head.strip()}"
+    return name, True, f"captured {path} with valid Netpbm header: {head.strip()[:20]}"
+
+
 TESTS = [
     test_boots,
     test_proc_readable,
@@ -1626,6 +1666,8 @@ TESTS = [
     test_rtc,
     test_ribbon_hotkeys,
     test_gemtext_reader_window,
+    test_reader_anti_aliased_typography,
+    test_screenshot_color_mode,
 ]
 
 

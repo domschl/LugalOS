@@ -85,6 +85,17 @@ bool console_pixels(const uint8_t **fb, unsigned *w, unsigned *h, unsigned *stri
     return g_screen && g_screen->pixels && g_screen->pixels(fb, w, h, stride);
 }
 
+bool console_pixels_format(const uint8_t **fb, unsigned *w, unsigned *h, unsigned *stride, unsigned *format) {
+    if (!g_screen) return false;
+    if (g_screen->pixels_format) return g_screen->pixels_format(fb, w, h, stride, format);
+    if (g_screen->pixels) {
+        if (!g_screen->pixels(fb, w, h, stride)) return false;
+        if (format) *format = SCREEN_FORMAT_1BPP;
+        return true;
+    }
+    return false;
+}
+
 static volatile uint8_t g_active_win_type = 1; /* 1 = RIBBON_WIN_TERM */
 
 void console_set_active_win_type(uint8_t type) {

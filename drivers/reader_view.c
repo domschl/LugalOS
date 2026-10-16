@@ -21,12 +21,21 @@
 #include "fs/vfs.h"
 #include "net/spartan.h"
 #include "kernel/vterm.h"
+#include "kernel/palloc.h"
 #include <string.h>
 
 #define READER_LINKS_MAX   16
 #define READER_STACK_MAX   8
 #define READER_MARGIN_X    24
 #define READER_LINE_H      18
+
+#define READER_BG_GRAY8          250   /* Soft book-grade paper/cream (0xFA) */
+#define READER_FG_GRAY8          10    /* Deep charcoal dark slate ink (0x0A) */
+#define READER_RULE_GRAY8        70    /* Heading underline rule */
+#define READER_QUOTE_BAR_GRAY8   180   /* Blockquote left vertical bar */
+#define READER_LINK_LINE_GRAY8   120   /* Hyperlink underline */
+#define READER_SB_TRACK_GRAY8    230   /* Scrollbar track */
+#define READER_SB_THUMB_GRAY8    90    /* Scrollbar thumb */
 
 typedef struct {
     int  y0, y1;         /* client area y bounds */
@@ -46,6 +55,10 @@ typedef struct {
     int           link_count;
     char          history[READER_STACK_MAX][128];
     int           history_depth;
+    uint8_t      *aa_buf;        /* Anti-aliased 8-bpp (GRAY8) surface in PSRAM */
+    uint32_t      aa_stride;
+    int           aa_w, aa_h;
+    uint32_t      aa_pages;
 } reader_state_t;
 
 static reader_state_t s_readers[READER_MAX_INSTANCES];
@@ -144,6 +157,18 @@ static bool reader_open_internal(uint8_t rid, const char *resource, bool push_hi
     r->total_h = 0;
     r->link_count = 0;
     r->active = true;
+
+    if (!r->aa_buf) {
+        uint32_t pages = (1024u * 600u + 4095u) / 4096u;
+        r->aa_buf = (uint8_t *)palloc_pages_bulk(pages);
+        if (r->aa_buf) {
+            r->aa_pages = pages;
+            r->aa_stride = 1024;
+            r->aa_w = 1024;
+            r->aa_h = 600;
+        }
+    }
+
     return true;
 }
 
@@ -170,11 +195,25 @@ void reader_close_instance(uint8_t rid) {
         s_readers[rid].active = false;
         s_readers[rid].path[0] = '\0';
         s_readers[rid].title[0] = '\0';
+        if (s_readers[rid].aa_buf) {
+            palloc_free(s_readers[rid].aa_buf, s_readers[rid].aa_pages);
+            s_readers[rid].aa_buf = NULL;
+            s_readers[rid].aa_pages = 0;
+        }
     }
 }
 
 void reader_close(void) {
     reader_close_instance(s_active_reader_rid);
+}
+
+uint8_t *reader_get_aa_backing(uint8_t rid, uint32_t *out_stride, int *out_w, int *out_h) {
+    if (rid >= READER_MAX_INSTANCES || !s_readers[rid].active || !s_readers[rid].aa_buf)
+        return NULL;
+    if (out_stride) *out_stride = s_readers[rid].aa_stride;
+    if (out_w) *out_w = s_readers[rid].win_w > 0 ? s_readers[rid].win_w : s_readers[rid].aa_w;
+    if (out_h) *out_h = s_readers[rid].win_h > 0 ? s_readers[rid].win_h : s_readers[rid].aa_h;
+    return s_readers[rid].aa_buf;
 }
 
 static canvas1_t *get_reader_canvas(uint8_t rid) {
@@ -586,10 +625,89 @@ int reader_find_by_path(const char *path) {
     return -1;
 }
 
+typedef struct {
+    const canvas1_t *c;
+    uint8_t         *aa_fb;
+    uint32_t         aa_stride;
+    int              w, h;
+} rdraw_t;
+
+static void rdraw_fill(rdraw_t *rd, int x0, int y0, int x1, int y1, uint8_t gray, unsigned pat1) {
+    if (rd->c) {
+        canvas1_fill(rd->c, x0, y0, x1, y1, pat1);
+    }
+    if (rd->aa_fb) {
+        int cx0 = x0 < 0 ? 0 : x0;
+        int cx1 = x1 >= rd->w ? rd->w - 1 : x1;
+        int cy0 = y0 < 0 ? 0 : y0;
+        int cy1 = y1 >= rd->h ? rd->h - 1 : y1;
+        if (cx0 <= cx1 && cy0 <= cy1) {
+            int len = cx1 - cx0 + 1;
+            for (int y = cy0; y <= cy1; y++) {
+                memset(rd->aa_fb + (uint32_t)y * rd->aa_stride + cx0, gray, (size_t)len);
+            }
+        }
+    }
+}
+
+static void rdraw_hline(rdraw_t *rd, int x0, int x1, int y, uint8_t gray, unsigned pat1) {
+    if (rd->c) {
+        canvas1_hline(rd->c, x0, x1, y, pat1);
+    }
+    if (rd->aa_fb && y >= 0 && y < rd->h) {
+        int cx0 = x0 < 0 ? 0 : x0;
+        int cx1 = x1 >= rd->w ? rd->w - 1 : x1;
+        if (cx0 <= cx1) {
+            memset(rd->aa_fb + (uint32_t)y * rd->aa_stride + cx0, gray, (size_t)(cx1 - cx0 + 1));
+        }
+    }
+}
+
+static int rdraw_serif_text(rdraw_t *rd, int x, int y, const char *s, uint32_t len, bool bold) {
+    int drawn_w = 0;
+    if (rd->c) {
+        drawn_w = canvas1_serif_text(rd->c, x, y, s, len, bold);
+    }
+    if (rd->aa_fb) {
+        int aa_w = font_serif_aa_text_gray8(rd->aa_fb, rd->aa_stride, rd->w, rd->h,
+                                            x, y, s, len,
+                                            READER_FG_GRAY8, READER_BG_GRAY8, bold);
+        if (!rd->c) drawn_w = aa_w;
+    }
+    return drawn_w;
+}
+
+static void rdraw_mono_text(rdraw_t *rd, int x, int y, const char *s, uint32_t len, int max_chars) {
+    if (rd->c) {
+        canvas1_text(rd->c, x, y, s, len, max_chars, 0, 16, false);
+    }
+    if (rd->aa_fb) {
+        int cx = x;
+        for (uint32_t i = 0; i < len && s[i] && (int)i < max_chars; i++) {
+            uint8_t code = (uint8_t)s[i];
+            if (code < FONT8X16_FIRST) code = FONT8X16_REPLACEMENT;
+            const uint8_t *glyph = font8x16_glyphs[code - FONT8X16_FIRST];
+            for (int r = 0; r < 16; r++) {
+                int py = y + r;
+                if (py < 0 || py >= rd->h) continue;
+                uint8_t *dst = rd->aa_fb + (uint32_t)py * rd->aa_stride;
+                uint8_t bits = glyph[r];
+                for (int b = 0; b < 8; b++) {
+                    int px = cx + b;
+                    if (px >= 0 && px < rd->w && ((bits >> b) & 1u)) {
+                        dst[px] = READER_FG_GRAY8;
+                    }
+                }
+            }
+            cx += 8;
+        }
+    }
+}
+
 /* Word wrapping and proportional text rendering */
-static int render_wrapped_serif_line(const canvas1_t *c, int x0, int max_w,
-                                    const char *text, bool bold, int line_h,
-                                    int scroll_y, int win_h, int *out_doc_y) {
+static int render_wrapped_serif_line(rdraw_t *rd, int x0, int max_w,
+                                     const char *text, bool bold, int line_h,
+                                     int scroll_y, int win_h, int *out_doc_y) {
     int cur_x = x0;
     int cur_y = *out_doc_y;
     const char *p = text;
@@ -609,7 +727,7 @@ static int render_wrapped_serif_line(const canvas1_t *c, int x0, int max_w,
 
         int screen_y = cur_y - scroll_y;
         if (screen_y + line_h >= 0 && screen_y < win_h) {
-            canvas1_serif_text(c, cur_x, screen_y, word_start, word_len, bold);
+            rdraw_serif_text(rd, cur_x, screen_y, word_start, word_len, bold);
         }
         cur_x += (int)word_w + (int)font_serif_char_width(' ');
     }
@@ -619,14 +737,22 @@ static int render_wrapped_serif_line(const canvas1_t *c, int x0, int max_w,
 }
 
 void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
-    if (!c || w <= 0 || h <= 0 || rid >= READER_MAX_INSTANCES) return;
+    if (w <= 0 || h <= 0 || rid >= READER_MAX_INSTANCES) return;
     reader_state_t *r = &s_readers[rid];
 
+    rdraw_t rd = {
+        .c = c,
+        .aa_fb = r->aa_buf,
+        .aa_stride = r->aa_stride,
+        .w = w,
+        .h = h,
+    };
+
     /* Fill background */
-    canvas1_fill(c, 0, 0, w - 1, h - 1, CANVAS1_WHITE);
+    rdraw_fill(&rd, 0, 0, w - 1, h - 1, READER_BG_GRAY8, CANVAS1_WHITE);
 
     if (!r->active || !r->path[0]) {
-        canvas1_serif_text(c, READER_MARGIN_X, 32, "No document loaded. Use 'reader <file.gmi>' to open.", 52, false);
+        rdraw_serif_text(&rd, READER_MARGIN_X, 32, "No document loaded. Use 'reader <file.gmi>' to open.", 52, false);
         return;
     }
 
@@ -641,7 +767,7 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
     if (fd < 0) {
         char err[128];
         ksnprintf(err, sizeof(err), "Cannot open document: %s", file_to_open);
-        canvas1_serif_text(c, READER_MARGIN_X, 32, err, strlen(err), false);
+        rdraw_serif_text(&rd, READER_MARGIN_X, 32, err, strlen(err), false);
         return;
     }
 
@@ -670,7 +796,7 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
                 if (gemtext_parse_line(line_buf, &in_pre, &gem)) {
                     /* Process line */
                     if (gem.type == GEM_LINE_TEXT) {
-                        render_wrapped_serif_line(c, margin_x, max_w, gem.text, false, READER_LINE_H, scroll_y, h, &doc_y);
+                        render_wrapped_serif_line(&rd, margin_x, max_w, gem.text, false, READER_LINE_H, scroll_y, h, &doc_y);
                         doc_y += 4;
                     }
                 }
@@ -693,22 +819,22 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
                 switch (gem.type) {
                 case GEM_LINE_H1:
                     if (screen_y + 26 >= 0 && screen_y < h) {
-                        canvas1_serif_text(c, margin_x, screen_y, gem.text, strlen(gem.text), true);
-                        canvas1_hline(c, margin_x, margin_x + max_w, screen_y + 19, CANVAS1_BLACK);
+                        rdraw_serif_text(&rd, margin_x, screen_y, gem.text, strlen(gem.text), true);
+                        rdraw_hline(&rd, margin_x, margin_x + max_w, screen_y + 19, READER_RULE_GRAY8, CANVAS1_BLACK);
                     }
                     doc_y += 30;
                     break;
 
                 case GEM_LINE_H2:
                     if (screen_y + 22 >= 0 && screen_y < h) {
-                        canvas1_serif_text(c, margin_x, screen_y, gem.text, strlen(gem.text), true);
+                        rdraw_serif_text(&rd, margin_x, screen_y, gem.text, strlen(gem.text), true);
                     }
                     doc_y += 24;
                     break;
 
                 case GEM_LINE_H3:
                     if (screen_y + 20 >= 0 && screen_y < h) {
-                        canvas1_serif_text(c, margin_x, screen_y, gem.text, strlen(gem.text), false);
+                        rdraw_serif_text(&rd, margin_x, screen_y, gem.text, strlen(gem.text), false);
                     }
                     doc_y += 22;
                     break;
@@ -719,20 +845,20 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
 
                 case GEM_LINE_LIST:
                     if (screen_y + 16 >= 0 && screen_y < h) {
-                        canvas1_fill(c, margin_x + 6, screen_y + 6, margin_x + 9, screen_y + 9, CANVAS1_BLACK);
+                        rdraw_fill(&rd, margin_x + 6, screen_y + 6, margin_x + 9, screen_y + 9, READER_FG_GRAY8, CANVAS1_BLACK);
                     }
-                    render_wrapped_serif_line(c, margin_x + 18, max_w - 18, gem.text, false, READER_LINE_H, scroll_y, h, &doc_y);
+                    render_wrapped_serif_line(&rd, margin_x + 18, max_w - 18, gem.text, false, READER_LINE_H, scroll_y, h, &doc_y);
                     doc_y += 4;
                     break;
 
                 case GEM_LINE_QUOTE:
                     {
                         int q_start = doc_y;
-                        render_wrapped_serif_line(c, margin_x + 16, max_w - 16, gem.text, false, READER_LINE_H, scroll_y, h, &doc_y);
+                        render_wrapped_serif_line(&rd, margin_x + 16, max_w - 16, gem.text, false, READER_LINE_H, scroll_y, h, &doc_y);
                         int q_h = doc_y - q_start;
                         int q_sy = q_start - scroll_y;
                         if (q_sy + q_h >= 0 && q_sy < h) {
-                            canvas1_fill(c, margin_x + 4, q_sy, margin_x + 6, q_sy + q_h - 2, CANVAS1_GREY);
+                            rdraw_fill(&rd, margin_x + 4, q_sy, margin_x + 6, q_sy + q_h - 2, READER_QUOTE_BAR_GRAY8, CANVAS1_GREY);
                         }
                         doc_y += 6;
                     }
@@ -745,7 +871,7 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
                 case GEM_LINE_PRE_TEXT:
                     if (screen_y + 16 >= 0 && screen_y < h) {
                         /* Monospace 8x16 Spleen text */
-                        canvas1_text(c, margin_x + 12, screen_y, gem.text, strlen(gem.text), (max_w - 12) / 8, 0, 16, false);
+                        rdraw_mono_text(&rd, margin_x + 12, screen_y, gem.text, strlen(gem.text), (max_w - 12) / 8);
                     }
                     doc_y += 16;
                     break;
@@ -764,18 +890,18 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
 
                         char prefix[16];
                         ksnprintf(prefix, sizeof(prefix), "[%d] ", link_idx);
-                        int px_w = canvas1_serif_text(c, margin_x, screen_y, prefix, strlen(prefix), true);
+                        int px_w = rdraw_serif_text(&rd, margin_x, screen_y, prefix, strlen(prefix), true);
                         const char *lbl = gem.label[0] ? gem.label : gem.url;
-                        int lbl_w = canvas1_serif_text(c, margin_x + px_w, screen_y, lbl, strlen(lbl), true);
+                        int lbl_w = rdraw_serif_text(&rd, margin_x + px_w, screen_y, lbl, strlen(lbl), true);
                         /* Underline the link */
-                        canvas1_hline(c, margin_x + px_w, margin_x + px_w + lbl_w, screen_y + 16, CANVAS1_BLACK);
+                        rdraw_hline(&rd, margin_x + px_w, margin_x + px_w + lbl_w, screen_y + 16, READER_LINK_LINE_GRAY8, CANVAS1_BLACK);
                     }
                     doc_y += 22;
                     break;
 
                 case GEM_LINE_TEXT:
                 default:
-                    render_wrapped_serif_line(c, margin_x, max_w, gem.text, false, READER_LINE_H, scroll_y, h, &doc_y);
+                    render_wrapped_serif_line(&rd, margin_x, max_w, gem.text, false, READER_LINE_H, scroll_y, h, &doc_y);
                     doc_y += 4;
                     break;
                 }
@@ -796,7 +922,7 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
         int thumb_h = (h * h) / r->total_h;
         if (thumb_h < 16) thumb_h = 16;
         int thumb_y = (r->scroll_y * (h - thumb_h)) / (r->total_h - h);
-        canvas1_fill(c, sb_x, 0, sb_x + sb_w, h - 1, CANVAS1_GREY);
-        canvas1_fill(c, sb_x, thumb_y, sb_x + sb_w, thumb_y + thumb_h, CANVAS1_BLACK);
+        rdraw_fill(&rd, sb_x, 0, sb_x + sb_w, h - 1, READER_SB_TRACK_GRAY8, CANVAS1_GREY);
+        rdraw_fill(&rd, sb_x, thumb_y, sb_x + sb_w, thumb_y + thumb_h, READER_SB_THUMB_GRAY8, CANVAS1_BLACK);
     }
 }

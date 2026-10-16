@@ -54,6 +54,8 @@ typedef struct {
      * after rendering intermediate frame (e.g. convert & flush to PSRAM on P4). */
     void      (*sync_pre)(void);
     void      (*sync_post)(void);
+    /* 55.3: capture scanout pixels with format (optional) */
+    bool      (*capture)(const uint8_t **fb, unsigned *w, unsigned *h, unsigned *stride, unsigned *format);
 } lcdterm_backend_t;
 
 /* Takes the backend (kept by pointer: it must outlive the terminal), finds
@@ -96,10 +98,15 @@ canvas1_t *lcdterm_get_reader_backing(uint8_t rid);
 bool lcdterm_is_animating(void);
 void lcdterm_sync_pre(void);
 void lcdterm_sync_post(void);
+int lcdterm_get_visible_readers(uint8_t *out_rids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins);
 #else
 static inline bool lcdterm_is_animating(void) { return false; }
 static inline void lcdterm_sync_pre(void) { }
 static inline void lcdterm_sync_post(void) { }
+static inline int lcdterm_get_visible_readers(uint8_t *out_rids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins) {
+    (void)out_rids; (void)out_x0; (void)out_y0; (void)out_x1; (void)out_y1; (void)max_wins;
+    return 0;
+}
 #endif
 
 #endif /* LUGALOS_DRIVERS_LCDTERM_H */

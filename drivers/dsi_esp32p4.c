@@ -46,6 +46,7 @@
 #include "drivers/esp32p4_ledc_regs.h"
 #include "drivers/font8x16.h"
 #include "drivers/lcdterm.h"
+#include "drivers/reader_view.h"
 #include "arch/esp32p4_intr.h"
 #include "arch/trap.h"
 #include "kernel/console.h"
@@ -1204,6 +1205,51 @@ static void term_convert(unsigned y0, unsigned y1) {
         }
     }
 
+    /* 2b. Composite visible anti-aliased Reader windows onto fb_back() */
+    uint8_t rids[4];
+    int rx0[4], ry0[4], rx1[4], ry1[4];
+    int rcount = lcdterm_get_visible_readers(rids, rx0, ry0, rx1, ry1, 4);
+    for (int i = 0; i < rcount; i++) {
+        uint32_t aa_stride = 0;
+        int aa_w = 0, aa_h = 0;
+        uint8_t *aa_buf = reader_get_aa_backing(rids[i], &aa_stride, &aa_w, &aa_h);
+        if (!aa_buf) continue;
+
+        int x0 = rx0[i];
+        int x1 = rx1[i];
+        int y0 = ry0[i];
+        int y1 = ry1[i];
+
+        int cl_x0 = x0 < 0 ? 0 : x0;
+        int cl_x1 = x1 >= DSI_LCD_H_RES ? DSI_LCD_H_RES - 1 : x1;
+        int cl_y0 = y0 < 0 ? 0 : y0;
+        int cl_y1 = y1 >= DSI_LCD_V_RES ? DSI_LCD_V_RES - 1 : y1;
+        if (cl_x0 > cl_x1 || cl_y0 > cl_y1) continue;
+
+        int blit_w = cl_x1 - cl_x0 + 1;
+        int src_x_off = cl_x0 - x0;
+
+        for (int y = cl_y0; y <= cl_y1; y++) {
+            int src_y = y - y0;
+            if (src_y < 0 || src_y >= aa_h) continue;
+            const uint8_t *src_line = aa_buf + (uint32_t)src_y * aa_stride + src_x_off;
+
+            if (fmt == FB_RGB565) {
+                uint16_t *dst_line = (uint16_t *)fb + (size_t)y * DSI_LCD_H_RES + cl_x0;
+                for (int x = 0; x < blit_w; x++) {
+                    uint8_t g = src_line[x];
+                    dst_line[x] = (uint16_t)(((g >> 3) << 11) | ((g >> 2) << 5) | (g >> 3));
+                }
+            } else {
+                uint8_t *dst_line = fb + (size_t)y * DSI_LCD_H_RES + cl_x0;
+                memcpy(dst_line, src_line, (size_t)blit_w);
+            }
+        }
+        if (lo < 0 || cl_y0 < lo) lo = cl_y0;
+        if (cl_y1 > hi) hi = cl_y1;
+        n++;
+    }
+
     /* 3. Flush written rows and arm VSYNC flip */
     if (n) {
         fb_flush_buffer(fb, (unsigned)lo, (unsigned)hi + 1u);
@@ -1248,6 +1294,23 @@ static void term_sync_post(void) {
     console_unlock();
 }
 
+static bool term_capture(const uint8_t **fb, unsigned *w, unsigned *h, unsigned *stride, unsigned *format) {
+    if (!g_fb_fmt) return false;
+    uint8_t *front = fb_front();
+    if (!front) return false;
+    *fb = front;
+    *w = DSI_LCD_H_RES;
+    *h = DSI_LCD_V_RES;
+    if (g_fb_fmt == FB_RGB565) {
+        *stride = DSI_LCD_H_RES * 2u;
+        if (format) *format = SCREEN_FORMAT_RGB565;
+    } else {
+        *stride = DSI_LCD_H_RES;
+        if (format) *format = SCREEN_FORMAT_GRAY8;
+    }
+    return true;
+}
+
 static lcdterm_backend_t g_tbe = {
     .name            = "LCD-7B",
     .text_test_title = "LugalOS on the LCD-7B: Spleen 8x16, 128 x 37 cells, 1-bpp to GRAY8 over DSI at 60 Hz",
@@ -1259,6 +1322,7 @@ static lcdterm_backend_t g_tbe = {
     .blank           = term_blank,
     .sync_pre        = term_sync_pre,
     .sync_post       = term_sync_post,
+    .capture         = term_capture,
 };
 
 /* The whole terminal again, from its 1-bpp frame -- after a test pattern
