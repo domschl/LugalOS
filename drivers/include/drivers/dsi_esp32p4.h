@@ -24,7 +24,13 @@ bool dsi_lcd_is_up(void);
  * per pixel (GRAY8) or two (RGB565), stride DSI_LCD_H_RES pixels; and the
  * write-back of rows [y0, y1) that makes a drawing visible to the DMA. */
 uint8_t *dsi_lcd_fb(void);
+uint8_t *dsi_lcd_fb_front(void);
+uint8_t *dsi_lcd_fb_back(void);
 void dsi_lcd_fb_flush(unsigned y0, unsigned y1);
+
+/* Phase 55: tear-free double-buffering control and flipping. */
+void dsi_lcd_flip(bool wait_vsync);
+bool dsi_lcd_is_double_buffered(void);
 
 /* 47.7: the panel, a GRAY8 frame and the terminal (drivers/lcdterm.h) on
  * it, at boot. 0, or -1 if any of it is missing (the board then keeps its

@@ -651,7 +651,24 @@ typedef enum { PAT_NONE, PAT_BARS, PAT_HBARS, PAT_BER } pattern_t;
 
 static void scan_stop(void);
 static void scan_start(void);
-static uint8_t *g_fb;
+
+/* Phase 55: double-buffering in PSRAM to eliminate tearing and color fringing. */
+static uint8_t          *g_fb_pool[2];
+static volatile uint8_t  g_front_idx;
+static volatile bool     g_flip_pending;
+static volatile uint32_t g_flips;
+static bool              g_double_buffered = true;
+
+#define DIRTY_WORDS ((DSI_LCD_V_RES + 63u) / 64u)
+static uint64_t          g_dirty[2][DIRTY_WORDS];
+
+static inline uint8_t *fb_front(void) {
+    return g_fb_pool[g_front_idx];
+}
+
+static inline uint8_t *fb_back(void) {
+    return g_fb_pool[g_double_buffered ? (1u - g_front_idx) : 0u];
+}
 
 static void set_pattern(pattern_t p) {
     /* The bridge's DPI stream off whenever the generator is on -- and since
@@ -684,7 +701,7 @@ static void set_pattern(pattern_t p) {
          * panel shows is undefined. */
         FSET(DSI_HOST_VID_MODE_CFG_REG, DSI_HOST_VPG_EN, 0);
         g_pattern = "none";
-        if (g_fb) scan_start();
+        if (g_fb_pool[0]) scan_start();
         break;
     }
 }
@@ -749,7 +766,7 @@ static bool              g_gdma_ready;
 
 static void lli_arm(void) {
     volatile gdma_lli_t *l = LLI_NC;
-    l->sar_lo = (uint32_t)(uintptr_t)g_fb;
+    l->sar_lo = (uint32_t)(uintptr_t)fb_front();
     l->sar_hi = 0;
     l->dar_lo = MIPI_DSI_BRG_MEM_BASE;
     l->dar_hi = 0;
@@ -776,7 +793,16 @@ static void gdma_isr(void *ctx) {
     if (st & GDMA_EV_ERRORS) { g_dma_errs++; g_dma_last_err = st; }
     if (st & GDMA_EV_DMA_TFR_DONE) {
         g_frames++;
-        if (g_fb && !g_stop_at_frame_end) gdma_restart();
+        if (g_fb_pool[g_front_idx] && !g_stop_at_frame_end) {
+            if (g_flip_pending && g_double_buffered && g_fb_pool[1]) {
+                g_front_idx = 1u - g_front_idx;
+                LLI_NC->sar_lo = (uint32_t)(uintptr_t)g_fb_pool[g_front_idx];
+                g_flip_pending = false;
+                g_flips++;
+            }
+            __asm__ volatile ("fence" ::: "memory");
+            gdma_restart();
+        }
     }
 }
 
@@ -825,22 +851,45 @@ static void gdma_stop(void) {
     while ((REG(DMAC_CHEN0_REG) & (1u << GDMA_CH)) && time_get_us() - t0 < 50000u) { }
 }
 
-/* Write back [y0, y1) of the frame so the DMA sees it (§4: the CPU writes
+/* Write back [y0, y1) of the given frame so the DMA sees it (§4: the CPU writes
  * PSRAM through L1D and L2; the DMA reads the chip). Chunked into 32-row
  * blocks so the extmem writeback does not starve DW-GDMA of PSRAM bandwidth. */
-void dsi_lcd_fb_flush(unsigned y0, unsigned y1) {
-    if (!g_fb || y0 >= y1) return;
+static void fb_flush_buffer(uint8_t *fb, unsigned y0, unsigned y1) {
+    if (!fb || y0 >= y1) return;
     if (y1 > DSI_LCD_V_RES) y1 = DSI_LCD_V_RES;
     uint32_t row = DSI_LCD_H_RES * g_fb_bpp / 8u;
     const unsigned CHUNK = 32;
     for (unsigned y = y0; y < y1; y += CHUNK) {
         unsigned end_y = y + CHUNK;
         if (end_y > y1) end_y = y1;
-        esp32p4_extmem_writeback((uintptr_t)g_fb + y * row, (end_y - y) * row);
+        esp32p4_extmem_writeback((uintptr_t)fb + y * row, (end_y - y) * row);
     }
 }
 
-uint8_t *dsi_lcd_fb(void) { return g_fb; }
+void dsi_lcd_fb_flush(unsigned y0, unsigned y1) {
+    fb_flush_buffer(fb_back(), y0, y1);
+}
+
+uint8_t *dsi_lcd_fb(void) { return fb_back(); }
+uint8_t *dsi_lcd_fb_front(void) { return fb_front(); }
+uint8_t *dsi_lcd_fb_back(void) { return fb_back(); }
+
+static bool g_scanning;
+
+/* Phase 55: Flip front/back buffers at hardware VSYNC. If wait_vsync is true,
+ * blocks until the ISR switches the scanout address during vertical blanking. */
+void dsi_lcd_flip(bool wait_vsync) {
+    if (!g_double_buffered || !g_fb_pool[1] || !g_scanning) return;
+    g_flip_pending = true;
+    if (wait_vsync) {
+        uint64_t t0 = time_get_us();
+        while (g_flip_pending && time_get_us() - t0 < 50000u) { }
+    }
+}
+
+bool dsi_lcd_is_double_buffered(void) {
+    return g_double_buffered && (g_fb_pool[1] != NULL);
+}
 
 /* dpi_panel_init() for one frame buffer: frame in PSRAM, bridge format, the
  * item, channel on, bridge DPI output on, pattern generator off. */
@@ -854,8 +903,6 @@ uint8_t *dsi_lcd_fb(void) { return g_fb; }
      * 2-3 pixels wrapped to the left edge after a GRAY8 -> RGB565 -> GRAY8
      * switch). So: let the running frame finish, let the bridge drain its
      * FIFO onto the glass, and only then stop the DPI stream. */
-static bool g_scanning;
-
 static void scan_stop(void) {
     if (g_scanning) {
         g_stop_at_frame_end = true;
@@ -866,6 +913,7 @@ static void scan_stop(void) {
         while (FGET(DSI_BRG_FIFO_FLOW_STATUS_REG, DSI_BRG_RAW_BUF_DEPTH) && time_get_us() - t0 < 20000u) { }
         gdma_stop();
         g_stop_at_frame_end = false;
+        g_flip_pending = false;
         g_scanning = false;
     }
     FSET(DSI_BRG_DPI_MISC_CONFIG_REG, DSI_BRG_DPI_EN, 0);
@@ -873,7 +921,7 @@ static void scan_stop(void) {
 }
 
 static void scan_start(void) {
-    if (!g_fb) return;
+    if (!g_fb_pool[0]) return;
     lli_arm();
     REG(DMAC_CH1_INTCLEAR0_REG) = 0xffffffffu;
     gdma_restart();
@@ -890,27 +938,49 @@ static bool fb_start(fb_fmt_t fmt) {
     gdma_init();
     if (!g_gdma_ready) { cprintf("lcd: the DW-GDMA interrupt could not be routed\n"); return false; }
 
-    uint8_t *old = g_fb; uint32_t old_pages = g_fb_pages;
+    uint8_t *old0 = g_fb_pool[0];
+    uint8_t *old1 = g_fb_pool[1];
+    uint32_t old_pages = g_fb_pages;
     scan_stop();
-    g_fb = NULL;
-    if (old) palloc_free(old, old_pages);
+    g_fb_pool[0] = NULL;
+    g_fb_pool[1] = NULL;
+    if (old0) palloc_free(old0, old_pages);
+    if (old1) palloc_free(old1, old_pages);
 
     uint32_t bpp = (fmt == FB_RGB565) ? 16u : 8u;
     uint32_t bytes = DSI_LCD_H_RES * DSI_LCD_V_RES * bpp / 8u;
     uint32_t pages = (bytes + 4095u) / 4096u;
-    uint8_t *fb = palloc_pages_bulk(pages);
-    if (!fb || !palloc_is_bulk(fb)) {
-        if (fb) palloc_free(fb, pages);
+    uint8_t *fb0 = palloc_pages_bulk(pages);
+    if (!fb0 || !palloc_is_bulk(fb0)) {
+        if (fb0) palloc_free(fb0, pages);
         cprintf("lcd: no %lu KB run of PSRAM for the frame\n", (unsigned long)(bytes / 1024u));
         g_fb_fmt = FB_NONE;
         return false;
     }
-    memset(fb, 0, bytes);
-    esp32p4_extmem_writeback((uintptr_t)fb, bytes);
+    memset(fb0, 0, bytes);
+    esp32p4_extmem_writeback((uintptr_t)fb0, bytes);
+    g_fb_pool[0] = fb0;
+
+    if (g_double_buffered) {
+        uint8_t *fb1 = palloc_pages_bulk(pages);
+        if (fb1 && palloc_is_bulk(fb1)) {
+            memset(fb1, 0, bytes);
+            esp32p4_extmem_writeback((uintptr_t)fb1, bytes);
+            g_fb_pool[1] = fb1;
+        } else {
+            if (fb1) palloc_free(fb1, pages);
+            cprintf("lcd: no PSRAM for second buffer; single-buffered\n");
+            g_fb_pool[1] = NULL;
+            g_double_buffered = false;
+        }
+    }
+
+    g_front_idx = 0;
+    g_flip_pending = false;
+    memset(g_dirty, 0xff, sizeof g_dirty);
 
     g_fb_bpp = bpp; g_fb_bytes = bytes; g_fb_pages = pages; g_fb_fmt = fmt;
     bridge_format(bpp, fmt == FB_RGB565 ? 2u : 12u);
-    g_fb = fb;
     scan_start();
     return true;
 }
@@ -918,20 +988,24 @@ static bool fb_start(fb_fmt_t fmt) {
 /* ---- 9. drawing for the tests: gray levels, into whichever format runs ---- */
 
 static inline void px(unsigned x, unsigned y, uint8_t g) {
+    uint8_t *fb = fb_back();
+    if (!fb) return;
     if (g_fb_fmt == FB_RGB565) {
         uint16_t v = (uint16_t)(((g >> 3) << 11) | ((g >> 2) << 5) | (g >> 3));
-        ((uint16_t *)g_fb)[y * DSI_LCD_H_RES + x] = v;
+        ((uint16_t *)fb)[y * DSI_LCD_H_RES + x] = v;
     } else {
-        g_fb[y * DSI_LCD_H_RES + x] = g;
+        fb[y * DSI_LCD_H_RES + x] = g;
     }
 }
 
 static void fill(uint8_t g) {
+    uint8_t *fb = fb_back();
+    if (!fb) return;
     if (g_fb_fmt == FB_RGB565) {
         for (unsigned y = 0; y < DSI_LCD_V_RES; y++)
             for (unsigned x = 0; x < DSI_LCD_H_RES; x++) px(x, y, g);
     } else {
-        memset(g_fb, g, g_fb_bytes);
+        memset(fb, g, g_fb_bytes);
     }
 }
 
@@ -1078,32 +1152,66 @@ static void term_convert(unsigned y0, unsigned y1) {
      * `lcd fb`) holds console_lock, as this does -- the lcdflush task once
      * converted into a frame that `lcd colours` had just set to NULL (a
      * store to 0xad000, row 346 of an RGB565 frame; 47.7's HIL run). */
-    uint8_t *const fb = g_fb;
+    uint8_t *const fb = fb_back();
     const fb_fmt_t fmt = g_fb_fmt;
     if (!fb || !g_t1 || fmt == FB_NONE || g_t_hold) return;
     if (y1 > DSI_LCD_V_RES) y1 = DSI_LCD_V_RES;
     uint64_t t0 = time_get_us();
+
+    /* 1. Detect rows changed in 1-bpp frame and mark dirty in both buffers */
     bool all = g_t_force && y0 == 0 && y1 == DSI_LCD_V_RES;
+    if (all) {
+        memset(g_dirty, 0xff, sizeof g_dirty);
+        memcpy(g_t1_shadow, g_t1, T_BYTES);
+        g_t_force = false;
+    } else {
+        for (unsigned y = y0; y < y1; y++) {
+            const uint8_t *src = g_t1 + y * T_STRIDE;
+            uint8_t *sh = g_t1_shadow + y * T_STRIDE;
+            if (g_t_force || !row_same(src, sh)) {
+                memcpy(sh, src, T_STRIDE);
+                unsigned w = y / 64u;
+                uint64_t mask = 1ull << (y % 64u);
+                g_dirty[0][w] |= mask;
+                g_dirty[1][w] |= mask;
+            }
+        }
+    }
+
+    /* 2. Convert dirty rows for the back buffer */
+    unsigned back_idx = g_double_buffered ? (1u - g_front_idx) : 0u;
     int lo = -1, hi = -1;
     uint32_t n = 0;
-    for (unsigned y = y0; y < y1; y++) {
-        const uint8_t *src = g_t1 + y * T_STRIDE;
-        uint8_t *sh = g_t1_shadow + y * T_STRIDE;
-        if (!g_t_force && row_same(src, sh)) continue;
-        memcpy(sh, src, T_STRIDE);
-        if (fmt == FB_RGB565) {
-            uint16_t *dst = (uint16_t *)fb + (size_t)y * DSI_LCD_H_RES;
-            for (unsigned b = 0; b < T_STRIDE; b++) memcpy(dst + 8u * b, g_lut565[sh[b]], 16u);
-        } else {
-            uint64_t *dst = (uint64_t *)(fb + (size_t)y * DSI_LCD_H_RES);
-            for (unsigned b = 0; b < T_STRIDE; b++) dst[b] = g_lut8[sh[b]];
+    for (unsigned w = 0; w < DIRTY_WORDS; w++) {
+        uint64_t bits = g_dirty[back_idx][w];
+        if (!bits) continue;
+        g_dirty[back_idx][w] = 0;
+        for (unsigned bit = 0; bit < 64u; bit++) {
+            if (!(bits & (1ull << bit))) continue;
+            unsigned y = w * 64u + bit;
+            if (y >= DSI_LCD_V_RES) break;
+            const uint8_t *sh = g_t1_shadow + y * T_STRIDE;
+            if (fmt == FB_RGB565) {
+                uint16_t *dst = (uint16_t *)fb + (size_t)y * DSI_LCD_H_RES;
+                for (unsigned b = 0; b < T_STRIDE; b++) memcpy(dst + 8u * b, g_lut565[sh[b]], 16u);
+            } else {
+                uint64_t *dst = (uint64_t *)(fb + (size_t)y * DSI_LCD_H_RES);
+                for (unsigned b = 0; b < T_STRIDE; b++) dst[b] = g_lut8[sh[b]];
+            }
+            if (lo < 0) lo = (int)y;
+            hi = (int)y;
+            n++;
         }
-        if (lo < 0) lo = (int)y;
-        hi = (int)y;
-        n++;
     }
-    if (all) g_t_force = false;
-    if (n) dsi_lcd_fb_flush((unsigned)lo, (unsigned)hi + 1u);
+
+    /* 3. Flush written rows and arm VSYNC flip */
+    if (n) {
+        fb_flush_buffer(fb, (unsigned)lo, (unsigned)hi + 1u);
+        if (g_double_buffered) {
+            dsi_lcd_flip(false);
+        }
+    }
+
     uint32_t us = (uint32_t)(time_get_us() - t0);
     g_t_flushes++;
     g_t_rows += n;
@@ -1118,14 +1226,13 @@ static void term_blank(bool off) {
 }
 
 /* Display synchronization hooks for intermediate animation frames:
- * 1-bpp rendering into SRAM is off-screen. In term_sync_post, we wait for
- * the bridge VSYNC immediately before converting to g_fb in PSRAM, so that
- * DW-GDMA scanout is at row 0 when conversion starts and the CPU stays ahead
- * of the beam throughout the frame, eliminating desync and tearing. */
+ * 1-bpp rendering into SRAM is off-screen. In double-buffered mode, we convert
+ * into the back buffer and flip synchronously at hardware VSYNC, eliminating
+ * scanline collision and tearing. */
 static void term_sync_pre(void) { }
 
 static void term_sync_post(void) {
-    if (g_scanning) {
+    if (!g_double_buffered && g_scanning) {
         REG(DSI_BRG_INT_CLR_REG) = (1u << DSI_BRG_VSYNC_INT_RAW_S);
         uint64_t t0 = time_get_us();
         while ((REG(DSI_BRG_INT_RAW_REG) & (1u << DSI_BRG_VSYNC_INT_RAW_S)) == 0) {
@@ -1135,6 +1242,9 @@ static void term_sync_post(void) {
     console_lock();
     term_convert(0, DSI_LCD_V_RES);
     g_t_due = false;
+    if (g_double_buffered) {
+        dsi_lcd_flip(true);
+    }
     console_unlock();
 }
 
@@ -1291,9 +1401,10 @@ int dsi_lcd_term_start(void) {
     g_t_force = true;
     if (lcdterm_init(&g_tbe) != 0) return -1;
     term_redraw();
-    printk("[LCD] terminal on the panel: %u x %u cells, 1-bpp frame at 0x%08lx, GRAY8 frame at 0x%08lx\n",
+    printk("[LCD] terminal on the panel: %u x %u cells, 1-bpp frame at 0x%08lx, GRAY8 frame at 0x%08lx%s\n",
            DSI_LCD_H_RES / FONT8X16_W, DSI_LCD_V_RES / FONT8X16_H,
-           (unsigned long)(uintptr_t)g_t1, (unsigned long)(uintptr_t)g_fb);
+           (unsigned long)(uintptr_t)g_t1, (unsigned long)(uintptr_t)fb_front(),
+           g_double_buffered ? " (double-buffered)" : "");
     return 0;
 }
 
@@ -1382,11 +1493,13 @@ static void report(void) {
             FGET(DSI_HOST_MODE_CFG_REG, DSI_HOST_CMD_VIDEO_MODE) ? "command" : "video",
             (unsigned long)REG(DSI_HOST_VID_MODE_CFG_REG), (unsigned long)REG(DSI_BRG_VER_DATE_REG),
             (unsigned long)REG(DSI_BRG_INT_RAW_REG));
-    if (g_fb)
-        cprintf("     frame: %s %lu KB at 0x%08lx; %lu frames, %lu DMA errors (last 0x%lx); "
+    if (fb_front())
+        cprintf("     frame: %s %lu KB at 0x%08lx (double-buffered: %s, %lu flips); %lu frames, %lu DMA errors (last 0x%lx); "
                 "bridge underrun %s\n",
                 g_fb_fmt == FB_RGB565 ? "RGB565" : "GRAY8", (unsigned long)(g_fb_bytes / 1024u),
-                (unsigned long)(uintptr_t)g_fb, (unsigned long)g_frames, (unsigned long)g_dma_errs,
+                (unsigned long)(uintptr_t)fb_front(),
+                g_double_buffered ? "yes" : "no", (unsigned long)g_flips,
+                (unsigned long)g_frames, (unsigned long)g_dma_errs,
                 (unsigned long)g_dma_last_err,
                 FGET(DSI_BRG_INT_RAW_REG, DSI_BRG_UNDERRUN_INT_RAW) ? "SEEN" : "none");
     term_report();
@@ -1416,6 +1529,7 @@ static void cmd_bench(void) {
     draw(pat_grid);
     dsi_lcd_fb_flush(0, DSI_LCD_V_RES);
     uint64_t t3 = time_get_us();
+    if (g_double_buffered) dsi_lcd_flip(true);
     uint32_t kb = g_fb_bytes / 1024u;
     cprintf("lcd: fill %lu KB %lu us (%lu MB/s), write-back %lu us, per-pixel grid redraw + write-back %lu us\n",
             (unsigned long)kb, (unsigned long)(t1 - t0),
@@ -1428,8 +1542,10 @@ static void cmd_bench(void) {
  * there. */
 static void cmd_verify(void) {
     if (!g_last_pat) { cprintf("lcd verify: draw `lcd test checker` or `grid` first\n"); return; }
-    dsi_lcd_fb_flush(0, DSI_LCD_V_RES);
-    esp32p4_extmem_invalidate((uintptr_t)g_fb, g_fb_bytes);
+    uint8_t *fb = fb_front();
+    if (!fb) return;
+    fb_flush_buffer(fb, 0, DSI_LCD_V_RES);
+    esp32p4_extmem_invalidate((uintptr_t)fb, g_fb_bytes);
     uint32_t bad = 0;
     for (unsigned y = 0; y < DSI_LCD_V_RES; y++)
         for (unsigned x = 0; x < DSI_LCD_H_RES; x++) {
@@ -1437,9 +1553,9 @@ static void cmd_verify(void) {
             bool ok;
             if (g_fb_fmt == FB_RGB565) {
                 uint16_t v = (uint16_t)(((g >> 3) << 11) | ((g >> 2) << 5) | (g >> 3));
-                ok = ((uint16_t *)g_fb)[y * DSI_LCD_H_RES + x] == v;
+                ok = ((uint16_t *)fb)[y * DSI_LCD_H_RES + x] == v;
             } else {
-                ok = g_fb[y * DSI_LCD_H_RES + x] == g;
+                ok = fb[y * DSI_LCD_H_RES + x] == g;
             }
             if (!ok && bad++ < 4) cprintf("  (%u,%u) differs\n", x, y);
         }
@@ -1513,9 +1629,74 @@ void dsi_lcd_command(const char *args) {
         if (!started) { cprintf("lcd: frame buffer not started\n"); return; }
         draw(pat_grid);
         dsi_lcd_fb_flush(0, DSI_LCD_V_RES);
+        if (g_double_buffered) dsi_lcd_flip(true);
         cprintf("lcd: frame buffer %s, %lu KB at 0x%08lx, scanning out (grid drawn)\n",
                 f == FB_RGB565 ? "RGB565" : "GRAY8", (unsigned long)(g_fb_bytes / 1024u),
-                (unsigned long)(uintptr_t)g_fb);
+                (unsigned long)(uintptr_t)fb_front());
+        return;
+    }
+    if (strncmp(args, "db", 2) == 0) {
+        const char *p = skip_ws(args + 2);
+        if (*p == '\0') {
+            cprintf("lcd: double-buffering %s (front 0x%08lx, back 0x%08lx, %lu flips)\n",
+                    g_double_buffered ? "enabled" : "disabled",
+                    (unsigned long)(uintptr_t)fb_front(),
+                    (unsigned long)(uintptr_t)fb_back(),
+                    (unsigned long)g_flips);
+            return;
+        }
+        if (strcmp(p, "on") == 0) {
+            if (g_double_buffered && g_fb_pool[1]) {
+                cprintf("lcd: double-buffering already enabled\n");
+                return;
+            }
+            if (!g_fb_pool[0]) {
+                cprintf("lcd: no active frame buffer\n");
+                return;
+            }
+            console_lock();
+            uint8_t *fb1 = palloc_pages_bulk(g_fb_pages);
+            if (!fb1 || !palloc_is_bulk(fb1)) {
+                if (fb1) palloc_free(fb1, g_fb_pages);
+                console_unlock();
+                cprintf("lcd: no PSRAM for second buffer\n");
+                return;
+            }
+            memcpy(fb1, g_fb_pool[0], g_fb_bytes);
+            esp32p4_extmem_writeback((uintptr_t)fb1, g_fb_bytes);
+            g_fb_pool[1] = fb1;
+            g_double_buffered = true;
+            memset(g_dirty, 0, sizeof g_dirty);
+            console_unlock();
+            cprintf("lcd: double-buffering enabled (front 0x%08lx, back 0x%08lx)\n",
+                    (unsigned long)(uintptr_t)fb_front(),
+                    (unsigned long)(uintptr_t)fb_back());
+            return;
+        }
+        if (strcmp(p, "off") == 0) {
+            if (!g_double_buffered) {
+                cprintf("lcd: double-buffering already disabled\n");
+                return;
+            }
+            console_lock();
+            uint64_t t0 = time_get_us();
+            while (g_flip_pending && time_get_us() - t0 < 50000u) { }
+            g_double_buffered = false;
+            if (g_front_idx != 0) {
+                memcpy(g_fb_pool[0], g_fb_pool[1], g_fb_bytes);
+                esp32p4_extmem_writeback((uintptr_t)g_fb_pool[0], g_fb_bytes);
+                g_front_idx = 0;
+                LLI_NC->sar_lo = (uint32_t)(uintptr_t)g_fb_pool[0];
+            }
+            if (g_fb_pool[1]) {
+                palloc_free(g_fb_pool[1], g_fb_pages);
+                g_fb_pool[1] = NULL;
+            }
+            console_unlock();
+            cprintf("lcd: double-buffering disabled\n");
+            return;
+        }
+        cprintf("usage: lcd db [on|off]\n");
         return;
     }
     if (!g_up) { cprintf("lcd: not up -- %s\n", g_reason); return; }
@@ -1570,7 +1751,7 @@ void dsi_lcd_command(const char *args) {
     }
     if (strcmp(args, "fps") == 0 || strncmp(args, "test", 4) == 0 || strcmp(args, "bench") == 0 ||
         strcmp(args, "verify") == 0 || strncmp(args, "wbtest", 6) == 0) {
-        if (!g_fb) { cprintf("lcd: no frame buffer -- `lcd fb [gray|rgb565]` first\n"); return; }
+        if (!g_fb_pool[0]) { cprintf("lcd: no frame buffer -- `lcd fb [gray|rgb565]` first\n"); return; }
     }
     if (strcmp(args, "fps") == 0) { cmd_fps(); return; }
     if (strcmp(args, "bench") == 0) { g_t_hold = (g_t1 != NULL); cmd_bench(); return; }
@@ -1589,6 +1770,7 @@ void dsi_lcd_command(const char *args) {
             g_last_pat = NULL;
         } else { cprintf("usage: lcd test checker|grid|page|ramp|white|black|text\n"); return; }
         dsi_lcd_fb_flush(0, DSI_LCD_V_RES);
+        if (g_double_buffered) dsi_lcd_flip(true);
         cprintf("lcd: drawn and written back\n");
         return;
     }
@@ -1604,11 +1786,18 @@ void dsi_lcd_command(const char *args) {
         g_t_hold = (g_t1 != NULL);
         fill(0xff);
         dsi_lcd_fb_flush(0, DSI_LCD_V_RES);
+        if (g_double_buffered) dsi_lcd_flip(true);
         task_sleep_ms(5000);
-        rect(312, 150, 400, 300, 0x00);
+        uint8_t *front = fb_front();
+        for (unsigned y = 150; y < 150 + 300 && y < DSI_LCD_V_RES; y++) {
+            for (unsigned x = 312; x < 312 + 400 && x < DSI_LCD_H_RES; x++) {
+                if (g_fb_fmt == FB_RGB565) ((uint16_t *)front)[y * DSI_LCD_H_RES + x] = 0;
+                else front[y * DSI_LCD_H_RES + x] = 0;
+            }
+        }
         cprintf("lcd wbtest: black 400x300 box drawn, NOT written back -- look now (%u s)\n", secs);
         task_sleep_ms(secs * 1000u);
-        dsi_lcd_fb_flush(0, DSI_LCD_V_RES);
+        fb_flush_buffer(front, 0, DSI_LCD_V_RES);
         cprintf("lcd wbtest: written back -- the box is complete now\n");
         g_last_pat = NULL;
         return;
@@ -1646,8 +1835,9 @@ void dsi_lcd_command(const char *args) {
         return;
     }
     cprintf("usage: lcd [colours FG BG | repaint | termbench | test text | scroll N | tee uart|off |\n"
-            "            pattern bars|hbars|ber|off | fb [gray|rgb565] | test checker|grid|page|ramp|white|black |\n"
-            "            fps | bench | verify | wbtest [s] | bl on|off | cmd CC [PP..] | id | rd CC [N]]\n");
+            "            pattern bars|hbars|ber|off | fb [gray|rgb565] | db [on|off] |\n"
+            "            test checker|grid|page|ramp|white|black | fps | bench | verify |\n"
+            "            wbtest [s] | bl on|off | cmd CC [PP..] | id | rd CC [N]]\n");
 }
 
 #endif
