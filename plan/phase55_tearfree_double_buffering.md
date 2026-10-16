@@ -1,6 +1,6 @@
 # Phase 55: Tear-Free Display Subsystem — PSRAM Double-Buffering & Multi-Color Depth Pipeline
 
-## Status: PLANNED
+## Status: IN PROGRESS (Milestones 55.1–55.5 Complete & Hardware-Verified)
 **Goal**: Eliminate display tearing, flicker, and color-fringing artifacts across all LCD/DSI targets (ESP32-P4 and RP2350) by implementing hardware-synchronized **ping-pong double-buffering** in PSRAM. Decouple rendering from scanout via VSYNC-timed buffer flipping, re-enable silky smooth 60 FPS ribbon animations, and establish a clean foundation for higher color depths (GRAY8, RGB565, and RGB888).
 
 ---
@@ -174,3 +174,130 @@ CPU / Rendering Engine (lcdterm, screen.c)
 2. **Zero Color Fringing**: Rapid window animation in RGB565 mode shows crisp borders and zero blue/cyan flashes during transitions.
 3. **Paced 60 FPS**: Animations run locked to the panel's 60 Hz VSYNC clock without skipping or micro-stutters.
 4. **Memory Headroom Preserved**: PSRAM utilization stays well under 10% of total capacity, leaving $>28\text{ MB}$ free for user programs and Lisp heaps.
+
+---
+
+## 5. Milestone Results, Hardware Artifacts & Platform Architecture Review
+
+### Summary of Completed Milestones
+
+| Milestone | Status | Key Deliverables | Verification |
+| :--- | :--- | :--- | :--- |
+| **55.1** | **DONE** | Ping-pong GDMA channel descriptors, atomic VSYNC flip, `dsi_lcd_flip()`, `lcd db on/off` | 60.03 Hz, 0 DMA errors |
+| **55.2** | **DONE** | Dual PSRAM buffers (`fb_front` / `fb_back`), per-buffer dirty row tracking bitmap | 1894 µs/char, 1897 lines/s |
+| **55.3** | **DONE** | 4-bpp / 16-level serif typography, integer alpha-blend, Netpbm PGM/PPM screenshot export | 43/43 tests, `shot-004.png` |
+| **55.4** | **DONE** | Dual format canvas (`CANVAS_FMT_RGB565`), hybrid ribbon compositing, Lisp color primitives | 44/44 tests, `shot-005.png` |
+| **55.5** | **DONE** | VSYNC-paced 5-step ease-out deceleration curve, Reader smooth vertical scrolling with touch momentum | 45/45 tests, 100% pass |
+
+---
+
+### Milestone 55.3 Results: Anti-Aliased Typography Pipeline & Scanout Capture
+
+* **Overview**: Implemented a 4-bpp / 16-level grayscale anti-aliased font rendering pipeline for the Reader view, coupled with native multi-format screenshot capture (PBM, PGM, PPM).
+* **Typography Engine**:
+  * Emits 1-bpp fallback tables in `.lcdtermtext` (`LCDTERM_URODATA`) to obey the RP2350 32 KB U-mode NAPOT PMP limit.
+  * Emits 4-bpp alpha coverage tables `font_serif_aa_glyphs[95][16][8]` in standard `.rodata`.
+  * Fast integer blending formula: `((delta * a + 8) >> 4)`.
+  * Reader maintains an anti-aliased backing buffer (`aa_buf`) in the PSRAM bulk zone (`palloc_pages_bulk()`).
+  * Direct scanout compositing: `term_convert()` blits visible Reader client areas directly into `fb_back()` during the 16 ms flush pass.
+* **Native Netpbm Screenshot Engine (`kernel/screenshot.c`)**:
+  * `SCREEN_FORMAT_1BPP` (0) $\rightarrow$ Netpbm Binary Bitmap (`.pbm`, P4)
+  * `SCREEN_FORMAT_GRAY8` (1) $\rightarrow$ Netpbm Binary Grayscale (`.pgm`, P5, 255 levels)
+  * `SCREEN_FORMAT_RGB565` (2) $\rightarrow$ Netpbm Binary Pixmap (`.ppm`, P6, 24-bit RGB)
+* **Visual Artifacts**:
+  * Baseline 1-bpp bilevel typography: `doc/assets/screenshots/reader_1bpp_baseline.png`
+  * Upgraded anti-aliased typography (captured from live hardware via `screenshot`):
+    ![Anti-Aliased Typography in Reader](../doc/assets/screenshots/reader_antialiased_serif.png)
+  * *Figure 55.3: Live 8-bpp PGM capture from ESP32-P4-LCD-7B showing smooth serif curves, soft cream paper background (#FAFAFA), and dark charcoal ink (#0A0A0A).*
+
+---
+
+### Milestone 55.4 Results: Hybrid Ribbon Compositing & RGB565 Color Canvases
+
+* **Overview**: Enables high-performance 16-bit RGB565 color graphics windows (games, data visualizers, photo view) to live seamlessly side-by-side with retro 1-bpp monochrome terminal shells on the infinite workspace ribbon.
+* **Canvas Format & Dynamic Allocation**:
+  * Added `CANVAS_FMT_RGB565` (1) alongside `CANVAS_FMT_1BPP` (0) in `screen_canvas_slot_t`.
+  * Backing buffers allocated dynamically in the PSRAM bulk zone (`palloc_pages_bulk()`) and freed on window close.
+* **16-Bit Graphics Primitives (`drivers/screen.c`)**:
+  * Implemented fast fill (`'F'`), pixel (`'p'`), Bresenham line (`'l'`), outline rect (`'o'`), filled rect (`'r'`), circle (`'c'`), invert (`'i'`), 8x16 font text (`'t'`), colored text (`'x'`), and direct bitmap blit (`'B'`).
+  * Guarded by `CANVAS_SUPPORT_RGB565` (`!defined(CONFIG_BOARD_RP2350)`), preserving the 32 KB U-mode PMP budget on RP2350.
+* **Hybrid Auto-Promotion Compositor (`drivers/dsi_esp32p4.c`)**:
+  * Automatically elevates the hardware scanout frame buffer to `FB_RGB565` whenever a color canvas is visible on the glass.
+  * Direct row blit compositing into `fb_back()` during the 16 ms flush pass.
+* **Shell & Lisp Integration**:
+  * Shell: `canvas open <name> [--rgb565]`, `canvas list`, `ribbon`.
+  * Lisp: `(canvas-rgb565? [name])`, `(rgb r g b)` (exact 16-bit 5-6-5 packing), `(canvas-open "name" 'split-half :rgb565)`, `(canvas-text x y "text" (rgb ...))`.
+* **Visual Artifacts**:
+  * Live hardware 24-bit Netpbm PPM capture:
+    ![Hybrid Ribbon Compositing: Retro Terminal and Color Canvas](../doc/assets/screenshots/ribbon_hybrid_color_canvas.png)
+  * *Figure 55.4: Live 24-bit capture (`SHOT-003.PPM`, 1.84 MB) from ESP32-P4-LCD-7B. Left: Standard 1-bpp interactive terminal shell (`lsh`). Right: Active 16-bit RGB565 color canvas (`colortest`) rendered with Lisp primitives at 60 Hz without tearing.*
+
+---
+
+### Milestone 55.5 Results: Silky-Smooth Ribbon Animation & Reader Smooth Inertia Scrolling
+
+* **Overview**: Re-enabled `CONFIG_ENABLE_RIBBON_ANIMATION` by default, locked transitions to hardware VSYNC, and introduced physics-modeled smooth vertical scrolling with touch momentum in the Reader view.
+* **Hardware VSYNC Pacing**:
+  * Upgraded `screen_animate_ribbon()` from 4-step linear interpolation to a 5-step ease-out deceleration curve (`weights = { 280, 540, 750, 900, 1000 }` out of 1000).
+  * Removed redundant busy delays: each animation step synchronizes to hardware VSYNC via `lcdterm_sync_post()` and `dsi_lcd_flip(true)` (~83.3 ms total transition at 60 FPS).
+  * Set `g_t_force = true` during ribbon animation in `dsi_esp32p4.c`, ensuring all 600 scanlines are refreshed into `fb_back()` and eliminating scanline ghosting.
+* **Reader Smooth Inertia Scrolling**:
+  * Ease-out vertical scrolling over 3–5 frames in `reader_scroll_instance()`, checking `console_has_char()` to break immediately on new key events.
+  * Touch flick momentum in `reader_touch_fling_instance()`: computes initial frame velocity from touch gesture delta and duration ($v_0 = -dy \times 16 / ms$, clamped to $\pm 50$ px/frame), decaying with 12% per-frame friction ($v_{t+1} = v_t \times 0.88$) until rest.
+  * Instant halt on touch tap or keystroke.
+  * GT911 vertical swipe detection dispatched via `console_touch_scroll(dy, ms)`.
+* **Hardware-in-the-Loop Verification**:
+  * Executed `tests/hw/test_esp32p4.py --board lcd7b --no-load` on physical hardware:
+  * **Result: 45 / 45 PASSED (100%)**.
+
+---
+
+### Platform Architecture Review: RP2350 Terminal vs. ESP32-P4
+
+#### 1. RP2350 PSRAM & Bulk Page Allocator Status
+The RP2350 terminal already features an active, hardware-verified PSRAM bulk page allocator in LugalOS:
+* **Hardware**: APS6404-class 8 MB QSPI PSRAM on GP0 (`XIP_CS1`).
+* **Kernel Allocator**: Initialized at boot via `psram_init()` and `palloc_init_bulk()` in `kernel/main.c`.
+* **Current Allocations in PSRAM on RP2350**:
+  * Lisp node pool: 65,536 cons nodes (**1 MB**) in `BULK_BSS`.
+  * Lisp string pool: 3,072 strings (**144 KB**).
+  * RAM disk (`/ram0`): 2 MB to 4 MB dynamically allocated from the PSRAM bulk zone.
+  * Chess transposition table: **512 KB** in PSRAM.
+  * Text editor line index: in PSRAM.
+
+#### 2. Display Bus Architecture & Bandwidth Analysis
+
+Why does the ESP32-P4 scan out a full 16-bpp RGB565 frame buffer from PSRAM while the RP2350 terminal scans out 1-bpp from SRAM?
+
+| Dimension | RP2350-LCD-7 | ESP32-P4-LCD-7B |
+| :--- | :--- | :--- |
+| **Panel Interface** | 800×480 Raw RGB TTL (`ST7262`) | 1024×600 MIPI-DSI (`EK79007`) |
+| **Panel Memory** | None (continuous raster scanout) | None (DSI bridge with internal FIFO) |
+| **PSRAM Bus** | 72 MHz Quad-SPI (**shared with Flash XIP**) | 200 MHz Hex/Octal DDR (**dedicated MSPI bus**) |
+| **PSRAM Read Bandwidth** | **~25–28 MB/s** sequential read | **400–800 MB/s** |
+| **Bus Contention** | Flash instruction fetches collide with PSRAM on QMI | Completely decoupled from Flash |
+| **Scanout Bandwidth Needed** | **46.08 MB/s** (for 800×480 RGB565 @ 60 Hz) | **122.8 MB/s** (for 1024×600 RGB565 @ 60 Hz) |
+| **Live Scanout Feasibility** | **Physically impossible** ($46 > 25\text{ MB/s}$) | **Effortless** ($122 \ll 400\text{ MB/s}$, ~15% bus) |
+
+* **The RP2350 Bandwidth Deficit**:
+  * An 800×480 screen at 16-bpp (RGB565) requires $800 \times 480 \times 2 = 768\text{ KB}$ per frame.
+  * At 60 Hz: $768\text{ KB} \times 60 = \mathbf{46.08\text{ MB/s}}$ continuous scanout bandwidth.
+  * Peak bandwidth during active scanlines (24 MHz pixel clock) is **48 MB/s**.
+  * The RP2350's QSPI PSRAM at 72 MHz SCK maxes out at **~25–28 MB/s**. Direct DMA scanout from PSRAM is physically impossible and triggers immediate FIFO underflow.
+
+#### 3. How the Waveshare Demo Code "Did It"
+Inspection of the vendor demo repository (`RP2350-Touch-LCD-7-Demo/examples/lcd/lcd_flush_rgb/`):
+* **Overclocking**: Overclocks RP2350 from 150 MHz to **240 MHz**.
+* **Huge SRAM Bounce Buffers**: Allocates **two 128 KB transfer buffers in SRAM (256 KB total)** — consuming half of the chip's total 520 KB SRAM.
+* **Manual CPU Copy in ISR**: Slices the display into 6 horizontal strips. In `dma_complete_handler` (firing 360 times/second), the CPU runs a manual `for` loop copying 128 KB from PSRAM to SRAM.
+* **Impact**: Slices burn ~100% of CPU 0, lock the bus against Flash instruction fetches, and prevent multitasking, USB host keyboards, and an OS.
+
+#### 4. Features from Phase 55 Applicable to RP2350
+1. **Double-Buffering in SRAM**:
+   * Two 800×480 1-bpp buffers require $48\text{ KB} \times 2 = \mathbf{96\text{ KB}}$ of SRAM.
+   * Readily fits within the 520 KB SRAM pool, enabling tear-free ribbon sliding on RP2350.
+2. **Offscreen RGB565 Canvases in PSRAM**:
+   * Offscreen canvases (e.g. 320×240 RGB565 = 153 KB) can be dynamically allocated in the PSRAM bulk page zone and dithered/quantized into the 1-bpp/2-bpp SRAM scanout buffer during composition.
+3. **Anti-Aliased Typography / Glyph Caching in PSRAM**:
+   * Glyph tables and rendered text layouts can be cached in the PSRAM bulk zone.
+
