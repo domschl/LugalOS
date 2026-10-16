@@ -61,8 +61,8 @@ static void damage(unsigned y0, unsigned y1);
  *
  * The cell grid of 8 x 16 glyphs that tiles the panel: 100 x 30 on the
  * RP2350-LCD-7, 128 x 37 on the LCD-7B. */
-#define TEXT_COLS            (g_be->w / FONT8X16_W)
-#define TEXT_ROWS            (g_be->h / FONT8X16_H)
+#define TEXT_COLS            (g_be->w / FONT_CELL_W)
+#define TEXT_ROWS            (g_be->h / FONT_CELL_H)
 
 /* 37.1: the screen's state -- the chrome's, the terminal, and the cell
  * shadow (98 x 27 x 2 bytes since 37.1a) -- in its own 8 KB, 8 KB-aligned block, which

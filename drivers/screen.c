@@ -1115,8 +1115,8 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout) {
         int c0 = 1;
         int win_c = (int)w->cols;
 
-        if (x0 >= 4) {
-            c0 = (int)((x0 + 4) / (int)FONT_CELL_W);
+        if (x0 >= (int)RIBBON_BORDER_PAD) {
+            c0 = (int)((x0 + (int)FONT_CELL_W - 1) / (int)FONT_CELL_W);
             col_off = 0;
             int max_c = C - 1 - c0;
             if (max_c < 1) {                /* only its frame is on screen */
@@ -1126,7 +1126,7 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout) {
             if (win_c > max_c) win_c = max_c;
         } else {
             c0 = 1;
-            col_off = (int)((4 - x0) / (int)FONT_CELL_W);
+            col_off = (int)(((int)RIBBON_BORDER_PAD - x0) / (int)FONT_CELL_W);
             if (col_off < 0) col_off = 0;
             if (col_off >= (int)w->cols) {
                 vtterm_set_hidden(&scr->terms[t].vt, true);

@@ -1395,7 +1395,7 @@ def test_lcd_terminal(b: Board) -> tuple[str, bool, str]:
     in its window, converted from the 1-bpp frame into the scanned-out one at
     most once per frame -- fast enough for a busy console, and `lcd colours`
     switches a coloured pair to RGB565 and a gray one back to GRAY8."""
-    term_dim = "158 x 42" if is_tab5(b) else "126 x 34"
+    term_dim = "78 x 21" if is_tab5(b) else "126 x 34"
     name = f"the terminal on the panel: {term_dim}, frame-paced, colours (47.7)"
     out = b.console_session.cmd("lcd", deadline=10.0)
     if "Unknown" in out or "Unbound" in out or "not found" in out.lower():

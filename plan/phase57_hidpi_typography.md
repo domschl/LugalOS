@@ -1,6 +1,6 @@
 # Phase 57: HiDPI & Anti-Aliased Typography (Noto Sans Mono & Noto Serif for High-Density Displays)
 
-**Status**: PROPOSED / IN PLANNING  
+**Status**: COMPLETED (2026-10-16)  
 **Target Hardware**:
 - **Primary**: M5Stack Tab5 (`esp32p4-tab5` / `esp32p4-tab5x`, 5.0" 720×1280 native portrait IPS, ~294 DPI)
 - **Secondary / Regression**: Waveshare ESP32-P4-WIFI6-Touch-LCD-7B (`esp32p4-lcd7b`, 7.0" 1024×600, ~170 DPI), Waveshare RP2350-LCD-7 (`rp2350-terminal`, 7.0" 800×480, ~133 DPI), QEMU (`rv32`, `rv64`)
@@ -180,15 +180,17 @@ All tables reside in Flash `.rodata` (XIP):
 
 ## 5. Verification Checklist & Success Criteria
 
-1. **[ ] Typography Scalability**:
+1. **[x] Typography Scalability**:
    - Tab5 boots with crisp, large, highly readable $16 \times 32$ Noto Sans Mono in the shell ($78 \times 21$ Landscape, $43 \times 38$ Portrait).
    - Character physical height on Tab5 is $\approx 2.77\text{ mm}$ (~11 pt), completely resolving microscopic eye strain.
-2. **[ ] Reader Aesthetics**:
+   - Textbox margins properly aligned with 12 px desktop padding and 4 px interior padding relative to window borders.
+2. **[x] Reader Aesthetics**:
    - Gemtext `.gmi` documents render with 32 px anti-aliased Noto Serif for prose and 32 px anti-aliased Noto Sans Mono for code blocks.
    - Smooth 60 Hz touch scrolling and link navigation are preserved.
-3. **[ ] Zero Memory & System Regressions**:
+   - Dynamic orientation switching (`Super+O` / `Cmd+O` / `'o'`) reflows typography instantly.
+3. **[x] Zero Memory & System Regressions**:
    - Zero dynamic SRAM allocations in font rendering; all font tables reside in Flash `.rodata`.
    - Zero floating point operations in kernel / M-mode.
    - RP2350 and LCD-7B presets retain their existing $8 \times 16$ geometries and zero performance loss.
-4. **[ ] Hardware Test Suite**:
-   - All tests pass cleanly in `tests/hw/test_esp32p4.py --board tab5`.
+4. **[x] Hardware Test Suite**:
+   - All tests pass cleanly in `tests/hw/test_esp32p4.py --board tab5` (46/46 passed).

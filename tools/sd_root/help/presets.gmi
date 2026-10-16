@@ -31,7 +31,20 @@ LugalOS operates with two memory resource profiles:
 * esp32c6, rp2350-chess, rp2350-clock, rp2350-wifi.
 * Strict .bss budgeting: 1,024 Lisp node pool, lean boot libraries, on-demand module loading via (require 'pkg). Zero SRAM impact on physical heap allocator (palloc).
 
-## 3. Building Presets
+## 3. Display Density Profiles & Typography
+
+LugalOS supports display-density-aware typography to ensure optimal legibility across varying panel sizes:
+
+```
+| Density Profile | Target Panels & DPI | Monospace Terminal Cell | Reader Typography | Typical Screen Geometries |
+| :--- | :--- | :--- | :--- | :--- |
+| Standard Density | rp2350-terminal (133 DPI), esp32p4-lcd7b (170 DPI) | 8 \times 16 px (Spleen) | 15 px Proportional Serif (18 px line height) | 98 \times 27 cells (800×480), 126 \times 34 cells (1024×600) |
+| HiDPI Handheld | esp32p4-tab5 (294 DPI) | 16 \times 32 px (Noto Sans Mono) | 32 px Anti-Aliased Noto Serif (38 px line height) | Landscape: 78 \times 21 cells (1280×720)Portrait: 43 \times 38 cells (720×1280) |
+```
+
+All font tables are stored in Flash .rodata for O(1) direct access with zero dynamic SRAM consumption.
+
+## 4. Building Presets
 
 To build any preset using CMake and Ninja:
 

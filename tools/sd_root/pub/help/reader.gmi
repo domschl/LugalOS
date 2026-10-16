@@ -12,10 +12,12 @@ LugalOS supports up to 4 concurrent Reader windows (READERMAXINSTANCES = 4) tile
 ## Proportional Typography
 
 Unlike standard terminal windows that use fixed-pitch monospace fonts, the Reader window features:
-* Proportional Serif Typography: Rendered in a high-legibility 15-pixel variable-pitch serif font with balanced 1-pixel vertical stems.
+* Proportional Serif Typography:
+* Standard Density Panels (rp2350-terminal, esp32p4-lcd7b): Rendered in a high-legibility 15-pixel variable-pitch serif font with balanced 1-pixel vertical stems (18 px line height).
+* HiDPI Panels (esp32p4-tab5): Rendered in an elegant 32-pixel anti-aliased proportional serif font (Noto Serif) with smooth 4-bpp alpha coverage masks (38 px line height).
 * Proportional Word Wrapping: Flowing paragraph text dynamically wrapped at word boundaries according to window geometry.
-* Monospace Code Blocks: Automatic fallback to 8x16 monospace font for preformatted code and ASCII diagrams.
-* Structural Hierarchy: Bold section headings (H1, H2, H3), bulleted lists, and indented blockquotes.
+* Monospace Code Blocks: Automatic formatting for preformatted code and ASCII diagrams using 8×16 monospace font (standard density) or 16×32 Noto Sans Mono (HiDPI).
+* Structural Hierarchy: Bold section headings (H1, H2, H3), bulleted lists, and indented blockquotes scaled proportionally to the display density.
 
 ## Opening Documents
 

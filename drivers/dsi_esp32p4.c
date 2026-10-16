@@ -41,6 +41,7 @@
 #include "drivers/esp32p4_dsi_regs.h"
 #include "drivers/esp32p4_ledc_regs.h"
 #include "drivers/font8x16.h"
+#include "drivers/ribbon.h"
 #include "drivers/i2c_bus.h"
 #include "drivers/lcdterm.h"
 #include "drivers/reader_view.h"
@@ -1834,7 +1835,7 @@ int dsi_lcd_term_start(void) {
     if (lcdterm_init(&g_tbe) != 0) return -1;
     term_redraw();
     printk("[LCD] terminal on the panel: %u x %u cells, 1-bpp frame at 0x%08lx, %s frame at 0x%08lx%s\n",
-           g_tbe.w / FONT8X16_W, g_tbe.h / FONT8X16_H,
+           g_tbe.w / (unsigned)FONT_CELL_W, g_tbe.h / (unsigned)FONT_CELL_H,
            (unsigned long)(uintptr_t)g_t1, g_fb_fmt == FB_RGB565 ? "RGB565" : "GRAY8",
            (unsigned long)(uintptr_t)fb_front(),
            g_double_buffered ? " (double-buffered)" : "");

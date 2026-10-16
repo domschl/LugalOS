@@ -15,7 +15,6 @@
 
 #define RIBBON_MAX_WINDOWS   8u
 #define RIBBON_GAP           10  /* 10 px gap between adjacent window frames */
-#define RIBBON_BORDER_PAD    4   /* 4 px margin before first window */
 #define RIBBON_TITLE_MAX     32u /* a window title's bytes, with the NUL */
 
 /* D7, 47.6: the preset widths, from
@@ -53,6 +52,8 @@
 #define FONT_CELL_H 16u
 #endif
 #endif
+
+#define RIBBON_BORDER_PAD          (FONT_CELL_W == 16u ? 12 : 4)
 
 /* A terminal is never narrower than this (ribbon_layout() widens it). A
  * split's text share below it is raised to it, and the canvas gets what is
