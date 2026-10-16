@@ -99,18 +99,22 @@ CPU / Rendering Engine (lcdterm, screen.c)
 
 ## 3. Milestones & Implementation Tasks
 
-### Milestone 55.1: Hardware VSYNC & Ping-Pong DMA Setup
-* **`drivers/dsi_esp32p4.c`**:
-  * Configure DW-GDMA channel descriptors for circular ping-pong operation or dynamic next-descriptor updates.
-  * Hook the DSI/GDMA frame-complete interrupt (CLIC 18) to detect vertical blanking.
-  * Implement `dsi_lcd_flip(uint8_t buffer_idx)` to atomically switch the active DMA read address during VSYNC.
+### Milestone 55.1: Hardware VSYNC & Ping-Pong DMA Setup (ESP32-P4 COMPLETE)
+* **`drivers/dsi_esp32p4.c`** [DONE - Commit `34bf02c`]:
+  * Configured DW-GDMA channel descriptors with atomic ping-pong flipping in `gdma_isr()` upon `GDMA_EV_DMA_TFR_DONE`.
+  * Implemented `dsi_lcd_flip(bool wait_vsync)`: non-blocking flip queuing during normal terminal output, synchronous VSYNC wait for animation steps.
+  * Added `dsi_lcd_is_double_buffered()` and CLI controls `lcd db [on|off]`.
+  * Verified 60.03 Hz scanout with 0 DMA errors and zero bridge underruns across hundreds of frame flips.
 * **`drivers/lcd7_rp2350.c`**:
   * Hook the vertical sync interrupt (line 480 counter) to swap the PIO DMA source pointer.
 
-### Milestone 55.2: Double-Buffered Frame Manager in `drivers/lcdterm.c`
-* Allocate front and back frame buffers from the PSRAM bulk zone (`palloc_bulk_alloc()`).
-* Expose `lcdterm_swap_buffers()` to the drawing engine.
-* Maintain clean separation between the working draw surface and the scanout surface.
+### Milestone 55.2: Double-Buffered Frame Manager & Dirty Row Synchronization (ESP32-P4 COMPLETE)
+* **`drivers/dsi_esp32p4.c`** [DONE - Commit `34bf02c`]:
+  * Allocated front and back frame buffers from the PSRAM bulk zone (`palloc_pages_bulk()`).
+  * Implemented per-buffer dirty row tracking array (`uint64_t g_dirty[2][DIRTY_WORDS]`): when a row changes, both buffers are marked dirty; each buffer only converts rows marked dirty for itself, keeping both buffers in exact sync without redundant redrawing.
+  * Separated `fb_front()` (active DMA scanout surface) and `fb_back()` (active CPU draw surface).
+  * Maintained high performance: character conversion in 1894 us (well under 5000 us limit), terminal scrolling at 1897 lines/s.
+  * Passed 41/41 hardware-in-the-loop tests in `tests/hw/test_esp32p4.py`.
 
 ### Milestone 55.3: Anti-Aliased Typography Pipeline (`drivers/reader_view.c`)
 * Update `tools/gen_serif_font.py` to generate 4-bit / 8-bit alpha coverage glyph tables.
