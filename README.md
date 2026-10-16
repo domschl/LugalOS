@@ -50,6 +50,7 @@
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **`rp2350-terminal`** | RV32 Hazard3 | Waveshare RP2350-LCD-7 | 150 MHz | 520 KB SRAM + 8 MB PSRAM | 7" 800×480 RGB LCD, GT911 Touch | SD/SPI, Dual CDC USB | Workstation Terminal |
 | **`esp32p4-lcd7b`** | RV32 Dual-Core | ESP32-P4-WIFI6-LCD-7B (rev v3.2) | 400 MHz | 768 KB L2MEM + 32 MB PSRAM | 7" 1024×600 MIPI-DSI, GT911 Touch | SDMMC, USB Host, Wi-Fi 6 | High-Perf Ribbon Workstation |
+| **`esp32p4-tab5`** | RV32 Dual-Core | M5Stack Tab5 (rev v1.3) | 360–400 MHz | 768 KB L2MEM + 32 MB PSRAM | 5" 720×1280 MIPI-DSI, ST7121 Touch | SDMMC, USB Host, Dual Expander | 5" Portable Tablet / Reader |
 | **`esp32p4`** | RV32 Dual-Core | ESP32-P4-NANO (rev v1.3) | 360–400 MHz | 768 KB L2MEM + 32 MB PSRAM | Serial Console (921600 baud) | RMII Ethernet, SDMMC | Microkernel Compute Node |
 | **`esp32c6`** | RV32IMAC | Waveshare ESP32-C6-Zero | 160 MHz | 512 KB SRAM, 8 MB Flash | Serial / JTAG Console | 802.11ax Wi-Fi, Flashfs | Low-Power Wireless Node |
 | **`rp2350-chess`** | RV32 Hazard3 | Raspberry Pi Pico 2 | 150 MHz | 520 KB SRAM | 1.8" ST7735 TFT, TM1638 Keypad | SD/SPI card | Dedicated Chess Computer |
@@ -91,6 +92,10 @@ picotool load -f build/rp2350-terminal/lugalos.uf2 -x
 # Example: Flash Waveshare ESP32-P4 7" Touch Terminal
 ninja -C build/esp32p4-lcd7b
 python3 tools/p4flash.py --board lcd7b --build build/esp32p4-lcd7b --only boot,os --verify
+
+# Example: Flash M5Stack Tab5 5" Portable Tablet
+ninja -C build/esp32p4-tab5
+python3 tools/p4flash.py --board tab5 --build build/esp32p4-tab5 --only boot,os --verify
 ```
 
 ---

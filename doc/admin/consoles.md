@@ -31,8 +31,8 @@ Connecting to the console:
 picocom -b 115200 /dev/serial/by-id/usb-LugalOS_*_Dual_CDC_ACM_*-if00
 ```
 
-### 2. ESP32-P4 Targets (ESP32-P4-NANO & LCD-7B)
-* **High Baud Rate**: LugalOS runs the ESP32-P4 UART0 console at **921,600 baud** (`CONFIG_UART0_BAUD`) to handle rapid graphics and microkernel debug logging.
+### 2. ESP32-P4 Targets (M5Stack Tab5, ESP32-P4-NANO & LCD-7B)
+* **High Baud Rate**: LugalOS runs the ESP32-P4 UART0 / USB-Serial/JTAG console at **921,600 baud** (`CONFIG_UART0_BAUD`) to handle rapid graphics and microkernel debug logging.
 * **Modem Control Lines**:
   * `RTS` controls `ESP_EN` (hardware chip reset).
   * `DTR` controls `GPIO35/BOOT` (download boot mode).
@@ -40,6 +40,9 @@ picocom -b 115200 /dev/serial/by-id/usb-LugalOS_*_Dual_CDC_ACM_*-if00
 
 **Always communicate via `tools/p4run.py`**:
 ```bash
+# Connect to M5Stack Tab5 5" Portable Tablet
+python3 tools/p4run.py --board tab5 --run
+
 # Connect to ESP32-P4 7" LCD Terminal
 python3 tools/p4run.py --board lcd7b --run
 

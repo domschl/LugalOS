@@ -327,7 +327,7 @@ static void run_hotkey(void) {
             if (ms > 0 && dy != 0) {
                 reader_touch_fling(dy, ms);
             } else {
-                reader_scroll(hk == CONSOLE_HOTKEY_SCROLL_UP ? -80 : 80);
+                reader_scroll(hk == CONSOLE_HOTKEY_SCROLL_UP ? -160 : 160);
             }
         }
         return;

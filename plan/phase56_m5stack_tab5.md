@@ -1,6 +1,6 @@
 # Phase 56: M5Stack Tab5 Support & Dual-Orientation Gemtext Reader
 
-**Status**: COMPLETE (VERIFIED LIVE)  
+**Status**: CLOSED (VERIFIED LIVE ON HARDWARE)  
 **Target Hardware**: M5Stack Tab5 (`esp32p4-tab5` / `esp32p4-tab5x`)  
 **Reference Materials**:
 - Schematics & Block Diagram: `~/Source/gith/esp/datasheet/Tab5_Schematics_PDF.pdf`, `Tab5_Overall_Design_Block_Diagram.pdf`
@@ -457,5 +457,10 @@ During live hardware bring-up on the physical M5Stack Tab5, the display initiall
 
 #### 4. Universal Local Keyboard Routing
 - Keystrokes from the local USB keyboard connected to Tab5 route to `reader_feed_key(c)` when Reader is focused (`g_active_win_type == 3`), enabling full navigation (`'o'`, arrows, Page Up/Down, link following `1..9`, `'q'`), while UART serial console input routes to `lsh` for automated test suites.
+
+#### 5. Touch Swipe Fling Physics Tuning & MicroSD Synchronization
+- **Responsive Fling Physics**: Scaled touch swipe velocity multiplier to `70` (from `28`), raised velocity clamp to `220` px/frame (from `100`), tuned low-friction decay to 5% loss per frame (`v = (v * 95) / 100`), and extended coast limit to 120 frames. Swiping now effortlessly flings across multiple pages on the 1,280 px portrait display while retaining immediate touch-to-stop braking.
+- **MicroSD Deployment**: Deployed complete `build/esp32p4-tab5/sd_root` filesystem to physical microSD card `/sd0` via 9P (`tools/p9sync.py --p4 tab5`), deploying all documentation, Gemini help pages, CAS algebra system, Zork 1/2/3 interactive fiction games, and userspace ELF binaries.
+
 
 

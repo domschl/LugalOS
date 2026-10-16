@@ -35,14 +35,18 @@ picotool load -f build/rp2350-terminal/flashfs.uf2
 
 ---
 
-## 2. Flashing ESP32-P4 Boards (LCD-7B & NANO)
+## 2. Flashing ESP32-P4 Boards (Tab5, LCD-7B & NANO)
 
 The ESP32-P4 uses `tools/p4flash.py` to program the second-stage bootloader and the Execute-In-Place (XIP) flash image.
 
 ### Board Disambiguation (`--board`)
-Always specify `--board nano` or `--board lcd7b` when flashing, as both use CH343P USB-serial bridges with different silicon revisions (NANO is rev v1.3; LCD-7B is rev v3.2):
+Always specify `--board nano`, `--board lcd7b`, or `--board tab5` when flashing, as they use different serial bridges and silicon revisions (NANO and Tab5 are rev v1.3; LCD-7B is rev v3.2):
 
 ```bash
+# Flash M5Stack Tab5 5" Portable Tablet
+ninja -C build/esp32p4-tab5
+python3 tools/p4flash.py --board tab5 --build build/esp32p4-tab5 --only boot,os --verify
+
 # Flash ESP32-P4 7" Touch LCD Terminal
 ninja -C build/esp32p4-lcd7b
 python3 tools/p4flash.py --board lcd7b --build build/esp32p4-lcd7b --only boot,os --verify

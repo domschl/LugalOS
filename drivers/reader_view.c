@@ -328,16 +328,16 @@ void reader_touch_fling_instance(uint8_t rid, int dy, uint32_t ms) {
     if (!c || w <= 0 || h <= 0) return;
 
     /* Moving finger up (dy < 0) scrolls down (positive scroll_y change).
-     * Scaled for responsive fling speed with low gravity friction. */
-    int v = -(dy * 28) / (int)ms;
-    if (v > 100) v = 100;
-    if (v < -100) v = -100;
-    if (v >= 0 && v < 8) v = 12;
-    if (v < 0 && v > -8) v = -12;
+     * Scaled for responsive, rapid fling speed with smooth inertia. */
+    int v = -(dy * 70) / (int)ms;
+    if (v > 220) v = 220;
+    if (v < -220) v = -220;
+    if (v >= 0 && v < 16) v = 24;
+    if (v < 0 && v > -16) v = -24;
 
     uint32_t start_presses = touch_press_count();
 
-    for (int frame = 0; frame < 80; frame++) {
+    for (int frame = 0; frame < 120; frame++) {
         int next_y = s_readers[rid].scroll_y + v;
         if (next_y < 0) {
             s_readers[rid].scroll_y = 0;
@@ -352,8 +352,8 @@ void reader_touch_fling_instance(uint8_t rid, int dy, uint32_t ms) {
 #if defined(LCDTERM_PRESENT)
         lcdterm_sync_post();
 #endif
-        /* Low gravity friction decay: only ~6% loss per frame at 60 Hz */
-        v = (v * 94) / 100;
+        /* Low friction decay: ~5% loss per frame at 60 Hz */
+        v = (v * 95) / 100;
         int abs_v = v < 0 ? -v : v;
         if (abs_v <= 1) break;
 

@@ -88,7 +88,8 @@ Hardware tests communicate with physical development boards over serial and USB 
 # Test RP2350 microcontrollers (RP2350-LCD-7, Pico 2, Pico 2 W)
 python3 tests/hw/test_rp2350.py
 
-# Test ESP32-P4 boards (NANO or LCD-7B)
+# Test ESP32-P4 boards (Tab5, LCD-7B, or NANO)
+python3 tests/hw/test_esp32p4.py --board tab5
 python3 tests/hw/test_esp32p4.py --board lcd7b
 
 # Test ESP32-C6-Zero

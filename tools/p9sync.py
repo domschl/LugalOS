@@ -58,6 +58,8 @@ def p4_shell(port: str, line: str) -> None:
 def find_default_src() -> Path | None:
     """Find the most likely staged sd_root directory."""
     candidates = [
+        REPO_ROOT / "build" / "esp32p4-tab5" / "sd_root",
+        REPO_ROOT / "build" / "esp32p4-lcd7b" / "sd_root",
         REPO_ROOT / "build" / "rp2350-terminal" / "sd_root",
         REPO_ROOT / "build" / "rp2350" / "sd_root",
         REPO_ROOT / "build" / "esp32p4" / "sd_root",
@@ -170,7 +172,7 @@ def main() -> int:
     parser.add_argument(
         "--p4",
         metavar="BOARD",
-        help="an ESP32-P4 board (nano|lcd7b): 9P on its console wire via p9share",
+        help="an ESP32-P4 board (nano|lcd7b|tab5): 9P on its console wire via p9share",
     )
     parser.add_argument(
         "--src",
