@@ -20,6 +20,8 @@ from pathlib import Path
 from PIL import Image, ImageFont, ImageDraw
 
 MONO_PATHS = [
+    "/usr/share/fonts/noto/NotoSansMono-CondensedMedium.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSansMono-CondensedMedium.ttf",
     "/usr/share/fonts/noto/NotoSansMono-Medium.ttf",
     "/usr/share/fonts/truetype/noto/NotoSansMono-Medium.ttf",
     "/usr/share/fonts/noto/NotoSansMono-Regular.ttf",
@@ -27,6 +29,8 @@ MONO_PATHS = [
 ]
 
 SERIF_PATHS = [
+    "/usr/share/fonts/TTF/GentiumBook-Regular.ttf",
+    "/usr/share/fonts/gentium/GentiumBook-Regular.ttf",
     "/usr/share/fonts/noto/NotoSerif-Regular.ttf",
     "/usr/share/fonts/truetype/noto/NotoSerif-Regular.ttf",
 ]
@@ -215,7 +219,7 @@ def generate_mono():
                 # Typographic characters from font (euro, quotes, bullet, ellipsis)
                 img_l = Image.new('L', (16, CELL_H), color=0)
                 draw_l = ImageDraw.Draw(img_l)
-                draw_l.text((0, -4), chr(cp), font=font, fill=255)
+                draw_l.text((1, -3), chr(cp), font=font, fill=255)
 
                 g_1 = []
                 for y in range(CELL_H):
@@ -238,7 +242,7 @@ def generate_mono():
             ch = chr(code)
             img_l = Image.new('L', (16, CELL_H), color=0)
             draw_l = ImageDraw.Draw(img_l)
-            draw_l.text((0, -4), ch, font=font, fill=255)
+            draw_l.text((1, -3), ch, font=font, fill=255)
 
             g_1 = []
             for y in range(CELL_H):
@@ -270,7 +274,7 @@ def generate_serif():
     serif_path = find_font(SERIF_PATHS)
     if not serif_path:
         sys.exit(f"No Noto Serif font found in {SERIF_PATHS}")
-    font = ImageFont.truetype(serif_path, 24)
+    font = ImageFont.truetype(serif_path, 26)
 
     widths = []
     glyphs_1bpp = []
@@ -289,17 +293,13 @@ def generate_serif():
 
             img_l = Image.new('L', (32, CELL_H), color=0)
             draw_l = ImageDraw.Draw(img_l)
-            draw_l.text((0, -4), ch, font=font, fill=255)
-
-            img_1 = Image.new('1', (32, CELL_H), color=0)
-            draw_1 = ImageDraw.Draw(img_1)
-            draw_1.text((0, -4), ch, font=font, fill=1)
+            draw_l.text((0, -1), ch, font=font, fill=255)
 
             g_1 = []
             for y in range(CELL_H):
                 r_val = 0
                 for x in range(32):
-                    if img_1.getpixel((x, y)):
+                    if img_l.getpixel((x, y)) >= 96:
                         r_val |= (1 << x)
                 g_1.append(r_val)
 
