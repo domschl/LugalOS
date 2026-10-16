@@ -171,15 +171,16 @@ All tables reside in Flash `.rodata` (XIP):
 
 ### Milestone 57.5: Hardware Verification & Regression Testing
 * **Bug Fixes & Refinements**:
-  - Fix typed character visibility: explicit interactive damage trigger in `lcdterm_console_flush()`; batched character writes during bulk output flush on newlines only.
+  - Fix typed character visibility: `s_pending_char_damage` tracking in `drivers/lcdterm.c`; bulk output flushes on newlines, while interactive input flushes immediately via `screen_flush()` / `lcdterm_screen_flush()` before key wait, eliminating both input lag and idle flip loops.
   - Fix Reader kinetic scroll clipping: updated visible window row bounds in `lcdterm_get_visible_readers()` and `lcdterm_get_visible_canvases565()` to use `(int)FONT_CELL_H * text_rows`.
+  - Fix double-buffer flip loop: tracked per-buffer sequence numbers `s_reader_drawn_seq[2][4]` and `reader_get_seq()`, preventing idle Reader windows from triggering continuous 60 Hz flip cycles.
   - Reader Typography Upgrade: switched proportional font to `Gentium Book` at 26pt (`GentiumBook-Regular.ttf`, 95 ASCII glyphs with FreeType grayscale thresholding >= 96), delivering classic book typography with optical proportion matching 280 DPI; tightened line height from 38 px to 30 px ($1.15\times$ classic print leading) and calibrated heading/paragraph breaks.
   - Terminal Shell Typography: set `Noto Sans Mono Medium` at 26pt (`NotoSansMono-Medium.ttf`), achieving natural advance width (15.59 px matching the 16x32 cell) with cohesive 2-3 px inter-character gaps and zero horizontal tracking distortion.
 * **M5Stack Tab5 Live Hardware Verification**:
   - Verify visual legibility of $16 \times 32$ terminal shell in Landscape ($1280 \times 720$, $78 \times 21$ cells).
   - Verify reading comfort of Gentium Book 26pt Gemtext reader in Portrait ($720 \times 1280$, $43 \times 38$ cells) and Landscape split ribbon.
   - Validate touch swipe inertia, link tapping, and `Super+O` orientation switching.
-  - Capture PGM/PPM screenshots to `/sd0/screenshots/` and inspect typography quality (`shot-tab5-noto-condensed-aa.png`, `shot-tab5-gentium-book-full.png`).
+  - Capture PGM/PPM screenshots to `/sd0/screenshots/` and inspect typography quality (`shot-tab5-noto-condensed-aa.png`, `shot-tab5-gentium-book-full.png`, `shot-tab5-noto-medium-final.png`).
 * **Regression Testing**:
   - Run `tests/hw/test_esp32p4.py --board tab5` (all 46/46 tests pass).
   - Verify clean builds for `esp32p4-lcd7b` and `rp2350-terminal` (zero compiler warnings or regressions).
