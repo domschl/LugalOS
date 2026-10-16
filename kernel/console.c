@@ -182,7 +182,7 @@ void console_hotkey(unsigned code) {
     g_hotkey = code;
 }
 
-static void console_sync_readers(void) {
+void console_sync_readers(void) {
     uint8_t req[2] = { 'R', 0 };
     uint8_t reply[SCREEN_REPLY_LEN];
     if (!console_canvas(req, 1, reply) || reply[0] != 0) return;
@@ -196,8 +196,9 @@ static void console_sync_readers(void) {
                 int rx0 = (int)(reply[4] | (reply[5] << 8));
                 int rx1 = (int)(reply[6] | (reply[7] << 8));
                 int rw = rx1 - rx0 - 1;
+                int rh = (int)(reply[10] | (reply[11] << 8));
                 if (rw > 0) {
-                    if (reader_set_target(rid, rw, 0)) {
+                    if (reader_set_target(rid, rw, rh)) {
                         reader_update_instance(rid);
                     }
                 }

@@ -1875,6 +1875,7 @@ int dsi_lcd_set_orientation(int rot) {
     }
     term_redraw();
     console_unlock();
+    console_sync_readers();
     return 0;
 #else
     (void)rot;

@@ -164,13 +164,15 @@ static bool reader_open_internal(uint8_t rid, const char *resource, bool push_hi
     r->active = true;
 
     if (!r->aa_buf) {
-        uint32_t pages = (1024u * 600u + 4095u) / 4096u;
+        uint32_t aa_w = 1280u;
+        uint32_t aa_h = 1280u;
+        uint32_t pages = (aa_w * aa_h + 4095u) / 4096u;
         r->aa_buf = (uint8_t *)palloc_pages_bulk(pages);
         if (r->aa_buf) {
             r->aa_pages = pages;
-            r->aa_stride = 1024;
-            r->aa_w = 1024;
-            r->aa_h = 600;
+            r->aa_stride = aa_w;
+            r->aa_w = aa_w;
+            r->aa_h = aa_h;
         }
     }
 
@@ -541,28 +543,11 @@ void reader_feed_key(int c) {
 #if defined(CONFIG_BOARD_TAB5)
             int cur_rot = dsi_lcd_get_orientation();
             int new_rot = (cur_rot == 0) ? 270 : 0;
-            char path_copy[128];
-            strncpy(path_copy, r->path, sizeof(path_copy) - 1);
-            path_copy[sizeof(path_copy) - 1] = '\0';
             dsi_lcd_set_orientation(new_rot);
-            /* Re-open reader in the new ribbon layout */
-            uint8_t req[128];
-            req[0] = 'O';
-            req[1] = 0; /* default cols */
-            uint32_t arg_len = (uint32_t)strlen(path_copy);
-            if (arg_len > sizeof(req) - 3) arg_len = sizeof(req) - 3;
-            memcpy(req + 2, path_copy, arg_len);
-            req[2 + arg_len] = '\0';
-            uint8_t reply[SCREEN_REPLY_LEN];
-            if (console_canvas(req, 3 + arg_len, reply) && reply[0] == 0) {
-                uint8_t nrid = reply[1];
-                int w = (int)(reply[2] | (reply[3] << 8));
-                int h = (int)(reply[4] | (reply[5] << 8));
-                reader_set_target(nrid, w, h);
-                reader_update_instance(nrid);
-                reader_set_active_instance(nrid);
-                console_set_active_win_type(3 /* RIBBON_WIN_READER */);
-            }
+            console_sync_readers();
+            reader_update_instance(rid);
+            reader_set_active_instance(rid);
+            console_set_active_win_type(3 /* RIBBON_WIN_READER */);
 #endif
             return;
         }

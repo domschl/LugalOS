@@ -437,3 +437,25 @@ During live hardware bring-up on the physical M5Stack Tab5, the display initiall
 5. **Screenshot Netpbm Buffering**:
    - Optimized `kernel/screenshot.c` with 4KB sector-buffered writes, reducing Netpbm PPM capture time on microSD from >25 seconds to ~1.5 seconds.
 
+### 6.4 ST7121 TDDI Touch Controller, Non-Destructive Reorientation & Reader Memory Stability
+
+#### 1. ST7121 TDDI Touch Protocol & FIFO Clearing
+- **Issue**: Live touch polling reported 0 touch events and locked up after initial read.
+- **Root Cause**: ST7121/ST7123 TDDI touch controllers require the host to read through the end of the coordinate table (register `0x0059` for 10-touch controllers) to deassert the INT pin and advance the internal touch coordinate FIFO. In addition, Touch ID bits in bits 7:4 of coordinate byte 2 corrupted Y coordinates if not masked with `0x0F`.
+- **Fix**: Added dummy read of register `0x0053..0x0059` (7 bytes) after touch coordinate 0, masked Y coordinate upper bits (`p[2] & 0x0Fu`), and added an 80 ms release debounce to clean up touch-up gestures.
+
+#### 2. Non-Destructive Dynamic Reorientation (`screen_reorient`)
+- **Issue**: Switching display orientation via `'o'` or `lcd orient` previously wiped all ribbon windows back to a single Terminal window because `screen_init()` destroyed the ribbon layout and window allocations.
+- **Fix**: Implemented `screen_reorient(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsigned h)` in `drivers/screen.c`.
+  - In Portrait (`w < h`, 720×1280): all ribbon windows dynamically reconfigure to `RIBBON_COLS_FULL(w)` (88 cols at 720px width), Reader is focused, and viewport `x_view` smoothly slides to fill the physical portrait display.
+  - In Landscape (`w > h`, 1280×720): windows restore to side-by-side pair (78 cols shell + 78 cols reader).
+  - Canvas and reader backing stores are preserved and re-initialized in place without leaking or dropping active document contents.
+
+#### 3. Reader Anti-Aliased Typography Buffer Sizing
+- **Issue**: In portrait mode, Reader window height expanded to 1,248 px. Previously, `r->aa_buf` was hardcoded to 1024×600 (600 KB). Drawing into a 1,248 px tall window scribbled ~660 KB beyond `r->aa_buf` into adjacent PSRAM, corrupting reader state and crashing reader.
+- **Fix**: Increased `r->aa_buf` allocation in `drivers/reader_view.c` to `1280×1280` (1.6 MB) with `aa_stride = 1280`, `aa_w = 1280`, and `aa_h = 1280`.
+
+#### 4. Universal Local Keyboard Routing
+- Keystrokes from the local USB keyboard connected to Tab5 route to `reader_feed_key(c)` when Reader is focused (`g_active_win_type == 3`), enabling full navigation (`'o'`, arrows, Page Up/Down, link following `1..9`, `'q'`), while UART serial console input routes to `lsh` for automated test suites.
+
+

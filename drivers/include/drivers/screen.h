@@ -154,6 +154,7 @@ typedef struct {
  * terminal empty, the tile titled `LugalOS` until something says otherwise.
  * `scr` must hold SCREEN_BYTES(w, h); w must be a multiple of 8. */
 void screen_init(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsigned h);
+void screen_reorient(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsigned h);
 
 /* 38.8: memory for the canvas stores, SCREEN_STORE_BYTES(w, h) of it;
  * before this, or with NULL, nothing is stored. */

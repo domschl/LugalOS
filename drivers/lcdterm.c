@@ -674,10 +674,7 @@ int lcdterm_init(const lcdterm_backend_t *be) {
 int lcdterm_reinit(const lcdterm_backend_t *be) {
     if (!be || !be->fb || !g_scr) return -1;
     g_be = be;
-    screen_init(g_scr, be->fb, be->stride, be->w, be->h);
-    if (palloc_is_bulk(g_scr)) {
-        screen_set_store(g_scr, (uint8_t *)g_scr + g_state_bytes, g_scr_bytes - g_state_bytes);
-    }
+    screen_reorient(g_scr, be->fb, be->stride, be->w, be->h);
     damage(0, be->h);
     return 0;
 }

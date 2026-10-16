@@ -182,11 +182,17 @@ static void touch_task_body(void *arg) {
             }
             if (adv & 0x08u) { /* with_coord */
                 uint8_t p[7];
-                if (reg_read(g_t.addr, ST7123_REPORT_0, p, 7) && (p[0] & 0x80u)) {
-                    rx = ((unsigned)(p[0] & 0x3Fu) << 8) | p[1];
-                    ry = ((unsigned)p[2] << 8) | p[3];
-                    got = true;
+                if (reg_read(g_t.addr, ST7123_REPORT_0, p, 7)) {
+                    if (p[0] & 0x80u) {
+                        rx = ((unsigned)(p[0] & 0x3Fu) << 8) | p[1];
+                        ry = ((unsigned)(p[2] & 0x0Fu) << 8) | p[3];
+                        got = true;
+                    }
                 }
+                /* ST7121/ST7123 TDDI requires reading through the end of the coordinate table
+                 * (last register 0x0059 for 10 touches) to clear INT and advance coordinate FIFO. */
+                uint8_t dummy[7];
+                (void)reg_read(g_t.addr, 0x0053u, dummy, 7);
             }
         } else {
             uint8_t st = 0;
@@ -230,10 +236,12 @@ static void touch_task_body(void *arg) {
             }
             g_t.log_seq++;
         } else if (down) {
-            down = false;
-            g_t.log_kind = 3;
-            g_t.log_seq++;
-            gesture(x0, y0, x, y, (uint32_t)(time_get_ms() - t0));
+            if (time_get_ms() - t_last > 80u) {
+                down = false;
+                g_t.log_kind = 3;
+                g_t.log_seq++;
+                gesture(x0, y0, x, y, (uint32_t)(t_last - t0));
+            }
         }
     }
 }

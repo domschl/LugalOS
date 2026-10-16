@@ -125,6 +125,7 @@ void console_set_title(const char *title);
 bool console_canvas(const uint8_t *req, uint32_t n, uint8_t *reply);
 void console_set_active_win_type(uint8_t type);
 uint8_t console_active_win_type(void);
+void console_sync_readers(void);
 
 /* 37.5b: everything written through console_putc() -- cprintf(), a Lisp
  * program's output, lisp_print() -- goes into `buf` instead of the screen
