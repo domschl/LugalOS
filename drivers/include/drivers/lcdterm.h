@@ -92,8 +92,14 @@ void lcdterm_scroll_test(unsigned n);
 void lcdterm_report(void);
 canvas1_t *lcdterm_get_canvas_backing(uint8_t cid);
 canvas1_t *lcdterm_get_reader_backing(uint8_t rid);
+#if defined(LCDTERM_PRESENT)
 bool lcdterm_is_animating(void);
 void lcdterm_sync_pre(void);
 void lcdterm_sync_post(void);
+#else
+static inline bool lcdterm_is_animating(void) { return false; }
+static inline void lcdterm_sync_pre(void) { }
+static inline void lcdterm_sync_post(void) { }
+#endif
 
 #endif /* LUGALOS_DRIVERS_LCDTERM_H */

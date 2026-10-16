@@ -601,11 +601,14 @@ bool llp_node_offer_netif(netif_t *nif) {
         g_bridged = nif;
         taken = true;
     } else {
-        net_stack_attach(nif);
         g_stack_nif = nif;
     }
     spin_unlock_irqrestore(&g_own_lock, f);
-    if (taken) printk("[LLP] bridging %s\n", nif->name);
+    if (taken) {
+        printk("[LLP] bridging %s\n", nif->name);
+    } else {
+        net_stack_attach(nif);
+    }
     return taken;
 }
 
