@@ -67,12 +67,33 @@ CPU / Rendering Engine (lcdterm, screen.c)
   * CPU cache lines are flushed prior to arming the flip (`dsi_lcd_fb_flush()`).
 * Zero CPU busy-waiting: rendering tasks queue a flip and yield or proceed with next computations.
 
-### 3. Impact on Future Multi-Color Depth Modes
-Double-buffering is not only compatible with higher color depths—**it is a mandatory prerequisite**:
-* **Monochrome (1-bpp)**: Tearing manifests as subtle line shifts.
-* **Grayscale (GRAY8, 256 levels)**: Tearing manifests as gray band mismatch; double-buffering enables smooth subpixel anti-aliasing and shading.
-* **High Color (RGB565, 65,536 colors)**: Without double-buffering, writing a 16-bit pixel takes 2 byte writes; scanout during a write reads corrupt RGB bitfields (e.g. green bits from new pixel, red/blue from old), producing vivid magenta/cyan flashes. Double-buffering guarantees 100% color integrity.
-* **True Color (RGB888, 16.7M colors)**: 3-byte writes are even more susceptible to byte-tearing. Double-buffering is required for high-fidelity photo rendering in the Gemini reader and graphical Lisp demos.
+### 3. Key Use-Cases & Architectural Solutions
+
+#### Use-Case 1: Grayscale Anti-Aliased Typography (E-Reader Print Quality)
+* **Design Goal**: Keep the clean, distraction-free black & white / paper aesthetic, but dramatically improve readability and typographic beauty in the **Reader** application.
+* **Mechanism**:
+  * Tools like `tools/gen_serif_font.py` generate anti-aliased glyph bitmaps with 4-bit (16 levels) or 8-bit (256 levels) coverage masks instead of 1-bpp bilevel thresholds.
+  * In the master RGB565 frame buffer, grayscale is represented by equal $R, G, B$ intensities (or custom paper tinting, e.g. subtle warm cream `#FDFBF7` background and crisp dark slate text).
+  * The Reader blits glyphs with fast integer alpha-blending:
+    $$\text{pixel} = \text{bg} \times (1 - \alpha) + \text{text\_color} \times \alpha$$
+  * Result: Serif fonts (such as Noto Serif and Liberation Serif) render with silky-smooth curves, perfect contrast, and zero jaggies, matching high-end e-readers.
+
+#### Use-Case 2: Hybrid Ribbon Compositing (Per-Window Color Depth & Color Canvases)
+* **Design Goal**: Allow a single window (e.g., a color game, a photo viewer, or a scientific plot) to render in full 16-bit RGB565 color, while neighboring terminal and reader windows preserve their crisp monochrome or grayscale styling.
+* **Mechanism**:
+  * **Master Scanout Buffer**: Set to RGB565 (16-bpp).
+  * **Per-Window Format Metadata**:
+    * `RIBBON_WIN_TERM`: 1-bpp character cell grid $\rightarrow$ compositor expands fg/bg colors into RGB565.
+    * `RIBBON_WIN_READER`: 4-bpp/8-bpp anti-aliased text surface $\rightarrow$ compositor alpha-blends onto paper background.
+    * `RIBBON_WIN_CANVAS`: Can be allocated as **1-bpp** (monochrome plot/chess, 48 KB) OR **RGB565** (game/graphics canvas, e.g. 400×300 RGB565 = 240 KB in PSRAM).
+  * **Compositor Blit (`screen.c`)**:
+    * When composing the visible ribbon segment, `draw_all_from()` blits each visible window using its native format:
+      * 1-bpp canvas/term $\rightarrow$ 1-to-16 bit expansion with palette lookup.
+      * RGB565 color canvas $\rightarrow$ direct 16-bit `memcpy` / DMA row copy into the back buffer.
+  * **CLI / Lisp Control**:
+    * Shell: `canvas open <name> [cols] [--rgb565]`
+    * Lisp: `(canvas-open "game" :format 'rgb565 :width 400 :height 300)`
+  * Allows a high-speed color game canvas to live right beside a retro monochrome shell on the same ribbon!
 
 ---
 
@@ -91,29 +112,29 @@ Double-buffering is not only compatible with higher color depths—**it is a man
 * Expose `lcdterm_swap_buffers()` to the drawing engine.
 * Maintain clean separation between the working draw surface and the scanout surface.
 
-### Milestone 55.3: Decoupled Render & Flush Pipeline
-* Update `lcdflush` task:
-  * Only blit changed/dirty rows into the back buffer.
-  * Flush L2/PSRAM cache for changed rows only (`dsi_lcd_fb_flush()`).
-  * Signal `flip_pending` to the VSYNC interrupt handler.
+### Milestone 55.3: Anti-Aliased Typography Pipeline (`drivers/reader_view.c`)
+* Update `tools/gen_serif_font.py` to generate 4-bit / 8-bit alpha coverage glyph tables.
+* Implement fast integer glyph alpha-blending in `reader_view.c`.
+* Render smooth serif fonts on cream/white backgrounds with zero color distractions.
 
-### Milestone 55.4: Re-Enable & Refine Ribbon Slide Animation
+### Milestone 55.4: Hybrid Ribbon Compositing & Color Canvases (`drivers/screen.c`)
+* Extend `screen_canvas_slot_t` with format descriptor: `CANVAS_FMT_1BPP` vs `CANVAS_FMT_RGB565`.
+* Allocate RGB565 canvas backings dynamically from PSRAM.
+* Update `screen.c` window blitter to blit 1-bpp, anti-aliased grayscale, and direct RGB565 side-by-side into the master RGB565 frame.
+* Add shell commands: `canvas open <name> [cols] [--rgb565]` and Lisp primitive bindings.
+
+### Milestone 55.5: Re-Enable & Refine Ribbon Slide Animation
 * Re-enable `CONFIG_ENABLE_RIBBON_ANIMATION`:
   * Set default to `ON` once double-buffering is verified.
   * Perform multi-step interpolations (e.g. 4–6 steps at 60 Hz = 66–100 ms total transition).
   * Each animation step renders to back buffer $\rightarrow$ flips at VSYNC $\rightarrow$ zero tearing, zero blue flashes.
 
-### Milestone 55.5: Multi-Color Depth Pipeline Abstraction
-* Extend `lcdterm_backend_t` to support selectable color depths:
-  * Mode 0: `1-bpp` native (minimal bandwidth, retro Mac aesthetic).
-  * Mode 1: `GRAY8` (anti-aliased fonts, smooth window shadows).
-  * Mode 2: `RGB565` (ANSI 256 colors, full-color Gemini images, syntax highlighting).
-* Shell command `lcd bpp [1|8|16]` to switch pixel formats dynamically.
-
 ### Milestone 55.6: Verification & Hardware Testing
 * **Benchmark & Frame-Pacing**:
   * Measure frame flip latency and verify exact 60 Hz pacing without dropped frames.
 * **Visual Inspection on ESP32-P4-LCD-7B**:
+  * Verify anti-aliased serif text in `reader`.
+  * Open simultaneous B/W Terminal, Anti-aliased Reader, and RGB565 Color Game canvas on the ribbon.
   * Rapid window cycling (`Super+Left`/`Right`, `Super+Ctrl+Left`/`Right`) to verify zero tearing or color artifacts.
 * **Visual Inspection on RP2350-LCD-7**:
   * Verify tear-free slide animation and clean title-bar rendering.
