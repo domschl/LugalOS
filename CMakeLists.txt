@@ -716,6 +716,8 @@ set(SOURCES
     drivers/screen.c
     drivers/canvas1.c
     drivers/font_serif.c
+    drivers/font_noto_mono.c
+    drivers/font_noto_serif.c
     drivers/reader_view.c
     drivers/ribbon.c
     # the same screen in RAM, for Lisp's canvas where there is no panel.
