@@ -237,9 +237,14 @@ void touch_command(const char *args) {
     if (g_t.presses) cprintf("touch: last point %d,%d\n", g_t.last_x, g_t.last_y);
 }
 
+uint32_t touch_press_count(void) {
+    return g_t.presses;
+}
+
 #else
 
 int touch_start(void) { return -1; }
 void touch_command(const char *args) { (void)args; cprintf("touch: this board has no touch controller\n"); }
+uint32_t touch_press_count(void) { return 0; }
 
 #endif

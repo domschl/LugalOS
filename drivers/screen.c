@@ -1257,11 +1257,10 @@ LCDTERM_UTEXT static void screen_animate_ribbon(screen_t *scr,
     }
 
     const int STEPS = 5;
-    /* Ease-out weights (scaled by 1000) for smooth deceleration */
-    static const int weights[5] = { 280, 540, 750, 900, 1000 };
     scr->animating = true;
     for (int s = 0; s < STEPS; s++) {
-        int w = weights[s];
+        /* Ease-out weights (scaled by 1000) for smooth deceleration */
+        int w = (s == 0) ? 280 : (s == 1) ? 540 : (s == 2) ? 750 : (s == 3) ? 900 : 1000;
         if (has_win_anim) {
             int32_t d_a0 = a_target_rx0 - a_start_rx0;
             int32_t d_a1 = a_target_rx1 - a_start_rx1;

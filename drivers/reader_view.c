@@ -17,6 +17,7 @@
 #include "drivers/ramscreen.h"
 #include "drivers/screen.h"
 #include "kernel/console.h"
+#include "drivers/touch.h"
 #include "fs/gemtext.h"
 #include "fs/vfs.h"
 #include "net/spartan.h"
@@ -322,14 +323,17 @@ void reader_touch_fling_instance(uint8_t rid, int dy, uint32_t ms) {
     int h = s_readers[rid].win_h > 0 ? s_readers[rid].win_h : (c ? (int)c->h : 0);
     if (!c || w <= 0 || h <= 0) return;
 
-    /* Moving finger up (dy < 0) scrolls down (positive scroll_y change) */
-    int v = -(dy * 16) / (int)ms;
-    if (v > 50) v = 50;
-    if (v < -50) v = -50;
-    if (v >= 0 && v < 4) v = 6;
-    if (v < 0 && v > -4) v = -6;
+    /* Moving finger up (dy < 0) scrolls down (positive scroll_y change).
+     * Scaled for responsive fling speed with low gravity friction. */
+    int v = -(dy * 28) / (int)ms;
+    if (v > 100) v = 100;
+    if (v < -100) v = -100;
+    if (v >= 0 && v < 8) v = 12;
+    if (v < 0 && v > -8) v = -12;
 
-    for (int frame = 0; frame < 30; frame++) {
+    uint32_t start_presses = touch_press_count();
+
+    for (int frame = 0; frame < 80; frame++) {
         int next_y = s_readers[rid].scroll_y + v;
         if (next_y < 0) {
             s_readers[rid].scroll_y = 0;
@@ -344,12 +348,14 @@ void reader_touch_fling_instance(uint8_t rid, int dy, uint32_t ms) {
 #if defined(LCDTERM_PRESENT)
         lcdterm_sync_post();
 #endif
-        /* Friction decay: 12% loss per frame at 60 Hz */
-        v = (v * 88) / 100;
+        /* Low gravity friction decay: only ~6% loss per frame at 60 Hz */
+        v = (v * 94) / 100;
         int abs_v = v < 0 ? -v : v;
         if (abs_v <= 1) break;
 
-        if (console_has_char() || console_interrupt_requested()) break;
+        /* Break immediately if user touches screen or presses a key */
+        if (console_has_char() || console_interrupt_requested() ||
+            touch_press_count() != start_presses) break;
     }
 
     reader_update_instance(rid);

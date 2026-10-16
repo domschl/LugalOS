@@ -30,4 +30,7 @@ int touch_start(void);
  * every press, move and release with its mapped point, for s seconds (20). */
 void touch_command(const char *args);
 
+/* Returns total number of touch press events detected since boot */
+uint32_t touch_press_count(void);
+
 #endif /* LUGALOS_DRIVERS_TOUCH_H */
