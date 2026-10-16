@@ -339,11 +339,19 @@ void reader_touch_fling_instance(uint8_t rid, int dy, uint32_t ms) {
 
     /* Moving finger up (dy < 0) scrolls down (positive scroll_y change).
      * Scaled for responsive, rapid fling speed with smooth inertia. */
+#if READER_IS_HIDPI
+    int v = -(dy * 110) / (int)ms;
+    if (v > 360) v = 360;
+    if (v < -360) v = -360;
+    if (v >= 0 && v < 24) v = 36;
+    if (v < 0 && v > -24) v = -36;
+#else
     int v = -(dy * 70) / (int)ms;
     if (v > 220) v = 220;
     if (v < -220) v = -220;
     if (v >= 0 && v < 16) v = 24;
     if (v < 0 && v > -16) v = -24;
+#endif
 
     uint32_t start_presses = touch_press_count();
 

@@ -48,9 +48,13 @@
 #define ST7123_REPORT_0   0x0014u
 
 #define POLL_MS   20u
-#define TAP_PX    24        /* screen pixels: a finger wobbles */
+#if defined(CONFIG_FONT_HIDPI)
+#define TAP_PX    48        /* screen pixels on HiDPI (~300 DPI): finger wobble */
+#else
+#define TAP_PX    24        /* screen pixels on standard DPI (~133-170 DPI) */
+#endif
 #define TAP_MS    600u
-#define SWIPE_DIV 8         /* a swipe crosses at least 1/8 of the width */
+#define SWIPE_DIV 8         /* a swipe crosses at least 1/8 of the width/height */
 
 typedef enum {
     CHIP_NONE = 0,
@@ -144,13 +148,14 @@ static void map_point(unsigned rx, unsigned ry, int *x, int *y) {
 static void gesture(int x0, int y0, int x1, int y1, uint32_t ms) {
     int dx = x1 - x0, dy = y1 - y0;
     int adx = dx < 0 ? -dx : dx, ady = dy < 0 ? -dy : dy;
-    int swipe_px = (int)(g_t.scr_w ? g_t.scr_w : 800u) / SWIPE_DIV;
-    if (adx >= swipe_px && adx >= 2 * ady) {
+    int swipe_px_x = (int)(g_t.scr_w ? g_t.scr_w : 800u) / SWIPE_DIV;
+    int swipe_px_y = (int)(g_t.scr_h ? g_t.scr_h : 480u) / SWIPE_DIV;
+    if (adx >= swipe_px_x && adx >= 2 * ady) {
         /* The finger drags the ribbon: moving it left brings the window on
          * the right into view, as Cmd+Right does. */
         g_t.swipes++;
         console_hotkey(dx < 0 ? CONSOLE_HOTKEY_FOCUS_RIGHT : CONSOLE_HOTKEY_FOCUS_LEFT);
-    } else if (ady >= swipe_px && ady >= 2 * adx) {
+    } else if (ady >= swipe_px_y && ady >= 2 * adx) {
         /* Vertical swipe: scroll document up/down with momentum/inertia */
         g_t.swipes++;
         console_touch_scroll(dy, ms);
