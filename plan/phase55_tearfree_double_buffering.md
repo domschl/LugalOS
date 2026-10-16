@@ -166,6 +166,24 @@ CPU / Rendering Engine (lcdterm, screen.c)
 * **Automated Hardware Suite**:
   * Add double-buffering integrity test to `tests/hw/test_esp32p4.py` and `tests/hw/test_rp2350.py`.
 
+### Milestone 55.7: RP2350 2-bpp Grayscale Mode & Configurable SRAM Feature Flag
+* **Feature Flag (`LUGALOS_RP2350_LCD_2BPP`)**:
+  * Configurable via CMake / board preset (default: `OFF`, strictly preserving existing SRAM budgets and test suites).
+  * **When OFF (1-bpp Default)**:
+    * Single buffer: 48 KB (12 SRAM pages).
+    * Double buffer: 96 KB (24 SRAM pages).
+    * Maximum SRAM headroom for concurrent interactive shells, compilation, and Lisp sessions.
+  * **When ON (2-bpp Grayscale Mode)**:
+    * Single buffer: 96 KB (24 SRAM pages).
+    * Double buffer: 192 KB (48 SRAM pages).
+    * 4 levels of grayscale (00 = white paper, 01 = light gray, 10 = medium gray, 11 = dark charcoal text), enabling 4-level anti-aliased serif fonts in the Reader view.
+* **PIO2 & DMA Pipeline for 2-bpp**:
+  * PIO2 SM1 shifts 2 bits per pixel at 24 MHz PCLK (50 words per 800-pixel line).
+  * DMA streaming bandwidth from SRAM: $96\text{ KB} \times 60\text{ Hz} = 5.76\text{ MB/s}$ (only ~1.1% of RP2350 crossbar SRAM bandwidth, zero bus contention with Flash XIP).
+  * Maps 2-bit values to 4 pre-configured RGB565 palette colors in hardware registers.
+* **SRAM vs. Typography Trade-Off**:
+  * Users can explicitly trade 48–96 KB of SRAM heap for e-reader quality typography on RP2350.
+
 ---
 
 ## 4. Verification Checkpoints
@@ -293,11 +311,29 @@ Inspection of the vendor demo repository (`RP2350-Touch-LCD-7-Demo/examples/lcd/
 * **Impact**: Slices burn ~100% of CPU 0, lock the bus against Flash instruction fetches, and prevent multitasking, USB host keyboards, and an OS.
 
 #### 4. Features from Phase 55 Applicable to RP2350
-1. **Double-Buffering in SRAM**:
+
+1. **Double-Buffering in SRAM (Tear-Free 1-bpp Baseline)**:
    * Two 800×480 1-bpp buffers require $48\text{ KB} \times 2 = \mathbf{96\text{ KB}}$ of SRAM.
-   * Readily fits within the 520 KB SRAM pool, enabling tear-free ribbon sliding on RP2350.
-2. **Offscreen RGB565 Canvases in PSRAM**:
-   * Offscreen canvases (e.g. 320×240 RGB565 = 153 KB) can be dynamically allocated in the PSRAM bulk page zone and dithered/quantized into the 1-bpp/2-bpp SRAM scanout buffer during composition.
-3. **Anti-Aliased Typography / Glyph Caching in PSRAM**:
-   * Glyph tables and rendered text layouts can be cached in the PSRAM bulk zone.
+   * Readily fits within the 520 KB SRAM pool, enabling tear-free ribbon sliding on RP2350 while maintaining 100% test compatibility.
+
+2. **2-bpp Grayscale Mode behind a Configurable Feature Flag (`LUGALOS_RP2350_LCD_2BPP`)**:
+   * **The Trade-Off**:
+     * 1-bpp single/double buffer: 48 KB / 96 KB SRAM.
+     * 2-bpp single/double buffer: 96 KB / 192 KB SRAM.
+     * Enabling 2-bpp consumes an extra 48 KB (or 96 KB if double-buffered) of SRAM.
+     * On the RP2350 (520 KB total SRAM), the kernel, USB host stack, network buffers, and terminal sessions share the fast SRAM pool. Halving the available free heap for terminal sessions and Lisp would risk regressions or memory exhaustion in SRAM-intensive workloads (such as multi-terminal tests or `chibicc`).
+   * **The Architectural Solution**:
+     * Hide 2-bpp behind a feature flag: `set(LUGALOS_RP2350_LCD_2BPP OFF CACHE BOOL "Enable 2-bpp 4-level grayscale display on RP2350")`.
+     * **Default `OFF` (1-bpp)**: Maximum SRAM headroom, 100% test suite compatibility, zero memory risk for heavy workstation sessions.
+     * **Optional `ON` (2-bpp)**: Provides 4 levels of grayscale (00 = white background, 01 = light gray, 10 = dark gray, 11 = black ink), enabling beautiful anti-aliased proportional typography in the Reader application for users who prefer e-reader aesthetic over maximum terminal multitasking headroom.
+   * **Hardware Scanout Feasibility**:
+     * Scanout bandwidth: $96\text{ KB} \times 60\text{ Hz} = \mathbf{5.76\text{ MB/s}}$ from SRAM.
+     * The RP2350's 10-bank SRAM crossbar runs at 144 MHz with $>500\text{ MB/s}$ throughput; 5.76 MB/s DMA represents only ~1.1% of SRAM bandwidth and causes zero contention with Flash XIP.
+
+3. **Offscreen RGB565 Canvases in PSRAM**:
+   * Offscreen canvases (e.g. 320×240 RGB565 = 153 KB) can be dynamically allocated in the PSRAM bulk page zone and dithered/quantized into the 1-bpp or 2-bpp SRAM scanout buffer during composition.
+
+4. **Anti-Aliased Typography / Glyph Caching in PSRAM**:
+   * Multi-level glyph tables and rendered text layouts can be cached in the PSRAM bulk zone, compositing directly into the visible 1-bpp or 2-bpp frame buffer.
+
 
