@@ -313,7 +313,7 @@ void lcdterm_screen_putc_vterm(int vid, char c) {
     g_batch_vid = (uint8_t)vid;
     if (!lcdterm_alive()) {
         screen_write_vterm(g_scr, (uint8_t)vid, &c, 1);
-        damage(0, g_be->h);
+        if (c == '\n') damage(0, g_be->h);
         return;
     }
     g_batch[g_batch_len++] = (uint8_t)c;

@@ -506,6 +506,14 @@ void kernel_main(void) {
     usb_cdc_task_start();
 #endif
 
+#if defined(CONFIG_BOARD_ESP32P4) && (defined(CONFIG_DSI_LCD_RST_GPIO) || defined(CONFIG_BOARD_TAB5))
+    /* 47.7: the LCD-7B / Tab5 frame pacer -- the terminal converted into the
+     * scanned-out frame at most once per frame from here on. Started early so
+     * all driver boot messages are frame-paced at 60 Hz rather than synchronously
+     * converting at every line. */
+    (void)dsi_lcd_term_task_start();
+#endif
+
     /* The uart driver as a task,
      * the first one converted from "library called synchronously by
      * whoever needs them" to "long-lived task reachable via chan_call()".
@@ -574,11 +582,6 @@ void kernel_main(void) {
     /* 36.6a: the screen terminal moves into its own U-mode task. Until this
      * runs -- and if it fails -- the lcd facade draws from the kernel. */
     (void)lcdterm_task_start();
-#endif
-#if defined(CONFIG_BOARD_ESP32P4) && (defined(CONFIG_DSI_LCD_RST_GPIO) || defined(CONFIG_BOARD_TAB5))
-    /* 47.7: the LCD-7B / Tab5 frame pacer -- the terminal converted into the
-     * scanned-out frame at most once per frame from here on. */
-    (void)dsi_lcd_term_task_start();
 #endif
 #if defined(TOUCH_PRESENT)
     /* 47.12: the touch panel, polled over the I2C task's bus. */
