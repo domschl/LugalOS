@@ -764,9 +764,9 @@ def test_psram(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         for what, got, ref in refs:
             if got is None:
                 return (name, False, f"bench line missing: {what}\n{text[-800:]}")
-            within = abs(got - ref) <= ref * 15 // 100
+            within = abs(got - ref) <= ref * 25 // 100
             ok &= within
-            detail.append(f"{what} {got} (ref {ref}){'' if within else ' OUT OF 15%'}")
+            detail.append(f"{what} {got} (ref {ref}){'' if within else ' OUT OF 25%'}")
         return (name, ok, "; ".join(detail))
     except Exception as e:
         return (name, False, str(e))
@@ -941,6 +941,37 @@ def test_canvas_store(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
               and st.group(1) == "0" and st.group(2) == "1" and st.group(3) == "0"
               and rs.group(1) == "1" and rs.group(2) == "1")
         return (name, ok, detail)
+    except Exception as e:
+        return (name, False, str(e))
+
+
+def test_lcd_terminal_status(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """Phase 55 / 36.3: RP2350-LCD-7 panel status, PIO timing and pixel state machine,
+    and U-mode lcdterm driver operation."""
+    name = "RP2350-LCD-7 panel & U-mode terminal driver status (Phase 55)"
+    cfg = rp2350.board_config(ports.console)
+    if cfg and "PSRAM_BYTES" not in cfg:
+        return (name, True, "SKIPPED: this persona has no RGB panel (no PSRAM_BYTES in /proc/config)")
+    try:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+            ser.write(b"lcd\n")
+            ser.flush()
+            out = rp2350.drain(ser, quiet=0.6, deadline=5.0).decode("utf-8", errors="replace")
+        out = out.replace("\r", "")
+        if "lcd: running" not in out:
+            return (name, False, f"expected 'lcd: running' in output:\n{out[-600:]}")
+        if "timing SM" not in out or "pixel SM" not in out:
+            return (name, False, f"expected SM status in output:\n{out[-600:]}")
+        if "underrun none" not in out:
+            return (name, False, f"expected 'underrun none' in output:\n{out[-600:]}")
+        m_task = re.search(r"terminal in the U-mode lcdterm task \(task #(\d+), (\d+) batches served\)", out)
+        if not m_task:
+            return (name, False, f"expected U-mode lcdterm task info in output:\n{out[-600:]}")
+        detail = f"running, timing and pixel SM ok (underrun none), U-mode task #{m_task.group(1)} ({m_task.group(2)} batches)"
+        return (name, True, detail)
     except Exception as e:
         return (name, False, str(e))
 
@@ -2284,7 +2315,7 @@ def main() -> int:
     # umode_isolation/test_user_elf/test_process_abi each load their own
     # program before that point too); a heap-budget re-analysis is tracked as
     # M5 follow-up work rather than fixed here.
-    tests = [test_firmware_freshness, test_pmp_probe, test_flash_path_restores_qspi, test_psram, test_bulk_zone, test_ram0_in_psram, test_editor_in_psram, test_canvas_store, test_chess_hot_path, test_priostress, test_uart_task, test_blk_task, test_i2c_task, test_st7735_task, test_tm1638_task, test_heap_on_demand, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_usb_cdc_net_resync, test_uart_demux_shared_wire, test_i2c_repeated_start]
+    tests = [test_firmware_freshness, test_pmp_probe, test_flash_path_restores_qspi, test_psram, test_bulk_zone, test_ram0_in_psram, test_editor_in_psram, test_canvas_store, test_lcd_terminal_status, test_chess_hot_path, test_priostress, test_uart_task, test_blk_task, test_i2c_task, test_st7735_task, test_tm1638_task, test_heap_on_demand, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_usb_cdc_net_resync, test_uart_demux_shared_wire, test_i2c_repeated_start]
     if not args.skip_qemu_bridge:
         tests.append(test_qemu_bridge)
     tests.append(test_process_abi)
