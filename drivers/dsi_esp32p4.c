@@ -822,6 +822,7 @@ static uint16_t          g_dirty_x0[2];
 static uint16_t          g_dirty_x1[2];
 #define MAX_TERM_CELLS   2048u
 static uint16_t          g_t_cell_drawn[2][MAX_TERM_CELLS];
+static uint32_t          s_reader_drawn_seq[2][4];
 
 static inline uint8_t *fb_front(void) {
     return g_fb_pool[g_front_idx];
@@ -1151,6 +1152,7 @@ static bool fb_start(fb_fmt_t fmt) {
     g_dirty_x0[0] = 0; g_dirty_x1[0] = 2047u;
     g_dirty_x0[1] = 0; g_dirty_x1[1] = 2047u;
     memset(g_t_cell_drawn, 0xff, sizeof g_t_cell_drawn);
+    memset(s_reader_drawn_seq, 0xff, sizeof s_reader_drawn_seq);
 
     g_fb_bpp = bpp; g_fb_bytes = bytes; g_fb_pages = pages; g_fb_fmt = fmt;
     bridge_format(bpp, fmt == FB_RGB565 ? 2u : 12u);
@@ -1363,6 +1365,7 @@ static void term_convert(unsigned y0, unsigned y1) {
         g_dirty_x0[0] = 0; g_dirty_x1[0] = (uint16_t)(g_tbe.w - 1);
         g_dirty_x0[1] = 0; g_dirty_x1[1] = (uint16_t)(g_tbe.w - 1);
         memset(g_t_cell_drawn, 0xff, sizeof g_t_cell_drawn);
+        memset(s_reader_drawn_seq, 0xff, sizeof s_reader_drawn_seq);
         memcpy(g_t1_shadow, g_t1, total_bytes);
         g_t_force = false;
     } else {
@@ -1521,6 +1524,10 @@ static void term_convert(unsigned y0, unsigned y1) {
     int rx0[4], ry0[4], rx1[4], ry1[4];
     int rcount = lcdterm_get_visible_readers(rids, rx0, ry0, rx1, ry1, 4);
     for (int i = 0; i < rcount; i++) {
+        uint32_t seq = reader_get_seq(rids[i]);
+        if (s_reader_drawn_seq[back_idx][i] == seq && !g_t_force) continue;
+        s_reader_drawn_seq[back_idx][i] = seq;
+
         uint32_t aa_stride = 0;
         int aa_w = 0, aa_h = 0;
         uint8_t *aa_buf = reader_get_aa_backing(rids[i], &aa_stride, &aa_w, &aa_h);
@@ -1730,8 +1737,6 @@ static void term_convert(unsigned y0, unsigned y1) {
                             if (g_t_cell_drawn[back_idx][cell_flat_idx] == cur_val) continue;
                             g_t_cell_drawn[back_idx][cell_flat_idx] = cur_val;
                         }
-
-                        if (code <= 0x20 && !is_inv && !is_cursor) continue;
 
                         const uint16_t *lut = is_inv ? inv_lut : norm_lut;
                         const uint8_t (*glyph)[8] = NULL;

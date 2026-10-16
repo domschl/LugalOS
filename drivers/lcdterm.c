@@ -434,7 +434,6 @@ static void status_tick(void) {
 static void lcdterm_console_flush(void) {
     if (!g_vt_ready) return;
     lcdterm_screen_flush();
-    damage(0, g_be->h);
     status_tick();
 }
 

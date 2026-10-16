@@ -78,6 +78,7 @@ typedef struct {
 
 static reader_state_t s_readers[READER_MAX_INSTANCES];
 static uint8_t        s_active_reader_rid = 0;
+static uint32_t       s_reader_seq[READER_MAX_INSTANCES];
 
 static bool resolve_doc_path(const char *topic, char *out_path, size_t out_sz) {
     if (!topic || !*topic) return false;
@@ -1178,4 +1179,10 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
         rdraw_fill(&rd, sb_x, 0, sb_x + sb_w, h - 1, READER_SB_TRACK_GRAY8, CANVAS1_GREY);
         rdraw_fill(&rd, sb_x, thumb_y, sb_x + sb_w, thumb_y + thumb_h, READER_SB_THUMB_GRAY8, CANVAS1_BLACK);
     }
+    s_reader_seq[rid]++;
+}
+
+uint32_t reader_get_seq(uint8_t rid) {
+    if (rid >= READER_MAX_INSTANCES) return 0;
+    return s_reader_seq[rid];
 }
