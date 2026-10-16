@@ -4,6 +4,26 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "lugalos_config.h"
+
+#ifndef FONT_CELL_W
+#if defined(CONFIG_FONT_CELL_W) && (CONFIG_FONT_CELL_W == 16)
+#define FONT_CELL_W 16u
+#else
+#define FONT_CELL_W 8u
+#endif
+#endif
+
+#ifndef FONT_CELL_H
+#if defined(CONFIG_FONT_CELL_H) && (CONFIG_FONT_CELL_H == 32)
+#define FONT_CELL_H 32u
+#else
+#define FONT_CELL_H 16u
+#endif
+#endif
+
+#define FONT_CELL_BYTES (FONT_CELL_W / 8u)
+
 /* Text on a 1-bpp framebuffer: 8x16 glyphs on a cell grid -- 36.5,
  *
  * Portable, with no hardware in it: the buffer is any byte-addressed 1-bpp

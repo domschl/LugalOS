@@ -96,3 +96,10 @@ set(CONFIG_TOUCH_INT_GPIO 23)
 # 5V VBUS (SYS_USB5V) is switched by U27 (MT9700) controlled by PI4IOE2 (0x44)
 # P3 (USB5V_EN, bit 3 = 1), enabled at boot by drivers/i2c_bus.c.
 set(CONFIG_USBHOST_DWC2 1)
+
+# --- Typography: HiDPI Profile (16x32 cell) -------------------------------
+# Phase 57: 294 DPI handheld panel requires 16x32 monospace cells (78x21 in
+# Landscape, 43x38 in Portrait) and 32 px Noto Serif in Reader to avoid eye strain.
+set(CONFIG_FONT_HIDPI      1)
+set(CONFIG_FONT_CELL_W     16)
+set(CONFIG_FONT_CELL_H     32)

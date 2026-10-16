@@ -36,13 +36,31 @@
  * Exactly today's 98/64/48/38 at 800, which is what the RP2350 must keep.
  * Macros, not functions: lcdterm's U-mode code uses them, and an out-of-line
  * copy in the kernel's .text would be outside its domain. */
+#include "lugalos_config.h"
+
+#ifndef FONT_CELL_W
+#if defined(CONFIG_FONT_CELL_W) && (CONFIG_FONT_CELL_W == 16)
+#define FONT_CELL_W 16u
+#else
+#define FONT_CELL_W 8u
+#endif
+#endif
+
+#ifndef FONT_CELL_H
+#if defined(CONFIG_FONT_CELL_H) && (CONFIG_FONT_CELL_H == 32)
+#define FONT_CELL_H 32u
+#else
+#define FONT_CELL_H 16u
+#endif
+#endif
+
 /* A terminal is never narrower than this (ribbon_layout() widens it). A
  * split's text share below it is raised to it, and the canvas gets what is
  * left of the pair, or the split is refused: only on screens far smaller
  * than either panel -- at 800 and 1024 the smallest share is 38. */
-#define RIBBON_TERM_MIN_COLS       20u
-#define RIBBON_COLS_FULL(w)        ((uint8_t)((unsigned)(w) / 8u - 2u))
-#define RIBBON_COLS_PAIR(w)        ((unsigned)(w) / 8u - 4u)
+#define RIBBON_TERM_MIN_COLS       (FONT_CELL_W == 16 ? 12u : 20u)
+#define RIBBON_COLS_FULL(w)        ((uint8_t)((unsigned)(w) / (unsigned)FONT_CELL_W - 2u))
+#define RIBBON_COLS_PAIR(w)        ((unsigned)(w) / (unsigned)FONT_CELL_W - 4u)
 #define RIBBON_COLS_TWO_THIRDS(w)  ((uint8_t)(2u * RIBBON_COLS_PAIR(w) / 3u))
 #define RIBBON_COLS_HALF(w)        ((uint8_t)(RIBBON_COLS_PAIR(w) / 2u))
 #define RIBBON_COLS_TWO_FIFTHS(w)  ((uint8_t)(2u * RIBBON_COLS_PAIR(w) / 5u))

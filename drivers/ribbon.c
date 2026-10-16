@@ -63,12 +63,12 @@ LCDTERM_UTEXT void ribbon_layout(ribbon_t *r) {
         uint8_t cols = w->cols;
         if (w->type == RIBBON_WIN_TERM && cols < RIBBON_TERM_MIN_COLS) cols = RIBBON_TERM_MIN_COLS;
         else if (cols < 1) cols = 1;
-        uint8_t max_cols = (uint8_t)(r->screen_w / 8u - 2u);
+        uint8_t max_cols = (uint8_t)(r->screen_w / (unsigned)FONT_CELL_W - 2u);
         if (cols > max_cols) cols = max_cols;
         w->cols = cols;
         w->rx0 = cur_x;
-        /* Frame width is 8 * cols + 7 pixels; right edge rx1 is rx0 + 8 * cols + 6 */
-        w->rx1 = cur_x + (int32_t)(8u * (uint32_t)cols + 6u);
+        /* Frame width is FONT_CELL_W * cols + 7 pixels; right edge rx1 is rx0 + FONT_CELL_W * cols + 6 */
+        w->rx1 = cur_x + (int32_t)((uint32_t)FONT_CELL_W * (uint32_t)cols + 6u);
         cur_x = w->rx1 + RIBBON_GAP;
     }
 }
@@ -118,7 +118,7 @@ LCDTERM_UTEXT int ribbon_insert(ribbon_t *r, uint8_t idx, uint8_t type, uint8_t 
     }
     r->wins[idx].type = type;
     r->wins[idx].vterm_id = vterm_id;
-    r->wins[idx].cols = cols ? cols : (uint8_t)(r->screen_w / 8u - 2u);
+    r->wins[idx].cols = cols ? cols : (uint8_t)(r->screen_w / (unsigned)FONT_CELL_W - 2u);
     r->wins[idx].flags = 0;
     if (title && title[0]) {
         cstr_copy(r->wins[idx].title, title, sizeof(r->wins[idx].title));

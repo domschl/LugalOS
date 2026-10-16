@@ -10,6 +10,7 @@
 
 #include "drivers/fbtext.h"
 #include "drivers/font8x16.h"
+#include "drivers/font_noto_mono.h"
 #include "drivers/lcdterm_attr.h"
 
 #include <stdint.h>
@@ -65,6 +66,16 @@ LCDTERM_UTEXT void fbtext_init(fbtext_t *t, void *fb, uint32_t stride, unsigned 
 
 LCDTERM_UTEXT uint8_t fbtext_code(uint32_t cp) {
     if ((cp >= 0x20u && cp <= 0x7eu) || (cp >= 0xa0u && cp <= 0xffu)) return (uint8_t)cp;
+#if defined(CONFIG_FONT_CELL_W) && (CONFIG_FONT_CELL_W == 16)
+    unsigned lo = 0, hi = FONT_NOTO_MONO_MAP_COUNT;
+    while (lo < hi) {
+        unsigned mid = (lo + hi) / 2u;
+        if (font_noto_mono_map_cp[mid] == cp) return font_noto_mono_map_code[mid];
+        if (font_noto_mono_map_cp[mid] < cp) lo = mid + 1u;
+        else hi = mid;
+    }
+    return FONT_NOTO_MONO_REPLACEMENT;
+#else
     unsigned lo = 0, hi = FONT8X16_MAP_COUNT;
     while (lo < hi) {
         unsigned mid = (lo + hi) / 2u;
@@ -73,14 +84,31 @@ LCDTERM_UTEXT uint8_t fbtext_code(uint32_t cp) {
         else hi = mid;
     }
     return FONT8X16_REPLACEMENT;
+#endif
 }
 
 LCDTERM_UTEXT const uint8_t *fbtext_glyph(uint32_t cp) {
+#if defined(CONFIG_FONT_CELL_W) && (CONFIG_FONT_CELL_W == 16)
+    return (const uint8_t *)font_noto_mono_glyphs[fbtext_code(cp) - FONT_NOTO_MONO_FIRST];
+#else
     return font8x16_glyphs[fbtext_code(cp) - FONT8X16_FIRST];
+#endif
 }
 
 LCDTERM_UTEXT void fbtext_putcode(fbtext_t *t, unsigned col, unsigned row, uint8_t code, bool inverse) {
     if (!t || !t->fb || col >= t->cols || row >= t->rows) return;
+#if defined(CONFIG_FONT_CELL_W) && (CONFIG_FONT_CELL_W == 16)
+    if (code < FONT_NOTO_MONO_FIRST) code = FONT_NOTO_MONO_REPLACEMENT;
+    const uint16_t *g = font_noto_mono_glyphs[code - FONT_NOTO_MONO_FIRST];
+    uint8_t *p = t->fb + (uint32_t)row * FONT_CELL_H * t->stride + (uint32_t)col * 2u;
+    uint16_t x = inverse ? 0xffffu : 0x0000u;
+    for (unsigned r = 0; r < FONT_CELL_H; r++) {
+        uint16_t val = (uint16_t)(g[r] ^ x);
+        p[0] = (uint8_t)(val & 0xffu);
+        p[1] = (uint8_t)(val >> 8);
+        p += t->stride;
+    }
+#else
     if (code < FONT8X16_FIRST) code = FONT8X16_REPLACEMENT;
     const uint8_t *g = font8x16_glyphs[code - FONT8X16_FIRST];
     uint8_t *p = t->fb + (uint32_t)row * FONT8X16_H * t->stride + col;
@@ -89,6 +117,7 @@ LCDTERM_UTEXT void fbtext_putcode(fbtext_t *t, unsigned col, unsigned row, uint8
         *p = (uint8_t)(g[r] ^ x);
         p += t->stride;
     }
+#endif
 }
 
 LCDTERM_UTEXT void fbtext_putcp(fbtext_t *t, unsigned col, unsigned row, uint32_t cp, bool inverse) {
@@ -99,9 +128,9 @@ LCDTERM_UTEXT void fbtext_clear_span(fbtext_t *t, unsigned row, unsigned col0, u
     if (!t || !t->fb || row >= t->rows) return;
     if (col1 > t->cols) col1 = t->cols;
     if (col0 >= col1) return;
-    uint8_t *p = t->fb + (uint32_t)row * FONT8X16_H * t->stride + col0;
-    for (unsigned r = 0; r < FONT8X16_H; r++) {
-        row_zero(p, col1 - col0);
+    uint8_t *p = t->fb + (uint32_t)row * FONT_CELL_H * t->stride + (uint32_t)col0 * FONT_CELL_BYTES;
+    for (unsigned r = 0; r < FONT_CELL_H; r++) {
+        row_zero(p, (col1 - col0) * FONT_CELL_BYTES);
         p += t->stride;
     }
 }
@@ -113,18 +142,19 @@ LCDTERM_UTEXT void fbtext_putc(fbtext_t *t, unsigned col, unsigned row, char c, 
 }
 
 LCDTERM_UTEXT void fbtext_clear_rows(fbtext_t *t, unsigned row, unsigned n) {
-    if (!t || !t->fb || row >= t->rows) return;
+    if (!t || !t->fb || n == 0 || row >= t->rows) return;
     if (n > (unsigned)t->rows - row) n = t->rows - row;
-    uint32_t px_rows = (uint32_t)n * FONT8X16_H;
-    uint8_t *p = t->fb + (uint32_t)row * FONT8X16_H * t->stride;
-    if (word_ok(t->fb, t->stride) && t->cols == t->stride) {
+    uint32_t px_rows = (uint32_t)n * FONT_CELL_H;
+    uint8_t *p = t->fb + (uint32_t)row * FONT_CELL_H * t->stride;
+    uint32_t width_bytes = (uint32_t)t->cols * FONT_CELL_BYTES;
+    if (word_ok(t->fb, t->stride) && width_bytes == t->stride) {
         /* The grid spans whole pixel rows: clear them as one run of words. */
         uint32_t *w = (uint32_t *)(void *)p;
         for (uint32_t i = 0; i < px_rows * t->stride / 4u; i++) w[i] = 0;
         return;
     }
     for (uint32_t y = 0; y < px_rows; y++) {
-        row_zero(p, t->cols);
+        row_zero(p, width_bytes);
         p += t->stride;
     }
 }
@@ -135,21 +165,22 @@ LCDTERM_UTEXT void fbtext_scroll_up(fbtext_t *t, unsigned n) {
         fbtext_clear_rows(t, 0, t->rows);
         return;
     }
-    uint32_t line = FONT8X16_H * t->stride;
+    uint32_t line = FONT_CELL_H * t->stride;
+    uint32_t width_bytes = (uint32_t)t->cols * FONT_CELL_BYTES;
     uint8_t *row0 = t->fb - t->xbyte;
     if (t->whole_rows && word_ok(row0, t->stride)) {
         /* The rows beside the window move with it, unchanged (37.1a). */
         uint32_t *d = (uint32_t *)(void *)row0;
         const uint32_t *src = (const uint32_t *)(const void *)(row0 + (uint32_t)n * line);
         for (uint32_t i = 0; i < (uint32_t)(t->rows - n) * line / 4u; i++) d[i] = src[i];
-    } else if (t->cols != t->stride) {
+    } else if (width_bytes != t->stride) {
         /* A window narrower than the buffer: move only its own bytes of
          * each pixel row, top to bottom (the source is below). */
-        uint32_t px_rows = (uint32_t)(t->rows - n) * FONT8X16_H;
+        uint32_t px_rows = (uint32_t)(t->rows - n) * FONT_CELL_H;
         uint8_t *d = t->fb;
         const uint8_t *src = t->fb + (uint32_t)n * line;
         for (uint32_t y = 0; y < px_rows; y++, d += t->stride, src += t->stride)
-            row_copy(d, src, t->cols);
+            row_copy(d, src, width_bytes);
     } else if (word_ok(t->fb, t->stride)) {
         /* Upward, so the source is always ahead of the destination: a
          * forward copy is correct although the two overlap. */
@@ -171,19 +202,26 @@ LCDTERM_UTEXT void fbtext_move_rows(fbtext_t *t, unsigned dst, unsigned src, uns
     if (!t || !t->fb || n == 0 || dst == src || dst >= t->rows || src >= t->rows) return;
     unsigned far = dst > src ? dst : src;
     if (n > (unsigned)t->rows - far) n = t->rows - far;
-    uint32_t px = (uint32_t)n * FONT8X16_H;
-    uint8_t *d = t->fb + (uint32_t)dst * FONT8X16_H * t->stride;
-    const uint8_t *s = t->fb + (uint32_t)src * FONT8X16_H * t->stride;
+    uint32_t px = (uint32_t)n * FONT_CELL_H;
+    uint32_t width_bytes = (uint32_t)t->cols * FONT_CELL_BYTES;
+    uint8_t *d = t->fb + (uint32_t)dst * FONT_CELL_H * t->stride;
+    const uint8_t *s = t->fb + (uint32_t)src * FONT_CELL_H * t->stride;
     if (dst < src) {
-        for (uint32_t y = 0; y < px; y++) row_copy(d + y * t->stride, s + y * t->stride, t->cols);
+        for (uint32_t y = 0; y < px; y++) row_copy(d + y * t->stride, s + y * t->stride, width_bytes);
     } else {
-        for (uint32_t y = px; y-- > 0;) row_copy(d + y * t->stride, s + y * t->stride, t->cols);
+        for (uint32_t y = px; y-- > 0;) row_copy(d + y * t->stride, s + y * t->stride, width_bytes);
     }
 }
 
 LCDTERM_UTEXT void fbtext_cursor_xor(fbtext_t *t, unsigned col, unsigned row) {
     if (!t || !t->fb || col >= t->cols || row >= t->rows) return;
+#if defined(CONFIG_FONT_CELL_W) && (CONFIG_FONT_CELL_W == 16)
+    uint8_t *p = t->fb + ((uint32_t)row * FONT_CELL_H + FONT_CELL_H - 2u) * t->stride + (uint32_t)col * 2u;
+    p[0] ^= 0xffu; p[1] ^= 0xffu;
+    p[t->stride] ^= 0xffu; p[t->stride + 1] ^= 0xffu;
+#else
     uint8_t *p = t->fb + ((uint32_t)row * FONT8X16_H + FONT8X16_H - 2u) * t->stride + col;
     p[0] ^= 0xffu;
     p[t->stride] ^= 0xffu;
+#endif
 }

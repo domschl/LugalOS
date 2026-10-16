@@ -890,7 +890,7 @@ LCDTERM_UTEXT static void clear_ribbon_gaps(const screen_t *scr) {
     int w = (int)cv->w;
     int h = (int)cv->h;
     if (h <= SCREEN_MENU_H) return;
-    int tile_y1 = SCREEN_TEXT_Y + 16 * (int)SCREEN_TEXT_ROWS(cv->h) + 1;
+    int tile_y1 = SCREEN_TEXT_Y + (int)FONT_CELL_H * (int)SCREEN_TEXT_ROWS(cv->h) + 1;
     if (tile_y1 >= h) tile_y1 = h - 1;
 
     /* The thin strip between menu bar and window tiles (rows 18..21) */
@@ -960,7 +960,7 @@ LCDTERM_UTEXT static void draw_all_from(screen_t *scr, bool restore) {
 
     if (scr->ribbon.count > 0) {
         int32_t xv = scr->ribbon.x_view;
-        int tile_y1 = SCREEN_TEXT_Y + 16 * (int)SCREEN_TEXT_ROWS(cv->h) + 1;
+        int tile_y1 = SCREEN_TEXT_Y + (int)FONT_CELL_H * (int)SCREEN_TEXT_ROWS(cv->h) + 1;
 
         /* Draw window tiles: inactive windows first, then active window on top */
         for (uint8_t pass = 0; pass < 2; pass++) {
@@ -1079,9 +1079,9 @@ LCDTERM_UTEXT static void draw_all(screen_t *scr) {
  * moved and resized to match. False for a split the screen is too narrow
  * for. */
 LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout) {
-    int C = scr->cv.w / 8;
+    int C = scr->cv.w / (int)FONT_CELL_W;
     unsigned rows = SCREEN_TEXT_ROWS(scr->cv.h);
-    int y1 = SCREEN_TEXT_Y + 16 * (int)rows + 1;
+    int y1 = SCREEN_TEXT_Y + (int)FONT_CELL_H * (int)rows + 1;
     int32_t xv = scr->ribbon.x_view;
     scr->layout = (uint8_t)layout;
 
@@ -1116,7 +1116,7 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout) {
         int win_c = (int)w->cols;
 
         if (x0 >= 4) {
-            c0 = (int)((x0 + 4) / 8);
+            c0 = (int)((x0 + 4) / (int)FONT_CELL_W);
             col_off = 0;
             int max_c = C - 1 - c0;
             if (max_c < 1) {                /* only its frame is on screen */
@@ -1126,7 +1126,7 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout) {
             if (win_c > max_c) win_c = max_c;
         } else {
             c0 = 1;
-            col_off = (int)((4 - x0) / 8);
+            col_off = (int)((4 - x0) / (int)FONT_CELL_W);
             if (col_off < 0) col_off = 0;
             if (col_off >= (int)w->cols) {
                 vtterm_set_hidden(&scr->terms[t].vt, true);
@@ -1142,16 +1142,16 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout) {
         vtterm_set_col_offset(&scr->terms[t].vt, (uint16_t)col_off);
 
         fbtext_t text;
-        fbtext_init(&text, scr->cv.fb + SCREEN_TEXT_Y * scr->cv.stride + (uint32_t)c0, scr->cv.stride,
+        fbtext_init(&text, scr->cv.fb + SCREEN_TEXT_Y * scr->cv.stride + (uint32_t)c0 * FONT_CELL_BYTES, scr->cv.stride,
                     (unsigned)win_c, rows);
-        text.xbyte = (uint16_t)c0;
+        text.xbyte = (uint16_t)(c0 * FONT_CELL_BYTES);
         text.whole_rows = (win_c == scr->full_cols && c0 == 1);
         vtterm_resize(&scr->terms[t].vt, &text);
         vtterm_set_hidden(&scr->terms[t].vt, false);
 
         if (w->vterm_id == window_vterm(scr, scr->ribbon.active_idx)) {
             scr->fx0 = (int16_t)x0;
-            scr->fx1 = (int16_t)(x0 + 8 * w->cols + 6);
+            scr->fx1 = (int16_t)(x0 + (int)FONT_CELL_W * w->cols + 6);
             scr->fy0 = SCREEN_TILE_Y;
             scr->fy1 = (int16_t)y1;
         }
@@ -1755,7 +1755,7 @@ LCDTERM_UTEXT static void canvas_size(const screen_t *scr, int cid, int *w, int 
     if (c_win < 0) return;
     const ribbon_win_t *win = &scr->ribbon.wins[c_win];
     *w = (int)(win->rx1 - win->rx0 - 1);
-    *h = (int)(SCREEN_TEXT_Y + 16 * (int)SCREEN_TEXT_ROWS(scr->cv.h) + 1 - (SCREEN_TILE_Y + 17));
+    *h = (int)(SCREEN_TEXT_Y + (int)FONT_CELL_H * (int)SCREEN_TEXT_ROWS(scr->cv.h) + 1 - (SCREEN_TILE_Y + 17));
     if (*w < 0 || *h < 0) *w = *h = 0;
 }
 
@@ -2112,7 +2112,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
                         reply[1] = r_id;
                         const ribbon_win_t *rw = &scr->ribbon.wins[i];
                         int r_w = (int)(rw->rx1 - rw->rx0 - 1);
-                        int r_h = (int)(SCREEN_TEXT_Y + 16 * (int)SCREEN_TEXT_ROWS(scr->cv.h) + 1 - (SCREEN_TILE_Y + 17));
+                        int r_h = (int)(SCREEN_TEXT_Y + (int)FONT_CELL_H * (int)SCREEN_TEXT_ROWS(scr->cv.h) + 1 - (SCREEN_TILE_Y + 17));
                         reply[2] = (uint8_t)(r_w & 0xff); reply[3] = (uint8_t)((r_w >> 8) & 0xff);
                         reply[4] = (uint8_t)(r_h & 0xff); reply[5] = (uint8_t)((r_h >> 8) & 0xff);
                         return;
@@ -2151,7 +2151,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
                 reply[1] = (uint8_t)rid;
                 const ribbon_win_t *rw = &scr->ribbon.wins[idx];
                 int r_w = (int)(rw->rx1 - rw->rx0 - 1);
-                int r_h = (int)(SCREEN_TEXT_Y + 16 * (int)SCREEN_TEXT_ROWS(scr->cv.h) + 1 - (SCREEN_TILE_Y + 17));
+                int r_h = (int)(SCREEN_TEXT_Y + (int)FONT_CELL_H * (int)SCREEN_TEXT_ROWS(scr->cv.h) + 1 - (SCREEN_TILE_Y + 17));
                 reply[2] = (uint8_t)(r_w & 0xff); reply[3] = (uint8_t)((r_w >> 8) & 0xff);
                 reply[4] = (uint8_t)(r_h & 0xff); reply[5] = (uint8_t)((r_h >> 8) & 0xff);
                 return;
@@ -2197,7 +2197,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
                 fmt = scr->canvases[w->vterm_id].format;
             }
             reply[9] = fmt;
-            int r_h = (int)(SCREEN_TEXT_Y + 16 * (int)SCREEN_TEXT_ROWS(scr->cv.h) + 1 - (SCREEN_TILE_Y + 17));
+            int r_h = (int)(SCREEN_TEXT_Y + (int)FONT_CELL_H * (int)SCREEN_TEXT_ROWS(scr->cv.h) + 1 - (SCREEN_TILE_Y + 17));
             reply[10] = (uint8_t)(r_h & 0xff);
             reply[11] = (uint8_t)((r_h >> 8) & 0xff);
             return;
@@ -2251,7 +2251,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
                 int32_t cx0 = w->rx0 - scr->ribbon.x_view;
                 int32_t cx1 = w->rx1 - scr->ribbon.x_view;
                 cw_w = (int)(w->rx1 - w->rx0 - 1);
-                cw_h = (int)(SCREEN_TEXT_Y + 16 * (int)SCREEN_TEXT_ROWS(scr->cv.h) + 1 - (SCREEN_TILE_Y + 17));
+                cw_h = (int)(SCREEN_TEXT_Y + (int)FONT_CELL_H * (int)SCREEN_TEXT_ROWS(scr->cv.h) + 1 - (SCREEN_TILE_Y + 17));
                 if (cx1 >= 0 && cx0 < (int32_t)scr->cv.w && cw_w > 0 && cw_h > 0) {
                     canvas1_window(&cc_screen, &scr->cv, (int)cx0 + 1, SCREEN_TILE_Y + 17,
                                    (unsigned)cw_w, (unsigned)cw_h);
@@ -2469,7 +2469,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
         const ribbon_win_t *aw = &scr->ribbon.wins[scr->ribbon.active_idx];
         if (aw->type == RIBBON_WIN_READER) {
             sw = (int)(aw->rx1 - aw->rx0 - 1);
-            sh = (int)(SCREEN_TEXT_Y + 16 * (int)SCREEN_TEXT_ROWS(scr->cv.h) + 1 - (SCREEN_TILE_Y + 17));
+            sh = (int)(SCREEN_TEXT_Y + (int)FONT_CELL_H * (int)SCREEN_TEXT_ROWS(scr->cv.h) + 1 - (SCREEN_TILE_Y + 17));
             if (sw < 0) sw = 0;
             if (sh < 0) sh = 0;
         } else {

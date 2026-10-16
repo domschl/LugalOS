@@ -197,6 +197,9 @@ set(_optional_keys
     # How its touch layer sits on the panel: its X / Y run against the
     # picture's. Absent: with it.
     CONFIG_TOUCH_MIRROR_X CONFIG_TOUCH_MIRROR_Y
+    # Typography: HiDPI display scaling profile (e.g. 16x32 cells for Tab5).
+    # Absent: Standard density (8x16 cells).
+    CONFIG_FONT_HIDPI CONFIG_FONT_CELL_W CONFIG_FONT_CELL_H
     # the largest /ram0 a mount may ask for, in KB, when a board wants
     # other than drivers/ramdisk.c's per-target default.
     CONFIG_RAMDISK_MAX_KB
