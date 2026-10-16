@@ -276,15 +276,13 @@ void reader_scroll_instance(uint8_t rid, int delta_y) {
     if (max_scroll < 0) max_scroll = 0;
     if (target_y > max_scroll) target_y = max_scroll;
     if (target_y == start_y) return;
-
+#if defined(LCDTERM_PRESENT)
+    int diff = target_y - start_y;
     canvas1_t *c = get_reader_canvas(rid);
     int w = s_readers[rid].win_w > 0 ? s_readers[rid].win_w : (c ? (int)c->w : 0);
     int h = s_readers[rid].win_h > 0 ? s_readers[rid].win_h : (c ? (int)c->h : 0);
-
-    int diff = target_y - start_y;
     int abs_diff = diff < 0 ? -diff : diff;
 
-#if defined(LCDTERM_PRESENT)
     if (c && w > 0 && h > 0 && abs_diff > 16) {
         /* Smooth ease-out scrolling */
         const int steps = abs_diff <= 48 ? 3 : 5;
