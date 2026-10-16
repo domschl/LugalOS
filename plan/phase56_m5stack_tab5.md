@@ -462,5 +462,12 @@ During live hardware bring-up on the physical M5Stack Tab5, the display initiall
 - **Responsive Fling Physics**: Scaled touch swipe velocity multiplier to `70` (from `28`), raised velocity clamp to `220` px/frame (from `100`), tuned low-friction decay to 5% loss per frame (`v = (v * 95) / 100`), and extended coast limit to 120 frames. Swiping now effortlessly flings across multiple pages on the 1,280 px portrait display while retaining immediate touch-to-stop braking.
 - **MicroSD Deployment**: Deployed complete `build/esp32p4-tab5/sd_root` filesystem to physical microSD card `/sd0` via 9P (`tools/p9sync.py --p4 tab5`), deploying all documentation, Gemini help pages, CAS algebra system, Zork 1/2/3 interactive fiction games, and userspace ELF binaries.
 
+#### 6. Universal Global Orientation Hotkey (`Super+O` / `Cmd+O`)
+- Mapped USB HID GUI+`'o'` (`USBKBD_HOTKEY_ORIENT`, 23u) in `drivers/usbkbd.c` and serial CSI-u sequence `\x1b[111;9u` in `kernel/line_editor.c`.
+- Dispatched in `kernel/console.c` to dynamically toggle between Portrait 0° (720×1280) and Landscape 270° (1280×720) across all ribbon windows, synchronizing active reader instances via `console_sync_readers()`. Single-key `'o'` in `reader_view.c` forwards to this global hotkey.
+- Verified in `tests/hw/test_esp32p4.py` and documented in `doc/user/ribbon.md` and `doc/user/reader.md`.
 
-
+#### 7. Startup Lag Elimination (5.52s -> 1.79s)
+- **Issue**: System boot experienced a ~3.5-second lag between timestamps `1.560` and `5.443`.
+- **Root Cause**: Once the console bound to `lcd` at `[1.560]`, in-kernel terminal characters called unpaced synchronous `damage()` before task `lcdflush` started at `[5.119]` (`g_t_paced == false`). Each printed character executed a synchronous 270° software-rotated RGB565 blit across 1.84 MB of PSRAM (~8–10 ms per char × 50 chars = ~400 ms per log line; 350 conversions total).
+- **Fix**: Gated fallback `damage()` in `drivers/lcdterm.c` to only run on `\n` or explicit `console_flush()`, and started `dsi_lcd_term_task_start()` early in `kernel/main.c` right after `sched_init()` (spawning `lcdflush` as task #1). Boot time dropped from **5.520s** to **1.793s**.
