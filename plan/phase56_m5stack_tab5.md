@@ -412,3 +412,28 @@ Result: 506 / 506 Tests PASSED (344.06s)
 ======================================================================
 ```
 Zero regressions across all existing targets: RP2350, ESP32-P4-NANO, ESP32-P4-LCD7B, ESP32-C6-Zero, RV32, and RV64 SMP.
+
+### 6.3 ST7121 16-bit RGB565 DSI Packetization & v1.3 Bridge Resolution
+
+During live hardware bring-up on the physical M5Stack Tab5, the display initially showed a severe visual artifact:
+- The rightmost 1/5 of the panel rendered desktop content stably, but with an inverted/light-blue background tint instead of crisp white.
+- The left 4/5 of the panel flickered with a 1-pixel diagonal staircase shift on every scanline.
+
+#### Root Cause Analysis
+1. **DPI Color Coding Mismatch (24-bit vs 16-bit)**:
+   - In `drivers/dsi_esp32p4.c`, `dpi_config()` programmed `DSI_HOST_DPI_COLOR_CODING` to `COLOR_CODE_24BIT` (5).
+   - In RGB888 mode, the DSI host packetizes 24 bits (3 bytes) per pixel, sending **2,160 bytes per 720-pixel scanline**.
+   - However, the ST7121 TDDI panel was initialized for RGB565 (16 bits / 2 bytes per pixel, expecting **1,440 bytes per scanline**).
+   - The extra **720 bytes per scanline** overflowed the panel's internal line buffer, causing every subsequent line to start with a **360-pixel (half-screen) horizontal phase offset**. This exactly generated the progressive diagonal staircase and sync jitter across the left 4/5 of the panel.
+   - The byte mis-alignment also scrambled the RGB channel bit positions, mapping white (`0xFFFF`) into the blue/green channels and producing the light-blue tint.
+2. **ESP32-P4 Silicon Revision v1.3 Bridge Differences**:
+   - On ESP32-P4 rev v3.2 (`hw_ver3`), `DSI_BRG_PIXEL_TYPE_REG` has separate fields for input and output formats (`RAW_TYPE` and `DPI_TYPE`).
+   - On rev v1.3 (`hw_ver1`, as on Tab5), bits 10:7 (`DPI_TYPE`) are reserved. `raw_type = 2` sets both the input and output format to 16-bit RGB565.
+3. **Panel Initialization Sequence**:
+   - Added explicit `CMD_MADCTL` (`0x36`, `0x00` RGB color filter order) and `CMD_COLMOD` (`0x3A`, `0x55` 16-bit RGB565) to ensure ST7121 latches RGB565 format.
+   - Extended post-`DISPON` (`0x29`) delay to 800 ms per ST7121 specification.
+4. **DW-GDMA Channel Protection**:
+   - Guarded `scan_start()` with `if (g_scanning || !g_fb_pool[0]) return;` to avoid bus faults (`Cause 0x7`) caused by re-arming active DMA channels during pattern switches.
+5. **Screenshot Netpbm Buffering**:
+   - Optimized `kernel/screenshot.c` with 4KB sector-buffered writes, reducing Netpbm PPM capture time on microSD from >25 seconds to ~1.5 seconds.
+

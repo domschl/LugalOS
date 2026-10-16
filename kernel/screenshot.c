@@ -72,24 +72,29 @@ int screenshot_save(const char *path, char *out, uint32_t cap) {
             }
         }
     } else if (format == SCREEN_FORMAT_RGB565) {
-        uint8_t rgb_buf[768]; /* 256 pixels = 768 bytes */
+        uint8_t rgb_buf[4096];
+        unsigned buf_len = 0;
         for (unsigned y = 0; ok && y < h; y++) {
             const uint16_t *row = (const uint16_t *)(fb + y * stride);
-            for (unsigned x = 0; ok && x < w; x += 256u) {
-                unsigned chunk_pixels = (w - x < 256u) ? (w - x) : 256u;
-                unsigned n = 0;
-                for (unsigned i = 0; i < chunk_pixels; i++) {
-                    uint16_t pix = row[x + i];
-                    uint8_t r = (uint8_t)((pix >> 11) & 0x1fu);
-                    uint8_t g = (uint8_t)((pix >> 5) & 0x3fu);
-                    uint8_t b = (uint8_t)(pix & 0x1fu);
-                    rgb_buf[n++] = (uint8_t)((r << 3) | (r >> 2));
-                    rgb_buf[n++] = (uint8_t)((g << 2) | (g >> 4));
-                    rgb_buf[n++] = (uint8_t)((b << 3) | (b >> 2));
+            for (unsigned x = 0; x < w; x++) {
+                uint16_t pix = row[x];
+                uint8_t r = (uint8_t)((pix >> 11) & 0x1fu);
+                uint8_t g = (uint8_t)((pix >> 5) & 0x3fu);
+                uint8_t b = (uint8_t)(pix & 0x1fu);
+                rgb_buf[buf_len++] = (uint8_t)((r << 3) | (r >> 2));
+                rgb_buf[buf_len++] = (uint8_t)((g << 2) | (g >> 4));
+                rgb_buf[buf_len++] = (uint8_t)((b << 3) | (b >> 2));
+                if (buf_len >= sizeof(rgb_buf) - 3u) {
+                    ok = vfs_pwrite(fd, rgb_buf, buf_len, off) == (int)buf_len;
+                    off += buf_len;
+                    buf_len = 0;
+                    if (!ok) break;
                 }
-                ok = vfs_pwrite(fd, rgb_buf, n, off) == (int)n;
-                off += n;
             }
+        }
+        if (ok && buf_len > 0) {
+            ok = vfs_pwrite(fd, rgb_buf, buf_len, off) == (int)buf_len;
+            off += buf_len;
         }
     } else {
         uint8_t buf[SHOT_BUF];

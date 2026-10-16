@@ -403,7 +403,11 @@ static void bridge_format(uint32_t bpp, uint32_t raw_type) {
     FSET(DSI_BRG_RAW_NUM_CFG_REG, DSI_BRG_RAW_NUM_TOTAL_SET, 1);
     FSET(DSI_BRG_PIXEL_TYPE_REG, DSI_BRG_RAW_TYPE, raw_type);
     FSET(DSI_BRG_PIXEL_TYPE_REG, DSI_BRG_DATA_IN_TYPE, 0);
+#if defined(CONFIG_BOARD_TAB5)
+    /* On Tab5 (ESP32-P4 v1.3), bridge input & output format is raw_type (2 = RGB565) */
+#else
     FSET(DSI_BRG_PIXEL_TYPE_REG, DSI_BRG_DPI_TYPE, 0);
+#endif
     FSET(DSI_BRG_PIXEL_TYPE_REG, DSI_BRG_DPI_CONFIG, 0);
 }
 
@@ -419,7 +423,11 @@ static void dpi_config(void) {
     FSET(HP_SYS_CLKRST_PERI_CLK_CTRL03_REG, HP_SYS_CLKRST_REG_MIPI_DSI_DPICLK_EN, 1);
 
     FSET(DSI_HOST_DPI_VCID_REG, DSI_HOST_DPI_VCID, 0);
+#if defined(CONFIG_BOARD_TAB5)
+    FSET(DSI_HOST_DPI_COLOR_CODING_REG, DSI_HOST_DPI_COLOR_CODING, 0); /* 16-bit RGB565 config 1 */
+#else
     FSET(DSI_HOST_DPI_COLOR_CODING_REG, DSI_HOST_DPI_COLOR_CODING, COLOR_CODE_24BIT);
+#endif
     REG(DSI_HOST_DPI_CFG_POL_REG) = 0;                      /* all active high */
     /* LP allowed in every blanking period, commands in LP (flags.disable_lp 0). */
     FSET(DSI_HOST_VID_MODE_CFG_REG, DSI_HOST_LP_HBP_EN, 1);
@@ -473,7 +481,11 @@ static void dpi_config(void) {
      * IDF's burst and threshold; the input format is bridge_format()'s
      * (RGB888 until 47.5's frame buffer picks one). The DPI output stays
      * off: the pattern generator needs none. */
+#if defined(CONFIG_BOARD_TAB5)
+    bridge_format(16u, 2u);
+#else
     bridge_format(24u, 0u);
+#endif
     FSET(DSI_BRG_DPI_MISC_CONFIG_REG, DSI_BRG_FIFO_UNDERRUN_DISCARD_VCNT, DSI_LCD_H_RES);
     FSET(DSI_BRG_DMA_FLOW_CTRL_REG, DSI_BRG_DSI_DMA_FLOW_CONTROLLER, 0);
     FSET(DSI_BRG_DMA_FLOW_CTRL_REG, DSI_BRG_DMA_FLOW_MULTIBLK_NUM, 1);
@@ -527,7 +539,9 @@ static bool dcs_write(uint8_t cmd, const uint8_t *param, unsigned n) {
     }
     bool drained = wait_for(cmd_fifo_drained, 20000u);
     uint32_t e0 = REG(DSI_HOST_INT_ST0_REG), e1 = REG(DSI_HOST_INT_ST1_REG);
-    if (!drained || e0 || e1) {
+    uint32_t ack_err = e0 & 0x0000ffffu;
+    uint32_t cmd_err = e1 & 0x00000180u;
+    if (!drained || ack_err || cmd_err) {
         g_cmd_errs++;
         printk("[LCD] DCS 0x%02x: %s, int_st0 0x%08lx int_st1 0x%08lx\n", (unsigned)cmd,
                drained ? "sent" : "FIFO did not drain", (unsigned long)e0, (unsigned long)e1);
@@ -683,9 +697,14 @@ static bool panel_init(void) {
     ok &= dcs_write(0x11, NULL, 0);   /* SLPOUT */
     wait_ms(120);
     ok &= dcs_write(0x29, NULL, 0);   /* DISPON */
-    wait_ms(10);
+    wait_ms(800);
     uint8_t te = 0x00;
     ok &= dcs_write(0x35, &te, 1);    /* TE off */
+    uint8_t madctl = 0x00;
+    ok &= dcs_write(0x36, &madctl, 1); /* MADCTL RGB order */
+    uint8_t colmod = 0x55;
+    ok &= dcs_write(0x3A, &colmod, 1); /* COLMOD 16-bit RGB565 */
+    wait_ms(20);
 #else
     for (size_t i = 0; i < sizeof k_ek79007_init / sizeof k_ek79007_init[0]; i++) {
         ok &= dcs_write(k_ek79007_init[i].cmd, &k_ek79007_init[i].p, k_ek79007_init[i].n);
@@ -1058,7 +1077,7 @@ static void scan_stop(void) {
 }
 
 static void scan_start(void) {
-    if (!g_fb_pool[0]) return;
+    if (g_scanning || !g_fb_pool[0]) return;
     lli_arm();
     REG(DMAC_CH1_INTCLEAR0_REG) = 0xffffffffu;
     gdma_restart();
