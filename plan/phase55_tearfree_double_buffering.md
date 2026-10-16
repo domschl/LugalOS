@@ -116,10 +116,16 @@ CPU / Rendering Engine (lcdterm, screen.c)
   * Maintained high performance: character conversion in 1894 us (well under 5000 us limit), terminal scrolling at 1897 lines/s.
   * Passed 41/41 hardware-in-the-loop tests in `tests/hw/test_esp32p4.py`.
 
-### Milestone 55.3: Anti-Aliased Typography Pipeline (`drivers/reader_view.c`)
-* Update `tools/gen_serif_font.py` to generate 4-bit / 8-bit alpha coverage glyph tables.
-* Implement fast integer glyph alpha-blending in `reader_view.c`.
-* Render smooth serif fonts on cream/white backgrounds with zero color distractions.
+### Milestone 55.3: Anti-Aliased Typography Pipeline (`drivers/reader_view.c`) [DONE - Commit `7e81425`]
+* Updated `tools/gen_serif_font.py` to generate 4-bit / 16-level alpha coverage glyph tables (`font_serif_aa_glyphs[95][16][8]`).
+* Implemented fast integer glyph alpha-blending in `font_serif.c` (`font_serif_aa_text_gray8` and `font_serif_aa_text_rgb565` using `((delta * a + 8) >> 4)`).
+* Refactored `drivers/reader_view.c` to maintain an 8-bpp anti-aliased surface in PSRAM bulk zone (`aa_buf`) alongside the 1-bpp fallback backing, rendering smooth serif fonts with soft paper background (`#FAFAFA` / 250) and deep charcoal ink (10).
+* Implemented visible Reader client area compositing directly into `fb_back()` during scanout conversion in `drivers/dsi_esp32p4.c` (`term_convert()`).
+* Upgraded `kernel/screenshot.c` and `console_pixels_format()` to automatically capture hardware scanout buffer in native format:
+  * `SCREEN_FORMAT_1BPP` $\rightarrow$ Netpbm PBM (`.pbm`, P4)
+  * `SCREEN_FORMAT_GRAY8` $\rightarrow$ Netpbm PGM (`.pgm`, P5, 255 levels)
+  * `SCREEN_FORMAT_RGB565` $\rightarrow$ Netpbm PPM (`.ppm`, P6, 24-bit RGB)
+* Verified 100% pass on host test suite (506/506) and hardware-in-the-loop suite on ESP32-P4-LCD-7B (43/43). Verified crystal-clear grayscale captures (`shot-004.png`).
 
 ### Milestone 55.4: Hybrid Ribbon Compositing & Color Canvases (`drivers/screen.c`)
 * Extend `screen_canvas_slot_t` with format descriptor: `CANVAS_FMT_1BPP` vs `CANVAS_FMT_RGB565`.
