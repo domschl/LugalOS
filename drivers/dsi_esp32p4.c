@@ -36,15 +36,12 @@
 #include "lugalos_config.h"
 #include "drivers/dsi_esp32p4.h"   /* outside the guard: never an empty unit */
 
-#if defined(CONFIG_BOARD_ESP32P4) && defined(CONFIG_DSI_LCD_RST_GPIO)
-
-#if !defined(CONFIG_ESP32P4_REV) || CONFIG_ESP32P4_REV < 300
-#error "drivers/dsi_esp32p4.c follows IDF's v3 DSI bridge and clock registers"
-#endif
+#if defined(CONFIG_BOARD_ESP32P4) && (defined(CONFIG_DSI_LCD_RST_GPIO) || defined(CONFIG_BOARD_TAB5))
 
 #include "drivers/esp32p4_dsi_regs.h"
 #include "drivers/esp32p4_ledc_regs.h"
 #include "drivers/font8x16.h"
+#include "drivers/i2c_bus.h"
 #include "drivers/lcdterm.h"
 #include "drivers/reader_view.h"
 #include "arch/esp32p4_intr.h"
@@ -73,6 +70,17 @@ static inline void field_set(uintptr_t reg, unsigned s, uint32_t v_mask, uint32_
 
 /* ---- the panel and the link ---------------------------------------------- */
 
+#if defined(CONFIG_BOARD_TAB5)
+#define LANES          2u
+#define LANE_MBPS      900u      /* ST7121 2-lane 900 Mbps */
+#define DPI_KHZ        70000u    /* 70 MHz */
+#define HSW 2u
+#define HBP 40u
+#define HFP 40u
+#define VSW 20u
+#define VBP 24u
+#define VFP 200u
+#else
 #define LANES          2u
 #define LANE_MBPS      1000u      /* EK79007_PANEL_BUS_DSI_2CH_CONFIG, Waveshare */
 #define DPI_KHZ        52000u     /* what the panel wants */
@@ -82,9 +90,16 @@ static inline void field_set(uintptr_t reg, unsigned s, uint32_t v_mask, uint32_
 #define VSW 1u
 #define VBP 23u
 #define VFP 12u
+#endif
 
 #define XTAL_MHZ       40u        /* the PHY PLL's reference on v3 (DEFAULT, not _LEGACY) */
 #define F240M_MHZ      240u       /* MIPI_DSI_DPI_CLK_SRC_DEFAULT = PLL_F240M */
+
+#if defined(CONFIG_ESP32P4_REV) && CONFIG_ESP32P4_REV >= 300
+#define PHY_REF_MHZ    XTAL_MHZ  /* 40 MHz on v3 */
+#else
+#define PHY_REF_MHZ    20u       /* 20 MHz (PLL_F20M) on v1 */
+#endif
 
 /* esp_lcd_mipi_dsi_bus.c */
 #define TIMEOUT_CLOCK_MHZ   10u
@@ -114,13 +129,19 @@ static inline void field_set(uintptr_t reg, unsigned s, uint32_t v_mask, uint32_
 #define  IOMUX_FUNC_GPIO        1u
 #define GPIO_OUT_SEL(n)     (GPIO_BASE + 0x558 + 4u * (uint32_t)(n))
 #define  GPIO_OUT_SEL_GPIO      256u
+#define GPIO_OUT_W1TS_LO    (GPIO_BASE + 0x08)
+#define GPIO_OUT_W1TC_LO    (GPIO_BASE + 0x0C)
+#define GPIO_ENABLE_W1TS_LO (GPIO_BASE + 0x24)
 #define GPIO_OUT_W1TS_HI    (GPIO_BASE + 0x14)
 #define GPIO_OUT_W1TC_HI    (GPIO_BASE + 0x18)
 #define GPIO_ENABLE_W1TS_HI (GPIO_BASE + 0x30)
 
+#ifndef CONFIG_DSI_LCD_RST_GPIO
+#define RST_GPIO 0
+#else
 #define RST_GPIO   CONFIG_DSI_LCD_RST_GPIO
+#endif
 #define BL_GPIO    CONFIG_DSI_LCD_BL_GPIO
-_Static_assert(RST_GPIO >= 32 && BL_GPIO >= 32, "the _HI GPIO registers are used");
 
 /* eFuse BLK1 words (drivers/psram_esp32p4.c reads the same two). */
 #define EFUSE_RD_MAC_SYS_2   0x5012d04cu
@@ -146,15 +167,21 @@ static const char *g_pattern = "none";
 
 static uint32_t div_round(uint64_t a, uint64_t b) { return (uint32_t)((a + b / 2u) / b); }
 
-static void gpio_out(unsigned gpio, bool high) {
+static void __attribute__((unused)) gpio_out(unsigned gpio, bool high) {
     uint32_t pad = REG(IOMUX_PAD(gpio));
     pad &= ~(IOMUX_MCU_SEL_M | IOMUX_FUN_PU | IOMUX_FUN_PD);
     pad |= (IOMUX_FUNC_GPIO << IOMUX_MCU_SEL_S);
     REG(IOMUX_PAD(gpio)) = pad;
     REG(GPIO_OUT_SEL(gpio)) = GPIO_OUT_SEL_GPIO;
-    if (high) REG(GPIO_OUT_W1TS_HI) = 1u << (gpio - 32u);
-    else      REG(GPIO_OUT_W1TC_HI) = 1u << (gpio - 32u);
-    REG(GPIO_ENABLE_W1TS_HI) = 1u << (gpio - 32u);
+    if (gpio >= 32u) {
+        if (high) REG(GPIO_OUT_W1TS_HI) = 1u << (gpio - 32u);
+        else      REG(GPIO_OUT_W1TC_HI) = 1u << (gpio - 32u);
+        REG(GPIO_ENABLE_W1TS_HI) = 1u << (gpio - 32u);
+    } else {
+        if (high) REG(GPIO_OUT_W1TS_LO) = 1u << gpio;
+        else      REG(GPIO_OUT_W1TC_LO) = 1u << gpio;
+        REG(GPIO_ENABLE_W1TS_LO) = 1u << gpio;
+    }
 }
 
 static bool wait_for(bool (*cond)(void), uint32_t timeout_us) {
@@ -239,16 +266,15 @@ static const struct { uint16_t lo, hi; uint8_t sel; } k_pll_ranges[] = {
 };
 
 /* mipi_dsi_hal_configure_phy_pll(): f_vco = M/N * f_ref, 5 <= f_ref/N <= 40
- * MHz, M even; the first (N, M) that hits the rate exactly wins. For 1000
- * Mbps from 40 MHz that is N 2, M 50. */
+ * MHz, M even; the first (N, M) that hits the rate exactly wins. */
 static bool phy_pll_config(void) {
-    unsigned min_n = XTAL_MHZ / 40u ? XTAL_MHZ / 40u : 1u, max_n = XTAL_MHZ / 5u;
+    unsigned min_n = PHY_REF_MHZ / 40u ? PHY_REF_MHZ / 40u : 1u, max_n = PHY_REF_MHZ / 5u;
     uint32_t best = 0xFFFFFFFFu;
     g_pll_m = 0; g_pll_n = 1;
     for (unsigned n = min_n; n <= max_n; n++) {
-        uint32_t m = LANE_MBPS * n / XTAL_MHZ;
+        uint32_t m = LANE_MBPS * n / PHY_REF_MHZ;
         if (m & 1u) continue;
-        uint32_t got_x1000 = XTAL_MHZ * 1000u * m / n;
+        uint32_t got_x1000 = PHY_REF_MHZ * 1000u * m / n;
         uint32_t delta = got_x1000 > LANE_MBPS * 1000u ? got_x1000 - LANE_MBPS * 1000u
                                                        : LANE_MBPS * 1000u - got_x1000;
         if (delta < best) {
@@ -290,13 +316,15 @@ static bool dsi_bus_init(void) {
     FSET(HP_SYS_CLKRST_HP_RST_EN0_REG, HP_SYS_CLKRST_REG_RST_EN_DSI_BRG, 1);
     FSET(HP_SYS_CLKRST_HP_RST_EN0_REG, HP_SYS_CLKRST_REG_RST_EN_DSI_BRG, 0);
 
-    /* The PHY's configuration clock: PLL_F20M (gate opened), source 0. Its
-     * PLL reference: XTAL (source 0), undivided. */
+    /* The PHY's configuration clock: PLL_F20M (gate opened), source 0. */
     FSET(HP_SYS_CLKRST_REF_CLK_CTRL2_REG, HP_SYS_CLKRST_REG_REF_20M_CLK_EN, 1);
     FSET(HP_SYS_CLKRST_PERI_CLK_CTRL02_REG, HP_SYS_CLKRST_REG_MIPI_DSI_DPHY_CLK_SRC_SEL, 0);
     FSET(HP_SYS_CLKRST_PERI_CLK_CTRL03_REG, HP_SYS_CLKRST_REG_MIPI_DSI_DPHY_CFG_CLK_EN, 1);
+#if defined(CONFIG_ESP32P4_REV) && CONFIG_ESP32P4_REV >= 300
+    /* Its PLL reference: XTAL (source 0), undivided (v3). */
     FSET(HP_SYS_CLKRST_PERI_CLK_CTRL03_REG, HP_SYS_CLKRST_REG_MIPI_DSI_DPHY_PLL_REFCLK_SRC_SEL, 0);
     FSET(HP_SYS_CLKRST_PERI_CLK_CTRL03_REG, HP_SYS_CLKRST_REG_MIPI_DSI_DPHY_PLL_REFCLK_DIV_NUM, 0);
+#endif
     FSET(HP_SYS_CLKRST_PERI_CLK_CTRL03_REG, HP_SYS_CLKRST_REG_MIPI_DSI_DPHY_PLL_REFCLK_EN, 1);
 
     /* mipi_dsi_hal_init() */
@@ -307,8 +335,10 @@ static bool dsi_bus_init(void) {
     FSET(DSI_HOST_PHY_RSTZ_REG, DSI_HOST_PHY_RSTZ, 1);
     FSET(DSI_HOST_PHY_RSTZ_REG, DSI_HOST_PHY_ENABLECLK, 1);
     FSET(DSI_HOST_PHY_RSTZ_REG, DSI_HOST_PHY_FORCEPLL, 1);
+#if defined(CONFIG_ESP32P4_REV) && CONFIG_ESP32P4_REV >= 300
     FSET(DSI_BRG_EN_REG, DSI_BRG_DSI_BRIG_RST, 1);
     FSET(DSI_BRG_EN_REG, DSI_BRG_DSI_BRIG_RST, 0);
+#endif
 
     if (!phy_pll_config()) { g_reason = "no PHY PLL M/N for the lane rate"; return false; }
     if (!wait_for(pll_locked, 100000u)) { g_reason = "the DSI PHY PLL did not lock"; return false; }
@@ -539,6 +569,7 @@ static int dcs_read(uint8_t cmd, uint8_t *out, unsigned n) {
 /* Waveshare's EK79007 sequence (displays_config.h, which says it follows
  * their BSP): 0xB2 0x10 selects 2-lane pad control, then vendor registers,
  * then sleep out and 120 ms. */
+#if !defined(CONFIG_BOARD_TAB5)
 static const struct { uint8_t cmd, n, p, delay_ms; } k_ek79007_init[] = {
     {0xB2, 1, 0x10, 0},
     {0x80, 1, 0x8B, 0},
@@ -550,24 +581,117 @@ static const struct { uint8_t cmd, n, p, delay_ms; } k_ek79007_init[] = {
     {0x86, 1, 0x88, 0},
     {0x11, 0, 0x00, 120},
 };
+#else
+/* M5Stack Tab5 ST7121 initialization sequence (from M5GFX Panel_ST7121.hpp). */
+static const uint8_t k_st7121_init[] = {
+    4,  0x60,  0x71, 0x21, 0xA2,
+    4,  0x60,  0x71, 0x21, 0xA3,
+    4,  0x60,  0x71, 0x21, 0xA4,
+    2,  0x78,  0x21,
+    2,  0x79,  0xEF,
+    2,  0xA4,  0x31,
+    7,  0xB7,  0x00, 0x00, 0x5F, 0x5F, 0x44,  0x1A,
+    8,  0xB0,  0x22, 0x6B, 0x11, 0x89, 0x25,  0x43, 0x43,
+    3,  0xBF,  0xA7, 0xA7,
+    3,  0xA5,  0xF0, 0x03,
+    7,  0xD7,  0x10, 0x2C, 0x14, 0x2A, 0x80,  0x80,
+    8,  0x90,  0x71, 0x23, 0x5A, 0x20, 0x24,  0x11, 0x21,
+
+    40, 0xA3,  0x80, 0x01, 0x8C, 0xFF, 0x45,  0x00, 0x00, 0x00, 0x00, 0x00,
+               0x46, 0x00, 0x00, 0x1E, 0x5C,  0x1E, 0x80, 0x10, 0x00, 0x05,
+               0x00, 0x00, 0x00, 0x00, 0x00,  0x46, 0x00, 0x00, 0x1E, 0x5C,
+               0x1E, 0x80, 0x10, 0xEF, 0x58,  0x00, 0x00, 0x00, 0xFF,
+
+    56, 0xA6,  0x0A, 0x00, 0x24, 0x71, 0x36,  0x00, 0x00, 0x00, 0x68, 0x68,
+               0x91, 0xFF, 0x00, 0x24, 0x71,  0x37, 0x00, 0x00, 0x00, 0x68,
+               0x68, 0x91, 0xFF, 0x00, 0x24,  0x71, 0x00, 0x00, 0x00, 0x00,
+               0x68, 0x68, 0x91, 0xFF, 0x00,  0x2C, 0x71, 0x00, 0x01, 0x00,
+               0x00, 0x68, 0x68, 0xFF, 0xFF,  0x00, 0x08, 0x80, 0x08, 0x80,
+               0x06, 0x00, 0x00, 0x00, 0x00,
+
+    61, 0xA7,  0x1A, 0x1A, 0xC0, 0x64, 0x40,  0x04, 0x15, 0x40, 0x00, 0x40,
+               0x00, 0x68, 0x68, 0x91, 0xFF,  0x08, 0x80, 0x64, 0x40, 0x26,
+               0x37, 0x40, 0x00, 0x00, 0x00,  0x68, 0x68, 0x91, 0xFF, 0x08,
+               0x80, 0x64, 0x40, 0x8C, 0x9D,  0x40, 0x00, 0x00, 0x00, 0x68,
+               0x68, 0x91, 0xFF, 0x08, 0x80,  0x64, 0x40, 0xAE, 0xBF, 0x00,
+               0x00, 0x20, 0x00, 0x68, 0x68,  0x91, 0xFF, 0x08, 0x80, 0x79,
+
+    45, 0xAC,  0x1D, 0x18, 0x19, 0x1D, 0x18,  0x19, 0x04, 0x1C, 0x1D, 0x08,
+               0x0A, 0x10, 0x12, 0x0C, 0x0E,  0x14, 0x16, 0x00, 0x1D, 0x1D,
+               0x1D, 0x1D, 0x1D, 0x18, 0x19,  0x1D, 0x18, 0x19, 0x06, 0x1C,
+               0x1D, 0x09, 0x0B, 0x11, 0x13,  0x0D, 0x0F, 0x15, 0x17, 0x02,
+               0x1D, 0x1D, 0x1D, 0x1D,
+
+    26, 0xAD,  0x0C, 0x40, 0x46, 0x00, 0x07,  0x4B, 0x4B, 0xFF, 0xFF, 0xF0,
+               0x40, 0x0E, 0x01, 0x07, 0x42,  0x42, 0xFF, 0xFF, 0x01, 0x00,
+               0x00, 0xFF, 0xFF, 0xFF, 0xFF,
+
+     8, 0xAE,  0xF0, 0xFF, 0x03, 0xF0, 0xFF,  0x03, 0x00,
+    18, 0xB2,  0x15, 0x19, 0x05, 0x23, 0x49,  0x2D, 0x03, 0x2E, 0x5C, 0xD2,
+               0xFF, 0x10, 0x60, 0xFD, 0x20,  0xC0, 0x00,
+    15, 0xE8,  0x20, 0x60, 0x04, 0x8E, 0x8E,  0x3E, 0x04, 0xDC, 0xDC, 0x3E,
+               0x06, 0xFA, 0x26, 0x3E,
+     3, 0x75,  0x03, 0x04,
+
+    43, 0xE7,  0x4B, 0x00, 0x00, 0xBE, 0x4B,  0x8C, 0x20, 0x1A, 0xF0, 0x7D,
+               0x14, 0x7D, 0x14, 0x7D, 0x14,  0x7D, 0x14, 0xFF, 0x00, 0x32,
+               0x30, 0x73, 0x00, 0x00, 0xC8,  0x6A, 0xFF, 0x5A, 0x64, 0x38,
+               0x88, 0x15, 0xB1, 0x01, 0x01,  0x64, 0x01, 0x01, 0x7C, 0xFF,
+               0x1A, 0x51,
+
+     3, 0xE1,  0x0C, 0x0C,
+     4, 0xEA,  0x15, 0x00, 0x01,
+    38, 0xC8,  0x00, 0x00, 0x04, 0x08, 0x10,  0x00, 0x1F, 0x01, 0x39, 0x3E,
+               0x00, 0x78, 0x06, 0xE2, 0x02,  0x11, 0x33, 0x01, 0x7A, 0x0D,
+               0x21, 0xC4, 0x0B, 0x19, 0x08,  0x32, 0xA0, 0x08, 0x1A, 0x0A,
+               0xF3, 0x7F, 0x0E, 0xC5, 0xE8,  0x03, 0xFF,
+    38, 0xC9,  0x00, 0x00, 0x04, 0x08, 0x10,  0x00, 0x1F, 0x01, 0x39, 0x3E,
+               0x00, 0x78, 0x06, 0xE2, 0x02,  0x11, 0x33, 0x01, 0x7A, 0x0D,
+               0x21, 0xC4, 0x0B, 0x19, 0x08,  0x32, 0xA0, 0x08, 0x1A, 0x0A,
+               0xF3, 0x7F, 0x0E, 0xC5, 0xE8,  0x03, 0xFF,
+     4, 0x60,  0x71, 0x21, 0x00,
+     0
+};
+#endif
 
 /* 47.7: the bring-up runs at boot, before the scheduler, so it waits by the
  * clock; ~250 ms once. */
 static void wait_ms(uint32_t ms) { time_delay_us((uint64_t)ms * 1000u); }
 
 static void panel_reset(void) {
+#if defined(CONFIG_BOARD_TAB5)
+    i2c_tab5_panel_reset();
+#else
     gpio_out(RST_GPIO, false);
     wait_ms(10);
     gpio_out(RST_GPIO, true);
     wait_ms(120);
+#endif
 }
 
 static bool panel_init(void) {
     bool ok = true;
+#if defined(CONFIG_BOARD_TAB5)
+    const uint8_t *p = k_st7121_init;
+    while (*p) {
+        uint8_t len = *p++;
+        uint8_t cmd = *p++;
+        uint8_t n = len - 1u;
+        ok &= dcs_write(cmd, p, n);
+        p += n;
+    }
+    ok &= dcs_write(0x11, NULL, 0);   /* SLPOUT */
+    wait_ms(120);
+    ok &= dcs_write(0x29, NULL, 0);   /* DISPON */
+    wait_ms(10);
+    uint8_t te = 0x00;
+    ok &= dcs_write(0x35, &te, 1);    /* TE off */
+#else
     for (size_t i = 0; i < sizeof k_ek79007_init / sizeof k_ek79007_init[0]; i++) {
         ok &= dcs_write(k_ek79007_init[i].cmd, &k_ek79007_init[i].p, k_ek79007_init[i].n);
         if (k_ek79007_init[i].delay_ms) wait_ms(k_ek79007_init[i].delay_ms);
     }
+#endif
     return ok;
 }
 
@@ -631,14 +755,22 @@ static void bl_set(unsigned percent) {
     REG(LEDC_CH0_CONF0_REG) |= 1u << LEDC_SIG_OUT_EN_CH0_S;
     REG(LEDC_CH0_CONF1_REG) = 1u << LEDC_DUTY_START_CH0_S;
     REG(LEDC_CH0_CONF0_REG) |= 1u << LEDC_PARA_UP_CH0_S;
-    /* The pad: GPIO function, its output from the matrix, inverted. */
+    /* The pad: GPIO function, its output from the matrix, inverted or normal. */
     uint32_t pad = REG(IOMUX_PAD(BL_GPIO));
     pad &= ~(IOMUX_MCU_SEL_M | IOMUX_FUN_PU | IOMUX_FUN_PD);
     pad |= (IOMUX_FUNC_GPIO << IOMUX_MCU_SEL_S);
     REG(IOMUX_PAD(BL_GPIO)) = pad;
     REG(GPIO_OUT_SEL(BL_GPIO)) = (LEDC_SIG_OUT0_IDX << GPIO_FUNC0_OUT_SEL_S) |
+#if !defined(CONFIG_DSI_LCD_BL_ACTIVE_HIGH) || !CONFIG_DSI_LCD_BL_ACTIVE_HIGH
                                  (1u << GPIO_FUNC0_OUT_INV_SEL_S);
+#else
+                                 0;
+#endif
+#if BL_GPIO >= 32
     REG(GPIO_ENABLE_W1TS_HI) = 1u << (BL_GPIO - 32u);
+#else
+    REG(GPIO_ENABLE_W1TS_LO) = 1u << BL_GPIO;
+#endif
 }
 
 static void backlight(bool on) {
@@ -939,6 +1071,9 @@ static void scan_start(void) {
 }
 
 static bool fb_start(fb_fmt_t fmt) {
+#if defined(CONFIG_BOARD_TAB5)
+    fmt = FB_RGB565; /* Tab5 v1.3 bridge uses RGB565 natively */
+#endif
     if (!dsi_lcd_init()) return false;
     gdma_init();
     if (!g_gdma_ready) { cprintf("lcd: the DW-GDMA interrupt could not be routed\n"); return false; }
@@ -1056,9 +1191,15 @@ static void draw(pat_fn f) {
 static void draw_text_page(void) {
     fill(0x00);
     static const char *const lines[] = {
+#if defined(CONFIG_BOARD_TAB5)
+        "LugalOS 56 -- frame buffer in PSRAM, DW-GDMA into DSI bridge, ST7121 720x1280",
+        "The quick brown fox jumps over the lazy dog.  0123456789  !\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~",
+        "90 x 80 cells of 8x16 Spleen -- M5Stack Tab5 5\" IPS display.",
+#else
         "LugalOS 47.5 -- frame buffer in PSRAM, DW-GDMA into the DSI bridge, EK79007 1024x600",
         "The quick brown fox jumps over the lazy dog.  0123456789  !\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~",
         "126 x 37 cells of 8x16 Spleen -- the RP2350-LCD-7's font, one byte per pixel here.",
+#endif
     };
     for (unsigned i = 0; i < sizeof lines / sizeof lines[0]; i++) text(1, 1 + i, lines[i], 0xffu, 0x00u);
     for (unsigned r = 5; r < DSI_LCD_V_RES / FONT8X16_H; r++) {
@@ -1088,9 +1229,22 @@ static void draw_text_page(void) {
  * are any two RGB565 colours, as `lcd colours` on the RP2350: a gray pair
  * runs in GRAY8, a coloured one switches the frame to RGB565 (47.5 §6.6). */
 
+#if defined(CONFIG_BOARD_TAB5)
+#define T_BYTES    (160u * 720u)
+static int g_lcd_rot = 270; /* Landscape by default */
+#else
 #define T_STRIDE   (DSI_LCD_H_RES / 8u)
 #define T_BYTES    (T_STRIDE * DSI_LCD_V_RES)
+static int g_lcd_rot = 0;   /* Native scanout (portrait or LCD-7B landscape) */
+#endif
 
+static inline uint8_t rev8(uint8_t v) {
+    v = (uint8_t)(((v >> 1) & 0x55u) | ((v & 0x55u) << 1));
+    v = (uint8_t)(((v >> 2) & 0x33u) | ((v & 0x33u) << 2));
+    return (uint8_t)((v >> 4) | (v << 4));
+}
+
+static lcdterm_backend_t g_tbe;
 static uint8_t  *g_t1, *g_t1_shadow;            /* 1-bpp frame, its shadow: PSRAM */
 static bool      g_t_force;                      /* convert every row next time */
 static uint16_t  g_t_fg = 0x0000, g_t_bg = 0xffff;   /* black on white, the RP2350's */
@@ -1123,10 +1277,11 @@ static void lut_build(void) {
 /* A row against its shadow, 64 bits at a time: libc's memcmp goes byte by
  * byte, and this runs over all 600 rows at every flush -- it was most of a
  * character's 3.2 ms (47.7). Both buffers are page-aligned. */
-static inline bool row_same(const uint8_t *a, const uint8_t *b) {
+static inline bool row_same(const uint8_t *a, const uint8_t *b, unsigned stride) {
     const uint64_t *x = (const uint64_t *)(const void *)a, *y = (const uint64_t *)(const void *)b;
     uint64_t d = 0;
-    for (unsigned i = 0; i < T_STRIDE / 8u; i++) d |= x[i] ^ y[i];
+    unsigned n = stride / 8u;
+    for (unsigned i = 0; i < n; i++) d |= x[i] ^ y[i];
     return d == 0;
 }
 
@@ -1160,21 +1315,24 @@ static void term_convert(unsigned y0, unsigned y1) {
     uint8_t *fb = fb_back();
     fb_fmt_t fmt = g_fb_fmt;
     if (!fb || !g_t1 || fmt == FB_NONE || g_t_hold) return;
-    if (y1 > DSI_LCD_V_RES) y1 = DSI_LCD_V_RES;
+    if (y1 > g_tbe.h) y1 = g_tbe.h;
     uint64_t t0 = time_get_us();
 
+    unsigned stride = g_tbe.stride;
+    unsigned total_bytes = stride * g_tbe.h;
+
     /* 1. Detect rows changed in 1-bpp frame and mark dirty in both buffers */
-    bool all = g_t_force && y0 == 0 && y1 == DSI_LCD_V_RES;
+    bool all = g_t_force && y0 == 0 && y1 == g_tbe.h;
     if (all) {
         memset(g_dirty, 0xff, sizeof g_dirty);
-        memcpy(g_t1_shadow, g_t1, T_BYTES);
+        memcpy(g_t1_shadow, g_t1, total_bytes);
         g_t_force = false;
     } else {
         for (unsigned y = y0; y < y1; y++) {
-            const uint8_t *src = g_t1 + y * T_STRIDE;
-            uint8_t *sh = g_t1_shadow + y * T_STRIDE;
-            if (g_t_force || !row_same(src, sh)) {
-                memcpy(sh, src, T_STRIDE);
+            const uint8_t *src = g_t1 + y * stride;
+            uint8_t *sh = g_t1_shadow + y * stride;
+            if (g_t_force || !row_same(src, sh, stride)) {
+                memcpy(sh, src, stride);
                 unsigned w = y / 64u;
                 uint64_t mask = 1ull << (y % 64u);
                 g_dirty[0][w] |= mask;
@@ -1187,25 +1345,81 @@ static void term_convert(unsigned y0, unsigned y1) {
     unsigned back_idx = g_double_buffered ? (1u - g_front_idx) : 0u;
     int lo = -1, hi = -1;
     uint32_t n = 0;
-    for (unsigned w = 0; w < DIRTY_WORDS; w++) {
-        uint64_t bits = g_dirty[back_idx][w];
-        if (!bits) continue;
-        g_dirty[back_idx][w] = 0;
-        for (unsigned bit = 0; bit < 64u; bit++) {
-            if (!(bits & (1ull << bit))) continue;
-            unsigned y = w * 64u + bit;
-            if (y >= DSI_LCD_V_RES) break;
-            const uint8_t *sh = g_t1_shadow + y * T_STRIDE;
-            if (fmt == FB_RGB565) {
-                uint16_t *dst = (uint16_t *)fb + (size_t)y * DSI_LCD_H_RES;
-                for (unsigned b = 0; b < T_STRIDE; b++) memcpy(dst + 8u * b, g_lut565[sh[b]], 16u);
-            } else {
-                uint64_t *dst = (uint64_t *)(fb + (size_t)y * DSI_LCD_H_RES);
-                for (unsigned b = 0; b < T_STRIDE; b++) dst[b] = g_lut8[sh[b]];
+
+    if (g_lcd_rot == 90 || g_lcd_rot == 270) {
+        /* Landscape Mode (1280x720): logical rows y in 0..719, stride 160 bytes.
+         * We convert dirty 8-row bands into physical 720x1280 back buffer. */
+        for (unsigned w = 0; w < DIRTY_WORDS; w++) {
+            uint64_t bits = g_dirty[back_idx][w];
+            if (!bits) continue;
+            g_dirty[back_idx][w] = 0;
+            for (unsigned bit = 0; bit < 64u; bit++) {
+                if (!(bits & (1ull << bit))) continue;
+                unsigned y = w * 64u + bit;
+                if (y >= g_tbe.h) break;
+                unsigned y0_band = (y / 8u) * 8u;
+                const uint8_t *r0 = g_t1_shadow + (y0_band + 0u) * stride;
+                const uint8_t *r1 = g_t1_shadow + (y0_band + 1u) * stride;
+                const uint8_t *r2 = g_t1_shadow + (y0_band + 2u) * stride;
+                const uint8_t *r3 = g_t1_shadow + (y0_band + 3u) * stride;
+                const uint8_t *r4 = g_t1_shadow + (y0_band + 4u) * stride;
+                const uint8_t *r5 = g_t1_shadow + (y0_band + 5u) * stride;
+                const uint8_t *r6 = g_t1_shadow + (y0_band + 6u) * stride;
+                const uint8_t *r7 = g_t1_shadow + (y0_band + 7u) * stride;
+
+                for (unsigned bx = 0; bx < stride; bx++) {
+                    uint8_t b0 = r0[bx], b1 = r1[bx], b2 = r2[bx], b3 = r3[bx];
+                    uint8_t b4 = r4[bx], b5 = r5[bx], b6 = r6[bx], b7 = r7[bx];
+
+                    for (unsigned b = 0; b < 8u; b++) {
+                        uint8_t c = ((b0 >> b) & 1u) |
+                                   (((b1 >> b) & 1u) << 1) |
+                                   (((b2 >> b) & 1u) << 2) |
+                                   (((b3 >> b) & 1u) << 3) |
+                                   (((b4 >> b) & 1u) << 4) |
+                                   (((b5 >> b) & 1u) << 5) |
+                                   (((b6 >> b) & 1u) << 6) |
+                                   (((b7 >> b) & 1u) << 7);
+                        if (g_lcd_rot == 270) {
+                            unsigned py = 1279u - (bx * 8u + b);
+                            uint16_t *dst = (uint16_t *)fb + (size_t)py * 720u + y0_band;
+                            memcpy(dst, g_lut565[c], 16u);
+                        } else {
+                            unsigned py = bx * 8u + b;
+                            uint16_t *dst = (uint16_t *)fb + (size_t)py * 720u + (712u - y0_band);
+                            memcpy(dst, g_lut565[rev8(c)], 16u);
+                        }
+                    }
+                }
+                unsigned rem = 7u - (y % 8u);
+                bit += rem;
+                lo = 0;
+                hi = 1279;
+                n++;
             }
-            if (lo < 0) lo = (int)y;
-            hi = (int)y;
-            n++;
+        }
+    } else {
+        /* Native orientation (0 deg or LCD-7B) */
+        for (unsigned w = 0; w < DIRTY_WORDS; w++) {
+            uint64_t bits = g_dirty[back_idx][w];
+            if (!bits) continue;
+            g_dirty[back_idx][w] = 0;
+            for (unsigned bit = 0; bit < 64u; bit++) {
+                if (!(bits & (1ull << bit))) continue;
+                unsigned y = w * 64u + bit;
+                if (y >= g_tbe.h) break;
+                const uint8_t *sh = g_t1_shadow + y * stride;
+                if (fmt == FB_RGB565) {
+                    uint16_t *dst = (uint16_t *)fb + (size_t)y * DSI_LCD_H_RES;
+                    for (unsigned b = 0; b < stride; b++) memcpy(dst + 8u * b, g_lut565[sh[b]], 16u);
+                } else {
+                    uint64_t *dst = (uint64_t *)(fb + (size_t)y * DSI_LCD_H_RES);
+                    for (unsigned b = 0; b < stride; b++) dst[b] = g_lut8[sh[b]];
+                }
+                if (lo < 0) lo = (int)y;
+                hi = (int)y;
+                n++;
+            }
         }
     }
 
@@ -1219,15 +1433,13 @@ static void term_convert(unsigned y0, unsigned y1) {
         uint8_t *aa_buf = reader_get_aa_backing(rids[i], &aa_stride, &aa_w, &aa_h);
         if (!aa_buf) continue;
 
-        int x0 = rx0[i];
-        int x1 = rx1[i];
-        int y0 = ry0[i];
-        int y1 = ry1[i];
+        int x0 = rx0[i], x1 = rx1[i];
+        int y0 = ry0[i], y1 = ry1[i];
 
         int cl_x0 = x0 < 0 ? 0 : x0;
-        int cl_x1 = x1 >= DSI_LCD_H_RES ? DSI_LCD_H_RES - 1 : x1;
+        int cl_x1 = x1 >= (int)g_tbe.w ? (int)g_tbe.w - 1 : x1;
         int cl_y0 = y0 < 0 ? 0 : y0;
-        int cl_y1 = y1 >= DSI_LCD_V_RES ? DSI_LCD_V_RES - 1 : y1;
+        int cl_y1 = y1 >= (int)g_tbe.h ? (int)g_tbe.h - 1 : y1;
         if (cl_x0 > cl_x1 || cl_y0 > cl_y1) continue;
 
         int blit_w = cl_x1 - cl_x0 + 1;
@@ -1238,15 +1450,33 @@ static void term_convert(unsigned y0, unsigned y1) {
             if (src_y < 0 || src_y >= aa_h) continue;
             const uint8_t *src_line = aa_buf + (uint32_t)src_y * aa_stride + src_x_off;
 
-            if (fmt == FB_RGB565) {
-                uint16_t *dst_line = (uint16_t *)fb + (size_t)y * DSI_LCD_H_RES + cl_x0;
+            if (g_lcd_rot == 270) {
                 for (int x = 0; x < blit_w; x++) {
                     uint8_t g = src_line[x];
-                    dst_line[x] = (uint16_t)(((g >> 3) << 11) | ((g >> 2) << 5) | (g >> 3));
+                    uint16_t c565 = (uint16_t)(((g >> 3) << 11) | ((g >> 2) << 5) | (g >> 3));
+                    unsigned py = 1279u - (cl_x0 + x);
+                    unsigned px = y;
+                    ((uint16_t *)fb)[(size_t)py * 720u + px] = c565;
+                }
+            } else if (g_lcd_rot == 90) {
+                for (int x = 0; x < blit_w; x++) {
+                    uint8_t g = src_line[x];
+                    uint16_t c565 = (uint16_t)(((g >> 3) << 11) | ((g >> 2) << 5) | (g >> 3));
+                    unsigned py = cl_x0 + x;
+                    unsigned px = 719u - y;
+                    ((uint16_t *)fb)[(size_t)py * 720u + px] = c565;
                 }
             } else {
-                uint8_t *dst_line = fb + (size_t)y * DSI_LCD_H_RES + cl_x0;
-                memcpy(dst_line, src_line, (size_t)blit_w);
+                if (fmt == FB_RGB565) {
+                    uint16_t *dst_line = (uint16_t *)fb + (size_t)y * DSI_LCD_H_RES + cl_x0;
+                    for (int x = 0; x < blit_w; x++) {
+                        uint8_t g = src_line[x];
+                        dst_line[x] = (uint16_t)(((g >> 3) << 11) | ((g >> 2) << 5) | (g >> 3));
+                    }
+                } else {
+                    uint8_t *dst_line = fb + (size_t)y * DSI_LCD_H_RES + cl_x0;
+                    memcpy(dst_line, src_line, (size_t)blit_w);
+                }
             }
         }
         if (lo < 0 || cl_y0 < lo) lo = cl_y0;
@@ -1268,8 +1498,8 @@ static void term_convert(unsigned y0, unsigned y1) {
             fb = fb_back();
             for (unsigned y = 0; y < DSI_LCD_V_RES; y++) {
                 uint16_t *dst = (uint16_t *)fb + (size_t)y * DSI_LCD_H_RES;
-                const uint8_t *sh = g_t1 + y * T_STRIDE;
-                for (unsigned b = 0; b < T_STRIDE; b++) {
+                const uint8_t *sh = g_t1 + y * stride;
+                for (unsigned b = 0; b < stride; b++) {
                     const uint16_t *pix = g_lut565[sh[b]];
                     for (unsigned p = 0; p < 8; p++) dst[b * 8 + p] = pix[p];
                 }
@@ -1285,15 +1515,14 @@ static void term_convert(unsigned y0, unsigned y1) {
         const uint16_t *c_buf = lcdterm_get_canvas565_backing(cids[i], &c_stride, &c_w, &c_h);
         if (!c_buf) continue;
 
-        int x0 = cx0[i];
-        int x1 = cx1[i];
+        int x0 = cx0[i], x1 = cx1[i];
         int y0 = cy0[i];
         int y1 = cy1[i];
 
         int cl_x0 = x0 < 0 ? 0 : x0;
-        int cl_x1 = x1 >= DSI_LCD_H_RES ? DSI_LCD_H_RES - 1 : x1;
+        int cl_x1 = x1 >= (int)g_tbe.w ? (int)g_tbe.w - 1 : x1;
         int cl_y0 = y0 < 0 ? 0 : y0;
-        int cl_y1 = y1 >= DSI_LCD_V_RES ? DSI_LCD_V_RES - 1 : y1;
+        int cl_y1 = y1 >= (int)g_tbe.h ? (int)g_tbe.h - 1 : y1;
         if (cl_x0 > cl_x1 || cl_y0 > cl_y1) continue;
 
         int blit_w = cl_x1 - cl_x0 + 1;
@@ -1302,19 +1531,33 @@ static void term_convert(unsigned y0, unsigned y1) {
         for (int y = cl_y0; y <= cl_y1; y++) {
             int src_y = y - y0;
             if (src_y < 0 || src_y >= c_h) continue;
-            const uint16_t *src_line = c_buf + (uint32_t)src_y * c_stride + src_x_off;
+            const uint16_t *src_line = c_buf + (size_t)src_y * c_stride + src_x_off;
 
-            if (fmt == FB_RGB565) {
-                uint16_t *dst_line = (uint16_t *)fb + (size_t)y * DSI_LCD_H_RES + cl_x0;
-                memcpy(dst_line, src_line, (size_t)blit_w * sizeof(uint16_t));
-            } else {
-                uint8_t *dst_line = fb + (size_t)y * DSI_LCD_H_RES + cl_x0;
+            if (g_lcd_rot == 270) {
                 for (int x = 0; x < blit_w; x++) {
-                    uint16_t pix = src_line[x];
-                    uint8_t r = (uint8_t)((pix >> 11) & 0x1fu);
-                    uint8_t g = (uint8_t)((pix >> 5) & 0x3fu);
-                    uint8_t b = (uint8_t)(pix & 0x1fu);
-                    dst_line[x] = (uint8_t)(((r << 3) * 77 + (g << 2) * 150 + (b << 3) * 29) >> 8);
+                    unsigned py = 1279u - (cl_x0 + x);
+                    unsigned px = y;
+                    ((uint16_t *)fb)[(size_t)py * 720u + px] = src_line[x];
+                }
+            } else if (g_lcd_rot == 90) {
+                for (int x = 0; x < blit_w; x++) {
+                    unsigned py = cl_x0 + x;
+                    unsigned px = 719u - y;
+                    ((uint16_t *)fb)[(size_t)py * 720u + px] = src_line[x];
+                }
+            } else {
+                if (fmt == FB_RGB565) {
+                    uint16_t *dst_line = (uint16_t *)fb + (size_t)y * DSI_LCD_H_RES + cl_x0;
+                    memcpy(dst_line, src_line, (size_t)blit_w * sizeof(uint16_t));
+                } else {
+                    uint8_t *dst_line = fb + (size_t)y * DSI_LCD_H_RES + cl_x0;
+                    for (int x = 0; x < blit_w; x++) {
+                        uint16_t pix = src_line[x];
+                        uint8_t r = (uint8_t)((pix >> 11) & 0x1fu);
+                        uint8_t g = (uint8_t)((pix >> 5) & 0x3fu);
+                        uint8_t b = (uint8_t)(pix & 0x1fu);
+                        dst_line[x] = (uint8_t)(((r << 3) * 77 + (g << 2) * 150 + (b << 3) * 29) >> 8);
+                    }
                 }
             }
         }
@@ -1325,7 +1568,11 @@ static void term_convert(unsigned y0, unsigned y1) {
 
     /* 3. Flush written rows and arm VSYNC flip */
     if (n) {
-        fb_flush_buffer(fb, (unsigned)lo, (unsigned)hi + 1u);
+        if (g_lcd_rot == 90 || g_lcd_rot == 270) {
+            fb_flush_buffer(fb, 0, DSI_LCD_V_RES);
+        } else {
+            fb_flush_buffer(fb, (unsigned)lo, (unsigned)hi + 1u);
+        }
         if (g_double_buffered) {
             dsi_lcd_flip(false);
         }
@@ -1351,6 +1598,7 @@ static void term_blank(bool off) {
 static void term_sync_pre(void) { }
 
 static void term_sync_post(void) {
+#if defined(CONFIG_ESP32P4_REV) && CONFIG_ESP32P4_REV >= 300
     if (!g_double_buffered && g_scanning) {
         REG(DSI_BRG_INT_CLR_REG) = (1u << DSI_BRG_VSYNC_INT_RAW_S);
         uint64_t t0 = time_get_us();
@@ -1358,6 +1606,7 @@ static void term_sync_post(void) {
             if (time_get_us() - t0 > 25000u) break;
         }
     }
+#endif
     console_lock();
     g_t_force = true;
     term_convert(0, DSI_LCD_V_RES);
@@ -1392,11 +1641,19 @@ static bool term_capture(const uint8_t **fb, unsigned *w, unsigned *h, unsigned 
 }
 
 static lcdterm_backend_t g_tbe = {
+#if defined(CONFIG_BOARD_TAB5)
+    .name            = "M5Tab5",
+    .text_test_title = "LugalOS on M5Stack Tab5: Spleen 8x16, 160 x 45 cells, 1280x720 MIPI-DSI ST7121",
+    .w               = 1280,
+    .h               = 720,
+    .stride          = 160,
+#else
     .name            = "LCD-7B",
     .text_test_title = "LugalOS on the LCD-7B: Spleen 8x16, 128 x 37 cells, 1-bpp to GRAY8 over DSI at 60 Hz",
     .w               = DSI_LCD_H_RES,
     .h               = DSI_LCD_V_RES,
     .stride          = T_STRIDE,
+#endif
     .fb_region_count = 0,              /* the terminal draws from the kernel here (lcdterm.h) */
     .flush           = term_flush,
     .blank           = term_blank,
@@ -1412,7 +1669,7 @@ static void term_redraw(void) {
     console_lock();
     g_t_hold = false;
     g_t_force = true;
-    term_convert(0, DSI_LCD_V_RES);
+    term_convert(0, g_tbe.h);
     console_unlock();
 }
 
@@ -1425,7 +1682,7 @@ static void term_flush_task(void *arg) {
         if (!g_t_due || lcdterm_is_animating()) continue;
         console_lock();
         g_t_due = false;
-        term_convert(0, DSI_LCD_V_RES);
+        term_convert(0, g_tbe.h);
         g_t_paced_passes++;
         console_unlock();
     }
@@ -1447,7 +1704,11 @@ static void term_colours(uint16_t fg, uint16_t bg) {
     bool gf, gb;
     (void)gray_of(fg, &gf);
     (void)gray_of(bg, &gb);
+#if defined(CONFIG_BOARD_TAB5)
+    fb_fmt_t want = FB_RGB565;         /* v1.3 bridge uses RGB565 natively */
+#else
     fb_fmt_t want = (gf && gb) ? FB_GRAY8 : FB_RGB565;
+#endif
     console_lock();                     /* the lcdflush task converts under it */
     g_t_fg = fg;
     g_t_bg = bg;
@@ -1534,7 +1795,11 @@ static void term_report(void) {
 }
 
 int dsi_lcd_term_start(void) {
+#if defined(CONFIG_BOARD_TAB5)
+    if (!fb_start(FB_RGB565)) return -1;
+#else
     if (!fb_start(FB_GRAY8)) return -1;
+#endif
     uint32_t pages = (2u * T_BYTES + 4095u) / 4096u;
     uint8_t *m = palloc_pages_bulk(pages);
     if (!m) { printk("[LCD] no PSRAM for the terminal's 1-bpp frame\n"); return -1; }
@@ -1542,15 +1807,60 @@ int dsi_lcd_term_start(void) {
     g_t1 = m;
     g_t1_shadow = m + T_BYTES;
     g_tbe.fb = g_t1;
+    if (g_fb_fmt == FB_RGB565 && !g_lut565) {
+        g_lut565 = (uint16_t (*)[8])palloc_pages_bulk(1);
+    }
     lut_build();
     g_t_force = true;
     if (lcdterm_init(&g_tbe) != 0) return -1;
     term_redraw();
-    printk("[LCD] terminal on the panel: %u x %u cells, 1-bpp frame at 0x%08lx, GRAY8 frame at 0x%08lx%s\n",
-           DSI_LCD_H_RES / FONT8X16_W, DSI_LCD_V_RES / FONT8X16_H,
-           (unsigned long)(uintptr_t)g_t1, (unsigned long)(uintptr_t)fb_front(),
+    printk("[LCD] terminal on the panel: %u x %u cells, 1-bpp frame at 0x%08lx, %s frame at 0x%08lx%s\n",
+           g_tbe.w / FONT8X16_W, g_tbe.h / FONT8X16_H,
+           (unsigned long)(uintptr_t)g_t1, g_fb_fmt == FB_RGB565 ? "RGB565" : "GRAY8",
+           (unsigned long)(uintptr_t)fb_front(),
            g_double_buffered ? " (double-buffered)" : "");
     return 0;
+}
+
+int dsi_lcd_get_orientation(void) {
+    return g_lcd_rot;
+}
+
+int dsi_lcd_set_orientation(int rot) {
+#if defined(CONFIG_BOARD_TAB5)
+    if (rot != 0 && rot != 90 && rot != 180 && rot != 270) return -1;
+    if (g_lcd_rot == rot) return 0;
+    console_lock();
+    g_lcd_rot = rot;
+    if (rot == 90 || rot == 270) {
+        g_tbe.w = 1280;
+        g_tbe.h = 720;
+        g_tbe.stride = 160;
+    } else {
+        g_tbe.w = 720;
+        g_tbe.h = 1280;
+        g_tbe.stride = 90;
+    }
+    if (g_t1) {
+        memset(g_t1, 0, T_BYTES);
+        memset(g_t1_shadow, 0, T_BYTES);
+        lcdterm_reinit(&g_tbe);
+    }
+    if (g_fb_pool[0]) {
+        memset(g_fb_pool[0], 0, (size_t)DSI_LCD_H_RES * DSI_LCD_V_RES * (g_fb_fmt == FB_RGB565 ? 2u : 1u));
+        esp32p4_extmem_writeback((uintptr_t)g_fb_pool[0], (size_t)DSI_LCD_H_RES * DSI_LCD_V_RES * (g_fb_fmt == FB_RGB565 ? 2u : 1u));
+    }
+    if (g_fb_pool[1]) {
+        memset(g_fb_pool[1], 0, (size_t)DSI_LCD_H_RES * DSI_LCD_V_RES * (g_fb_fmt == FB_RGB565 ? 2u : 1u));
+        esp32p4_extmem_writeback((uintptr_t)g_fb_pool[1], (size_t)DSI_LCD_H_RES * DSI_LCD_V_RES * (g_fb_fmt == FB_RGB565 ? 2u : 1u));
+    }
+    term_redraw();
+    console_unlock();
+    return 0;
+#else
+    (void)rot;
+    return 0;
+#endif
 }
 
 /* ---- the whole bring-up --------------------------------------------------- */
@@ -1584,8 +1894,13 @@ bool dsi_lcd_init(void) {
     g_up = true;
     if (!g_cmd_errs) g_reason = "up";
     g_init_us = (uint32_t)(time_get_us() - t0);
-    printk("[LCD] EK79007 %ux%u, DSI %u lanes x %u Mbps (PLL N %u M %u, hsfreq 0x%02x), "
+    printk("[LCD] %s %ux%u, DSI %u lanes x %u Mbps (PLL N %u M %u, hsfreq 0x%02x), "
            "DPI 240/%lu MHz, LDO3 dref %u mul %u, %lu us\n",
+#if defined(CONFIG_BOARD_TAB5)
+           "ST7121",
+#else
+           "EK79007",
+#endif
            DSI_LCD_H_RES, DSI_LCD_V_RES, LANES, LANE_MBPS, g_pll_n, g_pll_m, g_hsfreq,
            (unsigned long)g_dpi_div, g_ldo_dref, g_ldo_mul, (unsigned long)g_init_us);
     return true;
@@ -1619,8 +1934,13 @@ static int parse_hex(const char **sp) {
 static void term_report(void);
 
 static void report(void) {
-    cprintf("lcd: %s -- EK79007 %ux%u, %u lanes x %u Mbps\n", g_up ? "up" : "down", DSI_LCD_H_RES,
-            DSI_LCD_V_RES, LANES, LANE_MBPS);
+    cprintf("lcd: %s -- %s %ux%u, %u lanes x %u Mbps\n", g_up ? "up" : "down",
+#if defined(CONFIG_BOARD_TAB5)
+            "ST7121",
+#else
+            "EK79007",
+#endif
+            DSI_LCD_H_RES, DSI_LCD_V_RES, LANES, LANE_MBPS);
     if (!g_tried) { cprintf("     not initialised (`lcd pattern bars` brings it up)\n"); return; }
     cprintf("     %s; pattern: %s; backlight %s; init %lu us, %lu command errors\n", g_reason,
             g_pattern, g_bl_on ? "on" : "off", (unsigned long)g_init_us, (unsigned long)g_cmd_errs);
@@ -1628,8 +1948,13 @@ static void report(void) {
     else cprintf("     power mode (DCS 0x0A, at init): no answer\n");
     cprintf("     LDO3 %u mV: dref %u mul %u (K %d Vos %d C %d)\n", LDO3_MV, g_ldo_dref, g_ldo_mul,
             g_ldo_k, g_ldo_vos, g_ldo_c);
-    cprintf("     PHY PLL: XTAL %u MHz x %u / %u, hsfreqrange 0x%02x; status 0x%08lx\n", XTAL_MHZ,
-            g_pll_m, g_pll_n, g_hsfreq, (unsigned long)REG(DSI_HOST_PHY_STATUS_REG));
+    cprintf("     PHY PLL: %s %u MHz x %u / %u, hsfreqrange 0x%02x; status 0x%08lx\n",
+#if defined(CONFIG_ESP32P4_REV) && CONFIG_ESP32P4_REV >= 300
+            "XTAL",
+#else
+            "PLL_F20M",
+#endif
+            PHY_REF_MHZ, g_pll_m, g_pll_n, g_hsfreq, (unsigned long)REG(DSI_HOST_PHY_STATUS_REG));
     cprintf("     DPI 240/%lu MHz; host hsa %lu hbp %lu hline %lu; bridge hfp %lu\n",
             (unsigned long)g_dpi_div, (unsigned long)g_host_hsa, (unsigned long)g_host_hbp,
             (unsigned long)g_host_hline, (unsigned long)g_brg_hfp);
@@ -1979,8 +2304,35 @@ void dsi_lcd_command(const char *args) {
         cprintf("%s\n", got ? "" : " (nothing)");
         return;
     }
+    if (strncmp(args, "orient", 6) == 0) {
+        const char *p = skip_ws(args + 6);
+        if (*p == '\0') {
+            const char *mode_str = "0 deg (Portrait)";
+            if (g_lcd_rot == 270) mode_str = "270 deg (Landscape)";
+            else if (g_lcd_rot == 90) mode_str = "90 deg (Landscape Inverted)";
+            else if (g_lcd_rot == 180) mode_str = "180 deg (Portrait Inverted)";
+            cprintf("lcd orient: %s\n", mode_str);
+            return;
+        }
+        int rot = -1;
+        if (strcmp(p, "portrait") == 0 || strcmp(p, "0") == 0) rot = 0;
+        else if (strcmp(p, "landscape") == 0 || strcmp(p, "270") == 0) rot = 270;
+        else if (strcmp(p, "90") == 0) rot = 90;
+        else if (strcmp(p, "180") == 0) rot = 180;
+        else {
+            cprintf("usage: lcd orient [portrait|landscape|0|90|180|270]\n");
+            return;
+        }
+        if (dsi_lcd_set_orientation(rot) != 0) {
+            cprintf("lcd orient: failed to set orientation %d\n", rot);
+            return;
+        }
+        cprintf("lcd orient: set to %d deg (%s)\n", rot, (rot == 90 || rot == 270) ? "Landscape" : "Portrait");
+        return;
+    }
     cprintf("usage: lcd [colours FG BG | repaint | termbench | test text | scroll N | tee uart|off |\n"
             "            pattern bars|hbars|ber|off | fb [gray|rgb565] | db [on|off] |\n"
+            "            orient [portrait|landscape|0|90|180|270] |\n"
             "            test checker|grid|page|ramp|white|black | fps | bench | verify |\n"
             "            wbtest [s] | bl on|off | cmd CC [PP..] | id | rd CC [N]]\n");
 }

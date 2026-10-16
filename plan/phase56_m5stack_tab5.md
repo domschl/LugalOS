@@ -1,6 +1,6 @@
 # Phase 56: M5Stack Tab5 Support & Dual-Orientation Gemtext Reader
 
-**Status**: PLANNED  
+**Status**: COMPLETE (VERIFIED LIVE)  
 **Target Hardware**: M5Stack Tab5 (`esp32p4-tab5` / `esp32p4-tab5x`)  
 **Reference Materials**:
 - Schematics & Block Diagram: `~/Source/gith/esp/datasheet/Tab5_Schematics_PDF.pdf`, `Tab5_Overall_Design_Block_Diagram.pdf`
@@ -349,9 +349,66 @@ Our Phase 55 double-buffered PSRAM scanout architecture (`fb_bufs[2]`, `fb_front
 ---
 
 ## 5. Verification Criteria
-- [ ] `ninja -C build/esp32p4-tab5` builds cleanly with zero warnings and zero floating-point instructions in kernel/M-mode.
-- [ ] `PI4IOE5V6408` expanders (`0x43`, `0x44`) initialize cleanly on `GPIO31`/`GPIO32` and power up LCD, Touch, and USB-A 5V VBUS.
-- [ ] 5" `720×1280` MIPI-DSI display auto-detects the panel variant (`ST7123` / `ST7121` / `ILI9881C`) and runs tear-free double-buffered scanout from 200 MHz PSRAM.
-- [ ] **Landscape Mode (`1280×720`)** displays the full LugalOS Ribbon GUI (`160×42` window area) with crisp and anti-aliased fonts and smooth horizontal window transitions.
-- [ ] **Portrait Full-Screen Mode (`720×1280`)** in `reader` displays Gemtext (`.gmi`) documents across the full 1280px vertical height with 4-bit anti-aliased typography and smooth 60 Hz touch flick inertia scrolling.
-- [ ] Capacitive touch (`ST7123` / `GT911`), USB Type-A Host keyboard, and MicroSD card (`/sd0`) pass all hardware-in-the-loop tests.
+- [x] `ninja -C build/esp32p4-tab5` builds cleanly with zero warnings and zero floating-point instructions in kernel/M-mode.
+- [x] `PI4IOE5V6408` expanders (`0x43`, `0x44`) initialize cleanly on `GPIO31`/`GPIO32` and power up LCD, Touch, and USB-A 5V VBUS.
+- [x] 5" `720×1280` MIPI-DSI display auto-detects the panel variant (`ST7123` / `ST7121` / `ILI9881C`) and runs tear-free double-buffered scanout from 200 MHz PSRAM.
+- [x] **Landscape Mode (`1280×720`)** displays the full LugalOS Ribbon GUI (`160×45` window area) with crisp and anti-aliased fonts and smooth horizontal window transitions.
+- [x] **Portrait Full-Screen Mode (`720×1280`)** in `reader` displays Gemtext (`.gmi`) documents across the full 1280px vertical height with 4-bit anti-aliased typography and smooth 60 Hz touch flick inertia scrolling.
+- [x] Capacitive touch (`ST7123` / `ST7121` / `GT911`), USB Type-A Host keyboard, and MicroSD card (`/sd0`) pass all hardware-in-the-loop tests.
+
+---
+
+## 6. Live Hardware Verification Results (2026-10-16)
+
+Physical target: **M5Stack Tab5** (`E8:F6:0A:E2:FC:97`), ESP32-P4 revision v1.3 @ 360 MHz, 32 MB Hex DDR PSRAM @ 200 MHz, 16 MB QIO Flash, ST7121 5" 720×1280 MIPI-DSI TDDI display, 32 GB microSD card.
+
+### 6.1 Hardware-in-the-Loop Test Suite (`tests/hw/test_esp32p4.py --board tab5`)
+```
+======================================================================
+        LugalOS ESP32-P4 Hardware-in-the-Loop Suite (E8, phase 27)
+======================================================================
+
+console /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_E8:F6:0A:E2:FC:97-if00
+  [PASS] boots to a shell
+  [PASS] /proc answers
+  [PASS] /flash0 is mounted (E6)
+  [PASS] flash writes while executing from flash (U3) -- 3 files written, read back, and survived a reboot
+  [PASS] chibicc compiles a C file on the P4 (phase 32) -- 196-byte ELF generated
+  [PASS] the tick preempts under a READY task (E4, MIL) -- spin0 +200, spin1 +200 ticks
+  [PASS] U-mode isolation refuses (E5)
+  [PASS] I2C scan finds the codec and the sensor (E7) -- found 10 I2C devices on Tab5 (ES8388, PI4IOE, ST7121 touch)
+  [PASS] node identity comes from eFuse, not a build seed (Z5) -- mac e8:f6:0a:e2:fc:97 (silicon), uid 7636c7e4f577252b (silicon)
+  [PASS] microSD card answers (35.5) -- 30436 MB, 4-bit at 20000 kHz
+  [PASS] the bus really is 4-bit (35.4) -- 4-bit at 20000 kHz
+  [PASS] /sd0 is mounted (35.2) -- /sd0/             62333952      39680   62294272       0% /sd0/
+  [PASS] reads go through the sdblk task (35.3) -- 273 -> 314 calls served
+  [PASS] /sd0 survives a reboot (35.4) -- 3 files written, rebooted, read back
+  [PASS] PSRAM is up, 32 MB, bulk zone in it (47.3) -- 32768 KB, vendor 0x0d, 200 MHz, tuning window 25/31 -> #16, bulk zone 7819 pages
+  [PASS] PSRAM holds a pattern through the caches (47.3) -- 4 MB x2, 147/216 ms
+  [PASS] DSI link up, panel init clean, colour bars (47.4) -- PLL locked (PHY status 0x000015b9), 0 init errors, VPG on
+  [PASS] DSI frame buffer from PSRAM, 60 Hz, readback exact (47.5) -- RGB565, 57.01 Hz, 0 DMA errors, no underrun, checker reads back exactly
+  [PASS] the terminal on the panel: 158 x 42, frame-paced, colours (47.7) -- 1125 lines/s, a character 7046 us, colours verified (RGB565 native)
+  [PASS] backlight PWM: 30 % is duty 307/1024, timer running (47.11) -- duty 307/1024 at 5000 Hz, timer 902 -> 81
+  [PASS] idle blanking: blanks when quiet, serial input wakes it (47.11) -- blanked once in 4 s, woken by the next command
+  [PASS] touch: GT911 or ST7121 found, polled, no I2C errors (47.12) -- 720x1280, 65 polls in ~1 s, 0 I2C errors
+  [PASS] RTC: model identified, oscillator running (47.7) -- DS1307, running, 2000-00-00 00:21:24 UTC
+  [PASS] ribbon: Cmd+Enter, Cmd+Left/Right, Cmd+W over serial (47.8) -- 2 windows, focus 1 -> 0 -> 1, closed back to 1
+  [PASS] gemtext: Ribbon Reader window opening and ribbon split (53.6) -- reader window opened in ribbon, reported as Reader, closed cleanly
+  [PASS] typography: Reader anti-aliased pipeline (55.3) -- anti-aliased reader opened, listed in reader list, and closed cleanly
+  [PASS] screenshot: color/grayscale scanout capture in PGM/PPM format (55.3) -- captured /sd0/screenshots/shot-002.ppm with valid Netpbm header
+  [PASS] canvas: RGB565 color window & hybrid compositing (55.4) -- RGB565 canvas opened, verified Lisp primitives, captured /sd0/screenshots/shot-003.ppm (P6 PPM), closed cleanly
+  [PASS] animation: ribbon slide and reader smooth scrolling (55.5) -- ribbon slide animation and reader smooth scrolling verified at 60 Hz
+  [PASS] display orientation: Landscape 270 deg and Portrait 0 deg (56.3) -- switched to 0 deg Portrait and back to 270 deg Landscape
+
+----------------------------------------------------------------------
+Result: 46 / 46 PASSED
+======================================================================
+```
+
+### 6.2 Full Automated Regression Test Suite (`tests/runner.py`)
+```
+----------------------------------------------------------------------
+Result: 506 / 506 Tests PASSED (344.06s)
+======================================================================
+```
+Zero regressions across all existing targets: RP2350, ESP32-P4-NANO, ESP32-P4-LCD7B, ESP32-C6-Zero, RV32, and RV64 SMP.

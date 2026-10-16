@@ -415,8 +415,8 @@ void kernel_main(void) {
      * LCD-7B replaces it below once its panel is up. */
     console_set_screen(ramscreen_console());
 #endif
-#if defined(CONFIG_BOARD_ESP32P4) && defined(CONFIG_DSI_LCD_RST_GPIO)
-    /* The LCD-7B's panel and its
+#if defined(CONFIG_BOARD_ESP32P4) && (defined(CONFIG_DSI_LCD_RST_GPIO) || defined(CONFIG_BOARD_TAB5))
+    /* The LCD-7B / Tab5 panel and its
      * frame in PSRAM (after palloc's bulk zone, above), then the terminal on
      * it -- as the RP2350's below: a screen-only log sink, the console stream
      * on the `lcd` device (teeing to UART0), the screen hooks. Input stays on
@@ -575,8 +575,8 @@ void kernel_main(void) {
      * runs -- and if it fails -- the lcd facade draws from the kernel. */
     (void)lcdterm_task_start();
 #endif
-#if defined(CONFIG_BOARD_ESP32P4) && defined(CONFIG_DSI_LCD_RST_GPIO)
-    /* 47.7: the LCD-7B's frame pacer -- the terminal converted into the
+#if defined(CONFIG_BOARD_ESP32P4) && (defined(CONFIG_DSI_LCD_RST_GPIO) || defined(CONFIG_BOARD_TAB5))
+    /* 47.7: the LCD-7B / Tab5 frame pacer -- the terminal converted into the
      * scanned-out frame at most once per frame from here on. */
     (void)dsi_lcd_term_task_start();
 #endif

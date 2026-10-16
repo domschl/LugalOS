@@ -268,13 +268,80 @@ static void uart_commit(uintptr_t base) {
 
 /* --- raw hardware access ------------------------------------------------ */
 
+#if defined(CONFIG_USBJTAG_BASE)
+/* --- Native USB-Serial/JTAG console (0x500D2000, M5Stack Tab5) ----------
+ *
+ * On the M5Stack Tab5 the USB-C receptacle (J8) connects directly to the
+ * ESP32-P4's Full-Speed USB-Serial/JTAG controller (GPIO24/25, VID:PID
+ * 303a:1001). Every console byte is mirrored to both UART0 and USB_SERIAL_JTAG
+ * (with bounded spin so an unplugged USB host never stalls the kernel), and
+ * console RX accepts bytes and interrupts from both peripherals.
+ *
+ * Registers: IDF components/soc/esp32p4/register/hw_ver1/soc/usb_serial_jtag_reg.h,
+ * matrix source ETS_USB_SERIAL_JTAG_INTR_SOURCE = 22. */
+#define USJ_BASE                ((uintptr_t)CONFIG_USBJTAG_BASE)
+#define USJ_EP1                 (USJ_BASE + 0x00u)
+#define USJ_EP1_CONF            (USJ_BASE + 0x04u)
+#define USJ_INT_RAW             (USJ_BASE + 0x08u)
+#define USJ_INT_ST              (USJ_BASE + 0x0cu)
+#define USJ_INT_ENA             (USJ_BASE + 0x10u)
+#define USJ_INT_CLR             (USJ_BASE + 0x14u)
+#define USJ_WR_DONE             (1u << 0)
+#define USJ_IN_FREE             (1u << 1)
+#define USJ_OUT_AVAIL           (1u << 2)
+#define USJ_OUT_RECV_PKT_INT    (1u << 2)
+#define USJ_FIFO_BYTES          64u
+#define USJ_TX_SPIN_LIMIT       200000u
+
+static volatile unsigned g_usj_pending;
+static volatile bool     g_usj_host_gone;
+
+static void usj_flush(void) {
+    if (g_usj_pending) {
+        REG(USJ_EP1_CONF) = USJ_WR_DONE;
+        g_usj_pending = 0;
+    }
+}
+
+static void usj_putc(char c) {
+    if (g_usj_host_gone) {
+        if (!(REG(USJ_EP1_CONF) & USJ_IN_FREE)) {
+            REG(USJ_EP1_CONF) = USJ_WR_DONE;
+            return;
+        }
+        g_usj_host_gone = false;
+    } else {
+        unsigned n = 0;
+        while (!(REG(USJ_EP1_CONF) & USJ_IN_FREE)) {
+            if (++n >= USJ_TX_SPIN_LIMIT) {
+                REG(USJ_EP1_CONF) = USJ_WR_DONE;
+                g_usj_host_gone = true;
+                g_usj_pending = 0;
+                return;
+            }
+        }
+    }
+    REG(USJ_EP1) = (uint32_t)(uint8_t)c;
+    if (++g_usj_pending >= USJ_FIFO_BYTES || c == '\n') usj_flush();
+}
+#endif /* CONFIG_USBJTAG_BASE */
+
 static bool hw_uart_has_char(void) {
+#if defined(CONFIG_USBJTAG_BASE)
+    usj_flush();
+    if (REG(USJ_EP1_CONF) & USJ_OUT_AVAIL) return true;
+#endif
     if (!g_uart_base) return false;
     uint32_t st = REG(UART_STATUS(g_uart_base));
     return ((st >> UART_RXFIFO_CNT_SHIFT) & UART_RXFIFO_CNT_MASK) != 0;
 }
 
 static uint8_t hw_uart_getc(void) {
+#if defined(CONFIG_USBJTAG_BASE)
+    if (REG(USJ_EP1_CONF) & USJ_OUT_AVAIL) {
+        return (uint8_t)(REG(USJ_EP1) & 0xffu);
+    }
+#endif
     /* The FIFO is a single address; reading it pops one byte. Only the low
      * 8 bits carry data (TRM Register 45.1). */
     return (uint8_t)(REG(UART_FIFO(g_uart_base)) & 0xffu);
@@ -336,7 +403,17 @@ static void uart_isr(void *ctx) {
     uint32_t served = st & (UART_RX_INTS | UART_TXFIFO_EMPTY_INT);
     if (served) REG(UART_INT_ENA(base)) &= ~served;
 
-    if ((st & UART_RX_INTS) && g_rx_waiter >= 0) {
+#if defined(CONFIG_USBJTAG_BASE)
+    uint32_t usj_st = REG(USJ_INT_ST);
+    if (usj_st & USJ_OUT_RECV_PKT_INT) {
+        REG(USJ_INT_ENA) &= ~USJ_OUT_RECV_PKT_INT;
+    }
+    bool rx_fired = ((st & UART_RX_INTS) != 0) || ((usj_st & USJ_OUT_RECV_PKT_INT) != 0);
+#else
+    bool rx_fired = (st & UART_RX_INTS) != 0;
+#endif
+
+    if (rx_fired && g_rx_waiter >= 0) {
         g_uart_irq_rx_wakes++;
         int pid = g_rx_waiter;
         g_rx_waiter = -1;
@@ -355,6 +432,9 @@ static void uart_isr(void *ctx) {
      * clicintip follows the peripheral and "cleared from source" means
      * exactly this store. */
     REG(UART_INT_CLR(base)) = st;
+#if defined(CONFIG_USBJTAG_BASE)
+    if (usj_st) REG(USJ_INT_CLR) = usj_st;
+#endif
 }
 
 /* The blocking primitives. Whoever calls these owns the hardware -- normally
@@ -366,67 +446,17 @@ static void uart_isr(void *ctx) {
  * every line of boot output before the uart task exists goes through it. */
 static void uart_hw_putc_blocking_ex(char c, bool may_block) {
     if (!g_uart_base) return;
+#if defined(CONFIG_USBJTAG_BASE)
+    usj_putc(c);
+#endif
     if (hw_uart_tx_room()) {
         REG(UART_FIFO(g_uart_base)) = (uint8_t)c;
         return;
     }
-    /* Nothing between the fast-path miss and task_block() may restore
-     * interrupts early: a TX interrupt landing in that gap would find this
-     * task still RUNNING rather than BLOCKED, task_unblock() would no-op,
-     * and the ISR would have "served" a wakeup nobody was asleep for -- a
-     * silent, permanent lost wakeup. So the whole decision runs under one
-     * irq_save(). Copied in shape from drivers/uart_16550.c, where the same
-     * comment is the record of having got it wrong first. */
-    /* The caller decides whether blocking is even allowed here.
-     *
-     * uart_flush() reaches this function by two very different routes. Through
-     * the uart *task*, blocking is right: the task exists to sleep until the
-     * FIFO drains. Through the **fallback** -- taken when the endpoint is busy
-     * or the task is not running -- blocking is wrong, and not subtly so. That
-     * path exists precisely because the task machinery is unavailable, and
-     * task_block()ing there re-introduces the dependency the fallback was
-     * written to escape: the caller sleeps waiting for a TX interrupt while
-     * holding whatever it was in the middle of, and on this board that is a
-     * printk() that never returns.
-     *
-     * Kept on its own merits, and the record of how it was arrived at is worth
-     * preserving because the reasoning was right and the diagnosis was wrong.
-     * E7 saw a boot that stopped mid-console-line once E6's /flash0 added
-     * output after the shell starts reading the console, and this looked like
-     * the cause: the shell's pending blocking read occupies the single-slot
-     * uart endpoint, every later printk falls back to direct hardware, and the
-     * first one to find a full FIFO would block for good. The TX interrupt was
-     * blamed for never arriving.
-     *
-     * It arrives. uart_irq_tx_arms() and uart_irq_tx_wakes() are equal on this
-     * board, and enabling the source with a drained FIFO delivers an interrupt
-     * immediately -- both measured. The hang was the L2-cache memory
-     * corruption (esp32p4_l2_cache_shrink(), arch/riscv/common/trap.c) eating
-     * task context frames, and it presented as a lost wakeup because the task
-     * that should have been woken no longer had a frame to return to.
-     *
-     * The split stays regardless: a fallback whose whole reason for existing is
-     * that the task machinery is unavailable must not call task_block(). That
-     * argument never depended on the bug. */
     uintptr_t flags = irq_save();
-    /* Acknowledge before re-testing, not after. Both orderings look right;
-     * only this one is. INT_CLR takes down a raw bit that may be left over
-     * from an earlier condition -- without it the enable below would deliver
-     * an immediate stale interrupt and this function would return having
-     * written to a full FIFO. But clearing it *after* the test would instead
-     * discard the notification for a condition that became true in between,
-     * and the task would sleep on an event that had already happened. Clear
-     * first, test second: hardware re-asserts the raw bit for as long as the
-     * condition holds, so anything that arrives from here on is either seen
-     * by the test or delivered by the enable. */
     REG(UART_INT_CLR(g_uart_base)) = UART_TXFIFO_EMPTY_INT;
     if (!hw_uart_tx_room()) {
         if (may_block && g_tx_waiter < 0 && sched_has_task()) {
-            /* Prepared, and looped on the condition (phase31 §7 T11): the
-             * ISR is routed to core 0, and a caller on the other hart --
-             * uart_debug_putc(), say -- was woken before it had blocked and
-             * then slept for good. The token keeps that wake; the loop
-             * covers a return that was not this interrupt's. */
             int me = sched_current_pid();
             do {
                 task_prepare_block();
@@ -462,6 +492,9 @@ static uint8_t uart_hw_getc_blocking(void) {
     /* Clear first, test second -- see uart_hw_putc_blocking() above for why
      * the other order loses a keystroke rather than merely being untidy. */
     REG(UART_INT_CLR(g_uart_base)) = UART_RX_INTS;
+#if defined(CONFIG_USBJTAG_BASE)
+    REG(USJ_INT_CLR) = USJ_OUT_RECV_PKT_INT;
+#endif
     if (!hw_uart_has_char()) {
         if (g_rx_waiter < 0 && sched_has_task()) {
             /* As for TX above (T11): prepared, and looped on the data. */
@@ -470,14 +503,23 @@ static uint8_t uart_hw_getc_blocking(void) {
                 task_prepare_block();
                 g_rx_waiter = me;
                 REG(UART_INT_ENA(g_uart_base)) |= UART_RX_INTS;
+#if defined(CONFIG_USBJTAG_BASE)
+                REG(USJ_INT_ENA) |= USJ_OUT_RECV_PKT_INT;
+#endif
                 task_block();
                 REG(UART_INT_CLR(g_uart_base)) = UART_RX_INTS;
+#if defined(CONFIG_USBJTAG_BASE)
+                REG(USJ_INT_CLR) = USJ_OUT_RECV_PKT_INT;
+#endif
             } while (!hw_uart_has_char());
             task_wait_done();
             if (g_rx_waiter == me) {
                 g_rx_waiter = -1;
-                REG(UART_INT_ENA(g_uart_base)) &= ~UART_RX_INTS;
             }
+            REG(UART_INT_ENA(g_uart_base)) &= ~UART_RX_INTS;
+#if defined(CONFIG_USBJTAG_BASE)
+            REG(USJ_INT_ENA) &= ~USJ_OUT_RECV_PKT_INT;
+#endif
         } else {
             irq_restore(flags);
             while (!hw_uart_has_char()) sched_yield();
@@ -525,16 +567,6 @@ uint32_t uart_irq_tx_seen(void) { return g_uart_irq_tx_seen; }
 
 static bool uart_task_alive(void) { return driver_task_alive(&g_uart_task); }
 
-/* printk() from inside this loop is fine; cprintf()/printk_debug() are not.
- *
- * The rule used to cover printk() too, because printk() reached the console
- * through this very endpoint: a caller blocked here while holding the output
- * lock, and this task taking the same lock to log, deadlocks against itself.
- * Y5c made printk() a ring append
- * that reaches no blocking primitive, so that half is gone. The console
- * stream still ends at the wire, so the other half stands, and
- * drivers/driver_task.c's bracket plus console_lock() check it rather than
- * leaving it to this comment. uart_debug_putc() remains the escape hatch. */
 static uint32_t uart_serve(void *ctx, const uint8_t *req, uint32_t req_len,
                           uint8_t *resp, uint32_t resp_cap) {
     (void)ctx; (void)resp_cap;
@@ -554,6 +586,9 @@ static uint32_t uart_serve(void *ctx, const uint8_t *req, uint32_t req_len,
             for (uint32_t i = 1; i < req_len; i++) {
                 uart_hw_putc_blocking((char)req[i]);
             }
+#if defined(CONFIG_USBJTAG_BASE)
+            usj_flush();
+#endif
             g_uart_write_in_flight = false;
             return 0;
         default:
@@ -567,11 +602,10 @@ int uart_task_start(void) {
      * masks every CLIC line as its first act, and it runs in between. From
      * this point a task blocking on the console really sleeps. */
     arch_irq_enable(ESP32P4_CLIC_IRQ_UART0);
+#if defined(CONFIG_USBJTAG_BASE)
+    arch_irq_enable(ESP32P4_CLIC_IRQ_USBJTAG);
+#endif
 
-    /* the same spec uart_16550.c uses,
-     * because these two are the same driver in every respect the framework
-     * cares about -- a kernel-mode task, serving the same three opcodes, at
-     * the same priority, for the same reason. */
     const driver_task_spec_t spec = {
         .name        = "uart",
         .serve       = uart_serve,
@@ -749,6 +783,19 @@ void uart_init(uintptr_t base_addr) {
     if (esp32p4_intmtx_route(31u, ESP32P4_CLIC_IRQ_UART0) == 0) {
         devirq_attach(ESP32P4_CLIC_IRQ_UART0, uart_isr, NULL);
     }
+#if defined(CONFIG_USBJTAG_BASE)
+    /* Mask and clear any interrupts left by the ROM's USB-Serial/JTAG loader,
+     * drain any stray bytes in the OUT endpoint, and route matrix source 22
+     * (ETS_USB_SERIAL_JTAG_INTR_SOURCE) to ESP32P4_CLIC_IRQ_USBJTAG. */
+    REG(USJ_INT_ENA) = 0;
+    REG(USJ_INT_CLR) = 0xffffffffu;
+    for (unsigned i = 0; i < 64u && (REG(USJ_EP1_CONF) & USJ_OUT_AVAIL); i++) {
+        (void)REG(USJ_EP1);
+    }
+    if (esp32p4_intmtx_route(22u, ESP32P4_CLIC_IRQ_USBJTAG) == 0) {
+        devirq_attach(ESP32P4_CLIC_IRQ_USBJTAG, uart_isr, NULL);
+    }
+#endif
 }
 
 /* --- the facade (identical in shape to drivers/uart_16550.c's) ----------- */
@@ -791,6 +838,9 @@ static void uart_tx_send(const char *local, uint32_t len) {
         sched_yield();
     }
     for (uint32_t i = 0; i < len; i++) uart_hw_putc_polling(local[i]);
+#if defined(CONFIG_USBJTAG_BASE)
+    usj_flush();
+#endif
 }
 
 /* The polling path -- the shared wire (`p9share`) and before the uart task --
@@ -806,12 +856,21 @@ static void uart_drain_polling(unsigned h) {
         uintptr_t flags = spin_lock_irqsave(&g_tx_batch_lock);
         uint32_t len = g_tx_batch_len[h], n = 0;
         if (!g_uart_base) n = len;      /* before uart_init(): dropped, as uart_hw_putc_*() did */
-        while (n < len && hw_uart_tx_room()) REG(UART_FIFO(g_uart_base)) = (uint8_t)g_tx_batch[h][n++];
+        while (n < len && hw_uart_tx_room()) {
+            char c = g_tx_batch[h][n++];
+            REG(UART_FIFO(g_uart_base)) = (uint8_t)c;
+#if defined(CONFIG_USBJTAG_BASE)
+            usj_putc(c);
+#endif
+        }
         if (n > 0) {
             memmove(g_tx_batch[h], g_tx_batch[h] + n, len - n);
             g_tx_batch_len[h] = len - n;
         }
         bool done = g_tx_batch_len[h] == 0;
+#if defined(CONFIG_USBJTAG_BASE)
+        if (done) usj_flush();
+#endif
         if (done && g_tx_inflight[h] == 0) sched_release_hart_holds(h);
         spin_unlock_irqrestore(&g_tx_batch_lock, flags);
         if (done) return;
@@ -902,6 +961,10 @@ void uart_puts(const char *s) {
  * block -- in particular this never touches g_tx_waiter or INT_ENA, so it is
  * safe to call from inside the ISR that owns them. */
 void uart_critical_putc(char c) {
+#if defined(CONFIG_USBJTAG_BASE)
+    usj_putc(c);
+    usj_flush();
+#endif
     if (!g_uart_base) return;
     for (unsigned i = 0; i < 200000u; i++) {
         if (hw_uart_tx_room()) {
@@ -919,23 +982,6 @@ void uart_critical_puts(const char *s) {
     }
 }
 
-/* See drivers/uart.h. Same batch as uart_flush(), written the bounded way. */
-/* Never blocks, and that is the whole requirement.
- *
- * Every printk_critical() calls this first, and printk_critical() is what the
- * fatal trap handler reports through. Taking the batch lock unconditionally
- * meant a hart that died while holding it silenced the crash report of the
- * hart still running -- the machine stopped mid-dump with no indication that
- * anything further had been attempted. Each captured instance of the `exec`
- * wild jump ends exactly this way: two lines of register dump, then nothing,
- * with the lines that would have named the faulting task never printed. The
- * bug being reported is not this one, but this one is why the reports were
- * unreadable.
- *
- * On a failed acquire the drain still happens. The batch slot is indexed by
- * hart and no hart touches another's, so reading our own is correct without
- * the lock; what the lock buys is *ordering* between two harts draining at
- * once, and interleaved characters in a panic beat a panic nobody sees. */
 void uart_flush_critical(void) {
     char local[UART_TX_BATCH_CAP];
     uintptr_t flags;
@@ -952,6 +998,9 @@ void uart_flush_critical(void) {
         irq_restore(flags);
     }
     for (uint32_t i = 0; i < len; i++) uart_critical_putc(local[i]);
+#if defined(CONFIG_USBJTAG_BASE)
+    usj_flush();
+#endif
 }
 
 void uart_debug_putc(char c) {

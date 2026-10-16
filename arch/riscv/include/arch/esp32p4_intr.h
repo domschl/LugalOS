@@ -55,7 +55,10 @@
 #define ESP32P4_CLIC_IRQ_GDMA   18u
 /* The SD/MMC host (matrix source 23, ETS_SDIO_HOST_INTR_SOURCE): only the
  * SDIO slot's card interrupt is unmasked (drivers/sdio_esp32p4.c). */
-#define ESP32P4_CLIC_IRQ_SDHOST 19u
+#define ESP32P4_CLIC_IRQ_SDHOST  19u
+/* Native USB-Serial/JTAG console (matrix source 22, ETS_USB_SERIAL_JTAG_INTR_SOURCE),
+ * used on the M5Stack Tab5 alongside UART0 (drivers/uart_esp32p4.c). */
+#define ESP32P4_CLIC_IRQ_USBJTAG 20u
 
 /* Routes peripheral interrupt source `src` (an interrupt-matrix source
  * number from TRM Table 13.4-1) to CLIC interrupt `clic_id` on the calling

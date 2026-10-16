@@ -23,7 +23,7 @@
 #include "lugalos_config.h"
 
 #if (defined(CONFIG_BOARD_RP2350) && defined(CONFIG_LCD_PCLK_GPIO)) || \
-    (defined(CONFIG_BOARD_ESP32P4) && defined(CONFIG_DSI_LCD_RST_GPIO))
+    (defined(CONFIG_BOARD_ESP32P4) && (defined(CONFIG_DSI_LCD_RST_GPIO) || defined(CONFIG_BOARD_TAB5)))
 #define LCDTERM_PRESENT 1
 #endif
 
@@ -65,6 +65,7 @@ typedef struct {
  * memory for the screen's state and canvas stores, and initialises the
  * screen on the frame. 0, or -1 if there is no memory for the state. */
 int lcdterm_init(const lcdterm_backend_t *be);
+int lcdterm_reinit(const lcdterm_backend_t *be);
 
 /* The U-mode task. Until it runs, and if it never does, the terminal draws
  * from the kernel. */

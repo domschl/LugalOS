@@ -124,7 +124,9 @@
  * whatever the ROM or anything else left on GPIO45, the card ends powered and
  * freshly reset -- a GPIO45 left high would otherwise be a card that never
  * answers CMD0 on a board whose PMU registers all read back correctly. */
+#if defined(CONFIG_SDMMC_PWR_GPIO)
 #define SD_PWR_GPIO             ((uint32_t)CONFIG_SDMMC_PWR_GPIO)
+#endif
 
 /* --- Clock and reset -----------------------------------------------------
  *
@@ -414,15 +416,17 @@ static void sdmmc_power_on(void) {
     REG(GPIO_OUT_W1TC_HI) = mask;
     REG(GPIO_ENABLE_W1TS_HI) = mask;
 
-    uint32_t pad = REG(IOMUX_PAD(SD_PWR_GPIO));
+#if defined(CONFIG_SDMMC_PWR_GPIO)
+    uint32_t pad = REG(IOMUX_PAD(CONFIG_SDMMC_PWR_GPIO));
     pad &= ~(IOMUX_MCU_SEL_M | IOMUX_FUN_PU | IOMUX_FUN_PD);
     pad |= (IOMUX_FUNC_GPIO << IOMUX_MCU_SEL_S);
-    REG(IOMUX_PAD(SD_PWR_GPIO)) = pad;
-    REG(GPIO_OUT_SEL(SD_PWR_GPIO)) = GPIO_OUT_SEL_GPIO;
-    REG(GPIO_OUT_W1TS_HI) = 1u << (SD_PWR_GPIO - 32u);      /* gate high = OFF */
-    REG(GPIO_ENABLE_W1TS_HI) = 1u << (SD_PWR_GPIO - 32u);
+    REG(IOMUX_PAD(CONFIG_SDMMC_PWR_GPIO)) = pad;
+    REG(GPIO_OUT_SEL(CONFIG_SDMMC_PWR_GPIO)) = GPIO_OUT_SEL_GPIO;
+    REG(GPIO_OUT_W1TS_HI) = 1u << ((uint32_t)CONFIG_SDMMC_PWR_GPIO - 32u);      /* gate high = OFF */
+    REG(GPIO_ENABLE_W1TS_HI) = 1u << ((uint32_t)CONFIG_SDMMC_PWR_GPIO - 32u);
     time_delay_us(200000);
-    REG(GPIO_OUT_W1TC_HI) = 1u << (SD_PWR_GPIO - 32u);      /* gate low = ON */
+    REG(GPIO_OUT_W1TC_HI) = 1u << ((uint32_t)CONFIG_SDMMC_PWR_GPIO - 32u);      /* gate low = ON */
+#endif
 
     /* The lines go back to the controller in sdmmc_pads_init(). */
     REG(GPIO_ENABLE_W1TC_HI) = mask;

@@ -269,6 +269,31 @@ for both roles by itself.
   skip; a BME280 sits on the PH2.0 I2C header at 0x76). NANO: `uv run
   test_esp32p4.py --board nano` (40/40, the 7B's skipping).
 
+#### 5. M5Stack Tab5 (`esp32p4-tab5`, phase 56)
+5" portable tablet with 720×1280 native portrait IPS display, capacitive touch, microSD, USB host,
+32 MB PSRAM and 16 MB flash.
+* Console & Flashing: single USB-C cable carries native **USB-Serial/JTAG** (VID:PID `303a:1001`,
+  `GPIO24/25`). The kernel mirrors console TX/RX to both USB-Serial/JTAG and UART0 (`GPIO37/38` on M5-Bus).
+  `tools/p4run.py --board tab5` and `tools/p4flash.py --board tab5` auto-detect the JTAG port by symlink.
+* Dual `PI4IOE5V6408` I2C expanders at `0x43` and `0x44` on `SYS_I2C` (`GPIO31/32`): power sequencing,
+  hardware reset for LCD/Touch, and USB 5V VBUS enable (`U7` bit 3).
+* Display (`drivers/dsi_esp32p4.c`): 5" 720×1280 MIPI-DSI ST7121 TDDI, 2-lane @ 900 Mbps, DPI clock
+  70 MHz, double-buffered RGB565 PSRAM scanout at 58 Hz. Backlight active-high LEDC PWM on `GPIO22`.
+* Dual-Orientation Compositor: supports **Landscape Normal LugalOS GUI (`1280×720`, 160×45 cells)**
+  with 90°/270° hardware blitting, and **Portrait Full-Screen Gemtext Reader (`720×1280`, 90×80 cells)**.
+  Dynamic orientation toggle via `lcd orient [portrait|landscape]` or `'o'` in `reader`.
+* Capacitive Touch: ST7121 at `0x55` (and GT911 at `0x5D`), polled every 20 ms with orientation-aware
+  coordinate remapping.
+* MicroSD: 4-bit SDMMC Slot 0 (`GPIO39–44`) mounted on `/sd0/` at 20 MHz.
+* USB Host: DWC2 OTG HS on Type-A port with `USB5V_EN` via PI4IOE2.
+* Build & Flash:
+  ```bash
+  ninja -C build/esp32p4-tab5
+  python3 tools/p4flash.py --board tab5 --build build/esp32p4-tab5 --only boot,os --verify
+  python3 tools/p4run.py --board tab5 --run
+  ```
+* Test: `cd tests/hw && uv run test_esp32p4.py --board tab5 --build ../../build/esp32p4-tab5` (46/46 passed).
+
 ---
 
 ## 4. Hardware Presets & Agent Requests
@@ -281,6 +306,7 @@ LugalOS supports distinct hardware presets. If a task requires testing against a
 | `rp2350-chess` | RP2350 Hazard3 RV32 | Pico 2 with ST7735 LCD, TM1638 keypad, SD card, chess engine |
 | `esp32p4` | ESP32-P4 RV32 | Waveshare ESP32-P4-NANO (dual-core RISC-V @ 360–400 MHz, RMII Ethernet, SDMMC, writable flash) |
 | `esp32p4-lcd7b` | ESP32-P4 RV32 (rev v3.2) | Waveshare ESP32-P4-WIFI6-Touch-LCD-7B (7" 1024×600 MIPI-DSI, GT911 touch, USB-A host, SDMMC, 32 MB PSRAM, C6 on SDIO; phase 47) |
+| `esp32p4-tab5` | ESP32-P4 RV32 (rev v1.3) | M5Stack Tab5 (5" 720×1280 MIPI-DSI ST7121 touch, USB-A host, SDMMC, 32 MB PSRAM, dual PI4IOE expanders; phase 56) |
 | `rp2350-clock` | RP2350 LED Clock | Waveshare Pico-Clock-Green (SM16106 LED matrix + DCF77 radio) |
 | `rp2350-gateway` | RP2350 Gateway | Network gateway persona (ENC28J60 Ethernet / USB 9P / UART1 downlink) |
 | `rp2350-wifi` | RP2350 CYW43439 | Raspberry Pi Pico 2 W with CYW43439 Wi-Fi |

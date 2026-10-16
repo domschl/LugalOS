@@ -25,6 +25,10 @@
 #include "kernel/palloc.h"
 #include <string.h>
 
+#if defined(CONFIG_BOARD_ESP32P4) && (defined(CONFIG_DSI_LCD_RST_GPIO) || defined(CONFIG_BOARD_TAB5))
+#include "drivers/dsi_esp32p4.h"
+#endif
+
 #define READER_LINKS_MAX   16
 #define READER_STACK_MAX   8
 #define READER_MARGIN_X    24
@@ -463,6 +467,14 @@ void reader_feed_key(int c) {
             return;
         }
         if (c == 'q' || c == 0x03) {
+#if defined(CONFIG_BOARD_TAB5)
+            if (dsi_lcd_get_orientation() == 0) {
+                reader_close_instance(rid);
+                dsi_lcd_set_orientation(270);
+                console_set_active_win_type(1 /* RIBBON_WIN_TERM */);
+                return;
+            }
+#endif
             /* Close reader window */
             uint8_t req[1] = { 'C' }, reply[SCREEN_REPLY_LEN];
             if (console_canvas(req, 1, reply) && reply[0] == 0) {
@@ -522,6 +534,36 @@ void reader_feed_key(int c) {
         if (c == 'r' || c == 0x12 /* Ctrl-R */) {
             /* Reload / Redraw */
             reader_update_instance(rid);
+            return;
+        }
+        if (c == 'o' || c == 'O') {
+            /* Toggle display orientation between Portrait (0) and Landscape (270) */
+#if defined(CONFIG_BOARD_TAB5)
+            int cur_rot = dsi_lcd_get_orientation();
+            int new_rot = (cur_rot == 0) ? 270 : 0;
+            char path_copy[128];
+            strncpy(path_copy, r->path, sizeof(path_copy) - 1);
+            path_copy[sizeof(path_copy) - 1] = '\0';
+            dsi_lcd_set_orientation(new_rot);
+            /* Re-open reader in the new ribbon layout */
+            uint8_t req[128];
+            req[0] = 'O';
+            req[1] = 0; /* default cols */
+            uint32_t arg_len = (uint32_t)strlen(path_copy);
+            if (arg_len > sizeof(req) - 3) arg_len = sizeof(req) - 3;
+            memcpy(req + 2, path_copy, arg_len);
+            req[2 + arg_len] = '\0';
+            uint8_t reply[SCREEN_REPLY_LEN];
+            if (console_canvas(req, 3 + arg_len, reply) && reply[0] == 0) {
+                uint8_t nrid = reply[1];
+                int w = (int)(reply[2] | (reply[3] << 8));
+                int h = (int)(reply[4] | (reply[5] << 8));
+                reader_set_target(nrid, w, h);
+                reader_update_instance(nrid);
+                reader_set_active_instance(nrid);
+                console_set_active_win_type(3 /* RIBBON_WIN_READER */);
+            }
+#endif
             return;
         }
         if (c >= '1' && c <= '9') {

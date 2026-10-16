@@ -214,7 +214,33 @@ def board_ports(name):
     return console, cfg.get(key + "RESET_PORT") or console
 
 
+def is_jtag(port):
+    """True when `port` is an Espressif native USB-Serial/JTAG device (303a:1001).
+
+    The M5Stack Tab5 routes its USB-C port (J8) directly to the ESP32-P4's
+    USB-Serial/JTAG peripheral (GPIO24/25) with no UART bridge IC fitted. Its
+    DTR/RTS state machine inside the chip is the inverse of the NANO/LCD-7B's
+    external transistor pair:
+      * Open without reset: DTR=True, RTS=False (never pass through DTR=0, RTS=1).
+      * Reset to run flash: DTR=False, RTS=True -> DTR=True, RTS=False.
+      * Reset to download:  DTR=True, RTS=False -> DTR=False, RTS=True -> DTR=True, RTS=True."""
+    if not port:
+        return False
+    if "USB_JTAG_serial_debug_unit" in port:
+        return True
+    real = os.path.realpath(port)
+    for dev, vid, pid, _ in usb_ports():
+        if os.path.realpath(dev) == real and (vid, pid) in JTAG:
+            return True
+    return False
+
+
 def _drive(s, seq):
+    if is_jtag(s.port):
+        if seq is SEQ_RUN:
+            seq = SEQ_RUN_JTAG
+        elif seq is SEQ_DOWNLOAD:
+            seq = SEQ_DOWNLOAD_JTAG
     for dtr, rts, dwell in seq:
         s.dtr, s.rts = dtr, rts
         time.sleep(dwell)
@@ -228,6 +254,20 @@ def _drive(s, seq):
 #               ROM samples the strap and waits for a download instead.
 SEQ_RUN = [(False, True, 0.15), (False, False, 0.05)]
 SEQ_DOWNLOAD = [(False, True, 0.15), (True, False, 0.15), (False, False, 0.05)]
+
+# Native USB-Serial/JTAG (303a:1001) on M5Stack Tab5:
+# Step 3's (True, True) between (True, False) and (False, True) is essential:
+# Python's `s.dtr, s.rts = False, True` sets DTR=False first, which would
+# traverse (False, False) and clear the IO0 download latch before RTS=True
+# asserts reset (see esptool's usb_jtag_bootloader_reset).
+SEQ_RUN_JTAG = [(False, True, 0.15), (True, False, 0.05)]
+SEQ_DOWNLOAD_JTAG = [
+    (False, False, 0.10),
+    (True, False, 0.10),
+    (True, True, 0.02),
+    (False, True, 0.10),
+    (False, False, 0.05),
+]
 
 
 def pulse(port, seq, listen=1.5, watch=None):
@@ -251,7 +291,10 @@ def pulse(port, seq, listen=1.5, watch=None):
         buf = bytearray()
         t0 = time.time()
         while time.time() - t0 < listen:
-            buf.extend(r.read(4096))
+            n = r.in_waiting
+            chunk = r.read(max(1, min(4096, n)))
+            if chunk:
+                buf.extend(chunk)
     finally:
         if not same:
             close_console(r)
@@ -266,24 +309,28 @@ def enter_download(port, watch=None):
 
 
 def open_console(port):
-    """Open without asserting DTR/RTS.
+    """Open without resetting the target.
 
+    On CH34x/CP2102 bridges:
     Both lines reach the board through U6 -- RTS to ESP_EN, DTR to GPIO35 --
     so a library that helpfully asserts them on open would hold the chip in
     reset, or strap it into download mode, for as long as we are watching.
+    RTS goes down before DTR, never the other way round (47.0).
 
-    **RTS goes down before DTR, never the other way round** (47.0,
-    plan/phase47_esp32p4_lcd7b_ribbon.md). Linux's cdc_acm raises both lines
-    on open whatever pyserial was asked for; with both up the transistor pair
-    does nothing. Dropping DTR first passes through RTS-up/DTR-down, which is
-    exactly the state that pulls ESP_EN low. On the NANO that glitch reached
-    only the reset port and went unnoticed. On the LCD-7B the console *is*
-    the reset port, so every reopen to listen reset the chip, and a RAM-loaded
-    image was replaced by a flash boot before it printed anything. RTS first
-    passes through DTR-up/RTS-down instead, which only straps GPIO35 while EN
-    stays high, and that is harmless."""
+    On native USB-Serial/JTAG (303a:1001, M5Stack Tab5):
+    (DTR=0, RTS=1) triggers USB_UART_HPSYS reset, and pyserial sets DTR before
+    RTS on open. Setting DTR=True, RTS=False avoids ever passing through
+    (DTR=0, RTS=1)."""
     s = serial.Serial()
     s.port, s.baudrate, s.timeout = port, BAUD, 0.2
+    if is_jtag(port):
+        deadline = time.time() + 3.0
+        while not os.path.exists(port) and time.time() < deadline:
+            time.sleep(0.05)
+        s.dtr = True
+        s.rts = False
+        s.open()
+        return s
     s.rts = False
     s.dtr = False
     s.open()
@@ -302,7 +349,11 @@ def park(s):
     reset it every time, a B0 close + reopen never did. The termios outlive
     the close (cdc_acm keeps them while the device is plugged in), and
     leaving B0 for a real rate raises DTR alone, which only straps GPIO35.
-    So every port this script lets go of is parked first."""
+    So every port this script lets go of is parked first.
+
+    Skipped on USB-Serial/JTAG (303a:1001), where DTR=True is the idle state."""
+    if is_jtag(s.port):
+        return
     try:
         import termios
         a = termios.tcgetattr(s.fd)
@@ -337,7 +388,13 @@ class Watcher:
                 time.sleep(0.01)
                 continue
             self._idle.clear()
-            self.buf.extend(self.s.read(4096))
+            try:
+                n = self.s.in_waiting
+                chunk = self.s.read(max(1, min(4096, n)))
+                if chunk:
+                    self.buf.extend(chunk)
+            except Exception:
+                time.sleep(0.02)
 
     @contextlib.contextmanager
     def lent(self):
@@ -356,8 +413,12 @@ class Watcher:
             yield
         finally:
             self.s.baudrate = BAUD          # pyserial reapplies all termios
-            self.s.rts = False
-            self.s.dtr = False
+            if is_jtag(self.port):
+                self.s.dtr = True
+                self.s.rts = False
+            else:
+                self.s.rts = False
+                self.s.dtr = False
             self._pause.clear()
 
     def __enter__(self):

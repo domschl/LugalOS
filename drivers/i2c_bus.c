@@ -480,8 +480,13 @@ void i2c_rp2350_diag(uint8_t addr, uint8_t reg) {
 #define ESP_GPIO_IN_OFF      0x158u
 #define ESP_GPIO_OUT_OFF     0x558u
 #define ESP_IOMUX_BASE       0x500E1000UL
+#if defined(CONFIG_I2C_RTC_SDA_GPIO) && defined(CONFIG_I2C_RTC_SCL_GPIO)
+#define ESP_I2C_SDA_GPIO ((uint32_t)CONFIG_I2C_RTC_SDA_GPIO)
+#define ESP_I2C_SCL_GPIO ((uint32_t)CONFIG_I2C_RTC_SCL_GPIO)
+#else
 #define ESP_I2C_SDA_GPIO 7u
 #define ESP_I2C_SCL_GPIO 8u
+#endif
 #define ESP_I2C_SDA_SIG  69u
 #define ESP_I2C_SCL_SIG  68u
 #else   /* ESP32-C6 */
@@ -501,7 +506,10 @@ void i2c_rp2350_diag(uint8_t addr, uint8_t reg) {
 #define ESP_I2C_SDA_SIG  46u
 #define ESP_I2C_SCL_SIG  45u
 #endif
+#define ESP_GPIO_OUT_W1TS    (ESP_GPIO_BASE + 0x08)
+#define ESP_GPIO_OUT_W1TC    (ESP_GPIO_BASE + 0x0c)
 #define ESP_GPIO_ENABLE_W1TS (ESP_GPIO_BASE + 0x24)
+#define ESP_GPIO_ENABLE_W1TC (ESP_GPIO_BASE + 0x28)
 #define ESP_GPIO_PIN(n)      (ESP_GPIO_BASE + 0x74 + 4u * (n))
 #define ESP_GPIO_IN_SEL(sig) (ESP_GPIO_BASE + ESP_GPIO_IN_OFF + 4u * (sig))
 #define ESP_GPIO_OUT_SEL(n)  (ESP_GPIO_BASE + ESP_GPIO_OUT_OFF + 4u * (n))
@@ -513,12 +521,97 @@ void i2c_rp2350_diag(uint8_t addr, uint8_t reg) {
 
 static bool g_esp_i2c_ready;
 static void esp_i2c_bringup_timing(void);
+static bool i2c_write_bytes(uint8_t addr, const uint8_t *src, int len);
 static bool i2c_xfer_raw(uint8_t addr, const uint8_t *w, int wlen,
                          uint8_t *r, int rlen);
 static bool i2c_probe_addr(uint8_t addr);
 static void esp_i2c_bus_clear(void);
 static uint32_t g_esp_i2c_last_int;
 static uint32_t g_esp_i2c_last_sr;
+
+#if defined(CONFIG_BOARD_TAB5)
+/* M5Stack Tab5 dual PI4IOE5V6408 I2C IO expanders (U6 at 0x43, U7 at 0x44).
+ *
+ * On power-on reset, PI4IOE5V6408 sets OUT_H_IM (reg 0x07) = 0xFF, placing all
+ * pins in high-impedance mode even if IO_DIR (reg 0x03) selects output. Every
+ * active output pin must have its bit cleared in reg 0x07.
+ *
+ * U7 (0x44):
+ *   P0 = WLAN_PWR_EN (1), P3 = USB5V_EN (1, enables 5V VBUS on USB-A host J10),
+ *   P4 = PWROFF_PULSE (0), P5 = nCHG_QC_EN (0 = QC enabled), P6 = CHG_STAT (in),
+ *   P7 = CHG_EN (1).
+ * U6 (0x43):
+ *   P0 = RF_SW (0 = internal antenna), P1 = SPK_EN (0 = muted), P2 = EXT5V_EN (1),
+ *   P4 = LCD_RST (0 -> 1), P5 = TP_RST (0 -> 1), P6 = CAM_RST (1), P7 = HP_DET (in). */
+static void esp_i2c_tab5_pi4ioe_reg(uint8_t addr, uint8_t reg, uint8_t val) {
+    uint8_t buf[2] = { reg, val };
+    (void)i2c_write_bytes(addr, buf, 2);
+}
+
+static void esp_i2c_tab5_pi4ioe_init(void) {
+    /* 1. PI4IOE2 (0x44): USB5V_EN=1, CHG_EN=1, WLAN_PWR_EN=1 */
+    esp_i2c_tab5_pi4ioe_reg(0x44u, 0x03u, 0xB9u); /* IO_DIR: P7,P5,P4,P3,P0 out */
+    esp_i2c_tab5_pi4ioe_reg(0x44u, 0x07u, 0x06u); /* OUT_H_IM: push-pull on outputs */
+    esp_i2c_tab5_pi4ioe_reg(0x44u, 0x0Du, 0x08u); /* PULL_SEL: pull-up on USB5V_EN */
+    esp_i2c_tab5_pi4ioe_reg(0x44u, 0x0Bu, 0x08u); /* PULL_EN */
+    esp_i2c_tab5_pi4ioe_reg(0x44u, 0x05u, 0x89u); /* OUT_SET: CHG_EN=1, USB5V_EN=1, WLAN=1 */
+
+    /* 2. PI4IOE1 (0x43): pulse LCD_RST (bit 4) and TP_RST (bit 5) low, EXT5V_EN=1 */
+    esp_i2c_tab5_pi4ioe_reg(0x43u, 0x03u, 0x7Fu); /* IO_DIR: P0..P6 out, P7 in */
+    esp_i2c_tab5_pi4ioe_reg(0x43u, 0x07u, 0x00u); /* OUT_H_IM: push-pull on P0..P6 */
+    esp_i2c_tab5_pi4ioe_reg(0x43u, 0x0Du, 0x14u); /* PULL_SEL: pull-up on LCD_RST & EXT5V */
+    esp_i2c_tab5_pi4ioe_reg(0x43u, 0x0Bu, 0x14u); /* PULL_EN */
+    esp_i2c_tab5_pi4ioe_reg(0x43u, 0x05u, 0x44u); /* OUT_SET: CAM_RST=1, TP_RST=0, LCD_RST=0, EXT5V=1 */
+
+#if defined(CONFIG_TOUCH_INT_GPIO)
+    /* Hold TP_INT (GPIO23) high across TP_RST release so GT911 (if fitted) latches 0x14. */
+    uint32_t tp_int = (uint32_t)CONFIG_TOUCH_INT_GPIO;
+    uint32_t pad = REG(ESP_IOMUX_PAD(tp_int));
+    pad &= ~(7u << 12);
+    REG(ESP_IOMUX_PAD(tp_int)) = pad | ESP_IOMUX_FUN_GPIO | ESP_IOMUX_FUN_IE | ESP_IOMUX_FUN_PU;
+    REG(ESP_GPIO_OUT_SEL(tp_int)) = 256u;
+    REG(ESP_GPIO_OUT_W1TS) = (1u << tp_int);
+    REG(ESP_GPIO_ENABLE_W1TS) = (1u << tp_int);
+#endif
+    time_delay_us(20000);
+
+    /* 3. Release LCD_RST (bit 4 = 1) and TP_RST (bit 5 = 1) */
+    esp_i2c_tab5_pi4ioe_reg(0x43u, 0x05u, 0x74u); /* OUT_SET: CAM_RST=1, TP_RST=1, LCD_RST=1, EXT5V=1 */
+    time_delay_us(50000);
+#if defined(CONFIG_TOUCH_INT_GPIO)
+    REG(ESP_GPIO_ENABLE_W1TC) = (1u << tp_int);
+#endif
+}
+
+static void esp_i2c_hw_bringup(bool verbose);
+
+void i2c_tab5_panel_reset(void) {
+    if (!g_esp_i2c_ready) esp_i2c_hw_bringup(false);
+    /* Pulse LCD_RST (bit 4) and TP_RST (bit 5) low, then release high */
+    esp_i2c_tab5_pi4ioe_reg(0x43u, 0x05u, 0x44u);
+    time_delay_us(20000);
+    esp_i2c_tab5_pi4ioe_reg(0x43u, 0x05u, 0x74u);
+    time_delay_us(100000);
+}
+
+static bool i2c_xfer_raw(uint8_t addr, const uint8_t *w, int wlen, uint8_t *r, int rlen);
+static bool i2c_probe_addr(uint8_t addr);
+
+int i2c_tab5_touch_fw_version(void) {
+    if (!g_esp_i2c_ready) esp_i2c_hw_bringup(false);
+    uint8_t reg[2] = { 0x00, 0x00 };
+    uint8_t ver = 0;
+    for (int i = 0; i < 40; i++) {
+        if (i2c_xfer_raw(0x55u, reg, 2, &ver, 1)) {
+            if (ver == 1 || ver == 3) return (int)ver;
+        } else if (i2c_probe_addr(0x14u) || i2c_probe_addr(0x5Du)) {
+            return 0; /* GT911 / ILI9881C */
+        }
+        time_delay_us(10000);
+    }
+    return ver ? (int)ver : 1; /* default to ST7121 if 0x55 answered */
+}
+#endif /* CONFIG_BOARD_TAB5 */
 
 static void esp_pad_for_i2c(uint32_t gpio, uint32_t sig) {
     /* Open drain, input enabled, weak pull-up. The pull-up matters even with
@@ -536,19 +629,6 @@ static void esp_pad_for_i2c(uint32_t gpio, uint32_t sig) {
     REG(ESP_GPIO_IN_SEL(sig))   = gpio | (1u << 7);   /* bit 7: take from matrix */
 }
 
-/* The controller's own bringup: clocks, reset, pads, master mode, timing.
- *
- * This ran from `i2cdiag` alone for most of E7, because doing it at boot
- * wedged the board mid-console-line -- the machine reached the shell and then
- * stopped inside a printk. That was never this sequence: it was the L2-cache
- * corruption at the top of E7 eating the frame of the task the UART interrupt
- * was trying to wake. With the memory map fixed the sequence runs at boot,
- * which is where a bus that the RTC and sensor probes need has to come up.
- *
- * `verbose` narrates each step through printk_critical() -- the diagnostic
- * shape kept from that hunt, because it costs one branch and it is the only
- * console path that survives a step which takes the peripheral bus down.
- * Idempotent: the second caller finds g_esp_i2c_ready and returns. */
 static void esp_i2c_hw_bringup(bool verbose) {
     if (g_esp_i2c_ready) {
         if (verbose) printk_critical("[I2Cdiag] already up\n");
@@ -582,7 +662,7 @@ static void esp_i2c_hw_bringup(bool verbose) {
 
     if (verbose) printk_critical("[I2Cdiag] 6: CTR\n");
     REG(ESP_I2C_CTR) = ESP_I2C_MS_MODE | ESP_I2C_CLK_EN |
-                      ESP_I2C_SDA_FORCE_OUT | ESP_I2C_SCL_FORCE_OUT;
+                       ESP_I2C_SDA_FORCE_OUT | ESP_I2C_SCL_FORCE_OUT;
 
     if (verbose) printk_critical("[I2Cdiag] 7: timing\n");
     esp_i2c_bringup_timing();
@@ -592,21 +672,11 @@ static void esp_i2c_hw_bringup(bool verbose) {
     REG(ESP_I2C_CTR) |= ESP_I2C_CONF_UPGATE;
     g_esp_i2c_ready = true;
 
-    /* The controller is fresh; the bus is not.
-     *
-     * Resetting this chip does not reset what is wired to it. A part left
-     * mid-byte by the previous run -- or by the ROM, or by the factory image
-     * -- is still holding SDA when we arrive, and the first transaction after
-     * bringup then comes back wrong: E7 saw both halves of that, an address
-     * scan reporting a phantom device at the first address it tried, and a
-     * BME280 that is present NACKing its first read of the boot. Which of the
-     * two it was depended only on which transaction happened to be first,
-     * which is why it looked intermittent.
-     *
-     * Nine clocks here cost 90 microseconds once and make the first
-     * transaction as trustworthy as the rest. */
     if (verbose) printk_critical("[I2Cdiag] 9: bus clear\n");
     esp_i2c_bus_clear();
+#if defined(CONFIG_BOARD_TAB5)
+    esp_i2c_tab5_pi4ioe_init();
+#endif
     if (verbose) printk_critical("[I2Cdiag] bringup complete\n");
 }
 
@@ -862,9 +932,10 @@ void i2c_p4_diag(void) {
            (unsigned)REG(P4_SOC_CLK_CTRL2), (unsigned)REG(P4_PERI_CLK_CTRL10),
            (unsigned)REG(P4_HP_RST_EN1));
    
-    printk_critical("[I2Cdiag] pads: io7=0x%08x io8=0x%08x out7=0x%08x in69=0x%08x\n",
-           (unsigned)REG(ESP_IOMUX_PAD(7)), (unsigned)REG(ESP_IOMUX_PAD(8)),
-           (unsigned)REG(ESP_GPIO_OUT_SEL(7)), (unsigned)REG(ESP_GPIO_IN_SEL(69)));
+    printk_critical("[I2Cdiag] pads: sda=%u(0x%08x) scl=%u(0x%08x) out=0x%08x in69=0x%08x\n",
+           (unsigned)ESP_I2C_SDA_GPIO, (unsigned)REG(ESP_IOMUX_PAD(ESP_I2C_SDA_GPIO)),
+           (unsigned)ESP_I2C_SCL_GPIO, (unsigned)REG(ESP_IOMUX_PAD(ESP_I2C_SCL_GPIO)),
+           (unsigned)REG(ESP_GPIO_OUT_SEL(ESP_I2C_SDA_GPIO)), (unsigned)REG(ESP_GPIO_IN_SEL(69)));
    
     /* Both shapes, three times each, and the repetition is the measurement.
      *

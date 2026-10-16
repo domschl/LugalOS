@@ -10,10 +10,15 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#if defined(CONFIG_BOARD_ESP32P4) && defined(CONFIG_DSI_LCD_RST_GPIO)
+#if defined(CONFIG_BOARD_ESP32P4) && (defined(CONFIG_DSI_LCD_RST_GPIO) || defined(CONFIG_BOARD_TAB5))
 
+#if defined(CONFIG_BOARD_TAB5)
+#define DSI_LCD_H_RES 720
+#define DSI_LCD_V_RES 1280
+#else
 #define DSI_LCD_H_RES 1024
 #define DSI_LCD_V_RES 600
+#endif
 
 /* Power, clocks, PHY PLL, the panel's init sequence. Idempotent: the first
  * call does the work, later ones report what it found. */
@@ -42,8 +47,10 @@ int dsi_lcd_term_start(void);
 int dsi_lcd_term_task_start(void);
 
 /* `lcd`, `lcd pattern bars|hbars|ber|off`, `lcd bl on|off`, `lcd cmd ..`,
- * `lcd id`. */
+ * `lcd id`, `lcd orient`. */
 void dsi_lcd_command(const char *args);
+int dsi_lcd_set_orientation(int rot);
+int dsi_lcd_get_orientation(void);
 
 #endif
 

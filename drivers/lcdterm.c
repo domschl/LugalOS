@@ -671,6 +671,17 @@ int lcdterm_init(const lcdterm_backend_t *be) {
     return 0;
 }
 
+int lcdterm_reinit(const lcdterm_backend_t *be) {
+    if (!be || !be->fb || !g_scr) return -1;
+    g_be = be;
+    screen_init(g_scr, be->fb, be->stride, be->w, be->h);
+    if (palloc_is_bulk(g_scr)) {
+        screen_set_store(g_scr, (uint8_t *)g_scr + g_state_bytes, g_scr_bytes - g_state_bytes);
+    }
+    damage(0, be->h);
+    return 0;
+}
+
 /* The terminal's half of `lcd`; the panel driver prints its own. */
 void lcdterm_report(void) {
     if (g_vt_ready) {
@@ -790,6 +801,7 @@ int lcdterm_get_visible_canvases565(uint8_t *out_cids, int *out_x0, int *out_y0,
 #else /* no panel */
 
 int lcdterm_init(const lcdterm_backend_t *be) { (void)be; return -1; }
+int lcdterm_reinit(const lcdterm_backend_t *be) { (void)be; return -1; }
 int lcdterm_task_start(void) { return -1; }
 void lcdterm_screen_putc(char c) { (void)c; }
 void lcdterm_screen_putc_vterm(int vid, char c) { (void)vid; (void)c; }
@@ -808,13 +820,5 @@ void lcdterm_scroll_test(unsigned n) { (void)n; }
 void lcdterm_report(void) { }
 canvas1_t *lcdterm_get_canvas_backing(uint8_t cid) { (void)cid; return NULL; }
 canvas1_t *lcdterm_get_reader_backing(uint8_t rid) { (void)rid; return NULL; }
-bool lcdterm_is_animating(void) { return false; }
-bool lcdterm_is_double_buffered(void) { return false; }
-void lcdterm_sync_pre(void) { }
-void lcdterm_sync_post(void) { }
-int lcdterm_get_visible_readers(uint8_t *out_rids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins) {
-    (void)out_rids; (void)out_x0; (void)out_y0; (void)out_x1; (void)out_y1; (void)max_wins;
-    return 0;
-}
 
 #endif /* LCDTERM_PRESENT */

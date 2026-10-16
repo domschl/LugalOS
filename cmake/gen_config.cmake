@@ -182,17 +182,18 @@ set(_optional_keys
     # the ESP32-P4 PSRAM's bus
     # speed, 20 (untuned) or 200 (DQS timing tuning at boot). Absent: 20.
     CONFIG_PSRAM_SPEED_MHZ
-    # the LCD-7B's MIPI-DSI
+    # the LCD-7B's / Tab5's MIPI-DSI
     # panel -- its reset and backlight GPIOs. Absent: no display, and
     # drivers/dsi_esp32p4.c is an empty unit.
-    CONFIG_DSI_LCD_RST_GPIO CONFIG_DSI_LCD_BL_GPIO
-    # the ESP32-P4's OTG HS controller as a USB host (the LCD-7B's
+    CONFIG_BOARD_TAB5
+    CONFIG_DSI_LCD_RST_GPIO CONFIG_DSI_LCD_BL_GPIO CONFIG_DSI_LCD_BL_ACTIVE_HIGH
+    # the ESP32-P4's OTG HS controller as a USB host (the LCD-7B's / Tab5's
     # Type-A port), and the keyboard task on it. Absent: no USB host, and
     # drivers/usbhost_esp32p4.c is an empty unit.
     CONFIG_USBHOST_DWC2
-    # a GT911 touch controller at 0x5D on the board's I2C bus, polled
+    # a GT911 or ST7123 touch controller on the board's I2C bus, polled
     # by drivers/touch_gt911.c (tap to focus, swipe to move the ribbon).
-    CONFIG_TOUCH_GT911
+    CONFIG_TOUCH_GT911 CONFIG_TOUCH_ST7123 CONFIG_TOUCH_INT_GPIO
     # How its touch layer sits on the panel: its X / Y run against the
     # picture's. Absent: with it.
     CONFIG_TOUCH_MIRROR_X CONFIG_TOUCH_MIRROR_Y

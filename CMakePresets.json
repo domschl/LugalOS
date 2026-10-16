@@ -170,6 +170,28 @@
       }
     },
     {
+      "name": "esp32p4-tab5",
+      "displayName": "ESP32-P4 (M5Stack Tab5) \u2014 tablet & dual-orientation reader persona",
+      "description": "M5Stack Tab5 (rev v1.3): 5\" 720x1280 MIPI-DSI IPS panel (ST7123/ST7121/ILI9881C), capacitive touch, USB 2.0 Type-A host, microSD socket, 32 MB PSRAM, dual PI4IOE5V6408 IO expanders.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/esp32p4-tab5",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-esp32p4.cmake",
+        "LUGALOS_ENABLE_SMP": "ON",
+        "LUGALOS_ENABLE_CC": "ON",
+        "LUGALOS_ENABLE_ED": "OFF",
+        "LUGALOS_ENABLE_SPISD": "OFF",
+        "LUGALOS_ENABLE_SDMMC": "ON",
+        "LUGALOS_ENABLE_ST7735": "OFF",
+        "LUGALOS_ENABLE_TM1638": "OFF",
+        "LUGALOS_ENABLE_CHESS": "ON",
+        "LUGALOS_ENABLE_PICO_CLOCK_GREEN": "OFF",
+        "LUGALOS_ENABLE_DCF77": "OFF",
+        "LUGALOS_ENABLE_GPS": "OFF",
+        "LUGALOS_BOARD_FILE": "${sourceDir}/cmake/board-esp32p4-tab5.cmake"
+      }
+    },
+    {
       "name": "rv64-smp",
       "displayName": "QEMU RV64 (Sv39 MMU) - SMP, two harts",
       "description": "QEMU virt machine, 64-bit RISC-V, Sv39 MMU, dual-core SMP with CONFIG_ENABLE_SMP.",
@@ -276,6 +298,10 @@
     {
       "name": "esp32p4-lcd7b",
       "configurePreset": "esp32p4-lcd7b"
+    },
+    {
+      "name": "esp32p4-tab5",
+      "configurePreset": "esp32p4-tab5"
     },
     {
       "name": "rv64-smp",

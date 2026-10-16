@@ -5513,9 +5513,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         psram_command(cmd_line + 5);
         return;
 #endif
-#if defined(CONFIG_DSI_LCD_RST_GPIO)
+#if defined(CONFIG_DSI_LCD_RST_GPIO) || defined(CONFIG_BOARD_TAB5)
     } else if (strcmp(cmd_line, "lcd") == 0 || strncmp(cmd_line, "lcd ", 4) == 0) {
-        /* The LCD-7B panel. */
+        /* The LCD-7B / Tab5 panel. */
         dsi_lcd_command(cmd_line + 3);
         return;
 #endif

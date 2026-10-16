@@ -110,6 +110,10 @@ void i2c_rp2350_diag(uint8_t addr, uint8_t reg);
 #if defined(CONFIG_BOARD_ESP32P4)
 void i2c_p4_diag(void);
 void i2c_p4_last_status(uint32_t *int_raw, uint32_t *sr);
+#if defined(CONFIG_BOARD_TAB5)
+void i2c_tab5_panel_reset(void);
+int  i2c_tab5_touch_fw_version(void);
+#endif
 #endif
 
 #endif // DRIVERS_I2C_BUS_H
