@@ -1004,8 +1004,9 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout) {
     return true;
 }
 
-#if (defined(CONFIG_BOARD_RP2350) && defined(CONFIG_LCD_PCLK_GPIO)) || \
-    (defined(CONFIG_BOARD_ESP32P4) && defined(CONFIG_DSI_LCD_RST_GPIO))
+#if defined(CONFIG_ENABLE_RIBBON_ANIMATION) && CONFIG_ENABLE_RIBBON_ANIMATION && \
+    ((defined(CONFIG_BOARD_RP2350) && defined(CONFIG_LCD_PCLK_GPIO)) || \
+     (defined(CONFIG_BOARD_ESP32P4) && defined(CONFIG_DSI_LCD_RST_GPIO)))
 #define SCREEN_HAS_ANIMATION 1
 #else
 #define SCREEN_HAS_ANIMATION 0

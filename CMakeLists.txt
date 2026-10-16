@@ -269,6 +269,7 @@ option(LUGALOS_ENABLE_DCF77 "Build the DCF-77 longwave time-signal receiver driv
 # path. Its own flag rather than DCF77's -- a board could want one without the
 # other, and only the calibration wants both.
 option(LUGALOS_ENABLE_GPS "Build the GPS/PPS reference driver (RP2350 only)" OFF)
+option(LUGALOS_ENABLE_RIBBON_ANIMATION "Enable window slide animation on the ribbon" OFF)
 
 # --- U-mode user programs ------
 #
@@ -583,6 +584,7 @@ if(DEFINED LUGALOS_BOARD_FILE)
         -DENABLE_PICO_CLOCK_GREEN=${LUGALOS_ENABLE_PICO_CLOCK_GREEN}
         -DENABLE_DCF77=${LUGALOS_ENABLE_DCF77}
         -DENABLE_GPS=${LUGALOS_ENABLE_GPS}
+        -DENABLE_RIBBON_ANIMATION=${LUGALOS_ENABLE_RIBBON_ANIMATION}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_config.cmake)
     # add_custom_command(OUTPUT ...), not a bare add_custom_target(COMMAND ...)
     # -- the same distinction lugalos_build_id.h above already depends on, and
@@ -615,6 +617,7 @@ if(DEFINED LUGALOS_BOARD_FILE)
             -DENABLE_PICO_CLOCK_GREEN=${LUGALOS_ENABLE_PICO_CLOCK_GREEN}
             -DENABLE_DCF77=${LUGALOS_ENABLE_DCF77}
             -DENABLE_GPS=${LUGALOS_ENABLE_GPS}
+            -DENABLE_RIBBON_ANIMATION=${LUGALOS_ENABLE_RIBBON_ANIMATION}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_config.cmake
         DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/_always_rebuild
                 ${LUGALOS_BOARD_FILE}
