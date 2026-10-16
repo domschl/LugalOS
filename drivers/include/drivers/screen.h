@@ -78,8 +78,17 @@ enum {
 #define SCREEN_MAX_READERS  4u
 #define SCREEN_STORES       (SCREEN_MAX_CANVASES + SCREEN_MAX_READERS)
 
+enum {
+    CANVAS_FMT_1BPP   = 0,
+    CANVAS_FMT_RGB565 = 1,
+};
+
 typedef struct {
     canvas1_t backing;                  /* persistent backing store in PSRAM */
+    uint16_t *buf565;                   /* RGB565 pixel buffer in PSRAM (NULL if 1-bpp) */
+    uint32_t  stride565;                /* stride in uint16_t pixels (width) */
+    uint16_t  w565, h565;               /* dimensions of RGB565 buffer */
+    uint8_t   format;                   /* CANVAS_FMT_1BPP or CANVAS_FMT_RGB565 */
     uint8_t   vterm_id;                 /* creator terminal ID */
     bool      in_use;
     bool      locked;                   /* canvas layout locked for this slot */
@@ -167,6 +176,7 @@ void screen_repaint(screen_t *scr);
 bool screen_set_layout(screen_t *scr, unsigned layout);
 bool screen_set_layout_vterm(screen_t *scr, uint8_t vterm_id, unsigned layout);
 bool screen_set_layout_vterm_named(screen_t *scr, uint8_t vterm_id, unsigned layout, const char *name);
+bool screen_set_layout_vterm_named_fmt(screen_t *scr, uint8_t vterm_id, unsigned layout, const char *name, uint8_t format);
 
 /* The text window's size, which is what a program may use. */
 void screen_text_size(const screen_t *scr, unsigned *cols, unsigned *rows);

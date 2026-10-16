@@ -743,6 +743,46 @@ int lcdterm_get_visible_readers(uint8_t *out_rids, int *out_x0, int *out_y0, int
     return count;
 }
 
+uint16_t *lcdterm_get_canvas565_backing(uint8_t cid, uint32_t *out_stride, int *out_w, int *out_h) {
+    if (!g_scr || cid >= SCREEN_MAX_CANVASES || !g_scr->canvases[cid].in_use) return NULL;
+    if (g_scr->canvases[cid].format != CANVAS_FMT_RGB565) return NULL;
+    if (out_stride) *out_stride = g_scr->canvases[cid].stride565;
+    if (out_w) *out_w = (int)g_scr->canvases[cid].w565;
+    if (out_h) *out_h = (int)g_scr->canvases[cid].h565;
+    return g_scr->canvases[cid].buf565;
+}
+
+int lcdterm_get_visible_canvases565(uint8_t *out_cids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins) {
+    if (!g_scr || max_wins <= 0) return 0;
+    int count = 0;
+    int sw = (int)g_scr->cv.w;
+    int sh = (int)g_scr->cv.h;
+    int text_rows = (int)SCREEN_TEXT_ROWS(sh);
+    int tile_y0 = SCREEN_TILE_Y + 17;
+    int tile_y1 = SCREEN_TEXT_Y + 16 * text_rows - 1;
+
+    for (uint8_t i = 0; i < g_scr->ribbon.count && count < max_wins; i++) {
+        const ribbon_win_t *w = &g_scr->ribbon.wins[i];
+        if (w->type == RIBBON_WIN_CANVAS) {
+            uint8_t cid = w->vterm_id;
+            if (cid < SCREEN_MAX_CANVASES && g_scr->canvases[cid].format == CANVAS_FMT_RGB565 && g_scr->canvases[cid].buf565) {
+                int cx0 = (int)w->rx0 - (int)g_scr->ribbon.x_view + 1;
+                int cx1 = (int)w->rx1 - (int)g_scr->ribbon.x_view - 1;
+                if (cx1 >= 0 && cx0 < sw) {
+                    if (out_cids) out_cids[count] = cid;
+                    if (out_x0) out_x0[count] = cx0;
+                    if (out_y0) out_y0[count] = tile_y0;
+                    if (out_x1) out_x1[count] = cx1;
+                    if (out_y1) out_y1[count] = tile_y1;
+                    count++;
+                }
+            }
+        }
+    }
+    return count;
+}
+
+
 #else /* no panel */
 
 int lcdterm_init(const lcdterm_backend_t *be) { (void)be; return -1; }

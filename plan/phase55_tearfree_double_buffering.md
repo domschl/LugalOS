@@ -127,11 +127,20 @@ CPU / Rendering Engine (lcdterm, screen.c)
   * `SCREEN_FORMAT_RGB565` $\rightarrow$ Netpbm PPM (`.ppm`, P6, 24-bit RGB)
 * Verified 100% pass on host test suite (506/506) and hardware-in-the-loop suite on ESP32-P4-LCD-7B (43/43). Verified crystal-clear grayscale captures (`shot-004.png`).
 
-### Milestone 55.4: Hybrid Ribbon Compositing & Color Canvases (`drivers/screen.c`)
-* Extend `screen_canvas_slot_t` with format descriptor: `CANVAS_FMT_1BPP` vs `CANVAS_FMT_RGB565`.
-* Allocate RGB565 canvas backings dynamically from PSRAM.
-* Update `screen.c` window blitter to blit 1-bpp, anti-aliased grayscale, and direct RGB565 side-by-side into the master RGB565 frame.
-* Add shell commands: `canvas open <name> [cols] [--rgb565]` and Lisp primitive bindings.
+### Milestone 55.4: Hybrid Ribbon Compositing & Color Canvases (`drivers/screen.c`) [DONE - Commit pending]
+* Extended `screen_canvas_slot_t` with `buf565`, `stride565`, `w565`, `h565`, and `format` (`CANVAS_FMT_1BPP` vs `CANVAS_FMT_RGB565`).
+* Implemented dynamic 16-bit RGB565 canvas buffer allocation in PSRAM via `palloc_pages_bulk()` and free on window close (`screen_canvas_free()`).
+* Implemented full suite of RGB565 drawing operations in `drivers/screen.c` (conditioned on `!defined(CONFIG_BOARD_RP2350)` preserving RP2350 32 KB PMP budget):
+  * Fill (`'F'`), pixel (`'p'`), line (`'l'`), rect fill (`'r'`), rect outline (`'o'`), circle outline (`'c'`), invert (`'i'`), 8x16 font text (`'t'`), colored text (`'x'`), and direct blit (`'B'`).
+* Integrated ribbon compositing in `drivers/dsi_esp32p4.c` (`term_convert()`):
+  * Auto-promotes master scanout buffer to `FB_RGB565` when any visible color canvas is active on the ribbon.
+  * Direct 16-bit row blit compositing visible RGB565 window client areas onto `fb_back()`.
+* Extended shell and Lisp primitives:
+  * Shell: `canvas open <name> [--rgb565]` (sets layout flag `0x80u`), `canvas list`, `ribbon`.
+  * Lisp: `(canvas-rgb565? [name])`, `(rgb r g b)` (exact 16-bit RGB565 packing), `(canvas-open "name" 'split-half :rgb565)`, `(canvas-text x y "text" (rgb ...))`.
+* Verified 100% pass on host test suite (`runner.py`: 506/506) and hardware-in-the-loop suite on ESP32-P4-LCD-7B (`test_esp32p4.py`: 44/44, including `test_color_canvas_rgb565`).
+* Captured live hardware 24-bit Netpbm PPM screenshot (`SHOT-003.PPM` -> `shot-005.png`) showing retro monochrome terminal window side-by-side with full RGB565 color canvas.
+
 
 ### Milestone 55.5: Re-Enable & Refine Ribbon Slide Animation
 * Re-enable `CONFIG_ENABLE_RIBBON_ANIMATION`:

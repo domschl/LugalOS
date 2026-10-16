@@ -1153,8 +1153,8 @@ static void term_convert(unsigned y0, unsigned y1) {
      * `lcd fb`) holds console_lock, as this does -- the lcdflush task once
      * converted into a frame that `lcd colours` had just set to NULL (a
      * store to 0xad000, row 346 of an RGB565 frame; 47.7's HIL run). */
-    uint8_t *const fb = fb_back();
-    const fb_fmt_t fmt = g_fb_fmt;
+    uint8_t *fb = fb_back();
+    fb_fmt_t fmt = g_fb_fmt;
     if (!fb || !g_t1 || fmt == FB_NONE || g_t_hold) return;
     if (y1 > DSI_LCD_V_RES) y1 = DSI_LCD_V_RES;
     uint64_t t0 = time_get_us();
@@ -1243,6 +1243,75 @@ static void term_convert(unsigned y0, unsigned y1) {
             } else {
                 uint8_t *dst_line = fb + (size_t)y * DSI_LCD_H_RES + cl_x0;
                 memcpy(dst_line, src_line, (size_t)blit_w);
+            }
+        }
+        if (lo < 0 || cl_y0 < lo) lo = cl_y0;
+        if (cl_y1 > hi) hi = cl_y1;
+        n++;
+    }
+
+    /* 2c. Composite visible RGB565 color canvases onto fb_back() */
+    uint8_t cids[4];
+    int cx0[4], cy0[4], cx1[4], cy1[4];
+    int ccount = lcdterm_get_visible_canvases565(cids, cx0, cy0, cx1, cy1, 4);
+    if (ccount > 0 && g_fb_fmt != FB_RGB565) {
+        if (!g_lut565) {
+            g_lut565 = (uint16_t (*)[8])palloc_pages_bulk(1);
+        }
+        if (g_lut565 && fb_start(FB_RGB565)) {
+            lut_build();
+            fmt = g_fb_fmt;
+            fb = fb_back();
+            for (unsigned y = 0; y < DSI_LCD_V_RES; y++) {
+                uint16_t *dst = (uint16_t *)fb + (size_t)y * DSI_LCD_H_RES;
+                const uint8_t *sh = g_t1 + y * T_STRIDE;
+                for (unsigned b = 0; b < T_STRIDE; b++) {
+                    const uint16_t *pix = g_lut565[sh[b]];
+                    for (unsigned p = 0; p < 8; p++) dst[b * 8 + p] = pix[p];
+                }
+            }
+            lo = 0;
+            hi = DSI_LCD_V_RES - 1;
+            n = DSI_LCD_V_RES;
+        }
+    }
+    for (int i = 0; i < ccount; i++) {
+        uint32_t c_stride = 0;
+        int c_w = 0, c_h = 0;
+        const uint16_t *c_buf = lcdterm_get_canvas565_backing(cids[i], &c_stride, &c_w, &c_h);
+        if (!c_buf) continue;
+
+        int x0 = cx0[i];
+        int x1 = cx1[i];
+        int y0 = cy0[i];
+        int y1 = cy1[i];
+
+        int cl_x0 = x0 < 0 ? 0 : x0;
+        int cl_x1 = x1 >= DSI_LCD_H_RES ? DSI_LCD_H_RES - 1 : x1;
+        int cl_y0 = y0 < 0 ? 0 : y0;
+        int cl_y1 = y1 >= DSI_LCD_V_RES ? DSI_LCD_V_RES - 1 : y1;
+        if (cl_x0 > cl_x1 || cl_y0 > cl_y1) continue;
+
+        int blit_w = cl_x1 - cl_x0 + 1;
+        int src_x_off = cl_x0 - x0;
+
+        for (int y = cl_y0; y <= cl_y1; y++) {
+            int src_y = y - y0;
+            if (src_y < 0 || src_y >= c_h) continue;
+            const uint16_t *src_line = c_buf + (uint32_t)src_y * c_stride + src_x_off;
+
+            if (fmt == FB_RGB565) {
+                uint16_t *dst_line = (uint16_t *)fb + (size_t)y * DSI_LCD_H_RES + cl_x0;
+                memcpy(dst_line, src_line, (size_t)blit_w * sizeof(uint16_t));
+            } else {
+                uint8_t *dst_line = fb + (size_t)y * DSI_LCD_H_RES + cl_x0;
+                for (int x = 0; x < blit_w; x++) {
+                    uint16_t pix = src_line[x];
+                    uint8_t r = (uint8_t)((pix >> 11) & 0x1fu);
+                    uint8_t g = (uint8_t)((pix >> 5) & 0x3fu);
+                    uint8_t b = (uint8_t)(pix & 0x1fu);
+                    dst_line[x] = (uint8_t)(((r << 3) * 77 + (g << 2) * 150 + (b << 3) * 29) >> 8);
+                }
             }
         }
         if (lo < 0 || cl_y0 < lo) lo = cl_y0;

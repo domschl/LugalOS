@@ -1624,6 +1624,40 @@ def test_screenshot_color_mode(b: Board) -> tuple[str, bool, str]:
     return name, True, f"captured {path} with valid Netpbm header: {head.strip()[:20]}"
 
 
+def test_color_canvas_rgb565(b: Board) -> tuple[str, bool, str]:
+    """55.4: Hybrid ribbon compositing and RGB565 color canvas."""
+    name = "canvas: RGB565 color window & hybrid compositing (55.4)"
+    n0, _ = _ribbon(b)
+    if n0 < 0:
+        return name, True, "SKIPPED (no ribbon on this board)"
+    b.console_session.cmd("canvas open colortest --rgb565", deadline=5.0)
+    clist = b.console_session.cmd("canvas list", deadline=5.0)
+    if "RGB565 color" not in clist:
+        return name, False, f"canvas list did not report RGB565:\n{clist}"
+    # Verify Lisp canvas-rgb565? query
+    is_565 = b.console_session.cmd('(canvas-rgb565? "colortest")', deadline=5.0)
+    if "#t" not in is_565:
+        return name, False, f"(canvas-rgb565? \"colortest\") returned {is_565.strip()}"
+    # Render with color Lisp primitives: fill red, rect green, text yellow
+    b.console_session.cmd('(canvas-fill (rgb 255 0 0))', deadline=5.0)
+    b.console_session.cmd('(canvas-rect 10 10 50 50 (rgb 0 255 0) #t)', deadline=5.0)
+    b.console_session.cmd('(canvas-text 20 20 "COLOR" (rgb 255 255 0))', deadline=5.0)
+    # Screenshot capture should promote to PPM (1.84 MB file takes ~12-15s to write to SD)
+    shot_out = b.console_session.cmd("screenshot", deadline=25.0)
+    m = re.search(r"screenshot:\s+(\S+)", shot_out)
+    if not m or not m.group(1).endswith(".ppm"):
+        return name, False, f"expected .ppm screenshot with RGB565 canvas active, got:\n{shot_out}"
+    head = b.console_session.cmd(f"head -n 2 {m.group(1)}", deadline=5.0)
+    if "P6" not in head:
+        return name, False, f"expected P6 PPM header, got: {head.strip()}"
+    # Close window cleanly
+    b.console_session.cmd("canvas close colortest", deadline=5.0)
+    n2, _ = _ribbon(b)
+    if n2 != 1:
+        return name, False, f"expected 1 window after closing canvas, got {n2}"
+    return name, True, f"RGB565 canvas opened, verified Lisp primitives, captured {m.group(1)} (P6 PPM), closed cleanly"
+
+
 TESTS = [
     test_boots,
     test_proc_readable,
@@ -1668,6 +1702,7 @@ TESTS = [
     test_gemtext_reader_window,
     test_reader_anti_aliased_typography,
     test_screenshot_color_mode,
+    test_color_canvas_rgb565,
 ]
 
 

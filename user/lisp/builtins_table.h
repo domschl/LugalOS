@@ -73,6 +73,9 @@ static const builtin_t builtins[] = {
     BUILTIN_PRIM("canvas-pixel", prim_canvas_pixel),
     BUILTIN_PRIM("canvas-rect", prim_canvas_rect),
 #if !(defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735)
+    BUILTIN_PRIM("canvas-rgb565?", prim_canvas_rgb565_p),
+#endif
+#if !(defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735)
     BUILTIN_PRIM("canvas-row", prim_canvas_row),
 #endif
 #if !(defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735)
@@ -304,6 +307,7 @@ static const builtin_t builtins[] = {
     BUILTIN_PRIM("release", prim_release),
     BUILTIN_PRIM("remainder", prim_remainder),
     BUILTIN_PRIM("reverse", prim_reverse),
+    BUILTIN_PRIM("rgb", prim_rgb),
     BUILTIN_PRIM("rm", prim_rm),
     BUILTIN_PRIM("rmdir", prim_rmdir),
     BUILTIN_PRIM("rtc-status", prim_rtc_status),

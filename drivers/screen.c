@@ -14,6 +14,136 @@
 #include "drivers/font8x16.h"
 #include "drivers/lcdterm_attr.h"
 
+#if defined(CONFIG_BOARD_RP2350)
+#define CANVAS_SUPPORT_RGB565 0
+#else
+#define CANVAS_SUPPORT_RGB565 1
+#endif
+
+#if CANVAS_SUPPORT_RGB565
+#include "kernel/palloc.h"
+static void *canvas_alloc_psram(uint32_t pages) {
+    return palloc_pages_bulk(pages);
+}
+static void canvas_free_psram(void *ptr, uint32_t pages) {
+    palloc_free(ptr, pages);
+}
+
+static void canvas565_fill(uint16_t *fb, uint32_t stride, int x0, int y0,
+                           int x1, int y1, uint16_t c) {
+    if (x0 > x1 || y0 > y1) return;
+    for (int y = y0; y <= y1; y++) {
+        uint16_t *row = fb + (size_t)y * stride;
+        for (int x = x0; x <= x1; x++) row[x] = c;
+    }
+}
+
+static void canvas565_pixel(uint16_t *fb, uint32_t stride, int w, int h,
+                            int x, int y, uint16_t c) {
+    if (x >= 0 && x < w && y >= 0 && y < h) {
+        fb[(size_t)y * stride + (size_t)x] = c;
+    }
+}
+
+static void canvas565_line(uint16_t *fb, uint32_t stride, int w, int h,
+                           int x0, int y0, int x1, int y1, uint16_t c) {
+    int dx = x1 > x0 ? x1 - x0 : x0 - x1;
+    int sx = x0 < x1 ? 1 : -1;
+    int dy = y1 > y0 ? y0 - y1 : y1 - y0;
+    int sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy;
+    for (;;) {
+        if (x0 >= 0 && x0 < w && y0 >= 0 && y0 < h) {
+            fb[(size_t)y0 * stride + (size_t)x0] = c;
+        }
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x0 += sx; }
+        if (e2 <= dx) { err += dx; y0 += sy; }
+    }
+}
+
+static void canvas565_rect(uint16_t *fb, uint32_t stride, int w, int h,
+                           int x, int y, int rw, int rh, uint16_t c) {
+    if (rw <= 0 || rh <= 0) return;
+    int x1 = x + rw - 1;
+    int y1 = y + rh - 1;
+    for (int ix = x; ix <= x1; ix++) {
+        if (ix >= 0 && ix < w) {
+            if (y >= 0 && y < h) fb[(size_t)y * stride + (size_t)ix] = c;
+            if (y1 >= 0 && y1 < h) fb[(size_t)y1 * stride + (size_t)ix] = c;
+        }
+    }
+    for (int iy = y; iy <= y1; iy++) {
+        if (iy >= 0 && iy < h) {
+            if (x >= 0 && x < w) fb[(size_t)iy * stride + (size_t)x] = c;
+            if (x1 >= 0 && x1 < w) fb[(size_t)iy * stride + (size_t)x1] = c;
+        }
+    }
+}
+
+static void canvas565_circle(uint16_t *fb, uint32_t stride, int w, int h,
+                             int cx, int cy, int r, uint16_t c) {
+    if (r < 0) return;
+    int x = 0, y = r;
+    int d = 3 - 2 * r;
+    while (x <= y) {
+        int pts[8][2] = {
+            {cx + x, cy + y}, {cx - x, cy + y}, {cx + x, cy - y}, {cx - x, cy - y},
+            {cx + y, cy + x}, {cx - y, cy + x}, {cx + y, cy - x}, {cx - y, cy - x}
+        };
+        for (int i = 0; i < 8; i++) {
+            int px = pts[i][0], py = pts[i][1];
+            if (px >= 0 && px < w && py >= 0 && py < h) {
+                fb[(size_t)py * stride + (size_t)px] = c;
+            }
+        }
+        if (d < 0) d += 4 * x + 6;
+        else { d += 4 * (x - y) + 10; y--; }
+        x++;
+    }
+}
+
+static void canvas565_invert(uint16_t *fb, uint32_t stride, int w, int h,
+                             int x0, int y0, int x1, int y1) {
+    if (x0 < 0) x0 = 0;
+    if (x1 >= w) x1 = w - 1;
+    if (y0 < 0) y0 = 0;
+    if (y1 >= h) y1 = h - 1;
+    if (x0 > x1 || y0 > y1) return;
+    for (int y = y0; y <= y1; y++) {
+        uint16_t *row = fb + (size_t)y * stride;
+        for (int x = x0; x <= x1; x++) row[x] = (uint16_t)~row[x];
+    }
+}
+
+static void canvas565_text(uint16_t *fb, uint32_t stride, int w, int h,
+                           int x, int y, const char *s, uint32_t len,
+                           uint16_t fg, uint16_t bg, bool transparent, bool bold) {
+    (void)bg;
+    for (uint32_t i = 0; i < len; i++) {
+        char ch = s[i];
+        if ((uint8_t)ch < FONT8X16_FIRST) ch = '?';
+        const uint8_t *glyph = font8x16_glyphs[(uint8_t)ch - FONT8X16_FIRST];
+        for (int gy = 0; gy < 16; gy++) {
+            int py = y + gy;
+            if (py < 0 || py >= h) continue;
+            uint8_t bits = glyph[gy];
+            if (bold) bits |= (bits >> 1);
+            for (int gx = 0; gx < 8; gx++) {
+                int px = x + (int)i * 8 + gx;
+                if (px < 0 || px >= w) continue;
+                if ((bits >> gx) & 1u) {
+                    fb[(size_t)py * stride + (size_t)px] = fg;
+                } else if (!transparent) {
+                    fb[(size_t)py * stride + (size_t)px] = bg;
+                }
+            }
+        }
+    }
+}
+#endif
+
 LCDTERM_UTEXT static uint32_t cstr_len(const char *s) {
     uint32_t n = 0;
     while (s[n]) n++;
@@ -97,13 +227,32 @@ LCDTERM_UTEXT static int screen_find_canvas_by_vterm(const screen_t *scr, uint8_
     return -1;
 }
 
-LCDTERM_UTEXT static int screen_alloc_canvas_named(screen_t *scr, const char *name, uint8_t vterm_id) {
+LCDTERM_UTEXT static int screen_alloc_canvas_named_fmt(screen_t *scr, const char *name, uint8_t vterm_id, uint8_t format) {
+    int idx = -1;
     if (name && *name) {
-        int idx = screen_find_canvas_by_name(scr, name);
-        if (idx >= 0) return idx;
+        idx = screen_find_canvas_by_name(scr, name);
     } else {
-        int idx = screen_find_canvas_by_vterm(scr, vterm_id);
-        if (idx >= 0) return idx;
+        idx = screen_find_canvas_by_vterm(scr, vterm_id);
+    }
+    if (idx >= 0) {
+#if CANVAS_SUPPORT_RGB565
+        if (format == CANVAS_FMT_RGB565 && scr->canvases[idx].format != CANVAS_FMT_RGB565) {
+            uint32_t w = scr->cv.w;
+            uint32_t h = scr->cv.h;
+            uint32_t bytes = w * h * sizeof(uint16_t);
+            uint32_t pages = (bytes + 4095u) / 4096u;
+            uint16_t *buf = (uint16_t *)canvas_alloc_psram(pages);
+            if (buf) {
+                scr->canvases[idx].buf565 = buf;
+                scr->canvases[idx].stride565 = w;
+                scr->canvases[idx].w565 = (uint16_t)w;
+                scr->canvases[idx].h565 = (uint16_t)h;
+                scr->canvases[idx].format = CANVAS_FMT_RGB565;
+                canvas565_fill(buf, w, 0, 0, (int)w - 1, (int)h - 1, 0xFFFF);
+            }
+        }
+#endif
+        return idx;
     }
     for (uint32_t i = 0; i < SCREEN_MAX_CANVASES; i++) {
         if (!scr->canvases[i].in_use) {
@@ -111,6 +260,11 @@ LCDTERM_UTEXT static int screen_alloc_canvas_named(screen_t *scr, const char *na
             scr->canvases[i].locked = false;
             scr->canvases[i].drawn_w = 0;
             scr->canvases[i].vterm_id = vterm_id;
+            scr->canvases[i].format = format;
+            scr->canvases[i].buf565 = NULL;
+            scr->canvases[i].stride565 = 0;
+            scr->canvases[i].w565 = 0;
+            scr->canvases[i].h565 = 0;
             if (name && *name) {
                 uint32_t nl = 0;
                 while (nl + 1 < sizeof(scr->canvases[i].name) && name[nl]) {
@@ -130,6 +284,26 @@ LCDTERM_UTEXT static int screen_alloc_canvas_named(screen_t *scr, const char *na
                 scr->canvases[i].title[4] = 'a'; scr->canvases[i].title[5] = 's';
                 scr->canvases[i].title[6] = '\0';
             }
+#if CANVAS_SUPPORT_RGB565
+            if (format == CANVAS_FMT_RGB565) {
+                uint32_t w = scr->cv.w;
+                uint32_t h = scr->cv.h;
+                uint32_t bytes = w * h * sizeof(uint16_t);
+                uint32_t pages = (bytes + 4095u) / 4096u;
+                uint16_t *buf = (uint16_t *)canvas_alloc_psram(pages);
+                if (buf) {
+                    scr->canvases[i].buf565 = buf;
+                    scr->canvases[i].stride565 = w;
+                    scr->canvases[i].w565 = (uint16_t)w;
+                    scr->canvases[i].h565 = (uint16_t)h;
+                    canvas565_fill(buf, w, 0, 0, (int)w - 1, (int)h - 1, 0xFFFF);
+                } else {
+                    scr->canvases[i].format = CANVAS_FMT_1BPP;
+                }
+            }
+#else
+            scr->canvases[i].format = CANVAS_FMT_1BPP;
+#endif
             if (scr->store) {
                 canvas1_init(&scr->canvases[i].backing,
                              scr->store + i * scr->store_slot,
@@ -142,12 +316,28 @@ LCDTERM_UTEXT static int screen_alloc_canvas_named(screen_t *scr, const char *na
     return -1;
 }
 
-LCDTERM_UTEXT static int screen_alloc_canvas(screen_t *scr, uint8_t vterm_id) {
-    return screen_alloc_canvas_named(scr, NULL, vterm_id);
+__attribute__((unused)) LCDTERM_UTEXT static int screen_alloc_canvas_named(screen_t *scr, const char *name, uint8_t vterm_id) {
+    return screen_alloc_canvas_named_fmt(scr, name, vterm_id, CANVAS_FMT_1BPP);
+}
+
+__attribute__((unused)) LCDTERM_UTEXT static int screen_alloc_canvas(screen_t *scr, uint8_t vterm_id) {
+    return screen_alloc_canvas_named_fmt(scr, NULL, vterm_id, CANVAS_FMT_1BPP);
 }
 
 LCDTERM_UTEXT static void screen_free_canvas(screen_t *scr, uint8_t cid) {
     if (cid < SCREEN_MAX_CANVASES) {
+#if CANVAS_SUPPORT_RGB565
+        if (scr->canvases[cid].buf565) {
+            uint32_t bytes = (uint32_t)scr->canvases[cid].w565 * (uint32_t)scr->canvases[cid].h565 * sizeof(uint16_t);
+            uint32_t pages = (bytes + 4095u) / 4096u;
+            canvas_free_psram(scr->canvases[cid].buf565, pages);
+            scr->canvases[cid].buf565 = NULL;
+            scr->canvases[cid].stride565 = 0;
+            scr->canvases[cid].w565 = 0;
+            scr->canvases[cid].h565 = 0;
+        }
+#endif
+        scr->canvases[cid].format = CANVAS_FMT_1BPP;
         scr->canvases[cid].in_use = false;
         scr->canvases[cid].locked = false;
         scr->canvases[cid].vterm_id = 0;
@@ -1143,6 +1333,12 @@ void screen_init(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsigned 
         scr->canvases[c].locked = false;
         scr->canvases[c].drawn_w = 0;
         scr->canvases[c].title[0] = '\0';
+        scr->canvases[c].name[0] = '\0';
+        scr->canvases[c].buf565 = NULL;
+        scr->canvases[c].stride565 = 0;
+        scr->canvases[c].w565 = 0;
+        scr->canvases[c].h565 = 0;
+        scr->canvases[c].format = CANVAS_FMT_1BPP;
     }
 
     uint32_t term_cells = (uint32_t)SCREEN_TEXT_COLS(w) * (uint32_t)SCREEN_TEXT_ROWS(h);
@@ -1217,7 +1413,7 @@ LCDTERM_UTEXT void screen_repaint(screen_t *scr) {
     draw_all(scr);
 }
 
-LCDTERM_UTEXT bool screen_set_layout_vterm_named(screen_t *scr, uint8_t vid, unsigned layout, const char *name) {
+LCDTERM_UTEXT bool screen_set_layout_vterm_named_fmt(screen_t *scr, uint8_t vid, unsigned layout, const char *name, uint8_t format) {
     int cid_check = (name && *name) ? screen_find_canvas_by_name(scr, name) : screen_find_canvas_by_vterm(scr, vid);
     if (cid_check >= 0 && scr->canvases[cid_check].locked && layout != scr->layout && layout != SCREEN_LAYOUT_TEXT) return false;
 
@@ -1290,6 +1486,23 @@ LCDTERM_UTEXT bool screen_set_layout_vterm_named(screen_t *scr, uint8_t vid, uns
     int t_win = ribbon_find_vterm(&scr->ribbon, vid);
 
     if (c_win >= 0) {
+#if CANVAS_SUPPORT_RGB565
+        if (cid >= 0 && format == CANVAS_FMT_RGB565 && scr->canvases[cid].format != CANVAS_FMT_RGB565) {
+            uint32_t w = scr->cv.w;
+            uint32_t h = scr->cv.h;
+            uint32_t bytes = w * h * sizeof(uint16_t);
+            uint32_t pages = (bytes + 4095u) / 4096u;
+            uint16_t *buf = (uint16_t *)canvas_alloc_psram(pages);
+            if (buf) {
+                scr->canvases[cid].buf565 = buf;
+                scr->canvases[cid].stride565 = w;
+                scr->canvases[cid].w565 = (uint16_t)w;
+                scr->canvases[cid].h565 = (uint16_t)h;
+                scr->canvases[cid].format = CANVAS_FMT_RGB565;
+                canvas565_fill(buf, w, 0, 0, (int)w - 1, (int)h - 1, 0xFFFF);
+            }
+        }
+#endif
         /* Canvas already in ribbon: update column widths and bring into view */
         scr->ribbon.wins[c_win].cols = canvas_cols;
         if (t_win >= 0 && text_cols > 0) {
@@ -1306,9 +1519,9 @@ LCDTERM_UTEXT bool screen_set_layout_vterm_named(screen_t *scr, uint8_t vid, uns
     } else {
         /* Allocate a canvas slot */
         if (name && *name) {
-            cid = screen_alloc_canvas_named(scr, name, vid);
+            cid = screen_alloc_canvas_named_fmt(scr, name, vid, format);
         } else {
-            cid = screen_alloc_canvas(scr, vid);
+            cid = screen_alloc_canvas_named_fmt(scr, NULL, vid, format);
         }
         if (cid < 0) return false; /* out of canvas slots */
 
@@ -1354,6 +1567,10 @@ LCDTERM_UTEXT bool screen_set_layout_vterm_named(screen_t *scr, uint8_t vid, uns
     (void)place(scr, layout);
     draw_all_from(scr, true);
     return true;
+}
+
+LCDTERM_UTEXT bool screen_set_layout_vterm_named(screen_t *scr, uint8_t vid, unsigned layout, const char *name) {
+    return screen_set_layout_vterm_named_fmt(scr, vid, layout, name, CANVAS_FMT_1BPP);
 }
 
 LCDTERM_UTEXT bool screen_set_layout_vterm(screen_t *scr, uint8_t vid, unsigned layout) {
@@ -1413,9 +1630,29 @@ LCDTERM_UTEXT static int arg16(const uint8_t *req, uint32_t n, uint32_t i) {
     return (int)(int16_t)(uint16_t)(req[at] | ((uint16_t)req[at + 1u] << 8));
 }
 
-LCDTERM_UTEXT static unsigned colour(int c) {
-    return c == 0 ? CANVAS1_WHITE : c == 2 ? CANVAS1_GREY : CANVAS1_BLACK;
+#if CANVAS_SUPPORT_RGB565
+static inline uint16_t uarg16(const uint8_t *req, uint32_t n, uint32_t i) {
+    uint32_t at = 1u + 2u * i;
+    if (at + 2u > n) return 0;
+    return (uint16_t)(req[at] | ((uint16_t)req[at + 1u] << 8));
 }
+#endif
+
+LCDTERM_UTEXT static unsigned colour(int c) {
+    return (c == 0 || c == 0xffff || c == -1) ? CANVAS1_WHITE : c == 2 ? CANVAS1_GREY : CANVAS1_BLACK;
+}
+
+#if CANVAS_SUPPORT_RGB565
+static inline unsigned mono_fallback(uint16_t c565) {
+    if (c565 == 0xFFFF) return CANVAS1_WHITE;
+    if (c565 == 0) return CANVAS1_BLACK;
+    uint32_t r = (c565 >> 11) & 0x1f;
+    uint32_t g = (c565 >> 5) & 0x3f;
+    uint32_t b = c565 & 0x1f;
+    uint32_t lum = (r * 77u + (g >> 1) * 150u + b * 29u) >> 5;
+    return lum > 128u ? CANVAS1_WHITE : CANVAS1_BLACK;
+}
+#endif
 
 /* The canvas a request from terminal `vid` means: its own, else the focused
  * window's, else the first in the ribbon; -1 for none. */
@@ -1510,7 +1747,10 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
             name_buf[nl] = '\0';
             name = name_buf;
         }
-        status = (n >= 2 && screen_set_layout_vterm_named(scr, vid, req[1], name)) ? 0 : 1;
+        uint8_t raw_layout = (n >= 2) ? req[1] : 0;
+        uint8_t layout = raw_layout & 0x7fu;
+        uint8_t format = (raw_layout & 0x80u) ? CANVAS_FMT_RGB565 : CANVAS_FMT_1BPP;
+        status = (n >= 2 && screen_set_layout_vterm_named_fmt(scr, vid, layout, name, format)) ? 0 : 1;
     } else if (op == 'T') {
         if (scr->ribbon.count > 0 && scr->ribbon.active_idx < scr->ribbon.count &&
             scr->ribbon.wins[scr->ribbon.active_idx].type == RIBBON_WIN_READER) {
@@ -1874,6 +2114,11 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
             reply[6] = (uint8_t)(w->rx1 & 0xff);
             reply[7] = (uint8_t)((w->rx1 >> 8) & 0xff);
             reply[8] = window_vterm(scr, i);
+            uint8_t fmt = CANVAS_FMT_1BPP;
+            if (w->type == RIBBON_WIN_CANVAS && w->vterm_id < SCREEN_MAX_CANVASES) {
+                fmt = scr->canvases[w->vterm_id].format;
+            }
+            reply[9] = fmt;
             return;
         }
         reply[0] = 0;
@@ -1937,66 +2182,190 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
 
             int a = arg16(req, n, 0), b = arg16(req, n, 1), c = arg16(req, n, 2);
             int d = arg16(req, n, 3), e = arg16(req, n, 4);
-            if (op == 'F') {
-                if (cc_back) canvas1_fill(cc_back, 0, 0, cw_w - 1, cw_h - 1, colour(a));
-                if (cc_scr) canvas1_fill(cc_scr, 0, 0, cw_w - 1, cw_h - 1, colour(a));
-            } else if (op == 'p') {
-                if (cc_back) canvas1_fill(cc_back, a, b, a, b, colour(c));
-                if (cc_scr) canvas1_fill(cc_scr, a, b, a, b, colour(c));
-            } else if (op == 'l') {
-                if (cc_back) canvas1_line(cc_back, a, b, c, d, colour(e));
-                if (cc_scr) canvas1_line(cc_scr, a, b, c, d, colour(e));
-            } else if (op == 'r') {
-                if (c > 0 && d > 0) {
-                    if (cc_back) canvas1_fill(cc_back, a, b, a + c - 1, b + d - 1, colour(e));
-                    if (cc_scr) canvas1_fill(cc_scr, a, b, a + c - 1, b + d - 1, colour(e));
-                }
-            } else if (op == 'o') {
-                if (c > 0 && d > 0) {
-                    unsigned k = colour(e);
-                    if (cc_back) {
-                        canvas1_hline(cc_back, a, a + c - 1, b, k);
-                        canvas1_hline(cc_back, a, a + c - 1, b + d - 1, k);
-                        canvas1_vline(cc_back, a, b, b + d - 1, k);
-                        canvas1_vline(cc_back, a + c - 1, b, b + d - 1, k);
+
+#if CANVAS_SUPPORT_RGB565
+            screen_canvas_slot_t *slot = &scr->canvases[cid];
+            bool is_rgb565 = (slot->format == CANVAS_FMT_RGB565 && slot->buf565 != NULL);
+            if (is_rgb565) {
+                uint16_t *c565 = slot->buf565;
+                uint32_t c565_stride = slot->stride565;
+                if (op == 'F') {
+                    uint16_t col = uarg16(req, n, 0);
+                    canvas565_fill(c565, c565_stride, 0, 0, cw_w - 1, cw_h - 1, col);
+                    if (cc_back) canvas1_fill(cc_back, 0, 0, cw_w - 1, cw_h - 1, mono_fallback(col));
+                    if (cc_scr) canvas1_fill(cc_scr, 0, 0, cw_w - 1, cw_h - 1, mono_fallback(col));
+                } else if (op == 'p') {
+                    uint16_t col = uarg16(req, n, 2);
+                    canvas565_pixel(c565, c565_stride, cw_w, cw_h, a, b, col);
+                    if (cc_back) canvas1_fill(cc_back, a, b, a, b, mono_fallback(col));
+                    if (cc_scr) canvas1_fill(cc_scr, a, b, a, b, mono_fallback(col));
+                } else if (op == 'l') {
+                    uint16_t col = uarg16(req, n, 4);
+                    canvas565_line(c565, c565_stride, cw_w, cw_h, a, b, c, d, col);
+                    if (cc_back) canvas1_line(cc_back, a, b, c, d, mono_fallback(col));
+                    if (cc_scr) canvas1_line(cc_scr, a, b, c, d, mono_fallback(col));
+                } else if (op == 'r') {
+                    if (c > 0 && d > 0) {
+                        uint16_t col = uarg16(req, n, 4);
+                        canvas565_fill(c565, c565_stride, a, b, a + c - 1, b + d - 1, col);
+                        if (cc_back) canvas1_fill(cc_back, a, b, a + c - 1, b + d - 1, mono_fallback(col));
+                        if (cc_scr) canvas1_fill(cc_scr, a, b, a + c - 1, b + d - 1, mono_fallback(col));
                     }
-                    if (cc_scr) {
-                        canvas1_hline(cc_scr, a, a + c - 1, b, k);
-                        canvas1_hline(cc_scr, a, a + c - 1, b + d - 1, k);
-                        canvas1_vline(cc_scr, a, b, b + d - 1, k);
-                        canvas1_vline(cc_scr, a + c - 1, b, b + d - 1, k);
+                } else if (op == 'o') {
+                    if (c > 0 && d > 0) {
+                        uint16_t col = uarg16(req, n, 4);
+                        canvas565_rect(c565, c565_stride, cw_w, cw_h, a, b, c, d, col);
+                        unsigned k = mono_fallback(col);
+                        if (cc_back) {
+                            canvas1_hline(cc_back, a, a + c - 1, b, k);
+                            canvas1_hline(cc_back, a, a + c - 1, b + d - 1, k);
+                            canvas1_vline(cc_back, a, b, b + d - 1, k);
+                            canvas1_vline(cc_back, a + c - 1, b, b + d - 1, k);
+                        }
+                        if (cc_scr) {
+                            canvas1_hline(cc_scr, a, a + c - 1, b, k);
+                            canvas1_hline(cc_scr, a, a + c - 1, b + d - 1, k);
+                            canvas1_vline(cc_scr, a, b, b + d - 1, k);
+                            canvas1_vline(cc_scr, a + c - 1, b, b + d - 1, k);
+                        }
                     }
-                }
-            } else if (op == 'c') {
-                if (cc_back) canvas1_circle(cc_back, a, b, c, colour(d));
-                if (cc_scr) canvas1_circle(cc_scr, a, b, c, colour(d));
-            } else if (op == 'i') {
-                if (c > 0 && d > 0) {
-                    if (cc_back) canvas1_invert(cc_back, a, b, a + c - 1, b + d - 1);
-                    if (cc_scr) canvas1_invert(cc_scr, a, b, a + c - 1, b + d - 1);
-                }
-            } else if (op == 't') {
-                if (n >= 6) {
-                    const char *s = (const char *)req + 6;
-                    uint32_t len = n - 6u;
-                    unsigned tlen = canvas1_text_len(s, len);
-                    if (cc_back) canvas1_text(cc_back, a, b, s, len, tlen, 0, FONT8X16_H, req[5] != 0);
-                    if (cc_scr) canvas1_text(cc_scr, a, b, s, len, tlen, 0, FONT8X16_H, req[5] != 0);
-                }
-            } else if (op == 'b') {
-                unsigned cnt = (unsigned)(c < 0 ? 0 : c);
-                if (n >= 9u + (cnt + 7u) / 8u) {
-                    unsigned sc = (unsigned)(d < 1 ? 1 : d);
-                    if (cc_back) canvas1_row(cc_back, a, b, req + 9, cnt, sc);
-                    if (cc_scr) canvas1_row(cc_scr, a, b, req + 9, cnt, sc);
+                } else if (op == 'c') {
+                    uint16_t col = uarg16(req, n, 3);
+                    canvas565_circle(c565, c565_stride, cw_w, cw_h, a, b, c, col);
+                    if (cc_back) canvas1_circle(cc_back, a, b, c, mono_fallback(col));
+                    if (cc_scr) canvas1_circle(cc_scr, a, b, c, mono_fallback(col));
+                } else if (op == 'i') {
+                    if (c > 0 && d > 0) {
+                        canvas565_invert(c565, c565_stride, cw_w, cw_h, a, b, a + c - 1, b + d - 1);
+                        if (cc_back) canvas1_invert(cc_back, a, b, a + c - 1, b + d - 1);
+                        if (cc_scr) canvas1_invert(cc_scr, a, b, a + c - 1, b + d - 1);
+                    }
+                } else if (op == 't') {
+                    if (n >= 6) {
+                        const char *s = (const char *)req + 6;
+                        uint32_t len = n - 6u;
+                        unsigned tlen = canvas1_text_len(s, len);
+                        canvas565_text(c565, c565_stride, cw_w, cw_h, a, b, s, len, 0x0000, 0xFFFF, true, req[5] != 0);
+                        if (cc_back) canvas1_text(cc_back, a, b, s, len, tlen, 0, FONT8X16_H, req[5] != 0);
+                        if (cc_scr) canvas1_text(cc_scr, a, b, s, len, tlen, 0, FONT8X16_H, req[5] != 0);
+                    }
+                } else if (op == 'x') {
+                    if (n >= 10) {
+                        uint16_t fg = uarg16(req, n, 2);
+                        uint16_t bg = uarg16(req, n, 3);
+                        uint8_t flags = req[9];
+                        bool transparent = (flags & 1u) != 0;
+                        bool bold = (flags & 2u) != 0;
+                        const char *s = (const char *)req + 10;
+                        uint32_t len = n - 10u;
+                        unsigned tlen = canvas1_text_len(s, len);
+                        canvas565_text(c565, c565_stride, cw_w, cw_h, a, b, s, len, fg, bg, transparent, bold);
+                        if (cc_back) canvas1_text(cc_back, a, b, s, len, tlen, 0, FONT8X16_H, bold);
+                        if (cc_scr) canvas1_text(cc_scr, a, b, s, len, tlen, 0, FONT8X16_H, bold);
+                    } else {
+                        status = 1;
+                    }
+                } else if (op == 'B') {
+                    if (c > 0 && d > 0 && n >= 9u + (uint32_t)c * (uint32_t)d * sizeof(uint16_t)) {
+                        const uint16_t *src_pix = (const uint16_t *)(req + 9);
+                        for (int row = 0; row < d; row++) {
+                            int py = b + row;
+                            if (py >= 0 && py < cw_h) {
+                                int x0 = a < 0 ? 0 : a;
+                                int x1 = (a + c - 1) >= cw_w ? cw_w - 1 : a + c - 1;
+                                if (x0 <= x1) {
+                                    const uint16_t *src_line = src_pix + (size_t)row * (size_t)c + (size_t)(x0 - a);
+                                    uint16_t *dst_line = c565 + (size_t)py * c565_stride + (size_t)x0;
+                                    int copy_w = x1 - x0 + 1;
+                                    for (int k = 0; k < copy_w; k++) {
+                                        dst_line[k] = src_line[k];
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        status = 1;
+                    }
+                } else if (op == 'b') {
+                    unsigned cnt = (unsigned)(c < 0 ? 0 : c);
+                    if (n >= 9u + (cnt + 7u) / 8u) {
+                        unsigned sc = (unsigned)(d < 1 ? 1 : d);
+                        if (cc_back) canvas1_row(cc_back, a, b, req + 9, cnt, sc);
+                        if (cc_scr) canvas1_row(cc_scr, a, b, req + 9, cnt, sc);
+                    } else {
+                        status = 1;
+                    }
+                } else if (op == 'g') {
+                    if (a >= 0 && a < cw_w && b >= 0 && b < cw_h) {
+                        pixel = (c565[(size_t)b * c565_stride + (size_t)a] != 0xFFFF) ? 1 : 0;
+                    }
                 } else {
                     status = 1;
                 }
-            } else if (op == 'g') {
-                if (cc_back) pixel = (uint8_t)canvas1_get(cc_back, a, b);
-                else if (cc_scr) pixel = (uint8_t)canvas1_get(cc_scr, a, b);
-            } else {
-                status = 1;
+            } else
+#endif
+            {
+                if (op == 'F') {
+                    if (cc_back) canvas1_fill(cc_back, 0, 0, cw_w - 1, cw_h - 1, colour(a));
+                    if (cc_scr) canvas1_fill(cc_scr, 0, 0, cw_w - 1, cw_h - 1, colour(a));
+                } else if (op == 'p') {
+                    if (cc_back) canvas1_fill(cc_back, a, b, a, b, colour(c));
+                    if (cc_scr) canvas1_fill(cc_scr, a, b, a, b, colour(c));
+                } else if (op == 'l') {
+                    if (cc_back) canvas1_line(cc_back, a, b, c, d, colour(e));
+                    if (cc_scr) canvas1_line(cc_scr, a, b, c, d, colour(e));
+                } else if (op == 'r') {
+                    if (c > 0 && d > 0) {
+                        if (cc_back) canvas1_fill(cc_back, a, b, a + c - 1, b + d - 1, colour(e));
+                        if (cc_scr) canvas1_fill(cc_scr, a, b, a + c - 1, b + d - 1, colour(e));
+                    }
+                } else if (op == 'o') {
+                    if (c > 0 && d > 0) {
+                        unsigned k = colour(e);
+                        if (cc_back) {
+                            canvas1_hline(cc_back, a, a + c - 1, b, k);
+                            canvas1_hline(cc_back, a, a + c - 1, b + d - 1, k);
+                            canvas1_vline(cc_back, a, b, b + d - 1, k);
+                            canvas1_vline(cc_back, a + c - 1, b, b + d - 1, k);
+                        }
+                        if (cc_scr) {
+                            canvas1_hline(cc_scr, a, a + c - 1, b, k);
+                            canvas1_hline(cc_scr, a, a + c - 1, b + d - 1, k);
+                            canvas1_vline(cc_scr, a, b, b + d - 1, k);
+                            canvas1_vline(cc_scr, a + c - 1, b, b + d - 1, k);
+                        }
+                    }
+                } else if (op == 'c') {
+                    if (cc_back) canvas1_circle(cc_back, a, b, c, colour(d));
+                    if (cc_scr) canvas1_circle(cc_scr, a, b, c, colour(d));
+                } else if (op == 'i') {
+                    if (c > 0 && d > 0) {
+                        if (cc_back) canvas1_invert(cc_back, a, b, a + c - 1, b + d - 1);
+                        if (cc_scr) canvas1_invert(cc_scr, a, b, a + c - 1, b + d - 1);
+                    }
+                } else if (op == 't') {
+                    if (n >= 6) {
+                        const char *s = (const char *)req + 6;
+                        uint32_t len = n - 6u;
+                        unsigned tlen = canvas1_text_len(s, len);
+                        if (cc_back) canvas1_text(cc_back, a, b, s, len, tlen, 0, FONT8X16_H, req[5] != 0);
+                        if (cc_scr) canvas1_text(cc_scr, a, b, s, len, tlen, 0, FONT8X16_H, req[5] != 0);
+                    }
+                } else if (op == 'b') {
+                    unsigned cnt = (unsigned)(c < 0 ? 0 : c);
+                    if (n >= 9u + (cnt + 7u) / 8u) {
+                        unsigned sc = (unsigned)(d < 1 ? 1 : d);
+                        if (cc_back) canvas1_row(cc_back, a, b, req + 9, cnt, sc);
+                        if (cc_scr) canvas1_row(cc_scr, a, b, req + 9, cnt, sc);
+                    } else {
+                        status = 1;
+                    }
+                } else if (op == 'g') {
+                    if (cc_back) pixel = (uint8_t)canvas1_get(cc_back, a, b);
+                    else if (cc_scr) pixel = (uint8_t)canvas1_get(cc_scr, a, b);
+                } else {
+                    status = 1;
+                }
             }
 
             if (op != 'g' && status == 0 && !scr->redrawing) scr->draw_gen++;

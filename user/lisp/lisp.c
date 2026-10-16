@@ -4634,7 +4634,8 @@ static lisp_val_t *prim_canvas_fill(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     uint8_t req[3], reply[SCREEN_REPLY_LEN];
     req[0] = 'F';
-    put16(req + 1, arg_int(args, 0, 0));
+    int c = (int)arg_int(args, 0, 0xFFFF);
+    put16(req + 1, c);
     return canvas_call(req, sizeof(req), reply, true) ? &true_val : &false_val;
 }
 
@@ -4674,15 +4675,32 @@ static lisp_val_t *prim_canvas_invert(lisp_val_t *args, lisp_val_t *env) {
     return canvas_op('i', args, 4, false);
 }
 
-/* (canvas-text x y str [c] [size]) -- black on the canvas, the glyph's
- * top-left at x y; c and size are the ST7735's and are accepted and
- * ignored, except that a size above 1 draws bold. */
+/* (canvas-text x y str [c] [size] [bg]) -- text at x y;
+ * if c is provided, draws colored text using op 'x'. */
 static lisp_val_t *prim_canvas_text(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
-    uint8_t req[6 + STRING_SLOT_LEN], reply[SCREEN_REPLY_LEN];
     const char *str = get_str_val(lisp_list_ref(args, 2));
     uint32_t len = (uint32_t)strlen(str);
     if (len > STRING_SLOT_LEN) len = STRING_SLOT_LEN;
+
+    lisp_val_t *a3 = lisp_list_ref(args, 3);
+    if (a3) {
+        uint8_t req[10 + STRING_SLOT_LEN], reply[SCREEN_REPLY_LEN];
+        req[0] = 'x';
+        put16(req + 1, arg_int(args, 0, 0));
+        put16(req + 3, arg_int(args, 1, 0));
+        put16(req + 5, arg_int(args, 3, 0));
+        lisp_val_t *a5 = lisp_list_ref(args, 5);
+        int bg = (int)arg_int(args, 5, 0xFFFF);
+        put16(req + 7, bg);
+        bool bold = arg_int(args, 4, 1) > 1;
+        bool transparent = (a5 == NULL);
+        req[9] = (transparent ? 1u : 0u) | (bold ? 2u : 0u);
+        memcpy(req + 10, str, len);
+        return canvas_call(req, 10u + len, reply, true) ? &true_val : &false_val;
+    }
+
+    uint8_t req[6 + STRING_SLOT_LEN], reply[SCREEN_REPLY_LEN];
     req[0] = 't';
     put16(req + 1, arg_int(args, 0, 0));
     put16(req + 3, arg_int(args, 1, 0));
@@ -4779,11 +4797,12 @@ static lisp_val_t *prim_canvas_window(lisp_val_t *args, lisp_val_t *env) {
     return canvas_call(req, req_len, reply, false) ? &true_val : &false_val;
 }
 
-/* (canvas-open [name [layout]]) -- opens or attaches a named canvas */
+/* (canvas-open [name [layout [format]]]) -- opens or attaches a named canvas */
 static lisp_val_t *prim_canvas_open(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     const char *name = "plot";
     uint8_t layout = SCREEN_LAYOUT_SPLIT_HALF;
+    bool rgb565 = false;
     lisp_val_t *a0 = lisp_list_ref(args, 0);
     if (a0 && (a0->type == LISP_STRING || a0->type == LISP_SYMBOL)) {
         name = get_str_val(a0);
@@ -4794,16 +4813,69 @@ static lisp_val_t *prim_canvas_open(lisp_val_t *args, lisp_val_t *env) {
         if (streq(w, "split") || streq(w, "split-wide")) layout = SCREEN_LAYOUT_SPLIT_WIDE;
         else if (streq(w, "split-narrow")) layout = SCREEN_LAYOUT_SPLIT_NARROW;
         else if (streq(w, "canvas") || streq(w, "full")) layout = SCREEN_LAYOUT_CANVAS;
+        else if (streq(w, "split-half")) layout = SCREEN_LAYOUT_SPLIT_HALF;
+        else if (streq(w, "rgb565") || streq(w, ":rgb565") || streq(w, "color") || streq(w, ":color")) rgb565 = true;
+    }
+    lisp_val_t *a2 = lisp_list_ref(args, 2);
+    if (a2 && (a2->type == LISP_STRING || a2->type == LISP_SYMBOL)) {
+        const char *f = get_str_val(a2);
+        if (streq(f, "rgb565") || streq(f, ":rgb565") || streq(f, "color") || streq(f, ":color")) {
+            rgb565 = true;
+        }
     }
     uint8_t req[SCREEN_CTITLE_MAX + 3];
     req[0] = 'L';
-    req[1] = layout;
+    req[1] = layout | (rgb565 ? 0x80u : 0);
     size_t nlen = strlen(name);
     if (nlen > SCREEN_CTITLE_MAX - 1) nlen = SCREEN_CTITLE_MAX - 1;
     memcpy(req + 2, name, nlen);
     req[2 + nlen] = '\0';
     uint8_t reply[SCREEN_REPLY_LEN];
     return canvas_call(req, 3 + (uint32_t)nlen, reply, false) ? &true_val : &false_val;
+}
+
+/* (canvas-rgb565? [name]) -- returns #t if active or ribbon canvas is in RGB565 mode */
+static lisp_val_t *prim_canvas_rgb565_p(lisp_val_t *args, lisp_val_t *env) {
+    (void)env; (void)args;
+    uint8_t rreq[2] = { 'R', 0 }, rreply[SCREEN_REPLY_LEN];
+    if (!canvas_call(rreq, 1, rreply, false) || rreply[0] != 0) return &false_val;
+    uint8_t count = rreply[1];
+    uint8_t active = rreply[2];
+
+    /* First check the active window */
+    rreq[1] = active;
+    if (canvas_call(rreq, 2, rreply, false) && rreply[0] == 0) {
+        if (rreply[1] == 2 /* RIBBON_WIN_CANVAS */) {
+            return (rreply[9] == 1 /* CANVAS_FMT_RGB565 */) ? &true_val : &false_val;
+        }
+    }
+
+    /* If active window is not a canvas (e.g. typing in terminal), check any canvas in ribbon */
+    for (uint8_t i = 0; i < count; i++) {
+        if (i == active) continue;
+        rreq[1] = i;
+        if (!canvas_call(rreq, 2, rreply, false) || rreply[0] != 0) continue;
+        if (rreply[1] == 2 /* RIBBON_WIN_CANVAS */) {
+            return (rreply[9] == 1 /* CANVAS_FMT_RGB565 */) ? &true_val : &false_val;
+        }
+    }
+    return &false_val;
+}
+
+/* (rgb r g b) -- converts 8-bit r, g, b (0..255) to 16-bit RGB565 integer */
+static lisp_val_t *prim_rgb(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    long r = arg_int(args, 0, 0);
+    long g = arg_int(args, 1, 0);
+    long b = arg_int(args, 2, 0);
+    if (r < 0) r = 0;
+    if (r > 255) r = 255;
+    if (g < 0) g = 0;
+    if (g > 255) g = 255;
+    if (b < 0) b = 0;
+    if (b > 255) b = 255;
+    uint16_t rgb565 = (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+    return make_int((long)rgb565);
 }
 
 /* (canvas-close [name]) -- closes named canvas, or focused canvas */

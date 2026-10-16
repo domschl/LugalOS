@@ -16,6 +16,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 
 #include "drivers/canvas1.h"
 #include "kernel/console.h"
@@ -99,12 +100,22 @@ bool lcdterm_is_animating(void);
 void lcdterm_sync_pre(void);
 void lcdterm_sync_post(void);
 int lcdterm_get_visible_readers(uint8_t *out_rids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins);
+uint16_t *lcdterm_get_canvas565_backing(uint8_t cid, uint32_t *out_stride, int *out_w, int *out_h);
+int lcdterm_get_visible_canvases565(uint8_t *out_cids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins);
 #else
 static inline bool lcdterm_is_animating(void) { return false; }
 static inline void lcdterm_sync_pre(void) { }
 static inline void lcdterm_sync_post(void) { }
 static inline int lcdterm_get_visible_readers(uint8_t *out_rids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins) {
     (void)out_rids; (void)out_x0; (void)out_y0; (void)out_x1; (void)out_y1; (void)max_wins;
+    return 0;
+}
+static inline uint16_t *lcdterm_get_canvas565_backing(uint8_t cid, uint32_t *out_stride, int *out_w, int *out_h) {
+    (void)cid; (void)out_stride; (void)out_w; (void)out_h;
+    return NULL;
+}
+static inline int lcdterm_get_visible_canvases565(uint8_t *out_cids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins) {
+    (void)out_cids; (void)out_x0; (void)out_y0; (void)out_x1; (void)out_y1; (void)max_wins;
     return 0;
 }
 #endif

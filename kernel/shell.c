@@ -4781,8 +4781,10 @@ static void cmd_ribbon(const char *cmd_line) {
             int32_t rx0 = (int32_t)(reply[4] | (reply[5] << 8));
             int32_t rx1 = (int32_t)(reply[6] | (reply[7] << 8));
             if (type == RIBBON_WIN_CANVAS)
-                cprintf("  [%d] Canvas (slot %d of vterm %d, %d cols, rx %ld..%ld)%s\n",
-                        i, id, reply[8], cols, (long)rx0, (long)rx1, (i == active) ? " *" : "");
+                cprintf("  [%d] Canvas (slot %d of vterm %d, %d cols, rx %ld..%ld, %s)%s\n",
+                        i, id, reply[8], cols, (long)rx0, (long)rx1,
+                        (reply[9] == 1) ? "RGB565" : "1-bpp",
+                        (i == active) ? " *" : "");
             else if (type == RIBBON_WIN_READER)
                 cprintf("  [%d] Reader (slot %d, %d cols, rx %ld..%ld)%s\n",
                         i, id, cols, (long)rx0, (long)rx1, (i == active) ? " *" : "");
@@ -4799,7 +4801,7 @@ static void cmd_canvas(const char *cmd_line) {
     const char *args = cmd_line + 6;
     while (*args == ' ' || *args == '\t') args++;
     if (*args == '\0') {
-        cprintf("Usage: canvas [list | open <name> | attach <name> | close [name] | clear [name] | split | half | wide | narrow | full]\n");
+        cprintf("Usage: canvas [list | open <name> [--rgb565] | attach <name> | close [name] | clear [name] | split | half | wide | narrow | full]\n");
         return;
     }
 
@@ -4816,8 +4818,11 @@ static void cmd_canvas(const char *cmd_line) {
                 if (!console_canvas(rreq, 2, rreply) || rreply[0] != 0) break;
                 if (rreply[1] == 2 /* RIBBON_WIN_CANVAS */) {
                     uint8_t cid = rreply[2], cols = rreply[3];
-                    cprintf("  [%d] Canvas slot %d (%d cols)%s\n",
-                            i, cid, cols, (i == active) ? " (focused)" : "");
+                    uint8_t fmt = rreply[9];
+                    cprintf("  [%d] Canvas slot %d (%d cols, %s)%s\n",
+                            i, cid, cols,
+                            (fmt == 1 /* CANVAS_FMT_RGB565 */) ? "RGB565 color" : "1-bpp mono",
+                            (i == active) ? " (focused)" : "");
                     c_found++;
                 }
             }
@@ -4832,24 +4837,31 @@ static void cmd_canvas(const char *cmd_line) {
         const char *name = args + 5;
         while (*name == ' ' || *name == '\t') name++;
         if (!*name) {
-            cprintf("Usage: canvas open <name>\n");
+            cprintf("Usage: canvas open <name> [--rgb565]\n");
             return;
         }
         char name_buf[SCREEN_CTITLE_MAX];
         uint32_t nl = 0;
-        while (name[nl] && name[nl] != ' ' && nl + 1 < sizeof(name_buf)) {
+        while (name[nl] && name[nl] != ' ' && name[nl] != '\t' && nl + 1 < sizeof(name_buf)) {
             name_buf[nl] = name[nl];
             nl++;
         }
         name_buf[nl] = '\0';
 
+        const char *extra = name + nl;
+        while (*extra == ' ' || *extra == '\t') extra++;
+        bool rgb565 = false;
+        if (strcmp(extra, "--rgb565") == 0 || strcmp(extra, "--color") == 0) {
+            rgb565 = true;
+        }
+
         uint8_t req[SCREEN_CTITLE_MAX + 3];
         req[0] = 'L';
-        req[1] = SCREEN_LAYOUT_SPLIT_HALF;
+        req[1] = SCREEN_LAYOUT_SPLIT_HALF | (rgb565 ? 0x80u : 0);
         memcpy(req + 2, name_buf, nl + 1);
         uint8_t reply[SCREEN_REPLY_LEN];
         if (console_canvas(req, 3 + nl, reply) && reply[0] == 0) {
-            cprintf("canvas: opened/attached '%s'\n", name_buf);
+            cprintf("canvas: opened/attached '%s'%s\n", name_buf, rgb565 ? " (RGB565)" : "");
         } else {
             cprintf("canvas: failed to open '%s'\n", name_buf);
         }
