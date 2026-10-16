@@ -313,7 +313,7 @@ void lcdterm_screen_putc_vterm(int vid, char c) {
     g_batch_vid = (uint8_t)vid;
     if (!lcdterm_alive()) {
         screen_write_vterm(g_scr, (uint8_t)vid, &c, 1);
-        if (c == '\n') damage(0, g_be->h);
+        damage(0, g_be->h);
         return;
     }
     g_batch[g_batch_len++] = (uint8_t)c;
@@ -735,7 +735,7 @@ int lcdterm_get_visible_readers(uint8_t *out_rids, int *out_x0, int *out_y0, int
     int sh = (int)g_scr->cv.h;
     int text_rows = (int)SCREEN_TEXT_ROWS(sh);
     int tile_y0 = SCREEN_TILE_Y + 17;
-    int tile_y1 = SCREEN_TEXT_Y + 16 * text_rows - 1;
+    int tile_y1 = SCREEN_TEXT_Y + (int)FONT_CELL_H * text_rows - 1;
 
     for (uint8_t i = 0; i < g_scr->ribbon.count && count < max_wins; i++) {
         const ribbon_win_t *w = &g_scr->ribbon.wins[i];
@@ -771,7 +771,7 @@ int lcdterm_get_visible_canvases565(uint8_t *out_cids, int *out_x0, int *out_y0,
     int sh = (int)g_scr->cv.h;
     int text_rows = (int)SCREEN_TEXT_ROWS(sh);
     int tile_y0 = SCREEN_TILE_Y + 17;
-    int tile_y1 = SCREEN_TEXT_Y + 16 * text_rows - 1;
+    int tile_y1 = SCREEN_TEXT_Y + (int)FONT_CELL_H * text_rows - 1;
 
     for (uint8_t i = 0; i < g_scr->ribbon.count && count < max_wins; i++) {
         const ribbon_win_t *w = &g_scr->ribbon.wins[i];
