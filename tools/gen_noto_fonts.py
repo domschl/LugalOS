@@ -20,6 +20,8 @@ from pathlib import Path
 from PIL import Image, ImageFont, ImageDraw
 
 MONO_PATHS = [
+    "/usr/share/fonts/noto/NotoSansMono-Medium.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSansMono-Medium.ttf",
     "/usr/share/fonts/noto/NotoSansMono-Regular.ttf",
     "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
 ]
@@ -161,7 +163,7 @@ def generate_mono():
     mono_path = find_font(MONO_PATHS)
     if not mono_path:
         sys.exit(f"No Noto Sans Mono font found in {MONO_PATHS}")
-    font = ImageFont.truetype(mono_path, 25)
+    font = ImageFont.truetype(mono_path, 26)
 
     # 1. Prepare synthesized EXTRA glyphs
     extra_grids = {}
@@ -215,15 +217,11 @@ def generate_mono():
                 draw_l = ImageDraw.Draw(img_l)
                 draw_l.text((0, -4), chr(cp), font=font, fill=255)
 
-                img_1 = Image.new('1', (16, CELL_H), color=0)
-                draw_1 = ImageDraw.Draw(img_1)
-                draw_1.text((0, -4), chr(cp), font=font, fill=1)
-
                 g_1 = []
                 for y in range(CELL_H):
                     r_val = 0
                     for x in range(16):
-                        if img_1.getpixel((x, y)):
+                        if img_l.getpixel((x, y)) >= 96:
                             r_val |= (1 << x)
                     g_1.append(r_val)
 
@@ -242,15 +240,11 @@ def generate_mono():
             draw_l = ImageDraw.Draw(img_l)
             draw_l.text((0, -4), ch, font=font, fill=255)
 
-            img_1 = Image.new('1', (16, CELL_H), color=0)
-            draw_1 = ImageDraw.Draw(img_1)
-            draw_1.text((0, -4), ch, font=font, fill=1)
-
             g_1 = []
             for y in range(CELL_H):
                 r_val = 0
                 for x in range(16):
-                    if img_1.getpixel((x, y)):
+                    if img_l.getpixel((x, y)) >= 96:
                         r_val |= (1 << x)
                 g_1.append(r_val)
 

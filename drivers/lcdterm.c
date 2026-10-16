@@ -794,6 +794,52 @@ int lcdterm_get_visible_canvases565(uint8_t *out_cids, int *out_x0, int *out_y0,
     return count;
 }
 
+int lcdterm_get_visible_terms(lcdterm_visible_term_t *out_terms, int max_terms) {
+    if (!g_scr || max_terms <= 0) return 0;
+    int count = 0;
+    int sw = (int)g_scr->cv.w;
+
+    for (uint8_t i = 0; i < g_scr->ribbon.count && count < max_terms; i++) {
+        const ribbon_win_t *w = &g_scr->ribbon.wins[i];
+        if (w->type != RIBBON_WIN_TERM) continue;
+
+        int t = -1;
+        for (uint32_t j = 0; j < SCREEN_MAX_TERMS; j++) {
+            if (g_scr->terms[j].in_use && g_scr->terms[j].vterm_id == w->vterm_id) {
+                t = (int)j;
+                break;
+            }
+        }
+        if (t < 0) continue;
+
+        const vtterm_t *vt = &g_scr->terms[t].vt;
+        if (vt->hidden || !vt->shadow) continue;
+
+        int32_t x0 = w->rx0 - g_scr->ribbon.x_view;
+        int32_t x1 = w->rx1 - g_scr->ribbon.x_view;
+        if (x1 < 0 || x0 >= sw) continue;
+
+        int c0 = (int)(vt->text.xbyte / FONT_CELL_BYTES);
+        out_terms[count].vterm_id = w->vterm_id;
+        out_terms[count].x0 = c0 * (int)FONT_CELL_W;
+        out_terms[count].y0 = SCREEN_TEXT_Y;
+        out_terms[count].cols = vt->text.cols;
+        out_terms[count].rows = vt->text.rows;
+        out_terms[count].shadow_cols = vt->shadow_cols;
+        out_terms[count].col_offset = vt->col_offset;
+        out_terms[count].shadow = vt->shadow;
+        if (vt->cursor_on && !vt->hidden && vt->col >= vt->col_offset && (vt->col - vt->col_offset) < vt->text.cols) {
+            out_terms[count].cur_col = (int)(vt->col - vt->col_offset);
+            out_terms[count].cur_row = (int)vt->row;
+        } else {
+            out_terms[count].cur_col = -1;
+            out_terms[count].cur_row = -1;
+        }
+        count++;
+    }
+    return count;
+}
+
 
 #else /* no panel */
 

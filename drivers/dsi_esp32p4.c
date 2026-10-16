@@ -44,7 +44,10 @@
 #include "drivers/ribbon.h"
 #include "drivers/i2c_bus.h"
 #include "drivers/lcdterm.h"
+#include "drivers/screen.h"
 #include "drivers/reader_view.h"
+#include "drivers/font_noto_mono.h"
+#include "drivers/vtterm.h"
 #include "arch/esp32p4_intr.h"
 #include "arch/trap.h"
 #include "kernel/console.h"
@@ -814,6 +817,11 @@ static bool              g_double_buffered = true;
 
 #define DIRTY_WORDS ((DSI_LCD_V_RES + 63u) / 64u)
 static uint64_t          g_dirty[2][DIRTY_WORDS];
+static uint64_t          g_dirty_trows[2];
+static uint16_t          g_dirty_x0[2];
+static uint16_t          g_dirty_x1[2];
+#define MAX_TERM_CELLS   2048u
+static uint16_t          g_t_cell_drawn[2][MAX_TERM_CELLS];
 
 static inline uint8_t *fb_front(void) {
     return g_fb_pool[g_front_idx];
@@ -1138,6 +1146,11 @@ static bool fb_start(fb_fmt_t fmt) {
     g_front_idx = 0;
     g_flip_pending = false;
     memset(g_dirty, 0xff, sizeof g_dirty);
+    g_dirty_trows[0] = ~0ull;
+    g_dirty_trows[1] = ~0ull;
+    g_dirty_x0[0] = 0; g_dirty_x1[0] = 2047u;
+    g_dirty_x0[1] = 0; g_dirty_x1[1] = 2047u;
+    memset(g_t_cell_drawn, 0xff, sizeof g_t_cell_drawn);
 
     g_fb_bpp = bpp; g_fb_bytes = bytes; g_fb_pages = pages; g_fb_fmt = fmt;
     bridge_format(bpp, fmt == FB_RGB565 ? 2u : 12u);
@@ -1345,6 +1358,11 @@ static void term_convert(unsigned y0, unsigned y1) {
     bool all = g_t_force && y0 == 0 && y1 == g_tbe.h;
     if (all) {
         memset(g_dirty, 0xff, sizeof g_dirty);
+        g_dirty_trows[0] = ~0ull;
+        g_dirty_trows[1] = ~0ull;
+        g_dirty_x0[0] = 0; g_dirty_x1[0] = (uint16_t)(g_tbe.w - 1);
+        g_dirty_x0[1] = 0; g_dirty_x1[1] = (uint16_t)(g_tbe.w - 1);
+        memset(g_t_cell_drawn, 0xff, sizeof g_t_cell_drawn);
         memcpy(g_t1_shadow, g_t1, total_bytes);
         g_t_force = false;
     } else {
@@ -1352,11 +1370,41 @@ static void term_convert(unsigned y0, unsigned y1) {
             const uint8_t *src = g_t1 + y * stride;
             uint8_t *sh = g_t1_shadow + y * stride;
             if (g_t_force || !row_same(src, sh, stride)) {
+                if (g_t_force) {
+                    g_dirty_x0[0] = 0; g_dirty_x1[0] = (uint16_t)(g_tbe.w - 1);
+                    g_dirty_x0[1] = 0; g_dirty_x1[1] = (uint16_t)(g_tbe.w - 1);
+                } else {
+                    const uint64_t *s64 = (const uint64_t *)src;
+                    const uint64_t *h64 = (const uint64_t *)sh;
+                    unsigned num_words = stride / 8u;
+                    unsigned w_min = 0;
+                    while (w_min < num_words && s64[w_min] == h64[w_min]) w_min++;
+                    unsigned w_max = num_words - 1u;
+                    while (w_max > w_min && s64[w_max] == h64[w_max]) w_max--;
+                    unsigned b_min = w_min * 8u;
+                    unsigned b_max = w_max * 8u + 7u;
+                    while (b_min < stride && src[b_min] == sh[b_min]) b_min++;
+                    while (b_max > b_min && src[b_max] == sh[b_max]) b_max--;
+                    unsigned x_min = b_min * 8u;
+                    unsigned x_max = b_max * 8u + 7u;
+                    for (int b = 0; b < 2; b++) {
+                        if (x_min < g_dirty_x0[b]) g_dirty_x0[b] = (uint16_t)x_min;
+                        if (x_max > g_dirty_x1[b]) g_dirty_x1[b] = (uint16_t)x_max;
+                    }
+                }
                 memcpy(sh, src, stride);
                 unsigned w = y / 64u;
                 uint64_t mask = 1ull << (y % 64u);
                 g_dirty[0][w] |= mask;
                 g_dirty[1][w] |= mask;
+                if (y >= SCREEN_TEXT_Y) {
+                    unsigned tr = (y - SCREEN_TEXT_Y) / 32u;
+                    if (tr < 64u) {
+                        uint64_t tmask = 1ull << tr;
+                        g_dirty_trows[0] |= tmask;
+                        g_dirty_trows[1] |= tmask;
+                    }
+                }
             }
         }
     }
@@ -1364,11 +1412,21 @@ static void term_convert(unsigned y0, unsigned y1) {
     /* 2. Convert dirty rows for the back buffer */
     unsigned back_idx = g_double_buffered ? (1u - g_front_idx) : 0u;
     int lo = -1, hi = -1;
+    int flush_py0 = -1, flush_py1 = -1;
     uint32_t n = 0;
 
     if (g_lcd_rot == 90 || g_lcd_rot == 270) {
         /* Landscape Mode (1280x720): logical rows y in 0..719, stride 160 bytes.
          * We convert dirty 8-row bands into physical 720x1280 back buffer. */
+        unsigned bx_start = 0, bx_end = stride;
+        if (g_dirty_x0[back_idx] <= g_dirty_x1[back_idx]) {
+            bx_start = (unsigned)g_dirty_x0[back_idx] / 8u;
+            bx_end = ((unsigned)g_dirty_x1[back_idx] / 8u) + 1u;
+            if (bx_end > stride) bx_end = stride;
+        }
+        g_dirty_x0[back_idx] = 0xffff;
+        g_dirty_x1[back_idx] = 0;
+
         for (unsigned w = 0; w < DIRTY_WORDS; w++) {
             uint64_t bits = g_dirty[back_idx][w];
             if (!bits) continue;
@@ -1387,7 +1445,7 @@ static void term_convert(unsigned y0, unsigned y1) {
                 const uint8_t *r6 = g_t1_shadow + (y0_band + 6u) * stride;
                 const uint8_t *r7 = g_t1_shadow + (y0_band + 7u) * stride;
 
-                for (unsigned bx = 0; bx < stride; bx++) {
+                for (unsigned bx = bx_start; bx < bx_end; bx++) {
                     uint8_t b0 = r0[bx], b1 = r1[bx], b2 = r2[bx], b3 = r3[bx];
                     uint8_t b4 = r4[bx], b5 = r5[bx], b6 = r6[bx], b7 = r7[bx];
 
@@ -1418,7 +1476,22 @@ static void term_convert(unsigned y0, unsigned y1) {
                 n++;
             }
         }
+        if (n && bx_start < bx_end) {
+            if (g_lcd_rot == 270) {
+                unsigned cur_pymin = 1279u - (bx_end * 8u - 1u);
+                unsigned cur_pymax = 1279u - (bx_start * 8u);
+                if (flush_py0 < 0 || (int)cur_pymin < flush_py0) flush_py0 = (int)cur_pymin;
+                if ((int)cur_pymax > flush_py1) flush_py1 = (int)cur_pymax;
+            } else {
+                unsigned cur_pymin = bx_start * 8u;
+                unsigned cur_pymax = bx_end * 8u - 1u;
+                if (flush_py0 < 0 || (int)cur_pymin < flush_py0) flush_py0 = (int)cur_pymin;
+                if ((int)cur_pymax > flush_py1) flush_py1 = (int)cur_pymax;
+            }
+        }
     } else {
+        g_dirty_x0[back_idx] = 0xffff;
+        g_dirty_x1[back_idx] = 0;
         /* Native orientation (0 deg or LCD-7B) */
         for (unsigned w = 0; w < DIRTY_WORDS; w++) {
             uint64_t bits = g_dirty[back_idx][w];
@@ -1501,6 +1574,17 @@ static void term_convert(unsigned y0, unsigned y1) {
         }
         if (lo < 0 || cl_y0 < lo) lo = cl_y0;
         if (cl_y1 > hi) hi = cl_y1;
+        if (g_lcd_rot == 270) {
+            unsigned cur_pymin = 1279u - (unsigned)cl_x1;
+            unsigned cur_pymax = 1279u - (unsigned)cl_x0;
+            if (flush_py0 < 0 || (int)cur_pymin < flush_py0) flush_py0 = (int)cur_pymin;
+            if ((int)cur_pymax > flush_py1) flush_py1 = (int)cur_pymax;
+        } else if (g_lcd_rot == 90) {
+            unsigned cur_pymin = (unsigned)cl_x0;
+            unsigned cur_pymax = (unsigned)cl_x1;
+            if (flush_py0 < 0 || (int)cur_pymin < flush_py0) flush_py0 = (int)cur_pymin;
+            if ((int)cur_pymax > flush_py1) flush_py1 = (int)cur_pymax;
+        }
         n++;
     }
 
@@ -1583,13 +1667,167 @@ static void term_convert(unsigned y0, unsigned y1) {
         }
         if (lo < 0 || cl_y0 < lo) lo = cl_y0;
         if (cl_y1 > hi) hi = cl_y1;
+        if (g_lcd_rot == 270) {
+            unsigned cur_pymin = 1279u - (unsigned)cl_x1;
+            unsigned cur_pymax = 1279u - (unsigned)cl_x0;
+            if (flush_py0 < 0 || (int)cur_pymin < flush_py0) flush_py0 = (int)cur_pymin;
+            if ((int)cur_pymax > flush_py1) flush_py1 = (int)cur_pymax;
+        } else if (g_lcd_rot == 90) {
+            unsigned cur_pymin = (unsigned)cl_x0;
+            unsigned cur_pymax = (unsigned)cl_x1;
+            if (flush_py0 < 0 || (int)cur_pymin < flush_py0) flush_py0 = (int)cur_pymin;
+            if ((int)cur_pymax > flush_py1) flush_py1 = (int)cur_pymax;
+        }
         n++;
     }
+
+    /* 2d. Composite visible anti-aliased Terminal windows onto fb_back() */
+#if defined(CONFIG_FONT_CELL_H) && (CONFIG_FONT_CELL_H == 32)
+    if (fmt == FB_RGB565) {
+        uint64_t trows_mask = g_dirty_trows[back_idx];
+        g_dirty_trows[back_idx] = 0;
+        if (trows_mask) {
+            lcdterm_visible_term_t terms[4];
+            int tcount = lcdterm_get_visible_terms(terms, 4);
+            if (tcount > 0) {
+                uint16_t norm_lut[16];
+                uint16_t inv_lut[16];
+                uint32_t fg_r = (g_t_fg >> 11) & 0x1Fu, fg_g = (g_t_fg >> 5) & 0x3Fu, fg_b = g_t_fg & 0x1Fu;
+                uint32_t bg_r = (g_t_bg >> 11) & 0x1Fu, bg_g = (g_t_bg >> 5) & 0x3Fu, bg_b = g_t_bg & 0x1Fu;
+                for (unsigned a = 0; a < 16; a++) {
+                    unsigned inv_a = 15u - a;
+                    uint32_t nr = (fg_r * a + bg_r * inv_a + 7u) / 15u;
+                    uint32_t ng = (fg_g * a + bg_g * inv_a + 7u) / 15u;
+                    uint32_t nb = (fg_b * a + bg_b * inv_a + 7u) / 15u;
+                    norm_lut[a] = (uint16_t)((nr << 11) | (ng << 5) | nb);
+
+                    uint32_t ir = (bg_r * a + fg_r * inv_a + 7u) / 15u;
+                    uint32_t ig = (bg_g * a + fg_g * inv_a + 7u) / 15u;
+                    uint32_t ib = (bg_b * a + fg_b * inv_a + 7u) / 15u;
+                    inv_lut[a] = (uint16_t)((ir << 11) | (ig << 5) | ib);
+                }
+
+                for (int ti = 0; ti < tcount; ti++) {
+                    const lcdterm_visible_term_t *vt = &terms[ti];
+                    for (uint16_t row = 0; row < vt->rows; row++) {
+                        if (!(trows_mask & (1ull << row))) continue;
+                        int cell_y0 = vt->y0 + (int)row * 32;
+                        if (cell_y0 + 31 < 0 || cell_y0 >= (int)g_tbe.h) continue;
+
+                    for (uint16_t col = 0; col < vt->cols; col++) {
+                        int cell_x0 = vt->x0 + (int)col * 16;
+                        if (cell_x0 + 15 < 0 || cell_x0 >= (int)g_tbe.w) continue;
+
+                        uint16_t sh_idx = row * vt->shadow_cols + (col + vt->col_offset);
+                        uint16_t v = vt->shadow[sh_idx];
+                        bool is_cursor = ((int)col == vt->cur_col && (int)row == vt->cur_row);
+                        bool is_inv = (v & VT_CELL_INVERSE) != 0;
+                        uint8_t code = (uint8_t)v;
+
+                        unsigned cell_flat_idx = (unsigned)row * vt->cols + col;
+                        uint16_t cur_val = v | (is_cursor ? 0x8000u : 0u);
+                        if (cell_flat_idx < MAX_TERM_CELLS) {
+                            if (g_t_cell_drawn[back_idx][cell_flat_idx] == cur_val) continue;
+                            g_t_cell_drawn[back_idx][cell_flat_idx] = cur_val;
+                        }
+
+                        if (code <= 0x20 && !is_inv && !is_cursor) continue;
+
+                        const uint16_t *lut = is_inv ? inv_lut : norm_lut;
+                        const uint8_t (*glyph)[8] = NULL;
+                        if (code >= FONT_NOTO_MONO_FIRST) {
+                            glyph = font_noto_mono_aa_glyphs[code - FONT_NOTO_MONO_FIRST];
+                        } else if (code > 0x20) {
+                            glyph = font_noto_mono_aa_glyphs[FONT_NOTO_MONO_REPLACEMENT - FONT_NOTO_MONO_FIRST];
+                        }
+
+                        if (g_lcd_rot == 270) {
+                            unsigned cur_pymin = 1279u - ((unsigned)cell_x0 + 15u);
+                            unsigned cur_pymax = 1279u - (unsigned)cell_x0;
+                            if (flush_py0 < 0 || (int)cur_pymin < flush_py0) flush_py0 = (int)cur_pymin;
+                            if ((int)cur_pymax > flush_py1) flush_py1 = (int)cur_pymax;
+
+                            for (unsigned dx = 0; dx < 16u; dx++) {
+                                unsigned shift = (dx & 1u) ? 4u : 0u;
+                                unsigned byte_idx = dx >> 1;
+                                unsigned py = 1279u - ((unsigned)cell_x0 + dx);
+                                uint16_t *dst = (uint16_t *)fb + (size_t)py * 720u + (unsigned)cell_y0;
+                                unsigned dy_max = is_cursor ? 30u : 32u;
+                                for (unsigned dy = 0; dy < dy_max; dy++) {
+                                    uint8_t pair = glyph ? glyph[dy][byte_idx] : 0;
+                                    uint8_t a = (pair >> shift) & 0x0Fu;
+                                    dst[dy] = lut[a];
+                                }
+                                if (is_cursor) {
+                                    uint16_t cpix = is_inv ? g_t_bg : g_t_fg;
+                                    dst[30] = cpix;
+                                    dst[31] = cpix;
+                                }
+                            }
+                        } else if (g_lcd_rot == 90) {
+                            unsigned cur_pymin = (unsigned)cell_x0;
+                            unsigned cur_pymax = (unsigned)cell_x0 + 15u;
+                            if (flush_py0 < 0 || (int)cur_pymin < flush_py0) flush_py0 = (int)cur_pymin;
+                            if ((int)cur_pymax > flush_py1) flush_py1 = (int)cur_pymax;
+
+                            for (unsigned dx = 0; dx < 16u; dx++) {
+                                unsigned shift = (dx & 1u) ? 4u : 0u;
+                                unsigned byte_idx = dx >> 1;
+                                unsigned py = (unsigned)cell_x0 + dx;
+                                uint16_t *dst = (uint16_t *)fb + (size_t)py * 720u + (719u - ((unsigned)cell_y0 + 31u));
+                                unsigned dy_max = is_cursor ? 30u : 32u;
+                                for (unsigned dy = 0; dy < dy_max; dy++) {
+                                    uint8_t pair = glyph ? glyph[dy][byte_idx] : 0;
+                                    uint8_t a = (pair >> shift) & 0x0Fu;
+                                    dst[31u - dy] = lut[a];
+                                }
+                                if (is_cursor) {
+                                    uint16_t cpix = is_inv ? g_t_bg : g_t_fg;
+                                    dst[1] = cpix;
+                                    dst[0] = cpix;
+                                }
+                            }
+                        } else {
+                            unsigned dy_max = is_cursor ? 30u : 32u;
+                            for (unsigned dy = 0; dy < dy_max; dy++) {
+                                uint16_t *dst = (uint16_t *)fb + (size_t)((unsigned)cell_y0 + dy) * DSI_LCD_H_RES + (unsigned)cell_x0;
+                                for (unsigned dx = 0; dx < 16u; dx++) {
+                                    uint8_t pair = glyph ? glyph[dy][dx >> 1] : 0;
+                                    uint8_t a = (dx & 1u) ? (pair >> 4) : (pair & 0x0Fu);
+                                    dst[dx] = lut[a];
+                                }
+                            }
+                            if (is_cursor) {
+                                uint16_t cpix = is_inv ? g_t_bg : g_t_fg;
+                                for (unsigned dy = 30u; dy < 32u; dy++) {
+                                    uint16_t *dst = (uint16_t *)fb + (size_t)((unsigned)cell_y0 + dy) * DSI_LCD_H_RES + (unsigned)cell_x0;
+                                    for (unsigned dx = 0; dx < 16u; dx++) {
+                                        dst[dx] = cpix;
+                                    }
+                                }
+                            }
+                        }
+                        if (lo < 0 || cell_y0 < lo) lo = cell_y0;
+                        if (cell_y0 + 31 > hi) hi = cell_y0 + 31;
+                        n++;
+                    }
+                }
+            }
+        }
+    }
+}
+#endif
 
     /* 3. Flush written rows and arm VSYNC flip */
     if (n) {
         if (g_lcd_rot == 90 || g_lcd_rot == 270) {
-            fb_flush_buffer(fb, 0, DSI_LCD_V_RES);
+            if (flush_py0 >= 0 && flush_py1 >= flush_py0) {
+                if (flush_py0 < 0) flush_py0 = 0;
+                if (flush_py1 >= (int)DSI_LCD_V_RES) flush_py1 = (int)DSI_LCD_V_RES - 1;
+                fb_flush_buffer(fb, (unsigned)flush_py0, (unsigned)flush_py1 + 1u);
+            } else {
+                fb_flush_buffer(fb, 0, DSI_LCD_V_RES);
+            }
         } else {
             fb_flush_buffer(fb, (unsigned)lo, (unsigned)hi + 1u);
         }
@@ -2158,6 +2396,10 @@ void dsi_lcd_command(const char *args) {
             g_fb_pool[1] = fb1;
             g_double_buffered = true;
             memset(g_dirty, 0, sizeof g_dirty);
+            g_dirty_trows[0] = 0;
+            g_dirty_trows[1] = 0;
+            g_dirty_x0[0] = 0xffff; g_dirty_x1[0] = 0;
+            g_dirty_x0[1] = 0xffff; g_dirty_x1[1] = 0;
             console_unlock();
             cprintf("lcd: double-buffering enabled (front 0x%08lx, back 0x%08lx)\n",
                     (unsigned long)(uintptr_t)fb_front(),

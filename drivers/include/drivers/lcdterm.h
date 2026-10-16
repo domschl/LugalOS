@@ -106,6 +106,18 @@ void lcdterm_sync_post(void);
 int lcdterm_get_visible_readers(uint8_t *out_rids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins);
 uint16_t *lcdterm_get_canvas565_backing(uint8_t cid, uint32_t *out_stride, int *out_w, int *out_h);
 int lcdterm_get_visible_canvases565(uint8_t *out_cids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins);
+
+typedef struct {
+    uint8_t   vterm_id;
+    int       x0, y0;          /* pixel coordinates of top-left text cell */
+    uint16_t  cols, rows;      /* visible text cols & rows */
+    uint16_t  shadow_cols;     /* stride in cells of shadow */
+    uint16_t  col_offset;      /* horizontal scroll offset into shadow */
+    const uint16_t *shadow;    /* cell array */
+    int       cur_col, cur_row;/* cursor position relative to window, or -1 if hidden */
+} lcdterm_visible_term_t;
+
+int lcdterm_get_visible_terms(lcdterm_visible_term_t *out_terms, int max_terms);
 #else
 static inline bool lcdterm_is_animating(void) { return false; }
 static inline bool lcdterm_is_double_buffered(void) { return false; }
@@ -121,6 +133,21 @@ static inline uint16_t *lcdterm_get_canvas565_backing(uint8_t cid, uint32_t *out
 }
 static inline int lcdterm_get_visible_canvases565(uint8_t *out_cids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins) {
     (void)out_cids; (void)out_x0; (void)out_y0; (void)out_x1; (void)out_y1; (void)max_wins;
+    return 0;
+}
+
+typedef struct {
+    uint8_t   vterm_id;
+    int       x0, y0;
+    uint16_t  cols, rows;
+    uint16_t  shadow_cols;
+    uint16_t  col_offset;
+    const uint16_t *shadow;
+    int       cur_col, cur_row;
+} lcdterm_visible_term_t;
+
+static inline int lcdterm_get_visible_terms(lcdterm_visible_term_t *out_terms, int max_terms) {
+    (void)out_terms; (void)max_terms;
     return 0;
 }
 #endif
