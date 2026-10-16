@@ -708,6 +708,10 @@ bool lcdterm_is_animating(void) {
     return g_scr && g_scr->animating;
 }
 
+bool lcdterm_is_double_buffered(void) {
+    return g_be && g_be->is_double_buffered ? g_be->is_double_buffered() : false;
+}
+
 void lcdterm_sync_pre(void) {
     if (g_be && g_be->sync_pre) g_be->sync_pre();
 }
@@ -805,6 +809,7 @@ void lcdterm_report(void) { }
 canvas1_t *lcdterm_get_canvas_backing(uint8_t cid) { (void)cid; return NULL; }
 canvas1_t *lcdterm_get_reader_backing(uint8_t rid) { (void)rid; return NULL; }
 bool lcdterm_is_animating(void) { return false; }
+bool lcdterm_is_double_buffered(void) { return false; }
 void lcdterm_sync_pre(void) { }
 void lcdterm_sync_post(void) { }
 int lcdterm_get_visible_readers(uint8_t *out_rids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins) {

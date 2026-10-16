@@ -14,6 +14,8 @@ void reader_close(void);
 void reader_close_instance(uint8_t rid);
 void reader_scroll(int delta_y);
 void reader_scroll_instance(uint8_t rid, int delta_y);
+void reader_touch_fling(int dy, uint32_t ms);
+void reader_touch_fling_instance(uint8_t rid, int dy, uint32_t ms);
 bool reader_tap(int client_x, int client_y);
 bool reader_tap_instance(uint8_t rid, int client_x, int client_y);
 void reader_feed_key(int c);

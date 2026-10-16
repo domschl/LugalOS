@@ -159,11 +159,20 @@ void console_blank_counts(uint32_t *blankings, uint32_t *wakes, uint32_t *swallo
 }
 
 static volatile uint32_t g_tap_xy;     /* x << 16 | y */
+static volatile int      g_scroll_dy = 0;
+static volatile uint32_t g_scroll_ms = 0;
 
 void console_touch_tap(unsigned x, unsigned y) {
     if (note_input(true)) return;
     g_tap_xy = ((uint32_t)x << 16) | (y & 0xFFFFu);
     g_hotkey = CONSOLE_HOTKEY_TAP;
+}
+
+void console_touch_scroll(int dy, uint32_t ms) {
+    if (note_input(true)) return;
+    g_scroll_dy = dy;
+    g_scroll_ms = ms;
+    g_hotkey = dy < 0 ? CONSOLE_HOTKEY_SCROLL_DOWN : CONSOLE_HOTKEY_SCROLL_UP;
 }
 
 void console_hotkey(unsigned code) {
@@ -308,12 +317,18 @@ static void run_hotkey(void) {
         }
         return;
     }
-    if (hk == CONSOLE_HOTKEY_SCROLL_UP) {
-        if (reader_is_active()) reader_scroll(-80);
-        return;
-    }
-    if (hk == CONSOLE_HOTKEY_SCROLL_DOWN) {
-        if (reader_is_active()) reader_scroll(80);
+    if (hk == CONSOLE_HOTKEY_SCROLL_UP || hk == CONSOLE_HOTKEY_SCROLL_DOWN) {
+        if (reader_is_active()) {
+            int dy = g_scroll_dy;
+            uint32_t ms = g_scroll_ms;
+            g_scroll_dy = 0;
+            g_scroll_ms = 0;
+            if (ms > 0 && dy != 0) {
+                reader_touch_fling(dy, ms);
+            } else {
+                reader_scroll(hk == CONSOLE_HOTKEY_SCROLL_UP ? -80 : 80);
+            }
+        }
         return;
     }
     if (hk == CONSOLE_HOTKEY_TOGGLE_MAX) {

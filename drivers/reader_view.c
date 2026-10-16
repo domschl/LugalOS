@@ -267,17 +267,96 @@ void reader_update(void) {
 }
 
 void reader_scroll_instance(uint8_t rid, int delta_y) {
-    if (rid >= READER_MAX_INSTANCES || !s_readers[rid].active) return;
-    s_readers[rid].scroll_y += delta_y;
-    if (s_readers[rid].scroll_y < 0) s_readers[rid].scroll_y = 0;
+    if (rid >= READER_MAX_INSTANCES || !s_readers[rid].active || delta_y == 0) return;
+    int start_y = s_readers[rid].scroll_y;
+    int target_y = start_y + delta_y;
+    if (target_y < 0) target_y = 0;
     int max_scroll = s_readers[rid].total_h - 120;
     if (max_scroll < 0) max_scroll = 0;
-    if (s_readers[rid].scroll_y > max_scroll) s_readers[rid].scroll_y = max_scroll;
+    if (target_y > max_scroll) target_y = max_scroll;
+    if (target_y == start_y) return;
+
+    canvas1_t *c = get_reader_canvas(rid);
+    int w = s_readers[rid].win_w > 0 ? s_readers[rid].win_w : (c ? (int)c->w : 0);
+    int h = s_readers[rid].win_h > 0 ? s_readers[rid].win_h : (c ? (int)c->h : 0);
+
+    int diff = target_y - start_y;
+    int abs_diff = diff < 0 ? -diff : diff;
+
+#if defined(LCDTERM_PRESENT)
+    if (c && w > 0 && h > 0 && abs_diff > 16) {
+        /* Smooth ease-out scrolling */
+        const int steps = abs_diff <= 48 ? 3 : 5;
+        static const int weights3[3] = { 450, 800, 1000 };
+        static const int weights5[5] = { 280, 540, 750, 900, 1000 };
+        const int *w_table = (steps == 3) ? weights3 : weights5;
+
+        for (int s = 0; s < steps; s++) {
+            s_readers[rid].scroll_y = start_y + (diff * w_table[s]) / 1000;
+            reader_draw(rid, c, w, h);
+            lcdterm_sync_post();
+            if (console_has_char() || console_interrupt_requested()) break;
+        }
+    }
+#endif
+
+    s_readers[rid].scroll_y = target_y;
     reader_update_instance(rid);
 }
 
 void reader_scroll(int delta_y) {
     reader_scroll_instance(s_active_reader_rid, delta_y);
+}
+
+void reader_touch_fling_instance(uint8_t rid, int dy, uint32_t ms) {
+    if (rid >= READER_MAX_INSTANCES || !s_readers[rid].active) return;
+    if (ms < 10) ms = 10;
+    if (ms > 500) ms = 500;
+
+    int max_scroll = s_readers[rid].total_h - 120;
+    if (max_scroll < 0) max_scroll = 0;
+    if (max_scroll == 0) return;
+
+    canvas1_t *c = get_reader_canvas(rid);
+    int w = s_readers[rid].win_w > 0 ? s_readers[rid].win_w : (c ? (int)c->w : 0);
+    int h = s_readers[rid].win_h > 0 ? s_readers[rid].win_h : (c ? (int)c->h : 0);
+    if (!c || w <= 0 || h <= 0) return;
+
+    /* Moving finger up (dy < 0) scrolls down (positive scroll_y change) */
+    int v = -(dy * 16) / (int)ms;
+    if (v > 50) v = 50;
+    if (v < -50) v = -50;
+    if (v >= 0 && v < 4) v = 6;
+    if (v < 0 && v > -4) v = -6;
+
+    for (int frame = 0; frame < 30; frame++) {
+        int next_y = s_readers[rid].scroll_y + v;
+        if (next_y < 0) {
+            s_readers[rid].scroll_y = 0;
+            break;
+        }
+        if (next_y > max_scroll) {
+            s_readers[rid].scroll_y = max_scroll;
+            break;
+        }
+        s_readers[rid].scroll_y = next_y;
+        reader_draw(rid, c, w, h);
+#if defined(LCDTERM_PRESENT)
+        lcdterm_sync_post();
+#endif
+        /* Friction decay: 12% loss per frame at 60 Hz */
+        v = (v * 88) / 100;
+        int abs_v = v < 0 ? -v : v;
+        if (abs_v <= 1) break;
+
+        if (console_has_char() || console_interrupt_requested()) break;
+    }
+
+    reader_update_instance(rid);
+}
+
+void reader_touch_fling(int dy, uint32_t ms) {
+    reader_touch_fling_instance(s_active_reader_rid, dy, ms);
 }
 
 bool reader_back_instance(uint8_t rid) {

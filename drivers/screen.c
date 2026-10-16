@@ -1256,23 +1256,25 @@ LCDTERM_UTEXT static void screen_animate_ribbon(screen_t *scr,
         return;
     }
 
-    const int STEPS = 4;
+    const int STEPS = 5;
+    /* Ease-out weights (scaled by 1000) for smooth deceleration */
+    static const int weights[5] = { 280, 540, 750, 900, 1000 };
     scr->animating = true;
-    for (int s = 1; s <= STEPS; s++) {
-        int rem = STEPS - s;
+    for (int s = 0; s < STEPS; s++) {
+        int w = weights[s];
         if (has_win_anim) {
             int32_t d_a0 = a_target_rx0 - a_start_rx0;
             int32_t d_a1 = a_target_rx1 - a_start_rx1;
             int32_t d_b0 = b_target_rx0 - b_start_rx0;
             int32_t d_b1 = b_target_rx1 - b_start_rx1;
-            scr->ribbon.wins[win_a].rx0 = a_target_rx0 - (d_a0 * rem) / STEPS;
-            scr->ribbon.wins[win_a].rx1 = a_target_rx1 - (d_a1 * rem) / STEPS;
-            scr->ribbon.wins[win_b].rx0 = b_target_rx0 - (d_b0 * rem) / STEPS;
-            scr->ribbon.wins[win_b].rx1 = b_target_rx1 - (d_b1 * rem) / STEPS;
+            scr->ribbon.wins[win_a].rx0 = a_start_rx0 + (d_a0 * w) / 1000;
+            scr->ribbon.wins[win_a].rx1 = a_start_rx1 + (d_a1 * w) / 1000;
+            scr->ribbon.wins[win_b].rx0 = b_start_rx0 + (d_b0 * w) / 1000;
+            scr->ribbon.wins[win_b].rx1 = b_start_rx1 + (d_b1 * w) / 1000;
         }
         if (has_xv_anim) {
             int32_t d_xv = target_xv - start_xv;
-            scr->ribbon.x_view = target_xv - (d_xv * rem) / STEPS;
+            scr->ribbon.x_view = start_xv + (d_xv * w) / 1000;
         } else {
             scr->ribbon.x_view = target_xv;
         }
@@ -1281,10 +1283,6 @@ LCDTERM_UTEXT static void screen_animate_ribbon(screen_t *scr,
         (void)place(scr, scr->layout);
         draw_all_from(scr, true);
         lcdterm_sync_post();
-
-        if (s < STEPS) {
-            lcdterm_delay_us(25000);
-        }
     }
 
     /* Final canonical positioning */

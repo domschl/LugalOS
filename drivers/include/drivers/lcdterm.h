@@ -57,6 +57,8 @@ typedef struct {
     void      (*sync_post)(void);
     /* 55.3: capture scanout pixels with format (optional) */
     bool      (*capture)(const uint8_t **fb, unsigned *w, unsigned *h, unsigned *stride, unsigned *format);
+    /* 55.5: whether backend is using double-buffering (optional) */
+    bool      (*is_double_buffered)(void);
 } lcdterm_backend_t;
 
 /* Takes the backend (kept by pointer: it must outlive the terminal), finds
@@ -97,6 +99,7 @@ canvas1_t *lcdterm_get_canvas_backing(uint8_t cid);
 canvas1_t *lcdterm_get_reader_backing(uint8_t rid);
 #if defined(LCDTERM_PRESENT)
 bool lcdterm_is_animating(void);
+bool lcdterm_is_double_buffered(void);
 void lcdterm_sync_pre(void);
 void lcdterm_sync_post(void);
 int lcdterm_get_visible_readers(uint8_t *out_rids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins);
@@ -104,6 +107,7 @@ uint16_t *lcdterm_get_canvas565_backing(uint8_t cid, uint32_t *out_stride, int *
 int lcdterm_get_visible_canvases565(uint8_t *out_cids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins);
 #else
 static inline bool lcdterm_is_animating(void) { return false; }
+static inline bool lcdterm_is_double_buffered(void) { return false; }
 static inline void lcdterm_sync_pre(void) { }
 static inline void lcdterm_sync_post(void) { }
 static inline int lcdterm_get_visible_readers(uint8_t *out_rids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins) {

@@ -173,6 +173,8 @@ void console_hotkey(unsigned code);
  * like a hotkey (from an input wait), and like one it only wakes a blanked
  * panel. Swipes are hotkeys proper: CONSOLE_HOTKEY_FOCUS_LEFT/_RIGHT. */
 void console_touch_tap(unsigned x, unsigned y);
+/* 55.5: a vertical swipe / touch flick on the panel with delta y and duration ms */
+void console_touch_scroll(int dy, uint32_t ms);
 
 /* Where console input comes
  * from. Each source is polled by the console pump, in registration order,

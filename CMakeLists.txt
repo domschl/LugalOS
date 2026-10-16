@@ -269,7 +269,7 @@ option(LUGALOS_ENABLE_DCF77 "Build the DCF-77 longwave time-signal receiver driv
 # path. Its own flag rather than DCF77's -- a board could want one without the
 # other, and only the calibration wants both.
 option(LUGALOS_ENABLE_GPS "Build the GPS/PPS reference driver (RP2350 only)" OFF)
-option(LUGALOS_ENABLE_RIBBON_ANIMATION "Enable window slide animation on the ribbon" OFF)
+option(LUGALOS_ENABLE_RIBBON_ANIMATION "Enable window slide animation on the ribbon" ON)
 
 # --- U-mode user programs ------
 #

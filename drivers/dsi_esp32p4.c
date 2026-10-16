@@ -1355,6 +1355,7 @@ static void term_sync_post(void) {
         }
     }
     console_lock();
+    g_t_force = true;
     term_convert(0, DSI_LCD_V_RES);
     g_t_due = false;
     if (g_double_buffered) {
@@ -1392,6 +1393,7 @@ static lcdterm_backend_t g_tbe = {
     .sync_pre        = term_sync_pre,
     .sync_post       = term_sync_post,
     .capture         = term_capture,
+    .is_double_buffered = dsi_lcd_is_double_buffered,
 };
 
 /* The whole terminal again, from its 1-bpp frame -- after a test pattern

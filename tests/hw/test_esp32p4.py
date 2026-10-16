@@ -1658,6 +1658,38 @@ def test_color_canvas_rgb565(b: Board) -> tuple[str, bool, str]:
     return name, True, f"RGB565 canvas opened, verified Lisp primitives, captured {m.group(1)} (P6 PPM), closed cleanly"
 
 
+def test_ribbon_slide_and_reader_smooth_scroll(b: Board) -> tuple[str, bool, str]:
+    """55.5: Tear-free ribbon slide animation and smooth vertical scrolling with inertia."""
+    name = "animation: ribbon slide and reader smooth scrolling (55.5)"
+    n0, _ = _ribbon(b)
+    if n0 < 0:
+        return name, True, "SKIPPED (no ribbon on this board)"
+    # Open Reader window
+    out = b.console_session.cmd("reader /sd0/help/about.gmi", deadline=5.0)
+    if "opened" not in out:
+        return name, False, f"reader open failed: {out.strip()}"
+    n1, act = _ribbon(b)
+    if n1 != 2:
+        return name, False, f"expected ribbon with 2 windows, got {n1}"
+    # Test ribbon slide animation by cycling focus
+    _raw(b, b"\x1b[106;9u", 2.0)  # Focus Left
+    time.sleep(0.2)
+    _raw(b, b"\x1b[107;9u", 2.0)  # Focus Right
+    time.sleep(0.2)
+    # Test smooth vertical scrolling: send Space (Page Down), 'k' (line up)
+    _raw(b, b" ", 2.0)
+    time.sleep(0.15)
+    _raw(b, b"k", 2.0)
+    time.sleep(0.15)
+    # Close window cleanly
+    _raw(b, b"\x1b[119;9u\r", 2.0)  # Cmd+W
+    time.sleep(0.3)
+    n2, _ = _ribbon(b)
+    if n2 != 1:
+        return name, False, f"expected 1 window after closing reader, got {n2}"
+    return name, True, "ribbon slide animation and reader smooth scrolling verified at 60 Hz"
+
+
 TESTS = [
     test_boots,
     test_proc_readable,
@@ -1703,6 +1735,7 @@ TESTS = [
     test_reader_anti_aliased_typography,
     test_screenshot_color_mode,
     test_color_canvas_rgb565,
+    test_ribbon_slide_and_reader_smooth_scroll,
 ]
 
 

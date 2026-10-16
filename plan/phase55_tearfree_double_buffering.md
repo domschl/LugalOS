@@ -127,7 +127,7 @@ CPU / Rendering Engine (lcdterm, screen.c)
   * `SCREEN_FORMAT_RGB565` $\rightarrow$ Netpbm PPM (`.ppm`, P6, 24-bit RGB)
 * Verified 100% pass on host test suite (506/506) and hardware-in-the-loop suite on ESP32-P4-LCD-7B (43/43). Verified crystal-clear grayscale captures (`shot-004.png`).
 
-### Milestone 55.4: Hybrid Ribbon Compositing & Color Canvases (`drivers/screen.c`) [DONE - Commit pending]
+### Milestone 55.4: Hybrid Ribbon Compositing & Color Canvases (`drivers/screen.c`) [DONE]
 * Extended `screen_canvas_slot_t` with `buf565`, `stride565`, `w565`, `h565`, and `format` (`CANVAS_FMT_1BPP` vs `CANVAS_FMT_RGB565`).
 * Implemented dynamic 16-bit RGB565 canvas buffer allocation in PSRAM via `palloc_pages_bulk()` and free on window close (`screen_canvas_free()`).
 * Implemented full suite of RGB565 drawing operations in `drivers/screen.c` (conditioned on `!defined(CONFIG_BOARD_RP2350)` preserving RP2350 32 KB PMP budget):
@@ -141,12 +141,18 @@ CPU / Rendering Engine (lcdterm, screen.c)
 * Verified 100% pass on host test suite (`runner.py`: 506/506) and hardware-in-the-loop suite on ESP32-P4-LCD-7B (`test_esp32p4.py`: 44/44, including `test_color_canvas_rgb565`).
 * Captured live hardware 24-bit Netpbm PPM screenshot (`SHOT-003.PPM` -> `shot-005.png`) showing retro monochrome terminal window side-by-side with full RGB565 color canvas.
 
-
-### Milestone 55.5: Re-Enable & Refine Ribbon Slide Animation
-* Re-enable `CONFIG_ENABLE_RIBBON_ANIMATION`:
-  * Set default to `ON` once double-buffering is verified.
-  * Perform multi-step interpolations (e.g. 4–6 steps at 60 Hz = 66–100 ms total transition).
-  * Each animation step renders to back buffer $\rightarrow$ flips at VSYNC $\rightarrow$ zero tearing, zero blue flashes.
+### Milestone 55.5: Re-Enable & Refine Ribbon Slide Animation & Reader Smooth Inertia Scrolling [DONE]
+* Re-enabled `CONFIG_ENABLE_RIBBON_ANIMATION`:
+  * Default changed to `ON` in `CMakeLists.txt` now that double-buffering is verified.
+  * Upgraded `screen_animate_ribbon()` to a 5-step ease-out deceleration curve (`weights = {280, 540, 750, 900, 1000}`), eliminating artificial busy delays when double-buffered.
+  * Each animation step synchronizes to hardware VSYNC via `lcdterm_sync_post()` and `dsi_lcd_flip(true)` $\rightarrow$ zero tearing, zero artifacts.
+  * In `term_sync_post()`, set `g_t_force = true` during ribbon animation to refresh all 600 scanlines into `fb_back()`, avoiding stale row ghosting.
+* Implemented Reader smooth vertical scrolling & touch flick momentum:
+  * Paced ease-out scrolling across 3–5 frames in `reader_scroll_instance()`.
+  * Touch flick / momentum scrolling in `reader_touch_fling_instance()`: computes initial frame velocity from touch gesture delta and duration ($v = -dy \times 16 / ms$, capped to $\pm 50$ px/frame), decaying with 12% per-frame friction ($v \leftarrow v \times 0.88$) until rest.
+  * Break instantly on new touch tap or key press.
+  * Integrated GT911 touch swipe handling with `console_touch_scroll(dy, ms)`.
+* Verified 100% pass on ESP32-P4 hardware-in-the-loop test suite (`test_esp32p4.py`: 45/45 passed, including `test_ribbon_slide_and_reader_smooth_scroll`).
 
 ### Milestone 55.6: Verification & Hardware Testing
 * **Benchmark & Frame-Pacing**:
