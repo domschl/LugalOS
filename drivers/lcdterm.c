@@ -273,11 +273,12 @@ static bool lcdterm_send(uint8_t op, const char *p, uint32_t len) {
 }
 
 static uint8_t g_batch_vid;
+static bool    s_pending_char_damage = false;
 
 /* Called with the batch full, from console_flush(), and before input waits.
  * Takes console_lock itself (re-entrant) because writers append under it. */
 void lcdterm_screen_flush(void) {
-    if (g_batch_len == 0) return;
+    if (g_batch_len == 0 && !s_pending_char_damage) return;
     console_lock();
     if (g_batch_len > 0) {
         uint32_t len = g_batch_len;
@@ -290,6 +291,9 @@ void lcdterm_screen_flush(void) {
         for (uint32_t i = 0; i < len; i++) req[2u + i] = g_batch[i];
         if (!lcdterm_send(LCDTERM_OP_WRITE, (const char *)req + 1, 1u + len))
             screen_write_vterm(g_scr, vid, (const char *)g_batch, len);
+        damage(0, g_be->h);
+    } else if (s_pending_char_damage) {
+        s_pending_char_damage = false;
         damage(0, g_be->h);
     }
     console_unlock();
@@ -313,7 +317,11 @@ void lcdterm_screen_putc_vterm(int vid, char c) {
     g_batch_vid = (uint8_t)vid;
     if (!lcdterm_alive()) {
         screen_write_vterm(g_scr, (uint8_t)vid, &c, 1);
-        if (c == '\n') damage(0, g_be->h);
+        s_pending_char_damage = true;
+        if (c == '\n') {
+            damage(0, g_be->h);
+            s_pending_char_damage = false;
+        }
         return;
     }
     g_batch[g_batch_len++] = (uint8_t)c;
