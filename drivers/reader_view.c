@@ -10,6 +10,8 @@
 
 #include "drivers/reader_view.h"
 #include "drivers/font_serif.h"
+#include "drivers/font_noto_serif.h"
+#include "drivers/font_noto_mono.h"
 #include "drivers/font8x16.h"
 #include "drivers/canvas1.h"
 #include "drivers/lcdterm_attr.h"
@@ -31,8 +33,16 @@
 
 #define READER_LINKS_MAX   16
 #define READER_STACK_MAX   8
+
+#if defined(CONFIG_FONT_HIDPI) || (defined(CONFIG_FONT_CELL_H) && (CONFIG_FONT_CELL_H == 32))
+#define READER_IS_HIDPI    1
+#define READER_MARGIN_X    36
+#define READER_LINE_H      38
+#else
+#define READER_IS_HIDPI    0
 #define READER_MARGIN_X    24
 #define READER_LINE_H      18
+#endif
 
 #define READER_BG_GRAY8          250   /* Soft book-grade paper/cream (0xFA) */
 #define READER_FG_GRAY8          10    /* Deep charcoal dark slate ink (0x0A) */
@@ -767,6 +777,17 @@ static void rdraw_hline(rdraw_t *rd, int x0, int x1, int y, uint8_t gray, unsign
 
 static int rdraw_serif_text(rdraw_t *rd, int x, int y, const char *s, uint32_t len, bool bold) {
     int drawn_w = 0;
+#if READER_IS_HIDPI
+    if (rd->c) {
+        drawn_w = canvas1_noto_serif_text(rd->c, x, y, s, len, bold);
+    }
+    if (rd->aa_fb) {
+        int aa_w = font_noto_serif_aa_text_gray8(rd->aa_fb, rd->aa_stride, rd->w, rd->h,
+                                                 x, y, s, len,
+                                                 READER_FG_GRAY8, READER_BG_GRAY8, bold);
+        if (!rd->c) drawn_w = aa_w;
+    }
+#else
     if (rd->c) {
         drawn_w = canvas1_serif_text(rd->c, x, y, s, len, bold);
     }
@@ -776,10 +797,40 @@ static int rdraw_serif_text(rdraw_t *rd, int x, int y, const char *s, uint32_t l
                                             READER_FG_GRAY8, READER_BG_GRAY8, bold);
         if (!rd->c) drawn_w = aa_w;
     }
+#endif
     return drawn_w;
 }
 
 static void rdraw_mono_text(rdraw_t *rd, int x, int y, const char *s, uint32_t len, int max_chars) {
+#if READER_IS_HIDPI
+    if (rd->c) {
+        for (uint32_t i = 0; i < len && s[i] && (int)i < max_chars; i++) {
+            uint8_t code = (uint8_t)s[i];
+            if (code < FONT_NOTO_MONO_FIRST) code = FONT_NOTO_MONO_REPLACEMENT;
+            const uint16_t *glyph = font_noto_mono_get_glyph(code);
+            int cx = x + (int)i * 16;
+            for (int r = 0; r < 32; r++) {
+                int py = y + r;
+                if (py < 0 || py >= (int)rd->c->h) continue;
+                uint16_t bits = glyph[r];
+                for (int b = 0; b < 16; b++) {
+                    int px = cx + b;
+                    if (px >= 0 && px < (int)rd->c->w && ((bits >> b) & 1u)) {
+                        canvas1_fill(rd->c, px, py, px, py, CANVAS1_BLACK);
+                    }
+                }
+            }
+        }
+    }
+    if (rd->aa_fb) {
+        int cx = x;
+        for (uint32_t i = 0; i < len && s[i] && (int)i < max_chars; i++) {
+            font_noto_mono_aa_glyph_gray8(rd->aa_fb, rd->aa_stride, rd->w, rd->h,
+                                          cx, y, (uint8_t)s[i], READER_FG_GRAY8, READER_BG_GRAY8);
+            cx += 16;
+        }
+    }
+#else
     if (rd->c) {
         canvas1_text(rd->c, x, y, s, len, max_chars, 0, 16, false);
     }
@@ -804,6 +855,7 @@ static void rdraw_mono_text(rdraw_t *rd, int x, int y, const char *s, uint32_t l
             cx += 8;
         }
     }
+#endif
 }
 
 /* Word wrapping and proportional text rendering */
@@ -820,7 +872,13 @@ static int render_wrapped_serif_line(rdraw_t *rd, int x0, int max_w,
         const char *word_start = p;
         while (*p && *p != ' ') p++;
         uint32_t word_len = (uint32_t)(p - word_start);
+#if READER_IS_HIDPI
+        unsigned word_w = font_noto_serif_text_width(word_start, word_len);
+        unsigned space_w = font_noto_serif_char_width(' ');
+#else
         unsigned word_w = font_serif_text_width(word_start, word_len);
+        unsigned space_w = font_serif_char_width(' ');
+#endif
 
         if (cur_x + (int)word_w > x0 + max_w && cur_x > x0) {
             cur_x = x0;
@@ -831,7 +889,7 @@ static int render_wrapped_serif_line(rdraw_t *rd, int x0, int max_w,
         if (screen_y + line_h >= 0 && screen_y < win_h) {
             rdraw_serif_text(rd, cur_x, screen_y, word_start, word_len, bold);
         }
-        cur_x += (int)word_w + (int)font_serif_char_width(' ');
+        cur_x += (int)word_w + (int)space_w;
     }
     cur_y += line_h;
     *out_doc_y = cur_y;
@@ -899,7 +957,11 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
                     /* Process line */
                     if (gem.type == GEM_LINE_TEXT) {
                         render_wrapped_serif_line(&rd, margin_x, max_w, gem.text, false, READER_LINE_H, scroll_y, h, &doc_y);
+#if READER_IS_HIDPI
+                        doc_y += 8;
+#else
                         doc_y += 4;
+#endif
                     }
                 }
             }
@@ -920,42 +982,85 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
 
                 switch (gem.type) {
                 case GEM_LINE_H1:
+#if READER_IS_HIDPI
+                    if (screen_y + 44 >= 0 && screen_y < h) {
+                        rdraw_serif_text(&rd, margin_x, screen_y, gem.text, strlen(gem.text), true);
+                        rdraw_hline(&rd, margin_x, margin_x + max_w, screen_y + 36, READER_RULE_GRAY8, CANVAS1_BLACK);
+                    }
+                    doc_y += 52;
+#else
                     if (screen_y + 26 >= 0 && screen_y < h) {
                         rdraw_serif_text(&rd, margin_x, screen_y, gem.text, strlen(gem.text), true);
                         rdraw_hline(&rd, margin_x, margin_x + max_w, screen_y + 19, READER_RULE_GRAY8, CANVAS1_BLACK);
                     }
                     doc_y += 30;
+#endif
                     break;
 
                 case GEM_LINE_H2:
+#if READER_IS_HIDPI
+                    if (screen_y + 38 >= 0 && screen_y < h) {
+                        rdraw_serif_text(&rd, margin_x, screen_y, gem.text, strlen(gem.text), true);
+                    }
+                    doc_y += 44;
+#else
                     if (screen_y + 22 >= 0 && screen_y < h) {
                         rdraw_serif_text(&rd, margin_x, screen_y, gem.text, strlen(gem.text), true);
                     }
                     doc_y += 24;
+#endif
                     break;
 
                 case GEM_LINE_H3:
+#if READER_IS_HIDPI
+                    if (screen_y + 36 >= 0 && screen_y < h) {
+                        rdraw_serif_text(&rd, margin_x, screen_y, gem.text, strlen(gem.text), false);
+                    }
+                    doc_y += 40;
+#else
                     if (screen_y + 20 >= 0 && screen_y < h) {
                         rdraw_serif_text(&rd, margin_x, screen_y, gem.text, strlen(gem.text), false);
                     }
                     doc_y += 22;
+#endif
                     break;
 
                 case GEM_LINE_BLANK:
+#if READER_IS_HIDPI
+                    doc_y += 20;
+#else
                     doc_y += 12;
+#endif
                     break;
 
                 case GEM_LINE_LIST:
+#if READER_IS_HIDPI
+                    if (screen_y + 32 >= 0 && screen_y < h) {
+                        rdraw_fill(&rd, margin_x + 8, screen_y + 14, margin_x + 14, screen_y + 20, READER_FG_GRAY8, CANVAS1_BLACK);
+                    }
+                    render_wrapped_serif_line(&rd, margin_x + 28, max_w - 28, gem.text, false, READER_LINE_H, scroll_y, h, &doc_y);
+                    doc_y += 8;
+#else
                     if (screen_y + 16 >= 0 && screen_y < h) {
                         rdraw_fill(&rd, margin_x + 6, screen_y + 6, margin_x + 9, screen_y + 9, READER_FG_GRAY8, CANVAS1_BLACK);
                     }
                     render_wrapped_serif_line(&rd, margin_x + 18, max_w - 18, gem.text, false, READER_LINE_H, scroll_y, h, &doc_y);
                     doc_y += 4;
+#endif
                     break;
 
                 case GEM_LINE_QUOTE:
                     {
                         int q_start = doc_y;
+#if READER_IS_HIDPI
+                        render_wrapped_serif_line(&rd, margin_x + 24, max_w - 24, gem.text, false, READER_LINE_H, scroll_y, h, &doc_y);
+                        int q_h = doc_y - q_start;
+                        int q_sy = q_start - scroll_y;
+                        if (q_sy + q_h >= 0 && q_sy < h) {
+                            rdraw_fill(&rd, margin_x + 6, q_sy, margin_x + 10, q_sy + q_h - 4, READER_QUOTE_BAR_GRAY8, CANVAS1_GREY);
+                        }
+                        doc_y += 10;
+#else
                         render_wrapped_serif_line(&rd, margin_x + 16, max_w - 16, gem.text, false, READER_LINE_H, scroll_y, h, &doc_y);
                         int q_h = doc_y - q_start;
                         int q_sy = q_start - scroll_y;
@@ -963,23 +1068,57 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
                             rdraw_fill(&rd, margin_x + 4, q_sy, margin_x + 6, q_sy + q_h - 2, READER_QUOTE_BAR_GRAY8, CANVAS1_GREY);
                         }
                         doc_y += 6;
+#endif
                     }
                     break;
 
                 case GEM_LINE_PRE_TOGGLE:
+#if READER_IS_HIDPI
+                    doc_y += 16;
+#else
                     doc_y += 8;
+#endif
                     break;
 
                 case GEM_LINE_PRE_TEXT:
+#if READER_IS_HIDPI
+                    if (screen_y + 32 >= 0 && screen_y < h) {
+                        /* Monospace 16x32 Noto Sans Mono */
+                        rdraw_mono_text(&rd, margin_x + 16, screen_y, gem.text, strlen(gem.text), (max_w - 16) / 16);
+                    }
+                    doc_y += 34;
+#else
                     if (screen_y + 16 >= 0 && screen_y < h) {
                         /* Monospace 8x16 Spleen text */
                         rdraw_mono_text(&rd, margin_x + 12, screen_y, gem.text, strlen(gem.text), (max_w - 12) / 8);
                     }
                     doc_y += 16;
+#endif
                     break;
 
                 case GEM_LINE_LINK:
                     link_idx++;
+#if READER_IS_HIDPI
+                    if (screen_y + 36 >= 0 && screen_y < h) {
+                        if (r->link_count < READER_LINKS_MAX) {
+                            r->links[r->link_count].y0 = screen_y;
+                            r->links[r->link_count].y1 = screen_y + 36;
+                            r->links[r->link_count].num = link_idx;
+                            strncpy(r->links[r->link_count].url, gem.url, sizeof(r->links[0].url) - 1);
+                            r->links[r->link_count].url[sizeof(r->links[0].url) - 1] = '\0';
+                            r->link_count++;
+                        }
+
+                        char prefix[16];
+                        ksnprintf(prefix, sizeof(prefix), "[%d] ", link_idx);
+                        int px_w = rdraw_serif_text(&rd, margin_x, screen_y, prefix, strlen(prefix), true);
+                        const char *lbl = gem.label[0] ? gem.label : gem.url;
+                        int lbl_w = rdraw_serif_text(&rd, margin_x + px_w, screen_y, lbl, strlen(lbl), true);
+                        /* Underline the link */
+                        rdraw_hline(&rd, margin_x + px_w, margin_x + px_w + lbl_w, screen_y + 33, READER_LINK_LINE_GRAY8, CANVAS1_BLACK);
+                    }
+                    doc_y += 42;
+#else
                     if (screen_y + 20 >= 0 && screen_y < h) {
                         if (r->link_count < READER_LINKS_MAX) {
                             r->links[r->link_count].y0 = screen_y;
@@ -999,12 +1138,17 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
                         rdraw_hline(&rd, margin_x + px_w, margin_x + px_w + lbl_w, screen_y + 16, READER_LINK_LINE_GRAY8, CANVAS1_BLACK);
                     }
                     doc_y += 22;
+#endif
                     break;
 
                 case GEM_LINE_TEXT:
                 default:
                     render_wrapped_serif_line(&rd, margin_x, max_w, gem.text, false, READER_LINE_H, scroll_y, h, &doc_y);
+#if READER_IS_HIDPI
+                    doc_y += 8;
+#else
                     doc_y += 4;
+#endif
                     break;
                 }
             } else if (line_pos < (int)sizeof(line_buf) - 1) {
@@ -1019,10 +1163,17 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
 
     /* Render right scrollbar if document exceeds window height */
     if (r->total_h > h) {
+#if READER_IS_HIDPI
+        int sb_w = 8;
+        int sb_x = w - sb_w - 4;
+        int thumb_h = (h * h) / r->total_h;
+        if (thumb_h < 32) thumb_h = 32;
+#else
         int sb_w = 4;
         int sb_x = w - sb_w - 2;
         int thumb_h = (h * h) / r->total_h;
         if (thumb_h < 16) thumb_h = 16;
+#endif
         int thumb_y = (r->scroll_y * (h - thumb_h)) / (r->total_h - h);
         rdraw_fill(&rd, sb_x, 0, sb_x + sb_w, h - 1, READER_SB_TRACK_GRAY8, CANVAS1_GREY);
         rdraw_fill(&rd, sb_x, thumb_y, sb_x + sb_w, thumb_y + thumb_h, READER_SB_THUMB_GRAY8, CANVAS1_BLACK);

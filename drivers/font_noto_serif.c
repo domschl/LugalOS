@@ -3654,3 +3654,52 @@ int font_noto_serif_aa_text_rgb565(uint16_t *fb, uint32_t stride_pixels, int cli
     }
     return cur_x - x;
 }
+
+LCDTERM_UTEXT int canvas1_noto_serif_glyph(const canvas1_t *c, int x, int y, char ch, bool bold) {
+    if (!c || !c->fb) return 0;
+    uint8_t uc = (uint8_t)ch;
+    if (uc < FONT_NOTO_SERIF_FIRST || uc > FONT_NOTO_SERIF_LAST) uc = '?';
+    uint8_t w = font_noto_serif_char_width((char)uc);
+    const uint32_t *g = font_noto_serif_glyphs[uc - FONT_NOTO_SERIF_FIRST];
+
+    int ax = x + (int)c->ox;
+    int max_x = (int)c->stride * 8;
+    bool inside = (x >= 0 && x + (int)w <= (int)c->w && ax >= 0 && ax + 32 <= max_x);
+
+    for (int r = 0; r < FONT_NOTO_SERIF_H; r++) {
+        int py = y + r;
+        if (py < 0 || py >= (int)c->h) continue;
+        int spy = py + (int)c->oy;
+        if (spy < 0) continue;
+        uint32_t bits = g[r];
+        if (bold) bits |= bits << 1;
+        if (!bits) continue;
+        uint8_t *p = c->fb + (uint32_t)spy * c->stride;
+        if (inside) {
+            uint64_t v = (uint64_t)bits << (ax & 7);
+            int byte_idx = ax >> 3;
+            p[byte_idx] |= (uint8_t)v;
+            p[byte_idx + 1] |= (uint8_t)(v >> 8);
+            p[byte_idx + 2] |= (uint8_t)(v >> 16);
+            p[byte_idx + 3] |= (uint8_t)(v >> 24);
+            if (v >> 32) p[byte_idx + 4] |= (uint8_t)(v >> 32);
+            continue;
+        }
+        for (int b = 0; b < (int)w; b++) {
+            int spx = ax + b;
+            if (((bits >> b) & 1u) && x + b >= 0 && x + b < (int)c->w && spx >= 0 && spx < max_x) {
+                p[spx >> 3] |= (uint8_t)(1u << (spx & 7));
+            }
+        }
+    }
+    return (int)w;
+}
+
+LCDTERM_UTEXT int canvas1_noto_serif_text(const canvas1_t *c, int x, int y, const char *s, uint32_t len, bool bold) {
+    if (!s) return 0;
+    int cur_x = x;
+    for (uint32_t i = 0; i < len && s[i]; i++) {
+        cur_x += canvas1_noto_serif_glyph(c, cur_x, y, s[i], bold);
+    }
+    return cur_x - x;
+}

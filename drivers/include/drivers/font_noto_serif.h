@@ -5,6 +5,7 @@
 #include <stdbool.h>
 
 #include "drivers/lcdterm_attr.h"
+#include "drivers/canvas1.h"
 
 #define FONT_NOTO_SERIF_FIRST  0x20
 #define FONT_NOTO_SERIF_LAST   0x7e
@@ -28,6 +29,10 @@ static inline const uint8_t *font_noto_serif_get_aa_glyph(char c) {
 }
 
 unsigned font_noto_serif_text_width(const char *s, uint32_t len);
+
+/* 1-bpp canvas rendering (classic bilevel) */
+int canvas1_noto_serif_glyph(const canvas1_t *c, int x, int y, char ch, bool bold);
+int canvas1_noto_serif_text(const canvas1_t *c, int x, int y, const char *s, uint32_t len, bool bold);
 
 /* Fast integer blending onto 8-bpp (GRAY8) */
 int font_noto_serif_aa_glyph_gray8(uint8_t *fb, uint32_t stride, int clip_w, int clip_h,
