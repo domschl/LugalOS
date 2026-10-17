@@ -245,8 +245,9 @@ The long-term objective of LugalOS is self-hosting on RISC-V hardware:
 - [x] **Scenario 3: Damped Harmonic Oscillator**:
   - Task: Underdamped spring $x(t) = e^{-t}\cos(3t)$. Find velocity $v(t) = dx/dt$, verify ODE $\ddot{x} + 2\dot{x} + 10x = 0$ simplifies to exact 0, and plot $x(t)$ for $t \in [0, 5]$.
   - Verification: Differentiated twice, simplified ODE expression to exact `0` in pure symbolic rational arithmetic, and plotted decaying envelope on LCD canvas. (Passed on hardware)
-- [ ] **Scenario 4: Coupled Harmonic Oscillators (Two Masses & Springs)**:
+- [x] **Scenario 4: Coupled Harmonic Oscillators (Two Masses & Springs)**:
   - Task: Two coupled carts with masses $m_1 = m_2 = 1$ and springs $k_1 = k_2 = k$, coupling spring $k_c$. Find normal frequencies $\omega_1, \omega_2$, formulate beat superposition $x_1(t) = \frac{1}{2}(\cos(t) + \cos(\sqrt{3}t))$, $x_2(t) = \frac{1}{2}(\cos(t) - \cos(\sqrt{3}t))$, and plot both displacements simultaneously on shared axes via `(plot-multi ...)`.
+  - Verification: Differentiated $x_1(t)$ symbolically to $v_1(t) = -\frac{1}{2}\sin(t) - \frac{\sqrt{3}}{2}\sin(\sqrt{3}t)$, explained normal mode frequencies ($\omega_1 = 1$, $\omega_2 = \sqrt{3}$), derived beat frequency $f_{\text{beat}} = \frac{\sqrt{3}-1}{2\pi} \approx 0.13\text{ Hz}$ and beat period $T_{\text{beat}} \approx 7.66\text{ s}$, and rendered both curves simultaneously via `plot-multi` on LCD canvas. (Passed on hardware)
 - [ ] **Scenario 5: Driven Resonance & Frequency Response**:
   - Task: Damped driven oscillator with steady-state amplitude $A(\omega) = \frac{F_0}{\sqrt{(\omega_0^2 - \omega^2)^2 + (2\gamma\omega)^2}}$, determine peak resonance frequency $\omega_r = \sqrt{\omega_0^2 - 2\gamma^2}$, and plot resonance curve.
 - [ ] **Scenario 6: Non-Linear Large-Angle Pendulum vs. Small-Angle Harmonic Motion**:
