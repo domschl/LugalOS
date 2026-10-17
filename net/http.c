@@ -109,7 +109,7 @@ int http_request(const http_req_t *req, http_chunk_cb on_chunk, void *ctx,
     }
 
     uint32_t timeout = req->timeout_ms ? req->timeout_ms : 20000;
-    uint64_t deadline = time_get_ms() + 5000;
+    uint64_t deadline = time_get_ms() + (timeout < 10000 ? 10000 : timeout);
     int ready = 0;
     while ((ready = tcp_stream_ready(&stream)) == 0) {
         if (console_interrupt_requested()) {
