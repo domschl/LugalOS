@@ -40,7 +40,8 @@ static const char EA_SYSTEM_PROMPT[] =
     "Action: <tool>\n"
     "```<lang>\n"
     "<input>\n"
-    "```\n\n"
+    "```\n"
+    "Stop immediately after the closing ``` and wait for Observation. Do not generate thoughts or answers before Observation is given.\n\n"
     "When done, provide:\n"
     "Thought: <final reasoning>\n"
     "Answer: <clear explanation and solution>";
@@ -173,16 +174,16 @@ static void live_stream_token_cb(const char *token, bool is_reasoning, void *ctx
     }
 }
 
-static bool parse_react_action(const char *resp, char *tool_out, size_t tool_sz,
+static bool parse_react_action(char *resp, char *tool_out, size_t tool_sz,
                                char *code_out, size_t code_sz) {
     if (!resp || !tool_out || !code_out) return false;
 
-    const char *p = strstr(resp, "Action:");
+    char *p = strstr(resp, "Action:");
     if (!p) return false;
     p += 7;
     while (*p == ' ' || *p == '\t') p++;
 
-    const char *t_end = p;
+    char *t_end = p;
     while (*t_end && *t_end != '\r' && *t_end != '\n' && *t_end != ' ') t_end++;
 
     size_t t_len = (size_t)(t_end - p);
@@ -191,7 +192,7 @@ static bool parse_react_action(const char *resp, char *tool_out, size_t tool_sz,
     tool_out[t_len] = '\0';
 
     /* Find start of code block ``` */
-    const char *fence = strstr(t_end, "```");
+    char *fence = strstr(t_end, "```");
     if (!fence) return false;
     fence += 3;
     /* Skip lang tag until newline */
@@ -199,7 +200,7 @@ static bool parse_react_action(const char *resp, char *tool_out, size_t tool_sz,
     if (*fence == '\n') fence++;
 
     /* Find closing ``` */
-    const char *fence_end = strstr(fence, "```");
+    char *fence_end = strstr(fence, "```");
     if (!fence_end) {
         fence_end = fence + strlen(fence);
     }
@@ -208,6 +209,14 @@ static bool parse_react_action(const char *resp, char *tool_out, size_t tool_sz,
     if (c_len >= code_sz) c_len = code_sz - 1;
     memcpy(code_out, fence, c_len);
     code_out[c_len] = '\0';
+
+    /* If closing fence exists, truncate resp right after it to keep turn history clean */
+    if (strncmp(fence_end, "```", 3) == 0) {
+        char *trunc = fence_end + 3;
+        if (*trunc == '\r') trunc++;
+        if (*trunc == '\n') trunc++;
+        *trunc = '\0';
+    }
 
     return true;
 }
@@ -319,15 +328,22 @@ void cmd_ea(const char *args) {
     }
 
     const char *model = NULL;
+    const char *url = NULL;
     bool auto_confirm = false;
     const char *p = args;
 
     while (*p == '-') {
-        if (strncmp(p, "-m ", 3) == 0) {
-            p += 3;
-            while (*p == ' ') p++;
+        if (strncmp(p, "-m", 2) == 0 && (p[2] == ' ' || p[2] == '=' || p[2] == '"' || p[2] == '\'')) {
+            p += 2;
+            while (*p == ' ' || *p == '=') p++;
+            char quote = 0;
+            if (*p == '"' || *p == '\'') quote = *p++;
             const char *m_start = p;
-            while (*p && *p != ' ') p++;
+            if (quote) {
+                while (*p && *p != quote) p++;
+            } else {
+                while (*p && *p != ' ') p++;
+            }
             size_t m_len = (size_t)(p - m_start);
             static char m_buf[64];
             if (m_len < sizeof(m_buf)) {
@@ -335,6 +351,27 @@ void cmd_ea(const char *args) {
                 m_buf[m_len] = '\0';
                 model = m_buf;
             }
+            if (quote && *p == quote) p++;
+            while (*p == ' ') p++;
+        } else if (strncmp(p, "-s", 2) == 0 && (p[2] == ' ' || p[2] == '=' || p[2] == '"' || p[2] == '\'')) {
+            p += 2;
+            while (*p == ' ' || *p == '=') p++;
+            char quote = 0;
+            if (*p == '"' || *p == '\'') quote = *p++;
+            const char *s_start = p;
+            if (quote) {
+                while (*p && *p != quote) p++;
+            } else {
+                while (*p && *p != ' ') p++;
+            }
+            size_t s_len = (size_t)(p - s_start);
+            static char s_buf[128];
+            if (s_len < sizeof(s_buf)) {
+                memcpy(s_buf, s_start, s_len);
+                s_buf[s_len] = '\0';
+                url = s_buf;
+            }
+            if (quote && *p == quote) p++;
             while (*p == ' ') p++;
         } else if (strncmp(p, "-y", 2) == 0) {
             auto_confirm = true;
@@ -343,6 +380,20 @@ void cmd_ea(const char *args) {
         } else {
             break;
         }
+    }
+
+    if (url || model) {
+        llm_config_t cfg;
+        llm_get_config(&cfg);
+        if (url) {
+            strncpy(cfg.url, url, sizeof(cfg.url) - 1);
+            cfg.url[sizeof(cfg.url) - 1] = '\0';
+        }
+        if (model) {
+            strncpy(cfg.model, model, sizeof(cfg.model) - 1);
+            cfg.model[sizeof(cfg.model) - 1] = '\0';
+        }
+        llm_set_config(&cfg);
     }
 
     /* Strip leading quotes if present */
