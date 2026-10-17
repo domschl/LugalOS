@@ -1118,7 +1118,8 @@ lisp_val_t *make_sym(const char *sym) {
         case 'w': if (streq(sym, "while")) return (lisp_val_t *)&sym_while; break;
         case 'c': if (streq(sym, "cond")) return (lisp_val_t *)&sym_cond; break;
         case 's': if (streq(sym, "set!")) return (lisp_val_t *)&sym_set_bang; break;
-        case 'd': if (streq(sym, "define")) return (lisp_val_t *)&sym_define; break;
+        case 'd': if (streq(sym, "define") || streq(sym, "def")) return (lisp_val_t *)&sym_define; break;
+        case 'p': if (streq(sym, "progn")) return (lisp_val_t *)&sym_begin; break;
         case 'e': if (streq(sym, "else")) return (lisp_val_t *)&sym_else; break;
         case '#':
             if (streq(sym, "#t")) return &true_val;

@@ -731,16 +731,31 @@ def run_cmds(port, lines, wait):
         w.s.write(b"\r")
         time.sleep(0.3)
         for line in lines:
+            print("--- $ %s" % line)
             mark = len(w.buf)
             data = line.encode() + b"\r"
             for i in range(0, len(data), 16):
                 w.s.write(data[i:i + 16])
                 time.sleep(0.005)
-            time.sleep(wait)
+            t0 = time.time()
+            last_len = mark
+            while time.time() - t0 < wait:
+                cur_len = len(w.buf)
+                if cur_len > last_len:
+                    chunk = bytes(w.buf[last_len:cur_len]).decode("utf-8", "replace")
+                    sys.stdout.write(chunk)
+                    sys.stdout.flush()
+                    last_len = cur_len
+                    if READY_MARKER in bytes(w.buf[mark:]).decode("utf-8", "replace"):
+                        time.sleep(0.1)
+                        cur_len = len(w.buf)
+                        if cur_len > last_len:
+                            sys.stdout.write(bytes(w.buf[last_len:cur_len]).decode("utf-8", "replace"))
+                            sys.stdout.flush()
+                        break
+                time.sleep(0.05)
+            print()
             out.append((line, bytes(w.buf[mark:]).decode("utf-8", "replace")))
-    for line, text in out:
-        print("--- $ %s" % line)
-        print(text)
     return 0
 
 

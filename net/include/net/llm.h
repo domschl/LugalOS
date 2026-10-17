@@ -7,7 +7,7 @@
 
 #define LLM_DEFAULT_URL "http://ai-server.local:8080/v1"
 #define LLM_DEFAULT_MODEL "default"
-#define LLM_DEFAULT_TIMEOUT_MS 30000
+#define LLM_DEFAULT_TIMEOUT_MS 120000
 
 typedef struct llm_config {
     char     url[128];

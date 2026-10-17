@@ -29,6 +29,8 @@ static const char EA_SYSTEM_PROMPT[] =
     "  (limit expr var point [dir]) - Symbolic limits / limes\n"
     "  (plot expr '(var min max))   - 2D function graph on canvas. Example: (plot '(* x x) '(x -3 3))\n"
     "  (plot-diff expr '(var a b))  - Graph function & derivative on shared axes. Example: (plot-diff '(- (^ x 3) 1) '(x -2 2))\n"
+    "  (plot-multi '(e1 e2 ...) '(v a b)) - Graph multiple curves on shared axes. Example: (plot-multi (list '(* 2 (cos t)) '(* 3 (sin t))) '(t 0 7))\n"
+    "  (plot-parametric x-expr y-expr '(t a b)) - Graph parametric 2D trajectory. Example: (plot-parametric '(cos t) '(sin t) '(t 0 7))\n"
     "  (apropos \"str\")              - Search bound functions and built-in primitives\n"
     "  (doc 'symbol)                - Read manual/help for function or topic\n\n"
     "2. Action: sh\n"
@@ -48,15 +50,13 @@ static const char EA_SYSTEM_PROMPT[] =
     "<topic>\n"
     "```\n"
     "Reads system manual (plot, demos, cas, lisp, c_programming, shell, sensors, etc.).\n\n"
-    "Format rules:\n"
-    "Thought: <reasoning>\n"
-    "Action: <tool>\n"
-    "```<lang>\n"
-    "<input>\n"
-    "```\n"
-    "Stop immediately after the closing ``` and wait for Observation. Do not generate thoughts or answers before Observation is given.\n\n"
+    "Rules:\n"
+    "- Output Action immediately. Never calculate or simplify math in Thought; always delegate all calculations to the tools.\n"
+    "- In Lisp: begin, define, def, let, progn, list, quote, quasiquote (`), and unquote (,) are fully supported.\n"
+    "- Action: <tool> followed by ```<lang> ... ```.\n"
+    "- Stop immediately after closing ``` and wait for Observation.\n\n"
     "When done, provide:\n"
-    "Thought: <final reasoning>\n"
+    "Thought: <brief final reasoning>\n"
     "Answer: <clear explanation and solution>";
 
 static void strip_code_fences(char *dst, size_t dst_max, const char *src) {
@@ -99,6 +99,7 @@ int ea_eval_tool(const char *tool, const char *input, char *out_buf, size_t out_
         if (!cas_loaded && (strstr(clean_code, "diff") || strstr(clean_code, "integrate") ||
                             strstr(clean_code, "solve") || strstr(clean_code, "simplify") ||
                             strstr(clean_code, "taylor") || strstr(clean_code, "limit") ||
+                            strstr(clean_code, "matrix") || strstr(clean_code, "calc") ||
                             strstr(clean_code, "plot"))) {
             vfs_stat_t st;
             lisp_lock();
