@@ -19,7 +19,14 @@ static const char EA_SYSTEM_PROMPT[] =
     "<expression>\n"
     "```\n"
     "Evaluates expression in LugalOS kernel Lisp machine.\n"
-    "CAS libraries on /sd0: (load \"/sd0/cas/solve.lisp\"), (load \"/sd0/cas/calculus.lisp\"), (load \"/sd0/cas/matrix.lisp\"), (load \"/sd0/cas/plot.lisp\").\n\n"
+    "CAS (Computer Algebra System) math primitives (preloaded):\n"
+    "  (diff expr var [n])          - Symbolic n-th derivative. Example: (diff '(expt x 3) 'x) or (diff '(* x (sin x)) 'x)\n"
+    "  (integrate expr var)         - Indefinite integral. Example: (integrate '(* x x) 'x)\n"
+    "  (integrate-def expr var a b) - Definite integral. Example: (integrate-def '(* x x) 'x 0 1)\n"
+    "  (solve '(eq) 'var)           - Symbolic equation solver. Example: (solve '(= (+ (* x x) -4) 0) 'x)\n"
+    "  (simplify expr)              - Algebraic simplification. Example: (simplify '(+ (* 2 x) (* 3 x)))\n"
+    "  (taylor expr var order [x0]) - Taylor series expansion\n"
+    "  (limit expr var point [dir]) - Symbolic limits / limes\n\n"
     "2. Action: sh\n"
     "```sh\n"
     "<command>\n"
@@ -34,7 +41,7 @@ static const char EA_SYSTEM_PROMPT[] =
     "```text\n"
     "<topic>\n"
     "```\n"
-    "Reads system manual (lisp, cas, c_programming, shell, sensors, etc.).\n\n"
+    "Reads system manual (cas, lisp, c_programming, shell, sensors, etc.).\n\n"
     "Format rules:\n"
     "Thought: <reasoning>\n"
     "Action: <tool>\n"
@@ -81,6 +88,21 @@ int ea_eval_tool(const char *tool, const char *input, char *out_buf, size_t out_
     strip_code_fences(clean_code, sizeof(clean_code), input);
 
     if (strcmp(tool, "lisp") == 0) {
+        static bool cas_loaded = false;
+        if (!cas_loaded && (strstr(clean_code, "diff") || strstr(clean_code, "integrate") ||
+                            strstr(clean_code, "solve") || strstr(clean_code, "simplify") ||
+                            strstr(clean_code, "taylor") || strstr(clean_code, "limit"))) {
+            vfs_stat_t st;
+            lisp_lock();
+            if (vfs_stat("/sd0/cas/cas.lisp", &st) == 0) {
+                lisp_eval_string("(load \"/sd0/cas/cas.lisp\")");
+            } else if (vfs_stat("/flash0/cas/cas.lisp", &st) == 0) {
+                lisp_eval_string("(load \"/flash0/cas/cas.lisp\")");
+            }
+            lisp_unlock();
+            cas_loaded = true;
+        }
+
         console_capture(out_buf, (uint32_t)(out_max - 1));
         lisp_lock();
         lisp_val_t *res = lisp_eval_string(clean_code);
@@ -106,11 +128,23 @@ int ea_eval_tool(const char *tool, const char *input, char *out_buf, size_t out_
     }
 
     if (strcmp(tool, "help") == 0 || strcmp(tool, "man") == 0) {
+        const char *topic = clean_code;
+        if (strcmp(topic, "calculus") == 0 || strcmp(topic, "math") == 0 ||
+            strcmp(topic, "algebra") == 0 || strcmp(topic, "solve") == 0 ||
+            strcmp(topic, "diff") == 0 || strcmp(topic, "integrate") == 0) {
+            topic = "cas";
+        } else if (strcmp(topic, "c") == 0 || strcmp(topic, "chibicc") == 0) {
+            topic = "c_programming";
+        } else if (strcmp(topic, "wifi") == 0 || strcmp(topic, "ip") == 0 ||
+                   strcmp(topic, "dhcp") == 0 || strcmp(topic, "network") == 0) {
+            topic = "networking";
+        }
+
         char path[128];
-        ksnprintf(path, sizeof(path), "/sd0/help/%s.gmi", clean_code);
+        ksnprintf(path, sizeof(path), "/sd0/help/%s.gmi", topic);
         int fd = vfs_open(path, VFS_O_READ);
         if (fd < 0) {
-            ksnprintf(path, sizeof(path), "/flash0/help/%s.gmi", clean_code);
+            ksnprintf(path, sizeof(path), "/flash0/help/%s.gmi", topic);
             fd = vfs_open(path, VFS_O_READ);
         }
         if (fd >= 0) {
@@ -119,7 +153,7 @@ int ea_eval_tool(const char *tool, const char *input, char *out_buf, size_t out_
             if (rd > 0) out_buf[rd] = '\0';
             else strncpy(out_buf, "Empty help file", out_max - 1);
         } else {
-            ksnprintf(out_buf, out_max, "Help topic '%s' not found", clean_code);
+            ksnprintf(out_buf, out_max, "Help topic '%s' not found", topic);
         }
         return 0;
     }
@@ -239,8 +273,7 @@ int ea_run(const char *prompt, bool interactive, bool auto_confirm, const char *
         return -2;
     }
 
-    strncpy(history, prompt, 16383);
-    history[16383] = '\0';
+    ksnprintf(history, 16384, "[USER]\n%s", prompt);
 
     int turns = 0;
     int status = 0;
@@ -278,7 +311,7 @@ int ea_run(const char *prompt, bool interactive, bool auto_confirm, const char *
             /* Append assistant turn and tool observation to history */
             size_t hlen = strlen(history);
             int n = ksnprintf(history + hlen, 16384 - hlen,
-                              "\n\n%s\n\nObservation:\n%s", resp, tool_obs);
+                              "\n\n[ASSISTANT]\n%s\n\n[USER]\nObservation:\n%s", resp, tool_obs);
             if (n < 0 || hlen + (size_t)n >= 16384 - 256) {
                 cprintf("ea: conversation buffer full\n");
                 break;

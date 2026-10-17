@@ -3,6 +3,7 @@
 #include "fs/vfs.h"
 #include "kernel/printk.h"
 #include "kernel/sched.h"
+#include "kernel/palloc.h"
 #include "libc/include/string.h"
 
 static llm_config_t g_llm_cfg;
@@ -287,25 +288,75 @@ int llm_stream_chat(const char *prompt, const char *system_prompt, const char *m
     }
 
     /* Build JSON request payload */
-    char body[1536];
+    size_t body_max = 8192;
+    char *body = (char *)palloc_pages(2);
+    if (!body) {
+        if (err_out && err_sz > 0) strncpy(err_out, "Out of memory for request body", err_sz - 1);
+        return -1;
+    }
     size_t bpos = 0;
 
-    int n = ksnprintf(body, sizeof(body), "{\"model\":\"%s\",\"stream\":true,\"temperature\":0.2,\"messages\":[", model);
+    int n = ksnprintf(body, body_max, "{\"model\":\"%s\",\"stream\":true,\"temperature\":0.2,\"messages\":[", model);
     if (n > 0) bpos = (size_t)n;
 
     if (system_prompt && *system_prompt) {
-        n = ksnprintf(body + bpos, sizeof(body) - bpos, "{\"role\":\"system\",\"content\":\"");
+        n = ksnprintf(body + bpos, body_max - bpos, "{\"role\":\"system\",\"content\":\"");
         if (n > 0) bpos += (size_t)n;
-        json_append_escaped(body, &bpos, sizeof(body) - 64, system_prompt);
-        n = ksnprintf(body + bpos, sizeof(body) - bpos, "\"},");
+        json_append_escaped(body, &bpos, body_max - 64, system_prompt);
+        n = ksnprintf(body + bpos, body_max - bpos, "\"},");
         if (n > 0) bpos += (size_t)n;
     }
 
-    n = ksnprintf(body + bpos, sizeof(body) - bpos, "{\"role\":\"user\",\"content\":\"");
-    if (n > 0) bpos += (size_t)n;
-    json_append_escaped(body, &bpos, sizeof(body) - 16, prompt);
-    n = ksnprintf(body + bpos, sizeof(body) - bpos, "\"}]}");
-    if (n > 0) bpos += (size_t)n;
+    if (strstr(prompt, "[USER]") || strstr(prompt, "[ASSISTANT]")) {
+        const char *cur = prompt;
+        while (*cur) {
+            bool is_user = true;
+            if (strncmp(cur, "[USER]", 6) == 0) {
+                is_user = true;
+                cur += 6;
+            } else if (strncmp(cur, "[ASSISTANT]", 11) == 0) {
+                is_user = false;
+                cur += 11;
+            } else {
+                cur++;
+                continue;
+            }
+            while (*cur == ' ' || *cur == '\n' || *cur == '\r') cur++;
+            const char *next_u = strstr(cur, "[USER]");
+            const char *next_a = strstr(cur, "[ASSISTANT]");
+            const char *msg_end = NULL;
+            if (next_u && next_a) msg_end = next_u < next_a ? next_u : next_a;
+            else if (next_u) msg_end = next_u;
+            else if (next_a) msg_end = next_a;
+            else msg_end = cur + strlen(cur);
+
+            size_t mlen = (size_t)(msg_end - cur);
+            while (mlen > 0 && (cur[mlen - 1] == ' ' || cur[mlen - 1] == '\n' || cur[mlen - 1] == '\r')) mlen--;
+
+            if (mlen > 0 && bpos + 64 < body_max) {
+                n = ksnprintf(body + bpos, body_max - bpos, "{\"role\":\"%s\",\"content\":\"",
+                              is_user ? "user" : "assistant");
+                if (n > 0) bpos += (size_t)n;
+                char tmp[2048];
+                size_t clen = mlen < sizeof(tmp) - 1 ? mlen : sizeof(tmp) - 1;
+                memcpy(tmp, cur, clen);
+                tmp[clen] = '\0';
+                json_append_escaped(body, &bpos, body_max - 64, tmp);
+                n = ksnprintf(body + bpos, body_max - bpos, "\"},");
+                if (n > 0) bpos += (size_t)n;
+            }
+            cur = msg_end;
+        }
+        if (bpos > 0 && body[bpos - 1] == ',') bpos--;
+        n = ksnprintf(body + bpos, body_max - bpos, "]}");
+        if (n > 0) bpos += (size_t)n;
+    } else {
+        n = ksnprintf(body + bpos, body_max - bpos, "{\"role\":\"user\",\"content\":\"");
+        if (n > 0) bpos += (size_t)n;
+        json_append_escaped(body, &bpos, body_max - 16, prompt);
+        n = ksnprintf(body + bpos, body_max - bpos, "\"}]}");
+        if (n > 0) bpos += (size_t)n;
+    }
 
     /* Auth header if configured */
     char auth_buf[96] = {0};
@@ -331,6 +382,7 @@ int llm_stream_chat(const char *prompt, const char *system_prompt, const char *m
     req.timeout_ms = g_llm_cfg.timeout_ms;
 
     int status = http_request(&req, sse_chunk_cb, &sse_state, err_out, err_sz);
+    palloc_free(body, 2);
     if (status != 200) {
         if (err_out && err_sz > 0 && status > 0) {
             ksnprintf(err_out, err_sz, "LLM server returned HTTP %d", status);

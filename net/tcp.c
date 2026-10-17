@@ -40,7 +40,7 @@
  * that ended. Not the RFC's 2*MSL, which on a LAN would be pure waste. */
 #define TCP_TIME_WAIT_MS    2000u
 
-#define TCP_MAX_CONNS 2
+#define TCP_MAX_CONNS 4
 
 /* Q0's stream ring indexes the receive buffer modulo its size and lets the
  * byte counters wrap at 2^32. Both are only correct for a power-of-two size,
@@ -604,6 +604,7 @@ static tcp_conn_t *conn_dial(const uint8_t ip[IPV4_LEN], uint16_t port) {
     if (ensure_bufs() != 0) return NULL;
 
     tcp_conn_t *c = free_conn();
+    if (!c) c = recycle_finished();
     if (!c) return NULL;
 
     uint32_t epoch = c->epoch;
