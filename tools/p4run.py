@@ -729,10 +729,13 @@ def run_cmds(port, lines, wait):
         # missing prompt here and a wrong answer below are very different
         # problems, and telling them apart afterwards is much harder.
         w.s.write(b"\r")
-        time.sleep(wait)
+        time.sleep(0.3)
         for line in lines:
             mark = len(w.buf)
-            w.s.write(line.encode() + b"\r")
+            data = line.encode() + b"\r"
+            for i in range(0, len(data), 16):
+                w.s.write(data[i:i + 16])
+                time.sleep(0.005)
             time.sleep(wait)
             out.append((line, bytes(w.buf[mark:]).decode("utf-8", "replace")))
     for line, text in out:

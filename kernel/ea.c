@@ -36,7 +36,8 @@ static const char EA_SYSTEM_PROMPT[] =
     "```c\n"
     "<c-source>\n"
     "```\n"
-    "Compiles C code with chibicc and runs the resulting binary.\n\n"
+    "Compiles C code with chibicc and runs the resulting binary.\n"
+    "Source must #include <lugal.h> and define main() { ... return 0; }.\n\n"
     "4. Action: help\n"
     "```text\n"
     "<topic>\n"
@@ -159,28 +160,38 @@ int ea_eval_tool(const char *tool, const char *input, char *out_buf, size_t out_
     }
 
     if (strcmp(tool, "cc") == 0) {
-        int fd = vfs_open("/sd0/tmp/ea_prog.c", VFS_O_WRITE | VFS_O_CREATE | VFS_O_TRUNC);
+        const char *src_path = "/ram0/ea_prog.c";
+        const char *elf_path = "/ram0/ea_prog.elf";
+        int fd = vfs_open(src_path, VFS_O_WRITE | VFS_O_CREATE | VFS_O_TRUNC);
+        if (fd < 0) {
+            src_path = "/sd0/ea_prog.c";
+            elf_path = "/sd0/ea_prog.elf";
+            fd = vfs_open(src_path, VFS_O_WRITE | VFS_O_CREATE | VFS_O_TRUNC);
+        }
         if (fd >= 0) {
             vfs_pwrite(fd, (const uint8_t *)clean_code, (uint32_t)strlen(clean_code), 0);
             vfs_close(fd);
 
+            char cmd[128];
+            ksnprintf(cmd, sizeof(cmd), "cc %s %s", src_path, elf_path);
             console_capture(out_buf, (uint32_t)(out_max - 1));
-            shell_exec("cc /sd0/tmp/ea_prog.c /sd0/bin/ea_prog");
+            shell_exec(cmd);
             uint32_t clen = console_capture_end();
 
             /* Check if binary was generated */
-            int bfd = vfs_open("/sd0/bin/ea_prog", VFS_O_READ);
+            int bfd = vfs_open(elf_path, VFS_O_READ);
             if (bfd >= 0) {
                 vfs_close(bfd);
                 /* Execute binary and capture stdout */
                 console_capture(out_buf, (uint32_t)(out_max - 1));
-                shell_exec("/sd0/bin/ea_prog");
+                ksnprintf(cmd, sizeof(cmd), "exec %s", elf_path);
+                shell_exec(cmd);
                 console_capture_end();
             } else if (clen == 0) {
                 strncpy(out_buf, "Compilation failed", out_max - 1);
             }
         } else {
-            strncpy(out_buf, "Cannot write /sd0/tmp/ea_prog.c", out_max - 1);
+            strncpy(out_buf, "Cannot write temporary source file", out_max - 1);
         }
         return 0;
     }
