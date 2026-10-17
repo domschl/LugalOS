@@ -1262,6 +1262,13 @@ static lisp_val_t *env_get(lisp_val_t *env, const char *sym) {
 #endif
 
 static void env_set_sym(lisp_val_t **env, lisp_val_t *sym, lisp_val_t *val) {
+    if (env && *env == global_env) {
+        lisp_val_t *existing = env_binding_sym(*env, sym);
+        if (existing) {
+            existing->u.pair.cdr = val;
+            return;
+        }
+    }
     lisp_val_t *binding = make_pair(sym, val);
     *env = make_pair(binding, *env);
 }
