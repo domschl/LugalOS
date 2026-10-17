@@ -26,7 +26,11 @@ static const char EA_SYSTEM_PROMPT[] =
     "  (solve '(eq) 'var)           - Symbolic equation solver. Example: (solve '(= (+ (* x x) -4) 0) 'x)\n"
     "  (simplify expr)              - Algebraic simplification. Example: (simplify '(+ (* 2 x) (* 3 x)))\n"
     "  (taylor expr var order [x0]) - Taylor series expansion\n"
-    "  (limit expr var point [dir]) - Symbolic limits / limes\n\n"
+    "  (limit expr var point [dir]) - Symbolic limits / limes\n"
+    "  (plot expr '(var min max))   - 2D function graph on canvas. Example: (plot '(* x x) '(x -3 3))\n"
+    "  (plot-diff expr '(var a b))  - Graph function & derivative on shared axes. Example: (plot-diff '(- (^ x 3) 1) '(x -2 2))\n"
+    "  (apropos \"str\")              - Search bound functions and built-in primitives\n"
+    "  (doc 'symbol)                - Read manual/help for function or topic\n\n"
     "2. Action: sh\n"
     "```sh\n"
     "<command>\n"
@@ -37,12 +41,13 @@ static const char EA_SYSTEM_PROMPT[] =
     "<c-source>\n"
     "```\n"
     "Compiles C code with chibicc and runs the resulting binary.\n"
-    "Source must #include <lugal.h> and define main() { ... return 0; }.\n\n"
+    "Source must #include <lugal.h> and define main() { ... return 0; }.\n"
+    "Available I/O: print(str), puts(str), putnum(num), putchar(ch).\n\n"
     "4. Action: help\n"
     "```text\n"
     "<topic>\n"
     "```\n"
-    "Reads system manual (cas, lisp, c_programming, shell, sensors, etc.).\n\n"
+    "Reads system manual (plot, demos, cas, lisp, c_programming, shell, sensors, etc.).\n\n"
     "Format rules:\n"
     "Thought: <reasoning>\n"
     "Action: <tool>\n"
@@ -90,9 +95,11 @@ int ea_eval_tool(const char *tool, const char *input, char *out_buf, size_t out_
 
     if (strcmp(tool, "lisp") == 0) {
         static bool cas_loaded = false;
+        static bool plot_loaded = false;
         if (!cas_loaded && (strstr(clean_code, "diff") || strstr(clean_code, "integrate") ||
                             strstr(clean_code, "solve") || strstr(clean_code, "simplify") ||
-                            strstr(clean_code, "taylor") || strstr(clean_code, "limit"))) {
+                            strstr(clean_code, "taylor") || strstr(clean_code, "limit") ||
+                            strstr(clean_code, "plot"))) {
             vfs_stat_t st;
             lisp_lock();
             if (vfs_stat("/sd0/cas/cas.lisp", &st) == 0) {
@@ -102,6 +109,15 @@ int ea_eval_tool(const char *tool, const char *input, char *out_buf, size_t out_
             }
             lisp_unlock();
             cas_loaded = true;
+        }
+        if (!plot_loaded && strstr(clean_code, "plot")) {
+            vfs_stat_t st;
+            lisp_lock();
+            if (vfs_stat("/sd0/cas/plot.lisp", &st) == 0) {
+                lisp_eval_string("(load \"/sd0/cas/plot.lisp\")");
+            }
+            lisp_unlock();
+            plot_loaded = true;
         }
 
         console_capture(out_buf, (uint32_t)(out_max - 1));
@@ -139,6 +155,12 @@ int ea_eval_tool(const char *tool, const char *input, char *out_buf, size_t out_
         } else if (strcmp(topic, "wifi") == 0 || strcmp(topic, "ip") == 0 ||
                    strcmp(topic, "dhcp") == 0 || strcmp(topic, "network") == 0) {
             topic = "networking";
+        } else if (strcmp(topic, "plot") == 0 || strcmp(topic, "graph") == 0 ||
+                   strcmp(topic, "chart") == 0 || strcmp(topic, "plotting") == 0) {
+            topic = "plot";
+        } else if (strcmp(topic, "demo") == 0 || strcmp(topic, "demos") == 0 ||
+                   strcmp(topic, "ca") == 0 || strcmp(topic, "lorenz") == 0) {
+            topic = "demos";
         }
 
         char path[128];
@@ -186,7 +208,10 @@ int ea_eval_tool(const char *tool, const char *input, char *out_buf, size_t out_
                 console_capture(out_buf, (uint32_t)(out_max - 1));
                 ksnprintf(cmd, sizeof(cmd), "exec %s", elf_path);
                 shell_exec(cmd);
-                console_capture_end();
+                uint32_t elen = console_capture_end();
+                if (elen == 0 || out_buf[0] == '\0') {
+                    strncpy(out_buf, "Program executed successfully (no output)", out_max - 1);
+                }
             } else if (clen == 0) {
                 strncpy(out_buf, "Compilation failed", out_max - 1);
             }
@@ -272,19 +297,41 @@ int ea_run(const char *prompt, bool interactive, bool auto_confirm, const char *
 
     llm_init();
 
-    char *history = (char *)palloc_pages(4); /* 16 KB conversation buffer */
-    char *resp = (char *)palloc_pages(4);    /* 16 KB response buffer */
-    char *tool_obs = (char *)palloc_pages(2);/* 8 KB tool observation buffer */
+    uint32_t hist_pages = 16; /* 64 KB in PSRAM bulk zone */
+    uint32_t resp_pages = 8;  /* 32 KB in PSRAM bulk zone */
+    uint32_t obs_pages  = 8;  /* 32 KB in PSRAM bulk zone */
+    size_t hist_sz = hist_pages * 4096;
+    size_t resp_sz = resp_pages * 4096;
+    size_t obs_sz  = obs_pages * 4096;
+
+    char *history = (char *)palloc_pages_bulk(hist_pages);
+    char *resp = (char *)palloc_pages_bulk(resp_pages);
+    char *tool_obs = (char *)palloc_pages_bulk(obs_pages);
 
     if (!history || !resp || !tool_obs) {
-        if (history) palloc_free(history, 4);
-        if (resp) palloc_free(resp, 4);
-        if (tool_obs) palloc_free(tool_obs, 2);
+        if (history) palloc_free(history, hist_pages);
+        if (resp) palloc_free(resp, resp_pages);
+        if (tool_obs) palloc_free(tool_obs, obs_pages);
+
+        hist_pages = 4; resp_pages = 4; obs_pages = 2; /* 16KB/16KB/8KB SRAM fallback */
+        hist_sz = hist_pages * 4096;
+        resp_sz = resp_pages * 4096;
+        obs_sz  = obs_pages * 4096;
+
+        history = (char *)palloc_pages(hist_pages);
+        resp = (char *)palloc_pages(resp_pages);
+        tool_obs = (char *)palloc_pages(obs_pages);
+    }
+
+    if (!history || !resp || !tool_obs) {
+        if (history) palloc_free(history, hist_pages);
+        if (resp) palloc_free(resp, resp_pages);
+        if (tool_obs) palloc_free(tool_obs, obs_pages);
         cprintf("ea: out of memory for conversation buffers\n");
         return -2;
     }
 
-    ksnprintf(history, 16384, "[USER]\n%s", prompt);
+    ksnprintf(history, hist_sz, "[USER]\n%s", prompt);
 
     int turns = 0;
     int status = 0;
@@ -297,7 +344,7 @@ int ea_run(const char *prompt, bool interactive, bool auto_confirm, const char *
 
         char err_buf[128] = {0};
         int rc = llm_chat(history, EA_SYSTEM_PROMPT, model_override,
-                          resp, 16384, live_stream_token_cb, NULL,
+                          resp, resp_sz, live_stream_token_cb, NULL,
                           err_buf, sizeof(err_buf));
 
         if (g_in_thought) {
@@ -316,14 +363,14 @@ int ea_run(const char *prompt, bool interactive, bool auto_confirm, const char *
         char code[1024];
         if (parse_react_action(resp, tool, sizeof(tool), code, sizeof(code))) {
             cprintf("\n\033[1;34m--> [Executing Tool: %s]\033[0m\n", tool);
-            ea_eval_tool(tool, code, tool_obs, 8192);
+            ea_eval_tool(tool, code, tool_obs, obs_sz);
             cprintf("\033[36m<-- [Observation: %s]\033[0m\n\n", tool_obs);
 
             /* Append assistant turn and tool observation to history */
             size_t hlen = strlen(history);
-            int n = ksnprintf(history + hlen, 16384 - hlen,
+            int n = ksnprintf(history + hlen, hist_sz - hlen,
                               "\n\n[ASSISTANT]\n%s\n\n[USER]\nObservation:\n%s", resp, tool_obs);
-            if (n < 0 || hlen + (size_t)n >= 16384 - 256) {
+            if (n < 0 || hlen + (size_t)n >= hist_sz - 256) {
                 cprintf("ea: conversation buffer full\n");
                 break;
             }
@@ -333,9 +380,9 @@ int ea_run(const char *prompt, bool interactive, bool auto_confirm, const char *
         }
     }
 
-    palloc_free(history, 4);
-    palloc_free(resp, 4);
-    palloc_free(tool_obs, 2);
+    palloc_free(history, hist_pages);
+    palloc_free(resp, resp_pages);
+    palloc_free(tool_obs, obs_pages);
     return status;
 }
 

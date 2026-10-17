@@ -1723,6 +1723,8 @@ def test_ribbon_slide_and_reader_smooth_scroll(b: Board) -> tuple[str, bool, str
 def test_tab5_orientation(b: Board) -> tuple[str, bool, str]:
     """56.3: Tab5 dual-orientation compositor supporting Landscape and Portrait."""
     name = "display orientation: Landscape 270 deg and Portrait 0 deg (56.3)"
+    if not is_tab5(b):
+        return name, True, "SKIPPED (Tab5 only)"
     out = b.console_session.cmd("lcd orient", deadline=10.0)
     if "lcd orient:" not in out:
         return name, True, "SKIPPED (orientation switching not supported on this board)"

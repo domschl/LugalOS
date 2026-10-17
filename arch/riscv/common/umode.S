@@ -29,6 +29,7 @@
 #define CSR_SCRATCH sscratch
 #define CSR_EPC     sepc
 #define CSR_STATUS  sstatus
+#define CSR_CAUSE   scause
 #define PP_MASK     (1 << 8)          /* SPP */
 #define PIE_BIT     (1 << 5)          /* SPIE */
 #define TRAP_RET    sret
@@ -36,6 +37,7 @@
 #define CSR_SCRATCH mscratch
 #define CSR_EPC     mepc
 #define CSR_STATUS  mstatus
+#define CSR_CAUSE   mcause
 #define PP_MASK     (3 << 11)         /* MPP */
 #define PIE_BIT     (1 << 7)          /* MPIE */
 #define TRAP_RET    mret
@@ -130,6 +132,14 @@ arch_enter_user:
      * CSR_SCRATCH whenever the return goes back to U-mode. */
     li t0, PIE_BIT
     csrs CSR_STATUS, t0
+
+#if defined(CONFIG_BOARD_ESP32P4)
+    /* On ESP32-P4 (CLIC), mret restores privilege mode from mcause[29:28],
+     * interrupt enable from mcause[27] (MPIE), and interrupt level from mcause[23:16] (MPIL).
+     * For U-mode: MPP=0, MPIE=1, MPIL=0, EXCCODE=0 -> mcause = (1 << 27). */
+    li t0, (1 << 27)
+    csrw CSR_CAUSE, t0
+#endif
 
     mv sp, a1
 

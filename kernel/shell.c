@@ -5018,6 +5018,28 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         while (*arg == ' ') arg++;
         cmd_ea(arg);
         return;
+    } else if (strncmp(cmd_line, "exec ", 5) == 0) {
+        const char *p = cmd_line + 5;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p) {
+            char argbuf[256];
+            char *argp[USER_ARGV_LIMIT];
+            int argn = 0;
+            uint32_t n = 0;
+            while (p[n] && n < sizeof(argbuf) - 1) { argbuf[n] = p[n]; n++; }
+            argbuf[n] = '\0';
+            char *q = argbuf;
+            while (*q && argn < USER_ARGV_LIMIT) {
+                while (*q == ' ' || *q == '\t') *q++ = '\0';
+                if (!*q) break;
+                argp[argn++] = q;
+                while (*q && *q != ' ' && *q != '\t') q++;
+            }
+            if (argn > 0) {
+                elf_load_and_run_argv(argp[0], argn, (const char *const *)argp);
+            }
+        }
+        return;
     } else if (strcmp(cmd_line, "more") == 0) {
         cmd_more(NULL);
         return;
@@ -6476,6 +6498,13 @@ static void parse_and_eval_cmd(const char *cmd_line) {
             char prog[128];
             if (path_resolve("bin", argp[0], ".elf", prog, sizeof(prog)) == 0) {
                 elf_load_and_run_argv(prog, argn, (const char *const *)argp);
+                return;
+            }
+        } else if (argn > 0 && name_has_slash) {
+            int fd = vfs_open(argp[0], VFS_O_READ);
+            if (fd >= 0) {
+                vfs_close(fd);
+                elf_load_and_run_argv(argp[0], argn, (const char *const *)argp);
                 return;
             }
         }

@@ -499,11 +499,13 @@ trap_vector_entry:
     mv a0, sp
     call trap_handler
 
-    /* Restore EPC and status */
+    /* Restore EPC, status and cause */
     REG_L t0, 31*REGBYTES(sp)
     REG_L t1, 32*REGBYTES(sp)
+    REG_L t2, 33*REGBYTES(sp)
     csrw CSR_EPC, t0
     csrw CSR_STATUS, t1
+    csrw CSR_CAUSE, t2
 
     /* If this return goes to U-mode, park the kernel stack pointer in this
      * hart's record and point CSR_SCRATCH at the record, so the *next* trap
@@ -516,10 +518,15 @@ trap_vector_entry:
      * to a privileged mode and the invariant stays at zero. */
 #if defined(CONFIG_MODE_S)
     li t0, (1 << 8)
+    and t0, t1, t0
+#elif defined(CONFIG_BOARD_ESP32P4)
+    /* On CLIC, previous privilege mode lives in mcause[29:28] (t2), not mstatus (t1) */
+    li t0, (3 << 28)
+    and t0, t2, t0
 #else
     li t0, (3 << 11)
-#endif
     and t0, t1, t0
+#endif
     bnez t0, .Ltrap_exit_kernel
     addi t0, sp, TRAP_FRAME_SIZE
     REG_S t0, HART_OFF_KERNEL_SP(tp)

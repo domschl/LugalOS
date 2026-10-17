@@ -559,11 +559,12 @@ static inline void p4_drop_intlevel(void) {
     uintptr_t cause, status;
     __asm__ __volatile__("csrr %0, mcause" : "=r"(cause));
     cause &= ~((uintptr_t)0xff << 16);        /* MPIL = 0 */
+    cause |= ((uintptr_t)3 << 28);            /* MPP  = M in mcause: no privilege change on mret */
     __asm__ __volatile__("csrw mcause, %0" :: "r"(cause));
 
     __asm__ __volatile__("csrr %0, mstatus" : "=r"(status));
     status &= ~((uintptr_t)1 << 7);           /* MPIE = 0: stay masked */
-    status |= ((uintptr_t)3 << 11);           /* MPP  = M: no privilege change */
+    status |= ((uintptr_t)3 << 11);           /* MPP  = M in mstatus: no privilege change */
     __asm__ __volatile__("csrw mstatus, %0" :: "r"(status));
 
     __asm__ __volatile__(

@@ -27,6 +27,7 @@ static const builtin_t builtins[] = {
     BUILTIN_PRIM("adc-read", prim_adc_read),
     BUILTIN_PRIM("append", prim_append),
     BUILTIN_PRIM("apply", prim_apply),
+    BUILTIN_PRIM("apropos", prim_apropos),
     BUILTIN_PRIM("arch", prim_arch),
     BUILTIN_PRIM("assoc", prim_assoc),
     BUILTIN_PRIM("assq", prim_assq),

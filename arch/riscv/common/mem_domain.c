@@ -262,11 +262,32 @@ int mem_domain_activate(const mem_domain_t *d) {
     }
 #endif
 
-    /* Config first (see above), and every byte including the unused entries:
-     * writing the whole word is what makes a switch to a smaller domain
-     * actually shrink access rather than inherit the previous task's
-     * leftovers -- the leak the hardware suite caught after `usertest`, made
-     * structurally impossible. */
+    /* Zero config first so no stale address is matched while pmpaddr registers are updated. */
+    write_csr(pmpcfg0, 0);
+#if __riscv_xlen == 32
+    write_csr(pmpcfg1, 0);
+#if PMP_ENTRIES > 8
+    write_csr(pmpcfg2, 0);
+    write_csr(pmpcfg3, 0);
+#endif
+#endif
+
+    int ok = 0;
+#if PMP_DENY_ENTRIES > 0
+    if (d) {
+        for (int i = 0; i < PMP_DENY_ENTRIES; i++) {
+            pmpaddr_write(PMP_DYNAMIC_ENTRIES + i,
+                          napot_encode(g_hardwired_shadow[i].base,
+                                       g_hardwired_shadow[i].size));
+        }
+    }
+#endif
+    for (int i = 0; i < n; i++) {
+        uintptr_t want = napot_encode(d->regions[i].base, d->regions[i].size);
+        pmpaddr_write(i, want);
+    }
+
+    /* Activate target config with all pmpaddr registers settled. */
     uintptr_t w0 = 0, w1 = 0;
 #if __riscv_xlen == 32
     for (int i = 0; i < 4; i++) w0 |= ((uintptr_t)cfg[i]) << (i * 8);
@@ -286,26 +307,8 @@ int mem_domain_activate(const mem_domain_t *d) {
     (void)w1;
 #endif
 
-    int ok = 0;
-#if PMP_DENY_ENTRIES > 0
-    if (d) {
-        for (int i = 0; i < PMP_DENY_ENTRIES; i++) {
-            pmpaddr_write(PMP_DYNAMIC_ENTRIES + i,
-                          napot_encode(g_hardwired_shadow[i].base,
-                                       g_hardwired_shadow[i].size));
-        }
-    }
-#endif
     for (int i = 0; i < n; i++) {
         uintptr_t want = napot_encode(d->regions[i].base, d->regions[i].size);
-        pmpaddr_write(i, want);
-        /* A region the hardware declined to represent exactly is not a
-         * smaller region -- it is an unknown one. Report failure so the
-         * caller can refuse to run a task under a restriction nobody has
-         * verified, rather than granting something arbitrary. */
-        /* Compare only the bits the hardware lets software own. RP2350
-         * hardwires the low two to ones when the region is enabled (granule
-         * 32), so they carry no information and differ by design. */
         uintptr_t got = pmpaddr_read(i);
         if ((got | PMP_ADDR_FIXED_LOW) != (want | PMP_ADDR_FIXED_LOW)) {
             printk("[MemDomain] pmpaddr%d: wrote %08lx, kept %08lx "
@@ -316,6 +319,7 @@ int mem_domain_activate(const mem_domain_t *d) {
             ok = -1;
         }
     }
+
     return ok;
 }
 

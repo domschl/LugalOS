@@ -7439,7 +7439,63 @@ static lisp_val_t *prim_sensor_origin(lisp_val_t *args, lisp_val_t *env) {
 }
 
 static lisp_val_t *prim_help(lisp_val_t *args, lisp_val_t *env);
+static lisp_val_t *prim_apropos(lisp_val_t *args, lisp_val_t *env);
 #include "builtins_table.h"
+
+/* Introspection & Discoverability: (apropos <pattern>) searches both
+ * global_env and the Flash .rodata builtins table, prints matching
+ * symbols with their types, and returns the list of matched symbols. */
+static lisp_val_t *prim_apropos(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    const char *pat = "";
+    if (args && args->type == LISP_PAIR && args->u.pair.car && args->u.pair.car != &nil_val) {
+        lisp_val_t *v = args->u.pair.car;
+        if (v->type == LISP_SYMBOL) pat = v->u.sym;
+        else if (v->type == LISP_STRING) pat = v->u.str;
+    }
+
+    cprintf("\nLisp Apropos (matching \"%s\"):\n", pat);
+    cprintf("-------------------------------------------------\n");
+    lisp_val_t *res = &nil_val;
+    int count = 0;
+
+    /* 1. Global environment (closures, user definitions, macros) */
+    for (lisp_val_t *c = global_env; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
+        lisp_val_t *binding = c->u.pair.car;
+        if (!binding || binding->type != LISP_PAIR) continue;
+        lisp_val_t *k = binding->u.pair.car;
+        if (!k || k->type != LISP_SYMBOL || !k->u.sym) continue;
+        if (!pat[0] || strstr(k->u.sym, pat)) {
+            lisp_val_t *val = binding->u.pair.cdr;
+            const char *kind = "value";
+            if (val) {
+                if (val->type == LISP_PRIMITIVE) kind = "primitive";
+                else if (val->type == LISP_LAMBDA) kind = "closure";
+                else if (val->type == LISP_MACRO) kind = "macro";
+            }
+            cprintf("  %-24s -- %s\n", k->u.sym, kind);
+            res = make_pair(k, res);
+            count++;
+        }
+    }
+
+    /* 2. Flash .rodata builtins table */
+    for (size_t i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++) {
+        const char *bname = builtins[i].name;
+        if (!bname) continue;
+        if (!pat[0] || strstr(bname, pat)) {
+            const char *kind = (builtins[i].val && builtins[i].val->type == LISP_PRIMITIVE) ?
+                               "primitive" : "builtin";
+            cprintf("  %-24s -- %s\n", bname, kind);
+            res = make_pair(make_sym(bname), res);
+            count++;
+        }
+    }
+
+    cprintf("-------------------------------------------------\n");
+    cprintf("Found %d matching symbol(s).\n\n", count);
+    return res;
+}
 
 /* Discoverability (D2/D3 in plan/completed/2026-08-07_review_and_remediation.md): the
  * Lisp engine is the shell's execution core, but had no way to list what's
@@ -7454,8 +7510,15 @@ static lisp_val_t *prim_help(lisp_val_t *args, lisp_val_t *env) {
                            (sym->type == LISP_STRING) ? sym->u.str : NULL;
         if (name) {
             char path[64];
-            ksnprintf(path, sizeof(path), "/sd0/help/%s.txt", name);
             vfs_stat_t st;
+            /* Try .gmi first, then .txt across /sd0 and /flash0 */
+            ksnprintf(path, sizeof(path), "/sd0/help/%s.gmi", name);
+            if (vfs_stat(path, &st) != 0) {
+                ksnprintf(path, sizeof(path), "/flash0/help/%s.gmi", name);
+            }
+            if (vfs_stat(path, &st) != 0) {
+                ksnprintf(path, sizeof(path), "/sd0/help/%s.txt", name);
+            }
             if (vfs_stat(path, &st) != 0) {
                 ksnprintf(path, sizeof(path), "/flash0/help/%s.txt", name);
             }
@@ -7470,6 +7533,18 @@ static lisp_val_t *prim_help(lisp_val_t *args, lisp_val_t *env) {
                 p.u.pair.car = &arg_val;
                 p.u.pair.cdr = &nil_val;
                 return prim_cat(&p, env);
+            }
+
+            /* Fallback: check if symbol exists in builtins or global_env */
+            for (size_t i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++) {
+                if (strcmp(builtins[i].name, name) == 0) {
+                    cprintf("\n[doc] '%s' is a core built-in %s.\n"
+                            "Use (apropos \"%s\") to inspect related functions.\n\n",
+                            name,
+                            builtins[i].val->type == LISP_PRIMITIVE ? "primitive" : "constant",
+                            name);
+                    return &true_val;
+                }
             }
             cprintf("doc: topic '%s' not found.\n", name);
             return &nil_val;

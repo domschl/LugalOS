@@ -138,7 +138,7 @@ bool llm_set_config(const llm_config_t *cfg) {
 typedef struct {
     llm_token_cb on_token;
     void        *user_ctx;
-    char         line_buf[512];
+    char         line_buf[1024];
     uint32_t     line_pos;
     bool         done;
 } sse_ctx_t;
@@ -222,7 +222,15 @@ static void process_sse_line(sse_ctx_t *ctx) {
         /* Find matching closing quote (unescaped) */
         char *end = start;
         while (*end) {
-            if (*end == '"' && *(end - 1) != '\\') break;
+            if (*end == '"') {
+                size_t bs_count = 0;
+                char *p = end - 1;
+                while (p >= start && *p == '\\') {
+                    bs_count++;
+                    p--;
+                }
+                if ((bs_count % 2) == 0) break;
+            }
             end++;
         }
         if (*end == '"') {
@@ -287,9 +295,15 @@ int llm_stream_chat(const char *prompt, const char *system_prompt, const char *m
         ksnprintf(full_url, sizeof(full_url), "%s/chat/completions", g_llm_cfg.url);
     }
 
-    /* Build JSON request payload */
-    size_t body_max = 8192;
-    char *body = (char *)palloc_pages(2);
+    /* Build JSON request payload in PSRAM (bulk zone) with SRAM fallback */
+    uint32_t body_pages = 16; /* 64 KB */
+    size_t body_max = body_pages * 4096;
+    char *body = (char *)palloc_pages_bulk(body_pages);
+    if (!body) {
+        body_pages = 4; /* 16 KB SRAM fallback */
+        body_max = body_pages * 4096;
+        body = (char *)palloc_pages(body_pages);
+    }
     if (!body) {
         if (err_out && err_sz > 0) strncpy(err_out, "Out of memory for request body", err_sz - 1);
         return -1;
@@ -382,7 +396,7 @@ int llm_stream_chat(const char *prompt, const char *system_prompt, const char *m
     req.timeout_ms = g_llm_cfg.timeout_ms;
 
     int status = http_request(&req, sse_chunk_cb, &sse_state, err_out, err_sz);
-    palloc_free(body, 2);
+    palloc_free(body, body_pages);
     if (status != 200) {
         if (err_out && err_sz > 0 && status > 0) {
             ksnprintf(err_out, err_sz, "LLM server returned HTTP %d", status);

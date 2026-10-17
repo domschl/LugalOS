@@ -438,8 +438,18 @@ static char closed_terminal_wait(void) {
     return 0x03;
 }
 
+static inline bool is_pid_captured(int pid, int cap_pid) {
+    int depth = 0;
+    while (pid >= 0 && depth < MAX_TASKS) {
+        if (pid == cap_pid) return true;
+        pid = task_get_parent(pid);
+        depth++;
+    }
+    return false;
+}
+
 void console_putc(char c) {
-    if (g_cap && sched_current_pid() == g_cap_pid) {
+    if (g_cap && is_pid_captured(sched_current_pid(), g_cap_pid)) {
         if (g_cap_len < g_cap_max) {
             g_cap[g_cap_len++] = c;
         }

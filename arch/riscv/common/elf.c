@@ -322,7 +322,15 @@ static user_proc_t *proc_alloc(uint32_t image_pages) {
      * SRAM, which shares its bus with the panel's scan-out. Where the bulk
      * zone cannot place it, the fast zone does, counted as a fallback. The
      * user stack stays in SRAM. */
+#if defined(CONFIG_BOARD_ESP32P4)
+    /* On ESP32-P4 internal fast SRAM has abundant free pages (70+ pages) and running
+     * small user programs from fast internal SRAM avoids external PSRAM cache line
+     * refill latency and potential cache coherency hazards. Falls back to bulk PSRAM. */
+    p->image = (uint8_t *)palloc_pages_aligned(image_pages, image_pages);
+    if (!p->image) p->image = (uint8_t *)palloc_pages_bulk_aligned(image_pages, image_pages);
+#else
     p->image = (uint8_t *)palloc_pages_bulk_aligned(image_pages, image_pages);
+#endif
     if (!p->image) {
         uint32_t total = 0, free_pg = 0, run = 0;
         palloc_stats(&total, &free_pg);

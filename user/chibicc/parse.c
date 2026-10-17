@@ -605,6 +605,16 @@ static Node *assign(Token **rest, Token *tok) {
     Node *node = equality(&tok, tok);
     if (equal(tok, "=")) {
         node = new_binary(ND_ASSIGN, node, assign(&tok, tok->next));
+    } else if (equal(tok, "+=")) {
+        node = new_binary(ND_ASSIGN, node, new_binary(ND_ADD, node, assign(&tok, tok->next)));
+    } else if (equal(tok, "-=")) {
+        node = new_binary(ND_ASSIGN, node, new_binary(ND_SUB, node, assign(&tok, tok->next)));
+    } else if (equal(tok, "*=")) {
+        node = new_binary(ND_ASSIGN, node, new_binary(ND_MUL, node, assign(&tok, tok->next)));
+    } else if (equal(tok, "/=")) {
+        node = new_binary(ND_ASSIGN, node, new_binary(ND_DIV, node, assign(&tok, tok->next)));
+    } else if (equal(tok, "%=")) {
+        node = new_binary(ND_ASSIGN, node, new_binary(ND_MOD, node, assign(&tok, tok->next)));
     }
     *rest = tok;
     return node;
@@ -686,45 +696,66 @@ static Node *stmt_inner(Token **rest, Token *tok) {
     }
 
     if (is_typename(tok)) {
-        Type *ty = typespec(&tok, tok);
+        Type *base_ty = typespec(&tok, tok);
 
         if (equal(tok, ";")) {
             *rest = tok->next;
             return new_node(ND_EXPR_STMT);
         }
 
-        while (equal(tok, "*")) {
-            ty = pointer_to(ty);
+        Node head;
+        head.next = NULL;
+        Node *cur = &head;
+
+        while (1) {
+            Type *ty = base_ty;
+            while (equal(tok, "*")) {
+                ty = pointer_to(ty);
+                tok = tok->next;
+            }
+
+            Token *var_tok = tok;
             tok = tok->next;
-        }
 
-        Token *var_tok = tok;
-        tok = tok->next;
+            if (equal(tok, "[")) {
+                tok = tok->next;
+                int len = tok->val;
+                tok = skip(tok->next, "]");
+                ty = array_of(ty, len);
+            }
 
-        if (equal(tok, "[")) {
-            tok = tok->next;
-            int len = tok->val;
-            tok = skip(tok->next, "]");
-            ty = array_of(ty, len);
-        }
-
-        Obj *var = find_var(var_tok);
-        if (!var) {
-            char namebuf[32];
-            int len = var_tok->len < 31 ? var_tok->len : 31;
-            strncpy(namebuf, var_tok->loc, len);
-            namebuf[len] = '\0';
-            var = new_var(namebuf, ty);
-        }
-        if (equal(tok, "=")) {
-            Node *node = new_node(ND_EXPR_STMT);
-            Node *lhs = new_node(ND_VAR);
-            lhs->var = var;
-            node->lhs = new_binary(ND_ASSIGN, lhs, expr(&tok, tok->next));
+            Obj *var = find_var(var_tok);
+            if (!var) {
+                char namebuf[32];
+                int len = var_tok->len < 31 ? var_tok->len : 31;
+                strncpy(namebuf, var_tok->loc, len);
+                namebuf[len] = '\0';
+                var = new_var(namebuf, ty);
+            }
+            if (equal(tok, "=")) {
+                Node *node = new_node(ND_EXPR_STMT);
+                Node *lhs = new_node(ND_VAR);
+                lhs->var = var;
+                node->lhs = new_binary(ND_ASSIGN, lhs, expr(&tok, tok->next));
+                cur->next = node;
+                cur = node;
+            }
+            if (equal(tok, ",")) {
+                tok = tok->next;
+                continue;
+            }
             *rest = skip(tok, ";");
-            return node;
+            break;
         }
-        *rest = skip(tok, ";");
+
+        if (head.next) {
+            if (!head.next->next) {
+                return head.next;
+            }
+            Node *block = new_node(ND_BLOCK);
+            block->body = head.next;
+            return block;
+        }
         return new_node(ND_EXPR_STMT);
     }
 

@@ -109,6 +109,7 @@ void sched_init(void) {
     memset(g_tasks, 0, sizeof(g_tasks));
     for (int i = 0; i < MAX_TASKS; i++) {
         g_tasks[i].pid = i;
+        g_tasks[i].parent_pid = -1;
         g_tasks[i].state = TASK_UNUSED;
         g_tasks[i].name = "(unused)";
         g_tasks[i].hart_affinity = -1;   /* any hart, unless pinned */
@@ -278,6 +279,11 @@ void sched_release_hart_holds(unsigned hart) {
     }
 }
 
+int task_get_parent(int pid) {
+    if (!g_active || pid < 0 || pid >= MAX_TASKS) return -1;
+    return g_tasks[pid].parent_pid;
+}
+
 int task_get_vterm(int pid) {
     if (pid < 0 || pid >= MAX_TASKS) return 0;
     return g_tasks[pid].vterm_id;
@@ -315,6 +321,7 @@ int sched_secondary_init(void) {
     }
     g_tasks[slot].state = TASK_RUNNING;
     g_tasks[slot].name = "idle";
+    g_tasks[slot].parent_pid = -1;
     g_tasks[slot].stack_base = NULL;    /* the linker's, not palloc'd */
     g_tasks[slot].stack_pages = 0;
     g_tasks[slot].priority = TASK_PRIO_IDLE;
@@ -499,6 +506,7 @@ static int task_create_full(const char *name, void (*entry)(void *), void *arg,
     t->wait_armed = false;
     t->wake_pending = false;
     int cpid = cur();
+    t->parent_pid = (cpid >= 0 && cpid < MAX_TASKS) ? cpid : -1;
     t->vterm_id = (cpid >= 0 && cpid < MAX_TASKS) ? g_tasks[cpid].vterm_id : 0;
 
     /* Paint it before priming, so a high-water mark can be recovered later

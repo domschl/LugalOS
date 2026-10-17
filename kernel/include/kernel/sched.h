@@ -126,6 +126,7 @@ typedef struct task {
     int          held_affinity;
     /* Virtual terminal ID (0 = root/default console). */
     int          vterm_id;
+    int          parent_pid;  /* PID of creator task, or -1 */
     /* The wake token (task_prepare_block()): armed by the task before it
      * publishes what it will wait for, set by a task_unblock() that finds
      * it not yet BLOCKED, consumed by its task_block(). Both under
@@ -138,7 +139,8 @@ typedef struct task {
  * always a valid "current task" to switch away from. */
 void sched_init(void);
 
-/* Virtual terminal association. */
+/* Task relationship and terminal association. */
+int  task_get_parent(int pid);
 int  task_get_vterm(int pid);
 void task_set_vterm(int pid, int vterm_id);
 /* Every task on terminal `vterm_id` (> 0) is told it is gone: its vterm

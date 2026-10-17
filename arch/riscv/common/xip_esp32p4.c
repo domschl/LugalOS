@@ -49,6 +49,7 @@
 /* CACHE_MAP_* from esp32p4/rom/cache.h: ICACHE_0 bit 0, ICACHE_1 bit 1,
  * DCACHE bit 4, L2 bit 5. */
 #define CACHE_MAP_L1_ICACHE_0   (1u << 0)
+#define CACHE_MAP_L1_ICACHE_1   (1u << 1)
 #define CACHE_MAP_L1_DCACHE     (1u << 4)
 #define CACHE_MAP_L2_CACHE      (1u << 5)
 
@@ -306,11 +307,33 @@ BOOT_TEXT void esp32p4_xip_map(void) {
  * them back, which threw away the live stack and killed the board. After a
  * writeback-all nothing is dirty, so this is safe either way; naming just the
  * I-cache keeps it safe for the wrong reason as well as the right one. */
+static void p4_cache_sync_hw(uint32_t map, uint32_t op_bit) {
+    volatile uint32_t *const sync_ctrl = (volatile uint32_t *)0x3ff10098u;
+    volatile uint32_t *const sync_map  = (volatile uint32_t *)0x3ff1009cu;
+    volatile uint32_t *const sync_addr = (volatile uint32_t *)0x3ff100a0u;
+    volatile uint32_t *const sync_size = (volatile uint32_t *)0x3ff100a4u;
+
+    *sync_map = map;
+    *sync_addr = 0;
+    *sync_size = 0;
+    *sync_ctrl = op_bit;
+    while (!(*sync_ctrl & (1u << 4))) {}
+
+    if (op_bit == (1u << 2) /* CACHE_WRITEBACK_ENA */) {
+        *sync_ctrl = op_bit;
+        while (!(*sync_ctrl & (1u << 4))) {}
+    }
+}
+
 void esp32p4_icache_sync(void) {
-    rom_cache_op_t     wb    = (rom_cache_op_t)(uintptr_t)ROM_CACHE_WRITEBACK_ALL;
-    rom_cache_map_op_t inval = (rom_cache_map_op_t)(uintptr_t)ROM_CACHE_INVALIDATE_ALL;
-    wb();
-    inval(CACHE_MAP_L1_ICACHE_0);
+    /* 1. Writeback L1 DCache and L2 Cache so loader stores reach memory */
+    p4_cache_sync_hw(CACHE_MAP_L1_DCACHE, 1u << 2);
+    p4_cache_sync_hw(CACHE_MAP_L2_CACHE,  1u << 2);
+
+    /* 2. Invalidate L1 ICache (both cores) and L2 Cache so fetch sees fresh code */
+    p4_cache_sync_hw(CACHE_MAP_L1_ICACHE_0, 1u << 0);
+    p4_cache_sync_hw(CACHE_MAP_L1_ICACHE_1, 1u << 0);
+    p4_cache_sync_hw(CACHE_MAP_L2_CACHE,    1u << 0);
 }
 
 #endif /* CONFIG_BOARD_ESP32P4 */
