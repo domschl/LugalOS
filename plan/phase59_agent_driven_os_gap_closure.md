@@ -1,6 +1,6 @@
 # Phase 59: Agent-Driven OS Friction Reduction, Self-Extension & Introspection
 
-**Status**: PROPOSED / DRAFT  
+**Status**: ACTIVE IMPLEMENTATION (Milestones 59.1 & 59.2 Complete; 59.3, 59.4, 59.8 In Progress)  
 **Target Version**: 0.21.0  
 **Follows**:
 - Phase 42 & 43: Lisp Symbolic Foundations & Computer Algebra System (`cas/`)
@@ -203,6 +203,10 @@ The long-term objective of LugalOS is self-hosting on RISC-V hardware:
 - [x] Add direct `exec <path> [args...]` handler and direct VFS path execution in `kernel/shell.c`.
 - [x] Fix SSE JSON string unescaping in `net/llm.c` for backslashes preceding closing quotes (`putchar('\n');`).
 - [x] Redirect `chibicc` compiler diagnostics from async `printk` to user-facing `cprintf`.
+- [x] Prevent CLI answer cutoff in `tools/p4run.py` by replacing static `time.sleep(wait)` with live real-time stdout streaming and dynamic shell prompt (`READY_MARKER = "lsh>"`) detection.
+- [x] Increase kernel LLM client timeout `LLM_DEFAULT_TIMEOUT_MS` to 120s in `net/include/net/llm.h` to support large MoE models without premature connection reset.
+- [x] Add Lisp dialect flexibility by supporting `progn` (alias for `begin`) and `def` (alias for `define`) in `user/lisp/lisp.c`.
+- [x] Enrich `EA_SYSTEM_PROMPT` in `kernel/ea.c` with explicit support for quasiquote (`` ` ``) / unquote (`,`), multi-curve plotting (`plot-multi`, `plot-parametric`), and strict directive prohibiting scratchpad math in Thought.
 
 ### Milestone 59.3: `chibicc` C Compiler Expansion
 - [x] Support comma-separated variable declarations (`int a = 1, b = 2;`) in `user/chibicc/parse.c`.
@@ -227,6 +231,23 @@ The long-term objective of LugalOS is self-hosting on RISC-V hardware:
 - [ ] Add automated regression test in `tests/runner.py` verifying `find` and command chaining.
 
 ### Milestone 59.7: Automated Agent E2E Benchmark Suite
-- [ ] Create `tests/hw/test_agent_eval.py` that runs the 5 canonical benchmarks (CAS calculus, quadratic solver, demo discovery, sensor telemetry, and C compilation).
-- [ ] Assert that all 5 benchmarks achieve one-shot or two-shot resolution without getting stuck.
+- [ ] Create `tests/hw/test_agent_eval.py` that runs the canonical benchmarks (CAS calculus, quadratic solver, demo discovery, sensor telemetry, and C compilation).
+- [ ] Assert that all benchmarks achieve one-shot or two-shot resolution without getting stuck.
 - [ ] Track reasoning step counts and token efficiency across firmware revisions.
+
+### Milestone 59.8: Real-World Physics Student Benchmark Suite
+- [x] **Scenario 1: Cannon Ballistics**:
+  - Task: Differentiate trajectory $y(t) = 30t - 5t^2$, solve $dy/dt=0$ for peak time $t_{\text{peak}}$, and plot trajectory $y(x) = \frac{3}{2}x - \frac{1}{80}x^2$ for $x \in [0, 120]$.
+  - Verification: Solved $t=3\text{ s}$, max altitude $45\text{ m}$, range $120\text{ m}$, plotted on LCD canvas. (Passed on hardware)
+- [x] **Scenario 2: Simple Harmonic Oscillator (Spring)**:
+  - Task: Position $x(t) = 2\cos(2t)$. Differentiate to velocity $v(t)$ and acceleration $a(t)$, verify $\ddot{x} + 4x = 0$, and graph $x(t)$ and its derivative over $t \in [0, 7]$ using `plot-diff`.
+  - Verification: Computed $v(t) = -4\sin(2t)$, $a(t) = -8\cos(2t)$, verified $a + 4x = 0$, and plotted dual curves on LCD canvas. (Passed on hardware)
+- [x] **Scenario 3: Damped Harmonic Oscillator**:
+  - Task: Underdamped spring $x(t) = e^{-t}\cos(3t)$. Find velocity $v(t) = dx/dt$, verify ODE $\ddot{x} + 2\dot{x} + 10x = 0$ simplifies to exact 0, and plot $x(t)$ for $t \in [0, 5]$.
+  - Verification: Differentiated twice, simplified ODE expression to exact `0` in pure symbolic rational arithmetic, and plotted decaying envelope on LCD canvas. (Passed on hardware)
+- [ ] **Scenario 4: Coupled Harmonic Oscillators (Two Masses & Springs)**:
+  - Task: Two coupled carts with masses $m_1 = m_2 = 1$ and springs $k_1 = k_2 = k$, coupling spring $k_c$. Find normal frequencies $\omega_1, \omega_2$, formulate beat superposition $x_1(t) = \frac{1}{2}(\cos(t) + \cos(\sqrt{3}t))$, $x_2(t) = \frac{1}{2}(\cos(t) - \cos(\sqrt{3}t))$, and plot both displacements simultaneously on shared axes via `(plot-multi ...)`.
+- [ ] **Scenario 5: Driven Resonance & Frequency Response**:
+  - Task: Damped driven oscillator with steady-state amplitude $A(\omega) = \frac{F_0}{\sqrt{(\omega_0^2 - \omega^2)^2 + (2\gamma\omega)^2}}$, determine peak resonance frequency $\omega_r = \sqrt{\omega_0^2 - 2\gamma^2}$, and plot resonance curve.
+- [ ] **Scenario 6: Non-Linear Large-Angle Pendulum vs. Small-Angle Harmonic Motion**:
+  - Task: Compare harmonic approximation $\ddot{\theta} + \omega^2\theta = 0$ with true restoring torque $\ddot{\theta} + \omega^2\sin(\theta) = 0$, expand $\sin(\theta)$ using Taylor series (`(taylor '(sin theta) 'theta 5)`), and plot small vs large amplitude trajectory divergence via `plot-multi`.
