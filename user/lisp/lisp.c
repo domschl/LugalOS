@@ -33,6 +33,7 @@
 #include "net/tcp.h"
 #include "net/ntp.h"
 #include "net/mqttd.h"
+#include "net/llm.h"
 #include "drivers/sensor_hub.h"
 #include <limits.h>
 #include "kernel/identity.h"
@@ -6986,6 +6987,163 @@ static lisp_val_t *prim_lsh(lisp_val_t *args, lisp_val_t *env) {
     shell_run();
     lisp_unpark(&park);
     return &nil_val;
+}
+
+static lisp_val_t *prim_llm_chat(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    if (!args || args->type != LISP_PAIR) return &nil_val;
+    const char *prompt = get_str_val(args->u.pair.car);
+    if (!prompt) return &nil_val;
+
+    const char *system_prompt = NULL;
+    const char *model = NULL;
+
+    lisp_val_t *rest = args->u.pair.cdr;
+    if (rest && rest->type == LISP_PAIR) {
+        system_prompt = get_str_val(rest->u.pair.car);
+        rest = rest->u.pair.cdr;
+        if (rest && rest->type == LISP_PAIR) {
+            model = get_str_val(rest->u.pair.car);
+        }
+    }
+
+    char *resp_buf = (char *)palloc_pages(4); /* 16 KB response buffer */
+    if (!resp_buf) return &nil_val;
+
+    char err_buf[128] = {0};
+    lisp_park_t park;
+    lisp_park(&park);
+    int rc = llm_chat(prompt, system_prompt, model, resp_buf, 16384, NULL, NULL, err_buf, sizeof(err_buf));
+    lisp_unpark(&park);
+
+    lisp_val_t *ret = &nil_val;
+    if (rc == 0) {
+        ret = make_str(resp_buf);
+    } else {
+        cprintf("[llm-chat error: %s]\n", err_buf[0] ? err_buf : "failed");
+    }
+    palloc_free(resp_buf, 4);
+    return ret;
+}
+
+typedef struct {
+    lisp_val_t *cb;
+    lisp_val_t *env;
+} lisp_llm_stream_ctx_t;
+
+static void lisp_llm_stream_cb(const char *token, bool is_reasoning, void *ctx) {
+    (void)is_reasoning;
+    lisp_llm_stream_ctx_t *s = (lisp_llm_stream_ctx_t *)ctx;
+    if (!s || !s->cb) return;
+
+    lisp_lock();
+    lisp_val_t *tok = make_str(token);
+    lisp_val_t *arg_list = make_pair(tok, &nil_val);
+    lisp_apply(s->cb, arg_list, s->env);
+    lisp_unlock();
+}
+
+static lisp_val_t *prim_llm_stream(lisp_val_t *args, lisp_val_t *env) {
+    if (!args || args->type != LISP_PAIR) return &nil_val;
+    const char *prompt = get_str_val(args->u.pair.car);
+    if (!prompt) return &nil_val;
+
+    lisp_val_t *rest = args->u.pair.cdr;
+    if (!rest || rest->type != LISP_PAIR) return &nil_val;
+    lisp_val_t *cb = rest->u.pair.car;
+    rest = rest->u.pair.cdr;
+
+    const char *system_prompt = NULL;
+    const char *model = NULL;
+    if (rest && rest->type == LISP_PAIR) {
+        system_prompt = get_str_val(rest->u.pair.car);
+        rest = rest->u.pair.cdr;
+        if (rest && rest->type == LISP_PAIR) {
+            model = get_str_val(rest->u.pair.car);
+        }
+    }
+
+    lisp_llm_stream_ctx_t ctx;
+    ctx.cb = cb;
+    ctx.env = env;
+
+    char err_buf[128] = {0};
+    lisp_park_t park;
+    lisp_park(&park);
+    int rc = llm_stream_chat(prompt, system_prompt, model, lisp_llm_stream_cb, &ctx, err_buf, sizeof(err_buf));
+    lisp_unpark(&park);
+
+    if (rc != 0) {
+        cprintf("[llm-stream error: %s]\n", err_buf[0] ? err_buf : "failed");
+        return &false_val;
+    }
+    return &true_val;
+}
+
+static lisp_val_t *prim_llm_models(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    char *buf = (char *)palloc_pages(1); /* 4 KB models buffer */
+    if (!buf) return &nil_val;
+
+    char err_buf[128] = {0};
+    lisp_park_t park;
+    lisp_park(&park);
+    int rc = llm_models(buf, 4096, err_buf, sizeof(err_buf));
+    lisp_unpark(&park);
+
+    if (rc != 0) {
+        cprintf("[llm-models error: %s]\n", err_buf[0] ? err_buf : "failed");
+        palloc_free(buf, 1);
+        return &nil_val;
+    }
+
+    lisp_val_t *head = &nil_val;
+    lisp_val_t **tail = &head;
+
+    char *p = buf;
+    while (*p) {
+        while (*p == ' ') p++;
+        if (!*p) break;
+        char *start = p;
+        while (*p && *p != ' ') p++;
+        char saved = *p;
+        *p = '\0';
+        lisp_val_t *cell = make_pair(make_str(start), &nil_val);
+        *tail = cell;
+        tail = &cell->u.pair.cdr;
+        if (saved == '\0') break;
+        p++;
+    }
+
+    palloc_free(buf, 1);
+    return head;
+}
+
+static lisp_val_t *prim_llm_config(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    llm_config_t cfg;
+    llm_get_config(&cfg);
+
+    if (args && args->type == LISP_PAIR) {
+        const char *new_url = get_str_val(args->u.pair.car);
+        if (new_url && *new_url) {
+            strncpy(cfg.url, new_url, sizeof(cfg.url) - 1);
+            cfg.url[sizeof(cfg.url) - 1] = '\0';
+        }
+        lisp_val_t *cdr = args->u.pair.cdr;
+        if (cdr && cdr->type == LISP_PAIR) {
+            const char *new_model = get_str_val(cdr->u.pair.car);
+            if (new_model && *new_model) {
+                strncpy(cfg.model, new_model, sizeof(cfg.model) - 1);
+                cfg.model[sizeof(cfg.model) - 1] = '\0';
+            }
+        }
+        llm_set_config(&cfg);
+    }
+
+    lisp_val_t *url_pair = make_pair(make_sym("url"), make_str(cfg.url));
+    lisp_val_t *model_pair = make_pair(make_sym("model"), make_str(cfg.model));
+    return make_pair(url_pair, make_pair(model_pair, &nil_val));
 }
 
 static int parse_sensor_chan(const char *name) {

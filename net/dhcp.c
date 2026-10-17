@@ -32,7 +32,7 @@ enum { DHCPDISCOVER = 1, DHCPOFFER = 2, DHCPREQUEST = 3, DHCPNAK = 6, DHCPACK = 
 typedef struct {
     volatile bool got;
     uint8_t type;
-    uint8_t yiaddr[4], server[4], mask[4], router[4];
+    uint8_t yiaddr[4], server[4], mask[4], router[4], dns[4];
     uint32_t lease_s;
     uint32_t xid;
 } dhcp_rx_t;
@@ -40,6 +40,14 @@ typedef struct {
 static dhcp_rx_t g_rx;
 static uint32_t g_xid;
 static bool g_owned;          /* the address in use is one this client set (so it may renew it) */
+static uint8_t g_dns[4];
+static bool g_has_dns;
+
+bool dhcp_dns_server(uint8_t out[IPV4_LEN]) {
+    if (!g_has_dns || !out) return false;
+    memcpy(out, g_dns, 4);
+    return true;
+}
 
 static void put32(uint8_t *p, uint32_t v) { p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16); p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v; }
 static uint32_t get32(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]; }
@@ -65,6 +73,7 @@ static void rx_cb(void *ctx, const uint8_t src_ip[IPV4_LEN], uint16_t src_port, 
         else if (code == 54 && n == 4) memcpy(r.server, v, 4);
         else if (code == 1 && n == 4) memcpy(r.mask, v, 4);
         else if (code == 3 && n >= 4) memcpy(r.router, v, 4);
+        else if (code == 6 && n >= 4) memcpy(r.dns, v, 4);
         else if (code == 51 && n == 4) r.lease_s = get32(v);
         i += 2u + n;
     }
@@ -91,7 +100,7 @@ static int send_msg(uint8_t type, const uint8_t *req_ip, const uint8_t *server) 
     if (hl > 0 && hl < 32) { m[o++] = 12; m[o++] = (uint8_t)hl; memcpy(m + o, host, hl); o += hl; }
     if (req_ip)  { m[o++] = 50; m[o++] = 4; memcpy(m + o, req_ip, 4); o += 4; }
     if (server)  { m[o++] = 54; m[o++] = 4; memcpy(m + o, server, 4); o += 4; }
-    m[o++] = 55; m[o++] = 3; m[o++] = 1; m[o++] = 3; m[o++] = 51;                     /* parameter request: mask, router, lease */
+    m[o++] = 55; m[o++] = 4; m[o++] = 1; m[o++] = 3; m[o++] = 6; m[o++] = 51;         /* parameter request: mask, router, dns, lease */
     m[o++] = 255;
     static const uint8_t bcast[4] = { 255, 255, 255, 255 };
     return udp_send(bcast, DHCP_SERVER_PORT, DHCP_CLIENT_PORT, m, o < 300 ? 300 : o) > 0 ? 0 : -1;
@@ -130,6 +139,10 @@ static bool dhcp_exchange(uint8_t ip[4], uint8_t mask[4], uint8_t gw[4], uint32_
         memcpy(ip, g_rx.yiaddr, 4);
         memcpy(mask, g_rx.mask, 4);
         memcpy(gw, g_rx.router, 4);
+        if (g_rx.dns[0] != 0 || g_rx.dns[1] != 0 || g_rx.dns[2] != 0 || g_rx.dns[3] != 0) {
+            memcpy(g_dns, g_rx.dns, 4);
+            g_has_dns = true;
+        }
         *lease_s = g_rx.lease_s ? g_rx.lease_s : 3600;
         ok = true;
     }
@@ -159,8 +172,16 @@ static void dhcp_task(void *arg) {
         if (!ok) { task_sleep_ms(5000); continue; }
         if (net_set_address(ip, mask, gw) == 0) {
             g_owned = true;
-            printk("[DHCP] %u.%u.%u.%u/%u.%u.%u.%u gw %u.%u.%u.%u, lease %us\n", ip[0], ip[1], ip[2], ip[3],
-                   mask[0], mask[1], mask[2], mask[3], gw[0], gw[1], gw[2], gw[3], (unsigned)lease_s);
+            if (g_has_dns) {
+                printk("[DHCP] %u.%u.%u.%u/%u.%u.%u.%u gw %u.%u.%u.%u dns %u.%u.%u.%u, lease %us\n",
+                       ip[0], ip[1], ip[2], ip[3],
+                       mask[0], mask[1], mask[2], mask[3],
+                       gw[0], gw[1], gw[2], gw[3],
+                       g_dns[0], g_dns[1], g_dns[2], g_dns[3], (unsigned)lease_s);
+            } else {
+                printk("[DHCP] %u.%u.%u.%u/%u.%u.%u.%u gw %u.%u.%u.%u, lease %us\n", ip[0], ip[1], ip[2], ip[3],
+                       mask[0], mask[1], mask[2], mask[3], gw[0], gw[1], gw[2], gw[3], (unsigned)lease_s);
+            }
         }
         /* Renew at half the lease (clamped to something that is not a busy loop). */
         uint32_t wait = lease_s / 2;

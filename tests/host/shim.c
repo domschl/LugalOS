@@ -205,3 +205,15 @@ __attribute__((weak)) bool ipv4_parse(const char *s, uint8_t out[4]) {
     return part == 4;
 }
 
+__attribute__((weak)) bool dhcp_dns_server(uint8_t out[4]) { (void)out; return false; }
+__attribute__((weak)) const void *net_state(void) { return NULL; }
+__attribute__((weak)) int udp_bind(uint16_t port, void *cb, void *ctx) { (void)port; (void)cb; (void)ctx; return -1; }
+__attribute__((weak)) int udp_unbind(uint16_t port) { (void)port; return 0; }
+__attribute__((weak)) int udp_send(const uint8_t dst[4], uint16_t dport, uint16_t sport, const void *d, uint32_t l) {
+    (void)dst; (void)dport; (void)sport; (void)d; (void)l; return -1;
+}
+__attribute__((weak)) void random_bytes(void *buf, uint32_t len) {
+    uint8_t *p = (uint8_t *)buf;
+    for (uint32_t i = 0; i < len; i++) p[i] = (uint8_t)rand();
+}
+

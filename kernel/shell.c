@@ -101,6 +101,10 @@
 #include "net/ip.h"
 #include "net/tcp.h"
 #include "net/spartan.h"
+#include "net/dns.h"
+#include "net/http.h"
+#include "net/llm.h"
+#include "kernel/ea.h"
 #include "net/ntp.h"
 #include "net/mqtt.h"
 #include "net/mqttd.h"
@@ -5006,6 +5010,14 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         while (*arg == ' ') arg++;
         cmd_spartand(arg);
         return;
+    } else if (strcmp(cmd_line, "ea") == 0) {
+        cmd_ea(NULL);
+        return;
+    } else if (strncmp(cmd_line, "ea ", 3) == 0) {
+        const char *arg = cmd_line + 3;
+        while (*arg == ' ') arg++;
+        cmd_ea(arg);
+        return;
     } else if (strcmp(cmd_line, "more") == 0) {
         cmd_more(NULL);
         return;
@@ -6680,6 +6692,11 @@ void shell_worker_task_entry(void *arg) {
 
     if (task_get_vterm(me) == vid) vterm_destroy(vid);
     task_exit();
+}
+
+void shell_exec(const char *cmd_line) {
+    if (!cmd_line) return;
+    parse_and_eval_cmd(cmd_line);
 }
 
 

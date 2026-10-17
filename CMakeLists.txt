@@ -685,6 +685,7 @@ set(SOURCES
     # needs them: the tables are ~7 KB of .bss, which RP2350's heap cannot spare.
     ${KOBJ_SOURCES}
     kernel/shell.c
+    kernel/ea.c
     kernel/line_editor.c
     kernel/editor.c
     # one parser for every text input's keys, and the clipboard.
@@ -810,6 +811,10 @@ set(SOURCES
     net/mqttd.c
     # Phase 53: Spartan network client and sandboxed daemon
     net/spartan.c
+    # Phase 58: DNS client, HTTP/1.1 transport and LLM engine
+    net/dns.c
+    net/http.c
+    net/llm.c
     # P3: timestamped GPIO
     # edge capture. Built for every target because the ring is portable and is
     # where the off-by-one lives; the interrupt half compiles away on anything
