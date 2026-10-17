@@ -9,6 +9,10 @@
 #include "arch/elf.h"
 #include "fs/vfs.h"
 #include "kernel/printk.h"
+#ifndef HOST_TEST
+#include "kernel/console.h"
+#define printk cprintf
+#endif
 #include "kernel/lock.h"
 #include <string.h>
 

@@ -8,6 +8,10 @@
 #include "chibicc.h"
 #include "fs/vfs.h"
 #include "kernel/printk.h"
+#ifndef HOST_TEST
+#include "kernel/console.h"
+#define printk cprintf
+#endif
 #include <string.h>
 
 #define MAX_MACROS 128
@@ -33,30 +37,25 @@ static bool preproc_failed;
 static const char *builtin_lugal_h =
     "#ifndef _LUGAL_H\n"
     "#define _LUGAL_H\n"
-    "#define SYS_IPC_CALL   1\n"
-    "#define SYS_IPC_REPLY  2\n"
-    "#define SYS_IPC_SEND   3\n"
-    "#define SYS_IPC_RECV   4\n"
+    "#define SYS_CHAN_CALL  5\n"
     "#define SYS_PRINT      10\n"
     "#define SYS_PUTNUM     11\n"
     "#define SYS_PUTCHAR    12\n"
     "#define SYS_READ_FILE  13\n"
     "#define SYS_WRITE_FILE 14\n"
-    "#define IPC_ANY       -1\n"
-    "struct ipc_msg {\n"
-    "    long tag;\n"
-    "    long d0;\n"
-    "    long d1;\n"
-    "    long d2;\n"
-    "    long d3;\n"
-    "    long d4;\n"
-    "};\n"
+    "#define SYS_TICKS      21\n"
     "long lugal_syscall(long sys_nr, long a1, long a2, long a3);\n"
     "int print(char *s);\n"
     "int puts(char *s);\n"
     "int printf(char *s);\n"
+    "int print_str(char *s);\n"
     "int putnum(long n);\n"
+    "int print_num(long n);\n"
+    "int print_int(long n);\n"
     "int putchar(char c);\n"
+    "int print_char(char c);\n"
+    "int print_nl(void);\n"
+    "int print_sp(void);\n"
     "int read_file(char *path, void *buf, int max_len);\n"
     "int write_file(char *path, void *buf, int len);\n"
     "#endif\n";
@@ -352,12 +351,14 @@ static void preprocess_internal(const char *src, int depth) {
                 /* Where to look: an absolute path is itself; a quoted name
                  * is tried beside the including file first, then in /ram0/
                  * and /ram0/include/ like an angle-bracket one. */
-                const char *dirs[3];
+                const char *dirs[5];
                 int ndirs = 0;
                 if (hdr_path[0] == '/') {
                     dirs[ndirs++] = "";
                 } else {
                     if (delim == '"' && inc_dir[depth][0]) dirs[ndirs++] = inc_dir[depth];
+                    dirs[ndirs++] = "/sd0/";
+                    dirs[ndirs++] = "/sd0/include/";
                     dirs[ndirs++] = "/ram0/";
                     dirs[ndirs++] = "/ram0/include/";
                 }

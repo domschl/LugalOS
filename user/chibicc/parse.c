@@ -7,6 +7,10 @@
 
 #include "chibicc.h"
 #include "kernel/printk.h"
+#ifndef HOST_TEST
+#include "kernel/console.h"
+#define printk cprintf
+#endif
 #include <string.h>
 
 /* The parser's pools dominate chibicc's arena, and the arena is taken from the

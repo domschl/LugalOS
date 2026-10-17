@@ -148,6 +148,7 @@ static bool inside(uint32_t addr, uint32_t len, uint32_t base, uint32_t size) {
 bool c6flash_writable(uint32_t addr, uint32_t len) {
     if (len == 0 || addr >= (uint32_t)LUGALOS_C6_FLASH_SIZE) return false;
     if (inside(addr, len, LUGALOS_C6_IDENTITY_BASE, SECTOR_BYTES)) return true;
+    if (g_c6_boot.magic == OTA_C6_IDF_BOOT_MAGIC) return ota_c6_idf_writable(addr, len);
     if (inside(addr, len, LUGALOS_C6_BOOTREC_BASE, 2u * SECTOR_BYTES)) return true;
     if (g_c6_boot.magic != OTA_C6_BOOT_MAGIC) return false;
     uint32_t other = g_c6_boot.slot == 0 ? LUGALOS_C6_SLOT_B_BASE : LUGALOS_C6_SLOT_A_BASE;

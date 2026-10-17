@@ -85,13 +85,79 @@ def parts_esp32c6(build: Path, flash_size: int) -> list[bytes]:
     return [ram_img.read_bytes(), (build / "lugalos-xip.bin").read_bytes()]
 
 
-def make_image(build: Path, broken: bool = False) -> tuple[bytes, dict]:
+def corrupt_esp_app_image(raw: bytes) -> bytes:
+    """Zero 64 KB of .text (0x42080000) in an ESP-IDF 0xE9 image and recompute its checksum and SHA-256."""
+    data = bytearray(raw)
+    if len(data) < 64 or data[0] != 0xE9:
+        sys.exit("not an ESP-IDF 0xE9 image")
+    nseg = data[1]
+    hash_appended = data[23]
+    off = 24
+    chk = 0xEF
+    corrupted = False
+    for _ in range(nseg):
+        load_addr, seg_len = struct.unpack_from("<II", data, off)
+        off += 8
+        if load_addr == 0x42080000:
+            n = min(0x10000, seg_len)
+            data[off:off + n] = bytes(n)
+            corrupted = True
+        for b in data[off:off + seg_len]:
+            chk ^= b
+        off += seg_len
+    if not corrupted:
+        sys.exit("no 0x42080000 (.text) segment found in app image to corrupt")
+    chk_off = off | 15
+    data[chk_off] = chk
+    if hash_appended == 1:
+        data[-32:] = hashlib.sha256(data[:-32]).digest()
+    return bytes(data)
+
+
+def make_app_image(build: Path, broken: bool = False) -> tuple[bytes, dict]:
+    """Build a single-file ESP-IDF 0xE9 application image (lugalos-c6-app.bin) with esp_app_desc_t at 0x20."""
+    import c6run
+    man = read_manifest(build)
+    if "board" not in man:
+        sys.exit(f"{build}/flash.manifest names no board: rebuild it")
+    board, chip = man["board"]
+    flash_size = int(man["flash"][1], 0)
+    app_elf = build / "lugalos-app.elf"
+    if not app_elf.exists():
+        sys.exit(f"{app_elf} does not exist: rebuild {build}")
+    app_bin = build / "lugalos-c6-app.bin"
+    r = c6run.esptool("elf2image", "--flash-mode", "dio", "--flash-freq", "40m",
+                      "--flash-size", "%dMB" % (flash_size >> 20), "-o", str(app_bin), str(app_elf))
+    if r.returncode != 0:
+        sys.exit("elf2image failed:\n" + (r.stderr or r.stdout)[-600:])
+    raw = app_bin.read_bytes()
+    if len(raw) < 0x120 or raw[0] != 0xE9:
+        sys.exit("lugalos-c6-app.bin is not a valid 0xE9 image")
+    app_magic = struct.unpack_from("<I", raw, 0x20)[0]
+    if app_magic != 0xABCD5432:
+        sys.exit(f"esp_app_desc_t magic at 0x20 is 0x{app_magic:08x}, expected 0xABCD5432")
+    if broken:
+        raw = corrupt_esp_app_image(raw)
+    bid = build_id(build)
+    info = {"board": board, "chip": chip, "build_id": bid,
+            "size": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+    return raw, info
+
+
+def make_image(build: Path, broken: bool = False, idf: bool = False) -> tuple[bytes, dict]:
     man = read_manifest(build)
     if "board" not in man:
         sys.exit(f"{build}/flash.manifest names no board: rebuild it")
     board, chip = man["board"]
     if chip != "esp32c6":
         sys.exit(f"no update image format for {chip} yet")
+    if idf:
+        app_raw, app_info = make_app_image(build, broken=broken)
+        parts = [app_raw, b""]
+        hdr = header(board, chip, app_info["build_id"], parts)
+        info = {"board": board, "chip": chip, "build_id": app_info["build_id"],
+                "part_len": [len(app_raw), 0], "sha256": app_info["sha256"], "layout": "idf"}
+        return hdr + app_raw, info
     parts = parts_esp32c6(build, int(man["flash"][1], 0))
     if broken:
         # The kernel's own text starts 512 KB into the XIP half (linker/esp32c6.ld:
@@ -101,7 +167,8 @@ def make_image(build: Path, broken: bool = False) -> tuple[bytes, dict]:
         parts[1] = bytes(xip)
     hdr = header(board, chip, build_id(build), parts)
     info = {"board": board, "chip": chip, "build_id": build_id(build),
-            "part_len": [len(p) for p in parts], "sha256": hashlib.sha256(b"".join(parts)).hexdigest()}
+            "part_len": [len(p) for p in parts], "sha256": hashlib.sha256(b"".join(parts)).hexdigest(),
+            "layout": "loader"}
     return hdr + b"".join(parts), info
 
 
@@ -191,27 +258,95 @@ class Node:
         finally:
             c.clunk(fid)
 
+    def read_other_slot(self, max_bytes: int = 0) -> bytes:
+        """Read the inactive slot from <prefix>/dev/otaimage. If the slot starts with an ESP-IDF 0xE9
+        header, parse its segment headers on the fly so only the exact image bytes are transferred."""
+        from p9lib.client import OREAD
+        c = self.client
+        fid = self.sess._alloc_work_fid()
+        self.sess._walk_or_raise(fid, self.sess._split(self.prefix + "/dev/otaimage"), "otaimage", "walk to")
+        try:
+            c.open(fid, mode=OREAD)
+            chunk = min(c.io_chunk(), 2048)
+            first = c.read(fid, 0, min(chunk, 4096))
+            if not first:
+                return b""
+            target_len = max_bytes
+            if target_len == 0 and first[0] == 0xE9 and len(first) >= 24:
+                nseg = first[1]
+                hash_appended = first[23]
+                pos = 24
+                for _ in range(nseg):
+                    hdr_bytes = c.read(fid, pos, 8)
+                    if len(hdr_bytes) < 8:
+                        break
+                    _, seg_len = struct.unpack("<II", hdr_bytes)
+                    pos += 8 + seg_len
+                target_len = ((pos | 15) + 1) + (32 if hash_appended == 1 else 0)
+                print(f"detected ESP-IDF 0xE9 image in inactive slot: {nseg} segments, {target_len} bytes")
+            if target_len == 0:
+                target_len = 0x1C0000
+            out = bytearray()
+            t0 = time.monotonic()
+            while len(out) < target_len:
+                want = min(chunk, target_len - len(out))
+                try:
+                    b = c.read(fid, len(out), want)
+                except Exception as e:
+                    print(f"\n[read error] at offset {len(out)}/{target_len} (chunk={want}): {e}")
+                    raise
+                if not b:
+                    break
+                out.extend(b)
+                if (len(out) // chunk) % 32 == 0 or len(out) == target_len:
+                    rate = len(out) / 1024 / max(time.monotonic() - t0, 1e-3)
+                    print(f"\r  {len(out)}/{target_len} bytes, {rate:.0f} KB/s", end="", flush=True)
+                time.sleep(0.002)
+            print()
+            return bytes(out)
+        finally:
+            c.clunk(fid)
+
 
 def show(st: dict[str, str]) -> str:
-    keys = ("board", "running", "trial", "fell_back", "slot_a", "slot_b", "active", "pending", "state", "error")
+    keys = ("board", "layout", "running", "trial", "fell_back", "slot_a", "slot_b",
+            "active", "pending", "state", "error")
     return ", ".join(f"{k}={st[k]}" for k in keys if k in st)
 
 
 def push(a: argparse.Namespace) -> int:
     src = Path(a.source)
-    if src.is_dir():
-        image, info = make_image(src, broken=a.broken)
-    else:
-        image = src.read_bytes()
-        info = {"board": image[8:32].rstrip(b"\0").decode(), "build_id": image[56:88].rstrip(b"\0").decode()}
-    print(f"image: {len(image)} bytes for {info['board']}, build {info.get('build_id', '?')}"
-          f"{' (BROKEN on purpose)' if a.broken else ''}")
     node = Node(a)
     try:
         st = node.status()
         print("node:", show(st))
         if st.get("supported") == "no":
             sys.exit("the node cannot update itself")
+        is_idf = st.get("layout") == "idf"
+        if src.is_dir():
+            image, info = make_image(src, broken=a.broken, idf=is_idf)
+        else:
+            raw = src.read_bytes()
+            if len(raw) >= HEADER_LEN and struct.unpack_from("<I", raw, 0)[0] == MAGIC:
+                image = raw
+                info = {"board": image[8:32].rstrip(b"\0").decode(),
+                        "build_id": image[56:88].rstrip(b"\0").decode()}
+            elif raw and raw[0] == 0xE9 and is_idf:
+                if a.broken:
+                    raw = corrupt_esp_app_image(raw)
+                bid = "esp-idf-app"
+                if len(raw) >= 0x120 and struct.unpack_from("<I", raw, 0x20)[0] == 0xABCD5432:
+                    ver = raw[0x30:0x50].split(b"\0", 1)[0].decode(errors="replace")
+                    proj = raw[0x50:0x70].split(b"\0", 1)[0].decode(errors="replace")
+                    bid = ver if proj == "LugalOS" else f"{proj}:{ver}"
+                target_board = st.get("board", "esp32c6-mini")
+                hdr = header(target_board, st.get("chip", "esp32c6"), bid, [raw, b""])
+                image = hdr + raw
+                info = {"board": target_board, "build_id": bid}
+            else:
+                sys.exit(f"{src}: not a LugalOS OTA image or ESP-IDF 0xE9 app binary")
+        print(f"image: {len(image)} bytes for {info['board']}, build {info.get('build_id', '?')}"
+              f"{' (BROKEN on purpose)' if a.broken else ''}")
         if st.get("board") != info["board"] and not a.no_board_check:
             sys.exit(f"the node is a {st.get('board')}, the image is for {info['board']}")
         old_slot = st.get("running")
@@ -257,13 +392,55 @@ def push(a: argparse.Namespace) -> int:
         node.close()
 
 
+def switch_slot(a: argparse.Namespace) -> int:
+    node = Node(a)
+    try:
+        st = node.status()
+        print("node:", show(st))
+        node.ctl("switch")
+        st = node.status()
+        print("switched:", show(st))
+        if a.reboot:
+            node.ctl("reboot")
+            print("rebooting into the other slot")
+        return 0
+    finally:
+        node.close()
+
+
+def dump_other(a: argparse.Namespace) -> int:
+    node = Node(a)
+    try:
+        st = node.status()
+        print("node:", show(st))
+        data = node.read_other_slot(a.bytes)
+        if not data:
+            sys.exit("read 0 bytes from inactive slot")
+        if data[0] == 0xE9 and len(data) >= 64 and data[23] == 1:
+            expected_sha = data[-32:]
+            actual_sha = hashlib.sha256(data[:-32]).digest()
+            if expected_sha != actual_sha:
+                sys.exit(f"ESP-IDF image SHA-256 mismatch: expected {expected_sha.hex()}, got {actual_sha.hex()}")
+            print(f"verified ESP-IDF image SHA-256: {actual_sha.hex()}")
+        a.output.parent.mkdir(parents=True, exist_ok=True)
+        a.output.write_bytes(data)
+        print(f"wrote {len(data)} bytes to {a.output}")
+        return 0
+    finally:
+        node.close()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
     im = sub.add_parser("image", help="build the update image from a build directory")
     im.add_argument("build", type=Path)
     im.add_argument("-o", "--output", type=Path)
-    for name in ("push", "status"):
+    im.add_argument("--idf", action="store_true", help="pack single-file ESP-IDF 0xE9 app image instead of loader split")
+    aim = sub.add_parser("app-image", help="build the single-file ESP-IDF 0xE9 application image (lugalos-c6-app.bin)")
+    aim.add_argument("build", type=Path)
+    aim.add_argument("-o", "--output", type=Path)
+    for name in ("push", "status", "switch", "dump-other"):
         p = sub.add_parser(name)
         if name == "push":
             p.add_argument("source", help="a build directory, or an image file")
@@ -276,18 +453,29 @@ def main() -> int:
                            help="send no faster than this (testing a cut-off update by hand)")
             p.add_argument("--no-board-check", action="store_true",
                            help="send even to another board (testing the node's own refusal)")
-        p.add_argument("--p4", metavar="BOARD", help="through a P4 board's console (nano|lcd7b)")
+        elif name == "switch":
+            p.add_argument("--reboot", action="store_true", help="restart into the switched slot")
+        elif name == "dump-other":
+            p.add_argument("-o", "--output", type=Path, required=True, help="output file path")
+            p.add_argument("--bytes", type=int, default=0, help="explicit byte count (0: auto-detect 0xE9 image size)")
+        p.add_argument("--p4", metavar="BOARD", help="through a P4 board's console (nano|lcd7b|tab5)")
         p.add_argument("--tcp", metavar="HOST[:PORT]")
         p.add_argument("--key", help="9P key, hex")
         p.add_argument("--keyfile", help="file holding the 9P key, hex")
         p.add_argument("--prefix", default="", help="where the node's namespace is, e.g. /c6")
     a = ap.parse_args()
 
+    if a.cmd == "app-image":
+        raw, info = make_app_image(a.build)
+        out = a.output or a.build / "lugalos-c6-app.bin"
+        out.write_bytes(raw)
+        print(f"{out}: {len(raw)} bytes, {info['board']}, build {info['build_id']}, sha256 {info['sha256']}")
+        return 0
     if a.cmd == "image":
-        image, info = make_image(a.build)
+        image, info = make_image(a.build, idf=a.idf)
         out = a.output or a.build / "lugalos-ota.img"
         out.write_bytes(image)
-        print(f"{out}: {len(image)} bytes, {info['board']}, build {info['build_id']}, sha256 {info['sha256']}")
+        print(f"{out}: {len(image)} bytes, {info['board']} ({info['layout']}), build {info['build_id']}, sha256 {info['sha256']}")
         return 0
     if a.cmd == "status":
         node = Node(a)
@@ -297,6 +485,10 @@ def main() -> int:
         finally:
             node.close()
         return 0
+    if a.cmd == "switch":
+        return switch_slot(a)
+    if a.cmd == "dump-other":
+        return dump_other(a)
     return push(a)
 
 

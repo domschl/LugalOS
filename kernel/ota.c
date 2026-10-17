@@ -113,6 +113,18 @@ int ota_image_write(const void *buf, uint32_t len, uint64_t off) {
     return rc;
 }
 
+int ota_image_read(void *buf, uint32_t len, uint64_t off) {
+    if (off > 0xffffffffu) return 0;
+    lock();
+    ota_board_info_t info;
+    int rc = -1;
+    if (g.st == ST_IDLE && ota_board_info(&info) && info.running >= 0) {
+        rc = ota_board_raw_read(info.running ^ 1, (uint32_t)off, buf, len);
+    }
+    unlock();
+    return rc;
+}
+
 /* What is in the slot's flash, hashed, against the header. */
 static int verify(void) {
     static uint8_t chunk[512];
@@ -186,6 +198,16 @@ int ota_ctl_write(const char *buf, uint32_t len) {
         } else {
             rc = -1;
         }
+    } else if (strcmp(line, "switch") == 0) {
+        if (info.running < 0) {
+            rc = fail("this boot cannot switch slots");
+        } else if (info.trial && !g.confirmed) {
+            rc = fail("the running image is on trial: confirm it first");
+        } else if (ota_board_switch() != 0) {
+            rc = fail("could not switch to the other slot");
+        } else {
+            printk("[OTA] switched active slot to %c\n", slot_letter(info.running ^ 1));
+        }
     } else if (strcmp(line, "reboot") == 0) {
         rc = board_reset_later(false, 300) ? 0 : -1;
     } else if (strcmp(line, "confirm") == 0) {
@@ -208,7 +230,8 @@ uint32_t ota_ctl_read(char *out, uint32_t cap) {
     lock();
     uint32_t n = 0;
 #define PUT(...) do { if (n < cap) n += (uint32_t)ksnprintf(out + n, cap - n, __VA_ARGS__); } while (0)
-    PUT("board=%s\nchip=%s\nrunning=%c\n", LUGALOS_BOARD_ID, info.chip, slot_letter(info.running));
+    PUT("board=%s\nchip=%s\nlayout=%s\nrunning=%c\n", LUGALOS_BOARD_ID, info.chip,
+        info.layout ? info.layout : "loader", slot_letter(info.running));
     PUT("trial=%s\nfell_back=%s\n", info.trial && !g.confirmed ? "yes" : "no", info.fell_back ? "yes" : "no");
     for (int s = 0; s < (int)info.nslots; s++) {
         ota_image_header_t h;
@@ -261,9 +284,9 @@ static void trial_task(void *arg) {
 }
 
 void ota_start(void) {
+    ota_board_boot();
     ota_board_info_t info;
     if (!ota_board_info(&info)) return;
-    ota_board_boot();
     if (info.fell_back)
         printk("[OTA] the last trial did not confirm: running slot %c\n", slot_letter(info.running));
     if (!info.trial) return;

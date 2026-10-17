@@ -20,7 +20,8 @@
  * address, a2 = flags, a3 = the slot. Any other a0 (the ROM booting a kernel
  * image directly, or esptool's load-ram) means "no loader": slot A's XIP half,
  * and no update is possible in this boot. */
-#define OTA_C6_BOOT_MAGIC     0x44414f4cu       /* "LOAD" */
+#define OTA_C6_BOOT_MAGIC     0x44414f4cu       /* "LOAD": LugalOS loader */
+#define OTA_C6_IDF_BOOT_MAGIC 0x46444945u       /* "EIDF": ESP-IDF 2nd-stage bootloader */
 #define OTA_C6_FLAG_TRIAL     1u                /* this boot is a trial of a new image */
 #define OTA_C6_FLAG_FELL_BACK 2u                /* the last trial did not confirm */
 
@@ -34,5 +35,8 @@ typedef struct {
     uint32_t flags;
     uint32_t slot;
 } c6_boot_info_t;
+
+#include <stdbool.h>
+bool ota_c6_idf_writable(uint32_t addr, uint32_t len);
 
 #endif

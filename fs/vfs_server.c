@@ -2338,9 +2338,11 @@ int vfs_pread(int fd, void *buf, uint32_t count, uint64_t offset) {
             } else if (strcmp(h->rel_path, "eeprom") == 0) {
                 return at24c32_read((uint16_t)offset, (uint8_t *)buf, count);
             } else if (strcmp(h->rel_path, "null") == 0 || strcmp(h->rel_path, "zero") == 0 ||
-                       strcmp(h->rel_path, "reboot") == 0 || strcmp(h->rel_path, "otaimage") == 0) {
+                       strcmp(h->rel_path, "reboot") == 0) {
                 return 0;
 #if defined(CONFIG_OTA)
+            } else if (strcmp(h->rel_path, "otaimage") == 0) {
+                return ota_image_read(buf, count, offset);
             } else if (strcmp(h->rel_path, "ota") == 0) {
                 char st[512];
                 uint32_t len = ota_ctl_read(st, sizeof st);

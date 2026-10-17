@@ -1,6 +1,10 @@
 #include "chibicc.h"
 #include "kernel/palloc.h"
 #include "kernel/printk.h"
+#ifndef HOST_TEST
+#include "kernel/console.h"
+#define printk cprintf
+#endif
 #include <string.h>
 
 /* chibicc's working memory, taken from the heap only while it is compiling

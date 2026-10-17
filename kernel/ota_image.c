@@ -68,3 +68,76 @@ bool ota_header_valid(const ota_image_header_t *h) {
            h->header_len == OTA_HEADER_LEN &&
            h->crc == ota_crc32(h, (uint32_t)__builtin_offsetof(ota_image_header_t, crc));
 }
+
+bool ota_idf_parse_partitions(const void *table, uint32_t len, ota_idf_layout_t *out) {
+    if (!table || !out) return false;
+    out->otadata_base = out->otadata_size = 0;
+    out->slot_base[0] = out->slot_size[0] = 0;
+    out->slot_base[1] = out->slot_size[1] = 0;
+    const esp_part_entry_t *e = (const esp_part_entry_t *)table;
+    uint32_t max_entries = len / (uint32_t)sizeof(esp_part_entry_t);
+    for (uint32_t i = 0; i < max_entries; i++) {
+        if (e[i].magic != ESP_PART_MAGIC) break;
+        if (e[i].type == ESP_PART_TYPE_DATA && e[i].subtype == ESP_PART_SUBTYPE_OTA) {
+            out->otadata_base = e[i].offset;
+            out->otadata_size = e[i].size;
+        } else if (e[i].type == ESP_PART_TYPE_APP && e[i].subtype == ESP_PART_SUBTYPE_OTA0) {
+            out->slot_base[0] = e[i].offset;
+            out->slot_size[0] = e[i].size;
+        } else if (e[i].type == ESP_PART_TYPE_APP && e[i].subtype == ESP_PART_SUBTYPE_OTA1) {
+            out->slot_base[1] = e[i].offset;
+            out->slot_size[1] = e[i].size;
+        }
+    }
+    return out->otadata_base >= 0x8000u && (out->otadata_base & 0xfffu) == 0 &&
+           out->otadata_size >= 0x2000u &&
+           out->slot_base[0] >= 0x10000u && (out->slot_base[0] & 0xffffu) == 0 && out->slot_size[0] >= 0x100000u &&
+           out->slot_base[1] >= 0x10000u && (out->slot_base[1] & 0xffffu) == 0 && out->slot_size[1] >= 0x100000u &&
+           out->slot_base[0] != out->slot_base[1];
+}
+
+/* ESP-IDF's bootloader_common_ota_select_crc() calls esp_rom_crc32_le(UINT32_MAX, &s->ota_seq, 4).
+ * esp_rom_crc32_le(crc, buf, len) starts with c = ~crc, so passing UINT32_MAX starts with c = 0. */
+uint32_t ota_idf_crc32(uint32_t seq) {
+    uint32_t c = 0u;
+    for (int i = 0; i < 4; i++) {
+        c ^= (seq >> (8 * i)) & 0xffu;
+        for (int k = 0; k < 8; k++) c = (c >> 1) ^ (0xedb88320u & (0u - (c & 1u)));
+    }
+    return ~c;
+}
+
+bool ota_idf_select_valid(const esp_ota_select_entry_t *s) {
+    if (!s || s->ota_seq == 0xFFFFFFFFu || s->ota_seq == 0u) return false;
+    if (s->ota_state == ESP_OTA_IMG_INVALID || s->ota_state == ESP_OTA_IMG_ABORTED) return false;
+    return s->crc == ota_idf_crc32(s->ota_seq);
+}
+
+int ota_idf_active_sector(const esp_ota_select_entry_t s[2]) {
+    if (!s) return -1;
+    bool v0 = ota_idf_select_valid(&s[0]), v1 = ota_idf_select_valid(&s[1]);
+    if (v0 && v1) return s[1].ota_seq > s[0].ota_seq ? 1 : 0;
+    return v0 ? 0 : v1 ? 1 : -1;
+}
+
+uint32_t ota_idf_next_seq(uint32_t cur_seq, int target_slot) {
+    uint32_t slot = (uint32_t)(target_slot & 1);
+    uint32_t next = (cur_seq == 0xFFFFFFFFu ? 0u : cur_seq) + 1u;
+    if (((next - 1u) & 1u) != slot) next++;
+    return next;
+}
+
+void ota_idf_select_make(esp_ota_select_entry_t *s, uint32_t seq, uint32_t state, bool trial_tag) {
+    s->ota_seq = seq;
+    for (int i = 0; i < 20; i++) s->seq_label[i] = 0xffu;
+    if (trial_tag) {
+        s->seq_label[0] = 'L'; s->seq_label[1] = 'T'; s->seq_label[2] = 'R'; s->seq_label[3] = 'L';
+    }
+    s->ota_state = state;
+    s->crc = ota_idf_crc32(seq);
+}
+
+bool ota_idf_select_is_trial(const esp_ota_select_entry_t *s) {
+    return s && s->seq_label[0] == 'L' && s->seq_label[1] == 'T' &&
+           s->seq_label[2] == 'R' && s->seq_label[3] == 'L';
+}

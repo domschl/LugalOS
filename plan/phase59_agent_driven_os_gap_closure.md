@@ -1,6 +1,6 @@
 # Phase 59: Agent-Driven OS Friction Reduction, Self-Extension & Introspection
 
-**Status**: ACTIVE IMPLEMENTATION (Milestones 59.1 & 59.2 Complete; 59.3, 59.4, 59.8 In Progress)  
+**Status**: COMPLETED (Milestones 59.1 through 59.8 Complete & Verified)  
 **Target Version**: 0.21.0  
 **Follows**:
 - Phase 42 & 43: Lisp Symbolic Foundations & Computer Algebra System (`cas/`)
@@ -211,29 +211,29 @@ The long-term objective of LugalOS is self-hosting on RISC-V hardware:
 ### Milestone 59.3: `chibicc` C Compiler Expansion
 - [x] Support comma-separated variable declarations (`int a = 1, b = 2;`) in `user/chibicc/parse.c`.
 - [x] Support compound assignment operators (`+=`, `-=`, `*=`, `/=`, `%=`) in `user/chibicc/parse.c` and `tokenize.c`.
-- [ ] Add integer-to-string formatting helper or documented `putnum()` macros in `/sd0/include/lugal.h`.
-- [ ] Document supported C11 subset and syscall ABI in `/sd0/help/c_programming.gmi`.
+- [x] Add integer-to-string formatting helper or documented `putnum()` macros in `/sd0/include/lugal.h`.
+- [x] Document supported C11 subset and syscall ABI in `/sd0/help/c_programming.gmi`.
 
 ### Milestone 59.4: Modular Documentation Architecture
 - [x] Create `/sd0/help/plot.gmi` dedicated to 2D function plotting, canvas commands, and ASCII graphs.
 - [x] Create `/sd0/help/demos.gmi` indexing `/flash0/DEMOS` and `/sd0/demos` with descriptions.
-- [ ] Split `cas.gmi` into `/sd0/help/calculus.gmi` and `/sd0/help/algebra.gmi`.
-- [ ] Add section-level reading support to `help` tool (`help <topic> <subheading>`).
+- [x] Split `cas.gmi` into `/sd0/help/calculus.gmi` and `/sd0/help/algebra.gmi`.
+- [x] Add section-level reading support to `help` tool (`help <topic> <subheading>`).
 
 ### Milestone 59.5: Lisp Runtime Introspection
-- [ ] Implement `(apropos <str>)` scanning Flash builtins and global environment.
-- [ ] Implement `(doc <sym>)` retrieving builtin docstrings or `/sd0/help/` summaries.
-- [ ] Expose introspection in the `ea` system prompt so the agent queries available functions autonomously.
+- [x] Implement `(apropos <str>)` scanning Flash builtins and global environment.
+- [x] Implement `(doc <sym>)` retrieving builtin docstrings or `/sd0/help/` summaries.
+- [x] Expose introspection in the `ea` system prompt so the agent queries available functions autonomously.
 
 ### Milestone 59.6: Shell Discoverability & Command Sequencing
-- [ ] Implement `find [path] [pattern]` builtin in `kernel/shell.c`.
-- [ ] Implement semicolon `;` and logical `&&` sequencing in `kernel/shell.c`.
-- [ ] Add automated regression test in `tests/runner.py` verifying `find` and command chaining.
+- [x] Implement `find [path] [pattern]` builtin in `kernel/shell.c`.
+- [x] Implement semicolon `;` and logical `&&` sequencing in `kernel/shell.c`.
+- [x] Add automated regression test in `tests/runner.py` verifying `find` and command chaining.
 
 ### Milestone 59.7: Automated Agent E2E Benchmark Suite
-- [ ] Create `tests/hw/test_agent_eval.py` that runs the canonical benchmarks (CAS calculus, quadratic solver, demo discovery, sensor telemetry, and C compilation).
-- [ ] Assert that all benchmarks achieve one-shot or two-shot resolution without getting stuck.
-- [ ] Track reasoning step counts and token efficiency across firmware revisions.
+- [x] Create `tests/hw/test_agent_eval.py` that runs the canonical benchmarks (CAS calculus, quadratic solver, demo discovery, sensor telemetry, and C compilation).
+- [x] Assert that all benchmarks achieve one-shot or two-shot resolution without getting stuck.
+- [x] Track reasoning step counts and token efficiency across firmware revisions.
 
 ### Milestone 59.8: Real-World Physics Student Benchmark Suite
 - [x] **Scenario 1: Cannon Ballistics**:

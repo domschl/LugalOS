@@ -1,80 +1,124 @@
-# C Programming on LugalOS: Compiler, Libc & Syscall ABI
+# C Programming on LugalOS: Compiler, Intrinsics & Syscall ABI
 
-LugalOS provides a complete C programming environment for user applications. Programs can be compiled directly on the target hardware using the native `chibicc` C11 compiler or cross-compiled on a host computer.
+LugalOS features an on-device native C compiler (`chibicc`) capable of compiling C11 programs directly to unprivileged RISC-V user ELF binaries.
 
----
+## 1. On-Device Compilation & Execution
 
-## 1. On-Device Compilation with `chibicc`
-
-On targets with sufficient memory (`rp2350-terminal`, `esp32p4-lcd7b`, `esp32p4`, and QEMU), the C compiler is built into the shell:
+On hardware targets with sufficient RAM (`esp32p4-lcd7b`, `esp32p4-tab5`, `rp2350-terminal`, `rv32`, `rv64`), the `cc` command is built into the `lsh` shell:
 
 ```text
 # Compile source to native RISC-V ELF binary
-lsh> cc /sd0/hello.c /sd0/system/bin/hello.elf
+lsh> cc /sd0/hello.c /sd0/hello.elf
 
-# Execute the resulting binary
-lsh> hello
+# Execute directly or via exec
+lsh> /sd0/hello.elf
 Hello from native RISC-V user space!
 ```
 
-### Memory Efficiency
-The compiler allocates its syntax tree, tokenizer buffers, and code generation pools dynamically from the physical page heap (`palloc`) and releases all memory immediately upon compilation completion.
+Memory Efficiency: The compiler allocates AST nodes and code generation pools dynamically from page alloc (`palloc`) and frees all memory immediately upon completion.
 
----
+## 2. Supported C11 Language Subset
 
-## 2. The `lugal.h` Header & Standard Library Subset
+`chibicc` implements a lightweight, self-contained freestanding C11 subset:
+* Types: `int`, `char`, `long`, `void`, single- and multi-level pointers (`int *`, `char **`), arrays (`int arr[10]`), and `struct` types.
+* Declarations: Standard declarators and comma-separated declarations (e.g. `int a = 1, b = 2;`).
+* Control Flow: `if`, `else`, `while`, `for`, `return`, `break`, `continue`.
+* Expressions & Operators:
+  * Arithmetic: `+`, `-`, `*`, `/`, `%`
+  * Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`
+  * Increment & Decrement: `++`, `--` (both prefix and postfix)
+  * Comparisons: `==`, `!=`, `<`, `<=`, `>`, `>=`
+  * Logic & Unary: `!`, unary minus `-`, address-of `&`, pointer dereference `*`
+  * Member Access: Struct dot `.` and pointer arrow `->`
+  * Array Indexing: `arr[i]`
+* Preprocessor: `#include <...>`, `#include "..."`, `#define`, `#undef`, `#ifdef`, `#ifndef`, `#else`, `#endif`. Headers are searched in the source directory, `/sd0/include/`, `/sd0/`, `/ram0/include/`, and `/ram0/`.
 
-User programs include `<lugal.h>` (available at `/sd0/lugal.h` and embedded in the compiler's include path):
+## 3. The `lugal.h` Header & Compiler Intrinsics
+
+User binaries are freestanding (no heavy external libc required). The compiler provides direct zero-overhead intrinsics for console I/O, file access, and kernel syscalls:
 
 ```c
 #include <lugal.h>
 
-int main(int argc, char **argv) {
-    printf("Arguments received: %d\n", argc);
-    for (int i = 0; i < argc; i++) {
-        printf("  argv[%d] = %s\n", i, argv[i]);
-    }
+/* Direct RISC-V ecall system call invocation */
+long lugal_syscall(long sys_nr, long a1, long a2, long a3);
+
+/* Console Output Intrinsics */
+int print(char *s);         /* Print null-terminated string */
+int puts(char *s);          /* Print string (alias for print) */
+int printf(char *s);        /* Print string (alias for print) */
+int print_str(char *s);     /* Print string */
+int putnum(long n);         /* Print signed decimal integer */
+int print_num(long n);      /* Print signed decimal integer (alias) */
+int print_int(long n);      /* Print signed decimal integer (alias) */
+int putchar(char c);        /* Print single character */
+int print_char(char c);     /* Print single character (alias) */
+int print_nl(void);         /* Print newline character '\n' */
+int print_sp(void);         /* Print space character ' ' */
+
+/* File I/O Intrinsics */
+int read_file(char *path, void *buf, int max_len);
+int write_file(char *path, void *buf, int len);
+```
+
+## 4. How to Print Formatted Output & Numbers
+
+Because standard `printf` format specifiers (`%d`, `%s`) are not linked into freestanding binaries, use `putnum()` and `print()` to output values:
+
+```c
+#include <lugal.h>
+
+int main(void) {
+    int a = 12, b = 30;
+    print("The sum of ");
+    putnum(a);
+    print(" and ");
+    putnum(b);
+    print(" is ");
+    putnum(a + b);
+    print_nl();
     return 0;
 }
 ```
 
-### Supported C Standard Library Subset
-* **Memory & Strings**: `malloc()`, `free()`, `memcpy()`, `memmove()`, `memset()`, `strlen()`, `strcmp()`, `strncmp()`, `strcpy()`, `strncpy()`, `strcat()`.
-* **Standard I/O**: `printf()`, `snprintf()`, `puts()`, `putchar()`, `getchar()`.
-* **File Operations**: `open(path, flags)`, `read(fd, buf, count)`, `write(fd, buf, count)`, `close(fd)`, `stat(path, st)`.
-* **System Utilities**: `exit(status)`, `time_ms()`, `sleep_ms(ms)`.
+### Integer to String Conversion (`itoa`)
+For formatting numbers into memory buffers before writing to files via `write_file()`:
 
----
+```c
+char *itoa(long val, char *buf) {
+    char *p = buf;
+    if (val < 0) {
+        *p++ = '-';
+        val = -val;
+    }
+    char tmp[24];
+    int i = 0;
+    if (val == 0) {
+        tmp[i++] = '0';
+    } else {
+        while (val > 0) {
+            tmp[i++] = '0' + (val % 10);
+            val /= 10;
+        }
+    }
+    while (i > 0) {
+        *p++ = tmp[--i];
+    }
+    *p = '\0';
+    return buf;
+}
+```
 
-## 3. System Call ABI & Memory Confinement
+## 5. System Call ABI & Memory Confinement
 
-User applications execute in unprivileged **RISC-V User-Mode (U-Mode)**.
-
-### U-Mode Memory Isolation
-* **Hardware Enforcement**: Programs are confined via Physical Memory Protection (PMP) on NOMMU microcontrollers, and Sv39 page tables on RV64.
-* **Segment Confinement (W^X)**:
-  * Text segment: Read-only, Executable (`R | X`).
-  * Data/BSS segment: Read/Write, Non-Executable (`R | W`).
-  * User stack: Read/Write, Non-Executable (`R | W`).
-* **Safe Argument Passing**: `argc` and `argv` strings are constructed entirely within the application's private stack page. Zero kernel pointers cross into user space.
-* **Fault Containment**: If a user program dereferences a `NULL` pointer or writes outside its granted memory domain, hardware triggers an access fault. The kernel traps the fault, terminates the task, reclaims its allocated pages, and reports the error in `lsh` without crashing the operating system.
-
-### System Call Interface (`ecall`)
-User programs communicate with the microkernel via the RISC-V `ecall` instruction using register conventions:
-* `a7`: Syscall number.
-* `a0`–`a5`: Arguments.
-* `a0`: Return value.
-
-| Number | Name | Arguments | Description |
-| :--- | :--- | :--- | :--- |
-| `1` | `SYS_EXIT` | `a0 = status` | Terminate running task |
-| `2` | `SYS_PUTC` | `a0 = char` | Write character to console |
-| `3` | `SYS_GETC` | - | Read character from console |
-| `4` | `SYS_READ` | `a0 = fd, a1 = buf, a2 = count` | Read bytes from file descriptor |
-| `5` | `SYS_WRITE` | `a0 = fd, a1 = buf, a2 = count` | Write bytes to file descriptor |
-| `6` | `SYS_OPEN` | `a0 = path, a1 = flags` | Open file or endpoint |
-| `7` | `SYS_CLOSE` | `a0 = fd` | Close open file descriptor |
-| `10` | `SYS_CHAN_CALL` | `a0 = chan_id, a1 = in, a2 = out` | Copy-always IPC service call |
-| `15` | `SYS_TIME_MS` | - | Return uptime in milliseconds |
-
-All user pointers passed into syscalls are strictly validated against the task's granted memory domain before access.
+User applications execute in unprivileged RISC-V User Mode (U-Mode):
+* Memory Confinement: Hardware Physical Memory Protection (PMP) on NOMMU microcontrollers, Sv39 page tables on RV64.
+* Fault Containment: Null pointer dereferences or out-of-bounds memory writes trigger a hardware access fault trapped by the microkernel. The faulty user task is safely terminated and its resources reclaimed without compromising system stability.
+* Microkernel Syscalls:
+  * `SYS_CHAN_CALL` (5): Channel IPC service call.
+  * `SYS_PRINT` (10): Write string buffer to console.
+  * `SYS_PUTNUM` (11): Format and output integer.
+  * `SYS_PUTCHAR` (12): Write single character to console.
+  * `SYS_READ_FILE` (13): Read file from VFS.
+  * `SYS_WRITE_FILE` (14): Write file to VFS.
+  * `SYS_TICKS` (21): Read system preemption tick counter.

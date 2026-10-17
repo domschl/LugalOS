@@ -71,10 +71,18 @@ SECTIONS
      *
      * Declared before .text so that its patterns win the input sections: ld gives an
      * input section to the first statement that matches it. */
-    .radio_text ORIGIN(XIP) : {
+    /* 52.1: 32-byte pad at ORIGIN(XIP) so lugalos-xip.bin starts at 0x42000000 while
+     * .radio_text starts at 0x42000020 (matching the 24-byte image header + 8-byte
+     * segment header of a single-file ESP-IDF 0xE9 application image). */
+    .xip_pad ORIGIN(XIP) : {
         _xip_start = .;
         _radio_text_start = .;
         KEEP(*(.radio_text_marker))
+        . = ORIGIN(XIP) + 0x20;
+    } > XIP
+
+    .radio_text ORIGIN(XIP) + 0x20 : {
+        KEEP(*(.flash.appdesc))
         *libnet80211.a:*(.text .text.* .rodata .rodata.* .srodata .srodata.* .rodata_wlog* .iram1 .iram1.* .wifi*iram* .coexiram*)
         *libpp.a:*(.text .text.* .rodata .rodata.* .srodata .srodata.* .rodata_wlog* .iram1 .iram1.* .wifi*iram* .coexiram*)
         *libcore.a:*(.text .text.* .rodata .rodata.* .srodata .srodata.* .rodata_wlog* .iram1 .iram1.* .wifi*iram* .coexiram*)
@@ -102,13 +110,18 @@ SECTIONS
     ASSERT(_radio_text_end - _radio_text_start <= 512K,
            "the radio's text has outgrown its 512 KB PMP region (kernel/radio_c6.c)")
 
-    /* --- the flash-resident half --------------------------------------------- */
+    /* --- the flash-resident half (52.1: .text and .rodata in one output section so
+     * esptool elf2image emits exactly 2 flash-mapped segments for ESP-IDF's bootloader) */
     .text ORIGIN(XIP) + 512K : {
         _ktext_lo = .;
         . = ALIGN(4);
         *(EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj *radio_libc.c.obj) .text EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj *radio_libc.c.obj) .text.*)
         . = ALIGN(4);
         _ktext_hi = .;
+        *(EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj *radio_libc.c.obj) .rodata EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj *radio_libc.c.obj) .rodata.*)
+        *(EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj *radio_libc.c.obj) .srodata EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj *radio_libc.c.obj) .srodata.*)
+        . = ALIGN(4);
+        _xip_end = .;
     } > XIP
 
     /* U-mode-executable code, one page, power-of-two-sized and self-aligned so one
@@ -119,14 +132,6 @@ SECTIONS
         *(.utext .utext.*)
         . = _utext_start + 4096;
     } > RAM
-
-    .rodata : {
-        . = ALIGN(4);
-        *(EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj *radio_libc.c.obj) .rodata EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj *radio_libc.c.obj) .rodata.*)
-        *(EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj *radio_libc.c.obj) .srodata EXCLUDE_FILE(*osi_impl.c.obj *uprintf.c.obj *nvs_ram.c.obj *uheap.c.obj *radio_libc.c.obj) .srodata.*)
-        . = ALIGN(4);
-        _xip_end = .;
-    } > XIP
 
     /* How many 64 KB MMU pages esp32c6_xip_map() has to map. */
     _xip_pages = (_xip_end - _xip_start + 0xFFFF) >> 16;

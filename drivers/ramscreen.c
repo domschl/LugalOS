@@ -20,6 +20,7 @@
 #include "kernel/palloc.h"
 
 #include <stddef.h>
+#include <string.h>
 
 /* The panel's size by default, so layouts and canvas sizes are the
  * RP2350-LCD-7's. 47.6: settable (`ramscreen W H`), so the suite also runs
@@ -34,6 +35,13 @@ static unsigned  g_rs_built_w, g_rs_built_h;   /* the size g_rs was built at */
 
 static bool rs_canvas(const uint8_t *req, uint32_t n, uint8_t *reply) {
     if (!g_rs) {
+        if (n > 0 && (req[0] == 'S' || req[0] == 0)) {
+            if (reply) {
+                memset(reply, 0, SCREEN_REPLY_LEN);
+                reply[8] = SCREEN_LAYOUT_TEXT;
+            }
+            return true;
+        }
         void *fb = palloc_pages(RS_PAGES(RS_FB));
         if (!fb) return false;
         screen_t *scr = (screen_t *)palloc_pages(RS_PAGES(SCREEN_BYTES(g_rs_w, g_rs_h)));

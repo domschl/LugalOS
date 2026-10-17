@@ -585,6 +585,25 @@ static int detect_screen_rows(void) {
 #endif
 }
 
+static bool str_contains_icase(const char *haystack, const char *needle) {
+    if (!haystack || !needle || !*needle) return false;
+    for (const char *h = haystack; *h; h++) {
+        const char *h_cur = h;
+        const char *n_cur = needle;
+        while (*h_cur && *n_cur) {
+            char ch = *h_cur;
+            char cn = *n_cur;
+            if (ch >= 'A' && ch <= 'Z') ch = (char)(ch + ('a' - 'A'));
+            if (cn >= 'A' && cn <= 'Z') cn = (char)(cn + ('a' - 'A'));
+            if (ch != cn) break;
+            h_cur++;
+            n_cur++;
+        }
+        if (!*n_cur) return true;
+    }
+    return false;
+}
+
 static bool resolve_help_path(const char *topic, char *out_path, size_t out_sz) {
     if (!topic || !*topic) return false;
 
@@ -788,7 +807,7 @@ static bool pager_follow_link(int fd, char link_digit, const char *base_url,
     return false;
 }
 
-static void pager_view_file(const char *initial_resource, bool is_topic, const char *initial_title) {
+static void pager_view_file(const char *initial_resource, bool is_topic, const char *initial_title, const char *subheading) {
     int max_rows = detect_screen_rows();
     char cur_resource[128];
     strncpy(cur_resource, initial_resource, sizeof(cur_resource) - 1);
@@ -802,6 +821,8 @@ static void pager_view_file(const char *initial_resource, bool is_topic, const c
         strncpy(cur_title, initial_resource, sizeof(cur_title) - 1);
         cur_title[sizeof(cur_title) - 1] = '\0';
     }
+
+    const char *cur_subheading = subheading;
 
     while (cur_resource[0]) {
         char open_path[128];
@@ -852,11 +873,24 @@ static void pager_view_file(const char *initial_resource, bool is_topic, const c
                       (strstr(cur_resource, ".gmi") != NULL) || is_spartan;
         bool in_pre = false;
         int link_idx = 0;
+        bool seeking_section = (cur_subheading != NULL && cur_subheading[0] != '\0');
+        int section_lvl = 0;
 
         char read_buf[512];
         for (;;) {
             int n = vfs_pread(fd, read_buf, sizeof(read_buf), file_offset);
             if (n <= 0) {
+                if (seeking_section) {
+                    /* Subheading not found; rewind to show document from top */
+                    cprintf("Section '%s' not found in %s; displaying from top:\n\n",
+                            cur_subheading, cur_title[0] ? cur_title : cur_resource);
+                    cur_subheading = NULL;
+                    seeking_section = false;
+                    file_offset = 0;
+                    line_pos = 0;
+                    row_count = 0;
+                    continue;
+                }
                 if (line_pos > 0) {
                     line_buf[line_pos] = '\0';
                     pager_print_gem_line(line_buf, is_gmi, &in_pre, &link_idx);
@@ -911,6 +945,26 @@ static void pager_view_file(const char *initial_resource, bool is_topic, const c
                 if (ch == '\n') {
                     line_buf[line_pos] = '\0';
                     line_pos = 0;
+
+                    if (seeking_section) {
+                        if (line_buf[0] == '#' && str_contains_icase(line_buf, cur_subheading)) {
+                            seeking_section = false;
+                            section_lvl = 0;
+                            while (line_buf[section_lvl] == '#') section_lvl++;
+                        } else {
+                            continue;
+                        }
+                    } else if (cur_subheading != NULL && cur_subheading[0] != '\0') {
+                        if (line_buf[0] == '#') {
+                            int lvl = 0;
+                            while (line_buf[lvl] == '#') lvl++;
+                            if (lvl <= section_lvl) {
+                                quit = true;
+                                break;
+                            }
+                        }
+                    }
+
                     pager_print_gem_line(line_buf, is_gmi, &in_pre, &link_idx);
                     row_count++;
 
@@ -1001,6 +1055,7 @@ static void cmd_help_summary(void) {
     console_print_divider('-');
     cprintf("Filesystem:\n");
     cprintf("  ls [path]       - List directory (/flash0, /sd0, /ram0, /proc, /dev)\n");
+    cprintf("  find [path] [p] - Search directory recursively with wildcard matching\n");
     cprintf("  cat <path>      - Display file contents\n");
     cprintf("  more [path]     - View file or stream with terminal paging\n");
     cprintf("  grep [-i|-v] pat [f] - Filter matching lines from stream or file\n");
@@ -1100,11 +1155,11 @@ static void cmd_help_test(void) {
     cprintf("\n");
 }
 
-static void cmd_help_topic(const char *topic) {
+static void cmd_help_topic(const char *topic, const char *subheading) {
     char path[128];
     if (resolve_help_path(topic, path, sizeof(path))) {
         s_help_depth = 0;
-        pager_view_file(path, true, topic);
+        pager_view_file(path, true, topic, subheading);
     } else {
         cprintf("help: topic '%s' not found.\n", topic);
         cprintf("Available topics:\n");
@@ -1114,7 +1169,11 @@ static void cmd_help_topic(const char *topic) {
         cprintf("  reader       - Ribbon Reader window & proportional serif typography\n");
         cprintf("  spartan      - Spartan hypermedia protocol & Gemtext format\n");
         cprintf("  chess        - Chess computer & Lazy SMP engine\n");
-        cprintf("  cas          - Computer Algebra System (symbolic math)\n");
+        cprintf("  cas          - Computer Algebra System (overview & index)\n");
+        cprintf("  algebra      - CAS: Polynomials, equations, solve, matrices\n");
+        cprintf("  calculus     - CAS: Differentiation, integration, limits, series\n");
+        cprintf("  plot         - Mathematical plotting, multi-curve & parametric\n");
+        cprintf("  demos        - Interactive graphics & simulation demos\n");
         cprintf("  sensors      - Environmental telemetry & autonomous MQTT\n");
         cprintf("  presets      - Supported hardware targets & memory profiles\n");
         cprintf("  flashing     - Hardware programming (picotool, p4flash, c6flash)\n");
@@ -1127,19 +1186,33 @@ static void cmd_help_topic(const char *topic) {
 static void cmd_help(const char *arg) {
     if (!arg || !*arg) {
         cmd_help_summary();
-    } else if (strcmp(arg, "test") == 0) {
-        cmd_help_test();
-    } else {
-        cmd_help_topic(arg);
+        return;
     }
+    while (*arg == ' ' || *arg == '\t') arg++;
+    if (strcmp(arg, "test") == 0) {
+        cmd_help_test();
+        return;
+    }
+    char topic[64];
+    const char *sub = NULL;
+    const char *sp = strchr(arg, ' ');
+    if (sp) {
+        size_t tlen = (size_t)(sp - arg);
+        if (tlen >= sizeof(topic)) tlen = sizeof(topic) - 1;
+        memcpy(topic, arg, tlen);
+        topic[tlen] = '\0';
+        sub = sp + 1;
+        while (*sub == ' ' || *sub == '\t') sub++;
+        if (!*sub) sub = NULL;
+    } else {
+        strncpy(topic, arg, sizeof(topic) - 1);
+        topic[sizeof(topic) - 1] = '\0';
+    }
+    cmd_help_topic(topic, sub);
 }
 
 static void cmd_man(const char *topic) {
-    if (!topic || !*topic) {
-        cmd_help_summary();
-    } else {
-        cmd_help_topic(topic);
-    }
+    cmd_help(topic);
 }
 
 static void cmd_gem(const char *arg) {
@@ -1151,7 +1224,7 @@ static void cmd_gem(const char *arg) {
     /* Check Spartan protocol URL */
     if (strncmp(arg, "spartan://", 10) == 0 || strncmp(arg, "SPARTAN://", 10) == 0) {
         s_help_depth = 0;
-        pager_view_file(arg, false, arg);
+        pager_view_file(arg, false, arg, NULL);
         return;
     }
 
@@ -1160,7 +1233,7 @@ static void cmd_gem(const char *arg) {
     if (fd >= 0) {
         vfs_close(fd);
         s_help_depth = 0;
-        pager_view_file(arg, false, arg);
+        pager_view_file(arg, false, arg, NULL);
         return;
     }
 
@@ -1168,7 +1241,7 @@ static void cmd_gem(const char *arg) {
     char resolved[128];
     if (resolve_help_path(arg, resolved, sizeof(resolved))) {
         s_help_depth = 0;
-        pager_view_file(resolved, true, arg);
+        pager_view_file(resolved, true, arg, NULL);
         return;
     }
 
@@ -1178,7 +1251,7 @@ static void cmd_gem(const char *arg) {
     if (fd >= 0) {
         vfs_close(fd);
         s_help_depth = 0;
-        pager_view_file(resolved, false, arg);
+        pager_view_file(resolved, false, arg, NULL);
         return;
     }
 
@@ -1356,7 +1429,7 @@ static void cmd_more(const char *path) {
         return;
     }
     s_help_depth = 0;
-    pager_view_file(path, false, NULL);
+    pager_view_file(path, false, NULL, NULL);
 }
 
 static void cmd_dmesg(const char *arg) {
@@ -1808,6 +1881,181 @@ static void cmd_wc(const char *arg_str) {
         if (opt_c) cprintf("%d ", bytes);
         if (file_buf[0]) cprintf("%s", file_buf);
         cprintf("\n");
+    }
+}
+
+static int g_shell_last_status = 0;
+
+static inline char char_lower(char c) {
+    if (c >= 'A' && c <= 'Z') return (char)(c + ('a' - 'A'));
+    return c;
+}
+
+static bool wildcard_match(const char *pat, const char *str) {
+    if (!pat || !str) return false;
+    while (*pat) {
+        if (*pat == '*') {
+            while (*pat == '*') pat++;
+            if (!*pat) return true;
+            while (*str) {
+                if (wildcard_match(pat, str)) return true;
+                str++;
+            }
+            return false;
+        } else if (*pat == '?' || char_lower(*pat) == char_lower(*str)) {
+            if (!*str) return false;
+            pat++;
+            str++;
+        } else {
+            return false;
+        }
+    }
+    return *str == '\0';
+}
+
+#define MAX_FIND_DEPTH 16
+
+static void find_recurse(const char *dir_path, const char *pattern, int depth) {
+    if (depth > MAX_FIND_DEPTH) return;
+    int fd = vfs_open(dir_path, VFS_O_READ);
+    if (fd < 0) {
+        if (depth == 0) {
+            cprintf("find: cannot open '%s'\n", dir_path);
+            g_shell_last_status = 1;
+        }
+        return;
+    }
+
+    char name[64];
+    vfs_stat_t st;
+    for (uint32_t i = 0; vfs_readdir(fd, i, name, sizeof(name), &st) == 0; i++) {
+        if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
+
+        char full_path[192];
+        size_t dlen = strlen(dir_path);
+        if (dlen == 1 && dir_path[0] == '/') {
+            ksnprintf(full_path, sizeof(full_path), "/%s", name);
+        } else if (dlen > 0 && dir_path[dlen - 1] == '/') {
+            ksnprintf(full_path, sizeof(full_path), "%s%s", dir_path, name);
+        } else {
+            ksnprintf(full_path, sizeof(full_path), "%s/%s", dir_path, name);
+        }
+
+        if (!pattern || wildcard_match(pattern, name) || wildcard_match(pattern, full_path)) {
+            cprintf("%s\n", full_path);
+        }
+
+        if (st.is_dir) {
+            find_recurse(full_path, pattern, depth + 1);
+        }
+    }
+    vfs_close(fd);
+}
+
+static void cmd_find(const char *arg_str) {
+    char path_buf[128] = {0};
+    char pat_buf[64] = {0};
+    bool next_is_pat = false;
+
+    if (arg_str) {
+        const char *p = arg_str;
+        while (*p) {
+            while (*p == ' ' || *p == '\t') p++;
+            if (!*p) break;
+            char token[128];
+            int tlen = 0;
+            bool quoted = (*p == '"' || *p == '\'');
+            char qchar = quoted ? *p++ : '\0';
+            while (*p && tlen < (int)sizeof(token) - 1) {
+                if (quoted && *p == qchar) { p++; break; }
+                if (!quoted && (*p == ' ' || *p == '\t')) break;
+                token[tlen++] = *p++;
+            }
+            token[tlen] = '\0';
+
+            if (next_is_pat) {
+                strncpy(pat_buf, token, sizeof(pat_buf) - 1);
+                next_is_pat = false;
+            } else if (strcmp(token, "-name") == 0 || strcmp(token, "-iname") == 0) {
+                next_is_pat = true;
+            } else if (token[0] == '-' && !quoted) {
+                /* Ignore unknown flags */
+            } else if (path_buf[0] == '\0' && token[0] == '/') {
+                strncpy(path_buf, token, sizeof(path_buf) - 1);
+            } else if (path_buf[0] == '\0' && (strchr(token, '*') || strchr(token, '?'))) {
+                strncpy(pat_buf, token, sizeof(pat_buf) - 1);
+            } else if (path_buf[0] == '\0') {
+                strncpy(path_buf, token, sizeof(path_buf) - 1);
+            } else if (pat_buf[0] == '\0') {
+                strncpy(pat_buf, token, sizeof(pat_buf) - 1);
+            }
+        }
+    }
+
+    const char *start_path = path_buf[0] ? path_buf : "/";
+    const char *pattern = pat_buf[0] ? pat_buf : NULL;
+
+    find_recurse(start_path, pattern, 0);
+    g_shell_last_status = 0;
+}
+
+static bool has_unquoted_seq(const char *s) {
+    bool in_sq = false;
+    bool in_dq = false;
+    for (const char *p = s; *p; p++) {
+        if (*p == '\'' && !in_dq) in_sq = !in_sq;
+        else if (*p == '"' && !in_sq) in_dq = !in_dq;
+        else if (!in_sq && !in_dq) {
+            if (*p == ';') return true;
+            if (*p == '&' && *(p + 1) == '&') return true;
+        }
+    }
+    return false;
+}
+
+static void execute_command_sequence(const char *cmd_line) {
+    const char *p = cmd_line;
+    char cmd[256];
+    bool in_sq = false;
+    bool in_dq = false;
+
+    while (*p) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p) break;
+
+        int len = 0;
+        int delim = 0; /* 1 = ';', 2 = '&&' */
+        while (*p) {
+            if (*p == '\'' && !in_dq) {
+                in_sq = !in_sq;
+                if (len < (int)sizeof(cmd) - 1) cmd[len++] = *p++;
+            } else if (*p == '"' && !in_sq) {
+                in_dq = !in_dq;
+                if (len < (int)sizeof(cmd) - 1) cmd[len++] = *p++;
+            } else if (!in_sq && !in_dq && *p == ';') {
+                delim = 1;
+                p++;
+                break;
+            } else if (!in_sq && !in_dq && *p == '&' && *(p + 1) == '&') {
+                delim = 2;
+                p += 2;
+                break;
+            } else {
+                if (len < (int)sizeof(cmd) - 1) cmd[len++] = *p++;
+                else p++;
+            }
+        }
+        cmd[len] = '\0';
+        while (len > 0 && (cmd[len - 1] == ' ' || cmd[len - 1] == '\t')) {
+            cmd[--len] = '\0';
+        }
+
+        if (cmd[0] != '\0') {
+            parse_and_eval_cmd(cmd);
+            if (delim == 2 && g_shell_last_status != 0) {
+                break;
+            }
+        }
     }
 }
 
@@ -2943,9 +3191,13 @@ static void cmd_sdio(const char *arg) {
         if (!p) kb = 0x100u;
         if (p && (p = sdio_word(p, &fn)) != NULL && (p = sdio_word(p, &addr)) != NULL) (void)sdio_word(p, &len);
         sdio_bench(kb, fn, addr, len);
+    } else if (strcmp(arg, "ota") == 0 || strncmp(arg, "ota ", 4) == 0) {
+        const char *p = arg + 3;
+        while (*p == ' ') p++;
+        (void)sdio_hosted_ota(p);
     } else {
-        cprintf("usage: sdio [probe [khz-hex] | reset | resync | rd52 fn addr | wr52 fn addr byte |\n"
-                "             rd53 fn addr len | bench [kb [fn [addr [len]]]]] (all hex)\n");
+        cprintf("usage: sdio [probe [khz-hex] | reset | resync | ota <path> | rd52 fn addr |\n"
+                "             wr52 fn addr byte | rd53 fn addr len | bench [kb [fn [addr [len]]]]] (hex)\n");
     }
 }
 #endif
@@ -4965,10 +5217,17 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     while (*cmd_line == ' ' || *cmd_line == '\t') cmd_line++;
     if (*cmd_line == '\0') return;
 
+    if (!g_pipe_in && cmd_line[0] != '(' && has_unquoted_seq(cmd_line)) {
+        execute_command_sequence(cmd_line);
+        return;
+    }
+
     if (!g_pipe_in && cmd_line[0] != '(' && has_unquoted_pipe(cmd_line)) {
         execute_pipeline(cmd_line);
         return;
     }
+
+    g_shell_last_status = 0;
 
     if (strcmp(cmd_line, "help") == 0) {
         cmd_help(NULL);
@@ -5017,28 +5276,6 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         const char *arg = cmd_line + 3;
         while (*arg == ' ') arg++;
         cmd_ea(arg);
-        return;
-    } else if (strncmp(cmd_line, "exec ", 5) == 0) {
-        const char *p = cmd_line + 5;
-        while (*p == ' ' || *p == '\t') p++;
-        if (*p) {
-            char argbuf[256];
-            char *argp[USER_ARGV_LIMIT];
-            int argn = 0;
-            uint32_t n = 0;
-            while (p[n] && n < sizeof(argbuf) - 1) { argbuf[n] = p[n]; n++; }
-            argbuf[n] = '\0';
-            char *q = argbuf;
-            while (*q && argn < USER_ARGV_LIMIT) {
-                while (*q == ' ' || *q == '\t') *q++ = '\0';
-                if (!*q) break;
-                argp[argn++] = q;
-                while (*q && *q != ' ' && *q != '\t') q++;
-            }
-            if (argn > 0) {
-                elf_load_and_run_argv(argp[0], argn, (const char *const *)argp);
-            }
-        }
         return;
     } else if (strcmp(cmd_line, "more") == 0) {
         cmd_more(NULL);
@@ -5095,6 +5332,14 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         const char *arg = cmd_line + 3;
         while (*arg == ' ') arg++;
         cmd_wc(arg);
+        return;
+    } else if (strcmp(cmd_line, "find") == 0) {
+        cmd_find(NULL);
+        return;
+    } else if (strncmp(cmd_line, "find ", 5) == 0) {
+        const char *arg = cmd_line + 5;
+        while (*arg == ' ') arg++;
+        cmd_find(arg);
         return;
     } else if (strncmp(cmd_line, "time ", 5) == 0) {
         /* `time CMD` runs CMD
@@ -6497,14 +6742,18 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         if (argn > 0 && !name_has_slash) {
             char prog[128];
             if (path_resolve("bin", argp[0], ".elf", prog, sizeof(prog)) == 0) {
-                elf_load_and_run_argv(prog, argn, (const char *const *)argp);
+                int ret = elf_load_and_run_argv(prog, argn, (const char *const *)argp);
+                g_shell_last_status = ret;
+                lisp_canvas_reset();
                 return;
             }
         } else if (argn > 0 && name_has_slash) {
             int fd = vfs_open(argp[0], VFS_O_READ);
             if (fd >= 0) {
                 vfs_close(fd);
-                elf_load_and_run_argv(argp[0], argn, (const char *const *)argp);
+                int ret = elf_load_and_run_argv(argp[0], argn, (const char *const *)argp);
+                g_shell_last_status = ret;
+                lisp_canvas_reset();
                 return;
             }
         }

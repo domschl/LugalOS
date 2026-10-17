@@ -113,6 +113,81 @@ int main(int argc, char **argv) {
         CHECK(c.mark_sector < 2, "iteration %u marks sector %d", i, c.mark_sector);
     }
 
+    /* --- 52.2: ESP-IDF Partition Table & otadata (`esp_ota_select_entry_t`) --- */
+    {
+        esp_part_entry_t tbl[5];
+        memset(tbl, 0xff, sizeof tbl);
+        /* Entry 0: nvs */
+        tbl[0].magic = ESP_PART_MAGIC;
+        tbl[0].type = ESP_PART_TYPE_DATA;
+        tbl[0].subtype = 0x02;
+        tbl[0].offset = 0x9000;
+        tbl[0].size = 0x4000;
+        strcpy(tbl[0].label, "nvs");
+        tbl[0].flags = 0;
+        /* Entry 1: otadata */
+        tbl[1].magic = ESP_PART_MAGIC;
+        tbl[1].type = ESP_PART_TYPE_DATA;
+        tbl[1].subtype = ESP_PART_SUBTYPE_OTA;
+        tbl[1].offset = 0xd000;
+        tbl[1].size = 0x2000;
+        strcpy(tbl[1].label, "otadata");
+        tbl[1].flags = 0;
+        /* Entry 2: phy_init */
+        tbl[2].magic = ESP_PART_MAGIC;
+        tbl[2].type = ESP_PART_TYPE_DATA;
+        tbl[2].subtype = 0x01;
+        tbl[2].offset = 0xf000;
+        tbl[2].size = 0x1000;
+        strcpy(tbl[2].label, "phy_init");
+        tbl[2].flags = 0;
+        /* Entry 3: ota_0 */
+        tbl[3].magic = ESP_PART_MAGIC;
+        tbl[3].type = ESP_PART_TYPE_APP;
+        tbl[3].subtype = ESP_PART_SUBTYPE_OTA0;
+        tbl[3].offset = 0x10000;
+        tbl[3].size = 0x1c0000;
+        strcpy(tbl[3].label, "ota_0");
+        tbl[3].flags = 0;
+        /* Entry 4: ota_1 */
+        tbl[4].magic = ESP_PART_MAGIC;
+        tbl[4].type = ESP_PART_TYPE_APP;
+        tbl[4].subtype = ESP_PART_SUBTYPE_OTA1;
+        tbl[4].offset = 0x1d0000;
+        tbl[4].size = 0x1c0000;
+        strcpy(tbl[4].label, "ota_1");
+        tbl[4].flags = 0;
+
+        ota_idf_layout_t lay;
+        CHECK(ota_idf_parse_partitions(tbl, sizeof tbl, &lay), "parse standard ESP-IDF partition table");
+        CHECK(lay.otadata_base == 0xd000 && lay.otadata_size == 0x2000, "otadata at 0xd000");
+        CHECK(lay.slot_base[0] == 0x10000 && lay.slot_size[0] == 0x1c0000, "ota_0 at 0x10000");
+        CHECK(lay.slot_base[1] == 0x1d0000 && lay.slot_size[1] == 0x1c0000, "ota_1 at 0x1d0000");
+        CHECK(!ota_idf_parse_partitions(tbl, 3 * sizeof(esp_part_entry_t), &lay), "truncated partition table rejected");
+
+        /* otadata selection and sequence numbers */
+        esp_ota_select_entry_t s[2];
+        memset(s, 0xff, sizeof s);
+        CHECK(!ota_idf_select_valid(&s[0]), "erased otadata is not valid");
+        CHECK(ota_idf_active_sector(s) == -1, "both erased -> -1 (boot ota_0)");
+        CHECK(ota_idf_next_seq(0, 0) == 1 && ota_idf_next_seq(0, 1) == 2, "next_seq from 0");
+        CHECK(ota_idf_next_seq(1, 1) == 2 && ota_idf_next_seq(2, 0) == 3, "next_seq alternating");
+        CHECK(ota_idf_next_seq(2, 1) == 4 && ota_idf_next_seq(3, 0) == 5, "next_seq same parity");
+
+        ota_idf_select_make(&s[0], 1, ESP_OTA_IMG_VALID, false);
+        CHECK(ota_idf_select_valid(&s[0]) && !ota_idf_select_is_trial(&s[0]), "valid s[0] seq=1");
+        CHECK(ota_idf_active_sector(s) == 0, "s[0] active when s[1] erased");
+
+        ota_idf_select_make(&s[1], 2, ESP_OTA_IMG_UNDEFINED, true);
+        CHECK(ota_idf_select_valid(&s[1]) && ota_idf_select_is_trial(&s[1]), "trial s[1] seq=2 valid before boot");
+        CHECK(ota_idf_active_sector(s) == 1, "s[1] active on trial boot");
+
+        /* Simulated in-place bit clear of ota_state to ESP_OTA_IMG_ABORTED (4) on trial start */
+        s[1].ota_state = ESP_OTA_IMG_ABORTED;
+        CHECK(!ota_idf_select_valid(&s[1]), "aborted trial rejected by bootloader");
+        CHECK(ota_idf_active_sector(s) == 0, "bootloader falls back to s[0]");
+    }
+
     if (fails) { printf("%d failures (seed %#llx)\n", fails, (unsigned long long)seed); return 1; }
     printf("ota_host OK\n");
     return 0;

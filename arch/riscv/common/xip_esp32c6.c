@@ -64,9 +64,82 @@ extern char _xip_pages[];
  * In .data, not .bss: it is written before the kernel clears .bss. */
 __attribute__((section(".data"))) c6_boot_info_t g_c6_boot = { 0, 0, 0, 0 };
 
+typedef int (*rom_flash_read_t)(uint32_t src, uint32_t *dest, int32_t len);
+typedef int (*rom_flash_write_t)(uint32_t dest, const uint32_t *src, int32_t len);
+typedef int (*rom_flash_unlock_t)(void);
+
+#define ROM_FLASH_WRITE   ((rom_flash_write_t)0x4000014cu)
+#define ROM_FLASH_READ    ((rom_flash_read_t)0x40000150u)
+#define ROM_FLASH_UNLOCK  ((rom_flash_unlock_t)0x40000154u)
+#define ROM_CACHE_SUSPEND ((rom_u32_void_t)0x40000698u)
+#define ROM_CACHE_RESUME  ((rom_void_u32_t)0x4000069cu)
+
+#define WDT_WKEY                 0x50D83AA1u
+#define LP_WDT_BASE              0x600B1C00u
+#define LP_WDT_CONFIG0           (LP_WDT_BASE + 0x00u)
+#define LP_WDT_CONFIG1           (LP_WDT_BASE + 0x04u)
+#define LP_WDT_FEED              (LP_WDT_BASE + 0x14u)
+#define LP_WDT_WPROTECT          (LP_WDT_BASE + 0x18u)
+#define LP_WDT_FLASHBOOT_EN      (1u << 12)
+#define LP_WDT_EN                (1u << 31)
+#define LP_WDT_STG0_RESET_RTC    (4u << 28)
+#define LP_WDT_SYS_RESET_LENGTH  (7u << 13)
+#define LP_WDT_CPU_RESET_LENGTH  (7u << 16)
+#define RC_SLOW_HZ               136000u
+#define LP_WDT_SWD_CONFIG        (LP_WDT_BASE + 0x1cu)
+#define LP_WDT_SWD_WPROTECT      (LP_WDT_BASE + 0x20u)
+#define LP_WDT_SWD_AUTO_FEED     (1u << 18)
+
 /* `magic` == OTA_C6_BOOT_MAGIC: the loader booted this kernel and names the
  * XIP half to map; otherwise (a direct ROM boot, esptool's load-ram) slot A's. */
 BOOT_TEXT void esp32c6_xip_map(uint32_t magic, uint32_t xip_base, uint32_t flags, uint32_t slot) {
+    if (magic != OTA_C6_BOOT_MAGIC) {
+        uint32_t cache_ctrl = REG(EXTMEM_L1_CACHE_CTRL);
+        REG(MMU_ITEM_INDEX) = 0;
+        uint32_t mmu0 = REG(MMU_ITEM_CONTENT);
+        REG(MMU_ITEM_INDEX) = MMU_ENTRIES - 1u;
+        uint32_t mmu_end = REG(MMU_ITEM_CONTENT);
+        if ((cache_ctrl & (CACHE_SHUT_IBUS | CACHE_SHUT_DBUS)) == 0 &&
+            (mmu0 & MMU_VALID) != 0 && mmu0 == mmu_end) {
+            uint32_t part_base = (mmu0 & 0xffu) << 16;
+            uint32_t idf_slot = (part_base == 0x010000u) ? 0u : 1u;
+            uint32_t idf_flags = 0;
+            uint32_t autoload = ROM_CACHE_SUSPEND();
+            for (uint32_t i = 0; i < 2u; i++) {
+                uint32_t s[8];
+                uint32_t sec = 0xd000u + i * 0x1000u;
+                if (ROM_FLASH_READ(sec, s, 32) == 0 &&
+                    s[0] != 0xffffffffu && s[0] != 0u && s[1] == 0x4c52544cu) {
+                    uint32_t entry_slot = (s[0] - 1u) & 1u;
+                    if (entry_slot == idf_slot && s[6] == 0xffffffffu) {
+                        uint32_t aborted = 4u;
+                        if (ROM_FLASH_UNLOCK() == 0) (void)ROM_FLASH_WRITE(sec + 24u, &aborted, 4);
+                        idf_flags |= OTA_C6_FLAG_TRIAL;
+                    } else if (entry_slot != idf_slot && s[6] == 4u) {
+                        uint32_t zero = 0u;
+                        if (ROM_FLASH_UNLOCK() == 0) (void)ROM_FLASH_WRITE(sec + 4u, &zero, 4);
+                        idf_flags |= OTA_C6_FLAG_FELL_BACK;
+                    }
+                }
+            }
+            ROM_CACHE_RESUME(autoload);
+            REG(LP_WDT_WPROTECT) = WDT_WKEY;
+            if (idf_flags & OTA_C6_FLAG_TRIAL) {
+                REG(LP_WDT_CONFIG1) = OTA_C6_TRIAL_S * RC_SLOW_HZ;
+                REG(LP_WDT_CONFIG0) = LP_WDT_EN | LP_WDT_STG0_RESET_RTC |
+                                      LP_WDT_SYS_RESET_LENGTH | LP_WDT_CPU_RESET_LENGTH;
+                REG(LP_WDT_FEED) = 1u << 31;
+            } else {
+                REG(LP_WDT_CONFIG0) &= ~LP_WDT_EN;
+            }
+            REG(LP_WDT_WPROTECT) = 0;
+            g_c6_boot.magic = OTA_C6_IDF_BOOT_MAGIC;
+            g_c6_boot.xip_base = part_base;
+            g_c6_boot.flags = idf_flags;
+            g_c6_boot.slot = idf_slot;
+            return;
+        }
+    }
     if (magic != OTA_C6_BOOT_MAGIC || xip_base % 0x10000u ||
         (xip_base != (uint32_t)LUGALOS_C6_SLOT_A_BASE + OTA_C6_PART1_OFF &&
          xip_base != (uint32_t)LUGALOS_C6_SLOT_B_BASE + OTA_C6_PART1_OFF)) {

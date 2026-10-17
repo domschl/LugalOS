@@ -100,4 +100,78 @@ void ota_bootrec_make(ota_bootrec_t *r, uint32_t seq, uint8_t active, uint8_t pe
 /* The header's magic, version, length and CRC (not the board, nor the parts). */
 bool ota_header_valid(const ota_image_header_t *h);
 
+/* --- 52.1 / 52.2: ESP-IDF Application Descriptor, Partition Table & otadata --- */
+
+#define ESP_APP_DESC_MAGIC       0xABCD5432u
+
+typedef struct {
+    uint32_t magic_word;
+    uint32_t secure_version;
+    uint32_t reserv1[2];
+    char     version[32];
+    char     project_name[32];
+    char     time[16];
+    char     date[16];
+    char     idf_ver[32];
+    uint8_t  app_elf_sha256[32];
+    uint16_t min_efuse_blk_rev_full;
+    uint16_t max_efuse_blk_rev_full;
+    uint8_t  mmu_page_size;
+    uint8_t  spi_flash_mode;
+    uint8_t  reserv3[2];
+    uint32_t reserv2[18];
+} esp_app_desc_t;
+
+_Static_assert(sizeof(esp_app_desc_t) == 256, "esp_app_desc_t is 256 bytes");
+
+#define ESP_PART_MAGIC           0x50AAu
+#define ESP_PART_TYPE_APP        0x00u
+#define ESP_PART_SUBTYPE_OTA0    0x10u
+#define ESP_PART_SUBTYPE_OTA1    0x11u
+#define ESP_PART_TYPE_DATA       0x01u
+#define ESP_PART_SUBTYPE_OTA     0x00u
+
+typedef struct {
+    uint16_t magic;
+    uint8_t  type;
+    uint8_t  subtype;
+    uint32_t offset;
+    uint32_t size;
+    char     label[16];
+    uint32_t flags;
+} esp_part_entry_t;
+
+_Static_assert(sizeof(esp_part_entry_t) == 32, "esp_part_entry_t is 32 bytes");
+
+typedef struct {
+    uint32_t otadata_base;
+    uint32_t otadata_size;
+    uint32_t slot_base[2];
+    uint32_t slot_size[2];
+} ota_idf_layout_t;
+
+#define ESP_OTA_IMG_NEW             0x0u
+#define ESP_OTA_IMG_PENDING_VERIFY  0x1u
+#define ESP_OTA_IMG_VALID           0x2u
+#define ESP_OTA_IMG_INVALID         0x3u
+#define ESP_OTA_IMG_ABORTED         0x4u
+#define ESP_OTA_IMG_UNDEFINED       0xFFFFFFFFu
+
+typedef struct {
+    uint32_t ota_seq;
+    uint8_t  seq_label[20];
+    uint32_t ota_state;
+    uint32_t crc;                   /* esp_rom_crc32_le(UINT32_MAX, &ota_seq, 4) */
+} esp_ota_select_entry_t;
+
+_Static_assert(sizeof(esp_ota_select_entry_t) == 32, "esp_ota_select_entry_t is 32 bytes");
+
+bool ota_idf_parse_partitions(const void *table, uint32_t len, ota_idf_layout_t *out);
+uint32_t ota_idf_crc32(uint32_t seq);
+bool ota_idf_select_valid(const esp_ota_select_entry_t *s);
+int ota_idf_active_sector(const esp_ota_select_entry_t s[2]);
+uint32_t ota_idf_next_seq(uint32_t cur_seq, int target_slot);
+void ota_idf_select_make(esp_ota_select_entry_t *s, uint32_t seq, uint32_t state, bool trial_tag);
+bool ota_idf_select_is_trial(const esp_ota_select_entry_t *s);
+
 #endif

@@ -7,6 +7,10 @@
 
 #include "chibicc.h"
 #include "kernel/printk.h"
+#ifndef HOST_TEST
+#include "kernel/console.h"
+#define printk cprintf
+#endif
 #include <string.h>
 
 #if defined(CONFIG_TARGET_RV64)
@@ -329,13 +333,15 @@ static void gen_expr_inner(Node *node, uint8_t *code_buf) {
                 code_idx = emit_word(code_buf, code_idx, 0x00000073); // RISC-V ecall instruction
                 return;
             }
-            if (strcmp(node->funcname, "print") == 0 || strcmp(node->funcname, "puts") == 0 || strcmp(node->funcname, "printf") == 0) {
+            if (strcmp(node->funcname, "print") == 0 || strcmp(node->funcname, "puts") == 0 ||
+                strcmp(node->funcname, "printf") == 0 || strcmp(node->funcname, "print_str") == 0) {
                 code_idx = emit_word(code_buf, code_idx, encode_addi(11, 10, 0)); // a1 = a0
                 code_idx = emit_word(code_buf, code_idx, encode_addi(10, 0, 10)); // a0 = 10 (SYS_PRINT)
                 code_idx = emit_word(code_buf, code_idx, 0x00000073); // ecall
                 return;
             }
-            if (strcmp(node->funcname, "putnum") == 0) {
+            if (strcmp(node->funcname, "putnum") == 0 || strcmp(node->funcname, "print_num") == 0 ||
+                strcmp(node->funcname, "print_int") == 0) {
                 code_idx = emit_word(code_buf, code_idx, encode_addi(11, 10, 0)); // a1 = a0
                 code_idx = emit_word(code_buf, code_idx, encode_addi(10, 0, 11)); // a0 = 11 (SYS_PUTNUM)
                 code_idx = emit_word(code_buf, code_idx, 0x00000073); // ecall
@@ -356,10 +362,22 @@ static void gen_expr_inner(Node *node, uint8_t *code_buf) {
                 code_idx = emit_word(code_buf, code_idx, 0x00000073); // ecall
                 return;
             }
-            if (strcmp(node->funcname, "putchar") == 0) {
+            if (strcmp(node->funcname, "putchar") == 0 || strcmp(node->funcname, "print_char") == 0) {
                 code_idx = emit_word(code_buf, code_idx, encode_addi(11, 10, 0)); // a1 = a0
                 code_idx = emit_word(code_buf, code_idx, encode_addi(10, 0, 12)); // a0 = 12 (SYS_PUTCHAR)
                 code_idx = emit_word(code_buf, code_idx, 0x00000073); // ecall
+                return;
+            }
+            if (strcmp(node->funcname, "print_nl") == 0) {
+                code_idx = emit_word(code_buf, code_idx, encode_addi(11, 0, '\n')); // a1 = '\n'
+                code_idx = emit_word(code_buf, code_idx, encode_addi(10, 0, 12));   // a0 = 12 (SYS_PUTCHAR)
+                code_idx = emit_word(code_buf, code_idx, 0x00000073);               // ecall
+                return;
+            }
+            if (strcmp(node->funcname, "print_sp") == 0) {
+                code_idx = emit_word(code_buf, code_idx, encode_addi(11, 0, ' '));  // a1 = ' '
+                code_idx = emit_word(code_buf, code_idx, encode_addi(10, 0, 12));   // a0 = 12 (SYS_PUTCHAR)
+                code_idx = emit_word(code_buf, code_idx, 0x00000073);               // ecall
                 return;
             }
 

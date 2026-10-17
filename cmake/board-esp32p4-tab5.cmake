@@ -103,3 +103,17 @@ set(CONFIG_USBHOST_DWC2 1)
 set(CONFIG_FONT_HIDPI      1)
 set(CONFIG_FONT_CELL_W     16)
 set(CONFIG_FONT_CELL_H     32)
+
+# --- SDIO slot 1 (C6-MINI Wi-Fi / Bluetooth co-processor) ------------------
+#
+# [sch sheet 1, M5Unified] SDIO slot 1 routed via GPIO matrix to the on-board
+# ESP32-C6-MINI-1U module (CLK=12, CMD=13, D0=11, D1=10, D2=9, D3=8, RST=15).
+set(CONFIG_SDIO_CLK_GPIO   12)
+set(CONFIG_SDIO_CMD_GPIO   13)
+set(CONFIG_SDIO_D0_GPIO    11)
+set(CONFIG_SDIO_D1_GPIO    10)
+set(CONFIG_SDIO_D2_GPIO    9)
+set(CONFIG_SDIO_D3_GPIO    8)
+set(CONFIG_C6_CHIP_PU_GPIO 15)
+set(CONFIG_SDIO_FREQ_KHZ   40000)   # SDIO high speed; C6 slave answers at it
+

@@ -29,6 +29,7 @@
 #include "fs/p9_link.h"
 #include "fs/9p.h"
 #include "kernel/device.h"
+#include "arch/elf.h"
 #include "net/ip.h"
 #include "net/tcp.h"
 #include "net/ntp.h"
@@ -5616,12 +5617,31 @@ static lisp_val_t *prim_exec(lisp_val_t *args, lisp_val_t *env) {
     if (!args || args->type != LISP_PAIR) return &false_val;
     char safe_path[128];
     const char *p = get_str_val(args->u.pair.car);
+    if (!p) return &false_val;
     strncpy_local(safe_path, p, 127); safe_path[127] = '\0';
     /* 37.1: the status bar names the program, by its file name. */
     const char *name = safe_path;
     for (const char *q = safe_path; *q; q++) if (*q == '/') name = q + 1;
     console_set_title(name);
-    int res = elf_load_and_run(safe_path);
+
+    char *argp[USER_ARGV_LIMIT];
+    char argbuf[USER_ARGV_LIMIT][64];
+    int argn = 0;
+    argp[argn++] = safe_path;
+
+    lisp_val_t *cur = args->u.pair.cdr;
+    while (cur && cur->type == LISP_PAIR && argn < USER_ARGV_LIMIT) {
+        const char *s = get_str_val(cur->u.pair.car);
+        if (s) {
+            strncpy_local(argbuf[argn], s, 63);
+            argbuf[argn][63] = '\0';
+            argp[argn] = argbuf[argn];
+            argn++;
+        }
+        cur = cur->u.pair.cdr;
+    }
+
+    int res = elf_load_and_run_argv(safe_path, argn, (const char *const *)argp);
     lisp_canvas_reset();    /* 37.3b: whatever it left, the shell gets text back */
     return make_int(res);
 }
@@ -7511,6 +7531,25 @@ static lisp_val_t *prim_apropos(lisp_val_t *args, lisp_val_t *env) {
  * directly rather than maintaining a separate hand-written list, so it can
  * never drift out of sync with what's actually bound the way cmd_help() in
  * kernel/shell.c had. */
+static bool str_contains_icase(const char *haystack, const char *needle) {
+    if (!haystack || !needle || !*needle) return false;
+    for (const char *h = haystack; *h; h++) {
+        const char *h_cur = h;
+        const char *n_cur = needle;
+        while (*h_cur && *n_cur) {
+            char ch = *h_cur;
+            char cn = *n_cur;
+            if (ch >= 'A' && ch <= 'Z') ch = (char)(ch + ('a' - 'A'));
+            if (cn >= 'A' && cn <= 'Z') cn = (char)(cn + ('a' - 'A'));
+            if (ch != cn) break;
+            h_cur++;
+            n_cur++;
+        }
+        if (!*n_cur) return true;
+    }
+    return false;
+}
+
 static lisp_val_t *prim_help(lisp_val_t *args, lisp_val_t *env) {
     if (args && args->type == LISP_PAIR && args->u.pair.car && args->u.pair.car != &nil_val) {
         lisp_val_t *sym = args->u.pair.car;
@@ -7519,7 +7558,7 @@ static lisp_val_t *prim_help(lisp_val_t *args, lisp_val_t *env) {
         if (name) {
             char path[64];
             vfs_stat_t st;
-            /* Try .gmi first, then .txt across /sd0 and /flash0 */
+            /* 1. Try exact topic match .gmi or .txt across /sd0 and /flash0 */
             ksnprintf(path, sizeof(path), "/sd0/help/%s.gmi", name);
             if (vfs_stat(path, &st) != 0) {
                 ksnprintf(path, sizeof(path), "/flash0/help/%s.gmi", name);
@@ -7543,7 +7582,93 @@ static lisp_val_t *prim_help(lisp_val_t *args, lisp_val_t *env) {
                 return prim_cat(&p, env);
             }
 
-            /* Fallback: check if symbol exists in builtins or global_env */
+            /* 2. Scan standard manuals for a section heading containing `name` */
+            const char *help_files[] = {
+                "/sd0/help/calculus.gmi", "/sd0/help/algebra.gmi",
+                "/sd0/help/plot.gmi",     "/sd0/help/demos.gmi",
+                "/sd0/help/lisp.gmi",     "/sd0/help/c_programming.gmi",
+                "/sd0/help/cas.gmi"
+            };
+            for (size_t f = 0; f < sizeof(help_files) / sizeof(help_files[0]); f++) {
+                int fd = vfs_open(help_files[f], VFS_O_READ);
+                if (fd < 0) continue;
+                uint64_t foff = 0;
+                char rchunk[256];
+                char lbuf[256];
+                int lpos = 0;
+                bool found = false;
+                int heading_lvl = 0;
+
+                while (1) {
+                    int rn = vfs_pread(fd, rchunk, sizeof(rchunk), foff);
+                    if (rn <= 0) break;
+                    foff += (uint64_t)rn;
+                    for (int i = 0; i < rn; i++) {
+                        char c = rchunk[i];
+                        if (c == '\r') continue;
+                        if (c == '\n') {
+                            lbuf[lpos] = '\0';
+                            if (!found) {
+                                if (lbuf[0] == '#' && str_contains_icase(lbuf, name)) {
+                                    found = true;
+                                    heading_lvl = 0;
+                                    while (lbuf[heading_lvl] == '#') heading_lvl++;
+                                    cprintf("\n[doc from %s]\n%s\n", help_files[f], lbuf);
+                                }
+                            } else {
+                                if (lbuf[0] == '#') {
+                                    int lvl = 0;
+                                    while (lbuf[lvl] == '#') lvl++;
+                                    if (lvl <= heading_lvl) {
+                                        rn = 0; // stop reading
+                                        break;
+                                    }
+                                }
+                                cprintf("%s\n", lbuf);
+                            }
+                            lpos = 0;
+                        } else if (lpos < (int)sizeof(lbuf) - 1) {
+                            lbuf[lpos++] = c;
+                        }
+                    }
+                }
+                vfs_close(fd);
+                if (found) {
+                    cprintf("\n");
+                    return &true_val;
+                }
+            }
+
+            /* 3. Check global_env */
+            for (lisp_val_t *c = global_env; c && c->type == LISP_PAIR; c = c->u.pair.cdr) {
+                lisp_val_t *binding = c->u.pair.car;
+                if (!binding || binding->type != LISP_PAIR) continue;
+                lisp_val_t *k = binding->u.pair.car;
+                if (!k || k->type != LISP_SYMBOL || !k->u.sym) continue;
+                if (strcmp(k->u.sym, name) == 0) {
+                    lisp_val_t *val = binding->u.pair.cdr;
+                    if (val && val->type == LISP_LAMBDA) {
+                        cprintf("\n[doc] '%s' is a user closure in global_env:\n  (define (%s", name, name);
+                        for (lisp_val_t *p = val->u.lambda.params; p && p->type == LISP_PAIR; p = p->u.pair.cdr) {
+                            if (p->u.pair.car && p->u.pair.car->type == LISP_SYMBOL) {
+                                cprintf(" %s", p->u.pair.car->u.sym);
+                            }
+                        }
+                        cprintf(") ...)\n\n");
+                        return &true_val;
+                    } else if (val && val->type == LISP_MACRO) {
+                        cprintf("\n[doc] '%s' is a macro in global_env.\n\n", name);
+                        return &true_val;
+                    } else {
+                        cprintf("\n[doc] '%s' is a bound global: ", name);
+                        lisp_print(val);
+                        cprintf("\n\n");
+                        return &true_val;
+                    }
+                }
+            }
+
+            /* 4. Check core built-ins table */
             for (size_t i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++) {
                 if (strcmp(builtins[i].name, name) == 0) {
                     cprintf("\n[doc] '%s' is a core built-in %s.\n"
@@ -7554,7 +7679,7 @@ static lisp_val_t *prim_help(lisp_val_t *args, lisp_val_t *env) {
                     return &true_val;
                 }
             }
-            cprintf("doc: topic '%s' not found.\n", name);
+            cprintf("doc: symbol '%s' not found. Use (apropos \"%s\") to search.\n", name, name);
             return &nil_val;
         }
     }

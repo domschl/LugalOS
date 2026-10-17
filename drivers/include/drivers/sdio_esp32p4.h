@@ -21,6 +21,10 @@ typedef struct {
     bool     fn1_ready;
     uint32_t block_size, width, khz, errors;
     bool     high_speed;        /* CCCR EHS set: the card times for above 25 MHz */
+    bool     llp_present;       /* LugalOS LLP magic ('L','L','P') in scratch regs */
+    bool     hosted_present;    /* esp-hosted-mcu answered ESP_OPEN_DATA_PATH */
+    uint8_t  hosted_chip_id, hosted_sdio_mode;
+    uint16_t hosted_major, hosted_minor, hosted_patch;
 } sdio_info_t;
 
 /* Brings the card up and leaves it selected, function 1 enabled, at `khz`
@@ -54,5 +58,11 @@ void sdio_llp_set_waker(int pid);
 bool sdio_llp_irq_pending(void);
 /* Repeated CMD53 reads of `len` bytes at `addr` of `fn` (0 = one block). */
 void sdio_bench(uint32_t kilobytes, uint32_t fn, uint32_t addr, uint32_t len);
+
+/* Streams a standard ESP-IDF app image (`0xE9` + `esp_app_desc_t`) from VFS
+ * `path` into a factory `esp-hosted-mcu` C6 slave over SDIO (`ESP_SERIAL_IF`
+ * Protobuf OTA RPCs), activates the new partition, resets the C6, and brings
+ * LLP up (Phase 52.3). Returns 0 on success, < 0 on error. */
+int  sdio_hosted_ota(const char *path);
 
 #endif

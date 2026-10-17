@@ -104,7 +104,11 @@ static void modem_wifi_lpclk(void) {
  * radio_plat_early_init() does first. M-mode, from the kernel's radio start. */
 extern void rom_cpu_ticks(uint32_t mhz) __asm__("radio_ets_update_cpu_frequency");
 void radio_plat_cpu_to_pll(void) {
-    if (clk_ll_cpu_get_src() == SOC_CPU_CLK_SRC_PLL) return;
+    if (clk_ll_cpu_get_src() == SOC_CPU_CLK_SRC_PLL) {
+        clk_ll_cpu_set_hs_divider(CLK_LL_PLL_480M_FREQ_MHZ / 160);
+        rom_cpu_ticks(160);
+        return;
+    }
     clk_ll_bbpll_enable();
     clk_ll_bbpll_set_freq_mhz(480);
     clk_ll_bbpll_calibration_start();

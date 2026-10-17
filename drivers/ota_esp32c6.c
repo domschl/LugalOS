@@ -19,29 +19,99 @@
 #include "kernel/printk.h"
 #include "kernel/sched.h"
 #include "net/netif.h"
+#include "lugalos_build_id.h"
 #include <string.h>
 
 extern c6_boot_info_t g_c6_boot;                /* arch/riscv/common/xip_esp32c6.c */
 
+/* Standard ESP-IDF application descriptor at offset 0x20 of the first flash-mapped
+ * segment (.radio_text at 0x42000020 in linker/esp32c6.ld), verified by esp-hosted-mcu's
+ * esp_ota_begin()/esp_ota_write() and the ESP-IDF 2nd-stage bootloader. */
+__attribute__((section(".flash.appdesc"), used))
+const esp_app_desc_t g_esp_app_desc = {
+    .magic_word     = ESP_APP_DESC_MAGIC,
+    .secure_version = 0,
+    .version        = LUGALOS_BUILD_ID,
+    .project_name   = "LugalOS",
+    .time           = "00:00:00",
+    .date           = "2026-10-17",
+    .idf_ver        = "v5.4-lugalos",
+};
+
 #define SECTOR 4096u
+#define ESP_PARTITION_TABLE_OFFSET 0x8000u
+#define ESP_PARTITION_TABLE_MAX_LEN 0xc00u
+
 static const uint32_t g_base[2] = { LUGALOS_C6_SLOT_A_BASE, LUGALOS_C6_SLOT_B_BASE };
 
+static ota_idf_layout_t g_idf;
+static bool g_idf_checked;
+static bool g_idf_valid;
+
 static bool booted_by_loader(void) { return g_c6_boot.magic == OTA_C6_BOOT_MAGIC && g_c6_boot.slot < 2; }
+static bool booted_by_idf(void)    { return g_c6_boot.magic == OTA_C6_IDF_BOOT_MAGIC && g_c6_boot.slot < 2; }
+static bool ota_capable(void)      { return booted_by_loader() || booted_by_idf(); }
+
+static bool idf_ensure_layout(void) {
+    if (!booted_by_idf()) return false;
+    if (g_idf_checked) return g_idf_valid;
+    g_idf_checked = true;
+    uint8_t *buf = palloc_pages(1);
+    if (buf) {
+        if (c6flash_read(ESP_PARTITION_TABLE_OFFSET, buf, ESP_PARTITION_TABLE_MAX_LEN) == 0)
+            g_idf_valid = ota_idf_parse_partitions(buf, ESP_PARTITION_TABLE_MAX_LEN, &g_idf);
+        palloc_free(buf, 1);
+    }
+    if (!g_idf_valid) {
+        g_idf.otadata_base = 0x00d000u;
+        g_idf.otadata_size = 0x002000u;
+        g_idf.slot_base[0] = 0x010000u;
+        g_idf.slot_size[0] = 0x1c0000u;
+        g_idf.slot_base[1] = 0x1d0000u;
+        g_idf.slot_size[1] = 0x1c0000u;
+        g_idf_valid        = true;
+    }
+    g_c6_boot.slot = (g_c6_boot.xip_base == g_idf.slot_base[0]) ? 0u : 1u;
+    return true;
+}
+
+static bool inside(uint32_t addr, uint32_t len, uint32_t base, uint32_t size) {
+    return addr >= base && len <= size && addr - base <= size - len;
+}
+
+bool ota_c6_idf_writable(uint32_t addr, uint32_t len) {
+    if (!idf_ensure_layout()) return false;
+    if (inside(addr, len, g_idf.otadata_base, g_idf.otadata_size)) return true;
+    uint32_t other = g_c6_boot.slot ^ 1u;
+    return inside(addr, len, g_idf.slot_base[other], g_idf.slot_size[other]);
+}
 
 bool ota_board_info(ota_board_info_t *out) {
     out->nslots = 2;
+    out->chip = "esp32c6";
+    out->trial_s = OTA_C6_TRIAL_S;
+    if (booted_by_idf() && idf_ensure_layout()) {
+        uint32_t other = g_c6_boot.slot ^ 1u;
+        out->running = (int)g_c6_boot.slot;
+        out->trial = (g_c6_boot.flags & OTA_C6_FLAG_TRIAL) != 0;
+        out->fell_back = (g_c6_boot.flags & OTA_C6_FLAG_FELL_BACK) != 0;
+        out->part_max[0] = g_idf.slot_size[other];
+        out->part_max[1] = 0;
+        out->layout = "idf";
+        return true;
+    }
     out->running = booted_by_loader() ? (int)g_c6_boot.slot : -1;
     out->trial = booted_by_loader() && (g_c6_boot.flags & OTA_C6_FLAG_TRIAL);
     out->fell_back = booted_by_loader() && (g_c6_boot.flags & OTA_C6_FLAG_FELL_BACK);
     out->part_max[0] = OTA_C6_PART0_MAX;
     out->part_max[1] = (uint32_t)LUGALOS_C6_SLOT_SIZE - OTA_C6_PART1_OFF;
-    out->chip = "esp32c6";
-    out->trial_s = OTA_C6_TRIAL_S;
+    out->layout = booted_by_loader() ? "loader" : "none";
     return true;
 }
 
 /* Where byte `off` of the parts lands in flash. */
 static uint32_t map(int slot, const ota_image_header_t *h, uint32_t off) {
+    if (booted_by_idf()) return g_idf.slot_base[slot] + off;
     return off < h->part_len[0] ? g_base[slot] + OTA_C6_PART0_OFF + off
                                 : g_base[slot] + OTA_C6_PART1_OFF + (off - h->part_len[0]);
 }
@@ -60,9 +130,11 @@ static int flush(void) {
 
 int ota_board_begin(int slot) {
     if (slot < 0 || slot > 1) return -1;
+    if (booted_by_idf() && !idf_ensure_layout()) return -1;
     if (!g_sec && !(g_sec = palloc_pages(1))) return -1;
     g_sec_addr = 0;
-    return c6flash_erase_sector(g_base[slot]);          /* the header goes first: the slot is empty now */
+    uint32_t base = booted_by_idf() ? g_idf.slot_base[slot] : g_base[slot];
+    return c6flash_erase_sector(base);                  /* the header goes first: the slot is empty now */
 }
 
 int ota_board_write(int slot, const ota_image_header_t *h, uint32_t off, const void *buf, uint32_t len) {
@@ -103,16 +175,52 @@ int ota_board_read(int slot, const ota_image_header_t *h, uint32_t off, void *bu
     return 0;
 }
 
+int ota_board_raw_read(int slot, uint32_t off, void *buf, uint32_t len) {
+    if (slot < 0 || slot > 1) return -1;
+    if (booted_by_idf() && !idf_ensure_layout()) return -1;
+    uint32_t base = booted_by_idf() ? g_idf.slot_base[slot] : g_base[slot];
+    uint32_t size = booted_by_idf() ? g_idf.slot_size[slot] : (uint32_t)LUGALOS_C6_SLOT_SIZE;
+    if (off >= size) return 0;
+    if (len > size - off) len = size - off;
+    return c6flash_read(base + off, buf, len) == 0 ? (int)len : -1;
+}
+
+static int idf_slot_app_desc(int slot, esp_app_desc_t *desc_out) {
+    if (!idf_ensure_layout() || slot < 0 || slot > 1) return -1;
+    uint32_t hdr0 = 0;
+    uint32_t base = g_idf.slot_base[slot];
+    if (c6flash_read(base, &hdr0, 4) != 0 || (hdr0 & 0xffu) != 0xE9u) return -1;
+    if (c6flash_read(base + 0x20u, desc_out, sizeof *desc_out) != 0 ||
+        desc_out->magic_word != ESP_APP_DESC_MAGIC)
+        return -1;
+    return 0;
+}
+
 int ota_board_seal(int slot, const ota_image_header_t *h) {
+    if (booted_by_idf()) {
+        esp_app_desc_t desc;
+        return idf_slot_app_desc(slot, &desc);
+    }
     return c6flash_write(g_base[slot], h, sizeof *h);
 }
 
 int ota_board_header(int slot, ota_image_header_t *h) {
-    if (slot < 0 || slot > 1 || c6flash_read(g_base[slot], h, sizeof *h) != 0) return -1;
+    if (slot < 0 || slot > 1) return -1;
+    if (booted_by_idf()) {
+        esp_app_desc_t desc;
+        if (idf_slot_app_desc(slot, &desc) != 0) return -1;
+        memset(h, 0, sizeof *h);
+        if (strncmp(desc.project_name, "LugalOS", 8) == 0)
+            ksnprintf(h->build_id, sizeof h->build_id, "%.31s", desc.version);
+        else
+            ksnprintf(h->build_id, sizeof h->build_id, "%.15s:%.15s", desc.project_name, desc.version);
+        return 0;
+    }
+    if (c6flash_read(g_base[slot], h, sizeof *h) != 0) return -1;
     return ota_header_valid(h) ? 0 : -1;
 }
 
-/* --- the boot records ------------------------------------------------------------ */
+/* --- the boot records (loader & ESP-IDF otadata) --------------------------------- */
 
 static int read_records(ota_bootrec_t r[2], const ota_bootrec_t *rec[2]) {
     for (int i = 0; i < 2; i++)
@@ -134,7 +242,54 @@ static int write_record(int active, int pending) {
     return 0;
 }
 
+static int read_idf_otadata(esp_ota_select_entry_t s[2]) {
+    memset(s, 0xff, 2 * sizeof(esp_ota_select_entry_t));
+    if (!idf_ensure_layout()) return -1;
+    for (int i = 0; i < 2; i++)
+        (void)c6flash_read(g_idf.otadata_base + (uint32_t)i * SECTOR, &s[i], sizeof s[i]);
+    return ota_idf_active_sector(s);
+}
+
+static int write_idf_otadata(int target_sec, uint32_t seq, uint32_t state, bool trial_label) {
+    if (!idf_ensure_layout() || target_sec < 0 || target_sec > 1) return -1;
+    esp_ota_select_entry_t nr, back;
+    ota_idf_select_make(&nr, seq, state, trial_label);
+    uint32_t addr = g_idf.otadata_base + (uint32_t)target_sec * SECTOR;
+    if (c6flash_erase_sector(addr) != 0 || c6flash_write(addr, &nr, sizeof nr) != 0 ||
+        c6flash_read(addr, &back, sizeof back) != 0 || memcmp(&back, &nr, sizeof nr) != 0)
+        return -1;
+    return 0;
+}
+
 bool ota_board_record(ota_board_record_t *out) {
+    if (booted_by_idf()) {
+        esp_ota_select_entry_t s[2];
+        int cur = read_idf_otadata(s);
+        if (cur < 0) {
+            out->active = 0;
+            out->pending = -1;
+            out->tried = out->failed = false;
+            return true;
+        }
+        int cur_slot = (int)((s[cur].ota_seq - 1u) & 1u);
+        if (ota_idf_select_is_trial(&s[cur]) && s[cur].ota_state == ESP_OTA_IMG_UNDEFINED) {
+            out->active = cur_slot ^ 1;
+            out->pending = cur_slot;
+            out->tried = false;
+            out->failed = false;
+        } else if (g_c6_boot.flags & OTA_C6_FLAG_TRIAL) {
+            out->active = (int)(g_c6_boot.slot ^ 1u);
+            out->pending = (int)g_c6_boot.slot;
+            out->tried = true;
+            out->failed = false;
+        } else {
+            out->active = cur_slot;
+            out->pending = -1;
+            out->tried = (g_c6_boot.flags & OTA_C6_FLAG_FELL_BACK) != 0;
+            out->failed = (g_c6_boot.flags & OTA_C6_FLAG_FELL_BACK) != 0;
+        }
+        return true;
+    }
     ota_bootrec_t r[2];
     const ota_bootrec_t *rec[2];
     int cur = read_records(r, rec);
@@ -152,16 +307,51 @@ bool ota_board_record(ota_board_record_t *out) {
 }
 
 int ota_board_set_pending(int slot) {
+    if (booted_by_idf()) {
+        esp_app_desc_t desc;
+        if (idf_slot_app_desc(slot, &desc) != 0) return -1;
+        esp_ota_select_entry_t s[2];
+        int cur = read_idf_otadata(s);
+        uint32_t cur_seq = cur >= 0 ? s[cur].ota_seq : 0u;
+        int target = cur == 0 ? 1 : 0;
+        uint32_t next_seq = ota_idf_next_seq(cur_seq, slot);
+        bool is_lugalos = strncmp(desc.project_name, "LugalOS", 8) == 0;
+        uint32_t state = is_lugalos ? ESP_OTA_IMG_UNDEFINED : ESP_OTA_IMG_VALID;
+        return write_idf_otadata(target, next_seq, state, is_lugalos);
+    }
     if (!booted_by_loader()) return -1;
     return write_record((int)g_c6_boot.slot, slot);
 }
 
 int ota_board_clear_pending(void) {
+    if (booted_by_idf()) {
+        esp_ota_select_entry_t s[2];
+        int cur = read_idf_otadata(s);
+        if (cur >= 0 && (uint32_t)((s[cur].ota_seq - 1u) & 1u) != g_c6_boot.slot)
+            return c6flash_erase_sector(g_idf.otadata_base + (uint32_t)cur * SECTOR);
+        return 0;
+    }
     if (!booted_by_loader()) return -1;
     return write_record((int)g_c6_boot.slot, OTA_SLOT_NONE);
 }
 
-/* The RTC watchdog the loader armed for the trial (its registers: loader.c). */
+int ota_board_switch(void) {
+    if (!ota_capable()) return -1;
+    int other = (int)g_c6_boot.slot ^ 1;
+    ota_image_header_t h;
+    if (ota_board_header(other, &h) != 0) return -1;
+    if (booted_by_idf()) {
+        esp_ota_select_entry_t s[2];
+        int cur = read_idf_otadata(s);
+        uint32_t cur_seq = cur >= 0 ? s[cur].ota_seq : 0u;
+        int target = cur == 0 ? 1 : 0;
+        uint32_t next_seq = ota_idf_next_seq(cur_seq, other);
+        return write_idf_otadata(target, next_seq, ESP_OTA_IMG_VALID, false);
+    }
+    return write_record(other, OTA_SLOT_NONE);
+}
+
+/* The RTC watchdog the loader (or esp32c6_xip_map) armed for the trial. */
 #define LP_WDT_CONFIG0  0x600B1C00u
 #define LP_WDT_WPROTECT 0x600B1C18u
 #define WDT_WKEY        0x50D83AA1u
@@ -174,6 +364,22 @@ static void trial_watchdog_off(void) {
 }
 
 int ota_board_confirm(void) {
+    if (booted_by_idf()) {
+        esp_ota_select_entry_t s[2];
+        (void)read_idf_otadata(s);
+        int target = -1;
+        for (int i = 0; i < 2; i++) {
+            if (s[i].ota_seq != 0xffffffffu && s[i].ota_seq != 0u &&
+                ((s[i].ota_seq - 1u) & 1u) == g_c6_boot.slot) {
+                target = i;
+                break;
+            }
+        }
+        if (target < 0) return -1;
+        if (write_idf_otadata(target, s[target].ota_seq, ESP_OTA_IMG_VALID, false) != 0) return -1;
+        trial_watchdog_off();
+        return 0;
+    }
     if (!booted_by_loader() || write_record((int)g_c6_boot.slot, OTA_SLOT_NONE) != 0) return -1;
     trial_watchdog_off();
     return 0;
@@ -183,6 +389,20 @@ int ota_board_confirm(void) {
  * survive the system reset a failed trial ends in (the loader clears it too;
  * this covers a loader that does not). */
 void ota_board_boot(void) {
+    if (booted_by_idf()) {
+        (void)idf_ensure_layout();
+        if (!(g_c6_boot.flags & OTA_C6_FLAG_TRIAL)) {
+            trial_watchdog_off();
+            esp_ota_select_entry_t s[2];
+            int cur = read_idf_otadata(s);
+            if (cur >= 0 && (s[cur].ota_state == ESP_OTA_IMG_NEW ||
+                             s[cur].ota_state == ESP_OTA_IMG_PENDING_VERIFY ||
+                             s[cur].ota_state == ESP_OTA_IMG_UNDEFINED)) {
+                (void)write_idf_otadata(cur, s[cur].ota_seq, ESP_OTA_IMG_VALID, false);
+            }
+        }
+        return;
+    }
     if (!(booted_by_loader() && (g_c6_boot.flags & OTA_C6_FLAG_TRIAL))) trial_watchdog_off();
 }
 

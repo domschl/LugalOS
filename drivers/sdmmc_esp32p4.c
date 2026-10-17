@@ -881,7 +881,7 @@ static void sdmmc_dma_arm(void) {
  * and IDSTS the bus-facing ones (a descriptor the DMA could not fetch, a bus
  * error), and a transfer can fail in either without the other noticing. */
 static int sdmmc_dma_wait(uint32_t lba, const char *what) {
-    uint64_t deadline = time_get_us() + 500000u;
+    uint64_t deadline = time_get_us() + 3000000u;
     for (;;) {
         uint32_t st = REG(SD_RINTSTS);
         uint32_t id = REG(SD_IDSTS);

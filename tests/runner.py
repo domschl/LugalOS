@@ -1352,6 +1352,17 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("/proc/ports Reports Wires And Their Holders (C8)",
                         ok, log if not ok else ""))
 
+        # 59.6: Shell recursive file finding ('find')
+        ok, log = session.send_and_expect("find /flash0/system *.elf", r"(?i)/flash0/system/bin/uhello\.elf", timeout=6.0)
+        results.append(("Shell Recursive Find Discovers Files By Pattern (59.6 find)", ok, log if not ok else ""))
+
+        # 59.6: Shell command sequencing (';' and '&&')
+        ok, log = session.send_and_expect("echo SEQ_A ; echo SEQ_B", r"SEQ_A.*SEQ_B", timeout=5.0)
+        results.append(("Shell Command Semicolon Sequencing (59.6 ;)", ok, log if not ok else ""))
+
+        ok, log = session.send_and_expect("echo AND_A && echo AND_B", r"AND_A.*AND_B", timeout=5.0)
+        results.append(("Shell Logical AND Short-Circuit Success (59.6 &&)", ok, log if not ok else ""))
+
         # C3: a program receives its own arguments.
         #
         # Typed with arguments at the shell, so this exercises the whole path:

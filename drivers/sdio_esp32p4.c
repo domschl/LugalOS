@@ -33,6 +33,7 @@
 #include "kernel/time.h"
 #include "arch/esp32p4_intr.h"   /* esp32p4_dcache_*, ESP32P4_L1_CACHE_LINE */
 #include "arch/trap.h"           /* arch_irq_enable */
+#include "fs/vfs.h"
 #include "lugalos_config.h"
 #include <string.h>
 
@@ -58,7 +59,10 @@
 #define GPIO_OUT_SEL(n)     (GPIO_BASE + 0x558 + 4u * (uint32_t)(n))
 #define  GPIO_OUT_SEL_GPIO      256u
 #define  GPIO_OUT_OEN_SEL       (1u << 10)   /* 1 = GPIO_ENABLE decides; 0 = the peripheral */
+#define GPIO_OUT0_W1TC      (GPIO_BASE + 0x0C)
 #define GPIO_OUT1_W1TC      (GPIO_BASE + 0x18)
+#define GPIO_ENABLE0_W1TS   (GPIO_BASE + 0x24)
+#define GPIO_ENABLE0_W1TC   (GPIO_BASE + 0x28)
 #define GPIO_ENABLE1_W1TS   (GPIO_BASE + 0x30)
 #define GPIO_ENABLE1_W1TC   (GPIO_BASE + 0x34)
 #define GPIO_MATRIX_CONST_ZERO  0x3Eu
@@ -110,13 +114,22 @@ static void sdio_pads_init(void) {
  * Nothing on this net is ever driven high (plan §5.1). */
 void sdio_c6_reset(uint32_t hold_ms) {
     const uint32_t g = (uint32_t)CONFIG_C6_CHIP_PU_GPIO;
-    const uint32_t bit = 1u << (g - 32u);
+    const uint32_t bit = 1u << (g < 32u ? g : (g - 32u));
     pad_gpio(g, false);
     REG(GPIO_OUT_SEL(g)) = GPIO_OUT_SEL_GPIO | GPIO_OUT_OEN_SEL;
-    REG(GPIO_OUT1_W1TC) = bit;
-    REG(GPIO_ENABLE1_W1TS) = bit;          /* EN low */
+    if (g < 32u) {
+        REG(GPIO_OUT0_W1TC) = bit;
+        REG(GPIO_ENABLE0_W1TS) = bit;          /* EN low */
+    } else {
+        REG(GPIO_OUT1_W1TC) = bit;
+        REG(GPIO_ENABLE1_W1TS) = bit;          /* EN low */
+    }
     time_delay_us(hold_ms * 1000u);
-    REG(GPIO_ENABLE1_W1TC) = bit;          /* released: the pull-up raises it */
+    if (g < 32u) {
+        REG(GPIO_ENABLE0_W1TC) = bit;          /* released: the pull-up raises it */
+    } else {
+        REG(GPIO_ENABLE1_W1TC) = bit;          /* released: the pull-up raises it */
+    }
 }
 
 /* --- CMD52 / CMD53 ---------------------------------------------------------------- */
@@ -347,10 +360,13 @@ static int probe_locked(uint32_t khz) {
     return 0;
 }
 
+static void hosted_detect_locked(void);
+
 int sdio_probe(uint32_t khz) {
     if (!khz) khz = (uint32_t)CONFIG_SDIO_FREQ_KHZ;
     sdhost_acquire(1);
     int rc = probe_locked(khz);
+    if (rc == 0 && g_info.fn1_ready) hosted_detect_locked();
     sdhost_release();
     return rc;
 }
@@ -412,20 +428,28 @@ static uint32_t le32(const uint8_t *p) {
 
 /* One packet through the FIFO: whole blocks while 512 or more remain, then the
  * rest in byte mode, each CMD53 addressed so that the slave sees how much is
- * still to come (FIFO_END - remaining). `len` is a multiple of 4. Not one CMD53
- * rounded up to whole blocks: the slave stops answering commands after the
- * first such transfer (tried 2026-10-14); IDF's host splits the same way. */
+ * still to come (FIFO_END - remaining). When a byte-mode transfer is not a
+ * multiple of 4 (`esp-hosted-mcu` control packets), round the CMD53 byte count
+ * up to a multiple of 4 while keeping `FIFO_END - rem` as the address (matching
+ * `H_SDIO_RX/TX_LEN_TO_TRANSFER` in `esp-hosted-mcu`). */
 static int fifo_xfer_locked(bool write, uint8_t *buf, uint32_t len) {
     uint32_t done = 0;
     while (done < len) {
         uint32_t rem = len - done;
         uint32_t n = rem >= g_info.block_size ? (rem / g_info.block_size) * g_info.block_size : rem;
-        if (n > SDIO_XFER_MAX) n = SDIO_XFER_MAX;
-        if (cmd53_locked(write, LLP_SDIO_FN, LLP_SDIO_FIFO_END - rem, buf + done, n) != 0) return -1;
+        uint32_t xfer = (n + 3u) & ~3u;
+        if (xfer > SDIO_XFER_MAX) {
+            xfer = SDIO_XFER_MAX;
+            n = xfer;
+        }
+        if (cmd53_locked(write, LLP_SDIO_FN, LLP_SDIO_FIFO_END - rem, buf + done, xfer) != 0) return -1;
         done += n;
     }
     return 0;
 }
+
+static volatile bool g_hosted_ota_busy;
+static uint32_t g_hosted_rx_bytes;
 
 static int status_locked(void) {
     uint8_t st[LLP_SDIO_STATUS_LEN];
@@ -471,11 +495,15 @@ static int channel_reset_locked(void) {
 }
 
 int sdio_llp_open(void) {
+    if (g_hosted_ota_busy) return -1;
     irq_route();
     sdhost_acquire(1);
     int rc = -1;
     if (g_info.present || probe_locked((uint32_t)CONFIG_SDIO_FREQ_KHZ) == 0) rc = channel_reset_locked();
-    if (rc != 0) g_llp.need_reset = true;
+    if (rc != 0) {
+        if (g_info.present && g_info.fn1_ready && !g_info.hosted_present) hosted_detect_locked();
+        g_llp.need_reset = true;
+    }
     sdhost_release();
     return rc;
 }
@@ -486,6 +514,7 @@ int sdio_llp_open(void) {
  * when down. */
 int sdio_llp_poll(void) {
     static uint64_t next_probe;
+    if (g_hosted_ota_busy) return -1;
     sdhost_acquire(1);
     int rc = -1;
     if (!g_info.present) {
@@ -493,6 +522,7 @@ int sdio_llp_poll(void) {
         if (now < next_probe) goto out;
         next_probe = now + 1000u;
         if (probe_locked((uint32_t)CONFIG_SDIO_FREQ_KHZ) != 0) goto out;
+        if (g_info.fn1_ready) hosted_detect_locked();
     }
     if (g_irq_seen) {
         g_irq_seen = false;
@@ -579,13 +609,21 @@ void sdio_llp_report(void) {
             g_llp.up ? "up" : "down", g_llp.gen, g_llp.shared[LLP_SDIO_SH_LINK],
             (int)(int8_t)g_llp.shared[LLP_SDIO_SH_RSSI], g_llp.shared[LLP_SDIO_SH_NBUF],
             g_llp.shared[LLP_SDIO_SH_BUF64] * 64u);
+    if (g_info.present && g_info.fn1_ready && !g_llp.up && !magic_ok()) {
+        if (g_info.hosted_present) {
+            cprintf("  sdio: esp-hosted-mcu v%u.%u.%u on fn1 (run `sdio ota [path]`)\n",
+                    g_info.hosted_major, g_info.hosted_minor, g_info.hosted_patch);
+        } else {
+            cprintf("  sdio: non-LLP slave on fn1 (esp-hosted-mcu? run `sdio ota [path]`)\n");
+        }
+    }
     cprintf("  sdio: %u polls, %u card interrupts%s, out %u packets %u B (no room %u), in %u packets %u B, resyncs %u, failures %u, bus errors %u\n",
             (unsigned)g_llp.polls, (unsigned)g_llp.irqs, g_irq_routed ? "" : " (not routed)", (unsigned)g_llp.writes, (unsigned)g_llp.wbytes, (unsigned)g_llp.no_room,
             (unsigned)g_llp.reads, (unsigned)g_llp.rbytes, (unsigned)g_llp.resyncs, (unsigned)g_llp.failures,
             (unsigned)g_info.errors);
 }
 
-/* --- Shell --------------------------------------------------------------------------- */
+/* --- Shell & esp-hosted-mcu SDIO OTA (Phase 52.3) ------------------------------------ */
 
 static const char *const stage_names[] = {
     "not probed", "CMD5 unanswered (no SDIO slave running?)", "CMD5 never ready",
@@ -607,17 +645,27 @@ void sdio_report(void) {
     cprintf("  function 1 %s, block size %u; bus %u-bit at %u kHz%s; errors %u\n",
             i->fn1_ready ? "ready" : "NOT ready", (unsigned)i->block_size, (unsigned)i->width,
             (unsigned)i->khz, i->high_speed ? ", high speed" : "", (unsigned)i->errors);
+    if (i->hosted_present) {
+        cprintf("  slave: esp-hosted-mcu v%u.%u.%u (chip 0x%02x, %s mode) -- run `sdio ota [path]`\n",
+                i->hosted_major, i->hosted_minor, i->hosted_patch,
+                i->hosted_chip_id, i->hosted_sdio_mode ? "streaming" : "packet");
+    } else if (i->llp_present || g_llp.up || magic_ok()) {
+        cprintf("  slave: LugalOS LLP (gen %u)\n", g_llp.shared[LLP_SDIO_SH_GEN]);
+    } else if (i->fn1_ready) {
+        cprintf("  slave: non-LLP SDIO slave (esp-hosted-mcu? run `sdio probe` or `sdio ota [path]`)\n");
+    }
 }
+
+static uint8_t g_scratch[SDIO_XFER_MAX];
 
 void sdio_bench(uint32_t kilobytes, uint32_t fn, uint32_t addr, uint32_t chunk) {
     if (!g_info.present) { cprintf("sdio bench: probe first (`sdio probe`)\n"); return; }
     if (!chunk) chunk = g_info.block_size ? g_info.block_size : 512u;
     if (chunk > SDIO_XFER_MAX) chunk = SDIO_XFER_MAX;
     uint32_t total = kilobytes * 1024u, done = 0;
-    static uint8_t scratch[SDIO_XFER_MAX];
     uint64_t t0 = time_get_us();
     while (done < total) {
-        if (sdio_cmd53(false, fn, addr, scratch, chunk) != 0) break;
+        if (sdio_cmd53(false, fn, addr, g_scratch, chunk) != 0) break;
         done += chunk;
     }
     uint64_t us = time_get_us() - t0;
@@ -626,6 +674,562 @@ void sdio_bench(uint32_t kilobytes, uint32_t fn, uint32_t addr, uint32_t chunk) 
             (unsigned)(done / 1024u), (unsigned)fn, (unsigned)addr, (unsigned)chunk, (unsigned)(us / 1000u),
             (unsigned)((uint64_t)done * 1000000u / 1024u / us), (unsigned)g_info.width, (unsigned)g_info.khz,
             done < total ? " -- STOPPED on an error" : "");
+}
+
+/* --- esp-hosted-mcu SDIO OTA client (Phase 52.3) ------------------------------------
+ *
+ * Speaks just enough of Espressif's `esp-hosted-mcu` SDIO + Protocomm +
+ * Protobuf RPC protocol to stream a standard ESP-IDF application image
+ * (`lugalos-c6-app.bin`, 52.1) into a factory C6's `ota_1` partition and
+ * activate it without touching the C6's UART/USB pins.
+ *
+ * Wire layers:
+ *   1. SDIO Function 1 registers (`0x044` TOKEN, `0x050` INT_RAW, `0x060`
+ *      PKT_LEN, `0x08C` HOST_TO_SLAVE_INTR bit 0 = ESP_OPEN_DATA_PATH,
+ *      `0x0D4` INT_CLR) and packet FIFO ending at `0x1F800`, 1536-byte slave
+ *      RX buffers.
+ *   2. 12-byte `esp_payload_header`: byte 0 = `if_type` (3 = `ESP_SERIAL_IF`,
+ *      5 = `ESP_PRIV_IF`), bytes 2..3 = payload length, bytes 4..5 = 12,
+ *      bytes 6..7 = 16-bit byte sum over header + payload, bytes 8..9 = seq.
+ *   3. Protocomm TLV inside `ESP_SERIAL_IF`: TLV 1 (`EPNAME` = `"RPCRsp"`),
+ *      TLV 2 (`DATA` = Protobuf `Rpc` message).
+ *   4. Protobuf `Rpc`: field 1 `msg_type` (1 = Req, 2 = Resp, 3 = Event),
+ *      field 2 `msg_id` (`Req_OTABegin = 272`, `Req_OTAWrite = 273`,
+ *      `Req_OTAEnd = 274`, `Req_OTAActivate = 266`; responses `+ 256`),
+ *      field 3 `uid`, and submessage at field `msg_id`.
+ */
+
+#define HOSTED_RX_BUF_SIZE      1536u
+#define HOSTED_REG_SLV_INTR     0x08Cu      /* SLCHOST_CONF_W7: bit 0 = ESP_OPEN_DATA_PATH */
+#define HOSTED_OPEN_DATA_PATH   0x01u
+#define HOSTED_IF_SERIAL        3u
+#define HOSTED_IF_PRIV          5u
+#define HOSTED_PRIV_EVENT_INIT  0x22u
+#define HOSTED_TAG_CHIP_ID      0x12u
+#define HOSTED_TAG_FW_VER       0x17u
+#define HOSTED_TAG_SDIO_MODE    0x18u
+
+#define HOSTED_REQ_OTA_ACTIVATE 266u
+#define HOSTED_REQ_OTA_BEGIN    272u
+#define HOSTED_REQ_OTA_WRITE    273u
+#define HOSTED_REQ_OTA_END      274u
+
+typedef struct {
+    uint32_t tx_buf_count;
+    uint32_t rx_byte_count;
+    uint16_t seq_num;
+    uint32_t uid;
+    bool     init_seen;
+    uint8_t  chip_id;
+    uint8_t  sdio_mode;
+    uint32_t fw_major, fw_minor, fw_patch;
+} hosted_ctx_t;
+
+static uint16_t hosted_checksum(const uint8_t *buf, uint32_t len) {
+    uint16_t s = 0;
+    for (uint32_t i = 0; i < len; i++) s = (uint16_t)(s + buf[i]);
+    return s;
+}
+
+static uint32_t pb_put_varint(uint8_t *dst, uint32_t v) {
+    uint32_t n = 0;
+    while (v >= 0x80u) {
+        dst[n++] = (uint8_t)((v & 0x7fu) | 0x80u);
+        v >>= 7;
+    }
+    dst[n++] = (uint8_t)v;
+    return n;
+}
+
+static uint32_t pb_varint_len(uint32_t v) {
+    uint32_t n = 1;
+    while (v >= 0x80u) { v >>= 7; n++; }
+    return n;
+}
+
+static const uint8_t *pb_get_varint(const uint8_t *p, const uint8_t *end, uint32_t *out) {
+    uint32_t v = 0, shift = 0;
+    while (p < end && shift < 35u) {
+        uint8_t b = *p++;
+        v |= (uint32_t)(b & 0x7fu) << shift;
+        if (!(b & 0x80u)) { *out = v; return p; }
+        shift += 7u;
+    }
+    return NULL;
+}
+
+static void hosted_parse_priv(hosted_ctx_t *ctx, const uint8_t *pay, uint32_t len) {
+    if (len < 2 || pay[0] != HOSTED_PRIV_EVENT_INIT) return;
+    uint32_t evt_len = pay[1];
+    if (2u + evt_len < len) len = 2u + evt_len;
+    const uint8_t *p = pay + 2, *end = pay + len;
+    while (p + 2 <= end) {
+        uint8_t tag = p[0], tlen = p[1];
+        p += 2;
+        if (p + tlen > end) break;
+        if (tag == HOSTED_TAG_CHIP_ID && tlen >= 1) {
+            ctx->chip_id = p[0];
+        } else if (tag == HOSTED_TAG_SDIO_MODE && tlen >= 1) {
+            ctx->sdio_mode = p[0];
+        } else if (tag == HOSTED_TAG_FW_VER && tlen >= 4) {
+            uint32_t v = le32(p);
+            ctx->fw_major = (v >> 16) & 0xffu;
+            ctx->fw_minor = (v >> 8) & 0xffu;
+            ctx->fw_patch = v & 0xffu;
+        }
+        p += tlen;
+    }
+    ctx->init_seen = true;
+}
+
+static bool hosted_parse_serial_resp(const uint8_t *pay, uint32_t len,
+                                     uint32_t want_resp_id, int32_t *out_resp) {
+    const uint8_t *pos = pay, *end = pay + len;
+    const uint8_t *pb = NULL, *pb_end = NULL;
+    while (pos + 3 <= end) {
+        uint8_t t = pos[0];
+        uint16_t l = (uint16_t)pos[1] | ((uint16_t)pos[2] << 8);
+        pos += 3;
+        if (pos + l > end) return false;
+        if (t == 2u) { pb = pos; pb_end = pos + l; break; }
+        pos += l;
+    }
+    if (!pb) return false;
+
+    uint32_t msg_type = 0, msg_id = 0;
+    int32_t resp_code = 0;
+    const uint8_t *p = pb;
+    while (p < pb_end) {
+        uint32_t tag = 0;
+        p = pb_get_varint(p, pb_end, &tag);
+        if (!p) return false;
+        uint32_t fnum = tag >> 3, wtype = tag & 7u;
+        if (wtype == 0u) {
+            uint32_t v = 0;
+            p = pb_get_varint(p, pb_end, &v);
+            if (!p) return false;
+            if (fnum == 1u) msg_type = v;
+            else if (fnum == 2u) msg_id = v;
+        } else if (wtype == 2u) {
+            uint32_t slen = 0;
+            p = pb_get_varint(p, pb_end, &slen);
+            if (!p || p + slen > pb_end) return false;
+            if (fnum == want_resp_id) {
+                const uint8_t *sp = p, *send = p + slen;
+                while (sp < send) {
+                    uint32_t stag = 0, sval = 0;
+                    sp = pb_get_varint(sp, send, &stag);
+                    if (!sp) break;
+                    if ((stag & 7u) == 0u) {
+                        sp = pb_get_varint(sp, send, &sval);
+                        if (!sp) break;
+                        if ((stag >> 3) == 1u) resp_code = (int32_t)sval;
+                    } else if ((stag & 7u) == 2u) {
+                        uint32_t l2 = 0;
+                        sp = pb_get_varint(sp, send, &l2);
+                        if (!sp || sp + l2 > send) break;
+                        sp += l2;
+                    } else {
+                        break;
+                    }
+                }
+            }
+            p += slen;
+        } else if (wtype == 1u) {
+            if (p + 8 > pb_end) return false;
+            p += 8;
+        } else if (wtype == 5u) {
+            if (p + 4 > pb_end) return false;
+            p += 4;
+        } else {
+            return false;
+        }
+    }
+    if (msg_type == 2u && msg_id == want_resp_id) {
+        *out_resp = resp_code;
+        return true;
+    }
+    return false;
+}
+
+/* Polls the slave for any pending packet(s) and dispatches them. If
+ * `want_resp_id != 0`, sets `*got_resp = true` and `*out_resp` when the
+ * matching RPC response arrives. Under `sdhost_acquire(1)`. */
+/* Why the last esp-hosted-mcu exchange failed (for `sdio ota`'s message). */
+static const char *g_hosted_err = "";
+/* Slave -> host bytes, separate from g_scratch (which holds the request being
+ * built): streaming mode may hand over several packets at once, and a packet
+ * may straddle two reads, so the tail is carried over. */
+static uint8_t g_hosted_rx[SDIO_XFER_MAX];
+static uint32_t g_hosted_carry;
+
+static int hosted_poll_rx_locked(hosted_ctx_t *ctx, uint32_t want_resp_id,
+                                 bool *got_resp, int32_t *out_resp) {
+    uint8_t st[LLP_SDIO_STATUS_LEN];
+    if (cmd53_locked(false, LLP_SDIO_FN, LLP_SDIO_STATUS_ADDR, st, sizeof st) != 0) {
+        g_hosted_err = "status read failed";
+        return -1;
+    }
+    uint32_t int_raw = le32(st + (0x050u - LLP_SDIO_STATUS_ADDR));
+    if (int_raw) {
+        uint8_t clr[4] = {
+            (uint8_t)(int_raw & 0xffu), (uint8_t)((int_raw >> 8) & 0xffu),
+            (uint8_t)((int_raw >> 16) & 0xffu), (uint8_t)((int_raw >> 24) & 0xffu)
+        };
+        (void)cmd53_locked(true, LLP_SDIO_FN, LLP_SDIO_REG_INT_CLR, clr, 4);
+    }
+    g_llp.token = le32(st + (LLP_SDIO_REG_TOKEN - LLP_SDIO_STATUS_ADDR));
+    uint32_t pkt_len = le32(st + (LLP_SDIO_REG_PKT_LEN - LLP_SDIO_STATUS_ADDR));
+    if (pkt_len == 0xffffffffu) { g_hosted_err = "PKT_LEN reads all ones (bus fault)"; return -1; }
+    pkt_len &= LLP_SDIO_LEN_MASK;
+
+    uint32_t avail = (pkt_len - ctx->rx_byte_count) & LLP_SDIO_LEN_MASK;
+    while (avail) {
+        uint32_t room = SDIO_XFER_MAX - g_hosted_carry;
+        uint32_t n = avail < room ? avail : room;
+        if (n == 0) { g_hosted_err = "receive buffer full of an unparsable packet"; g_hosted_carry = 0; return -1; }
+        if (fifo_xfer_locked(false, g_hosted_rx + g_hosted_carry, n) != 0) {
+            g_hosted_err = "FIFO read failed";
+            return -1;
+        }
+        ctx->rx_byte_count = (ctx->rx_byte_count + n) & LLP_SDIO_LEN_MASK;
+        avail -= n;
+        uint32_t have = g_hosted_carry + n, off = 0;
+        while (off + 12u <= have) {
+            uint8_t *h = g_hosted_rx + off;
+            uint8_t if_type = h[0] & 0x0fu;
+            uint16_t pay_len = (uint16_t)h[2] | ((uint16_t)h[3] << 8);
+            uint16_t pay_off = (uint16_t)h[4] | ((uint16_t)h[5] << 8);
+            if (pay_off != 12u || pay_len == 0) { off = have; break; }   /* padding or garbage: drop */
+            if (off + pay_off + pay_len > have) break;                  /* straddles: carry */
+            uint16_t rx_csum = (uint16_t)h[6] | ((uint16_t)h[7] << 8);
+            h[6] = 0;
+            h[7] = 0;
+            /* Slaves built with CONFIG_ESP_SDIO_CHECKSUM=n leave checksum = 0. */
+            bool ok = rx_csum == 0 || hosted_checksum(h, pay_off + pay_len) == rx_csum;
+            const uint8_t *pay = h + pay_off;
+            if (ok && if_type == HOSTED_IF_PRIV) {
+                hosted_parse_priv(ctx, pay, pay_len);
+            } else if (ok && if_type == HOSTED_IF_SERIAL && want_resp_id != 0) {
+                int32_t rc = -1;
+                if (hosted_parse_serial_resp(pay, pay_len, want_resp_id, &rc)) {
+                    *got_resp = true;
+                    *out_resp = rc;
+                }
+            }
+            off += pay_off + pay_len;
+        }
+        g_hosted_carry = have - off;
+        if (g_hosted_carry && off) memmove(g_hosted_rx, g_hosted_rx + off, g_hosted_carry);
+    }
+    return 0;
+}
+
+/* Under `sdhost_acquire(1)` at the end of `sdio_probe`: identifies whether the
+ * C6 slave is LugalOS LLP or `esp-hosted-mcu` (and records its firmware
+ * version from `ESP_PRIV_EVENT_INIT`). */
+static void hosted_detect_locked(void) {
+    if (status_locked() != 0) return;
+    if (magic_ok()) {
+        g_info.llp_present = true;
+        return;
+    }
+    hosted_ctx_t ctx;
+    memset(&ctx, 0, sizeof ctx);
+    if (g_llp.pkt_len < g_hosted_rx_bytes) g_hosted_rx_bytes = 0;
+    ctx.rx_byte_count = g_hosted_rx_bytes;
+    (void)cmd52_locked(true, LLP_SDIO_FN, HOSTED_REG_SLV_INTR, HOSTED_OPEN_DATA_PATH, NULL);
+    uint64_t deadline = time_get_ms() + 300u;
+    while (!ctx.init_seen && time_get_ms() < deadline) {
+        bool dummy_got = false;
+        int32_t dummy_rc = 0;
+        if (hosted_poll_rx_locked(&ctx, 0, &dummy_got, &dummy_rc) != 0) break;
+        if (ctx.init_seen) break;
+        time_delay_us(2000);
+    }
+    if (ctx.init_seen) {
+        /* Drain the trailing Event_ESPInit packet queued ~4 ms after ESP_PRIV_EVENT_INIT. */
+        time_delay_us(15000);
+        bool dummy_got = false;
+        int32_t dummy_rc = 0;
+        (void)hosted_poll_rx_locked(&ctx, 0, &dummy_got, &dummy_rc);
+        g_hosted_rx_bytes = ctx.rx_byte_count;
+        g_info.hosted_present = true;
+        g_info.hosted_chip_id = ctx.chip_id;
+        g_info.hosted_sdio_mode = ctx.sdio_mode;
+        g_info.hosted_major = (uint16_t)ctx.fw_major;
+        g_info.hosted_minor = (uint16_t)ctx.fw_minor;
+        g_info.hosted_patch = (uint16_t)ctx.fw_patch;
+    }
+}
+
+static int hosted_rpc_call(hosted_ctx_t *ctx, uint32_t req_id,
+                           const uint8_t *chunk, uint32_t chunk_len,
+                           uint32_t timeout_ms) {
+    ctx->uid++;
+    uint8_t *pkt = g_scratch;
+    uint8_t *pb = pkt + 24u;
+    uint32_t pb_len = 0;
+
+    /* Field 1: msg_type = 1 (Req); Field 2: msg_id; Field 3: uid. */
+    pb[pb_len++] = 0x08u;
+    pb[pb_len++] = 0x01u;
+    pb[pb_len++] = 0x10u;
+    pb_len += pb_put_varint(pb + pb_len, req_id);
+    pb[pb_len++] = 0x18u;
+    pb_len += pb_put_varint(pb + pb_len, ctx->uid);
+
+    /* Oneof payload submessage at field `req_id` (wire type 2). */
+    pb_len += pb_put_varint(pb + pb_len, (req_id << 3) | 2u);
+    if (chunk_len == 0) {
+        pb[pb_len++] = 0x00u;
+    } else {
+        uint32_t sub_len = 1u + pb_varint_len(chunk_len) + chunk_len;
+        pb_len += pb_put_varint(pb + pb_len, sub_len);
+        pb[pb_len++] = 0x0Au;   /* field 1: bytes ota_data */
+        pb_len += pb_put_varint(pb + pb_len, chunk_len);
+        memcpy(pb + pb_len, chunk, chunk_len);
+        pb_len += chunk_len;
+    }
+
+    /* 12-byte Protocomm TLV header: EPNAME ("RPCRsp") + DATA (pb_len). */
+    static const uint8_t ep_tlv[9] = { 0x01u, 0x06u, 0x00u, 'R', 'P', 'C', 'R', 's', 'p' };
+    memcpy(pkt + 12u, ep_tlv, 9u);
+    pkt[21] = 0x02u;
+    pkt[22] = (uint8_t)(pb_len & 0xffu);
+    pkt[23] = (uint8_t)(pb_len >> 8);
+
+    /* 12-byte esp_payload_header. */
+    uint16_t serial_len = (uint16_t)(12u + pb_len);
+    uint32_t total_len = 12u + (uint32_t)serial_len;
+    memset(pkt, 0, 12u);
+    pkt[0] = HOSTED_IF_SERIAL;
+    pkt[2] = (uint8_t)(serial_len & 0xffu);
+    pkt[3] = (uint8_t)(serial_len >> 8);
+    pkt[4] = 12u;
+    pkt[8] = (uint8_t)(ctx->seq_num & 0xffu);
+    pkt[9] = (uint8_t)(ctx->seq_num >> 8);
+    ctx->seq_num++;
+    uint16_t csum = hosted_checksum(pkt, total_len);
+    pkt[6] = (uint8_t)(csum & 0xffu);
+    pkt[7] = (uint8_t)(csum >> 8);
+
+    uint32_t bufs_needed = (total_len + HOSTED_RX_BUF_SIZE - 1u) / HOSTED_RX_BUF_SIZE;
+    uint64_t deadline = time_get_ms() + timeout_ms;
+    sdhost_acquire(1);
+    for (;;) {
+        if (status_locked() != 0) { sdhost_release(); g_hosted_err = "status read failed"; return -1; }
+        uint32_t free_bufs = (LLP_SDIO_TOKEN(g_llp.token) - ctx->tx_buf_count) & (LLP_SDIO_TOKEN_MOD - 1u);
+        if (free_bufs >= bufs_needed) break;
+        sdhost_release();
+        if (time_get_ms() >= deadline) { g_hosted_err = "no slave receive buffer"; return -1; }
+        task_sleep_ms(2);
+        sdhost_acquire(1);
+    }
+    if (fifo_xfer_locked(true, pkt, total_len) != 0) {
+        sdhost_release();
+        g_hosted_err = "FIFO write failed";
+        return -1;
+    }
+    ctx->tx_buf_count = (ctx->tx_buf_count + bufs_needed) & (LLP_SDIO_TOKEN_MOD - 1u);
+
+    uint32_t want_resp_id = req_id + 256u;
+    bool got_resp = false;
+    int32_t resp_code = -1;
+    while (!got_resp) {
+        if (hosted_poll_rx_locked(ctx, want_resp_id, &got_resp, &resp_code) != 0) {
+            sdhost_release();
+            return -1;
+        }
+        if (got_resp) break;
+        sdhost_release();
+        if (time_get_ms() >= deadline) { g_hosted_err = "no response in time"; return -1; }
+        task_sleep_ms(2);
+        sdhost_acquire(1);
+    }
+    sdhost_release();
+    if (resp_code != 0) {
+        static char why[40];
+        ksnprintf(why, sizeof why, "slave answered esp_err 0x%x", (unsigned)resp_code);
+        g_hosted_err = why;
+        return -1;
+    }
+    return 0;
+}
+
+int sdio_hosted_ota(const char *path) {
+    static const char *const defaults[] = {
+        "/sd0/lugalos-c6-app.bin",
+        "/sd0/firmware/lugalos-c6-mini.bin",
+        "/ram0/lugalos-c6-app.bin",
+    };
+    int fd = -1;
+    if (path && *path) {
+        fd = vfs_open(path, VFS_O_READ);
+    } else {
+        for (unsigned i = 0; i < sizeof(defaults) / sizeof(defaults[0]); i++) {
+            fd = vfs_open(defaults[i], VFS_O_READ);
+            if (fd >= 0) { path = defaults[i]; break; }
+        }
+    }
+    if (fd < 0) {
+        cprintf("sdio ota: cannot open %s\n", (path && *path) ? path : "/sd0/lugalos-c6-app.bin");
+        return -1;
+    }
+    vfs_stat_t st = {0};
+    if (vfs_fstat(fd, &st) != 0 || st.size < 0x100u ||
+        vfs_pread(fd, g_scratch, 0x80u, 0) != 0x80) {
+        vfs_close(fd);
+        cprintf("sdio ota: cannot read header of %s\n", path);
+        return -1;
+    }
+    if (g_scratch[0] != 0xE9u || le32(g_scratch + 0x20u) != 0xABCD5432u) {
+        vfs_close(fd);
+        cprintf("sdio ota: %s is not a valid ESP-IDF app image (magic 0x%02x, app_desc 0x%08x)\n",
+                path, g_scratch[0], (unsigned)le32(g_scratch + 0x20u));
+        return -1;
+    }
+    char proj[33], ver[33];
+    memcpy(proj, g_scratch + 0x50u, 32); proj[32] = '\0';
+    memcpy(ver,  g_scratch + 0x30u, 32); ver[32]  = '\0';
+    cprintf("sdio ota: image %s (%s %s, %u bytes)\n", path, proj, ver, (unsigned)st.size);
+
+    g_hosted_ota_busy = true;
+    g_llp.up = false;
+
+    /* Reset the C6 and let its bootloader + esp-hosted-mcu slave initialize. */
+    cprintf("sdio ota: resetting C6 and probing esp-hosted-mcu SDIO slave...\n");
+    g_hosted_rx_bytes = 0;
+    g_hosted_carry = 0;
+    sdio_c6_reset(20);
+    task_sleep_ms(750);
+
+    hosted_ctx_t ctx;
+    memset(&ctx, 0, sizeof ctx);
+
+    sdhost_acquire(1);
+    if (probe_locked((uint32_t)CONFIG_SDIO_FREQ_KHZ) != 0 || !g_info.fn1_ready) {
+        sdhost_release();
+        vfs_close(fd);
+        g_hosted_ota_busy = false;
+        cprintf("sdio ota: SDIO probe failed (stage %u)\n", (unsigned)g_info.stage);
+        return -1;
+    }
+    if (status_locked() == 0 && magic_ok()) {
+        sdhost_release();
+        vfs_close(fd);
+        g_hosted_ota_busy = false;
+        cprintf("sdio ota: C6 is already running LugalOS (LLP gen %u); use /c6/dev/ota instead\n",
+                g_llp.shared[LLP_SDIO_SH_GEN]);
+        return -1;
+    }
+    /* Open the slave data path (HOST_TO_SLAVE_INTR = 0x08C, bit 0). */
+    (void)cmd52_locked(true, LLP_SDIO_FN, HOSTED_REG_SLV_INTR, HOSTED_OPEN_DATA_PATH, NULL);
+    uint64_t init_deadline = time_get_ms() + 3000u;
+    while (!ctx.init_seen && time_get_ms() < init_deadline) {
+        bool dummy_got = false;
+        int32_t dummy_rc = 0;
+        if (hosted_poll_rx_locked(&ctx, 0, &dummy_got, &dummy_rc) != 0) break;
+        if (ctx.init_seen) break;
+        sdhost_release();
+        task_sleep_ms(10);
+        sdhost_acquire(1);
+    }
+    /* Drain any trailing startup event (e.g. Event_ESPInit on ESP_SERIAL_IF). */
+    if (ctx.init_seen) {
+        sdhost_release();
+        task_sleep_ms(15);
+        sdhost_acquire(1);
+        bool dummy_got = false;
+        int32_t dummy_rc = 0;
+        (void)hosted_poll_rx_locked(&ctx, 0, &dummy_got, &dummy_rc);
+    }
+    sdhost_release();
+
+    if (!ctx.init_seen) {
+        vfs_close(fd);
+        g_hosted_ota_busy = false;
+        cprintf("sdio ota: timed out waiting for esp-hosted-mcu INIT event\n");
+        return -1;
+    }
+    cprintf("sdio ota: esp-hosted-mcu slave ready (chip 0x%02x, fw v%u.%u.%u, %s mode)\n",
+            ctx.chip_id, (unsigned)ctx.fw_major, (unsigned)ctx.fw_minor, (unsigned)ctx.fw_patch,
+            ctx.sdio_mode ? "streaming" : "packet");
+
+    uint64_t t0 = time_get_ms();
+    cprintf("sdio ota: OTABegin (erasing target partition)...\n");
+    if (hosted_rpc_call(&ctx, HOSTED_REQ_OTA_BEGIN, NULL, 0, 20000u) != 0) {
+        vfs_close(fd);
+        g_hosted_ota_busy = false;
+        cprintf("sdio ota: Req_OTABegin failed (%s)\n", g_hosted_err);
+        return -1;
+    }
+
+    uint32_t written = 0, next_report = 131072u;
+    while (written < st.size) {
+        uint32_t n = st.size - written;
+        if (n > 1024u) n = 1024u;
+        uint8_t *chunk = g_scratch + 2048u;
+        if (vfs_pread(fd, chunk, n, written) != (int)n) {
+            vfs_close(fd);
+            g_hosted_ota_busy = false;
+            cprintf("sdio ota: file read error at offset %u\n", (unsigned)written);
+            return -1;
+        }
+        if (hosted_rpc_call(&ctx, HOSTED_REQ_OTA_WRITE, chunk, n, 10000u) != 0) {
+            vfs_close(fd);
+            g_hosted_ota_busy = false;
+            cprintf("sdio ota: Req_OTAWrite failed at %u / %u (%s)\n",
+                    (unsigned)written, (unsigned)st.size, g_hosted_err);
+            return -1;
+        }
+        written += n;
+        if (written >= next_report || written == st.size) {
+            cprintf("sdio ota: %u / %u KB (%u%%)\n",
+                    (unsigned)(written / 1024u), (unsigned)(st.size / 1024u),
+                    (unsigned)((uint64_t)written * 100u / st.size));
+            next_report += 131072u;
+        }
+    }
+    vfs_close(fd);
+
+    if (hosted_rpc_call(&ctx, HOSTED_REQ_OTA_END, NULL, 0, 15000u) != 0) {
+        g_hosted_ota_busy = false;
+        cprintf("sdio ota: Req_OTAEnd failed (%s)\n", g_hosted_err);
+        return -1;
+    }
+
+    /* esp-hosted-mcu >= v2.6.0 separates OTAActivate from OTAEnd; earlier
+     * versions (< 2.6.0) activate the partition inside OTAEnd. */
+    if (ctx.fw_major > 2u || (ctx.fw_major == 2u && ctx.fw_minor >= 6u)) {
+        if (hosted_rpc_call(&ctx, HOSTED_REQ_OTA_ACTIVATE, NULL, 0, 10000u) != 0) {
+            g_hosted_ota_busy = false;
+            cprintf("sdio ota: Req_OTAActivate failed (%s)\n", g_hosted_err);
+            return -1;
+        }
+    }
+
+    uint32_t elapsed_ms = (uint32_t)(time_get_ms() - t0);
+    cprintf("sdio ota: flashed %u bytes in %u.%u s; rebooting C6 into LugalOS...\n",
+            (unsigned)st.size, (unsigned)(elapsed_ms / 1000u), (unsigned)((elapsed_ms % 1000u) / 100u));
+
+    task_sleep_ms(250);
+    sdio_c6_reset(20);
+    g_info.present = false;
+    g_llp.need_reset = true;
+    g_hosted_ota_busy = false;
+
+    uint64_t llp_deadline = time_get_ms() + 5000u;
+    while (time_get_ms() < llp_deadline) {
+        if (sdio_llp_up()) break;
+        task_sleep_ms(100);
+    }
+    if (sdio_llp_up()) {
+        cprintf("sdio ota: LugalOS C6 is up over LLP (gen %u)\n", g_llp.gen);
+        return 0;
+    }
+    cprintf("sdio ota: OTA succeeded; waiting for LLP pump to attach\n");
+    return 0;
 }
 
 #else
@@ -637,6 +1241,7 @@ int sdio_cmd52(bool w, uint32_t fn, uint32_t a, uint8_t in, uint8_t *out) { (voi
 int sdio_cmd53(bool w, uint32_t fn, uint32_t a, uint8_t *d, uint32_t l) { (void)w; (void)fn; (void)a; (void)d; (void)l; return -1; }
 void sdio_c6_reset(uint32_t ms) { (void)ms; }
 void sdio_bench(uint32_t kb, uint32_t fn, uint32_t addr, uint32_t len) { (void)kb; (void)fn; (void)addr; (void)len; sdio_report(); }
+int sdio_hosted_ota(const char *path) { (void)path; sdio_report(); return -1; }
 int sdio_llp_open(void) { return -1; }
 void sdio_llp_set_waker(int pid) { (void)pid; }
 bool sdio_llp_irq_pending(void) { return false; }

@@ -1632,6 +1632,8 @@ def test_reader_anti_aliased_typography(b: Board) -> tuple[str, bool, str]:
 def test_screenshot_color_mode(b: Board) -> tuple[str, bool, str]:
     """55.3: Screenshot capture in hardware scanout color/grayscale mode."""
     name = "screenshot: color/grayscale scanout capture in PGM/PPM format (55.3)"
+    if b.board_name not in ("lcd7b", "tab5"):
+        return name, True, f"SKIPPED ({b.board_name} has no hardware display scanout)"
     # Writing a 1.84 MB PPM on Tab5 can take ~12-15s over SDMMC
     out = b.console_session.cmd("screenshot", deadline=25.0)
     if "nothing saved" in out:
@@ -1651,6 +1653,8 @@ def test_screenshot_color_mode(b: Board) -> tuple[str, bool, str]:
 def test_color_canvas_rgb565(b: Board) -> tuple[str, bool, str]:
     """55.4: Hybrid ribbon compositing and RGB565 color canvas."""
     name = "canvas: RGB565 color window & hybrid compositing (55.4)"
+    if b.board_name not in ("lcd7b", "tab5"):
+        return name, True, f"SKIPPED ({b.board_name} has no hardware display scanout)"
     n0, _ = _ribbon(b)
     if n0 < 0:
         return name, True, "SKIPPED (no ribbon on this board)"
@@ -1685,6 +1689,8 @@ def test_color_canvas_rgb565(b: Board) -> tuple[str, bool, str]:
 def test_ribbon_slide_and_reader_smooth_scroll(b: Board) -> tuple[str, bool, str]:
     """55.5: Tear-free ribbon slide animation and smooth vertical scrolling with inertia."""
     name = "animation: ribbon slide and reader smooth scrolling (55.5)"
+    if b.board_name not in ("lcd7b", "tab5"):
+        return name, True, f"SKIPPED ({b.board_name} has no hardware display scanout)"
     n0, _ = _ribbon(b)
     if n0 < 0:
         return name, True, "SKIPPED (no ribbon on this board)"

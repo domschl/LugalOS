@@ -1229,6 +1229,10 @@ if(DEFINED LUGALOS_BOARD_FILE)
         PROPERTIES OBJECT_DEPENDS ${LUGALOS_CONFIG_HEADER})
     set_source_files_properties(fs/vfs_server.c
         PROPERTIES OBJECT_DEPENDS "${LUGALOS_CONFIG_HEADER};${LUGALOS_BUILD_ID_HEADER}")
+    if(LUGALOS_TARGET STREQUAL "ESP32C6")
+        set_source_files_properties(drivers/ota_esp32c6.c
+            PROPERTIES OBJECT_DEPENDS "${LUGALOS_CONFIG_HEADER};${LUGALOS_BUILD_ID_HEADER}")
+    endif()
 endif()
 
 # `sizereport`: where static RAM went,
@@ -1511,11 +1515,18 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
     # window at 0x42000000 and SRAM at 0x40800000 are 8 MB apart, and a single
     # `objcopy -O binary` would pad the gap. See the P4 block above for the
     # (intended) "empty loadable segment" warning this extraction can emit.
+    # 52.1: also emit lugalos-app.elf (without the 32-byte .xip_pad at 0x42000000)
+    # and convert it into a single-file ESP-IDF 0xE9 application image
+    # (lugalos-c6-app.bin) with esp_app_desc_t at file offset 0x20.
     set(RAW_BIN_COMMANDS
-        COMMAND ${CMAKE_OBJCOPY} -O binary -j .radio_text -j .text -j .rodata --gap-fill 0
+        COMMAND ${CMAKE_OBJCOPY} -O binary -j .xip_pad -j .radio_text -j .text -j .rodata --gap-fill 0
                 lugalos.elf lugalos-xip.bin
-        COMMAND ${CMAKE_OBJCOPY} -R .radio_text -R .text -R .rodata --strip-all
-                lugalos.elf lugalos-ram.elf)
+        COMMAND ${CMAKE_OBJCOPY} -R .xip_pad -R .radio_text -R .text -R .rodata --strip-all
+                lugalos.elf lugalos-ram.elf
+        COMMAND ${CMAKE_OBJCOPY} -R .xip_pad --strip-all
+                lugalos.elf lugalos-app.elf
+        COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/lota.py app-image ${CMAKE_CURRENT_BINARY_DIR}
+                -o ${CMAKE_CURRENT_BINARY_DIR}/lugalos-c6-app.bin)
 else()
     set(RAW_BIN_COMMANDS
         COMMAND ${CMAKE_OBJCOPY} -O binary lugalos.elf lugalos.bin)

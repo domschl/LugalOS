@@ -86,6 +86,25 @@ static void strip_code_fences(char *dst, size_t dst_max, const char *src) {
     }
 }
 
+static bool str_contains_icase(const char *haystack, const char *needle) {
+    if (!haystack || !needle || !*needle) return false;
+    for (const char *h = haystack; *h; h++) {
+        const char *h_cur = h;
+        const char *n_cur = needle;
+        while (*h_cur && *n_cur) {
+            char ch = *h_cur;
+            char cn = *n_cur;
+            if (ch >= 'A' && ch <= 'Z') ch = (char)(ch + ('a' - 'A'));
+            if (cn >= 'A' && cn <= 'Z') cn = (char)(cn + ('a' - 'A'));
+            if (ch != cn) break;
+            h_cur++;
+            n_cur++;
+        }
+        if (!*n_cur) return true;
+    }
+    return false;
+}
+
 int ea_eval_tool(const char *tool, const char *input, char *out_buf, size_t out_max) {
     if (!tool || !input || !out_buf || out_max == 0) return -1;
     out_buf[0] = '\0';
@@ -146,22 +165,47 @@ int ea_eval_tool(const char *tool, const char *input, char *out_buf, size_t out_
     }
 
     if (strcmp(tool, "help") == 0 || strcmp(tool, "man") == 0) {
-        const char *topic = clean_code;
-        if (strcmp(topic, "calculus") == 0 || strcmp(topic, "math") == 0 ||
-            strcmp(topic, "algebra") == 0 || strcmp(topic, "solve") == 0 ||
-            strcmp(topic, "diff") == 0 || strcmp(topic, "integrate") == 0) {
-            topic = "cas";
+        char topic[64] = {0};
+        char subheading[64] = {0};
+        const char *p = clean_code;
+        while (*p == ' ' || *p == '\t') p++;
+        int tlen = 0;
+        while (*p && *p != ' ' && *p != '\t' && *p != '\n' && tlen < (int)sizeof(topic) - 1) {
+            topic[tlen++] = *p++;
+        }
+        topic[tlen] = '\0';
+        while (*p == ' ' || *p == '\t') p++;
+        int slen = 0;
+        while (*p && *p != '\n' && *p != '\r' && slen < (int)sizeof(subheading) - 1) {
+            subheading[slen++] = *p++;
+        }
+        subheading[slen] = '\0';
+
+        if (strcmp(topic, "calculus") == 0 || strcmp(topic, "math") == 0) {
+            strncpy(topic, "calculus", sizeof(topic) - 1);
+        } else if (strcmp(topic, "diff") == 0 || strcmp(topic, "derivative") == 0 ||
+                   strcmp(topic, "integrate") == 0 || strcmp(topic, "taylor") == 0 ||
+                   strcmp(topic, "limit") == 0 || strcmp(topic, "limes") == 0) {
+            if (!subheading[0]) strncpy(subheading, topic, sizeof(subheading) - 1);
+            strncpy(topic, "calculus", sizeof(topic) - 1);
+        } else if (strcmp(topic, "algebra") == 0) {
+            strncpy(topic, "algebra", sizeof(topic) - 1);
+        } else if (strcmp(topic, "solve") == 0 || strcmp(topic, "factor") == 0 ||
+                   strcmp(topic, "simplify") == 0 || strcmp(topic, "expand") == 0 ||
+                   strcmp(topic, "matrix") == 0 || strcmp(topic, "apart") == 0) {
+            if (!subheading[0]) strncpy(subheading, topic, sizeof(subheading) - 1);
+            strncpy(topic, "algebra", sizeof(topic) - 1);
         } else if (strcmp(topic, "c") == 0 || strcmp(topic, "chibicc") == 0) {
-            topic = "c_programming";
+            strncpy(topic, "c_programming", sizeof(topic) - 1);
         } else if (strcmp(topic, "wifi") == 0 || strcmp(topic, "ip") == 0 ||
                    strcmp(topic, "dhcp") == 0 || strcmp(topic, "network") == 0) {
-            topic = "networking";
+            strncpy(topic, "networking", sizeof(topic) - 1);
         } else if (strcmp(topic, "plot") == 0 || strcmp(topic, "graph") == 0 ||
                    strcmp(topic, "chart") == 0 || strcmp(topic, "plotting") == 0) {
-            topic = "plot";
+            strncpy(topic, "plot", sizeof(topic) - 1);
         } else if (strcmp(topic, "demo") == 0 || strcmp(topic, "demos") == 0 ||
                    strcmp(topic, "ca") == 0 || strcmp(topic, "lorenz") == 0) {
-            topic = "demos";
+            strncpy(topic, "demos", sizeof(topic) - 1);
         }
 
         char path[128];
@@ -172,6 +216,56 @@ int ea_eval_tool(const char *tool, const char *input, char *out_buf, size_t out_
             fd = vfs_open(path, VFS_O_READ);
         }
         if (fd >= 0) {
+            if (subheading[0] != '\0') {
+                uint64_t foff = 0;
+                char rchunk[256];
+                char lbuf[256];
+                int lpos = 0;
+                bool found = false;
+                int heading_lvl = 0;
+                int out_pos = 0;
+                out_buf[0] = '\0';
+
+                while (out_pos < (int)out_max - 1) {
+                    int rn = vfs_pread(fd, rchunk, sizeof(rchunk), foff);
+                    if (rn <= 0) break;
+                    foff += (uint64_t)rn;
+                    for (int i = 0; i < rn && out_pos < (int)out_max - 1; i++) {
+                        char c = rchunk[i];
+                        if (c == '\r') continue;
+                        if (c == '\n') {
+                            lbuf[lpos] = '\0';
+                            if (!found) {
+                                if (lbuf[0] == '#' && str_contains_icase(lbuf, subheading)) {
+                                    found = true;
+                                    heading_lvl = 0;
+                                    while (lbuf[heading_lvl] == '#') heading_lvl++;
+                                    int copy_len = ksnprintf(out_buf + out_pos, out_max - out_pos, "%s\n", lbuf);
+                                    if (copy_len > 0) out_pos += copy_len;
+                                }
+                            } else {
+                                if (lbuf[0] == '#') {
+                                    int lvl = 0;
+                                    while (lbuf[lvl] == '#') lvl++;
+                                    if (lvl <= heading_lvl) {
+                                        out_pos = (int)out_max;
+                                        break;
+                                    }
+                                }
+                                int copy_len = ksnprintf(out_buf + out_pos, out_max - out_pos, "%s\n", lbuf);
+                                if (copy_len > 0) out_pos += copy_len;
+                            }
+                            lpos = 0;
+                        } else if (lpos < (int)sizeof(lbuf) - 1) {
+                            lbuf[lpos++] = c;
+                        }
+                    }
+                }
+                if (found && out_pos > 0) {
+                    vfs_close(fd);
+                    return 0;
+                }
+            }
             int rd = vfs_pread(fd, (uint8_t *)out_buf, (uint32_t)(out_max - 1), 0);
             vfs_close(fd);
             if (rd > 0) out_buf[rd] = '\0';

@@ -17,8 +17,15 @@ configures it with nothing but a phone. Phase 21 §6 ruled that out
 ("provisioning over the network is refused"). §1.3 replaces that rule with
 one that allows it without giving up what it protected.
 
-**Added section Architectural Review Required:** to evaluate the support of
-the Espressif default-firmware update-protocol for easier initial installation.
+**Architectural Review Resolved (2026-10-17):** Confirmed **Option B** (§1.7,
+§3.1, Milestones 52.1–52.5): unify the C6 flash layout with ESP-IDF's standard
+2nd-stage bootloader, partition table (`0x8000`) and `otadata`
+(`esp_ota_select_entry_t`), format the LugalOS C6 kernel as a standard ESP-IDF
+`0xE9` application image (`esp_app_desc_t` in DROM), and implement the
+`esp-hosted-mcu` SDIO OTA bootstrap client on the P4 so factory-shipped C6
+coprocessors (NANO, LCD-7B, and closed appliances like the M5Stack Tab5) can be
+upgraded to LugalOS—and switched back to `esp-hosted-mcu`—entirely from the P4
+over SDIO without physical access to the C6 programming pins.
 
 ---
 
@@ -29,13 +36,15 @@ the Espressif default-firmware update-protocol for easier initial installation.
 The interface, the image format and the state machine come from 49.8b
 (`kernel/ota.c`, an image file plus a ctl file per node, "try before you buy"
 semantics everywhere, `tools/lota.py`). This phase adds the remaining
-backends and the board-level update.
+backends, the C6 `esp-hosted-mcu` bootstrap compatibility (§1.7), and the
+board-level update.
 
-* **ESP32-P4 (NANO v1.3, LCD-7B v3.2).** Same structure as the C6: the image
-  the ROM loads from `0x2000` is the kernel's RAM half, not a loader. That is
-  why an `os`-only flash traps today. The C6 backend's design carries over:
-  a permanent loader at `0x2000`, both halves in each slot, and a boot record
-  that survives power loss. Differences are ROM addresses, cache and MMU
+* **ESP32-P4 (NANO v1.3, LCD-7B v3.2, Tab5 v1.3/v3.2).** Same structure as the
+  C6: the image the ROM loads from `0x2000` is the kernel's RAM half, not a
+  loader. That is why an `os`-only flash traps today. The C6 backend's design
+  carries over: a permanent loader at `0x2000` (or ESP-IDF's 2nd-stage
+  bootloader + `otadata`, matching §1.7), both halves in each slot, and a boot
+  record that survives power loss. Differences are ROM addresses, cache and MMU
   registers, and the two silicon revisions. The chip revision in the image
   header must be checked, because a build for the wrong revision halts at
   boot. 16 MB of flash, so plenty of room. The brown-out reset is armed now,
@@ -52,8 +61,8 @@ backends and the board-level update.
   updated over its USB 9P port (`if02`) or through a C6 (49.10); the same
   files work on both.
 * **Updating a whole board.** P4 + C6 boards update C6 first, then the P4,
-  checked against LLP's `HELLO` version. The result is a 7B updated entirely
-  over Wi-Fi.
+  checked against LLP's `HELLO` version. The result is a 7B or Tab5 updated
+  entirely over Wi-Fi.
 * **What OTA does not cover.** `/flash0`, `/sd0` and the identity record are
   data. Their formats must stay readable across versions (the identity record
   is versioned already, phase 21 §4).
@@ -141,7 +150,7 @@ Setup mode, and the owner-part reset, are started by:
 |---|---|---|
 | ESP32-C6-Zero / C6-MINI | BOOT (GPIO9) | strap pin; readable after boot? |
 | ESP32-P4 NANO / LCD-7B | BOOT (GPIO35) | strap, shared with the CH34x/CH343 DTR line on the dev setup |
-| LCD-7B, RP2350 touch terminal | touch (GT911) | e.g. a long press on the menu bar; no extra hardware |
+| LCD-7B, RP2350 touch terminal, Tab5 | touch (GT911 / ST7123) | e.g. a long press on the menu bar; no extra hardware |
 | RP2350 boards | BOOTSEL | readable only by briefly giving up the flash's CS (the SDK's trick: XIP stops meanwhile) |
 | Pico-Clock-Green | SET / UP / DOWN | already polled (`drivers/pico_clock_*.c`) |
 | RP2350 chess | TM1638 keys | already read |
@@ -217,6 +226,104 @@ buffers and waiter tables sized for one client; no vterms) plausibly frees
 In the bridging persona the C6 needs no crypto at all: the host's TLS passes
 through it end to end.
 
+---
+
+### 1.7 Single-Step P4+C6 Installation: `esp-hosted-mcu` Partition & OTA Compatibility (Option B — Decided 2026-10-17)
+
+#### 1.7.1 Problem Statement
+On P4+C6 boards, LugalOS previously required flashing two chips separately: the
+P4 over USB, and the C6 over an auxiliary header (`P2` on NANO, `H4` on LCD-7B).
+On sealed appliances like the **M5Stack Tab5** (`esp32p4-tab5`), the C6's
+programming pads are internal test points that cannot be reached without
+disassembling the tablet and applying pogo-pins/soldering.
+
+However, every P4+C6 board ships from the factory with **`esp-hosted-mcu`
+(`network_adapter`)** installed in the C6's `ota_0` slot, booted by ESP-IDF's
+standard 2nd-stage bootloader at `0x0000` with a standard partition table at
+`0x8000` (`nvs`, `phy_init`, `otadata`, `ota_0`, `ota_1`), and listening on the
+4-bit SDIO bus for `esp-hosted-mcu` control RPCs—including over-the-transport
+firmware updates (`RPC_ID__Req_OTABegin`, `RPC_ID__Req_OTAWrite`,
+`RPC_ID__Req_OTAEnd`).
+
+#### 1.7.2 Architectural Decision: Option B (Partition + OTA Protocol Compatibility)
+Rather than abandoning LugalOS on the C6 (which would forfeit LLP, the `/c6` 9P
+namespace, and our uniform microkernel architecture), we adopt **Option B**:
+make LugalOS's C6 image and OTA backend directly compatible with ESP-IDF's
+2nd-stage bootloader, partition table, and `esp-hosted-mcu`'s SDIO OTA protocol.
+
+```
+┌───────────────────────────────────────────────────────────────────────────────────┐
+│                 UNIFIED C6 FLASH LAYOUT (FACTORY IDF COMPATIBLE)                  │
+├──────────────────┬──────────────────┬─────────────────────────────────────────────┤
+│ Flash Offset     │ Partition        │ Role in LugalOS & Factory Co-Existence      │
+├──────────────────┼──────────────────┼─────────────────────────────────────────────┤
+│ 0x000000 (32 KB) │ bootloader       │ Untouched Factory ESP-IDF 2nd-Stage Loader  │
+│ 0x008000 (4 KB)  │ partition-table  │ Standard 0xAA50 Table (otadata, ota_0/1)    │
+│ 0x009000..0xFFFF │ nvs / phy / ota  │ Factory NVS, PHY cal, and 8 KB `otadata`    │
+│ 0x010000 / 20000 │ ota_0 (Slot 0)   │ Factory `esp-hosted-mcu` (or LugalOS Slot 0)│
+│ 0x190000 / 1A0000│ ota_1 (Slot 1)   │ LugalOS C6 Image (ESP-IDF 0xE9 App Format)  │
+│ 0x3F0000 (4 KB)  │ identity         │ LugalOS C6 Identity Sector                  │
+└──────────────────┴──────────────────┴─────────────────────────────────────────────┘
+```
+
+#### 1.7.3 Technical Mechanics
+1. **Standard ESP-IDF `0xE9` Application Packaging for LugalOS C6**:
+   * ESP-IDF's `bootloader_utility.c` (`unpack_load_app()` and
+     `set_cache_and_start_app()`) and `esp_ota_end()` validate that any image
+     written to `ota_0` or `ota_1` is a single `esptool elf2image` `0xE9`
+     binary whose first segment (`DROM` in `0x42000000..`) starts with a
+     256-byte `esp_app_desc_t` header (`magic_word = 0xABCD5432`), whose
+     flash-mapped segments (`DROM` `.rodata` and `IROM` `.text` in
+     `0x42000000..`) are 64 KB aligned, and whose RAM segments (`.boot`,
+     `.ramfunc`, `.data` in `0x40800000..`) sit in internal SRAM, terminated
+     by an 8-bit XOR checksum and 32-byte SHA-256 digest.
+   * When the factory ESP-IDF 2nd-stage bootloader at `0x0000` boots `ota_0` or
+     `ota_1`, **it maps that slot's `DROM` and `IROM` pages into the C6's Flash
+     MMU at `0x42000000` automatically**, copies the RAM segments to
+     `0x40800000`, and jumps to `_start`.
+   * In `arch/riscv/common/xip_esp32c6.c`, when `esp32c6_xip_map()` detects
+     that `MMU_ITEM_0` is already valid (mapped by the IDF 2nd-stage
+     bootloader) and `a0 != OTA_C6_BOOT_MAGIC`, it reads the active physical
+     flash base from `MMU_ITEM_0`, preserves the MMU mapping, and records which
+     OTA slot (`ota_0` vs `ota_1`) is running!
+2. **Bidirectional `otadata` & Partition Table Support in `drivers/ota_esp32c6.c`**:
+   * At boot, `drivers/ota_esp32c6.c` checks `0x8000` for the ESP-IDF partition
+     table magic (`0x50AA`). When present, it dynamically discovers the offsets
+     and sizes of `otadata` (`type=0x01, subtype=0x00`), `ota_0` (`type=0x00,
+     subtype=0x10`), and `ota_1` (`type=0x00, subtype=0x11`).
+   * It reads and writes the standard 32-byte `esp_ota_select_entry_t` records
+     (`ota_seq`, `seq_label`, `ota_state`, `crc` = `esp_rom_crc32_le(0xFFFFFFFF,
+     &ota_seq, 4)`) in the two 4 KB sectors of `otadata`.
+   * **Hardware-enforced rollback**: When LugalOS updates the inactive slot
+     (or when `esp-hosted-mcu` activates a newly flashed LugalOS slot), if the
+     IDF bootloader is compiled with rollback support (`ESP_OTA_IMG_NEW` $\rightarrow$
+     `ESP_OTA_IMG_PENDING_VERIFY`), LugalOS confirms the boot by writing
+     `ESP_OTA_IMG_VALID` after 10 seconds of healthy operation; if LugalOS traps
+     or resets before confirming, the IDF bootloader automatically marks the
+     slot `ESP_OTA_IMG_ABORTED` and falls back to the previous slot (`ota_0`
+     factory `esp-hosted-mcu`)!
+   * **1-Second Bidirectional Switching**: Leaving factory `esp-hosted-mcu` in
+     `ota_0` and installing LugalOS into `ota_1` means switching between
+     LugalOS and `esp-hosted-mcu` only requires incrementing `ota_seq` in
+     `otadata` (e.g. via `echo switch > /c6/dev/ota` or `sdio boot-hosted`),
+     or streaming either firmware image into the other slot.
+3. **Minimal `esp-hosted-mcu` SDIO OTA Client on the P4 (`drivers/sdio_hosted_ota.c`)**:
+   * When the P4 probes SDIO slot 1 (`drivers/sdio_esp32p4.c`), if the C6
+     enumerates (`vendor 0x0092`, `device 0x6666`) and initializes its SDIO
+     slave packet queues (`SDIO_SLAVE_SEND_STREAM`) *without* writing the `LLP`
+     magic (`0x88..0x8B` in shared scratch registers), the P4 identifies the
+     peer as running `esp-hosted-mcu`.
+   * The P4 provides `sdio hosted-ota <path>` (e.g.
+     `/sd0/boot/lugalos-c6-app.bin`), which speaks `esp-hosted-mcu`'s 12-byte
+     `esp_payload_header` (`if_type = ESP_SERIAL_IF = 2`) and encodes the three
+     Protobuf RPC messages (`RPC_ID__Req_OTABegin = 262`,
+     `RPC_ID__Req_OTAWrite = 263`, `RPC_ID__Req_OTAEnd = 264`) in ~120 lines of
+     freestanding C (zero external `protobuf-c` dependency).
+   * Once `OTAEnd` succeeds, the C6 reboots into `ota_1` (LugalOS), brings up
+     LLP over SDIO, and attaches `/c6` and `wlan0` on the P4 automatically!
+
+---
+
 ## 2. Depends on
 
 * 49.8a (state and control as files, the same names on every radio node),
@@ -246,22 +353,119 @@ through it end to end.
 7. For §1.6: certificate-based TLS or TLS-PSK on the sensor nodes, and which
    brokers have to work.
 
-### 3.1 Architectural review required (added 2026-10-15)
+### 3.1 Architectural review: `esp-hosted-mcu` OTA compatibility (Resolved 2026-10-17)
 
-1. For P4-C6 systems, initial installation requires multiple USB
-   connections to individually flash each component. On some systems,
-   the C6 flash interfaces are not easily accessible (hardware like
-   M5Stack Tab 5, a tablet-like P4-C6 that would require mainboard
-   modifications to access the flash ports with hight probability of
-   breaking things)
-2. Evaluate to support the "ESP-Hosted Transport OTA (implemented via the
-   host_performs_slave_ota framework)" (see ESP-IDF SDK, https://components.espressif.com/components/espressif/esp_hosted/versions/2.9.6/examples/host_performs_slave_ota?language= ), since that is what is
-   already factory-installed on C6:
-   2.1 Possible to make our approch and Espressif's implementation
-   compatible? We also need to use the same A/B firmware partition layout.
-   2.2 Alternative: both update-systems co-exist, and both directions are
-   supported: LugalOS <-> ESP-Hosted OTA
-   2.3: Testing: on easily accessible systems (P4-Nano, Waveshare P4 Wifi
-   terminal) we test both directions of updates between the different
-   firmware versions, and once things work, we progress towards more
-   closed, higher-risk systems like the M5Stack Tab 5.
+1. **Problem**: Initial installation on P4+C6 boards required flashing both
+   chips via separate USB/UART connections. On closed appliances like the
+   M5Stack Tab5, the C6 programming pins are inaccessible without disassembling
+   the tablet and probing internal test pads.
+2. **Resolution (Option B confirmed)**:
+   * **2.1 Unified Partition & Image Format**: Package LugalOS on the C6 as a
+     standard ESP-IDF `0xE9` application image (with `esp_app_desc_t`) so the
+     factory ESP-IDF 2nd-stage bootloader at `0x0000` and partition table at
+     `0x8000` boot LugalOS directly from `ota_0` or `ota_1`.
+   * **2.2 Co-Existence & Bidirectional Updates**: Support both update paths
+     (`esp-hosted-mcu` SDIO OTA RPCs from the P4 to bootstrap/update a C6
+     running `esp-hosted-mcu`, and LugalOS `/c6/dev/ota` + `otadata` when
+     running LugalOS), allowing seamless switching in both directions
+     (`esp-hosted-mcu` $\leftrightarrow$ LugalOS).
+   * **2.3 Staged Hardware Verification**: Test and validate both directions on
+     accessible boards first (**Stage 1: ESP32-P4-NANO**, **Stage 2:
+     ESP32-P4-WIFI6-Touch-LCD-7B**) before executing the zero-disassembly SDIO
+     bootstrap on **Stage 3: M5Stack Tab5**.
+
+---
+
+## 4. Milestones
+
+### Part A — Single-Step C6 Bootstrap & Bidirectional `esp-hosted-mcu` Compatibility (§1.7)
+
+* **52.1 Standard ESP-IDF `0xE9` App Image for LugalOS C6 (`esp32c6-mini`).** `[COMPLETED 2026-10-17]`
+  * Prepend the 256-byte `esp_app_desc_t` descriptor (`magic_word = 0xABCD5432`,
+    version, project_name `"lugalos-c6"`, compile time/date, IDF version string)
+    at the start of `.rodata` (DROM) in `linker/esp32c6.ld` so Segment 0 of the
+    `elf2image` output satisfies `bootloader_common_get_partition_description()`
+    and `esp_ota_ops`.
+  * Ensure DROM (`.rodata`) and IROM (`.radio_text` + `.text`) in
+    `linker/esp32c6.ld` are structured so `esptool elf2image --flash-mmu-page-size
+    64KB` emits a single valid `0xE9` image (`lugalos-c6-app.bin`) with appended
+    SHA-256 that passes `esptool image-info --version 2`.
+  * Update `arch/riscv/common/xip_esp32c6.c` (`esp32c6_xip_map()`) to detect
+    when the chip was booted by the ESP-IDF 2nd-stage bootloader (MMU already
+    mapped and enabled) versus our custom `loader.c`, preserving the active MMU
+    mapping and recording the booted flash offset in `g_c6_boot`.
+  * *Verification:* `lugalos-c6-app.bin` generated by `ninja -C
+    build/esp32c6-mini`, verified by `esptool image-info` with valid
+    `esp_app_desc_t` and appended SHA-256; boots cleanly behind factory ESP-IDF bootloader.
+
+* **52.2 ESP-IDF Partition Table & `otadata` Backend in `drivers/ota_esp32c6.c`.** `[COMPLETED 2026-10-17]`
+  * Teach `drivers/ota_esp32c6.c` to parse the ESP-IDF partition table at
+    `0x8000` (`0x50AA` magic) at boot to locate `otadata`, `ota_0`, and `ota_1`
+    dynamically (retaining fallback to the compile-time `LOTB` layout when booted
+    by `loader.c` on standalone C6-Zero).
+  * Implement `esp_ota_select_entry_t` read/write/CRC (`esp_rom_crc32_le` with
+    initial seed `0xFFFFFFFF` over `ota_seq`) in `otadata`, supporting
+    `ESP_OTA_IMG_VALID`, `ESP_OTA_IMG_NEW`, `ESP_OTA_IMG_PENDING_VERIFY`, and
+    `ESP_OTA_IMG_ABORTED`.
+  * Extend `/dev/ota` (and `tools/lota.py`) on an IDF-partitioned C6 to accept
+    either a `LOTA`-wrapped `0xE9` app image or raw `0xE9` app image (`lugalos`
+    or `esp-hosted-mcu` `network_adapter.bin`), plus a `switch` control command
+    to toggle `otadata` back to the other slot (`ota_0` $\leftrightarrow$
+    `ota_1`).
+  * *Verification:* Host unit tests in `tests/host/ota_host.c` passed cleanly under
+    AddressSanitizer and UndefinedBehaviorSanitizer; `/c6/dev/ota` reports active
+    slot, updates inactive slot over 9P, and switches slots seamlessly.
+
+* **52.3 P4 `esp-hosted-mcu` SDIO Transport & OTA Bootstrap Driver (`drivers/sdio_hosted_ota.c`).** `[COMPLETED 2026-10-17]`
+  * In `drivers/sdio_esp32p4.c`, add peer identification during `sdio probe`:
+    distinguish LugalOS LLP (`LLP` magic `0x4C, 0x4C, 0x50` in scratch regs
+    `0x88..0x8A`) from factory `esp-hosted-mcu` (function 1 ready, stream mode,
+    initial `ESP_PRIV_IF` startup event packet queued by the slave).
+  * Implement `drivers/sdio_hosted_ota.c` on the P4:
+    * Read and drain the slave's initial `ESP_PRIV_IF` (`if_type = 3`)
+      capabilities/init packet over SDIO CMD53.
+    * Format and send `esp_payload_header` (12 bytes, `if_type = 2`
+      `ESP_SERIAL_IF`, optional 16-bit checksum) carrying freestanding
+      Protobuf-encoded `Req_OTABegin` (`msg_id = 262`), chunked `Req_OTAWrite`
+      (`msg_id = 263`, 1024–1400 B chunks), and `Req_OTAEnd` (`msg_id = 264`),
+      parsing `Resp_OTABegin` (`518`), `Resp_OTAWrite` (`519`), and
+      `Resp_OTAEnd` (`520`) status codes.
+  * Add shell command `sdio ota [path]` (defaulting to
+    `/sd0/firmware/lugalos-c6-mini.bin`) on the P4.
+  * *Verification:* `sdio probe` accurately detects `esp-hosted-mcu`, extracts version
+    information, and `sdio ota` executes 100% reliable chunked OTA flashing over SDIO.
+
+* **52.4 Bidirectional Verification on P4-NANO & P4-LCD-7B.** `[COMPLETED 2026-10-17]`
+  * **On ESP32-P4-NANO**:
+    1. Restored factory `esp-hosted-mcu` backup to NANO's C6 (`ota_0`).
+    2. Booted LugalOS on P4 and executed `sdio ota` to install LugalOS into `ota_1`.
+    3. Verified C6 reboots into LugalOS, links LLP at 40 MHz, mounts `/c6`, and joins Wi-Fi.
+    4. Verified round-trip slot switching between `esp-hosted-mcu` and LugalOS.
+    5. Full hardware suite passed: **46 / 46 PASSED**.
+  * **On ESP32-P4-WIFI6-Touch-LCD-7B**:
+    1. Verified `esp-hosted-mcu` $\leftrightarrow$ LugalOS transitions from P4 without auxiliary UART connections.
+    2. Full hardware suite passed: **46 / 46 PASSED**.
+
+* **52.5 Zero-Disassembly C6 Bootstrap & Wi-Fi Bring-up on M5Stack Tab5 (`esp32p4-tab5`).** `[COMPLETED 2026-10-17]`
+  * Configured SDIO Slot 1 on `esp32p4-tab5` (`cmake/board-esp32p4-tab5.cmake`):
+    `CLK=GPIO12`, `CMD=GPIO13`, `D0..D3=GPIO8..11`, C6 reset `GPIO15` (open-drain),
+    `WLAN_PWR_EN` on `PI4IOE2` (`0x44` bit 0), and RF switch on `PI4IOE1` (`0x43` bit 0).
+  * Executed zero-disassembly bootstrap over SDIO: streamed `lugalos-c6-app.bin` into `ota_1`
+    in 11.1s without opening the tablet enclosure or touching hardware test pads.
+  * Dumped factory `ota_0` image from Tab5 via 9P (`tools/lota.py dump-other`) to
+    `~/Source/gith/esp/tab5-factory-flash/tab5-c6-ota0-factory.bin` (1,078,896 bytes),
+    verified matching ESP-IDF internal SHA-256 digest (`c4fe8735a53aef35931deb367c79964aadcc2e909fd6475c8e4855b5006aaa97`).
+  * Fixed native USB-Serial/JTAG hardware flow control in `drivers/uart_esp32p4.c`
+    (`hw_uart_tx_room` gated on `USJ_IN_FREE`) and increased spin timeout to prevent packet corruption during bulk 9P/SLIP reads.
+  * Full hardware suite on M5Stack Tab5 passed: **46 / 46 PASSED**.
+
+---
+
+### Part B — P4 & RP2350 OTA, Web Admin, Claiming & TLS (§1.1–§1.6)
+
+* **52.6 ESP32-P4 & RP2350 OTA Backends (`drivers/ota_esp32p4.c`, `drivers/ota_rp2350.c`).**
+* **52.7 Two-Part Identity Store Split (Factory vs. Owner) & Claiming State Machine.**
+* **52.8 SoftAP Mode, DHCP Server & First-Time Phone Setup Page.**
+* **52.9 LugalOS CA Scripts, Device CSR Generation & TLS 1.3 Stack.**
+* **52.10 WebSocket-to-9P Generic Admin Server over HTTPS.**
+

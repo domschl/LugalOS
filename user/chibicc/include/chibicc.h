@@ -12,11 +12,6 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-#ifndef HOST_TEST
-#include "kernel/console.h"
-#define printk cprintf
-#endif
-
 typedef enum {
     TK_IDENT,
     TK_PUNCT,

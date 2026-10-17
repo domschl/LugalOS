@@ -29,6 +29,8 @@ int ota_ctl_write(const char *buf, uint32_t len);
 uint32_t ota_ctl_read(char *out, uint32_t cap);
 /* The image file: `len` bytes at `off`. The count, or -1. */
 int ota_image_write(const void *buf, uint32_t len, uint64_t off);
+/* Reads raw bytes from the inactive slot when idle (for factory slot backup). */
+int ota_image_read(void *buf, uint32_t len, uint64_t off);
 /* At boot: on a trial boot, the task that confirms the image or gives up on it. */
 void ota_start(void);
 
@@ -41,6 +43,7 @@ typedef struct {
     bool     fell_back;         /* the last trial did not confirm */
     uint32_t part_max[2];       /* the largest part 0 / part 1 a slot holds */
     const char *chip;
+    const char *layout;         /* "loader" or "idf" */
     uint32_t trial_s;           /* the watchdog's deadline for a trial */
 } ota_board_info_t;
 
@@ -61,12 +64,15 @@ int  ota_board_write(int slot, const ota_image_header_t *h, uint32_t off, const 
 /* Everything received is in flash. */
 int  ota_board_finish(int slot, const ota_image_header_t *h);
 int  ota_board_read(int slot, const ota_image_header_t *h, uint32_t off, void *buf, uint32_t len);
+int  ota_board_raw_read(int slot, uint32_t off, void *buf, uint32_t len);
 /* Writes the header: from now on the slot holds a complete image. */
 int  ota_board_seal(int slot, const ota_image_header_t *h);
 /* 0 and the header when `slot` holds a sealed image. */
 int  ota_board_header(int slot, ota_image_header_t *h);
 int  ota_board_set_pending(int slot);
 int  ota_board_clear_pending(void);
+/* Switch next boot to the valid image already in the other slot. */
+int  ota_board_switch(void);
 /* The running trial is good: make it the active slot, disarm the watchdog. */
 int  ota_board_confirm(void);
 bool ota_board_record(ota_board_record_t *out);

@@ -1,10 +1,10 @@
 # Mathematical Plotting & Canvas Visualization (plot)
 
-LugalOS provides a hardware-accelerated 2D function and curve plotting subsystem (`/sd0/cas/plot.lisp`) that renders mathematical graphs directly into graphical terminal canvas windows across all display-equipped hardware targets (ESP32-P4-7B, Tab5, RP2350-Terminal).
+LugalOS provides a hardware-accelerated 2D function and curve plotting subsystem (/sd0/cas/plot.lisp) that renders mathematical graphs directly into graphical terminal canvas windows across all display-equipped hardware targets (ESP32-P4-7B, Tab5, RP2350-Terminal).
 
 ## 1. Quick Start
 
-Plotting automatically splits the screen to allocate a graphics canvas window next to your text console (`canvas-window 'split'`).
+Plotting automatically splits the screen to allocate a graphics canvas window next to your text console (canvas-window 'split').
 
 ```lisp
 ;; Load plotting subsystem (automatically pre-loaded by ea)
@@ -31,14 +31,14 @@ Plotting automatically splits the screen to allocate a graphics canvas window ne
 ## 3. Plotting Options (opts)
 
 Options are passed as an association list of key-value pairs:
-* `'title`: Title banner string displayed at the top of the canvas.
-  Example: `'((title . "Harmonic Oscillator"))`
-* `'samples`: Number of sampled evaluation points across the domain (default: 40–50).
-  Example: `'((samples . 60))`
-* `'layout`: Window arrangement:
-  * `'split` (default): Shares display with the text terminal / shell.
-  * `'canvas`: Full-screen canvas graph.
-* `'ymin`, `'ymax`: Explicit overrides for vertical axis scaling bounds.
+* 'title: Title banner string displayed at the top of the canvas.
+Example: '((title . "Harmonic Oscillator"))
+* 'samples: Number of sampled evaluation points across the domain (default: 40–50).
+Example: '((samples . 60))
+* 'layout: Window arrangement:
+* 'split (default): Shares display with the text terminal / shell.
+* 'canvas: Full-screen canvas graph.
+* 'ymin, 'ymax: Explicit overrides for vertical axis scaling bounds.
 
 ## 4. Examples
 
@@ -62,5 +62,5 @@ Options are passed as an association list of key-value pairs:
 ```
 
 ## 5. Architectural Features
-* **Zero Floating-Point in Kernel / M-Mode**: All coordinate transformations, aspect ratio adjustments, and axis tick calculations use exact rational arithmetic and fixed-point math.
-* **Auto-Scaling**: Automatically calculates domain and range extents with padding and plots coordinate grid lines and numeric labels.
+* Zero Floating-Point in Kernel / M-Mode: All coordinate transformations, aspect ratio adjustments, and axis tick calculations use exact rational arithmetic and fixed-point math.
+* Auto-Scaling: Automatically calculates domain and range extents with padding and plots coordinate grid lines and numeric labels.
