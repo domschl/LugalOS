@@ -15,6 +15,7 @@
  * pixel.
  */
 
+#include "drivers/battery.h"
 #include "drivers/lcdterm.h"
 
 #include <string.h>
@@ -424,6 +425,12 @@ static void status_tick(void) {
     }
     char right[SCREEN_RIGHT_MAX];
     uint32_t n = console_indicators(right, sizeof(right));
+    char batt[8];
+    uint32_t bn = battery_indicator(batt, sizeof batt);
+    if (bn > 0 && n + 2u + bn < sizeof(right)) {
+        if (n > 0) { right[n++] = ' '; right[n++] = ' '; }
+        for (uint32_t i = 0; i < bn; i++) right[n++] = batt[i];
+    }
     if (n > 0 && g_clock[0] && n + 2u < sizeof(right)) { right[n++] = ' '; right[n++] = ' '; }
     for (uint32_t i = 0; g_clock[i] && n + 1u < sizeof(right); i++) right[n++] = g_clock[i];
     right[n] = '\0';

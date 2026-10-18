@@ -65,6 +65,15 @@ Lisp scripts can interact directly with system services and microcontroller hard
 * `(gpio-set <pin> <val>)`: Set GPIO logic level (0 or 1).
 * `(gpio-get <pin>)`: Read GPIO logic level.
 
+### Sensors
+Readings come from the sensor hub's cache, so no call waits on the I2C bus. Values are integers in each channel's fixed-point unit ([sensors](doc/user/sensors.md)).
+* `(sensor-list)`: The detected devices, as symbols (`(bme280 ina226)`).
+* `(sensor-read)`: Everything, as `((hw (dev (chan . val) ...) ...) (inferred ...) (fused ...))`.
+* `(sensor-read 'dev)`: One device's channels; `(sensor-read 'ina226 'voltage)` one value; add `'age` for its age in seconds.
+* `(sensor-read 'chan)`: The best source of a channel (`'temp`, `'co2`, ...).
+* Channel names: `temp`, `pressure`, `humidity`, `lux`, `eco2`, `tvoc`, `gas-res`, `co`, `no2`, `nh3`, `co2`, `pressure-msl`, `abs-humidity`, `dew-point`, `iaq`, `voltage` (mV), `current` (mA), `power` (mW), `battery` (0.1 %), `accel-x/y/z` (mg), `gyro-x/y/z` (0.1 deg/s).
+* `(sensor-cal ['save | 'restore | 'clear])`: Gas-sensor calibration baselines.
+
 ### Filesystem & Process Control
 * `(load <path>)`: Load and evaluate Lisp source file.
 * `(read-file <path>)`: Read file content directly into a Lisp string.

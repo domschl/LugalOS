@@ -84,6 +84,10 @@ set(_optional_keys
     # a second I2C controller (ESP32-P4 I2C1) and its pins, and the RTC chip
     # when it is a board part rather than a module found by probing 0x68
     CONFIG_I2C1_SDA_GPIO CONFIG_I2C1_SCL_GPIO CONFIG_RTC_RX8130
+    # a battery the board carries, and the monitor on it (drivers/battery.h,
+    # drivers/ina226.h)
+    CONFIG_BATT_CELLS CONFIG_BATT_EMPTY_MV CONFIG_BATT_FULL_MV CONFIG_BATT_RINT_MOHM
+    CONFIG_BATT_CAPACITY_MAH CONFIG_INA226_SHUNT_UOHM CONFIG_INA226_INVERT
     # N5, : the gateway persona's UART1
     # downlink. Optional like everything else here -- a board with no second
     # UART simply does not set them. (The W5500's own pins lived here too,

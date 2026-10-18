@@ -28,6 +28,20 @@ Sensors are searched for at their usual addresses, but never at a board part's a
 
 **M5Stack Tab5:** connect external sensors to **Grove port A** (bus 1, GPIO53 SDA / GPIO54 SCL), not to the internal bus. The sensor hub searches both buses. The port's 5 V supply is switched on at boot.
 
+### Power and Motion Channels
+Board parts report through the same channels as the environmental sensors: in `sensor`, in `/proc/sensor/<part>`, and (except motion) on MQTT as `sensor/<part>/<channel>`:
+
+| Channel | Unit | `/proc/sensor` key | Source |
+| :--- | :--- | :--- | :--- |
+| `voltage` | V | `voltage_mv` | INA226 bus voltage |
+| `current` | A, + while charging | `current_ma` | INA226 shunt |
+| `power` | W | `power_mw` | voltage x current |
+| `battery` | % | `battery_pm` (0.1 %) | charge estimate (`power`) |
+| `accel_x/y/z` | g | `accel_x_mg` ... | IMU (not published) |
+| `gyro_x/y/z` | deg/s | `gyro_x_ddps` ... | IMU (not published) |
+
+A board part may be sampled on its own period. The INA226 is read once a second, environmental sensors every 60 s. An INA226 module on a Grove or header bus is found too, and is taken to have the usual 0.1 Ohm shunt.
+
 ### Reading Sensor Telemetry
 ```text
 lsh> sensor

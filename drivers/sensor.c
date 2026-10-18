@@ -5,21 +5,31 @@
 
 /* Uniform sensor channel descriptors */
 static const sensor_chan_desc_t s_descriptors[SENSOR_CHAN_MAX] = {
-    [SENSOR_CHAN_TEMP]         = { SENSOR_CHAN_TEMP,         "temperature",    "C",    2, 100 },
-    [SENSOR_CHAN_PRESSURE]     = { SENSOR_CHAN_PRESSURE,     "pressure",       "hPa",  2, 100 },
-    [SENSOR_CHAN_HUMIDITY]     = { SENSOR_CHAN_HUMIDITY,     "humidity",       "%RH",  2, 100 },
-    [SENSOR_CHAN_LUX]          = { SENSOR_CHAN_LUX,          "lux",            "Lux",  2, 100 },
-    [SENSOR_CHAN_ECO2]         = { SENSOR_CHAN_ECO2,         "eco2",           "ppm",  0, 1   },
-    [SENSOR_CHAN_TVOC]         = { SENSOR_CHAN_TVOC,         "tvoc",           "ppb",  0, 1   },
-    [SENSOR_CHAN_GAS_RES]      = { SENSOR_CHAN_GAS_RES,      "gas_resistance", "Ohm",  0, 1   },
-    [SENSOR_CHAN_CO]           = { SENSOR_CHAN_CO,           "co",             "ppm",  2, 100 },
-    [SENSOR_CHAN_NO2]          = { SENSOR_CHAN_NO2,          "no2",            "ppm",  2, 100 },
-    [SENSOR_CHAN_NH3]          = { SENSOR_CHAN_NH3,          "nh3",            "ppm",  2, 100 },
-    [SENSOR_CHAN_CO2]          = { SENSOR_CHAN_CO2,          "co2",            "ppm",  0, 1   },
-    [SENSOR_CHAN_PRESSURE_MSL] = { SENSOR_CHAN_PRESSURE_MSL, "pressure_msl",   "hPa",  2, 100 },
-    [SENSOR_CHAN_AH]           = { SENSOR_CHAN_AH,           "abs_humidity",   "g/m3", 2, 100 },
-    [SENSOR_CHAN_DEW_POINT]    = { SENSOR_CHAN_DEW_POINT,    "dew_point",      "C",    2, 100 },
-    [SENSOR_CHAN_IAQ]          = { SENSOR_CHAN_IAQ,          "iaq",            "IAQ",  0, 1   },
+    [SENSOR_CHAN_TEMP]         = { SENSOR_CHAN_TEMP,         "temperature",    "C",    2, 100,  NULL, true },
+    [SENSOR_CHAN_PRESSURE]     = { SENSOR_CHAN_PRESSURE,     "pressure",       "hPa",  2, 100,  NULL, true },
+    [SENSOR_CHAN_HUMIDITY]     = { SENSOR_CHAN_HUMIDITY,     "humidity",       "%RH",  2, 100,  NULL, true },
+    [SENSOR_CHAN_LUX]          = { SENSOR_CHAN_LUX,          "lux",            "Lux",  2, 100,  NULL, true },
+    [SENSOR_CHAN_ECO2]         = { SENSOR_CHAN_ECO2,         "eco2",           "ppm",  0, 1,    NULL, true },
+    [SENSOR_CHAN_TVOC]         = { SENSOR_CHAN_TVOC,         "tvoc",           "ppb",  0, 1,    NULL, true },
+    [SENSOR_CHAN_GAS_RES]      = { SENSOR_CHAN_GAS_RES,      "gas_resistance", "Ohm",  0, 1,    NULL, true },
+    [SENSOR_CHAN_CO]           = { SENSOR_CHAN_CO,           "co",             "ppm",  2, 100,  NULL, true },
+    [SENSOR_CHAN_NO2]          = { SENSOR_CHAN_NO2,          "no2",            "ppm",  2, 100,  NULL, true },
+    [SENSOR_CHAN_NH3]          = { SENSOR_CHAN_NH3,          "nh3",            "ppm",  2, 100,  NULL, true },
+    [SENSOR_CHAN_CO2]          = { SENSOR_CHAN_CO2,          "co2",            "ppm",  0, 1,    NULL, true },
+    [SENSOR_CHAN_PRESSURE_MSL] = { SENSOR_CHAN_PRESSURE_MSL, "pressure_msl",   "hPa",  2, 100,  NULL, true },
+    [SENSOR_CHAN_AH]           = { SENSOR_CHAN_AH,           "abs_humidity",   "g/m3", 2, 100,  NULL, true },
+    [SENSOR_CHAN_DEW_POINT]    = { SENSOR_CHAN_DEW_POINT,    "dew_point",      "C",    2, 100,  NULL, true },
+    [SENSOR_CHAN_IAQ]          = { SENSOR_CHAN_IAQ,          "iaq",            "IAQ",  0, 1,    NULL, true },
+    [SENSOR_CHAN_VOLTAGE]      = { SENSOR_CHAN_VOLTAGE,      "voltage",        "V",    3, 1000, "voltage_mv", true },
+    [SENSOR_CHAN_CURRENT]      = { SENSOR_CHAN_CURRENT,      "current",        "A",    3, 1000, "current_ma", true },
+    [SENSOR_CHAN_POWER]        = { SENSOR_CHAN_POWER,        "power",          "W",    3, 1000, "power_mw", true },
+    [SENSOR_CHAN_BATTERY]      = { SENSOR_CHAN_BATTERY,      "battery",        "%",    1, 10,   "battery_pm", true },
+    [SENSOR_CHAN_ACCEL_X]      = { SENSOR_CHAN_ACCEL_X,      "accel_x",        "g",    3, 1000, "accel_x_mg", false },
+    [SENSOR_CHAN_ACCEL_Y]      = { SENSOR_CHAN_ACCEL_Y,      "accel_y",        "g",    3, 1000, "accel_y_mg", false },
+    [SENSOR_CHAN_ACCEL_Z]      = { SENSOR_CHAN_ACCEL_Z,      "accel_z",        "g",    3, 1000, "accel_z_mg", false },
+    [SENSOR_CHAN_GYRO_X]       = { SENSOR_CHAN_GYRO_X,       "gyro_x",         "dps",  1, 10,   "gyro_x_ddps", false },
+    [SENSOR_CHAN_GYRO_Y]       = { SENSOR_CHAN_GYRO_Y,       "gyro_y",         "dps",  1, 10,   "gyro_y_ddps", false },
+    [SENSOR_CHAN_GYRO_Z]       = { SENSOR_CHAN_GYRO_Z,       "gyro_z",         "dps",  1, 10,   "gyro_z_ddps", false },
 };
 
 const sensor_chan_desc_t *sensor_chan_desc(sensor_chan_t chan) {
@@ -71,16 +81,23 @@ size_t sensor_format_channel(sensor_chan_t chan, int32_t raw_val, char *buf, siz
             return (size_t)ksnprintf(buf, cap, "%ld.%02ld kOhm", (long)whole, (long)frac);
         }
         return (size_t)ksnprintf(buf, cap, "%ld %s", (long)raw_val, desc->unit_symbol);
-    } else if (desc->decimals == 2 && desc->scale_div == 100) {
-        bool neg = raw_val < 0;
-        int32_t abs_val = neg ? -raw_val : raw_val;
-        int32_t whole = abs_val / 100;
-        int32_t frac = abs_val % 100;
-        return (size_t)ksnprintf(buf, cap, "%s%ld.%02ld %s",
-                                 neg ? "-" : "", (long)whole, (long)frac, desc->unit_symbol);
     }
 
-    return (size_t)ksnprintf(buf, cap, "%ld %s", (long)raw_val, desc->unit_symbol);
+    /* Fixed point with scale_div = 10^decimals. The sign is printed by hand:
+     * -0.412 has a whole part of 0, which "%ld" would print without it. */
+    bool neg = raw_val < 0;
+    uint32_t abs_val = neg ? (uint32_t)0 - (uint32_t)raw_val : (uint32_t)raw_val;
+    uint32_t div = desc->scale_div > 0 ? (uint32_t)desc->scale_div : 1u;
+    char frac[10];
+    unsigned nd = desc->decimals < sizeof(frac) ? desc->decimals : sizeof(frac) - 1u;
+    uint32_t f = abs_val % div;
+    for (int i = (int)nd - 1; i >= 0; i--) {
+        frac[i] = (char)('0' + f % 10u);
+        f /= 10u;
+    }
+    frac[nd] = '\0';
+    return (size_t)ksnprintf(buf, cap, "%s%lu.%s %s", neg ? "-" : "",
+                             (unsigned long)(abs_val / div), frac, desc->unit_symbol);
 }
 
 /* --- Derived Metrics Calculations (Zero-Float Invariant) --- */
@@ -239,6 +256,29 @@ uint32_t sensor_derived_selftest(bool report) {
     if (iaq_polluted < 250 || iaq_polluted > 280) {
         failed++;
         if (report) cprintf("  iaq polluted test failed: got %ld, want ~262\n", (long)iaq_polluted);
+    }
+
+    /* 5. Channel formatting, signs and every decimals/scale_div pair */
+    static const struct { sensor_chan_t chan; int32_t raw; const char *want; } fmt[] = {
+        { SENSOR_CHAN_TEMP,    -5,     "-0.05 C" },
+        { SENSOR_CHAN_TEMP,    2150,   "21.50 C" },
+        { SENSOR_CHAN_ECO2,    420,    "420 ppm" },
+        { SENSOR_CHAN_VOLTAGE, 7861,   "7.861 V" },
+        { SENSOR_CHAN_CURRENT, -412,   "-0.412 A" },
+        { SENSOR_CHAN_CURRENT, 1005,   "1.005 A" },
+        { SENSOR_CHAN_POWER,   -3238,  "-3.238 W" },
+        { SENSOR_CHAN_BATTERY, 715,    "71.5 %" },
+        { SENSOR_CHAN_BATTERY, 1000,   "100.0 %" },
+        { SENSOR_CHAN_ACCEL_Z, -1003,  "-1.003 g" },
+        { SENSOR_CHAN_GYRO_X,  -7,     "-0.7 dps" },
+    };
+    for (unsigned i = 0; i < sizeof(fmt) / sizeof(fmt[0]); i++) {
+        char got[32];
+        sensor_format_channel(fmt[i].chan, fmt[i].raw, got, sizeof(got));
+        if (strcmp(got, fmt[i].want) != 0) {
+            failed++;
+            if (report) cprintf("  format test %u failed: got '%s', want '%s'\n", i, got, fmt[i].want);
+        }
     }
 
     if (report) {

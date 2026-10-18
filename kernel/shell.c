@@ -48,6 +48,9 @@
 #include "drivers/hdc1080.h"
 #include "drivers/mcp9808.h"
 #include "drivers/tmp117.h"
+#include "drivers/ina226.h"
+#include "drivers/battery.h"
+#include "kernel/power.h"
 #include "drivers/sensor_hub.h"
 #include "drivers/boardprobe.h"
 #include "drivers/clocks_rp2350.h"
@@ -1077,6 +1080,7 @@ static void cmd_help_summary(void) {
     cprintf("  meminfo         - Physical memory and page pool status\n");
     cprintf("  date [ISO]      - Show or set date and RTC time\n");
     cprintf("  rtc             - Display RTC status and temperature\n");
+    cprintf("  power [log F [s]] - Battery voltage, current, charge (log to CSV)\n");
     cprintf("  dmesg [-c|-f]   - Dump kernel log ring (-c clear, -f follow)\n");
     cprintf("  klog [attach|detach] - Kernel log ring (/proc/kmsg)\n");
     cprintf("  history [clear] - Command history (!n, !! to repeat)\n");
@@ -2714,6 +2718,8 @@ static void cmd_sensor(const char *arg) {
         hdc1080_selftest(true);
         mcp9808_selftest(true);
         tmp117_selftest(true);
+        ina226_selftest(true);
+        battery_selftest(true);
         sensor_derived_selftest(true);
         return;
     }
@@ -6276,6 +6282,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "sensor") == 0) {
         cmd_sensor("");
+        return;
+    } else if (strcmp(cmd_line, "power") == 0 || strncmp(cmd_line, "power ", 6) == 0) {
+        power_cmd(cmd_line + 5);
         return;
     } else if (strncmp(cmd_line, "sensor ", 7) == 0) {
         cmd_sensor(&cmd_line[7]);

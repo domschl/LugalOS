@@ -73,6 +73,23 @@ set(CONFIG_I2C0_PARTS
 # found by probing 0x68.
 set(CONFIG_RTC_RX8130 1)
 
+# --- Battery: 2S Li-ion, INA226 (0x41) on its 5 mOhm shunt -----------------
+#
+# [sch U31 INA226, R39 5 mOhm on SYS_BAT_2S; m5 Power_Class.inl]
+# Charge current reads negative on this wiring; M5Unified inverts it, so does
+# drivers/ina226.c. Empty and full are what this unit's pack reads at rest
+# [meas, owner: 8.23 V full, 6.0 V where the supervisor cuts power].
+# Capacity: the Tab5's NP-F550-type pack [m5 product page, not measured].
+# R_int is a starting value for the voltage estimate's load correction;
+# tools/batt_fit.py fits it from a logged discharge.
+set(CONFIG_INA226_SHUNT_UOHM 5000)
+set(CONFIG_INA226_INVERT     1)
+set(CONFIG_BATT_CELLS        2)
+set(CONFIG_BATT_EMPTY_MV     6000)
+set(CONFIG_BATT_FULL_MV      8230)
+set(CONFIG_BATT_RINT_MOHM    150)
+set(CONFIG_BATT_CAPACITY_MAH 2000)
+
 # --- External I2C (I2C1): Grove port A (J11) and M5-Bus EXT_SDA/EXT_SCL ----
 #
 # [m5 M5Unified.inl ex_i2c: SCL G54, SDA G53] Powered from SYS_EXT5VO, which

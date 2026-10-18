@@ -7174,6 +7174,16 @@ static lisp_val_t *prim_llm_config(lisp_val_t *args, lisp_val_t *env) {
     return make_pair(url_pair, make_pair(model_pair, &nil_val));
 }
 
+/* The symbol `sensor-read` returns for each channel, indexed by sensor_chan_t. */
+static const char *const k_lisp_chan_names[] = {
+    "temp", "pressure", "humidity", "lux", "eco2", "tvoc", "gas-res",
+    "co", "no2", "nh3", "co2", "pressure-msl", "abs-humidity", "dew-point", "iaq",
+    "voltage", "current", "power", "battery",
+    "accel-x", "accel-y", "accel-z", "gyro-x", "gyro-y", "gyro-z",
+};
+_Static_assert(sizeof(k_lisp_chan_names) / sizeof(k_lisp_chan_names[0]) == SENSOR_CHAN_MAX,
+               "a Lisp name for every sensor channel");
+
 static int parse_sensor_chan(const char *name) {
     if (!name) return -1;
     if (strcmp(name, "temp") == 0 || strcmp(name, "temperature") == 0) return SENSOR_CHAN_TEMP;
@@ -7191,6 +7201,10 @@ static int parse_sensor_chan(const char *name) {
     if (strcmp(name, "ah") == 0 || strcmp(name, "abs-humidity") == 0) return SENSOR_CHAN_AH;
     if (strcmp(name, "dew-point") == 0 || strcmp(name, "dew") == 0) return SENSOR_CHAN_DEW_POINT;
     if (strcmp(name, "iaq") == 0) return SENSOR_CHAN_IAQ;
+    if (strcmp(name, "soc") == 0) return SENSOR_CHAN_BATTERY;
+    for (int ch = SENSOR_CHAN_VOLTAGE; ch < SENSOR_CHAN_MAX; ch++) {
+        if (strcmp(name, k_lisp_chan_names[ch]) == 0) return ch;
+    }
     return -1;
 }
 
@@ -7276,16 +7290,12 @@ static lisp_val_t *prim_sensor_list(lisp_val_t *args, lisp_val_t *env) {
 }
 
 static lisp_val_t *make_dev_chan_alist(const sensor_dev_t *dev) {
-    static const char *const names[SENSOR_CHAN_MAX] = {
-        "temp", "pressure", "humidity", "lux", "eco2", "tvoc", "gas-res",
-        "co", "no2", "nh3", "co2", "pressure-msl", "abs-humidity", "dew-point", "iaq"
-    };
     lisp_val_t *alist = &nil_val;
     for (int ch = SENSOR_CHAN_MAX - 1; ch >= 0; ch--) {
         if (!(dev->chan_mask & (1u << ch))) continue;
         int32_t val = 0;
         if (sensor_hub_get_dev(dev, (sensor_chan_t)ch, &val, NULL)) {
-            alist = make_pair(make_pair(make_sym(names[ch]), make_int((long)val)), alist);
+            alist = make_pair(make_pair(make_sym(k_lisp_chan_names[ch]), make_int((long)val)), alist);
         }
     }
     return alist;
@@ -7320,17 +7330,13 @@ static lisp_val_t *make_inferred_alist(void) {
 }
 
 static lisp_val_t *make_fused_alist(void) {
-    static const char *const names[SENSOR_CHAN_MAX] = {
-        "temp", "pressure", "humidity", "lux", "eco2", "tvoc", "gas-res",
-        "co", "no2", "nh3", "co2", "pressure-msl", "abs-humidity", "dew-point", "iaq"
-    };
     lisp_val_t *alist = &nil_val;
     for (int ch = SENSOR_CHAN_MAX - 1; ch >= 0; ch--) {
         if (ch == SENSOR_CHAN_PRESSURE_MSL || ch == SENSOR_CHAN_AH ||
             ch == SENSOR_CHAN_DEW_POINT || ch == SENSOR_CHAN_IAQ) continue;
         int32_t val = 0;
         if (sensor_hub_get((sensor_chan_t)ch, &val, NULL)) {
-            alist = make_pair(make_pair(make_sym(names[ch]), make_int((long)val)), alist);
+            alist = make_pair(make_pair(make_sym(k_lisp_chan_names[ch]), make_int((long)val)), alist);
         }
     }
     return alist;

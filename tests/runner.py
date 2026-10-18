@@ -6172,6 +6172,11 @@ def test_bme280_compensation(elf_path: Path, img_path: Path, arch_name: str) -> 
             return (name, False,
                     f"tmp117 selftest did not pass:\n{log[-700:]}")
 
+        for part in ("ina226", "battery"):
+            m_part = re.search(part + r" selftest: (\d+) case", log)
+            if not m_part or int(m_part.group(1)) != 0:
+                return (name, False, f"{part} selftest did not pass:\n{log[-700:]}")
+
         m_derived = re.search(r"sensor_derived selftest: (\d+) case", log)
         if not m_derived or int(m_derived.group(1)) != 0:
             return (name, False,

@@ -1,3 +1,4 @@
+#include "kernel/power.h"
 #include "fs/vfs.h"
 #include "fs/fat32.h"
 #include "fs/9p.h"
@@ -1776,6 +1777,10 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
             used += (uint32_t)ksnprintf(buf + used, cap - used,
                 "tier=hw\npart=%s\nbus=%u\naddr=0x%02x\nsample_period_s=%lu\n",
                 dev->name, (unsigned)dev->bus, dev->addr, (unsigned long)sensor_hub_sample_period_s());
+            if (dev->period_ms) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "sample_period_ms=%lu\n",
+                                            (unsigned long)dev->period_ms);
+            }
 
             bool any_val = false;
             uint32_t min_age = 0;
@@ -1820,8 +1825,13 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
                         case SENSOR_CHAN_CO2:
                             used += (uint32_t)ksnprintf(buf + used, cap - used, "co2_ppm=%ld\n", (long)val);
                             break;
-                        default:
+                        default: {
+                            const sensor_chan_desc_t *d = sensor_chan_desc((sensor_chan_t)ch);
+                            if (d && d->raw_key) {
+                                used += (uint32_t)ksnprintf(buf + used, cap - used, "%s=%ld\n", d->raw_key, (long)val);
+                            }
                             break;
+                        }
                     }
                 }
             }
@@ -2164,6 +2174,10 @@ static const char *g_dev_names[]  = { "uart", "null", "zero", "eeprom", "clipboa
     /* updating this node's image (kernel/ota.h): the ctl file and the image */
     "ota", "otaimage",
 #endif
+#if defined(CONFIG_BATT_CELLS)
+    /* the board battery's state (kernel/power.h) */
+    "power",
+#endif
 };
 #define DEV_COUNT ((int)(sizeof(g_dev_names) / sizeof(g_dev_names[0])))
 
@@ -2346,6 +2360,16 @@ int vfs_pread(int fd, void *buf, uint32_t count, uint64_t offset) {
             } else if (strcmp(h->rel_path, "ota") == 0) {
                 char st[512];
                 uint32_t len = ota_ctl_read(st, sizeof st);
+                if (offset >= len) return 0;
+                uint32_t k = len - (uint32_t)offset;
+                if (k > count) k = count;
+                memcpy(buf, st + offset, k);
+                return (int)k;
+#endif
+#if defined(CONFIG_BATT_CELLS)
+            } else if (strcmp(h->rel_path, "power") == 0) {
+                char st[256];
+                uint32_t len = power_ctl_read(st, sizeof st);
                 if (offset >= len) return 0;
                 uint32_t k = len - (uint32_t)offset;
                 if (k > count) k = count;

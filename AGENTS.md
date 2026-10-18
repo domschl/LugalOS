@@ -282,6 +282,8 @@ for both roles by itself.
   0x28 answers but is undocumented (reads 0xff): leave it alone.
 * RTC: the board's **RX8130CE at 0x32** (`CONFIG_RTC_RX8130`, backup cell), read at boot and set by `date`/NTP.
   `reboot` is not supported on the P4; reset with `tools/p4run.py --board tab5 --run`.
+* Battery: 2S pack on the INA226 (0x41, 5 mOhm, sign inverted so + = charging); `power`, `cat /dev/power`,
+  `power log FILE [s]`; charge estimate in drivers/battery.c (board facts `CONFIG_BATT_*`).
 * Grove port A is a second I2C bus (I2C1, GPIO53 SDA / GPIO54 SCL, `i2c scan 1`); external sensors go there.
 * Display (`drivers/dsi_esp32p4.c`): 5" 720×1280 MIPI-DSI ST7121 TDDI, 2-lane @ 900 Mbps, DPI clock
   70 MHz, double-buffered RGB565 PSRAM scanout at 58 Hz. Backlight active-high LEDC PWM on `GPIO22`.

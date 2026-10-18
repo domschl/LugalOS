@@ -30,6 +30,15 @@
  *   SENSOR_CHAN_AH:       0.01 g/m³    (Absolute humidity: 1125 is 11.25 g/m³)
  *   SENSOR_CHAN_DEW_POINT: 0.01 °C     (Dew point: 1520 is 15.20 °C)
  *   SENSOR_CHAN_IAQ:      1            (Index of Air Quality: 0-500)
+ *
+ * Power and motion (board parts: a battery monitor, an IMU):
+ *
+ *   SENSOR_CHAN_VOLTAGE:  1 mV         (7861 is 7.861 V)
+ *   SENSOR_CHAN_CURRENT:  1 mA, signed (+ into the battery: -412 is 0.412 A discharging)
+ *   SENSOR_CHAN_POWER:    1 mW, signed (same sign as the current)
+ *   SENSOR_CHAN_BATTERY:  0.1 %        (state of charge: 715 is 71.5 %)
+ *   SENSOR_CHAN_ACCEL_X/Y/Z: 1 mg, signed (1000 is 1 g)
+ *   SENSOR_CHAN_GYRO_X/Y/Z:  0.1 deg/s, signed
  */
 
 typedef enum {
@@ -48,8 +57,21 @@ typedef enum {
     SENSOR_CHAN_AH,
     SENSOR_CHAN_DEW_POINT,
     SENSOR_CHAN_IAQ,
+    SENSOR_CHAN_VOLTAGE,
+    SENSOR_CHAN_CURRENT,
+    SENSOR_CHAN_POWER,
+    SENSOR_CHAN_BATTERY,
+    SENSOR_CHAN_ACCEL_X,
+    SENSOR_CHAN_ACCEL_Y,
+    SENSOR_CHAN_ACCEL_Z,
+    SENSOR_CHAN_GYRO_X,
+    SENSOR_CHAN_GYRO_Y,
+    SENSOR_CHAN_GYRO_Z,
     SENSOR_CHAN_MAX
 } sensor_chan_t;
+
+/* chan_mask is a uint32_t bitmask over these. */
+_Static_assert(SENSOR_CHAN_MAX <= 32, "sensor_dev_t.chan_mask holds one bit per channel");
 
 /* Measurement provenance and inference tier */
 typedef enum {
@@ -85,6 +107,11 @@ typedef struct sensor_dev {
     uint8_t             addr;       /* Detected I2C address */
     uint8_t             bus;        /* Detected I2C bus index (0 or 1) */
     uint32_t            chan_mask;  /* Bitmask of (1u << SENSOR_CHAN_*) supported */
+    /* How often the hub samples this device, in ms; 0 is the hub's own period
+     * (SENSOR_HUB_DEFAULT_PERIOD_S, `sensor period`). A battery monitor or an
+     * IMU sets its own; an environmental sensor leaves it 0. Read by the hub
+     * after init(), so init() may set it from what it found. */
+    uint32_t            period_ms;
     const sensor_ops_t *ops;
     void               *priv;       /* Driver-specific context / calibration */
 } sensor_dev_t;
@@ -95,7 +122,11 @@ typedef struct {
     const char   *name;        /* Machine key: "temperature", "pressure", "co2", etc. */
     const char   *unit_symbol; /* Display unit: "°C", "hPa", "%RH", "ppm", "ppb", "Ohm", "g/m³" */
     uint8_t       decimals;    /* Decimal places for display */
-    int32_t       scale_div;   /* Divider from raw int32_t to standard units */
+    int32_t       scale_div;   /* Divider from raw int32_t to standard units: 10^decimals */
+    /* The /proc/sensor/<dev> key for the raw integer, unit in the name
+     * ("voltage_mv"); NULL for the channels /proc/sensor spells by hand. */
+    const char   *raw_key;
+    bool          publish;     /* registered as an MQTT source (motion channels are not) */
 } sensor_chan_desc_t;
 
 /* Channel metadata accessors */

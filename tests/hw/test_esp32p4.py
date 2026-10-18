@@ -384,7 +384,8 @@ def test_sensor_reads(b: Board) -> tuple[str, bool, str]:
     number but an absurd one."""
     name = "BME280 reads a plausible measurement (E7)"
     out = b.console_session.cmd("sensor", deadline=20.0)
-    if "none found" in out:
+    # Other parts (the Tab5's INA226) report here too: only a bme280 line counts.
+    if "none found" in out or not re.search(r"bm[ep]280 (?:@|at )0x", out):
         return name, True, "SKIPPED (no BME280 fitted)"
     # "bme280 at 0x76: ..." since the phase-46 sensor hub, "bme280 @0x76: ..." before it.
     m = re.search(r"(bm[ep]280) (?:@|at )0x([0-9a-f]{2}): (-?\d+)\.(\d\d) C, (\d+)\.(\d\d) hPa", out)
@@ -1548,6 +1549,30 @@ def test_rtc(b: Board) -> tuple[str, bool, str]:
     return name, True, f"{m.group(1)}, running, {t.group(1)} UTC"
 
 
+def test_power(b: Board) -> tuple[str, bool, str]:
+    """62.3: the Tab5's INA226 on its battery -- a pack voltage inside the 2S
+    range, a current, a charge level, and /dev/power agreeing. Skips on a
+    board without a battery."""
+    name = "power: battery voltage, current and charge level (62.3)"
+    out = b.console_session.cmd("power", deadline=10.0)
+    if "no battery" in out or _no_display(out) or "Unknown" in out:
+        return name, True, "SKIPPED (no battery on this board)"
+    m = re.search(r"battery\s+(\d+\.\d+) V\s+(-?\d+\.\d+) A\s+(-?\d+\.\d+) W\s+(\d+\.\d) %", out)
+    if not m:
+        return name, False, f"no battery line: {out.strip()[-300:]}"
+    v = float(m.group(1))
+    if not 5.5 <= v <= 8.6:
+        return name, False, f"pack voltage {v} V is outside a 2S pack's range"
+    dev = b.console_session.cmd("cat /dev/power", deadline=10.0)
+    mv = re.search(r"mv=(\d+)", dev)
+    soc = re.search(r"soc_pm=(\d+)", dev)
+    if not mv or not soc:
+        return name, False, f"/dev/power incomplete: {dev.strip()[-300:]}"
+    if abs(int(mv.group(1)) - v * 1000) > 100:
+        return name, False, f"/dev/power says {mv.group(1)} mV, power says {v} V"
+    return name, True, f"{v} V, {m.group(2)} A, {m.group(4)} %"
+
+
 def _ribbon(b: Board) -> tuple[int, int]:
     out = b.console_session.cmd("ribbon", deadline=10.0)
     m = re.search(r"Ribbon Status: (\d+) windows, active idx (\d+)", out)
@@ -1806,6 +1831,7 @@ TESTS = [
     test_usb_keyboard,
     test_touch,
     test_rtc,
+    test_power,
     test_ribbon_hotkeys,
     test_gemtext_reader_window,
     test_reader_anti_aliased_typography,

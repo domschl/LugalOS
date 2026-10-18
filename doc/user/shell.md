@@ -59,6 +59,15 @@ LugalOS supports multiple mounted FAT32 volumes:
 * `date YYYY-MM-DD HH:MM:SS`: Sets the system time (local time) and the battery-backed hardware RTC: a DS1307/DS3231 module, or the board's own RX8130CE on the M5Stack Tab5.
 * `rtc`: Reports the RTC chip and its address, oscillator health, and temperature readback (DS3231 only). At boot the kernel clock is set from the RTC unless the chip reports a power loss or holds a year before 2024 (a clock nobody set).
 
+### Power & Battery
+On a board with a battery (the M5Stack Tab5):
+* `power`: Pack voltage, current (positive while charging), power, the estimated charge level, and the time to empty or full.
+* `power log FILE [s]`: Writes one CSV line a second (`t_s,mv,ma,mw,soc_pm`) to FILE, for `s` seconds or until `power log stop`. Used to measure a full discharge for calibrating the charge estimate.
+* `cat /dev/power`: The same state as `key=value` lines (`mv`, `ma`, `mw`, `state`, `soc_pm` in 0.1 %, `minutes`), readable over 9P.
+* The menu bar shows the charge level left of the clock, with `+` while charging.
+
+The charge level blends two estimates. One is the pack voltage, corrected for the voltage drop under load and read off a Li-ion discharge curve. The other counts the current in and out against the pack's capacity. The count keeps the number steady from second to second, and the voltage corrects it over several minutes. ([sensors](doc/user/sensors.md))
+
 ### Firmware Updates
 * `cat /dev/ota`: The node's slots, boot record and update state. Commands (`begin`, `commit`, `switch`, `reboot`, ...) are written to it over 9P, usually by `tools/lota.py` ([updates](doc/admin/updates.md)).
 * `sdio ota [path]` (ESP32-P4): Installs LugalOS on a C6 still running the factory esp-hosted-mcu, over SDIO ([updates](doc/admin/updates.md)).

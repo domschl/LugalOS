@@ -9,6 +9,7 @@
 #include "drivers/mics6814.h"
 #include "drivers/mhz19b.h"
 #include "drivers/hdc1080.h"
+#include "drivers/ina226.h"
 #include "drivers/tmp117.h"
 #include "drivers/mcp9808.h"
 #include "drivers/at24c32.h"
@@ -29,11 +30,16 @@ typedef struct {
     sensor_dev_t *dev;
     int32_t       raw_val[SENSOR_CHAN_MAX];
     int32_t       filtered_val[SENSOR_CHAN_MAX];
-    bool          valid[SENSOR_CHAN_MAX];
-    uint64_t      last_sample_ms[SENSOR_CHAN_MAX];
+    uint32_t      valid;                          /* bit per sensor_chan_t */
+    uint32_t      last_sample_s[SENSOR_CHAN_MAX]; /* seconds since boot */
     uint32_t      sample_count;
     uint32_t      fail_count;
+    uint64_t      next_due_ms;   /* devices with their own period_ms only */
 } dev_cache_t;
+
+static inline bool cache_has(const dev_cache_t *c, uint32_t ch) {
+    return (c->valid >> ch) & 1u;
+}
 
 typedef struct {
     int32_t  raw_val;
@@ -92,6 +98,7 @@ void sensor_hub_init(void) {
     sensor_hub_register(&tsl2561_sensor_dev);
     sensor_hub_register(&ccs811_sensor_dev);
     sensor_hub_register(&sgp30_sensor_dev);
+    sensor_hub_register(&ina226_sensor_dev);
 
     s_active_count = 0;
     memset(s_caches, 0, sizeof(s_caches));
@@ -133,39 +140,41 @@ sensor_dev_t *sensor_hub_device_get(uint32_t idx) {
     return s_caches[idx].dev;
 }
 
-void sensor_hub_sample_all(void) {
-    for (uint32_t i = 0; i < s_active_count; i++) {
-        dev_cache_t *c = &s_caches[i];
-        sensor_dev_t *dev = c->dev;
-        if (!dev || !dev->ops || !dev->ops->sample) continue;
-
-        if (dev->ops->sample(dev)) {
-            c->sample_count++;
-            uint64_t now = time_get_ms();
-            for (uint32_t ch = 0; ch < SENSOR_CHAN_MAX; ch++) {
-                if (!(dev->chan_mask & (1u << ch))) continue;
-                int32_t val = 0;
-                if (dev->ops->get_value(dev, (sensor_chan_t)ch, &val)) {
-                    c->raw_val[ch] = val;
-                    if (!c->valid[ch]) {
-                        c->filtered_val[ch] = val;
-                    } else {
-                        /* Exponential moving average with alpha_shift = 2 (weight 1/4 new, 3/4 old) */
-                        c->filtered_val[ch] += (val - c->filtered_val[ch]) >> 2;
-                    }
-                    c->valid[ch] = true;
-                    c->last_sample_ms[ch] = now;
+/* One conversion of one device, into its cache. */
+static void hub_sample_dev(dev_cache_t *c) {
+    sensor_dev_t *dev = c->dev;
+    if (!dev || !dev->ops || !dev->ops->sample) return;
+    if (dev->ops->sample(dev)) {
+        c->sample_count++;
+        uint64_t now = time_get_ms();
+        for (uint32_t ch = 0; ch < SENSOR_CHAN_MAX; ch++) {
+            if (!(dev->chan_mask & (1u << ch))) continue;
+            int32_t val = 0;
+            if (dev->ops->get_value(dev, (sensor_chan_t)ch, &val)) {
+                c->raw_val[ch] = val;
+                if (!cache_has(c, ch)) {
+                    c->filtered_val[ch] = val;
+                } else {
+                    /* Exponential moving average with alpha_shift = 2 (weight 1/4 new, 3/4 old) */
+                    c->filtered_val[ch] += (val - c->filtered_val[ch]) >> 2;
                 }
+                c->valid |= 1u << ch;
+                c->last_sample_s[ch] = (uint32_t)(now / 1000u);
             }
-        } else {
-            c->fail_count++;
         }
+    } else {
+        c->fail_count++;
     }
+}
+
+/* What the environmental readings feed: compensation, derived metrics,
+ * calibration checkpoints. Runs at the hub's period, not a fast device's. */
+static void hub_derive(void) {
+    int32_t t = 0, h = 0;
 
     /* Cross-Sensor Compensation Pipeline:
      * If ambient temperature and humidity are available from BME280/BME680,
      * feed them into gas sensors (such as CCS811) for real-time baseline tuning. */
-    int32_t t = 0, h = 0;
     if (sensor_hub_get(SENSOR_CHAN_TEMP, &t, NULL) &&
         sensor_hub_get(SENSOR_CHAN_HUMIDITY, &h, NULL)) {
         if (sgp30_is_detected()) {
@@ -269,12 +278,42 @@ void sensor_hub_sample_all(void) {
     }
 }
 
+void sensor_hub_sample_all(void) {
+    for (uint32_t i = 0; i < s_active_count; i++) hub_sample_dev(&s_caches[i]);
+    hub_derive();
+}
+
+/* Devices without a period of their own are sampled together every hub
+ * period, then hub_derive() runs; a device with period_ms is sampled on its
+ * own deadline in between. The task sleeps until the earliest deadline. */
 static void sensor_hub_sampler_body(void *arg) {
     (void)arg;
+    uint64_t next_env = 0;
     for (;;) {
-        sensor_hub_sample_all();
-        uint32_t period = s_sample_period_s ? s_sample_period_s : SENSOR_HUB_DEFAULT_PERIOD_S;
-        task_sleep_ms((uint64_t)period * 1000u);
+        uint64_t now = time_get_ms();
+        bool env_due = now >= next_env;
+        for (uint32_t i = 0; i < s_active_count; i++) {
+            dev_cache_t *c = &s_caches[i];
+            uint32_t own = c->dev ? c->dev->period_ms : 0u;
+            if (own ? now >= c->next_due_ms : env_due) {
+                hub_sample_dev(c);
+                if (own) c->next_due_ms = now + own;
+            }
+        }
+        if (env_due) {
+            hub_derive();
+            uint32_t period = s_sample_period_s ? s_sample_period_s : SENSOR_HUB_DEFAULT_PERIOD_S;
+            next_env = now + (uint64_t)period * 1000u;
+        }
+
+        uint64_t wake = next_env;
+        for (uint32_t i = 0; i < s_active_count; i++) {
+            if (s_caches[i].dev && s_caches[i].dev->period_ms && s_caches[i].next_due_ms < wake) {
+                wake = s_caches[i].next_due_ms;
+            }
+        }
+        now = time_get_ms();
+        task_sleep_ms(wake > now ? wake - now : 1u);
     }
 }
 
@@ -295,13 +334,12 @@ bool sensor_hub_get_dev(const sensor_dev_t *dev, sensor_chan_t chan, int32_t *ou
     if (!dev || chan >= SENSOR_CHAN_MAX || !out_val) return false;
     for (uint32_t i = 0; i < s_active_count; i++) {
         dev_cache_t *c = &s_caches[i];
-        if (c->dev == dev && c->valid[chan]) {
+        if (c->dev == dev && cache_has(c, chan)) {
             *out_val = c->raw_val[chan];
             if (age_s) {
                 uint64_t now = time_get_ms();
-                *age_s = (now >= c->last_sample_ms[chan])
-                             ? (uint32_t)((now - c->last_sample_ms[chan]) / 1000u)
-                             : 0u;
+                uint32_t now_s = (uint32_t)(now / 1000u);
+                *age_s = now_s >= c->last_sample_s[chan] ? now_s - c->last_sample_s[chan] : 0u;
             }
             return true;
         }
@@ -352,13 +390,12 @@ bool sensor_hub_get(sensor_chan_t chan, int32_t *out_val, uint32_t *age_s) {
     /* 4. Physical sensor cache search */
     for (uint32_t i = 0; i < s_active_count; i++) {
         dev_cache_t *c = &s_caches[i];
-        if (c->valid[chan]) {
+        if (cache_has(c, chan)) {
             *out_val = c->raw_val[chan];
             if (age_s) {
                 uint64_t now = time_get_ms();
-                *age_s = (now >= c->last_sample_ms[chan])
-                             ? (uint32_t)((now - c->last_sample_ms[chan]) / 1000u)
-                             : 0u;
+                uint32_t now_s = (uint32_t)(now / 1000u);
+                *age_s = now_s >= c->last_sample_s[chan] ? now_s - c->last_sample_s[chan] : 0u;
             }
             return true;
         }
@@ -386,7 +423,7 @@ bool sensor_hub_get_filtered(sensor_chan_t chan, int32_t *out_val) {
         };
         for (size_t p = 0; p < sizeof(temp_prio)/sizeof(temp_prio[0]); p++) {
             for (uint32_t i = 0; i < s_active_count; i++) {
-                if (s_caches[i].dev == temp_prio[p] && s_caches[i].valid[chan]) {
+                if (s_caches[i].dev == temp_prio[p] && cache_has(&s_caches[i], chan)) {
                     *out_val = s_caches[i].filtered_val[chan];
                     return true;
                 }
@@ -397,7 +434,7 @@ bool sensor_hub_get_filtered(sensor_chan_t chan, int32_t *out_val) {
     /* 3. Physical sensor cache search */
     for (uint32_t i = 0; i < s_active_count; i++) {
         dev_cache_t *c = &s_caches[i];
-        if (c->valid[chan]) {
+        if (cache_has(c, chan)) {
             *out_val = c->filtered_val[chan];
             return true;
         }
@@ -465,7 +502,7 @@ bool sensor_hub_get_origin(sensor_chan_t chan, sensor_origin_t *out) {
         };
         for (size_t p = 0; p < sizeof(temp_prio)/sizeof(temp_prio[0]); p++) {
             for (uint32_t i = 0; i < s_active_count; i++) {
-                if (s_caches[i].dev == temp_prio[p] && s_caches[i].valid[chan]) {
+                if (s_caches[i].dev == temp_prio[p] && cache_has(&s_caches[i], chan)) {
                     out->tier = SENSOR_TIER_FUSED;
                     out->source_dev = s_caches[i].dev->name;
                     out->model_name = "hardware-transducer";
@@ -478,7 +515,7 @@ bool sensor_hub_get_origin(sensor_chan_t chan, sensor_origin_t *out) {
 
     for (uint32_t i = 0; i < s_active_count; i++) {
         dev_cache_t *c = &s_caches[i];
-        if (c->valid[chan]) {
+        if (cache_has(c, chan)) {
             out->tier = SENSOR_TIER_FUSED;
             out->source_dev = c->dev->name;
             out->model_name = "hardware-transducer";
@@ -503,6 +540,7 @@ uint32_t sensor_hub_selftest(bool report) {
     sensor_hub_register(&sgp30_sensor_dev);
     sensor_hub_register(&tsl2561_sensor_dev);
     sensor_hub_register(&tsl2591_sensor_dev);
+    sensor_hub_register(&ina226_sensor_dev);
 
     for (uint32_t i = 0; i < s_driver_count; i++) {
         sensor_dev_t *dev = s_drivers[i];
@@ -518,7 +556,7 @@ uint32_t sensor_hub_selftest(bool report) {
 
 void sensor_hub_print_status(void) {
     if (s_active_count == 0) {
-        cprintf("sensor: none found at 0x76 or 0x77 on the shared I2C bus\n"
+        cprintf("sensor: none found on any I2C bus\n"
                 "        `i2c scan` lists what is actually answering there\n");
         return;
     }
@@ -531,7 +569,7 @@ void sensor_hub_print_status(void) {
         /* If no sample has been taken yet, take one synchronously */
         bool has_sample = false;
         for (uint32_t ch = 0; ch < SENSOR_CHAN_MAX; ch++) {
-            if (c->valid[ch]) { has_sample = true; break; }
+            if (cache_has(c, ch)) { has_sample = true; break; }
         }
         if (!has_sample && dev->ops && dev->ops->sample) {
             if (dev->ops->sample(dev)) {
@@ -543,8 +581,8 @@ void sensor_hub_print_status(void) {
                     if (dev->ops->get_value(dev, (sensor_chan_t)ch, &val)) {
                         c->raw_val[ch] = val;
                         c->filtered_val[ch] = val;
-                        c->valid[ch] = true;
-                        c->last_sample_ms[ch] = now;
+                        c->valid |= 1u << ch;
+                        c->last_sample_s[ch] = (uint32_t)(now / 1000u);
                     }
                 }
             } else {
@@ -554,48 +592,54 @@ void sensor_hub_print_status(void) {
 
         /* Print sensor identity and available channels */
         cprintf("%s at 0x%02x:", dev->name, dev->addr);
-        if (c->valid[SENSOR_CHAN_TEMP]) {
+        if (cache_has(c, SENSOR_CHAN_TEMP)) {
             int32_t t = c->raw_val[SENSOR_CHAN_TEMP];
             int32_t w = t / 100;
             int32_t f = t < 0 ? -(t % 100) : (t % 100);
             cprintf(" %ld.%02ld C,", (long)w, (long)f);
         }
-        if (c->valid[SENSOR_CHAN_PRESSURE]) {
+        if (cache_has(c, SENSOR_CHAN_PRESSURE)) {
             int32_t p = c->raw_val[SENSOR_CHAN_PRESSURE];
             cprintf(" %ld.%02ld hPa,", (long)(p / 100), (long)(p % 100));
         }
-        if (c->valid[SENSOR_CHAN_HUMIDITY]) {
+        if (cache_has(c, SENSOR_CHAN_HUMIDITY)) {
             int32_t h = c->raw_val[SENSOR_CHAN_HUMIDITY];
             cprintf(" %ld.%02ld %%RH,", (long)(h / 100), (long)(h % 100));
         }
-        if (c->valid[SENSOR_CHAN_GAS_RES]) {
+        if (cache_has(c, SENSOR_CHAN_GAS_RES)) {
             int32_t g = c->raw_val[SENSOR_CHAN_GAS_RES];
             cprintf(" %ld Ohm (gas),", (long)g);
         }
-        if (c->valid[SENSOR_CHAN_LUX]) {
+        if (cache_has(c, SENSOR_CHAN_LUX)) {
             int32_t l = c->raw_val[SENSOR_CHAN_LUX];
             cprintf(" %ld.%02ld Lux,", (long)(l / 100), (long)(l % 100));
         }
-        if (c->valid[SENSOR_CHAN_ECO2]) {
+        if (cache_has(c, SENSOR_CHAN_ECO2)) {
             cprintf(" %ld ppm eCO2,", (long)c->raw_val[SENSOR_CHAN_ECO2]);
         }
-        if (c->valid[SENSOR_CHAN_TVOC]) {
+        if (cache_has(c, SENSOR_CHAN_TVOC)) {
             cprintf(" %ld ppb TVOC,", (long)c->raw_val[SENSOR_CHAN_TVOC]);
         }
-        if (c->valid[SENSOR_CHAN_CO]) {
+        if (cache_has(c, SENSOR_CHAN_CO)) {
             int32_t val = c->raw_val[SENSOR_CHAN_CO];
             cprintf(" %ld.%02ld ppm CO,", (long)(val / 100), (long)(val % 100));
         }
-        if (c->valid[SENSOR_CHAN_NO2]) {
+        if (cache_has(c, SENSOR_CHAN_NO2)) {
             int32_t val = c->raw_val[SENSOR_CHAN_NO2];
             cprintf(" %ld.%02ld ppm NO2,", (long)(val / 100), (long)(val % 100));
         }
-        if (c->valid[SENSOR_CHAN_NH3]) {
+        if (cache_has(c, SENSOR_CHAN_NH3)) {
             int32_t val = c->raw_val[SENSOR_CHAN_NH3];
             cprintf(" %ld.%02ld ppm NH3,", (long)(val / 100), (long)(val % 100));
         }
-        if (c->valid[SENSOR_CHAN_CO2]) {
+        if (cache_has(c, SENSOR_CHAN_CO2)) {
             cprintf(" %ld ppm CO2 (NDIR),", (long)c->raw_val[SENSOR_CHAN_CO2]);
+        }
+        for (uint32_t ch = SENSOR_CHAN_VOLTAGE; ch < SENSOR_CHAN_MAX; ch++) {
+            if (!cache_has(c, ch)) continue;
+            char v[32];
+            sensor_format_channel((sensor_chan_t)ch, c->raw_val[ch], v, sizeof(v));
+            cprintf(" %s %s,", sensor_chan_name((sensor_chan_t)ch), v);
         }
         if (strcmp(dev->name, "mics6814") == 0) {
             uint32_t rem = 0;
@@ -611,10 +655,17 @@ void sensor_hub_print_status(void) {
         }
         cprintf("\n");
 
-        cprintf("  /proc/sensors: sampler every %lu s, %lu read%s, %lu failure%s\n",
-                (unsigned long)s_sample_period_s,
-                (unsigned long)c->sample_count, c->sample_count == 1u ? "" : "s",
-                (unsigned long)c->fail_count, c->fail_count == 1u ? "" : "s");
+        if (dev->period_ms) {
+            cprintf("  /proc/sensors: sampled every %lu ms, %lu read%s, %lu failure%s\n",
+                    (unsigned long)dev->period_ms,
+                    (unsigned long)c->sample_count, c->sample_count == 1u ? "" : "s",
+                    (unsigned long)c->fail_count, c->fail_count == 1u ? "" : "s");
+        } else {
+            cprintf("  /proc/sensors: sampler every %lu s, %lu read%s, %lu failure%s\n",
+                    (unsigned long)s_sample_period_s,
+                    (unsigned long)c->sample_count, c->sample_count == 1u ? "" : "s",
+                    (unsigned long)c->fail_count, c->fail_count == 1u ? "" : "s");
+        }
     }
 
     /* Print derived metrics report */
@@ -851,6 +902,9 @@ void sensor_hub_register_sources(void) {
     static const mqttd_rule_t lux_rule  = { .min_interval_s = 5, .max_interval_s = 300, .delta = 500,  .alpha_shift = 2 };
     static const mqttd_rule_t gas_rule  = { .min_interval_s = 5, .max_interval_s = 300, .delta = 25,   .alpha_shift = 2 };
     static const mqttd_rule_t res_rule  = { .min_interval_s = 5, .max_interval_s = 300, .delta = 5000, .alpha_shift = 3 };
+    /* mV, mA, mW: a change of 50 is worth a message; 0.1 %: 1 % is */
+    static const mqttd_rule_t pwr_rule  = { .min_interval_s = 5, .max_interval_s = 300, .delta = 50,   .alpha_shift = 2 };
+    static const mqttd_rule_t soc_rule  = { .min_interval_s = 5, .max_interval_s = 300, .delta = 10,   .alpha_shift = 2 };
 
     s_topic_count = 0;
     uint32_t have = 0;
@@ -862,6 +916,7 @@ void sensor_hub_register_sources(void) {
         have |= dev->chan_mask;
         for (uint32_t ch = 0; ch < SENSOR_CHAN_MAX; ch++) {
             if (!(dev->chan_mask & (1u << ch))) continue;
+            if (!sensor_chan_desc((sensor_chan_t)ch)->publish) continue;
             if (s_topic_count >= MQTTD_MAX_SOURCES) break;
             uint32_t idx = s_topic_count++;
             s_source_ctx[idx].dev = dev;
@@ -873,7 +928,10 @@ void sensor_hub_register_sources(void) {
                                      : (ch == SENSOR_CHAN_ECO2 || ch == SENSOR_CHAN_TVOC ||
                                         ch == SENSOR_CHAN_CO || ch == SENSOR_CHAN_NO2 || ch == SENSOR_CHAN_NH3 ||
                                         ch == SENSOR_CHAN_CO2 || ch == SENSOR_CHAN_IAQ) ? &gas_rule
-                                     : ch == SENSOR_CHAN_GAS_RES ? &res_rule : &env_rule;
+                                     : ch == SENSOR_CHAN_GAS_RES ? &res_rule
+                                     : ch == SENSOR_CHAN_BATTERY ? &soc_rule
+                                     : (ch == SENSOR_CHAN_VOLTAGE || ch == SENSOR_CHAN_CURRENT ||
+                                        ch == SENSOR_CHAN_POWER) ? &pwr_rule : &env_rule;
             (void)mqttd_add_source(s_topic_names[idx], hub_chan_source,
                                    &s_source_ctx[idx], sensor_chan_decimals((sensor_chan_t)ch), rule);
         }

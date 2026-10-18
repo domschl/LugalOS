@@ -693,6 +693,7 @@ set(SOURCES
     kernel/clipboard.c
     # the screen to a PBM file.
     kernel/screenshot.c
+    kernel/power.c
     kernel/ubsan.c
 
     arch/riscv/common/entry.S
@@ -841,6 +842,8 @@ set(SOURCES
     drivers/hdc1080.c
     drivers/mcp9808.c
     drivers/tmp117.c
+    drivers/ina226.c
+    drivers/battery.c
     drivers/sensor_hub.c
     fs/p9_chan.c
     libc/string.c

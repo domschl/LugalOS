@@ -333,6 +333,19 @@ to a particular ASR or TTS engine.
 - Host tests: channel formatting and scheduler deadline order. `sensor_derived_selftest` covers
   the new math.
 
+**Done (2026-10-18):**
+- Ten new channels, with `raw_key` and `publish` in the descriptor. Motion channels are not
+  published on MQTT.
+- `sensor_format_channel` handles any decimals (format vectors are in `sensor_derived_selftest`).
+- `period_ms` per device, with the sampler sleeping to the earliest deadline.
+- Lisp's channel names are one table, checked against `SENSOR_CHAN_MAX` at compile time. It
+  was a 15-entry array indexed by channel and would have read NULL for the new channels.
+- The cache stores validity as a bitmask and timestamps as seconds. That keeps the RP2350's
+  growth at +1 KB BSS.
+- **Changed from §1.2:** there is no `SENSOR_DEV_INTERNAL` flag. MQTT topics are already
+  `sensor/<device>/<channel>`, and the BMI270 will not expose its die temperature, so nothing
+  can stand in for a room temperature.
+
 **62.3 INA226 driver and battery model**
 - `drivers/ina226.c` as a sensor driver: manufacturer ID 0x5449 and die ID 0x2260 check,
   configuration as in §0.5, calibration register for 0.5 mA LSB, voltage, current and power.
@@ -349,6 +362,24 @@ to a particular ASR or TTS engine.
 - A battery percentage and charge marker in the menu bar, next to HH:MM.
 - One full discharge and charge log, then `tools/batt_fit.py` replaces the starting OCV table
   and `R_int`.
+
+**Done (2026-10-18):**
+- `drivers/ina226.c` computes current from the shunt register (no calibration register). It
+  probes 0x40–0x4F under a probe window and tells itself apart from the HDC1080 by die ID
+  0x2260. Only the board's part gets the board's shunt, sign and the battery feed.
+- `drivers/battery.c`:
+  - OCV curve over the board's empty..full span, with I·R_int correction.
+  - Coulomb count blended 1/256 per sample toward the voltage estimate. This replaces §1.3's
+    re-anchoring after rest periods, because a Tab5 on battery never rests: the system always
+    draws.
+  - The first sample starts from voltage. A gap of over 60 s restarts.
+- `kernel/power.c`: `power`, `power log FILE [s]`, `/dev/power` (read).
+- The menu bar shows `71%` or `71%+`.
+- Tests: Tab5 `power` and `/dev/power` hardware check; ina226 and battery vectors in QEMU.
+- First reading, on USB with the charger finished: 8.318 V, −2 mA, 100 %. That is above the
+  8.23 V "full" taken from the demo app, so the curve's top end is a calibration question for
+  the logged discharge.
+- Not done: `tools/batt_fit.py` (needs a logged discharge first).
 
 **62.4 Charging control and power off**
 - `power charge off|slow|fast`, persisted; CHG_STAT readback.
