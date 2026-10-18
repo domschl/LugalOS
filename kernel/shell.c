@@ -1084,6 +1084,7 @@ static void cmd_help_summary(void) {
     cprintf("  rtc             - Display RTC status and temperature\n");
     cprintf("  power [charge|limit|off|log] - Battery, charging, power off, CSV log\n");
     cprintf("  imu [watch [s]] - Accelerometer, gyroscope, pitch and roll\n");
+    cprintf("  orient [auto|off] - Turn the display with the board (IMU)\n");
     cprintf("  dmesg [-c|-f]   - Dump kernel log ring (-c clear, -f follow)\n");
     cprintf("  klog [attach|detach] - Kernel log ring (/proc/kmsg)\n");
     cprintf("  history [clear] - Command history (!n, !! to repeat)\n");
@@ -2724,6 +2725,7 @@ static void cmd_sensor(const char *arg) {
         ina226_selftest(true);
         battery_selftest(true);
         bmi270_selftest(true);
+        orient_selftest(true);
         sensor_derived_selftest(true);
         return;
     }
@@ -6292,6 +6294,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "imu") == 0 || strncmp(cmd_line, "imu ", 4) == 0) {
         imu_cmd(cmd_line + 3);
+        return;
+    } else if (strcmp(cmd_line, "orient") == 0 || strncmp(cmd_line, "orient ", 7) == 0) {
+        orient_cmd(cmd_line + 6);
         return;
     } else if (strncmp(cmd_line, "sensor ", 7) == 0) {
         cmd_sensor(&cmd_line[7]);

@@ -445,6 +445,24 @@ to a particular ASR or TTS engine.
 - `orient auto|off|lock`, persisted, default off. Wire the reader's `o` key to `lock`.
 - Host test: the state machine against recorded gravity traces (tilts, flat, shakes, slow turns).
 
+**Done (2026-10-18):**
+- Axis mapping measured with the owner holding the board: +x → 270, −x → 90, +y → 0,
+  −y → 180 (`CONFIG_IMU_ROT_*`).
+- `orient_step()`: dominance a² > 3b² and ≥ 0.5 g, flat (|z| > 0.8 g) or moving
+  (> 60 °/s) keeps the display, and a direction must hold 600 ms. Seven traces in
+  `orient selftest`.
+- `orient auto|off` is stored (IDSTORE_FIELD_ORIENT, 12) and off by default. Manual turns
+  pause it until `orient auto`. **Changed from §1.5:** no separate `lock` mode; a manual turn
+  is the lock.
+- The compositor needed work first:
+  - 180° existed in name only, so it was added to all four stages.
+  - A rotation left the panel black until the next change, because the repaint was missing
+    and the buffer on screen was cleared.
+- Found on the way: the multi-terminal crash. `ksnprintf()` was not re-entrant, and the
+  battery indicator (62.3) made two tasks format at once. Bisected to `5f7a542` and fixed
+  at the source.
+- Owner: "follows all four".
+
 ### Part B — Audio (NANO, LCD-7B, Tab5)
 
 **62.7 GDMA-AHB driver**

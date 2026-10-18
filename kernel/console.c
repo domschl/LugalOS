@@ -1,3 +1,4 @@
+#include "kernel/orient.h"
 #include "kernel/time.h"
 #include "kernel/console.h"
 #include "kernel/screenshot.h"
@@ -343,6 +344,7 @@ static void run_hotkey(void) {
 #if defined(CONFIG_BOARD_TAB5)
         int cur = dsi_lcd_get_orientation();
         int next = (cur == 0 || cur == 180) ? 270 : 0;
+        orient_manual();
         dsi_lcd_set_orientation(next);
         console_sync_readers();
         if (reader_is_active()) {

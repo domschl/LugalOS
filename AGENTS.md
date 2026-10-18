@@ -291,6 +291,9 @@ for both roles by itself.
 * IMU: BMI270 at 0x68, needs Bosch's microcode uploaded (drivers/bmi270_config.c, ~1.3 s, first read
   on the sampler task); `imu`, `imu watch`. The i2c task serves one caller at a time and queues nobody:
   a client that issues long transfers back to back must pause between them or it starves the others.
+* Display rotation: all four of 0/90/180/270 (`lcd orient`); `orient auto|off` turns it with the IMU
+  (kernel/orient.c, mapping `CONFIG_IMU_ROT_*` measured: +x 270, -x 90, +y 0, -y 180). ksnprintf() is
+  re-entrant now (it was one global context, and two tasks formatting at once corrupted a stack).
 * Grove port A is a second I2C bus (I2C1, GPIO53 SDA / GPIO54 SCL, `i2c scan 1`); external sensors go there.
 * Display (`drivers/dsi_esp32p4.c`): 5" 720×1280 MIPI-DSI ST7121 TDDI, 2-lane @ 900 Mbps, DPI clock
   70 MHz, double-buffered RGB565 PSRAM scanout at 58 Hz. Backlight active-high LEDC PWM on `GPIO22`.

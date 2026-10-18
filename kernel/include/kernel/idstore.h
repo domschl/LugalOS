@@ -122,6 +122,8 @@ typedef enum {
     IDSTORE_FIELD_POWER     = 11, /* instance scope: 2 bytes -- the charge mode
                                     * (drivers/charger.h's charge_mode_t) and the charge
                                     * limit in % (0 = none). kernel/power.c applies it at boot. */
+    IDSTORE_FIELD_ORIENT    = 12, /* instance scope: 1 byte -- 1 when the display turns
+                                    * itself with the IMU (kernel/orient.c), 0 when not. */
 } idstore_field_type_t;
 
 typedef struct {

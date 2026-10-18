@@ -88,6 +88,9 @@ set(_optional_keys
     # drivers/ina226.h)
     CONFIG_BATT_CELLS CONFIG_BATT_EMPTY_MV CONFIG_BATT_FULL_MV CONFIG_BATT_RINT_MOHM
     CONFIG_BATT_CAPACITY_MAH CONFIG_INA226_SHUNT_UOHM CONFIG_INA226_INVERT
+    # the display rotation that reads upright with gravity along each IMU
+    # axis (kernel/orient.c)
+    CONFIG_IMU_ROT_XPOS CONFIG_IMU_ROT_XNEG CONFIG_IMU_ROT_YPOS CONFIG_IMU_ROT_YNEG
     # N5, : the gateway persona's UART1
     # downlink. Optional like everything else here -- a board with no second
     # UART simply does not set them. (The W5500's own pins lived here too,

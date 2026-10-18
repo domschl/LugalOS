@@ -1821,6 +1821,25 @@ def test_tab5_orientation(b: Board) -> tuple[str, bool, str]:
     return name, True, "switched to 0 deg Portrait and back to 270 deg Landscape (command & Super+O hotkey)"
 
 
+def test_orient_auto(b: Board) -> tuple[str, bool, str]:
+    """62.6: `orient auto|off` is accepted and reported; the stored setting is
+    put back as it was. (Turning the board is checked by hand: the decision's
+    traces run in `sensor selftest`.)"""
+    name = "auto-orientation: orient auto/off (62.6)"
+    out = b.console_session.cmd("orient", deadline=10.0)
+    if "no IMU" in out or "Unknown" in out or "orient:" not in out:
+        return name, True, "SKIPPED (no IMU-driven display on this board)"
+    # "paused" is auto interrupted by a manual turn (an earlier test turns the
+    # display by hand): stored as auto.
+    was = "auto" if ("orient: auto" in out or "orient: paused" in out) else "off"
+    on = b.console_session.cmd("orient auto", deadline=10.0)
+    off = b.console_session.cmd("orient off", deadline=10.0)
+    b.console_session.cmd(f"orient {was}", deadline=10.0)
+    if "orient: auto" not in on or "orient: off" not in off:
+        return name, False, f"auto -> {on.strip()[-80:]!r}, off -> {off.strip()[-80:]!r}"
+    return name, True, f"auto and off accepted, restored to {was}"
+
+
 def test_tab5_portrait_180_terminals(b: Board) -> tuple[str, bool, str]:
     """62.6: the compositor's 180 deg portrait, with three terminals in the
     ribbon and the view moved across them -- windows half off-screen, and
@@ -1899,6 +1918,7 @@ TESTS = [
     test_ribbon_slide_and_reader_smooth_scroll,
     test_tab5_orientation,
     test_tab5_portrait_180_terminals,
+    test_orient_auto,
 ]
 
 

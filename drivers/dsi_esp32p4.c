@@ -33,6 +33,7 @@
  * The floats IDF uses (lane rate, DPI clock ratios) are integers here, with
  * the same roundf() results: the kernel runs with the FPU off. */
 
+#include "kernel/orient.h"
 #include "lugalos_config.h"
 #include "drivers/dsi_esp32p4.h"   /* outside the guard: never an empty unit */
 
@@ -2667,6 +2668,7 @@ void dsi_lcd_command(const char *args) {
             cprintf("usage: lcd orient [portrait|landscape|0|90|180|270]\n");
             return;
         }
+        orient_manual();
         if (dsi_lcd_set_orientation(rot) != 0) {
             cprintf("lcd orient: failed to set orientation %d\n", rot);
             return;

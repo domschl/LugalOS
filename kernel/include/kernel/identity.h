@@ -290,6 +290,11 @@ node_id_result_t node_identity_clear_altitude(void);
  * `power charge` / `power limit`; false when nothing is stored. */
 bool node_power_settings(uint8_t *mode, uint8_t *limit_pct);
 node_id_result_t node_identity_set_power(uint8_t mode, uint8_t limit_pct);
+
+/* Whether the display turns itself with the IMU (`orient auto|off`); false
+ * when nothing is stored. */
+bool node_orient_auto(bool *on);
+node_id_result_t node_identity_set_orient_auto(bool on);
 node_id_result_t node_identity_clear_mqtt(void);
 
 node_id_result_t node_identity_set_ipv4(const uint8_t ip[NODE_IPV4_LEN],

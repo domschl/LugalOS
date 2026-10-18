@@ -76,6 +76,7 @@ On a board with a BMI270 (the M5Stack Tab5, or a module at 0x69):
 * `imu`: One reading: acceleration in g, rotation in deg/s, and pitch and roll in degrees.
 * `imu watch [s]`: Five readings a second for `s` seconds (default 10); `q` stops.
 * `imu reload`: Uploads the chip's configuration again (a diagnostic).
+* `orient [auto|off]`: Turns the display with the board. In `auto` the screen follows within about half a second once the board is held in a new position, and keeps its orientation while the board lies flat or is being turned. All four orientations are used (landscape, portrait, and both upside down). The setting is stored and applied at boot; the default is `off`. Turning the display by hand (`lcd orient`, Super+O, the reader's `o`) pauses `auto` until `orient auto`.
 
 The BMI270 measures nothing until Bosch's configuration microcode (8 KB, BSD-3 licence, `drivers/bmi270_config.c`) has been uploaded to it. That takes about a second after boot, on the sensor task. The readings also appear in `sensor` and `/proc/sensor/bmi270`, not on MQTT.
 

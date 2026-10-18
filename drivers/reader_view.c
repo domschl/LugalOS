@@ -8,6 +8,7 @@
  * - Freestanding C, zero heap allocations, zero FPU in M-mode.
  */
 
+#include "kernel/orient.h"
 #include "drivers/reader_view.h"
 #include "drivers/font_serif.h"
 #include "drivers/font_noto_serif.h"
@@ -492,6 +493,7 @@ void reader_feed_key(int c) {
             int rot = dsi_lcd_get_orientation();
             if (rot == 0 || rot == 180) {
                 reader_close_instance(rid);
+                orient_manual();
                 dsi_lcd_set_orientation(270);
                 console_set_active_win_type(1 /* RIBBON_WIN_TERM */);
                 return;

@@ -11,6 +11,7 @@
 #include "kernel/irq.h"
 #include "kernel/sched.h"
 #include "kernel/power.h"
+#include "kernel/orient.h"
 #include "kernel/hart.h"
 #include "kernel/ipc.h"
 #include "kernel/shell.h"
@@ -617,6 +618,7 @@ void kernel_main(void) {
      * MQTT. The BME280 sampler is the fallback for a board whose hub found nothing. */
     if (sensor_hub_sampler_start(0) < 0) bme280_sampler_start(0);
     power_init();
+    orient_init();
 
     /* The 9P/filesystem server, now a scheduled task rather than something
      * pumped from the console's busy-wait (D4). Must follow sched_init(). */

@@ -90,6 +90,17 @@ set(CONFIG_BATT_FULL_MV      8230)
 set(CONFIG_BATT_RINT_MOHM    150)
 set(CONFIG_BATT_CAPACITY_MAH 2000)
 
+# --- Auto-orientation: the BMI270's axes against the panel ----------------
+#
+# [meas 2026-10-18, owner holding the board] Upright in landscape (text
+# reading normally at 270 deg) the IMU reads +1 g on x; a quarter turn
+# clockwise, -1 g on y, where 0 deg reads upside down and 180 upright. The
+# other two follow by symmetry. Flat on its back, z reads -1 g.
+set(CONFIG_IMU_ROT_XPOS 270)
+set(CONFIG_IMU_ROT_XNEG 90)
+set(CONFIG_IMU_ROT_YPOS 0)
+set(CONFIG_IMU_ROT_YNEG 180)
+
 # --- External I2C (I2C1): Grove port A (J11) and M5-Bus EXT_SDA/EXT_SCL ----
 #
 # [m5 M5Unified.inl ex_i2c: SCL G54, SDA G53] Powered from SYS_EXT5VO, which
