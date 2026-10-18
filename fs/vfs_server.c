@@ -80,8 +80,10 @@ static fat32_fs_t g_fat32_flash;
 #define VFS_SD_FAT_CACHE 1
 static uint32_t g_sd_fat_cache[128];
 #endif
+/* guarded by: mount_quiesce() for `format` and a new RAM disk; set at boot otherwise. */
 static bool g_sd_mounted = false;
 static bool g_ram_mounted = false;
+/* single task: the boot, before any reader runs; constant after. */
 static bool g_flash_mounted = false;
 
 typedef struct {
@@ -90,6 +92,7 @@ typedef struct {
 } service_entry_t;
 
 #define MAX_SERVICES 8
+/* single task: the boot, before any reader runs; constant after. */
 static service_entry_t g_services[MAX_SERVICES];
 static int g_num_services = 0;
 
@@ -3060,7 +3063,7 @@ int vfs_cp(const char *src_path, const char *dst_path) {
         return -1;
     }
 
-    static uint8_t copy_buf[512];
+    uint8_t copy_buf[512];   /* each copy its own: two terminals may copy at once */
     uint64_t offset = 0;
     int result = 0;
     for (;;) {

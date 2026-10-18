@@ -670,6 +670,8 @@ void sdio_report(void) {
     }
 }
 
+/* accepted: a diagnostic command's state; two terminals running it at once mix their
+ * output. */
 static uint8_t g_scratch[SDIO_XFER_MAX];
 
 void sdio_bench(uint32_t kilobytes, uint32_t fn, uint32_t addr, uint32_t chunk) {
@@ -1075,6 +1077,8 @@ static int hosted_rpc_call(hosted_ctx_t *ctx, uint32_t req_id,
     }
     sdhost_release();
     if (resp_code != 0) {
+        /* accepted: a diagnostic command's state; two terminals running it at once mix
+         * their output. */
         static char why[40];
         ksnprintf(why, sizeof why, "slave answered esp_err 0x%x", (unsigned)resp_code);
         g_hosted_err = why;

@@ -80,6 +80,7 @@ static struct virtqueue_mem g_txq __attribute__((aligned(4096)));
 static uint8_t g_rx_buf[RX_BUF_SIZE] __attribute__((aligned(16)));
 static uint8_t g_tx_buf[TX_BUF_SIZE] __attribute__((aligned(16)));
 
+/* single task: the boot, before any reader runs; constant after. */
 static volatile uint32_t *g_mmio_base = NULL;
 static uint32_t g_mmio_version = 0;
 static int g_probed = 0;

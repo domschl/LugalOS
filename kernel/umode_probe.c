@@ -101,6 +101,7 @@ static volatile uint8_t g_uprobe_shared[UPROBE_SHARED_BYTES]
 #define UPROBE_MARK_SURVIVED  4   /* still running after it -- a FAIL  */
 
 static mem_domain_t g_uprobe_domain;
+/* accepted: a selftest's state; one run at a time. */
 static int          g_uprobe_pid = -1;
 
 /* An address inside RAM that the domain does not grant.

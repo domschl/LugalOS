@@ -10,8 +10,10 @@
 
 /* See kernel/include/kernel/ticker.h for why this has three backends. */
 
+/* single task: the boot, before any reader runs; constant after. */
 static bool     g_enabled;
 static uint32_t g_hz;
+/* single task: the boot, before any reader runs; constant after. */
 static uint64_t g_measured_hz;   /* 0 = the nominal TICK_HZ was used */
 /* Per-hart, not global.
  *

@@ -92,6 +92,7 @@ static struct virtqueue_mem g_vq_mem __attribute__((aligned(4096)));
 static struct virtio_blk_req_hdr g_req_hdr __attribute__((aligned(16)));
 static uint8_t g_req_status __attribute__((aligned(16)));
 
+/* single task: the boot (or the root shell re-running it); constant after. */
 static volatile uint32_t *g_mmio_base = NULL;
 static uint32_t g_mmio_version = 0;
 static uint32_t g_num_sectors = 1024;
@@ -163,6 +164,7 @@ static int virtio_blk_transfer(uint32_t type, void *buf, uint32_t lba, uint32_t 
 
 static uint8_t       g_blk_req[BLK_REQ_CAP];
 static uint8_t       g_blk_resp[BLK_RESP_CAP];
+/* single task: the boot (or the root shell re-running it); constant after. */
 static driver_task_t g_blk_task;
 
 /* Verify: counts chan_call()s actually served -- see

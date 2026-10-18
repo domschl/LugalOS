@@ -16,6 +16,7 @@
 #include <limits.h>
 #include <string.h>
 
+/* accepted: a selftest's state; one run at a time. */
 static unsigned g_cases, g_wrong;
 
 static void expect(const char *got, const char *want) {

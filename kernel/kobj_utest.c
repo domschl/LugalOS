@@ -225,6 +225,7 @@ KU static void kobj_utest_body(uintptr_t arg) {
 
 /* ---- kernel half --------------------------------------------------------- */
 
+/* single task: the test task. */
 static mem_domain_t g_kutest_domain;
 static kctx_t      *g_kctx;
 static void        *g_kpage;

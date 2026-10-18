@@ -40,6 +40,7 @@ typedef struct {
 static dhcp_rx_t g_rx;
 static uint32_t g_xid;
 static bool g_owned;          /* the address in use is one this client set (so it may renew it) */
+/* accepted: the DHCP task sets the server, the resolver copies it unlocked. */
 static uint8_t g_dns[4];
 static bool g_has_dns;
 

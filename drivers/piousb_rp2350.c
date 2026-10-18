@@ -214,6 +214,7 @@ static const uint16_t k_edge_prog[17] = {
  * and the status. Padded to exactly 512 bytes on a 512-byte boundary, so a
  * PMP grant of it covers nothing else. .bss, in SRAM. */
 #define RING PIOUSB_RING
+/* single task: the keyboard host, through the PIO engine on core 1. */
 static union {
     piousb_shared_t s;
     uint8_t         raw[512];
@@ -230,6 +231,7 @@ void piousb_shared_region(uintptr_t *base, uintptr_t *size) {
 }
 static uint16_t        g_crc_tbl[256];
 static ylock_t         g_xfer_lock;
+/* single task: the boot, before any reader runs; constant after. */
 static bool            g_inited;
 
 /* --- Core 1: the engine --------------------------------------------------

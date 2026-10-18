@@ -12,10 +12,12 @@
 #include "kernel/palloc.h"
 #include "lugalos_config.h"
 
+/* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
 TTEntry *tt_table = NULL;
 int tt_size_entries = 0;
 uint8_t tt_current_age = 0;
 
+/* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
 static uint32_t tt_pages = 0;
 
 

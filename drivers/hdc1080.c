@@ -1,4 +1,5 @@
 #include "drivers/hdc1080.h"
+#include "kernel/lock.h"
 #include "drivers/i2c_bus.h"
 #include "drivers/i2c_reg.h"
 #include "kernel/printk.h"
@@ -12,6 +13,9 @@
  * Implements pure fixed-point arithmetic without FPU instructions.
  */
 
+/* guarded by: g_dev_lock (below), which init and every measurement take:
+ * the hub's sampler, an mqttd source, `sensor` and Lisp may all measure, and
+ * `sensor init` probes again under them. */
 static struct {
     bool              detected;
     uint8_t           addr;
@@ -23,6 +27,7 @@ static struct {
     uint32_t          fail_count;
     const char       *last_failure;
 } g;
+static ylock_t g_dev_lock;
 
 static bool fail(const char *reason) {
     g.fail_count++;
@@ -80,7 +85,7 @@ static int32_t hdc1080_calc_hum_rh1000(uint16_t raw_hum) {
     return (int32_t)(((int64_t)raw_hum * 100000LL) >> 16);
 }
 
-bool hdc1080_init(void) {
+static bool hdc1080_init_locked(void) {
     g.detected = false;
     g.addr = HDC1080_I2C_ADDR;
 
@@ -104,7 +109,7 @@ bool hdc1080_init(void) {
     return false;
 }
 
-bool hdc1080_read(hdc1080_reading_t *out) {
+static bool hdc1080_read_locked(hdc1080_reading_t *out) {
     if (!out || !g.detected) return false;
 
     /* 1. Trigger measurement by writing pointer 0x00 (Temperature register) */
@@ -223,3 +228,18 @@ sensor_dev_t hdc1080_sensor_dev = {
     .ops       = &s_hdc1080_ops,
     .priv      = NULL,
 };
+
+/* The driver's entry points, under g_dev_lock. */
+bool hdc1080_init(void) {
+    ylock_acquire(&g_dev_lock);
+    bool r = hdc1080_init_locked();
+    ylock_release(&g_dev_lock);
+    return r;
+}
+
+bool hdc1080_read(hdc1080_reading_t *out) {
+    ylock_acquire(&g_dev_lock);
+    bool r = hdc1080_read_locked(out);
+    ylock_release(&g_dev_lock);
+    return r;
+}

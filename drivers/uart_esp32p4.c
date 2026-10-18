@@ -95,6 +95,7 @@ static uintptr_t g_uart_base = CONFIG_UART0_BASE;
  * otherwise invisible. */
 #define UART_RXFIFO_OVF_INT     (1u << 4)
 
+/* single task: the boot (or the root shell re-running it); constant after. */
 static volatile uint32_t g_uart_rx_overruns;
 
 uint32_t uart_rx_overruns(void) {
@@ -571,6 +572,7 @@ static uint8_t uart_hw_getc_blocking(void) {
 
 static uint8_t          g_uart_req[UART_REQ_CAP];
 static uint8_t          g_uart_resp[1];
+/* single task: the boot (or the root shell re-running it); constant after. */
 static driver_task_t g_uart_task;
 /* single task: the uart task (uart_serve()); readers only elsewhere. */
 static uint32_t         g_uart_write_calls;

@@ -436,6 +436,7 @@ static volatile uint32_t g_tx_claim;
 #define UART0_RSR   (UART0_BASE + 0x04)
 #define UART0_RSR_OE (1u << 3)
 
+/* accepted: a statistic. */
 static volatile uint32_t g_uart_rx_overruns;
 
 static void note_rx_overrun(void) {
@@ -795,6 +796,7 @@ static int hw_uart_read(void) {
 static uint8_t         g_uart_req[UART_REQ_CAP];
 static uint8_t         g_uart_resp[UART_RESP_CAP];
 static chan_endpoint_t *g_uart_ep;
+/* single task: the boot, before any reader runs; constant after. */
 static int              g_uart_task_pid = -1;
 
 /* Verify: counts UART_REQ_WRITE calls actually served -- one per

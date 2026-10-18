@@ -194,6 +194,7 @@ typedef struct {
  * it, and `usb` only reads. */
 static usbhost_t g_host;
 
+/* single task: the keyboard host (`kbd` starts and stops it). */
 static union {
     usbkbd_state_t s;
     uint8_t        raw[1024];
@@ -451,6 +452,7 @@ bool usbkbd_port_up(usbkbd_state_t *k) {
 
 /* --- The task ------------------------------------------------------------- */
 
+/* single task: the boot, before any reader runs; constant after. */
 static int g_kbd_pid = -1;
 
 static void kbd_task_body(void *arg) {

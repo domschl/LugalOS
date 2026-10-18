@@ -1,4 +1,5 @@
 #include "kernel/line_editor.h"
+#include "kernel/lock.h"
 #include "kernel/klog.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
@@ -37,8 +38,14 @@ static void safe_strncpy(char *dst, const char *src, int dst_size) {
     dst[i] = '\0';
 }
 
+/* One history for every terminal. guarded by: g_hist_lock for every change
+ * (add, load, clear): two adds at once could both pass the room check and
+ * count past the end. accepted: readers (navigation, `history`) read rows
+ * unlocked; a row's last byte is always its NUL, so the worst is a mixed
+ * line. */
 static char history_stack[MAX_HIST_ITEMS][MAX_LINE_LEN];
 static int history_count = 0;
+static ylock_t g_hist_lock;
 
 /* One redraw is one whole write, and is held as one (2026-09-14).
  *
@@ -122,7 +129,7 @@ void line_editor_init(void) {
 }
 
 
-void line_editor_add_history(const char *line) {
+static void line_editor_add_history_locked(const char *line) {
     if (!line || strlen(line) == 0) return;
     if (line[0] == '!') return;
     if (strcmp(line, "history") == 0 || strncmp(line, "history ", 8) == 0) return;
@@ -172,6 +179,7 @@ void line_editor_add_history(const char *line) {
      * append fails, which is what a swapped card looks like from here. No card
      * at all: vfs_mkdir() on an inactive mount fails silently, and so does
      * this -- history is a convenience, not something to warn about. */
+    /* guarded by: g_hist_lock (the caller's) */
     static bool history_dir_ready = false;
     static bool history_given_up = false;
     if (history_given_up) return;
@@ -204,12 +212,12 @@ const char *line_editor_history_get(int idx) {
     return history_stack[idx];
 }
 
-void line_editor_clear_history(void) {
+static void line_editor_clear_history_locked(void) {
     history_count = 0;
     (void)vfs_write("/sd0/system/history.lisp", "", 0);
 }
 
-void line_editor_load_history(int max_entries) {
+static void line_editor_load_history_locked(int max_entries) {
     if (max_entries <= 0) return;
     if (max_entries > MAX_HIST_ITEMS) max_entries = MAX_HIST_ITEMS;
 
@@ -675,6 +683,7 @@ static int line_key(line_state_t *st, key_event_t k, const char *prompt,
 
 static const readline_opts_t g_shell_opts = { false, false, false };
 
+/* single task: set by the root shell before any terminal starts. */
 static void (*g_idle)(void);
 
 void readline_set_idle(void (*fn)(void)) {
@@ -737,6 +746,8 @@ int readline_interactive(const char *prompt, char *out_buf, int max_len) {
  * wait is for bytes already in flight, never for the user.
  *
  * The prompt is drawn once, when a fresh line starts. */
+/* guarded by: the chess session claim: chess_next_event() is readline_poll()'s only
+ * caller. */
 static line_state_t g_poll_state;
 static bool         g_poll_in_progress = false;
 
@@ -764,4 +775,23 @@ void readline_poll_reset(void) {
 
 bool readline_poll_active(void) {
     return g_poll_in_progress && g_poll_state.len > 0;
+}
+
+/* The history's writers, under g_hist_lock. */
+void line_editor_add_history(const char *line) {
+    ylock_acquire(&g_hist_lock);
+    line_editor_add_history_locked(line);
+    ylock_release(&g_hist_lock);
+}
+
+void line_editor_clear_history(void) {
+    ylock_acquire(&g_hist_lock);
+    line_editor_clear_history_locked();
+    ylock_release(&g_hist_lock);
+}
+
+void line_editor_load_history(int max_entries) {
+    ylock_acquire(&g_hist_lock);
+    line_editor_load_history_locked(max_entries);
+    ylock_release(&g_hist_lock);
 }

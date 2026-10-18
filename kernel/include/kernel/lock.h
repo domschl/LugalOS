@@ -354,4 +354,17 @@ void waitfor_report_cycle(const char *what, int me, int target);
  * of failures. */
 int lock_selftest(void);
 
+/* A session claim: one terminal at a time for a tool whose state is one set
+ * (an editor, chess, a pager). Not a wait: a second terminal is told the tool
+ * is in use (`what: in use in another terminal`) and gets false, because the
+ * session it would wait for can last as long as someone keeps typing.
+ * Re-entrant for its owner (sched_context_id()). Zero is a free claim. */
+typedef struct {
+    volatile int owner;      /* context id + 1; 0: free */
+    uint32_t     depth;      /* the owner's alone */
+} session_claim_t;
+
+bool session_claim(session_claim_t *c, const char *what);
+void session_release(session_claim_t *c);
+
 #endif /* LUGALOS_KERNEL_LOCK_H */

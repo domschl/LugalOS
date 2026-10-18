@@ -38,6 +38,8 @@ struct chan_endpoint {
 };
 
 static chan_endpoint_t g_endpoints[CHAN_MAX_ENDPOINTS];
+/* accepted: endpoints are registered at boot and by selftests; a registration from two
+ * terminals at once could take one slot. */
 static uint32_t        g_num_endpoints;
 
 /* The anti-cycle guard lives in kernel/lock.c now : one wait-for graph fed by every

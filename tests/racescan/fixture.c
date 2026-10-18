@@ -51,6 +51,11 @@ static void logger(void) {
     deferred_b();
 }
 static void nap(void) { sched_yield(); }
+static uint32_t g_via_table;               /* written by a function reached only through a const table */
+static void table_op(void) { g_via_table++; }
+typedef struct { void (*fn)(void); } op_t;
+static const op_t k_ops[] = { { table_op } };
+static void run_ops(void) { k_ops[0].fn(); }
 static void isr2(void *ctx) { (void)ctx; nap(); }   /* reaches a blocking call */
 
 static void isr(void *ctx) {
@@ -59,6 +64,7 @@ static void isr(void *ctx) {
     g_grp_b++; g_grp_c[1]++; g_after_blank++;
     logger();
     touch_slot();
+    run_ops();
     *(volatile uint32_t *)0x50000000u = 1u;
 }
 
@@ -68,6 +74,7 @@ static void worker(void *arg) {
     g_grp_b = 0; g_grp_c[1] = 0; g_after_blank = 0;
     logger();
     touch_slot();
+    run_ops();
     g_only_task += g_boot_cfg + g_table[1];
     consume(&g_by_const_ptr);
     fill(g_text, sizeof g_text);

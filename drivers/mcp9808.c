@@ -1,4 +1,5 @@
 #include "drivers/mcp9808.h"
+#include "kernel/lock.h"
 #include "drivers/i2c_bus.h"
 #include "drivers/i2c_reg.h"
 #include "kernel/printk.h"
@@ -7,6 +8,9 @@
 #include "kernel/sched.h"
 #include <string.h>
 
+/* guarded by: g_dev_lock (below), which init and every measurement take:
+ * the hub's sampler, an mqttd source, `sensor` and Lisp may all measure, and
+ * `sensor init` probes again under them. */
 static struct {
     bool              detected;
     uint8_t           addr;
@@ -18,6 +22,7 @@ static struct {
     uint32_t          fail_count;
     const char       *last_fail;
 } g;
+static ylock_t g_dev_lock;
 
 static bool fail(const char *where) {
     g.last_fail = where;
@@ -45,7 +50,7 @@ int32_t mcp9808_calc_temp_c100(uint16_t raw_val) {
     }
 }
 
-bool mcp9808_init(void) {
+static bool mcp9808_init_locked(void) {
     uint8_t buses = i2c_bus_count();
 
     for (uint8_t b = 0; b < buses; b++) {
@@ -83,7 +88,7 @@ bool mcp9808_init(void) {
     return false;
 }
 
-bool mcp9808_read(mcp9808_reading_t *out) {
+static bool mcp9808_read_locked(mcp9808_reading_t *out) {
     if (!out || !g.detected) return false;
 
     uint16_t raw_val = 0;
@@ -182,3 +187,18 @@ sensor_dev_t mcp9808_sensor_dev = {
     .ops       = &mcp9808_ops,
     .priv      = NULL,
 };
+
+/* The driver's entry points, under g_dev_lock. */
+bool mcp9808_init(void) {
+    ylock_acquire(&g_dev_lock);
+    bool r = mcp9808_init_locked();
+    ylock_release(&g_dev_lock);
+    return r;
+}
+
+bool mcp9808_read(mcp9808_reading_t *out) {
+    ylock_acquire(&g_dev_lock);
+    bool r = mcp9808_read_locked(out);
+    ylock_release(&g_dev_lock);
+    return r;
+}

@@ -78,6 +78,8 @@
 #define CS_PIN CONFIG_SPI1_CS_GPIO
 #define CS_MASK (1u << CS_PIN)
 
+/* single task: the card's bring-up (boot, or `sd init` from a shell) and the block
+ * task; counters accepted. */
 static bool g_sd_is_sdhc = false;
 static bool g_sd_initialized = false;
 
@@ -457,6 +459,7 @@ static int spisd_hw_write_blocks(uint32_t lba, uint32_t count, const void *buf) 
 static uint8_t         g_blk_req[BLK_REQ_CAP];
 static uint8_t         g_blk_resp[BLK_RESP_CAP];
 static chan_endpoint_t *g_blk_ep;
+/* single task: the boot, before any reader runs; constant after. */
 static int              g_blk_task_pid = -1;
 
 /* Verify: counts chan_call()s actually served -- see
@@ -464,6 +467,8 @@ static int              g_blk_task_pid = -1;
  * (a nonzero, growing count is what distinguishes "the task is genuinely
  * serving requests" from "every caller silently fell back to direct
  * access the whole time"). */
+/* single task: the card's bring-up (boot, or `sd init` from a shell) and the block
+ * task; counters accepted. */
 static uint32_t g_blk_calls;
 
 uint32_t blk_task_call_count(void) { return g_blk_calls; }
@@ -783,6 +788,8 @@ static int blk_write_chunk(uint32_t lba, uint32_t count, const void *buf) {
  * row and the card is taken for gone (block_dev_t's `lost`): with it pulled,
  * every request failed after its full SPI timeout, forever. */
 #define SPISD_LOST_AFTER 3u
+/* single task: the card's bring-up (boot, or `sd init` from a shell) and the block
+ * task; counters accepted. */
 static uint32_t g_spisd_fail_run;
 
 static int spisd_note(block_dev_t *dev, int rc) {

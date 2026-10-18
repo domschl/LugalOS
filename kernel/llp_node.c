@@ -422,6 +422,7 @@ static bool wlan_link_up(netif_t *nif) {
     return g_link.state == LLP_UP && g_link.peer_link;
 }
 
+/* single task: the pump. */
 static netif_t g_wlan = {
     .name = "wlan0", .poll = wlan_poll, .send_frame = wlan_send,
     .recv_frame = wlan_recv, .link_up = wlan_link_up,
@@ -433,6 +434,7 @@ static netif_t g_wlan = {
 /* Frames received from a peer session that has since ended, up to this mark,
  * are dropped unread. Set by the pump (the queue's producer), acted on here
  * (its consumer): only the consumer moves the tail. */
+/* single task: the pump (see above). */
 static volatile uint32_t g_p9_rx_stale;
 
 static void p9_drop_stale(void) {
@@ -979,6 +981,8 @@ void llp_node_bench(uint32_t count, uint32_t size) {
     }
     if (size < 64u) size = 64u;
     if (size > NETIF_FRAME_MAX) size = NETIF_FRAME_MAX;
+    /* accepted: a diagnostic command's state; two terminals running it at once mix
+     * their output. */
     static uint8_t frame[NETIF_FRAME_MAX];
     memset(frame, 0xFF, 6);
     memcpy(frame + 6, g_wlan.mac, 6);

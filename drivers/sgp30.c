@@ -1,4 +1,5 @@
 #include "drivers/sgp30.h"
+#include "kernel/lock.h"
 #include "drivers/i2c_bus.h"
 #include "drivers/i2c_reg.h"
 #include "kernel/printk.h"
@@ -35,7 +36,8 @@ static struct {
     uint32_t         read_count;
     uint32_t         fail_count;
     const char      *last_fail;
-} g;
+} g;   /* guarded by: g_dev_lock (below), as the other sensor drivers */
+static ylock_t g_dev_lock;
 
 static bool fail(const char *where) {
     g.last_fail = where;
@@ -115,7 +117,7 @@ bool sgp30_set_absolute_humidity(int32_t temp_c100, int32_t rh_cpercent) {
     return i2c_xfer(g.addr, payload, 5u, NULL, 0u);
 }
 
-bool sgp30_init(void) {
+static bool sgp30_init_locked(void) {
     g.detected = false;
     g.addr = SGP30_ADDR;
 
@@ -156,7 +158,7 @@ bool sgp30_init(void) {
     return true;
 }
 
-bool sgp30_read(sgp30_reading_t *out) {
+static bool sgp30_read_locked(sgp30_reading_t *out) {
     if (!out || !g.detected) return false;
 
     /* Issue sgp30_measure_iaq command (0x2008) */
@@ -335,3 +337,18 @@ sensor_dev_t sgp30_sensor_dev = {
     .ops       = &sgp30_ops,
     .priv      = NULL,
 };
+
+/* The driver's entry points, under g_dev_lock. */
+bool sgp30_init(void) {
+    ylock_acquire(&g_dev_lock);
+    bool r = sgp30_init_locked();
+    ylock_release(&g_dev_lock);
+    return r;
+}
+
+bool sgp30_read(sgp30_reading_t *out) {
+    ylock_acquire(&g_dev_lock);
+    bool r = sgp30_read_locked(out);
+    ylock_release(&g_dev_lock);
+    return r;
+}

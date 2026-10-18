@@ -238,7 +238,58 @@ past it, which the OTA check catches), RP2350 terminal 34/34, Tab5 49/50 (the to
 during the BMI270 upload, for 63.4). The NANO's run includes the remount of /c6 after a C6
 restart and a rejoin under an open 9P session.
 
-Next: groups B and S (63.2), then 63.4.
+**Groups B and S done (2026-10-18).** Every candidate in all ten configured builds has a
+verdict (the five scanned so far, plus the LCD-7B, NANO, C6-MINI, rv64 and the RP2350
+sensor persona): zero unmarked.
+
+Two scanner gaps first, both hiding reachability:
+- `const` tables were dropped before their initializers were read, so every function reached
+  only through one (all Lisp primitives, const ops tables) looked unreachable.
+- A static function defined in a header (or a table in an included file) was looked up in
+  the header's own name space, not the translation unit's.
+- Fixing both moved the Lisp interpreter, the C compiler and much of the shell into view
+  (Tab5's group S went from 176 to 286).
+
+What serialises the shell side, found on the way:
+- Every Lisp evaluation, and every shell command that becomes a Lisp form, holds
+  `g_lisp_lock`. That covers the interpreter and the C compiler (`cc` is a primitive).
+- The native commands `parse_and_eval_cmd()` handles in C do not take it, and neither do
+  the Lisp "sessions" that park it (chess, the Z-machine, the clock, a nested `lsh`, LLM
+  chats).
+- Those are where two terminals can meet. For tools whose state is one set, a session claim
+  (`kernel/lock.h`'s `session_claim_t`, re-entrant): a second terminal is told the tool is in
+  use rather than made to wait out a session. Used by chess, `e`, `ed`, `ea` and the pager.
+
+Fixed:
+
+| # | where | what | fix |
+| :--- | :--- | :--- | :--- |
+| F25 | user/chess | one engine state for every terminal: a session ending in one freed the tables a search in another used | session claim at the four entry points |
+| F26 | `e`, `ed`, `ea` | native commands whose state is one set | session claims |
+| F27 | kernel/shell.c | a pipeline's input was one global; another terminal's command read it as its own | per execution context |
+| F28 | fs/9p.c | the grants cache and console key were rewritten from a shell while the server read them for an attach | g_auth_lock; readers copy out |
+| F29 | kernel/time.c | the wall-clock base (two 64-bit words and the rate), set by `date`/NTP while every task reads it, tears on rv32 | a sequence lock, lock-free readers |
+| F30 | fs/vfs_server.c | one static buffer for every `cp` | on the stack |
+| F31 | kernel/kobj_sys.c | a domain's threads making their first critical section at once could each create a mutex: two critical sections that do not exclude each other (the C6 radio) | g_crit_lock |
+| F32 | drivers/i2c_bus.c | the probe window was wait-then-set: two tasks could both open one | a ylock held for the window |
+| F33 | kernel/line_editor.c | two history adds could both pass the room check and count past the array | g_hist_lock for writers |
+| F34 | arch/riscv/common/elf.c | two terminals starting programs could take one slot and share the header buffer | g_elf_lock over the load |
+| F35 | net/dns.c, net/ntp.c | one reply slot each: two terminals querying at once took each other's answer | a lock per query |
+| F36 | various | wire claims tested then set (g_wire_lock); the pager's stack one for all terminals (session claim); the RAM screen built twice on first use (console_lock); the EMAC's diagnostics taking the rings mid-poll (under net_lock); every sensor driver's init and measurement under its own lock, as the BME280's | |
+
+Everything else in S has an `accepted:` or `single task:` reason in the code:
+- selftests and diagnostics, one run at a time;
+- caches whose readers tolerate an old value;
+- configuration set from a shell by single stores (`tz`, `path`, `identity`, `mqtt`
+  credentials).
+
+Tested: host harnesses (ASan/UBSan) clean; QEMU 511/512 (TCP recovery R3 on rv32, the known
+flake: 6/6 alone afterwards); NANO 50/50 (its C6 on the new build); RP2350 34/34; LCD-7B 50/50
+alone. In the run with all three P4 boards in parallel, the LCD-7B and the Tab5 each counted
+two touch I2C errors; not reproduced on the LCD-7B alone or by replaying the tests. Recorded
+with the Tab5's touch errors for 63.4.
+
+Next: 63.4 (owner bypass and the chan_call wait helper; the touch I2C errors).
 
 ### 63.3 Fix shared mutable state (class 1)
 

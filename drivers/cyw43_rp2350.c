@@ -386,6 +386,8 @@ static void wl_gpio_setup(void) {
  * wrong window: intermittent verify failures at offset 0, depending on
  * where the previous run happened to leave things. */
 #define BP_WINDOW_INVALID 0xFFFFFFFFu
+/* guarded by: g_bus_lock (cyw43_lock()); cyw43_assert_bus_held() reports a caller that
+ * reaches the bus without it. */
 static uint32_t g_bp_window = BP_WINDOW_INVALID;
 
 /* --- serialising access -------------------------------------------------
@@ -418,6 +420,8 @@ static void cyw43_unlock(void) { ylock_release(&g_bus_lock); }
  * one transfer failed: the chip and this driver no longer agree on where a
  * word boundary is, so every ioctl afterwards times out. An ioctl cannot be
  * the fix when an ioctl is what is broken -- see cyw43_link_recover(3). */
+/* guarded by: g_bus_lock (cyw43_lock()); cyw43_assert_bus_held() reports a caller that
+ * reaches the bus without it. */
 static volatile bool g_bus_wedged;
 
 /* Warn once about a caller that reached the bus without holding it.
@@ -431,6 +435,8 @@ static volatile bool g_bus_wedged;
  * capture that named the fault. The lock was right and one caller did not
  * take it, so the lock is no longer left to memory. */
 static void cyw43_assert_bus_held(const char *who) {
+    /* accepted: link statistics for `wifi`, written by the event handler under
+     * g_bus_lock and read unlocked. */
     static bool warned;
     if (ylock_owner(&g_bus_lock) == sched_context_id() || warned) return;
     warned = true;
@@ -527,11 +533,15 @@ typedef enum {
  * is the firmware talking, and it talks a lot. */
 bool g_event_trace;
 
+/* guarded by: g_bus_lock (cyw43_lock()); cyw43_assert_bus_held() reports a caller that
+ * reaches the bus without it. */
 static volatile uint32_t   g_join_state;
 static volatile join_fail_t g_join_fail;
 
 /* Carrier state. Set when a join reaches JOIN_ALL and cleared by a link-down,
  * disassociation or deauthentication event -- never inferred. */
+/* guarded by: g_bus_lock (cyw43_lock()); cyw43_assert_bus_held() reports a caller that
+ * reaches the bus without it. */
 static bool g_link_up;
 
 /* A disassociate the firmware needs but the event handler must not issue.
@@ -549,6 +559,8 @@ static bool g_link_up;
  * Deferred rather than done in place for the same reason the SDK defers it:
  * the handler runs inside packet processing, and an ioctl from there would
  * re-enter the bus it is already using. */
+/* guarded by: g_bus_lock (cyw43_lock()); cyw43_assert_bus_held() reports a caller that
+ * reaches the bus without it. */
 static volatile bool g_pend_disassoc;
 
 /* Why the link went away, kept rather than only printed.
@@ -562,6 +574,8 @@ static volatile bool g_pend_disassoc;
  * So the last drop's event, status and reason live here, along with counters,
  * and are readable over the network *after* the link comes back. The incident
  * report outlives the incident. */
+/* accepted: link statistics for `wifi`, written by the event handler under g_bus_lock
+ * and read unlocked. */
 static uint32_t g_drops;             /* link-down events since boot */
 static uint32_t g_joins;             /* successful joins since boot */
 static uint32_t g_last_drop_ev;      /* the event type that dropped it */
@@ -588,6 +602,8 @@ static void note_drop(uint32_t ev, uint32_t status, uint32_t reason) {
  * that talks to the firmware -- joining, the LED, the netif -- is
  * meaningless before this, and failing it early gives a caller something
  * it can act on instead of a bus-level timeout to decode. */
+/* guarded by: g_bus_lock (cyw43_lock()); cyw43_assert_bus_held() reports a caller that
+ * reaches the bus without it. */
 static bool g_fw_ready;
 
 
@@ -1021,6 +1037,8 @@ static bool bp_write_bulk(uint32_t addr, const uint8_t *data, uint32_t len) {
     /* 4 bytes of command followed by up to BP_MAX_TRANSFER of payload,
      * word-aligned because the transfer layer packs it 32 bits at a
      * time. */
+    /* guarded by: g_bus_lock (cyw43_lock()); cyw43_assert_bus_held() reports a caller
+     * that reaches the bus without it. */
     static uint32_t buf[1 + BP_MAX_TRANSFER / 4];
     while (len) {
         uint32_t window_offs = addr & BP_ADDRESS_MASK;
@@ -1236,13 +1254,19 @@ static bool cyw43_download_firmware(void) {
 
 /* --- control channel: SDPCM + CDC over the WLAN function --------------- */
 
+/* guarded by: g_bus_lock (cyw43_lock()); cyw43_assert_bus_held() reports a caller that
+ * reaches the bus without it. */
 static uint8_t g_sdpcm_seq;
 static uint16_t g_ioctl_id;
 /* Set around calls whose failure is an expected, polled-for outcome. */
+/* guarded by: g_bus_lock (cyw43_lock()); cyw43_assert_bus_held() reports a caller that
+ * reaches the bus without it. */
 static bool g_ioctl_quiet;
 
 /* One buffer for both directions. 2 KB is the firmware's own control
  * packet ceiling, plus room for the command word a WLAN write prepends. */
+/* guarded by: g_bus_lock (cyw43_lock()); cyw43_assert_bus_held() reports a caller that
+ * reaches the bus without it. */
 static uint32_t g_wlan_buf[(4 + 2048) / 4];
 
 /* Write a prepared SDPCM packet to function 2. The command word goes in
@@ -1309,9 +1333,13 @@ static uint32_t get_u32(const uint8_t *p) {
  * `wifi stats` reports the high-water mark, so the question stays
  * answerable with data rather than argument. */
 #define CYW43_RX_RING 4
+/* guarded by: g_bus_lock (cyw43_lock()); cyw43_assert_bus_held() reports a caller that
+ * reaches the bus without it. */
 static uint8_t  g_rx_ring[CYW43_RX_RING][NETIF_FRAME_MAX];
 static uint32_t g_rx_ring_len[CYW43_RX_RING];
 static uint32_t g_rx_head, g_rx_tail, g_rx_count;
+/* accepted: link statistics for `wifi`, written by the event handler under g_bus_lock
+ * and read unlocked. */
 static uint32_t g_rx_overrun;      /* arrived with the ring full */
 static uint32_t g_rx_high_water;   /* deepest the ring ever got */
 
@@ -1328,6 +1356,8 @@ static struct {
     uint32_t status;
     uint32_t len;
     uint8_t  data[512];
+/* guarded by: g_bus_lock (cyw43_lock()); cyw43_assert_bus_held() reports a caller that
+ * reaches the bus without it. */
 } g_ioctl_reply;
 
 /* 1 = handled a packet, 0 = nothing waiting, -1 = bus error. */
@@ -1430,6 +1460,8 @@ static int cyw43_pump(void) {
     if (!wlan_packet_pending(&plen)) return -1;
     if (plen == 0) return 0;
 
+    /* guarded by: g_bus_lock (cyw43_lock()); cyw43_assert_bus_held() reports a caller
+     * that reaches the bus without it. */
     static uint8_t rx[2048];
     if (plen > sizeof(rx)) return -1;
     if (!wlan_read(rx, plen)) return -1;
@@ -1668,6 +1700,8 @@ static bool cyw43_load_clm(void) {
          * directly in the WLAN buffer's payload area rather than a stack
          * copy -- a 1 KB chunk plus headers is more than this kernel's
          * stacks want to carry. */
+        /* guarded by: g_bus_lock (cyw43_lock()); cyw43_assert_bus_held() reports a
+         * caller that reaches the bus without it. */
         static uint8_t buf[8 + 12 + CLM_CHUNK_SIZE];
         memcpy(buf, "clmload", 8);              /* includes the NUL */
         put_u16(buf + 8, flag);
@@ -1886,6 +1920,8 @@ static bool cyw43_join_wpa2_locked(const char *ssid, const uint8_t psk[32]) {
 
 /* --- netif_t: whole Ethernet frames ------------------------------------- */
 
+/* guarded by: g_bus_lock (cyw43_lock()); cyw43_assert_bus_held() reports a caller that
+ * reaches the bus without it. */
 static netif_t g_netif;
 static bool g_netif_registered;
 
@@ -2297,6 +2333,8 @@ static int cyw43_netif_send(netif_t *nif, const uint8_t *buf, uint32_t len) {
  * transfers nothing. */
 #define CYW43_IDLE_POLL_GAP_US 1000u
 
+/* guarded by: g_bus_lock (cyw43_lock()); cyw43_assert_bus_held() reports a caller that
+ * reaches the bus without it. */
 static uint64_t g_next_poll_us;
 
 static int cyw43_netif_poll(netif_t *nif) {

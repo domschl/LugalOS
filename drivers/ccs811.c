@@ -1,4 +1,5 @@
 #include "drivers/ccs811.h"
+#include "kernel/lock.h"
 #include "drivers/i2c_bus.h"
 #include "drivers/i2c_reg.h"
 #include "kernel/printk.h"
@@ -44,7 +45,8 @@ static struct {
     uint32_t            read_count;
     uint32_t            fail_count;
     const char         *last_fail;
-} g;
+} g;   /* guarded by: g_dev_lock (below), as the other sensor drivers */
+static ylock_t g_dev_lock;
 
 static bool fail(const char *where) {
     g.last_fail = where;
@@ -114,7 +116,7 @@ bool ccs811_reset(void) {
     return ccs811_init();
 }
 
-bool ccs811_init(void) {
+static bool ccs811_init_locked(void) {
     static const uint8_t s_addrs[] = { CCS811_ADDR_LOW, CCS811_ADDR_HIGH };
     g.detected = false;
 
@@ -162,7 +164,7 @@ bool ccs811_init(void) {
     return false;
 }
 
-bool ccs811_read(ccs811_reading_t *out) {
+static bool ccs811_read_locked(ccs811_reading_t *out) {
     if (!out || !g.detected) return false;
 
     uint8_t buf[5];
@@ -304,3 +306,18 @@ sensor_dev_t ccs811_sensor_dev = {
     .ops       = &ccs811_ops,
     .priv      = NULL,
 };
+
+/* The driver's entry points, under g_dev_lock. */
+bool ccs811_init(void) {
+    ylock_acquire(&g_dev_lock);
+    bool r = ccs811_init_locked();
+    ylock_release(&g_dev_lock);
+    return r;
+}
+
+bool ccs811_read(ccs811_reading_t *out) {
+    ylock_acquire(&g_dev_lock);
+    bool r = ccs811_read_locked(out);
+    ylock_release(&g_dev_lock);
+    return r;
+}

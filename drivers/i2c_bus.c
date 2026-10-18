@@ -1822,19 +1822,26 @@ const char *i2c_bus_part(uint8_t bus, uint8_t addr) {
 }
 
 /* The open probe window, if any: whose, and on which task. Before the
- * scheduler runs every caller is TASK_NO_PID, which is still one caller. */
+ * scheduler runs every caller is TASK_NO_PID, which is still one caller.
+ * guarded by: g_probe_lock (below), held for the window; transfers read them
+ * unlocked and act only on a window of their own task. */
 static const char *volatile g_probe_who;
 static volatile int         g_probe_pid;
 
+/* One window at a time: held from begin to end (a second task's begin waits
+ * here). A wait-then-set let two tasks that found it free both open one. */
+static ylock_t g_probe_lock;
+
 void i2c_probe_begin(const char *who) {
-    int me = sched_current_pid();
-    while (g_probe_who && g_probe_pid != me) sched_yield();
-    g_probe_pid = me;
+    ylock_acquire(&g_probe_lock);
+    g_probe_pid = sched_current_pid();
     g_probe_who = who ? who : "";
 }
 
 void i2c_probe_end(void) {
-    if (g_probe_pid == sched_current_pid()) g_probe_who = NULL;
+    if (g_probe_pid != sched_current_pid()) return;
+    g_probe_who = NULL;
+    ylock_release(&g_probe_lock);
 }
 
 static bool i2c_probe_refused(uint8_t bus, uint8_t addr) {

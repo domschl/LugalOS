@@ -6,6 +6,7 @@
 #include "kernel/palloc.h"
 #include "libc/include/string.h"
 
+/* accepted: the LLM client's configuration, read once and set by `llm`. */
 static llm_config_t g_llm_cfg;
 static bool         g_llm_inited = false;
 

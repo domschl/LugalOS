@@ -16,6 +16,7 @@
 #include <string.h>
 
 #define DS1307_DS3231_I2C_ADDR 0x68
+/* single task: the boot, before any reader runs; constant after. */
 static bool g_rtc_detected = false;
 static rtc_chip_type_t g_rtc_type = RTC_TYPE_NONE;
 static uint8_t g_rtc_addr = DS1307_DS3231_I2C_ADDR;
@@ -479,6 +480,8 @@ bool i2c_rtc_write_time(const rtc_time_t *tm) {
  * The age matters as much as the value: a temperature from an hour ago is
  * evidence about an hour ago, and correlating a crystal's rate against a stale
  * reading is how a spurious tempco gets published. */
+/* accepted: a cached reading, value then time then flag; a reader can pair one sample's
+ * value with another's time. */
 static int      g_temp_cached_c;
 static bool     g_temp_cached_ok;
 static uint64_t g_temp_cached_ms;

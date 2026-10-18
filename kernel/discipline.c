@@ -110,6 +110,8 @@
  * which is not an optimistic dispersion but a fictional one. */
 #define UNKNOWN_PPB_ERR 30000
 
+/* accepted: fed one sample at a time by `ntp` and the clock sources; two terminals
+ * syncing at once interleave their samples. */
 static disc_state_t g_state = DISC_UNSET;
 static uint32_t g_samples, g_accepted, g_rejected, g_consec_rejects;
 static int32_t  g_freq_ppb;
@@ -119,6 +121,8 @@ static bool     g_have_last;
 
 /* Running statistics over accepted samples, for reporting rather than for the
  * loop: sum and sum of squares, as everywhere else in this tree. */
+/* accepted: fed one sample at a time by `ntp` and the clock sources; two terminals
+ * syncing at once interleave their samples. */
 static int64_t  g_sum_us;
 static uint64_t g_sumsq;
 static uint32_t g_n;
@@ -126,6 +130,8 @@ static uint32_t g_n;
 /* How many times the rate estimate has been updated. Dispersion needs it to
  * know whether the loop has run long enough for its noise floor to be the
  * dominant error -- see freq_uncertainty_ppb(). */
+/* accepted: fed one sample at a time by `ntp` and the clock sources; two terminals
+ * syncing at once interleave their samples. */
 static uint32_t g_freq_updates;
 
 /* What the rate estimate is *observed* to do, as opposed to what a noise model
@@ -151,6 +157,8 @@ static uint32_t g_freq_updates;
  * EWMA whose increment rounds to zero stops moving and reports a confident
  * nothing, which is the failure this whole field exists to prevent. */
 #define FREQ_VAR_N 512
+/* accepted: fed one sample at a time by `ntp` and the clock sources; two terminals
+ * syncing at once interleave their samples. */
 static int64_t  g_fmean_x256;
 static int64_t  g_fvar_x256;
 static bool     g_fvar_primed;

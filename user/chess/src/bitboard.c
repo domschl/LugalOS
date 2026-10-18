@@ -16,11 +16,13 @@
 #include "bitboard.h"
 
 // Global precomputed attack tables
+/* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
 uint64_t pawn_attacks[2][64];
 uint64_t knight_attacks[64];
 uint64_t king_attacks[64];
 
 // Board file & rank masks
+/* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
 uint64_t file_masks[8];
 uint64_t rank_masks[8];
 

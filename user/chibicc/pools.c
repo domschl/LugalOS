@@ -56,6 +56,8 @@
  * on the first attempt -- 112 KB against the ~300 KB the QEMU builds want --
  * and the failure was a clean diagnostic only because the bump allocator
  * checks. Summing what each module asks for cannot drift. */
+/* guarded by: g_lisp_lock: the compiler runs only from the `cc` primitive, inside an
+ * evaluation. */
 static uint8_t *g_arena;
 static uint32_t g_pages;
 static uint32_t g_used;

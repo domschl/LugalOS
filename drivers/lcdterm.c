@@ -77,6 +77,7 @@ static void damage(unsigned y0, unsigned y1);
  * smaller than the RP2350-LCD-7's, so its numbers stay exactly what they
  * were (16 pages here, 64 below). */
 #define STATE_PAGES_MIN      16u
+/* single task: the boot, before any reader runs; constant after. */
 static uint32_t g_state_bytes;
 
 /* with PSRAM, the state block grows into a
@@ -116,6 +117,7 @@ static void text_line(fbtext_t *t, unsigned row, const char *s, bool inverse) {
  * (kernel/console.c's screen hooks), so an echoed keystroke appears at once.
  * Until the task is alive -- boot, or if it never starts -- the facade draws
  * directly, the fallback every driver task here has. */
+/* single task: the boot, before any reader runs; constant after. */
 static screen_t *g_scr;             /* the state block: g_scr_bytes, naturally aligned */
 static uint32_t  g_scr_bytes;
 static bool      g_vt_ready;
@@ -573,8 +575,10 @@ bool lcdterm_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) {
  * there, and then `lcd tee uart` is one command. The kernel log still reaches
  * UART0 through its own sink either way. */
 #if defined(CONFIG_BOARD_RP2350)
+/* accepted: one byte, set by `lcd tee`. */
 static uint8_t g_tee = LCD_TEE_USB;
 #else
+/* accepted: one byte, set by `lcd tee`. */
 static uint8_t g_tee = LCD_TEE_UART;    /* 47.6: no USB device stack; UART0 is the host's console */
 #endif
 

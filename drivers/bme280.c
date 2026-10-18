@@ -460,6 +460,8 @@ uint32_t bme280_selftest(bool report) {
  * refreshed only when it is older than a second, so a publish cycle wakes the
  * part once. Three forced-mode conversions where one would do is both three
  * times the self-heating and three times the chance of meeting a bus error. */
+/* accepted: a cached reading, value then time then flag; a reader can pair one sample's
+ * value with another's time. */
 static bme280_reading_t g_cached;
 static uint64_t         g_cached_ms;
 static bool             g_cached_ok;
@@ -534,6 +536,7 @@ static bool src_pressure_msl(int32_t *out, void *ctx) {
  * All three filter at 1/8, which at a 5 s sample period settles a step change
  * in well under a minute while removing most of the per-reading jitter.
  */
+/* single task: the boot, before any reader runs; constant after. */
 static bool g_sources_registered, g_msl_registered;
 
 void bme280_register_sources(void) {
@@ -601,6 +604,7 @@ bool bme280_altitude(int32_t *alt_m) {
  * sense: it owns no hardware and serves no endpoint -- it is a *client* of the
  * "i2c" task, like any other caller of bme280_read(). */
 
+/* single task: the boot, before any reader runs; constant after. */
 static uint32_t g_sample_period_s = BME280_DEFAULT_SAMPLE_S;
 
 static void bme280_sampler_body(void *arg) {

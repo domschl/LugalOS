@@ -81,6 +81,7 @@ typedef int  (*rom_config_param_fn)(uint32_t deviceId, uint32_t chip_size,
 #define FLASH_P4_PAGE_SIZE   256u
 #define FLASH_P4_STATUS_MASK 0xffffu
 
+/* accepted: a lazy init, idempotent. */
 static bool       g_ready;
 
 

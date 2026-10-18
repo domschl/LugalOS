@@ -46,6 +46,7 @@ def main() -> int:
     want(shared.get("g_slots", {}).get("group") == "A", "g_slots: written through `T *p = &g_slots[i]`")
     for v in ("g_via_const", "g_ptr_var"):
         want(v not in shared, f"{v}: a const pointer or a copied pointer is not a write")
+    want(shared.get("g_via_table", {}).get("group") == "A", "g_via_table: reached through a const ops table")
     blk = {(b["context"], b["function"]) for b in d["isr_blocking"]}
     want(("isr:isr2", "sched_yield") in blk, "isr2 reaches a blocking call")
     want(not any(c == "isr:isr" for c, _ in blk), "isr's blocking calls are all behind guards")

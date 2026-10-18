@@ -75,6 +75,7 @@ static void spin_us(uint32_t us) {
 
 extern char _bulk_bss_start[], _bulk_bss_end[];
 
+/* single task: the boot, before any reader runs; constant after. */
 static bool        g_up;
 static const char *g_reason = "not initialised";
 static uint32_t    g_bytes;
@@ -193,6 +194,7 @@ static bool mpll_on(void) {
 #endif
 #define PSRAM_INIT_MHZ    20u
 #define BUS_DIV_FOR(mhz)  (MPLL_MHZ / (mhz))
+/* single task: the boot, before any reader runs; constant after. */
 static uint32_t g_speed_mhz = PSRAM_INIT_MHZ;   /* what the bus runs at now */
 
 /* ---- 3. controller -------------------------------------------------------- */
@@ -405,6 +407,7 @@ static const uint32_t s_ref[32] = {
 #define TUNE_DL_NUM      31u
 #define TUNE_DL_REPEATS  100u
 
+/* single task: the boot, before any reader runs; constant after. */
 static uint8_t  g_tune_phase_ok;           /* bit i: phase i passed */
 static uint32_t g_tune_dl_ok;              /* bit i: delay-line config i passed 100/100 */
 static int8_t   g_tune_phase = -1, g_tune_dl = -1;

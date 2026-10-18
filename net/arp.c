@@ -29,6 +29,7 @@ typedef struct {
     uint64_t learned_ms;
 } arp_entry_t;
 
+/* guarded by: net_lock() (the stack task fills it in its round); `arp` reads it unlocked. */
 static arp_entry_t g_cache[ARP_CACHE_SIZE];
 /* Round-robin victim when every slot is live and unexpired. Evicting the
  * oldest would be better and needs a scan; with eight slots the difference is

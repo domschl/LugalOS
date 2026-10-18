@@ -1247,6 +1247,8 @@ static uint8_t pat_grid(unsigned x, unsigned y) {
 }
 
 typedef uint8_t (*pat_fn)(unsigned x, unsigned y);
+/* accepted: a diagnostic command's state; two terminals running it at once mix their
+ * output. */
 static pat_fn g_last_pat;
 
 static void draw(pat_fn f) {

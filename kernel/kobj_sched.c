@@ -226,6 +226,7 @@ int kos_ev_delete(kh_t h) {
 
 /* The pid of the thread blocked in kos_timer_wait(), so that arming a timer
  * can wake it to recompute its deadline. One radio, one timer thread. */
+/* single task: the timer thread (kos_timer_wait()). */
 static volatile int g_timer_waiter = -1;
 
 static void timer_poke(void) {

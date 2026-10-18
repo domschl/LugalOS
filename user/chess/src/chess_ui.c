@@ -36,6 +36,7 @@
 #include "kernel/printk.h"
 #include "kernel/line_editor.h"
 #include "kernel/sched.h"
+#include "kernel/lock.h"
 #include "kernel/palloc.h"
 #include "fs/vfs.h"
 #include "lugalos_config.h"
@@ -59,6 +60,7 @@
 
 #define STANDARD_START_FEN "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 
+/* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
 static bool g_chess_ready = false;
 static Position g_chess_pos; /* static: ~8 KB (MAX_PLYS=256 history), never a stack local */
 
@@ -72,6 +74,7 @@ static Position g_chess_pos; /* static: ~8 KB (MAX_PLYS=256 history), never a st
  * same lifetime as search.c's own on-demand pools. Safe to share between
  * the two call sites: this is single-threaded, cooperative code, and
  * neither caller's use of it is ever nested inside the other's. */
+/* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
 static Position *g_chess_scratch = NULL;
 static uint32_t g_chess_scratch_pages = 0;
 
@@ -114,6 +117,7 @@ Position *chess_scratch_position(void) {
     return g_chess_scratch;
 }
 
+/* guarded by: the chess session claim (chess_claim() below). */
 static Move g_search_best_move = 0;
 static int g_search_score = 0;
 static int g_search_depth = 0;
@@ -141,6 +145,19 @@ static int g_search_root_side = 0; /* pos->side snapshotted once at the
  * worth special-casing around. init_zobrist() used to sit beside it and no
  * longer exists at all: its tables are const in flash now (section 3.2,
  * ), so there is nothing to initialise. */
+/* One chess session at a time, across terminals: the engine's state -- the
+ * session's tables and scratch from chess_ensure_init(), hart 0's search
+ * state, the search's progress fields below -- is one set, and a session
+ * ending in one terminal frees what a search in another is using. Claimed at
+ * each entry point (re-entrant for its owner: chess_perft() calls
+ * chess_perft_cores()); a second terminal is told rather than made to wait
+ * out a game.
+ * guarded by: g_chess_session (kernel/lock.h's session claim). */
+static session_claim_t g_chess_session;
+
+static bool chess_claim(void) { return session_claim(&g_chess_session, "chess"); }
+static void chess_unclaim(void) { session_release(&g_chess_session); }
+
 static bool chess_ensure_init(void) {
     if (g_chess_ready) return true;
     init_bitboards();
@@ -371,6 +388,7 @@ static ChessCmdResult console_dispatch_line(const char *line);
  * a FEN plus a level fits with room to spare. Static rather than a stack
  * local for the reason every other buffer in this file is: the deepest call
  * chain in the system runs through here. */
+/* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
 static char g_event_line[300];
 
 /* The poll interval. 20 ms is tm_wait_key()'s own long-standing debounce
@@ -622,7 +640,7 @@ void chess_selftest_cores(int cores) {
  * the same and the number says nothing. A fixed depth turns "how deep in a
  * fixed time" -- which saturates -- into "how long to a fixed depth", which
  * does not. */
-void chess_selftest_bench(int cores, int fixed_depth) {
+static void chess_selftest_bench_locked(int cores, int fixed_depth) {
     g_search_cores = (cores < 1) ? 1 : cores;
     if (!chess_ensure_init()) return;
     /* A midgame position, well outside the opening book, so this exercises
@@ -695,7 +713,7 @@ void chess_perft(int max_depth) {
 /* X8: the same suite, split across `cores`. The session bracket is unchanged
  * -- workers share the bitboard/zobrist tables chess_ensure_init() builds,
  * which are read-only once built, so one init still covers every core. */
-void chess_perft_cores(int max_depth, int cores) {
+static void chess_perft_cores_locked(int max_depth, int cores) {
     if (!chess_ensure_init()) return;
     run_perft_tests_cores(max_depth, cores);
     chess_session_end();
@@ -727,6 +745,7 @@ typedef enum {
 } ChessOutcome;
 
 static bool chess_has_legal_move(Position *pos) {
+    /* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
     static MoveList list;
     generate_moves(pos, &list);
     for (int i = 0; i < list.count; i++) {
@@ -801,6 +820,7 @@ static ChessOutcome chess_game_outcome(Position *pos) {
  * means the search runs to full depth-64 completion with nothing able to
  * cut it short until J2 lands. print_console_help() says so. */
 static const int level_times_ms[8] = { 1000, 2000, 5000, 10000, 15000, 30000, 60000, -1 };
+/* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
 static int g_console_search_level = 2;
 static int g_console_max_history_ply = 0;
 
@@ -880,6 +900,7 @@ static bool console_execute_move(Position *pos, const char *move_str) {
         }
     }
 
+    /* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
     static MoveList list;
     generate_moves(pos, &list);
 
@@ -1111,6 +1132,7 @@ static void console_resume_or_new(Position *pos) {
 /* The PGN result tag implied by the position itself, so a finished game is
  * archived as finished rather than as "*". */
 static const char *console_result_tag(Position *pos) {
+    /* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
     static MoveList l;
     generate_moves(pos, &l);
     for (int i = 0; i < l.count; i++) {
@@ -1234,6 +1256,7 @@ static void console_handle_go(Position *pos, const char *args) {
 }
 
 static void console_list_moves(Position *pos) {
+    /* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
     static MoveList list;
     generate_moves(pos, &list);
     cprintf("Legal moves in this position:\n");
@@ -1394,7 +1417,7 @@ static ChessCmdResult console_dispatch_line(const char *line) {
     return CHESS_CMD_OK;
 }
 
-void chess_console_run(void) {
+static void chess_console_run_locked(void) {
     if (!chess_ensure_init()) return;
     console_resume_or_new(&g_chess_pos);
 
@@ -2537,7 +2560,7 @@ static TmAfterMove tm_after_move(Position *pos, char *disp, int mover_side) {
     return TM_AFTER_ONGOING;
 }
 
-void chess_run(void) {
+static void chess_run_locked(void) {
     if (!chess_ensure_init()) return;
     /* 14b: resume the auto-saved game rather than always starting fresh --
      * this is the persona that boots straight into chess with no shell to
@@ -2701,6 +2724,13 @@ void chess_run(void) {
         if (tm_after_move(&g_chess_pos, disp2, mover_side) == TM_AFTER_EXIT) return;
     }
 }
+
+/* Holding the session claim (chess_claim()) for the session. */
+void chess_run(void) {
+    if (!chess_claim()) return;
+    chess_run_locked();
+    chess_unclaim();
+}
 #endif /* CONFIG_ENABLE_ST7735 */
 #endif /* CONFIG_BOARD_RP2350 && CONFIG_ENABLE_TM1638 */
 
@@ -2815,6 +2845,7 @@ static void canvas_board_draw(const Position *pos) {
 }
 
 #if !(defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735)
+/* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
 static int g_chess_damage = -1;
 static int g_chess_last_w = -1, g_chess_last_h = -1;
 
@@ -2967,3 +2998,24 @@ static void chess_show(const Position *pos) {
     }
 #endif
 }
+
+/* The entry points, each holding the session claim (chess_claim()) for its
+ * length. */
+void chess_selftest_bench(int cores, int fixed_depth) {
+    if (!chess_claim()) return;
+    chess_selftest_bench_locked(cores, fixed_depth);
+    chess_unclaim();
+}
+
+void chess_perft_cores(int max_depth, int cores) {
+    if (!chess_claim()) return;
+    chess_perft_cores_locked(max_depth, cores);
+    chess_unclaim();
+}
+
+void chess_console_run(void) {
+    if (!chess_claim()) return;
+    chess_console_run_locked();
+    chess_unclaim();
+}
+

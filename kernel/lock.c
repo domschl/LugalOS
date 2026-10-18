@@ -561,10 +561,12 @@ int ylock_held_by(int pid) {
  * today (preemption and yielding), which is the property S2-S6 are about to
  * build on. */
 
+/* accepted: a selftest's state; one run at a time. */
 static int g_fail;
 /* Counted rather than written into the summary by hand: the literal "7/7" it
  * used to print stopped being true the moment Y2 added two checks, and a
  * count that can drift from what ran is a count nobody should trust. */
+/* accepted: a selftest's state; one run at a time. */
 static int g_checks;
 
 /* --- Y3's deliberate cycle -------------------------------------------------
@@ -890,6 +892,7 @@ int lock_selftest(void) {
          * edge there is nothing to detect, and calling anyway would block on
          * a task that is not serving. */
         if (edge_recorded) {
+            /* accepted: a selftest's state; one run at a time. */
             static uint8_t creq[8], cresp[8];
             if (chan_register_task("lockcycle", wpid, creq, sizeof(creq),
                                    cresp, sizeof(cresp)) == 0) {
@@ -988,6 +991,7 @@ int lock_selftest(void) {
 
         /* Truncation is visible and counted, not silent. */
         uint32_t trunc_before = klog_truncations();
+        /* accepted: a selftest's state; one run at a time. */
         static char toolong[KLOG_REC_MAX + 64];
         for (uint32_t i = 0; i < sizeof(toolong) - 1; i++) toolong[i] = 'x';
         toolong[sizeof(toolong) - 1] = '\0';
@@ -1066,4 +1070,23 @@ int lock_selftest(void) {
     if (g_fail == 0) cprintf("LOCK_SELFTEST_OK (%d/%d)\n", g_checks, g_checks);
     else             cprintf("LOCK_SELFTEST_FAIL (%d of %d failed)\n", g_fail, g_checks);
     return g_fail;
+}
+
+/* --- Session claims (kernel/lock.h) ------------------------------------- */
+
+bool session_claim(session_claim_t *c, const char *what) {
+    int me = sched_context_id() + 1;
+    if (__atomic_load_n(&c->owner, __ATOMIC_ACQUIRE) == me) { c->depth++; return true; }
+    int expect = 0;
+    if (!__atomic_compare_exchange_n(&c->owner, &expect, me, false,
+                                     __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        if (what) cprintf("%s: in use in another terminal\n", what);
+        return false;
+    }
+    c->depth = 1;
+    return true;
+}
+
+void session_release(session_claim_t *c) {
+    if (c->depth && --c->depth == 0) __atomic_store_n(&c->owner, 0, __ATOMIC_RELEASE);
 }

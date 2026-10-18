@@ -268,6 +268,7 @@ static void hub_derive(void) {
     }
 
     if (at24c32_is_detected()) {
+        /* guarded by: s_hub_lock, as hub_derive()'s caller holds it */
         static uint64_t s_last_eeprom_ckpt_ms = 0;
         static bool s_was_fresh_air = false;
         bool fresh_transition = s_fresh_air_verified && !s_was_fresh_air;

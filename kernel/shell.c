@@ -573,8 +573,12 @@ typedef struct {
 } pager_stack_entry_t;
 
 #define HELP_STACK_MAX 8
+/* The pager's way back: one stack for every terminal. guarded by:
+ * g_pager_session, which `help`, `gem`, `more` and the pager itself claim
+ * (re-entrant). */
 static pager_stack_entry_t s_help_stack[HELP_STACK_MAX];
 static int  s_help_depth = 0;
+static session_claim_t g_pager_session;
 
 static int detect_screen_rows(void) {
     unsigned cols = 80, rows = 24;
@@ -812,7 +816,8 @@ static bool pager_follow_link(int fd, char link_digit, const char *base_url,
     return false;
 }
 
-static void pager_view_file(const char *initial_resource, bool is_topic, const char *initial_title, const char *subheading) {
+static void pager_view_file(const char *initial_resource, bool is_topic, const char *initial_title, const char *subheading);
+static void pager_view_file_locked(const char *initial_resource, bool is_topic, const char *initial_title, const char *subheading) {
     int max_rows = detect_screen_rows();
     char cur_resource[128];
     strncpy(cur_resource, initial_resource, sizeof(cur_resource) - 1);
@@ -1163,7 +1168,8 @@ static void cmd_help_test(void) {
     cprintf("\n");
 }
 
-static void cmd_help_topic(const char *topic, const char *subheading) {
+static void cmd_help_topic(const char *topic, const char *subheading);
+static void cmd_help_topic_locked(const char *topic, const char *subheading) {
     char path[128];
     if (resolve_help_path(topic, path, sizeof(path))) {
         s_help_depth = 0;
@@ -1223,7 +1229,8 @@ static void cmd_man(const char *topic) {
     cmd_help(topic);
 }
 
-static void cmd_gem(const char *arg) {
+static void cmd_gem(const char *arg);
+static void cmd_gem_locked(const char *arg) {
     if (!arg || !*arg) {
         cprintf("Usage: gem <file.gmi | topic | spartan://host[:port]/path>\n");
         return;
@@ -1369,8 +1376,23 @@ static void cmd_spartand(const char *arg) {
     cprintf("Usage: spartand [start [port] | stop | status]\n");
 }
 
-static const char *g_pipe_in = NULL;
-static size_t      g_pipe_in_len = 0;
+/* A pipeline's input for the command it is running: per execution context,
+ * because each terminal runs its own pipelines, and a command reading "its"
+ * piped input must not find another terminal's.
+ * single task: each slot its own context's (sched_context_id()). */
+typedef struct {
+    const char *buf;
+    size_t      len;
+} pipe_in_t;
+static pipe_in_t g_pipe_in_ctx[MAX_TASKS + MAX_HARTS];
+
+static pipe_in_t *pipe_in(void) {
+    int id = sched_context_id();
+    if (id < 0 || id >= (int)(sizeof g_pipe_in_ctx / sizeof g_pipe_in_ctx[0])) id = 0;
+    return &g_pipe_in_ctx[id];
+}
+#define g_pipe_in     (pipe_in()->buf)
+#define g_pipe_in_len (pipe_in()->len)
 
 static void parse_and_eval_cmd(const char *cmd_line);
 
@@ -1427,7 +1449,8 @@ static void pager_view_buf(const char *buf, size_t len) {
     }
 }
 
-static void cmd_more(const char *path) {
+static void cmd_more(const char *path);
+static void cmd_more_locked(const char *path) {
     if (g_pipe_in != NULL && g_pipe_in_len > 0) {
         pager_view_buf(g_pipe_in, g_pipe_in_len);
         return;
@@ -1892,6 +1915,7 @@ static void cmd_wc(const char *arg_str) {
     }
 }
 
+/* accepted: the last command's status, in whichever terminal ran it. */
 static int g_shell_last_status = 0;
 
 static inline char char_lower(char c) {
@@ -2616,6 +2640,8 @@ static void cmd_mqtt(const char *arg) {
         /* Username and password, each up to the next space. Copied into
          * buffers with a lifetime past this call because mqtt_connect() keeps
          * the config; the strings in `cmd_line` do not outlive the command. */
+        /* accepted: `mqtt`/`mqttd` parse their credentials here; two terminals at once
+         * mix them. */
         static char user[64], pass[64];
         user[0] = pass[0] = '\0';
         while (*a == ' ') a++;
@@ -2657,6 +2683,7 @@ static void cmd_mqtt(const char *arg) {
         /* The filter is copied into a static: mqtt_subscribe() only needs it
          * for the call, but the handler prints topics for the rest of the
          * session and `cmd_line` is gone by then. */
+        /* accepted: `mqtt` parses its filter here. */
         static char filter[MQTT_TOPIC_MAX + 1];
         strncpy(filter, a, sizeof(filter) - 1);
         filter[sizeof(filter) - 1] = '\0';
@@ -2871,6 +2898,7 @@ static void shell_mqtt_message(const char *topic, const uint8_t *payload,
 }
 
 static bool shell_fake_source(int32_t *out, void *ctx) {
+    /* accepted: a command's or selftest's own state; one run at a time. */
     static int32_t n;
     (void)ctx;
     *out = n++;
@@ -2965,6 +2993,8 @@ static void cmd_mqttd(const char *arg) {
         while (*a >= '0' && *a <= '9') period = period * 10u + (unsigned)(*a++ - '0');
         cfg.sample_s = (uint16_t)period;
 
+        /* accepted: `mqtt`/`mqttd` parse their credentials here; two terminals at once
+         * mix them. */
         static char user[64], pass[64];
         user[0] = pass[0] = '\0';
         while (*a == ' ') a++;
@@ -3188,6 +3218,7 @@ static void cmd_sdio(const char *arg) {
             cprintf("usage: sdio rd53 <fn> <addr> <len, hex, at most 200>\n");
             return;
         }
+        /* accepted: a command's or selftest's own state; one run at a time. */
         static uint8_t buf[512];
         if (sdio_cmd53(false, a, b, buf, c) != 0) { cprintf("sdio rd53: failed\n"); return; }
         for (uint32_t i = 0; i < c; i++) {
@@ -3807,6 +3838,7 @@ UATTR static void user_probe(void) {
 
 /* The isolation probe: a store into kernel memory the task was never granted.
  * Under a correct domain it faults and the task is terminated. */
+/* accepted: a command's or selftest's own state; one run at a time. */
 static volatile uintptr_t g_kernel_canary = 0xC0FFEE;
 
 UATTR static void user_intruder(void) {
@@ -3824,6 +3856,7 @@ UATTR static void user_intruder(void) {
  * kernel writes into, validated by copy_to_user() against this task's domain.
  * Both outcomes are asserted -- a syscall layer refusing every pointer would
  * pass the "refused" half while being useless. */
+/* accepted: a command's or selftest's own state; one run at a time. */
 static volatile uintptr_t g_deputy_target = 0xFEEDFACE;
 
 UATTR static void user_deputy(void) {
@@ -3875,6 +3908,7 @@ UATTR static void user_deputy(void) {
  * against someone typing it. palloc_pages() returns page-aligned memory on
  * every target, which is exactly the property the paragraph above needs, so
  * the grant is unchanged -- only where the page comes from moved. */
+/* accepted: a command's or selftest's own state; one run at a time. */
 static scratch_t g_user_stack_sc;
 static uint8_t *g_user_stack;
 static mem_domain_t g_user_domain;
@@ -3883,6 +3917,7 @@ static mem_domain_t g_user_domain;
  * report is a false positive on any core where the domain could not be
  * installed: the canary is untouched because nothing ran, which reads
  * identically to "the write was correctly blocked". */
+/* accepted: a command's or selftest's own state; one run at a time. */
 static volatile bool g_user_entered;
 
 /* X5: the hart the probe was executing on when it entered U-mode.
@@ -3892,6 +3927,7 @@ static volatile bool g_user_entered;
  * actually having run there is exactly the gap a pin that silently did
  * nothing would hide -- and a pass built on that gap would be the kind of
  * false positive g_user_entered above already exists to rule out. */
+/* accepted: a command's or selftest's own state; one run at a time. */
 static volatile int g_user_hart = -1;
 
 static void user_task_common(void (*entry)(void)) {
@@ -4058,9 +4094,11 @@ static void cmd_deputytest(int hart) {
  * than to a specific driver's PMP grant. */
 /* Same treatment as g_user_stack above (§3.1): heap for the duration of the
  * `chanechotest` probe rather than permanent .bss. */
+/* accepted: a command's or selftest's own state; one run at a time. */
 static scratch_t       g_echo_ustack_sc;
 static uint8_t        *g_echo_ustack;
 static mem_domain_t    g_echo_domain;
+/* accepted: a command's or selftest's own state; one run at a time. */
 static uint8_t         g_echo_req[16];
 static uint8_t         g_echo_resp[16];
 static chan_endpoint_t *g_echo_ep;
@@ -5223,8 +5261,14 @@ static void cmd_canvas(const char *cmd_line) {
     }
 }
 
+/* One full-screen editor at a time: g_shell_editor and the editor's own
+ * state are one set. guarded by: g_editor_session. */
+static session_claim_t g_editor_session;
+
 static void shell_run_editor(const char *filename) {
+    if (!session_claim(&g_editor_session, "e")) return;
     (void)editor_run(filename, &g_shell_editor, NULL, 0);
+    session_release(&g_editor_session);
 }
 
 static void parse_and_eval_cmd(const char *cmd_line) {
@@ -7003,4 +7047,27 @@ void shell_exec(const char *cmd_line) {
     parse_and_eval_cmd(cmd_line);
 }
 
+/* The pager's entry points, each holding g_pager_session. */
+static void pager_view_file(const char *initial_resource, bool is_topic, const char *initial_title, const char *subheading) {
+    if (!session_claim(&g_pager_session, "help")) return;
+    pager_view_file_locked(initial_resource, is_topic, initial_title, subheading);
+    session_release(&g_pager_session);
+}
 
+static void cmd_help_topic(const char *topic, const char *subheading) {
+    if (!session_claim(&g_pager_session, "help")) return;
+    cmd_help_topic_locked(topic, subheading);
+    session_release(&g_pager_session);
+}
+
+static void cmd_gem(const char *arg) {
+    if (!session_claim(&g_pager_session, "help")) return;
+    cmd_gem_locked(arg);
+    session_release(&g_pager_session);
+}
+
+static void cmd_more(const char *path) {
+    if (!session_claim(&g_pager_session, "help")) return;
+    cmd_more_locked(path);
+    session_release(&g_pager_session);
+}

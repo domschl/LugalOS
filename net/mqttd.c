@@ -221,6 +221,8 @@ typedef struct {
     uint16_t max_age_s;
 } mqttd_file_src_t;
 
+/* accepted: added and cleared from a shell while the daemon reads them; a slot is
+ * published by its in_use flag after its fields. */
 static mqttd_file_src_t g_file_src[MQTTD_MAX_FILE_SOURCES];
 
 /* The text after `key=` at the start of a line of `buf`, or NULL. */

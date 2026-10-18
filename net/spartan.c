@@ -8,6 +8,7 @@
 #include "kernel/printk.h"
 #include "libc/include/string.h"
 
+/* accepted: `spartand start|stop` from a shell; one flag and one port. */
 static bool     g_spartan_running = false;
 static uint16_t g_spartan_port = SPARTAN_DEFAULT_PORT;
 static uint32_t g_spartan_requests = 0;

@@ -49,6 +49,7 @@ extern char _utext_kobj_start[], _udata_kobj_start[], _udata_kobj_end[];
 /* The arena: pages from the heap for the test's duration, granted to its domain as one NAPOT region
  * (a power of two, self-aligned). It used to be a static 24 KB in the shim's data region, which kept
  * that region at 32 KB of SRAM on every board for a self-test (45.8). */
+/* accepted: a selftest's state; one run at a time. */
 static uint8_t *g_arena;
 
 typedef struct {

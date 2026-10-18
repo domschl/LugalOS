@@ -81,6 +81,7 @@ class Func:
     var_writes: set[str] = field(default_factory=set)   # variable keys it may write
     mmio: int = 0
     chan_calls: list[dict] = field(default_factory=list)
+    tu: str = ""                                        # the translation unit it was compiled in
 
 
 @dataclass
@@ -94,6 +95,8 @@ class Var:
     size: int
     volatile: bool
     marked: str        # the triage comment, or ""
+    readonly: bool = False
+    tu: str = ""
     init_funcs: set[str] = field(default_factory=set)
     init_vars: set[str] = field(default_factory=set)
 
@@ -139,6 +142,7 @@ class Scanner:
         self.root_args: set[tuple[str, str]] = set()          # (caller key, fn) excluded from edges
         self.static_funcs: dict[str, dict[str, str]] = defaultdict(dict)  # file -> name -> key
         self.src_lines: dict[str, list[str]] = {}
+        self.cur_tu = ""
 
     # --- keys -----------------------------------------------------------------
 
@@ -198,8 +202,11 @@ class Scanner:
             return None
         t = cur.type
         tname = t.spelling
-        if t.is_const_qualified() or (t.kind == ci.TypeKind.CONSTANTARRAY and t.element_type.is_const_qualified()):
-            return None
+        # Read-only storage is kept for the function addresses in its
+        # initializer (a const ops or builtins table is how most callbacks are
+        # reached), and left out of the lists: nothing writes it.
+        readonly = t.is_const_qualified() or (t.kind == ci.TypeKind.CONSTANTARRAY and
+                                              t.element_type.is_const_qualified())
         if LOCK_TYPES.search(tname):
             return None
         key = self.var_key(cur)
@@ -212,7 +219,8 @@ class Scanner:
         kind = "local-static" if local else ("file-static" if cur.linkage == ci.LinkageKind.INTERNAL else "global")
         size = t.get_size()
         v = Var(key, cur.spelling, rel(cur.location.file.name), cur.location.line, kind, tname,
-                size if size > 0 else 0, t.is_volatile_qualified() or "volatile" in tname, self.marked(cur))
+                size if size > 0 else 0, t.is_volatile_qualified() or "volatile" in tname,
+                "" if readonly else self.marked(cur), readonly=readonly, tu=self.cur_tu)
         for d in cur.walk_preorder():
             if d.kind == K.DECL_REF_EXPR and d.referenced is not None:
                 r = d.referenced
@@ -277,12 +285,15 @@ class Scanner:
 
     def walk_function(self, cur: ci.Cursor) -> None:
         key = self.func_key(cur)
+        if cur.linkage == ci.LinkageKind.INTERNAL:
+            # By its own file and by every unit that compiles it (a static
+            # inline in a header, a table's callbacks in an included file).
+            self.static_funcs[rel(cur.location.file.name)][cur.spelling] = key
+            self.static_funcs[self.cur_tu].setdefault(cur.spelling, key)
         if key in self.funcs:
             return
-        fn = Func(key, cur.spelling, rel(cur.location.file.name), cur.location.line)
+        fn = Func(key, cur.spelling, rel(cur.location.file.name), cur.location.line, tu=self.cur_tu)
         self.funcs[key] = fn
-        if cur.linkage == ci.LinkageKind.INTERNAL:
-            self.static_funcs[fn.file][cur.spelling] = key
 
         def param_is_const_ptr(call: ci.Cursor, i: int) -> bool | None:
             r = call.referenced
@@ -434,6 +445,7 @@ class Scanner:
         fn.locks = bool(fn.calls & LOCK_FUNCS)
 
     def scan_tu(self, path: str, args: list[str], idx: ci.Index) -> int:
+        self.cur_tu = rel(path)
         tu = idx.parse(path, args=args)
         errs = sum(1 for d in tu.diagnostics if d.severity >= 3)
         for cur in tu.cursor.walk_preorder():
@@ -450,8 +462,8 @@ class Scanner:
 
     # --- reachability ---------------------------------------------------------
 
-    def resolve(self, file: str, name: str) -> str | None:
-        sk = self.static_funcs.get(file, {}).get(name)
+    def resolve(self, file: str, name: str, tu: str = "") -> str | None:
+        sk = self.static_funcs.get(file, {}).get(name) or self.static_funcs.get(tu, {}).get(name)
         if sk:
             return sk
         return name if name in self.funcs else None
@@ -461,18 +473,18 @@ class Scanner:
         self.task_edges = defaultdict(set)
         for fk, fn in self.funcs.items():
             for c in fn.calls:
-                t = self.resolve(fn.file, c)
+                t = self.resolve(fn.file, c, fn.tu)
                 if t:
                     edges[fk].add(t)
             for c in fn.task_calls - fn.calls:
-                t = self.resolve(fn.file, c)
+                t = self.resolve(fn.file, c, fn.tu)
                 if t:
                     edges[fk].add(t)
                     self.task_edges[fk].add(t)
             for a in fn.addr_of:
                 if (fk, a) in self.root_args:
                     continue
-                t = self.resolve(fn.file, a)
+                t = self.resolve(fn.file, a, fn.tu)
                 if t:
                     edges[fk].add(t)
             # function addresses in the initializers of variables it touches
@@ -487,7 +499,7 @@ class Scanner:
                 for f in v.init_funcs:
                     if ("<spec>", f) in self.root_args:
                         continue
-                    t = self.resolve(v.file, f)
+                    t = self.resolve(v.file, f, v.tu)
                     if t:
                         edges[fk].add(t)
                 stack.extend(v.init_vars)
@@ -588,6 +600,8 @@ def main() -> int:
     locked = {fn.name: fn.locks for fn in sc.funcs.values()}
     shared = []
     for vk, v in sc.vars.items():
+        if v.readonly:
+            continue
         wc, rc = w_ctx.get(vk, set()), r_ctx.get(vk, set())
         if not wc or len(wc | rc) < 2:
             continue                       # never written after its initializer, or one context
@@ -626,7 +640,7 @@ def main() -> int:
         f"# racescan: {a.build}",
         "",
         f"{len(cc)} translation units ({bad} with parse errors), {len(sc.funcs)} functions, "
-        f"{len(sc.vars)} writable static variables, {len(sc.roots) + 1} contexts.",
+        f"{sum(1 for v in sc.vars.values() if not v.readonly)} writable static variables, {len(sc.roots) + 1} contexts.",
         "",
         f"## 1. Static storage written after its initializer and reached from two or more contexts: "
         f"{len(unmarked)} unmarked, {len(marked)} marked",
@@ -693,7 +707,7 @@ def main() -> int:
     }, indent=1))
     ga = sum(1 for t in unmarked if t[0] == "A")
     gs = sum(1 for t in unmarked if t[0] == "S")
-    print(f"{len(sc.funcs)} functions, {len(sc.vars)} static variables, {len(sc.roots) + 1} contexts; "
+    print(f"{len(sc.funcs)} functions, {sum(1 for v in sc.vars.values() if not v.readonly)} static variables, {len(sc.roots) + 1} contexts; "
           f"{len(unmarked)} shared unmarked (A {ga}, S {gs}, B {len(unmarked) - ga - gs}), {len(marked)} marked; "
           f"{sum(1 for f in mmio_files if len(mmio_files[f]) >= 2)} MMIO files in 2+ contexts; "
           f"{len(chan_sites)} chan_call sites; {len(isr_block)} handler paths to a blocking call "

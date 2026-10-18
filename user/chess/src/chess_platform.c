@@ -12,6 +12,7 @@ int atoi(const char *s) {
     return sign * val;
 }
 
+/* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
 static uint64_t g_chess_rand_state = 88172645463325252ULL;
 
 void srand(unsigned int seed) {

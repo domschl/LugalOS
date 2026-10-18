@@ -16,6 +16,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+/* accepted: a selftest's state; one run at a time. */
 static int g_fail;
 
 #define CHECK(cond, ...) do { if (!(cond)) { \
@@ -29,6 +30,7 @@ static bool wait_count(volatile int *c, int n) {
 
 /* ---- 1. polls, timeouts, FIFO hand-off ----------------------------------- */
 
+/* accepted: a selftest's state; one run at a time. */
 static kh_t g_sem;
 static volatile int g_order[4], g_norder, g_started;   /* accepted: the selftest and its helper tasks */
 static volatile int g_rc[4];
@@ -69,6 +71,7 @@ static void test_basic(void) {
 
 /* ---- 2. a mutex under contention ----------------------------------------- */
 
+/* accepted: a selftest's state; one run at a time. */
 static kh_t g_mtx;
 static volatile int g_counter, g_in_cs, g_violations, g_mdone;   /* accepted: the selftest and its helper tasks */
 
@@ -103,6 +106,7 @@ static void test_mutex(void) {
 
 /* ---- 3. a queue between two tasks ---------------------------------------- */
 
+/* accepted: a selftest's state; one run at a time. */
 static kh_t g_q;
 static volatile int g_pdone;   /* accepted: the selftest and its helper tasks */
 
@@ -136,7 +140,9 @@ static void test_queue(void) {
 
 /* ---- 4. an event group --------------------------------------------------- */
 
+/* accepted: a selftest's state; one run at a time. */
 static kh_t g_ev;
+/* accepted: the selftest and its helper tasks. */
 static volatile uint32_t g_ev_out;
 static volatile int g_ev_rc = -99, g_ev_done;   /* accepted: the selftest and its helper tasks */
 
@@ -169,6 +175,7 @@ static void test_event(void) {
 /* ---- 5. timers through the timer thread ---------------------------------- */
 
 #define OWNER 0x1234u
+/* accepted: the selftest and its helper tasks. */
 static volatile uintptr_t g_fired[16];
 static volatile uint32_t g_fired_at[16];
 static volatile int g_nfired, g_tstop;   /* accepted: the selftest and its helper tasks */

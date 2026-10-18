@@ -255,6 +255,7 @@ static uint8_t uart_hw_getc_blocking(void) {
 
 static uint8_t       g_uart_req[UART_REQ_CAP];
 static uint8_t       g_uart_resp[1];
+/* single task: the boot (or the root shell re-running it); constant after. */
 static driver_task_t g_uart_task;
 
 /* Verify: counts UART_REQ_WRITE calls actually served -- one per

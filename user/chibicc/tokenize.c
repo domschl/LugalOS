@@ -14,14 +14,20 @@
 #include <string.h>
 
 #define MAX_TOKENS 512
+/* guarded by: g_lisp_lock: the compiler runs only from the `cc` primitive, inside an
+ * evaluation. */
 static Token *token_pool;
 static int token_pool_idx = 0;
 
 #define MAX_STR_BUFS 64
 #define STR_BUF_LEN 128
+/* guarded by: g_lisp_lock: the compiler runs only from the `cc` primitive, inside an
+ * evaluation. */
 static char (*str_bufs)[STR_BUF_LEN];
 static int str_buf_idx = 0;
 
+/* guarded by: g_lisp_lock: the compiler runs only from the `cc` primitive, inside an
+ * evaluation. */
 bool chibicc_pool_exhausted = false;
 
 static Token *new_token(TokenKind kind, char *start, char *end) {

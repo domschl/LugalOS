@@ -1,4 +1,5 @@
 #include "drivers/bme680.h"
+#include "kernel/lock.h"
 #include "drivers/i2c_bus.h"
 #include "drivers/i2c_reg.h"
 #include "kernel/printk.h"
@@ -56,6 +57,9 @@ static const uint32_t LOOKUP_TABLE2[16] = {
     4000000u, 2000000u, 1000000u, 500000u, 250000u, 125000u
 };
 
+/* guarded by: g_dev_lock (below), which init and every measurement take:
+ * the hub's sampler, an mqttd source, `sensor` and Lisp may all measure, and
+ * `sensor init` probes again under them. */
 static struct {
     bool             detected;
     uint8_t          addr;
@@ -69,7 +73,8 @@ static struct {
     uint32_t         read_count;
     uint32_t         fail_count;
     const char      *last_fail;
-} g;
+} g;   /* guarded by: g_dev_lock (see above the struct) */
+static ylock_t g_dev_lock;
 
 static bool rd(uint8_t reg, uint8_t *dst, uint32_t len) {
     return i2c_reg_read_bytes_bus(g.bus, g.addr, reg, dst, len);
@@ -175,7 +180,7 @@ static bool read_calibration(void) {
     return true;
 }
 
-bool bme680_init(void) {
+static bool bme680_init_locked(void) {
     static const uint8_t ADDRS[] = { BME680_ADDR_LOW, BME680_ADDR_HIGH };
     uint8_t buses = i2c_bus_count();
 
@@ -296,7 +301,7 @@ void bme680_compensate(const bme680_calib_t *cal,
     }
 }
 
-bool bme680_read(bme680_reading_t *out) {
+static bool bme680_read_locked(bme680_reading_t *out) {
     if (!out || !g.detected) return false;
 
     /* Re-arm heater target based on last measured ambient temperature if available */
@@ -498,3 +503,18 @@ sensor_dev_t bme680_sensor_dev = {
     .ops       = &bme680_ops,
     .priv      = NULL,
 };
+
+/* The driver's entry points, under g_dev_lock. */
+bool bme680_init(void) {
+    ylock_acquire(&g_dev_lock);
+    bool r = bme680_init_locked();
+    ylock_release(&g_dev_lock);
+    return r;
+}
+
+bool bme680_read(bme680_reading_t *out) {
+    ylock_acquire(&g_dev_lock);
+    bool r = bme680_read_locked(out);
+    ylock_release(&g_dev_lock);
+    return r;
+}

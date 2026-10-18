@@ -32,6 +32,8 @@ typedef struct {
     bool frame_ready;
 } uart_slip_ctx_t;
 
+/* accepted: p9share's SLIP context and demux, enabled and driven by the one shell that
+ * started it. */
 static uart_slip_ctx_t g_uart_slip_ctx;
 
 static int uart_slip_poll(p9_link_t *link) {
@@ -147,6 +149,8 @@ typedef struct {
     bool frame_ready;
 } uart_demux_ctx_t;
 
+/* accepted: p9share's SLIP context and demux, enabled and driven by the one shell that
+ * started it. */
 static uart_demux_ctx_t g_demux;
 
 static void demux_console_push(uint8_t c) {

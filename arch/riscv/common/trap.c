@@ -909,6 +909,8 @@ void arch_irq_enable(uint32_t irq_num) {
 
 /* See arch/trap.h. Not a general exception-handling mechanism -- deliberately
  * narrow, so it cannot accidentally mask a real fault. */
+/* accepted: one access probe at a time (`peek`/`poke`); a fault in another task during
+ * one is taken as the probe's. */
 static volatile bool g_probe_active;
 static volatile bool g_probe_faulted;
 

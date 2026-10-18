@@ -13,6 +13,7 @@
  */
 
 #include "kernel/kobj_sys.h"
+#include "kernel/lock.h"
 #include "kernel/kobj_sched.h"
 #include "kernel/sched.h"
 #include "kernel/uaccess.h"
@@ -37,9 +38,14 @@ static inline uintptr_t caller_domain(void) {
  * domain , so excluding that thread is excluding the
  * interrupt. Few domains use it, so a tiny table is enough. */
 #define CRIT_MAX 4
+/* guarded by: g_crit_lock: a domain's threads make their first critical
+ * section at once, and two that both found no mutex would each create one --
+ * two "critical sections" that do not exclude each other. */
 static struct { uintptr_t owner; kh_t m; } g_crit[CRIT_MAX];
+static ylock_t g_crit_lock;
 
-static kh_t crit_mutex(uintptr_t owner, bool create) {
+static kh_t crit_mutex(uintptr_t owner, bool create);
+static kh_t crit_mutex_locked(uintptr_t owner, bool create) {
     for (int i = 0; i < CRIT_MAX; i++)
         if (g_crit[i].m && g_crit[i].owner == owner) return g_crit[i].m;
     if (!create) return 0;
@@ -56,7 +62,7 @@ static kh_t crit_mutex(uintptr_t owner, bool create) {
 /* Everything a finished domain still holds here: its critical-section entry above (whose mutex is
  * about to be deleted -- the entry must not outlive it), then every object and timer it owns
  * (kos_release_owner). Only once no thread of the domain can run. */
-uint32_t kobj_sys_release_domain(uintptr_t owner) {
+static uint32_t kobj_sys_release_domain_locked(uintptr_t owner) {
     if (owner == 0) return 0;
     for (int i = 0; i < CRIT_MAX; i++)
         if (g_crit[i].m && g_crit[i].owner == owner) { g_crit[i].m = 0; g_crit[i].owner = 0; }
@@ -271,4 +277,19 @@ static long kobj_syscall_impl(unsigned op, uintptr_t a1, uintptr_t a2, uintptr_t
     default:
         return KO_FAIL;
     }
+}
+
+/* The critical-section table's users, under g_crit_lock. */
+static kh_t crit_mutex(uintptr_t owner, bool create) {
+    ylock_acquire(&g_crit_lock);
+    kh_t r = crit_mutex_locked(owner, create);
+    ylock_release(&g_crit_lock);
+    return r;
+}
+
+uint32_t kobj_sys_release_domain(uintptr_t owner) {
+    ylock_acquire(&g_crit_lock);
+    uint32_t r = kobj_sys_release_domain_locked(owner);
+    ylock_release(&g_crit_lock);
+    return r;
 }

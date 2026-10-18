@@ -355,6 +355,8 @@ void sdhost_set_width4(bool four) {
 
 /* --- What this driver remembers about the card in the slot --------------- */
 
+/* guarded by: g_host_lock (sdhost_acquire()) for the card's state; the rest is set at
+ * boot. */
 static bool     g_present;        /* a card answered and is initialised */
 static bool     g_block_addressed;/* SDHC/SDXC: LBA in blocks, not bytes */
 static uint32_t g_rca;            /* the card's relative address, as published */
@@ -964,6 +966,8 @@ static int sdmmc_hw_write_block(uint32_t lba, const uint8_t *src) {
  * so the whole probe costs microseconds rather than the 1.5 s the ACMD41 loop
  * is budgeted. The budget only ever applies to a card that is answering and
  * still initialising. */
+/* guarded by: g_host_lock (sdhost_acquire()) for the card's state; the rest is set at
+ * boot. */
 static bool g_hw_ready;
 
 /* The controller's half: clocks, reset, polled mode, watermarks. Shared with
@@ -1092,6 +1096,8 @@ void sdhost_clear_status(uint32_t bits) { REG(SD_RINTSTS) = bits; }
  * `probe` is 512 bytes of .bss rather than a local because this runs on
  * whatever stack the first caller happens to have -- vfs_server_init()'s,
  * during boot -- and half a kilobyte is a great deal to ask of one. */
+/* guarded by: g_host_lock (sdhost_acquire()) for the card's state; the rest is set at
+ * boot. */
 static uint8_t g_probe_block[512];
 
 static void sdmmc_set_bus_width(void) {
@@ -1280,6 +1286,8 @@ static int sdmmc_card_init_locked(void) {
 
 static uint8_t       g_blk_req[BLK_REQ_CAP];
 static uint8_t       g_blk_resp[BLK_RESP_CAP];
+/* guarded by: g_host_lock (sdhost_acquire()) for the card's state; the rest is set at
+ * boot. */
 static driver_task_t g_blk_task;
 
 uint32_t blk_task_call_count(void) { return driver_task_call_count(&g_blk_task); }
@@ -1425,6 +1433,8 @@ static int sdmmc_write_blocks(block_dev_t *dev, const void *buf, uint32_t lba, u
     return sdmmc_hw_write_blocks(lba + done, count - done, src + (size_t)done * 512u);
 }
 
+/* guarded by: g_host_lock (sdhost_acquire()) for the card's state; the rest is set at
+ * boot. */
 static block_dev_t g_sdmmc_dev = {
     .name = "sdmmc0",
     .block_size = 512,

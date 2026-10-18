@@ -1,4 +1,5 @@
 #include "drivers/mics6814.h"
+#include "kernel/lock.h"
 #include "drivers/i2c_bus.h"
 #include "drivers/i2c_reg.h"
 #include "kernel/printk.h"
@@ -51,7 +52,8 @@ static struct {
     uint32_t            read_count;
     uint32_t            fail_count;
     const char         *last_fail;
-} g;
+} g;   /* guarded by: g_dev_lock (below), as the other sensor drivers */
+static ylock_t g_dev_lock;
 
 static bool fail(const char *where) {
     g.last_fail = where;
@@ -210,7 +212,7 @@ static bool mics6814_v2_read_adc(uint8_t ch, uint16_t *out_val) {
 
 /* --- Driver Lifecycle --- */
 
-bool mics6814_init(void) {
+static bool mics6814_init_locked(void) {
     g.detected = false;
     g.addr = MICS6814_DEFAULT_ADDR;
     g.fw_version = 1;
@@ -282,7 +284,7 @@ bool mics6814_init(void) {
     return true;
 }
 
-bool mics6814_read(mics6814_reading_t *out) {
+static bool mics6814_read_locked(mics6814_reading_t *out) {
     if (!out || !g.detected) return false;
 
     mics6814_reading_t r = g.last;
@@ -474,3 +476,18 @@ sensor_dev_t mics6814_sensor_dev = {
     .ops       = &mics6814_ops,
     .priv      = NULL,
 };
+
+/* The driver's entry points, under g_dev_lock. */
+bool mics6814_init(void) {
+    ylock_acquire(&g_dev_lock);
+    bool r = mics6814_init_locked();
+    ylock_release(&g_dev_lock);
+    return r;
+}
+
+bool mics6814_read(mics6814_reading_t *out) {
+    ylock_acquire(&g_dev_lock);
+    bool r = mics6814_read_locked(out);
+    ylock_release(&g_dev_lock);
+    return r;
+}

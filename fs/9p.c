@@ -518,22 +518,27 @@ static p9_grant_result_t p9_grants_store(const char *text, uint32_t len);
  * The file path is deliberately left uncached: it already worked from any
  * task, /sd0 is where an administrator may edit grants by hand behind the
  * system's back, and a cache would start ignoring them. */
-static char     g_grants_cache[NODE_GRANTS_MAX];
-static uint32_t g_grants_cache_len;
-static bool     g_grants_cached;
+/* guarded by: g_auth_lock (with the console key below): `p9grant` and the
+ * key setter change them from a shell while the server reads them to decide
+ * an attach, and a list read half old, half new could admit a revoked user.
+ * Readers copy out under the lock and parse the copy. */
+static char       g_grants_cache[NODE_GRANTS_MAX];
+static uint32_t   g_grants_cache_len;
+static bool       g_grants_cached;
+static spinlock_t g_auth_lock;
 
 /* Reads the record's grants into the cache. Call from the boot task only.
  * Absence of a record, or of the field, is not an error -- it means this
  * board keeps its grants in a file, and p9_grants_list() falls through. */
 void p9_grants_cache_load(void) {
+    static char rec[NODE_GRANTS_MAX];   /* single task: the boot task, as said above */
     uint32_t n = 0;
-    if (node_grants(g_grants_cache, sizeof(g_grants_cache), &n) && n > 0) {
-        g_grants_cache_len = n;
-        g_grants_cached = true;
-    } else {
-        g_grants_cache_len = 0;
-        g_grants_cached = false;
-    }
+    bool have = node_grants(rec, sizeof(rec), &n) && n > 0;
+    uintptr_t f = spin_lock_irqsave(&g_auth_lock);
+    if (have) memcpy(g_grants_cache, rec, n);
+    g_grants_cache_len = have ? n : 0;
+    g_grants_cached = have;
+    spin_unlock_irqrestore(&g_auth_lock, f);
 }
 
 uint32_t p9_grants_list(p9_grant_t *out, uint32_t cap) {
@@ -555,13 +560,15 @@ uint32_t p9_grants_list(p9_grant_t *out, uint32_t cap) {
      *
      * Same bytes either way -- this is a storage decision, not a format one,
      * and the parser below does not know which it got. */
-    int n;
-    if (g_grants_cached && g_grants_cache_len > 0) {
+    int n = 0;
+    uintptr_t f = spin_lock_irqsave(&g_auth_lock);
+    bool cached = g_grants_cached && g_grants_cache_len > 0;
+    if (cached) {
         n = (int)(g_grants_cache_len < sizeof(buf) ? g_grants_cache_len : sizeof(buf));
         memcpy(buf, g_grants_cache, (size_t)n);
-    } else {
-        n = p9_read_small_file(P9_AUTH_KEYS_FILE, buf, sizeof(buf));
     }
+    spin_unlock_irqrestore(&g_auth_lock, f);
+    if (!cached) n = p9_read_small_file(P9_AUTH_KEYS_FILE, buf, sizeof(buf));
     if (n <= 0) return 0;
 
     uint32_t count = 0;
@@ -657,9 +664,11 @@ static p9_grant_result_t p9_grants_store(const char *text, uint32_t len) {
         if (rc == NODE_ID_OK) {
             /* Written through rather than invalidated: the next reader may be
              * the 9P server task, which cannot reload it itself. */
+            uintptr_t f = spin_lock_irqsave(&g_auth_lock);
             g_grants_cache_len = len < sizeof(g_grants_cache) ? len : sizeof(g_grants_cache);
             memcpy(g_grants_cache, text, g_grants_cache_len);
             g_grants_cached = g_grants_cache_len > 0;
+            spin_unlock_irqrestore(&g_auth_lock, f);
             return P9_GRANT_OK;
         }
         /* A board that HAS a store and could not be written is a failure, not
@@ -724,26 +733,37 @@ const char *p9_grant_result_str(p9_grant_result_t rc) {
  * Safe by the same argument that lets the local channel skip authentication:
  * whoever has the console already has the board. It is never reachable over
  * 9P (it is not a file), and it does not survive a reboot. */
+/* guarded by: g_auth_lock (above). */
 static uint8_t  g_console_key[P9_AUTH_KEY_MAX];
 static uint32_t g_console_key_len;
 
 void p9_auth_set_console_key(const uint8_t *key, uint32_t len) {
+    uintptr_t f = spin_lock_irqsave(&g_auth_lock);
     if (!key || len == 0 || len > sizeof(g_console_key)) {
         memset(g_console_key, 0, sizeof(g_console_key));
         g_console_key_len = 0;
-        return;
+    } else {
+        memcpy(g_console_key, key, len);
+        g_console_key_len = len;
     }
-    memcpy(g_console_key, key, len);
-    g_console_key_len = len;
+    spin_unlock_irqrestore(&g_auth_lock, f);
+}
+
+/* The console key into `key_out`, if one is set. */
+static bool console_key_copy(uint8_t *key_out, uint32_t *key_len) {
+    uintptr_t f = spin_lock_irqsave(&g_auth_lock);
+    bool have = g_console_key_len > 0;
+    if (have) {
+        memcpy(key_out, g_console_key, g_console_key_len);
+        *key_len = g_console_key_len;
+    }
+    spin_unlock_irqrestore(&g_auth_lock, f);
+    return have;
 }
 
 int p9_auth_own_key(uint8_t *key_out, uint32_t *key_len) {
     /* Console key first, same bootstrap-override argument as always. */
-    if (g_console_key_len > 0) {
-        memcpy(key_out, g_console_key, g_console_key_len);
-        *key_len = g_console_key_len;
-        return 0;
-    }
+    if (console_key_copy(key_out, key_len)) return 0;
     /* I4: the identity record. This is the only other place this node's
      * own key lives -- deliberately never the grants list or the flash
      * fallback below, which as of I5 answer a different question ("who
@@ -763,11 +783,7 @@ int p9_auth_own_key(uint8_t *key_out, uint32_t *key_len) {
 int p9_auth_key_for(const char *uname, uint8_t *key_out, uint32_t *key_len) {
     /* Console key first: it is the bootstrap and the override, and a gateway
      * being repaired should not have to fight its own card. */
-    if (g_console_key_len > 0) {
-        memcpy(key_out, g_console_key, g_console_key_len);
-        *key_len = g_console_key_len;
-        return 0;
-    }
+    if (console_key_copy(key_out, key_len)) return 0;
 
     /* I5: the grants list -- what `uname` must present to attach to ME.
      * Deliberately does NOT consult this node's own identity-record key:

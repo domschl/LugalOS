@@ -5,6 +5,7 @@
 #include "kernel/time.h"
 #include <string.h>
 
+/* single task: the boot, before any reader runs; constant after. */
 static bool g_at24c32_detected = false;
 
 /* --- Bus access ---------------------------------

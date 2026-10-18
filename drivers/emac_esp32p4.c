@@ -14,6 +14,7 @@
  */
 
 #include <stdint.h>
+#include "net/ip.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <string.h>
@@ -604,11 +605,17 @@ _Static_assert(EMAC_BUF_SIZE % ESP32P4_L1_CACHE_LINE == 0,
 
 #define CACHE_ALIGNED __attribute__((aligned(ESP32P4_L1_CACHE_LINE)))
 
+/* guarded by: net_lock() for the interface (the stack task polls, receives and sends
+ * under it); the loopback diagnostics take the rings with g_diag_owns_rings, set under
+ * the same lock. */
 static CACHE_ALIGNED emac_desc_t g_rx_desc[EMAC_RX_DESC_COUNT];
 static CACHE_ALIGNED emac_desc_t g_tx_desc[EMAC_TX_DESC_COUNT];
 static CACHE_ALIGNED uint8_t     g_rx_buf[EMAC_RX_DESC_COUNT][EMAC_BUF_SIZE];
 static CACHE_ALIGNED uint8_t     g_tx_buf[EMAC_TX_DESC_COUNT][EMAC_BUF_SIZE];
 
+/* guarded by: net_lock() for the interface (the stack task polls, receives and sends
+ * under it); the loopback diagnostics take the rings with g_diag_owns_rings, set under
+ * the same lock. */
 static uint32_t g_rx_next;   /* the descriptor we will look at next */
 static uint32_t g_tx_next;
 
@@ -757,7 +764,10 @@ static void emac_netif_restarted(void);
  * about one scheduler slice; a long run does not.
  *
  * The netif yields rather than locks: poll() simply reports "nothing" while
- * this is set, which is always a legal answer for a non-blocking poll. */
+ * this is set, which is always a legal answer for a non-blocking poll.
+ * guarded by: net_lock() for the interface's state below (the stack task
+ * polls, receives and sends under it); a diagnostic takes the rings by
+ * setting this under the same lock, so never in the middle of a poll. */
 static volatile bool g_diag_owns_rings;
 
 /* Brings the DMA and MAC up. `loopback` selects the MAC's internal loopback,
@@ -859,6 +869,7 @@ static void emac_start(bool loopback) {
  * the wire is not refused by emac_tx_submit() -- that only hands the
  * descriptor over -- so without looking at the status the DMA wrote back, a
  * lost frame is invisible to everything above. */
+/* accepted: error statistics for `emac`. */
 static uint32_t g_tx_hw_errors;
 static uint32_t g_tx_err_last_des0;
 static uint32_t g_tx_err_seen_bits;
@@ -1087,7 +1098,9 @@ void emac_loopback_stress(uint32_t rounds) {
         cprintf("[EMAC] probe failed -- see `emac scan`.\n");
         return;
     }
+    net_lock();                     /* not in the middle of the stack task's poll */
     g_diag_owns_rings = true;
+    net_unlock();
     emac_start(true);
 
     uint32_t sent, ok, corrupt, refused;
@@ -1103,7 +1116,9 @@ void emac_loopback_test(void) {
         cprintf("[EMAC] probe failed -- see `emac scan`.\n");
         return;
     }
+    net_lock();                     /* not in the middle of the stack task's poll */
     g_diag_owns_rings = true;
+    net_unlock();
     emac_start(true);
 
     cprintf("EMAC loopback: %u RX + %u TX descriptors of %u B, buffers %u B\n",
@@ -1243,6 +1258,9 @@ void emac_loopback_test(void) {
 #define EMAC_CLK_DIV_100M   1u
 #define EMAC_CLK_DIV_10M    19u
 
+/* guarded by: net_lock() for the interface (the stack task polls, receives and sends
+ * under it); the loopback diagnostics take the rings with g_diag_owns_rings, set under
+ * the same lock. */
 static emac_link_t g_link;          /* last resolved state */
 static uint64_t    g_link_checked_ms;
 static bool        g_link_valid;
@@ -1257,6 +1275,7 @@ static bool        g_link_valid;
  * Kept in a static as well as written to the register because it has to be
  * written **again every time the link comes up** -- see the note in
  * emac_apply_link(). */
+/* single task: set at boot, before the stack task polls the interface. */
 static uint8_t g_station_mac[NETIF_MAC_LEN];
 static bool    g_station_mac_valid;
 
@@ -1606,7 +1625,9 @@ void emac_loopback_phy(uint32_t rounds) {
         cprintf("[EMAC] probe failed -- see `emac scan`.\n");
         return;
     }
+    net_lock();                     /* not in the middle of the stack task's poll */
     g_diag_owns_rings = true;
+    net_unlock();
     emac_start(false);
     REG(EMAC_MACFRAMEFILTER) = FILTER_RA;
 
@@ -1662,6 +1683,7 @@ void emac_loopback_phy(uint32_t rounds) {
  * dropped before it ever occupies a descriptor.
  */
 
+/* single task: set at boot, before the stack task polls the interface. */
 static netif_t g_netif;
 static bool    g_netif_registered;
 
@@ -1679,6 +1701,9 @@ static bool    g_netif_registered;
  * and never receives. Miss one and the ring stops at that descriptor
  * permanently, which presents as "the link is up and no traffic arrives".
  * g_rx_held is what makes that auditable. */
+/* guarded by: net_lock() for the interface (the stack task polls, receives and sends
+ * under it); the loopback diagnostics take the rings with g_diag_owns_rings, set under
+ * the same lock. */
 static const uint8_t *g_rx_held;
 static uint32_t       g_rx_held_len;
 
@@ -1687,15 +1712,20 @@ static uint32_t       g_rx_held_len;
  * netif_send()/netif_recv() wrappers can see, precisely so two drivers cannot
  * disagree about what they mean. A hardware-level error is this driver's own
  * business, and its own number. */
+/* accepted: error statistics for `emac`. */
 static uint32_t g_rx_hw_errors;
 /* RDES0 of the last rejected frame, and a running OR of every one of them, so
  * a rate of rejections can be attributed to a cause instead of guessed at. */
+/* accepted: error statistics for `emac`. */
 static uint32_t g_rx_err_last_des0;
 static uint32_t g_rx_err_seen_bits;
 
 /* The Ethernet header of the last frame the MAC accepted, so `emac stats` can
  * answer "what is actually addressed to us on this wire" without a capture
  * host. Fourteen bytes: destination, source, EtherType. */
+/* guarded by: net_lock() for the interface (the stack task polls, receives and sends
+ * under it); the loopback diagnostics take the rings with g_diag_owns_rings, set under
+ * the same lock. */
 static uint8_t  g_last_hdr[14];
 static bool     g_last_hdr_valid;
 

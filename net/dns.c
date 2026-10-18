@@ -1,4 +1,5 @@
 #include "net/dns.h"
+#include "kernel/lock.h"
 #include "net/ip.h"
 #include "fs/vfs.h"
 #include "kernel/printk.h"
@@ -18,6 +19,7 @@ typedef struct {
     uint64_t expires_ms;
 } dns_cache_entry_t;
 
+/* guarded by: g_dns_lock (dns_resolve() holds it). */
 static dns_cache_entry_t g_dns_cache[DNS_CACHE_SIZE];
 static uint32_t          g_dns_cache_idx = 0;
 
@@ -30,7 +32,12 @@ typedef struct {
     uint8_t       ip[IPV4_LEN];
 } dns_reply_t;
 
+/* guarded by: g_dns_lock (dns_resolve() holds it). */
 static dns_reply_t g_dns_reply;
+/* guarded by: g_dns_lock, held for a whole resolve: one reply slot, and two
+ * terminals resolving at once would take each other's answer. The reply
+ * callback (the stack task) only fills the slot of the query in flight. */
+static ylock_t g_dns_lock;
 
 void dns_set_server(const uint8_t ip[IPV4_LEN]) {
     if (!ip) {
@@ -190,7 +197,7 @@ static void dns_rx_cb(void *ctx, const uint8_t src_ip[IPV4_LEN], uint16_t src_po
     }
 }
 
-bool dns_resolve(const char *name, uint8_t ip_out[IPV4_LEN]) {
+static bool dns_resolve_locked(const char *name, uint8_t ip_out[IPV4_LEN]) {
     if (!name || !*name || !ip_out) return false;
 
     /* 1. If name is already an IPv4 dotted quad string, parse directly */
@@ -296,4 +303,12 @@ bool dns_resolve(const char *name, uint8_t ip_out[IPV4_LEN]) {
     }
 
     return false;
+}
+
+/* One query at a time, under g_dns_lock. */
+bool dns_resolve(const char *name, uint8_t ip_out[IPV4_LEN]) {
+    ylock_acquire(&g_dns_lock);
+    bool r = dns_resolve_locked(name, ip_out);
+    ylock_release(&g_dns_lock);
+    return r;
 }

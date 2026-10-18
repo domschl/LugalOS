@@ -21,6 +21,7 @@
 /* See kernel/include/kernel/console.h. The formatting engine lives in
  * kernel/printk.c and is shared; only the destination differs. */
 
+/* accepted: one pointer store each, by `console bind`. */
 static console_putc_fn g_console_putc;
 
 /* See kernel/console.h. A ylock, because it is held across the block that a
@@ -45,6 +46,7 @@ bool console_lock_held(void) {
     return ylock_owner(&g_console_lock) == sched_context_id();
 }
 
+/* single task: the boot, before any reader runs; constant after. */
 static const console_screen_t *g_screen;
 
 void console_set_screen(const console_screen_t *screen) {
@@ -560,6 +562,7 @@ void console_puts(const char *s) {
 
 /* --- The console as a channel endpoint --- */
 
+/* accepted: one pointer store each, by `console bind`. */
 static const char *g_bound_name = "(none)";
 
 /* Sized to one line of output rather than a whole screen: a console write is
@@ -697,6 +700,7 @@ static int pushback_get(void) {
 static ylock_t g_input_lock;
 
 /* 36.9: the registered input sources (kernel/include/kernel/console.h). */
+/* single task: the boot, before any reader runs; constant after. */
 static const console_input_t *g_inputs[CONSOLE_INPUT_MAX];
 static unsigned               g_ninputs;
 

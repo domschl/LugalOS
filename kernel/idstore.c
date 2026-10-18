@@ -188,6 +188,7 @@ int idstore_writer_commit(idstore_writer_t *w, block_dev_t *dev) {
  * .bss") applies just as directly to a buffer that exists only to be read
  * and thrown away by one shell command. RP2350's heap is the one this
  * actually matters for; QEMU's is large enough not to care either way. */
+/* accepted: a selftest's state; one run at a time. */
 static uint8_t *g_fake_disk;
 
 static int fake_read(block_dev_t *dev, void *buf, uint32_t lba, uint32_t count) {
@@ -202,6 +203,7 @@ static int fake_write(block_dev_t *dev, const void *buf, uint32_t lba, uint32_t 
     memcpy(&g_fake_disk[lba * IDSTORE_BLOCK_SIZE], buf, count * IDSTORE_BLOCK_SIZE);
     return 0;
 }
+/* accepted: a selftest's state; one run at a time. */
 static block_dev_t g_fake_dev = {
     .name = "idstore-selftest-fake",
     .block_size = IDSTORE_BLOCK_SIZE,

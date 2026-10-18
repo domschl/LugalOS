@@ -35,6 +35,8 @@ typedef struct {
 
 /* UTC until someone says otherwise, so a parse failure at boot still leaves
  * the system with a coherent (if unhelpful) answer rather than garbage. */
+/* accepted: set by `tz`; a reader during the change can pair the old offset with the
+ * new name. */
 static tz_t  g_tz = { "UTC", "", 0, 0, false, {0,0,0,0}, {0,0,0,0} };
 static char  g_spec[TZ_SPEC_MAX + 1] = "UTC0";
 
@@ -264,6 +266,8 @@ void tz_from_offset(const rtc_time_t *local, int offset_min, rtc_time_t *utc) {
 
 /* ---------------------------------------------------------- selftest --- */
 
+/* accepted: set by `tz`; a reader during the change can pair the old offset with the
+ * new name. */
 static int g_fail;
 
 static void check(bool ok, const char *what) {

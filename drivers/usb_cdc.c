@@ -16,6 +16,7 @@
 #include "kernel/identity.h"
 #include <string.h>
 
+/* single task: the boot, before any reader runs; constant after. */
 static bool g_usb_cdc_connected = false;
 
 #if defined(CONFIG_BOARD_RP2350)
@@ -1846,6 +1847,7 @@ bool usb_cdc_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) {
  * alive by the time it runs) or made conditional on usb_cdc_task_alive()
  * (kernel/time.c's time_delay_us(), which also fires during early boot
  * before this task -- or any task -- exists). */
+/* single task: the boot, before any reader runs; constant after. */
 static int g_usb_cdc_task_pid = -1;
 
 bool usb_cdc_task_alive(void) {
