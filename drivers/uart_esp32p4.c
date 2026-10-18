@@ -358,11 +358,6 @@ static uint8_t hw_uart_getc(void) {
  * (bits [23:16]) and the depth against SOC_UART_FIFO_LEN (128), so this is a
  * real count against a real capacity and cannot silently overrun. */
 static bool hw_uart_tx_room(void) {
-#if defined(CONFIG_USBJTAG_BASE)
-    if (!g_usj_host_gone && !(REG(USJ_EP1_CONF) & USJ_IN_FREE)) {
-        return false;
-    }
-#endif
     if (!g_uart_base) return true;
     uint32_t st = REG(UART_STATUS(g_uart_base));
     uint32_t used = (st >> UART_TXFIFO_CNT_SHIFT) & UART_TXFIFO_CNT_MASK;
