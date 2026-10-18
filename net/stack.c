@@ -8,6 +8,7 @@
 #include "kernel/identity.h"
 #include "kernel/sched.h"
 #include "kernel/time.h"
+#include "kernel/lock.h"
 #include "kernel/palloc.h"
 #include <string.h>
 
@@ -15,6 +16,21 @@
  * dispatch that feeds ARP and IPv4 (R2,
  * ). */
 
+/* The stack's one lock. The stack task holds it for each round of polling
+ * and timers (and lets go while it serves a 9P or Spartan request); every
+ * entry point another task calls takes it -- UDP, TCP's connections and
+ * listeners, the address, attach and detach -- because they share one
+ * transmit frame and the tables the round works on. Re-entrant (a UDP
+ * callback answering from inside the round). Order: a 9P client's or pump's
+ * lock before this one, never after; a driver's bus lock after it, except
+ * cyw43's first `wifi probe`, which attaches before the stack task exists. */
+static ylock_t g_net_lock;
+
+void net_lock(void)   { ylock_acquire(&g_net_lock); }
+void net_unlock(void) { ylock_release(&g_net_lock); }
+
+/* guarded by: g_net_lock, as the frame buffers, the unclaimed frame and the
+ * flags below. */
 static net_state_t g_net;
 
 /* One transmit frame and one receive frame, reused. Everything above runs
@@ -30,19 +46,20 @@ static net_state_t g_net;
  * cost the chess persona a whole heap page for a stack it has no interface to
  * run. rule applies exactly: memory taken only while it is used. A
  * board with no netif never attaches, so it never pays. */
-static uint8_t *g_frames;
+static uint8_t *g_frames;   /* guarded by: g_net_lock, as g_tx and g_rx */
 static uint8_t *g_tx;
 static uint8_t *g_rx;
 
 static const uint8_t BROADCAST_MAC[NETIF_MAC_LEN] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
 
+/* guarded by: g_net_lock. */
 static uint8_t g_unclaimed[NET_UNCLAIMED_HEAD];
 static uint32_t g_unclaimed_len;      /* the full frame length, 0 = empty */
 static uint32_t g_unclaimed_total;    /* how many have ever arrived */
 
 uint32_t net_unclaimed_count(void) { return g_unclaimed_total; }
 
-uint32_t net_take_unclaimed(uint8_t *out) {
+static uint32_t net_take_unclaimed_locked(uint8_t *out) {
     if (!out || g_unclaimed_len == 0) return 0;
     memcpy(out, g_unclaimed, NET_UNCLAIMED_HEAD);
     uint32_t len = g_unclaimed_len;
@@ -54,12 +71,12 @@ uint32_t net_take_unclaimed(uint8_t *out) {
  * bridge), so nothing may bind the stack to it again behind that owner's back
  * -- not a DHCP lease landing late (net_set_address() below). Two readers on
  * one interface's receive ring corrupt it. Cleared by an explicit attach. */
-static bool g_released;
+static bool g_released;   /* guarded by: g_net_lock */
 
 /* net_autoconfig_once() has run for the interface the stack is on. */
-static bool g_autoconf_done;
+static bool g_autoconf_done;   /* single task: the stack task (attach resets it, under g_net_lock) */
 
-int net_stack_attach(netif_t *nif) {
+static int net_stack_attach_locked(netif_t *nif) {
     if (!nif) return -1;
     g_released = false;
     g_autoconf_done = false;
@@ -82,7 +99,7 @@ int net_stack_attach(netif_t *nif) {
  * over LLP instead of reading them itself, and keeps no address, no ARP
  * entries and no connections of its own on that segment -- the host's are the
  * only ones. The stack's task keeps running and finds nothing to do. */
-void net_stack_detach(void) {
+static void net_stack_detach_locked(void) {
     memset(&g_net, 0, sizeof(g_net));
     g_released = true;
 }
@@ -98,7 +115,7 @@ bool wifi_is_connected(void) {
     return true;
 }
 
-int net_set_address(const uint8_t ip[IPV4_LEN], const uint8_t mask[IPV4_LEN],
+static int net_set_address_locked(const uint8_t ip[IPV4_LEN], const uint8_t mask[IPV4_LEN],
                     const uint8_t gw[IPV4_LEN]) {
     if (!g_net.nif) {
         /* Late binding: (net-config) may run from a boot script before
@@ -330,16 +347,18 @@ static void net_task_body(void *arg) {
          * than before it because it waits for carrier, which on a wireless
          * board arrives long after this task starts. */
         net_autoconfig_once();
+        /* Receive, then timers, 9P on established connections and transmit,
+         * under the stack's lock (released only around a request's service). */
+        net_lock();
         net_poll(4);
-        /* Timers, then 9P on established connections, then transmit -- all on
-         * this call stack, which is what lets net/tcp.c hold no locks. */
         tcp_service();
+        net_unlock();
         sched_yield();
     }
 }
 
 int net_task_start(void) {
-    static int pid = -1;
+    static int pid = -1;   /* single task: one starter per board (boot, cyw43's probe, LLP's pump) */
     if (pid >= 0) return pid;                   /* one stack task, however often an interface comes */
     if (!g_net.nif) return -1;
 
@@ -402,3 +421,32 @@ void net_print_status(void) {
 
 /* --- accessors the protocol files share, kept here with the state --- */
 net_state_t *net_mutable_state(void) { return &g_net; }
+
+/* Entry points from other tasks, under the stack's lock (net_lock()). */
+uint32_t net_take_unclaimed(uint8_t *out) {
+    net_lock();
+    uint32_t r = net_take_unclaimed_locked(out);
+    net_unlock();
+    return r;
+}
+
+int net_stack_attach(netif_t *nif) {
+    net_lock();
+    int r = net_stack_attach_locked(nif);
+    net_unlock();
+    return r;
+}
+
+void net_stack_detach(void) {
+    net_lock();
+    net_stack_detach_locked();
+    net_unlock();
+}
+
+int net_set_address(const uint8_t ip[IPV4_LEN], const uint8_t mask[IPV4_LEN],
+                    const uint8_t gw[IPV4_LEN]) {
+    net_lock();
+    int r = net_set_address_locked(ip, mask, gw);
+    net_unlock();
+    return r;
+}

@@ -7,6 +7,10 @@
 #include "kernel/idstore.h"
 #include "kernel/identity.h"
 #include "kernel/time.h"
+#include "kernel/sched.h"
+#include "kernel/hart.h"
+#include "kernel/lock.h"
+#include "kernel/palloc.h"
 #include <string.h>
 
 /* --- Bounds-checked wire cursors (closes B11, plan/completed/2026-08-07_review_
@@ -255,48 +259,98 @@ typedef struct {
  * belongs to: a fid number means something only to the client that chose it,
  * so lookups, allocation and Tversion's reset all go by (connection, fid). A
  * connection is the link a request came in on (p9_server_process_conn()). */
+/* guarded by: g_fid_lock for taking, finding and freeing a slot. An entry
+ * is then its connection's, and one connection's requests come one at a time
+ * (its link's pump, or its channel's endpoint); the server itself is entered
+ * from several tasks at once (link pump, the local `chan:p9` mount, the
+ * loopback self-test). */
 static p9_fid_entry_t g_fid_table[P9_MAX_FIDS];
+static spinlock_t     g_fid_lock;
 
-/* The connection of the request being processed (NULL: the only one). */
-static const void *g_conn;
+/* The request being processed, per execution context: which connection it
+ * came in on and the auth policy in force. Per context, not one global,
+ * because two requests can be in the server at once -- a network request
+ * under a local one's "no key" policy is an attach without authentication --
+ * and saved and restored around each request, because a local mount can
+ * re-enter the server on the same task.
+ * single task: each slot its own context's (sched_context_id()). */
+typedef struct {
+    const void       *conn;     /* NULL: the only one */
+    p9_auth_policy_t  policy;
+} p9_req_ctx_t;
+static p9_req_ctx_t g_req[MAX_TASKS + MAX_HARTS];
 
-static p9_fid_entry_t *p9_fid_lookup(uint32_t fid) {
+static p9_req_ctx_t *req_ctx(void) {
+    int id = sched_context_id();
+    if (id < 0 || id >= (int)(sizeof g_req / sizeof g_req[0])) id = 0;
+    return &g_req[id];
+}
+static const void *cur_conn(void) { return req_ctx()->conn; }
+
+static p9_fid_entry_t *fid_find_locked(const void *conn, uint32_t fid) {
     for (int i = 0; i < P9_MAX_FIDS; i++) {
-        if (g_fid_table[i].in_use && g_fid_table[i].conn == g_conn && g_fid_table[i].fid_value == fid)
+        if (g_fid_table[i].in_use && g_fid_table[i].conn == conn && g_fid_table[i].fid_value == fid)
             return &g_fid_table[i];
     }
     return NULL;
 }
 
+static p9_fid_entry_t *p9_fid_lookup(uint32_t fid) {
+    uintptr_t f = spin_lock_irqsave(&g_fid_lock);
+    p9_fid_entry_t *e = fid_find_locked(cur_conn(), fid);
+    spin_unlock_irqrestore(&g_fid_lock, f);
+    return e;
+}
+
+/* The close goes first, outside the lock (it may block); the slot is given
+ * back in one step under it. */
 static void p9_fid_release(p9_fid_entry_t *e) {
     if (!e) return;
     if (e->is_open && !e->is_dir && e->vfs_fd >= 0) vfs_close(e->vfs_fd);
+    uintptr_t f = spin_lock_irqsave(&g_fid_lock);
     memset(e, 0, sizeof(*e));
+    spin_unlock_irqrestore(&g_fid_lock, f);
 }
 
 static p9_fid_entry_t *p9_fid_alloc(uint32_t fid) {
-    if (p9_fid_lookup(fid)) return NULL; // client protocol error: fid already in use
-    for (int i = 0; i < P9_MAX_FIDS; i++) {
-        if (!g_fid_table[i].in_use) {
-            memset(&g_fid_table[i], 0, sizeof(g_fid_table[i]));
-            g_fid_table[i].in_use = true;
-            g_fid_table[i].conn = g_conn;
-            g_fid_table[i].fid_value = fid;
-            g_fid_table[i].vfs_fd = -1;
-            return &g_fid_table[i];
+    const void *conn = cur_conn();
+    p9_fid_entry_t *e = NULL;
+    uintptr_t f = spin_lock_irqsave(&g_fid_lock);
+    if (!fid_find_locked(conn, fid)) {          /* in use: a client protocol error */
+        for (int i = 0; i < P9_MAX_FIDS; i++) {
+            if (!g_fid_table[i].in_use) {
+                e = &g_fid_table[i];
+                memset(e, 0, sizeof(*e));
+                e->in_use = true;
+                e->conn = conn;
+                e->fid_value = fid;
+                e->vfs_fd = -1;
+                break;
+            }
         }
     }
-    return NULL; // table full
+    spin_unlock_irqrestore(&g_fid_lock, f);
+    return e;                                   /* NULL: in use, or the table is full */
+}
+
+/* Is slot i in use (by `conn`, unless all)? */
+static bool fid_slot_match(int i, bool all, const void *conn) {
+    uintptr_t f = spin_lock_irqsave(&g_fid_lock);
+    bool m = g_fid_table[i].in_use && (all || g_fid_table[i].conn == conn);
+    spin_unlock_irqrestore(&g_fid_lock, f);
+    return m;
 }
 
 static void p9_fid_reset_all(void) {
-    for (int i = 0; i < P9_MAX_FIDS; i++) p9_fid_release(&g_fid_table[i]);
+    for (int i = 0; i < P9_MAX_FIDS; i++)
+        if (fid_slot_match(i, true, NULL)) p9_fid_release(&g_fid_table[i]);
 }
 
 /* Tversion: this connection starts over; the others keep their fids. */
 static void p9_fid_reset_conn(void) {
+    const void *conn = cur_conn();
     for (int i = 0; i < P9_MAX_FIDS; i++)
-        if (g_fid_table[i].in_use && g_fid_table[i].conn == g_conn) p9_fid_release(&g_fid_table[i]);
+        if (fid_slot_match(i, false, conn)) p9_fid_release(&g_fid_table[i]);
 }
 
 /* --- The auth gate --------- */
@@ -805,11 +859,9 @@ static bool p9_path_is_secret(const char *path) {
  * peer -- and it is the piece whose failure is silent. */
 bool p9_auth_path_is_secret(const char *path) { return p9_path_is_secret(path); }
 
-/* The policy in force for the request being processed. Set once per call from
- * p9_server_process()'s argument; a static rather than a parameter threaded
- * through nine handlers, which is honest for a server that processes one
- * request at a time (g_conn below is set the same way). */
-static p9_auth_policy_t g_auth_policy = P9_AUTH_NOT_REQUIRED;
+/* The policy in force for the request being processed: its context's (see
+ * g_req above), set once per call from p9_server_process()'s argument. */
+static p9_auth_policy_t cur_policy(void) { return req_ctx()->policy; }
 
 static void p9_handle_tauth(const p9_msg_t *req, p9_msg_t *resp) {
     if (req->afid == P9_NOFID) {
@@ -969,7 +1021,7 @@ static void p9_handle_tattach(const p9_msg_t *req, p9_msg_t *resp) {
      * the afid it names: the afid must exist, be an auth fid, have had a
      * verified response written to it, and have been established for the same
      * identity now being claimed. */
-    if (g_auth_policy == P9_AUTH_REQUIRED) {
+    if (cur_policy() == P9_AUTH_REQUIRED) {
         if (req->afid == P9_NOFID) {
             resp->type = P9_RERROR;
             resp->ename = "attach: this link requires authentication (no afid)";
@@ -1695,24 +1747,32 @@ int p9_deserialize(const uint8_t *buf, uint32_t len, p9_msg_t *msg) {
  * connection with none (it skipped Tversion, a protocol error) is answered
  * with this node's own maximum, which is at least legal. */
 #define P9_MSIZE_CONNS 6
+/* guarded by: g_fid_lock, as the fid table. */
 static struct { const void *conn; uint32_t msize; uint32_t age; } g_msize[P9_MSIZE_CONNS];
-static uint32_t g_msize_age;
+static uint32_t g_msize_age;   /* guarded by: g_fid_lock */
 
 static void msize_set(uint32_t msize) {
+    const void *conn = cur_conn();
+    uintptr_t f = spin_lock_irqsave(&g_fid_lock);
     int slot = 0;
     for (int i = 0; i < P9_MSIZE_CONNS; i++) {
-        if (g_msize[i].msize && g_msize[i].conn == g_conn) { slot = i; break; }
+        if (g_msize[i].msize && g_msize[i].conn == conn) { slot = i; break; }
         if (!g_msize[i].msize || g_msize[i].age < g_msize[slot].age) slot = i;
     }
-    g_msize[slot].conn = g_conn;
+    g_msize[slot].conn = conn;
     g_msize[slot].msize = msize;
     g_msize[slot].age = ++g_msize_age;
+    spin_unlock_irqrestore(&g_fid_lock, f);
 }
 
 static uint32_t msize_get(void) {
+    const void *conn = cur_conn();
+    uint32_t m = P9_MAX_MSIZE;
+    uintptr_t f = spin_lock_irqsave(&g_fid_lock);
     for (int i = 0; i < P9_MSIZE_CONNS; i++)
-        if (g_msize[i].msize && g_msize[i].conn == g_conn) return g_msize[i].msize;
-    return P9_MAX_MSIZE;
+        if (g_msize[i].msize && g_msize[i].conn == conn) { m = g_msize[i].msize; break; }
+    spin_unlock_irqrestore(&g_fid_lock, f);
+    return m;
 }
 
 /* What an Ropen/Rcreate may advertise as its iounit: the largest payload one
@@ -1723,7 +1783,7 @@ uint32_t p9_negotiated_iounit(void) {
     return (msize > P9_IOHDRSZ) ? (msize - P9_IOHDRSZ) : 0;
 }
 
-static uint64_t g_p9_last_activity_us = 0;
+static uint64_t g_p9_last_activity_us = 0;   /* accepted: a "recently used" hint */
 
 bool p9_is_connected(void) {
     for (int i = 0; i < P9_MAX_FIDS; i++) {
@@ -1740,11 +1800,41 @@ int p9_server_process(const uint8_t *req_buf, uint32_t req_len, uint8_t *resp_bu
     return p9_server_process_conn(NULL, req_buf, req_len, resp_buf, resp_max, policy);
 }
 
+/* Tread's and Tstat's payload: the static buffer for the first request to
+ * want it, a page for one that finds it taken (a second task in the server,
+ * or a local mount re-entering it). guarded by: s_databuf_busy, taken with
+ * an atomic exchange. */
+static uint8_t           s_databuf[P9_MAX_MSIZE];
+static volatile uint32_t s_databuf_busy;
+_Static_assert(P9_MAX_MSIZE <= PAGE_SIZE, "a request's data buffer is one page");
+
+static uint8_t *databuf_take(void) {
+    if (!__atomic_exchange_n(&s_databuf_busy, 1u, __ATOMIC_ACQUIRE)) return s_databuf;
+    return (uint8_t *)palloc_pages(1);
+}
+
+static void databuf_give(uint8_t *b) {
+    if (b == s_databuf) __atomic_store_n(&s_databuf_busy, 0u, __ATOMIC_RELEASE);
+    else if (b) palloc_free(b, 1);
+}
+
+static int process_request(const uint8_t *req_buf, uint32_t req_len,
+                           uint8_t *resp_buf, uint32_t resp_max);
+
 int p9_server_process_conn(const void *conn, const uint8_t *req_buf, uint32_t req_len,
                            uint8_t *resp_buf, uint32_t resp_max, p9_auth_policy_t policy) {
-    g_conn = conn;
+    p9_req_ctx_t *ctx = req_ctx();
+    p9_req_ctx_t outer = *ctx;
+    ctx->conn = conn;
+    ctx->policy = policy;
     g_p9_last_activity_us = time_get_us();
-    g_auth_policy = policy;
+    int rc = process_request(req_buf, req_len, resp_buf, resp_max);
+    *ctx = outer;
+    return rc;
+}
+
+static int process_request(const uint8_t *req_buf, uint32_t req_len,
+                           uint8_t *resp_buf, uint32_t resp_max) {
     p9_msg_t req;
     if (p9_deserialize(req_buf, req_len, &req) < 0) {
         p9_msg_t err = { .type = P9_RERROR, .tag = P9_NOTAG, .ename = "Invalid 9P frame" };
@@ -1755,13 +1845,18 @@ int p9_server_process_conn(const void *conn, const uint8_t *req_buf, uint32_t re
     memset(&resp, 0, sizeof(resp));
     resp.tag = req.tag;
 
-    /* Scratch space for Tread/Tstat payloads. Single static buffer: this
-     * server processes one request at a time (no concurrency in this
-     * kernel yet), same non-reentrancy contract as ksnprintf()'s buffer. */
-    static uint8_t s_databuf[P9_MAX_MSIZE];
     uint32_t header_overhead = 11; // worst case of RREAD's/RWRITE's/RSTAT's framing: size4+type1+tag2+count4
     uint32_t max_payload = (resp_max > header_overhead) ? (resp_max - header_overhead) : 0;
     if (max_payload > sizeof(s_databuf)) max_payload = sizeof(s_databuf);
+    uint8_t *databuf = NULL;
+    if (req.type == P9_TREAD || req.type == P9_TSTAT) {
+        databuf = databuf_take();
+        if (!databuf) {
+            resp.type = P9_RERROR;
+            resp.ename = "out of memory";
+            return p9_serialize(&resp, resp_buf, resp_max);
+        }
+    }
 
     switch (req.type) {
         case P9_TVERSION:
@@ -1789,7 +1884,7 @@ int p9_server_process_conn(const void *conn, const uint8_t *req_buf, uint32_t re
             p9_handle_tcreate(&req, &resp);
             break;
         case P9_TREAD:
-            p9_handle_tread(&req, &resp, s_databuf, max_payload);
+            p9_handle_tread(&req, &resp, databuf, max_payload);
             break;
         case P9_TWRITE:
             p9_handle_twrite(&req, &resp);
@@ -1801,7 +1896,7 @@ int p9_server_process_conn(const void *conn, const uint8_t *req_buf, uint32_t re
             p9_handle_tremove(&req, &resp);
             break;
         case P9_TSTAT:
-            p9_handle_tstat(&req, &resp, s_databuf, max_payload);
+            p9_handle_tstat(&req, &resp, databuf, max_payload);
             break;
         case P9_TFLUSH:
             // No concurrency to flush yet; always succeeds as a no-op.
@@ -1812,5 +1907,7 @@ int p9_server_process_conn(const void *conn, const uint8_t *req_buf, uint32_t re
             resp.ename = "Unsupported 9P request type";
             break;
     }
-    return p9_serialize(&resp, resp_buf, resp_max);
+    int n = p9_serialize(&resp, resp_buf, resp_max);   /* resp may point into databuf */
+    databuf_give(databuf);
+    return n;
 }

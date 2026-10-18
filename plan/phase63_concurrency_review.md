@@ -214,21 +214,31 @@ Smaller ones:
 - The BMI270's last reading and reload are under its lock.
 - mqttd fences a new source before counting it.
 
-Open, the next fixes:
-
-| # | where | what |
-| :--- | :--- | :--- |
-| F9 | net/stack.c, tcp.c, udp.c | one transmit frame and the TCP/UDP tables used from many tasks (DHCP, DNS and NTP from the shell or Lisp, MQTT, the stack task) with no lock; tcp.c relies on running on one call stack |
-| F10 | fs/9p.c | the server is entered from the link pump (under g_pump_lock), the local `chan:p9` mount and the loopback test; the connection and the auth policy are per-request globals, so a TCP request can run under a local request's "no auth" policy or with another connection's fids; the data buffer is shared; fid allocation is unlocked. Not a server lock (it would invert against the client lock): per-task request context, a spinlock for fid slots, a buffer per request |
-| F11 | fs/p9_link.c | `waiter_begin()` sets the link before the tag, and the pump (another lock) can match a half-set slot |
-| F13 | fs/vfs_server.c | the mount table has no lock: `/c6` is unmounted and remounted on every C6 restart while other tasks resolve through it or hold handles onto it; `format` re-initialises a mounted volume, its lock included |
-| F15 | drivers/sensor_hub.c | `sensor init` re-runs the hub's init under the running sampler (caches cleared, drivers re-initialised), and readers see torn caches |
-
 Tested: QEMU 512/512; Tab5, NANO and LCD-7B 50/50; RP2350 terminal 34/34. C6 (the NANO's
 C6-MINI): all pass but the DHCP lease, which a C6 bridging wlan0 for the NANO's P4 does not
 take by design (`[LLP] bridging wlan0`).
 
-Next: fixes F9, F10/F11, F13 and F15 (63.3), then groups B and S.
+
+The five that needed a design, fixed afterwards (2026-10-18):
+
+| # | where | what | fix |
+| :--- | :--- | :--- | :--- |
+| F9 | net/stack.c, tcp.c, udp.c | one transmit frame and the TCP/UDP tables used from many tasks with no lock (DHCP, DNS and NTP from the shell or Lisp, MQTT, the stack task) | one re-entrant stack lock, `net_lock()`: the stack task holds it for each round, every public entry point takes it; released around the inline 9P and Spartan service, which can reach a remote mount's client lock (order: 9P client/pump locks before the stack's) |
+| F10 | fs/9p.c | the request's connection and auth policy were globals while the server ran for several tasks at once: a TCP request could run under a local request's "no key" policy, or with another connection's fids; same-task recursion left the outer request with the inner's; one shared data buffer; unlocked fid slots | per-context request state (`sched_context_id()`), saved and restored around each request; fid and msize slots under g_fid_lock; the data buffer claimed atomically, a page for a second request |
+| F11 | fs/p9_link.c | `waiter_begin()` set the slot's link before its tag | fields first, link last behind a fence |
+| F13 | fs/vfs_server.c | the mount table had no lock: `/c6`, unmounted and remounted on every C6 restart, was cleared under tasks resolving through it (an all-zero entry reads as FAT32 with no volume) or holding handles on it; `format` re-initialised a volume in use | reference-counted entries: lookups and open handles hold one; an unmount marks the entry dying and the last reference clears it and closes its session; a slot is ready only once filled; `format` and a new RAM disk withdraw the volume and refuse one in use |
+| F15 | drivers/sensor_hub.c | `sensor init` re-ran the hub's init under the running sampler (caches cleared, drivers re-initialised); readers saw torn caches | s_hub_lock over init, each device's conversion, `hub_derive()` and every reader; the BME280 and BMI270 inits under their drivers' locks |
+| F24 | fs/p9_link.c | found on the way: the 9P client parsed replies in place in one static buffer, and its callers used the data after the client lock was released; the background-link poller read each slot twice | every public `p9_remote_*()` holds the client lock throughout; one read; registration under a spinlock |
+
+Group A is at zero unmarked in all five builds.
+
+Tested after the fixes: QEMU 512/512 and every host harness under ASan/UBSan; LCD-7B 50/50,
+NANO 50/50 (with its C6 back on its loader: an earlier C6 suite run had loaded the kernel
+past it, which the OTA check catches), RP2350 terminal 34/34, Tab5 49/50 (the touch error
+during the BMI270 upload, for 63.4). The NANO's run includes the remount of /c6 after a C6
+restart and a rejoin under an open 9P session.
+
+Next: groups B and S (63.2), then 63.4.
 
 ### 63.3 Fix shared mutable state (class 1)
 

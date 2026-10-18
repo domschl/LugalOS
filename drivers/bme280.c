@@ -700,7 +700,18 @@ void bme280_print_status(void) {
 
 /* --- Sensor Device Contract (Category D) --- */
 
+static bool bme280_dev_init_locked(struct sensor_dev *dev);
+
+/* Under g_read_lock: `sensor init` probes again while an mqttd source or
+ * `sensor` may be measuring. */
 static bool bme280_dev_init(struct sensor_dev *dev) {
+    ylock_acquire(&g_read_lock);
+    bool ok = bme280_dev_init_locked(dev);
+    ylock_release(&g_read_lock);
+    return ok;
+}
+
+static bool bme280_dev_init_locked(struct sensor_dev *dev) {
     bme280_part_t part = bme280_init();
     if (part == BME280_PART_NONE) return false;
     dev->bus = g.bus;

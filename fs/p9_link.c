@@ -27,7 +27,11 @@
 /* How long a client waits for a reply before calling it a failure. See the
  * wait loop in p9_client_rpc() for why this is not "forever". */
 #define P9_CLIENT_TIMEOUT_MS 10000
+/* guarded by: g_bg_lock for registering and unregistering; the poller reads
+ * each slot once (links are static objects, so one unregistered mid-service
+ * is still valid memory). */
 static p9_link_t *g_background_links[P9_LINK_MAX_BACKGROUND];
+static spinlock_t g_bg_lock;
 
 /* --- B2: inbound frame demultiplexing (the D5 gate) ---
  *
@@ -92,22 +96,30 @@ typedef struct {
     uint8_t    reply[P9_MAX_MSIZE];
 } p9_waiter_t;
 
+/* guarded by: g_client_lock for taking and giving back a slot (one client
+ * call at a time); the pump, under g_pump_lock, fills a slot's reply only once
+ * its link is set, which waiter_begin() does last. */
 static p9_waiter_t g_waiters[P9_LINK_MAX_WAITERS];
 
 /* The link whose request is being served, and the task serving it (see
  * p9_route_frame()); NULL/-1 outside a request. */
+/* guarded by: g_pump_lock (p9_route_frame() sets and restores them under it). */
 static p9_link_t *g_serving_link;
 static int g_serving_pid = -1;
 
 static bool link_up(p9_link_t *link) { return !link->up || link->up(link); }
 
+/* The slot's link is what the pump matches on, so it is set last: the pump
+ * runs under the other lock and must not find a slot whose tag is still the
+ * previous request's. */
 static p9_waiter_t *waiter_begin(p9_link_t *link, uint16_t tag) {
     for (int i = 0; i < P9_LINK_MAX_WAITERS; i++) {
         if (!g_waiters[i].link) {
-            g_waiters[i].link = link;
             g_waiters[i].tag = tag;
             g_waiters[i].have_reply = false;
             g_waiters[i].reply_len = 0;
+            __atomic_thread_fence(__ATOMIC_RELEASE);
+            g_waiters[i].link = link;
             return &g_waiters[i];
         }
     }
@@ -149,7 +161,7 @@ static int p9_route_frame(p9_link_t *link, const uint8_t *buf, uint32_t len) {
     /* T-message: a genuine request for this node's server. Which link it
      * came in on is recorded for p9_remote_xchg()'s loop check, per task:
      * another task's client calls are not this request's. */
-    static uint8_t resp_buf[P9_MAX_MSIZE];
+    static uint8_t resp_buf[P9_MAX_MSIZE];   /* guarded by: g_pump_lock */
     p9_link_t *outer_link = g_serving_link;
     int outer_pid = g_serving_pid;
     g_serving_link = link;
@@ -188,23 +200,24 @@ int p9_link_service(p9_link_t *link) {
 
 void p9_link_register_background(p9_link_t *link) {
     if (!link) return;
-    for (int i = 0; i < P9_LINK_MAX_BACKGROUND; i++) {
-        if (g_background_links[i] == link) return; // already registered
+    int got = -2;                                  /* -2: no slot; -1: already registered */
+    uintptr_t f = spin_lock_irqsave(&g_bg_lock);
+    for (int i = 0; i < P9_LINK_MAX_BACKGROUND; i++)
+        if (g_background_links[i] == link) got = -1;
+    for (int i = 0; got == -2 && i < P9_LINK_MAX_BACKGROUND; i++) {
+        if (!g_background_links[i]) { g_background_links[i] = link; got = i; }
     }
-    for (int i = 0; i < P9_LINK_MAX_BACKGROUND; i++) {
-        if (!g_background_links[i]) {
-            g_background_links[i] = link;
-            printk("[9P Link] '%s' registered as background transport.\n", link->name ? link->name : "?");
-            return;
-        }
-    }
-    printk("[9P Link] background transport slots full; '%s' not registered.\n", link->name ? link->name : "?");
+    spin_unlock_irqrestore(&g_bg_lock, f);
+    if (got >= 0) printk("[9P Link] '%s' registered as background transport.\n", link->name ? link->name : "?");
+    else if (got == -2) printk("[9P Link] background transport slots full; '%s' not registered.\n", link->name ? link->name : "?");
 }
 
 void p9_link_unregister_background(p9_link_t *link) {
+    uintptr_t f = spin_lock_irqsave(&g_bg_lock);
     for (int i = 0; i < P9_LINK_MAX_BACKGROUND; i++) {
         if (g_background_links[i] == link) g_background_links[i] = NULL;
     }
+    spin_unlock_irqrestore(&g_bg_lock, f);
 }
 
 /* --- The 9P server as a task --- *
@@ -262,7 +275,8 @@ int p9_server_task_start(void) {
 
 void p9_link_background_poll(void) {
     for (int i = 0; i < P9_LINK_MAX_BACKGROUND; i++) {
-        if (g_background_links[i]) p9_link_service(g_background_links[i]);
+        p9_link_t *l = __atomic_load_n(&g_background_links[i], __ATOMIC_ACQUIRE);
+        if (l) p9_link_service(l);
     }
 }
 
@@ -519,6 +533,8 @@ struct p9_remote_mount {
     uint32_t msize;
 };
 
+/* guarded by: g_client_lock, which every public p9_remote_*() call holds for
+ * its whole length (the wrappers at the end of this file). */
 static p9_remote_mount_t g_remote_mounts[P9_REMOTE_MAX_MOUNTS];
 static uint32_t g_mount_serial;
 static uint8_t g_remote_tx[P9_MAX_MSIZE];
@@ -636,7 +652,7 @@ static uint32_t p9_remote_authenticate(p9_remote_mount_t *m, const char *uname) 
     return afid;
 }
 
-p9_remote_mount_t *p9_remote_mount_open(p9_link_t *link) {
+static p9_remote_mount_t *remote_mount_open_locked(p9_link_t *link) {
     if (!link) return NULL;
 
     p9_remote_mount_t *m = NULL;
@@ -688,7 +704,7 @@ p9_remote_mount_t *p9_remote_mount_open(p9_link_t *link) {
     return m;
 }
 
-void p9_remote_mount_close(p9_remote_mount_t *m) {
+static void remote_mount_close_locked(p9_remote_mount_t *m) {
     if (!m || !m->in_use) return;
     p9_msg_t req, resp;
     memset(&req, 0, sizeof(req));
@@ -699,7 +715,7 @@ void p9_remote_mount_close(p9_remote_mount_t *m) {
     memset(m, 0, sizeof(*m));
 }
 
-int p9_remote_open(p9_remote_mount_t *mount, const char *path, uint8_t p9_mode, bool create, uint32_t *out_fid, bool *out_is_dir) {
+static int remote_open_locked(p9_remote_mount_t *mount, const char *path, uint8_t p9_mode, bool create, uint32_t *out_fid, bool *out_is_dir) {
     if (!mount || !mount->in_use || !path || !out_fid) return -1;
     while (*path == '/') path++;
 
@@ -765,7 +781,7 @@ int p9_remote_open(p9_remote_mount_t *mount, const char *path, uint8_t p9_mode, 
     return 0;
 }
 
-int p9_remote_pread(p9_remote_mount_t *mount, uint32_t fid, void *buf, uint32_t count, uint64_t offset) {
+static int remote_pread_locked(p9_remote_mount_t *mount, uint32_t fid, void *buf, uint32_t count, uint64_t offset) {
     if (!mount || !mount->in_use || !buf) return -1;
     if (count > sizeof(g_remote_rx) - 32) count = sizeof(g_remote_rx) - 32; // framing headroom
 
@@ -783,7 +799,7 @@ int p9_remote_pread(p9_remote_mount_t *mount, uint32_t fid, void *buf, uint32_t 
     return (int)resp.count;
 }
 
-int p9_remote_pwrite(p9_remote_mount_t *mount, uint32_t fid, const void *buf, uint32_t count, uint64_t offset) {
+static int remote_pwrite_locked(p9_remote_mount_t *mount, uint32_t fid, const void *buf, uint32_t count, uint64_t offset) {
     if (!mount || !mount->in_use || !buf) return -1;
     if (count > sizeof(g_remote_tx) - 64) count = sizeof(g_remote_tx) - 64; // framing headroom
 
@@ -857,7 +873,7 @@ static int p9_unpack_stat_entry(const uint8_t *src, uint32_t src_len, char *name
  * traffic per call. Every directory in this system is small; matches A1's
  * own fat32_read_at() precedent of "walk from the start every call,
  * revisit if it's ever a hot path." */
-int p9_remote_readdir(p9_remote_mount_t *mount, uint32_t fid, uint32_t index, char *name_out, uint32_t name_max, p9_remote_stat_t *stat_out) {
+static int remote_readdir_locked(p9_remote_mount_t *mount, uint32_t fid, uint32_t index, char *name_out, uint32_t name_max, p9_remote_stat_t *stat_out) {
     if (!mount || !mount->in_use) return -1;
 
     uint64_t offset = 0;
@@ -896,7 +912,7 @@ int p9_remote_readdir(p9_remote_mount_t *mount, uint32_t fid, uint32_t index, ch
     }
 }
 
-int p9_remote_fstat(p9_remote_mount_t *mount, uint32_t fid, p9_remote_stat_t *out) {
+static int remote_fstat_locked(p9_remote_mount_t *mount, uint32_t fid, p9_remote_stat_t *out) {
     if (!mount || !mount->in_use || !out) return -1;
 
     p9_msg_t req, resp;
@@ -914,7 +930,7 @@ int p9_remote_fstat(p9_remote_mount_t *mount, uint32_t fid, p9_remote_stat_t *ou
     return 0;
 }
 
-int p9_remote_close(p9_remote_mount_t *mount, uint32_t fid) {
+static int remote_close_locked(p9_remote_mount_t *mount, uint32_t fid) {
     if (!mount || !mount->in_use) return -1;
     p9_msg_t req, resp;
     memset(&req, 0, sizeof(req));
@@ -925,7 +941,7 @@ int p9_remote_close(p9_remote_mount_t *mount, uint32_t fid) {
     return 0;
 }
 
-int p9_remote_remove(p9_remote_mount_t *mount, const char *path) {
+static int remote_remove_locked(p9_remote_mount_t *mount, const char *path) {
     if (!mount || !mount->in_use || !path) return -1;
     while (*path == '/') path++;
 
@@ -958,7 +974,7 @@ int p9_remote_remove(p9_remote_mount_t *mount, const char *path) {
     return 0;
 }
 
-int p9_remote_mkdir(p9_remote_mount_t *mount, const char *path) {
+static int remote_mkdir_locked(p9_remote_mount_t *mount, const char *path) {
     if (!mount || !mount->in_use || !path) return -1;
     while (*path == '/') path++;
 
@@ -993,4 +1009,76 @@ int p9_remote_mkdir(p9_remote_mount_t *mount, const char *path) {
     if (p9_remote_xchg(mount, &tcreate, &resp) < 0 || resp.type != P9_RCREATE) return -1;
     p9_remote_close(mount, fid); // Tcreate leaves it open; mkdir doesn't need to keep it that way
     return 0;
+}
+
+/* The public client calls, each under g_client_lock for its whole length:
+ * a reply is parsed in place in g_remote_rx (its data and error text point
+ * into it), and the mount table and each mount's tag counter are shared. */
+p9_remote_mount_t *p9_remote_mount_open(p9_link_t *link) {
+    ylock_acquire(&g_client_lock);
+    p9_remote_mount_t *r = remote_mount_open_locked(link);
+    ylock_release(&g_client_lock);
+    return r;
+}
+
+void p9_remote_mount_close(p9_remote_mount_t *m) {
+    ylock_acquire(&g_client_lock);
+    remote_mount_close_locked(m);
+    ylock_release(&g_client_lock);
+}
+
+int p9_remote_open(p9_remote_mount_t *mount, const char *path, uint8_t p9_mode, bool create, uint32_t *out_fid, bool *out_is_dir) {
+    ylock_acquire(&g_client_lock);
+    int r = remote_open_locked(mount, path, p9_mode, create, out_fid, out_is_dir);
+    ylock_release(&g_client_lock);
+    return r;
+}
+
+int p9_remote_pread(p9_remote_mount_t *mount, uint32_t fid, void *buf, uint32_t count, uint64_t offset) {
+    ylock_acquire(&g_client_lock);
+    int r = remote_pread_locked(mount, fid, buf, count, offset);
+    ylock_release(&g_client_lock);
+    return r;
+}
+
+int p9_remote_pwrite(p9_remote_mount_t *mount, uint32_t fid, const void *buf, uint32_t count, uint64_t offset) {
+    ylock_acquire(&g_client_lock);
+    int r = remote_pwrite_locked(mount, fid, buf, count, offset);
+    ylock_release(&g_client_lock);
+    return r;
+}
+
+int p9_remote_readdir(p9_remote_mount_t *mount, uint32_t fid, uint32_t index, char *name_out, uint32_t name_max, p9_remote_stat_t *stat_out) {
+    ylock_acquire(&g_client_lock);
+    int r = remote_readdir_locked(mount, fid, index, name_out, name_max, stat_out);
+    ylock_release(&g_client_lock);
+    return r;
+}
+
+int p9_remote_fstat(p9_remote_mount_t *mount, uint32_t fid, p9_remote_stat_t *out) {
+    ylock_acquire(&g_client_lock);
+    int r = remote_fstat_locked(mount, fid, out);
+    ylock_release(&g_client_lock);
+    return r;
+}
+
+int p9_remote_close(p9_remote_mount_t *mount, uint32_t fid) {
+    ylock_acquire(&g_client_lock);
+    int r = remote_close_locked(mount, fid);
+    ylock_release(&g_client_lock);
+    return r;
+}
+
+int p9_remote_remove(p9_remote_mount_t *mount, const char *path) {
+    ylock_acquire(&g_client_lock);
+    int r = remote_remove_locked(mount, path);
+    ylock_release(&g_client_lock);
+    return r;
+}
+
+int p9_remote_mkdir(p9_remote_mount_t *mount, const char *path) {
+    ylock_acquire(&g_client_lock);
+    int r = remote_mkdir_locked(mount, path);
+    ylock_release(&g_client_lock);
+    return r;
 }

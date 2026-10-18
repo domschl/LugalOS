@@ -230,11 +230,17 @@ uint32_t bmi270_selftest(bool report) {
 
 /* --- Sensor Device-Class Contract --- */
 
+/* Under g_lock: `sensor init` probes again while the orientation task and
+ * the shell may be reading. */
 static bool bmi270_dev_init(struct sensor_dev *dev) {
-    if (!bmi270_init()) return false;
-    dev->bus = g.bus;
-    dev->addr = g.addr;
-    return true;
+    ylock_acquire(&g_lock);
+    bool ok = bmi270_init();
+    if (ok) {
+        dev->bus = g.bus;
+        dev->addr = g.addr;
+    }
+    ylock_release(&g_lock);
+    return ok;
 }
 
 static bool bmi270_dev_sample(struct sensor_dev *dev) {
