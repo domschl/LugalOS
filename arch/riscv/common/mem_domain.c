@@ -30,8 +30,18 @@ uint32_t mem_domain_activations(unsigned hart) {
     return (hart < MAX_HARTS) ? g_domain_activations[hart] : 0;
 }
 
+#if defined(CONFIG_MODE_M)
+static bool pmp_is_covered_locked(uintptr_t base, uintptr_t size, uint8_t perms);
+#endif
+
 int mem_domain_add(mem_domain_t *d, uintptr_t base, uintptr_t size, uint8_t perms) {
-    if (!d || d->count >= MEM_DOMAIN_MAX_REGIONS) return -1;
+    if (!d) return -1;
+#if defined(CONFIG_MODE_M)
+    if (pmp_is_covered_locked(base, size, perms)) {
+        return 0; /* already granted by locked bootloader entry */
+    }
+#endif
+    if (d->count >= MEM_DOMAIN_MAX_REGIONS) return -1;
     /* NAPOT requires a power-of-two size, self-aligned. The floor is 32 bytes
      * -- RP2350's granule (datasheet §3.8.3.1); QEMU's is 8, and taking the
      * stricter of the two keeps one rule for both builds rather than a region
@@ -74,6 +84,9 @@ bool mem_domain_permits(const mem_domain_t *d, uintptr_t base, uintptr_t len,
             return (d->regions[i].perms & perms) == perms;
         }
     }
+#if defined(CONFIG_MODE_M)
+    if (pmp_is_covered_locked(base, len, perms)) return true;
+#endif
     return false;
 }
 
@@ -226,6 +239,101 @@ static uintptr_t napot_encode(uintptr_t base, uintptr_t size) {
     return (base >> 2) | ((size >> 3) - 1);
 }
 
+#define MAX_LOCKED_REGIONS 8
+typedef struct {
+    uintptr_t base;
+    uintptr_t end;
+    uint8_t   perms;
+} pmp_locked_region_t;
+
+static pmp_locked_region_t g_locked_regions[MAX_LOCKED_REGIONS];
+static int g_locked_count = 0;
+static int g_pmp_dynamic_start = -1;
+static int g_pmp_dynamic_avail = -1;
+
+static void pmp_probe_locked(void) {
+    if (g_pmp_dynamic_start >= 0) return;
+
+    /* Read the boot-time pmpcfg CSRs to check if any entries were locked
+     * (bit 7, PMP_L) by a prior bootloader (e.g. ESP-IDF 2nd-stage bootloader). */
+    uintptr_t c0 = read_csr(pmpcfg0);
+    uintptr_t c1 = 0;
+#if __riscv_xlen == 32
+    c1 = read_csr(pmpcfg1);
+#if PMP_ENTRIES > 8
+    uintptr_t c2 = read_csr(pmpcfg2);
+    uintptr_t c3 = read_csr(pmpcfg3);
+#endif
+#endif
+
+    uint8_t init_cfg[PMP_ENTRIES];
+    for (int i = 0; i < 4 && i < PMP_ENTRIES; i++) init_cfg[i] = (uint8_t)(c0 >> (i * 8));
+#if __riscv_xlen == 32
+    for (int i = 0; i < 4 && 4 + i < PMP_ENTRIES; i++) init_cfg[4 + i] = (uint8_t)(c1 >> (i * 8));
+#if PMP_ENTRIES > 8
+    for (int i = 0; i < 4 && 8 + i < PMP_ENTRIES; i++) init_cfg[8 + i] = (uint8_t)(c2 >> (i * 8));
+    for (int i = 0; i < 4 && 12 + i < PMP_ENTRIES; i++) init_cfg[12 + i] = (uint8_t)(c3 >> (i * 8));
+#endif
+#endif
+
+    g_locked_count = 0;
+    for (int i = 0; i < PMP_ENTRIES; i++) {
+        if (!(init_cfg[i] & 0x80u)) continue; /* not locked */
+        uint8_t mode = (init_cfg[i] >> 3) & 3u;
+        uint8_t perms = 0;
+        if (init_cfg[i] & PMP_R) perms |= MEM_R;
+        if (init_cfg[i] & PMP_W) perms |= MEM_W;
+        if (init_cfg[i] & PMP_X) perms |= MEM_X;
+
+        if (mode == 3 /* NAPOT */ && g_locked_count < MAX_LOCKED_REGIONS) {
+            uintptr_t paddr = pmpaddr_read(i);
+            uint32_t ones = (~paddr == 0) ? 32u : (uint32_t)__builtin_ctz(~paddr);
+            uintptr_t size = (ones >= 29) ? ((uintptr_t)-1) : (((uintptr_t)8) << ones);
+            uintptr_t mask = (ones >= 32) ? (uintptr_t)-1 : (((uintptr_t)1 << ones) - 1);
+            uintptr_t base = (paddr & ~mask) << 2;
+            g_locked_regions[g_locked_count++] = (pmp_locked_region_t){ base, base + size, perms };
+        } else if (mode == 1 /* TOR */ && g_locked_count < MAX_LOCKED_REGIONS) {
+            uintptr_t hi = pmpaddr_read(i) << 2;
+            uintptr_t lo = (i > 0) ? (pmpaddr_read(i - 1) << 2) : 0;
+            g_locked_regions[g_locked_count++] = (pmp_locked_region_t){ lo, hi, perms };
+        }
+    }
+
+    int start = 0;
+    while (start < PMP_ENTRIES && (init_cfg[start] & 0x80u)) {
+        start++;
+    }
+    int end = PMP_ENTRIES - 1;
+    while (end >= start && (init_cfg[end] & 0x80u)) {
+        end--;
+    }
+    int avail = (end >= start) ? (end - start + 1) : 0;
+#if PMP_DENY_ENTRIES > 0
+    if (avail > PMP_DENY_ENTRIES) avail -= PMP_DENY_ENTRIES;
+    else avail = 0;
+#endif
+    g_pmp_dynamic_start = start;
+    g_pmp_dynamic_avail = avail;
+
+    if (g_locked_count > 0) {
+        printk("[MemDomain] %d PMP entries locked (%d at start, %d at end); dynamic range %d..%d (%d entries)\n",
+               g_locked_count, start, PMP_ENTRIES - 1 - end, start, end, avail);
+    }
+}
+
+static bool pmp_is_covered_locked(uintptr_t base, uintptr_t size, uint8_t perms) {
+    pmp_probe_locked();
+    uintptr_t end = base + size;
+    for (int i = 0; i < g_locked_count; i++) {
+        if ((g_locked_regions[i].perms & perms) == perms &&
+            base >= g_locked_regions[i].base &&
+            end <= g_locked_regions[i].end) {
+            return true;
+        }
+    }
+    return false;
+}
+
 int mem_domain_activate(const mem_domain_t *d) {
     /* which harts have actually
      * activated a restricted domain.
@@ -238,9 +346,20 @@ int mem_domain_activate(const mem_domain_t *d) {
      * claim into evidence: a non-zero entry for hart 1 means a restricted
      * domain was installed there, by code running there. */
     if (d) g_domain_activations[hart_id()]++;
+    pmp_probe_locked();
+
+    int start = g_pmp_dynamic_start;
+    int avail = g_pmp_dynamic_avail;
+
     int n = d ? d->count : 0;
     if (n > MEM_DOMAIN_MAX_REGIONS) n = MEM_DOMAIN_MAX_REGIONS;
-    if (n > PMP_DYNAMIC_ENTRIES) n = PMP_DYNAMIC_ENTRIES;
+    if (n > avail) n = avail;
+
+    if (d && d->count > avail) {
+        printk("[MemDomain] domain requires %d regions, but only %d dynamic PMP entries available\n",
+               d->count, avail);
+        return -1;
+    }
 
     uint8_t cfg[PMP_ENTRIES];
     for (int i = 0; i < PMP_ENTRIES; i++) cfg[i] = 0;
@@ -249,20 +368,16 @@ int mem_domain_activate(const mem_domain_t *d) {
         if (d->regions[i].perms & MEM_R) byte |= PMP_R;
         if (d->regions[i].perms & MEM_W) byte |= PMP_W;
         if (d->regions[i].perms & MEM_X) byte |= PMP_X;
-        cfg[i] = byte;
+        cfg[start + i] = byte;
     }
 #if PMP_DENY_ENTRIES > 0
-    /* Active (A=NAPOT) with every permission bit clear: a match that grants
-     * U-mode nothing, which is what overrides the hardwired grants above.
-     * Installed only when there is a domain to enforce -- a kernel task runs
-     * with no restriction at all, and M-mode ignores an unlocked region
-     * anyway (datasheet §3.8.3.2). */
     if (d) {
-        for (int i = 0; i < PMP_DENY_ENTRIES; i++) cfg[PMP_DYNAMIC_ENTRIES + i] = PMP_A_NAPOT;
+        for (int i = 0; i < PMP_DENY_ENTRIES; i++) cfg[start + avail + i] = PMP_A_NAPOT;
     }
 #endif
 
-    /* Zero config first so no stale address is matched while pmpaddr registers are updated. */
+    /* Zero config first so no stale address is matched while pmpaddr registers are updated.
+     * Note: writing 0 to locked entries is a no-op in hardware. */
     write_csr(pmpcfg0, 0);
 #if __riscv_xlen == 32
     write_csr(pmpcfg1, 0);
@@ -276,7 +391,7 @@ int mem_domain_activate(const mem_domain_t *d) {
 #if PMP_DENY_ENTRIES > 0
     if (d) {
         for (int i = 0; i < PMP_DENY_ENTRIES; i++) {
-            pmpaddr_write(PMP_DYNAMIC_ENTRIES + i,
+            pmpaddr_write(start + avail + i,
                           napot_encode(g_hardwired_shadow[i].base,
                                        g_hardwired_shadow[i].size));
         }
@@ -284,7 +399,7 @@ int mem_domain_activate(const mem_domain_t *d) {
 #endif
     for (int i = 0; i < n; i++) {
         uintptr_t want = napot_encode(d->regions[i].base, d->regions[i].size);
-        pmpaddr_write(i, want);
+        pmpaddr_write(start + i, want);
     }
 
     /* Activate target config with all pmpaddr registers settled. */
@@ -308,12 +423,13 @@ int mem_domain_activate(const mem_domain_t *d) {
 #endif
 
     for (int i = 0; i < n; i++) {
+        int idx = start + i;
         uintptr_t want = napot_encode(d->regions[i].base, d->regions[i].size);
-        uintptr_t got = pmpaddr_read(i);
+        uintptr_t got = pmpaddr_read(idx);
         if ((got | PMP_ADDR_FIXED_LOW) != (want | PMP_ADDR_FIXED_LOW)) {
             printk("[MemDomain] pmpaddr%d: wrote %08lx, kept %08lx "
                    "(region %08lx+%08lx not representable on this core)\n",
-                   i, (unsigned long)want, (unsigned long)got,
+                   idx, (unsigned long)want, (unsigned long)got,
                    (unsigned long)d->regions[i].base,
                    (unsigned long)d->regions[i].size);
             ok = -1;
