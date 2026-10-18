@@ -465,6 +465,10 @@ to a particular ASR or TTS engine.
 
 ### Part B — Audio (NANO, LCD-7B, Tab5)
 
+**Scheduled after phase 63** (plan/phase63_concurrency_review.md). Part A found three
+concurrency bugs older than its own code, and audio adds the interrupt- and ring-heavy code
+where that class does the most damage.
+
 **62.7 GDMA-AHB driver**
 - `drivers/gdma_ahb_esp32p4.c`: channel claim and peripheral selection, circular descriptor
   rings, EOF interrupt through the CLIC, error counters.
