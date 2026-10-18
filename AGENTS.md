@@ -284,6 +284,9 @@ for both roles by itself.
   `reboot` is not supported on the P4; reset with `tools/p4run.py --board tab5 --run`.
 * Battery: 2S pack on the INA226 (0x41, 5 mOhm, sign inverted so + = charging); `power`, `cat /dev/power`,
   `power log FILE [s]`; charge estimate in drivers/battery.c (board facts `CONFIG_BATT_*`).
+  Charger (IP2326 via 0x44: P7 CHG_EN, P5 nQC): `power charge off|slow|fast`, `power limit N|off`
+  (stored in the identity record); `power off` pulses PWROFF (P4) and switches the board off --
+  never run it on a board you need to keep talking to. CHG_STAT (P6) reads 1 whether charging or not.
 * Grove port A is a second I2C bus (I2C1, GPIO53 SDA / GPIO54 SCL, `i2c scan 1`); external sensors go there.
 * Display (`drivers/dsi_esp32p4.c`): 5" 720×1280 MIPI-DSI ST7121 TDDI, 2-lane @ 900 Mbps, DPI clock
   70 MHz, double-buffered RGB565 PSRAM scanout at 58 Hz. Backlight active-high LEDC PWM on `GPIO22`.

@@ -59,7 +59,10 @@ LugalOS supports multiple mounted FAT32 volumes:
 On a board with a battery (the M5Stack Tab5):
 * power: Pack voltage, current (positive while charging), power, the estimated charge level, and the time to empty or full.
 * power log FILE [s]: Writes one CSV line a second (ts,mv,ma,mw,socpm) to FILE, for s seconds or until power log stop. Used to measure a full discharge for calibrating the charge estimate.
-* cat /dev/power: The same state as key=value lines (mv, ma, mw, state, soc_pm in 0.1 %, minutes), readable over 9P.
+* power charge [off|slow|fast]: Shows or sets the charger. off stops charging, slow and fast are the Tab5 charger's two modes (M5Stack's 500 mA and 1 A). The setting is stored and applied at every boot. The default is fast, which is how the board starts.
+* power limit [N|off]: Stops charging at N % and resumes below N−5 %, for a tablet that stays on its charger. off (or 100) charges fully.
+* power off: Switches the board off through its power supervisor. LugalOS does the same by itself when the battery stays below the cut-off voltage (6.2 V on the Tab5) for 30 s while discharging, after stopping a running power log. Below 6.6 V the menu bar shows ! after the charge level.
+* cat /dev/power: The same state as key=value lines (mv, ma, mw, state, socpm in 0.1 %, minutes, charge, held, limit, chgstat), readable over 9P. Writing charge MODE, limit N|off or off to it does what the commands do.
 * The menu bar shows the charge level left of the clock, with + while charging.
 
 The charge level blends two estimates. One is the pack voltage, corrected for the voltage drop under load and read off a Li-ion discharge curve. The other counts the current in and out against the pack's capacity. The count keeps the number steady from second to second, and the voltage corrects it over several minutes. (sensors)

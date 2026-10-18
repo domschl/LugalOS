@@ -285,6 +285,11 @@ node_id_result_t node_identity_set_mqtt(const node_mqtt_t *cfg);
 bool node_altitude(int32_t *metres_out);
 node_id_result_t node_identity_set_altitude(int32_t metres);
 node_id_result_t node_identity_clear_altitude(void);
+
+/* The board's charge mode and charge limit in % (0 = none), as stored by
+ * `power charge` / `power limit`; false when nothing is stored. */
+bool node_power_settings(uint8_t *mode, uint8_t *limit_pct);
+node_id_result_t node_identity_set_power(uint8_t mode, uint8_t limit_pct);
 node_id_result_t node_identity_clear_mqtt(void);
 
 node_id_result_t node_identity_set_ipv4(const uint8_t ip[NODE_IPV4_LEN],

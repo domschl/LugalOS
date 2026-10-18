@@ -4,6 +4,7 @@
 #include "kernel/console.h"
 #include "kernel/time.h"
 #include "kernel/sched.h"
+#include "kernel/lock.h"
 #include "kernel/chan.h"
 #include "kernel/mem_domain.h"
 #include "kernel/device.h"
@@ -553,6 +554,12 @@ static esp_i2c_t *g_esp = &g_esp_bus[0];
 
 static inline void esp_sel(uint8_t bus) { g_esp = &g_esp_bus[bus]; }
 
+/* One transfer on the controllers at a time. The bus task's transfers, the
+ * direct ones before it runs, and the diagnostics that drive the controller
+ * from the shell's own task (i2cdiag) all take it; without it, i2cdiag's
+ * probes landed in the middle of the touch poller's transfers. */
+static ylock_t g_esp_hw_lock;
+
 static void esp_i2c_bringup_timing(void);
 static bool i2c_write_bytes(uint8_t addr, const uint8_t *src, int len);
 static bool i2c_xfer_raw(uint8_t addr, const uint8_t *w, int wlen,
@@ -617,13 +624,35 @@ static void esp_i2c_tab5_pi4ioe_init(void) {
 
 static void esp_i2c_hw_bringup(bool verbose);
 
+/* Read-modify-write of an expander's OUT_SET, so that a driver changing its
+ * own pins (the charger's on 0x44, the panel resets and the speaker enable on
+ * 0x43) leaves everyone else's alone. The lock makes the read and the write
+ * one step against another task doing the same. */
+static ylock_t g_pi4ioe_lock;
+
+bool i2c_tab5_expander_update(uint8_t addr, uint8_t mask, uint8_t bits) {
+    if (!g_esp_bus[0].ready) esp_i2c_hw_bringup(false);
+    ylock_acquire(&g_pi4ioe_lock);
+    uint8_t reg = 0x05u, cur = 0;
+    bool ok = i2c_xfer(addr, &reg, 1, &cur, 1);
+    if (ok) {
+        uint8_t w[2] = { 0x05u, (uint8_t)((cur & (uint8_t)~mask) | (bits & mask)) };
+        ok = i2c_xfer(addr, w, 2, NULL, 0);
+    }
+    ylock_release(&g_pi4ioe_lock);
+    return ok;
+}
+
+int i2c_tab5_expander_read(uint8_t addr, uint8_t reg) {
+    uint8_t v = 0;
+    return i2c_xfer(addr, &reg, 1, &v, 1) ? (int)v : -1;
+}
+
 void i2c_tab5_panel_reset(void) {
-    esp_sel(0);
-    if (!g_esp->ready) esp_i2c_hw_bringup(false);
     /* Pulse LCD_RST (bit 4) and TP_RST (bit 5) low, then release high */
-    esp_i2c_tab5_pi4ioe_reg(0x43u, 0x05u, 0x44u);
+    i2c_tab5_expander_update(0x43u, 0x30u, 0x00u);
     time_delay_us(20000);
-    esp_i2c_tab5_pi4ioe_reg(0x43u, 0x05u, 0x74u);
+    i2c_tab5_expander_update(0x43u, 0x30u, 0x30u);
     time_delay_us(100000);
 }
 
@@ -631,14 +660,18 @@ static bool i2c_xfer_raw(uint8_t addr, const uint8_t *w, int wlen, uint8_t *r, i
 static bool i2c_probe_addr(uint8_t addr);
 
 int i2c_tab5_touch_fw_version(void) {
-    esp_sel(0);
-    if (!g_esp->ready) esp_i2c_hw_bringup(false);
+    if (!g_esp_bus[0].ready) esp_i2c_hw_bringup(false);
     uint8_t reg[2] = { 0x00, 0x00 };
     uint8_t ver = 0;
     for (int i = 0; i < 40; i++) {
-        if (i2c_xfer_raw(0x55u, reg, 2, &ver, 1)) {
+        ylock_acquire(&g_esp_hw_lock);
+        esp_sel(0);
+        bool st = i2c_xfer_raw(0x55u, reg, 2, &ver, 1);
+        bool gt = !st && (i2c_probe_addr(0x14u) || i2c_probe_addr(0x5Du));
+        ylock_release(&g_esp_hw_lock);
+        if (st) {
             if (ver == 1 || ver == 3) return (int)ver;
-        } else if (i2c_probe_addr(0x14u) || i2c_probe_addr(0x5Du)) {
+        } else if (gt) {
             return 0; /* GT911 / ILI9881C */
         }
         time_delay_us(10000);
@@ -968,6 +1001,7 @@ static bool esp_i2c_run(void) {
  * i2c task is not in the picture either. */
 void i2c_p4_diag(void) {
     esp_i2c_hw_bringup(true);
+    ylock_acquire(&g_esp_hw_lock);
     esp_sel(0);
     printk_critical("[I2Cdiag] ready=%d\n", (int)g_esp->ready);
    
@@ -1013,6 +1047,7 @@ void i2c_p4_diag(void) {
                i, (int)rok, (unsigned)id, (unsigned)g_esp->last_int,
                (unsigned)g_esp->last_sr);
     }
+    ylock_release(&g_esp_hw_lock);
 }
 
 /* What the last transaction ended on, for i2cdiag. Exposed rather than
@@ -1087,8 +1122,11 @@ static bool __attribute__((unused)) i2c_probe_addr(uint8_t addr) {
 static bool i2c_xfer_raw_bus(uint8_t bus, uint8_t addr, const uint8_t *w, int wlen,
                              uint8_t *r, int rlen) {
     if (bus >= ESP_I2C_NBUS) return false;
+    ylock_acquire(&g_esp_hw_lock);
     esp_sel(bus);
-    return i2c_xfer_raw(addr, w, wlen, r, rlen);
+    bool ok = i2c_xfer_raw(addr, w, wlen, r, rlen);
+    ylock_release(&g_esp_hw_lock);
+    return ok;
 }
 #else
 void i2c_bus_init(void) {}

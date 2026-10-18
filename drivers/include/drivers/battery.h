@@ -47,6 +47,7 @@ typedef struct {
     int32_t  soc_ppm;        /* the blended level */
     uint64_t last_ms;
     int32_t  last_mv, last_ma;
+    bool     low;            /* set by kernel/power.c below its warning voltage */
 } battery_t;
 
 /* The level the voltage alone says, in ppm, for a resting pack voltage. */
@@ -70,8 +71,8 @@ uint32_t battery_selftest(bool report);
  * on a board without one (CONFIG_BATT_CELLS unset). */
 battery_t *battery_board(void);
 
-/* "71%" or "71%+" while charging, for the menu bar; 0 (and "") without a
- * board battery or before its first reading. */
+/* "71%", "71%+" while charging, "9%!" when low, for the menu bar; 0 (and
+ * "") without a board battery or before its first reading. */
 uint32_t battery_indicator(char *buf, uint32_t cap);
 
 /* Whether the board battery is charging: current into it above 20 mA. */

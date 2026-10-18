@@ -2434,6 +2434,10 @@ int vfs_pwrite(int fd, const void *buf, uint32_t count, uint64_t offset) {
             } else if (strcmp(h->rel_path, "wlan") == 0) {
                 return radio_c6_ctl_write((const char *)buf, count);
 #endif
+#if defined(CONFIG_BATT_CELLS)
+            } else if (strcmp(h->rel_path, "power") == 0) {
+                return power_ctl_write((const char *)buf, count);
+#endif
 #if defined(CONFIG_OTA)
             } else if (strcmp(h->rel_path, "ota") == 0) {
                 return ota_ctl_write((const char *)buf, count);

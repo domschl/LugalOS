@@ -315,6 +315,8 @@ typedef struct {
     /* Multi-sensor calibration blob. */
     const uint8_t *sensor_cal; uint32_t sensor_cal_len;
     bool           clear_sensor_cal;
+    /* Charge mode and limit, two bytes. */
+    const uint8_t *power;
 } identity_patch_t;
 
 /* Reads whatever is currently on `dev` (if anything valid), then writes a
@@ -491,7 +493,18 @@ static int identity_store_write(const identity_patch_t *patch) {
         if (n > 0) final_scal_len = (uint32_t)n;
     }
 
+    uint8_t  final_power[2];
+    bool     have_power = false;
+    if (patch->power) {
+        memcpy(final_power, patch->power, sizeof(final_power));
+        have_power = true;
+    } else if (old_valid) {
+        have_power = idstore_get_field(oldp, IDSTORE_FIELD_POWER, final_power,
+                                       sizeof(final_power)) == (int)sizeof(final_power);
+    }
+
     if (have_ipv4)           rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_IPV4, final_ipv4, sizeof(final_ipv4));
+    if (have_power)          rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_POWER, final_power, sizeof(final_power));
     if (have_alt)            rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_ALTITUDE, final_alt, sizeof(final_alt));
     if (final_mqtt_len)      rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_MQTT, final_mqtt, (uint16_t)final_mqtt_len);
     if (final_grants_len)    rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_GRANTS, final_grants, final_grants_len);
@@ -827,6 +840,32 @@ node_id_result_t node_identity_set_altitude(int32_t metres) {
     if (!identity_store_device()) return NODE_ID_ERR_NO_BACKEND;
     uint8_t b[2] = { (uint8_t)((uint16_t)metres >> 8), (uint8_t)metres };
     identity_patch_t patch = { .altitude = b };
+    return identity_store_write(&patch) != 0 ? NODE_ID_ERR_WRITE_FAILED : NODE_ID_OK;
+}
+
+bool node_power_settings(uint8_t *mode, uint8_t *limit_pct) {
+    block_dev_t *dev = identity_store_device();
+    if (!dev) return false;
+    scratch_t sc;
+    if (!scratch_acquire(&sc, sizeof(idstore_t))) return false;
+    idstore_t *rec = (idstore_t *)sc.base;
+    bool ok = false;
+    if (idstore_read(dev, rec) == IDSTORE_VALID) {
+        uint8_t b[2];
+        if (idstore_get_field(rec, IDSTORE_FIELD_POWER, b, sizeof(b)) == (int)sizeof(b)) {
+            if (mode) *mode = b[0];
+            if (limit_pct) *limit_pct = b[1];
+            ok = true;
+        }
+    }
+    scratch_release(&sc);
+    return ok;
+}
+
+node_id_result_t node_identity_set_power(uint8_t mode, uint8_t limit_pct) {
+    if (!identity_store_device()) return NODE_ID_ERR_NO_BACKEND;
+    uint8_t b[2] = { mode, limit_pct };
+    identity_patch_t patch = { .power = b };
     return identity_store_write(&patch) != 0 ? NODE_ID_ERR_WRITE_FAILED : NODE_ID_OK;
 }
 

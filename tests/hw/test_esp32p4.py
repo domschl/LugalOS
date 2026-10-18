@@ -1570,7 +1570,17 @@ def test_power(b: Board) -> tuple[str, bool, str]:
         return name, False, f"/dev/power incomplete: {dev.strip()[-300:]}"
     if abs(int(mv.group(1)) - v * 1000) > 100:
         return name, False, f"/dev/power says {mv.group(1)} mV, power says {v} V"
-    return name, True, f"{v} V, {m.group(2)} A, {m.group(4)} %"
+    # 62.4: the charge mode reaches the expander (0x44 OUT_SET bits 7 and 5)
+    # and back; restored to what it was.
+    was = re.search(r"charge=(\w+)", dev)
+    if was:
+        b.console_session.cmd("power charge slow", deadline=10.0)
+        reg = b.console_session.cmd("i2c rd 44 5 1", deadline=10.0)
+        b.console_session.cmd(f"power charge {was.group(1)}", deadline=10.0)
+        r = re.search(r"0x44: ([0-9a-f]{2})", reg)
+        if not r or (int(r.group(1), 16) & 0xA0) != 0xA0:
+            return name, False, f"`power charge slow` left OUT_SET at {r.group(1) if r else '?'}"
+    return name, True, f"{v} V, {m.group(2)} A, {m.group(4)} %, charge {was.group(1) if was else '-'}"
 
 
 def _ribbon(b: Board) -> tuple[int, int]:

@@ -105,8 +105,9 @@ uint32_t battery_indicator(char *buf, uint32_t cap) {
     if (!buf || cap == 0) return 0;
     buf[0] = '\0';
     if (!battery_soc(battery_board(), &pm)) return 0;
+    battery_t *b = battery_board();
     int n = ksnprintf(buf, cap, "%ld%%%s", (long)((pm + 5) / 10),
-                      battery_board_charging() ? "+" : "");
+                      battery_board_charging() ? "+" : b->low ? "!" : "");
     return n > 0 ? (uint32_t)n : 0u;
 }
 

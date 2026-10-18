@@ -1080,7 +1080,7 @@ static void cmd_help_summary(void) {
     cprintf("  meminfo         - Physical memory and page pool status\n");
     cprintf("  date [ISO]      - Show or set date and RTC time\n");
     cprintf("  rtc             - Display RTC status and temperature\n");
-    cprintf("  power [log F [s]] - Battery voltage, current, charge (log to CSV)\n");
+    cprintf("  power [charge|limit|off|log] - Battery, charging, power off, CSV log\n");
     cprintf("  dmesg [-c|-f]   - Dump kernel log ring (-c clear, -f follow)\n");
     cprintf("  klog [attach|detach] - Kernel log ring (/proc/kmsg)\n");
     cprintf("  history [clear] - Command history (!n, !! to repeat)\n");

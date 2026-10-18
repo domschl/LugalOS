@@ -119,6 +119,9 @@ typedef enum {
                                     * What the BME280's sea-level pressure is reduced with; a
                                     * board without it publishes station pressure only. */
     IDSTORE_FIELD_SENSOR_CAL = 10, /* instance scope: persistent multi-sensor calibration blob */
+    IDSTORE_FIELD_POWER     = 11, /* instance scope: 2 bytes -- the charge mode
+                                    * (drivers/charger.h's charge_mode_t) and the charge
+                                    * limit in % (0 = none). kernel/power.c applies it at boot. */
 } idstore_field_type_t;
 
 typedef struct {

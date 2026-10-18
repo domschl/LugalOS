@@ -844,6 +844,7 @@ set(SOURCES
     drivers/tmp117.c
     drivers/ina226.c
     drivers/battery.c
+    drivers/charger.c
     drivers/sensor_hub.c
     fs/p9_chan.c
     libc/string.c

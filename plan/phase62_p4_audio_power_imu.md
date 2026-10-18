@@ -390,6 +390,25 @@ to a particular ASR or TTS engine.
 - Trace the INA226 `ALERT` → Q12 path. If it is a hardware undervoltage cut, set the INA226's
   alert limit to match §1.4's thresholds instead of fighting it.
 
+**Done (2026-10-18):**
+- `drivers/charger.c` implements M5's modes through `i2c_tab5_expander_update()`, a locked
+  read-modify-write of OUT_SET. `i2c_tab5_panel_reset()` now uses it too, so it no longer
+  overwrites SPK_EN and the antenna bit.
+- `power charge|limit|off` and `/dev/power` writes. The settings live in `IDSTORE_FIELD_POWER`
+  (11) and are applied at boot.
+- The `power` task keeps the limit with a 5 % hysteresis. It warns below empty+600 mV and
+  switches off after 30 s below empty+200 mV while discharging.
+- Measured: the limit pauses charging (212 mA → −2 mA) and lifting it resumes (225 mA). A
+  stored mode survives a reset.
+- **CHG_STAT (P6) reads 1 while charging and while paused**, so it does not mean "charging" as
+  M5Unified's `isCharging()` assumes. It is reported raw, and the CSV log records it.
+- Not yet measured:
+  - slow against fast charge current. The battery was full, and only the top-off current flowed.
+  - the low-battery shutdown and `power off`.
+  - `ALERT`→Q12.
+  These need a discharged battery, which means the owner unplugging the Tab5 with
+  `power log /sd0/batt.csv` running.
+
 **62.5 BMI270 driver**
 - Chip ID, soft reset, power configuration, accelerometer and gyro configuration. Test raw data
   without the config blob first (§1.5) and **stop for a user decision** if the blob is needed.
