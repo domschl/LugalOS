@@ -331,7 +331,11 @@ def test_i2c_bus(b: Board) -> tuple[str, bool, str]:
     if is_tab5(b):
         if 0x10 not in found or 0x43 not in found or 0x55 not in found:
             return name, False, f"Tab5 I2C missing key devices: {sorted(hex(a) for a in found)}"
-        return name, True, f"found {len(found)} I2C devices on Tab5 (ES8388, PI4IOE, ST7121 touch)"
+        if "68 bmi270" not in out or "32 rx8130" not in out:
+            return name, False, f"the board-parts line does not name the BMI270 and RX8130CE: {out[-400:]!r}"
+        if "I2C Bus 1 Scan" not in out:
+            return name, False, "no second bus (Grove port A, GPIO53/54)"
+        return name, True, f"found {len(found)} I2C devices on Tab5 (ES8388, PI4IOE, ST7121 touch); Grove bus up"
     if ES8311_ADDR not in found:
         return name, False, (f"no ES8311 at 0x18 -- the codec is soldered to this "
                              f"board, so the bus is wrong, not the wiring. Found "
@@ -1524,14 +1528,18 @@ def test_touch(b: Board) -> tuple[str, bool, str]:
 def test_rtc(b: Board) -> tuple[str, bool, str]:
     """47.7 and the DS1307 merge: an RTC module on the I2C header is told
     apart (DS3231 or DS1307), its oscillator runs, and its time is readable.
-    Skips without a module."""
+    Skips without a module. The Tab5's RX8130CE is a board part: there it
+    must be found, and found as itself (0x68 on that board is the BMI270)."""
     name = "RTC: model identified, oscillator running (47.7)"
     out = b.console_session.cmd("rtc", deadline=10.0)
-    if "No RTC module" in out or _no_display(out):
+    tab5 = is_tab5(b)
+    if ("No RTC" in out or _no_display(out)) and not tab5:
         return name, True, "SKIPPED (no RTC module on the I2C header)"
-    m = re.search(r"RTC Model: (DS\d+)", out)
+    m = re.search(r"RTC Model: (DS\d+|RX8130CE)", out)
     if not m:
         return name, False, f"no model: {out.strip()[-300:]}"
+    if tab5 and m.group(1) != "RX8130CE":
+        return name, False, f"Tab5 RTC identified as {m.group(1)}, not its RX8130CE"
     if "Oscillator status: running" not in out:
         return name, True, f"SKIPPED ({m.group(1)} found, but its time was never set)"
     t = re.search(r"RTC Time \(UTC\): (\S+ \S+)", out)

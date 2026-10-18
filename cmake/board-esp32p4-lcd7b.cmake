@@ -134,6 +134,10 @@ set(CONFIG_DSI_LCD_BL_GPIO  32)
 #   [ws: gt911.cpp, mirror_x = 1, mirror_y = 1; owner, 47.12: taps landed on
 #   the other window and swipes went the wrong way without it].
 set(CONFIG_TOUCH_GT911 1)
+# The parts soldered to that bus; probes by other drivers skip them
+# (drivers/i2c_bus.c, i2c_probe_begin). The DS3231, AT24C32 and BME280 on the
+# PH2.0 header are modules, not board parts, and stay probeable.
+set(CONFIG_I2C0_PARTS 0x18:es8311 0x40:es7210 0x5d:gt911)
 set(CONFIG_TOUCH_MIRROR_X 1)
 set(CONFIG_TOUCH_MIRROR_Y 1)
 #

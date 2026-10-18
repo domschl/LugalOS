@@ -306,6 +306,26 @@ to a particular ASR or TTS engine.
 - Done when the Tab5 keeps the right time across a power cycle without network, `rtc` no longer
   claims a DS1307, and a BME280 on Grove shows in `sensor`.
 
+**Done (2026-10-18):**
+- Board files list their parts (`CONFIG_I2C0_PARTS`, generator-checked ascending).
+- `i2c_bus_part()` and `i2c_probe_begin/end()`. The hub's driver inits and the DS probe run
+  in probe windows.
+- `i2c scan` names the board parts and now goes through the bus task instead of driving the
+  controller under it.
+- The ESP I2C driver keeps state per controller. I2C1 is on GPIO53/54 on the Tab5, and its
+  scan of the empty port is clean.
+- The RX8130CE is in `drivers/i2c_rtc.c` (`CONFIG_RTC_RX8130`). STOP is held while writing and
+  VLF is cleared afterwards. A year before 2024 counts as "never set". Set, chip reset and
+  restored at boot, verified.
+- 0x28 could not be identified. It ACKs and reads 0xff from any register. SYS_I2C also reaches
+  the M5-Bus and the expansion header, so it may not be on the board. It is reserved as
+  `undocumented`.
+- Tests: Tab5 46/46 and NANO 46/46.
+- Open:
+  - The LCD-7B was not attached, so it is unverified.
+  - A BME280 on the Tab5's Grove port has not been tried.
+  - `reboot` is not supported on the P4 (noted, not in scope).
+
 **62.2 Sensor framework: new channels, per-device period, internal flag**
 - Add the channels in §1.2, their descriptors and formatting, MQTT names, and the `/proc/sensors` layout.
 - Per-device `period_ms`, and a hub task that sleeps to the earliest deadline.

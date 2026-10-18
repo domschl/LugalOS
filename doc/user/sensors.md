@@ -12,12 +12,21 @@ LugalOS includes built-in drivers for a wide range of I2C environmental and atmo
 * **Ambient Light**: AMS/TAOS TSL2561, TSL2591.
 
 ### Discovering Connected Sensors
-To scan the hardware I2C bus:
+`i2c scan` lists every address that answers on each bus, then the parts soldered to the board on that bus:
 ```text
 lsh> i2c scan
-Scanning I2C bus (100 kHz)...
-  0x76: BME280 / BMP280 Environmental Sensor detected
+
+I2C Bus 0 Scan (GPIO7 SDA / GPIO8 SCL):
+     0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f
+10: -- -- -- -- -- -- -- -- 18 -- -- -- -- -- -- --
+...
+70: -- -- -- -- -- -- 76 --
+Found 4 I2C device(s) on bus 0.
+Board parts: 18 es8311
 ```
+Sensors are searched for at their usual addresses, but never at a board part's address. Some parts share an address with a sensor: the ES8311 codec sits at an MCP9808 address (0x18), the ES7210 microphone ADC at the HDC1080's (0x40), and the Tab5's BMI270 at the DS3231's (0x68). Probing them would write their registers, so a sensor with the same address cannot be used on that bus.
+
+**M5Stack Tab5:** connect external sensors to **Grove port A** (bus 1, GPIO53 SDA / GPIO54 SCL), not to the internal bus. The sensor hub searches both buses. The port's 5 V supply is switched on at boot.
 
 ### Reading Sensor Telemetry
 ```text

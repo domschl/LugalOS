@@ -293,6 +293,13 @@ set(CONFIG_SDMMC_BUS_WIDTH 4)
 # transfers, not a faster clock. See .
 set(CONFIG_SDMMC_FREQ_KHZ  20000)
 
+# --- I2C (GPIO7 SDA / GPIO8 SCL, drivers/i2c_bus.c's default pads) ---------
+#
+# [sch ESP32-P4-NANO, meas `i2c rd 18 fd 2` -> 83] The ES8311 codec at 0x18 is
+# the only part soldered to this bus; probes by other drivers skip it
+# (i2c_probe_begin), so the MCP9808 search starts at 0x19 here.
+set(CONFIG_I2C0_PARTS 0x18:es8311)
+
 # the ESP32-C6-MINI-1 on the SD/MMC
 # host's slot 1, through the GPIO matrix (slot 1 has no IO_MUX pads). Read off
 # the schematic (C6 IO19 = SDIO CLK, IO18 = CMD, IO20..23 = D0..D3, each with a

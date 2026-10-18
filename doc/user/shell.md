@@ -56,8 +56,8 @@ LugalOS supports multiple mounted FAT32 volumes:
 
 ### Real-Time Clock & Timestamps
 * `date`: Displays current date and time.
-* `date YYYY-MM-DD HH:MM:SS`: Sets system time and synchronizes the battery-backed hardware RTC (DS1307/DS3231).
-* `rtc`: Reports RTC chip status, oscillator health, and temperature sensor readback.
+* `date YYYY-MM-DD HH:MM:SS`: Sets the system time (local time) and the battery-backed hardware RTC: a DS1307/DS3231 module, or the board's own RX8130CE on the M5Stack Tab5.
+* `rtc`: Reports the RTC chip and its address, oscillator health, and temperature readback (DS3231 only). At boot the kernel clock is set from the RTC unless the chip reports a power loss or holds a year before 2024 (a clock nobody set).
 
 ### Firmware Updates
 * `cat /dev/ota`: The node's slots, boot record and update state. Commands (`begin`, `commit`, `switch`, `reboot`, ...) are written to it over 9P, usually by `tools/lota.py` ([updates](doc/admin/updates.md)).

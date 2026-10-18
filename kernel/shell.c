@@ -6025,15 +6025,17 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "rtc") == 0) {
         if (!i2c_rtc_is_detected()) {
-            cprintf("No RTC module detected at 0x68\n");
+            cprintf("No RTC chip detected\n");
             return;
         }
         const char *model = i2c_rtc_get_model_name();
-        cprintf("RTC Model: %s (at 0x68)\n", model);
+        cprintf("RTC Model: %s (at 0x%02x)\n", model, (unsigned)i2c_rtc_get_addr());
+        rtc_chip_type_t type = i2c_rtc_get_type();
         cprintf("Oscillator status: %s\n",
-                i2c_rtc_lost_power()
-                    ? (i2c_rtc_get_type() == RTC_TYPE_DS3231 ? "stopped (OSF set)" : "halted (CH set)")
-                    : "running");
+                !i2c_rtc_lost_power() ? "running"
+                : type == RTC_TYPE_DS3231 ? "stopped (OSF set)"
+                : type == RTC_TYPE_RX8130 ? "supply dropped (VLF set)"
+                : "halted (CH set)");
         rtc_time_t tm;
         if (i2c_rtc_read_time(&tm)) {
             char isostr[32];
@@ -6047,7 +6049,8 @@ static void parse_and_eval_cmd(const char *cmd_line) {
             cprintf("Temperature: %d C\n", temp_c);
         } else {
             cprintf("Temperature: %s\n",
-                    (i2c_rtc_get_type() == RTC_TYPE_DS1307) ? "none (DS1307 has no sensor)" : "not available");
+                    (type == RTC_TYPE_DS1307) ? "none (DS1307 has no sensor)"
+                    : (type == RTC_TYPE_RX8130) ? "none (RX8130CE has no sensor)" : "not available");
         }
         return;
     } else if (strcmp(cmd_line, "date") == 0) {

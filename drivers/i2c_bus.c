@@ -408,11 +408,16 @@ void i2c_rp2350_diag(uint8_t addr, uint8_t reg) {
  * are unsigned long constants rather than pointers. */
 #define REG(addr) (*(volatile uint32_t *)(uintptr_t)(addr))
 
+/* Every register macro below is relative to the selected controller's base
+ * (g_esp, set by esp_sel()). One controller is driven at a time: the bus task
+ * serializes transfers, and before it runs the boot is single-threaded. */
 #if defined(CONFIG_BOARD_ESP32P4)
-#define ESP_I2C_BASE        0x500C4000UL
+#define ESP_I2C0_BASE       0x500C4000UL
+#define ESP_I2C1_BASE       0x500C5000UL
 #else   /* ESP32-C6: I2C0 at DR_REG_I2C_EXT_BASE */
-#define ESP_I2C_BASE        0x60004000UL
+#define ESP_I2C0_BASE       0x60004000UL
 #endif
+#define ESP_I2C_BASE        (g_esp->base)
 #define ESP_I2C_SCL_LOW     (ESP_I2C_BASE + 0x00)
 #define ESP_I2C_CTR         (ESP_I2C_BASE + 0x04)
 #define ESP_I2C_SR          (ESP_I2C_BASE + 0x08)
@@ -473,9 +478,9 @@ void i2c_rp2350_diag(uint8_t addr, uint8_t reg) {
 
 #if defined(CONFIG_BOARD_ESP32P4)
 #define P4_CLKRST_BASE      0x500E6000UL
-#define P4_SOC_CLK_CTRL2    (P4_CLKRST_BASE + 0x1c)   /* bit 12: I2C0 APB gate */
-#define P4_PERI_CLK_CTRL10  (P4_CLKRST_BASE + 0x40)   /* b0 src sel, b1 clk en */
-#define P4_HP_RST_EN1       (P4_CLKRST_BASE + 0xc4)   /* bit 22: I2C0 reset    */
+#define P4_SOC_CLK_CTRL2    (P4_CLKRST_BASE + 0x1c)   /* APB gate: b12 I2C0, b13 I2C1 */
+#define P4_PERI_CLK_CTRL10  (P4_CLKRST_BASE + 0x40)   /* I2C0 b0 src/b1 en, I2C1 b26/b27 */
+#define P4_HP_RST_EN1       (P4_CLKRST_BASE + 0xc4)   /* reset: b22 I2C0, b21 I2C1 */
 #define ESP_GPIO_BASE        0x500E0000UL
 #define ESP_GPIO_IN_OFF      0x158u
 #define ESP_GPIO_OUT_OFF     0x558u
@@ -489,6 +494,9 @@ void i2c_rp2350_diag(uint8_t addr, uint8_t reg) {
 #endif
 #define ESP_I2C_SDA_SIG  69u
 #define ESP_I2C_SCL_SIG  68u
+/* I2C1's matrix signals (IDF gpio_sig_map.h I2C1_SCL/SDA_PAD_*_IDX) */
+#define ESP_I2C1_SDA_SIG 71u
+#define ESP_I2C1_SCL_SIG 70u
 #else   /* ESP32-C6 */
 /* PCR: I2C_CONF (bit 0 APB clock, bit 1 reset) and I2C_SCLK_CONF (bit 20 source: 0 = XTAL, bits
  * [19:12] divider, bit 22 enable) -- IDF's soc/esp32c6/register/soc/pcr_reg.h. */
@@ -519,15 +527,39 @@ void i2c_rp2350_diag(uint8_t addr, uint8_t reg) {
 #define ESP_IOMUX_FUN_IE     (1u << 9)
 #define ESP_IOMUX_FUN_PU     (1u << 8)
 
-static bool g_esp_i2c_ready;
+typedef struct {
+    uintptr_t base;
+    uint32_t  sda_gpio, scl_gpio, sda_sig, scl_sig;
+    uint32_t  apb_gate, clk_src, clk_en, rst;   /* P4 clock/reset bits */
+    bool      ready;
+    uint32_t  last_int, last_sr;                /* what the last transfer ended on */
+} esp_i2c_t;
+
+static esp_i2c_t g_esp_bus[] = {
+#if defined(CONFIG_BOARD_ESP32P4)
+    { ESP_I2C0_BASE, ESP_I2C_SDA_GPIO, ESP_I2C_SCL_GPIO, ESP_I2C_SDA_SIG, ESP_I2C_SCL_SIG,
+      1u << 12, 1u << 0, 1u << 1, 1u << 22, false, 0, 0 },
+#if defined(CONFIG_I2C1_SDA_GPIO) && defined(CONFIG_I2C1_SCL_GPIO)
+    { ESP_I2C1_BASE, CONFIG_I2C1_SDA_GPIO, CONFIG_I2C1_SCL_GPIO, ESP_I2C1_SDA_SIG, ESP_I2C1_SCL_SIG,
+      1u << 13, 1u << 26, 1u << 27, 1u << 21, false, 0, 0 },
+#endif
+#else
+    { ESP_I2C0_BASE, ESP_I2C_SDA_GPIO, ESP_I2C_SCL_GPIO, ESP_I2C_SDA_SIG, ESP_I2C_SCL_SIG,
+      0, 0, 0, 0, false, 0, 0 },
+#endif
+};
+#define ESP_I2C_NBUS ((uint8_t)(sizeof(g_esp_bus) / sizeof(g_esp_bus[0])))
+static esp_i2c_t *g_esp = &g_esp_bus[0];
+
+static inline void esp_sel(uint8_t bus) { g_esp = &g_esp_bus[bus]; }
+
 static void esp_i2c_bringup_timing(void);
 static bool i2c_write_bytes(uint8_t addr, const uint8_t *src, int len);
 static bool i2c_xfer_raw(uint8_t addr, const uint8_t *w, int wlen,
                          uint8_t *r, int rlen);
 static bool i2c_probe_addr(uint8_t addr);
 static void esp_i2c_bus_clear(void);
-static uint32_t g_esp_i2c_last_int;
-static uint32_t g_esp_i2c_last_sr;
+
 
 #if defined(CONFIG_BOARD_TAB5)
 /* M5Stack Tab5 dual PI4IOE5V6408 I2C IO expanders (U6 at 0x43, U7 at 0x44).
@@ -586,7 +618,8 @@ static void esp_i2c_tab5_pi4ioe_init(void) {
 static void esp_i2c_hw_bringup(bool verbose);
 
 void i2c_tab5_panel_reset(void) {
-    if (!g_esp_i2c_ready) esp_i2c_hw_bringup(false);
+    esp_sel(0);
+    if (!g_esp->ready) esp_i2c_hw_bringup(false);
     /* Pulse LCD_RST (bit 4) and TP_RST (bit 5) low, then release high */
     esp_i2c_tab5_pi4ioe_reg(0x43u, 0x05u, 0x44u);
     time_delay_us(20000);
@@ -598,7 +631,8 @@ static bool i2c_xfer_raw(uint8_t addr, const uint8_t *w, int wlen, uint8_t *r, i
 static bool i2c_probe_addr(uint8_t addr);
 
 int i2c_tab5_touch_fw_version(void) {
-    if (!g_esp_i2c_ready) esp_i2c_hw_bringup(false);
+    esp_sel(0);
+    if (!g_esp->ready) esp_i2c_hw_bringup(false);
     uint8_t reg[2] = { 0x00, 0x00 };
     uint8_t ver = 0;
     for (int i = 0; i < 40; i++) {
@@ -629,23 +663,19 @@ static void esp_pad_for_i2c(uint32_t gpio, uint32_t sig) {
     REG(ESP_GPIO_IN_SEL(sig))   = gpio | (1u << 7);   /* bit 7: take from matrix */
 }
 
-static void esp_i2c_hw_bringup(bool verbose) {
-    if (g_esp_i2c_ready) {
-        if (verbose) printk_critical("[I2Cdiag] already up\n");
-        return;
-    }
-
+/* Clocks, reset, pads, master mode and timing for the selected controller. */
+static void esp_i2c_ctrl_bringup(bool verbose) {
 #if defined(CONFIG_BOARD_ESP32P4)
     if (verbose) printk_critical("[I2Cdiag] 1: APB gate\n");
-    REG(P4_SOC_CLK_CTRL2) |= (1u << 12);
+    REG(P4_SOC_CLK_CTRL2) |= g_esp->apb_gate;
 
     if (verbose) printk_critical("[I2Cdiag] 2: module clock, XTAL source\n");
-    REG(P4_PERI_CLK_CTRL10) &= ~(1u << 0);
-    REG(P4_PERI_CLK_CTRL10) |= (1u << 1);
+    REG(P4_PERI_CLK_CTRL10) &= ~g_esp->clk_src;
+    REG(P4_PERI_CLK_CTRL10) |= g_esp->clk_en;
 
     if (verbose) printk_critical("[I2Cdiag] 3: reset pulse\n");
-    REG(P4_HP_RST_EN1) |=  (1u << 22);
-    REG(P4_HP_RST_EN1) &= ~(1u << 22);
+    REG(P4_HP_RST_EN1) |=  g_esp->rst;
+    REG(P4_HP_RST_EN1) &= ~g_esp->rst;
 #else   /* ESP32-C6: the same three steps in the PCR -- APB clock, function clock from the 40 MHz
          * crystal undivided (so the timing below holds as it is), a reset pulse */
     REG(C6_PCR_I2C_CONF) |= (1u << 0);
@@ -655,10 +685,10 @@ static void esp_i2c_hw_bringup(bool verbose) {
 #endif
 
     if (verbose) printk_critical("[I2Cdiag] 4: pad (SDA)\n");
-    esp_pad_for_i2c(ESP_I2C_SDA_GPIO, ESP_I2C_SDA_SIG);
+    esp_pad_for_i2c(g_esp->sda_gpio, g_esp->sda_sig);
 
     if (verbose) printk_critical("[I2Cdiag] 5: pad (SCL)\n");
-    esp_pad_for_i2c(ESP_I2C_SCL_GPIO, ESP_I2C_SCL_SIG);
+    esp_pad_for_i2c(g_esp->scl_gpio, g_esp->scl_sig);
 
     if (verbose) printk_critical("[I2Cdiag] 6: CTR\n");
     REG(ESP_I2C_CTR) = ESP_I2C_MS_MODE | ESP_I2C_CLK_EN |
@@ -670,13 +700,30 @@ static void esp_i2c_hw_bringup(bool verbose) {
     if (verbose) printk_critical("[I2Cdiag] 8: fifo + commit\n");
     REG(ESP_I2C_FIFO_CONF) = ESP_I2C_FIFO_PRT_EN;
     REG(ESP_I2C_CTR) |= ESP_I2C_CONF_UPGATE;
-    g_esp_i2c_ready = true;
+    g_esp->ready = true;
 
     if (verbose) printk_critical("[I2Cdiag] 9: bus clear\n");
     esp_i2c_bus_clear();
+}
+
+/* Bus 0 first: on the Tab5 its IO expander switches EXT5V, which powers the
+ * Grove port behind bus 1, so bus 1's bus clear comes after that. Leaves bus
+ * 0 selected. */
+static void esp_i2c_hw_bringup(bool verbose) {
+    esp_sel(0);
+    if (g_esp->ready) {
+        if (verbose) printk_critical("[I2Cdiag] already up\n");
+        return;
+    }
+    esp_i2c_ctrl_bringup(verbose);
 #if defined(CONFIG_BOARD_TAB5)
     esp_i2c_tab5_pi4ioe_init();
 #endif
+    for (uint8_t b = 1; b < ESP_I2C_NBUS; b++) {
+        esp_sel(b);
+        esp_i2c_ctrl_bringup(false);
+    }
+    esp_sel(0);
     if (verbose) printk_critical("[I2Cdiag] bringup complete\n");
 }
 
@@ -741,7 +788,7 @@ static void esp_i2c_bringup_timing(void) {
 
     REG(ESP_I2C_FIFO_CONF) = ESP_I2C_FIFO_PRT_EN;
     REG(ESP_I2C_CTR) |= ESP_I2C_CONF_UPGATE;
-    g_esp_i2c_ready = true;
+    g_esp->ready = true;
 }
 
 static void esp_i2c_reset_fifo(void) {
@@ -841,7 +888,7 @@ static void esp_i2c_recover(void) {
 
 /* Runs a command list that has already been written, and reports what the
  * bus said. Bounded: a stuck bus must not become a stuck kernel. */
-/* g_esp_i2c_last_int / _sr (declared above): what the last transaction
+/* g_esp->last_int / _sr (declared above): what the last transaction
  * ended on. */
 
 static bool esp_i2c_run(void) {
@@ -864,8 +911,8 @@ static bool esp_i2c_run(void) {
         if (st & (ESP_I2C_INT_TRANS_COMPLETE | ESP_I2C_INT_END_DETECT)) break;
     } while (time_get_us() < deadline);
 
-    g_esp_i2c_last_int = st;
-    g_esp_i2c_last_sr  = REG(ESP_I2C_SR);
+    g_esp->last_int = st;
+    g_esp->last_sr  = REG(ESP_I2C_SR);
 
     /* a NACK is *reported* before
      * the transfer is over. The command list still runs on to its STOP, and
@@ -921,7 +968,8 @@ static bool esp_i2c_run(void) {
  * i2c task is not in the picture either. */
 void i2c_p4_diag(void) {
     esp_i2c_hw_bringup(true);
-    printk_critical("[I2Cdiag] ready=%d\n", (int)g_esp_i2c_ready);
+    esp_sel(0);
+    printk_critical("[I2Cdiag] ready=%d\n", (int)g_esp->ready);
    
     printk_critical("[I2Cdiag] CTR=0x%08x\n", (unsigned)REG(ESP_I2C_CTR));
    
@@ -933,9 +981,9 @@ void i2c_p4_diag(void) {
            (unsigned)REG(P4_HP_RST_EN1));
    
     printk_critical("[I2Cdiag] pads: sda=%u(0x%08x) scl=%u(0x%08x) out=0x%08x in69=0x%08x\n",
-           (unsigned)ESP_I2C_SDA_GPIO, (unsigned)REG(ESP_IOMUX_PAD(ESP_I2C_SDA_GPIO)),
-           (unsigned)ESP_I2C_SCL_GPIO, (unsigned)REG(ESP_IOMUX_PAD(ESP_I2C_SCL_GPIO)),
-           (unsigned)REG(ESP_GPIO_OUT_SEL(ESP_I2C_SDA_GPIO)), (unsigned)REG(ESP_GPIO_IN_SEL(69)));
+           (unsigned)g_esp->sda_gpio, (unsigned)REG(ESP_IOMUX_PAD(g_esp->sda_gpio)),
+           (unsigned)g_esp->scl_gpio, (unsigned)REG(ESP_IOMUX_PAD(g_esp->scl_gpio)),
+           (unsigned)REG(ESP_GPIO_OUT_SEL(g_esp->sda_gpio)), (unsigned)REG(ESP_GPIO_IN_SEL(g_esp->sda_sig)));
    
     /* Both shapes, three times each, and the repetition is the measurement.
      *
@@ -956,28 +1004,28 @@ void i2c_p4_diag(void) {
     for (int i = 0; i < 3; i++) {
         bool pok = i2c_probe_addr(0x76u);
         printk_critical("[I2Cdiag] probe#%d 0x76 -> %d  INT_RAW=0x%08x SR=0x%08x\n",
-               i, (int)pok, (unsigned)g_esp_i2c_last_int, (unsigned)g_esp_i2c_last_sr);
+               i, (int)pok, (unsigned)g_esp->last_int, (unsigned)g_esp->last_sr);
     }
     for (int i = 0; i < 3; i++) {
         uint8_t reg = 0xd0u, id = 0;
         bool rok = i2c_xfer_raw(0x76u, &reg, 1, &id, 1);
         printk_critical("[I2Cdiag] read#%d 0x76 reg 0xd0 -> %d id=0x%02x  INT_RAW=0x%08x SR=0x%08x\n",
-               i, (int)rok, (unsigned)id, (unsigned)g_esp_i2c_last_int,
-               (unsigned)g_esp_i2c_last_sr);
+               i, (int)rok, (unsigned)id, (unsigned)g_esp->last_int,
+               (unsigned)g_esp->last_sr);
     }
 }
 
 /* What the last transaction ended on, for i2cdiag. Exposed rather than
  * printed here: this runs inside the i2c task, which may not printk(). */
 void i2c_p4_last_status(uint32_t *int_raw, uint32_t *sr) {
-    if (int_raw) *int_raw = g_esp_i2c_last_int;
-    if (sr) *sr = g_esp_i2c_last_sr;
+    if (int_raw) *int_raw = g_esp->last_int;
+    if (sr) *sr = g_esp->last_sr;
 }
 
 #endif /* CONFIG_BOARD_ESP32P4: i2cdiag */
 
 static bool i2c_write_bytes(uint8_t addr, const uint8_t *src, int len) {
-    if (!g_esp_i2c_ready || len < 0 || len > 30) return false;
+    if (!g_esp->ready || len < 0 || len > 30) return false;
     esp_i2c_begin();
     REG(ESP_I2C_DATA) = (uint32_t)(addr << 1);          /* address + write     */
     for (int i = 0; i < len; i++) REG(ESP_I2C_DATA) = src[i];
@@ -994,7 +1042,7 @@ static bool i2c_write_bytes(uint8_t addr, const uint8_t *src, int len) {
  * pointer, lose the register selection. */
 static bool i2c_xfer_raw(uint8_t addr, const uint8_t *w, int wlen,
                          uint8_t *r, int rlen) {
-    if (!g_esp_i2c_ready) return false;
+    if (!g_esp->ready) return false;
     if (wlen < 0 || rlen < 0 || wlen > 30 || rlen > 30) return false;
     if (rlen == 0) return i2c_write_bytes(addr, w, wlen);
 
@@ -1026,8 +1074,8 @@ static bool i2c_xfer_raw(uint8_t addr, const uint8_t *w, int wlen,
  * and a STOP. Nothing is read, so the only thing that distinguishes a present
  * device from an absent one is whether the address was acknowledged -- which
  * is precisely what esp_i2c_run() returns false for. */
-static bool i2c_probe_addr(uint8_t addr) {
-    if (!g_esp_i2c_ready) return false;
+static bool __attribute__((unused)) i2c_probe_addr(uint8_t addr) {
+    if (!g_esp->ready) return false;
     esp_i2c_begin();
     REG(ESP_I2C_DATA) = (uint32_t)(addr << 1);
     REG(ESP_I2C_COMD(0)) = ESP_CMD(ESP_CMD_RSTART, 0, 0, 0);
@@ -1038,13 +1086,9 @@ static bool i2c_probe_addr(uint8_t addr) {
 
 static bool i2c_xfer_raw_bus(uint8_t bus, uint8_t addr, const uint8_t *w, int wlen,
                              uint8_t *r, int rlen) {
-    if (bus != 0) return false;
+    if (bus >= ESP_I2C_NBUS) return false;
+    esp_sel(bus);
     return i2c_xfer_raw(addr, w, wlen, r, rlen);
-}
-
-static bool i2c_probe_addr_bus(uint8_t bus, uint8_t addr) {
-    if (bus != 0) return false;
-    return i2c_probe_addr(addr);
 }
 #else
 void i2c_bus_init(void) {}
@@ -1067,8 +1111,22 @@ uint8_t i2c_bus_count(void) {
 #else
     return 1;
 #endif
+#elif defined(CONFIG_BOARD_ESP32P4) || defined(CONFIG_BOARD_ESP32C6)
+    return ESP_I2C_NBUS;
 #else
     return 1;
+#endif
+}
+
+/* One address probe for the scan. On the Espressif controllers it is an
+ * empty write through i2c_xfer_bus(), the same address-only command list
+ * i2c_probe_addr() builds, so the scan takes turns with the bus task instead
+ * of reprogramming the controller under a transfer it is running. */
+static bool i2c_scan_probe(uint8_t bus, uint8_t addr) {
+#if defined(CONFIG_BOARD_ESP32P4) || defined(CONFIG_BOARD_ESP32C6)
+    return i2c_xfer_bus(bus, addr, NULL, 0, NULL, 0);
+#else
+    return i2c_probe_addr_bus(bus, addr);
 #endif
 }
 
@@ -1089,6 +1147,9 @@ void i2c_scan_bus_id(uint8_t bus) {
     } else {
         cprintf("\nI2C Bus %u Scan (GP%d SDA / GP%d SCL):\n", bus, sda, scl);
     }
+#elif defined(CONFIG_BOARD_ESP32P4) || defined(CONFIG_BOARD_ESP32C6)
+    cprintf("\nI2C Bus %u Scan (GPIO%u SDA / GPIO%u SCL):\n", bus,
+            (unsigned)g_esp_bus[bus].sda_gpio, (unsigned)g_esp_bus[bus].scl_gpio);
 #else
     if (bus == 0) {
         cprintf("\nI2C Bus Scan:\n");
@@ -1106,7 +1167,7 @@ void i2c_scan_bus_id(uint8_t bus) {
             if (addr < 0x03 || addr > 0x77) {
                 cprintf("   ");
             } else {
-                if (i2c_probe_addr_bus(bus, addr)) {
+                if (i2c_scan_probe(bus, addr)) {
                     cprintf("%02x ", addr);
                     found_count++;
                 } else {
@@ -1116,7 +1177,17 @@ void i2c_scan_bus_id(uint8_t bus) {
         }
         cprintf("\n");
     }
-    cprintf("Found %d I2C device(s) on bus %u.\n\n", found_count, bus);
+    cprintf("Found %d I2C device(s) on bus %u.\n", found_count, bus);
+
+    bool any = false;
+    for (uint8_t addr = 0x03; addr <= 0x77; addr++) {
+        const char *part = i2c_bus_part(bus, addr);
+        if (!part) continue;
+        if (!any) cprintf("Board parts:");
+        any = true;
+        cprintf(" %02x %s%s", addr, part, i2c_scan_probe(bus, addr) ? "" : " (absent)");
+    }
+    cprintf(any ? "\n\n" : "\n");
 }
 
 void i2c_scan_bus(void) {
@@ -1661,9 +1732,66 @@ bool i2c_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) {
 #endif /* CONFIG_BOARD_RP2350 */
 
 
+typedef struct {
+    uint8_t     addr;
+    const char *name;
+} i2c_part_t;
+
+#if defined(CONFIG_I2C0_PARTS)
+static const i2c_part_t k_i2c0_parts[] = { CONFIG_I2C0_PARTS };
+#define I2C0_NPARTS (sizeof(k_i2c0_parts) / sizeof(k_i2c0_parts[0]))
+#else
+static const i2c_part_t *const k_i2c0_parts = NULL;
+#define I2C0_NPARTS 0u
+#endif
+#if defined(CONFIG_I2C1_PARTS)
+static const i2c_part_t k_i2c1_parts[] = { CONFIG_I2C1_PARTS };
+#define I2C1_NPARTS (sizeof(k_i2c1_parts) / sizeof(k_i2c1_parts[0]))
+#else
+static const i2c_part_t *const k_i2c1_parts = NULL;
+#define I2C1_NPARTS 0u
+#endif
+
+/* Sorted by address: cmake/gen_config.cmake refuses a list out of order. */
+const char *i2c_bus_part(uint8_t bus, uint8_t addr) {
+    const i2c_part_t *t = (bus == 0) ? k_i2c0_parts : (bus == 1) ? k_i2c1_parts : NULL;
+    uint32_t lo = 0, hi = (bus == 0) ? I2C0_NPARTS : (bus == 1) ? I2C1_NPARTS : 0u;
+    while (lo < hi) {
+        uint32_t mid = (lo + hi) / 2u;
+        if (t[mid].addr == addr) return t[mid].name;
+        if (t[mid].addr < addr) lo = mid + 1u;
+        else hi = mid;
+    }
+    return NULL;
+}
+
+/* The open probe window, if any: whose, and on which task. Before the
+ * scheduler runs every caller is TASK_NO_PID, which is still one caller. */
+static const char *volatile g_probe_who;
+static volatile int         g_probe_pid;
+
+void i2c_probe_begin(const char *who) {
+    int me = sched_current_pid();
+    while (g_probe_who && g_probe_pid != me) sched_yield();
+    g_probe_pid = me;
+    g_probe_who = who ? who : "";
+}
+
+void i2c_probe_end(void) {
+    if (g_probe_pid == sched_current_pid()) g_probe_who = NULL;
+}
+
+static bool i2c_probe_refused(uint8_t bus, uint8_t addr) {
+    const char *who = g_probe_who;
+    if (!who || g_probe_pid != sched_current_pid()) return false;
+    const char *part = i2c_bus_part(bus, addr);
+    return part && strcmp(part, who) != 0;
+}
+
 bool i2c_xfer_bus(uint8_t bus, uint8_t addr, const uint8_t *w, uint32_t wlen,
                   uint8_t *r, uint32_t rlen) {
     if (bus >= i2c_bus_count()) return false;
+    if (i2c_probe_refused(bus, addr)) return false;
     if (wlen > I2C_XFER_WMAX || rlen > I2C_XFER_RMAX) return false;
     if ((wlen && !w) || (rlen && !r)) return false;
 

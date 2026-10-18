@@ -18,6 +18,30 @@
 #define DS1307_DS3231_I2C_ADDR 0x68
 static bool g_rtc_detected = false;
 static rtc_chip_type_t g_rtc_type = RTC_TYPE_NONE;
+static uint8_t g_rtc_addr = DS1307_DS3231_I2C_ADDR;
+
+/* Epson RX8130CE (the Tab5's U30). Time at 0x10-0x16 in BCD, 24-hour only:
+ * seconds, minutes, hours, weekday (one-hot, bit n = day n), day, month,
+ * year (00-99). FLAG 0x1D: VLF (bit 1) is set at power-on and when the
+ * supply dropped so low the time is unreliable; its bits are cleared by
+ * writing 0 and ignore a written 1, so one write clears one flag without a
+ * read-modify-write race. CTRL0 0x1E bit 6 STOP holds the counter while the
+ * time is written. CTRL1 0x1F bit 5 CHGEN / bit 4 INIEN: charge the backup
+ * cell and switch to it on power loss, as M5Stack's own driver sets them. */
+#define RX8130_I2C_ADDR   0x32
+#define RX8130_REG_SEC    0x10
+#define RX8130_REG_FLAG   0x1D
+#define RX8130_FLAG_VLF   0x02
+#define RX8130_REG_CTRL0  0x1E
+#define RX8130_CTRL0_STOP 0x40
+#define RX8130_REG_CTRL1  0x1F
+#define RX8130_CTRL1_BKUP 0x30
+
+/* A clock that was never set counts up from 2000-01-01, and a backup-powered
+ * one keeps doing so with no flag raised (the Tab5's RX8130CE read
+ * 2000-01-03 with VLF clear). Any year before this one is not a time anyone
+ * set. */
+#define RTC_YEAR_MIN 2024u
 
 static inline uint8_t bcd2dec(uint8_t val) {
     return ((val >> 4) * 10) + (val & 0x0F);
@@ -84,8 +108,31 @@ static bool i2c_rtc_hw_read_temperature_c(int *temp_c);
  *    If readback does not match, register 0x11 is read-only -> DS3231.
  * 4. Verify DS3231 invariants: status 0x0F bits 6:4 == 0, temp fraction 0x12 bits 5:0 == 0.
  */
+static void i2c_rtc_identify_ds(void) __attribute__((unused));
+
 static void i2c_rtc_identify_part(void) {
     g_rtc_type = RTC_TYPE_NONE;
+#if defined(CONFIG_RTC_RX8130)
+    /* A board part at a known address, not a module to search for: 0x68 on
+     * this board is something else (the Tab5's BMI270). */
+    g_rtc_addr = RX8130_I2C_ADDR;
+    uint8_t c1 = 0;
+    if (!rtc_rd(RX8130_REG_CTRL1, &c1, 1)) return;
+    if ((c1 & RX8130_CTRL1_BKUP) != RX8130_CTRL1_BKUP) {
+        uint8_t w[2] = { RX8130_REG_CTRL1, (uint8_t)(c1 | RX8130_CTRL1_BKUP) };
+        rtc_wr(w, 2);
+    }
+    g_rtc_type = RTC_TYPE_RX8130;
+#else
+    /* The probe writes register 0x11 of whatever answers at 0x68, so it runs
+     * in a probe window: a board part there (an IMU) is refused unanswered. */
+    i2c_probe_begin("ds3231");
+    i2c_rtc_identify_ds();
+    i2c_probe_end();
+#endif
+}
+
+static void i2c_rtc_identify_ds(void) {
 
     uint8_t reg0 = 0;
     if (!rtc_rd(0x00, &reg0, 1)) {
@@ -162,14 +209,18 @@ void i2c_rtc_init(void) {
         return;
     }
 
-    const char *model = (g_rtc_type == RTC_TYPE_DS3231) ? "DS3231" : "DS1307";
+    const char *model = i2c_rtc_get_model_name();
+    unsigned addr = g_rtc_addr;
 
     /* A chip that answers but has lost its oscillator is a *detected* chip
      * with an unusable time. Detecting it here is what lets the clock be written
      * (which clears OSF on DS3231, or clears CH and starts the oscillator on DS1307)
      * instead of the board deciding there is no RTC. */
     if (i2c_rtc_lost_power()) {
-        if (g_rtc_type == RTC_TYPE_DS3231) {
+        if (g_rtc_type == RTC_TYPE_RX8130) {
+            printk("[I2C RTC] RX8130CE at 0x32 answered, but VLF is set: its supply "
+                   "dropped too low and the time was not used. Set the clock to clear it.\n");
+        } else if (g_rtc_type == RTC_TYPE_DS3231) {
             printk("[I2C RTC] DS3231 at 0x68 answered, but OSF is set: its time is "
                    "unverified and was not used. Set the clock to clear it "
                    "(the flag is sticky and may be reporting an old event).\n");
@@ -179,22 +230,23 @@ void i2c_rtc_init(void) {
         }
         return;
     } else if (i2c_rtc_hw_read_time(&tm)) {
-        if (tm.month >= 1 && tm.month <= 12 && tm.day >= 1 && tm.day <= 31 &&
-            tm.hour <= 23 && tm.min <= 59 && tm.sec <= 59) {
+        if (tm.year >= RTC_YEAR_MIN && tm.month >= 1 && tm.month <= 12 &&
+            tm.day >= 1 && tm.day <= 31 && tm.hour <= 23 && tm.min <= 59 && tm.sec <= 59) {
             time_set_utc(&tm);
             char isostr[32];
             time_format_iso(&tm, isostr, sizeof(isostr));
 #if defined(CONFIG_BOARD_RP2350)
-            printk("[I2C RTC] %s detected at 0x68 (GP%d/GP%d)! Synced UTC: %s\n",
-                   model, CONFIG_I2C_RTC_SDA_GPIO, CONFIG_I2C_RTC_SCL_GPIO, isostr);
+            printk("[I2C RTC] %s detected at 0x%02x (GP%d/GP%d)! Synced UTC: %s\n",
+                   model, addr, CONFIG_I2C_RTC_SDA_GPIO, CONFIG_I2C_RTC_SCL_GPIO, isostr);
 #else
-            printk("[I2C RTC] %s detected at 0x68! Synced UTC: %s\n",
-                   model, isostr);
+            printk("[I2C RTC] %s detected at 0x%02x! Synced UTC: %s\n",
+                   model, addr, isostr);
 #endif
             return;
         } else {
-            printk("[I2C RTC] %s at 0x68 answered, but stored time is out of range. "
-                   "Set the clock to update it.\n", model);
+            printk("[I2C RTC] %s at 0x%02x answered, but its time (%u-%02u-%02u) was "
+                   "never set. Set the clock to update it.\n", model, addr,
+                   (unsigned)tm.year, (unsigned)tm.month, (unsigned)tm.day);
             return;
         }
     }
@@ -212,8 +264,13 @@ const char *i2c_rtc_get_model_name(void) {
     switch (g_rtc_type) {
     case RTC_TYPE_DS3231: return "DS3231";
     case RTC_TYPE_DS1307: return "DS1307";
+    case RTC_TYPE_RX8130: return "RX8130CE";
     default:              return "none";
     }
+}
+
+uint8_t i2c_rtc_get_addr(void) {
+    return g_rtc_addr;
 }
 
 
@@ -232,15 +289,55 @@ const char *i2c_rtc_get_model_name(void) {
  * when it was. i2c_xfer() routes to the task when one is alive and goes
  * direct before it exists, so one implementation covers both. */
 static bool rtc_rd(uint8_t reg, uint8_t *dst, uint32_t len) {
-    return i2c_xfer(DS1307_DS3231_I2C_ADDR, &reg, 1u, dst, len);
+    return i2c_xfer(g_rtc_addr, &reg, 1u, dst, len);
 }
 
 static bool rtc_wr(const uint8_t *buf, uint32_t len) {
-    return i2c_xfer(DS1307_DS3231_I2C_ADDR, buf, len, NULL, 0u);
+    return i2c_xfer(g_rtc_addr, buf, len, NULL, 0u);
+}
+
+/* 0 = Sunday. Sakamoto's method, valid for the Gregorian calendar. */
+static uint8_t rtc_weekday(uint16_t y, uint8_t m, uint8_t d) {
+    static const uint8_t t[12] = { 0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4 };
+    if (m < 3) y--;
+    return (uint8_t)((y + y / 4u - y / 100u + y / 400u + t[(m - 1u) % 12u] + d) % 7u);
+}
+
+static bool rx8130_read_time(rtc_time_t *tm) {
+    uint8_t b[7];
+    if (!rtc_rd(RX8130_REG_SEC, b, 7)) return false;
+    tm->sec   = bcd2dec(b[0] & 0x7F);
+    tm->min   = bcd2dec(b[1] & 0x7F);
+    tm->hour  = bcd2dec(b[2] & 0x3F);
+    tm->day   = bcd2dec(b[4] & 0x3F);
+    tm->month = bcd2dec(b[5] & 0x1F);
+    tm->year  = (uint16_t)(2000u + bcd2dec(b[6]));
+    tm->ms    = 0;
+    return true;
+}
+
+static bool rx8130_write_time(const rtc_time_t *tm) {
+    uint8_t c0 = 0;
+    if (!rtc_rd(RX8130_REG_CTRL0, &c0, 1)) return false;
+    uint8_t stop[2] = { RX8130_REG_CTRL0, (uint8_t)(c0 | RX8130_CTRL0_STOP) };
+    if (!rtc_wr(stop, 2)) return false;
+    uint8_t b[8] = {
+        RX8130_REG_SEC,
+        dec2bcd(tm->sec), dec2bcd(tm->min), dec2bcd(tm->hour),
+        (uint8_t)(1u << rtc_weekday(tm->year, tm->month, tm->day)),
+        dec2bcd(tm->day), dec2bcd(tm->month),
+        dec2bcd((uint8_t)(tm->year >= 2000 ? (tm->year - 2000) % 100u : 0u)),
+    };
+    bool ok = rtc_wr(b, sizeof(b));
+    uint8_t run[2] = { RX8130_REG_CTRL0, (uint8_t)(c0 & (uint8_t)~RX8130_CTRL0_STOP) };
+    ok = rtc_wr(run, 2) && ok;
+    uint8_t clr[2] = { RX8130_REG_FLAG, (uint8_t)~RX8130_FLAG_VLF };
+    return rtc_wr(clr, 2) && ok;
 }
 
 static bool i2c_rtc_hw_read_time(rtc_time_t *tm) {
     if (!tm || !g_rtc_detected) return false;
+    if (g_rtc_type == RTC_TYPE_RX8130) return rx8130_read_time(tm);
     uint8_t buf[7];
     if (!rtc_rd(0x00, buf, 7)) {
         return false;
@@ -279,6 +376,7 @@ static bool i2c_rtc_hw_read_time(rtc_time_t *tm) {
 
 static bool i2c_rtc_hw_write_time(const rtc_time_t *tm) {
     if (!tm || !g_rtc_detected) return false;
+    if (g_rtc_type == RTC_TYPE_RX8130) return rx8130_write_time(tm);
     uint8_t reg_buf[8];
     reg_buf[0] = 0x00; // Register index
     /* Bit 7 = 0: on DS1307, writing bit 7 = 0 clears CH and starts the oscillator.
@@ -349,7 +447,11 @@ bool i2c_rtc_read_time(rtc_time_t *tm) {
 bool i2c_rtc_lost_power(void) {
     if (!g_rtc_detected) return false;
 
-    if (g_rtc_type == RTC_TYPE_DS3231) {
+    if (g_rtc_type == RTC_TYPE_RX8130) {
+        uint8_t fl;
+        if (!rtc_rd(RX8130_REG_FLAG, &fl, 1)) return false;
+        return (fl & RX8130_FLAG_VLF) != 0;
+    } else if (g_rtc_type == RTC_TYPE_DS3231) {
         uint8_t st;
         if (!rtc_rd(DS3231_REG_STATUS, &st, 1)) return false;
         return (st & DS3231_STATUS_OSF) != 0;

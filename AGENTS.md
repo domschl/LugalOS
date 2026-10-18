@@ -277,6 +277,12 @@ for both roles by itself.
   `tools/p4run.py --board tab5` and `tools/p4flash.py --board tab5` auto-detect the JTAG port by symlink.
 * Dual `PI4IOE5V6408` I2C expanders at `0x43` and `0x44` on `SYS_I2C` (`GPIO31/32`): power sequencing,
   hardware reset for LCD/Touch, and USB 5V VBUS enable (`U7` bit 3).
+* I2C parts on `SYS_I2C` are declared in the board file (`CONFIG_I2C0_PARTS`); `i2c scan` names them and
+  sensor/RTC probes skip them (`i2c_probe_begin`, drivers/i2c_bus.h). 0x68 is the **BMI270**, not an RTC.
+  0x28 answers but is undocumented (reads 0xff): leave it alone.
+* RTC: the board's **RX8130CE at 0x32** (`CONFIG_RTC_RX8130`, backup cell), read at boot and set by `date`/NTP.
+  `reboot` is not supported on the P4; reset with `tools/p4run.py --board tab5 --run`.
+* Grove port A is a second I2C bus (I2C1, GPIO53 SDA / GPIO54 SCL, `i2c scan 1`); external sensors go there.
 * Display (`drivers/dsi_esp32p4.c`): 5" 720×1280 MIPI-DSI ST7121 TDDI, 2-lane @ 900 Mbps, DPI clock
   70 MHz, double-buffered RGB565 PSRAM scanout at 58 Hz. Backlight active-high LEDC PWM on `GPIO22`.
 * Dual-Orientation Compositor: supports **Landscape Normal LugalOS GUI (`1280×720`, 160×45 cells)**

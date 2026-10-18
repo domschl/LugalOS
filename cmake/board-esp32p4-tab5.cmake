@@ -57,6 +57,30 @@ set(CONFIG_LISP_STRING_POOL  3072)
 set(CONFIG_I2C_RTC_SDA_GPIO 31)
 set(CONFIG_I2C_RTC_SCL_GPIO 32)
 
+# The parts soldered to SYS_I2C (M5Stack's documented map, plus what this
+# unit's `i2c scan` finds). Probes by other drivers skip these addresses
+# (drivers/i2c_bus.c, i2c_probe_begin): 0x68 is the BMI270, not a DS3231.
+# GT911 at 0x14/0x5D and ST7123 at 0x55 are the alternative touch variants.
+# 0x28 answers on this unit but is in no M5Stack document; SYS_I2C also
+# reaches the M5-Bus (G21/G22) and the expansion header. It reads 0xff from
+# any register, so it is left alone.
+set(CONFIG_I2C0_PARTS
+    0x10:es8388 0x14:gt911 0x28:undocumented 0x32:rx8130 0x36:sc2356
+    0x40:es7210 0x41:ina226 0x43:pi4ioe1 0x44:pi4ioe2 0x55:st7123
+    0x5d:gt911 0x68:bmi270)
+
+# The RTC is the RX8130CE at 0x32 (sch U30, backup cell BT1), not a module
+# found by probing 0x68.
+set(CONFIG_RTC_RX8130 1)
+
+# --- External I2C (I2C1): Grove port A (J11) and M5-Bus EXT_SDA/EXT_SCL ----
+#
+# [m5 M5Unified.inl ex_i2c: SCL G54, SDA G53] Powered from SYS_EXT5VO, which
+# PI4IOE1 P2 (EXT5V_EN) switches; drivers/i2c_bus.c turns it on at boot.
+# Sensors plugged in here are found by the sensor hub like those on any bus.
+set(CONFIG_I2C1_SDA_GPIO 53)
+set(CONFIG_I2C1_SCL_GPIO 54)
+
 # --- microSD: SDMMC slot 0 (GPIO39-44) ------------------------------------
 #
 # [sch sheet 15 "SD_Card"] Slot 0 dedicated IO_MUX pads (CLK=43, CMD=44,

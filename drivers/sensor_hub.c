@@ -1,4 +1,5 @@
 #include "drivers/sensor_hub.h"
+#include "drivers/i2c_bus.h"
 #include "drivers/bme280.h"
 #include "drivers/bme680.h"
 #include "drivers/ccs811.h"
@@ -99,7 +100,13 @@ void sensor_hub_init(void) {
     for (uint32_t i = 0; i < s_driver_count; i++) {
         sensor_dev_t *dev = s_drivers[i];
         if (!dev || !dev->ops || !dev->ops->init) continue;
-        if (dev->ops->init(dev)) {
+        /* A driver's init searches addresses; the window keeps it off board
+         * parts that share one (the ES8311 at an MCP9808 address, the ES7210
+         * at the HDC1080's). */
+        i2c_probe_begin(dev->name);
+        bool found = dev->ops->init(dev);
+        i2c_probe_end();
+        if (found) {
             s_caches[s_active_count].dev = dev;
             s_active_count++;
         }

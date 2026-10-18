@@ -1,7 +1,8 @@
 #ifndef DRIVERS_I2C_RTC_H
 #define DRIVERS_I2C_RTC_H
 
-/* The DS3231/DS1307 real-time clock: a device on the I2C bus, and nothing
+/* The real-time clock (a DS3231/DS1307 module found at 0x68, or the board's
+ * RX8130CE at 0x32 where CONFIG_RTC_RX8130 says so): a device on the I2C bus, and nothing
  * more.
  *
  * The bus it sits on is drivers/i2c_bus.h, which is where the controller, the
@@ -17,6 +18,7 @@ typedef enum {
     RTC_TYPE_NONE = 0,
     RTC_TYPE_DS1307,
     RTC_TYPE_DS3231,
+    RTC_TYPE_RX8130,    /* Epson RX8130CE at 0x32, a board part (CONFIG_RTC_RX8130) */
 } rtc_chip_type_t;
 
 void i2c_rtc_init(void);
@@ -32,6 +34,8 @@ bool i2c_rtc_write_time(const rtc_time_t *tm);
 bool i2c_rtc_is_detected(void);
 rtc_chip_type_t i2c_rtc_get_type(void);
 const char *i2c_rtc_get_model_name(void);
+/* The detected chip's I2C address (0x68 for the DS parts, 0x32 for the RX8130CE). */
+uint8_t i2c_rtc_get_addr(void);
 
 /* DS3231-only (registers 0x11/0x12; a DS1307 has no temperature sensor and
  * this returns false for one). Rounded to the nearest whole degree C --

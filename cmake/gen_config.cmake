@@ -81,6 +81,9 @@ set(_optional_keys
     CONFIG_CLOCK_BUZZER_GPIO
     CONFIG_CLOCK_TEMP_OFFSET_C CONFIG_CLOCK_COLON_BLINK CONFIG_CLOCK_BOOT_BEACON
     CONFIG_I2C_RTC_BASE CONFIG_I2C_RTC_SDA_GPIO CONFIG_I2C_RTC_SCL_GPIO
+    # a second I2C controller (ESP32-P4 I2C1) and its pins, and the RTC chip
+    # when it is a board part rather than a module found by probing 0x68
+    CONFIG_I2C1_SDA_GPIO CONFIG_I2C1_SCL_GPIO CONFIG_RTC_RX8130
     # N5, : the gateway persona's UART1
     # downlink. Optional like everything else here -- a board with no second
     # UART simply does not set them. (The W5500's own pins lived here too,
@@ -309,6 +312,31 @@ foreach(_key ${_optional_keys})
 endforeach()
 foreach(_key ${_string_keys})
     string(APPEND _content "#define ${_key} \"${${_key}}\"\n")
+endforeach()
+
+# The parts soldered to an I2C bus, as a list of ADDR:name items in ascending
+# address order (drivers/i2c_bus.c searches the table with bsearch). Emitted as
+# a C initializer: {0x10u, "es8388"}, {0x14u, "gt911"}, ...
+foreach(_bus 0 1)
+    set(_key CONFIG_I2C${_bus}_PARTS)
+    if(NOT DEFINED ${_key})
+        continue()
+    endif()
+    set(_init "")
+    set(_prev -1)
+    foreach(_item ${${_key}})
+        if(NOT _item MATCHES "^0x([0-9a-fA-F][0-9a-fA-F]?):([a-z0-9_]+)$")
+            message(FATAL_ERROR "gen_config.cmake: ${_key} item '${_item}' is not ADDR:name (e.g. 0x10:es8388)")
+        endif()
+        set(_name "${CMAKE_MATCH_2}")
+        math(EXPR _addr "0x${CMAKE_MATCH_1}")
+        if(_addr LESS_EQUAL _prev OR _addr GREATER 127)
+            message(FATAL_ERROR "gen_config.cmake: ${_key} must list 7-bit addresses in ascending order ('${_item}')")
+        endif()
+        set(_prev ${_addr})
+        string(APPEND _init "{${_addr}u, \"${_name}\"}, ")
+    endforeach()
+    string(APPEND _content "#define ${_key} ${_init}\n")
 endforeach()
 string(APPEND _content "\n#endif /* LUGALOS_CONFIG_H */\n")
 

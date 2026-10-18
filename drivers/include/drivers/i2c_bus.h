@@ -81,10 +81,26 @@ bool i2c_xfer_bus(uint8_t bus, uint8_t addr, const uint8_t *w, uint32_t wlen,
 bool i2c_xfer(uint8_t addr, const uint8_t *w, uint32_t wlen,
               uint8_t *r, uint32_t rlen);
 
-/* Prints which addresses answer on a specific bus or all active buses.
- * Diagnostic: it probes the controller directly rather than going through the task. */
+/* Prints which addresses answer on a specific bus or all active buses, and
+ * the board's parts on it (present or not). */
 void i2c_scan_bus_id(uint8_t bus);
 void i2c_scan_bus(void);
+
+/* The part soldered at `addr` on `bus` (CONFIG_I2Cn_PARTS in the board file),
+ * e.g. "es8388", or NULL when the address belongs to no board part. */
+const char *i2c_bus_part(uint8_t bus, uint8_t addr);
+
+/* A probe window: between begin and end, a transfer from the calling task to
+ * a board part's address fails without touching the bus unless the part is
+ * named `who`. A driver that searches addresses for its chip (a sensor's
+ * init, the DS3231 probe) opens one with its own name, so its probe cannot
+ * write registers of a codec or an IMU that happens to share the address,
+ * while a driver named like the part ("ina226") still reaches its own chip.
+ * Other tasks are unaffected: the touch poller keeps reading 0x55 while
+ * `sensor init` runs. One window at a time; a second task's begin waits.
+ * `who` must outlive the window (a string literal or a driver's name). */
+void i2c_probe_begin(const char *who);
+void i2c_probe_end(void);
 
 /* The owning task. Must run after sched_init(); every device keeps working
  * through direct hardware access if this fails or has not run yet, same as
