@@ -10,6 +10,7 @@
 #include "drivers/mhz19b.h"
 #include "drivers/hdc1080.h"
 #include "drivers/ina226.h"
+#include "drivers/bmi270.h"
 #include "drivers/tmp117.h"
 #include "drivers/mcp9808.h"
 #include "drivers/at24c32.h"
@@ -99,6 +100,7 @@ void sensor_hub_init(void) {
     sensor_hub_register(&ccs811_sensor_dev);
     sensor_hub_register(&sgp30_sensor_dev);
     sensor_hub_register(&ina226_sensor_dev);
+    sensor_hub_register(&bmi270_sensor_dev);
 
     s_active_count = 0;
     memset(s_caches, 0, sizeof(s_caches));
@@ -541,6 +543,7 @@ uint32_t sensor_hub_selftest(bool report) {
     sensor_hub_register(&tsl2561_sensor_dev);
     sensor_hub_register(&tsl2591_sensor_dev);
     sensor_hub_register(&ina226_sensor_dev);
+    sensor_hub_register(&bmi270_sensor_dev);
 
     for (uint32_t i = 0; i < s_driver_count; i++) {
         sensor_dev_t *dev = s_drivers[i];

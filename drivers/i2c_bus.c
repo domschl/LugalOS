@@ -1685,17 +1685,28 @@ int i2c_task_start(void) {
     return pid;
 }
 
+/* chan_call() fails at once while the task is serving another client, so
+ * the wait for a turn is here. It is bounded in time, not in attempts: a
+ * yield returns immediately when nothing else is ready, and eight of them
+ * were over long before a 30-byte write (3 ms at 100 kHz) was -- the touch
+ * poller counted an I2C error for every transfer that arrived during the
+ * BMI270's microcode upload. Yield a few times, then sleep a millisecond at
+ * a time, for up to I2C_CALL_WAIT_MS. */
+#define I2C_CALL_WAIT_MS 50u
+
 int i2c_task_call(const uint8_t *req, uint32_t req_len, uint8_t *resp, uint32_t resp_max) {
-    for (int attempt = 0; attempt < 8; attempt++) {
+    uint64_t deadline = time_get_ms() + I2C_CALL_WAIT_MS;
+    for (int attempt = 0; ; attempt++) {
         int n = chan_call(g_i2c_ep, req, req_len, resp, resp_max);
         /* counted here, on the client side -- see
          * drivers/tm1638_rp2350.c's tm1638_call_with_retry() comment,
          * same reasoning: a U-mode server cannot touch g_i2c_calls, an
          * ordinary kernel .bss global no domain grants it. */
         if (n >= 0) { g_i2c_calls++; return n; }
-        sched_yield();
+        if (!i2c_task_alive() || time_get_ms() >= deadline) return -1;
+        if (attempt < 8) sched_yield();
+        else task_sleep_ms(1);
     }
-    return -1;
 }
 
 #if defined(CONFIG_BOARD_RP2350)

@@ -1583,6 +1583,26 @@ def test_power(b: Board) -> tuple[str, bool, str]:
     return name, True, f"{v} V, {m.group(2)} A, {m.group(4)} %, charge {was.group(1) if was else '-'}"
 
 
+def test_imu(b: Board) -> tuple[str, bool, str]:
+    """62.5: the BMI270 with its microcode loaded -- gravity's magnitude within
+    10 % of 1 g and the gyroscope near rest (the board lies still during the
+    suite). Skips on a board without an IMU."""
+    name = "imu: BMI270 reads 1 g at rest (62.5)"
+    out = b.console_session.cmd("imu", deadline=15.0)
+    if "no IMU" in out or _no_display(out) or "Unknown" in out:
+        return name, True, "SKIPPED (no IMU on this board)"
+    m = re.search(r"accel (-?\d+\.\d+) g (-?\d+\.\d+) g (-?\d+\.\d+) g\s+gyro (-?\d+\.\d) dps (-?\d+\.\d) dps (-?\d+\.\d) dps", out)
+    if not m:
+        return name, False, f"unparseable: {out.strip()[-300:]}"
+    ax, ay, az, gx, gy, gz = (float(v) for v in m.groups())
+    g = (ax * ax + ay * ay + az * az) ** 0.5
+    if not 0.9 <= g <= 1.1:
+        return name, False, f"|a| = {g:.3f} g"
+    if max(abs(gx), abs(gy), abs(gz)) > 20.0:
+        return name, False, f"gyro {gx}/{gy}/{gz} dps at rest"
+    return name, True, f"|a| = {g:.3f} g, gyro {gx}/{gy}/{gz} dps"
+
+
 def _ribbon(b: Board) -> tuple[int, int]:
     out = b.console_session.cmd("ribbon", deadline=10.0)
     m = re.search(r"Ribbon Status: (\d+) windows, active idx (\d+)", out)
@@ -1842,6 +1862,7 @@ TESTS = [
     test_touch,
     test_rtc,
     test_power,
+    test_imu,
     test_ribbon_hotkeys,
     test_gemtext_reader_window,
     test_reader_anti_aliased_typography,

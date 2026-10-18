@@ -845,6 +845,10 @@ set(SOURCES
     drivers/ina226.c
     drivers/battery.c
     drivers/charger.c
+    drivers/bmi270.c
+    drivers/bmi270_config.c
+    kernel/imath.c
+    kernel/orient.c
     drivers/sensor_hub.c
     fs/p9_chan.c
     libc/string.c

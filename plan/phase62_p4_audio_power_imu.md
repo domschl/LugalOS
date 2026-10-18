@@ -419,6 +419,26 @@ to a particular ASR or TTS engine.
 - `imu` command: one reading, or `imu watch [s]` for a live view with derived pitch and roll,
   using an integer atan2 to 1°.
 
+**Done (2026-10-18):**
+- **Measured: the blob is required.** After a soft reset INTERNAL_STATUS reads 0 and every
+  data register stays 0. The owner chose to embed it.
+- `drivers/bmi270_config.c` holds Bosch's bytes from BMI270_SensorAPI v2.86.1 with its BSD-3
+  notice. They are identical to M5Unified's copy.
+- `drivers/bmi270.c`:
+  - ±4 g / ±1000 dps.
+  - The upload happens on the first read (sampler task), not at probe time, so boot does not
+    wait the 1.3 s.
+  - Probed at a board part "bmi270" or at 0x69, never at a bare 0x68 (a DS3231 module answers
+    there).
+- `kernel/imath.c`: integer sqrt and atan2 (worst error 0.14°).
+- `kernel/orient.c`: `imu`, `imu watch`, `imu reload`.
+- Found on the way: the i2c task's callers gave up after 8 yields, and the upload's
+  back-to-back bursts starved the touch poller (about 30 "I2C errors" per upload). Two fixes:
+  - `i2c_task_call` now waits up to 50 ms (yields, then 1 ms sleeps).
+  - The upload pauses 1 ms between bursts.
+
+  Result: 0 errors.
+
 **62.6 Auto-orientation**
 - `kernel/orient.c` state machine (§1.5), driven by the hub's 100 ms BMI270 period while enabled.
 - Measure `CONFIG_IMU_AXIS_MAP` on the device.

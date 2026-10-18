@@ -288,6 +288,9 @@ for both roles by itself.
   Charger (IP2326 via 0x44: P7 CHG_EN, P5 nQC): `power charge off|slow|fast`, `power limit N|off`
   (stored in the identity record); `power off` pulses PWROFF (P4) and switches the board off --
   never run it on a board you need to keep talking to. CHG_STAT (P6) reads 1 whether charging or not.
+* IMU: BMI270 at 0x68, needs Bosch's microcode uploaded (drivers/bmi270_config.c, ~1.3 s, first read
+  on the sampler task); `imu`, `imu watch`. The i2c task serves one caller at a time and queues nobody:
+  a client that issues long transfers back to back must pause between them or it starves the others.
 * Grove port A is a second I2C bus (I2C1, GPIO53 SDA / GPIO54 SCL, `i2c scan 1`); external sensors go there.
 * Display (`drivers/dsi_esp32p4.c`): 5" 720×1280 MIPI-DSI ST7121 TDDI, 2-lane @ 900 Mbps, DPI clock
   70 MHz, double-buffered RGB565 PSRAM scanout at 58 Hz. Backlight active-high LEDC PWM on `GPIO22`.
