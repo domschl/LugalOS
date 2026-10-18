@@ -159,6 +159,14 @@ LugalOS maintains structured, in-depth documentation under [`doc/`](doc/):
 
 ---
 
+## How this was build
+
+This project was implemented with the help of AI agents:
+
+- Anthropic Claude Caude (mostly Opus 5.5)
+- Google Antigravity (mostly Gemini 3.8 Flash)
+- Pi (Qwen3.8 Flash Next)
+
 ## License & Acknowledgments
 
 LugalOS is licensed under the [MIT License](LICENSE).  
