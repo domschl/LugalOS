@@ -189,7 +189,7 @@ void i2c_bus_init(void) {
 #endif
 }
 
-static uint32_t g_rp2350_last_abrt_source;
+static uint32_t g_rp2350_last_abrt_source;   /* accepted: the last abort, for `i2cdiag` */
 
 static bool rp2350_i2c_write_bytes_stop(uintptr_t base, uint8_t addr, const uint8_t *src, int len, bool stop) {
     REG(base + IC_ENABLE_OFFSET) = 0;
@@ -536,6 +536,8 @@ typedef struct {
     uint32_t  last_int, last_sr;                /* what the last transfer ended on */
 } esp_i2c_t;
 
+/* guarded by: g_esp_hw_lock (below), with g_esp, the controller selected:
+ * every transfer, bring-up and diagnostic selects and drives under it. */
 static esp_i2c_t g_esp_bus[] = {
 #if defined(CONFIG_BOARD_ESP32P4)
     { ESP_I2C0_BASE, ESP_I2C_SDA_GPIO, ESP_I2C_SCL_GPIO, ESP_I2C_SDA_SIG, ESP_I2C_SCL_SIG,
@@ -550,7 +552,7 @@ static esp_i2c_t g_esp_bus[] = {
 #endif
 };
 #define ESP_I2C_NBUS ((uint8_t)(sizeof(g_esp_bus) / sizeof(g_esp_bus[0])))
-static esp_i2c_t *g_esp = &g_esp_bus[0];
+static esp_i2c_t *g_esp = &g_esp_bus[0];   /* guarded by: g_esp_hw_lock */
 
 static inline void esp_sel(uint8_t bus) { g_esp = &g_esp_bus[bus]; }
 
@@ -743,9 +745,11 @@ static void esp_i2c_ctrl_bringup(bool verbose) {
  * Grove port behind bus 1, so bus 1's bus clear comes after that. Leaves bus
  * 0 selected. */
 static void esp_i2c_hw_bringup(bool verbose) {
+    ylock_acquire(&g_esp_hw_lock);   /* the helpers that call this at run time race otherwise */
     esp_sel(0);
     if (g_esp->ready) {
         if (verbose) printk_critical("[I2Cdiag] already up\n");
+        ylock_release(&g_esp_hw_lock);
         return;
     }
     esp_i2c_ctrl_bringup(verbose);
@@ -758,6 +762,7 @@ static void esp_i2c_hw_bringup(bool verbose) {
     }
     esp_sel(0);
     if (verbose) printk_critical("[I2Cdiag] bringup complete\n");
+    ylock_release(&g_esp_hw_lock);
 }
 
 void i2c_bus_init(void) { esp_i2c_hw_bringup(false); }
@@ -1278,6 +1283,8 @@ void i2c_scan_bus(void) {
 #define I2C_REQ_CAP  (5u + I2C_XFER_WMAX)
 #define I2C_RESP_CAP (1u + I2C_XFER_RMAX)
 
+/* single task: the i2c task's endpoint buffers (chan_call() copies in and
+ * out under the endpoint's busy flag). */
 static uint8_t         g_i2c_req[I2C_REQ_CAP];
 static uint8_t         g_i2c_resp[I2C_RESP_CAP];
 static chan_endpoint_t *g_i2c_ep;
@@ -1285,7 +1292,7 @@ static int              g_i2c_task_pid = -1;
 
 /* Verify: counts chan_call()s actually served -- see
  * drivers/uart_16550.c's g_uart_write_calls comment for the reasoning. */
-static uint32_t g_i2c_calls;
+static uint32_t g_i2c_calls;   /* accepted: a statistic, counted by the callers */
 
 uint32_t i2c_task_call_count(void) { return g_i2c_calls; }
 
@@ -1720,14 +1727,14 @@ int i2c_task_call(const uint8_t *req, uint32_t req_len, uint8_t *resp, uint32_t 
  * hand-rolled per file. Only meaningful where the "i2c" task actually runs
  * in U-mode -- see this file's own #if defined(CONFIG_BOARD_RP2350) split
  * above. */
-static volatile uintptr_t g_i2c_canary = 0xC0FFEE;
+static volatile uintptr_t g_i2c_canary = 0xC0FFEE;   /* accepted: an isolation test's canary or handshake */
 
 I2C_UATTR static void i2c_intruder(void) {
     g_i2c_canary = 0xDEAD;
     for (;;) { } /* only reached if the store was NOT stopped */
 }
 
-static volatile bool g_i2c_intruder_entered;
+static volatile bool g_i2c_intruder_entered;   /* accepted: an isolation test's canary or handshake */
 
 /* `arg` is the U-mode stack -- allocated by i2c_isolation_test() below,
  * not here, so it can free it once the task is confirmed DEAD (same

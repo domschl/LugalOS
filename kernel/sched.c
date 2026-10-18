@@ -30,6 +30,7 @@ static task_t  g_tasks[MAX_TASKS];
  * scheduler lock anyway. Making this an array is what lets the *shared*
  * part shrink to the ready queue, which is the only thing g_sched_lock has
  * to cover. */
+/* single task: each hart writes its own slot (under g_sched_lock). */
 static int     g_current[MAX_HARTS];
 /* single task: the boot (sched_init), before the first task or tick. */
 static bool    g_active;
@@ -78,7 +79,7 @@ static spinlock_t g_sched_lock;
  * would now fire on correct code. What must hold is that a hart which has
  * just been resumed is still holding the lock its predecessor took -- which
  * is checkable on one hart today, unlike the race it protects against. */
-static uint32_t g_handoff_faults;
+static uint32_t g_handoff_faults;   /* accepted: a fault counter */
 
 /* This hart's current task index. */
 static inline int cur(void) { return g_current[hart_id()]; }
@@ -714,6 +715,7 @@ uint32_t sched_stack_size(int pid) {
  * So this hart's slot is always empty by the time a task running on this hart
  * can reach task_exit(). A single global slot had no such property -- a task
  * exiting on hart 1 could find hart 0's hand-off still pending. */
+/* guarded by: g_sched_lock, each hart its own slot. */
 static void    *g_reap_stack[MAX_HARTS];
 static uint32_t g_reap_pages[MAX_HARTS];
 

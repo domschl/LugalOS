@@ -261,7 +261,7 @@ static driver_task_t g_uart_task;
  * uart_flush() that reached the task (not per character, and not per
  * uart_putc()), so a test can check IPC volume tracks *lines/messages*
  * instead of guessing from timing. See uart_write_call_count(). */
-static uint32_t g_uart_write_calls;
+static uint32_t g_uart_write_calls;   /* single task: the uart task (uart_serve()) */
 
 uint32_t uart_write_call_count(void) { return g_uart_write_calls; }
 uint32_t uart_irq_count(void) { return g_uart_irq_count; }
@@ -289,7 +289,7 @@ uint32_t uart_irq_tx_seen(void) { return g_uart_irq_tx_seen; }
  * byte-level interleaved console garbage on real RP2350 hardware, where a
  * full batch takes real, non-negligible time to transmit. Fixed here too
  * rather than left as a latent, harder-to-trigger version of the same bug. */
-static volatile bool g_uart_write_in_flight;
+static volatile bool g_uart_write_in_flight;   /* single task: the uart task; read by writers */
 
 static bool uart_task_alive(void) { return driver_task_alive(&g_uart_task); }
 

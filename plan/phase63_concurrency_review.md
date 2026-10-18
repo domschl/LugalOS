@@ -181,7 +181,54 @@ on the i2c task.
 Tested: QEMU 512/512; Tab5 49/50 (the touch error above), NANO 50/50, LCD-7B 50/50. The
 RP2350 change (F6, F7) is built but untested on hardware: no RP2350 board attached.
 
-Next: the rest of group A (no handler involved), then B, then S.
+The RP2350 change (F6, F7) passed its suite afterwards, 34/34.
+
+**Group A done (2026-10-18).** Every group-A candidate in the five builds has a verdict, except
+the 37 per build that belong to the four open findings below. More scanner changes:
+- A pointer declared on a static (`T *p = &g_x[i];`) counts as a write through it; the VFS
+  handle table was invisible before.
+- One comment marks a declaration group across preprocessor lines, attributes, arithmetic in
+  array sizes and struct bodies, but not across a statement.
+
+Fixed on this branch:
+
+| # | where | what | fix |
+| :--- | :--- | :--- | :--- |
+| F8 | kernel/console.c | one global capture (`ea`, the editor): a second capturer made the first's output run past its buffer | a slot per capturing task, under g_cap_lock |
+| F12 | fs/vfs_server.c | a handle slot was found and taken in two steps, and freed by a memset another open could overtake | g_handles_lock for both |
+| F14 | arch/riscv/common/mem_domain.c | the first PMP probe from two tasks interleaved its count, and published `avail` after `start` (an activation could read -1) | probe into locals, publish `start` last behind a fence |
+| F16 | kernel/random.c | the counter was incremented and re-read unlocked: two tasks could hash the same value (identical bytes from the timer source) | an atomic add; each call hashes the value it took |
+| F17 | drivers/driver_task.c | U-mode domain slots taken by `count++` while driver tasks' first passes interleave; a failure's `count--` could free another's | one atomic claim; an unused slot stays unused |
+| F18 | kernel/time.c, drivers/usb_cdc.c | `time_delay_us()` pumped the USB device from any waiting task beside the usbcdc driver task; its re-entry guard was test-then-set | pump only without the task; atomic exchange |
+| F19 | kernel/radio_c6.c | boot's join and an LLP host's could overwrite each other's key and start the radio twice | atomic claims of the credentials and of the start |
+| F20 | kernel/ota.c, drivers/flash_esp32c6.c | a lazy `ylock_init()` on first use: a second first user reset a lock already held | none needed: zero is a free ylock |
+| F21 | drivers/ota_esp32c6.c | the IDF layout probe marked itself done before it was; a concurrent OTA request read "updates disabled" | g_idf_lock |
+| F22 | kernel/kobj_sched.c | the object layer's lazy init could run over tables and a lock in use | a one-shot compare-and-swap; late callers wait |
+| F23 | drivers/reader_view.c | closing a reader freed its surface while the compositor read it | open and close under console_lock |
+
+Smaller ones:
+- `lcd pattern` now holds console_lock, like the other scan-out changes.
+- The ESP I2C bring-up takes g_esp_hw_lock.
+- Locks for the clipboard's writers and for the UART and loopback 9P self-tests' static buffers.
+- One BME280 measurement at a time.
+- The BMI270's last reading and reload are under its lock.
+- mqttd fences a new source before counting it.
+
+Open, the next fixes:
+
+| # | where | what |
+| :--- | :--- | :--- |
+| F9 | net/stack.c, tcp.c, udp.c | one transmit frame and the TCP/UDP tables used from many tasks (DHCP, DNS and NTP from the shell or Lisp, MQTT, the stack task) with no lock; tcp.c relies on running on one call stack |
+| F10 | fs/9p.c | the server is entered from the link pump (under g_pump_lock), the local `chan:p9` mount and the loopback test; the connection and the auth policy are per-request globals, so a TCP request can run under a local request's "no auth" policy or with another connection's fids; the data buffer is shared; fid allocation is unlocked. Not a server lock (it would invert against the client lock): per-task request context, a spinlock for fid slots, a buffer per request |
+| F11 | fs/p9_link.c | `waiter_begin()` sets the link before the tag, and the pump (another lock) can match a half-set slot |
+| F13 | fs/vfs_server.c | the mount table has no lock: `/c6` is unmounted and remounted on every C6 restart while other tasks resolve through it or hold handles onto it; `format` re-initialises a mounted volume, its lock included |
+| F15 | drivers/sensor_hub.c | `sensor init` re-runs the hub's init under the running sampler (caches cleared, drivers re-initialised), and readers see torn caches |
+
+Tested: QEMU 512/512; Tab5, NANO and LCD-7B 50/50; RP2350 terminal 34/34. C6 (the NANO's
+C6-MINI): all pass but the DHCP lease, which a C6 bridging wlan0 for the NANO's P4 does not
+take by design (`[LLP] bridging wlan0`).
+
+Next: fixes F9, F10/F11, F13 and F15 (63.3), then groups B and S.
 
 ### 63.3 Fix shared mutable state (class 1)
 

@@ -3,6 +3,7 @@
 #include "drivers/i2c_reg.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
+#include "kernel/lock.h"
 #include "kernel/sched.h"
 #include "kernel/time.h"
 #include "net/mqttd.h"
@@ -50,6 +51,9 @@
 #define OSRS_X1 0x01u
 #define CTRL_MEAS_FORCED ((OSRS_X1 << 5) | (OSRS_X1 << 2) | 0x01u)
 
+/* guarded by: g_read_lock for the measurement and its counters; accepted:
+ * the cache (last, last_ms, have_last) is ordered, not locked (see below), and
+ * bme280_init() runs from `sensor init` (see drivers/sensor_hub.c). */
 static struct {
     bme280_part_t  part;
     uint8_t        addr;
@@ -79,7 +83,7 @@ static struct {
     uint64_t         last_ms;
     bool             have_last;
     uint32_t         read_count;
-} g;
+} g;   /* guarded by: g_read_lock; see the comment above the struct */
 
 static bool rd(uint8_t reg, uint8_t *dst, uint32_t len) {
     return i2c_reg_read_bytes_bus(g.bus, g.addr, reg, dst, len);
@@ -268,8 +272,23 @@ static bool fail(const char *where) {
     return false;
 }
 
+static bool read_locked(bme280_reading_t *out);
+
+/* One measurement at a time: the sampler, `sensor` and an mqttd source may all
+ * ask, and a forced-mode trigger from one between another's trigger and data
+ * read would hand both a half-finished conversion. The cache below is not
+ * under it (see its comment). */
+static ylock_t g_read_lock;
+
 bool bme280_read(bme280_reading_t *out) {
     if (!out || g.part == BME280_PART_NONE) return false;
+    ylock_acquire(&g_read_lock);
+    bool ok = read_locked(out);
+    ylock_release(&g_read_lock);
+    return ok;
+}
+
+static bool read_locked(bme280_reading_t *out) {
 
     /* Forced mode is one-shot: the part returns to sleep after each
      * measurement, so every read starts by asking for one. */
@@ -480,6 +499,8 @@ static bool src_humidity(int32_t *out, void *ctx) {
 /* The installation altitude, read once when the sources are registered
  * (identity writes reboot the board, so it does not change under a running
  * one). Only meaningful while g_have_alt. */
+/* accepted: set when the sources are registered and on `identity` reload, one
+ * word each; a reader in between pairs an old altitude with the new flag. */
 static int32_t g_alt_m;
 static bool    g_have_alt;
 

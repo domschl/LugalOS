@@ -258,7 +258,7 @@ KU static void radio_utest_body(uintptr_t arg) {
 
 /* ---- kernel half --------------------------------------------------------- */
 
-static mem_domain_t g_rdomain;
+static mem_domain_t g_rdomain;   /* single task: the test's radio task */
 static void        *g_rpage;
 
 static void radio_task(void *arg) {

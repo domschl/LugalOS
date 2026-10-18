@@ -436,6 +436,7 @@ bool smp_launch_core1_engine(void) {
  * Both words live in .bss and the spin itself is `.ramfunc`, so nothing on
  * core 1's side of the barrier touches the XIP window.
  */
+/* guarded by: the request/acknowledge handshake above, one writer each. */
 volatile uint32_t g_flash_park_req;    /* core 0 -> core 1: park now */
 volatile uint32_t g_flash_park_ack;    /* core 1 -> core 0: parked, in RAM */
 
@@ -973,6 +974,9 @@ void smp_load_note_fault(void) { }
 #define SMPTEST_WORKERS 4
 #define SMPTEST_ITERS   20000
 
+/* accepted: a selftest's counters; g_smptest_unlocked races on purpose (it
+ * is what the test measures), the others are under g_smptest_lock or are
+ * per-run flags. */
 static spinlock_t        g_smptest_lock;
 static volatile uint32_t g_smptest_locked;
 static volatile uint32_t g_smptest_unlocked;
@@ -1081,6 +1085,7 @@ int smp_selftest(void) {
 
 #define SMPLOAD_TASKS (MAX_HARTS * 2)
 
+/* accepted: the load test's per-hart progress and liveness counters. */
 static spinlock_t        g_load_lock;
 static volatile uint32_t g_load_prog[MAX_HARTS];      /* work done, per hart */
 static volatile int      g_load_run;                  /* loaders exit at 0 */

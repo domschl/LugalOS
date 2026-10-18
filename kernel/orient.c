@@ -111,6 +111,8 @@ uint32_t orient_selftest(bool report) {
 /* --- The task and the command ------------------------------------------- */
 
 typedef enum { ORIENT_OFF, ORIENT_AUTO, ORIENT_PAUSED } orient_mode_t;
+/* accepted: one word, set by `orient`, the Super+O hotkey and the task's own
+ * pause; the last store wins and the task reads it each round. */
 static volatile orient_mode_t g_mode = ORIENT_OFF;
 static int g_task = -1;
 

@@ -37,8 +37,10 @@ static uint32_t    g_lock_faults;
  * a spinlock, which would trip the check, which would report again. This flag
  * makes the check transparent for the duration of its own diagnostic.
  *
- * guarded by: interrupts masked on the owning hart. Per-hart and not a lock:
- * only the hart it belongs to reads and writes it, with interrupts masked. */
+ * accepted: per hart and not a lock: only its own hart reads and writes it.
+ * The lock-fault paths hold interrupts masked; waitfor_report_cycle() does not,
+ * so a task preempted mid-report silences another's report on that hart until
+ * it resumes (the fault is still counted). */
 static bool        g_check_busy[MAX_HARTS];
 
 /* Enough to see the pattern, few enough that a violation in a hot path cannot
@@ -114,6 +116,7 @@ static void lock_fault(const char *what, const char *name, const char *site) {
  * and the consequence of the false positive is one wrong line of diagnostic,
  * not a wrong behaviour. Clearing it from the exit path would mean a
  * scheduler hook for a case that cannot currently happen. */
+/* single task: each slot its own task's. */
 static const char *g_serving[MAX_TASKS];
 
 void lock_serve_enter(const char *what) {
@@ -312,6 +315,7 @@ bool spin_is_locked(const spinlock_t *l) { return l && l->word != 0; }
  * below walk a fixed array and call nothing. That is what lets waitfor_enter()
  * be called from chan_call_task() and from ylock_acquire() without either
  * needing to know the other exists. */
+/* guarded by: g_waitfor_lock. */
 static spinlock_t g_waitfor_lock;
 static int        g_waitfor[MAX_TASKS];
 static bool       g_waitfor_ready;
@@ -380,6 +384,7 @@ void ylock_init(ylock_t *l) {
 
 /* How many distinct ylocks each task holds (re-entry counts once), for
  * ylock_held_by(). Written with interrupts masked, by the holder only. */
+/* single task: each slot its holder's. */
 static uint8_t g_ylocks_held[MAX_TASKS];
 
 /* How long a wait-for cycle seen from ylock_acquire() must persist before it
@@ -569,6 +574,8 @@ static int g_checks;
  * *working* checker never blocks -- the call is refused before it can -- and
  * so the precondition is asserted first, which keeps a regression from
  * turning into a silent hang in a 363-test suite. */
+/* accepted: the selftest's handshake with its helper task; one selftest at a
+ * time is the test's own precondition. */
 static ylock_t g_cycle_lock;
 static volatile bool g_cycle_waiting;
 static volatile bool g_cycle_done;
@@ -590,6 +597,7 @@ static void check(const char *what, bool ok) {
 /* The contender for check 3. Runs as its own task, tries to take a lock the
  * selftest is holding, and records the order of events so the main task can
  * tell "it never ran" apart from "it ran and correctly did not get in". */
+/* accepted: as g_cycle_waiting above. */
 static ylock_t        g_test_ylock;
 static volatile int   g_contender_ran;      /* times it was scheduled at all */
 static volatile bool  g_contender_acquired; /* did it get past ylock_acquire */

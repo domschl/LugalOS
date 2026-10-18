@@ -245,8 +245,12 @@ uint64_t time_get_ms(void) {
 
 void time_delay_us(uint64_t us) {
     uint64_t start = time_get_us();
+    /* Pumps the USB device only while its driver task is not there to
+     * (as every other caller of usb_cdc_task()): with the task up, this would
+     * drive the controller from whichever task is waiting, beside the task. */
+    bool pump = !usb_cdc_task_alive();
     while (time_get_us() - start < us) {
-        usb_cdc_task();
+        if (pump) usb_cdc_task();
     }
 }
 

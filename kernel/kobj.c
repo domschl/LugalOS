@@ -78,6 +78,9 @@ typedef struct {
     uint64_t deadline, period, seq;
 } timer_t_;
 
+/* guarded by: g_kobj_lock (kernel/kobj_sched.c), which every call into this
+ * file holds; kobj_reset() runs from kos_init() before any user, and from the
+ * selftests. */
 static sem_t_   g_sem[KSEM_MAX];
 static mutex_t_ g_mtx[KMUTEX_MAX];
 static queue_t_ g_q[KQUEUE_MAX];

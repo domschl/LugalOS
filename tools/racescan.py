@@ -49,7 +49,8 @@ K = ci.CursorKind
 TASK_CREATORS = {"task_create", "task_create_sized", "task_create_driver", "task_create_pinned"}
 LOCK_TYPES = re.compile(r"\b(ylock_t|spinlock_t|chan_endpoint_t)\b")
 MARK = re.compile(r"(single task|guarded by|interrupt-shared|accepted):", re.I)
-DECL_LINE = re.compile(r"^(?!(return|goto|break|continue|case)\b)(static\s|extern\s|volatile\s|const\s)?[\w\s\*\[\],]+[\w\]\)]\s*(=[^;]*)?;(\s*/[/*].*)?$")
+DECL_LINE = re.compile(r"^(?!(return|goto|break|continue|case|if|else|while|for|do|switch)\b)(static\s|extern\s|volatile\s|const\s)?[\w\s\*\[\](),?:+\-/]+[\w\]\)]\s*(=[^;]*)?;(\s*/[/*].*)?$")
+STRUCT_OPEN = re.compile(r"^(static\s+|typedef\s+)?(volatile\s+)?(struct|union)\b[\w\s]*\{$")
 CLOCK_FUNCS = {"time_get_ms", "time_get_us", "time_get_ns"}
 LOCK_FUNCS = {"spin_lock_at", "spin_lock_irqsave_at", "spin_lock_irqsave_bottom_at",
               "ylock_acquire_at", "ylock_try_acquire", "console_lock"}
@@ -180,7 +181,8 @@ class Scanner:
             m = MARK.search(s)
             if m:
                 return m.group(0)
-            if not (s.startswith(("/*", "*", "//")) or s.endswith("*/") or DECL_LINE.match(s)):
+            if not (s.startswith(("/*", "*", "//", "#")) or s.endswith("*/") or DECL_LINE.match(s)
+                    or STRUCT_OPEN.match(s)):
                 break
             j -= 1
         return ""
@@ -349,6 +351,12 @@ class Scanner:
                     w = ch.type.kind != ci.TypeKind.POINTER or is_array(ch)
                 elif write and nk == K.MEMBER_REF_EXPR:
                     w = ch.type.kind != ci.TypeKind.POINTER
+                elif nk == K.VAR_DECL and node.type.kind == ci.TypeKind.POINTER and \
+                        not node.type.get_pointee().is_const_qualified():
+                    # T *p = &var / T *p = array: the address escapes into p,
+                    # which may write through it (a pointer copied is a read)
+                    w = True
+                    a = True
                 elif nk in (K.BINARY_OPERATOR,) and node.binary_operator == ci.BinaryOperator.Assign and pos == 1:
                     # p = &var / p = array: the address escapes into p
                     w = False

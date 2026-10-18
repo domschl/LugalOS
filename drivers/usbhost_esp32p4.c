@@ -190,6 +190,8 @@ typedef struct {
     uint64_t busy_us;               /* spent inside transactions (they poll) */
 } usbhost_t;
 
+/* single task: the kbd task; host_init() runs at boot (usbkbd_start()) before
+ * it, and `usb` only reads. */
 static usbhost_t g_host;
 
 static union {

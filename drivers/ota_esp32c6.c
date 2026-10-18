@@ -10,6 +10,7 @@
  * keeps the radio and the channel to the host served in between. */
 
 #include "kernel/ota.h"
+#include "kernel/lock.h"
 #include "drivers/ota_esp32c6.h"
 #include "drivers/flash_esp32c6.h"
 #include "kernel/llp_node.h"
@@ -44,6 +45,7 @@ const esp_app_desc_t g_esp_app_desc = {
 
 static const uint32_t g_base[2] = { LUGALOS_C6_SLOT_A_BASE, LUGALOS_C6_SLOT_B_BASE };
 
+/* guarded by: g_idf_lock (idf_ensure_layout()); constant once checked. */
 static ota_idf_layout_t g_idf;
 static bool g_idf_checked;
 static bool g_idf_valid;
@@ -55,8 +57,21 @@ static bool ota_capable(void)      { return booted_by_loader() || booted_by_idf(
 /* The partition table, read once. With no usable table there is no guessing:
  * a wrong guess would put the inactive slot over the running one. Updates,
  * switching and confirming are then refused for this boot. */
+static bool idf_ensure_layout_locked(void);
+
+/* Once, for the first caller; the others wait for its answer instead of
+ * reading "not valid" while it is still being worked out. */
+static ylock_t g_idf_lock;
+
 static bool idf_ensure_layout(void) {
     if (!booted_by_idf()) return false;
+    ylock_acquire(&g_idf_lock);
+    bool ok = idf_ensure_layout_locked();
+    ylock_release(&g_idf_lock);
+    return ok;
+}
+
+static bool idf_ensure_layout_locked(void) {
     if (g_idf_checked) return g_idf_valid;
     g_idf_checked = true;
     uint8_t *buf = palloc_pages(1);
@@ -132,6 +147,7 @@ static uint32_t map(int slot, const ota_image_header_t *h, uint32_t off) {
 }
 
 /* The sector being gathered: its flash address (0: none) and its bytes. */
+/* guarded by: kernel/ota.c's lock, which every write path holds. */
 static uint8_t *g_sec;
 static uint32_t g_sec_addr;
 

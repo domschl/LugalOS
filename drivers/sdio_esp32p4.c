@@ -141,6 +141,8 @@ void sdio_c6_reset(uint32_t hold_ms) {
 #define CMD53_INCR     (1u << 26)
 #define R5_ERRORS      0xCB00u       /* COM_CRC, ILLEGAL, ERROR, FUNCTION_NUMBER, OUT_OF_RANGE */
 
+/* guarded by: the SD host's lock (sdhost_acquire(1)), which every *_locked()
+ * function runs under. */
 static sdio_info_t g_info;
 static sdhost_desc_t g_desc __attribute__((aligned(ESP32P4_L1_CACHE_LINE)));
 static uint8_t g_buf[SDIO_XFER_MAX] __attribute__((aligned(ESP32P4_L1_CACHE_LINE)));
@@ -250,7 +252,7 @@ static void cis_manfid(uint32_t cis, uint16_t *vendor, uint16_t *device) {
 
 /* --- Bring-up ----------------------------------------------------------------------- */
 
-static bool g_hosted_tried;   /* hosted_detect_locked() ran since the last probe */
+static bool g_hosted_tried;   /* guarded by: sdhost_acquire(1); hosted_detect_locked() ran since the last probe */
 
 static int probe_locked(uint32_t khz) {
     memset(&g_info, 0, sizeof g_info);
@@ -393,7 +395,7 @@ static struct {
     uint32_t token, pkt_len;    /* the slave's, as last polled */
     uint8_t  shared[8];
     uint32_t polls, writes, reads, wbytes, rbytes, no_room, resyncs, failures, irqs;
-} g_llp;
+} g_llp;   /* guarded by: sdhost_acquire(1) */
 
 /* The card interrupt. The handler masks it and wakes the pump; the next poll
  * clears the slave's bit, then the controller's, reads the status and
@@ -455,6 +457,11 @@ static int fifo_xfer_locked(bool write, uint8_t *buf, uint32_t len) {
     return 0;
 }
 
+/* guarded by: sdhost_acquire(1) for the esp-hosted state (the receive count,
+ * buffer, carry and error text, written by the detection under it and by
+ * `sdio ota`); `sdio ota` also holds g_hosted_ota_busy, and the LLP pump
+ * stands aside while it is set, so the few writes it makes between two holds
+ * of the lock meet no other writer. */
 static volatile bool g_hosted_ota_busy;
 static uint32_t g_hosted_rx_bytes;
 
@@ -862,7 +869,8 @@ static bool hosted_parse_serial_resp(const uint8_t *pay, uint32_t len,
 /* Polls the slave for any pending packet(s) and dispatches them. If
  * `want_resp_id != 0`, sets `*got_resp = true` and `*out_resp` when the
  * matching RPC response arrives. Under `sdhost_acquire(1)`. */
-/* Why the last esp-hosted-mcu exchange failed (for `sdio ota`'s message). */
+/* Why the last esp-hosted-mcu exchange failed (for `sdio ota`'s message).
+ * guarded by: as g_hosted_ota_busy above, with the buffer and carry below. */
 static const char *g_hosted_err = "";
 /* Slave -> host bytes, separate from g_scratch (which holds the request being
  * built): streaming mode may hand over several packets at once, and a packet

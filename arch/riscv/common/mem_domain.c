@@ -24,7 +24,7 @@ void mem_domain_init(mem_domain_t *d) {
  * staleness cannot explain a zero. That failure is a scheduling outcome the
  * test assumed -- the counter moves only for a task that *has* a domain, and
  * the only unpinned one is deliberately left for the scheduler to place. */
-volatile uint32_t g_domain_activations[MAX_HARTS];
+volatile uint32_t g_domain_activations[MAX_HARTS];   /* single task: per hart, its own switch */
 
 uint32_t mem_domain_activations(unsigned hart) {
     return (hart < MAX_HARTS) ? g_domain_activations[hart] : 0;
@@ -246,6 +246,9 @@ typedef struct {
     uint8_t   perms;
 } pmp_locked_region_t;
 
+/* guarded by: publication. pmp_probe_locked() fills them once, from the
+ * first activation or domain build (two may race and write the same values),
+ * g_pmp_dynamic_start last; constant after. */
 static pmp_locked_region_t g_locked_regions[MAX_LOCKED_REGIONS];
 static int g_locked_count = 0;
 static int g_pmp_dynamic_start = -1;
@@ -276,7 +279,10 @@ static void pmp_probe_locked(void) {
 #endif
 #endif
 
-    g_locked_count = 0;
+    /* Into locals, published at the end: the first activation and the first
+     * domain built can probe at the same time, on two tasks. */
+    pmp_locked_region_t regs[MAX_LOCKED_REGIONS];
+    int count = 0;
     for (int i = 0; i < PMP_ENTRIES; i++) {
         if (!(init_cfg[i] & 0x80u)) continue; /* not locked */
         uint8_t mode = (init_cfg[i] >> 3) & 3u;
@@ -285,17 +291,17 @@ static void pmp_probe_locked(void) {
         if (init_cfg[i] & PMP_W) perms |= MEM_W;
         if (init_cfg[i] & PMP_X) perms |= MEM_X;
 
-        if (mode == 3 /* NAPOT */ && g_locked_count < MAX_LOCKED_REGIONS) {
+        if (mode == 3 /* NAPOT */ && count < MAX_LOCKED_REGIONS) {
             uintptr_t paddr = pmpaddr_read(i);
             uint32_t ones = (~paddr == 0) ? 32u : (uint32_t)__builtin_ctz(~paddr);
             uintptr_t size = (ones >= 29) ? ((uintptr_t)-1) : (((uintptr_t)8) << ones);
             uintptr_t mask = (ones >= 32) ? (uintptr_t)-1 : (((uintptr_t)1 << ones) - 1);
             uintptr_t base = (paddr & ~mask) << 2;
-            g_locked_regions[g_locked_count++] = (pmp_locked_region_t){ base, base + size, perms };
-        } else if (mode == 1 /* TOR */ && g_locked_count < MAX_LOCKED_REGIONS) {
+            regs[count++] = (pmp_locked_region_t){ base, base + size, perms };
+        } else if (mode == 1 /* TOR */ && count < MAX_LOCKED_REGIONS) {
             uintptr_t hi = pmpaddr_read(i) << 2;
             uintptr_t lo = (i > 0) ? (pmpaddr_read(i - 1) << 2) : 0;
-            g_locked_regions[g_locked_count++] = (pmp_locked_region_t){ lo, hi, perms };
+            regs[count++] = (pmp_locked_region_t){ lo, hi, perms };
         }
     }
 
@@ -312,8 +318,13 @@ static void pmp_probe_locked(void) {
     if (avail > PMP_DENY_ENTRIES) avail -= PMP_DENY_ENTRIES;
     else avail = 0;
 #endif
-    g_pmp_dynamic_start = start;
+    /* Identical values from every prober; start last, so a reader that sees
+     * it set sees the rest. */
+    for (int i = 0; i < count; i++) g_locked_regions[i] = regs[i];
+    g_locked_count = count;
     g_pmp_dynamic_avail = avail;
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    g_pmp_dynamic_start = start;
 
     if (g_locked_count > 0) {
         printk("[MemDomain] %d PMP entries locked (%d at start, %d at end); dynamic range %d..%d (%d entries)\n",

@@ -28,6 +28,16 @@ static uint32_t g_grp_a, g_grp_b;
 static uint32_t g_grp_c[2];
 
 static uint32_t g_after_blank;             /* after a blank line: unmarked, A */
+static uint32_t g_slots[4];                /* written through a pointer declared on it: A */
+static uint32_t g_via_const[4];            /* only read through a const pointer: not written */
+static uint32_t *g_ptr_var;                /* copied into a local pointer: not written */
+static void touch_slot(void) {
+    uint32_t *s = &g_slots[1];
+    *s = 1;
+    const uint32_t *c = &g_via_const[1];
+    uint32_t *q = g_ptr_var;
+    (void)c; (void)q;
+}
 
 static uint32_t g_guarded_a;               /* written behind handler guards only: */
 static uint32_t g_guarded_b;               /* one context (worker), not listed */
@@ -48,6 +58,7 @@ static void isr(void *ctx) {
     g_shared_counter++;
     g_grp_b++; g_grp_c[1]++; g_after_blank++;
     logger();
+    touch_slot();
     *(volatile uint32_t *)0x50000000u = 1u;
 }
 
@@ -56,6 +67,7 @@ static void worker(void *arg) {
     g_shared_counter = 0;
     g_grp_b = 0; g_grp_c[1] = 0; g_after_blank = 0;
     logger();
+    touch_slot();
     g_only_task += g_boot_cfg + g_table[1];
     consume(&g_by_const_ptr);
     fill(g_text, sizeof g_text);

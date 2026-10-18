@@ -155,6 +155,10 @@ static inline void field_set(uintptr_t reg, unsigned s, uint32_t v_mask, uint32_
 
 /* ---- state -------------------------------------------------------------- */
 
+/* guarded by: console_lock for the bring-up (dsi_lcd_init() runs its body
+ * once, from fb_start() or `lcd pattern`, both under it; the boot's first call
+ * comes before any other task draws). accepted: the backlight figures, set by
+ * the boot and by `lcd bl|backlight` from a shell, single stores. */
 static bool        g_up, g_tried;
 static const char *g_reason = "not initialised";
 static uint8_t     g_ldo_dref, g_ldo_mul;
@@ -828,6 +832,7 @@ static volatile bool     g_flip_pending;
 static volatile uint32_t g_flips;
 static bool              g_double_buffered = true;
 
+/* guarded by: console_lock, as every conversion and frame switch. */
 #define DIRTY_WORDS ((DSI_LCD_V_RES + 63u) / 64u)
 static uint64_t          g_dirty[2][DIRTY_WORDS];
 static uint64_t          g_dirty_trows[2];
@@ -933,6 +938,7 @@ static gdma_lli_t g_lli_mem __attribute__((aligned(64)));
 #define LLI_NC ((volatile gdma_lli_t *)((uintptr_t)&g_lli_mem + SRAM_NONCACHE_OFFSET))
 
 typedef enum { FB_NONE = 0, FB_GRAY8, FB_RGB565 } fb_fmt_t;
+/* guarded by: console_lock (fb_start()'s callers hold it, or are the boot). */
 static fb_fmt_t          g_fb_fmt;
 static uint32_t          g_fb_bytes, g_fb_pages, g_fb_bpp;
 /* interrupt-shared: the counters are written only by gdma_isr() (or
@@ -1069,9 +1075,9 @@ uint8_t *dsi_lcd_fb(void) { return fb_back(); }
 uint8_t *dsi_lcd_fb_front(void) { return fb_front(); }
 uint8_t *dsi_lcd_fb_back(void) { return fb_back(); }
 
-static bool g_scanning;
+static bool g_scanning;   /* guarded by: console_lock (scan_start/scan_stop's callers) */
 
-/* Phase 55: Flip front/back buffers at hardware VSYNC. If wait_vsync is true,
+/* Flip front/back buffers at hardware VSYNC. If wait_vsync is true,
  * blocks until the ISR switches the scanout address during vertical blanking. */
 void dsi_lcd_flip(bool wait_vsync) {
     if (!g_double_buffered || !g_fb_pool[1] || !g_scanning) return;
@@ -1290,6 +1296,9 @@ static void draw_text_page(void) {
  * are any two RGB565 colours, as `lcd colours` on the RP2350: a gray pair
  * runs in GRAY8, a coloured one switches the frame to RGB565 (47.5 §6.6). */
 
+/* g_lcd_rot and the terminal state below -- guarded by: console_lock, which
+ * every writer of the 1-bpp frame, every conversion and the rotation hold
+ * (dsi_lcd_term_start() runs at boot, before any of them). */
 #if defined(CONFIG_BOARD_TAB5)
 #define T_BYTES    (160u * 720u)
 static int g_lcd_rot = 270; /* Landscape by default */
@@ -1305,6 +1314,7 @@ static inline uint8_t rev8(uint8_t v) {
     return (uint8_t)((v >> 4) | (v << 4));
 }
 
+/* guarded by: console_lock, as g_lcd_rot above. */
 static lcdterm_backend_t g_tbe;
 static uint8_t  *g_t1, *g_t1_shadow;            /* 1-bpp frame, its shadow: PSRAM */
 static bool      g_t_force;                      /* convert every row next time */
@@ -1351,7 +1361,9 @@ static inline bool row_same(const uint8_t *a, const uint8_t *b, unsigned stride)
  * 60 frames a second, so converting a scroll more often than that is work
  * nobody sees -- and fast output scrolls far more often (the owner's "not
  * very fast", 2026-10-11). Before the scheduler, at boot, flushes convert
- * at once. */
+ * at once.
+ * guarded by: console_lock; the flush task reads it without, as a hint, and
+ * clears it and converts under the lock. */
 static volatile bool g_t_due;
 /* 47.7: a test owns the frame (`lcd test`, `fb`, `wbtest`, `bench`): the
  * terminal keeps drawing into its 1-bpp frame but converts nothing until
@@ -2412,8 +2424,10 @@ void dsi_lcd_command(const char *args) {
         else if (strcmp(p, "ber") == 0) pat = PAT_BER;
         else if (strcmp(p, "off") == 0) pat = PAT_NONE;
         else { cprintf("usage: lcd pattern [bars|hbars|ber|off]\n"); return; }
-        if (!dsi_lcd_init()) { cprintf("lcd: bring-up failed: %s\n", g_reason); return; }
+        console_lock();                 /* as fb_start()'s callers: the scan-out state */
+        if (!dsi_lcd_init()) { console_unlock(); cprintf("lcd: bring-up failed: %s\n", g_reason); return; }
         set_pattern(pat);
+        console_unlock();
         cprintf("lcd: %s\n", g_pattern);
         return;
     }

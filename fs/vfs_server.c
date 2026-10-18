@@ -1,3 +1,4 @@
+#include "kernel/lock.h"
 #include "kernel/power.h"
 #include "fs/vfs.h"
 #include "fs/fat32.h"
@@ -188,7 +189,10 @@ typedef struct {
     uint32_t remote_fid;              /* valid for MOUNT_REMOTE9P */
 } vfs_handle_t;
 
+/* guarded by: g_handles_lock for taking a slot (in_use); an open handle is
+ * its opener's, and freeing it is one clear of in_use. */
 static vfs_handle_t g_handles[VFS_MAX_HANDLES];
+static spinlock_t   g_handles_lock = SPINLOCK_INIT;
 
 #include "drivers/spisd.h"
 #include "drivers/sdmmc.h"
@@ -530,7 +534,7 @@ int vfs_register_service(const char *service_name, int target_pid) {
  * means no mount matches the path's first component -- explicit failure,
  * not a fallback to any particular volume (closes review finding A2). */
 static mount_entry_t *vfs_resolve(const char *path, const char **rel_path, bool *is_root) {
-    static const char *empty_str = "";
+    static const char *empty_str = "";   /* accepted: only ever assigned itself */
     if (!rel_path) rel_path = &empty_str;
     if (is_root) *is_root = false;
 
@@ -2287,14 +2291,21 @@ static int vfs_open_into(vfs_handle_t *h, const char *path, int flags) {
 int vfs_open(const char *path, int flags) {
     if (!path) return -1;
 
+    /* Find and take the slot as one step: two tasks opening at once would
+     * otherwise both find the same free one. */
     int slot = -1;
+    uintptr_t f = spin_lock_irqsave(&g_handles_lock);
     for (int i = 0; i < VFS_MAX_HANDLES; i++) {
         if (!g_handles[i].in_use) { slot = i; break; }
     }
+    if (slot >= 0) {
+        memset(&g_handles[slot], 0, sizeof(g_handles[slot]));
+        g_handles[slot].in_use = true;
+    }
+    spin_unlock_irqrestore(&g_handles_lock, f);
     if (slot < 0) return -1;
 
     vfs_handle_t *h = &g_handles[slot];
-    memset(h, 0, sizeof(*h));
 
     /* Reserve the slot BEFORE doing any work that might re-enter vfs_open().
      *
@@ -2313,11 +2324,13 @@ int vfs_open(const char *path, int flags) {
      * A truly remote peer could never expose this (its vfs_open() runs on
      * another machine), which is exactly why exercising the local case is
      * worth doing: it puts the client and server in one address space, where
-     * shared-state bugs like this one become reachable. */
-    h->in_use = true;
+     * shared-state bugs like this one become reachable. (Taken above, under
+     * g_handles_lock.) */
 
     if (vfs_open_into(h, path, flags) < 0) {
+        uintptr_t r = spin_lock_irqsave(&g_handles_lock);
         memset(h, 0, sizeof(*h)); /* releases the reservation */
+        spin_unlock_irqrestore(&g_handles_lock, r);
         return -1;
     }
 
@@ -2608,7 +2621,9 @@ int vfs_close(int fd) {
     /* A written file's close is where FSInfo's free count goes back to disk
      * (fat32_sync()): one sector, so `df` after a reboot need not rescan. */
     if (h->kind == MOUNT_FAT32 && h->wrote) fat32_sync(h->fs);
+    uintptr_t f = spin_lock_irqsave(&g_handles_lock);   /* not taken mid-clear */
     memset(h, 0, sizeof(*h));
+    spin_unlock_irqrestore(&g_handles_lock, f);
     return 0;
 }
 

@@ -4064,7 +4064,7 @@ static mem_domain_t    g_echo_domain;
 static uint8_t         g_echo_req[16];
 static uint8_t         g_echo_resp[16];
 static chan_endpoint_t *g_echo_ep;
-static volatile bool    g_echo_entered;
+static volatile bool    g_echo_entered;   /* accepted: a selftest's handshake flag */
 
 __attribute__((always_inline)) static inline long echo_usys_chan_serve_wait(const char *name, uint8_t *buf, long buf_max) {
     register long r_a0 __asm__("a0") = SYS_CHAN_SERVE_WAIT;
@@ -4480,7 +4480,7 @@ static void cmd_usb_isolation_test(void) {
  *
  * Both loops are bounded, so a failure reports rather than wedging the
  * machine and taking every later test down with it. */
-static volatile uint32_t g_preempt_flag;
+static volatile uint32_t g_preempt_flag;   /* accepted: a selftest's handshake flag */
 
 static void preempt_spinner(void *arg) {
     (void)arg;
@@ -4535,6 +4535,7 @@ static void cmd_preempttest(void) {
  * cause in the toolchain; recorded as a real constraint instead of
  * papered over: a volatile flag polled across a preemption boundary in this
  * tree should be word-sized, not bool. */
+/* accepted: a selftest's handshake flags. */
 static volatile uint32_t g_urgent_ran;
 static volatile uint64_t g_urgent_woken_tick;
 
@@ -4624,6 +4625,7 @@ static void cmd_priotest(void) {
  * comment), the favoured task finishes quickly while the other is starved
  * until it, which shows up as a large gap between the two finish ticks
  * instead of a small one. */
+/* accepted: per-task slots of a selftest, read when both are done. */
 static volatile uint32_t g_stress_done[2];
 static volatile uint64_t g_stress_finish_tick[2];
 
@@ -4636,7 +4638,7 @@ static volatile uint64_t g_stress_finish_tick[2];
  * real RP2350 hardware too. */
 #define PRIOSTRESS_ITERATIONS 150000000L
 
-static volatile long g_stress_sink[2]; /* per-task: keeps the optimizer from eliminating the loop below without sharing a write target between the two concurrently-running tasks */
+static volatile long g_stress_sink[2]; /* accepted: per-task: keeps the optimizer from eliminating the loop below without sharing a write target between the two concurrently-running tasks */
 
 static void priostress_body(void *arg) {
     int id = (int)(intptr_t)arg;

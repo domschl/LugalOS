@@ -265,7 +265,7 @@ static void drain_rx_locked(void) {
 
 /* UART0's divider for `baud`, scaled from the one the boot ROM left for 115200:
  * the clock behind it need not be known. Taken once, before any change. */
-static uint32_t g_div16_115200;
+static uint32_t g_div16_115200;   /* accepted: taken lazily, the same value by every taker */
 
 static bool uart0_set_baud(uint32_t baud) {
     if (!g_div16_115200) {
@@ -348,7 +348,7 @@ int usbjtag_llp_write(const uint8_t *buf, uint32_t len) {
 
 /* A frame streamed byte by byte (llp_serial_emit()): the first byte of a frame
  * is its SLIP_END, which is where waiting console text goes out first. */
-static bool g_streaming;
+static bool g_streaming;   /* single task: LLP's sender */
 
 void usbjtag_llp_putc(uint8_t b) {
     if (!g_streaming) { con_tx_flush(); g_streaming = true; }

@@ -38,11 +38,13 @@ typedef struct {
 } zone_t;
 
 static uint8_t g_fast_bitmap[(PALLOC_MAX_PAGES + 7) / 8];
+/* guarded by: g_palloc_lock (below), as is the bulk zone and its fallback
+ * count. */
 static zone_t  g_fast = { .bitmap = g_fast_bitmap, .max_pages = PALLOC_MAX_PAGES };
 
 #if defined(CONFIG_PALLOC_BULK_PAGES)
 static uint8_t g_bulk_bitmap[(CONFIG_PALLOC_BULK_PAGES + 7) / 8];
-static zone_t  g_bulk = { .bitmap = g_bulk_bitmap, .max_pages = CONFIG_PALLOC_BULK_PAGES };
+static zone_t  g_bulk = { .bitmap = g_bulk_bitmap, .max_pages = CONFIG_PALLOC_BULK_PAGES };   /* guarded by: g_palloc_lock */
 #define BULK_ZONE (&g_bulk)
 #else
 #define BULK_ZONE ((zone_t *)NULL)
@@ -50,7 +52,7 @@ static zone_t  g_bulk = { .bitmap = g_bulk_bitmap, .max_pages = CONFIG_PALLOC_BU
 
 /* Bulk requests served from SRAM because the bulk zone could not: a number
  * that should stay 0, and /proc/meminfo says so when it does not. */
-static uint32_t g_bulk_fallbacks;
+static uint32_t g_bulk_fallbacks;   /* guarded by: g_palloc_lock */
 
 /* Guards both bitmaps and their counters. Zero-initialised, which is a free
  * spinlock_t -- and on RP2350 that also keeps it in .bss where

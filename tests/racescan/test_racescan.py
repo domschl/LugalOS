@@ -43,6 +43,9 @@ def main() -> int:
     want(not shared.get("g_after_blank", {}).get("marked"), "g_after_blank: a blank line ends the group")
     for v in ("g_guarded_a", "g_guarded_b"):
         want(v not in shared, f"{v}: behind a devirq_in_handler() guard, not reached from the handler")
+    want(shared.get("g_slots", {}).get("group") == "A", "g_slots: written through `T *p = &g_slots[i]`")
+    for v in ("g_via_const", "g_ptr_var"):
+        want(v not in shared, f"{v}: a const pointer or a copied pointer is not a write")
     blk = {(b["context"], b["function"]) for b in d["isr_blocking"]}
     want(("isr:isr2", "sched_yield") in blk, "isr2 reaches a blocking call")
     want(not any(c == "isr:isr" for c, _ in blk), "isr's blocking calls are all behind guards")

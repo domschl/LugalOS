@@ -63,6 +63,8 @@ extern char _radio_text_start[], _radio_data_start[], _radio_bss_start[], _radio
 #define ARENA_PAGES 16          /* 64 KB (one NAPOT region): the frame rings (10 KB) and the radio heap */
 #define STACK_PAGES 4           /* 16 KB: the main thread's stack, with the context at its bottom */
 
+/* single task: radio_c6_start() (one per boot, claimed there) sets them up
+ * before it creates the radio task, which owns them after. */
 static mem_domain_t g_rdomain;
 static void *g_rstack;
 static void *g_rarena;
@@ -197,10 +199,20 @@ int radio_c6_start(const char *ssid, const char *psk) {
     /* The blob's initialised data is loaded once, with the image; a second start would run
      * it from the state the first one left. Until the kernel keeps a pristine copy, one
      * start per boot. */
-    if (g_rpid >= 0) { cprintf("radio: already started in this boot -- reset the board to start it again\n"); return 1; }
+    /* Taken as one step: the shell's `radio start` and a join can arrive
+     * together. Given back only by a failure before the task exists. */
+    static volatile bool s_starting;   /* guarded by: the atomic exchange below */
+    if (g_rpid >= 0 || __atomic_exchange_n(&s_starting, true, __ATOMIC_ACQ_REL)) {
+        cprintf("radio: already started in this boot -- reset the board to start it again\n");
+        return 1;
+    }
     g_rstack = palloc_pages_aligned(STACK_PAGES, STACK_PAGES);
     g_rarena = palloc_pages_aligned(ARENA_PAGES, ARENA_PAGES);
-    if (!g_rstack || !g_rarena) { cprintf("radio: out of memory for the radio's heap/stack\n"); return 1; }
+    if (!g_rstack || !g_rarena) {
+        cprintf("radio: out of memory for the radio's heap/stack\n");
+        s_starting = false;
+        return 1;
+    }
     radio_ctx_t *c0 = (radio_ctx_t *)g_rstack;
     c0->join = 0;
     if (ssid && psk) {
@@ -212,7 +224,7 @@ int radio_c6_start(const char *ssid, const char *psk) {
         c0->join = 1;
     }
     g_rpid = task_create("radio", radio_task, NULL);
-    if (g_rpid < 0) { cprintf("radio: could not create the task\n"); return 1; }
+    if (g_rpid < 0) { cprintf("radio: could not create the task\n"); s_starting = false; return 1; }
     for (int i = 0; i < 40000 && sched_task_state(g_rpid) != TASK_DEAD && !((const radio_ctx_t *)g_rstack)->done; i++) task_sleep_ms(1);
     radio_intr_report();
     const radio_ctx_t *ctx = (const radio_ctx_t *)g_rstack;
@@ -289,6 +301,8 @@ void radio_c6_rejoin(void) {
 /* The network the `wlan` task joins: from the identity record at boot, or from
  * an LLP host that holds the credentials itself (radio_c6_join()). The key is
  * kept only until the radio has it. */
+/* guarded by: g_join_busy, claimed with an atomic exchange before the
+ * credentials are written; the join task owns them from then on. */
 static char g_join_ssid[NODE_WLAN_SSID_MAX + 1];
 static char g_join_psk[2 * NODE_WLAN_PSK_LEN + 1];
 static volatile bool g_join_busy;
@@ -321,9 +335,13 @@ static void wlan_join_task(void *arg) {
 
 static void wlan_autostart_task(void *arg) {
     (void)arg;
+    /* The credentials are claimed before they are written: an LLP host may be
+     * handing over its own at the same moment (radio_c6_join()). */
+    if (__atomic_exchange_n(&g_join_busy, true, __ATOMIC_ACQ_REL)) { task_set_exit_status(0); return; }
     uint8_t psk[NODE_WLAN_PSK_LEN];
     if (!node_wlan_ssid(g_join_ssid, sizeof(g_join_ssid)) || !node_wlan_psk(psk)) {
         memset(psk, 0, sizeof(psk));
+        g_join_busy = false;
         task_set_exit_status(0);
         return;                                  /* no credentials: not meant to join anything */
     }
@@ -334,23 +352,21 @@ static void wlan_autostart_task(void *arg) {
     }
     g_join_psk[2 * NODE_WLAN_PSK_LEN] = 0;
     memset(psk, 0, sizeof(psk));
-    g_join_busy = true;
     wlan_join_task(NULL);
 }
 #endif
 
 int radio_c6_join(const char *ssid, const char *psk_hex) {
 #if defined(CONFIG_RADIO_C6)
-    if (g_rpid >= 0 || g_join_busy) return -1;
     size_t n = strlen(ssid), k = strlen(psk_hex);
     if (n == 0 || n > NODE_WLAN_SSID_MAX || k != 2u * NODE_WLAN_PSK_LEN) return -1;
     for (size_t i = 0; i < k; i++) {
         char ch = psk_hex[i];
         if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F'))) return -1;
     }
+    if (g_rpid >= 0 || __atomic_exchange_n(&g_join_busy, true, __ATOMIC_ACQ_REL)) return -1;
     memcpy(g_join_ssid, ssid, n + 1);
     memcpy(g_join_psk, psk_hex, k + 1);
-    g_join_busy = true;
     if (task_create("wlan", wlan_join_task, (void *)1) < 0) {
         memset(g_join_psk, 0, sizeof(g_join_psk));
         g_join_busy = false;
@@ -435,7 +451,7 @@ uint32_t radio_c6_scan_render(char *out, uint32_t cap) {
 #if defined(CONFIG_RADIO_C6)
     const radio_ctx_t *c = (const radio_ctx_t *)g_rstack;
     if (!c) return (uint32_t)ksnprintf(out, cap, "aps=0\n");
-    static radio_ap_t aps[RADIO_SCAN_MAX];
+    static radio_ap_t aps[RADIO_SCAN_MAX];   /* accepted: two readers at once can mix their lists */
     uint32_t count = 0;
     for (int tries = 0; tries < 8; tries++) {         /* the radio publishes rarely: a retry is enough */
         uint32_t seq = c->scan_seq;

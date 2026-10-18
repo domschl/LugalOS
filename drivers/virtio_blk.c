@@ -86,6 +86,8 @@ struct virtqueue_mem {
     struct virtq_used used;
 } __attribute__((aligned(4096)));
 
+/* single task: the blk task (blk_serve(), the only caller of the transfer);
+ * virtio_blk_init() at boot, before it. */
 static struct virtqueue_mem g_vq_mem __attribute__((aligned(4096)));
 static struct virtio_blk_req_hdr g_req_hdr __attribute__((aligned(16)));
 static uint8_t g_req_status __attribute__((aligned(16)));
@@ -95,7 +97,7 @@ static uint32_t g_mmio_version = 0;
 static uint32_t g_num_sectors = 1024;
 static block_dev_t g_virtio_blk_dev;
 static int g_initialized = 0;
-static uint16_t g_last_used_idx = 0;
+static uint16_t g_last_used_idx = 0;   /* single task: the blk task, as g_vq_mem */
 
 static int virtio_blk_transfer(uint32_t type, void *buf, uint32_t lba, uint32_t count) {
     if (!g_mmio_base || count == 0) return -1;

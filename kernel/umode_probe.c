@@ -86,6 +86,8 @@ static uint8_t g_uprobe_stack[UPROBE_STACK_BYTES]
 
 /* The one data grant, and the only thing the U-mode half can say to the
  * kernel half. */
+/* accepted: the probe's one grant, written by its U-mode half and read by the
+ * kernel half; one probe at a time. */
 static volatile uint8_t g_uprobe_shared[UPROBE_SHARED_BYTES]
     __attribute__((aligned(UPROBE_SHARED_BYTES)));
 

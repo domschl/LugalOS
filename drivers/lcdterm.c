@@ -55,6 +55,8 @@
 #if defined(LCDTERM_PRESENT)
 
 /* --- The panel this terminal runs on (47.6) ------------------------------- */
+/* guarded by: console_lock (lcdterm_init() at boot, lcdterm_reinit() from a
+ * rotation, which holds it). */
 static const lcdterm_backend_t *g_be;
 static void damage(unsigned y0, unsigned y1);
 
@@ -124,6 +126,8 @@ static bool      g_vt_ready;
 #define LCDTERM_OP_RIGHT  'S'       /* 37.1: its indicators */
 #define LCDTERM_OP_REPAINT 'R'      /* 37.1a: everything, from the shadow */
 #define LCDTERM_OP_CANVAS 'C'       /* 37.3b: a canvas request; the reply comes back */
+/* guarded by: console_lock, for the batch, the reply buffer and the call
+ * count (lcdterm_screen_putc_vterm() reports a write without it). */
 static uint8_t          g_batch[LCDTERM_BATCH];
 static uint32_t         g_batch_len;
 #if defined(LCDTERM_UMODE)
@@ -273,6 +277,7 @@ static bool lcdterm_send(uint8_t op, const char *p, uint32_t len) {
     return false;
 }
 
+/* guarded by: console_lock, as g_batch. */
 static uint8_t g_batch_vid;
 static bool    s_pending_char_damage = false;
 
@@ -306,7 +311,7 @@ void lcdterm_screen_putc_vterm(int vid, char c) {
      * console_lock() makes that safe: an unlocked append preempted between
      * the increment and the flush test lets the next one run off the end
      * (phase31 §7 T5). Named once rather than assumed. */
-    static bool s_unlocked_reported;
+    static bool s_unlocked_reported;   /* accepted: a report-once flag */
     if (!s_unlocked_reported && !console_lock_held()) {
         s_unlocked_reported = true;
         printk("[LCD BUG] console write without console_lock() from task %d\n",
@@ -503,8 +508,8 @@ const console_screen_t *lcdterm_console_screen(void) {
 /* `lcdtermisotest`: the lcdterm domain, but a body that stores into kernel
  * memory. Must fault, and the canary must survive -- the check every isolated
  * driver here has (st7735isotest, blkisotest, ...). */
-static volatile uintptr_t g_lcdterm_canary = 0xC0FFEE;
-static volatile bool      g_lcdterm_intruder_entered;
+static volatile uintptr_t g_lcdterm_canary = 0xC0FFEE;   /* accepted: an isolation test's canary or handshake */
+static volatile bool      g_lcdterm_intruder_entered;   /* accepted: an isolation test's canary or handshake */
 
 LCDTERM_UTEXT static void lcdterm_intruder(void) {
     g_lcdterm_canary = 0xDEAD;

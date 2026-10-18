@@ -572,6 +572,7 @@ static uint8_t uart_hw_getc_blocking(void) {
 static uint8_t          g_uart_req[UART_REQ_CAP];
 static uint8_t          g_uart_resp[1];
 static driver_task_t g_uart_task;
+/* single task: the uart task (uart_serve()); readers only elsewhere. */
 static uint32_t         g_uart_write_calls;
 static volatile bool    g_uart_write_in_flight;
 
@@ -833,7 +834,8 @@ static spinlock_t g_tx_batch_lock;
  * (sched_hold_current_on_hart()) and the holds on a hart are given back once
  * that hart has nothing batched and nothing in flight: a copy taken by
  * uart_flush() counts here until it is sent, or the owner could be released
- * and overtake it from the other hart. */
+ * and overtake it from the other hart.
+ * guarded by: g_tx_batch_lock. */
 static uint32_t g_tx_inflight[MAX_HARTS];
 
 /* The bounded retry is driver_task_call()'s (G2), shared with every other

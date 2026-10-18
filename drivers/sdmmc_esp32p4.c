@@ -334,6 +334,7 @@
  * transfer polls for milliseconds and the other slot's user should yield, and
  * re-entrant, because card init calls its own locked block reads. */
 static ylock_t  g_host_lock;
+/* guarded by: g_host_lock (taken by sdhost_acquire(), which sets g_card). */
 static uint32_t g_card;           /* the card the lock holder is driving */
 static uint32_t g_stale_transfers;  /* data commands that found the data path still busy */
 
@@ -829,6 +830,7 @@ static uint32_t sd_csd_blocks(const uint32_t *csd) {
 
 typedef sdhost_desc_t sdmmc_desc_t;   /* drivers/sdhost_esp32p4.h */
 
+/* guarded by: g_host_lock (every block read and write holds it). */
 static sdmmc_desc_t g_desc  __attribute__((aligned(ESP32P4_L1_CACHE_LINE)));
 static uint8_t g_dma_buf[512] __attribute__((aligned(ESP32P4_L1_CACHE_LINE)));
 
@@ -966,7 +968,9 @@ static bool g_hw_ready;
 
 /* The controller's half: clocks, reset, polled mode, watermarks. Shared with
  * the SDIO slot (49.4), so idempotent and independent of the card's power and
- * pads, which are slot 0's alone. */
+ * pads, which are slot 0's alone.
+ * guarded by: g_host_lock on the SDIO side (its probe holds it); the card's
+ * bring-up at boot runs before any other user. */
 static bool g_ctrl_ready;
 
 int sdhost_controller_init(void) {

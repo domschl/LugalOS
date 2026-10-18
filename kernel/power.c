@@ -37,6 +37,9 @@ typedef struct {
     uint32_t age_s;
 } power_now_t;
 
+/* accepted: a shell sets the mode and the limit with single stores; the
+ * power task alone keeps held, warned and low_since, and its next round
+ * puts the charger right after a change. */
 static struct {
     charge_mode_t mode;      /* configured */
     uint8_t       limit;     /* %, 0 = none */
@@ -67,6 +70,9 @@ static const char *power_state(const power_now_t *p) {
 
 /* One CSV line a second, for fitting the battery curve (tools/batt_fit.py).
  * A task of its own, so the shell stays free for the hours a discharge takes. */
+/* accepted: `power log` starts the task and `power log stop` sets stop; the
+ * task clears active when it ends. Two shells starting one at the same
+ * instant could both start. */
 static struct {
     volatile bool active;
     volatile bool stop;

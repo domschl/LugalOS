@@ -477,6 +477,8 @@ bool board_reset(void) {
 #endif
 }
 
+/* accepted: a pending reset's mode and delay, set by whoever asks; two
+ * requests at once leave the last one's. */
 static bool g_reset_download;
 static uint32_t g_reset_ms;
 

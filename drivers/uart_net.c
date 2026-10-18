@@ -1,3 +1,4 @@
+#include "kernel/lock.h"
 #include "drivers/uart_net.h"
 #include "kernel/identity.h"
 #include "fs/9p.h"
@@ -292,10 +293,10 @@ p9_link_t *uart_demux_get_link(void) {
     return &g_uart_demux_link;
 }
 
-int uart_net_send_9p(const uint8_t *req_buf, uint32_t req_len, uint8_t *resp_buf, uint32_t resp_max) {
+static int send_9p_unlocked(const uint8_t *req_buf, uint32_t req_len, uint8_t *resp_buf, uint32_t resp_max) {
     if (!req_buf || req_len < 7 || !resp_buf) return -1;
 
-    static uint8_t slip_tx[2048];
+    static uint8_t slip_tx[2048];   /* guarded by: g_loop_lock (below) */
     static uint8_t slip_rx[2048];
 
     int slip_len = slip_encode(req_buf, req_len, slip_tx, sizeof(slip_tx));
@@ -321,9 +322,9 @@ int uart_net_send_9p(const uint8_t *req_buf, uint32_t req_len, uint8_t *resp_buf
  * the attach fid. Uses its own scratch filename so concurrent loopback and
  * UART RPCs (e.g. both exercised back-to-back by tests/runner.py) never
  * collide on the same file. */
-int uart_net_rpc(const char *write_payload, char *read_out_buf, uint32_t read_max) {
+static int rpc_unlocked(const char *write_payload, char *read_out_buf, uint32_t read_max) {
     static const char *SCRATCH_NAME = "uart9p.tmp";
-    static uint8_t tx_buf[1024];
+    static uint8_t tx_buf[1024];   /* guarded by: g_loop_lock (below) */
     static uint8_t rx_buf[1024];
 
     // 1. Tversion -- also resets the server's fid table for a clean session.
@@ -409,6 +410,24 @@ int uart_net_rpc(const char *write_payload, char *read_out_buf, uint32_t read_ma
     uart_net_send_9p(tx_buf, (uint32_t)tx_len, rx_buf, sizeof(rx_buf));
 
     return result;
+}
+
+/* The loopback self-test's buffers above are static: one exchange at a time,
+ * whichever task opened the /dev node. guarded by: g_loop_lock. */
+static ylock_t g_loop_lock;
+
+int uart_net_send_9p(const uint8_t *req_buf, uint32_t req_len, uint8_t *resp_buf, uint32_t resp_max) {
+    ylock_acquire(&g_loop_lock);
+    int rc = send_9p_unlocked(req_buf, req_len, resp_buf, resp_max);
+    ylock_release(&g_loop_lock);
+    return rc;
+}
+
+int uart_net_rpc(const char *write_payload, char *read_out_buf, uint32_t read_max) {
+    ylock_acquire(&g_loop_lock);
+    int rc = rpc_unlocked(write_payload, read_out_buf, read_max);
+    ylock_release(&g_loop_lock);
+    return rc;
 }
 
 #else /* CONFIG_BOARD_ESP32C6 */

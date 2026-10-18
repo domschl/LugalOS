@@ -302,7 +302,7 @@ int heartbeat_task_start(void) {
  * same reason heartbeat_usys_yield()/_time_ms() are hand-rolled per file:
  * a HEARTBEAT_UATTR probe should not depend on anything outside this
  * translation unit. */
-static volatile uintptr_t g_heartbeat_canary = 0xC0FFEE;
+static volatile uintptr_t g_heartbeat_canary = 0xC0FFEE;   /* accepted: an isolation test's canary or handshake */
 
 HEARTBEAT_UATTR static void heartbeat_intruder(void) {
     g_heartbeat_canary = 0xDEAD;
@@ -330,7 +330,7 @@ HEARTBEAT_UATTR static void heartbeat_intruder(void) {
  * domain that failed to install would read identically to "the write was
  * correctly blocked" (same false-positive risk cmd_usertest_isolation()'s
  * own g_user_entered exists to rule out). */
-static volatile bool g_heartbeat_intruder_entered;
+static volatile bool g_heartbeat_intruder_entered;   /* accepted: an isolation test's canary or handshake */
 
 static void heartbeat_intruder_task_body(void *arg) {
     uint8_t *ustack = (uint8_t *)arg;
@@ -803,7 +803,7 @@ static int              g_uart_task_pid = -1;
  * counted client-side now (uart_flush() below), matching
  * every other U-mode driver's own g_*_calls -- a U-mode server cannot
  * touch this ordinary kernel .bss global. */
-static uint32_t g_uart_write_calls;
+static uint32_t g_uart_write_calls;   /* accepted: a statistic, counted by the callers */
 
 uint32_t uart_write_call_count(void) { return g_uart_write_calls; }
 uint32_t uart_irq_count(void) { return g_uart_irq_count; }
@@ -1015,14 +1015,14 @@ static int uart_call_with_retry(const uint8_t *req, uint32_t req_len,
  * idea (a deliberate out-of-domain store, asserted to fault), a separate
  * canary rather than reaching into another file's, for the same reason
  * the syscall stubs above are hand-rolled per file. */
-static volatile uintptr_t g_uart_canary = 0xC0FFEE;
+static volatile uintptr_t g_uart_canary = 0xC0FFEE;   /* accepted: an isolation test's canary or handshake */
 
 UART_UATTR static void uart_intruder(void) {
     g_uart_canary = 0xDEAD;
     for (;;) { } /* only reached if the store was NOT stopped */
 }
 
-static volatile bool g_uart_intruder_entered;
+static volatile bool g_uart_intruder_entered;   /* accepted: an isolation test's canary or handshake */
 
 /* `arg` is the U-mode stack -- allocated by uart_isolation_test() below,
  * not here, so it can free it once the task is confirmed DEAD (same
@@ -1133,6 +1133,7 @@ static spinlock_t g_tx_batch_lock;
  * that hart has nothing batched and nothing in flight: a copy taken by
  * uart_flush() counts here until it is sent, or the owner could be released
  * and overtake it from the other hart. */
+/* guarded by: g_tx_batch_lock. */
 static uint32_t g_tx_inflight[MAX_HARTS];
 
 static void uart_tx_send(const char *local, uint32_t len) {

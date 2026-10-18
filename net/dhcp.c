@@ -195,7 +195,7 @@ static void dhcp_task(void *arg) {
 }
 
 int dhcp_start(void) {
-    static int pid = -1;
+    static int pid = -1;   /* single task: one starter per board (the LLP pump, the radio's start, cyw43) */
     if (pid >= 0) return pid;
     pid = task_create_sized("dhcpc", dhcp_task, NULL, 1);   /* measured peak under 1 KB (C6, 2026-10-06) */
     if (pid < 0) printk("[DHCP] could not start the client task\n");

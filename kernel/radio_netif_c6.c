@@ -15,6 +15,8 @@
 
 #define fence() __asm__ volatile("fence rw, rw" ::: "memory")
 
+/* single task: radio_c6_start() registers once (one start per boot, claimed
+ * there); the stack only reads after. */
 static radio_ctx_t *g_ctx;
 static netif_t g_nif;
 static bool g_registered;

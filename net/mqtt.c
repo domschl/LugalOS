@@ -112,7 +112,7 @@ static struct {
     uint16_t        ack_wait_id;    /* the SUBACK/UNSUBACK we are waiting for, 0 = none */
     bool            ack_seen;
     uint8_t         ack_granted;    /* SUBACK's returned QoS, 0x80 = refused */
-} g;
+} g;   /* guarded by: g_client_lock (below) */
 
 /* One task inside the client at a time.
  *
@@ -141,7 +141,7 @@ static ylock_t g_client_lock;
  * way. Safe alongside mqttd's own service call because both go through
  * g_client_lock, which is re-entrant for the owning task and yields rather
  * than spinning. */
-static int g_pump_pid = -1;
+static int g_pump_pid = -1;   /* guarded by: g_client_lock */
 
 static void mqtt_pump_body(void *arg) {
     (void)arg;

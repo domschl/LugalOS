@@ -873,14 +873,14 @@ static int spisd_write_blocks_raw(block_dev_t *dev, const void *buf, uint32_t lb
  * store, asserted to fault), a separate canary rather than reaching into
  * another file's, for the same reason the syscall stubs above are
  * hand-rolled per file. */
-static volatile uintptr_t g_blk_canary = 0xC0FFEE;
+static volatile uintptr_t g_blk_canary = 0xC0FFEE;   /* accepted: an isolation test's canary or handshake */
 
 BLK_UATTR static void blk_intruder(void) {
     g_blk_canary = 0xDEAD;
     for (;;) { } /* only reached if the store was NOT stopped */
 }
 
-static volatile bool g_blk_intruder_entered;
+static volatile bool g_blk_intruder_entered;   /* accepted: an isolation test's canary or handshake */
 
 /* `arg` is the U-mode stack -- allocated by blk_isolation_test() below,
  * not here, so it can free it once the task is confirmed DEAD (same
