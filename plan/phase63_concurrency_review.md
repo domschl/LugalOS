@@ -104,6 +104,34 @@ Output goes to `build/racescan/candidates.md`: one line per candidate with file:
 class, and the entry points that reach it. The script's own tests use a small fixture tree
 with a known answer.
 
+**Done (2026-10-18):**
+- `tools/racescan.py` uses libclang over a build's `compile_commands.json`, about 35 s per
+  build.
+- Contexts:
+  - `kernel` (kernel_main);
+  - `task:<name>` (task_create* and driver_task_spec_t .serve);
+  - `chan:<name>` (chan_register);
+  - `isr:<handler>` (devirq_attach).
+- Function addresses in ops tables and callbacks count as calls from whoever takes them, so
+  the list is a deliberate over-approximation.
+- Writes follow the lvalue path. An address passed to a `const` parameter is a read, an array
+  passed to a non-const parameter is a write, and `REG(base + off) = v` does not write
+  `base`.
+- Groups:
+  - **A**: written in two or more contexts.
+  - **S**: written only by shells.
+  - **B**: one writer, readers elsewhere.
+- Static storage with no write after its initializer is dropped.
+- The "all writers lock" column sees only a lock in the writing function itself.
+- The fixture test passes: `tests/racescan/test_racescan.py` with `fixture.c`.
+- First counts (unmarked shared statics):
+
+| build | statics | A | S | B | MMIO files, 2+ contexts | chan_call sites |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| esp32p4-tab5 | 820 | 199 | 195 | 66 | 13 | 11 |
+| rp2350-terminal | 744 | 140 | 183 | 62 | 15 | 14 |
+| esp32c6 | 601 | 179 | 167 | 43 | 13 | 8 |
+
 ### 63.2 Triage and the ownership record
 
 Every candidate gets one of four verdicts, recorded in the code next to the symbol as a
