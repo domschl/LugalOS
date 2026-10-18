@@ -44,6 +44,11 @@ typedef struct {
     volatile uint32_t fired;       /* how many times, for the shell */
 } ri_slot_t;
 
+/* interrupt-shared: ri_stub() masks its line, then marks the slot pending and
+ * wakes the radio's interrupt thread; that one thread sets g_ri_waiter in
+ * radio_isr_wait() and waits prepared, so no wake is lost. The slots are
+ * filled and cleared from the radio's own calls (radio_intr_reset() masks
+ * every line before clearing). */
 static ri_slot_t g_ri[RI_SLOTS];
 static volatile int g_ri_waiter = -1;      /* the interrupt thread's pid */
 

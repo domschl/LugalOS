@@ -36,6 +36,16 @@ def main() -> int:
     for v in ("g_only_task", "g_table", "g_by_const_ptr", "g_lock"):
         want(v not in shared, f"{v}: not listed")
     want(shared.get("g_marked", {}).get("marked", "").lower().startswith("guarded by"), "g_marked: marked")
+    for v in ("g_grp_b", "g_grp_c"):
+        want(shared.get(v, {}).get("marked", "").lower().startswith("interrupt-shared"),
+             f"{v}: marked by the group's comment")
+    want("g_after_blank" in shared, "g_after_blank: listed")
+    want(not shared.get("g_after_blank", {}).get("marked"), "g_after_blank: a blank line ends the group")
+    for v in ("g_guarded_a", "g_guarded_b"):
+        want(v not in shared, f"{v}: behind a devirq_in_handler() guard, not reached from the handler")
+    blk = {(b["context"], b["function"]) for b in d["isr_blocking"]}
+    want(("isr:isr2", "sched_yield") in blk, "isr2 reaches a blocking call")
+    want(not any(c == "isr:isr" for c, _ in blk), "isr's blocking calls are all behind guards")
     want(any("fixture.c" in f for f in d["mmio"]) and len(next(iter(d["mmio"].values()))) >= 2,
          "register access in two contexts")
     cc = {c["function"]: c for c in d["chan_calls"]}

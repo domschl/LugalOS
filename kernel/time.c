@@ -5,6 +5,8 @@
 #include "lugalos_config.h"
 #include <string.h>
 
+/* single task: the boot (time_init), before interrupts are enabled;
+ * constant after. */
 static uint64_t g_boot_us_offset = 0;
 
 /* The wall clock is kept as UTC milliseconds since 1970, pinned to a reading

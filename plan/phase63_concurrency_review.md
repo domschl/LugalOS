@@ -1,6 +1,6 @@
 # Phase 63 — Concurrency Review: Shared State, Ownership, Locks
 
-**Status: planned. Written 2026-10-18.** Scheduled before phase 62 Part B (audio).
+**Status: in progress (63.1 done, 63.2 under way). Written 2026-10-18.** Scheduled before phase 62 Part B (audio).
 Milestone scheme: `63.1`, `63.2`, …
 
 ---
@@ -144,6 +144,44 @@ one-line comment:
 The comment rule goes into AGENTS.md §8 (what to include in comments: "which lock guards
 what" is already there). `racescan.py` then reports only symbols without such a line. A new
 unmarked static becomes visible in review, and the scanner's count can only shrink.
+
+**Interrupt-shared entries done (2026-10-18).** Every candidate an interrupt handler reaches,
+in all five scanned builds (Tab5, RP2350 terminal, C6, rv32, rv64-smp), has a verdict in the
+code. One comment covers the run of declarations below it, up to a blank line.
+
+Scanner changes made during the triage:
+- `--why CONTEXT FUNC` prints the shortest call path, which is how each verdict was checked.
+- Element writes to static arrays were invisible: the base reaches the subscript through an
+  array-to-pointer decay. Fixed; the counts rose with it (Tab5 now 480 unmarked: A 209,
+  S 207, B 64; 45 marked).
+- Section 4 lists handlers that can reach a blocking call (`sched_yield`, `task_block*`,
+  `task_sleep_ms`, `ylock_acquire_at`, `chan_call`). A handler's context stops there, so
+  the scheduler behind it no longer counts as reached from the interrupt. Zero in all five
+  builds now.
+- `devirq_in_handler()` (new, per-hart depth kept by `devirq_dispatch()`) marks a path as
+  not taken from a handler: calls under `if (!devirq_in_handler())`, or after
+  `if (devirq_in_handler()) return;`, are not followed for interrupt contexts.
+
+Findings, all fixed on this branch:
+
+| # | where | class | what | fix |
+| :--- | :--- | :--- | :--- | :--- |
+| F1 | kernel/printk.c | 1 | `printk_critical()` built its klog copy in one shared `g_crit_buf`/`g_crit_len`: two reporters at once (two tasks, or a task and a lock fault in a handler) mixed their text | the copy on the caller's stack, as `printk()`'s record buffer |
+| F2 | drivers/dsi_esp32p4.c | 4 | `dsi_lcd_flip(true)` and `term_sync_post()` called `gdma_isr()` from a task with interrupts on: the handler proper could run between its status read and clear and finish a frame twice (a second restart into a running transfer) | `gdma_poll()`, interrupts masked; `gdma_wait_flip()` |
+| F3 | drivers/dsi_esp32p4.c | 4 | the terminal drew into the back buffer while a flip was pending, i.e. into the next front: a half-drawn frame at the frame end, dirty bookkeeping on the wrong buffer | `term_convert()` takes the pending flip back (one store) and arms it again when done; no wait, so a character costs what it did (Tab5 3.7 ms, LCD-7B 1.8 ms) |
+| F4 | drivers/dsi_esp32p4.c | 4 | `lcd db off` switched the front index and the DMA item in two steps and freed buffer 1 under the frame still reading it | both with interrupts masked; wait one frame before the free |
+| F5 | kernel/klog.c, drivers/uart_16550.c | 6 | the 16550 handler's overrun `printk()` reached klog's boot-time inline drain, which takes `console_lock` and can block, in the window before klogd | the inline drain (both `klog_emit` and `klog_emit_tok`) skips in a handler; the record stays in the ring |
+| F6 | drivers/uart_{16550,esp32p4,rp2350}.c | 4 | the TX/RX waiter slot was taken by "free? then take" under `irq_save()`, atomic on one hart only: `uart_tx_send()`'s fallback lets any printer wait, and two on two harts could both take it, the overwritten one never woken | a claim word per direction (`arch_lock_try_acquire`), held for the whole wait; a loser polls |
+| F7 | drivers/uart_rp2350.c | 4 | the RP2350 TX wait blocked once without `task_prepare_block()` and wrote into the FIFO without re-checking: a wake from the other core before the block was lost | prepared and looped on the FIFO, as the 16550 one |
+
+Open, for 63.4: the Tab5 touch poller counts one I2C error on some boots, during the
+BMI270 microcode upload (seen on `main` as well, 1 of 2 boots): one client starving another
+on the i2c task.
+
+Tested: QEMU 512/512; Tab5 49/50 (the touch error above), NANO 50/50, LCD-7B 50/50. The
+RP2350 change (F6, F7) is built but untested on hardware: no RP2350 board attached.
+
+Next: the rest of group A (no handler involved), then B, then S.
 
 ### 63.3 Fix shared mutable state (class 1)
 

@@ -400,6 +400,10 @@ static struct {
  * unmasks -- in that order, so a change during the read raises it again. */
 #define SDHOST_INTR_SOURCE  23u            /* ETS_SDIO_HOST_INTR_SOURCE */
 #define CARD_INT            (1u << 17)     /* RINTSTS: card 1's SDIO interrupt */
+/* interrupt-shared: sdhost_isr() masks the card interrupt, then sets
+ * g_irq_seen; the pump clears it under sdhost_acquire() before it clears the
+ * slave's and the controller's bits and unmasks, so no set is lost. The pump
+ * sets g_irq_waker once, when it starts. */
 static volatile bool g_irq_seen;
 static volatile int  g_irq_waker = -1;
 static bool          g_irq_routed;

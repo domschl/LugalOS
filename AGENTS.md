@@ -477,6 +477,7 @@ Source code comments must have a high signal-to-noise ratio:
    * **Invariants & Contracts:** Preconditions, postconditions, pointer nullability, and buffer ownership (who allocates and who frees).
    * **Hardware Quirks & Errata:** Silicon errata, register timing delays, revision differences (e.g. ESP32-P4 v1.3 vs v3.2).
    * **Concurrency & Memory Isolation:** Which lock guards what, why a lock is held across context switches, PMP granularity and alignment rules.
+   * **Ownership of static storage:** every writable static or global reached from more than one task or handler carries a verdict comment, on its line or in the comment just above (one comment covers a run of declarations up to a blank line): `single task: <who>`, `guarded by: <lock>`, `interrupt-shared: <protocol>`, or `accepted: <why>`. `tools/racescan.py --build build/<preset>` lists what is unmarked (`--why CONTEXT FUNC` shows how a context reaches a function); a handler path that may block is cut off with `if (devirq_in_handler()) return;` (plan/phase63).
    * **Non-Obvious Algorithms:** Mathematical derivations, pure fixed-point scaling rationale.
 2. **What NEVER to Include in Comments:**
    * **No Milestone or Phase References:** Never write `/* M3, plan/phase12... */` or `/* Phase 48 */`.

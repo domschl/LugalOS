@@ -51,6 +51,10 @@
 #define FIFO_BYTES       64u
 #define TX_SPIN_LIMIT    200000u
 
+/* accepted: g_pending is the console writers', except that the critical path
+ * (uart_critical_putc()) writes it from any context, by design: a critical
+ * message may interleave with console bytes, and a torn count only flushes a
+ * packet early or late. g_base is constant. */
 static uintptr_t g_base = CONFIG_USBJTAG_BASE;
 static volatile unsigned g_pending;     /* bytes written since the last WR_DONE */
 
@@ -93,9 +97,12 @@ static void hw_flush(void) {
 #define UART0_TX_ROOM   120u
 #define UART0_SPIN_LIMIT 2000000u
 
+/* accepted: as g_pending above. */
 static volatile bool g_host_gone;       /* the last USB wait timed out: do not spin again until there is room */
 /* LLP on UART0 instead of the USB (usbjtag_llp_use_uart()): UART0 is then LLP's
- * alone -- no console copy goes out on it, and everything it receives is LLP's. */
+ * alone -- no console copy goes out on it, and everything it receives is LLP's.
+ * single task: set once, under g_mux_lock, by LLP's start, before UART0's
+ * interrupt is attached. */
 static volatile bool g_llp_on_uart;
 
 static void uart0_put(char c) {
@@ -183,6 +190,8 @@ static void uart0_put_llp(uint8_t b) {
 
 typedef struct { uint8_t *buf; uint32_t cap, head, tail; uint32_t drops; } bring_t;
 
+/* guarded by: g_mux_lock with interrupts masked (one core), which also keeps
+ * uart0_isr() out; that handler is g_llp_rx's other producer. */
 static uint8_t g_llp_rx_mem[LLP_RX_CAP], g_con_rx_mem[CON_RX_CAP], g_con_tx_mem[CON_TX_CAP];
 static bring_t g_llp_rx = { g_llp_rx_mem, LLP_RX_CAP, 0, 0, 0 };
 static bring_t g_con_rx = { g_con_rx_mem, CON_RX_CAP, 0, 0, 0 };
@@ -201,6 +210,8 @@ static bool br_get(bring_t *r, uint8_t *c) {
     return true;
 }
 
+/* interrupt-shared: counted by uart0_isr() and by drain_rx_locked() with
+ * interrupts masked. */
 static uint32_t g_uart_overflows;           /* RX FIFO overflows while UART0 is LLP's */
 
 /* UART0 for LLP is drained in its interrupt: the FIFO holds 128 bytes, 11 ms

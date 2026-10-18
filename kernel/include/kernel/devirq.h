@@ -1,6 +1,7 @@
 #ifndef LUGALOS_KERNEL_DEVIRQ_H
 #define LUGALOS_KERNEL_DEVIRQ_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 /* Device interrupt dispatch.
@@ -42,5 +43,11 @@ int devirq_attach(uint32_t irq_num, devirq_handler_fn handler, void *ctx);
  * The PLIC and Hazard3 arms ignore the result: their claim/complete and
  * pending-bit semantics already drop an unclaimed interrupt. */
 int devirq_dispatch(uint32_t irq_num);
+
+/* Whether this hart is inside a device handler. A path that may block (the
+ * console lock, a chan_call) checks it and defers instead: the scanner
+ * (tools/racescan.py) also reads `if (!devirq_in_handler())` and
+ * `if (devirq_in_handler()) return;` as cutting that path off from handlers. */
+bool devirq_in_handler(void);
 
 #endif /* LUGALOS_KERNEL_DEVIRQ_H */

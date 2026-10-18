@@ -54,6 +54,7 @@
  * 24's 0x88888888 is what it cost the last time that rule was skipped.
  */
 
+#include "arch/atomic.h"
 #include "drivers/uart.h"
 #include "drivers/uart_proto.h"
 #include "drivers/driver_task.h"
@@ -74,6 +75,8 @@
 
 /* --- UART0 registers (TRM chapter 45, Register Summary) ----------------- */
 
+/* single task: the boot (uart_init), before the console interrupt is
+ * enabled or a task exists; constant after. */
 static uintptr_t g_uart_base = CONFIG_UART0_BASE;
 
 #define UART_FIFO(base)         ((base) + 0x00)  /* RO/WO FIFO data port     */
@@ -293,6 +296,10 @@ static void uart_commit(uintptr_t base) {
 #define USJ_FIFO_BYTES          64u
 #define USJ_TX_SPIN_LIMIT       2000000u
 
+/* accepted: the uart task's (and the boot's, before it exists), except that
+ * uart_critical_putc() writes them from any context, by design: a critical
+ * message may interleave with the task's bytes, and a torn count only sends a
+ * packet early or late. */
 static volatile unsigned g_usj_pending;
 static volatile bool     g_usj_host_gone;
 
@@ -379,6 +386,10 @@ static bool hw_uart_tx_room(void) {
  * the task that was waiting and lets that task do the read or the write.
  * Draining the FIFO here would put console bytes somewhere the demux
  * (drivers/uart_net.c) cannot see them. */
+/* interrupt-shared: a slot is taken by the task about to block (the uart
+ * task, or a printer on uart_tx_send()'s fallback), with interrupts masked and
+ * its claim word held, and given back by uart_isr() or by the waiter itself.
+ * The counters are written only in the handler or with interrupts masked. */
 static volatile int g_rx_waiter = -1;
 static volatile int g_tx_waiter = -1;
 static volatile uint32_t g_uart_irq_count;    /* see uart_irq_count()    */
@@ -386,6 +397,10 @@ static volatile uint32_t g_uart_irq_rx_wakes; /* see uart_irq_rx_wakes() */
 static volatile uint32_t g_uart_irq_tx_arms;  /* see uart_irq_tx_arms()  */
 static volatile uint32_t g_uart_irq_tx_wakes; /* see uart_irq_tx_wakes() */
 static volatile uint32_t g_uart_irq_tx_seen;  /* see uart_irq_tx_seen()  */
+/* Who owns each slot, across harts: irq_save() alone makes "is it free, then
+ * take it" atomic on one hart only, and two printers on two harts could both
+ * take it, the overwritten one never to be woken. Held for the whole wait. */
+static volatile uint32_t g_rx_claim, g_tx_claim;
 
 static void uart_isr(void *ctx) {
     (void)ctx;
@@ -457,7 +472,7 @@ static void uart_hw_putc_blocking_ex(char c, bool may_block) {
     uintptr_t flags = irq_save();
     REG(UART_INT_CLR(g_uart_base)) = UART_TXFIFO_EMPTY_INT;
     if (!hw_uart_tx_room()) {
-        if (may_block && g_tx_waiter < 0 && sched_has_task()) {
+        if (may_block && sched_has_task() && arch_lock_try_acquire(&g_tx_claim)) {
             int me = sched_current_pid();
             do {
                 task_prepare_block();
@@ -472,6 +487,7 @@ static void uart_hw_putc_blocking_ex(char c, bool may_block) {
                 g_tx_waiter = -1;
                 REG(UART_INT_ENA(g_uart_base)) &= ~UART_TXFIFO_EMPTY_INT;
             }
+            arch_lock_release(&g_tx_claim);
         } else {
             irq_restore(flags);
             while (!hw_uart_tx_room()) sched_yield();
@@ -497,7 +513,7 @@ static uint8_t uart_hw_getc_blocking(void) {
     REG(USJ_INT_CLR) = USJ_OUT_RECV_PKT_INT;
 #endif
     if (!hw_uart_has_char()) {
-        if (g_rx_waiter < 0 && sched_has_task()) {
+        if (sched_has_task() && arch_lock_try_acquire(&g_rx_claim)) {
             /* As for TX above (T11): prepared, and looped on the data. */
             int me = sched_current_pid();
             do {
@@ -517,6 +533,7 @@ static uint8_t uart_hw_getc_blocking(void) {
             if (g_rx_waiter == me) {
                 g_rx_waiter = -1;
             }
+            arch_lock_release(&g_rx_claim);
             REG(UART_INT_ENA(g_uart_base)) &= ~UART_RX_INTS;
 #if defined(CONFIG_USBJTAG_BASE)
             REG(USJ_INT_ENA) &= ~USJ_OUT_RECV_PKT_INT;
@@ -801,6 +818,9 @@ void uart_init(uintptr_t base_addr) {
 
 /* --- the facade (identical in shape to drivers/uart_16550.c's) ----------- */
 
+/* guarded by: g_tx_batch_lock; except that uart_flush_critical() takes its
+ * own hart's batch without it, interrupts masked, when the lock stays held for
+ * a million tries (a fault with it held). */
 static char       g_tx_batch[MAX_HARTS][UART_TX_BATCH_CAP];
 static uint32_t   g_tx_batch_len[MAX_HARTS];
 static spinlock_t g_tx_batch_lock;

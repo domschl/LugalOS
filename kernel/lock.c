@@ -21,12 +21,15 @@ void spinlock_init(spinlock_t *l) { if (l) l->word = 0; }
  * one task to another across ctx_switch(), so its acquire and its release
  * happen in different functions and different tasks but always on one hart.
  *
- * Safe without a lock of its own, which would be circular anyway: every write
- * below happens with interrupts already masked on this hart, and no other
- * hart reads this hart's slot. */
+ * guarded by: interrupts masked on the owning hart. No lock of its own, which
+ * would be circular anyway: every write below happens with interrupts already
+ * masked on this hart, and no other hart reads this hart's slot. */
 static uint8_t     g_spin_depth[MAX_HARTS];
 static const char *g_spin_name[MAX_HARTS];
 static const char *g_spin_site[MAX_HARTS];
+/* accepted: a statistic, incremented without a lock; two contexts faulting at
+ * once may lose one increment. The selftests that assert on it run with
+ * nothing else faulting. */
 static uint32_t    g_lock_faults;
 
 /* The checker reports through printk_critical(), which reaches the UART
@@ -34,8 +37,8 @@ static uint32_t    g_lock_faults;
  * a spinlock, which would trip the check, which would report again. This flag
  * makes the check transparent for the duration of its own diagnostic.
  *
- * Per-hart and not a lock: it is only ever read and written by the hart it
- * belongs to, with interrupts masked. */
+ * guarded by: interrupts masked on the owning hart. Per-hart and not a lock:
+ * only the hart it belongs to reads and writes it, with interrupts masked. */
 static bool        g_check_busy[MAX_HARTS];
 
 /* Enough to see the pattern, few enough that a violation in a hot path cannot

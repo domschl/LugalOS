@@ -49,11 +49,17 @@ K = ci.CursorKind
 TASK_CREATORS = {"task_create", "task_create_sized", "task_create_driver", "task_create_pinned"}
 LOCK_TYPES = re.compile(r"\b(ylock_t|spinlock_t|chan_endpoint_t)\b")
 MARK = re.compile(r"(single task|guarded by|interrupt-shared|accepted):", re.I)
+DECL_LINE = re.compile(r"^(?!(return|goto|break|continue|case)\b)(static\s|extern\s|volatile\s|const\s)?[\w\s\*\[\],]+[\w\]\)]\s*(=[^;]*)?;(\s*/[/*].*)?$")
 CLOCK_FUNCS = {"time_get_ms", "time_get_us", "time_get_ns"}
 LOCK_FUNCS = {"spin_lock_at", "spin_lock_irqsave_at", "spin_lock_irqsave_bottom_at",
               "ylock_acquire_at", "ylock_try_acquire", "console_lock"}
 # Selftest and demo tasks, started by a shell command to exercise the kernel:
 # real code, listed after the system's own contexts.
+# A handler that reaches one of these can block in interrupt context: listed on
+# its own (section 4), and not followed further for that handler, so the
+# scheduler behind it does not count as reached from the interrupt.
+BLOCKING_FUNCS = {"sched_yield", "task_block", "task_block_until_ms", "task_sleep_ms",
+                  "ylock_acquire_at", "chan_call"}
 TEST_CONTEXTS = {"task:demoA", "task:demoB", "task:sized1", "task:smpload", "task:smpw",
                  "task:spinner", "task:stressA", "task:stressB", "task:hog", "task:urgent",
                  "task:locktest", "task:clicspin", "task:perftw", "task:cyclewait",
@@ -67,6 +73,7 @@ class Func:
     file: str
     line: int
     calls: set[str] = field(default_factory=set)        # callee names (resolved later)
+    task_calls: set[str] = field(default_factory=set)   # callees behind a devirq_in_handler() guard
     locks: bool = False                                 # calls a lock acquire
     addr_of: set[str] = field(default_factory=set)      # function names whose address it takes
     var_refs: set[str] = field(default_factory=set)     # variable keys
@@ -121,6 +128,10 @@ def clang_args(entry: dict) -> list[str]:
 
 class Scanner:
     def __init__(self) -> None:
+        self.edges: dict[str, set[str]] = {}
+        self.task_edges: dict[str, set[str]] = defaultdict(set)   # edges a handler does not take
+        self.isr_blocking: dict[str, set[str]] = defaultdict(set)   # isr context -> blocking funcs
+        self.all_roots: dict[str, set[str]] = {}
         self.funcs: dict[str, Func] = {}
         self.vars: dict[str, Var] = {}
         self.roots: dict[str, set[str]] = defaultdict(set)   # context -> function names
@@ -160,15 +171,16 @@ class Scanner:
         # the declaration's own line, then the comment block just above it
         if 0 <= i < len(lines) and MARK.search(lines[i]):
             return MARK.search(lines[i]).group(0)
+        # One comment covers the run of declarations below it, up to a blank line.
         j = i - 1
-        while j >= 0 and j >= i - 6:
+        while j >= 0 and j >= i - 40:
             s = lines[j].strip()
             if not s:
                 break
             m = MARK.search(s)
             if m:
                 return m.group(0)
-            if not (s.startswith(("/*", "*", "//")) or s.endswith("*/")):
+            if not (s.startswith(("/*", "*", "//")) or s.endswith("*/") or DECL_LINE.match(s)):
                 break
             j -= 1
         return ""
@@ -285,6 +297,14 @@ class Scanner:
                 return True            # by value: read
             return t.get_pointee().is_const_qualified()
 
+        def is_array(e: ci.Cursor) -> bool:
+            while e.kind in (K.UNEXPOSED_EXPR, K.PAREN_EXPR):
+                kids = list(e.get_children())
+                if len(kids) != 1:
+                    return False
+                e = kids[0]
+            return e.type.kind in (ci.TypeKind.CONSTANTARRAY, ci.TypeKind.INCOMPLETEARRAY)
+
         # `write`: this subtree is on an lvalue path (an assignment's target,
         # ++/--, an address handed to something that may write through it).
         # It follows parens, implicit casts, an array's base and a `.` member,
@@ -292,13 +312,20 @@ class Scanner:
         # writes the register, not `base`.
         # `arg`: the path began at a call argument, where a pointer variable is
         # passed by value (not written) and an array decays (may be written).
-        def visit(node: ci.Cursor, loops: list[ci.Cursor], write: bool = False, arg: bool = False) -> None:
+        # `tonly`: not reached from a device handler -- the then-branch of
+        # `if (!devirq_in_handler())`, or what follows `if (devirq_in_handler()) return;`.
+        def visit(node: ci.Cursor, loops: list[ci.Cursor], write: bool = False, arg: bool = False,
+                  tonly: bool = False) -> None:
             kids = list(node.get_children())
             nk = node.kind
+            rest_tonly = False
             for pos, ch in enumerate(kids):
                 k = ch.kind
                 w = False
                 a = arg
+                t = tonly or rest_tonly
+                if nk == K.IF_STMT and pos == 1 and handler_guard(kids[0]) == "not":
+                    t = True
                 if nk == K.BINARY_OPERATOR and pos == 0 and \
                         node.binary_operator == ci.BinaryOperator.Assign:
                     w = True
@@ -318,7 +345,8 @@ class Scanner:
                 elif write and nk in (K.PAREN_EXPR, K.UNEXPOSED_EXPR):
                     w = True
                 elif write and nk == K.ARRAY_SUBSCRIPT_EXPR and pos == 0:
-                    w = ch.type.kind != ci.TypeKind.POINTER
+                    # an array's base arrives through its decay to a pointer
+                    w = ch.type.kind != ci.TypeKind.POINTER or is_array(ch)
                 elif write and nk == K.MEMBER_REF_EXPR:
                     w = ch.type.kind != ci.TypeKind.POINTER
                 elif nk in (K.BINARY_OPERATOR,) and node.binary_operator == ci.BinaryOperator.Assign and pos == 1:
@@ -335,7 +363,7 @@ class Scanner:
                 elif k == K.CALL_EXPR:
                     nm = self.call_name(ch)
                     if nm:
-                        fn.calls.add(nm)
+                        (fn.task_calls if t else fn.calls).add(nm)
                         self.note_registration(key, ch, nm)
                         if nm == "chan_call":
                             loop = loops[-1] if loops else None
@@ -368,13 +396,33 @@ class Scanner:
                         if inner and inner[-1].type.kind not in (ci.TypeKind.POINTER,):
                             fn.mmio += 1
                 if k in (K.FOR_STMT, K.WHILE_STMT, K.DO_STMT):
-                    visit(ch, loops + [ch], w, a and w)
+                    visit(ch, loops + [ch], w, a and w, t)
                 else:
-                    visit(ch, loops, w, a and w)
+                    visit(ch, loops, w, a and w, t)
+                if nk == K.COMPOUND_STMT and k == K.IF_STMT:
+                    ik = list(ch.get_children())
+                    if len(ik) == 2 and handler_guard(ik[0]) == "is" and returns(ik[1]):
+                        rest_tonly = True
+
+        def handler_guard(cond: ci.Cursor) -> str | None:
+            toks = [x.spelling for x in cond.get_tokens()]
+            while toks[:1] == ["("] and toks[-1:] == [")"]:
+                toks = toks[1:-1]
+            if toks == ["devirq_in_handler", "(", ")"]:
+                return "is"
+            if toks == ["!", "devirq_in_handler", "(", ")"]:
+                return "not"
+            return None
+
+        def returns(st: ci.Cursor) -> bool:
+            if st.kind == K.RETURN_STMT:
+                return True
+            kids = list(st.get_children())
+            return st.kind == K.COMPOUND_STMT and len(kids) == 1 and kids[0].kind == K.RETURN_STMT
 
         visit(cur, [])
         # unexposed callee wrappers: a call's first child is the callee reference
-        fn.addr_of -= fn.calls
+        fn.addr_of -= fn.calls | fn.task_calls
         fn.locks = bool(fn.calls & LOCK_FUNCS)
 
     def scan_tu(self, path: str, args: list[str], idx: ci.Index) -> int:
@@ -402,11 +450,17 @@ class Scanner:
 
     def contexts(self) -> dict[str, set[str]]:
         edges: dict[str, set[str]] = defaultdict(set)
+        self.task_edges = defaultdict(set)
         for fk, fn in self.funcs.items():
             for c in fn.calls:
                 t = self.resolve(fn.file, c)
                 if t:
                     edges[fk].add(t)
+            for c in fn.task_calls - fn.calls:
+                t = self.resolve(fn.file, c)
+                if t:
+                    edges[fk].add(t)
+                    self.task_edges[fk].add(t)
             for a in fn.addr_of:
                 if (fk, a) in self.root_args:
                     continue
@@ -430,8 +484,10 @@ class Scanner:
                         edges[fk].add(t)
                 stack.extend(v.init_vars)
 
+        self.edges = edges
         roots = dict(self.roots)
         roots["kernel"] = {"kernel_main"}
+        self.all_roots = roots
         reach: dict[str, set[str]] = defaultdict(set)   # function key -> contexts
         for ctx, starts in roots.items():
             stack = []
@@ -440,14 +496,45 @@ class Scanner:
                     if f == s or f.endswith("::" + s):
                         stack.append(f)
             seen: set[str] = set()
+            isr = ctx.startswith("isr:")
             while stack:
                 f = stack.pop()
                 if f in seen:
                     continue
                 seen.add(f)
                 reach[f].add(ctx)
-                stack.extend(edges.get(f, ()))
+                if isr and self.funcs[f].name in BLOCKING_FUNCS:
+                    self.isr_blocking[ctx].add(f)
+                    continue
+                nxt = edges.get(f, set())
+                stack.extend(nxt - self.task_edges.get(f, set()) if isr else nxt)
         return reach
+
+    def why(self, ctx: str, target: str) -> list[str] | None:
+        """The shortest call path from a context's entry to a function (by name)."""
+        starts = [f for s in self.all_roots.get(ctx, ()) for f in self.funcs
+                  if f == s or f.endswith("::" + s)]
+        prev: dict[str, str | None] = {f: None for f in starts}
+        queue = list(starts)
+        while queue:
+            f = queue.pop(0)
+            if f == target or f.endswith("::" + target):
+                path = []
+                cur: str | None = f
+                while cur is not None:
+                    path.append(cur)
+                    cur = prev[cur]
+                return path[::-1]
+            if ctx.startswith("isr:") and self.funcs[f].name in BLOCKING_FUNCS:
+                continue
+            nxt = self.edges.get(f, set())
+            if ctx.startswith("isr:"):
+                nxt = nxt - self.task_edges.get(f, set())
+            for t in sorted(nxt):
+                if t not in prev:
+                    prev[t] = f
+                    queue.append(t)
+        return None
 
 
 def main() -> int:
@@ -455,6 +542,8 @@ def main() -> int:
     ap.add_argument("--build", default="build/esp32p4-tab5")
     ap.add_argument("--out", default="build/racescan")
     ap.add_argument("--only", default="", help="substring filter on source paths (debugging)")
+    ap.add_argument("--why", nargs=2, action="append", default=[], metavar=("CONTEXT", "FUNC"),
+                    help="print the shortest call path from CONTEXT (e.g. isr:uart_isr) to FUNC")
     a = ap.parse_args()
 
     cc = json.loads((REPO / a.build / "compile_commands.json").read_text())
@@ -469,6 +558,11 @@ def main() -> int:
             continue
         bad += sc.scan_tu(p, clang_args(e), idx) > 0
     reach = sc.contexts()
+    if a.why:
+        for ctx, fn in a.why:
+            path = sc.why(ctx, fn)
+            print(f"{ctx} -> {fn}: " + (" -> ".join(path) if path else "unreachable"))
+        return 0
 
     # 1. shared static storage: who writes, who reads
     w_ctx: dict[str, set[str]] = defaultdict(set)
@@ -563,6 +657,18 @@ def main() -> int:
     for f, ln, nm, loop, clock, ctxs in chan_sites:
         md.append(f"| {f}:{ln} | {nm} | {'yes' if loop else 'no'} | "
                   f"{'yes' if clock else ('no' if loop else '-')} | {', '.join(ctxs)} |")
+    md += ["", "## 4. Interrupt handlers that can reach a blocking call", "",
+           "Each path is the shortest one; a guard on the way (a check for a held spinlock, a",
+           "consumer task that exists) is for a person to confirm.", ""]
+    isr_block = []
+    for ctx in sorted(sc.isr_blocking):
+        for f in sorted(sc.isr_blocking[ctx]):
+            path = sc.why(ctx, f) or [f]
+            isr_block.append({"context": ctx, "function": sc.funcs[f].name,
+                              "path": [p.split("::")[-1] for p in path]})
+            md.append(f"- `{ctx}` -> `{sc.funcs[f].name}`: " + " -> ".join(p.split("::")[-1] for p in path))
+    if not isr_block:
+        md.append("none")
     md += ["", "## Contexts", ""]
     for ctx in sorted(sc.roots):
         md.append(f"- `{ctx}`: {', '.join(sorted(sc.roots[ctx]))}")
@@ -573,6 +679,7 @@ def main() -> int:
                     "written_in": sorted(wc), "read_in": sorted(rc - wc),
                     "writers": sorted(writers[vk])} for grp, _, _, _, vk, v, wc, rc in shared],
         "mmio": {f: sorted(c) for f, c in mmio_files.items()},
+        "isr_blocking": isr_block,
         "chan_calls": [{"file": f, "line": ln, "function": nm, "in_loop": lp, "loop_reads_clock": ck,
                         "contexts": cx} for f, ln, nm, lp, ck, cx in chan_sites],
     }, indent=1))
@@ -581,7 +688,8 @@ def main() -> int:
     print(f"{len(sc.funcs)} functions, {len(sc.vars)} static variables, {len(sc.roots) + 1} contexts; "
           f"{len(unmarked)} shared unmarked (A {ga}, S {gs}, B {len(unmarked) - ga - gs}), {len(marked)} marked; "
           f"{sum(1 for f in mmio_files if len(mmio_files[f]) >= 2)} MMIO files in 2+ contexts; "
-          f"{len(chan_sites)} chan_call sites -> {out / 'candidates.md'}")
+          f"{len(chan_sites)} chan_call sites; {len(isr_block)} handler paths to a blocking call "
+          f"-> {out / 'candidates.md'}")
     return 0
 
 

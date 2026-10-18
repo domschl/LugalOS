@@ -4,6 +4,7 @@
 #include "kernel/sched.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
+#include "kernel/devirq.h"
 #include <string.h>
 
 /* See kernel/include/kernel/klog.h for the rationale. */
@@ -26,13 +27,16 @@
  * rendered stream, which is why /proc/kmsg needed no change at all: the
  * window it snapshots at open() time is still [oldest, total) in bytes it
  * will actually receive. */
-static char     g_ring[KLOG_RING_SIZE];
+static char     g_ring[KLOG_RING_SIZE];   /* guarded by: g_klog_lock */
 
+/* guarded by: g_klog_lock (below), interrupts masked. */
 static uint64_t g_stored_total;    /* bytes ever appended to the ring */
 static uint64_t g_stored_oldest;   /* stored position of the oldest intact record */
 static uint64_t g_render_total;    /* rendered bytes ever produced */
 static uint64_t g_render_oldest;   /* rendered position of that same record */
 
+/* accepted: statistics, counted without the lock; a lost increment from two
+ * contexts at once is a miscount by one. */
 static uint32_t g_truncations;
 static uint32_t g_drops;
 
@@ -54,6 +58,8 @@ typedef struct {
     bool          attached;
 } klog_sink_t;
 
+/* accepted: filled at boot (klog_sink_register); after that only `attached`
+ * changes, one store by `klog attach|detach`, read by every writer. */
 static klog_sink_t g_sinks[KLOG_MAX_SINKS];
 
 /* Guards against a sink's putc() re-entering klog_write() (e.g. a future
@@ -65,7 +71,11 @@ static klog_sink_t g_sinks[KLOG_MAX_SINKS];
  * reaching printk() and coming back here *on the same call stack*, and a
  * call stack belongs to a hart. A single flag shared by two harts would
  * have made one hart's fanout suppress the other's -- silently dropping
- * that hart's console output rather than merely nesting it. */
+ * that hart's console output rather than merely nesting it.
+ *
+ * accepted: per hart, a recursion guard and not a lock. Only the boot-time
+ * inline drain sets it; a task preempted inside that drain makes another
+ * task's line on the same hart skip the console (it stays in the ring). */
 static bool g_in_fanout[MAX_HARTS];
 
 /* Guards the ring and its counter, and nothing else (S5).
@@ -230,6 +240,9 @@ void klog_record_text(uint32_t ms, const char *text, uint32_t len,
 
 /* --- The consumer (Y5c) -------------------------------------------------- */
 
+/* guarded by: g_klog_lock in klog_take(), klogd being the only consumer.
+ * Before it exists the boot's inline drain moves the cursor under
+ * console_lock, and klog_set_consumer() hands over once, from klogd_start(). */
 static int      g_consumer_pid = -1;
 static uint64_t g_cursor;        /* rendered position the consumer has written to */
 static uint64_t g_cursor_spos;   /* and the stored position of the next record */
@@ -471,7 +484,9 @@ void klog_emit_tok(uint32_t ms, const char *fmt,
     }
 
     /* No consumer yet: the text was rendered by the caller anyway, so the
-     * inline fan-out writes that rather than rendering the record again. */
+     * inline fan-out writes that rather than rendering the record again.
+     * Not from a device handler, as in klog_emit(). */
+    if (devirq_in_handler()) return;
     unsigned h = hart_id();
     if (g_in_fanout[h]) return;
     g_in_fanout[h] = true;
@@ -532,6 +547,9 @@ void klog_emit(uint32_t ms, const char *text, uint32_t len) {
      *
      * console_flush() also empties the UART's TX batch, which is why boot
      * output appears as it is produced rather than in 256-byte lumps. */
+    /* A device handler cannot take the console lock. The record stays in the
+     * ring (/proc/kmsg); in this boot-only window it misses the console. */
+    if (devirq_in_handler()) return;
     unsigned h = hart_id();
     if (g_in_fanout[h]) return;
     g_in_fanout[h] = true;

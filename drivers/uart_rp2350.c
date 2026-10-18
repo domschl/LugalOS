@@ -9,6 +9,7 @@
  *   GP16 : External LED (Function 5 - SIO, active-high pulse)
  */
 
+#include "arch/atomic.h"
 #include "drivers/uart.h"
 #include "drivers/uart_proto.h"
 #include "drivers/driver_task.h"
@@ -412,12 +413,20 @@ static uint8_t hw_uart_getc(void);
  * (kernel/printk.c) already serialized to a single writer, so a second,
  * concurrent blocker here should not happen -- kept as a defensive
  * fallback below, not a load-bearing path, the same shape as
- * drivers/uart_16550.c's equivalent. */
+ * drivers/uart_16550.c's equivalent.
+ *
+ * interrupt-shared: the slot is taken by the task about to block, with
+ * interrupts masked and g_tx_claim held, and given back by uart_isr() or by
+ * the waiter itself. The counters are written only in the handler or with
+ * interrupts masked. */
 static volatile int g_tx_waiter = -1;
 static volatile uint32_t g_uart_irq_count; /* see uart_irq_count() */
 static volatile uint32_t g_uart_irq_tx_arms;  /* see uart_irq_tx_arms()  */
 static volatile uint32_t g_uart_irq_tx_wakes; /* see uart_irq_tx_wakes() */
 static volatile uint32_t g_uart_irq_tx_seen;  /* see uart_irq_tx_seen()  */
+/* Who owns the slot, across harts: irq_save() alone makes "is it free, then
+ * take it" atomic on one hart only. Held for the whole wait. */
+static volatile uint32_t g_tx_claim;
 
 /* PL011 receive status/error clear. OE (bit 3) latches when a byte arrives
  * before the previous one is read -- the previous byte is gone. Writing any
@@ -463,6 +472,11 @@ uint32_t uart_rx_overruns(void) {
 #define UART0_IMSC_RTIM (1u << 6)
 #define UART0_DR_OE  (1u << 11)
 
+/* interrupt-shared: one producer, one consumer. uart_isr() (raw_rx_drain)
+ * fills the ring and alone advances g_raw_head; the LLP pump alone reads and
+ * advances g_raw_tail. Each index is one word with one writer, and a byte is
+ * fenced before its index moves. uart_raw_open() sets the ring up with
+ * interrupts masked and publishes g_raw_ring last; the waker is set once. */
 static uint8_t *volatile g_raw_ring;
 static uint32_t g_raw_cap;
 static volatile uint32_t g_raw_head, g_raw_tail;
@@ -692,11 +706,24 @@ static void uart_hw_putc(char c) {
          * task_block() would have nothing to block, and the slot would
          * hold -1, which reads as "free". It polls instead, which is
          * the branch already here for the other-waiter case. */
-        if (g_tx_waiter < 0 && sched_has_task()) {
-            g_tx_waiter = sched_current_pid();
-            g_uart_irq_tx_arms++;
-            REG(UART0_IMSC) |= UART0_IMSC_TXIM;
-            task_block();
+        if (sched_has_task() && arch_lock_try_acquire(&g_tx_claim)) {
+            /* Prepared, and looped on the FIFO: the handler can run on the
+             * other core and wake this task before it has blocked, and a wake
+             * is not a promise of room (as in drivers/uart_16550.c). */
+            int me = sched_current_pid();
+            do {
+                task_prepare_block();
+                g_tx_waiter = me;
+                g_uart_irq_tx_arms++;
+                REG(UART0_IMSC) |= UART0_IMSC_TXIM;
+                task_block();
+            } while (REG(UART0_FR) & UART0_FR_TXFF);
+            task_wait_done();
+            if (g_tx_waiter == me) {
+                g_tx_waiter = -1;
+                REG(UART0_IMSC) &= ~UART0_IMSC_TXIM;
+            }
+            arch_lock_release(&g_tx_claim);
         } else {
             irq_restore(flags);
             while (REG(UART0_FR) & UART0_FR_TXFF) sched_yield();
@@ -1076,6 +1103,8 @@ bool uart_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) {
  *
  * The lock stays: it still guards each hart's own buffer against preemption
  * on that hart, which is what it was added for. */
+/* guarded by: g_tx_batch_lock (below); uart_flush_critical() takes its own
+ * hart's batch without it when the lock stays held (a fault with it held). */
 static char     g_tx_batch[MAX_HARTS][UART_TX_BATCH_CAP];
 static uint32_t g_tx_batch_len[MAX_HARTS];
 /* Guards g_tx_batch/g_tx_batch_len.

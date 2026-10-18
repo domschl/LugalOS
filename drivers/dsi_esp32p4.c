@@ -53,6 +53,7 @@
 #include "arch/trap.h"
 #include "kernel/console.h"
 #include "kernel/devirq.h"
+#include "kernel/irq.h"
 #include "kernel/palloc.h"
 #include "kernel/printk.h"
 #include "kernel/sched.h"
@@ -809,7 +810,18 @@ typedef enum { PAT_NONE, PAT_BARS, PAT_HBARS, PAT_BER } pattern_t;
 static void scan_stop(void);
 static void scan_start(void);
 
-/* Phase 55: double-buffering in PSRAM to eliminate tearing and color fringing. */
+/* Double-buffering in PSRAM, against tearing and colour fringing.
+ * interrupt-shared: the drawing side (under console_lock) fills the back
+ * buffer, flushes it and sets g_flip_pending; gdma_isr() at the frame end
+ * swaps g_front_idx, points the item at the new front and clears the flag.
+ * The terminal never draws into the back buffer with the flag set:
+ * term_convert() takes the flip back first and arms it again when done. The
+ * `lcd test|bench` drawers hold the terminal and wait for their own flip; one
+ * pending from the terminal can show a test frame part-drawn. g_front_idx and
+ * g_double_buffered change elsewhere only under console_lock, with the
+ * scan-out stopped (fb_start) or with interrupts masked around the index and
+ * the item (`lcd db off`). Tasks run the handler's work only through
+ * gdma_poll(). */
 static uint8_t          *g_fb_pool[2];
 static volatile uint8_t  g_front_idx;
 static volatile bool     g_flip_pending;
@@ -923,6 +935,9 @@ static gdma_lli_t g_lli_mem __attribute__((aligned(64)));
 typedef enum { FB_NONE = 0, FB_GRAY8, FB_RGB565 } fb_fmt_t;
 static fb_fmt_t          g_fb_fmt;
 static uint32_t          g_fb_bytes, g_fb_pages, g_fb_bpp;
+/* interrupt-shared: the counters are written only by gdma_isr() (or
+ * gdma_poll(), interrupts masked); g_stop_at_frame_end is set and cleared by
+ * scan_stop() around its wait for the frame end. */
 static volatile uint32_t g_frames, g_dma_errs, g_dma_last_err;
 static volatile bool     g_stop_at_frame_end;   /* ISR: finish this frame, do not re-arm */
 static bool              g_gdma_ready;
@@ -967,6 +982,23 @@ static void gdma_isr(void *ctx) {
             gdma_restart();
         }
     }
+}
+
+/* The handler's work from a task that waits on the frame end: with interrupts
+ * masked, so gdma_isr() proper cannot run between this status read and its
+ * clear and finish the same frame twice (a second restart into a running
+ * transfer). */
+static void gdma_poll(void) {
+    uintptr_t f = irq_save();
+    if (REG(DMAC_CH1_INTSTATUS0_REG) & (GDMA_EV_DMA_TFR_DONE | GDMA_EV_ERRORS)) gdma_isr(NULL);
+    irq_restore(f);
+}
+
+/* Waits up to `us` for the frame end that takes a pending flip. */
+static bool gdma_wait_flip(uint32_t us) {
+    uint64_t t0 = time_get_us();
+    while (g_flip_pending && time_get_us() - t0 < us) gdma_poll();
+    return !g_flip_pending;
 }
 
 /* esp_lcd's dw_gdma_new_channel() for the DPI panel, once. */
@@ -1044,14 +1076,7 @@ static bool g_scanning;
 void dsi_lcd_flip(bool wait_vsync) {
     if (!g_double_buffered || !g_fb_pool[1] || !g_scanning) return;
     g_flip_pending = true;
-    if (wait_vsync) {
-        uint64_t t0 = time_get_us();
-        while (g_flip_pending && time_get_us() - t0 < 50000u) {
-            if (REG(DMAC_CH1_INTSTATUS0_REG) & (GDMA_EV_DMA_TFR_DONE | GDMA_EV_ERRORS)) {
-                gdma_isr(NULL);
-            }
-        }
-    }
+    if (wait_vsync) (void)gdma_wait_flip(50000u);
 }
 
 bool dsi_lcd_is_double_buffered(void) {
@@ -1360,9 +1385,19 @@ static void term_convert(unsigned y0, unsigned y1) {
      * `lcd fb`) holds console_lock, as this does -- the lcdflush task once
      * converted into a frame that `lcd colours` had just set to NULL (a
      * store to 0xad000, row 346 of an RGB565 frame; 47.7's HIL run). */
+    if (!fb_back() || !g_t1 || g_fb_fmt == FB_NONE || g_t_hold) return;
+    /* While a flip is pending the back buffer is the next front: drawing into
+     * it would put a half-drawn frame on the glass at the frame end. So the
+     * flip is taken back instead of waited for (one store, which gdma_isr()
+     * either saw before it or does not see), this pass draws on top of the
+     * same back buffer, and the flip is armed again below. */
+    bool rearm = false;
+    if (g_double_buffered && g_flip_pending) {
+        g_flip_pending = false;
+        rearm = true;
+    }
     uint8_t *fb = fb_back();
     fb_fmt_t fmt = g_fb_fmt;
-    if (!fb || !g_t1 || fmt == FB_NONE || g_t_hold) return;
     if (y1 > g_tbe.h) y1 = g_tbe.h;
     uint64_t t0 = time_get_us();
 
@@ -1908,10 +1943,8 @@ static void term_convert(unsigned y0, unsigned y1) {
         } else {
             fb_flush_buffer(fb, (unsigned)lo, (unsigned)hi + 1u);
         }
-        if (g_double_buffered) {
-            dsi_lcd_flip(false);
-        }
     }
+    if (g_double_buffered && (n || rearm)) dsi_lcd_flip(false);
 
     uint32_t us = (uint32_t)(time_get_us() - t0);
     g_t_flushes++;
@@ -1946,15 +1979,8 @@ static void term_sync_post(void) {
     g_t_force = true;
     term_convert(0, DSI_LCD_V_RES);
     g_t_due = false;
-    if (g_double_buffered) {
-        /* Wait for the flip armed by term_convert to complete at hardware VSYNC */
-        uint64_t t0 = time_get_us();
-        while (g_flip_pending && time_get_us() - t0 < 50000u) {
-            if (REG(DMAC_CH1_INTSTATUS0_REG) & (GDMA_EV_DMA_TFR_DONE | GDMA_EV_ERRORS)) {
-                gdma_isr(NULL);
-            }
-        }
-    }
+    /* the flip term_convert() armed, taken at the frame end */
+    if (g_double_buffered) (void)gdma_wait_flip(50000u);
     console_unlock();
 }
 
@@ -2494,14 +2520,21 @@ void dsi_lcd_command(const char *args) {
                 return;
             }
             console_lock();
-            uint64_t t0 = time_get_us();
-            while (g_flip_pending && time_get_us() - t0 < 50000u) { }
+            (void)gdma_wait_flip(50000u);
             g_double_buffered = false;
             if (g_front_idx != 0) {
                 memcpy(g_fb_pool[0], g_fb_pool[1], g_fb_bytes);
                 esp32p4_extmem_writeback((uintptr_t)g_fb_pool[0], g_fb_bytes);
+                /* index and item together, so a frame end in between cannot
+                 * re-arm on the buffer about to be freed */
+                uintptr_t f = irq_save();
                 g_front_idx = 0;
                 LLI_NC->sar_lo = (uint32_t)(uintptr_t)g_fb_pool[0];
+                irq_restore(f);
+                /* the frame in flight still reads buffer 1: let it finish */
+                uint32_t f0 = g_frames;
+                uint64_t t0 = time_get_us();
+                while (g_scanning && g_frames == f0 && time_get_us() - t0 < 50000u) gdma_poll();
             }
             if (g_fb_pool[1]) {
                 palloc_free(g_fb_pool[1], g_fb_pages);

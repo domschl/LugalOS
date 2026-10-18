@@ -19,6 +19,7 @@ static int task_create_full(const char *name, void (*entry)(void *), void *arg,
                             uint32_t stack_pages, int hart); /* defined below */
 extern void task_trampoline(void);
 
+/* guarded by: g_sched_lock (below), for the states and the ready queue. */
 static task_t  g_tasks[MAX_TASKS];
 
 /* Which task each hart is running, as an index into g_tasks.
@@ -30,6 +31,7 @@ static task_t  g_tasks[MAX_TASKS];
  * part shrink to the ready queue, which is the only thing g_sched_lock has
  * to cover. */
 static int     g_current[MAX_HARTS];
+/* single task: the boot (sched_init), before the first task or tick. */
 static bool    g_active;
 
 /* Guards the task table -- the ready queue, task states, and the reap slot.

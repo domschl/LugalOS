@@ -11,6 +11,7 @@ void ylock_acquire_at(ylock_t *l, const char *name, const char *site);
 void ylock_release(ylock_t *l);
 void consume(const uint32_t *p);
 void fill(char *buf, uint32_t n);
+_Bool devirq_in_handler(void);
 
 static uint32_t g_shared_counter;          /* written by a task and an interrupt: A */
 static uint32_t g_boot_cfg;                /* written at boot, read by a task: B */
@@ -22,16 +23,39 @@ static ylock_t  g_lock;                    /* a lock object: not listed */
 /* guarded by: g_lock */
 static uint32_t g_marked;
 static void *g_ep;
+/* interrupt-shared: one comment covers the declarations below it */
+static uint32_t g_grp_a, g_grp_b;
+static uint32_t g_grp_c[2];
+
+static uint32_t g_after_blank;             /* after a blank line: unmarked, A */
+
+static uint32_t g_guarded_a;               /* written behind handler guards only: */
+static uint32_t g_guarded_b;               /* one context (worker), not listed */
+
+void sched_yield(void) { }
+static void deferred_a(void) { g_guarded_a++; sched_yield(); }
+static void deferred_b(void) { g_guarded_b++; sched_yield(); }
+static void logger(void) {
+    if (!devirq_in_handler()) deferred_a();
+    if (devirq_in_handler()) return;
+    deferred_b();
+}
+static void nap(void) { sched_yield(); }
+static void isr2(void *ctx) { (void)ctx; nap(); }   /* reaches a blocking call */
 
 static void isr(void *ctx) {
     (void)ctx;
     g_shared_counter++;
+    g_grp_b++; g_grp_c[1]++; g_after_blank++;
+    logger();
     *(volatile uint32_t *)0x50000000u = 1u;
 }
 
 static void worker(void *arg) {
     (void)arg;
     g_shared_counter = 0;
+    g_grp_b = 0; g_grp_c[1] = 0; g_after_blank = 0;
+    logger();
     g_only_task += g_boot_cfg + g_table[1];
     consume(&g_by_const_ptr);
     fill(g_text, sizeof g_text);
@@ -57,6 +81,7 @@ static void other(void *arg) {
 void kernel_main(void) {
     g_boot_cfg = 3;
     devirq_attach(5, isr, 0);
+    devirq_attach(6, isr2, 0);
     task_create("worker", worker, 0);
     task_create("other", other, 0);
 }
