@@ -1821,6 +1821,34 @@ def test_tab5_orientation(b: Board) -> tuple[str, bool, str]:
     return name, True, "switched to 0 deg Portrait and back to 270 deg Landscape (command & Super+O hotkey)"
 
 
+def test_tab5_portrait_180_terminals(b: Board) -> tuple[str, bool, str]:
+    """62.6: the compositor's 180 deg portrait, with three terminals in the
+    ribbon and the view moved across them -- windows half off-screen, and
+    three shells flushing the console at once. The last time this ran without
+    a fix, two tasks' ksnprintf() calls shared one buffer pointer and the
+    board faulted in console_pump()."""
+    name = "display: portrait 180 deg with three terminals (62.6)"
+    if not is_tab5(b):
+        return name, True, "SKIPPED (Tab5 only)"
+    out = b.console_session.cmd("lcd orient 180", deadline=10.0)
+    if "180 deg" not in out:
+        return name, False, f"could not set 180: {out.strip()[-200:]}"
+    for _ in range(2):
+        _raw(b, b"\x1b[13;9u", 2.5)          # Cmd+Enter: a new terminal
+    for k in (b"\x1b[1;9D", b"\x1b[1;9D", b"\x1b[1;9C", b"\x1b[1;9C"):
+        _raw(b, k, 1.2)                      # Cmd+Left / Cmd+Right
+    alive = b.console_session.cmd("echo portrait-alive", deadline=10.0)
+    count, _ = _ribbon(b)
+    for _ in range(2):
+        _raw(b, b"\x1b[119;9u", 2.0)         # Cmd+W: close the focused terminal
+    b.console_session.cmd("lcd orient 270", deadline=10.0)
+    if "portrait-alive" not in alive:
+        return name, False, f"no answer after opening terminals at 180: {alive.strip()[-300:]}"
+    if count < 3:
+        return name, False, f"expected 3 ribbon windows, saw {count}"
+    return name, True, f"{count} terminals at 180 deg, board answering"
+
+
 TESTS = [
     test_boots,
     test_proc_readable,
@@ -1870,6 +1898,7 @@ TESTS = [
     test_color_canvas_rgb565,
     test_ribbon_slide_and_reader_smooth_scroll,
     test_tab5_orientation,
+    test_tab5_portrait_180_terminals,
 ]
 
 

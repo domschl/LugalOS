@@ -489,7 +489,8 @@ void reader_feed_key(int c) {
         }
         if (c == 'q' || c == 0x03) {
 #if defined(CONFIG_BOARD_TAB5)
-            if (dsi_lcd_get_orientation() == 0) {
+            int rot = dsi_lcd_get_orientation();
+            if (rot == 0 || rot == 180) {
                 reader_close_instance(rid);
                 dsi_lcd_set_orientation(270);
                 console_set_active_win_type(1 /* RIBBON_WIN_TERM */);

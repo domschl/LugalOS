@@ -1342,6 +1342,18 @@ static void term_flush(unsigned y0, unsigned y1) {
     term_convert(y0, y1);
 }
 
+/* Widens [*lo, *hi], the physical rows written, by logical rows y0..y1 of a
+ * portrait frame: the same rows at 0 deg, mirrored at 180. */
+static inline void span_rows(int *lo, int *hi, int y0, int y1) {
+    if (g_lcd_rot == 180) {
+        int a = (int)DSI_LCD_V_RES - 1 - y1, b = (int)DSI_LCD_V_RES - 1 - y0;
+        y0 = a;
+        y1 = b;
+    }
+    if (*lo < 0 || y0 < *lo) *lo = y0;
+    if (y1 > *hi) *hi = y1;
+}
+
 static void term_convert(unsigned y0, unsigned y1) {
     /* The frame once: every switch of it (fb_start(), from `lcd colours` or
      * `lcd fb`) holds console_lock, as this does -- the lcdflush task once
@@ -1495,7 +1507,10 @@ static void term_convert(unsigned y0, unsigned y1) {
     } else {
         g_dirty_x0[back_idx] = 0xffff;
         g_dirty_x1[back_idx] = 0;
-        /* Native orientation (0 deg or LCD-7B) */
+        /* Native orientation (0 deg, or the LCD-7B), or 180 deg: row y to
+         * physical row V_RES-1-y, each byte's 8 pixels mirrored to the far
+         * end of the row (rev8, as the 90 deg path does). */
+        bool flip = g_lcd_rot == 180;
         for (unsigned w = 0; w < DIRTY_WORDS; w++) {
             uint64_t bits = g_dirty[back_idx][w];
             if (!bits) continue;
@@ -1505,15 +1520,24 @@ static void term_convert(unsigned y0, unsigned y1) {
                 unsigned y = w * 64u + bit;
                 if (y >= g_tbe.h) break;
                 const uint8_t *sh = g_t1_shadow + y * stride;
+                unsigned py = flip ? DSI_LCD_V_RES - 1u - y : y;
                 if (fmt == FB_RGB565) {
-                    uint16_t *dst = (uint16_t *)fb + (size_t)y * DSI_LCD_H_RES;
-                    for (unsigned b = 0; b < stride; b++) memcpy(dst + 8u * b, g_lut565[sh[b]], 16u);
+                    uint16_t *dst = (uint16_t *)fb + (size_t)py * DSI_LCD_H_RES;
+                    if (flip) {
+                        for (unsigned b = 0; b < stride; b++)
+                            memcpy(dst + (DSI_LCD_H_RES - 8u - 8u * b), g_lut565[rev8(sh[b])], 16u);
+                    } else {
+                        for (unsigned b = 0; b < stride; b++) memcpy(dst + 8u * b, g_lut565[sh[b]], 16u);
+                    }
                 } else {
-                    uint64_t *dst = (uint64_t *)(fb + (size_t)y * DSI_LCD_H_RES);
-                    for (unsigned b = 0; b < stride; b++) dst[b] = g_lut8[sh[b]];
+                    uint64_t *dst = (uint64_t *)(fb + (size_t)py * DSI_LCD_H_RES);
+                    if (flip) {
+                        for (unsigned b = 0; b < stride; b++) dst[stride - 1u - b] = g_lut8[rev8(sh[b])];
+                    } else {
+                        for (unsigned b = 0; b < stride; b++) dst[b] = g_lut8[sh[b]];
+                    }
                 }
-                if (lo < 0) lo = (int)y;
-                hi = (int)y;
+                span_rows(&lo, &hi, (int)y, (int)y);
                 n++;
             }
         }
@@ -1566,6 +1590,17 @@ static void term_convert(unsigned y0, unsigned y1) {
                     unsigned px = 719u - y;
                     ((uint16_t *)fb)[(size_t)py * 720u + px] = c565;
                 }
+            } else if (g_lcd_rot == 180) {
+                unsigned py = DSI_LCD_V_RES - 1u - (unsigned)y;
+                for (int x = 0; x < blit_w; x++) {
+                    uint8_t g = src_line[x];
+                    unsigned px = DSI_LCD_H_RES - 1u - (unsigned)(cl_x0 + x);
+                    if (fmt == FB_RGB565)
+                        ((uint16_t *)fb)[(size_t)py * DSI_LCD_H_RES + px] =
+                            (uint16_t)(((g >> 3) << 11) | ((g >> 2) << 5) | (g >> 3));
+                    else
+                        fb[(size_t)py * DSI_LCD_H_RES + px] = g;
+                }
             } else {
                 if (fmt == FB_RGB565) {
                     uint16_t *dst_line = (uint16_t *)fb + (size_t)y * DSI_LCD_H_RES + cl_x0;
@@ -1579,8 +1614,7 @@ static void term_convert(unsigned y0, unsigned y1) {
                 }
             }
         }
-        if (lo < 0 || cl_y0 < lo) lo = cl_y0;
-        if (cl_y1 > hi) hi = cl_y1;
+        span_rows(&lo, &hi, cl_y0, cl_y1);
         if (g_lcd_rot == 270) {
             unsigned cur_pymin = 1279u - (unsigned)cl_x1;
             unsigned cur_pymax = 1279u - (unsigned)cl_x0;
@@ -1656,6 +1690,21 @@ static void term_convert(unsigned y0, unsigned y1) {
                     unsigned px = 719u - y;
                     ((uint16_t *)fb)[(size_t)py * 720u + px] = src_line[x];
                 }
+            } else if (g_lcd_rot == 180) {
+                unsigned py = DSI_LCD_V_RES - 1u - (unsigned)y;
+                for (int x = 0; x < blit_w; x++) {
+                    unsigned px = DSI_LCD_H_RES - 1u - (unsigned)(cl_x0 + x);
+                    uint16_t pix = src_line[x];
+                    if (fmt == FB_RGB565) {
+                        ((uint16_t *)fb)[(size_t)py * DSI_LCD_H_RES + px] = pix;
+                    } else {
+                        uint8_t r = (uint8_t)((pix >> 11) & 0x1fu);
+                        uint8_t g = (uint8_t)((pix >> 5) & 0x3fu);
+                        uint8_t b = (uint8_t)(pix & 0x1fu);
+                        fb[(size_t)py * DSI_LCD_H_RES + px] =
+                            (uint8_t)(((r << 3) * 77 + (g << 2) * 150 + (b << 3) * 29) >> 8);
+                    }
+                }
             } else {
                 if (fmt == FB_RGB565) {
                     uint16_t *dst_line = (uint16_t *)fb + (size_t)y * DSI_LCD_H_RES + cl_x0;
@@ -1672,8 +1721,7 @@ static void term_convert(unsigned y0, unsigned y1) {
                 }
             }
         }
-        if (lo < 0 || cl_y0 < lo) lo = cl_y0;
-        if (cl_y1 > hi) hi = cl_y1;
+        span_rows(&lo, &hi, cl_y0, cl_y1);
         if (g_lcd_rot == 270) {
             unsigned cur_pymin = 1279u - (unsigned)cl_x1;
             unsigned cur_pymax = 1279u - (unsigned)cl_x0;
@@ -1792,6 +1840,30 @@ static void term_convert(unsigned y0, unsigned y1) {
                                     dst[0] = cpix;
                                 }
                             }
+                        } else if (g_lcd_rot == 180) {
+                            /* Clipped pixel by pixel: a window that is half
+                             * off-screen (several terminals in the ribbon)
+                             * has cells running past an edge, and mirrored
+                             * coordinates past an edge are out of the frame. */
+                            unsigned dy_max = is_cursor ? 30u : 32u;
+                            for (unsigned dy = 0; dy < 32u; dy++) {
+                                int ly = cell_y0 + (int)dy;
+                                if (ly < 0 || ly >= (int)DSI_LCD_V_RES) continue;
+                                unsigned py = DSI_LCD_V_RES - 1u - (unsigned)ly;
+                                uint16_t *row = (uint16_t *)fb + (size_t)py * DSI_LCD_H_RES;
+                                for (unsigned dx = 0; dx < 16u; dx++) {
+                                    int lx = cell_x0 + (int)dx;
+                                    if (lx < 0 || lx >= (int)DSI_LCD_H_RES) continue;
+                                    uint16_t pix;
+                                    if (dy < dy_max) {
+                                        uint8_t pair = glyph ? glyph[dy][dx >> 1] : 0;
+                                        pix = lut[(dx & 1u) ? (pair >> 4) : (pair & 0x0Fu)];
+                                    } else {
+                                        pix = is_inv ? g_t_bg : g_t_fg;
+                                    }
+                                    row[DSI_LCD_H_RES - 1u - (unsigned)lx] = pix;
+                                }
+                            }
                         } else {
                             unsigned dy_max = is_cursor ? 30u : 32u;
                             for (unsigned dy = 0; dy < dy_max; dy++) {
@@ -1812,8 +1884,7 @@ static void term_convert(unsigned y0, unsigned y1) {
                                 }
                             }
                         }
-                        if (lo < 0 || cell_y0 < lo) lo = cell_y0;
-                        if (cell_y0 + 31 > hi) hi = cell_y0 + 31;
+                        span_rows(&lo, &hi, cell_y0, cell_y0 + 31);
                         n++;
                     }
                 }
@@ -2054,6 +2125,10 @@ static void term_report(void) {
             g_t_paced ? "frame-paced" : "at every flush", (unsigned long)g_t_paced_passes,
             (unsigned long)g_t_rows, (unsigned long)g_t_rows_last, (unsigned long)g_t_us_last,
             (unsigned long)g_t_us_max);
+    cprintf("     front %u, flip %s, due %s, hold %s, force %s, animating %s, rot %d, %lu flips\n",
+            (unsigned)g_front_idx, g_flip_pending ? "pending" : "-", g_t_due ? "yes" : "no",
+            g_t_hold ? "yes" : "no", g_t_force ? "yes" : "no", lcdterm_is_animating() ? "yes" : "no",
+            g_lcd_rot, (unsigned long)g_flips);
     lcdterm_report();
 }
 
@@ -2109,16 +2184,17 @@ int dsi_lcd_set_orientation(int rot) {
         memset(g_t1_shadow, 0, T_BYTES);
         lcdterm_reinit(&g_tbe);
     }
-    if (g_fb_pool[0]) {
-        memset(g_fb_pool[0], 0, (size_t)DSI_LCD_H_RES * DSI_LCD_V_RES * (g_fb_fmt == FB_RGB565 ? 2u : 1u));
-        esp32p4_extmem_writeback((uintptr_t)g_fb_pool[0], (size_t)DSI_LCD_H_RES * DSI_LCD_V_RES * (g_fb_fmt == FB_RGB565 ? 2u : 1u));
-    }
-    if (g_fb_pool[1]) {
-        memset(g_fb_pool[1], 0, (size_t)DSI_LCD_H_RES * DSI_LCD_V_RES * (g_fb_fmt == FB_RGB565 ? 2u : 1u));
-        esp32p4_extmem_writeback((uintptr_t)g_fb_pool[1], (size_t)DSI_LCD_H_RES * DSI_LCD_V_RES * (g_fb_fmt == FB_RGB565 ? 2u : 1u));
-    }
-    term_redraw();
+    /* The frame buffers are not cleared: the full redraw below rewrites
+     * every pixel of both, and clearing the one being scanned out put black
+     * on the glass until then. */
     console_unlock();
+    /* lcdterm_reinit() only marks the screen damaged; without a repaint the
+     * panel stays black until the next console output. Then both frames:
+     * the one not being shown is otherwise left blank until the next change
+     * lands in it, and a second flip before then showed it for up to a
+     * minute (until the menu bar's clock moved). */
+    lcdterm_repaint();
+    for (int i = 0; i < (g_double_buffered ? 2 : 1); i++) term_sync_post();
     console_sync_readers();
     return 0;
 #else
