@@ -317,7 +317,10 @@ to a particular ASR or TTS engine.
 - The RX8130CE is in `drivers/i2c_rtc.c` (`CONFIG_RTC_RX8130`). STOP is held while writing and
   VLF is cleared afterwards. A year before 2024 counts as "never set". Set, chip reset and
   restored at boot, verified.
-- 0x28 could not be identified. It ACKs and reads 0xff from any register. SYS_I2C also reaches
+- 0x28 was later identified as the ST7123's second address: it disappears with 0x55 while
+  TP_RST is held low, but not while CAM_RST is. The AT581x radar (default 0x28) was ruled out,
+  because 0x28 ignores the register pointer. Originally:
+  0x28 could not be identified. It ACKs and reads 0xff from any register. SYS_I2C also reaches
   the M5-Bus and the expansion header, so it may not be on the board. It is reserved as
   `undocumented`.
 - Tests: Tab5 46/46 and NANO 46/46.

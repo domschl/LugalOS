@@ -61,11 +61,11 @@ set(CONFIG_I2C_RTC_SCL_GPIO 32)
 # unit's `i2c scan` finds). Probes by other drivers skip these addresses
 # (drivers/i2c_bus.c, i2c_probe_begin): 0x68 is the BMI270, not a DS3231.
 # GT911 at 0x14/0x5D and ST7123 at 0x55 are the alternative touch variants.
-# 0x28 answers on this unit but is in no M5Stack document; SYS_I2C also
-# reaches the M5-Bus (G21/G22) and the expansion header. It reads 0xff from
-# any register, so it is left alone.
+# 0x28 is in no M5Stack document, but it is the ST7123's: it disappears with
+# 0x55 while TP_RST (PI4IOE1 P5) is held low, and stays when CAM_RST is
+# [meas 2026-10-18]. It ignores the register pointer (reads fe d2 d2 ...).
 set(CONFIG_I2C0_PARTS
-    0x10:es8388 0x14:gt911 0x28:undocumented 0x32:rx8130 0x36:sc2356
+    0x10:es8388 0x14:gt911 0x28:st7123 0x32:rx8130 0x36:sc2356
     0x40:es7210 0x41:ina226 0x43:pi4ioe1 0x44:pi4ioe2 0x55:st7123
     0x5d:gt911 0x68:bmi270)
 

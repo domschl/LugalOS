@@ -279,7 +279,8 @@ for both roles by itself.
   hardware reset for LCD/Touch, and USB 5V VBUS enable (`U7` bit 3).
 * I2C parts on `SYS_I2C` are declared in the board file (`CONFIG_I2C0_PARTS`); `i2c scan` names them and
   sensor/RTC probes skip them (`i2c_probe_begin`, drivers/i2c_bus.h). 0x68 is the **BMI270**, not an RTC.
-  0x28 answers but is undocumented (reads 0xff): leave it alone.
+  0x28 is a second address of the ST7123 touch/display chip (gone while TP_RST is low); leave it alone.
+  Holding TP_RST low also blanks the panel (TDDI: one chip); reset the board afterwards.
 * RTC: the board's **RX8130CE at 0x32** (`CONFIG_RTC_RX8130`, backup cell), read at boot and set by `date`/NTP.
   `reboot` is not supported on the P4; reset with `tools/p4run.py --board tab5 --run`.
 * Battery: 2S pack on the INA226 (0x41, 5 mOhm, sign inverted so + = charging); `power`, `cat /dev/power`,
