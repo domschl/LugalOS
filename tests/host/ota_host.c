@@ -113,7 +113,7 @@ int main(int argc, char **argv) {
         CHECK(c.mark_sector < 2, "iteration %u marks sector %d", i, c.mark_sector);
     }
 
-    /* --- 52.2: ESP-IDF Partition Table & otadata (`esp_ota_select_entry_t`) --- */
+    /* --- ESP-IDF partition table & otadata (`esp_ota_select_entry_t`) --- */
     {
         esp_part_entry_t tbl[5];
         memset(tbl, 0xff, sizeof tbl);

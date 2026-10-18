@@ -1515,7 +1515,7 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
     # window at 0x42000000 and SRAM at 0x40800000 are 8 MB apart, and a single
     # `objcopy -O binary` would pad the gap. See the P4 block above for the
     # (intended) "empty loadable segment" warning this extraction can emit.
-    # 52.1: also emit lugalos-app.elf (without the 32-byte .xip_pad at 0x42000000)
+    # Also emit lugalos-app.elf (without the 32-byte .xip_pad at 0x42000000)
     # and convert it into a single-file ESP-IDF 0xE9 application image
     # (lugalos-c6-app.bin) with esp_app_desc_t at file offset 0x20.
     set(RAW_BIN_COMMANDS

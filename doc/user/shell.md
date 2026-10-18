@@ -59,6 +59,10 @@ LugalOS supports multiple mounted FAT32 volumes:
 * `date YYYY-MM-DD HH:MM:SS`: Sets system time and synchronizes the battery-backed hardware RTC (DS1307/DS3231).
 * `rtc`: Reports RTC chip status, oscillator health, and temperature sensor readback.
 
+### Firmware Updates
+* `cat /dev/ota`: The node's slots, boot record and update state. Commands (`begin`, `commit`, `switch`, `reboot`, ...) are written to it over 9P, usually by `tools/lota.py` ([updates](doc/admin/updates.md)).
+* `sdio ota [path]` (ESP32-P4): Installs LugalOS on a C6 still running the factory esp-hosted-mcu, over SDIO ([updates](doc/admin/updates.md)).
+
 ---
 
 ## 4. Shell History & Command Expansion

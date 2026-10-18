@@ -25,6 +25,16 @@
 #define OTA_C6_FLAG_TRIAL     1u                /* this boot is a trial of a new image */
 #define OTA_C6_FLAG_FELL_BACK 2u                /* the last trial did not confirm */
 
+/* Where esp32c6_xip_map() looks for otadata and ota_0 on an IDF-booted chip,
+ * before the partition table can be read (esp-hosted-mcu's
+ * slave/partitions.esp32c6.csv). drivers/ota_esp32c6.c checks the real table
+ * against them and refuses updates when they differ: on any other table the
+ * boot-time trial handling read the wrong sectors. */
+#define OTA_C6_IDF_OTADATA_BASE 0x00d000u
+#define OTA_C6_IDF_OTA0_BASE    0x010000u
+/* "LTRL", little-endian: the seq_label LugalOS writes on an entry it wants tried. */
+#define OTA_C6_IDF_TRIAL_LABEL  0x4c52544cu
+
 /* The trial's deadline: the RTC watchdog the loader arms resets the chip this
  * long after a trial boot unless the kernel confirms (and disarms it) first. */
 #define OTA_C6_TRIAL_S        60u

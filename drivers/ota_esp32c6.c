@@ -52,6 +52,9 @@ static bool booted_by_loader(void) { return g_c6_boot.magic == OTA_C6_BOOT_MAGIC
 static bool booted_by_idf(void)    { return g_c6_boot.magic == OTA_C6_IDF_BOOT_MAGIC && g_c6_boot.slot < 2; }
 static bool ota_capable(void)      { return booted_by_loader() || booted_by_idf(); }
 
+/* The partition table, read once. With no usable table there is no guessing:
+ * a wrong guess would put the inactive slot over the running one. Updates,
+ * switching and confirming are then refused for this boot. */
 static bool idf_ensure_layout(void) {
     if (!booted_by_idf()) return false;
     if (g_idf_checked) return g_idf_valid;
@@ -63,15 +66,27 @@ static bool idf_ensure_layout(void) {
         palloc_free(buf, 1);
     }
     if (!g_idf_valid) {
-        g_idf.otadata_base = 0x00d000u;
-        g_idf.otadata_size = 0x002000u;
-        g_idf.slot_base[0] = 0x010000u;
-        g_idf.slot_size[0] = 0x1c0000u;
-        g_idf.slot_base[1] = 0x1d0000u;
-        g_idf.slot_size[1] = 0x1c0000u;
-        g_idf_valid        = true;
+        printk("[OTA] no usable ESP-IDF partition table at 0x%x: updates disabled\n",
+               (unsigned)ESP_PARTITION_TABLE_OFFSET);
+        return false;
     }
-    g_c6_boot.slot = (g_c6_boot.xip_base == g_idf.slot_base[0]) ? 0u : 1u;
+    if (g_idf.otadata_base != OTA_C6_IDF_OTADATA_BASE || g_idf.slot_base[0] != OTA_C6_IDF_OTA0_BASE) {
+        printk("[OTA] partition table has otadata 0x%x, ota_0 0x%x; boot handling expects 0x%x, 0x%x: "
+               "updates disabled\n", (unsigned)g_idf.otadata_base, (unsigned)g_idf.slot_base[0],
+               (unsigned)OTA_C6_IDF_OTADATA_BASE, (unsigned)OTA_C6_IDF_OTA0_BASE);
+        g_idf_valid = false;
+        return false;
+    }
+    if (g_c6_boot.xip_base == g_idf.slot_base[0]) {
+        g_c6_boot.slot = 0;
+    } else if (g_c6_boot.xip_base == g_idf.slot_base[1]) {
+        g_c6_boot.slot = 1;
+    } else {
+        printk("[OTA] running from 0x%x, which is neither ota_0 nor ota_1: updates disabled\n",
+               (unsigned)g_c6_boot.xip_base);
+        g_idf_valid = false;
+        return false;
+    }
     return true;
 }
 
@@ -105,7 +120,7 @@ bool ota_board_info(ota_board_info_t *out) {
     out->fell_back = booted_by_loader() && (g_c6_boot.flags & OTA_C6_FLAG_FELL_BACK);
     out->part_max[0] = OTA_C6_PART0_MAX;
     out->part_max[1] = (uint32_t)LUGALOS_C6_SLOT_SIZE - OTA_C6_PART1_OFF;
-    out->layout = booted_by_loader() ? "loader" : "none";
+    out->layout = booted_by_loader() ? "loader" : booted_by_idf() ? "idf" : "none";
     return true;
 }
 
@@ -261,8 +276,18 @@ static int write_idf_otadata(int target_sec, uint32_t seq, uint32_t state, bool 
     return 0;
 }
 
+/* The running trial's entry has been rewritten VALID by ota_board_confirm(). */
+static bool idf_running_confirmed(const esp_ota_select_entry_t s[2]) {
+    for (int i = 0; i < 2; i++)
+        if (ota_idf_select_valid(&s[i]) && s[i].ota_state == ESP_OTA_IMG_VALID &&
+            ((s[i].ota_seq - 1u) & 1u) == g_c6_boot.slot)
+            return true;
+    return false;
+}
+
 bool ota_board_record(ota_board_record_t *out) {
     if (booted_by_idf()) {
+        if (!idf_ensure_layout()) return false;
         esp_ota_select_entry_t s[2];
         int cur = read_idf_otadata(s);
         if (cur < 0) {
@@ -277,7 +302,7 @@ bool ota_board_record(ota_board_record_t *out) {
             out->pending = cur_slot;
             out->tried = false;
             out->failed = false;
-        } else if (g_c6_boot.flags & OTA_C6_FLAG_TRIAL) {
+        } else if ((g_c6_boot.flags & OTA_C6_FLAG_TRIAL) && !idf_running_confirmed(s)) {
             out->active = (int)(g_c6_boot.slot ^ 1u);
             out->pending = (int)g_c6_boot.slot;
             out->tried = true;
@@ -366,14 +391,18 @@ static void trial_watchdog_off(void) {
 int ota_board_confirm(void) {
     if (booted_by_idf()) {
         esp_ota_select_entry_t s[2];
+        if (!idf_ensure_layout()) return -1;
         (void)read_idf_otadata(s);
+        /* The newest entry naming this slot. Its state is ABORTED already
+         * (esp32c6_xip_map() marks a trial so before it starts), so the CRC is
+         * the test, not ota_idf_select_valid(). */
         int target = -1;
         for (int i = 0; i < 2; i++) {
-            if (s[i].ota_seq != 0xffffffffu && s[i].ota_seq != 0u &&
-                ((s[i].ota_seq - 1u) & 1u) == g_c6_boot.slot) {
-                target = i;
-                break;
-            }
+            if (s[i].ota_seq == 0xffffffffu || s[i].ota_seq == 0u ||
+                s[i].crc != ota_idf_crc32(s[i].ota_seq) ||
+                ((s[i].ota_seq - 1u) & 1u) != g_c6_boot.slot)
+                continue;
+            if (target < 0 || s[i].ota_seq > s[target].ota_seq) target = i;
         }
         if (target < 0) return -1;
         if (write_idf_otadata(target, s[target].ota_seq, ESP_OTA_IMG_VALID, false) != 0) return -1;
@@ -390,16 +419,32 @@ int ota_board_confirm(void) {
  * this covers a loader that does not). */
 void ota_board_boot(void) {
     if (booted_by_idf()) {
-        (void)idf_ensure_layout();
-        if (!(g_c6_boot.flags & OTA_C6_FLAG_TRIAL)) {
-            trial_watchdog_off();
-            esp_ota_select_entry_t s[2];
-            int cur = read_idf_otadata(s);
-            if (cur >= 0 && (s[cur].ota_state == ESP_OTA_IMG_NEW ||
-                             s[cur].ota_state == ESP_OTA_IMG_PENDING_VERIFY ||
-                             s[cur].ota_state == ESP_OTA_IMG_UNDEFINED)) {
-                (void)write_idf_otadata(cur, s[cur].ota_seq, ESP_OTA_IMG_VALID, false);
-            }
+        if (!idf_ensure_layout()) {
+            if (g_c6_boot.flags & OTA_C6_FLAG_TRIAL)
+                printk("[OTA] this trial cannot be confirmed: the watchdog restarts into the previous image\n");
+            else
+                trial_watchdog_off();
+            return;
+        }
+        if (g_c6_boot.flags & OTA_C6_FLAG_TRIAL) return;
+        trial_watchdog_off();
+        esp_ota_select_entry_t s[2];
+        int cur = read_idf_otadata(s);
+        if (cur < 0) return;
+        uint32_t cur_slot = (s[cur].ota_seq - 1u) & 1u;
+        if (cur_slot != g_c6_boot.slot) {
+            /* The newest entry names the other slot, yet the bootloader started
+             * this one: it rejected that image (hash, chip revision, segments
+             * over its own RAM). Record the running slot as the newest entry so
+             * the record says what boots, and report the fall-back. */
+            printk("[OTA] the bootloader rejected slot %c: running slot %c\n",
+                   (char)('a' + cur_slot), (char)('a' + g_c6_boot.slot));
+            g_c6_boot.flags |= OTA_C6_FLAG_FELL_BACK;
+            (void)write_idf_otadata(cur ^ 1, ota_idf_next_seq(s[cur].ota_seq, (int)g_c6_boot.slot),
+                                    ESP_OTA_IMG_VALID, false);
+        } else if (s[cur].ota_state == ESP_OTA_IMG_NEW || s[cur].ota_state == ESP_OTA_IMG_PENDING_VERIFY ||
+                   s[cur].ota_state == ESP_OTA_IMG_UNDEFINED) {
+            (void)write_idf_otadata(cur, s[cur].ota_seq, ESP_OTA_IMG_VALID, false);
         }
         return;
     }

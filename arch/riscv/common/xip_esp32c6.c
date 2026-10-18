@@ -102,14 +102,14 @@ BOOT_TEXT void esp32c6_xip_map(uint32_t magic, uint32_t xip_base, uint32_t flags
         if ((cache_ctrl & (CACHE_SHUT_IBUS | CACHE_SHUT_DBUS)) == 0 &&
             (mmu0 & MMU_VALID) != 0 && mmu0 == mmu_end) {
             uint32_t part_base = (mmu0 & 0xffu) << 16;
-            uint32_t idf_slot = (part_base == 0x010000u) ? 0u : 1u;
+            uint32_t idf_slot = (part_base == OTA_C6_IDF_OTA0_BASE) ? 0u : 1u;
             uint32_t idf_flags = 0;
             uint32_t autoload = ROM_CACHE_SUSPEND();
             for (uint32_t i = 0; i < 2u; i++) {
                 uint32_t s[8];
-                uint32_t sec = 0xd000u + i * 0x1000u;
+                uint32_t sec = OTA_C6_IDF_OTADATA_BASE + i * 0x1000u;
                 if (ROM_FLASH_READ(sec, s, 32) == 0 &&
-                    s[0] != 0xffffffffu && s[0] != 0u && s[1] == 0x4c52544cu) {
+                    s[0] != 0xffffffffu && s[0] != 0u && s[1] == OTA_C6_IDF_TRIAL_LABEL) {
                     uint32_t entry_slot = (s[0] - 1u) & 1u;
                     if (entry_slot == idf_slot && s[6] == 0xffffffffu) {
                         uint32_t aborted = 4u;

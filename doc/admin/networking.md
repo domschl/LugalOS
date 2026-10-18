@@ -142,6 +142,7 @@ Checks of the channel itself:
 | `sdio` | C6 | the SDIO slave: generation, timing, receive buffers, packets in and out |
 | `sdio timing 0..3` | C6 | the slave's edges (0: send and sample on the rising edge) |
 | `sdio`, `sdio probe`, `sdio reset` | P4 | the host side; `sdio reset` pulses the C6's `CHIP_PU` |
+| `sdio ota [path]` | P4 | installs an ESP-IDF app image (`lugalos-c6-app.bin`) on a C6 still running the factory esp-hosted-mcu, over SDIO ([updates](doc/admin/updates.md)) |
 | `sdio resync` | P4 | ask the C6 to restart LLP's SDIO channel (both counters, a new generation) at the next poll |
 
 Measured on the LCD-7B at 20 MHz, 4-bit: 3.1 MB/s each way with 1514-byte

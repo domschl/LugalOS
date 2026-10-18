@@ -62,7 +62,7 @@ void sdio_bench(uint32_t kilobytes, uint32_t fn, uint32_t addr, uint32_t len);
 /* Streams a standard ESP-IDF app image (`0xE9` + `esp_app_desc_t`) from VFS
  * `path` into a factory `esp-hosted-mcu` C6 slave over SDIO (`ESP_SERIAL_IF`
  * Protobuf OTA RPCs), activates the new partition, resets the C6, and brings
- * LLP up (Phase 52.3). Returns 0 on success, < 0 on error. */
+ * LLP up. Returns 0 on success, < 0 on error. */
 int  sdio_hosted_ota(const char *path);
 
 #endif

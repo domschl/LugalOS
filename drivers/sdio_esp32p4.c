@@ -250,8 +250,11 @@ static void cis_manfid(uint32_t cis, uint16_t *vendor, uint16_t *device) {
 
 /* --- Bring-up ----------------------------------------------------------------------- */
 
+static bool g_hosted_tried;   /* hosted_detect_locked() ran since the last probe */
+
 static int probe_locked(uint32_t khz) {
     memset(&g_info, 0, sizeof g_info);
+    g_hosted_tried = false;
     if (sdhost_controller_init() != 0) return -1;
     sdio_pads_init();
     sdhost_set_width4(false);
@@ -623,7 +626,7 @@ void sdio_llp_report(void) {
             (unsigned)g_info.errors);
 }
 
-/* --- Shell & esp-hosted-mcu SDIO OTA (Phase 52.3) ------------------------------------ */
+/* --- Shell & esp-hosted-mcu SDIO OTA ------------------------------------------------ */
 
 static const char *const stage_names[] = {
     "not probed", "CMD5 unanswered (no SDIO slave running?)", "CMD5 never ready",
@@ -676,11 +679,11 @@ void sdio_bench(uint32_t kilobytes, uint32_t fn, uint32_t addr, uint32_t chunk) 
             done < total ? " -- STOPPED on an error" : "");
 }
 
-/* --- esp-hosted-mcu SDIO OTA client (Phase 52.3) ------------------------------------
+/* --- esp-hosted-mcu SDIO OTA client ------------------------------------------------
  *
  * Speaks just enough of Espressif's `esp-hosted-mcu` SDIO + Protocomm +
  * Protobuf RPC protocol to stream a standard ESP-IDF application image
- * (`lugalos-c6-app.bin`, 52.1) into a factory C6's `ota_1` partition and
+ * (`lugalos-c6-app.bin`) into a factory C6's passive OTA partition and
  * activate it without touching the C6's UART/USB pins.
  *
  * Wire layers:
@@ -885,7 +888,8 @@ static int hosted_poll_rx_locked(hosted_ctx_t *ctx, uint32_t want_resp_id,
 
     uint32_t avail = (pkt_len - ctx->rx_byte_count) & LLP_SDIO_LEN_MASK;
     while (avail) {
-        uint32_t room = SDIO_XFER_MAX - g_hosted_carry;
+        /* A multiple of 4: fifo_xfer_locked() rounds a short read up to one. */
+        uint32_t room = (SDIO_XFER_MAX - g_hosted_carry) & ~3u;
         uint32_t n = avail < room ? avail : room;
         if (n == 0) { g_hosted_err = "receive buffer full of an unparsable packet"; g_hosted_carry = 0; return -1; }
         if (fifo_xfer_locked(false, g_hosted_rx + g_hosted_carry, n) != 0) {
@@ -925,15 +929,19 @@ static int hosted_poll_rx_locked(hosted_ctx_t *ctx, uint32_t want_resp_id,
     return 0;
 }
 
-/* Under `sdhost_acquire(1)` at the end of `sdio_probe`: identifies whether the
- * C6 slave is LugalOS LLP or `esp-hosted-mcu` (and records its firmware
- * version from `ESP_PRIV_EVENT_INIT`). */
+/* Under `sdhost_acquire(1)`: identifies whether the C6 slave is LugalOS LLP or
+ * `esp-hosted-mcu` (and records its firmware version from
+ * `ESP_PRIV_EVENT_INIT`). The slave sends that event once after its data path
+ * opens, so the wait runs once per probe. The host is shared with the microSD:
+ * it is released while waiting, and the caller gets it back held. */
 static void hosted_detect_locked(void) {
+    if (g_hosted_tried) return;
     if (status_locked() != 0) return;
     if (magic_ok()) {
         g_info.llp_present = true;
         return;
     }
+    g_hosted_tried = true;
     hosted_ctx_t ctx;
     memset(&ctx, 0, sizeof ctx);
     if (g_llp.pkt_len < g_hosted_rx_bytes) g_hosted_rx_bytes = 0;
@@ -945,11 +953,17 @@ static void hosted_detect_locked(void) {
         int32_t dummy_rc = 0;
         if (hosted_poll_rx_locked(&ctx, 0, &dummy_got, &dummy_rc) != 0) break;
         if (ctx.init_seen) break;
-        time_delay_us(2000);
+        sdhost_release();
+        task_sleep_ms(2);
+        sdhost_acquire(1);
+        if (g_hosted_ota_busy) return;   /* `sdio ota` took over while this slept */
     }
     if (ctx.init_seen) {
         /* Drain the trailing Event_ESPInit packet queued ~4 ms after ESP_PRIV_EVENT_INIT. */
-        time_delay_us(15000);
+        sdhost_release();
+        task_sleep_ms(15);
+        sdhost_acquire(1);
+        if (g_hosted_ota_busy) return;
         bool dummy_got = false;
         int32_t dummy_rc = 0;
         (void)hosted_poll_rx_locked(&ctx, 0, &dummy_got, &dummy_rc);
@@ -1093,6 +1107,20 @@ int sdio_hosted_ota(const char *path) {
     memcpy(proj, g_scratch + 0x50u, 32); proj[32] = '\0';
     memcpy(ver,  g_scratch + 0x30u, 32); ver[32]  = '\0';
     cprintf("sdio ota: image %s (%s %s, %u bytes)\n", path, proj, ver, (unsigned)st.size);
+
+    /* A C6 already on LLP is refused before the reset below would cut its link. */
+    bool llp_now = sdio_llp_up();
+    if (!llp_now && g_info.present) {
+        sdhost_acquire(1);
+        llp_now = status_locked() == 0 && magic_ok();
+        sdhost_release();
+    }
+    if (llp_now) {
+        vfs_close(fd);
+        cprintf("sdio ota: C6 is already running LugalOS (LLP gen %u); use /c6/dev/ota instead\n",
+                g_llp.shared[LLP_SDIO_SH_GEN]);
+        return -1;
+    }
 
     g_hosted_ota_busy = true;
     g_llp.up = false;

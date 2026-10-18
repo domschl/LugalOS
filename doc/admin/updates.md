@@ -13,7 +13,7 @@ RP2350 follow (plan/phase52_remote_admin.md).
 
 | File | Read | Write |
 | :--- | :--- | :--- |
-| `/dev/ota` | `board`, `chip`, `running` (slot `a`/`b`), `trial`, `fell_back`, `slot_a`/`slot_b` (build id or `empty`), `active`, `pending`, `tried`, `failed` (the boot record), `state` (`idle`, `receiving`, `received`, `committed`, `error`), `received`, `error` | `begin SIZE`, `commit`, `reboot`, `confirm`, `abort` |
+| `/dev/ota` | `board`, `chip`, `layout` (`loader`, `idf`, or `none`), `running` (slot `a`/`b`), `trial`, `fell_back`, `slot_a`/`slot_b` (build id or `empty`), `active`, `pending`, `tried`, `failed` (the boot record), `state` (`idle`, `receiving`, `received`, `committed`, `error`), `received`, `error` | `begin SIZE`, `commit`, `reboot`, `confirm`, `abort`, `switch` |
 | `/dev/otaimage` | — | the update image, in order from offset 0, after `begin` |
 
 1. `begin SIZE`: the image's length in bytes.
@@ -31,7 +31,12 @@ RP2350 follow (plan/phase52_remote_admin.md).
    (a whole-chip reset: `last_reset=watchdog (RTC, ...)`), and the loader
    boots the old slot again (`fell_back=yes`).
 
-`confirm` confirms by hand; `abort` drops an update in progress.
+`confirm` confirms by hand; `abort` drops an update in progress. `switch`
+makes the image already in the other slot the one the next boot starts (no
+trial: it is booted as it is), then `reboot`.
+
+Reading `/dev/otaimage` while no update is in progress returns the other
+slot's raw bytes (`lota.py dump-other`, for backing up a factory image).
 
 ## `tools/lota.py`
 
@@ -52,6 +57,13 @@ uv run tools/lota.py push build/esp32c6-mini --tcp 192.168.178.160 --keyfile KEY
 uv run tools/lota.py push build/esp32c6 --tcp 192.168.178.162 --keyfile KEYFILE --reboot
 
 uv run tools/lota.py status --p4 lcd7b --prefix /c6
+
+# Boot the other slot's image next (e.g. back to the factory esp-hosted-mcu):
+uv run tools/lota.py switch --p4 tab5 --prefix /c6 --reboot
+
+# Save the other slot's image (an ESP-IDF image is cut to its length and its
+# SHA-256 checked):
+uv run tools/lota.py dump-other --p4 tab5 --prefix /c6 -o ota0-factory.bin
 ```
 
 `--wait` follows `/dev/ota` until the new image has confirmed (exit 0) or the
@@ -78,20 +90,62 @@ The loader prints one line on the C6's UART0 at every boot, e.g.
 A kernel loaded into RAM by `c6run.py` was not started by the loader: it
 cannot update (`running=-`), and says so if asked.
 
-### ESP-IDF Partition Layout (`layout=idf`)
+### ESP-IDF partition layout (`layout=idf`)
 
-On appliances where the ESP32-C6 is sealed inside without external header access
-(such as the M5Stack Tab5), LugalOS runs on top of the factory ESP-IDF second-stage
-bootloader using standard ESP-IDF OTA partitions:
+On boards where the C6's pins cannot be reached (the M5Stack Tab5), LugalOS
+runs behind the C6's factory ESP-IDF second-stage bootloader, in the factory
+partition table's OTA slots. esp-hosted-mcu's table for the C6:
 
-* **Partitions:** `ota_0` and `ota_1` app slots, with boot state managed in the
-  standard `otadata` (`esp_ota_select`) partition.
-* **Status:** `/dev/ota` reports `layout=idf` along with `running` (`a`/`b`),
-  `active`, and `pending` sequence numbers.
-* **Packaging:** `tools/lota.py` detects `layout=idf` automatically, building a
-  single-file ESP-IDF 0xE9 image (`lugalos-c6-app.bin`) with `esp_app_desc_t`
-  descriptor at offset 0x20.
-* **Safe fallback:** Updates boot on trial (`ESP_OTA_IMG_NEW`); if unconfirmed or
-  aborted, the ESP-IDF bootloader marks the slot invalid (`ESP_OTA_IMG_INVALID`)
-  and falls back automatically to the previous valid slot.
+| Offset | Partition |
+| :--- | :--- |
+| `0x000000` | the factory ESP-IDF bootloader (never written) |
+| `0x008000` | the partition table |
+| `0x009000` | `nvs`, 16 KB |
+| `0x00D000` | `otadata`, two 4 KB sectors of `esp_ota_select_entry_t` |
+| `0x00F000` | `phy_init` |
+| `0x010000` | `ota_0` (slot `a`), 1920 KB: esp-hosted-mcu from the factory |
+| `0x1F0000` | `ota_1` (slot `b`), 1920 KB |
+| `0x3F0000` | the LugalOS identity sector |
 
+* **The image** is a single ESP-IDF `0xE9` application image
+  (`build/esp32c6-mini/lugalos-c6-app.bin`, built with the kernel), with its
+  `esp_app_desc_t` at offset 0x20. `lota.py push` sees `layout=idf` and sends
+  it wrapped in the usual update header.
+* **The table is read at boot** and must match what the kernel's early boot
+  code assumes (`otadata` at 0xD000, `ota_0` at 0x10000). If it cannot be read
+  or differs, updates, `switch` and `confirm` are refused for that boot
+  (`running=-`) rather than guessed at.
+* **The trial** does not depend on the bootloader's rollback option. `commit`
+  writes a new `otadata` entry for the slot, marked as LugalOS's trial. On the
+  trial boot the kernel marks that entry ABORTED before anything else runs, and
+  `confirm` rewrites it as VALID. A trial that never confirms (hang, crash,
+  power loss, watchdog after 60 s) leaves the entry ABORTED, which every IDF
+  bootloader skips: the next boot starts the previous slot (`fell_back=yes`).
+* **An image the bootloader rejects** (bad hash, wrong chip revision, a RAM
+  segment over the bootloader's own memory) is never started: the bootloader
+  starts the other slot. The kernel notices that the newest entry names a slot
+  it is not running, records the running slot as the newest, and reports
+  `fell_back=yes`.
+* **An image that is not LugalOS** (esp-hosted-mcu's `network_adapter.bin`)
+  can be pushed too; it is marked VALID directly, with no trial.
+* **After the first LugalOS self-update** both slots hold LugalOS and the
+  factory esp-hosted-mcu is gone; back it up first (`lota.py dump-other`).
+  The Tab5's is in `~/Source/gith/esp/tab5-factory-flash/tab5-c6-ota0-factory.bin`,
+  the NANO's in `~/Source/gith/esp/p4nano-c6-factory-flash/nano-c6-ota0-hosted.bin`.
+
+### First install from esp-hosted-mcu (`sdio ota`)
+
+A C6 still running the factory esp-hosted-mcu is given LugalOS from the P4, over
+SDIO, with esp-hosted-mcu's own OTA RPCs (OTABegin, OTAWrite in 1 KB chunks,
+OTAEnd, and OTAActivate on esp-hosted-mcu 2.6 and later):
+
+```
+sdio ota [path]       # default /sd0/lugalos-c6-app.bin, then /sd0/firmware/lugalos-c6-mini.bin
+```
+
+esp-hosted-mcu writes the image into its passive slot, checks it and activates
+it; the P4 resets the C6, which comes up with LugalOS and LLP. A C6 that is
+already on LLP is refused (use `/c6/dev/ota`). This first boot is **not** a
+LugalOS trial: the kernel marks it VALID when it starts. Its safety net is the
+bootloader's own image check, and esp-hosted-mcu staying in the other slot until
+the first LugalOS self-update.

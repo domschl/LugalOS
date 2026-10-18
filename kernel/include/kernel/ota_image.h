@@ -100,7 +100,7 @@ void ota_bootrec_make(ota_bootrec_t *r, uint32_t seq, uint8_t active, uint8_t pe
 /* The header's magic, version, length and CRC (not the board, nor the parts). */
 bool ota_header_valid(const ota_image_header_t *h);
 
-/* --- 52.1 / 52.2: ESP-IDF Application Descriptor, Partition Table & otadata --- */
+/* --- ESP-IDF application descriptor, partition table & otadata --- */
 
 #define ESP_APP_DESC_MAGIC       0xABCD5432u
 
