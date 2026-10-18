@@ -80,16 +80,16 @@ For wireless presets (`rp2350-wifi`, `esp32c6`):
 
 ## 4. Wi-Fi Through the Board's ESP32-C6 (ESP32-P4 Boards)
 
-The ESP32-P4 boards (`esp32p4`, `esp32p4-lcd7b`) have an ESP32-C6 beside the P4,
+The ESP32-P4 boards (`esp32p4`, `esp32p4-lcd7b`, `esp32p4-tab5`) have an ESP32-C6 beside the P4,
 wired to it over SDIO. Running LugalOS on both (`esp32c6-mini` on the C6), the
 C6 is the P4's network card: the [LugalOS Link Protocol](../dev/protocols/llp.md)
 carries Ethernet frames and 9P between them, and the P4 gets `wlan0` with the
 C6's station MAC.
 
 * **At boot** the C6 (`esp32c6-mini`) arms the radio role and waits for a
-  host, and an LCD-7B (whose only network is its C6) starts the host role.
-  On the NANO, which has Ethernet as well, type `llp host` on the P4. By hand
-  on either side: `llp radio` (C6), `llp host` (P4).
+  host, and both the LCD-7B and Tab5 (whose wireless network is their C6) start
+  the host role. On the NANO, which has Ethernet as well, type `llp host` on the
+  P4. By hand on either side: `llp radio` (C6), `llp host` (P4).
 * **Link up** (within a second of both running): the P4 registers `wlan0`
   with the C6's station MAC and asks for a DHCP lease once the radio is
   associated. The C6 gives its interface to the link only now. A C6 with no

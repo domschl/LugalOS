@@ -286,6 +286,14 @@ for both roles by itself.
   coordinate remapping.
 * MicroSD: 4-bit SDMMC Slot 0 (`GPIO39–44`) mounted on `/sd0/` at 20 MHz.
 * USB Host: DWC2 OTG HS on Type-A port with `USB5V_EN` via PI4IOE2.
+* SDIO Wi-Fi Co-Processor (ESP32-C6, phase 52): connected via SDMMC Slot 1 (`GPIO14–19`); C6 reset controlled via PI4IOE2 (`U8` bit 0).
+  * Closed appliance without external C6 serial/JTAG headers. Boots LugalOS via factory ESP-IDF bootloader from `ota_1` partition (`layout=idf`).
+  * Bootloader locks PMP entries 0–2 and 15 (`PMP_L`); LugalOS kernel probes locked entries at boot (`arch/riscv/common/mem_domain.c`) and dynamically allocates user domains in unlocked slots 3–14 without trap.
+  * Over-the-air updates for the C6 are performed over 9P/SDIO without opening the case:
+    ```bash
+    uv run tools/lota.py push build/esp32c6-mini --p4 tab5 --prefix /c6 --reboot --wait
+    ```
+  * Boot-time Wi-Fi & DHCP: P4 boots into LLP host role, discovers C6 on SDIO, mounts `/c6`, automatically pushes credentials from `/sd0/etc/wlan.env` or identity record to `/c6/dev/wlan`, registers `wlan0`, and arms DHCP client (`dhcpc`) to acquire network address automatically.
 * Build & Flash:
   ```bash
   ninja -C build/esp32p4-tab5

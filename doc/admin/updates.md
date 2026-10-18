@@ -77,3 +77,21 @@ The loader prints one line on the C6's UART0 at every boot, e.g.
 
 A kernel loaded into RAM by `c6run.py` was not started by the loader: it
 cannot update (`running=-`), and says so if asked.
+
+### ESP-IDF Partition Layout (`layout=idf`)
+
+On appliances where the ESP32-C6 is sealed inside without external header access
+(such as the M5Stack Tab5), LugalOS runs on top of the factory ESP-IDF second-stage
+bootloader using standard ESP-IDF OTA partitions:
+
+* **Partitions:** `ota_0` and `ota_1` app slots, with boot state managed in the
+  standard `otadata` (`esp_ota_select`) partition.
+* **Status:** `/dev/ota` reports `layout=idf` along with `running` (`a`/`b`),
+  `active`, and `pending` sequence numbers.
+* **Packaging:** `tools/lota.py` detects `layout=idf` automatically, building a
+  single-file ESP-IDF 0xE9 image (`lugalos-c6-app.bin`) with `esp_app_desc_t`
+  descriptor at offset 0x20.
+* **Safe fallback:** Updates boot on trial (`ESP_OTA_IMG_NEW`); if unconfirmed or
+  aborted, the ESP-IDF bootloader marks the slot invalid (`ESP_OTA_IMG_INVALID`)
+  and falls back automatically to the previous valid slot.
+
