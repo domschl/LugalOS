@@ -14,9 +14,8 @@
  *   rot    the Tab5's panel turned every 7 s (the orientation test hook)
  *
  * The workers are mixed: each picks a path at random every iteration, so two
- * meet on one path by chance rather than by construction -- the boards run
- * 16-18 tasks of their own out of MAX_TASKS (24), and a worker per path did
- * not fit (three terminals on the LCD-7B leave three slots). As many as the
+ * meet on one path by chance rather than by construction, and the load fits
+ * beside a board's own 16-18 tasks and its terminals. As many as the task
  * table allows, up to W_MIX_MAX; fewer than W_MIX_MIN is a failed run. The
  * Tab5's rotation has a task of its own.
  *

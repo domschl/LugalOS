@@ -2222,7 +2222,7 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
  *
  * proc_buf is a fixed 896 bytes and several of these files are generated
  * from tables that grow: /proc/ps runs out at about thirteen tasks against
- * a MAX_TASKS of 24, and /proc/config has already come within 105 bytes of
+ * a MAX_TASKS of 32, and /proc/config has already come within 105 bytes of
  * the limit once (see proc_buf's own comment). Every producer above stops
  * cleanly at `cap`, which is safe and completely silent -- the reader gets a
  * table that simply ends, with no way to tell a short system from a clipped

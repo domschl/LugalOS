@@ -3,6 +3,9 @@
  * blocks, never touches the scheduler and never reads a clock. */
 
 #include "kernel/kobj.h"
+#include "kernel/sched.h"
+
+_Static_assert(KWAKE_MAX >= MAX_TASKS, "a deleted object wakes every waiter: KWAKE_MAX must cover MAX_TASKS");
 #include <stddef.h>
 #include <string.h>
 

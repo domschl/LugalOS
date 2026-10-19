@@ -668,7 +668,14 @@ Open (next session):
    `lcd reinit` to recover without a reboot. Each needs ~30 observed resets to tell.
 2. **Tab5 sd read-back mismatches** under the full mix (data integrity; no error reported by
    the driver). Bisect the paths with `only=`.
-3. NANO `/ram0` write failures; LCD-7B task-table exhaustion during the hour; its one 9P failure.
+3. NANO `/ram0` write failures; the LCD-7B's one 9P failure during the hour.
+   `MAX_TASKS` is 32 now (owner's decision, 2026-10-19; ~1 KB of static RAM per board). It was
+   not the LCD-7B's limit, though: with three terminals open, its fourth worker fails with "Out
+   of memory for 'stress' stack (3 pages)" -- task stacks come from the fast page zone only
+   (`palloc_pages()` in task_create_sized()), ~13 pages free there. Whether stacks of
+   non-critical tasks may come from the bulk zone (PSRAM: slower, and the domains' PMP regions
+   to check) is a decision for the owner. During the hour run something held more than usual:
+   only 1 worker started.
 4. Then the hour runs again on all three boards; pass = STRESS_OK, no trap, no checker report.
 
 ### 63.8 Close
