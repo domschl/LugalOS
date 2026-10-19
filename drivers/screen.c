@@ -22,6 +22,7 @@
 
 #if CANVAS_SUPPORT_RGB565
 #include "kernel/palloc.h"
+#include "kernel/console.h"
 static void *canvas_alloc_psram(uint32_t pages) {
     return palloc_pages_bulk(pages);
 }
@@ -330,11 +331,17 @@ LCDTERM_UTEXT static void screen_free_canvas(screen_t *scr, uint8_t cid) {
         if (scr->canvases[cid].buf565) {
             uint32_t bytes = (uint32_t)scr->canvases[cid].w565 * (uint32_t)scr->canvases[cid].h565 * sizeof(uint16_t);
             uint32_t pages = (bytes + 4095u) / 4096u;
+#if defined(CONFIG_BOARD_ESP32P4)
+            console_frame_lock();   /* the panel's conversion reads buf565 under it */
+#endif
             canvas_free_psram(scr->canvases[cid].buf565, pages);
             scr->canvases[cid].buf565 = NULL;
             scr->canvases[cid].stride565 = 0;
             scr->canvases[cid].w565 = 0;
             scr->canvases[cid].h565 = 0;
+#if defined(CONFIG_BOARD_ESP32P4)
+            console_frame_unlock();
+#endif
         }
 #endif
         scr->canvases[cid].format = CANVAS_FMT_1BPP;

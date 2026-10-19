@@ -216,8 +216,9 @@ bool reader_open(const char *resource) {
     return reader_open_instance(s_active_reader_rid, resource) >= 0;
 }
 
-/* Under console_lock: term_convert() composites from aa_buf under it, and the
- * page must not be freed in the middle of that. */
+/* Under console_lock and the panel's frame lock: the conversion composites
+ * from aa_buf under the frame lock, and the page must not be freed in the
+ * middle of that. */
 void reader_close_instance(uint8_t rid) {
     if (rid < READER_MAX_INSTANCES) {
         console_lock();
@@ -225,9 +226,11 @@ void reader_close_instance(uint8_t rid) {
         s_readers[rid].path[0] = '\0';
         s_readers[rid].title[0] = '\0';
         if (s_readers[rid].aa_buf) {
+            console_frame_lock();
             palloc_free(s_readers[rid].aa_buf, s_readers[rid].aa_pages);
             s_readers[rid].aa_buf = NULL;
             s_readers[rid].aa_pages = 0;
+            console_frame_unlock();
         }
         console_unlock();
     }

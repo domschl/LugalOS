@@ -1394,6 +1394,7 @@ static bool          g_t_paced;
 static uint32_t      g_t_paced_passes;
 
 static void term_convert(unsigned y0, unsigned y1);
+static void term_hold(void);
 
 static void term_flush(unsigned y0, unsigned y1) {
     if (g_t_paced) { g_t_due = true; return; }
@@ -1412,12 +1413,71 @@ static inline void span_rows(int *lo, int *hi, int y0, int y1) {
     if (y1 > *hi) *hi = y1;
 }
 
-static void term_convert(unsigned y0, unsigned y1) {
+/* The frame side of the terminal: g_t1_shadow, the dirty marks, the colour
+ * tables, the frame buffers, their format and the scan-out index, the
+ * rotation and the terminal geometry, the snapshot below, and the reader and
+ * canvas backings while they are drawn (their owners free them under it).
+ * guarded by: itself, always taken after console_lock (frame_begin()): the
+ * conversion of a frame -- 100-250 ms for a rotated full redraw on the Tab5
+ * -- runs under this lock alone, so the terminals' writers, who need only
+ * console_lock, are not held up by it (`lockcheck`). */
+static ylock_t g_frame_lock;
+
+#define frame_begin() frame_begin_at(__func__)
+static void frame_begin_at(const char *site) {
+    console_lock_at(site);
+    ylock_acquire(&g_frame_lock);
+}
+static void frame_end(void) {
+    ylock_release(&g_frame_lock);
+    console_unlock();
+}
+/* For console_frame_lock(): the frame lock alone, its callers hold console_lock. */
+static void frame_lock_take(void) { ylock_acquire(&g_frame_lock); }
+static void frame_lock_give(void) { ylock_release(&g_frame_lock); }
+
+/* What the drawing reads that its owners change under console_lock: taken by
+ * term_snapshot() with both locks held, read by term_draw() with only
+ * g_frame_lock. The terminal cells are copied; reader and canvas pixels are
+ * read in place (a window drawn into meanwhile is redrawn next pass: its
+ * sequence number has moved), their buffers kept alive by g_frame_lock.
+ * guarded by: g_frame_lock. */
+#define TERM_SNAP_CELLS 8192u   /* every visible window's cells: at most one screen's (160 x 45) */
+typedef struct {
+    int nr;
+    int rx0[4], ry0[4], rx1[4], ry1[4];
+    uint32_t rseq[4], rstride[4];
+    uint8_t *rbuf[4];
+    int rw[4], rh[4];
+    int nc;
+    int cx0[4], cy0[4], cx1[4], cy1[4];
+    uint32_t cstride[4];
+    const uint16_t *cbuf[4];
+    int cw[4], ch[4];
+    int nt;
+    lcdterm_visible_term_t terms[4];
+    bool force, rearm;
+    uint64_t t0;
+} term_snap_t;
+static term_snap_t g_snap;   /* guarded by: g_frame_lock */
+#if defined(CONFIG_FONT_CELL_H) && (CONFIG_FONT_CELL_H == 32)
+static uint16_t    g_snap_cells[TERM_SNAP_CELLS] BULK_BSS;   /* guarded by: g_frame_lock; PSRAM: low SRAM is full */
+#endif
+
+typedef enum {
+    TERM_NONE,       /* nothing to draw (no frame, or a test holds it) */
+    TERM_UNLOCKED,   /* term_draw() may run without console_lock */
+    TERM_LOCKED,     /* the cells did not fit the snapshot: draw before console_unlock() */
+} term_go_t;
+
+/* Under console_lock and g_frame_lock: the rows into the shadow, the dirty
+ * marks, and the snapshot term_draw() reads. */
+static term_go_t term_snapshot(unsigned y0, unsigned y1) {
     /* The frame once: every switch of it (fb_start(), from `lcd colours` or
-     * `lcd fb`) holds console_lock, as this does -- the lcdflush task once
+     * `lcd fb`) holds g_frame_lock, as this does -- the lcdflush task once
      * converted into a frame that `lcd colours` had just set to NULL (a
      * store to 0xad000, row 346 of an RGB565 frame; 47.7's HIL run). */
-    if (!fb_back() || !g_t1 || g_fb_fmt == FB_NONE || g_t_hold) return;
+    if (!fb_back() || !g_t1 || g_fb_fmt == FB_NONE || g_t_hold) return TERM_NONE;
     /* While a flip is pending the back buffer is the next front: drawing into
      * it would put a half-drawn frame on the glass at the frame end. So the
      * flip is taken back instead of waited for (under g_scan_lock, so a frame
@@ -1430,8 +1490,6 @@ static void term_convert(unsigned y0, unsigned y1) {
         g_flip_pending = false;
         spin_unlock_irqrestore(&g_scan_lock, f);
     }
-    uint8_t *fb = fb_back();
-    fb_fmt_t fmt = g_fb_fmt;
     if (y1 > g_tbe.h) y1 = g_tbe.h;
     uint64_t t0 = time_get_us();
 
@@ -1493,6 +1551,78 @@ static void term_convert(unsigned y0, unsigned y1) {
             }
         }
     }
+
+    term_snap_t *sn = &g_snap;
+    term_go_t go = TERM_UNLOCKED;
+    sn->force = g_t_force;
+    sn->rearm = rearm;
+    sn->t0 = t0;
+
+    /* An RGB565 canvas on a GRAY8 frame switches the frame first: fb_start()
+     * marks every row and cell dirty, so the drawing repaints it whole. */
+    uint8_t cids[4];
+    int ccount = lcdterm_get_visible_canvases565(cids, sn->cx0, sn->cy0, sn->cx1, sn->cy1, 4);
+    if (ccount > 0 && g_fb_fmt != FB_RGB565) {
+        if (!g_lut565) g_lut565 = (uint16_t (*)[8])palloc_pages_bulk(1);
+        if (g_lut565 && fb_start(FB_RGB565)) lut_build();
+    }
+    sn->nc = 0;
+    for (int i = 0; i < ccount; i++) {
+        uint32_t st = 0;
+        int w = 0, h = 0;
+        const uint16_t *buf = lcdterm_get_canvas565_backing(cids[i], &st, &w, &h);
+        if (!buf) continue;
+        int k = sn->nc++;
+        sn->cx0[k] = sn->cx0[i]; sn->cy0[k] = sn->cy0[i];
+        sn->cx1[k] = sn->cx1[i]; sn->cy1[k] = sn->cy1[i];
+        sn->cbuf[k] = buf; sn->cstride[k] = st; sn->cw[k] = w; sn->ch[k] = h;
+    }
+
+    /* Readers by their place in the visible list, as s_reader_drawn_seq is. */
+    uint8_t rids[4];
+    sn->nr = lcdterm_get_visible_readers(rids, sn->rx0, sn->ry0, sn->rx1, sn->ry1, 4);
+    for (int i = 0; i < sn->nr; i++) {
+        sn->rseq[i] = reader_get_seq(rids[i]);
+        sn->rstride[i] = 0; sn->rw[i] = 0; sn->rh[i] = 0;
+        sn->rbuf[i] = reader_get_aa_backing(rids[i], &sn->rstride[i], &sn->rw[i], &sn->rh[i]);
+    }
+
+    sn->nt = 0;
+#if defined(CONFIG_FONT_CELL_H) && (CONFIG_FONT_CELL_H == 32)
+    if (g_fb_fmt == FB_RGB565) {
+        int tc = lcdterm_get_visible_terms(sn->terms, 4);
+        uint32_t used = 0;
+        for (int t = 0; t < tc; t++) {
+            lcdterm_visible_term_t *vt = &sn->terms[t];
+            uint32_t need = (uint32_t)vt->rows * vt->cols;
+            if (used + need > TERM_SNAP_CELLS) { go = TERM_LOCKED; break; }
+            for (uint16_t r = 0; r < vt->rows; r++)
+                memcpy(&g_snap_cells[used + (uint32_t)r * vt->cols],
+                       vt->shadow + (uint32_t)r * vt->shadow_cols + vt->col_offset,
+                       (size_t)vt->cols * sizeof(uint16_t));
+            vt->shadow = &g_snap_cells[used];
+            vt->shadow_cols = vt->cols;
+            vt->col_offset = 0;
+            used += need;
+        }
+        if (go == TERM_LOCKED) tc = lcdterm_get_visible_terms(sn->terms, 4);   /* live: drawn under console_lock */
+        sn->nt = tc;
+    }
+#endif
+    return go;
+}
+
+/* Under g_frame_lock (and console_lock only for TERM_LOCKED): the dirty rows,
+ * readers, canvases and cells into the back buffer, then its write-back and
+ * the flip. Reads the shadow, the frame side and g_snap, nothing a terminal's
+ * writer changes. */
+static void term_draw(void) {
+    const term_snap_t *sn = &g_snap;
+    uint8_t *fb = fb_back();
+    fb_fmt_t fmt = g_fb_fmt;
+    unsigned stride = g_tbe.stride;
+    bool rearm = sn->rearm;
+    uint64_t t0 = sn->t0;
 
     /* 2. Convert dirty rows for the back buffer */
     unsigned back_idx = g_double_buffered ? (1u - g_front_idx) : 0u;
@@ -1614,21 +1744,18 @@ static void term_convert(unsigned y0, unsigned y1) {
     }
 
     /* 2b. Composite visible anti-aliased Reader windows onto fb_back() */
-    uint8_t rids[4];
-    int rx0[4], ry0[4], rx1[4], ry1[4];
-    int rcount = lcdterm_get_visible_readers(rids, rx0, ry0, rx1, ry1, 4);
-    for (int i = 0; i < rcount; i++) {
-        uint32_t seq = reader_get_seq(rids[i]);
-        if (s_reader_drawn_seq[back_idx][i] == seq && !g_t_force) continue;
+    for (int i = 0; i < sn->nr; i++) {
+        uint32_t seq = sn->rseq[i];
+        if (s_reader_drawn_seq[back_idx][i] == seq && !sn->force) continue;
         s_reader_drawn_seq[back_idx][i] = seq;
 
-        uint32_t aa_stride = 0;
-        int aa_w = 0, aa_h = 0;
-        uint8_t *aa_buf = reader_get_aa_backing(rids[i], &aa_stride, &aa_w, &aa_h);
+        uint32_t aa_stride = sn->rstride[i];
+        int aa_h = sn->rh[i];
+        uint8_t *aa_buf = sn->rbuf[i];
         if (!aa_buf) continue;
 
-        int x0 = rx0[i], x1 = rx1[i];
-        int y0 = ry0[i], y1 = ry1[i];
+        int x0 = sn->rx0[i], x1 = sn->rx1[i];
+        int y0 = sn->ry0[i], y1 = sn->ry1[i];
 
         int cl_x0 = x0 < 0 ? 0 : x0;
         int cl_x1 = x1 >= (int)g_tbe.w ? (int)g_tbe.w - 1 : x1;
@@ -1700,39 +1827,14 @@ static void term_convert(unsigned y0, unsigned y1) {
     }
 
     /* 2c. Composite visible RGB565 color canvases onto fb_back() */
-    uint8_t cids[4];
-    int cx0[4], cy0[4], cx1[4], cy1[4];
-    int ccount = lcdterm_get_visible_canvases565(cids, cx0, cy0, cx1, cy1, 4);
-    if (ccount > 0 && g_fb_fmt != FB_RGB565) {
-        if (!g_lut565) {
-            g_lut565 = (uint16_t (*)[8])palloc_pages_bulk(1);
-        }
-        if (g_lut565 && fb_start(FB_RGB565)) {
-            lut_build();
-            fmt = g_fb_fmt;
-            fb = fb_back();
-            for (unsigned y = 0; y < DSI_LCD_V_RES; y++) {
-                uint16_t *dst = (uint16_t *)fb + (size_t)y * DSI_LCD_H_RES;
-                const uint8_t *sh = g_t1 + y * stride;
-                for (unsigned b = 0; b < stride; b++) {
-                    const uint16_t *pix = g_lut565[sh[b]];
-                    for (unsigned p = 0; p < 8; p++) dst[b * 8 + p] = pix[p];
-                }
-            }
-            lo = 0;
-            hi = DSI_LCD_V_RES - 1;
-            n = DSI_LCD_V_RES;
-        }
-    }
-    for (int i = 0; i < ccount; i++) {
-        uint32_t c_stride = 0;
-        int c_w = 0, c_h = 0;
-        const uint16_t *c_buf = lcdterm_get_canvas565_backing(cids[i], &c_stride, &c_w, &c_h);
-        if (!c_buf) continue;
+    for (int i = 0; i < sn->nc; i++) {
+        uint32_t c_stride = sn->cstride[i];
+        int c_h = sn->ch[i];
+        const uint16_t *c_buf = sn->cbuf[i];
 
-        int x0 = cx0[i], x1 = cx1[i];
-        int y0 = cy0[i];
-        int y1 = cy1[i];
+        int x0 = sn->cx0[i], x1 = sn->cx1[i];
+        int y0 = sn->cy0[i];
+        int y1 = sn->cy1[i];
 
         int cl_x0 = x0 < 0 ? 0 : x0;
         int cl_x1 = x1 >= (int)g_tbe.w ? (int)g_tbe.w - 1 : x1;
@@ -1812,8 +1914,8 @@ static void term_convert(unsigned y0, unsigned y1) {
         uint64_t trows_mask = g_dirty_trows[back_idx];
         g_dirty_trows[back_idx] = 0;
         if (trows_mask) {
-            lcdterm_visible_term_t terms[4];
-            int tcount = lcdterm_get_visible_terms(terms, 4);
+            const lcdterm_visible_term_t *terms = sn->terms;
+            int tcount = sn->nt;
             if (tcount > 0) {
                 uint16_t norm_lut[16];
                 uint16_t inv_lut[16];
@@ -1989,6 +2091,21 @@ static void term_convert(unsigned y0, unsigned y1) {
 
 /* 47.11: idle blanking -- dark, or back to what `lcd backlight` / `lcd bl`
  * last set, without changing either. */
+/* A test takes the frame: set under both locks, so no conversion is in the
+ * middle of drawing when the test starts. */
+static void term_hold(void) {
+    frame_begin();
+    g_t_hold = (g_t1 != NULL);
+    frame_end();
+}
+
+/* With console_lock held, as every caller but the flush task: both steps. */
+static void term_convert(unsigned y0, unsigned y1) {
+    ylock_acquire(&g_frame_lock);
+    if (term_snapshot(y0, y1) != TERM_NONE) term_draw();
+    ylock_release(&g_frame_lock);
+}
+
 static void term_blank(bool off) {
     bl_set(off || !g_bl_on ? 0u : g_bl_level);
 }
@@ -1999,6 +2116,10 @@ static void term_blank(bool off) {
  * scanline collision and tearing. */
 static void term_sync_pre(void) { }
 
+/* A synchronous full redraw (the end of an animation, a rotation): the glass
+ * must match before the caller goes on, so it converts under console_lock as
+ * well -- 170 ms on the Tab5's rotated frame (`lockcheck`). Rare by design;
+ * the rotated blit's cost is the display task's to reduce. */
 static void term_sync_post(void) {
 #if defined(CONFIG_ESP32P4_REV) && CONFIG_ESP32P4_REV >= 300
     if (!g_double_buffered && g_scanning) {
@@ -2009,17 +2130,27 @@ static void term_sync_post(void) {
         }
     }
 #endif
-    console_lock();
+    frame_begin();
     g_t_force = true;
     term_convert(0, DSI_LCD_V_RES);
     g_t_due = false;
     /* the flip term_convert() armed, taken at the frame end */
     if (g_double_buffered) (void)gdma_wait_flip(50000u);
-    console_unlock();
+    frame_end();
 }
 
 static bool term_capture(const uint8_t **fb, unsigned *w, unsigned *h, unsigned *stride, unsigned *format) {
     if (!g_fb_fmt) return false;
+    /* What the terminal holds now, not what the paced conversion last put on
+     * the glass: a screenshot taken right after a write would otherwise
+     * depend on where the flush task's 16 ms period stood. */
+    frame_begin();
+    if (g_t1 && !g_t_hold) {
+        term_convert(0, g_tbe.h);
+        g_t_due = false;
+        if (g_double_buffered) (void)gdma_wait_flip(50000u);
+    }
+    frame_end();
     uint8_t *front = fb_front();
     if (!front) return false;
     *fb = front;
@@ -2061,11 +2192,11 @@ static lcdterm_backend_t g_tbe = {
 /* The whole terminal again, from its 1-bpp frame -- after a test pattern
  * drew over the glass, or a colour or format change. */
 static void term_redraw(void) {
-    console_lock();
+    frame_begin();
     g_t_hold = false;
     g_t_force = true;
     term_convert(0, g_tbe.h);
-    console_unlock();
+    frame_end();
 }
 
 /* Every 16 ms: if anything was drawn since the last pass, convert it. Under
@@ -2077,9 +2208,13 @@ static void term_flush_task(void *arg) {
         if (!g_t_due || lcdterm_is_animating()) continue;
         console_lock();
         g_t_due = false;
-        term_convert(0, g_tbe.h);
-        g_t_paced_passes++;
+        ylock_acquire(&g_frame_lock);
+        term_go_t go = term_snapshot(0, g_tbe.h);
+        if (go == TERM_LOCKED) term_draw();
         console_unlock();
+        if (go == TERM_UNLOCKED) term_draw();   /* the writers no longer wait for this */
+        g_t_paced_passes++;
+        ylock_release(&g_frame_lock);
     }
 }
 
@@ -2094,7 +2229,8 @@ int dsi_lcd_term_task_start(void) {
     return pid;
 }
 
-/* `lcd colours FG BG`: RGB565 hex, as on the RP2350. */
+/* `lcd colours FG BG`: RGB565 hex, as on the RP2350. A full redraw in the new
+ * colours under console_lock (about 100 ms): a command, not a hot path. */
 static void term_colours(uint16_t fg, uint16_t bg) {
     bool gf, gb;
     (void)gray_of(fg, &gf);
@@ -2104,19 +2240,21 @@ static void term_colours(uint16_t fg, uint16_t bg) {
 #else
     fb_fmt_t want = (gf && gb) ? FB_GRAY8 : FB_RGB565;
 #endif
-    console_lock();                     /* the lcdflush task converts under it */
+    frame_begin();                     /* the lcdflush task converts under it */
     g_t_fg = fg;
     g_t_bg = bg;
     if (want == FB_RGB565 && !g_lut565) {
         g_lut565 = (uint16_t (*)[8])palloc_pages_bulk(1);
-        if (!g_lut565) { console_unlock(); cprintf("lcd: no page for the RGB565 table\n"); return; }
+        if (!g_lut565) { frame_end(); cprintf("lcd: no page for the RGB565 table\n"); return; }
     }
-    if (want != g_fb_fmt && !fb_start(want)) { console_unlock(); return; }
+    if (want != g_fb_fmt && !fb_start(want)) { frame_end(); return; }
     lut_build();
     term_redraw();
-    console_unlock();
+    frame_end();
 }
 
+/* accepted: holds console_lock for the whole run (seconds) -- it measures the
+ * console path itself, and other writers would be what it measured. */
 /* `lcd termbench`: what a character and a scroll cost on the glass, through
  * the real console path (console_putc, then the flush that runs at every
  * write boundary), conversion and write-back included. The tee is off
@@ -2129,7 +2267,7 @@ static void term_bench(void) {
     uint32_t ch_best = 0xffffffffu, ch_worst = 0, ch_sum = 0;
     uint32_t sc_best = 0xffffffffu, sc_worst = 0, sc_sum = 0;
     enum { CH = 60, SC = 40 };
-    console_lock();
+    frame_begin();
     console_putc('\n');
     console_flush();
     for (unsigned i = 0; i < CH; i++) {
@@ -2164,7 +2302,7 @@ static void term_bench(void) {
         console_flush();
     }
     uint32_t tee_us = (uint32_t)(time_get_us() - t2);
-    console_unlock();
+    frame_end();
     task_sleep_ms(40);                 /* let the pacer show the last of it */
     cprintf("lcd termbench: 200 lines of 55 in %lu ms = %lu lines/s (%s); with the tee to %s: %lu ms = %lu lines/s\n",
             (unsigned long)(lines_us / 1000u),
@@ -2211,6 +2349,7 @@ int dsi_lcd_term_start(void) {
     }
     lut_build();
     g_t_force = true;
+    console_set_frame_lock(frame_lock_take, frame_lock_give);
     if (lcdterm_init(&g_tbe) != 0) return -1;
     term_redraw();
     printk("[LCD] terminal on the panel: %u x %u cells, 1-bpp frame at 0x%08lx, %s frame at 0x%08lx%s\n",
@@ -2229,7 +2368,7 @@ int dsi_lcd_set_orientation(int rot) {
 #if defined(CONFIG_BOARD_TAB5)
     if (rot != 0 && rot != 90 && rot != 180 && rot != 270) return -1;
     if (g_lcd_rot == rot) return 0;
-    console_lock();
+    frame_begin();
     g_lcd_rot = rot;
     if (rot == 90 || rot == 270) {
         g_tbe.w = 1280;
@@ -2248,7 +2387,7 @@ int dsi_lcd_set_orientation(int rot) {
     /* The frame buffers are not cleared: the full redraw below rewrites
      * every pixel of both, and clearing the one being scanned out put black
      * on the glass until then. */
-    console_unlock();
+    frame_end();
     /* lcdterm_reinit() only marks the screen damaged; without a repaint the
      * panel stays black until the next console output. Then both frames:
      * the one not being shown is otherwise left blank until the next change
@@ -2446,10 +2585,10 @@ void dsi_lcd_command(const char *args) {
         else if (strcmp(p, "ber") == 0) pat = PAT_BER;
         else if (strcmp(p, "off") == 0) pat = PAT_NONE;
         else { cprintf("usage: lcd pattern [bars|hbars|ber|off]\n"); return; }
-        console_lock();                 /* as fb_start()'s callers: the scan-out state */
-        if (!dsi_lcd_init()) { console_unlock(); cprintf("lcd: bring-up failed: %s\n", g_reason); return; }
+        frame_begin();                 /* as fb_start()'s callers: the scan-out state */
+        if (!dsi_lcd_init()) { frame_end(); cprintf("lcd: bring-up failed: %s\n", g_reason); return; }
         set_pattern(pat);
-        console_unlock();
+        frame_end();
         cprintf("lcd: %s\n", g_pattern);
         return;
     }
@@ -2495,10 +2634,10 @@ void dsi_lcd_command(const char *args) {
         fb_fmt_t f = FB_GRAY8;
         if (strcmp(p, "rgb565") == 0) f = FB_RGB565;
         else if (*p && strcmp(p, "gray") != 0) { cprintf("usage: lcd fb [gray|rgb565]\n"); return; }
+        frame_begin();                 /* as term_colours(): no conversion mid-switch */
         g_t_hold = (g_t1 != NULL);
-        console_lock();                 /* as term_colours(): no conversion mid-switch */
         bool started = fb_start(f);
-        console_unlock();
+        frame_end();
         if (!started) { cprintf("lcd: frame buffer not started\n"); return; }
         draw(pat_grid);
         dsi_lcd_fb_flush(0, DSI_LCD_V_RES);
@@ -2527,11 +2666,11 @@ void dsi_lcd_command(const char *args) {
                 cprintf("lcd: no active frame buffer\n");
                 return;
             }
-            console_lock();
+            frame_begin();
             uint8_t *fb1 = palloc_pages_bulk(g_fb_pages);
             if (!fb1 || !palloc_is_bulk(fb1)) {
                 if (fb1) palloc_free(fb1, g_fb_pages);
-                console_unlock();
+                frame_end();
                 cprintf("lcd: no PSRAM for second buffer\n");
                 return;
             }
@@ -2544,7 +2683,7 @@ void dsi_lcd_command(const char *args) {
             g_dirty_trows[1] = 0;
             g_dirty_x0[0] = 0xffff; g_dirty_x1[0] = 0;
             g_dirty_x0[1] = 0xffff; g_dirty_x1[1] = 0;
-            console_unlock();
+            frame_end();
             cprintf("lcd: double-buffering enabled (front 0x%08lx, back 0x%08lx)\n",
                     (unsigned long)(uintptr_t)fb_front(),
                     (unsigned long)(uintptr_t)fb_back());
@@ -2555,7 +2694,7 @@ void dsi_lcd_command(const char *args) {
                 cprintf("lcd: double-buffering already disabled\n");
                 return;
             }
-            console_lock();
+            frame_begin();
             (void)gdma_wait_flip(50000u);
             g_double_buffered = false;
             if (g_front_idx != 0) {
@@ -2576,7 +2715,7 @@ void dsi_lcd_command(const char *args) {
                 palloc_free(g_fb_pool[1], g_fb_pages);
                 g_fb_pool[1] = NULL;
             }
-            console_unlock();
+            frame_end();
             cprintf("lcd: double-buffering disabled\n");
             return;
         }
@@ -2638,11 +2777,11 @@ void dsi_lcd_command(const char *args) {
         if (!g_fb_pool[0]) { cprintf("lcd: no frame buffer -- `lcd fb [gray|rgb565]` first\n"); return; }
     }
     if (strcmp(args, "fps") == 0) { cmd_fps(); return; }
-    if (strcmp(args, "bench") == 0) { g_t_hold = (g_t1 != NULL); cmd_bench(); return; }
+    if (strcmp(args, "bench") == 0) { term_hold(); cmd_bench(); return; }
     if (strcmp(args, "verify") == 0) { cmd_verify(); return; }
     if (strncmp(args, "test", 4) == 0) {
         const char *p = skip_ws(args + 4);
-        g_t_hold = (g_t1 != NULL);
+        term_hold();
         if (strcmp(p, "checker") == 0) draw(pat_checker);
         else if (strcmp(p, "grid") == 0) draw(pat_grid);
         else if (strcmp(p, "page") == 0) draw_text_page();   /* 47.5's; `test text` is the terminal's */
@@ -2667,7 +2806,7 @@ void dsi_lcd_command(const char *args) {
         unsigned secs = 0;
         while (*q >= '0' && *q <= '9') secs = secs * 10u + (unsigned)(*q++ - '0');
         if (!secs) secs = 10;
-        g_t_hold = (g_t1 != NULL);
+        term_hold();
         fill(0xff);
         dsi_lcd_fb_flush(0, DSI_LCD_V_RES);
         if (g_double_buffered) dsi_lcd_flip(true);

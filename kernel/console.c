@@ -39,7 +39,7 @@ static int         g_con_max_pid = -1;
 static const char *g_con_max_site;
 #define CON_LONG_RING 4u
 static struct { const char *site; uint32_t ms; int pid; } g_con_long[CON_LONG_RING];
-static uint32_t    g_con_long_n;
+static uint32_t    g_con_long_n;   /* guarded by: g_console_lock, as the above */
 
 void console_lock_at(const char *site) {
     /* The rule G2 added, now pointing at what it actually guards (§5.6): a
@@ -75,6 +75,17 @@ void console_lock_hold_stats(uint32_t hist[CONSOLE_HOLD_BUCKETS], uint32_t *max_
     *max_pid = g_con_max_pid;
     *max_site = g_con_max_site;
 }
+
+/* single task: set once, by the panel's terminal start. */
+static void (*g_frame_lock_fn)(void);
+static void (*g_frame_unlock_fn)(void);
+
+void console_set_frame_lock(void (*lock)(void), void (*unlock)(void)) {
+    g_frame_lock_fn = lock;
+    g_frame_unlock_fn = unlock;
+}
+void console_frame_lock(void)   { if (g_frame_lock_fn) g_frame_lock_fn(); }
+void console_frame_unlock(void) { if (g_frame_unlock_fn) g_frame_unlock_fn(); }
 
 bool console_lock_long_hold(unsigned i, const char **site, uint32_t *ms, int *pid) {
     uint32_t n = g_con_long_n < CON_LONG_RING ? g_con_long_n : CON_LONG_RING;

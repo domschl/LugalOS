@@ -1,6 +1,6 @@
 # Phase 63 — Concurrency Review: Shared State, Ownership, Locks
 
-**Status: in progress (63.1–63.5 done). Written 2026-10-18.** Scheduled before phase 62 Part B (audio).
+**Status: in progress (63.1–63.6 done). Written 2026-10-18.** Scheduled before phase 62 Part B (audio).
 Milestone scheme: `63.1`, `63.2`, …
 
 ---
@@ -437,6 +437,74 @@ actually ran on hart 1 is for 63.7's harness.
   redraw is one) are measured with a hold-time histogram in `lockcheck`. Anything over a
   threshold gets a reason in a comment or is shortened.
 
+**Done (2026-10-19).**
+
+*Shared hardware words (class 5).* Clock gates and reset lines are the words several drivers
+read-modify-write. I resolved every compound register update in the P4 build to its address.
+Seven words in HP_SYS_CLKRST are written from more than one file:
+- SOC_CLK_CTRL0/1/2, REF_CLK_CTRL2, ANA_PLL_CTRL0, HP_RST_EN0/1;
+- EMAC's helper adds PERI_CLK_CTRL00/01 and the SDMMC/EMAC reset word.
+
+Several of those drivers come up at run time (the panel on the first `lcd`, the LLP task's SD
+host, `smpstart`, I2C's re-bring-up), so two updates could lose one: a gate closed again, a
+reset left asserted. Fixed:
+- `sysreg_update()` (kernel/sysreg.h), under one spinlock, for every read-modify-write in the
+  HP_SYS_CLKRST and LP_CLKRST blocks. The drivers' field helpers route there by address;
+  `sysreg_lock()` covers the multi-statement updates.
+- The RP2350's GPIO_NSMASK0 (seven drivers) is written through its atomic set alias, which
+  needs no password. RESETS already used the aliases.
+- The C6's PCR is one word per peripheral.
+- One CPU frequency switch at a time (`g_freq_lock`): `cpufreq` from two terminals
+  interleaved the mux, divider and PLL steps.
+
+*Lock order (owner's decisions: learned, on in every build).*
+- When a context holding ylock A takes ylock B, the pair A->B is recorded once. A later B->A
+  is reported once, report and continue.
+- Locks are told apart by address. A try-acquire adds no pair into itself.
+- 6-deep held stacks per context and 96 pairs: about 2.8 KB on rv32.
+- `lockselftest` checks learning, reporting, re-entry and try-acquire.
+- After every suite: the P4 boards 44–46 pairs, the RP2350 23, **0 inversions** anywhere.
+
+*`console_lock` hold times.*
+- `console_lock()` passes its caller's name. `lockcheck [pairs]` shows the histogram, the
+  longest hold and the last holds of 100 ms or more.
+- Found: on the Tab5 the panel's flush task held it 64–256 ms on every redraw that scrolled
+  (the rotated blit), about 175 times per suite run, and every terminal waited behind it.
+- Owner's decision: split the lock, and schedule the blit's speed-up (63.6b).
+
+| # | where | what | fix |
+| :--- | :--- | :--- | :--- |
+| F44 | P4 clock/reset words, RP2350 NSMASK0 | read-modify-write from several drivers, some at run time | `sysreg_update()`; the atomic set alias |
+| F45 | arch/riscv/common/clk_esp32p4.c | two `cpufreq` at once interleave a multi-step switch | `g_freq_lock` |
+| F46 | drivers/dsi_esp32p4.c | the conversion ran entirely under console_lock | split: `term_snapshot()` (console_lock + `g_frame_lock`: the rows into the shadow, and a snapshot of the reader and canvas rectangles, their backings and a copy of the visible cells) and `term_draw()` (`g_frame_lock` alone); every frame-side change takes both (`frame_begin()`), and readers and canvases free their pixels under the frame lock (`console_frame_lock()`) |
+
+After the split, on the Tab5: holds of 64–256 ms went from about 175 to 21 per suite run, and
+the flush task is no longer among the long holds. What remains has a reason in the code:
+- `term_sync_post` (~170 ms): a synchronous full redraw for animations and rotation.
+- `term_colours` (~100 ms): a command.
+- `term_bench` (seconds): a benchmark of the console path itself.
+- `lcdterm_canvas` (745–836 ms): one canvas operation from Lisp in the RGB565 canvas test. Not
+  explained yet (the fill itself is a plain loop); measured in 63.6b.
+
+A screenshot now converts what is pending and waits for the flip before it reads the front
+buffer. Before, it caught whatever the paced conversion had last put on the glass, so a
+command's own echo was there or not depending on timing.
+
+LCD-7B, lcdterm_shots terminal scenario, before and after the split, 1-bit compare: identical
+but for the status bar and one 16-row band per shot (the echo above). The tool itself only
+reads 1-bit PBM; screenshots have been P5/P6 since phase 55, so it needs updating (63.6b).
+
+Tested: QEMU 514/514; Tab5, LCD-7B, NANO 50/50; RP2350 terminal 34/34.
+
+### 63.6b The panel's conversion cost (scheduled by the owner)
+
+- The Tab5's rotated blit, now 100–250 ms for a full redraw: word-wide 8x8 transposes instead
+  of per-bit work, aiming at the LCD-7B's 8–16 ms.
+- `term_sync_post`'s full redraw falls with it.
+- Measure the 745–836 ms `lcdterm_canvas` hold (an RGB565 canvas opened and filled from
+  Lisp).
+- `tests/hw/lcdterm_shots.py --compare`: read P5/P6, and run on the Tab5.
+
 ### 63.7 Stress harness
 
 Load that makes collisions likely instead of lucky:
@@ -476,6 +544,7 @@ Load that makes collisions likely instead of lucky:
 
 1. ~~Whether `chan_call` should queue waiting callers (63.4), once the cost is known.~~
    Decided 2026-10-19: a FIFO, opt-in through `chan_call_wait()`.
-2. Whether the lock-rank check stays on in release builds or is debug-only.
+2. ~~Whether the lock-rank check stays on in release builds or is debug-only.~~ Decided
+   2026-10-19: a learned order rather than ranks, on in every build.
 3. Whether `racescan.py` failing the runner is acceptable from 63.8 on, which makes new
    statics need their ownership comment before merge.

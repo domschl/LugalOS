@@ -74,6 +74,14 @@ void console_lock_hold_stats(uint32_t hist[CONSOLE_HOLD_BUCKETS], uint32_t *max_
  * the end. */
 #define CONSOLE_LONG_HOLD_MS 100u
 bool console_lock_long_hold(unsigned i, const char **site, uint32_t *ms, int *pid);
+
+/* The panel's frame lock, for code that frees what the panel's conversion
+ * reads (a reader's or a canvas's pixels): taken after console_lock, so the
+ * buffer is not freed under a conversion that runs without console_lock
+ * (drivers/dsi_esp32p4.c). No-ops until a panel registers one. */
+void console_set_frame_lock(void (*lock)(void), void (*unlock)(void));
+void console_frame_lock(void);
+void console_frame_unlock(void);
 void console_unlock(void);
 /* Whether the calling context holds console_lock() -- for a writer that
  * relies on it to check that it is really there (phase31 §7 R4). */
