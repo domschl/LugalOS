@@ -105,8 +105,131 @@ static void power_log_task(void *arg) {
     g_log.active = false;
 }
 
+/* --- The automatic log ---------------------------------------------------
+ *
+ * On by default while LugalOS is in development (CONFIG_POWER_LOG_AUTO): a
+ * record of how the board is really used, for the charge estimate and for
+ * finding what drains it. One line a minute, and one at once when something
+ * moves -- the state (charging, discharging, idle) or the charger's status
+ * line, the current by more than AUTO_DMA, the voltage by more than AUTO_DMV,
+ * the charge by a percent -- so a plug-in or a load step is caught to the
+ * second without a line every second for days. One file a day in AUTO_DIR
+ * (8.3 names: PYYMMDD.CSV, local date; PNODATE.CSV until the clock is set),
+ * the UTC time in every line, so a file can span reboots. */
+#ifndef CONFIG_POWER_LOG_AUTO
+#define CONFIG_POWER_LOG_AUTO 1
+#endif
+#define AUTO_DIR      "/sd0/log"
+#define AUTO_PERIOD_S 60u
+#define AUTO_DMA      100
+#define AUTO_DMV      50
+#define AUTO_DSOC     10      /* per mille */
+
+/* single task: the auto log task, but for `stop`, which a shell or the power
+ * task stores; `lines`, `path` and `errors` are read by `power log` as a
+ * snapshot (accepted: a statistic). */
+static struct {
+    volatile bool active;
+    volatile bool stop;
+    char     path[32];
+    uint32_t lines, errors;
+} g_auto;
+
+static void auto_path(char *out, uint32_t cap) {
+    if (!time_is_set()) {
+        ksnprintf(out, cap, AUTO_DIR "/PNODATE.CSV");
+        return;
+    }
+    rtc_time_t tm;
+    time_get_local(&tm);
+    ksnprintf(out, cap, AUTO_DIR "/P%02u%02u%02u.CSV",
+              (unsigned)(tm.year % 100u), (unsigned)tm.month, (unsigned)tm.day);
+}
+
+static void power_auto_task(void *arg) {
+    (void)arg;
+    /* /sd0 is mounted after the power task starts; a board without a card logs nothing. */
+    vfs_stat_t st;
+    while (!g_auto.stop && vfs_stat("/sd0", &st) != 0) task_sleep_ms(5000);
+    (void)vfs_mkdir(AUTO_DIR);                    /* fails harmlessly if it exists */
+    power_now_t last;
+    memset(&last, 0, sizeof last);
+    int last_chg = -2;
+    const char *last_state = "";
+    uint64_t last_ms = 0;
+    bool first = true;
+    while (!g_auto.stop) {
+        task_sleep_ms(1000);
+        power_now_t p;
+        power_now(&p);
+        if (!p.have) continue;
+        int chg = charger_stat_raw();
+        const char *state = power_state(&p);
+        uint64_t now = time_get_ms();
+        char why = 0;
+        if (first) why = 'b';                                        /* boot */
+        else if (strcmp(state, last_state) != 0 || chg != last_chg) why = 's';
+        else if (p.ma - last.ma > AUTO_DMA || last.ma - p.ma > AUTO_DMA) why = 'i';
+        else if (p.mv - last.mv > AUTO_DMV || last.mv - p.mv > AUTO_DMV) why = 'v';
+        else if (p.have_soc && (p.soc_pm - last.soc_pm >= AUTO_DSOC || last.soc_pm - p.soc_pm >= AUTO_DSOC)) why = 'q';
+        else if (now - last_ms >= AUTO_PERIOD_S * 1000u) why = 't';  /* the minute */
+        if (!why) continue;
+
+        char path[sizeof g_auto.path];
+        auto_path(path, sizeof path);
+        if (strcmp(path, g_auto.path) != 0) {                        /* a new day: a new file */
+            if (vfs_stat(path, &st) != 0) {
+                static const char hdr[] = "utc_s,uptime_s,mv,ma,mw,soc_pm,chg_stat,why\n";
+                (void)vfs_append(path, hdr, sizeof hdr - 1);
+            }
+            memcpy(g_auto.path, path, sizeof path);
+        }
+        char line[96];
+        int64_t utc = time_is_set() ? time_epoch_us() / 1000000 : 0;
+        int n = ksnprintf(line, sizeof line, "%ld,%lu,%ld,%ld,%ld,%ld,%d,%c\n",
+                          (long)utc, (unsigned long)(now / 1000u), (long)p.mv, (long)p.ma,
+                          (long)p.mw, (long)(p.have_soc ? p.soc_pm : -1), chg, why);
+        if (n > 0 && vfs_append(g_auto.path, line, (uint32_t)n) >= 0) g_auto.lines++;
+        else g_auto.errors++;
+        last = p;
+        last_chg = chg;
+        last_state = state;
+        last_ms = now;
+        first = false;
+    }
+    g_auto.active = false;
+}
+
+static bool power_auto_start(void) {
+    if (g_auto.active) return true;
+    g_auto.stop = false;
+    g_auto.active = true;
+    /* Three pages: a FAT append to the card goes deeper than one (the
+     * scheduler caught it filling 4 KB). */
+    if (task_create_sized("power_auto", power_auto_task, NULL, 3) < 0) {
+        g_auto.active = false;
+        return false;
+    }
+    return true;
+}
+
+static void power_auto_stop(void) {
+    if (!g_auto.active) return;
+    g_auto.stop = true;
+    for (int i = 0; i < 60 && g_auto.active; i++) task_sleep_ms(50);
+}
+
 static void power_log_cmd(const char *arg) {
     while (*arg == ' ') arg++;
+    if (strcmp(arg, "auto on") == 0) {
+        cprintf(power_auto_start() ? "power log: automatic log on (%s)\n" : "power log: no task\n", AUTO_DIR);
+        return;
+    }
+    if (strcmp(arg, "auto off") == 0 || strcmp(arg, "off") == 0) {
+        power_auto_stop();
+        cprintf("power log: automatic log off\n");
+        return;
+    }
     if (strcmp(arg, "stop") == 0) {
         if (!g_log.active) { cprintf("power log: not running\n"); return; }
         g_log.stop = true;
@@ -114,8 +237,14 @@ static void power_log_cmd(const char *arg) {
         return;
     }
     if (!*arg) {
-        if (g_log.active) cprintf("power log: %lu lines in %s\n", (unsigned long)g_log.lines, g_log.path);
-        else cprintf("usage: power log FILE [seconds] | power log stop\n");
+        if (g_auto.active)
+            cprintf("power log: automatic, %lu lines in %s (%lu failed writes); a line a minute and at every change\n",
+                    (unsigned long)g_auto.lines, g_auto.path[0] ? g_auto.path : AUTO_DIR,
+                    (unsigned long)g_auto.errors);
+        else
+            cprintf("power log: automatic log off\n");
+        if (g_log.active) cprintf("power log: %lu lines in %s, one a second\n", (unsigned long)g_log.lines, g_log.path);
+        cprintf("usage: power log [auto on|auto off] | power log FILE [seconds] | power log stop\n");
         return;
     }
     if (g_log.active) { cprintf("power log: already logging to %s\n", g_log.path); return; }
@@ -157,6 +286,7 @@ static void power_off_now(const char *why) {
         g_log.stop = true;
         for (int i = 0; i < 40 && g_log.active; i++) task_sleep_ms(50);
     }
+    power_auto_stop();
     /* Files are written through and their FSInfo synced at close; what the
      * pause covers is a write another task has in flight right now. */
     task_sleep_ms(500);
@@ -218,6 +348,7 @@ void power_init(void) {
         if (charger_get_mode(&m)) g.mode = m;
     }
     g.pid = task_create_sized("power", power_task, NULL, 1);
+    if (CONFIG_POWER_LOG_AUTO && battery_board()) (void)power_auto_start();
 }
 
 /* --- What `power` shows and /dev/power reads --------------------------- */
@@ -345,5 +476,5 @@ void power_cmd(const char *arg) {
         return;
     }
     cprintf("usage: power | power charge [off|slow|fast] | power limit [N|off] | power off\n"
-            "       power log FILE [seconds] | power log stop\n");
+            "       power log [auto on|auto off] | power log FILE [seconds] | power log stop\n");
 }
