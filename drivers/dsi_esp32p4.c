@@ -934,12 +934,19 @@ static void set_pattern(pattern_t p) {
 
 /* CTL0 (ctrl_lo) and CTL1 (ctrl_hi) of the item, from IDF's dpi_panel_init()
  * transfer config: src memory port 1, increment, 64-bit, burst 512; dst DSI
- * port 0, fixed, 64-bit, burst 256; AXI burst length 16 both ways. */
+ * port 0, fixed, 64-bit, burst 256; AXI write bursts 16, read bursts 32.
+ *
+ * The read burst is IDF's 16 doubled. Scan-out shares PSRAM with the CPU
+ * (`psram bench`: 80 MB/s memset with no panel, 43 under the Tab5's
+ * 107 MB/s of RGB565 scan-out), and every PSRAM transaction pays a fixed
+ * command and latency cost: 256-byte reads instead of 128 leave the CPU
+ * 57-60 MB/s there. 64 gains nothing more. 0 DMA errors, no underrun, the
+ * frame reads back exact (`lcd verify`). */
 #define LLI_CTL0  ((1u << 0) /* SMS = memory */ | (0u << 2) /* DMS = DSI */ | \
                    (0u << 4) /* SINC inc */ | (1u << 6) /* DINC fixed */ | \
                    (3u << 8) /* SRC 64-bit */ | (3u << 11) /* DST 64-bit */ | \
                    (8u << 14) /* SRC_MSIZE 512 */ | (7u << 18) /* DST_MSIZE 256 */)
-#define LLI_CTL1  ((1u << 6) | (16u << 7) /* ARLEN 16 */ | (1u << 15) | (16u << 16) /* AWLEN 16 */ | \
+#define LLI_CTL1  ((1u << 6) | (32u << 7) /* ARLEN 32 */ | (1u << 15) | (16u << 16) /* AWLEN 16 */ | \
                    (1u << 30) /* LAST */ | (1u << 31) /* VALID */)
 
 typedef struct {

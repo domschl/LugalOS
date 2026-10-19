@@ -564,6 +564,28 @@ way round (66 inversions in one run). `term_draw()` prints nothing; that is in i
 
 Tested: Tab5, LCD-7B, NANO 50/50; 0 inversions.
 
+*The PSRAM path (owner: investigate now).* An IDF build of the same benchmark (bootloader,
+partition table and app written below LugalOS's filesystem on the NANO, LugalOS restored
+afterwards; a RAM-loaded IDF app does not start on the P4) measured:
+- IDF: word write + write-back 82 MB/s, word read 102, `memset` 84, `memcpy` 56;
+- LugalOS on the NANO: 79, 101, 80, 50.
+
+So the PSRAM setup is at parity. Every MSPI, clock, divider, mode-register and cache setting
+was compared with IDF's and matches.
+
+The Tab5's half rate (43 MB/s `memset`) is its panel. RGB565 scan-out at 1280 x 720 and
+58 Hz reads 107 MB/s from PSRAM, and every transaction pays a fixed cost. The LCD-7B shows the
+same in between: 75 MB/s with GRAY8 scan-out, 65 with RGB565. The scan-out's AXI read burst,
+IDF's 16 beats, now 32: the Tab5's CPU gets 57–60 MB/s (+35%); 64 gains nothing more; 0 DMA
+errors, no underrun, the frame reads back exact. A slide on the Tab5: 535 ms (from 784–822 at
+the start of 63.6b).
+
+What remains is the scan-out itself: a lower refresh rate, or a smaller pixel format where
+the bridge takes one (the Tab5's v1.3 bridge is used in RGB565), would each return bandwidth.
+Those change what the panel shows and are for the owner. The NANO's flash keeps IDF's
+partition table and NVS in the unused tail of LugalOS's boot region (`0x8000`–`0x10000`);
+nothing reads it. NANO 50/50 afterwards.
+
 ### 63.7 Stress harness
 
 Load that makes collisions likely instead of lucky:
