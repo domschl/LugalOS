@@ -366,14 +366,16 @@ Tested:
   transfers.
 - LCD-7B 50/50, NANO 50/50, RP2350 terminal 34/34 (also after the RP2350 writer change).
 - C6-MINI 20/21: the DHCP lease again, which a C6 bridging wlan0 does not take.
-- st7735, tm1638 and the clock driver compile (rp2350-clock builds; rp2350-chess fails to link
-  on `prim_rgb` in the Lisp builtins table, unrelated). Not run on hardware.
+- rp2350-chess board 34/34: its st7735, tm1638 and sdblk tasks serve through
+  `chan_call_wait()`. The preset had stopped linking (`prim_rgb` defined only for non-ST7735
+  builds); fixed. The clock driver compiles (rp2350-clock), not run on hardware.
+- LCD-7B again 50/50 on the final build.
 
-Open: after the C6 suite's RAM-loaded session, the NANO's C6-MINI no longer boots from flash.
-The loader and the 63.2 build in its slot stop at breadcrumb 0x21 (after `uart_init()`, no
-trap, no ticks) through `reboot`, `sdio reset` and an esptool reset alike. LP_AON_SYS_CFG
-bit 30 is clear, and the same build booted the NANO suite earlier that day. Left on a RAM
-kernel; a power cycle is the next thing to try.
+The NANO's C6-MINI did not boot from flash: its slot A held `968.cfa5a878+`, a dirty build
+from the 63.3 work, which stopped after `uart_init()` (breadcrumb 0x21) even after a power
+cycle. The suites had passed only because a RAM-loaded kernel was still running. Rewritten
+with `c6flash.py` (current build): it boots, joins and bridges by itself. C6 suite on the
+flashed kernel 20/21 (DHCP, as above); NANO 50/50 with it.
 
 ### 63.5 Interrupt-shared state (class 4)
 
