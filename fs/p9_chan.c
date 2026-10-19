@@ -26,7 +26,9 @@ static uint8_t g_resp_buf[P9_MAX_MSIZE];
 /* The pending reply from the most recent send_frame(). p9_link_t's contract
  * is send -> poll -> recv, but a local channel call is synchronous: the
  * response already exists by the time send_frame() returns, so it is parked
- * here for the recv_frame() that the interface says must follow. */
+ * here for the recv_frame() that the interface says must follow.
+ * guarded by: g_client_lock (fs/p9_link.c), which p9_link_roundtrip() holds
+ * from the send to the receive -- this link's only client path. */
 static uint8_t  g_reply[P9_MAX_MSIZE];
 static uint32_t g_reply_len;
 
@@ -50,7 +52,7 @@ static int p9_chan_handler(void *ctx, const uint8_t *req, uint32_t req_len,
 static int p9_chan_send(p9_link_t *link, const uint8_t *buf, uint32_t len) {
     (void)link;
     if (!g_ep) return -1;
-    int n = chan_call(g_ep, buf, len, g_reply, sizeof(g_reply));
+    int n = chan_call_wait(g_ep, buf, len, g_reply, sizeof(g_reply), P9_CHAN_WAIT_MS);
     if (n < 0) {
         g_reply_len = 0;
         return -1;

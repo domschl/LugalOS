@@ -202,17 +202,11 @@ static union {
 #define g_kbd g_kbd_mem.s
 
 static bool wait_set(uint32_t off, uint32_t mask, uint32_t us) {
-    uint64_t end = time_get_us() + us;
-    while (!(OTG(off) & mask))
-        if (time_get_us() > end) return false;
-    return true;
+    return time_poll_until_us(OTG(off) & mask, time_get_us() + us);
 }
 
 static bool wait_clear(uint32_t off, uint32_t mask, uint32_t us) {
-    uint64_t end = time_get_us() + us;
-    while (OTG(off) & mask)
-        if (time_get_us() > end) return false;
-    return true;
+    return time_poll_until_us(!(OTG(off) & mask), time_get_us() + us);
 }
 
 /* --- Bring-up ------------------------------------------------------------- */
@@ -281,9 +275,10 @@ static bool host_init(void) {
     OTG(GINTMSK) = 0;
     OTG(GINTSTS) = 0xFFFFFFFFu;
     /* Forcing host mode takes effect after up to 25 ms (databook). */
-    uint64_t end = time_get_ms() + 100;
-    while (!(OTG(GINTSTS) & GINTSTS_CMOD))
-        if (time_get_ms() > end) { printk("[USB] core did not enter host mode\n"); return false; }
+    if (!time_poll_until_us(OTG(GINTSTS) & GINTSTS_CMOD, time_get_us() + 100000u)) {
+        printk("[USB] core did not enter host mode\n");
+        return false;
+    }
     OTG(HCFG) &= ~HCFG_FSLS_ONLY;
     OTG(GRXFSIZ) = FIFO_RX_WORDS;
     OTG(GNPTXFSIZ) = (FIFO_NPTX_WORDS << 16) | FIFO_RX_WORDS;
@@ -315,9 +310,11 @@ static void rx_drain(uint8_t *in, uint32_t in_max, uint32_t *got) {
 static void channel_stop(uint8_t *in, uint32_t in_max, uint32_t *got) {
     if (OTG(HCCHAR(CH)) & HCCHAR_CHENA) OTG(HCCHAR(CH)) |= HCCHAR_CHENA | HCCHAR_CHDIS;
     uint64_t end = time_get_us() + 5000;
-    while (!(OTG(HCINT(CH)) & HCINT_HALTED) && (OTG(HCCHAR(CH)) & HCCHAR_CHENA)) {
+    for (;;) {
+        bool late = time_get_us() >= end;   /* before the test: kernel/time.h */
+        if ((OTG(HCINT(CH)) & HCINT_HALTED) || !(OTG(HCCHAR(CH)) & HCCHAR_CHENA)) break;
         rx_drain(in, in_max, got);
-        if (time_get_us() > end) { g_host.stuck++; break; }
+        if (late) { g_host.stuck++; break; }
     }
     rx_drain(in, in_max, got);
 }
@@ -367,8 +364,10 @@ uint32_t usbkbd_port_xfer(usbkbd_state_t *k, uint32_t op, uint32_t addr, uint32_
         task_sleep_ms(50);                      /* TDRSTR: 50 ms at the root */
         OTG(HPRT) = OTG(HPRT) & ~(HPRT_W1C | HPRT_RESET);
         uint64_t end = time_get_ms() + 200;
-        while (!(OTG(HPRT) & HPRT_ENABLE)) {
-            if (time_get_ms() > end) return PIOUSB_NODEV;
+        for (;;) {
+            bool late = time_get_ms() >= end;   /* before the test: kernel/time.h */
+            if (OTG(HPRT) & HPRT_ENABLE) break;
+            if (late) return PIOUSB_NODEV;
             task_sleep_ms(1);
         }
         hprt = OTG(HPRT);

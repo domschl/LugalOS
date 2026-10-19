@@ -4,6 +4,8 @@
 #include "kernel/irq.h"
 #include "kernel/lock.h"
 #include "kernel/uaccess.h"
+#include "kernel/time.h"
+#include "kernel/devirq.h"
 #include <string.h>
 
 /* See kernel/include/kernel/chan.h for the rationale, especially why the
@@ -32,8 +34,17 @@ struct chan_endpoint {
      * single-slot buffer whose second writer would corrupt the first's
      * in-flight request. See chan_call(). */
     bool            busy;
-    /* Guards the check-and-set of `busy` above, and nothing else -- a
-     * handful of instructions that never block . */
+    /* While busy: the sched_context_id() of the claimant, so a context that
+     * re-enters its own endpoint is refused instead of queued behind itself. */
+    int             holder;
+    /* The waiting tasks, oldest first (chan_call_wait()), and the one a
+     * release handed the claim to, until it wakes and takes it (-1: none). */
+    int16_t         wq[CHAN_WAITQ_LEN];
+    uint8_t         wq_head;
+    uint8_t         wq_len;
+    int             handed_to;
+    /* Guards `busy`, `holder`, the queue and `handed_to`, and nothing else --
+     * a handful of instructions that never block. */
     spinlock_t      lock;
 };
 
@@ -81,6 +92,10 @@ int chan_register(const char *name, chan_handler_fn handler, void *ctx,
     ep->resp_cap = resp_cap;
     ep->in_use   = true;
     ep->busy     = false;
+    ep->holder   = -1;
+    ep->wq_head  = 0;
+    ep->wq_len   = 0;
+    ep->handed_to = -1;
     spinlock_init(&ep->lock);
     return 0;
 }
@@ -116,6 +131,10 @@ int chan_register_task(const char *name, int owner_pid,
     ep->resp_cap = resp_cap;
     ep->in_use   = true;
     ep->busy     = false;
+    ep->holder   = -1;
+    ep->wq_head  = 0;
+    ep->wq_len   = 0;
+    ep->handed_to = -1;
     spinlock_init(&ep->lock);
     return 0;
 }
@@ -128,6 +147,114 @@ chan_endpoint_t *chan_lookup(const char *name) {
         }
     }
     return NULL;
+}
+
+/* --- Claiming an endpoint: the busy flag and its FIFO of waiters --------- */
+
+/* Both under ep->lock. */
+static void wq_push(chan_endpoint_t *ep, int pid) {
+    ep->wq[(ep->wq_head + ep->wq_len) % CHAN_WAITQ_LEN] = (int16_t)pid;
+    ep->wq_len++;
+}
+
+static void wq_remove(chan_endpoint_t *ep, int pid) {
+    uint8_t kept = 0;
+    for (uint8_t i = 0; i < ep->wq_len; i++) {
+        int16_t w = ep->wq[(ep->wq_head + i) % CHAN_WAITQ_LEN];
+        if (w != pid) ep->wq[(ep->wq_head + kept++) % CHAN_WAITQ_LEN] = w;
+    }
+    ep->wq_len = kept;
+}
+
+/* Gives the claim up: to the oldest waiter still alive, which keeps the
+ * endpoint busy across the hand-off, or back to free. Under ep->lock; returns
+ * the pid to wake once the lock is dropped, or -1. */
+static int release_locked(chan_endpoint_t *ep) {
+    while (ep->wq_len > 0) {
+        int pid = ep->wq[ep->wq_head];
+        ep->wq_head = (uint8_t)((ep->wq_head + 1u) % CHAN_WAITQ_LEN);
+        ep->wq_len--;
+        int st = sched_task_state(pid);
+        if (st == TASK_UNUSED || st == TASK_DEAD) continue;
+        ep->handed_to = pid;
+        ep->holder = pid;
+        return pid;
+    }
+    ep->busy = false;
+    ep->holder = -1;
+    return -1;
+}
+
+/* Released under the same lock as the claim, which gives the next claimant
+ * release ordering over everything the call wrote. */
+static void ep_release(chan_endpoint_t *ep) {
+    uintptr_t flags = spin_lock_irqsave(&ep->lock);
+    int next = release_locked(ep);
+    spin_unlock_irqrestore(&ep->lock, flags);
+    if (next >= 0) task_unblock(next);
+}
+
+/* Takes the endpoint, waiting up to `wait_ms` for a turn. See "Waiting for a
+ * turn" in chan.h for what is refused at once and why.
+ *
+ * Contention must refuse or wait, never spin: the claim is held across
+ * chan_call_task()'s task_block(), so a spinlock_t in its place would be the
+ * block-while-holding deadlock kernel/lock.h refuses. The spinlock only makes
+ * reading and taking the claim indivisible against the other hart. */
+static bool ep_claim(chan_endpoint_t *ep, uint32_t wait_ms) {
+    int ctx = sched_context_id();
+    uintptr_t flags = spin_lock_irqsave(&ep->lock);
+    if (!ep->busy) {
+        ep->busy = true;
+        ep->holder = ctx;
+        spin_unlock_irqrestore(&ep->lock, flags);
+        return true;
+    }
+    int me = sched_current_pid();
+    if (wait_ms == 0 || ep->holder == ctx || me < 0 || !sched_is_active() ||
+        devirq_in_handler()) {
+        spin_unlock_irqrestore(&ep->lock, flags);
+        return false;
+    }
+    bool queued = ep->wq_len < CHAN_WAITQ_LEN;
+    if (queued) wq_push(ep, me);
+    spin_unlock_irqrestore(&ep->lock, flags);
+
+    uint64_t deadline = time_get_ms() + wait_ms;
+    for (;;) {
+        /* Prepare, test, block (sched.h): a hand-off between the test and the
+         * block leaves a token, so the block returns at once. */
+        if (queued) task_prepare_block();
+        flags = spin_lock_irqsave(&ep->lock);
+        if (queued && ep->handed_to == me) {
+            ep->handed_to = -1;
+            ep->holder = ctx;
+            spin_unlock_irqrestore(&ep->lock, flags);
+            task_wait_done();
+            return true;
+        }
+        if (!queued) {
+            /* The queue was full: poll, and join it once there is room. A
+             * free endpoint means nobody is queued, so taking it overtakes
+             * no one. */
+            if (!ep->busy) {
+                ep->busy = true;
+                ep->holder = ctx;
+                spin_unlock_irqrestore(&ep->lock, flags);
+                return true;
+            }
+            if (ep->wq_len < CHAN_WAITQ_LEN) { wq_push(ep, me); queued = true; }
+        }
+        if (time_get_ms() >= deadline) {
+            if (queued) wq_remove(ep, me);
+            spin_unlock_irqrestore(&ep->lock, flags);
+            if (queued) task_wait_done();
+            return false;
+        }
+        spin_unlock_irqrestore(&ep->lock, flags);
+        if (queued) task_block_until_ms(deadline);
+        else task_sleep_ms(1);
+    }
 }
 
 /* The task-owned half of chan_call(). Everything from setting up the
@@ -204,7 +331,7 @@ static int chan_call_task(chan_endpoint_t *ep, uint32_t req_len) {
  * to the calling U-mode task's own memory, validated against its domain. */
 static int chan_call_impl(chan_endpoint_t *ep, const void *req, uintptr_t ureq,
                           uint32_t req_len, void *resp, uintptr_t uresp,
-                          uint32_t resp_max, bool user) {
+                          uint32_t resp_max, bool user, uint32_t wait_ms) {
     if (!ep || !ep->in_use || (!user && !req) || req_len == 0) return -1;
     if (req_len > ep->req_cap) return -1;
 
@@ -222,35 +349,9 @@ static int chan_call_impl(chan_endpoint_t *ep, const void *req, uintptr_t ureq,
 
     /* Re-entrancy: the endpoint's buffers are single-slot, so an inner call
      * would overwrite the outer call's request mid-flight. See the header --
-     * a recursive local 9P mount is the concrete way to reach this.
-     *
-     * Check-then-set, so it must be atomic against a timer tick landing
-     * between the two : without the mask, two callers whose
-     * check-and-set straddle a preemption both see busy == false and both
-     * proceed, and their memcpy()s below race on the same ep->req_buf. */
-    /* S3: the lock covers these three lines and stops. It is deliberately
-     * NOT held for the duration of the call, and the reason is exactly the
-     * distinction kernel/lock.h draws between its two types:
-     *
-     *   - `busy` is held across chan_call_task(), which calls task_block().
-     *     A spinlock_t held across a block is the deadlock its own header
-     *     warns about -- and now refuses : the holder cannot run
-     *     to release it, and this function checks for one before it blocks.
-     *   - Contention here must *refuse*, not wait. A caller that finds the
-     *     endpoint busy gets -1 and decides for itself; spinning or
-     *     yielding until it frees would change chan_call()'s contract, and
-     *     on the re-entrant path (a recursive local 9P mount) the waiter
-     *     would be waiting on itself.
-     *
-     * So the claim stays a plain flag with a long lifetime, and the lock
-     * only makes reading-and-taking that flag indivisible. Two different
-     * jobs; conflating them is how this goes wrong. irq_save() alone was
-     * never going to stop a second hart arriving here at the same instant,
-     * which is what changes now. */
-    uintptr_t flags = spin_lock_irqsave(&ep->lock);
-    if (ep->busy) { spin_unlock_irqrestore(&ep->lock, flags); return -1; }
-    ep->busy = true;
-    spin_unlock_irqrestore(&ep->lock, flags);
+     * a recursive local 9P mount is the concrete way to reach this, and why
+     * ep_claim() refuses its own holder rather than queueing it. */
+    if (!ep_claim(ep, wait_ms)) return -1;
 
     /* Copy IN. The handler must never see the caller's pointer -- that is
      * Rule 1, and it is what keeps this identical to the MMU case (where the
@@ -258,9 +359,7 @@ static int chan_call_impl(chan_endpoint_t *ep, const void *req, uintptr_t ureq,
      * is on another machine entirely). */
     if (user) {
         if (copy_from_user(ep->req_buf, ureq, req_len) < 0) {
-            flags = spin_lock_irqsave(&ep->lock);
-            ep->busy = false;
-            spin_unlock_irqrestore(&ep->lock, flags);
+            ep_release(ep);
             return -1;
         }
     } else {
@@ -291,22 +390,23 @@ static int chan_call_impl(chan_endpoint_t *ep, const void *req, uintptr_t ureq,
         }
     }
 
-    /* Released under the same lock as the claim, which gives the next hart
-     * to take this endpoint release ordering over everything above. */
-    flags = spin_lock_irqsave(&ep->lock);
-    ep->busy = false;
-    spin_unlock_irqrestore(&ep->lock, flags);
+    ep_release(ep);
     return ret;
 }
 
 int chan_call(chan_endpoint_t *ep, const uint8_t *req, uint32_t req_len,
               uint8_t *resp, uint32_t resp_max) {
-    return chan_call_impl(ep, req, 0, req_len, resp, 0, resp_max, false);
+    return chan_call_impl(ep, req, 0, req_len, resp, 0, resp_max, false, 0);
+}
+
+int chan_call_wait(chan_endpoint_t *ep, const uint8_t *req, uint32_t req_len,
+                   uint8_t *resp, uint32_t resp_max, uint32_t wait_ms) {
+    return chan_call_impl(ep, req, 0, req_len, resp, 0, resp_max, false, wait_ms);
 }
 
 int chan_call_user(chan_endpoint_t *ep, uintptr_t ureq, uint32_t req_len,
                    uintptr_t uresp, uint32_t resp_max) {
-    return chan_call_impl(ep, NULL, ureq, req_len, NULL, uresp, resp_max, true);
+    return chan_call_impl(ep, NULL, ureq, req_len, NULL, uresp, resp_max, true, CHAN_WAIT_MS);
 }
 
 uint32_t chan_serve_wait(chan_endpoint_t *ep) {
@@ -335,6 +435,19 @@ void chan_serve_reply(chan_endpoint_t *ep, uint32_t resp_len) {
 void chan_owner_exited(int owner_pid) {
     for (uint32_t i = 0; i < g_num_endpoints; i++) {
         chan_endpoint_t *ep = &g_endpoints[i];
+        if (!ep->in_use) continue;
+        /* As a waiter: out of the queue; a turn handed to it, or a claim it
+         * died holding (a fault inside an inline handler), goes to the next. */
+        uintptr_t flags = spin_lock_irqsave(&ep->lock);
+        wq_remove(ep, owner_pid);
+        int next = -1;
+        if (ep->busy && ep->holder == owner_pid) {
+            ep->handed_to = -1;
+            next = release_locked(ep);
+        }
+        spin_unlock_irqrestore(&ep->lock, flags);
+        if (next >= 0) task_unblock(next);
+
         if (ep->in_use && ep->owner_pid == owner_pid && ep->request_pending) {
             /* Same shape as chan_serve_reply(), just with a failure result
              * instead of whatever the owner would have produced -- there

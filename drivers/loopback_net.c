@@ -24,7 +24,7 @@ int loopback_send_9p(const uint8_t *req_buf, uint32_t req_len, uint8_t *resp_buf
     if (!req_buf || req_len < 7 || !resp_buf) return -1;
     chan_endpoint_t *ep = chan_lookup("p9");
     if (!ep) return -1;
-    return chan_call(ep, req_buf, req_len, resp_buf, resp_max);
+    return chan_call_wait(ep, req_buf, req_len, resp_buf, resp_max, P9_CHAN_WAIT_MS);
 }
 
 /* Drives a full 9P session against a real file on /ram0 -- attach, walk to

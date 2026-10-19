@@ -1155,6 +1155,7 @@ static void cmd_help_test(void) {
 #endif
     cprintf("\nMulticore SMP & Concurrency Checks:\n");
     cprintf("  lockselftest    - Atomic spinlocks, interrupt masking, ylock\n");
+    cprintf("  chanqtest       - chan_call_wait(): FIFO turns, hand-off, deadlines\n");
     cprintf("  smpstart [join] - Launch secondary CPU core\n");
     cprintf("  smptest         - Multi-hart atomic counter and lock race test\n");
     cprintf("  smpload         - Background CPU load across all online harts\n");
@@ -5693,6 +5694,8 @@ static void parse_and_eval_cmd(const char *cmd_line) {
 #endif
     } else if (strcmp(cmd_line, "lockselftest") == 0) {
         lock_selftest();
+    } else if (strcmp(cmd_line, "chanqtest") == 0) {
+        (void)chan_selftest();
 #if defined(CONFIG_KOBJ)
     } else if (strcmp(cmd_line, "kobjselftest") == 0) {
         kobj_selftest();
@@ -6711,7 +6714,12 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         /* Driver task verify: exposes i2c_task_call_count() so a test can confirm the shared
          * RTC/EEPROM task is genuinely serving requests, same reasoning as
          * blkstats above. */
-        printk("[I2cStats] calls=%u\n", i2c_task_call_count());
+        i2c_fail_counts_t f;
+        i2c_fail_counts(&f);
+        printk("[I2cStats] calls=%u no_turn=%u nack=%u timeout=%u arb_lost=%u incomplete=%u"
+               " last=0x%02x int=0x%08x %u us\n",
+               i2c_task_call_count(), f.no_turn, f.nack, f.timeout, f.arb_lost, f.incomplete,
+               (unsigned)f.last_addr, (unsigned)f.last_int, (unsigned)f.last_us);
         return;
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
     } else if (strcmp(cmd_line, "st7735stats") == 0) {

@@ -2822,7 +2822,7 @@ static int vfs_write_on(mount_entry_t *m, const char *rel, bool is_root, const c
         chan_endpoint_t *ep = chan_lookup(rel);
         if (ep) {
             uint8_t reply[64];
-            int n = chan_call(ep, (const uint8_t *)buf, len, reply, sizeof(reply));
+            int n = chan_call_wait(ep, (const uint8_t *)buf, len, reply, sizeof(reply), CHAN_WAIT_MS);
             return (n < 0) ? -1 : 0;
         }
         for (int i = 0; i < g_num_services; i++) {

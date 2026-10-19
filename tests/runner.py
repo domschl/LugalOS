@@ -999,6 +999,17 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Cross-Hart Lock Primitives: Atomic Gate, Real Masking, ylock Re-entry (S1)",
                         lock_ok, log if not lock_ok else ""))
 
+        # 63.4 (plan/phase63_concurrency_review.md): chan_call_wait()'s FIFO of
+        # waiting callers -- arrival order, the hand-off that keeps a client
+        # calling back to back from starving a waiter (the touch poller during
+        # the BMI270 upload), deadlines, plain chan_call()'s refusal, and a
+        # holder re-entering its own endpoint refused rather than queued.
+        ok, log = session.send_and_expect("chanqtest\n",
+                                          r"CHANQ_SELFTEST_(OK|FAIL)", timeout=30.0)
+        chanq_ok = ok and "CHANQ_SELFTEST_OK" in log
+        results.append(("Channel Wait Queue: FIFO Turns, Hand-off, Deadlines (63.4)",
+                        chanq_ok, log if not chanq_ok else ""))
+
         # 45.3b (plan/phase45_esp32c6.md): the kernel objects the ESP32-C6's
         # confined Wi-Fi runtime needs -- semaphores, mutexes, queues, event
         # groups, timers -- under real tasks and preemption: FIFO hand-off,

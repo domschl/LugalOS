@@ -56,6 +56,9 @@ def main() -> int:
     want(cc.get("worker", {}).get("loop_reads_clock") is True, "worker's chan_call loop reads the clock")
     want(cc.get("other", {}).get("in_loop") is True and cc["other"]["loop_reads_clock"] is False,
          "other's chan_call loop counts attempts")
+    want(cc.get("kernel_main", {}).get("waits") is True and cc["kernel_main"]["in_loop"] is False,
+         "kernel_main's chan_call_wait is a wait, not a loop")
+    want(cc.get("worker", {}).get("waits") is False, "worker's chan_call refuses")
     for f in fails:
         print("FAIL", f)
     print(f"racescan fixture: {len(fails)} failure(s)")

@@ -284,13 +284,14 @@ static int probe_locked(uint32_t khz) {
     g_info.ocr = r;
     uint64_t deadline = time_get_ms() + 1000u;
     for (;;) {
+        bool late = time_get_ms() >= deadline;   /* before the command: kernel/time.h */
         if (sdhost_cmd(5, r & 0x00FFFF00u ? (r & 0x00FFFF00u) : 0x00FF8000u, SDHOST_RESP_R3, 0, &r, &st) != 0) {
             g_info.stage = 2;
             g_info.last_status = st;
             return -1;
         }
         if (r & 0x80000000u) break;
-        if (time_get_ms() > deadline) { g_info.stage = 2; return -1; }
+        if (late) { g_info.stage = 2; return -1; }
     }
     g_info.ocr = r;
     g_info.functions = (r >> 28) & 7u;
@@ -1046,11 +1047,12 @@ static int hosted_rpc_call(hosted_ctx_t *ctx, uint32_t req_id,
     uint64_t deadline = time_get_ms() + timeout_ms;
     sdhost_acquire(1);
     for (;;) {
+        bool late = time_get_ms() >= deadline;   /* before the read: kernel/time.h */
         if (status_locked() != 0) { sdhost_release(); g_hosted_err = "status read failed"; return -1; }
         uint32_t free_bufs = (LLP_SDIO_TOKEN(g_llp.token) - ctx->tx_buf_count) & (LLP_SDIO_TOKEN_MOD - 1u);
         if (free_bufs >= bufs_needed) break;
         sdhost_release();
-        if (time_get_ms() >= deadline) { g_hosted_err = "no slave receive buffer"; return -1; }
+        if (late) { g_hosted_err = "no slave receive buffer"; return -1; }
         task_sleep_ms(2);
         sdhost_acquire(1);
     }
@@ -1065,13 +1067,14 @@ static int hosted_rpc_call(hosted_ctx_t *ctx, uint32_t req_id,
     bool got_resp = false;
     int32_t resp_code = -1;
     while (!got_resp) {
+        bool late = time_get_ms() >= deadline;   /* before the poll: kernel/time.h */
         if (hosted_poll_rx_locked(ctx, want_resp_id, &got_resp, &resp_code) != 0) {
             sdhost_release();
             return -1;
         }
         if (got_resp) break;
         sdhost_release();
-        if (time_get_ms() >= deadline) { g_hosted_err = "no response in time"; return -1; }
+        if (late) { g_hosted_err = "no response in time"; return -1; }
         task_sleep_ms(2);
         sdhost_acquire(1);
     }

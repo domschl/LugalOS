@@ -269,14 +269,11 @@ static bool lcdterm_send(uint8_t op, const char *p, uint32_t len) {
     if (len > 1u + LCDTERM_BATCH) len = 1u + LCDTERM_BATCH;
     req[0] = op;
     for (uint32_t i = 0; i < len; i++) req[1u + i] = (uint8_t)p[i];
-    for (int attempt = 0; attempt < 8; attempt++) {
-        if (chan_call(g_lcdterm_ep, req, 1u + len, g_lcdterm_resp, sizeof(g_lcdterm_resp)) >= 0) {
-            g_lcdterm_calls++;
-            return true;
-        }
-        sched_yield();
-    }
-    return false;
+    if (chan_call_wait(g_lcdterm_ep, req, 1u + len, g_lcdterm_resp, sizeof(g_lcdterm_resp),
+                       CHAN_WAIT_MS) < 0)
+        return false;
+    g_lcdterm_calls++;
+    return true;
 }
 
 /* guarded by: console_lock, as g_batch. */
@@ -376,14 +373,11 @@ static bool lcdterm_canvas(const uint8_t *req, uint32_t n, uint8_t *reply) {
         buf[0] = LCDTERM_OP_CANVAS;
         buf[1] = (uint8_t)my_vid;
         for (uint32_t i = 0; i < n; i++) buf[2u + i] = req[i];
-        for (int attempt = 0; attempt < 8 && !sent; attempt++) {
-            if (chan_call(g_lcdterm_ep, buf, 2u + n, g_lcdterm_resp, sizeof(g_lcdterm_resp)) >= 0) {
-                g_lcdterm_calls++;
-                for (uint32_t i = 0; i < SCREEN_REPLY_LEN; i++) reply[i] = g_lcdterm_resp[i];
-                sent = true;
-            } else {
-                sched_yield();
-            }
+        if (chan_call_wait(g_lcdterm_ep, buf, 2u + n, g_lcdterm_resp, sizeof(g_lcdterm_resp),
+                           CHAN_WAIT_MS) >= 0) {
+            g_lcdterm_calls++;
+            for (uint32_t i = 0; i < SCREEN_REPLY_LEN; i++) reply[i] = g_lcdterm_resp[i];
+            sent = true;
         }
     }
     if (!sent) screen_canvas_vterm(g_scr, (uint8_t)my_vid, req, n, reply);

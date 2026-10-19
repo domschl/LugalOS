@@ -21,7 +21,8 @@ Three lists:
   1. static storage reached from two or more contexts (shared mutable state)
   2. files whose raw register accesses are reached from two or more contexts
      (a driver bypassed by someone other than its owner)
-  3. chan_call() sites: in a loop or not, and whether that loop reads the clock
+  3. chan_call() / chan_call_wait() sites: a plain chan_call() in a loop is a
+     hand-written retry, which chan_call_wait() replaces
 
 A declaration preceded by a comment starting with one of
 "single task:", "guarded by:", "interrupt-shared:" or "accepted:" counts as
@@ -60,11 +61,11 @@ LOCK_FUNCS = {"spin_lock_at", "spin_lock_irqsave_at", "spin_lock_irqsave_bottom_
 # its own (section 4), and not followed further for that handler, so the
 # scheduler behind it does not count as reached from the interrupt.
 BLOCKING_FUNCS = {"sched_yield", "task_block", "task_block_until_ms", "task_sleep_ms",
-                  "ylock_acquire_at", "chan_call"}
+                  "ylock_acquire_at", "chan_call", "chan_call_wait"}
 TEST_CONTEXTS = {"task:demoA", "task:demoB", "task:sized1", "task:smpload", "task:smpw",
                  "task:spinner", "task:stressA", "task:stressB", "task:hog", "task:urgent",
                  "task:locktest", "task:clicspin", "task:perftw", "task:cyclewait",
-                 "task:chanecho", "task:uprobe", "task:llpsoak"}
+                 "task:chanecho", "task:uprobe", "task:llpsoak", "task:chanq"}
 
 
 @dataclass
@@ -384,7 +385,7 @@ class Scanner:
                     if nm:
                         (fn.task_calls if t else fn.calls).add(nm)
                         self.note_registration(key, ch, nm)
-                        if nm == "chan_call":
+                        if nm in ("chan_call", "chan_call_wait"):
                             loop = loops[-1] if loops else None
                             reads_clock = False
                             if loop is not None:
@@ -393,7 +394,8 @@ class Scanner:
                                         reads_clock = True
                                         break
                             fn.chan_calls.append({"line": ch.location.line, "in_loop": loop is not None,
-                                                  "loop_reads_clock": reads_clock})
+                                                  "loop_reads_clock": reads_clock,
+                                                  "waits": nm == "chan_call_wait"})
                 elif k == K.DECL_REF_EXPR and ch.referenced is not None:
                     r = ch.referenced
                     if r.kind == K.VAR_DECL and (r.storage_class == ci.StorageClass.STATIC or
@@ -628,8 +630,8 @@ def main() -> int:
     chan_sites = []
     for fk, fn in sc.funcs.items():
         for s in fn.chan_calls:
-            chan_sites.append((fn.file, s["line"], fn.name, s["in_loop"], s["loop_reads_clock"],
-                               sorted(reach.get(fk, set()))))
+            chan_sites.append((fn.file, s["line"], fn.name, s["waits"], s["in_loop"],
+                               s["loop_reads_clock"], sorted(reach.get(fk, set()))))
     chan_sites.sort()
 
     out = REPO / a.out
@@ -674,10 +676,12 @@ def main() -> int:
         if len(mmio_files[f]) >= 2:
             md.append(f"| {f} | {mmio_funcs[f]} | {', '.join(sorted(mmio_files[f]))} |")
     md += ["", "## 3. chan_call() sites", "",
-           "| at | function | in a loop | loop reads the clock | contexts |",
-           "| :--- | :--- | :--- | :--- | :--- |"]
-    for f, ln, nm, loop, clock, ctxs in chan_sites:
-        md.append(f"| {f}:{ln} | {nm} | {'yes' if loop else 'no'} | "
+           "`waits`: chan_call_wait(), a turn in the endpoint's FIFO. A plain chan_call() in a",
+           "loop is a hand-written retry.", "",
+           "| at | function | call | in a loop | loop reads the clock | contexts |",
+           "| :--- | :--- | :--- | :--- | :--- | :--- |"]
+    for f, ln, nm, waits, loop, clock, ctxs in chan_sites:
+        md.append(f"| {f}:{ln} | {nm} | {'waits' if waits else 'refuses'} | {'yes' if loop else 'no'} | "
                   f"{'yes' if clock else ('no' if loop else '-')} | {', '.join(ctxs)} |")
     md += ["", "## 4. Interrupt handlers that can reach a blocking call", "",
            "Each path is the shortest one; a guard on the way (a check for a held spinlock, a",
@@ -702,15 +706,17 @@ def main() -> int:
                     "writers": sorted(writers[vk])} for grp, _, _, _, vk, v, wc, rc in shared],
         "mmio": {f: sorted(c) for f, c in mmio_files.items()},
         "isr_blocking": isr_block,
-        "chan_calls": [{"file": f, "line": ln, "function": nm, "in_loop": lp, "loop_reads_clock": ck,
-                        "contexts": cx} for f, ln, nm, lp, ck, cx in chan_sites],
+        "chan_calls": [{"file": f, "line": ln, "function": nm, "waits": w, "in_loop": lp,
+                        "loop_reads_clock": ck, "contexts": cx}
+                       for f, ln, nm, w, lp, ck, cx in chan_sites],
     }, indent=1))
     ga = sum(1 for t in unmarked if t[0] == "A")
     gs = sum(1 for t in unmarked if t[0] == "S")
     print(f"{len(sc.funcs)} functions, {sum(1 for v in sc.vars.values() if not v.readonly)} static variables, {len(sc.roots) + 1} contexts; "
           f"{len(unmarked)} shared unmarked (A {ga}, S {gs}, B {len(unmarked) - ga - gs}), {len(marked)} marked; "
           f"{sum(1 for f in mmio_files if len(mmio_files[f]) >= 2)} MMIO files in 2+ contexts; "
-          f"{len(chan_sites)} chan_call sites; {len(isr_block)} handler paths to a blocking call "
+          f"{len(chan_sites)} chan_call sites ({sum(1 for c in chan_sites if c[3])} waiting, "
+          f"{sum(1 for c in chan_sites if not c[3] and c[4])} hand-written retries); {len(isr_block)} handler paths to a blocking call "
           f"-> {out / 'candidates.md'}")
     return 0
 

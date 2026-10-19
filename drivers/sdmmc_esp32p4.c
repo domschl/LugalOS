@@ -570,14 +570,10 @@ static void sdmmc_clk_init(void) {
 static int sdmmc_cmd_start(uint32_t cmd, uint32_t arg) {
     uint64_t deadline = time_get_us() + 100000u;      /* 100 ms */
 
-    while (REG(SD_CMD) & CMD_START) {
-        if (time_get_us() > deadline) return -1;
-    }
+    if (!time_poll_until_us(!(REG(SD_CMD) & CMD_START), deadline)) return -1;
     REG(SD_CMDARG) = arg;
     REG(SD_CMD) = cmd | ((g_card & 0x1fu) << CMD_CARD_NUM_S) | CMD_START | CMD_USE_HOLD_REG;
-    while (REG(SD_CMD) & CMD_START) {
-        if (time_get_us() > deadline) return -1;
-    }
+    if (!time_poll_until_us(!(REG(SD_CMD) & CMD_START), deadline)) return -1;
     return 0;
 }
 
@@ -628,10 +624,9 @@ static uint32_t sdmmc_set_bus_clock(uint32_t want_khz) {
  * to turn into a return value rather than a hang. */
 static int sdmmc_host_reset(void) {
     REG(SD_CTRL) |= CTRL_RESET | CTRL_FIFO_RESET | CTRL_DMA_RESET;
-    uint64_t deadline = time_get_us() + 100000u;
-    while (REG(SD_CTRL) & (CTRL_RESET | CTRL_FIFO_RESET | CTRL_DMA_RESET)) {
-        if (time_get_us() > deadline) return -1;
-    }
+    if (!time_poll_until_us(!(REG(SD_CTRL) & (CTRL_RESET | CTRL_FIFO_RESET | CTRL_DMA_RESET)),
+                            time_get_us() + 100000u))
+        return -1;
     return 0;
 }
 
@@ -691,9 +686,10 @@ static int sd_command(uint8_t index, uint32_t arg, sd_resp_t rt,
     uint64_t deadline = time_get_us() + 500000u;
     uint32_t status;
     for (;;) {
+        bool late = time_get_us() >= deadline;   /* before the read: kernel/time.h */
         status = REG(SD_RINTSTS);
         if (status & (INT_CMD_DONE | INT_CMD_ERRORS)) break;
-        if (time_get_us() > deadline) {
+        if (late) {
             if (out_status) *out_status = status;
             return -1;
         }
@@ -721,10 +717,8 @@ static int sd_command(uint8_t index, uint32_t arg, sd_resp_t rt,
     if (rt == RESP_R1B) {
         /* The card pulls DAT0 low while it finishes. Busy-polled rather than
          * yielded: this is CMD7 during init and nothing else. */
-        deadline = time_get_us() + 1000000u;
-        while (REG(SD_STATUS) & STATUS_DATA_BUSY) {
-            if (time_get_us() > deadline) return -1;
-        }
+        if (!time_poll_until_us(!(REG(SD_STATUS) & STATUS_DATA_BUSY), time_get_us() + 1000000u))
+            return -1;
     }
     return 0;
 }
@@ -887,6 +881,7 @@ static void sdmmc_dma_arm(void) {
 static int sdmmc_dma_wait(uint32_t lba, const char *what) {
     uint64_t deadline = time_get_us() + 3000000u;
     for (;;) {
+        bool late = time_get_us() >= deadline;   /* before the reads: kernel/time.h */
         uint32_t st = REG(SD_RINTSTS);
         uint32_t id = REG(SD_IDSTS);
         if ((st & INT_DATA_ERRORS) || (id & IDSTS_ERRORS)) {
@@ -895,7 +890,7 @@ static int sdmmc_dma_wait(uint32_t lba, const char *what) {
             return -1;
         }
         if (st & INT_DATA_OVER) return 0;
-        if (time_get_us() > deadline) {
+        if (late) {
             printk("[SDMMC] %s lba %u timed out (RINTSTS 0x%x IDSTS 0x%x FIFO %u)\n",
                    what, (unsigned)lba, (unsigned)st, (unsigned)id,
                    (unsigned)sdmmc_fifo_count());
@@ -945,12 +940,9 @@ static int sdmmc_hw_write_block(uint32_t lba, const uint8_t *src) {
      * yielding here would mean a serve callback rescheduling inside a
      * transfer, and the block driver's contract is that only it touches the
      * hardware while one is in flight. */
-    uint64_t deadline = time_get_us() + 1000000u;
-    while (REG(SD_STATUS) & STATUS_DATA_BUSY) {
-        if (time_get_us() > deadline) {
-            printk("[SDMMC] write lba %u: card still busy after 1 s\n", (unsigned)lba);
-            return -1;
-        }
+    if (!time_poll_until_us(!(REG(SD_STATUS) & STATUS_DATA_BUSY), time_get_us() + 1000000u)) {
+        printk("[SDMMC] write lba %u: card still busy after 1 s\n", (unsigned)lba);
+        return -1;
     }
     return 0;
 }
@@ -1368,17 +1360,19 @@ int sdmmc_task_start(void) {
 }
 
 /* One batched request through the endpoint. Returns the blocks transferred,
- * or -1 if the channel itself failed -- which the caller answers by falling
- * back to direct access rather than by propagating a failure that might be
- * about the IPC and not about the card. Same split, and the same reasoning,
- * as spisd's and virtio_blk's. */
+ * or -1, which the caller reports: with the task alive, it alone drives the
+ * card. A turn can wait out another client's transfer, and a card may hold a
+ * write busy for up to 250 ms (the SD spec's write timeout). */
+#define BLK_CALL_WAIT_MS 500u
+
 static int blk_read_chunk(uint32_t lba, uint32_t count, uint8_t *dst) {
     uint8_t req[BLK_HDR_LEN];
     req[0] = BLK_REQ_READ;
     be32_store(&req[1], lba);
     be32_store(&req[5], count);
     uint8_t resp[BLK_RESP_CAP];
-    int n = driver_task_call(&g_blk_task, req, sizeof(req), resp, sizeof(resp));
+    int n = driver_task_call_wait(&g_blk_task, req, sizeof(req), resp, sizeof(resp),
+                                  BLK_CALL_WAIT_MS);
     if (n >= 1 && resp[0] == 0 && (uint32_t)n >= 1u + count * 512u) {
         memcpy(dst, &resp[1], count * 512u);
         return (int)count;
@@ -1393,8 +1387,8 @@ static int blk_write_chunk(uint32_t lba, uint32_t count, const uint8_t *src) {
     be32_store(&req[5], count);
     memcpy(&req[BLK_HDR_LEN], src, count * 512u);
     uint8_t resp[1];
-    int n = driver_task_call(&g_blk_task, req, BLK_HDR_LEN + count * 512u,
-                             resp, sizeof(resp));
+    int n = driver_task_call_wait(&g_blk_task, req, BLK_HDR_LEN + count * 512u,
+                                  resp, sizeof(resp), BLK_CALL_WAIT_MS);
     if (n >= 1 && resp[0] == 0) return (int)count;
     return -1;
 }
@@ -1408,10 +1402,10 @@ static int sdmmc_read_blocks(block_dev_t *dev, void *buf, uint32_t lba, uint32_t
         while (done < count) {
             uint32_t chunk = (count - done) > BLK_MAX_COUNT ? BLK_MAX_COUNT : (count - done);
             int n = blk_read_chunk(lba + done, chunk, dst + (size_t)done * 512u);
-            if (n < 0) break;
+            if (n < 0) return -1;
             done += (uint32_t)n;
         }
-        if (done >= count) return 0;
+        return 0;
     }
     return sdmmc_hw_read_blocks(lba + done, count - done, dst + (size_t)done * 512u);
 }
@@ -1425,10 +1419,10 @@ static int sdmmc_write_blocks(block_dev_t *dev, const void *buf, uint32_t lba, u
         while (done < count) {
             uint32_t chunk = (count - done) > BLK_MAX_COUNT ? BLK_MAX_COUNT : (count - done);
             int n = blk_write_chunk(lba + done, chunk, src + (size_t)done * 512u);
-            if (n < 0) break;
+            if (n < 0) return -1;
             done += (uint32_t)n;
         }
-        if (done >= count) return 0;
+        return 0;
     }
     return sdmmc_hw_write_blocks(lba + done, count - done, src + (size_t)done * 512u);
 }

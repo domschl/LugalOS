@@ -1724,18 +1724,27 @@ int pico_clock_green_task_start(void) {
  */
 
 /* One request, one reply, or -1. Every call below is short and idempotent
- * except 'P' (which blocks for the length of a beep), so a failed call is
- * simply a dropped frame rather than something to retry: the next frame is
- * 8 ms away. read_light is the exception and retries, because a diagnostic
- * that returns a wrong number is worse than one that takes longer. */
-static int clock_call(const uint8_t *req, uint32_t len, uint8_t *resp, uint32_t cap) {
+ * except 'P' (which blocks for the length of a beep), so a call that does not
+ * get its turn within a frame is simply a dropped frame: the next one is 8 ms
+ * away. With the task alive it alone drives the matrix, so a failed call is
+ * never answered by a direct access beside it. read_light waits longer,
+ * because a diagnostic that returns a wrong number is worse than one that
+ * takes longer. */
+#define CLOCK_CALL_WAIT_MS 8u
+
+static int clock_call_wait(const uint8_t *req, uint32_t len, uint8_t *resp, uint32_t cap,
+                           uint32_t wait_ms) {
     if (!clock_task_alive()) return -1;
-    int n = chan_call(g_clock_ep, req, len, resp, cap);
+    int n = chan_call_wait(g_clock_ep, req, len, resp, cap, wait_ms);
     /* Counted here, on the client side, and not by the server: a U-mode task
      * cannot touch g_clock_calls, an ordinary kernel .bss global no domain
-     * grants it. Same reasoning as st7735_call_with_retry()'s own counter. */
+     * grants it. */
     if (n >= 0) g_clock_calls++;
     return n;
+}
+
+static int clock_call(const uint8_t *req, uint32_t len, uint8_t *resp, uint32_t cap) {
+    return clock_call_wait(req, len, resp, cap, CLOCK_CALL_WAIT_MS);
 }
 
 unsigned clock_hw_scan_frame(clock_event_t *ev, unsigned max) {
@@ -1757,8 +1766,9 @@ unsigned clock_hw_scan_frame(clock_event_t *ev, unsigned max) {
         }
         return n;
     }
+    if (clock_task_alive()) return 0;
 
-    /* Fallback: the task is not alive, so this caller owns the hardware. */
+    /* The task is not alive, so this caller owns the hardware. */
     {
         uint8_t raw[2 * BTN_RING];
         n = pico_clock_green_hw_scan_frame(raw, BTN_RING);
@@ -1775,21 +1785,21 @@ unsigned clock_hw_scan_frame(clock_event_t *ev, unsigned max) {
 void clock_hw_clear(void) {
     uint8_t req[1] = { CLOCK_OP_CLEAR };
     uint8_t resp[CLOCK_RESP_CAP];
-    if (clock_call(req, sizeof(req), resp, sizeof(resp)) >= 0) return;
+    if (clock_call(req, sizeof(req), resp, sizeof(resp)) >= 0 || clock_task_alive()) return;
     pico_clock_green_clear();
 }
 
 void clock_hw_blank(void) {
     uint8_t req[1] = { CLOCK_OP_BLANK };
     uint8_t resp[CLOCK_RESP_CAP];
-    if (clock_call(req, sizeof(req), resp, sizeof(resp)) >= 0) return;
+    if (clock_call(req, sizeof(req), resp, sizeof(resp)) >= 0 || clock_task_alive()) return;
     pico_clock_green_hw_blank();
 }
 
 void clock_hw_show_time(unsigned h, unsigned m, bool colon) {
     uint8_t req[4] = { CLOCK_OP_SHOW_TIME, (uint8_t)h, (uint8_t)m, (uint8_t)(colon ? 1 : 0) };
     uint8_t resp[CLOCK_RESP_CAP];
-    if (clock_call(req, sizeof(req), resp, sizeof(resp)) >= 0) return;
+    if (clock_call(req, sizeof(req), resp, sizeof(resp)) >= 0 || clock_task_alive()) return;
     pico_clock_green_show_time(h, m, colon);
 }
 
@@ -1798,7 +1808,7 @@ void clock_hw_show_temperature_c(int c) {
     if (c < -99) c = -99;
     uint8_t req[2] = { CLOCK_OP_SHOW_TEMP, (uint8_t)(int8_t)c };
     uint8_t resp[CLOCK_RESP_CAP];
-    if (clock_call(req, sizeof(req), resp, sizeof(resp)) >= 0) return;
+    if (clock_call(req, sizeof(req), resp, sizeof(resp)) >= 0 || clock_task_alive()) return;
     pico_clock_green_show_temperature_c(c);
 }
 
@@ -1809,7 +1819,7 @@ void clock_hw_draw_text(const char *s) {
     req[0] = CLOCK_OP_TEXT;
     uint32_t n = 0;
     while (s[n] && n < CLOCK_REQ_CAP - 1u) { req[1 + n] = (uint8_t)s[n]; n++; }
-    if (clock_call(req, 1 + n, resp, sizeof(resp)) >= 0) return;
+    if (clock_call(req, 1 + n, resp, sizeof(resp)) >= 0 || clock_task_alive()) return;
     draw_text(s);
 }
 
@@ -1823,7 +1833,7 @@ void clock_hw_draw_text_at(int col, const char *s) {
     req[1] = (uint8_t)(int8_t)col;
     uint32_t n = 0;
     while (s[n] && n < CLOCK_REQ_CAP - 2u) { req[2 + n] = (uint8_t)s[n]; n++; }
-    if (clock_call(req, 2 + n, resp, sizeof(resp)) >= 0) return;
+    if (clock_call(req, 2 + n, resp, sizeof(resp)) >= 0 || clock_task_alive()) return;
     pico_clock_green_hw_draw_text_at(col, s);
 }
 
@@ -1834,35 +1844,35 @@ void clock_hw_draw_bars(const uint8_t *scores, unsigned n) {
     uint8_t resp[CLOCK_RESP_CAP];
     req[0] = CLOCK_OP_BARS;
     for (unsigned i = 0; i < n; i++) req[1 + i] = scores[i];
-    if (clock_call(req, 1 + n, resp, sizeof(resp)) >= 0) return;
+    if (clock_call(req, 1 + n, resp, sizeof(resp)) >= 0 || clock_task_alive()) return;
     pico_clock_green_hw_draw_bars(scores, n);
 }
 
 void clock_hw_set_weekday(unsigned dow) {
     uint8_t req[2] = { CLOCK_OP_WEEKDAY, (uint8_t)dow };
     uint8_t resp[CLOCK_RESP_CAP];
-    if (clock_call(req, sizeof(req), resp, sizeof(resp)) >= 0) return;
+    if (clock_call(req, sizeof(req), resp, sizeof(resp)) >= 0 || clock_task_alive()) return;
     pico_clock_green_hw_set_weekday(dow);
 }
 
 void clock_hw_indicator(clock_indicator_t ind, bool on) {
     uint8_t req[3] = { CLOCK_OP_INDICATOR, (uint8_t)ind, (uint8_t)(on ? 1 : 0) };
     uint8_t resp[CLOCK_RESP_CAP];
-    if (clock_call(req, sizeof(req), resp, sizeof(resp)) >= 0) return;
+    if (clock_call(req, sizeof(req), resp, sizeof(resp)) >= 0 || clock_task_alive()) return;
     pico_clock_green_hw_indicator(ind, on);
 }
 
 void clock_hw_set_brightness(int level) {
     uint8_t req[2] = { CLOCK_OP_BRIGHTNESS, (uint8_t)(int8_t)level };
     uint8_t resp[CLOCK_RESP_CAP];
-    if (clock_call(req, sizeof(req), resp, sizeof(resp)) >= 0) return;
+    if (clock_call(req, sizeof(req), resp, sizeof(resp)) >= 0 || clock_task_alive()) return;
     pico_clock_green_hw_set_brightness(level);
 }
 
 void clock_hw_beep(unsigned ms) {
     uint8_t req[3] = { CLOCK_OP_BEEP, (uint8_t)(ms >> 8), (uint8_t)ms };
     uint8_t resp[CLOCK_RESP_CAP];
-    if (clock_call(req, sizeof(req), resp, sizeof(resp)) >= 0) return;
+    if (clock_call(req, sizeof(req), resp, sizeof(resp)) >= 0 || clock_task_alive()) return;
     pico_clock_green_hw_beep(ms);
 }
 
@@ -1889,12 +1899,8 @@ uint16_t pico_clock_green_read_light(void) {
     uint8_t req[1] = { CLOCK_OP_READ_LIGHT };
     uint8_t resp[CLOCK_RESP_CAP];
     if (clock_task_alive()) {
-        for (int attempt = 0; attempt < 8; attempt++) {
-            int n = clock_call(req, sizeof(req), resp, sizeof(resp));
-            if (n >= 2) return ((uint16_t)resp[0] << 8) | resp[1];
-            if (n >= 0) break; /* short reply -- treat as failure, fall through */
-            sched_yield();
-        }
+        int n = clock_call_wait(req, sizeof(req), resp, sizeof(resp), CHAN_WAIT_MS);
+        return n >= 2 ? (uint16_t)(((uint16_t)resp[0] << 8) | resp[1]) : 0;
     }
     return pico_clock_green_hw_read_light();
 }

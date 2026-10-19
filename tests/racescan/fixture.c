@@ -6,6 +6,8 @@ typedef struct { volatile uint32_t word; } ylock_t;
 int  task_create(const char *name, void (*entry)(void *), void *arg);
 int  devirq_attach(uint32_t irq, void (*handler)(void *), void *ctx);
 int  chan_call(void *ep, const uint8_t *req, uint32_t len, uint8_t *resp, uint32_t max);
+int  chan_call_wait(void *ep, const uint8_t *req, uint32_t len, uint8_t *resp, uint32_t max,
+                    uint32_t wait_ms);
 uint64_t time_get_ms(void);
 void ylock_acquire_at(ylock_t *l, const char *name, const char *site);
 void ylock_release(ylock_t *l);
@@ -103,4 +105,6 @@ void kernel_main(void) {
     devirq_attach(6, isr2, 0);
     task_create("worker", worker, 0);
     task_create("other", other, 0);
+    uint8_t q = 0, r = 0;
+    (void)chan_call_wait(g_ep, &q, 1, &r, 1, 50u);
 }

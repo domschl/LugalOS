@@ -1,6 +1,6 @@
 # Phase 63 — Concurrency Review: Shared State, Ownership, Locks
 
-**Status: in progress (63.1 done, 63.2 under way). Written 2026-10-18.** Scheduled before phase 62 Part B (audio).
+**Status: in progress (63.1–63.4 done). Written 2026-10-18.** Scheduled before phase 62 Part B (audio).
 Milestone scheme: `63.1`, `63.2`, …
 
 ---
@@ -176,7 +176,7 @@ Findings, all fixed on this branch:
 
 Open, for 63.4: the Tab5 touch poller counts one I2C error on some boots, during the
 BMI270 microcode upload (seen on `main` as well, 1 of 2 boots): one client starving another
-on the i2c task.
+on the i2c task. (63.4: not starvation, F39.)
 
 Tested: QEMU 512/512; Tab5 49/50 (the touch error above), NANO 50/50, LCD-7B 50/50. The
 RP2350 change (F6, F7) is built but untested on hardware: no RP2350 board attached.
@@ -289,7 +289,7 @@ alone. In the run with all three P4 boards in parallel, the LCD-7B and the Tab5 
 two touch I2C errors; not reproduced on the LCD-7B alone or by replaying the tests. Recorded
 with the Tab5's touch errors for 63.4.
 
-Next: 63.4 (owner bypass and the chan_call wait helper; the touch I2C errors).
+Next: 63.4 (owner bypass and the chan_call wait helper; the touch I2C errors). Done, below.
 
 ### 63.3 Fix shared mutable state (class 1)
 
@@ -312,6 +312,68 @@ hammering the function).
 - **Decide whether `chan_call` should queue callers.** A FIFO of waiting tasks would remove
   the starvation class entirely. Evaluated against the cost in `kernel/chan.c`, with a
   recommendation for the owner before anything changes.
+
+**Done (2026-10-19).** The owner chose the FIFO (decision 1, §4).
+
+`chan_call_wait(ep, …, wait_ms)` (kernel/chan.h, "Waiting for a turn"):
+- A caller finding the endpoint busy joins its FIFO (8 places) and blocks until its turn or its
+  deadline. The releasing caller hands the endpoint straight to the oldest live waiter, so it
+  never goes free in between and a client calling back to back cannot barge.
+- Refused at once, as before: the context that holds the endpoint (the recursive local 9P
+  mount), no task, an interrupt handler, a spinlock held. A full queue polls at 1 ms.
+- `chan_owner_exited()` also takes a dead task out of the queues and passes on a turn handed
+  to it, or a claim it died holding.
+- Cost: about 12 bytes per endpoint, one test under the spinlock chan_call() already took.
+- `CHAN_WAIT_MS` (50) is the common bound. Block devices wait 500 ms (an SD write may stay
+  busy 250 ms), local 9P 1 s. U-mode `SYS_CHAN_CALL` waits `CHAN_WAIT_MS`.
+- `chanqtest` (kernel/chan_selftest.c, in the QEMU suite) checks arrival order, the hand-off
+  against a back-to-back client, deadlines, plain chan_call()'s refusal, and re-entry. With
+  the hand-off disabled, the first two fail.
+
+Every hand-written retry loop is gone: driver_task_call, i2c_task_call, st7735, tm1638, spisd,
+uart_rp2350, lcdterm, the clock driver, the local 9P link, loopback 9P, /srv writes. Three
+uses of plain `chan_call()` stay, each with a reason in the code:
+- the 16550 and P4 UART writers (`uart_tx_send`) wait only while a WRITE is in flight and
+  never behind a READ that waits for a key (the RP2350's, whose ops never block, waits its
+  turn in the queue: with a hand-off the endpoint stays busy while anyone is queued, and its
+  old "yield while busy" loop could have starved);
+- `spisd_probe()`: a busy endpoint means a card that answers;
+- the lock selftest and `chanechotest` test chan_call() itself.
+
+racescan section 3 now tells "waits" from "refuses" and counts hand-written retries (the
+16550/P4 UART writer; none elsewhere). All ten builds: zero unmarked statics.
+
+Findings, fixed:
+
+| # | where | class | what | fix |
+| :--- | :--- | :--- | :--- | :--- |
+| F37 | drivers/virtio_blk.c | 2 | a request over four blocks went straight to the device while the task was alive: one descriptor chain and request header for both | chunks through the task; direct only without it |
+| F38 | spisd, sdmmc, st7735, tm1638, the clock driver, the 16550/P4 `uart_getc` | 2 | a call that failed with the task alive (busy past a few yields) fell back to the hardware beside the task: the SPI bus driven by two at once (spisd has no bus lock), the LED matrix scanned by two, a second RX reader. Requests too big for the endpoint (st7735 bitmaps over 32 rows, long strings) went direct too | with the task alive a failed call is an error or a dropped draw; bitmaps go in bands, strings are cut at what the screen shows; getc waits its turn as long as it takes |
+| F39 | drivers/i2c_bus.c (ESP) | 6 | `esp_i2c_run()` read the status, then the clock: preempted past its 10 ms deadline, it gave up on a status word read before the preemption and failed a finished transfer. This was the Tab5's touch I2C error and the BMI270's "incomplete" transfers (11.9 ms, INT_RAW 0x8211) | the clock first, then the status (`time_poll_until_us()`, kernel/time.h). The same order fixed in the bus clear, usbhost (5 ms channel halt, `wait_set`/`wait_clear`, port enable), sdmmc and sdio waits |
+
+The I2C tool to find F39 stays: `i2cstats` counts failed transfers by cause (no turn, NACK,
+timeout, arbitration, incomplete) with the last one's address, status and duration.
+
+Class 2 in racescan's MMIO list: driver facades are done (above). The shell's `usb` and
+`usb regs` only read registers that have no read side effects. The shell-only MMIO files
+(clock, PSRAM, XIP, SMP, GPIO setup) are read-modify-write questions, for 63.6.
+
+Tested:
+- QEMU 514/514, with `chanqtest` 6/6 on rv64, rv32 and rv64-smp (second hart started); host
+  harnesses clean under ASan/UBSan.
+- Tab5 50/50, the first clean run since the touch error appeared. Over five boots: touch
+  0 errors, `no_turn` 0, `incomplete` 0; before the F39 fix, 2 of 5 boots had incomplete
+  transfers.
+- LCD-7B 50/50, NANO 50/50, RP2350 terminal 34/34 (also after the RP2350 writer change).
+- C6-MINI 20/21: the DHCP lease again, which a C6 bridging wlan0 does not take.
+- st7735, tm1638 and the clock driver compile (rp2350-clock builds; rp2350-chess fails to link
+  on `prim_rgb` in the Lisp builtins table, unrelated). Not run on hardware.
+
+Open: after the C6 suite's RAM-loaded session, the NANO's C6-MINI no longer boots from flash.
+The loader and the 63.2 build in its slot stop at breadcrumb 0x21 (after `uart_init()`, no
+trap, no ticks) through `reboot`, `sdio reset` and an esptool reset alike. LP_AON_SYS_CFG
+bit 30 is clear, and the same build booted the NANO suite earlier that day. Left on a RAM
+kernel; a power cycle is the next thing to try.
 
 ### 63.5 Interrupt-shared state (class 4)
 
@@ -370,7 +432,8 @@ Load that makes collisions likely instead of lucky:
 
 ## 4. Decisions for the Owner
 
-1. Whether `chan_call` should queue waiting callers (63.4), once the cost is known.
+1. ~~Whether `chan_call` should queue waiting callers (63.4), once the cost is known.~~
+   Decided 2026-10-19: a FIFO, opt-in through `chan_call_wait()`.
 2. Whether the lock-rank check stays on in release builds or is debug-only.
 3. Whether `racescan.py` failing the runner is acceptable from 63.8 on, which makes new
    statics need their ownership comment before merge.

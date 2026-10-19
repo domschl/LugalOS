@@ -107,21 +107,15 @@ bool driver_task_alive(const driver_task_t *dt) {
     return st != TASK_UNUSED && st != TASK_DEAD;
 }
 
+int driver_task_call_wait(driver_task_t *dt, const uint8_t *req, uint32_t req_len,
+                          uint8_t *resp, uint32_t resp_max, uint32_t wait_ms) {
+    if (!dt || !dt->ep) return -1;
+    return chan_call_wait(dt->ep, req, req_len, resp, resp_max, wait_ms);
+}
+
 int driver_task_call(driver_task_t *dt, const uint8_t *req, uint32_t req_len,
                      uint8_t *resp, uint32_t resp_max) {
-    if (!dt || !dt->ep) return -1;
-
-    /* Bounded, yielding retry rather than blocking indefinitely or falling
-     * straight back to a hardware access that would race the request already
-     * in flight. Busy is expected to be rare -- these endpoints have one
-     * writer in practice, already serialized by the driver's own batching
-     * where there is any. */
-    for (int attempt = 0; attempt < 8; attempt++) {
-        int n = chan_call(dt->ep, req, req_len, resp, resp_max);
-        if (n >= 0) return n;
-        sched_yield();
-    }
-    return -1;
+    return driver_task_call_wait(dt, req, req_len, resp, resp_max, CHAN_WAIT_MS);
 }
 
 

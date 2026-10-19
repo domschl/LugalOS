@@ -640,6 +640,7 @@ set(SOURCES
     kernel/device.c
     kernel/board.c
     kernel/chan.c
+    kernel/chan_selftest.c
     kernel/palloc.c
     kernel/scratch.c
     kernel/balloc.c

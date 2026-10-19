@@ -740,18 +740,17 @@ int spisd_task_start(void) {
     return pid;
 }
 
-static int blk_call_with_retry(const uint8_t *req, uint32_t req_len,
-                               uint8_t *resp, uint32_t resp_max) {
-    for (int attempt = 0; attempt < 8; attempt++) {
-        int n = chan_call(g_blk_ep, req, req_len, resp, resp_max);
-        /* counted here, on the client side -- see
-         * drivers/st7735_rp2350.c's st7735_call_with_retry() comment,
-         * same reasoning: a U-mode server cannot touch g_blk_calls, an
-         * ordinary kernel .bss global no domain grants it. */
-        if (n >= 0) { g_blk_calls++; return n; }
-        sched_yield();
-    }
-    return -1;
+/* A turn can wait out another client's transfer, and a card may hold a
+ * write busy for up to 250 ms (SD spec's write timeout). */
+#define BLK_CALL_WAIT_MS 500u
+
+static int blk_call(const uint8_t *req, uint32_t req_len,
+                    uint8_t *resp, uint32_t resp_max) {
+    int n = chan_call_wait(g_blk_ep, req, req_len, resp, resp_max, BLK_CALL_WAIT_MS);
+    /* counted here, on the client side: a U-mode server cannot touch
+     * g_blk_calls, an ordinary kernel .bss global no domain grants it. */
+    if (n >= 0) g_blk_calls++;
+    return n;
 }
 
 /* One wire round trip, at most BLK_MAX_COUNT (one) sector -- the
@@ -764,7 +763,7 @@ static int blk_read_chunk(uint32_t lba, uint32_t count, void *buf) {
     be32_store(&req[1], lba);
     be32_store(&req[5], count);
     uint8_t resp[BLK_RESP_CAP];
-    int n = blk_call_with_retry(req, sizeof(req), resp, sizeof(resp));
+    int n = blk_call(req, sizeof(req), resp, sizeof(resp));
     if (n >= 1 && resp[0] == 0 && (uint32_t)n >= 1u + count * 512u) {
         memcpy(buf, &resp[1], count * 512u);
         return (int)count;
@@ -779,7 +778,7 @@ static int blk_write_chunk(uint32_t lba, uint32_t count, const void *buf) {
     be32_store(&req[5], count);
     memcpy(&req[BLK_HDR_LEN], buf, count * 512u);
     uint8_t resp[1];
-    int n = blk_call_with_retry(req, BLK_HDR_LEN + count * 512u, resp, sizeof(resp));
+    int n = blk_call(req, BLK_HDR_LEN + count * 512u, resp, sizeof(resp));
     if (n >= 1 && resp[0] == 0) return (int)count;
     return -1;
 }
@@ -847,10 +846,10 @@ static int spisd_read_blocks_raw(block_dev_t *dev, void *buf, uint32_t lba, uint
         while (done < count) {
             uint32_t chunk = (count - done) > BLK_MAX_COUNT ? BLK_MAX_COUNT : (count - done);
             int n = blk_read_chunk(lba + done, chunk, dst + (size_t)done * 512u);
-            if (n < 0) break; /* IPC failed -- fall through to direct access below for whatever wasn't already transferred, same as at24c32_read()/at24c32_write() */
+            if (n < 0) return -1;   /* not the bus: the task may still be on it */
             done += (uint32_t)n;
         }
-        if (done >= count) return 0;
+        return 0;
     }
     return spisd_hw_read_blocks(lba + done, count - done, dst + (size_t)done * 512u);
 }
@@ -864,10 +863,10 @@ static int spisd_write_blocks_raw(block_dev_t *dev, const void *buf, uint32_t lb
         while (done < count) {
             uint32_t chunk = (count - done) > BLK_MAX_COUNT ? BLK_MAX_COUNT : (count - done);
             int n = blk_write_chunk(lba + done, chunk, src + (size_t)done * 512u);
-            if (n < 0) break;
+            if (n < 0) return -1;   /* not the bus: the task may still be on it */
             done += (uint32_t)n;
         }
-        if (done >= count) return 0;
+        return 0;
     }
     return spisd_hw_write_blocks(lba + done, count - done, src + (size_t)done * 512u);
 }

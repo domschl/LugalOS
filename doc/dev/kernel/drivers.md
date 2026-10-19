@@ -58,3 +58,30 @@ To prove that hardware confinement is real rather than assumed, every driver inc
 Hardware interrupts (IRQs) are handled via a two-stage model:
 1. **Top Half (Kernel Trap Handler)**: Acknowledges the hardware interrupt, masks the line if necessary, and unblocks the driver's task queue or posts an event.
 2. **Bottom Half (U-Mode Driver Task)**: The driver task wakes up in its isolated memory domain, drains hardware FIFOs, and handles the request asynchronously.
+
+---
+
+## 4. Calling a Driver Task
+
+An endpoint serves one request at a time. A caller that finds it busy waits its turn with
+`chan_call_wait(ep, req, len, resp, max, wait_ms)` (`kernel/chan.h`), or with
+`driver_task_call()` / `driver_task_call_wait()` for a `driver_task_t`:
+* Waiting callers are served in arrival order. The caller releasing the endpoint hands it
+  straight to the next one, so a client issuing requests back to back cannot keep it from a
+  client that was already waiting.
+* `CHAN_WAIT_MS` (50 ms) is the usual bound; block devices use 500 ms, the local 9P link 1 s.
+* A context re-entering an endpoint it holds is refused at once rather than queued behind
+  itself. So is a caller holding a spinlock, or one in an interrupt handler.
+* Plain `chan_call()` never waits. It is for the few callers that must not queue, such as a
+  UART writer that would otherwise wait behind a READ waiting for a key.
+
+**A facade touches the hardware itself only when the task is not running**
+(`driver_task_alive()` false: during boot, or if the task never started). If the call fails
+while the task is alive, the facade reports an error (or drops a display update). The task may
+still be driving the hardware, and a second access beside it collides on the bus.
+
+Timed waits on hardware read the clock *before* the condition, so the last test always comes
+after the deadline (`time_poll_until_us()`, `kernel/time.h`). In the other order, a task
+preempted past the deadline gives up on a reading taken before the preemption.
+
+`chanqtest` checks the queue under real tasks; `i2cstats` counts I2C failures by cause.

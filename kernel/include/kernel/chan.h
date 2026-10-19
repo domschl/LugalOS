@@ -35,13 +35,9 @@
  *
  * ## Shape
  *
- * Synchronous request/response only. There is no queue depth: this kernel is
- * still single-call-stack (kernel/sched.c is a bookkeeping shim), so a
- * message can never sit waiting for a receiver that is not already running.
- * A depth-N ring would be untestable capacity today, which is a liability
- * rather than a feature. Once tasks exist,
- * chan_call() splits into a real blocking send/receive rendezvous and the
- * busy flag below becomes a wait queue.
+ * Synchronous request/response only, one request in flight per endpoint:
+ * messages are never queued. Callers can be -- see "Waiting for a turn"
+ * below.
  *
  * Buffers are supplied by the registrant, not allocated here: this kernel has
  * no malloc (each arch's vmm.c is a bump allocator that never frees), and it
@@ -65,9 +61,31 @@
  * both sides only ever touch the endpoint's own buffers, never a caller's
  * or a server's raw pointer.
  *
- * Still no queue: one request in flight per endpoint, same as before,
- * enforced the same way (chan_call()'s busy flag). A second caller while
- * one is already being served is refused, not queued.
+ * One request in flight per endpoint, enforced by chan_call()'s claim of
+ * it. A second caller while one is already being served is refused by
+ * chan_call(), or waits its turn in chan_call_wait().
+ *
+ * ## Waiting for a turn
+ *
+ * chan_call() refuses a busy endpoint at once. chan_call_wait() instead joins
+ * the endpoint's FIFO of waiting tasks and blocks until its turn or its
+ * deadline. A caller releasing the endpoint hands it straight to the head of
+ * the queue (the endpoint never goes free in between), so a client calling
+ * back to back cannot take it again ahead of one that was waiting: the touch
+ * poller lost transfers to the BMI270's microcode upload that way while every
+ * client polled.
+ *
+ * Refused at once even by chan_call_wait(), because waiting could never end:
+ *   - the calling context already holds the endpoint (a recursive local 9P
+ *     mount re-entering "p9" from inside its own handler);
+ *   - no task is running (boot, a hart without a task) or the caller is an
+ *     interrupt handler.
+ * A wait is not an edge in the wait-for graph (kernel/lock.h): the holder can
+ * change while a task waits. A cycle through a queue (the holder needs a lock
+ * the waiter holds) ends at the waiter's deadline instead, with -1.
+ *
+ * The queue has CHAN_WAITQ_LEN places; a caller finding it full polls at 1 ms
+ * until its deadline, without the FIFO's guarantee.
  *
  * Message-oriented, not byte-oriented: a caller with more than one thing to
  * say sends *one* call carrying all of it (see drivers/uart_16550.c's
@@ -142,6 +160,20 @@ int chan_register_task(const char *name, int owner_pid,
 int chan_call(chan_endpoint_t *ep, const uint8_t *req, uint32_t req_len,
               uint8_t *resp, uint32_t resp_max);
 
+/* Waiting places per endpoint (see "Waiting for a turn" above). */
+#define CHAN_WAITQ_LEN 8
+
+/* The bound most clients want: long enough for any one transfer a driver task
+ * serves (a 30-byte I2C write is 3 ms at 100 kHz, four SD blocks a few ms),
+ * short enough that a stuck owner costs a caller a visible stall, not a hang. */
+#define CHAN_WAIT_MS 50u
+
+/* chan_call(), waiting up to `wait_ms` in the endpoint's FIFO when it is busy
+ * instead of refusing. 0 is chan_call(). Same return values; -1 after the
+ * deadline. The time spent waiting does not count the call's own run. */
+int chan_call_wait(chan_endpoint_t *ep, const uint8_t *req, uint32_t req_len,
+                   uint8_t *resp, uint32_t resp_max, uint32_t wait_ms);
+
 /* Called by a task-owned endpoint's owner. Blocks until a request is
  * pending, then returns its length -- already copied into the endpoint's
  * own request buffer by chan_call(), so the caller reads it from there
@@ -176,6 +208,7 @@ void chan_serve_reply_copy(chan_endpoint_t *ep, const uint8_t *in, uint32_t resp
 /* The syscall forms: the same three operations, copying
  * straight between the calling U-mode task's memory -- validated against its
  * domain -- and the endpoint's own buffers, while the endpoint is claimed.
+ * chan_call_user() waits its turn as chan_call_wait() with CHAN_WAIT_MS.
  * They replace staging through static kernel buffers in the trap handler,
  * which two harts could use at once, and which a task blocked in
  * SYS_CHAN_CALL could resume from on the other hart.
@@ -209,23 +242,22 @@ bool chan_info(uint32_t index, const char **name_out, bool *busy_out);
  * Scans every endpoint `owner_pid` owns (at most one in practice; nothing
  * enforces that structurally) and, for one with a request currently
  * pending, unblocks its caller with an error rather than leaving it
- * blocked -- which in turn makes every existing "fall back to direct
+ * blocked. The same task is also taken out of every endpoint's wait queue,
+ * and a turn handed to it, or a claim it died holding, is passed on: a dead
+ * waiter would otherwise keep the endpoint busy for good -- which in turn makes every existing "fall back to direct
  * hardware access if the task isn't alive" facade (uart_putc(),
  * tm1638_display_string(), ...) actually reachable when a task dies
  * mid-request, not just when it never started. */
 void chan_owner_exited(int owner_pid);
 
-/* Exposes ep->busy
- * (chan_call()'s own request-in-flight flag, kernel/chan.c) to a single
- * named endpoint a caller already holds a pointer to -- chan_info()
- * above only offers it by enumeration index. Added so
- * drivers/uart_rp2350.c's uart_flush() could stop tracking its own
- * separate "a WRITE is in flight" flag (the original, g_uart_write_in_flight,
- * was set from *inside* the server's WRITE case -- something a U-mode
- * server cannot do to an ordinary kernel .bss global) and instead read
- * the channel layer's own already-correct window directly: true from the
- * moment a caller's request is copied in until that caller's reply comes
- * back, exactly the span a competing client needs to see. */
+/* Whether the endpoint is claimed: true from the moment a caller's request
+ * is copied in until the last queued caller's reply is back (a hand-off keeps
+ * it claimed). For selftests and diagnostics; a caller that wants a turn asks
+ * chan_call_wait(), not this. */
 bool chan_endpoint_busy(chan_endpoint_t *ep);
+
+/* `chanqtest` (kernel/chan_selftest.c): chan_call_wait()'s queue under real
+ * tasks. Prints CHANQ_SELFTEST_OK or _FAIL; 0 or -1. */
+int chan_selftest(void);
 
 #endif /* LUGALOS_KERNEL_CHAN_H */

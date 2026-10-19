@@ -236,43 +236,57 @@ int virtio_blk_task_start(void) {
     return driver_task_start(&g_blk_task, &spec);
 }
 
+/* One request through the task, at most BLK_MAX_COUNT blocks. 0 or -1. */
+static int blk_read_chunk(uint32_t lba, uint32_t count, uint8_t *dst) {
+    uint8_t req[BLK_HDR_LEN];
+    req[0] = BLK_REQ_READ;
+    be32_store(&req[1], lba);
+    be32_store(&req[5], count);
+    uint8_t resp[BLK_RESP_CAP];
+    int n = driver_task_call(&g_blk_task, req, sizeof(req), resp, sizeof(resp));
+    if (n < 1 || resp[0] != 0 || (uint32_t)n < 1u + count * 512u) return -1;
+    memcpy(dst, &resp[1], count * 512u);
+    return 0;
+}
+
+static int blk_write_chunk(uint32_t lba, uint32_t count, const uint8_t *src) {
+    uint8_t req[BLK_HDR_LEN + BLK_MAX_COUNT * 512u];
+    req[0] = BLK_REQ_WRITE;
+    be32_store(&req[1], lba);
+    be32_store(&req[5], count);
+    memcpy(&req[BLK_HDR_LEN], src, count * 512u);
+    uint8_t resp[1];
+    int n = driver_task_call(&g_blk_task, req, BLK_HDR_LEN + count * 512u, resp, sizeof(resp));
+    return (n >= 1 && resp[0] == 0) ? 0 : -1;
+}
+
+/* With the task alive, every transfer goes through it, in chunks: the queue
+ * and the request header are single-slot, and a direct transfer beside the
+ * task's would share them. A failed call is an I/O error. */
 static int virtio_blk_read(block_dev_t *dev, void *buf, uint32_t lba, uint32_t count) {
     (void)dev;
     if (!buf || count == 0 || lba + count > g_num_sectors) return -1;
-
-    if (count <= BLK_MAX_COUNT && blk_task_alive()) {
-        uint8_t req[BLK_HDR_LEN];
-        req[0] = BLK_REQ_READ;
-        be32_store(&req[1], lba);
-        be32_store(&req[5], count);
-        uint8_t resp[BLK_RESP_CAP];
-        int n = driver_task_call(&g_blk_task, req, sizeof(req), resp, sizeof(resp));
-        if (n >= 1 && resp[0] == 0 && (uint32_t)n >= 1u + count * 512u) {
-            memcpy(buf, &resp[1], count * 512u);
-            return 0;
-        }
-        /* IPC failed or the task answered with an error -- fall through to
-         * direct access rather than propagate a failure that might only be
-         * about the channel, not the device. */
+    if (!blk_task_alive()) return virtio_blk_transfer(VIRTIO_BLK_T_IN, buf, lba, count);
+    uint8_t *dst = (uint8_t *)buf;
+    for (uint32_t done = 0; done < count; ) {
+        uint32_t chunk = (count - done) > BLK_MAX_COUNT ? BLK_MAX_COUNT : (count - done);
+        if (blk_read_chunk(lba + done, chunk, dst + (size_t)done * 512u) < 0) return -1;
+        done += chunk;
     }
-    return virtio_blk_transfer(VIRTIO_BLK_T_IN, buf, lba, count);
+    return 0;
 }
 
 static int virtio_blk_write(block_dev_t *dev, const void *buf, uint32_t lba, uint32_t count) {
     (void)dev;
     if (!buf || count == 0 || lba + count > g_num_sectors) return -1;
-
-    if (count <= BLK_MAX_COUNT && blk_task_alive()) {
-        uint8_t req[BLK_HDR_LEN + BLK_MAX_COUNT * 512u];
-        req[0] = BLK_REQ_WRITE;
-        be32_store(&req[1], lba);
-        be32_store(&req[5], count);
-        memcpy(&req[BLK_HDR_LEN], buf, count * 512u);
-        uint8_t resp[1];
-        int n = driver_task_call(&g_blk_task, req, BLK_HDR_LEN + count * 512u, resp, sizeof(resp));
-        if (n >= 1 && resp[0] == 0) return 0;
+    if (!blk_task_alive()) return virtio_blk_transfer(VIRTIO_BLK_T_OUT, (void *)buf, lba, count);
+    const uint8_t *src = (const uint8_t *)buf;
+    for (uint32_t done = 0; done < count; ) {
+        uint32_t chunk = (count - done) > BLK_MAX_COUNT ? BLK_MAX_COUNT : (count - done);
+        if (blk_write_chunk(lba + done, chunk, src + (size_t)done * 512u) < 0) return -1;
+        done += chunk;
     }
-    return virtio_blk_transfer(VIRTIO_BLK_T_OUT, (void *)buf, lba, count);
+    return 0;
 }
 
 int virtio_blk_init(void) {

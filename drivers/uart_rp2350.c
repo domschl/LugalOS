@@ -1000,14 +1000,10 @@ int uart_task_start(void) {
     return pid;
 }
 
-static int uart_call_with_retry(const uint8_t *req, uint32_t req_len,
-                                uint8_t *resp, uint32_t resp_max) {
-    for (int attempt = 0; attempt < 8; attempt++) {
-        int n = chan_call(g_uart_ep, req, req_len, resp, resp_max);
-        if (n >= 0) return n;
-        sched_yield();
-    }
-    return -1;
+/* Every op this task serves is a few register accesses, so a turn is short. */
+static int uart_call(const uint8_t *req, uint32_t req_len,
+                     uint8_t *resp, uint32_t resp_max) {
+    return chan_call_wait(g_uart_ep, req, req_len, resp, resp_max, CHAN_WAIT_MS);
 }
 
 /* Domain verification: does the real uart domain shape
@@ -1154,33 +1150,15 @@ static void uart_tx_send(const char *local, uint32_t len) {
     req[0] = UART_REQ_WRITE;
     memcpy(&req[1], local, len);
     uint8_t resp[1];
-    /* Not uart_call_with_retry()'s plain bounded retry: a WRITE must never
-     * give up and fall back to direct hardware access while another
-     * WRITE is actually in flight (a real race on real hardware, not a
-     * theoretical one -- see the git history of this comment for the
-     * exact interleaved-output symptom it was found by), while still
-     * falling back promptly when the endpoint is merely busy with some
-     * other, near-instant op instead.
-     *
-     * chan_endpoint_busy(g_uart_ep) (kernel/chan.c) replaces
-     * the old server-set g_uart_write_in_flight flag -- a U-mode server
-     * cannot write an ordinary kernel .bss global, but chan_call()
-     * itself already tracks exactly this window (ep->busy, true from
-     * the moment a caller's request is copied in until that caller's
-     * reply comes back), so this reads that directly instead of keeping
-     * a second, redundant flag. Every op this task now serves is small
-     * and bounded (no more open-ended READ), so "busy" here can only
-     * ever mean "a few register pokes are in flight", never "someone is
-     * waiting on a human keystroke". */
-    for (;;) {
-        int n = chan_call(g_uart_ep, req, 1 + len, resp, sizeof(resp));
-        if (n >= 0) {
-            g_uart_write_calls++;
-            for (uint32_t i = 0; i < len; i++) usb_cdc_putc(local[i]);
-            return;
-        }
-        if (!chan_endpoint_busy(g_uart_ep)) break;
-        sched_yield();
+    /* A WRITE must never fall back to direct hardware access while another
+     * WRITE is in flight: the two interleave on the wire. Every op this task serves is a few register
+     * accesses -- no READ here waits for a key -- so the writer simply waits
+     * for its turn, as long as that takes. Only a refusal (no task to block,
+     * a spinlock held) writes directly. */
+    if (chan_call_wait(g_uart_ep, req, 1 + len, resp, sizeof(resp), UINT32_MAX) >= 0) {
+        g_uart_write_calls++;
+        for (uint32_t i = 0; i < len; i++) usb_cdc_putc(local[i]);
+        return;
     }
     for (uint32_t i = 0; i < len; i++) {
         uart_hw_putc(local[i]);
@@ -1319,7 +1297,7 @@ bool uart_serial_has_char(void) {
     if (uart_task_alive()) {
         uint8_t req[1] = { UART_REQ_HASCHAR };
         uint8_t resp[1];
-        return uart_call_with_retry(req, 1, resp, 1) == 1 && resp[0];
+        return uart_call(req, 1, resp, 1) == 1 && resp[0];
     }
     return hw_uart_has_char();
 }
@@ -1331,7 +1309,7 @@ int uart_serial_getc(void) {
     if (uart_task_alive()) {
         uint8_t req[1] = { UART_REQ_READ };
         uint8_t resp[2];
-        int n = uart_call_with_retry(req, 1, resp, sizeof(resp));
+        int n = uart_call(req, 1, resp, sizeof(resp));
         return (n >= 2 && resp[0]) ? (int)resp[1] : -1;
     }
     return hw_uart_read();
@@ -1368,7 +1346,7 @@ char uart_getc(void) {
         if (uart_task_alive()) {
             uint8_t req[1] = { UART_REQ_READ };
             uint8_t resp[2];
-            int n = uart_call_with_retry(req, 1, resp, sizeof(resp));
+            int n = uart_call(req, 1, resp, sizeof(resp));
             if (n >= 2 && resp[0]) return (char)resp[1];
         } else {
             int c = hw_uart_read();

@@ -130,6 +130,7 @@ LugalOS features a ring buffer kernel logging subsystem ([logging](doc/dev/kerne
 * `klog`: Displays kernel log statistics, total emitted bytes, and attached output sinks.
 * `klog detach console`: Detaches console sink permanently.
 * `klog attach console`: Re-enables unconditional kernel log echoing to the console.
+* `chanqtest`: Selftest of the channel layer's waiting callers: turns served in arrival order, a back-to-back client handing over to a waiter, deadlines, and refusals. Prints `CHANQ_SELFTEST_OK` or `CHANQ_SELFTEST_FAIL`.
 
 ---
 

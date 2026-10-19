@@ -16,6 +16,12 @@
 #include "arch/rp2350_clocks.h"
 #include <string.h>
 
+/* accepted: statistics. no_turn is added atomically by the callers; the rest
+ * by whoever drives the controller, which is serialised (the task, or a
+ * direct caller under g_esp_hw_lock). */
+static i2c_fail_counts_t g_i2c_fails;
+
+
 /* See drivers/include/drivers/i2c_bus.h for what this file is and why it is
  * not part of the RTC driver any more. */
 
@@ -898,8 +904,10 @@ static void esp_i2c_bus_clear(void) {
      * going to. Give up rather than spin -- the enable is then cleared by
      * hand so the next transaction does not start into a pending clear. */
     uint64_t deadline = time_get_us() + 5000u;
-    while ((REG(ESP_I2C_SCL_SP_CONF) & ESP_I2C_SCL_RST_SLV_EN) != 0) {
-        if (time_get_us() >= deadline) {
+    for (;;) {
+        bool late = time_get_us() >= deadline;   /* before the read: see esp_i2c_run() */
+        if ((REG(ESP_I2C_SCL_SP_CONF) & ESP_I2C_SCL_RST_SLV_EN) == 0) break;
+        if (late) {
             REG(ESP_I2C_SCL_SP_CONF) = 0;
             break;
         }
@@ -929,7 +937,8 @@ static void esp_i2c_recover(void) {
 /* g_esp->last_int / _sr (declared above): what the last transaction
  * ended on. */
 
-static bool esp_i2c_run(void) {
+static bool esp_i2c_run(uint8_t addr) {
+    uint64_t t_start = time_get_us();
     REG(ESP_I2C_CTR) |= ESP_I2C_CONF_UPGATE;
     REG(ESP_I2C_CTR) |= ESP_I2C_TRANS_START;
 
@@ -941,13 +950,20 @@ static bool esp_i2c_run(void) {
      * bus scan looked exactly like a hung board. A transaction of a few bytes
      * at 100 kHz is under a millisecond; 10 ms is generous and still leaves a
      * full scan of an empty bus well under two seconds. */
+    /* The clock is read before the status, so the status that decides is
+     * always read after the deadline: a task preempted past it would
+     * otherwise give up on a word read before the preemption, and fail a
+     * transfer that had long finished (the BMI270 upload, under a busy
+     * display: "incomplete" after 11.9 ms). */
     uint64_t deadline = time_get_us() + 10000u;
     uint32_t st = 0;
-    do {
+    for (;;) {
+        bool late = time_get_us() >= deadline;
         st = REG(ESP_I2C_INT_RAW);
         if (st & (ESP_I2C_INT_NACK | ESP_I2C_INT_TIME_OUT | ESP_I2C_INT_ARB_LOST)) break;
         if (st & (ESP_I2C_INT_TRANS_COMPLETE | ESP_I2C_INT_END_DETECT)) break;
-    } while (time_get_us() < deadline);
+        if (late) break;
+    }
 
     g_esp->last_int = st;
     g_esp->last_sr  = REG(ESP_I2C_SR);
@@ -986,6 +1002,13 @@ static bool esp_i2c_run(void) {
      * next transaction's esp_i2c_begin() still resets the FSM and FIFOs, which
      * is what the NANO's stale-controller fix needed. */
     if (!ok) {
+        if (st & ESP_I2C_INT_ARB_LOST) g_i2c_fails.arb_lost++;
+        else if (st & ESP_I2C_INT_TIME_OUT) g_i2c_fails.timeout++;
+        else if (st & ESP_I2C_INT_NACK) g_i2c_fails.nack++;
+        else g_i2c_fails.incomplete++;
+        g_i2c_fails.last_addr = addr;
+        g_i2c_fails.last_int = st;
+        g_i2c_fails.last_us = (uint32_t)(time_get_us() - t_start);
         bool clean_nack = (st & ESP_I2C_INT_NACK) &&
                           !(st & (ESP_I2C_INT_TIME_OUT | ESP_I2C_INT_ARB_LOST)) &&
                           !(REG(ESP_I2C_SR) & ESP_I2C_SR_BUS_BUSY);
@@ -1072,7 +1095,7 @@ static bool i2c_write_bytes(uint8_t addr, const uint8_t *src, int len) {
     REG(ESP_I2C_COMD(0)) = ESP_CMD(ESP_CMD_RSTART, 0, 0, 0);
     REG(ESP_I2C_COMD(1)) = ESP_CMD(ESP_CMD_WRITE, 1, 0, 1 + len);
     REG(ESP_I2C_COMD(2)) = ESP_CMD(ESP_CMD_STOP, 0, 0, 0);
-    return esp_i2c_run();
+    return esp_i2c_run(addr);
 }
 /* Write-then-read with a repeated start, which is the shape every register
  * read on this bus takes: address+W, the register number, RESTART,
@@ -1105,7 +1128,7 @@ static bool i2c_xfer_raw(uint8_t addr, const uint8_t *w, int wlen,
     REG(ESP_I2C_COMD(c++)) = ESP_CMD(ESP_CMD_READ, 0, 1, 1);
     REG(ESP_I2C_COMD(c++)) = ESP_CMD(ESP_CMD_STOP, 0, 0, 0);
 
-    if (!esp_i2c_run()) return false;
+    if (!esp_i2c_run(addr)) return false;
     for (int i = 0; i < rlen; i++) r[i] = (uint8_t)(REG(ESP_I2C_DATA) & 0xffu);
     return true;
 }
@@ -1121,7 +1144,7 @@ static bool __attribute__((unused)) i2c_probe_addr(uint8_t addr) {
     REG(ESP_I2C_COMD(0)) = ESP_CMD(ESP_CMD_RSTART, 0, 0, 0);
     REG(ESP_I2C_COMD(1)) = ESP_CMD(ESP_CMD_WRITE, 1, 0, 1);
     REG(ESP_I2C_COMD(2)) = ESP_CMD(ESP_CMD_STOP, 0, 0, 0);
-    return esp_i2c_run();
+    return esp_i2c_run(addr);
 }
 
 static bool i2c_xfer_raw_bus(uint8_t bus, uint8_t addr, const uint8_t *w, int wlen,
@@ -1293,8 +1316,9 @@ static int              g_i2c_task_pid = -1;
 /* Verify: counts chan_call()s actually served -- see
  * drivers/uart_16550.c's g_uart_write_calls comment for the reasoning. */
 static uint32_t g_i2c_calls;   /* accepted: a statistic, counted by the callers */
-
 uint32_t i2c_task_call_count(void) { return g_i2c_calls; }
+
+void i2c_fail_counts(i2c_fail_counts_t *out) { *out = g_i2c_fails; }
 
 bool i2c_task_alive(void) {
     if (g_i2c_task_pid < 0) return false;
@@ -1692,28 +1716,17 @@ int i2c_task_start(void) {
     return pid;
 }
 
-/* chan_call() fails at once while the task is serving another client, so
- * the wait for a turn is here. It is bounded in time, not in attempts: a
- * yield returns immediately when nothing else is ready, and eight of them
- * were over long before a 30-byte write (3 ms at 100 kHz) was -- the touch
- * poller counted an I2C error for every transfer that arrived during the
- * BMI270's microcode upload. Yield a few times, then sleep a millisecond at
- * a time, for up to I2C_CALL_WAIT_MS. */
-#define I2C_CALL_WAIT_MS 50u
-
+/* Waits its turn in the endpoint's FIFO (chan_call_wait()), so a client
+ * issuing transfers back to back -- the BMI270's microcode upload -- cannot
+ * keep the bus from one that was already waiting, such as the touch poller. */
 int i2c_task_call(const uint8_t *req, uint32_t req_len, uint8_t *resp, uint32_t resp_max) {
-    uint64_t deadline = time_get_ms() + I2C_CALL_WAIT_MS;
-    for (int attempt = 0; ; attempt++) {
-        int n = chan_call(g_i2c_ep, req, req_len, resp, resp_max);
-        /* counted here, on the client side -- see
-         * drivers/tm1638_rp2350.c's tm1638_call_with_retry() comment,
-         * same reasoning: a U-mode server cannot touch g_i2c_calls, an
-         * ordinary kernel .bss global no domain grants it. */
-        if (n >= 0) { g_i2c_calls++; return n; }
-        if (!i2c_task_alive() || time_get_ms() >= deadline) return -1;
-        if (attempt < 8) sched_yield();
-        else task_sleep_ms(1);
-    }
+    if (!i2c_task_alive()) return -1;
+    int n = chan_call_wait(g_i2c_ep, req, req_len, resp, resp_max, CHAN_WAIT_MS);
+    /* counted here, on the client side: a U-mode server cannot touch
+     * g_i2c_calls, an ordinary kernel .bss global no domain grants it. */
+    if (n >= 0) g_i2c_calls++;
+    else __atomic_fetch_add(&g_i2c_fails.no_turn, 1u, __ATOMIC_RELAXED);
+    return n;
 }
 
 #if defined(CONFIG_BOARD_RP2350)

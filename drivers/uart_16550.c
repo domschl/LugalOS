@@ -547,13 +547,19 @@ bool uart_peek_interrupt(void) {
     return false;
 }
 
+#define UART_HASCHAR_WAIT_MS 2u
+
 bool uart_has_char(void) {
     uart_flush();
     if (uart_demux_is_enabled()) return uart_demux_console_has_char();
     if (uart_task_alive()) {
+        /* A short turn: the call ahead may be a READ waiting for a key. Then
+         * the status register is read here; reading it changes nothing the
+         * task depends on. */
         uint8_t req[1] = { UART_REQ_HASCHAR };
         uint8_t resp[1];
-        if (driver_task_call(&g_uart_task, req, 1, resp, 1) == 1) return resp[0] != 0;
+        if (driver_task_call_wait(&g_uart_task, req, 1, resp, 1, UART_HASCHAR_WAIT_MS) == 1)
+            return resp[0] != 0;
     }
     return hw_uart_has_char();
 }
@@ -565,9 +571,14 @@ char uart_getc(void) {
         return uart_demux_console_getc();
     }
     if (uart_task_alive()) {
+        /* Blocking by contract, so it waits for its turn as long as that takes
+         * (a READ ahead of it waits for a key): a second reader of the RX
+         * register beside the task would take keys from it. A refusal (no
+         * task to block, a spinlock held) still returns at once. */
         uint8_t req[1] = { UART_REQ_READ };
         uint8_t resp[1];
-        if (driver_task_call(&g_uart_task, req, 1, resp, 1) == 1) return (char)resp[0];
+        if (driver_task_call_wait(&g_uart_task, req, 1, resp, 1, UINT32_MAX) == 1)
+            return (char)resp[0];
     }
     return (char)uart_hw_getc_blocking();
 }
