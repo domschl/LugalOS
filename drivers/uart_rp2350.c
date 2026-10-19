@@ -456,6 +456,11 @@ uint32_t uart_rx_overruns(void) {
 
 #define UART0_FR    (UART0_BASE + 0x18)
 #define UART0_IMSC  (UART0_BASE + 0x38)
+/* interrupt-shared: IMSC is changed by the handler and by tasks on either core,
+ * so never read-modify-written: through the RP2350's atomic aliases (datasheet
+ * 2.1.3, +0x2000 sets bits, +0x3000 clears them), one store each. */
+#define UART0_IMSC_SET (UART0_IMSC + 0x2000u)
+#define UART0_IMSC_CLR (UART0_IMSC + 0x3000u)
 #define UART0_FR_TXFF (1u << 5)
 #define UART0_IMSC_TXIM (1u << 5)
 
@@ -516,7 +521,7 @@ int uart_raw_open(uint8_t *ring, uint32_t cap, uint32_t baud) {
     g_raw_ring = ring;
     REG(UART0_IFLS) = (REG(UART0_IFLS) & ~(7u << 3)) | (1u << 3);  /* RX interrupt at 1/4 full (8 bytes) */
     REG(UART0_ICR) = UART0_IMSC_RXIM | UART0_IMSC_RTIM;
-    REG(UART0_IMSC) |= UART0_IMSC_RXIM | UART0_IMSC_RTIM;
+    REG(UART0_IMSC_SET) = UART0_IMSC_RXIM | UART0_IMSC_RTIM;
     irq_restore(flags);
     return 0;
 }
@@ -560,10 +565,10 @@ static void uart_isr(void *ctx) {
         if (g_raw_head != before && g_raw_waker >= 0) task_unblock(g_raw_waker);
     }
     if (!(REG(UART0_FR) & UART0_FR_TXFF)) g_uart_irq_tx_seen++;
-    if (!(REG(UART0_FR) & UART0_FR_TXFF) && g_tx_waiter >= 0) {
-        REG(UART0_IMSC) &= ~UART0_IMSC_TXIM;
+    int pid = g_tx_waiter;   /* once: a waiter on the other core may clear it */
+    if (!(REG(UART0_FR) & UART0_FR_TXFF) && pid >= 0) {
+        REG(UART0_IMSC_CLR) = UART0_IMSC_TXIM;
         g_uart_irq_tx_wakes++;
-        int pid = g_tx_waiter;
         g_tx_waiter = -1;
         task_unblock(pid);
     }
@@ -716,13 +721,15 @@ static void uart_hw_putc(char c) {
                 task_prepare_block();
                 g_tx_waiter = me;
                 g_uart_irq_tx_arms++;
-                REG(UART0_IMSC) |= UART0_IMSC_TXIM;
+                /* the slot before the enable, for a handler on the other core */
+                __asm__ volatile ("fence w,o" ::: "memory");
+                REG(UART0_IMSC_SET) = UART0_IMSC_TXIM;
                 task_block();
             } while (REG(UART0_FR) & UART0_FR_TXFF);
             task_wait_done();
             if (g_tx_waiter == me) {
                 g_tx_waiter = -1;
-                REG(UART0_IMSC) &= ~UART0_IMSC_TXIM;
+                REG(UART0_IMSC_CLR) = UART0_IMSC_TXIM;
             }
             arch_lock_release(&g_tx_claim);
         } else {

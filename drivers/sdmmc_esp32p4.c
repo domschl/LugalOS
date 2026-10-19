@@ -1062,6 +1062,14 @@ void sdhost_data_reset(void) {
     REG(SD_RINTSTS) = 0x0000ffffu;
 }
 
+/* interrupt-shared: SD_INTMASK. Only the SDIO slot's card bit is ever set
+ * (slot 0 is polled, INTMASK 0 from init). sdhost_isr() clears it, on
+ * whichever hart takes the interrupt; the LLP pump sets it under
+ * sdhost_acquire(1), possibly on the other hart, where irq_save() does not
+ * exclude the handler. A lost update between the two is harmless: the handler
+ * only runs with the bit set and sets g_irq_seen, so the bit ends either clear
+ * with a wake pending, or set again with the wake pending -- the next poll
+ * handles both. SD_CTRL is written only by tasks under the host lock. */
 void sdhost_sdio_irq(uint32_t card, bool on) {
     uintptr_t f = irq_save();
     if (on) {

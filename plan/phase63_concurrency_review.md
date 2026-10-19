@@ -1,6 +1,6 @@
 # Phase 63 — Concurrency Review: Shared State, Ownership, Locks
 
-**Status: in progress (63.1–63.4 done). Written 2026-10-18.** Scheduled before phase 62 Part B (audio).
+**Status: in progress (63.1–63.5 done). Written 2026-10-18.** Scheduled before phase 62 Part B (audio).
 Milestone scheme: `63.1`, `63.2`, …
 
 ---
@@ -386,6 +386,46 @@ flashed kernel 20/21 (DHCP, as above); NANO 50/50 with it.
   interrupts masked around it.
 - The SDIO/LLP, USB host, DSI scanout and GDMA paths are read first. Part B adds the
   next ones.
+
+**Done (2026-10-19).**
+
+The handlers: nine attached through devirq, plus the timer tick:
+- ESP32-P4: uart_isr (UART0 and USB-Serial/JTAG), gdma_isr, sdhost_isr.
+- RP2350: uart_isr, edgecap_isr.
+- QEMU: the 16550's uart_isr.
+- ESP32-C6: uart0_isr, and the radio's ri_stub.
+- The tick: preemption and timed wakeups, under g_sched_lock.
+
+From racescan's data (Tab5, RP2350 terminal, C6, rv32, rv64-smp), 67 variables are shared
+between a handler and tasks. Each has a verdict since 63.2. This pass checked that each
+claimed protocol holds, and on how many harts.
+
+**The finding is one class.** Several protocols relied on `irq_save()` to keep a task's
+update apart from the handler, or from another task. That excludes only the task's own hart.
+Every hardware target runs one hart by default (`harts_online: 1`; a second joins after
+`smpstart`), so these held as shipped. rv64-smp runs two harts all the time, and a second
+hart breaks them:
+
+| # | where | what | fix |
+| :--- | :--- | :--- | :--- |
+| F40 | drivers/dsi_esp32p4.c | the terminal took a pending flip back with one store while `gdma_isr()` on the other hart, past its test, swapped the buffers: the next draw went into the new front (F3 again). `gdma_poll()` and `lcd db off` masked interrupts against a handler that could be running elsewhere | `g_scan_lock`, held by the frame end (the handler and `gdma_poll()`), the take-back and the index/item switch |
+| F41 | drivers/uart_16550.c, uart_esp32p4.c | INT_ENA / IER read-modify-written by the handler and by the RX and TX waiters on up to three harts: one's enable could overwrite the other's, and that waiter then blocks with its interrupt off | `g_ier_lock` / `g_ena_lock` over every enable update and the waiter slot that goes with it; the handler wakes after unlocking (a spinlock is a leaf) |
+| F42 | drivers/uart_rp2350.c | the same for IMSC | the RP2350's atomic set/clear aliases (+0x2000/+0x3000): one store each, no lock. `fence w,o` between the waiter slot and the enable; the handler reads the slot once |
+| F43 | drivers/uart_net.c | the p9share demux (console ring, SLIP frame) protected against its two callers by masking, "there is one hart" | `g_demux_lock` |
+
+Checked, and left as they are:
+- `sdhost_isr`: it clears the card bit in SD_INTMASK while the LLP pump (any hart, under the
+  host lock) sets it. Only that bit is ever set, so a lost update leaves the bit clear or set
+  with `g_irq_seen` pending, and the next poll handles both. The protocol is now written at
+  `sdhost_sdio_irq()`.
+- klog, the lock checker, the scheduler and the clock: real locks, or per-hart slots (63.2).
+- The C6's handlers: one core.
+- The USB host: polled, no handler.
+
+Tested: QEMU 514/514 (rv64-smp runs the 16550 change on two harts); Tab5, LCD-7B, NANO 50/50;
+RP2350 terminal 34/34. Tab5 with `smpstart join` (two harts online): panel terminal bench,
+console, LLP up, no trap or lock report. That is a smoke test; whether each racing path
+actually ran on hart 1 is for 63.7's harness.
 
 ### 63.6 Read-modify-write and lock discipline (classes 5 and 6)
 

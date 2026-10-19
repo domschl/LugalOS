@@ -402,10 +402,20 @@ static volatile uint32_t g_uart_irq_tx_seen;  /* see uart_irq_tx_seen()  */
  * take it" atomic on one hart only, and two printers on two harts could both
  * take it, the overwritten one never to be woken. Held for the whole wait. */
 static volatile uint32_t g_rx_claim, g_tx_claim;
+/* interrupt-shared: UART_INT_ENA and USJ_INT_ENA are read-modify-written by the
+ * handler and by both waiters, which can be on different harts: irq_save()
+ * excludes the handler only on its own hart, and the RX and TX waiters not at
+ * all, so one's enable could overwrite the other's and leave it blocked with
+ * its interrupt off. Every enable update, with the slot it goes with, is under
+ * g_ena_lock; the handler wakes its tasks after dropping it (a spinlock is a
+ * leaf, and task_unblock() takes the scheduler's). */
+static spinlock_t g_ena_lock;
 
 static void uart_isr(void *ctx) {
     (void)ctx;
     g_uart_irq_count++;
+    int rx = -1, tx = -1;
+    uintptr_t f = spin_lock_irqsave(&g_ena_lock);
     uintptr_t base = g_uart_base;
     uint32_t st = REG(UART_INT_ST(base));
 
@@ -432,16 +442,14 @@ static void uart_isr(void *ctx) {
 
     if (rx_fired && g_rx_waiter >= 0) {
         g_uart_irq_rx_wakes++;
-        int pid = g_rx_waiter;
+        rx = g_rx_waiter;
         g_rx_waiter = -1;
-        task_unblock(pid);
     }
     if (st & UART_TXFIFO_EMPTY_INT) g_uart_irq_tx_seen++;
     if ((st & UART_TXFIFO_EMPTY_INT) && g_tx_waiter >= 0) {
         g_uart_irq_tx_wakes++;
-        int pid = g_tx_waiter;
+        tx = g_tx_waiter;
         g_tx_waiter = -1;
-        task_unblock(pid);
     }
 
     /* Acknowledge last. This is also what takes the CLIC's pending bit down:
@@ -452,6 +460,9 @@ static void uart_isr(void *ctx) {
 #if defined(CONFIG_USBJTAG_BASE)
     if (usj_st) REG(USJ_INT_CLR) = usj_st;
 #endif
+    spin_unlock_irqrestore(&g_ena_lock, f);
+    if (rx >= 0) task_unblock(rx);
+    if (tx >= 0) task_unblock(tx);
 }
 
 /* The blocking primitives. Whoever calls these owns the hardware -- normally
@@ -477,17 +488,21 @@ static void uart_hw_putc_blocking_ex(char c, bool may_block) {
             int me = sched_current_pid();
             do {
                 task_prepare_block();
-                g_tx_waiter = me;
                 g_uart_irq_tx_arms++;
+                uintptr_t f2 = spin_lock_irqsave(&g_ena_lock);
+                g_tx_waiter = me;
                 REG(UART_INT_ENA(g_uart_base)) |= UART_TXFIFO_EMPTY_INT;
+                spin_unlock_irqrestore(&g_ena_lock, f2);
                 task_block();
                 REG(UART_INT_CLR(g_uart_base)) = UART_TXFIFO_EMPTY_INT;   /* clear first, test second */
             } while (!hw_uart_tx_room());
             task_wait_done();
+            uintptr_t f2 = spin_lock_irqsave(&g_ena_lock);
             if (g_tx_waiter == me) {               /* woken by something else */
                 g_tx_waiter = -1;
                 REG(UART_INT_ENA(g_uart_base)) &= ~UART_TXFIFO_EMPTY_INT;
             }
+            spin_unlock_irqrestore(&g_ena_lock, f2);
             arch_lock_release(&g_tx_claim);
         } else {
             irq_restore(flags);
@@ -519,11 +534,13 @@ static uint8_t uart_hw_getc_blocking(void) {
             int me = sched_current_pid();
             do {
                 task_prepare_block();
+                uintptr_t f2 = spin_lock_irqsave(&g_ena_lock);
                 g_rx_waiter = me;
                 REG(UART_INT_ENA(g_uart_base)) |= UART_RX_INTS;
 #if defined(CONFIG_USBJTAG_BASE)
                 REG(USJ_INT_ENA) |= USJ_OUT_RECV_PKT_INT;
 #endif
+                spin_unlock_irqrestore(&g_ena_lock, f2);
                 task_block();
                 REG(UART_INT_CLR(g_uart_base)) = UART_RX_INTS;
 #if defined(CONFIG_USBJTAG_BASE)
@@ -531,14 +548,16 @@ static uint8_t uart_hw_getc_blocking(void) {
 #endif
             } while (!hw_uart_has_char());
             task_wait_done();
+            uintptr_t f2 = spin_lock_irqsave(&g_ena_lock);
             if (g_rx_waiter == me) {
                 g_rx_waiter = -1;
             }
-            arch_lock_release(&g_rx_claim);
             REG(UART_INT_ENA(g_uart_base)) &= ~UART_RX_INTS;
 #if defined(CONFIG_USBJTAG_BASE)
             REG(USJ_INT_ENA) &= ~USJ_OUT_RECV_PKT_INT;
 #endif
+            spin_unlock_irqrestore(&g_ena_lock, f2);
+            arch_lock_release(&g_rx_claim);
         } else {
             irq_restore(flags);
             while (!hw_uart_has_char()) sched_yield();

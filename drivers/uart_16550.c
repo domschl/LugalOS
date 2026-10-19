@@ -99,27 +99,55 @@ static volatile uint32_t g_uart_irq_tx_seen;  /* see uart_irq_tx_seen()  */
  * take it" atomic on one hart only, and two printers on two harts could both
  * take it, the overwritten one never to be woken. Held for the whole wait. */
 static volatile uint32_t g_rx_claim, g_tx_claim;
+/* interrupt-shared: IER and the two waiter slots. IER is read-modify-written
+ * by the handler and by both waiters, which can be on three harts: irq_save()
+ * excludes the handler only on its own, and the RX and TX waiters not at all
+ * -- one's enable could overwrite the other's, leaving it blocked with its
+ * interrupt off. So every IER update, together with the slot it goes with, is
+ * under g_ier_lock; the handler wakes its tasks after dropping it (a spinlock
+ * is a leaf, and task_unblock() takes the scheduler's). */
+static spinlock_t g_ier_lock;
+
+static void ier_arm(volatile int *slot, int me, uint8_t bit) {
+    uintptr_t f = spin_lock_irqsave(&g_ier_lock);
+    *slot = me;
+    uart_base[UART_IER] |= bit;
+    spin_unlock_irqrestore(&g_ier_lock, f);
+}
+
+/* After the wait: a slot still naming `me` was not served by the handler. */
+static void ier_disarm(volatile int *slot, int me, uint8_t bit) {
+    uintptr_t f = spin_lock_irqsave(&g_ier_lock);
+    if (*slot == me) {
+        *slot = -1;
+        uart_base[UART_IER] &= (uint8_t)~bit;
+    }
+    spin_unlock_irqrestore(&g_ier_lock, f);
+}
 
 static void uart_isr(void *ctx) {
     (void)ctx;
     g_uart_irq_count++;
+    int rx = -1, tx = -1;
+    uintptr_t f = spin_lock_irqsave(&g_ier_lock);
     uint8_t lsr = uart_base[UART_LSR];
-    if (lsr & UART_LSR_OE) note_rx_overrun();
     if (lsr & UART_LSR_THRE) g_uart_irq_tx_seen++;
     if ((lsr & UART_LSR_DR) && g_rx_waiter >= 0) {
         uart_base[UART_IER] &= (uint8_t)~UART_IER_ERBFI;
         g_uart_irq_rx_wakes++;
-        int pid = g_rx_waiter;
+        rx = g_rx_waiter;
         g_rx_waiter = -1;
-        task_unblock(pid);
     }
     if ((lsr & UART_LSR_THRE) && g_tx_waiter >= 0) {
         uart_base[UART_IER] &= (uint8_t)~UART_IER_ETBEI;
         g_uart_irq_tx_wakes++;
-        int pid = g_tx_waiter;
+        tx = g_tx_waiter;
         g_tx_waiter = -1;
-        task_unblock(pid);
     }
+    spin_unlock_irqrestore(&g_ier_lock, f);
+    if (lsr & UART_LSR_OE) note_rx_overrun();   /* prints: outside the lock */
+    if (rx >= 0) task_unblock(rx);
+    if (tx >= 0) task_unblock(tx);
 }
 
 // Raw hardware byte access, handed to drivers/uart_net.c's A3b demux at
@@ -168,16 +196,12 @@ static void uart_hw_putc_blocking(char c) {
             int me = sched_current_pid();
             do {
                 task_prepare_block();
-                g_tx_waiter = me;
                 g_uart_irq_tx_arms++;
-                uart_base[UART_IER] |= UART_IER_ETBEI;
+                ier_arm(&g_tx_waiter, me, UART_IER_ETBEI);
                 task_block();
             } while ((uart_base[UART_LSR] & UART_LSR_THRE) == 0);
             task_wait_done();
-            if (g_tx_waiter == me) {               /* woken by something else */
-                g_tx_waiter = -1;
-                uart_base[UART_IER] &= (uint8_t)~UART_IER_ETBEI;
-            }
+            ier_disarm(&g_tx_waiter, me, UART_IER_ETBEI);   /* woken by something else */
             arch_lock_release(&g_tx_claim);
         } else {
             irq_restore(flags);
@@ -201,15 +225,11 @@ static uint8_t uart_hw_getc_blocking(void) {
             int me = sched_current_pid();          /* as for TX above */
             do {
                 task_prepare_block();
-                g_rx_waiter = me;
-                uart_base[UART_IER] |= UART_IER_ERBFI;
+                ier_arm(&g_rx_waiter, me, UART_IER_ERBFI);
                 task_block();
             } while (!hw_uart_has_char());
             task_wait_done();
-            if (g_rx_waiter == me) {
-                g_rx_waiter = -1;
-                uart_base[UART_IER] &= (uint8_t)~UART_IER_ERBFI;
-            }
+            ier_disarm(&g_rx_waiter, me, UART_IER_ERBFI);
             arch_lock_release(&g_rx_claim);
         } else {
             irq_restore(flags);

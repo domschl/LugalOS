@@ -54,6 +54,7 @@
 #include "kernel/console.h"
 #include "kernel/devirq.h"
 #include "kernel/irq.h"
+#include "kernel/lock.h"
 #include "kernel/palloc.h"
 #include "kernel/printk.h"
 #include "kernel/sched.h"
@@ -823,9 +824,10 @@ static void scan_start(void);
  * `lcd test|bench` drawers hold the terminal and wait for their own flip; one
  * pending from the terminal can show a test frame part-drawn. g_front_idx and
  * g_double_buffered change elsewhere only under console_lock, with the
- * scan-out stopped (fb_start) or with interrupts masked around the index and
- * the item (`lcd db off`). Tasks run the handler's work only through
- * gdma_poll(). */
+ * scan-out stopped (fb_start) or under g_scan_lock around the index and the
+ * item (`lcd db off`). Tasks run the handler's work only through gdma_poll().
+ * Taking the flip back is under g_scan_lock (see gdma_isr()); arming it is one
+ * store, which the next frame end takes or the one after. */
 static uint8_t          *g_fb_pool[2];
 static volatile uint8_t  g_front_idx;
 static volatile bool     g_flip_pending;
@@ -941,8 +943,8 @@ typedef enum { FB_NONE = 0, FB_GRAY8, FB_RGB565 } fb_fmt_t;
 /* guarded by: console_lock (fb_start()'s callers hold it, or are the boot). */
 static fb_fmt_t          g_fb_fmt;
 static uint32_t          g_fb_bytes, g_fb_pages, g_fb_bpp;
-/* interrupt-shared: the counters are written only by gdma_isr() (or
- * gdma_poll(), interrupts masked); g_stop_at_frame_end is set and cleared by
+/* interrupt-shared: the counters are written only by the frame end
+ * (gdma_isr() or gdma_poll(), under g_scan_lock); g_stop_at_frame_end is set and cleared by
  * scan_stop() around its wait for the frame end. */
 static volatile uint32_t g_frames, g_dma_errs, g_dma_last_err;
 static volatile bool     g_stop_at_frame_end;   /* ISR: finish this frame, do not re-arm */
@@ -970,8 +972,17 @@ static void gdma_restart(void) {
     REG(DMAC_CHEN0_REG) = 0x101u << GDMA_CH;
 }
 
-static void gdma_isr(void *ctx) {
-    (void)ctx;
+/* interrupt-shared: g_scan_lock makes a frame end and a task's change to the
+ * flip one step each: gdma_isr() holds it for the whole frame end, and every
+ * task that tests and takes g_flip_pending, or moves g_front_idx with the
+ * item, holds it too. Masking interrupts alone excluded the handler only on
+ * the task's own hart; with a second hart running tasks (smpstart), the
+ * terminal could take a flip back while the handler, past its test, swapped
+ * the buffers -- and then draw into the new front. */
+static spinlock_t g_scan_lock;
+
+/* The frame end. Under g_scan_lock. */
+static void gdma_frame_end_locked(void) {
     uint32_t st = REG(DMAC_CH1_INTSTATUS0_REG);
     REG(DMAC_CH1_INTCLEAR0_REG) = st;
     if (st & GDMA_EV_ERRORS) { g_dma_errs++; g_dma_last_err = st; }
@@ -990,14 +1001,20 @@ static void gdma_isr(void *ctx) {
     }
 }
 
-/* The handler's work from a task that waits on the frame end: with interrupts
- * masked, so gdma_isr() proper cannot run between this status read and its
- * clear and finish the same frame twice (a second restart into a running
- * transfer). */
+static void gdma_isr(void *ctx) {
+    (void)ctx;
+    uintptr_t f = spin_lock_irqsave(&g_scan_lock);
+    gdma_frame_end_locked();
+    spin_unlock_irqrestore(&g_scan_lock, f);
+}
+
+/* The handler's work from a task that waits on the frame end, under the same
+ * lock, so gdma_isr() cannot run between this status read and its clear and
+ * finish the same frame twice (a second restart into a running transfer). */
 static void gdma_poll(void) {
-    uintptr_t f = irq_save();
-    if (REG(DMAC_CH1_INTSTATUS0_REG) & (GDMA_EV_DMA_TFR_DONE | GDMA_EV_ERRORS)) gdma_isr(NULL);
-    irq_restore(f);
+    uintptr_t f = spin_lock_irqsave(&g_scan_lock);
+    if (REG(DMAC_CH1_INTSTATUS0_REG) & (GDMA_EV_DMA_TFR_DONE | GDMA_EV_ERRORS)) gdma_frame_end_locked();
+    spin_unlock_irqrestore(&g_scan_lock, f);
 }
 
 /* Waits up to `us` for the frame end that takes a pending flip. */
@@ -1402,13 +1419,15 @@ static void term_convert(unsigned y0, unsigned y1) {
     if (!fb_back() || !g_t1 || g_fb_fmt == FB_NONE || g_t_hold) return;
     /* While a flip is pending the back buffer is the next front: drawing into
      * it would put a half-drawn frame on the glass at the frame end. So the
-     * flip is taken back instead of waited for (one store, which gdma_isr()
-     * either saw before it or does not see), this pass draws on top of the
-     * same back buffer, and the flip is armed again below. */
+     * flip is taken back instead of waited for (under g_scan_lock, so a frame
+     * end either swapped before it or does not swap), this pass draws on top
+     * of the same back buffer, and the flip is armed again below. */
     bool rearm = false;
     if (g_double_buffered && g_flip_pending) {
+        uintptr_t f = spin_lock_irqsave(&g_scan_lock);
+        rearm = g_flip_pending;
         g_flip_pending = false;
-        rearm = true;
+        spin_unlock_irqrestore(&g_scan_lock, f);
     }
     uint8_t *fb = fb_back();
     fb_fmt_t fmt = g_fb_fmt;
@@ -2543,10 +2562,10 @@ void dsi_lcd_command(const char *args) {
                 esp32p4_extmem_writeback((uintptr_t)g_fb_pool[0], g_fb_bytes);
                 /* index and item together, so a frame end in between cannot
                  * re-arm on the buffer about to be freed */
-                uintptr_t f = irq_save();
+                uintptr_t f = spin_lock_irqsave(&g_scan_lock);
                 g_front_idx = 0;
                 LLI_NC->sar_lo = (uint32_t)(uintptr_t)g_fb_pool[0];
-                irq_restore(f);
+                spin_unlock_irqrestore(&g_scan_lock, f);
                 /* the frame in flight still reads buffer 1: let it finish */
                 uint32_t f0 = g_frames;
                 uint64_t t0 = time_get_us();
