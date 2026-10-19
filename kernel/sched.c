@@ -460,6 +460,7 @@ static int task_create_full(const char *name, void (*entry)(void *), void *arg,
         }
     }
     spin_unlock_irqrestore(&g_sched_lock, flags);
+    if (slot >= 0) lock_task_reset(slot);   /* a reused slot held nothing */
 
     if (slot < 0) {
         /* Ordinary printk(), here and everywhere else in this file that is

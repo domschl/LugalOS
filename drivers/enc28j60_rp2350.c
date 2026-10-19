@@ -449,7 +449,8 @@ static void spi0_init(void) {
     REG(PADS_BANK0_PAD(INT_PIN)) = 0x5A;
     REG(SIO_GPIO_OE_CLR) = (1u << INT_PIN);
 
-    REG(ACCESSCTRL_GPIO_NSMASK0) |= (CS_MASK | RST_MASK | (1u << INT_PIN));
+    REG(ACCESSCTRL_GPIO_NSMASK0 + 0x2000u) =   /* atomic set alias: several drivers own bits here */
+        (CS_MASK | RST_MASK | (1u << INT_PIN));
     REG(ACCESSCTRL_SPI0) = ACCESSCTRL_WRITE_PASSWORD | REG(ACCESSCTRL_SPI0)
                            | ACCESSCTRL_NSP | ACCESSCTRL_NSU;
 

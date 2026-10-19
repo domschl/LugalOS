@@ -200,7 +200,8 @@ static int spisd_init_hardware(void) {
      * U-mode task's own serve loop below to actually touch them -- must
      * happen here, from M-mode, before the task exists. See
      * ACCESSCTRL_SPI1's own comment above. */
-    REG(ACCESSCTRL_GPIO_NSMASK0) |= CS_MASK;
+    REG(ACCESSCTRL_GPIO_NSMASK0 + 0x2000u) =   /* atomic set alias: several drivers own bits here */
+        CS_MASK;
     REG(ACCESSCTRL_SPI1) = ACCESSCTRL_WRITE_PASSWORD | REG(ACCESSCTRL_SPI1)
                            | ACCESSCTRL_SPI1_NSP | ACCESSCTRL_SPI1_NSU;
 

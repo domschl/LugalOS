@@ -28,7 +28,20 @@ static console_putc_fn g_console_putc;
  * console write ends in. */
 static ylock_t g_console_lock;
 
-void console_lock(void) {
+/* guarded by: g_console_lock -- written by its holder, from the outermost
+ * acquire to the final release. How long the lock is held, in power-of-two
+ * millisecond buckets (`lockcheck`): every terminal waits behind a long hold. */
+static uint64_t    g_con_t0;
+static const char *g_con_site;
+static uint32_t    g_con_hist[CONSOLE_HOLD_BUCKETS];
+static uint32_t    g_con_max_us;
+static int         g_con_max_pid = -1;
+static const char *g_con_max_site;
+#define CON_LONG_RING 4u
+static struct { const char *site; uint32_t ms; int pid; } g_con_long[CON_LONG_RING];
+static uint32_t    g_con_long_n;
+
+void console_lock_at(const char *site) {
     /* The rule G2 added, now pointing at what it actually guards (§5.6): a
      * driver serve callback must not write the console, because this path
      * ends in chan_call() to the uart task and a caller blocked on that
@@ -36,10 +49,39 @@ void console_lock(void) {
      * longer comes through here. */
     (void)lock_check_may_console();
     ylock_acquire(&g_console_lock);
+    if (ylock_depth(&g_console_lock) == 1) { g_con_t0 = time_get_us(); g_con_site = site; }
 }
 
 void console_unlock(void) {
+    if (ylock_depth(&g_console_lock) == 1 && ylock_owner(&g_console_lock) == sched_context_id()) {
+        uint32_t us = (uint32_t)(time_get_us() - g_con_t0);
+        unsigned b = 0;
+        for (uint32_t ms = us / 1000u; ms && b + 1u < CONSOLE_HOLD_BUCKETS; ms >>= 1) b++;
+        g_con_hist[b]++;
+        int pid = sched_current_pid();
+        if (us > g_con_max_us) { g_con_max_us = us; g_con_max_pid = pid; g_con_max_site = g_con_site; }
+        if (us >= CONSOLE_LONG_HOLD_MS * 1000u) {
+            uint32_t k = g_con_long_n++ % CON_LONG_RING;
+            g_con_long[k].site = g_con_site; g_con_long[k].ms = us / 1000u; g_con_long[k].pid = pid;
+        }
+    }
     ylock_release(&g_console_lock);
+}
+
+void console_lock_hold_stats(uint32_t hist[CONSOLE_HOLD_BUCKETS], uint32_t *max_us, int *max_pid,
+                             const char **max_site) {
+    for (unsigned i = 0; i < CONSOLE_HOLD_BUCKETS; i++) hist[i] = g_con_hist[i];
+    *max_us = g_con_max_us;
+    *max_pid = g_con_max_pid;
+    *max_site = g_con_max_site;
+}
+
+bool console_lock_long_hold(unsigned i, const char **site, uint32_t *ms, int *pid) {
+    uint32_t n = g_con_long_n < CON_LONG_RING ? g_con_long_n : CON_LONG_RING;
+    if (i >= n) return false;
+    uint32_t k = (g_con_long_n - 1u - i) % CON_LONG_RING;
+    *site = g_con_long[k].site; *ms = g_con_long[k].ms; *pid = g_con_long[k].pid;
+    return true;
 }
 
 bool console_lock_held(void) {

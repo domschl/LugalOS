@@ -45,6 +45,7 @@
 
 #include "drivers/esp32p4_psram_regs.h"
 #include "arch/esp32p4_intr.h"
+#include "kernel/sysreg.h"
 #include "kernel/console.h"
 #include "kernel/printk.h"
 #include "kernel/palloc.h"
@@ -58,6 +59,7 @@
 #define REG(a) (*(volatile uint32_t *)(uintptr_t)(a))
 
 static inline void field_set(uintptr_t reg, unsigned s, uint32_t v_mask, uint32_t val) {
+    if (sysreg_is_shared(reg)) { sysreg_update(reg, v_mask << s, (val & v_mask) << s); return; }
     uint32_t x = REG(reg);
     x &= ~(v_mask << s);
     x |= (val & v_mask) << s;

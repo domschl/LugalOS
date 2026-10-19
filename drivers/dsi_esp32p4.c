@@ -33,6 +33,7 @@
  * The floats IDF uses (lane rate, DPI clock ratios) are integers here, with
  * the same roundf() results: the kernel runs with the FPU off. */
 
+#include "kernel/sysreg.h"
 #include "kernel/orient.h"
 #include "lugalos_config.h"
 #include "drivers/dsi_esp32p4.h"   /* outside the guard: never an empty unit */
@@ -67,6 +68,7 @@
 #define REG(a) (*(volatile uint32_t *)(uintptr_t)(a))
 
 static inline void field_set(uintptr_t reg, unsigned s, uint32_t v_mask, uint32_t val) {
+    if (sysreg_is_shared(reg)) { sysreg_update(reg, v_mask << s, (val & v_mask) << s); return; }
     uint32_t x = REG(reg);
     x &= ~(v_mask << s);
     x |= (val & v_mask) << s;
@@ -751,13 +753,12 @@ static bool panel_init(void) {
 #define BL_XTAL_HZ             40000000u
 
 static void bl_pwm_init(void) {
-    REG(HP_SYS_CLKRST_SOC_CLK_CTRL3_REG) |= 1u << HP_SYS_CLKRST_REG_LEDC_APB_CLK_EN_S;
-    REG(HP_SYS_CLKRST_HP_RST_EN1_REG) |= 1u << HP_SYS_CLKRST_REG_RST_EN_LEDC_S;
-    REG(HP_SYS_CLKRST_HP_RST_EN1_REG) &= ~(1u << HP_SYS_CLKRST_REG_RST_EN_LEDC_S);
-    uint32_t c = REG(HP_SYS_CLKRST_PERI_CLK_CTRL22_REG);
-    c &= ~(HP_SYS_CLKRST_REG_LEDC_CLK_SRC_SEL_V << HP_SYS_CLKRST_REG_LEDC_CLK_SRC_SEL_S);   /* 0: XTAL */
-    c |= 1u << HP_SYS_CLKRST_REG_LEDC_CLK_EN_S;
-    REG(HP_SYS_CLKRST_PERI_CLK_CTRL22_REG) = c;
+    sysreg_set(HP_SYS_CLKRST_SOC_CLK_CTRL3_REG, 1u << HP_SYS_CLKRST_REG_LEDC_APB_CLK_EN_S);
+    sysreg_set(HP_SYS_CLKRST_HP_RST_EN1_REG, 1u << HP_SYS_CLKRST_REG_RST_EN_LEDC_S);
+    sysreg_clear(HP_SYS_CLKRST_HP_RST_EN1_REG, 1u << HP_SYS_CLKRST_REG_RST_EN_LEDC_S);
+    sysreg_update(HP_SYS_CLKRST_PERI_CLK_CTRL22_REG,
+                  HP_SYS_CLKRST_REG_LEDC_CLK_SRC_SEL_V << HP_SYS_CLKRST_REG_LEDC_CLK_SRC_SEL_S,   /* 0: XTAL */
+                  1u << HP_SYS_CLKRST_REG_LEDC_CLK_EN_S);
     REG(LEDC_CONF_REG) |= 1u << LEDC_CLK_EN_S;
 
     /* 40 MHz / (5 kHz * 1024) = 7.8125: the divider has 8 fraction bits. */

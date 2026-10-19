@@ -1156,6 +1156,7 @@ static void cmd_help_test(void) {
     cprintf("\nMulticore SMP & Concurrency Checks:\n");
     cprintf("  lockselftest    - Atomic spinlocks, interrupt masking, ylock\n");
     cprintf("  chanqtest       - chan_call_wait(): FIFO turns, hand-off, deadlines\n");
+    cprintf("  lockcheck [pairs] - Lock faults, learned lock order, console_lock hold times\n");
     cprintf("  smpstart [join] - Launch secondary CPU core\n");
     cprintf("  smptest         - Multi-hart atomic counter and lock race test\n");
     cprintf("  smpload         - Background CPU load across all online harts\n");
@@ -4176,6 +4177,42 @@ static void echo_task_body(void *arg) {
     arch_enter_user(echo_umode_body, (uintptr_t)g_echo_ustack + 4096, 0, 0, 0);
 }
 
+/* `lockcheck`: the lock checker's counters, the learned lock order and the
+ * console_lock hold times (kernel/lock.c, kernel/console.c). */
+static void cmd_lockcheck(bool pairs) {
+    lock_order_stats_t o;
+    lock_order_stats(&o);
+    cprintf("lock faults:     %u (blocking under a spinlock, console from a serve callback, cycles)\n",
+            (unsigned)lock_faults());
+    cprintf("lock order:      %u of %u pairs recorded, %u inversions, %u not recorded (table full), "
+            "%u held past the stack\n",
+            (unsigned)o.pairs, (unsigned)o.pairs_max, (unsigned)o.inversions,
+            (unsigned)o.pairs_dropped, (unsigned)o.held_overflow);
+    if (pairs) {
+        const char *a, *b;
+        for (uint32_t i = 0; lock_order_pair(i, &a, &b); i++)
+            cprintf("  %-28s -> %s\n", a ? a : "?", b ? b : "?");
+    }
+    uint32_t hist[CONSOLE_HOLD_BUCKETS], max_us;
+    int max_pid;
+    const char *max_site;
+    console_lock_hold_stats(hist, &max_us, &max_pid, &max_site);
+    cprintf("console_lock:    held %u.%03u ms at most (task %d, %s); holds by duration:\n",
+            (unsigned)(max_us / 1000u), (unsigned)(max_us % 1000u), max_pid,
+            max_site ? max_site : "?");
+    for (unsigned i = 0; i < CONSOLE_HOLD_BUCKETS; i++) {
+        if (!hist[i]) continue;
+        if (i == 0) cprintf("  under 1 ms      %u\n", (unsigned)hist[i]);
+        else if (i + 1 == CONSOLE_HOLD_BUCKETS) cprintf("  %u ms or more  %u\n", 1u << (i - 1), (unsigned)hist[i]);
+        else cprintf("  %u to %u ms     %u\n", 1u << (i - 1), 1u << i, (unsigned)hist[i]);
+    }
+    const char *site;
+    uint32_t ms;
+    int pid;
+    for (unsigned i = 0; console_lock_long_hold(i, &site, &ms, &pid); i++)
+        cprintf("  %s %u ms: task %d, %s\n", i ? "     " : "last:", (unsigned)ms, pid, site ? site : "?");
+}
+
 static void cmd_chan_echo_test(void) {
     /* Refuse a repeat run before committing anything to it.
      *
@@ -5696,6 +5733,8 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         lock_selftest();
     } else if (strcmp(cmd_line, "chanqtest") == 0) {
         (void)chan_selftest();
+    } else if (strcmp(cmd_line, "lockcheck") == 0 || strcmp(cmd_line, "lockcheck pairs") == 0) {
+        cmd_lockcheck(cmd_line[9] == ' ');
 #if defined(CONFIG_KOBJ)
     } else if (strcmp(cmd_line, "kobjselftest") == 0) {
         kobj_selftest();

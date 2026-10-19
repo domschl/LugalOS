@@ -607,7 +607,8 @@ void uart_init(uintptr_t base_addr) {
      * PMP domain cannot grant its way around this on its own. GPIO_NSMASK0
      * is one of the two ACCESSCTRL registers exempt from the 0xacce
      * write-protection prefix every other ACCESSCTRL register needs. */
-    REG(ACCESSCTRL_GPIO_NSMASK0) |= (1u << CONFIG_LED_EXT_GPIO);
+    REG(ACCESSCTRL_GPIO_NSMASK0 + 0x2000u) =   /* atomic set alias: several drivers own bits here */
+        (1u << CONFIG_LED_EXT_GPIO);
 #endif
 
     /* UART0 itself needs the same Non-secure grant, for the

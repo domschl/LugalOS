@@ -391,8 +391,115 @@ static uint8_t g_ylocks_held[MAX_TASKS];
  * is reported -- see the report's call site. */
 #define YLOCK_CYCLE_TURNS 2048u
 
+
+/* --- Lock order ---------------------------------------------------------
+ *
+ * Learned as the kernel runs: when a context that holds ylock A takes ylock B
+ * (and might wait for it), the pair A->B is recorded once. A later take of A
+ * by a context holding B is an inversion -- two paths that would deadlock if
+ * they met -- and is reported once per pair, report and continue, like the
+ * leaf check. The wait-for graph catches the deadlock when it happens; this
+ * catches the order before both halves happen to meet.
+ *
+ * Locks are told apart by address, so two instances of one kind of lock
+ * (each terminal's input lock) are two locks. A try-acquire is held but adds
+ * no pair into itself: it never waits. Paths that never run are not seen;
+ * the stress harness runs them. */
+#define LOCKORD_DEPTH 6
+#define LOCKORD_PAIRS 96
+#define LOCKORD_CTX   (MAX_TASKS + MAX_HARTS)   /* sched_context_id()'s range */
+
+typedef struct { const ylock_t *l; const char *name; } lockord_held_t;
+typedef struct { const ylock_t *a, *b; const char *a_name, *b_name; } lockord_pair_t;
+
+/* guarded by: g_order_lock, a bottom spinlock (kernel/lock.h): the
+ * bookkeeping under it calls nothing and takes nothing. */
+static lockord_held_t g_held[LOCKORD_CTX][LOCKORD_DEPTH];
+static uint8_t        g_held_n[LOCKORD_CTX];
+static lockord_pair_t g_pairs[LOCKORD_PAIRS];
+static uint8_t        g_pair_reported[LOCKORD_PAIRS];
+static uint32_t       g_pairs_n, g_pairs_dropped, g_held_overflow, g_inversions;
+static spinlock_t     g_order_lock;
+
+static int pair_find(const ylock_t *a, const ylock_t *b) {
+    for (uint32_t i = 0; i < g_pairs_n; i++)
+        if (g_pairs[i].a == a && g_pairs[i].b == b) return (int)i;
+    return -1;
+}
+
+static void order_acquired(const ylock_t *l, int me, const char *name, const char *site,
+                           bool may_wait) {
+    if (me < 0 || me >= LOCKORD_CTX) return;
+    const char *inv_held = NULL;
+    uintptr_t f = spin_lock_irqsave_bottom(&g_order_lock);
+    for (uint8_t i = 0; i < g_held_n[me] && may_wait; i++) {
+        const lockord_held_t *h = &g_held[me][i];
+        if (h->l == l) continue;
+        int inv = pair_find(l, h->l);
+        if (inv >= 0) {
+            g_inversions++;
+            if (!g_pair_reported[inv]) { g_pair_reported[inv] = 1; inv_held = h->name; }
+        } else if (pair_find(h->l, l) < 0) {
+            if (g_pairs_n < LOCKORD_PAIRS)
+                g_pairs[g_pairs_n++] = (lockord_pair_t){ h->l, l, h->name, name };
+            else
+                g_pairs_dropped++;
+        }
+    }
+    if (g_held_n[me] < LOCKORD_DEPTH) g_held[me][g_held_n[me]++] = (lockord_held_t){ l, name };
+    else g_held_overflow++;
+    spin_unlock_irqrestore(&g_order_lock, f);
+
+    if (inv_held) {
+        unsigned h = hart_id();
+        if (g_check_busy[h]) return;
+        g_check_busy[h] = true;
+        printk_critical("\n[Lock BUG] order: %s took %s while holding %s;\n"
+                        "[Lock BUG]   elsewhere %s was taken while holding %s. "
+                        "Two such paths deadlock if they meet.\n",
+                        site ? site : "?", name ? name : "?", inv_held,
+                        inv_held, name ? name : "?");
+        g_check_busy[h] = false;
+    }
+}
+
+static void order_released(const ylock_t *l, int owner) {
+    if (owner < 0 || owner >= LOCKORD_CTX) return;
+    uintptr_t f = spin_lock_irqsave_bottom(&g_order_lock);
+    for (int i = (int)g_held_n[owner] - 1; i >= 0; i--) {
+        if (g_held[owner][i].l != l) continue;
+        for (int j = i; j + 1 < (int)g_held_n[owner]; j++) g_held[owner][j] = g_held[owner][j + 1];
+        g_held_n[owner]--;
+        break;
+    }
+    spin_unlock_irqrestore(&g_order_lock, f);
+}
+
+void lock_task_reset(int pid) {
+    if (pid < 0 || pid >= LOCKORD_CTX) return;
+    uintptr_t f = spin_lock_irqsave_bottom(&g_order_lock);
+    g_held_n[pid] = 0;
+    spin_unlock_irqrestore(&g_order_lock, f);
+    if (pid < MAX_TASKS) g_ylocks_held[pid] = 0;
+}
+
+void lock_order_stats(lock_order_stats_t *out) {
+    uintptr_t f = spin_lock_irqsave_bottom(&g_order_lock);
+    out->pairs = g_pairs_n;
+    out->pairs_max = LOCKORD_PAIRS;
+    out->pairs_dropped = g_pairs_dropped;
+    out->inversions = g_inversions;
+    out->held_overflow = g_held_overflow;
+    spin_unlock_irqrestore(&g_order_lock, f);
+}
+
+bool lock_order_pair(uint32_t i, const char **a, const char **b) {
+    if (i >= g_pairs_n) return false;
+    *a = g_pairs[i].a_name; *b = g_pairs[i].b_name;
+    return true;
+}
+
 void ylock_acquire_at(ylock_t *l, const char *name, const char *site) {
-    (void)name; (void)site;
     /* A ylock may be held across a block -- that is what it is for -- but it
      * may not be taken *under* a spinlock, because the yield below would then
      * happen with that spinlock held. Reported, not refused: the caller has
@@ -436,6 +543,7 @@ void ylock_acquire_at(ylock_t *l, const char *name, const char *site) {
             if (me >= 0 && me < MAX_TASKS) g_ylocks_held[me]++;
             waitfor_leave(me);
             irq_restore(f);
+            order_acquired(l, me, name, site, true);
             return;
         }
 
@@ -515,6 +623,9 @@ bool ylock_try_acquire(ylock_t *l) {
         l->depth = 1;
         if (me >= 0 && me < MAX_TASKS) g_ylocks_held[me]++;
         got = true;
+        irq_restore(f);
+        order_acquired(l, me, "(try)", NULL, false);
+        return true;
     }
     irq_restore(f);
     return got;
@@ -525,6 +636,7 @@ void ylock_release(ylock_t *l) {
     if (l->depth > 0 && --l->depth == 0) {
         int o = l->owner;
         if (o >= 0 && o < MAX_TASKS && g_ylocks_held[o] > 0) g_ylocks_held[o]--;
+        order_released(l, o);
         l->owner = -1;
         /* Released last, after the bookkeeping: another hart that sees the
          * gate free must not then read an owner this hart has not cleared
@@ -1059,6 +1171,39 @@ int lock_selftest(void) {
         uint32_t gaps = klog_gaps() - gaps_before;
         check("log burst: the producer never blocked, and the loss is reported",
               (smp_harts_online() > 1 ? gaps >= 1 : gaps == 1) && klog_gap_bytes() > 0);
+    }
+
+    /* --- the lock order: an inversion is seen without a deadlock --------- */
+    {
+        /* A then B, then B then A, in one task: harmless done in sequence,
+         * and exactly the pair two tasks would deadlock on. The first order
+         * is learned (on the first run), the second is reported. Static: the
+         * record knows locks by address. A nested re-entry and a try-acquire
+         * must add nothing. */
+        static ylock_t ord_a, ord_b, ord_c;
+        lock_order_stats_t before, mid, after;
+        lock_order_stats(&before);
+        ylock_acquire(&ord_a);
+        ylock_acquire(&ord_b);
+        ylock_acquire(&ord_a);                 /* re-entry: no pair */
+        ylock_release(&ord_a);
+        ylock_release(&ord_b);
+        ylock_release(&ord_a);
+        ylock_acquire(&ord_b);
+        bool tried = ylock_try_acquire(&ord_c); /* held, but never waits: no pair into it */
+        if (tried) ylock_release(&ord_c);
+        ylock_release(&ord_b);
+        lock_order_stats(&mid);
+        ylock_acquire(&ord_b);
+        ylock_acquire(&ord_a);                 /* B then A: the inversion */
+        ylock_release(&ord_a);
+        ylock_release(&ord_b);
+        lock_order_stats(&after);
+        check("lock order: A->B learned, B->A reported, re-entry and try-acquire add nothing",
+              tried && mid.inversions == before.inversions &&
+              after.inversions == mid.inversions + 1 &&
+              (before.pairs == mid.pairs || mid.pairs == before.pairs + 1) &&
+              after.pairs == mid.pairs);
     }
 
     /* The fault total includes the three this selftest caused on purpose,

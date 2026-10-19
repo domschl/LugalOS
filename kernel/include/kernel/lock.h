@@ -139,6 +139,15 @@ int  ylock_depth(const ylock_t *l);
  * can be ended at an input wait without taking a lock down with it. */
 int  ylock_held_by(int pid);
 
+/* The lock-order record (kernel/lock.c, "Lock order"). lock_task_reset()
+ * forgets what a task slot held, when the slot is reused. */
+typedef struct {
+    uint32_t pairs, pairs_max, pairs_dropped, inversions, held_overflow;
+} lock_order_stats_t;
+void lock_order_stats(lock_order_stats_t *out);
+bool lock_order_pair(uint32_t i, const char **held, const char **taken);
+void lock_task_reset(int pid);
+
 /* --- The hierarchy, and the check that keeps it honest --------------------
  *
  * ## The rule, in one line

@@ -19,6 +19,7 @@
 #include <stddef.h>
 #include <string.h>
 
+#include "kernel/sysreg.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
 #include "kernel/time.h"
@@ -212,6 +213,9 @@ static void gpio_bit_set(uintptr_t lo, uintptr_t hi, uint32_t gpio) {
 /* --- small helpers ------------------------------------------------------ */
 
 static void reg_modify(uintptr_t addr, uint32_t clear, uint32_t set) {
+    /* PERI_CLK_CTRL00/01 and the SDMMC/EMAC reset word hold other drivers'
+     * bits too (kernel/sysreg.h). */
+    if (sysreg_is_shared(addr)) { sysreg_update(addr, clear, set); return; }
     uint32_t v = REG(addr);
     v &= ~clear;
     v |= set;

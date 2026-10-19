@@ -1,5 +1,6 @@
 #include "drivers/i2c_bus.h"
 #include "drivers/driver_task.h"
+#include "kernel/sysreg.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
 #include "kernel/time.h"
@@ -708,15 +709,14 @@ static void esp_pad_for_i2c(uint32_t gpio, uint32_t sig) {
 static void esp_i2c_ctrl_bringup(bool verbose) {
 #if defined(CONFIG_BOARD_ESP32P4)
     if (verbose) printk_critical("[I2Cdiag] 1: APB gate\n");
-    REG(P4_SOC_CLK_CTRL2) |= g_esp->apb_gate;
+    sysreg_set(P4_SOC_CLK_CTRL2, g_esp->apb_gate);
 
     if (verbose) printk_critical("[I2Cdiag] 2: module clock, XTAL source\n");
-    REG(P4_PERI_CLK_CTRL10) &= ~g_esp->clk_src;
-    REG(P4_PERI_CLK_CTRL10) |= g_esp->clk_en;
+    sysreg_update(P4_PERI_CLK_CTRL10, g_esp->clk_src, g_esp->clk_en);
 
     if (verbose) printk_critical("[I2Cdiag] 3: reset pulse\n");
-    REG(P4_HP_RST_EN1) |=  g_esp->rst;
-    REG(P4_HP_RST_EN1) &= ~g_esp->rst;
+    sysreg_set(P4_HP_RST_EN1, g_esp->rst);
+    sysreg_clear(P4_HP_RST_EN1, g_esp->rst);
 #else   /* ESP32-C6: the same three steps in the PCR -- APB clock, function clock from the 40 MHz
          * crystal undivided (so the timing below holds as it is), a reset pulse */
     REG(C6_PCR_I2C_CONF) |= (1u << 0);

@@ -59,6 +59,7 @@
 #include "drivers/uart_proto.h"
 #include "drivers/driver_task.h"
 #include "drivers/uart_net.h"
+#include "kernel/sysreg.h"
 #include "kernel/devirq.h"
 #include "kernel/irq.h"
 #include "kernel/sched.h"
@@ -671,8 +672,8 @@ void uart_init(uintptr_t base_addr) {
      * them on already -- this is not fixing anything today. It is the part
      * that stops being redundant the first time this image is entered by
      * something other than the ROM's download loader. */
-    REG(SOC_CLK_CTRL1) |= UART0_SYS_CLK_EN;
-    REG(SOC_CLK_CTRL2) |= UART0_APB_CLK_EN;
+    sysreg_set(SOC_CLK_CTRL1, UART0_SYS_CLK_EN);
+    sysreg_set(SOC_CLK_CTRL2, UART0_APB_CLK_EN);
 
     /* 2. Source clock: XTAL, undivided.
      *
@@ -682,10 +683,8 @@ void uart_init(uintptr_t base_addr) {
      * ratio fits in CLKDIV's 12 integer bits with room to spare
      * (40e6/115200 = 347, against a 4095 ceiling), so the pre-divider has
      * nothing to do. Written explicitly rather than assumed zero. */
-    uint32_t c110 = REG(PERI_CLK_CTRL110);
-    c110 &= ~UART0_CLK_SRC_SEL_MASK;
-    REG(PERI_CLK_CTRL110) = c110 | UART0_CLK_SRC_XTAL | UART0_CLK_EN;
-    REG(PERI_CLK_CTRL111) &= ~UART0_SCLK_DIV_NUM_MASK;
+    sysreg_update(PERI_CLK_CTRL110, UART0_CLK_SRC_SEL_MASK, UART0_CLK_SRC_XTAL | UART0_CLK_EN);
+    sysreg_clear(PERI_CLK_CTRL111, UART0_SCLK_DIV_NUM_MASK);
 
     REG(UART_CLK_CONF(base)) |= UART_TX_SCLK_EN | UART_RX_SCLK_EN;
 

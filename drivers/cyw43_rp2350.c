@@ -327,7 +327,8 @@ static void wl_gpio_setup(void) {
      * while the two SIO-muxed pins were untouched. That left the state
      * machine's clock driving nothing, and cost this bring-up most of
      * its debugging. */
-    REG(ACCESSCTRL_GPIO_NSMASK0) |= (WL_ON_MASK | WL_DATA_MASK | WL_CS_MASK |
+    REG(ACCESSCTRL_GPIO_NSMASK0 + 0x2000u) =   /* atomic set alias: several drivers own bits here */
+        (WL_ON_MASK | WL_DATA_MASK | WL_CS_MASK |
                                       (1u << WL_CLK_PIN));
     REG(ACCESSCTRL_PIO0) = ACCESSCTRL_WRITE_PASSWORD | REG(ACCESSCTRL_PIO0)
                            | ACCESSCTRL_NSP | ACCESSCTRL_NSU;

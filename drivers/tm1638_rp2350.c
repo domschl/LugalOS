@@ -183,7 +183,8 @@ void tm1638_init(void) {
      * U-mode task's own serve loop below to actually toggle them -- must
      * happen here, from M-mode, before the task exists. See
      * ACCESSCTRL_GPIO_NSMASK0's own comment above. */
-    REG(ACCESSCTRL_GPIO_NSMASK0) |= (STB_MASK | CLK_MASK | DIO_MASK);
+    REG(ACCESSCTRL_GPIO_NSMASK0 + 0x2000u) =   /* atomic set alias: several drivers own bits here */
+        (STB_MASK | CLK_MASK | DIO_MASK);
 
     stb_high();
     REG(SIO_GPIO_OUT_SET) = CLK_MASK;

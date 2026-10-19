@@ -122,6 +122,7 @@ LugalOS features a ring buffer kernel logging subsystem (logging):
 * klog: Displays kernel log statistics, total emitted bytes, and attached output sinks.
 * klog detach console: Detaches console sink permanently.
 * klog attach console: Re-enables unconditional kernel log echoing to the console.
+* lockcheck [pairs]: The lock checker since boot: faults (blocking under a spinlock, console writes from a driver's serve callback, wait cycles), the lock order it has learned (pairs lists it) and any inversions, and how long console_lock was held: a histogram, the longest hold and who held it, and the last holds of 100 ms or more.
 * chanqtest: Selftest of the channel layer's waiting callers: turns served in arrival order, a back-to-back client handing over to a waiter, deadlines, and refusals. Prints CHANQSELFTESTOK or CHANQSELFTESTFAIL.
 
 ## 7. Built-in Applications & Languages

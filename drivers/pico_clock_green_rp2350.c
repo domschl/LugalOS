@@ -752,7 +752,8 @@ void pico_clock_green_init(void) {
      * (2026-09-08). drivers/uart1_link_rp2350.c learned the same thing about
      * the same register: a pin driven by a peripheral must not be in this
      * mask. */
-    REG(ACCESSCTRL_GPIO_NSMASK0) |= (SDI_MASK | CLK_MASK | LE_MASK
+    REG(ACCESSCTRL_GPIO_NSMASK0 + 0x2000u) =   /* atomic set alias: several drivers own bits here */
+        (SDI_MASK | CLK_MASK | LE_MASK
                                      | A0_MASK | A1_MASK | A2_MASK
                                      | (1u << BTN_SET_PIN)
                                      | (1u << BTN_UP_PIN)

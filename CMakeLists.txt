@@ -641,6 +641,7 @@ set(SOURCES
     kernel/board.c
     kernel/chan.c
     kernel/chan_selftest.c
+    kernel/sysreg.c
     kernel/palloc.c
     kernel/scratch.c
     kernel/balloc.c

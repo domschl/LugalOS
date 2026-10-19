@@ -61,7 +61,19 @@ void console_bind(console_putc_fn putc);
  * It may be held across a block -- a console write ends in chan_call() to the
  * uart task -- which is what makes it a ylock and not a spinlock. printk()
  * does not take it at all any more; that is the whole of Y5. */
-void console_lock(void);
+void console_lock_at(const char *site);
+#define console_lock() console_lock_at(__func__)   /* the caller names the hold (`lockcheck`) */
+
+/* console_lock hold times since boot: bucket 0 is under 1 ms, bucket b
+ * covers [2^(b-1), 2^b) ms, the last everything longer; the longest hold and
+ * the task that held it (`lockcheck`). */
+#define CONSOLE_HOLD_BUCKETS 12
+void console_lock_hold_stats(uint32_t hist[CONSOLE_HOLD_BUCKETS], uint32_t *max_us, int *max_pid,
+                             const char **max_site);
+/* The last holds of CONSOLE_LONG_HOLD_MS or more, newest first: false past
+ * the end. */
+#define CONSOLE_LONG_HOLD_MS 100u
+bool console_lock_long_hold(unsigned i, const char **site, uint32_t *ms, int *pid);
 void console_unlock(void);
 /* Whether the calling context holds console_lock() -- for a writer that
  * relies on it to check that it is really there (phase31 §7 R4). */

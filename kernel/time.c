@@ -1,3 +1,4 @@
+#include "kernel/sysreg.h"
 #include "kernel/time.h"
 #include "kernel/lock.h"
 #include "kernel/timezone.h"
@@ -214,9 +215,8 @@ void time_init(void) {
      * kernel wants (UNIT0 keeps counting while a core is halted for
      * debugging, UNIT1 does not). Zeroing them would make the clock stop
      * whenever a debugger did. */
-    P4_REG(P4_SOC_CLK_CTRL2)   |= P4_SYSTIMER_APB_CLK_EN;
-    P4_REG(P4_PERI_CLK_CTRL21) = (P4_REG(P4_PERI_CLK_CTRL21) &
-                                  ~P4_SYSTIMER_CLK_SRC_SEL) | P4_SYSTIMER_CLK_EN;
+    sysreg_set(P4_SOC_CLK_CTRL2, P4_SYSTIMER_APB_CLK_EN);
+    sysreg_update(P4_PERI_CLK_CTRL21, P4_SYSTIMER_CLK_SRC_SEL, P4_SYSTIMER_CLK_EN);
     P4_REG(SYSTIMER_CONF) |= SYSTIMER_REGFILE_CLK_EN;
     P4_REG(SYSTIMER_CONF) |= SYSTIMER_UNIT0_WORK_EN;
 #elif defined(CONFIG_BOARD_ESP32C6)

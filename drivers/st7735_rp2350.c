@@ -172,7 +172,8 @@ static int st7735_init_hardware(void) {
      * the U-mode task's own serve loop below to actually touch them --
      * must happen here, from M-mode, before the task exists. See
      * ACCESSCTRL_SPI0's own comment above. */
-    REG(ACCESSCTRL_GPIO_NSMASK0) |= (CS_MASK | DC_MASK | RST_MASK);
+    REG(ACCESSCTRL_GPIO_NSMASK0 + 0x2000u) =   /* atomic set alias: several drivers own bits here */
+        (CS_MASK | DC_MASK | RST_MASK);
     REG(ACCESSCTRL_SPI0) = ACCESSCTRL_WRITE_PASSWORD | REG(ACCESSCTRL_SPI0)
                            | ACCESSCTRL_SPI0_NSP | ACCESSCTRL_SPI0_NSU;
 

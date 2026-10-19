@@ -48,6 +48,7 @@
 
 #include "drivers/usbkbd.h"
 #include "drivers/usbkbd_task.h"
+#include "kernel/sysreg.h"
 #include "kernel/console.h"
 #include "kernel/printk.h"
 #include "kernel/sched.h"
@@ -215,12 +216,12 @@ static bool wait_clear(uint32_t off, uint32_t mask, uint32_t us) {
  * bus clock and the PHY's 48 MHz reference on, both out of reset, SUSPENDM
  * forced high, LS in parallel mode with keep-alives, pulldowns on. */
 static void phy_init(void) {
-    REG(HP_SYS_CLKRST_SOC_CLK_CTRL1_REG) |= 1u << HP_SYS_CLKRST_REG_USB_OTG20_SYS_CLK_EN_S;
-    REG(LP_CLKRST_HP_USB_CLKRST_CTRL1_REG) |= 1u << LP_CLKRST_USB_OTG20_PHYREF_CLK_EN_S;
-    REG(LP_CLKRST_HP_USB_CLKRST_CTRL1_REG) |= 1u << LP_CLKRST_RST_EN_USB_OTG20_S;
-    REG(LP_CLKRST_HP_USB_CLKRST_CTRL1_REG) |= 1u << LP_CLKRST_RST_EN_USB_OTG20_PHY_S;
-    REG(LP_CLKRST_HP_USB_CLKRST_CTRL1_REG) &= ~(1u << LP_CLKRST_RST_EN_USB_OTG20_PHY_S);
-    REG(LP_CLKRST_HP_USB_CLKRST_CTRL1_REG) &= ~(1u << LP_CLKRST_RST_EN_USB_OTG20_S);
+    sysreg_set(HP_SYS_CLKRST_SOC_CLK_CTRL1_REG, 1u << HP_SYS_CLKRST_REG_USB_OTG20_SYS_CLK_EN_S);
+    sysreg_set(LP_CLKRST_HP_USB_CLKRST_CTRL1_REG, 1u << LP_CLKRST_USB_OTG20_PHYREF_CLK_EN_S);
+    sysreg_set(LP_CLKRST_HP_USB_CLKRST_CTRL1_REG, 1u << LP_CLKRST_RST_EN_USB_OTG20_S);
+    sysreg_set(LP_CLKRST_HP_USB_CLKRST_CTRL1_REG, 1u << LP_CLKRST_RST_EN_USB_OTG20_PHY_S);
+    sysreg_clear(LP_CLKRST_HP_USB_CLKRST_CTRL1_REG, 1u << LP_CLKRST_RST_EN_USB_OTG20_PHY_S);
+    sysreg_clear(LP_CLKRST_HP_USB_CLKRST_CTRL1_REG, 1u << LP_CLKRST_RST_EN_USB_OTG20_S);
     REG(HP_SYSTEM_SYS_USBOTG20_CTRL_REG) |= 1u << HP_SYSTEM_SYS_OTG_SUSPENDM_S;
     REG(UTMI_FC_06) |= UTMI_LS_PAR_EN | UTMI_LS_KPALV_EN;
     REG(LP_SYSTEM_REG_HP_USB_OTGHS_PHY_CTRL_REG) |= (1u << LP_SYSTEM_REG_HP_UTMIOTG_DPPULLDOWN_S) |

@@ -44,6 +44,7 @@
 #include "drivers/sdmmc.h"
 #include "drivers/driver_task.h"
 #include "drivers/sdhost_esp32p4.h"
+#include "kernel/sysreg.h"
 #include "kernel/irq.h"
 #include "kernel/lock.h"
 #include "kernel/printk.h"
@@ -493,6 +494,7 @@ static void sdmmc_pads_init(void) {
 /* The host-side divider: PLL_F160M / div, expressed as the three edge numbers
  * the hardware actually takes. div must be 2..16. */
 static void sdmmc_set_host_div(uint32_t div) {
+    uintptr_t f = sysreg_lock();   /* PERI_CLK_CTRL02 is in the shared clock block */
     uint32_t v = REG(PERI_CLK_CTRL02);
     v &= ~((0xfu << SDIO_LS_EDGE_L_S) | (0xfu << SDIO_LS_EDGE_H_S) |
            (0xfu << SDIO_LS_EDGE_N_S));
@@ -502,32 +504,32 @@ static void sdmmc_set_host_div(uint32_t div) {
     REG(PERI_CLK_CTRL02) = v;
     REG(PERI_CLK_CTRL02) = v | SDIO_LS_EDGE_UPDATE;
     REG(PERI_CLK_CTRL02) = v;
+    sysreg_unlock(f);
 }
 
 static void sdmmc_clk_init(void) {
     /* The module's bus clock, and its reset. RST_EN is 1 = held in reset. */
-    REG(SOC_CLK_CTRL1) |= SDMMC_SYS_CLK_EN;
-    REG(LP_SDMMC_EMAC_RST) |= RST_EN_SDMMC;
-    REG(LP_SDMMC_EMAC_RST) &= ~RST_EN_SDMMC;
+    sysreg_set(SOC_CLK_CTRL1, SDMMC_SYS_CLK_EN);
+    sysreg_set(LP_SDMMC_EMAC_RST, RST_EN_SDMMC);
+    sysreg_clear(LP_SDMMC_EMAC_RST, RST_EN_SDMMC);
 
     /* The 160 MHz reference this peripheral divides down. Its gate resets to
      * 1, so this write normally changes nothing -- which is exactly the
      * argument drivers/emac_esp32p4.c makes for writing its own always-on
      * gate anyway: a gate nobody writes is a gate nobody notices when
      * something else clears it. */
-    REG(REF_CLK_CTRL2) |= REF_160M_CLK_EN;
+    sysreg_set(REF_CLK_CTRL2, REF_160M_CLK_EN);
 
-    uint32_t v = REG(PERI_CLK_CTRL01);
-    v &= ~(SDIO_LS_CLK_SRC_SEL | SDIO_HS_MODE);   /* PLL_F160M, divided */
-    v |= SDIO_LS_CLK_EN;
-    REG(PERI_CLK_CTRL01) = v;
+    sysreg_update(PERI_CLK_CTRL01, SDIO_LS_CLK_SRC_SEL | SDIO_HS_MODE,   /* PLL_F160M, divided */
+                  SDIO_LS_CLK_EN);
 
     /* The drive/sample/self clock phases. IDF's sdmmc_ll_init_phase_delay():
      * drive on the falling edge (sel 1), sample and self on the rising one
      * (sel 0). These are the default-speed settings and this driver never
      * leaves default speed -- a DDR or SDR104 mode would have to revisit
      * them, and would have a good deal more to revisit besides. */
-    v = REG(PERI_CLK_CTRL02);
+    uintptr_t f = sysreg_lock();   /* PERI_CLK_CTRL02 is in the shared clock block */
+    uint32_t v = REG(PERI_CLK_CTRL02);
     v |= SDIO_LS_SLF_CLK_EN | SDIO_LS_DRV_CLK_EN | SDIO_LS_SAM_CLK_EN;
     v &= ~((3u << SDIO_LS_SLF_EDGE_SEL_S) | (3u << SDIO_LS_DRV_EDGE_SEL_S) |
            (3u << SDIO_LS_SAM_EDGE_SEL_S));
@@ -535,6 +537,7 @@ static void sdmmc_clk_init(void) {
     REG(PERI_CLK_CTRL02) = v;
     REG(PERI_CLK_CTRL02) = v | SDIO_LS_EDGE_UPDATE;
     REG(PERI_CLK_CTRL02) = v;
+    sysreg_unlock(f);
 
     /* **A divider, before the controller is reset.** MEASURED, 2026-09-18:
      * without this line the very first hardware run printed
