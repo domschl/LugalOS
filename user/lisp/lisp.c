@@ -4909,20 +4909,6 @@ static lisp_val_t *prim_canvas_rgb565_p(lisp_val_t *args, lisp_val_t *env) {
 }
 
 /* (rgb r g b) -- converts 8-bit r, g, b (0..255) to 16-bit RGB565 integer */
-static lisp_val_t *prim_rgb(lisp_val_t *args, lisp_val_t *env) {
-    (void)env;
-    long r = arg_int(args, 0, 0);
-    long g = arg_int(args, 1, 0);
-    long b = arg_int(args, 2, 0);
-    if (r < 0) r = 0;
-    if (r > 255) r = 255;
-    if (g < 0) g = 0;
-    if (g > 255) g = 255;
-    if (b < 0) b = 0;
-    if (b > 255) b = 255;
-    uint16_t rgb565 = (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
-    return make_int((long)rgb565);
-}
 
 /* (canvas-close [name]) -- closes named canvas, or focused canvas */
 static lisp_val_t *prim_canvas_close(lisp_val_t *args, lisp_val_t *env) {
@@ -5059,6 +5045,22 @@ void lisp_canvas_reset(void) {
     (void)console_canvas(forget, 1, reply);
 }
 #endif
+
+/* (rgb r g b): 8-bit components to an RGB565 int, for any canvas. */
+static lisp_val_t *prim_rgb(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    long r = arg_int(args, 0, 0);
+    long g = arg_int(args, 1, 0);
+    long b = arg_int(args, 2, 0);
+    if (r < 0) r = 0;
+    if (r > 255) r = 255;
+    if (g < 0) g = 0;
+    if (g > 255) g = 255;
+    if (b < 0) b = 0;
+    if (b > 255) b = 255;
+    uint16_t rgb565 = (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+    return make_int((long)rgb565);
+}
 
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
 /* TM1638 primitives. */
