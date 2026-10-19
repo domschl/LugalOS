@@ -661,7 +661,7 @@ static void damage(unsigned y0, unsigned y1) {
 int lcdterm_init(const lcdterm_backend_t *be) {
     if (!be || !be->fb || (be->w % 8u) != 0) return -1;
     g_be = be;
-    uint32_t state_pages = pow2_pages(SCREEN_BYTES(be->w, be->h), STATE_PAGES_MIN);
+    uint32_t state_pages = pow2_pages(SCREEN_BYTES_ROT(be->w, be->h, be->rotates), STATE_PAGES_MIN);
     g_state_bytes = state_pages * 4096u;
     uint32_t block_pages = pow2_pages(g_state_bytes + SCREEN_STORE_BYTES(be->w, be->h),
                                       STORE_BLOCK_PAGES_MIN);
@@ -681,7 +681,7 @@ int lcdterm_init(const lcdterm_backend_t *be) {
         printk("[LCD] no memory for the screen's state; the panel runs without a terminal\n");
         return -1;
     }
-    screen_init(g_scr, be->fb, be->stride, be->w, be->h);
+    screen_init_rot(g_scr, be->fb, be->stride, be->w, be->h, be->rotates);
     if (stores)
         screen_set_store(g_scr, (uint8_t *)g_scr + g_state_bytes, g_scr_bytes - g_state_bytes);
     g_vt_ready = true;

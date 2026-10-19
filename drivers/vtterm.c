@@ -122,7 +122,8 @@ LCDTERM_UTEXT void vtterm_init(vtterm_t *vt, const fbtext_t *text, uint16_t *sha
     vt->text.xbyte = text->xbyte;
     vt->text.whole_rows = text->whole_rows;
     vt->shadow = shadow;
-    vt->shadow_cols = text->cols;           /* 37.5a: fixed from here on */
+    vt->shadow_cols = text->cols;           /* fixed from here on */
+    vt->shadow_rows = text->rows;
     vt->col_offset = 0;
     vt->logical_cols = text->cols;
     vt->hidden = false;
@@ -176,19 +177,29 @@ LCDTERM_UTEXT void vtterm_set_logical_cols(vtterm_t *vt, uint16_t logical_cols) 
     if (vt->col >= logical_cols) vt->col = (uint16_t)(logical_cols - 1u);
 }
 
+LCDTERM_UTEXT void vtterm_set_shadow_capacity(vtterm_t *vt, uint16_t cols, uint16_t rows) {
+    if (cols < vt->text.cols || rows < vt->text.rows) return;
+    vt->shadow_cols = cols;
+    vt->shadow_rows = rows;
+}
+
 LCDTERM_UTEXT void vtterm_resize(vtterm_t *vt, const fbtext_t *text) {
     unsigned nc = text->cols, rows = text->rows;
     if (nc > vt->shadow_cols) nc = vt->shadow_cols;         /* never past the shadow */
+    if (vt->shadow && rows > vt->shadow_rows) rows = vt->shadow_rows;
+    /* A region that was the whole screen stays the whole screen: kept at the
+     * old bottom, a taller window scrolled at that row and never wrote below. */
+    bool full_region = vt->top == 0 && vt->bot + 1u == vt->text.rows;
     vt->text.fb = text->fb;
     vt->text.stride = text->stride;
     vt->text.cols = (uint16_t)nc;
-    vt->text.rows = text->rows;
+    vt->text.rows = (uint16_t)rows;
     vt->text.xbyte = text->xbyte;
     vt->text.whole_rows = text->whole_rows;
     if (vt->logical_cols == 0) vt->logical_cols = (uint16_t)nc;
     if (vt->col >= vt->logical_cols) vt->col = (uint16_t)(vt->logical_cols - 1u);
     if (vt->row >= rows) vt->row = (uint16_t)(rows - 1u);
-    if (vt->bot >= rows || vt->top >= vt->bot) {    /* 37.5b: a region that no longer fits */
+    if (full_region || vt->bot >= rows || vt->top >= vt->bot) {    /* a region that no longer fits */
         vt->top = 0;
         vt->bot = (uint16_t)(rows - 1u);
     }
@@ -619,6 +630,24 @@ int vtterm_selftest(void) {
 
     st_fresh(&cx, &vt); FEED(&vt, "1\r\n2\r\n3\r\n4\r\n5");
     st_check(&cx, "LF at the bottom scrolls", row_is(&vt, 0, "2") && row_is(&vt, 3, "5") && vt.row == 3);
+
+    /* A screen that turns: shorter, then back, then taller than the shadow. */
+    {
+        st_fresh(&cx, &vt);
+        fbtext_t t;
+        fbtext_init(&t, cx.buf, ST_COLS, ST_COLS, 2);
+        vtterm_resize(&vt, &t);
+        bool shrunk = vt.text.rows == 2 && vt.bot == 1;
+        fbtext_init(&t, cx.buf, ST_COLS, ST_COLS, ST_ROWS);
+        vtterm_resize(&vt, &t);
+        bool regrown = vt.text.rows == ST_ROWS && vt.top == 0 && vt.bot == ST_ROWS - 1u;
+        fbtext_init(&t, cx.buf, ST_COLS, ST_COLS, ST_ROWS + 2u);
+        vtterm_resize(&vt, &t);
+        bool clamped = vt.text.rows == ST_ROWS && vt.bot == ST_ROWS - 1u;
+        FEED(&vt, "1\r\n2\r\n3\r\n4\r\n5");
+        st_check(&cx, "resize: a whole-screen region follows the screen; never taller than the shadow",
+                 shrunk && regrown && clamped && row_is(&vt, 0, "2") && row_is(&vt, 3, "5") && vt.row == 3);
+    }
 
     st_fresh(&cx, &vt); FEED(&vt, "abcdef\033[3D\033[K");
     st_check(&cx, "ESC[nD then ESC[K", row_is(&vt, 0, "abc") && vt.col == 3);

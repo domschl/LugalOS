@@ -82,7 +82,18 @@ static spinlock_t g_sched_lock;
 static uint32_t g_handoff_faults;   /* accepted: a fault counter */
 
 /* This hart's current task index. */
-static inline int cur(void) { return g_current[hart_id()]; }
+/* The hart's current task, read with interrupts masked: unmasked, a task
+ * preempted between hart_id() and the array read and resumed on the other hart
+ * read that hart's current task -- another pid, or none. Every owner and
+ * context id derives from this (ylocks, chan claims, the 9P server's request
+ * state); `stress` on rv64-smp caught a 9P fid filed under no connection,
+ * about once in two minutes of load. */
+static inline int cur(void) {
+    uintptr_t f = irq_save();
+    int c = g_current[hart_id()];
+    irq_restore(f);
+    return c;
+}
 static inline void set_cur(int t) { g_current[hart_id()] = t; }
 
 /* Called on every arrival from a switch. */

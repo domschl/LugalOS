@@ -7,6 +7,7 @@
 #include "kernel/sched.h"
 #include "kernel/lock.h"
 #include "kernel/scratch.h"
+#include "kernel/palloc.h"
 #include <string.h>
 
 /* Small fixed set, not one global pointer: RP2350 wants both its USB-CDC
@@ -416,7 +417,7 @@ static int p9_split_path(const char *path, char out[P9_MAX_WALK_ELEM][P9_MAX_NAM
     return n;
 }
 
-int p9_link_cat(p9_link_t *link, const char *path, char *out_buf, uint32_t out_max) {
+static int p9_link_cat_locked(p9_link_t *link, const char *path, char *out_buf, uint32_t out_max) {
     if (!link || !link->poll || !link->send_frame || !link->recv_frame || !path) return -1;
     while (*path == '/') path++;
 
@@ -428,8 +429,13 @@ int p9_link_cat(p9_link_t *link, const char *path, char *out_buf, uint32_t out_m
      * (resp_buf, rx_buf, g_waiters) deliberately stay static: those are
      * touched once per inbound frame by a task whose whole job is serving
      * frames, and a page allocation per 9P message would be the wrong trade. */
-    scratch_t sc;
-    if (!scratch_acquire(&sc, 2u * P9_MAX_MSIZE)) { scratch_release(&sc); return -1; }
+    /* From the bulk zone (PSRAM where a board has it): the buffers are the
+     * CPU's alone, and the fast zone runs out first -- with three terminals
+     * and `stress`'s workers on the LCD-7B it had no two pages left, and every
+     * session failed here. */
+    uint32_t pages = (2u * P9_MAX_MSIZE + PAGE_SIZE - 1u) / PAGE_SIZE;
+    scratch_t sc = { palloc_pages_bulk(pages), pages };
+    if (!sc.base) return -1;
     uint8_t *tx = (uint8_t *)sc.base;
     uint8_t *rx = tx + P9_MAX_MSIZE;
     p9_msg_t req, resp;
@@ -509,6 +515,17 @@ int p9_link_cat(p9_link_t *link, const char *path, char *out_buf, uint32_t out_m
 
     scratch_release(&sc);
     return read_failed ? -1 : (int)total;
+}
+
+/* The whole session under g_client_lock, not only each round trip: it is a
+ * session of its own on the link (Tversion, fids 1 and 2), and two at once on
+ * one link reset and reuse each other's fids -- `stress` saw one in a few
+ * hundred local reads fail. */
+int p9_link_cat(p9_link_t *link, const char *path, char *out_buf, uint32_t out_max) {
+    ylock_acquire(&g_client_lock);
+    int n = p9_link_cat_locked(link, path, out_buf, out_max);
+    ylock_release(&g_client_lock);
+    return n;
 }
 
 /* --- Persistent remote 9P connection --- *

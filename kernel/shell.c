@@ -1,4 +1,5 @@
 #include "kernel/shell.h"
+#include "kernel/stress.h"
 #include "kernel/llp_node.h"
 #if defined(CONFIG_BOARD_ESP32P4)
 #include "drivers/sdio_esp32p4.h"
@@ -1157,6 +1158,7 @@ static void cmd_help_test(void) {
     cprintf("  lockselftest    - Atomic spinlocks, interrupt masking, ylock\n");
     cprintf("  chanqtest       - chan_call_wait(): FIFO turns, hand-off, deadlines\n");
     cprintf("  lockcheck [pairs] - Lock faults, learned lock order, console_lock hold times\n");
+    cprintf("  stress [s]      - Worker tasks on the shared paths, checked; STRESS_OK/FAIL\n");
     cprintf("  smpstart [join] - Launch secondary CPU core\n");
     cprintf("  smptest         - Multi-hart atomic counter and lock race test\n");
     cprintf("  smpload         - Background CPU load across all online harts\n");
@@ -2739,6 +2741,14 @@ static void cmd_mqtt(const char *arg) {
  * targets. */
 static void cmd_sensor(const char *arg) {
     while (*arg == ' ') arg++;
+    if (strncmp(arg, "period", 6) == 0) {
+        unsigned long secs = 0;
+        for (const char *q = arg + 6; *q; q++) if (*q >= '0' && *q <= '9') secs = secs * 10u + (unsigned long)(*q - '0');
+        if (secs) (void)sensor_hub_sampler_start((uint32_t)secs);
+        cprintf("sensor: environmental sensors every %lu s (from the next round)\n",
+                (unsigned long)sensor_hub_sample_period_s());
+        return;
+    }
     if (strncmp(arg, "selftest", 8) == 0) {
         bme280_selftest(true);
         bme680_selftest(true);
@@ -5731,10 +5741,22 @@ static void parse_and_eval_cmd(const char *cmd_line) {
 #endif
     } else if (strcmp(cmd_line, "lockselftest") == 0) {
         lock_selftest();
+        return;
     } else if (strcmp(cmd_line, "chanqtest") == 0) {
         (void)chan_selftest();
+        return;
+    } else if (strcmp(cmd_line, "stress") == 0 || strncmp(cmd_line, "stress ", 7) == 0) {
+        unsigned long secs = 0;
+        for (const char *q = cmd_line + 6; *q && *q != 'o' && *q != 'n'; q++)   /* up to `only=` / `norot` */
+            if (*q >= '0' && *q <= '9') secs = secs * 10u + (unsigned long)(*q - '0');
+        stress_set_rotation(strstr(cmd_line, "norot") == NULL);
+        stress_set_paths(strstr(cmd_line, "only="));
+        if (strncmp(cmd_line, "stress bg", 9) == 0) stress_start_bg((uint32_t)secs);
+        else (void)stress_run((uint32_t)secs);
+        return;
     } else if (strcmp(cmd_line, "lockcheck") == 0 || strcmp(cmd_line, "lockcheck pairs") == 0) {
         cmd_lockcheck(cmd_line[9] == ' ');
+        return;
 #if defined(CONFIG_KOBJ)
     } else if (strcmp(cmd_line, "kobjselftest") == 0) {
         kobj_selftest();

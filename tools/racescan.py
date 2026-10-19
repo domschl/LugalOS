@@ -65,7 +65,8 @@ BLOCKING_FUNCS = {"sched_yield", "task_block", "task_block_until_ms", "task_slee
 TEST_CONTEXTS = {"task:demoA", "task:demoB", "task:sized1", "task:smpload", "task:smpw",
                  "task:spinner", "task:stressA", "task:stressB", "task:hog", "task:urgent",
                  "task:locktest", "task:clicspin", "task:perftw", "task:cyclewait",
-                 "task:chanecho", "task:uprobe", "task:llpsoak", "task:chanq"}
+                 "task:chanecho", "task:uprobe", "task:llpsoak", "task:chanq",
+                 "task:stress", "task:stressrun", "task:stressrot"}
 
 
 @dataclass

@@ -1010,6 +1010,14 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Channel Wait Queue: FIFO Turns, Hand-off, Deadlines (63.4)",
                         chanq_ok, log if not chanq_ok else ""))
 
+        # 63.7: `stress` for 30 s on one hart (the two-hart run is in the SMP
+        # target): formatters, files, local 9P, channel waits, the log ring and
+        # the shell under mixed worker tasks, every result checked.
+        ok, log = session.send_and_expect("stress 30\n", r"STRESS_(OK|FAIL)", timeout=150.0)
+        stress_ok = ok and "STRESS_OK" in log
+        results.append(("Stress: 30 s of mixed workers on the shared paths, nothing wrong (63.7)",
+                        stress_ok, log if not stress_ok else ""))
+
         # 45.3b (plan/phase45_esp32c6.md): the kernel objects the ESP32-C6's
         # confined Wi-Fi runtime needs -- semaphores, mutexes, queues, event
         # groups, timers -- under real tasks and preemption: FIFO hand-off,
@@ -9045,6 +9053,15 @@ def test_smp_two_harts(elf_path: Path, img_path: Path) -> list[tuple[str, bool, 
         out.append(("SMP: a chess session does not change the next one (open_issues)",
                     ok_ind,
                     "" if ok_ind else f"nodes={node_counts} moves={move_seq}"))
+
+        # 63.7 (plan/phase63_concurrency_review.md): `stress`, the shared paths
+        # under mixed worker tasks on both harts, every result checked. The run
+        # that found sched_current_pid() reading the other hart's current task
+        # (a 9P fid filed under no connection, about once in two minutes).
+        ok, log = session.send_and_expect("stress 60\n", r"STRESS_(OK|FAIL)", timeout=200.0)
+        ok = ok and "STRESS_OK" in log
+        out.append(("SMP: stress, 60 s of mixed workers on the shared paths, nothing wrong (63.7)",
+                    ok, log if not ok else ""))
     except Exception as e:  # noqa: BLE001
         out.append(("SMP two-hart target", False, str(e)))
     finally:

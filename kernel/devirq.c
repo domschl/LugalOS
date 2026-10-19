@@ -1,4 +1,5 @@
 #include "kernel/devirq.h"
+#include "kernel/irq.h"
 #include "kernel/printk.h"
 #include "kernel/hart.h"
 #include <stdbool.h>
@@ -22,7 +23,14 @@ static uint32_t       g_count;
  * masked); each hart counts only its own nesting. */
 static uint8_t        g_depth[MAX_HARTS];
 
-bool devirq_in_handler(void) { return g_depth[hart_id()] != 0; }
+/* Masked, as sched.c's cur(): a task moved to the other hart between
+ * hart_id() and the read would see that hart's handler depth. */
+bool devirq_in_handler(void) {
+    uintptr_t f = irq_save();
+    bool in = g_depth[hart_id()] != 0;
+    irq_restore(f);
+    return in;
+}
 
 int devirq_attach(uint32_t irq_num, devirq_handler_fn handler, void *ctx) {
     if (!handler) return -1;

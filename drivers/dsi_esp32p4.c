@@ -688,6 +688,16 @@ static void wait_ms(uint32_t ms) { time_delay_us((uint64_t)ms * 1000u); }
 static void panel_reset(void) {
 #if defined(CONFIG_BOARD_TAB5)
     i2c_tab5_panel_reset();
+    /* The ST7121 is display and touch in one chip, and after a reset it takes
+     * a while to listen -- longer when it was reset while running (M5GFX
+     * measured ~50 ms). DCS writes in LP mode are not acknowledged, so an
+     * init table sent too early is lost without an error and the panel stays
+     * black with everything reading normal. Its touch side answering its
+     * firmware version on I2C is the sign it is up (M5GFX waits the same). */
+    uint64_t t0 = time_get_us();
+    int fw = i2c_tab5_touch_fw_version();
+    printk("[LCD] ST7121 answered %lu ms after its reset (touch firmware %d)\n",
+           (unsigned long)((time_get_us() - t0) / 1000u), fw);
 #else
     gpio_out(RST_GPIO, false);
     wait_ms(10);
@@ -852,13 +862,14 @@ static uint16_t          g_dirty_x1[2];
 #define MAX_TERM_CELLS   7200u
 typedef struct { int16_t x0, y0; uint16_t cols, rows, col_offset; uint8_t vterm_id; } cell_key_t;
 #if defined(CONFIG_FONT_CELL_H) && (CONFIG_FONT_CELL_H == 32)
+/* guarded by: g_frame_lock (the cache above) */
 static uint16_t          g_t_cell_drawn[2][TERM_CELL_SLOTS][MAX_TERM_CELLS] BULK_BSS;
 static cell_key_t        g_t_cell_key[2][TERM_CELL_SLOTS];
 #define cells_forget() memset(g_t_cell_drawn, 0xff, sizeof g_t_cell_drawn)
 #else
 #define cells_forget() ((void)0)
 #endif
-static uint32_t          s_reader_drawn_seq[2][4];
+static uint32_t          s_reader_drawn_seq[2][4];   /* guarded by: g_frame_lock */
 
 static inline uint8_t *fb_front(void) {
     return g_fb_pool[g_front_idx];
@@ -2292,6 +2303,7 @@ static lcdterm_backend_t g_tbe = {
     .w               = 1280,
     .h               = 720,
     .stride          = 160,
+    .rotates         = true,           /* dsi_lcd_set_orientation() */
 #else
     .name            = "LCD-7B",
     .text_test_title = "LugalOS on the LCD-7B: Spleen 8x16, 128 x 37 cells, 1-bpp to GRAY8 over DSI at 60 Hz",

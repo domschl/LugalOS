@@ -1317,6 +1317,10 @@ LCDTERM_UTEXT static void screen_animate_ribbon(screen_t *scr,
 }
 
 void screen_init(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsigned h) {
+    screen_init_rot(scr, fb, stride, w, h, false);
+}
+
+void screen_init_rot(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsigned h, bool rotates) {
     canvas1_init(&scr->cv, fb, stride, w, h);
     canvas1_init(&scr->c_backing, 0, 0, 0, 0);
     scr->full_cols = (uint8_t)SCREEN_TEXT_COLS(w);
@@ -1355,7 +1359,9 @@ void screen_init(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsigned 
         scr->canvases[c].format = CANVAS_FMT_1BPP;
     }
 
-    uint32_t term_cells = (uint32_t)SCREEN_TEXT_COLS(w) * (uint32_t)SCREEN_TEXT_ROWS(h);
+    uint16_t cap_cols = (uint16_t)SCREEN_SHADOW_COLS(w, h, rotates);
+    uint16_t cap_rows = (uint16_t)SCREEN_SHADOW_ROWS(w, h, rotates);
+    uint32_t term_cells = (uint32_t)cap_cols * cap_rows;
     for (uint32_t t = 0; t < SCREEN_MAX_TERMS; t++) {
         uint16_t *t_shadow = scr->shadow + t * term_cells;
         for (uint32_t j = 0; j < term_cells; j++) t_shadow[j] = 0;
@@ -1363,6 +1369,7 @@ void screen_init(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsigned 
         fbtext_init(&t_text, (uint8_t *)fb + SCREEN_TEXT_Y * stride + SCREEN_TEXT_X / 8, stride,
                     SCREEN_TEXT_COLS(w), SCREEN_TEXT_ROWS(h));
         vtterm_init(&scr->terms[t].vt, &t_text, t_shadow);
+        vtterm_set_shadow_capacity(&scr->terms[t].vt, cap_cols, cap_rows);
         scr->terms[t].in_use = (t == 0);
         scr->terms[t].vterm_id = (uint8_t)t;
     }
@@ -1372,6 +1379,7 @@ void screen_init(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsigned 
     fbtext_init(&text, (uint8_t *)fb + SCREEN_TEXT_Y * stride + SCREEN_TEXT_X / 8, stride,
                 SCREEN_TEXT_COLS(w), SCREEN_TEXT_ROWS(h));
     vtterm_init(&scr->vt, &text, scr->shadow);
+    vtterm_set_shadow_capacity(&scr->vt, cap_cols, cap_rows);
     vtterm_set_title(&scr->vt, name, 7);
 
     ribbon_init(&scr->ribbon, (uint16_t)w, (uint16_t)h);
@@ -1386,13 +1394,13 @@ void screen_reorient(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsig
     scr->ribbon.screen_w = (uint16_t)w;
     scr->ribbon.screen_h = (uint16_t)h;
 
-    uint32_t text_rows = (uint32_t)SCREEN_TEXT_ROWS(h);
-    for (uint32_t t = 0; t < SCREEN_MAX_TERMS; t++) {
-        fbtext_init(&scr->terms[t].vt.text, (uint8_t *)fb + SCREEN_TEXT_Y * stride + SCREEN_TEXT_X / 8, stride,
-                    scr->full_cols, text_rows);
-    }
-    fbtext_init(&scr->vt.text, (uint8_t *)fb + SCREEN_TEXT_Y * stride + SCREEN_TEXT_X / 8, stride,
-                scr->full_cols, text_rows);
+    /* Through vtterm_resize(), hidden terminals too: it keeps every grid
+     * inside its shadow and the scroll region on the new screen. */
+    fbtext_t text;
+    fbtext_init(&text, (uint8_t *)fb + SCREEN_TEXT_Y * stride + SCREEN_TEXT_X / 8, stride,
+                scr->full_cols, (unsigned)SCREEN_TEXT_ROWS(h));
+    for (uint32_t t = 0; t < SCREEN_MAX_TERMS; t++) vtterm_resize(&scr->terms[t].vt, &text);
+    vtterm_resize(&scr->vt, &text);
 
     if (w < h) {
         /* Portrait mode: full-width windows (88 cols at 720px) */

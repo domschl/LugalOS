@@ -56,7 +56,8 @@
 typedef struct {
     fbtext_t  text;
     uint16_t *shadow;           /* shadow_cols x rows cells, or NULL for none */
-    uint16_t  shadow_cols;      /* 37.5a: the width vtterm_init() was given */
+    uint16_t  shadow_cols;      /* the shadow's row stride in cells, and the widest the window may be */
+    uint16_t  shadow_rows;      /* the shadow's rows: the tallest the window may be */
     bool      hidden;           /* 37.3b: draw into the shadow only */
     uint16_t  col, row;
     uint16_t  top, bot;         /* 37.5b: the scroll region, rows top..bot */
@@ -101,6 +102,12 @@ void vtterm_set_logical_cols(vtterm_t *vt, uint16_t logical_cols);
  * never wider than the shadow, nor taller; the cursor is clamped. Nothing is
  * drawn -- the caller repaints. */
 void vtterm_resize(vtterm_t *vt, const fbtext_t *text);
+
+/* The shadow holds `cols` x `rows` cells, `cols` apart, more than the grid
+ * vtterm_init() was given: room for a screen that turns (the window grows
+ * into it with vtterm_resize()). Right after vtterm_init(), before any output;
+ * the caller has cleared the cells. */
+void vtterm_set_shadow_capacity(vtterm_t *vt, uint16_t cols, uint16_t rows);
 
 /* 37.3b: hide or show the window. Hidden, output still goes to the shadow
  * (so nothing is lost while a full-screen canvas is up), and the pixels are

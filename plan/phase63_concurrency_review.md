@@ -587,6 +587,9 @@ Those change what the panel shows and are for the owner. The NANO's flash keeps 
 partition table and NVS in the unused tail of LugalOS's boot region (`0x8000`–`0x10000`);
 nothing reads it. NANO 50/50 afterwards.
 
+*63.6 closed (2026-10-19), owner's decision:* the refresh rate and the pixel formats stay as
+they are; the panel's share of the PSRAM bandwidth is accepted.
+
 ### 63.7 Stress harness
 
 Load that makes collisions likely instead of lucky:
@@ -600,6 +603,73 @@ Load that makes collisions likely instead of lucky:
   - Pass: an hour with no trap, no checker report, and no I2C or SDIO error counted.
 - A **stack-canary report** in `ps` (lowest untouched word per task stack) so overflow is
   measured, not guessed. Part A sized two stacks by argument.
+
+*Status (2026-10-19, end of day): harness done, found bugs fixed, hour runs not yet passed.*
+
+Done:
+- **`stress [s] [norot] [only=fmt,ram,sd,p9,chan,log,shell]` / `stress bg ...`**
+  (kernel/stress.c): mixed worker tasks, each picking a path at random every iteration
+  (formatter, files on `/ram0` and `/sd0`, the local 9P server, `chan_call_wait()` into an
+  endpoint that holds its turn 0-2 ms, log bursts, shell commands under capture; on the Tab5 a
+  task of its own turns the panel every 7 s unless `norot`). Every result is checked; at the end
+  the lock faults, order inversions, I2C failures, klog gaps, full stacks (`sched_stack_full`,
+  the canary half of this item; `ps` shows the high water) and stuck workers since the start.
+  A worker per path did not fit: the boards run 16-18 tasks of their own out of 24, and with
+  three terminals the LCD-7B has three slots left (the minimum).
+- **`tools/stress.py --board B --minutes N [--norot] [--only ...] [--bare]`**: around
+  `stress bg`, two more terminals, focus moved and commands typed (focus back on terminal 1
+  for the last 30 s: the serial console shows the focused terminal, and the report goes to the
+  one that started the run), `sensor period 2` (new), 9P over TCP from the host with a
+  one-time `p9key`, then `dmesg`, `lockcheck`, `i2cstats`, `ts` checked.
+- **runner.py:** `stress 30` on rv64 and rv32, `stress 60` on rv64-smp (517/517 before the
+  last round of changes).
+- **Found by it, fixed:**
+  - `p9_link_cat()` sessions on one link ran concurrently and shared fids 1/2 and Tversion: the
+    whole session now holds `g_client_lock`.
+  - `sched_current_pid()` / `cur()` and `devirq_in_handler()` read `g_current[hart_id()]` with
+    interrupts on: a task preempted between the two reads and resumed on the other hart read the
+    other hart's task (a 9P fid filed under no connection, about once in two minutes on
+    rv64-smp). Read under `irq_save()` now; four 300 s rv64-smp runs clean afterwards.
+  - `p9_link_cat()`'s two message buffers came from the fast page zone, which three terminals
+    and the workers exhausted on the LCD-7B (every session failed): from the bulk zone now.
+  - `stress`, `chanqtest`, `lockselftest`, `lockcheck` fell through to the Lisp evaluator after
+    running ("Unbound function").
+  - **Tab5 rotation overflowed the terminal shadows** (owner saw stale text in the lower half
+    after a turn): each terminal's shadow share was sized for the boot orientation (78 x 21) and
+    `vtterm_resize()` let a portrait window grow to 38 rows inside it -- rows past the 21st went
+    into the next terminal's share, the last terminal's past the array; and a whole-screen scroll
+    region kept its old bottom row. Now a backend that `rotates` gets shares sized for both
+    orientations (`SCREEN_BYTES_ROT`, `screen_init_rot()`), a window is never taller than its
+    shadow (`shadow_rows`), a whole-screen region follows the screen, and `screen_reorient()`
+    resizes hidden terminals through `vtterm_resize()` too. vtselftest checks it; the owner
+    confirmed all four orientations.
+
+Hour runs (2026-10-19, 60 min each, with terminals, typing, 9P/TCP, sensors at 2 s):
+- **NANO:** STRESS_FAIL -- `ram` 2 failed writes to `/ram0` in 388,907 (first: "write");
+  everything else clean (sd 96,521, no errors).
+- **LCD-7B:** STRESS_FAIL -- only 1 worker (task table full: something held more slots than in
+  the 3-minute trials) and 1 local 9P read failure in 38,361; sd 12,778 clean.
+- **Tab5:** stopped after ~14 min: the panel was black (see below). A 20 min run without
+  rotation: `sd` **5 read-back mismatches** in 17,874 (no driver error logged); with only the sd
+  and p9 paths (+ 9P/TCP, rotation) 60,213 sd cycles clean -- the mismatch needs another path
+  at the same time.
+
+Open (next session):
+1. **Tab5 black panel at boot, ~1 boot in 10** (3 of 32 resets; owner watching). Not a runtime
+   failure: five 20 min runs that started visible stayed visible (load without rotation;
+   rotation alone; rotation + PSRAM bench; rotation + sd/p9; rotation + console half). In the
+   black state everything readable is normal: scan-out at 58 Hz from the right buffer, frame
+   content white, no DMA error or underrun, backlight on, DCS 0x0A 9c, 0x05 0 errors, 0x0B-0x0F
+   and 0x45 identical to a good boot; SLPOUT/DISPON and repaint do not recover it, a reset does.
+   The readiness wait M5GFX does (ST7121's touch side answering its firmware version) is in
+   `panel_reset()` now; the chip always answers at once, and a black boot still happened.
+   Next: M5GFX's ST7121 timing (DPI 70 MHz; hbp 40, hsync 2, hfp 40, vbp 24, vsync 20, vfp 200;
+   ours 80 MHz), M5GFX's LCD_RST release (input with pull-up, not driven high), and an
+   `lcd reinit` to recover without a reboot. Each needs ~30 observed resets to tell.
+2. **Tab5 sd read-back mismatches** under the full mix (data integrity; no error reported by
+   the driver). Bisect the paths with `only=`.
+3. NANO `/ram0` write failures; LCD-7B task-table exhaustion during the hour; its one 9P failure.
+4. Then the hour runs again on all three boards; pass = STRESS_OK, no trap, no checker report.
 
 ### 63.8 Close
 
