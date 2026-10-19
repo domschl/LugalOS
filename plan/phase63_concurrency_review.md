@@ -575,10 +575,11 @@ was compared with IDF's and matches.
 
 The Tab5's half rate (43 MB/s `memset`) is its panel. RGB565 scan-out at 1280 x 720 and
 58 Hz reads 107 MB/s from PSRAM, and every transaction pays a fixed cost. The LCD-7B shows the
-same in between: 75 MB/s with GRAY8 scan-out, 65 with RGB565. The scan-out's AXI read burst,
-IDF's 16 beats, now 32: the Tab5's CPU gets 57–60 MB/s (+35%); 64 gains nothing more; 0 DMA
-errors, no underrun, the frame reads back exact. A slide on the Tab5: 535 ms (from 784–822 at
-the start of 63.6b).
+same in between: 75 MB/s with GRAY8 scan-out, 65 with RGB565. A longer AXI read burst for the
+scan-out (32 beats instead of IDF's 16) gave the Tab5's CPU 57–60 MB/s (+35%), with no DMA
+error, no underrun and an exact frame readback, but the panel went dark. Found by the owner
+looking at it; reverted to 16. No automatic check sees what the panel shows: the suite's
+readback reads the frame from memory.
 
 What remains is the scan-out itself: a lower refresh rate, or a smaller pixel format where
 the bridge takes one (the Tab5's v1.3 bridge is used in RGB565), would each return bandwidth.
