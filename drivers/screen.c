@@ -1247,6 +1247,12 @@ LCDTERM_UTEXT static inline void lcdterm_sync_post(void) {
 #include "drivers/lcdterm.h"
 #endif
 
+/* Six full frames under console_lock (the caller's, through the canvas
+ * request): on the Tab5's rotated frame each costs ~87 ms -- re-rendering the
+ * 1-bpp screen, converting every pixel of it, the flip -- so a slide holds the
+ * console ~520-650 ms (`lockcheck`). Every pixel moves, so the conversion is
+ * at the PSRAM's bandwidth; fewer frames or a faster PSRAM path are what
+ * would shorten it. */
 LCDTERM_UTEXT static void screen_animate_ribbon(screen_t *scr,
                                                 uint8_t win_a, int32_t a_start_rx0, int32_t a_start_rx1,
                                                 uint8_t win_b, int32_t b_start_rx0, int32_t b_start_rx1,

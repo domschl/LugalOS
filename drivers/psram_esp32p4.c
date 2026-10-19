@@ -706,6 +706,20 @@ static void psram_bench(void) {
     uint32_t sum = 0;
     for (uint32_t i = 0; i < BYTES / 4u; i++) sum += p[i];
     uint64_t t2 = time_get_us();
+    uint8_t *mem2 = bulk_claim(PAGES, "psram bench");
+    uint64_t t3 = time_get_us();
+    memset(mem, 0x5a, BYTES);
+    esp32p4_extmem_writeback(base, BYTES);
+    uint64_t t4 = time_get_us();
+    if (mem2) {
+        memcpy(mem2, mem, BYTES);
+        esp32p4_extmem_writeback((uintptr_t)mem2, BYTES);
+    }
+    uint64_t t5 = time_get_us();
+    if (mem2) palloc_free(mem2, PAGES);
+    cprintf("psram bench: memset 1 MB %lu us (%lu KB/s), memcpy 1 MB %lu us (%lu KB/s)\n",
+            (unsigned long)(t4 - t3), (unsigned long)(1024ull * 1000000ull / (t4 - t3 + 1)),
+            (unsigned long)(t5 - t4), (unsigned long)(1024ull * 1000000ull / (t5 - t4 + 1)));
     palloc_free(mem, PAGES);
     cprintf("psram bench: 1 MB write+writeback %lu us (%lu KB/s), read %lu us (%lu KB/s), sum %08lx\n",
             (unsigned long)(t1 - t0), (unsigned long)(1024ull * 1000000ull / (t1 - t0 + 1)),

@@ -841,8 +841,23 @@ static uint64_t          g_dirty[2][DIRTY_WORDS];
 static uint64_t          g_dirty_trows[2];
 static uint16_t          g_dirty_x0[2];
 static uint16_t          g_dirty_x1[2];
-#define MAX_TERM_CELLS   2048u
-static uint16_t          g_t_cell_drawn[2][MAX_TERM_CELLS];
+/* What each back buffer last drew into each visible terminal's cells (the
+ * anti-aliased pass; a cell whose value matches is not drawn again), per
+ * window slot, with the geometry it was drawn at: a slot whose window moved,
+ * resized, scrolled sideways or changed terminal is dropped and redrawn whole.
+ * The rows pass leaves the text areas to this pass entirely, so the cache must
+ * be exact. Sized for one window filling the Tab5's screen (160 x 45). In PSRAM:
+ * low SRAM is full. guarded by: g_frame_lock. */
+#define TERM_CELL_SLOTS  4u
+#define MAX_TERM_CELLS   7200u
+typedef struct { int16_t x0, y0; uint16_t cols, rows, col_offset; uint8_t vterm_id; } cell_key_t;
+#if defined(CONFIG_FONT_CELL_H) && (CONFIG_FONT_CELL_H == 32)
+static uint16_t          g_t_cell_drawn[2][TERM_CELL_SLOTS][MAX_TERM_CELLS] BULK_BSS;
+static cell_key_t        g_t_cell_key[2][TERM_CELL_SLOTS];
+#define cells_forget() memset(g_t_cell_drawn, 0xff, sizeof g_t_cell_drawn)
+#else
+#define cells_forget() ((void)0)
+#endif
 static uint32_t          s_reader_drawn_seq[2][4];
 
 static inline uint8_t *fb_front(void) {
@@ -1201,7 +1216,7 @@ static bool fb_start(fb_fmt_t fmt) {
     g_dirty_trows[1] = ~0ull;
     g_dirty_x0[0] = 0; g_dirty_x1[0] = 2047u;
     g_dirty_x0[1] = 0; g_dirty_x1[1] = 2047u;
-    memset(g_t_cell_drawn, 0xff, sizeof g_t_cell_drawn);
+    cells_forget();
     memset(s_reader_drawn_seq, 0xff, sizeof s_reader_drawn_seq);
 
     g_fb_bpp = bpp; g_fb_bytes = bytes; g_fb_pages = pages; g_fb_fmt = fmt;
@@ -1327,6 +1342,19 @@ static int g_lcd_rot = 270; /* Landscape by default */
 #define T_BYTES    (T_STRIDE * DSI_LCD_V_RES)
 static int g_lcd_rot = 0;   /* Native scanout (portrait or LCD-7B landscape) */
 #endif
+
+/* Bit (8r + c) of x moves to bit (8c + r): row bytes in, column bytes out
+ * (Hacker's Delight, transpose8). */
+static inline uint64_t transpose8x8(uint64_t x) {
+    uint64_t t;
+    t = (x ^ (x >> 7))  & 0x00AA00AA00AA00AAull; x = x ^ t ^ (t << 7);
+    t = (x ^ (x >> 14)) & 0x0000CCCC0000CCCCull; x = x ^ t ^ (t << 14);
+    t = (x ^ (x >> 28)) & 0x00000000F0F0F0F0ull; x = x ^ t ^ (t << 28);
+    return x;
+}
+
+/* The rotated frame's 720 logical rows, in 8-row bands. */
+#define ROT_MAX_BANDS 90u
 
 static inline uint8_t rev8(uint8_t v) {
     v = (uint8_t)(((v >> 1) & 0x55u) | ((v & 0x55u) << 1));
@@ -1504,7 +1532,7 @@ static term_go_t term_snapshot(unsigned y0, unsigned y1) {
         g_dirty_trows[1] = ~0ull;
         g_dirty_x0[0] = 0; g_dirty_x1[0] = (uint16_t)(g_tbe.w - 1);
         g_dirty_x0[1] = 0; g_dirty_x1[1] = (uint16_t)(g_tbe.w - 1);
-        memset(g_t_cell_drawn, 0xff, sizeof g_t_cell_drawn);
+        cells_forget();
         memset(s_reader_drawn_seq, 0xff, sizeof s_reader_drawn_seq);
         memcpy(g_t1_shadow, g_t1, total_bytes);
         g_t_force = false;
@@ -1615,7 +1643,9 @@ static term_go_t term_snapshot(unsigned y0, unsigned y1) {
 /* Under g_frame_lock (and console_lock only for TERM_LOCKED): the dirty rows,
  * readers, canvases and cells into the back buffer, then its write-back and
  * the flip. Reads the shadow, the frame side and g_snap, nothing a terminal's
- * writer changes. */
+ * writer changes. Prints nothing: before klogd a printk() drains inline and
+ * takes console_lock, the wrong way round under g_frame_lock (`lockcheck`
+ * reported exactly that for a debugging print here). */
 static void term_draw(void) {
     const term_snap_t *sn = &g_snap;
     uint8_t *fb = fb_back();
@@ -1642,6 +1672,9 @@ static void term_draw(void) {
         g_dirty_x0[back_idx] = 0xffff;
         g_dirty_x1[back_idx] = 0;
 
+        /* The dirty 8-row bands, ascending. */
+        uint16_t bands[ROT_MAX_BANDS];
+        unsigned nb = 0;
         for (unsigned w = 0; w < DIRTY_WORDS; w++) {
             uint64_t bits = g_dirty[back_idx][w];
             if (!bits) continue;
@@ -1650,46 +1683,74 @@ static void term_draw(void) {
                 if (!(bits & (1ull << bit))) continue;
                 unsigned y = w * 64u + bit;
                 if (y >= g_tbe.h) break;
-                unsigned y0_band = (y / 8u) * 8u;
-                const uint8_t *r0 = g_t1_shadow + (y0_band + 0u) * stride;
-                const uint8_t *r1 = g_t1_shadow + (y0_band + 1u) * stride;
-                const uint8_t *r2 = g_t1_shadow + (y0_band + 2u) * stride;
-                const uint8_t *r3 = g_t1_shadow + (y0_band + 3u) * stride;
-                const uint8_t *r4 = g_t1_shadow + (y0_band + 4u) * stride;
-                const uint8_t *r5 = g_t1_shadow + (y0_band + 5u) * stride;
-                const uint8_t *r6 = g_t1_shadow + (y0_band + 6u) * stride;
-                const uint8_t *r7 = g_t1_shadow + (y0_band + 7u) * stride;
+                if (nb < ROT_MAX_BANDS) bands[nb++] = (uint16_t)(y / 8u);
+                bit += 7u - (y % 8u);          /* the rest of this band */
+            }
+        }
 
-                for (unsigned bx = bx_start; bx < bx_end; bx++) {
-                    uint8_t b0 = r0[bx], b1 = r1[bx], b2 = r2[bx], b3 = r3[bx];
-                    uint8_t b4 = r4[bx], b5 = r5[bx], b6 = r6[bx], b7 = r7[bx];
-
-                    for (unsigned b = 0; b < 8u; b++) {
-                        uint8_t c = ((b0 >> b) & 1u) |
-                                   (((b1 >> b) & 1u) << 1) |
-                                   (((b2 >> b) & 1u) << 2) |
-                                   (((b3 >> b) & 1u) << 3) |
-                                   (((b4 >> b) & 1u) << 4) |
-                                   (((b5 >> b) & 1u) << 5) |
-                                   (((b6 >> b) & 1u) << 6) |
-                                   (((b7 >> b) & 1u) << 7);
-                        if (g_lcd_rot == 270) {
-                            unsigned py = 1279u - (bx * 8u + b);
-                            uint16_t *dst = (uint16_t *)fb + (size_t)py * 720u + y0_band;
-                            memcpy(dst, g_lut565[c], 16u);
-                        } else {
-                            unsigned py = bx * 8u + b;
-                            uint16_t *dst = (uint16_t *)fb + (size_t)py * 720u + (712u - y0_band);
-                            memcpy(dst, g_lut565[rev8(c)], 16u);
-                        }
+        /* A band is a column of the rotated frame: 16 bytes in each of its
+         * 1280 rows, 1440 bytes apart, in PSRAM behind the cache. Written band
+         * by band, every one of those writes filled a cache line of its own
+         * (a full redraw: 90 x 1280 line fills, 55-110 ms). So the frame is
+         * walked row by row instead: each row gets every dirty band's 16
+         * bytes, in ascending address order, and a line is filled once per
+         * pass. The 8x8 bit transpose that turns eight 1-bpp row bytes into
+         * the frame's eight columns is the 64-bit mask-and-shift one. */
+        /* With the anti-aliased pass drawing the text, the units inside a
+         * visible text area are left to it: drawn here, they were overwritten
+         * there (or, where its cache said a cell was unchanged, left showing
+         * the 1-bpp glyph). Text areas lie on the 8x8 grid (16-pixel columns,
+         * rows of 32 from SCREEN_TEXT_Y = 40), so a unit is inside or out. */
+        uint8_t skip_lo[ROT_MAX_BANDS][TERM_CELL_SLOTS], skip_hi[ROT_MAX_BANDS][TERM_CELL_SLOTS];
+        uint8_t skip_n[ROT_MAX_BANDS];
+        for (unsigned k = 0; k < nb; k++) {
+            skip_n[k] = 0;
+            for (int t = 0; t < sn->nt && t < (int)TERM_CELL_SLOTS; t++) {
+                const lcdterm_visible_term_t *vt = &sn->terms[t];
+                int by = (int)bands[k] * 8;
+                if (by < vt->y0 || by + 8 > vt->y0 + (int)vt->rows * 32) continue;
+                int lo_b = vt->x0 / 8, hi_b = (vt->x0 + (int)vt->cols * 16) / 8;
+                if (lo_b < 0) lo_b = 0;
+                if (hi_b > (int)stride) hi_b = (int)stride;
+                if (lo_b >= hi_b) continue;
+                skip_lo[k][skip_n[k]] = (uint8_t)lo_b;
+                skip_hi[k][skip_n[k]] = (uint8_t)hi_b;
+                skip_n[k]++;
+            }
+        }
+        if (nb) {
+            uint64_t col[ROT_MAX_BANDS];
+            uint8_t draw[ROT_MAX_BANDS];
+            uint16_t *fb16 = (uint16_t *)fb;
+            for (unsigned bx = bx_start; bx < bx_end; bx++) {
+                for (unsigned k = 0; k < nb; k++) {
+                    draw[k] = 1;
+                    for (unsigned j = 0; j < skip_n[k]; j++)
+                        if (bx >= skip_lo[k][j] && bx < skip_hi[k][j]) draw[k] = 0;
+                    if (!draw[k]) continue;
+                    const uint8_t *r = g_t1_shadow + (size_t)bands[k] * 8u * stride + bx;
+                    uint64_t x = (uint64_t)r[0] | (uint64_t)r[stride] << 8 |
+                                 (uint64_t)r[2u * stride] << 16 | (uint64_t)r[3u * stride] << 24 |
+                                 (uint64_t)r[4u * stride] << 32 | (uint64_t)r[5u * stride] << 40 |
+                                 (uint64_t)r[6u * stride] << 48 | (uint64_t)r[7u * stride] << 56;
+                    col[k] = transpose8x8(x);  /* byte b: frame column bx*8+b, bit r = row r */
+                }
+                for (unsigned b = 0; b < 8u; b++) {
+                    if (g_lcd_rot == 270) {
+                        uint16_t *row = fb16 + (size_t)(1279u - (bx * 8u + b)) * 720u;
+                        for (unsigned k = 0; k < nb; k++)
+                            if (draw[k]) memcpy(row + bands[k] * 8u, g_lut565[(uint8_t)(col[k] >> (8u * b))], 16u);
+                    } else {
+                        uint16_t *row = fb16 + (size_t)(bx * 8u + b) * 720u;
+                        for (unsigned k = nb; k-- > 0; )   /* ascending addresses */
+                            if (draw[k]) memcpy(row + (712u - bands[k] * 8u),
+                                                g_lut565[rev8((uint8_t)(col[k] >> (8u * b)))], 16u);
                     }
                 }
-                unsigned rem = 7u - (y % 8u);
-                bit += rem;
-                lo = 0;
-                hi = 1279;
-                n++;
             }
+            lo = 0;
+            hi = 1279;
+            n += nb;
         }
         if (n && bx_start < bx_end) {
             if (g_lcd_rot == 270) {
@@ -1722,12 +1783,24 @@ static void term_draw(void) {
                 const uint8_t *sh = g_t1_shadow + y * stride;
                 unsigned py = flip ? DSI_LCD_V_RES - 1u - y : y;
                 if (fmt == FB_RGB565) {
+                    /* The text areas are the anti-aliased pass's, as in the
+                     * rotated path above. */
+                    unsigned slo[TERM_CELL_SLOTS], shi[TERM_CELL_SLOTS], ns = 0;
+                    for (int t = 0; t < sn->nt && t < (int)TERM_CELL_SLOTS; t++) {
+                        const lcdterm_visible_term_t *vt = &sn->terms[t];
+                        if ((int)y < vt->y0 || (int)y >= vt->y0 + (int)vt->rows * 32) continue;
+                        int lo_b = vt->x0 / 8, hi_b = (vt->x0 + (int)vt->cols * 16) / 8;
+                        if (lo_b < 0) lo_b = 0;
+                        if (hi_b > (int)stride) hi_b = (int)stride;
+                        if (lo_b < hi_b) { slo[ns] = (unsigned)lo_b; shi[ns] = (unsigned)hi_b; ns++; }
+                    }
                     uint16_t *dst = (uint16_t *)fb + (size_t)py * DSI_LCD_H_RES;
-                    if (flip) {
-                        for (unsigned b = 0; b < stride; b++)
-                            memcpy(dst + (DSI_LCD_H_RES - 8u - 8u * b), g_lut565[rev8(sh[b])], 16u);
-                    } else {
-                        for (unsigned b = 0; b < stride; b++) memcpy(dst + 8u * b, g_lut565[sh[b]], 16u);
+                    for (unsigned b = 0; b < stride; b++) {
+                        unsigned j = 0;
+                        while (j < ns && !(b >= slo[j] && b < shi[j])) j++;
+                        if (j < ns) { b = shi[j] - 1u; continue; }
+                        if (flip) memcpy(dst + (DSI_LCD_H_RES - 8u - 8u * b), g_lut565[rev8(sh[b])], 16u);
+                        else memcpy(dst + 8u * b, g_lut565[sh[b]], 16u);
                     }
                 } else {
                     uint64_t *dst = (uint64_t *)(fb + (size_t)py * DSI_LCD_H_RES);
@@ -1913,7 +1986,7 @@ static void term_draw(void) {
     if (fmt == FB_RGB565) {
         uint64_t trows_mask = g_dirty_trows[back_idx];
         g_dirty_trows[back_idx] = 0;
-        if (trows_mask) {
+        if (trows_mask || sn->nt) {
             const lcdterm_visible_term_t *terms = sn->terms;
             int tcount = sn->nt;
             if (tcount > 0) {
@@ -1934,10 +2007,97 @@ static void term_draw(void) {
                     inv_lut[a] = (uint16_t)((ir << 11) | (ig << 5) | ib);
                 }
 
-                for (int ti = 0; ti < tcount; ti++) {
+                for (int ti = 0; ti < tcount && ti < (int)TERM_CELL_SLOTS; ti++) {
                     const lcdterm_visible_term_t *vt = &terms[ti];
+                    uint16_t *drawn = g_t_cell_drawn[back_idx][ti];
+                    cell_key_t key = { (int16_t)vt->x0, (int16_t)vt->y0, vt->cols, vt->rows,
+                                       vt->col_offset, vt->vterm_id };
+                    uint64_t rows_mask = trows_mask;
+                    if (memcmp(&key, &g_t_cell_key[back_idx][ti], sizeof key) != 0) {
+                        g_t_cell_key[back_idx][ti] = key;
+                        memset(drawn, 0xff, sizeof g_t_cell_drawn[0][0]);
+                        rows_mask = ~0ull;      /* moved: every row of it */
+                    }
+                    if (g_lcd_rot == 90 || g_lcd_rot == 270) {
+                        /* Rotated, a cell column is 16 rows of the frame and
+                         * each cell 64 bytes of each: drawn row of cells by
+                         * row of cells, every pass over a text row touched all
+                         * 1280 frame rows again (a full redraw: 45 x 1280 x 2
+                         * line fills in PSRAM, ~130 ms). Column by column, each
+                         * frame row is written front to back once. */
+                        for (uint16_t col = 0; col < vt->cols; col++) {
+                            int cell_x0 = vt->x0 + (int)col * 16;
+                            if (cell_x0 + 15 < 0 || cell_x0 >= (int)g_tbe.w) continue;
+                            struct {
+                                int y0;
+                                const uint8_t (*glyph)[8];
+                                const uint16_t *lut;
+                                bool cursor, inv;
+                            } todo[64];
+                            unsigned nd = 0;
+                            for (uint16_t row = 0; row < vt->rows && row < 64u; row++) {
+                                if (!(rows_mask & (1ull << row))) continue;
+                                int cell_y0 = vt->y0 + (int)row * 32;
+                                if (cell_y0 + 31 < 0 || cell_y0 >= (int)g_tbe.h) continue;
+                                uint16_t v = vt->shadow[row * vt->shadow_cols + (col + vt->col_offset)];
+                                bool is_cursor = ((int)col == vt->cur_col && (int)row == vt->cur_row);
+                                unsigned idx = (unsigned)row * vt->cols + col;
+                                uint16_t cur_val = v | (is_cursor ? 0x8000u : 0u);
+                                if (idx < MAX_TERM_CELLS) {
+                                    if (drawn[idx] == cur_val) continue;
+                                    drawn[idx] = cur_val;
+                                }
+                                uint8_t code = (uint8_t)v;
+                                bool is_inv = (v & VT_CELL_INVERSE) != 0;
+                                todo[nd].y0 = cell_y0;
+                                todo[nd].glyph = code >= FONT_NOTO_MONO_FIRST
+                                    ? font_noto_mono_aa_glyphs[code - FONT_NOTO_MONO_FIRST]
+                                    : code > 0x20 ? font_noto_mono_aa_glyphs[FONT_NOTO_MONO_REPLACEMENT - FONT_NOTO_MONO_FIRST]
+                                                  : NULL;
+                                todo[nd].lut = is_inv ? inv_lut : norm_lut;
+                                todo[nd].cursor = is_cursor;
+                                todo[nd].inv = is_inv;
+                                nd++;
+                                span_rows(&lo, &hi, cell_y0, cell_y0 + 31);
+                            }
+                            if (!nd) continue;
+                            unsigned cmin = g_lcd_rot == 270 ? 1279u - ((unsigned)cell_x0 + 15u) : (unsigned)cell_x0;
+                            unsigned cmax = g_lcd_rot == 270 ? 1279u - (unsigned)cell_x0 : (unsigned)cell_x0 + 15u;
+                            if (flush_py0 < 0 || (int)cmin < flush_py0) flush_py0 = (int)cmin;
+                            if ((int)cmax > flush_py1) flush_py1 = (int)cmax;
+                            for (unsigned dx = 0; dx < 16u; dx++) {
+                                unsigned shift = (dx & 1u) ? 4u : 0u;
+                                unsigned byte_idx = dx >> 1;
+                                if (g_lcd_rot == 270) {
+                                    uint16_t *row = (uint16_t *)fb + (size_t)(1279u - ((unsigned)cell_x0 + dx)) * 720u;
+                                    for (unsigned k = 0; k < nd; k++) {          /* ascending addresses */
+                                        uint16_t *dst = row + (unsigned)todo[k].y0;
+                                        unsigned dy_max = todo[k].cursor ? 30u : 32u;
+                                        for (unsigned dy = 0; dy < dy_max; dy++) {
+                                            uint8_t pair = todo[k].glyph ? todo[k].glyph[dy][byte_idx] : 0;
+                                            dst[dy] = todo[k].lut[(pair >> shift) & 0x0Fu];
+                                        }
+                                        if (todo[k].cursor) dst[30] = dst[31] = todo[k].inv ? g_t_bg : g_t_fg;
+                                    }
+                                } else {
+                                    uint16_t *row = (uint16_t *)fb + (size_t)((unsigned)cell_x0 + dx) * 720u;
+                                    for (unsigned k = nd; k-- > 0; ) {           /* ascending addresses */
+                                        uint16_t *dst = row + (719u - ((unsigned)todo[k].y0 + 31u));
+                                        unsigned dy_max = todo[k].cursor ? 30u : 32u;
+                                        for (unsigned dy = 0; dy < dy_max; dy++) {
+                                            uint8_t pair = todo[k].glyph ? todo[k].glyph[dy][byte_idx] : 0;
+                                            dst[31u - dy] = todo[k].lut[(pair >> shift) & 0x0Fu];
+                                        }
+                                        if (todo[k].cursor) dst[1] = dst[0] = todo[k].inv ? g_t_bg : g_t_fg;
+                                    }
+                                }
+                            }
+                            n += nd;
+                        }
+                        continue;
+                    }
                     for (uint16_t row = 0; row < vt->rows; row++) {
-                        if (!(trows_mask & (1ull << row))) continue;
+                        if (!(rows_mask & (1ull << row))) continue;
                         int cell_y0 = vt->y0 + (int)row * 32;
                         if (cell_y0 + 31 < 0 || cell_y0 >= (int)g_tbe.h) continue;
 
@@ -1954,8 +2114,8 @@ static void term_draw(void) {
                         unsigned cell_flat_idx = (unsigned)row * vt->cols + col;
                         uint16_t cur_val = v | (is_cursor ? 0x8000u : 0u);
                         if (cell_flat_idx < MAX_TERM_CELLS) {
-                            if (g_t_cell_drawn[back_idx][cell_flat_idx] == cur_val) continue;
-                            g_t_cell_drawn[back_idx][cell_flat_idx] = cur_val;
+                            if (drawn[cell_flat_idx] == cur_val) continue;
+                            drawn[cell_flat_idx] = cur_val;
                         }
 
                         const uint16_t *lut = is_inv ? inv_lut : norm_lut;
@@ -1966,53 +2126,7 @@ static void term_draw(void) {
                             glyph = font_noto_mono_aa_glyphs[FONT_NOTO_MONO_REPLACEMENT - FONT_NOTO_MONO_FIRST];
                         }
 
-                        if (g_lcd_rot == 270) {
-                            unsigned cur_pymin = 1279u - ((unsigned)cell_x0 + 15u);
-                            unsigned cur_pymax = 1279u - (unsigned)cell_x0;
-                            if (flush_py0 < 0 || (int)cur_pymin < flush_py0) flush_py0 = (int)cur_pymin;
-                            if ((int)cur_pymax > flush_py1) flush_py1 = (int)cur_pymax;
-
-                            for (unsigned dx = 0; dx < 16u; dx++) {
-                                unsigned shift = (dx & 1u) ? 4u : 0u;
-                                unsigned byte_idx = dx >> 1;
-                                unsigned py = 1279u - ((unsigned)cell_x0 + dx);
-                                uint16_t *dst = (uint16_t *)fb + (size_t)py * 720u + (unsigned)cell_y0;
-                                unsigned dy_max = is_cursor ? 30u : 32u;
-                                for (unsigned dy = 0; dy < dy_max; dy++) {
-                                    uint8_t pair = glyph ? glyph[dy][byte_idx] : 0;
-                                    uint8_t a = (pair >> shift) & 0x0Fu;
-                                    dst[dy] = lut[a];
-                                }
-                                if (is_cursor) {
-                                    uint16_t cpix = is_inv ? g_t_bg : g_t_fg;
-                                    dst[30] = cpix;
-                                    dst[31] = cpix;
-                                }
-                            }
-                        } else if (g_lcd_rot == 90) {
-                            unsigned cur_pymin = (unsigned)cell_x0;
-                            unsigned cur_pymax = (unsigned)cell_x0 + 15u;
-                            if (flush_py0 < 0 || (int)cur_pymin < flush_py0) flush_py0 = (int)cur_pymin;
-                            if ((int)cur_pymax > flush_py1) flush_py1 = (int)cur_pymax;
-
-                            for (unsigned dx = 0; dx < 16u; dx++) {
-                                unsigned shift = (dx & 1u) ? 4u : 0u;
-                                unsigned byte_idx = dx >> 1;
-                                unsigned py = (unsigned)cell_x0 + dx;
-                                uint16_t *dst = (uint16_t *)fb + (size_t)py * 720u + (719u - ((unsigned)cell_y0 + 31u));
-                                unsigned dy_max = is_cursor ? 30u : 32u;
-                                for (unsigned dy = 0; dy < dy_max; dy++) {
-                                    uint8_t pair = glyph ? glyph[dy][byte_idx] : 0;
-                                    uint8_t a = (pair >> shift) & 0x0Fu;
-                                    dst[31u - dy] = lut[a];
-                                }
-                                if (is_cursor) {
-                                    uint16_t cpix = is_inv ? g_t_bg : g_t_fg;
-                                    dst[1] = cpix;
-                                    dst[0] = cpix;
-                                }
-                            }
-                        } else if (g_lcd_rot == 180) {
+                        if (g_lcd_rot == 180) {
                             /* Clipped pixel by pixel: a window that is half
                              * off-screen (several terminals in the ribbon)
                              * has cells running past an edge, and mirrored

@@ -505,6 +505,65 @@ Tested: QEMU 514/514; Tab5, LCD-7B, NANO 50/50; RP2350 terminal 34/34.
   Lisp).
 - `tests/hw/lcdterm_shots.py --compare`: read P5/P6, and run on the Tab5.
 
+**Done (2026-10-19).**
+
+*The 800 ms "canvas operation"* was not a drawing primitive. Ops '<' and '>' are Cmd+Left and
+Cmd+Right, and they run the ribbon's slide (`screen_animate_ribbon()`): six full frames
+under console_lock, each a full rotated conversion.
+
+*What a conversion costs, measured.* PSRAM through the cache does 43 MB/s writing (`psram
+bench`, which now also times `memset` and `memcpy`: 43 and 27 MB/s) and 55 MB/s reading.
+The conversion runs at that rate. Per full redraw on the Tab5, before:
+- 55–110 ms for the 1-bpp blit;
+- 50–130 ms for the anti-aliased cells.
+
+Both wrote along the rotated frame's columns: a cache line filled per 16 or 64 bytes. And
+both wrote the text areas, the second over the first.
+
+Changes (drivers/dsi_esp32p4.c):
+- The rotated 1-bpp blit walks the frame row by row (each row front to back once) with a
+  64-bit 8x8 transpose. A host test compared it with the old loop over 300 random frames in
+  both rotations: identical.
+- With the anti-aliased pass drawing the text, the 1-bpp pass leaves the visible text areas
+  alone. They lie on the 8x8 grid, so a unit is inside or out.
+- The anti-aliased cells, rotated, are drawn column by column: each frame row front to back
+  once.
+- The cell cache is per window (four slots, in PSRAM, sized for 160 x 45) and is dropped
+  when its window's geometry changes. It was one array shared by all windows: a cell of a
+  second window could match the first's and not be drawn, which the 1-bpp layer underneath
+  had been hiding (a non-anti-aliased glyph showing through).
+
+| Tab5, rotated | before | after |
+| :--- | ---: | ---: |
+| full redraw, 1-bpp pass | 55–110 ms | 1–10 ms |
+| full redraw, cells | 50–130 ms | 40–80 ms |
+| full redraw at boot, total | ~127 ms | ~63 ms |
+| one slide frame | ~135 ms | ~87 ms (render 12, convert 70, flip 5) |
+| slide (Cmd+Left/Right) | 784–822 ms | 646–666 ms |
+| `lcd termbench` | 2.6 s | 1.65 s |
+
+The LCD-7B's forced redraw (not rotated) is about 30 ms for a full frame: 1.2 MB of RGB565 at
+the measured bandwidth (half in GRAY8). The rest of a colour change is clearing both buffers
+when the format switches (gray <-> RGB565). That stays: without it the new buffer shows stale
+PSRAM for a frame. So both panels' redraws are now near the bandwidth. What would shorten
+them further is a faster PSRAM path. At hex DDR 200 MHz, 43 MB/s is a fraction of the raw
+rate, and the cache configuration is the same as IDF's default (128 KB L2, 64-byte lines).
+
+*`lcdterm_shots.py`:*
+- It reads P4, P5 and P6 and compares them as RGB, noting a format change.
+- It masks the status bar's right end, clock and link icons, scaled by the cell height.
+- `--board tab5` turns the portrait frame back to landscape and fetches over 9P on TCP with
+  a one-time key: `p9share` does not demultiplex the Tab5's USB-Serial/JTAG. The fetch needs
+  the Tab5's networking, which does not transmit yet (LLP up, 16 frames sent against 2,304
+  received).
+- LCD-7B, before and after this work: all 8 shots identical.
+
+The lock-order record caught a mistake on the way: a debugging printk in `term_draw()`,
+before klogd, drained the log inline and took console_lock under `g_frame_lock`, the wrong
+way round (66 inversions in one run). `term_draw()` prints nothing; that is in its comment.
+
+Tested: Tab5, LCD-7B, NANO 50/50; 0 inversions.
+
 ### 63.7 Stress harness
 
 Load that makes collisions likely instead of lucky:

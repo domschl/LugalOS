@@ -22,16 +22,22 @@ Boards (--board):
   rp2350    the RP2350 terminal: console on if00, 9P on if02 (default)
   lcd7b     the ESP32-P4-WIFI6-Touch-LCD-7B: one CH343P for the console;
             the shots come back over 9P on the same wire (`p9share`)
+  tab5      the M5Stack Tab5, the same way over its USB-Serial/JTAG; its
+            shots are the portrait frame and are compared turned back to
+            the landscape screen the terminal draws
 
-A comparison diffs every shot pixel by pixel. The clock at the right end of
-the status bar is masked (it is the one thing allowed to change between two
-runs); everything else must be identical. Exit status 0 means identical.
+A comparison diffs every shot pixel by pixel, as RGB: a 1-bpp PBM, a GRAY8
+PGM and an RGB565 PPM (the panel's three frame formats) compare with each
+other, and a format change is reported beside the result. The right end of
+the status bar -- the clock and the link icons, which come and go -- is
+masked; everything else must be identical. Exit status 0 means identical.
 Nothing is flashed here; flash first.
 """
 from __future__ import annotations
 
 import argparse
 import re
+import secrets
 import sys
 import time
 from pathlib import Path
@@ -124,7 +130,9 @@ FOCUS_RE: dict[str, str] = {
 # Shots that must be pixel-identical within one run (clock masked).
 RIBBON_SAME: list[tuple[str, str]] = [("chess-board", "chess-back")]
 
-CLOCK_MASK_PX = 64       # the status bar's right end: "HH:MM" and its gap
+# The status bar's right end -- "HH:MM" and the link icons left of it -- in
+# 16-pixel cells; scaled by the cell height (32 on the Tab5).
+CLOCK_MASK_PX = 120
 STATUS_BAR_ROWS = 16
 
 
@@ -184,14 +192,16 @@ class Rp2350Board:
 
 
 class P4Board:
-    """The LCD-7B: one CH343P carries the console and, for the fetch, 9P in
-    SLIP frames beside it (`p9share`, as the P4 suite's 9P test does).
-    Opened only through tools/p4run.py: a plain open resets this board."""
+    """An ESP32-P4 board (the LCD-7B, the Tab5): one serial line carries the
+    console and, for the fetch, 9P in SLIP frames beside it (`p9share`, as the
+    P4 suite's 9P test does). Opened only through tools/p4run.py: a plain open
+    resets the LCD-7B."""
     def __init__(self, name: str) -> None:
         sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
         import p4run  # noqa: E402
         self.p4run = p4run
         self.port, _ = p4run.board_ports(name)
+        self.name = name
 
     def present(self) -> bool:
         return bool(self.port)
@@ -207,6 +217,8 @@ class P4Board:
         self.p4run.close_console(ser)
 
     def fetch(self, paths: list[str]) -> list[bytes]:
+        if self.name == "tab5":
+            return self.fetch_tcp(paths)
         ser = self.open()
         run_line(ser, "p9share", 2.0)
         self.close(ser)
@@ -223,6 +235,36 @@ class P4Board:
             time.sleep(0.3)
             ser = self.open()
             run_line(ser, "p9share off", 2.0)
+            self.close(ser)
+
+
+    def fetch_tcp(self, paths: list[str]) -> list[bytes]:
+        """The Tab5's console is its USB-Serial/JTAG, which `p9share` does not
+        demultiplex: the shots come over 9P on TCP instead, through its Wi-Fi,
+        with a key for this fetch alone (cleared afterwards)."""
+        key = secrets.token_hex(16)
+        ser = self.open()
+        try:
+            run_line(ser, f"p9key {key}", 2.0)
+            net = run_line(ser, "cat /proc/net", 3.0)
+        finally:
+            self.close(ser)
+        addr = None
+        for block in net.split("interface: ")[1:]:
+            m = re.search(r"address: (\d+\.\d+\.\d+\.\d+)", block)
+            if block.startswith("wlan0") and m and m.group(1) != "0.0.0.0":
+                addr = m.group(1)
+        if not addr:
+            raise SystemExit("tab5: no address on wlan0 -- the shots cannot be fetched")
+        try:
+            sess = p9lib.Session(p9lib.connect_tcp(addr, 564, timeout=20.0), key=bytes.fromhex(key))
+            try:
+                return [sess.read(p) for p in paths]
+            finally:
+                sess.close()
+        finally:
+            ser = self.open()
+            run_line(ser, "p9key clear", 2.0)
             self.close(ser)
 
 
@@ -250,44 +292,63 @@ def ribbon_windows(ser: serial.Serial) -> int:
     return int(m.group(1)) if m else -1
 
 
-def parse_pbm(data: bytes) -> tuple[int, int, bytes]:
-    """P4 (binary) only, as kernel/screenshot.c writes it."""
-    parts = data.split(maxsplit=3)
-    if parts[0] != b"P4":
-        raise ValueError("not a binary PBM")
-    w, h = int(parts[1]), int(parts[2])
-    stride = (w + 7) // 8
-    body = parts[3][-stride * h:]
-    return w, h, body
+def parse_shot(data: bytes) -> tuple[int, int, str, list[tuple[int, int, int]]]:
+    """A screenshot as (w, h, format, RGB pixels): P4 (1 = black), P5 or P6,
+    as kernel/screenshot.c writes them."""
+    kind = data[:2]
+    if kind == b"P4":
+        parts = data.split(maxsplit=3)
+        w, h = int(parts[1]), int(parts[2])
+        stride = (w + 7) // 8
+        body = parts[3][-stride * h:]
+        px = [(0, 0, 0) if (body[y * stride + x // 8] >> (7 - x % 8)) & 1 else (255, 255, 255)
+              for y in range(h) for x in range(w)]
+        return w, h, "1-bpp", px
+    if kind in (b"P5", b"P6"):
+        parts = data.split(maxsplit=4)
+        w, h = int(parts[1]), int(parts[2])
+        n = 3 if kind == b"P6" else 1
+        body = parts[4][-w * h * n:]
+        if n == 1:
+            return w, h, "gray8", [(v, v, v) for v in body]
+        return w, h, "rgb", [(body[i], body[i + 1], body[i + 2]) for i in range(0, len(body), 3)]
+    raise ValueError("not a PBM, PGM or PPM")
 
 
-def diff_pbm(a: bytes, b: bytes) -> tuple[int, int, int, int]:
-    """(differing pixels outside the mask, total pixels, w, h)."""
-    wa, ha, pa = parse_pbm(a)
-    wb, hb, pb = parse_pbm(b)
+def landscape(w: int, h: int, px: list[tuple[int, int, int]]) -> tuple[int, int, list[tuple[int, int, int]]]:
+    """The Tab5's portrait frame (720x1280, the terminal at 270 degrees) as the
+    1280x720 screen: logical (x, y) is physical (y, 1279 - x)."""
+    if (w, h) != (720, 1280):
+        return w, h, px
+    return 1280, 720, [px[(1279 - x) * 720 + y] for y in range(720) for x in range(1280)]
+
+
+def diff_shots(a: bytes, b: bytes) -> tuple[int, int, int, int, str]:
+    """(differing pixels outside the mask, total pixels, w, h, format note)."""
+    wa, ha, fa, pa = parse_shot(a)
+    wb, hb, fb, pb = parse_shot(b)
+    wa, ha, pa = landscape(wa, ha, pa)
+    wb, hb, pb = landscape(wb, hb, pb)
+    note = "" if fa == fb else f" (format {fa} -> {fb})"
     if (wa, ha) != (wb, hb):
-        return -1, wa * ha, wa, ha
-    stride = (wa + 7) // 8
+        return -1, wa * ha, wa, ha, note
+    scale = 2 if ha >= 720 else 1          # the Tab5's 32-pixel cells
+    bar, mask = STATUS_BAR_ROWS * scale, CLOCK_MASK_PX * scale
     bad = 0
-    for y in range(ha):
-        for xb in range(stride):
-            d = pa[y * stride + xb] ^ pb[y * stride + xb]
-            if not d:
+    for i, (x, y) in enumerate(zip(pa, pb)):
+        if x != y:
+            row, col = divmod(i, wa)
+            if row < bar and col >= wa - mask:
                 continue
-            for bit in range(8):
-                if d & (0x80 >> bit):
-                    x = xb * 8 + bit
-                    if y < STATUS_BAR_ROWS and x >= wa - CLOCK_MASK_PX:
-                        continue
-                    bad += 1
-    return bad, wa * ha, wa, ha
+            bad += 1
+    return bad, wa * ha, wa, ha, note
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", required=True, type=Path, help="directory for shots and the console log")
     ap.add_argument("--compare", type=Path, help="a previous --out directory to diff against")
-    ap.add_argument("--board", choices=["rp2350", "lcd7b"], default="rp2350")
+    ap.add_argument("--board", choices=["rp2350", "lcd7b", "tab5"], default="rp2350")
     ap.add_argument("--scenario", choices=["terminal", "ribbon"], default="terminal")
     ap.add_argument("--console", help="RP2350: override the console port (if00)")
     ap.add_argument("--net", help="RP2350: override the 9P port (if02)")
@@ -344,7 +405,7 @@ def main() -> int:
         if left != 1:
             worst = 1
         for x, y in RIBBON_SAME:
-            bad, _, w, h = diff_pbm((args.out / f"{x}.pbm").read_bytes(), (args.out / f"{y}.pbm").read_bytes())
+            bad, _, w, h, _ = diff_shots((args.out / f"{x}.pbm").read_bytes(), (args.out / f"{y}.pbm").read_bytes())
             print(f"  {x} == {y}: {'identical' if bad == 0 else f'{bad} pixels differ'}")
             if bad != 0:
                 worst = 1
@@ -357,9 +418,9 @@ def main() -> int:
             print(f"  {shot}: no reference")
             worst = max(worst, 1)
             continue
-        bad, total, w, h = diff_pbm(a.read_bytes(), b.read_bytes())
+        bad, total, w, h, note = diff_shots(a.read_bytes(), b.read_bytes())
         verdict = "identical" if bad == 0 else ("SIZE DIFFERS" if bad < 0 else f"{bad} pixels differ")
-        print(f"  {shot}: {w}x{h} {verdict}")
+        print(f"  {shot}: {w}x{h} {verdict}{note}")
         if bad != 0:
             worst = 1
     print("RESULT:", "identical" if worst == 0 else "DIFFERENT")
