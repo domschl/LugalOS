@@ -5,6 +5,7 @@
 #include "kernel/console.h"
 #include "kernel/sched.h"
 #include "kernel/time.h"
+#include "kernel/lock.h"
 #include <string.h>
 
 /* AMS TSL2591 High Dynamic Range Light Sensor Driver.
@@ -27,9 +28,13 @@
 
 #define LUX_COEFF         408u
 
+/* guarded by: g_dev_lock (below), which init and every measurement take:
+ * the hub's sampler, `sensor` and Lisp may all measure, and `sensor init`
+ * probes again under them. */
 static struct {
     bool              detected;
     uint8_t           addr;
+    uint8_t           bus;
     tsl2591_gain_t    gain;
     tsl2591_integ_t   integ;
 
@@ -41,13 +46,14 @@ static struct {
     uint32_t          fail_count;
     const char       *last_fail;
 } g;
+static ylock_t g_dev_lock;
 
 static bool rd(uint8_t reg, uint8_t *dst, uint32_t len) {
-    return i2c_reg_read_bytes(g.addr, CMD_NORMAL_OP | reg, dst, len);
+    return i2c_reg_read_bytes_bus(g.bus, g.addr, CMD_NORMAL_OP | reg, dst, len);
 }
 
 static bool wr(uint8_t reg, uint8_t value) {
-    return i2c_reg_write_u8(g.addr, CMD_NORMAL_OP | reg, value);
+    return i2c_reg_write_u8_bus(g.bus, g.addr, CMD_NORMAL_OP | reg, value);
 }
 
 static bool fail(const char *where) {
@@ -58,6 +64,7 @@ static bool fail(const char *where) {
 
 bool        tsl2591_is_detected(void)  { return g.detected; }
 uint8_t     tsl2591_address(void)      { return g.addr; }
+uint8_t     tsl2591_bus(void)          { return g.bus; }
 const char *tsl2591_part_name(void)    { return "tsl2591"; }
 
 uint32_t    tsl2591_read_count(void)   { return g.read_count; }
@@ -96,33 +103,29 @@ int32_t tsl2591_compensate_lux(uint16_t ch0, uint16_t ch1, uint16_t gain_mult, u
     return (int32_t)(lux_m / 10u);
 }
 
-bool tsl2591_init(void) {
+static bool tsl2591_init_locked(void) {
+    g.detected = false;
     g.addr = TSL2591_ADDR;
-    uint8_t id = 0;
-    if (!rd(REG_ID, &id, 1u)) {
-        g.detected = false;
-        return false;
+    for (uint8_t b = 0; b < i2c_bus_count(); b++) {
+        uint8_t id = 0;
+        g.bus = b;
+        if (!rd(REG_ID, &id, 1u) || id != TSL2591_CHIP_ID) continue;
+
+        g.gain = TSL2591_GAIN_MED;      /* 25x gain */
+        g.integ = TSL2591_INTEG_100MS;  /* 100 ms integration time */
+        if (!wr(REG_CONFIG, (uint8_t)(g.gain | g.integ))) continue;
+
+        /* Power off until an on-demand reading is requested */
+        (void)wr(REG_ENABLE, 0x00u);
+
+        g.detected = true;
+        printk("[TSL2591] TSL2591 light sensor at bus %u 0x%02x.\n", g.bus, g.addr);
+        return true;
     }
-    if (id != TSL2591_CHIP_ID) {
-        g.detected = false;
-        return false;
-    }
-
-    g.gain = TSL2591_GAIN_MED;      /* 25x gain */
-    g.integ = TSL2591_INTEG_100MS;  /* 100 ms integration time */
-
-    /* Configure gain and integration time */
-    if (!wr(REG_CONFIG, (uint8_t)(g.gain | g.integ))) return false;
-
-    /* Power off until an on-demand reading is requested */
-    (void)wr(REG_ENABLE, 0x00u);
-
-    g.detected = true;
-    printk("[TSL2591] TSL2591 light sensor at 0x%02x on the shared I2C bus.\n", g.addr);
-    return true;
+    return false;
 }
 
-bool tsl2591_read(tsl2591_reading_t *out) {
+static bool tsl2591_read_locked(tsl2591_reading_t *out) {
     if (!out || !g.detected) return false;
 
     /* Power on and enable ALS conversion */
@@ -196,8 +199,8 @@ void tsl2591_print_status(void) {
     }
     int32_t w = r.lux_c100 / 100;
     int32_t f = r.lux_c100 % 100;
-    cprintf("tsl2591 at 0x%02x: %ld.%02ld Lux (CH0=%u, CH1=%u)\n",
-            g.addr, (long)w, (long)f, r.ch0, r.ch1);
+    cprintf("tsl2591 at bus %u 0x%02x: %ld.%02ld Lux (CH0=%u, CH1=%u)\n",
+            g.bus, g.addr, (long)w, (long)f, r.ch0, r.ch1);
 }
 
 /* --- Sensor Device Contract (Category D) --- */
@@ -205,6 +208,7 @@ void tsl2591_print_status(void) {
 static bool tsl2591_dev_init(struct sensor_dev *dev) {
     if (!tsl2591_init()) return false;
     dev->addr = g.addr;
+    dev->bus = g.bus;
     dev->chan_mask = (1u << SENSOR_CHAN_LUX);
     return true;
 }
@@ -243,3 +247,18 @@ sensor_dev_t tsl2591_sensor_dev = {
     .ops       = &tsl2591_ops,
     .priv      = NULL,
 };
+
+/* The driver's entry points, under g_dev_lock. */
+bool tsl2591_init(void) {
+    ylock_acquire(&g_dev_lock);
+    bool r = tsl2591_init_locked();
+    ylock_release(&g_dev_lock);
+    return r;
+}
+
+bool tsl2591_read(tsl2591_reading_t *out) {
+    ylock_acquire(&g_dev_lock);
+    bool r = tsl2591_read_locked(out);
+    ylock_release(&g_dev_lock);
+    return r;
+}

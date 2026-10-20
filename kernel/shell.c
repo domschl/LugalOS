@@ -2768,6 +2768,13 @@ static void cmd_sensor(const char *arg) {
         sensor_derived_selftest(true);
         return;
     }
+    if (strncmp(arg, "lux", 3) == 0) {
+        /* A conversion now, not the hub's cached sample (60 s by default) */
+        if (tsl2591_is_detected()) tsl2591_print_status();
+        else if (tsl2561_is_detected()) tsl2561_print_status();
+        else cprintf("sensor: no light sensor (tsl2591, tsl2561) found\n");
+        return;
+    }
     if (strncmp(arg, "init", 4) == 0) {
         sensor_hub_init();
         if (sensor_hub_device_count() == 0) {
