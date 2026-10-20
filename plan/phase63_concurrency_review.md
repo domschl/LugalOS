@@ -696,52 +696,39 @@ Hour runs (2026-10-19, 60 min each, with terminals, typing, 9P/TCP, sensors at 2
    stress report). NANO 10 min: peak 8 of 8, 1 open waited, 0 failed, STRESS_OK. LCD-7B 10 min:
    peak 5, STRESS_OK, 5718 9P/TCP reads clean. `VFS_MAX_HANDLES` stays 8 (each handle is
    1.1 KB, mostly its /proc buffer): a decision for the owner if waits become common.
-3. **Tab5 SD corruption: narrowed, not fixed.** The stress worker now logs what came back
-   (`first difference at N: got ... want ...`) and reads a second time. What comes back is a
-   valid stress pattern from another write; a second read is just as wrong, so the wrong data is
-   on the card. Directory entries are lost too: twice the power log's `/sd0/log` directory
-   disappeared mid-run (the owner's discharge logs P261019/P261020 with it; copies were taken
-   this morning), files read back with size 0, and opens fail after a create the same task
-   just did. Every FAT32 change holds the volume's lock, so a directory sector is being
-   written back from a stale copy, or a write is not reaching the card.
-   Ruled out: block calls timing out (none logged), a second `fat32_fs_t` on the card, a
-   run-time re-init, two harts (one online), the bounce buffers' placement (internal SRAM on all
-   three boards), stale `RINTSTS`. The NANO's and LCD-7B's cards check clean after their runs.
-   Found and fixed on the way (real, but not the whole cause):
-   - **SD/SDIO reads completed on DATA_OVER while the DMA was still writing the buffer**: the
-     descriptor's OWN bit now has to clear (DESC_DIC leaves IDSTS.RI unset). On the Tab5, 475
-     transfers in the first 10 s ended on the card before the DMA gave the buffer back (up to
-     7 us); `sdinfo` counts them.
-   - **FAT32 ignored device errors**: a failed data write returned success, a failed read
-     returned whatever was in the buffer, and a directory sector that did not read was written
-     back over its 16 entries. All checked now; `tests/host/fat32_host.c` part 4 fails on the
-     old code.
-   - **`fsck [/sd0|/ram0]`** (new, read-only `fat32_check()`): cross-links, chains into free
-     entries, wrong sizes, lost clusters. Tab5's card: 0 cross-links, 0 broken chains, 1 wrong
-     size (a screenshot), 1481 lost clusters (the lost directory's files); NANO and LCD-7B clean.
-   Ruled out since, each by a 10-20 min run that still failed:
-   - the C6 link (LLP off at boot: 10 errors; it flaps all through a run, but that is not it);
-   - the power log, the one `/sd0` writer only the Tab5 has (`power log auto off`: 7 errors);
-   - a reply reaching the wrong `sdblk` caller: requests carry a tag the reply echoes, 0 wrong
-     (`sdinfo`);
-   - a lock released by a context that does not hold it: `ylock_release()` now reports that as a
-     lock fault, 0 in a failing run;
-   - leaked mount references (0 after a run, `vfs_mount_users()` in the stress report), VFS
-     handle shortage (opens wait now; 0 gave up);
-   - the card itself: `sdbench w 2048` three times, verified, from one task.
-   Bisected on the board (`stress 300 norot only=sd,X`): sd alone and sd with each other path
-   (ram, shell, log, p9, chan, fmt) are clean, about 87,000 sd iterations; the full board mix
-   alone reproduces it (1-2 errors in 7,000-15,000). So it needs load, not one path.
-   - stack overflow: the stack pointer is now checked against its task's stack at every switch
-     and every trap (below the base halts with a dump, within 512 B warns once), `ps` shows the
-     deeper of that and the poison scan, and the stress report gives the deepest worker. A
-     failing 5-minute run (2 sd errors) had no warning; workers reached 7.9 of 12 KB, the rest
-     of the system's tasks at most 4.7 KB (netsrv, 12 KB). A sub-sample excursion between two
-     switches or ticks is the one thing this cannot see.
-   Still open. Found on the way: long `stress` runs stop streaming to the Tab5's USB-Serial/JTAG
-   console after ~10 s (the board runs on; short runs report normally).
-   Found on the way and fixed: `/proc/ps` stopped at the VFS handle's 896-byte buffer (13
-   tasks); the /proc text now has a page of its own while the file is open.
+3. **Tab5 SD corruption: found and fixed -- concurrent cache maintenance.**
+   The path there (all of it kept, each piece cheap):
+   - A read-back check in the SD facade: a checksum of every sector written, compared with
+     every later read of it (`sdinfo`: count, and per mismatch the sector, the first bytes,
+     the callers and times of the expected and of the matching write). It caught it: 20
+     mismatches in a 20-minute run, all one sector, the root directory's second (lba 30497),
+     which read back the bytes `fat_set_entry()` had written to FAT sector 202 thirteen
+     milliseconds before -- and those were the directory sector itself. So in one operation a
+     read of FAT sector 202 returned the directory sector read just before it (the FAT cache
+     filled with directory data, then written into the FAT), and the next write of the
+     directory sector sent the old bytes (a deleted entry came back).
+   - Both are what a lost cache operation on the SD bounce buffer does: a lost invalidate
+     hands back the previous transfer's bytes, a lost writeback sends them. The P4's ROM
+     `Cache_WriteBack_Addr` / `Cache_Invalidate_Addr` program one set of cache-controller
+     registers; our wrappers called them with no lock, so the panel's flush task writing back
+     frame buffers and the SD driver invalidating its buffer could overwrite each other's
+     setup. IDF wraps every such call in a spinlock critical section (esp_cache_msync()).
+     It needed heavy panel output at the same time as SD traffic: the `log` path's bursts
+     drawn on the Tab5's rotated terminal. The NANO has no panel; the LCD-7B's flushes are
+     smaller and fewer.
+   - Fix: one spinlock, interrupts masked, around every ROM cache operation after boot, large
+     ranges in 32 KB chunks (arch/riscv/common/trap.c). Same 20-minute setup: 0 mismatches in
+     389,216 reads (20 in 484,833 before). Full `stress.py` run (terminals, typing, 9P/TCP, power log on): STRESS_OK, sd 23,416 iterations, 0 errors -- the first Tab5 pass.
+   Ruled out on the way, each by a run that still failed: the C6 link (LLP off), the power log,
+   a reply reaching the wrong `sdblk` caller (request tags, 0), lock release by a non-holder
+   (now a lock fault, 0), mount references, VFS handles, stack depth, the card (`sdbench`),
+   and the 40 MHz high-speed mode (CMD6 switch, kept: reads 46 % faster). Also fixed on the
+   way: SD/SDIO reads completed on DATA_OVER before the IDMAC released the buffer (the
+   descriptor's OWN bit is now waited for), and FAT32 ignored device errors.
+   Found on the way, not fixed: the stress `log` path outruns the Tab5's USB-Serial/JTAG
+   console; with no reader the console driver spins on a full FIFO and slows everything, and
+   a few times the USB console stopped answering until the cable was replugged (the board ran
+   on; the keyboard worked).
 4. `tools/stress.py` refuses a board that does not answer (one left in download mode by a
    flash ran 10 minutes against nothing).
 

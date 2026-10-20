@@ -7,6 +7,7 @@
 #include "kernel/ipc.h"
 #include "kernel/chan.h"
 #include "kernel/sched.h"
+#include "kernel/lock.h"
 #include "kernel/uaccess.h"
 #include "kernel/ticker.h"
 #include "kernel/devirq.h"
@@ -378,13 +379,40 @@ void esp32p4_l2_cache_report(void) {
  * where touching a neighbour's line would discard its writes. The EMAC's
  * descriptors are padded to a full line each and its buffers are whole
  * multiples of one precisely so that this rounding is a no-op there. */
-static void p4_cache_range(uint32_t rom_fn, uintptr_t addr, uint32_t size) {
+/* One cache-maintenance operation at a time, from any context.
+ *
+ * The ROM's Cache_WriteBack_Addr / Cache_Invalidate_Addr program the cache
+ * controller's one set of sync registers (address, size, start) and poll for
+ * done. Two at once -- the panel's flush task writing back a frame while the
+ * SD driver invalidates its bounce buffer -- overwrite each other's setup:
+ * one range is never done, or done over the other's addresses. On the Tab5
+ * that lost SD transfers silently: a read handed back the previous sector
+ * (the FAT cache filled with a directory sector, then written into the FAT)
+ * and a write sent the previous bytes (a deleted directory entry came back).
+ * IDF serialises every sync op the same way (esp_cache_msync(), s_spinlock).
+ * Large ranges go in 32 KB chunks, IDF's default, so interrupts are never off
+ * for long.
+ * interrupt-shared: taken with interrupts masked, on every hart. */
+static spinlock_t g_cache_op_lock = SPINLOCK_INIT;
+#define P4_CACHE_OP_CHUNK (32u * 1024u)
+
+static void p4_cache_op(uint32_t rom_fn, uint32_t map, uintptr_t start, uintptr_t end) {
     int (*op)(uint32_t, uint32_t, uint32_t) =
         (int (*)(uint32_t, uint32_t, uint32_t))(uintptr_t)rom_fn;
+    while (start < end) {
+        uintptr_t n = end - start > P4_CACHE_OP_CHUNK ? P4_CACHE_OP_CHUNK : end - start;
+        uintptr_t f = spin_lock_irqsave(&g_cache_op_lock);
+        op(map, (uint32_t)start, (uint32_t)n);
+        spin_unlock_irqrestore(&g_cache_op_lock, f);
+        start += n;
+    }
+}
+
+static void p4_cache_range(uint32_t rom_fn, uintptr_t addr, uint32_t size) {
     uintptr_t start = addr & ~(uintptr_t)(ESP32P4_L1_CACHE_LINE - 1u);
     uintptr_t end   = (addr + size + ESP32P4_L1_CACHE_LINE - 1u) &
                       ~(uintptr_t)(ESP32P4_L1_CACHE_LINE - 1u);
-    op(P4_CACHE_MAP_L1_DCACHE, (uint32_t)start, (uint32_t)(end - start));
+    p4_cache_op(rom_fn, P4_CACHE_MAP_L1_DCACHE, start, end);
 }
 
 void esp32p4_dcache_writeback(uintptr_t addr, uint32_t size) {
@@ -402,11 +430,9 @@ void esp32p4_dcache_invalidate(uintptr_t addr, uint32_t size) {
  * cache_hal_writeback_addr() amounts to. */
 #define P4_CACHE_MAP_L2              (1u << 5)
 static void p4_ext_cache_range(uint32_t rom_fn, uintptr_t addr, uint32_t size) {
-    int (*op)(uint32_t, uint32_t, uint32_t) =
-        (int (*)(uint32_t, uint32_t, uint32_t))(uintptr_t)rom_fn;
     uintptr_t start = addr & ~(uintptr_t)63u;
     uintptr_t end   = (addr + size + 63u) & ~(uintptr_t)63u;
-    op(P4_CACHE_MAP_L1_DCACHE | P4_CACHE_MAP_L2, (uint32_t)start, (uint32_t)(end - start));
+    p4_cache_op(rom_fn, P4_CACHE_MAP_L1_DCACHE | P4_CACHE_MAP_L2, start, end);
 }
 
 void esp32p4_extmem_writeback(uintptr_t addr, uint32_t size) {

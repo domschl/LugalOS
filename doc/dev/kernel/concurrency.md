@@ -60,6 +60,18 @@ task (or tasks on two harts) both read-modify-write takes a spinlock on both sid
 the lock. Boards run one hart until `smpstart`, `rv64-smp` always runs two, so a protocol
 that only works on one hart passes on hardware and fails in QEMU.
 
+### Shared hardware engines
+
+Some hardware is one resource for the whole chip, however many drivers use it.
+The P4's cache maintenance is the one that cost data: `Cache_WriteBack_Addr` and
+`Cache_Invalidate_Addr` program the cache controller's single set of sync registers, so two
+at once (the panel's frame flush and the SD driver's bounce buffer) overwrite each other's
+setup and one range is silently not done. A lost invalidate hands back the previous DMA
+transfer's bytes; a lost writeback sends them. Use `esp32p4_dcache_*()` and
+`esp32p4_extmem_*()` (arch/riscv/common/trap.c), which serialise every operation under one
+spinlock in 32 KB chunks, as IDF's `esp_cache_msync()` does; never call the ROM routines
+directly after boot.
+
 ### Lock order
 
 ylocks are taken in one order. The kernel learns it: when a context holding A takes B, the

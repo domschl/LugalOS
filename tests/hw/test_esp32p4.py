@@ -509,9 +509,14 @@ def test_9p_over_the_wire(b: Board) -> tuple[str, bool, str]:
     f = kv(data)
     if f.get("part") == "none":
         return name, True, "SKIPPED (9P works, but no BME280 fitted)"
-    if f.get("valid") != "yes" or "temperature_c100" not in f:
+    # The first sensor in /proc/sensors is whichever was found first (a light
+    # sensor on the Tab5's Grove port, a BME280 elsewhere): any valid reading
+    # that came over 9P is the point.
+    readings = {k: v for k, v in f.items() if k.endswith(("_c100", "_pm", "_ppm", "_ppb", "_pa", "_mv"))}
+    if f.get("valid") != "yes" or not readings:
         return name, False, f"9P read succeeded but the content is wrong: {f}"
-    return name, True, f"{int(f['temperature_c100']) / 100.0} C over 9P"
+    k, v = next(iter(readings.items()))
+    return name, True, f"{f.get('part', '?')} {k}={v} over 9P"
 
 
 def test_emac_loopback(b: Board) -> tuple[str, bool, str]:
