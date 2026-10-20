@@ -565,6 +565,9 @@ def main() -> int:
     ap.add_argument("--build", default="build/esp32p4-tab5")
     ap.add_argument("--out", default="build/racescan")
     ap.add_argument("--only", default="", help="substring filter on source paths (debugging)")
+    ap.add_argument("--check", action="store_true",
+                    help="exit 1, explaining each one, if a shared static has no ownership "
+                         "comment or a handler can reach a blocking call (tests/runner.py)")
     ap.add_argument("--why", nargs=2, action="append", default=[], metavar=("CONTEXT", "FUNC"),
                     help="print the shortest call path from CONTEXT (e.g. isr:uart_isr) to FUNC")
     a = ap.parse_args()
@@ -719,7 +722,38 @@ def main() -> int:
           f"{len(chan_sites)} chan_call sites ({sum(1 for c in chan_sites if c[3])} waiting, "
           f"{sum(1 for c in chan_sites if not c[3] and c[4])} hand-written retries); {len(isr_block)} handler paths to a blocking call "
           f"-> {out / 'candidates.md'}")
+    if a.check and (unmarked or isr_block):
+        print(CHECK_HELP.format(build=a.build))
+        for grp, _, _, _, vk, v, wc, rc in unmarked:
+            print(f"  {v.file}:{v.line}: `{v.name}`\n"
+                  f"      written in: {ctxlist(wc)}\n"
+                  f"      also read in: {ctxlist(rc - wc) or '-'}")
+        for hb in isr_block:
+            print(f"  interrupt handler path that can block: {hb}")
+        return 1
     return 0
+
+
+CHECK_HELP = """
+racescan --check FAILED for {build}.
+
+LugalOS runs many tasks, on one or two harts, with interrupt handlers on top.
+Every writable static or global that more than one of them can reach must say
+who owns it, in a comment on its line or directly above it (one comment covers
+the declarations below it up to a blank line). Write one of:
+
+    /* single task: <the one task or the boot path that touches it> */
+    /* guarded by: <the lock every access holds> */
+    /* interrupt-shared: <who writes, who reads, why that is consistent> */
+    /* accepted: <why sharing it without a lock is fine> */
+
+If none of these is true, the variable is a race: give it a lock (kernel/lock.h),
+make it per task or per call, or pass it in. doc/dev/kernel/concurrency.md
+explains the rules; `tools/racescan.py --build {build} --why CONTEXT FUNC`
+shows how a context reaches a function. An interrupt handler must not reach
+anything that can block: cut the path with `if (devirq_in_handler()) return;`.
+
+What needs an answer:"""
 
 
 if __name__ == "__main__":

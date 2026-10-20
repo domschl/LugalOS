@@ -81,6 +81,15 @@ static spinlock_t g_sched_lock;
  * is checkable on one hart today, unlike the race it protects against. */
 static uint32_t g_handoff_faults;   /* accepted: a fault counter */
 
+/* Stack depth seen from the stack pointer (sched_stack_check_sp()). */
+#define STACK_WARN_BYTES 512u
+/* interrupt-shared: written with interrupts masked (the switch holds
+ * g_sched_lock; a trap runs masked on its hart), each word a single store;
+ * readers (`ps`) tolerate a value one sample old. */
+static uintptr_t g_sp_low[MAX_TASKS];
+static bool      g_sp_warned[MAX_TASKS];
+static uint32_t  g_sp_overruns;
+
 /* This hart's current task index. */
 /* The hart's current task, read with interrupts masked: unmasked, a task
  * preempted between hart_id() and the array read and resumed on the other hart
@@ -506,6 +515,8 @@ static int task_create_full(const char *name, void (*entry)(void *), void *arg,
     t->name = name ? name : "unnamed";
     t->stack_base = stack;
     t->stack_pages = stack_pages;
+    g_sp_low[t->pid] = 0;
+    g_sp_warned[t->pid] = false;
     t->domain = NULL; /* unrestricted until a caller attaches one */
     /* Cleared explicitly: a slot is reused from TASK_DEAD, so a previous
      * occupant's clean exit would otherwise be reported as this task's. */
@@ -759,7 +770,58 @@ static uint32_t g_reap_pages[MAX_HARTS];
  * (arch/riscv/common/trap.c) already declare it locally for the same reason. */
 void sched_dump_table(void);
 
+/* --- Stack depth, from the stack pointer itself --------------------------
+ *
+ * The poison scan (sched_stack_used()) sees the deepest word ever written,
+ * and a frame with a large local array can jump past a stack's bottom
+ * without writing it: the scan then reports a stack with room to spare while
+ * the page below is being overwritten. The stack pointer cannot jump. It is
+ * checked where it is deepest in practice -- at a switch (a task blocks in
+ * its deepest calls: a block transfer waits on its driver task) and on every
+ * trap (the tick samples everything else, and the trap frame itself lands on
+ * the interrupted task's stack). Below the base is fatal; within
+ * STACK_WARN_BYTES of it is reported once per task. */
+
+void sched_stack_check_sp(int pid, uintptr_t sp, const char *where) {
+    if (pid < 0 || pid >= MAX_TASKS) return;
+    task_t *t = &g_tasks[pid];
+    if (!t->stack_base || t->state == TASK_UNUSED) return;
+    uintptr_t base = (uintptr_t)t->stack_base;
+    uintptr_t top = base + t->stack_pages * (uintptr_t)PAGE_SIZE;
+    /* Not on its own stack (a boot or hart stack): neither above the top nor
+     * further below the base than any one frame on the path could reach. */
+    if (sp > top || sp + 4u * (uintptr_t)PAGE_SIZE < base) return;
+    if (g_sp_low[pid] == 0 || sp < g_sp_low[pid]) g_sp_low[pid] = sp;
+    if (sp < base) {
+        g_sp_overruns++;
+        printk_critical("\n[Sched BUG] #%d '%s' ran %lu bytes past the bottom of its %lu-byte "
+                        "stack (sp 0x%lx, base 0x%lx), seen at %s\n", pid,
+                        t->name ? t->name : "?", (unsigned long)(base - sp),
+                        (unsigned long)(top - base), (unsigned long)sp, (unsigned long)base, where);
+        sched_dump_table();
+        printk_critical("[Sched BUG] halting with the table intact.\n");
+        for (;;) { __asm__ __volatile__("wfi"); }
+    }
+    if (sp < base + STACK_WARN_BYTES && !g_sp_warned[pid]) {
+        g_sp_warned[pid] = true;
+        printk_critical("[Sched] #%d '%s' came within %lu bytes of its stack's bottom (%s)\n",
+                        pid, t->name ? t->name : "?", (unsigned long)(sp - base), where);
+    }
+}
+
+uint32_t sched_stack_sp_depth(int pid) {
+    if (pid < 0 || pid >= MAX_TASKS || !g_tasks[pid].stack_base || !g_sp_low[pid]) return 0;
+    uintptr_t top = (uintptr_t)g_tasks[pid].stack_base + g_tasks[pid].stack_pages * (uintptr_t)PAGE_SIZE;
+    return (uint32_t)(top - g_sp_low[pid]);
+}
+
 static void sched_check_incoming(int prev, int next) {
+    {
+        uintptr_t here;
+        __asm__ __volatile__("mv %0, sp" : "=r"(here));
+        sched_stack_check_sp(prev, here, "a switch away");
+        sched_stack_check_sp(next, g_tasks[next].sp, "its last switch");
+    }
     /* The kernel's own .text, and nothing else -- see the block that defines
      * these in each of the four linker scripts. _ram_start/_ram_end bound
      * where a stack can possibly live, on all four. */

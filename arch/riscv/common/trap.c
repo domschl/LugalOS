@@ -939,6 +939,8 @@ uintptr_t arch_last_ecall_cause(void) { return g_last_ecall_cause; }
 
 void trap_handler(trap_frame_t *frame) {
     uintptr_t cause = frame->cause;
+    /* The frame sits on the interrupted task's stack: how deep it is now. */
+    sched_stack_check_sp(sched_current_pid(), (uintptr_t)frame, "a trap");
 #if defined(CONFIG_BOARD_ESP32C6)
     *(volatile uint32_t *)0x600B1008u = (uint32_t)cause;      /* LP_AON stores 2,3: the last trap, for a boot that says nothing */
     *(volatile uint32_t *)0x600B100Cu = (uint32_t)frame->epc;

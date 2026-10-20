@@ -28,8 +28,11 @@ static ylock_t g_dev_lock;
 ```
 
 `tools/racescan.py --build build/<preset>` lists the statics that are shared and unmarked
-(`build/racescan/candidates.md`). The count is zero in every configured build, and a new
-static without a verdict shows up there.
+(`build/racescan/candidates.md`). The count is zero in every configured build, and
+`tests/runner.py` keeps it there: it runs `racescan.py --check` on rv32, rv64-smp, the Tab5,
+the RP2350 terminal and the C6, and fails on a shared static without a verdict (or an
+interrupt handler that can reach a blocking call), naming the variable, where it is, which
+contexts reach it and what to write.
 
 - Groups: **A** written from two or more contexts, **S** written only by shells, **B** one
   writer with readers elsewhere.
@@ -137,8 +140,11 @@ log gaps, full stacks, stuck workers and VFS handle shortage, then `STRESS_OK` o
 | QEMU | `tests/runner.py` runs `stress 30` on rv64 and rv32, `stress 60` on rv64-smp. |
 | P4 boards | `uv run tools/stress.py --board nano\|lcd7b\|tab5 --minutes 60` adds two terminals, typing, 9P over TCP and sensor sampling every 2 s, then checks `dmesg`, `lockcheck`, `i2cstats` and `ts`. |
 
-`ps` shows each task's stack high-water mark, so an overflow is measured rather than
-guessed.
+`ps` shows each task's stack depth: the deeper of the poison scan and the stack pointer seen at
+every switch and every trap. A frame with a large local array can jump the poison; the stack
+pointer cannot. A task whose stack pointer goes below its stack's base halts the board with a
+dump of every task's stack; within 512 bytes of the base it is reported once. The stress report
+gives the deepest worker stack.
 
 ---
 

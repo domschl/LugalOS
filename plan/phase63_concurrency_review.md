@@ -724,14 +724,16 @@ Hour runs (2026-10-19, 60 min each, with terminals, typing, 9P/TCP, sensors at 2
    Bisected on the board (`stress 300 norot only=sd,X`): sd alone and sd with each other path
    (ram, shell, log, p9, chan, fmt) are clean, about 87,000 sd iterations; the full board mix
    alone reproduces it (1-2 errors in 7,000-15,000). So it needs load, not one path.
-   Open: stack depth. `-fstack-usage` on the SD path: a worker's deepest write is ~5.4 KB
-   (`blk_write_chunk` alone 2.1 KB) in a 12 KB stack, fine; but a task with a smaller stack
-   reaching the card, or interrupt frames on top, could pass the bottom without touching the
-   canary word that `ps` checks. Next: `ps` high-water marks after a failing run, and a guard
-   region below each stack.
-   Found on the way: `/proc/ps` (and `ps`) stop at the VFS handle's 896-byte buffer, so with
-   more than 13 tasks the rest -- the shells and the stress workers -- are cut off ("--
-   truncated --"). The high-water check above needs them.
+   - stack overflow: the stack pointer is now checked against its task's stack at every switch
+     and every trap (below the base halts with a dump, within 512 B warns once), `ps` shows the
+     deeper of that and the poison scan, and the stress report gives the deepest worker. A
+     failing 5-minute run (2 sd errors) had no warning; workers reached 7.9 of 12 KB, the rest
+     of the system's tasks at most 4.7 KB (netsrv, 12 KB). A sub-sample excursion between two
+     switches or ticks is the one thing this cannot see.
+   Still open. Found on the way: long `stress` runs stop streaming to the Tab5's USB-Serial/JTAG
+   console after ~10 s (the board runs on; short runs report normally).
+   Found on the way and fixed: `/proc/ps` stopped at the VFS handle's 896-byte buffer (13
+   tasks); the /proc text now has a page of its own while the file is open.
 4. `tools/stress.py` refuses a board that does not answer (one left in download mode by a
    flash ran 10 minutes against nothing).
 
@@ -762,5 +764,10 @@ Hour runs (2026-10-19, 60 min each, with terminals, typing, 9P/TCP, sensors at 2
    Decided 2026-10-19: a FIFO, opt-in through `chan_call_wait()`.
 2. ~~Whether the lock-rank check stays on in release builds or is debug-only.~~ Decided
    2026-10-19: a learned order rather than ranks, on in every build.
-3. Whether `racescan.py` failing the runner is acceptable from 63.8 on, which makes new
-   statics need their ownership comment before merge.
+3. ~~Whether `racescan.py` failing the runner is acceptable from 63.8 on.~~ Decided
+   2026-10-20: yes, with a message that explains the system to someone who does not know it
+   (`racescan.py --check`, five builds, ~100 s in parallel).
+4. ~~Task stacks from PSRAM for the LCD-7B's page shortage.~~ Decided 2026-10-20: stacks stay
+   in SRAM (grown where needed). The VFS handle's /proc buffer moved out of the handle (a page
+   taken at open from the bulk zone, else SRAM): a handle is ~250 B instead of 1.1 KB, which
+   fixed /proc/ps's cut-off at 13 tasks; the handle count (8) stays until the owner raises it.

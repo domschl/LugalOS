@@ -169,6 +169,12 @@ int task_create(const char *name, void (*entry)(void *), void *arg);
  * task's number meaningful, which is the case that matters -- you want to know
  * how deep a driver task got, after it got there. */
 uint32_t sched_stack_used(int pid);
+/* Checks `sp` against task `pid`'s stack: below its base halts with a dump,
+ * within 512 bytes warns once. Called at every switch and every trap. */
+void sched_stack_check_sp(int pid, uintptr_t sp, const char *where);
+/* The deepest the task's stack pointer has been seen, in bytes from the top
+ * (0: not seen yet). Unlike sched_stack_used(), a frame cannot jump over it. */
+uint32_t sched_stack_sp_depth(int pid);
 uint32_t sched_stack_size(int pid);
 
 /* True when the task's stack has been filled to its deepest word -- which is

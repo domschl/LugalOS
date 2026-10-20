@@ -161,9 +161,8 @@ static mount_entry_t g_mounts[MAX_MOUNTS];
 static spinlock_t    g_mount_lock;
 
 /* --- Handle table ---
- * A flat array, not a union: at 8 handles this is a few KB (dominated by
- * the 512-byte proc_buf per slot), affordable even on RP2350's SRAM
- * budget. `kind` mirrors the owning mount's mount_kind_t, plus a
+ * A flat array, not a union: about 250 bytes a handle, the /proc text living
+ * in a page of its own while the file is open. `kind` mirrors the owning mount's mount_kind_t, plus a
  * root-pseudo-directory case (kind == (mount_kind_t)-1, see vfs_open())
  * for "/" itself, which isn't a real mount_entry_t. MOUNT_SRV never
  * appears here -- /srv/ stays on its own direct-dispatch path in
@@ -182,22 +181,12 @@ typedef struct {
     bool wrote;                  /* MOUNT_FAT32: sync FSInfo on close */
     uint32_t dir_cluster;        /* valid for MOUNT_FAT32, is_dir */
     char rel_path[128];          /* path within volume (FAT32) or device name (DEV) */
-    /* Generated /proc file content (PROC, non-dir), shared by every file
-     * under /proc that this VFS serves. 512 silently truncated /proc/config on RP2350
-     * once every board feature's pin fields were in it -- caught by
-     * tests/hw/test_rp2350.py's K3, not by anything that runs on QEMU,
-     * since QEMU has no pin model to report. Measured, not assumed: the
-     * worst case (every ENABLE_* flag on at once, including the clock
-     * persona's fields alongside chess's) is 791 bytes including the NUL:
-     *
-     *     PALLOC_MAX_PAGES=128\nUART0_BASE=0x40070000\n...DCF77_WARMUP_MS=5000\n
-     *
-     * That was 690 before D2 added
-     * ENABLE_DCF77 plus four DCF77_* pin lines -- 95 bytes, which is what
-     * took it past the old 768 and would have silently truncated the tail of
-     * /proc/config all over again. 896 gives headroom without padding
-     * arbitrarily. */
-    char proc_buf[896];
+    /* Generated /proc file content (PROC, non-dir): one page, taken at open
+     * (from the bulk zone where there is one) and given back at close. It
+     * used to be 896 bytes inside every handle, which cut /proc/ps off at
+     * thirteen tasks and cost 896 bytes per handle for a /proc file few
+     * handles ever hold. */
+    char *proc_buf;
     uint32_t proc_len;
     /* /proc/kmsg only: served straight from the klog ring rather than
      * generated into proc_buf, which is far too small to hold it. The window
@@ -778,7 +767,11 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
              * whose stack is the linker's and is reported by the Boot Stack
              * line in /proc/meminfo instead. */
             {
+                /* The deeper of the poison scan and the stack pointer seen
+                 * at switches and traps: a large frame can jump the poison. */
                 uint32_t su = sched_stack_used(pid);
+                uint32_t sp_depth = sched_stack_sp_depth(pid);
+                if (sp_depth > su) su = sp_depth;
                 uint32_t ss = sched_stack_size(pid);
                 if (ss == 0) {
                     used += (uint32_t)ksnprintf(buf + used, cap - used, "-\n");
@@ -836,7 +829,7 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
          * the board's actual RAM, which is the thing that decides whether
          * another static array fits.
          *
-         * The whole report has to land inside the handle's 896-byte proc_buf
+         * The whole report has to land inside the handle's one-page proc_buf
          * (see vfs_handle_t). ksnprintf() truncates safely rather than
          * overrunning, so the failure mode is a silently short file; the
          * Storage line is deliberately kept last so that a test asserting on
@@ -1214,8 +1207,7 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
             "%s %s\n", LUGALOS_VERSION, LUGALOS_BUILD_ID);
         return (int)used;
     } else if (strcmp(rel, "devices") == 0) {
-        /* B0 device registry (kernel/device.h). Compact deliberately: this
-         * is generated into the handle's fixed 512-byte proc_buf. */
+        /* B0 device registry (kernel/device.h), into the handle's proc_buf. */
         used = append_col(buf, used, cap, "Name", 11);
         used = append_col(buf, used, cap, "Kind", 9);
         used += (uint32_t)ksnprintf(buf + used, cap - used, "State\n");
@@ -2243,14 +2235,10 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
 /* Says so when the answer did not fit, instead of handing back a plausible
  * prefix.
  *
- * proc_buf is a fixed 896 bytes and several of these files are generated
- * from tables that grow: /proc/ps runs out at about thirteen tasks against
- * a MAX_TASKS of 32, and /proc/config has already come within 105 bytes of
- * the limit once (see proc_buf's own comment). Every producer above stops
- * cleanly at `cap`, which is safe and completely silent -- the reader gets a
- * table that simply ends, with no way to tell a short system from a clipped
- * one. Enlarging the buffer is the wrong trade at 8 handles on a 264 KB
- * part; being honest about the edge costs 18 bytes of text.
+ * proc_buf is one page and several of these files are generated from tables
+ * that grow. Every producer above stops cleanly at `cap`, which is safe and
+ * completely silent -- the reader gets a table that simply ends, with no way
+ * to tell a short system from a clipped one.
  *
  * Stamped over the tail rather than appended, because by definition there is
  * no room left to append into. */
@@ -2367,8 +2355,15 @@ static int vfs_open_into_on(mount_entry_t *m, const char *rel, bool is_root, vfs
             h->kmsg_start = klog_oldest();
             h->proc_len = (uint32_t)(klog_total() - h->kmsg_start);
         } else {
-            int len = vfs_generate_proc_content(h->rel_path, h->proc_buf, sizeof(h->proc_buf));
-            if (len < 0) return -1;
+            h->proc_buf = palloc_pages_bulk(1);
+            if (!h->proc_buf) h->proc_buf = palloc_pages(1);
+            if (!h->proc_buf) return -1;
+            int len = vfs_generate_proc_content(h->rel_path, h->proc_buf, PAGE_SIZE);
+            if (len < 0) {
+                palloc_free(h->proc_buf, 1);
+                h->proc_buf = NULL;
+                return -1;
+            }
             h->proc_len = (uint32_t)len;
         }
         h->kind = MOUNT_PROC;
@@ -2776,6 +2771,7 @@ int vfs_close(int fd) {
     /* A written file's close is where FSInfo's free count goes back to disk
      * (fat32_sync()): one sector, so `df` after a reboot need not rescan. */
     if (h->kind == MOUNT_FAT32 && h->wrote) fat32_sync(h->fs);
+    if (h->proc_buf) palloc_free(h->proc_buf, 1);
     mount_entry_t *mnt = h->mnt;
     uintptr_t f = spin_lock_irqsave(&g_handles_lock);   /* not taken mid-clear */
     memset(h, 0, sizeof(*h));

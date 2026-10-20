@@ -55,6 +55,8 @@ typedef struct {
     bool              rot;
     volatile uint32_t iters;
     volatile bool     done;
+    uint32_t          stack_depth;   /* deepest sp seen, bytes (sched_stack_sp_depth()) */
+    uint32_t          stack_size;
 } worker_t;
 
 typedef struct {
@@ -258,6 +260,10 @@ static void worker_body(void *arg) {
         w->iters++;
         if ((w->iters & 15u) == 0) sched_yield();
     }
+    int me = sched_current_pid();
+    w->stack_depth = sched_stack_sp_depth(me);
+    if (sched_stack_used(me) > w->stack_depth) w->stack_depth = sched_stack_used(me);
+    w->stack_size = sched_stack_size(me);
     w->done = true;
 }
 
@@ -375,6 +381,12 @@ int stress_run(uint32_t seconds) {
     cprintf("  VFS handles: at most %lu of %u open, %lu opens waited for one, %lu found none\n",
             (unsigned long)s1.vfs.peak, (unsigned)VFS_MAX_HANDLES,
             (unsigned long)(s1.vfs.waits - s0.vfs.waits), (unsigned long)vnone);
+    {
+        uint32_t deep = 0, size = 0;
+        for (unsigned i = 0; i < nw; i++)
+            if (g_workers[i].stack_depth > deep) { deep = g_workers[i].stack_depth; size = g_workers[i].stack_size; }
+        cprintf("  worker stacks: deepest %lu of %lu B\n", (unsigned long)deep, (unsigned long)size);
+    }
     cprintf("  mount references now: sd0 %lu, ram0 %lu\n", (unsigned long)vfs_mount_users("sd0"),
             (unsigned long)vfs_mount_users("ram0"));
     bool ok = mixed >= W_MIX_MIN && errors == 0 && lf == 0 && inv == 0 && i2c == 0 &&

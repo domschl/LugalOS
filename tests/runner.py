@@ -5426,6 +5426,40 @@ def test_host_sanitizer_harnesses() -> tuple[bool, str]:
     return True, "; ".join(ln for ln in out.splitlines() if "no fault" in ln)
 
 
+RACESCAN_BUILDS = ["rv32", "rv64-smp", "esp32p4-tab5", "rp2350-terminal", "esp32c6"]
+
+
+def test_racescan_ownership() -> tuple[bool, str]:
+    """Phase 63.8: every shared static says who owns it, and no interrupt
+    handler reaches a blocking call (tools/racescan.py --check), on each of
+    the builds the review covered that is configured here. Parsing takes
+    about a minute a build; they run side by side."""
+    import concurrent.futures
+    import sys as _sys
+    repo = Path(__file__).resolve().parent.parent
+    try:
+        import clang.cindex  # noqa: F401
+    except ImportError:
+        return False, ("tools/racescan.py needs libclang's Python binding: "
+                       "`pip install libclang` (or the distribution's python-clang)")
+    builds = [b for b in RACESCAN_BUILDS if (repo / "build" / b / "compile_commands.json").exists()]
+    if not builds:
+        return False, "no build directory with compile_commands.json to scan"
+
+    def scan(b: str) -> tuple[str, int, str]:
+        r = subprocess.run([_sys.executable, str(repo / "tools" / "racescan.py"), "--build", f"build/{b}",
+                            "--out", f"build/racescan-{b}", "--check"],
+                           cwd=repo, capture_output=True, text=True, timeout=900)
+        return b, r.returncode, (r.stdout + r.stderr).strip()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(builds)) as ex:
+        results = list(ex.map(scan, builds))
+    failed = [(b, out) for b, rc, out in results if rc != 0]
+    if failed:
+        return False, "\n\n".join(out[-4000:] for _, out in failed)
+    return True, "clean: " + ", ".join(builds)
+
+
 def test_host_wpa2_psk_derivation() -> tuple[bool, str]:
     """I6's host-side verify point: "a known passphrase and SSID derive
     the PSK the standard gives." No QEMU -- tools/provision.py's
@@ -9119,6 +9153,15 @@ def main() -> int:
     if ok:
         passed_tests += 1
         print(f"  [PASS] {name}")
+    else:
+        print(f"  [FAIL] {name}\n    Log Output:\n{info}")
+
+    ok, info = test_racescan_ownership()
+    total_tests += 1
+    name = "Ownership Of Shared Statics And No Blocking In Handlers (tools/racescan.py --check, 63.8)"
+    if ok:
+        passed_tests += 1
+        print(f"  [PASS] {name} -- {info}")
     else:
         print(f"  [FAIL] {name}\n    Log Output:\n{info}")
 
