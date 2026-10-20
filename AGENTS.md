@@ -304,7 +304,7 @@ for both roles by itself.
   coordinate remapping.
 * MicroSD: 4-bit SDMMC Slot 0 (`GPIO39–44`) mounted on `/sd0/` at 20 MHz.
 * USB Host: DWC2 OTG HS on Type-A port with `USB5V_EN` via PI4IOE2.
-* SDIO Wi-Fi Co-Processor (ESP32-C6, phase 52): connected via SDMMC Slot 1 (`GPIO14–19`); C6 reset controlled via PI4IOE2 (`U8` bit 0).
+* SDIO Wi-Fi Co-Processor (ESP32-C6, phase 52): connected via SDMMC Slot 1 (CLK 12, CMD 13, D0–D3 11/10/9/8); C6 reset on GPIO15 (active low, `CONFIG_C6_CHIP_PU_GPIO`; M5Stack's esp-hosted config uses the same pin).
   * Closed appliance without external C6 serial/JTAG headers. Boots LugalOS via factory ESP-IDF bootloader from `ota_1` partition (`layout=idf`).
   * Bootloader locks PMP entries 0–2 and 15 (`PMP_L`); LugalOS kernel probes locked entries at boot (`arch/riscv/common/mem_domain.c`) and dynamically allocates user domains in unlocked slots 3–14 without trap.
   * Over-the-air updates for the C6 are performed over 9P/SDIO without opening the case:

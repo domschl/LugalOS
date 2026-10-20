@@ -623,8 +623,12 @@ static void esp_i2c_tab5_pi4ioe_init(void) {
 #endif
     time_delay_us(20000);
 
-    /* 3. Release LCD_RST (bit 4 = 1) and TP_RST (bit 5 = 1) */
-    esp_i2c_tab5_pi4ioe_reg(0x43u, 0x05u, 0x74u); /* OUT_SET: CAM_RST=1, TP_RST=1, LCD_RST=1, EXT5V=1 */
+    /* 3. Release TP_RST (bit 5 = 1) and LCD_RST, the way M5GFX does
+     * (M5GFX.cpp, Tab5 autodetect): LCD_RST becomes an input and its pull-up
+     * raises it, rather than the expander driving it high; its output latch
+     * stays 0, so the next reset starts low. */
+    esp_i2c_tab5_pi4ioe_reg(0x43u, 0x03u, 0x6Fu); /* IO_DIR: LCD_RST (P4) in */
+    esp_i2c_tab5_pi4ioe_reg(0x43u, 0x05u, 0x64u); /* OUT_SET: CAM_RST=1, TP_RST=1, EXT5V=1 */
     time_delay_us(50000);
 #if defined(CONFIG_TOUCH_INT_GPIO)
     REG(ESP_GPIO_ENABLE_W1TC) = (1u << tp_int);
@@ -639,17 +643,21 @@ static void esp_i2c_hw_bringup(bool verbose);
  * one step against another task doing the same. */
 static ylock_t g_pi4ioe_lock;
 
-bool i2c_tab5_expander_update(uint8_t addr, uint8_t mask, uint8_t bits) {
+static bool expander_update_reg(uint8_t addr, uint8_t reg, uint8_t mask, uint8_t bits) {
     if (!g_esp_bus[0].ready) esp_i2c_hw_bringup(false);
     ylock_acquire(&g_pi4ioe_lock);
-    uint8_t reg = 0x05u, cur = 0;
+    uint8_t cur = 0;
     bool ok = i2c_xfer(addr, &reg, 1, &cur, 1);
     if (ok) {
-        uint8_t w[2] = { 0x05u, (uint8_t)((cur & (uint8_t)~mask) | (bits & mask)) };
+        uint8_t w[2] = { reg, (uint8_t)((cur & (uint8_t)~mask) | (bits & mask)) };
         ok = i2c_xfer(addr, w, 2, NULL, 0);
     }
     ylock_release(&g_pi4ioe_lock);
     return ok;
+}
+
+bool i2c_tab5_expander_update(uint8_t addr, uint8_t mask, uint8_t bits) {
+    return expander_update_reg(addr, 0x05u, mask, bits);
 }
 
 int i2c_tab5_expander_read(uint8_t addr, uint8_t reg) {
@@ -658,10 +666,13 @@ int i2c_tab5_expander_read(uint8_t addr, uint8_t reg) {
 }
 
 void i2c_tab5_panel_reset(void) {
-    /* Pulse LCD_RST (bit 4) and TP_RST (bit 5) low, then release high */
-    i2c_tab5_expander_update(0x43u, 0x30u, 0x00u);
-    time_delay_us(20000);
-    i2c_tab5_expander_update(0x43u, 0x30u, 0x30u);
+    /* LCD_RST (P4) and TP_RST (P5) low; then TP_RST driven high and LCD_RST
+     * released to its pull-up (an input), as at boot and as M5GFX does. */
+    expander_update_reg(0x43u, 0x05u, 0x30u, 0x00u);   /* latches low first */
+    expander_update_reg(0x43u, 0x03u, 0x10u, 0x10u);   /* LCD_RST an output: low */
+    time_delay_us(10000);
+    expander_update_reg(0x43u, 0x03u, 0x10u, 0x00u);   /* LCD_RST an input: the pull-up */
+    expander_update_reg(0x43u, 0x05u, 0x20u, 0x20u);   /* TP_RST high */
     time_delay_us(100000);
 }
 

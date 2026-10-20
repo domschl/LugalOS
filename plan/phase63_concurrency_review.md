@@ -674,6 +674,14 @@ Hour runs (2026-10-19, 60 min each, with terminals, typing, 9P/TCP, sensors at 2
    - plus the PHY's test interface cleared (TESTCLR) before the PLL is programmed, as Linux's
      dw-mipi-dsi does: 30/30 and 58/60; control without it in the same hour 27/30;
    - plus a second PHY setup at boot after the panel's init: 59/60.
+   - M5Stack's own sequence (M5GFX.cpp, Tab5): the panel reset once, before the PHY, LCD_RST
+     released by its pull-up rather than driven high, the touch side waited for, then the
+     PHY, then 80 ms before the first command: 54/60. Kept: it is the vendor's sequence.
+   M5Stack's Tab5 demo (M5Tab5-UserDemo) has no ST7121 bring-up of its own (its BSP drives the
+   older ILI9881C panel); its SD setup (slot 0, 4-bit, 40 MHz, pads on LDO_VO4 at 3.3 V) and
+   esp-hosted's SDIO settings (slot 1, 4-bit, 40 MHz, same pins, C6 reset on GPIO15) match
+   ours except the card's 20 MHz here. Next for the panel: the factory firmware through the
+   same reset series, counted by eye -- if it goes black too, the cause is not the bring-up.
    The first three stay (harmless; the order IDF and Linux use); the fourth was removed. A
    second setup at run time (`lcd reinit phy`) has brought the picture back every time (5 of 5).
    No boot-log line and no event time differs between lit and black boots (153 lit, 27 black

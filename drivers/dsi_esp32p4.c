@@ -697,9 +697,24 @@ static const uint8_t k_st7121_init[] = {
  * clock; ~250 ms once. */
 static void wait_ms(uint32_t ms) { time_delay_us((uint64_t)ms * 1000u); }
 
+#if defined(CONFIG_BOARD_TAB5)
+static void panel_wait_ready(void);
+#endif
+
 static void panel_reset(void) {
 #if defined(CONFIG_BOARD_TAB5)
     i2c_tab5_panel_reset();
+    panel_wait_ready();
+#else
+    gpio_out(RST_GPIO, false);
+    wait_ms(10);
+    gpio_out(RST_GPIO, true);
+    wait_ms(120);
+#endif
+}
+
+#if defined(CONFIG_BOARD_TAB5)
+static void panel_wait_ready(void) {
     /* The ST7121 is display and touch in one chip, and after a reset it takes
      * a while to listen -- longer when it was reset while running (M5GFX
      * measured ~50 ms). DCS writes in LP mode are not acknowledged, so an
@@ -710,13 +725,8 @@ static void panel_reset(void) {
     int fw = i2c_tab5_touch_fw_version();
     printk("[LCD] ST7121 answered %lu ms after its reset (touch firmware %d)\n",
            (unsigned long)((time_get_us() - t0) / 1000u), fw);
-#else
-    gpio_out(RST_GPIO, false);
-    wait_ms(10);
-    gpio_out(RST_GPIO, true);
-    wait_ms(120);
-#endif
 }
+#endif
 
 static bool panel_init(void) {
     bool ok = true;
@@ -2554,13 +2564,25 @@ bool dsi_lcd_init(void) {
     uint64_t t0 = time_get_us();
 
     backlight(false);                 /* dark until there is something to show */
+#if defined(CONFIG_BOARD_TAB5)
+    /* M5GFX's order (M5GFX.cpp, Tab5): the panel's one reset (the expander
+     * setup's, at boot) and the ST7121 answering before the DSI PHY starts,
+     * then 80 ms before the first command. Reset again under a running link,
+     * as this did, it came up black on some boots while a second PHY setup
+     * (`lcd reinit phy`) always brought it back. */
+    panel_wait_ready();
+#endif
     ldo3_on();
     /* The PHY's supply settled before the PHY starts: 200 us is IDF's LDO
      * delay, and 5 ms costs nothing at boot. */
     wait_ms(5);
     if (!dsi_bus_init()) goto fail;
     dpi_config();
+#if defined(CONFIG_BOARD_TAB5)
+    wait_ms(80);
+#else
     panel_reset();
+#endif
     if (!panel_init()) {
         /* Report and carry on: a NACKed vendor register is worth seeing on
          * the glass, and `lcd` says which command it was. */
