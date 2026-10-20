@@ -27,6 +27,8 @@
 #include "drivers/sensor_hub.h"
 #include "drivers/piousb.h"
 #include "kernel/time.h"
+#include "kernel/sched.h"
+#include "kernel/devirq.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
 #include "kernel/clipboard.h"
@@ -213,6 +215,18 @@ typedef struct {
  * its opener's, and freeing it is one clear of in_use. */
 static vfs_handle_t g_handles[VFS_MAX_HANDLES];
 static spinlock_t   g_handles_lock = SPINLOCK_INIT;
+/* guarded by: g_handles_lock. How full the table has been, how often an open
+ * found it full and waited, and how often the wait ran out. */
+static uint32_t g_handles_peak, g_handles_waits, g_handles_none;
+#define VFS_OPEN_WAIT_MS 500u
+
+void vfs_handle_stats(vfs_handle_stats_t *out) {
+    uintptr_t f = spin_lock_irqsave(&g_handles_lock);
+    out->peak = g_handles_peak;
+    out->waits = g_handles_waits;
+    out->none = g_handles_none;
+    spin_unlock_irqrestore(&g_handles_lock, f);
+}
 
 #include "drivers/spisd.h"
 #include "drivers/sdmmc.h"
@@ -271,6 +285,15 @@ static void mount_abandon(mount_entry_t *e) {
 
 /* Drops a reference from mount_get() (NULL is fine). The last one on a dying
  * entry clears it and closes its remote session, outside the lock. */
+uint32_t vfs_mount_users(const char *name) {
+    uint32_t n = 0;
+    uintptr_t f = spin_lock_irqsave(&g_mount_lock);
+    for (int i = 0; i < MAX_MOUNTS; i++)
+        if (g_mounts[i].in_use && strcmp(g_mounts[i].name, name) == 0) n = g_mounts[i].users;
+    spin_unlock_irqrestore(&g_mount_lock, f);
+    return n;
+}
+
 static void mount_put(mount_entry_t *m) {
     if (!m) return;
     p9_remote_mount_t *close = NULL;
@@ -2409,16 +2432,33 @@ int vfs_open(const char *path, int flags) {
     /* Find and take the slot as one step: two tasks opening at once would
      * otherwise both find the same free one. */
     int slot = -1;
-    uintptr_t f = spin_lock_irqsave(&g_handles_lock);
-    for (int i = 0; i < VFS_MAX_HANDLES; i++) {
-        if (!g_handles[i].in_use) { slot = i; break; }
+    bool waited = false;
+    uint64_t deadline = 0;
+    for (;;) {
+        bool late = waited && time_get_ms() >= deadline;
+        unsigned used = 0;
+        uintptr_t f = spin_lock_irqsave(&g_handles_lock);
+        for (int i = 0; i < VFS_MAX_HANDLES; i++) {
+            if (!g_handles[i].in_use) { if (slot < 0) slot = i; }
+            else used++;
+        }
+        if (slot >= 0) {
+            memset(&g_handles[slot], 0, sizeof(g_handles[slot]));
+            g_handles[slot].in_use = true;
+            if (used + 1u > g_handles_peak) g_handles_peak = used + 1u;
+        } else if (!waited) {
+            g_handles_waits++;
+        } else if (late) {
+            g_handles_none++;
+        }
+        spin_unlock_irqrestore(&g_handles_lock, f);
+        if (slot >= 0) break;
+        /* Every handle is open: wait for one to be closed, as a busy endpoint
+         * is waited for, where waiting is possible. */
+        if (late || !sched_active() || devirq_in_handler()) return -1;
+        if (!waited) { waited = true; deadline = time_get_ms() + VFS_OPEN_WAIT_MS; }
+        task_sleep_ms(1u);
     }
-    if (slot >= 0) {
-        memset(&g_handles[slot], 0, sizeof(g_handles[slot]));
-        g_handles[slot].in_use = true;
-    }
-    spin_unlock_irqrestore(&g_handles_lock, f);
-    if (slot < 0) return -1;
 
     vfs_handle_t *h = &g_handles[slot];
 
@@ -2918,6 +2958,44 @@ void vfs_fat_recount(void) {
                     (unsigned long)(time_get_ms() - t0));
         }
     }
+}
+
+/* `fsck`: fat32_check() on /sd0 or /ram0, its working memory borrowed from
+ * the page allocator for the run (a 32 GB card with 32 KB clusters needs a
+ * 116 KB bitmap). */
+#define FSCK_DIRQ 1024u
+void vfs_fsck(const char *path) {
+    fat32_fs_t *fs = NULL;
+    const char *name = "/sd0/";
+    if (!path || !*path || strncmp(path, "/sd0", 4) == 0) {
+        if (g_sd_mounted) fs = &g_fat32_sd;
+    } else if (strncmp(path, "/ram0", 5) == 0) {
+        name = "/ram0/";
+        if (g_ram_mounted) fs = &g_fat32_ram;
+    } else {
+        cprintf("usage: fsck [/sd0|/ram0]\n");
+        return;
+    }
+    if (!fs) { cprintf("fsck: %s is not mounted\n", name); return; }
+    uint32_t bitmap_bytes = (fs->total_clusters + 2u + 7u) / 8u;
+    uint32_t bytes = ((bitmap_bytes + 3u) & ~3u) + FSCK_DIRQ * 4u;
+    uint32_t pages = (bytes + 4095u) / 4096u;
+    uint8_t *mem = palloc_pages_bulk(pages);
+    if (!mem) mem = palloc_pages(pages);
+    if (!mem) { cprintf("fsck: no %lu KB for the cluster map\n", (unsigned long)(bytes / 1024u)); return; }
+    uint32_t *dirq = (uint32_t *)(mem + ((bitmap_bytes + 3u) & ~3u));
+    fat32_check_t r;
+    uint64_t t0 = time_get_ms();
+    int rc = fat32_check(fs, mem, bitmap_bytes, dirq, FSCK_DIRQ, &r);
+    palloc_free(mem, pages);
+    uint32_t problems = r.cross + r.bad_chain + r.size + r.lost;
+    cprintf("fsck %s %lu files, %lu directories, %lu clusters in use; "
+            "%lu cross-linked, %lu broken chains, %lu wrong sizes, %lu lost clusters%s; %lu ms\n",
+            name, (unsigned long)r.files, (unsigned long)r.dirs, (unsigned long)r.clusters,
+            (unsigned long)r.cross, (unsigned long)r.bad_chain, (unsigned long)r.size,
+            (unsigned long)r.lost, r.skipped ? " (some directories not walked)" : "",
+            (unsigned long)(time_get_ms() - t0));
+    cprintf("%s\n", rc != 0 ? "fsck: INCOMPLETE (read error)" : problems ? "fsck: DAMAGED" : "fsck: clean");
 }
 
 static int vfs_format_volume(mount_entry_t *m, const char *path);

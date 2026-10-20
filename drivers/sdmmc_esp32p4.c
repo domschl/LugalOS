@@ -833,6 +833,12 @@ typedef sdhost_desc_t sdmmc_desc_t;   /* drivers/sdhost_esp32p4.h */
 static sdmmc_desc_t g_desc  __attribute__((aligned(ESP32P4_L1_CACHE_LINE)));
 static uint8_t g_dma_buf[512] __attribute__((aligned(ESP32P4_L1_CACHE_LINE)));
 
+/* guarded by: g_host_lock. The descriptor the last arm handed over, and how
+ * often DATA_OVER came before the DMA had given it back (see
+ * sdmmc_dma_wait()). */
+static sdmmc_desc_t *g_armed_desc;
+static uint32_t      g_dma_late, g_dma_late_max_us;
+
 static uint32_t sdmmc_fifo_count(void) {
     return (REG(SD_STATUS) >> STATUS_FIFO_COUNT_S) & STATUS_FIFO_COUNT_M;
 }
@@ -863,6 +869,7 @@ static void sdmmc_dma_arm_on(sdmmc_desc_t *d, uint8_t *buf, uint32_t len, uint32
     d->des2 = (uint32_t)(uintptr_t)buf;
     d->des3 = (uint32_t)(uintptr_t)d;              /* chained back to itself */
     esp32p4_dcache_writeback((uintptr_t)d, sizeof(*d));
+    g_armed_desc = d;
 
     REG(SD_CTRL) |= CTRL_DMA_ENABLE | CTRL_USE_INTERNAL_DMA;
     REG(SD_DBADDR) = (uint32_t)(uintptr_t)d;
@@ -892,7 +899,7 @@ static int sdmmc_dma_wait(uint32_t lba, const char *what) {
                    what, (unsigned)lba, (unsigned)st, (unsigned)id);
             return -1;
         }
-        if (st & INT_DATA_OVER) return 0;
+        if (st & INT_DATA_OVER) break;
         if (late) {
             printk("[SDMMC] %s lba %u timed out (RINTSTS 0x%x IDSTS 0x%x FIFO %u)\n",
                    what, (unsigned)lba, (unsigned)st, (unsigned)id,
@@ -900,6 +907,29 @@ static int sdmmc_dma_wait(uint32_t lba, const char *what) {
             return -1;
         }
     }
+    /* DATA_OVER is the card side: the last byte reached the FIFO. The DMA
+     * may still be moving it to memory (it shares the bus with everything
+     * else; the Tab5's panel scan-out alone reads 107 MB/s from PSRAM), and
+     * a read copied out before then is the bounce buffer's previous sector.
+     * The DMA is done with the buffer when it clears the descriptor's OWN
+     * bit; DESC_DIC leaves IDSTS's RI unset, so that bit is the signal. */
+    sdmmc_desc_t *d = g_armed_desc;
+    if (!d) return 0;
+    uint64_t t0 = time_get_us();
+    bool done = time_poll_until_us(
+        (esp32p4_dcache_invalidate((uintptr_t)d, sizeof(*d)), !(d->des0 & DESC_OWN)),
+        t0 + 10000u);
+    uint32_t waited = (uint32_t)(time_get_us() - t0);
+    if (!done) {
+        printk("[SDMMC] %s lba %u: the DMA kept its descriptor 10 ms past the data's end\n",
+               what, (unsigned)lba);
+        return -1;
+    }
+    if (waited > 2u) {
+        g_dma_late++;
+        if (waited > g_dma_late_max_us) g_dma_late_max_us = waited;
+    }
+    return 0;
 }
 
 static int sdmmc_hw_read_block(uint32_t lba, uint8_t *dst) {
@@ -1283,9 +1313,15 @@ static int sdmmc_card_init_locked(void) {
 #define BLK_REQ_READ  ((uint8_t)'R')
 #define BLK_REQ_WRITE ((uint8_t)'W')
 #define BLK_MAX_COUNT 4u
-#define BLK_HDR_LEN   9u /* opcode + lba(4) + count(4) */
+#define BLK_HDR_LEN   13u /* opcode + lba(4) + count(4) + tag(4) */
+#define BLK_RESP_HDR  5u  /* status + the request's tag(4) */
 #define BLK_REQ_CAP   (BLK_HDR_LEN + BLK_MAX_COUNT * 512u)
-#define BLK_RESP_CAP  (1u + BLK_MAX_COUNT * 512u)
+#define BLK_RESP_CAP  (BLK_RESP_HDR + BLK_MAX_COUNT * 512u)
+
+/* Each request carries a tag the reply echoes, so a reply that reaches the
+ * wrong caller is caught instead of handed over as that caller's sector.
+ * guarded by: atomic increments (g_blk_tag); g_blk_mixups the same. */
+static uint32_t g_blk_tag, g_blk_mixups;
 
 static uint8_t       g_blk_req[BLK_REQ_CAP];
 static uint8_t       g_blk_resp[BLK_RESP_CAP];
@@ -1339,20 +1375,21 @@ static uint32_t blk_serve(void *ctx, const uint8_t *req, uint32_t req_len,
     uint8_t  op    = req[0];
     uint32_t lba   = be32_load(&req[1]);
     uint32_t count = be32_load(&req[5]);
+    be32_store(&resp[1], req_len >= BLK_HDR_LEN ? be32_load(&req[9]) : 0u);
 
-    if (op == BLK_REQ_READ && count >= 1 && count <= BLK_MAX_COUNT) {
-        int rc = sdmmc_hw_read_blocks(lba, count, &resp[1]);
+    if (op == BLK_REQ_READ && req_len >= BLK_HDR_LEN && count >= 1 && count <= BLK_MAX_COUNT) {
+        int rc = sdmmc_hw_read_blocks(lba, count, &resp[BLK_RESP_HDR]);
         resp[0] = (rc == 0) ? 0 : 1;
-        return (rc == 0) ? (1u + count * 512u) : 1u;
+        return (rc == 0) ? (BLK_RESP_HDR + count * 512u) : BLK_RESP_HDR;
     }
     if (op == BLK_REQ_WRITE && count >= 1 && count <= BLK_MAX_COUNT &&
         req_len >= BLK_HDR_LEN + count * 512u) {
         int rc = sdmmc_hw_write_blocks(lba, count, &req[BLK_HDR_LEN]);
         resp[0] = (rc == 0) ? 0 : 1;
-        return 1;
+        return BLK_RESP_HDR;
     }
     resp[0] = 1;
-    return 1;
+    return BLK_RESP_HDR;
 }
 
 int sdmmc_task_start(void) {
@@ -1376,31 +1413,53 @@ int sdmmc_task_start(void) {
  * write busy for up to 250 ms (the SD spec's write timeout). */
 #define BLK_CALL_WAIT_MS 500u
 
+static bool blk_reply_is_mine(int n, const uint8_t *resp, uint32_t tag, uint32_t lba, const char *what) {
+    if (n < (int)BLK_RESP_HDR || be32_load(&resp[1]) == tag) return true;
+    __atomic_fetch_add(&g_blk_mixups, 1u, __ATOMIC_RELAXED);
+    printk("[SDMMC] %s lba %lu: the reply was another request's (tag %lu, sent %lu)\n", what,
+           (unsigned long)lba, (unsigned long)be32_load(&resp[1]), (unsigned long)tag);
+    return false;
+}
+
 static int blk_read_chunk(uint32_t lba, uint32_t count, uint8_t *dst) {
     uint8_t req[BLK_HDR_LEN];
+    uint32_t tag = __atomic_add_fetch(&g_blk_tag, 1u, __ATOMIC_RELAXED);
     req[0] = BLK_REQ_READ;
     be32_store(&req[1], lba);
     be32_store(&req[5], count);
+    be32_store(&req[9], tag);
     uint8_t resp[BLK_RESP_CAP];
+    uint64_t t0 = time_get_ms();
     int n = driver_task_call_wait(&g_blk_task, req, sizeof(req), resp, sizeof(resp),
                                   BLK_CALL_WAIT_MS);
-    if (n >= 1 && resp[0] == 0 && (uint32_t)n >= 1u + count * 512u) {
-        memcpy(dst, &resp[1], count * 512u);
+    if (!blk_reply_is_mine(n, resp, tag, lba, "read")) return -1;
+    if (n >= 1 && resp[0] == 0 && (uint32_t)n >= BLK_RESP_HDR + count * 512u) {
+        memcpy(dst, &resp[BLK_RESP_HDR], count * 512u);
         return (int)count;
     }
+    printk("[SDMMC] read lba %lu x%lu failed after %lu ms (call %d, status %d)\n",
+           (unsigned long)lba, (unsigned long)count, (unsigned long)(time_get_ms() - t0), n,
+           n >= 1 ? (int)resp[0] : -1);
     return -1;
 }
 
 static int blk_write_chunk(uint32_t lba, uint32_t count, const uint8_t *src) {
     uint8_t req[BLK_REQ_CAP];
+    uint32_t tag = __atomic_add_fetch(&g_blk_tag, 1u, __ATOMIC_RELAXED);
     req[0] = BLK_REQ_WRITE;
     be32_store(&req[1], lba);
     be32_store(&req[5], count);
+    be32_store(&req[9], tag);
     memcpy(&req[BLK_HDR_LEN], src, count * 512u);
-    uint8_t resp[1];
+    uint8_t resp[BLK_RESP_HDR];
+    uint64_t t0 = time_get_ms();
     int n = driver_task_call_wait(&g_blk_task, req, BLK_HDR_LEN + count * 512u,
                                   resp, sizeof(resp), BLK_CALL_WAIT_MS);
+    if (!blk_reply_is_mine(n, resp, tag, lba, "write")) return -1;
     if (n >= 1 && resp[0] == 0) return (int)count;
+    printk("[SDMMC] write lba %lu x%lu failed after %lu ms (call %d, status %d)\n",
+           (unsigned long)lba, (unsigned long)count, (unsigned long)(time_get_ms() - t0), n,
+           n >= 1 ? (int)resp[0] : -1);
     return -1;
 }
 
@@ -1548,6 +1607,9 @@ void sdmmc_info_report(void) {
             (unsigned)blk_task_call_count());
     cprintf("  shared data path: %u data commands found it busy and reset it first\n",
             (unsigned)g_stale_transfers);
+    cprintf("  DMA: %u transfers ended on the card before the DMA gave the buffer back "
+            "(longest %u us)\n", (unsigned)g_dma_late, (unsigned)g_dma_late_max_us);
+    cprintf("  sdblk: %u replies reached the wrong caller\n", (unsigned)g_blk_mixups);
 
     /* Block 0, re-read now, and the reason this is in a status command rather
      * than in a debugging patch somebody deleted afterwards: "the card

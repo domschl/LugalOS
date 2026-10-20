@@ -132,6 +132,10 @@ def main() -> int:
     c = Console(a.board, log)
     try:
         c.cmd("", 0.5)
+        if "LugalOS" not in c.cmd("cat /proc/version", 2.0):
+            # A board left in download mode by a flash says nothing at all.
+            print(f"{a.board}: the console does not answer (reset it: p4run.py --board {a.board} --run)")
+            return 2
         panel = "up" in c.cmd("lcd", 2.0) and not a.bare
         touch0 = re.search(r"(\d+) I2C errors", c.cmd("ts", 1.5))
         c.cmd("dmesg -c", 2.0)                       # from here on, dmesg is this run's

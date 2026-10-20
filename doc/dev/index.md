@@ -14,6 +14,7 @@ doc/dev/
 ├── kernel/             # Part B: LugalOS Kernel & Driver Architecture
 │   ├── architecture.md    # Microkernel model, memory domains (PMP/Sv39), IPC channels
 │   ├── scheduler.md       # Priority tiers, preemption, cross-hart lock hand-off, SMP
+│   ├── concurrency.md     # Ownership comments, racescan, locks and lock order, waits, stress
 │   ├── logging.md         # Tokenized kernel logging macro system, klogd, rodata dictionary
 │   ├── drivers.md         # Confined U-mode driver framework, PMP register grants, IRQs
 │   └── porting.md         # Board bringup: linker scripts, clock trees, XIP flash
@@ -37,6 +38,7 @@ doc/dev/
 ## 2. [Part B: LugalOS Kernel & Driver Architecture](kernel/architecture.md)
 * **[Microkernel Architecture](kernel/architecture.md)**: Hardware-isolated tasks, PMP regions on NOMMU, Sv39 page tables on MMU, copy-always channels (`chan_t`), and the syscall validation boundary.
 * **[Scheduler & Multicore SMP](kernel/scheduler.md)**: Preemptive round-robin scheduler with static priority tiers, atomic primitives (`spinlock_t`, `ylock_t`), the critical cross-hart scheduler lock hand-off across `ctx_switch()`, and Lazy SMP.
+* **[Concurrency: Shared State, Locks and Waits](kernel/concurrency.md)**: The ownership comment on every shared static and `racescan.py`, spinlocks vs ylocks and the learned lock order, `chan_call_wait()` and timed polls, and the stress harness.
 * **[Tokenized Kernel Logging Macro System](kernel/logging.md)**: Zero-overhead logging capturing format-string addresses in `.rodata` and vararg binary blobs in the ring buffer, expanded on drain by `klogd`.
 * **[Driver Framework & Fault Isolation](kernel/drivers.md)**: Running drivers as confined U-mode tasks with fine-grained PMP hardware register grants and asynchronous message queues.
 * **[Board Porting Guide](kernel/porting.md)**: Step-by-step instructions for porting LugalOS to new RISC-V microcontrollers, clock trees, and XIP memory layouts.

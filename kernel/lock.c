@@ -633,6 +633,23 @@ bool ylock_try_acquire(ylock_t *l) {
 
 void ylock_release(ylock_t *l) {
     uintptr_t f = irq_save();
+    int me = sched_context_id();
+    if (l->depth <= 0 || l->owner != me) {
+        /* Released by a context that does not hold it: the holder is still
+         * inside and would be joined by the next taker. */
+        uint32_t h = hart_id();
+        if (!g_check_busy[h]) {
+            g_lock_faults++;
+            if (g_lock_faults <= LOCK_FAULT_REPORT_MAX) {
+                g_check_busy[h] = true;
+                printk_critical("\n[Lock BUG] ylock %p released by context %d, held by %d "
+                                "(depth %d), from %p. Fault %u.\n", (void *)l, me,
+                                (int)l->owner, (int)l->depth, __builtin_return_address(0),
+                                (unsigned)g_lock_faults);
+                g_check_busy[h] = false;
+            }
+        }
+    }
     if (l->depth > 0 && --l->depth == 0) {
         int o = l->owner;
         if (o >= 0 && o < MAX_TASKS && g_ylocks_held[o] > 0) g_ylocks_held[o]--;

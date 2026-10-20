@@ -654,29 +654,86 @@ Hour runs (2026-10-19, 60 min each, with terminals, typing, 9P/TCP, sensors at 2
   and p9 paths (+ 9P/TCP, rotation) 60,213 sd cycles clean -- the mismatch needs another path
   at the same time.
 
-Open (next session):
-1. **Tab5 black panel at boot, ~1 boot in 10** (3 of 32 resets; owner watching). Not a runtime
-   failure: five 20 min runs that started visible stayed visible (load without rotation;
-   rotation alone; rotation + PSRAM bench; rotation + sd/p9; rotation + console half). In the
-   black state everything readable is normal: scan-out at 58 Hz from the right buffer, frame
-   content white, no DMA error or underrun, backlight on, DCS 0x0A 9c, 0x05 0 errors, 0x0B-0x0F
-   and 0x45 identical to a good boot; SLPOUT/DISPON and repaint do not recover it, a reset does.
-   The readiness wait M5GFX does (ST7121's touch side answering its firmware version) is in
-   `panel_reset()` now; the chip always answers at once, and a black boot still happened.
-   Next: M5GFX's ST7121 timing (DPI 70 MHz; hbp 40, hsync 2, hfp 40, vbp 24, vsync 20, vfp 200;
-   ours 80 MHz), M5GFX's LCD_RST release (input with pull-up, not driven high), and an
-   `lcd reinit` to recover without a reboot. Each needs ~30 observed resets to tell.
-2. **Tab5 sd read-back mismatches** under the full mix (data integrity; no error reported by
-   the driver). Bisect the paths with `only=`.
-3. NANO `/ram0` write failures; the LCD-7B's one 9P failure during the hour.
-   `MAX_TASKS` is 32 now (owner's decision, 2026-10-19; ~1 KB of static RAM per board). It was
-   not the LCD-7B's limit, though: with three terminals open, its fourth worker fails with "Out
-   of memory for 'stress' stack (3 pages)" -- task stacks come from the fast page zone only
-   (`palloc_pages()` in task_create_sized()), ~13 pages free there. Whether stacks of
-   non-critical tasks may come from the bulk zone (PSRAM: slower, and the domains' PMP regions
-   to check) is a decision for the owner. During the hour run something held more than usual:
-   only 1 worker started.
-4. Then the hour runs again on all three boards; pass = STRESS_OK, no trap, no checker report.
+*2026-10-20.* The open items, worked through:
+
+1. **Tab5 black panel at boot.** A TSL2591 on the Grove port (bus 1), placed against the
+   glass, reads the panel: ~180 lux lit, ~2.6 lux black with the backlight on, ~0.9 lux backlight
+   off. `tools/panelboot.py --board tab5 --boots N` resets the board N times and counts lit and
+   black boots from `sensor lux` with the backlight on and off (new: the TSL2591 driver searches
+   every bus and has a device lock; `sensor lux` reads on demand). Back-to-back USB resets make it
+   frequent: 11 black of 30 on the old code (the owner had seen ~1 in 10).
+   `lcd reinit video|panel|phy|link` (new) redoes part of the bring-up on a running board. In the
+   black state `video` and `panel` (the panel's reset and init table) do not bring the picture
+   back; `phy` (the DSI PHY and timing, the panel left alone) does. **The panel is fine every
+   time; on some boots the P4's DSI PHY comes up wrong, and a second setup is right.**
+   **Not fixed.** The rate drifts over the day with the same code (11, 10 and 3 of 30 at
+   different times), so a 30-60 boot run cannot show a small effect, and four changes that each
+   looked like the fix in one run did not hold:
+   - host and PHY powered down before setup (IDF's teardown order): 29/30 lit;
+   - plus 5 ms for the PHY's LDO3 to settle: 60/60, then 10/30 in the afternoon;
+   - plus the PHY's test interface cleared (TESTCLR) before the PLL is programmed, as Linux's
+     dw-mipi-dsi does: 30/30 and 58/60; control without it in the same hour 27/30;
+   - plus a second PHY setup at boot after the panel's init: 59/60.
+   The first three stay (harmless; the order IDF and Linux use); the fourth was removed. A
+   second setup at run time (`lcd reinit phy`) has brought the picture back every time (5 of 5).
+   No boot-log line and no event time differs between lit and black boots (153 lit, 27 black
+   compared).
+   The ST7121 always answers 0 ms after its boot-time reset (the early expander setup has
+   already reset it cold), lit or black; M5GFX's timing is ours already (its 70 MHz pixel
+   clock is 240/3 = 80 MHz through IDF's rounding too).
+2. **NANO `/ram0` write failures: found.** The VFS has 8 file handles for the whole system;
+   with four workers, the shell, the 9P server and the power log the table filled and
+   `vfs_open()` failed at once. Now an open with every handle in use waits up to 500 ms for one
+   to close, and the table's peak, waits and give-ups are counted (`vfs_handle_stats()`, in the
+   stress report). NANO 10 min: peak 8 of 8, 1 open waited, 0 failed, STRESS_OK. LCD-7B 10 min:
+   peak 5, STRESS_OK, 5718 9P/TCP reads clean. `VFS_MAX_HANDLES` stays 8 (each handle is
+   1.1 KB, mostly its /proc buffer): a decision for the owner if waits become common.
+3. **Tab5 SD corruption: narrowed, not fixed.** The stress worker now logs what came back
+   (`first difference at N: got ... want ...`) and reads a second time. What comes back is a
+   valid stress pattern from another write; a second read is just as wrong, so the wrong data is
+   on the card. Directory entries are lost too: twice the power log's `/sd0/log` directory
+   disappeared mid-run (the owner's discharge logs P261019/P261020 with it; copies were taken
+   this morning), files read back with size 0, and opens fail after a create the same task
+   just did. Every FAT32 change holds the volume's lock, so a directory sector is being
+   written back from a stale copy, or a write is not reaching the card.
+   Ruled out: block calls timing out (none logged), a second `fat32_fs_t` on the card, a
+   run-time re-init, two harts (one online), the bounce buffers' placement (internal SRAM on all
+   three boards), stale `RINTSTS`. The NANO's and LCD-7B's cards check clean after their runs.
+   Found and fixed on the way (real, but not the whole cause):
+   - **SD/SDIO reads completed on DATA_OVER while the DMA was still writing the buffer**: the
+     descriptor's OWN bit now has to clear (DESC_DIC leaves IDSTS.RI unset). On the Tab5, 475
+     transfers in the first 10 s ended on the card before the DMA gave the buffer back (up to
+     7 us); `sdinfo` counts them.
+   - **FAT32 ignored device errors**: a failed data write returned success, a failed read
+     returned whatever was in the buffer, and a directory sector that did not read was written
+     back over its 16 entries. All checked now; `tests/host/fat32_host.c` part 4 fails on the
+     old code.
+   - **`fsck [/sd0|/ram0]`** (new, read-only `fat32_check()`): cross-links, chains into free
+     entries, wrong sizes, lost clusters. Tab5's card: 0 cross-links, 0 broken chains, 1 wrong
+     size (a screenshot), 1481 lost clusters (the lost directory's files); NANO and LCD-7B clean.
+   Ruled out since, each by a 10-20 min run that still failed:
+   - the C6 link (LLP off at boot: 10 errors; it flaps all through a run, but that is not it);
+   - the power log, the one `/sd0` writer only the Tab5 has (`power log auto off`: 7 errors);
+   - a reply reaching the wrong `sdblk` caller: requests carry a tag the reply echoes, 0 wrong
+     (`sdinfo`);
+   - a lock released by a context that does not hold it: `ylock_release()` now reports that as a
+     lock fault, 0 in a failing run;
+   - leaked mount references (0 after a run, `vfs_mount_users()` in the stress report), VFS
+     handle shortage (opens wait now; 0 gave up);
+   - the card itself: `sdbench w 2048` three times, verified, from one task.
+   Bisected on the board (`stress 300 norot only=sd,X`): sd alone and sd with each other path
+   (ram, shell, log, p9, chan, fmt) are clean, about 87,000 sd iterations; the full board mix
+   alone reproduces it (1-2 errors in 7,000-15,000). So it needs load, not one path.
+   Open: stack depth. `-fstack-usage` on the SD path: a worker's deepest write is ~5.4 KB
+   (`blk_write_chunk` alone 2.1 KB) in a 12 KB stack, fine; but a task with a smaller stack
+   reaching the card, or interrupt frames on top, could pass the bottom without touching the
+   canary word that `ps` checks. Next: `ps` high-water marks after a failing run, and a guard
+   region below each stack.
+   Found on the way: `/proc/ps` (and `ps`) stop at the VFS handle's 896-byte buffer, so with
+   more than 13 tasks the rest -- the shells and the stress workers -- are cut off ("--
+   truncated --"). The high-water check above needs them.
+4. `tools/stress.py` refuses a board that does not answer (one left in download mode by a
+   flash ran 10 minutes against nothing).
 
 ### 63.8 Close
 

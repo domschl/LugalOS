@@ -6236,6 +6236,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "tzselftest") == 0) {
         tz_selftest();
         return;
+    } else if (strcmp(cmd_line, "fsck") == 0 || strncmp(cmd_line, "fsck ", 5) == 0) {
+        const char *a = cmd_line + 4;
+        while (*a == ' ') a++;
+        vfs_fsck(a);
+        return;
     } else if (strcmp(cmd_line, "df -r") == 0) {
         /* 38.0: recount free space from the FAT, repairing a stale FSInfo. */
         vfs_fat_recount();

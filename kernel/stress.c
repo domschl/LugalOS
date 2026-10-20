@@ -138,9 +138,39 @@ static void do_file(const worker_t *w, unsigned path, const char *dir) {
     uint32_t len = 16u + rnd() % (sizeof data - 16u);
     uint32_t seed = rnd();
     for (uint32_t i = 0; i < len; i++) data[i] = (char)('a' + (seed + i * 7u) % 26u);
-    if (vfs_write(name, data, len) < 0) { fail(path, "write"); return; }
+    int fd = vfs_open(name, VFS_O_WRITE | VFS_O_CREATE | VFS_O_TRUNC);
+    if (fd < 0) { printk("[stress] %s: open for writing failed\n", name); fail(path, "write"); return; }
+    int wn = vfs_pwrite(fd, data, len, 0);
+    vfs_close(fd);
+    if (wn != (int)len) {
+        printk("[stress] %s: wrote %d of %lu\n", name, wn, (unsigned long)len);
+        fail(path, "write");
+        return;
+    }
     int n = vfs_read(name, back, sizeof back);
-    if (n != (int)len || memcmp(data, back, len) != 0) fail(path, "read back differs");
+    if (n != (int)len || memcmp(data, back, len) != 0) {
+        /* What came back instead says where it came from: zeros, a shifted
+         * copy, another worker's letters, or a sector of something else. */
+        uint32_t at = 0;
+        while (at < len && (int)at < n && data[at] == back[at]) at++;
+        char got[17], want[17];
+        uint32_t k = 0;
+        for (; k < 16u && at + k < len; k++) {
+            char c = (int)(at + k) < n ? back[at + k] : '~';
+            got[k] = (c >= ' ' && c < 0x7f) ? c : '.';
+            want[k] = data[at + k];
+        }
+        got[k] = want[k] = '\0';
+        /* Read again: right this time means the card holds the data and the
+         * first read was what failed. */
+        char again[200];
+        int n2 = vfs_read(name, again, sizeof again);
+        bool second_ok = n2 == (int)len && memcmp(data, again, len) == 0;
+        printk("[stress] %s: wrote %lu, read %d, first difference at %lu: got \"%s\" want \"%s\"; "
+               "read again: %s\n", name, (unsigned long)len, n, (unsigned long)at, got, want,
+               second_ok ? "right" : "still wrong");
+        fail(path, "read back differs");
+    }
     if (vfs_remove(name) < 0) fail(path, "remove");
 }
 
@@ -234,6 +264,7 @@ static void worker_body(void *arg) {
 typedef struct {
     uint32_t lock_faults, inversions, klog_gaps;
     i2c_fail_counts_t i2c;
+    vfs_handle_stats_t vfs;
 } snapshot_t;
 
 static void snapshot(snapshot_t *s) {
@@ -243,6 +274,7 @@ static void snapshot(snapshot_t *s) {
     s->inversions = o.inversions;
     s->klog_gaps = klog_gaps();
     i2c_fail_counts(&s->i2c);
+    vfs_handle_stats(&s->vfs);
 }
 
 void stress_set_rotation(bool on) { g_rotate = on; }
@@ -339,8 +371,14 @@ int stress_run(uint32_t seconds) {
             (unsigned long)(s1.i2c.arb_lost - s0.i2c.arb_lost),
             (unsigned long)(s1.i2c.incomplete - s0.i2c.incomplete),
             (unsigned long)(s1.klog_gaps - s0.klog_gaps), (unsigned long)full, (unsigned long)stuck);
+    uint32_t vnone = s1.vfs.none - s0.vfs.none;
+    cprintf("  VFS handles: at most %lu of %u open, %lu opens waited for one, %lu found none\n",
+            (unsigned long)s1.vfs.peak, (unsigned)VFS_MAX_HANDLES,
+            (unsigned long)(s1.vfs.waits - s0.vfs.waits), (unsigned long)vnone);
+    cprintf("  mount references now: sd0 %lu, ram0 %lu\n", (unsigned long)vfs_mount_users("sd0"),
+            (unsigned long)vfs_mount_users("ram0"));
     bool ok = mixed >= W_MIX_MIN && errors == 0 && lf == 0 && inv == 0 && i2c == 0 &&
-              full == 0 && stuck == 0;
+              full == 0 && stuck == 0 && vnone == 0;
     if (mixed < W_MIX_MIN) cprintf("  only %u workers: the task table is full\n", mixed);
     cprintf(ok ? "STRESS_OK\n" : "STRESS_FAIL\n");
     session_release(&g_stress_session);

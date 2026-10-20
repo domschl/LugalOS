@@ -37,11 +37,9 @@ static struct {
     uint8_t           bus;
     tsl2591_gain_t    gain;
     tsl2591_integ_t   integ;
-
     tsl2591_reading_t last;
     uint64_t          last_ms;
     bool              have_last;
-
     uint32_t          read_count;
     uint32_t          fail_count;
     const char       *last_fail;

@@ -39,6 +39,7 @@ LugalOS supports multiple mounted FAT32 volumes:
 | cp   | Copy a file | cp /flash0/init.lisp /sd0/init.lisp |
 | rm  | Delete a file | rm /sd0/test.txt |
 | df [-r] | Show filesystem disk usage (-r recounts FAT) | df |
+| fsck [/sd0\|/ram0] | Read-only FAT32 check: every directory and cluster chain walked; reports cross-linked clusters, chains running into free entries, files whose size does not match their chain, and lost clusters (in use, reached from nowhere). Changes nothing. | fsck |
 | format  | Format a volume as FAT32 (destroys data) | format /ram0 |
 ```
 

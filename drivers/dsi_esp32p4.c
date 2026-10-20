@@ -340,6 +340,18 @@ static bool dsi_bus_init(void) {
 #endif
     FSET(HP_SYS_CLKRST_PERI_CLK_CTRL03_REG, HP_SYS_CLKRST_REG_MIPI_DSI_DPHY_PLL_REFCLK_EN, 1);
 
+    /* Host and PHY powered down first (mipi_dsi_hal_deinit()): a reset other
+     * than a power cycle leaves them as the last run left them. */
+    FSET(DSI_HOST_PWR_UP_REG, DSI_HOST_SHUTDOWNZ, 0);
+    REG(DSI_HOST_PHY_RSTZ_REG) = 0;
+    time_delay_us(100);
+    /* The PHY's test interface cleared before the PLL is programmed through
+     * it, as Linux's dw-mipi-dsi does (dw_mipi_dsi_dphy_init()); IDF does
+     * not. */
+    REG(DSI_HOST_PHY_TST_CTRL0_REG) = 1u << DSI_HOST_PHY_TESTCLR_S;
+    time_delay_us(10);
+    REG(DSI_HOST_PHY_TST_CTRL0_REG) = 0;
+
     /* mipi_dsi_hal_init() */
     FSET(DSI_HOST_PHY_IF_CFG_REG, DSI_HOST_N_LANES, LANES - 1u);
     FSET(DSI_HOST_PWR_UP_REG, DSI_HOST_SHUTDOWNZ, 1);
@@ -2543,6 +2555,9 @@ bool dsi_lcd_init(void) {
 
     backlight(false);                 /* dark until there is something to show */
     ldo3_on();
+    /* The PHY's supply settled before the PHY starts: 200 us is IDF's LDO
+     * delay, and 5 ms costs nothing at boot. */
+    wait_ms(5);
     if (!dsi_bus_init()) goto fail;
     dpi_config();
     panel_reset();
@@ -2882,6 +2897,46 @@ void dsi_lcd_command(const char *args) {
     if (strcmp(args, "repaint") == 0) {
         lcdterm_repaint();
         term_redraw();
+        return;
+    }
+    if (strncmp(args, "reinit", 6) == 0) {
+        /* `lcd reinit video|panel|link`: redo part of the bring-up on a running
+         * panel, to find which part a black panel needs (video: restart the
+         * stream; panel: its reset and init table; link: the DSI PHY and timing
+         * too). The scan-out is stopped and restarted under the frame locks;
+         * the panel's reset and table (~1.1 s of waits, I2C to the expander)
+         * run without them, with nothing being scanned out. */
+        const char *m = skip_ws(args + 6);
+        int lvl = strcmp(m, "video") == 0 ? 0 : strcmp(m, "panel") == 0 ? 1 :
+                  strcmp(m, "link") == 0 ? 2 : strcmp(m, "phy") == 0 ? 3 : -1;
+        if (lvl < 0) { cprintf("usage: lcd reinit video|panel|phy|link\n"); return; }
+        if (!g_up) { cprintf("lcd: not up\n"); return; }
+        frame_begin();
+        scan_stop();
+        FSET(DSI_HOST_MODE_CFG_REG, DSI_HOST_CMD_VIDEO_MODE, 1);
+        frame_end();
+        bool ok = true;
+        if (lvl >= 2) {
+            ok = dsi_bus_init();
+            if (ok) {
+                dpi_config();
+                bridge_format(g_fb_bpp, g_fb_fmt == FB_RGB565 ? 2u : 12u);
+            }
+        }
+        if (ok && (lvl == 1 || lvl == 2)) {
+            panel_reset();
+            ok = panel_init();
+            uint8_t pm = 0;
+            if (dcs_read(0x0A, &pm, 1) == 1) g_pwr_mode = pm;
+        }
+        frame_begin();
+        FSET(DSI_HOST_MODE_CFG_REG, DSI_HOST_CMD_VIDEO_MODE, 0);
+        scan_start();
+        frame_end();
+        lcdterm_repaint();
+        for (int i = 0; i < (g_double_buffered ? 2 : 1); i++) term_sync_post();
+        cprintf("lcd reinit %s: %s, power mode 0x%02x\n", m, ok ? "done" : g_reason,
+                (unsigned)(g_pwr_mode & 0xff));
         return;
     }
     if (strcmp(args, "test text") == 0) {

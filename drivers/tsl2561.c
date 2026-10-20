@@ -5,6 +5,7 @@
 #include "kernel/console.h"
 #include "kernel/sched.h"
 #include "kernel/time.h"
+#include "kernel/lock.h"
 #include <string.h>
 
 /* AMS / TAOS TSL2561 Light-to-Digital Converter.
@@ -60,20 +61,22 @@
 #define B7T 0x0018u  /* 0.00146 * 2^LUX_SCALE */
 #define M7T 0x0012u  /* 0.00112 * 2^LUX_SCALE */
 
+/* guarded by: g_dev_lock (below), which init and every measurement take:
+ * the hub's sampler, `sensor` and Lisp may all measure, and `sensor init`
+ * probes again under them. */
 static struct {
     bool              detected;
     uint8_t           addr;
     tsl2561_gain_t    gain;
     tsl2561_integ_t   integ;
-
     tsl2561_reading_t last;
     uint64_t          last_ms;
     bool              have_last;
-
     uint32_t          read_count;
     uint32_t          fail_count;
     const char       *last_fail;
 } g;
+static ylock_t g_dev_lock;
 
 static bool fail(const char *where) {
     g.last_fail = where;
@@ -140,7 +143,7 @@ int32_t tsl2561_compensate_lux(uint16_t ch0, uint16_t ch1, uint8_t gain, uint8_t
     return (int32_t)lux_c100;
 }
 
-bool tsl2561_init(void) {
+static bool tsl2561_init_locked(void) {
     static const uint8_t s_addrs[] = {
         TSL2561_ADDR_FLOAT, /* 0x39 */
         TSL2561_ADDR_HIGH,  /* 0x49 */
@@ -192,7 +195,7 @@ bool tsl2561_init(void) {
     return false;
 }
 
-bool tsl2561_read(tsl2561_reading_t *out) {
+static bool tsl2561_read_locked(tsl2561_reading_t *out) {
     if (!out || !g.detected) return false;
 
     /* Power up device */
@@ -327,3 +330,18 @@ sensor_dev_t tsl2561_sensor_dev = {
     .ops       = &tsl2561_ops,
     .priv      = NULL,
 };
+
+/* The driver's entry points, under g_dev_lock. */
+bool tsl2561_init(void) {
+    ylock_acquire(&g_dev_lock);
+    bool r = tsl2561_init_locked();
+    ylock_release(&g_dev_lock);
+    return r;
+}
+
+bool tsl2561_read(tsl2561_reading_t *out) {
+    ylock_acquire(&g_dev_lock);
+    bool r = tsl2561_read_locked(out);
+    ylock_release(&g_dev_lock);
+    return r;
+}
