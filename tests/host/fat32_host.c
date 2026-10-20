@@ -27,6 +27,7 @@
 
 #include <signal.h>
 #include <stdio.h>
+#include <sys/wait.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -470,6 +471,68 @@ static void check_volume(void) {
            g_failures ? "FAILED" : "ok");
 }
 
+/* --- Part 6: fat32_mkfs(), judged by dosfstools ---
+ * A partitioned card image: mounts, takes files, our check finds it clean,
+ * and so does fsck.fat when the host has it. */
+static uint8_t *g_big;
+static uint32_t g_big_blocks;
+static int big_read(block_dev_t *d, void *buf, uint32_t lba, uint32_t n) {
+    (void)d;
+    if (lba >= g_big_blocks || n > g_big_blocks - lba) return -1;
+    memcpy(buf, g_big + (size_t)lba * SECTOR, (size_t)n * SECTOR);
+    return 0;
+}
+static int big_write(block_dev_t *d, const void *buf, uint32_t lba, uint32_t n) {
+    (void)d;
+    if (lba >= g_big_blocks || n > g_big_blocks - lba) return -1;
+    memcpy(g_big + (size_t)lba * SECTOR, buf, (size_t)n * SECTOR);
+    return 0;
+}
+
+static void mkfs_card(void) {
+    g_big_blocks = 72u * 2048u;                     /* 72 MB: FAT32 needs ~36 MB at least */
+    g_big = calloc(g_big_blocks, SECTOR);
+    block_dev_t dev = { "card", SECTOR, g_big_blocks, big_read, big_write };
+    memset(g_big, 0xA5, (size_t)g_big_blocks * SECTOR);   /* an old format's leftovers */
+    CHECK(fat32_mkfs(&dev, "testcard", 0x12345678u, NULL) == 0, "mkfs");
+    fat32_fs_t fs;
+    memset(&fs, 0, sizeof fs);
+    CHECK(fat32_init_quiet(&fs, &dev, true) == 0, "mount after mkfs");
+    CHECK(fs.fsinfo_lba != 0 && fs.free_count != FAT32_FREE_UNKNOWN, "FSInfo not found after mkfs");
+    CHECK((fs.data_start_sector % 8192u) == 0, "data area at %u, not on a 4 MB boundary", fs.data_start_sector);
+    uint32_t free0 = fs.free_count;
+    static uint8_t data[20000];
+    for (int i = 0; i < (int)sizeof data; i++) data[i] = (uint8_t)i;
+    CHECK(fat32_mkdir(&fs, "DIR") == 0, "mkdir");
+    CHECK(fat32_write_file(&fs, "DIR/A.BIN", data, sizeof data) == 0, "write");
+    CHECK(fat32_write_file(&fs, "B.TXT", "hello", 5) == 0, "write");
+    fat32_sync(&fs);
+    uint32_t nb = (fs.total_clusters + 2u + 7u) / 8u;
+    uint8_t *bits = malloc(nb);
+    uint32_t q[16];
+    fat32_check_t r;
+    CHECK(fat32_check(&fs, bits, nb, q, 16, &r) == 0 && r.cross + r.bad_chain + r.size + r.lost == 0,
+          "our check on a fresh card: %u cross %u chain %u size %u lost", r.cross, r.bad_chain, r.size, r.lost);
+    free(bits);
+    CHECK(free0 == fs.total_clusters - 1u, "FSInfo free %u, want %u", free0, fs.total_clusters - 1u);
+    const char *img = "../../build/host/mkfs_card.img";
+    FILE *f = fopen(img, "wb");
+    if (f) {
+        fwrite(g_big, SECTOR, g_big_blocks, f);
+        fclose(f);
+        /* The partition, as fsck.fat wants it: offset 4 MB. */
+        int rc = system("command -v fsck.fat >/dev/null 2>&1 || exit 77; "
+                        "dd if=../../build/host/mkfs_card.img of=../../build/host/mkfs_part.img "
+                        "bs=512 skip=8192 status=none && fsck.fat -n ../../build/host/mkfs_part.img >/dev/null");
+        int code = WIFEXITED(rc) ? WEXITSTATUS(rc) : -1;
+        if (code == 77) printf("fat32_host: fsck.fat not installed, skipped\n");
+        else CHECK(code == 0, "fsck.fat found problems (exit %d): fsck.fat -n build/host/mkfs_part.img", code);
+    }
+    free(g_big);
+    printf("fat32_host: mkfs card image (spc %u, %u clusters) %s\n", fs.bpb.sec_per_clus,
+           fs.total_clusters, g_failures ? "FAILED" : "ok, fsck.fat agrees");
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);   /* in order with sanitizer reports on stderr */
     int iterations = argc > 1 ? atoi(argv[1]) : 2000;
@@ -481,6 +544,8 @@ int main(int argc, char **argv) {
     failed_transfers();
     if (g_failures) return 1;
     check_volume();
+    if (g_failures) return 1;
+    mkfs_card();
     if (g_failures) return 1;
     corrupt_images(iterations, seed);
     free(g_disk);

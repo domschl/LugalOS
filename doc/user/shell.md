@@ -43,7 +43,7 @@ LugalOS supports multiple mounted FAT32 volumes:
 | `rm <file>` | Delete a file | `rm /sd0/test.txt` |
 | `df [-r]` | Show filesystem disk usage (`-r` recounts FAT) | `df` |
 | `fsck [/sd0\|/ram0]` | Read-only FAT32 check: every directory and cluster chain walked; reports cross-linked clusters, chains running into free entries, files whose size does not match their chain, and lost clusters (in use, reached from nowhere). Changes nothing. | `fsck` |
-| `format <vol>` | Format a volume as FAT32 (destroys data) | `format /ram0` |
+| `format <vol> [label]` / `mkfs.vfat <vol> [label]` | Format a volume as FAT32 (destroys data). `/sd0` gets a card's layout, as `mkfs.vfat` or the SD Association's formatter make it: an MBR with one FAT32 partition from 4 MB, 32 KB clusters, the data area on a 4 MB boundary, FSInfo and backup boot sector; `label` up to 11 characters (default `LUGALOS`). About 20 s for 32 GB. `/ram0` gets a bare volume. | `mkfs.vfat /sd0 MYCARD` |
 
 ---
 

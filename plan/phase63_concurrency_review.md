@@ -725,10 +725,19 @@ Hour runs (2026-10-19, 60 min each, with terminals, typing, 9P/TCP, sensors at 2
    and the 40 MHz high-speed mode (CMD6 switch, kept: reads 46 % faster). Also fixed on the
    way: SD/SDIO reads completed on DATA_OVER before the IDMAC released the buffer (the
    descriptor's OWN bit is now waited for), and FAT32 ignored device errors.
-   Found on the way, not fixed: the stress `log` path outruns the Tab5's USB-Serial/JTAG
-   console; with no reader the console driver spins on a full FIFO and slows everything, and
-   a few times the USB console stopped answering until the cable was replugged (the board ran
-   on; the keyboard worked).
+   Found on the way and fixed afterwards (2026-10-21): the stress `log` path outran the Tab5's
+   USB-Serial/JTAG console. With no reader, `usj_putc()` spun up to two million register reads
+   per byte waiting for the FIFO, on one path under g_tx_batch_lock with interrupts masked: the
+   board crawled (~11,000 read-back checks in 5 minutes instead of ~170,000) and twice the USB
+   console stopped answering until the cable was replugged. Now a full FIFO is waited out for
+   at most 2 ms by the clock (never with interrupts masked), then output is dropped until a
+   host reads again, counted (`uartstats`: usb_dropped) and reported in one line when it does.
+   With nobody reading: full speed, console answering at once. With a reader: a 60 s run's
+   report arrives at 60.4 s. Also: `klog_drain()` held console_lock until caught up, which a
+   flood never is; it now gives the lock back every 2 KB.
+- The Tab5's card reformatted with the new `mkfs.vfat` (`fat32_mkfs()`: MBR, FAT32 from 4 MB,
+  32 KB clusters, data on a 4 MB boundary, FSInfo, backup boot sector; host-tested against
+  dosfstools' `fsck.fat`) and synced over 9P/TCP (`p9sync.py --tcp`, new): `fsck` clean.
 4. `tools/stress.py` refuses a board that does not answer (one left in download mode by a
    flash ran 10 minutes against nothing).
 
@@ -736,9 +745,43 @@ Hour runs (2026-10-19, 60 min each, with terminals, typing, 9P/TCP, sensors at 2
 
 - `doc/dev/kernel/` gains a concurrency page: the ownership comment rule, the `chan_call`
   wait helper, the interrupt-shared protocols, the lock ranks, and how to run
-  `racescan.py` and the stress harness.
-- AGENTS.md: the rules in short, next to the existing comment standard.
-- `racescan.py` runs in `tests/runner.py` and fails on an unmarked new static.
+  `racescan.py` and the stress harness. *Done (2026-10-20).*
+- AGENTS.md: the rules in short, next to the existing comment standard. *Done.*
+- `racescan.py` runs in `tests/runner.py` and fails on an unmarked new static. *Done
+  (owner's decision 3), with a message that explains the rules.*
+- **Remove the SD read-back checker** (drivers/sdmmc_esp32p4.c, `wchk_*`: a checksum of every
+  sector written, compared on every read, 128 KB of PSRAM) once 63.9 and the hour runs are
+  done, or keep it as an off-by-default debug option. Owner: keep it until the end of the
+  phase.
+
+### 63.9 Shared hardware engines and interrupt paths
+
+The Tab5's SD corruption was a multi-step operation on a chip-wide unit (the cache
+controller's sync registers: address, size, start, poll) done by two contexts that could
+interleave, with no lock. Each step was right; the sequence was not atomic. Nothing in
+63.1-63.6 looked for that shape: racescan finds shared *variables*, and the class-5 pass
+covered read-modify-write of single words. This milestone looks for it everywhere.
+
+- **Inventory.** Every ROM routine called after boot, and every driver sequence that programs
+  more than one register of a unit another context can also program. Candidates on the P4:
+  SPI flash operations at run time (identity record, /flash0, OTA), the GPIO matrix and
+  IO_MUX set up by drivers after boot, PMU/LDO programming, the interrupt matrix and CLIC
+  routing, the DW-GDMA channels, the LEDC, the PSRAM/MSPI controller (`psram` diagnostics),
+  the RNG. On the C6: the ROM's cache suspend/resume around flash writes. On the RP2350: the
+  XIP cache maintenance and the PIO/DMA blocks. racescan's MMIO list (files whose registers
+  are reached from two or more contexts, 16 on the Tab5) is the starting point; it gains a
+  list of ROM calls by context.
+- **Interrupt paths.** Each attached handler (63.5 listed nine plus the tick): what it touches
+  that a task also touches *as a sequence*, whether it can preempt a task in the middle of one,
+  and whether it may itself be re-entered (nested interrupt levels on the CLIC, a second
+  hart). The trap entry's own work (the stack check added in 63.7) counts too.
+- **Verdict per item**, as for statics: `single task:`, `guarded by:`, `interrupt-shared:`
+  or `accepted:` at the sequence, and a lock (or an owner task) where none holds. IDF's
+  convention is the reference: a critical section around each HAL sequence on a shared
+  engine (`esp_cache_msync()`, `PERIPH_RCC_ATOMIC()`).
+- **Test.** The stress harness gains a path that drives one shared engine from a second
+  context (cache maintenance on a scratch buffer, flash reads/writes of a scratch sector)
+  while the others run; the SD read-back checker stays armed for it.
 
 ---
 

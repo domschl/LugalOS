@@ -27,6 +27,7 @@
 #include "drivers/sensor_hub.h"
 #include "drivers/piousb.h"
 #include "kernel/time.h"
+#include "kernel/random.h"
 #include "kernel/sched.h"
 #include "kernel/devirq.h"
 #include "kernel/printk.h"
@@ -2994,9 +2995,10 @@ void vfs_fsck(const char *path) {
     cprintf("%s\n", rc != 0 ? "fsck: INCOMPLETE (read error)" : problems ? "fsck: DAMAGED" : "fsck: clean");
 }
 
-static int vfs_format_volume(mount_entry_t *m, const char *path);
+static int vfs_format_volume(mount_entry_t *m, const char *path, const char *label);
 
-static int vfs_format_on(mount_entry_t *m, const char *rel, bool is_root, const char *path) {
+static int vfs_format_on(mount_entry_t *m, const char *rel, bool is_root, const char *path,
+                         const char *label) {
     (void)rel; (void)is_root;
     if (!path) return -1;
     /* Not under open files: fat32_init() starts the volume over, its lock
@@ -3007,12 +3009,14 @@ static int vfs_format_on(mount_entry_t *m, const char *rel, bool is_root, const 
         printk("[VFS Error] format: '/%s/' is in use\n", m->name);
         return -1;
     }
-    int rc = vfs_format_volume(m, path);
+    int rc = vfs_format_volume(m, path, label);
     if (q) mount_ready(q);
     return rc;
 }
 
-static int vfs_format_volume(mount_entry_t *m, const char *path) {
+static void format_progress(uint32_t pct) { cprintf("format: %lu%%\r", (unsigned long)pct); }
+
+static int vfs_format_volume(mount_entry_t *m, const char *path, const char *label) {
     if (m && strcmp(m->name, "sd0") == 0) {
 #if defined(CONFIG_BOARD_RP2350)
         block_dev_t *dev = spisd_get_device();
@@ -3023,7 +3027,16 @@ static int vfs_format_volume(mount_entry_t *m, const char *path) {
 #else
         block_dev_t *dev = virtio_blk_get_device();
 #endif
-        if (!dev || fat32_format(dev) != 0) return -1;
+        /* A card gets a card's layout (fat32_mkfs(): MBR, aligned FAT32,
+         * FSInfo), not the bare volume /ram0 gets. */
+        uint32_t vol_id = 0;
+        random_bytes(&vol_id, sizeof vol_id);
+        if (!dev) return -1;
+        if (fat32_mkfs(dev, label, vol_id, format_progress) == 0) {
+            cprintf("\n");
+        } else if (dev->num_blocks >= 131072u || fat32_format(dev) != 0) {
+            return -1;      /* too small for FAT32 proper (QEMU's image): the bare volume */
+        }
         g_sd_mounted = (fat32_init(&g_fat32_sd, dev) == 0);
         return g_sd_mounted ? 0 : -1;
     } else if (m && strcmp(m->name, "ram0") == 0) {
@@ -3039,11 +3052,13 @@ static int vfs_format_volume(mount_entry_t *m, const char *path) {
     return -1;
 }
 
-int vfs_format(const char *path) {
+int vfs_format(const char *path) { return vfs_format_label(path, NULL); }
+
+int vfs_format_label(const char *path, const char *label) {
     bool is_root;
     const char *rel = NULL;
     mount_entry_t *m = mount_get(path, &rel, &is_root);
-    int r = vfs_format_on(m, rel, is_root, path);
+    int r = vfs_format_on(m, rel, is_root, path, label);
     mount_put(m);
     return r;
 }

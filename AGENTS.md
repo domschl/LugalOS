@@ -384,6 +384,9 @@ uv run --project host/p9lib python3 tools/p9sync.py \
   --src build/esp32p4-lcd7b/sd_root` (or `--p4 nano`) puts 9P on the console with
   `p9share`, syncs over SLIP and turns it off again, opening the port only the way
   `p4run.py` does (a plain pyserial open or close resets the LCD-7B).
+* **Tab5** (its USB-Serial/JTAG console cannot carry 9P): over TCP. Set a key on the board
+  (`p9key HEX`), then `uv run --project host/p9lib python3 tools/p9sync.py --tcp ADDR --key HEX
+  --src build/esp32p4-tab5/sd_root` (ADDR from `cat /proc/net`).
 * **Preservation Policy:** `tools/p9sync.py` is additive and idempotent. It creates missing directories (e.g. `/sd0/cas/`), updates files that differ in size, and **strictly preserves user files** (such as `/sd0/CHESS/` games and `/sd0/SYSTEM/HISTORY.LIS`).
 
 ### Flashing & Running ESP32-P4-NANO

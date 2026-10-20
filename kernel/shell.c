@@ -6236,6 +6236,19 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "tzselftest") == 0) {
         tz_selftest();
         return;
+    } else if (strncmp(cmd_line, "mkfs.vfat ", 10) == 0) {
+        /* `mkfs.vfat VOL [LABEL]`: `format` under the name people look for. */
+        char vol[32] = {0}, label[16] = {0};
+        const char *a = cmd_line + 10;
+        while (*a == ' ') a++;
+        unsigned i = 0;
+        while (*a && *a != ' ' && i < sizeof vol - 1) vol[i++] = *a++;
+        while (*a == ' ') a++;
+        i = 0;
+        while (*a && *a != ' ' && i < sizeof label - 1) label[i++] = *a++;
+        int rc = vfs_format_label(vol, label[0] ? label : NULL);
+        cprintf("mkfs.vfat %s: %s\n", vol, rc == 0 ? "done" : "failed");
+        return;
     } else if (strcmp(cmd_line, "fsck") == 0 || strncmp(cmd_line, "fsck ", 5) == 0) {
         const char *a = cmd_line + 4;
         while (*a == ' ') a++;
@@ -6736,6 +6749,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         /* Received bytes the hardware dropped. Its own line for the same
          * reason the TX half has one: the exact matches above keep working. */
         printk("[UartStats] rx_overruns=%u\n", uart_rx_overruns());
+#if defined(CONFIG_BOARD_ESP32P4) && defined(CONFIG_USBJTAG_BASE)
+        printk("[UartStats] usb_dropped=%u (console bytes no USB host read)\n", uart_usj_dropped());
+#endif
         return;
     } else if (strcmp(cmd_line, "blkstats") == 0) {
         /* Driver task verify: exposes blk_task_call_count() so a test can confirm the sdblk/blk

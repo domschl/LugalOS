@@ -6010,7 +6010,9 @@ static lisp_val_t *prim_format(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     lisp_val_t *a1 = lisp_list_ref(args, 0);
     if (!a1) return &false_val;
-    return (vfs_format(get_str_val(a1)) == 0) ? &true_val : &false_val;
+    lisp_val_t *a2 = lisp_list_ref(args, 1);
+    const char *label = a2 ? get_str_val(a2) : NULL;
+    return (vfs_format_label(get_str_val(a1), label) == 0) ? &true_val : &false_val;
 }
 
 static lisp_val_t *prim_time(lisp_val_t *args, lisp_val_t *env) {

@@ -504,6 +504,125 @@ int fat32_format_quiet(block_dev_t *dev, bool quiet) {
     return 0;
 }
 
+/* --- fat32_mkfs ---------------------------------------------------------- */
+
+#define MKFS_ALIGN      8192u      /* 4 MB in sectors: the partition start and the data area */
+#define MKFS_MIN_CLUST  65525u     /* fewer clusters is FAT16 by definition */
+
+int fat32_mkfs(block_dev_t *dev, const char *label, uint32_t vol_id, void (*progress)(uint32_t pct)) {
+    if (!dev || !dev->write_blocks) return -1;
+    const uint32_t total = dev->num_blocks;
+    if (total <= MKFS_ALIGN * 2u) return -1;
+    const uint32_t part_start = MKFS_ALIGN;
+    const uint32_t part_size = total - part_start;
+
+    /* Largest cluster (sectors, a power of two up to 64) that still leaves
+     * enough clusters; and the FAT and reserved sizes that put the data area
+     * on the alignment boundary. */
+    uint32_t spc = 64, reserved = 0, fat_sz = 0, clusters = 0;
+    for (; spc >= 1; spc >>= 1) {
+        /* The FAT sized for the most clusters the partition could hold; the
+         * padding that aligns the data area then only takes clusters away,
+         * so the FAT is never short (fsck.fat checks exactly that). */
+        uint32_t most = (part_size - 32u) / spc;
+        fat_sz = ((most + 2u) * 4u + 511u) / 512u;
+        uint32_t data_abs = part_start + 32u + 2u * fat_sz;
+        reserved = 32u + (MKFS_ALIGN - data_abs % MKFS_ALIGN) % MKFS_ALIGN;
+        clusters = (part_size - reserved - 2u * fat_sz) / spc;
+        if (clusters >= MKFS_MIN_CLUST) break;
+    }
+    if (spc < 1 || clusters < MKFS_MIN_CLUST) return -1;
+    const uint32_t data_rel = reserved + 2u * fat_sz;
+
+    char lab[11];
+    memset(lab, ' ', sizeof lab);
+    const char *l = label && *label ? label : "LUGALOS";
+    for (int i = 0; i < 11 && l[i]; i++) {
+        char c = l[i];
+        lab[i] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : c;
+    }
+
+    fat32_sector_t s;
+    /* The MBR: one primary partition, FAT32 with LBA, no boot code. */
+    memset(&s, 0, sizeof s);
+    s.raw[0x1B8] = (uint8_t)vol_id; s.raw[0x1B9] = (uint8_t)(vol_id >> 8);
+    s.raw[0x1BA] = (uint8_t)(vol_id >> 16); s.raw[0x1BB] = (uint8_t)(vol_id >> 24);
+    uint8_t *pe = &s.raw[0x1BE];
+    pe[0] = 0x00;                                  /* not bootable */
+    pe[1] = 0xFE; pe[2] = 0xFF; pe[3] = 0xFF;      /* CHS: "use the LBA fields" */
+    pe[4] = 0x0C;                                  /* FAT32, LBA */
+    pe[5] = 0xFE; pe[6] = 0xFF; pe[7] = 0xFF;
+    memcpy(&pe[8], &part_start, 4);
+    memcpy(&pe[12], &part_size, 4);
+    s.raw[510] = 0x55; s.raw[511] = 0xAA;
+    if (dev->write_blocks(dev, s.raw, 0, 1) != 0) return -1;
+
+    /* The volume boot record, at the partition's sector 0 and 6. */
+    memset(&s, 0, sizeof s);
+    fat32_bpb_t *b = &s.bpb;
+    b->jmp_boot[0] = 0xEB; b->jmp_boot[1] = 0x58; b->jmp_boot[2] = 0x90;
+    memcpy(b->oem_name, "MSWIN4.1", 8);
+    b->bytes_per_sec = 512;
+    b->sec_per_clus = (uint8_t)spc;
+    b->reserved_sec_cnt = (uint16_t)reserved;
+    b->num_fats = 2;
+    b->media = 0xF8;
+    b->sec_per_trk = 63;
+    b->num_heads = 255;
+    b->hidd_sec = part_start;
+    b->tot_sec32 = part_size;
+    b->fat_sz32 = fat_sz;
+    b->root_clus = 2;
+    b->fs_info = 1;
+    b->bk_boot_sec = 6;
+    b->drv_num = 0x80;
+    b->boot_sig = 0x29;
+    b->vol_id = vol_id;
+    memcpy(b->vol_lab, lab, 11);
+    memcpy(b->fil_sys_type, "FAT32   ", 8);
+    s.raw[510] = 0x55; s.raw[511] = 0xAA;
+    if (dev->write_blocks(dev, s.raw, part_start, 1) != 0) return -1;
+    if (dev->write_blocks(dev, s.raw, part_start + 6u, 1) != 0) return -1;
+
+    /* FSInfo at 1 and 7: every cluster but the root's free, the next from 3. */
+    memset(&s, 0, sizeof s);
+    s.words[FSINFO_W_LEAD] = FSINFO_LEAD_SIG;
+    s.words[FSINFO_W_STRUC] = FSINFO_STRUC_SIG;
+    s.words[FSINFO_W_FREE] = clusters - 1u;
+    s.words[FSINFO_W_NXT] = 3;
+    s.words[FSINFO_W_TRAIL] = FSINFO_TRAIL_SIG;
+    if (dev->write_blocks(dev, s.raw, part_start + 1u, 1) != 0) return -1;
+    if (dev->write_blocks(dev, s.raw, part_start + 7u, 1) != 0) return -1;
+
+    /* The rest of the reserved area (a stale backup boot sector or FSInfo
+     * from an earlier format must not survive), both FATs, the root cluster. */
+    memset(&s, 0, sizeof s);
+    for (uint32_t r = 2; r < reserved; r++) {
+        if (r == 6 || r == 7) continue;
+        if (dev->write_blocks(dev, s.raw, part_start + r, 1) != 0) return -1;
+    }
+    uint32_t zero_end = data_rel + spc, last_pct = 101;
+    for (uint32_t r = reserved; r < zero_end; r++) {
+        if (dev->write_blocks(dev, s.raw, part_start + r, 1) != 0) return -1;
+        uint32_t pct = (uint32_t)((uint64_t)(r - reserved) * 100u / (zero_end - reserved));
+        if (progress && pct != last_pct && pct % 10u == 0) { progress(pct); last_pct = pct; }
+    }
+    /* Each FAT's first sector: media, end-of-chain, the root a chain of one. */
+    s.words[0] = 0x0FFFFFF8;
+    s.words[1] = 0x0FFFFFFF;
+    s.words[2] = 0x0FFFFFFF;
+    for (uint32_t f = 0; f < 2u; f++) {
+        if (dev->write_blocks(dev, s.raw, part_start + reserved + f * fat_sz, 1) != 0) return -1;
+    }
+    /* The root directory's first entry: the volume label. */
+    memset(&s, 0, sizeof s);
+    memcpy(s.entries[0].name, lab, 11);
+    s.entries[0].attr = FAT32_ATTR_VOLUME_ID;
+    if (dev->write_blocks(dev, s.raw, part_start + data_rel, 1) != 0) return -1;
+    if (progress) progress(100);
+    return 0;
+}
+
 int fat32_init(fat32_fs_t *fs, block_dev_t *dev) {
     return fat32_init_quiet(fs, dev, false);
 }

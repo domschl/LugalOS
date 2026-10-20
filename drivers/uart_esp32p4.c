@@ -67,6 +67,7 @@
 #include "kernel/lock.h"
 #include "kernel/chan.h"
 #include "kernel/printk.h"
+#include "kernel/time.h"
 #include "arch/trap.h"
 #include "arch/esp32p4_intr.h"
 #include "lugalos_config.h"
@@ -296,7 +297,7 @@ static void uart_commit(uintptr_t base) {
 #define USJ_OUT_AVAIL           (1u << 2)
 #define USJ_OUT_RECV_PKT_INT    (1u << 2)
 #define USJ_FIFO_BYTES          64u
-#define USJ_TX_SPIN_LIMIT       2000000u
+#define USJ_TX_WAIT_US          2000u   /* how long a full FIFO is waited out, at most */
 
 /* accepted: the uart task's (and the boot's, before it exists), except that
  * uart_critical_putc() writes them from any context, by design: a critical
@@ -304,6 +305,7 @@ static void uart_commit(uintptr_t base) {
  * packet early or late. */
 static volatile unsigned g_usj_pending;
 static volatile bool     g_usj_host_gone;
+static volatile uint32_t g_usj_dropped, g_usj_dropped_total;
 
 static void usj_flush(void) {
     if (g_usj_pending) {
@@ -312,26 +314,60 @@ static void usj_flush(void) {
     }
 }
 
-static void usj_putc(char c) {
-    if (g_usj_host_gone) {
-        if (!(REG(USJ_EP1_CONF) & USJ_IN_FREE)) {
-            REG(USJ_EP1_CONF) = USJ_WR_DONE;
-            return;
-        }
-        g_usj_host_gone = false;
-    } else {
-        unsigned n = 0;
-        while (!(REG(USJ_EP1_CONF) & USJ_IN_FREE)) {
-            if (++n >= USJ_TX_SPIN_LIMIT) {
-                REG(USJ_EP1_CONF) = USJ_WR_DONE;
-                g_usj_host_gone = true;
-                g_usj_pending = 0;
-                return;
-            }
-        }
-    }
+static void usj_fifo_put(char c) {
     REG(USJ_EP1) = (uint32_t)(uint8_t)c;
     if (++g_usj_pending >= USJ_FIFO_BYTES || c == '\n') usj_flush();
+}
+
+/* One byte to the USB host, never holding anyone up for long.
+ *
+ * The FIFO only empties while a host reads the port. With none (the cable in
+ * but no terminal open, or a host slower than the console), a byte is dropped
+ * rather than waited for: `may_wait` callers (the uart task) wait at most
+ * USJ_TX_WAIT_US by the clock, others -- under g_tx_batch_lock with
+ * interrupts masked -- not at all. It used to spin up to two million register
+ * reads per byte, interrupts masked on some paths: a console nobody read froze
+ * the hart for tens of milliseconds at a time, and a log burst slowed the
+ * whole board to a crawl. Once the host is found gone, bytes are dropped
+ * without waiting until it reads again; then a line says how many were lost. */
+static void usj_putc(char c, bool may_wait) {
+    if (g_usj_host_gone) {
+        if (!(REG(USJ_EP1_CONF) & USJ_IN_FREE)) { g_usj_dropped++; return; }
+        g_usj_host_gone = false;
+        if (g_usj_dropped) {
+            char note[64];
+            int n = ksnprintf(note, sizeof note, "\r\n[console: %lu bytes not sent: no USB host read]\r\n",
+                              (unsigned long)g_usj_dropped);
+            g_usj_dropped_total += g_usj_dropped;
+            g_usj_dropped = 0;
+            for (int i = 0; i < n && (REG(USJ_EP1_CONF) & USJ_IN_FREE); i++) usj_fifo_put(note[i]);
+            usj_flush();
+        }
+    }
+    if (!(REG(USJ_EP1_CONF) & USJ_IN_FREE)) {
+        bool room = false;
+        if (may_wait) {
+            uint64_t deadline = time_get_us() + USJ_TX_WAIT_US;
+            room = time_poll_until_us((REG(USJ_EP1_CONF) & USJ_IN_FREE) != 0, deadline);
+        }
+        if (!room) {
+            g_usj_host_gone = true;
+            g_usj_pending = 0;
+            g_usj_dropped++;
+            return;
+        }
+    }
+    usj_fifo_put(c);
+}
+
+uint32_t uart_usj_dropped(void) { return g_usj_dropped_total + g_usj_dropped; }
+
+/* Whether usj_putc(c, false) will take a byte now without dropping it: the
+ * FIFO has room, or the host is already known gone (the byte is dropped
+ * anyway). For callers that must not wait -- they stop, release their lock
+ * and come back, as they do for the UART's own FIFO. */
+static bool usj_ready(void) {
+    return g_usj_host_gone || (REG(USJ_EP1_CONF) & USJ_IN_FREE) != 0;
 }
 #endif /* CONFIG_USBJTAG_BASE */
 
@@ -476,7 +512,7 @@ static void uart_isr(void *ctx) {
 static void uart_hw_putc_blocking_ex(char c, bool may_block) {
     if (!g_uart_base) return;
 #if defined(CONFIG_USBJTAG_BASE)
-    usj_putc(c);
+    usj_putc(c, true);         /* task or boot context: the bounded wait is fine */
 #endif
     if (hw_uart_tx_room()) {
         REG(UART_FIFO(g_uart_base)) = (uint8_t)c;
@@ -893,15 +929,32 @@ static void uart_tx_send(const char *local, uint32_t len) {
  * of it (47.8, the split Rreads). Popped under the lock, bytes leave in batch
  * order whoever drains them. */
 static void uart_drain_polling(unsigned h) {
+#if defined(CONFIG_USBJTAG_BASE)
+    uint64_t usj_stall_since = 0;   /* when the USB FIFO last stopped this drain */
+#endif
     for (;;) {
         uintptr_t flags = spin_lock_irqsave(&g_tx_batch_lock);
         uint32_t len = g_tx_batch_len[h], n = 0;
         if (!g_uart_base) n = len;      /* before uart_init(): dropped, as uart_hw_putc_*() did */
+#if defined(CONFIG_USBJTAG_BASE)
+        /* The USB FIFO is waited for the way the UART's is: by stopping,
+         * unlocking and coming back, never under the lock. No progress for
+         * USJ_TX_WAIT_US means no host is reading; then it is dropped. */
+        if (n < len && !usj_ready()) {
+            uint64_t now = time_get_us();
+            if (!usj_stall_since) usj_stall_since = now;
+            else if (now - usj_stall_since > USJ_TX_WAIT_US) g_usj_host_gone = true;
+        } else {
+            usj_stall_since = 0;
+        }
+        while (n < len && hw_uart_tx_room() && usj_ready()) {
+#else
         while (n < len && hw_uart_tx_room()) {
+#endif
             char c = g_tx_batch[h][n++];
             REG(UART_FIFO(g_uart_base)) = (uint8_t)c;
 #if defined(CONFIG_USBJTAG_BASE)
-            usj_putc(c);
+            usj_putc(c, false);     /* under g_tx_batch_lock, interrupts masked */
 #endif
         }
         if (n > 0) {
@@ -1014,7 +1067,7 @@ void uart_puts(const char *s) {
  * safe to call from inside the ISR that owns them. */
 void uart_critical_putc(char c) {
 #if defined(CONFIG_USBJTAG_BASE)
-    usj_putc(c);
+    usj_putc(c, true);          /* bounded: a critical line is worth 2 ms */
     usj_flush();
 #endif
     if (!g_uart_base) return;

@@ -96,6 +96,8 @@ int vfs_mkdir(const char *path);
 int vfs_rmdir(const char *path);
 int vfs_cp(const char *src_path, const char *dst_path);
 int vfs_format(const char *path);
+/* /sd0 gets a card layout (fat32_mkfs()) labelled `label` (NULL: "LUGALOS"). */
+int vfs_format_label(const char *path, const char *label);
 void vfs_fat_recount(void);   /* `df -r`, 38.0 */
 void vfs_fsck(const char *path);   /* `fsck [/sd0|/ram0]`: read-only check, see fat32_check() */
 void vfs_ls(const char *path);

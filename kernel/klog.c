@@ -392,6 +392,8 @@ static uint32_t klog_take(char *buf, uint32_t cap, uint64_t *lost) {
     return 0;
 }
 
+#define KLOG_DRAIN_PASS_MAX 2048u   /* bytes written per hold of console_lock */
+
 void klog_drain(void) {
     /* Safe to call from anywhere, because it refuses everywhere it would not
      * be. That is what lets the console stream's own entry points call it
@@ -418,6 +420,14 @@ void klog_drain(void) {
      * may -- see kernel/klogd.c. */
     if (klog_total() == g_cursor && g_gap_bytes == 0) return;
 
+    /* A bounded pass, then the lock goes back: a log produced as fast as the
+     * console can write it was never caught up with, so a pass that ran until
+     * caught up held console_lock indefinitely, and every cprintf() -- the
+     * shell's replies, a stress run's report -- waited behind the whole flood
+     * (the Tab5, `stress` with its log path: minutes). klogd comes back for
+     * the rest at once; cprintf() gets in between. */
+    uint32_t pass = 0;
+again:
     console_lock();
 
     /* Whole records, in order, until caught up. The chunk is a stack buffer
@@ -449,6 +459,14 @@ void klog_drain(void) {
         }
         if (n == 0) break;
         sinks_write(chunk, n);
+        pass += n;
+        if (pass >= KLOG_DRAIN_PASS_MAX) {
+            console_unlock();
+            console_flush();
+            pass = 0;
+            sched_yield();
+            goto again;
+        }
     }
 
     console_unlock();
