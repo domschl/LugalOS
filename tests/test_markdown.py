@@ -89,6 +89,35 @@ def run_qemu_tests() -> bool:
             print(f"    [FAIL] ribbon list:\n{log}")
             all_passed = False
 
+        # Test terminal markdown viewer (md command)
+        print("  Checking 'md /sd0/help/markdown_showcase.md' pager...")
+        ok, log = session.send_and_expect("md /sd0/help/markdown_showcase.md", r"(More|End of)", timeout=4.0)
+        if ok:
+            print("    [PASS] md pager displayed markdown document")
+            session.send_and_expect("q", r">", timeout=2.0)
+        else:
+            print(f"    [FAIL] md pager:\n{log}")
+            all_passed = False
+
+        # Test man command
+        print("  Checking 'man shell' pager...")
+        ok, log = session.send_and_expect("man shell", r"(More|End of)", timeout=4.0)
+        if ok:
+            print("    [PASS] man shell opened help manual")
+            session.send_and_expect("q", r">", timeout=2.0)
+        else:
+            print(f"    [FAIL] man shell:\n{log}")
+            all_passed = False
+
+        # Test ea config command
+        print("  Checking 'ea config'...")
+        ok, log = session.send_and_expect("ea config", r"LLM Endpoint Configuration:", timeout=4.0)
+        if ok:
+            print("    [PASS] ea config returned configuration")
+        else:
+            print(f"    [FAIL] ea config:\n{log}")
+            all_passed = False
+
     finally:
         session.close()
         if arch_img.exists():

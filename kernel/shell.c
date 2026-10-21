@@ -103,6 +103,7 @@
 #include "fs/p9_link.h"
 #include "fs/9p.h"
 #include "fs/gemtext.h"
+#include "fs/markdown.h"
 #include "net/netif.h"
 #include "net/ip.h"
 #include "net/tcp.h"
@@ -624,26 +625,36 @@ static bool resolve_help_path(const char *topic, char *out_path, size_t out_sz) 
     for (char *p = clean; *p; p++) {
         if (*p == '.') dot = p;
     }
-    if (dot && (strcmp(dot, ".gmi") == 0 || strcmp(dot, ".txt") == 0)) {
+    if (dot && (strcmp(dot, ".md") == 0 || strcmp(dot, ".gmi") == 0 || strcmp(dot, ".txt") == 0)) {
         *dot = '\0';
     }
 
-    /* 1. Try .gmi on /sd0 */
-    ksnprintf(out_path, out_sz, "/sd0/help/%s.gmi", clean);
+    /* 1. Try .md on /sd0 */
+    ksnprintf(out_path, out_sz, "/sd0/help/%s.md", clean);
     int fd = vfs_open(out_path, VFS_O_READ);
     if (fd >= 0) { vfs_close(fd); return true; }
 
-    /* 2. Try .gmi on /flash0 */
+    /* 2. Try .gmi on /sd0 */
+    ksnprintf(out_path, out_sz, "/sd0/help/%s.gmi", clean);
+    fd = vfs_open(out_path, VFS_O_READ);
+    if (fd >= 0) { vfs_close(fd); return true; }
+
+    /* 3. Try .md on /flash0 */
+    ksnprintf(out_path, out_sz, "/flash0/help/%s.md", clean);
+    fd = vfs_open(out_path, VFS_O_READ);
+    if (fd >= 0) { vfs_close(fd); return true; }
+
+    /* 4. Try .gmi on /flash0 */
     ksnprintf(out_path, out_sz, "/flash0/help/%s.gmi", clean);
     fd = vfs_open(out_path, VFS_O_READ);
     if (fd >= 0) { vfs_close(fd); return true; }
 
-    /* 3. Try exact path on /sd0 */
+    /* 5. Try exact path on /sd0 */
     ksnprintf(out_path, out_sz, "/sd0/help/%s", topic);
     fd = vfs_open(out_path, VFS_O_READ);
     if (fd >= 0) { vfs_close(fd); return true; }
 
-    /* 4. Try exact path on /flash0 */
+    /* 6. Try exact path on /flash0 */
     ksnprintf(out_path, out_sz, "/flash0/help/%s", topic);
     fd = vfs_open(out_path, VFS_O_READ);
     if (fd >= 0) { vfs_close(fd); return true; }
@@ -668,10 +679,11 @@ static bool find_link_target(int fd, char link_digit, char *out_target, size_t t
 
     char buf[512];
     uint64_t file_offset = 0;
-    char line[GEM_LINE_MAX];
+    char line[MD_LINE_MAX];
     size_t line_pos = 0;
-    bool in_pre = false;
-    gem_line_t parsed;
+    bool in_code = false;
+    bool in_math = false;
+    md_line_t parsed;
 
     for (;;) {
         int n = vfs_pread(fd, buf, sizeof(buf), file_offset);
@@ -684,13 +696,28 @@ static bool find_link_target(int fd, char link_digit, char *out_target, size_t t
             if (ch == '\n') {
                 line[line_pos] = '\0';
                 line_pos = 0;
-                if (gemtext_parse_line(line, &in_pre, &parsed)) {
-                    if (parsed.type == GEM_LINE_LINK) {
+                if (md_parse_line(line, &in_code, &in_math, &parsed)) {
+                    if (parsed.type == MD_LINE_GEM_LINK) {
                         current_idx++;
                         if (current_idx == target_idx) {
                             strncpy(out_target, parsed.url, target_sz - 1);
                             out_target[target_sz - 1] = '\0';
                             return true;
+                        }
+                    } else if (parsed.type == MD_LINE_TEXT || parsed.type == MD_LINE_ULIST ||
+                               parsed.type == MD_LINE_OLIST || parsed.type == MD_LINE_QUOTE) {
+                        md_span_iter_t iter;
+                        md_span_init(&iter, parsed.text);
+                        md_span_t span;
+                        while (md_span_next(&iter, &span)) {
+                            if (span.style & MD_STYLE_LINK) {
+                                current_idx++;
+                                if (current_idx == target_idx) {
+                                    strncpy(out_target, span.link_url, target_sz - 1);
+                                    out_target[target_sz - 1] = '\0';
+                                    return true;
+                                }
+                            }
                         }
                     }
                 }
@@ -702,13 +729,28 @@ static bool find_link_target(int fd, char link_digit, char *out_target, size_t t
 
     if (line_pos > 0) {
         line[line_pos] = '\0';
-        if (gemtext_parse_line(line, &in_pre, &parsed)) {
-            if (parsed.type == GEM_LINE_LINK) {
+        if (md_parse_line(line, &in_code, &in_math, &parsed)) {
+            if (parsed.type == MD_LINE_GEM_LINK) {
                 current_idx++;
                 if (current_idx == target_idx) {
                     strncpy(out_target, parsed.url, target_sz - 1);
                     out_target[target_sz - 1] = '\0';
                     return true;
+                }
+            } else if (parsed.type == MD_LINE_TEXT || parsed.type == MD_LINE_ULIST ||
+                       parsed.type == MD_LINE_OLIST || parsed.type == MD_LINE_QUOTE) {
+                md_span_iter_t iter;
+                md_span_init(&iter, parsed.text);
+                md_span_t span;
+                while (md_span_next(&iter, &span)) {
+                    if (span.style & MD_STYLE_LINK) {
+                        current_idx++;
+                        if (current_idx == target_idx) {
+                            strncpy(out_target, span.link_url, target_sz - 1);
+                            out_target[target_sz - 1] = '\0';
+                            return true;
+                        }
+                    }
                 }
             }
         }
@@ -717,58 +759,177 @@ static bool find_link_target(int fd, char link_digit, char *out_target, size_t t
     return false;
 }
 
-static void pager_print_gem_line(const char *raw, bool is_gmi, bool *in_pre, int *link_idx) {
-    if (!is_gmi) {
+static void print_span_chars(const char *text, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        console_putc(text[i]);
+    }
+}
+
+static void pager_print_spans(const char *text, int *link_idx) {
+    if (!text) return;
+    md_span_iter_t iter;
+    md_span_init(&iter, text);
+    md_span_t span;
+
+    while (md_span_next(&iter, &span)) {
+        if (span.style & MD_STYLE_CODE) {
+            cprintf("\033[36m`");
+            print_span_chars(span.text, span.len);
+            cprintf("`\033[0m");
+        } else if (span.style & MD_STYLE_MATH) {
+            cprintf("\033[1;35m$");
+            print_span_chars(span.text, span.len);
+            cprintf("$\033[0m");
+        } else if (span.style & MD_STYLE_LINK) {
+            if (link_idx) (*link_idx)++;
+            int num = link_idx ? *link_idx : 0;
+            if (num > 0 && num <= 9) {
+                cprintf("\033[1;33m[%d]\033[0m \033[4m%s\033[0m \033[2m(%s)\033[0m",
+                        num, span.link_text, span.link_url);
+            } else {
+                cprintf("\033[4m%s\033[0m \033[2m(%s)\033[0m",
+                        span.link_text, span.link_url);
+            }
+        } else if (span.style & MD_STYLE_IMAGE) {
+            cprintf("\033[2m[Image: %s]\033[0m", span.link_text);
+        } else if (span.style & MD_STYLE_FOOTNOTE) {
+            cprintf("\033[1;33m[^%s]\033[0m", span.footnote_id);
+        } else if ((span.style & MD_STYLE_BOLD) && (span.style & MD_STYLE_ITALIC)) {
+            cprintf("\033[1;4m");
+            print_span_chars(span.text, span.len);
+            cprintf("\033[0m");
+        } else if (span.style & MD_STYLE_BOLD) {
+            cprintf("\033[1m");
+            print_span_chars(span.text, span.len);
+            cprintf("\033[0m");
+        } else if (span.style & MD_STYLE_ITALIC) {
+            cprintf("\033[4m");
+            print_span_chars(span.text, span.len);
+            cprintf("\033[0m");
+        } else {
+            print_span_chars(span.text, span.len);
+        }
+    }
+}
+
+void pager_print_md_line(const char *raw, bool is_formatted, bool *in_code, bool *in_math, int *link_idx) {
+    if (!is_formatted) {
         cprintf("%s\n", raw);
         return;
     }
-    gem_line_t gem;
-    if (!gemtext_parse_line(raw, in_pre, &gem)) {
+    md_line_t md;
+    if (!md_parse_line(raw, in_code, in_math, &md)) {
         cprintf("%s\n", raw);
         return;
     }
 
-    switch (gem.type) {
-    case GEM_LINE_H1:
-        cprintf("\033[1;36m# %s\033[0m\n", gem.text);
+    switch (md.type) {
+    case MD_LINE_H1:
+        cprintf("\033[1;36m# %s\033[0m\n", md.text);
         break;
-    case GEM_LINE_H2:
-        cprintf("\033[1;32m## %s\033[0m\n", gem.text);
+    case MD_LINE_H2:
+        cprintf("\033[1;32m## %s\033[0m\n", md.text);
         break;
-    case GEM_LINE_H3:
-        cprintf("\033[1;33m### %s\033[0m\n", gem.text);
+    case MD_LINE_H3:
+        cprintf("\033[1;33m### %s\033[0m\n", md.text);
         break;
-    case GEM_LINE_LIST:
-        cprintf("  • %s\n", gem.text);
+    case MD_LINE_H4:
+        cprintf("\033[1;35m#### %s\033[0m\n", md.text);
         break;
-    case GEM_LINE_QUOTE:
-        cprintf("  │ \033[3m%s\033[0m\n", gem.text);
+    case MD_LINE_ULIST:
+        for (int i = 0; i < md.indent_level; i++) cprintf("  ");
+        cprintf("  • ");
+        pager_print_spans(md.text, link_idx);
+        cprintf("\n");
         break;
-    case GEM_LINE_PRE_TOGGLE:
-        if (*in_pre) {
-            if (gem.alt[0]) cprintf("\033[2m```%s\033[0m\n", gem.alt);
+    case MD_LINE_OLIST:
+        for (int i = 0; i < md.indent_level; i++) cprintf("  ");
+        cprintf("  \033[1m%d.\033[0m ", md.order_num);
+        pager_print_spans(md.text, link_idx);
+        cprintf("\n");
+        break;
+    case MD_LINE_QUOTE:
+        cprintf("  │ \033[3m");
+        pager_print_spans(md.text, link_idx);
+        cprintf("\033[0m\n");
+        break;
+    case MD_LINE_ALERT:
+        {
+            const char *badge = "NOTE";
+            const char *col = "\033[1;34m";
+            if (md.alert_type == MD_ALERT_TIP) { badge = "TIP"; col = "\033[1;32m"; }
+            else if (md.alert_type == MD_ALERT_WARNING) { badge = "WARNING"; col = "\033[1;33m"; }
+            else if (md.alert_type == MD_ALERT_IMPORTANT) { badge = "IMPORTANT"; col = "\033[1;35m"; }
+            else if (md.alert_type == MD_ALERT_CAUTION) { badge = "CAUTION"; col = "\033[1;31m"; }
+            cprintf("  │ %s[%s]\033[0m ", col, badge);
+            pager_print_spans(md.text, link_idx);
+            cprintf("\n");
+        }
+        break;
+    case MD_LINE_HRULE:
+        cprintf("  ────────────────────────────────────────────────────────────\n");
+        break;
+    case MD_LINE_TABLE_HDR:
+    case MD_LINE_TABLE_ROW:
+        {
+            char cells[MD_TABLE_MAX_COLS][MD_CELL_MAX];
+            int cols = md_parse_table_cells(raw, cells);
+            if (cols > 0) {
+                cprintf("  │");
+                for (int c = 0; c < cols; c++) {
+                    if (md.type == MD_LINE_TABLE_HDR) {
+                        cprintf(" \033[1m%-16s\033[0m │", cells[c]);
+                    } else {
+                        cprintf(" %-16s │", cells[c]);
+                    }
+                }
+                cprintf("\n");
+            }
+        }
+        break;
+    case MD_LINE_TABLE_SEP:
+        cprintf("  ├───────────────────┼───────────────────┤\n");
+        break;
+    case MD_LINE_FOOTNOTE_DEF:
+        cprintf("  \033[1;33m[^%s]\033[0m ", md.footnote_id);
+        pager_print_spans(md.text, link_idx);
+        cprintf("\n");
+        break;
+    case MD_LINE_MATH_TOGGLE:
+        cprintf("  \033[2m$$ math\033[0m\n");
+        break;
+    case MD_LINE_MATH_TEXT:
+        cprintf("    \033[1;35m%s\033[0m\n", md.text);
+        break;
+    case MD_LINE_CODE_TOGGLE:
+        if (*in_code) {
+            if (md.lang[0]) cprintf("\033[2m```%s\033[0m\n", md.lang);
             else cprintf("\033[2m```\033[0m\n");
         } else {
             cprintf("\033[2m```\033[0m\n");
         }
         break;
-    case GEM_LINE_PRE_TEXT:
-        cprintf("  %s\n", gem.text);
+    case MD_LINE_CODE_TEXT:
+        cprintf("    \033[36m%s\033[0m\n", md.text);
         break;
-    case GEM_LINE_LINK:
+    case MD_LINE_GEM_LINK:
         (*link_idx)++;
         if (*link_idx <= 9) {
-            cprintf("  \033[1;33m[%d]\033[0m ➔ %s \033[2m(%s)\033[0m\n", *link_idx, gem.label, gem.url);
+            cprintf("  \033[1;33m[%d]\033[0m ➔ %s \033[2m(%s)\033[0m\n", *link_idx, md.label, md.url);
         } else {
-            cprintf("  \033[1;33m[=>]\033[0m ➔ %s \033[2m(%s)\033[0m\n", gem.label, gem.url);
+            cprintf("  \033[1;33m[=>]\033[0m ➔ %s \033[2m(%s)\033[0m\n", md.label, md.url);
         }
         break;
-    case GEM_LINE_BLANK:
+    case MD_LINE_TOC:
+        cprintf("  \033[1;34m[Table of Contents]\033[0m\n");
+        break;
+    case MD_LINE_BLANK:
         cprintf("\n");
         break;
-    case GEM_LINE_TEXT:
+    case MD_LINE_TEXT:
     default:
-        cprintf("%s\n", gem.text);
+        pager_print_spans(md.text, link_idx);
+        cprintf("\n");
         break;
     }
 }
@@ -876,13 +1037,17 @@ static void pager_view_file_locked(const char *initial_resource, bool is_topic, 
 
         uint64_t file_offset = 0;
         int row_count = 0;
-        char line_buf[GEM_LINE_MAX];
+        char line_buf[MD_LINE_MAX];
         int line_pos = 0;
         bool quit = false;
         bool reload_topic = false;
-        bool is_gmi = (strstr(open_path, ".gmi") != NULL) || is_topic ||
+        bool is_md = (strstr(open_path, ".md") != NULL) ||
+                      (strstr(cur_resource, ".md") != NULL);
+        bool is_gmi = (strstr(open_path, ".gmi") != NULL) ||
                       (strstr(cur_resource, ".gmi") != NULL) || is_spartan;
-        bool in_pre = false;
+        bool is_formatted = is_md || is_gmi || is_topic;
+        bool in_code = false;
+        bool in_math = false;
         int link_idx = 0;
         bool seeking_section = (cur_subheading != NULL && cur_subheading[0] != '\0');
         int section_lvl = 0;
@@ -904,13 +1069,13 @@ static void pager_view_file_locked(const char *initial_resource, bool is_topic, 
                 }
                 if (line_pos > 0) {
                     line_buf[line_pos] = '\0';
-                    pager_print_gem_line(line_buf, is_gmi, &in_pre, &link_idx);
+                    pager_print_md_line(line_buf, is_formatted, &in_code, &in_math, &link_idx);
                     line_pos = 0;
                 }
                 cprintf("\n-- End of %s (%sb: Back, q: Quit%s) -- ",
                         cur_title[0] ? cur_title : cur_resource,
                         s_help_depth > 0 ? "" : "",
-                        is_gmi ? ", 1..9: Link" : "");
+                        is_formatted ? ", 1..9: Link" : "");
                 for (;;) {
                     char c = console_getc();
                     if (c == 'q' || c == 'Q' || c == 27 || c == '\n' || c == '\r') {
@@ -976,12 +1141,12 @@ static void pager_view_file_locked(const char *initial_resource, bool is_topic, 
                         }
                     }
 
-                    pager_print_gem_line(line_buf, is_gmi, &in_pre, &link_idx);
+                    pager_print_md_line(line_buf, is_formatted, &in_code, &in_math, &link_idx);
                     row_count++;
 
                     if (row_count >= max_rows) {
                         cprintf("-- More (Space: Next, Enter: Line, b: Back, Ctrl-H/?: Help, q: Quit%s) -- ",
-                                is_gmi ? ", 1..9: Link" : "");
+                                is_formatted ? ", 1..9: Link" : "");
                         for (;;) {
                             char c = console_getc();
                             if (c == 'q' || c == 'Q' || c == 27 || c == 3) {
@@ -1234,10 +1399,9 @@ static void cmd_man(const char *topic) {
     cmd_help(topic);
 }
 
-static void cmd_gem(const char *arg);
-static void cmd_gem_locked(const char *arg) {
+static void cmd_md_or_gem_locked(const char *arg, const char *cmd_name) {
     if (!arg || !*arg) {
-        cprintf("Usage: gem <file.gmi | topic | spartan://host[:port]/path>\n");
+        cprintf("Usage: %s <file.md | file.gmi | topic | spartan://host[:port]/path>\n", cmd_name);
         return;
     }
 
@@ -1275,7 +1439,17 @@ static void cmd_gem_locked(const char *arg) {
         return;
     }
 
-    cprintf("gem: cannot open '%s'\n", arg);
+    cprintf("%s: cannot open '%s'\n", cmd_name, arg);
+}
+
+static void cmd_gem(const char *arg);
+static void cmd_gem_locked(const char *arg) {
+    cmd_md_or_gem_locked(arg, "gem");
+}
+
+static void cmd_md(const char *arg);
+static void cmd_md_locked(const char *arg) {
+    cmd_md_or_gem_locked(arg, "md");
 }
 
 static void cmd_reader(const char *arg) {
@@ -5367,6 +5541,14 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         while (*arg == ' ') arg++;
         cmd_gem(arg);
         return;
+    } else if (strcmp(cmd_line, "md") == 0) {
+        cmd_md(NULL);
+        return;
+    } else if (strncmp(cmd_line, "md ", 3) == 0) {
+        const char *arg = cmd_line + 3;
+        while (*arg == ' ') arg++;
+        cmd_md(arg);
+        return;
     } else if (strcmp(cmd_line, "reader") == 0) {
         cmd_reader(NULL);
         return;
@@ -7161,6 +7343,12 @@ static void cmd_help_topic(const char *topic, const char *subheading) {
 static void cmd_gem(const char *arg) {
     if (!session_claim(&g_pager_session, "help")) return;
     cmd_gem_locked(arg);
+    session_release(&g_pager_session);
+}
+
+static void cmd_md(const char *arg) {
+    if (!session_claim(&g_pager_session, "help")) return;
+    cmd_md_locked(arg);
     session_release(&g_pager_session);
 }
 
