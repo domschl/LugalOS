@@ -9,8 +9,9 @@
  * interactive: true if running in interactive multi-turn REPL mode.
  * auto_confirm: true if shell actions should execute without asking [y/N].
  * model_override: optional model name, or NULL to use default.
+ * open_reader: true to save final answer to /ram0/ea_ans.md and launch Ribbon Reader.
  * Returns 0 on success, negative error code on failure. */
-int ea_run(const char *prompt, bool interactive, bool auto_confirm, const char *model_override);
+int ea_run(const char *prompt, bool interactive, bool auto_confirm, const char *model_override, bool open_reader);
 
 /* Evaluates an individual tool request (lisp, sh, cc, help) and captures output. */
 int ea_eval_tool(const char *tool, const char *input, char *out_buf, size_t out_max);

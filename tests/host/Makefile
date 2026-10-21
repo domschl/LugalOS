@@ -22,10 +22,13 @@ BASE    := -std=gnu11 -g -fno-omit-frame-pointer $(INC) $(WARN) -DLUGALOS_HOST_T
 ASAN    := -O1 -fsanitize=address,undefined -fno-sanitize-recover=all
 PLAIN   := -O1
 
-HARNESSES := fat32_host chibicc_host p9_host net_host kobj_host uheap_host uprintf_host nvs_host ws2812_host llp_host ota_host gemtext_host spartan_host llm_host
+HARNESSES := fat32_host chibicc_host p9_host net_host kobj_host uheap_host uprintf_host nvs_host ws2812_host llp_host ota_host gemtext_host spartan_host llm_host markdown_host latex_math_host
 
+latex_math_host_SRC := latex_math_host.c $(ROOT)/fs/latex_math.c $(ROOT)/drivers/font_math.c $(ROOT)/drivers/latex_layout.c $(ROOT)/drivers/font_serif.c $(ROOT)/drivers/font_noto_serif.c $(ROOT)/drivers/canvas1.c $(ROOT)/drivers/font8x16.c $(ROOT)/drivers/fbtext.c
+
+markdown_host_SRC := markdown_host.c $(ROOT)/fs/markdown.c
 llm_host_SRC     := llm_host.c $(ROOT)/net/dns.c $(ROOT)/net/http.c $(ROOT)/net/llm.c
-spartan_host_SRC := spartan_host.c $(ROOT)/net/spartan.c $(ROOT)/fs/gemtext.c
+spartan_host_SRC := spartan_host.c $(ROOT)/net/spartan.c $(ROOT)/fs/gemtext.c $(ROOT)/fs/markdown.c
 gemtext_host_SRC := gemtext_host.c $(ROOT)/fs/gemtext.c
 fat32_host_SRC   := fat32_host.c $(ROOT)/fs/fat32.c
 chibicc_host_SRC := chibicc_host.c $(wildcard $(ROOT)/user/chibicc/*.c)
@@ -38,7 +41,7 @@ uprintf_host_SRC := uprintf_host.c $(ROOT)/drivers/radio/uprintf.c
 uheap_host_SRC   := uheap_host.c $(ROOT)/kernel/uheap.c
 kobj_host_SRC    := kobj_host.c $(ROOT)/kernel/kobj.c
 net_host_SRC     := net_host.c $(ROOT)/net/arp.c $(ROOT)/net/ipv4.c $(ROOT)/net/icmp.c \
-                    $(ROOT)/net/udp.c $(ROOT)/net/spartan.c $(OUT)/gen/tcp.c
+                    $(ROOT)/net/udp.c $(ROOT)/net/spartan.c $(ROOT)/fs/gemtext.c $(ROOT)/fs/markdown.c $(OUT)/gen/tcp.c
 
 # net/tcp.c orders its buffer writes with RISC-V fences; the host gets the
 # equivalent C11 fence, in a copy, so the source itself stays as it is.

@@ -22,6 +22,9 @@
 #include "kernel/console.h"
 #include "drivers/touch.h"
 #include "fs/gemtext.h"
+#include "fs/markdown.h"
+#include "fs/latex_math.h"
+#include "drivers/latex_layout.h"
 #include "fs/vfs.h"
 #include "net/spartan.h"
 #include "kernel/vterm.h"
@@ -32,7 +35,8 @@
 #include "drivers/dsi_esp32p4.h"
 #endif
 
-#define READER_LINKS_MAX   16
+#define READER_LINKS_MAX   32
+#define READER_TOC_MAX     32
 #define READER_STACK_MAX   8
 
 #if defined(CONFIG_FONT_HIDPI) || (defined(CONFIG_FONT_CELL_H) && (CONFIG_FONT_CELL_H == 32))
@@ -54,27 +58,41 @@
 #define READER_SB_THUMB_GRAY8    90    /* Scrollbar thumb */
 
 typedef struct {
-    int  y0, y1;         /* client area y bounds */
-    int  num;            /* 1-based index (e.g. 1..9) */
-    char url[128];
+    int16_t x0, y0, x1, y1;  /* Exact 2D bounding box */
+    int     num;             /* 1-based index (e.g. 1..9) */
+    char    url[128];
 } reader_link_t;
 
 typedef struct {
-    bool          active;
-    uint8_t       target_cid;
-    int           win_w, win_h;
-    char          path[128];
-    char          title[64];
-    int           scroll_y;
-    int           total_h;
-    reader_link_t links[READER_LINKS_MAX];
-    int           link_count;
-    char          history[READER_STACK_MAX][128];
-    int           history_depth;
-    uint8_t      *aa_buf;        /* Anti-aliased 8-bpp (GRAY8) surface in PSRAM */
-    uint32_t      aa_stride;
-    int           aa_w, aa_h;
-    uint32_t      aa_pages;
+    char path[128];
+    int  scroll_y;
+} reader_hist_entry_t;
+
+typedef struct {
+    char    title[48];
+    uint8_t level;
+    int     doc_y;
+} reader_toc_entry_t;
+
+typedef struct {
+    bool                active;
+    uint8_t             target_cid;
+    int                 win_w, win_h;
+    char                path[128];
+    char                title[64];
+    int                 scroll_y;
+    int                 total_h;
+    reader_link_t       links[READER_LINKS_MAX];
+    int                 link_count;
+    reader_hist_entry_t history[READER_STACK_MAX];
+    int                 history_depth;
+    reader_toc_entry_t  toc[READER_TOC_MAX];
+    int                 toc_count;
+    bool                toc_mode;
+    uint8_t            *aa_buf;        /* Anti-aliased 8-bpp (GRAY8) surface in PSRAM */
+    uint32_t            aa_stride;
+    int                 aa_w, aa_h;
+    uint32_t            aa_pages;
 } reader_state_t;
 
 /* guarded by: console_lock for opening and closing an instance (the surface
@@ -111,21 +129,33 @@ static bool resolve_doc_path(const char *topic, char *out_path, size_t out_sz) {
     for (char *p = clean; *p; p++) {
         if (*p == '.') dot = p;
     }
-    if (dot && (strcmp(dot, ".gmi") == 0 || strcmp(dot, ".txt") == 0)) {
+    if (dot && (strcmp(dot, ".md") == 0 || strcmp(dot, ".gmi") == 0 || strcmp(dot, ".txt") == 0)) {
         *dot = '\0';
     }
 
-    /* 1. Try .gmi on /sd0/help */
-    ksnprintf(out_path, out_sz, "/sd0/help/%s.gmi", clean);
+    /* 1. Try .md then .gmi on /sd0/help */
+    ksnprintf(out_path, out_sz, "/sd0/help/%s.md", clean);
     int fd = vfs_open(out_path, VFS_O_READ);
     if (fd >= 0) { vfs_close(fd); return true; }
 
-    /* 2. Try .gmi on /flash0/help */
+    ksnprintf(out_path, out_sz, "/sd0/help/%s.gmi", clean);
+    fd = vfs_open(out_path, VFS_O_READ);
+    if (fd >= 0) { vfs_close(fd); return true; }
+
+    /* 2. Try .md then .gmi on /flash0/help */
+    ksnprintf(out_path, out_sz, "/flash0/help/%s.md", clean);
+    fd = vfs_open(out_path, VFS_O_READ);
+    if (fd >= 0) { vfs_close(fd); return true; }
+
     ksnprintf(out_path, out_sz, "/flash0/help/%s.gmi", clean);
     fd = vfs_open(out_path, VFS_O_READ);
     if (fd >= 0) { vfs_close(fd); return true; }
 
     /* 3. Try /sd0/pub/ */
+    ksnprintf(out_path, out_sz, "/sd0/pub/%s.md", clean);
+    fd = vfs_open(out_path, VFS_O_READ);
+    if (fd >= 0) { vfs_close(fd); return true; }
+
     ksnprintf(out_path, out_sz, "/sd0/pub/%s.gmi", clean);
     fd = vfs_open(out_path, VFS_O_READ);
     if (fd >= 0) { vfs_close(fd); return true; }
@@ -144,7 +174,10 @@ static bool reader_open_internal(uint8_t rid, const char *resource, bool push_hi
     }
 
     if (push_history && r->path[0] && r->history_depth < READER_STACK_MAX) {
-        strncpy(r->history[r->history_depth++], r->path, sizeof(r->history[0]) - 1);
+        strncpy(r->history[r->history_depth].path, r->path, sizeof(r->history[0].path) - 1);
+        r->history[r->history_depth].path[sizeof(r->history[0].path) - 1] = '\0';
+        r->history[r->history_depth].scroll_y = r->scroll_y;
+        r->history_depth++;
     }
 
     bool is_spartan = (strncmp(resolved, "spartan://", 10) == 0 || strncmp(resolved, "SPARTAN://", 10) == 0);
@@ -403,15 +436,57 @@ void reader_touch_fling(int dy, uint32_t ms) {
     reader_touch_fling_instance(s_active_reader_rid, dy, ms);
 }
 
+static bool reader_jump_anchor(uint8_t rid, const char *anchor) {
+    if (rid >= READER_MAX_INSTANCES || !anchor || anchor[0] != '#') return false;
+    reader_state_t *r = &s_readers[rid];
+    const char *target = anchor + 1;
+
+    /* Check if target matches footnote #fn:id */
+    bool is_footnote = (strncmp(target, "fn:", 3) == 0);
+    const char *fn_id = is_footnote ? target + 3 : NULL;
+
+    for (int i = 0; i < r->toc_count; i++) {
+        char slug[64];
+        md_heading_slug(r->toc[i].title, slug, sizeof(slug));
+        if (strcmp(slug, target) == 0) {
+            if (r->history_depth < READER_STACK_MAX) {
+                strncpy(r->history[r->history_depth].path, r->path, sizeof(r->history[0].path) - 1);
+                r->history[r->history_depth].path[sizeof(r->history[0].path) - 1] = '\0';
+                r->history[r->history_depth].scroll_y = r->scroll_y;
+                r->history_depth++;
+            }
+            int target_y = r->toc[i].doc_y - 20;
+            if (target_y < 0) target_y = 0;
+            r->scroll_y = target_y;
+            reader_update_instance(rid);
+            return true;
+        }
+    }
+    (void)fn_id;
+    return false;
+}
+
 bool reader_back_instance(uint8_t rid) {
     if (rid >= READER_MAX_INSTANCES) return false;
-    if (s_readers[rid].history_depth > 0) {
-        s_readers[rid].history_depth--;
-        char prev[128];
-        strncpy(prev, s_readers[rid].history[s_readers[rid].history_depth], sizeof(prev) - 1);
-        prev[sizeof(prev) - 1] = '\0';
-        bool ok = reader_open_internal(rid, prev, false);
-        if (ok) reader_update_instance(rid);
+    reader_state_t *r = &s_readers[rid];
+    if (r->toc_mode) {
+        r->toc_mode = false;
+        reader_update_instance(rid);
+        return true;
+    }
+    if (r->history_depth > 0) {
+        r->history_depth--;
+        reader_hist_entry_t entry = r->history[r->history_depth];
+        if (strcmp(entry.path, r->path) == 0) {
+            r->scroll_y = entry.scroll_y;
+            reader_update_instance(rid);
+            return true;
+        }
+        bool ok = reader_open_internal(rid, entry.path, false);
+        if (ok) {
+            r->scroll_y = entry.scroll_y;
+            reader_update_instance(rid);
+        }
         return ok;
     }
     return false;
@@ -422,19 +497,27 @@ bool reader_back(void) {
 }
 
 bool reader_tap_instance(uint8_t rid, int client_x, int client_y) {
-    (void)client_x;
     if (rid >= READER_MAX_INSTANCES || !s_readers[rid].active) return false;
     reader_state_t *r = &s_readers[rid];
 
     for (int i = 0; i < r->link_count; i++) {
-        if (client_y >= r->links[i].y0 && client_y <= r->links[i].y1) {
+        if (client_x >= r->links[i].x0 && client_x <= r->links[i].x1 &&
+            client_y >= r->links[i].y0 && client_y <= r->links[i].y1) {
             char target[128];
             strncpy(target, r->links[i].url, sizeof(target) - 1);
             target[sizeof(target) - 1] = '\0';
 
+            if (r->toc_mode) {
+                r->toc_mode = false;
+            }
+
+            if (target[0] == '#') {
+                if (reader_jump_anchor(rid, target)) return true;
+            }
+
             char resolved[128];
             bool ok = false;
-            if (gemtext_resolve_url(r->path, target, resolved, sizeof(resolved)) ||
+            if (md_resolve_url(r->path, target, resolved, sizeof(resolved)) ||
                 resolve_doc_path(target, resolved, sizeof(resolved))) {
                 ok = reader_open_internal(rid, resolved, true);
             } else {
@@ -460,9 +543,17 @@ bool reader_follow_link_num_instance(uint8_t rid, int num) {
             strncpy(target, r->links[i].url, sizeof(target) - 1);
             target[sizeof(target) - 1] = '\0';
 
+            if (r->toc_mode) {
+                r->toc_mode = false;
+            }
+
+            if (target[0] == '#') {
+                if (reader_jump_anchor(rid, target)) return true;
+            }
+
             char resolved[128];
             bool ok = false;
-            if (gemtext_resolve_url(r->path, target, resolved, sizeof(resolved)) ||
+            if (md_resolve_url(r->path, target, resolved, sizeof(resolved)) ||
                 resolve_doc_path(target, resolved, sizeof(resolved))) {
                 ok = reader_open_internal(rid, resolved, true);
             } else {
@@ -505,6 +596,11 @@ void reader_feed_key(int c) {
             return;
         }
         if (c == 'q' || c == 0x03) {
+            if (r->toc_mode) {
+                r->toc_mode = false;
+                reader_update_instance(rid);
+                return;
+            }
 #if defined(CONFIG_BOARD_TAB5)
             int rot = dsi_lcd_get_orientation();
             if (rot == 0 || rot == 180) {
@@ -579,6 +675,12 @@ void reader_feed_key(int c) {
         if (c == 'o' || c == 'O') {
             /* Toggle display orientation between Portrait (0) and Landscape (270) */
             console_hotkey(CONSOLE_HOTKEY_ORIENT);
+            return;
+        }
+        if (c == 't' || c == 'T') {
+            /* Toggle Table of Contents outline view */
+            r->toc_mode = !r->toc_mode;
+            reader_update_instance(rid);
             return;
         }
         if (c >= '1' && c <= '9') {
@@ -803,26 +905,26 @@ static void rdraw_hline(rdraw_t *rd, int x0, int x1, int y, uint8_t gray, unsign
     }
 }
 
-static int rdraw_serif_text(rdraw_t *rd, int x, int y, const char *s, uint32_t len, bool bold) {
+static int rdraw_serif_text(rdraw_t *rd, int x, int y, const char *s, uint32_t len, bool bold, bool italic) {
     int drawn_w = 0;
 #if READER_IS_HIDPI
     if (rd->c) {
-        drawn_w = canvas1_noto_serif_text(rd->c, x, y, s, len, bold);
+        drawn_w = canvas1_noto_serif_text(rd->c, x, y, s, len, bold, italic);
     }
     if (rd->aa_fb) {
         int aa_w = font_noto_serif_aa_text_gray8(rd->aa_fb, rd->aa_stride, rd->w, rd->h,
                                                  x, y, s, len,
-                                                 READER_FG_GRAY8, READER_BG_GRAY8, bold);
+                                                 READER_FG_GRAY8, READER_BG_GRAY8, bold, italic);
         if (!rd->c) drawn_w = aa_w;
     }
 #else
     if (rd->c) {
-        drawn_w = canvas1_serif_text(rd->c, x, y, s, len, bold);
+        drawn_w = canvas1_serif_text(rd->c, x, y, s, len, bold, italic);
     }
     if (rd->aa_fb) {
         int aa_w = font_serif_aa_text_gray8(rd->aa_fb, rd->aa_stride, rd->w, rd->h,
                                             x, y, s, len,
-                                            READER_FG_GRAY8, READER_BG_GRAY8, bold);
+                                            READER_FG_GRAY8, READER_BG_GRAY8, bold, italic);
         if (!rd->c) drawn_w = aa_w;
     }
 #endif
@@ -886,39 +988,141 @@ static void rdraw_mono_text(rdraw_t *rd, int x, int y, const char *s, uint32_t l
 #endif
 }
 
-/* Word wrapping and proportional text rendering */
-static int render_wrapped_serif_line(rdraw_t *rd, int x0, int max_w,
-                                     const char *text, bool bold, int line_h,
-                                     int scroll_y, int win_h, int *out_doc_y) {
+/* Word wrapping and rich proportional / monospace span rendering */
+static int render_wrapped_spans(reader_state_t *r, rdraw_t *rd, int x0, int max_w,
+                                const char *text, int line_h,
+                                int scroll_y, int win_h, int *out_doc_y,
+                                int *inout_link_idx) {
     int cur_x = x0;
     int cur_y = *out_doc_y;
-    const char *p = text;
 
-    while (*p) {
-        while (*p == ' ') p++;
-        if (!*p) break;
-        const char *word_start = p;
-        while (*p && *p != ' ') p++;
-        uint32_t word_len = (uint32_t)(p - word_start);
+    md_span_iter_t iter;
+    md_span_init(&iter, text);
+    md_span_t span;
+
+    while (md_span_next(&iter, &span)) {
+        int link_num = 0;
+        char target_url[128] = {0};
+        bool is_link = false;
+
+        if (span.style & MD_STYLE_LINK) {
+            is_link = true;
+            link_num = ++(*inout_link_idx);
+            strncpy(target_url, span.link_url, sizeof(target_url) - 1);
+        } else if (span.style & MD_STYLE_FOOTNOTE) {
+            is_link = true;
+            link_num = ++(*inout_link_idx);
+            ksnprintf(target_url, sizeof(target_url), "#fn:%s", span.footnote_id);
+        } else if (span.style & MD_STYLE_MATH) {
+            char mbuf[128];
+            size_t mlen = span.len < sizeof(mbuf) - 1 ? span.len : sizeof(mbuf) - 1;
+            memcpy(mbuf, span.text, mlen);
+            mbuf[mlen] = '\0';
+
+            uint8_t arena_buf[2048];
+            math_arena_t arena;
+            math_arena_init(&arena, arena_buf, sizeof(arena_buf));
+            math_box_t *box = latex_parse(mbuf, STYLE_TEXT, &arena);
+            if (box) {
+                int base_scale = READER_IS_HIDPI ? 2 : 1;
+                latex_layout(box, base_scale);
+                int math_w = box->w;
+
+                if (cur_x + math_w > x0 + max_w && cur_x > x0) {
+                    cur_x = x0;
+                    cur_y += line_h;
+                }
+
+                int screen_y = cur_y - scroll_y;
+                if (screen_y + line_h >= 0 && screen_y < win_h) {
+                    int baseline = screen_y + line_h - 4 * base_scale;
+                    if (rd->c) {
+                        latex_render_canvas1(box, cur_x, baseline, rd->c, 1);
+                    }
+                    if (rd->aa_fb) {
+                        latex_render_gray8(box, cur_x, baseline, rd->aa_fb, rd->aa_stride, rd->w, rd->h, READER_FG_GRAY8, READER_BG_GRAY8);
+                    }
+                }
+                cur_x += math_w + 4 * base_scale;
+            }
+            continue;
+        }
+
+        /* Iterate through words inside the span */
+        const char *p = span.text;
+        size_t span_remaining = span.len;
+
+        while (span_remaining > 0 && *p) {
+            while (span_remaining > 0 && *p == ' ') {
+                p++;
+                span_remaining--;
+            }
+            if (span_remaining == 0 || !*p) break;
+
+            const char *word_start = p;
+            size_t word_len = 0;
+            while (span_remaining > 0 && *p && *p != ' ') {
+                word_len++;
+                p++;
+                span_remaining--;
+            }
+
+            unsigned word_w = 0;
+            unsigned space_w = 0;
+            if (span.style & MD_STYLE_CODE) {
 #if READER_IS_HIDPI
-        unsigned word_w = font_noto_serif_text_width(word_start, word_len);
-        unsigned space_w = font_noto_serif_char_width(' ');
+                word_w = (unsigned)word_len * 16;
+                space_w = 16;
 #else
-        unsigned word_w = font_serif_text_width(word_start, word_len);
-        unsigned space_w = font_serif_char_width(' ');
+                word_w = (unsigned)word_len * 8;
+                space_w = 8;
 #endif
+            } else {
+#if READER_IS_HIDPI
+                word_w = font_noto_serif_text_width(word_start, (uint32_t)word_len);
+                space_w = font_noto_serif_char_width(' ');
+#else
+                word_w = font_serif_text_width(word_start, (uint32_t)word_len);
+                space_w = font_serif_char_width(' ');
+#endif
+            }
 
-        if (cur_x + (int)word_w > x0 + max_w && cur_x > x0) {
-            cur_x = x0;
-            cur_y += line_h;
-        }
+            if (cur_x + (int)word_w > x0 + max_w && cur_x > x0) {
+                cur_x = x0;
+                cur_y += line_h;
+            }
 
-        int screen_y = cur_y - scroll_y;
-        if (screen_y + line_h >= 0 && screen_y < win_h) {
-            rdraw_serif_text(rd, cur_x, screen_y, word_start, word_len, bold);
+            int screen_y = cur_y - scroll_y;
+            if (screen_y + line_h >= 0 && screen_y < win_h) {
+                if (span.style & MD_STYLE_CODE) {
+                    /* Monospace code pill with subtle shaded background */
+                    rdraw_fill(rd, cur_x - 2, screen_y + 1, cur_x + (int)word_w + 1, screen_y + line_h - 3, 236, CANVAS1_GREY);
+                    rdraw_mono_text(rd, cur_x, screen_y + 1, word_start, (uint32_t)word_len, (int)word_len);
+                } else {
+                    bool bold = (span.style & MD_STYLE_BOLD) != 0;
+                    bool italic = (span.style & MD_STYLE_ITALIC) != 0;
+                    rdraw_serif_text(rd, cur_x, screen_y, word_start, (uint32_t)word_len, bold, italic);
+                    if (is_link) {
+                        rdraw_hline(rd, cur_x, cur_x + (int)word_w, screen_y + line_h - 2, READER_LINK_LINE_GRAY8, CANVAS1_BLACK);
+                    }
+                }
+
+                /* Register 2D bounding box for touch and numbered keys */
+                if (is_link && r && r->link_count < READER_LINKS_MAX) {
+                    reader_link_t *lnk = &r->links[r->link_count++];
+                    lnk->x0 = (int16_t)cur_x;
+                    lnk->y0 = (int16_t)screen_y;
+                    lnk->x1 = (int16_t)(cur_x + (int)word_w);
+                    lnk->y1 = (int16_t)(screen_y + line_h);
+                    lnk->num = link_num;
+                    strncpy(lnk->url, target_url, sizeof(lnk->url) - 1);
+                    lnk->url[sizeof(lnk->url) - 1] = '\0';
+                }
+            }
+            cur_x += (int)word_w + (int)space_w;
         }
-        cur_x += (int)word_w + (int)space_w;
     }
+
     cur_y += line_h;
     *out_doc_y = cur_y;
     return cur_y;
@@ -940,7 +1144,7 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
     rdraw_fill(&rd, 0, 0, w - 1, h - 1, READER_BG_GRAY8, CANVAS1_WHITE);
 
     if (!r->active || !r->path[0]) {
-        rdraw_serif_text(&rd, READER_MARGIN_X, 32, "No document loaded. Use 'reader <file.gmi>' to open.", 52, false);
+        rdraw_serif_text(&rd, READER_MARGIN_X, 32, "No document loaded. Use 'reader <file.md>' to open.", 51, false, false);
         return;
     }
 
@@ -955,7 +1159,7 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
     if (fd < 0) {
         char err[128];
         ksnprintf(err, sizeof(err), "Cannot open document: %s", file_to_open);
-        rdraw_serif_text(&rd, READER_MARGIN_X, 32, err, strlen(err), false);
+        rdraw_serif_text(&rd, READER_MARGIN_X, 32, err, strlen(err), false, false);
         return;
     }
 
@@ -967,24 +1171,26 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
     int scroll_y = r->scroll_y;
     int link_idx = 0;
     r->link_count = 0;
+    r->toc_count = 0;
 
     uint64_t file_offset = 0;
     char read_buf[512];
-    char line_buf[GEM_LINE_MAX];
+    char line_buf[MD_LINE_MAX];
     int line_pos = 0;
-    bool in_pre = false;
+    bool in_code = false;
+    bool in_math = false;
 
+    /* Parse all document lines */
     for (;;) {
         int n = vfs_pread(fd, read_buf, sizeof(read_buf), file_offset);
         if (n <= 0) {
             if (line_pos > 0) {
                 line_buf[line_pos] = '\0';
                 line_pos = 0;
-                gem_line_t gem;
-                if (gemtext_parse_line(line_buf, &in_pre, &gem)) {
-                    /* Process line */
-                    if (gem.type == GEM_LINE_TEXT) {
-                        render_wrapped_serif_line(&rd, margin_x, max_w, gem.text, false, READER_LINE_H, scroll_y, h, &doc_y);
+                md_line_t md;
+                if (md_parse_line(line_buf, &in_code, &in_math, &md)) {
+                    if (md.type == MD_LINE_TEXT) {
+                        render_wrapped_spans(r, &rd, margin_x, max_w, md.text, READER_LINE_H, scroll_y, h, &doc_y, &link_idx);
                         doc_y += 4;
                     }
                 }
@@ -999,57 +1205,90 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
                 line_buf[line_pos] = '\0';
                 line_pos = 0;
 
-                gem_line_t gem;
-                if (!gemtext_parse_line(line_buf, &in_pre, &gem)) continue;
+                md_line_t md;
+                if (!md_parse_line(line_buf, &in_code, &in_math, &md)) continue;
+
+                /* Collect headings into Table of Contents */
+                if (md.type == MD_LINE_H1 || md.type == MD_LINE_H2 ||
+                    md.type == MD_LINE_H3 || md.type == MD_LINE_H4) {
+                    if (r->toc_count < READER_TOC_MAX) {
+                        reader_toc_entry_t *entry = &r->toc[r->toc_count++];
+                        strncpy(entry->title, md.text, sizeof(entry->title) - 1);
+                        entry->title[sizeof(entry->title) - 1] = '\0';
+                        entry->level = (md.type == MD_LINE_H1) ? 1 :
+                                       (md.type == MD_LINE_H2) ? 2 :
+                                       (md.type == MD_LINE_H3) ? 3 : 4;
+                        entry->doc_y = doc_y;
+                    }
+                }
+
+                /* If TOC mode is active, skip body rendering */
+                if (r->toc_mode) {
+                    continue;
+                }
 
                 int screen_y = doc_y - scroll_y;
 
-                switch (gem.type) {
-                case GEM_LINE_H1:
+                switch (md.type) {
+                case MD_LINE_H1:
 #if READER_IS_HIDPI
                     if (screen_y + 40 >= 0 && screen_y < h) {
-                        rdraw_serif_text(&rd, margin_x, screen_y, gem.text, strlen(gem.text), true);
+                        rdraw_serif_text(&rd, margin_x, screen_y, md.text, strlen(md.text), true, false);
                         rdraw_hline(&rd, margin_x, margin_x + max_w, screen_y + 32, READER_RULE_GRAY8, CANVAS1_BLACK);
                     }
                     doc_y += 44;
 #else
                     if (screen_y + 26 >= 0 && screen_y < h) {
-                        rdraw_serif_text(&rd, margin_x, screen_y, gem.text, strlen(gem.text), true);
+                        rdraw_serif_text(&rd, margin_x, screen_y, md.text, strlen(md.text), true, false);
                         rdraw_hline(&rd, margin_x, margin_x + max_w, screen_y + 19, READER_RULE_GRAY8, CANVAS1_BLACK);
                     }
                     doc_y += 30;
 #endif
                     break;
 
-                case GEM_LINE_H2:
+                case MD_LINE_H2:
 #if READER_IS_HIDPI
                     if (screen_y + 34 >= 0 && screen_y < h) {
-                        rdraw_serif_text(&rd, margin_x, screen_y, gem.text, strlen(gem.text), true);
+                        rdraw_serif_text(&rd, margin_x, screen_y, md.text, strlen(md.text), true, false);
                     }
                     doc_y += 38;
 #else
                     if (screen_y + 22 >= 0 && screen_y < h) {
-                        rdraw_serif_text(&rd, margin_x, screen_y, gem.text, strlen(gem.text), true);
+                        rdraw_serif_text(&rd, margin_x, screen_y, md.text, strlen(md.text), true, false);
                     }
                     doc_y += 24;
 #endif
                     break;
 
-                case GEM_LINE_H3:
+                case MD_LINE_H3:
 #if READER_IS_HIDPI
                     if (screen_y + 32 >= 0 && screen_y < h) {
-                        rdraw_serif_text(&rd, margin_x, screen_y, gem.text, strlen(gem.text), false);
+                        rdraw_serif_text(&rd, margin_x, screen_y, md.text, strlen(md.text), false, false);
                     }
                     doc_y += 34;
 #else
                     if (screen_y + 20 >= 0 && screen_y < h) {
-                        rdraw_serif_text(&rd, margin_x, screen_y, gem.text, strlen(gem.text), false);
+                        rdraw_serif_text(&rd, margin_x, screen_y, md.text, strlen(md.text), false, false);
                     }
                     doc_y += 22;
 #endif
                     break;
 
-                case GEM_LINE_BLANK:
+                case MD_LINE_H4:
+#if READER_IS_HIDPI
+                    if (screen_y + 30 >= 0 && screen_y < h) {
+                        rdraw_serif_text(&rd, margin_x, screen_y, md.text, strlen(md.text), false, false);
+                    }
+                    doc_y += 32;
+#else
+                    if (screen_y + 18 >= 0 && screen_y < h) {
+                        rdraw_serif_text(&rd, margin_x, screen_y, md.text, strlen(md.text), false, false);
+                    }
+                    doc_y += 20;
+#endif
+                    break;
+
+                case MD_LINE_BLANK:
 #if READER_IS_HIDPI
                     doc_y += 14;
 #else
@@ -1057,27 +1296,43 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
 #endif
                     break;
 
-                case GEM_LINE_LIST:
+                case MD_LINE_ULIST:
+                    {
+                        int indent_px = md.indent_level * 20;
 #if READER_IS_HIDPI
-                    if (screen_y + 30 >= 0 && screen_y < h) {
-                        rdraw_fill(&rd, margin_x + 8, screen_y + 12, margin_x + 14, screen_y + 18, READER_FG_GRAY8, CANVAS1_BLACK);
-                    }
-                    render_wrapped_serif_line(&rd, margin_x + 28, max_w - 28, gem.text, false, READER_LINE_H, scroll_y, h, &doc_y);
-                    doc_y += 4;
+                        if (screen_y + 30 >= 0 && screen_y < h) {
+                            rdraw_fill(&rd, margin_x + indent_px + 8, screen_y + 12, margin_x + indent_px + 14, screen_y + 18, READER_FG_GRAY8, CANVAS1_BLACK);
+                        }
+                        render_wrapped_spans(r, &rd, margin_x + indent_px + 24, max_w - indent_px - 24, md.text, READER_LINE_H, scroll_y, h, &doc_y, &link_idx);
 #else
-                    if (screen_y + 16 >= 0 && screen_y < h) {
-                        rdraw_fill(&rd, margin_x + 6, screen_y + 6, margin_x + 9, screen_y + 9, READER_FG_GRAY8, CANVAS1_BLACK);
-                    }
-                    render_wrapped_serif_line(&rd, margin_x + 18, max_w - 18, gem.text, false, READER_LINE_H, scroll_y, h, &doc_y);
-                    doc_y += 4;
+                        if (screen_y + 16 >= 0 && screen_y < h) {
+                            rdraw_fill(&rd, margin_x + indent_px + 6, screen_y + 6, margin_x + indent_px + 9, screen_y + 9, READER_FG_GRAY8, CANVAS1_BLACK);
+                        }
+                        render_wrapped_spans(r, &rd, margin_x + indent_px + 16, max_w - indent_px - 16, md.text, READER_LINE_H, scroll_y, h, &doc_y, &link_idx);
 #endif
+                        doc_y += 4;
+                    }
                     break;
 
-                case GEM_LINE_QUOTE:
+                case MD_LINE_OLIST:
+                    {
+                        int indent_px = md.indent_level * 20;
+                        char num_str[16];
+                        ksnprintf(num_str, sizeof(num_str), "%d.", md.order_num);
+                        int pfx_w = (READER_IS_HIDPI ? 32 : 20);
+                        if (screen_y + READER_LINE_H >= 0 && screen_y < h) {
+                            rdraw_serif_text(&rd, margin_x + indent_px, screen_y, num_str, strlen(num_str), true, false);
+                        }
+                        render_wrapped_spans(r, &rd, margin_x + indent_px + pfx_w, max_w - indent_px - pfx_w, md.text, READER_LINE_H, scroll_y, h, &doc_y, &link_idx);
+                        doc_y += 4;
+                    }
+                    break;
+
+                case MD_LINE_QUOTE:
                     {
                         int q_start = doc_y;
 #if READER_IS_HIDPI
-                        render_wrapped_serif_line(&rd, margin_x + 24, max_w - 24, gem.text, false, READER_LINE_H, scroll_y, h, &doc_y);
+                        render_wrapped_spans(r, &rd, margin_x + 24, max_w - 24, md.text, READER_LINE_H, scroll_y, h, &doc_y, &link_idx);
                         int q_h = doc_y - q_start;
                         int q_sy = q_start - scroll_y;
                         if (q_sy + q_h >= 0 && q_sy < h) {
@@ -1085,7 +1340,7 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
                         }
                         doc_y += 10;
 #else
-                        render_wrapped_serif_line(&rd, margin_x + 16, max_w - 16, gem.text, false, READER_LINE_H, scroll_y, h, &doc_y);
+                        render_wrapped_spans(r, &rd, margin_x + 16, max_w - 16, md.text, READER_LINE_H, scroll_y, h, &doc_y, &link_idx);
                         int q_h = doc_y - q_start;
                         int q_sy = q_start - scroll_y;
                         if (q_sy + q_h >= 0 && q_sy < h) {
@@ -1096,7 +1351,126 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
                     }
                     break;
 
-                case GEM_LINE_PRE_TOGGLE:
+                case MD_LINE_ALERT:
+                    {
+                        const char *badge = "NOTE";
+                        uint8_t bar_gray = 120;
+                        if (md.alert_type == MD_ALERT_TIP) { badge = "TIP"; bar_gray = 90; }
+                        else if (md.alert_type == MD_ALERT_WARNING) { badge = "WARNING"; bar_gray = 40; }
+                        else if (md.alert_type == MD_ALERT_IMPORTANT) { badge = "IMPORTANT"; bar_gray = 50; }
+                        else if (md.alert_type == MD_ALERT_CAUTION) { badge = "CAUTION"; bar_gray = 20; }
+
+                        int q_start = doc_y;
+                        char full_badge[32];
+                        ksnprintf(full_badge, sizeof(full_badge), "[%s]", badge);
+                        if (screen_y + READER_LINE_H >= 0 && screen_y < h) {
+                            rdraw_serif_text(&rd, margin_x + 16, screen_y, full_badge, strlen(full_badge), true, false);
+                        }
+                        doc_y += READER_LINE_H;
+                        render_wrapped_spans(r, &rd, margin_x + 16, max_w - 16, md.text, READER_LINE_H, scroll_y, h, &doc_y, &link_idx);
+                        int q_h = doc_y - q_start;
+                        int q_sy = q_start - scroll_y;
+                        if (q_sy + q_h >= 0 && q_sy < h) {
+                            rdraw_fill(&rd, margin_x + 4, q_sy, margin_x + 8, q_sy + q_h - 2, bar_gray, CANVAS1_BLACK);
+                        }
+                        doc_y += 8;
+                    }
+                    break;
+
+                case MD_LINE_HRULE:
+                    if (screen_y + 12 >= 0 && screen_y < h) {
+                        rdraw_hline(&rd, margin_x, margin_x + max_w, screen_y + 6, READER_RULE_GRAY8, CANVAS1_BLACK);
+                    }
+                    doc_y += 18;
+                    break;
+
+                case MD_LINE_TABLE_HDR:
+                case MD_LINE_TABLE_ROW:
+                    {
+                        char cells[MD_TABLE_MAX_COLS][MD_CELL_MAX];
+                        int cols = md_parse_table_cells(line_buf, cells);
+                        if (cols > 0) {
+                            int cell_w = max_w / cols;
+                            int row_h = READER_LINE_H + 4;
+                            if (screen_y + row_h >= 0 && screen_y < h) {
+                                bool is_hdr = (md.type == MD_LINE_TABLE_HDR);
+                                uint8_t bg_gray = is_hdr ? 238 : 250;
+                                rdraw_fill(&rd, margin_x, screen_y, margin_x + max_w, screen_y + row_h - 1, bg_gray, CANVAS1_GREY);
+                                for (int c = 0; c < cols; c++) {
+                                    int cx = margin_x + c * cell_w + 6;
+                                    rdraw_serif_text(&rd, cx, screen_y + 2, cells[c], strlen(cells[c]), is_hdr, false);
+                                    if (c > 0) {
+                                        rdraw_fill(&rd, margin_x + c * cell_w, screen_y, margin_x + c * cell_w, screen_y + row_h - 1, 210, CANVAS1_BLACK);
+                                    }
+                                }
+                                rdraw_hline(&rd, margin_x, margin_x + max_w, screen_y + row_h - 1, is_hdr ? READER_RULE_GRAY8 : 210, CANVAS1_BLACK);
+                            }
+                            doc_y += row_h;
+                        }
+                    }
+                    break;
+
+                case MD_LINE_TABLE_SEP:
+                    /* Handled by table header bottom border */
+                    break;
+
+                case MD_LINE_FOOTNOTE_DEF:
+                    {
+                        char badge[32];
+                        ksnprintf(badge, sizeof(badge), "[^%s] ", md.footnote_id);
+                        int pfx_w = (READER_IS_HIDPI ? 48 : 32);
+                        if (screen_y + READER_LINE_H >= 0 && screen_y < h) {
+                            rdraw_serif_text(&rd, margin_x, screen_y, badge, strlen(badge), true, false);
+                        }
+                        render_wrapped_spans(r, &rd, margin_x + pfx_w, max_w - pfx_w, md.text, READER_LINE_H, scroll_y, h, &doc_y, &link_idx);
+                        doc_y += 6;
+                    }
+                    break;
+
+                case MD_LINE_MATH_TOGGLE:
+                    doc_y += 8;
+                    break;
+
+                case MD_LINE_MATH_TEXT:
+                    {
+                        uint8_t arena_buf[4096];
+                        math_arena_t arena;
+                        math_arena_init(&arena, arena_buf, sizeof(arena_buf));
+                        math_box_t *box = latex_parse(md.text, STYLE_DISPLAY, &arena);
+                        int base_scale = READER_IS_HIDPI ? 2 : 1;
+                        if (box) {
+                            latex_layout(box, base_scale);
+                            int math_w = box->w;
+                            int total_h = box->h + box->d + 16 * base_scale;
+                            int cx = margin_x + (max_w - math_w) / 2;
+                            if (cx < margin_x) cx = margin_x;
+
+                            int my = doc_y - scroll_y;
+                            if (my + total_h >= 0 && my < h) {
+                                int baseline = my + box->h + 8 * base_scale;
+                                if (rd.c) {
+                                    latex_render_canvas1(box, cx, baseline, rd.c, 1);
+                                }
+                                if (rd.aa_fb) {
+                                    latex_render_gray8(box, cx, baseline, rd.aa_fb, rd.aa_stride, rd.w, rd.h, READER_FG_GRAY8, READER_BG_GRAY8);
+                                }
+                            }
+                            doc_y += total_h;
+                        } else {
+                            int line_len = strlen(md.text);
+                            int txt_w = line_len * (READER_IS_HIDPI ? 16 : 8);
+                            int cx = margin_x + (max_w - txt_w) / 2;
+                            if (cx < margin_x) cx = margin_x;
+                            if (screen_y + READER_LINE_H >= 0 && screen_y < h) {
+                                rdraw_fill(&rd, cx - 8, screen_y - 2, cx + txt_w + 8, screen_y + READER_LINE_H, 244, CANVAS1_GREY);
+                                rdraw_mono_text(&rd, cx, screen_y, md.text, line_len, max_w / (READER_IS_HIDPI ? 16 : 8));
+                            }
+                            doc_y += READER_LINE_H + 8;
+                        }
+                    }
+                    break;
+
+                case MD_LINE_CODE_TOGGLE:
 #if READER_IS_HIDPI
                     doc_y += 16;
 #else
@@ -1104,70 +1478,74 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
 #endif
                     break;
 
-                case GEM_LINE_PRE_TEXT:
+                case MD_LINE_CODE_TEXT:
 #if READER_IS_HIDPI
                     if (screen_y + 32 >= 0 && screen_y < h) {
-                        /* Monospace 16x32 Noto Sans Mono */
-                        rdraw_mono_text(&rd, margin_x + 16, screen_y, gem.text, strlen(gem.text), (max_w - 16) / 16);
+                        rdraw_mono_text(&rd, margin_x + 16, screen_y, md.text, strlen(md.text), (max_w - 16) / 16);
                     }
                     doc_y += 34;
 #else
                     if (screen_y + 16 >= 0 && screen_y < h) {
-                        /* Monospace 8x16 Spleen text */
-                        rdraw_mono_text(&rd, margin_x + 12, screen_y, gem.text, strlen(gem.text), (max_w - 12) / 8);
+                        rdraw_mono_text(&rd, margin_x + 12, screen_y, md.text, strlen(md.text), (max_w - 12) / 8);
                     }
                     doc_y += 16;
 #endif
                     break;
 
-                case GEM_LINE_LINK:
+                case MD_LINE_GEM_LINK:
                     link_idx++;
 #if READER_IS_HIDPI
                     if (screen_y + 36 >= 0 && screen_y < h) {
                         if (r->link_count < READER_LINKS_MAX) {
-                            r->links[r->link_count].y0 = screen_y;
-                            r->links[r->link_count].y1 = screen_y + 36;
+                            r->links[r->link_count].x0 = (int16_t)margin_x;
+                            r->links[r->link_count].y0 = (int16_t)screen_y;
+                            r->links[r->link_count].x1 = (int16_t)(margin_x + max_w);
+                            r->links[r->link_count].y1 = (int16_t)(screen_y + 36);
                             r->links[r->link_count].num = link_idx;
-                            strncpy(r->links[r->link_count].url, gem.url, sizeof(r->links[0].url) - 1);
+                            strncpy(r->links[r->link_count].url, md.url, sizeof(r->links[0].url) - 1);
                             r->links[r->link_count].url[sizeof(r->links[0].url) - 1] = '\0';
                             r->link_count++;
                         }
 
                         char prefix[16];
                         ksnprintf(prefix, sizeof(prefix), "[%d] ", link_idx);
-                        int px_w = rdraw_serif_text(&rd, margin_x, screen_y, prefix, strlen(prefix), true);
-                        const char *lbl = gem.label[0] ? gem.label : gem.url;
-                        int lbl_w = rdraw_serif_text(&rd, margin_x + px_w, screen_y, lbl, strlen(lbl), true);
-                        /* Underline the link */
+                        int px_w = rdraw_serif_text(&rd, margin_x, screen_y, prefix, strlen(prefix), true, false);
+                        const char *lbl = md.label[0] ? md.label : md.url;
+                        int lbl_w = rdraw_serif_text(&rd, margin_x + px_w, screen_y, lbl, strlen(lbl), true, false);
                         rdraw_hline(&rd, margin_x + px_w, margin_x + px_w + lbl_w, screen_y + 33, READER_LINK_LINE_GRAY8, CANVAS1_BLACK);
                     }
                     doc_y += 42;
 #else
                     if (screen_y + 20 >= 0 && screen_y < h) {
                         if (r->link_count < READER_LINKS_MAX) {
-                            r->links[r->link_count].y0 = screen_y;
-                            r->links[r->link_count].y1 = screen_y + 18;
+                            r->links[r->link_count].x0 = (int16_t)margin_x;
+                            r->links[r->link_count].y0 = (int16_t)screen_y;
+                            r->links[r->link_count].x1 = (int16_t)(margin_x + max_w);
+                            r->links[r->link_count].y1 = (int16_t)(screen_y + 18);
                             r->links[r->link_count].num = link_idx;
-                            strncpy(r->links[r->link_count].url, gem.url, sizeof(r->links[0].url) - 1);
+                            strncpy(r->links[r->link_count].url, md.url, sizeof(r->links[0].url) - 1);
                             r->links[r->link_count].url[sizeof(r->links[0].url) - 1] = '\0';
                             r->link_count++;
                         }
 
                         char prefix[16];
                         ksnprintf(prefix, sizeof(prefix), "[%d] ", link_idx);
-                        int px_w = rdraw_serif_text(&rd, margin_x, screen_y, prefix, strlen(prefix), true);
-                        const char *lbl = gem.label[0] ? gem.label : gem.url;
-                        int lbl_w = rdraw_serif_text(&rd, margin_x + px_w, screen_y, lbl, strlen(lbl), true);
-                        /* Underline the link */
+                        int px_w = rdraw_serif_text(&rd, margin_x, screen_y, prefix, strlen(prefix), true, false);
+                        const char *lbl = md.label[0] ? md.label : md.url;
+                        int lbl_w = rdraw_serif_text(&rd, margin_x + px_w, screen_y, lbl, strlen(lbl), true, false);
                         rdraw_hline(&rd, margin_x + px_w, margin_x + px_w + lbl_w, screen_y + 16, READER_LINK_LINE_GRAY8, CANVAS1_BLACK);
                     }
                     doc_y += 22;
 #endif
                     break;
 
-                case GEM_LINE_TEXT:
+                case MD_LINE_TOC:
+                    doc_y += 8;
+                    break;
+
+                case MD_LINE_TEXT:
                 default:
-                    render_wrapped_serif_line(&rd, margin_x, max_w, gem.text, false, READER_LINE_H, scroll_y, h, &doc_y);
+                    render_wrapped_spans(r, &rd, margin_x, max_w, md.text, READER_LINE_H, scroll_y, h, &doc_y, &link_idx);
                     doc_y += 4;
                     break;
                 }
@@ -1180,6 +1558,65 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
 
     vfs_close(fd);
     r->total_h = doc_y + 32;
+
+    /* Render interactive Table of Contents overlay if in TOC mode */
+    if (r->toc_mode) {
+        rdraw_fill(&rd, 0, 0, w - 1, h - 1, READER_BG_GRAY8, CANVAS1_WHITE);
+        int ty = 24;
+        rdraw_serif_text(&rd, margin_x, ty, "Table of Contents (press 't' to return)", 39, true, false);
+        rdraw_hline(&rd, margin_x, margin_x + max_w, ty + 20, READER_RULE_GRAY8, CANVAS1_BLACK);
+        ty += 34;
+
+        r->link_count = 0;
+        if (r->toc_count == 0) {
+            rdraw_serif_text(&rd, margin_x, ty, "No headings found in document.", 30, false, false);
+        } else {
+            for (int i = 0; i < r->toc_count && i < READER_TOC_MAX; i++) {
+                reader_toc_entry_t *entry = &r->toc[i];
+                int indent_px = (entry->level > 1) ? (entry->level - 1) * 20 : 0;
+                int entry_x = margin_x + indent_px;
+                char num_prefix[16];
+                ksnprintf(num_prefix, sizeof(num_prefix), "[%d] ", i + 1);
+                int pfx_w = rdraw_serif_text(&rd, entry_x, ty, num_prefix, strlen(num_prefix), true, false);
+                int title_w = rdraw_serif_text(&rd, entry_x + pfx_w, ty, entry->title, strlen(entry->title), false, false);
+
+                if (r->link_count < READER_LINKS_MAX) {
+                    reader_link_t *lnk = &r->links[r->link_count++];
+                    lnk->x0 = (int16_t)entry_x;
+                    lnk->y0 = (int16_t)ty;
+                    lnk->x1 = (int16_t)(entry_x + pfx_w + title_w);
+                    lnk->y1 = (int16_t)(ty + READER_LINE_H);
+                    lnk->num = i + 1;
+                    char slug[64];
+                    md_heading_slug(entry->title, slug, sizeof(slug));
+                    ksnprintf(lnk->url, sizeof(lnk->url), "#%s", slug);
+                }
+                ty += READER_LINE_H + 4;
+                if (ty >= h - 24) break;
+            }
+        }
+        s_reader_seq[rid]++;
+        return;
+    }
+
+    /* Render right scrollbar if document exceeds window height */
+    if (r->total_h > h) {
+#if READER_IS_HIDPI
+        int sb_w = 8;
+        int sb_x = w - sb_w - 4;
+        int thumb_h = (h * h) / r->total_h;
+        if (thumb_h < 32) thumb_h = 32;
+#else
+        int sb_w = 4;
+        int sb_x = w - sb_w - 2;
+        int thumb_h = (h * h) / r->total_h;
+        if (thumb_h < 16) thumb_h = 16;
+#endif
+        int thumb_y = (r->scroll_y * (h - thumb_h)) / (r->total_h - h);
+        rdraw_fill(&rd, sb_x, 0, sb_x + sb_w, h - 1, READER_SB_TRACK_GRAY8, CANVAS1_GREY);
+        rdraw_fill(&rd, sb_x, thumb_y, sb_x + sb_w, thumb_y + thumb_h, READER_SB_THUMB_GRAY8, CANVAS1_BLACK);
+    }
+    s_reader_seq[rid]++;
 
     /* Render right scrollbar if document exceeds window height */
     if (r->total_h > h) {

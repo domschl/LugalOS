@@ -8,6 +8,7 @@
 #include "kernel/palloc.h"
 #include "net/llm.h"
 #include "fs/vfs.h"
+#include "fs/markdown.h"
 #include "libc/include/string.h"
 #include "user/lisp/include/lisp.h"
 
@@ -211,10 +212,26 @@ int ea_eval_tool(const char *tool, const char *input, char *out_buf, size_t out_
         }
 
         char path[128];
-        ksnprintf(path, sizeof(path), "/sd0/help/%s.gmi", topic);
+        ksnprintf(path, sizeof(path), "/sd0/help/%s.md", topic);
         int fd = vfs_open(path, VFS_O_READ);
         if (fd < 0) {
+            ksnprintf(path, sizeof(path), "/sd0/help/%s.gmi", topic);
+            fd = vfs_open(path, VFS_O_READ);
+        }
+        if (fd < 0) {
+            ksnprintf(path, sizeof(path), "/flash0/help/%s.md", topic);
+            fd = vfs_open(path, VFS_O_READ);
+        }
+        if (fd < 0) {
             ksnprintf(path, sizeof(path), "/flash0/help/%s.gmi", topic);
+            fd = vfs_open(path, VFS_O_READ);
+        }
+        if (fd < 0) {
+            ksnprintf(path, sizeof(path), "/sd0/help/%s", topic);
+            fd = vfs_open(path, VFS_O_READ);
+        }
+        if (fd < 0) {
+            ksnprintf(path, sizeof(path), "/flash0/help/%s", topic);
             fd = vfs_open(path, VFS_O_READ);
         }
         if (fd >= 0) {
@@ -324,6 +341,12 @@ int ea_eval_tool(const char *tool, const char *input, char *out_buf, size_t out_
 
 /* guarded by: g_ea_session (cmd_ea()). */
 static bool g_in_thought = false;
+static char g_ea_line[MD_LINE_MAX];
+static size_t g_ea_line_len = 0;
+static bool g_ea_in_code = false;
+static bool g_ea_in_math = false;
+static int g_ea_link_idx = 0;
+static bool g_ea_suppress_output = false;
 
 static void live_stream_token_cb(const char *token, bool is_reasoning, void *ctx) {
     (void)ctx;
@@ -338,7 +361,19 @@ static void live_stream_token_cb(const char *token, bool is_reasoning, void *ctx
             cprintf("]\033[0m\n");
             g_in_thought = false;
         }
-        cprintf("%s", token);
+        if (g_ea_suppress_output) return;
+
+        for (const char *p = token; *p; p++) {
+            char c = *p;
+            if (c == '\r') continue;
+            if (c == '\n') {
+                g_ea_line[g_ea_line_len] = '\0';
+                pager_print_md_line(g_ea_line, true, &g_ea_in_code, &g_ea_in_math, &g_ea_link_idx);
+                g_ea_line_len = 0;
+            } else if (g_ea_line_len < sizeof(g_ea_line) - 1) {
+                g_ea_line[g_ea_line_len++] = c;
+            }
+        }
     }
 }
 
@@ -389,7 +424,7 @@ static bool parse_react_action(char *resp, char *tool_out, size_t tool_sz,
     return true;
 }
 
-int ea_run(const char *prompt, bool interactive, bool auto_confirm, const char *model_override) {
+int ea_run(const char *prompt, bool interactive, bool auto_confirm, const char *model_override, bool open_reader) {
     (void)interactive; (void)auto_confirm;
     if (!prompt || !*prompt) return -1;
 
@@ -439,6 +474,11 @@ int ea_run(const char *prompt, bool interactive, bool auto_confirm, const char *
     while (turns < 8) {
         turns++;
         g_in_thought = false;
+        g_ea_line_len = 0;
+        g_ea_in_code = false;
+        g_ea_in_math = false;
+        g_ea_link_idx = 0;
+        g_ea_suppress_output = open_reader;
 
         char err_buf[128] = {0};
         int rc = llm_chat(history, EA_SYSTEM_PROMPT, model_override,
@@ -448,6 +488,11 @@ int ea_run(const char *prompt, bool interactive, bool auto_confirm, const char *
         if (g_in_thought) {
             cprintf("]\033[0m\n");
             g_in_thought = false;
+        }
+        if (!g_ea_suppress_output && g_ea_line_len > 0) {
+            g_ea_line[g_ea_line_len] = '\0';
+            pager_print_md_line(g_ea_line, true, &g_ea_in_code, &g_ea_in_math, &g_ea_link_idx);
+            g_ea_line_len = 0;
         }
 
         if (rc != 0) {
@@ -474,6 +519,23 @@ int ea_run(const char *prompt, bool interactive, bool auto_confirm, const char *
             }
         } else {
             /* No further action requested; model provided final answer */
+            if (open_reader) {
+                const char *ans = resp;
+                const char *p_ans = strstr(resp, "Answer:");
+                if (p_ans) {
+                    ans = p_ans + 7;
+                    while (*ans == ' ' || *ans == '\t' || *ans == '\r' || *ans == '\n') ans++;
+                }
+                int wfd = vfs_open("/ram0/ea_ans.md", VFS_O_WRITE | VFS_O_CREATE | VFS_O_TRUNC);
+                if (wfd >= 0) {
+                    vfs_pwrite(wfd, (const uint8_t *)ans, strlen(ans), 0);
+                    vfs_close(wfd);
+                    cprintf("\n\033[1;32m[ea: Answer written to /ram0/ea_ans.md, opening Ribbon Reader...]\033[0m\n");
+                    shell_exec("reader /ram0/ea_ans.md");
+                } else {
+                    cprintf("ea: failed to write /ram0/ea_ans.md\n");
+                }
+            }
             break;
         }
     }
@@ -497,7 +559,7 @@ void cmd_ea(const char *args) {
 
 static void cmd_ea_session(const char *args) {
     if (!args || !*args) {
-        cprintf("Usage: ea [-m model] [-s url] [-y] \"<prompt>\"\n");
+        cprintf("Usage: ea [-m model] [-s url] [-y] [-r] \"<prompt>\"\n");
         cprintf("       ea -c / ea config       Display current LLM configuration\n");
         cprintf("       ea -l / ea models       List available models from server\n");
         return;
@@ -530,6 +592,7 @@ static void cmd_ea_session(const char *args) {
     const char *model = NULL;
     const char *url = NULL;
     bool auto_confirm = false;
+    bool open_reader = false;
     const char *p = args;
 
     while (*p == '-') {
@@ -575,8 +638,12 @@ static void cmd_ea_session(const char *args) {
             }
             if (quote && *p == quote) p++;
             while (*p == ' ') p++;
-        } else if (strncmp(p, "-y", 2) == 0) {
+        } else if (strncmp(p, "-y", 2) == 0 && (p[2] == ' ' || p[2] == '\0')) {
             auto_confirm = true;
+            p += 2;
+            while (*p == ' ') p++;
+        } else if (strncmp(p, "-r", 2) == 0 && (p[2] == ' ' || p[2] == '\0')) {
+            open_reader = true;
             p += 2;
             while (*p == ' ') p++;
         } else {
@@ -613,5 +680,5 @@ static void cmd_ea_session(const char *args) {
         return;
     }
 
-    ea_run(clean_prompt, false, auto_confirm, model);
+    ea_run(clean_prompt, false, auto_confirm, model, open_reader);
 }

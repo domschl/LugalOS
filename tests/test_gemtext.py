@@ -101,7 +101,7 @@ def run_qemu_tests() -> bool:
 
         # Test 1: 'gem' usage banner
         print("  Checking 'gem' usage...")
-        ok, log = session.send_and_expect("gem", r"Usage: gem <file\.gmi \| topic \| spartan://host\[:port\]/path>", timeout=4.0)
+        ok, log = session.send_and_expect("gem", r"Usage: gem <.*file\.(md|gmi).*spartan://", timeout=4.0)
         if ok:
             print("    [PASS] gem usage banner")
         else:

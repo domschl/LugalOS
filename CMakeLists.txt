@@ -723,6 +723,8 @@ set(SOURCES
     drivers/font_serif.c
     drivers/font_noto_mono.c
     drivers/font_noto_serif.c
+    drivers/font_math.c
+    drivers/latex_layout.c
     drivers/reader_view.c
     drivers/ribbon.c
     # the same screen in RAM, for Lisp's canvas where there is no panel.
@@ -779,6 +781,8 @@ set(SOURCES
     fs/9p.c
     fs/p9_link.c
     fs/gemtext.c
+    fs/markdown.c
+    fs/latex_math.c
 
     # R1: the frame-source seam below
     # the IP stack. Built for every target, like fs/ above -- a board with no

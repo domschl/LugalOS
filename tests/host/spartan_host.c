@@ -149,6 +149,22 @@ static void test_server_request_processing(void) {
     tx[tx_len] = '\0';
     assert(strncmp((char *)tx, "40 Bad Request", 14) == 0);
 
+    /* 6. Native Markdown file request -> status 2 text/markdown */
+    const char *md_content = "# Title\n\nVisit [Shell](shell.md) for details.\n";
+    host_file_put("/sd0/pub/guide.md", md_content, strlen(md_content));
+    strcpy((char *)rx, "localhost /guide.md 0\r\n");
+    assert(spartan_process_request(rx, strlen((char *)rx), &consumed, tx, sizeof(tx), &tx_len, &close_after) == 0);
+    tx[tx_len] = '\0';
+    assert(strncmp((char *)tx, "2 text/markdown", 15) == 0);
+    assert(strstr((char *)tx, "[Shell](shell.md)") != NULL);
+
+    /* 7. On-the-fly Markdown to Gemtext conversion when .gmi is requested */
+    strcpy((char *)rx, "localhost /guide.gmi 0\r\n");
+    assert(spartan_process_request(rx, strlen((char *)rx), &consumed, tx, sizeof(tx), &tx_len, &close_after) == 0);
+    tx[tx_len] = '\0';
+    assert(strncmp((char *)tx, "2 text/gemini", 13) == 0);
+    assert(strstr((char *)tx, "=> shell.md Shell") != NULL);
+
     PASS();
 }
 

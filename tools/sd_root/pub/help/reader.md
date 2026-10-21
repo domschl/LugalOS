@@ -1,0 +1,87 @@
+# Ribbon Reader Window Guide
+
+The LugalOS Ribbon Reader (`RIBBON_WIN_READER`) is a dedicated long-form document viewer integrated into the horizontal window ribbon. It is designed for comfortable reading of system documentation, manuals, books, and network hypermedia capsules formatted in **Restricted Markdown (`.md`)** or **Gemtext (`.gmi`)**.
+
+## Multi-Instance Reader Architecture
+
+LugalOS supports up to 4 concurrent Reader windows (`READER_MAX_INSTANCES = 4`) tiled side-by-side on the horizontal window ribbon. Each Reader instance operates completely independently with its own document buffer, scroll offset, history stack, and link table:
+* **Multiple Open Manuals**: Keep multiple documentation files open simultaneously (e.g. `reader /sd0/help/shell.md` and `reader /sd0/help/spartan.md`).
+* **Instance Management**: Running `reader list` in `lsh` lists all active Reader instances and their loaded paths.
+* **Smart Window Reuse**: Issuing `reader <path>` focuses the existing Reader window if that exact document is already open, or allocates a new Reader pane on the ribbon if available.
+
+## Restricted Markdown & Typography
+
+Unlike standard terminal windows that use fixed-pitch monospace fonts, the Reader window features full rich typography and Knuth Appendix G mathematical typesetting:
+
+* **Proportional Typography**:
+  * **Standard Density Panels** (`rp2350-terminal`, `esp32p4-lcd7b`): Rendered in a high-legibility 15-pixel variable-pitch serif font with balanced 1-pixel vertical stems (18 px line height).
+  * **HiDPI Panels** (`esp32p4-tab5`): Rendered in an elegant 32-pixel anti-aliased proportional serif font (`Noto Serif`) with smooth 4-bpp alpha coverage masks (38 px line height).
+* **Inline Emphasis & Styling**:
+  * **Bold**: `**bold text**` rendered with weighted glyph stems.
+  * **Italic**: `*italic text*` rendered with an algorithmic shear angle.
+  * **Inline Code**: `` `code` `` rendered with monospace font inside a subtle pill background (`gray=245`).
+  * **2D Hyperlinks**: `[label](shell.md)` rendered in underlined serif with touch / click targeting.
+  * **Footnotes**: `[^id]` rendered as superscript badge and linked to `#fn:id` definitions.
+* **Block Elements**:
+  * **Structural Hierarchy**: Bold section headings (H1, H2, H3, H4) scaled proportionally to display density, indexed into the dynamic Table of Contents (`[TOC]`).
+  * **Admonition Callouts**: `> [!NOTE]`, `> [!TIP]`, `> [!WARNING]`, and `> [!CAUTION]` rendered with colored accent bars and styled badges.
+  * **Structured Tables**: Multi-column Markdown grid tables (`| Header | ... |`) with cell padding and header separation rules.
+  * **Monospace Code Blocks**: Shaded code box (`gray=242`) with 8×16 monospace font (standard density) or 16×32 `Noto Sans Mono` (HiDPI).
+* **Typeset LaTeX Math Engine**:
+  * Formatted with a freestanding Knuth Appendix G box layout engine (`drivers/latex_layout.c`) using dedicated math font tables (`drivers/font_math.c`).
+  * **Inline Math**: `$E = mc^2$` embedded seamlessly within flowing paragraph text.
+  * **Display Formulas**: `$$ \int_a^b f(x)\,dx = F(b) - F(a) $$` centered with vertical limits, multi-level fractions, radical surds, and scalable delimiters.
+
+## Opening Documents
+
+Open local Markdown (`.md`) or Gemtext (`.gmi`) files or remote Spartan capsules directly from the shell:
+
+```
+lsh> reader /sd0/help/shell.md
+lsh> reader /sd0/help/markdown_showcase.md
+lsh> reader spartan://spartan.mozz.us/
+lsh> reader list
+```
+
+## Window Controls & Macintosh Close Box
+
+Every Reader window includes a classic Macintosh-style close box (`[■]`) at the left edge of its title bar:
+* **Close Box Tap / Click**: Tapping or clicking the close box closes that specific Reader instance immediately, releasing its PSRAM backing store and refocusing the ribbon.
+* **Maximize / Restore**: Pressing `Super+\` / `Cmd+\` toggles the focused Reader window between half-screen and full-screen ribbon width.
+* **Keyboard Close**: Pressing `q` or `Cmd-W` closes the active Reader window and returns focus to the terminal.
+
+## Keyboard Navigation
+
+When the Reader window has focus, standard keyboard navigation shortcuts are active (routing from either the physical USB keyboard or UART serial console):
+
+* **Vertical Scrolling**:
+  * `Up Arrow` / `k` / `Ctrl-P`: Scroll up by one line (32 px).
+  * `Down Arrow` / `j` / `Ctrl-N`: Scroll down by one line (32 px).
+  * `PageUp` / `Alt-V`: Scroll up by one full page.
+  * `PageDown` / `Space` / `Ctrl-V`: Scroll down by one full page.
+  * `Home` / `g`: Jump to top of document.
+  * `End` / `G`: Jump to bottom of document.
+* **Link Navigation**:
+  * `1` .. `9`: Follow the corresponding numbered link visible on the page.
+  * `b` / `Left Arrow`: Navigate back in document history.
+* **Help & Controls**:
+  * `Ctrl-H` / `?` / `h`: Open this Reader Help manual.
+  * `r`: Reload and redraw the current document.
+  * `Super+O` / `Cmd+O` / `o`: Toggle display orientation between Portrait and Landscape (Tab5).
+  * `Super+\` / `Cmd+\`: Toggle Maximize / Restore window width.
+  * `q` / `Cmd-W`: Close the reader window and return focus to the terminal.
+
+## Touch & Gestures
+
+On touchscreen-equipped hardware (such as the Waveshare ESP32-P4 Touch LCD 7B and M5Stack Tab5):
+
+* **Tap Close Box**: Closes the window.
+* **Tap on Link**: Tapping anywhere within an inline link or link block follows the target immediately.
+* **Swipe Up / Down**: Vertical touch dragging pans the document smoothly.
+* **Minimap Tap**: Tapping a window thumbnail in the top menu bar jumps directly to that window.
+
+## Related Topics
+
+[Spartan Protocol Guide](spartan.md)  
+[Shell & Console Manual](shell.md)  
+[Window Ribbon Architecture](ribbon.md)

@@ -234,37 +234,124 @@ DOC_MAPPINGS: dict[str, str] = {
 }
 
 
+def rewrite_markdown_for_help(src_text: str) -> str:
+    """Rewrites cross-document links in markdown to flat help namespace."""
+    pattern = re.compile(r'(?<!\!)\[([^\]]+)\]\(([^)]+)\)')
+
+    def replacer(m: re.Match) -> str:
+        anchor = m.group(1).strip()
+        url = m.group(2).strip()
+
+        # External URLs or non-doc links
+        if url.startswith(("http://", "https://", "spartan://", "mailto:")):
+            return m.group(0)
+
+        # In-document anchors like #section
+        if url.startswith("#"):
+            return m.group(0)
+
+        # Cross-document link
+        parts = url.split("#", 1)
+        doc_path = parts[0]
+        hash_part = f"#{parts[1]}" if len(parts) > 1 else ""
+
+        if doc_path.endswith(".md"):
+            stem = Path(doc_path).stem.lower()
+            if stem == "lisp_scripting":
+                stem = "lisp"
+            return f"[{anchor}]({stem}.md{hash_part})"
+
+        return m.group(0)
+
+    return pattern.sub(replacer, src_text)
+
+
+def validate_markdown_no_html(src_rel: str, src_text: str) -> bool:
+    """Validates that markdown source does not contain raw HTML layout tags."""
+    raw_tags = re.findall(r'<([a-zA-Z/][^>]*)>', src_text)
+    known_placeholders = {
+        'topic', 'target', 'target', 'path', 'story', 'filename', 'host', 'status',
+        'meta', 'body', 'name', 'driver', 'who', 'lock', 'protocol', 'why', 'preset',
+        'handler', 'ms', 'addr', 'reg', 'n', 'byte-list', 'pin', 'val', 'string',
+        'elf-path', 'part', 'channel', 'metric_id', 'min_interval_s', 'max_interval_s',
+        'delta', 'file', 'src', 'dst', 'vol', 'pat', 'dir', 'elf', 'lugal.h'
+    }
+    violations = []
+    for tag in raw_tags:
+        tag_name = tag.lstrip('/').split()[0].lower()
+        if tag_name not in known_placeholders:
+            violations.append(tag)
+    if violations:
+        print(f"[HTML VIOLATION] {src_rel} contains raw HTML tags: {violations}")
+        return False
+    return True
+
+
 def generate_all(repo_root: Path, check_only: bool = False) -> bool:
     """Generates all configured help files. If check_only=True, verifies parity without writing."""
     all_ok = True
-    for src_rel, dst_rel in DOC_MAPPINGS.items():
+    for src_rel, gmi_rel in DOC_MAPPINGS.items():
         src_path = repo_root / src_rel
-        dst_path = repo_root / dst_rel
+        gmi_path = repo_root / gmi_rel
+
+        stem = Path(gmi_rel).stem
+        md_rel = f"tools/sd_root/help/{stem}.md"
+        md_path = repo_root / md_rel
 
         if not src_path.exists():
             continue
 
         src_text = src_path.read_text(encoding="utf-8")
-        generated = convert_markdown_to_gemtext(src_text)
+
+        # 1. HTML validation
+        if not validate_markdown_no_html(src_rel, src_text):
+            all_ok = False
+
+        # 2. Markdown output with rewritten cross-doc links
+        md_out = rewrite_markdown_for_help(src_text)
+
+        # 3. Gemtext output
+        gmi_out = convert_markdown_to_gemtext(src_text)
 
         if check_only:
-            if not dst_path.exists():
-                print(f"[DRIFT] Missing generated file: {dst_rel}")
+            # Verify Markdown file
+            if not md_path.exists():
+                print(f"[DRIFT] Missing generated file: {md_rel}")
                 all_ok = False
             else:
-                existing = dst_path.read_text(encoding="utf-8")
-                if existing != generated:
-                    print(f"[DRIFT] File content mismatch: {dst_rel}")
+                existing_md = md_path.read_text(encoding="utf-8")
+                if existing_md != md_out:
+                    print(f"[DRIFT] Markdown file content mismatch: {md_rel}")
+                    all_ok = False
+
+            # Verify Gemtext file
+            if not gmi_path.exists():
+                print(f"[DRIFT] Missing generated file: {gmi_rel}")
+                all_ok = False
+            else:
+                existing_gmi = gmi_path.read_text(encoding="utf-8")
+                if existing_gmi != gmi_out:
+                    print(f"[DRIFT] Gemtext file content mismatch: {gmi_rel}")
                     all_ok = False
         else:
-            dst_path.parent.mkdir(parents=True, exist_ok=True)
-            dst_path.write_text(generated, encoding="utf-8")
-            print(f"[GEN] {src_rel} -> {dst_rel} ({len(generated)} bytes)")
-            
+            # Write help/*.md
+            md_path.parent.mkdir(parents=True, exist_ok=True)
+            md_path.write_text(md_out, encoding="utf-8")
+
+            # Write help/*.gmi
+            gmi_path.parent.mkdir(parents=True, exist_ok=True)
+            gmi_path.write_text(gmi_out, encoding="utf-8")
+
             # Mirror to pub/help for Spartan capsule
-            pub_dst = repo_root / "tools/sd_root/pub/help" / dst_path.name
-            pub_dst.parent.mkdir(parents=True, exist_ok=True)
-            pub_dst.write_text(generated, encoding="utf-8")
+            pub_md = repo_root / f"tools/sd_root/pub/help/{stem}.md"
+            pub_md.parent.mkdir(parents=True, exist_ok=True)
+            pub_md.write_text(md_out, encoding="utf-8")
+
+            pub_gmi = repo_root / f"tools/sd_root/pub/help/{stem}.gmi"
+            pub_gmi.parent.mkdir(parents=True, exist_ok=True)
+            pub_gmi.write_text(gmi_out, encoding="utf-8")
+
+            print(f"[GEN] {src_rel} -> {stem}.md ({len(md_out)} B) & {stem}.gmi ({len(gmi_out)} B)")
 
     return all_ok
 
