@@ -34,6 +34,13 @@ CASES: list[tuple[str, str, str]] = [
     ("fmt equation", "(to-infix '(= (+ 4 (* 3 x)) 10))", '=> "3*x + 4 = 10"'),
     ("fmt solution list", "(to-infix '((x . 2) (x . 3)))", '=> "[x = 2, x = 3]"'),
     ("fmt reciprocal", "(to-infix '(* -1 (^ x -1)))", '=> "-1/x"'),
+    # --- to-latex ---
+    ("latex polynomial", "(to-latex '(+ 1 (* 2 x) (* 3 (^ x 2))))", '=> "3 x^{2} + 2 x + 1"'),
+    ("latex fraction", "(to-latex '(* 1/2 (^ x 2)))", r'=> "\frac{x^{2}}{2}"'),
+    ("latex sin + cos", "(to-latex '(+ (sin x) (cos x)))", r'=> "\cos\left(x\right) + \sin\left(x\right)"'),
+    ("latex greek and sqrt", "(to-latex '(sqrt alpha))", r'=> "\sqrt{\alpha}"'),
+    ("latex subscript", "(to-latex 'x_1)", '=> "x_{1}"'),
+    ("latex string input", '(to-latex "sin(x) / x")', r'=> "\frac{\sin\left(x\right)}{x}"'),
     # --- from-infix ---
     ("parse precedence", '(from-infix "1 + 2*x^2")', "=> (+ 1 (* 2 (^ x 2)))"),
     ("parse implicit mult 3x^2", '(from-infix "3x^2")', "=> (* 3 (^ x 2))"),

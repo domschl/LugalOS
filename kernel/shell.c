@@ -104,6 +104,7 @@
 #include "fs/9p.h"
 #include "fs/gemtext.h"
 #include "fs/markdown.h"
+#include "fs/latex_math.h"
 #include "net/netif.h"
 #include "net/ip.h"
 #include "net/tcp.h"
@@ -777,9 +778,13 @@ static void pager_print_spans(const char *text, int *link_idx) {
             print_span_chars(span.text, span.len);
             cprintf("`\033[0m");
         } else if (span.style & MD_STYLE_MATH) {
-            cprintf("\033[1;35m$");
-            print_span_chars(span.text, span.len);
-            cprintf("$\033[0m");
+            char mbuf[128];
+            size_t mlen = span.len < sizeof(mbuf) - 1 ? span.len : sizeof(mbuf) - 1;
+            memcpy(mbuf, span.text, mlen);
+            mbuf[mlen] = '\0';
+            char ubuf[256];
+            latex_to_unicode(mbuf, ubuf, sizeof(ubuf));
+            cprintf("\033[1;35m%s\033[0m", ubuf);
         } else if (span.style & MD_STYLE_LINK) {
             if (link_idx) (*link_idx)++;
             int num = link_idx ? *link_idx : 0;
@@ -899,7 +904,11 @@ void pager_print_md_line(const char *raw, bool is_formatted, bool *in_code, bool
         cprintf("  \033[2m$$ math\033[0m\n");
         break;
     case MD_LINE_MATH_TEXT:
-        cprintf("    \033[1;35m%s\033[0m\n", md.text);
+        {
+            char ubuf[512];
+            latex_to_unicode(md.text, ubuf, sizeof(ubuf));
+            cprintf("    \033[1;35m%s\033[0m\n", ubuf);
+        }
         break;
     case MD_LINE_CODE_TOGGLE:
         if (*in_code) {

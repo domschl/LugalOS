@@ -23,6 +23,8 @@
 #include "drivers/touch.h"
 #include "fs/gemtext.h"
 #include "fs/markdown.h"
+#include "fs/latex_math.h"
+#include "drivers/latex_layout.h"
 #include "fs/vfs.h"
 #include "net/spartan.h"
 #include "kernel/vterm.h"
@@ -1011,6 +1013,38 @@ static int render_wrapped_spans(reader_state_t *r, rdraw_t *rd, int x0, int max_
             is_link = true;
             link_num = ++(*inout_link_idx);
             ksnprintf(target_url, sizeof(target_url), "#fn:%s", span.footnote_id);
+        } else if (span.style & MD_STYLE_MATH) {
+            char mbuf[128];
+            size_t mlen = span.len < sizeof(mbuf) - 1 ? span.len : sizeof(mbuf) - 1;
+            memcpy(mbuf, span.text, mlen);
+            mbuf[mlen] = '\0';
+
+            uint8_t arena_buf[2048];
+            math_arena_t arena;
+            math_arena_init(&arena, arena_buf, sizeof(arena_buf));
+            math_box_t *box = latex_parse(mbuf, STYLE_TEXT, &arena);
+            if (box) {
+                int base_scale = READER_IS_HIDPI ? 2 : 1;
+                latex_layout(box, base_scale);
+                int math_w = box->w;
+
+                if (cur_x + math_w > x0 + max_w && cur_x > x0) {
+                    cur_x = x0;
+                    cur_y += line_h;
+                }
+
+                int screen_y = cur_y - scroll_y;
+                if (screen_y + line_h >= 0 && screen_y < win_h) {
+                    int baseline = screen_y + line_h - 4 * base_scale;
+                    if (rd->c) {
+                        latex_render_canvas1(box, cur_x, baseline, rd->c, 1);
+                    } else if (rd->aa_fb) {
+                        latex_render_gray8(box, cur_x, baseline, rd->aa_fb, rd->aa_stride, rd->w, rd->h, 0x00, 0xFF);
+                    }
+                }
+                cur_x += math_w + 4 * base_scale;
+            }
+            continue;
         }
 
         /* Iterate through words inside the span */
@@ -1397,15 +1431,39 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
 
                 case MD_LINE_MATH_TEXT:
                     {
-                        int line_len = strlen(md.text);
-                        int txt_w = line_len * (READER_IS_HIDPI ? 16 : 8);
-                        int cx = margin_x + (max_w - txt_w) / 2;
-                        if (cx < margin_x) cx = margin_x;
-                        if (screen_y + READER_LINE_H >= 0 && screen_y < h) {
-                            rdraw_fill(&rd, cx - 8, screen_y - 2, cx + txt_w + 8, screen_y + READER_LINE_H, 244, CANVAS1_GREY);
-                            rdraw_mono_text(&rd, cx, screen_y, md.text, line_len, max_w / (READER_IS_HIDPI ? 16 : 8));
+                        uint8_t arena_buf[4096];
+                        math_arena_t arena;
+                        math_arena_init(&arena, arena_buf, sizeof(arena_buf));
+                        math_box_t *box = latex_parse(md.text, STYLE_DISPLAY, &arena);
+                        int base_scale = READER_IS_HIDPI ? 2 : 1;
+                        if (box) {
+                            latex_layout(box, base_scale);
+                            int math_w = box->w;
+                            int total_h = box->h + box->d + 16 * base_scale;
+                            int cx = margin_x + (max_w - math_w) / 2;
+                            if (cx < margin_x) cx = margin_x;
+
+                            int my = doc_y - scroll_y;
+                            if (my + total_h >= 0 && my < h) {
+                                int baseline = my + box->h + 8 * base_scale;
+                                if (rd.c) {
+                                    latex_render_canvas1(box, cx, baseline, rd.c, 1);
+                                } else if (rd.aa_fb) {
+                                    latex_render_gray8(box, cx, baseline, rd.aa_fb, rd.aa_stride, rd.w, rd.h, 0x00, 0xFF);
+                                }
+                            }
+                            doc_y += total_h;
+                        } else {
+                            int line_len = strlen(md.text);
+                            int txt_w = line_len * (READER_IS_HIDPI ? 16 : 8);
+                            int cx = margin_x + (max_w - txt_w) / 2;
+                            if (cx < margin_x) cx = margin_x;
+                            if (screen_y + READER_LINE_H >= 0 && screen_y < h) {
+                                rdraw_fill(&rd, cx - 8, screen_y - 2, cx + txt_w + 8, screen_y + READER_LINE_H, 244, CANVAS1_GREY);
+                                rdraw_mono_text(&rd, cx, screen_y, md.text, line_len, max_w / (READER_IS_HIDPI ? 16 : 8));
+                            }
+                            doc_y += READER_LINE_H + 8;
                         }
-                        doc_y += READER_LINE_H + 8;
                     }
                     break;
 
