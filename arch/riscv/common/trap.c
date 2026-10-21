@@ -8,6 +8,7 @@
 #include "kernel/chan.h"
 #include "kernel/sched.h"
 #include "kernel/lock.h"
+#include "kernel/irq.h"
 #include "kernel/uaccess.h"
 #include "kernel/ticker.h"
 #include "kernel/devirq.h"
@@ -433,6 +434,29 @@ static void p4_ext_cache_range(uint32_t rom_fn, uintptr_t addr, uint32_t size) {
     uintptr_t start = addr & ~(uintptr_t)63u;
     uintptr_t end   = (addr + size + 63u) & ~(uintptr_t)63u;
     p4_cache_op(rom_fn, P4_CACHE_MAP_L1_DCACHE | P4_CACHE_MAP_L2, start, end);
+}
+
+/* After the ELF loader wrote a program through the data path: its stores out
+ * of the L1 data cache (writeback, which loses nothing), then both cores'
+ * instruction caches dropped (they never hold dirty data), so the fetch sees
+ * the new code rather than stale lines. Measured before this existed: the
+ * same binary faulted differently on consecutive `exec`s -- stale memory.
+ *
+ * Under g_cache_op_lock with interrupts masked, like every sync operation:
+ * this used to drive the sync registers directly, beside the ROM routines and
+ * outside any lock, and it also invalidated the whole L2 cache after writing
+ * it back -- anything a preempting task (or the other hart) wrote to PSRAM
+ * between the two steps was thrown away. L2 needs nothing here: after the L1
+ * writeback the new code is in L2 or memory, where the fetch finds it. */
+#define P4_CACHE_MAP_L1_ICACHE_0 (1u << 0)
+#define P4_CACHE_MAP_L1_ICACHE_1 (1u << 1)
+void esp32p4_icache_sync(void) {
+    void (*writeback_all)(uint32_t)  = (void (*)(uint32_t))P4_ROM_CACHE_WRITEBACK_ALL;
+    void (*invalidate_all)(uint32_t) = (void (*)(uint32_t))P4_ROM_CACHE_INVALIDATE_ALL;
+    uintptr_t f = spin_lock_irqsave(&g_cache_op_lock);
+    writeback_all(P4_CACHE_MAP_L1_DCACHE);
+    invalidate_all(P4_CACHE_MAP_L1_ICACHE_0 | P4_CACHE_MAP_L1_ICACHE_1);
+    spin_unlock_irqrestore(&g_cache_op_lock, f);
 }
 
 void esp32p4_extmem_writeback(uintptr_t addr, uint32_t size) {
@@ -869,9 +893,15 @@ void arch_irq_enable(uint32_t irq_num) {
         printk("[INTC] arch_irq_enable(%u) refused: not an available line\n", (unsigned)irq_num);
         return;
     }
+    /* interrupt-shared: C6_PLIC_TYPE / C6_PLIC_ENABLE hold every line's bit and
+     * a handler masks its own line in them (radio_intr.c's stub, the trap
+     * path's unclaimed-line mask): read-modify-written by tasks only with
+     * interrupts masked, which on this one-core chip makes them atomic. */
+    uintptr_t f = irq_save();
     C6_PLIC_TYPE &= ~(1u << irq_num);
     C6_PLIC_PRI(irq_num) = 1;
     C6_PLIC_ENABLE |= (1u << irq_num);
+    irq_restore(f);
     /* And at the core: the TRM is explicit that "an M mode interrupt (external or
      * local) further needs to be unmasked at core level by setting the corresponding
      * bit in mie" -- bit n for line n -- and that the controller's pending state
@@ -1692,6 +1722,16 @@ void trap_handler(trap_frame_t *frame) {
 }
 
 #if defined(CONFIG_BOARD_ESP32C6)
-void esp32c6_irq_mask(uint32_t line)   { C6_PLIC_ENABLE &= ~(1u << line); }
-void esp32c6_irq_unmask(uint32_t line) { C6_PLIC_ENABLE |= (1u << line); }
+/* With interrupts masked: a handler masks lines in the same word (see
+ * arch_irq_enable()), and an interrupted read-modify-write here would undo it. */
+void esp32c6_irq_mask(uint32_t line) {
+    uintptr_t f = irq_save();
+    C6_PLIC_ENABLE &= ~(1u << line);
+    irq_restore(f);
+}
+void esp32c6_irq_unmask(uint32_t line) {
+    uintptr_t f = irq_save();
+    C6_PLIC_ENABLE |= (1u << line);
+    irq_restore(f);
+}
 #endif

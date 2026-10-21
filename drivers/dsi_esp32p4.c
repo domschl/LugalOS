@@ -524,6 +524,12 @@ static void dpi_config(void) {
 
 /* ---- 5. commands: mipi_dsi_hal_host_gen_write_dcs_command() -------------- */
 
+/* guarded by: itself -- one panel command (DCS) exchange at a time after boot:
+ * each is several writes to the host's command and payload FIFOs, and two
+ * terminals' `lcd cmd` / `lcd rd` / `lcd reinit` could interleave them. The
+ * boot's panel init runs before anything else can. */
+static ylock_t g_dcs_lock;
+
 static bool cmd_fifo_not_full(void)  { return !FGET(DSI_HOST_CMD_PKT_STATUS_REG, DSI_HOST_GEN_CMD_FULL); }
 static bool pld_fifo_not_full(void)  { return !FGET(DSI_HOST_CMD_PKT_STATUS_REG, DSI_HOST_GEN_PLD_W_FULL); }
 static bool cmd_fifo_drained(void) {
@@ -806,8 +812,21 @@ static void bl_pwm_init(void) {
     g_bl_pwm = true;
 }
 
+/* guarded by: itself. The backlight is set from the console's idle blanking
+ * and its wake on input (the touch, keyboard and input tasks) and from
+ * `lcd backlight` / `lcd bl`: each a sequence of LEDC and pad writes, and the
+ * first one the LEDC's setup. */
+static ylock_t g_bl_lock;
+
 /* 0..100; 0 is dark. Routes the pin to the LEDC on first use. */
+static void bl_set_locked(unsigned percent);
 static void bl_set(unsigned percent) {
+    ylock_acquire(&g_bl_lock);
+    bl_set_locked(percent);
+    ylock_release(&g_bl_lock);
+}
+
+static void bl_set_locked(unsigned percent) {
     if (percent > 100u) percent = 100u;
     if (!g_bl_pwm) bl_pwm_init();
     uint32_t duty = ((1u << BL_DUTY_RES) * percent) / 100u;
@@ -2933,6 +2952,7 @@ void dsi_lcd_command(const char *args) {
                   strcmp(m, "link") == 0 ? 2 : strcmp(m, "phy") == 0 ? 3 : -1;
         if (lvl < 0) { cprintf("usage: lcd reinit video|panel|phy|link\n"); return; }
         if (!g_up) { cprintf("lcd: not up\n"); return; }
+        ylock_acquire(&g_dcs_lock);
         frame_begin();
         scan_stop();
         FSET(DSI_HOST_MODE_CFG_REG, DSI_HOST_CMD_VIDEO_MODE, 1);
@@ -2957,6 +2977,7 @@ void dsi_lcd_command(const char *args) {
         frame_end();
         lcdterm_repaint();
         for (int i = 0; i < (g_double_buffered ? 2 : 1); i++) term_sync_post();
+        ylock_release(&g_dcs_lock);
         cprintf("lcd reinit %s: %s, power mode 0x%02x\n", m, ok ? "done" : g_reason,
                 (unsigned)(g_pwr_mode & 0xff));
         return;
@@ -3043,7 +3064,9 @@ void dsi_lcd_command(const char *args) {
         int v;
         while (n < sizeof prm && (v = parse_hex(&p)) >= 0) prm[n++] = (uint8_t)v;
         if (c < 0 || *skip_ws(p)) { cprintf("usage: lcd cmd CC [PP ...] (hex)\n"); return; }
+        ylock_acquire(&g_dcs_lock);
         bool ok = dcs_write((uint8_t)c, prm, n);
+        ylock_release(&g_dcs_lock);
         cprintf("lcd: DCS 0x%02x (%u params) %s\n", (unsigned)c, n, ok ? "sent" : "FAILED");
         return;
     }
@@ -3058,7 +3081,9 @@ void dsi_lcd_command(const char *args) {
             if (c < 0 || n > 16) { cprintf("usage: lcd rd CC [N] (hex)\n"); return; }
         }
         uint8_t buf[16];
+        ylock_acquire(&g_dcs_lock);
         int got = dcs_read((uint8_t)c, buf, (unsigned)n);
+        ylock_release(&g_dcs_lock);
         if (got < 0) { cprintf("lcd: DCS read 0x%02x timed out\n", (unsigned)c); return; }
         cprintf("lcd: DCS read 0x%02x ->", (unsigned)c);
         for (int i = 0; i < got; i++) cprintf(" %02x", buf[i]);

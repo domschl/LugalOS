@@ -741,20 +741,7 @@ Hour runs (2026-10-19, 60 min each, with terminals, typing, 9P/TCP, sensors at 2
 4. `tools/stress.py` refuses a board that does not answer (one left in download mode by a
    flash ran 10 minutes against nothing).
 
-### 63.8 Close
-
-- `doc/dev/kernel/` gains a concurrency page: the ownership comment rule, the `chan_call`
-  wait helper, the interrupt-shared protocols, the lock ranks, and how to run
-  `racescan.py` and the stress harness. *Done (2026-10-20).*
-- AGENTS.md: the rules in short, next to the existing comment standard. *Done.*
-- `racescan.py` runs in `tests/runner.py` and fails on an unmarked new static. *Done
-  (owner's decision 3), with a message that explains the rules.*
-- **Remove the SD read-back checker** (drivers/sdmmc_esp32p4.c, `wchk_*`: a checksum of every
-  sector written, compared on every read, 128 KB of PSRAM) once 63.9 and the hour runs are
-  done, or keep it as an off-by-default debug option. Owner: keep it until the end of the
-  phase.
-
-### 63.9 Shared hardware engines and interrupt paths
+### 63.8 Shared hardware engines and interrupt paths
 
 The Tab5's SD corruption was a multi-step operation on a chip-wide unit (the cache
 controller's sync registers: address, size, start, poll) done by two contexts that could
@@ -783,6 +770,54 @@ covered read-modify-write of single words. This milestone looks for it everywher
   context (cache maintenance on a scratch buffer, flash reads/writes of a scratch sector)
   while the others run; the SD read-back checker stays armed for it.
 
+*Done (2026-10-21).* Handlers do not nest (the trap entry never re-enables `mstatus.MIE`, and a
+spinlock released inside a handler restores the handler's own masked state), and each source
+is routed once, to the hart that routed it (`esp32p4_intmtx_route()` writes the calling hart's
+matrix; every driver routes from a once-guard), so no handler runs on two harts at once.
+Sequences on chip-wide units, by unit:
+
+| unit | contexts | verdict / fix |
+| :--- | :--- | :--- |
+| P4 cache sync registers (ROM Cache_*_Addr) | panel flush, SD/SDIO, PSRAM, ELF loader, stress | **fixed in 63.7** (g_cache_op_lock, 32 KB chunks); **found here:** `esp32p4_icache_sync()` (every `exec`) drove the same registers directly, interrupts on, and invalidated all of L2 after writing it back -- PSRAM stores between the two steps were thrown away. Now under the lock, L1D writeback and L1I invalidate only |
+| P4/C6 systimer UNIT0 latch (time_get_us, the C6 tick's now()) | every context, handlers included | **fixed:** another latch between the high and low reads paired two snapshots' halves (off by 2^32 ticks, 268 s, when the low word wrapped between them); now low/high/low until the lows agree (IDF's reader), lock-free |
+| C6 PLIC enable word | tasks (arch_irq_enable, esp32c6_irq_mask/unmask) and handlers (the radio stub masks its line, the trap path masks unclaimed lines) | **fixed:** the task side's read-modify-write under irq_save (one core) |
+| P4 flash via ROM (erase, write, read) | identity, /flash0, OTA, any task | g_flash_ylock, routines in .ramfunc, interrupts masked; erase and write parked the other hart, **reads did not** -- fixed (IDF guards a read like an erase) |
+| P4 DSI command FIFOs (DCS) | boot; `lcd cmd`, `lcd rd`, `lcd reinit` | **g_dcs_lock** (two terminals could interleave packets) |
+| P4 LEDC + backlight pad | idle blanking and wake (touch, keyboard, input tasks), `lcd backlight` / `bl` | **g_bl_lock** (a sequence of writes and a lazy one-time setup) |
+| P4 UART / USB-Serial/JTAG INT_ENA | uart_isr, RX/TX waiters | g_ena_lock on both sides (63.5) |
+| P4 SDMMC host (both slots), SDIO card interrupt | sdblk, the LLP pump, sdhost_isr | g_host_lock; the handler's INTMASK bit accepted (63.5) |
+| P4 GDMA / DSI bridge scan-out | gdma_isr, drawing | g_scan_lock (63.5, F40) |
+| P4 clock/reset words, CPU frequency | drivers at run time, `cpufreq` | sysreg_update(), g_freq_lock (63.6) |
+| P4 PSRAM MSPI (ROM SPI commands) | boot tuning only | accepted: the run-time `psram` commands use cached access only |
+| P4 interrupt matrix, CLIC | driver init | one register / byte per source and line, each written once |
+| GPIO / IO_MUX | drivers' pad setup, the shell's `gpio` | per-pin registers; shared words through W1TS/W1TC |
+| tick comparators (CLINT / SIO / C6 systimer target) | the tick handler only | high half to all-ones first, then low, then high |
+| RP2350 XIP cache, flash | single-store maintenance; flash writes park core 1 (X7) | accepted |
+
+- racescan's MMIO list and the ROM-call inventory were the starting points; ROM routines called
+  after boot: cache sync (locked), CPU frequency (locked), the second hart's start (once), SPI
+  flash (locked, parked).
+- **Test.** The stress `cache` path (ESP32-P4): each worker writes a pattern into a line-aligned
+  buffer of its own (256 B SRAM, 16 KB PSRAM), writes it back, invalidates it, reads it back.
+  It adds cache traffic from many contexts more than it detects: with the cache lock taken out,
+  `stress 120 norot only=cache,log,sd` failed in each run on an SD write (the path itself
+  stayed clean -- a short operation is rarely the one interrupted); with the lock, 0 errors in
+  two runs, 89,192 read-back checks clean. Before the path, the same failure took up to 20
+  minutes to appear.
+
+### 63.9 Close
+
+- `doc/dev/kernel/` gains a concurrency page: the ownership comment rule, the `chan_call`
+  wait helper, the interrupt-shared protocols, the lock ranks, and how to run
+  `racescan.py` and the stress harness. *Done (2026-10-20).*
+- AGENTS.md: the rules in short, next to the existing comment standard. *Done.*
+- `racescan.py` runs in `tests/runner.py` and fails on an unmarked new static. *Done
+  (owner's decision 3), with a message that explains the rules.*
+- **Remove the SD read-back checker** (drivers/sdmmc_esp32p4.c, `wchk_*`: a checksum of every
+  sector written, compared on every read, 128 KB of PSRAM) once 63.8 and the hour runs are
+  done, or keep it as an off-by-default debug option. Owner: keep it until the end of the
+  phase.
+
 ---
 
 ## 3. Exit Criteria
@@ -802,7 +837,7 @@ covered read-modify-write of single words. This milestone looks for it everywher
    Decided 2026-10-19: a FIFO, opt-in through `chan_call_wait()`.
 2. ~~Whether the lock-rank check stays on in release builds or is debug-only.~~ Decided
    2026-10-19: a learned order rather than ranks, on in every build.
-3. ~~Whether `racescan.py` failing the runner is acceptable from 63.8 on.~~ Decided
+3. ~~Whether `racescan.py` failing the runner is acceptable from 63.9 on.~~ Decided
    2026-10-20: yes, with a message that explains the system to someone who does not know it
    (`racescan.py --check`, five builds, ~100 s in parallel).
 4. ~~Task stacks from PSRAM for the LCD-7B's page shortage.~~ Decided 2026-10-20: stacks stay

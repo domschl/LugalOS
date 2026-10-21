@@ -11,6 +11,12 @@
  *          for 0-2 ms, so callers queue
  *   log    printk() bursts, so the klog ring wraps under the others
  *   shell  native commands and a Lisp form through the shell, output captured
+ *   cache  (ESP32-P4) a line-aligned scratch buffer of its own, in SRAM and in
+ *          PSRAM: pattern written, written back, invalidated, read back. Mostly
+ *          load: cache operations from many contexts at once (the controller's
+ *          sync registers are one for the chip), so a broken serialisation shows
+ *          on the sd path within minutes; a short operation of its own is rarely
+ *          the one that is interrupted
  *   rot    the Tab5's panel turned every 7 s (the orientation test hook)
  *
  * The workers are mixed: each picks a path at random every iteration, so two
@@ -42,10 +48,14 @@
 #endif
 #include <string.h>
 
-enum { P_FMT, P_RAM, P_SD, P_P9, P_CHAN, P_LOG, P_SHELL, P_ROT, P_COUNT };
-static const char *const P_NAME[P_COUNT] = { "fmt", "ram", "sd", "p9", "chan", "log", "shell", "rot" };
+enum { P_FMT, P_RAM, P_SD, P_P9, P_CHAN, P_LOG, P_SHELL, P_CACHE, P_ROT, P_COUNT };
+static const char *const P_NAME[P_COUNT] = { "fmt", "ram", "sd", "p9", "chan", "log", "shell", "cache", "rot" };
 /* How often a mixed worker picks each path (rot is never picked: its own task). */
-static const uint8_t P_WEIGHT[P_ROT] = { 4, 4, 1, 3, 4, 1, 2 };
+#if defined(CONFIG_BOARD_ESP32P4)
+static const uint8_t P_WEIGHT[P_ROT] = { 4, 4, 1, 3, 4, 1, 2, 2 };
+#else
+static const uint8_t P_WEIGHT[P_ROT] = { 4, 4, 1, 3, 4, 1, 2, 0 };
+#endif
 
 #define W_MIX_MAX 8
 #define W_MIX_MIN 3
@@ -232,6 +242,38 @@ static unsigned pick_path(void) {
     return P_FMT;
 }
 
+#if defined(CONFIG_BOARD_ESP32P4)
+#include "arch/esp32p4_intr.h"
+#include "kernel/palloc.h"
+/* Per worker: 256 bytes of SRAM and 16 KB of PSRAM, each whole cache lines.
+ * The PSRAM slice is long on purpose: an operation is lost when another
+ * context's lands while it is in progress, so the long one is the victim.
+ * single task: each slice its worker's; the PSRAM page is taken before the
+ * workers start and given back after they stop. */
+#define CACHE_SLICE      256u
+#define CACHE_EXT_SLICE  (16u * 1024u)
+#define CACHE_EXT_PAGES  ((W_MIX_MAX + 1u) * CACHE_EXT_SLICE / 4096u)
+static uint8_t  g_cache_sram[W_MIX_MAX + 1][CACHE_SLICE] __attribute__((aligned(64)));
+static uint8_t *g_cache_psram;
+
+static bool cache_round(uint8_t *buf, uint32_t len, bool ext, uint32_t seed) {
+    for (uint32_t i = 0; i < len; i++) buf[i] = (uint8_t)(seed + i * 13u);
+    if (ext) { esp32p4_extmem_writeback((uintptr_t)buf, len); esp32p4_extmem_invalidate((uintptr_t)buf, len); }
+    else     { esp32p4_dcache_writeback((uintptr_t)buf, len); esp32p4_dcache_invalidate((uintptr_t)buf, len); }
+    for (uint32_t i = 0; i < len; i++)
+        if (buf[i] != (uint8_t)(seed + i * 13u)) return false;
+    return true;
+}
+
+static void do_cache(const worker_t *w) {
+    uint32_t seed = rnd();
+    if (!cache_round(g_cache_sram[w->index], CACHE_SLICE, false, seed)) fail(P_CACHE, "SRAM line lost its writeback");
+    if (g_cache_psram && !cache_round(g_cache_psram + (size_t)w->index * CACHE_EXT_SLICE, CACHE_EXT_SLICE, true,
+                                      seed ^ 0x5au))
+        fail(P_CACHE, "PSRAM line lost its writeback");
+}
+#endif
+
 static void worker_body(void *arg) {
     worker_t *w = (worker_t *)arg;
     while (time_get_ms() < g_until_ms) {
@@ -244,6 +286,9 @@ static void worker_body(void *arg) {
         case P_CHAN:  do_chan(); break;
         case P_LOG:   do_log(w->iters); break;
         case P_SHELL: do_shell(w->iters); task_sleep_ms(10); break;
+#if defined(CONFIG_BOARD_ESP32P4)
+        case P_CACHE: do_cache(w); break;
+#endif
         case P_ROT:
 #if defined(CONFIG_BOARD_TAB5)
         {
@@ -317,6 +362,9 @@ int stress_run(uint32_t seconds) {
     snapshot_t s0, s1;
     snapshot(&s0);
     g_until_ms = time_get_ms() + (uint64_t)seconds * 1000u;
+#if defined(CONFIG_BOARD_ESP32P4)
+    g_cache_psram = palloc_pages_bulk(CACHE_EXT_PAGES);   /* NULL without PSRAM: the SRAM half still runs */
+#endif
 
     unsigned nw = 0, mixed = 0;
 #if defined(CONFIG_BOARD_TAB5)
@@ -393,6 +441,9 @@ int stress_run(uint32_t seconds) {
               full == 0 && stuck == 0 && vnone == 0;
     if (mixed < W_MIX_MIN) cprintf("  only %u workers: the task table is full\n", mixed);
     cprintf(ok ? "STRESS_OK\n" : "STRESS_FAIL\n");
+#if defined(CONFIG_BOARD_ESP32P4)
+    if (g_cache_psram) { palloc_free(g_cache_psram, CACHE_EXT_PAGES); g_cache_psram = NULL; }
+#endif
     session_release(&g_stress_session);
     return ok ? 0 : -1;
 }

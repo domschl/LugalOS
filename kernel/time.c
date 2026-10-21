@@ -177,12 +177,22 @@ static inline uint64_t read_hardware_counter_us(void) {
      * among other places, so a hang here would take the console with it and
      * leave nothing to report the hang. A stopped clock is visible in the
      * output; a stopped kernel is not. */
+    /* The latch is one per unit, shared by every context: an interrupt (or
+     * the other hart) that latches again between our two reads would pair
+     * this snapshot's high word with the next one's low word -- off by 2^32
+     * ticks, 268 s, whenever the low word wrapped in between. So low, high,
+     * low again, until the two lows agree: then both halves are one latch's
+     * (IDF's systimer_hal_get_counter_value(), lock-free). */
     P4_REG(SYSTIMER_UNIT0_OP) = SYSTIMER_UNIT0_UPDATE;
     for (unsigned i = 0; i < 10000u; i++) {
         if (P4_REG(SYSTIMER_UNIT0_OP) & SYSTIMER_UNIT0_VALID) break;
     }
-    uint32_t hi = P4_REG(SYSTIMER_UNIT0_VALUE_HI) & 0xfffffu;  /* 52 bits total */
-    uint32_t lo = P4_REG(SYSTIMER_UNIT0_VALUE_LO);
+    uint32_t lo, hi, lo_again = P4_REG(SYSTIMER_UNIT0_VALUE_LO);
+    do {
+        lo = lo_again;
+        hi = P4_REG(SYSTIMER_UNIT0_VALUE_HI) & 0xfffffu;   /* 52 bits total */
+        lo_again = P4_REG(SYSTIMER_UNIT0_VALUE_LO);
+    } while (lo != lo_again);
     return (((uint64_t)hi << 32) | lo) / SYSTIMER_TICKS_PER_US;
 #elif !defined(CONFIG_MODE_S)
     return CLINT_MTIME / 10; /* 10 MHz ticks -> microseconds */

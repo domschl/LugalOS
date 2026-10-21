@@ -5430,7 +5430,7 @@ RACESCAN_BUILDS = ["rv32", "rv64-smp", "esp32p4-tab5", "rp2350-terminal", "esp32
 
 
 def test_racescan_ownership() -> tuple[bool, str]:
-    """Phase 63.8: every shared static says who owns it, and no interrupt
+    """Phase 63.9: every shared static says who owns it, and no interrupt
     handler reaches a blocking call (tools/racescan.py --check), on each of
     the builds the review covered that is configured here. Parsing takes
     about a minute a build; they run side by side."""
@@ -9158,7 +9158,7 @@ def main() -> int:
 
     ok, info = test_racescan_ownership()
     total_tests += 1
-    name = "Ownership Of Shared Statics And No Blocking In Handlers (tools/racescan.py --check, 63.8)"
+    name = "Ownership Of Shared Statics And No Blocking In Handlers (tools/racescan.py --check, 63.9)"
     if ok:
         passed_tests += 1
         print(f"  [PASS] {name} -- {info}")

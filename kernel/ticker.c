@@ -401,8 +401,15 @@ static uint64_t now(void) {
     C6_ST(C6_ST_UNIT0_OP) = C6_ST_UNIT0_UPDATE;
     for (unsigned i = 0; i < 10000u; i++)
         if (C6_ST(C6_ST_UNIT0_OP) & C6_ST_UNIT0_VALID) break;
-    uint32_t lo = C6_ST(C6_ST_UNIT0_LO);
-    uint32_t hi = C6_ST(C6_ST_UNIT0_HI);
+    /* Low, high, low again until the lows agree: another latch between the
+     * reads (kernel/time.c's reader shares the unit) would otherwise pair two
+     * snapshots' halves. */
+    uint32_t lo, hi, lo_again = C6_ST(C6_ST_UNIT0_LO);
+    do {
+        lo = lo_again;
+        hi = C6_ST(C6_ST_UNIT0_HI);
+        lo_again = C6_ST(C6_ST_UNIT0_LO);
+    } while (lo != lo_again);
     return ((uint64_t)(hi & 0xfffffu) << 32) | lo;
 }
 
