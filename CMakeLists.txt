@@ -779,6 +779,7 @@ set(SOURCES
     fs/9p.c
     fs/p9_link.c
     fs/gemtext.c
+    fs/markdown.c
 
     # R1: the frame-source seam below
     # the IP stack. Built for every target, like fs/ above -- a board with no
