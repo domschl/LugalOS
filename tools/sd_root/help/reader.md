@@ -1,0 +1,74 @@
+# Ribbon Reader Window Guide
+
+The LugalOS Ribbon Reader (`RIBBON_WIN_READER`) is a dedicated long-form document viewer integrated into the horizontal window ribbon. It is designed for comfortable reading of system documentation, manuals, books, and network hypermedia capsules.
+
+## Multi-Instance Reader Architecture
+
+LugalOS supports up to 4 concurrent Reader windows (`READER_MAX_INSTANCES = 4`) tiled side-by-side on the horizontal window ribbon. Each Reader instance operates completely independently with its own document buffer, scroll offset, history stack, and link table:
+* **Multiple Open Manuals**: Keep multiple documentation files open simultaneously (e.g. `reader /sd0/help/shell.gmi` and `reader /sd0/help/spartan.gmi`).
+* **Instance Management**: Running `reader list` in `lsh` lists all active Reader instances and their loaded paths.
+* **Smart Window Reuse**: Issuing `reader <path>` focuses the existing Reader window if that exact document is already open, or allocates a new Reader pane on the ribbon if available.
+
+## Proportional Typography
+
+Unlike standard terminal windows that use fixed-pitch monospace fonts, the Reader window features:
+* **Proportional Serif Typography**:
+  * **Standard Density Panels** (`rp2350-terminal`, `esp32p4-lcd7b`): Rendered in a high-legibility 15-pixel variable-pitch serif font with balanced 1-pixel vertical stems (18 px line height).
+  * **HiDPI Panels** (`esp32p4-tab5`): Rendered in an elegant 32-pixel anti-aliased proportional serif font (`Noto Serif`) with smooth 4-bpp alpha coverage masks (38 px line height).
+* **Proportional Word Wrapping**: Flowing paragraph text dynamically wrapped at word boundaries according to window geometry.
+* **Monospace Code Blocks**: Automatic formatting for preformatted code and ASCII diagrams using 8×16 monospace font (standard density) or 16×32 `Noto Sans Mono` (HiDPI).
+* **Structural Hierarchy**: Bold section headings (H1, H2, H3), bulleted lists, and indented blockquotes scaled proportionally to the display density.
+
+## Opening Documents
+
+Open local Gemtext (`.gmi`) files or remote Spartan capsules directly from the shell:
+
+```
+lsh> reader /sd0/help/shell.gmi
+lsh> reader /sd0/help/spartan.gmi
+lsh> reader spartan://spartan.mozz.us/
+lsh> reader list
+```
+
+## Window Controls & Macintosh Close Box
+
+Every Reader window includes a classic Macintosh-style close box (`[■]`) at the left edge of its title bar:
+* **Close Box Tap / Click**: Tapping or clicking the close box closes that specific Reader instance immediately, releasing its PSRAM backing store and refocusing the ribbon.
+* **Maximize / Restore**: Pressing `Super+\` / `Cmd+\` toggles the focused Reader window between half-screen and full-screen ribbon width.
+* **Keyboard Close**: Pressing `q` or `Cmd-W` closes the active Reader window and returns focus to the terminal.
+
+## Keyboard Navigation
+
+When the Reader window has focus, standard keyboard navigation shortcuts are active (routing from either the physical USB keyboard or UART serial console):
+
+* **Vertical Scrolling**:
+  * `Up Arrow` / `k` / `Ctrl-P`: Scroll up by one line (32 px).
+  * `Down Arrow` / `j` / `Ctrl-N`: Scroll down by one line (32 px).
+  * `PageUp` / `Alt-V`: Scroll up by one full page.
+  * `PageDown` / `Space` / `Ctrl-V`: Scroll down by one full page.
+  * `Home` / `g`: Jump to top of document.
+  * `End` / `G`: Jump to bottom of document.
+* **Link Navigation**:
+  * `1` .. `9`: Follow the corresponding numbered link visible on the page.
+  * `b` / `Left Arrow`: Navigate back in document history.
+* **Help & Controls**:
+  * `Ctrl-H` / `?` / `h`: Open this Reader Help manual.
+  * `r`: Reload and redraw the current document.
+  * `Super+O` / `Cmd+O` / `o`: Toggle display orientation between Portrait and Landscape (Tab5).
+  * `Super+\` / `Cmd+\`: Toggle Maximize / Restore window width.
+  * `q` / `Cmd-W`: Close the reader window and return focus to the terminal.
+
+## Touch & Gestures
+
+On touchscreen-equipped hardware (such as the Waveshare ESP32-P4 Touch LCD 7B and RP2350-LCD-7):
+
+* **Tap Close Box**: Closes the window.
+* **Tap on Link**: Tapping anywhere within a link line follows the link target immediately.
+* **Swipe Up / Down**: Vertical touch dragging pans the document smoothly.
+* **Minimap Tap**: Tapping a window thumbnail in the top menu bar jumps directly to that window.
+
+## Related Topics
+
+=> spartan.gmi Spartan Protocol & Gemtext Guide
+=> shell.gmi Shell & Console Manual
+=> ribbon.gmi Window Ribbon Architecture

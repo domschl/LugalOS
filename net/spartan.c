@@ -2,6 +2,8 @@
 #include "net/tcp.h"
 #include "net/ip.h"
 #include "fs/vfs.h"
+#include "fs/markdown.h"
+#include "fs/gemtext.h"
 #include "kernel/time.h"
 #include "kernel/sched.h"
 #include "kernel/console.h"
@@ -313,6 +315,144 @@ int spartan_fetch(const char *url, const char *local_dest,
 
 /* --- Spartan Server (spartand) --- */
 
+static void spartan_emit_gmi_line(const char *raw, bool *in_code, bool *in_math,
+                                  char *dst, uint32_t dst_max, uint32_t *out_pos) {
+    if (!dst || dst_max == 0 || !out_pos || *out_pos >= dst_max - 1) return;
+
+    md_line_t md;
+    if (!md_parse_line(raw, in_code, in_math, &md)) {
+        int w = ksnprintf(dst + *out_pos, dst_max - *out_pos, "%s\n", raw);
+        if (w > 0) *out_pos += (uint32_t)w;
+        return;
+    }
+
+    switch (md.type) {
+    case MD_LINE_H1:
+        { int w = ksnprintf(dst + *out_pos, dst_max - *out_pos, "# %s\n", md.text); if (w > 0) *out_pos += (uint32_t)w; }
+        break;
+    case MD_LINE_H2:
+        { int w = ksnprintf(dst + *out_pos, dst_max - *out_pos, "## %s\n", md.text); if (w > 0) *out_pos += (uint32_t)w; }
+        break;
+    case MD_LINE_H3:
+    case MD_LINE_H4:
+        { int w = ksnprintf(dst + *out_pos, dst_max - *out_pos, "### %s\n", md.text); if (w > 0) *out_pos += (uint32_t)w; }
+        break;
+    case MD_LINE_ULIST:
+    case MD_LINE_OLIST:
+        {
+            int w = ksnprintf(dst + *out_pos, dst_max - *out_pos, "* %s\n", md.text);
+            if (w > 0) *out_pos += (uint32_t)w;
+        }
+        break;
+    case MD_LINE_QUOTE:
+        { int w = ksnprintf(dst + *out_pos, dst_max - *out_pos, "> %s\n", md.text); if (w > 0) *out_pos += (uint32_t)w; }
+        break;
+    case MD_LINE_ALERT:
+        {
+            const char *badge = "NOTE";
+            if (md.alert_type == MD_ALERT_TIP) badge = "TIP";
+            else if (md.alert_type == MD_ALERT_WARNING) badge = "WARNING";
+            else if (md.alert_type == MD_ALERT_IMPORTANT) badge = "IMPORTANT";
+            else if (md.alert_type == MD_ALERT_CAUTION) badge = "CAUTION";
+            int w = ksnprintf(dst + *out_pos, dst_max - *out_pos, "> [%s] %s\n", badge, md.text);
+            if (w > 0) *out_pos += (uint32_t)w;
+        }
+        break;
+    case MD_LINE_CODE_TOGGLE:
+        { int w = ksnprintf(dst + *out_pos, dst_max - *out_pos, "```%s\n", md.lang); if (w > 0) *out_pos += (uint32_t)w; }
+        break;
+    case MD_LINE_CODE_TEXT:
+        { int w = ksnprintf(dst + *out_pos, dst_max - *out_pos, "%s\n", md.text); if (w > 0) *out_pos += (uint32_t)w; }
+        break;
+    case MD_LINE_TABLE_HDR:
+    case MD_LINE_TABLE_ROW:
+    case MD_LINE_TABLE_SEP:
+        { int w = ksnprintf(dst + *out_pos, dst_max - *out_pos, "%s\n", raw); if (w > 0) *out_pos += (uint32_t)w; }
+        break;
+    case MD_LINE_GEM_LINK:
+        { int w = ksnprintf(dst + *out_pos, dst_max - *out_pos, "=> %s %s\n", md.url, md.label); if (w > 0) *out_pos += (uint32_t)w; }
+        break;
+    case MD_LINE_BLANK:
+        { int w = ksnprintf(dst + *out_pos, dst_max - *out_pos, "\n"); if (w > 0) *out_pos += (uint32_t)w; }
+        break;
+    case MD_LINE_TEXT:
+    default:
+        {
+            md_span_iter_t iter;
+            md_span_init(&iter, md.text);
+            md_span_t span;
+            char links[4][128];
+            char labels[4][64];
+            int n_links = 0;
+
+            while (md_span_next(&iter, &span)) {
+                if (span.style & MD_STYLE_LINK) {
+                    if (*out_pos < dst_max - 1) {
+                        int w = ksnprintf(dst + *out_pos, dst_max - *out_pos, "%s", span.link_text);
+                        if (w > 0) *out_pos += (uint32_t)w;
+                    }
+                    if (n_links < 4) {
+                        strncpy(links[n_links], span.link_url, sizeof(links[0]) - 1);
+                        links[n_links][sizeof(links[0]) - 1] = '\0';
+                        strncpy(labels[n_links], span.link_text, sizeof(labels[0]) - 1);
+                        labels[n_links][sizeof(labels[0]) - 1] = '\0';
+                        n_links++;
+                    }
+                } else {
+                    for (size_t k = 0; k < span.len && *out_pos < dst_max - 1; k++) {
+                        dst[(*out_pos)++] = span.text[k];
+                    }
+                }
+            }
+            if (*out_pos < dst_max - 1) dst[(*out_pos)++] = '\n';
+            for (int l = 0; l < n_links && *out_pos < dst_max - 1; l++) {
+                int w = ksnprintf(dst + *out_pos, dst_max - *out_pos, "=> %s %s\n", links[l], labels[l]);
+                if (w > 0) *out_pos += (uint32_t)w;
+            }
+        }
+        break;
+    }
+}
+
+static uint32_t spartan_convert_md_to_gmi(int fd, char *dst, uint32_t dst_max) {
+    if (fd < 0 || !dst || dst_max == 0) return 0;
+
+    uint32_t out_pos = 0;
+    uint64_t file_offset = 0;
+    char read_buf[512];
+    char line_buf[MD_LINE_MAX];
+    size_t line_pos = 0;
+    bool in_code = false;
+    bool in_math = false;
+
+    for (;;) {
+        int n = vfs_pread(fd, (uint8_t *)read_buf, sizeof(read_buf), file_offset);
+        if (n <= 0) {
+            if (line_pos > 0) {
+                line_buf[line_pos] = '\0';
+                spartan_emit_gmi_line(line_buf, &in_code, &in_math, dst, dst_max, &out_pos);
+            }
+            break;
+        }
+        file_offset += (uint64_t)n;
+        for (int i = 0; i < n; i++) {
+            char ch = read_buf[i];
+            if (ch == '\r') continue;
+            if (ch == '\n') {
+                line_buf[line_pos] = '\0';
+                line_pos = 0;
+                spartan_emit_gmi_line(line_buf, &in_code, &in_math, dst, dst_max, &out_pos);
+                if (out_pos >= dst_max - 1) goto done;
+            } else if (line_pos < sizeof(line_buf) - 1) {
+                line_buf[line_pos++] = ch;
+            }
+        }
+    }
+done:
+    if (out_pos < dst_max) dst[out_pos] = '\0';
+    return out_pos;
+}
+
 int spartan_process_request(const uint8_t *rx, uint32_t rx_len, uint32_t *consumed,
                            uint8_t *tx, uint32_t tx_max, uint32_t *tx_len,
                            bool *close_after_tx) {
@@ -398,9 +538,33 @@ int spartan_process_request(const uint8_t *rx, uint32_t rx_len, uint32_t *consum
 
     /* Open requested file */
     int fd = vfs_open(safe_path, VFS_O_READ);
+    bool is_md_source = (strstr(safe_path, ".md") != NULL);
+    bool req_is_md = (strstr(path, ".md") != NULL);
+
+    if (fd < 0) {
+        /* If requested file was .gmi, check if .md counterpart exists */
+        char alt_path[160];
+        strncpy(alt_path, safe_path, sizeof(alt_path) - 1);
+        alt_path[sizeof(alt_path) - 1] = '\0';
+        char *dot = NULL;
+        for (char *s = alt_path; *s; s++) { if (*s == '.') dot = s; }
+        if (dot && strcmp(dot, ".gmi") == 0) {
+            strcpy(dot, ".md");
+            fd = vfs_open(alt_path, VFS_O_READ);
+            if (fd >= 0) {
+                is_md_source = true;
+            }
+        }
+    }
+
     if (fd < 0 && strcmp(path, "/") == 0) {
-        /* If index.gmi in /sd0/pub is absent, fallback to help manual */
-        fd = vfs_open("/sd0/help/shell.gmi", VFS_O_READ);
+        /* If index in /sd0/pub is absent, fallback to help manual */
+        fd = vfs_open("/sd0/help/shell.md", VFS_O_READ);
+        if (fd >= 0) {
+            is_md_source = true;
+        } else {
+            fd = vfs_open("/sd0/help/shell.gmi", VFS_O_READ);
+        }
     }
 
     if (fd < 0) {
@@ -411,8 +575,14 @@ int spartan_process_request(const uint8_t *rx, uint32_t rx_len, uint32_t *consum
         return 0;
     }
 
-    /* Success: write "2 text/gemini; charset=utf-8\r\n" */
-    int hdr_len = ksnprintf((char *)tx, tx_max, "2 text/gemini; charset=utf-8\r\n");
+    /* Success: write response header */
+    int hdr_len = 0;
+    if (req_is_md) {
+        hdr_len = ksnprintf((char *)tx, tx_max, "2 text/markdown; charset=utf-8\r\n");
+    } else {
+        hdr_len = ksnprintf((char *)tx, tx_max, "2 text/gemini; charset=utf-8\r\n");
+    }
+
     if (hdr_len < 0 || (uint32_t)hdr_len >= tx_max) {
         vfs_close(fd);
         *tx_len = 0;
@@ -421,12 +591,21 @@ int spartan_process_request(const uint8_t *rx, uint32_t rx_len, uint32_t *consum
         return 0;
     }
 
-    /* Read file body into remaining tx buffer */
+    /* Read or convert body */
     uint32_t room = tx_max - (uint32_t)hdr_len;
-    int rd = vfs_pread(fd, tx + hdr_len, room, 0);
+    uint32_t body_len = 0;
+
+    if (!req_is_md && is_md_source) {
+        /* Down-convert Markdown to Gemtext on the fly */
+        body_len = spartan_convert_md_to_gmi(fd, (char *)tx + hdr_len, room);
+    } else {
+        /* Read file body raw */
+        int rd = vfs_pread(fd, tx + hdr_len, room, 0);
+        body_len = (rd > 0) ? (uint32_t)rd : 0;
+    }
     vfs_close(fd);
 
-    *tx_len = (uint32_t)hdr_len + (rd > 0 ? (uint32_t)rd : 0);
+    *tx_len = (uint32_t)hdr_len + body_len;
     *close_after_tx = true;
     g_spartan_served++;
     return 0;
