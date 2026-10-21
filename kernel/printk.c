@@ -706,7 +706,7 @@ int ksnprintf(char *buf, uint32_t cap, const char *fmt, ...) {
     snprintf_ctx_t ctx = { buf, 0, cap };
     va_list args;
     va_start(args, fmt);
-    vprintk_to(snprintf_putc, snprintf_puts, &ctx, fmt, args, true);
+    vprintk_to(snprintf_putc, snprintf_puts, &ctx, fmt, args, false);
     va_end(args);
     buf[ctx.idx] = '\0';
     return (int)ctx.idx;

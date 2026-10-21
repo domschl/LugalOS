@@ -4,6 +4,10 @@
  * formulas. Pure integer arithmetic with Zero Floating-Point in Kernel / M-Mode.
  */
 
+#ifndef LUGALOS_HOST_TEST
+#include "lugalos_config.h"
+#endif
+
 #include "drivers/latex_layout.h"
 #include "drivers/font_math.h"
 #include "drivers/font_serif.h"
@@ -32,19 +36,38 @@ int latex_layout(math_box_t *b, int base_scale) {
             if (b->d < 0) b->d = 0;
         } else {
             /* Standard serif font metrics fallback */
-            uint8_t sw = font_serif_char_width((char)b->u.ch.codepoint);
-            if (b->style == STYLE_SCRIPT) {
-                b->w = (int16_t)((sw * 7 * base_scale) / 10);
-                b->h = (int16_t)(10 * base_scale);
-                b->d = (int16_t)(2 * base_scale);
-            } else if (b->style == STYLE_SCRIPTSCRIPT) {
-                b->w = (int16_t)((sw * 5 * base_scale) / 10);
-                b->h = (int16_t)(7 * base_scale);
-                b->d = (int16_t)(1 * base_scale);
-            } else {
-                b->w = (int16_t)(sw * base_scale);
-                b->h = (int16_t)(14 * base_scale);
-                b->d = (int16_t)(3 * base_scale);
+#if MATH_USE_HIDPI
+            if (base_scale > 1) {
+                if (b->style == STYLE_SCRIPT || b->style == STYLE_SCRIPTSCRIPT) {
+                    /* In HiDPI, scripts use the 16px standard serif font */
+                    uint8_t sw = font_serif_char_width((char)b->u.ch.codepoint);
+                    b->w = (int16_t)sw;
+                    b->h = 12;
+                    b->d = 3;
+                } else {
+                    /* Main text in HiDPI uses 32px Noto serif font */
+                    uint8_t nw = font_noto_serif_char_width((char)b->u.ch.codepoint);
+                    b->w = (int16_t)nw;
+                    b->h = 24;
+                    b->d = 6;
+                }
+            } else
+#endif
+            {
+                uint8_t sw = font_serif_char_width((char)b->u.ch.codepoint);
+                if (b->style == STYLE_SCRIPT) {
+                    b->w = (int16_t)((sw * 7 * base_scale) / 10);
+                    b->h = (int16_t)(10 * base_scale);
+                    b->d = (int16_t)(2 * base_scale);
+                } else if (b->style == STYLE_SCRIPTSCRIPT) {
+                    b->w = (int16_t)((sw * 5 * base_scale) / 10);
+                    b->h = (int16_t)(7 * base_scale);
+                    b->d = (int16_t)(1 * base_scale);
+                } else {
+                    b->w = (int16_t)(sw * base_scale);
+                    b->h = (int16_t)(14 * base_scale);
+                    b->d = (int16_t)(3 * base_scale);
+                }
             }
         }
         break;
@@ -138,14 +161,17 @@ int latex_layout(math_box_t *b, int base_scale) {
         if (sup) {
             latex_layout(sup, base_scale);
             sup->x = nuc ? nuc->w : 0;
-            sup->y = (int16_t)((nuc ? nuc->h : 10) - 4 * base_scale);
+            int16_t shift = (int16_t)(nuc ? ((nuc->h * 45) / 100) : (4 * base_scale));
+            if (shift < 3 * base_scale) shift = (int16_t)(3 * base_scale);
+            sup->y = shift;
             sup_w = sup->w;
             if (sup->y + sup->h > b->h) b->h = (int16_t)(sup->y + sup->h);
         }
         if (sub) {
             latex_layout(sub, base_scale);
             sub->x = nuc ? nuc->w : 0;
-            sub->y = (int16_t)(-(nuc ? nuc->d : 2) - 2 * base_scale);
+            int16_t shift = (int16_t)(nuc ? ((nuc->d * 50) / 100 + 2 * base_scale) : (2 * base_scale));
+            sub->y = (int16_t)(-shift);
             sub_w = sub->w;
             if (-sub->y + sub->d > b->d) b->d = (int16_t)(-sub->y + sub->d);
         }
@@ -185,6 +211,14 @@ int latex_layout(math_box_t *b, int base_scale) {
             /* Text style: limits to the right */
             latex_layout(sup, base_scale);
             latex_layout(sub, base_scale);
+            if (sup) {
+                sup->x = op_w;
+                sup->y = (int16_t)((op_h * 45) / 100);
+            }
+            if (sub) {
+                sub->x = op_w;
+                sub->y = (int16_t)(-4 * base_scale);
+            }
             int16_t script_w = (sup && sub) ? ((sup->w > sub->w) ? sup->w : sub->w) :
                                (sup ? sup->w : (sub ? sub->w : 0));
             b->w = (int16_t)(op_w + script_w);
@@ -301,15 +335,15 @@ void latex_render_canvas1(const math_box_t *b, int origin_x, int baseline_y,
     case MATH_BOX_HLIST: {
         const math_box_t *child = b->u.list.head;
         while (child) {
-            latex_render_canvas1(child, abs_x, baseline_y, c, fg);
+            latex_render_canvas1(child, abs_x, abs_y, c, fg);
             child = child->next;
         }
         break;
     }
 
     case MATH_BOX_FRAC: {
-        if (b->u.frac.num) latex_render_canvas1(b->u.frac.num, abs_x, abs_y - b->u.frac.num->y, c, fg);
-        if (b->u.frac.den) latex_render_canvas1(b->u.frac.den, abs_x, abs_y - b->u.frac.den->y, c, fg);
+        if (b->u.frac.num) latex_render_canvas1(b->u.frac.num, abs_x, abs_y, c, fg);
+        if (b->u.frac.den) latex_render_canvas1(b->u.frac.den, abs_x, abs_y, c, fg);
 
         /* Draw fraction rule bar */
         if (b->u.frac.has_bar) {
@@ -345,8 +379,8 @@ void latex_render_canvas1(const math_box_t *b, int origin_x, int baseline_y,
 
     case MATH_BOX_SCRIPT: {
         if (b->u.script.nucleus) latex_render_canvas1(b->u.script.nucleus, abs_x, abs_y, c, fg);
-        if (b->u.script.sup) latex_render_canvas1(b->u.script.sup, abs_x, abs_y - b->u.script.sup->y, c, fg);
-        if (b->u.script.sub) latex_render_canvas1(b->u.script.sub, abs_x, abs_y - b->u.script.sub->y, c, fg);
+        if (b->u.script.sup) latex_render_canvas1(b->u.script.sup, abs_x, abs_y, c, fg);
+        if (b->u.script.sub) latex_render_canvas1(b->u.script.sub, abs_x, abs_y, c, fg);
         break;
     }
 
@@ -358,8 +392,8 @@ void latex_render_canvas1(const math_box_t *b, int origin_x, int baseline_y,
         if (g && g->rows) {
             render_glyph_1bpp(c, abs_x, abs_y - g->bearing_y * scale, g->rows, g->w, g->h, scale);
         }
-        if (b->u.bigop.sup) latex_render_canvas1(b->u.bigop.sup, abs_x, abs_y - b->u.bigop.sup->y, c, fg);
-        if (b->u.bigop.sub) latex_render_canvas1(b->u.bigop.sub, abs_x, abs_y - b->u.bigop.sub->y, c, fg);
+        if (b->u.bigop.sup) latex_render_canvas1(b->u.bigop.sup, abs_x, abs_y, c, fg);
+        if (b->u.bigop.sub) latex_render_canvas1(b->u.bigop.sub, abs_x, abs_y, c, fg);
         break;
     }
 
@@ -447,15 +481,15 @@ void latex_render_gray8(const math_box_t *b, int origin_x, int baseline_y,
     case MATH_BOX_HLIST: {
         const math_box_t *child = b->u.list.head;
         while (child) {
-            latex_render_gray8(child, abs_x, baseline_y, fb, stride, clip_w, clip_h, fg, bg);
+            latex_render_gray8(child, abs_x, abs_y, fb, stride, clip_w, clip_h, fg, bg);
             child = child->next;
         }
         return;
     }
 
     case MATH_BOX_FRAC: {
-        if (b->u.frac.num) latex_render_gray8(b->u.frac.num, abs_x, abs_y - b->u.frac.num->y, fb, stride, clip_w, clip_h, fg, bg);
-        if (b->u.frac.den) latex_render_gray8(b->u.frac.den, abs_x, abs_y - b->u.frac.den->y, fb, stride, clip_w, clip_h, fg, bg);
+        if (b->u.frac.num) latex_render_gray8(b->u.frac.num, abs_x, abs_y, fb, stride, clip_w, clip_h, fg, bg);
+        if (b->u.frac.den) latex_render_gray8(b->u.frac.den, abs_x, abs_y, fb, stride, clip_w, clip_h, fg, bg);
         if (b->u.frac.has_bar) {
             int scale = (b->h > 24) ? 2 : 1;
             int axis = font_math_axis_height((math_style_t)b->style) * scale;
@@ -489,8 +523,8 @@ void latex_render_gray8(const math_box_t *b, int origin_x, int baseline_y,
 
     case MATH_BOX_SCRIPT: {
         if (b->u.script.nucleus) latex_render_gray8(b->u.script.nucleus, abs_x, abs_y, fb, stride, clip_w, clip_h, fg, bg);
-        if (b->u.script.sup) latex_render_gray8(b->u.script.sup, abs_x, abs_y - b->u.script.sup->y, fb, stride, clip_w, clip_h, fg, bg);
-        if (b->u.script.sub) latex_render_gray8(b->u.script.sub, abs_x, abs_y - b->u.script.sub->y, fb, stride, clip_w, clip_h, fg, bg);
+        if (b->u.script.sup) latex_render_gray8(b->u.script.sup, abs_x, abs_y, fb, stride, clip_w, clip_h, fg, bg);
+        if (b->u.script.sub) latex_render_gray8(b->u.script.sub, abs_x, abs_y, fb, stride, clip_w, clip_h, fg, bg);
         return;
     }
 
@@ -519,8 +553,8 @@ void latex_render_gray8(const math_box_t *b, int origin_x, int baseline_y,
                 }
             }
         }
-        if (b->u.bigop.sup) latex_render_gray8(b->u.bigop.sup, abs_x, abs_y - b->u.bigop.sup->y, fb, stride, clip_w, clip_h, fg, bg);
-        if (b->u.bigop.sub) latex_render_gray8(b->u.bigop.sub, abs_x, abs_y - b->u.bigop.sub->y, fb, stride, clip_w, clip_h, fg, bg);
+        if (b->u.bigop.sup) latex_render_gray8(b->u.bigop.sup, abs_x, abs_y, fb, stride, clip_w, clip_h, fg, bg);
+        if (b->u.bigop.sub) latex_render_gray8(b->u.bigop.sub, abs_x, abs_y, fb, stride, clip_w, clip_h, fg, bg);
         return;
     }
 
@@ -604,15 +638,15 @@ void latex_render_rgb565(const math_box_t *b, int origin_x, int baseline_y,
     case MATH_BOX_HLIST: {
         const math_box_t *child = b->u.list.head;
         while (child) {
-            latex_render_rgb565(child, abs_x, baseline_y, fb, stride_pixels, clip_w, clip_h, fg, bg);
+            latex_render_rgb565(child, abs_x, abs_y, fb, stride_pixels, clip_w, clip_h, fg, bg);
             child = child->next;
         }
         return;
     }
 
     case MATH_BOX_FRAC: {
-        if (b->u.frac.num) latex_render_rgb565(b->u.frac.num, abs_x, abs_y - b->u.frac.num->y, fb, stride_pixels, clip_w, clip_h, fg, bg);
-        if (b->u.frac.den) latex_render_rgb565(b->u.frac.den, abs_x, abs_y - b->u.frac.den->y, fb, stride_pixels, clip_w, clip_h, fg, bg);
+        if (b->u.frac.num) latex_render_rgb565(b->u.frac.num, abs_x, abs_y, fb, stride_pixels, clip_w, clip_h, fg, bg);
+        if (b->u.frac.den) latex_render_rgb565(b->u.frac.den, abs_x, abs_y, fb, stride_pixels, clip_w, clip_h, fg, bg);
         if (b->u.frac.has_bar) {
             int scale = (b->h > 24) ? 2 : 1;
             int axis = font_math_axis_height((math_style_t)b->style) * scale;
@@ -646,8 +680,8 @@ void latex_render_rgb565(const math_box_t *b, int origin_x, int baseline_y,
 
     case MATH_BOX_SCRIPT: {
         if (b->u.script.nucleus) latex_render_rgb565(b->u.script.nucleus, abs_x, abs_y, fb, stride_pixels, clip_w, clip_h, fg, bg);
-        if (b->u.script.sup) latex_render_rgb565(b->u.script.sup, abs_x, abs_y - b->u.script.sup->y, fb, stride_pixels, clip_w, clip_h, fg, bg);
-        if (b->u.script.sub) latex_render_rgb565(b->u.script.sub, abs_x, abs_y - b->u.script.sub->y, fb, stride_pixels, clip_w, clip_h, fg, bg);
+        if (b->u.script.sup) latex_render_rgb565(b->u.script.sup, abs_x, abs_y, fb, stride_pixels, clip_w, clip_h, fg, bg);
+        if (b->u.script.sub) latex_render_rgb565(b->u.script.sub, abs_x, abs_y, fb, stride_pixels, clip_w, clip_h, fg, bg);
         return;
     }
 
@@ -676,8 +710,8 @@ void latex_render_rgb565(const math_box_t *b, int origin_x, int baseline_y,
                 }
             }
         }
-        if (b->u.bigop.sup) latex_render_rgb565(b->u.bigop.sup, abs_x, abs_y - b->u.bigop.sup->y, fb, stride_pixels, clip_w, clip_h, fg, bg);
-        if (b->u.bigop.sub) latex_render_rgb565(b->u.bigop.sub, abs_x, abs_y - b->u.bigop.sub->y, fb, stride_pixels, clip_w, clip_h, fg, bg);
+        if (b->u.bigop.sup) latex_render_rgb565(b->u.bigop.sup, abs_x, abs_y, fb, stride_pixels, clip_w, clip_h, fg, bg);
+        if (b->u.bigop.sub) latex_render_rgb565(b->u.bigop.sub, abs_x, abs_y, fb, stride_pixels, clip_w, clip_h, fg, bg);
         return;
     }
 
