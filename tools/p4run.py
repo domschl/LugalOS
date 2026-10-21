@@ -208,10 +208,28 @@ def board_ports(name):
     cfg.update({k: v for k, v in os.environ.items() if k.startswith("LUGALOS_P4_")})
     key = "LUGALOS_P4_%s_" % name.upper().replace("-", "_")
     console = cfg.get(key + "PORT")
+    reset = cfg.get(key + "RESET_PORT")
+    if not console and name.lower() == "tab5":
+        for dev, vid, pid, _ in usb_ports():
+            if (vid, pid) in JTAG:
+                console = dev
+                break
+        if not console:
+            hits = sorted(glob.glob("/dev/serial/by-id/*USB_JTAG*"))
+            if hits:
+                console = hits[0]
     if not console:
         sys.exit("board '%s' has no %sPORT in %s or the environment"
                  % (name, key, BOARDS_FILE))
-    return console, cfg.get(key + "RESET_PORT") or console
+    if console and "*" in console:
+        hits = sorted(glob.glob(console))
+        if hits:
+            console = hits[0]
+    if reset and "*" in reset:
+        hits = sorted(glob.glob(reset))
+        if hits:
+            reset = hits[0]
+    return console, reset or console
 
 
 def is_jtag(port):
