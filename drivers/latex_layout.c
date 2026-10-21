@@ -7,6 +7,12 @@
 #include "drivers/latex_layout.h"
 #include "drivers/font_math.h"
 #include "drivers/font_serif.h"
+#if defined(CONFIG_FONT_HIDPI) || (defined(CONFIG_FONT_CELL_H) && (CONFIG_FONT_CELL_H == 32)) || defined(LUGALOS_HOST_TEST)
+#include "drivers/font_noto_serif.h"
+#define MATH_USE_HIDPI 1
+#else
+#define MATH_USE_HIDPI 0
+#endif
 #include "drivers/canvas1.h"
 
 int latex_layout(math_box_t *b, int base_scale) {
@@ -248,13 +254,17 @@ static inline void canvas1_put_pixel(const canvas1_t *c, int x, int y) {
 }
 
 static void render_glyph_1bpp(const canvas1_t *c, int px, int py,
-                              const uint16_t *rows, int w, int h) {
+                              const uint16_t *rows, int w, int h, int scale) {
     if (!c || !rows) return;
     for (int r = 0; r < h; r++) {
         uint16_t bits = rows[r];
         for (int col = 0; col < w; col++) {
             if (bits & (0x8000 >> col)) {
-                canvas1_put_pixel(c, px + col, py + r);
+                for (int dy = 0; dy < scale; dy++) {
+                    for (int dx = 0; dx < scale; dx++) {
+                        canvas1_put_pixel(c, px + col * scale + dx, py + r * scale + dy);
+                    }
+                }
             }
         }
     }
@@ -270,13 +280,20 @@ void latex_render_canvas1(const math_box_t *b, int origin_x, int baseline_y,
 
     switch (b->type) {
     case MATH_BOX_CHAR: {
+        int scale = (b->h > 18) ? 2 : 1;
         const math_glyph_t *g = font_math_lookup(b->u.ch.codepoint, (math_style_t)b->style);
         if (g && g->rows) {
-            int gy = abs_y - g->bearing_y;
-            render_glyph_1bpp(c, abs_x, gy, g->rows, g->w, g->h);
+            int gy = abs_y - g->bearing_y * scale;
+            render_glyph_1bpp(c, abs_x, gy, g->rows, g->w, g->h, scale);
         } else {
-            /* Standard serif fallback */
-            canvas1_serif_glyph(c, abs_x, abs_y - 12, (char)b->u.ch.codepoint, false);
+#if MATH_USE_HIDPI
+            if (scale > 1) {
+                canvas1_noto_serif_glyph(c, abs_x, abs_y - 24, (char)b->u.ch.codepoint, false);
+            } else
+#endif
+            {
+                canvas1_serif_glyph(c, abs_x, abs_y - 12, (char)b->u.ch.codepoint, false);
+            }
         }
         break;
     }
@@ -296,27 +313,33 @@ void latex_render_canvas1(const math_box_t *b, int origin_x, int baseline_y,
 
         /* Draw fraction rule bar */
         if (b->u.frac.has_bar) {
-            int axis = font_math_axis_height((math_style_t)b->style);
+            int scale = (b->h > 24) ? 2 : 1;
+            int axis = font_math_axis_height((math_style_t)b->style) * scale;
             int bar_y = abs_y - axis;
-            canvas1_hline(c, abs_x, abs_x + b->w - 1, bar_y, CANVAS1_BLACK);
+            for (int dy = 0; dy < scale; dy++) {
+                canvas1_hline(c, abs_x, abs_x + b->w - 1, bar_y + dy, CANVAS1_BLACK);
+            }
         }
         break;
     }
 
     case MATH_BOX_RADICAL: {
+        int scale = (b->h > 24) ? 2 : 1;
         if (b->u.radical.body) {
             latex_render_canvas1(b->u.radical.body, abs_x, abs_y, c, fg);
         }
         /* Draw radical surd and vinculum overbar */
         int top_y = abs_y - b->h;
-        canvas1_hline(c, abs_x + 9, abs_x + b->w - 1, top_y, CANVAS1_BLACK);
+        for (int dy = 0; dy < scale; dy++) {
+            canvas1_hline(c, abs_x + 9 * scale, abs_x + b->w - 1, top_y + dy, CANVAS1_BLACK);
+        }
         /* Surd hook */
-        canvas1_put_pixel(c, abs_x + 8, top_y + 1);
-        canvas1_put_pixel(c, abs_x + 7, top_y + 3);
-        canvas1_put_pixel(c, abs_x + 6, abs_y + b->d);
-        canvas1_put_pixel(c, abs_x + 5, abs_y + b->d - 2);
-        canvas1_put_pixel(c, abs_x + 4, abs_y + b->d - 4);
-        canvas1_put_pixel(c, abs_x + 3, abs_y + b->d - 3);
+        canvas1_put_pixel(c, abs_x + 8 * scale, top_y + 1);
+        canvas1_put_pixel(c, abs_x + 7 * scale, top_y + 3);
+        canvas1_put_pixel(c, abs_x + 6 * scale, abs_y + b->d);
+        canvas1_put_pixel(c, abs_x + 5 * scale, abs_y + b->d - 2);
+        canvas1_put_pixel(c, abs_x + 4 * scale, abs_y + b->d - 4);
+        canvas1_put_pixel(c, abs_x + 3 * scale, abs_y + b->d - 3);
         break;
     }
 
@@ -328,11 +351,12 @@ void latex_render_canvas1(const math_box_t *b, int origin_x, int baseline_y,
     }
 
     case MATH_BOX_BIGOP: {
+        int scale = (b->h > 24) ? 2 : 1;
         uint16_t op_cp = (b->u.bigop.op == BIGOP_SUM) ? 0x2211 :
                          (b->u.bigop.op == BIGOP_PROD) ? 0x220F : 0x222B;
         const math_glyph_t *g = font_math_lookup(op_cp, (math_style_t)b->style);
         if (g && g->rows) {
-            render_glyph_1bpp(c, abs_x, abs_y - g->bearing_y, g->rows, g->w, g->h);
+            render_glyph_1bpp(c, abs_x, abs_y - g->bearing_y * scale, g->rows, g->w, g->h, scale);
         }
         if (b->u.bigop.sup) latex_render_canvas1(b->u.bigop.sup, abs_x, abs_y - b->u.bigop.sup->y, c, fg);
         if (b->u.bigop.sub) latex_render_canvas1(b->u.bigop.sub, abs_x, abs_y - b->u.bigop.sub->y, c, fg);
@@ -382,29 +406,45 @@ void latex_render_gray8(const math_box_t *b, int origin_x, int baseline_y,
     int abs_x = origin_x + b->x;
     int abs_y = baseline_y - b->y;
 
-    if (b->type == MATH_BOX_CHAR) {
+    switch (b->type) {
+    case MATH_BOX_CHAR: {
+        int scale = (b->h > 18) ? 2 : 1;
         const math_glyph_t *g = font_math_lookup(b->u.ch.codepoint, (math_style_t)b->style);
         if (g && g->rows) {
-            int gy = abs_y - g->bearing_y;
+            int gy = abs_y - g->bearing_y * scale;
             for (int r = 0; r < g->h; r++) {
-                int py = gy + r;
-                if (py < 0 || py >= clip_h) continue;
                 uint16_t bits = g->rows[r];
                 for (int col = 0; col < g->w; col++) {
-                    int px = abs_x + col;
-                    if (px >= 0 && px < clip_w && (bits & (0x8000 >> col))) {
-                        fb[py * stride + px] = fg;
+                    if (bits & (0x8000 >> col)) {
+                        for (int dy = 0; dy < scale; dy++) {
+                            int py = gy + r * scale + dy;
+                            if (py < 0 || py >= clip_h) continue;
+                            for (int dx = 0; dx < scale; dx++) {
+                                int px = abs_x + col * scale + dx;
+                                if (px >= 0 && px < clip_w) {
+                                    fb[py * stride + px] = fg;
+                                }
+                            }
+                        }
                     }
                 }
             }
         } else {
-            font_serif_aa_glyph_gray8(fb, stride, clip_w, clip_h,
-                                      abs_x, abs_y - 12, (char)b->u.ch.codepoint, fg, bg, false);
+#if MATH_USE_HIDPI
+            if (scale > 1) {
+                font_noto_serif_aa_glyph_gray8(fb, stride, clip_w, clip_h,
+                                               abs_x, abs_y - 24, (char)b->u.ch.codepoint, fg, bg, false);
+            } else
+#endif
+            {
+                font_serif_aa_glyph_gray8(fb, stride, clip_w, clip_h,
+                                          abs_x, abs_y - 12, (char)b->u.ch.codepoint, fg, bg, false);
+            }
         }
         return;
     }
 
-    if (b->type == MATH_BOX_HLIST) {
+    case MATH_BOX_HLIST: {
         const math_box_t *child = b->u.list.head;
         while (child) {
             latex_render_gray8(child, abs_x, baseline_y, fb, stride, clip_w, clip_h, fg, bg);
@@ -413,53 +453,68 @@ void latex_render_gray8(const math_box_t *b, int origin_x, int baseline_y,
         return;
     }
 
-    if (b->type == MATH_BOX_FRAC) {
+    case MATH_BOX_FRAC: {
         if (b->u.frac.num) latex_render_gray8(b->u.frac.num, abs_x, abs_y - b->u.frac.num->y, fb, stride, clip_w, clip_h, fg, bg);
         if (b->u.frac.den) latex_render_gray8(b->u.frac.den, abs_x, abs_y - b->u.frac.den->y, fb, stride, clip_w, clip_h, fg, bg);
         if (b->u.frac.has_bar) {
-            int axis = font_math_axis_height((math_style_t)b->style);
+            int scale = (b->h > 24) ? 2 : 1;
+            int axis = font_math_axis_height((math_style_t)b->style) * scale;
             int bar_y = abs_y - axis;
-            if (bar_y >= 0 && bar_y < clip_h) {
-                for (int k = abs_x; k < abs_x + b->w && k < clip_w; k++) {
-                    if (k >= 0) fb[bar_y * stride + k] = fg;
+            for (int dy = 0; dy < scale; dy++) {
+                int py = bar_y + dy;
+                if (py >= 0 && py < clip_h) {
+                    for (int k = abs_x; k < abs_x + b->w && k < clip_w; k++) {
+                        if (k >= 0) fb[py * stride + k] = fg;
+                    }
                 }
             }
         }
         return;
     }
 
-    if (b->type == MATH_BOX_RADICAL) {
+    case MATH_BOX_RADICAL: {
+        int scale = (b->h > 24) ? 2 : 1;
         if (b->u.radical.body) latex_render_gray8(b->u.radical.body, abs_x, abs_y, fb, stride, clip_w, clip_h, fg, bg);
         int top_y = abs_y - b->h;
-        if (top_y >= 0 && top_y < clip_h) {
-            for (int k = abs_x + 9; k < abs_x + b->w && k < clip_w; k++) {
-                if (k >= 0) fb[top_y * stride + k] = fg;
+        for (int dy = 0; dy < scale; dy++) {
+            int py = top_y + dy;
+            if (py >= 0 && py < clip_h) {
+                for (int k = abs_x + 9 * scale; k < abs_x + b->w && k < clip_w; k++) {
+                    if (k >= 0) fb[py * stride + k] = fg;
+                }
             }
         }
         return;
     }
 
-    if (b->type == MATH_BOX_SCRIPT) {
+    case MATH_BOX_SCRIPT: {
         if (b->u.script.nucleus) latex_render_gray8(b->u.script.nucleus, abs_x, abs_y, fb, stride, clip_w, clip_h, fg, bg);
         if (b->u.script.sup) latex_render_gray8(b->u.script.sup, abs_x, abs_y - b->u.script.sup->y, fb, stride, clip_w, clip_h, fg, bg);
         if (b->u.script.sub) latex_render_gray8(b->u.script.sub, abs_x, abs_y - b->u.script.sub->y, fb, stride, clip_w, clip_h, fg, bg);
         return;
     }
 
-    if (b->type == MATH_BOX_BIGOP) {
+    case MATH_BOX_BIGOP: {
+        int scale = (b->h > 24) ? 2 : 1;
         uint16_t op_cp = (b->u.bigop.op == BIGOP_SUM) ? 0x2211 :
                          (b->u.bigop.op == BIGOP_PROD) ? 0x220F : 0x222B;
         const math_glyph_t *g = font_math_lookup(op_cp, (math_style_t)b->style);
         if (g && g->rows) {
-            int gy = abs_y - g->bearing_y;
+            int gy = abs_y - g->bearing_y * scale;
             for (int r = 0; r < g->h; r++) {
-                int py = gy + r;
-                if (py < 0 || py >= clip_h) continue;
                 uint16_t bits = g->rows[r];
                 for (int col = 0; col < g->w; col++) {
-                    int px = abs_x + col;
-                    if (px >= 0 && px < clip_w && (bits & (0x8000 >> col))) {
-                        fb[py * stride + px] = fg;
+                    if (bits & (0x8000 >> col)) {
+                        for (int dy = 0; dy < scale; dy++) {
+                            int py = gy + r * scale + dy;
+                            if (py < 0 || py >= clip_h) continue;
+                            for (int dx = 0; dx < scale; dx++) {
+                                int px = abs_x + col * scale + dx;
+                                if (px >= 0 && px < clip_w) {
+                                    fb[py * stride + px] = fg;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -467,6 +522,35 @@ void latex_render_gray8(const math_box_t *b, int origin_x, int baseline_y,
         if (b->u.bigop.sup) latex_render_gray8(b->u.bigop.sup, abs_x, abs_y - b->u.bigop.sup->y, fb, stride, clip_w, clip_h, fg, bg);
         if (b->u.bigop.sub) latex_render_gray8(b->u.bigop.sub, abs_x, abs_y - b->u.bigop.sub->y, fb, stride, clip_w, clip_h, fg, bg);
         return;
+    }
+
+    case MATH_BOX_DELIM: {
+        int top = abs_y - b->h;
+        int bot = abs_y + b->d;
+        for (int y = top; y <= bot && y < clip_h; y++) {
+            if (y >= 0 && abs_x + 2 < clip_w) fb[y * stride + abs_x + 2] = fg;
+        }
+        return;
+    }
+
+    case MATH_BOX_MATRIX: {
+        int cur_x = abs_x + 6;
+        for (uint8_t col = 0; col < b->u.matrix.cols; col++) {
+            int cur_y = abs_y - b->h;
+            for (uint8_t row = 0; row < b->u.matrix.rows; row++) {
+                const math_box_t *cell = b->u.matrix.cells ? b->u.matrix.cells[row * MATH_MATRIX_MAX_COLS + col] : NULL;
+                if (cell) {
+                    latex_render_gray8(cell, cur_x, cur_y + b->u.matrix.row_h[row] - cell->d, fb, stride, clip_w, clip_h, fg, bg);
+                }
+                cur_y += b->u.matrix.row_h[row];
+            }
+            cur_x += b->u.matrix.col_w[col] + 8;
+        }
+        return;
+    }
+
+    default:
+        break;
     }
 }
 
@@ -479,29 +563,45 @@ void latex_render_rgb565(const math_box_t *b, int origin_x, int baseline_y,
     int abs_x = origin_x + b->x;
     int abs_y = baseline_y - b->y;
 
-    if (b->type == MATH_BOX_CHAR) {
+    switch (b->type) {
+    case MATH_BOX_CHAR: {
+        int scale = (b->h > 18) ? 2 : 1;
         const math_glyph_t *g = font_math_lookup(b->u.ch.codepoint, (math_style_t)b->style);
         if (g && g->rows) {
-            int gy = abs_y - g->bearing_y;
+            int gy = abs_y - g->bearing_y * scale;
             for (int r = 0; r < g->h; r++) {
-                int py = gy + r;
-                if (py < 0 || py >= clip_h) continue;
                 uint16_t bits = g->rows[r];
                 for (int col = 0; col < g->w; col++) {
-                    int px = abs_x + col;
-                    if (px >= 0 && px < clip_w && (bits & (0x8000 >> col))) {
-                        fb[py * stride_pixels + px] = fg;
+                    if (bits & (0x8000 >> col)) {
+                        for (int dy = 0; dy < scale; dy++) {
+                            int py = gy + r * scale + dy;
+                            if (py < 0 || py >= clip_h) continue;
+                            for (int dx = 0; dx < scale; dx++) {
+                                int px = abs_x + col * scale + dx;
+                                if (px >= 0 && px < clip_w) {
+                                    fb[py * stride_pixels + px] = fg;
+                                }
+                            }
+                        }
                     }
                 }
             }
         } else {
-            font_serif_aa_glyph_rgb565(fb, stride_pixels, clip_w, clip_h,
-                                       abs_x, abs_y - 12, (char)b->u.ch.codepoint, fg, bg, false);
+#if MATH_USE_HIDPI
+            if (scale > 1) {
+                font_noto_serif_aa_glyph_rgb565(fb, stride_pixels, clip_w, clip_h,
+                                                abs_x, abs_y - 24, (char)b->u.ch.codepoint, fg, bg, false);
+            } else
+#endif
+            {
+                font_serif_aa_glyph_rgb565(fb, stride_pixels, clip_w, clip_h,
+                                           abs_x, abs_y - 12, (char)b->u.ch.codepoint, fg, bg, false);
+            }
         }
         return;
     }
 
-    if (b->type == MATH_BOX_HLIST) {
+    case MATH_BOX_HLIST: {
         const math_box_t *child = b->u.list.head;
         while (child) {
             latex_render_rgb565(child, abs_x, baseline_y, fb, stride_pixels, clip_w, clip_h, fg, bg);
@@ -510,53 +610,68 @@ void latex_render_rgb565(const math_box_t *b, int origin_x, int baseline_y,
         return;
     }
 
-    if (b->type == MATH_BOX_FRAC) {
+    case MATH_BOX_FRAC: {
         if (b->u.frac.num) latex_render_rgb565(b->u.frac.num, abs_x, abs_y - b->u.frac.num->y, fb, stride_pixels, clip_w, clip_h, fg, bg);
         if (b->u.frac.den) latex_render_rgb565(b->u.frac.den, abs_x, abs_y - b->u.frac.den->y, fb, stride_pixels, clip_w, clip_h, fg, bg);
         if (b->u.frac.has_bar) {
-            int axis = font_math_axis_height((math_style_t)b->style);
+            int scale = (b->h > 24) ? 2 : 1;
+            int axis = font_math_axis_height((math_style_t)b->style) * scale;
             int bar_y = abs_y - axis;
-            if (bar_y >= 0 && bar_y < clip_h) {
-                for (int k = abs_x; k < abs_x + b->w && k < clip_w; k++) {
-                    if (k >= 0) fb[bar_y * stride_pixels + k] = fg;
+            for (int dy = 0; dy < scale; dy++) {
+                int py = bar_y + dy;
+                if (py >= 0 && py < clip_h) {
+                    for (int k = abs_x; k < abs_x + b->w && k < clip_w; k++) {
+                        if (k >= 0) fb[py * stride_pixels + k] = fg;
+                    }
                 }
             }
         }
         return;
     }
 
-    if (b->type == MATH_BOX_RADICAL) {
+    case MATH_BOX_RADICAL: {
+        int scale = (b->h > 24) ? 2 : 1;
         if (b->u.radical.body) latex_render_rgb565(b->u.radical.body, abs_x, abs_y, fb, stride_pixels, clip_w, clip_h, fg, bg);
         int top_y = abs_y - b->h;
-        if (top_y >= 0 && top_y < clip_h) {
-            for (int k = abs_x + 9; k < abs_x + b->w && k < clip_w; k++) {
-                if (k >= 0) fb[top_y * stride_pixels + k] = fg;
+        for (int dy = 0; dy < scale; dy++) {
+            int py = top_y + dy;
+            if (py >= 0 && py < clip_h) {
+                for (int k = abs_x + 9 * scale; k < abs_x + b->w && k < clip_w; k++) {
+                    if (k >= 0) fb[py * stride_pixels + k] = fg;
+                }
             }
         }
         return;
     }
 
-    if (b->type == MATH_BOX_SCRIPT) {
+    case MATH_BOX_SCRIPT: {
         if (b->u.script.nucleus) latex_render_rgb565(b->u.script.nucleus, abs_x, abs_y, fb, stride_pixels, clip_w, clip_h, fg, bg);
         if (b->u.script.sup) latex_render_rgb565(b->u.script.sup, abs_x, abs_y - b->u.script.sup->y, fb, stride_pixels, clip_w, clip_h, fg, bg);
         if (b->u.script.sub) latex_render_rgb565(b->u.script.sub, abs_x, abs_y - b->u.script.sub->y, fb, stride_pixels, clip_w, clip_h, fg, bg);
         return;
     }
 
-    if (b->type == MATH_BOX_BIGOP) {
+    case MATH_BOX_BIGOP: {
+        int scale = (b->h > 24) ? 2 : 1;
         uint16_t op_cp = (b->u.bigop.op == BIGOP_SUM) ? 0x2211 :
                          (b->u.bigop.op == BIGOP_PROD) ? 0x220F : 0x222B;
         const math_glyph_t *g = font_math_lookup(op_cp, (math_style_t)b->style);
         if (g && g->rows) {
-            int gy = abs_y - g->bearing_y;
+            int gy = abs_y - g->bearing_y * scale;
             for (int r = 0; r < g->h; r++) {
-                int py = gy + r;
-                if (py < 0 || py >= clip_h) continue;
                 uint16_t bits = g->rows[r];
                 for (int col = 0; col < g->w; col++) {
-                    int px = abs_x + col;
-                    if (px >= 0 && px < clip_w && (bits & (0x8000 >> col))) {
-                        fb[py * stride_pixels + px] = fg;
+                    if (bits & (0x8000 >> col)) {
+                        for (int dy = 0; dy < scale; dy++) {
+                            int py = gy + r * scale + dy;
+                            if (py < 0 || py >= clip_h) continue;
+                            for (int dx = 0; dx < scale; dx++) {
+                                int px = abs_x + col * scale + dx;
+                                if (px >= 0 && px < clip_w) {
+                                    fb[py * stride_pixels + px] = fg;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -564,5 +679,34 @@ void latex_render_rgb565(const math_box_t *b, int origin_x, int baseline_y,
         if (b->u.bigop.sup) latex_render_rgb565(b->u.bigop.sup, abs_x, abs_y - b->u.bigop.sup->y, fb, stride_pixels, clip_w, clip_h, fg, bg);
         if (b->u.bigop.sub) latex_render_rgb565(b->u.bigop.sub, abs_x, abs_y - b->u.bigop.sub->y, fb, stride_pixels, clip_w, clip_h, fg, bg);
         return;
+    }
+
+    case MATH_BOX_DELIM: {
+        int top = abs_y - b->h;
+        int bot = abs_y + b->d;
+        for (int y = top; y <= bot && y < clip_h; y++) {
+            if (y >= 0 && abs_x + 2 < clip_w) fb[y * stride_pixels + abs_x + 2] = fg;
+        }
+        return;
+    }
+
+    case MATH_BOX_MATRIX: {
+        int cur_x = abs_x + 6;
+        for (uint8_t col = 0; col < b->u.matrix.cols; col++) {
+            int cur_y = abs_y - b->h;
+            for (uint8_t row = 0; row < b->u.matrix.rows; row++) {
+                const math_box_t *cell = b->u.matrix.cells ? b->u.matrix.cells[row * MATH_MATRIX_MAX_COLS + col] : NULL;
+                if (cell) {
+                    latex_render_rgb565(cell, cur_x, cur_y + b->u.matrix.row_h[row] - cell->d, fb, stride_pixels, clip_w, clip_h, fg, bg);
+                }
+                cur_y += b->u.matrix.row_h[row];
+            }
+            cur_x += b->u.matrix.col_w[col] + 8;
+        }
+        return;
+    }
+
+    default:
+        break;
     }
 }

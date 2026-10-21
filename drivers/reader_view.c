@@ -1038,8 +1038,9 @@ static int render_wrapped_spans(reader_state_t *r, rdraw_t *rd, int x0, int max_
                     int baseline = screen_y + line_h - 4 * base_scale;
                     if (rd->c) {
                         latex_render_canvas1(box, cur_x, baseline, rd->c, 1);
-                    } else if (rd->aa_fb) {
-                        latex_render_gray8(box, cur_x, baseline, rd->aa_fb, rd->aa_stride, rd->w, rd->h, 0x00, 0xFF);
+                    }
+                    if (rd->aa_fb) {
+                        latex_render_gray8(box, cur_x, baseline, rd->aa_fb, rd->aa_stride, rd->w, rd->h, READER_FG_GRAY8, READER_BG_GRAY8);
                     }
                 }
                 cur_x += math_w + 4 * base_scale;
@@ -1448,8 +1449,9 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
                                 int baseline = my + box->h + 8 * base_scale;
                                 if (rd.c) {
                                     latex_render_canvas1(box, cx, baseline, rd.c, 1);
-                                } else if (rd.aa_fb) {
-                                    latex_render_gray8(box, cx, baseline, rd.aa_fb, rd.aa_stride, rd.w, rd.h, 0x00, 0xFF);
+                                }
+                                if (rd.aa_fb) {
+                                    latex_render_gray8(box, cx, baseline, rd.aa_fb, rd.aa_stride, rd.w, rd.h, READER_FG_GRAY8, READER_BG_GRAY8);
                                 }
                             }
                             doc_y += total_h;
