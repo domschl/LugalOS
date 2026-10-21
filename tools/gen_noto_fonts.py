@@ -518,22 +518,22 @@ static inline const uint8_t *font_noto_serif_get_aa_glyph(char c) {
 unsigned font_noto_serif_text_width(const char *s, uint32_t len);
 
 /* 1-bpp canvas rendering (classic bilevel) */
-int canvas1_noto_serif_glyph(const canvas1_t *c, int x, int y, char ch, bool bold);
-int canvas1_noto_serif_text(const canvas1_t *c, int x, int y, const char *s, uint32_t len, bool bold);
+int canvas1_noto_serif_glyph(const canvas1_t *c, int x, int y, char ch, bool bold, bool italic);
+int canvas1_noto_serif_text(const canvas1_t *c, int x, int y, const char *s, uint32_t len, bool bold, bool italic);
 
 /* Fast integer blending onto 8-bpp (GRAY8) */
 int font_noto_serif_aa_glyph_gray8(uint8_t *fb, uint32_t stride, int clip_w, int clip_h,
-                                   int x, int y, char ch, uint8_t fg, uint8_t bg, bool bold);
+                                   int x, int y, char ch, uint8_t fg, uint8_t bg, bool bold, bool italic);
 int font_noto_serif_aa_text_gray8(uint8_t *fb, uint32_t stride, int clip_w, int clip_h,
                                   int x, int y, const char *s, uint32_t len,
-                                  uint8_t fg, uint8_t bg, bool bold);
+                                  uint8_t fg, uint8_t bg, bool bold, bool italic);
 
 /* Fast integer blending onto 16-bpp (RGB565) */
 int font_noto_serif_aa_glyph_rgb565(uint16_t *fb, uint32_t stride_pixels, int clip_w, int clip_h,
-                                    int x, int y, char ch, uint16_t fg, uint16_t bg, bool bold);
+                                    int x, int y, char ch, uint16_t fg, uint16_t bg, bool bold, bool italic);
 int font_noto_serif_aa_text_rgb565(uint16_t *fb, uint32_t stride_pixels, int clip_w, int clip_h,
                                    int x, int y, const char *s, uint32_t len,
-                                   uint16_t fg, uint16_t bg, bool bold);
+                                   uint16_t fg, uint16_t bg, bool bold, bool italic);
 
 #endif /* LUGALOS_DRIVERS_FONT_NOTO_SERIF_H */
 """)
@@ -592,7 +592,7 @@ LCDTERM_URODATA const uint8_t font_noto_serif_widths[128] = {
 }
 
 int font_noto_serif_aa_glyph_gray8(uint8_t *fb, uint32_t stride, int clip_w, int clip_h,
-                                   int x, int y, char ch, uint8_t fg, uint8_t bg, bool bold) {
+                                   int x, int y, char ch, uint8_t fg, uint8_t bg, bool bold, bool italic) {
     (void)bg;
     uint8_t w = font_noto_serif_char_width(ch);
     const uint8_t *g = font_noto_serif_get_aa_glyph(ch);
@@ -601,9 +601,10 @@ int font_noto_serif_aa_glyph_gray8(uint8_t *fb, uint32_t stride, int clip_w, int
         int py = y + r;
         if (py < 0 || py >= clip_h) continue;
         uint8_t *dst = fb + (uint32_t)py * stride;
+        int slant = italic ? ((int)(FONT_NOTO_SERIF_H - 1 - r) / 5) : 0;
 
         for (int c = 0; c < (int)w; c++) {
-            int px = x + c;
+            int px = x + c + slant;
             if (px < 0 || px >= clip_w) continue;
 
             uint8_t pair = g[(r * 16) + (c >> 1)];
@@ -630,17 +631,17 @@ int font_noto_serif_aa_glyph_gray8(uint8_t *fb, uint32_t stride, int clip_w, int
 
 int font_noto_serif_aa_text_gray8(uint8_t *fb, uint32_t stride, int clip_w, int clip_h,
                                   int x, int y, const char *s, uint32_t len,
-                                  uint8_t fg, uint8_t bg, bool bold) {
+                                  uint8_t fg, uint8_t bg, bool bold, bool italic) {
     if (!fb || !s) return 0;
     int cur_x = x;
     for (uint32_t i = 0; i < len && s[i]; i++) {
-        cur_x += font_noto_serif_aa_glyph_gray8(fb, stride, clip_w, clip_h, cur_x, y, s[i], fg, bg, bold);
+        cur_x += font_noto_serif_aa_glyph_gray8(fb, stride, clip_w, clip_h, cur_x, y, s[i], fg, bg, bold, italic);
     }
     return cur_x - x;
 }
 
 int font_noto_serif_aa_glyph_rgb565(uint16_t *fb, uint32_t stride_pixels, int clip_w, int clip_h,
-                                    int x, int y, char ch, uint16_t fg, uint16_t bg, bool bold) {
+                                    int x, int y, char ch, uint16_t fg, uint16_t bg, bool bold, bool italic) {
     (void)bg;
     uint8_t w = font_noto_serif_char_width(ch);
     const uint8_t *g = font_noto_serif_get_aa_glyph(ch);
@@ -653,9 +654,10 @@ int font_noto_serif_aa_glyph_rgb565(uint16_t *fb, uint32_t stride_pixels, int cl
         int py = y + r;
         if (py < 0 || py >= clip_h) continue;
         uint16_t *dst = fb + (uint32_t)py * stride_pixels;
+        int slant = italic ? ((int)(FONT_NOTO_SERIF_H - 1 - r) / 5) : 0;
 
         for (int c = 0; c < (int)w; c++) {
-            int px = x + c;
+            int px = x + c + slant;
             if (px < 0 || px >= clip_w) continue;
 
             uint8_t pair = g[(r * 16) + (c >> 1)];
@@ -689,16 +691,16 @@ int font_noto_serif_aa_glyph_rgb565(uint16_t *fb, uint32_t stride_pixels, int cl
 
 int font_noto_serif_aa_text_rgb565(uint16_t *fb, uint32_t stride_pixels, int clip_w, int clip_h,
                                    int x, int y, const char *s, uint32_t len,
-                                   uint16_t fg, uint16_t bg, bool bold) {
+                                   uint16_t fg, uint16_t bg, bool bold, bool italic) {
     if (!fb || !s) return 0;
     int cur_x = x;
     for (uint32_t i = 0; i < len && s[i]; i++) {
-        cur_x += font_noto_serif_aa_glyph_rgb565(fb, stride_pixels, clip_w, clip_h, cur_x, y, s[i], fg, bg, bold);
+        cur_x += font_noto_serif_aa_glyph_rgb565(fb, stride_pixels, clip_w, clip_h, cur_x, y, s[i], fg, bg, bold, italic);
     }
     return cur_x - x;
 }
 
-LCDTERM_UTEXT int canvas1_noto_serif_glyph(const canvas1_t *c, int x, int y, char ch, bool bold) {
+LCDTERM_UTEXT int canvas1_noto_serif_glyph(const canvas1_t *c, int x, int y, char ch, bool bold, bool italic) {
     if (!c || !c->fb) return 0;
     uint8_t uc = (uint8_t)ch;
     if (uc < FONT_NOTO_SERIF_FIRST || uc > FONT_NOTO_SERIF_LAST) uc = '?';
@@ -707,7 +709,7 @@ LCDTERM_UTEXT int canvas1_noto_serif_glyph(const canvas1_t *c, int x, int y, cha
 
     int ax = x + (int)c->ox;
     int max_x = (int)c->stride * 8;
-    bool inside = (x >= 0 && x + (int)w <= (int)c->w && ax >= 0 && ax + 32 <= max_x);
+    bool inside = (x >= 0 && x + 48 <= (int)c->w && ax >= 0 && ax + 48 <= max_x);
 
     for (int r = 0; r < FONT_NOTO_SERIF_H; r++) {
         int py = y + r;
@@ -717,10 +719,12 @@ LCDTERM_UTEXT int canvas1_noto_serif_glyph(const canvas1_t *c, int x, int y, cha
         uint32_t bits = g[r];
         if (bold) bits |= bits << 1;
         if (!bits) continue;
+        int slant = italic ? ((int)(FONT_NOTO_SERIF_H - 1 - r) / 5) : 0;
+        int row_ax = ax + slant;
         uint8_t *p = c->fb + (uint32_t)spy * c->stride;
         if (inside) {
-            uint64_t v = (uint64_t)bits << (ax & 7);
-            int byte_idx = ax >> 3;
+            uint64_t v = (uint64_t)bits << (row_ax & 7);
+            int byte_idx = row_ax >> 3;
             p[byte_idx] |= (uint8_t)v;
             p[byte_idx + 1] |= (uint8_t)(v >> 8);
             p[byte_idx + 2] |= (uint8_t)(v >> 16);
@@ -729,8 +733,8 @@ LCDTERM_UTEXT int canvas1_noto_serif_glyph(const canvas1_t *c, int x, int y, cha
             continue;
         }
         for (int b = 0; b < (int)w; b++) {
-            int spx = ax + b;
-            if (((bits >> b) & 1u) && x + b >= 0 && x + b < (int)c->w && spx >= 0 && spx < max_x) {
+            int spx = row_ax + b;
+            if (((bits >> b) & 1u) && x + slant + b >= 0 && x + slant + b < (int)c->w && spx >= 0 && spx < max_x) {
                 p[spx >> 3] |= (uint8_t)(1u << (spx & 7));
             }
         }
@@ -738,11 +742,11 @@ LCDTERM_UTEXT int canvas1_noto_serif_glyph(const canvas1_t *c, int x, int y, cha
     return (int)w;
 }
 
-LCDTERM_UTEXT int canvas1_noto_serif_text(const canvas1_t *c, int x, int y, const char *s, uint32_t len, bool bold) {
+LCDTERM_UTEXT int canvas1_noto_serif_text(const canvas1_t *c, int x, int y, const char *s, uint32_t len, bool bold, bool italic) {
     if (!s) return 0;
     int cur_x = x;
     for (uint32_t i = 0; i < len && s[i]; i++) {
-        cur_x += canvas1_noto_serif_glyph(c, cur_x, y, s[i], bold);
+        cur_x += canvas1_noto_serif_glyph(c, cur_x, y, s[i], bold, italic);
     }
     return cur_x - x;
 }

@@ -288,11 +288,11 @@ void latex_render_canvas1(const math_box_t *b, int origin_x, int baseline_y,
         } else {
 #if MATH_USE_HIDPI
             if (scale > 1) {
-                canvas1_noto_serif_glyph(c, abs_x, abs_y - 24, (char)b->u.ch.codepoint, false);
+                canvas1_noto_serif_glyph(c, abs_x, abs_y - 24, (char)b->u.ch.codepoint, false, false);
             } else
 #endif
             {
-                canvas1_serif_glyph(c, abs_x, abs_y - 12, (char)b->u.ch.codepoint, false);
+                canvas1_serif_glyph(c, abs_x, abs_y - 12, (char)b->u.ch.codepoint, false, false);
             }
         }
         break;
@@ -433,12 +433,12 @@ void latex_render_gray8(const math_box_t *b, int origin_x, int baseline_y,
 #if MATH_USE_HIDPI
             if (scale > 1) {
                 font_noto_serif_aa_glyph_gray8(fb, stride, clip_w, clip_h,
-                                               abs_x, abs_y - 24, (char)b->u.ch.codepoint, fg, bg, false);
+                                               abs_x, abs_y - 24, (char)b->u.ch.codepoint, fg, bg, false, false);
             } else
 #endif
             {
                 font_serif_aa_glyph_gray8(fb, stride, clip_w, clip_h,
-                                          abs_x, abs_y - 12, (char)b->u.ch.codepoint, fg, bg, false);
+                                          abs_x, abs_y - 12, (char)b->u.ch.codepoint, fg, bg, false, false);
             }
         }
         return;
@@ -590,12 +590,12 @@ void latex_render_rgb565(const math_box_t *b, int origin_x, int baseline_y,
 #if MATH_USE_HIDPI
             if (scale > 1) {
                 font_noto_serif_aa_glyph_rgb565(fb, stride_pixels, clip_w, clip_h,
-                                                abs_x, abs_y - 24, (char)b->u.ch.codepoint, fg, bg, false);
+                                                abs_x, abs_y - 24, (char)b->u.ch.codepoint, fg, bg, false, false);
             } else
 #endif
             {
                 font_serif_aa_glyph_rgb565(fb, stride_pixels, clip_w, clip_h,
-                                           abs_x, abs_y - 12, (char)b->u.ch.codepoint, fg, bg, false);
+                                           abs_x, abs_y - 12, (char)b->u.ch.codepoint, fg, bg, false, false);
             }
         }
         return;
