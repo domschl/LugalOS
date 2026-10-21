@@ -1,4 +1,5 @@
 #include "drivers/loopback_net.h"
+#include "kernel/lock.h"
 #include "kernel/identity.h"
 #include "fs/9p.h"
 #include "fs/p9_chan.h"
@@ -23,7 +24,7 @@ int loopback_send_9p(const uint8_t *req_buf, uint32_t req_len, uint8_t *resp_buf
     if (!req_buf || req_len < 7 || !resp_buf) return -1;
     chan_endpoint_t *ep = chan_lookup("p9");
     if (!ep) return -1;
-    return chan_call(ep, req_buf, req_len, resp_buf, resp_max);
+    return chan_call_wait(ep, req_buf, req_len, resp_buf, resp_max, P9_CHAN_WAIT_MS);
 }
 
 /* Drives a full 9P session against a real file on /ram0 -- attach, walk to
@@ -32,9 +33,22 @@ int loopback_send_9p(const uint8_t *req_buf, uint32_t req_len, uint8_t *resp_buf
  * API instead of a single global echo buffer, so a Twrite/Tread against an
  * unopened directory fid correctly fails; this is the minimum real 9P
  * message sequence that gets to an actual open file. */
+static int rpc_unlocked(const char *write_payload, char *read_out_buf, uint32_t read_max);
+
+/* The buffers below are static: one exchange at a time, whichever task opened
+ * the /dev node. */
+static ylock_t g_loop_lock;
+
 int loopback_9p_rpc(const char *write_payload, char *read_out_buf, uint32_t read_max) {
+    ylock_acquire(&g_loop_lock);
+    int rc = rpc_unlocked(write_payload, read_out_buf, read_max);
+    ylock_release(&g_loop_lock);
+    return rc;
+}
+
+static int rpc_unlocked(const char *write_payload, char *read_out_buf, uint32_t read_max) {
     static const char *SCRATCH_NAME = "loopback9p.tmp";
-    static uint8_t tx_buf[1024];
+    static uint8_t tx_buf[1024];   /* guarded by: g_loop_lock */
     static uint8_t rx_buf[1024];
 
     // 1. Tversion -- also resets the server's fid table for a clean session.

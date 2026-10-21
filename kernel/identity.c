@@ -8,12 +8,16 @@
 #include "lugalos_config.h"
 #include <string.h>
 
+/* accepted: set at boot and by a rename from a shell; a reader copying the name during
+ * a rename can see part of each. */
 static char     g_name[NODE_NAME_MAX];
 static uint8_t  g_mac[NODE_MAC_LEN];
 static const char *g_name_source = "unset";
 static const char *g_mac_source  = "unset";
 static bool     g_mac_is_derived;
 
+/* accepted: set at boot and by a rename from a shell; a reader copying the name during
+ * a rename can see part of each. */
 static uint8_t  g_uid[NODE_UID_LEN];
 static bool     g_has_uid;
 static const char *g_uid_source = "unset";

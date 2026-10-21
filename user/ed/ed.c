@@ -1,4 +1,5 @@
 #include "kernel/console.h"
+#include "kernel/lock.h"
 #include "kernel/line_editor.h"
 #include "ed.h"
 #include "fs/vfs.h"
@@ -15,6 +16,7 @@ static void ed_main_inner(const char *filename);
  * buffers are taken while it is running and returned when it exits, so an
  * editor nobody has opened costs nothing. 44 KB on a 512 KB board is most of
  * a user program's worth of memory to reserve for a text editor. */
+/* guarded by: g_ed_session (ed_main()). */
 static char (*ed_buf)[MAX_LINE_LEN];
 static int line_count = 0;
 static int dot = 0; // 1-based current line index (0 if buffer empty)
@@ -22,6 +24,7 @@ static char current_file[64];
 
 #define ED_RAW_BUF_SIZE 4096
 #define ED_OUT_BUF_SIZE 8192
+/* guarded by: g_ed_session (ed_main()). */
 static char *raw_buf;   /* both were function-scope statics: the same memory */
 static char *out_buf;   /* under a narrower name */
 static uint8_t *g_ed_arena;
@@ -306,7 +309,18 @@ static void ed_search(const char *pattern) {
     cprintf("?\n");
 }
 
+/* One ed at a time: its buffer, its lines and its file name are one set
+ * (the statics above). guarded by: g_ed_session. */
+static session_claim_t g_ed_session;
+static void ed_main_session(const char *filename);
+
 void ed_main(const char *filename) {
+    if (!session_claim(&g_ed_session, "ed")) return;
+    ed_main_session(filename);
+    session_release(&g_ed_session);
+}
+
+static void ed_main_session(const char *filename) {
     /* Acquired for the editor's lifetime and released on every exit path --
      * ed_main() returns from several places, and one of them forgetting would
      * leak 44 KB on a 160 KB heap. */

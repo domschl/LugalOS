@@ -999,6 +999,25 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Cross-Hart Lock Primitives: Atomic Gate, Real Masking, ylock Re-entry (S1)",
                         lock_ok, log if not lock_ok else ""))
 
+        # 63.4 (plan/phase63_concurrency_review.md): chan_call_wait()'s FIFO of
+        # waiting callers -- arrival order, the hand-off that keeps a client
+        # calling back to back from starving a waiter (the touch poller during
+        # the BMI270 upload), deadlines, plain chan_call()'s refusal, and a
+        # holder re-entering its own endpoint refused rather than queued.
+        ok, log = session.send_and_expect("chanqtest\n",
+                                          r"CHANQ_SELFTEST_(OK|FAIL)", timeout=30.0)
+        chanq_ok = ok and "CHANQ_SELFTEST_OK" in log
+        results.append(("Channel Wait Queue: FIFO Turns, Hand-off, Deadlines (63.4)",
+                        chanq_ok, log if not chanq_ok else ""))
+
+        # 63.7: `stress` for 30 s on one hart (the two-hart run is in the SMP
+        # target): formatters, files, local 9P, channel waits, the log ring and
+        # the shell under mixed worker tasks, every result checked.
+        ok, log = session.send_and_expect("stress 30\n", r"STRESS_(OK|FAIL)", timeout=150.0)
+        stress_ok = ok and "STRESS_OK" in log
+        results.append(("Stress: 30 s of mixed workers on the shared paths, nothing wrong (63.7)",
+                        stress_ok, log if not stress_ok else ""))
+
         # 45.3b (plan/phase45_esp32c6.md): the kernel objects the ESP32-C6's
         # confined Wi-Fi runtime needs -- semaphores, mutexes, queues, event
         # groups, timers -- under real tasks and preemption: FIFO hand-off,
@@ -5407,6 +5426,40 @@ def test_host_sanitizer_harnesses() -> tuple[bool, str]:
     return True, "; ".join(ln for ln in out.splitlines() if "no fault" in ln)
 
 
+RACESCAN_BUILDS = ["rv32", "rv64-smp", "esp32p4-tab5", "rp2350-terminal", "esp32c6"]
+
+
+def test_racescan_ownership() -> tuple[bool, str]:
+    """Phase 63.9: every shared static says who owns it, and no interrupt
+    handler reaches a blocking call (tools/racescan.py --check), on each of
+    the builds the review covered that is configured here. Parsing takes
+    about a minute a build; they run side by side."""
+    import concurrent.futures
+    import sys as _sys
+    repo = Path(__file__).resolve().parent.parent
+    try:
+        import clang.cindex  # noqa: F401
+    except ImportError:
+        return False, ("tools/racescan.py needs libclang's Python binding: "
+                       "`pip install libclang` (or the distribution's python-clang)")
+    builds = [b for b in RACESCAN_BUILDS if (repo / "build" / b / "compile_commands.json").exists()]
+    if not builds:
+        return False, "no build directory with compile_commands.json to scan"
+
+    def scan(b: str) -> tuple[str, int, str]:
+        r = subprocess.run([_sys.executable, str(repo / "tools" / "racescan.py"), "--build", f"build/{b}",
+                            "--out", f"build/racescan-{b}", "--check"],
+                           cwd=repo, capture_output=True, text=True, timeout=900)
+        return b, r.returncode, (r.stdout + r.stderr).strip()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(builds)) as ex:
+        results = list(ex.map(scan, builds))
+    failed = [(b, out) for b, rc, out in results if rc != 0]
+    if failed:
+        return False, "\n\n".join(out[-4000:] for _, out in failed)
+    return True, "clean: " + ", ".join(builds)
+
+
 def test_host_wpa2_psk_derivation() -> tuple[bool, str]:
     """I6's host-side verify point: "a known passphrase and SSID derive
     the PSK the standard gives." No QEMU -- tools/provision.py's
@@ -9034,6 +9087,15 @@ def test_smp_two_harts(elf_path: Path, img_path: Path) -> list[tuple[str, bool, 
         out.append(("SMP: a chess session does not change the next one (open_issues)",
                     ok_ind,
                     "" if ok_ind else f"nodes={node_counts} moves={move_seq}"))
+
+        # 63.7 (plan/phase63_concurrency_review.md): `stress`, the shared paths
+        # under mixed worker tasks on both harts, every result checked. The run
+        # that found sched_current_pid() reading the other hart's current task
+        # (a 9P fid filed under no connection, about once in two minutes).
+        ok, log = session.send_and_expect("stress 60\n", r"STRESS_(OK|FAIL)", timeout=200.0)
+        ok = ok and "STRESS_OK" in log
+        out.append(("SMP: stress, 60 s of mixed workers on the shared paths, nothing wrong (63.7)",
+                    ok, log if not ok else ""))
     except Exception as e:  # noqa: BLE001
         out.append(("SMP two-hart target", False, str(e)))
     finally:
@@ -9091,6 +9153,15 @@ def main() -> int:
     if ok:
         passed_tests += 1
         print(f"  [PASS] {name}")
+    else:
+        print(f"  [FAIL] {name}\n    Log Output:\n{info}")
+
+    ok, info = test_racescan_ownership()
+    total_tests += 1
+    name = "Ownership Of Shared Statics And No Blocking In Handlers (tools/racescan.py --check, 63.9)"
+    if ok:
+        passed_tests += 1
+        print(f"  [PASS] {name} -- {info}")
     else:
         print(f"  [FAIL] {name}\n    Log Output:\n{info}")
 

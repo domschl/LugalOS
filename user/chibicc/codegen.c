@@ -19,6 +19,8 @@
 #define REG_SZ 4
 #endif
 
+/* guarded by: g_lisp_lock: the compiler runs only from the `cc` primitive, inside an
+ * evaluation. */
 static int code_idx = 0;
 
 /* codegen checks what it emits. It used to ignore the size
@@ -27,6 +29,8 @@ static int code_idx = 0;
  * stack offset and branch was cast to its instruction field whatever its
  * value, so `return 5000;` returned 904. Each such case now fails the
  * compile, and nothing is written outside the buffer. */
+/* guarded by: g_lisp_lock: the compiler runs only from the `cc` primitive, inside an
+ * evaluation. */
 static int  g_cg_max;       /* bytes code_buf holds */
 static bool g_cg_failed;
 static int  g_cg_depth;     /* gen_expr()/gen_stmt() recursion */
@@ -195,13 +199,19 @@ static void gen_addr(Node *node, uint8_t *code_buf) {
     cg_fail("not an lvalue: cannot take its address or assign to it");
 }
 
+/* guarded by: g_lisp_lock: the compiler runs only from the `cc` primitive, inside an
+ * evaluation. */
 static Function *global_prog = NULL;
 
 /* True only while the final (emitting) pass runs. The dry passes exist to
  * converge function offsets, so a diagnostic raised in one of them is
  * reporting on offsets that are not settled yet. */
+/* guarded by: g_lisp_lock: the compiler runs only from the `cc` primitive, inside an
+ * evaluation. */
 static bool g_final_pass = false;
 
+/* guarded by: g_lisp_lock: the compiler runs only from the `cc` primitive, inside an
+ * evaluation. */
 static int break_jals[16];
 static int break_cnt = 0;
 static int loop_depth = 0;
@@ -477,6 +487,8 @@ static void gen_expr_inner(Node *node, uint8_t *code_buf) {
     }
 }
 
+/* guarded by: g_lisp_lock: the compiler runs only from the `cc` primitive, inside an
+ * evaluation. */
 static int current_stack_sz = 64;
 
 static void gen_stmt_inner(Node *node, uint8_t *code_buf);

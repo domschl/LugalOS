@@ -1,3 +1,4 @@
+#include "arch/atomic.h"
 #include "drivers/uart.h"
 #include "drivers/uart_proto.h"
 #include "drivers/uart_net.h"
@@ -12,6 +13,7 @@
 #include "arch/trap.h"
 #include <string.h>
 
+/* single task: the boot (uart_init), before the line is enabled. */
 static volatile uint8_t *uart_base = (volatile uint8_t *)0x10000000; // QEMU virt UART0 base
 
 /* 16550 Register Offsets */
@@ -30,6 +32,8 @@ static volatile uint8_t *uart_base = (volatile uint8_t *)0x10000000; // QEMU vir
 
 /* Every received byte the hardware dropped because nothing read the previous
  * one in time. See UART_LSR_OE. */
+/* accepted: a statistic, counted by the handler and by the polling read; a
+ * lost increment is a miscount by one, and the first message may repeat. */
 static volatile uint32_t g_uart_rx_overruns;
 uint32_t uart_rx_overruns(void) { return g_uart_rx_overruns; }
 
@@ -40,9 +44,10 @@ uint32_t uart_rx_overruns(void) { return g_uart_rx_overruns; }
  * a command that appears not to have been sent. Polling a counter cannot catch
  * that -- by the time a test thinks to look, the run it would explain is over.
  *
- * printk() and not printk_critical(): since Y5 the former is a ring append
- * that reaches no blocking primitive, which is what makes it safe from the
- * interrupt handler below. printk_critical() would reach
+ * printk() and not printk_critical(): from a device handler the former is a
+ * ring append and a wake, and reaches no blocking primitive (klog_emit()
+ * checks devirq_in_handler() before its boot-time inline drain), which is
+ * what makes it safe from the interrupt handler below. printk_critical() would reach
  * uart_flush_critical() and the batch spinlock -- the mistake that hung three
  * suite runs earlier in this investigation. */
 static void note_rx_overrun(void) {
@@ -77,7 +82,12 @@ static void note_rx_overrun(void) {
  * still holds regardless of who the caller is. A second, concurrent
  * blocking call in the same direction falls back to plain polling rather
  * than being silently queued -- the same "single-slot, busy refuses" shape
- * chan_call() itself uses for the same reason. */
+ * chan_call() itself uses for the same reason.
+ *
+ * interrupt-shared: a slot is taken by the task about to block, with
+ * interrupts masked and its claim word held, and given back by uart_isr() or
+ * by the waiter itself. The counters are written only in the handler or with
+ * interrupts masked. */
 static volatile int g_rx_waiter = -1;
 static volatile int g_tx_waiter = -1;
 static volatile uint32_t g_uart_irq_count;    /* see uart_irq_count()    */
@@ -85,27 +95,59 @@ static volatile uint32_t g_uart_irq_rx_wakes; /* see uart_irq_rx_wakes() */
 static volatile uint32_t g_uart_irq_tx_arms;  /* see uart_irq_tx_arms()  */
 static volatile uint32_t g_uart_irq_tx_wakes; /* see uart_irq_tx_wakes() */
 static volatile uint32_t g_uart_irq_tx_seen;  /* see uart_irq_tx_seen()  */
+/* Who owns each slot, across harts: irq_save() alone makes "is it free, then
+ * take it" atomic on one hart only, and two printers on two harts could both
+ * take it, the overwritten one never to be woken. Held for the whole wait. */
+static volatile uint32_t g_rx_claim, g_tx_claim;
+/* interrupt-shared: IER and the two waiter slots. IER is read-modify-written
+ * by the handler and by both waiters, which can be on three harts: irq_save()
+ * excludes the handler only on its own, and the RX and TX waiters not at all
+ * -- one's enable could overwrite the other's, leaving it blocked with its
+ * interrupt off. So every IER update, together with the slot it goes with, is
+ * under g_ier_lock; the handler wakes its tasks after dropping it (a spinlock
+ * is a leaf, and task_unblock() takes the scheduler's). */
+static spinlock_t g_ier_lock;
+
+static void ier_arm(volatile int *slot, int me, uint8_t bit) {
+    uintptr_t f = spin_lock_irqsave(&g_ier_lock);
+    *slot = me;
+    uart_base[UART_IER] |= bit;
+    spin_unlock_irqrestore(&g_ier_lock, f);
+}
+
+/* After the wait: a slot still naming `me` was not served by the handler. */
+static void ier_disarm(volatile int *slot, int me, uint8_t bit) {
+    uintptr_t f = spin_lock_irqsave(&g_ier_lock);
+    if (*slot == me) {
+        *slot = -1;
+        uart_base[UART_IER] &= (uint8_t)~bit;
+    }
+    spin_unlock_irqrestore(&g_ier_lock, f);
+}
 
 static void uart_isr(void *ctx) {
     (void)ctx;
     g_uart_irq_count++;
+    int rx = -1, tx = -1;
+    uintptr_t f = spin_lock_irqsave(&g_ier_lock);
     uint8_t lsr = uart_base[UART_LSR];
-    if (lsr & UART_LSR_OE) note_rx_overrun();
     if (lsr & UART_LSR_THRE) g_uart_irq_tx_seen++;
     if ((lsr & UART_LSR_DR) && g_rx_waiter >= 0) {
         uart_base[UART_IER] &= (uint8_t)~UART_IER_ERBFI;
         g_uart_irq_rx_wakes++;
-        int pid = g_rx_waiter;
+        rx = g_rx_waiter;
         g_rx_waiter = -1;
-        task_unblock(pid);
     }
     if ((lsr & UART_LSR_THRE) && g_tx_waiter >= 0) {
         uart_base[UART_IER] &= (uint8_t)~UART_IER_ETBEI;
         g_uart_irq_tx_wakes++;
-        int pid = g_tx_waiter;
+        tx = g_tx_waiter;
         g_tx_waiter = -1;
-        task_unblock(pid);
     }
+    spin_unlock_irqrestore(&g_ier_lock, f);
+    if (lsr & UART_LSR_OE) note_rx_overrun();   /* prints: outside the lock */
+    if (rx >= 0) task_unblock(rx);
+    if (tx >= 0) task_unblock(tx);
 }
 
 // Raw hardware byte access, handed to drivers/uart_net.c's A3b demux at
@@ -147,23 +189,20 @@ static void uart_hw_putc_blocking(char c) {
          * task_block() would have nothing to block, and the slot would
          * hold -1, which reads as "free". It polls instead, which is
          * the branch already here for the other-waiter case. */
-        if (g_tx_waiter < 0 && sched_has_task()) {
+        if (sched_has_task() && arch_lock_try_acquire(&g_tx_claim)) {
             /* Prepared, and looped on the condition: on two harts the ISR
              * can run on the other one and wake this task before it has
              * blocked (phase31 §7 T11; sched.h's task_prepare_block()). */
             int me = sched_current_pid();
             do {
                 task_prepare_block();
-                g_tx_waiter = me;
                 g_uart_irq_tx_arms++;
-                uart_base[UART_IER] |= UART_IER_ETBEI;
+                ier_arm(&g_tx_waiter, me, UART_IER_ETBEI);
                 task_block();
             } while ((uart_base[UART_LSR] & UART_LSR_THRE) == 0);
             task_wait_done();
-            if (g_tx_waiter == me) {               /* woken by something else */
-                g_tx_waiter = -1;
-                uart_base[UART_IER] &= (uint8_t)~UART_IER_ETBEI;
-            }
+            ier_disarm(&g_tx_waiter, me, UART_IER_ETBEI);   /* woken by something else */
+            arch_lock_release(&g_tx_claim);
         } else {
             irq_restore(flags);
             while ((uart_base[UART_LSR] & UART_LSR_THRE) == 0) sched_yield();
@@ -182,19 +221,16 @@ static uint8_t uart_hw_getc_blocking(void) {
          * task_block() would have nothing to block, and the slot would
          * hold -1, which reads as "free". It polls instead, which is
          * the branch already here for the other-waiter case. */
-        if (g_rx_waiter < 0 && sched_has_task()) {
+        if (sched_has_task() && arch_lock_try_acquire(&g_rx_claim)) {
             int me = sched_current_pid();          /* as for TX above */
             do {
                 task_prepare_block();
-                g_rx_waiter = me;
-                uart_base[UART_IER] |= UART_IER_ERBFI;
+                ier_arm(&g_rx_waiter, me, UART_IER_ERBFI);
                 task_block();
             } while (!hw_uart_has_char());
             task_wait_done();
-            if (g_rx_waiter == me) {
-                g_rx_waiter = -1;
-                uart_base[UART_IER] &= (uint8_t)~UART_IER_ERBFI;
-            }
+            ier_disarm(&g_rx_waiter, me, UART_IER_ERBFI);
+            arch_lock_release(&g_rx_claim);
         } else {
             irq_restore(flags);
             while (!hw_uart_has_char()) sched_yield();
@@ -239,13 +275,14 @@ static uint8_t uart_hw_getc_blocking(void) {
 
 static uint8_t       g_uart_req[UART_REQ_CAP];
 static uint8_t       g_uart_resp[1];
+/* single task: the boot (or the root shell re-running it); constant after. */
 static driver_task_t g_uart_task;
 
 /* Verify: counts UART_REQ_WRITE calls actually served -- one per
  * uart_flush() that reached the task (not per character, and not per
  * uart_putc()), so a test can check IPC volume tracks *lines/messages*
  * instead of guessing from timing. See uart_write_call_count(). */
-static uint32_t g_uart_write_calls;
+static uint32_t g_uart_write_calls;   /* single task: the uart task (uart_serve()) */
 
 uint32_t uart_write_call_count(void) { return g_uart_write_calls; }
 uint32_t uart_irq_count(void) { return g_uart_irq_count; }
@@ -273,7 +310,7 @@ uint32_t uart_irq_tx_seen(void) { return g_uart_irq_tx_seen; }
  * byte-level interleaved console garbage on real RP2350 hardware, where a
  * full batch takes real, non-negligible time to transmit. Fixed here too
  * rather than left as a latent, harder-to-trigger version of the same bug. */
-static volatile bool g_uart_write_in_flight;
+static volatile bool g_uart_write_in_flight;   /* single task: the uart task; read by writers */
 
 static bool uart_task_alive(void) { return driver_task_alive(&g_uart_task); }
 
@@ -421,6 +458,8 @@ void uart_init(uintptr_t base_addr) {
  *
  * The lock stays: it still guards each hart's own buffer against preemption
  * on that hart, which is what it was added for. */
+/* guarded by: g_tx_batch_lock (below); uart_flush_critical() takes its own
+ * hart's batch without it when the lock stays held (a fault with it held). */
 static char     g_tx_batch[MAX_HARTS][UART_TX_BATCH_CAP];
 static uint32_t g_tx_batch_len[MAX_HARTS];
 /* Guards g_tx_batch/g_tx_batch_len.
@@ -448,7 +487,8 @@ static spinlock_t g_tx_batch_lock;
  * (sched_hold_current_on_hart()) and the holds on a hart are given back once
  * that hart has nothing batched and nothing in flight: a copy taken by
  * uart_flush() counts here until it is sent, or the owner could be released
- * and overtake it from the other hart. */
+ * and overtake it from the other hart.
+ * guarded by: g_tx_batch_lock. */
 static uint32_t g_tx_inflight[MAX_HARTS];
 
 static void uart_tx_send(const char *local, uint32_t len) {
@@ -527,13 +567,19 @@ bool uart_peek_interrupt(void) {
     return false;
 }
 
+#define UART_HASCHAR_WAIT_MS 2u
+
 bool uart_has_char(void) {
     uart_flush();
     if (uart_demux_is_enabled()) return uart_demux_console_has_char();
     if (uart_task_alive()) {
+        /* A short turn: the call ahead may be a READ waiting for a key. Then
+         * the status register is read here; reading it changes nothing the
+         * task depends on. */
         uint8_t req[1] = { UART_REQ_HASCHAR };
         uint8_t resp[1];
-        if (driver_task_call(&g_uart_task, req, 1, resp, 1) == 1) return resp[0] != 0;
+        if (driver_task_call_wait(&g_uart_task, req, 1, resp, 1, UART_HASCHAR_WAIT_MS) == 1)
+            return resp[0] != 0;
     }
     return hw_uart_has_char();
 }
@@ -545,9 +591,14 @@ char uart_getc(void) {
         return uart_demux_console_getc();
     }
     if (uart_task_alive()) {
+        /* Blocking by contract, so it waits for its turn as long as that takes
+         * (a READ ahead of it waits for a key): a second reader of the RX
+         * register beside the task would take keys from it. A refusal (no
+         * task to block, a spinlock held) still returns at once. */
         uint8_t req[1] = { UART_REQ_READ };
         uint8_t resp[1];
-        if (driver_task_call(&g_uart_task, req, 1, resp, 1) == 1) return (char)resp[0];
+        if (driver_task_call_wait(&g_uart_task, req, 1, resp, 1, UINT32_MAX) == 1)
+            return (char)resp[0];
     }
     return (char)uart_hw_getc_blocking();
 }

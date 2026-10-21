@@ -44,8 +44,10 @@
 #include "drivers/sdmmc.h"
 #include "drivers/driver_task.h"
 #include "drivers/sdhost_esp32p4.h"
+#include "kernel/sysreg.h"
 #include "kernel/irq.h"
 #include "kernel/lock.h"
+#include "kernel/palloc.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
 #include "kernel/time.h"
@@ -334,6 +336,7 @@
  * transfer polls for milliseconds and the other slot's user should yield, and
  * re-entrant, because card init calls its own locked block reads. */
 static ylock_t  g_host_lock;
+/* guarded by: g_host_lock (taken by sdhost_acquire(), which sets g_card). */
 static uint32_t g_card;           /* the card the lock holder is driving */
 static uint32_t g_stale_transfers;  /* data commands that found the data path still busy */
 
@@ -354,6 +357,8 @@ void sdhost_set_width4(bool four) {
 
 /* --- What this driver remembers about the card in the slot --------------- */
 
+/* guarded by: g_host_lock (sdhost_acquire()) for the card's state; the rest is set at
+ * boot. */
 static bool     g_present;        /* a card answered and is initialised */
 static bool     g_block_addressed;/* SDHC/SDXC: LBA in blocks, not bytes */
 static uint32_t g_rca;            /* the card's relative address, as published */
@@ -490,6 +495,7 @@ static void sdmmc_pads_init(void) {
 /* The host-side divider: PLL_F160M / div, expressed as the three edge numbers
  * the hardware actually takes. div must be 2..16. */
 static void sdmmc_set_host_div(uint32_t div) {
+    uintptr_t f = sysreg_lock();   /* PERI_CLK_CTRL02 is in the shared clock block */
     uint32_t v = REG(PERI_CLK_CTRL02);
     v &= ~((0xfu << SDIO_LS_EDGE_L_S) | (0xfu << SDIO_LS_EDGE_H_S) |
            (0xfu << SDIO_LS_EDGE_N_S));
@@ -499,32 +505,32 @@ static void sdmmc_set_host_div(uint32_t div) {
     REG(PERI_CLK_CTRL02) = v;
     REG(PERI_CLK_CTRL02) = v | SDIO_LS_EDGE_UPDATE;
     REG(PERI_CLK_CTRL02) = v;
+    sysreg_unlock(f);
 }
 
 static void sdmmc_clk_init(void) {
     /* The module's bus clock, and its reset. RST_EN is 1 = held in reset. */
-    REG(SOC_CLK_CTRL1) |= SDMMC_SYS_CLK_EN;
-    REG(LP_SDMMC_EMAC_RST) |= RST_EN_SDMMC;
-    REG(LP_SDMMC_EMAC_RST) &= ~RST_EN_SDMMC;
+    sysreg_set(SOC_CLK_CTRL1, SDMMC_SYS_CLK_EN);
+    sysreg_set(LP_SDMMC_EMAC_RST, RST_EN_SDMMC);
+    sysreg_clear(LP_SDMMC_EMAC_RST, RST_EN_SDMMC);
 
     /* The 160 MHz reference this peripheral divides down. Its gate resets to
      * 1, so this write normally changes nothing -- which is exactly the
      * argument drivers/emac_esp32p4.c makes for writing its own always-on
      * gate anyway: a gate nobody writes is a gate nobody notices when
      * something else clears it. */
-    REG(REF_CLK_CTRL2) |= REF_160M_CLK_EN;
+    sysreg_set(REF_CLK_CTRL2, REF_160M_CLK_EN);
 
-    uint32_t v = REG(PERI_CLK_CTRL01);
-    v &= ~(SDIO_LS_CLK_SRC_SEL | SDIO_HS_MODE);   /* PLL_F160M, divided */
-    v |= SDIO_LS_CLK_EN;
-    REG(PERI_CLK_CTRL01) = v;
+    sysreg_update(PERI_CLK_CTRL01, SDIO_LS_CLK_SRC_SEL | SDIO_HS_MODE,   /* PLL_F160M, divided */
+                  SDIO_LS_CLK_EN);
 
     /* The drive/sample/self clock phases. IDF's sdmmc_ll_init_phase_delay():
      * drive on the falling edge (sel 1), sample and self on the rising one
      * (sel 0). These are the default-speed settings and this driver never
      * leaves default speed -- a DDR or SDR104 mode would have to revisit
      * them, and would have a good deal more to revisit besides. */
-    v = REG(PERI_CLK_CTRL02);
+    uintptr_t f = sysreg_lock();   /* PERI_CLK_CTRL02 is in the shared clock block */
+    uint32_t v = REG(PERI_CLK_CTRL02);
     v |= SDIO_LS_SLF_CLK_EN | SDIO_LS_DRV_CLK_EN | SDIO_LS_SAM_CLK_EN;
     v &= ~((3u << SDIO_LS_SLF_EDGE_SEL_S) | (3u << SDIO_LS_DRV_EDGE_SEL_S) |
            (3u << SDIO_LS_SAM_EDGE_SEL_S));
@@ -532,6 +538,7 @@ static void sdmmc_clk_init(void) {
     REG(PERI_CLK_CTRL02) = v;
     REG(PERI_CLK_CTRL02) = v | SDIO_LS_EDGE_UPDATE;
     REG(PERI_CLK_CTRL02) = v;
+    sysreg_unlock(f);
 
     /* **A divider, before the controller is reset.** MEASURED, 2026-09-18:
      * without this line the very first hardware run printed
@@ -567,14 +574,10 @@ static void sdmmc_clk_init(void) {
 static int sdmmc_cmd_start(uint32_t cmd, uint32_t arg) {
     uint64_t deadline = time_get_us() + 100000u;      /* 100 ms */
 
-    while (REG(SD_CMD) & CMD_START) {
-        if (time_get_us() > deadline) return -1;
-    }
+    if (!time_poll_until_us(!(REG(SD_CMD) & CMD_START), deadline)) return -1;
     REG(SD_CMDARG) = arg;
     REG(SD_CMD) = cmd | ((g_card & 0x1fu) << CMD_CARD_NUM_S) | CMD_START | CMD_USE_HOLD_REG;
-    while (REG(SD_CMD) & CMD_START) {
-        if (time_get_us() > deadline) return -1;
-    }
+    if (!time_poll_until_us(!(REG(SD_CMD) & CMD_START), deadline)) return -1;
     return 0;
 }
 
@@ -625,10 +628,9 @@ static uint32_t sdmmc_set_bus_clock(uint32_t want_khz) {
  * to turn into a return value rather than a hang. */
 static int sdmmc_host_reset(void) {
     REG(SD_CTRL) |= CTRL_RESET | CTRL_FIFO_RESET | CTRL_DMA_RESET;
-    uint64_t deadline = time_get_us() + 100000u;
-    while (REG(SD_CTRL) & (CTRL_RESET | CTRL_FIFO_RESET | CTRL_DMA_RESET)) {
-        if (time_get_us() > deadline) return -1;
-    }
+    if (!time_poll_until_us(!(REG(SD_CTRL) & (CTRL_RESET | CTRL_FIFO_RESET | CTRL_DMA_RESET)),
+                            time_get_us() + 100000u))
+        return -1;
     return 0;
 }
 
@@ -688,9 +690,10 @@ static int sd_command(uint8_t index, uint32_t arg, sd_resp_t rt,
     uint64_t deadline = time_get_us() + 500000u;
     uint32_t status;
     for (;;) {
+        bool late = time_get_us() >= deadline;   /* before the read: kernel/time.h */
         status = REG(SD_RINTSTS);
         if (status & (INT_CMD_DONE | INT_CMD_ERRORS)) break;
-        if (time_get_us() > deadline) {
+        if (late) {
             if (out_status) *out_status = status;
             return -1;
         }
@@ -718,10 +721,8 @@ static int sd_command(uint8_t index, uint32_t arg, sd_resp_t rt,
     if (rt == RESP_R1B) {
         /* The card pulls DAT0 low while it finishes. Busy-polled rather than
          * yielded: this is CMD7 during init and nothing else. */
-        deadline = time_get_us() + 1000000u;
-        while (REG(SD_STATUS) & STATUS_DATA_BUSY) {
-            if (time_get_us() > deadline) return -1;
-        }
+        if (!time_poll_until_us(!(REG(SD_STATUS) & STATUS_DATA_BUSY), time_get_us() + 1000000u))
+            return -1;
     }
     return 0;
 }
@@ -829,8 +830,15 @@ static uint32_t sd_csd_blocks(const uint32_t *csd) {
 
 typedef sdhost_desc_t sdmmc_desc_t;   /* drivers/sdhost_esp32p4.h */
 
+/* guarded by: g_host_lock (every block read and write holds it). */
 static sdmmc_desc_t g_desc  __attribute__((aligned(ESP32P4_L1_CACHE_LINE)));
 static uint8_t g_dma_buf[512] __attribute__((aligned(ESP32P4_L1_CACHE_LINE)));
+
+/* guarded by: g_host_lock. The descriptor the last arm handed over, and how
+ * often DATA_OVER came before the DMA had given it back (see
+ * sdmmc_dma_wait()). */
+static sdmmc_desc_t *g_armed_desc;
+static uint32_t      g_dma_late, g_dma_late_max_us;
 
 static uint32_t sdmmc_fifo_count(void) {
     return (REG(SD_STATUS) >> STATUS_FIFO_COUNT_S) & STATUS_FIFO_COUNT_M;
@@ -862,6 +870,7 @@ static void sdmmc_dma_arm_on(sdmmc_desc_t *d, uint8_t *buf, uint32_t len, uint32
     d->des2 = (uint32_t)(uintptr_t)buf;
     d->des3 = (uint32_t)(uintptr_t)d;              /* chained back to itself */
     esp32p4_dcache_writeback((uintptr_t)d, sizeof(*d));
+    g_armed_desc = d;
 
     REG(SD_CTRL) |= CTRL_DMA_ENABLE | CTRL_USE_INTERNAL_DMA;
     REG(SD_DBADDR) = (uint32_t)(uintptr_t)d;
@@ -883,6 +892,7 @@ static void sdmmc_dma_arm(void) {
 static int sdmmc_dma_wait(uint32_t lba, const char *what) {
     uint64_t deadline = time_get_us() + 3000000u;
     for (;;) {
+        bool late = time_get_us() >= deadline;   /* before the reads: kernel/time.h */
         uint32_t st = REG(SD_RINTSTS);
         uint32_t id = REG(SD_IDSTS);
         if ((st & INT_DATA_ERRORS) || (id & IDSTS_ERRORS)) {
@@ -890,14 +900,37 @@ static int sdmmc_dma_wait(uint32_t lba, const char *what) {
                    what, (unsigned)lba, (unsigned)st, (unsigned)id);
             return -1;
         }
-        if (st & INT_DATA_OVER) return 0;
-        if (time_get_us() > deadline) {
+        if (st & INT_DATA_OVER) break;
+        if (late) {
             printk("[SDMMC] %s lba %u timed out (RINTSTS 0x%x IDSTS 0x%x FIFO %u)\n",
                    what, (unsigned)lba, (unsigned)st, (unsigned)id,
                    (unsigned)sdmmc_fifo_count());
             return -1;
         }
     }
+    /* DATA_OVER is the card side: the last byte reached the FIFO. The DMA
+     * may still be moving it to memory (it shares the bus with everything
+     * else; the Tab5's panel scan-out alone reads 107 MB/s from PSRAM), and
+     * a read copied out before then is the bounce buffer's previous sector.
+     * The DMA is done with the buffer when it clears the descriptor's OWN
+     * bit; DESC_DIC leaves IDSTS's RI unset, so that bit is the signal. */
+    sdmmc_desc_t *d = g_armed_desc;
+    if (!d) return 0;
+    uint64_t t0 = time_get_us();
+    bool done = time_poll_until_us(
+        (esp32p4_dcache_invalidate((uintptr_t)d, sizeof(*d)), !(d->des0 & DESC_OWN)),
+        t0 + 100000u);   /* the DMA itself needs microseconds; a preempted waiter longer */
+    uint32_t waited = (uint32_t)(time_get_us() - t0);
+    if (!done) {
+        printk("[SDMMC] %s lba %u: the DMA kept its descriptor 100 ms past the data's end\n",
+               what, (unsigned)lba);
+        return -1;
+    }
+    if (waited > 2u) {
+        g_dma_late++;
+        if (waited > g_dma_late_max_us) g_dma_late_max_us = waited;
+    }
+    return 0;
 }
 
 static int sdmmc_hw_read_block(uint32_t lba, uint8_t *dst) {
@@ -941,12 +974,9 @@ static int sdmmc_hw_write_block(uint32_t lba, const uint8_t *src) {
      * yielding here would mean a serve callback rescheduling inside a
      * transfer, and the block driver's contract is that only it touches the
      * hardware while one is in flight. */
-    uint64_t deadline = time_get_us() + 1000000u;
-    while (REG(SD_STATUS) & STATUS_DATA_BUSY) {
-        if (time_get_us() > deadline) {
-            printk("[SDMMC] write lba %u: card still busy after 1 s\n", (unsigned)lba);
-            return -1;
-        }
+    if (!time_poll_until_us(!(REG(SD_STATUS) & STATUS_DATA_BUSY), time_get_us() + 1000000u)) {
+        printk("[SDMMC] write lba %u: card still busy after 1 s\n", (unsigned)lba);
+        return -1;
     }
     return 0;
 }
@@ -962,11 +992,15 @@ static int sdmmc_hw_write_block(uint32_t lba, const uint8_t *src) {
  * so the whole probe costs microseconds rather than the 1.5 s the ACMD41 loop
  * is budgeted. The budget only ever applies to a card that is answering and
  * still initialising. */
+/* guarded by: g_host_lock (sdhost_acquire()) for the card's state; the rest is set at
+ * boot. */
 static bool g_hw_ready;
 
 /* The controller's half: clocks, reset, polled mode, watermarks. Shared with
  * the SDIO slot (49.4), so idempotent and independent of the card's power and
- * pads, which are slot 0's alone. */
+ * pads, which are slot 0's alone.
+ * guarded by: g_host_lock on the SDIO side (its probe holds it); the card's
+ * bring-up at boot runs before any other user. */
 static bool g_ctrl_ready;
 
 int sdhost_controller_init(void) {
@@ -1062,6 +1096,14 @@ void sdhost_data_reset(void) {
     REG(SD_RINTSTS) = 0x0000ffffu;
 }
 
+/* interrupt-shared: SD_INTMASK. Only the SDIO slot's card bit is ever set
+ * (slot 0 is polled, INTMASK 0 from init). sdhost_isr() clears it, on
+ * whichever hart takes the interrupt; the LLP pump sets it under
+ * sdhost_acquire(1), possibly on the other hart, where irq_save() does not
+ * exclude the handler. A lost update between the two is harmless: the handler
+ * only runs with the bit set and sets g_irq_seen, so the bit ends either clear
+ * with a wake pending, or set again with the wake pending -- the next poll
+ * handles both. SD_CTRL is written only by tasks under the host lock. */
 void sdhost_sdio_irq(uint32_t card, bool on) {
     uintptr_t f = irq_save();
     if (on) {
@@ -1088,7 +1130,27 @@ void sdhost_clear_status(uint32_t bits) { REG(SD_RINTSTS) = bits; }
  * `probe` is 512 bytes of .bss rather than a local because this runs on
  * whatever stack the first caller happens to have -- vfs_server_init()'s,
  * during boot -- and half a kilobyte is a great deal to ask of one. */
+/* guarded by: g_host_lock (sdhost_acquire()) for the card's state; the rest is set at
+ * boot. */
 static uint8_t g_probe_block[512];
+
+/* CMD6 (SWITCH_FUNC), mode 1, function group 1 to function 1: high speed,
+ * which a card needs before it may be clocked past 25 MHz (SD Physical Layer
+ * spec 4.3.10). The answer is a 64-byte status block; byte 16's low nibble
+ * is the function group 1 now runs (1 = high speed, 0xF = the switch failed). */
+static bool sdmmc_switch_high_speed(void) {
+    esp32p4_dcache_invalidate((uintptr_t)g_dma_buf, sizeof(g_dma_buf));
+    sdmmc_dma_arm_on(&g_desc, g_dma_buf, 64u, 64u);
+    uint32_t status = 0;
+    if (sd_command(6, 0x80FFFFF1u, RESP_R1, CMD_DATA_EXPECTED, NULL, &status) != 0) {
+        printk("[SDMMC] CMD6 (high speed) failed (status 0x%x)\n", (unsigned)status);
+        sdhost_data_reset();
+        return false;
+    }
+    if (sdmmc_dma_wait(0, "switch") != 0) { sdhost_data_reset(); return false; }
+    esp32p4_dcache_invalidate((uintptr_t)g_dma_buf, sizeof(g_dma_buf));
+    return (g_dma_buf[16] & 0x0Fu) == 1u;
+}
 
 static void sdmmc_set_bus_width(void) {
     uint32_t want = (uint32_t)CONFIG_SDMMC_BUS_WIDTH;
@@ -1104,7 +1166,12 @@ static void sdmmc_set_bus_width(void) {
         }
     }
 
-    g_bus_khz = sdmmc_set_bus_clock((uint32_t)CONFIG_SDMMC_FREQ_KHZ);
+    uint32_t khz = (uint32_t)CONFIG_SDMMC_FREQ_KHZ;
+    if (khz > 25000u && !sdmmc_switch_high_speed()) {
+        printk("[SDMMC] the card did not switch to high speed; 20 MHz instead of %u\n", (unsigned)khz);
+        khz = 20000u;
+    }
+    g_bus_khz = sdmmc_set_bus_clock(khz);
 
     if (sdmmc_hw_read_block(0, g_probe_block) == 0) return;
 
@@ -1270,12 +1337,20 @@ static int sdmmc_card_init_locked(void) {
 #define BLK_REQ_READ  ((uint8_t)'R')
 #define BLK_REQ_WRITE ((uint8_t)'W')
 #define BLK_MAX_COUNT 4u
-#define BLK_HDR_LEN   9u /* opcode + lba(4) + count(4) */
+#define BLK_HDR_LEN   13u /* opcode + lba(4) + count(4) + tag(4) */
+#define BLK_RESP_HDR  5u  /* status + the request's tag(4) */
 #define BLK_REQ_CAP   (BLK_HDR_LEN + BLK_MAX_COUNT * 512u)
-#define BLK_RESP_CAP  (1u + BLK_MAX_COUNT * 512u)
+#define BLK_RESP_CAP  (BLK_RESP_HDR + BLK_MAX_COUNT * 512u)
+
+/* Each request carries a tag the reply echoes, so a reply that reaches the
+ * wrong caller is caught instead of handed over as that caller's sector.
+ * guarded by: atomic increments (g_blk_tag); g_blk_mixups the same. */
+static uint32_t g_blk_tag, g_blk_mixups;
 
 static uint8_t       g_blk_req[BLK_REQ_CAP];
 static uint8_t       g_blk_resp[BLK_RESP_CAP];
+/* guarded by: g_host_lock (sdhost_acquire()) for the card's state; the rest is set at
+ * boot. */
 static driver_task_t g_blk_task;
 
 uint32_t blk_task_call_count(void) { return driver_task_call_count(&g_blk_task); }
@@ -1324,20 +1399,21 @@ static uint32_t blk_serve(void *ctx, const uint8_t *req, uint32_t req_len,
     uint8_t  op    = req[0];
     uint32_t lba   = be32_load(&req[1]);
     uint32_t count = be32_load(&req[5]);
+    be32_store(&resp[1], req_len >= BLK_HDR_LEN ? be32_load(&req[9]) : 0u);
 
-    if (op == BLK_REQ_READ && count >= 1 && count <= BLK_MAX_COUNT) {
-        int rc = sdmmc_hw_read_blocks(lba, count, &resp[1]);
+    if (op == BLK_REQ_READ && req_len >= BLK_HDR_LEN && count >= 1 && count <= BLK_MAX_COUNT) {
+        int rc = sdmmc_hw_read_blocks(lba, count, &resp[BLK_RESP_HDR]);
         resp[0] = (rc == 0) ? 0 : 1;
-        return (rc == 0) ? (1u + count * 512u) : 1u;
+        return (rc == 0) ? (BLK_RESP_HDR + count * 512u) : BLK_RESP_HDR;
     }
     if (op == BLK_REQ_WRITE && count >= 1 && count <= BLK_MAX_COUNT &&
         req_len >= BLK_HDR_LEN + count * 512u) {
         int rc = sdmmc_hw_write_blocks(lba, count, &req[BLK_HDR_LEN]);
         resp[0] = (rc == 0) ? 0 : 1;
-        return 1;
+        return BLK_RESP_HDR;
     }
     resp[0] = 1;
-    return 1;
+    return BLK_RESP_HDR;
 }
 
 int sdmmc_task_start(void) {
@@ -1356,34 +1432,58 @@ int sdmmc_task_start(void) {
 }
 
 /* One batched request through the endpoint. Returns the blocks transferred,
- * or -1 if the channel itself failed -- which the caller answers by falling
- * back to direct access rather than by propagating a failure that might be
- * about the IPC and not about the card. Same split, and the same reasoning,
- * as spisd's and virtio_blk's. */
+ * or -1, which the caller reports: with the task alive, it alone drives the
+ * card. A turn can wait out another client's transfer, and a card may hold a
+ * write busy for up to 250 ms (the SD spec's write timeout). */
+#define BLK_CALL_WAIT_MS 500u
+
+static bool blk_reply_is_mine(int n, const uint8_t *resp, uint32_t tag, uint32_t lba, const char *what) {
+    if (n < (int)BLK_RESP_HDR || be32_load(&resp[1]) == tag) return true;
+    __atomic_fetch_add(&g_blk_mixups, 1u, __ATOMIC_RELAXED);
+    printk("[SDMMC] %s lba %lu: the reply was another request's (tag %lu, sent %lu)\n", what,
+           (unsigned long)lba, (unsigned long)be32_load(&resp[1]), (unsigned long)tag);
+    return false;
+}
+
 static int blk_read_chunk(uint32_t lba, uint32_t count, uint8_t *dst) {
     uint8_t req[BLK_HDR_LEN];
+    uint32_t tag = __atomic_add_fetch(&g_blk_tag, 1u, __ATOMIC_RELAXED);
     req[0] = BLK_REQ_READ;
     be32_store(&req[1], lba);
     be32_store(&req[5], count);
+    be32_store(&req[9], tag);
     uint8_t resp[BLK_RESP_CAP];
-    int n = driver_task_call(&g_blk_task, req, sizeof(req), resp, sizeof(resp));
-    if (n >= 1 && resp[0] == 0 && (uint32_t)n >= 1u + count * 512u) {
-        memcpy(dst, &resp[1], count * 512u);
+    uint64_t t0 = time_get_ms();
+    int n = driver_task_call_wait(&g_blk_task, req, sizeof(req), resp, sizeof(resp),
+                                  BLK_CALL_WAIT_MS);
+    if (!blk_reply_is_mine(n, resp, tag, lba, "read")) return -1;
+    if (n >= 1 && resp[0] == 0 && (uint32_t)n >= BLK_RESP_HDR + count * 512u) {
+        memcpy(dst, &resp[BLK_RESP_HDR], count * 512u);
         return (int)count;
     }
+    printk("[SDMMC] read lba %lu x%lu failed after %lu ms (call %d, status %d)\n",
+           (unsigned long)lba, (unsigned long)count, (unsigned long)(time_get_ms() - t0), n,
+           n >= 1 ? (int)resp[0] : -1);
     return -1;
 }
 
 static int blk_write_chunk(uint32_t lba, uint32_t count, const uint8_t *src) {
     uint8_t req[BLK_REQ_CAP];
+    uint32_t tag = __atomic_add_fetch(&g_blk_tag, 1u, __ATOMIC_RELAXED);
     req[0] = BLK_REQ_WRITE;
     be32_store(&req[1], lba);
     be32_store(&req[5], count);
+    be32_store(&req[9], tag);
     memcpy(&req[BLK_HDR_LEN], src, count * 512u);
-    uint8_t resp[1];
-    int n = driver_task_call(&g_blk_task, req, BLK_HDR_LEN + count * 512u,
-                             resp, sizeof(resp));
+    uint8_t resp[BLK_RESP_HDR];
+    uint64_t t0 = time_get_ms();
+    int n = driver_task_call_wait(&g_blk_task, req, BLK_HDR_LEN + count * 512u,
+                                  resp, sizeof(resp), BLK_CALL_WAIT_MS);
+    if (!blk_reply_is_mine(n, resp, tag, lba, "write")) return -1;
     if (n >= 1 && resp[0] == 0) return (int)count;
+    printk("[SDMMC] write lba %lu x%lu failed after %lu ms (call %d, status %d)\n",
+           (unsigned long)lba, (unsigned long)count, (unsigned long)(time_get_ms() - t0), n,
+           n >= 1 ? (int)resp[0] : -1);
     return -1;
 }
 
@@ -1396,12 +1496,13 @@ static int sdmmc_read_blocks(block_dev_t *dev, void *buf, uint32_t lba, uint32_t
         while (done < count) {
             uint32_t chunk = (count - done) > BLK_MAX_COUNT ? BLK_MAX_COUNT : (count - done);
             int n = blk_read_chunk(lba + done, chunk, dst + (size_t)done * 512u);
-            if (n < 0) break;
+            if (n < 0) return -1;
             done += (uint32_t)n;
         }
-        if (done >= count) return 0;
+        return 0;
     }
-    return sdmmc_hw_read_blocks(lba + done, count - done, dst + (size_t)done * 512u);
+    int rc = sdmmc_hw_read_blocks(lba + done, count - done, dst + (size_t)done * 512u);
+    return rc;
 }
 
 static int sdmmc_write_blocks(block_dev_t *dev, const void *buf, uint32_t lba, uint32_t count) {
@@ -1413,14 +1514,17 @@ static int sdmmc_write_blocks(block_dev_t *dev, const void *buf, uint32_t lba, u
         while (done < count) {
             uint32_t chunk = (count - done) > BLK_MAX_COUNT ? BLK_MAX_COUNT : (count - done);
             int n = blk_write_chunk(lba + done, chunk, src + (size_t)done * 512u);
-            if (n < 0) break;
+            if (n < 0) return -1;
             done += (uint32_t)n;
         }
-        if (done >= count) return 0;
+        return 0;
     }
-    return sdmmc_hw_write_blocks(lba + done, count - done, src + (size_t)done * 512u);
+    int rc = sdmmc_hw_write_blocks(lba + done, count - done, src + (size_t)done * 512u);
+    return rc;
 }
 
+/* guarded by: g_host_lock (sdhost_acquire()) for the card's state; the rest is set at
+ * boot. */
 static block_dev_t g_sdmmc_dev = {
     .name = "sdmmc0",
     .block_size = 512,
@@ -1529,6 +1633,9 @@ void sdmmc_info_report(void) {
             (unsigned)blk_task_call_count());
     cprintf("  shared data path: %u data commands found it busy and reset it first\n",
             (unsigned)g_stale_transfers);
+    cprintf("  DMA: %u transfers ended on the card before the DMA gave the buffer back "
+            "(longest %u us)\n", (unsigned)g_dma_late, (unsigned)g_dma_late_max_us);
+    cprintf("  sdblk: %u replies reached the wrong caller\n", (unsigned)g_blk_mixups);
 
     /* Block 0, re-read now, and the reason this is in a status command rather
      * than in a debugging patch somebody deleted afterwards: "the card

@@ -55,6 +55,8 @@
 #if defined(LCDTERM_PRESENT)
 
 /* --- The panel this terminal runs on (47.6) ------------------------------- */
+/* guarded by: console_lock (lcdterm_init() at boot, lcdterm_reinit() from a
+ * rotation, which holds it). */
 static const lcdterm_backend_t *g_be;
 static void damage(unsigned y0, unsigned y1);
 
@@ -75,6 +77,7 @@ static void damage(unsigned y0, unsigned y1);
  * smaller than the RP2350-LCD-7's, so its numbers stay exactly what they
  * were (16 pages here, 64 below). */
 #define STATE_PAGES_MIN      16u
+/* single task: the boot, before any reader runs; constant after. */
 static uint32_t g_state_bytes;
 
 /* with PSRAM, the state block grows into a
@@ -114,6 +117,7 @@ static void text_line(fbtext_t *t, unsigned row, const char *s, bool inverse) {
  * (kernel/console.c's screen hooks), so an echoed keystroke appears at once.
  * Until the task is alive -- boot, or if it never starts -- the facade draws
  * directly, the fallback every driver task here has. */
+/* single task: the boot, before any reader runs; constant after. */
 static screen_t *g_scr;             /* the state block: g_scr_bytes, naturally aligned */
 static uint32_t  g_scr_bytes;
 static bool      g_vt_ready;
@@ -124,6 +128,8 @@ static bool      g_vt_ready;
 #define LCDTERM_OP_RIGHT  'S'       /* 37.1: its indicators */
 #define LCDTERM_OP_REPAINT 'R'      /* 37.1a: everything, from the shadow */
 #define LCDTERM_OP_CANVAS 'C'       /* 37.3b: a canvas request; the reply comes back */
+/* guarded by: console_lock, for the batch, the reply buffer and the call
+ * count (lcdterm_screen_putc_vterm() reports a write without it). */
 static uint8_t          g_batch[LCDTERM_BATCH];
 static uint32_t         g_batch_len;
 #if defined(LCDTERM_UMODE)
@@ -263,16 +269,14 @@ static bool lcdterm_send(uint8_t op, const char *p, uint32_t len) {
     if (len > 1u + LCDTERM_BATCH) len = 1u + LCDTERM_BATCH;
     req[0] = op;
     for (uint32_t i = 0; i < len; i++) req[1u + i] = (uint8_t)p[i];
-    for (int attempt = 0; attempt < 8; attempt++) {
-        if (chan_call(g_lcdterm_ep, req, 1u + len, g_lcdterm_resp, sizeof(g_lcdterm_resp)) >= 0) {
-            g_lcdterm_calls++;
-            return true;
-        }
-        sched_yield();
-    }
-    return false;
+    if (chan_call_wait(g_lcdterm_ep, req, 1u + len, g_lcdterm_resp, sizeof(g_lcdterm_resp),
+                       CHAN_WAIT_MS) < 0)
+        return false;
+    g_lcdterm_calls++;
+    return true;
 }
 
+/* guarded by: console_lock, as g_batch. */
 static uint8_t g_batch_vid;
 static bool    s_pending_char_damage = false;
 
@@ -306,7 +310,7 @@ void lcdterm_screen_putc_vterm(int vid, char c) {
      * console_lock() makes that safe: an unlocked append preempted between
      * the increment and the flush test lets the next one run off the end
      * (phase31 §7 T5). Named once rather than assumed. */
-    static bool s_unlocked_reported;
+    static bool s_unlocked_reported;   /* accepted: a report-once flag */
     if (!s_unlocked_reported && !console_lock_held()) {
         s_unlocked_reported = true;
         printk("[LCD BUG] console write without console_lock() from task %d\n",
@@ -369,14 +373,11 @@ static bool lcdterm_canvas(const uint8_t *req, uint32_t n, uint8_t *reply) {
         buf[0] = LCDTERM_OP_CANVAS;
         buf[1] = (uint8_t)my_vid;
         for (uint32_t i = 0; i < n; i++) buf[2u + i] = req[i];
-        for (int attempt = 0; attempt < 8 && !sent; attempt++) {
-            if (chan_call(g_lcdterm_ep, buf, 2u + n, g_lcdterm_resp, sizeof(g_lcdterm_resp)) >= 0) {
-                g_lcdterm_calls++;
-                for (uint32_t i = 0; i < SCREEN_REPLY_LEN; i++) reply[i] = g_lcdterm_resp[i];
-                sent = true;
-            } else {
-                sched_yield();
-            }
+        if (chan_call_wait(g_lcdterm_ep, buf, 2u + n, g_lcdterm_resp, sizeof(g_lcdterm_resp),
+                           CHAN_WAIT_MS) >= 0) {
+            g_lcdterm_calls++;
+            for (uint32_t i = 0; i < SCREEN_REPLY_LEN; i++) reply[i] = g_lcdterm_resp[i];
+            sent = true;
         }
     }
     if (!sent) screen_canvas_vterm(g_scr, (uint8_t)my_vid, req, n, reply);
@@ -503,8 +504,8 @@ const console_screen_t *lcdterm_console_screen(void) {
 /* `lcdtermisotest`: the lcdterm domain, but a body that stores into kernel
  * memory. Must fault, and the canary must survive -- the check every isolated
  * driver here has (st7735isotest, blkisotest, ...). */
-static volatile uintptr_t g_lcdterm_canary = 0xC0FFEE;
-static volatile bool      g_lcdterm_intruder_entered;
+static volatile uintptr_t g_lcdterm_canary = 0xC0FFEE;   /* accepted: an isolation test's canary or handshake */
+static volatile bool      g_lcdterm_intruder_entered;   /* accepted: an isolation test's canary or handshake */
 
 LCDTERM_UTEXT static void lcdterm_intruder(void) {
     g_lcdterm_canary = 0xDEAD;
@@ -568,8 +569,10 @@ bool lcdterm_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) {
  * there, and then `lcd tee uart` is one command. The kernel log still reaches
  * UART0 through its own sink either way. */
 #if defined(CONFIG_BOARD_RP2350)
+/* accepted: one byte, set by `lcd tee`. */
 static uint8_t g_tee = LCD_TEE_USB;
 #else
+/* accepted: one byte, set by `lcd tee`. */
 static uint8_t g_tee = LCD_TEE_UART;    /* 47.6: no USB device stack; UART0 is the host's console */
 #endif
 
@@ -658,7 +661,7 @@ static void damage(unsigned y0, unsigned y1) {
 int lcdterm_init(const lcdterm_backend_t *be) {
     if (!be || !be->fb || (be->w % 8u) != 0) return -1;
     g_be = be;
-    uint32_t state_pages = pow2_pages(SCREEN_BYTES(be->w, be->h), STATE_PAGES_MIN);
+    uint32_t state_pages = pow2_pages(SCREEN_BYTES_ROT(be->w, be->h, be->rotates), STATE_PAGES_MIN);
     g_state_bytes = state_pages * 4096u;
     uint32_t block_pages = pow2_pages(g_state_bytes + SCREEN_STORE_BYTES(be->w, be->h),
                                       STORE_BLOCK_PAGES_MIN);
@@ -678,7 +681,7 @@ int lcdterm_init(const lcdterm_backend_t *be) {
         printk("[LCD] no memory for the screen's state; the panel runs without a terminal\n");
         return -1;
     }
-    screen_init(g_scr, be->fb, be->stride, be->w, be->h);
+    screen_init_rot(g_scr, be->fb, be->stride, be->w, be->h, be->rotates);
     if (stores)
         screen_set_store(g_scr, (uint8_t *)g_scr + g_state_bytes, g_scr_bytes - g_state_bytes);
     g_vt_ready = true;

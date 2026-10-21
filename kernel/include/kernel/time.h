@@ -21,6 +21,24 @@ uint64_t time_get_us(void);
 uint64_t time_get_ms(void);
 void time_delay_us(uint64_t us);
 
+/* Polls until `cond` holds or the clock reaches the deadline; evaluates to
+ * whether `cond` held. The clock is read *before* each test of `cond`, so the
+ * last test always comes after the deadline: a caller preempted past it sees a
+ * condition that came true meanwhile, instead of giving up on a reading taken
+ * before the preemption. "Read, then check the clock" fails a transfer that
+ * finished while the task was not running (an I2C transfer under a busy
+ * display did). A hand-written wait loop keeps the same order:
+ *     for (;;) { bool late = now() >= deadline; if (cond) ok; if (late) fail; } */
+#define time_poll_until_us(cond, deadline_us) __extension__ ({         \
+    uint64_t dl_ = (deadline_us);                                       \
+    bool ok_;                                                           \
+    for (;;) {                                                          \
+        bool late_ = time_get_us() >= dl_;                              \
+        if (cond) { ok_ = true; break; }                                \
+        if (late_) { ok_ = false; break; }                              \
+    }                                                                   \
+    ok_; })
+
 /* Wall clock. The clock the kernel keeps is UTC; local time is derived from
  * it through kernel/timezone.c and stored nowhere (see the note there and in
  * time.c). Every caller has to say which one it means, which is the point:

@@ -304,7 +304,7 @@ for both roles by itself.
   coordinate remapping.
 * MicroSD: 4-bit SDMMC Slot 0 (`GPIO39–44`) mounted on `/sd0/` at 20 MHz.
 * USB Host: DWC2 OTG HS on Type-A port with `USB5V_EN` via PI4IOE2.
-* SDIO Wi-Fi Co-Processor (ESP32-C6, phase 52): connected via SDMMC Slot 1 (`GPIO14–19`); C6 reset controlled via PI4IOE2 (`U8` bit 0).
+* SDIO Wi-Fi Co-Processor (ESP32-C6, phase 52): connected via SDMMC Slot 1 (CLK 12, CMD 13, D0–D3 11/10/9/8); C6 reset on GPIO15 (active low, `CONFIG_C6_CHIP_PU_GPIO`; M5Stack's esp-hosted config uses the same pin).
   * Closed appliance without external C6 serial/JTAG headers. Boots LugalOS via factory ESP-IDF bootloader from `ota_1` partition (`layout=idf`).
   * Bootloader locks PMP entries 0–2 and 15 (`PMP_L`); LugalOS kernel probes locked entries at boot (`arch/riscv/common/mem_domain.c`) and dynamically allocates user domains in unlocked slots 3–14 without trap.
   * Over-the-air updates for the C6 are performed over 9P/SDIO without opening the case:
@@ -384,6 +384,9 @@ uv run --project host/p9lib python3 tools/p9sync.py \
   --src build/esp32p4-lcd7b/sd_root` (or `--p4 nano`) puts 9P on the console with
   `p9share`, syncs over SLIP and turns it off again, opening the port only the way
   `p4run.py` does (a plain pyserial open or close resets the LCD-7B).
+* **Tab5** (its USB-Serial/JTAG console cannot carry 9P): over TCP. Set a key on the board
+  (`p9key HEX`), then `uv run --project host/p9lib python3 tools/p9sync.py --tcp ADDR --key HEX
+  --src build/esp32p4-tab5/sd_root` (ADDR from `cat /proc/net`).
 * **Preservation Policy:** `tools/p9sync.py` is additive and idempotent. It creates missing directories (e.g. `/sd0/cas/`), updates files that differ in size, and **strictly preserves user files** (such as `/sd0/CHESS/` games and `/sd0/SYSTEM/HISTORY.LIS`).
 
 ### Flashing & Running ESP32-P4-NANO
@@ -477,6 +480,11 @@ Source code comments must have a high signal-to-noise ratio:
    * **Invariants & Contracts:** Preconditions, postconditions, pointer nullability, and buffer ownership (who allocates and who frees).
    * **Hardware Quirks & Errata:** Silicon errata, register timing delays, revision differences (e.g. ESP32-P4 v1.3 vs v3.2).
    * **Concurrency & Memory Isolation:** Which lock guards what, why a lock is held across context switches, PMP granularity and alignment rules.
+   * **Ownership of static storage:** every writable static or global reached from more than one task or handler carries a verdict comment, on its line or in the comment just above (one comment covers a run of declarations up to a blank line): `single task: <who>`, `guarded by: <lock>`, `interrupt-shared: <protocol>`, or `accepted: <why>`. `tools/racescan.py --build build/<preset>` lists what is unmarked (`--why CONTEXT FUNC` shows how a context reaches a function), and `tests/runner.py` fails while anything is (`racescan.py --check` on rv32, rv64-smp, Tab5, RP2350 terminal and C6); a handler path that may block is cut off with `if (devirq_in_handler()) return;` (plan/phase63). Native shell commands do not hold the Lisp lock: a tool whose state is one set takes a `session_claim_t` (kernel/lock.h) so a second terminal is refused rather than sharing it.
+   * **Driver tasks and waits:** call a busy endpoint with `chan_call_wait()` (kernel/chan.h: a FIFO turn with a deadline, `CHAN_WAIT_MS`), never a hand-written retry loop; a facade touches the hardware itself only when `driver_task_alive()` is false -- a failed call with the task alive is an error, not a fallback. A timed poll reads the clock *before* the condition (`time_poll_until_us()`, kernel/time.h), or a task preempted past the deadline fails on a stale reading. `i2cstats` counts I2C failures by cause; `chanqtest` checks the queue.
+   * **Interrupt-shared state:** `irq_save()` keeps out the handler only on the calling hart. A word that a handler and a task (or tasks on two harts) both read-modify-write is guarded by a spinlock taken on both sides (`spin_lock_irqsave()` in the handler too), or on the RP2350 written through its atomic set/clear aliases (+0x2000/+0x3000). A handler holding such a lock wakes tasks only after releasing it (a spinlock is a leaf). Boards run one hart until `smpstart`; rv64-smp always runs two.
+   * **Cache maintenance (P4):** only through `esp32p4_dcache_*()` / `esp32p4_extmem_*()`, which serialise the ROM's cache sync operations (one register set for the chip); two unserialised ones silently lost SD transfers.
+   * **Shared system registers and lock order:** a read-modify-write of a word that holds other drivers' bits (the P4's HP_SYS_CLKRST/LP_CLKRST clock gates and resets) goes through `sysreg_update()` (kernel/sysreg.h); on the RP2350 use the +0x2000/+0x3000 aliases. ylocks are taken in one order -- the kernel learns it and reports an inversion; `lockcheck [pairs]` shows the order, any inversions and `console_lock` hold times (holds over 100 ms need a reason in a comment). On the P4 panel, frame-side state is under `g_frame_lock`, always taken after `console_lock` (`frame_begin()`).
    * **Non-Obvious Algorithms:** Mathematical derivations, pure fixed-point scaling rationale.
 2. **What NEVER to Include in Comments:**
    * **No Milestone or Phase References:** Never write `/* M3, plan/phase12... */` or `/* Phase 48 */`.

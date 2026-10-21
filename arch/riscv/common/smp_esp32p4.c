@@ -59,6 +59,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "arch/smp_esp32p4.h"
+#include "kernel/sysreg.h"
 #include "kernel/console.h"
 #include "kernel/time.h"
 
@@ -191,10 +192,10 @@ bool esp32p4_core1_launch(bool into_kernel) {
     /* 2. Clock, then reset -- IDF's order, and it checks each before writing
      * because a debugger may have gone first. 34.8 found neither touched. */
     if (!(P4_REG(P4_SOC_CLK_CTRL0) & CORE1_CPU_CLK_EN)) {
-        P4_REG(P4_SOC_CLK_CTRL0) |= CORE1_CPU_CLK_EN;
+        sysreg_set(P4_SOC_CLK_CTRL0, CORE1_CPU_CLK_EN);
     }
     if (P4_REG(P4_HP_RST_EN0) & RST_EN_CORE1_GLOBAL) {
-        P4_REG(P4_HP_RST_EN0) &= ~RST_EN_CORE1_GLOBAL;
+        sysreg_clear(P4_HP_RST_EN0, RST_EN_CORE1_GLOBAL);
     }
 
     /* 3. The boot address, last, because it is the handshake rather than a

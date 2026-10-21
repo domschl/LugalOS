@@ -37,9 +37,13 @@
 #define RAMDISK_MAX_BLOCKS 1024  /* 512 KB */
 #endif
 
+/* guarded by: vfs_mount_ramdisk(), which withdraws /ram0 from lookups first
+ * (mount_quiesce()). */
 static uint8_t *g_storage;      /* NULL until ramdisk_init() succeeds */
 static uint32_t g_pages;        /* what to hand back on release */
 
+/* guarded by: vfs_mount_ramdisk(), which withdraws /ram0 from lookups first
+ * (mount_quiesce()). */
 static block_dev_t ramdisk_device;
 
 static int ramdisk_read(block_dev_t *dev, void *buf, uint32_t lba, uint32_t count) {

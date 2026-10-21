@@ -23,6 +23,8 @@ typedef struct {
     char val[MACRO_VAL_LEN];
 } Macro;
 
+/* guarded by: g_lisp_lock: the compiler runs only from the `cc` primitive, inside an
+ * evaluation. */
 static Macro *macros;
 static int macro_cnt = 0;
 
@@ -31,6 +33,8 @@ static int macro_cnt = 0;
  * missing header, a 300-character line split mid-token, a program past the
  * 16 KB output silently cut off -- and the compile went ahead on text that
  * was not the program, or, worse, succeeded. */
+/* guarded by: g_lisp_lock: the compiler runs only from the `cc` primitive, inside an
+ * evaluation. */
 static bool preproc_failed;
 #define PP_FAIL(...) do { printk(__VA_ARGS__); preproc_failed = true; } while (0)
 
@@ -111,6 +115,8 @@ static bool is_ident_body(char c) {
 }
 
 #define PREPROC_BUF_SIZE 16384
+/* guarded by: g_lisp_lock: the compiler runs only from the `cc` primitive, inside an
+ * evaluation. */
 static char *preproc_buf;
 /* Headers being read, as a stack: a header is read in
  * above the ones that include it and popped when it is done. This used to be
@@ -119,12 +125,16 @@ static char *preproc_buf;
  * shared by everything open at once; a header that does not fit is an error
  * rather than a truncated read. */
 #define HDR_BUF_SIZE 4096
+/* guarded by: g_lisp_lock: the compiler runs only from the `cc` primitive, inside an
+ * evaluation. */
 static char *hdr_buf;
 static uint32_t hdr_used;
 /* The directory of the file at each include depth -- where a quoted
  * #include is looked for first. Depth 0 is the file `cc` was given. */
 #define MAX_INCLUDE_DEPTH 8
 #define INC_DIR_LEN 64
+/* guarded by: g_lisp_lock: the compiler runs only from the `cc` primitive, inside an
+ * evaluation. */
 static char (*inc_dir)[INC_DIR_LEN];
 static int preproc_out_idx = 0;
 

@@ -172,7 +172,8 @@ static int st7735_init_hardware(void) {
      * the U-mode task's own serve loop below to actually touch them --
      * must happen here, from M-mode, before the task exists. See
      * ACCESSCTRL_SPI0's own comment above. */
-    REG(ACCESSCTRL_GPIO_NSMASK0) |= (CS_MASK | DC_MASK | RST_MASK);
+    REG(ACCESSCTRL_GPIO_NSMASK0 + 0x2000u) =   /* atomic set alias: several drivers own bits here */
+        (CS_MASK | DC_MASK | RST_MASK);
     REG(ACCESSCTRL_SPI0) = ACCESSCTRL_WRITE_PASSWORD | REG(ACCESSCTRL_SPI0)
                            | ACCESSCTRL_SPI0_NSP | ACCESSCTRL_SPI0_NSU;
 
@@ -870,18 +871,15 @@ int st7735_task_start(void) {
     return pid;
 }
 
-static int st7735_call_with_retry(const uint8_t *req, uint32_t req_len) {
+/* With the task alive, it alone drives SPI0: a call that fails is a dropped
+ * draw, never a direct one beside the task's. */
+static int st7735_call(const uint8_t *req, uint32_t req_len) {
     uint8_t resp[ST7735_RESP_CAP];
-    for (int attempt = 0; attempt < 8; attempt++) {
-        int n = chan_call(g_st7735_ep, req, req_len, resp, sizeof(resp));
-        /* counted here, on the client side -- see
-         * drivers/tm1638_rp2350.c's tm1638_call_with_retry() comment,
-         * same reasoning: a U-mode server cannot touch g_st7735_calls,
-         * an ordinary kernel .bss global no domain grants it. */
-        if (n >= 0) { g_st7735_calls++; return n; }
-        sched_yield();
-    }
-    return -1;
+    int n = chan_call_wait(g_st7735_ep, req, req_len, resp, sizeof(resp), CHAN_WAIT_MS);
+    /* counted here, on the client side: a U-mode server cannot touch
+     * g_st7735_calls, an ordinary kernel .bss global no domain grants it. */
+    if (n >= 0) g_st7735_calls++;
+    return n;
 }
 
 /* Domain verification: does the real st7735 domain
@@ -962,7 +960,8 @@ void st7735_fill_screen(uint16_t color) {
         uint8_t req[3];
         req[0] = ST7735_OP_FILL_SCREEN;
         put_u16(&req[1], color);
-        if (st7735_call_with_retry(req, sizeof(req)) >= 0) return;
+        (void)st7735_call(req, sizeof(req));
+        return;
     }
     st7735_hw_fill_screen(color);
 }
@@ -974,7 +973,8 @@ void st7735_draw_pixel(int x, int y, uint16_t color) {
         put_i16(&req[1], x);
         put_i16(&req[3], y);
         put_u16(&req[5], color);
-        if (st7735_call_with_retry(req, sizeof(req)) >= 0) return;
+        (void)st7735_call(req, sizeof(req));
+        return;
     }
     st7735_hw_draw_pixel(x, y, color);
 }
@@ -988,23 +988,29 @@ void st7735_draw_rect(int x, int y, int w, int h, uint16_t color) {
         put_i16(&req[5], w);
         put_i16(&req[7], h);
         put_u16(&req[9], color);
-        if (st7735_call_with_retry(req, sizeof(req)) >= 0) return;
+        (void)st7735_call(req, sizeof(req));
+        return;
     }
     st7735_hw_draw_rect(x, y, w, h, color);
 }
 
 void st7735_draw_bitmap_mono(int x, int y, int w, int h, const uint16_t *bitmap, uint16_t fg_color, uint16_t bg_color) {
-    if (h > 0 && (uint32_t)h <= ST7735_BITMAP_MAX_ROWS && st7735_task_alive()) {
-        uint8_t req[13 + ST7735_BITMAP_MAX_ROWS * 2];
-        req[0] = ST7735_OP_DRAW_BITMAP;
-        put_i16(&req[1], x);
-        put_i16(&req[3], y);
-        put_i16(&req[5], w);
-        put_i16(&req[7], h);
-        put_u16(&req[9], fg_color);
-        put_u16(&req[11], bg_color);
-        for (int r = 0; r < h; r++) put_u16(&req[13 + r * 2], bitmap[r]);
-        if (st7735_call_with_retry(req, 13u + (uint32_t)h * 2u) >= 0) return;
+    if (h > 0 && st7735_task_alive()) {
+        /* Taller than one request: in bands of ST7735_BITMAP_MAX_ROWS rows. */
+        for (int r0 = 0; r0 < h; r0 += (int)ST7735_BITMAP_MAX_ROWS) {
+            int rows = h - r0 < (int)ST7735_BITMAP_MAX_ROWS ? h - r0 : (int)ST7735_BITMAP_MAX_ROWS;
+            uint8_t req[13 + ST7735_BITMAP_MAX_ROWS * 2];
+            req[0] = ST7735_OP_DRAW_BITMAP;
+            put_i16(&req[1], x);
+            put_i16(&req[3], y + r0);
+            put_i16(&req[5], w);
+            put_i16(&req[7], rows);
+            put_u16(&req[9], fg_color);
+            put_u16(&req[11], bg_color);
+            for (int r = 0; r < rows; r++) put_u16(&req[13 + r * 2], bitmap[r0 + r]);
+            if (st7735_call(req, 13u + (uint32_t)rows * 2u) < 0) return;
+        }
+        return;
     }
     st7735_hw_draw_bitmap_mono(x, y, w, h, bitmap, fg_color, bg_color);
 }
@@ -1018,14 +1024,18 @@ void st7735_draw_char(int x, int y, char c, uint16_t color, int size) {
         req[5] = (uint8_t)c;
         put_u16(&req[6], color);
         put_i16(&req[8], size);
-        if (st7735_call_with_retry(req, sizeof(req)) >= 0) return;
+        (void)st7735_call(req, sizeof(req));
+        return;
     }
     st7735_hw_draw_char(x, y, c, color, size);
 }
 
 void st7735_draw_string(int x, int y, const char *str, uint16_t color, int size) {
     size_t len = strlen(str);
-    if (len <= ST7735_STR_MAX && st7735_task_alive()) {
+    if (st7735_task_alive()) {
+        /* Past ST7735_STR_MAX characters a string is off the 128-pixel
+         * screen, which the drawing clips anyway. */
+        if (len > ST7735_STR_MAX) len = ST7735_STR_MAX;
         uint8_t req[9 + ST7735_STR_MAX];
         req[0] = ST7735_OP_DRAW_STRING;
         put_i16(&req[1], x);
@@ -1033,7 +1043,8 @@ void st7735_draw_string(int x, int y, const char *str, uint16_t color, int size)
         put_u16(&req[5], color);
         put_i16(&req[7], size);
         memcpy(&req[9], str, len);
-        if (st7735_call_with_retry(req, 9u + (uint32_t)len) >= 0) return;
+        (void)st7735_call(req, 9u + (uint32_t)len);
+        return;
     }
     st7735_hw_draw_string(x, y, str, color, size);
 }

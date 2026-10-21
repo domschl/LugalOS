@@ -59,6 +59,16 @@ void ylock_release(ylock_t *l) {
     l->depth--;
 }
 
+/* Spinlocks that do nothing, and one execution context: the harnesses are
+ * single-threaded. */
+__attribute__((weak)) uintptr_t spin_lock_irqsave_at(spinlock_t *l, const char *name, const char *site) {
+    (void)l; (void)name; (void)site; return 0;
+}
+__attribute__((weak)) void spin_unlock_irqrestore_at(spinlock_t *l, uintptr_t flags) { (void)l; (void)flags; }
+__attribute__((weak)) int sched_context_id(void) { return 0; }
+__attribute__((weak)) void net_lock(void) {}
+__attribute__((weak)) void net_unlock(void) {}
+
 /* Pages from the C heap, page-aligned and zeroed like palloc's, and sized
  * exactly -- so ASan sees a write one byte past the last page. */
 #define HOST_PAGE 4096u

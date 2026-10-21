@@ -27,6 +27,7 @@
  */
 
 extern char _kernel_end[];
+/* single task: the boot, before any reader runs; constant after. */
 static uintptr_t *kernel_page_table;
 static bool g_paging_on;
 

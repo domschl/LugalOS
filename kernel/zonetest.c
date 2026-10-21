@@ -33,10 +33,12 @@
 /* 6. A BULK_BSS object: placed in PSRAM on a board that has one, zero at
  * boot (psram_init() zeroes the section; the reset handler runs before the
  * chip answers). 64 bytes, and only on builds with a bulk zone. */
+/* accepted: a selftest's state; one run at a time. */
 static volatile uint32_t g_bulk_probe[16] BULK_BSS;
 static bool g_probe_seen;
 #endif
 
+/* accepted: a selftest's state; one run at a time. */
 static unsigned g_bad;
 
 static void check(int ok, const char *what) {

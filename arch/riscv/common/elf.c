@@ -140,7 +140,11 @@ typedef struct {
 #define USER_ARGV_MAX_BYTES 512
 #define USER_ARGV_MAX_COUNT USER_ARGV_LIMIT
 
+/* guarded by: g_elf_lock for taking, filling and reaping slots (two
+ * terminals may start programs at once); a running program's slot is its
+ * own until it is reaped. The header buffer in load_into_slot() too. */
 static user_proc_t g_procs[USER_PROC_MAX];
+static ylock_t     g_elf_lock;
 
 /* Releases one slot's pages and its domain. The caller must have established
  * that the task is dead: on the MMU build this frees the page table, and
@@ -633,7 +637,9 @@ static void user_program_body(void *arg) {
 
 /* Loads `path` into a fresh slot and starts it. Returns the slot, or NULL --
  * having released anything it had claimed. Does not wait. */
-static user_proc_t *load_into_slot(const char *path, int argc,
+static user_proc_t * load_into_slot(const char *path, int argc,
+                                   const char *const *argv);
+static user_proc_t * load_into_slot_locked(const char *path, int argc,
                                    const char *const *argv) {
     if (!path) return NULL;
 
@@ -661,6 +667,7 @@ static user_proc_t *load_into_slot(const char *path, int argc,
      * fully consumed before any task is created, so concurrent programs do not
      * make this shared buffer a hazard: loading is done from the caller's
      * thread of control, one at a time. */
+    /* guarded by: g_elf_lock (the load). */
     static uint8_t hdrbuf[1024];
     uint32_t want = fsize < sizeof(hdrbuf) ? fsize : (uint32_t)sizeof(hdrbuf);
     int got = vfs_pread(fd, hdrbuf, want, 0);
@@ -917,4 +924,13 @@ int elf_load_and_run_argv(const char *path, int argc, const char *const *argv) {
      * (C0). */
     cprintf("[ELF] '%s' returned %ld\n", path, status);
     return (int)status;
+}
+
+/* Under g_elf_lock: the load, not the run. */
+static user_proc_t *load_into_slot(const char *path, int argc,
+                                   const char *const *argv) {
+    ylock_acquire(&g_elf_lock);
+    user_proc_t * r = load_into_slot_locked(path, argc, argv);
+    ylock_release(&g_elf_lock);
+    return r;
 }

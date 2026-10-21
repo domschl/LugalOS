@@ -16,6 +16,7 @@
 #include "kernel/identity.h"
 #include <string.h>
 
+/* single task: the boot, before any reader runs; constant after. */
 static bool g_usb_cdc_connected = false;
 
 #if defined(CONFIG_BOARD_RP2350)
@@ -362,6 +363,9 @@ typedef union {
 _Static_assert(sizeof(usb_umode_fields_t) <= USB_STATE_REGION_SIZE,
                "usb_umode_fields_t no longer fits its padded PMP region -- see USB_EP4_RX_RING_SIZE's own comment");
 
+/* guarded by: one pump at a time -- the usbcdc task, or usb_cdc_task() while
+ * that task is not alive (every caller checks; in_task keeps two out) -- and
+ * g_usb_tx_lock for the transmit side the writers share. */
 static volatile usb_umode_state_t g_usb_region __attribute__((aligned(USB_STATE_REGION_SIZE)))
                                                 __attribute__((section(".ustacks16384")));
 #define g_usb (g_usb_region.fields)
@@ -616,9 +620,9 @@ void usb_cdc_task(void) {
         }
     }
 
+    /* guarded by: an atomic exchange, so two pollers cannot both get past */
     static volatile bool in_task = false;
-    if (in_task) return;
-    in_task = true;
+    if (__atomic_exchange_n(&in_task, true, __ATOMIC_ACQUIRE)) return;
 
     uint32_t intr = REG(USB_INTR);
     uint32_t sie  = REG(USB_SIE_STATUS);
@@ -639,7 +643,7 @@ void usb_cdc_task(void) {
     }
 
     // Check BUS_RESET (bit 12 in USB_INTR or bit 19 in USB_SIE_STATUS)
-    static bool bus_reset_handled = false;
+    static bool bus_reset_handled = false;   /* guarded by: in_task */
     if ((intr & USB_INTR_BUS_RESET) || (sie & USB_SIE_STATUS_BUS_RESET)) {
         REG(USB_SIE_STATUS) = USB_SIE_STATUS_BUS_RESET; // Clear bit 19 in SIE_STATUS
         if (!bus_reset_handled) {
@@ -1748,14 +1752,14 @@ USB_UATTR static void usb_cdc_umode_body(void) {
  * or does one of the grants accidentally cover more? A separate canary
  * (not reused from any other driver's), for the same reason the syscall
  * stubs above are hand-rolled per file. */
-static volatile uintptr_t g_usb_canary = 0xC0FFEE;
+static volatile uintptr_t g_usb_canary = 0xC0FFEE;   /* accepted: an isolation test's canary or handshake */
 
 USB_UATTR static void usb_intruder(void) {
     g_usb_canary = 0xDEAD;
     for (;;) { } /* only reached if the store was NOT stopped */
 }
 
-static volatile bool g_usb_intruder_entered;
+static volatile bool g_usb_intruder_entered;   /* accepted: an isolation test's canary or handshake */
 
 /* `arg` is the U-mode stack -- allocated by usb_cdc_isolation_test() below,
  * not here, so it can be freed once the task is confirmed DEAD. */
@@ -1843,6 +1847,7 @@ bool usb_cdc_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) {
  * alive by the time it runs) or made conditional on usb_cdc_task_alive()
  * (kernel/time.c's time_delay_us(), which also fires during early boot
  * before this task -- or any task -- exists). */
+/* single task: the boot, before any reader runs; constant after. */
 static int g_usb_cdc_task_pid = -1;
 
 bool usb_cdc_task_alive(void) {

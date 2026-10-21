@@ -16,7 +16,7 @@
 
 #define fence() __asm__ volatile("fence rw, rw" ::: "memory")
 
-static radio_ctx_t *g_ctx;
+static radio_ctx_t *g_ctx;   /* single task: set once by radio_netif_start() */
 
 /* IDF's esp_netif_receive path passes (buffer, len, eb); eb is the handle to give back. */
 static int rx_cb(void *buffer, uint16_t len, void *eb) {

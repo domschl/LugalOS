@@ -62,6 +62,15 @@ int vfs_mount_local(const char *name);
 
 #define VFS_MAX_HANDLES 8
 
+/* The handle table's use since boot: the most open at once, the opens that
+ * found it full and waited (up to 500 ms) for a close, and those that gave up. */
+typedef struct {
+    uint32_t peak, waits, none;
+} vfs_handle_stats_t;
+void vfs_handle_stats(vfs_handle_stats_t *out);
+/* References held on a mount (operations in progress, open handles). */
+uint32_t vfs_mount_users(const char *name);
+
 typedef struct {
     uint32_t size;
     uint8_t is_dir;
@@ -87,7 +96,10 @@ int vfs_mkdir(const char *path);
 int vfs_rmdir(const char *path);
 int vfs_cp(const char *src_path, const char *dst_path);
 int vfs_format(const char *path);
+/* /sd0 gets a card layout (fat32_mkfs()) labelled `label` (NULL: "LUGALOS"). */
+int vfs_format_label(const char *path, const char *label);
 void vfs_fat_recount(void);   /* `df -r`, 38.0 */
+void vfs_fsck(const char *path);   /* `fsck [/sd0|/ram0]`: read-only check, see fat32_check() */
 void vfs_ls(const char *path);
 
 /* --- Mount table ---

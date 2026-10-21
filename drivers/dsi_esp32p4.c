@@ -33,6 +33,7 @@
  * The floats IDF uses (lane rate, DPI clock ratios) are integers here, with
  * the same roundf() results: the kernel runs with the FPU off. */
 
+#include "kernel/sysreg.h"
 #include "kernel/orient.h"
 #include "lugalos_config.h"
 #include "drivers/dsi_esp32p4.h"   /* outside the guard: never an empty unit */
@@ -53,6 +54,8 @@
 #include "arch/trap.h"
 #include "kernel/console.h"
 #include "kernel/devirq.h"
+#include "kernel/irq.h"
+#include "kernel/lock.h"
 #include "kernel/palloc.h"
 #include "kernel/printk.h"
 #include "kernel/sched.h"
@@ -65,6 +68,7 @@
 #define REG(a) (*(volatile uint32_t *)(uintptr_t)(a))
 
 static inline void field_set(uintptr_t reg, unsigned s, uint32_t v_mask, uint32_t val) {
+    if (sysreg_is_shared(reg)) { sysreg_update(reg, v_mask << s, (val & v_mask) << s); return; }
     uint32_t x = REG(reg);
     x &= ~(v_mask << s);
     x |= (val & v_mask) << s;
@@ -154,6 +158,10 @@ static inline void field_set(uintptr_t reg, unsigned s, uint32_t v_mask, uint32_
 
 /* ---- state -------------------------------------------------------------- */
 
+/* guarded by: console_lock for the bring-up (dsi_lcd_init() runs its body
+ * once, from fb_start() or `lcd pattern`, both under it; the boot's first call
+ * comes before any other task draws). accepted: the backlight figures, set by
+ * the boot and by `lcd bl|backlight` from a shell, single stores. */
 static bool        g_up, g_tried;
 static const char *g_reason = "not initialised";
 static uint8_t     g_ldo_dref, g_ldo_mul;
@@ -332,6 +340,18 @@ static bool dsi_bus_init(void) {
 #endif
     FSET(HP_SYS_CLKRST_PERI_CLK_CTRL03_REG, HP_SYS_CLKRST_REG_MIPI_DSI_DPHY_PLL_REFCLK_EN, 1);
 
+    /* Host and PHY powered down first (mipi_dsi_hal_deinit()): a reset other
+     * than a power cycle leaves them as the last run left them. */
+    FSET(DSI_HOST_PWR_UP_REG, DSI_HOST_SHUTDOWNZ, 0);
+    REG(DSI_HOST_PHY_RSTZ_REG) = 0;
+    time_delay_us(100);
+    /* The PHY's test interface cleared before the PLL is programmed through
+     * it, as Linux's dw-mipi-dsi does (dw_mipi_dsi_dphy_init()); IDF does
+     * not. */
+    REG(DSI_HOST_PHY_TST_CTRL0_REG) = 1u << DSI_HOST_PHY_TESTCLR_S;
+    time_delay_us(10);
+    REG(DSI_HOST_PHY_TST_CTRL0_REG) = 0;
+
     /* mipi_dsi_hal_init() */
     FSET(DSI_HOST_PHY_IF_CFG_REG, DSI_HOST_N_LANES, LANES - 1u);
     FSET(DSI_HOST_PWR_UP_REG, DSI_HOST_SHUTDOWNZ, 1);
@@ -503,6 +523,12 @@ static void dpi_config(void) {
 }
 
 /* ---- 5. commands: mipi_dsi_hal_host_gen_write_dcs_command() -------------- */
+
+/* guarded by: itself -- one panel command (DCS) exchange at a time after boot:
+ * each is several writes to the host's command and payload FIFOs, and two
+ * terminals' `lcd cmd` / `lcd rd` / `lcd reinit` could interleave them. The
+ * boot's panel init runs before anything else can. */
+static ylock_t g_dcs_lock;
 
 static bool cmd_fifo_not_full(void)  { return !FGET(DSI_HOST_CMD_PKT_STATUS_REG, DSI_HOST_GEN_CMD_FULL); }
 static bool pld_fifo_not_full(void)  { return !FGET(DSI_HOST_CMD_PKT_STATUS_REG, DSI_HOST_GEN_PLD_W_FULL); }
@@ -677,9 +703,14 @@ static const uint8_t k_st7121_init[] = {
  * clock; ~250 ms once. */
 static void wait_ms(uint32_t ms) { time_delay_us((uint64_t)ms * 1000u); }
 
+#if defined(CONFIG_BOARD_TAB5)
+static void panel_wait_ready(void);
+#endif
+
 static void panel_reset(void) {
 #if defined(CONFIG_BOARD_TAB5)
     i2c_tab5_panel_reset();
+    panel_wait_ready();
 #else
     gpio_out(RST_GPIO, false);
     wait_ms(10);
@@ -687,6 +718,21 @@ static void panel_reset(void) {
     wait_ms(120);
 #endif
 }
+
+#if defined(CONFIG_BOARD_TAB5)
+static void panel_wait_ready(void) {
+    /* The ST7121 is display and touch in one chip, and after a reset it takes
+     * a while to listen -- longer when it was reset while running (M5GFX
+     * measured ~50 ms). DCS writes in LP mode are not acknowledged, so an
+     * init table sent too early is lost without an error and the panel stays
+     * black with everything reading normal. Its touch side answering its
+     * firmware version on I2C is the sign it is up (M5GFX waits the same). */
+    uint64_t t0 = time_get_us();
+    int fw = i2c_tab5_touch_fw_version();
+    printk("[LCD] ST7121 answered %lu ms after its reset (touch firmware %d)\n",
+           (unsigned long)((time_get_us() - t0) / 1000u), fw);
+}
+#endif
 
 static bool panel_init(void) {
     bool ok = true;
@@ -745,13 +791,12 @@ static bool panel_init(void) {
 #define BL_XTAL_HZ             40000000u
 
 static void bl_pwm_init(void) {
-    REG(HP_SYS_CLKRST_SOC_CLK_CTRL3_REG) |= 1u << HP_SYS_CLKRST_REG_LEDC_APB_CLK_EN_S;
-    REG(HP_SYS_CLKRST_HP_RST_EN1_REG) |= 1u << HP_SYS_CLKRST_REG_RST_EN_LEDC_S;
-    REG(HP_SYS_CLKRST_HP_RST_EN1_REG) &= ~(1u << HP_SYS_CLKRST_REG_RST_EN_LEDC_S);
-    uint32_t c = REG(HP_SYS_CLKRST_PERI_CLK_CTRL22_REG);
-    c &= ~(HP_SYS_CLKRST_REG_LEDC_CLK_SRC_SEL_V << HP_SYS_CLKRST_REG_LEDC_CLK_SRC_SEL_S);   /* 0: XTAL */
-    c |= 1u << HP_SYS_CLKRST_REG_LEDC_CLK_EN_S;
-    REG(HP_SYS_CLKRST_PERI_CLK_CTRL22_REG) = c;
+    sysreg_set(HP_SYS_CLKRST_SOC_CLK_CTRL3_REG, 1u << HP_SYS_CLKRST_REG_LEDC_APB_CLK_EN_S);
+    sysreg_set(HP_SYS_CLKRST_HP_RST_EN1_REG, 1u << HP_SYS_CLKRST_REG_RST_EN_LEDC_S);
+    sysreg_clear(HP_SYS_CLKRST_HP_RST_EN1_REG, 1u << HP_SYS_CLKRST_REG_RST_EN_LEDC_S);
+    sysreg_update(HP_SYS_CLKRST_PERI_CLK_CTRL22_REG,
+                  HP_SYS_CLKRST_REG_LEDC_CLK_SRC_SEL_V << HP_SYS_CLKRST_REG_LEDC_CLK_SRC_SEL_S,   /* 0: XTAL */
+                  1u << HP_SYS_CLKRST_REG_LEDC_CLK_EN_S);
     REG(LEDC_CONF_REG) |= 1u << LEDC_CLK_EN_S;
 
     /* 40 MHz / (5 kHz * 1024) = 7.8125: the divider has 8 fraction bits. */
@@ -767,8 +812,21 @@ static void bl_pwm_init(void) {
     g_bl_pwm = true;
 }
 
+/* guarded by: itself. The backlight is set from the console's idle blanking
+ * and its wake on input (the touch, keyboard and input tasks) and from
+ * `lcd backlight` / `lcd bl`: each a sequence of LEDC and pad writes, and the
+ * first one the LEDC's setup. */
+static ylock_t g_bl_lock;
+
 /* 0..100; 0 is dark. Routes the pin to the LEDC on first use. */
+static void bl_set_locked(unsigned percent);
 static void bl_set(unsigned percent) {
+    ylock_acquire(&g_bl_lock);
+    bl_set_locked(percent);
+    ylock_release(&g_bl_lock);
+}
+
+static void bl_set_locked(unsigned percent) {
     if (percent > 100u) percent = 100u;
     if (!g_bl_pwm) bl_pwm_init();
     uint32_t duty = ((1u << BL_DUTY_RES) * percent) / 100u;
@@ -809,21 +867,50 @@ typedef enum { PAT_NONE, PAT_BARS, PAT_HBARS, PAT_BER } pattern_t;
 static void scan_stop(void);
 static void scan_start(void);
 
-/* Phase 55: double-buffering in PSRAM to eliminate tearing and color fringing. */
+/* Double-buffering in PSRAM, against tearing and colour fringing.
+ * interrupt-shared: the drawing side (under console_lock) fills the back
+ * buffer, flushes it and sets g_flip_pending; gdma_isr() at the frame end
+ * swaps g_front_idx, points the item at the new front and clears the flag.
+ * The terminal never draws into the back buffer with the flag set:
+ * term_convert() takes the flip back first and arms it again when done. The
+ * `lcd test|bench` drawers hold the terminal and wait for their own flip; one
+ * pending from the terminal can show a test frame part-drawn. g_front_idx and
+ * g_double_buffered change elsewhere only under console_lock, with the
+ * scan-out stopped (fb_start) or under g_scan_lock around the index and the
+ * item (`lcd db off`). Tasks run the handler's work only through gdma_poll().
+ * Taking the flip back is under g_scan_lock (see gdma_isr()); arming it is one
+ * store, which the next frame end takes or the one after. */
 static uint8_t          *g_fb_pool[2];
 static volatile uint8_t  g_front_idx;
 static volatile bool     g_flip_pending;
 static volatile uint32_t g_flips;
 static bool              g_double_buffered = true;
 
+/* guarded by: console_lock, as every conversion and frame switch. */
 #define DIRTY_WORDS ((DSI_LCD_V_RES + 63u) / 64u)
 static uint64_t          g_dirty[2][DIRTY_WORDS];
 static uint64_t          g_dirty_trows[2];
 static uint16_t          g_dirty_x0[2];
 static uint16_t          g_dirty_x1[2];
-#define MAX_TERM_CELLS   2048u
-static uint16_t          g_t_cell_drawn[2][MAX_TERM_CELLS];
-static uint32_t          s_reader_drawn_seq[2][4];
+/* What each back buffer last drew into each visible terminal's cells (the
+ * anti-aliased pass; a cell whose value matches is not drawn again), per
+ * window slot, with the geometry it was drawn at: a slot whose window moved,
+ * resized, scrolled sideways or changed terminal is dropped and redrawn whole.
+ * The rows pass leaves the text areas to this pass entirely, so the cache must
+ * be exact. Sized for one window filling the Tab5's screen (160 x 45). In PSRAM:
+ * low SRAM is full. guarded by: g_frame_lock. */
+#define TERM_CELL_SLOTS  4u
+#define MAX_TERM_CELLS   7200u
+typedef struct { int16_t x0, y0; uint16_t cols, rows, col_offset; uint8_t vterm_id; } cell_key_t;
+#if defined(CONFIG_FONT_CELL_H) && (CONFIG_FONT_CELL_H == 32)
+/* guarded by: g_frame_lock (the cache above) */
+static uint16_t          g_t_cell_drawn[2][TERM_CELL_SLOTS][MAX_TERM_CELLS] BULK_BSS;
+static cell_key_t        g_t_cell_key[2][TERM_CELL_SLOTS];
+#define cells_forget() memset(g_t_cell_drawn, 0xff, sizeof g_t_cell_drawn)
+#else
+#define cells_forget() ((void)0)
+#endif
+static uint32_t          s_reader_drawn_seq[2][4];   /* guarded by: g_frame_lock */
 
 static inline uint8_t *fb_front(void) {
     return g_fb_pool[g_front_idx];
@@ -899,7 +986,12 @@ static void set_pattern(pattern_t p) {
 
 /* CTL0 (ctrl_lo) and CTL1 (ctrl_hi) of the item, from IDF's dpi_panel_init()
  * transfer config: src memory port 1, increment, 64-bit, burst 512; dst DSI
- * port 0, fixed, 64-bit, burst 256; AXI burst length 16 both ways. */
+ * port 0, fixed, 64-bit, burst 256; AXI burst length 16 both ways.
+ *
+ * Scan-out shares PSRAM with the CPU (`psram bench`: 80 MB/s memset with no
+ * panel, 43 under the Tab5's 107 MB/s of RGB565 scan-out). A 32-beat read
+ * burst gave the CPU 35% more, reported no DMA error or underrun and read the
+ * frame back exact -- and left the Tab5's panel dark. 16, as IDF. */
 #define LLI_CTL0  ((1u << 0) /* SMS = memory */ | (0u << 2) /* DMS = DSI */ | \
                    (0u << 4) /* SINC inc */ | (1u << 6) /* DINC fixed */ | \
                    (3u << 8) /* SRC 64-bit */ | (3u << 11) /* DST 64-bit */ | \
@@ -921,8 +1013,12 @@ static gdma_lli_t g_lli_mem __attribute__((aligned(64)));
 #define LLI_NC ((volatile gdma_lli_t *)((uintptr_t)&g_lli_mem + SRAM_NONCACHE_OFFSET))
 
 typedef enum { FB_NONE = 0, FB_GRAY8, FB_RGB565 } fb_fmt_t;
+/* guarded by: console_lock (fb_start()'s callers hold it, or are the boot). */
 static fb_fmt_t          g_fb_fmt;
 static uint32_t          g_fb_bytes, g_fb_pages, g_fb_bpp;
+/* interrupt-shared: the counters are written only by the frame end
+ * (gdma_isr() or gdma_poll(), under g_scan_lock); g_stop_at_frame_end is set and cleared by
+ * scan_stop() around its wait for the frame end. */
 static volatile uint32_t g_frames, g_dma_errs, g_dma_last_err;
 static volatile bool     g_stop_at_frame_end;   /* ISR: finish this frame, do not re-arm */
 static bool              g_gdma_ready;
@@ -949,8 +1045,17 @@ static void gdma_restart(void) {
     REG(DMAC_CHEN0_REG) = 0x101u << GDMA_CH;
 }
 
-static void gdma_isr(void *ctx) {
-    (void)ctx;
+/* interrupt-shared: g_scan_lock makes a frame end and a task's change to the
+ * flip one step each: gdma_isr() holds it for the whole frame end, and every
+ * task that tests and takes g_flip_pending, or moves g_front_idx with the
+ * item, holds it too. Masking interrupts alone excluded the handler only on
+ * the task's own hart; with a second hart running tasks (smpstart), the
+ * terminal could take a flip back while the handler, past its test, swapped
+ * the buffers -- and then draw into the new front. */
+static spinlock_t g_scan_lock;
+
+/* The frame end. Under g_scan_lock. */
+static void gdma_frame_end_locked(void) {
     uint32_t st = REG(DMAC_CH1_INTSTATUS0_REG);
     REG(DMAC_CH1_INTCLEAR0_REG) = st;
     if (st & GDMA_EV_ERRORS) { g_dma_errs++; g_dma_last_err = st; }
@@ -967,6 +1072,29 @@ static void gdma_isr(void *ctx) {
             gdma_restart();
         }
     }
+}
+
+static void gdma_isr(void *ctx) {
+    (void)ctx;
+    uintptr_t f = spin_lock_irqsave(&g_scan_lock);
+    gdma_frame_end_locked();
+    spin_unlock_irqrestore(&g_scan_lock, f);
+}
+
+/* The handler's work from a task that waits on the frame end, under the same
+ * lock, so gdma_isr() cannot run between this status read and its clear and
+ * finish the same frame twice (a second restart into a running transfer). */
+static void gdma_poll(void) {
+    uintptr_t f = spin_lock_irqsave(&g_scan_lock);
+    if (REG(DMAC_CH1_INTSTATUS0_REG) & (GDMA_EV_DMA_TFR_DONE | GDMA_EV_ERRORS)) gdma_frame_end_locked();
+    spin_unlock_irqrestore(&g_scan_lock, f);
+}
+
+/* Waits up to `us` for the frame end that takes a pending flip. */
+static bool gdma_wait_flip(uint32_t us) {
+    uint64_t t0 = time_get_us();
+    while (g_flip_pending && time_get_us() - t0 < us) gdma_poll();
+    return !g_flip_pending;
 }
 
 /* esp_lcd's dw_gdma_new_channel() for the DPI panel, once. */
@@ -1037,21 +1165,14 @@ uint8_t *dsi_lcd_fb(void) { return fb_back(); }
 uint8_t *dsi_lcd_fb_front(void) { return fb_front(); }
 uint8_t *dsi_lcd_fb_back(void) { return fb_back(); }
 
-static bool g_scanning;
+static bool g_scanning;   /* guarded by: console_lock (scan_start/scan_stop's callers) */
 
-/* Phase 55: Flip front/back buffers at hardware VSYNC. If wait_vsync is true,
+/* Flip front/back buffers at hardware VSYNC. If wait_vsync is true,
  * blocks until the ISR switches the scanout address during vertical blanking. */
 void dsi_lcd_flip(bool wait_vsync) {
     if (!g_double_buffered || !g_fb_pool[1] || !g_scanning) return;
     g_flip_pending = true;
-    if (wait_vsync) {
-        uint64_t t0 = time_get_us();
-        while (g_flip_pending && time_get_us() - t0 < 50000u) {
-            if (REG(DMAC_CH1_INTSTATUS0_REG) & (GDMA_EV_DMA_TFR_DONE | GDMA_EV_ERRORS)) {
-                gdma_isr(NULL);
-            }
-        }
-    }
+    if (wait_vsync) (void)gdma_wait_flip(50000u);
 }
 
 bool dsi_lcd_is_double_buffered(void) {
@@ -1152,7 +1273,7 @@ static bool fb_start(fb_fmt_t fmt) {
     g_dirty_trows[1] = ~0ull;
     g_dirty_x0[0] = 0; g_dirty_x1[0] = 2047u;
     g_dirty_x0[1] = 0; g_dirty_x1[1] = 2047u;
-    memset(g_t_cell_drawn, 0xff, sizeof g_t_cell_drawn);
+    cells_forget();
     memset(s_reader_drawn_seq, 0xff, sizeof s_reader_drawn_seq);
 
     g_fb_bpp = bpp; g_fb_bytes = bytes; g_fb_pages = pages; g_fb_fmt = fmt;
@@ -1216,6 +1337,8 @@ static uint8_t pat_grid(unsigned x, unsigned y) {
 }
 
 typedef uint8_t (*pat_fn)(unsigned x, unsigned y);
+/* accepted: a diagnostic command's state; two terminals running it at once mix their
+ * output. */
 static pat_fn g_last_pat;
 
 static void draw(pat_fn f) {
@@ -1265,6 +1388,9 @@ static void draw_text_page(void) {
  * are any two RGB565 colours, as `lcd colours` on the RP2350: a gray pair
  * runs in GRAY8, a coloured one switches the frame to RGB565 (47.5 §6.6). */
 
+/* g_lcd_rot and the terminal state below -- guarded by: console_lock, which
+ * every writer of the 1-bpp frame, every conversion and the rotation hold
+ * (dsi_lcd_term_start() runs at boot, before any of them). */
 #if defined(CONFIG_BOARD_TAB5)
 #define T_BYTES    (160u * 720u)
 static int g_lcd_rot = 270; /* Landscape by default */
@@ -1274,12 +1400,26 @@ static int g_lcd_rot = 270; /* Landscape by default */
 static int g_lcd_rot = 0;   /* Native scanout (portrait or LCD-7B landscape) */
 #endif
 
+/* Bit (8r + c) of x moves to bit (8c + r): row bytes in, column bytes out
+ * (Hacker's Delight, transpose8). */
+static inline uint64_t transpose8x8(uint64_t x) {
+    uint64_t t;
+    t = (x ^ (x >> 7))  & 0x00AA00AA00AA00AAull; x = x ^ t ^ (t << 7);
+    t = (x ^ (x >> 14)) & 0x0000CCCC0000CCCCull; x = x ^ t ^ (t << 14);
+    t = (x ^ (x >> 28)) & 0x00000000F0F0F0F0ull; x = x ^ t ^ (t << 28);
+    return x;
+}
+
+/* The rotated frame's 720 logical rows, in 8-row bands. */
+#define ROT_MAX_BANDS 90u
+
 static inline uint8_t rev8(uint8_t v) {
     v = (uint8_t)(((v >> 1) & 0x55u) | ((v & 0x55u) << 1));
     v = (uint8_t)(((v >> 2) & 0x33u) | ((v & 0x33u) << 2));
     return (uint8_t)((v >> 4) | (v << 4));
 }
 
+/* guarded by: console_lock, as g_lcd_rot above. */
 static lcdterm_backend_t g_tbe;
 static uint8_t  *g_t1, *g_t1_shadow;            /* 1-bpp frame, its shadow: PSRAM */
 static bool      g_t_force;                      /* convert every row next time */
@@ -1326,7 +1466,9 @@ static inline bool row_same(const uint8_t *a, const uint8_t *b, unsigned stride)
  * 60 frames a second, so converting a scroll more often than that is work
  * nobody sees -- and fast output scrolls far more often (the owner's "not
  * very fast", 2026-10-11). Before the scheduler, at boot, flushes convert
- * at once. */
+ * at once.
+ * guarded by: console_lock; the flush task reads it without, as a hint, and
+ * clears it and converts under the lock. */
 static volatile bool g_t_due;
 /* 47.7: a test owns the frame (`lcd test`, `fb`, `wbtest`, `bench`): the
  * terminal keeps drawing into its 1-bpp frame but converts nothing until
@@ -1337,6 +1479,7 @@ static bool          g_t_paced;
 static uint32_t      g_t_paced_passes;
 
 static void term_convert(unsigned y0, unsigned y1);
+static void term_hold(void);
 
 static void term_flush(unsigned y0, unsigned y1) {
     if (g_t_paced) { g_t_due = true; return; }
@@ -1355,14 +1498,83 @@ static inline void span_rows(int *lo, int *hi, int y0, int y1) {
     if (y1 > *hi) *hi = y1;
 }
 
-static void term_convert(unsigned y0, unsigned y1) {
+/* The frame side of the terminal: g_t1_shadow, the dirty marks, the colour
+ * tables, the frame buffers, their format and the scan-out index, the
+ * rotation and the terminal geometry, the snapshot below, and the reader and
+ * canvas backings while they are drawn (their owners free them under it).
+ * guarded by: itself, always taken after console_lock (frame_begin()): the
+ * conversion of a frame -- 100-250 ms for a rotated full redraw on the Tab5
+ * -- runs under this lock alone, so the terminals' writers, who need only
+ * console_lock, are not held up by it (`lockcheck`). */
+static ylock_t g_frame_lock;
+
+#define frame_begin() frame_begin_at(__func__)
+static void frame_begin_at(const char *site) {
+    console_lock_at(site);
+    ylock_acquire(&g_frame_lock);
+}
+static void frame_end(void) {
+    ylock_release(&g_frame_lock);
+    console_unlock();
+}
+/* For console_frame_lock(): the frame lock alone, its callers hold console_lock. */
+static void frame_lock_take(void) { ylock_acquire(&g_frame_lock); }
+static void frame_lock_give(void) { ylock_release(&g_frame_lock); }
+
+/* What the drawing reads that its owners change under console_lock: taken by
+ * term_snapshot() with both locks held, read by term_draw() with only
+ * g_frame_lock. The terminal cells are copied; reader and canvas pixels are
+ * read in place (a window drawn into meanwhile is redrawn next pass: its
+ * sequence number has moved), their buffers kept alive by g_frame_lock.
+ * guarded by: g_frame_lock. */
+#define TERM_SNAP_CELLS 8192u   /* every visible window's cells: at most one screen's (160 x 45) */
+typedef struct {
+    int nr;
+    int rx0[4], ry0[4], rx1[4], ry1[4];
+    uint32_t rseq[4], rstride[4];
+    uint8_t *rbuf[4];
+    int rw[4], rh[4];
+    int nc;
+    int cx0[4], cy0[4], cx1[4], cy1[4];
+    uint32_t cstride[4];
+    const uint16_t *cbuf[4];
+    int cw[4], ch[4];
+    int nt;
+    lcdterm_visible_term_t terms[4];
+    bool force, rearm;
+    uint64_t t0;
+} term_snap_t;
+static term_snap_t g_snap;   /* guarded by: g_frame_lock */
+#if defined(CONFIG_FONT_CELL_H) && (CONFIG_FONT_CELL_H == 32)
+static uint16_t    g_snap_cells[TERM_SNAP_CELLS] BULK_BSS;   /* guarded by: g_frame_lock; PSRAM: low SRAM is full */
+#endif
+
+typedef enum {
+    TERM_NONE,       /* nothing to draw (no frame, or a test holds it) */
+    TERM_UNLOCKED,   /* term_draw() may run without console_lock */
+    TERM_LOCKED,     /* the cells did not fit the snapshot: draw before console_unlock() */
+} term_go_t;
+
+/* Under console_lock and g_frame_lock: the rows into the shadow, the dirty
+ * marks, and the snapshot term_draw() reads. */
+static term_go_t term_snapshot(unsigned y0, unsigned y1) {
     /* The frame once: every switch of it (fb_start(), from `lcd colours` or
-     * `lcd fb`) holds console_lock, as this does -- the lcdflush task once
+     * `lcd fb`) holds g_frame_lock, as this does -- the lcdflush task once
      * converted into a frame that `lcd colours` had just set to NULL (a
      * store to 0xad000, row 346 of an RGB565 frame; 47.7's HIL run). */
-    uint8_t *fb = fb_back();
-    fb_fmt_t fmt = g_fb_fmt;
-    if (!fb || !g_t1 || fmt == FB_NONE || g_t_hold) return;
+    if (!fb_back() || !g_t1 || g_fb_fmt == FB_NONE || g_t_hold) return TERM_NONE;
+    /* While a flip is pending the back buffer is the next front: drawing into
+     * it would put a half-drawn frame on the glass at the frame end. So the
+     * flip is taken back instead of waited for (under g_scan_lock, so a frame
+     * end either swapped before it or does not swap), this pass draws on top
+     * of the same back buffer, and the flip is armed again below. */
+    bool rearm = false;
+    if (g_double_buffered && g_flip_pending) {
+        uintptr_t f = spin_lock_irqsave(&g_scan_lock);
+        rearm = g_flip_pending;
+        g_flip_pending = false;
+        spin_unlock_irqrestore(&g_scan_lock, f);
+    }
     if (y1 > g_tbe.h) y1 = g_tbe.h;
     uint64_t t0 = time_get_us();
 
@@ -1377,7 +1589,7 @@ static void term_convert(unsigned y0, unsigned y1) {
         g_dirty_trows[1] = ~0ull;
         g_dirty_x0[0] = 0; g_dirty_x1[0] = (uint16_t)(g_tbe.w - 1);
         g_dirty_x0[1] = 0; g_dirty_x1[1] = (uint16_t)(g_tbe.w - 1);
-        memset(g_t_cell_drawn, 0xff, sizeof g_t_cell_drawn);
+        cells_forget();
         memset(s_reader_drawn_seq, 0xff, sizeof s_reader_drawn_seq);
         memcpy(g_t1_shadow, g_t1, total_bytes);
         g_t_force = false;
@@ -1425,6 +1637,80 @@ static void term_convert(unsigned y0, unsigned y1) {
         }
     }
 
+    term_snap_t *sn = &g_snap;
+    term_go_t go = TERM_UNLOCKED;
+    sn->force = g_t_force;
+    sn->rearm = rearm;
+    sn->t0 = t0;
+
+    /* An RGB565 canvas on a GRAY8 frame switches the frame first: fb_start()
+     * marks every row and cell dirty, so the drawing repaints it whole. */
+    uint8_t cids[4];
+    int ccount = lcdterm_get_visible_canvases565(cids, sn->cx0, sn->cy0, sn->cx1, sn->cy1, 4);
+    if (ccount > 0 && g_fb_fmt != FB_RGB565) {
+        if (!g_lut565) g_lut565 = (uint16_t (*)[8])palloc_pages_bulk(1);
+        if (g_lut565 && fb_start(FB_RGB565)) lut_build();
+    }
+    sn->nc = 0;
+    for (int i = 0; i < ccount; i++) {
+        uint32_t st = 0;
+        int w = 0, h = 0;
+        const uint16_t *buf = lcdterm_get_canvas565_backing(cids[i], &st, &w, &h);
+        if (!buf) continue;
+        int k = sn->nc++;
+        sn->cx0[k] = sn->cx0[i]; sn->cy0[k] = sn->cy0[i];
+        sn->cx1[k] = sn->cx1[i]; sn->cy1[k] = sn->cy1[i];
+        sn->cbuf[k] = buf; sn->cstride[k] = st; sn->cw[k] = w; sn->ch[k] = h;
+    }
+
+    /* Readers by their place in the visible list, as s_reader_drawn_seq is. */
+    uint8_t rids[4];
+    sn->nr = lcdterm_get_visible_readers(rids, sn->rx0, sn->ry0, sn->rx1, sn->ry1, 4);
+    for (int i = 0; i < sn->nr; i++) {
+        sn->rseq[i] = reader_get_seq(rids[i]);
+        sn->rstride[i] = 0; sn->rw[i] = 0; sn->rh[i] = 0;
+        sn->rbuf[i] = reader_get_aa_backing(rids[i], &sn->rstride[i], &sn->rw[i], &sn->rh[i]);
+    }
+
+    sn->nt = 0;
+#if defined(CONFIG_FONT_CELL_H) && (CONFIG_FONT_CELL_H == 32)
+    if (g_fb_fmt == FB_RGB565) {
+        int tc = lcdterm_get_visible_terms(sn->terms, 4);
+        uint32_t used = 0;
+        for (int t = 0; t < tc; t++) {
+            lcdterm_visible_term_t *vt = &sn->terms[t];
+            uint32_t need = (uint32_t)vt->rows * vt->cols;
+            if (used + need > TERM_SNAP_CELLS) { go = TERM_LOCKED; break; }
+            for (uint16_t r = 0; r < vt->rows; r++)
+                memcpy(&g_snap_cells[used + (uint32_t)r * vt->cols],
+                       vt->shadow + (uint32_t)r * vt->shadow_cols + vt->col_offset,
+                       (size_t)vt->cols * sizeof(uint16_t));
+            vt->shadow = &g_snap_cells[used];
+            vt->shadow_cols = vt->cols;
+            vt->col_offset = 0;
+            used += need;
+        }
+        if (go == TERM_LOCKED) tc = lcdterm_get_visible_terms(sn->terms, 4);   /* live: drawn under console_lock */
+        sn->nt = tc;
+    }
+#endif
+    return go;
+}
+
+/* Under g_frame_lock (and console_lock only for TERM_LOCKED): the dirty rows,
+ * readers, canvases and cells into the back buffer, then its write-back and
+ * the flip. Reads the shadow, the frame side and g_snap, nothing a terminal's
+ * writer changes. Prints nothing: before klogd a printk() drains inline and
+ * takes console_lock, the wrong way round under g_frame_lock (`lockcheck`
+ * reported exactly that for a debugging print here). */
+static void term_draw(void) {
+    const term_snap_t *sn = &g_snap;
+    uint8_t *fb = fb_back();
+    fb_fmt_t fmt = g_fb_fmt;
+    unsigned stride = g_tbe.stride;
+    bool rearm = sn->rearm;
+    uint64_t t0 = sn->t0;
+
     /* 2. Convert dirty rows for the back buffer */
     unsigned back_idx = g_double_buffered ? (1u - g_front_idx) : 0u;
     int lo = -1, hi = -1;
@@ -1443,6 +1729,9 @@ static void term_convert(unsigned y0, unsigned y1) {
         g_dirty_x0[back_idx] = 0xffff;
         g_dirty_x1[back_idx] = 0;
 
+        /* The dirty 8-row bands, ascending. */
+        uint16_t bands[ROT_MAX_BANDS];
+        unsigned nb = 0;
         for (unsigned w = 0; w < DIRTY_WORDS; w++) {
             uint64_t bits = g_dirty[back_idx][w];
             if (!bits) continue;
@@ -1451,46 +1740,74 @@ static void term_convert(unsigned y0, unsigned y1) {
                 if (!(bits & (1ull << bit))) continue;
                 unsigned y = w * 64u + bit;
                 if (y >= g_tbe.h) break;
-                unsigned y0_band = (y / 8u) * 8u;
-                const uint8_t *r0 = g_t1_shadow + (y0_band + 0u) * stride;
-                const uint8_t *r1 = g_t1_shadow + (y0_band + 1u) * stride;
-                const uint8_t *r2 = g_t1_shadow + (y0_band + 2u) * stride;
-                const uint8_t *r3 = g_t1_shadow + (y0_band + 3u) * stride;
-                const uint8_t *r4 = g_t1_shadow + (y0_band + 4u) * stride;
-                const uint8_t *r5 = g_t1_shadow + (y0_band + 5u) * stride;
-                const uint8_t *r6 = g_t1_shadow + (y0_band + 6u) * stride;
-                const uint8_t *r7 = g_t1_shadow + (y0_band + 7u) * stride;
+                if (nb < ROT_MAX_BANDS) bands[nb++] = (uint16_t)(y / 8u);
+                bit += 7u - (y % 8u);          /* the rest of this band */
+            }
+        }
 
-                for (unsigned bx = bx_start; bx < bx_end; bx++) {
-                    uint8_t b0 = r0[bx], b1 = r1[bx], b2 = r2[bx], b3 = r3[bx];
-                    uint8_t b4 = r4[bx], b5 = r5[bx], b6 = r6[bx], b7 = r7[bx];
-
-                    for (unsigned b = 0; b < 8u; b++) {
-                        uint8_t c = ((b0 >> b) & 1u) |
-                                   (((b1 >> b) & 1u) << 1) |
-                                   (((b2 >> b) & 1u) << 2) |
-                                   (((b3 >> b) & 1u) << 3) |
-                                   (((b4 >> b) & 1u) << 4) |
-                                   (((b5 >> b) & 1u) << 5) |
-                                   (((b6 >> b) & 1u) << 6) |
-                                   (((b7 >> b) & 1u) << 7);
-                        if (g_lcd_rot == 270) {
-                            unsigned py = 1279u - (bx * 8u + b);
-                            uint16_t *dst = (uint16_t *)fb + (size_t)py * 720u + y0_band;
-                            memcpy(dst, g_lut565[c], 16u);
-                        } else {
-                            unsigned py = bx * 8u + b;
-                            uint16_t *dst = (uint16_t *)fb + (size_t)py * 720u + (712u - y0_band);
-                            memcpy(dst, g_lut565[rev8(c)], 16u);
-                        }
+        /* A band is a column of the rotated frame: 16 bytes in each of its
+         * 1280 rows, 1440 bytes apart, in PSRAM behind the cache. Written band
+         * by band, every one of those writes filled a cache line of its own
+         * (a full redraw: 90 x 1280 line fills, 55-110 ms). So the frame is
+         * walked row by row instead: each row gets every dirty band's 16
+         * bytes, in ascending address order, and a line is filled once per
+         * pass. The 8x8 bit transpose that turns eight 1-bpp row bytes into
+         * the frame's eight columns is the 64-bit mask-and-shift one. */
+        /* With the anti-aliased pass drawing the text, the units inside a
+         * visible text area are left to it: drawn here, they were overwritten
+         * there (or, where its cache said a cell was unchanged, left showing
+         * the 1-bpp glyph). Text areas lie on the 8x8 grid (16-pixel columns,
+         * rows of 32 from SCREEN_TEXT_Y = 40), so a unit is inside or out. */
+        uint8_t skip_lo[ROT_MAX_BANDS][TERM_CELL_SLOTS], skip_hi[ROT_MAX_BANDS][TERM_CELL_SLOTS];
+        uint8_t skip_n[ROT_MAX_BANDS];
+        for (unsigned k = 0; k < nb; k++) {
+            skip_n[k] = 0;
+            for (int t = 0; t < sn->nt && t < (int)TERM_CELL_SLOTS; t++) {
+                const lcdterm_visible_term_t *vt = &sn->terms[t];
+                int by = (int)bands[k] * 8;
+                if (by < vt->y0 || by + 8 > vt->y0 + (int)vt->rows * 32) continue;
+                int lo_b = vt->x0 / 8, hi_b = (vt->x0 + (int)vt->cols * 16) / 8;
+                if (lo_b < 0) lo_b = 0;
+                if (hi_b > (int)stride) hi_b = (int)stride;
+                if (lo_b >= hi_b) continue;
+                skip_lo[k][skip_n[k]] = (uint8_t)lo_b;
+                skip_hi[k][skip_n[k]] = (uint8_t)hi_b;
+                skip_n[k]++;
+            }
+        }
+        if (nb) {
+            uint64_t col[ROT_MAX_BANDS];
+            uint8_t draw[ROT_MAX_BANDS];
+            uint16_t *fb16 = (uint16_t *)fb;
+            for (unsigned bx = bx_start; bx < bx_end; bx++) {
+                for (unsigned k = 0; k < nb; k++) {
+                    draw[k] = 1;
+                    for (unsigned j = 0; j < skip_n[k]; j++)
+                        if (bx >= skip_lo[k][j] && bx < skip_hi[k][j]) draw[k] = 0;
+                    if (!draw[k]) continue;
+                    const uint8_t *r = g_t1_shadow + (size_t)bands[k] * 8u * stride + bx;
+                    uint64_t x = (uint64_t)r[0] | (uint64_t)r[stride] << 8 |
+                                 (uint64_t)r[2u * stride] << 16 | (uint64_t)r[3u * stride] << 24 |
+                                 (uint64_t)r[4u * stride] << 32 | (uint64_t)r[5u * stride] << 40 |
+                                 (uint64_t)r[6u * stride] << 48 | (uint64_t)r[7u * stride] << 56;
+                    col[k] = transpose8x8(x);  /* byte b: frame column bx*8+b, bit r = row r */
+                }
+                for (unsigned b = 0; b < 8u; b++) {
+                    if (g_lcd_rot == 270) {
+                        uint16_t *row = fb16 + (size_t)(1279u - (bx * 8u + b)) * 720u;
+                        for (unsigned k = 0; k < nb; k++)
+                            if (draw[k]) memcpy(row + bands[k] * 8u, g_lut565[(uint8_t)(col[k] >> (8u * b))], 16u);
+                    } else {
+                        uint16_t *row = fb16 + (size_t)(bx * 8u + b) * 720u;
+                        for (unsigned k = nb; k-- > 0; )   /* ascending addresses */
+                            if (draw[k]) memcpy(row + (712u - bands[k] * 8u),
+                                                g_lut565[rev8((uint8_t)(col[k] >> (8u * b)))], 16u);
                     }
                 }
-                unsigned rem = 7u - (y % 8u);
-                bit += rem;
-                lo = 0;
-                hi = 1279;
-                n++;
             }
+            lo = 0;
+            hi = 1279;
+            n += nb;
         }
         if (n && bx_start < bx_end) {
             if (g_lcd_rot == 270) {
@@ -1523,12 +1840,24 @@ static void term_convert(unsigned y0, unsigned y1) {
                 const uint8_t *sh = g_t1_shadow + y * stride;
                 unsigned py = flip ? DSI_LCD_V_RES - 1u - y : y;
                 if (fmt == FB_RGB565) {
+                    /* The text areas are the anti-aliased pass's, as in the
+                     * rotated path above. */
+                    unsigned slo[TERM_CELL_SLOTS], shi[TERM_CELL_SLOTS], ns = 0;
+                    for (int t = 0; t < sn->nt && t < (int)TERM_CELL_SLOTS; t++) {
+                        const lcdterm_visible_term_t *vt = &sn->terms[t];
+                        if ((int)y < vt->y0 || (int)y >= vt->y0 + (int)vt->rows * 32) continue;
+                        int lo_b = vt->x0 / 8, hi_b = (vt->x0 + (int)vt->cols * 16) / 8;
+                        if (lo_b < 0) lo_b = 0;
+                        if (hi_b > (int)stride) hi_b = (int)stride;
+                        if (lo_b < hi_b) { slo[ns] = (unsigned)lo_b; shi[ns] = (unsigned)hi_b; ns++; }
+                    }
                     uint16_t *dst = (uint16_t *)fb + (size_t)py * DSI_LCD_H_RES;
-                    if (flip) {
-                        for (unsigned b = 0; b < stride; b++)
-                            memcpy(dst + (DSI_LCD_H_RES - 8u - 8u * b), g_lut565[rev8(sh[b])], 16u);
-                    } else {
-                        for (unsigned b = 0; b < stride; b++) memcpy(dst + 8u * b, g_lut565[sh[b]], 16u);
+                    for (unsigned b = 0; b < stride; b++) {
+                        unsigned j = 0;
+                        while (j < ns && !(b >= slo[j] && b < shi[j])) j++;
+                        if (j < ns) { b = shi[j] - 1u; continue; }
+                        if (flip) memcpy(dst + (DSI_LCD_H_RES - 8u - 8u * b), g_lut565[rev8(sh[b])], 16u);
+                        else memcpy(dst + 8u * b, g_lut565[sh[b]], 16u);
                     }
                 } else {
                     uint64_t *dst = (uint64_t *)(fb + (size_t)py * DSI_LCD_H_RES);
@@ -1545,21 +1874,18 @@ static void term_convert(unsigned y0, unsigned y1) {
     }
 
     /* 2b. Composite visible anti-aliased Reader windows onto fb_back() */
-    uint8_t rids[4];
-    int rx0[4], ry0[4], rx1[4], ry1[4];
-    int rcount = lcdterm_get_visible_readers(rids, rx0, ry0, rx1, ry1, 4);
-    for (int i = 0; i < rcount; i++) {
-        uint32_t seq = reader_get_seq(rids[i]);
-        if (s_reader_drawn_seq[back_idx][i] == seq && !g_t_force) continue;
+    for (int i = 0; i < sn->nr; i++) {
+        uint32_t seq = sn->rseq[i];
+        if (s_reader_drawn_seq[back_idx][i] == seq && !sn->force) continue;
         s_reader_drawn_seq[back_idx][i] = seq;
 
-        uint32_t aa_stride = 0;
-        int aa_w = 0, aa_h = 0;
-        uint8_t *aa_buf = reader_get_aa_backing(rids[i], &aa_stride, &aa_w, &aa_h);
+        uint32_t aa_stride = sn->rstride[i];
+        int aa_h = sn->rh[i];
+        uint8_t *aa_buf = sn->rbuf[i];
         if (!aa_buf) continue;
 
-        int x0 = rx0[i], x1 = rx1[i];
-        int y0 = ry0[i], y1 = ry1[i];
+        int x0 = sn->rx0[i], x1 = sn->rx1[i];
+        int y0 = sn->ry0[i], y1 = sn->ry1[i];
 
         int cl_x0 = x0 < 0 ? 0 : x0;
         int cl_x1 = x1 >= (int)g_tbe.w ? (int)g_tbe.w - 1 : x1;
@@ -1631,39 +1957,14 @@ static void term_convert(unsigned y0, unsigned y1) {
     }
 
     /* 2c. Composite visible RGB565 color canvases onto fb_back() */
-    uint8_t cids[4];
-    int cx0[4], cy0[4], cx1[4], cy1[4];
-    int ccount = lcdterm_get_visible_canvases565(cids, cx0, cy0, cx1, cy1, 4);
-    if (ccount > 0 && g_fb_fmt != FB_RGB565) {
-        if (!g_lut565) {
-            g_lut565 = (uint16_t (*)[8])palloc_pages_bulk(1);
-        }
-        if (g_lut565 && fb_start(FB_RGB565)) {
-            lut_build();
-            fmt = g_fb_fmt;
-            fb = fb_back();
-            for (unsigned y = 0; y < DSI_LCD_V_RES; y++) {
-                uint16_t *dst = (uint16_t *)fb + (size_t)y * DSI_LCD_H_RES;
-                const uint8_t *sh = g_t1 + y * stride;
-                for (unsigned b = 0; b < stride; b++) {
-                    const uint16_t *pix = g_lut565[sh[b]];
-                    for (unsigned p = 0; p < 8; p++) dst[b * 8 + p] = pix[p];
-                }
-            }
-            lo = 0;
-            hi = DSI_LCD_V_RES - 1;
-            n = DSI_LCD_V_RES;
-        }
-    }
-    for (int i = 0; i < ccount; i++) {
-        uint32_t c_stride = 0;
-        int c_w = 0, c_h = 0;
-        const uint16_t *c_buf = lcdterm_get_canvas565_backing(cids[i], &c_stride, &c_w, &c_h);
-        if (!c_buf) continue;
+    for (int i = 0; i < sn->nc; i++) {
+        uint32_t c_stride = sn->cstride[i];
+        int c_h = sn->ch[i];
+        const uint16_t *c_buf = sn->cbuf[i];
 
-        int x0 = cx0[i], x1 = cx1[i];
-        int y0 = cy0[i];
-        int y1 = cy1[i];
+        int x0 = sn->cx0[i], x1 = sn->cx1[i];
+        int y0 = sn->cy0[i];
+        int y1 = sn->cy1[i];
 
         int cl_x0 = x0 < 0 ? 0 : x0;
         int cl_x1 = x1 >= (int)g_tbe.w ? (int)g_tbe.w - 1 : x1;
@@ -1742,9 +2043,9 @@ static void term_convert(unsigned y0, unsigned y1) {
     if (fmt == FB_RGB565) {
         uint64_t trows_mask = g_dirty_trows[back_idx];
         g_dirty_trows[back_idx] = 0;
-        if (trows_mask) {
-            lcdterm_visible_term_t terms[4];
-            int tcount = lcdterm_get_visible_terms(terms, 4);
+        if (trows_mask || sn->nt) {
+            const lcdterm_visible_term_t *terms = sn->terms;
+            int tcount = sn->nt;
             if (tcount > 0) {
                 uint16_t norm_lut[16];
                 uint16_t inv_lut[16];
@@ -1763,10 +2064,97 @@ static void term_convert(unsigned y0, unsigned y1) {
                     inv_lut[a] = (uint16_t)((ir << 11) | (ig << 5) | ib);
                 }
 
-                for (int ti = 0; ti < tcount; ti++) {
+                for (int ti = 0; ti < tcount && ti < (int)TERM_CELL_SLOTS; ti++) {
                     const lcdterm_visible_term_t *vt = &terms[ti];
+                    uint16_t *drawn = g_t_cell_drawn[back_idx][ti];
+                    cell_key_t key = { (int16_t)vt->x0, (int16_t)vt->y0, vt->cols, vt->rows,
+                                       vt->col_offset, vt->vterm_id };
+                    uint64_t rows_mask = trows_mask;
+                    if (memcmp(&key, &g_t_cell_key[back_idx][ti], sizeof key) != 0) {
+                        g_t_cell_key[back_idx][ti] = key;
+                        memset(drawn, 0xff, sizeof g_t_cell_drawn[0][0]);
+                        rows_mask = ~0ull;      /* moved: every row of it */
+                    }
+                    if (g_lcd_rot == 90 || g_lcd_rot == 270) {
+                        /* Rotated, a cell column is 16 rows of the frame and
+                         * each cell 64 bytes of each: drawn row of cells by
+                         * row of cells, every pass over a text row touched all
+                         * 1280 frame rows again (a full redraw: 45 x 1280 x 2
+                         * line fills in PSRAM, ~130 ms). Column by column, each
+                         * frame row is written front to back once. */
+                        for (uint16_t col = 0; col < vt->cols; col++) {
+                            int cell_x0 = vt->x0 + (int)col * 16;
+                            if (cell_x0 + 15 < 0 || cell_x0 >= (int)g_tbe.w) continue;
+                            struct {
+                                int y0;
+                                const uint8_t (*glyph)[8];
+                                const uint16_t *lut;
+                                bool cursor, inv;
+                            } todo[64];
+                            unsigned nd = 0;
+                            for (uint16_t row = 0; row < vt->rows && row < 64u; row++) {
+                                if (!(rows_mask & (1ull << row))) continue;
+                                int cell_y0 = vt->y0 + (int)row * 32;
+                                if (cell_y0 + 31 < 0 || cell_y0 >= (int)g_tbe.h) continue;
+                                uint16_t v = vt->shadow[row * vt->shadow_cols + (col + vt->col_offset)];
+                                bool is_cursor = ((int)col == vt->cur_col && (int)row == vt->cur_row);
+                                unsigned idx = (unsigned)row * vt->cols + col;
+                                uint16_t cur_val = v | (is_cursor ? 0x8000u : 0u);
+                                if (idx < MAX_TERM_CELLS) {
+                                    if (drawn[idx] == cur_val) continue;
+                                    drawn[idx] = cur_val;
+                                }
+                                uint8_t code = (uint8_t)v;
+                                bool is_inv = (v & VT_CELL_INVERSE) != 0;
+                                todo[nd].y0 = cell_y0;
+                                todo[nd].glyph = code >= FONT_NOTO_MONO_FIRST
+                                    ? font_noto_mono_aa_glyphs[code - FONT_NOTO_MONO_FIRST]
+                                    : code > 0x20 ? font_noto_mono_aa_glyphs[FONT_NOTO_MONO_REPLACEMENT - FONT_NOTO_MONO_FIRST]
+                                                  : NULL;
+                                todo[nd].lut = is_inv ? inv_lut : norm_lut;
+                                todo[nd].cursor = is_cursor;
+                                todo[nd].inv = is_inv;
+                                nd++;
+                                span_rows(&lo, &hi, cell_y0, cell_y0 + 31);
+                            }
+                            if (!nd) continue;
+                            unsigned cmin = g_lcd_rot == 270 ? 1279u - ((unsigned)cell_x0 + 15u) : (unsigned)cell_x0;
+                            unsigned cmax = g_lcd_rot == 270 ? 1279u - (unsigned)cell_x0 : (unsigned)cell_x0 + 15u;
+                            if (flush_py0 < 0 || (int)cmin < flush_py0) flush_py0 = (int)cmin;
+                            if ((int)cmax > flush_py1) flush_py1 = (int)cmax;
+                            for (unsigned dx = 0; dx < 16u; dx++) {
+                                unsigned shift = (dx & 1u) ? 4u : 0u;
+                                unsigned byte_idx = dx >> 1;
+                                if (g_lcd_rot == 270) {
+                                    uint16_t *row = (uint16_t *)fb + (size_t)(1279u - ((unsigned)cell_x0 + dx)) * 720u;
+                                    for (unsigned k = 0; k < nd; k++) {          /* ascending addresses */
+                                        uint16_t *dst = row + (unsigned)todo[k].y0;
+                                        unsigned dy_max = todo[k].cursor ? 30u : 32u;
+                                        for (unsigned dy = 0; dy < dy_max; dy++) {
+                                            uint8_t pair = todo[k].glyph ? todo[k].glyph[dy][byte_idx] : 0;
+                                            dst[dy] = todo[k].lut[(pair >> shift) & 0x0Fu];
+                                        }
+                                        if (todo[k].cursor) dst[30] = dst[31] = todo[k].inv ? g_t_bg : g_t_fg;
+                                    }
+                                } else {
+                                    uint16_t *row = (uint16_t *)fb + (size_t)((unsigned)cell_x0 + dx) * 720u;
+                                    for (unsigned k = nd; k-- > 0; ) {           /* ascending addresses */
+                                        uint16_t *dst = row + (719u - ((unsigned)todo[k].y0 + 31u));
+                                        unsigned dy_max = todo[k].cursor ? 30u : 32u;
+                                        for (unsigned dy = 0; dy < dy_max; dy++) {
+                                            uint8_t pair = todo[k].glyph ? todo[k].glyph[dy][byte_idx] : 0;
+                                            dst[31u - dy] = todo[k].lut[(pair >> shift) & 0x0Fu];
+                                        }
+                                        if (todo[k].cursor) dst[1] = dst[0] = todo[k].inv ? g_t_bg : g_t_fg;
+                                    }
+                                }
+                            }
+                            n += nd;
+                        }
+                        continue;
+                    }
                     for (uint16_t row = 0; row < vt->rows; row++) {
-                        if (!(trows_mask & (1ull << row))) continue;
+                        if (!(rows_mask & (1ull << row))) continue;
                         int cell_y0 = vt->y0 + (int)row * 32;
                         if (cell_y0 + 31 < 0 || cell_y0 >= (int)g_tbe.h) continue;
 
@@ -1783,8 +2171,8 @@ static void term_convert(unsigned y0, unsigned y1) {
                         unsigned cell_flat_idx = (unsigned)row * vt->cols + col;
                         uint16_t cur_val = v | (is_cursor ? 0x8000u : 0u);
                         if (cell_flat_idx < MAX_TERM_CELLS) {
-                            if (g_t_cell_drawn[back_idx][cell_flat_idx] == cur_val) continue;
-                            g_t_cell_drawn[back_idx][cell_flat_idx] = cur_val;
+                            if (drawn[cell_flat_idx] == cur_val) continue;
+                            drawn[cell_flat_idx] = cur_val;
                         }
 
                         const uint16_t *lut = is_inv ? inv_lut : norm_lut;
@@ -1795,53 +2183,7 @@ static void term_convert(unsigned y0, unsigned y1) {
                             glyph = font_noto_mono_aa_glyphs[FONT_NOTO_MONO_REPLACEMENT - FONT_NOTO_MONO_FIRST];
                         }
 
-                        if (g_lcd_rot == 270) {
-                            unsigned cur_pymin = 1279u - ((unsigned)cell_x0 + 15u);
-                            unsigned cur_pymax = 1279u - (unsigned)cell_x0;
-                            if (flush_py0 < 0 || (int)cur_pymin < flush_py0) flush_py0 = (int)cur_pymin;
-                            if ((int)cur_pymax > flush_py1) flush_py1 = (int)cur_pymax;
-
-                            for (unsigned dx = 0; dx < 16u; dx++) {
-                                unsigned shift = (dx & 1u) ? 4u : 0u;
-                                unsigned byte_idx = dx >> 1;
-                                unsigned py = 1279u - ((unsigned)cell_x0 + dx);
-                                uint16_t *dst = (uint16_t *)fb + (size_t)py * 720u + (unsigned)cell_y0;
-                                unsigned dy_max = is_cursor ? 30u : 32u;
-                                for (unsigned dy = 0; dy < dy_max; dy++) {
-                                    uint8_t pair = glyph ? glyph[dy][byte_idx] : 0;
-                                    uint8_t a = (pair >> shift) & 0x0Fu;
-                                    dst[dy] = lut[a];
-                                }
-                                if (is_cursor) {
-                                    uint16_t cpix = is_inv ? g_t_bg : g_t_fg;
-                                    dst[30] = cpix;
-                                    dst[31] = cpix;
-                                }
-                            }
-                        } else if (g_lcd_rot == 90) {
-                            unsigned cur_pymin = (unsigned)cell_x0;
-                            unsigned cur_pymax = (unsigned)cell_x0 + 15u;
-                            if (flush_py0 < 0 || (int)cur_pymin < flush_py0) flush_py0 = (int)cur_pymin;
-                            if ((int)cur_pymax > flush_py1) flush_py1 = (int)cur_pymax;
-
-                            for (unsigned dx = 0; dx < 16u; dx++) {
-                                unsigned shift = (dx & 1u) ? 4u : 0u;
-                                unsigned byte_idx = dx >> 1;
-                                unsigned py = (unsigned)cell_x0 + dx;
-                                uint16_t *dst = (uint16_t *)fb + (size_t)py * 720u + (719u - ((unsigned)cell_y0 + 31u));
-                                unsigned dy_max = is_cursor ? 30u : 32u;
-                                for (unsigned dy = 0; dy < dy_max; dy++) {
-                                    uint8_t pair = glyph ? glyph[dy][byte_idx] : 0;
-                                    uint8_t a = (pair >> shift) & 0x0Fu;
-                                    dst[31u - dy] = lut[a];
-                                }
-                                if (is_cursor) {
-                                    uint16_t cpix = is_inv ? g_t_bg : g_t_fg;
-                                    dst[1] = cpix;
-                                    dst[0] = cpix;
-                                }
-                            }
-                        } else if (g_lcd_rot == 180) {
+                        if (g_lcd_rot == 180) {
                             /* Clipped pixel by pixel: a window that is half
                              * off-screen (several terminals in the ribbon)
                              * has cells running past an edge, and mirrored
@@ -1908,10 +2250,8 @@ static void term_convert(unsigned y0, unsigned y1) {
         } else {
             fb_flush_buffer(fb, (unsigned)lo, (unsigned)hi + 1u);
         }
-        if (g_double_buffered) {
-            dsi_lcd_flip(false);
-        }
     }
+    if (g_double_buffered && (n || rearm)) dsi_lcd_flip(false);
 
     uint32_t us = (uint32_t)(time_get_us() - t0);
     g_t_flushes++;
@@ -1922,6 +2262,21 @@ static void term_convert(unsigned y0, unsigned y1) {
 
 /* 47.11: idle blanking -- dark, or back to what `lcd backlight` / `lcd bl`
  * last set, without changing either. */
+/* A test takes the frame: set under both locks, so no conversion is in the
+ * middle of drawing when the test starts. */
+static void term_hold(void) {
+    frame_begin();
+    g_t_hold = (g_t1 != NULL);
+    frame_end();
+}
+
+/* With console_lock held, as every caller but the flush task: both steps. */
+static void term_convert(unsigned y0, unsigned y1) {
+    ylock_acquire(&g_frame_lock);
+    if (term_snapshot(y0, y1) != TERM_NONE) term_draw();
+    ylock_release(&g_frame_lock);
+}
+
 static void term_blank(bool off) {
     bl_set(off || !g_bl_on ? 0u : g_bl_level);
 }
@@ -1932,6 +2287,10 @@ static void term_blank(bool off) {
  * scanline collision and tearing. */
 static void term_sync_pre(void) { }
 
+/* A synchronous full redraw (the end of an animation, a rotation): the glass
+ * must match before the caller goes on, so it converts under console_lock as
+ * well -- 170 ms on the Tab5's rotated frame (`lockcheck`). Rare by design;
+ * the rotated blit's cost is the display task's to reduce. */
 static void term_sync_post(void) {
 #if defined(CONFIG_ESP32P4_REV) && CONFIG_ESP32P4_REV >= 300
     if (!g_double_buffered && g_scanning) {
@@ -1942,24 +2301,27 @@ static void term_sync_post(void) {
         }
     }
 #endif
-    console_lock();
+    frame_begin();
     g_t_force = true;
     term_convert(0, DSI_LCD_V_RES);
     g_t_due = false;
-    if (g_double_buffered) {
-        /* Wait for the flip armed by term_convert to complete at hardware VSYNC */
-        uint64_t t0 = time_get_us();
-        while (g_flip_pending && time_get_us() - t0 < 50000u) {
-            if (REG(DMAC_CH1_INTSTATUS0_REG) & (GDMA_EV_DMA_TFR_DONE | GDMA_EV_ERRORS)) {
-                gdma_isr(NULL);
-            }
-        }
-    }
-    console_unlock();
+    /* the flip term_convert() armed, taken at the frame end */
+    if (g_double_buffered) (void)gdma_wait_flip(50000u);
+    frame_end();
 }
 
 static bool term_capture(const uint8_t **fb, unsigned *w, unsigned *h, unsigned *stride, unsigned *format) {
     if (!g_fb_fmt) return false;
+    /* What the terminal holds now, not what the paced conversion last put on
+     * the glass: a screenshot taken right after a write would otherwise
+     * depend on where the flush task's 16 ms period stood. */
+    frame_begin();
+    if (g_t1 && !g_t_hold) {
+        term_convert(0, g_tbe.h);
+        g_t_due = false;
+        if (g_double_buffered) (void)gdma_wait_flip(50000u);
+    }
+    frame_end();
     uint8_t *front = fb_front();
     if (!front) return false;
     *fb = front;
@@ -1982,6 +2344,7 @@ static lcdterm_backend_t g_tbe = {
     .w               = 1280,
     .h               = 720,
     .stride          = 160,
+    .rotates         = true,           /* dsi_lcd_set_orientation() */
 #else
     .name            = "LCD-7B",
     .text_test_title = "LugalOS on the LCD-7B: Spleen 8x16, 128 x 37 cells, 1-bpp to GRAY8 over DSI at 60 Hz",
@@ -2001,11 +2364,11 @@ static lcdterm_backend_t g_tbe = {
 /* The whole terminal again, from its 1-bpp frame -- after a test pattern
  * drew over the glass, or a colour or format change. */
 static void term_redraw(void) {
-    console_lock();
+    frame_begin();
     g_t_hold = false;
     g_t_force = true;
     term_convert(0, g_tbe.h);
-    console_unlock();
+    frame_end();
 }
 
 /* Every 16 ms: if anything was drawn since the last pass, convert it. Under
@@ -2017,9 +2380,13 @@ static void term_flush_task(void *arg) {
         if (!g_t_due || lcdterm_is_animating()) continue;
         console_lock();
         g_t_due = false;
-        term_convert(0, g_tbe.h);
-        g_t_paced_passes++;
+        ylock_acquire(&g_frame_lock);
+        term_go_t go = term_snapshot(0, g_tbe.h);
+        if (go == TERM_LOCKED) term_draw();
         console_unlock();
+        if (go == TERM_UNLOCKED) term_draw();   /* the writers no longer wait for this */
+        g_t_paced_passes++;
+        ylock_release(&g_frame_lock);
     }
 }
 
@@ -2034,7 +2401,8 @@ int dsi_lcd_term_task_start(void) {
     return pid;
 }
 
-/* `lcd colours FG BG`: RGB565 hex, as on the RP2350. */
+/* `lcd colours FG BG`: RGB565 hex, as on the RP2350. A full redraw in the new
+ * colours under console_lock (about 100 ms): a command, not a hot path. */
 static void term_colours(uint16_t fg, uint16_t bg) {
     bool gf, gb;
     (void)gray_of(fg, &gf);
@@ -2044,19 +2412,21 @@ static void term_colours(uint16_t fg, uint16_t bg) {
 #else
     fb_fmt_t want = (gf && gb) ? FB_GRAY8 : FB_RGB565;
 #endif
-    console_lock();                     /* the lcdflush task converts under it */
+    frame_begin();                     /* the lcdflush task converts under it */
     g_t_fg = fg;
     g_t_bg = bg;
     if (want == FB_RGB565 && !g_lut565) {
         g_lut565 = (uint16_t (*)[8])palloc_pages_bulk(1);
-        if (!g_lut565) { console_unlock(); cprintf("lcd: no page for the RGB565 table\n"); return; }
+        if (!g_lut565) { frame_end(); cprintf("lcd: no page for the RGB565 table\n"); return; }
     }
-    if (want != g_fb_fmt && !fb_start(want)) { console_unlock(); return; }
+    if (want != g_fb_fmt && !fb_start(want)) { frame_end(); return; }
     lut_build();
     term_redraw();
-    console_unlock();
+    frame_end();
 }
 
+/* accepted: holds console_lock for the whole run (seconds) -- it measures the
+ * console path itself, and other writers would be what it measured. */
 /* `lcd termbench`: what a character and a scroll cost on the glass, through
  * the real console path (console_putc, then the flush that runs at every
  * write boundary), conversion and write-back included. The tee is off
@@ -2069,7 +2439,7 @@ static void term_bench(void) {
     uint32_t ch_best = 0xffffffffu, ch_worst = 0, ch_sum = 0;
     uint32_t sc_best = 0xffffffffu, sc_worst = 0, sc_sum = 0;
     enum { CH = 60, SC = 40 };
-    console_lock();
+    frame_begin();
     console_putc('\n');
     console_flush();
     for (unsigned i = 0; i < CH; i++) {
@@ -2104,7 +2474,7 @@ static void term_bench(void) {
         console_flush();
     }
     uint32_t tee_us = (uint32_t)(time_get_us() - t2);
-    console_unlock();
+    frame_end();
     task_sleep_ms(40);                 /* let the pacer show the last of it */
     cprintf("lcd termbench: 200 lines of 55 in %lu ms = %lu lines/s (%s); with the tee to %s: %lu ms = %lu lines/s\n",
             (unsigned long)(lines_us / 1000u),
@@ -2151,6 +2521,7 @@ int dsi_lcd_term_start(void) {
     }
     lut_build();
     g_t_force = true;
+    console_set_frame_lock(frame_lock_take, frame_lock_give);
     if (lcdterm_init(&g_tbe) != 0) return -1;
     term_redraw();
     printk("[LCD] terminal on the panel: %u x %u cells, 1-bpp frame at 0x%08lx, %s frame at 0x%08lx%s\n",
@@ -2169,7 +2540,7 @@ int dsi_lcd_set_orientation(int rot) {
 #if defined(CONFIG_BOARD_TAB5)
     if (rot != 0 && rot != 90 && rot != 180 && rot != 270) return -1;
     if (g_lcd_rot == rot) return 0;
-    console_lock();
+    frame_begin();
     g_lcd_rot = rot;
     if (rot == 90 || rot == 270) {
         g_tbe.w = 1280;
@@ -2188,7 +2559,7 @@ int dsi_lcd_set_orientation(int rot) {
     /* The frame buffers are not cleared: the full redraw below rewrites
      * every pixel of both, and clearing the one being scanned out put black
      * on the glass until then. */
-    console_unlock();
+    frame_end();
     /* lcdterm_reinit() only marks the screen damaged; without a repaint the
      * panel stays black until the next console output. Then both frames:
      * the one not being shown is otherwise left blank until the next change
@@ -2212,10 +2583,25 @@ bool dsi_lcd_init(void) {
     uint64_t t0 = time_get_us();
 
     backlight(false);                 /* dark until there is something to show */
+#if defined(CONFIG_BOARD_TAB5)
+    /* M5GFX's order (M5GFX.cpp, Tab5): the panel's one reset (the expander
+     * setup's, at boot) and the ST7121 answering before the DSI PHY starts,
+     * then 80 ms before the first command. Reset again under a running link,
+     * as this did, it came up black on some boots while a second PHY setup
+     * (`lcd reinit phy`) always brought it back. */
+    panel_wait_ready();
+#endif
     ldo3_on();
+    /* The PHY's supply settled before the PHY starts: 200 us is IDF's LDO
+     * delay, and 5 ms costs nothing at boot. */
+    wait_ms(5);
     if (!dsi_bus_init()) goto fail;
     dpi_config();
+#if defined(CONFIG_BOARD_TAB5)
+    wait_ms(80);
+#else
     panel_reset();
+#endif
     if (!panel_init()) {
         /* Report and carry on: a NACKed vendor register is worth seeing on
          * the glass, and `lcd` says which command it was. */
@@ -2386,8 +2772,10 @@ void dsi_lcd_command(const char *args) {
         else if (strcmp(p, "ber") == 0) pat = PAT_BER;
         else if (strcmp(p, "off") == 0) pat = PAT_NONE;
         else { cprintf("usage: lcd pattern [bars|hbars|ber|off]\n"); return; }
-        if (!dsi_lcd_init()) { cprintf("lcd: bring-up failed: %s\n", g_reason); return; }
+        frame_begin();                 /* as fb_start()'s callers: the scan-out state */
+        if (!dsi_lcd_init()) { frame_end(); cprintf("lcd: bring-up failed: %s\n", g_reason); return; }
         set_pattern(pat);
+        frame_end();
         cprintf("lcd: %s\n", g_pattern);
         return;
     }
@@ -2433,10 +2821,10 @@ void dsi_lcd_command(const char *args) {
         fb_fmt_t f = FB_GRAY8;
         if (strcmp(p, "rgb565") == 0) f = FB_RGB565;
         else if (*p && strcmp(p, "gray") != 0) { cprintf("usage: lcd fb [gray|rgb565]\n"); return; }
+        frame_begin();                 /* as term_colours(): no conversion mid-switch */
         g_t_hold = (g_t1 != NULL);
-        console_lock();                 /* as term_colours(): no conversion mid-switch */
         bool started = fb_start(f);
-        console_unlock();
+        frame_end();
         if (!started) { cprintf("lcd: frame buffer not started\n"); return; }
         draw(pat_grid);
         dsi_lcd_fb_flush(0, DSI_LCD_V_RES);
@@ -2465,11 +2853,11 @@ void dsi_lcd_command(const char *args) {
                 cprintf("lcd: no active frame buffer\n");
                 return;
             }
-            console_lock();
+            frame_begin();
             uint8_t *fb1 = palloc_pages_bulk(g_fb_pages);
             if (!fb1 || !palloc_is_bulk(fb1)) {
                 if (fb1) palloc_free(fb1, g_fb_pages);
-                console_unlock();
+                frame_end();
                 cprintf("lcd: no PSRAM for second buffer\n");
                 return;
             }
@@ -2482,7 +2870,7 @@ void dsi_lcd_command(const char *args) {
             g_dirty_trows[1] = 0;
             g_dirty_x0[0] = 0xffff; g_dirty_x1[0] = 0;
             g_dirty_x0[1] = 0xffff; g_dirty_x1[1] = 0;
-            console_unlock();
+            frame_end();
             cprintf("lcd: double-buffering enabled (front 0x%08lx, back 0x%08lx)\n",
                     (unsigned long)(uintptr_t)fb_front(),
                     (unsigned long)(uintptr_t)fb_back());
@@ -2493,21 +2881,28 @@ void dsi_lcd_command(const char *args) {
                 cprintf("lcd: double-buffering already disabled\n");
                 return;
             }
-            console_lock();
-            uint64_t t0 = time_get_us();
-            while (g_flip_pending && time_get_us() - t0 < 50000u) { }
+            frame_begin();
+            (void)gdma_wait_flip(50000u);
             g_double_buffered = false;
             if (g_front_idx != 0) {
                 memcpy(g_fb_pool[0], g_fb_pool[1], g_fb_bytes);
                 esp32p4_extmem_writeback((uintptr_t)g_fb_pool[0], g_fb_bytes);
+                /* index and item together, so a frame end in between cannot
+                 * re-arm on the buffer about to be freed */
+                uintptr_t f = spin_lock_irqsave(&g_scan_lock);
                 g_front_idx = 0;
                 LLI_NC->sar_lo = (uint32_t)(uintptr_t)g_fb_pool[0];
+                spin_unlock_irqrestore(&g_scan_lock, f);
+                /* the frame in flight still reads buffer 1: let it finish */
+                uint32_t f0 = g_frames;
+                uint64_t t0 = time_get_us();
+                while (g_scanning && g_frames == f0 && time_get_us() - t0 < 50000u) gdma_poll();
             }
             if (g_fb_pool[1]) {
                 palloc_free(g_fb_pool[1], g_fb_pages);
                 g_fb_pool[1] = NULL;
             }
-            console_unlock();
+            frame_end();
             cprintf("lcd: double-buffering disabled\n");
             return;
         }
@@ -2545,6 +2940,48 @@ void dsi_lcd_command(const char *args) {
         term_redraw();
         return;
     }
+    if (strncmp(args, "reinit", 6) == 0) {
+        /* `lcd reinit video|panel|link`: redo part of the bring-up on a running
+         * panel, to find which part a black panel needs (video: restart the
+         * stream; panel: its reset and init table; link: the DSI PHY and timing
+         * too). The scan-out is stopped and restarted under the frame locks;
+         * the panel's reset and table (~1.1 s of waits, I2C to the expander)
+         * run without them, with nothing being scanned out. */
+        const char *m = skip_ws(args + 6);
+        int lvl = strcmp(m, "video") == 0 ? 0 : strcmp(m, "panel") == 0 ? 1 :
+                  strcmp(m, "link") == 0 ? 2 : strcmp(m, "phy") == 0 ? 3 : -1;
+        if (lvl < 0) { cprintf("usage: lcd reinit video|panel|phy|link\n"); return; }
+        if (!g_up) { cprintf("lcd: not up\n"); return; }
+        ylock_acquire(&g_dcs_lock);
+        frame_begin();
+        scan_stop();
+        FSET(DSI_HOST_MODE_CFG_REG, DSI_HOST_CMD_VIDEO_MODE, 1);
+        frame_end();
+        bool ok = true;
+        if (lvl >= 2) {
+            ok = dsi_bus_init();
+            if (ok) {
+                dpi_config();
+                bridge_format(g_fb_bpp, g_fb_fmt == FB_RGB565 ? 2u : 12u);
+            }
+        }
+        if (ok && (lvl == 1 || lvl == 2)) {
+            panel_reset();
+            ok = panel_init();
+            uint8_t pm = 0;
+            if (dcs_read(0x0A, &pm, 1) == 1) g_pwr_mode = pm;
+        }
+        frame_begin();
+        FSET(DSI_HOST_MODE_CFG_REG, DSI_HOST_CMD_VIDEO_MODE, 0);
+        scan_start();
+        frame_end();
+        lcdterm_repaint();
+        for (int i = 0; i < (g_double_buffered ? 2 : 1); i++) term_sync_post();
+        ylock_release(&g_dcs_lock);
+        cprintf("lcd reinit %s: %s, power mode 0x%02x\n", m, ok ? "done" : g_reason,
+                (unsigned)(g_pwr_mode & 0xff));
+        return;
+    }
     if (strcmp(args, "test text") == 0) {
         if (lcdterm_text_test() != 0) cprintf("lcd test text: no terminal on the panel\n");
         return;
@@ -2569,11 +3006,11 @@ void dsi_lcd_command(const char *args) {
         if (!g_fb_pool[0]) { cprintf("lcd: no frame buffer -- `lcd fb [gray|rgb565]` first\n"); return; }
     }
     if (strcmp(args, "fps") == 0) { cmd_fps(); return; }
-    if (strcmp(args, "bench") == 0) { g_t_hold = (g_t1 != NULL); cmd_bench(); return; }
+    if (strcmp(args, "bench") == 0) { term_hold(); cmd_bench(); return; }
     if (strcmp(args, "verify") == 0) { cmd_verify(); return; }
     if (strncmp(args, "test", 4) == 0) {
         const char *p = skip_ws(args + 4);
-        g_t_hold = (g_t1 != NULL);
+        term_hold();
         if (strcmp(p, "checker") == 0) draw(pat_checker);
         else if (strcmp(p, "grid") == 0) draw(pat_grid);
         else if (strcmp(p, "page") == 0) draw_text_page();   /* 47.5's; `test text` is the terminal's */
@@ -2598,7 +3035,7 @@ void dsi_lcd_command(const char *args) {
         unsigned secs = 0;
         while (*q >= '0' && *q <= '9') secs = secs * 10u + (unsigned)(*q++ - '0');
         if (!secs) secs = 10;
-        g_t_hold = (g_t1 != NULL);
+        term_hold();
         fill(0xff);
         dsi_lcd_fb_flush(0, DSI_LCD_V_RES);
         if (g_double_buffered) dsi_lcd_flip(true);
@@ -2627,7 +3064,9 @@ void dsi_lcd_command(const char *args) {
         int v;
         while (n < sizeof prm && (v = parse_hex(&p)) >= 0) prm[n++] = (uint8_t)v;
         if (c < 0 || *skip_ws(p)) { cprintf("usage: lcd cmd CC [PP ...] (hex)\n"); return; }
+        ylock_acquire(&g_dcs_lock);
         bool ok = dcs_write((uint8_t)c, prm, n);
+        ylock_release(&g_dcs_lock);
         cprintf("lcd: DCS 0x%02x (%u params) %s\n", (unsigned)c, n, ok ? "sent" : "FAILED");
         return;
     }
@@ -2642,7 +3081,9 @@ void dsi_lcd_command(const char *args) {
             if (c < 0 || n > 16) { cprintf("usage: lcd rd CC [N] (hex)\n"); return; }
         }
         uint8_t buf[16];
+        ylock_acquire(&g_dcs_lock);
         int got = dcs_read((uint8_t)c, buf, (unsigned)n);
+        ylock_release(&g_dcs_lock);
         if (got < 0) { cprintf("lcd: DCS read 0x%02x timed out\n", (unsigned)c); return; }
         cprintf("lcd: DCS read 0x%02x ->", (unsigned)c);
         for (int i = 0; i < got; i++) cprintf(" %02x", buf[i]);

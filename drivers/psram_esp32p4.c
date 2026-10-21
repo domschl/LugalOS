@@ -45,6 +45,7 @@
 
 #include "drivers/esp32p4_psram_regs.h"
 #include "arch/esp32p4_intr.h"
+#include "kernel/sysreg.h"
 #include "kernel/console.h"
 #include "kernel/printk.h"
 #include "kernel/palloc.h"
@@ -58,6 +59,7 @@
 #define REG(a) (*(volatile uint32_t *)(uintptr_t)(a))
 
 static inline void field_set(uintptr_t reg, unsigned s, uint32_t v_mask, uint32_t val) {
+    if (sysreg_is_shared(reg)) { sysreg_update(reg, v_mask << s, (val & v_mask) << s); return; }
     uint32_t x = REG(reg);
     x &= ~(v_mask << s);
     x |= (val & v_mask) << s;
@@ -75,6 +77,7 @@ static void spin_us(uint32_t us) {
 
 extern char _bulk_bss_start[], _bulk_bss_end[];
 
+/* single task: the boot, before any reader runs; constant after. */
 static bool        g_up;
 static const char *g_reason = "not initialised";
 static uint32_t    g_bytes;
@@ -193,6 +196,7 @@ static bool mpll_on(void) {
 #endif
 #define PSRAM_INIT_MHZ    20u
 #define BUS_DIV_FOR(mhz)  (MPLL_MHZ / (mhz))
+/* single task: the boot, before any reader runs; constant after. */
 static uint32_t g_speed_mhz = PSRAM_INIT_MHZ;   /* what the bus runs at now */
 
 /* ---- 3. controller -------------------------------------------------------- */
@@ -405,6 +409,7 @@ static const uint32_t s_ref[32] = {
 #define TUNE_DL_NUM      31u
 #define TUNE_DL_REPEATS  100u
 
+/* single task: the boot, before any reader runs; constant after. */
 static uint8_t  g_tune_phase_ok;           /* bit i: phase i passed */
 static uint32_t g_tune_dl_ok;              /* bit i: delay-line config i passed 100/100 */
 static int8_t   g_tune_phase = -1, g_tune_dl = -1;
@@ -701,6 +706,20 @@ static void psram_bench(void) {
     uint32_t sum = 0;
     for (uint32_t i = 0; i < BYTES / 4u; i++) sum += p[i];
     uint64_t t2 = time_get_us();
+    uint8_t *mem2 = bulk_claim(PAGES, "psram bench");
+    uint64_t t3 = time_get_us();
+    memset(mem, 0x5a, BYTES);
+    esp32p4_extmem_writeback(base, BYTES);
+    uint64_t t4 = time_get_us();
+    if (mem2) {
+        memcpy(mem2, mem, BYTES);
+        esp32p4_extmem_writeback((uintptr_t)mem2, BYTES);
+    }
+    uint64_t t5 = time_get_us();
+    if (mem2) palloc_free(mem2, PAGES);
+    cprintf("psram bench: memset 1 MB %lu us (%lu KB/s), memcpy 1 MB %lu us (%lu KB/s)\n",
+            (unsigned long)(t4 - t3), (unsigned long)(1024ull * 1000000ull / (t4 - t3 + 1)),
+            (unsigned long)(t5 - t4), (unsigned long)(1024ull * 1000000ull / (t5 - t4 + 1)));
     palloc_free(mem, PAGES);
     cprintf("psram bench: 1 MB write+writeback %lu us (%lu KB/s), read %lu us (%lu KB/s), sum %08lx\n",
             (unsigned long)(t1 - t0), (unsigned long)(1024ull * 1000000ull / (t1 - t0 + 1)),

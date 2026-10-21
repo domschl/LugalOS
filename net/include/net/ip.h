@@ -55,6 +55,11 @@ typedef struct {
 /* Binds the stack to an interface. Without an address it will answer ARP for
  * nothing and route nothing; that is deliberate (see net_set_address). */
 int net_stack_attach(netif_t *nif);
+
+/* The stack's lock (net/stack.c says what it covers and its order). The
+ * stack's own entry points take it; code outside net/ never needs to. */
+void net_lock(void);
+void net_unlock(void);
 /* the inverse -- the interface goes to someone else (an LLP bridge). */
 void net_stack_detach(void);
 

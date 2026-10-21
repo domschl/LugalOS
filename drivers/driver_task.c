@@ -107,44 +107,43 @@ bool driver_task_alive(const driver_task_t *dt) {
     return st != TASK_UNUSED && st != TASK_DEAD;
 }
 
+int driver_task_call_wait(driver_task_t *dt, const uint8_t *req, uint32_t req_len,
+                          uint8_t *resp, uint32_t resp_max, uint32_t wait_ms) {
+    if (!dt || !dt->ep) return -1;
+    return chan_call_wait(dt->ep, req, req_len, resp, resp_max, wait_ms);
+}
+
 int driver_task_call(driver_task_t *dt, const uint8_t *req, uint32_t req_len,
                      uint8_t *resp, uint32_t resp_max) {
-    if (!dt || !dt->ep) return -1;
-
-    /* Bounded, yielding retry rather than blocking indefinitely or falling
-     * straight back to a hardware access that would race the request already
-     * in flight. Busy is expected to be rare -- these endpoints have one
-     * writer in practice, already serialized by the driver's own batching
-     * where there is any. */
-    for (int attempt = 0; attempt < 8; attempt++) {
-        int n = chan_call(dt->ep, req, req_len, resp, resp_max);
-        if (n >= 0) return n;
-        sched_yield();
-    }
-    return -1;
+    return driver_task_call_wait(dt, req, req_len, resp, resp_max, CHAN_WAIT_MS);
 }
 
 
 /* --- The U-mode domain -------- */
 
-/* One per driver that enters U-mode, and they are not concurrent: a task
- * builds its domain once, on its own first pass through its body, and never
- * again. Static rather than on the task's stack because task_set_domain()
- * keeps a pointer to it -- a domain that lived on the stack would be
- * describing memory that had since become something else. */
+/* One per driver that enters U-mode: a task builds its domain once, on its
+ * own first pass through its body, and never again. Static rather than on the
+ * task's stack because task_set_domain() keeps a pointer to it -- a domain
+ * that lived on the stack would be describing memory that had since become
+ * something else.
+ * guarded by: an atomic claim of the slot. The driver tasks' first passes can
+ * interleave (they start back to back at boot), so a slot is taken with one
+ * atomic add, and one that is then not used stays unused: giving it back
+ * could free a slot another task took meanwhile. */
 static mem_domain_t g_umode_domains[DRIVER_UMODE_MAX_DOMAINS];
 static uint32_t     g_umode_domain_count;
 
 int driver_umode_enter(const driver_umode_spec_t *spec) {
     if (!spec || !spec->body || !spec->stack_base) return -1;
 
-    if (g_umode_domain_count >= DRIVER_UMODE_MAX_DOMAINS) {
+    uint32_t slot = __atomic_fetch_add(&g_umode_domain_count, 1u, __ATOMIC_RELAXED);
+    if (slot >= DRIVER_UMODE_MAX_DOMAINS) {
         printk("[%s] Refusing to enter U-mode: no domain slot left; %s\n",
                spec->name ? spec->name : "driver",
                spec->fallback ? spec->fallback : "falling back to direct hardware access.");
         return -1;
     }
-    mem_domain_t *dom = &g_umode_domains[g_umode_domain_count++];
+    mem_domain_t *dom = &g_umode_domains[slot];
 
     mem_domain_init(dom);
     mem_domain_add(dom, spec->stack_base, spec->stack_size, MEM_R | MEM_W);
@@ -171,8 +170,7 @@ int driver_umode_enter(const driver_umode_spec_t *spec) {
         printk("[%s] Refusing to enter U-mode: memory domain not enforceable; %s\n",
                spec->name ? spec->name : "driver",
                spec->fallback ? spec->fallback : "falling back to direct hardware access.");
-        g_umode_domain_count--;   /* the slot was never used */
-        return -1;
+        return -1;                /* the slot stays unused */
     }
 
     uintptr_t top = spec->stack_top ? spec->stack_top

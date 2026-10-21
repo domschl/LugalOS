@@ -1,5 +1,6 @@
 #include "drivers/i2c_bus.h"
 #include "drivers/driver_task.h"
+#include "kernel/sysreg.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
 #include "kernel/time.h"
@@ -15,6 +16,12 @@
 #include "lugalos_config.h"
 #include "arch/rp2350_clocks.h"
 #include <string.h>
+
+/* accepted: statistics. no_turn is added atomically by the callers; the rest
+ * by whoever drives the controller, which is serialised (the task, or a
+ * direct caller under g_esp_hw_lock). */
+static i2c_fail_counts_t g_i2c_fails;
+
 
 /* See drivers/include/drivers/i2c_bus.h for what this file is and why it is
  * not part of the RTC driver any more. */
@@ -189,7 +196,7 @@ void i2c_bus_init(void) {
 #endif
 }
 
-static uint32_t g_rp2350_last_abrt_source;
+static uint32_t g_rp2350_last_abrt_source;   /* accepted: the last abort, for `i2cdiag` */
 
 static bool rp2350_i2c_write_bytes_stop(uintptr_t base, uint8_t addr, const uint8_t *src, int len, bool stop) {
     REG(base + IC_ENABLE_OFFSET) = 0;
@@ -536,6 +543,8 @@ typedef struct {
     uint32_t  last_int, last_sr;                /* what the last transfer ended on */
 } esp_i2c_t;
 
+/* guarded by: g_esp_hw_lock (below), with g_esp, the controller selected:
+ * every transfer, bring-up and diagnostic selects and drives under it. */
 static esp_i2c_t g_esp_bus[] = {
 #if defined(CONFIG_BOARD_ESP32P4)
     { ESP_I2C0_BASE, ESP_I2C_SDA_GPIO, ESP_I2C_SCL_GPIO, ESP_I2C_SDA_SIG, ESP_I2C_SCL_SIG,
@@ -550,7 +559,7 @@ static esp_i2c_t g_esp_bus[] = {
 #endif
 };
 #define ESP_I2C_NBUS ((uint8_t)(sizeof(g_esp_bus) / sizeof(g_esp_bus[0])))
-static esp_i2c_t *g_esp = &g_esp_bus[0];
+static esp_i2c_t *g_esp = &g_esp_bus[0];   /* guarded by: g_esp_hw_lock */
 
 static inline void esp_sel(uint8_t bus) { g_esp = &g_esp_bus[bus]; }
 
@@ -614,8 +623,12 @@ static void esp_i2c_tab5_pi4ioe_init(void) {
 #endif
     time_delay_us(20000);
 
-    /* 3. Release LCD_RST (bit 4 = 1) and TP_RST (bit 5 = 1) */
-    esp_i2c_tab5_pi4ioe_reg(0x43u, 0x05u, 0x74u); /* OUT_SET: CAM_RST=1, TP_RST=1, LCD_RST=1, EXT5V=1 */
+    /* 3. Release TP_RST (bit 5 = 1) and LCD_RST, the way M5GFX does
+     * (M5GFX.cpp, Tab5 autodetect): LCD_RST becomes an input and its pull-up
+     * raises it, rather than the expander driving it high; its output latch
+     * stays 0, so the next reset starts low. */
+    esp_i2c_tab5_pi4ioe_reg(0x43u, 0x03u, 0x6Fu); /* IO_DIR: LCD_RST (P4) in */
+    esp_i2c_tab5_pi4ioe_reg(0x43u, 0x05u, 0x64u); /* OUT_SET: CAM_RST=1, TP_RST=1, EXT5V=1 */
     time_delay_us(50000);
 #if defined(CONFIG_TOUCH_INT_GPIO)
     REG(ESP_GPIO_ENABLE_W1TC) = (1u << tp_int);
@@ -630,17 +643,21 @@ static void esp_i2c_hw_bringup(bool verbose);
  * one step against another task doing the same. */
 static ylock_t g_pi4ioe_lock;
 
-bool i2c_tab5_expander_update(uint8_t addr, uint8_t mask, uint8_t bits) {
+static bool expander_update_reg(uint8_t addr, uint8_t reg, uint8_t mask, uint8_t bits) {
     if (!g_esp_bus[0].ready) esp_i2c_hw_bringup(false);
     ylock_acquire(&g_pi4ioe_lock);
-    uint8_t reg = 0x05u, cur = 0;
+    uint8_t cur = 0;
     bool ok = i2c_xfer(addr, &reg, 1, &cur, 1);
     if (ok) {
-        uint8_t w[2] = { 0x05u, (uint8_t)((cur & (uint8_t)~mask) | (bits & mask)) };
+        uint8_t w[2] = { reg, (uint8_t)((cur & (uint8_t)~mask) | (bits & mask)) };
         ok = i2c_xfer(addr, w, 2, NULL, 0);
     }
     ylock_release(&g_pi4ioe_lock);
     return ok;
+}
+
+bool i2c_tab5_expander_update(uint8_t addr, uint8_t mask, uint8_t bits) {
+    return expander_update_reg(addr, 0x05u, mask, bits);
 }
 
 int i2c_tab5_expander_read(uint8_t addr, uint8_t reg) {
@@ -649,10 +666,13 @@ int i2c_tab5_expander_read(uint8_t addr, uint8_t reg) {
 }
 
 void i2c_tab5_panel_reset(void) {
-    /* Pulse LCD_RST (bit 4) and TP_RST (bit 5) low, then release high */
-    i2c_tab5_expander_update(0x43u, 0x30u, 0x00u);
-    time_delay_us(20000);
-    i2c_tab5_expander_update(0x43u, 0x30u, 0x30u);
+    /* LCD_RST (P4) and TP_RST (P5) low; then TP_RST driven high and LCD_RST
+     * released to its pull-up (an input), as at boot and as M5GFX does. */
+    expander_update_reg(0x43u, 0x05u, 0x30u, 0x00u);   /* latches low first */
+    expander_update_reg(0x43u, 0x03u, 0x10u, 0x10u);   /* LCD_RST an output: low */
+    time_delay_us(10000);
+    expander_update_reg(0x43u, 0x03u, 0x10u, 0x00u);   /* LCD_RST an input: the pull-up */
+    expander_update_reg(0x43u, 0x05u, 0x20u, 0x20u);   /* TP_RST high */
     time_delay_us(100000);
 }
 
@@ -700,15 +720,14 @@ static void esp_pad_for_i2c(uint32_t gpio, uint32_t sig) {
 static void esp_i2c_ctrl_bringup(bool verbose) {
 #if defined(CONFIG_BOARD_ESP32P4)
     if (verbose) printk_critical("[I2Cdiag] 1: APB gate\n");
-    REG(P4_SOC_CLK_CTRL2) |= g_esp->apb_gate;
+    sysreg_set(P4_SOC_CLK_CTRL2, g_esp->apb_gate);
 
     if (verbose) printk_critical("[I2Cdiag] 2: module clock, XTAL source\n");
-    REG(P4_PERI_CLK_CTRL10) &= ~g_esp->clk_src;
-    REG(P4_PERI_CLK_CTRL10) |= g_esp->clk_en;
+    sysreg_update(P4_PERI_CLK_CTRL10, g_esp->clk_src, g_esp->clk_en);
 
     if (verbose) printk_critical("[I2Cdiag] 3: reset pulse\n");
-    REG(P4_HP_RST_EN1) |=  g_esp->rst;
-    REG(P4_HP_RST_EN1) &= ~g_esp->rst;
+    sysreg_set(P4_HP_RST_EN1, g_esp->rst);
+    sysreg_clear(P4_HP_RST_EN1, g_esp->rst);
 #else   /* ESP32-C6: the same three steps in the PCR -- APB clock, function clock from the 40 MHz
          * crystal undivided (so the timing below holds as it is), a reset pulse */
     REG(C6_PCR_I2C_CONF) |= (1u << 0);
@@ -743,9 +762,11 @@ static void esp_i2c_ctrl_bringup(bool verbose) {
  * Grove port behind bus 1, so bus 1's bus clear comes after that. Leaves bus
  * 0 selected. */
 static void esp_i2c_hw_bringup(bool verbose) {
+    ylock_acquire(&g_esp_hw_lock);   /* the helpers that call this at run time race otherwise */
     esp_sel(0);
     if (g_esp->ready) {
         if (verbose) printk_critical("[I2Cdiag] already up\n");
+        ylock_release(&g_esp_hw_lock);
         return;
     }
     esp_i2c_ctrl_bringup(verbose);
@@ -758,6 +779,7 @@ static void esp_i2c_hw_bringup(bool verbose) {
     }
     esp_sel(0);
     if (verbose) printk_critical("[I2Cdiag] bringup complete\n");
+    ylock_release(&g_esp_hw_lock);
 }
 
 void i2c_bus_init(void) { esp_i2c_hw_bringup(false); }
@@ -893,8 +915,10 @@ static void esp_i2c_bus_clear(void) {
      * going to. Give up rather than spin -- the enable is then cleared by
      * hand so the next transaction does not start into a pending clear. */
     uint64_t deadline = time_get_us() + 5000u;
-    while ((REG(ESP_I2C_SCL_SP_CONF) & ESP_I2C_SCL_RST_SLV_EN) != 0) {
-        if (time_get_us() >= deadline) {
+    for (;;) {
+        bool late = time_get_us() >= deadline;   /* before the read: see esp_i2c_run() */
+        if ((REG(ESP_I2C_SCL_SP_CONF) & ESP_I2C_SCL_RST_SLV_EN) == 0) break;
+        if (late) {
             REG(ESP_I2C_SCL_SP_CONF) = 0;
             break;
         }
@@ -924,7 +948,8 @@ static void esp_i2c_recover(void) {
 /* g_esp->last_int / _sr (declared above): what the last transaction
  * ended on. */
 
-static bool esp_i2c_run(void) {
+static bool esp_i2c_run(uint8_t addr) {
+    uint64_t t_start = time_get_us();
     REG(ESP_I2C_CTR) |= ESP_I2C_CONF_UPGATE;
     REG(ESP_I2C_CTR) |= ESP_I2C_TRANS_START;
 
@@ -936,13 +961,20 @@ static bool esp_i2c_run(void) {
      * bus scan looked exactly like a hung board. A transaction of a few bytes
      * at 100 kHz is under a millisecond; 10 ms is generous and still leaves a
      * full scan of an empty bus well under two seconds. */
+    /* The clock is read before the status, so the status that decides is
+     * always read after the deadline: a task preempted past it would
+     * otherwise give up on a word read before the preemption, and fail a
+     * transfer that had long finished (the BMI270 upload, under a busy
+     * display: "incomplete" after 11.9 ms). */
     uint64_t deadline = time_get_us() + 10000u;
     uint32_t st = 0;
-    do {
+    for (;;) {
+        bool late = time_get_us() >= deadline;
         st = REG(ESP_I2C_INT_RAW);
         if (st & (ESP_I2C_INT_NACK | ESP_I2C_INT_TIME_OUT | ESP_I2C_INT_ARB_LOST)) break;
         if (st & (ESP_I2C_INT_TRANS_COMPLETE | ESP_I2C_INT_END_DETECT)) break;
-    } while (time_get_us() < deadline);
+        if (late) break;
+    }
 
     g_esp->last_int = st;
     g_esp->last_sr  = REG(ESP_I2C_SR);
@@ -981,6 +1013,13 @@ static bool esp_i2c_run(void) {
      * next transaction's esp_i2c_begin() still resets the FSM and FIFOs, which
      * is what the NANO's stale-controller fix needed. */
     if (!ok) {
+        if (st & ESP_I2C_INT_ARB_LOST) g_i2c_fails.arb_lost++;
+        else if (st & ESP_I2C_INT_TIME_OUT) g_i2c_fails.timeout++;
+        else if (st & ESP_I2C_INT_NACK) g_i2c_fails.nack++;
+        else g_i2c_fails.incomplete++;
+        g_i2c_fails.last_addr = addr;
+        g_i2c_fails.last_int = st;
+        g_i2c_fails.last_us = (uint32_t)(time_get_us() - t_start);
         bool clean_nack = (st & ESP_I2C_INT_NACK) &&
                           !(st & (ESP_I2C_INT_TIME_OUT | ESP_I2C_INT_ARB_LOST)) &&
                           !(REG(ESP_I2C_SR) & ESP_I2C_SR_BUS_BUSY);
@@ -1067,7 +1106,7 @@ static bool i2c_write_bytes(uint8_t addr, const uint8_t *src, int len) {
     REG(ESP_I2C_COMD(0)) = ESP_CMD(ESP_CMD_RSTART, 0, 0, 0);
     REG(ESP_I2C_COMD(1)) = ESP_CMD(ESP_CMD_WRITE, 1, 0, 1 + len);
     REG(ESP_I2C_COMD(2)) = ESP_CMD(ESP_CMD_STOP, 0, 0, 0);
-    return esp_i2c_run();
+    return esp_i2c_run(addr);
 }
 /* Write-then-read with a repeated start, which is the shape every register
  * read on this bus takes: address+W, the register number, RESTART,
@@ -1100,7 +1139,7 @@ static bool i2c_xfer_raw(uint8_t addr, const uint8_t *w, int wlen,
     REG(ESP_I2C_COMD(c++)) = ESP_CMD(ESP_CMD_READ, 0, 1, 1);
     REG(ESP_I2C_COMD(c++)) = ESP_CMD(ESP_CMD_STOP, 0, 0, 0);
 
-    if (!esp_i2c_run()) return false;
+    if (!esp_i2c_run(addr)) return false;
     for (int i = 0; i < rlen; i++) r[i] = (uint8_t)(REG(ESP_I2C_DATA) & 0xffu);
     return true;
 }
@@ -1116,7 +1155,7 @@ static bool __attribute__((unused)) i2c_probe_addr(uint8_t addr) {
     REG(ESP_I2C_COMD(0)) = ESP_CMD(ESP_CMD_RSTART, 0, 0, 0);
     REG(ESP_I2C_COMD(1)) = ESP_CMD(ESP_CMD_WRITE, 1, 0, 1);
     REG(ESP_I2C_COMD(2)) = ESP_CMD(ESP_CMD_STOP, 0, 0, 0);
-    return esp_i2c_run();
+    return esp_i2c_run(addr);
 }
 
 static bool i2c_xfer_raw_bus(uint8_t bus, uint8_t addr, const uint8_t *w, int wlen,
@@ -1278,6 +1317,8 @@ void i2c_scan_bus(void) {
 #define I2C_REQ_CAP  (5u + I2C_XFER_WMAX)
 #define I2C_RESP_CAP (1u + I2C_XFER_RMAX)
 
+/* single task: the i2c task's endpoint buffers (chan_call() copies in and
+ * out under the endpoint's busy flag). */
 static uint8_t         g_i2c_req[I2C_REQ_CAP];
 static uint8_t         g_i2c_resp[I2C_RESP_CAP];
 static chan_endpoint_t *g_i2c_ep;
@@ -1285,9 +1326,10 @@ static int              g_i2c_task_pid = -1;
 
 /* Verify: counts chan_call()s actually served -- see
  * drivers/uart_16550.c's g_uart_write_calls comment for the reasoning. */
-static uint32_t g_i2c_calls;
-
+static uint32_t g_i2c_calls;   /* accepted: a statistic, counted by the callers */
 uint32_t i2c_task_call_count(void) { return g_i2c_calls; }
+
+void i2c_fail_counts(i2c_fail_counts_t *out) { *out = g_i2c_fails; }
 
 bool i2c_task_alive(void) {
     if (g_i2c_task_pid < 0) return false;
@@ -1685,28 +1727,17 @@ int i2c_task_start(void) {
     return pid;
 }
 
-/* chan_call() fails at once while the task is serving another client, so
- * the wait for a turn is here. It is bounded in time, not in attempts: a
- * yield returns immediately when nothing else is ready, and eight of them
- * were over long before a 30-byte write (3 ms at 100 kHz) was -- the touch
- * poller counted an I2C error for every transfer that arrived during the
- * BMI270's microcode upload. Yield a few times, then sleep a millisecond at
- * a time, for up to I2C_CALL_WAIT_MS. */
-#define I2C_CALL_WAIT_MS 50u
-
+/* Waits its turn in the endpoint's FIFO (chan_call_wait()), so a client
+ * issuing transfers back to back -- the BMI270's microcode upload -- cannot
+ * keep the bus from one that was already waiting, such as the touch poller. */
 int i2c_task_call(const uint8_t *req, uint32_t req_len, uint8_t *resp, uint32_t resp_max) {
-    uint64_t deadline = time_get_ms() + I2C_CALL_WAIT_MS;
-    for (int attempt = 0; ; attempt++) {
-        int n = chan_call(g_i2c_ep, req, req_len, resp, resp_max);
-        /* counted here, on the client side -- see
-         * drivers/tm1638_rp2350.c's tm1638_call_with_retry() comment,
-         * same reasoning: a U-mode server cannot touch g_i2c_calls, an
-         * ordinary kernel .bss global no domain grants it. */
-        if (n >= 0) { g_i2c_calls++; return n; }
-        if (!i2c_task_alive() || time_get_ms() >= deadline) return -1;
-        if (attempt < 8) sched_yield();
-        else task_sleep_ms(1);
-    }
+    if (!i2c_task_alive()) return -1;
+    int n = chan_call_wait(g_i2c_ep, req, req_len, resp, resp_max, CHAN_WAIT_MS);
+    /* counted here, on the client side: a U-mode server cannot touch
+     * g_i2c_calls, an ordinary kernel .bss global no domain grants it. */
+    if (n >= 0) g_i2c_calls++;
+    else __atomic_fetch_add(&g_i2c_fails.no_turn, 1u, __ATOMIC_RELAXED);
+    return n;
 }
 
 #if defined(CONFIG_BOARD_RP2350)
@@ -1720,14 +1751,14 @@ int i2c_task_call(const uint8_t *req, uint32_t req_len, uint8_t *resp, uint32_t 
  * hand-rolled per file. Only meaningful where the "i2c" task actually runs
  * in U-mode -- see this file's own #if defined(CONFIG_BOARD_RP2350) split
  * above. */
-static volatile uintptr_t g_i2c_canary = 0xC0FFEE;
+static volatile uintptr_t g_i2c_canary = 0xC0FFEE;   /* accepted: an isolation test's canary or handshake */
 
 I2C_UATTR static void i2c_intruder(void) {
     g_i2c_canary = 0xDEAD;
     for (;;) { } /* only reached if the store was NOT stopped */
 }
 
-static volatile bool g_i2c_intruder_entered;
+static volatile bool g_i2c_intruder_entered;   /* accepted: an isolation test's canary or handshake */
 
 /* `arg` is the U-mode stack -- allocated by i2c_isolation_test() below,
  * not here, so it can free it once the task is confirmed DEAD (same
@@ -1815,19 +1846,26 @@ const char *i2c_bus_part(uint8_t bus, uint8_t addr) {
 }
 
 /* The open probe window, if any: whose, and on which task. Before the
- * scheduler runs every caller is TASK_NO_PID, which is still one caller. */
+ * scheduler runs every caller is TASK_NO_PID, which is still one caller.
+ * guarded by: g_probe_lock (below), held for the window; transfers read them
+ * unlocked and act only on a window of their own task. */
 static const char *volatile g_probe_who;
 static volatile int         g_probe_pid;
 
+/* One window at a time: held from begin to end (a second task's begin waits
+ * here). A wait-then-set let two tasks that found it free both open one. */
+static ylock_t g_probe_lock;
+
 void i2c_probe_begin(const char *who) {
-    int me = sched_current_pid();
-    while (g_probe_who && g_probe_pid != me) sched_yield();
-    g_probe_pid = me;
+    ylock_acquire(&g_probe_lock);
+    g_probe_pid = sched_current_pid();
     g_probe_who = who ? who : "";
 }
 
 void i2c_probe_end(void) {
-    if (g_probe_pid == sched_current_pid()) g_probe_who = NULL;
+    if (g_probe_pid != sched_current_pid()) return;
+    g_probe_who = NULL;
+    ylock_release(&g_probe_lock);
 }
 
 static bool i2c_probe_refused(uint8_t bus, uint8_t addr) {

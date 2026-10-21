@@ -1,3 +1,4 @@
+#include "kernel/lock.h"
 #include "kernel/power.h"
 #include "fs/vfs.h"
 #include "fs/fat32.h"
@@ -26,6 +27,9 @@
 #include "drivers/sensor_hub.h"
 #include "drivers/piousb.h"
 #include "kernel/time.h"
+#include "kernel/random.h"
+#include "kernel/sched.h"
+#include "kernel/devirq.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
 #include "kernel/clipboard.h"
@@ -63,6 +67,9 @@
 #include "drivers/gps_pps.h"
 #endif
 
+/* guarded by: each volume's own fs->lock (fs/fat32.c) for every operation;
+ * re-initialised only by `format` and a new RAM disk, which first withdraw
+ * the volume from lookups and refuse one with users (mount_quiesce()). */
 static fat32_fs_t g_fat32_sd;
 static fat32_fs_t g_fat32_ram;
 static fat32_fs_t g_fat32_flash;
@@ -76,8 +83,10 @@ static fat32_fs_t g_fat32_flash;
 #define VFS_SD_FAT_CACHE 1
 static uint32_t g_sd_fat_cache[128];
 #endif
+/* guarded by: mount_quiesce() for `format` and a new RAM disk; set at boot otherwise. */
 static bool g_sd_mounted = false;
 static bool g_ram_mounted = false;
+/* single task: the boot, before any reader runs; constant after. */
 static bool g_flash_mounted = false;
 
 typedef struct {
@@ -86,6 +95,7 @@ typedef struct {
 } service_entry_t;
 
 #define MAX_SERVICES 8
+/* single task: the boot, before any reader runs; constant after. */
 static service_entry_t g_services[MAX_SERVICES];
 static int g_num_services = 0;
 
@@ -133,15 +143,27 @@ typedef struct {
     bool *mounted_ptr;            /* MOUNT_FAT32; NULL = always considered mounted */
     p9_remote_mount_t *remote;    /* MOUNT_REMOTE9P */
     uint8_t probe_misses;         /* vfs_volume_probe()'s failures in a row */
+    /* Lifetime: users counts the operations and open handles on the entry;
+     * an unmount marks it dying (no new lookups find it) and the last user's
+     * mount_put() clears it. ready: filled in (a remote mount's handshake
+     * runs after its slot is taken). */
+    uint16_t users;
+    bool dying;
+    bool ready;
 } mount_entry_t;
 
 #define MAX_MOUNTS 10
+/* guarded by: g_mount_lock for every change of an entry's state (taking,
+ * readying, users, dying, clearing) and for lookups; a found entry stays
+ * valid while its caller holds a reference (mount_get/mount_put). The
+ * listings (`ls /`, /proc/mounts) read names unlocked; they can show one
+ * mid-change. */
 static mount_entry_t g_mounts[MAX_MOUNTS];
+static spinlock_t    g_mount_lock;
 
 /* --- Handle table ---
- * A flat array, not a union: at 8 handles this is a few KB (dominated by
- * the 512-byte proc_buf per slot), affordable even on RP2350's SRAM
- * budget. `kind` mirrors the owning mount's mount_kind_t, plus a
+ * A flat array, not a union: about 250 bytes a handle, the /proc text living
+ * in a page of its own while the file is open. `kind` mirrors the owning mount's mount_kind_t, plus a
  * root-pseudo-directory case (kind == (mount_kind_t)-1, see vfs_open())
  * for "/" itself, which isn't a real mount_entry_t. MOUNT_SRV never
  * appears here -- /srv/ stays on its own direct-dispatch path in
@@ -160,22 +182,12 @@ typedef struct {
     bool wrote;                  /* MOUNT_FAT32: sync FSInfo on close */
     uint32_t dir_cluster;        /* valid for MOUNT_FAT32, is_dir */
     char rel_path[128];          /* path within volume (FAT32) or device name (DEV) */
-    /* Generated /proc file content (PROC, non-dir), shared by every file
-     * under /proc that this VFS serves. 512 silently truncated /proc/config on RP2350
-     * once every board feature's pin fields were in it -- caught by
-     * tests/hw/test_rp2350.py's K3, not by anything that runs on QEMU,
-     * since QEMU has no pin model to report. Measured, not assumed: the
-     * worst case (every ENABLE_* flag on at once, including the clock
-     * persona's fields alongside chess's) is 791 bytes including the NUL:
-     *
-     *     PALLOC_MAX_PAGES=128\nUART0_BASE=0x40070000\n...DCF77_WARMUP_MS=5000\n
-     *
-     * That was 690 before D2 added
-     * ENABLE_DCF77 plus four DCF77_* pin lines -- 95 bytes, which is what
-     * took it past the old 768 and would have silently truncated the tail of
-     * /proc/config all over again. 896 gives headroom without padding
-     * arbitrarily. */
-    char proc_buf[896];
+    /* Generated /proc file content (PROC, non-dir): one page, taken at open
+     * (from the bulk zone where there is one) and given back at close. It
+     * used to be 896 bytes inside every handle, which cut /proc/ps off at
+     * thirteen tasks and cost 896 bytes per handle for a /proc file few
+     * handles ever hold. */
+    char *proc_buf;
     uint32_t proc_len;
     /* /proc/kmsg only: served straight from the klog ring rather than
      * generated into proc_buf, which is far too small to hold it. The window
@@ -186,9 +198,25 @@ typedef struct {
     uint64_t kmsg_start;
     p9_remote_mount_t *remote_mount; /* valid for MOUNT_REMOTE9P */
     uint32_t remote_fid;              /* valid for MOUNT_REMOTE9P */
+    mount_entry_t *mnt;               /* the mount reference the open handle holds */
 } vfs_handle_t;
 
+/* guarded by: g_handles_lock for taking a slot (in_use); an open handle is
+ * its opener's, and freeing it is one clear of in_use. */
 static vfs_handle_t g_handles[VFS_MAX_HANDLES];
+static spinlock_t   g_handles_lock = SPINLOCK_INIT;
+/* guarded by: g_handles_lock. How full the table has been, how often an open
+ * found it full and waited, and how often the wait ran out. */
+static uint32_t g_handles_peak, g_handles_waits, g_handles_none;
+#define VFS_OPEN_WAIT_MS 500u
+
+void vfs_handle_stats(vfs_handle_stats_t *out) {
+    uintptr_t f = spin_lock_irqsave(&g_handles_lock);
+    out->peak = g_handles_peak;
+    out->waits = g_handles_waits;
+    out->none = g_handles_none;
+    spin_unlock_irqrestore(&g_handles_lock, f);
+}
 
 #include "drivers/spisd.h"
 #include "drivers/sdmmc.h"
@@ -206,20 +234,86 @@ static int vfs_mount_flashdisk(void) {
     return -1;
 }
 
-static mount_entry_t *mount_alloc(const char *name) {
+/* `ready` false: the caller fills the entry in and readies it with
+ * mount_ready(); lookups pass it by until then. A dying entry's name is free
+ * for a new mount (a radio that restarted is mounted again while handles to
+ * the old session close). */
+static mount_entry_t *mount_alloc(const char *name, bool ready) {
     if (!name || !name[0] || strlen(name) >= sizeof(g_mounts[0].name)) return NULL;
+    mount_entry_t *e = NULL;
+    uintptr_t f = spin_lock_irqsave(&g_mount_lock);
+    bool taken = false;
     for (int i = 0; i < MAX_MOUNTS; i++) {
-        if (g_mounts[i].in_use && strcmp(g_mounts[i].name, name) == 0) return NULL; // name collision
+        if (g_mounts[i].in_use && !g_mounts[i].dying && strcmp(g_mounts[i].name, name) == 0) taken = true;
     }
-    for (int i = 0; i < MAX_MOUNTS; i++) {
+    for (int i = 0; !taken && i < MAX_MOUNTS; i++) {
         if (!g_mounts[i].in_use) {
-            memset(&g_mounts[i], 0, sizeof(g_mounts[i]));
-            strncpy(g_mounts[i].name, name, sizeof(g_mounts[i].name) - 1);
-            g_mounts[i].in_use = true;
-            return &g_mounts[i];
+            e = &g_mounts[i];
+            memset(e, 0, sizeof(*e));
+            strncpy(e->name, name, sizeof(e->name) - 1);
+            e->in_use = true;
+            e->ready = ready;
+            break;
         }
     }
-    return NULL; // table full
+    spin_unlock_irqrestore(&g_mount_lock, f);
+    return e;   /* NULL: the name is taken, or the table is full */
+}
+
+static void mount_ready(mount_entry_t *e) {
+    uintptr_t f = spin_lock_irqsave(&g_mount_lock);
+    e->ready = true;
+    spin_unlock_irqrestore(&g_mount_lock, f);
+}
+
+/* Gives up a slot that never became ready. */
+static void mount_abandon(mount_entry_t *e) {
+    uintptr_t f = spin_lock_irqsave(&g_mount_lock);
+    memset(e, 0, sizeof(*e));
+    spin_unlock_irqrestore(&g_mount_lock, f);
+}
+
+/* Drops a reference from mount_get() (NULL is fine). The last one on a dying
+ * entry clears it and closes its remote session, outside the lock. */
+uint32_t vfs_mount_users(const char *name) {
+    uint32_t n = 0;
+    uintptr_t f = spin_lock_irqsave(&g_mount_lock);
+    for (int i = 0; i < MAX_MOUNTS; i++)
+        if (g_mounts[i].in_use && strcmp(g_mounts[i].name, name) == 0) n = g_mounts[i].users;
+    spin_unlock_irqrestore(&g_mount_lock, f);
+    return n;
+}
+
+static void mount_put(mount_entry_t *m) {
+    if (!m) return;
+    p9_remote_mount_t *close = NULL;
+    uintptr_t f = spin_lock_irqsave(&g_mount_lock);
+    if (m->users) m->users--;
+    if (m->dying && m->users == 0) {
+        close = m->remote;
+        memset(m, 0, sizeof(*m));
+    }
+    spin_unlock_irqrestore(&g_mount_lock, f);
+    if (close) p9_remote_mount_close(close);
+}
+
+/* Takes the named volume out of lookups for a re-initialisation (`format`,
+ * a new RAM disk), if no one but `own` references holds it: the test and the
+ * withdrawal are one step, so no open can slip in between. True: withdrawn
+ * (or no such mount); give it back with mount_ready(). */
+static bool mount_quiesce(const char *name, uint16_t own, mount_entry_t **out) {
+    bool ok = true;
+    *out = NULL;
+    uintptr_t f = spin_lock_irqsave(&g_mount_lock);
+    for (int i = 0; i < MAX_MOUNTS; i++) {
+        mount_entry_t *e = &g_mounts[i];
+        if (!e->in_use || e->dying || strcmp(e->name, name) != 0) continue;
+        if (e->users > own) ok = false;
+        else { e->ready = false; *out = e; }
+        break;
+    }
+    spin_unlock_irqrestore(&g_mount_lock, f);
+    return ok;
 }
 
 static bool mount_is_active(const mount_entry_t *m) {
@@ -235,7 +329,7 @@ static void mount_table_init(void) {
     memset(g_mounts, 0, sizeof(g_mounts));
 
     mount_entry_t *e;
-    e = mount_alloc("flash0");
+    e = mount_alloc("flash0", true);
     e->kind = MOUNT_FAT32; e->fs = &g_fat32_flash; e->mounted_ptr = &g_flash_mounted;
     /* Read-only everywhere the backing store cannot be written, which until
      * E6 was everywhere. The QEMU targets back /flash0 with a C array in the
@@ -256,23 +350,23 @@ static void mount_table_init(void) {
     strncpy(e->label, "FAT32 Embedded Flash ROM", sizeof(e->label) - 1);
 #endif
 
-    e = mount_alloc("sd0");
+    e = mount_alloc("sd0", true);
     e->kind = MOUNT_FAT32; e->fs = &g_fat32_sd; e->mounted_ptr = &g_sd_mounted;
     strncpy(e->label, "FAT32 Persistent SD", sizeof(e->label) - 1);
 
-    e = mount_alloc("ram0");
+    e = mount_alloc("ram0", true);
     e->kind = MOUNT_FAT32; e->fs = &g_fat32_ram; e->mounted_ptr = &g_ram_mounted;
     strncpy(e->label, "FAT32 In-Memory RAMDisk", sizeof(e->label) - 1);
 
-    e = mount_alloc("proc");
+    e = mount_alloc("proc", true);
     e->kind = MOUNT_PROC;
     strncpy(e->label, "Synthetic Metrics System", sizeof(e->label) - 1);
 
-    e = mount_alloc("dev");
+    e = mount_alloc("dev", true);
     e->kind = MOUNT_DEV;
     strncpy(e->label, "Hardware Device Nodes", sizeof(e->label) - 1);
 
-    e = mount_alloc("srv");
+    e = mount_alloc("srv", true);
     e->kind = MOUNT_SRV;
     strncpy(e->label, "IPC Service Registry", sizeof(e->label) - 1);
 }
@@ -284,18 +378,19 @@ static void mount_table_init(void) {
  * an existing mount, the table is full, or the handshake itself fails. */
 int vfs_mount_remote(const char *name, p9_link_t *link) {
     if (!link) return -1;
-    mount_entry_t *e = mount_alloc(name);
+    mount_entry_t *e = mount_alloc(name, false);
     if (!e) return -1;
 
     p9_remote_mount_t *remote = p9_remote_mount_open(link);
     if (!remote) {
-        memset(e, 0, sizeof(*e));
+        mount_abandon(e);
         return -1;
     }
 
     e->kind = MOUNT_REMOTE9P;
     e->remote = remote;
     ksnprintf(e->label, sizeof(e->label), "Remote 9P Namespace (%s)", link->name ? link->name : "?");
+    mount_ready(e);
     printk("[VFS Server] Mounted remote 9P namespace on /%s/ (link '%s')\n", name, link->name ? link->name : "?");
     return 0;
 }
@@ -325,15 +420,22 @@ int vfs_mount_local(const char *name) {
  * the system assumes they exist. */
 int vfs_unmount(const char *name) {
     if (!name) return -1;
+    mount_entry_t *m = NULL;
+    uintptr_t f = spin_lock_irqsave(&g_mount_lock);
     for (int i = 0; i < MAX_MOUNTS; i++) {
-        if (g_mounts[i].in_use && g_mounts[i].kind == MOUNT_REMOTE9P && strcmp(g_mounts[i].name, name) == 0) {
-            p9_remote_mount_close(g_mounts[i].remote);
-            memset(&g_mounts[i], 0, sizeof(g_mounts[i]));
-            printk("[VFS Server] Unmounted /%s/\n", name);
-            return 0;
+        mount_entry_t *e = &g_mounts[i];
+        if (e->in_use && e->ready && !e->dying && e->kind == MOUNT_REMOTE9P && strcmp(e->name, name) == 0) {
+            e->dying = true;
+            e->users++;               /* this call's own, dropped below */
+            m = e;
+            break;
         }
     }
-    return -1;
+    spin_unlock_irqrestore(&g_mount_lock, f);
+    if (!m) return -1;
+    printk("[VFS Server] Unmounted /%s/\n", name);
+    mount_put(m);                     /* clears it now, or when its last user leaves */
+    return 0;
 }
 
 void vfs_server_init(void) {
@@ -458,7 +560,21 @@ void vfs_volume_probe(const char *name) {
     }
 }
 
+static int vfs_mount_ramdisk_quiet(int size_kb);
+
+/* Not under open files: a new RAM disk replaces the storage under them. */
 int vfs_mount_ramdisk(int size_kb) {
+    mount_entry_t *e;
+    if (!mount_quiesce("ram0", 0, &e)) {
+        printk("[VFS Server] /ram0/ is in use; not replaced\n");
+        return -1;
+    }
+    int rc = vfs_mount_ramdisk_quiet(size_kb);
+    if (e) mount_ready(e);
+    return rc;
+}
+
+static int vfs_mount_ramdisk_quiet(int size_kb) {
     block_dev_t *ram_dev = ramdisk_get_device();
     if (ram_dev) {
         /* The storage is allocated here rather than reserved in .bss (C5), so
@@ -529,8 +645,10 @@ int vfs_register_service(const char *service_name, int target_pid) {
  * callers handle the root pseudo-directory themselves. Otherwise, NULL
  * means no mount matches the path's first component -- explicit failure,
  * not a fallback to any particular volume (closes review finding A2). */
-static mount_entry_t *vfs_resolve(const char *path, const char **rel_path, bool *is_root) {
-    static const char *empty_str = "";
+/* Finds the mount a path is on and takes a reference to it: the caller ends
+ * with mount_put(), and until then the entry cannot be cleared under it. */
+static mount_entry_t *mount_get(const char *path, const char **rel_path, bool *is_root) {
+    static const char *empty_str = "";   /* accepted: only ever assigned itself */
     if (!rel_path) rel_path = &empty_str;
     if (is_root) *is_root = false;
 
@@ -551,13 +669,19 @@ static mount_entry_t *vfs_resolve(const char *path, const char **rel_path, bool 
     memcpy(comp, path, complen);
     comp[complen] = '\0';
 
+    mount_entry_t *m = NULL;
+    uintptr_t f = spin_lock_irqsave(&g_mount_lock);
     for (int i = 0; i < MAX_MOUNTS; i++) {
-        if (g_mounts[i].in_use && strcmp(g_mounts[i].name, comp) == 0) {
-            *rel_path = slash ? slash + 1 : empty_str;
-            return &g_mounts[i];
+        mount_entry_t *e = &g_mounts[i];
+        if (e->in_use && e->ready && !e->dying && strcmp(e->name, comp) == 0) {
+            e->users++;
+            m = e;
+            break;
         }
     }
-    return NULL; // no such mount
+    spin_unlock_irqrestore(&g_mount_lock, f);
+    if (m) *rel_path = slash ? slash + 1 : empty_str;
+    return m;   /* NULL: no such mount */
 }
 
 /* Generates the current content of a /proc/<name> virtual file directly into
@@ -644,7 +768,11 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
              * whose stack is the linker's and is reported by the Boot Stack
              * line in /proc/meminfo instead. */
             {
+                /* The deeper of the poison scan and the stack pointer seen
+                 * at switches and traps: a large frame can jump the poison. */
                 uint32_t su = sched_stack_used(pid);
+                uint32_t sp_depth = sched_stack_sp_depth(pid);
+                if (sp_depth > su) su = sp_depth;
                 uint32_t ss = sched_stack_size(pid);
                 if (ss == 0) {
                     used += (uint32_t)ksnprintf(buf + used, cap - used, "-\n");
@@ -702,7 +830,7 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
          * the board's actual RAM, which is the thing that decides whether
          * another static array fits.
          *
-         * The whole report has to land inside the handle's 896-byte proc_buf
+         * The whole report has to land inside the handle's one-page proc_buf
          * (see vfs_handle_t). ksnprintf() truncates safely rather than
          * overrunning, so the failure mode is a silently short file; the
          * Storage line is deliberately kept last so that a test asserting on
@@ -1080,8 +1208,7 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
             "%s %s\n", LUGALOS_VERSION, LUGALOS_BUILD_ID);
         return (int)used;
     } else if (strcmp(rel, "devices") == 0) {
-        /* B0 device registry (kernel/device.h). Compact deliberately: this
-         * is generated into the handle's fixed 512-byte proc_buf. */
+        /* B0 device registry (kernel/device.h), into the handle's proc_buf. */
         used = append_col(buf, used, cap, "Name", 11);
         used = append_col(buf, used, cap, "Kind", 9);
         used += (uint32_t)ksnprintf(buf + used, cap - used, "State\n");
@@ -2109,14 +2236,10 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
 /* Says so when the answer did not fit, instead of handing back a plausible
  * prefix.
  *
- * proc_buf is a fixed 896 bytes and several of these files are generated
- * from tables that grow: /proc/ps runs out at about thirteen tasks against
- * a MAX_TASKS of 24, and /proc/config has already come within 105 bytes of
- * the limit once (see proc_buf's own comment). Every producer above stops
- * cleanly at `cap`, which is safe and completely silent -- the reader gets a
- * table that simply ends, with no way to tell a short system from a clipped
- * one. Enlarging the buffer is the wrong trade at 8 handles on a 264 KB
- * part; being honest about the edge costs 18 bytes of text.
+ * proc_buf is one page and several of these files are generated from tables
+ * that grow. Every producer above stops cleanly at `cap`, which is safe and
+ * completely silent -- the reader gets a table that simply ends, with no way
+ * to tell a short system from a clipped one.
  *
  * Stamped over the tail rather than appended, because by definition there is
  * no room left to append into. */
@@ -2187,10 +2310,8 @@ static const char *g_dev_names[]  = { "uart", "null", "zero", "eeprom", "clipboa
  * on this API in fs/include/fs/vfs.h. */
 /* Fills an already-reserved handle. Split out of vfs_open() so that the
  * slot can be marked in_use *before* any of this runs -- see vfs_open(). */
-static int vfs_open_into(vfs_handle_t *h, const char *path, int flags) {
-    bool is_root;
-    const char *rel = NULL;
-    mount_entry_t *m = vfs_resolve(path, &rel, &is_root);
+static int vfs_open_into_on(mount_entry_t *m, const char *rel, bool is_root, vfs_handle_t *h, const char *path, int flags) {
+    (void)path;
 
     if (is_root) {
         h->kind = VFS_KIND_ROOT;
@@ -2235,8 +2356,15 @@ static int vfs_open_into(vfs_handle_t *h, const char *path, int flags) {
             h->kmsg_start = klog_oldest();
             h->proc_len = (uint32_t)(klog_total() - h->kmsg_start);
         } else {
-            int len = vfs_generate_proc_content(h->rel_path, h->proc_buf, sizeof(h->proc_buf));
-            if (len < 0) return -1;
+            h->proc_buf = palloc_pages_bulk(1);
+            if (!h->proc_buf) h->proc_buf = palloc_pages(1);
+            if (!h->proc_buf) return -1;
+            int len = vfs_generate_proc_content(h->rel_path, h->proc_buf, PAGE_SIZE);
+            if (len < 0) {
+                palloc_free(h->proc_buf, 1);
+                h->proc_buf = NULL;
+                return -1;
+            }
             h->proc_len = (uint32_t)len;
         }
         h->kind = MOUNT_PROC;
@@ -2284,17 +2412,51 @@ static int vfs_open_into(vfs_handle_t *h, const char *path, int flags) {
     return 0;
 }
 
+static int vfs_open_into(vfs_handle_t *h, const char *path, int flags) {
+    bool is_root;
+    const char *rel = NULL;
+    mount_entry_t *m = mount_get(path, &rel, &is_root);
+    int r = vfs_open_into_on(m, rel, is_root, h, path, flags);
+    if (r >= 0) h->mnt = m;           /* the open handle keeps it */
+    else mount_put(m);
+    return r;
+}
+
 int vfs_open(const char *path, int flags) {
     if (!path) return -1;
 
+    /* Find and take the slot as one step: two tasks opening at once would
+     * otherwise both find the same free one. */
     int slot = -1;
-    for (int i = 0; i < VFS_MAX_HANDLES; i++) {
-        if (!g_handles[i].in_use) { slot = i; break; }
+    bool waited = false;
+    uint64_t deadline = 0;
+    for (;;) {
+        bool late = waited && time_get_ms() >= deadline;
+        unsigned used = 0;
+        uintptr_t f = spin_lock_irqsave(&g_handles_lock);
+        for (int i = 0; i < VFS_MAX_HANDLES; i++) {
+            if (!g_handles[i].in_use) { if (slot < 0) slot = i; }
+            else used++;
+        }
+        if (slot >= 0) {
+            memset(&g_handles[slot], 0, sizeof(g_handles[slot]));
+            g_handles[slot].in_use = true;
+            if (used + 1u > g_handles_peak) g_handles_peak = used + 1u;
+        } else if (!waited) {
+            g_handles_waits++;
+        } else if (late) {
+            g_handles_none++;
+        }
+        spin_unlock_irqrestore(&g_handles_lock, f);
+        if (slot >= 0) break;
+        /* Every handle is open: wait for one to be closed, as a busy endpoint
+         * is waited for, where waiting is possible. */
+        if (late || !sched_active() || devirq_in_handler()) return -1;
+        if (!waited) { waited = true; deadline = time_get_ms() + VFS_OPEN_WAIT_MS; }
+        task_sleep_ms(1u);
     }
-    if (slot < 0) return -1;
 
     vfs_handle_t *h = &g_handles[slot];
-    memset(h, 0, sizeof(*h));
 
     /* Reserve the slot BEFORE doing any work that might re-enter vfs_open().
      *
@@ -2313,11 +2475,13 @@ int vfs_open(const char *path, int flags) {
      * A truly remote peer could never expose this (its vfs_open() runs on
      * another machine), which is exactly why exercising the local case is
      * worth doing: it puts the client and server in one address space, where
-     * shared-state bugs like this one become reachable. */
-    h->in_use = true;
+     * shared-state bugs like this one become reachable. (Taken above, under
+     * g_handles_lock.) */
 
     if (vfs_open_into(h, path, flags) < 0) {
+        uintptr_t r = spin_lock_irqsave(&g_handles_lock);
         memset(h, 0, sizeof(*h)); /* releases the reservation */
+        spin_unlock_irqrestore(&g_handles_lock, r);
         return -1;
     }
 
@@ -2608,7 +2772,12 @@ int vfs_close(int fd) {
     /* A written file's close is where FSInfo's free count goes back to disk
      * (fat32_sync()): one sector, so `df` after a reboot need not rescan. */
     if (h->kind == MOUNT_FAT32 && h->wrote) fat32_sync(h->fs);
+    if (h->proc_buf) palloc_free(h->proc_buf, 1);
+    mount_entry_t *mnt = h->mnt;
+    uintptr_t f = spin_lock_irqsave(&g_handles_lock);   /* not taken mid-clear */
     memset(h, 0, sizeof(*h));
+    spin_unlock_irqrestore(&g_handles_lock, f);
+    mount_put(mnt);
     return 0;
 }
 
@@ -2619,12 +2788,10 @@ int vfs_close(int fd) {
  * MOUNT_REMOTE9P support "for free" -- they were already generic over
  * whatever vfs_open()/vfs_pread()/vfs_pwrite() resolve to. --- */
 
-int vfs_read(const char *path, void *buf, uint32_t max_len) {
+static int vfs_read_on(mount_entry_t *m, const char *rel, bool is_root, const char *path, void *buf, uint32_t max_len) {
+    (void)is_root;
     if (!path) return -1;
 
-    bool is_root;
-    const char *rel = NULL;
-    mount_entry_t *m = vfs_resolve(path, &rel, &is_root);
 
     if (m && m->kind == MOUNT_SRV) {
         if (strcmp(rel, "p9_loopback") == 0 || strcmp(rel, "loopback_9p") == 0 || strcmp(rel, "p9") == 0 || strcmp(rel, "net") == 0) {
@@ -2657,12 +2824,19 @@ int vfs_read(const char *path, void *buf, uint32_t max_len) {
     return n;
 }
 
-int vfs_write(const char *path, const void *buf, uint32_t len) {
-    if (!path) return -1;
-
+int vfs_read(const char *path, void *buf, uint32_t max_len) {
     bool is_root;
     const char *rel = NULL;
-    mount_entry_t *m = vfs_resolve(path, &rel, &is_root);
+    mount_entry_t *m = mount_get(path, &rel, &is_root);
+    int r = vfs_read_on(m, rel, is_root, path, buf, max_len);
+    mount_put(m);
+    return r;
+}
+
+static int vfs_write_on(mount_entry_t *m, const char *rel, bool is_root, const char *path, const void *buf, uint32_t len) {
+    (void)is_root;
+    if (!path) return -1;
+
 
     if (m && m->kind == MOUNT_FAT32 && m->read_only) {
         printk("[VFS Error] '/%s/' is read-only\n", m->name);
@@ -2685,7 +2859,7 @@ int vfs_write(const char *path, const void *buf, uint32_t len) {
         chan_endpoint_t *ep = chan_lookup(rel);
         if (ep) {
             uint8_t reply[64];
-            int n = chan_call(ep, (const uint8_t *)buf, len, reply, sizeof(reply));
+            int n = chan_call_wait(ep, (const uint8_t *)buf, len, reply, sizeof(reply), CHAN_WAIT_MS);
             return (n < 0) ? -1 : 0;
         }
         for (int i = 0; i < g_num_services; i++) {
@@ -2713,13 +2887,20 @@ int vfs_write(const char *path, const void *buf, uint32_t len) {
     return ((uint32_t)n == len) ? 0 : -1;
 }
 
-int vfs_append(const char *path, const void *buf, uint32_t len) {
+int vfs_write(const char *path, const void *buf, uint32_t len) {
+    bool is_root;
+    const char *rel = NULL;
+    mount_entry_t *m = mount_get(path, &rel, &is_root);
+    int r = vfs_write_on(m, rel, is_root, path, buf, len);
+    mount_put(m);
+    return r;
+}
+
+static int vfs_append_on(mount_entry_t *m, const char *rel, bool is_root, const char *path, const void *buf, uint32_t len) {
+    (void)rel; (void)is_root;
     if (!path) return -1;
     if (!buf || len == 0) return 0; // matches fat32_append_file()'s own no-op guard
 
-    bool is_root;
-    const char *rel = NULL;
-    mount_entry_t *m = vfs_resolve(path, &rel, &is_root);
     if (!m) return -1;
     if (m->kind == MOUNT_FAT32 && m->read_only) {
         printk("[VFS Error] '/%s/' is read-only\n", m->name);
@@ -2734,6 +2915,15 @@ int vfs_append(const char *path, const void *buf, uint32_t len) {
     int n = vfs_pwrite(fd, buf, len, st.size);
     vfs_close(fd);
     return n; // byte-count convention, matching the old fat32_append_file() passthrough
+}
+
+int vfs_append(const char *path, const void *buf, uint32_t len) {
+    bool is_root;
+    const char *rel = NULL;
+    mount_entry_t *m = mount_get(path, &rel, &is_root);
+    int r = vfs_append_on(m, rel, is_root, path, buf, len);
+    mount_put(m);
+    return r;
 }
 
 /* Explicit volume initialization, replacing the auto-format-on-invalid-boot-
@@ -2767,12 +2957,66 @@ void vfs_fat_recount(void) {
     }
 }
 
-int vfs_format(const char *path) {
-    if (!path) return -1;
-    bool is_root;
-    const char *rel = NULL;
-    mount_entry_t *m = vfs_resolve(path, &rel, &is_root);
+/* `fsck`: fat32_check() on /sd0 or /ram0, its working memory borrowed from
+ * the page allocator for the run (a 32 GB card with 32 KB clusters needs a
+ * 116 KB bitmap). */
+#define FSCK_DIRQ 1024u
+void vfs_fsck(const char *path) {
+    fat32_fs_t *fs = NULL;
+    const char *name = "/sd0/";
+    if (!path || !*path || strncmp(path, "/sd0", 4) == 0) {
+        if (g_sd_mounted) fs = &g_fat32_sd;
+    } else if (strncmp(path, "/ram0", 5) == 0) {
+        name = "/ram0/";
+        if (g_ram_mounted) fs = &g_fat32_ram;
+    } else {
+        cprintf("usage: fsck [/sd0|/ram0]\n");
+        return;
+    }
+    if (!fs) { cprintf("fsck: %s is not mounted\n", name); return; }
+    uint32_t bitmap_bytes = (fs->total_clusters + 2u + 7u) / 8u;
+    uint32_t bytes = ((bitmap_bytes + 3u) & ~3u) + FSCK_DIRQ * 4u;
+    uint32_t pages = (bytes + 4095u) / 4096u;
+    uint8_t *mem = palloc_pages_bulk(pages);
+    if (!mem) mem = palloc_pages(pages);
+    if (!mem) { cprintf("fsck: no %lu KB for the cluster map\n", (unsigned long)(bytes / 1024u)); return; }
+    uint32_t *dirq = (uint32_t *)(mem + ((bitmap_bytes + 3u) & ~3u));
+    fat32_check_t r;
+    uint64_t t0 = time_get_ms();
+    int rc = fat32_check(fs, mem, bitmap_bytes, dirq, FSCK_DIRQ, &r);
+    palloc_free(mem, pages);
+    uint32_t problems = r.cross + r.bad_chain + r.size + r.lost;
+    cprintf("fsck %s %lu files, %lu directories, %lu clusters in use; "
+            "%lu cross-linked, %lu broken chains, %lu wrong sizes, %lu lost clusters%s; %lu ms\n",
+            name, (unsigned long)r.files, (unsigned long)r.dirs, (unsigned long)r.clusters,
+            (unsigned long)r.cross, (unsigned long)r.bad_chain, (unsigned long)r.size,
+            (unsigned long)r.lost, r.skipped ? " (some directories not walked)" : "",
+            (unsigned long)(time_get_ms() - t0));
+    cprintf("%s\n", rc != 0 ? "fsck: INCOMPLETE (read error)" : problems ? "fsck: DAMAGED" : "fsck: clean");
+}
 
+static int vfs_format_volume(mount_entry_t *m, const char *path, const char *label);
+
+static int vfs_format_on(mount_entry_t *m, const char *rel, bool is_root, const char *path,
+                         const char *label) {
+    (void)rel; (void)is_root;
+    if (!path) return -1;
+    /* Not under open files: fat32_init() starts the volume over, its lock
+     * included. This call's own reference is the one allowed, and no new
+     * one is handed out until it is done. */
+    mount_entry_t *q = NULL;
+    if (m && !mount_quiesce(m->name, 1, &q)) {
+        printk("[VFS Error] format: '/%s/' is in use\n", m->name);
+        return -1;
+    }
+    int rc = vfs_format_volume(m, path, label);
+    if (q) mount_ready(q);
+    return rc;
+}
+
+static void format_progress(uint32_t pct) { cprintf("format: %lu%%\r", (unsigned long)pct); }
+
+static int vfs_format_volume(mount_entry_t *m, const char *path, const char *label) {
     if (m && strcmp(m->name, "sd0") == 0) {
 #if defined(CONFIG_BOARD_RP2350)
         block_dev_t *dev = spisd_get_device();
@@ -2783,7 +3027,16 @@ int vfs_format(const char *path) {
 #else
         block_dev_t *dev = virtio_blk_get_device();
 #endif
-        if (!dev || fat32_format(dev) != 0) return -1;
+        /* A card gets a card's layout (fat32_mkfs(): MBR, aligned FAT32,
+         * FSInfo), not the bare volume /ram0 gets. */
+        uint32_t vol_id = 0;
+        random_bytes(&vol_id, sizeof vol_id);
+        if (!dev) return -1;
+        if (fat32_mkfs(dev, label, vol_id, format_progress) == 0) {
+            cprintf("\n");
+        } else if (dev->num_blocks >= 131072u || fat32_format(dev) != 0) {
+            return -1;      /* too small for FAT32 proper (QEMU's image): the bare volume */
+        }
         g_sd_mounted = (fat32_init(&g_fat32_sd, dev) == 0);
         return g_sd_mounted ? 0 : -1;
     } else if (m && strcmp(m->name, "ram0") == 0) {
@@ -2799,11 +3052,20 @@ int vfs_format(const char *path) {
     return -1;
 }
 
-int vfs_remove(const char *path) {
-    if (!path) return -1;
+int vfs_format(const char *path) { return vfs_format_label(path, NULL); }
+
+int vfs_format_label(const char *path, const char *label) {
     bool is_root;
     const char *rel = NULL;
-    mount_entry_t *m = vfs_resolve(path, &rel, &is_root);
+    mount_entry_t *m = mount_get(path, &rel, &is_root);
+    int r = vfs_format_on(m, rel, is_root, path, label);
+    mount_put(m);
+    return r;
+}
+
+static int vfs_remove_on(mount_entry_t *m, const char *rel, bool is_root, const char *path) {
+    (void)is_root;
+    if (!path) return -1;
     if (!m || !rel || rel[0] == '\0') return -1;
 
     if (m->kind == MOUNT_FAT32) {
@@ -2815,11 +3077,18 @@ int vfs_remove(const char *path) {
     return -1;
 }
 
-int vfs_mkdir(const char *path) {
-    if (!path) return -1;
+int vfs_remove(const char *path) {
     bool is_root;
     const char *rel = NULL;
-    mount_entry_t *m = vfs_resolve(path, &rel, &is_root);
+    mount_entry_t *m = mount_get(path, &rel, &is_root);
+    int r = vfs_remove_on(m, rel, is_root, path);
+    mount_put(m);
+    return r;
+}
+
+static int vfs_mkdir_on(mount_entry_t *m, const char *rel, bool is_root, const char *path) {
+    (void)is_root;
+    if (!path) return -1;
     if (!m || !rel || rel[0] == '\0') return -1;
 
     if (m->kind == MOUNT_FAT32) {
@@ -2831,11 +3100,18 @@ int vfs_mkdir(const char *path) {
     return -1;
 }
 
-int vfs_rmdir(const char *path) {
-    if (!path) return -1;
+int vfs_mkdir(const char *path) {
     bool is_root;
     const char *rel = NULL;
-    mount_entry_t *m = vfs_resolve(path, &rel, &is_root);
+    mount_entry_t *m = mount_get(path, &rel, &is_root);
+    int r = vfs_mkdir_on(m, rel, is_root, path);
+    mount_put(m);
+    return r;
+}
+
+static int vfs_rmdir_on(mount_entry_t *m, const char *rel, bool is_root, const char *path) {
+    (void)is_root;
+    if (!path) return -1;
     if (!m || !rel || rel[0] == '\0') return -1;
 
     if (m->kind == MOUNT_FAT32) {
@@ -2845,6 +3121,15 @@ int vfs_rmdir(const char *path) {
         return p9_remote_remove(m->remote, rel); // server dispatches file vs. dir removal itself
     }
     return -1;
+}
+
+int vfs_rmdir(const char *path) {
+    bool is_root;
+    const char *rel = NULL;
+    mount_entry_t *m = mount_get(path, &rel, &is_root);
+    int r = vfs_rmdir_on(m, rel, is_root, path);
+    mount_put(m);
+    return r;
 }
 
 /* Copies via the new handle API in fixed-size chunks rather than one
@@ -2867,7 +3152,7 @@ int vfs_cp(const char *src_path, const char *dst_path) {
         return -1;
     }
 
-    static uint8_t copy_buf[512];
+    uint8_t copy_buf[512];   /* each copy its own: two terminals may copy at once */
     uint64_t offset = 0;
     int result = 0;
     for (;;) {
@@ -2887,10 +3172,7 @@ int vfs_cp(const char *src_path, const char *dst_path) {
     return result;
 }
 
-void vfs_ls(const char *path) {
-    bool is_root;
-    const char *rel = NULL;
-    mount_entry_t *m = vfs_resolve(path, &rel, &is_root);
+static void vfs_ls_on(mount_entry_t *m, const char *rel, bool is_root, const char *path) {
 
     if (is_root) {
         cprintf("\nDirectory Listing (/):\n");
@@ -2974,4 +3256,12 @@ void vfs_ls(const char *path) {
             break;
         }
     }
+}
+
+void vfs_ls(const char *path) {
+    bool is_root;
+    const char *rel = NULL;
+    mount_entry_t *m = mount_get(path, &rel, &is_root);
+    vfs_ls_on(m, rel, is_root, path);
+    mount_put(m);
 }

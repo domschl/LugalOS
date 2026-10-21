@@ -7,6 +7,8 @@
 #include "kernel/ipc.h"
 #include "kernel/chan.h"
 #include "kernel/sched.h"
+#include "kernel/lock.h"
+#include "kernel/irq.h"
 #include "kernel/uaccess.h"
 #include "kernel/ticker.h"
 #include "kernel/devirq.h"
@@ -378,13 +380,40 @@ void esp32p4_l2_cache_report(void) {
  * where touching a neighbour's line would discard its writes. The EMAC's
  * descriptors are padded to a full line each and its buffers are whole
  * multiples of one precisely so that this rounding is a no-op there. */
-static void p4_cache_range(uint32_t rom_fn, uintptr_t addr, uint32_t size) {
+/* One cache-maintenance operation at a time, from any context.
+ *
+ * The ROM's Cache_WriteBack_Addr / Cache_Invalidate_Addr program the cache
+ * controller's one set of sync registers (address, size, start) and poll for
+ * done. Two at once -- the panel's flush task writing back a frame while the
+ * SD driver invalidates its bounce buffer -- overwrite each other's setup:
+ * one range is never done, or done over the other's addresses. On the Tab5
+ * that lost SD transfers silently: a read handed back the previous sector
+ * (the FAT cache filled with a directory sector, then written into the FAT)
+ * and a write sent the previous bytes (a deleted directory entry came back).
+ * IDF serialises every sync op the same way (esp_cache_msync(), s_spinlock).
+ * Large ranges go in 32 KB chunks, IDF's default, so interrupts are never off
+ * for long.
+ * interrupt-shared: taken with interrupts masked, on every hart. */
+static spinlock_t g_cache_op_lock = SPINLOCK_INIT;
+#define P4_CACHE_OP_CHUNK (32u * 1024u)
+
+static void p4_cache_op(uint32_t rom_fn, uint32_t map, uintptr_t start, uintptr_t end) {
     int (*op)(uint32_t, uint32_t, uint32_t) =
         (int (*)(uint32_t, uint32_t, uint32_t))(uintptr_t)rom_fn;
+    while (start < end) {
+        uintptr_t n = end - start > P4_CACHE_OP_CHUNK ? P4_CACHE_OP_CHUNK : end - start;
+        uintptr_t f = spin_lock_irqsave(&g_cache_op_lock);
+        op(map, (uint32_t)start, (uint32_t)n);
+        spin_unlock_irqrestore(&g_cache_op_lock, f);
+        start += n;
+    }
+}
+
+static void p4_cache_range(uint32_t rom_fn, uintptr_t addr, uint32_t size) {
     uintptr_t start = addr & ~(uintptr_t)(ESP32P4_L1_CACHE_LINE - 1u);
     uintptr_t end   = (addr + size + ESP32P4_L1_CACHE_LINE - 1u) &
                       ~(uintptr_t)(ESP32P4_L1_CACHE_LINE - 1u);
-    op(P4_CACHE_MAP_L1_DCACHE, (uint32_t)start, (uint32_t)(end - start));
+    p4_cache_op(rom_fn, P4_CACHE_MAP_L1_DCACHE, start, end);
 }
 
 void esp32p4_dcache_writeback(uintptr_t addr, uint32_t size) {
@@ -402,11 +431,32 @@ void esp32p4_dcache_invalidate(uintptr_t addr, uint32_t size) {
  * cache_hal_writeback_addr() amounts to. */
 #define P4_CACHE_MAP_L2              (1u << 5)
 static void p4_ext_cache_range(uint32_t rom_fn, uintptr_t addr, uint32_t size) {
-    int (*op)(uint32_t, uint32_t, uint32_t) =
-        (int (*)(uint32_t, uint32_t, uint32_t))(uintptr_t)rom_fn;
     uintptr_t start = addr & ~(uintptr_t)63u;
     uintptr_t end   = (addr + size + 63u) & ~(uintptr_t)63u;
-    op(P4_CACHE_MAP_L1_DCACHE | P4_CACHE_MAP_L2, (uint32_t)start, (uint32_t)(end - start));
+    p4_cache_op(rom_fn, P4_CACHE_MAP_L1_DCACHE | P4_CACHE_MAP_L2, start, end);
+}
+
+/* After the ELF loader wrote a program through the data path: its stores out
+ * of the L1 data cache (writeback, which loses nothing), then both cores'
+ * instruction caches dropped (they never hold dirty data), so the fetch sees
+ * the new code rather than stale lines. Measured before this existed: the
+ * same binary faulted differently on consecutive `exec`s -- stale memory.
+ *
+ * Under g_cache_op_lock with interrupts masked, like every sync operation:
+ * this used to drive the sync registers directly, beside the ROM routines and
+ * outside any lock, and it also invalidated the whole L2 cache after writing
+ * it back -- anything a preempting task (or the other hart) wrote to PSRAM
+ * between the two steps was thrown away. L2 needs nothing here: after the L1
+ * writeback the new code is in L2 or memory, where the fetch finds it. */
+#define P4_CACHE_MAP_L1_ICACHE_0 (1u << 0)
+#define P4_CACHE_MAP_L1_ICACHE_1 (1u << 1)
+void esp32p4_icache_sync(void) {
+    void (*writeback_all)(uint32_t)  = (void (*)(uint32_t))P4_ROM_CACHE_WRITEBACK_ALL;
+    void (*invalidate_all)(uint32_t) = (void (*)(uint32_t))P4_ROM_CACHE_INVALIDATE_ALL;
+    uintptr_t f = spin_lock_irqsave(&g_cache_op_lock);
+    writeback_all(P4_CACHE_MAP_L1_DCACHE);
+    invalidate_all(P4_CACHE_MAP_L1_ICACHE_0 | P4_CACHE_MAP_L1_ICACHE_1);
+    spin_unlock_irqrestore(&g_cache_op_lock, f);
 }
 
 void esp32p4_extmem_writeback(uintptr_t addr, uint32_t size) {
@@ -843,9 +893,15 @@ void arch_irq_enable(uint32_t irq_num) {
         printk("[INTC] arch_irq_enable(%u) refused: not an available line\n", (unsigned)irq_num);
         return;
     }
+    /* interrupt-shared: C6_PLIC_TYPE / C6_PLIC_ENABLE hold every line's bit and
+     * a handler masks its own line in them (radio_intr.c's stub, the trap
+     * path's unclaimed-line mask): read-modify-written by tasks only with
+     * interrupts masked, which on this one-core chip makes them atomic. */
+    uintptr_t f = irq_save();
     C6_PLIC_TYPE &= ~(1u << irq_num);
     C6_PLIC_PRI(irq_num) = 1;
     C6_PLIC_ENABLE |= (1u << irq_num);
+    irq_restore(f);
     /* And at the core: the TRM is explicit that "an M mode interrupt (external or
      * local) further needs to be unmasked at core level by setting the corresponding
      * bit in mie" -- bit n for line n -- and that the controller's pending state
@@ -909,6 +965,8 @@ void arch_irq_enable(uint32_t irq_num) {
 
 /* See arch/trap.h. Not a general exception-handling mechanism -- deliberately
  * narrow, so it cannot accidentally mask a real fault. */
+/* accepted: one access probe at a time (`peek`/`poke`); a fault in another task during
+ * one is taken as the probe's. */
 static volatile bool g_probe_active;
 static volatile bool g_probe_faulted;
 
@@ -937,6 +995,8 @@ uintptr_t arch_last_ecall_cause(void) { return g_last_ecall_cause; }
 
 void trap_handler(trap_frame_t *frame) {
     uintptr_t cause = frame->cause;
+    /* The frame sits on the interrupted task's stack: how deep it is now. */
+    sched_stack_check_sp(sched_current_pid(), (uintptr_t)frame, "a trap");
 #if defined(CONFIG_BOARD_ESP32C6)
     *(volatile uint32_t *)0x600B1008u = (uint32_t)cause;      /* LP_AON stores 2,3: the last trap, for a boot that says nothing */
     *(volatile uint32_t *)0x600B100Cu = (uint32_t)frame->epc;
@@ -1662,6 +1722,16 @@ void trap_handler(trap_frame_t *frame) {
 }
 
 #if defined(CONFIG_BOARD_ESP32C6)
-void esp32c6_irq_mask(uint32_t line)   { C6_PLIC_ENABLE &= ~(1u << line); }
-void esp32c6_irq_unmask(uint32_t line) { C6_PLIC_ENABLE |= (1u << line); }
+/* With interrupts masked: a handler masks lines in the same word (see
+ * arch_irq_enable()), and an interrupted read-modify-write here would undo it. */
+void esp32c6_irq_mask(uint32_t line) {
+    uintptr_t f = irq_save();
+    C6_PLIC_ENABLE &= ~(1u << line);
+    irq_restore(f);
+}
+void esp32c6_irq_unmask(uint32_t line) {
+    uintptr_t f = irq_save();
+    C6_PLIC_ENABLE |= (1u << line);
+    irq_restore(f);
+}
 #endif

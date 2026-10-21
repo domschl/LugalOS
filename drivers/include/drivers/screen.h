@@ -147,13 +147,25 @@ typedef struct {
 #define SCREEN_STORE_BYTES(w, h) (SCREEN_STORES * ((uint32_t)(w) / 8u) * (uint32_t)(h))
 
 /* What a screen of w x h pixels needs, shadow included for all 4 terminals. */
-#define SCREEN_BYTES(w, h) \
-    (sizeof(screen_t) + SCREEN_MAX_TERMS * SCREEN_TEXT_COLS(w) * SCREEN_TEXT_ROWS(h) * sizeof(uint16_t))
+#define SCREEN_BYTES(w, h) SCREEN_BYTES_ROT(w, h, false)
+
+/* A terminal's shadow: the grid of its screen, or on a panel that turns
+ * (`rotates`: w and h trade places at run time) the wider and the taller of
+ * both, so a turn never indexes past a terminal's share into the next one. */
+#define SCREEN_SHADOW_COLS(w, h, rotates) \
+    ((rotates) && SCREEN_TEXT_COLS(h) > SCREEN_TEXT_COLS(w) ? SCREEN_TEXT_COLS(h) : SCREEN_TEXT_COLS(w))
+#define SCREEN_SHADOW_ROWS(w, h, rotates) \
+    ((rotates) && SCREEN_TEXT_ROWS(w) > SCREEN_TEXT_ROWS(h) ? SCREEN_TEXT_ROWS(w) : SCREEN_TEXT_ROWS(h))
+#define SCREEN_BYTES_ROT(w, h, rotates) \
+    (sizeof(screen_t) + SCREEN_MAX_TERMS * SCREEN_SHADOW_COLS(w, h, rotates) * \
+     SCREEN_SHADOW_ROWS(w, h, rotates) * sizeof(uint16_t))
 
 /* Takes over the whole buffer and draws everything: the TEXT layout, the
  * terminal empty, the tile titled `LugalOS` until something says otherwise.
  * `scr` must hold SCREEN_BYTES(w, h); w must be a multiple of 8. */
 void screen_init(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsigned h);
+/* The same for a panel that turns: `scr` must hold SCREEN_BYTES_ROT(w, h, rotates). */
+void screen_init_rot(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsigned h, bool rotates);
 void screen_reorient(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsigned h);
 
 /* 38.8: memory for the canvas stores, SCREEN_STORE_BYTES(w, h) of it;

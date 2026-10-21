@@ -167,15 +167,23 @@ typedef struct {
 } chan_block_t;
 #define BLOCK_PAGES ((sizeof(chan_block_t) + PAGE_SIZE - 1u) / PAGE_SIZE)
 
+/* single task: LLP's pump; sdio_slave_start() sets the channel up before it, and `sdio
+ * timing` sets one word. */
 static chan_block_t *g_blk;
 #define g_rxd   (g_blk->rxd)
 #define g_txd   (g_blk->txd)
+/* single task: LLP's pump; sdio_slave_start() sets the channel up before it, and `sdio
+ * timing` sets one word. */
 static uint32_t   g_rx_head;      /* the oldest loaded buffer */
 static uint32_t   g_rx_tail;      /* the last loaded buffer: its next is NULL */
 
+/* single task: LLP's pump; sdio_slave_start() sets the channel up before it, and `sdio
+ * timing` sets one word. */
 static bool       g_tx_busy;
 static uint32_t   g_tx_total;     /* bytes offered since the channel's reset, mod 2^20 */
 
+/* single task: LLP's pump; sdio_slave_start() sets the channel up before it, and `sdio
+ * timing` sets one word. */
 static bool       g_started;
 static uint8_t    g_gen;
 static uint32_t   g_timing;
@@ -183,6 +191,8 @@ static uint8_t    g_shared[8];
 
 static struct {
     uint32_t rx_pkts, rx_bytes, rx_too_big, tx_pkts, tx_bytes, resets;
+/* single task: LLP's pump; sdio_slave_start() sets the channel up before it, and `sdio
+ * timing` sets one word. */
 } g_st;
 
 static void put_shared(void) {

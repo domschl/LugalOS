@@ -5,6 +5,8 @@
 
 /* See kernel/include/kernel/path.h for the rationale. */
 
+/* accepted: the search path, set by `path`; a lookup during the change can see either
+ * list. */
 static char g_volumes[PATH_MAX_VOLUMES][PATH_VOLUME_MAX];
 static int  g_count;
 

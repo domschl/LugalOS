@@ -38,6 +38,7 @@ int esp_wifi_disconnect(void) { return esp_wifi_disconnect_internal(); }
 extern void rom_install_putc1(void (*fn)(char)) __asm__("radio_ets_install_putc1");
 extern void rom_install_putc2(void (*fn)(char)) __asm__("radio_ets_install_putc2");
 static void rom_putc(char c) {
+    /* accepted: the ROM's log sink; two radio threads at once mix one line */
     static char line[96];
     static unsigned n;
     if (c == '\r') return;
@@ -57,7 +58,7 @@ extern void rom_update_cpu_frequency(uint32_t ticks_per_us) __asm__("radio_ets_u
 
 /* One scan's records, as the blob returns them (one scan at a time: the boot scan, then the
  * kernel's requests). */
-static wifi_ap_record_t g_recs[RADIO_SCAN_MAX];
+static wifi_ap_record_t g_recs[RADIO_SCAN_MAX];   /* single task: the radio's main thread */
 
 /* The scan's records into the context, for the kernel (the seqlock is described there). */
 static void scan_publish(radio_ctx_t *ctx, const wifi_ap_record_t *recs, uint16_t got) {
@@ -174,7 +175,7 @@ void radio_main(uintptr_t arg) {
     }
 
     int retry_in = 0;
-    static wifi_config_t wc;            /* kept: the pump below re-applies it without the BSSID pin */
+    static wifi_config_t wc;            /* single task: the main thread; kept: the pump below re-applies it without the BSSID pin */
     if (r == 0 && ctx->join) {
         /* As esp_netif does when it attaches to the station: the receive callback is in place before the
          * connection, so the first frame after the handshake has somewhere to go. */

@@ -353,6 +353,7 @@ KBD_UTEXT bool usbkbd_host_session(usbkbd_state_t *k) {
 
 /* --- Kernel side ---------------------------------------------------------- */
 
+/* single task: the boot, before any reader runs; constant after. */
 static usbkbd_state_t *g_k;
 
 /* --- The keyboard as a console input source (36.9) -----------------------

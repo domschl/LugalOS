@@ -39,11 +39,12 @@ typedef struct {
     int32_t  lux_c100;   /* Illuminance in 0.01 Lux (centi-Lux) */
 } tsl2591_reading_t;
 
-/* Probes 0x29, verifies chip ID 0x50, configures default gain and integration time */
+/* Probes 0x29 on every bus, verifies chip ID 0x50, configures default gain and integration time */
 bool tsl2591_init(void);
 
 bool        tsl2591_is_detected(void);
 uint8_t     tsl2591_address(void);
+uint8_t     tsl2591_bus(void);
 const char *tsl2591_part_name(void);
 
 /* Triggers an on-demand integration cycle and updates reading */

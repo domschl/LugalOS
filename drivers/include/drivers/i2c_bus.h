@@ -111,6 +111,23 @@ int  i2c_task_start(void);
  * drivers/spisd_rp2350.c's g_blk_calls comment for the reasoning. */
 uint32_t i2c_task_call_count(void);
 
+/* Failed transfers by cause, since boot (`i2cstats`): a call that did not get
+ * the task's turn in time, and on the ESP controller what the bus answered
+ * -- NACK, the controller's own timeout, lost arbitration, or neither
+ * completion nor error before the deadline. */
+typedef struct {
+    uint32_t no_turn;
+    uint32_t nack;
+    uint32_t timeout;
+    uint32_t arb_lost;
+    uint32_t incomplete;
+    /* The last bus failure: address, INT_RAW, and how long it ran (us). */
+    uint8_t  last_addr;
+    uint32_t last_int;
+    uint32_t last_us;
+} i2c_fail_counts_t;
+void i2c_fail_counts(i2c_fail_counts_t *out);
+
 /* Internal to the bus and its isolation test; not for device drivers. */
 bool i2c_task_alive(void);
 int  i2c_task_call(const uint8_t *req, uint32_t req_len,

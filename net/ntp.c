@@ -1,4 +1,5 @@
 #include "net/ntp.h"
+#include "kernel/lock.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
 #include "kernel/sched.h"
@@ -32,7 +33,10 @@ static struct {
     uint8_t        pkt[NTP_PKT_LEN];
     uint8_t        from[IPV4_LEN];
     int64_t        t4_us;      /* our clock when the reply arrived */
-} g_rx;
+} g_rx;   /* guarded by: g_ntp_lock (below), held for a whole query */
+/* One query at a time: one reply slot, which two terminals querying at once
+ * would share. The callback (the stack task) fills the query in flight. */
+static ylock_t g_ntp_lock;
 
 static uint32_t be32(const uint8_t *p) {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
@@ -107,7 +111,7 @@ const char *ntp_err_str(int rc) {
     }
 }
 
-int ntp_query(const uint8_t server[IPV4_LEN], uint32_t timeout_ms, ntp_result_t *out) {
+static int ntp_query_locked(const uint8_t server[IPV4_LEN], uint32_t timeout_ms, ntp_result_t *out) {
     if (!server || !out) return NTP_ERR_NO_NET;
     if (!net_configured()) return NTP_ERR_NO_NET;
     if (timeout_ms == 0) timeout_ms = 3000u;
@@ -346,4 +350,12 @@ void ntp_print_result(const ntp_result_t *r, bool applied) {
     } else {
         cprintf("  clock      : not changed\n");
     }
+}
+
+/* One query at a time, under g_ntp_lock. */
+int ntp_query(const uint8_t server[IPV4_LEN], uint32_t timeout_ms, ntp_result_t *out) {
+    ylock_acquire(&g_ntp_lock);
+    int r = ntp_query_locked(server, timeout_ms, out);
+    ylock_release(&g_ntp_lock);
+    return r;
 }

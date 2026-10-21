@@ -40,6 +40,7 @@ typedef struct {
 static dhcp_rx_t g_rx;
 static uint32_t g_xid;
 static bool g_owned;          /* the address in use is one this client set (so it may renew it) */
+/* accepted: the DHCP task sets the server, the resolver copies it unlocked. */
 static uint8_t g_dns[4];
 static bool g_has_dns;
 
@@ -195,7 +196,7 @@ static void dhcp_task(void *arg) {
 }
 
 int dhcp_start(void) {
-    static int pid = -1;
+    static int pid = -1;   /* single task: one starter per board (the LLP pump, the radio's start, cyw43) */
     if (pid >= 0) return pid;
     pid = task_create_sized("dhcpc", dhcp_task, NULL, 1);   /* measured peak under 1 KB (C6, 2026-10-06) */
     if (pid < 0) printk("[DHCP] could not start the client task\n");

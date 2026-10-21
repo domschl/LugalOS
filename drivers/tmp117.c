@@ -1,4 +1,5 @@
 #include "drivers/tmp117.h"
+#include "kernel/lock.h"
 #include "drivers/i2c_bus.h"
 #include "drivers/i2c_reg.h"
 #include "kernel/printk.h"
@@ -7,6 +8,9 @@
 #include "kernel/sched.h"
 #include <string.h>
 
+/* guarded by: g_dev_lock (below), which init and every measurement take:
+ * the hub's sampler, an mqttd source, `sensor` and Lisp may all measure, and
+ * `sensor init` probes again under them. */
 static struct {
     bool             detected;
     uint8_t          addr;
@@ -18,6 +22,7 @@ static struct {
     uint32_t         fail_count;
     const char      *last_fail;
 } g;
+static ylock_t g_dev_lock;
 
 static bool fail(const char *where) {
     g.last_fail = where;
@@ -39,7 +44,7 @@ int32_t tmp117_calc_temp_c100(int16_t raw_val) {
     }
 }
 
-bool tmp117_init(void) {
+static bool tmp117_init_locked(void) {
     static const uint8_t ADDRS[4] = { 0x48u, 0x49u, 0x4Au, 0x4Bu };
     uint8_t buses = i2c_bus_count();
 
@@ -70,7 +75,7 @@ bool tmp117_init(void) {
     return false;
 }
 
-bool tmp117_read(tmp117_reading_t *out) {
+static bool tmp117_read_locked(tmp117_reading_t *out) {
     if (!out || !g.detected) return false;
 
     uint16_t raw16 = 0;
@@ -179,3 +184,18 @@ sensor_dev_t tmp117_sensor_dev = {
     .ops       = &tmp117_ops,
     .priv      = NULL,
 };
+
+/* The driver's entry points, under g_dev_lock. */
+bool tmp117_init(void) {
+    ylock_acquire(&g_dev_lock);
+    bool r = tmp117_init_locked();
+    ylock_release(&g_dev_lock);
+    return r;
+}
+
+bool tmp117_read(tmp117_reading_t *out) {
+    ylock_acquire(&g_dev_lock);
+    bool r = tmp117_read_locked(out);
+    ylock_release(&g_dev_lock);
+    return r;
+}

@@ -9,6 +9,7 @@
  *   GP16 : External LED (Function 5 - SIO, active-high pulse)
  */
 
+#include "arch/atomic.h"
 #include "drivers/uart.h"
 #include "drivers/uart_proto.h"
 #include "drivers/driver_task.h"
@@ -301,7 +302,7 @@ int heartbeat_task_start(void) {
  * same reason heartbeat_usys_yield()/_time_ms() are hand-rolled per file:
  * a HEARTBEAT_UATTR probe should not depend on anything outside this
  * translation unit. */
-static volatile uintptr_t g_heartbeat_canary = 0xC0FFEE;
+static volatile uintptr_t g_heartbeat_canary = 0xC0FFEE;   /* accepted: an isolation test's canary or handshake */
 
 HEARTBEAT_UATTR static void heartbeat_intruder(void) {
     g_heartbeat_canary = 0xDEAD;
@@ -329,7 +330,7 @@ HEARTBEAT_UATTR static void heartbeat_intruder(void) {
  * domain that failed to install would read identically to "the write was
  * correctly blocked" (same false-positive risk cmd_usertest_isolation()'s
  * own g_user_entered exists to rule out). */
-static volatile bool g_heartbeat_intruder_entered;
+static volatile bool g_heartbeat_intruder_entered;   /* accepted: an isolation test's canary or handshake */
 
 static void heartbeat_intruder_task_body(void *arg) {
     uint8_t *ustack = (uint8_t *)arg;
@@ -412,12 +413,20 @@ static uint8_t hw_uart_getc(void);
  * (kernel/printk.c) already serialized to a single writer, so a second,
  * concurrent blocker here should not happen -- kept as a defensive
  * fallback below, not a load-bearing path, the same shape as
- * drivers/uart_16550.c's equivalent. */
+ * drivers/uart_16550.c's equivalent.
+ *
+ * interrupt-shared: the slot is taken by the task about to block, with
+ * interrupts masked and g_tx_claim held, and given back by uart_isr() or by
+ * the waiter itself. The counters are written only in the handler or with
+ * interrupts masked. */
 static volatile int g_tx_waiter = -1;
 static volatile uint32_t g_uart_irq_count; /* see uart_irq_count() */
 static volatile uint32_t g_uart_irq_tx_arms;  /* see uart_irq_tx_arms()  */
 static volatile uint32_t g_uart_irq_tx_wakes; /* see uart_irq_tx_wakes() */
 static volatile uint32_t g_uart_irq_tx_seen;  /* see uart_irq_tx_seen()  */
+/* Who owns the slot, across harts: irq_save() alone makes "is it free, then
+ * take it" atomic on one hart only. Held for the whole wait. */
+static volatile uint32_t g_tx_claim;
 
 /* PL011 receive status/error clear. OE (bit 3) latches when a byte arrives
  * before the previous one is read -- the previous byte is gone. Writing any
@@ -427,6 +436,7 @@ static volatile uint32_t g_uart_irq_tx_seen;  /* see uart_irq_tx_seen()  */
 #define UART0_RSR   (UART0_BASE + 0x04)
 #define UART0_RSR_OE (1u << 3)
 
+/* accepted: a statistic. */
 static volatile uint32_t g_uart_rx_overruns;
 
 static void note_rx_overrun(void) {
@@ -446,6 +456,11 @@ uint32_t uart_rx_overruns(void) {
 
 #define UART0_FR    (UART0_BASE + 0x18)
 #define UART0_IMSC  (UART0_BASE + 0x38)
+/* interrupt-shared: IMSC is changed by the handler and by tasks on either core,
+ * so never read-modify-written: through the RP2350's atomic aliases (datasheet
+ * 2.1.3, +0x2000 sets bits, +0x3000 clears them), one store each. */
+#define UART0_IMSC_SET (UART0_IMSC + 0x2000u)
+#define UART0_IMSC_CLR (UART0_IMSC + 0x3000u)
 #define UART0_FR_TXFF (1u << 5)
 #define UART0_IMSC_TXIM (1u << 5)
 
@@ -463,6 +478,11 @@ uint32_t uart_rx_overruns(void) {
 #define UART0_IMSC_RTIM (1u << 6)
 #define UART0_DR_OE  (1u << 11)
 
+/* interrupt-shared: one producer, one consumer. uart_isr() (raw_rx_drain)
+ * fills the ring and alone advances g_raw_head; the LLP pump alone reads and
+ * advances g_raw_tail. Each index is one word with one writer, and a byte is
+ * fenced before its index moves. uart_raw_open() sets the ring up with
+ * interrupts masked and publishes g_raw_ring last; the waker is set once. */
 static uint8_t *volatile g_raw_ring;
 static uint32_t g_raw_cap;
 static volatile uint32_t g_raw_head, g_raw_tail;
@@ -501,7 +521,7 @@ int uart_raw_open(uint8_t *ring, uint32_t cap, uint32_t baud) {
     g_raw_ring = ring;
     REG(UART0_IFLS) = (REG(UART0_IFLS) & ~(7u << 3)) | (1u << 3);  /* RX interrupt at 1/4 full (8 bytes) */
     REG(UART0_ICR) = UART0_IMSC_RXIM | UART0_IMSC_RTIM;
-    REG(UART0_IMSC) |= UART0_IMSC_RXIM | UART0_IMSC_RTIM;
+    REG(UART0_IMSC_SET) = UART0_IMSC_RXIM | UART0_IMSC_RTIM;
     irq_restore(flags);
     return 0;
 }
@@ -545,10 +565,10 @@ static void uart_isr(void *ctx) {
         if (g_raw_head != before && g_raw_waker >= 0) task_unblock(g_raw_waker);
     }
     if (!(REG(UART0_FR) & UART0_FR_TXFF)) g_uart_irq_tx_seen++;
-    if (!(REG(UART0_FR) & UART0_FR_TXFF) && g_tx_waiter >= 0) {
-        REG(UART0_IMSC) &= ~UART0_IMSC_TXIM;
+    int pid = g_tx_waiter;   /* once: a waiter on the other core may clear it */
+    if (!(REG(UART0_FR) & UART0_FR_TXFF) && pid >= 0) {
+        REG(UART0_IMSC_CLR) = UART0_IMSC_TXIM;
         g_uart_irq_tx_wakes++;
-        int pid = g_tx_waiter;
         g_tx_waiter = -1;
         task_unblock(pid);
     }
@@ -587,7 +607,8 @@ void uart_init(uintptr_t base_addr) {
      * PMP domain cannot grant its way around this on its own. GPIO_NSMASK0
      * is one of the two ACCESSCTRL registers exempt from the 0xacce
      * write-protection prefix every other ACCESSCTRL register needs. */
-    REG(ACCESSCTRL_GPIO_NSMASK0) |= (1u << CONFIG_LED_EXT_GPIO);
+    REG(ACCESSCTRL_GPIO_NSMASK0 + 0x2000u) =   /* atomic set alias: several drivers own bits here */
+        (1u << CONFIG_LED_EXT_GPIO);
 #endif
 
     /* UART0 itself needs the same Non-secure grant, for the
@@ -692,11 +713,26 @@ static void uart_hw_putc(char c) {
          * task_block() would have nothing to block, and the slot would
          * hold -1, which reads as "free". It polls instead, which is
          * the branch already here for the other-waiter case. */
-        if (g_tx_waiter < 0 && sched_has_task()) {
-            g_tx_waiter = sched_current_pid();
-            g_uart_irq_tx_arms++;
-            REG(UART0_IMSC) |= UART0_IMSC_TXIM;
-            task_block();
+        if (sched_has_task() && arch_lock_try_acquire(&g_tx_claim)) {
+            /* Prepared, and looped on the FIFO: the handler can run on the
+             * other core and wake this task before it has blocked, and a wake
+             * is not a promise of room (as in drivers/uart_16550.c). */
+            int me = sched_current_pid();
+            do {
+                task_prepare_block();
+                g_tx_waiter = me;
+                g_uart_irq_tx_arms++;
+                /* the slot before the enable, for a handler on the other core */
+                __asm__ volatile ("fence w,o" ::: "memory");
+                REG(UART0_IMSC_SET) = UART0_IMSC_TXIM;
+                task_block();
+            } while (REG(UART0_FR) & UART0_FR_TXFF);
+            task_wait_done();
+            if (g_tx_waiter == me) {
+                g_tx_waiter = -1;
+                REG(UART0_IMSC_CLR) = UART0_IMSC_TXIM;
+            }
+            arch_lock_release(&g_tx_claim);
         } else {
             irq_restore(flags);
             while (REG(UART0_FR) & UART0_FR_TXFF) sched_yield();
@@ -768,6 +804,7 @@ static int hw_uart_read(void) {
 static uint8_t         g_uart_req[UART_REQ_CAP];
 static uint8_t         g_uart_resp[UART_RESP_CAP];
 static chan_endpoint_t *g_uart_ep;
+/* single task: the boot, before any reader runs; constant after. */
 static int              g_uart_task_pid = -1;
 
 /* Verify: counts UART_REQ_WRITE calls actually served -- one per
@@ -776,7 +813,7 @@ static int              g_uart_task_pid = -1;
  * counted client-side now (uart_flush() below), matching
  * every other U-mode driver's own g_*_calls -- a U-mode server cannot
  * touch this ordinary kernel .bss global. */
-static uint32_t g_uart_write_calls;
+static uint32_t g_uart_write_calls;   /* accepted: a statistic, counted by the callers */
 
 uint32_t uart_write_call_count(void) { return g_uart_write_calls; }
 uint32_t uart_irq_count(void) { return g_uart_irq_count; }
@@ -971,14 +1008,10 @@ int uart_task_start(void) {
     return pid;
 }
 
-static int uart_call_with_retry(const uint8_t *req, uint32_t req_len,
-                                uint8_t *resp, uint32_t resp_max) {
-    for (int attempt = 0; attempt < 8; attempt++) {
-        int n = chan_call(g_uart_ep, req, req_len, resp, resp_max);
-        if (n >= 0) return n;
-        sched_yield();
-    }
-    return -1;
+/* Every op this task serves is a few register accesses, so a turn is short. */
+static int uart_call(const uint8_t *req, uint32_t req_len,
+                     uint8_t *resp, uint32_t resp_max) {
+    return chan_call_wait(g_uart_ep, req, req_len, resp, resp_max, CHAN_WAIT_MS);
 }
 
 /* Domain verification: does the real uart domain shape
@@ -988,14 +1021,14 @@ static int uart_call_with_retry(const uint8_t *req, uint32_t req_len,
  * idea (a deliberate out-of-domain store, asserted to fault), a separate
  * canary rather than reaching into another file's, for the same reason
  * the syscall stubs above are hand-rolled per file. */
-static volatile uintptr_t g_uart_canary = 0xC0FFEE;
+static volatile uintptr_t g_uart_canary = 0xC0FFEE;   /* accepted: an isolation test's canary or handshake */
 
 UART_UATTR static void uart_intruder(void) {
     g_uart_canary = 0xDEAD;
     for (;;) { } /* only reached if the store was NOT stopped */
 }
 
-static volatile bool g_uart_intruder_entered;
+static volatile bool g_uart_intruder_entered;   /* accepted: an isolation test's canary or handshake */
 
 /* `arg` is the U-mode stack -- allocated by uart_isolation_test() below,
  * not here, so it can free it once the task is confirmed DEAD (same
@@ -1076,6 +1109,8 @@ bool uart_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) {
  *
  * The lock stays: it still guards each hart's own buffer against preemption
  * on that hart, which is what it was added for. */
+/* guarded by: g_tx_batch_lock (below); uart_flush_critical() takes its own
+ * hart's batch without it when the lock stays held (a fault with it held). */
 static char     g_tx_batch[MAX_HARTS][UART_TX_BATCH_CAP];
 static uint32_t g_tx_batch_len[MAX_HARTS];
 /* Guards g_tx_batch/g_tx_batch_len.
@@ -1104,6 +1139,7 @@ static spinlock_t g_tx_batch_lock;
  * that hart has nothing batched and nothing in flight: a copy taken by
  * uart_flush() counts here until it is sent, or the owner could be released
  * and overtake it from the other hart. */
+/* guarded by: g_tx_batch_lock. */
 static uint32_t g_tx_inflight[MAX_HARTS];
 
 static void uart_tx_send(const char *local, uint32_t len) {
@@ -1122,33 +1158,15 @@ static void uart_tx_send(const char *local, uint32_t len) {
     req[0] = UART_REQ_WRITE;
     memcpy(&req[1], local, len);
     uint8_t resp[1];
-    /* Not uart_call_with_retry()'s plain bounded retry: a WRITE must never
-     * give up and fall back to direct hardware access while another
-     * WRITE is actually in flight (a real race on real hardware, not a
-     * theoretical one -- see the git history of this comment for the
-     * exact interleaved-output symptom it was found by), while still
-     * falling back promptly when the endpoint is merely busy with some
-     * other, near-instant op instead.
-     *
-     * chan_endpoint_busy(g_uart_ep) (kernel/chan.c) replaces
-     * the old server-set g_uart_write_in_flight flag -- a U-mode server
-     * cannot write an ordinary kernel .bss global, but chan_call()
-     * itself already tracks exactly this window (ep->busy, true from
-     * the moment a caller's request is copied in until that caller's
-     * reply comes back), so this reads that directly instead of keeping
-     * a second, redundant flag. Every op this task now serves is small
-     * and bounded (no more open-ended READ), so "busy" here can only
-     * ever mean "a few register pokes are in flight", never "someone is
-     * waiting on a human keystroke". */
-    for (;;) {
-        int n = chan_call(g_uart_ep, req, 1 + len, resp, sizeof(resp));
-        if (n >= 0) {
-            g_uart_write_calls++;
-            for (uint32_t i = 0; i < len; i++) usb_cdc_putc(local[i]);
-            return;
-        }
-        if (!chan_endpoint_busy(g_uart_ep)) break;
-        sched_yield();
+    /* A WRITE must never fall back to direct hardware access while another
+     * WRITE is in flight: the two interleave on the wire. Every op this task serves is a few register
+     * accesses -- no READ here waits for a key -- so the writer simply waits
+     * for its turn, as long as that takes. Only a refusal (no task to block,
+     * a spinlock held) writes directly. */
+    if (chan_call_wait(g_uart_ep, req, 1 + len, resp, sizeof(resp), UINT32_MAX) >= 0) {
+        g_uart_write_calls++;
+        for (uint32_t i = 0; i < len; i++) usb_cdc_putc(local[i]);
+        return;
     }
     for (uint32_t i = 0; i < len; i++) {
         uart_hw_putc(local[i]);
@@ -1287,7 +1305,7 @@ bool uart_serial_has_char(void) {
     if (uart_task_alive()) {
         uint8_t req[1] = { UART_REQ_HASCHAR };
         uint8_t resp[1];
-        return uart_call_with_retry(req, 1, resp, 1) == 1 && resp[0];
+        return uart_call(req, 1, resp, 1) == 1 && resp[0];
     }
     return hw_uart_has_char();
 }
@@ -1299,7 +1317,7 @@ int uart_serial_getc(void) {
     if (uart_task_alive()) {
         uint8_t req[1] = { UART_REQ_READ };
         uint8_t resp[2];
-        int n = uart_call_with_retry(req, 1, resp, sizeof(resp));
+        int n = uart_call(req, 1, resp, sizeof(resp));
         return (n >= 2 && resp[0]) ? (int)resp[1] : -1;
     }
     return hw_uart_read();
@@ -1336,7 +1354,7 @@ char uart_getc(void) {
         if (uart_task_alive()) {
             uint8_t req[1] = { UART_REQ_READ };
             uint8_t resp[2];
-            int n = uart_call_with_retry(req, 1, resp, sizeof(resp));
+            int n = uart_call(req, 1, resp, sizeof(resp));
             if (n >= 2 && resp[0]) return (char)resp[1];
         } else {
             int c = hw_uart_read();

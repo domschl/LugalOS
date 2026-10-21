@@ -59,7 +59,7 @@ static struct {
     uint32_t connect_fails;
     uint64_t last_sample_ms;
     uint64_t started_ms;
-} g;
+} g;   /* single task: the daemon while it runs; mqttd_configure() stops it first */
 
 typedef struct {
     const char     *name;
@@ -85,6 +85,8 @@ typedef struct {
     uint32_t publishes;
 } mqttd_source_state_t;
 
+/* single task: the daemon owns the filter and rule state while it runs;
+ * sources are appended (each filled before g_src_count shows it). */
 static mqttd_source_state_t g_src[MQTTD_MAX_SOURCES];
 static uint32_t g_src_count;
 
@@ -114,6 +116,7 @@ int mqttd_add_source(const char *name, mqttd_sample_fn fn, void *ctx,
      * plenty of headroom over any fixed-point value a sensor produces. */
     if (st->rule.alpha_shift > 12u) st->rule.alpha_shift = 12u;
     if (st->rule.delta < 0) st->rule.delta = st->rule.delta == INT32_MIN ? INT32_MAX : -st->rule.delta;
+    __atomic_thread_fence(__ATOMIC_RELEASE);   /* the entry before the count that shows it */
     g_src_count++;
     return 0;
 }
@@ -218,6 +221,8 @@ typedef struct {
     uint16_t max_age_s;
 } mqttd_file_src_t;
 
+/* accepted: added and cleared from a shell while the daemon reads them; a slot is
+ * published by its in_use flag after its fields. */
 static mqttd_file_src_t g_file_src[MQTTD_MAX_FILE_SOURCES];
 
 /* The text after `key=` at the start of a line of `buf`, or NULL. */

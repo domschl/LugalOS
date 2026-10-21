@@ -126,7 +126,7 @@ static void fns_init(rom_fns_t *f) {
 }
 
 static ylock_t g_lock;
-static bool g_ready;
+static bool g_ready;   /* guarded by: g_lock */
 
 /* Once, under g_lock: tell the ROM the part is the size the flash map says. */
 static bool flash_ready(const rom_fns_t *f) {
@@ -155,11 +155,9 @@ bool c6flash_writable(uint32_t addr, uint32_t len) {
     return inside(addr, len, other, LUGALOS_C6_SLOT_SIZE);
 }
 
-static ylock_t *lock(void) {
-    static bool inited;
-    if (!inited) { ylock_init(&g_lock); inited = true; }
-    return &g_lock;
-}
+/* Zero is a free ylock: no first-use init, which two tasks could both run
+ * and so reset a lock the other already held. */
+static ylock_t *lock(void) { return &g_lock; }
 
 int c6flash_read(uint32_t addr, void *buf, uint32_t len) {
     if (addr >= (uint32_t)LUGALOS_C6_FLASH_SIZE || len > (uint32_t)LUGALOS_C6_FLASH_SIZE - addr) return -1;

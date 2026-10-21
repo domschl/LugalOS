@@ -1,3 +1,4 @@
+#include "kernel/lock.h"
 #include "drivers/uart_net.h"
 #include "kernel/identity.h"
 #include "fs/9p.h"
@@ -31,6 +32,8 @@ typedef struct {
     bool frame_ready;
 } uart_slip_ctx_t;
 
+/* accepted: p9share's SLIP context and demux, enabled and driven by the one shell that
+ * started it. */
 static uart_slip_ctx_t g_uart_slip_ctx;
 
 static int uart_slip_poll(p9_link_t *link) {
@@ -146,7 +149,11 @@ typedef struct {
     bool frame_ready;
 } uart_demux_ctx_t;
 
+/* guarded by: g_demux_lock for the console ring and the frame accumulator,
+ * which two callers drive (the console's poll and the 9P link's); the hooks
+ * and `enabled` are set by the one shell that starts p9share. */
 static uart_demux_ctx_t g_demux;
+static spinlock_t       g_demux_lock;
 
 static void demux_console_push(uint8_t c) {
     uint32_t next = (g_demux.console_head + 1) % UART_DEMUX_CONSOLE_RING_CAP;
@@ -189,7 +196,7 @@ static void demux_route_byte(uint8_t c) {
  * console side (uart_demux_console_has_char()) and the p9_link_t's poll()
  * so whichever caller happens to run first keeps the wire moving -- there's
  * only one consumer of the underlying hardware register either way. */
-/* B6: every entry point below runs with interrupts masked.
+/* Every entry point below holds g_demux_lock.
  *
  * Two independent callers reach this state machine -- the console via
  * uart_getc(), and the 9P server task via the link's poll() -- and before
@@ -200,8 +207,8 @@ static void demux_route_byte(uint8_t c) {
  * preemption was switched on, which is exactly the sort of race that would
  * otherwise have shown up as an occasional corrupted frame much later.
  *
- * Masking rather than a lock, for the same reasons as kernel/irq.h: the
- * regions are short and there is one hart. */
+ * A spinlock, not interrupt masking: the regions are short, and masking
+ * excludes only callers on the same hart. */
 static void demux_pump_locked(void) {
     if (!g_demux.enabled || !g_demux.raw_has_char || !g_demux.raw_getc) return;
     while (g_demux.raw_has_char()) {
@@ -233,30 +240,30 @@ bool uart_demux_is_enabled(void) {
 }
 
 bool uart_demux_console_has_char(void) {
-    uintptr_t f = irq_save();
+    uintptr_t f = spin_lock_irqsave(&g_demux_lock);
     demux_pump_locked();
     bool r = g_demux.enabled && g_demux.console_head != g_demux.console_tail;
-    irq_restore(f);
+    spin_unlock_irqrestore(&g_demux_lock, f);
     return r;
 }
 
 char uart_demux_console_getc(void) {
-    uintptr_t f = irq_save();
+    uintptr_t f = spin_lock_irqsave(&g_demux_lock);
     char c = 0;
     if (g_demux.console_head != g_demux.console_tail) {
         c = (char)g_demux.console_ring[g_demux.console_tail];
         g_demux.console_tail = (g_demux.console_tail + 1) % UART_DEMUX_CONSOLE_RING_CAP;
     }
-    irq_restore(f);
+    spin_unlock_irqrestore(&g_demux_lock, f);
     return c;
 }
 
 static int uart_demux_poll(p9_link_t *link) {
     (void)link;
-    uintptr_t f = irq_save();
+    uintptr_t f = spin_lock_irqsave(&g_demux_lock);
     demux_pump_locked();
     int r = g_demux.frame_ready ? 1 : 0;
-    irq_restore(f);
+    spin_unlock_irqrestore(&g_demux_lock, f);
     return r;
 }
 
@@ -265,13 +272,13 @@ static int uart_demux_poll(p9_link_t *link) {
  * overwritten by the next arrival. */
 static int uart_demux_recv_frame(p9_link_t *link, uint8_t *buf, uint32_t max_len) {
     (void)link;
-    uintptr_t f = irq_save();
-    if (!g_demux.frame_ready) { irq_restore(f); return -1; }
+    uintptr_t f = spin_lock_irqsave(&g_demux_lock);
+    if (!g_demux.frame_ready) { spin_unlock_irqrestore(&g_demux_lock, f); return -1; }
     uint32_t n = (g_demux.frame_len < max_len) ? g_demux.frame_len : max_len;
     memcpy(buf, g_demux.frame, n);
     g_demux.frame_ready = false;
     g_demux.frame_len = 0;
-    irq_restore(f);
+    spin_unlock_irqrestore(&g_demux_lock, f);
     return (int)n;
 }
 
@@ -292,10 +299,10 @@ p9_link_t *uart_demux_get_link(void) {
     return &g_uart_demux_link;
 }
 
-int uart_net_send_9p(const uint8_t *req_buf, uint32_t req_len, uint8_t *resp_buf, uint32_t resp_max) {
+static int send_9p_unlocked(const uint8_t *req_buf, uint32_t req_len, uint8_t *resp_buf, uint32_t resp_max) {
     if (!req_buf || req_len < 7 || !resp_buf) return -1;
 
-    static uint8_t slip_tx[2048];
+    static uint8_t slip_tx[2048];   /* guarded by: g_loop_lock (below) */
     static uint8_t slip_rx[2048];
 
     int slip_len = slip_encode(req_buf, req_len, slip_tx, sizeof(slip_tx));
@@ -321,9 +328,9 @@ int uart_net_send_9p(const uint8_t *req_buf, uint32_t req_len, uint8_t *resp_buf
  * the attach fid. Uses its own scratch filename so concurrent loopback and
  * UART RPCs (e.g. both exercised back-to-back by tests/runner.py) never
  * collide on the same file. */
-int uart_net_rpc(const char *write_payload, char *read_out_buf, uint32_t read_max) {
+static int rpc_unlocked(const char *write_payload, char *read_out_buf, uint32_t read_max) {
     static const char *SCRATCH_NAME = "uart9p.tmp";
-    static uint8_t tx_buf[1024];
+    static uint8_t tx_buf[1024];   /* guarded by: g_loop_lock (below) */
     static uint8_t rx_buf[1024];
 
     // 1. Tversion -- also resets the server's fid table for a clean session.
@@ -409,6 +416,24 @@ int uart_net_rpc(const char *write_payload, char *read_out_buf, uint32_t read_ma
     uart_net_send_9p(tx_buf, (uint32_t)tx_len, rx_buf, sizeof(rx_buf));
 
     return result;
+}
+
+/* The loopback self-test's buffers above are static: one exchange at a time,
+ * whichever task opened the /dev node. guarded by: g_loop_lock. */
+static ylock_t g_loop_lock;
+
+int uart_net_send_9p(const uint8_t *req_buf, uint32_t req_len, uint8_t *resp_buf, uint32_t resp_max) {
+    ylock_acquire(&g_loop_lock);
+    int rc = send_9p_unlocked(req_buf, req_len, resp_buf, resp_max);
+    ylock_release(&g_loop_lock);
+    return rc;
+}
+
+int uart_net_rpc(const char *write_payload, char *read_out_buf, uint32_t read_max) {
+    ylock_acquire(&g_loop_lock);
+    int rc = rpc_unlocked(write_payload, read_out_buf, read_max);
+    ylock_release(&g_loop_lock);
+    return rc;
 }
 
 #else /* CONFIG_BOARD_ESP32C6 */

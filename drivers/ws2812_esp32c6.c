@@ -54,6 +54,7 @@
 
 #define SPIN_LIMIT 200000u
 
+/* accepted: a lazy init, idempotent. */
 static bool g_ready;
 
 bool ws2812_init(void) {

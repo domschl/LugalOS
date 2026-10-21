@@ -335,8 +335,10 @@ _Static_assert(PIX_ORG + sizeof(k_pixel_prog) / 2u <= 32u, "lcd7: PIO2 has 32 in
 _Static_assert(LCD_H_ACTIVE % 32u == 0, "lcd7: a line must be whole words");
 
 static uint16_t *g_table;         /* one heap page, never freed while the panel runs */
+/* single task: the boot, before any reader runs; constant after. */
 static uint32_t *g_fb;            /* FB_PAGES heap pages, likewise */
 static uint32_t  g_fb_start;      /* what RL_CH writes back into FB_CH each frame */
+/* single task: the boot, before any reader runs; constant after. */
 static bool      g_running;
 static uint16_t  g_fg, g_bg;
 static unsigned  g_brightness;

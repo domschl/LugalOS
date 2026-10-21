@@ -183,7 +183,8 @@ void tm1638_init(void) {
      * U-mode task's own serve loop below to actually toggle them -- must
      * happen here, from M-mode, before the task exists. See
      * ACCESSCTRL_GPIO_NSMASK0's own comment above. */
-    REG(ACCESSCTRL_GPIO_NSMASK0) |= (STB_MASK | CLK_MASK | DIO_MASK);
+    REG(ACCESSCTRL_GPIO_NSMASK0 + 0x2000u) =   /* atomic set alias: several drivers own bits here */
+        (STB_MASK | CLK_MASK | DIO_MASK);
 
     stb_high();
     REG(SIO_GPIO_OUT_SET) = CLK_MASK;
@@ -700,30 +701,29 @@ bool tm1638_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) {
     return g_tm1638_intruder_entered;
 }
 
-static int tm1638_call_with_retry(const uint8_t *req, uint32_t req_len,
-                                  uint8_t *resp, uint32_t resp_max) {
-    for (int attempt = 0; attempt < 8; attempt++) {
-        int n = chan_call(g_tm1638_ep, req, req_len, resp, resp_max);
-        /* counted here, on the client side, rather than in the
-         * server's own serve loop as it was before that loop moved to
-         * U-mode -- a U-mode task cannot touch g_tm1638_calls, an ordinary
-         * kernel .bss global no domain grants it. Every successful
-         * chan_call() here was, by construction, actually served, so the
-         * count means the same thing either way. */
-        if (n >= 0) { g_tm1638_calls++; return n; }
-        sched_yield();
-    }
-    return -1;
+/* With the task alive, it alone drives the TM1638's pins: a call that fails
+ * is a dropped update (or no key), never a direct access beside the task's. */
+static int tm1638_call(const uint8_t *req, uint32_t req_len,
+                       uint8_t *resp, uint32_t resp_max) {
+    int n = chan_call_wait(g_tm1638_ep, req, req_len, resp, resp_max, CHAN_WAIT_MS);
+    /* counted here, on the client side: a U-mode task cannot touch
+     * g_tm1638_calls, an ordinary kernel .bss global no domain grants it. */
+    if (n >= 0) g_tm1638_calls++;
+    return n;
 }
 
 void tm1638_display_string(const char *str) {
     size_t len = strlen(str);
-    if (len <= TM1638_STR_MAX && tm1638_task_alive()) {
+    if (tm1638_task_alive()) {
+        /* Eight digits and their dots: more than TM1638_STR_MAX characters
+         * never reach the display. */
+        if (len > TM1638_STR_MAX) len = TM1638_STR_MAX;
         uint8_t req[1 + TM1638_STR_MAX];
         req[0] = TM1638_OP_DISPLAY_STRING;
         memcpy(&req[1], str, len);
         uint8_t resp[TM1638_RESP_CAP];
-        if (tm1638_call_with_retry(req, 1u + (uint32_t)len, resp, sizeof(resp)) >= 0) return;
+        (void)tm1638_call(req, 1u + (uint32_t)len, resp, sizeof(resp));
+        return;
     }
     tm1638_hw_display_string(str);
 }
@@ -732,7 +732,8 @@ void tm1638_set_leds(uint8_t mask) {
     if (tm1638_task_alive()) {
         uint8_t req[2] = { TM1638_OP_SET_LEDS, mask };
         uint8_t resp[TM1638_RESP_CAP];
-        if (tm1638_call_with_retry(req, sizeof(req), resp, sizeof(resp)) >= 0) return;
+        (void)tm1638_call(req, sizeof(req), resp, sizeof(resp));
+        return;
     }
     tm1638_hw_set_leds(mask);
 }
@@ -741,9 +742,8 @@ int tm1638_get_key(void) {
     if (tm1638_task_alive()) {
         uint8_t req[1] = { TM1638_OP_GET_KEY };
         uint8_t resp[TM1638_RESP_CAP];
-        int n = tm1638_call_with_retry(req, sizeof(req), resp, sizeof(resp));
-        if (n >= 1) return (int)(int8_t)resp[0];
-        /* IPC failed -- fall through to direct access. */
+        int n = tm1638_call(req, sizeof(req), resp, sizeof(resp));
+        return n >= 1 ? (int)(int8_t)resp[0] : -1;
     }
     return tm1638_hw_get_key();
 }

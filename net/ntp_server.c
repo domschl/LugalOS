@@ -32,6 +32,8 @@
  * the difference between those two is the entire argument for P5. */
 #define UNSYNC_DISPERSION_US 1000000u
 
+/* single task: the stack task runs the callback that counts; ntp_server_start()
+ * sets g_running once, before the binding exists. */
 static bool     g_running;
 static uint32_t g_requests, g_malformed, g_unsync;
 static uint8_t  g_last_stratum;

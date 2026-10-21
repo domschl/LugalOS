@@ -125,6 +125,7 @@ _Static_assert((CONFIG_PSRAM_BYTES & (CONFIG_PSRAM_BYTES - 1)) == 0 &&
                CONFIG_PSRAM_BYTES <= (16u << 20),
                "CONFIG_PSRAM_BYTES must be a power of two within the 16 MB window");
 
+/* single task: the boot, before any reader runs; constant after. */
 static bool        g_up;
 static uint32_t    g_bytes;
 static uint8_t     g_kgd, g_eid;
@@ -379,6 +380,8 @@ static void psram_test(void) {
 
 #define BENCH_BYTES (64u * 1024u)
 
+/* accepted: a diagnostic command's state; two terminals running it at once mix their
+ * output. */
 static volatile uint32_t g_sink;
 
 /* In SRAM, not flash (2026-10-05): the "cached (cold)" pass reads 64 KB

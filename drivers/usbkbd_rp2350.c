@@ -37,6 +37,7 @@
 
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)
 
+/* single task: the keyboard host (`kbd` starts and stops it). */
 static union {
     usbkbd_state_t s;
     uint8_t        raw[1024];
@@ -120,6 +121,7 @@ KBD_UTEXT static void kbd_umode_body(uintptr_t arg) {
 
 static uint8_t g_kbd_ustack[2048] __attribute__((aligned(2048)))
                                   __attribute__((section(".ustacks2048")));
+/* single task: the boot, before any reader runs; constant after. */
 static int g_kbd_pid = -1;
 
 static void kbd_task_body(void *arg) {

@@ -27,6 +27,7 @@
 
 #include <signal.h>
 #include <stdio.h>
+#include <sys/wait.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,11 +40,15 @@ static uint32_t g_disk_blocks;
 
 static bool     g_pulled;      /* the card is gone: every access fails */
 static uint32_t g_pulled_calls;
+static int64_t  g_fail_read_lba = -1;    /* this one sector's reads fail */
+static int64_t  g_fail_write_from = -1;  /* writes at or past this sector fail */
 
 static int dev_read(block_dev_t *d, void *buf, uint32_t lba, uint32_t n) {
     (void)d;
     if (g_pulled) { g_pulled_calls++; return -1; }
     if (lba >= g_disk_blocks || n > g_disk_blocks - lba) return -1;
+    if (g_fail_read_lba >= 0 && (int64_t)lba <= g_fail_read_lba && g_fail_read_lba < (int64_t)(lba + n))
+        return -1;
     memcpy(buf, g_disk + (size_t)lba * SECTOR, (size_t)n * SECTOR);
     return 0;
 }
@@ -52,6 +57,7 @@ static int dev_write(block_dev_t *d, const void *buf, uint32_t lba, uint32_t n) 
     (void)d;
     if (g_pulled) { g_pulled_calls++; return -1; }
     if (lba >= g_disk_blocks || n > g_disk_blocks - lba) return -1;
+    if (g_fail_write_from >= 0 && (int64_t)(lba + n) > g_fail_write_from) return -1;
     memcpy(g_disk + (size_t)lba * SECTOR, buf, (size_t)n * SECTOR);
     return 0;
 }
@@ -333,6 +339,14 @@ static void corrupt_images(int iterations, uint64_t seed) {
             (void)fat32_statfs(&fs, &t, &f);
             (void)fat32_recount(&fs);
             walk(&fs, fs.root_dir_cluster, 0, buf, 131072);
+            {
+                uint32_t nb = (fs.total_clusters + 2u + 7u) / 8u;
+                uint8_t *bits = malloc(nb ? nb : 1);
+                uint32_t q[32];
+                fat32_check_t r;
+                (void)fat32_check(&fs, bits, nb, q, 32, &r);
+                free(bits);
+            }
         }
         alarm(0);
     }
@@ -366,6 +380,159 @@ static void pulled_card(void) {
     g_pulled = false;
 }
 
+/* --- Part 4: single failed transfers on a working card ---
+ * A block driver can fail one call (its task did not answer in time) and
+ * then work again. Every such failure must reach the caller: a data write
+ * that went nowhere reported as success left the old cluster's bytes in a
+ * new file, a failed read returned whatever was in the buffer, and a
+ * directory sector that was not read was written back over its sixteen
+ * entries. */
+static void failed_transfers(void) {
+    memset(g_disk, 0, (size_t)g_disk_blocks * SECTOR);
+    CHECK(fat32_format_quiet(&g_dev, true) == 0, "format");
+    fat32_fs_t fs;
+    memset(&fs, 0, sizeof(fs));
+    CHECK(fat32_init_quiet(&fs, &g_dev, true) == 0, "init");
+    static uint8_t a[700], b[700], back[700];
+    for (int i = 0; i < 700; i++) { a[i] = (uint8_t)('a' + i % 26); b[i] = (uint8_t)('A' + i % 26); }
+    CHECK(fat32_write_file(&fs, "A.TXT", a, 700) == 0, "write A");
+    CHECK(fat32_write_file(&fs, "B.TXT", b, 700) == 0, "write B");
+    uint32_t root_lba = fs.data_start_sector + (fs.root_dir_cluster - 2) * fs.bpb.sec_per_clus;
+
+    /* Data writes fail: both write paths say so. */
+    g_fail_write_from = fs.data_start_sector;
+    CHECK(fat32_write_at(&fs, "A.TXT", b, 700, 0, NULL) < 0, "a failed data write reported success");
+    CHECK(fat32_write_file(&fs, "C.TXT", a, 700) < 0, "a failed whole-file write reported success");
+    g_fail_write_from = -1;
+
+    /* A data read fails: no bytes are passed off as the file's. */
+    fat32_dir_entry_t e;
+    CHECK(fat32_find_file(&fs, "B.TXT", &e) == 0, "find B");
+    uint32_t first = ((uint32_t)e.fst_clus_hi << 16) | e.fst_clus_lo;
+    g_fail_read_lba = fs.data_start_sector + (first - 2) * fs.bpb.sec_per_clus;
+    CHECK(fat32_read_at(&fs, &e, back, 700, 0, NULL) < 0, "a failed data read reported success");
+    g_fail_read_lba = -1;
+
+    /* The root directory's sector unreadable while a write grows A: the
+     * write fails and B's entry beside it survives. */
+    CHECK(fat32_find_file(&fs, "A.TXT", &e) == 0, "find A");
+    g_fail_read_lba = root_lba;
+    (void)fat32_write_at(&fs, "A.TXT", a, 700, 700, NULL);
+    g_fail_read_lba = -1;
+    CHECK(fat32_find_file(&fs, "B.TXT", &e) == 0 && e.file_size == 700, "B's entry damaged");
+    memset(back, 0, sizeof back);
+    CHECK(fat32_read_at(&fs, &e, back, 700, 0, NULL) == 700 && memcmp(back, b, 700) == 0,
+          "B's content damaged");
+    printf("fat32_host: failed single transfers reported, %s\n", g_failures ? "FAILED" : "ok");
+}
+
+/* --- Part 5: the read-only check (`fsck`) ---
+ * A volume this code wrote is clean; one with a directory entry pointed at
+ * another file's cluster is cross-linked, and the cluster it used to own is
+ * lost. */
+static void check_volume(void) {
+    memset(g_disk, 0, (size_t)g_disk_blocks * SECTOR);
+    CHECK(fat32_format_quiet(&g_dev, true) == 0, "format");
+    fat32_fs_t fs;
+    memset(&fs, 0, sizeof(fs));
+    CHECK(fat32_init_quiet(&fs, &g_dev, true) == 0, "init");
+    static uint8_t data[3000];
+    memset(data, 'x', sizeof data);
+    CHECK(fat32_write_file(&fs, "A.TXT", data, 3000) == 0, "write A");
+    CHECK(fat32_write_file(&fs, "B.TXT", data, 700) == 0, "write B");
+    CHECK(fat32_write_file(&fs, "EMPTY.TXT", data, 0) == 0, "write EMPTY");
+    CHECK(fat32_mkdir(&fs, "D") == 0, "mkdir D");
+    CHECK(fat32_write_file(&fs, "D/C.TXT", data, 1500) == 0, "write D/C");
+
+    uint32_t bytes = (fs.total_clusters + 2u + 7u) / 8u;
+    uint8_t *bits = malloc(bytes);
+    uint32_t q[64];
+    fat32_check_t r;
+    CHECK(fat32_check(&fs, bits, bytes, q, 64, &r) == 0, "check ran");
+    CHECK(r.files == 4 && r.dirs == 1, "check found %u files, %u dirs", r.files, r.dirs);
+    CHECK(r.cross == 0 && r.bad_chain == 0 && r.size == 0 && r.lost == 0,
+          "clean volume reported %u cross %u chain %u size %u lost", r.cross, r.bad_chain, r.size, r.lost);
+
+    /* B's entry pointed at A's first cluster, through the raw disk. */
+    fat32_dir_entry_t ea, eb;
+    CHECK(fat32_find_file(&fs, "A.TXT", &ea) == 0 && fat32_find_file(&fs, "B.TXT", &eb) == 0, "find A, B");
+    uint32_t root_lba = fs.data_start_sector + (fs.root_dir_cluster - 2) * fs.bpb.sec_per_clus;
+    fat32_dir_entry_t *ents = (fat32_dir_entry_t *)(g_disk + (size_t)root_lba * SECTOR);
+    for (int i = 0; i < 16; i++)
+        if (memcmp(ents[i].name, "B       TXT", 11) == 0) {
+            ents[i].fst_clus_hi = ea.fst_clus_hi;
+            ents[i].fst_clus_lo = ea.fst_clus_lo;
+        }
+    CHECK(fat32_check(&fs, bits, bytes, q, 64, &r) == 0, "check ran");
+    CHECK(r.cross >= 1, "a cross-linked entry not reported");
+    CHECK(r.lost >= 1, "B's old cluster not reported lost");
+    free(bits);
+    printf("fat32_host: check finds a clean volume clean and a cross-link, %s\n",
+           g_failures ? "FAILED" : "ok");
+}
+
+/* --- Part 6: fat32_mkfs(), judged by dosfstools ---
+ * A partitioned card image: mounts, takes files, our check finds it clean,
+ * and so does fsck.fat when the host has it. */
+static uint8_t *g_big;
+static uint32_t g_big_blocks;
+static int big_read(block_dev_t *d, void *buf, uint32_t lba, uint32_t n) {
+    (void)d;
+    if (lba >= g_big_blocks || n > g_big_blocks - lba) return -1;
+    memcpy(buf, g_big + (size_t)lba * SECTOR, (size_t)n * SECTOR);
+    return 0;
+}
+static int big_write(block_dev_t *d, const void *buf, uint32_t lba, uint32_t n) {
+    (void)d;
+    if (lba >= g_big_blocks || n > g_big_blocks - lba) return -1;
+    memcpy(g_big + (size_t)lba * SECTOR, buf, (size_t)n * SECTOR);
+    return 0;
+}
+
+static void mkfs_card(void) {
+    g_big_blocks = 72u * 2048u;                     /* 72 MB: FAT32 needs ~36 MB at least */
+    g_big = calloc(g_big_blocks, SECTOR);
+    block_dev_t dev = { "card", SECTOR, g_big_blocks, big_read, big_write };
+    memset(g_big, 0xA5, (size_t)g_big_blocks * SECTOR);   /* an old format's leftovers */
+    CHECK(fat32_mkfs(&dev, "testcard", 0x12345678u, NULL) == 0, "mkfs");
+    fat32_fs_t fs;
+    memset(&fs, 0, sizeof fs);
+    CHECK(fat32_init_quiet(&fs, &dev, true) == 0, "mount after mkfs");
+    CHECK(fs.fsinfo_lba != 0 && fs.free_count != FAT32_FREE_UNKNOWN, "FSInfo not found after mkfs");
+    CHECK((fs.data_start_sector % 8192u) == 0, "data area at %u, not on a 4 MB boundary", fs.data_start_sector);
+    uint32_t free0 = fs.free_count;
+    static uint8_t data[20000];
+    for (int i = 0; i < (int)sizeof data; i++) data[i] = (uint8_t)i;
+    CHECK(fat32_mkdir(&fs, "DIR") == 0, "mkdir");
+    CHECK(fat32_write_file(&fs, "DIR/A.BIN", data, sizeof data) == 0, "write");
+    CHECK(fat32_write_file(&fs, "B.TXT", "hello", 5) == 0, "write");
+    fat32_sync(&fs);
+    uint32_t nb = (fs.total_clusters + 2u + 7u) / 8u;
+    uint8_t *bits = malloc(nb);
+    uint32_t q[16];
+    fat32_check_t r;
+    CHECK(fat32_check(&fs, bits, nb, q, 16, &r) == 0 && r.cross + r.bad_chain + r.size + r.lost == 0,
+          "our check on a fresh card: %u cross %u chain %u size %u lost", r.cross, r.bad_chain, r.size, r.lost);
+    free(bits);
+    CHECK(free0 == fs.total_clusters - 1u, "FSInfo free %u, want %u", free0, fs.total_clusters - 1u);
+    const char *img = "../../build/host/mkfs_card.img";
+    FILE *f = fopen(img, "wb");
+    if (f) {
+        fwrite(g_big, SECTOR, g_big_blocks, f);
+        fclose(f);
+        /* The partition, as fsck.fat wants it: offset 4 MB. */
+        int rc = system("command -v fsck.fat >/dev/null 2>&1 || exit 77; "
+                        "dd if=../../build/host/mkfs_card.img of=../../build/host/mkfs_part.img "
+                        "bs=512 skip=8192 status=none && fsck.fat -n ../../build/host/mkfs_part.img >/dev/null");
+        int code = WIFEXITED(rc) ? WEXITSTATUS(rc) : -1;
+        if (code == 77) printf("fat32_host: fsck.fat not installed, skipped\n");
+        else CHECK(code == 0, "fsck.fat found problems (exit %d): fsck.fat -n build/host/mkfs_part.img", code);
+    }
+    free(g_big);
+    printf("fat32_host: mkfs card image (spc %u, %u clusters) %s\n", fs.bpb.sec_per_clus,
+           fs.total_clusters, g_failures ? "FAILED" : "ok, fsck.fat agrees");
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);   /* in order with sanitizer reports on stderr */
     int iterations = argc > 1 ? atoi(argv[1]) : 2000;
@@ -373,6 +540,12 @@ int main(int argc, char **argv) {
     functional();
     if (g_failures) return 1;
     pulled_card();
+    if (g_failures) return 1;
+    failed_transfers();
+    if (g_failures) return 1;
+    check_volume();
+    if (g_failures) return 1;
+    mkfs_card();
     if (g_failures) return 1;
     corrupt_images(iterations, seed);
     free(g_disk);

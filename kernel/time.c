@@ -1,10 +1,14 @@
+#include "kernel/sysreg.h"
 #include "kernel/time.h"
+#include "kernel/lock.h"
 #include "kernel/timezone.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
 #include "lugalos_config.h"
 #include <string.h>
 
+/* single task: the boot (time_init), before interrupts are enabled;
+ * constant after. */
 static uint64_t g_boot_us_offset = 0;
 
 /* The wall clock is kept as UTC milliseconds since 1970, pinned to a reading
@@ -27,6 +31,13 @@ static uint64_t g_boot_us_offset = 0;
  * milliseconds threw away three digits of a counter that has them
  * (time_get_us() is a 1 us TIMER0 read), so a set-then-read round trip lost
  * sub-millisecond detail even when both ends had it. */
+/* guarded by: a sequence lock over this and the rate below (g_time_seq):
+ * `date`, NTP and the discipline set the clock from their own tasks while
+ * every task reads it, and on a 32-bit hart a 64-bit base read across a set
+ * is half old, half new -- a timestamp off by hours. Writers serialise on
+ * g_time_lock and make the count odd while they write; a reader copies the
+ * set and retries if the count moved. Lock-free for readers, so a handler
+ * may read the time. */
 static int64_t  g_base_epoch_us = 1785931200000000LL; /* 2026-08-05 12:00:00 UTC */
 static uint64_t g_base_mono_us = 0;
 
@@ -44,9 +55,12 @@ static uint64_t g_base_mono_us = 0;
  * interval across the jump, which after P6 includes every NTP client on the
  * segment. The long-term correction describes the crystal; the slew describes
  * a debt being paid off. */
+/* guarded by: the sequence lock above (g_time_seq). */
 static int32_t  g_freq_ppb = 0;
 static int32_t  g_slew_ppb = 0;
 static uint64_t g_slew_until_mono_us = 0;
+static volatile uint32_t g_time_seq;
+static spinlock_t        g_time_lock;
 
 /* Whether anything has ever set this clock, as opposed to it still holding
  * the instant compiled in above. The difference is invisible in the value --
@@ -54,7 +68,7 @@ static uint64_t g_slew_until_mono_us = 0;
  * it displays as 14:00 -- so a caller that wants to know cannot work it out
  * by looking. A clock face showing a fabricated time with no way to tell is
  * exactly what this exists to prevent. */
-static bool g_clock_set = false;
+static bool g_clock_set = false;   /* accepted: one flag, set once with the clock */
 
 #if defined(CONFIG_BOARD_RP2350)
 #define TIMER0_BASE      0x400B0000UL
@@ -163,12 +177,22 @@ static inline uint64_t read_hardware_counter_us(void) {
      * among other places, so a hang here would take the console with it and
      * leave nothing to report the hang. A stopped clock is visible in the
      * output; a stopped kernel is not. */
+    /* The latch is one per unit, shared by every context: an interrupt (or
+     * the other hart) that latches again between our two reads would pair
+     * this snapshot's high word with the next one's low word -- off by 2^32
+     * ticks, 268 s, whenever the low word wrapped in between. So low, high,
+     * low again, until the two lows agree: then both halves are one latch's
+     * (IDF's systimer_hal_get_counter_value(), lock-free). */
     P4_REG(SYSTIMER_UNIT0_OP) = SYSTIMER_UNIT0_UPDATE;
     for (unsigned i = 0; i < 10000u; i++) {
         if (P4_REG(SYSTIMER_UNIT0_OP) & SYSTIMER_UNIT0_VALID) break;
     }
-    uint32_t hi = P4_REG(SYSTIMER_UNIT0_VALUE_HI) & 0xfffffu;  /* 52 bits total */
-    uint32_t lo = P4_REG(SYSTIMER_UNIT0_VALUE_LO);
+    uint32_t lo, hi, lo_again = P4_REG(SYSTIMER_UNIT0_VALUE_LO);
+    do {
+        lo = lo_again;
+        hi = P4_REG(SYSTIMER_UNIT0_VALUE_HI) & 0xfffffu;   /* 52 bits total */
+        lo_again = P4_REG(SYSTIMER_UNIT0_VALUE_LO);
+    } while (lo != lo_again);
     return (((uint64_t)hi << 32) | lo) / SYSTIMER_TICKS_PER_US;
 #elif !defined(CONFIG_MODE_S)
     return CLINT_MTIME / 10; /* 10 MHz ticks -> microseconds */
@@ -201,9 +225,8 @@ void time_init(void) {
      * kernel wants (UNIT0 keeps counting while a core is halted for
      * debugging, UNIT1 does not). Zeroing them would make the clock stop
      * whenever a debugger did. */
-    P4_REG(P4_SOC_CLK_CTRL2)   |= P4_SYSTIMER_APB_CLK_EN;
-    P4_REG(P4_PERI_CLK_CTRL21) = (P4_REG(P4_PERI_CLK_CTRL21) &
-                                  ~P4_SYSTIMER_CLK_SRC_SEL) | P4_SYSTIMER_CLK_EN;
+    sysreg_set(P4_SOC_CLK_CTRL2, P4_SYSTIMER_APB_CLK_EN);
+    sysreg_update(P4_PERI_CLK_CTRL21, P4_SYSTIMER_CLK_SRC_SEL, P4_SYSTIMER_CLK_EN);
     P4_REG(SYSTIMER_CONF) |= SYSTIMER_REGFILE_CLK_EN;
     P4_REG(SYSTIMER_CONF) |= SYSTIMER_UNIT0_WORK_EN;
 #elif defined(CONFIG_BOARD_ESP32C6)
@@ -243,8 +266,12 @@ uint64_t time_get_ms(void) {
 
 void time_delay_us(uint64_t us) {
     uint64_t start = time_get_us();
+    /* Pumps the USB device only while its driver task is not there to
+     * (as every other caller of usb_cdc_task()): with the task up, this would
+     * drive the controller from whichever task is waiting, beside the task. */
+    bool pump = !usb_cdc_task_alive();
     while (time_get_us() - start < us) {
-        usb_cdc_task();
+        if (pump) usb_cdc_task();
     }
 }
 
@@ -319,18 +346,57 @@ unsigned time_weekday(const rtc_time_t *tm) {
  * Split from the caller so the rebase in every setter uses exactly the same
  * arithmetic the reader does -- if they could differ, each rebase would inject
  * a small step, which is precisely what all of this exists to avoid. */
-static int64_t rate_correction(uint64_t elapsed_us, uint64_t at_mono_us) {
-    int64_t ppb = g_freq_ppb;
-    if (g_slew_ppb && at_mono_us < g_slew_until_mono_us) ppb += g_slew_ppb;
+typedef struct {
+    int64_t  epoch_us;
+    uint64_t mono_us;
+    int32_t  freq_ppb, slew_ppb;
+    uint64_t slew_until_mono_us;
+} clock_base_t;
+
+static clock_base_t base_now(void) {          /* the writer's own view, under g_time_lock */
+    return (clock_base_t){ g_base_epoch_us, g_base_mono_us, g_freq_ppb, g_slew_ppb, g_slew_until_mono_us };
+}
+
+static clock_base_t base_read(void) {
+    clock_base_t b;
+    uint32_t s0;
+    do {
+        while ((s0 = __atomic_load_n(&g_time_seq, __ATOMIC_ACQUIRE)) & 1u) { }
+        b = base_now();
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    } while (__atomic_load_n(&g_time_seq, __ATOMIC_RELAXED) != s0);
+    return b;
+}
+
+static uintptr_t base_write_begin(void) {
+    uintptr_t f = spin_lock_irqsave(&g_time_lock);
+    __atomic_store_n(&g_time_seq, g_time_seq + 1u, __ATOMIC_RELAXED);
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    return f;
+}
+
+static void base_write_end(uintptr_t f) {
+    __atomic_store_n(&g_time_seq, g_time_seq + 1u, __ATOMIC_RELEASE);
+    spin_unlock_irqrestore(&g_time_lock, f);
+}
+
+static int64_t rate_correction(const clock_base_t *b, uint64_t elapsed_us, uint64_t at_mono_us) {
+    int64_t ppb = b->freq_ppb;
+    if (b->slew_ppb && at_mono_us < b->slew_until_mono_us) ppb += b->slew_ppb;
     /* elapsed * ppb / 1e9, ordered to keep the intermediate in range: an hour
      * is 3.6e9 us, and 3.6e9 * 1e6 overflows nothing in 64 bits but a
      * carelessly large ppb would, so the divide happens on the larger term. */
     return (int64_t)(elapsed_us / 1000u) * ppb / 1000000LL;
 }
 
+static int64_t epoch_at(const clock_base_t *b, uint64_t mono_us) {
+    uint64_t elapsed = mono_us > b->mono_us ? mono_us - b->mono_us : 0;
+    return b->epoch_us + (int64_t)elapsed + rate_correction(b, elapsed, mono_us);
+}
+
 int64_t time_epoch_us_at(uint64_t mono_us) {
-    uint64_t elapsed = mono_us > g_base_mono_us ? mono_us - g_base_mono_us : 0;
-    return g_base_epoch_us + (int64_t)elapsed + rate_correction(elapsed, mono_us);
+    clock_base_t b = base_read();
+    return epoch_at(&b, mono_us);
 }
 
 int64_t time_epoch_us(void) {
@@ -339,16 +405,19 @@ int64_t time_epoch_us(void) {
 
 /* Moves the base to *now* without moving the clock, so a rate change applies
  * from here rather than retroactively rewriting how much time has passed. */
-static void rebase(void) {
+static void rebase(void) {                    /* inside base_write_begin/end */
     uint64_t now = time_get_us();
-    g_base_epoch_us = time_epoch_us_at(now);
+    clock_base_t b = base_now();
+    g_base_epoch_us = epoch_at(&b, now);
     g_base_mono_us = now;
 }
 
 void time_set_epoch_us(int64_t us) {
-    g_clock_set = true;
+    uintptr_t f = base_write_begin();
     g_base_epoch_us = us;
     g_base_mono_us = time_get_us();
+    base_write_end(f);
+    g_clock_set = true;
 }
 
 void time_set_freq_ppb(int32_t ppb) {
@@ -357,25 +426,34 @@ void time_set_freq_ppb(int32_t ppb) {
      * crystal this runs on and far inside anything that would break. */
     if (ppb >  100000) ppb =  100000;
     if (ppb < -100000) ppb = -100000;
+    uintptr_t f = base_write_begin();
     rebase();
     g_freq_ppb = ppb;
+    base_write_end(f);
 }
 
 int32_t time_freq_ppb(void) { return g_freq_ppb; }
 
 void time_slew_us(int64_t amount_us, uint32_t over_ms) {
+    uintptr_t f = base_write_begin();
     rebase();
-    if (!over_ms || !amount_us) { g_slew_ppb = 0; g_slew_until_mono_us = 0; return; }
-    /* The rate that pays off `amount_us` across `over_ms`, in ppb. */
-    int64_t ppb = amount_us * 1000000LL / (int64_t)over_ms;
-    if (ppb >  500000) ppb =  500000;      /* 500 ppm: 1.8 s per hour, plenty */
-    if (ppb < -500000) ppb = -500000;
-    g_slew_ppb = (int32_t)ppb;
-    g_slew_until_mono_us = time_get_us() + (uint64_t)over_ms * 1000ull;
+    if (!over_ms || !amount_us) {
+        g_slew_ppb = 0;
+        g_slew_until_mono_us = 0;
+    } else {
+        /* The rate that pays off `amount_us` across `over_ms`, in ppb. */
+        int64_t ppb = amount_us * 1000000LL / (int64_t)over_ms;
+        if (ppb >  500000) ppb =  500000;      /* 500 ppm: 1.8 s per hour, plenty */
+        if (ppb < -500000) ppb = -500000;
+        g_slew_ppb = (int32_t)ppb;
+        g_slew_until_mono_us = time_get_us() + (uint64_t)over_ms * 1000ull;
+    }
+    base_write_end(f);
 }
 
 bool time_slewing(void) {
-    return g_slew_ppb != 0 && time_get_us() < g_slew_until_mono_us;
+    clock_base_t b = base_read();
+    return b.slew_ppb != 0 && time_get_us() < b.slew_until_mono_us;
 }
 
 void time_get_utc(rtc_time_t *tm) {

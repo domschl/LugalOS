@@ -26,7 +26,12 @@ Board parts: 18 es8311
 ```
 Sensors are searched for at their usual addresses, but never at a board part's address. Some parts share an address with a sensor: the ES8311 codec sits at an MCP9808 address (0x18), the ES7210 microphone ADC at the HDC1080's (0x40), and the Tab5's BMI270 at the DS3231's (0x68). Probing them would write their registers, so a sensor with the same address cannot be used on that bus.
 
-**M5Stack Tab5:** connect external sensors to **Grove port A** (bus 1, GPIO53 SDA / GPIO54 SCL), not to the internal bus. The sensor hub searches both buses. The port's 5 V supply is switched on at boot.
+**M5Stack Tab5:** connect external sensors to **Grove port A** (bus 1, GPIO53 SDA / GPIO54 SCL), not to the internal bus. The sensor hub searches both buses. The port's 5 V supply is switched on at boot. Sensors are searched for at boot; one plugged in later is found by `sensor init`.
+
+### Sampling Period
+`sensor period N` samples the environmental sensors every N seconds, from the next round on; `sensor period` alone shows the current period. It lasts until the next boot.
+
+`sensor lux` takes a light reading now (TSL2591, else TSL2561) instead of showing the last sample.
 
 ### Power and Motion Channels
 Board parts report through the same channels as the environmental sensors: in `sensor`, in `/proc/sensor/<part>`, and (except motion) on MQTT as `sensor/<part>/<channel>`:

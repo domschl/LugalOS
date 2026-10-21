@@ -16,6 +16,10 @@
  * Call once at boot, after p9_init(). */
 int p9_chan_init(void);
 
+/* How long a caller of the "p9" endpoint waits for its turn: the request
+ * ahead may be a whole msize read from a card (see BLK_CALL_WAIT_MS). */
+#define P9_CHAN_WAIT_MS 1000u
+
 /* NULL until p9_chan_init() has succeeded. */
 p9_link_t *p9_chan_get_link(void);
 

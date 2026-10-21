@@ -23,6 +23,7 @@
 
 #define REG(addr)               (*(volatile uint32_t *)(uintptr_t)(addr))
 
+/* accepted: a lazy init, idempotent. */
 static bool s_adc_ready = false;
 
 static void adc_ensure_init(void) {

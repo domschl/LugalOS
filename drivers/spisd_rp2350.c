@@ -78,6 +78,8 @@
 #define CS_PIN CONFIG_SPI1_CS_GPIO
 #define CS_MASK (1u << CS_PIN)
 
+/* single task: the card's bring-up (boot, or `sd init` from a shell) and the block
+ * task; counters accepted. */
 static bool g_sd_is_sdhc = false;
 static bool g_sd_initialized = false;
 
@@ -198,7 +200,8 @@ static int spisd_init_hardware(void) {
      * U-mode task's own serve loop below to actually touch them -- must
      * happen here, from M-mode, before the task exists. See
      * ACCESSCTRL_SPI1's own comment above. */
-    REG(ACCESSCTRL_GPIO_NSMASK0) |= CS_MASK;
+    REG(ACCESSCTRL_GPIO_NSMASK0 + 0x2000u) =   /* atomic set alias: several drivers own bits here */
+        CS_MASK;
     REG(ACCESSCTRL_SPI1) = ACCESSCTRL_WRITE_PASSWORD | REG(ACCESSCTRL_SPI1)
                            | ACCESSCTRL_SPI1_NSP | ACCESSCTRL_SPI1_NSU;
 
@@ -457,6 +460,7 @@ static int spisd_hw_write_blocks(uint32_t lba, uint32_t count, const void *buf) 
 static uint8_t         g_blk_req[BLK_REQ_CAP];
 static uint8_t         g_blk_resp[BLK_RESP_CAP];
 static chan_endpoint_t *g_blk_ep;
+/* single task: the boot, before any reader runs; constant after. */
 static int              g_blk_task_pid = -1;
 
 /* Verify: counts chan_call()s actually served -- see
@@ -464,6 +468,8 @@ static int              g_blk_task_pid = -1;
  * (a nonzero, growing count is what distinguishes "the task is genuinely
  * serving requests" from "every caller silently fell back to direct
  * access the whole time"). */
+/* single task: the card's bring-up (boot, or `sd init` from a shell) and the block
+ * task; counters accepted. */
 static uint32_t g_blk_calls;
 
 uint32_t blk_task_call_count(void) { return g_blk_calls; }
@@ -735,18 +741,17 @@ int spisd_task_start(void) {
     return pid;
 }
 
-static int blk_call_with_retry(const uint8_t *req, uint32_t req_len,
-                               uint8_t *resp, uint32_t resp_max) {
-    for (int attempt = 0; attempt < 8; attempt++) {
-        int n = chan_call(g_blk_ep, req, req_len, resp, resp_max);
-        /* counted here, on the client side -- see
-         * drivers/st7735_rp2350.c's st7735_call_with_retry() comment,
-         * same reasoning: a U-mode server cannot touch g_blk_calls, an
-         * ordinary kernel .bss global no domain grants it. */
-        if (n >= 0) { g_blk_calls++; return n; }
-        sched_yield();
-    }
-    return -1;
+/* A turn can wait out another client's transfer, and a card may hold a
+ * write busy for up to 250 ms (SD spec's write timeout). */
+#define BLK_CALL_WAIT_MS 500u
+
+static int blk_call(const uint8_t *req, uint32_t req_len,
+                    uint8_t *resp, uint32_t resp_max) {
+    int n = chan_call_wait(g_blk_ep, req, req_len, resp, resp_max, BLK_CALL_WAIT_MS);
+    /* counted here, on the client side: a U-mode server cannot touch
+     * g_blk_calls, an ordinary kernel .bss global no domain grants it. */
+    if (n >= 0) g_blk_calls++;
+    return n;
 }
 
 /* One wire round trip, at most BLK_MAX_COUNT (one) sector -- the
@@ -759,7 +764,7 @@ static int blk_read_chunk(uint32_t lba, uint32_t count, void *buf) {
     be32_store(&req[1], lba);
     be32_store(&req[5], count);
     uint8_t resp[BLK_RESP_CAP];
-    int n = blk_call_with_retry(req, sizeof(req), resp, sizeof(resp));
+    int n = blk_call(req, sizeof(req), resp, sizeof(resp));
     if (n >= 1 && resp[0] == 0 && (uint32_t)n >= 1u + count * 512u) {
         memcpy(buf, &resp[1], count * 512u);
         return (int)count;
@@ -774,7 +779,7 @@ static int blk_write_chunk(uint32_t lba, uint32_t count, const void *buf) {
     be32_store(&req[5], count);
     memcpy(&req[BLK_HDR_LEN], buf, count * 512u);
     uint8_t resp[1];
-    int n = blk_call_with_retry(req, BLK_HDR_LEN + count * 512u, resp, sizeof(resp));
+    int n = blk_call(req, BLK_HDR_LEN + count * 512u, resp, sizeof(resp));
     if (n >= 1 && resp[0] == 0) return (int)count;
     return -1;
 }
@@ -783,6 +788,8 @@ static int blk_write_chunk(uint32_t lba, uint32_t count, const void *buf) {
  * row and the card is taken for gone (block_dev_t's `lost`): with it pulled,
  * every request failed after its full SPI timeout, forever. */
 #define SPISD_LOST_AFTER 3u
+/* single task: the card's bring-up (boot, or `sd init` from a shell) and the block
+ * task; counters accepted. */
 static uint32_t g_spisd_fail_run;
 
 static int spisd_note(block_dev_t *dev, int rc) {
@@ -840,10 +847,10 @@ static int spisd_read_blocks_raw(block_dev_t *dev, void *buf, uint32_t lba, uint
         while (done < count) {
             uint32_t chunk = (count - done) > BLK_MAX_COUNT ? BLK_MAX_COUNT : (count - done);
             int n = blk_read_chunk(lba + done, chunk, dst + (size_t)done * 512u);
-            if (n < 0) break; /* IPC failed -- fall through to direct access below for whatever wasn't already transferred, same as at24c32_read()/at24c32_write() */
+            if (n < 0) return -1;   /* not the bus: the task may still be on it */
             done += (uint32_t)n;
         }
-        if (done >= count) return 0;
+        return 0;
     }
     return spisd_hw_read_blocks(lba + done, count - done, dst + (size_t)done * 512u);
 }
@@ -857,10 +864,10 @@ static int spisd_write_blocks_raw(block_dev_t *dev, const void *buf, uint32_t lb
         while (done < count) {
             uint32_t chunk = (count - done) > BLK_MAX_COUNT ? BLK_MAX_COUNT : (count - done);
             int n = blk_write_chunk(lba + done, chunk, src + (size_t)done * 512u);
-            if (n < 0) break;
+            if (n < 0) return -1;   /* not the bus: the task may still be on it */
             done += (uint32_t)n;
         }
-        if (done >= count) return 0;
+        return 0;
     }
     return spisd_hw_write_blocks(lba + done, count - done, src + (size_t)done * 512u);
 }
@@ -873,14 +880,14 @@ static int spisd_write_blocks_raw(block_dev_t *dev, const void *buf, uint32_t lb
  * store, asserted to fault), a separate canary rather than reaching into
  * another file's, for the same reason the syscall stubs above are
  * hand-rolled per file. */
-static volatile uintptr_t g_blk_canary = 0xC0FFEE;
+static volatile uintptr_t g_blk_canary = 0xC0FFEE;   /* accepted: an isolation test's canary or handshake */
 
 BLK_UATTR static void blk_intruder(void) {
     g_blk_canary = 0xDEAD;
     for (;;) { } /* only reached if the store was NOT stopped */
 }
 
-static volatile bool g_blk_intruder_entered;
+static volatile bool g_blk_intruder_entered;   /* accepted: an isolation test's canary or handshake */
 
 /* `arg` is the U-mode stack -- allocated by blk_isolation_test() below,
  * not here, so it can free it once the task is confirmed DEAD (same

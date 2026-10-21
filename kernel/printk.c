@@ -593,14 +593,19 @@ int printk_debug(const char *fmt, ...) {
  *
  * The ring copy is accumulated alongside and stored as one record at the end;
  * if the machine dies mid-message the UART already has it and the ring does
- * not, which is the right way round. */
-static char     g_crit_buf[KLOG_REC_MAX];
-static uint32_t g_crit_len;
+ * not, which is the right way round. The copy lives on the caller's stack, as
+ * printk()'s record buffer does: two contexts reporting at once (a task and a
+ * lock fault in a handler, or two tasks) would interleave into one shared
+ * buffer and store each other's text. */
+typedef struct {
+    char     buf[KLOG_REC_MAX];
+    uint32_t len;
+} crit_stash_t;
 
-static void crit_stash(char c) { if (g_crit_len < sizeof(g_crit_buf)) g_crit_buf[g_crit_len++] = c; }
+static void crit_stash(crit_stash_t *s, char c) { if (s->len < sizeof(s->buf)) s->buf[s->len++] = c; }
 
-static void critical_putc_ring(void *ctx, char c) { (void)ctx; crit_stash(c); }
-static void critical_putc_both(void *ctx, char c) { (void)ctx; crit_stash(c); uart_critical_putc(c); }
+static void critical_putc_ring(void *ctx, char c) { crit_stash((crit_stash_t *)ctx, c); }
+static void critical_putc_both(void *ctx, char c) { crit_stash((crit_stash_t *)ctx, c); uart_critical_putc(c); }
 static void critical_puts_ring(void *ctx, const char *s) { while (*s) critical_putc_ring(ctx, *s++); }
 static void critical_puts_both(void *ctx, const char *s) { while (*s) critical_putc_both(ctx, *s++); }
 
@@ -629,16 +634,17 @@ int printk_critical(const char *fmt, ...) {
     /* Anything already batched goes out first, so this message cannot
      * overtake output that was produced before it. See uart_flush_critical(). */
     if (tty) uart_flush_critical();
-    g_crit_len = 0;
-    int ret = tty ? vprintk_to(critical_putc_both, critical_puts_both, NULL, fmt, args, true)
-                  : vprintk_to(critical_putc_ring, critical_puts_ring, NULL, fmt, args, true);
+    crit_stash_t st;
+    st.len = 0;
+    int ret = tty ? vprintk_to(critical_putc_both, critical_puts_both, &st, fmt, args, true)
+                  : vprintk_to(critical_putc_ring, critical_puts_ring, &st, fmt, args, true);
     va_end(args);
 
     /* The record goes in whole, after the wire already has it. The timestamp
      * is KLOG_NO_TS because vprintk_to() rendered one into the text above --
      * this path prints as it formats, so it cannot defer the stamp the way
      * printk() does. */
-    if (g_crit_len > 0) klog_record_text(KLOG_NO_TS, g_crit_buf, g_crit_len, tty);
+    if (st.len > 0) klog_record_text(KLOG_NO_TS, st.buf, st.len, tty);
     return ret;
 }
 

@@ -18,6 +18,7 @@
 #include "drivers/ramscreen.h"
 #include "drivers/screen.h"
 #include "kernel/palloc.h"
+#include "kernel/console.h"
 
 #include <stddef.h>
 #include <string.h>
@@ -25,15 +26,17 @@
 /* The panel's size by default, so layouts and canvas sizes are the
  * RP2350-LCD-7's. 47.6: settable (`ramscreen W H`), so the suite also runs
  * them at the LCD-7B's 1024 x 600 with the widths D7 derives from it. */
+/* accepted: `ramscreen W H` sets the size before a screen is built. */
 static unsigned g_rs_w = 800u, g_rs_h = 480u;
 #define RS_FB    (g_rs_w / 8u * g_rs_h)
 #define RS_PAGES(bytes) (((bytes) + PAGE_SIZE - 1u) / PAGE_SIZE)
 
+/* guarded by: console_lock (rs_canvas()); `ramscreen W H` sets the size before a screen exists. */
 static screen_t *g_rs;
 static void     *g_rs_fb, *g_rs_store;
-static unsigned  g_rs_built_w, g_rs_built_h;   /* the size g_rs was built at */
+static unsigned  g_rs_built_w, g_rs_built_h;   /* guarded by: console_lock; the size g_rs was built at */
 
-static bool rs_canvas(const uint8_t *req, uint32_t n, uint8_t *reply) {
+static bool rs_canvas_locked(const uint8_t *req, uint32_t n, uint8_t *reply) {
     if (!g_rs) {
         if (n > 0 && (req[0] == 'S' || req[0] == 0)) {
             if (reply) {
@@ -62,6 +65,15 @@ static bool rs_canvas(const uint8_t *req, uint32_t n, uint8_t *reply) {
     }
     screen_canvas(g_rs, req, n, reply);
     return true;
+}
+
+/* Under console_lock, as the panel terminal's canvas: the screen is built on
+ * the first request, and any task's canvas call can be that one. */
+static bool rs_canvas(const uint8_t *req, uint32_t n, uint8_t *reply) {
+    console_lock();
+    bool ok = rs_canvas_locked(req, n, reply);
+    console_unlock();
+    return ok;
 }
 
 /* 37.5a: what a screenshot saves -- once something has drawn. */

@@ -75,6 +75,8 @@ typedef struct {
     volatile int      log_kind;              /* 1 press, 2 move, 3 release */
 } touch_t;
 
+/* single task: the touch task; touch_start() fills it at boot before creating
+ * it, and `ts` only reads. */
 static touch_t g_t;
 
 static bool reg_read(uint8_t addr, uint16_t reg, uint8_t *buf, uint32_t n) {

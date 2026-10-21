@@ -1,4 +1,5 @@
 #include "kernel/device.h"
+#include "kernel/lock.h"
 #include "kernel/printk.h"
 #include <string.h>
 
@@ -22,7 +23,9 @@ typedef struct {
     bool present;
 } dev_slot_t;
 
+/* single task: registered at boot; a probe from a shell only re-reads. */
 static dev_slot_t g_devs[DEV_MAX];
+/* single task: the boot, before any reader runs; constant after. */
 static uint32_t   g_num_devs;
 
 static const char *kind_name(dev_kind_t k) {
@@ -132,6 +135,9 @@ void *dev_next_with_flags(uint32_t *cursor, dev_kind_t kind, uint32_t flags) {
  * already held by uartslip" tells the operator what to release, where a bare
  * failure would not.
  */
+/* guarded by: g_wire_lock for the claim's test and set (dev_claim(),
+ * dev_release()): two terminals can bind the same wire at once. */
+static spinlock_t g_wire_lock;
 static const char *g_wire_owner[DEV_WIRE_VIRTIO + 1];
 
 static const dev_driver_t *find_driver(const char *name) {
@@ -142,7 +148,7 @@ static const dev_driver_t *find_driver(const char *name) {
     return NULL;
 }
 
-int dev_claim(const char *name) {
+static int dev_claim_locked(const char *name) {
     const dev_driver_t *drv = find_driver(name);
     if (!drv) return -1;
     if (drv->wire == DEV_WIRE_NONE) return 0; /* not an exclusive resource */
@@ -159,7 +165,7 @@ int dev_claim(const char *name) {
     return 0;
 }
 
-void dev_release(const char *name) {
+static void dev_release_locked(const char *name) {
     const dev_driver_t *drv = find_driver(name);
     if (!drv || drv->wire == DEV_WIRE_NONE) return;
     if (g_wire_owner[drv->wire] &&
@@ -205,4 +211,18 @@ bool dev_binding_info(uint32_t index, const char **name_out, const char **kind_o
         return true;
     }
     return false;
+}
+
+/* The claim and its release, under g_wire_lock. */
+int dev_claim(const char *name) {
+    uintptr_t lf = spin_lock_irqsave(&g_wire_lock);
+    int r = dev_claim_locked(name);
+    spin_unlock_irqrestore(&g_wire_lock, lf);
+    return r;
+}
+
+void dev_release(const char *name) {
+    uintptr_t lf = spin_lock_irqsave(&g_wire_lock);
+    dev_release_locked(name);
+    spin_unlock_irqrestore(&g_wire_lock, lf);
 }

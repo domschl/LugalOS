@@ -73,15 +73,18 @@ struct virtqueue_mem {
     struct virtq_used used;
 } __attribute__((aligned(4096)));
 
+/* single task: LLP's pump, through the link's ops (virtio_console_get_link());
+ * virtio_console_init() at boot, before it. The receive ring below too. */
 static struct virtqueue_mem g_rxq __attribute__((aligned(4096)));
 static struct virtqueue_mem g_txq __attribute__((aligned(4096)));
 static uint8_t g_rx_buf[RX_BUF_SIZE] __attribute__((aligned(16)));
 static uint8_t g_tx_buf[TX_BUF_SIZE] __attribute__((aligned(16)));
 
+/* single task: the boot, before any reader runs; constant after. */
 static volatile uint32_t *g_mmio_base = NULL;
 static uint32_t g_mmio_version = 0;
 static int g_probed = 0;
-static uint16_t g_rx_last_used = 0;
+static uint16_t g_rx_last_used = 0;   /* single task: LLP's pump, as g_rxq */
 static uint16_t g_tx_last_used = 0;
 
 /* --- Software byte ring: buffers bytes drained from completed RX
@@ -92,7 +95,7 @@ typedef struct {
     uint32_t head, tail, count;
 } byte_ring_t;
 
-static byte_ring_t g_rx_ring;
+static byte_ring_t g_rx_ring;   /* single task: LLP's pump */
 
 static void ring_push(byte_ring_t *r, const uint8_t *data, uint32_t len) {
     for (uint32_t i = 0; i < len && r->count < RX_RING_CAP; i++) {

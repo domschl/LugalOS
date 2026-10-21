@@ -45,6 +45,7 @@
  * from the ring to the sinks. */
 #define KLOGD_STACK_PAGES 1
 
+/* single task: the boot (or the root shell re-running it); constant after. */
 static int g_klogd_pid = -1;
 
 static void klogd_body(void *arg) {

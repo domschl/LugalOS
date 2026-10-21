@@ -514,6 +514,7 @@ temperature:
 
 /* ---------------------------------------------------------- selftest --- */
 
+/* accepted: a selftest's state; one run at a time. */
 static int g_fail;
 
 static void check(bool ok, const char *what) {
@@ -523,6 +524,7 @@ static void check(bool ok, const char *what) {
 
 /* A whole test is "press these keys, then look at the panel", which is what a
  * person does, so the helpers are shaped that way too. */
+/* accepted: a selftest's state; one run at a time. */
 static ui_state_t  T_st;
 static ui_inputs_t T_in;
 static uint64_t    T_now;
@@ -555,6 +557,7 @@ static void t_wait(uint64_t ms) {
 }
 
 static const char *t_text(void) {
+    /* accepted: a selftest's state; one run at a time. */
     static ui_screen_t scr;
     clock_ui_screen(&T_st, &T_in, T_now, &scr);
     return scr.text;

@@ -163,8 +163,12 @@
  * that has one (the LCD-7: 65 536 nodes, 1 MB, measured 1.7x slower than
  * SRAM and accepted for the size), ordinary .bss everywhere else. The mark
  * bitmaps further down stay in SRAM: they are small and hit at random. */
+/* guarded by: g_lisp_lock (lisp_lock()): every evaluation holds it, every shell command
+ * that is a Lisp form too. */
 static lisp_val_t node_pool[NODE_POOL_SIZE] BULK_BSS;
 
+/* guarded by: g_lisp_lock (lisp_lock()): every evaluation holds it, every shell command
+ * that is a Lisp form too. */
 static int node_pool_idx = 0;
 static bool node_pool_exhausted_warned = false;
 
@@ -172,6 +176,8 @@ static bool node_pool_exhausted_warned = false;
  * node_pool cells, threaded through the existing pair.cdr field (no extra
  * storage) -- see gc_collect() further down for how cells get here. NULL
  * means empty, i.e. every collection so far has reclaimed nothing new. */
+/* guarded by: g_lisp_lock (lisp_lock()): every evaluation holds it, every shell command
+ * that is a Lisp form too. */
 static lisp_val_t *node_free_list = NULL;
 /* 38.5: the free lists' lengths, kept as they change rather than walked.
  * Walking was free while the pools were SRAM; in PSRAM a walk of the node
@@ -180,6 +186,8 @@ static lisp_val_t *node_free_list = NULL;
  * pool had cycled (10 ms round trip fresh, 30 ms after). Changed in exactly
  * the places the lists are: the pops in alloc_node()/take_small()/
  * take_large() and the pushes in the sweep. */
+/* guarded by: g_lisp_lock (lisp_lock()): every evaluation holds it, every shell command
+ * that is a Lisp form too. */
 static int node_free_count;
 static int string_small_free_count;
 static int string_large_free_count;
@@ -193,6 +201,8 @@ static int string_large_free_count;
  * 536 bytes of a 16 KB stack unused on rv64 (second terminal,
  * measured 2026-10-04), where every frame is twice as wide. */
 #define LISP_STACK_MARGIN (512u * sizeof(void *))
+/* guarded by: g_lisp_lock (lisp_lock()): every evaluation holds it, every shell command
+ * that is a Lisp form too. */
 static int eval_depth = 0;
 static bool eval_depth_exceeded_warned = false;
 
@@ -202,12 +212,16 @@ static bool eval_depth_exceeded_warned = false;
  * exponential-blowup recursive definition well under the depth-100
  * ceiling can still run for a long time). See lisp_eval()'s own use of
  * these for the full mechanism. */
+/* guarded by: g_lisp_lock (lisp_lock()): every evaluation holds it, every shell command
+ * that is a Lisp form too. */
 static uint8_t eval_poll_count = 0;      /* wraps: the clock every 256 calls */
 static bool lisp_interrupted = false;
 static bool lisp_exit_requested = false;
 static uint32_t interrupt_poll_us;      /* when the console was last asked */
 static bool lisp_poll_interrupt(void);
 
+/* guarded by: g_lisp_lock (lisp_lock()): every evaluation holds it, every shell command
+ * that is a Lisp form too. */
 static lisp_val_t nil_val = { .type = LISP_NIL };
 static lisp_val_t true_val = { .type = LISP_SYMBOL, .u.sym = "#t" };
 static lisp_val_t false_val = { .type = LISP_SYMBOL, .u.sym = "#f" };
@@ -238,8 +252,12 @@ static const lisp_val_t sym_unquote_splicing = { .type = LISP_SYMBOL, .u.sym = "
 static lisp_val_t sym_out_of_nodes = { .type = LISP_SYMBOL, .u.sym = "#<out-of-nodes>" };
 
 #define SYM_HASH_SIZE 128
+/* guarded by: g_lisp_lock (lisp_lock()): every evaluation holds it, every shell command
+ * that is a Lisp form too. */
 static lisp_val_t *sym_hash_table[SYM_HASH_SIZE];
 
+/* guarded by: g_lisp_lock (lisp_lock()): every evaluation holds it, every shell command
+ * that is a Lisp form too. */
 static lisp_val_t *global_env = &nil_val;
 
 static int streq(const char *s1, const char *s2) {
@@ -267,6 +285,8 @@ static void strncpy_local(char *dst, const char *src, int n) {
  * collector below), and how often it has run -- `(gc-stats)`. */
 static bool gc_collect_in_form(void);
 static int gc_free_nodes(void);
+/* guarded by: g_lisp_lock (lisp_lock()): every evaluation holds it, every shell command
+ * that is a Lisp form too. */
 static unsigned long gc_in_form_count;
 
 /* Node allocation */
@@ -442,6 +462,8 @@ static char string_small[STRING_SMALL_SLOTS][STRING_SMALL_LEN] BULK_BSS;
 static char string_large[STRING_LARGE_SLOTS][STRING_SLOT_LEN] BULK_BSS;
 
 /* Bump indices, one per tier. */
+/* guarded by: g_lisp_lock (lisp_lock()): every evaluation holds it, every shell command
+ * that is a Lisp form too. */
 static int string_small_idx = 0;
 static int string_large_idx = 0;
 static bool string_pool_exhausted_warned = false;
@@ -467,6 +489,8 @@ static inline uint32_t slot_capacity(int idx) {
  * list (its content is the "next free" index) or handed out (its content
  * is whatever string was written into it); nothing reads a slot's bytes as
  * both at once. -1 means empty. */
+/* guarded by: g_lisp_lock (lisp_lock()): every evaluation holds it, every shell command
+ * that is a Lisp form too. */
 static int string_free_head = -1;        /* small tier */
 static int string_large_free_head = -1;  /* large tier */
 
@@ -559,6 +583,8 @@ static char *intern_string(const char *src) {
  * plan/completed/2026-08-07_review_and_remediation.md) stays untouched. */
 #define NODE_MARK_BITS_SIZE ((NODE_POOL_SIZE + 7) / 8)
 #define STRING_MARK_BITS_SIZE ((STRING_POOL_SIZE + 7) / 8)
+/* guarded by: g_lisp_lock (lisp_lock()): every evaluation holds it, every shell command
+ * that is a Lisp form too. */
 static uint8_t node_mark_bits[NODE_MARK_BITS_SIZE];
 static uint8_t string_mark_bits[STRING_MARK_BITS_SIZE];
 
@@ -573,6 +599,8 @@ static uint8_t string_mark_bits[STRING_MARK_BITS_SIZE];
  * needs to hold more than NODE_POOL_SIZE entries no matter how bushy the
  * live graph is, so it can be sized exactly and statically rather than
  * guessed. */
+/* guarded by: g_lisp_lock (lisp_lock()): every evaluation holds it, every shell command
+ * that is a Lisp form too. */
 static lisp_val_t *gc_work_stack[NODE_POOL_SIZE] BULK_BSS;
 
 static int string_slot_index(const char *slot) {
@@ -723,6 +751,8 @@ __attribute__((noinline)) static void gc_push_stack(int *sp, uintptr_t top) {
 
 /* Sessions parked by lisp_park() (lisp.h). Read by a collection and written
  * by lisp_park()/lisp_unpark(), all three under g_lisp_lock. */
+/* guarded by: g_lisp_lock (lisp_lock()): every evaluation holds it, every shell command
+ * that is a Lisp form too. */
 static lisp_park_t *g_parked;
 
 /* Every parked session's registers and stack range, as for gc_push_stack():
@@ -762,6 +792,8 @@ static void gc_push_parked(int *sp) {
 /* 38.5: the longest collection so far and how many there were, for
  * `(gc-stats)` -- with the pool in PSRAM, a full sweep is the one pause a
  * user can feel, so it is measured rather than estimated. */
+/* guarded by: g_lisp_lock (lisp_lock()): every evaluation holds it, every shell command
+ * that is a Lisp form too. */
 static uint32_t gc_max_pause_us;
 static uint32_t gc_total_ms_x1000;   /* total time collecting, in microseconds */
 static unsigned long gc_collections;
@@ -908,6 +940,8 @@ static void gc_collect(void) {
  * whose fields are not yet filled is harmless: its stale fields point at
  * nodes or slots that are either still free (pre-marked, so not followed)
  * or valid, so marking through them only keeps garbage a little longer. */
+/* guarded by: g_lisp_lock (lisp_lock()): every evaluation holds it, every shell command
+ * that is a Lisp form too. */
 static bool gc_in_progress;
 
 static bool gc_collect_in_form(void) {
@@ -4609,6 +4643,8 @@ void lisp_canvas_reset(void) { }
  * calls remember it, canvas-window does not -- so after a layout change,
  * or a `lcd repaint`, the next prompt sees a count the program has not seen
  * and calls its (canvas-on-redraw f). */
+/* guarded by: g_lisp_lock (lisp_lock()): every evaluation holds it, every shell command
+ * that is a Lisp form too. */
 static uint16_t g_canvas_seen;      /* the damage the program has drawn after */
 
 static void put16(uint8_t *b, long v) {
@@ -4873,20 +4909,6 @@ static lisp_val_t *prim_canvas_rgb565_p(lisp_val_t *args, lisp_val_t *env) {
 }
 
 /* (rgb r g b) -- converts 8-bit r, g, b (0..255) to 16-bit RGB565 integer */
-static lisp_val_t *prim_rgb(lisp_val_t *args, lisp_val_t *env) {
-    (void)env;
-    long r = arg_int(args, 0, 0);
-    long g = arg_int(args, 1, 0);
-    long b = arg_int(args, 2, 0);
-    if (r < 0) r = 0;
-    if (r > 255) r = 255;
-    if (g < 0) g = 0;
-    if (g > 255) g = 255;
-    if (b < 0) b = 0;
-    if (b > 255) b = 255;
-    uint16_t rgb565 = (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
-    return make_int((long)rgb565);
-}
 
 /* (canvas-close [name]) -- closes named canvas, or focused canvas */
 static lisp_val_t *prim_canvas_close(lisp_val_t *args, lisp_val_t *env) {
@@ -4978,6 +5000,8 @@ static lisp_val_t *prim_canvas_on_redraw(lisp_val_t *args, lisp_val_t *env) {
 /* 38.8: set while the redraw function runs, between 'D' 1 and 'D' 0, so
  * that its drawing does not make the other layouts' stored canvases stale.
  * A redraw cut short (Ctrl-C, an error) is closed at the next prompt. */
+/* guarded by: g_lisp_lock (lisp_lock()): every evaluation holds it, every shell command
+ * that is a Lisp form too. */
 static bool g_canvas_redrawing;
 
 static void canvas_poll_locked(void);
@@ -5021,6 +5045,22 @@ void lisp_canvas_reset(void) {
     (void)console_canvas(forget, 1, reply);
 }
 #endif
+
+/* (rgb r g b): 8-bit components to an RGB565 int, for any canvas. */
+static lisp_val_t *prim_rgb(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    long r = arg_int(args, 0, 0);
+    long g = arg_int(args, 1, 0);
+    long b = arg_int(args, 2, 0);
+    if (r < 0) r = 0;
+    if (r > 255) r = 255;
+    if (g < 0) g = 0;
+    if (g > 255) g = 255;
+    if (b < 0) b = 0;
+    if (b > 255) b = 255;
+    uint16_t rgb565 = (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+    return make_int((long)rgb565);
+}
 
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
 /* TM1638 primitives. */
@@ -5607,6 +5647,8 @@ static lisp_val_t *prim_which(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     if (!args || args->type != LISP_PAIR) return &false_val;
     const char *name = get_str_val(args->u.pair.car);
+    /* guarded by: g_lisp_lock (lisp_lock()): every evaluation holds it, every shell
+     * command that is a Lisp form too. */
     static char found[128];
     if (path_resolve("bin", name, ".elf", found, sizeof(found)) != 0) return &false_val;
     return make_str(found);
@@ -5680,6 +5722,8 @@ static void print_proc_file(const char *path) {
         cprintf("(no data for '%s')\n", path);
         return;
     }
+    /* guarded by: g_lisp_lock (lisp_lock()): every evaluation holds it, every shell
+     * command that is a Lisp form too. */
     static char buf[257];
     uint64_t off = 0;
     for (;;) {
@@ -5966,7 +6010,9 @@ static lisp_val_t *prim_format(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     lisp_val_t *a1 = lisp_list_ref(args, 0);
     if (!a1) return &false_val;
-    return (vfs_format(get_str_val(a1)) == 0) ? &true_val : &false_val;
+    lisp_val_t *a2 = lisp_list_ref(args, 1);
+    const char *label = a2 ? get_str_val(a2) : NULL;
+    return (vfs_format_label(get_str_val(a1), label) == 0) ? &true_val : &false_val;
 }
 
 static lisp_val_t *prim_time(lisp_val_t *args, lisp_val_t *env) {
@@ -6340,6 +6386,8 @@ static struct {
     bool in_use;
     char name[24];
     p9_link_t *link;
+/* guarded by: g_lisp_lock (lisp_lock()): every evaluation holds it, every shell command
+ * that is a Lisp form too. */
 } g_net_mounts[NET_MOUNT_MAX];
 
 static void net_mount_remember(const char *name, p9_link_t *link) {

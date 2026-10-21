@@ -54,10 +54,12 @@
  * 24's 0x88888888 is what it cost the last time that rule was skipped.
  */
 
+#include "arch/atomic.h"
 #include "drivers/uart.h"
 #include "drivers/uart_proto.h"
 #include "drivers/driver_task.h"
 #include "drivers/uart_net.h"
+#include "kernel/sysreg.h"
 #include "kernel/devirq.h"
 #include "kernel/irq.h"
 #include "kernel/sched.h"
@@ -65,6 +67,7 @@
 #include "kernel/lock.h"
 #include "kernel/chan.h"
 #include "kernel/printk.h"
+#include "kernel/time.h"
 #include "arch/trap.h"
 #include "arch/esp32p4_intr.h"
 #include "lugalos_config.h"
@@ -74,6 +77,8 @@
 
 /* --- UART0 registers (TRM chapter 45, Register Summary) ----------------- */
 
+/* single task: the boot (uart_init), before the console interrupt is
+ * enabled or a task exists; constant after. */
 static uintptr_t g_uart_base = CONFIG_UART0_BASE;
 
 #define UART_FIFO(base)         ((base) + 0x00)  /* RO/WO FIFO data port     */
@@ -92,6 +97,7 @@ static uintptr_t g_uart_base = CONFIG_UART0_BASE;
  * otherwise invisible. */
 #define UART_RXFIFO_OVF_INT     (1u << 4)
 
+/* single task: the boot (or the root shell re-running it); constant after. */
 static volatile uint32_t g_uart_rx_overruns;
 
 uint32_t uart_rx_overruns(void) {
@@ -291,10 +297,15 @@ static void uart_commit(uintptr_t base) {
 #define USJ_OUT_AVAIL           (1u << 2)
 #define USJ_OUT_RECV_PKT_INT    (1u << 2)
 #define USJ_FIFO_BYTES          64u
-#define USJ_TX_SPIN_LIMIT       2000000u
+#define USJ_TX_WAIT_US          2000u   /* how long a full FIFO is waited out, at most */
 
+/* accepted: the uart task's (and the boot's, before it exists), except that
+ * uart_critical_putc() writes them from any context, by design: a critical
+ * message may interleave with the task's bytes, and a torn count only sends a
+ * packet early or late. */
 static volatile unsigned g_usj_pending;
 static volatile bool     g_usj_host_gone;
+static volatile uint32_t g_usj_dropped, g_usj_dropped_total;
 
 static void usj_flush(void) {
     if (g_usj_pending) {
@@ -303,26 +314,60 @@ static void usj_flush(void) {
     }
 }
 
-static void usj_putc(char c) {
-    if (g_usj_host_gone) {
-        if (!(REG(USJ_EP1_CONF) & USJ_IN_FREE)) {
-            REG(USJ_EP1_CONF) = USJ_WR_DONE;
-            return;
-        }
-        g_usj_host_gone = false;
-    } else {
-        unsigned n = 0;
-        while (!(REG(USJ_EP1_CONF) & USJ_IN_FREE)) {
-            if (++n >= USJ_TX_SPIN_LIMIT) {
-                REG(USJ_EP1_CONF) = USJ_WR_DONE;
-                g_usj_host_gone = true;
-                g_usj_pending = 0;
-                return;
-            }
-        }
-    }
+static void usj_fifo_put(char c) {
     REG(USJ_EP1) = (uint32_t)(uint8_t)c;
     if (++g_usj_pending >= USJ_FIFO_BYTES || c == '\n') usj_flush();
+}
+
+/* One byte to the USB host, never holding anyone up for long.
+ *
+ * The FIFO only empties while a host reads the port. With none (the cable in
+ * but no terminal open, or a host slower than the console), a byte is dropped
+ * rather than waited for: `may_wait` callers (the uart task) wait at most
+ * USJ_TX_WAIT_US by the clock, others -- under g_tx_batch_lock with
+ * interrupts masked -- not at all. It used to spin up to two million register
+ * reads per byte, interrupts masked on some paths: a console nobody read froze
+ * the hart for tens of milliseconds at a time, and a log burst slowed the
+ * whole board to a crawl. Once the host is found gone, bytes are dropped
+ * without waiting until it reads again; then a line says how many were lost. */
+static void usj_putc(char c, bool may_wait) {
+    if (g_usj_host_gone) {
+        if (!(REG(USJ_EP1_CONF) & USJ_IN_FREE)) { g_usj_dropped++; return; }
+        g_usj_host_gone = false;
+        if (g_usj_dropped) {
+            char note[64];
+            int n = ksnprintf(note, sizeof note, "\r\n[console: %lu bytes not sent: no USB host read]\r\n",
+                              (unsigned long)g_usj_dropped);
+            g_usj_dropped_total += g_usj_dropped;
+            g_usj_dropped = 0;
+            for (int i = 0; i < n && (REG(USJ_EP1_CONF) & USJ_IN_FREE); i++) usj_fifo_put(note[i]);
+            usj_flush();
+        }
+    }
+    if (!(REG(USJ_EP1_CONF) & USJ_IN_FREE)) {
+        bool room = false;
+        if (may_wait) {
+            uint64_t deadline = time_get_us() + USJ_TX_WAIT_US;
+            room = time_poll_until_us((REG(USJ_EP1_CONF) & USJ_IN_FREE) != 0, deadline);
+        }
+        if (!room) {
+            g_usj_host_gone = true;
+            g_usj_pending = 0;
+            g_usj_dropped++;
+            return;
+        }
+    }
+    usj_fifo_put(c);
+}
+
+uint32_t uart_usj_dropped(void) { return g_usj_dropped_total + g_usj_dropped; }
+
+/* Whether usj_putc(c, false) will take a byte now without dropping it: the
+ * FIFO has room, or the host is already known gone (the byte is dropped
+ * anyway). For callers that must not wait -- they stop, release their lock
+ * and come back, as they do for the UART's own FIFO. */
+static bool usj_ready(void) {
+    return g_usj_host_gone || (REG(USJ_EP1_CONF) & USJ_IN_FREE) != 0;
 }
 #endif /* CONFIG_USBJTAG_BASE */
 
@@ -379,6 +424,10 @@ static bool hw_uart_tx_room(void) {
  * the task that was waiting and lets that task do the read or the write.
  * Draining the FIFO here would put console bytes somewhere the demux
  * (drivers/uart_net.c) cannot see them. */
+/* interrupt-shared: a slot is taken by the task about to block (the uart
+ * task, or a printer on uart_tx_send()'s fallback), with interrupts masked and
+ * its claim word held, and given back by uart_isr() or by the waiter itself.
+ * The counters are written only in the handler or with interrupts masked. */
 static volatile int g_rx_waiter = -1;
 static volatile int g_tx_waiter = -1;
 static volatile uint32_t g_uart_irq_count;    /* see uart_irq_count()    */
@@ -386,10 +435,24 @@ static volatile uint32_t g_uart_irq_rx_wakes; /* see uart_irq_rx_wakes() */
 static volatile uint32_t g_uart_irq_tx_arms;  /* see uart_irq_tx_arms()  */
 static volatile uint32_t g_uart_irq_tx_wakes; /* see uart_irq_tx_wakes() */
 static volatile uint32_t g_uart_irq_tx_seen;  /* see uart_irq_tx_seen()  */
+/* Who owns each slot, across harts: irq_save() alone makes "is it free, then
+ * take it" atomic on one hart only, and two printers on two harts could both
+ * take it, the overwritten one never to be woken. Held for the whole wait. */
+static volatile uint32_t g_rx_claim, g_tx_claim;
+/* interrupt-shared: UART_INT_ENA and USJ_INT_ENA are read-modify-written by the
+ * handler and by both waiters, which can be on different harts: irq_save()
+ * excludes the handler only on its own hart, and the RX and TX waiters not at
+ * all, so one's enable could overwrite the other's and leave it blocked with
+ * its interrupt off. Every enable update, with the slot it goes with, is under
+ * g_ena_lock; the handler wakes its tasks after dropping it (a spinlock is a
+ * leaf, and task_unblock() takes the scheduler's). */
+static spinlock_t g_ena_lock;
 
 static void uart_isr(void *ctx) {
     (void)ctx;
     g_uart_irq_count++;
+    int rx = -1, tx = -1;
+    uintptr_t f = spin_lock_irqsave(&g_ena_lock);
     uintptr_t base = g_uart_base;
     uint32_t st = REG(UART_INT_ST(base));
 
@@ -416,16 +479,14 @@ static void uart_isr(void *ctx) {
 
     if (rx_fired && g_rx_waiter >= 0) {
         g_uart_irq_rx_wakes++;
-        int pid = g_rx_waiter;
+        rx = g_rx_waiter;
         g_rx_waiter = -1;
-        task_unblock(pid);
     }
     if (st & UART_TXFIFO_EMPTY_INT) g_uart_irq_tx_seen++;
     if ((st & UART_TXFIFO_EMPTY_INT) && g_tx_waiter >= 0) {
         g_uart_irq_tx_wakes++;
-        int pid = g_tx_waiter;
+        tx = g_tx_waiter;
         g_tx_waiter = -1;
-        task_unblock(pid);
     }
 
     /* Acknowledge last. This is also what takes the CLIC's pending bit down:
@@ -436,6 +497,9 @@ static void uart_isr(void *ctx) {
 #if defined(CONFIG_USBJTAG_BASE)
     if (usj_st) REG(USJ_INT_CLR) = usj_st;
 #endif
+    spin_unlock_irqrestore(&g_ena_lock, f);
+    if (rx >= 0) task_unblock(rx);
+    if (tx >= 0) task_unblock(tx);
 }
 
 /* The blocking primitives. Whoever calls these owns the hardware -- normally
@@ -448,7 +512,7 @@ static void uart_isr(void *ctx) {
 static void uart_hw_putc_blocking_ex(char c, bool may_block) {
     if (!g_uart_base) return;
 #if defined(CONFIG_USBJTAG_BASE)
-    usj_putc(c);
+    usj_putc(c, true);         /* task or boot context: the bounded wait is fine */
 #endif
     if (hw_uart_tx_room()) {
         REG(UART_FIFO(g_uart_base)) = (uint8_t)c;
@@ -457,21 +521,26 @@ static void uart_hw_putc_blocking_ex(char c, bool may_block) {
     uintptr_t flags = irq_save();
     REG(UART_INT_CLR(g_uart_base)) = UART_TXFIFO_EMPTY_INT;
     if (!hw_uart_tx_room()) {
-        if (may_block && g_tx_waiter < 0 && sched_has_task()) {
+        if (may_block && sched_has_task() && arch_lock_try_acquire(&g_tx_claim)) {
             int me = sched_current_pid();
             do {
                 task_prepare_block();
-                g_tx_waiter = me;
                 g_uart_irq_tx_arms++;
+                uintptr_t f2 = spin_lock_irqsave(&g_ena_lock);
+                g_tx_waiter = me;
                 REG(UART_INT_ENA(g_uart_base)) |= UART_TXFIFO_EMPTY_INT;
+                spin_unlock_irqrestore(&g_ena_lock, f2);
                 task_block();
                 REG(UART_INT_CLR(g_uart_base)) = UART_TXFIFO_EMPTY_INT;   /* clear first, test second */
             } while (!hw_uart_tx_room());
             task_wait_done();
+            uintptr_t f2 = spin_lock_irqsave(&g_ena_lock);
             if (g_tx_waiter == me) {               /* woken by something else */
                 g_tx_waiter = -1;
                 REG(UART_INT_ENA(g_uart_base)) &= ~UART_TXFIFO_EMPTY_INT;
             }
+            spin_unlock_irqrestore(&g_ena_lock, f2);
+            arch_lock_release(&g_tx_claim);
         } else {
             irq_restore(flags);
             while (!hw_uart_tx_room()) sched_yield();
@@ -497,16 +566,18 @@ static uint8_t uart_hw_getc_blocking(void) {
     REG(USJ_INT_CLR) = USJ_OUT_RECV_PKT_INT;
 #endif
     if (!hw_uart_has_char()) {
-        if (g_rx_waiter < 0 && sched_has_task()) {
+        if (sched_has_task() && arch_lock_try_acquire(&g_rx_claim)) {
             /* As for TX above (T11): prepared, and looped on the data. */
             int me = sched_current_pid();
             do {
                 task_prepare_block();
+                uintptr_t f2 = spin_lock_irqsave(&g_ena_lock);
                 g_rx_waiter = me;
                 REG(UART_INT_ENA(g_uart_base)) |= UART_RX_INTS;
 #if defined(CONFIG_USBJTAG_BASE)
                 REG(USJ_INT_ENA) |= USJ_OUT_RECV_PKT_INT;
 #endif
+                spin_unlock_irqrestore(&g_ena_lock, f2);
                 task_block();
                 REG(UART_INT_CLR(g_uart_base)) = UART_RX_INTS;
 #if defined(CONFIG_USBJTAG_BASE)
@@ -514,6 +585,7 @@ static uint8_t uart_hw_getc_blocking(void) {
 #endif
             } while (!hw_uart_has_char());
             task_wait_done();
+            uintptr_t f2 = spin_lock_irqsave(&g_ena_lock);
             if (g_rx_waiter == me) {
                 g_rx_waiter = -1;
             }
@@ -521,6 +593,8 @@ static uint8_t uart_hw_getc_blocking(void) {
 #if defined(CONFIG_USBJTAG_BASE)
             REG(USJ_INT_ENA) &= ~USJ_OUT_RECV_PKT_INT;
 #endif
+            spin_unlock_irqrestore(&g_ena_lock, f2);
+            arch_lock_release(&g_rx_claim);
         } else {
             irq_restore(flags);
             while (!hw_uart_has_char()) sched_yield();
@@ -554,7 +628,9 @@ static uint8_t uart_hw_getc_blocking(void) {
 
 static uint8_t          g_uart_req[UART_REQ_CAP];
 static uint8_t          g_uart_resp[1];
+/* single task: the boot (or the root shell re-running it); constant after. */
 static driver_task_t g_uart_task;
+/* single task: the uart task (uart_serve()); readers only elsewhere. */
 static uint32_t         g_uart_write_calls;
 static volatile bool    g_uart_write_in_flight;
 
@@ -632,8 +708,8 @@ void uart_init(uintptr_t base_addr) {
      * them on already -- this is not fixing anything today. It is the part
      * that stops being redundant the first time this image is entered by
      * something other than the ROM's download loader. */
-    REG(SOC_CLK_CTRL1) |= UART0_SYS_CLK_EN;
-    REG(SOC_CLK_CTRL2) |= UART0_APB_CLK_EN;
+    sysreg_set(SOC_CLK_CTRL1, UART0_SYS_CLK_EN);
+    sysreg_set(SOC_CLK_CTRL2, UART0_APB_CLK_EN);
 
     /* 2. Source clock: XTAL, undivided.
      *
@@ -643,10 +719,8 @@ void uart_init(uintptr_t base_addr) {
      * ratio fits in CLKDIV's 12 integer bits with room to spare
      * (40e6/115200 = 347, against a 4095 ceiling), so the pre-divider has
      * nothing to do. Written explicitly rather than assumed zero. */
-    uint32_t c110 = REG(PERI_CLK_CTRL110);
-    c110 &= ~UART0_CLK_SRC_SEL_MASK;
-    REG(PERI_CLK_CTRL110) = c110 | UART0_CLK_SRC_XTAL | UART0_CLK_EN;
-    REG(PERI_CLK_CTRL111) &= ~UART0_SCLK_DIV_NUM_MASK;
+    sysreg_update(PERI_CLK_CTRL110, UART0_CLK_SRC_SEL_MASK, UART0_CLK_SRC_XTAL | UART0_CLK_EN);
+    sysreg_clear(PERI_CLK_CTRL111, UART0_SCLK_DIV_NUM_MASK);
 
     REG(UART_CLK_CONF(base)) |= UART_TX_SCLK_EN | UART_RX_SCLK_EN;
 
@@ -801,6 +875,9 @@ void uart_init(uintptr_t base_addr) {
 
 /* --- the facade (identical in shape to drivers/uart_16550.c's) ----------- */
 
+/* guarded by: g_tx_batch_lock; except that uart_flush_critical() takes its
+ * own hart's batch without it, interrupts masked, when the lock stays held for
+ * a million tries (a fault with it held). */
 static char       g_tx_batch[MAX_HARTS][UART_TX_BATCH_CAP];
 static uint32_t   g_tx_batch_len[MAX_HARTS];
 static spinlock_t g_tx_batch_lock;
@@ -813,13 +890,12 @@ static spinlock_t g_tx_batch_lock;
  * (sched_hold_current_on_hart()) and the holds on a hart are given back once
  * that hart has nothing batched and nothing in flight: a copy taken by
  * uart_flush() counts here until it is sent, or the owner could be released
- * and overtake it from the other hart. */
+ * and overtake it from the other hart.
+ * guarded by: g_tx_batch_lock. */
 static uint32_t g_tx_inflight[MAX_HARTS];
 
-/* The bounded retry is driver_task_call()'s (G2), shared with every other
- * driver task. uart_flush() below still does not use it -- see its own
- * comment for the one policy that is this driver's rather than the
- * framework's. */
+/* Reads wait for a turn through driver_task_call_wait(). The write path below
+ * does not: see its own comment for the one policy that is this driver's. */
 
 static void uart_tx_send(const char *local, uint32_t len) {
     uint8_t req[1 + UART_TX_BATCH_CAP];
@@ -853,15 +929,32 @@ static void uart_tx_send(const char *local, uint32_t len) {
  * of it (47.8, the split Rreads). Popped under the lock, bytes leave in batch
  * order whoever drains them. */
 static void uart_drain_polling(unsigned h) {
+#if defined(CONFIG_USBJTAG_BASE)
+    uint64_t usj_stall_since = 0;   /* when the USB FIFO last stopped this drain */
+#endif
     for (;;) {
         uintptr_t flags = spin_lock_irqsave(&g_tx_batch_lock);
         uint32_t len = g_tx_batch_len[h], n = 0;
         if (!g_uart_base) n = len;      /* before uart_init(): dropped, as uart_hw_putc_*() did */
+#if defined(CONFIG_USBJTAG_BASE)
+        /* The USB FIFO is waited for the way the UART's is: by stopping,
+         * unlocking and coming back, never under the lock. No progress for
+         * USJ_TX_WAIT_US means no host is reading; then it is dropped. */
+        if (n < len && !usj_ready()) {
+            uint64_t now = time_get_us();
+            if (!usj_stall_since) usj_stall_since = now;
+            else if (now - usj_stall_since > USJ_TX_WAIT_US) g_usj_host_gone = true;
+        } else {
+            usj_stall_since = 0;
+        }
+        while (n < len && hw_uart_tx_room() && usj_ready()) {
+#else
         while (n < len && hw_uart_tx_room()) {
+#endif
             char c = g_tx_batch[h][n++];
             REG(UART_FIFO(g_uart_base)) = (uint8_t)c;
 #if defined(CONFIG_USBJTAG_BASE)
-            usj_putc(c);
+            usj_putc(c, false);     /* under g_tx_batch_lock, interrupts masked */
 #endif
         }
         if (n > 0) {
@@ -922,13 +1015,19 @@ bool uart_peek_interrupt(void) {
     return false;
 }
 
+#define UART_HASCHAR_WAIT_MS 2u
+
 bool uart_has_char(void) {
     uart_flush();
     if (uart_demux_is_enabled()) return uart_demux_console_has_char();
     if (uart_task_alive()) {
+        /* A short turn: the call ahead may be a READ waiting for a key. Then
+         * the status register is read here; reading it changes nothing the
+         * task depends on. */
         uint8_t req[1] = { UART_REQ_HASCHAR };
         uint8_t resp[1];
-        if (driver_task_call(&g_uart_task, req, 1, resp, 1) == 1) return resp[0] != 0;
+        if (driver_task_call_wait(&g_uart_task, req, 1, resp, 1, UART_HASCHAR_WAIT_MS) == 1)
+            return resp[0] != 0;
     }
     return hw_uart_has_char();
 }
@@ -940,9 +1039,14 @@ char uart_getc(void) {
         return uart_demux_console_getc();
     }
     if (uart_task_alive()) {
+        /* Blocking by contract, so it waits for its turn as long as that takes
+         * (a READ ahead of it waits for a key): a second reader of the RX
+         * register beside the task would take keys from it. A refusal (no
+         * task to block, a spinlock held) still returns at once. */
         uint8_t req[1] = { UART_REQ_READ };
         uint8_t resp[1];
-        if (driver_task_call(&g_uart_task, req, 1, resp, 1) == 1) return (char)resp[0];
+        if (driver_task_call_wait(&g_uart_task, req, 1, resp, 1, UINT32_MAX) == 1)
+            return (char)resp[0];
     }
     return (char)uart_hw_getc_blocking();
 }
@@ -963,7 +1067,7 @@ void uart_puts(const char *s) {
  * safe to call from inside the ISR that owns them. */
 void uart_critical_putc(char c) {
 #if defined(CONFIG_USBJTAG_BASE)
-    usj_putc(c);
+    usj_putc(c, true);          /* bounded: a critical line is worth 2 ms */
     usj_flush();
 #endif
     if (!g_uart_base) return;

@@ -21,13 +21,27 @@
 /* See kernel/include/kernel/console.h. The formatting engine lives in
  * kernel/printk.c and is shared; only the destination differs. */
 
+/* accepted: one pointer store each, by `console bind`. */
 static console_putc_fn g_console_putc;
 
 /* See kernel/console.h. A ylock, because it is held across the block that a
  * console write ends in. */
 static ylock_t g_console_lock;
 
-void console_lock(void) {
+/* guarded by: g_console_lock -- written by its holder, from the outermost
+ * acquire to the final release. How long the lock is held, in power-of-two
+ * millisecond buckets (`lockcheck`): every terminal waits behind a long hold. */
+static uint64_t    g_con_t0;
+static const char *g_con_site;
+static uint32_t    g_con_hist[CONSOLE_HOLD_BUCKETS];
+static uint32_t    g_con_max_us;
+static int         g_con_max_pid = -1;
+static const char *g_con_max_site;
+#define CON_LONG_RING 4u
+static struct { const char *site; uint32_t ms; int pid; } g_con_long[CON_LONG_RING];
+static uint32_t    g_con_long_n;   /* guarded by: g_console_lock, as the above */
+
+void console_lock_at(const char *site) {
     /* The rule G2 added, now pointing at what it actually guards (§5.6): a
      * driver serve callback must not write the console, because this path
      * ends in chan_call() to the uart task and a caller blocked on that
@@ -35,16 +49,57 @@ void console_lock(void) {
      * longer comes through here. */
     (void)lock_check_may_console();
     ylock_acquire(&g_console_lock);
+    if (ylock_depth(&g_console_lock) == 1) { g_con_t0 = time_get_us(); g_con_site = site; }
 }
 
 void console_unlock(void) {
+    if (ylock_depth(&g_console_lock) == 1 && ylock_owner(&g_console_lock) == sched_context_id()) {
+        uint32_t us = (uint32_t)(time_get_us() - g_con_t0);
+        unsigned b = 0;
+        for (uint32_t ms = us / 1000u; ms && b + 1u < CONSOLE_HOLD_BUCKETS; ms >>= 1) b++;
+        g_con_hist[b]++;
+        int pid = sched_current_pid();
+        if (us > g_con_max_us) { g_con_max_us = us; g_con_max_pid = pid; g_con_max_site = g_con_site; }
+        if (us >= CONSOLE_LONG_HOLD_MS * 1000u) {
+            uint32_t k = g_con_long_n++ % CON_LONG_RING;
+            g_con_long[k].site = g_con_site; g_con_long[k].ms = us / 1000u; g_con_long[k].pid = pid;
+        }
+    }
     ylock_release(&g_console_lock);
+}
+
+void console_lock_hold_stats(uint32_t hist[CONSOLE_HOLD_BUCKETS], uint32_t *max_us, int *max_pid,
+                             const char **max_site) {
+    for (unsigned i = 0; i < CONSOLE_HOLD_BUCKETS; i++) hist[i] = g_con_hist[i];
+    *max_us = g_con_max_us;
+    *max_pid = g_con_max_pid;
+    *max_site = g_con_max_site;
+}
+
+/* single task: set once, by the panel's terminal start. */
+static void (*g_frame_lock_fn)(void);
+static void (*g_frame_unlock_fn)(void);
+
+void console_set_frame_lock(void (*lock)(void), void (*unlock)(void)) {
+    g_frame_lock_fn = lock;
+    g_frame_unlock_fn = unlock;
+}
+void console_frame_lock(void)   { if (g_frame_lock_fn) g_frame_lock_fn(); }
+void console_frame_unlock(void) { if (g_frame_unlock_fn) g_frame_unlock_fn(); }
+
+bool console_lock_long_hold(unsigned i, const char **site, uint32_t *ms, int *pid) {
+    uint32_t n = g_con_long_n < CON_LONG_RING ? g_con_long_n : CON_LONG_RING;
+    if (i >= n) return false;
+    uint32_t k = (g_con_long_n - 1u - i) % CON_LONG_RING;
+    *site = g_con_long[k].site; *ms = g_con_long[k].ms; *pid = g_con_long[k].pid;
+    return true;
 }
 
 bool console_lock_held(void) {
     return ylock_owner(&g_console_lock) == sched_context_id();
 }
 
+/* single task: the boot, before any reader runs; constant after. */
 static const console_screen_t *g_screen;
 
 void console_set_screen(const console_screen_t *screen) {
@@ -98,6 +153,8 @@ bool console_pixels_format(const uint8_t **fb, unsigned *w, unsigned *h, unsigne
     return false;
 }
 
+/* accepted: one byte, stored by the ribbon's focus changes (hotkeys, the
+ * reader) and read by the input path; the last focus change wins. */
 static volatile uint8_t g_active_win_type = 1; /* 1 = RIBBON_WIN_TERM */
 
 void console_set_active_win_type(uint8_t type) {
@@ -108,6 +165,10 @@ uint8_t console_active_win_type(void) {
     return g_active_win_type;
 }
 
+/* accepted: a one-word mailbox. The keyboard, touch and line editor post into
+ * it (a tap's or scroll's details first, then the word), the pump takes it
+ * with an atomic exchange; a second hotkey before the pump runs replaces the
+ * first. */
 static volatile unsigned g_hotkey;
 
 /* --- 47.11: idle blanking ------------------------------------------------
@@ -116,6 +177,9 @@ static volatile unsigned g_hotkey;
  * panel leaves it blanked. Checked from the pump, which every task waiting
  * for input -- or polling for Ctrl-C -- runs, so a system with a shell at a
  * prompt anywhere checks it all the time. */
+/* accepted: input from several tasks (pump, touch, keyboard) updates these
+ * with single stores; two at once can count a wake twice or blank-hook twice,
+ * both harmless. */
 static volatile uint32_t g_blank_after_s;       /* 0: never */
 static volatile uint64_t g_last_input_ms;
 static volatile bool     g_blanked;
@@ -160,6 +224,7 @@ void console_blank_counts(uint32_t *blankings, uint32_t *wakes, uint32_t *swallo
     *swallowed = g_wakes_swallowed;
 }
 
+/* accepted: g_hotkey's payload (above). */
 static volatile uint32_t g_tap_xy;     /* x << 16 | y */
 static volatile int      g_scroll_dy = 0;
 static volatile uint32_t g_scroll_ms = 0;
@@ -388,29 +453,55 @@ void console_emit(console_putc_fn out, char c) {
  * outright in any context that must not block -- see kernel/klog.c. It does
  * not recurse: the drain writes to klog's *sinks* (console_emit(uart_putc,
  * ...)), not back through here. */
-/* 37.5b: console_capture() -- the last `cap` bytes written, kept instead
- * of shown. */
-static char    *g_cap;
-static uint32_t g_cap_max, g_cap_len;
-static int      g_cap_pid = -1;     /* Only its writes are kept */
+/* console_capture(): what a task (and the tasks it started) writes, kept
+ * instead of shown. One slot per capturing task, so captures in two terminals
+ * (`ea` in one, the editor in another) neither end nor overrun each other.
+ * guarded by: g_cap_lock, for taking and giving back a slot and for every
+ * write into one; g_cap_active lets console_putc() skip the lock when no
+ * capture runs. */
+#define CAP_SLOTS 4
+typedef struct {
+    char    *buf;          /* NULL: free */
+    uint32_t max, len;
+    int      pid;          /* only its writes, and its descendants', are kept */
+} cap_slot_t;
+static cap_slot_t        g_caps[CAP_SLOTS];   /* guarded by: g_cap_lock (above) */
+static volatile uint32_t g_cap_active;
+static spinlock_t        g_cap_lock = SPINLOCK_INIT;
 
 void console_capture(char *buf, uint32_t cap) {
-    g_cap_len = 0;
-    g_cap_max = cap;
-    g_cap_pid = sched_current_pid();
-    g_cap = cap ? buf : NULL;
+    if (!buf || !cap) return;
+    int me = sched_current_pid();
+    uintptr_t f = spin_lock_irqsave(&g_cap_lock);
+    cap_slot_t *slot = NULL;
+    for (unsigned i = 0; i < CAP_SLOTS; i++) {
+        if (g_caps[i].buf && g_caps[i].pid == me) { slot = &g_caps[i]; break; }
+        if (!g_caps[i].buf && !slot) slot = &g_caps[i];
+    }
+    if (slot) {
+        if (!slot->buf) g_cap_active++;
+        slot->buf = buf;
+        slot->max = cap;
+        slot->len = 0;
+        slot->pid = me;
+    }
+    spin_unlock_irqrestore(&g_cap_lock, f);
 }
 
 uint32_t console_capture_end(void) {
-    uint32_t len = g_cap_len;
-    if (g_cap) {
-        if (g_cap_len < g_cap_max) {
-            g_cap[g_cap_len] = '\0';
-        } else if (g_cap_max > 0) {
-            g_cap[g_cap_max - 1] = '\0';
-        }
+    int me = sched_current_pid();
+    uint32_t len = 0;
+    uintptr_t f = spin_lock_irqsave(&g_cap_lock);
+    for (unsigned i = 0; i < CAP_SLOTS; i++) {
+        cap_slot_t *c = &g_caps[i];
+        if (!c->buf || c->pid != me) continue;
+        len = c->len;
+        c->buf[c->len < c->max ? c->len : c->max - 1u] = '\0';
+        c->buf = NULL;
+        g_cap_active--;
+        break;
     }
-    g_cap = NULL;
+    spin_unlock_irqrestore(&g_cap_lock, f);
     return len;
 }
 
@@ -450,13 +541,23 @@ static inline bool is_pid_captured(int pid, int cap_pid) {
     return false;
 }
 
-void console_putc(char c) {
-    if (g_cap && is_pid_captured(sched_current_pid(), g_cap_pid)) {
-        if (g_cap_len < g_cap_max) {
-            g_cap[g_cap_len++] = c;
-        }
-        return;
+/* True when the running task's output went into a capture. */
+static bool capture_putc(char c) {
+    int me = sched_current_pid();
+    bool kept = false;
+    uintptr_t f = spin_lock_irqsave(&g_cap_lock);
+    for (unsigned i = 0; i < CAP_SLOTS && !kept; i++) {
+        cap_slot_t *s = &g_caps[i];
+        if (!s->buf || !is_pid_captured(me, s->pid)) continue;
+        if (s->len < s->max) s->buf[s->len++] = c;
+        kept = true;
     }
+    spin_unlock_irqrestore(&g_cap_lock, f);
+    return kept;
+}
+
+void console_putc(char c) {
+    if (g_cap_active && capture_putc(c)) return;
     bool closed;
     vterm_t *vt = task_terminal(&closed);
     if (closed) return;                         /* nobody to show it to */
@@ -514,6 +615,7 @@ void console_puts(const char *s) {
 
 /* --- The console as a channel endpoint --- */
 
+/* accepted: one pointer store each, by `console bind`. */
 static const char *g_bound_name = "(none)";
 
 /* Sized to one line of output rather than a whole screen: a console write is
@@ -578,6 +680,8 @@ const char *console_bound_device(void) { return g_bound_name; }
 
 /* --- Ctrl-C interrupt --- */
 
+/* accepted: a latch for the root console, set by the pump (under
+ * g_input_lock) on Ctrl-C and cleared by the command that handled it. */
 static volatile bool g_interrupt_pending = false;
 
 /* Push-back ring. See kernel/console.h for why this exists and what it is
@@ -586,6 +690,7 @@ static volatile bool g_interrupt_pending = false;
  * its producer and its consumer: see pushback_full() below. */
 #define CONSOLE_PUSHBACK_SIZE 128u
 
+/* guarded by: the single-producer/single-consumer protocol below. */
 static char     g_pushback[CONSOLE_PUSHBACK_SIZE];
 static uint32_t g_pb_head;   /* next slot to write */
 static uint32_t g_pb_tail;   /* next slot to read */
@@ -648,6 +753,7 @@ static int pushback_get(void) {
 static ylock_t g_input_lock;
 
 /* 36.9: the registered input sources (kernel/include/kernel/console.h). */
+/* single task: the boot, before any reader runs; constant after. */
 static const console_input_t *g_inputs[CONSOLE_INPUT_MAX];
 static unsigned               g_ninputs;
 

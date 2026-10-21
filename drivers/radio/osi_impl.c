@@ -57,6 +57,9 @@ typedef struct {
     bool        up;
 } radio_state_t;
 
+/* guarded by: heap_lock and nvs_lock (kernel mutexes) for the heap and the
+ * store; the rest is set by radio_osi_init() on the main thread, before the
+ * blob starts its own. */
 RADIO_DATA static radio_state_t g_r;
 
 /* ---- heap: the radio's own, serialised by one kernel mutex --------------- */
@@ -454,6 +457,7 @@ RADIO_TEXT int radio_osi_read_mac(uint8_t *mac, unsigned int type) {
 #define EV_RING 16u
 #define EV_DATA 48u
 typedef struct { int32_t id; uint32_t size; uint8_t data[EV_DATA]; } rev_t;
+/* guarded by: the kernel critical section (KOBJ_OP_CRIT_ENTER) around post and pop. */
 RADIO_DATA static rev_t g_ev[EV_RING];
 RADIO_DATA static volatile uint32_t g_ev_head, g_ev_tail;
 

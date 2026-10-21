@@ -14,13 +14,23 @@
  * while calling the scheduler -- the rule spinlock_t exists to enforce
  * (kernel/lock.h). */
 static spinlock_t g_kobj_lock;
-static bool g_inited;
+
+/* Once, by whichever caller gets here first (the radio task, the first
+ * object syscall, a selftest); the others wait for it rather than run
+ * kobj_init() over tables already in use. 0: not started, 1: running, 2: done. */
+static volatile uint32_t g_init_state;
 
 void kos_init(void) {
-    if (g_inited) return;
-    kobj_init();
-    spinlock_init(&g_kobj_lock);
-    g_inited = true;
+    if (__atomic_load_n(&g_init_state, __ATOMIC_ACQUIRE) == 2u) return;
+    uint32_t expect = 0;
+    if (__atomic_compare_exchange_n(&g_init_state, &expect, 1u, false,
+                                    __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+        kobj_init();
+        spinlock_init(&g_kobj_lock);
+        __atomic_store_n(&g_init_state, 2u, __ATOMIC_RELEASE);
+        return;
+    }
+    while (__atomic_load_n(&g_init_state, __ATOMIC_ACQUIRE) != 2u) sched_yield();
 }
 
 static void wake_all(const kwake_t *wk) {
@@ -216,6 +226,7 @@ int kos_ev_delete(kh_t h) {
 
 /* The pid of the thread blocked in kos_timer_wait(), so that arming a timer
  * can wake it to recompute its deadline. One radio, one timer thread. */
+/* single task: the timer thread (kos_timer_wait()). */
 static volatile int g_timer_waiter = -1;
 
 static void timer_poke(void) {

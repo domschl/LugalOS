@@ -1,4 +1,5 @@
 #include "kernel/ea.h"
+#include "kernel/lock.h"
 #include "kernel/console.h"
 #include "kernel/shell.h"
 #include "kernel/printk.h"
@@ -113,6 +114,7 @@ int ea_eval_tool(const char *tool, const char *input, char *out_buf, size_t out_
     strip_code_fences(clean_code, sizeof(clean_code), input);
 
     if (strcmp(tool, "lisp") == 0) {
+        /* guarded by: g_ea_session (cmd_ea()). */
         static bool cas_loaded = false;
         static bool plot_loaded = false;
         if (!cas_loaded && (strstr(clean_code, "diff") || strstr(clean_code, "integrate") ||
@@ -320,6 +322,7 @@ int ea_eval_tool(const char *tool, const char *input, char *out_buf, size_t out_
     return -1;
 }
 
+/* guarded by: g_ea_session (cmd_ea()). */
 static bool g_in_thought = false;
 
 static void live_stream_token_cb(const char *token, bool is_reasoning, void *ctx) {
@@ -481,7 +484,18 @@ int ea_run(const char *prompt, bool interactive, bool auto_confirm, const char *
     return status;
 }
 
+/* One `ea` at a time: its prompt buffers and the loaded-tool flags are one
+ * set. guarded by: g_ea_session. */
+static session_claim_t g_ea_session;
+static void cmd_ea_session(const char *args);
+
 void cmd_ea(const char *args) {
+    if (!session_claim(&g_ea_session, "ea")) return;
+    cmd_ea_session(args);
+    session_release(&g_ea_session);
+}
+
+static void cmd_ea_session(const char *args) {
     if (!args || !*args) {
         cprintf("Usage: ea [-m model] [-s url] [-y] \"<prompt>\"\n");
         cprintf("       ea -c / ea config       Display current LLM configuration\n");
@@ -531,6 +545,7 @@ void cmd_ea(const char *args) {
                 while (*p && *p != ' ') p++;
             }
             size_t m_len = (size_t)(p - m_start);
+            /* guarded by: g_ea_session (cmd_ea()). */
             static char m_buf[64];
             if (m_len < sizeof(m_buf)) {
                 memcpy(m_buf, m_start, m_len);
@@ -551,6 +566,7 @@ void cmd_ea(const char *args) {
                 while (*p && *p != ' ') p++;
             }
             size_t s_len = (size_t)(p - s_start);
+            /* guarded by: g_ea_session (cmd_ea()). */
             static char s_buf[128];
             if (s_len < sizeof(s_buf)) {
                 memcpy(s_buf, s_start, s_len);

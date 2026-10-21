@@ -60,6 +60,8 @@
 
 #include <stdint.h>
 #include "arch/clk_esp32p4.h"
+#include "kernel/sysreg.h"
+#include "kernel/lock.h"
 #include "kernel/console.h"
 #include "kernel/ticker.h"
 #include "kernel/hart.h"
@@ -519,7 +521,7 @@ static int cpll_configure_target(void) {
     P4_REG(P4_ANA_MST_CLK160M) |= ANA_MST_SEL_160M;
 
     /* Calibration start: CAL_STOP = 0. */
-    P4_REG(P4_ANA_PLL_CTRL0) &= ~CPU_PLL_CAL_STOP_B;
+    sysreg_clear(P4_ANA_PLL_CTRL0, CPU_PLL_CAL_STOP_B);
 
     if (!regi2c_write_cpll(I2C_CPLL_REG_REF_DIV, CPLL_REG_REF_DIV_BYTE)) return 1;
     if (!regi2c_write_cpll(I2C_CPLL_REG_DIV_7_0, CPLL_REG_DIV_TARGET))   return 2;
@@ -538,7 +540,7 @@ static int cpll_configure_target(void) {
     t0 = time_get_us();
     while (time_get_us() - t0 < 10u) { }
 
-    P4_REG(P4_ANA_PLL_CTRL0) |= CPU_PLL_CAL_STOP_B;
+    sysreg_set(P4_ANA_PLL_CTRL0, CPU_PLL_CAL_STOP_B);
     return 0;
 }
 
@@ -1202,15 +1204,13 @@ uint32_t esp32p4_core_onto_dcdc(void) {
 #define SOC_CLK_DIV_UPDATE_B    (1u << 4)   /* ROOT_CLK_CTRL0, WT */
 
 static void root_div_commit(void) {
-    P4_REG(P4_ROOT_CLK_CTRL0) |= SOC_CLK_DIV_UPDATE_B;
+    sysreg_set(P4_ROOT_CLK_CTRL0, SOC_CLK_DIV_UPDATE_B);
     while (P4_REG(P4_ROOT_CLK_CTRL0) & SOC_CLK_DIV_UPDATE_B) { }
 }
 
 static void root_field_set(uintptr_t reg, unsigned shift, uint32_t div) {
-    uint32_t v = P4_REG(reg);
-    v &= ~(DIV_FIELD_MASK << shift);
-    v |= ((div - 1u) & DIV_FIELD_MASK) << shift;   /* encoded as div-1 */
-    P4_REG(reg) = v;
+    sysreg_update(reg, DIV_FIELD_MASK << shift,
+                  ((div - 1u) & DIV_FIELD_MASK) << shift);   /* encoded as div-1 */
     root_div_commit();
 }
 
@@ -1254,7 +1254,7 @@ static void console_tx_drain(void) {
     while (time_get_us() - t0 < 200u) { }         /* shift register */
 }
 
-bool esp32p4_cpu_freq_set(uint32_t mhz, uint32_t *measured_hz) {
+static bool cpu_freq_set_locked(uint32_t mhz, uint32_t *measured_hz) {
     uint32_t cpu_div, mem_div, sys_div = 1u, apb_div;
 
     /* Back to the crystal. 34.6 needs this: comparing a clock change on ONE
@@ -1460,6 +1460,18 @@ void esp32p4_smpinfo_report(void) {
                 (unsigned)g_p4_core1_mhcr_before,
                 (unsigned)g_p4_core1_mhcr_after);
     }
+}
+
+/* guarded by: itself -- one frequency switch at a time (the boot, or `cpufreq`
+ * from any terminal): the switch is several steps over the root mux, the
+ * dividers and the PLL, and two interleaved would leave a mix of both. */
+static ylock_t g_freq_lock;
+
+bool esp32p4_cpu_freq_set(uint32_t mhz, uint32_t *measured_hz) {
+    ylock_acquire(&g_freq_lock);
+    bool ok = cpu_freq_set_locked(mhz, measured_hz);
+    ylock_release(&g_freq_lock);
+    return ok;
 }
 
 #endif /* CONFIG_BOARD_ESP32P4 */

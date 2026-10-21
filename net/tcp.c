@@ -159,6 +159,10 @@ typedef struct {
     p9_link_t link;
 } tcp_conn_t;
 
+/* guarded by: net_lock() (net/stack.c), for the connections, the listeners
+ * and the counters down to g_ephemeral: the stack task holds it for its round,
+ * and every entry point below takes it. A stream's buffers additionally keep
+ * the fill-only-when-empty rule described above tcp_stream_writable(). */
 static tcp_conn_t g_conns[TCP_MAX_CONNS];
 static uint8_t *g_bufs;                /* one palloc run, carved per connection */
 #define TCP_MAX_LISTENERS 4
@@ -349,7 +353,8 @@ static uint32_t framed_len(const tcp_conn_t *c) {
            ((uint32_t)c->rx[2] << 16) | ((uint32_t)c->rx[3] << 24);
 }
 
-static int link_poll(p9_link_t *link) {
+static int link_poll(p9_link_t *link);
+static int link_poll_locked(p9_link_t *link) {
     tcp_conn_t *c = link_conn(link);
     if (!c || !c->in_use) return -1;
     uint32_t declared = framed_len(c);
@@ -358,7 +363,8 @@ static int link_poll(p9_link_t *link) {
     return (c->rx_len >= declared) ? 1 : 0;
 }
 
-static int link_recv_frame(p9_link_t *link, uint8_t *buf, uint32_t max_len) {
+static int link_recv_frame(p9_link_t *link, uint8_t *buf, uint32_t max_len);
+static int link_recv_frame_locked(p9_link_t *link, uint8_t *buf, uint32_t max_len) {
     tcp_conn_t *c = link_conn(link);
     if (!c || !c->in_use) return -1;
     uint32_t declared = framed_len(c);
@@ -376,7 +382,8 @@ static int link_recv_frame(p9_link_t *link, uint8_t *buf, uint32_t max_len) {
     return (int)declared;
 }
 
-static int link_send_frame(p9_link_t *link, const uint8_t *buf, uint32_t len) {
+static int link_send_frame(p9_link_t *link, const uint8_t *buf, uint32_t len);
+static int link_send_frame_locked(p9_link_t *link, const uint8_t *buf, uint32_t len) {
     tcp_conn_t *c = link_conn(link);
     if (!c || !c->in_use || len == 0 || len > P9_MAX_MSIZE) return -1;
     /* Never blocks. tcp_service() only offers a connection to the 9P server
@@ -637,7 +644,7 @@ static void conn_start_syn(tcp_conn_t *c) {
     c->retries = 0;
 }
 
-p9_link_t *tcp_connect(const uint8_t ip[IPV4_LEN], uint16_t port) {
+static p9_link_t * tcp_connect_locked(const uint8_t ip[IPV4_LEN], uint16_t port) {
     tcp_conn_t *c = conn_dial(ip, port);
     if (!c) return NULL;
     conn_init_link(c);
@@ -646,7 +653,7 @@ p9_link_t *tcp_connect(const uint8_t ip[IPV4_LEN], uint16_t port) {
 }
 
 /* 1 established, 0 still handshaking, -1 refused or gone. */
-int tcp_link_ready(p9_link_t *link) {
+static int tcp_link_ready_locked(p9_link_t *link) {
     tcp_conn_t *c = link_conn(link);
     if (!c || !c->in_use) return -1;
     if (c->state == TCP_ESTABLISHED) return 1;
@@ -655,7 +662,7 @@ int tcp_link_ready(p9_link_t *link) {
 }
 
 /* Our own close: the graceful one, which is the path FIN_WAIT_1 exists for. */
-void tcp_close(p9_link_t *link) {
+static void tcp_close_locked(p9_link_t *link) {
     tcp_conn_t *c = link_conn(link);
     if (!c || !c->in_use) return;
     if (c->state == TCP_ESTABLISHED) {
@@ -697,7 +704,7 @@ static tcp_conn_t *stream_conn(tcp_stream_t *s) {
     return c;
 }
 
-int tcp_stream_open(tcp_stream_t *s, const uint8_t ip[IPV4_LEN], uint16_t port) {
+static int tcp_stream_open_locked(tcp_stream_t *s, const uint8_t ip[IPV4_LEN], uint16_t port) {
     if (!s) return -1;
     s->open = false;
     tcp_conn_t *c = conn_dial(ip, port);
@@ -715,7 +722,7 @@ int tcp_stream_open(tcp_stream_t *s, const uint8_t ip[IPV4_LEN], uint16_t port) 
     return 0;
 }
 
-int tcp_stream_ready(tcp_stream_t *s) {
+static int tcp_stream_ready_locked(tcp_stream_t *s) {
     tcp_conn_t *c = stream_conn(s);
     if (!c) return -1;
     if (c->state == TCP_ESTABLISHED || c->state == TCP_CLOSE_WAIT) return 1;
@@ -723,7 +730,7 @@ int tcp_stream_ready(tcp_stream_t *s) {
     return -1;
 }
 
-int tcp_stream_read(tcp_stream_t *s, uint8_t *buf, uint32_t max) {
+static int tcp_stream_read_locked(tcp_stream_t *s, uint8_t *buf, uint32_t max) {
     tcp_conn_t *c = stream_conn(s);
     if (!c || !buf) return -1;
 
@@ -784,14 +791,14 @@ int tcp_stream_read(tcp_stream_t *s, uint8_t *buf, uint32_t max) {
  * echo stalled roughly one run in four, at a different point each time, with
  * both sides waiting for the other. */
 
-uint32_t tcp_stream_writable(tcp_stream_t *s) {
+static uint32_t tcp_stream_writable_locked(tcp_stream_t *s) {
     tcp_conn_t *c = stream_conn(s);
     if (!c) return 0;
     if (c->state != TCP_ESTABLISHED && c->state != TCP_CLOSE_WAIT) return 0;
     return c->tx_len ? 0 : P9_MAX_MSIZE;
 }
 
-int tcp_stream_write(tcp_stream_t *s, const uint8_t *buf, uint32_t len) {
+static int tcp_stream_write_locked(tcp_stream_t *s, const uint8_t *buf, uint32_t len) {
     tcp_conn_t *c = stream_conn(s);
     if (!c || !buf) return -1;
     /* Writing into a handshake is not an error worth failing a caller for,
@@ -814,14 +821,14 @@ int tcp_stream_write(tcp_stream_t *s, const uint8_t *buf, uint32_t len) {
     return (int)n;
 }
 
-bool tcp_stream_peer_closed(tcp_stream_t *s) {
+static bool tcp_stream_peer_closed_locked(tcp_stream_t *s) {
     tcp_conn_t *c = stream_conn(s);
     if (!c) return true;
     return c->state == TCP_CLOSE_WAIT || c->state == TCP_LAST_ACK ||
            c->state == TCP_CLOSING || c->state == TCP_TIME_WAIT;
 }
 
-void tcp_stream_close(tcp_stream_t *s) {
+static void tcp_stream_close_locked(tcp_stream_t *s) {
     tcp_conn_t *c = stream_conn(s);
     if (c) {
         if (c->tx_len != 0 &&
@@ -1081,14 +1088,23 @@ void tcp_service(void) {
         if (c->state == TCP_ESTABLISHED && c->tx_len == 0 &&
             !c->is_client && !c->is_stream) {
             if (c->local_port == 564) {
+                /* The request is served with the stack's lock released: it can
+                 * reach a remote mount, whose client lock a task sending over
+                 * TCP holds before it takes this one. A server connection is
+                 * this task's alone, so nothing changes it meanwhile; the
+                 * link's own calls take the lock again. */
+                net_unlock();
                 p9_link_service(&c->link);
+                net_lock();
             } else if (spartan_server_running(NULL) && c->local_port == spartan_server_port()) {
                 uint32_t consumed = 0;
                 uint32_t out_len = 0;
                 bool close_after = false;
                 if (c->rx_len > 0) {
+                    net_unlock();                 /* as the 9P service above */
                     int rc = spartan_process_request(c->rx, c->rx_len, &consumed,
                                                     c->tx, P9_MAX_MSIZE, &out_len, &close_after);
+                    net_lock();
                     if (rc == 0) {
                         if (consumed > 0 && consumed <= c->rx_len) {
                             memmove(c->rx, c->rx + consumed, c->rx_len - consumed);
@@ -1152,7 +1168,7 @@ static int ensure_bufs(void) {
     return 0;
 }
 
-int tcp_listen(uint16_t port) {
+static int tcp_listen_locked(uint16_t port) {
     if (port == 0) return -1;
     if (ensure_bufs() != 0) return -1;
     for (uint32_t i = 0; i < g_num_listeners; i++) {
@@ -1163,9 +1179,11 @@ int tcp_listen(uint16_t port) {
     return 0;
 }
 
-void tcp_unlisten(void) { g_num_listeners = 0; }
+static void tcp_unlisten_locked(void) {
+    g_num_listeners = 0;
+}
 
-void tcp_unlisten_port(uint16_t port) {
+static void tcp_unlisten_port_locked(uint16_t port) {
     for (uint32_t i = 0; i < g_num_listeners; i++) {
         if (g_listen_ports[i] == port) {
             for (uint32_t j = i; j + 1 < g_num_listeners; j++) {
@@ -1202,4 +1220,116 @@ void tcp_conn_str(uint32_t index, char *out, uint32_t max) {
               c->is_stream ? " stream" : "",
               (unsigned long)(c->is_stream ? c->rx_len - c->rx_head : c->rx_len),
               (unsigned long)c->tx_len);
+}
+
+/* The entry points other tasks call, each under the stack's lock (net_lock(),
+ * net/stack.c): they build frames in the one transmit buffer (a SYN, a FIN,
+ * a reset) and change the connection and listener tables, which the stack
+ * task works on under the same lock. */
+static int link_poll(p9_link_t *link) {
+    net_lock();
+    int r = link_poll_locked(link);
+    net_unlock();
+    return r;
+}
+
+static int link_recv_frame(p9_link_t *link, uint8_t *buf, uint32_t max_len) {
+    net_lock();
+    int r = link_recv_frame_locked(link, buf, max_len);
+    net_unlock();
+    return r;
+}
+
+static int link_send_frame(p9_link_t *link, const uint8_t *buf, uint32_t len) {
+    net_lock();
+    int r = link_send_frame_locked(link, buf, len);
+    net_unlock();
+    return r;
+}
+
+p9_link_t *tcp_connect(const uint8_t ip[IPV4_LEN], uint16_t port) {
+    net_lock();
+    p9_link_t * r = tcp_connect_locked(ip, port);
+    net_unlock();
+    return r;
+}
+
+int tcp_link_ready(p9_link_t *link) {
+    net_lock();
+    int r = tcp_link_ready_locked(link);
+    net_unlock();
+    return r;
+}
+
+void tcp_close(p9_link_t *link) {
+    net_lock();
+    tcp_close_locked(link);
+    net_unlock();
+}
+
+int tcp_stream_open(tcp_stream_t *s, const uint8_t ip[IPV4_LEN], uint16_t port) {
+    net_lock();
+    int r = tcp_stream_open_locked(s, ip, port);
+    net_unlock();
+    return r;
+}
+
+int tcp_stream_ready(tcp_stream_t *s) {
+    net_lock();
+    int r = tcp_stream_ready_locked(s);
+    net_unlock();
+    return r;
+}
+
+int tcp_stream_read(tcp_stream_t *s, uint8_t *buf, uint32_t max) {
+    net_lock();
+    int r = tcp_stream_read_locked(s, buf, max);
+    net_unlock();
+    return r;
+}
+
+uint32_t tcp_stream_writable(tcp_stream_t *s) {
+    net_lock();
+    uint32_t r = tcp_stream_writable_locked(s);
+    net_unlock();
+    return r;
+}
+
+int tcp_stream_write(tcp_stream_t *s, const uint8_t *buf, uint32_t len) {
+    net_lock();
+    int r = tcp_stream_write_locked(s, buf, len);
+    net_unlock();
+    return r;
+}
+
+bool tcp_stream_peer_closed(tcp_stream_t *s) {
+    net_lock();
+    bool r = tcp_stream_peer_closed_locked(s);
+    net_unlock();
+    return r;
+}
+
+void tcp_stream_close(tcp_stream_t *s) {
+    net_lock();
+    tcp_stream_close_locked(s);
+    net_unlock();
+}
+
+int tcp_listen(uint16_t port) {
+    net_lock();
+    int r = tcp_listen_locked(port);
+    net_unlock();
+    return r;
+}
+
+void tcp_unlisten(void) {
+    net_lock();
+    tcp_unlisten_locked();
+    net_unlock();
+}
+
+void tcp_unlisten_port(uint16_t port) {
+    net_lock();
+    tcp_unlisten_port_locked(port);
+    net_unlock();
 }

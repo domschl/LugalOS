@@ -3,6 +3,9 @@
  * blocks, never touches the scheduler and never reads a clock. */
 
 #include "kernel/kobj.h"
+#include "kernel/sched.h"
+
+_Static_assert(KWAKE_MAX >= MAX_TASKS, "a deleted object wakes every waiter: KWAKE_MAX must cover MAX_TASKS");
 #include <stddef.h>
 #include <string.h>
 
@@ -78,6 +81,9 @@ typedef struct {
     uint64_t deadline, period, seq;
 } timer_t_;
 
+/* guarded by: g_kobj_lock (kernel/kobj_sched.c), which every call into this
+ * file holds; kobj_reset() runs from kos_init() before any user, and from the
+ * selftests. */
 static sem_t_   g_sem[KSEM_MAX];
 static mutex_t_ g_mtx[KMUTEX_MAX];
 static queue_t_ g_q[KQUEUE_MAX];

@@ -20,6 +20,8 @@
 
 /* Arena-backed (C6): see user/chibicc/pools.c. Both were function-scope
  * statics, which is the same memory under a narrower name. */
+/* guarded by: g_lisp_lock: the compiler runs only from the `cc` primitive, inside an
+ * evaluation. */
 static char    *src_buf;
 static uint8_t *elf_buf;
 

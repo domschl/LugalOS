@@ -81,6 +81,7 @@ typedef int  (*rom_config_param_fn)(uint32_t deviceId, uint32_t chip_size,
 #define FLASH_P4_PAGE_SIZE   256u
 #define FLASH_P4_STATUS_MASK 0xffffu
 
+/* accepted: a lazy init, idempotent. */
 static bool       g_ready;
 
 
@@ -304,6 +305,14 @@ int flash_p4_read(uint32_t addr, void *buf, uint32_t len) {
     flash_rom_fns_t f;
     flash_rom_fns_init(&f);
     ylock_acquire(&g_flash_ylock);
+    /* Reads too: the ROM drives the flash through the controller's command
+     * interface, beside the cache's own fetches of the code the other hart
+     * is running; IDF guards a read exactly as it does an erase. */
+    if (!smp_flash_park_request()) {
+        ylock_release(&g_flash_ylock);
+        printk("[Flash] core 1 did not park; refusing to read\n");
+        return -1;
+    }
     int rc = 0;
     while (len > 0) {
         uint32_t chunk_addr = addr & ~3u;
@@ -320,6 +329,7 @@ int flash_p4_read(uint32_t addr, void *buf, uint32_t len) {
         addr += got;
         len  -= got;
     }
+    smp_flash_park_release();
     ylock_release(&g_flash_ylock);
     return rc;
 }

@@ -7,7 +7,7 @@
 #define LUGALOS_VERSION_MAJOR 0
 #define LUGALOS_VERSION_MINOR 17
 #define LUGALOS_VERSION_PATCH 2
-#define LUGALOS_VERSION "0.17.2"
+#define LUGALOS_VERSION "0.18.0"
 
 /* Git-derived build identifier: "<commit-count>.<short-hash>", with a '+'
  * suffix when the tree had uncommitted changes. Generated per build by

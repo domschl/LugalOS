@@ -5,6 +5,7 @@
 #include "kernel/time.h"
 #include <string.h>
 
+/* single task: the boot, before any reader runs; constant after. */
 static bool g_at24c32_detected = false;
 
 /* --- Bus access ---------------------------------
@@ -53,7 +54,7 @@ static bool i2c_write_at24(uint16_t mem_addr, const uint8_t *src, size_t len) {
 
 #else
 // Synthetic RAM EEPROM for targets with no I2C controller
-static uint8_t g_qemu_eeprom[AT24C32_SIZE_BYTES];
+static uint8_t g_qemu_eeprom[AT24C32_SIZE_BYTES];   /* accepted: as a real EEPROM, two writers interleave */
 static bool i2c_write_at24(uint16_t mem_addr, const uint8_t *src, size_t len) {
     if (mem_addr + len > AT24C32_SIZE_BYTES) return false;
     memcpy(&g_qemu_eeprom[mem_addr], src, len);

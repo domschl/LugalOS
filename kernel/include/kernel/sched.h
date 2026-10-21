@@ -54,12 +54,12 @@
 #define TASK_PRIO_NORMAL     2
 #define TASK_PRIO_INTERRUPT  3
 
-/* Raised from 8 so that a fully
- * decomposed board persona (one task per driver, per Rule 4) doesn't hit the
- * slot ceiling on its own drivers alone -- chess's persona reached 8 using
- * only its own devices plus the shell, before any of RTC/EEPROM/net existed
- * as tasks. Cost is a static array: (24-8) * sizeof(task_t), well under 1 KB. */
-#define MAX_TASKS 24
+/* Task slots. A P4 board runs 16-18 tasks of its own (one per driver), and
+ * every terminal adds a shell worker; 32 leaves room for three or four
+ * terminals plus a load such as `stress`. Cost: the static task table and
+ * the per-task arrays sized by MAX_TASKS (fs/9p.c, kernel/shell.c,
+ * kernel/lock.c). kobj's wake list (KWAKE_MAX) must cover every task. */
+#define MAX_TASKS 32
 
 /* "No task" -- what sched_current_pid() answers on a hart that is executing
  * kernel code but does not own a task slot yet. Distinct from every real pid
@@ -169,6 +169,12 @@ int task_create(const char *name, void (*entry)(void *), void *arg);
  * task's number meaningful, which is the case that matters -- you want to know
  * how deep a driver task got, after it got there. */
 uint32_t sched_stack_used(int pid);
+/* Checks `sp` against task `pid`'s stack: below its base halts with a dump,
+ * within 512 bytes warns once. Called at every switch and every trap. */
+void sched_stack_check_sp(int pid, uintptr_t sp, const char *where);
+/* The deepest the task's stack pointer has been seen, in bytes from the top
+ * (0: not seen yet). Unlike sched_stack_used(), a frame cannot jump over it. */
+uint32_t sched_stack_sp_depth(int pid);
 uint32_t sched_stack_size(int pid);
 
 /* True when the task's stack has been filled to its deepest word -- which is

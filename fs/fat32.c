@@ -504,6 +504,125 @@ int fat32_format_quiet(block_dev_t *dev, bool quiet) {
     return 0;
 }
 
+/* --- fat32_mkfs ---------------------------------------------------------- */
+
+#define MKFS_ALIGN      8192u      /* 4 MB in sectors: the partition start and the data area */
+#define MKFS_MIN_CLUST  65525u     /* fewer clusters is FAT16 by definition */
+
+int fat32_mkfs(block_dev_t *dev, const char *label, uint32_t vol_id, void (*progress)(uint32_t pct)) {
+    if (!dev || !dev->write_blocks) return -1;
+    const uint32_t total = dev->num_blocks;
+    if (total <= MKFS_ALIGN * 2u) return -1;
+    const uint32_t part_start = MKFS_ALIGN;
+    const uint32_t part_size = total - part_start;
+
+    /* Largest cluster (sectors, a power of two up to 64) that still leaves
+     * enough clusters; and the FAT and reserved sizes that put the data area
+     * on the alignment boundary. */
+    uint32_t spc = 64, reserved = 0, fat_sz = 0, clusters = 0;
+    for (; spc >= 1; spc >>= 1) {
+        /* The FAT sized for the most clusters the partition could hold; the
+         * padding that aligns the data area then only takes clusters away,
+         * so the FAT is never short (fsck.fat checks exactly that). */
+        uint32_t most = (part_size - 32u) / spc;
+        fat_sz = ((most + 2u) * 4u + 511u) / 512u;
+        uint32_t data_abs = part_start + 32u + 2u * fat_sz;
+        reserved = 32u + (MKFS_ALIGN - data_abs % MKFS_ALIGN) % MKFS_ALIGN;
+        clusters = (part_size - reserved - 2u * fat_sz) / spc;
+        if (clusters >= MKFS_MIN_CLUST) break;
+    }
+    if (spc < 1 || clusters < MKFS_MIN_CLUST) return -1;
+    const uint32_t data_rel = reserved + 2u * fat_sz;
+
+    char lab[11];
+    memset(lab, ' ', sizeof lab);
+    const char *l = label && *label ? label : "LUGALOS";
+    for (int i = 0; i < 11 && l[i]; i++) {
+        char c = l[i];
+        lab[i] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : c;
+    }
+
+    fat32_sector_t s;
+    /* The MBR: one primary partition, FAT32 with LBA, no boot code. */
+    memset(&s, 0, sizeof s);
+    s.raw[0x1B8] = (uint8_t)vol_id; s.raw[0x1B9] = (uint8_t)(vol_id >> 8);
+    s.raw[0x1BA] = (uint8_t)(vol_id >> 16); s.raw[0x1BB] = (uint8_t)(vol_id >> 24);
+    uint8_t *pe = &s.raw[0x1BE];
+    pe[0] = 0x00;                                  /* not bootable */
+    pe[1] = 0xFE; pe[2] = 0xFF; pe[3] = 0xFF;      /* CHS: "use the LBA fields" */
+    pe[4] = 0x0C;                                  /* FAT32, LBA */
+    pe[5] = 0xFE; pe[6] = 0xFF; pe[7] = 0xFF;
+    memcpy(&pe[8], &part_start, 4);
+    memcpy(&pe[12], &part_size, 4);
+    s.raw[510] = 0x55; s.raw[511] = 0xAA;
+    if (dev->write_blocks(dev, s.raw, 0, 1) != 0) return -1;
+
+    /* The volume boot record, at the partition's sector 0 and 6. */
+    memset(&s, 0, sizeof s);
+    fat32_bpb_t *b = &s.bpb;
+    b->jmp_boot[0] = 0xEB; b->jmp_boot[1] = 0x58; b->jmp_boot[2] = 0x90;
+    memcpy(b->oem_name, "MSWIN4.1", 8);
+    b->bytes_per_sec = 512;
+    b->sec_per_clus = (uint8_t)spc;
+    b->reserved_sec_cnt = (uint16_t)reserved;
+    b->num_fats = 2;
+    b->media = 0xF8;
+    b->sec_per_trk = 63;
+    b->num_heads = 255;
+    b->hidd_sec = part_start;
+    b->tot_sec32 = part_size;
+    b->fat_sz32 = fat_sz;
+    b->root_clus = 2;
+    b->fs_info = 1;
+    b->bk_boot_sec = 6;
+    b->drv_num = 0x80;
+    b->boot_sig = 0x29;
+    b->vol_id = vol_id;
+    memcpy(b->vol_lab, lab, 11);
+    memcpy(b->fil_sys_type, "FAT32   ", 8);
+    s.raw[510] = 0x55; s.raw[511] = 0xAA;
+    if (dev->write_blocks(dev, s.raw, part_start, 1) != 0) return -1;
+    if (dev->write_blocks(dev, s.raw, part_start + 6u, 1) != 0) return -1;
+
+    /* FSInfo at 1 and 7: every cluster but the root's free, the next from 3. */
+    memset(&s, 0, sizeof s);
+    s.words[FSINFO_W_LEAD] = FSINFO_LEAD_SIG;
+    s.words[FSINFO_W_STRUC] = FSINFO_STRUC_SIG;
+    s.words[FSINFO_W_FREE] = clusters - 1u;
+    s.words[FSINFO_W_NXT] = 3;
+    s.words[FSINFO_W_TRAIL] = FSINFO_TRAIL_SIG;
+    if (dev->write_blocks(dev, s.raw, part_start + 1u, 1) != 0) return -1;
+    if (dev->write_blocks(dev, s.raw, part_start + 7u, 1) != 0) return -1;
+
+    /* The rest of the reserved area (a stale backup boot sector or FSInfo
+     * from an earlier format must not survive), both FATs, the root cluster. */
+    memset(&s, 0, sizeof s);
+    for (uint32_t r = 2; r < reserved; r++) {
+        if (r == 6 || r == 7) continue;
+        if (dev->write_blocks(dev, s.raw, part_start + r, 1) != 0) return -1;
+    }
+    uint32_t zero_end = data_rel + spc, last_pct = 101;
+    for (uint32_t r = reserved; r < zero_end; r++) {
+        if (dev->write_blocks(dev, s.raw, part_start + r, 1) != 0) return -1;
+        uint32_t pct = (uint32_t)((uint64_t)(r - reserved) * 100u / (zero_end - reserved));
+        if (progress && pct != last_pct && pct % 10u == 0) { progress(pct); last_pct = pct; }
+    }
+    /* Each FAT's first sector: media, end-of-chain, the root a chain of one. */
+    s.words[0] = 0x0FFFFFF8;
+    s.words[1] = 0x0FFFFFFF;
+    s.words[2] = 0x0FFFFFFF;
+    for (uint32_t f = 0; f < 2u; f++) {
+        if (dev->write_blocks(dev, s.raw, part_start + reserved + f * fat_sz, 1) != 0) return -1;
+    }
+    /* The root directory's first entry: the volume label. */
+    memset(&s, 0, sizeof s);
+    memcpy(s.entries[0].name, lab, 11);
+    s.entries[0].attr = FAT32_ATTR_VOLUME_ID;
+    if (dev->write_blocks(dev, s.raw, part_start + data_rel, 1) != 0) return -1;
+    if (progress) progress(100);
+    return 0;
+}
+
 int fat32_init(fat32_fs_t *fs, block_dev_t *dev) {
     return fat32_init_quiet(fs, dev, false);
 }
@@ -745,7 +864,7 @@ static uint32_t chain_seek(fat32_fs_t *fs, uint32_t first, uint32_t target,
  * primitive underlying fs/vfs_server.c's vfs_pread(), which has its own
  * notion of "how many bytes did I get", not "give me a C string". Returns
  * the number of bytes actually read (0 at or past EOF), or -1 on a bad
- * argument. */
+ * argument or a device read error. */
 int fat32_read_at(fat32_fs_t *fs, fat32_dir_entry_t *entry, void *buf, uint32_t count, uint64_t offset,
                   fat32_cursor_t *cur) {
     if (!fs || !entry || !buf || !fs->dev || !fs->dev->read_blocks) return -1;
@@ -783,13 +902,20 @@ int fat32_read_at(fat32_fs_t *fs, fat32_dir_entry_t *entry, void *buf, uint32_t 
             uint32_t lba = cluster_to_lba(fs, cluster) + sector_in_cluster;
             uint32_t chunk = 512 - offset_in_sector;
             if (chunk > to_read - read_total) chunk = to_read - read_total;
+            int rc;
             if (chunk == 512) {
                 /* A whole sector: straight into the caller's buffer. */
-                fs->dev->read_blocks(fs->dev, dst + read_total, lba, 1);
+                rc = fs->dev->read_blocks(fs->dev, dst + read_total, lba, 1);
             } else {
                 uint8_t sec[512];
-                fs->dev->read_blocks(fs->dev, sec, lba, 1);
-                memcpy(dst + read_total, sec + offset_in_sector, chunk);
+                rc = fs->dev->read_blocks(fs->dev, sec, lba, 1);
+                if (rc == 0) memcpy(dst + read_total, sec + offset_in_sector, chunk);
+            }
+            if (rc != 0) {
+                /* What a failed read left in the buffer is not the file. */
+                ylock_release(&fs->lock);
+                printk("[FAT32] Device '%s': read error at lba %lu\n", fs->dev->name ? fs->dev->name : "unknown", (unsigned long)lba);
+                return -1;
             }
             read_total += chunk;
             sector_in_cluster++;
@@ -948,13 +1074,15 @@ static int fat32_update_entry(fat32_fs_t *fs, const char *path, uint32_t new_siz
     if (!ctx.name_matched) return -1;
 
     fat32_sector_t sec;
-    fs->dev->read_blocks(fs->dev, sec.raw, (uint32_t)ctx.free_sector_lba, 1);
+    /* A sector that was not read is not written back: it would put whatever
+     * the buffer held over sixteen directory entries. */
+    if (fs->dev->read_blocks(fs->dev, sec.raw, (uint32_t)ctx.free_sector_lba, 1) != 0) return -1;
     sec.entries[ctx.free_slot].file_size = new_size;
     if (set_first) {
         sec.entries[ctx.free_slot].fst_clus_hi = (uint16_t)(set_first >> 16);
         sec.entries[ctx.free_slot].fst_clus_lo = (uint16_t)(set_first & 0xFFFF);
     }
-    fs->dev->write_blocks(fs->dev, sec.raw, (uint32_t)ctx.free_sector_lba, 1);
+    if (fs->dev->write_blocks(fs->dev, sec.raw, (uint32_t)ctx.free_sector_lba, 1) != 0) return -1;
     return 0;
 }
 
@@ -1012,6 +1140,7 @@ static int fat32_write_file_nolock(fat32_fs_t *fs, const char *path, const void 
 
     uint32_t first_cluster = 0;
     uint32_t cur_clus = 0;
+    bool io_error = false;
 
     for (uint32_t c = 0; c < clusters_needed; c++) {
         uint32_t next_clus = fat_alloc_cluster(fs);
@@ -1050,25 +1179,36 @@ static int fat32_write_file_nolock(fat32_fs_t *fs, const char *path, const void 
             uint32_t chunk = (size > offset) ? (size - offset) : 0;
             if (chunk > 512) chunk = 512;
             if (buf && chunk == 512) {
-                fs->dev->write_blocks(fs->dev, (const uint8_t *)buf + offset, data_lba + sct, 1);
+                if (fs->dev->write_blocks(fs->dev, (const uint8_t *)buf + offset, data_lba + sct, 1) != 0)
+                    io_error = true;
                 continue;
             }
             uint8_t data_sec[512];
             memset(data_sec, 0, 512);
             if (buf && chunk > 0) memcpy(data_sec, (const uint8_t *)buf + offset, chunk);
-            fs->dev->write_blocks(fs->dev, data_sec, data_lba + sct, 1);
+            if (fs->dev->write_blocks(fs->dev, data_sec, data_lba + sct, 1) != 0) io_error = true;
         }
     }
 
+    /* The entry is recorded even after a failed data write, so the chain is
+     * not leaked; the caller is told the content is not what it wrote. */
     fat32_sector_t sector;
-    fs->dev->read_blocks(fs->dev, sector.raw, (uint32_t)ctx.free_sector_lba, 1);
+    if (fs->dev->read_blocks(fs->dev, sector.raw, (uint32_t)ctx.free_sector_lba, 1) != 0) {
+        if (first_cluster) fat32_free_chain(fs, first_cluster);
+        printk("[FAT32] Device '%s': directory unreadable writing '%s'\n", fs->dev->name ? fs->dev->name : "unknown", path);
+        return -1;
+    }
     fat32_dir_entry_t *entries = sector.entries;
     memcpy(entries[ctx.free_slot].name, name83, 11);
     entries[ctx.free_slot].attr = FAT32_ATTR_ARCHIVE;
     entries[ctx.free_slot].fst_clus_hi = (uint16_t)(first_cluster >> 16);
     entries[ctx.free_slot].fst_clus_lo = (uint16_t)(first_cluster & 0xFFFF);
     entries[ctx.free_slot].file_size = size;
-    fs->dev->write_blocks(fs->dev, sector.raw, (uint32_t)ctx.free_sector_lba, 1);
+    if (fs->dev->write_blocks(fs->dev, sector.raw, (uint32_t)ctx.free_sector_lba, 1) != 0) io_error = true;
+    if (io_error) {
+        printk("[FAT32] Device '%s': write error in '%s'\n", fs->dev->name ? fs->dev->name : "unknown", path);
+        return -1;
+    }
     return 0;
 }
 
@@ -1144,8 +1284,9 @@ int fat32_write_at(fat32_fs_t *fs, const char *path, const void *buf, uint32_t c
     uint32_t offset_in_cluster = (uint32_t)(offset % bpc);
     const uint8_t *src = (const uint8_t *)buf;
     uint32_t written = 0;
+    bool io_error = false;
 
-    while (written < count) {
+    while (written < count && !io_error) {
         while (offset_in_cluster < bpc && written < count) {
             uint32_t sector_in_cluster = offset_in_cluster / 512;
             uint32_t offset_in_sector = offset_in_cluster % 512;
@@ -1155,18 +1296,18 @@ int fat32_write_at(fat32_fs_t *fs, const char *path, const void *buf, uint32_t c
             uint32_t chunk = (count - written) < space ? (count - written) : space;
             if (chunk == 512) {
                 /* A whole sector replaces what was there: no read needed. */
-                fs->dev->write_blocks(fs->dev, src + written, lba, 1);
+                if (fs->dev->write_blocks(fs->dev, src + written, lba, 1) != 0) { io_error = true; break; }
             } else {
                 uint8_t sec[512];
-                fs->dev->read_blocks(fs->dev, sec, lba, 1);
+                if (fs->dev->read_blocks(fs->dev, sec, lba, 1) != 0) { io_error = true; break; }
                 memcpy(sec + offset_in_sector, src + written, chunk);
-                fs->dev->write_blocks(fs->dev, sec, lba, 1);
+                if (fs->dev->write_blocks(fs->dev, sec, lba, 1) != 0) { io_error = true; break; }
             }
 
             written += chunk;
             offset_in_cluster += chunk;
         }
-        if (written < count) {
+        if (written < count && !io_error) {
             /* Extending here does not zero the new cluster first: every byte
              * up to the new EOF is about to be written, and what lies past
              * EOF is never read. */
@@ -1195,6 +1336,11 @@ int fat32_write_at(fat32_fs_t *fs, const char *path, const void *buf, uint32_t c
                            new_first ? first_cluster : 0);
     }
     ylock_release(&fs->lock);
+    if (io_error) {
+        printk("[FAT32] Device '%s': write error in '%s' at %lu\n", fs->dev->name ? fs->dev->name : "unknown", path,
+               (unsigned long)(offset + written));
+        return -1;
+    }
     return (int)written;
 }
 
@@ -1289,14 +1435,20 @@ static int fat32_mkdir_nolock(fat32_fs_t *fs, const char *path) {
     }
 
     fat32_sector_t sector;
-    fs->dev->read_blocks(fs->dev, sector.raw, (uint32_t)ctx.free_sector_lba, 1);
+    if (fs->dev->read_blocks(fs->dev, sector.raw, (uint32_t)ctx.free_sector_lba, 1) != 0) {
+        fat32_free_chain(fs, new_clus);
+        return -1;
+    }
     fat32_dir_entry_t *entries = sector.entries;
     memcpy(entries[ctx.free_slot].name, name83, 11);
     entries[ctx.free_slot].attr = FAT32_ATTR_DIRECTORY;
     entries[ctx.free_slot].fst_clus_hi = (uint16_t)(new_clus >> 16);
     entries[ctx.free_slot].fst_clus_lo = (uint16_t)(new_clus & 0xFFFF);
     entries[ctx.free_slot].file_size = 0;
-    fs->dev->write_blocks(fs->dev, sector.raw, (uint32_t)ctx.free_sector_lba, 1);
+    if (fs->dev->write_blocks(fs->dev, sector.raw, (uint32_t)ctx.free_sector_lba, 1) != 0) {
+        fat32_free_chain(fs, new_clus);
+        return -1;
+    }
 
     printk("[FAT32] Device '%s': Subdirectory created: '%s' (Cluster %u)\n",
            fs->dev->name ? fs->dev->name : "unknown", new_dir_name, (unsigned int)new_clus);
@@ -1469,6 +1621,118 @@ int fat32_statfs(fat32_fs_t *fs, uint32_t *total_blocks, uint32_t *free_blocks) 
     fat32_sync(fs);
     ylock_release(&fs->lock);
     return 0;
+}
+
+/* --- fat32_check --- */
+
+typedef struct {
+    uint8_t       *bits;
+    uint32_t      *q;
+    uint32_t       qcap, qhead, qtail;
+    fat32_check_t *out;
+    uint32_t       printed;
+} check_ctx_t;
+
+static void check_say(check_ctx_t *c, const char *what, const char raw[11], uint32_t clus) {
+    if (c->printed++ >= 8u) return;
+    char name[13];
+    fat83_to_display_name(raw, name, sizeof name);
+    printk("[FAT32] check: %s: '%s' at cluster %lu\n", what, name, (unsigned long)clus);
+}
+
+/* Marks the chain from `first` and returns how many clusters it has. */
+static uint32_t check_chain(fat32_fs_t *fs, check_ctx_t *c, uint32_t first, const char raw[11]) {
+    uint32_t n = 0, clus = first;
+    while (n <= fs->total_clusters) {
+        if (clus < 2 || clus >= fs->total_clusters + 2) {
+            c->out->bad_chain++;
+            check_say(c, "chain leaves the volume", raw, clus);
+            break;
+        }
+        uint8_t m = (uint8_t)(1u << (clus & 7u));
+        if (c->bits[clus >> 3] & m) {
+            c->out->cross++;
+            check_say(c, "cluster already claimed (cross-linked)", raw, clus);
+            break;
+        }
+        c->bits[clus >> 3] |= m;
+        c->out->clusters++;
+        n++;
+        uint32_t next;
+        if (!fat_read_entry(fs, clus, &next)) break;
+        if (next >= 0x0FFFFFF8) break;
+        if (next < 2) {
+            c->out->bad_chain++;
+            check_say(c, "chain runs into a free entry", raw, clus);
+            break;
+        }
+        clus = next;
+    }
+    return n;
+}
+
+static bool check_dir_cb(fat32_fs_t *fs, uint32_t sector_lba, fat32_dir_entry_t *entries,
+                         int count, void *vctx) {
+    (void)sector_lba;
+    check_ctx_t *c = (check_ctx_t *)vctx;
+    for (int i = 0; i < count; i++) {
+        fat32_dir_entry_t *e = &entries[i];
+        if (e->name[0] == 0x00) return true;          /* end of directory */
+        if (dir_entry_is_skippable(e) || e->name[0] == '.') continue;
+        uint32_t first = ((uint32_t)e->fst_clus_hi << 16) | e->fst_clus_lo;
+        uint32_t bpc = fs->bytes_per_cluster ? fs->bytes_per_cluster : 512u;
+        if (e->attr & FAT32_ATTR_DIRECTORY) {
+            c->out->dirs++;
+            if (first == 0) continue;
+            uint8_t m = (uint8_t)(1u << (first & 7u));
+            bool seen = first >= 2 && first < fs->total_clusters + 2 && (c->bits[first >> 3] & m);
+            (void)check_chain(fs, c, first, e->name);
+            if (seen) continue;                        /* reported; not walked twice */
+            if (c->qtail - c->qhead < c->qcap) c->q[c->qtail++ % c->qcap] = first;
+            else c->out->skipped++;
+        } else {
+            c->out->files++;
+            uint32_t need = (e->file_size + bpc - 1u) / bpc;
+            uint32_t have = first ? check_chain(fs, c, first, e->name) : 0u;
+            if (have != need && !(first == 0 && need == 0)) {
+                c->out->size++;
+                check_say(c, "size does not match its chain", e->name, first);
+            }
+        }
+    }
+    return false;
+}
+
+int fat32_check(fat32_fs_t *fs, uint8_t *bitmap, uint32_t bitmap_bytes,
+                uint32_t *dirq, uint32_t dirq_cap, fat32_check_t *out) {
+    if (!fs || !fs->dev || !bitmap || !dirq || dirq_cap == 0 || !out) return -1;
+    if (bitmap_bytes < (fs->total_clusters + 2u + 7u) / 8u) return -1;
+    memset(out, 0, sizeof *out);
+    memset(bitmap, 0, (fs->total_clusters + 2u + 7u) / 8u);
+    check_ctx_t c = { .bits = bitmap, .q = dirq, .qcap = dirq_cap, .out = out };
+    static const char k_root[11] = { '/', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ' };
+
+    ylock_acquire(&fs->lock);
+    (void)check_chain(fs, &c, fs->root_dir_cluster, k_root);
+    c.q[c.qtail++] = fs->root_dir_cluster;
+    while (c.qhead != c.qtail) {
+        uint32_t d = c.q[c.qhead++ % c.qcap];
+        fat32_scan_dir(fs, d, check_dir_cb, &c);
+    }
+    /* What the FAT holds that nothing reached. */
+    int rc = 0;
+    uint32_t end = fs->total_clusters + 2u;
+    for (uint32_t clus = 2; clus < end; ) {
+        fat32_sector_t sec;
+        uint32_t fat_sector = fs->fat_start_sector + (clus * 4u) / 512u;
+        if (fs->dev->read_blocks(fs->dev, sec.raw, fat_sector, 1) != 0) { rc = -1; break; }
+        for (uint32_t k = (clus * 4u % 512u) / 4u; k < 128u && clus < end; k++, clus++) {
+            if ((sec.words[k] & 0x0FFFFFFFu) != 0 && !(bitmap[clus >> 3] & (1u << (clus & 7u))))
+                out->lost++;
+        }
+    }
+    ylock_release(&fs->lock);
+    return rc;
 }
 
 uint32_t fat32_recount(fat32_fs_t *fs) {

@@ -39,21 +39,31 @@
 #define MAX_TYPES 256
 #endif
 
+/* guarded by: g_lisp_lock: the compiler runs only from the `cc` primitive, inside an
+ * evaluation. */
 static Node *node_pool;
 static int node_pool_idx = 0;
 
+/* guarded by: g_lisp_lock: the compiler runs only from the `cc` primitive, inside an
+ * evaluation. */
 static Obj *obj_pool;
 static int obj_pool_idx = 0;
 
 #define MAX_FNS 64
+/* guarded by: g_lisp_lock: the compiler runs only from the `cc` primitive, inside an
+ * evaluation. */
 static Function *fn_pool;
 static int fn_pool_idx = 0;
 
+/* guarded by: g_lisp_lock: the compiler runs only from the `cc` primitive, inside an
+ * evaluation. */
 static Type *type_pool;
 static int type_pool_idx = 0;
 
 
 #define MAX_MEMBERS 128
+/* guarded by: g_lisp_lock: the compiler runs only from the `cc` primitive, inside an
+ * evaluation. */
 static Member *member_pool;
 static int member_pool_idx = 0;
 
@@ -69,6 +79,8 @@ Type *ty_short = &ty_short_obj;
 Type *ty_int   = &ty_int_obj;
 Type *ty_long  = &ty_long_obj;
 
+/* guarded by: g_lisp_lock: the compiler runs only from the `cc` primitive, inside an
+ * evaluation. */
 Obj *globals = NULL;
 
 /* Reuse the last slot instead of wrapping to 0 on exhaustion: index 0 and
@@ -104,6 +116,8 @@ static Type *array_of(Type *base, int len) {
     return ty;
 }
 
+/* guarded by: g_lisp_lock: the compiler runs only from the `cc` primitive, inside an
+ * evaluation. */
 static Obj *locals = NULL;
 
 static Node *new_node(NodeKind kind) {
@@ -182,6 +196,8 @@ static bool equal(Token *tok, const char *op) {
     return tok->len == (int)strlen(op) && strncmp(tok->loc, op, tok->len) == 0;
 }
 
+/* guarded by: g_lisp_lock: the compiler runs only from the `cc` primitive, inside an
+ * evaluation. */
 bool chibicc_parse_failed;
 static Token *g_eof;     /* the stream's EOF token, where an error sends the parse */
 static int g_nest;       /* unary()/stmt() recursion depth */
@@ -364,6 +380,8 @@ static Node *funcall(Token **rest, Token *tok) {
     return node;
 }
 
+/* guarded by: g_lisp_lock: the compiler runs only from the `cc` primitive, inside an
+ * evaluation. */
 static int str_label_idx = 0;
 
 static Node *primary(Token **rest, Token *tok) {

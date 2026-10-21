@@ -7,6 +7,8 @@
 #include "drivers/screen.h"
 #include <string.h>
 
+/* guarded by: g_vterm_mgr_lock for the table and the active terminal (each
+ * terminal's queues have their own input_lock). */
 static vterm_t g_vterms[MAX_VTERMS];
 static int     g_active_vterm = 0;
 static ylock_t g_vterm_mgr_lock;

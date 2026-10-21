@@ -84,8 +84,10 @@ const char *random_source(void) { return "timer+counter (NOT random)"; }
 #endif
 
 /* Rolled into every request so that two calls in the same microsecond, or two
- * boards with identical timers, cannot produce the same bytes. */
-static uint64_t g_counter;
+ * boards with identical timers, cannot produce the same bytes.
+ * guarded by: an atomic add; each call hashes the value it took, not the
+ * shared word, which another task may have moved on since. */
+static uint32_t g_counter;
 
 /*
  * The construction, and why it is a hash rather than the raw bits:
@@ -111,8 +113,8 @@ void random_bytes(void *out, uint32_t len) {
 
         uint64_t t = time_get_us();
         sha256_update(&ctx, &t, sizeof(t));
-        g_counter++;
-        sha256_update(&ctx, &g_counter, sizeof(g_counter));
+        uint32_t n = __atomic_add_fetch(&g_counter, 1u, __ATOMIC_RELAXED);
+        sha256_update(&ctx, &n, sizeof(n));
 
 #if defined(CONFIG_BOARD_RP2350)
         /* 512 raw bits, packed eight to a byte. */

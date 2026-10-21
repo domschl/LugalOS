@@ -1,4 +1,5 @@
 #include "kernel/shell.h"
+#include "kernel/stress.h"
 #include "kernel/llp_node.h"
 #if defined(CONFIG_BOARD_ESP32P4)
 #include "drivers/sdio_esp32p4.h"
@@ -573,8 +574,12 @@ typedef struct {
 } pager_stack_entry_t;
 
 #define HELP_STACK_MAX 8
+/* The pager's way back: one stack for every terminal. guarded by:
+ * g_pager_session, which `help`, `gem`, `more` and the pager itself claim
+ * (re-entrant). */
 static pager_stack_entry_t s_help_stack[HELP_STACK_MAX];
 static int  s_help_depth = 0;
+static session_claim_t g_pager_session;
 
 static int detect_screen_rows(void) {
     unsigned cols = 80, rows = 24;
@@ -812,7 +817,8 @@ static bool pager_follow_link(int fd, char link_digit, const char *base_url,
     return false;
 }
 
-static void pager_view_file(const char *initial_resource, bool is_topic, const char *initial_title, const char *subheading) {
+static void pager_view_file(const char *initial_resource, bool is_topic, const char *initial_title, const char *subheading);
+static void pager_view_file_locked(const char *initial_resource, bool is_topic, const char *initial_title, const char *subheading) {
     int max_rows = detect_screen_rows();
     char cur_resource[128];
     strncpy(cur_resource, initial_resource, sizeof(cur_resource) - 1);
@@ -1074,7 +1080,8 @@ static void cmd_help_summary(void) {
     cprintf("  cp <src> <dst>  - Copy file\n");
     cprintf("  rm <file>       - Delete file\n");
     cprintf("  df [-r]         - Filesystem disk usage (-r recounts FAT)\n");
-    cprintf("  format <vol>    - Format volume as FAT32 (/sd0, /ram0)\n");
+    cprintf("  format <vol> [label] - Format volume as FAT32 (/sd0, /ram0); also mkfs.vfat\n");
+    cprintf("  fsck [vol]      - Read-only FAT32 check (/sd0, /ram0)\n");
     cprintf("\nSystem & Diagnostics:\n");
     cprintf("  uname           - Show OS build target and architecture\n");
     cprintf("  ps              - List processes and isolation domains (/proc/ps)\n");
@@ -1150,6 +1157,9 @@ static void cmd_help_test(void) {
 #endif
     cprintf("\nMulticore SMP & Concurrency Checks:\n");
     cprintf("  lockselftest    - Atomic spinlocks, interrupt masking, ylock\n");
+    cprintf("  chanqtest       - chan_call_wait(): FIFO turns, hand-off, deadlines\n");
+    cprintf("  lockcheck [pairs] - Lock faults, learned lock order, console_lock hold times\n");
+    cprintf("  stress [s]      - Worker tasks on the shared paths, checked; STRESS_OK/FAIL\n");
     cprintf("  smpstart [join] - Launch secondary CPU core\n");
     cprintf("  smptest         - Multi-hart atomic counter and lock race test\n");
     cprintf("  smpload         - Background CPU load across all online harts\n");
@@ -1163,7 +1173,8 @@ static void cmd_help_test(void) {
     cprintf("\n");
 }
 
-static void cmd_help_topic(const char *topic, const char *subheading) {
+static void cmd_help_topic(const char *topic, const char *subheading);
+static void cmd_help_topic_locked(const char *topic, const char *subheading) {
     char path[128];
     if (resolve_help_path(topic, path, sizeof(path))) {
         s_help_depth = 0;
@@ -1223,7 +1234,8 @@ static void cmd_man(const char *topic) {
     cmd_help(topic);
 }
 
-static void cmd_gem(const char *arg) {
+static void cmd_gem(const char *arg);
+static void cmd_gem_locked(const char *arg) {
     if (!arg || !*arg) {
         cprintf("Usage: gem <file.gmi | topic | spartan://host[:port]/path>\n");
         return;
@@ -1369,8 +1381,23 @@ static void cmd_spartand(const char *arg) {
     cprintf("Usage: spartand [start [port] | stop | status]\n");
 }
 
-static const char *g_pipe_in = NULL;
-static size_t      g_pipe_in_len = 0;
+/* A pipeline's input for the command it is running: per execution context,
+ * because each terminal runs its own pipelines, and a command reading "its"
+ * piped input must not find another terminal's.
+ * single task: each slot its own context's (sched_context_id()). */
+typedef struct {
+    const char *buf;
+    size_t      len;
+} pipe_in_t;
+static pipe_in_t g_pipe_in_ctx[MAX_TASKS + MAX_HARTS];
+
+static pipe_in_t *pipe_in(void) {
+    int id = sched_context_id();
+    if (id < 0 || id >= (int)(sizeof g_pipe_in_ctx / sizeof g_pipe_in_ctx[0])) id = 0;
+    return &g_pipe_in_ctx[id];
+}
+#define g_pipe_in     (pipe_in()->buf)
+#define g_pipe_in_len (pipe_in()->len)
 
 static void parse_and_eval_cmd(const char *cmd_line);
 
@@ -1427,7 +1454,8 @@ static void pager_view_buf(const char *buf, size_t len) {
     }
 }
 
-static void cmd_more(const char *path) {
+static void cmd_more(const char *path);
+static void cmd_more_locked(const char *path) {
     if (g_pipe_in != NULL && g_pipe_in_len > 0) {
         pager_view_buf(g_pipe_in, g_pipe_in_len);
         return;
@@ -1892,6 +1920,7 @@ static void cmd_wc(const char *arg_str) {
     }
 }
 
+/* accepted: the last command's status, in whichever terminal ran it. */
 static int g_shell_last_status = 0;
 
 static inline char char_lower(char c) {
@@ -2616,6 +2645,8 @@ static void cmd_mqtt(const char *arg) {
         /* Username and password, each up to the next space. Copied into
          * buffers with a lifetime past this call because mqtt_connect() keeps
          * the config; the strings in `cmd_line` do not outlive the command. */
+        /* accepted: `mqtt`/`mqttd` parse their credentials here; two terminals at once
+         * mix them. */
         static char user[64], pass[64];
         user[0] = pass[0] = '\0';
         while (*a == ' ') a++;
@@ -2657,6 +2688,7 @@ static void cmd_mqtt(const char *arg) {
         /* The filter is copied into a static: mqtt_subscribe() only needs it
          * for the call, but the handler prints topics for the rest of the
          * session and `cmd_line` is gone by then. */
+        /* accepted: `mqtt` parses its filter here. */
         static char filter[MQTT_TOPIC_MAX + 1];
         strncpy(filter, a, sizeof(filter) - 1);
         filter[sizeof(filter) - 1] = '\0';
@@ -2710,6 +2742,14 @@ static void cmd_mqtt(const char *arg) {
  * targets. */
 static void cmd_sensor(const char *arg) {
     while (*arg == ' ') arg++;
+    if (strncmp(arg, "period", 6) == 0) {
+        unsigned long secs = 0;
+        for (const char *q = arg + 6; *q; q++) if (*q >= '0' && *q <= '9') secs = secs * 10u + (unsigned long)(*q - '0');
+        if (secs) (void)sensor_hub_sampler_start((uint32_t)secs);
+        cprintf("sensor: environmental sensors every %lu s (from the next round)\n",
+                (unsigned long)sensor_hub_sample_period_s());
+        return;
+    }
     if (strncmp(arg, "selftest", 8) == 0) {
         bme280_selftest(true);
         bme680_selftest(true);
@@ -2727,6 +2767,13 @@ static void cmd_sensor(const char *arg) {
         bmi270_selftest(true);
         orient_selftest(true);
         sensor_derived_selftest(true);
+        return;
+    }
+    if (strncmp(arg, "lux", 3) == 0) {
+        /* A conversion now, not the hub's cached sample (60 s by default) */
+        if (tsl2591_is_detected()) tsl2591_print_status();
+        else if (tsl2561_is_detected()) tsl2561_print_status();
+        else cprintf("sensor: no light sensor (tsl2591, tsl2561) found\n");
         return;
     }
     if (strncmp(arg, "init", 4) == 0) {
@@ -2871,6 +2918,7 @@ static void shell_mqtt_message(const char *topic, const uint8_t *payload,
 }
 
 static bool shell_fake_source(int32_t *out, void *ctx) {
+    /* accepted: a command's or selftest's own state; one run at a time. */
     static int32_t n;
     (void)ctx;
     *out = n++;
@@ -2965,6 +3013,8 @@ static void cmd_mqttd(const char *arg) {
         while (*a >= '0' && *a <= '9') period = period * 10u + (unsigned)(*a++ - '0');
         cfg.sample_s = (uint16_t)period;
 
+        /* accepted: `mqtt`/`mqttd` parse their credentials here; two terminals at once
+         * mix them. */
         static char user[64], pass[64];
         user[0] = pass[0] = '\0';
         while (*a == ' ') a++;
@@ -3188,6 +3238,7 @@ static void cmd_sdio(const char *arg) {
             cprintf("usage: sdio rd53 <fn> <addr> <len, hex, at most 200>\n");
             return;
         }
+        /* accepted: a command's or selftest's own state; one run at a time. */
         static uint8_t buf[512];
         if (sdio_cmd53(false, a, b, buf, c) != 0) { cprintf("sdio rd53: failed\n"); return; }
         for (uint32_t i = 0; i < c; i++) {
@@ -3807,6 +3858,7 @@ UATTR static void user_probe(void) {
 
 /* The isolation probe: a store into kernel memory the task was never granted.
  * Under a correct domain it faults and the task is terminated. */
+/* accepted: a command's or selftest's own state; one run at a time. */
 static volatile uintptr_t g_kernel_canary = 0xC0FFEE;
 
 UATTR static void user_intruder(void) {
@@ -3824,6 +3876,7 @@ UATTR static void user_intruder(void) {
  * kernel writes into, validated by copy_to_user() against this task's domain.
  * Both outcomes are asserted -- a syscall layer refusing every pointer would
  * pass the "refused" half while being useless. */
+/* accepted: a command's or selftest's own state; one run at a time. */
 static volatile uintptr_t g_deputy_target = 0xFEEDFACE;
 
 UATTR static void user_deputy(void) {
@@ -3875,6 +3928,7 @@ UATTR static void user_deputy(void) {
  * against someone typing it. palloc_pages() returns page-aligned memory on
  * every target, which is exactly the property the paragraph above needs, so
  * the grant is unchanged -- only where the page comes from moved. */
+/* accepted: a command's or selftest's own state; one run at a time. */
 static scratch_t g_user_stack_sc;
 static uint8_t *g_user_stack;
 static mem_domain_t g_user_domain;
@@ -3883,6 +3937,7 @@ static mem_domain_t g_user_domain;
  * report is a false positive on any core where the domain could not be
  * installed: the canary is untouched because nothing ran, which reads
  * identically to "the write was correctly blocked". */
+/* accepted: a command's or selftest's own state; one run at a time. */
 static volatile bool g_user_entered;
 
 /* X5: the hart the probe was executing on when it entered U-mode.
@@ -3892,6 +3947,7 @@ static volatile bool g_user_entered;
  * actually having run there is exactly the gap a pin that silently did
  * nothing would hide -- and a pass built on that gap would be the kind of
  * false positive g_user_entered above already exists to rule out. */
+/* accepted: a command's or selftest's own state; one run at a time. */
 static volatile int g_user_hart = -1;
 
 static void user_task_common(void (*entry)(void)) {
@@ -4058,13 +4114,15 @@ static void cmd_deputytest(int hart) {
  * than to a specific driver's PMP grant. */
 /* Same treatment as g_user_stack above (§3.1): heap for the duration of the
  * `chanechotest` probe rather than permanent .bss. */
+/* accepted: a command's or selftest's own state; one run at a time. */
 static scratch_t       g_echo_ustack_sc;
 static uint8_t        *g_echo_ustack;
 static mem_domain_t    g_echo_domain;
+/* accepted: a command's or selftest's own state; one run at a time. */
 static uint8_t         g_echo_req[16];
 static uint8_t         g_echo_resp[16];
 static chan_endpoint_t *g_echo_ep;
-static volatile bool    g_echo_entered;
+static volatile bool    g_echo_entered;   /* accepted: a selftest's handshake flag */
 
 __attribute__((always_inline)) static inline long echo_usys_chan_serve_wait(const char *name, uint8_t *buf, long buf_max) {
     register long r_a0 __asm__("a0") = SYS_CHAN_SERVE_WAIT;
@@ -4135,6 +4193,42 @@ static void echo_task_body(void *arg) {
     }
     g_echo_entered = true;
     arch_enter_user(echo_umode_body, (uintptr_t)g_echo_ustack + 4096, 0, 0, 0);
+}
+
+/* `lockcheck`: the lock checker's counters, the learned lock order and the
+ * console_lock hold times (kernel/lock.c, kernel/console.c). */
+static void cmd_lockcheck(bool pairs) {
+    lock_order_stats_t o;
+    lock_order_stats(&o);
+    cprintf("lock faults:     %u (blocking under a spinlock, console from a serve callback, cycles)\n",
+            (unsigned)lock_faults());
+    cprintf("lock order:      %u of %u pairs recorded, %u inversions, %u not recorded (table full), "
+            "%u held past the stack\n",
+            (unsigned)o.pairs, (unsigned)o.pairs_max, (unsigned)o.inversions,
+            (unsigned)o.pairs_dropped, (unsigned)o.held_overflow);
+    if (pairs) {
+        const char *a, *b;
+        for (uint32_t i = 0; lock_order_pair(i, &a, &b); i++)
+            cprintf("  %-28s -> %s\n", a ? a : "?", b ? b : "?");
+    }
+    uint32_t hist[CONSOLE_HOLD_BUCKETS], max_us;
+    int max_pid;
+    const char *max_site;
+    console_lock_hold_stats(hist, &max_us, &max_pid, &max_site);
+    cprintf("console_lock:    held %u.%03u ms at most (task %d, %s); holds by duration:\n",
+            (unsigned)(max_us / 1000u), (unsigned)(max_us % 1000u), max_pid,
+            max_site ? max_site : "?");
+    for (unsigned i = 0; i < CONSOLE_HOLD_BUCKETS; i++) {
+        if (!hist[i]) continue;
+        if (i == 0) cprintf("  under 1 ms      %u\n", (unsigned)hist[i]);
+        else if (i + 1 == CONSOLE_HOLD_BUCKETS) cprintf("  %u ms or more  %u\n", 1u << (i - 1), (unsigned)hist[i]);
+        else cprintf("  %u to %u ms     %u\n", 1u << (i - 1), 1u << i, (unsigned)hist[i]);
+    }
+    const char *site;
+    uint32_t ms;
+    int pid;
+    for (unsigned i = 0; console_lock_long_hold(i, &site, &ms, &pid); i++)
+        cprintf("  %s %u ms: task %d, %s\n", i ? "     " : "last:", (unsigned)ms, pid, site ? site : "?");
 }
 
 static void cmd_chan_echo_test(void) {
@@ -4480,7 +4574,7 @@ static void cmd_usb_isolation_test(void) {
  *
  * Both loops are bounded, so a failure reports rather than wedging the
  * machine and taking every later test down with it. */
-static volatile uint32_t g_preempt_flag;
+static volatile uint32_t g_preempt_flag;   /* accepted: a selftest's handshake flag */
 
 static void preempt_spinner(void *arg) {
     (void)arg;
@@ -4535,6 +4629,7 @@ static void cmd_preempttest(void) {
  * cause in the toolchain; recorded as a real constraint instead of
  * papered over: a volatile flag polled across a preemption boundary in this
  * tree should be word-sized, not bool. */
+/* accepted: a selftest's handshake flags. */
 static volatile uint32_t g_urgent_ran;
 static volatile uint64_t g_urgent_woken_tick;
 
@@ -4624,6 +4719,7 @@ static void cmd_priotest(void) {
  * comment), the favoured task finishes quickly while the other is starved
  * until it, which shows up as a large gap between the two finish ticks
  * instead of a small one. */
+/* accepted: per-task slots of a selftest, read when both are done. */
 static volatile uint32_t g_stress_done[2];
 static volatile uint64_t g_stress_finish_tick[2];
 
@@ -4636,7 +4732,7 @@ static volatile uint64_t g_stress_finish_tick[2];
  * real RP2350 hardware too. */
 #define PRIOSTRESS_ITERATIONS 150000000L
 
-static volatile long g_stress_sink[2]; /* per-task: keeps the optimizer from eliminating the loop below without sharing a write target between the two concurrently-running tasks */
+static volatile long g_stress_sink[2]; /* accepted: per-task: keeps the optimizer from eliminating the loop below without sharing a write target between the two concurrently-running tasks */
 
 static void priostress_body(void *arg) {
     int id = (int)(intptr_t)arg;
@@ -5221,8 +5317,14 @@ static void cmd_canvas(const char *cmd_line) {
     }
 }
 
+/* One full-screen editor at a time: g_shell_editor and the editor's own
+ * state are one set. guarded by: g_editor_session. */
+static session_claim_t g_editor_session;
+
 static void shell_run_editor(const char *filename) {
+    if (!session_claim(&g_editor_session, "e")) return;
     (void)editor_run(filename, &g_shell_editor, NULL, 0);
+    session_release(&g_editor_session);
 }
 
 static void parse_and_eval_cmd(const char *cmd_line) {
@@ -5647,6 +5749,22 @@ static void parse_and_eval_cmd(const char *cmd_line) {
 #endif
     } else if (strcmp(cmd_line, "lockselftest") == 0) {
         lock_selftest();
+        return;
+    } else if (strcmp(cmd_line, "chanqtest") == 0) {
+        (void)chan_selftest();
+        return;
+    } else if (strcmp(cmd_line, "stress") == 0 || strncmp(cmd_line, "stress ", 7) == 0) {
+        unsigned long secs = 0;
+        for (const char *q = cmd_line + 6; *q && *q != 'o' && *q != 'n'; q++)   /* up to `only=` / `norot` */
+            if (*q >= '0' && *q <= '9') secs = secs * 10u + (unsigned long)(*q - '0');
+        stress_set_rotation(strstr(cmd_line, "norot") == NULL);
+        stress_set_paths(strstr(cmd_line, "only="));
+        if (strncmp(cmd_line, "stress bg", 9) == 0) stress_start_bg((uint32_t)secs);
+        else (void)stress_run((uint32_t)secs);
+        return;
+    } else if (strcmp(cmd_line, "lockcheck") == 0 || strcmp(cmd_line, "lockcheck pairs") == 0) {
+        cmd_lockcheck(cmd_line[9] == ' ');
+        return;
 #if defined(CONFIG_KOBJ)
     } else if (strcmp(cmd_line, "kobjselftest") == 0) {
         kobj_selftest();
@@ -6118,6 +6236,24 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "tzselftest") == 0) {
         tz_selftest();
+        return;
+    } else if (strncmp(cmd_line, "mkfs.vfat ", 10) == 0) {
+        /* `mkfs.vfat VOL [LABEL]`: `format` under the name people look for. */
+        char vol[32] = {0}, label[16] = {0};
+        const char *a = cmd_line + 10;
+        while (*a == ' ') a++;
+        unsigned i = 0;
+        while (*a && *a != ' ' && i < sizeof vol - 1) vol[i++] = *a++;
+        while (*a == ' ') a++;
+        i = 0;
+        while (*a && *a != ' ' && i < sizeof label - 1) label[i++] = *a++;
+        int rc = vfs_format_label(vol, label[0] ? label : NULL);
+        cprintf("mkfs.vfat %s: %s\n", vol, rc == 0 ? "done" : "failed");
+        return;
+    } else if (strcmp(cmd_line, "fsck") == 0 || strncmp(cmd_line, "fsck ", 5) == 0) {
+        const char *a = cmd_line + 4;
+        while (*a == ' ') a++;
+        vfs_fsck(a);
         return;
     } else if (strcmp(cmd_line, "df -r") == 0) {
         /* 38.0: recount free space from the FAT, repairing a stale FSInfo. */
@@ -6614,6 +6750,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         /* Received bytes the hardware dropped. Its own line for the same
          * reason the TX half has one: the exact matches above keep working. */
         printk("[UartStats] rx_overruns=%u\n", uart_rx_overruns());
+#if defined(CONFIG_BOARD_ESP32P4) && defined(CONFIG_USBJTAG_BASE)
+        printk("[UartStats] usb_dropped=%u (console bytes no USB host read)\n", uart_usj_dropped());
+#endif
         return;
     } else if (strcmp(cmd_line, "blkstats") == 0) {
         /* Driver task verify: exposes blk_task_call_count() so a test can confirm the sdblk/blk
@@ -6665,7 +6804,12 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         /* Driver task verify: exposes i2c_task_call_count() so a test can confirm the shared
          * RTC/EEPROM task is genuinely serving requests, same reasoning as
          * blkstats above. */
-        printk("[I2cStats] calls=%u\n", i2c_task_call_count());
+        i2c_fail_counts_t f;
+        i2c_fail_counts(&f);
+        printk("[I2cStats] calls=%u no_turn=%u nack=%u timeout=%u arb_lost=%u incomplete=%u"
+               " last=0x%02x int=0x%08x %u us\n",
+               i2c_task_call_count(), f.no_turn, f.nack, f.timeout, f.arb_lost, f.incomplete,
+               (unsigned)f.last_addr, (unsigned)f.last_int, (unsigned)f.last_us);
         return;
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
     } else if (strcmp(cmd_line, "st7735stats") == 0) {
@@ -7001,4 +7145,27 @@ void shell_exec(const char *cmd_line) {
     parse_and_eval_cmd(cmd_line);
 }
 
+/* The pager's entry points, each holding g_pager_session. */
+static void pager_view_file(const char *initial_resource, bool is_topic, const char *initial_title, const char *subheading) {
+    if (!session_claim(&g_pager_session, "help")) return;
+    pager_view_file_locked(initial_resource, is_topic, initial_title, subheading);
+    session_release(&g_pager_session);
+}
 
+static void cmd_help_topic(const char *topic, const char *subheading) {
+    if (!session_claim(&g_pager_session, "help")) return;
+    cmd_help_topic_locked(topic, subheading);
+    session_release(&g_pager_session);
+}
+
+static void cmd_gem(const char *arg) {
+    if (!session_claim(&g_pager_session, "help")) return;
+    cmd_gem_locked(arg);
+    session_release(&g_pager_session);
+}
+
+static void cmd_more(const char *path) {
+    if (!session_claim(&g_pager_session, "help")) return;
+    cmd_more_locked(path);
+    session_release(&g_pager_session);
+}

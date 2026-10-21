@@ -56,6 +56,7 @@
  * 4096 nodes and only on hart 0, as search.c polls its stop callback (the
  * console's input sources are served from hart 0). A stop unwinds every
  * worker; the suite driver reports it rather than a wrong node count. */
+/* guarded by: the chess session claim; the workers of one run share the stop. */
 static volatile bool g_perft_stop;
 static uint32_t      g_perft_poll;
 
@@ -90,6 +91,7 @@ typedef struct {
     int       ply;
 } perft_ctx_t;
 
+/* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
 static perft_ctx_t perft_main;   /* the single-threaded path's context */
 
 static bool perft_ctx_init(perft_ctx_t *c) {

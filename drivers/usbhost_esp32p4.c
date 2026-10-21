@@ -48,6 +48,7 @@
 
 #include "drivers/usbkbd.h"
 #include "drivers/usbkbd_task.h"
+#include "kernel/sysreg.h"
 #include "kernel/console.h"
 #include "kernel/printk.h"
 #include "kernel/sched.h"
@@ -190,8 +191,11 @@ typedef struct {
     uint64_t busy_us;               /* spent inside transactions (they poll) */
 } usbhost_t;
 
+/* single task: the kbd task; host_init() runs at boot (usbkbd_start()) before
+ * it, and `usb` only reads. */
 static usbhost_t g_host;
 
+/* single task: the keyboard host (`kbd` starts and stops it). */
 static union {
     usbkbd_state_t s;
     uint8_t        raw[1024];
@@ -199,17 +203,11 @@ static union {
 #define g_kbd g_kbd_mem.s
 
 static bool wait_set(uint32_t off, uint32_t mask, uint32_t us) {
-    uint64_t end = time_get_us() + us;
-    while (!(OTG(off) & mask))
-        if (time_get_us() > end) return false;
-    return true;
+    return time_poll_until_us(OTG(off) & mask, time_get_us() + us);
 }
 
 static bool wait_clear(uint32_t off, uint32_t mask, uint32_t us) {
-    uint64_t end = time_get_us() + us;
-    while (OTG(off) & mask)
-        if (time_get_us() > end) return false;
-    return true;
+    return time_poll_until_us(!(OTG(off) & mask), time_get_us() + us);
 }
 
 /* --- Bring-up ------------------------------------------------------------- */
@@ -218,12 +216,12 @@ static bool wait_clear(uint32_t off, uint32_t mask, uint32_t us) {
  * bus clock and the PHY's 48 MHz reference on, both out of reset, SUSPENDM
  * forced high, LS in parallel mode with keep-alives, pulldowns on. */
 static void phy_init(void) {
-    REG(HP_SYS_CLKRST_SOC_CLK_CTRL1_REG) |= 1u << HP_SYS_CLKRST_REG_USB_OTG20_SYS_CLK_EN_S;
-    REG(LP_CLKRST_HP_USB_CLKRST_CTRL1_REG) |= 1u << LP_CLKRST_USB_OTG20_PHYREF_CLK_EN_S;
-    REG(LP_CLKRST_HP_USB_CLKRST_CTRL1_REG) |= 1u << LP_CLKRST_RST_EN_USB_OTG20_S;
-    REG(LP_CLKRST_HP_USB_CLKRST_CTRL1_REG) |= 1u << LP_CLKRST_RST_EN_USB_OTG20_PHY_S;
-    REG(LP_CLKRST_HP_USB_CLKRST_CTRL1_REG) &= ~(1u << LP_CLKRST_RST_EN_USB_OTG20_PHY_S);
-    REG(LP_CLKRST_HP_USB_CLKRST_CTRL1_REG) &= ~(1u << LP_CLKRST_RST_EN_USB_OTG20_S);
+    sysreg_set(HP_SYS_CLKRST_SOC_CLK_CTRL1_REG, 1u << HP_SYS_CLKRST_REG_USB_OTG20_SYS_CLK_EN_S);
+    sysreg_set(LP_CLKRST_HP_USB_CLKRST_CTRL1_REG, 1u << LP_CLKRST_USB_OTG20_PHYREF_CLK_EN_S);
+    sysreg_set(LP_CLKRST_HP_USB_CLKRST_CTRL1_REG, 1u << LP_CLKRST_RST_EN_USB_OTG20_S);
+    sysreg_set(LP_CLKRST_HP_USB_CLKRST_CTRL1_REG, 1u << LP_CLKRST_RST_EN_USB_OTG20_PHY_S);
+    sysreg_clear(LP_CLKRST_HP_USB_CLKRST_CTRL1_REG, 1u << LP_CLKRST_RST_EN_USB_OTG20_PHY_S);
+    sysreg_clear(LP_CLKRST_HP_USB_CLKRST_CTRL1_REG, 1u << LP_CLKRST_RST_EN_USB_OTG20_S);
     REG(HP_SYSTEM_SYS_USBOTG20_CTRL_REG) |= 1u << HP_SYSTEM_SYS_OTG_SUSPENDM_S;
     REG(UTMI_FC_06) |= UTMI_LS_PAR_EN | UTMI_LS_KPALV_EN;
     REG(LP_SYSTEM_REG_HP_USB_OTGHS_PHY_CTRL_REG) |= (1u << LP_SYSTEM_REG_HP_UTMIOTG_DPPULLDOWN_S) |
@@ -278,9 +276,10 @@ static bool host_init(void) {
     OTG(GINTMSK) = 0;
     OTG(GINTSTS) = 0xFFFFFFFFu;
     /* Forcing host mode takes effect after up to 25 ms (databook). */
-    uint64_t end = time_get_ms() + 100;
-    while (!(OTG(GINTSTS) & GINTSTS_CMOD))
-        if (time_get_ms() > end) { printk("[USB] core did not enter host mode\n"); return false; }
+    if (!time_poll_until_us(OTG(GINTSTS) & GINTSTS_CMOD, time_get_us() + 100000u)) {
+        printk("[USB] core did not enter host mode\n");
+        return false;
+    }
     OTG(HCFG) &= ~HCFG_FSLS_ONLY;
     OTG(GRXFSIZ) = FIFO_RX_WORDS;
     OTG(GNPTXFSIZ) = (FIFO_NPTX_WORDS << 16) | FIFO_RX_WORDS;
@@ -312,9 +311,11 @@ static void rx_drain(uint8_t *in, uint32_t in_max, uint32_t *got) {
 static void channel_stop(uint8_t *in, uint32_t in_max, uint32_t *got) {
     if (OTG(HCCHAR(CH)) & HCCHAR_CHENA) OTG(HCCHAR(CH)) |= HCCHAR_CHENA | HCCHAR_CHDIS;
     uint64_t end = time_get_us() + 5000;
-    while (!(OTG(HCINT(CH)) & HCINT_HALTED) && (OTG(HCCHAR(CH)) & HCCHAR_CHENA)) {
+    for (;;) {
+        bool late = time_get_us() >= end;   /* before the test: kernel/time.h */
+        if ((OTG(HCINT(CH)) & HCINT_HALTED) || !(OTG(HCCHAR(CH)) & HCCHAR_CHENA)) break;
         rx_drain(in, in_max, got);
-        if (time_get_us() > end) { g_host.stuck++; break; }
+        if (late) { g_host.stuck++; break; }
     }
     rx_drain(in, in_max, got);
 }
@@ -364,8 +365,10 @@ uint32_t usbkbd_port_xfer(usbkbd_state_t *k, uint32_t op, uint32_t addr, uint32_
         task_sleep_ms(50);                      /* TDRSTR: 50 ms at the root */
         OTG(HPRT) = OTG(HPRT) & ~(HPRT_W1C | HPRT_RESET);
         uint64_t end = time_get_ms() + 200;
-        while (!(OTG(HPRT) & HPRT_ENABLE)) {
-            if (time_get_ms() > end) return PIOUSB_NODEV;
+        for (;;) {
+            bool late = time_get_ms() >= end;   /* before the test: kernel/time.h */
+            if (OTG(HPRT) & HPRT_ENABLE) break;
+            if (late) return PIOUSB_NODEV;
             task_sleep_ms(1);
         }
         hprt = OTG(HPRT);
@@ -449,6 +452,7 @@ bool usbkbd_port_up(usbkbd_state_t *k) {
 
 /* --- The task ------------------------------------------------------------- */
 
+/* single task: the boot, before any reader runs; constant after. */
 static int g_kbd_pid = -1;
 
 static void kbd_task_body(void *arg) {

@@ -92,6 +92,8 @@ uint32_t uart_rx_overruns(void);
 // a working TX interrupt, arms > wakes by a steady one is a waiter asleep
 // right now, and arms > 0 with wakes == 0 is the lost-wakeup bug.
 uint32_t uart_irq_tx_arms(void);
+/* Console bytes dropped because no USB host read the USB-Serial/JTAG port (P4 with one). */
+uint32_t uart_usj_dropped(void);
 uint32_t uart_irq_tx_wakes(void);
 
 // And how many ISR entries saw the transmit-ready condition at all, whether

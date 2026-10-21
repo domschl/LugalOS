@@ -71,13 +71,14 @@
  *         return driver_task_start(&g_widget_task, &spec);
  *     }
  *
- *     // 4. The facade, for everyone else. Falls back when the task is not
- *     //    serving -- during boot, or if it never started.
- *     uint8_t widget_read(void) {
+ *     // 4. The facade, for everyone else. Goes to the hardware itself only
+ *     //    when no task owns it -- during boot, or if it never started.
+ *     int widget_read(void) {
  *         if (driver_task_alive(&g_widget_task)) {
  *             uint8_t req[1] = { WIDGET_REQ_READ }, resp[1];
  *             if (driver_task_call(&g_widget_task, req, 1, resp, 1) == 1)
  *                 return resp[0];
+ *             return -1;
  *         }
  *         return widget_hw_read();
  *     }
@@ -224,12 +225,16 @@ static inline uint32_t driver_task_call_count(const driver_task_t *dt) {
     return dt ? dt->calls : 0u;
 }
 
-/* chan_call() with a bounded retry on a transient busy (the endpoint's
- * single in-flight slot occupied by someone else), yielding between
- * attempts. Returns the response length, or -1 once the retries are
- * exhausted -- which is a real if unlikely degradation and the only case a
- * caller should fall back to direct access for. A dead or unstarted task is
- * driver_task_alive()'s question, asked before this one. */
+/* chan_call_wait() on the task's endpoint: a caller finding it busy waits
+ * its turn, in order, for up to `wait_ms` (driver_task_call(): CHAN_WAIT_MS).
+ * Returns the response length, or -1.
+ *
+ * -1 from a live task is a failed request, not a reason to touch the
+ * hardware: the task may still be driving it (a turn that timed out is
+ * someone else's transfer in progress). A facade falls back to direct access
+ * only when driver_task_alive() says nobody owns the hardware. */
+int driver_task_call_wait(driver_task_t *dt, const uint8_t *req, uint32_t req_len,
+                          uint8_t *resp, uint32_t resp_max, uint32_t wait_ms);
 int driver_task_call(driver_task_t *dt, const uint8_t *req, uint32_t req_len,
                      uint8_t *resp, uint32_t resp_max);
 

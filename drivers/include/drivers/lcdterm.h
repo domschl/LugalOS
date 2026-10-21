@@ -59,6 +59,9 @@ typedef struct {
     bool      (*capture)(const uint8_t **fb, unsigned *w, unsigned *h, unsigned *stride, unsigned *format);
     /* 55.5: whether backend is using double-buffering (optional) */
     bool      (*is_double_buffered)(void);
+    /* The panel turns at run time: lcdterm_reinit() with w and h traded.
+     * The screen's state is then sized for both orientations. */
+    bool        rotates;
 } lcdterm_backend_t;
 
 /* Takes the backend (kept by pointer: it must outlive the terminal), finds

@@ -86,4 +86,5 @@ Graphical canvases in LugalOS are decoupled from terminal lifetimes and can be a
 
 * `lcd backlight <0-100>`: Sets panel LEDC PWM brightness (0 turns backlight completely off).
 * `lcd blank [min|Ns|off]`: Sets idle inactivity timeout before backlight turns off. Pressing any key or touching the screen wakes the display immediately.
+* `lcd reinit video|panel|phy|link` (ESP32-P4 panels): Redoes part of the panel's bring-up without a reboot: `video` restarts the pixel stream, `panel` also resets the panel and sends its init commands, `phy` restarts the MIPI-DSI link (PHY, clocks, timing) and leaves the panel alone, `link` does both. For a panel that stays black while everything reports normal.
 * `screenshot [path]`: Saves an uncompressed PBM image of the active display buffer directly to the filesystem.

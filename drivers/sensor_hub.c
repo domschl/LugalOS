@@ -1,4 +1,5 @@
 #include "drivers/sensor_hub.h"
+#include "kernel/lock.h"
 #include "drivers/i2c_bus.h"
 #include "drivers/bme280.h"
 #include "drivers/bme680.h"
@@ -49,25 +50,26 @@ typedef struct {
     uint64_t last_sample_ms;
 } derived_chan_t;
 
+/* guarded by: s_hub_lock, everything down to s_have_altitude: the sampler
+ * holds it for each device's conversion and for hub_derive(), `sensor init`
+ * for the whole of a re-probe, and every reader for its copy. A reader waits
+ * at most one device's conversion. */
+static ylock_t        s_hub_lock;
 static sensor_dev_t  *s_drivers[SENSOR_HUB_MAX_DEVS];
 static uint32_t       s_driver_count = 0;
-
 static dev_cache_t    s_caches[SENSOR_HUB_MAX_DEVS];
 static uint32_t       s_active_count = 0;
-
 static derived_chan_t s_derived[SENSOR_CHAN_MAX];
 static int32_t        s_bme680_r_base = 0;
 static bool           s_mox_contaminated = false;
 static bool           s_fresh_air_verified = false;
 static int32_t        s_co2_ratio_pct = 100;
-
 static uint32_t       s_sample_period_s = SENSOR_HUB_DEFAULT_PERIOD_S;
 static int            s_sampler_pid = -1;
-
 static int32_t        s_altitude_m = 0;
 static bool           s_have_altitude = false;
 
-void sensor_hub_altitude_reload(void) {
+static void sensor_hub_altitude_reload_locked(void) {
     int32_t alt = 0;
     s_have_altitude = node_altitude(&alt);
     s_altitude_m = s_have_altitude ? alt : 0;
@@ -77,7 +79,7 @@ bool    sensor_hub_is_mox_contaminated(void)   { return s_mox_contaminated; }
 bool    sensor_hub_is_fresh_air_verified(void) { return s_fresh_air_verified; }
 int32_t sensor_hub_co2_ratio_pct(void)         { return s_co2_ratio_pct; }
 
-bool sensor_hub_register(sensor_dev_t *dev) {
+static bool sensor_hub_register_locked(sensor_dev_t *dev) {
     if (!dev || s_driver_count >= SENSOR_HUB_MAX_DEVS) return false;
     for (uint32_t i = 0; i < s_driver_count; i++) {
         if (s_drivers[i] == dev) return true;
@@ -86,7 +88,7 @@ bool sensor_hub_register(sensor_dev_t *dev) {
     return true;
 }
 
-void sensor_hub_init(void) {
+static void sensor_hub_init_locked(void) {
     /* Register built-in drivers */
     sensor_hub_register(&tmp117_sensor_dev);
     sensor_hub_register(&mcp9808_sensor_dev);
@@ -133,11 +135,11 @@ void sensor_hub_init(void) {
     }
 }
 
-uint32_t sensor_hub_device_count(void) {
+static uint32_t sensor_hub_device_count_locked(void) {
     return s_active_count;
 }
 
-sensor_dev_t *sensor_hub_device_get(uint32_t idx) {
+static sensor_dev_t * sensor_hub_device_get_locked(uint32_t idx) {
     if (idx >= s_active_count) return NULL;
     return s_caches[idx].dev;
 }
@@ -266,6 +268,7 @@ static void hub_derive(void) {
     }
 
     if (at24c32_is_detected()) {
+        /* guarded by: s_hub_lock, as hub_derive()'s caller holds it */
         static uint64_t s_last_eeprom_ckpt_ms = 0;
         static bool s_was_fresh_air = false;
         bool fresh_transition = s_fresh_air_verified && !s_was_fresh_air;
@@ -280,7 +283,7 @@ static void hub_derive(void) {
     }
 }
 
-void sensor_hub_sample_all(void) {
+static void sensor_hub_sample_all_locked(void) {
     for (uint32_t i = 0; i < s_active_count; i++) hub_sample_dev(&s_caches[i]);
     hub_derive();
 }
@@ -294,14 +297,21 @@ static void sensor_hub_sampler_body(void *arg) {
     for (;;) {
         uint64_t now = time_get_ms();
         bool env_due = now >= next_env;
-        for (uint32_t i = 0; i < s_active_count; i++) {
+        /* One device per hold of the lock, so a reader waits one conversion
+         * at most; the count is read again each time (`sensor init` may have
+         * changed it in between). */
+        for (uint32_t i = 0; ; i++) {
+            ylock_acquire(&s_hub_lock);
+            if (i >= s_active_count) { ylock_release(&s_hub_lock); break; }
             dev_cache_t *c = &s_caches[i];
             uint32_t own = c->dev ? c->dev->period_ms : 0u;
             if (own ? now >= c->next_due_ms : env_due) {
                 hub_sample_dev(c);
                 if (own) c->next_due_ms = now + own;
             }
+            ylock_release(&s_hub_lock);
         }
+        ylock_acquire(&s_hub_lock);
         if (env_due) {
             hub_derive();
             uint32_t period = s_sample_period_s ? s_sample_period_s : SENSOR_HUB_DEFAULT_PERIOD_S;
@@ -314,25 +324,30 @@ static void sensor_hub_sampler_body(void *arg) {
                 wake = s_caches[i].next_due_ms;
             }
         }
+        ylock_release(&s_hub_lock);
         now = time_get_ms();
         task_sleep_ms(wake > now ? wake - now : 1u);
     }
 }
 
 int sensor_hub_sampler_start(uint32_t period_s) {
-    if (s_active_count == 0) return -1;
-    if (period_s != 0) s_sample_period_s = period_s;
-    if (s_sampler_pid >= 0) return s_sampler_pid;
-
-    s_sampler_pid = task_create_sized("sensor_hub", sensor_hub_sampler_body, NULL, 3);
-    return s_sampler_pid;
+    ylock_acquire(&s_hub_lock);
+    int pid = -1;
+    if (s_active_count != 0) {
+        if (period_s != 0) s_sample_period_s = period_s;
+        if (s_sampler_pid < 0)
+            s_sampler_pid = task_create_sized("sensor_hub", sensor_hub_sampler_body, NULL, 3);
+        pid = s_sampler_pid;
+    }
+    ylock_release(&s_hub_lock);
+    return pid;
 }
 
 uint32_t sensor_hub_sample_period_s(void) {
     return s_sample_period_s;
 }
 
-bool sensor_hub_get_dev(const sensor_dev_t *dev, sensor_chan_t chan, int32_t *out_val, uint32_t *age_s) {
+static bool sensor_hub_get_dev_locked(const sensor_dev_t *dev, sensor_chan_t chan, int32_t *out_val, uint32_t *age_s) {
     if (!dev || chan >= SENSOR_CHAN_MAX || !out_val) return false;
     for (uint32_t i = 0; i < s_active_count; i++) {
         dev_cache_t *c = &s_caches[i];
@@ -349,7 +364,7 @@ bool sensor_hub_get_dev(const sensor_dev_t *dev, sensor_chan_t chan, int32_t *ou
     return false;
 }
 
-bool sensor_hub_get(sensor_chan_t chan, int32_t *out_val, uint32_t *age_s) {
+static bool sensor_hub_get_locked(sensor_chan_t chan, int32_t *out_val, uint32_t *age_s) {
     if (chan >= SENSOR_CHAN_MAX || !out_val) return false;
 
     /* 1. Handle derived channels */
@@ -405,7 +420,7 @@ bool sensor_hub_get(sensor_chan_t chan, int32_t *out_val, uint32_t *age_s) {
     return false;
 }
 
-bool sensor_hub_get_filtered(sensor_chan_t chan, int32_t *out_val) {
+static bool sensor_hub_get_filtered_locked(sensor_chan_t chan, int32_t *out_val) {
     if (chan >= SENSOR_CHAN_MAX || !out_val) return false;
 
     /* 1. Derived channels */
@@ -444,7 +459,7 @@ bool sensor_hub_get_filtered(sensor_chan_t chan, int32_t *out_val) {
     return false;
 }
 
-bool sensor_hub_get_origin(sensor_chan_t chan, sensor_origin_t *out) {
+static bool sensor_hub_get_origin_locked(sensor_chan_t chan, sensor_origin_t *out) {
     if (chan >= SENSOR_CHAN_MAX || !out) return false;
 
     if (chan == SENSOR_CHAN_PRESSURE_MSL) {
@@ -557,7 +572,7 @@ uint32_t sensor_hub_selftest(bool report) {
     return failed;
 }
 
-void sensor_hub_print_status(void) {
+static void sensor_hub_print_status_locked(void) {
     if (s_active_count == 0) {
         cprintf("sensor: none found on any I2C bus\n"
                 "        `i2c scan` lists what is actually answering there\n");
@@ -719,7 +734,7 @@ void sensor_hub_print_status(void) {
 
 /* --- Calibration Operations --- */
 
-bool sensor_hub_cal_get_current(sensor_cal_blob_t *out) {
+static bool sensor_hub_cal_get_current_locked(sensor_cal_blob_t *out) {
     if (!out) return false;
     memset(out, 0, sizeof(*out));
     out->magic = SENSOR_CAL_MAGIC;
@@ -751,7 +766,7 @@ bool sensor_hub_cal_get_current(sensor_cal_blob_t *out) {
     return true;
 }
 
-bool sensor_hub_cal_apply(const sensor_cal_blob_t *cal) {
+static bool sensor_hub_cal_apply_locked(const sensor_cal_blob_t *cal) {
     if (!cal || cal->magic != SENSOR_CAL_MAGIC) return false;
 
     if (sgp30_is_detected() && (cal->sgp30_eco2_base || cal->sgp30_tvoc_base)) {
@@ -777,7 +792,7 @@ bool sensor_hub_cal_has_saved(sensor_cal_blob_t *out) {
     return true;
 }
 
-bool sensor_hub_cal_save(void) {
+static bool sensor_hub_cal_save_locked(void) {
     sensor_cal_blob_t cal;
     if (!sensor_hub_cal_get_current(&cal)) return false;
     if (at24c32_is_detected()) {
@@ -786,20 +801,20 @@ bool sensor_hub_cal_save(void) {
     return node_identity_set_sensor_cal(&cal) == NODE_ID_OK;
 }
 
-bool sensor_hub_cal_restore(void) {
+static bool sensor_hub_cal_restore_locked(void) {
     sensor_cal_blob_t cal;
     if (!sensor_hub_cal_has_saved(&cal)) return false;
     return sensor_hub_cal_apply(&cal);
 }
 
-bool sensor_hub_cal_clear(void) {
+static bool sensor_hub_cal_clear_locked(void) {
     if (at24c32_is_detected()) {
         (void)sensor_hub_cal_eeprom_clear();
     }
     return node_identity_clear_sensor_cal() == NODE_ID_OK;
 }
 
-bool sensor_hub_cal_clear_dev(const char *dev_name) {
+static bool sensor_hub_cal_clear_dev_locked(const char *dev_name) {
     if (!dev_name || strcmp(dev_name, "all") == 0) {
         return sensor_hub_cal_clear();
     }
@@ -853,7 +868,7 @@ bool sensor_hub_cal_eeprom_has_saved(sensor_cal_blob_t *out) {
     return true;
 }
 
-bool sensor_hub_cal_eeprom_save(void) {
+static bool sensor_hub_cal_eeprom_save_locked(void) {
     if (!at24c32_is_detected()) return false;
     sensor_cal_blob_t cal;
     if (!sensor_hub_cal_get_current(&cal)) return false;
@@ -861,13 +876,13 @@ bool sensor_hub_cal_eeprom_save(void) {
     return w == (int)sizeof(cal);
 }
 
-bool sensor_hub_cal_eeprom_restore(void) {
+static bool sensor_hub_cal_eeprom_restore_locked(void) {
     sensor_cal_blob_t cal;
     if (!sensor_hub_cal_eeprom_has_saved(&cal)) return false;
     return sensor_hub_cal_apply(&cal);
 }
 
-bool sensor_hub_cal_eeprom_clear(void) {
+static bool sensor_hub_cal_eeprom_clear_locked(void) {
     if (!at24c32_is_detected()) return false;
     uint8_t zeros[sizeof(sensor_cal_blob_t)];
     memset(zeros, 0, sizeof(zeros));
@@ -987,4 +1002,142 @@ void sensor_hub_register_sources(void) {
         (void)mqttd_add_source(s_topic_names[idx], hub_chan_source,
                                &s_source_ctx[idx], sensor_chan_decimals((sensor_chan_t)ch), rule);
     }
+}
+
+/* The public calls, each under s_hub_lock (re-entrant: init applies a saved
+ * calibration, which is itself a public call). */
+void sensor_hub_altitude_reload(void) {
+    ylock_acquire(&s_hub_lock);
+    sensor_hub_altitude_reload_locked();
+    ylock_release(&s_hub_lock);
+}
+
+bool sensor_hub_register(sensor_dev_t *dev) {
+    ylock_acquire(&s_hub_lock);
+    bool r = sensor_hub_register_locked(dev);
+    ylock_release(&s_hub_lock);
+    return r;
+}
+
+void sensor_hub_init(void) {
+    ylock_acquire(&s_hub_lock);
+    sensor_hub_init_locked();
+    ylock_release(&s_hub_lock);
+}
+
+uint32_t sensor_hub_device_count(void) {
+    ylock_acquire(&s_hub_lock);
+    uint32_t r = sensor_hub_device_count_locked();
+    ylock_release(&s_hub_lock);
+    return r;
+}
+
+sensor_dev_t *sensor_hub_device_get(uint32_t idx) {
+    ylock_acquire(&s_hub_lock);
+    sensor_dev_t * r = sensor_hub_device_get_locked(idx);
+    ylock_release(&s_hub_lock);
+    return r;
+}
+
+void sensor_hub_sample_all(void) {
+    ylock_acquire(&s_hub_lock);
+    sensor_hub_sample_all_locked();
+    ylock_release(&s_hub_lock);
+}
+
+bool sensor_hub_get_dev(const sensor_dev_t *dev, sensor_chan_t chan, int32_t *out_val, uint32_t *age_s) {
+    ylock_acquire(&s_hub_lock);
+    bool r = sensor_hub_get_dev_locked(dev, chan, out_val, age_s);
+    ylock_release(&s_hub_lock);
+    return r;
+}
+
+bool sensor_hub_get(sensor_chan_t chan, int32_t *out_val, uint32_t *age_s) {
+    ylock_acquire(&s_hub_lock);
+    bool r = sensor_hub_get_locked(chan, out_val, age_s);
+    ylock_release(&s_hub_lock);
+    return r;
+}
+
+bool sensor_hub_get_filtered(sensor_chan_t chan, int32_t *out_val) {
+    ylock_acquire(&s_hub_lock);
+    bool r = sensor_hub_get_filtered_locked(chan, out_val);
+    ylock_release(&s_hub_lock);
+    return r;
+}
+
+bool sensor_hub_get_origin(sensor_chan_t chan, sensor_origin_t *out) {
+    ylock_acquire(&s_hub_lock);
+    bool r = sensor_hub_get_origin_locked(chan, out);
+    ylock_release(&s_hub_lock);
+    return r;
+}
+
+void sensor_hub_print_status(void) {
+    ylock_acquire(&s_hub_lock);
+    sensor_hub_print_status_locked();
+    ylock_release(&s_hub_lock);
+}
+
+bool sensor_hub_cal_get_current(sensor_cal_blob_t *out) {
+    ylock_acquire(&s_hub_lock);
+    bool r = sensor_hub_cal_get_current_locked(out);
+    ylock_release(&s_hub_lock);
+    return r;
+}
+
+bool sensor_hub_cal_apply(const sensor_cal_blob_t *cal) {
+    ylock_acquire(&s_hub_lock);
+    bool r = sensor_hub_cal_apply_locked(cal);
+    ylock_release(&s_hub_lock);
+    return r;
+}
+
+bool sensor_hub_cal_save(void) {
+    ylock_acquire(&s_hub_lock);
+    bool r = sensor_hub_cal_save_locked();
+    ylock_release(&s_hub_lock);
+    return r;
+}
+
+bool sensor_hub_cal_restore(void) {
+    ylock_acquire(&s_hub_lock);
+    bool r = sensor_hub_cal_restore_locked();
+    ylock_release(&s_hub_lock);
+    return r;
+}
+
+bool sensor_hub_cal_clear(void) {
+    ylock_acquire(&s_hub_lock);
+    bool r = sensor_hub_cal_clear_locked();
+    ylock_release(&s_hub_lock);
+    return r;
+}
+
+bool sensor_hub_cal_clear_dev(const char *dev_name) {
+    ylock_acquire(&s_hub_lock);
+    bool r = sensor_hub_cal_clear_dev_locked(dev_name);
+    ylock_release(&s_hub_lock);
+    return r;
+}
+
+bool sensor_hub_cal_eeprom_save(void) {
+    ylock_acquire(&s_hub_lock);
+    bool r = sensor_hub_cal_eeprom_save_locked();
+    ylock_release(&s_hub_lock);
+    return r;
+}
+
+bool sensor_hub_cal_eeprom_restore(void) {
+    ylock_acquire(&s_hub_lock);
+    bool r = sensor_hub_cal_eeprom_restore_locked();
+    ylock_release(&s_hub_lock);
+    return r;
+}
+
+bool sensor_hub_cal_eeprom_clear(void) {
+    ylock_acquire(&s_hub_lock);
+    bool r = sensor_hub_cal_eeprom_clear_locked();
+    ylock_release(&s_hub_lock);
+    return r;
 }

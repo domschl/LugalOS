@@ -141,6 +141,8 @@ void sdio_c6_reset(uint32_t hold_ms) {
 #define CMD53_INCR     (1u << 26)
 #define R5_ERRORS      0xCB00u       /* COM_CRC, ILLEGAL, ERROR, FUNCTION_NUMBER, OUT_OF_RANGE */
 
+/* guarded by: the SD host's lock (sdhost_acquire(1)), which every *_locked()
+ * function runs under. */
 static sdio_info_t g_info;
 static sdhost_desc_t g_desc __attribute__((aligned(ESP32P4_L1_CACHE_LINE)));
 static uint8_t g_buf[SDIO_XFER_MAX] __attribute__((aligned(ESP32P4_L1_CACHE_LINE)));
@@ -250,7 +252,7 @@ static void cis_manfid(uint32_t cis, uint16_t *vendor, uint16_t *device) {
 
 /* --- Bring-up ----------------------------------------------------------------------- */
 
-static bool g_hosted_tried;   /* hosted_detect_locked() ran since the last probe */
+static bool g_hosted_tried;   /* guarded by: sdhost_acquire(1); hosted_detect_locked() ran since the last probe */
 
 static int probe_locked(uint32_t khz) {
     memset(&g_info, 0, sizeof g_info);
@@ -282,13 +284,14 @@ static int probe_locked(uint32_t khz) {
     g_info.ocr = r;
     uint64_t deadline = time_get_ms() + 1000u;
     for (;;) {
+        bool late = time_get_ms() >= deadline;   /* before the command: kernel/time.h */
         if (sdhost_cmd(5, r & 0x00FFFF00u ? (r & 0x00FFFF00u) : 0x00FF8000u, SDHOST_RESP_R3, 0, &r, &st) != 0) {
             g_info.stage = 2;
             g_info.last_status = st;
             return -1;
         }
         if (r & 0x80000000u) break;
-        if (time_get_ms() > deadline) { g_info.stage = 2; return -1; }
+        if (late) { g_info.stage = 2; return -1; }
     }
     g_info.ocr = r;
     g_info.functions = (r >> 28) & 7u;
@@ -393,13 +396,17 @@ static struct {
     uint32_t token, pkt_len;    /* the slave's, as last polled */
     uint8_t  shared[8];
     uint32_t polls, writes, reads, wbytes, rbytes, no_room, resyncs, failures, irqs;
-} g_llp;
+} g_llp;   /* guarded by: sdhost_acquire(1) */
 
 /* The card interrupt. The handler masks it and wakes the pump; the next poll
  * clears the slave's bit, then the controller's, reads the status and
  * unmasks -- in that order, so a change during the read raises it again. */
 #define SDHOST_INTR_SOURCE  23u            /* ETS_SDIO_HOST_INTR_SOURCE */
 #define CARD_INT            (1u << 17)     /* RINTSTS: card 1's SDIO interrupt */
+/* interrupt-shared: sdhost_isr() masks the card interrupt, then sets
+ * g_irq_seen; the pump clears it under sdhost_acquire() before it clears the
+ * slave's and the controller's bits and unmasks, so no set is lost. The pump
+ * sets g_irq_waker once, when it starts. */
 static volatile bool g_irq_seen;
 static volatile int  g_irq_waker = -1;
 static bool          g_irq_routed;
@@ -451,6 +458,11 @@ static int fifo_xfer_locked(bool write, uint8_t *buf, uint32_t len) {
     return 0;
 }
 
+/* guarded by: sdhost_acquire(1) for the esp-hosted state (the receive count,
+ * buffer, carry and error text, written by the detection under it and by
+ * `sdio ota`); `sdio ota` also holds g_hosted_ota_busy, and the LLP pump
+ * stands aside while it is set, so the few writes it makes between two holds
+ * of the lock meet no other writer. */
 static volatile bool g_hosted_ota_busy;
 static uint32_t g_hosted_rx_bytes;
 
@@ -659,6 +671,8 @@ void sdio_report(void) {
     }
 }
 
+/* accepted: a diagnostic command's state; two terminals running it at once mix their
+ * output. */
 static uint8_t g_scratch[SDIO_XFER_MAX];
 
 void sdio_bench(uint32_t kilobytes, uint32_t fn, uint32_t addr, uint32_t chunk) {
@@ -858,7 +872,8 @@ static bool hosted_parse_serial_resp(const uint8_t *pay, uint32_t len,
 /* Polls the slave for any pending packet(s) and dispatches them. If
  * `want_resp_id != 0`, sets `*got_resp = true` and `*out_resp` when the
  * matching RPC response arrives. Under `sdhost_acquire(1)`. */
-/* Why the last esp-hosted-mcu exchange failed (for `sdio ota`'s message). */
+/* Why the last esp-hosted-mcu exchange failed (for `sdio ota`'s message).
+ * guarded by: as g_hosted_ota_busy above, with the buffer and carry below. */
 static const char *g_hosted_err = "";
 /* Slave -> host bytes, separate from g_scratch (which holds the request being
  * built): streaming mode may hand over several packets at once, and a packet
@@ -1032,11 +1047,12 @@ static int hosted_rpc_call(hosted_ctx_t *ctx, uint32_t req_id,
     uint64_t deadline = time_get_ms() + timeout_ms;
     sdhost_acquire(1);
     for (;;) {
+        bool late = time_get_ms() >= deadline;   /* before the read: kernel/time.h */
         if (status_locked() != 0) { sdhost_release(); g_hosted_err = "status read failed"; return -1; }
         uint32_t free_bufs = (LLP_SDIO_TOKEN(g_llp.token) - ctx->tx_buf_count) & (LLP_SDIO_TOKEN_MOD - 1u);
         if (free_bufs >= bufs_needed) break;
         sdhost_release();
-        if (time_get_ms() >= deadline) { g_hosted_err = "no slave receive buffer"; return -1; }
+        if (late) { g_hosted_err = "no slave receive buffer"; return -1; }
         task_sleep_ms(2);
         sdhost_acquire(1);
     }
@@ -1051,18 +1067,21 @@ static int hosted_rpc_call(hosted_ctx_t *ctx, uint32_t req_id,
     bool got_resp = false;
     int32_t resp_code = -1;
     while (!got_resp) {
+        bool late = time_get_ms() >= deadline;   /* before the poll: kernel/time.h */
         if (hosted_poll_rx_locked(ctx, want_resp_id, &got_resp, &resp_code) != 0) {
             sdhost_release();
             return -1;
         }
         if (got_resp) break;
         sdhost_release();
-        if (time_get_ms() >= deadline) { g_hosted_err = "no response in time"; return -1; }
+        if (late) { g_hosted_err = "no response in time"; return -1; }
         task_sleep_ms(2);
         sdhost_acquire(1);
     }
     sdhost_release();
     if (resp_code != 0) {
+        /* accepted: a diagnostic command's state; two terminals running it at once mix
+         * their output. */
         static char why[40];
         ksnprintf(why, sizeof why, "slave answered esp_err 0x%x", (unsigned)resp_code);
         g_hosted_err = why;

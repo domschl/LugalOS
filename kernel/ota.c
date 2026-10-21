@@ -20,6 +20,7 @@ typedef enum { ST_IDLE, ST_RECEIVING, ST_RECEIVED, ST_COMMITTED, ST_ERROR } ota_
 
 static const char *const g_state_names[] = { "idle", "receiving", "received", "committed", "error" };
 
+/* guarded by: g_lock (below), which every entry point takes. */
 static struct {
     ota_state_t        st;
     int                slot;
@@ -29,13 +30,11 @@ static struct {
     bool               confirmed;       /* this boot's trial confirmed */
 } g;
 
+/* Zero is a free ylock: no first-use init, which two tasks could both run
+ * and so reset a lock the other already held. */
 static ylock_t g_lock;
-static bool g_lock_ready;
 
-static void lock(void) {
-    if (!g_lock_ready) { ylock_init(&g_lock); g_lock_ready = true; }
-    ylock_acquire(&g_lock);
-}
+static void lock(void) { ylock_acquire(&g_lock); }
 static void unlock(void) { ylock_release(&g_lock); }
 
 static int fail(const char *why) {
@@ -127,7 +126,7 @@ int ota_image_read(void *buf, uint32_t len, uint64_t off) {
 
 /* What is in the slot's flash, hashed, against the header. */
 static int verify(void) {
-    static uint8_t chunk[512];
+    static uint8_t chunk[512];   /* guarded by: g_lock (verify() runs under it) */
     sha256_ctx_t ctx;
     sha256_init(&ctx);
     uint32_t total = g.hdr.part_len[0] + g.hdr.part_len[1];

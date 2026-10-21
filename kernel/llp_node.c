@@ -30,7 +30,7 @@
  *   hardware. The P4 as the SDIO host, the C6-MINI beside it as the slave. */
 
 /* A serial channel's rate on a UART (llp_node_set_uart_baud()); 0: the board's default wire. */
-static uint32_t g_uart_baud;
+static uint32_t g_uart_baud;   /* single task: set at boot, before LLP starts */
 
 #if defined(CONFIG_BOARD_ESP32C6)
 #include "kernel/radio_c6.h"
@@ -174,6 +174,8 @@ static void chan_service(void) {}
 #endif
 /* A pump that waits (PUMP_WAITS) is woken by its channel's interrupt and by
  * tx_put(); g_tx_seq tells it whether a frame was queued during its round. */
+/* guarded by: g_tx_lock for g_tx_seq (tx_put()); the pump reads it. The pid is
+ * set once, at start. */
 static volatile int      g_pump_pid = -1;
 static volatile uint32_t g_tx_seq;
 
@@ -181,7 +183,13 @@ static volatile uint32_t g_tx_seq;
  * Fixed slots, one producer side and one consumer side each. The receive
  * queues are filled by the pump alone; the transmit queues have several
  * producers (the stack's task, the DHCP client, 9P server and clients), so
- * their put is under a spinlock, and the pump alone takes from them. */
+ * their put is under a spinlock, and the pump alone takes from them.
+ *
+ * guarded by: that protocol. Receive: the pump is the one producer, and one
+ * consumer per role (the stack's wlan_recv(); the 9P link's one user, the /c6
+ * mount on a host or the server on a radio). Transmit: g_tx_lock for the
+ * puts, the pump the one consumer. llp_node_start() allocates them before the
+ * pump exists (it refuses a second start). */
 
 typedef struct {
     uint8_t          *mem;
@@ -225,6 +233,7 @@ static void fq_flush(fq_t *q) {
 /* The slots come from pages when the node starts, sized for its role (a
  * radio has no Ethernet queues): nothing is spent on a board that never runs
  * LLP. The length arrays are small enough to keep. */
+/* guarded by: the frame-queue protocol above. */
 static uint16_t g_eth_rx_len[ETH_SLOTS ? ETH_SLOTS : 1], g_eth_tx_len[ETH_SLOTS ? ETH_SLOTS : 1];
 static uint16_t g_p9_rx_len[P9_SLOTS], g_p9_tx_len[P9_TX_SLOTS];
 static fq_t g_eth_rx = { NULL, g_eth_rx_len, NETIF_FRAME_MAX, 0, 0, 0, 0 };
@@ -259,6 +268,9 @@ static bool tx_put(fq_t *q, const uint8_t *d, uint32_t n) {
 
 /* --- State ----------------------------------------------------------------------- */
 
+/* single task: the pump. llp_node_start() sets them up before creating it;
+ * everything else reaches them through the callbacks the link calls from the
+ * pump (on_event, on_send). */
 static llp_node_role_t g_role;
 static llp_link_t      g_link;
 static volatile bool   g_ev_up, g_ev_down;
@@ -267,7 +279,8 @@ static volatile bool   g_ev_up, g_ev_down;
 /* Packets out: frames are appended to the one filling, and it goes when the
  * next frame would not fit, or at the end of the pump's round. Packets in: one
  * at a time, its frames handed on as far as the queues take them; the rest
- * waits, and so does the channel (its flow control is the slave's buffers). */
+ * waits, and so does the channel (its flow control is the slave's buffers).
+ * single task: the pump (llp_node_start() allocates them first). */
 static uint8_t        *g_txp[2];
 static unsigned        g_txp_cur;
 static uint32_t        g_txp_len;
@@ -285,8 +298,8 @@ static uint32_t        g_chan_errors;
 /* Radio role: the interface the link stands in for (NULL until the radio has
  * one), and a frame read from it that is waiting to go. In loop mode the
  * frames the host sends come back to it instead, through the same slot. */
-static netif_t        *g_bridged;
-static uint8_t        *g_pending;              /* one frame */
+static netif_t        *g_bridged;              /* guarded by: g_own_lock (below) */
+static uint8_t        *g_pending;              /* single task: the pump; one frame */
 static uint32_t        g_pending_len;
 static int             g_sent_link = -1;      /* last STATE link value sent */
 static int             g_sent_rssi;           /* ... its rssi, and when */
@@ -300,6 +313,8 @@ static uint32_t        g_looped;
  * here instead of going to the stack. */
 static bool            g_wlan_registered;
 #define BENCH_ETHERTYPE 0x88B5u               /* IEEE 802 local experimental */
+/* accepted: counters the pump increments and `llp bench|soak` resets before a
+ * run; a lost increment is a miscount by one. */
 static volatile uint32_t g_bench_rx, g_bench_bad;
 
 static uint32_t now_ms(void) { return (uint32_t)time_get_ms(); }
@@ -407,6 +422,7 @@ static bool wlan_link_up(netif_t *nif) {
     return g_link.state == LLP_UP && g_link.peer_link;
 }
 
+/* single task: the pump. */
 static netif_t g_wlan = {
     .name = "wlan0", .poll = wlan_poll, .send_frame = wlan_send,
     .recv_frame = wlan_recv, .link_up = wlan_link_up,
@@ -418,6 +434,7 @@ static netif_t g_wlan = {
 /* Frames received from a peer session that has since ended, up to this mark,
  * are dropped unread. Set by the pump (the queue's producer), acted on here
  * (its consumer): only the consumer moves the tail. */
+/* single task: the pump (see above). */
 static volatile uint32_t g_p9_rx_stale;
 
 static void p9_drop_stale(void) {
@@ -456,6 +473,8 @@ static int p9_send(p9_link_t *link, const uint8_t *buf, uint32_t len) {
 
 static bool p9_up(p9_link_t *link) { (void)link; return g_link.state == LLP_UP; }
 
+/* single task: the pump moves it (generation, session); c6attach only reads
+ * it and uses its ops. */
 static p9_link_t g_p9 = {
     .name = "llp", .poll = p9_poll, .send_frame = p9_send, .recv_frame = p9_recv,
     .auth_required = false, .up = p9_up,
@@ -578,7 +597,7 @@ static void drain(fq_t *q, uint8_t type, uint32_t now) {
  * by whichever comes second: the radio registering its interface
  * (llp_node_offer_netif()), or the link coming up (radio_adopt()). */
 static spinlock_t g_own_lock = SPINLOCK_INIT;
-static netif_t   *g_stack_nif;     /* the interface the stack was given, if any */
+static netif_t   *g_stack_nif;     /* guarded by: g_own_lock (llp_node_start() before the pump) */
 
 /* A host is there: the interface is bridged from now on. A radio with no host
  * stays a node of its own: it is a host's HELLO that makes it a network card. */
@@ -636,6 +655,10 @@ static void radio_forward(uint32_t now) {
  * here, and the radio holds them in RAM only: its image carries a binary blob,
  * and a key it never stores is one it cannot leak. Its own task: the mount
  * talks 9P over this link, which only the pump moves. */
+/* guarded by: a hand-off. The pump sets g_c6_attaching and starts c6attach;
+ * until the task clears it, only the task writes g_c6_mounted and
+ * g_c6_fail_said. A new peer meanwhile: the pump clears g_c6_mounted, and
+ * the task's generation check keeps it clear. */
 static volatile bool g_c6_mounted, g_c6_attaching;
 static uint32_t g_c6_attach_at;                /* when the last attempt started */
 static bool g_c6_fail_said;                    /* a failure is said once per radio */
@@ -958,6 +981,8 @@ void llp_node_bench(uint32_t count, uint32_t size) {
     }
     if (size < 64u) size = 64u;
     if (size > NETIF_FRAME_MAX) size = NETIF_FRAME_MAX;
+    /* accepted: a diagnostic command's state; two terminals running it at once mix
+     * their output. */
     static uint8_t frame[NETIF_FRAME_MAX];
     memset(frame, 0xFF, 6);
     memcpy(frame + 6, g_wlan.mac, 6);
@@ -989,6 +1014,9 @@ void llp_node_bench(uint32_t count, uint32_t size) {
  * (to reset the radio or the channel under it). It sends only while the link
  * is up with the peer it started with: a radio that restarted has left loop
  * mode, and its bridge would put the frames -- broadcasts -- on the air. */
+/* accepted: `llp soak` tests and sets the flag from a shell, the soak task
+ * clears it when done; two shells starting one at the same instant could both
+ * start. */
 static uint32_t g_soak_s, g_soak_size;
 static volatile bool g_soak_running;
 

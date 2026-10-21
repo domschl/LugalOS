@@ -3,6 +3,7 @@
 #include "drivers/i2c_reg.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
+#include "kernel/lock.h"
 #include "kernel/sched.h"
 #include "kernel/time.h"
 #include "net/mqttd.h"
@@ -50,6 +51,9 @@
 #define OSRS_X1 0x01u
 #define CTRL_MEAS_FORCED ((OSRS_X1 << 5) | (OSRS_X1 << 2) | 0x01u)
 
+/* guarded by: g_read_lock for the measurement and its counters; accepted:
+ * the cache (last, last_ms, have_last) is ordered, not locked (see below), and
+ * bme280_init() runs from `sensor init` (see drivers/sensor_hub.c). */
 static struct {
     bme280_part_t  part;
     uint8_t        addr;
@@ -79,7 +83,7 @@ static struct {
     uint64_t         last_ms;
     bool             have_last;
     uint32_t         read_count;
-} g;
+} g;   /* guarded by: g_read_lock; see the comment above the struct */
 
 static bool rd(uint8_t reg, uint8_t *dst, uint32_t len) {
     return i2c_reg_read_bytes_bus(g.bus, g.addr, reg, dst, len);
@@ -268,8 +272,23 @@ static bool fail(const char *where) {
     return false;
 }
 
+static bool read_locked(bme280_reading_t *out);
+
+/* One measurement at a time: the sampler, `sensor` and an mqttd source may all
+ * ask, and a forced-mode trigger from one between another's trigger and data
+ * read would hand both a half-finished conversion. The cache below is not
+ * under it (see its comment). */
+static ylock_t g_read_lock;
+
 bool bme280_read(bme280_reading_t *out) {
     if (!out || g.part == BME280_PART_NONE) return false;
+    ylock_acquire(&g_read_lock);
+    bool ok = read_locked(out);
+    ylock_release(&g_read_lock);
+    return ok;
+}
+
+static bool read_locked(bme280_reading_t *out) {
 
     /* Forced mode is one-shot: the part returns to sleep after each
      * measurement, so every read starts by asking for one. */
@@ -441,6 +460,8 @@ uint32_t bme280_selftest(bool report) {
  * refreshed only when it is older than a second, so a publish cycle wakes the
  * part once. Three forced-mode conversions where one would do is both three
  * times the self-heating and three times the chance of meeting a bus error. */
+/* accepted: a cached reading, value then time then flag; a reader can pair one sample's
+ * value with another's time. */
 static bme280_reading_t g_cached;
 static uint64_t         g_cached_ms;
 static bool             g_cached_ok;
@@ -480,6 +501,8 @@ static bool src_humidity(int32_t *out, void *ctx) {
 /* The installation altitude, read once when the sources are registered
  * (identity writes reboot the board, so it does not change under a running
  * one). Only meaningful while g_have_alt. */
+/* accepted: set when the sources are registered and on `identity` reload, one
+ * word each; a reader in between pairs an old altitude with the new flag. */
 static int32_t g_alt_m;
 static bool    g_have_alt;
 
@@ -513,6 +536,7 @@ static bool src_pressure_msl(int32_t *out, void *ctx) {
  * All three filter at 1/8, which at a 5 s sample period settles a step change
  * in well under a minute while removing most of the per-reading jitter.
  */
+/* single task: the boot, before any reader runs; constant after. */
 static bool g_sources_registered, g_msl_registered;
 
 void bme280_register_sources(void) {
@@ -580,6 +604,7 @@ bool bme280_altitude(int32_t *alt_m) {
  * sense: it owns no hardware and serves no endpoint -- it is a *client* of the
  * "i2c" task, like any other caller of bme280_read(). */
 
+/* single task: the boot, before any reader runs; constant after. */
 static uint32_t g_sample_period_s = BME280_DEFAULT_SAMPLE_S;
 
 static void bme280_sampler_body(void *arg) {
@@ -679,7 +704,18 @@ void bme280_print_status(void) {
 
 /* --- Sensor Device Contract (Category D) --- */
 
+static bool bme280_dev_init_locked(struct sensor_dev *dev);
+
+/* Under g_read_lock: `sensor init` probes again while an mqttd source or
+ * `sensor` may be measuring. */
 static bool bme280_dev_init(struct sensor_dev *dev) {
+    ylock_acquire(&g_read_lock);
+    bool ok = bme280_dev_init_locked(dev);
+    ylock_release(&g_read_lock);
+    return ok;
+}
+
+static bool bme280_dev_init_locked(struct sensor_dev *dev) {
     bme280_part_t part = bme280_init();
     if (part == BME280_PART_NONE) return false;
     dev->bus = g.bus;

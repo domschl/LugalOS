@@ -90,6 +90,8 @@ int gpio_read_pin(uint32_t pin) {
 
 #else
 /* QEMU / Mock fallback */
+/* accepted: the `gpio` command's shadow of what it set; two terminals at once can leave
+ * it out of date. */
 static uint8_t s_gpio_dirs[64];
 static uint8_t s_gpio_vals[64];
 

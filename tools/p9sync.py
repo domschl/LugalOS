@@ -196,6 +196,12 @@ def main() -> int:
         help="preview files to sync without making changes",
     )
     parser.add_argument(
+        "--tcp", metavar="ADDR",
+        help="9P over TCP to ADDR (port 564), e.g. a Tab5 whose USB console cannot carry 9P; "
+             "needs --key, set on the board first with `p9key HEX`",
+    )
+    parser.add_argument("--key", metavar="HEX", help="the board's p9key, for --tcp")
+    parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="print detailed information on skipped items",
@@ -203,25 +209,30 @@ def main() -> int:
 
     args = parser.parse_args()
 
-    if args.p4:
+    if args.tcp and not args.key:
+        sys.exit("Error: --tcp needs --key (set it on the board with `p9key HEX`).")
+    if args.p4 and not args.tcp:
         sys.path.insert(0, str(REPO_ROOT / "tools"))
         import p4run
         args.serial, _ = p4run.board_ports(args.p4)
-    if not args.serial:
+    if not args.serial and not args.tcp:
         sys.exit("Error: no 9P serial port specified or auto-detected.")
     if not args.src or not args.src.is_dir():
         sys.exit(f"Error: source directory '{args.src}' does not exist.")
 
-    if args.p4:
+    if args.p4 and not args.tcp:
         p4_shell(args.serial, "p9share")
-    print(f"Connecting to 9P server on {args.serial}...")
-    if args.p4:
+    print(f"Connecting to 9P server on {args.tcp or args.serial}...")
+    key = bytes.fromhex(args.key) if args.tcp else None
+    if args.tcp:
+        client = p9lib.connect_tcp(args.tcp, 564, timeout=30.0)
+    elif args.p4:
         client = p9lib.connect_open_serial(p4run.open_console(args.serial), framing="slip",
                                            timeout=20.0, closer=p4run.close_console)
     else:
         client = p9lib.connect_serial(args.serial, baudrate=args.baud)
     try:
-        with p9lib.Session(client, aname="/") as sess:
+        with p9lib.Session(client, aname="/", key=key) as sess:
             print(f"Syncing local '{args.src}' -> remote '{args.dst}' {'[DRY RUN]' if args.dry_run else ''}...")
             dirs, synced, skipped, total_bytes = sync_tree(
                 sess,
@@ -237,10 +248,10 @@ def main() -> int:
             print(f"  Files unchanged:     {skipped}")
     finally:
         client.close()
-        if client.console_text:
+        if getattr(client, "console_text", None):
             print("Console output during the sync:")
             print(client.console_text.decode("utf-8", "replace").rstrip())
-        if args.p4:
+        if args.p4 and not args.tcp:
             time.sleep(0.3)
             p4_shell(args.serial, "p9share off")
 

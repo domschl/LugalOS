@@ -77,6 +77,10 @@ typedef struct {
     uint32_t      aa_pages;
 } reader_state_t;
 
+/* guarded by: console_lock for opening and closing an instance (the surface
+ * and the active flag), which the compositor reads under it. accepted: the
+ * scroll position and the drawing into a live surface happen from the input
+ * path without it; the compositor can show a frame mid-draw. */
 static reader_state_t s_readers[READER_MAX_INSTANCES];
 static uint8_t        s_active_reader_rid = 0;
 static uint32_t       s_reader_seq[READER_MAX_INSTANCES];
@@ -158,6 +162,9 @@ static bool reader_open_internal(uint8_t rid, const char *resource, bool push_hi
         }
     }
 
+    /* From here the instance changes under what the compositor reads it
+     * with; the fetch above is not, it may take seconds. */
+    console_lock();
     strncpy(r->path, resolved, sizeof(r->path) - 1);
     r->path[sizeof(r->path) - 1] = '\0';
 
@@ -187,7 +194,7 @@ static bool reader_open_internal(uint8_t rid, const char *resource, bool push_hi
             r->aa_h = aa_h;
         }
     }
-
+    console_unlock();
     return true;
 }
 
@@ -209,16 +216,23 @@ bool reader_open(const char *resource) {
     return reader_open_instance(s_active_reader_rid, resource) >= 0;
 }
 
+/* Under console_lock and the panel's frame lock: the conversion composites
+ * from aa_buf under the frame lock, and the page must not be freed in the
+ * middle of that. */
 void reader_close_instance(uint8_t rid) {
     if (rid < READER_MAX_INSTANCES) {
+        console_lock();
         s_readers[rid].active = false;
         s_readers[rid].path[0] = '\0';
         s_readers[rid].title[0] = '\0';
         if (s_readers[rid].aa_buf) {
+            console_frame_lock();
             palloc_free(s_readers[rid].aa_buf, s_readers[rid].aa_pages);
             s_readers[rid].aa_buf = NULL;
             s_readers[rid].aa_pages = 0;
+            console_frame_unlock();
         }
+        console_unlock();
     }
 }
 
@@ -469,6 +483,8 @@ void reader_feed_key(int c) {
     uint8_t rid = s_active_reader_rid;
     if (rid >= READER_MAX_INSTANCES || !s_readers[rid].active) return;
     reader_state_t *r = &s_readers[rid];
+    /* guarded by: g_input_lock (kernel/console.c): the console pump is the
+     * only caller. */
     static int esc_state = 0;
     static int esc_arg = 0;
     static int esc_mod = 0;

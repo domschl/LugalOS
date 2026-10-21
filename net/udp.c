@@ -24,9 +24,9 @@ typedef struct {
     void *ctx;
 } udp_binding_t;
 
-static udp_binding_t g_bindings[UDP_MAX_BINDINGS];
+static udp_binding_t g_bindings[UDP_MAX_BINDINGS];   /* guarded by: net_lock() */
 
-int udp_bind(uint16_t port, udp_recv_fn cb, void *ctx) {
+static int udp_bind_locked(uint16_t port, udp_recv_fn cb, void *ctx) {
     if (port == 0 || !cb) return -1;
     for (uint32_t i = 0; i < UDP_MAX_BINDINGS; i++) {
         if (g_bindings[i].in_use && g_bindings[i].port == port) return -1;   /* taken */
@@ -43,7 +43,7 @@ int udp_bind(uint16_t port, udp_recv_fn cb, void *ctx) {
     return -1;
 }
 
-int udp_unbind(uint16_t port) {
+static int udp_unbind_locked(uint16_t port) {
     for (uint32_t i = 0; i < UDP_MAX_BINDINGS; i++) {
         if (g_bindings[i].in_use && g_bindings[i].port == port) {
             g_bindings[i].in_use = false;
@@ -89,7 +89,7 @@ static uint16_t udp_checksum(const uint8_t src[IPV4_LEN], const uint8_t dst[IPV4
     return ck ? ck : 0xffffu;
 }
 
-int udp_send(const uint8_t dst_ip[IPV4_LEN], uint16_t dst_port, uint16_t src_port,
+static int udp_send_locked(const uint8_t dst_ip[IPV4_LEN], uint16_t dst_port, uint16_t src_port,
              const uint8_t *data, uint32_t len) {
     net_state_t *st = net_mutable_state();
     if (!st->configured || !dst_ip || (len && !data)) return -1;
@@ -153,4 +153,28 @@ void udp_input(const uint8_t src[IPV4_LEN], const uint8_t *ip_hdr,
     bool bcast = true;
     for (uint32_t i = 0; i < IPV4_LEN; i++) if (ip_hdr[16 + i] != 0xff) { bcast = false; break; }
     if (!bcast) icmp_port_unreachable(src, ip_hdr, IPV4_HDR_LEN + total);
+}
+
+/* Under the stack's lock (net_lock()): a send builds its frame in the one
+ * transmit buffer, and the bindings are what the stack task dispatches on. */
+int udp_bind(uint16_t port, udp_recv_fn cb, void *ctx) {
+    net_lock();
+    int r = udp_bind_locked(port, cb, ctx);
+    net_unlock();
+    return r;
+}
+
+int udp_unbind(uint16_t port) {
+    net_lock();
+    int r = udp_unbind_locked(port);
+    net_unlock();
+    return r;
+}
+
+int udp_send(const uint8_t dst_ip[IPV4_LEN], uint16_t dst_port, uint16_t src_port,
+             const uint8_t *data, uint32_t len) {
+    net_lock();
+    int r = udp_send_locked(dst_ip, dst_port, src_port, data, len);
+    net_unlock();
+    return r;
 }

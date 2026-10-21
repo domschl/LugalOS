@@ -22,6 +22,7 @@ static const char PIECE_LETTER[6] = { 'P', 'N', 'B', 'R', 'Q', 'K' };
 /* Does `side` have any legal reply in `pos`? Used only for the '#' vs '+'
  * distinction, so it stops at the first one rather than counting. */
 static bool has_any_legal_move(Position *pos) {
+    /* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
     static MoveList list;   /* not on the stack: this file runs on the same
                              * deep call chain as everything else in chess */
     generate_moves(pos, &list);
@@ -72,6 +73,7 @@ void format_move_san(Position *pos, Move m, char out[SAN_MAX]) {
          * direction produces SAN that other programs read as ambiguous. */
         bool shares_file = false, shares_rank = false, ambiguous = false;
         {
+            /* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
             static MoveList list;
             generate_moves(pos, &list);
             for (int i = 0; i < list.count; i++) {
@@ -134,6 +136,7 @@ void format_move_san(Position *pos, Move m, char out[SAN_MAX]) {
 Move parse_move_san(Position *pos, const char *san) {
     if (!san || !*san) return 0;
 
+    /* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
     static MoveList list;
     generate_moves(pos, &list);
     for (int i = 0; i < list.count; i++) {
@@ -210,6 +213,7 @@ int pgn_selftest(void) {
     for (unsigned c = 0; c < sizeof(SAN_CASES) / sizeof(SAN_CASES[0]); c++) {
         parse_fen(pos, SAN_CASES[c].fen);
 
+        /* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
         static MoveList list;
         generate_moves(pos, &list);
 
@@ -260,6 +264,7 @@ int pgn_selftest(void) {
             /* A handful of real moves, chosen by the engine's own generator so
              * this works from either starting position without hardcoding. */
             for (int ply = 0; ply < 8; ply++) {
+                /* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
                 static MoveList l;
                 generate_moves(pos, &l);
                 bool played = false;

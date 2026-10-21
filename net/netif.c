@@ -3,6 +3,8 @@
 #include "kernel/identity.h"
 #include <string.h>
 
+/* single task: drivers register at boot; at run time one registrant per board
+ * (LLP's pump on a host, the radio's start on a C6). Readers walk 0..count. */
 static netif_t *g_netifs[NETIF_MAX];
 static uint32_t g_num_netifs;
 

@@ -17,6 +17,8 @@ extern const size_t bmi270_config_file_len;
  * one of which is the register; the chip wants whole 16-bit words. */
 #define CFG_CHUNK 28u
 
+/* guarded by: g_lock (below) for the configuration state and the last
+ * reading; bmi270_init() runs from `sensor init` (see drivers/sensor_hub.c). */
 static struct {
     bool             detected;
     bool             configured;    /* microcode loaded, sensors set up */
@@ -29,9 +31,13 @@ static struct {
 bool bmi270_is_detected(void) { return g.detected; }
 bool bmi270_is_configured(void) { return g.configured; }
 
+static ylock_t g_lock;
+
 void bmi270_reload(void) {
+    ylock_acquire(&g_lock);
     g.configured = false;
     g.load_tries = 0;
+    ylock_release(&g_lock);
 }
 
 /* +-4 g: 8192 LSB per g */
@@ -90,7 +96,7 @@ static const char *bmi270_load_config(void) {
         time_delay_us(10000);
         if (rd8(BMI270_REG_INT_STATUS, &st) && (st & 0x0Fu) == 0x01u) return NULL;
     }
-    static char why[32];
+    static char why[32];   /* guarded by: g_lock, as its only caller's printk */
     ksnprintf(why, sizeof why, "INTERNAL_STATUS 0x%02x", (unsigned)st);
     return why;
 }
@@ -147,8 +153,7 @@ static bool bmi270_init(void) {
 }
 
 /* The sampler, the orientation task and the shell all read; the first read
- * also uploads the microcode, which must happen once. */
-static ylock_t g_lock;
+ * also uploads the microcode, which must happen once: under g_lock (above). */
 
 bool bmi270_read(bmi270_reading_t *out) {
     if (!g.detected) return false;
@@ -156,16 +161,19 @@ bool bmi270_read(bmi270_reading_t *out) {
     ylock_acquire(&g_lock);
     bool ok = bmi270_configure() &&
               i2c_reg_read_bytes_bus(g.bus, g.addr, BMI270_REG_DATA, d, sizeof d);
+    bmi270_reading_t r = { 0 };
+    if (ok) {
+        int16_t v[6];
+        for (int i = 0; i < 6; i++) v[i] = (int16_t)((uint16_t)d[2 * i] | ((uint16_t)d[2 * i + 1] << 8));
+        r = (bmi270_reading_t){
+            bmi270_acc_mg(v[0]), bmi270_acc_mg(v[1]), bmi270_acc_mg(v[2]),
+            bmi270_gyr_ddps(v[3]), bmi270_gyr_ddps(v[4]), bmi270_gyr_ddps(v[5]),
+        };
+        g.last = r;
+        g.have_last = true;
+    }
     ylock_release(&g_lock);
     if (!ok) return false;
-    int16_t v[6];
-    for (int i = 0; i < 6; i++) v[i] = (int16_t)((uint16_t)d[2 * i] | ((uint16_t)d[2 * i + 1] << 8));
-    bmi270_reading_t r = {
-        bmi270_acc_mg(v[0]), bmi270_acc_mg(v[1]), bmi270_acc_mg(v[2]),
-        bmi270_gyr_ddps(v[3]), bmi270_gyr_ddps(v[4]), bmi270_gyr_ddps(v[5]),
-    };
-    g.last = r;
-    g.have_last = true;
     if (out) *out = r;
     return true;
 }
@@ -222,11 +230,17 @@ uint32_t bmi270_selftest(bool report) {
 
 /* --- Sensor Device-Class Contract --- */
 
+/* Under g_lock: `sensor init` probes again while the orientation task and
+ * the shell may be reading. */
 static bool bmi270_dev_init(struct sensor_dev *dev) {
-    if (!bmi270_init()) return false;
-    dev->bus = g.bus;
-    dev->addr = g.addr;
-    return true;
+    ylock_acquire(&g_lock);
+    bool ok = bmi270_init();
+    if (ok) {
+        dev->bus = g.bus;
+        dev->addr = g.addr;
+    }
+    ylock_release(&g_lock);
+    return ok;
 }
 
 static bool bmi270_dev_sample(struct sensor_dev *dev) {

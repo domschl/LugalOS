@@ -1,5 +1,7 @@
 #include "kernel/devirq.h"
+#include "kernel/irq.h"
 #include "kernel/printk.h"
+#include "kernel/hart.h"
 #include <stdbool.h>
 
 /* See kernel/include/kernel/devirq.h for the rationale. */
@@ -13,8 +15,22 @@ typedef struct {
     bool              in_use;
 } devirq_entry_t;
 
+/* single task: filled at boot (devirq_attach), before the lines are enabled. */
 static devirq_entry_t g_table[DEVIRQ_MAX];
 static uint32_t       g_count;
+
+/* guarded by: interrupts masked on the owning hart (a handler runs with them
+ * masked); each hart counts only its own nesting. */
+static uint8_t        g_depth[MAX_HARTS];
+
+/* Masked, as sched.c's cur(): a task moved to the other hart between
+ * hart_id() and the read would see that hart's handler depth. */
+bool devirq_in_handler(void) {
+    uintptr_t f = irq_save();
+    bool in = g_depth[hart_id()] != 0;
+    irq_restore(f);
+    return in;
+}
 
 int devirq_attach(uint32_t irq_num, devirq_handler_fn handler, void *ctx) {
     if (!handler) return -1;
@@ -40,7 +56,10 @@ int devirq_attach(uint32_t irq_num, devirq_handler_fn handler, void *ctx) {
 int devirq_dispatch(uint32_t irq_num) {
     for (uint32_t i = 0; i < g_count; i++) {
         if (g_table[i].in_use && g_table[i].irq_num == irq_num) {
+            unsigned h = hart_id();
+            g_depth[h]++;
             g_table[i].handler(g_table[i].ctx);
+            g_depth[h]--;
             return 0;
         }
     }

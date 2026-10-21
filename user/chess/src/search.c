@@ -61,6 +61,7 @@
 
 // Global search variables
 int max_search_depth = 64;
+/* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
 long max_search_time_ms = -1;
 long start_search_time_ms = 0;
 /* volatile because it is read on a hart other than the one that writes it.
@@ -77,6 +78,8 @@ long start_search_time_ms = 0;
  * accident of inlining, not a guarantee: if anything ever lets GCC prove no
  * call clobbers it, the load is hoisted, the helper never observes the stop,
  * and search_helper_join() below starts having to use its bound. */
+/* guarded by: the chess session claim (chess_ui.c's chess_claim()); within
+ * a session the primary sets the stop and the helpers only read it. */
 volatile bool stop_search = false;
 long nodes_searched = 0;
 
@@ -115,6 +118,7 @@ typedef struct {
 } search_state_t;
 
 static search_state_t  g_search0;                 /* hart 0: as before X8b */
+/* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
 static search_state_t *g_search[MAX_HARTS] = { &g_search0 };
 
 /* This hart's state. See the note above for why hart_id() is a safe index. */
@@ -415,9 +419,11 @@ static void move_str_copy(char *dest, const char *src) {
 }
 
 static Move get_book_move(Position *pos) {
+    /* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
     static char history_str[512];
     int history_len = build_history_string(pos, history_str, sizeof(history_str));
 
+    /* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
     static char next_move_strs[64][8];
     int unique_count = 0;
 
@@ -873,6 +879,8 @@ int g_search_cores = 1;
  * state above is selected by hart_id(), so a helper that migrated mid-search
  * would swap its heuristics and its per-ply pools underneath itself.
  */
+/* guarded by: the chess session claim; within it, the primary's handshake
+ * with its helper (the primary arms, the helper reports done and its count). */
 static volatile int  g_helper_active;
 static volatile int  g_helper_done;
 static volatile long g_helper_nodes;
@@ -897,6 +905,7 @@ static int           g_helper_pid = -1;
  * and which would have been far harder to find than a leak that announces
  * itself. A bounded leak of ~100 KB and a single-core engine is a bad day; a
  * cross-core use-after-free is a bad week. */
+/* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
 static volatile int  g_helper_unjoined;
 
 long search_helper_nodes(void) { return g_helper_nodes; }
@@ -1053,6 +1062,7 @@ void search_position(Position *pos, int depth, int time_limit_ms) {
      * after stop_search/max_search_time_ms are set, because it reads both. */
     bool helper = (g_search_cores >= 2) && search_helper_start(pos, depth);
 
+    /* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
     static MoveList root_list;
     generate_moves(pos, &root_list);
     Move fallback_move = 0;

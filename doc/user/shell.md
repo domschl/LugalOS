@@ -42,7 +42,8 @@ LugalOS supports multiple mounted FAT32 volumes:
 | `cp <src> <dst>` | Copy a file | `cp /flash0/init.lisp /sd0/init.lisp` |
 | `rm <file>` | Delete a file | `rm /sd0/test.txt` |
 | `df [-r]` | Show filesystem disk usage (`-r` recounts FAT) | `df` |
-| `format <vol>` | Format a volume as FAT32 (destroys data) | `format /ram0` |
+| `fsck [/sd0\|/ram0]` | Read-only FAT32 check: every directory and cluster chain walked; reports cross-linked clusters, chains running into free entries, files whose size does not match their chain, and lost clusters (in use, reached from nowhere). Changes nothing. | `fsck` |
+| `format <vol> [label]` / `mkfs.vfat <vol> [label]` | Format a volume as FAT32 (destroys data). `/sd0` gets a card's layout, as `mkfs.vfat` or the SD Association's formatter make it: an MBR with one FAT32 partition from 4 MB, 32 KB clusters, the data area on a 4 MB boundary, FSInfo and backup boot sector; `label` up to 11 characters (default `LUGALOS`). About 20 s for 32 GB. `/ram0` gets a bare volume. | `mkfs.vfat /sd0 MYCARD` |
 
 ---
 
@@ -63,6 +64,7 @@ LugalOS supports multiple mounted FAT32 volumes:
 On a board with a battery (the M5Stack Tab5):
 * `power`: Pack voltage, current (positive while charging), power, the estimated charge level, and the time to empty or full.
 * `power log FILE [s]`: Writes one CSV line a second (`t_s,mv,ma,mw,soc_pm`) to FILE, for `s` seconds or until `power log stop`. Used to measure a full discharge for calibrating the charge estimate.
+* `power log` / `power log auto on|off`: The automatic log, on from boot on boards with a battery while LugalOS is in development (`CONFIG_POWER_LOG_AUTO`). One CSV file a day in `/sd0/log/` (`PYYMMDD.CSV`, local date; `PNODATE.CSV` until the clock is set) with `utc_s,uptime_s,mv,ma,mw,soc_pm,chg_stat,why`: a line a minute (`t`), and one at once when the state or the charger's status changes (`s`), the current moves by more than 100 mA (`i`), the voltage by more than 50 mV (`v`) or the charge by 1 % (`q`); `b` marks a boot. `power log` alone shows both logs.
 * `power charge [off|slow|fast]`: Shows or sets the charger. `off` stops charging, `slow` and `fast` are the Tab5 charger's two modes (M5Stack's 500 mA and 1 A). The setting is stored and applied at every boot. The default is `fast`, which is how the board starts.
 * `power limit [N|off]`: Stops charging at N % and resumes below N−5 %, for a tablet that stays on its charger. `off` (or 100) charges fully.
 * `power off`: Switches the board off through its power supervisor. LugalOS does the same by itself when the battery stays below the cut-off voltage (6.2 V on the Tab5) for 30 s while discharging, after stopping a running `power log`. Below 6.6 V the menu bar shows `!` after the charge level.
@@ -130,6 +132,30 @@ LugalOS features a ring buffer kernel logging subsystem ([logging](doc/dev/kerne
 * `klog`: Displays kernel log statistics, total emitted bytes, and attached output sinks.
 * `klog detach console`: Detaches console sink permanently.
 * `klog attach console`: Re-enables unconditional kernel log echoing to the console.
+* `lockcheck [pairs]`: The lock checker since boot: faults (blocking under a spinlock, console writes from a driver's serve callback, wait cycles), the lock order it has learned (`pairs` lists it) and any inversions, and how long `console_lock` was held: a histogram, the longest hold and who held it, and the last holds of 100 ms or more.
+* `chanqtest`: Selftest of the channel layer's waiting callers: turns served in arrival order, a back-to-back client handing over to a waiter, deadlines, and refusals. Prints `CHANQ_SELFTEST_OK` or `CHANQ_SELFTEST_FAIL`.
+* `stress [s] [norot] [only=PATHS]` / `stress bg [s] ...`: Load test of the paths tasks share (default 60 s): worker tasks pick at random among formatting, files on `/ram0` and `/sd0`, the local 9P server, channel calls into a busy endpoint, log bursts, shell commands and (on the ESP32-P4) cache maintenance on scratch buffers of their own, and check every result; on the Tab5 the panel is turned every 7 s as well (`norot` leaves it). `only=` limits the workers to some paths, comma-separated: `fmt`, `ram`, `sd`, `p9`, `chan`, `log`, `shell`, `cache` (e.g. `stress 600 only=sd,p9`). Reports iterations and errors per path, and the lock faults, lock-order inversions, I2C failures, log gaps and full stacks seen meanwhile; prints `STRESS_OK` or `STRESS_FAIL`. `bg` runs it in the background and prints the report in the terminal that started it. One run at a time. On the P4 boards, `tools/stress.py --board BOARD --minutes N` adds terminals, typing, 9P over TCP and fast sensor sampling around it (`--norot`, `--only`, and `--bare` for no terminals and no typing).
+
+### Storage, Time & Network
+* `sdinfo`: The SD card and its controller, re-read on every run (an empty slot is probed again, so a card inserted since boot is found): card identity, bus width and clock, host status, counters for data-path anomalies, and block 0 with its boot signature (separates a blank card from a broken data path).
+* `sdbench [kb]`: Sequential SD read throughput; `sdbench w` measures writes. `fsbench <dir>` is the filesystem write/read/verify benchmark; `edbench [kb] [dir]` times the editor's buffer operations.
+* `tz [POSIX-TZ]`: Shows the time zone and whether summer time is in force; with a rule (`tz CET-1CEST,M3.5.0,M10.5.0/3`, `tz UTC0`) sets it.
+* `ntp [server-ip]`: Sets the clock over NTP; without an argument it asks the gateway.
+* `peers [...]`: The LLP peer table. `p9serve`: Runs the local 9P server on the console link (see the networking guide).
+
+### Hardware Bring-up & Diagnostics
+These are bring-up aids for developers. They read hardware state, and some change it.
+* `peek ADDR [COUNT]` / `poke ADDR VALUE`: Read words from, or write a word to, a physical address (hex, `0x` optional). M-mode and unrestricted: a stray poke can hang the chip.
+* `psram [test [MB]|bench]` (ESP32-P4): PSRAM size, speed and tuning window; `test` runs a pattern test, `bench` measures bandwidth.
+* `smpinfo`, `clocks` (ESP32-P4, RP2350): second-hart state and the measured clock tree. `cpufreq MHz` (ESP32-P4 only) changes the CPU clock under live drivers: re-check measurements from a clean boot. `xipcycle` (RP2350) exercises the flash/XIP park handshake without writing; `flashinfo` (ESP32-P4) reports the flash chip.
+* `intrdump`, `clicdump` (ESP32-P4): Interrupt controller state. `pmpinfo` reports usable PMP regions and granularity; `pmpdump` dumps every PMP register.
+* `i2cdiag` (ESP32-P4): I2C controller diagnostics; `emac scan`: Ethernet PHY addresses found on the MDIO bus.
+* `kbd [desc|on|off]`, `kbdlog [s]`: The USB keyboard host: state, descriptors, switching it off to leave the port to `usbprobe`, and a log of reports for `s` seconds (default 30).
+* `usbprobe`, `usbprobe loop`, `boardprobe`, `uart1pins`, `uart1test [ms]` (RP2350): PIO-USB and UART1 pin and loopback probes for board bring-up.
+* `led R G B` / `led off` (ESP32-C6): The on-board RGB LED, 0-255 per channel.
+* `ramscreen W H`: Resizes the RAM screen (boards without a panel), e.g. `ramscreen 1024 600` to test layouts under QEMU. The screen built so far is dropped.
+* `vterm`: Lists the virtual terminals. `radioosi` (ESP32-C6): Self-test of the radio blob's OS interface.
+* `priostress`, `smpload`, `pinall`, `flashpark`: Scheduler and SMP test loads (equal-priority fairness, background load on every hart, pinning every task to hart 0, the flash-write park handshake).
 
 ---
 

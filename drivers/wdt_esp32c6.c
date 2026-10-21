@@ -48,8 +48,10 @@
 typedef uint32_t (*rom_reset_reason_fn)(int cpu);
 #define rom_reset_reason ((rom_reset_reason_fn)0x40000018UL)   /* rtc_get_reset_reason, esp32c6.rom.ld */
 
+/* single task: the boot, before any reader runs; constant after. */
 static volatile bool g_armed, g_withhold;
 static uint32_t g_reason;
+/* single task: the wdog task. */
 static uint32_t g_feeds;
 
 static void wdt_feed(void) {

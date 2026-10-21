@@ -61,7 +61,27 @@ void console_bind(console_putc_fn putc);
  * It may be held across a block -- a console write ends in chan_call() to the
  * uart task -- which is what makes it a ylock and not a spinlock. printk()
  * does not take it at all any more; that is the whole of Y5. */
-void console_lock(void);
+void console_lock_at(const char *site);
+#define console_lock() console_lock_at(__func__)   /* the caller names the hold (`lockcheck`) */
+
+/* console_lock hold times since boot: bucket 0 is under 1 ms, bucket b
+ * covers [2^(b-1), 2^b) ms, the last everything longer; the longest hold and
+ * the task that held it (`lockcheck`). */
+#define CONSOLE_HOLD_BUCKETS 12
+void console_lock_hold_stats(uint32_t hist[CONSOLE_HOLD_BUCKETS], uint32_t *max_us, int *max_pid,
+                             const char **max_site);
+/* The last holds of CONSOLE_LONG_HOLD_MS or more, newest first: false past
+ * the end. */
+#define CONSOLE_LONG_HOLD_MS 100u
+bool console_lock_long_hold(unsigned i, const char **site, uint32_t *ms, int *pid);
+
+/* The panel's frame lock, for code that frees what the panel's conversion
+ * reads (a reader's or a canvas's pixels): taken after console_lock, so the
+ * buffer is not freed under a conversion that runs without console_lock
+ * (drivers/dsi_esp32p4.c). No-ops until a panel registers one. */
+void console_set_frame_lock(void (*lock)(void), void (*unlock)(void));
+void console_frame_lock(void);
+void console_frame_unlock(void);
 void console_unlock(void);
 /* Whether the calling context holds console_lock() -- for a writer that
  * relies on it to check that it is really there (phase31 §7 R4). */
@@ -130,9 +150,11 @@ void console_sync_readers(void);
 /* 37.5b: everything written through console_putc() -- cprintf(), a Lisp
  * program's output, lisp_print() -- goes into `buf` instead of the screen
  * until console_capture_end(), which returns how many bytes it holds (the
- * last `cap` written). The editor's evaluate-and-stay uses it to put a
- * result on its status line rather than over its text. Not the kernel log,
- * which has its own sinks. One capture at a time. */
+ * first `cap` written, NUL-terminated within `cap`). Only the calling task's
+ * output and that of the tasks it started is kept. The editor's
+ * evaluate-and-stay uses it to put a result on its status line rather than
+ * over its text. Not the kernel log, which has its own sinks. One capture per
+ * task, up to four tasks at once; a fifth captures nothing. */
 void console_capture(char *buf, uint32_t cap);
 uint32_t console_capture_end(void);
 

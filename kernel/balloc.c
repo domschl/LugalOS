@@ -23,6 +23,7 @@ _Static_assert((NUM_LEAVES & (NUM_LEAVES - 1u)) == 0,
               "BALLOC_ARENA_PAGES * PAGE_SIZE / BALLOC_MIN_BLOCK must be a "
               "power of two, or the tree below is not a real binary buddy tree");
 
+/* accepted: used by its selftest only (`balloc`), one run at a time. */
 static uint16_t  g_longest[NODE_COUNT];
 static uintptr_t g_arena_base;
 static bool      g_ready;

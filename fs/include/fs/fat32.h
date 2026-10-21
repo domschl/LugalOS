@@ -140,6 +140,23 @@ void fat32_sync(fat32_fs_t *fs);
  * the count it replaced. Slow on a large card: it reads the entire FAT. */
 uint32_t fat32_recount(fat32_fs_t *fs);
 
+/* A read-only consistency check (`fsck`): every directory walked from the
+ * root, every chain followed, then the whole FAT compared with what was
+ * reached. Nothing is changed. The caller lends the working memory: a bitmap
+ * of (total_clusters + 2) bits and a queue for directories still to walk.
+ * The first few problems are printed; the counts land in *out. Returns 0
+ * when it ran to the end, -1 when the memory was too small or a read failed. */
+typedef struct {
+    uint32_t files, dirs, clusters;   /* reached */
+    uint32_t cross;        /* a cluster claimed a second time */
+    uint32_t bad_chain;    /* a chain running into a free, reserved or out-of-range entry */
+    uint32_t size;         /* a file whose chain is not as long as its size says */
+    uint32_t lost;         /* marked in use in the FAT, reached from no entry */
+    uint32_t skipped;      /* directories left out: the queue was full */
+} fat32_check_t;
+int fat32_check(fat32_fs_t *fs, uint8_t *bitmap, uint32_t bitmap_bytes,
+                uint32_t *dirq, uint32_t dirq_cap, fat32_check_t *out);
+
 /* Same, without the "no valid volume" line on failure (Y5a,
  * ).
  *
@@ -155,6 +172,17 @@ int fat32_format(block_dev_t *dev);
 /* Same, without the "formatted cleanly" line -- same caller and same reason
  * as fat32_init_quiet(). An explicit (format ...) still says so. */
 int fat32_format_quiet(block_dev_t *dev, bool quiet);
+
+/* A card's FAT32 the way mkfs.vfat and the SD Association's formatter lay
+ * one out: an MBR with one FAT32 (LBA, 0x0C) partition from 4 MB, the
+ * largest cluster up to 32 KB that still gives FAT32's minimum of 65525
+ * clusters, the data area on a 4 MB boundary (the card's allocation unit),
+ * FSInfo with the true free count, backup boot sector and FSInfo at 6 and 7,
+ * and `label` (up to 11 characters, NULL for "LUGALOS") in the boot sector
+ * and the root directory. Returns 0, or -1 for a device too small for FAT32
+ * (under ~36 MB) or a write error. Calls `progress` (may be NULL) with the
+ * percentage while it clears the FATs. */
+int fat32_mkfs(block_dev_t *dev, const char *label, uint32_t vol_id, void (*progress)(uint32_t pct));
 int fat32_find_file(fat32_fs_t *fs, const char *path, fat32_dir_entry_t *out_entry);
 int fat32_read_file(fat32_fs_t *fs, fat32_dir_entry_t *entry, void *buf, uint32_t max_size);
 int fat32_write_file(fat32_fs_t *fs, const char *path, const void *buf, uint32_t size);

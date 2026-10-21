@@ -139,6 +139,15 @@ int  ylock_depth(const ylock_t *l);
  * can be ended at an input wait without taking a lock down with it. */
 int  ylock_held_by(int pid);
 
+/* The lock-order record (kernel/lock.c, "Lock order"). lock_task_reset()
+ * forgets what a task slot held, when the slot is reused. */
+typedef struct {
+    uint32_t pairs, pairs_max, pairs_dropped, inversions, held_overflow;
+} lock_order_stats_t;
+void lock_order_stats(lock_order_stats_t *out);
+bool lock_order_pair(uint32_t i, const char **held, const char **taken);
+void lock_task_reset(int pid);
+
 /* --- The hierarchy, and the check that keeps it honest --------------------
  *
  * ## The rule, in one line
@@ -353,5 +362,18 @@ void waitfor_report_cycle(const char *what, int me, int target);
 /* Prints the checks and a LOCK_SELFTEST_OK / _FAIL marker; returns the number
  * of failures. */
 int lock_selftest(void);
+
+/* A session claim: one terminal at a time for a tool whose state is one set
+ * (an editor, chess, a pager). Not a wait: a second terminal is told the tool
+ * is in use (`what: in use in another terminal`) and gets false, because the
+ * session it would wait for can last as long as someone keeps typing.
+ * Re-entrant for its owner (sched_context_id()). Zero is a free claim. */
+typedef struct {
+    volatile int owner;      /* context id + 1; 0: free */
+    uint32_t     depth;      /* the owner's alone */
+} session_claim_t;
+
+bool session_claim(session_claim_t *c, const char *what);
+void session_release(session_claim_t *c);
 
 #endif /* LUGALOS_KERNEL_LOCK_H */
