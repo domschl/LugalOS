@@ -1,6 +1,6 @@
 # Phase 63 — Concurrency Review: Shared State, Ownership, Locks
 
-**Status: in progress (63.1–63.6 done). Written 2026-10-18.** Scheduled before phase 62 Part B (audio).
+**Status: done (2026-10-21, version 0.18.0). Written 2026-10-18.** Scheduled before phase 62 Part B (audio).
 Milestone scheme: `63.1`, `63.2`, …
 
 ---
@@ -813,10 +813,14 @@ Sequences on chip-wide units, by unit:
 - AGENTS.md: the rules in short, next to the existing comment standard. *Done.*
 - `racescan.py` runs in `tests/runner.py` and fails on an unmarked new static. *Done
   (owner's decision 3), with a message that explains the rules.*
-- **Remove the SD read-back checker** (drivers/sdmmc_esp32p4.c, `wchk_*`: a checksum of every
-  sector written, compared on every read, 128 KB of PSRAM) once 63.8 and the hour runs are
-  done, or keep it as an off-by-default debug option. Owner: keep it until the end of the
-  phase.
+- **Remove the SD read-back checker** (drivers/sdmmc_esp32p4.c, `wchk_*`). *Done (2026-10-21):
+  removed after the hour runs; a 10 min Tab5 stress run and its suite (50/50) pass without it.*
+- **Final tests (2026-10-21, version 0.18.0).** QEMU suite 518/518 (racescan included).
+  Hour runs, `tools/stress.py --minutes 60`, all three boards in parallel: NANO, LCD-7B and
+  Tab5 RESULT: PASS (9P/TCP 26,187 / 33,963 / 69,405 reads, 0 errors; touch 0 new I2C errors).
+  Hardware suites: LCD-7B 50/50, Tab5 50/50, NANO 50/50 (after flashing its C6 with
+  `c6flash.py`; one run lost 3 of 20 Wi-Fi echoes, two repeats clean), C6-Zero 21/21,
+  RP2350 terminal 34/34. *Done.*
 
 ---
 

@@ -1080,7 +1080,8 @@ static void cmd_help_summary(void) {
     cprintf("  cp <src> <dst>  - Copy file\n");
     cprintf("  rm <file>       - Delete file\n");
     cprintf("  df [-r]         - Filesystem disk usage (-r recounts FAT)\n");
-    cprintf("  format <vol>    - Format volume as FAT32 (/sd0, /ram0)\n");
+    cprintf("  format <vol> [label] - Format volume as FAT32 (/sd0, /ram0); also mkfs.vfat\n");
+    cprintf("  fsck [vol]      - Read-only FAT32 check (/sd0, /ram0)\n");
     cprintf("\nSystem & Diagnostics:\n");
     cprintf("  uname           - Show OS build target and architecture\n");
     cprintf("  ps              - List processes and isolation domains (/proc/ps)\n");

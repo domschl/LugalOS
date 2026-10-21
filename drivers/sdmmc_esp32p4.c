@@ -1487,88 +1487,6 @@ static int blk_write_chunk(uint32_t lba, uint32_t count, const uint8_t *src) {
     return -1;
 }
 
-/* --- What was last written to each sector, checked against what reads back --
- *
- * A diagnostic for silent corruption: a checksum of every sector written
- * (direct-mapped by LBA, so a collision only forgets), compared with every
- * read of the same sector. A mismatch means the card or this driver handed
- * back something other than what was written; none while files still come
- * back wrong means the bytes were wrong before they reached this layer.
- * `sdinfo` counts both. */
-#define WCHK_SLOTS 8192u   /* 16 bytes each: 128 KB of the bulk zone */
-typedef struct { uint32_t lba, sum, ra, ms; } wchk_t;
-/* guarded by: g_wchk_lock for each slot's two words together; the table
- * pointer is set once, by the first write (callers of a volume are
- * serialised by its lock). accepted: the two counters are statistics. */
-static wchk_t    *g_wchk;
-static spinlock_t g_wchk_lock;
-static uint32_t   g_wchk_checked, g_wchk_bad;
-/* accepted: written only on a mismatch (rare), read by `sdinfo`. */
-#define WCHK_KEEP 6u
-static struct { uint32_t lba, ms, other, read_ra, want_ra, want_ms, other_ra, other_ms; uint8_t head[8]; } g_wchk_seen[WCHK_KEEP];
-
-static uint32_t wchk_sum(const uint8_t *p) {
-    uint32_t h = 2166136261u;                  /* FNV-1a */
-    for (uint32_t i = 0; i < 512u; i++) h = (h ^ p[i]) * 16777619u;
-    return h | 1u;                             /* never 0: 0 marks an empty slot */
-}
-
-static void wchk_note(uint32_t lba, const uint8_t *p, uint32_t count, uintptr_t ra) {
-    if (!g_wchk) {
-        void *t = palloc_pages_bulk((WCHK_SLOTS * sizeof(wchk_t) + 4095u) / 4096u);
-        if (!t) return;
-        memset(t, 0, WCHK_SLOTS * sizeof(wchk_t));
-        g_wchk = t;
-    }
-    for (uint32_t i = 0; i < count; i++) {
-        uint32_t s = wchk_sum(p + (size_t)i * 512u);
-        uintptr_t f = spin_lock_irqsave(&g_wchk_lock);
-        g_wchk[(lba + i) % WCHK_SLOTS] = (wchk_t){ lba + i, s, (uint32_t)ra, (uint32_t)time_get_ms() };
-        spin_unlock_irqrestore(&g_wchk_lock, f);
-    }
-}
-
-static void wchk_check(uint32_t lba, const uint8_t *p, uint32_t count, uintptr_t ra) {
-    if (!g_wchk) return;
-    for (uint32_t i = 0; i < count; i++) {
-        uintptr_t f = spin_lock_irqsave(&g_wchk_lock);
-        wchk_t e = g_wchk[(lba + i) % WCHK_SLOTS];
-        spin_unlock_irqrestore(&g_wchk_lock, f);
-        if (e.lba != lba + i || !e.sum) continue;
-        g_wchk_checked++;
-        uint32_t s = wchk_sum(p + (size_t)i * 512u);
-        if (s != e.sum) {
-            /* Whose data is it? Another recently written sector with this
-             * checksum means an address or buffer mix-up; none, stale or
-             * foreign data from further back. */
-            uint32_t other = 0xffffffffu, other_ra = 0, other_ms = 0;
-            for (uint32_t k = 0; k < WCHK_SLOTS; k++) {
-                if (g_wchk[k].sum == s && g_wchk[k].lba != lba + i) {
-                    other = g_wchk[k].lba; other_ra = g_wchk[k].ra; other_ms = g_wchk[k].ms;
-                    break;
-                }
-            }
-            const uint8_t *q = p + (size_t)i * 512u;
-            uint32_t n = g_wchk_bad++;
-            if (n < WCHK_KEEP) {
-                g_wchk_seen[n].lba = lba + i;
-                g_wchk_seen[n].ms = (uint32_t)time_get_ms();
-                g_wchk_seen[n].other = other;
-                memcpy(g_wchk_seen[n].head, q, 8);
-                g_wchk_seen[n].read_ra = (uint32_t)ra;
-                g_wchk_seen[n].want_ra = e.ra;
-                g_wchk_seen[n].want_ms = e.ms;
-                g_wchk_seen[n].other_ra = other_ra;
-                g_wchk_seen[n].other_ms = other_ms;
-            }
-            printk("[SDMMC] lba %lu read back differs from what was last written to it "
-                   "(%02x %02x %02x %02x ...; %s %lu)\n", (unsigned long)(lba + i),
-                   q[0], q[1], q[2], q[3], other != 0xffffffffu ? "the contents of lba" : "no match", 
-                   (unsigned long)other);
-        }
-    }
-}
-
 static int sdmmc_read_blocks(block_dev_t *dev, void *buf, uint32_t lba, uint32_t count) {
     if (!buf || count == 0 || lba + count < lba || lba + count > dev->num_blocks) return -1;
 
@@ -1581,11 +1499,9 @@ static int sdmmc_read_blocks(block_dev_t *dev, void *buf, uint32_t lba, uint32_t
             if (n < 0) return -1;
             done += (uint32_t)n;
         }
-        wchk_check(lba, (const uint8_t *)buf, count, (uintptr_t)__builtin_return_address(0));
         return 0;
     }
     int rc = sdmmc_hw_read_blocks(lba + done, count - done, dst + (size_t)done * 512u);
-    if (rc == 0) wchk_check(lba, (const uint8_t *)buf, count, (uintptr_t)__builtin_return_address(0));
     return rc;
 }
 
@@ -1601,11 +1517,9 @@ static int sdmmc_write_blocks(block_dev_t *dev, const void *buf, uint32_t lba, u
             if (n < 0) return -1;
             done += (uint32_t)n;
         }
-        wchk_note(lba, (const uint8_t *)buf, count, (uintptr_t)__builtin_return_address(0));
         return 0;
     }
     int rc = sdmmc_hw_write_blocks(lba + done, count - done, src + (size_t)done * 512u);
-    if (rc == 0) wchk_note(lba, (const uint8_t *)buf, count, (uintptr_t)__builtin_return_address(0));
     return rc;
 }
 
@@ -1722,19 +1636,6 @@ void sdmmc_info_report(void) {
     cprintf("  DMA: %u transfers ended on the card before the DMA gave the buffer back "
             "(longest %u us)\n", (unsigned)g_dma_late, (unsigned)g_dma_late_max_us);
     cprintf("  sdblk: %u replies reached the wrong caller\n", (unsigned)g_blk_mixups);
-    cprintf("  read-back check: %u reads of a written sector compared, %u differed\n",
-            (unsigned)g_wchk_checked, (unsigned)g_wchk_bad);
-    for (uint32_t k = 0; k < g_wchk_bad && k < WCHK_KEEP; k++) {
-        cprintf("    lba %u at %u ms: %02x %02x %02x %02x %02x %02x %02x %02x; ", (unsigned)g_wchk_seen[k].lba,
-                (unsigned)g_wchk_seen[k].ms, g_wchk_seen[k].head[0], g_wchk_seen[k].head[1],
-                g_wchk_seen[k].head[2], g_wchk_seen[k].head[3], g_wchk_seen[k].head[4],
-                g_wchk_seen[k].head[5], g_wchk_seen[k].head[6], g_wchk_seen[k].head[7]);
-        if (g_wchk_seen[k].other != 0xffffffffu) cprintf("the contents of lba %u\n", (unsigned)g_wchk_seen[k].other);
-        else cprintf("matches no recent write\n");
-        cprintf("      read by %08x; expected the write by %08x at %u ms; matched the write by %08x at %u ms\n",
-                (unsigned)g_wchk_seen[k].read_ra, (unsigned)g_wchk_seen[k].want_ra, (unsigned)g_wchk_seen[k].want_ms,
-                (unsigned)g_wchk_seen[k].other_ra, (unsigned)g_wchk_seen[k].other_ms);
-    }
 
     /* Block 0, re-read now, and the reason this is in a status command rather
      * than in a debugging patch somebody deleted afterwards: "the card

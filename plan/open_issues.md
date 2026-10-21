@@ -241,6 +241,25 @@ of something else.
 for the interface counters. Other candidates: a hung task (no watchdog), or
 power.
 
+## The Tab5's panel stays black on some boots (~1 in 10, up to 11 in 30 after back-to-back resets)
+
+**Seen:** 2026-10, M5Stack Tab5. The kernel runs and the console answers; the
+panel shows nothing. The rate drifts over the day with the same code (11, 10
+and 3 black of 30), so a 30-60 boot run cannot show a small effect.
+
+**Known:** a TSL2591 against the glass told lit (~180 lux) from black (~2.6
+lux with the backlight on); `tools/panelboot.py --board tab5 --boots N`
+counted them. The sensor has since been removed from the board, so counts
+need it back or a count by eye. The panel itself is fine: `lcd reinit phy` (DSI PHY and timing)
+brings the picture back every time (5 of 5), `video` and `panel` do not. No
+boot-log line or event time differs between lit and black boots (153 lit, 27
+black compared). Five bring-up changes each looked like the fix in one run and
+did not hold; M5Stack's own sequence (54/60) is kept. Details: plan/phase63,
+§63.7 item 1.
+
+**What would settle it:** the factory firmware put through the same reset
+series, counted by eye. If it goes black too, the cause is not our bring-up.
+
 ## The RP2350-LCD-7 hung during boot after a flash (once)
 
 **Seen:** 2026-10-01 (37.5a), second of two flashes of one image: USB
