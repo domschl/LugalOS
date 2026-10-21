@@ -1,7 +1,7 @@
 # Phase 61 — Restricted (No-HTML) Markdown Engine, Rich Typography, LaTeX Math & `ea` Integration
 
-**Status**: PROPOSED / READY FOR IMPLEMENTATION  
-**Target Version**: 0.23.0  
+**Status**: Done (2026-10-21, version 0.18.1)  
+**Target Version**: 0.18.1  
 **Supersedes / Evolves**: Phase 53 (`plan/phase53_gemtext_spartan.md`)  
 **Follows**:
 - Phase 42 & 43: Lisp CAS & Symbolic Computation (`cas/`, `cas/format.lisp`)
@@ -383,6 +383,7 @@ Phase 61 Milestones:
   1. Verify on **M5Stack Tab5** (`esp32p4-tab5`, Portrait & Landscape HiDPI), **ESP32-P4-LCD-7B** (`esp32p4-lcd7b`), and **RP2350-Terminal** (`rp2350-terminal`).
   2. Capture screenshots (`lcd screen`) showing proportional tables, inline code pills, footnotes, TOC view, and typeset mathematical equations.
   3. Update `tests/runner.py`, `tests/test_markdown.py`, and `tests/hw/test_esp32p4.py` to validate `.md` help files, 2D inline link tapping, TOC navigation, and math formulas.
+* **Status**: Complete (2026-10-21). Verified across host ASan/UBSan (15/15 suites pass), M5Stack Tab5 (50/50 hardware tests pass), ESP32-P4-LCD-7B (50/50 hardware tests pass), and RP2350 Terminal (34/34 hardware tests pass). Inline and display LaTeX equations, radical surds, bigop integral limits, script scaling, and multi-level exponents render accurately.
 
 ---
 

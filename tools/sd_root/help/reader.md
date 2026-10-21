@@ -1,31 +1,44 @@
 # Ribbon Reader Window Guide
 
-The LugalOS Ribbon Reader (`RIBBON_WIN_READER`) is a dedicated long-form document viewer integrated into the horizontal window ribbon. It is designed for comfortable reading of system documentation, manuals, books, and network hypermedia capsules.
+The LugalOS Ribbon Reader (`RIBBON_WIN_READER`) is a dedicated long-form document viewer integrated into the horizontal window ribbon. It is designed for comfortable reading of system documentation, manuals, books, and network hypermedia capsules formatted in **Restricted Markdown (`.md`)** or **Gemtext (`.gmi`)**.
 
 ## Multi-Instance Reader Architecture
 
 LugalOS supports up to 4 concurrent Reader windows (`READER_MAX_INSTANCES = 4`) tiled side-by-side on the horizontal window ribbon. Each Reader instance operates completely independently with its own document buffer, scroll offset, history stack, and link table:
-* **Multiple Open Manuals**: Keep multiple documentation files open simultaneously (e.g. `reader /sd0/help/shell.gmi` and `reader /sd0/help/spartan.gmi`).
+* **Multiple Open Manuals**: Keep multiple documentation files open simultaneously (e.g. `reader /sd0/help/shell.md` and `reader /sd0/help/spartan.md`).
 * **Instance Management**: Running `reader list` in `lsh` lists all active Reader instances and their loaded paths.
 * **Smart Window Reuse**: Issuing `reader <path>` focuses the existing Reader window if that exact document is already open, or allocates a new Reader pane on the ribbon if available.
 
-## Proportional Typography
+## Restricted Markdown & Typography
 
-Unlike standard terminal windows that use fixed-pitch monospace fonts, the Reader window features:
-* **Proportional Serif Typography**:
+Unlike standard terminal windows that use fixed-pitch monospace fonts, the Reader window features full rich typography and Knuth Appendix G mathematical typesetting:
+
+* **Proportional Typography**:
   * **Standard Density Panels** (`rp2350-terminal`, `esp32p4-lcd7b`): Rendered in a high-legibility 15-pixel variable-pitch serif font with balanced 1-pixel vertical stems (18 px line height).
   * **HiDPI Panels** (`esp32p4-tab5`): Rendered in an elegant 32-pixel anti-aliased proportional serif font (`Noto Serif`) with smooth 4-bpp alpha coverage masks (38 px line height).
-* **Proportional Word Wrapping**: Flowing paragraph text dynamically wrapped at word boundaries according to window geometry.
-* **Monospace Code Blocks**: Automatic formatting for preformatted code and ASCII diagrams using 8×16 monospace font (standard density) or 16×32 `Noto Sans Mono` (HiDPI).
-* **Structural Hierarchy**: Bold section headings (H1, H2, H3), bulleted lists, and indented blockquotes scaled proportionally to the display density.
+* **Inline Emphasis & Styling**:
+  * **Bold**: `**bold text**` rendered with weighted glyph stems.
+  * **Italic**: `*italic text*` rendered with an algorithmic shear angle.
+  * **Inline Code**: `` `code` `` rendered with monospace font inside a subtle pill background (`gray=245`).
+  * **2D Hyperlinks**: `[label](shell.md)` rendered in underlined serif with touch / click targeting.
+  * **Footnotes**: `[^id]` rendered as superscript badge and linked to `#fn:id` definitions.
+* **Block Elements**:
+  * **Structural Hierarchy**: Bold section headings (H1, H2, H3, H4) scaled proportionally to display density, indexed into the dynamic Table of Contents (`[TOC]`).
+  * **Admonition Callouts**: `> [!NOTE]`, `> [!TIP]`, `> [!WARNING]`, and `> [!CAUTION]` rendered with colored accent bars and styled badges.
+  * **Structured Tables**: Multi-column Markdown grid tables (`| Header | ... |`) with cell padding and header separation rules.
+  * **Monospace Code Blocks**: Shaded code box (`gray=242`) with 8×16 monospace font (standard density) or 16×32 `Noto Sans Mono` (HiDPI).
+* **Typeset LaTeX Math Engine**:
+  * Formatted with a freestanding Knuth Appendix G box layout engine (`drivers/latex_layout.c`) using dedicated math font tables (`drivers/font_math.c`).
+  * **Inline Math**: `$E = mc^2$` embedded seamlessly within flowing paragraph text.
+  * **Display Formulas**: `$$ \int_a^b f(x)\,dx = F(b) - F(a) $$` centered with vertical limits, multi-level fractions, radical surds, and scalable delimiters.
 
 ## Opening Documents
 
-Open local Gemtext (`.gmi`) files or remote Spartan capsules directly from the shell:
+Open local Markdown (`.md`) or Gemtext (`.gmi`) files or remote Spartan capsules directly from the shell:
 
 ```
-lsh> reader /sd0/help/shell.gmi
-lsh> reader /sd0/help/spartan.gmi
+lsh> reader /sd0/help/shell.md
+lsh> reader /sd0/help/markdown_showcase.md
 lsh> reader spartan://spartan.mozz.us/
 lsh> reader list
 ```
@@ -60,15 +73,15 @@ When the Reader window has focus, standard keyboard navigation shortcuts are act
 
 ## Touch & Gestures
 
-On touchscreen-equipped hardware (such as the Waveshare ESP32-P4 Touch LCD 7B and RP2350-LCD-7):
+On touchscreen-equipped hardware (such as the Waveshare ESP32-P4 Touch LCD 7B and M5Stack Tab5):
 
 * **Tap Close Box**: Closes the window.
-* **Tap on Link**: Tapping anywhere within a link line follows the link target immediately.
+* **Tap on Link**: Tapping anywhere within an inline link or link block follows the target immediately.
 * **Swipe Up / Down**: Vertical touch dragging pans the document smoothly.
 * **Minimap Tap**: Tapping a window thumbnail in the top menu bar jumps directly to that window.
 
 ## Related Topics
 
-=> spartan.gmi Spartan Protocol & Gemtext Guide
-=> shell.gmi Shell & Console Manual
-=> ribbon.gmi Window Ribbon Architecture
+[Spartan Protocol Guide](spartan.md)  
+[Shell & Console Manual](shell.md)  
+[Window Ribbon Architecture](ribbon.md)
