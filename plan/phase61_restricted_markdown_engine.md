@@ -301,9 +301,9 @@ Phase 61 Milestones:
     │
   M61.4: Documentation Pipeline Migration to Native `.md` & Spartan On-the-Fly Down-Converter (`tools/gendocs.py`, `net/spartan.c`)
     │
-  M61.5: Hardware Verification (Tab5, LCD-7B, RP2350-Terminal) & Full Regression Suite
+  M61.5: Restricted LaTeX Math Engine: Parser, Knuth Layout, Math Fonts & CAS/`ea` Integration (`fs/latex_math.c`, `drivers/latex_layout.c`)
     │
-  M61.6: Restricted LaTeX Math Engine: Parser, Knuth Layout, Math Fonts & CAS/`ea` Integration (`fs/latex_math.c`, `drivers/latex_layout.c`)
+  M61.6: Comprehensive Hardware Verification (Tab5, LCD-7B, RP2350-Terminal) & Full Regression Suite
 ```
 
 ### Milestone 61.1: Restricted Markdown Parser & Span Tokenizer (`fs/markdown.c`, `include/fs/markdown.h`)
@@ -356,14 +356,7 @@ Phase 61 Milestones:
      - Add streaming `.md` $\rightarrow$ `.gmi` conversion in `spartand` when a client requests a `.gmi` URI (or directory index) backed by a `.md` file, while serving raw `text/markdown` when `.md` is requested directly.
 * **Verification**: `python3 tools/gendocs.py --check` passes; `man <topic>` and `reader <topic>` open `.md` manuals with full inline formatting, tables, and links; Spartan loopback test verifies both `.md` and down-converted `.gmi` serving.
 
-### Milestone 61.5: Hardware Verification & Full Regression Suite
-* **Goal**: Verify the Restricted Markdown Engine on connected hardware targets and update automated test suites.
-* **Deliverables**:
-  1. Verify on **M5Stack Tab5** (`esp32p4-tab5`, Portrait & Landscape HiDPI), **ESP32-P4-LCD-7B** (`esp32p4-lcd7b`), and **RP2350-Terminal** (`rp2350-terminal`).
-  2. Capture screenshots (`lcd screen`) showing proportional tables, inline code pills, footnotes, and TOC view.
-  3. Update `tests/runner.py`, `tests/test_markdown.py`, and `tests/hw/test_esp32p4.py` to validate `.md` help files, 2D inline link tapping, and TOC navigation.
-
-### Milestone 61.6: Restricted LaTeX Math Engine (`fs/latex_math.c`, `drivers/latex_layout.c`, `drivers/font_math.c`)
+### Milestone 61.5: Restricted LaTeX Math Engine (`fs/latex_math.c`, `drivers/latex_layout.c`, `drivers/font_math.c`)
 * **Goal**: Implement the freestanding, zero-allocation LaTeX math parser, Knuth Appendix G box layout engine, math font generator, and CAS/`ea` integration.
 * **Deliverables**:
   1. **Math Font Assets (`tools/gen_math_font.py`, `drivers/font_math.c`, `include/drivers/font_math.h`)**:
@@ -383,7 +376,13 @@ Phase 61 Milestones:
      - CAS formatter enhancement in `cas/format.lisp`: implements `(to-latex expr)` to render CAS expressions directly into typeset math.
   5. **Automated Test Suite (`tests/test_latex_math.py`)**:
      - Host test suite verifying AST arena sizing, Appendix G bounding box calculations, and parser edge cases under ASan/UBSan.
-* **Verification**: Render complex mathematical equations (Maxwell's equations, Schrödinger equation, Cauchy's residue theorem, and CAS output) in QEMU `ramscreen`, Tab5, and LCD-7B with zero heap allocations.
+
+### Milestone 61.6: Comprehensive Hardware Verification & Full Regression Suite
+* **Goal**: Verify the Restricted Markdown Engine, rich typography, and typeset LaTeX math across all connected hardware targets and update automated test suites.
+* **Deliverables**:
+  1. Verify on **M5Stack Tab5** (`esp32p4-tab5`, Portrait & Landscape HiDPI), **ESP32-P4-LCD-7B** (`esp32p4-lcd7b`), and **RP2350-Terminal** (`rp2350-terminal`).
+  2. Capture screenshots (`lcd screen`) showing proportional tables, inline code pills, footnotes, TOC view, and typeset mathematical equations.
+  3. Update `tests/runner.py`, `tests/test_markdown.py`, and `tests/hw/test_esp32p4.py` to validate `.md` help files, 2D inline link tapping, TOC navigation, and math formulas.
 
 ---
 
