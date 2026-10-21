@@ -64,6 +64,7 @@ typedef enum {
 typedef struct math_box {
     uint8_t   type;       /* math_box_type_t */
     uint8_t   style;      /* math_style_t */
+    uint8_t   scale;      /* base_scale from latex_layout (1: 16px, 2: 32px HiDPI) */
     int16_t   w, h, d;    /* Advance width, height above baseline, depth below baseline */
     int16_t   x, y;       /* Relative position within parent */
     union {

@@ -81,7 +81,7 @@ static const math_glyph_t g_math_glyphs[] = {
     { 0x2213, 10, 12, 0, 11, 11, glyph_data_mp },
     { 0x221a, 11, 15, 0, 13, 12, glyph_data_sqrt },
     { 0x221e, 13, 8, 0, 8, 14, glyph_data_infty },
-    { 0x222b, 10, 18, 0, 16, 11, glyph_data_int },
+    { 0x222b, 10, 16, 0, 14, 11, glyph_data_int },
     { 0x2248, 10, 10, 0, 9, 11, glyph_data_approx },
     { 0x2260, 10, 12, 0, 11, 11, glyph_data_neq },
     { 0x2261, 10, 10, 0, 9, 11, glyph_data_equiv },

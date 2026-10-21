@@ -213,6 +213,64 @@ static void test_unicode_converter(void) {
     PASS();
 }
 
+static void test_rendering(void) {
+    TEST("Rendering to Canvas1, Gray8, and RGB565");
+    uint8_t buf[16384];
+    math_arena_t arena;
+    math_arena_init(&arena, buf, sizeof(buf));
+
+    const char *formula = "\\int_0^\\infty e^{-x^2} dx = \\sqrt{\\pi}";
+    math_box_t *box = latex_parse(formula, STYLE_DISPLAY, &arena);
+    assert(box != NULL);
+
+    /* Test scale 1 (16px base typography) */
+    int w1 = latex_layout(box, 1);
+    assert(w1 > 50);
+    assert(box->scale == 1);
+
+    /* Render to canvas1 */
+    uint8_t c_fb[1024];
+    memset(c_fb, 0, sizeof(c_fb));
+    canvas1_t c;
+    canvas1_init(&c, c_fb, 32, 256, 32);
+    latex_render_canvas1(box, 10, 20, &c, 1);
+    bool c_has_pixels = false;
+    for (size_t i = 0; i < sizeof(c_fb); i++) {
+        if (c_fb[i] != 0) { c_has_pixels = true; break; }
+    }
+    assert(c_has_pixels);
+
+    /* Render to Gray8 */
+    uint8_t g_fb[256 * 32];
+    memset(g_fb, 0xff, sizeof(g_fb));
+    latex_render_gray8(box, 10, 20, g_fb, 256, 256, 32, 0x00, 0xff);
+    bool g_has_pixels = false;
+    for (size_t i = 0; i < sizeof(g_fb); i++) {
+        if (g_fb[i] != 0xff) { g_has_pixels = true; break; }
+    }
+    assert(g_has_pixels);
+
+    /* Render to RGB565 */
+    uint16_t rgb_fb[256 * 32];
+    memset(rgb_fb, 0xff, sizeof(rgb_fb));
+    latex_render_rgb565(box, 10, 20, rgb_fb, 256, 256, 32, 0x0000, 0xffff);
+    bool rgb_has_pixels = false;
+    for (size_t i = 0; i < 256 * 32; i++) {
+        if (rgb_fb[i] != 0xffff) { rgb_has_pixels = true; break; }
+    }
+    assert(rgb_has_pixels);
+
+    /* Test scale 2 (32px HiDPI) */
+    math_arena_init(&arena, buf, sizeof(buf));
+    box = latex_parse(formula, STYLE_DISPLAY, &arena);
+    assert(box != NULL);
+    int w2 = latex_layout(box, 2);
+    assert(w2 > w1);
+    assert(box->scale == 2);
+
+    PASS();
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     printf("=== LugalOS Host Test: Restricted LaTeX Math Engine ===\n");
@@ -225,6 +283,7 @@ int main(int argc, char **argv) {
     test_big_operators();
     test_matrices();
     test_unicode_converter();
+    test_rendering();
 
     printf("\nAll %d/%d tests passed successfully!\n", g_tests_passed, g_tests_run);
     return 0;
