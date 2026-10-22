@@ -12,6 +12,7 @@ int main(int argc, char **argv) {
     int height = MOON_PRESET_LCD7B_H;
     int max_frames = 0;
     const char *preset_name = "ESP32-P4-LCD-7B (1024x600)";
+    const char *dump_ppm = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--tab5") == 0) {
@@ -28,6 +29,8 @@ int main(int argc, char **argv) {
             preset_name = "ESP32-P4-LCD-7B (1024x600)";
         } else if (strncmp(argv[i], "--test-frames=", 14) == 0) {
             max_frames = atoi(argv[i] + 14);
+        } else if (strncmp(argv[i], "--dump-ppm=", 11) == 0) {
+            dump_ppm = argv[i] + 11;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             printf("Moonbase Lambda - Host Simulator\n");
             printf("Usage: %s [options]\n", argv[0]);
@@ -82,6 +85,26 @@ int main(int argc, char **argv) {
         uint16_t *fb = moon_platform_get_framebuffer(&stride);
         if (fb) {
             moon_game_render(&s_game, fb, width, height, stride);
+
+            if (dump_ppm && max_frames > 0 && s_game.frame_count >= (uint32_t)max_frames) {
+                FILE *fp = fopen(dump_ppm, "wb");
+                if (fp) {
+                    fprintf(fp, "P6\n%d %d\n255\n", width, height);
+                    for (int y = 0; y < height; y++) {
+                        for (int x = 0; x < width; x++) {
+                            uint16_t c = fb[y * stride + x];
+                            uint8_t r = ((c >> 11) & 0x1F) * 255 / 31;
+                            uint8_t g = ((c >> 5) & 0x3F) * 255 / 63;
+                            uint8_t b = (c & 0x1F) * 255 / 31;
+                            fputc(r, fp);
+                            fputc(g, fp);
+                            fputc(b, fp);
+                        }
+                    }
+                    fclose(fp);
+                    moon_platform_log("[main] Dumped frame to %s\n", dump_ppm);
+                }
+            }
         }
 
         /* 4. Present frame */
