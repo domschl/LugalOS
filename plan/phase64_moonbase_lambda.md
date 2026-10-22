@@ -34,7 +34,46 @@
 
 ---
 
-## 2. Architecture & Directory Structure
+## 2. Long-Term Progression Vision: The 4 Acts
+
+While Phase 64 immediately focuses on **Act I** to build and polish the foundational mechanics, the broader game arc is structured into four narrative and technical acts:
+
+### Act I: Survival & Bootstrapping (Current Implementation Focus)
+* **Objective**: Touchdown on lunar soil, establish survival basics, bootstrap initial closed-loop life support and raw power.
+* **Core Loops**:
+  * Solar array placement and battery banking for the 14-day lunar day/night cycle.
+  * Regolith quarrying & basic sintering for radiation shielding and foundation pads.
+  * Ice harvesting from polar crater traps; electrolysis for $O_2$ and drinking water.
+  * Establishing the base's first pressurized habitat module.
+
+### Act II: Municipal Expansion & Starship Settlers (Future)
+* **Objective**: Transition from an austere robotic outpost into a thriving lunar city.
+* **Mechanics**:
+  * Construction of a commercial Spaceport with dust-deflection berms and LOX/fuel refueling depots.
+  * Regular arrival of passenger starships from Earth bringing specialized settlers (engineers, scientists, botanists).
+  * Population needs: Hydroponic food production, pressurized residential domes, medical facilities, entertainment, and morale.
+  * Export economy: Shipping refined Helium-3 to Earth to finance high-tech imports and heavy machinery.
+
+### Act III: Cybernetics & Deep Lunar Exploration (Future)
+* **Objective**: Scale operations through automated programming and uncover the Moon's hidden secrets.
+* **Mechanics**:
+  * **Lisp Cybernetics Terminal** (The *Lambda* in *Moonbase Lambda*):
+    * Leveraging LugalOS's built-in Lisp engine (`user/lisp/`) to allow players to script autonomous base behavior (e.g. dynamic power shedding during lunar night, automated harvester dispatch, automated life support alerts).
+  * **Deep Rover Exploration & Sub-Surface Scans**:
+    * Venturing into shadowed polar craters (e.g. Shackleton) and volcanic lava tubes.
+    * Discovery of anomalous gravitational / magnetic mascons concealing ancient alien artifacts.
+    * Reverse-engineering exotic physics: solid-state field shielding, zero-point energy taps, and relativistic propulsion theory.
+
+### Act IV: The Interstellar Ark (Endgame Megaproject) (Future)
+* **Objective**: Leverage the Moon's low gravity and industrial base to construct humanity's first interstellar generation ship.
+* **Mechanics**:
+  * Construction of an equatorial mass driver or orbital space tether.
+  * Massive accumulation of fusion propellants (super-refined Helium-3) and alien-alloy structural trusses.
+  * Commissioning and launching the starship to leave the solar system, providing a definitive victory climax.
+
+---
+
+## 3. Architecture & Directory Structure
 
 ```
 user/moonbase/
@@ -60,7 +99,7 @@ user/moonbase/
 
 ---
 
-## 3. Platform Hardware Abstraction Layer (HAL)
+## 4. Platform Hardware Abstraction Layer (HAL)
 
 The interface in `moon_platform.h` decouples the game core completely from the operating environment:
 
@@ -100,11 +139,11 @@ bool     moon_platform_poll_event(moon_event_t *ev);
 
 ---
 
-## 4. Milestones & Phased Execution
+## 5. Milestones & Phased Execution (Act I Focus)
 
 | Milestone | Status | Key Deliverables | Verification Criteria |
 | :--- | :--- | :--- | :--- |
-| **64.1** | **IN PROGRESS** | Phase plan, project tree, Platform HAL (`moon_platform.h`), Host SDL3 runner, `Makefile` with ASan/UBSan | Clean compile, SDL3 window opens at 1024×600 and 1280×720, exits cleanly on ESC/close, ASan clean |
+| **64.1** | **DONE** | Phase plan, project tree, Platform HAL (`moon_platform.h`), Host SDL3 runner, `Makefile` with ASan/UBSan | Clean compile, SDL3 window opens at 1024×600 and 1280×720, exits cleanly on ESC/close, ASan clean |
 | **64.2** | Planned | Fixed-point math (`moon_fixed.h`), 16-bit RGB565 blitter (`moon_blitter.c`), dirty rects, procedural glyph rendering | Flat shading, color fills, sprite blits with transparency key, 60 FPS verified |
 | **64.3** | Planned | Isometric projection math, screen-to-grid raycasting/picking, procedural lunar terrain generation (regolith, craters, elevation) | Smooth camera pan/drag, correct tile highlighting under cursor |
 | **64.4** | Planned | Structure catalog (Lander, Solar Array, Battery, Habitat, Regolith Sinterer, O2 Plant), footprint & placement rules | Validated placement, collision detection, road/cable network connections |
