@@ -1,49 +1,7 @@
 #include "moon_game.h"
 #include "moon_config.h"
 #include "moon_fixed.h"
-
-/* Simple integer clamp */
-static inline int32_t clamp_i32(int32_t v, int32_t min_v, int32_t max_v) {
-    if (v < min_v) return min_v;
-    if (v > max_v) return max_v;
-    return v;
-}
-
-/* Fast flat-colored rectangle */
-static void draw_rect(uint16_t *fb, int stride, int x, int y, int w, int h, uint16_t color) {
-    if (w <= 0 || h <= 0) return;
-    for (int cy = y; cy < y + h; cy++) {
-        uint16_t *row = fb + cy * stride + x;
-        for (int cx = 0; cx < w; cx++) {
-            row[cx] = color;
-        }
-    }
-}
-
-/* Fast Bresenham line for RGB565 */
-static void draw_line(uint16_t *fb, int stride, int x0, int y0, int x1, int y1, uint16_t color, int clip_w, int clip_h) {
-    int dx = (x1 > x0) ? (x1 - x0) : (x0 - x1);
-    int dy = (y1 > y0) ? (y1 - y0) : (y0 - y1);
-    int sx = (x0 < x1) ? 1 : -1;
-    int sy = (y0 < y1) ? 1 : -1;
-    int err = dx - dy;
-
-    for (;;) {
-        if (x0 >= 0 && x0 < clip_w && y0 >= 0 && y0 < clip_h) {
-            fb[y0 * stride + x0] = color;
-        }
-        if (x0 == x1 && y0 == y1) break;
-        int e2 = 2 * err;
-        if (e2 > -dy) {
-            err -= dy;
-            x0 += sx;
-        }
-        if (e2 < dx) {
-            err += dx;
-            y0 += sy;
-        }
-    }
-}
+#include "moon_blitter.h"
 
 /* Coordinate transform: Grid (gx, gy) -> Screen (sx, sy) relative to camera */
 static void grid_to_screen(int32_t gx, int32_t gy, int32_t cam_x, int32_t cam_y,
@@ -65,8 +23,6 @@ static void screen_to_grid(int32_t sx, int32_t sy, int32_t cam_x, int32_t cam_y,
     int32_t iso_y = sy + cam_y - (screen_h / 2);
 
     /* Inverse 2:1 isometric formula using pure integer math */
-    /* iso_x / (W/2) = gx - gy */
-    /* iso_y / (H/2) = gx + gy */
     int64_t num_x = (int64_t)iso_x * FIXED_ONE / MOON_TILE_HALF_W;
     int64_t num_y = (int64_t)iso_y * FIXED_ONE / MOON_TILE_HALF_H;
 
@@ -77,49 +33,6 @@ static void screen_to_grid(int32_t sx, int32_t sy, int32_t cam_x, int32_t cam_y,
     *gy = (int32_t)(calc_gy >> FIXED_SHIFT);
 }
 
-/* Draw one isometric tile diamond */
-static void draw_iso_tile(uint16_t *fb, int stride, int32_t sx, int32_t sy,
-                          uint16_t fill_color, uint16_t border_color,
-                          int clip_w, int clip_h) {
-    /* Diamond vertices:
-     * Top:    (sx, sy - HALF_H)
-     * Right:  (sx + HALF_W, sy)
-     * Bottom: (sx, sy + HALF_H)
-     * Left:   (sx - HALF_W, sy)
-     */
-    int32_t top_x = sx, top_y = sy - MOON_TILE_HALF_H;
-    int32_t right_x = sx + MOON_TILE_HALF_W, right_y = sy;
-    int32_t bot_x = sx, bot_y = sy + MOON_TILE_HALF_H;
-    int32_t left_x = sx - MOON_TILE_HALF_W, left_y = sy;
-
-    /* Fill horizontal spans across diamond */
-    for (int y = -MOON_TILE_HALF_H; y <= MOON_TILE_HALF_H; y++) {
-        int py = sy + y;
-        if (py < 0 || py >= clip_h) continue;
-
-        int span = (y <= 0) ? (MOON_TILE_HALF_H + y) : (MOON_TILE_HALF_H - y);
-        int half_span_x = span * 2; /* 2:1 slope */
-
-        int lx = sx - half_span_x;
-        int rx = sx + half_span_x;
-        if (lx < 0) lx = 0;
-        if (rx >= clip_w) rx = clip_w - 1;
-
-        if (lx <= rx) {
-            uint16_t *row = fb + py * stride;
-            for (int x = lx; x <= rx; x++) {
-                row[x] = fill_color;
-            }
-        }
-    }
-
-    /* Outline borders */
-    draw_line(fb, stride, top_x, top_y, right_x, right_y, border_color, clip_w, clip_h);
-    draw_line(fb, stride, right_x, right_y, bot_x, bot_y, border_color, clip_w, clip_h);
-    draw_line(fb, stride, bot_x, bot_y, left_x, left_y, border_color, clip_w, clip_h);
-    draw_line(fb, stride, left_x, left_y, top_x, top_y, border_color, clip_w, clip_h);
-}
-
 bool moon_game_init(moon_game_t *game, int width, int height) {
     if (!game) return false;
 
@@ -128,7 +41,7 @@ bool moon_game_init(moon_game_t *game, int width, int height) {
     game->screen_w = width;
     game->screen_h = height;
 
-    /* Center camera on initial base site (tile 32, 32) */
+    /* Center camera on initial expedition landing site (tile 32, 32) */
     game->cam_x = 0;
     game->cam_y = 32 * MOON_TILE_H;
 
@@ -171,22 +84,22 @@ void moon_game_handle_event(moon_game_t *game, const moon_event_t *ev) {
                     break;
                 case MOON_KEY_UP:
                 case MOON_KEY_W:
-                    game->cam_y -= 16;
+                    game->cam_y -= 24;
                     break;
                 case MOON_KEY_DOWN:
                 case MOON_KEY_S:
-                    game->cam_y += 16;
+                    game->cam_y += 24;
                     break;
                 case MOON_KEY_LEFT:
                 case MOON_KEY_A:
-                    game->cam_x -= 16;
+                    game->cam_x -= 24;
                     break;
                 case MOON_KEY_RIGHT:
                 case MOON_KEY_D:
-                    game->cam_x += 16;
+                    game->cam_x += 24;
                     break;
                 case MOON_KEY_SPACE:
-                    /* Reset camera to center */
+                    /* Recenter camera on expedition lander */
                     game->cam_x = 0;
                     game->cam_y = 32 * MOON_TILE_H;
                     break;
@@ -231,8 +144,8 @@ void moon_game_handle_event(moon_game_t *game, const moon_event_t *ev) {
 
         case MOON_EVENT_SCROLL:
             /* Panning with scroll wheel */
-            game->cam_x -= (int32_t)ev->wheel_x * 24;
-            game->cam_y -= (int32_t)ev->wheel_y * 24;
+            game->cam_x -= (int32_t)ev->wheel_x * 32;
+            game->cam_y -= (int32_t)ev->wheel_y * 32;
             break;
 
         default:
@@ -249,24 +162,20 @@ void moon_game_update(moon_game_t *game, uint32_t delta_ms) {
     while (game->last_tick_ms >= MOON_SIM_TICK_MS) {
         game->last_tick_ms -= MOON_SIM_TICK_MS;
         game->sim_ticks++;
-        /* Future: resource tick & simulation updates */
     }
 }
 
 void moon_game_render(moon_game_t *game, uint16_t *fb, int width, int height, int stride) {
     if (!game || !fb) return;
 
+    moon_surface_t surf = moon_surface_make(fb, width, height, stride);
+
     /* 1. Clear background to lunar deep space */
-    for (int y = 0; y < height; y++) {
-        uint16_t *row = fb + y * stride;
-        for (int x = 0; x < width; x++) {
-            row[x] = COLOR_SPACE_BLACK;
-        }
-    }
+    moon_blit_clear(&surf, COLOR_SPACE_BLACK);
 
     /* 2. Render visible isometric terrain tiles */
     int32_t view_left = 0;
-    int32_t view_top = 32; /* Top HUD bar reserve */
+    int32_t view_top = 36; /* Top HUD bar reserve */
     int32_t view_right = width;
     int32_t view_bottom = height;
 
@@ -294,33 +203,61 @@ void moon_game_render(moon_game_t *game, uint16_t *fb, int width, int height, in
             }
 
             /* Highlight hovered tile */
-            if (game->hover_valid && gx == game->hover_tile_x && gy == game->hover_tile_y) {
+            bool is_hover = (game->hover_valid && gx == game->hover_tile_x && gy == game->hover_tile_y);
+            if (is_hover) {
                 fill_color = COLOR_LASER_CYAN;
             }
 
-            /* Draw the tile */
-            draw_iso_tile(fb, stride, sx, sy, fill_color, COLOR_REGOLITH_LIGHT, width, height);
+            /* Render Lander at tile (32, 32) as an extruded 3D isometric structure */
+            if (gx == 32 && gy == 32) {
+                moon_blit_iso_block(&surf, sx, sy,
+                                    MOON_TILE_HALF_W, MOON_TILE_HALF_H, 20,
+                                    COLOR_GOLD_FOIL,
+                                    moon_color_dim(COLOR_GOLD_FOIL, 180),
+                                    moon_color_dim(COLOR_GOLD_FOIL, 220),
+                                    COLOR_LUNAR_WHITE);
+            } else {
+                /* Standard terrain tile */
+                moon_blit_iso_tile(&surf, sx, sy,
+                                   MOON_TILE_HALF_W, MOON_TILE_HALF_H,
+                                   fill_color, COLOR_REGOLITH_LIGHT);
+            }
         }
     }
 
-    /* 3. Render Top HUD Bar (Title, Coordinates, Resources) */
-    draw_rect(fb, stride, 0, 0, width, 28, RGB565(18, 20, 24));
-    draw_line(fb, stride, 0, 28, width - 1, 28, COLOR_GOLD_FOIL, width, height);
+    /* 3. Render Top HUD Bar (Title, Resources, Coordinates) */
+    moon_blit_fill_rect(&surf, 0, 0, width, 32, RGB565(14, 16, 20));
+    moon_blit_line(&surf, 0, 32, width - 1, 32, COLOR_GOLD_FOIL);
 
-    /* Indicator blocks representing resource status */
-    /* Power (Yellow) */
-    draw_rect(fb, stride, 16, 6, 16, 16, COLOR_ENERGY_YELLOW);
-    /* Regolith (Gray) */
-    draw_rect(fb, stride, 120, 6, 16, 16, COLOR_REGOLITH_LIGHT);
-    /* Oxygen (Cyan) */
-    draw_rect(fb, stride, 230, 6, 16, 16, COLOR_LASER_CYAN);
-    /* Water (Blue) */
-    draw_rect(fb, stride, 340, 6, 16, 16, COLOR_SOLAR_BLUE);
-    /* Fuel (Red) */
-    draw_rect(fb, stride, 450, 6, 16, 16, COLOR_ALERT_RED);
+    /* Game Banner */
+    moon_blit_text(&surf, 12, 8, "MOONBASE LAMBDA", COLOR_GOLD_FOIL, 0, true);
 
-    /* Hover tile coordinate badge */
+    /* Resource Indicators with numeric values */
+    /* PWR (Yellow) */
+    moon_blit_fill_rect(&surf, 160, 10, 8, 12, COLOR_ENERGY_YELLOW);
+    moon_blit_text(&surf, 172, 8, "PWR 100%", COLOR_ENERGY_YELLOW, 0, true);
+
+    /* RGL (Regolith, Gray) */
+    moon_blit_fill_rect(&surf, 255, 10, 8, 12, COLOR_REGOLITH_LIGHT);
+    moon_blit_text(&surf, 267, 8, "RGL 50t", COLOR_REGOLITH_LIGHT, 0, true);
+
+    /* O2 (Oxygen, Cyan) */
+    moon_blit_fill_rect(&surf, 345, 10, 8, 12, COLOR_LASER_CYAN);
+    moon_blit_text(&surf, 357, 8, "O2 99%", COLOR_LASER_CYAN, 0, true);
+
+    /* H2O (Water, Blue) */
+    moon_blit_fill_rect(&surf, 435, 10, 8, 12, COLOR_SOLAR_BLUE);
+    moon_blit_text(&surf, 447, 8, "H2O 1.2kL", COLOR_SOLAR_BLUE, 0, true);
+
+    /* FUEL (Red) */
+    moon_blit_fill_rect(&surf, 540, 10, 8, 12, COLOR_ALERT_RED);
+    moon_blit_text(&surf, 552, 8, "FUEL 400kg", COLOR_ALERT_RED, 0, true);
+
+    /* Right HUD Info (Hover Tile Coordinates) */
     if (game->hover_valid) {
-        draw_rect(fb, stride, width - 180, 4, 160, 20, RGB565(30, 35, 42));
+        moon_blit_fill_rect(&surf, width - 180, 4, 170, 24, RGB565(26, 30, 36));
+        moon_blit_rect_outline(&surf, width - 180, 4, 170, 24, COLOR_LASER_CYAN);
+        moon_blit_text_fmt(&surf, width - 170, 8, COLOR_LASER_CYAN, 0, true,
+                           "TILE: [%02d, %02d]", game->hover_tile_x, game->hover_tile_y);
     }
 }

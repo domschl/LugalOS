@@ -16,21 +16,34 @@ SDL_CFLAGS := $(shell pkg-config --cflags sdl3 2>/dev/null)
 SDL_LIBS   := $(shell pkg-config --libs sdl3 2>/dev/null || echo "-lSDL3")
 
 SRC := src/platform_sdl3.c \
+       src/moon_fixed.c \
+       src/moon_font8x16.c \
+       src/moon_blitter.c \
        src/moon_game.c \
        src/main_host.c
+
+TEST_SRC := tests/test_fixed_blitter.c \
+            src/moon_fixed.c \
+            src/moon_font8x16.c \
+            src/moon_blitter.c
 
 OBJ_DIR := build_host
 OBJ := $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 BIN_DIR := bin
 TARGET := $(BIN_DIR)/moonbase_host
+TEST_TARGET := $(BIN_DIR)/test_fixed_blitter
 
 .PHONY: all run run_tab5 test clean
 
-all: $(TARGET)
+all: $(TARGET) $(TEST_TARGET)
 
-test: $(TARGET)
+test: $(TEST_TARGET) $(TARGET)
+	./$(TEST_TARGET)
 	SDL_VIDEO_DRIVER=dummy ./$(TARGET) --7b --test-frames=15
 	SDL_VIDEO_DRIVER=dummy ./$(TARGET) --tab5 --test-frames=15
+
+$(TEST_TARGET): $(TEST_SRC) | $(BIN_DIR)
+	$(CC) $(CFLAGS) $^ -o $@
 
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)

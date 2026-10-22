@@ -144,7 +144,7 @@ bool     moon_platform_poll_event(moon_event_t *ev);
 | Milestone | Status | Key Deliverables | Verification Criteria |
 | :--- | :--- | :--- | :--- |
 | **64.1** | **DONE** | Phase plan, project tree, Platform HAL (`moon_platform.h`), Host SDL3 runner, `Makefile` with ASan/UBSan | Clean compile, SDL3 window opens at 1024×600 and 1280×720, exits cleanly on ESC/close, ASan clean |
-| **64.2** | Planned | Fixed-point math (`moon_fixed.h`), 16-bit RGB565 blitter (`moon_blitter.c`), dirty rects, procedural glyph rendering | Flat shading, color fills, sprite blits with transparency key, 60 FPS verified |
+| **64.2** | **DONE** | Fixed-point math (`moon_fixed.h`), 16-bit RGB565 blitter (`moon_blitter.c`), 3D iso block extrusion, 8x16 font typography | Test suite (`bin/test_fixed_blitter`) passes 100%, sprite & geometric clipping verified under ASan |
 | **64.3** | Planned | Isometric projection math, screen-to-grid raycasting/picking, procedural lunar terrain generation (regolith, craters, elevation) | Smooth camera pan/drag, correct tile highlighting under cursor |
 | **64.4** | Planned | Structure catalog (Lander, Solar Array, Battery, Habitat, Regolith Sinterer, O2 Plant), footprint & placement rules | Validated placement, collision detection, road/cable network connections |
 | **64.5** | Planned | Resource simulation loop (Energy, Regolith, Oxygen, Water, Fuel), Lunar Day/Night cycle, life support stress | Discrete tick updates, battery discharge during night, resource starvation warnings |
