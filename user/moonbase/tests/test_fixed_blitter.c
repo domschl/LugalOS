@@ -6,6 +6,72 @@
 #include "moon_fixed.h"
 #include "moon_blitter.h"
 #include "moon_grid.h"
+#include "moon_structures.h"
+
+static void test_structure_catalog_and_placement(void) {
+    printf("[test] Checking structure catalog, footprints & placement rules...\n");
+
+    moon_grid_t grid;
+    moon_grid_generate(&grid, 19690720);
+
+    moon_structure_mgr_t mgr;
+    moon_structure_mgr_init(&mgr);
+
+    /* 1. Catalog integrity */
+    for (int t = 1; t < MOON_STRUCT_COUNT; t++) {
+        const moon_structure_def_t *def = moon_structure_get_def((moon_structure_type_t)t);
+        assert(def != NULL);
+        assert(def->name != NULL);
+        assert(def->footprint_w >= 1 && def->footprint_w <= 2);
+        assert(def->footprint_h >= 1 && def->footprint_h <= 2);
+    }
+
+    /* 2. Initial expedition lander */
+    moon_structure_t *lander = moon_structure_place(&grid, &mgr, MOON_STRUCT_LANDER, 32, 32);
+    assert(lander != NULL);
+    assert(mgr.count == 1);
+    assert(grid.tiles[32][32].flags & MOON_TILE_FLAG_OCCUPIED);
+    assert(grid.tiles[32][32].structure_id == lander->id);
+
+    /* 3. Collision: placing on top of lander must fail */
+    const char *reason = NULL;
+    bool can_place = moon_structure_can_place(&grid, &mgr, MOON_STRUCT_SOLAR_ARRAY, 32, 32, &reason);
+    assert(!can_place);
+    assert(strcmp(reason, "Site already occupied") == 0);
+
+    /* 4. Placement of Solar Array at (33, 32) */
+    moon_structure_t *solar = moon_structure_place(&grid, &mgr, MOON_STRUCT_SOLAR_ARRAY, 33, 32);
+    assert(solar != NULL);
+    assert(mgr.count == 2);
+    assert(grid.tiles[32][33].flags & MOON_TILE_FLAG_OCCUPIED);
+
+    /* 5. 2x2 Habitat Dome placement at (30, 30) */
+    moon_structure_t *hab = moon_structure_place(&grid, &mgr, MOON_STRUCT_HABITAT_DOME, 30, 30);
+    assert(hab != NULL);
+    assert(mgr.count == 3);
+    assert(grid.tiles[30][30].flags & MOON_TILE_FLAG_OCCUPIED);
+    assert(grid.tiles[30][31].flags & MOON_TILE_FLAG_OCCUPIED);
+    assert(grid.tiles[31][30].flags & MOON_TILE_FLAG_OCCUPIED);
+    assert(grid.tiles[31][31].flags & MOON_TILE_FLAG_OCCUPIED);
+
+    /* 6. Demolition */
+    moon_structure_demolish(&grid, &mgr, 33, 32);
+    assert(mgr.count == 2);
+    assert(!(grid.tiles[32][33].flags & MOON_TILE_FLAG_OCCUPIED));
+
+    /* 7. Render structures and ghost preview onto surface */
+    uint16_t *surf_buf = (uint16_t *)calloc(1024 * 600, sizeof(uint16_t));
+    assert(surf_buf != NULL);
+    moon_surface_t surf = moon_surface_make(surf_buf, 1024, 600, 1024);
+
+    moon_structure_render_all(&mgr, &grid, &surf, 0, 32 * MOON_TILE_H);
+
+    mgr.selected_build_type = MOON_STRUCT_BATTERY_BANK;
+    moon_structure_render_ghost(&mgr, &grid, &surf, 0, 32 * MOON_TILE_H, 34, 32);
+
+    free(surf_buf);
+    printf("[test] Structure catalog, footprints & placement rules: PASS\n");
+}
 
 static void test_grid_generation_and_projection(void) {
     printf("[test] Checking lunar terrain generation & grid projections...\n");
@@ -13,13 +79,13 @@ static void test_grid_generation_and_projection(void) {
     moon_grid_t grid;
     moon_grid_generate(&grid, 19690720);
 
-    /* Verify lander tile */
+    /* Verify lander tile is ready with foundation pad */
     const moon_tile_t *lander = moon_grid_get_tile_const(&grid, grid.lander_gx, grid.lander_gy);
     assert(lander != NULL);
     assert(lander->terrain == MOON_TERRAIN_REGOLITH_FLAT);
     assert(lander->elevation == 1);
-    assert(lander->flags & MOON_TILE_FLAG_OCCUPIED);
-    assert(lander->structure_id == 1);
+    assert(lander->flags & MOON_TILE_FLAG_FOUNDATION);
+    assert(lander->structure_id == 0);
 
     /* Verify presence of diverse terrain types */
     bool has_ice = false;
@@ -196,6 +262,7 @@ int main(void) {
     test_fixed_math();
     test_blitter_and_clipping();
     test_grid_generation_and_projection();
-    printf("[test] All Milestone 64.2 and 64.3 tests passed cleanly.\n");
+    test_structure_catalog_and_placement();
+    printf("[test] All Milestone 64.2, 64.3, and 64.4 tests passed cleanly.\n");
     return 0;
 }
