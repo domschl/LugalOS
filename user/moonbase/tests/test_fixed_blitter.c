@@ -7,6 +7,7 @@
 #include "moon_blitter.h"
 #include "moon_grid.h"
 #include "moon_structures.h"
+#include "moon_resources.h"
 
 static void test_structure_catalog_and_placement(void) {
     printf("[test] Checking structure catalog, footprints & placement rules...\n");
@@ -258,11 +259,92 @@ static void test_blitter_and_clipping(void) {
     printf("[test] Blitter routines & boundary clipping: PASS\n");
 }
 
+static void test_resource_simulation_and_day_night(void) {
+    printf("[test] Checking resource simulation loop & lunar day/night cycle...\n");
+
+    moon_grid_t grid;
+    moon_grid_generate(&grid, 19690720);
+
+    moon_structure_mgr_t mgr;
+    moon_structure_mgr_init(&mgr);
+
+    moon_resources_t res;
+    moon_resources_init(&res);
+
+    /* 1. Initial State */
+    assert(res.lunar_day == 1);
+    assert(!res.is_night);
+    assert(res.solar_intensity > 0);
+    assert(res.population == MOON_LANDER_CREW);
+    assert(res.battery_stored_kwh > 0);
+
+    /* 2. Place Lander at (32, 32) */
+    moon_structure_place(&grid, &mgr, MOON_STRUCT_LANDER, 32, 32);
+
+    /* Place Solar Array connected directly adjacent at (33, 32) */
+    moon_structure_t *solar = moon_structure_place(&grid, &mgr, MOON_STRUCT_SOLAR_ARRAY, 33, 32);
+    assert(solar != NULL);
+
+    /* Place disconnected/isolated Sinterer far away at (10, 10) */
+    moon_structure_t *isolated_sinterer = moon_structure_place(&grid, &mgr, MOON_STRUCT_REGOLITH_PLANT, 10, 10);
+    assert(isolated_sinterer != NULL);
+
+    /* Solve power grid */
+    moon_resources_solve_power_grid(&grid, &mgr);
+    assert(solar->powered == true);
+    assert(isolated_sinterer->powered == false);
+
+    /* Connect isolated sinterer using Power Conduit chain from (32, 32) to (32, 31) */
+    moon_structure_t *cable = moon_structure_place(&grid, &mgr, MOON_STRUCT_POWER_CONDUIT, 32, 31);
+    assert(cable != NULL);
+    moon_resources_solve_power_grid(&grid, &mgr);
+    assert(cable->powered == true);
+
+    /* 3. Run tick at midday */
+    res.cycle_tick = MOON_LUNAR_DAY_TICKS * 90 / 360; /* Noon: 90 deg */
+    moon_resources_tick(&res, &grid, &mgr);
+    assert(!res.is_night);
+    assert(res.sun_elevation_deg == 90);
+    assert(res.power_produced_kw >= 35); /* RTG 10 kW + Solar ~30 kW */
+    assert(res.power_net_kw > 0);
+    assert(!res.power_brownout);
+
+    /* 4. Advance into Lunar Night (270 deg) */
+    res.cycle_tick = MOON_LUNAR_DAY_TICKS * 270 / 360;
+    moon_resources_tick(&res, &grid, &mgr);
+    assert(res.is_night);
+    assert(res.solar_intensity == 0);
+    /* In night, solar produces 0 kW, only Lander RTG (10 kW) */
+    assert(res.power_produced_kw == 10);
+
+    /* 5. Add power-hungry Regolith Sinterer adjacent to lander at (31, 32) */
+    moon_structure_t *sinterer = moon_structure_place(&grid, &mgr, MOON_STRUCT_REGOLITH_PLANT, 31, 32);
+    assert(sinterer != NULL);
+
+    /* At night: consumption (5 base + 20 Sinterer = 25 kW) exceeds RTG (10 kW) -> deficit of -15 kW */
+    res.battery_stored_kwh = fixed_from_int(1); /* almost empty */
+    moon_resources_tick(&res, &grid, &mgr);
+    assert(res.power_net_kw < 0);
+
+    /* Drain battery to 0 -> trigger brownout and cold warning */
+    for (int t = 0; t < 20; t++) {
+        moon_resources_tick(&res, &grid, &mgr);
+    }
+    assert(res.battery_stored_kwh == 0);
+    assert(res.power_brownout == true);
+    assert(res.warning_power == true);
+    assert(res.warning_cold == true);
+    assert(res.life_support_pct < 100);
+
+    printf("[test] Resource simulation loop & lunar day/night cycle: PASS\n");
+}
+
 int main(void) {
     test_fixed_math();
     test_blitter_and_clipping();
     test_grid_generation_and_projection();
     test_structure_catalog_and_placement();
-    printf("[test] All Milestone 64.2, 64.3, and 64.4 tests passed cleanly.\n");
+    test_resource_simulation_and_day_night();
+    printf("[test] All Milestone 64.2, 64.3, 64.4, and 64.5 tests passed cleanly.\n");
     return 0;
 }

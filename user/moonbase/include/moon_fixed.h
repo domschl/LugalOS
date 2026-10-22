@@ -14,19 +14,27 @@ typedef int32_t fixed32_t;
 #define FIXED_HALF          ((fixed32_t)(1 << (FIXED_SHIFT - 1)))
 #define FIXED_ZERO          ((fixed32_t)0)
 
-#define INT_TO_FIXED(x)     ((fixed32_t)((int32_t)(x) << FIXED_SHIFT))
+#define INT_TO_FIXED(x)     ((fixed32_t)((uint32_t)(x) << FIXED_SHIFT))
 #define FIXED_TO_INT(x)     ((int32_t)((x) >> FIXED_SHIFT))
 #define FIXED_ROUND(x)      ((int32_t)(((x) + FIXED_HALF) >> FIXED_SHIFT))
+
+static inline fixed32_t fixed_from_int(int32_t x) {
+    return INT_TO_FIXED(x);
+}
+
+static inline int32_t fixed_to_int(fixed32_t x) {
+    return FIXED_TO_INT(x);
+}
 
 /* Multiplication: (a * b) >> 16 using 64-bit intermediate */
 static inline fixed32_t fixed_mul(fixed32_t a, fixed32_t b) {
     return (fixed32_t)(((int64_t)a * (int64_t)b) >> FIXED_SHIFT);
 }
 
-/* Division: (a << 16) / b using 64-bit intermediate */
+/* Division: (a * 65536) / b using 64-bit intermediate */
 static inline fixed32_t fixed_div(fixed32_t a, fixed32_t b) {
     if (b == 0) return (a >= 0) ? INT32_MAX : INT32_MIN;
-    return (fixed32_t)((((int64_t)a) << FIXED_SHIFT) / b);
+    return (fixed32_t)(((int64_t)a * FIXED_ONE) / b);
 }
 
 static inline fixed32_t fixed_abs(fixed32_t x) {
@@ -99,6 +107,10 @@ static inline fixed32_t fixed_sin_deg(int32_t deg) {
  */
 static inline fixed32_t fixed_cos_deg(int32_t deg) {
     return fixed_sin_deg(deg + 90);
+}
+
+static inline fixed32_t moon_sin(int32_t deg) {
+    return fixed_sin_deg(deg);
 }
 
 #endif /* MOON_FIXED_H */
