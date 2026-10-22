@@ -152,7 +152,11 @@ def generate_c_files(sprites, out_h_path, out_c_path):
 def main():
     specs = [
         ("assets/lander.jpg", "lander", 64, 64),
-        ("assets/solar_array.jpg", "solar_array", 64, 48)
+        ("assets/solar_array.jpg", "solar_array", 64, 48),
+        ("assets/battery_bank.jpg", "battery_bank", 64, 48),
+        ("assets/habitat_dome.jpg", "habitat_dome", 96, 80),
+        ("assets/sinterer.jpg", "sinterer", 64, 48),
+        ("assets/o2_extractor.jpg", "o2_extractor", 64, 48)
     ]
 
     sprites = []
