@@ -1,5 +1,6 @@
 #include "moon_blitter.h"
 #include "moon_grid.h"
+#include "moon_textures.h"
 #include <stdarg.h>
 #include <stdio.h>
 
@@ -284,10 +285,11 @@ static inline uint32_t micro_noise(int32_t gx, int32_t gy, int32_t px, int32_t p
 
 static uint16_t sample_terrain_pixel(int gx, int gy, int px, int py, int sx, int sy,
                                      uint8_t terrain, uint8_t flags) {
+    int rel_x = px - sx;
+    int rel_y = py - sy;
+
     /* Sintered Regolith Paver (Foundation Pad) */
     if (flags & MOON_TILE_FLAG_FOUNDATION) {
-        int rel_x = px - sx;
-        int rel_y = py - sy;
         if (((rel_x + rel_y * 2) % 14 == 0) || ((rel_x - rel_y * 2) % 14 == 0)) {
             return RGB565(42, 42, 48); /* paver seam line */
         }
@@ -297,21 +299,21 @@ static uint16_t sample_terrain_pixel(int gx, int gy, int px, int py, int sx, int
         return RGB565(110, 110, 116);
     }
 
+    /* World-space continuous 2:1 isometric mapping into seamless 128x128 regolith texture */
+    int u = (gx * 32) + (rel_y * 2) + rel_x;
+    int v = (gy * 32) + (rel_y * 2) - rel_x;
+    uint32_t tu = (uint32_t)u & (TEX_REGOLITH_W - 1);
+    uint32_t tv = (uint32_t)v & (TEX_REGOLITH_H - 1);
+    uint16_t base = g_tex_regolith[(tv << 7) | tu];
+
     uint32_t n = micro_noise(gx, gy, px, py);
     uint32_t var = (n >> 28) & 0x0F; /* 0..15 */
 
     switch (terrain) {
-        case MOON_TERRAIN_REGOLITH_FLAT: {
-            uint16_t base = RGB565(88, 88, 92);
-            if (var == 0) return RGB565(48, 48, 52);   /* Micro-craterlet shadow */
-            if (var == 1) return RGB565(128, 128, 134); /* Micro-craterlet rim highlight */
-            if (var <= 5) return moon_color_lerp(base, COLOR_LUNAR_WHITE, FIXED_ONE / 7);
-            if (var >= 12) return moon_color_dim(base, 225);
+        case MOON_TERRAIN_REGOLITH_FLAT:
             return base;
-        }
 
         case MOON_TERRAIN_REGOLITH_ROUGH: {
-            uint16_t base = RGB565(74, 72, 78);
             if ((var % 6) == 0) return RGB565(36, 34, 40);   /* Boulder shadow */
             if ((var % 6) == 1) return RGB565(136, 134, 142); /* Boulder sunward edge */
             if (var >= 13) return moon_color_dim(base, 210);
@@ -319,58 +321,64 @@ static uint16_t sample_terrain_pixel(int gx, int gy, int px, int py, int sx, int
         }
 
         case MOON_TERRAIN_BASALT_MARE: {
-            uint16_t base = RGB565(40, 42, 46);
+            uint16_t dark_basalt = moon_color_dim(base, 140);
             /* Dark volcanic cooling cracks */
             if (((px ^ py) % 11) == 0 && var < 8) return RGB565(16, 17, 20);
             if (var == 3 || var == 4) return RGB565(62, 66, 74); /* Titanium reflection */
-            if (var <= 2) return moon_color_dim(base, 215);
-            return base;
+            return dark_basalt;
         }
 
         case MOON_TERRAIN_CRATER_RIM: {
-            uint16_t base = RGB565(135, 135, 140);
+            uint16_t rim_col = moon_color_lerp(base, COLOR_LUNAR_WHITE, FIXED_ONE / 4);
             /* Jagged ridge striations */
             if (((px - py) % 7) == 0) return RGB565(180, 180, 185);
             if (var >= 12) return RGB565(80, 80, 85); /* Ridge shadow crevice */
-            if (var <= 3) return RGB565(160, 160, 165);
-            return base;
+            return rim_col;
         }
 
-        case MOON_TERRAIN_CRATER_FLOOR: {
-            uint16_t base = RGB565(22, 22, 26);
-            if (var == 0) return RGB565(10, 10, 13);
-            if (var >= 13) return RGB565(36, 36, 42);
-            return base;
-        }
+        case MOON_TERRAIN_CRATER_FLOOR:
+            return moon_color_dim(base, 70);
 
         case MOON_TERRAIN_ICE_DEPOSIT: {
-            uint16_t base = RGB565(90, 165, 215);
+            uint16_t ice_base = moon_color_lerp(base, RGB565(85, 170, 225), FIXED_ONE / 2);
             /* Dazzling specular ice crystal glints */
             if (var == 0 || var == 1) return COLOR_LUNAR_WHITE;
-            if (var == 2 || var == 3) return COLOR_LASER_CYAN;
-            if (var >= 13) return RGB565(55, 115, 160);
-            return base;
+            if (var == 2) return COLOR_LASER_CYAN;
+            return ice_base;
         }
 
         default:
-            return RGB565(80, 80, 80);
+            return base;
     }
 }
 
-static uint16_t sample_cliff_pixel(int x, int dy, uint16_t base_wall_color, int face_type) {
-    uint16_t col = base_wall_color;
+static uint16_t sample_cliff_pixel(int gx, int gy, int rel_x, int dy, uint8_t terrain, int face_type) {
+    /* World-space mapping into seamless 128x64 cliff strata texture */
+    int base_coord = (face_type == 1) ? (gx << 5) : (gy << 5);
+    uint32_t cu = (uint32_t)(base_coord + rel_x) & (TEX_CLIFF_W - 1);
+    uint32_t cv = (uint32_t)dy & (TEX_CLIFF_H - 1);
+    uint16_t col = g_tex_cliff[(cv << 7) | cu];
 
-    /* Horizontal strata modulation (layers of anorthosite & basalt) */
-    int strata_layer = dy % 6;
-    if (strata_layer == 0 || strata_layer == 1) {
-        col = moon_color_dim(base_wall_color, 195); /* Dark dense basalt layer */
-    } else if (strata_layer == 3) {
-        col = moon_color_lerp(base_wall_color, COLOR_LUNAR_WHITE, FIXED_ONE / 5); /* Light anorthosite */
+    /* Natural geological lighting: SW face shadowed, SE face illuminated */
+    if (face_type == 1) {
+        col = moon_color_dim(col, 175);
+    } else {
+        col = moon_color_dim(col, 235);
     }
 
-    /* Vertical rock joint fissures */
-    if (((x + face_type * 3) % 8) == 0) {
-        col = moon_color_dim(col, 175);
+    /* Strata and terrain tinting */
+    switch (terrain) {
+        case MOON_TERRAIN_CRATER_RIM:
+            col = moon_color_lerp(col, COLOR_LUNAR_WHITE, FIXED_ONE / 5);
+            break;
+        case MOON_TERRAIN_BASALT_MARE:
+            col = moon_color_dim(col, 150);
+            break;
+        case MOON_TERRAIN_ICE_DEPOSIT:
+            col = moon_color_lerp(col, COLOR_LASER_CYAN, FIXED_ONE / 3);
+            break;
+        default:
+            break;
     }
 
     return col;
@@ -419,29 +427,6 @@ void moon_blit_iso_block_textured(const moon_surface_t *surf, int sx, int sy,
 
     int top_sy = sy - height_px;
 
-    /* Base wall colors according to terrain */
-    uint16_t top_c, left_c, right_c, bord_c;
-    (void)top_c;
-    (void)bord_c;
-    switch (terrain) {
-        case MOON_TERRAIN_CRATER_RIM:
-            left_c = RGB565(95, 95, 100);
-            right_c = RGB565(115, 115, 120);
-            break;
-        case MOON_TERRAIN_BASALT_MARE:
-            left_c = RGB565(24, 25, 28);
-            right_c = RGB565(32, 34, 38);
-            break;
-        case MOON_TERRAIN_ICE_DEPOSIT:
-            left_c = RGB565(55, 110, 150);
-            right_c = RGB565(75, 135, 180);
-            break;
-        default:
-            left_c = RGB565(58, 58, 62);
-            right_c = RGB565(72, 72, 76);
-            break;
-    }
-
     /* 1. Left Vertical Face with Geological Stratification */
     for (int x = sx - half_w; x <= sx; x++) {
         if (x < 0 || x >= surf->width) continue;
@@ -454,7 +439,7 @@ void moon_blit_iso_block_textured(const moon_surface_t *surf, int sx, int sy,
         if (y_bot >= surf->height) y_bot = surf->height - 1;
 
         for (int y = y_top; y <= y_bot; y++) {
-            surf->pixels[y * surf->stride + x] = sample_cliff_pixel(x, y - y_top, left_c, 1);
+            surf->pixels[y * surf->stride + x] = sample_cliff_pixel(gx, gy, x - sx, y - y_top, terrain, 1);
         }
     }
 
@@ -470,7 +455,7 @@ void moon_blit_iso_block_textured(const moon_surface_t *surf, int sx, int sy,
         if (y_bot >= surf->height) y_bot = surf->height - 1;
 
         for (int y = y_top; y <= y_bot; y++) {
-            surf->pixels[y * surf->stride + x] = sample_cliff_pixel(x, y - y_top, right_c, 2);
+            surf->pixels[y * surf->stride + x] = sample_cliff_pixel(gx, gy, x - sx, y - y_top, terrain, 2);
         }
     }
 

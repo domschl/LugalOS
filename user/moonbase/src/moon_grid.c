@@ -270,15 +270,14 @@ void moon_grid_render(const moon_grid_t *grid, const moon_surface_t *surf,
                                        COLOR_LASER_CYAN, COLOR_LUNAR_WHITE);
                 }
             } else {
-                if (t->flags & MOON_TILE_FLAG_FOUNDATION) {
-                    border_col = COLOR_GOLD_FOIL;
-                }
+                border_col = (t->flags & MOON_TILE_FLAG_FOUNDATION) ? COLOR_GOLD_FOIL : 0;
 
-                /* Procedural textured rendering with cliff stratification */
+                /* Seamless textured rendering with geological cliff stratification */
                 if (height_px > 0) {
+                    uint16_t cliff_rim = (border_col != 0) ? border_col : RGB565(48, 48, 54);
                     moon_blit_iso_block_textured(surf, base_sx, base_sy,
                                                  MOON_TILE_HALF_W, MOON_TILE_HALF_H, height_px,
-                                                 gx, gy, t->terrain, t->flags, border_col);
+                                                 gx, gy, t->terrain, t->flags, cliff_rim);
                 } else {
                     moon_blit_iso_tile_textured(surf, base_sx, base_sy,
                                                 MOON_TILE_HALF_W, MOON_TILE_HALF_H,
