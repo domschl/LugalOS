@@ -1,4 +1,5 @@
 #include "moon_structures.h"
+#include "moon_sprites.h"
 #include <string.h>
 
 /* Static Catalog of Structures */
@@ -289,37 +290,18 @@ void moon_structure_demolish(moon_grid_t *grid,
 }
 
 static void render_lander(const moon_surface_t *surf, int32_t sx, int32_t sy) {
-    /* Gold Foil 3D Lander module sitting on top */
-    moon_blit_iso_block(surf, sx, sy,
-                        MOON_TILE_HALF_W - 4, MOON_TILE_HALF_H - 2, 22,
-                        COLOR_GOLD_FOIL,
-                        moon_color_dim(COLOR_GOLD_FOIL, 175),
-                        moon_color_dim(COLOR_GOLD_FOIL, 220),
-                        COLOR_LUNAR_WHITE);
-
-    /* Pressurized crew cabin cylinder & antenna */
-    moon_blit_circle_filled(surf, sx, sy - 24, 6, COLOR_LUNAR_WHITE);
-    moon_blit_circle(surf, sx, sy - 24, 6, COLOR_GOLD_FOIL);
-    moon_blit_line(surf, sx, sy - 30, sx, sy - 38, COLOR_LUNAR_WHITE);
-    moon_blit_pixel(surf, sx, sy - 39, COLOR_ALERT_RED); /* beacon LED */
+    /* Blit realistic 64x64 Lander sprite anchored at diamond bottom */
+    int dst_x = sx - (SPRITE_LANDER_W / 2);
+    int dst_y = sy + MOON_TILE_HALF_H - SPRITE_LANDER_H;
+    moon_blit_sprite(surf, dst_x, dst_y, &g_surf_lander, MOON_KEY_COLOR);
 }
 
 /* Individual Structure Visual Renderers */
 static void render_solar_array(const moon_surface_t *surf, int32_t sx, int32_t sy) {
-    /* Central support mast */
-    moon_blit_fill_rect(surf, sx - 2, sy - 14, 4, 14, COLOR_LUNAR_WHITE);
-
-    /* Angled photovoltaic wing diamond */
-    int panel_w = MOON_TILE_HALF_W - 4;
-    int panel_h = MOON_TILE_HALF_H - 4;
-    int panel_sy = sy - 14;
-
-    moon_blit_iso_tile(surf, sx, panel_sy, panel_w, panel_h,
-                       COLOR_SOLAR_BLUE, COLOR_LUNAR_WHITE);
-
-    /* Photovoltaic cell busbars (grid lines) */
-    moon_blit_line(surf, sx, panel_sy - panel_h + 2, sx, panel_sy + panel_h - 2, COLOR_LUNAR_WHITE);
-    moon_blit_line(surf, sx - panel_w + 4, panel_sy, sx + panel_w - 4, panel_sy, COLOR_LUNAR_WHITE);
+    /* Blit realistic 64x48 Solar Array sprite */
+    int dst_x = sx - (SPRITE_SOLAR_ARRAY_W / 2);
+    int dst_y = sy + MOON_TILE_HALF_H - SPRITE_SOLAR_ARRAY_H;
+    moon_blit_sprite(surf, dst_x, dst_y, &g_surf_solar_array, MOON_KEY_COLOR);
 }
 
 static void render_battery_bank(const moon_surface_t *surf, int32_t sx, int32_t sy) {
