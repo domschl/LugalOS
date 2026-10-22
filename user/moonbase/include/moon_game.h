@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "moon_platform.h"
+#include "moon_grid.h"
 
 /* Main Game State Machine */
 typedef enum {
@@ -37,6 +38,9 @@ typedef struct {
     int32_t  hover_tile_x;
     int32_t  hover_tile_y;
     bool     hover_valid;
+
+    /* World Grid */
+    moon_grid_t grid;
 
     /* Frame and Tick Counters */
     uint32_t frame_count;
