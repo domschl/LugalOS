@@ -32,12 +32,9 @@ bool moon_game_init(moon_game_t *game, int width, int height) {
     moon_structure_mgr_init(&game->structs);
     moon_structure_place(&game->grid, &game->structs, MOON_STRUCT_LANDER, 32, 32);
 
-    /* Initial expedition resources */
-    game->stored_regolith  = 100; /* Sintered blocks / structural minerals */
-    game->stored_power_kwh = 50;  /* RTG battery reserve */
-    game->stored_o2_kg     = 200; /* Baseline life support */
-    game->stored_water_l   = 500;
-    game->stored_fuel_kg   = 150;
+    /* Initialize resource & life support simulation */
+    moon_resources_init(&game->resources);
+    moon_resources_solve_power_grid(&game->grid, &game->structs);
 
     /* Center camera on initial expedition landing site (tile 32, 32) */
     game->cam_x = 0;
@@ -91,7 +88,8 @@ static void try_place_selected_structure(moon_game_t *game) {
     const moon_structure_def_t *def = moon_structure_get_def(game->structs.selected_build_type);
     if (!def) return;
 
-    if (game->stored_regolith < def->cost_regolith) {
+    fixed32_t cost = fixed_from_int(def->cost_regolith);
+    if (game->resources.regolith_stored_kg < cost) {
         /* Insufficient materials */
         return;
     }
@@ -100,7 +98,8 @@ static void try_place_selected_structure(moon_game_t *game) {
                                                     game->structs.selected_build_type,
                                                     game->hover_tile_x, game->hover_tile_y);
     if (placed) {
-        game->stored_regolith -= def->cost_regolith;
+        game->resources.regolith_stored_kg -= cost;
+        moon_resources_solve_power_grid(&game->grid, &game->structs);
     }
 }
 
@@ -150,6 +149,7 @@ void moon_game_handle_event(moon_game_t *game, const moon_event_t *ev) {
                     if (game->hover_valid) {
                         moon_structure_demolish(&game->grid, &game->structs,
                                                 game->hover_tile_x, game->hover_tile_y);
+                        moon_resources_solve_power_grid(&game->grid, &game->structs);
                     }
                     break;
 
@@ -263,9 +263,10 @@ void moon_game_update(moon_game_t *game, uint32_t delta_ms) {
     game->frame_count++;
     game->last_tick_ms += delta_ms;
 
-    while (game->last_tick_ms >= MOON_SIM_TICK_MS) {
-        game->last_tick_ms -= MOON_SIM_TICK_MS;
+    while (game->last_tick_ms >= MOON_SIM_TICK_INTERVAL_MS) {
+        game->last_tick_ms -= MOON_SIM_TICK_INTERVAL_MS;
         game->sim_ticks++;
+        moon_resources_tick(&game->resources, &game->grid, &game->structs);
     }
 }
 
@@ -287,10 +288,12 @@ static void render_build_ribbon(const moon_game_t *game, const moon_surface_t *s
     for (int i = 0; i < 6; i++) {
         int bx = start_x + i * (btn_w + 6);
         bool selected = (game->structs.selected_build_type == s_build_buttons[i]);
+        const moon_structure_def_t *def = moon_structure_get_def(s_build_buttons[i]);
+        bool can_afford = def && (game->resources.regolith_stored_kg >= fixed_from_int(def->cost_regolith));
 
         uint16_t bg = selected ? RGB565(30, 45, 60) : RGB565(20, 24, 30);
-        uint16_t border = selected ? COLOR_LASER_CYAN : RGB565(60, 65, 75);
-        uint16_t text_col = selected ? COLOR_LUNAR_WHITE : RGB565(170, 175, 185);
+        uint16_t border = selected ? COLOR_LASER_CYAN : (can_afford ? RGB565(60, 65, 75) : RGB565(35, 38, 45));
+        uint16_t text_col = selected ? COLOR_LUNAR_WHITE : (can_afford ? RGB565(170, 175, 185) : RGB565(80, 85, 95));
 
         moon_blit_fill_rect(surf, bx, ribbon_y + 2, btn_w, btn_h, bg);
         moon_blit_rect_outline(surf, bx, ribbon_y + 2, btn_w, btn_h, border);
@@ -334,33 +337,57 @@ void moon_game_render(moon_game_t *game, uint16_t *fb, int width, int height, in
     /* 6. Render Bottom Build Ribbon */
     render_build_ribbon(game, &surf);
 
-    /* 7. Render Top HUD Bar (Title, Resources, Coordinates) */
+    /* 7. Render Top HUD Bar (Title, Day/Night Clock, Power, O2, H2O, Materials, Crew) */
     moon_blit_fill_rect(&surf, 0, 0, width, 32, RGB565(14, 16, 20));
     moon_blit_line(&surf, 0, 32, width - 1, 32, COLOR_GOLD_FOIL);
 
-    /* Game Banner */
-    moon_blit_text(&surf, 12, 8, "MOONBASE LAMBDA", COLOR_GOLD_FOIL, 0, true);
+    /* Lunar Day / Solar Cycle Clock */
+    const moon_resources_t *res = &game->resources;
+    int sun_pct = fixed_to_int(res->solar_intensity * 100);
+    if (!res->is_night) {
+        moon_blit_text_fmt(&surf, 8, 8, COLOR_GOLD_FOIL, 0, true,
+                           "D%02d SUN:%d%%", res->lunar_day, sun_pct);
+    } else {
+        moon_blit_text_fmt(&surf, 8, 8, COLOR_LASER_CYAN, 0, true,
+                           "D%02d NIGHT", res->lunar_day);
+    }
 
-    /* Live Resource Indicators with dynamic numbers */
-    /* PWR (Yellow) */
-    moon_blit_fill_rect(&surf, 160, 10, 8, 12, COLOR_ENERGY_YELLOW);
-    moon_blit_text_fmt(&surf, 172, 8, COLOR_ENERGY_YELLOW, 0, true, "PWR %dkW", game->stored_power_kwh);
+    /* Power Indicator & Battery Reserve */
+    uint16_t pwr_col = res->power_brownout ? COLOR_ALERT_RED : (res->warning_power ? COLOR_ENERGY_YELLOW : COLOR_ENERGY_YELLOW);
+    int batt_kwh = fixed_to_int(res->battery_stored_kwh);
+    moon_blit_fill_rect(&surf, 130, 10, 6, 12, pwr_col);
+    moon_blit_text_fmt(&surf, 140, 8, pwr_col, 0, true,
+                       "PWR %d/%dkW BATT %d/%dkWh",
+                       res->power_produced_kw, res->power_consumed_kw,
+                       batt_kwh, res->battery_capacity_kwh);
 
-    /* RGL (Regolith, Gray) */
-    moon_blit_fill_rect(&surf, 265, 10, 8, 12, COLOR_REGOLITH_LIGHT);
-    moon_blit_text_fmt(&surf, 277, 8, COLOR_REGOLITH_LIGHT, 0, true, "RGL %dt", game->stored_regolith);
+    /* Regolith / Paver Material Stock */
+    int rgl_kg = fixed_to_int(res->regolith_stored_kg);
+    moon_blit_fill_rect(&surf, 380, 10, 6, 12, COLOR_REGOLITH_LIGHT);
+    moon_blit_text_fmt(&surf, 390, 8, COLOR_REGOLITH_LIGHT, 0, true,
+                       "RGL %dkg", rgl_kg);
 
-    /* O2 (Oxygen, Cyan) */
-    moon_blit_fill_rect(&surf, 360, 10, 8, 12, COLOR_LASER_CYAN);
-    moon_blit_text_fmt(&surf, 372, 8, COLOR_LASER_CYAN, 0, true, "O2 %dkg", game->stored_o2_kg);
+    /* O2 (Oxygen) */
+    int o2_kg = fixed_to_int(res->o2_stored_kg);
+    uint16_t o2_col = res->warning_o2 ? COLOR_ALERT_RED : COLOR_LASER_CYAN;
+    moon_blit_fill_rect(&surf, 480, 10, 6, 12, o2_col);
+    moon_blit_text_fmt(&surf, 490, 8, o2_col, 0, true,
+                       "O2 %dkg", o2_kg);
 
-    /* H2O (Water, Blue) */
-    moon_blit_fill_rect(&surf, 460, 10, 8, 12, COLOR_SOLAR_BLUE);
-    moon_blit_text_fmt(&surf, 472, 8, COLOR_SOLAR_BLUE, 0, true, "H2O %dL", game->stored_water_l);
+    /* H2O (Water) */
+    int water_l = fixed_to_int(res->water_stored_l);
+    uint16_t water_col = res->warning_water ? COLOR_ALERT_RED : COLOR_SOLAR_BLUE;
+    moon_blit_fill_rect(&surf, 570, 10, 6, 12, water_col);
+    moon_blit_text_fmt(&surf, 580, 8, water_col, 0, true,
+                       "H2O %dL", water_l);
 
-    /* FUEL (Red) */
-    moon_blit_fill_rect(&surf, 565, 10, 8, 12, COLOR_ALERT_RED);
-    moon_blit_text_fmt(&surf, 577, 8, COLOR_ALERT_RED, 0, true, "FUEL %dkg", game->stored_fuel_kg);
+    /* Crew & Life Support Status */
+    uint16_t ls_col = (res->life_support_pct < 50) ? COLOR_ALERT_RED :
+                      ((res->life_support_pct < 80) ? COLOR_ENERGY_YELLOW : COLOR_STATUS_GREEN);
+    moon_blit_fill_rect(&surf, 660, 10, 6, 12, ls_col);
+    moon_blit_text_fmt(&surf, 670, 8, ls_col, 0, true,
+                       "CREW %d/%d (LS:%d%%)",
+                       res->population, res->max_population, res->life_support_pct);
 
     /* Right HUD Info (Hover Tile Coordinates & Resource Inspector) */
     if (game->hover_valid) {
@@ -371,14 +398,26 @@ void moon_game_render(moon_game_t *game, uint16_t *fb, int width, int height, in
         int elev = ht ? ht->elevation : 0;
         int rval = ht ? ht->resource_val : 0;
 
-        int badge_w = 270;
-        int badge_x = width - badge_w - 10;
+        int badge_w = 210;
+        int badge_x = width - badge_w - 8;
         moon_blit_fill_rect(&surf, badge_x, 4, badge_w, 24, RGB565(26, 30, 36));
         moon_blit_rect_outline(&surf, badge_x, 4, badge_w, 24, COLOR_LASER_CYAN);
 
-        moon_blit_text_fmt(&surf, badge_x + 8, 8, COLOR_LASER_CYAN, 0, true,
+        moon_blit_text_fmt(&surf, badge_x + 6, 8, COLOR_LASER_CYAN, 0, true,
                            "[%02d,%02d] %s E:%d R:%d%%",
                            game->hover_tile_x, game->hover_tile_y,
                            tname, elev, rval);
+    }
+
+    /* 8. Active Life Support / Crisis Warning Ticker Banner */
+    if (res->warning_cold) {
+        moon_blit_fill_rect(&surf, 8, 38, 380, 20, COLOR_ALERT_RED);
+        moon_blit_text(&surf, 14, 40, "[CRITICAL] CRYOGENIC FREEZING: HEATING LOST", COLOR_LUNAR_WHITE, 0, true);
+    } else if (res->warning_power) {
+        moon_blit_fill_rect(&surf, 8, 38, 350, 20, RGB565(180, 50, 20));
+        moon_blit_text(&surf, 14, 40, "[ALERT] POWER BLACKOUT: BATTERIES DEPLETED", COLOR_LUNAR_WHITE, 0, true);
+    } else if (res->warning_o2) {
+        moon_blit_fill_rect(&surf, 8, 38, 320, 20, COLOR_ALERT_RED);
+        moon_blit_text(&surf, 14, 40, "[CRITICAL] O2 STARVATION: RESERVES EMPTY", COLOR_LUNAR_WHITE, 0, true);
     }
 }

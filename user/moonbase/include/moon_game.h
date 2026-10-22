@@ -6,6 +6,7 @@
 #include "moon_platform.h"
 #include "moon_grid.h"
 #include "moon_structures.h"
+#include "moon_resources.h"
 
 /* Main Game State Machine */
 typedef enum {
@@ -44,12 +45,8 @@ typedef struct {
     moon_grid_t          grid;
     moon_structure_mgr_t structs;
 
-    /* Base Resources (Inventory) */
-    uint16_t stored_regolith;   /* Building material blocks */
-    uint16_t stored_power_kwh;  /* Stored electrical energy */
-    uint16_t stored_o2_kg;      /* Life support oxygen */
-    uint16_t stored_water_l;    /* Drinking & hydroponics water */
-    uint16_t stored_fuel_kg;    /* Rocket propellant */
+    /* Base Resources & Life Support Simulation */
+    moon_resources_t     resources;
 
     /* Drag tracking threshold */
     bool was_dragging;
