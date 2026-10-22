@@ -5,6 +5,8 @@
 #include "moon_config.h"
 #include "moon_game.h"
 
+static moon_game_t s_game;
+
 int main(int argc, char **argv) {
     int width = MOON_PRESET_LCD7B_W;
     int height = MOON_PRESET_LCD7B_H;
@@ -48,8 +50,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    moon_game_t game;
-    if (!moon_game_init(&game, width, height)) {
+    if (!moon_game_init(&s_game, width, height)) {
         moon_platform_log("[main] Fatal: failed to initialize game state.\n");
         moon_platform_shutdown();
         return 1;
@@ -57,7 +58,7 @@ int main(int argc, char **argv) {
 
     uint32_t last_time = moon_platform_get_ticks_ms();
 
-    while (game.running) {
+    while (s_game.running) {
         uint32_t current_time = moon_platform_get_ticks_ms();
         uint32_t delta_ms = current_time - last_time;
         if (delta_ms < 1) delta_ms = 1;
@@ -66,21 +67,21 @@ int main(int argc, char **argv) {
         /* 1. Poll & handle inputs */
         moon_event_t ev;
         while (moon_platform_poll_event(&ev)) {
-            moon_game_handle_event(&game, &ev);
+            moon_game_handle_event(&s_game, &ev);
         }
 
         /* 2. Simulation update */
-        moon_game_update(&game, delta_ms);
+        moon_game_update(&s_game, delta_ms);
 
-        if (max_frames > 0 && game.frame_count >= (uint32_t)max_frames) {
-            game.running = false;
+        if (max_frames > 0 && s_game.frame_count >= (uint32_t)max_frames) {
+            s_game.running = false;
         }
 
         /* 3. Render frame to RGB565 surface */
         int stride = 0;
         uint16_t *fb = moon_platform_get_framebuffer(&stride);
         if (fb) {
-            moon_game_render(&game, fb, width, height, stride);
+            moon_game_render(&s_game, fb, width, height, stride);
         }
 
         /* 4. Present frame */
@@ -94,7 +95,7 @@ int main(int argc, char **argv) {
     }
 
     moon_platform_log("[main] Shutting down Moonbase Lambda.\n");
-    moon_game_shutdown(&game);
+    moon_game_shutdown(&s_game);
     moon_platform_shutdown();
 
     return 0;

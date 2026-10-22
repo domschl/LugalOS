@@ -2,35 +2,18 @@
 #include "moon_config.h"
 #include "moon_fixed.h"
 #include "moon_blitter.h"
+#include "moon_grid.h"
 
-/* Coordinate transform: Grid (gx, gy) -> Screen (sx, sy) relative to camera */
-static void grid_to_screen(int32_t gx, int32_t gy, int32_t cam_x, int32_t cam_y,
-                           int32_t screen_w, int32_t screen_h,
-                           int32_t *sx, int32_t *sy) {
-    /* Isometric 2:1 projection */
-    int32_t iso_x = (gx - gy) * MOON_TILE_HALF_W;
-    int32_t iso_y = (gx + gy) * MOON_TILE_HALF_H;
-
-    *sx = iso_x - cam_x + (screen_w / 2);
-    *sy = iso_y - cam_y + (screen_h / 2);
-}
-
-/* Coordinate transform: Screen (sx, sy) -> Grid (gx, gy) */
-static void screen_to_grid(int32_t sx, int32_t sy, int32_t cam_x, int32_t cam_y,
-                           int32_t screen_w, int32_t screen_h,
-                           int32_t *gx, int32_t *gy) {
-    int32_t iso_x = sx + cam_x - (screen_w / 2);
-    int32_t iso_y = sy + cam_y - (screen_h / 2);
-
-    /* Inverse 2:1 isometric formula using pure integer math */
-    int64_t num_x = (int64_t)iso_x * FIXED_ONE / MOON_TILE_HALF_W;
-    int64_t num_y = (int64_t)iso_y * FIXED_ONE / MOON_TILE_HALF_H;
-
-    int64_t calc_gx = (num_y + num_x) / 2;
-    int64_t calc_gy = (num_y - num_x) / 2;
-
-    *gx = (int32_t)(calc_gx >> FIXED_SHIFT);
-    *gy = (int32_t)(calc_gy >> FIXED_SHIFT);
+static const char *get_terrain_name(moon_terrain_type_t t) {
+    switch (t) {
+        case MOON_TERRAIN_REGOLITH_FLAT:  return "REGOLITH";
+        case MOON_TERRAIN_REGOLITH_ROUGH: return "BOULDERS";
+        case MOON_TERRAIN_BASALT_MARE:    return "BASALT MARE";
+        case MOON_TERRAIN_CRATER_RIM:     return "CRATER RIM";
+        case MOON_TERRAIN_CRATER_FLOOR:   return "CRATER FLOOR";
+        case MOON_TERRAIN_ICE_DEPOSIT:    return "POLAR ICE";
+        default:                          return "UNKNOWN";
+    }
 }
 
 bool moon_game_init(moon_game_t *game, int width, int height) {
@@ -40,6 +23,9 @@ bool moon_game_init(moon_game_t *game, int width, int height) {
     game->running = true;
     game->screen_w = width;
     game->screen_h = height;
+
+    /* Generate procedural lunar terrain */
+    moon_grid_generate(&game->grid, 19690720);
 
     /* Center camera on initial expedition landing site (tile 32, 32) */
     game->cam_x = 0;
@@ -69,6 +55,13 @@ void moon_game_shutdown(moon_game_t *game) {
     game->running = false;
 }
 
+static void clamp_camera(moon_game_t *game) {
+    if (game->cam_x < -1200) game->cam_x = -1200;
+    if (game->cam_x > 1200)  game->cam_x = 1200;
+    if (game->cam_y < 100)   game->cam_y = 100;
+    if (game->cam_y > 2000)  game->cam_y = 2000;
+}
+
 void moon_game_handle_event(moon_game_t *game, const moon_event_t *ev) {
     if (!game || !ev) return;
 
@@ -85,18 +78,22 @@ void moon_game_handle_event(moon_game_t *game, const moon_event_t *ev) {
                 case MOON_KEY_UP:
                 case MOON_KEY_W:
                     game->cam_y -= 24;
+                    clamp_camera(game);
                     break;
                 case MOON_KEY_DOWN:
                 case MOON_KEY_S:
                     game->cam_y += 24;
+                    clamp_camera(game);
                     break;
                 case MOON_KEY_LEFT:
                 case MOON_KEY_A:
                     game->cam_x -= 24;
+                    clamp_camera(game);
                     break;
                 case MOON_KEY_RIGHT:
                 case MOON_KEY_D:
                     game->cam_x += 24;
+                    clamp_camera(game);
                     break;
                 case MOON_KEY_SPACE:
                     /* Recenter camera on expedition lander */
@@ -131,12 +128,13 @@ void moon_game_handle_event(moon_game_t *game, const moon_event_t *ev) {
                 int32_t dy = ev->y - game->drag_start_y;
                 game->cam_x = game->cam_start_x - dx;
                 game->cam_y = game->cam_start_y - dy;
+                clamp_camera(game);
             }
 
             /* Update hover tile */
-            screen_to_grid(ev->x, ev->y, game->cam_x, game->cam_y,
-                           game->screen_w, game->screen_h,
-                           &game->hover_tile_x, &game->hover_tile_y);
+            moon_screen_to_grid(ev->x, ev->y, game->cam_x, game->cam_y,
+                                game->screen_w, game->screen_h,
+                                &game->hover_tile_x, &game->hover_tile_y);
 
             game->hover_valid = (game->hover_tile_x >= 0 && game->hover_tile_x < MOON_MAP_SIZE_X &&
                                  game->hover_tile_y >= 0 && game->hover_tile_y < MOON_MAP_SIZE_Y);
@@ -146,6 +144,7 @@ void moon_game_handle_event(moon_game_t *game, const moon_event_t *ev) {
             /* Panning with scroll wheel */
             game->cam_x -= (int32_t)ev->wheel_x * 32;
             game->cam_y -= (int32_t)ev->wheel_y * 32;
+            clamp_camera(game);
             break;
 
         default:
@@ -173,59 +172,23 @@ void moon_game_render(moon_game_t *game, uint16_t *fb, int width, int height, in
     /* 1. Clear background to lunar deep space */
     moon_blit_clear(&surf, COLOR_SPACE_BLACK);
 
-    /* 2. Render visible isometric terrain tiles */
-    int32_t view_left = 0;
-    int32_t view_top = 36; /* Top HUD bar reserve */
-    int32_t view_right = width;
-    int32_t view_bottom = height;
+    /* 2. Render visible isometric terrain & elevated relief */
+    moon_grid_render(&game->grid, &surf,
+                     game->cam_x, game->cam_y,
+                     game->hover_tile_x, game->hover_tile_y,
+                     game->hover_valid);
 
-    /* Draw tiles in back-to-front order (diagonal wave) */
-    for (int d = 0; d < MOON_MAP_SIZE_X + MOON_MAP_SIZE_Y - 1; d++) {
-        for (int gx = 0; gx <= d; gx++) {
-            int gy = d - gx;
-            if (gx >= MOON_MAP_SIZE_X || gy >= MOON_MAP_SIZE_Y) continue;
+    /* 3. Render Bottom-Right Minimap */
+    int mm_size = 64;
+    int mm_x = width - mm_size - 10;
+    int mm_y = height - mm_size - 10;
+    moon_grid_render_minimap(&game->grid, &surf, mm_x, mm_y, mm_size, mm_size,
+                             game->cam_x, game->cam_y);
 
-            int32_t sx, sy;
-            grid_to_screen(gx, gy, game->cam_x, game->cam_y, width, height, &sx, &sy);
+    /* Minimap label */
+    moon_blit_text(&surf, mm_x - 30, mm_y - 18, "RADAR", COLOR_GOLD_FOIL, 0, true);
 
-            /* Viewport culling */
-            if (sx + MOON_TILE_HALF_W < view_left || sx - MOON_TILE_HALF_W >= view_right ||
-                sy + MOON_TILE_HALF_H < view_top  || sy - MOON_TILE_HALF_H >= view_bottom) {
-                continue;
-            }
-
-            /* Procedural lunar landscape shades */
-            uint16_t fill_color = ((gx + gy) & 1) ? COLOR_REGOLITH_MID : COLOR_REGOLITH_DARK;
-
-            /* Checkered crater pattern simulation */
-            if (((gx ^ gy) % 7) == 0) {
-                fill_color = COLOR_CRATER_SHADOW;
-            }
-
-            /* Highlight hovered tile */
-            bool is_hover = (game->hover_valid && gx == game->hover_tile_x && gy == game->hover_tile_y);
-            if (is_hover) {
-                fill_color = COLOR_LASER_CYAN;
-            }
-
-            /* Render Lander at tile (32, 32) as an extruded 3D isometric structure */
-            if (gx == 32 && gy == 32) {
-                moon_blit_iso_block(&surf, sx, sy,
-                                    MOON_TILE_HALF_W, MOON_TILE_HALF_H, 20,
-                                    COLOR_GOLD_FOIL,
-                                    moon_color_dim(COLOR_GOLD_FOIL, 180),
-                                    moon_color_dim(COLOR_GOLD_FOIL, 220),
-                                    COLOR_LUNAR_WHITE);
-            } else {
-                /* Standard terrain tile */
-                moon_blit_iso_tile(&surf, sx, sy,
-                                   MOON_TILE_HALF_W, MOON_TILE_HALF_H,
-                                   fill_color, COLOR_REGOLITH_LIGHT);
-            }
-        }
-    }
-
-    /* 3. Render Top HUD Bar (Title, Resources, Coordinates) */
+    /* 4. Render Top HUD Bar (Title, Resources, Coordinates) */
     moon_blit_fill_rect(&surf, 0, 0, width, 32, RGB565(14, 16, 20));
     moon_blit_line(&surf, 0, 32, width - 1, 32, COLOR_GOLD_FOIL);
 
@@ -253,11 +216,23 @@ void moon_game_render(moon_game_t *game, uint16_t *fb, int width, int height, in
     moon_blit_fill_rect(&surf, 540, 10, 8, 12, COLOR_ALERT_RED);
     moon_blit_text(&surf, 552, 8, "FUEL 400kg", COLOR_ALERT_RED, 0, true);
 
-    /* Right HUD Info (Hover Tile Coordinates) */
+    /* Right HUD Info (Hover Tile Coordinates & Resource Inspector) */
     if (game->hover_valid) {
-        moon_blit_fill_rect(&surf, width - 180, 4, 170, 24, RGB565(26, 30, 36));
-        moon_blit_rect_outline(&surf, width - 180, 4, 170, 24, COLOR_LASER_CYAN);
-        moon_blit_text_fmt(&surf, width - 170, 8, COLOR_LASER_CYAN, 0, true,
-                           "TILE: [%02d, %02d]", game->hover_tile_x, game->hover_tile_y);
+        const moon_tile_t *ht = moon_grid_get_tile_const(&game->grid,
+                                                         game->hover_tile_x,
+                                                         game->hover_tile_y);
+        const char *tname = ht ? get_terrain_name((moon_terrain_type_t)ht->terrain) : "VOID";
+        int elev = ht ? ht->elevation : 0;
+        int rval = ht ? ht->resource_val : 0;
+
+        int badge_w = 270;
+        int badge_x = width - badge_w - 10;
+        moon_blit_fill_rect(&surf, badge_x, 4, badge_w, 24, RGB565(26, 30, 36));
+        moon_blit_rect_outline(&surf, badge_x, 4, badge_w, 24, COLOR_LASER_CYAN);
+
+        moon_blit_text_fmt(&surf, badge_x + 8, 8, COLOR_LASER_CYAN, 0, true,
+                           "[%02d,%02d] %s E:%d R:%d%%",
+                           game->hover_tile_x, game->hover_tile_y,
+                           tname, elev, rval);
     }
 }

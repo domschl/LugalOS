@@ -5,6 +5,73 @@
 
 #include "moon_fixed.h"
 #include "moon_blitter.h"
+#include "moon_grid.h"
+
+static void test_grid_generation_and_projection(void) {
+    printf("[test] Checking lunar terrain generation & grid projections...\n");
+
+    moon_grid_t grid;
+    moon_grid_generate(&grid, 19690720);
+
+    /* Verify lander tile */
+    const moon_tile_t *lander = moon_grid_get_tile_const(&grid, grid.lander_gx, grid.lander_gy);
+    assert(lander != NULL);
+    assert(lander->terrain == MOON_TERRAIN_REGOLITH_FLAT);
+    assert(lander->elevation == 1);
+    assert(lander->flags & MOON_TILE_FLAG_OCCUPIED);
+    assert(lander->structure_id == 1);
+
+    /* Verify presence of diverse terrain types */
+    bool has_ice = false;
+    bool has_basalt = false;
+    bool has_crater_rim = false;
+    bool has_crater_floor = false;
+
+    for (int gy = 0; gy < MOON_MAP_SIZE_Y; gy++) {
+        for (int gx = 0; gx < MOON_MAP_SIZE_X; gx++) {
+            const moon_tile_t *t = &grid.tiles[gy][gx];
+            if (t->terrain == MOON_TERRAIN_ICE_DEPOSIT) has_ice = true;
+            if (t->terrain == MOON_TERRAIN_BASALT_MARE) has_basalt = true;
+            if (t->terrain == MOON_TERRAIN_CRATER_RIM) has_crater_rim = true;
+            if (t->terrain == MOON_TERRAIN_CRATER_FLOOR) has_crater_floor = true;
+        }
+    }
+
+    assert(has_ice);
+    assert(has_basalt);
+    assert(has_crater_rim);
+    assert(has_crater_floor);
+
+    /* Test isometric coordinate roundtrip */
+    int32_t cam_x = 0;
+    int32_t cam_y = 32 * MOON_TILE_H;
+    int32_t screen_w = 1024;
+    int32_t screen_h = 600;
+
+    for (int gy = 20; gy <= 40; gy += 5) {
+        for (int gx = 20; gx <= 40; gx += 5) {
+            int32_t sx, sy;
+            moon_grid_to_screen(gx, gy, 0, cam_x, cam_y, screen_w, screen_h, &sx, &sy);
+
+            int32_t out_gx, out_gy;
+            moon_screen_to_grid(sx, sy, cam_x, cam_y, screen_w, screen_h, &out_gx, &out_gy);
+
+            assert(out_gx == gx);
+            assert(out_gy == gy);
+        }
+    }
+
+    /* Test grid rendering onto surface with boundary clipping */
+    uint16_t *surf_buf = (uint16_t *)calloc(screen_w * screen_h, sizeof(uint16_t));
+    assert(surf_buf != NULL);
+    moon_surface_t surf = moon_surface_make(surf_buf, screen_w, screen_h, screen_w);
+
+    moon_grid_render(&grid, &surf, cam_x, cam_y, 32, 32, true);
+    moon_grid_render_minimap(&grid, &surf, screen_w - 74, screen_h - 74, 64, 64, cam_x, cam_y);
+
+    free(surf_buf);
+    printf("[test] Lunar terrain generation & grid projections: PASS\n");
+}
 
 static void test_fixed_math(void) {
     printf("[test] Checking fixed-point arithmetic...\n");
@@ -121,6 +188,7 @@ static void test_blitter_and_clipping(void) {
 int main(void) {
     test_fixed_math();
     test_blitter_and_clipping();
-    printf("[test] All Milestone 64.2 tests passed cleanly.\n");
+    test_grid_generation_and_projection();
+    printf("[test] All Milestone 64.2 and 64.3 tests passed cleanly.\n");
     return 0;
 }

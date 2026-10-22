@@ -1,6 +1,6 @@
 CC ?= clang
 CFLAGS ?= -Wall -Wextra -std=c11 -O2 -g
-CFLAGS += -Iinclude
+CFLAGS += -Iinclude -MMD -MP
 
 # AddressSanitizer & UndefinedBehaviorSanitizer enabled by default for host safety
 ifeq ($(ASAN), 0)
@@ -19,13 +19,15 @@ SRC := src/platform_sdl3.c \
        src/moon_fixed.c \
        src/moon_font8x16.c \
        src/moon_blitter.c \
+       src/moon_grid.c \
        src/moon_game.c \
        src/main_host.c
 
 TEST_SRC := tests/test_fixed_blitter.c \
             src/moon_fixed.c \
             src/moon_font8x16.c \
-            src/moon_blitter.c
+            src/moon_blitter.c \
+            src/moon_grid.c
 
 OBJ_DIR := build_host
 OBJ := $(SRC:src/%.c=$(OBJ_DIR)/%.o)
@@ -65,3 +67,5 @@ run_tab5: $(TARGET)
 
 clean:
 	rm -rf $(OBJ_DIR) $(BIN_DIR)
+
+-include $(OBJ:.o=.d)
