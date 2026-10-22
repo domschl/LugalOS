@@ -68,6 +68,16 @@ void moon_game_shutdown(moon_game_t *game) {
     game->running = false;
 }
 
+/* Mapping from the 6 Ribbon buttons / keys to placeable structure types */
+static const moon_structure_type_t s_build_buttons[6] = {
+    MOON_STRUCT_SOLAR_ARRAY,    /* Button 1 / Key 1 */
+    MOON_STRUCT_BATTERY_BANK,   /* Button 2 / Key 2 */
+    MOON_STRUCT_HABITAT_DOME,   /* Button 3 / Key 3 */
+    MOON_STRUCT_REGOLITH_PLANT, /* Button 4 / Key 4 */
+    MOON_STRUCT_O2_EXTRACTOR,   /* Button 5 / Key 5 */
+    MOON_STRUCT_POWER_CONDUIT   /* Button 6 / Key 6 */
+};
+
 static void clamp_camera(moon_game_t *game) {
     if (game->cam_x < -1200) game->cam_x = -1200;
     if (game->cam_x > 1200)  game->cam_x = 1200;
@@ -193,13 +203,14 @@ void moon_game_handle_event(moon_game_t *game, const moon_event_t *ev) {
                 if (ev->y >= game->screen_h - 40) {
                     int btn_w = 95;
                     int start_x = 10;
-                    for (int i = 1; i <= 6; i++) {
-                        int bx = start_x + (i - 1) * (btn_w + 6);
+                    for (int i = 0; i < 6; i++) {
+                        int bx = start_x + i * (btn_w + 6);
                         if (ev->x >= bx && ev->x <= bx + btn_w) {
-                            if (game->structs.selected_build_type == i) {
+                            moon_structure_type_t target_type = s_build_buttons[i];
+                            if (game->structs.selected_build_type == target_type) {
                                 game->structs.selected_build_type = MOON_STRUCT_NONE;
                             } else {
-                                game->structs.selected_build_type = (uint8_t)i;
+                                game->structs.selected_build_type = target_type;
                             }
                             break;
                         }
@@ -269,13 +280,13 @@ static void render_build_ribbon(const moon_game_t *game, const moon_surface_t *s
     moon_blit_line(surf, 0, ribbon_y - 2, game->screen_w - 1, ribbon_y - 2, COLOR_GOLD_FOIL);
 
     static const char *labels[6] = {
-        "1:SOLAR 10t", "2:BATT 20t", "3:HAB 50t",
-        "4:SINT 15t",  "5:O2 25t",   "6:CABLE 2t"
+        "1:SOLAR 10t", "2:BATT  20t", "3:HAB   50t",
+        "4:SINT  15t", "5:OXY   25t", "6:CABLE  2t"
     };
 
-    for (int i = 1; i <= 6; i++) {
-        int bx = start_x + (i - 1) * (btn_w + 6);
-        bool selected = (game->structs.selected_build_type == i);
+    for (int i = 0; i < 6; i++) {
+        int bx = start_x + i * (btn_w + 6);
+        bool selected = (game->structs.selected_build_type == s_build_buttons[i]);
 
         uint16_t bg = selected ? RGB565(30, 45, 60) : RGB565(20, 24, 30);
         uint16_t border = selected ? COLOR_LASER_CYAN : RGB565(60, 65, 75);
@@ -283,7 +294,7 @@ static void render_build_ribbon(const moon_game_t *game, const moon_surface_t *s
 
         moon_blit_fill_rect(surf, bx, ribbon_y + 2, btn_w, btn_h, bg);
         moon_blit_rect_outline(surf, bx, ribbon_y + 2, btn_w, btn_h, border);
-        moon_blit_text(surf, bx + 6, ribbon_y + 10, labels[i - 1], text_col, 0, true);
+        moon_blit_text(surf, bx + 6, ribbon_y + 10, labels[i], text_col, 0, true);
     }
 }
 

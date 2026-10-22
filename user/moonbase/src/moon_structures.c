@@ -92,8 +92,8 @@ static const moon_structure_def_t s_catalog[MOON_STRUCT_COUNT] = {
 
     [MOON_STRUCT_O2_EXTRACTOR] = {
         .type           = MOON_STRUCT_O2_EXTRACTOR,
-        .name           = "Volatiles Extractor",
-        .short_name     = "O2 PLANT",
+        .name           = "Oxygen Extractor",
+        .short_name     = "OXYGEN",
         .footprint_w    = 1,
         .footprint_h    = 1,
         .cost_regolith  = 25,
@@ -104,7 +104,7 @@ static const moon_structure_def_t s_catalog[MOON_STRUCT_COUNT] = {
         .primary_color  = RGB565(40, 115, 155),
         .accent_color   = COLOR_LASER_CYAN,
         .height_px      = 20,
-        .desc           = "Electrolyzes ice & reduces ilmenite for closed-loop O2 and water."
+        .desc           = "Electrolyzes ice & reduces ilmenite for closed-loop oxygen and water."
     },
 
     [MOON_STRUCT_POWER_CONDUIT] = {
