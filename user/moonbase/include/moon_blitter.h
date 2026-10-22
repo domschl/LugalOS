@@ -67,6 +67,17 @@ void moon_blit_iso_block(const moon_surface_t *surf, int sx, int sy,
                          uint16_t top_color, uint16_t left_color,
                          uint16_t right_color, uint16_t border_color);
 
+/* Procedural Textured Terrain & Stratified Geological Block Primitives */
+void moon_blit_iso_tile_textured(const moon_surface_t *surf, int sx, int sy,
+                                 int half_w, int half_h,
+                                 int gx, int gy, uint8_t terrain,
+                                 uint8_t flags, uint16_t border_color);
+
+void moon_blit_iso_block_textured(const moon_surface_t *surf, int sx, int sy,
+                                  int half_w, int half_h, int height_px,
+                                  int gx, int gy, uint8_t terrain,
+                                  uint8_t flags, uint16_t border_color);
+
 /* Sprite & Bitmap Blitting with Color-Key Transparency */
 void moon_blit_sprite(const moon_surface_t *dst, int dst_x, int dst_y,
                       const moon_surface_t *src, uint16_t key_color);

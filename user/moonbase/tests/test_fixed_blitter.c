@@ -159,6 +159,13 @@ static void test_blitter_and_clipping(void) {
                         COLOR_GOLD_FOIL, COLOR_REGOLITH_DARK,
                         COLOR_REGOLITH_MID, COLOR_LUNAR_WHITE);
 
+    /* Textured isometric tile & block (procedural texturing and cliff stratification) */
+    moon_blit_iso_tile_textured(&surf, 32, 20, 16, 8, 10, 10,
+                                MOON_TERRAIN_ICE_DEPOSIT, 0, COLOR_LASER_CYAN);
+    moon_blit_iso_block_textured(&surf, 32, 45, 16, 8, 12, 12, 14,
+                                 MOON_TERRAIN_CRATER_RIM, MOON_TILE_FLAG_FOUNDATION,
+                                 COLOR_GOLD_FOIL);
+
     /* Text & formatted text */
     moon_blit_text(&surf, 0, 0, "TEST", COLOR_LUNAR_WHITE, 0, true);
     moon_blit_text_fmt(&surf, 0, 16, COLOR_GOLD_FOIL, 0, true, "VAL=%d", 42);

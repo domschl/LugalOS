@@ -218,61 +218,6 @@ void moon_screen_to_grid(int32_t sx, int32_t sy,
     *gy = (int32_t)(calc_gy >> FIXED_SHIFT);
 }
 
-static void get_terrain_colors(moon_terrain_type_t type,
-                               uint16_t *top_color, uint16_t *left_color,
-                               uint16_t *right_color, uint16_t *border_color) {
-    switch (type) {
-        case MOON_TERRAIN_REGOLITH_FLAT:
-            *top_color    = RGB565(88, 88, 92);
-            *left_color   = RGB565(58, 58, 62);
-            *right_color  = RGB565(72, 72, 76);
-            *border_color = RGB565(115, 115, 120);
-            break;
-
-        case MOON_TERRAIN_REGOLITH_ROUGH:
-            *top_color    = RGB565(74, 72, 78);
-            *left_color   = RGB565(48, 46, 52);
-            *right_color  = RGB565(60, 58, 64);
-            *border_color = RGB565(98, 95, 102);
-            break;
-
-        case MOON_TERRAIN_BASALT_MARE:
-            *top_color    = RGB565(40, 42, 46);
-            *left_color   = RGB565(24, 25, 28);
-            *right_color  = RGB565(32, 34, 38);
-            *border_color = RGB565(58, 60, 66);
-            break;
-
-        case MOON_TERRAIN_CRATER_RIM:
-            *top_color    = RGB565(135, 135, 140);
-            *left_color   = RGB565(95, 95, 100);
-            *right_color  = RGB565(115, 115, 120);
-            *border_color = RGB565(165, 165, 170);
-            break;
-
-        case MOON_TERRAIN_CRATER_FLOOR:
-            *top_color    = RGB565(22, 22, 26);
-            *left_color   = RGB565(14, 14, 18);
-            *right_color  = RGB565(18, 18, 22);
-            *border_color = RGB565(38, 38, 44);
-            break;
-
-        case MOON_TERRAIN_ICE_DEPOSIT:
-            *top_color    = RGB565(90, 165, 215);
-            *left_color   = RGB565(55, 110, 150);
-            *right_color  = RGB565(75, 135, 180);
-            *border_color = RGB565(160, 220, 255);
-            break;
-
-        default:
-            *top_color    = RGB565(80, 80, 80);
-            *left_color   = RGB565(50, 50, 50);
-            *right_color  = RGB565(65, 65, 65);
-            *border_color = RGB565(100, 100, 100);
-            break;
-    }
-}
-
 void moon_grid_render(const moon_grid_t *grid, const moon_surface_t *surf,
                       int32_t cam_x, int32_t cam_y,
                       int32_t hover_gx, int32_t hover_gy, bool hover_valid) {
@@ -306,38 +251,46 @@ void moon_grid_render(const moon_grid_t *grid, const moon_surface_t *surf,
                 continue;
             }
 
-            uint16_t top_col, left_col, right_col, border_col;
-            get_terrain_colors((moon_terrain_type_t)t->terrain,
-                               &top_col, &left_col, &right_col, &border_col);
-
-            /* Checkered regolith subtle variation */
-            if (t->terrain == MOON_TERRAIN_REGOLITH_FLAT && ((gx + gy) & 1)) {
-                top_col = moon_color_dim(top_col, 235);
-            }
+            uint16_t border_col = COLOR_REGOLITH_LIGHT;
 
             /* Highlight hovered tile */
             bool is_hover = (hover_valid && gx == hover_gx && gy == hover_gy);
             if (is_hover) {
-                top_col = COLOR_LASER_CYAN;
                 border_col = COLOR_LUNAR_WHITE;
-            }
-
-            /* Draw 3D elevated block if elevation > 0, else flat diamond */
-            if (height_px > 0) {
-                moon_blit_iso_block(surf, base_sx, base_sy,
-                                    MOON_TILE_HALF_W, MOON_TILE_HALF_H, height_px,
-                                    top_col, left_col, right_col, border_col);
+                if (height_px > 0) {
+                    moon_blit_iso_block(surf, base_sx, base_sy,
+                                        MOON_TILE_HALF_W, MOON_TILE_HALF_H, height_px,
+                                        COLOR_LASER_CYAN,
+                                        moon_color_dim(COLOR_LASER_CYAN, 180),
+                                        moon_color_dim(COLOR_LASER_CYAN, 220),
+                                        COLOR_LUNAR_WHITE);
+                } else {
+                    moon_blit_iso_tile(surf, base_sx, base_sy,
+                                       MOON_TILE_HALF_W, MOON_TILE_HALF_H,
+                                       COLOR_LASER_CYAN, COLOR_LUNAR_WHITE);
+                }
             } else {
-                moon_blit_iso_tile(surf, base_sx, base_sy,
-                                   MOON_TILE_HALF_W, MOON_TILE_HALF_H,
-                                   top_col, border_col);
+                if (t->flags & MOON_TILE_FLAG_FOUNDATION) {
+                    border_col = COLOR_GOLD_FOIL;
+                }
+
+                /* Procedural textured rendering with cliff stratification */
+                if (height_px > 0) {
+                    moon_blit_iso_block_textured(surf, base_sx, base_sy,
+                                                 MOON_TILE_HALF_W, MOON_TILE_HALF_H, height_px,
+                                                 gx, gy, t->terrain, t->flags, border_col);
+                } else {
+                    moon_blit_iso_tile_textured(surf, base_sx, base_sy,
+                                                MOON_TILE_HALF_W, MOON_TILE_HALF_H,
+                                                gx, gy, t->terrain, t->flags, border_col);
+                }
             }
 
             /* Render Expedition Lander at its starting tile */
             if (gx == grid->lander_gx && gy == grid->lander_gy) {
                 int lander_sy = base_sy - height_px;
                 /* Gold Foil 3D Lander module sitting on top */
-                moon_blit_iso_block(surf, lander_sy ? base_sx : base_sx, lander_sy,
+                moon_blit_iso_block(surf, base_sx, lander_sy,
                                     MOON_TILE_HALF_W - 4, MOON_TILE_HALF_H - 2, 22,
                                     COLOR_GOLD_FOIL,
                                     moon_color_dim(COLOR_GOLD_FOIL, 175),
