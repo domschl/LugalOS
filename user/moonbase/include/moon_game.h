@@ -41,6 +41,12 @@ typedef struct {
     int32_t  hover_tile_y;
     bool     hover_valid;
 
+    /* Inspector Selection State */
+    int32_t  selected_tile_x;
+    int32_t  selected_tile_y;
+    bool     has_selection;
+    bool     demolish_tool_active;
+
     /* World Grid & Structures */
     moon_grid_t          grid;
     moon_structure_mgr_t structs;

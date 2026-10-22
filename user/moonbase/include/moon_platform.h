@@ -36,6 +36,7 @@ enum {
     MOON_KEY_Q,
     MOON_KEY_E,
     MOON_KEY_R,
+    MOON_KEY_0,
     MOON_KEY_1,
     MOON_KEY_2,
     MOON_KEY_3,
