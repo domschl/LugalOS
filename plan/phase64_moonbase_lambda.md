@@ -32,6 +32,15 @@
    * **Host Simulator (`platform_sdl3.c`)**: Uses SDL3 to display the RGB565 surface, capture mouse/keyboard inputs, and simulate touch gestures. Compiles natively with `clang`/`gcc` and AddressSanitizer/UBSan for sub-second iteration loops.
    * **LugalOS Bare Metal (`platform_p4.c`)**: Connects directly to LugalOS RGB565 PSRAM canvas (`slot->buf565`), receives touch events from GT911/ST7121, and utilizes hardware tear-free double-buffered scanout.
 
+### 1.3 Texturing Architecture & Visual Pipeline
+To provide visual detail without heavy external image dependencies:
+1. **Procedural Micro-Texturing (Terrain & Cliffs)**:
+   * **Diamond Surface Synthesis**: Algorithmic noise, micro-craterlets, rock speckles, basalt cooling fissures, and ice specular crystal glints generated deterministically per tile coordinate.
+   * **Stratified Cliff Faces**: Horizontal sedimentary strata bands and vertical rock joints on elevated crater rims and plateaus.
+2. **Compact Sprite Asset Pipeline (Structures)**:
+   * 4-bpp / 8-bpp indexed palette or 16-bit RGB565 arrays stored in Flash `.rodata`.
+   * Host tool (`tools/gen_assets.py`) to convert pixel-art PNGs into C headers for buildings, machinery, and vehicles.
+
 ---
 
 ## 2. Long-Term Progression Vision: The 4 Acts
@@ -146,6 +155,7 @@ bool     moon_platform_poll_event(moon_event_t *ev);
 | **64.1** | **DONE** | Phase plan, project tree, Platform HAL (`moon_platform.h`), Host SDL3 runner, `Makefile` with ASan/UBSan | Clean compile, SDL3 window opens at 1024×600 and 1280×720, exits cleanly on ESC/close, ASan clean |
 | **64.2** | **DONE** | Fixed-point math (`moon_fixed.h`), 16-bit RGB565 blitter (`moon_blitter.c`), 3D iso block extrusion, 8x16 font typography | Test suite (`bin/test_fixed_blitter`) passes 100%, sprite & geometric clipping verified under ASan |
 | **64.3** | **DONE** | 64×64 procedural lunar grid (`moon_grid.c`), crater basins/rims, polar ice pockets, minimap radar, elevation relief | Smooth camera drag/pan with map boundary clamping, coordinate roundtrips verified, live tile inspector |
+| **64.3b** | **DONE** | Procedural terrain diamond texturing (regolith dust, basalt fissures, ice crystals) & stratified cliff relief | Rich multi-tone terrain surfaces, rock strata on elevated blocks, zero heap overhead |
 | **64.4** | Planned | Structure catalog (Lander, Solar Array, Battery, Habitat, Regolith Sinterer, O2 Plant), footprint & placement rules | Validated placement, collision detection, road/cable network connections |
 | **64.5** | Planned | Resource simulation loop (Energy, Regolith, Oxygen, Water, Fuel), Lunar Day/Night cycle, life support stress | Discrete tick updates, battery discharge during night, resource starvation warnings |
 | **64.6** | Planned | UI HUD (top resource bar, build menu ribbon, inspector pane), touch controls, minimap overview | Responsive UI, touch-friendly tap/drag gestures, full settlement gameplay loop |
