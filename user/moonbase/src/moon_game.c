@@ -28,9 +28,12 @@ bool moon_game_init(moon_game_t *game, int width, int height) {
     /* Generate procedural lunar terrain */
     moon_grid_generate(&game->grid, 19690720);
 
-    /* Initialize structure manager & place expedition lander at touchdown site */
+    /* Initialize structure manager & place expedition landing site */
     moon_structure_mgr_init(&game->structs);
     moon_structure_place(&game->grid, &game->structs, MOON_STRUCT_LANDER, 32, 32);
+    moon_structure_place(&game->grid, &game->structs, MOON_STRUCT_POWER_CONDUIT, 33, 32);
+    moon_structure_place(&game->grid, &game->structs, MOON_STRUCT_SOLAR_ARRAY, 34, 32);
+    moon_structure_place(&game->grid, &game->structs, MOON_STRUCT_BATTERY_BANK, 33, 33);
 
     /* Initialize resource & life support simulation */
     moon_resources_init(&game->resources);

@@ -305,62 +305,64 @@ static void render_solar_array(const moon_surface_t *surf, int32_t sx, int32_t s
 }
 
 static void render_battery_bank(const moon_surface_t *surf, int32_t sx, int32_t sy) {
-    /* Reinforced battery block */
-    moon_blit_iso_block(surf, sx, sy, MOON_TILE_HALF_W - 6, MOON_TILE_HALF_H - 4, 16,
-                        RGB565(60, 75, 95), RGB565(40, 50, 65), RGB565(50, 62, 80),
-                        COLOR_LUNAR_WHITE);
-
-    /* Glowing charge indicator status LED strip */
-    moon_blit_line(surf, sx - 8, sy - 10, sx + 8, sy - 2, COLOR_STATUS_GREEN);
+    /* Blit realistic 64x48 Battery Bank sprite */
+    int dst_x = sx - (SPRITE_BATTERY_BANK_W / 2);
+    int dst_y = sy + MOON_TILE_HALF_H - SPRITE_BATTERY_BANK_H;
+    moon_blit_sprite(surf, dst_x, dst_y, &g_surf_battery_bank, MOON_KEY_COLOR);
 }
 
 static void render_habitat_dome(const moon_surface_t *surf, int32_t sx, int32_t sy) {
-    /* 2x2 Geodesic Dome: centered between 2x2 tiles */
-    int dome_r = MOON_TILE_HALF_W - 4;
-    int dome_cy = sy - 12;
-
-    /* Base pressurized foundation ring */
-    moon_blit_iso_tile(surf, sx, sy, MOON_TILE_HALF_W * 2 - 8, MOON_TILE_HALF_H * 2 - 4,
-                       RGB565(180, 185, 195), COLOR_LUNAR_WHITE);
-
-    /* Rounded geodesic dome sphere */
-    moon_blit_circle_filled(surf, sx, dome_cy, dome_r, RGB565(210, 215, 225));
-    moon_blit_circle(surf, sx, dome_cy, dome_r, COLOR_LUNAR_WHITE);
-
-    /* Translucent hexagonal observation window facets */
-    moon_blit_fill_rect(surf, sx - 8, dome_cy - 4, 16, 8, COLOR_LASER_CYAN);
-    moon_blit_rect_outline(surf, sx - 8, dome_cy - 4, 16, 8, COLOR_LUNAR_WHITE);
+    /* Blit realistic 96x80 2x2 Habitat Dome sprite centered on 2x2 footprint */
+    int dst_x = sx - (SPRITE_HABITAT_DOME_W / 2);
+    int dst_y = sy + MOON_TILE_H - SPRITE_HABITAT_DOME_H;
+    moon_blit_sprite(surf, dst_x, dst_y, &g_surf_habitat_dome, MOON_KEY_COLOR);
 }
 
 static void render_regolith_sinterer(const moon_surface_t *surf, int32_t sx, int32_t sy) {
-    /* Main furnace bunker */
-    moon_blit_iso_block(surf, sx, sy, MOON_TILE_HALF_W - 6, MOON_TILE_HALF_H - 4, 18,
-                        RGB565(95, 85, 75), RGB565(65, 55, 48), RGB565(80, 70, 62),
-                        COLOR_ENERGY_YELLOW);
-
-    /* Microwave chimney / hopper */
-    moon_blit_fill_rect(surf, sx - 4, sy - 26, 8, 10, RGB565(120, 105, 95));
-    moon_blit_rect_outline(surf, sx - 4, sy - 26, 8, 10, COLOR_GOLD_FOIL);
+    /* Blit realistic 64x48 Regolith Sinterer sprite */
+    int dst_x = sx - (SPRITE_SINTERER_W / 2);
+    int dst_y = sy + MOON_TILE_HALF_H - SPRITE_SINTERER_H;
+    moon_blit_sprite(surf, dst_x, dst_y, &g_surf_sinterer, MOON_KEY_COLOR);
 }
 
 static void render_o2_extractor(const moon_surface_t *surf, int32_t sx, int32_t sy) {
-    /* Base plant */
-    moon_blit_iso_block(surf, sx, sy, MOON_TILE_HALF_W - 6, MOON_TILE_HALF_H - 4, 14,
-                        RGB565(45, 100, 135), RGB565(30, 70, 95), RGB565(38, 85, 115),
-                        COLOR_LASER_CYAN);
-
-    /* Dual spherical cryogenic storage tanks */
-    moon_blit_circle_filled(surf, sx - 8, sy - 16, 7, COLOR_LUNAR_WHITE);
-    moon_blit_circle(surf, sx - 8, sy - 16, 7, COLOR_LASER_CYAN);
-
-    moon_blit_circle_filled(surf, sx + 8, sy - 16, 7, COLOR_LUNAR_WHITE);
-    moon_blit_circle(surf, sx + 8, sy - 16, 7, COLOR_LASER_CYAN);
+    /* Blit realistic 64x48 Oxygen Extractor sprite */
+    int dst_x = sx - (SPRITE_O2_EXTRACTOR_W / 2);
+    int dst_y = sy + MOON_TILE_HALF_H - SPRITE_O2_EXTRACTOR_H;
+    moon_blit_sprite(surf, dst_x, dst_y, &g_surf_o2_extractor, MOON_KEY_COLOR);
 }
 
-static void render_power_conduit(const moon_surface_t *surf, int32_t sx, int32_t sy) {
-    /* Sleek surface cable running through tile center */
-    moon_blit_fill_rect(surf, sx - 4, sy - 2, 8, 4, COLOR_ENERGY_YELLOW);
-    moon_blit_line(surf, sx - 8, sy, sx + 8, sy, COLOR_GOLD_FOIL);
+static void render_power_conduit(const moon_surface_t *surf, const moon_grid_t *grid,
+                                 int gx, int gy, int32_t sx, int32_t sy, bool powered) {
+    /* Directional cable connections to adjacent structures */
+    const moon_tile_t *e = moon_grid_get_tile_const(grid, gx + 1, gy);
+    const moon_tile_t *w = moon_grid_get_tile_const(grid, gx - 1, gy);
+    const moon_tile_t *s = moon_grid_get_tile_const(grid, gx, gy + 1);
+    const moon_tile_t *n = moon_grid_get_tile_const(grid, gx, gy - 1);
+
+    uint16_t cable_col = powered ? COLOR_ENERGY_YELLOW : RGB565(80, 85, 95);
+
+    /* +gx = Down-Right */
+    if (e && e->structure_id != 0) {
+        moon_blit_line(surf, sx, sy, sx + 16, sy + 8, cable_col);
+    }
+    /* -gx = Up-Left */
+    if (w && w->structure_id != 0) {
+        moon_blit_line(surf, sx, sy, sx - 16, sy - 8, cable_col);
+    }
+    /* +gy = Down-Left */
+    if (s && s->structure_id != 0) {
+        moon_blit_line(surf, sx, sy, sx - 16, sy + 8, cable_col);
+    }
+    /* -gy = Up-Right */
+    if (n && n->structure_id != 0) {
+        moon_blit_line(surf, sx, sy, sx + 16, sy - 8, cable_col);
+    }
+
+    /* Central insulated junction box */
+    moon_blit_fill_rect(surf, sx - 4, sy - 4, 9, 9, RGB565(25, 28, 35));
+    moon_blit_rect_outline(surf, sx - 4, sy - 4, 9, 9, COLOR_GOLD_FOIL);
+    moon_blit_pixel(surf, sx, sy, powered ? COLOR_STATUS_GREEN : COLOR_ALERT_RED);
 }
 
 void moon_structure_render_all(const moon_structure_mgr_t *mgr,
@@ -412,7 +414,7 @@ void moon_structure_render_all(const moon_structure_mgr_t *mgr,
                 render_o2_extractor(surf, sx, sy);
                 break;
             case MOON_STRUCT_POWER_CONDUIT:
-                render_power_conduit(surf, sx, sy);
+                render_power_conduit(surf, grid, s->gx, s->gy, sx, sy, s->powered);
                 break;
             default:
                 break;
