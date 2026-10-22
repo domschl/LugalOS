@@ -117,43 +117,50 @@ void moon_game_handle_event(moon_game_t *game, const moon_event_t *ev) {
         case MOON_EVENT_KEY_DOWN:
             switch (ev->key) {
                 case MOON_KEY_ESCAPE:
-                    if (game->structs.selected_build_type != MOON_STRUCT_NONE) {
+                    if (game->structs.selected_build_type != MOON_STRUCT_NONE || game->demolish_tool_active) {
                         game->structs.selected_build_type = MOON_STRUCT_NONE;
+                        game->demolish_tool_active = false;
+                    } else if (game->has_selection) {
+                        game->has_selection = false;
                     } else {
                         game->running = false;
                     }
                     break;
 
+                case MOON_KEY_0:
+                case MOON_KEY_Q:
+                    game->structs.selected_build_type = MOON_STRUCT_NONE;
+                    game->demolish_tool_active = false;
+                    break;
+
                 case MOON_KEY_1:
                     game->structs.selected_build_type = MOON_STRUCT_SOLAR_ARRAY;
+                    game->demolish_tool_active = false;
                     break;
                 case MOON_KEY_2:
                     game->structs.selected_build_type = MOON_STRUCT_BATTERY_BANK;
+                    game->demolish_tool_active = false;
                     break;
                 case MOON_KEY_3:
                     game->structs.selected_build_type = MOON_STRUCT_HABITAT_DOME;
+                    game->demolish_tool_active = false;
                     break;
                 case MOON_KEY_4:
                     game->structs.selected_build_type = MOON_STRUCT_REGOLITH_PLANT;
+                    game->demolish_tool_active = false;
                     break;
                 case MOON_KEY_5:
                     game->structs.selected_build_type = MOON_STRUCT_O2_EXTRACTOR;
+                    game->demolish_tool_active = false;
                     break;
                 case MOON_KEY_6:
                     game->structs.selected_build_type = MOON_STRUCT_POWER_CONDUIT;
-                    break;
-
-                case MOON_KEY_Q:
-                    game->structs.selected_build_type = MOON_STRUCT_NONE;
+                    game->demolish_tool_active = false;
                     break;
 
                 case MOON_KEY_R:
-                    /* Demolish structure at hover tile */
-                    if (game->hover_valid) {
-                        moon_structure_demolish(&game->grid, &game->structs,
-                                                game->hover_tile_x, game->hover_tile_y);
-                        moon_resources_solve_power_grid(&game->grid, &game->structs);
-                    }
+                    game->demolish_tool_active = !game->demolish_tool_active;
+                    game->structs.selected_build_type = MOON_STRUCT_NONE;
                     break;
 
                 case MOON_KEY_UP:
@@ -199,28 +206,129 @@ void moon_game_handle_event(moon_game_t *game, const moon_event_t *ev) {
 
         case MOON_EVENT_POINTER_UP:
             if (ev->button == 3) {
-                /* Right click cancels build mode */
+                /* Right click cancels build / demolish tool */
                 game->structs.selected_build_type = MOON_STRUCT_NONE;
+                game->demolish_tool_active = false;
             } else if (ev->button == 1 && !game->was_dragging) {
-                /* Check if clicked on Bottom Build Ribbon */
+                /* 1. Check if clicked on Minimap Radar for Instant Navigation */
+                int mm_size = 64;
+                int mm_x = game->screen_w - mm_size - 10;
+                int mm_y = game->screen_h - mm_size - 44;
+                if (ev->x >= mm_x && ev->x < mm_x + mm_size && ev->y >= mm_y && ev->y < mm_y + mm_size) {
+                    int target_gx = ev->x - mm_x;
+                    int target_gy = ev->y - mm_y;
+                    game->cam_x = (target_gx - target_gy) * MOON_TILE_HALF_W;
+                    game->cam_y = (target_gx + target_gy) * MOON_TILE_HALF_H;
+                    clamp_camera(game);
+                    game->pointer_down = false;
+                    break;
+                }
+
+                /* 2. Check if clicked on Bottom Build & Tools Ribbon */
                 if (ev->y >= game->screen_h - 40) {
                     int btn_w = 95;
                     int start_x = 10;
-                    for (int i = 0; i < 6; i++) {
+                    for (int i = 0; i < 8; i++) {
                         int bx = start_x + i * (btn_w + 6);
                         if (ev->x >= bx && ev->x <= bx + btn_w) {
-                            moon_structure_type_t target_type = s_build_buttons[i];
-                            if (game->structs.selected_build_type == target_type) {
+                            if (i == 0) {
+                                /* 0: Inspect Mode */
                                 game->structs.selected_build_type = MOON_STRUCT_NONE;
-                            } else {
-                                game->structs.selected_build_type = target_type;
+                                game->demolish_tool_active = false;
+                            } else if (i >= 1 && i <= 6) {
+                                /* 1..6: Placeable Structure Tools */
+                                moon_structure_type_t target_type = s_build_buttons[i - 1];
+                                if (game->structs.selected_build_type == target_type) {
+                                    game->structs.selected_build_type = MOON_STRUCT_NONE;
+                                } else {
+                                    game->structs.selected_build_type = target_type;
+                                    game->demolish_tool_active = false;
+                                }
+                            } else if (i == 7) {
+                                /* R: Demolish / Recycle Tool */
+                                game->demolish_tool_active = !game->demolish_tool_active;
+                                game->structs.selected_build_type = MOON_STRUCT_NONE;
                             }
                             break;
                         }
                     }
+                } else if (game->has_selection &&
+                           ev->x >= game->screen_w - 280 && ev->x <= game->screen_w - 10 &&
+                           ev->y >= 40 && ev->y <= 220) {
+                    /* 3. Check if clicked inside Inspector Drawer */
+                    int ip_x = game->screen_w - 270;
+                    int ip_y = 40;
+
+                    /* Clicked [X] close button */
+                    if (ev->x >= ip_x + 260 - 22 && ev->y <= ip_y + 22) {
+                        game->has_selection = false;
+                    } else if (ev->y >= ip_y + 138 && ev->y <= ip_y + 164) {
+                        const moon_tile_t *tile = moon_grid_get_tile_const(&game->grid,
+                                                                           game->selected_tile_x,
+                                                                           game->selected_tile_y);
+                        if (tile && tile->structure_id != 0 && tile->structure_id != 1) {
+                            /* Clicked [RECYCLE] */
+                            if (ev->x >= ip_x + 8 && ev->x <= ip_x + 123) {
+                                for (int i = 0; i < MOON_MAX_STRUCTURES; i++) {
+                                    if (game->structs.list[i].id == tile->structure_id) {
+                                        const moon_structure_def_t *def = moon_structure_get_def((moon_structure_type_t)game->structs.list[i].type);
+                                        if (def) {
+                                            game->resources.regolith_stored_kg += fixed_from_int(def->cost_regolith / 2);
+                                        }
+                                        break;
+                                    }
+                                }
+                                moon_structure_demolish(&game->grid, &game->structs,
+                                                        game->selected_tile_x, game->selected_tile_y);
+                                moon_resources_solve_power_grid(&game->grid, &game->structs);
+                                game->has_selection = false;
+                            }
+                            /* Clicked [STANDBY / ACTIVATE] */
+                            else if (ev->x >= ip_x + 132 && ev->x <= ip_x + 247) {
+                                for (int i = 0; i < MOON_MAX_STRUCTURES; i++) {
+                                    if (game->structs.list[i].id == tile->structure_id) {
+                                        game->structs.list[i].active = !game->structs.list[i].active;
+                                        moon_resources_solve_power_grid(&game->grid, &game->structs);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
                 } else {
-                    /* Click on map viewport to place structure */
-                    try_place_selected_structure(game);
+                    /* 4. Clicked on Map Viewport */
+                    if (game->demolish_tool_active) {
+                        if (game->hover_valid) {
+                            const moon_tile_t *ht = moon_grid_get_tile_const(&game->grid,
+                                                                             game->hover_tile_x,
+                                                                             game->hover_tile_y);
+                            if (ht && ht->structure_id != 0 && ht->structure_id != 1) {
+                                for (int i = 0; i < MOON_MAX_STRUCTURES; i++) {
+                                    if (game->structs.list[i].id == ht->structure_id) {
+                                        const moon_structure_def_t *def = moon_structure_get_def((moon_structure_type_t)game->structs.list[i].type);
+                                        if (def) {
+                                            game->resources.regolith_stored_kg += fixed_from_int(def->cost_regolith / 2);
+                                        }
+                                        break;
+                                    }
+                                }
+                                moon_structure_demolish(&game->grid, &game->structs,
+                                                        game->hover_tile_x, game->hover_tile_y);
+                                moon_resources_solve_power_grid(&game->grid, &game->structs);
+                            }
+                        }
+                    } else if (game->structs.selected_build_type != MOON_STRUCT_NONE) {
+                        try_place_selected_structure(game);
+                    } else {
+                        /* Inspection mode: select clicked tile */
+                        if (game->hover_valid) {
+                            game->selected_tile_x = game->hover_tile_x;
+                            game->selected_tile_y = game->hover_tile_y;
+                            game->has_selection = true;
+                        } else {
+                            game->has_selection = false;
+                        }
+                    }
                 }
             }
             game->pointer_down = false;
@@ -273,6 +381,122 @@ void moon_game_update(moon_game_t *game, uint32_t delta_ms) {
     }
 }
 
+static void render_inspector_panel(const moon_game_t *game, const moon_surface_t *surf) {
+    if (!game->has_selection) return;
+
+    int ip_w = 260;
+    int ip_h = 180;
+    int ip_x = game->screen_w - ip_w - 10;
+    int ip_y = 40;
+
+    /* Panel frame */
+    moon_blit_fill_rect(surf, ip_x, ip_y, ip_w, ip_h, RGB565(14, 18, 24));
+    moon_blit_rect_outline(surf, ip_x, ip_y, ip_w, ip_h, COLOR_LASER_CYAN);
+    moon_blit_line(surf, ip_x, ip_y + 26, ip_x + ip_w - 1, ip_y + 26, COLOR_GOLD_FOIL);
+
+    /* Close button [X] */
+    moon_blit_fill_rect(surf, ip_x + ip_w - 22, ip_y + 4, 18, 18, RGB565(35, 40, 50));
+    moon_blit_rect_outline(surf, ip_x + ip_w - 22, ip_y + 4, 18, 18, COLOR_ALERT_RED);
+    moon_blit_text(surf, ip_x + ip_w - 17, ip_y + 5, "X", COLOR_ALERT_RED, 0, true);
+
+    const moon_tile_t *tile = moon_grid_get_tile_const(&game->grid, game->selected_tile_x, game->selected_tile_y);
+    if (!tile) return;
+
+    if (tile->structure_id != 0) {
+        const moon_structure_t *s = NULL;
+        for (int i = 0; i < MOON_MAX_STRUCTURES; i++) {
+            if (game->structs.list[i].id == tile->structure_id) {
+                s = &game->structs.list[i];
+                break;
+            }
+        }
+        if (!s) return;
+
+        const moon_structure_def_t *def = moon_structure_get_def((moon_structure_type_t)s->type);
+        if (!def) return;
+
+        /* Title */
+        moon_blit_text_fmt(surf, ip_x + 8, ip_y + 6, COLOR_GOLD_FOIL, 0, true, "%s", def->name);
+
+        /* Status */
+        const char *status_str = !s->active ? "STANDBY" : (s->powered ? "ONLINE" : "NO POWER");
+        uint16_t status_col = !s->active ? RGB565(140, 140, 150) : (s->powered ? COLOR_STATUS_GREEN : COLOR_ALERT_RED);
+        moon_blit_text_fmt(surf, ip_x + 8, ip_y + 34, status_col, 0, true, "STATUS: [%s]", status_str);
+
+        /* Power metrics */
+        if (def->power_kw > 0) {
+            moon_blit_text_fmt(surf, ip_x + 8, ip_y + 52, COLOR_ENERGY_YELLOW, 0, true,
+                               "POWER: +%d kW (Gen)", def->power_kw);
+        } else if (def->power_kw < 0) {
+            moon_blit_text_fmt(surf, ip_x + 8, ip_y + 52, COLOR_ENERGY_YELLOW, 0, true,
+                               "POWER: %d kW (Demand)", def->power_kw);
+        } else {
+            moon_blit_text(surf, ip_x + 8, ip_y + 52, "POWER: Passive", COLOR_REGOLITH_LIGHT, 0, true);
+        }
+
+        /* Storage & Life Support */
+        if (def->power_storage > 0) {
+            moon_blit_text_fmt(surf, ip_x + 8, ip_y + 70, COLOR_ENERGY_YELLOW, 0, true,
+                               "STORAGE: %d kWh capacity", def->power_storage);
+        } else if (def->rate_o2 != 0 || def->rate_water != 0) {
+            moon_blit_text_fmt(surf, ip_x + 8, ip_y + 70, COLOR_LASER_CYAN, 0, true,
+                               "LIFE: %+d kg O2 / %+d L H2O", def->rate_o2, def->rate_water);
+        } else {
+            moon_blit_text_fmt(surf, ip_x + 8, ip_y + 70, COLOR_REGOLITH_LIGHT, 0, true,
+                               "COORDS: [%02d, %02d]", s->gx, s->gy);
+        }
+
+        /* Integrity */
+        moon_blit_text_fmt(surf, ip_x + 8, ip_y + 88, COLOR_STATUS_GREEN, 0, true,
+                           "STRUCTURAL INTEGRITY: %d%%", s->health);
+
+        moon_blit_text_fmt(surf, ip_x + 8, ip_y + 108, RGB565(160, 165, 175), 0, true,
+                           "Footprint: %dx%d tiles", s->footprint_w, s->footprint_h);
+
+        /* Buttons if not primary lander */
+        if (tile->structure_id != 1) {
+            /* Recycle button */
+            moon_blit_fill_rect(surf, ip_x + 8, ip_y + 138, 115, 26, RGB565(45, 20, 20));
+            moon_blit_rect_outline(surf, ip_x + 8, ip_y + 138, 115, 26, COLOR_ALERT_RED);
+            moon_blit_text(surf, ip_x + 14, ip_y + 144, "RECYCLE 50%", COLOR_LUNAR_WHITE, 0, true);
+
+            /* Toggle standby button */
+            uint16_t act_bg = s->active ? RGB565(20, 45, 30) : RGB565(45, 40, 20);
+            uint16_t act_border = s->active ? COLOR_STATUS_GREEN : COLOR_ENERGY_YELLOW;
+            const char *act_label = s->active ? "STANDBY" : "ACTIVATE";
+            moon_blit_fill_rect(surf, ip_x + 132, ip_y + 138, 115, 26, act_bg);
+            moon_blit_rect_outline(surf, ip_x + 132, ip_y + 138, 115, 26, act_border);
+            moon_blit_text(surf, ip_x + 148, ip_y + 144, act_label, COLOR_LUNAR_WHITE, 0, true);
+        } else {
+            moon_blit_text(surf, ip_x + 8, ip_y + 144, "EXPEDITION COMMAND ANCHOR", COLOR_GOLD_FOIL, 0, true);
+        }
+    } else {
+        /* Terrain Inspector */
+        const char *tname = get_terrain_name((moon_terrain_type_t)tile->terrain);
+        moon_blit_text_fmt(surf, ip_x + 8, ip_y + 6, COLOR_GOLD_FOIL, 0, true, "TERRAIN: %s", tname);
+        moon_blit_text_fmt(surf, ip_x + 8, ip_y + 36, COLOR_LASER_CYAN, 0, true,
+                           "Coordinates: [%02d, %02d]", game->selected_tile_x, game->selected_tile_y);
+        moon_blit_text_fmt(surf, ip_x + 8, ip_y + 56, COLOR_REGOLITH_LIGHT, 0, true,
+                           "Elevation Level: %d", tile->elevation);
+        moon_blit_text_fmt(surf, ip_x + 8, ip_y + 76, COLOR_GOLD_FOIL, 0, true,
+                           "Mineral Richness: %d%%", tile->resource_val);
+
+        if (tile->terrain == MOON_TERRAIN_ICE_DEPOSIT) {
+            moon_blit_text(surf, ip_x + 8, ip_y + 104, "Water ice cold trap.", COLOR_LASER_CYAN, 0, true);
+            moon_blit_text(surf, ip_x + 8, ip_y + 120, "Ideal for O2 Extractor.", COLOR_LUNAR_WHITE, 0, true);
+        } else if (tile->terrain == MOON_TERRAIN_BASALT_MARE) {
+            moon_blit_text(surf, ip_x + 8, ip_y + 104, "Volcanic titanium mare.", COLOR_REGOLITH_LIGHT, 0, true);
+            moon_blit_text(surf, ip_x + 8, ip_y + 120, "Suitable for O2 / Sinterer.", COLOR_LUNAR_WHITE, 0, true);
+        } else if (tile->terrain == MOON_TERRAIN_CRATER_RIM) {
+            moon_blit_text(surf, ip_x + 8, ip_y + 104, "Elevated crater rim ridge.", COLOR_ALERT_RED, 0, true);
+            moon_blit_text(surf, ip_x + 8, ip_y + 120, "Terrain too steep to build.", RGB565(160, 160, 160), 0, true);
+        } else {
+            moon_blit_text(surf, ip_x + 8, ip_y + 104, "Flat regolith plain.", COLOR_REGOLITH_LIGHT, 0, true);
+            moon_blit_text(surf, ip_x + 8, ip_y + 120, "Prime foundation site.", COLOR_LUNAR_WHITE, 0, true);
+        }
+    }
+}
+
 static void render_build_ribbon(const moon_game_t *game, const moon_surface_t *surf) {
     int ribbon_y = game->screen_h - 38;
     int btn_w = 95;
@@ -283,19 +507,30 @@ static void render_build_ribbon(const moon_game_t *game, const moon_surface_t *s
     moon_blit_fill_rect(surf, 0, ribbon_y - 2, game->screen_w, 40, RGB565(10, 12, 16));
     moon_blit_line(surf, 0, ribbon_y - 2, game->screen_w - 1, ribbon_y - 2, COLOR_GOLD_FOIL);
 
-    static const char *labels[6] = {
+    static const char *labels[8] = {
+        "0:INSPECT",
         "1:SOLAR 10t", "2:BATT  20t", "3:HAB   50t",
-        "4:SINT  15t", "5:OXY   25t", "6:CABLE  2t"
+        "4:SINT  15t", "5:OXY   25t", "6:CABLE  2t",
+        "R:RECYCLE"
     };
 
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 8; i++) {
         int bx = start_x + i * (btn_w + 6);
-        bool selected = (game->structs.selected_build_type == s_build_buttons[i]);
-        const moon_structure_def_t *def = moon_structure_get_def(s_build_buttons[i]);
-        bool can_afford = def && (game->resources.regolith_stored_kg >= fixed_from_int(def->cost_regolith));
+        bool selected = false;
+        bool can_afford = true;
 
-        uint16_t bg = selected ? RGB565(30, 45, 60) : RGB565(20, 24, 30);
-        uint16_t border = selected ? COLOR_LASER_CYAN : (can_afford ? RGB565(60, 65, 75) : RGB565(35, 38, 45));
+        if (i == 0) {
+            selected = (game->structs.selected_build_type == MOON_STRUCT_NONE && !game->demolish_tool_active);
+        } else if (i >= 1 && i <= 6) {
+            selected = (game->structs.selected_build_type == s_build_buttons[i - 1]);
+            const moon_structure_def_t *def = moon_structure_get_def(s_build_buttons[i - 1]);
+            can_afford = def && (game->resources.regolith_stored_kg >= fixed_from_int(def->cost_regolith));
+        } else if (i == 7) {
+            selected = game->demolish_tool_active;
+        }
+
+        uint16_t bg = selected ? (i == 7 ? RGB565(55, 20, 20) : RGB565(30, 45, 60)) : RGB565(20, 24, 30);
+        uint16_t border = selected ? (i == 7 ? COLOR_ALERT_RED : COLOR_LASER_CYAN) : (can_afford ? RGB565(60, 65, 75) : RGB565(35, 38, 45));
         uint16_t text_col = selected ? COLOR_LUNAR_WHITE : (can_afford ? RGB565(170, 175, 185) : RGB565(80, 85, 95));
 
         moon_blit_fill_rect(surf, bx, ribbon_y + 2, btn_w, btn_h, bg);
@@ -327,6 +562,24 @@ void moon_game_render(moon_game_t *game, uint16_t *fb, int width, int height, in
         moon_structure_render_ghost(&game->structs, &game->grid, &surf,
                                     game->cam_x, game->cam_y,
                                     game->hover_tile_x, game->hover_tile_y);
+    } else if (game->demolish_tool_active && game->hover_valid) {
+        /* Render bulldozer / demolish target indicator */
+        const moon_tile_t *ht = moon_grid_get_tile_const(&game->grid, game->hover_tile_x, game->hover_tile_y);
+        int elev = ht ? ht->elevation : 0;
+        int32_t hsx, hsy;
+        moon_grid_to_screen(game->hover_tile_x, game->hover_tile_y, elev, game->cam_x, game->cam_y, width, height, &hsx, &hsy);
+        moon_blit_iso_tile(&surf, hsx, hsy, MOON_TILE_HALF_W, MOON_TILE_HALF_H, moon_color_dim(COLOR_ALERT_RED, 120), COLOR_ALERT_RED);
+        moon_blit_line(&surf, hsx - 10, hsy - 5, hsx + 10, hsy + 5, COLOR_LUNAR_WHITE);
+        moon_blit_line(&surf, hsx - 10, hsy + 5, hsx + 10, hsy - 5, COLOR_LUNAR_WHITE);
+    }
+
+    /* Selection Highlight Box */
+    if (game->has_selection) {
+        const moon_tile_t *st = moon_grid_get_tile_const(&game->grid, game->selected_tile_x, game->selected_tile_y);
+        int elev = st ? st->elevation : 0;
+        int32_t ssx, ssy;
+        moon_grid_to_screen(game->selected_tile_x, game->selected_tile_y, elev, game->cam_x, game->cam_y, width, height, &ssx, &ssy);
+        moon_blit_iso_tile(&surf, ssx, ssy, MOON_TILE_HALF_W, MOON_TILE_HALF_H, 0, COLOR_LASER_CYAN);
     }
 
     /* 5. Render Bottom-Right Minimap Radar */
@@ -423,4 +676,7 @@ void moon_game_render(moon_game_t *game, uint16_t *fb, int width, int height, in
         moon_blit_fill_rect(&surf, 8, 38, 320, 20, COLOR_ALERT_RED);
         moon_blit_text(&surf, 14, 40, "[CRITICAL] O2 STARVATION: RESERVES EMPTY", COLOR_LUNAR_WHITE, 0, true);
     }
+
+    /* 9. Interactive Building & Terrain Inspector Panel */
+    render_inspector_panel(game, &surf);
 }

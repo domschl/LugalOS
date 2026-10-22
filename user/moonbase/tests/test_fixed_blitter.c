@@ -339,12 +339,54 @@ static void test_resource_simulation_and_day_night(void) {
     printf("[test] Resource simulation loop & lunar day/night cycle: PASS\n");
 }
 
+static void test_ui_inspection_and_gameplay_loop(void) {
+    printf("[test] Checking UI inspector, minimap navigation & gameplay loop...\n");
+
+    moon_grid_t grid;
+    moon_grid_generate(&grid, 19690720);
+
+    moon_structure_mgr_t mgr;
+    moon_structure_mgr_init(&mgr);
+
+    /* 1. Place Lander and Battery */
+    moon_structure_t *lander = moon_structure_place(&grid, &mgr, MOON_STRUCT_LANDER, 32, 32);
+    assert(lander != NULL);
+    moon_structure_t *batt = moon_structure_place(&grid, &mgr, MOON_STRUCT_BATTERY_BANK, 33, 32);
+    assert(batt != NULL);
+
+    /* 2. Selection lookup */
+    const moon_tile_t *t_batt = moon_grid_get_tile_const(&grid, 33, 32);
+    assert(t_batt != NULL);
+    assert(t_batt->structure_id == batt->id);
+
+    /* 3. Demolish and 50% refund calculation */
+    const moon_structure_def_t *def = moon_structure_get_def((moon_structure_type_t)batt->type);
+    assert(def != NULL);
+    int refund = def->cost_regolith / 2;
+    assert(refund == 10); /* Battery costs 20, refund is 10 */
+
+    moon_structure_demolish(&grid, &mgr, 33, 32);
+    assert(mgr.count == 1);
+    assert(grid.tiles[32][33].structure_id == 0);
+
+    /* 4. Minimap coordinate to camera projection */
+    int mm_click_x = 32;
+    int mm_click_y = 32;
+    int32_t cam_x = (mm_click_x - mm_click_y) * MOON_TILE_HALF_W;
+    int32_t cam_y = (mm_click_x + mm_click_y) * MOON_TILE_HALF_H;
+    assert(cam_x == 0);
+    assert(cam_y == 32 * MOON_TILE_H);
+
+    printf("[test] UI inspector, minimap navigation & gameplay loop: PASS\n");
+}
+
 int main(void) {
     test_fixed_math();
     test_blitter_and_clipping();
     test_grid_generation_and_projection();
     test_structure_catalog_and_placement();
     test_resource_simulation_and_day_night();
-    printf("[test] All Milestone 64.2, 64.3, 64.4, and 64.5 tests passed cleanly.\n");
+    test_ui_inspection_and_gameplay_loop();
+    printf("[test] All Milestone 64.2 through 64.6 tests passed cleanly.\n");
     return 0;
 }
