@@ -143,10 +143,10 @@ void moon_grid_generate(moon_grid_t *grid, uint32_t seed) {
         }
     }
 
-    /* Landing tile itself is sintered and occupied by Lander */
+    /* Landing tile itself is sintered foundation pad ready for Lander */
     moon_tile_t *lander_tile = &grid->tiles[grid->lander_gy][grid->lander_gx];
-    lander_tile->flags |= (MOON_TILE_FLAG_FOUNDATION | MOON_TILE_FLAG_OCCUPIED);
-    lander_tile->structure_id = 1; /* Structure 1 = Expedition Lander */
+    lander_tile->flags |= MOON_TILE_FLAG_FOUNDATION;
+    lander_tile->structure_id = 0;
 
     /* Ensure a reachable Polar Ice deposit exists near the landing site (approx 10 tiles away) */
     int ice_cx = grid->lander_gx - 6;
@@ -284,18 +284,6 @@ void moon_grid_render(const moon_grid_t *grid, const moon_surface_t *surf,
                                                 MOON_TILE_HALF_W, MOON_TILE_HALF_H,
                                                 gx, gy, t->terrain, t->flags, border_col);
                 }
-            }
-
-            /* Render Expedition Lander at its starting tile */
-            if (gx == grid->lander_gx && gy == grid->lander_gy) {
-                int lander_sy = base_sy - height_px;
-                /* Gold Foil 3D Lander module sitting on top */
-                moon_blit_iso_block(surf, base_sx, lander_sy,
-                                    MOON_TILE_HALF_W - 4, MOON_TILE_HALF_H - 2, 22,
-                                    COLOR_GOLD_FOIL,
-                                    moon_color_dim(COLOR_GOLD_FOIL, 175),
-                                    moon_color_dim(COLOR_GOLD_FOIL, 220),
-                                    COLOR_LUNAR_WHITE);
             }
         }
     }
