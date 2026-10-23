@@ -21,6 +21,7 @@ void moon_grid_generate(moon_grid_t *grid, uint32_t seed) {
 
     if (seed == 0) seed = 19690720; /* Apollo 11 touchdown seed */
     grid->seed = seed;
+    grid->textured_terrain = true;
     uint32_t rng = seed;
 
     grid->lander_gx = 32;
@@ -218,6 +219,17 @@ void moon_screen_to_grid(int32_t sx, int32_t sy,
     *gy = (int32_t)(calc_gy >> FIXED_SHIFT);
 }
 
+static inline uint16_t get_terrain_top_color(uint8_t terrain) {
+    switch (terrain) {
+        case MOON_TERRAIN_ICE_DEPOSIT:    return RGB565(90, 180, 235);
+        case MOON_TERRAIN_BASALT_MARE:    return RGB565(42, 44, 50);
+        case MOON_TERRAIN_CRATER_RIM:     return RGB565(170, 170, 175);
+        case MOON_TERRAIN_CRATER_FLOOR:   return RGB565(25, 25, 30);
+        case MOON_TERRAIN_REGOLITH_ROUGH: return RGB565(75, 72, 78);
+        default:                          return RGB565(95, 93, 100);
+    }
+}
+
 void moon_grid_render(const moon_grid_t *grid, const moon_surface_t *surf,
                       int32_t cam_x, int32_t cam_y,
                       int32_t hover_gx, int32_t hover_gy, bool hover_valid) {
@@ -272,16 +284,34 @@ void moon_grid_render(const moon_grid_t *grid, const moon_surface_t *surf,
             } else {
                 border_col = (t->flags & MOON_TILE_FLAG_FOUNDATION) ? COLOR_GOLD_FOIL : 0;
 
-                /* Seamless textured rendering with geological cliff stratification */
-                if (height_px > 0) {
-                    uint16_t cliff_rim = (border_col != 0) ? border_col : RGB565(48, 48, 54);
-                    moon_blit_iso_block_textured(surf, base_sx, base_sy,
-                                                 MOON_TILE_HALF_W, MOON_TILE_HALF_H, height_px,
-                                                 gx, gy, t->terrain, t->flags, cliff_rim);
+                if (grid->textured_terrain) {
+                    /* Seamless textured rendering with geological cliff stratification */
+                    if (height_px > 0) {
+                        uint16_t cliff_rim = (border_col != 0) ? border_col : RGB565(48, 48, 54);
+                        moon_blit_iso_block_textured(surf, base_sx, base_sy,
+                                                     MOON_TILE_HALF_W, MOON_TILE_HALF_H, height_px,
+                                                     gx, gy, t->terrain, t->flags, cliff_rim);
+                    } else {
+                        moon_blit_iso_tile_textured(surf, base_sx, base_sy,
+                                                    MOON_TILE_HALF_W, MOON_TILE_HALF_H,
+                                                    gx, gy, t->terrain, t->flags, border_col);
+                    }
                 } else {
-                    moon_blit_iso_tile_textured(surf, base_sx, base_sy,
-                                                MOON_TILE_HALF_W, MOON_TILE_HALF_H,
-                                                gx, gy, t->terrain, t->flags, border_col);
+                    /* High-performance flat-shaded retro terrain rendering */
+                    uint16_t top_col = get_terrain_top_color(t->terrain);
+                    if (t->flags & MOON_TILE_FLAG_FOUNDATION) top_col = COLOR_GOLD_FOIL;
+                    if (height_px > 0) {
+                        uint16_t left_col = moon_color_dim(top_col, 175);
+                        uint16_t right_col = moon_color_dim(top_col, 220);
+                        uint16_t cliff_rim = (border_col != 0) ? border_col : RGB565(48, 48, 54);
+                        moon_blit_iso_block(surf, base_sx, base_sy,
+                                            MOON_TILE_HALF_W, MOON_TILE_HALF_H, height_px,
+                                            top_col, left_col, right_col, cliff_rim);
+                    } else {
+                        moon_blit_iso_tile(surf, base_sx, base_sy,
+                                           MOON_TILE_HALF_W, MOON_TILE_HALF_H,
+                                           top_col, border_col);
+                    }
                 }
             }
         }

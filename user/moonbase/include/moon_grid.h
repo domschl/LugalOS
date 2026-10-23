@@ -42,6 +42,7 @@ typedef struct {
     uint32_t    seed;
     int32_t     lander_gx;  /* Default expedition landing site X */
     int32_t     lander_gy;  /* Default expedition landing site Y */
+    bool        textured_terrain; /* true = textured, false = flat-shaded retro */
 } moon_grid_t;
 
 /* Procedural Generation */

@@ -57,6 +57,10 @@ typedef struct {
     /* Drag tracking threshold */
     bool was_dragging;
 
+    /* Live HUD Notification Badge */
+    const char *notify_msg;
+    uint32_t notify_timer_ms;
+
     /* Frame and Tick Counters */
     uint32_t frame_count;
     uint32_t sim_ticks;
