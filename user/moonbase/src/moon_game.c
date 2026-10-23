@@ -163,6 +163,14 @@ void moon_game_handle_event(moon_game_t *game, const moon_event_t *ev) {
                     game->structs.selected_build_type = MOON_STRUCT_NONE;
                     break;
 
+                case MOON_KEY_T:
+                    game->grid.textured_terrain = !game->grid.textured_terrain;
+                    game->notify_msg = game->grid.textured_terrain
+                        ? "TERRAIN: TEXTURED (HIGH QUALITY)"
+                        : "TERRAIN: FLAT SHADED (FAST RETRO)";
+                    game->notify_timer_ms = 2500;
+                    break;
+
                 case MOON_KEY_UP:
                 case MOON_KEY_W:
                     game->cam_y -= 24;
@@ -210,10 +218,22 @@ void moon_game_handle_event(moon_game_t *game, const moon_event_t *ev) {
                 game->structs.selected_build_type = MOON_STRUCT_NONE;
                 game->demolish_tool_active = false;
             } else if (ev->button == 1 && !game->was_dragging) {
-                /* 1. Check if clicked on Minimap Radar for Instant Navigation */
                 int mm_size = 64;
                 int mm_x = game->screen_w - mm_size - 10;
                 int mm_y = game->screen_h - mm_size - 44;
+
+                /* 0. Check if clicked on Terrain Texture Mode Toggle button */
+                if (ev->x >= mm_x && ev->x < mm_x + mm_size && ev->y >= mm_y - 20 && ev->y < mm_y - 2) {
+                    game->grid.textured_terrain = !game->grid.textured_terrain;
+                    game->notify_msg = game->grid.textured_terrain
+                        ? "TERRAIN: TEXTURED (HIGH QUALITY)"
+                        : "TERRAIN: FLAT SHADED (FAST RETRO)";
+                    game->notify_timer_ms = 2500;
+                    game->pointer_down = false;
+                    break;
+                }
+
+                /* 1. Check if clicked on Minimap Radar for Instant Navigation */
                 if (ev->x >= mm_x && ev->x < mm_x + mm_size && ev->y >= mm_y && ev->y < mm_y + mm_size) {
                     int target_gx = ev->x - mm_x;
                     int target_gy = ev->y - mm_y;
@@ -226,10 +246,11 @@ void moon_game_handle_event(moon_game_t *game, const moon_event_t *ev) {
 
                 /* 2. Check if clicked on Bottom Build & Tools Ribbon */
                 if (ev->y >= game->screen_h - 40) {
-                    int btn_w = 95;
-                    int start_x = 10;
+                    int btn_w = (game->screen_w < 800) ? 70 : 95;
+                    int btn_gap = (game->screen_w < 800) ? 4 : 6;
+                    int start_x = (game->screen_w < 800) ? 4 : 10;
                     for (int i = 0; i < 8; i++) {
-                        int bx = start_x + i * (btn_w + 6);
+                        int bx = start_x + i * (btn_w + btn_gap);
                         if (ev->x >= bx && ev->x <= bx + btn_w) {
                             if (i == 0) {
                                 /* 0: Inspect Mode */
@@ -253,10 +274,12 @@ void moon_game_handle_event(moon_game_t *game, const moon_event_t *ev) {
                         }
                     }
                 } else if (game->has_selection &&
-                           ev->x >= game->screen_w - 280 && ev->x <= game->screen_w - 10 &&
+                           ev->x >= game->screen_w - ((game->screen_w < 800) ? 230 : 280) &&
+                           ev->x <= game->screen_w - 10 &&
                            ev->y >= 40 && ev->y <= 220) {
                     /* 3. Check if clicked inside Inspector Drawer */
-                    int ip_x = game->screen_w - 270;
+                    int ip_w = (game->screen_w < 800) ? 220 : 260;
+                    int ip_x = game->screen_w - ip_w - 10;
                     int ip_y = 40;
 
                     /* Clicked [X] close button */
@@ -374,6 +397,11 @@ void moon_game_update(moon_game_t *game, uint32_t delta_ms) {
     game->frame_count++;
     game->last_tick_ms += delta_ms;
 
+    if (game->notify_timer_ms > 0) {
+        if (delta_ms >= game->notify_timer_ms) game->notify_timer_ms = 0;
+        else game->notify_timer_ms -= delta_ms;
+    }
+
     while (game->last_tick_ms >= MOON_SIM_TICK_INTERVAL_MS) {
         game->last_tick_ms -= MOON_SIM_TICK_INTERVAL_MS;
         game->sim_ticks++;
@@ -384,7 +412,7 @@ void moon_game_update(moon_game_t *game, uint32_t delta_ms) {
 static void render_inspector_panel(const moon_game_t *game, const moon_surface_t *surf) {
     if (!game->has_selection) return;
 
-    int ip_w = 260;
+    int ip_w = (game->screen_w < 800) ? 220 : 260;
     int ip_h = 180;
     int ip_x = game->screen_w - ip_w - 10;
     int ip_y = 40;
@@ -499,9 +527,11 @@ static void render_inspector_panel(const moon_game_t *game, const moon_surface_t
 
 static void render_build_ribbon(const moon_game_t *game, const moon_surface_t *surf) {
     int ribbon_y = game->screen_h - 38;
-    int btn_w = 95;
+    bool narrow = (game->screen_w < 800);
+    int btn_w = narrow ? 70 : 95;
     int btn_h = 32;
-    int start_x = 10;
+    int btn_gap = narrow ? 4 : 6;
+    int start_x = narrow ? 4 : 10;
 
     /* Ribbon Background */
     moon_blit_fill_rect(surf, 0, ribbon_y - 2, game->screen_w, 40, RGB565(10, 12, 16));
@@ -514,8 +544,15 @@ static void render_build_ribbon(const moon_game_t *game, const moon_surface_t *s
         "R:RECYCLE"
     };
 
+    static const char *labels_narrow[8] = {
+        "0:INSP",
+        "1:SOL", "2:BAT", "3:HAB",
+        "4:SINT", "5:OXY", "6:WIRE",
+        "R:DEM"
+    };
+
     for (int i = 0; i < 8; i++) {
-        int bx = start_x + i * (btn_w + 6);
+        int bx = start_x + i * (btn_w + btn_gap);
         bool selected = false;
         bool can_afford = true;
 
@@ -535,7 +572,9 @@ static void render_build_ribbon(const moon_game_t *game, const moon_surface_t *s
 
         moon_blit_fill_rect(surf, bx, ribbon_y + 2, btn_w, btn_h, bg);
         moon_blit_rect_outline(surf, bx, ribbon_y + 2, btn_w, btn_h, border);
-        moon_blit_text(surf, bx + 6, ribbon_y + 10, labels[i], text_col, 0, true);
+        const char *lbl = narrow ? labels_narrow[i] : labels[i];
+        int tx = narrow ? (bx + 4) : (bx + 6);
+        moon_blit_text(surf, tx, ribbon_y + 10, lbl, text_col, 0, true);
     }
 }
 
@@ -620,62 +659,84 @@ void moon_game_render(moon_game_t *game, uint16_t *fb, int width, int height, in
     int mm_y = height - mm_size - 44; /* Above build ribbon */
     moon_grid_render_minimap(&game->grid, &surf, mm_x, mm_y, mm_size, mm_size,
                              game->cam_x, game->cam_y);
-    moon_blit_text(&surf, mm_x - 30, mm_y - 18, "RADAR", COLOR_GOLD_FOIL, 0, true);
+
+    /* Render Terrain Texture Mode Toggle Button above Radar */
+    uint16_t tex_border = game->grid.textured_terrain ? COLOR_LASER_CYAN : COLOR_REGOLITH_LIGHT;
+    uint16_t tex_bg = game->grid.textured_terrain ? RGB565(20, 35, 45) : RGB565(35, 30, 20);
+    const char *tex_lbl = game->grid.textured_terrain ? "TEX:ON" : "TEX:FAST";
+    moon_blit_fill_rect(&surf, mm_x, mm_y - 20, mm_size, 16, tex_bg);
+    moon_blit_rect_outline(&surf, mm_x, mm_y - 20, mm_size, 16, tex_border);
+    moon_blit_text(&surf, mm_x + 2, mm_y - 20, tex_lbl, COLOR_LUNAR_WHITE, 0, true);
 
     /* 6. Render Bottom Build Ribbon */
     render_build_ribbon(game, &surf);
 
     /* 7. Render Top HUD Bar (Title, Day/Night Clock, Power, O2, H2O, Materials, Crew) */
-    moon_blit_fill_rect(&surf, 0, 0, width, 32, RGB565(14, 16, 20));
-    moon_blit_line(&surf, 0, 32, width - 1, 32, COLOR_GOLD_FOIL);
-
-    /* Lunar Day / Solar Cycle Clock */
     const moon_resources_t *res = &game->resources;
     int sun_pct = fixed_to_int(res->solar_intensity * 100);
-    if (!res->is_night) {
-        moon_blit_text_fmt(&surf, 8, 8, COLOR_GOLD_FOIL, 0, true,
-                           "D%02d SUN:%d%%", res->lunar_day, sun_pct);
-    } else {
-        moon_blit_text_fmt(&surf, 8, 8, COLOR_LASER_CYAN, 0, true,
-                           "D%02d NIGHT", res->lunar_day);
-    }
-
-    /* Power Indicator & Battery Reserve */
-    uint16_t pwr_col = res->power_brownout ? COLOR_ALERT_RED : (res->warning_power ? COLOR_ENERGY_YELLOW : COLOR_ENERGY_YELLOW);
+    uint16_t pwr_col = res->power_brownout ? COLOR_ALERT_RED : COLOR_ENERGY_YELLOW;
     int batt_kwh = fixed_to_int(res->battery_stored_kwh);
-    moon_blit_fill_rect(&surf, 130, 10, 6, 12, pwr_col);
-    moon_blit_text_fmt(&surf, 140, 8, pwr_col, 0, true,
-                       "PWR %d/%dkW BATT %d/%dkWh",
-                       res->power_produced_kw, res->power_consumed_kw,
-                       batt_kwh, res->battery_capacity_kwh);
-
-    /* Regolith / Paver Material Stock */
     int rgl_kg = fixed_to_int(res->regolith_stored_kg);
-    moon_blit_fill_rect(&surf, 380, 10, 6, 12, COLOR_REGOLITH_LIGHT);
-    moon_blit_text_fmt(&surf, 390, 8, COLOR_REGOLITH_LIGHT, 0, true,
-                       "RGL %dkg", rgl_kg);
-
-    /* O2 (Oxygen) */
     int o2_kg = fixed_to_int(res->o2_stored_kg);
     uint16_t o2_col = res->warning_o2 ? COLOR_ALERT_RED : COLOR_LASER_CYAN;
-    moon_blit_fill_rect(&surf, 480, 10, 6, 12, o2_col);
-    moon_blit_text_fmt(&surf, 490, 8, o2_col, 0, true,
-                       "O2 %dkg", o2_kg);
-
-    /* H2O (Water) */
     int water_l = fixed_to_int(res->water_stored_l);
     uint16_t water_col = res->warning_water ? COLOR_ALERT_RED : COLOR_SOLAR_BLUE;
-    moon_blit_fill_rect(&surf, 570, 10, 6, 12, water_col);
-    moon_blit_text_fmt(&surf, 580, 8, water_col, 0, true,
-                       "H2O %dL", water_l);
-
-    /* Crew & Life Support Status */
     uint16_t ls_col = (res->life_support_pct < 50) ? COLOR_ALERT_RED :
                       ((res->life_support_pct < 80) ? COLOR_ENERGY_YELLOW : COLOR_STATUS_GREEN);
-    moon_blit_fill_rect(&surf, 660, 10, 6, 12, ls_col);
-    moon_blit_text_fmt(&surf, 670, 8, ls_col, 0, true,
-                       "CREW %d/%d (LS:%d%%)",
-                       res->population, res->max_population, res->life_support_pct);
+
+    if (width < 800) {
+        /* Compact HUD layout for 640x360 HiDPI */
+        moon_blit_fill_rect(&surf, 0, 0, width, 24, RGB565(14, 16, 20));
+        moon_blit_line(&surf, 0, 24, width - 1, 24, COLOR_GOLD_FOIL);
+
+        if (!res->is_night) {
+            moon_blit_text_fmt(&surf, 4, 4, COLOR_GOLD_FOIL, 0, true, "D%02d %d%%", res->lunar_day, sun_pct);
+        } else {
+            moon_blit_text_fmt(&surf, 4, 4, COLOR_LASER_CYAN, 0, true, "D%02d NGT", res->lunar_day);
+        }
+
+        moon_blit_text_fmt(&surf, 70, 4, pwr_col, 0, true, "P:%d/%d", res->power_produced_kw, res->power_consumed_kw);
+        moon_blit_text_fmt(&surf, 165, 4, pwr_col, 0, true, "B:%d", batt_kwh);
+        moon_blit_text_fmt(&surf, 240, 4, COLOR_REGOLITH_LIGHT, 0, true, "R:%d", rgl_kg);
+        moon_blit_text_fmt(&surf, 320, 4, o2_col, 0, true, "O2:%d", o2_kg);
+        moon_blit_text_fmt(&surf, 395, 4, water_col, 0, true, "W:%d", water_l);
+        moon_blit_text_fmt(&surf, 465, 4, ls_col, 0, true, "CRW:%d/%d (%d%%)", res->population, res->max_population, res->life_support_pct);
+    } else {
+        /* Standard HUD layout for 1024x600 and 1280x720 */
+        moon_blit_fill_rect(&surf, 0, 0, width, 32, RGB565(14, 16, 20));
+        moon_blit_line(&surf, 0, 32, width - 1, 32, COLOR_GOLD_FOIL);
+
+        if (!res->is_night) {
+            moon_blit_text_fmt(&surf, 8, 8, COLOR_GOLD_FOIL, 0, true,
+                               "D%02d SUN:%d%%", res->lunar_day, sun_pct);
+        } else {
+            moon_blit_text_fmt(&surf, 8, 8, COLOR_LASER_CYAN, 0, true,
+                               "D%02d NIGHT", res->lunar_day);
+        }
+
+        moon_blit_fill_rect(&surf, 130, 10, 6, 12, pwr_col);
+        moon_blit_text_fmt(&surf, 140, 8, pwr_col, 0, true,
+                           "PWR %d/%dkW BATT %d/%dkWh",
+                           res->power_produced_kw, res->power_consumed_kw,
+                           batt_kwh, res->battery_capacity_kwh);
+
+        moon_blit_fill_rect(&surf, 380, 10, 6, 12, COLOR_REGOLITH_LIGHT);
+        moon_blit_text_fmt(&surf, 390, 8, COLOR_REGOLITH_LIGHT, 0, true,
+                           "RGL %dkg", rgl_kg);
+
+        moon_blit_fill_rect(&surf, 480, 10, 6, 12, o2_col);
+        moon_blit_text_fmt(&surf, 490, 8, o2_col, 0, true,
+                           "O2 %dkg", o2_kg);
+
+        moon_blit_fill_rect(&surf, 570, 10, 6, 12, water_col);
+        moon_blit_text_fmt(&surf, 580, 8, water_col, 0, true,
+                           "H2O %dL", water_l);
+
+        moon_blit_fill_rect(&surf, 660, 10, 6, 12, ls_col);
+        moon_blit_text_fmt(&surf, 670, 8, ls_col, 0, true,
+                           "CREW %d/%d (LS:%d%%)",
+                           res->population, res->max_population, res->life_support_pct);
+    }
 
     /* Right HUD Info (Hover Tile Coordinates & Resource Inspector) */
     if (game->hover_valid) {
@@ -686,35 +747,50 @@ void moon_game_render(moon_game_t *game, uint16_t *fb, int width, int height, in
         int elev = ht ? ht->elevation : 0;
         int rval = ht ? ht->resource_val : 0;
 
-        int badge_w = 210;
+        int badge_w = (width < 800) ? 170 : 210;
         int badge_x = width - badge_w - 8;
-        moon_blit_fill_rect(&surf, badge_x, 4, badge_w, 24, RGB565(26, 30, 36));
-        moon_blit_rect_outline(&surf, badge_x, 4, badge_w, 24, COLOR_LASER_CYAN);
+        int badge_y = (width < 800) ? 26 : 4;
+        moon_blit_fill_rect(&surf, badge_x, badge_y, badge_w, 20, RGB565(26, 30, 36));
+        moon_blit_rect_outline(&surf, badge_x, badge_y, badge_w, 20, COLOR_LASER_CYAN);
 
-        moon_blit_text_fmt(&surf, badge_x + 6, 8, COLOR_LASER_CYAN, 0, true,
+        moon_blit_text_fmt(&surf, badge_x + 4, badge_y + 2, COLOR_LASER_CYAN, 0, true,
                            "[%02d,%02d] %s E:%d R:%d%%",
                            game->hover_tile_x, game->hover_tile_y,
                            tname, elev, rval);
     }
 
     /* 8. Active Life Support / Crisis Warning Ticker Banner */
+    int banner_y = (width < 800) ? 26 : 38;
     if (res->population == 0) {
-        moon_blit_fill_rect(&surf, 8, 38, 430, 20, COLOR_ALERT_RED);
-        moon_blit_text(&surf, 14, 40, "[MISSION FAILED] ALL CREW LOST: COLONY ABANDONED", COLOR_LUNAR_WHITE, 0, true);
+        moon_blit_fill_rect(&surf, 8, banner_y, 430, 20, COLOR_ALERT_RED);
+        moon_blit_text(&surf, 14, banner_y + 2, "[MISSION FAILED] ALL CREW LOST: COLONY ABANDONED", COLOR_LUNAR_WHITE, 0, true);
     } else if (res->warning_crew_lost) {
-        moon_blit_fill_rect(&surf, 8, 38, 430, 20, COLOR_ALERT_RED);
-        moon_blit_text(&surf, 14, 40, "[CASUALTY] CREW MEMBER PERISHED - ZERO LIFE SUPPORT", COLOR_LUNAR_WHITE, 0, true);
+        moon_blit_fill_rect(&surf, 8, banner_y, 430, 20, COLOR_ALERT_RED);
+        moon_blit_text(&surf, 14, banner_y + 2, "[CASUALTY] CREW MEMBER PERISHED - ZERO LIFE SUPPORT", COLOR_LUNAR_WHITE, 0, true);
     } else if (res->warning_cold) {
-        moon_blit_fill_rect(&surf, 8, 38, 380, 20, COLOR_ALERT_RED);
-        moon_blit_text(&surf, 14, 40, "[CRITICAL] CRYOGENIC FREEZING: HEATING LOST", COLOR_LUNAR_WHITE, 0, true);
+        moon_blit_fill_rect(&surf, 8, banner_y, 380, 20, COLOR_ALERT_RED);
+        moon_blit_text(&surf, 14, banner_y + 2, "[CRITICAL] CRYOGENIC FREEZING: HEATING LOST", COLOR_LUNAR_WHITE, 0, true);
     } else if (res->warning_power) {
-        moon_blit_fill_rect(&surf, 8, 38, 350, 20, RGB565(180, 50, 20));
-        moon_blit_text(&surf, 14, 40, "[ALERT] POWER BLACKOUT: BATTERIES DEPLETED", COLOR_LUNAR_WHITE, 0, true);
+        moon_blit_fill_rect(&surf, 8, banner_y, 350, 20, RGB565(180, 50, 20));
+        moon_blit_text(&surf, 14, banner_y + 2, "[ALERT] POWER BLACKOUT: BATTERIES DEPLETED", COLOR_LUNAR_WHITE, 0, true);
     } else if (res->warning_o2) {
-        moon_blit_fill_rect(&surf, 8, 38, 320, 20, COLOR_ALERT_RED);
-        moon_blit_text(&surf, 14, 40, "[CRITICAL] O2 STARVATION: RESERVES EMPTY", COLOR_LUNAR_WHITE, 0, true);
+        moon_blit_fill_rect(&surf, 8, banner_y, 320, 20, COLOR_ALERT_RED);
+        moon_blit_text(&surf, 14, banner_y + 2, "[CRITICAL] O2 STARVATION: RESERVES EMPTY", COLOR_LUNAR_WHITE, 0, true);
     }
 
-    /* 9. Interactive Building & Terrain Inspector Panel */
+    /* 9. Live Notification Banner (Terrain toggle, etc.) */
+    if (game->notify_timer_ms > 0 && game->notify_msg) {
+        int len = 0;
+        const char *p = game->notify_msg;
+        while (*p++) len++;
+        int nw = len * 8 + 16;
+        int nx = (width - nw) / 2;
+        int ny = (width < 800) ? 28 : 38;
+        moon_blit_fill_rect(&surf, nx, ny, nw, 22, RGB565(20, 25, 35));
+        moon_blit_rect_outline(&surf, nx, ny, nw, 22, COLOR_GOLD_FOIL);
+        moon_blit_text(&surf, nx + 8, ny + 3, game->notify_msg, COLOR_GOLD_FOIL, 0, true);
+    }
+
+    /* 10. Interactive Building & Terrain Inspector Panel */
     render_inspector_panel(game, &surf);
 }

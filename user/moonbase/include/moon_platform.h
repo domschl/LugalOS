@@ -46,6 +46,8 @@ enum {
     MOON_KEY_7,
     MOON_KEY_8,
     MOON_KEY_9,
+    MOON_KEY_T,
+    MOON_KEY_Z,
 };
 
 typedef struct {
