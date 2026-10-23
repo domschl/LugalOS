@@ -782,6 +782,20 @@ uint16_t *lcdterm_get_canvas565_backing(uint8_t cid, uint32_t *out_stride, int *
     return g_scr->canvases[cid].buf565;
 }
 
+uint16_t *lcdterm_get_canvas565_by_name(const char *name, uint32_t *out_stride, int *out_w, int *out_h) {
+    if (!g_scr || !name) return NULL;
+    for (uint32_t i = 0; i < SCREEN_MAX_CANVASES; i++) {
+        if (g_scr->canvases[i].in_use && strcmp(g_scr->canvases[i].name, name) == 0) {
+            if (g_scr->canvases[i].format != CANVAS_FMT_RGB565) return NULL;
+            if (out_stride) *out_stride = g_scr->canvases[i].stride565;
+            if (out_w) *out_w = (int)g_scr->canvases[i].w565;
+            if (out_h) *out_h = (int)g_scr->canvases[i].h565;
+            return g_scr->canvases[i].buf565;
+        }
+    }
+    return NULL;
+}
+
 int lcdterm_get_visible_canvases565(uint8_t *out_cids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins) {
     if (!g_scr || max_wins <= 0) return 0;
     int count = 0;

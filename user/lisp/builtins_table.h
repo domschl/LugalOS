@@ -264,6 +264,9 @@ static const builtin_t builtins[] = {
     BUILTIN_PRIM("min", prim_min),
     BUILTIN_PRIM("mkdir", prim_mkdir),
     BUILTIN_PRIM("modulo", prim_modulo),
+#if CONFIG_ENABLE_MOONBASE
+    BUILTIN_PRIM("moonbase", prim_moonbase),
+#endif
     BUILTIN_PRIM("mount-local", prim_mount_local),
     BUILTIN_PRIM("mount-ramdisk", prim_mount_ramdisk),
     BUILTIN_PRIM("mount-remote", prim_mount_remote),

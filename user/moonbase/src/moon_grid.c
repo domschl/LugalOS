@@ -334,7 +334,7 @@ void moon_grid_render_minimap(const moon_grid_t *grid, const moon_surface_t *sur
     /* Camera viewport indicator box on minimap */
     /* Map center is tile (32, 32). In isometric coordinates: */
     /* Estimate visible tiles from cam_x and cam_y */
-    int center_gx = 0, center_gy = 0;
+    int32_t center_gx = 0, center_gy = 0;
     moon_screen_to_grid(surf->width / 2, surf->height / 2,
                         cam_x, cam_y, surf->width, surf->height,
                         &center_gx, &center_gy);

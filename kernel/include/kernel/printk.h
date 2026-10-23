@@ -84,6 +84,7 @@ int printk_critical(const char *fmt, ...) LUGALOS_PRINTF(1, 2);
 // worth revisiting if/when a 9P server starts serving these buffers to a
 // remote client that expects LF-only text.
 int ksnprintf(char *buf, uint32_t cap, const char *fmt, ...) LUGALOS_PRINTF(3, 4);
+int kvsnprintf(char *buf, uint32_t cap, const char *fmt, va_list args);
 
 /* Renders a log record captured by printk() : the format string it was given
  * and the arguments it stored, replayed through the same engine that would

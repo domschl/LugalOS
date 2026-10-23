@@ -167,6 +167,7 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/user/ed/include
     ${CMAKE_CURRENT_SOURCE_DIR}/user/chess/include
     ${CMAKE_CURRENT_SOURCE_DIR}/user/zmachine
+    ${CMAKE_CURRENT_SOURCE_DIR}/user/moonbase/include
 )
 
 # UBSan only makes sense on QEMU targets (bare metal has no abort/printf runtime)
@@ -228,6 +229,10 @@ option(LUGALOS_ENABLE_CHESS "Build the chess engine (RP2350 only; H4, not yet im
 # image flat until then. The game itself is data: games/zork1/zork1-mit.z3
 # is staged to /sd0/games/ (MIT-built from in-tree ZIL source).
 option(LUGALOS_ENABLE_ZMACHINE "Build the Z-machine v3 interpreter (user/zmachine)" ON)
+
+# user/moonbase: Moonbase Lambda 2D isometric lunar city-builder simulation.
+# Targets ESP32-P4 with 32 MB PSRAM and RGB565 display.
+option(LUGALOS_ENABLE_MOONBASE "Build the Moonbase Lambda lunar city-builder (user/moonbase)" ON)
 
 # Same mechanism again: the
 # Pico-Clock-Green baseboard persona wires GP10-13 (SPI1/SD card on every
@@ -585,6 +590,7 @@ if(DEFINED LUGALOS_BOARD_FILE)
         -DENABLE_DCF77=${LUGALOS_ENABLE_DCF77}
         -DENABLE_GPS=${LUGALOS_ENABLE_GPS}
         -DENABLE_RIBBON_ANIMATION=${LUGALOS_ENABLE_RIBBON_ANIMATION}
+        -DENABLE_MOONBASE=${LUGALOS_ENABLE_MOONBASE}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_config.cmake)
     # add_custom_command(OUTPUT ...), not a bare add_custom_target(COMMAND ...)
     # -- the same distinction lugalos_build_id.h above already depends on, and
@@ -618,6 +624,7 @@ if(DEFINED LUGALOS_BOARD_FILE)
             -DENABLE_DCF77=${LUGALOS_ENABLE_DCF77}
             -DENABLE_GPS=${LUGALOS_ENABLE_GPS}
             -DENABLE_RIBBON_ANIMATION=${LUGALOS_ENABLE_RIBBON_ANIMATION}
+            -DENABLE_MOONBASE=${LUGALOS_ENABLE_MOONBASE}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_config.cmake
         DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/_always_rebuild
                 ${LUGALOS_BOARD_FILE}
@@ -915,6 +922,19 @@ if(LUGALOS_ENABLE_ZMACHINE)
         user/zmachine/zfront.c
         user/zmachine/zmap.c
         user/zmachine/zwrap.c)
+endif()
+if(LUGALOS_ENABLE_MOONBASE)
+    list(APPEND SOURCES
+        user/moonbase/src/platform_p4.c
+        user/moonbase/src/moon_fixed.c
+        user/moonbase/src/moon_font8x16.c
+        user/moonbase/src/moon_blitter.c
+        user/moonbase/src/moon_grid.c
+        user/moonbase/src/moon_sprites.c
+        user/moonbase/src/moon_textures.c
+        user/moonbase/src/moon_structures.c
+        user/moonbase/src/moon_resources.c
+        user/moonbase/src/moon_game.c)
 endif()
 
 if(LUGALOS_TARGET STREQUAL "RP2350")

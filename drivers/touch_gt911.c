@@ -31,6 +31,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 
 #if defined(TOUCH_PRESENT)
 
@@ -78,6 +79,11 @@ typedef struct {
 /* single task: the touch task; touch_start() fills it at boot before creating
  * it, and `ts` only reads. */
 static touch_t g_t;
+static touch_hook_fn s_touch_hook = NULL;
+
+void touch_set_hook(touch_hook_fn hook) {
+    s_touch_hook = hook;
+}
 
 static bool reg_read(uint8_t addr, uint16_t reg, uint8_t *buf, uint32_t n) {
     uint8_t a[2] = { (uint8_t)(reg >> 8), (uint8_t)reg };
@@ -232,22 +238,32 @@ static void touch_task_body(void *arg) {
             map_point(rx, ry, &x, &y);
             g_t.last_x = x;
             g_t.last_y = y;
+            int kind = 2;
             if (!down) {
                 down = true;
                 x0 = x; y0 = y;
                 t0 = time_get_ms();
                 g_t.presses++;
                 g_t.log_kind = 1;
+                kind = 1;
             } else {
                 g_t.log_kind = 2;
+                kind = 2;
             }
             g_t.log_seq++;
+            if (s_touch_hook) {
+                (void)s_touch_hook(x, y, kind);
+            }
         } else if (down) {
             if (time_get_ms() - t_last > 80u) {
                 down = false;
                 g_t.log_kind = 3;
                 g_t.log_seq++;
-                gesture(x0, y0, x, y, (uint32_t)(t_last - t0));
+                if (s_touch_hook && s_touch_hook(x, y, 3)) {
+                    /* Handled by application hook: suppress ribbon gestures */
+                } else {
+                    gesture(x0, y0, x, y, (uint32_t)(t_last - t0));
+                }
             }
         }
     }
@@ -372,6 +388,7 @@ uint32_t touch_press_count(void) {
 #else
 
 int touch_start(void) { return -1; }
+void touch_set_hook(touch_hook_fn hook) { (void)hook; }
 void touch_command(const char *args) { (void)args; cprintf("touch: this board has no touch controller\n"); }
 uint32_t touch_press_count(void) { return 0; }
 
