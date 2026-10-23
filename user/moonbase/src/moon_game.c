@@ -88,16 +88,17 @@ static void clamp_camera(moon_game_t *game) {
     if (game->cam_y > 2000)  game->cam_y = 2000;
 }
 
-static void try_place_selected_structure(moon_game_t *game) {
-    if (game->structs.selected_build_type == MOON_STRUCT_NONE || !game->hover_valid) return;
+static bool try_place_selected_structure(moon_game_t *game) {
+    if (game->structs.selected_build_type == MOON_STRUCT_NONE || !game->hover_valid) return false;
 
     const moon_structure_def_t *def = moon_structure_get_def(game->structs.selected_build_type);
-    if (!def) return;
+    if (!def) return false;
 
     fixed32_t cost = fixed_from_int(def->cost_regolith);
     if (game->resources.regolith_stored_kg < cost) {
-        /* Insufficient materials */
-        return;
+        game->notify_msg = "INSUFFICIENT REGOLITH!";
+        game->notify_timer_ms = 2500;
+        return false;
     }
 
     moon_structure_t *placed = moon_structure_place(&game->grid, &game->structs,
@@ -106,6 +107,19 @@ static void try_place_selected_structure(moon_game_t *game) {
     if (placed) {
         game->resources.regolith_stored_kg -= cost;
         moon_resources_solve_power_grid(&game->grid, &game->structs);
+        /* Deselect tool on placement so ghost does not obscure the newly built structure */
+        game->structs.selected_build_type = MOON_STRUCT_NONE;
+        return true;
+    } else {
+        const char *reason = NULL;
+        (void)moon_structure_can_place(&game->grid, &game->structs,
+                                       game->structs.selected_build_type,
+                                       game->hover_tile_x, game->hover_tile_y, &reason);
+        if (reason) {
+            game->notify_msg = reason;
+            game->notify_timer_ms = 2000;
+        }
+        return false;
     }
 }
 
@@ -131,9 +145,19 @@ void moon_game_handle_event(moon_game_t *game, const moon_event_t *ev) {
                     break;
 
                 case MOON_KEY_0:
-                case MOON_KEY_Q:
                     game->structs.selected_build_type = MOON_STRUCT_NONE;
                     game->demolish_tool_active = false;
+                    break;
+
+                case MOON_KEY_Q:
+                    if (game->structs.selected_build_type != MOON_STRUCT_NONE || game->demolish_tool_active) {
+                        game->structs.selected_build_type = MOON_STRUCT_NONE;
+                        game->demolish_tool_active = false;
+                    } else if (game->has_selection) {
+                        game->has_selection = false;
+                    } else {
+                        game->running = false;
+                    }
                     break;
 
                 case MOON_KEY_1:
@@ -213,9 +237,33 @@ void moon_game_handle_event(moon_game_t *game, const moon_event_t *ev) {
             game->drag_start_y = ev->y;
             game->cam_start_x = game->cam_x;
             game->cam_start_y = game->cam_y;
+
+            /* Always update hover tile on pointer down */
+            moon_screen_to_grid(ev->x, ev->y, game->cam_x, game->cam_y,
+                                game->screen_w, game->screen_h,
+                                &game->hover_tile_x, &game->hover_tile_y);
+            game->hover_valid = (game->hover_tile_x >= 0 && game->hover_tile_x < MOON_MAP_SIZE_X &&
+                                 game->hover_tile_y >= 0 && game->hover_tile_y < MOON_MAP_SIZE_Y);
             break;
 
         case MOON_EVENT_POINTER_UP:
+            /* Detect drag from cumulative displacement between down and up */
+            if (game->pointer_down) {
+                int32_t total_dx = ev->x - game->drag_start_x;
+                int32_t total_dy = ev->y - game->drag_start_y;
+                if (total_dx * total_dx + total_dy * total_dy > 36) {
+                    game->was_dragging = true;
+                }
+            }
+            game->pointer_down = false;
+
+            /* Always update hover tile to release location */
+            moon_screen_to_grid(ev->x, ev->y, game->cam_x, game->cam_y,
+                                game->screen_w, game->screen_h,
+                                &game->hover_tile_x, &game->hover_tile_y);
+            game->hover_valid = (game->hover_tile_x >= 0 && game->hover_tile_x < MOON_MAP_SIZE_X &&
+                                 game->hover_tile_y >= 0 && game->hover_tile_y < MOON_MAP_SIZE_Y);
+
             if (ev->button == 3) {
                 /* Right click cancels build / demolish tool */
                 game->structs.selected_build_type = MOON_STRUCT_NONE;
@@ -357,7 +405,6 @@ void moon_game_handle_event(moon_game_t *game, const moon_event_t *ev) {
                     }
                 }
             }
-            game->pointer_down = false;
             break;
 
         case MOON_EVENT_POINTER_MOVE:
@@ -366,7 +413,7 @@ void moon_game_handle_event(moon_game_t *game, const moon_event_t *ev) {
             if (game->pointer_down) {
                 int32_t dx = ev->x - game->drag_start_x;
                 int32_t dy = ev->y - game->drag_start_y;
-                if (dx * dx + dy * dy > 16) {
+                if (dx * dx + dy * dy > 36) {
                     game->was_dragging = true;
                 }
                 game->cam_x = game->cam_start_x - dx;

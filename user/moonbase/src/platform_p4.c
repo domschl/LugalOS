@@ -18,6 +18,7 @@
 #include "drivers/touch.h"
 #include "drivers/screen.h"
 #include "kernel/console.h"
+#include "kernel/keyseq.h"
 #include "kernel/palloc.h"
 #include "kernel/printk.h"
 #include "kernel/sched.h"
@@ -41,15 +42,17 @@ static int       s_height = 600;
 static uint32_t  s_stride = 1024;
 static int       s_virtual_w = 1024;
 static int       s_virtual_h = 600;
-static uint16_t *s_fb = NULL;         /* Canvas slot buffer (visible to compositor) */
-static uint16_t *s_render_fb = NULL;  /* Off-screen render buffer (drawn by game) */
+static uint16_t *s_fb = NULL;                 /* Canvas slot buffer (visible to compositor) */
+static uint16_t *s_render_fb = NULL;          /* Off-screen render buffer (drawn by game) */
+static uint16_t *s_canvas_fb_original = NULL; /* Original canvas slot backing buffer */
+static uint16_t *s_render_fb_original = NULL; /* Original palloc buffer for safe freeing */
 static int       s_cid = -1;
 static bool      s_allocated_fb = false;
 static uint32_t  s_fb_pages = 0;
 static uint32_t  s_render_pages = 0;
 
-/* Touch event queue */
-#define EVENT_QUEUE_SIZE 32
+/* Touch event queue with move-coalescing */
+#define EVENT_QUEUE_SIZE 64
 static moon_event_t s_queue[EVENT_QUEUE_SIZE];
 static volatile int s_qhead = 0;
 static volatile int s_qtail = 0;
@@ -57,6 +60,18 @@ static int s_last_touch_x = 0;
 static int s_last_touch_y = 0;
 
 static void queue_push(const moon_event_t *ev) {
+    /* If the event is POINTER_MOVE, coalesce with previous queued POINTER_MOVE to prevent queue overflow */
+    if (ev->type == MOON_EVENT_POINTER_MOVE && s_qhead != s_qtail) {
+        int prev = (s_qhead - 1 + EVENT_QUEUE_SIZE) % EVENT_QUEUE_SIZE;
+        if (s_queue[prev].type == MOON_EVENT_POINTER_MOVE) {
+            s_queue[prev].x = ev->x;
+            s_queue[prev].y = ev->y;
+            s_queue[prev].dx += ev->dx;
+            s_queue[prev].dy += ev->dy;
+            return;
+        }
+    }
+
     int next = (s_qhead + 1) % EVENT_QUEUE_SIZE;
     if (next != s_qtail) {
         s_queue[s_qhead] = *ev;
@@ -148,14 +163,17 @@ bool moon_platform_init(int width, int height, const char *title) {
         printk("[moonbase] Failed to allocate or acquire RGB565 framebuffer in PSRAM\n");
         return false;
     }
+    s_canvas_fb_original = s_fb;
 
     /* Allocate secondary off-screen render buffer in PSRAM */
     uint32_t render_bytes = (uint32_t)s_virtual_w * s_virtual_h * sizeof(uint16_t);
     s_render_pages = (render_bytes + 4095u) / 4096u;
     s_render_fb = (uint16_t *)palloc_pages_bulk(s_render_pages);
+    s_render_fb_original = s_render_fb;
     if (!s_render_fb) {
         printk("[moonbase] Warning: failed to allocate secondary buffer, using single-buffered rendering\n");
         s_render_fb = s_fb;
+        s_render_fb_original = NULL;
         s_scale = 1;
         s_virtual_w = s_width;
         s_virtual_h = s_height;
@@ -191,14 +209,21 @@ void moon_platform_shutdown(void) {
     uint8_t reply[SCREEN_REPLY_LEN];
     (void)console_canvas(req, 3 + (uint32_t)nl, reply);
 
-    if (s_render_fb && s_render_fb != s_fb && s_render_pages > 0) {
-        palloc_free(s_render_fb, s_render_pages);
+    /* Restore original canvas backing pointer if double-buffering swapped backing */
+    if (s_cid >= 0 && s_canvas_fb_original) {
+        lcdterm_set_canvas565_backing((uint8_t)s_cid, s_canvas_fb_original);
+    }
+
+    if (s_render_fb_original && s_render_fb_original != s_canvas_fb_original && s_render_pages > 0) {
+        palloc_free(s_render_fb_original, s_render_pages);
+        s_render_fb_original = NULL;
         s_render_fb = NULL;
         s_render_pages = 0;
     }
 
-    if (s_allocated_fb && s_fb && s_fb_pages > 0) {
-        palloc_free(s_fb, s_fb_pages);
+    if (s_allocated_fb && s_canvas_fb_original && s_fb_pages > 0) {
+        palloc_free(s_canvas_fb_original, s_fb_pages);
+        s_canvas_fb_original = NULL;
         s_fb = NULL;
         s_allocated_fb = false;
         s_fb_pages = 0;
@@ -280,37 +305,72 @@ bool moon_platform_poll_event(moon_event_t *ev) {
         return true;
     }
 
-    /* 2. Keyboard events */
+    /* 2. Keyboard events via kernel keyseq decoder (VT escape sequences, arrow keys, etc.) */
     if (console_has_char()) {
-        char c = console_getc();
+        key_event_t ke = keyseq_read_console();
         memset(ev, 0, sizeof(*ev));
         ev->type = MOON_EVENT_KEY_DOWN;
-        switch (c) {
-            case 'q': case 'Q': case 27: /* ESC */
+        switch (ke.key) {
+            case KEY_UP:
+                ev->key = MOON_KEY_UP;
+                return true;
+            case KEY_DOWN:
+                ev->key = MOON_KEY_DOWN;
+                return true;
+            case KEY_LEFT:
+                ev->key = MOON_KEY_LEFT;
+                return true;
+            case KEY_RIGHT:
+                ev->key = MOON_KEY_RIGHT;
+                return true;
+            case 0x1B: /* Lone ESC key */
+                ev->key = MOON_KEY_ESCAPE;
+                return true;
+            case 'q': case 'Q':
                 ev->key = MOON_KEY_Q;
-                ev->type = MOON_EVENT_QUIT;
-                break;
-            case ' ': ev->key = MOON_KEY_SPACE; break;
-            case '\r': case '\n': ev->key = MOON_KEY_RETURN; break;
-            case '\t': ev->key = MOON_KEY_TAB; break;
-            case 'w': case 'W': ev->key = MOON_KEY_W; break;
-            case 'a': case 'A': ev->key = MOON_KEY_A; break;
-            case 's': case 'S': ev->key = MOON_KEY_S; break;
-            case 'd': case 'D': ev->key = MOON_KEY_D; break;
-            case 'r': case 'R': ev->key = MOON_KEY_R; break;
-            case 't': case 'T': ev->key = MOON_KEY_T; break;
-            case 'z': case 'Z': ev->key = MOON_KEY_Z; break;
-            case '0': ev->key = MOON_KEY_0; break;
-            case '1': ev->key = MOON_KEY_1; break;
-            case '2': ev->key = MOON_KEY_2; break;
-            case '3': ev->key = MOON_KEY_3; break;
-            case '4': ev->key = MOON_KEY_4; break;
-            case '5': ev->key = MOON_KEY_5; break;
-            case '6': ev->key = MOON_KEY_6; break;
-            case '7': ev->key = MOON_KEY_7; break;
-            default:  ev->key = MOON_KEY_UNKNOWN; break;
+                return true;
+            case ' ':
+                ev->key = MOON_KEY_SPACE;
+                return true;
+            case '\r': case '\n':
+                ev->key = MOON_KEY_RETURN;
+                return true;
+            case '\t':
+                ev->key = MOON_KEY_TAB;
+                return true;
+            case 'w': case 'W':
+                ev->key = MOON_KEY_W;
+                return true;
+            case 'a': case 'A':
+                ev->key = MOON_KEY_A;
+                return true;
+            case 's': case 'S':
+                ev->key = MOON_KEY_S;
+                return true;
+            case 'd': case 'D':
+                ev->key = MOON_KEY_D;
+                return true;
+            case 'r': case 'R':
+                ev->key = MOON_KEY_R;
+                return true;
+            case 't': case 'T':
+                ev->key = MOON_KEY_T;
+                return true;
+            case 'z': case 'Z':
+                ev->key = MOON_KEY_Z;
+                return true;
+            case '0': ev->key = MOON_KEY_0; return true;
+            case '1': ev->key = MOON_KEY_1; return true;
+            case '2': ev->key = MOON_KEY_2; return true;
+            case '3': ev->key = MOON_KEY_3; return true;
+            case '4': ev->key = MOON_KEY_4; return true;
+            case '5': ev->key = MOON_KEY_5; return true;
+            case '6': ev->key = MOON_KEY_6; return true;
+            case '7': ev->key = MOON_KEY_7; return true;
+            default:
+                ev->key = MOON_KEY_UNKNOWN;
+                return true;
         }
-        return true;
     }
 
     /* 3. Ctrl-C interrupt */
