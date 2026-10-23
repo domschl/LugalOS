@@ -834,7 +834,14 @@ int lcdterm_get_visible_canvases565(uint8_t *out_cids, int *out_x0, int *out_y0,
             if (cid < SCREEN_MAX_CANVASES && g_scr->canvases[cid].format == CANVAS_FMT_RGB565 && g_scr->canvases[cid].buf565) {
                 int cx0 = (int)w->rx0 - (int)g_scr->ribbon.x_view + 1;
                 int cx1 = (int)w->rx1 - (int)g_scr->ribbon.x_view - 1;
-                if (cx1 >= 0 && cx0 < sw) {
+                if (g_scr->layout == SCREEN_LAYOUT_FULLSCREEN) {
+                    if (out_cids) out_cids[count] = cid;
+                    if (out_x0) out_x0[count] = 0;
+                    if (out_y0) out_y0[count] = 0;
+                    if (out_x1) out_x1[count] = sw - 1;
+                    if (out_y1) out_y1[count] = sh - 1;
+                    count++;
+                } else if (cx1 >= 0 && cx0 < sw) {
                     if (out_cids) out_cids[count] = cid;
                     if (out_x0) out_x0[count] = cx0;
                     if (out_y0) out_y0[count] = tile_y0;

@@ -647,7 +647,7 @@ LCDTERM_UTEXT static void draw_tile(const canvas1_t *cv, int x0, int y0, int x1,
 }
 
 LCDTERM_UTEXT static bool has_text(const screen_t *scr) {
-    if (scr->layout == SCREEN_LAYOUT_CANVAS) return false;
+    if (scr->layout == SCREEN_LAYOUT_CANVAS || scr->layout == SCREEN_LAYOUT_FULLSCREEN) return false;
     if (scr->ribbon.count > 0) return ribbon_find_term(&scr->ribbon) >= 0;
     return true;
 }
@@ -959,6 +959,10 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout);
 LCDTERM_UTEXT static void draw_all_from(screen_t *scr, bool restore) {
     const canvas1_t *cv = &scr->cv;
     (void)place(scr, scr->layout);
+    if (scr->layout == SCREEN_LAYOUT_FULLSCREEN) {
+        /* Fullscreen canvas: omit all ribbon window tiles, chrome and menu bar */
+        return;
+    }
     if (scr->animating) {
         clear_ribbon_gaps(scr);
     } else {
@@ -1170,19 +1174,27 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout) {
         const ribbon_win_t *cw = &scr->ribbon.wins[c_idx];
         int32_t cx0 = cw->rx0 - xv;
         int32_t cx1 = cw->rx1 - xv;
-        scr->cx0 = (int16_t)cx0;
-        scr->cx1 = (int16_t)cx1;
-        scr->cy0 = SCREEN_TILE_Y;
-        scr->cy1 = (int16_t)y1;
-        int cw_w = (int)(cw->rx1 - cw->rx0 - 1);
-        int cw_h = (int)(scr->cy1 - scr->cy0 - 17);
-        if (cw_w < 0) cw_w = 0;
-        if (cw_h < 0) cw_h = 0;
-        if (cw_w == 0 || cw_h == 0) {
-            canvas1_window(&scr->cc, &scr->cv, 0, 0, 0, 0);
+        if (scr->layout == SCREEN_LAYOUT_FULLSCREEN) {
+            scr->cx0 = 0;
+            scr->cx1 = (int16_t)(scr->cv.w - 1);
+            scr->cy0 = 0;
+            scr->cy1 = (int16_t)(scr->cv.h - 1);
+            canvas1_window(&scr->cc, &scr->cv, 0, 0, scr->cv.w, scr->cv.h);
         } else {
-            canvas1_window(&scr->cc, &scr->cv, (int)scr->cx0 + 1, (int)scr->cy0 + 17,
-                           (unsigned)cw_w, (unsigned)cw_h);
+            scr->cx0 = (int16_t)cx0;
+            scr->cx1 = (int16_t)cx1;
+            scr->cy0 = SCREEN_TILE_Y;
+            scr->cy1 = (int16_t)y1;
+            int cw_w = (int)(cw->rx1 - cw->rx0 - 1);
+            int cw_h = (int)(scr->cy1 - scr->cy0 - 17);
+            if (cw_w < 0) cw_w = 0;
+            if (cw_h < 0) cw_h = 0;
+            if (cw_w == 0 || cw_h == 0) {
+                canvas1_window(&scr->cc, &scr->cv, 0, 0, 0, 0);
+            } else {
+                canvas1_window(&scr->cc, &scr->cv, (int)scr->cx0 + 1, (int)scr->cy0 + 17,
+                               (unsigned)cw_w, (unsigned)cw_h);
+            }
         }
     } else {
         scr->cx0 = scr->cx1 = 0;
@@ -1554,7 +1566,8 @@ LCDTERM_UTEXT bool screen_set_layout_vterm_named_fmt(screen_t *scr, uint8_t vid,
     }
 
     if (layout != SCREEN_LAYOUT_SPLIT_WIDE && layout != SCREEN_LAYOUT_SPLIT_HALF &&
-        layout != SCREEN_LAYOUT_SPLIT_NARROW && layout != SCREEN_LAYOUT_CANVAS) {
+        layout != SCREEN_LAYOUT_SPLIT_NARROW && layout != SCREEN_LAYOUT_CANVAS &&
+        layout != SCREEN_LAYOUT_FULLSCREEN) {
         return false;
     }
 
@@ -1565,15 +1578,16 @@ LCDTERM_UTEXT bool screen_set_layout_vterm_named_fmt(screen_t *scr, uint8_t vid,
         text_cols = RIBBON_COLS_TWO_FIFTHS(scr->cv.w);
     } else if (layout == SCREEN_LAYOUT_SPLIT_HALF) {
         text_cols = RIBBON_COLS_HALF(scr->cv.w);
-    } else if (layout != SCREEN_LAYOUT_CANVAS) {
+    } else if (layout != SCREEN_LAYOUT_CANVAS && layout != SCREEN_LAYOUT_FULLSCREEN) {
         text_cols = RIBBON_COLS_TWO_THIRDS(scr->cv.w);
     }
     if (text_cols && text_cols < RIBBON_TERM_MIN_COLS) text_cols = RIBBON_TERM_MIN_COLS;
-    if (layout != SCREEN_LAYOUT_CANVAS) {
+    if (layout != SCREEN_LAYOUT_CANVAS && layout != SCREEN_LAYOUT_FULLSCREEN) {
         if (8 * (C - 1 - (int)text_cols) - 14 < 4 + 24) return false;   /* no room for a canvas */
     }
 
-    uint8_t canvas_cols = (layout == SCREEN_LAYOUT_CANVAS) ? scr->full_cols : (uint8_t)(scr->full_cols - text_cols - 2u);
+    uint8_t canvas_cols = (layout == SCREEN_LAYOUT_CANVAS || layout == SCREEN_LAYOUT_FULLSCREEN)
+                          ? scr->full_cols : (uint8_t)(scr->full_cols - text_cols - 2u);
 
     int cid = -1;
     if (name && *name) {
@@ -1607,7 +1621,7 @@ LCDTERM_UTEXT bool screen_set_layout_vterm_named_fmt(screen_t *scr, uint8_t vid,
         if (t_win >= 0 && text_cols > 0) {
             scr->ribbon.wins[t_win].cols = text_cols;
         }
-        if (layout == SCREEN_LAYOUT_CANVAS) {
+        if (layout == SCREEN_LAYOUT_CANVAS || layout == SCREEN_LAYOUT_FULLSCREEN) {
             scr->ribbon.active_idx = (uint8_t)c_win;
         } else if (t_win >= 0) {
             scr->ribbon.active_idx = (uint8_t)t_win;
@@ -1647,7 +1661,7 @@ LCDTERM_UTEXT bool screen_set_layout_vterm_named_fmt(screen_t *scr, uint8_t vid,
         const char *ctitle = scr->canvases[cid].title[0] ? scr->canvases[cid].title : def_ctitle;
         int idx = ribbon_insert(&scr->ribbon, insert_idx, RIBBON_WIN_CANVAS, (uint8_t)cid, canvas_cols, ctitle);
         if (idx >= 0) {
-            if (layout == SCREEN_LAYOUT_CANVAS) {
+            if (layout == SCREEN_LAYOUT_CANVAS || layout == SCREEN_LAYOUT_FULLSCREEN) {
                 scr->ribbon.active_idx = (uint8_t)idx;
             } else {
                 scr->ribbon.active_idx = (insert_idx <= act) ? (uint8_t)(act + 1u) : act;
@@ -1772,6 +1786,11 @@ LCDTERM_UTEXT static int canvas_for(const screen_t *scr, uint8_t vid) {
 LCDTERM_UTEXT static void canvas_size(const screen_t *scr, int cid, int *w, int *h) {
     *w = *h = 0;
     if (cid < 0 || !scr->canvases[cid].in_use) return;
+    if (scr->layout == SCREEN_LAYOUT_FULLSCREEN) {
+        *w = (int)scr->cv.w;
+        *h = (int)scr->cv.h;
+        return;
+    }
     int c_win = ribbon_find_canvas_slot(&scr->ribbon, (uint8_t)cid);
     if (c_win < 0) return;
     const ribbon_win_t *win = &scr->ribbon.wins[c_win];
@@ -2271,12 +2290,17 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
                 const ribbon_win_t *w = &scr->ribbon.wins[c_win];
                 int32_t cx0 = w->rx0 - scr->ribbon.x_view;
                 int32_t cx1 = w->rx1 - scr->ribbon.x_view;
-                cw_w = (int)(w->rx1 - w->rx0 - 1);
-                cw_h = (int)(SCREEN_TEXT_Y + (int)FONT_CELL_H * (int)SCREEN_TEXT_ROWS(scr->cv.h) + 1 - (SCREEN_TILE_Y + 17));
-                if (cx1 >= 0 && cx0 < (int32_t)scr->cv.w && cw_w > 0 && cw_h > 0) {
-                    canvas1_window(&cc_screen, &scr->cv, (int)cx0 + 1, SCREEN_TILE_Y + 17,
-                                   (unsigned)cw_w, (unsigned)cw_h);
-                    cc_scr = &cc_screen;
+                if (scr->layout == SCREEN_LAYOUT_FULLSCREEN) {
+                    cw_w = (int)scr->cv.w;
+                    cw_h = (int)scr->cv.h;
+                } else {
+                    cw_w = (int)(w->rx1 - w->rx0 - 1);
+                    cw_h = (int)(SCREEN_TEXT_Y + (int)FONT_CELL_H * (int)SCREEN_TEXT_ROWS(scr->cv.h) + 1 - (SCREEN_TILE_Y + 17));
+                    if (cx1 >= 0 && cx0 < (int32_t)scr->cv.w && cw_w > 0 && cw_h > 0) {
+                        canvas1_window(&cc_screen, &scr->cv, (int)cx0 + 1, SCREEN_TILE_Y + 17,
+                                       (unsigned)cw_w, (unsigned)cw_h);
+                        cc_scr = &cc_screen;
+                    }
                 }
             }
             if (cw_w <= 0) cw_w = (int)scr->cc.w;

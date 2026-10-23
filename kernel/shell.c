@@ -5493,6 +5493,8 @@ static void cmd_canvas(const char *cmd_line) {
         layout = SCREEN_LAYOUT_SPLIT_NARROW;
     } else if (strcmp(args, "full") == 0) {
         layout = SCREEN_LAYOUT_CANVAS;
+    } else if (strcmp(args, "fullscreen") == 0) {
+        layout = SCREEN_LAYOUT_FULLSCREEN;
     } else {
         cprintf("canvas: unknown option '%s'\n", args);
         return;

@@ -71,6 +71,7 @@ enum {
     SCREEN_LAYOUT_SPLIT_WIDE = 2,
     SCREEN_LAYOUT_SPLIT_HALF = 3,
     SCREEN_LAYOUT_SPLIT_NARROW = 4,     /* 37.5a: a narrow canvas, 64 text columns */
+    SCREEN_LAYOUT_FULLSCREEN = 5,       /* Borderless full-screen canvas (no menu bar, no titlebar) */
 };
 
 #define SCREEN_MAX_TERMS 8u
