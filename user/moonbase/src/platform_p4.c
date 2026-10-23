@@ -99,10 +99,10 @@ bool moon_platform_init(int width, int height, const char *title) {
 #endif
     s_stride = (uint32_t)s_width;
 
-    /* 1. Open or focus RGB565 full-screen canvas "moonbase" */
+    /* 1. Open or focus RGB565 true full-screen canvas "moonbase" (no chrome/decorations) */
     uint8_t req[SCREEN_CTITLE_MAX + 3];
     req[0] = 'L';
-    req[1] = SCREEN_LAYOUT_CANVAS | 0x80u; /* RGB565 Full Canvas */
+    req[1] = SCREEN_LAYOUT_FULLSCREEN | 0x80u; /* RGB565 True Fullscreen Canvas */
     const char *cname = "moonbase";
     size_t nl = strlen(cname);
     memcpy(req + 2, cname, nl);
@@ -184,6 +184,13 @@ void moon_platform_shutdown(void) {
         s_fb = NULL;
         s_allocated_fb = false;
         s_fb_pages = 0;
+    }
+
+    /* Force full terminal repaint and hardware VSYNC scanout flip to purge residual game graphics */
+    lcdterm_repaint();
+    lcdterm_sync_post();
+    if (lcdterm_is_double_buffered()) {
+        lcdterm_sync_post();
     }
 }
 
