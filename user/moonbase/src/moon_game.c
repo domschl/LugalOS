@@ -4,6 +4,7 @@
 #include "moon_blitter.h"
 #include "moon_grid.h"
 #include "moon_structures.h"
+#include "moon_textures.h"
 
 static const char *get_terrain_name(moon_terrain_type_t t) {
     switch (t) {
@@ -19,6 +20,8 @@ static const char *get_terrain_name(moon_terrain_type_t t) {
 
 bool moon_game_init(moon_game_t *game, int width, int height) {
     if (!game) return false;
+
+    moon_textures_init();
 
     game->state = MOON_STATE_PLAYING;
     game->running = true;

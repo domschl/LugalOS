@@ -304,12 +304,12 @@ static uint16_t sample_terrain_pixel(int gx, int gy, int px, int py, int sx, int
         return RGB565(110, 110, 116);
     }
 
-    /* World-space continuous 2:1 isometric mapping into seamless 64x64 regolith texture */
-    int u = (gx * 32) + (rel_y * 2) + rel_x;
-    int v = (gy * 32) + (rel_y * 2) - rel_x;
+    /* World-space continuous 2:1 isometric mapping into seamless 128x128 regolith texture */
+    int u = ((gx * 64) + (rel_y * 2) + rel_x) >> 2;
+    int v = ((gy * 64) + (rel_y * 2) - rel_x) >> 2;
     uint32_t tu = (uint32_t)u & (TEX_REGOLITH_W - 1);
     uint32_t tv = (uint32_t)v & (TEX_REGOLITH_H - 1);
-    uint16_t base = g_tex_regolith[(tv << 6) | tu];
+    uint16_t base = g_tex_regolith[(tv << 7) | tu];
 
     uint32_t n = micro_noise(gx, gy, px, py);
     uint32_t var = (n >> 28) & 0x0F; /* 0..15 */
