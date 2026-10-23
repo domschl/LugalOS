@@ -106,9 +106,12 @@ bool lcdterm_is_animating(void);
 bool lcdterm_is_double_buffered(void);
 void lcdterm_sync_pre(void);
 void lcdterm_sync_post(void);
+void lcdterm_damage(void);
 int lcdterm_get_visible_readers(uint8_t *out_rids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins);
 uint16_t *lcdterm_get_canvas565_backing(uint8_t cid, uint32_t *out_stride, int *out_w, int *out_h);
 uint16_t *lcdterm_get_canvas565_by_name(const char *name, uint32_t *out_stride, int *out_w, int *out_h);
+int lcdterm_get_canvas565_cid_by_name(const char *name);
+bool lcdterm_set_canvas565_backing(uint8_t cid, uint16_t *buf);
 int lcdterm_get_visible_canvases565(uint8_t *out_cids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins);
 
 typedef struct {
@@ -127,6 +130,7 @@ static inline bool lcdterm_is_animating(void) { return false; }
 static inline bool lcdterm_is_double_buffered(void) { return false; }
 static inline void lcdterm_sync_pre(void) { }
 static inline void lcdterm_sync_post(void) { }
+static inline void lcdterm_damage(void) { }
 static inline int lcdterm_get_visible_readers(uint8_t *out_rids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins) {
     (void)out_rids; (void)out_x0; (void)out_y0; (void)out_x1; (void)out_y1; (void)max_wins;
     return 0;
@@ -138,6 +142,14 @@ static inline uint16_t *lcdterm_get_canvas565_backing(uint8_t cid, uint32_t *out
 static inline uint16_t *lcdterm_get_canvas565_by_name(const char *name, uint32_t *out_stride, int *out_w, int *out_h) {
     (void)name; (void)out_stride; (void)out_w; (void)out_h;
     return NULL;
+}
+static inline int lcdterm_get_canvas565_cid_by_name(const char *name) {
+    (void)name;
+    return -1;
+}
+static inline bool lcdterm_set_canvas565_backing(uint8_t cid, uint16_t *buf) {
+    (void)cid; (void)buf;
+    return false;
 }
 static inline int lcdterm_get_visible_canvases565(uint8_t *out_cids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins) {
     (void)out_cids; (void)out_x0; (void)out_y0; (void)out_x1; (void)out_y1; (void)max_wins;
