@@ -81,10 +81,14 @@ void moon_structure_demolish(moon_grid_t *grid,
                              moon_structure_mgr_t *mgr,
                              int gx, int gy);
 
+/* Forward declaration of resources */
+struct moon_resources_s;
+
 /* Rendering */
 void moon_structure_render_all(const moon_structure_mgr_t *mgr,
                                const moon_grid_t *grid,
                                const moon_surface_t *surf,
+                               const struct moon_resources_s *res,
                                int32_t cam_x, int32_t cam_y);
 
 /* Ghost preview while building */

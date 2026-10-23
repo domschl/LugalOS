@@ -65,7 +65,7 @@ static void test_structure_catalog_and_placement(void) {
     assert(surf_buf != NULL);
     moon_surface_t surf = moon_surface_make(surf_buf, 1024, 600, 1024);
 
-    moon_structure_render_all(&mgr, &grid, &surf, 0, 32 * MOON_TILE_H);
+    moon_structure_render_all(&mgr, &grid, &surf, NULL, 0, 32 * MOON_TILE_H);
 
     mgr.selected_build_type = MOON_STRUCT_BATTERY_BANK;
     moon_structure_render_ghost(&mgr, &grid, &surf, 0, 32 * MOON_TILE_H, 34, 32);
@@ -335,6 +335,15 @@ static void test_resource_simulation_and_day_night(void) {
     assert(res.warning_power == true);
     assert(res.warning_cold == true);
     assert(res.life_support_pct < 100);
+
+    /* 6. Verify crew casualty when life support stays at 0% */
+    res.life_support_pct = 0;
+    res.casualty_timer_ticks = 0;
+    for (int t = 0; t < 25; t++) {
+        moon_resources_tick(&res, &grid, &mgr);
+    }
+    assert(res.population < MOON_LANDER_CREW);
+    assert(res.warning_crew_lost == true);
 
     printf("[test] Resource simulation loop & lunar day/night cycle: PASS\n");
 }

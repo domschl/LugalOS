@@ -298,10 +298,31 @@ void moon_resources_tick(moon_resources_t *res,
     if (stressed) {
         if (res->life_support_pct > 0) {
             res->life_support_pct--;
+        } else if (res->population > 0) {
+            /* At 0% life support: casualties occur every 5 seconds (20 ticks at 4Hz) */
+            res->casualty_timer_ticks++;
+            if (res->casualty_timer_ticks >= (MOON_SIM_TICK_RATE_HZ * 5)) {
+                res->casualty_timer_ticks = 0;
+                res->population--;
+                res->warning_crew_lost = true;
+            }
         }
+        res->growth_timer_ticks = 0;
     } else {
+        res->casualty_timer_ticks = 0;
         if (res->life_support_pct < 100) {
             res->life_support_pct++;
+        }
+
+        /* Population growth when life support is excellent and housing capacity exists */
+        if (res->life_support_pct >= 95 && res->population < res->max_population) {
+            res->growth_timer_ticks++;
+            if (res->growth_timer_ticks >= (MOON_SIM_TICK_RATE_HZ * 45)) {
+                res->growth_timer_ticks = 0;
+                res->population++;
+            }
+        } else {
+            res->growth_timer_ticks = 0;
         }
     }
 }
