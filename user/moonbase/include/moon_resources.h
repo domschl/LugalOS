@@ -20,7 +20,7 @@
 #define MOON_HABITAT_CREW         8
 
 /* Resource System State */
-typedef struct {
+typedef struct moon_resources_s {
     /* Day / Night Cycle */
     uint32_t cycle_tick;            /* 0..MOON_LUNAR_DAY_TICKS - 1 */
     uint32_t lunar_day;             /* Day count (1, 2, 3...) */
@@ -55,6 +55,9 @@ typedef struct {
     uint16_t population;            /* Active colonists */
     uint16_t max_population;        /* Housing capacity */
     uint8_t  life_support_pct;      /* 0..100% health */
+    uint16_t casualty_timer_ticks;  /* Timer at 0% life support before crew loss */
+    uint16_t growth_timer_ticks;    /* Timer at >95% life support before new arrival */
+    bool     warning_crew_lost;     /* Flag set when casualty occurs */
     bool     warning_power;         /* Low power / blackout */
     bool     warning_o2;            /* Oxygen depleted */
     bool     warning_water;         /* Water depleted */

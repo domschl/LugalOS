@@ -1,5 +1,6 @@
 #include "moon_structures.h"
 #include "moon_sprites.h"
+#include "moon_resources.h"
 #include <string.h>
 
 /* Static Catalog of Structures */
@@ -304,11 +305,47 @@ static void render_solar_array(const moon_surface_t *surf, int32_t sx, int32_t s
     moon_blit_sprite(surf, dst_x, dst_y, &g_surf_solar_array, MOON_KEY_COLOR);
 }
 
-static void render_battery_bank(const moon_surface_t *surf, int32_t sx, int32_t sy) {
+static void render_battery_bank(const moon_surface_t *surf, int32_t sx, int32_t sy,
+                                const struct moon_resources_s *res, bool active, bool powered) {
     /* Blit realistic 64x48 Battery Bank sprite */
     int dst_x = sx - (SPRITE_BATTERY_BANK_W / 2);
     int dst_y = sy + MOON_TILE_HALF_H - SPRITE_BATTERY_BANK_H;
     moon_blit_sprite(surf, dst_x, dst_y, &g_surf_battery_bank, MOON_KEY_COLOR);
+
+    /* Dynamic LED charge level bar */
+    int bar_x = sx - 10;
+    int bar_y = sy - 14;
+    int bar_w = 20;
+    int bar_h = 4;
+
+    /* Dark background bezel */
+    moon_blit_fill_rect(surf, bar_x - 1, bar_y - 1, bar_w + 2, bar_h + 2, RGB565(15, 18, 22));
+    moon_blit_rect_outline(surf, bar_x - 1, bar_y - 1, bar_w + 2, bar_h + 2, RGB565(40, 45, 55));
+
+    if (active && powered && res && res->battery_capacity_kwh > 0) {
+        int capacity = res->battery_capacity_kwh;
+        int stored = fixed_to_int(res->battery_stored_kwh);
+        int pips = (stored * 5 + (capacity / 10)) / capacity;
+        if (pips > 5) pips = 5;
+        if (pips < 0) pips = 0;
+
+        uint16_t led_col = (pips >= 3) ? COLOR_STATUS_GREEN :
+                           ((pips >= 2) ? COLOR_ENERGY_YELLOW : COLOR_ALERT_RED);
+
+        for (int p = 0; p < 5; p++) {
+            int px = bar_x + p * 4;
+            if (p < pips) {
+                moon_blit_fill_rect(surf, px, bar_y, 3, bar_h, led_col);
+            } else {
+                moon_blit_fill_rect(surf, px, bar_y, 3, bar_h, RGB565(30, 32, 38));
+            }
+        }
+    } else {
+        /* Unpowered / standby: dark unlit pips */
+        for (int p = 0; p < 5; p++) {
+            moon_blit_fill_rect(surf, bar_x + p * 4, bar_y, 3, bar_h, RGB565(25, 25, 30));
+        }
+    }
 }
 
 static void render_habitat_dome(const moon_surface_t *surf, int32_t sx, int32_t sy) {
@@ -368,12 +405,16 @@ static void render_power_conduit(const moon_surface_t *surf, const moon_grid_t *
 void moon_structure_render_all(const moon_structure_mgr_t *mgr,
                                const moon_grid_t *grid,
                                const moon_surface_t *surf,
+                               const struct moon_resources_s *res,
                                int32_t cam_x, int32_t cam_y) {
     if (!mgr || !grid || !surf) return;
 
     for (int i = 1; i < MOON_MAX_STRUCTURES; i++) {
         const moon_structure_t *s = &mgr->list[i];
-        if (s->id == 0 || !s->active) continue;
+        if (s->id == 0) continue; /* NEVER skip inactive buildings */
+
+        const moon_structure_def_t *def = moon_structure_get_def((moon_structure_type_t)s->type);
+        if (!def) continue;
 
         const moon_tile_t *t = moon_grid_get_tile_const(grid, s->gx, s->gy);
         int elev = t ? t->elevation : 0;
@@ -402,7 +443,7 @@ void moon_structure_render_all(const moon_structure_mgr_t *mgr,
                 render_solar_array(surf, sx, sy);
                 break;
             case MOON_STRUCT_BATTERY_BANK:
-                render_battery_bank(surf, sx, sy);
+                render_battery_bank(surf, sx, sy, res, s->active, s->powered);
                 break;
             case MOON_STRUCT_HABITAT_DOME:
                 render_habitat_dome(surf, sx, sy);
@@ -418,6 +459,30 @@ void moon_structure_render_all(const moon_structure_mgr_t *mgr,
                 break;
             default:
                 break;
+        }
+
+        /* Floating operational status icon if disabled or unpowered */
+        if (s->type != MOON_STRUCT_POWER_CONDUIT) {
+            int badge_y = sy - def->height_px - 8;
+            if (s->type == MOON_STRUCT_HABITAT_DOME) {
+                badge_y = sy - 34;
+            }
+
+            if (!s->active) {
+                /* Standby / Deactivated badge: yellow framed pill */
+                int bw = 24;
+                int bh = 10;
+                moon_blit_fill_rect(surf, sx - (bw / 2), badge_y, bw, bh, RGB565(30, 26, 10));
+                moon_blit_rect_outline(surf, sx - (bw / 2), badge_y, bw, bh, COLOR_ENERGY_YELLOW);
+                moon_blit_text(surf, sx - (bw / 2) + 3, badge_y + 1, "OFF", COLOR_ENERGY_YELLOW, 0, true);
+            } else if (!s->powered) {
+                /* No power / brownout failure badge: red framed pill */
+                int bw = 30;
+                int bh = 10;
+                moon_blit_fill_rect(surf, sx - (bw / 2), badge_y, bw, bh, RGB565(35, 10, 10));
+                moon_blit_rect_outline(surf, sx - (bw / 2), badge_y, bw, bh, COLOR_ALERT_RED);
+                moon_blit_text(surf, sx - (bw / 2) + 3, badge_y + 1, "!PWR", COLOR_ALERT_RED, 0, true);
+            }
         }
     }
 }

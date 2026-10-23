@@ -553,8 +553,49 @@ void moon_game_render(moon_game_t *game, uint16_t *fb, int width, int height, in
                      game->hover_tile_x, game->hover_tile_y,
                      game->hover_valid);
 
-    /* 3. Render all placed structures */
-    moon_structure_render_all(&game->structs, &game->grid, &surf,
+    /* 2.5 Selection Highlight Framing (Unobtrusive outline & corner brackets, NO black fill!) */
+    if (game->has_selection) {
+        const moon_tile_t *st = moon_grid_get_tile_const(&game->grid, game->selected_tile_x, game->selected_tile_y);
+        int elev = st ? st->elevation : 0;
+        int32_t ssx, ssy;
+        moon_grid_to_screen(game->selected_tile_x, game->selected_tile_y, elev, game->cam_x, game->cam_y, width, height, &ssx, &ssy);
+
+        int hw = MOON_TILE_HALF_W;
+        int hh = MOON_TILE_HALF_H;
+
+        /* If selected tile has a 2x2 habitat dome, frame full 2x2 footprint */
+        if (st && st->structure_id != 0) {
+            for (int i = 0; i < MOON_MAX_STRUCTURES; i++) {
+                if (game->structs.list[i].id == st->structure_id && game->structs.list[i].type == MOON_STRUCT_HABITAT_DOME) {
+                    hw = MOON_TILE_W;
+                    hh = MOON_TILE_H;
+                    ssx += MOON_TILE_HALF_W;
+                    ssy += MOON_TILE_HALF_H / 2;
+                    break;
+                }
+            }
+        }
+
+        /* Perimeter diamond outline */
+        moon_blit_line(&surf, ssx, ssy - hh, ssx + hw, ssy, COLOR_LASER_CYAN);
+        moon_blit_line(&surf, ssx + hw, ssy, ssx, ssy + hh, COLOR_LASER_CYAN);
+        moon_blit_line(&surf, ssx, ssy + hh, ssx - hw, ssy, COLOR_LASER_CYAN);
+        moon_blit_line(&surf, ssx - hw, ssy, ssx, ssy - hh, COLOR_LASER_CYAN);
+
+        /* High-tech NASA gold surveyor corner brackets */
+        int L = 6;
+        moon_blit_line(&surf, ssx, ssy - hh, ssx + L * 2, ssy - hh + L, COLOR_GOLD_FOIL);
+        moon_blit_line(&surf, ssx, ssy - hh, ssx - L * 2, ssy - hh + L, COLOR_GOLD_FOIL);
+        moon_blit_line(&surf, ssx, ssy + hh, ssx + L * 2, ssy + hh - L, COLOR_GOLD_FOIL);
+        moon_blit_line(&surf, ssx, ssy + hh, ssx - L * 2, ssy + hh - L, COLOR_GOLD_FOIL);
+        moon_blit_line(&surf, ssx - hw, ssy, ssx - hw + L * 2, ssy - L, COLOR_GOLD_FOIL);
+        moon_blit_line(&surf, ssx - hw, ssy, ssx - hw + L * 2, ssy + L, COLOR_GOLD_FOIL);
+        moon_blit_line(&surf, ssx + hw, ssy, ssx + hw - L * 2, ssy - L, COLOR_GOLD_FOIL);
+        moon_blit_line(&surf, ssx + hw, ssy, ssx + hw - L * 2, ssy + L, COLOR_GOLD_FOIL);
+    }
+
+    /* 3. Render all placed structures with live resources & status icons */
+    moon_structure_render_all(&game->structs, &game->grid, &surf, &game->resources,
                               game->cam_x, game->cam_y);
 
     /* 4. Render structure placement ghost if build tool is active */
@@ -571,15 +612,6 @@ void moon_game_render(moon_game_t *game, uint16_t *fb, int width, int height, in
         moon_blit_iso_tile(&surf, hsx, hsy, MOON_TILE_HALF_W, MOON_TILE_HALF_H, moon_color_dim(COLOR_ALERT_RED, 120), COLOR_ALERT_RED);
         moon_blit_line(&surf, hsx - 10, hsy - 5, hsx + 10, hsy + 5, COLOR_LUNAR_WHITE);
         moon_blit_line(&surf, hsx - 10, hsy + 5, hsx + 10, hsy - 5, COLOR_LUNAR_WHITE);
-    }
-
-    /* Selection Highlight Box */
-    if (game->has_selection) {
-        const moon_tile_t *st = moon_grid_get_tile_const(&game->grid, game->selected_tile_x, game->selected_tile_y);
-        int elev = st ? st->elevation : 0;
-        int32_t ssx, ssy;
-        moon_grid_to_screen(game->selected_tile_x, game->selected_tile_y, elev, game->cam_x, game->cam_y, width, height, &ssx, &ssy);
-        moon_blit_iso_tile(&surf, ssx, ssy, MOON_TILE_HALF_W, MOON_TILE_HALF_H, 0, COLOR_LASER_CYAN);
     }
 
     /* 5. Render Bottom-Right Minimap Radar */
@@ -666,7 +698,13 @@ void moon_game_render(moon_game_t *game, uint16_t *fb, int width, int height, in
     }
 
     /* 8. Active Life Support / Crisis Warning Ticker Banner */
-    if (res->warning_cold) {
+    if (res->population == 0) {
+        moon_blit_fill_rect(&surf, 8, 38, 430, 20, COLOR_ALERT_RED);
+        moon_blit_text(&surf, 14, 40, "[MISSION FAILED] ALL CREW LOST: COLONY ABANDONED", COLOR_LUNAR_WHITE, 0, true);
+    } else if (res->warning_crew_lost) {
+        moon_blit_fill_rect(&surf, 8, 38, 430, 20, COLOR_ALERT_RED);
+        moon_blit_text(&surf, 14, 40, "[CASUALTY] CREW MEMBER PERISHED - ZERO LIFE SUPPORT", COLOR_LUNAR_WHITE, 0, true);
+    } else if (res->warning_cold) {
         moon_blit_fill_rect(&surf, 8, 38, 380, 20, COLOR_ALERT_RED);
         moon_blit_text(&surf, 14, 40, "[CRITICAL] CRYOGENIC FREEZING: HEATING LOST", COLOR_LUNAR_WHITE, 0, true);
     } else if (res->warning_power) {
