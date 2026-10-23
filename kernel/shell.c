@@ -118,6 +118,9 @@
 #include "net/mqttd.h"
 #include "drivers/edgecap.h"
 #include "arch/elf.h"
+#if CONFIG_ENABLE_MOONBASE
+#include "moonbase.h"
+#endif
 #include "kernel/path.h"
 #include "arch/pmp.h"
 #include "kernel/umode_probe.h"
@@ -1278,6 +1281,9 @@ static void cmd_help_summary(void) {
     cprintf("  lisp            - Interactive Scheme / Lisp REPL\n");
     cprintf("  (help)          - List bound Lisp primitives (works from 'lisp' or shell)\n");
     cprintf("  chess           - Play chess (appliance & canvas ribbon)\n");
+#if CONFIG_ENABLE_MOONBASE
+    cprintf("  moonbase        - 2D isometric lunar city-builder simulation\n");
+#endif
     cprintf("  canvas [split|full|close] - Manage graphics canvas\n");
     cprintf("  cc <src> <dst>  - Compile C11 source to RISC-V ELF (chibicc)\n");
     cprintf("  exec <elf>      - Run ELF binary confined to U-mode domain\n");
@@ -5566,6 +5572,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         while (*arg == ' ') arg++;
         cmd_reader(arg);
         return;
+#if CONFIG_ENABLE_MOONBASE
+    } else if (strcmp(cmd_line, "moonbase") == 0 || strncmp(cmd_line, "moonbase ", 9) == 0) {
+        moonbase_run();
+        return;
+#endif
     } else if (strcmp(cmd_line, "spartand") == 0) {
         cmd_spartand(NULL);
         return;

@@ -22,9 +22,15 @@
 #define TOUCH_PRESENT 1
 #endif
 
+/* Touch event callback: return true to capture event and suppress desktop ribbon gestures */
+typedef bool (*touch_hook_fn)(int x, int y, int kind);
+
 /* After sched_init() and the I2C task: finds the controller and starts the
  * polling task. -1 (and one log line) if there is no controller. */
 int touch_start(void);
+
+/* Direct touch hook for interactive full-screen applications */
+void touch_set_hook(touch_hook_fn hook);
 
 /* `ts`: the controller, its resolution, the counters. `ts log [s]`:
  * every press, move and release with its mapped point, for s seconds (20). */

@@ -701,13 +701,19 @@ static void snprintf_puts(void *ctx, const char *s) {
     while (*s) snprintf_putc(ctx, *s++);
 }
 
-int ksnprintf(char *buf, uint32_t cap, const char *fmt, ...) {
+int kvsnprintf(char *buf, uint32_t cap, const char *fmt, va_list args) {
     if (!buf || cap == 0) return 0;
     snprintf_ctx_t ctx = { buf, 0, cap };
-    va_list args;
-    va_start(args, fmt);
     vprintk_to(snprintf_putc, snprintf_puts, &ctx, fmt, args, false);
-    va_end(args);
     buf[ctx.idx] = '\0';
     return (int)ctx.idx;
+}
+
+int ksnprintf(char *buf, uint32_t cap, const char *fmt, ...) {
+    if (!buf || cap == 0) return 0;
+    va_list args;
+    va_start(args, fmt);
+    int ret = kvsnprintf(buf, cap, fmt, args);
+    va_end(args);
+    return ret;
 }
