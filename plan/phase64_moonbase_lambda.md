@@ -1,6 +1,6 @@
 # Phase 64 — Moonbase Lambda: 2D Isometric Lunar City-Builder
 
-**Status**: In Progress  
+**Status**: Complete (Act I Delivered)  
 **Target Version**: 0.19.0  
 **Target Hardware**: ESP32-P4 only (LCD-7B at 1024×600, Tab5 at 1280×720 landscape and 720×1280 portrait) with 32 MB PSRAM  
 **Host Tooling**: Linux host runner with SDL3 for rapid prototyping and AddressSanitizer verification  
@@ -160,3 +160,33 @@ bool     moon_platform_poll_event(moon_event_t *ev);
 | **64.5** | **DONE** | Resource simulation loop (Energy, Regolith, Oxygen, Water, Fuel), Lunar Day/Night cycle, life support stress | Discrete tick updates, battery discharge during night, power grid connectivity BFS, resource starvation warnings |
 | **64.6** | **DONE** | UI HUD (top resource bar, build menu ribbon, inspector pane), touch controls, minimap navigation | Responsive UI, touch-friendly tap/drag gestures, interactive building inspector, full settlement loop |
 | **64.7** | **DONE** | LugalOS bare-metal integration (`platform_p4.c`), CMake integration into LugalOS build system, PSRAM canvas binding | Runs on ESP32-P4-LCD-7B and Tab5 bare metal with native touch and double buffering |
+| **64.8** | **DONE** | Fullscreen borderless canvas, touch coalescing & debounce, ANSI VT arrow-key handling via `keyseq`, safe double-buffer shutdown | Borderless 1024×600 (LCD-7B) & 2× integer HiDPI (Tab5), no contact bounce, zero-crash arrow keys and clean exit |
+
+---
+
+## 6. Act I Implementation Summary & Features Delivered
+
+Act I (*Survival & Bootstrapping*) is fully implemented and running on both the SDL3 host simulator and bare-metal LugalOS ESP32-P4 hardware.
+
+### 6.1 Systems & Mechanics Delivered
+1. **Engine & Architecture**:
+   - Freestanding standard C, zero floating-point math (`fixed32_t` arithmetic across simulation and blitting).
+   - RGB565 software rasterizer with isometric block extrusion, depth-sorted tile blitting, font rendering, and dirty/double-buffering.
+   - Dual HAL: Host runner with SDL3 (`platform_sdl3.c`) and bare-metal ESP32-P4 driver (`platform_p4.c`) linking with LugalOS kernel PSRAM canvases.
+2. **Terrain & Isometric World**:
+   - $64 \times 64$ diamond isometric lunar map with crater topography, basalt rock formations, and shadowed polar ice pockets.
+   - Macro-crater texturing via Flash-compressed 4-bit packed nibbles unpacking into a 32 KB RGB565 PSRAM buffer, mapped smoothly with zero seam repetition.
+   - Real-time minimap radar with viewport indicator and instant tap-to-navigate camera jump.
+3. **Colony Simulation & Resources**:
+   - Full 60-second accelerated lunar diurnal cycle with day/night solar curve.
+   - BFS-based graph-traversal electrical grid with conduit connectivity, brownout states, and power-grid solver.
+   - Closed-loop life support (Power, Regolith, Oxygen, Water, Cryogenic Battery storage, Colonist headcount).
+4. **Interactive Controls & Input**:
+   - Full capacitive touch support on GT911 and ST7121 with event-queue move coalescing and displacement-based drag detection.
+   - Bottom build ribbon for one-tap structure selection, demolish tool, and fast-render toggle.
+   - Inspector pane with real-time status, health, standby/activate toggle, and material recycling.
+   - Complete ANSI VT escape sequence decoder (`keyseq_read_console()`) supporting Up/Down/Left/Right arrows for smooth camera panning, 'Q'/ESC for cancellation and clean shutdown.
+5. **Display & Hardware Targets**:
+   - **ESP32-P4-WIFI6-Touch-LCD-7B**: Native 1024×600 borderless fullscreen presentation with cache writebacks and front/back buffer flipping.
+   - **M5Stack Tab5**: 1280×720 physical presentation with 2× integer HiDPI scaling (640×360 virtual viewport).
+   - Zero-crash cleanup restoring terminal text mode, repainting canvas, and synchronizing scanout.
