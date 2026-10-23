@@ -746,6 +746,10 @@ void lcdterm_sync_post(void) {
     if (g_be && g_be->sync_post) g_be->sync_post();
 }
 
+void lcdterm_damage(void) {
+    damage(0, g_be ? g_be->h : 0);
+}
+
 int lcdterm_get_visible_readers(uint8_t *out_rids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins) {
     if (!g_scr || max_wins <= 0) return 0;
     int count = 0;
@@ -794,6 +798,24 @@ uint16_t *lcdterm_get_canvas565_by_name(const char *name, uint32_t *out_stride, 
         }
     }
     return NULL;
+}
+
+int lcdterm_get_canvas565_cid_by_name(const char *name) {
+    if (!g_scr || !name) return -1;
+    for (uint32_t i = 0; i < SCREEN_MAX_CANVASES; i++) {
+        if (g_scr->canvases[i].in_use && strcmp(g_scr->canvases[i].name, name) == 0) {
+            if (g_scr->canvases[i].format != CANVAS_FMT_RGB565) return -1;
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+bool lcdterm_set_canvas565_backing(uint8_t cid, uint16_t *buf) {
+    if (!g_scr || cid >= SCREEN_MAX_CANVASES) return false;
+    if (g_scr->canvases[cid].format != CANVAS_FMT_RGB565) return false;
+    g_scr->canvases[cid].buf565 = buf;
+    return true;
 }
 
 int lcdterm_get_visible_canvases565(uint8_t *out_cids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins) {
@@ -887,6 +909,9 @@ unsigned lcdterm_tee(void) { return LCD_TEE_OFF; }
 const console_screen_t *lcdterm_console_screen(void) { return NULL; }
 void lcdterm_set_title(const char *title) { (void)title; }
 void lcdterm_repaint(void) { }
+void lcdterm_damage(void) { }
+int lcdterm_get_canvas565_cid_by_name(const char *name) { (void)name; return -1; }
+bool lcdterm_set_canvas565_backing(uint8_t cid, uint16_t *buf) { (void)cid; (void)buf; return false; }
 uint32_t lcdterm_unknown_sequences(void) { return 0; }
 uint32_t lcdterm_task_call_count(void) { return 0; }
 bool lcdterm_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) { (void)out_canary; (void)out_exited_clean; return false; }

@@ -33,9 +33,12 @@ static moon_game_t s_p4_game BULK_BSS;
 static int       s_width = 1024;
 static int       s_height = 600;
 static uint32_t  s_stride = 1024;
-static uint16_t *s_fb = NULL;
+static uint16_t *s_fb = NULL;         /* Canvas slot buffer (visible to compositor) */
+static uint16_t *s_render_fb = NULL;  /* Off-screen render buffer (drawn by game) */
+static int       s_cid = -1;
 static bool      s_allocated_fb = false;
 static uint32_t  s_fb_pages = 0;
+static uint32_t  s_render_pages = 0;
 
 /* Touch event queue */
 #define EVENT_QUEUE_SIZE 32
@@ -107,17 +110,21 @@ bool moon_platform_init(int width, int height, const char *title) {
     uint8_t reply[SCREEN_REPLY_LEN];
     (void)console_canvas(req, 3 + (uint32_t)nl, reply);
 
-    /* 2. Retrieve canvas backing buffer */
+    /* 2. Retrieve canvas backing buffer and slot ID */
+    s_cid = lcdterm_get_canvas565_cid_by_name("moonbase");
     s_fb = lcdterm_get_canvas565_by_name("moonbase", &s_stride, &s_width, &s_height);
     if (!s_fb) {
         /* Fallback: try slot 0 */
+        s_cid = 0;
         s_fb = lcdterm_get_canvas565_backing(0, &s_stride, &s_width, &s_height);
     }
 
+    uint32_t bytes = (uint32_t)s_width * s_height * sizeof(uint16_t);
+    uint32_t pages = (bytes + 4095u) / 4096u;
+
     if (!s_fb) {
         /* Direct PSRAM allocation fallback */
-        uint32_t bytes = (uint32_t)s_width * s_height * sizeof(uint16_t);
-        s_fb_pages = (bytes + 4095u) / 4096u;
+        s_fb_pages = pages;
         s_fb = (uint16_t *)palloc_pages_bulk(s_fb_pages);
         s_allocated_fb = (s_fb != NULL);
         s_stride = (uint32_t)s_width;
@@ -128,15 +135,27 @@ bool moon_platform_init(int width, int height, const char *title) {
         return false;
     }
 
-    /* Clear framebuffer to black */
+    /* Allocate secondary off-screen render buffer in PSRAM for tear-free presentation */
+    s_render_pages = pages;
+    s_render_fb = (uint16_t *)palloc_pages_bulk(s_render_pages);
+    if (!s_render_fb) {
+        printk("[moonbase] Warning: failed to allocate secondary buffer, using single-buffered rendering\n");
+        s_render_fb = s_fb;
+    }
+
+    /* Clear both framebuffers to black */
     memset(s_fb, 0, (size_t)s_stride * s_height * sizeof(uint16_t));
     esp32p4_extmem_writeback((uintptr_t)s_fb, (size_t)s_stride * s_height * sizeof(uint16_t));
+    if (s_render_fb != s_fb) {
+        memset(s_render_fb, 0, (size_t)s_stride * s_height * sizeof(uint16_t));
+        esp32p4_extmem_writeback((uintptr_t)s_render_fb, (size_t)s_stride * s_height * sizeof(uint16_t));
+    }
 
     /* Hook touch subsystem */
     touch_set_hook(p4_touch_hook);
 
-    printk("[moonbase] Bare-metal platform initialized: %dx%d (stride=%lu) at %p\n",
-           s_width, s_height, (unsigned long)s_stride, (void *)s_fb);
+    printk("[moonbase] Bare-metal platform initialized: %dx%d (stride=%lu) at %p (render_fb=%p, cid=%d)\n",
+           s_width, s_height, (unsigned long)s_stride, (void *)s_fb, (void *)s_render_fb, s_cid);
     return true;
 }
 
@@ -153,6 +172,12 @@ void moon_platform_shutdown(void) {
     req[2 + nl] = '\0';
     uint8_t reply[SCREEN_REPLY_LEN];
     (void)console_canvas(req, 3 + (uint32_t)nl, reply);
+
+    if (s_render_fb && s_render_fb != s_fb && s_render_pages > 0) {
+        palloc_free(s_render_fb, s_render_pages);
+        s_render_fb = NULL;
+        s_render_pages = 0;
+    }
 
     if (s_allocated_fb && s_fb && s_fb_pages > 0) {
         palloc_free(s_fb, s_fb_pages);
@@ -180,18 +205,27 @@ void moon_platform_delay_ms(uint32_t ms) {
 
 uint16_t* moon_platform_get_framebuffer(int *stride_pixels) {
     if (stride_pixels) *stride_pixels = (int)s_stride;
-    return s_fb;
+    return s_render_fb ? s_render_fb : s_fb;
 }
 
 void moon_platform_present(void) {
-    if (!s_fb) return;
+    if (!s_render_fb) return;
 
-    /* Write back CPU cache lines for the RGB565 surface in PSRAM */
-    esp32p4_extmem_writeback((uintptr_t)s_fb, (size_t)s_stride * s_height * sizeof(uint16_t));
+    /* Write back CPU cache lines for the completed off-screen frame */
+    esp32p4_extmem_writeback((uintptr_t)s_render_fb, (size_t)s_stride * s_height * sizeof(uint16_t));
 
-    /* Trigger ribbon redraw & hardware VSYNC double-buffer flip */
-    lcdterm_repaint();
-    lcdterm_sync_post();
+    /* Swap canvas backing buffer atomically so compositor sees the completed frame */
+    if (s_render_fb != s_fb && s_cid >= 0) {
+        console_lock();
+        uint16_t *tmp = s_fb;
+        s_fb = s_render_fb;
+        s_render_fb = tmp;
+        lcdterm_set_canvas565_backing((uint8_t)s_cid, s_fb);
+        lcdterm_damage();
+        console_unlock();
+    } else {
+        lcdterm_damage();
+    }
 }
 
 bool moon_platform_poll_event(moon_event_t *ev) {
