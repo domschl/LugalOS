@@ -858,6 +858,50 @@ static void test_touch_flow(void) {
     printf("[test] Touch: tap selects, inspector on buildings, drag threshold: PASS\n");
 }
 
+/* Cables laid with a finger in brush mode: one tap, one cable, no leftover "occupied" ghost */
+static void test_touch_brush(void) {
+    fresh();
+    g.resources.regolith_stored_kg = fixed_from_int(100);
+    s_touch = 1;
+    click_rect(&g.ui.ribbon[6]);
+    click_rect(&g.ui.ribbon[6]);                       /* second tap on the button arms the brush */
+    assert(g.structs.selected_build_type == MOON_STRUCT_POWER_CONDUIT);
+    int n = g.structs.count, gx, gy;
+    g.notify_timer_ms = 0;
+
+    for (int i = 0; i < 4; i++) {
+        int tx = 33, ty = 31 - i;                      /* a column of tiles next to the base */
+        int32_t sx, sy;
+        tile_screen(tx, ty, &sx, &sy);
+        ptr(MOON_EVENT_POINTER_DOWN, sx, sy, 1);
+        assert(moon_game_ghost_target(&g, &gx, &gy) && gx == tx && gy == ty); /* preview under the finger */
+        ptr(MOON_EVENT_POINTER_UP, sx, sy, 1);
+        assert(g.structs.count == n + i + 1 && struct_at(tx, ty));
+        assert(g.notify_timer_ms == 0);                /* nothing was refused */
+        assert(!moon_game_ghost_target(&g, &gx, &gy)); /* finger up: nothing hovers on the new cable */
+    }
+    s_touch = 0;
+
+    /* A keyboard brush previews the selection (Enter applies there), a mouse brush the pointer */
+    key(MOON_KEY_LEFT);
+    assert(moon_game_ghost_target(&g, &gx, &gy) && gx == g.selected_tile_x && gy == g.selected_tile_y);
+    ptr(MOON_EVENT_POINTER_MOVE, 500, 300, 0);
+    assert(moon_game_ghost_target(&g, &gx, &gy) && gx == g.hover_tile_x && gy == g.hover_tile_y);
+
+    /* The same goes for the recycle brush after a finger recycled something */
+    key(MOON_KEY_0);
+    s_touch = 1;
+    click_rect(&g.ui.ribbon[7]);
+    click_rect(&g.ui.ribbon[7]);
+    assert(g.demolish_tool_active);
+    int32_t sx, sy;
+    tile_screen(33, 31, &sx, &sy);
+    click(sx, sy);
+    assert(!struct_at(33, 31) && !moon_game_ghost_target(&g, &gx, &gy));
+    s_touch = 0;
+    printf("[test] Touch brush: one cable per tap, no stale ghost: PASS\n");
+}
+
 static void test_menu_and_cancel(void) {
     fresh();
     /* ESC with nothing to cancel opens the menu and freezes the sim; it never quits */
@@ -1313,6 +1357,7 @@ int main(void) {
     test_button_validity_and_preview();
     test_three_devices();
     test_touch_flow();
+    test_touch_brush();
     test_menu_and_cancel();
     test_pointer_leave_and_hover();
     test_game_over();

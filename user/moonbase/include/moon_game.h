@@ -132,6 +132,11 @@ void moon_game_clamp_camera(moon_game_t *game);
 void moon_game_handle_event(moon_game_t *game, const moon_event_t *ev);
 void moon_game_update(moon_game_t *game, uint32_t delta_ms);
 
+/* Where the ghost of a held / hovered build button or an armed brush is drawn, if at all.
+ * A brush follows the pointer; with a finger lifted there is nothing to preview (the
+ * selection is the tile just built on), but a keyboard brush previews the selection. */
+bool moon_game_ghost_target(const moon_game_t *game, int *gx, int *gy);
+
 /* Move to GAME_OVER or VICTORY when the base has failed or Act I is complete */
 void moon_game_check_end(moon_game_t *game);
 void moon_game_render(moon_game_t *game, uint16_t *fb, int width, int height, int stride);
