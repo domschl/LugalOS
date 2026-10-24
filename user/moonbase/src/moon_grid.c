@@ -139,6 +139,7 @@ void moon_grid_generate(moon_grid_t *grid, uint32_t seed) {
                 moon_tile_t *t = &grid->tiles[gy][gx];
                 t->terrain = MOON_TERRAIN_REGOLITH_FLAT;
                 t->elevation = 1;
+                t->resource_val = (uint8_t)prng_range(&rng, 30, 60); /* ordinary ground, not leftover mare or crater richness */
                 t->flags &= ~MOON_TILE_FLAG_OCCUPIED;
             }
         }

@@ -1345,6 +1345,66 @@ static void test_deposits(void) {
     printf("[test] Deposits: richest tile first, depletion, idle and power, placement rule, standby: PASS\n");
 }
 
+static void test_quarry(void) {
+    fresh();
+    g.resources.rules.sinterer_kg_per_min = 60;          /* a kilogram, so one unit, a second */
+    /* Only two regolith tiles beside the Sinterer have anything in them; a mare tile beside it
+     * belongs to the Extractors and is left alone */
+    for (int dy = -1; dy <= 1; dy++)
+        for (int dx = -1; dx <= 1; dx++) g.grid.tiles[32 + dy][31 + dx].resource_val = 0;
+    g.grid.tiles[31][30].resource_val = 4;                /* (30,31) */
+    g.grid.tiles[33][31].resource_val = 2;                /* (31,33) */
+    g.grid.tiles[32][30].terrain = MOON_TERRAIN_BASALT_MARE; g.grid.tiles[32][30].resource_val = 9;
+
+    /* Placement needs ground to quarry, and says how much there is */
+    const char *why = NULL;
+    assert(moon_structure_ore_left(&g.grid, MOON_STRUCT_REGOLITH_PLANT, 31, 32) == 6);
+    assert(moon_structure_ore_left(&g.grid, MOON_STRUCT_O2_EXTRACTOR, 31, 32) == 9);
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_REGOLITH_PLANT, 31, 32));
+    ticks(1);
+    int start = regolith();
+    ticks(MOON_SIM_TICK_RATE_HZ * 3);
+    /* the richer tile is drawn first: 3 units gone from it */
+    assert(g.grid.tiles[31][30].resource_val == 1 && g.grid.tiles[33][31].resource_val == 2);
+    assert(!struct_at(31, 32)->depleted);
+    int use_kw = g.resources.power_consumed_kw;
+
+    /* Run it dry: six units in all, six kilograms made, then it idles */
+    ticks(MOON_SIM_TICK_RATE_HZ * 5);
+    assert(g.grid.tiles[31][30].resource_val == 0 && g.grid.tiles[33][31].resource_val == 0);
+    assert(g.grid.tiles[32][30].resource_val == 9);                 /* the deposit is untouched */
+    assert(abs(regolith() - start - 6) <= 1);
+    ticks(2);
+    assert(struct_at(31, 32)->depleted);
+    assert(g.resources.power_consumed_kw == use_kw - 20 && g.resources.regolith_rate_kg_per_tick == 0);
+    int after = regolith();
+    ticks(MOON_SIM_TICK_RATE_HZ * 5);
+    assert(regolith() >= after && regolith() <= MOON_REGOLITH_RESERVE_KG + after);   /* only the Lander's scoop */
+
+    /* A new Sinterer is refused where the ground is spent; fresh ground is accepted */
+    for (int dy = -1; dy <= 1; dy++)
+        for (int dx = -1; dx <= 1; dx++) g.grid.tiles[36 + dy][37 + dx].resource_val = 0;
+    assert(!moon_structure_can_place(&g.grid, &g.structs, MOON_STRUCT_REGOLITH_PLANT, 37, 36, &why));
+    assert(why && strstr(why, "quarry"));
+    g.grid.tiles[35][36].resource_val = 40;
+    assert(moon_structure_can_place(&g.grid, &g.structs, MOON_STRUCT_REGOLITH_PLANT, 37, 36, NULL));
+
+    /* Richness differs by ground: boulder fields are the best, crater floors poor */
+    fresh();
+    long sum[MOON_TERRAIN_COUNT] = { 0 }, n[MOON_TERRAIN_COUNT] = { 0 };
+    for (int y = 0; y < MOON_MAP_SIZE_Y; y++)
+        for (int x = 0; x < MOON_MAP_SIZE_X; x++) {
+            sum[g.grid.tiles[y][x].terrain] += g.grid.tiles[y][x].resource_val;
+            n[g.grid.tiles[y][x].terrain]++;
+        }
+    assert(n[MOON_TERRAIN_REGOLITH_ROUGH] > 0 && n[MOON_TERRAIN_REGOLITH_FLAT] > 0 && n[MOON_TERRAIN_CRATER_FLOOR] > 0);
+    assert(sum[MOON_TERRAIN_REGOLITH_ROUGH] / n[MOON_TERRAIN_REGOLITH_ROUGH] >
+           sum[MOON_TERRAIN_REGOLITH_FLAT] / n[MOON_TERRAIN_REGOLITH_FLAT]);
+    assert(sum[MOON_TERRAIN_REGOLITH_FLAT] / n[MOON_TERRAIN_REGOLITH_FLAT] >
+           sum[MOON_TERRAIN_CRATER_FLOOR] / n[MOON_TERRAIN_CRATER_FLOOR]);
+    printf("[test] Quarrying: richest tile first, a kilogram per unit, idle and power, placement, deposits untouched: PASS\n");
+}
+
 static bool ice_near_lander(const moon_grid_t *grid) {
     for (int y = 0; y < MOON_MAP_SIZE_Y; y++)
         for (int x = 0; x < MOON_MAP_SIZE_X; x++)
@@ -1419,6 +1479,7 @@ int main(void) {
     test_objectives();
     test_title();
     test_deposits();
+    test_quarry();
     printf("[test] All Milestone 64.9-64.12 tests passed cleanly.\n");
     return 0;
 }
