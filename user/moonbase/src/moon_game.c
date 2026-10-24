@@ -180,10 +180,59 @@ static void select_tile(moon_game_t *game, int gx, int gy) {
     game->selected_tile_y = gy;
 }
 
-/* Keys move the selection and the view follows it */
-static void move_selection(moon_game_t *game, int dgx, int dgy, int steps) {
-    select_tile(game, game->selected_tile_x + dgx * steps, game->selected_tile_y + dgy * steps);
-    view_glide_to(game, game->selected_tile_x, game->selected_tile_y);
+/* Screen position of the selected tile for a given camera */
+static void selection_on_screen(const moon_game_t *game, int32_t cam_x, int32_t cam_y, int32_t *sx, int32_t *sy) {
+    const moon_tile_t *t = moon_grid_get_tile_const(&game->grid, game->selected_tile_x, game->selected_tile_y);
+    moon_grid_to_screen(game->selected_tile_x, game->selected_tile_y, t ? t->elevation : 0,
+                        cam_x, cam_y, game->screen_w, game->screen_h, sx, sy);
+}
+
+/* The view stays still while the selection moves inside the middle of the map
+ * area; once it leaves that zone the view glides to centre it, so a run of key
+ * presses scrolls rarely rather than on every step. */
+static void view_follow_selection(moon_game_t *game) {
+    int32_t sx, sy;
+    if (game->glide) selection_on_screen(game, game->glide_x, game->glide_y, &sx, &sy);
+    else selection_on_screen(game, game->cam_x, game->cam_y, &sx, &sy);
+
+    const int top = game->ui.hud.h, bottom = game->ui.ribbon_bar.y;
+    const int mx = game->screen_w / 5, my = (bottom - top) / 5;
+    if (sx < mx || sx > game->screen_w - mx || sy < top + my || sy > bottom - my) {
+        view_glide_to(game, game->selected_tile_x, game->selected_tile_y);
+    }
+}
+
+enum { DIR_UP, DIR_DOWN, DIR_LEFT, DIR_RIGHT };
+
+static bool tile_in_map(int gx, int gy) {
+    return gx >= 0 && gy >= 0 && gx < MOON_MAP_SIZE_X && gy < MOON_MAP_SIZE_Y;
+}
+
+/* One key press moves the selection by half a tile width in a screen direction. On the
+ * diamond grid a pure screen-vertical or -horizontal move does not land on a tile
+ * centre, so the step alternates between the two neighbours on that side (up goes
+ * up-left, then up-right, ...): the line stays straight on screen, every tile can be
+ * reached, and Down undoes Up and Right undoes Left. At the map edge the other
+ * neighbour is used so the selection can still slide along it. */
+static void step_selection(moon_game_t *game, int dir) {
+    int gx = game->selected_tile_x, gy = game->selected_tile_y;
+    bool even = ((gx + gy) & 1) == 0;
+    int a[2], b[2]; /* preferred step, alternative step */
+    switch (dir) {
+    case DIR_UP:    a[0] = even ? -1 : 0; a[1] = even ? 0 : -1; b[0] = even ? 0 : -1; b[1] = even ? -1 : 0; break;
+    case DIR_DOWN:  a[0] = even ? 0 : 1;  a[1] = even ? 1 : 0;  b[0] = even ? 1 : 0;  b[1] = even ? 0 : 1;  break;
+    case DIR_LEFT:  a[0] = even ? 0 : -1; a[1] = even ? 1 : 0;  b[0] = even ? -1 : 0; b[1] = even ? 0 : 1;  break;
+    default:        a[0] = even ? 1 : 0;  a[1] = even ? 0 : -1; b[0] = even ? 0 : 1;  b[1] = even ? -1 : 0; break;
+    }
+    if (tile_in_map(gx + a[0], gy + a[1])) { gx += a[0]; gy += a[1]; }
+    else if (tile_in_map(gx + b[0], gy + b[1])) { gx += b[0]; gy += b[1]; }
+    game->selected_tile_x = gx;
+    game->selected_tile_y = gy;
+}
+
+static void move_selection(moon_game_t *game, int dir, int steps) {
+    for (int i = 0; i < steps; i++) step_selection(game, dir);
+    view_follow_selection(game);
 }
 
 static void select_next_structure(moon_game_t *game) {
@@ -194,7 +243,7 @@ static void select_next_structure(moon_game_t *game) {
         if (i != 0 && game->structs.list[i].id == i) {
             select_tile(game, game->structs.list[i].gx, game->structs.list[i].gy);
             game->panel_open = true;
-            view_glide_to(game, game->selected_tile_x, game->selected_tile_y);
+            view_follow_selection(game);
             return;
         }
     }
@@ -510,11 +559,11 @@ static void handle_key_down(moon_game_t *game, const moon_event_t *ev) {
     case MOON_KEY_MINUS: set_speed(game, game->speed / 2); break;
     case MOON_KEY_PLUS:  set_speed(game, game->speed * 2); break;
 
-    /* Arrows and WASD move the selected tile; the view follows it */
-    case MOON_KEY_UP:    case MOON_KEY_W: move_selection(game, -1, -1, steps); break;
-    case MOON_KEY_DOWN:  case MOON_KEY_S: move_selection(game,  1,  1, steps); break;
-    case MOON_KEY_LEFT:  case MOON_KEY_A: move_selection(game, -1,  1, steps); break;
-    case MOON_KEY_RIGHT: case MOON_KEY_D: move_selection(game,  1, -1, steps); break;
+    /* Arrows and WASD move the selected tile; the view follows near the border */
+    case MOON_KEY_UP:    case MOON_KEY_W: move_selection(game, DIR_UP, steps); break;
+    case MOON_KEY_DOWN:  case MOON_KEY_S: move_selection(game, DIR_DOWN, steps); break;
+    case MOON_KEY_LEFT:  case MOON_KEY_A: move_selection(game, DIR_LEFT, steps); break;
+    case MOON_KEY_RIGHT: case MOON_KEY_D: move_selection(game, DIR_RIGHT, steps); break;
 
     case MOON_KEY_TAB: select_next_structure(game); break;
     case MOON_KEY_RETURN:
