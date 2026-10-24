@@ -916,9 +916,6 @@ unsigned lcdterm_tee(void) { return LCD_TEE_OFF; }
 const console_screen_t *lcdterm_console_screen(void) { return NULL; }
 void lcdterm_set_title(const char *title) { (void)title; }
 void lcdterm_repaint(void) { }
-void lcdterm_damage(void) { }
-int lcdterm_get_canvas565_cid_by_name(const char *name) { (void)name; return -1; }
-bool lcdterm_set_canvas565_backing(uint8_t cid, uint16_t *buf) { (void)cid; (void)buf; return false; }
 uint32_t lcdterm_unknown_sequences(void) { return 0; }
 uint32_t lcdterm_task_call_count(void) { return 0; }
 bool lcdterm_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) { (void)out_canary; (void)out_exited_clean; return false; }
