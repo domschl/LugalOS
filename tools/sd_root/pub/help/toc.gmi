@@ -1,0 +1,96 @@
+# LugalOS Documentation
+
+Welcome to the documentation for LugalOS, a bare-metal, capability-isolated RISC-V microkernel operating system with Plan 9 IPC, exact Lisp algebra, on-device compilation, and horizontal tiling window ribbons.
+
+## Documentation Structure
+
+The documentation is organized into three comprehensive manuals, an Architecture Decision Record (ADR) repository, and a generated on-device help system:
+
+```
+doc/
+├── user/             User Manual: Day-to-day operation, shell, and applications
+├── admin/            Administrator Manual: Hardware presets, flashing, and networking
+├── dev/              System Programmer Manual: C & Lisp APIs, kernel internals, and testing
+├── history/          Architecture Decision Records (ADRs)
+└── assets/           Hardware photographs, diagrams, and terminal screenshots
+```
+
+* About LugalOS: High-level architecture overview, hardware targets, on-device tools, and system concepts.
+
+## 1. User Manual
+
+Guides for operating LugalOS interactively via terminals and serial consoles:
+
+* Shell & Commands: Interactive lsh shell, file manipulation, pipeline & redirection model, procfs/devfs navigation, job control.
+* Text Editors: Full-screen Emacs editor (e), teletype line editor (ed), keybindings, and buffer management.
+* Window Ribbon & Terminal: Horizontal tiling window manager, touch gestures (tap, swipe), keyboard navigation (Cmd+Left/Right), split canvases, screenshots.
+* Chess Computer: Operating the chess engine on RP2350 and display terminals, Lazy SMP dual-core search, TM1638 keypad controls, and game history.
+* Computer Algebra System (CAS): Exact symbolic mathematics, canonical polynomial simplification, equation solving, series expansion, and plotting.
+* Environmental Sensors & Telemetry: Autonomous sensor node operation, I2C environmental telemetry (BME280/BMP280), and MQTT 3.1.1 publishing.
+* Z-Machine & Interactive Fiction: Playing Infocom and v3 stories, split-screen canvas auto-mapper, and save slot persistence.
+
+## 2. Administrator Manual
+
+Guides for hardware provisioning, flashing, networking, and storage:
+
+* Hardware Presets Matrix: Comparison of all supported silicon targets (RP2350, ESP32-P4, ESP32-C6, QEMU RV32/RV64).
+* Firmware Flashing Guide: Step-by-step flashing procedures via picotool, p4flash.py, and c6flash.py.
+* Consoles & Serial Connections: Dynamic TTY port mapping, CDC-ACM dual ports, CH343P/CP2102 baud rates (921600 on ESP32-P4), and modem control (DTR/RTS).
+* Networking & Plan 9 Services: 9P filesystem protocol, p9sync.py synchronization, fuse-p9 host mounts, SLIP demultiplexing, and Wi-Fi / Ethernet setups.
+* Identity & Security Records: Board provisioning, credential storage (idstore), Wi-Fi PSK derivation, and mutual authentication.
+* Storage & Filesystems: MicroSD FAT32 formatting, flashfs ROM disks, and RAM disks.
+* Updating Nodes over 9P: A/B partition updates, trial booting, and rollback.
+* Target Hardware & Board Reference Guides: Operational guides for ESP32-P4-LCD-7B, M5Stack Tab5, ESP32-C6, and RP2350.
+
+## 3. System Programmer Manual
+
+Guides for developing user-space applications and extending the LugalOS kernel:
+
+### Part A: On-Device Application Development
+* C Programming on LugalOS: On-device compilation with chibicc, freestanding C subset (lugal.h), system call ABI, and ELF execution under PMP domains.
+* Lisp Scripting & Extensions: LugalOS Scheme/Lisp dialect, zero-SRAM builtins in Flash .rodata, standard library modules, macros, and CAS extensions.
+
+### Part B: Kernel & Driver Architecture
+* Microkernel Architecture: Capability-style memory domains (PMP on NOMMU, Sv39 page tables on MMU), copy-always message channels (chan_t), and U-mode task isolation.
+* Scheduler & SMP Multicore: Priority tiers, preemptive timer scheduling, cross-hart scheduler lock hand-off, and atomic primitives (spinlockt, ylockt).
+* Tokenized Kernel Logging: High-efficiency dictionary logging, .rodata format string pointers, varargs capturing in klogemittok(), and deferred expansion via klogd.
+* Driver Framework: Confined U-mode driver tasks, hardware register window grants, IRQ dispatch, and fault containment.
+* Board Porting Guide: Adding new SoCs and boards, linker layouts, clock trees, stage 2 bootloaders, and XIP flash mapping.
+
+### Part C: Testing Framework & QA
+* Testing Guide: Unit tests, ASan/UBSan host harnesses, automated QEMU regression runner (tests/runner.py), and hardware-in-the-loop silicon suites (tests/hw/).
+
+### Part D: Wire & Interconnect Protocols
+* LugalOS Link Protocol (LLP): Point-to-point link protocol multiplexing 9P filesystem calls and raw 802.3 Ethernet frames between coprocessors with credit-based flow control.
+
+## 4. Architecture Decision Records (ADRs)
+
+Formal records documenting critical architectural choices, trade-offs, and historical rationale:
+
+* ADR 001: Zero Floating-Point in Kernel / M-Mode
+* ADR 002: Scheduler Lock Hand-Off Across Context Switches
+* ADR 003: Tokenized Dictionary Logging in Kernel Ring
+* ADR 004: Copy-Always Message Channels for IPC
+* ADR 005: Zero SRAM Builtins in Flash .rodata
+
+## 5. On-Device Help System
+
+All chapters from the User and Administrator manuals are automatically compiled by tools/gendocs.py into 78-column plain-text help files stored on device storage at /sd0/help/ (and /flash0/help/).
+
+On a running LugalOS terminal or serial console:
+* Type help for an overview of shell commands.
+* Type help  or man  to read interactive help with terminal paging and single-key [1..9] link jumps.
+
+### Related Topics
+=> about.gmi About LugalOS
+=> user.gmi User Manual
+=> shell.gmi Shell & Commands
+=> editors.gmi Text Editors
+=> ribbon.gmi Window Ribbon & Terminal
+=> chess.gmi Chess Computer
+=> cas.gmi Computer Algebra System (CAS)
+=> sensors.gmi Environmental Sensors & Telemetry
+=> zmachine.gmi Z-Machine & Interactive Fiction
+=> admin.gmi Administrator Manual
+=> presets.gmi Hardware Presets Matrix
+=> flashing.gmi Firmware Flashing Guide

@@ -1,5 +1,9 @@
 # LugalOS Identity, Authentication & Security
 
+[Documentation](../README.md) > [Administrator Manual](index.md) > **Identity, Authentication & Security**
+
+---
+
 LugalOS implements a decentralized identity and authentication architecture designed for embedded microcontroller networks. The identity record (`idstore`) anchors board provisioning, network credentials, and mutual authentication.
 
 ---
@@ -53,3 +57,7 @@ When exposing 9P filesystem namespaces over TCP or untrusted links:
   lsh> p9key 0123456789abcdef...
   ```
 * Unauthorized read or write requests to protected volumes (`/sd0`, `/flash0`) are rejected at the channel boundary before reaching filesystem drivers.
+
+---
+
+**Navigation:** [← Networking Guide](networking.md) | [Administrator Manual](index.md) | [Storage Guide →](storage.md) | [Documentation Index](../README.md)

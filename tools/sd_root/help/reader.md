@@ -1,5 +1,9 @@
 # Ribbon Reader Window Guide
 
+[Documentation](index.md) > [User Manual](user.md) > **Ribbon Reader Window Guide**
+
+---
+
 The LugalOS Ribbon Reader (`RIBBON_WIN_READER`) is a dedicated long-form document viewer integrated into the horizontal window ribbon. It is designed for comfortable reading of system documentation, manuals, books, and network hypermedia capsules formatted in **Restricted Markdown (`.md`)** or **Gemtext (`.gmi`)**.
 
 ## Multi-Instance Reader Architecture
@@ -82,6 +86,10 @@ On touchscreen-equipped hardware (such as the Waveshare ESP32-P4 Touch LCD 7B an
 
 ## Related Topics
 
-[Spartan Protocol Guide](spartan.md)  
-[Shell & Console Manual](shell.md)  
-[Window Ribbon Architecture](ribbon.md)
+* [Spartan Protocol Guide](spartan.md)
+* [Shell & Console Manual](shell.md)
+* [Window Ribbon Architecture](ribbon.md)
+
+---
+
+**Navigation:** [← User Manual](user.md) | [Spartan Guide →](spartan.md) | [Documentation Index](index.md)

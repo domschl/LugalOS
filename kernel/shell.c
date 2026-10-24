@@ -1362,6 +1362,8 @@ static void cmd_help_topic_locked(const char *topic, const char *subheading) {
     } else {
         cprintf("help: topic '%s' not found.\n", topic);
         cprintf("Available topics:\n");
+        cprintf("  index        - Master documentation table of contents (or: toc)\n");
+        cprintf("  about        - Architecture overview & hardware platform summary\n");
         cprintf("  shell        - Shell commands, paths & virtual filesystems\n");
         cprintf("  editors      - Full-screen (e) and line (ed) text editors\n");
         cprintf("  ribbon       - Window ribbon, touch gestures & canvases\n");

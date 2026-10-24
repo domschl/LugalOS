@@ -1,5 +1,7 @@
 # LugalOS Hardware Presets & Targets
 
+Documentation > Administrator Manual > Hardware Presets & Targets
+
 LugalOS supports a range of distinct hardware presets across RISC-V microcontrollers and virtual machines. Each preset configures the target architecture, clock trees, peripheral drivers, and memory layouts via CMake presets (CMakePresets.json).
 
 ## 1. Presets Comparison Matrix
@@ -72,5 +74,9 @@ ninja -C build/rv64 run
 ```
 See the flashing guide for instructions on programming images onto physical hardware.
 
+Navigation: ← Administrator Manual | Flashing Guide → | Documentation Index
+
 ### Related Topics
+=> index.gmi Documentation
+=> admin.gmi Administrator Manual
 => flashing.gmi flashing guide

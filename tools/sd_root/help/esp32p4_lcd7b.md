@@ -1,0 +1,140 @@
+# ESP32-P4-WIFI6-Touch-LCD-7B Hardware Reference Guide
+
+[Documentation](index.md) > [Administrator Manual](admin.md) > [Board Reference Guides](boards.md) > **ESP32-P4-LCD-7B Guide**
+
+---
+
+This document provides in-depth hardware specifications, peripheral register details, and operational instructions for the **Waveshare ESP32-P4-WIFI6-Touch-LCD-7B** workstation board (`esp32p4-lcd7b`).
+
+---
+
+## 1. Port Topology & Modem Signals
+
+* **Controller:** Single CH343P USB-to-UART bridge ("USB TO UART" Type-C port) handling **both** UART0 console (`GPIO37`/`GPIO38`) and hardware reset lines:
+  * `RTS` controls `ESP_EN` (hardware chip reset).
+  * `DTR` controls `GPIO35/BOOT` (download boot mode).
+* **Reset Danger:** Opening this port resets the chip unless the TTY was parked at `B0`. Linux raises DTR/RTS upon open.
+  * **Always use [`tools/p4run.py`](file:///home/dsc/Source/gith/domschl/lugalos/tools/p4run.py) or [`tools/p4flash.py`](file:///home/dsc/Source/gith/domschl/lugalos/tools/p4flash.py)**. Generic serial programs (`picocom`, raw pyserial) will inadvertently trigger a hardware reset.
+* **Console Speed:** UART0 operates at **921,600 baud** (`CONFIG_UART0_BAUD`, matched by `tools/p4run.py`). The boot ROM's early initialization logs are at 115,200 baud and arrive as brief garbled text before LugalOS takes over.
+
+---
+
+## 2. Silicon Revision Differences (v3.2 vs v1.3)
+
+> [!WARNING]
+> The ESP32-P4-WIFI6-Touch-LCD-7B uses **silicon revision v3.2**, whereas the ESP32-P4-NANO and Tab5 use **revision v1.3**.
+> In revision v3.2, L2MEM cache lines and ROM data reside at opposite ends of the address space, and the Core-Local Interrupt Controller (CLIC) uses standard RISC-V layout.
+> A binary compiled for v1.3 will halt at boot with `[Chip] ... Halted.`
+
+* **Board Disambiguation:** When multiple P4 boards are attached, explicit port assignments are loaded from `~/.config/lugalos/p4-ports.env`. Always pass `--board lcd7b` to flashing and console scripts.
+
+---
+
+## 3. Build, Flash & Console Workflows
+
+### Building Firmware
+```bash
+ninja -C build/esp32p4-lcd7b
+```
+
+### Flashing (Bootloader + OS)
+```bash
+python3 tools/p4flash.py --board lcd7b --build build/esp32p4-lcd7b --only boot,os --verify
+```
+> [!IMPORTANT]
+> Always flash both bootloader and kernel (`--only boot,os`). Flashing only the OS (`--only os`) can pair a new XIP flash image with an incompatible in-SRAM boot state, causing hard traps at boot.
+
+### Running Interactive Console
+```bash
+python3 tools/p4run.py --board lcd7b --run
+```
+
+### Automated Hardware-in-the-Loop Testing
+```bash
+cd tests/hw && uv run test_esp32p4.py --board lcd7b --build ../../build/esp32p4-lcd7b
+```
+Runs 40 silicon tests covering PSRAM DDR tuning, CLIC interrupts, I2C peripherals, SDIO link, touch, backlight PWM, and Wi-Fi.
+
+---
+
+## 4. Memory Architecture: 32 MB DDR PSRAM & Cache
+
+* **Address Range:** `0x48000000` to `0x49FFFFFF` (32 MB).
+* **Speed:** 200 MHz Hex DDR tuned at boot via DQS timing algorithms (`CONFIG_PSRAM_SPEED_MHZ`).
+  * If tuning fails, the driver falls back to 20 MHz and logs the error.
+* **Commands:** `psram` (displays tuning window), `psram test [MB]`, `psram bench`.
+* **Allocation Roles:** PSRAM hosts the bulk BSS pool (`BULK_BSS`), dynamic Lisp node pools, and the 600 KB MIPI-DSI framebuffer.
+* **Cache Coherence & Flash XIP:** Flash executes at 80 MHz QIO.
+  * Never invoke the ROM's `spi_flash_attach()` from the running kernel; doing so drops XIP down to 10 MHz single-line mode, causing cache misses to trigger fatal DBUS load access faults.
+  * Always serialize cache operations through `esp32p4_dcache_*()` and `esp32p4_extmem_*()`.
+
+---
+
+## 5. Display Subsystem (MIPI-DSI & DW-GDMA)
+
+* **Display Controller:** EK79007 driver over 2-lane MIPI-DSI running at 1 Gbps.
+* **Framebuffer:** `1024×600` native resolution in PSRAM (GRAY8 = 600 KB, scanned out by DW-GDMA at 60 Hz and re-armed via CLIC interrupt 18).
+* **Console Terminal:** Portable `drivers/lcdterm.c` renders a 126×34 character grid directly on the panel. Changing text rows are converted into framebuffer scanlines via a 16 ms periodic `lcdflush` kernel task.
+* **Commands:**
+  * `lcd` (link status), `lcd pattern [bars|hbars|ber|off]`, `lcd fb [gray|rgb565]`.
+  * `lcd repaint`, `lcd termbench`, `lcd tee uart|off`.
+  * `lcd colours FG BG` (accepts RGB565 hex colors).
+  * `lcd test checker|grid|text|ramp`, `lcd verify`, `lcd fps`.
+* **Backlight:** LEDC PWM on GPIO32 (inverted logic).
+  * `lcd backlight [0-100]`: Adjusts duty cycle.
+  * `lcd blank [min|Ns|off]`: Automatically powers down backlight after inactivity timeout. Serial input or USB keypress wakes the panel.
+
+---
+
+## 6. Touch, Audio & Peripheral Bus
+
+### I2C Bus (PH2.0 Header on GPIO7 SDA / GPIO8 SCL)
+* `0x18`: Everest ES8311 Audio DAC / Codec.
+* `0x40`: Everest ES7210 4-Channel Microphone ADC.
+* `0x5D`: Goodix GT911 Capacitive Touch Controller.
+* `0x68`: Maxim DS3231 High-Precision RTC (with AT24C32 EEPROM at `0x57`).
+  * If OSF (Oscillator Stop Flag) is set, clock is unverified until configured:
+    ```text
+    lsh> date YYYY-MM-DD HH:MM:SS
+    ```
+
+### Touch Gestures (GT911)
+* Tap window to focus.
+* Tap menu bar minimap to jump directly to desktop slots.
+* Horizontal swipe to navigate the ribbon.
+* Diagnostics: `ts`, `ts log [s]`.
+
+### USB Host (Type-A Port)
+* High-Speed DWC2 OTG HS core (4.30a) in slave mode.
+* Supports split transactions across Transaction Translators (TT) for low/full-speed USB devices connected via high-speed hubs.
+* Primary device: Shared keyboard driver (`drivers/usbkbd_host.c`).
+* Commands: `usb`, `usb regs`, `kbd`, `kbdlog [s]`.
+
+---
+
+## 7. SDIO Interconnect to ESP32-C6 Co-Processor
+
+* **Hardware Mapping:** SD/MMC Slot 1 (`GPIO14`–`GPIO19`) linked to ESP32-C6 SDIO slave; C6 hardware reset is wired to `GPIO54` (open-drain).
+* **Speed:** 40 MHz SDIO high-speed mode (microSD on Slot 0 operates at 20 MHz on a separate clock divider).
+* **Network Protocol:** LugalOS Link Protocol (LLP) runs across SDIO, enabling:
+  1. Automated link establishment at boot.
+  2. Wi-Fi network interface registration (`wlan0`).
+  3. Mounting C6 storage on `/c6`.
+  4. Automatic injection of Wi-Fi credentials from `/sd0/etc/wlan.env` to `/c6/dev/wlan`.
+* **Commands:**
+  * `sdio probe [khz-hex]`, `sdio`, `sdio rd52 fn addr`, `sdio rd53 fn addr len`.
+  * `sdio reset` (toggles GPIO54 to restart C6), `sdio resync`.
+  * `llp soak [s] [size]` (loopback stress benchmark).
+
+### ESP32-C6 Co-Processor Firmware & Unbricking
+* Runs preset `esp32c6-mini`.
+* Diagnostic console accessible on header H4 ("C6-UART", SH1.0 4-pin: 1=IO9/BOOT, 2=GND, 3=U0RXD, 4=U0TXD) at 115200 baud via CP2102.
+* Over-the-air update from P4 via 9P:
+  ```bash
+  uv run tools/lota.py push build/esp32c6-mini --p4 lcd7b --prefix /c6 --reboot --wait
+  ```
+* Recovery from hard fault / failed boot: Connect H4 pin 1 to pin 2, issue `sdio reset` on P4 console to force download mode, then flash via `c6flash.py`.
+
+---
+
+**Navigation:** [← Board Reference Guides](boards.md) | [Administrator Manual](admin.md) | [Documentation Index](index.md)

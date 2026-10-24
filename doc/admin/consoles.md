@@ -1,5 +1,9 @@
 # LugalOS Consoles, Serial Topologies & Modem Control
 
+[Documentation](../README.md) > [Administrator Manual](index.md) > **Consoles, Serial Topologies & Modem Control**
+
+---
+
 Connecting to LugalOS hardware requires understanding host USB serial enumeration, TTY naming, and board-specific modem signal lines.
 
 ---
@@ -58,3 +62,16 @@ Uses native USB-Serial/JTAG (`303a:1001`):
 ```bash
 python3 tools/c6run.py --run
 ```
+
+---
+
+## 3. Dedicated Board Guides
+For deep hardware specifications, silicon revision differences, and peripheral pinouts:
+* [ESP32-P4-WIFI6-Touch-LCD-7B Guide](boards/esp32p4_lcd7b.md)
+* [M5Stack Tab5 Guide](boards/esp32p4_tab5.md)
+* [ESP32-C6 Guide](boards/esp32c6.md)
+* [RP2350 Hardware Guide](boards/rp2350.md)
+
+---
+
+**Navigation:** [← Administrator Manual](index.md) | [Networking Guide →](networking.md) | [Documentation Index](../README.md)

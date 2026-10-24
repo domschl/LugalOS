@@ -1,5 +1,7 @@
 # LugalOS Computer Algebra System (CAS) — Overview & Index
 
+Documentation > User Manual > Computer Algebra System (CAS)
+
 LugalOS features a self-contained, exact Computer Algebra System (CAS) written in Scheme-like Lisp. All computations use exact rational \mathbb{Q} and Gaussian rational \mathbb{Q}(i) arithmetic with zero floating-point overhead.
 
 ## 1. System Startup
@@ -76,7 +78,11 @@ The CAS documentation is partitioned into focused, lightweight manuals:
 | Plotting | plot-diff | (plot-diff "expr" ...) | Function vs derivative plot |
 ```
 
+Navigation: ← User Manual | Documentation Index
+
 ### Related Topics
+=> index.gmi Documentation
+=> user.gmi User Manual
 => algebra.gmi algebra
 => calculus.gmi calculus
 => plot.gmi plot

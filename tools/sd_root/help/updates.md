@@ -1,5 +1,9 @@
 # Updating Nodes over 9P
 
+[Documentation](index.md) > [Administrator Manual](admin.md) > **Updating Nodes over 9P**
+
+---
+
 A node that supports updates takes a new image through two files in its own
 namespace, keeps the old image until the new one has proven itself, and goes
 back to the old one by itself if it does not. Because it is only 9P, any path
@@ -7,7 +11,7 @@ to the node works: a host on the LAN, a P4 reaching its C6 through `/c6`, or
 the console's SLIP link.
 
 Supported so far: **the ESP32-C6** (`esp32c6`, `esp32c6-mini`). The P4 and the
-RP2350 follow (plan/phase52_remote_admin.md).
+RP2350 follow.
 
 ## The files
 
@@ -149,3 +153,7 @@ already on LLP is refused (use `/c6/dev/ota`). This first boot is **not** a
 LugalOS trial: the kernel marks it VALID when it starts. Its safety net is the
 bootloader's own image check, and esp-hosted-mcu staying in the other slot until
 the first LugalOS self-update.
+
+---
+
+**Navigation:** [← Storage Guide](storage.md) | [Administrator Manual](admin.md) | [Board Reference Guides →](boards.md) | [Documentation Index](index.md)

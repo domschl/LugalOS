@@ -1,5 +1,7 @@
 # LugalOS Environmental Sensors & MQTT Telemetry
 
+Documentation > User Manual > Environmental Sensors & MQTT Telemetry
+
 LugalOS features a comprehensive sensor subsystem capable of running autonomous environmental monitoring nodes. A node reads physical environmental metrics over I2C, applies filtering and publish rules, and transmits telemetry to standard MQTT 3.1.1 brokers over Wi-Fi or Ethernet.
 
 ## 1. Supported Sensors & I2C Bus
@@ -111,3 +113,24 @@ An environmental node can be provisioned once so that it boots, joins Wi-Fi, and
 * Probes the I2C sensors.
 * Connects to the MQTT broker and registers its Last Will.
 * Starts streaming sensor readings according to configured delta rules.
+
+## 4. Hardware Datasheet References
+
+Official component datasheets for all supported environmental and light sensors are stored on the host system under ~/gith/sensors/ or ~/Source/gith/sensors/:
+* BME280: bst-bme280-ds002.pdf
+* BME680: bst-bme680-ds001.pdf
+* CCS811: CCS811_Datasheet-DS000459.pdf
+* HDC1080: hdc1080.pdf
+* MCP9808: MCP9808.pdf
+* MH-Z19B: mh-z19b-co2-ver1_0.pdf
+* MiCS-6814: MiCS-6814_Datasheet.pdf & Multichannel gas sensor 1.0.pdf
+* SGP30: SensirionGasSensorsDatasheetSGP30.pdf
+* TMP117: tmp117.pdf
+* TSL2561: TSL2561.pdf
+* TSL2591: TSL25911DatasheetEN_v1.pdf
+
+Navigation: ← User Manual | Documentation Index
+
+### Related Topics
+=> index.gmi Documentation
+=> user.gmi User Manual

@@ -1,5 +1,9 @@
 # ea - LugalOS Embedded Assistant & AI Agent
 
+[Documentation](../README.md) > [User Manual](index.md) > **Embedded Assistant (ea)**
+
+---
+
 The `ea` command launches LugalOS's on-device AI assistant. It integrates an OpenAI-compatible HTTP inference endpoint with LugalOS's built-in Lisp machine, Computer Algebra System (CAS), on-device C compiler (`chibicc`), and system manuals.
 
 ## 1. Quick Usage
@@ -65,3 +69,7 @@ The LLM transport layer is exposed directly to the Lisp environment:
 * Solvers: `(load "/sd0/cas/solve.lisp")` -> `(solve '(= (^ x 2) 9) 'x)`
 * Matrices: `(load "/sd0/cas/matrix.lisp")` -> `(mat-det '((1 2)(3 4)))`
 * Plotting: `(load "/sd0/cas/plot.lisp")` -> `(plot '(sin x) -3 3)`
+
+---
+
+**Navigation:** [← User Manual](index.md) | [Documentation Index](../README.md)

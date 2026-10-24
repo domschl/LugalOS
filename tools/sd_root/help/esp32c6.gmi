@@ -1,0 +1,108 @@
+# ESP32-C6 Hardware Reference Guide
+
+Documentation > Administrator Manual > Board Reference Guides > ESP32-C6 Guide
+
+This document provides in-depth hardware, peripheral, flashing, and recovery details for the Waveshare ESP32-C6-Zero (esp32c6) and the ESP32-C6-MINI co-processor (esp32c6-mini).
+
+## 1. Port Topology & Modem Signals
+
+* Controller: Native USB-Serial/JTAG (VID:PID 303a:1001). Console, firmware loading, and hardware reset all run over this single USB-C port.
+* Symlink: /dev/serial/by-id/usb-EspressifUSBJTAGserialdebugunit*-if00
+* Modem Signal Safety: Opening the port with DTR low resets the chip.
+* Always use tools/c6run.py or tools/c6flash.py, which open the port with DTR high and RTS low.
+* UART0 Console Mirror: The C6 console output is duplicated to UART0 at 115200 baud (e.g. NANO header P2 pin 22; SH1.0 header H4 on the LCD-7B). When the USB console is silent (early boot or hard hang), the UART0 copy reveals diagnostic logs.
+
+## 2. Flash Architecture & Execution Model
+
+The LugalOS C6 kernel is structured as two images:
+1. XIP Flash Half (0x42000000): .text and .rodata execute directly in place from SPI flash.
+2. RAM Half: Remaining sections live in SRAM.
+
+The flash partition layout is defined in build/esp32c6/flash.manifest (generated from cmake/flashlayoutesp32c6.cmake for 8 MB C6-Zero, or cmake/flashlayoutesp32c6_mini.cmake for 4 MB C6-MINI).
+
+### Flash Layout (Slots & Loader)
+* 0x000000: Permanent loader (started by boot ROM).
+* Two boot records for A/B trial booting.
+* Two application slots (Slot A and Slot B).
+
+## 3. Build, Run & Flash Procedures
+
+### Fast Development Loop (RAM + Flash XIP)
+Loads the RAM portion over USB and writes only changed XIP flash pages:
+```bash
+ninja -C build/esp32c6
+tools/c6run.py --kernel build/esp32c6 --cmd "preempttest" --cmd-wait 8
+```
+
+### Flashing Standalone Firmware
+Installs the permanent loader, erases boot records, writes Slot A, verifies, and resets:
+```bash
+tools/c6flash.py build/esp32c6
+tools/c6flash.py build/esp32c6 --only slot     # updates slot A only, keeps loader
+```
+Once installed, subsequent updates can be pushed over 9P via tools/lota.py push without touching USB headers.
+
+### Hardware-in-the-Loop Testing
+```bash
+cd tests/hw && uv run test_esp32c6.py --port <C6-Zero>
+```
+* Runs 21 silicon verification checks.
+* Skips cleanly if no board is attached.
+* Wi-Fi checks read credentials from ~/.config/lugalos/wifi.env (only the derived 64-hex PSK is transmitted to the board).
+* The final test arms the LLP radio role and remains in it until reset.
+
+## 4. Multi-Board Disambiguation (Zero vs MINI on NANO / LCD-7B)
+
+When multiple Espressif devices are connected, distinguish boards via --board zero|nano|lcd7b:
+* Port mappings are defined in ~/.config/lugalos/c6-ports.env (LUGALOSC6ZEROPORT, NANOPORT, LCD7B_PORT).
+* Flash the C6-MINI on the ESP32-P4 NANO:
+```bash
+  ninja -C build/esp32c6-mini
+  tools/c6flash.py build/esp32c6-mini --board nano
+  cd tests/hw && uv run test_esp32c6.py --board nano --build ../../build/esp32c6-mini
+```
+* Update the C6-MINI on the LCD-7B or Tab5 over 9P through the P4 host:
+```bash
+  uv run tools/lota.py push build/esp32c6-mini --p4 lcd7b --prefix /c6 --reboot --wait
+```
+
+## 5. Diagnostic Breadcrumbs & Recovery
+
+### Low-Power / AON Breadcrumbs
+When debugging early boot hangs or crashes with a silent USB console, inspect LP_AON diagnostic registers using esptool read-mem:
+* 0x600B1000: Early boot stage identifier.
+* 0x600B1004: Millisecond tick counter.
+* 0x600B1008 / 0x600B100C: Last trap cause and trap PC.
+* 0x600B1014 / 0x600B1018: Return address (ra) and task pointer at last tick.
+
+### Software Download Mode & Bit 30
+* reboot restarts the C6 normally.
+* reboot download restarts the chip into the boot ROM's download mode without needing physical BOOT strap buttons.
+* This sets bit 30 of LPAONSYSCFG (0x600B1034), which survives every reset except a physical power cycle (CHIPPU).
+* Normal reboot and c6flash.py clear this bit automatically.
+* To clear manually using esptool:
+```bash
+    esptool write-mem 0x600B1034 0 0x40000000
+```
+
+### Unbricking an Unresponsive C6-MINI
+If firmware fails to boot and UART is inaccessible:
+* On ESP32-P4-LCD-7B (Header H4): Connect H4 pin 1 (IO9/BOOT) to pin 2 (GND), then issue sdio reset on the P4 console. This forces download mode for re-flashing via c6flash.py.
+
+## 6. Subsystem & Operational Notes
+
+* Top 16 KB SRAM Reserved for ROM: SRAM from 0x4087c000 to 0x4087ffff is exclusively reserved for the ESP32-C6 ROM's Wi-Fi state. The kernel allocator must never touch or hand out this memory.
+* LLP Radio Role: llp radio on the C6 console multiplexes the USB port between serial shell traffic and LLP radio frames.
+* I2C Bus: GPIO0 = SDA, GPIO1 = SCL (100 kHz). Commands: i2c scan, sensor, /proc/sensors.
+* RP2350 Terminal Wireless Link: When attached to RP2350 terminal header H7 (UART0, crossed TX/RX, 921600 baud), an autonomous C6 that boots without USB automatically arms LLP on UART0.
+> [!IMPORTANT]
+> The C6 must be powered from a dedicated external USB charger; H7's 3.3V rail cannot sustain 802.11ax peak transmit bursts.
+* Hardware Watchdog: MWDT0 is armed at boot (30-second timeout). Commands: wdt (status and reset cause), wdt test (stops petting watchdog to verify hardware reset).
+* Cold vs Warm Boot: PMU and LP registers retain state across software chip resets. Hardware radio bring-up tests should be verified after a complete USB cold power cycle (unplug ~10 seconds).
+
+Navigation: ← Board Reference Guides | Administrator Manual | Documentation Index
+
+### Related Topics
+=> index.gmi Documentation
+=> admin.gmi Administrator Manual
+=> boards.gmi Board Reference Guides

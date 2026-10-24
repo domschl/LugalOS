@@ -1,5 +1,9 @@
 # LugalOS Text Editors
 
+[Documentation](index.md) > [User Manual](user.md) > **Text Editors**
+
+---
+
 LugalOS provides two built-in text editors designed for different interaction environments:
 1. **`e`**: An interactive full-screen editor with classic Emacs keybindings, designed for display terminals (RP2350-LCD-7, ESP32-P4-LCD-7B) and VT100-compatible serial terminals.
 2. **`ed`**: A standard teletype line editor, ideal for low-bandwidth serial lines, teletypes, or scripting.
@@ -82,3 +86,7 @@ lsh> ed /sd0/notes.txt
 
 * Use **`e`** for writing C programs ([C programming](c_programming.md)), modifying Lisp scripts, and interactive editing on terminals.
 * Use **`ed`** when connecting over low-baud wireless or raw UART serial links.
+
+---
+
+**Navigation:** [← User Manual](user.md) | [Documentation Index](index.md)

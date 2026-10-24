@@ -1,6 +1,10 @@
 # LugalOS Chess Computer
 
-LugalOS features a native chess computer system running across dedicated appliances (the `rp2350-chess` preset) as well as graphical display terminals on the window ribbon ([window ribbon](doc/user/ribbon.md)).
+[Documentation](../README.md) > [User Manual](index.md) > **Chess Computer**
+
+---
+
+LugalOS features a native chess computer system running across dedicated appliances (the `rp2350-chess` preset) as well as graphical display terminals on the window ribbon ([window ribbon](ribbon.md)).
 
 ---
 
@@ -69,3 +73,7 @@ On the physical appliance:
 
 * **Opening Book**: On boot, the engine automatically checks `/sd0/CHESS/BOOK.BIN`. If present, moves in the opening phase are played instantly from the book.
 * **Saving Games**: Games are recorded and saved to `/sd0/CHESS/` in PGN/text format, preserving historical play across reboots.
+
+---
+
+**Navigation:** [← User Manual](index.md) | [Documentation Index](../README.md)

@@ -1,5 +1,9 @@
 # LugalOS Plan 9 Networking & Host Integration
 
+[Documentation](index.md) > [Administrator Manual](admin.md) > **Plan 9 Networking & Host Integration**
+
+---
+
 LugalOS implements native Plan 9 file protocol (9P2000) services and an embedded IPv4 network stack. This enables bidirectional filesystem sharing, live MicroSD card synchronization without removing physical media, and network appliance operation.
 
 ---
@@ -35,15 +39,33 @@ python3 tools/p9sync.py --p4 lcd7b --src build/esp32p4-lcd7b/sd_root
 
 ## 2. Mounting LugalOS on Linux via `fuse-p9`
 
-The `host/fuse-p9` utility mounts a running LugalOS filesystem directly into the Linux host directory tree:
+The `host/fuse-p9` utility (`lugal9pfuse`) mounts a running LugalOS filesystem (`/sd0`, `/flash0`, `/ram0`, `/proc`) directly into the host directory tree via FUSE:
+
+### Mounting over Serial / USB CDC
+```bash
+mkdir -p /tmp/lugalos
+uv run --project host/fuse-p9 lugal9pfuse --serial /dev/serial/by-id/usb-LugalOS_*_Dual_CDC_ACM_*-if02 /tmp/lugalos
+```
+
+### Mounting over the Network (TCP) & Authentication
+Network 9P links require authentication (see [Identity, Provisioning & Credentials](identity.md)). The board must have a key configured (`p9key <hex>` or identity record) and be listening on port 564 (`net listen 564`).
 
 ```bash
-# Mount LugalOS over TCP (e.g. Wi-Fi node)
-mkdir -p /mnt/lugalos
-./host/fuse-p9/fuse-p9 -s 192.168.1.50:564 /mnt/lugalos
+# Save authentication key to a secured file:
+printf '000102030405060708090a0b0c0d0e0f' > ~/.lugal9p.key && chmod 600 ~/.lugal9p.key
 
-# Files on the microcontroller are now accessible on the host:
-ls -la /mnt/lugalos/sd0
+# Mount wireless or Ethernet node:
+uv run --project host/fuse-p9 lugal9pfuse --key-file ~/.lugal9p.key --tcp 192.168.1.50 /tmp/lugalos
+```
+
+### Accessing & Unmounting
+```bash
+# Files on the board are now accessible to standard host tools:
+ls -la /tmp/lugalos/sd0
+cat /tmp/lugalos/proc/version
+
+# Unmount cleanly when finished:
+fusermount -u /tmp/lugalos   # Linux (macOS: umount /tmp/lugalos)
 ```
 
 ---
@@ -172,7 +194,7 @@ namespace is the terminal's `/c6`, as on the P4 boards (section 4).
 | 4 | TXD0 (GP16) | RX (GPIO17) |
 
 * **Flash the C6 once over its USB** (`tools/c6flash.py build/esp32c6`); after
-  that it updates over 9P through the terminal's `/c6` (doc/admin/updates.md).
+  that it updates over 9P through the terminal's `/c6` ([updates](updates.md)).
 * **Nothing to type.** The terminal takes H7 for LLP at boot; the C6, booting
   with no USB host, arms LLP on its UART0 after 2 s. Both run at 921600 baud
   (`CONFIG_LLP_UART_BAUD` in `cmake/board-rp2350-terminal.cmake` and
@@ -191,4 +213,8 @@ namespace is the terminal's `/c6`, as on the P4 boards (section 4).
 * **Debugging both ends:** with the C6's USB attached to a PC it does not arm
   by itself, and the terminal's traffic on H7 arrives at the C6's console as
   input; park the terminal (BOOTSEL) to type `llp radio uart 921600` at the C6.
+
+---
+
+**Navigation:** [← Administrator Manual](admin.md) | [Identity & Provisioning →](identity.md) | [Documentation Index](index.md)
 

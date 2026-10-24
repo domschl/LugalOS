@@ -1,5 +1,7 @@
 # LugalOS Firmware Flashing Guide
 
+Documentation > Administrator Manual > Firmware Flashing Guide
+
 This document describes procedures for flashing and programming LugalOS binaries across supported microcontrollers: Raspberry Pi Pico 2 (RP2350), Espressif ESP32-P4, and ESP32-C6.
 
 ## 1. Flashing RP2350 Targets (Pico 2 & RP2350-LCD-7)
@@ -75,5 +77,11 @@ tools/c6flash.py build/esp32c6 --only slot     # slot A only, the loader kept
 ```
 The script opens the port with DTR high and RTS low (opening with DTR low resets the chip) and verifies written blocks. After that, new builds go over 9P with tools/lota.py push, without the header.
 
+Navigation: ← Presets Matrix | Administrator Manual | Consoles Guide → | Documentation Index
+
 ### Related Topics
+=> index.gmi Documentation
+=> admin.gmi Administrator Manual
 => updates.gmi Updating Nodes over 9P
+=> presets.gmi ← Presets Matrix
+=> consoles.gmi Consoles Guide →

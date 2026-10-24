@@ -1,5 +1,9 @@
 # LugalOS Z-Machine & Interactive Fiction
 
+[Documentation](index.md) > [User Manual](user.md) > **Z-Machine & Interactive Fiction**
+
+---
+
 LugalOS includes a native, freestanding Z-machine (Version 3) interpreter for interactive fiction, featuring an interactive split-screen real-time auto-mapper on the [window ribbon](ribbon.md).
 
 ---
@@ -134,3 +138,7 @@ To add additional interactive fiction games:
 2. Rename the file using standard 8.3 FAT short filenames (e.g. `ENCHANTE.Z3`, `PLANETFA.Z3`, `HITCHHIK.Z3`).
 3. Copy the file into `/sd0/games/` using the 9P synchronization tool (`tools/p9sync.py`) or by mounting the MicroSD card on a host workstation.
 4. Launch the game using `zmachine <filename>`.
+
+---
+
+**Navigation:** [← User Manual](user.md) | [Documentation Index](index.md)

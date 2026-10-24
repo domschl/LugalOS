@@ -1,5 +1,9 @@
 # LugalOS Lisp Dialect, Primitives & Scripting
 
+[Documentation](index.md) > [Developer Manual](dev.md) > **Lisp Dialect, Primitives & Scripting**
+
+---
+
 LugalOS features a self-contained Scheme-like Lisp machine (`user/lisp/lisp.c`) that serves as the interactive system console, an appliance scripting language, and the mathematical runtime for the Computer Algebra System (CAS).
 
 ---
@@ -102,4 +106,8 @@ lsh> lisp
 (poly-factor '(+ (^ x 2) (* 5 x) 6) 'x)
 ;; => (* (+ x 2) (+ x 3))
 ```
-For complete CAS documentation, see [`doc/user/cas.md`](cas.md).
+For complete CAS documentation, see the [CAS Manual](cas.md).
+
+---
+
+**Navigation:** [← C Programming](c_programming.md) | [Developer Manual](dev.md) | [Documentation Index](index.md)

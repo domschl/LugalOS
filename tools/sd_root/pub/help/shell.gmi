@@ -1,5 +1,7 @@
 # LugalOS Shell & Command Environment
 
+Documentation > User Manual > Shell & Command Environment
+
 The interactive shell (lsh) is the primary user interface for LugalOS across interactive display terminals and serial consoles. Built around a Plan 9–inspired philosophy, LugalOS exposes system metrics, hardware devices, and IPC channels as hierarchical file namespaces.
 
 ## 1. Shell Basics & Path Resolution
@@ -160,13 +162,17 @@ From lsh, you can immediately invoke native applications:
 * cc  : Compiles a C11 source file on-device to a native RISC-V ELF binary using chibicc (C programming).
 * exec : Loads and executes a RISC-V ELF binary confined to a U-mode PMP memory domain.
 
-## 6. On-Device Help Commands
+## 8. On-Device Help Commands
 
 * help: Displays a quick command reference categorized by topic.
 * help test: Displays internal hardware verification and self-test commands.
 * help  or man : Opens the interactive topic viewer (e.g. man editors, man ribbon, man cas).
 
+Navigation: ← User Manual | Documentation Index
+
 ### Related Topics
+=> index.gmi Documentation
+=> user.gmi User Manual
 => sensors.gmi sensors
 => updates.gmi updates
 => logging.gmi logging
