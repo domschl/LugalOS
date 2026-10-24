@@ -43,7 +43,7 @@ A tile is always **selected** (the gold frame; the minimap shows it as a white d
 - **Pause, speed, menu**: The three buttons at the right of the ribbon. The menu has Resume, the terrain mode (textured or fast), Restart and Quit; Restart and Quit ask for confirmation.
 
 ### Keyboard Controls
-- **Arrow keys / W, A, S, D**: Move the selected tile by half a tile width in a screen direction (Shift: 8 steps). Up goes up-left, then up-right, and so on, so the line is straight on screen and every tile can be reached; the opposite key undoes a step. The view stays still until the selection nears the edge of the map area, then glides to centre it.
+- **Arrow keys / W, A, S, D**: Move the selection to the adjacent tile in the direction they point, with the map rotated by 45 degrees: **Up** goes up-left, **Right** up-right, **Down** down-right, **Left** down-left (Shift: 8 tiles). Every tile is reachable, the opposite key undoes a step, and two different keys make a straight line on screen (Up then Right goes straight up). The view stays still until the selection nears the edge of the map area, then glides to centre it.
 - **1 – 6**: Build on the selected tile; **R**: recycle it; **E**: toggle standby. Press a build key twice for a brush, **Enter** applies the brush to the selected tile.
 - **Z**: Undo the last build or recycle. **Tab**: jump to the next building. **Enter**: open or close the inspector (when no brush is armed).
 - **Space**: Bring the view to the selection; again, to the Expedition Lander.
