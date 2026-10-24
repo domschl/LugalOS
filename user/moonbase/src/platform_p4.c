@@ -10,6 +10,7 @@
 #include "moon_config.h"
 #include "moon_game.h"
 #include "moonbase.h"
+#include "moon_bench.h"
 
 #include "lugalos_config.h"
 #include "arch/esp32p4_intr.h"
@@ -25,6 +26,7 @@
 #include "kernel/sched.h"
 #include "kernel/time.h"
 
+#include <stdarg.h>
 #include <string.h>
 
 #if defined(CONFIG_BOARD_ESP32P4)
@@ -49,6 +51,8 @@ static uint16_t *s_canvas_fb_original = NULL; /* Original canvas slot backing bu
 static uint16_t *s_render_fb_original = NULL; /* Original palloc buffer for safe freeing */
 static int       s_cid = -1;
 static bool      s_allocated_fb = false;
+static void       *s_tile_cache = NULL;     /* baked terrain tops (moon_tile_cache_attach) */
+static uint32_t   s_tile_cache_pages = 0;
 static bool      s_active = false;   /* single task: the moonbase command; between init and shutdown */
 static uint32_t  s_fb_pages = 0;
 static uint32_t  s_render_pages = 0;
@@ -191,6 +195,12 @@ bool moon_platform_init(int width, int height, const char *title) {
         esp32p4_extmem_writeback((uintptr_t)s_render_fb, (size_t)s_virtual_w * s_virtual_h * sizeof(uint16_t));
     }
 
+    /* Baked terrain tops: about 8.7 MB of PSRAM, a lot faster than sampling every pixel */
+    s_tile_cache_pages = (uint32_t)((moon_tile_cache_bytes() + 4095u) / 4096u);
+    s_tile_cache = palloc_pages_bulk(s_tile_cache_pages);
+    if (s_tile_cache) moon_tile_cache_attach(s_tile_cache);
+    else printk("[moonbase] No PSRAM for the tile cache: terrain is sampled per pixel (slow)\n");
+
     /* Hook touch subsystem */
     touch_set_hook(p4_touch_hook);
 
@@ -209,6 +219,13 @@ void moon_platform_shutdown(void) {
     touch_set_hook(NULL);
     s_qhead = s_qtail = 0;                 /* events queued but never read */
     while (console_has_char()) (void)keyseq_read_console();
+
+    moon_tile_cache_attach(NULL);
+    if (s_tile_cache) {
+        palloc_free(s_tile_cache, s_tile_cache_pages);
+        s_tile_cache = NULL;
+        s_tile_cache_pages = 0;
+    }
 
     /* Close canvas and return to text terminal */
     uint8_t req[SCREEN_CTITLE_MAX + 3];
@@ -261,6 +278,10 @@ uint32_t moon_platform_get_ticks_ms(void) {
     return (uint32_t)time_get_ms();
 }
 
+uint32_t moon_platform_get_ticks_us(void) {
+    return (uint32_t)time_get_us();
+}
+
 void moon_platform_delay_ms(uint32_t ms) {
     task_sleep_ms(ms);
 }
@@ -270,27 +291,38 @@ uint16_t* moon_platform_get_framebuffer(int *stride_pixels) {
     return s_render_fb ? s_render_fb : s_fb;
 }
 
+/* 2x pixel doubling of virtual rows [y0, y1) of the 640x360 frame into the 1280x720 canvas, and
+ * the cache write-back of destination. Rows are independent, so a partial update costs its rows only. */
+static void upscale_rows(int y0, int y1) {
+    if (y0 < 0) y0 = 0;
+    if (y1 > s_virtual_h) y1 = s_virtual_h;
+    if (y0 >= y1) return;
+    for (int y = y0; y < y1; y++) {
+        const uint32_t *src_row32 = (const uint32_t *)(s_render_fb + (size_t)y * s_virtual_w);
+        uint32_t *dst0 = (uint32_t *)(s_fb + ((size_t)y * 2) * s_stride);
+        uint32_t *dst1 = (uint32_t *)(s_fb + ((size_t)y * 2 + 1) * s_stride);
+        int half_w = s_virtual_w / 2;
+        for (int i = 0; i < half_w; i++) {
+            uint32_t p2 = src_row32[i];
+            uint32_t p0 = (uint16_t)p2;
+            uint32_t p1 = p2 >> 16;
+            uint32_t w0 = (p0 << 16) | p0;
+            uint32_t w1 = (p1 << 16) | p1;
+            dst0[2 * i] = w0;
+            dst0[2 * i + 1] = w1;
+            dst1[2 * i] = w0;
+            dst1[2 * i + 1] = w1;
+        }
+    }
+    esp32p4_extmem_writeback((uintptr_t)(s_fb + (size_t)y0 * 2 * s_stride),
+                             (size_t)(y1 - y0) * 2 * s_stride * sizeof(uint16_t));
+}
+
 void moon_platform_present(void) {
     if (!s_render_fb) return;
 
     if (s_scale == 2 && s_fb && s_render_fb && s_render_fb != s_fb) {
-        /* Write back CPU cache lines for the completed 640x360 off-screen frame */
-        esp32p4_extmem_writeback((uintptr_t)s_render_fb, (size_t)s_virtual_w * s_virtual_h * sizeof(uint16_t));
-
-        /* Fast 2x2 integer pixel doubling from s_render_fb (640x360) into s_fb (1280x720) */
-        for (int y = 0; y < s_virtual_h; y++) {
-            const uint16_t *src_row = s_render_fb + (size_t)y * s_virtual_w;
-            uint32_t *dst0 = (uint32_t *)(s_fb + ((size_t)y * 2) * s_stride);
-            uint32_t *dst1 = (uint32_t *)(s_fb + ((size_t)y * 2 + 1) * s_stride);
-            for (int x = 0; x < s_virtual_w; x++) {
-                uint32_t p = ((uint32_t)src_row[x] << 16) | (uint32_t)src_row[x];
-                dst0[x] = p;
-                dst1[x] = p;
-            }
-        }
-
-        /* Flush hardware canvas framebuffer and signal compositor */
-        esp32p4_extmem_writeback((uintptr_t)s_fb, (size_t)s_stride * s_height * sizeof(uint16_t));
+        upscale_rows(0, s_virtual_h);
         lcdterm_damage();
     } else {
         /* 1x presentation: write back and swap front/back pointers */
@@ -307,6 +339,28 @@ void moon_platform_present(void) {
             lcdterm_damage();
         }
     }
+}
+
+/* The buffer on screen: the Tab5 composes in its 640x360 frame and upscales, the 7B shows s_fb
+ * (after a swap that is the frame just drawn) */
+uint16_t* moon_platform_get_display_framebuffer(int *stride_pixels) {
+    if (s_scale == 2 && s_render_fb && s_render_fb != s_fb) {
+        if (stride_pixels) *stride_pixels = s_virtual_w;
+        return s_render_fb;
+    }
+    if (stride_pixels) *stride_pixels = (int)s_stride;
+    return s_fb;
+}
+
+void moon_platform_present_rows(int y0, int y1) {
+    if (s_scale == 2 && s_fb && s_render_fb && s_render_fb != s_fb) {
+        upscale_rows(y0, y1);
+    } else if (s_fb) {
+        if (y0 < 0) y0 = 0;
+        if (y1 > s_height) y1 = s_height;
+        if (y0 < y1) esp32p4_extmem_writeback((uintptr_t)(s_fb + (size_t)y0 * s_stride), (size_t)(y1 - y0) * s_stride * sizeof(uint16_t));
+    }
+    lcdterm_damage();
 }
 
 bool moon_platform_poll_event(moon_event_t *ev) {
@@ -401,6 +455,9 @@ bool moon_platform_poll_event(moon_event_t *ev) {
             case 'o': case 'O':
                 ev->key = MOON_KEY_O;
                 return true;
+            case 'f': case 'F':
+                ev->key = MOON_KEY_F;
+                return true;
             case '-': case '_':
                 ev->key = MOON_KEY_MINUS;
                 return true;
@@ -427,10 +484,15 @@ bool moon_platform_poll_event(moon_event_t *ev) {
 }
 
 void moon_platform_log(const char *fmt, ...) {
-    (void)fmt;
+    char line[200];
+    va_list ap;
+    va_start(ap, fmt);
+    kvsnprintf(line, sizeof(line), fmt, ap);
+    va_end(ap);
+    cprintf("%s", line);
 }
 
-int moonbase_run(void) {
+int moonbase_run(const char *args) {
     if (!moon_platform_init(0, 0, "Moonbase Lambda")) {
         moon_platform_shutdown(); /* gives the terminal its screen back if init got that far */
         cprintf("moonbase: failed to initialize bare-metal platform\n");
@@ -450,6 +512,22 @@ int moonbase_run(void) {
         return -1;
     }
 
+    s_p4_game.clock_us = moon_platform_get_ticks_us;
+
+    if (args && strstr(args, "micro")) {
+        moon_bench_micro(w, h);
+        moon_platform_shutdown();
+        return 0;
+    }
+    if (args && strstr(args, "bench")) {
+        static moon_bench_result_t results[MOON_BENCH_SCENARIOS];
+        static uint32_t samples[4096] BULK_BSS;   /* single task: the moonbase command */
+        int n = moon_bench_run(&s_p4_game, w, h, 6, results, samples, 4096);
+        moon_platform_shutdown();
+        moon_bench_print(results, n);
+        return 0;
+    }
+
     uint32_t last_time = moon_platform_get_ticks_ms();
 
     while (s_p4_game.running) {
@@ -467,14 +545,31 @@ int moonbase_run(void) {
 
         moon_game_update(&s_p4_game, delta);
 
+        /* Draw only what is stale: nothing, the top bar and ribbon, or the whole frame */
+        int dirty = moon_game_take_dirty(&s_p4_game);
         int stride = 0;
-        uint16_t *fb = moon_platform_get_framebuffer(&stride);
-        if (fb) {
-            moon_game_render(&s_p4_game, fb, w, h, stride);
-            moon_platform_present();
+        if (dirty == MOON_DIRTY_WORLD) {
+            uint16_t *fb = moon_platform_get_framebuffer(&stride);
+            if (fb) {
+                uint32_t t0 = moon_platform_get_ticks_us();
+                moon_game_render(&s_p4_game, fb, w, h, stride);
+                uint32_t t1 = moon_platform_get_ticks_us();
+                moon_platform_present();
+                uint32_t t2 = moon_platform_get_ticks_us();
+                moon_game_note_frame(&s_p4_game, t2 - t1, t2 - t0);
+            }
+        } else if (dirty == MOON_DIRTY_HUD) {
+            uint16_t *fb = moon_platform_get_display_framebuffer(&stride);
+            if (fb) {
+                moon_game_render_hud(&s_p4_game, fb, w, h, stride);
+                moon_platform_present_rows(0, s_p4_game.ui.hud.h + 1);
+                moon_platform_present_rows(s_p4_game.ui.ribbon_bar.y, h);
+            }
         }
 
-        moon_platform_delay_ms(16); /* ~60 FPS cap */
+        /* Sleep for what is left of the 16 ms frame, not a fixed 16 ms on top of the work */
+        uint32_t spent = moon_platform_get_ticks_ms() - now;
+        moon_platform_delay_ms(spent >= 16 ? 1 : 16 - spent);
     }
 
     moon_platform_shutdown();
@@ -484,7 +579,8 @@ int moonbase_run(void) {
 #else
 
 /* Stub for non-ESP32-P4 targets */
-int moonbase_run(void) {
+int moonbase_run(const char *args) {
+    (void)args;
     cprintf("moonbase: requires ESP32-P4 target with RGB565 display.\n");
     return -1;
 }

@@ -5576,7 +5576,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
 #if CONFIG_ENABLE_MOONBASE
     } else if (strcmp(cmd_line, "moonbase") == 0 || strncmp(cmd_line, "moonbase ", 9) == 0) {
-        moonbase_run();
+        moonbase_run(cmd_line[8] ? cmd_line + 9 : "");
         return;
 #endif
     } else if (strcmp(cmd_line, "spartand") == 0) {

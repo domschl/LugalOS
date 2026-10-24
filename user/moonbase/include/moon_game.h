@@ -22,6 +22,13 @@ typedef enum {
 enum { MOON_UNDO_NONE = 0, MOON_UNDO_BUILD, MOON_UNDO_RECYCLE };
 #define MOON_UNDO_WINDOW_MS 10000
 
+/* Frame-time instrumentation: microseconds per phase of the last frame, and a ring of
+ * recent whole-frame times (render + present) for the median and the 95th percentile */
+#define MOON_PERF_RING 256
+typedef struct {
+    uint32_t world, overlay, minimap, ui;
+} moon_phase_us_t;
+
 /* Menu pages */
 enum { MOON_MENU_CLOSED = 0, MOON_MENU_MAIN, MOON_MENU_CONFIRM_QUIT, MOON_MENU_NEW_GAME,
        MOON_MENU_GAME_OVER, MOON_MENU_VICTORY, MOON_MENU_TITLE };
@@ -87,6 +94,25 @@ typedef struct {
     bool     objectives_hidden;
     bool     victory_claimed; /* Act I was completed and the player chose to go on */
 
+    /* Instrumentation: the platform sets clock_us (NULL: no timing) and reports each
+     * frame; F shows the overlay */
+    uint32_t (*clock_us)(void);
+    moon_phase_us_t phase;
+    uint32_t present_us;
+    uint32_t frame_ring[MOON_PERF_RING];
+    uint32_t frames_noted;
+    bool     show_perf;
+
+    /* Redraw bookkeeping: what the next frame has to redo, and a digest of everything the
+     * world pass shows that a sim tick can change */
+    uint8_t  dirty;
+    uint32_t world_sig;
+    uint8_t  undo_secs_shown;
+    bool     notify_shown;
+    int32_t  shown_hover_x, shown_hover_y;
+    bool     shown_hover_valid;
+    int8_t   shown_preview;
+
     /* Layout table shared by drawing and hit-testing */
     moon_ui_layout_t ui;
 
@@ -135,6 +161,22 @@ void moon_game_update(moon_game_t *game, uint32_t delta_ms);
 /* Where the ghost of a held / hovered build button or an armed brush is drawn, if at all.
  * A brush follows the pointer; with a finger lifted there is nothing to preview (the
  * selection is the tile just built on), but a keyboard brush previews the selection. */
+/* The platform loop reports a finished frame: time spent presenting and in all */
+/* How out of date the frame on screen is. The platform loop draws and presents only when it
+ * is, and only the top bar and the ribbon when that is all that changed (a sim tick that moved
+ * nothing but numbers). Reading it resets it. */
+enum { MOON_DIRTY_NONE = 0, MOON_DIRTY_HUD = 1, MOON_DIRTY_WORLD = 2 };
+int moon_game_take_dirty(moon_game_t *game);
+
+/* Redraw just the top bar and the ribbon (the rows ui.hud and ui.ribbon_bar) over an
+ * up-to-date frame; for MOON_DIRTY_HUD */
+void moon_game_render_hud(moon_game_t *game, uint16_t *fb, int width, int height, int stride);
+
+void moon_game_note_frame(moon_game_t *game, uint32_t present_us, uint32_t frame_us);
+
+/* Median and 95th percentile of the recent frames (0 when none) */
+void moon_game_frame_stats(const moon_game_t *game, uint32_t *median_us, uint32_t *p95_us);
+
 bool moon_game_ghost_target(const moon_game_t *game, int *gx, int *gy);
 
 /* Move to GAME_OVER or VICTORY when the base has failed or Act I is complete */

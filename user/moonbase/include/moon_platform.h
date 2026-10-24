@@ -56,6 +56,7 @@ enum {
     MOON_KEY_N,
     MOON_KEY_C,
     MOON_KEY_O,
+    MOON_KEY_F,
 };
 
 #define MOON_MOD_SHIFT 1
@@ -82,11 +83,17 @@ int      moon_platform_get_height(void);
 
 /* Timing & Delays */
 uint32_t moon_platform_get_ticks_ms(void);
+uint32_t moon_platform_get_ticks_us(void);   /* wraps after about 71 minutes: use differences */
 void     moon_platform_delay_ms(uint32_t ms);
 
 /* 16-Bit RGB565 Framebuffer Access */
 uint16_t* moon_platform_get_framebuffer(int *stride_pixels);
 void      moon_platform_present(void);
+
+/* Partial updates: draw into the buffer that is being shown (not the one frames are composed
+ * in, which on a double-buffered board is a frame old) and publish only some rows of it. */
+uint16_t* moon_platform_get_display_framebuffer(int *stride_pixels);
+void      moon_platform_present_rows(int y0, int y1);   /* rows [y0, y1) */
 
 /* Input Event Polling */
 bool     moon_platform_poll_event(moon_event_t *ev);

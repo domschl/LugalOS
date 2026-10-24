@@ -5,6 +5,7 @@
 #include "moon_platform.h"
 #include "moon_config.h"
 #include "moon_game.h"
+#include "moon_bench.h"
 
 static moon_game_t s_game;
 
@@ -16,6 +17,7 @@ int main(int argc, char **argv) {
     const char *dump_ppm = NULL;
     uint32_t seed = (uint32_t)time(NULL); /* a new map each run */
     int difficulty = MOON_DIFFICULTY_NORMAL;
+    bool bench = false, micro = false;
     bool difficulty_given = false;
 
     for (int i = 1; i < argc; i++) {
@@ -33,6 +35,10 @@ int main(int argc, char **argv) {
             preset_name = "ESP32-P4-LCD-7B (1024x600)";
         } else if (strncmp(argv[i], "--test-frames=", 14) == 0) {
             max_frames = atoi(argv[i] + 14);
+        } else if (strcmp(argv[i], "--bench") == 0) {
+            bench = true;
+        } else if (strcmp(argv[i], "--micro") == 0) {
+            micro = true;
         } else if (strncmp(argv[i], "--seed=", 7) == 0) {
             seed = (uint32_t)strtoul(argv[i] + 7, NULL, 0);
         } else if (strncmp(argv[i], "--difficulty=", 13) == 0) {
@@ -75,6 +81,21 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    s_game.clock_us = moon_platform_get_ticks_us;
+    if (micro) {
+        moon_bench_micro(width, height);
+        moon_platform_shutdown();
+        return 0;
+    }
+    if (bench) {
+        moon_bench_result_t results[MOON_BENCH_SCENARIOS];
+        static uint32_t samples[4096];
+        int n = moon_bench_run(&s_game, width, height, 4, results, samples, 4096);
+        moon_bench_print(results, n);
+        moon_platform_shutdown();
+        return 0;
+    }
+
     uint32_t last_time = moon_platform_get_ticks_ms();
 
     while (s_game.running) {
@@ -96,11 +117,19 @@ int main(int argc, char **argv) {
             s_game.running = false;
         }
 
-        /* 3. Render frame to RGB565 surface */
+        /* 3. Render frame to RGB565 surface, if anything changed (automated runs draw every frame) */
+        if (max_frames > 0) s_game.dirty = MOON_DIRTY_WORLD;
+        int dirty = moon_game_take_dirty(&s_game);
         int stride = 0;
-        uint16_t *fb = moon_platform_get_framebuffer(&stride);
+        uint16_t *fb = (dirty == MOON_DIRTY_WORLD) ? moon_platform_get_framebuffer(&stride) : NULL;
+        if (dirty == MOON_DIRTY_HUD) {
+            uint16_t *disp = moon_platform_get_display_framebuffer(&stride);
+            moon_game_render_hud(&s_game, disp, width, height, stride);
+        }
         if (fb) {
+            uint32_t t0 = moon_platform_get_ticks_us();
             moon_game_render(&s_game, fb, width, height, stride);
+            uint32_t t1 = moon_platform_get_ticks_us();
 
             if (dump_ppm && max_frames > 0 && s_game.frame_count >= (uint32_t)max_frames) {
                 FILE *fp = fopen(dump_ppm, "wb");
@@ -124,7 +153,11 @@ int main(int argc, char **argv) {
         }
 
         /* 4. Present frame */
-        moon_platform_present();
+        if (dirty != MOON_DIRTY_NONE) {
+            uint32_t t1 = moon_platform_get_ticks_us();
+            moon_platform_present();
+            if (dirty == MOON_DIRTY_WORLD) moon_game_note_frame(&s_game, moon_platform_get_ticks_us() - t1, moon_platform_get_ticks_us() - t1);
+        }
 
         /* 5. Frame rate limiter (target 60 FPS) */
         uint32_t frame_elapsed = moon_platform_get_ticks_ms() - current_time;

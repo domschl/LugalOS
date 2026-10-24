@@ -7,8 +7,9 @@ extern "C" {
 #endif
 
 /* Run the Moonbase Lambda interactive simulation loop on LugalOS bare metal.
- * Returns 0 on normal exit, negative error code on failure. */
-int moonbase_run(void);
+ * `args` is the rest of the command line: "bench" runs the frame-time benchmark
+ * instead of the game. Returns 0 on normal exit, negative error code on failure. */
+int moonbase_run(const char *args);
 
 #ifdef __cplusplus
 }

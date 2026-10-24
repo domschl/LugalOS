@@ -103,7 +103,7 @@ struct moon_resources_s;
 void moon_world_render(const moon_structure_mgr_t *mgr,
                        const moon_grid_t *grid,
                        const moon_surface_t *surf,
-                       int32_t cam_x, int32_t cam_y,
+                       int32_t cam_x, int32_t cam_y, int32_t view_top,
                        int32_t hover_gx, int32_t hover_gy, bool hover_valid);
 
 void moon_world_render_overlays(const moon_structure_mgr_t *mgr,

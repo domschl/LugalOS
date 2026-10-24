@@ -5237,7 +5237,7 @@ static lisp_val_t *prim_moonbase(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
     lisp_park_t park;
     lisp_park(&park);
-    int rc = moonbase_run();
+    int rc = moonbase_run("");
     lisp_unpark(&park);
     return (rc == 0) ? &true_val : &false_val;
 }

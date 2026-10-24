@@ -17,6 +17,7 @@ static void fresh(void) {
     assert(moon_game_init(&g, 1024, 600));
 }
 
+static void put(moon_structure_type_t type);
 static int selected_structure_type(void);
 static int s_touch; /* 1 while the test plays with a finger */
 
@@ -240,7 +241,7 @@ static uint16_t s_fb[1024 * 600];
 static void render_scene(moon_surface_t *surf) {
     *surf = moon_surface_make(s_fb, 1024, 600, 1024);
     moon_blit_clear(surf, COLOR_SPACE_BLACK);
-    moon_world_render(&g.structs, &g.grid, surf, g.cam_x, g.cam_y,
+    moon_world_render(&g.structs, &g.grid, surf, g.cam_x, g.cam_y, 0,
                       g.hover_tile_x, g.hover_tile_y, false);
     moon_world_render_overlays(&g.structs, &g.grid, surf, &g.resources, g.cam_x, g.cam_y);
 }
@@ -253,6 +254,91 @@ static void tile_screen(int gx, int gy, int32_t *sx, int32_t *sy) {
 static int selected_structure_type(void) {
     const moon_tile_t *t = moon_grid_get_tile_const(&g.grid, g.selected_tile_x, g.selected_tile_y);
     return t && t->structure_id ? g.structs.list[t->structure_id].type : -1;
+}
+
+/* The folded world tint equals the old way: draw untinted, then run the tint over the frame */
+static void test_tint_fold(void) {
+    static uint16_t a[1024 * 600], b[1024 * 600];
+    for (int night = 0; night < 3; night++) {
+        const uint16_t f[3][3] = { { 116, 128, 150 }, { 190, 190, 200 }, { 255, 255, 255 } };
+        for (int textured = 0; textured < 2; textured++) {
+            fresh();
+            g.grid.textured_terrain = textured;
+            for (int i = 0; i < 6; i++) put(i % 2 ? MOON_STRUCT_BATTERY_BANK : MOON_STRUCT_SOLAR_ARRAY);
+            put(MOON_STRUCT_POWER_CONDUIT);
+            g.cam_x = 300; g.cam_y = 40 * MOON_TILE_H;
+            moon_surface_t sa = moon_surface_make(a, 1024, 600, 1024), sb = moon_surface_make(b, 1024, 600, 1024);
+            moon_blit_clear(&sa, COLOR_SPACE_BLACK); moon_blit_clear(&sb, COLOR_SPACE_BLACK);
+
+            moon_blit_set_tint(f[night][0], f[night][1], f[night][2]);
+            moon_world_render(&g.structs, &g.grid, &sa, g.cam_x, g.cam_y, 0, 33, 33, true);
+            moon_blit_set_tint(256, 256, 256);
+
+            moon_world_render(&g.structs, &g.grid, &sb, g.cam_x, g.cam_y, 0, 33, 33, true);
+            moon_blit_tint_rect(&sb, 0, 0, 1024, 600, f[night][0], f[night][1], f[night][2]);
+            assert(memcmp(a, b, sizeof(a)) == 0);
+        }
+    }
+    printf("[test] World tint folded into the drawing equals the whole-frame pass, pixel for pixel: PASS\n");
+}
+
+/* The baked tile cache changes how fast a tile is drawn, never how it looks */
+static void test_tile_cache(void) {
+    static uint16_t cold[1024 * 600], warm[1024 * 600], plain[1024 * 600];
+    void *mem = malloc(moon_tile_cache_bytes());
+    assert(mem);
+    fresh();
+    g.grid.textured_terrain = true;
+    for (int i = 0; i < 6; i++) put(i % 2 ? MOON_STRUCT_BATTERY_BANK : MOON_STRUCT_SOLAR_ARRAY);
+    for (int night = 0; night < 2; night++) {
+        if (night) g.resources.solar_intensity = 0;            /* night: the tint is on */
+        moon_tile_cache_attach(mem);
+        for (int cx = -1500; cx <= 1500; cx += 497) {
+            for (int cy = 100; cy <= 1900; cy += 449) {
+                g.cam_x = cx; g.cam_y = cy;
+                moon_game_clamp_camera(&g);
+                moon_tile_cache_attach(NULL);                  /* no cache: every tile sampled as drawn */
+                moon_game_render(&g, plain, 1024, 600, 1024);
+                moon_tile_cache_attach(mem);                   /* fresh cache: baking while drawing */
+                moon_game_render(&g, cold, 1024, 600, 1024);
+                moon_game_render(&g, warm, 1024, 600, 1024);   /* everything now comes from the cache */
+                assert(memcmp(plain, cold, sizeof(plain)) == 0);
+                assert(memcmp(plain, warm, sizeof(plain)) == 0);
+            }
+        }
+    }
+
+    /* A tile that changed under the cache is baked again */
+    g.cam_x = 0; g.cam_y = 32 * MOON_TILE_H;
+    g.resources.solar_intensity = fixed_from_int(1);
+    moon_game_render(&g, warm, 1024, 600, 1024);
+    g.grid.tiles[33][36].terrain = MOON_TERRAIN_ICE_DEPOSIT;
+    g.grid.tiles[33][36].flags |= MOON_TILE_FLAG_FOUNDATION;
+    moon_game_render(&g, warm, 1024, 600, 1024);
+    moon_tile_cache_attach(NULL);
+    moon_game_render(&g, plain, 1024, 600, 1024);
+    assert(memcmp(plain, warm, sizeof(plain)) == 0);
+    free(mem);
+    printf("[test] Tile cache: cached, baking and uncached frames are identical, changed tiles re-bake: PASS\n");
+}
+
+/* With no clear first, tiles must still cover everything the view can show */
+static void test_view_coverage(void) {
+    static uint16_t fb[1024 * 600];
+    fresh();
+    for (int textured = 0; textured < 2; textured++) {
+        g.grid.textured_terrain = textured;
+        for (int cx = -1900; cx <= 1900; cx += 211) {
+            for (int cy = 0; cy <= 2050; cy += 173) {
+                g.cam_x = cx; g.cam_y = cy;
+                moon_game_clamp_camera(&g);
+                for (int i = 0; i < 1024 * 600; i++) fb[i] = 0xF81F;      /* sentinel */
+                moon_game_render(&g, fb, 1024, 600, 1024);
+                for (int i = 0; i < 1024 * 600; i++) assert(fb[i] != 0xF81F);
+            }
+        }
+    }
+    printf("[test] Whole view is covered at every camera position without a clear: PASS\n");
 }
 
 static void test_depth_order(void) {
@@ -1499,6 +1585,9 @@ int main(void) {
     test_camera_and_ticks();
     test_pointer_routing();
     test_regolith_guard();
+    test_tint_fold();
+    test_view_coverage();
+    test_tile_cache();
     test_depth_order();
     test_badge_survives();
     test_sprite_pick();
