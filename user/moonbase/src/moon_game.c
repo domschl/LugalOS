@@ -36,10 +36,8 @@ static void camera_home(moon_game_t *game) {
 
 /* Fresh base. Keeps what belongs to the platform and the player's display choice. */
 static void game_reset(moon_game_t *game, int width, int height) {
-    bool key_up = game->key_up_supported;
     bool textured = (game->state != MOON_STATE_INIT) ? game->grid.textured_terrain : true;
     memset(game, 0, sizeof(*game));
-    game->key_up_supported = key_up;
 
     moon_textures_init();
 
@@ -68,8 +66,11 @@ static void game_reset(moon_game_t *game, int width, int height) {
     camera_home(game);
     game->cam_start_x = game->cam_x;
     game->cam_start_y = game->cam_y;
-    game->cursor_x = HOME_GX;
-    game->cursor_y = HOME_GY;
+    game->selected_tile_x = HOME_GX;
+    game->selected_tile_y = HOME_GY;
+    game->press_slot = -1;
+    game->preview_slot = -1;
+    game->last_slot = -1;
 }
 
 bool moon_game_init(moon_game_t *game, int width, int height) {
@@ -83,15 +84,6 @@ void moon_game_shutdown(moon_game_t *game) {
     game->running = false;
 }
 
-/* Mapping from the 6 Ribbon buttons / keys to placeable structure types */
-static const moon_structure_type_t s_build_buttons[6] = {
-    MOON_STRUCT_SOLAR_ARRAY,    /* Button 1 / Key 1 */
-    MOON_STRUCT_BATTERY_BANK,   /* Button 2 / Key 2 */
-    MOON_STRUCT_HABITAT_DOME,   /* Button 3 / Key 3 */
-    MOON_STRUCT_REGOLITH_PLANT, /* Button 4 / Key 4 */
-    MOON_STRUCT_O2_EXTRACTOR,   /* Button 5 / Key 5 */
-    MOON_STRUCT_POWER_CONDUIT   /* Button 6 / Key 6 */
-};
 
 /* The view centre may reach any tile of the map (independent of screen size). */
 void moon_game_clamp_camera(moon_game_t *game) {
@@ -106,20 +98,35 @@ void moon_game_clamp_camera(moon_game_t *game) {
 #define clamp_camera moon_game_clamp_camera
 
 /* Screen regions, used to route pointer input (and to keep drags that start on UI off the map) */
-enum { UI_MAP = 0, UI_HUD, UI_RIBBON, UI_MINIMAP, UI_INSPECTOR, UI_CONFIRM, UI_MENU };
+enum { UI_MAP = 0, UI_HUD, UI_RIBBON, UI_MINIMAP, UI_INSPECTOR, UI_UNDO, UI_MENU };
+
+static bool undo_available(const moon_game_t *game) {
+    return game->undo_kind != MOON_UNDO_NONE && game->undo_ms > 0;
+}
 
 static int ui_region(const moon_game_t *game, int px, int py) {
     const moon_ui_layout_t *ui = &game->ui;
     if (game->menu_page != MOON_MENU_CLOSED) return UI_MENU;
-    if (game->pending_valid &&
-        (moon_ui_hit(&ui->confirm_ok, px, py) || moon_ui_hit(&ui->confirm_cancel, px, py))) {
-        return UI_CONFIRM;
-    }
+    if (undo_available(game) && moon_ui_hit(&ui->undo_btn, px, py)) return UI_UNDO;
     if (moon_ui_hit(&ui->ribbon_bar, px, py)) return UI_RIBBON;
     if (moon_ui_hit(&ui->minimap_zone, px, py)) return UI_MINIMAP;
-    if (game->has_selection && moon_ui_hit(&ui->inspector, px, py)) return UI_INSPECTOR;
+    if (game->panel_open && moon_ui_hit(&ui->inspector, px, py)) return UI_INSPECTOR;
     if (py < ui->hud.h) return UI_HUD;
     return UI_MAP;
+}
+
+/* Ribbon slots: 0 standby, 1..6 build, 7 recycle; then pause, speed, menu */
+enum { SLOT_STANDBY = 0, SLOT_RECYCLE = 7, SLOT_PAUSE = 8, SLOT_SPEED = 9, SLOT_MENU = 10 };
+
+static int ribbon_slot_at(const moon_game_t *game, int px, int py) {
+    const moon_ui_layout_t *ui = &game->ui;
+    for (int i = 0; i < MOON_UI_RIBBON_SLOTS; i++) {
+        if (moon_ui_hit(&ui->ribbon[i], px, py)) return i;
+    }
+    if (moon_ui_hit(&ui->pause_btn, px, py)) return SLOT_PAUSE;
+    if (moon_ui_hit(&ui->speed_btn, px, py)) return SLOT_SPEED;
+    if (moon_ui_hit(&ui->menu_btn, px, py)) return SLOT_MENU;
+    return -1;
 }
 
 static const moon_structure_t *find_structure(const moon_game_t *game, uint8_t id) {
@@ -128,7 +135,6 @@ static const moon_structure_t *find_structure(const moon_game_t *game, uint8_t i
 }
 
 static const moon_structure_t *selected_structure(const moon_game_t *game) {
-    if (!game->has_selection) return NULL;
     const moon_tile_t *t = moon_grid_get_tile_const(&game->grid, game->selected_tile_x, game->selected_tile_y);
     return t ? find_structure(game, t->structure_id) : NULL;
 }
@@ -139,142 +145,178 @@ static void notify(moon_game_t *game, const char *msg, uint32_t ms) {
 }
 
 static void update_hover(moon_game_t *game, int px, int py) {
-    /* Inspecting or recycling: a building's sprite hides the tile behind it, so
-     * the front-most sprite under the pointer wins over the ground tile. */
-    if (game->structs.selected_build_type == MOON_STRUCT_NONE) {
-        int id;
-        if (moon_structure_pick(&game->structs, &game->grid, px, py, game->cam_x, game->cam_y,
-                                game->screen_w, game->screen_h, &id)) {
-            game->hover_tile_x = game->structs.list[id].gx;
-            game->hover_tile_y = game->structs.list[id].gy;
-            game->hover_valid = true;
-            return;
-        }
+    /* A building's sprite hides the tile behind it, so the front-most sprite
+     * under the pointer wins over the ground tile (except while placing, where
+     * the ground tile behind a building is a valid target). */
+    int id;
+    if (game->structs.selected_build_type == MOON_STRUCT_NONE &&
+        moon_structure_pick(&game->structs, &game->grid, px, py, game->cam_x, game->cam_y,
+                            game->screen_w, game->screen_h, &id)) {
+        game->hover_tile_x = game->structs.list[id].gx;
+        game->hover_tile_y = game->structs.list[id].gy;
+        game->hover_valid = true;
+        return;
     }
     game->hover_valid = moon_grid_pick(&game->grid, px, py, game->cam_x, game->cam_y,
                                        game->screen_w, game->screen_h,
                                        &game->hover_tile_x, &game->hover_tile_y);
 }
 
-/* The highlighted tile of a touch session is the pending one, if any */
-static void touch_restore_hover(moon_game_t *game) {
-    if (game->pending_valid) {
-        game->hover_tile_x = game->pending_x;
-        game->hover_tile_y = game->pending_y;
-        game->hover_valid = true;
-    } else {
-        game->hover_valid = false;
+/* ---- Selection and view ---- */
+
+static void view_glide_to(moon_game_t *game, int gx, int gy) {
+    const moon_tile_t *t = moon_grid_get_tile_const(&game->grid, gx, gy);
+    game->glide_x = (gx - gy) * MOON_TILE_HALF_W;
+    game->glide_y = (gx + gy) * MOON_TILE_HALF_H - (t ? t->elevation : 0) * MOON_ELEVATION_STEP_PX;
+    game->glide = true;
+}
+
+static void select_tile(moon_game_t *game, int gx, int gy) {
+    if (gx < 0) gx = 0;
+    if (gy < 0) gy = 0;
+    if (gx >= MOON_MAP_SIZE_X) gx = MOON_MAP_SIZE_X - 1;
+    if (gy >= MOON_MAP_SIZE_Y) gy = MOON_MAP_SIZE_Y - 1;
+    game->selected_tile_x = gx;
+    game->selected_tile_y = gy;
+}
+
+/* Keys move the selection and the view follows it */
+static void move_selection(moon_game_t *game, int dgx, int dgy, int steps) {
+    select_tile(game, game->selected_tile_x + dgx * steps, game->selected_tile_y + dgy * steps);
+    view_glide_to(game, game->selected_tile_x, game->selected_tile_y);
+}
+
+static void select_next_structure(moon_game_t *game) {
+    const moon_structure_t *cur = selected_structure(game);
+    int start = cur ? cur->id : 0;
+    for (int n = 1; n <= MOON_MAX_STRUCTURES; n++) {
+        int i = (start + n) % MOON_MAX_STRUCTURES;
+        if (i != 0 && game->structs.list[i].id == i) {
+            select_tile(game, game->structs.list[i].gx, game->structs.list[i].gy);
+            game->panel_open = true;
+            view_glide_to(game, game->selected_tile_x, game->selected_tile_y);
+            return;
+        }
     }
+}
+
+/* Space: bring the view to the selection; when it is already there, to the lander */
+static void view_toggle_home(moon_game_t *game) {
+    int32_t sx, sy;
+    const moon_tile_t *t = moon_grid_get_tile_const(&game->grid, game->selected_tile_x, game->selected_tile_y);
+    moon_grid_to_screen(game->selected_tile_x, game->selected_tile_y, t ? t->elevation : 0,
+                        game->cam_x, game->cam_y, game->screen_w, game->screen_h, &sx, &sy);
+    bool centred = (sx - game->screen_w / 2) * (sx - game->screen_w / 2) +
+                   (sy - game->screen_h / 2) * (sy - game->screen_h / 2) < 40 * 40;
+    if (centred) view_glide_to(game, HOME_GX, HOME_GY);
+    else view_glide_to(game, game->selected_tile_x, game->selected_tile_y);
+}
+
+static void pan_by(moon_game_t *game, int dx, int dy) {
+    game->glide = false;
+    game->cam_x += dx;
+    game->cam_y += dy;
+    clamp_camera(game);
+}
+
+/* ---- Actions on the selected tile ---- */
+
+static void undo_record(moon_game_t *game, int kind, int type, int gx, int gy, int refund_kg) {
+    game->undo_kind = (uint8_t)kind;
+    game->undo_type = (uint8_t)type;
+    game->undo_x = (uint8_t)gx;
+    game->undo_y = (uint8_t)gy;
+    game->undo_refund_kg = refund_kg;
+    game->undo_ms = MOON_UNDO_WINDOW_MS;
+}
+
+static void add_regolith(moon_game_t *game, int kg) {
+    game->resources.regolith_stored_kg += fixed_from_int(kg);
+    fixed32_t cap = fixed_from_int(game->resources.regolith_capacity_kg);
+    if (game->resources.regolith_stored_kg > cap) game->resources.regolith_stored_kg = cap;
 }
 
 /* Recycle the structure on tile (gx, gy) for a 50% refund; the Lander is permanent. */
-static void recycle_structure_at(moon_game_t *game, int gx, int gy) {
+static bool recycle_at(moon_game_t *game, int gx, int gy) {
     const moon_tile_t *t = moon_grid_get_tile_const(&game->grid, gx, gy);
-    if (!t) return;
-    const moon_structure_t *s = find_structure(game, t->structure_id);
-    if (!s || s->type == MOON_STRUCT_LANDER) return;
+    const moon_structure_t *s = t ? find_structure(game, t->structure_id) : NULL;
+    if (!s) { notify(game, "NOTHING TO RECYCLE", 1500); return false; }
+    if (s->type == MOON_STRUCT_LANDER) { notify(game, "THE LANDER CANNOT BE RECYCLED", 2000); return false; }
 
-    const moon_structure_def_t *def = moon_structure_get_def((moon_structure_type_t)s->type);
-    if (def) {
-        game->resources.regolith_stored_kg += fixed_from_int(def->cost_regolith / 2);
-        fixed32_t cap = fixed_from_int(game->resources.regolith_capacity_kg);
-        if (game->resources.regolith_stored_kg > cap) game->resources.regolith_stored_kg = cap;
-    }
+    int type = s->type, ox = s->gx, oy = s->gy;
+    const moon_structure_def_t *def = moon_structure_get_def((moon_structure_type_t)type);
+    fixed32_t before = game->resources.regolith_stored_kg;
+    if (def) add_regolith(game, def->cost_regolith / 2);
+    int refund = fixed_to_int(game->resources.regolith_stored_kg - before);
     moon_structure_demolish(&game->grid, &game->structs, gx, gy);
     moon_resources_solve_power_grid(&game->grid, &game->structs);
+    undo_record(game, MOON_UNDO_RECYCLE, type, ox, oy, refund);
+    return true;
 }
 
-static bool try_place_selected_structure(moon_game_t *game) {
-    if (game->structs.selected_build_type == MOON_STRUCT_NONE || !game->hover_valid) return false;
-
-    const moon_structure_def_t *def = moon_structure_get_def(game->structs.selected_build_type);
+/* Can build button `slot` (1..6) act on the selected tile? */
+static bool build_possible(const moon_game_t *game, moon_structure_type_t type, const char **reason) {
+    const moon_structure_def_t *def = moon_structure_get_def(type);
     if (!def) return false;
-
-    fixed32_t cost = fixed_from_int(def->cost_regolith);
-    if (game->resources.regolith_stored_kg < cost) {
-        notify(game, "INSUFFICIENT REGOLITH!", 2500);
+    if (!moon_structure_can_place(&game->grid, &game->structs, type,
+                                  game->selected_tile_x, game->selected_tile_y, reason)) {
         return false;
     }
-
-    moon_structure_t *placed = moon_structure_place(&game->grid, &game->structs,
-                                                    game->structs.selected_build_type,
-                                                    game->hover_tile_x, game->hover_tile_y);
-    if (placed) {
-        game->resources.regolith_stored_kg -= cost;
-        moon_resources_solve_power_grid(&game->grid, &game->structs);
-        /* Deselect tool on placement so ghost does not obscure the newly built structure */
-        game->structs.selected_build_type = MOON_STRUCT_NONE;
-        return true;
+    if (game->resources.regolith_stored_kg < fixed_from_int(def->cost_regolith)) {
+        if (reason) *reason = "INSUFFICIENT REGOLITH!";
+        return false;
     }
+    return true;
+}
+
+static bool build_at_selection(moon_game_t *game, moon_structure_type_t type) {
     const char *reason = NULL;
-    (void)moon_structure_can_place(&game->grid, &game->structs,
-                                   game->structs.selected_build_type,
-                                   game->hover_tile_x, game->hover_tile_y, &reason);
-    if (reason) notify(game, reason, 2000);
-    return false;
-}
-
-/* ---- Tools and actions shared by mouse, touch and keyboard ---- */
-
-/* Ribbon slot of the active tool: 0 inspect, 1..6 build, 7 recycle */
-static int active_slot(const moon_game_t *game) {
-    if (game->demolish_tool_active) return 7;
-    for (int i = 0; i < 6; i++) {
-        if (game->structs.selected_build_type == s_build_buttons[i]) return i + 1;
+    if (!build_possible(game, type, &reason)) {
+        if (reason) notify(game, reason, 2000);
+        return false;
     }
-    return 0;
-}
-
-static void select_slot(moon_game_t *game, int slot) {
-    game->pending_valid = false;
-    game->structs.selected_build_type = MOON_STRUCT_NONE;
-    if (slot == 7) {
-        game->demolish_tool_active = !game->demolish_tool_active;
-    } else {
-        game->demolish_tool_active = false;
-        if (slot >= 1 && slot <= 6) game->structs.selected_build_type = s_build_buttons[slot - 1];
-    }
-    if (game->touch_input) game->hover_valid = false;
-}
-
-/* One map action on the highlighted tile: build, recycle or inspect */
-static void map_action(moon_game_t *game) {
-    if (game->demolish_tool_active) {
-        if (game->hover_valid) recycle_structure_at(game, game->hover_tile_x, game->hover_tile_y);
-    } else if (game->structs.selected_build_type != MOON_STRUCT_NONE) {
-        try_place_selected_structure(game);
-    } else if (game->hover_valid) {
-        game->selected_tile_x = game->hover_tile_x;
-        game->selected_tile_y = game->hover_tile_y;
-        game->has_selection = true;
-    } else {
-        game->has_selection = false;
-    }
-}
-
-static void confirm_pending(moon_game_t *game) {
-    if (!game->pending_valid) return;
-    game->hover_tile_x = game->pending_x;
-    game->hover_tile_y = game->pending_y;
-    game->hover_valid = true;
-    game->pending_valid = false;
-    map_action(game);
-    if (game->touch_input) game->hover_valid = false;
+    const moon_structure_def_t *def = moon_structure_get_def(type);
+    moon_structure_t *placed = moon_structure_place(&game->grid, &game->structs, type,
+                                                    game->selected_tile_x, game->selected_tile_y);
+    if (!placed) return false;
+    game->resources.regolith_stored_kg -= fixed_from_int(def->cost_regolith);
+    moon_resources_solve_power_grid(&game->grid, &game->structs);
+    undo_record(game, MOON_UNDO_BUILD, type, game->selected_tile_x, game->selected_tile_y, def->cost_regolith);
+    return true;
 }
 
 static void toggle_standby_selected(moon_game_t *game) {
     const moon_structure_t *s = selected_structure(game);
-    if (!s || s->type == MOON_STRUCT_LANDER) return;
+    if (!s) { notify(game, "NO BUILDING SELECTED", 1500); return; }
+    if (s->type == MOON_STRUCT_LANDER) { notify(game, "THE LANDER CANNOT STAND BY", 2000); return; }
     game->structs.list[s->id].active = !s->active;
     moon_structure_mark_dirty(&game->structs);
     moon_resources_solve_power_grid(&game->grid, &game->structs);
 }
 
-static void recycle_selected(moon_game_t *game) {
-    const moon_structure_t *s = selected_structure(game);
-    if (!s || s->type == MOON_STRUCT_LANDER) return;
-    recycle_structure_at(game, game->selected_tile_x, game->selected_tile_y);
-    game->has_selection = false;
+static void undo_last(moon_game_t *game) {
+    if (!undo_available(game)) return;
+    const moon_tile_t *t = moon_grid_get_tile_const(&game->grid, game->undo_x, game->undo_y);
+    const moon_structure_t *s = t ? find_structure(game, t->structure_id) : NULL;
+
+    if (game->undo_kind == MOON_UNDO_BUILD) {
+        if (!s || s->type != game->undo_type) { notify(game, "CANNOT UNDO", 1500); game->undo_kind = MOON_UNDO_NONE; return; }
+        moon_structure_demolish(&game->grid, &game->structs, game->undo_x, game->undo_y);
+        add_regolith(game, game->undo_refund_kg);
+    } else {
+        fixed32_t give_back = fixed_from_int(game->undo_refund_kg);
+        if (s || game->resources.regolith_stored_kg < give_back ||
+            !moon_structure_place(&game->grid, &game->structs, (moon_structure_type_t)game->undo_type,
+                                  game->undo_x, game->undo_y)) {
+            notify(game, "CANNOT UNDO", 1500);
+            game->undo_kind = MOON_UNDO_NONE;
+            return;
+        }
+        game->resources.regolith_stored_kg -= give_back;
+    }
+    moon_resources_solve_power_grid(&game->grid, &game->structs);
+    select_tile(game, game->undo_x, game->undo_y);
+    game->undo_kind = MOON_UNDO_NONE;
 }
 
 static void toggle_pause(moon_game_t *game) {
@@ -294,6 +336,63 @@ static void toggle_texture(moon_game_t *game) {
                                              : "TERRAIN: FLAT SHADED (FAST RETRO)", 2500);
 }
 
+/* ---- Brush: a build type or recycle that stays armed for repeated use ---- */
+
+static const moon_structure_type_t s_build_buttons[6] = {
+    MOON_STRUCT_SOLAR_ARRAY, MOON_STRUCT_BATTERY_BANK, MOON_STRUCT_HABITAT_DOME,
+    MOON_STRUCT_REGOLITH_PLANT, MOON_STRUCT_O2_EXTRACTOR, MOON_STRUCT_POWER_CONDUIT
+};
+
+/* Slot of the armed brush (1..7) or -1 */
+static int brush_slot(const moon_game_t *game) {
+    if (game->demolish_tool_active) return SLOT_RECYCLE;
+    for (int i = 0; i < 6; i++) {
+        if (game->structs.selected_build_type == s_build_buttons[i]) return i + 1;
+    }
+    return -1;
+}
+
+static void brush_set(moon_game_t *game, int slot) {
+    game->structs.selected_build_type = MOON_STRUCT_NONE;
+    game->demolish_tool_active = false;
+    if (slot == SLOT_RECYCLE) game->demolish_tool_active = true;
+    else if (slot >= 1 && slot <= 6) game->structs.selected_build_type = s_build_buttons[slot - 1];
+}
+
+static void brush_apply(moon_game_t *game) {
+    int slot = brush_slot(game);
+    if (slot == SLOT_RECYCLE) recycle_at(game, game->selected_tile_x, game->selected_tile_y);
+    else if (slot >= 1) build_at_selection(game, game->structs.selected_build_type);
+}
+
+/* A build / recycle / standby button or key. One press acts on the selected tile;
+ * pressing the same one again with nothing in between arms it as a brush, which
+ * then acts on every tile selected until it is cancelled. */
+static void press_slot(moon_game_t *game, int slot) {
+    if (slot == SLOT_STANDBY) {
+        game->last_slot = -1;
+        toggle_standby_selected(game);
+        return;
+    }
+    int armed = brush_slot(game);
+    bool again = (game->last_slot == slot);
+    game->last_slot = slot;
+
+    if (armed >= 0) {
+        brush_set(game, armed == slot ? -1 : slot);   /* switch or end the brush */
+        if (armed != slot) game->last_slot = -1;
+        return;
+    }
+    if (again) {
+        brush_set(game, slot);
+        game->last_slot = -1;
+        notify(game, "BRUSH ARMED - ESC ENDS", 2000);
+        return;
+    }
+    if (slot == SLOT_RECYCLE) recycle_at(game, game->selected_tile_x, game->selected_tile_y);
+    else build_at_selection(game, s_build_buttons[slot - 1]);
+}
+
 /* ---- Menu ---- */
 
 static int menu_item_count(const moon_game_t *game) {
@@ -303,9 +402,7 @@ static int menu_item_count(const moon_game_t *game) {
 static void menu_open(moon_game_t *game) {
     game->menu_page = MOON_MENU_MAIN;
     game->menu_sel = 0;
-    game->pending_valid = false;
     game->pointer_down = false;
-    game->keys_held = 0;
 }
 
 static void menu_activate(moon_game_t *game, int item) {
@@ -329,7 +426,7 @@ static void menu_activate(moon_game_t *game, int item) {
     }
 }
 
-/* Same on every device: back out of the innermost thing (menu page, tool, selection).
+/* Same on every device: back out of the innermost thing (menu page, brush, inspector).
  * Returns false when there was nothing to back out of. */
 static bool cancel_action(moon_game_t *game) {
     if (game->menu_page == MOON_MENU_CONFIRM_QUIT || game->menu_page == MOON_MENU_CONFIRM_RESTART) {
@@ -340,16 +437,12 @@ static bool cancel_action(moon_game_t *game) {
         game->menu_page = MOON_MENU_CLOSED;
         return true;
     }
-    if (game->structs.selected_build_type != MOON_STRUCT_NONE || game->demolish_tool_active ||
-        game->pending_valid) {
-        game->structs.selected_build_type = MOON_STRUCT_NONE;
-        game->demolish_tool_active = false;
-        game->pending_valid = false;
-        if (game->touch_input) game->hover_valid = false;
+    if (brush_slot(game) >= 0) {
+        brush_set(game, -1);
         return true;
     }
-    if (game->has_selection) {
-        game->has_selection = false;
+    if (game->panel_open) {
+        game->panel_open = false;
         return true;
     }
     return false;
@@ -360,60 +453,14 @@ static void escape_action(moon_game_t *game) {
     if (!cancel_action(game)) menu_open(game);
 }
 
-/* ---- Keyboard map cursor ---- */
-
-static void cursor_show(moon_game_t *game) {
-    game->hover_tile_x = game->cursor_x;
-    game->hover_tile_y = game->cursor_y;
-    game->hover_valid = true;
-}
-
-/* Bring the cursor tile into the middle of the view if it left the visible map area */
-static void cursor_scroll_into_view(moon_game_t *game) {
-    const moon_tile_t *t = moon_grid_get_tile_const(&game->grid, game->cursor_x, game->cursor_y);
-    int32_t sx, sy;
-    moon_grid_to_screen(game->cursor_x, game->cursor_y, t ? t->elevation : 0,
-                        game->cam_x, game->cam_y, game->screen_w, game->screen_h, &sx, &sy);
-    int top = game->ui.hud.h + 40;
-    int bottom = game->ui.ribbon_bar.y - 40;
-    if (sx < 60 || sx > game->screen_w - 60 || sy < top || sy > bottom) {
-        game->cam_x = (game->cursor_x - game->cursor_y) * MOON_TILE_HALF_W;
-        game->cam_y = (game->cursor_x + game->cursor_y) * MOON_TILE_HALF_H;
-        clamp_camera(game);
-    }
-}
-
-static void cursor_move(moon_game_t *game, int dgx, int dgy) {
-    if (!game->cursor_mode) {
-        game->cursor_mode = true;
-        if (game->hover_valid) {
-            game->cursor_x = game->hover_tile_x;
-            game->cursor_y = game->hover_tile_y;
-        }
-    }
-    int nx = game->cursor_x + dgx, ny = game->cursor_y + dgy;
-    if (nx < 0) nx = 0;
-    if (ny < 0) ny = 0;
-    if (nx >= MOON_MAP_SIZE_X) nx = MOON_MAP_SIZE_X - 1;
-    if (ny >= MOON_MAP_SIZE_Y) ny = MOON_MAP_SIZE_Y - 1;
-    game->cursor_x = nx;
-    game->cursor_y = ny;
-    cursor_scroll_into_view(game);
-    cursor_show(game);
-}
-
 static int32_t drag_limit_sq(const moon_game_t *game) {
     int32_t px = game->touch_input ? DRAG_LIMIT_TOUCH_PX : DRAG_LIMIT_MOUSE_PX;
     return px * px;
 }
 
-static void pan_by(moon_game_t *game, int dx, int dy) {
-    game->cam_x += dx;
-    game->cam_y += dy;
-    clamp_camera(game);
-}
+static void handle_key_down(moon_game_t *game, const moon_event_t *ev) {
+    uint32_t key = ev->key;
 
-static void handle_key_down(moon_game_t *game, uint32_t key) {
     /* Menu keys */
     if (game->menu_page != MOON_MENU_CLOSED) {
         int n = menu_item_count(game);
@@ -436,71 +483,49 @@ static void handle_key_down(moon_game_t *game, uint32_t key) {
         return;
     }
 
+    bool slot_key = (key >= MOON_KEY_1 && key <= MOON_KEY_6) || key == MOON_KEY_R || key == MOON_KEY_E;
+    if (!slot_key) game->last_slot = -1;
+    int steps = (ev->mods & MOON_MOD_SHIFT) ? 8 : 1;
+
     switch (key) {
     case MOON_KEY_ESCAPE:
     case MOON_KEY_Q:
         escape_action(game);
         break;
     case MOON_KEY_BACKSPACE:
+    case MOON_KEY_0:
         cancel_action(game);
         break;
 
-    case MOON_KEY_0: select_slot(game, 0); break;
     case MOON_KEY_1: case MOON_KEY_2: case MOON_KEY_3:
     case MOON_KEY_4: case MOON_KEY_5: case MOON_KEY_6:
-        select_slot(game, (int)(key - MOON_KEY_0));
+        press_slot(game, (int)(key - MOON_KEY_0));
         break;
-    case MOON_KEY_R: select_slot(game, 7); break;
-    case MOON_KEY_TAB: select_slot(game, (active_slot(game) + 1) % MOON_UI_RIBBON_SLOTS); break;
+    case MOON_KEY_R: press_slot(game, SLOT_RECYCLE); break;
+    case MOON_KEY_E: press_slot(game, SLOT_STANDBY); break;
+    case MOON_KEY_Z: undo_last(game); break;
 
     case MOON_KEY_T: toggle_texture(game); break;
     case MOON_KEY_P: toggle_pause(game); break;
     case MOON_KEY_MINUS: set_speed(game, game->speed / 2); break;
     case MOON_KEY_PLUS:  set_speed(game, game->speed * 2); break;
-    case MOON_KEY_E: toggle_standby_selected(game); break;
 
-    /* Arrows move the map cursor; Enter acts on it (or confirms a touch placement) */
-    case MOON_KEY_UP:    cursor_move(game, -1, -1); break;
-    case MOON_KEY_DOWN:  cursor_move(game,  1,  1); break;
-    case MOON_KEY_LEFT:  cursor_move(game, -1,  1); break;
-    case MOON_KEY_RIGHT: cursor_move(game,  1, -1); break;
+    /* Arrows and WASD move the selected tile; the view follows it */
+    case MOON_KEY_UP:    case MOON_KEY_W: move_selection(game, -1, -1, steps); break;
+    case MOON_KEY_DOWN:  case MOON_KEY_S: move_selection(game,  1,  1, steps); break;
+    case MOON_KEY_LEFT:  case MOON_KEY_A: move_selection(game, -1,  1, steps); break;
+    case MOON_KEY_RIGHT: case MOON_KEY_D: move_selection(game,  1, -1, steps); break;
+
+    case MOON_KEY_TAB: select_next_structure(game); break;
     case MOON_KEY_RETURN:
-        if (game->pending_valid) {
-            confirm_pending(game);
-        } else {
-            if (!game->cursor_mode) { game->cursor_mode = true; }
-            cursor_show(game);
-            map_action(game);
-        }
+        if (brush_slot(game) >= 0) brush_apply(game);
+        else game->panel_open = !game->panel_open;
         break;
-
-    /* WASD scrolls the view: continuous while held, or one step per key repeat */
-    case MOON_KEY_W: case MOON_KEY_A: case MOON_KEY_S: case MOON_KEY_D: {
-        uint8_t bit = (key == MOON_KEY_W) ? MOON_HELD_UP : (key == MOON_KEY_S) ? MOON_HELD_DOWN :
-                      (key == MOON_KEY_A) ? MOON_HELD_LEFT : MOON_HELD_RIGHT;
-        if (game->key_up_supported) {
-            game->keys_held |= bit;
-        } else {
-            pan_by(game, (bit == MOON_HELD_LEFT ? -KEY_STEP_PX : bit == MOON_HELD_RIGHT ? KEY_STEP_PX : 0),
-                         (bit == MOON_HELD_UP ? -KEY_STEP_PX : bit == MOON_HELD_DOWN ? KEY_STEP_PX : 0));
-        }
-        break;
-    }
     case MOON_KEY_SPACE:
-        camera_home(game);
+        view_toggle_home(game);
         break;
     default:
         break;
-    }
-}
-
-static void handle_key_up(moon_game_t *game, uint32_t key) {
-    switch (key) {
-    case MOON_KEY_W: game->keys_held &= (uint8_t)~MOON_HELD_UP; break;
-    case MOON_KEY_S: game->keys_held &= (uint8_t)~MOON_HELD_DOWN; break;
-    case MOON_KEY_A: game->keys_held &= (uint8_t)~MOON_HELD_LEFT; break;
-    case MOON_KEY_D: game->keys_held &= (uint8_t)~MOON_HELD_RIGHT; break;
-    default: break;
     }
 }
 
@@ -515,22 +540,21 @@ static void click_menu(moon_game_t *game, int px, int py) {
     }
 }
 
-static void click_ribbon(moon_game_t *game, int px, int py) {
-    const moon_ui_layout_t *ui = &game->ui;
-    for (int i = 0; i < MOON_UI_RIBBON_SLOTS; i++) {
-        if (moon_ui_hit(&ui->ribbon[i], px, py)) {
-            select_slot(game, i);
-            return;
-        }
+static void click_ribbon(moon_game_t *game, int slot) {
+    if (slot >= 0 && slot < MOON_UI_RIBBON_SLOTS) {
+        press_slot(game, slot);
+        return;
     }
-    if (moon_ui_hit(&ui->pause_btn, px, py)) toggle_pause(game);
-    else if (moon_ui_hit(&ui->speed_btn, px, py)) set_speed(game, game->speed >= 4 ? 1 : game->speed * 2);
-    else if (moon_ui_hit(&ui->menu_btn, px, py)) menu_open(game);
+    game->last_slot = -1;
+    if (slot == SLOT_PAUSE) toggle_pause(game);
+    else if (slot == SLOT_SPEED) set_speed(game, game->speed >= 4 ? 1 : game->speed * 2);
+    else if (slot == SLOT_MENU) menu_open(game);
 }
 
 static void click_minimap(moon_game_t *game, int px, int py) {
     int tx = px - game->ui.minimap.x;
     int ty = py - game->ui.minimap.y;
+    game->glide = false;
     game->cam_x = (tx - ty) * MOON_TILE_HALF_W;
     game->cam_y = (tx + ty) * MOON_TILE_HALF_H;
     clamp_camera(game);
@@ -539,28 +563,29 @@ static void click_minimap(moon_game_t *game, int px, int py) {
 static void click_inspector(moon_game_t *game, int px, int py) {
     const moon_ui_layout_t *ui = &game->ui;
     if (moon_ui_hit(&ui->insp_close, px, py)) {
-        game->has_selection = false;
+        game->panel_open = false;
         return;
     }
     const moon_structure_t *s = selected_structure(game);
     if (!s || s->type == MOON_STRUCT_LANDER) return;
-    if (moon_ui_hit(&ui->insp_recycle, px, py)) recycle_selected(game);
-    else if (moon_ui_hit(&ui->insp_standby, px, py)) toggle_standby_selected(game);
+    if (moon_ui_hit(&ui->insp_recycle, px, py)) {
+        recycle_at(game, game->selected_tile_x, game->selected_tile_y);
+        game->panel_open = false;
+    } else if (moon_ui_hit(&ui->insp_standby, px, py)) {
+        toggle_standby_selected(game);
+    }
 }
 
+/* A click or tap on the map selects the tile; with a brush armed it also acts there */
 static void click_map(moon_game_t *game) {
-    bool tool = game->demolish_tool_active || game->structs.selected_build_type != MOON_STRUCT_NONE;
-    if (game->touch_input && tool) {
-        /* Two steps on a finger: the tap positions the ghost, the confirm bar acts */
-        if (game->hover_valid) {
-            game->pending_valid = true;
-            game->pending_x = game->hover_tile_x;
-            game->pending_y = game->hover_tile_y;
-        }
-        return;
+    if (!game->hover_valid) return;
+    select_tile(game, game->hover_tile_x, game->hover_tile_y);
+    if (brush_slot(game) >= 0) {
+        brush_apply(game);
+    } else {
+        const moon_structure_t *s = selected_structure(game);
+        if (s) game->panel_open = true;
     }
-    map_action(game);
-    if (game->touch_input) game->hover_valid = false;
 }
 
 void moon_game_handle_event(moon_game_t *game, const moon_event_t *ev) {
@@ -572,20 +597,16 @@ void moon_game_handle_event(moon_game_t *game, const moon_event_t *ev) {
             break;
 
         case MOON_EVENT_KEY_DOWN:
-            handle_key_down(game, ev->key);
-            break;
-
-        case MOON_EVENT_KEY_UP:
-            handle_key_up(game, ev->key);
+            handle_key_down(game, ev);
             break;
 
         case MOON_EVENT_POINTER_LEAVE:
-            if (!game->touch_input && !game->cursor_mode) game->hover_valid = false;
+            if (!game->touch_input) game->hover_valid = false;
+            game->preview_slot = -1;
             break;
 
         case MOON_EVENT_POINTER_DOWN:
             game->touch_input = ev->touch != 0;
-            game->cursor_mode = false;
             game->pointer_down = true;
             game->was_dragging = false;
             game->pointer_x = ev->x;
@@ -596,8 +617,10 @@ void moon_game_handle_event(moon_game_t *game, const moon_event_t *ev) {
             game->drag_start_y = ev->y;
             game->cam_start_x = game->cam_x;
             game->cam_start_y = game->cam_y;
+            game->press_slot = (game->press_region == UI_RIBBON) ? (int8_t)ribbon_slot_at(game, ev->x, ev->y) : -1;
+            /* Holding a build button shows what it would build on the selected tile */
+            game->preview_slot = (game->press_slot >= 1 && game->press_slot <= 6) ? game->press_slot : -1;
             if (game->press_region == UI_MAP) update_hover(game, ev->x, ev->y);
-            else if (game->touch_input) touch_restore_hover(game);
             else game->hover_valid = false;
             break;
 
@@ -610,6 +633,7 @@ void moon_game_handle_event(moon_game_t *game, const moon_event_t *ev) {
             }
             game->pointer_down = false;
             game->touch_input = ev->touch != 0;
+            game->preview_slot = -1;
 
             int region = ui_region(game, ev->x, ev->y);
             if (region == UI_MAP) update_hover(game, ev->x, ev->y);
@@ -619,13 +643,15 @@ void moon_game_handle_event(moon_game_t *game, const moon_event_t *ev) {
                 if (ev->button == 3) {
                     cancel_action(game);
                 } else if (ev->button == 1 && !game->was_dragging) {
+                    if (region != UI_RIBBON) game->last_slot = -1;
                     switch (region) {
                     case UI_MENU:      click_menu(game, ev->x, ev->y); break;
-                    case UI_CONFIRM:
-                        if (moon_ui_hit(&game->ui.confirm_ok, ev->x, ev->y)) confirm_pending(game);
-                        else cancel_action(game);
+                    case UI_UNDO:      undo_last(game); break;
+                    case UI_RIBBON: {
+                        int slot = ribbon_slot_at(game, ev->x, ev->y);
+                        if (slot >= 0 && slot == game->press_slot) click_ribbon(game, slot);
                         break;
-                    case UI_RIBBON:    click_ribbon(game, ev->x, ev->y); break;
+                    }
                     case UI_MINIMAP:   click_minimap(game, ev->x, ev->y); break;
                     case UI_INSPECTOR: click_inspector(game, ev->x, ev->y); break;
                     case UI_HUD:       break;
@@ -633,39 +659,50 @@ void moon_game_handle_event(moon_game_t *game, const moon_event_t *ev) {
                     }
                 }
             }
-            if (game->touch_input) touch_restore_hover(game);
-            else if (region != UI_MAP) game->hover_valid = false;
+            game->press_slot = -1;
+            if (game->touch_input || region != UI_MAP) game->hover_valid = false;
             break;
         }
 
-        case MOON_EVENT_POINTER_MOVE:
+        case MOON_EVENT_POINTER_MOVE: {
             game->pointer_x = ev->x;
             game->pointer_y = ev->y;
+            game->touch_input = ev->touch != 0;
+            int region = ui_region(game, ev->x, ev->y);
             if (game->pointer_down) {
                 int32_t dx = ev->x - game->drag_start_x;
                 int32_t dy = ev->y - game->drag_start_y;
                 if (dx * dx + dy * dy > drag_limit_sq(game)) game->was_dragging = true;
                 /* Only a drag that started on the map (left, middle or touch) pans it */
                 if (game->press_region == UI_MAP && game->pointer_button != 3 && game->was_dragging) {
+                    game->glide = false;
                     game->cam_x = game->cam_start_x - dx;
                     game->cam_y = game->cam_start_y - dy;
                     clamp_camera(game);
                 }
-            }
-            game->touch_input = ev->touch != 0;
-            if (!game->touch_input) game->cursor_mode = false;
-            if (game->touch_input) {
-                if (game->pointer_down && game->press_region == UI_MAP && !game->was_dragging) {
-                    update_hover(game, ev->x, ev->y); /* finger preview */
-                } else {
-                    touch_restore_hover(game);
+                /* Sliding off a held build button cancels its preview */
+                if (game->press_region == UI_RIBBON) {
+                    int slot = ribbon_slot_at(game, ev->x, ev->y);
+                    game->preview_slot = (slot == game->press_slot && slot >= 1 && slot <= 6) ? (int8_t)slot : -1;
                 }
-            } else if (ui_region(game, ev->x, ev->y) == UI_MAP) {
+            } else if (!game->touch_input) {
+                int slot = (region == UI_RIBBON) ? ribbon_slot_at(game, ev->x, ev->y) : -1;
+                game->preview_slot = (slot >= 1 && slot <= 6) ? (int8_t)slot : -1;
+            }
+            if (game->touch_input) {
+                /* A finger on the map previews under itself; once lifted nothing stays lit */
+                if (game->pointer_down && game->press_region == UI_MAP && !game->was_dragging) {
+                    update_hover(game, ev->x, ev->y);
+                } else {
+                    game->hover_valid = false;
+                }
+            } else if (region == UI_MAP) {
                 update_hover(game, ev->x, ev->y);
             } else {
                 game->hover_valid = false;
             }
             break;
+        }
 
         case MOON_EVENT_SCROLL:
             /* The wheel pans the map (two-finger scroll on a trackpad) */
@@ -689,14 +726,22 @@ void moon_game_update(moon_game_t *game, uint32_t delta_ms) {
         if (delta_ms >= game->notify_timer_ms) game->notify_timer_ms = 0;
         else game->notify_timer_ms -= delta_ms;
     }
+    if (game->undo_ms > 0) {
+        game->undo_ms = (delta_ms >= game->undo_ms) ? 0 : game->undo_ms - delta_ms;
+        if (game->undo_ms == 0) game->undo_kind = MOON_UNDO_NONE;
+    }
 
-    /* Held scroll keys work while paused too */
-    if (game->keys_held) {
-        int step = (int)(SCROLL_PX_PER_S * delta_ms / 1000);
-        if (step < 1) step = 1;
-        pan_by(game,
-               ((game->keys_held & MOON_HELD_RIGHT) ? step : 0) - ((game->keys_held & MOON_HELD_LEFT) ? step : 0),
-               ((game->keys_held & MOON_HELD_DOWN) ? step : 0) - ((game->keys_held & MOON_HELD_UP) ? step : 0));
+    /* The view eases toward a keyboard-selected tile (and works while paused) */
+    if (game->glide) {
+        int32_t dx = game->glide_x - game->cam_x, dy = game->glide_y - game->cam_y;
+        int32_t step_x = (delta_ms >= 100) ? dx : dx * (int32_t)delta_ms / 100;
+        int32_t step_y = (delta_ms >= 100) ? dy : dy * (int32_t)delta_ms / 100;
+        if (step_x == 0 && dx != 0) step_x = dx > 0 ? 1 : -1;
+        if (step_y == 0 && dy != 0) step_y = dy > 0 ? 1 : -1;
+        game->cam_x += step_x;
+        game->cam_y += step_y;
+        clamp_camera(game);
+        if (game->cam_x == game->glide_x && game->cam_y == game->glide_y) game->glide = false;
     }
 
     if (game->paused || game->menu_page != MOON_MENU_CLOSED) return;
@@ -710,7 +755,7 @@ void moon_game_update(moon_game_t *game, uint32_t delta_ms) {
 }
 
 static void render_inspector_panel(const moon_game_t *game, const moon_surface_t *surf) {
-    if (!game->has_selection) return;
+    if (!game->panel_open) return;
 
     const moon_ui_layout_t *ui = &game->ui;
     int ip_x = ui->inspector.x, ip_y = ui->inspector.y, ip_w = ui->inspector.w, ip_h = ui->inspector.h;
@@ -843,32 +888,35 @@ static void render_build_ribbon(const moon_game_t *game, const moon_surface_t *s
     moon_blit_line(surf, 0, ui->ribbon_bar.y, ui->ribbon_bar.w - 1, ui->ribbon_bar.y, COLOR_GOLD_FOIL);
 
     static const char *labels[8] = {
-        "0:INSPECT",
+        "E:STANDBY",
         "1:SOLAR 10t", "2:BATT  20t", "3:HAB   50t",
         "4:SINT  15t", "5:OXY   25t", "6:CABLE  2t",
         "R:RECYCLE"
     };
 
     static const char *labels_narrow[8] = {
-        "0:INSP",
+        "E:STBY",
         "1:SOL", "2:BAT", "3:HAB",
         "4:SINT", "5:OXY", "6:WIRE",
-        "R:DEM"
+        "R:RECY"
     };
 
-    int active = active_slot(game);
+    const moon_structure_t *sel = selected_structure(game);
+    int armed = brush_slot(game);
     for (int i = 0; i < MOON_UI_RIBBON_SLOTS; i++) {
-        bool selected = (i == active);
-        bool can_afford = true;
-        if (i >= 1 && i <= 6) {
-            const moon_structure_def_t *def = moon_structure_get_def(s_build_buttons[i - 1]);
-            can_afford = def && (game->resources.regolith_stored_kg >= fixed_from_int(def->cost_regolith));
-        }
+        /* Enabled when the button could act on the selected tile right now */
+        bool enabled;
+        if (i >= 1 && i <= 6) enabled = build_possible(game, s_build_buttons[i - 1], NULL);
+        else enabled = (sel && sel->type != MOON_STRUCT_LANDER);
+        bool selected = (i == armed);
 
-        uint16_t bg = selected ? (i == 7 ? RGB565(55, 20, 20) : RGB565(30, 45, 60)) : RGB565(20, 24, 30);
-        uint16_t border = selected ? (i == 7 ? COLOR_ALERT_RED : COLOR_LASER_CYAN) : (can_afford ? RGB565(60, 65, 75) : RGB565(35, 38, 45));
-        uint16_t text_col = selected ? COLOR_LUNAR_WHITE : (can_afford ? RGB565(170, 175, 185) : RGB565(80, 85, 95));
-        draw_button(surf, &ui->ribbon[i], narrow ? labels_narrow[i] : labels[i], bg, border, text_col);
+        uint16_t bg = selected ? (i == SLOT_RECYCLE ? RGB565(55, 20, 20) : RGB565(30, 45, 60)) : RGB565(20, 24, 30);
+        uint16_t border = selected ? (i == SLOT_RECYCLE ? COLOR_ALERT_RED : COLOR_LASER_CYAN)
+                                   : (enabled ? RGB565(60, 65, 75) : RGB565(35, 38, 45));
+        uint16_t text_col = selected ? COLOR_LUNAR_WHITE : (enabled ? RGB565(170, 175, 185) : RGB565(80, 85, 95));
+        const char *label = narrow ? labels_narrow[i] : labels[i];
+        if (i == SLOT_STANDBY && sel && !sel->active) label = narrow ? "E:ACT" : "E:ACTIVATE";
+        draw_button(surf, &ui->ribbon[i], label, bg, border, text_col);
     }
 
     /* Pause, speed and menu */
@@ -904,14 +952,13 @@ static void render_clock(const moon_game_t *game, const moon_surface_t *surf) {
     moon_blit_fill_rect(surf, hx - 1, hy - 1, 3, 3, game->resources.is_night ? COLOR_LASER_CYAN : COLOR_GOLD_FOIL);
 }
 
-static void render_confirm_bar(const moon_game_t *game, const moon_surface_t *surf) {
-    if (!game->pending_valid) return;
-    const moon_ui_layout_t *ui = &game->ui;
-    bool demo = game->demolish_tool_active;
-    draw_button(surf, &ui->confirm_ok, demo ? "RECYCLE" : "BUILD",
-                demo ? RGB565(55, 20, 20) : RGB565(20, 55, 30),
-                demo ? COLOR_ALERT_RED : COLOR_STATUS_GREEN, COLOR_LUNAR_WHITE);
-    draw_button(surf, &ui->confirm_cancel, "CANCEL", RGB565(30, 32, 40), RGB565(110, 115, 125), COLOR_LUNAR_WHITE);
+static void render_undo_button(const moon_game_t *game, const moon_surface_t *surf) {
+    if (!undo_available(game)) return;
+    unsigned secs = (game->undo_ms + 999) / 1000; /* 1..10 */
+    char label[] = "Z:UNDO   s";
+    label[7] = (secs >= 10) ? '1' : ' ';
+    label[8] = (char)('0' + secs % 10);
+    draw_button(surf, &game->ui.undo_btn, label, RGB565(35, 30, 15), COLOR_ENERGY_YELLOW, COLOR_LUNAR_WHITE);
 }
 
 static void render_menu(const moon_game_t *game, const moon_surface_t *surf) {
@@ -1022,34 +1069,43 @@ void moon_game_render(moon_game_t *game, uint16_t *fb, int width, int height, in
                                game->cam_x, game->cam_y);
 
     /* 3. Selection frame around the selected structure's footprint (or tile) */
-    if (game->has_selection) {
-        render_selection_frame(game, &surf);
-    }
+    render_selection_frame(game, &surf);
 
-    /* 4. Placement ghost or demolish marker */
-    if (game->structs.selected_build_type != MOON_STRUCT_NONE && game->hover_valid) {
-        moon_structure_render_ghost(&game->structs, &game->grid, &surf,
-                                    game->cam_x, game->cam_y,
-                                    game->hover_tile_x, game->hover_tile_y);
-    } else if (game->demolish_tool_active && game->hover_valid) {
-        /* Render bulldozer / demolish target indicator */
-        const moon_tile_t *ht = moon_grid_get_tile_const(&game->grid, game->hover_tile_x, game->hover_tile_y);
-        int elev = ht ? ht->elevation : 0;
-        int32_t hsx, hsy;
-        moon_grid_to_screen(game->hover_tile_x, game->hover_tile_y, elev, game->cam_x, game->cam_y, width, height, &hsx, &hsy);
-        moon_blit_iso_tile(&surf, hsx, hsy, MOON_TILE_HALF_W, MOON_TILE_HALF_H, moon_color_dim(COLOR_ALERT_RED, 120), COLOR_ALERT_RED);
-        moon_blit_line(&surf, hsx - 10, hsy - 5, hsx + 10, hsy + 5, COLOR_LUNAR_WHITE);
-        moon_blit_line(&surf, hsx - 10, hsy + 5, hsx + 10, hsy - 5, COLOR_LUNAR_WHITE);
+    /* 4. Ghost of what the armed brush or the held / hovered build button would build,
+     * and the recycle brush's target marker. A brush follows the pointer; a button
+     * preview shows on the selected tile. */
+    {
+        moon_structure_type_t gtype = game->structs.selected_build_type;
+        bool brush = (gtype != MOON_STRUCT_NONE);
+        if (!brush && game->preview_slot >= 1 && game->preview_slot <= 6) gtype = s_build_buttons[game->preview_slot - 1];
+        int tx = game->selected_tile_x, ty = game->selected_tile_y;
+        if ((brush || game->demolish_tool_active) && game->hover_valid) {
+            tx = game->hover_tile_x;
+            ty = game->hover_tile_y;
+        }
+        if (gtype != MOON_STRUCT_NONE) {
+            moon_structure_render_ghost(&game->structs, &game->grid, &surf, game->cam_x, game->cam_y,
+                                        gtype, tx, ty);
+        } else if (game->demolish_tool_active) {
+            const moon_tile_t *ht = moon_grid_get_tile_const(&game->grid, tx, ty);
+            int32_t hsx, hsy;
+            moon_grid_to_screen(tx, ty, ht ? ht->elevation : 0, game->cam_x, game->cam_y, width, height, &hsx, &hsy);
+            moon_blit_iso_tile(&surf, hsx, hsy, MOON_TILE_HALF_W, MOON_TILE_HALF_H, moon_color_dim(COLOR_ALERT_RED, 120), COLOR_ALERT_RED);
+            moon_blit_line(&surf, hsx - 10, hsy - 5, hsx + 10, hsy + 5, COLOR_LUNAR_WHITE);
+            moon_blit_line(&surf, hsx - 10, hsy + 5, hsx + 10, hsy - 5, COLOR_LUNAR_WHITE);
+        }
     }
 
     /* 5. Render Bottom-Right Minimap Radar */
     moon_grid_render_minimap(&game->grid, &surf, game->ui.minimap.x, game->ui.minimap.y,
                              game->ui.minimap.w, game->ui.minimap.h,
                              game->cam_x, game->cam_y);
+    moon_blit_fill_rect(&surf, game->ui.minimap.x + game->selected_tile_x - 1,
+                        game->ui.minimap.y + game->selected_tile_y - 1, 3, 3, COLOR_LUNAR_WHITE);
 
     /* 6. Render Bottom Build Ribbon */
     render_build_ribbon(game, &surf);
-    render_confirm_bar(game, &surf);
+    render_undo_button(game, &surf);
 
     /* 7. Render Top HUD Bar (Title, Day/Night Clock, Power, O2, H2O, Materials, Crew) */
     const moon_resources_t *res = &game->resources;
@@ -1099,25 +1155,21 @@ void moon_game_render(moon_game_t *game, uint16_t *fb, int width, int height, in
 
     render_clock(game, &surf);
 
-    /* Right HUD Info (Hover Tile Coordinates & Resource Inspector) */
-    if (game->hover_valid) {
-        const moon_tile_t *ht = moon_grid_get_tile_const(&game->grid,
-                                                         game->hover_tile_x,
-                                                         game->hover_tile_y);
+    /* Tile readout: under the mouse, else the selected tile */
+    {
+        bool hov = game->hover_valid;
+        int bx = hov ? game->hover_tile_x : game->selected_tile_x;
+        int by = hov ? game->hover_tile_y : game->selected_tile_y;
+        const moon_tile_t *ht = moon_grid_get_tile_const(&game->grid, bx, by);
         const char *tname = ht ? get_terrain_name((moon_terrain_type_t)ht->terrain) : "VOID";
-        int elev = ht ? ht->elevation : 0;
-        int rval = ht ? ht->resource_val : 0;
-
         const moon_ui_rect_t *hb = &game->ui.hover_badge;
-        int badge_x = hb->x, badge_y = hb->y;
         int badge_w = (22 + (int)strlen(tname)) * MOON_FONT_W + 8; /* "[xx,yy] NAME E:n R:nnn%" */
-        moon_blit_fill_rect(&surf, badge_x, badge_y, badge_w, hb->h, RGB565(26, 30, 36));
-        moon_blit_rect_outline(&surf, badge_x, badge_y, badge_w, hb->h, COLOR_LASER_CYAN);
-
-        moon_blit_text_fmt(&surf, badge_x + 4, badge_y + 2, COLOR_LASER_CYAN, 0, true,
-                           "[%02d,%02d] %s E:%d R:%d%%",
-                           game->hover_tile_x, game->hover_tile_y,
-                           tname, elev, rval);
+        uint16_t col = hov ? COLOR_LASER_CYAN : COLOR_GOLD_FOIL;
+        moon_blit_fill_rect(&surf, hb->x, hb->y, badge_w, hb->h, RGB565(26, 30, 36));
+        moon_blit_rect_outline(&surf, hb->x, hb->y, badge_w, hb->h, col);
+        moon_blit_text_fmt(&surf, hb->x + 4, hb->y + 2, col, 0, true,
+                           "[%02d,%02d] %s E:%d R:%d%%", bx, by, tname,
+                           ht ? ht->elevation : 0, ht ? ht->resource_val : 0);
     }
 
     /* 8. Active Life Support / Crisis Warning Ticker Banner */

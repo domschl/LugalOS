@@ -4,6 +4,7 @@
  * play sequence by mouse, touch and keyboard. Headless (no SDL). */
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "moon_game.h"
 #include "moon_sprites.h"
@@ -15,6 +16,7 @@ static void fresh(void) {
     assert(moon_game_init(&g, 1024, 600));
 }
 
+static int selected_structure_type(void);
 static int s_touch; /* 1 while the test plays with a finger */
 
 static void ptr(moon_event_type_t type, int x, int y, int button) {
@@ -28,13 +30,6 @@ static void key(uint32_t k) {
     moon_event_t ev;
     memset(&ev, 0, sizeof(ev));
     ev.type = MOON_EVENT_KEY_DOWN; ev.key = k;
-    moon_game_handle_event(&g, &ev);
-}
-
-static void key_up(uint32_t k) {
-    moon_event_t ev;
-    memset(&ev, 0, sizeof(ev));
-    ev.type = MOON_EVENT_KEY_UP; ev.key = k;
     moon_game_handle_event(&g, &ev);
 }
 
@@ -185,7 +180,7 @@ static void test_pointer_routing(void) {
     /* Click on the HUD bar must not select or place */
     fresh();
     click(500, 10);
-    assert(!g.has_selection);
+    assert(!g.panel_open && g.selected_tile_x == 32 && g.selected_tile_y == 32);
 
     g.structs.selected_build_type = MOON_STRUCT_SOLAR_ARRAY;
     fixed32_t reg = g.resources.regolith_stored_kg;
@@ -218,12 +213,12 @@ static void test_pointer_routing(void) {
     for (int w = 0; w < 2; w++) {
         memset(&g, 0, sizeof(g));
         assert(moon_game_init(&g, w ? 1024 : 640, w ? 600 : 360));
-        g.has_selection = true;
+        g.panel_open = true;
         g.selected_tile_x = 33; g.selected_tile_y = 32;
         int ip_w = w ? 260 : 220;
         int ip_x = g.screen_w - ip_w - 10;
         click(ip_x + ip_w - 14, 40 + 12);
-        assert(!g.has_selection);
+        assert(!g.panel_open);
     }
     printf("[test] Pointer routing (HUD click-through, UI-started drags, inspector): PASS\n");
 }
@@ -252,6 +247,11 @@ static void render_scene(moon_surface_t *surf) {
 static void tile_screen(int gx, int gy, int32_t *sx, int32_t *sy) {
     const moon_tile_t *t = moon_grid_get_tile_const(&g.grid, gx, gy);
     moon_grid_to_screen(gx, gy, t->elevation, g.cam_x, g.cam_y, 1024, 600, sx, sy);
+}
+
+static int selected_structure_type(void) {
+    const moon_tile_t *t = moon_grid_get_tile_const(&g.grid, g.selected_tile_x, g.selected_tile_y);
+    return t && t->structure_id ? g.structs.list[t->structure_id].type : -1;
 }
 
 static void test_depth_order(void) {
@@ -347,7 +347,7 @@ static void test_sprite_pick(void) {
     assert(id == s->id);
 
     click(px, py);
-    assert(g.has_selection && g.selected_tile_x == 30 && g.selected_tile_y == 30);
+    assert(g.panel_open && g.selected_tile_x == 30 && g.selected_tile_y == 30);
 
     /* With a build tool the ground tile is still the target */
     ptr(MOON_EVENT_POINTER_MOVE, px, py, 0);
@@ -406,7 +406,7 @@ static void check_layout(int w, int h) {
     moon_ui_layout(&ui, w, h);
     const moon_ui_rect_t *touch[] = {
         &ui.pause_btn, &ui.speed_btn, &ui.menu_btn, &ui.insp_recycle, &ui.insp_standby,
-        &ui.confirm_ok, &ui.confirm_cancel, &ui.menu_item[0], &ui.menu_item[1],
+        &ui.undo_btn, &ui.menu_item[0], &ui.menu_item[1],
         &ui.menu_item[2], &ui.menu_item[3], &ui.minimap_zone
     };
     for (unsigned i = 0; i < sizeof(touch) / sizeof(touch[0]); i++) {
@@ -426,8 +426,7 @@ static void check_layout(int w, int h) {
     assert(!overlap(&ui.inspector, &ui.hud));
     assert(!overlap(&ui.inspector, &ui.ribbon_bar));
     assert(!overlap(&ui.minimap_zone, &ui.ribbon_bar));
-    assert(!overlap(&ui.confirm_ok, &ui.confirm_cancel));
-    assert(!overlap(&ui.confirm_ok, &ui.ribbon_bar) && !overlap(&ui.confirm_cancel, &ui.minimap_zone));
+    assert(!overlap(&ui.undo_btn, &ui.ribbon_bar) && !overlap(&ui.undo_btn, &ui.minimap_zone));
     /* Inspector close button lies inside the panel, actions below the body text */
     assert(ui.insp_close.x + ui.insp_close.w <= ui.inspector.x + ui.inspector.w);
     assert(ui.insp_recycle.y + ui.insp_recycle.h <= ui.inspector.y + ui.inspector.h);
@@ -488,48 +487,235 @@ static void test_clock_and_pause(void) {
     printf("[test] Lunar clock mapping, pause and speed: PASS\n");
 }
 
-/* One play sequence, three input devices. Returns the final regolith in 1/16 kg. */
-typedef struct { int regolith, structures; bool tile_free, standby_seen; } outcome_t;
+static int regolith(void) { return fixed_to_int(g.resources.regolith_stored_kg); }
+
+static const moon_structure_t *struct_at(int gx, int gy) {
+    const moon_tile_t *t = moon_grid_get_tile_const(&g.grid, gx, gy);
+    return t && t->structure_id ? &g.structs.list[t->structure_id] : NULL;
+}
+
+/* A selected tile always exists; build buttons act on it directly */
+static void test_select_first(void) {
+    fresh();
+    assert(g.selected_tile_x == 32 && g.selected_tile_y == 32 && !g.panel_open);
+
+    /* Move the selection with arrows and WASD; the view follows */
+    key(MOON_KEY_UP);                      /* (-1,-1) */
+    key(MOON_KEY_W);
+    assert(g.selected_tile_x == 30 && g.selected_tile_y == 30);
+    key(MOON_KEY_RIGHT);
+    assert(g.selected_tile_x == 31 && g.selected_tile_y == 29);
+    key(MOON_KEY_A);
+    assert(g.selected_tile_x == 30 && g.selected_tile_y == 30);
+    for (int i = 0; i < 100; i++) moon_game_update(&g, 16);
+    int32_t sx, sy;
+    tile_screen(30, 30, &sx, &sy);
+    assert(abs(sx - 512) <= 2 && abs(sy - 300) <= 18); /* centred (elevation shifts it) */
+
+    /* 1 builds a solar array on the selection, nothing else needed */
+    int before = regolith();
+    key(MOON_KEY_1);
+    assert(struct_at(30, 30) && struct_at(30, 30)->type == MOON_STRUCT_SOLAR_ARRAY);
+    assert(before - regolith() == 10);
+
+    /* An occupied tile rejects a build: nothing changes, the reason is shown */
+    before = regolith();
+    key(MOON_KEY_2);
+    assert(struct_at(30, 30)->type == MOON_STRUCT_SOLAR_ARRAY && regolith() == before);
+    assert(g.notify_msg != NULL && g.notify_timer_ms > 0);
+    key(MOON_KEY_7); /* unmapped */
+
+    /* Shift moves 8 tiles and the selection stays on the map */
+    moon_event_t ev; memset(&ev, 0, sizeof(ev));
+    ev.type = MOON_EVENT_KEY_DOWN; ev.key = MOON_KEY_DOWN; ev.mods = MOON_MOD_SHIFT;
+    moon_game_handle_event(&g, &ev);
+    assert(g.selected_tile_x == 38 && g.selected_tile_y == 38);
+    for (int i = 0; i < 10; i++) { ev.key = MOON_KEY_UP; moon_game_handle_event(&g, &ev); }
+    assert(g.selected_tile_x == 0 && g.selected_tile_y == 0);
+
+    /* Tab jumps to the next building and opens the inspector; Enter toggles it */
+    key(MOON_KEY_TAB);
+    assert(g.panel_open && selected_structure_type() == MOON_STRUCT_LANDER);
+    key(MOON_KEY_TAB);
+    assert(selected_structure_type() != MOON_STRUCT_LANDER);
+    key(MOON_KEY_RETURN);
+    assert(!g.panel_open);
+    key(MOON_KEY_RETURN);
+    assert(g.panel_open);
+
+    /* Space brings the view to the selection, and from there home to the lander */
+    g.cam_x = 0; g.cam_y = 0;
+    key(MOON_KEY_SPACE);
+    for (int i = 0; i < 100; i++) moon_game_update(&g, 16);
+    tile_screen(g.selected_tile_x, g.selected_tile_y, &sx, &sy);
+    assert(abs(sx - 512) <= 2);
+    key(MOON_KEY_SPACE);
+    for (int i = 0; i < 100; i++) moon_game_update(&g, 16);
+    tile_screen(32, 32, &sx, &sy);
+    assert(abs(sx - 512) <= 2);
+    printf("[test] Select-first: move selection, act on it, Tab, Shift jump, Space: PASS\n");
+}
+
+static void test_standby_recycle_undo(void) {
+    fresh();
+    key(MOON_KEY_UP); key(MOON_KEY_UP);                /* (30,30) */
+    int start = regolith();
+    key(MOON_KEY_4);                                   /* Sinterer, 15 kg */
+    assert(regolith() == start - 15 && struct_at(30, 30));
+
+    /* E toggles standby on the selection; the ribbon says what a press will do */
+    key(MOON_KEY_E);
+    assert(!struct_at(30, 30)->active);
+    key(MOON_KEY_E);
+    assert(struct_at(30, 30)->active);
+
+    /* Undo within the window: structure gone, full cost back */
+    key(MOON_KEY_Z);
+    assert(!struct_at(30, 30) && regolith() == start);
+
+    /* Recycle gives half back, and undo restores the building for that half */
+    key(MOON_KEY_4);
+    key(MOON_KEY_R);
+    assert(!struct_at(30, 30) && regolith() == start - 15 + 7);
+    key(MOON_KEY_Z);
+    assert(struct_at(30, 30) && regolith() == start - 15);
+
+    /* The window closes */
+    key(MOON_KEY_R);
+    assert(!struct_at(30, 30));
+    for (int i = 0; i < 12 * 1000 / 50; i++) moon_game_update(&g, 50);
+    key(MOON_KEY_Z);
+    assert(!struct_at(30, 30));
+
+    /* Nothing to recycle on bare ground and never the lander */
+    int r0 = regolith();
+    key(MOON_KEY_R);
+    assert(regolith() == r0);
+    g.selected_tile_x = 32; g.selected_tile_y = 32;
+    key(MOON_KEY_R);
+    assert(struct_at(32, 32) && struct_at(32, 32)->type == MOON_STRUCT_LANDER);
+    key(MOON_KEY_E);
+    assert(struct_at(32, 32)->active);
+    printf("[test] Standby, recycle, undo window: PASS\n");
+}
+
+static void test_brush(void) {
+    fresh();
+    g.resources.regolith_stored_kg = fixed_from_int(200);
+    g.selected_tile_x = 30; g.selected_tile_y = 28;
+
+    /* Pressing the same build key twice with nothing between arms it as a brush */
+    key(MOON_KEY_6);                       /* builds a conduit */
+    assert(struct_at(30, 28));
+    key(MOON_KEY_6);                       /* second press: brush, builds nothing */
+    assert(g.structs.selected_build_type == MOON_STRUCT_POWER_CONDUIT);
+    int n = g.structs.count;
+    key(MOON_KEY_RIGHT);                   /* (31,27) */
+    key(MOON_KEY_RETURN);                  /* Enter applies the brush there */
+    assert(g.structs.count == n + 1 && struct_at(31, 27));
+    click_tile(29, 29);                    /* a click selects and applies */
+    assert(g.structs.count == n + 2 && struct_at(29, 29));
+    assert(g.structs.selected_build_type == MOON_STRUCT_POWER_CONDUIT); /* still armed */
+
+    /* Another key between the two presses means no brush */
+    key(MOON_KEY_0);
+    assert(g.structs.selected_build_type == MOON_STRUCT_NONE);
+    key(MOON_KEY_DOWN);
+    key(MOON_KEY_6);
+    key(MOON_KEY_DOWN);
+    key(MOON_KEY_6);
+    assert(g.structs.selected_build_type == MOON_STRUCT_NONE);
+
+    /* Recycle brush: the first R recycles the selected conduit, the second arms the
+     * brush, and a click then removes what it hits */
+    int cnt = g.structs.count;
+    key(MOON_KEY_R);
+    assert(g.structs.count == cnt - 1);
+    key(MOON_KEY_R);
+    assert(g.demolish_tool_active);
+    click_tile(29, 29);
+    assert(!struct_at(29, 29) && g.structs.count == cnt - 2);
+    key(MOON_KEY_ESCAPE);
+    assert(!g.demolish_tool_active && g.menu_page == MOON_MENU_CLOSED);
+    printf("[test] Brush: double press arms, Enter/click applies, ESC ends: PASS\n");
+}
+
+/* Ribbon states: a build button is live only where it could act */
+static void test_button_validity_and_preview(void) {
+    fresh();
+    /* Selection on the lander: nothing can be built there */
+    for (int i = 1; i <= 6; i++) {
+        key(MOON_KEY_0 + i);
+        assert(struct_at(32, 32)->type == MOON_STRUCT_LANDER && g.structs.count == 4);
+        g.last_slot = -1;
+    }
+
+    /* Hovering a build button previews it on the selection; leaving clears it */
+    g.selected_tile_x = 30; g.selected_tile_y = 30;
+    ptr(MOON_EVENT_POINTER_MOVE, g.ui.ribbon[3].x + 5, g.ui.ribbon[3].y + 5, 0);
+    assert(g.preview_slot == 3);
+    ptr(MOON_EVENT_POINTER_MOVE, 500, 300, 0);
+    assert(g.preview_slot == -1);
+
+    /* Touch peek: hold a button, slide off, release: nothing built; release on it: built */
+    s_touch = 1;
+    int cx = g.ui.ribbon[1].x + 5, cy = g.ui.ribbon[1].y + 5;
+    ptr(MOON_EVENT_POINTER_DOWN, cx, cy, 1);
+    assert(g.preview_slot == 1);
+    ptr(MOON_EVENT_POINTER_MOVE, cx, cy - 120, 1);
+    assert(g.preview_slot == -1);
+    ptr(MOON_EVENT_POINTER_UP, cx, cy - 120, 1);
+    assert(g.structs.count == 4);
+    ptr(MOON_EVENT_POINTER_DOWN, cx, cy, 1);
+    ptr(MOON_EVENT_POINTER_UP, cx, cy, 1);
+    assert(struct_at(30, 30) && g.structs.count == 5);
+    s_touch = 0;
+
+    /* Too poor: refused with a reason, nothing built */
+    g.resources.regolith_stored_kg = fixed_from_int(5);
+    g.selected_tile_x = 29; g.selected_tile_y = 29;
+    g.last_slot = -1;
+    key(MOON_KEY_3);
+    assert(g.structs.count == 5);
+    printf("[test] Button validity, hover preview, touch peek: PASS\n");
+}
+
+/* One play sequence, three input devices; each ends on identical state */
+typedef struct { int regolith, structures; bool tile_free, standby_seen, undone; } outcome_t;
 
 static outcome_t play(int device) {
     fresh();
     s_touch = (device == 1);
-    outcome_t o = { 0, 0, false, false };
+    outcome_t o = { 0, 0, false, false, false };
     const int T = 30;
 
+    /* Select the tile, then press the button for what to build there */
     if (device == 2) {
-        key(MOON_KEY_4);                 /* Sinterer */
-        key(MOON_KEY_UP);                /* cursor (32,32) -> (30,30) */
-        key(MOON_KEY_UP);
-        key(MOON_KEY_RETURN);
+        key(MOON_KEY_UP); key(MOON_KEY_UP);              /* (32,32) -> (30,30) */
+        key(MOON_KEY_4);
     } else {
-        click_rect(&g.ui.ribbon[4]);
         click_tile(T, T);
-        if (device == 1) {
-            /* A finger only positions the ghost; nothing is built yet */
-            assert(g.pending_valid && g.structs.count == 4);
-            click_rect(&g.ui.confirm_ok);
-        }
+        click_rect(&g.ui.ribbon[4]);
     }
     assert(g.structs.count == 5);
-    const moon_tile_t *t = moon_grid_get_tile_const(&g.grid, T, T);
-    const moon_structure_t *s = &g.structs.list[t->structure_id];
-    assert(s->type == MOON_STRUCT_REGOLITH_PLANT && s->active);
+    const moon_structure_t *s = struct_at(T, T);
+    assert(s && s->type == MOON_STRUCT_REGOLITH_PLANT && s->active);
+    assert(g.selected_tile_x == T && g.selected_tile_y == T);
 
-    /* Inspect it */
-    if (device == 2) { key(MOON_KEY_0); key(MOON_KEY_RETURN); }
-    else { click_rect(&g.ui.ribbon[0]); click_tile(T, T); }
-    assert(g.has_selection && g.selected_tile_x == T && g.selected_tile_y == T);
+    /* Standby */
+    if (device == 2) key(MOON_KEY_E); else click_rect(&g.ui.ribbon[0]);
+    o.standby_seen = !struct_at(T, T)->active;
 
-    /* Standby on, then recycle */
-    if (device == 2) key(MOON_KEY_E); else click_rect(&g.ui.insp_standby);
-    o.standby_seen = !g.structs.list[t->structure_id].active;
-    if (device == 2) { key(MOON_KEY_R); key(MOON_KEY_RETURN); }
-    else click_rect(&g.ui.insp_recycle);
+    /* Undo it all, then build again and recycle for good */
+    if (device == 2) key(MOON_KEY_Z); else click_rect(&g.ui.undo_btn);
+    o.undone = !struct_at(T, T);
+    if (device == 2) key(MOON_KEY_4); else click_rect(&g.ui.ribbon[4]);
+    assert(struct_at(T, T));
+    if (device == 2) key(MOON_KEY_R); else click_rect(&g.ui.ribbon[7]);
 
-    o.regolith = fixed_to_int(g.resources.regolith_stored_kg);
+    o.regolith = regolith();
     o.structures = g.structs.count;
-    o.tile_free = (moon_grid_get_tile_const(&g.grid, T, T)->structure_id == 0);
+    o.tile_free = !struct_at(T, T);
     s_touch = 0;
     return o;
 }
@@ -537,50 +723,43 @@ static outcome_t play(int device) {
 static void test_three_devices(void) {
     outcome_t m = play(0), f = play(1), k = play(2);
     assert(m.standby_seen && f.standby_seen && k.standby_seen);
+    assert(m.undone && f.undone && k.undone);
     assert(m.tile_free && f.tile_free && k.tile_free);
     assert(m.structures == 4 && f.structures == 4 && k.structures == 4);
     assert(m.regolith == f.regolith && m.regolith == k.regolith);
-    printf("[test] Build / inspect / standby / recycle by mouse, touch, keyboard: PASS (%d kg)\n", m.regolith);
+    printf("[test] Select, build, standby, undo, recycle by mouse, touch, keyboard: PASS (%d kg)\n", m.regolith);
 }
 
 static void test_touch_flow(void) {
     fresh();
     s_touch = 1;
-    int rgl = g.resources.regolith_stored_kg;
-    click_rect(&g.ui.ribbon[4]);
+    int rgl = regolith();
 
-    /* Press: the ghost follows the finger; a second tap moves it; cancel builds nothing */
-    int32_t sx, sy;
-    tile_screen(31, 31, &sx, &sy);
-    ptr(MOON_EVENT_POINTER_DOWN, sx, sy, 1);
-    assert(g.hover_valid && g.hover_tile_x == 31);
-    ptr(MOON_EVENT_POINTER_UP, sx, sy, 1);
-    assert(g.pending_valid && g.pending_x == 31 && g.pending_y == 31 && g.hover_valid);
-    click_tile(30, 30);
-    assert(g.pending_x == 30 && g.pending_y == 30);
-    click_rect(&g.ui.confirm_cancel);
-    assert(!g.pending_valid && g.structs.selected_build_type == MOON_STRUCT_NONE);
-    assert(g.structs.count == 4 && g.resources.regolith_stored_kg == rgl);
-
-    /* Inspect by tap: the highlight does not stay behind */
+    /* A tap on bare ground only selects it: no panel, no hover left behind */
     click_tile(35, 35);
-    assert(g.has_selection && !g.hover_valid);
+    assert(g.selected_tile_x == 35 && g.selected_tile_y == 35 && !g.panel_open && !g.hover_valid);
+    assert(g.structs.count == 4 && regolith() == rgl);
 
-    /* A 10 px wobble is a tap; 20 px is a drag that pans and does not select */
-    g.has_selection = false;
+    /* A tap on a building selects it and opens the inspector */
+    click_tile(34, 32);
+    assert(g.panel_open && selected_structure_type() == MOON_STRUCT_SOLAR_ARRAY);
+
+    /* A 10 px wobble is a tap; 30 px is a drag that pans and does not select */
+    g.panel_open = false;
+    int32_t sx, sy;
     tile_screen(36, 30, &sx, &sy);
     int cam = g.cam_x;
     ptr(MOON_EVENT_POINTER_DOWN, sx, sy, 1);
     ptr(MOON_EVENT_POINTER_MOVE, sx + 8, sy + 4, 1);
     ptr(MOON_EVENT_POINTER_UP, sx + 8, sy + 4, 1);
-    assert(g.has_selection && g.cam_x == cam);
-    g.has_selection = false;
+    assert(g.selected_tile_x == 36 && g.cam_x == cam);
+    tile_screen(37, 29, &sx, &sy);
     ptr(MOON_EVENT_POINTER_DOWN, sx, sy, 1);
     ptr(MOON_EVENT_POINTER_MOVE, sx + 30, sy, 1);
     ptr(MOON_EVENT_POINTER_UP, sx + 30, sy, 1);
-    assert(!g.has_selection && g.cam_x != cam);
+    assert(g.selected_tile_x == 36 && g.cam_x != cam);
     s_touch = 0;
-    printf("[test] Touch two-step placement, hover clearing, drag threshold: PASS\n");
+    printf("[test] Touch: tap selects, inspector on buildings, drag threshold: PASS\n");
 }
 
 static void test_menu_and_cancel(void) {
@@ -608,8 +787,8 @@ static void test_menu_and_cancel(void) {
 
     /* Restart: confirm, then a clean base */
     fresh();
+    click_tile(30, 30);
     click_rect(&g.ui.ribbon[4]);
-    click_tile(31, 31);
     assert(g.structs.count == 5);
     click_rect(&g.ui.menu_btn);
     assert(g.menu_page == MOON_MENU_MAIN);
@@ -617,62 +796,38 @@ static void test_menu_and_cancel(void) {
     assert(g.menu_page == MOON_MENU_CONFIRM_RESTART && g.structs.count == 5);
     click_rect(&g.ui.menu_item[0]);
     assert(g.menu_page == MOON_MENU_CLOSED && g.structs.count == 4 && g.running);
-    assert(g.sim_ticks == 0 && !g.has_selection && g.structs.selected_build_type == MOON_STRUCT_NONE);
+    assert(g.sim_ticks == 0 && !g.panel_open && g.structs.selected_build_type == MOON_STRUCT_NONE);
+    assert(g.selected_tile_x == 32 && g.undo_kind == MOON_UNDO_NONE);
 
-    /* Right click, Backspace, Tab-to-inspect and ESC cancel a tool alike */
-    for (int how = 0; how < 3; how++) {
+    /* Right click, Backspace, 0 and ESC end a brush alike; the inspector closes the same way */
+    for (int how = 0; how < 4; how++) {
         fresh();
-        key(MOON_KEY_3);
+        key(MOON_KEY_3); key(MOON_KEY_3);
         assert(g.structs.selected_build_type == MOON_STRUCT_HABITAT_DOME);
         if (how == 0) { ptr(MOON_EVENT_POINTER_DOWN, 500, 300, 3); ptr(MOON_EVENT_POINTER_UP, 500, 300, 3); }
         if (how == 1) key(MOON_KEY_BACKSPACE);
         if (how == 2) key(MOON_KEY_ESCAPE);
+        if (how == 3) key(MOON_KEY_0);
         assert(g.structs.selected_build_type == MOON_STRUCT_NONE && g.menu_page == MOON_MENU_CLOSED);
+        g.panel_open = true;
+        key(MOON_KEY_BACKSPACE);
+        assert(!g.panel_open);
     }
-
-    /* Tab walks the ribbon */
-    fresh();
-    key(MOON_KEY_TAB);
-    assert(g.structs.selected_build_type == MOON_STRUCT_SOLAR_ARRAY);
-    for (int i = 0; i < 6; i++) key(MOON_KEY_TAB);
-    assert(g.demolish_tool_active);
-    key(MOON_KEY_TAB);
-    assert(!g.demolish_tool_active && g.structs.selected_build_type == MOON_STRUCT_NONE);
     printf("[test] Menu, quit/restart confirmation, identical cancel: PASS\n");
 }
 
-static void test_keyboard_scroll_and_cursor(void) {
-    fresh();
-    g.key_up_supported = true;
-    int cy = g.cam_y;
-    key(MOON_KEY_S);
-    moon_game_update(&g, 100);
-    assert(g.cam_y > cy + 30);
-    key_up(MOON_KEY_S);
-    cy = g.cam_y;
-    moon_game_update(&g, 100);
-    assert(g.cam_y == cy);
-
-    /* Without key-up events a press is one step */
-    g.key_up_supported = false;
-    key(MOON_KEY_S);
-    assert(g.cam_y == cy + 24);
-
-    /* The cursor stays on the map and drags the view along when it leaves the screen */
-    for (int i = 0; i < 40; i++) key(MOON_KEY_RIGHT);
-    assert(g.cursor_x == MOON_MAP_SIZE_X - 1 && g.cursor_y == 0 && g.hover_valid);
-    int32_t sx, sy;
-    tile_screen(g.cursor_x, g.cursor_y, &sx, &sy);
-    assert(sx >= 0 && sx < 1024 && sy >= 0 && sy < 600);
-
-    /* The mouse leaving the window clears the hover, a keyboard cursor keeps it */
+static void test_pointer_leave_and_hover(void) {
     fresh();
     ptr(MOON_EVENT_POINTER_MOVE, 500, 300, 0);
     assert(g.hover_valid);
     moon_event_t lv; memset(&lv, 0, sizeof(lv)); lv.type = MOON_EVENT_POINTER_LEAVE;
     moon_game_handle_event(&g, &lv);
     assert(!g.hover_valid);
-    printf("[test] Held-key scroll, map cursor, pointer leave: PASS\n");
+    /* Over the ribbon there is no tile under the mouse */
+    ptr(MOON_EVENT_POINTER_MOVE, 500, 300, 0);
+    ptr(MOON_EVENT_POINTER_MOVE, g.ui.ribbon[2].x + 3, g.ui.ribbon[2].y + 3, 0);
+    assert(!g.hover_valid);
+    printf("[test] Pointer leave and hover over UI: PASS\n");
 }
 
 int main(void) {
@@ -688,10 +843,14 @@ int main(void) {
     test_palette_and_tint();
     test_layout();
     test_clock_and_pause();
+    test_select_first();
+    test_standby_recycle_undo();
+    test_brush();
+    test_button_validity_and_preview();
     test_three_devices();
     test_touch_flow();
     test_menu_and_cancel();
-    test_keyboard_scroll_and_cursor();
-    printf("[test] All Milestone 64.9-64.11 tests passed cleanly.\n");
+    test_pointer_leave_and_hover();
+    printf("[test] All Milestone 64.9-64.11b tests passed cleanly.\n");
     return 0;
 }

@@ -164,8 +164,6 @@ void moon_platform_present(void) {
     SDL_RenderPresent(s_plat.renderer);
 }
 
-bool moon_platform_has_key_up(void) { return true; }
-
 bool moon_platform_poll_event(moon_event_t *ev) {
     if (!ev) return false;
 
@@ -179,6 +177,7 @@ bool moon_platform_poll_event(moon_event_t *ev) {
             case SDL_EVENT_KEY_DOWN:
                 ev->type = MOON_EVENT_KEY_DOWN;
                 ev->key = map_sdl_key(e.key.key);
+                ev->mods = (e.key.mod & SDL_KMOD_SHIFT) ? MOON_MOD_SHIFT : 0;
                 return true;
 
             case SDL_EVENT_KEY_UP:

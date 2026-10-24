@@ -32,24 +32,23 @@ You touch down at the lunar South Pole with an initial expedition lander and sur
 
 Moonbase Lambda is designed to be played seamlessly using a mouse, keyboard, or capacitive touchscreen:
 
+A tile is always **selected** (the gold frame; the minimap shows it as a white dot). Build, standby and recycle act on the selected tile; a build button is dimmed when it could not act there, and the line at the bottom left says what is under the selection (or under the mouse).
+
 ### Touch & Mouse
-- **Pan**: Drag on the map (touch, left or middle button); the mouse wheel pans too.
-- **Select a tool**: Tap a button in the bottom ribbon (Inspect, Solar, Battery, Habitat, Sinterer, Oxy, Cable, Recycle).
-- **Place or recycle**: With a mouse, click the tile. On a touchscreen a tap positions the ghost and a `BUILD` / `RECYCLE` button confirms it (`CANCEL` backs out).
-- **Inspect**: Tap a building (its sprite, not just the ground tile) or a tile in Inspect mode; the inspector has `STANDBY` / `ACTIVATE`, `RECYCLE` and a close button.
-- **Minimap Radar**: Tap anywhere on the radar (bottom right) to jump there.
+- **Select**: Tap or click a tile or a building (its sprite counts). A building also opens the inspector.
+- **Build / recycle / standby**: Press a ribbon button: `1:SOLAR` ... `6:CABLE` build on the selected tile, `R:RECYCLE` removes the selected building for 50%, `E:STANDBY` switches it. Hovering a build button with the mouse, or holding it on a touchscreen, shows a ghost of what it would build; slide off the button to cancel.
+- **Undo**: The `Z:UNDO` button above the ribbon (ten seconds) reverses the last build (full refund) or recycle.
+- **Brush**: Press the same build button twice (or double-tap it) to keep it armed: every tile you then tap or click gets that building (cables!). Press the button again, right-click or ESC to end it. `R` twice arms a recycle brush.
+- **Pan**: Drag on the map (touch, left or middle button); the mouse wheel pans too. The minimap jumps to a place.
 - **Pause, speed, menu**: The three buttons at the right of the ribbon. The menu has Resume, the terrain mode (textured or fast), Restart and Quit; Restart and Quit ask for confirmation.
-- Right click cancels the active tool.
 
 ### Keyboard Controls
-- **Arrow Keys**: Move the map cursor (the highlighted tile); **Enter** builds, recycles or inspects there.
-- **W, A, S, D**: Scroll the view (continuous while held where the terminal reports key releases, otherwise one step per key press).
-- **Space**: Recenter camera on the Expedition Lander.
-- **1 – 6**: Select building; **R**: Recycle tool; **0**: Inspect; **Tab**: next ribbon tool.
-- **E**: Toggle Standby on the inspected building.
-- **P**: Pause / resume. **-** / **+**: simulation speed 1x, 2x, 4x.
-- **T**: Toggle terrain texturing mode (Textured vs. Fast Retro).
-- **Backspace**: Cancel the active tool or close the inspector.
+- **Arrow keys / W, A, S, D**: Move the selected tile (Shift: 8 tiles); the view glides to follow it.
+- **1 – 6**: Build on the selected tile; **R**: recycle it; **E**: toggle standby. Press a build key twice for a brush, **Enter** applies the brush to the selected tile.
+- **Z**: Undo the last build or recycle. **Tab**: jump to the next building. **Enter**: open or close the inspector (when no brush is armed).
+- **Space**: Bring the view to the selection; again, to the Expedition Lander.
+- **P**: Pause / resume. **-** / **+**: simulation speed 1x, 2x, 4x. **T**: textured or fast terrain.
+- **Backspace / 0**: End the brush or close the inspector.
 - **ESC** / **Q**: The same, and with nothing to cancel it opens the menu. Quitting is only possible through the menu's confirmation (or Ctrl-C on the P4).
 
 ### Day/night clock

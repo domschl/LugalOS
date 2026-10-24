@@ -109,11 +109,12 @@ bool moon_structure_pick(const moon_structure_mgr_t *mgr, const moon_grid_t *gri
                          int32_t px, int32_t py, int32_t cam_x, int32_t cam_y,
                          int32_t screen_w, int32_t screen_h, int *out_id);
 
-/* Ghost preview while building */
+/* Ghost preview of `type` at a tile (footprint outline, translucent sprite, reason label) */
 void moon_structure_render_ghost(const moon_structure_mgr_t *mgr,
                                  const moon_grid_t *grid,
                                  const moon_surface_t *surf,
                                  int32_t cam_x, int32_t cam_y,
+                                 moon_structure_type_t type,
                                  int hover_gx, int hover_gy);
 
 #endif /* MOON_STRUCTURES_H */

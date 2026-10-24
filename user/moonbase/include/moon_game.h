@@ -18,11 +18,12 @@ typedef enum {
     MOON_STATE_GAME_OVER
 } moon_game_state_t;
 
+/* Undo records */
+enum { MOON_UNDO_NONE = 0, MOON_UNDO_BUILD, MOON_UNDO_RECYCLE };
+#define MOON_UNDO_WINDOW_MS 10000
+
 /* Menu pages */
 enum { MOON_MENU_CLOSED = 0, MOON_MENU_MAIN, MOON_MENU_CONFIRM_QUIT, MOON_MENU_CONFIRM_RESTART };
-
-/* Held scroll keys */
-enum { MOON_HELD_UP = 1, MOON_HELD_DOWN = 2, MOON_HELD_LEFT = 4, MOON_HELD_RIGHT = 8 };
 
 typedef struct {
     moon_game_state_t state;
@@ -48,10 +49,14 @@ typedef struct {
     int32_t  hover_tile_y;
     bool     hover_valid;
 
-    /* Inspector Selection State */
+    /* The selected tile always exists (build / standby / recycle act on it); the
+     * inspector panel shows it while panel_open. */
     int32_t  selected_tile_x;
     int32_t  selected_tile_y;
-    bool     has_selection;
+    bool     panel_open;
+
+    /* Brush: a build type (structs.selected_build_type) or recycle stays armed for
+     * repeated use; otherwise a build button acts once on the selection. */
     bool     demolish_tool_active;
 
     /* World Grid & Structures */
@@ -79,12 +84,19 @@ typedef struct {
 
     /* Input device in use */
     bool     touch_input;     /* Last pointer event came from a finger */
-    bool     cursor_mode;     /* Keyboard map cursor drives hover */
-    int32_t  cursor_x, cursor_y;
-    bool     pending_valid;   /* Touch: tile awaiting confirm (build / recycle) */
-    int32_t  pending_x, pending_y;
-    bool     key_up_supported; /* Platform reports key releases (set by the platform glue) */
-    uint8_t  keys_held;       /* Scroll keys currently down (MOON_HELD_*) */
+    int8_t   press_slot;      /* Ribbon button under the current press, or -1 */
+    int8_t   preview_slot;    /* Build button hovered or held: the ghost shows it */
+    int8_t   last_slot;       /* Slot of the previous press with nothing in between; -1 */
+
+    /* View glide toward a tile selected from the keyboard */
+    bool     glide;
+    int32_t  glide_x, glide_y;
+
+    /* One-step undo of the last build or recycle */
+    uint8_t  undo_kind;       /* MOON_UNDO_* */
+    uint8_t  undo_type, undo_x, undo_y;
+    int32_t  undo_refund_kg;
+    uint32_t undo_ms;
 
     /* Live HUD Notification Badge */
     const char *notify_msg;

@@ -67,8 +67,7 @@ static void test_structure_catalog_and_placement(void) {
 
     moon_world_render(&mgr, &grid, &surf, 0, 32 * MOON_TILE_H, 0, 0, false);
 
-    mgr.selected_build_type = MOON_STRUCT_BATTERY_BANK;
-    moon_structure_render_ghost(&mgr, &grid, &surf, 0, 32 * MOON_TILE_H, 34, 32);
+    moon_structure_render_ghost(&mgr, &grid, &surf, 0, 32 * MOON_TILE_H, MOON_STRUCT_BATTERY_BANK, 34, 32);
 
     free(surf_buf);
     printf("[test] Structure catalog, footprints & placement rules: PASS\n");

@@ -31,7 +31,7 @@ typedef struct {
     moon_ui_rect_t minimap_zone;       /* Map plus frame: the hit area */
     moon_ui_rect_t inspector;
     moon_ui_rect_t insp_close, insp_recycle, insp_standby;
-    moon_ui_rect_t confirm_ok, confirm_cancel;    /* Touch two-step placement */
+    moon_ui_rect_t undo_btn;           /* Shown while the last action can be undone */
     moon_ui_rect_t hover_badge;
     moon_ui_rect_t menu_panel;
     moon_ui_rect_t menu_item[MOON_UI_MENU_ITEMS];
