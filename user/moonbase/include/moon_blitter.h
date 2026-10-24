@@ -78,9 +78,23 @@ void moon_blit_iso_block_textured(const moon_surface_t *surf, int sx, int sy,
                                   int gx, int gy, uint8_t terrain,
                                   uint8_t flags, uint16_t border_color);
 
+/* Scale each colour channel of a rectangle (256 = unchanged, each <= 256) */
+void moon_blit_tint_rect(const moon_surface_t *surf, int x, int y, int w, int h,
+                         uint16_t r_256, uint16_t g_256, uint16_t b_256);
+
+/* Average colour of a textured terrain top / cliff face (face_type 1 = shadowed, 2 = lit);
+ * the flat renderer uses these so both modes share one palette. */
+uint16_t moon_terrain_mean_color(uint8_t terrain);
+uint16_t moon_cliff_mean_color(uint8_t terrain, int face_type);
+
 /* Sprite & Bitmap Blitting with Color-Key Transparency */
 void moon_blit_sprite(const moon_surface_t *dst, int dst_x, int dst_y,
                       const moon_surface_t *src, uint16_t key_color);
+
+/* Translucent sprite: tinted and mixed over the destination (alpha 0..256) */
+void moon_blit_sprite_blend(const moon_surface_t *dst, int dst_x, int dst_y,
+                            const moon_surface_t *src, uint16_t key_color,
+                            uint16_t tint, uint16_t alpha_256);
 
 void moon_blit_subsprite(const moon_surface_t *dst, int dst_x, int dst_y,
                          const moon_surface_t *sheet, int src_x, int src_y,

@@ -91,6 +91,7 @@ static bool p4_touch_hook(int x, int y, int kind) {
     s_last_touch_x = vx;
     s_last_touch_y = vy;
     ev.button = 1;
+    ev.touch = 1;
 
     if (kind == 1) {
         ev.type = MOON_EVENT_POINTER_DOWN;
@@ -297,6 +298,8 @@ void moon_platform_present(void) {
     }
 }
 
+bool moon_platform_has_key_up(void) { return false; }
+
 bool moon_platform_poll_event(moon_event_t *ev) {
     /* 1. Touch events */
     if (s_qhead != s_qtail) {
@@ -367,6 +370,23 @@ bool moon_platform_poll_event(moon_event_t *ev) {
             case '5': ev->key = MOON_KEY_5; return true;
             case '6': ev->key = MOON_KEY_6; return true;
             case '7': ev->key = MOON_KEY_7; return true;
+            case '8': ev->key = MOON_KEY_8; return true;
+            case '9': ev->key = MOON_KEY_9; return true;
+            case 'e': case 'E':
+                ev->key = MOON_KEY_E;
+                return true;
+            case 'p': case 'P':
+                ev->key = MOON_KEY_P;
+                return true;
+            case '-': case '_':
+                ev->key = MOON_KEY_MINUS;
+                return true;
+            case '+': case '=':
+                ev->key = MOON_KEY_PLUS;
+                return true;
+            case 0x7F: case '\b':
+                ev->key = MOON_KEY_BACKSPACE;
+                return true;
             default:
                 ev->key = MOON_KEY_UNKNOWN;
                 return true;

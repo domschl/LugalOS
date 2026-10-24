@@ -15,6 +15,7 @@ typedef enum {
     MOON_EVENT_POINTER_UP,
     MOON_EVENT_POINTER_MOVE,
     MOON_EVENT_SCROLL,
+    MOON_EVENT_POINTER_LEAVE,   /* Pointer left the window */
 } moon_event_type_t;
 
 /* Standard Key Codes for cross-platform handling */
@@ -48,6 +49,9 @@ enum {
     MOON_KEY_9,
     MOON_KEY_T,
     MOON_KEY_Z,
+    MOON_KEY_P,
+    MOON_KEY_MINUS,
+    MOON_KEY_PLUS,
 };
 
 typedef struct {
@@ -57,6 +61,7 @@ typedef struct {
     int32_t dx;             /* Relative motion delta X */
     int32_t dy;             /* Relative motion delta Y */
     uint32_t key;           /* Key code (MOON_KEY_*) */
+    uint8_t  touch;         /* 1 if the pointer event comes from a finger */
     uint8_t  button;        /* Pointer button: 1=primary/touch, 2=middle, 3=secondary */
     int16_t  wheel_x;       /* Scroll wheel X */
     int16_t  wheel_y;       /* Scroll wheel Y */
@@ -75,6 +80,10 @@ void     moon_platform_delay_ms(uint32_t ms);
 /* 16-Bit RGB565 Framebuffer Access */
 uint16_t* moon_platform_get_framebuffer(int *stride_pixels);
 void      moon_platform_present(void);
+
+/* True if the platform reports key releases (held-key scrolling); false when
+ * it only sees key-repeat characters, as on the P4 console */
+bool     moon_platform_has_key_up(void);
 
 /* Input Event Polling */
 bool     moon_platform_poll_event(moon_event_t *ev);

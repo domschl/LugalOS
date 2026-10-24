@@ -39,6 +39,7 @@ void moon_resources_init(moon_resources_t *res) {
 void moon_resources_solve_power_grid(moon_grid_t *grid,
                                      moon_structure_mgr_t *mgr) {
     if (!grid || !mgr) return;
+    mgr->solved_revision = mgr->revision;
 
     /* 1. Mark all structures unpowered by default */
     for (int i = 0; i < MOON_MAX_STRUCTURES; i++) {
@@ -58,59 +59,39 @@ void moon_resources_solve_power_grid(moon_grid_t *grid,
 
     if (lander_idx < 0) return; /* No power grid without Lander */
 
-    /* 3. BFS traversal across orthogonal building and conduit footprints */
-    uint8_t visited[MOON_MAP_SIZE_Y][MOON_MAP_SIZE_X];
-    memset(visited, 0, sizeof(visited));
-
-    /* Simple ring queue for BFS */
-    typedef struct { uint8_t gx, gy; } grid_pt_t;
-    grid_pt_t queue[MOON_MAP_SIZE_X * MOON_MAP_SIZE_Y];
+    /* 3. BFS over the structure graph (two structures are linked when any of
+     *    their footprint tiles share an edge). Small, fixed-size working set:
+     *    safe on a small task stack. */
+    uint8_t queue[MOON_MAX_STRUCTURES];
+    uint8_t visited[MOON_MAX_STRUCTURES];
     int q_head = 0;
     int q_tail = 0;
+    memset(visited, 0, sizeof(visited));
 
-    /* Seed BFS with all tiles under the Lander */
     moon_structure_t *lander = &mgr->list[lander_idx];
     lander->powered = true;
-    for (int dy = 0; dy < lander->footprint_h; dy++) {
-        for (int dx = 0; dx < lander->footprint_w; dx++) {
-            int gx = lander->gx + dx;
-            int gy = lander->gy + dy;
-            if (gx < MOON_MAP_SIZE_X && gy < MOON_MAP_SIZE_Y) {
-                visited[gy][gx] = 1;
-                queue[q_tail++] = (grid_pt_t){ (uint8_t)gx, (uint8_t)gy };
-            }
-        }
-    }
+    visited[lander_idx] = 1;
+    queue[q_tail++] = (uint8_t)lander_idx;
 
     /* Direction deltas: North, South, East, West */
     static const int dirs[4][2] = { {0, -1}, {0, 1}, {-1, 0}, {1, 0} };
 
     while (q_head < q_tail) {
-        grid_pt_t curr = queue[q_head++];
+        const moon_structure_t *cur = &mgr->list[queue[q_head++]];
 
-        for (int d = 0; d < 4; d++) {
-            int nx = curr.gx + dirs[d][0];
-            int ny = curr.gy + dirs[d][1];
-
-            if (nx < 0 || nx >= MOON_MAP_SIZE_X || ny < 0 || ny >= MOON_MAP_SIZE_Y) {
-                continue;
-            }
-            if (visited[ny][nx]) continue;
-
-            /* Check if neighbor tile contains any structure or conduit */
-            const moon_tile_t *tile = moon_grid_get_tile_const(grid, nx, ny);
-            if (!tile || tile->structure_id == 0) continue;
-
-            /* Mark tile visited */
-            visited[ny][nx] = 1;
-            queue[q_tail++] = (grid_pt_t){ (uint8_t)nx, (uint8_t)ny };
-
-            /* Mark the structure owning this tile as powered */
-            uint8_t struct_id = tile->structure_id;
-            for (int i = 0; i < MOON_MAX_STRUCTURES; i++) {
-                if (mgr->list[i].id == struct_id) {
-                    mgr->list[i].powered = true;
-                    break;
+        for (int dy = 0; dy < cur->footprint_h; dy++) {
+            for (int dx = 0; dx < cur->footprint_w; dx++) {
+                for (int d = 0; d < 4; d++) {
+                    int nx = cur->gx + dx + dirs[d][0];
+                    int ny = cur->gy + dy + dirs[d][1];
+                    const moon_tile_t *tile = moon_grid_get_tile_const(grid, nx, ny);
+                    if (!tile) continue;
+                    uint8_t sid = tile->structure_id;
+                    if (sid == 0 || sid >= MOON_MAX_STRUCTURES) continue;
+                    if (visited[sid] || mgr->list[sid].id != sid) continue;
+                    visited[sid] = 1;
+                    mgr->list[sid].powered = true;
+                    queue[q_tail++] = sid;
                 }
             }
         }
@@ -142,8 +123,10 @@ void moon_resources_tick(moon_resources_t *res,
         res->solar_intensity = 0;
     }
 
-    /* 2. Solve Power Grid Connectivity */
-    moon_resources_solve_power_grid(grid, mgr);
+    /* 2. Re-solve power grid connectivity only when the structures changed */
+    if (mgr->solved_revision != mgr->revision) {
+        moon_resources_solve_power_grid(grid, mgr);
+    }
 
     /* 3. Aggregate Generation, Capacity, and Consumption */
     int32_t total_gen_kw = 0;
@@ -208,27 +191,22 @@ void moon_resources_tick(moon_resources_t *res,
     int32_t net_energy_unit = res->power_net_kw * 10; /* kWh * 10 / sec */
     fixed32_t delta_kwh = fixed_div(fixed_from_int(net_energy_unit), fixed_from_int(MOON_SIM_TICK_RATE_HZ * 10));
 
+    res->battery_stored_kwh += delta_kwh;
+    fixed32_t max_cap = fixed_from_int(res->battery_capacity_kwh);
+    if (res->battery_stored_kwh > max_cap) {
+        res->battery_stored_kwh = max_cap;   /* also after a battery was recycled */
+    }
+
     if (res->power_net_kw >= 0) {
-        /* Surplus power charges battery */
-        res->battery_stored_kwh += delta_kwh;
-        fixed32_t max_cap = fixed_from_int(res->battery_capacity_kwh);
-        if (res->battery_stored_kwh > max_cap) {
-            res->battery_stored_kwh = max_cap;
-        }
         res->power_brownout = false;
         res->warning_power = false;
+    } else if (res->battery_stored_kwh <= 0) {
+        res->battery_stored_kwh = 0;
+        res->power_brownout = true;
+        res->warning_power = true;
     } else {
-        /* Deficit discharges battery */
-        res->battery_stored_kwh += delta_kwh; /* delta_kwh is negative */
-        if (res->battery_stored_kwh <= 0) {
-            res->battery_stored_kwh = 0;
-            res->power_brownout = true;
-            res->warning_power = true;
-        } else if (res->battery_stored_kwh < fixed_from_int(res->battery_capacity_kwh / 5)) {
-            res->warning_power = true;
-        } else {
-            res->warning_power = false;
-        }
+        res->power_brownout = false;
+        res->warning_power = res->battery_stored_kwh < fixed_from_int(res->battery_capacity_kwh / 5);
     }
 
     /* 5. Life Support: Population Consumption */
@@ -280,6 +258,17 @@ void moon_resources_tick(moon_resources_t *res,
         res->regolith_stored_kg = 0;
     }
 
+    /* Emergency scooping by the Lander when nothing else produces regolith */
+    if (net_regolith_milli <= 0 && res->regolith_stored_kg < fixed_from_int(MOON_REGOLITH_RESERVE_KG)) {
+        res->regolith_stored_kg += fixed_div(fixed_from_int(MOON_SCOOP_MILLI_PER_TICK), fixed_from_int(1000));
+        if (res->regolith_stored_kg > fixed_from_int(MOON_REGOLITH_RESERVE_KG)) {
+            res->regolith_stored_kg = fixed_from_int(MOON_REGOLITH_RESERVE_KG);
+        }
+    }
+
+    if (res->crew_lost_ticks > 0) res->crew_lost_ticks--;
+    res->warning_crew_lost = (res->crew_lost_ticks > 0);
+
     /* 6. Life Support Health Calculation */
     bool stressed = false;
 
@@ -291,7 +280,9 @@ void moon_resources_tick(moon_resources_t *res,
         res->warning_cold = false;
     }
 
-    if (res->warning_o2 || res->warning_water || res->warning_power) {
+    /* Low reserves (battery, O2, water) are only warnings: stress needs an actual
+     * blackout or an empty O2 or water tank. */
+    if (res->o2_stored_kg <= 0 || res->water_stored_l <= 0 || res->power_brownout) {
         stressed = true;
     }
 
@@ -304,7 +295,7 @@ void moon_resources_tick(moon_resources_t *res,
             if (res->casualty_timer_ticks >= (MOON_SIM_TICK_RATE_HZ * 5)) {
                 res->casualty_timer_ticks = 0;
                 res->population--;
-                res->warning_crew_lost = true;
+                res->crew_lost_ticks = MOON_CREW_LOST_BANNER_TICKS;
             }
         }
         res->growth_timer_ticks = 0;
@@ -325,4 +316,15 @@ void moon_resources_tick(moon_resources_t *res,
             res->growth_timer_ticks = 0;
         }
     }
+}
+
+moon_clock_t moon_resources_clock(const moon_resources_t *res) {
+    moon_clock_t c;
+    const int64_t day = MOON_LUNAR_DAY_TICKS;
+    int64_t t = res->cycle_tick;
+    c.minutes = (int)((t * 1440 / day + 360) % 1440);
+    int64_t until = (t < day / 2) ? (day / 2 - t) : (day - t);
+    c.next_is_dusk = (t < day / 2);
+    c.next_in_min = (int)(until * 1440 / day);
+    return c;
 }

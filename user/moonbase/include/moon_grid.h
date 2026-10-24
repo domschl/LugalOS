@@ -63,7 +63,17 @@ void moon_screen_to_grid(int32_t sx, int32_t sy,
                          int32_t screen_w, int32_t screen_h,
                          int32_t *gx, int32_t *gy);
 
+/* Elevation-aware picking: tile under a screen point (true if inside the map) */
+bool moon_grid_pick(const moon_grid_t *grid, int32_t sx, int32_t sy,
+                    int32_t cam_x, int32_t cam_y,
+                    int32_t screen_w, int32_t screen_h,
+                    int32_t *gx, int32_t *gy);
+
 /* Terrain Rendering */
+void moon_grid_render_tile(const moon_grid_t *grid, const moon_surface_t *surf,
+                           int gx, int gy, int32_t cam_x, int32_t cam_y,
+                           int32_t hover_gx, int32_t hover_gy, bool hover_valid);
+
 void moon_grid_render(const moon_grid_t *grid, const moon_surface_t *surf,
                       int32_t cam_x, int32_t cam_y,
                       int32_t hover_gx, int32_t hover_gy, bool hover_valid);

@@ -33,21 +33,27 @@ You touch down at the lunar South Pole with an initial expedition lander and sur
 Moonbase Lambda is designed to be played seamlessly using a mouse, keyboard, or capacitive touchscreen:
 
 ### Touch & Mouse
-- **Pan / Scroll Viewport**: Touch-drag or click-and-drag across the lunar surface.
-- **Select Build Tool**: Tap any tool icon in the bottom ribbon (Solar, Battery, Habitat, Sinterer, O2, Conduit, Recycle, or Inspect).
-- **Place Building**: Tap on any valid terrain tile. Tool automatically deselects upon successful placement.
-- **Inspect Building / Tile**: Tap in Inspect mode (Button 0) to open the building inspector drawer.
-- **Minimap Radar**: Tap anywhere on the radar (bottom right) for instant camera navigation.
-- **Fast Terrain Toggle**: Tap the `TEX:ON` / `TEX:FAST` button above the radar to toggle between textured and flat-shaded terrain.
+- **Pan**: Drag on the map (touch, left or middle button); the mouse wheel pans too.
+- **Select a tool**: Tap a button in the bottom ribbon (Inspect, Solar, Battery, Habitat, Sinterer, Oxy, Cable, Recycle).
+- **Place or recycle**: With a mouse, click the tile. On a touchscreen a tap positions the ghost and a `BUILD` / `RECYCLE` button confirms it (`CANCEL` backs out).
+- **Inspect**: Tap a building (its sprite, not just the ground tile) or a tile in Inspect mode; the inspector has `STANDBY` / `ACTIVATE`, `RECYCLE` and a close button.
+- **Minimap Radar**: Tap anywhere on the radar (bottom right) to jump there.
+- **Pause, speed, menu**: The three buttons at the right of the ribbon. The menu has Resume, the terrain mode (textured or fast), Restart and Quit; Restart and Quit ask for confirmation.
+- Right click cancels the active tool.
 
 ### Keyboard Controls
-- **Arrow Keys** / **W, A, S, D**: Pan camera across the lunar surface.
+- **Arrow Keys**: Move the map cursor (the highlighted tile); **Enter** builds, recycles or inspects there.
+- **W, A, S, D**: Scroll the view (continuous while held where the terminal reports key releases, otherwise one step per key press).
 - **Space**: Recenter camera on the Expedition Lander.
-- **1 – 6**: Select building from build catalog.
-- **R**: Toggle Recycle / Demolish tool.
-- **0**: Cancel active tool / return to Inspect mode.
+- **1 – 6**: Select building; **R**: Recycle tool; **0**: Inspect; **Tab**: next ribbon tool.
+- **E**: Toggle Standby on the inspected building.
+- **P**: Pause / resume. **-** / **+**: simulation speed 1x, 2x, 4x.
 - **T**: Toggle terrain texturing mode (Textured vs. Fast Retro).
-- **ESC** / **Q**: Cancel tool, close inspector, or exit cleanly to the LugalOS shell (`lsh`).
+- **Backspace**: Cancel the active tool or close the inspector.
+- **ESC** / **Q**: The same, and with nothing to cancel it opens the menu. Quitting is only possible through the menu's confirmation (or Ctrl-C on the P4).
+
+### Day/night clock
+The dial at the top left is a 24 h clock for the lunar cycle (one cycle is 180 s of game time): dawn is 06:00, zenith 12:00, dusk 18:00 and the middle of the night 00:00. The text beside it shows the lunar day, the time and the time until the next dusk or dawn.
 
 ---
 

@@ -24,6 +24,7 @@ SRC := src/platform_sdl3.c \
        src/moon_textures.c \
        src/moon_structures.c \
        src/moon_resources.c \
+       src/moon_ui.c \
        src/moon_game.c \
        src/main_host.c
 
@@ -35,24 +36,31 @@ TEST_SRC := tests/test_fixed_blitter.c \
             src/moon_sprites.c \
             src/moon_textures.c \
             src/moon_structures.c \
-            src/moon_resources.c
+            src/moon_resources.c \
+            src/moon_ui.c
 
 OBJ_DIR := build_host
 OBJ := $(SRC:src/%.c=$(OBJ_DIR)/%.o)
 BIN_DIR := bin
 TARGET := $(BIN_DIR)/moonbase_host
 TEST_TARGET := $(BIN_DIR)/test_fixed_blitter
+LOGIC_TARGET := $(BIN_DIR)/test_game_logic
+LOGIC_SRC := tests/test_game_logic.c $(filter-out tests/test_fixed_blitter.c,$(TEST_SRC)) src/moon_game.c
 
 .PHONY: all run run_tab5 test clean
 
-all: $(TARGET) $(TEST_TARGET)
+all: $(TARGET) $(TEST_TARGET) $(LOGIC_TARGET)
 
-test: $(TEST_TARGET) $(TARGET)
+test: $(TEST_TARGET) $(LOGIC_TARGET) $(TARGET)
 	./$(TEST_TARGET)
+	./$(LOGIC_TARGET)
 	SDL_VIDEO_DRIVER=dummy ./$(TARGET) --7b --test-frames=15
 	SDL_VIDEO_DRIVER=dummy ./$(TARGET) --tab5 --test-frames=15
 
 $(TEST_TARGET): $(TEST_SRC) | $(BIN_DIR)
+	$(CC) $(CFLAGS) $^ -o $@
+
+$(LOGIC_TARGET): $(LOGIC_SRC) | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@
 
 $(BIN_DIR):

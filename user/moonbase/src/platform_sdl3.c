@@ -46,6 +46,12 @@ static uint32_t map_sdl_key(SDL_Keycode k) {
         case SDLK_9:         return MOON_KEY_9;
         case SDLK_T:         return MOON_KEY_T;
         case SDLK_Z:         return MOON_KEY_Z;
+        case SDLK_P:         return MOON_KEY_P;
+        case SDLK_MINUS:     return MOON_KEY_MINUS;
+        case SDLK_KP_MINUS:  return MOON_KEY_MINUS;
+        case SDLK_EQUALS:    return MOON_KEY_PLUS;
+        case SDLK_PLUS:      return MOON_KEY_PLUS;
+        case SDLK_KP_PLUS:   return MOON_KEY_PLUS;
         default:             return MOON_KEY_UNKNOWN;
     }
 }
@@ -158,6 +164,8 @@ void moon_platform_present(void) {
     SDL_RenderPresent(s_plat.renderer);
 }
 
+bool moon_platform_has_key_up(void) { return true; }
+
 bool moon_platform_poll_event(moon_event_t *ev) {
     if (!ev) return false;
 
@@ -183,6 +191,7 @@ bool moon_platform_poll_event(moon_event_t *ev) {
                 ev->x = (int32_t)e.button.x;
                 ev->y = (int32_t)e.button.y;
                 ev->button = e.button.button;
+                ev->touch = (e.button.which == SDL_TOUCH_MOUSEID);
                 return true;
 
             case SDL_EVENT_MOUSE_BUTTON_UP:
@@ -190,6 +199,7 @@ bool moon_platform_poll_event(moon_event_t *ev) {
                 ev->x = (int32_t)e.button.x;
                 ev->y = (int32_t)e.button.y;
                 ev->button = e.button.button;
+                ev->touch = (e.button.which == SDL_TOUCH_MOUSEID);
                 return true;
 
             case SDL_EVENT_MOUSE_MOTION:
@@ -198,6 +208,11 @@ bool moon_platform_poll_event(moon_event_t *ev) {
                 ev->y = (int32_t)e.motion.y;
                 ev->dx = (int32_t)e.motion.xrel;
                 ev->dy = (int32_t)e.motion.yrel;
+                ev->touch = (e.motion.which == SDL_TOUCH_MOUSEID);
+                return true;
+
+            case SDL_EVENT_WINDOW_MOUSE_LEAVE:
+                ev->type = MOON_EVENT_POINTER_LEAVE;
                 return true;
 
             case SDL_EVENT_MOUSE_WHEEL:
