@@ -39,6 +39,7 @@ typedef struct {
                                     * 90 s, so 100 would need about twenty batteries */
     uint8_t  sinterer_kg_per_min;  /* regolith a powered Sinterer bakes */
     uint8_t  crew_use_pct;         /* O2 and water per colonist, 100 = 1 kg and 2 L per 30 s */
+    uint8_t  deposit_s_per_unit;   /* Seconds an Extractor takes to draw one unit (1% of a tile) from a deposit */
 } moon_rules_t;
 
 enum { MOON_DIFFICULTY_EASY = 0, MOON_DIFFICULTY_NORMAL, MOON_DIFFICULTY_HARD, MOON_DIFFICULTY_COUNT };

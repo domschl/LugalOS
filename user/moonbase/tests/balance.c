@@ -25,6 +25,16 @@ static bool ok_to_build(moon_structure_type_t t, int x, int y) {
     return moon_structure_can_place(&g.grid, &g.structs, t, x, y, NULL);
 }
 
+/* Extractors with something left to draw */
+static int working_extractors(void) {
+    int n = 0;
+    for (int i = 1; i < MOON_MAX_STRUCTURES; i++) {
+        const moon_structure_t *s = &g.structs.list[i];
+        if (s->id && s->type == MOON_STRUCT_O2_EXTRACTOR && !s->depleted) n++;
+    }
+    return n;
+}
+
 static int count_of(moon_structure_type_t t) {
     int n = 0;
     for (int i = 1; i < MOON_MAX_STRUCTURES; i++) if (g.structs.list[i].id && g.structs.list[i].type == t) n++;
@@ -158,7 +168,7 @@ static void decide(player_t who) {
     }
 
     /* 1. Water and oxygen: power for the extractor, a route of conduits, the extractor */
-    if (count_of(MOON_STRUCT_O2_EXTRACTOR) == 0) {
+    if (working_extractors() == 0) {
         /* only solar until the extractor is covered; batteries wait for income */
         if (count_of(MOON_STRUCT_SOLAR_ARRAY) < solar_for(load_with(1, 0, 0, 0))) { build_site(MOON_STRUCT_SOLAR_ARRAY, 10); return; }
         build_extractor();
@@ -182,7 +192,7 @@ static void decide(player_t who) {
     }
 
     /* 4. Water or oxygen going down: another extractor, with its power */
-    int ex = count_of(MOON_STRUCT_O2_EXTRACTOR);
+    int ex = working_extractors();
     if (ex < 5 && (ex < 2 || g.resources.water_rate_l_per_tick < 0 || g.resources.o2_rate_kg_per_tick < 0)) {
         if (ensure_supply(load_with(ex + 1, 1, 1, 0))) return;
         build_extractor();
@@ -318,6 +328,14 @@ int main(int argc, char **argv) {
             assert(h->act1[0] < SEEDS || h->act1[1] < SEEDS);               /* ... and punishes a slow player or a bad map */
             assert(h->careless_dead >= SEEDS - 1);
             assert(h->idle_median_death <= n->idle_median_death);
+            /* Deposits run dry and the base moves on: a month on the default map */
+            s_override = &g_moon_rules[MOON_DIFFICULTY_NORMAL];
+            s_seed = 0;
+            result_t month = run(PLAYER_GOOD, 30, false, "");
+            int dry = 0;
+            for (int i = 1; i < MOON_MAX_STRUCTURES; i++) if (g.structs.list[i].id && g.structs.list[i].depleted) dry++;
+            assert(!month.day_dead && month.day_end >= 30);
+            assert(dry >= 1 && working_extractors() >= 1);
             printf("[test] Balance: good player wins every level, careless and idle players lose on Normal and Hard: PASS\n");
         }
         return 0;
@@ -336,7 +354,7 @@ int main(int argc, char **argv) {
         moon_rules_t r = g_moon_rules[MOON_DIFFICULTY_NORMAL];
         r.energy_pct = (uint8_t)atoi(argv[2]); r.start_regolith_kg = (uint16_t)atoi(argv[3]); r.sinterer_kg_per_min = (uint8_t)atoi(argv[4]);
         s_override = &r;
-        run(PLAYER_GOOD, days, true, "good");
+        run(PLAYER_GOOD, argc > 5 ? atoi(argv[5]) : 16, true, "good");
         return 0;
     }
     if (!check) {

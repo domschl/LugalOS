@@ -335,7 +335,7 @@ Order is by dependency: correctness first (everything else builds on picking and
 - P4 shutdown (`platform_p4.c`): `s_active` is armed as soon as the terminal's screen is taken, a failed init now tears down too, and teardown is idempotent: input first (touch hook off, event queue and console key bytes drained so repeat characters do not reach the shell), then the canvas goes back to text, then the buffers are freed.
 - Tests: game over (overlay, frozen sim, keys inert, Restart / Quit by key and button), cause of death for each cause, the victory conditions one by one and the Continue / ESC / Restart / Quit flow, 50 restarts through the menu (clean base, distinct seeds, ice in reach, valid landing tile), reproducible seeds; the ASan run reports no leaks. Still to do by a person: on the 7B and Tab5 exit by menu, by `Q` and by Ctrl-C each leave a clean text console, and a game over by starving the base.
 
-**64.13 implementation notes, balance part (2026-10-24).** Done: 5.7.8 (balance and difficulty), the headless test, the balance table below, 5.2.15 for the README catalog. Still open in 64.13: quarrying from `resource_val` and foundation pads (5.7.2), ice stock and a separate electrolysis step (5.7.3), Habitat that draws O2 and water and needs shielding (5.7.4), fuel and landing pad (5.7.5), events and building health (5.7.9), storage and heater buildings (5.7.10).
+**64.13 implementation notes, balance part (2026-10-24).** Done: 5.7.8 (balance and difficulty), the headless test, the balance table below, 5.2.15 for the README catalog. Still open in 64.13: quarrying from `resource_val` and foundation pads (5.7.2), a separate electrolysis step (5.7.3), Habitat that draws O2 and water and needs shielding (5.7.4), fuel and landing pad (5.7.5), events and building health (5.7.9), storage and heater buildings (5.7.10).
 - **What was wrong (measured with `tests/balance.c`).** The sim moved 1 kWh per kW per game second, so carrying a 50 kW base through the 90 s night needed about 4,000 kWh (14 batteries; 5.7.8's suspicion was right). A good scripted player died on the first night on every setting; the idle player died on day 2; and several maps put the first source of water a 9-tile cable run away, which the start stock could not pay for. Two causes were also in the *bot*: it sized solar for the day load only (the night is as long as the day, so solar must average about twice the load) and it stopped at two Extractors although 12 colonists need more.
 - **Energy scale.** `rules.energy_pct`: kWh a kW moves per game second, in percent (Normal 8: a 55 kW night costs about 400 kWh, two batteries). It is data, so the levels can set it.
 - **Difficulty levels** (`moon_rules_t`, `g_moon_rules[]`, flash): Cadet (easy), Engineer (normal, the default), Commander (hard). A level sets the starting regolith, O2, water and battery, the energy scale, the Sinterer's output and the crew's use of O2 and water. Chosen in the menu's `R:NEW GAME` page (`1`/`2`/`3`, `N` back; from the game-over and victory overlays too); the host takes `--difficulty=`. The level is kept over restarts of a session and shown in the menu and the end overlays.
@@ -343,11 +343,11 @@ Order is by dependency: correctness first (everything else builds on picking and
 - **Act I goal raised** to day 6 and 8 crew (`MOON_ACT1_DAY`, `MOON_ACT1_CREW`) so that a base has to run through five full days and a full Habitat; with the crew at 12 it also needs a second or third Extractor, which is the point of the "production keeps up" condition.
 - **Balance table** (rules, then what `bin/balance levels 16` measures over twelve maps; "good" decides every second, "slow" every 8 s, "careless" builds a Habitat first, "idle" builds nothing). `make test` asserts the targets in the last column.
 
-| Level | regolith | O2 | water | battery | energy % | Sinterer kg/min | crew use % |
-| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Cadet | 120 | 70 | 100 | 100 | 5 | 45 | 80 |
-| Engineer | 80 | 50 | 75 | 40 | 8 | 30 | 100 |
-| Commander | 50 | 40 | 60 | 20 | 10 | 30 | 130 |
+| Level | regolith | O2 | water | battery | energy % | Sinterer kg/min | crew use % | s per deposit unit |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Cadet | 120 | 70 | 100 | 100 | 5 | 45 | 80 | 12 |
+| Engineer | 80 | 50 | 75 | 40 | 8 | 30 | 100 | 8 |
+| Commander | 50 | 40 | 60 | 20 | 10 | 30 | 130 | 6 |
 
 | Level | good: alive / Act I (median day) | slow: alive / Act I (median day) | careless dies | idle dies (median day) | Target |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -364,6 +364,11 @@ Order is by dependency: correctness first (everything else builds on picking and
 - Title page (`MOON_MENU_TITLE`): opened when `show_title` is set before init (the P4 launch; the host, unless `--difficulty=` or an automated `--test-frames` run). It keeps the launch's map (`keep_seed`), so `--seed=N` replays a map, and ESC cannot dismiss it; `1`/`2`/`3` start, `Q` quits.
 - Brush ghost on touch (fix found on the boards): with a finger lifted the ghost used to fall back to the selected tile, i.e. the cable just built, and showed "Site already occupied" after every tap. `moon_game_ghost_target()` now returns no target for a brush while a finger is up (the ghost shows under the finger while it is down); a keyboard brush still previews the selection and a mouse brush the pointer, and a key press marks the keyboard as the last device.
 - `make test` additionally asserts that the scripted good player completes every objective on every map on Cadet and Engineer, and the unit tests walk the chain through real placements.
+
+**64.13 implementation notes, deposits (2026-10-24).** Done: the stock and depletion half of 5.7.3. A separate electrolysis building is not built: the ribbon has no room for a seventh build button without shrinking every label, and it would mostly add a step rather than a decision.
+- A deposit is the `resource_val` of its ice or mare tiles (the "R:" in the tile readout and the inspector). A powered, active Extractor draws one unit from the richest ice or mare tile beside it every `rules.deposit_s_per_unit` seconds (Engineer 8: about 11 days for one Extractor on three 82-unit mare tiles); `moon_structure_t.work` counts toward the next unit and `.depleted` is set when no adjacent tile has any left. A depleted Extractor makes nothing and draws no power; the badge reads `DEPL`, the inspector `DEPLETED` and "Deposit left". Unpowered, standby and brownout Extractors draw nothing, so they keep their deposit.
+- Placement needs a neighbouring ice or mare tile with `resource_val` > 0 ("Needs ice or mare with ore left"), so an exhausted patch is closed to new Extractors.
+- Balance: the scripted good player copes by building Extractors on fresh ground (five over a month on Engineer's default map); `bin/balance check` asserts it survives 30 days with at least one Extractor dry. In Act I the depletion only costs a few kg, because regolith is plentiful once a Sinterer runs and the stock caps at 250 kg: the real pressure needs the sinks of Act II (fuel, exports) and the quarrying and storage of 64.13's remaining items.
 
 ### 5.9 Long-Term Features for Acts II/III (requested 2026-10-24; not scheduled)
 
