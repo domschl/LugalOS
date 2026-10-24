@@ -39,13 +39,16 @@ static void game_reset(moon_game_t *game, int width, int height) {
     bool textured = (game->state != MOON_STATE_INIT) ? game->grid.textured_terrain : true;
     /* A fresh seed per run: the requested one for the first, then one derived from
      * the previous seed and how long that run lasted */
-    uint32_t seed = game->seed_request ? game->seed_request :
+    uint32_t seed = game->keep_seed ? game->seed :
+                    game->seed_request ? game->seed_request :
                     game->seed ? game->seed * 1664525u + 1013904223u + game->sim_ticks : 19690720u;
+    bool hide_objectives = game->objectives_hidden;
     int difficulty = game->difficulty_request ? game->difficulty_request - 1
                    : (game->state != MOON_STATE_INIT) ? game->difficulty : MOON_DIFFICULTY_NORMAL;
     memset(game, 0, sizeof(*game));
     game->seed = seed;
     game->difficulty = (uint8_t)difficulty;
+    game->objectives_hidden = hide_objectives;
 
     moon_textures_init();
 
@@ -83,7 +86,12 @@ static void game_reset(moon_game_t *game, int width, int height) {
 
 bool moon_game_init(moon_game_t *game, int width, int height) {
     if (!game) return false;
+    bool title = game->show_title;
     game_reset(game, width, height);
+    if (title) {
+        game->menu_page = MOON_MENU_TITLE;
+        game->menu_sel = game->difficulty;
+    }
     return true;
 }
 
@@ -439,6 +447,7 @@ static int menu_item_count(const moon_game_t *game) {
     switch (game->menu_page) {
     case MOON_MENU_MAIN:     return MOON_UI_MENU_ITEMS;
     case MOON_MENU_VICTORY:  return 3;
+    case MOON_MENU_TITLE:    return 3;   /* the three levels */
     case MOON_MENU_NEW_GAME: return 4;   /* three levels and Back */
     default:                 return 2;
     }
@@ -448,6 +457,7 @@ static int menu_first_row(const moon_game_t *game) {
     switch (game->menu_page) {
     case MOON_MENU_GAME_OVER: return 2;
     case MOON_MENU_VICTORY:   return 1;
+    case MOON_MENU_TITLE:     return 1;
     default:                  return 0;
     }
 }
@@ -489,6 +499,12 @@ static void menu_activate(moon_game_t *game, int item) {
             game->menu_sel = (game->menu_return == MOON_MENU_MAIN) ? 2 : 0;
         }
         break;
+    case MOON_MENU_TITLE:
+        /* Same map, the chosen level: the seed was picked at launch */
+        game->difficulty_request = (uint8_t)(item + 1);
+        game->keep_seed = true;
+        game_reset(game, game->screen_w, game->screen_h);
+        break;
     case MOON_MENU_GAME_OVER:
         if (item == 0) open_new_game(game, MOON_MENU_GAME_OVER);
         else game->running = false;
@@ -509,7 +525,7 @@ static void menu_activate(moon_game_t *game, int item) {
 /* Same on every device: back out of the innermost thing (menu page, brush, inspector).
  * Returns false when there was nothing to back out of. */
 static bool cancel_action(moon_game_t *game) {
-    if (game->menu_page == MOON_MENU_GAME_OVER) return true;      /* the only ways out are the buttons */
+    if (game->menu_page == MOON_MENU_GAME_OVER || game->menu_page == MOON_MENU_TITLE) return true; /* the only ways out are the buttons */
     if (game->menu_page == MOON_MENU_VICTORY) {
         menu_activate(game, 0);                                   /* ESC continues playing */
         return true;
@@ -563,8 +579,12 @@ static void handle_key_down(moon_game_t *game, const moon_event_t *ev) {
             if (key == MOON_KEY_Q) { menu_activate(game, restart + 1); return; }
             if (key == MOON_KEY_C && game->menu_page == MOON_MENU_VICTORY) { menu_activate(game, 0); return; }
         }
-        if (newgame && key >= MOON_KEY_1 && key <= MOON_KEY_3) {
+        if ((newgame || game->menu_page == MOON_MENU_TITLE) && key >= MOON_KEY_1 && key <= MOON_KEY_3) {
             menu_activate(game, (int)(key - MOON_KEY_1));
+            return;
+        }
+        if (game->menu_page == MOON_MENU_TITLE && key == MOON_KEY_Q) {
+            game->running = false;
             return;
         }
         switch (key) {
@@ -625,6 +645,7 @@ static void handle_key_down(moon_game_t *game, const moon_event_t *ev) {
 
     case MOON_KEY_T: toggle_texture(game); break;
     case MOON_KEY_P: toggle_pause(game); break;
+    case MOON_KEY_O: game->objectives_hidden = !game->objectives_hidden; break;
     case MOON_KEY_MINUS: set_speed(game, game->speed / 2); break;
     case MOON_KEY_PLUS:  set_speed(game, game->speed * 2); break;
 
@@ -832,6 +853,41 @@ void moon_game_handle_event(moon_game_t *game, const moon_event_t *ev) {
     }
 }
 
+/* ---- Objectives: the tutorial path ---- */
+
+static int count_built(const moon_game_t *game, int type, bool powered_only) {
+    int n = 0;
+    for (int i = 1; i < MOON_MAX_STRUCTURES; i++) {
+        const moon_structure_t *s = &game->structs.list[i];
+        if (s->id && s->type == type && (!powered_only || (s->active && s->powered))) n++;
+    }
+    return n;
+}
+
+static bool objective_done(const moon_game_t *game, int i) {
+    switch (i) {
+    case 0: return count_built(game, MOON_STRUCT_O2_EXTRACTOR, true) >= 1;
+    case 1: return count_built(game, MOON_STRUCT_SOLAR_ARRAY, false) >= 3;
+    case 2: return count_built(game, MOON_STRUCT_REGOLITH_PLANT, true) >= 1;
+    case 3: return count_built(game, MOON_STRUCT_BATTERY_BANK, false) >= 2;
+    case 4: return count_built(game, MOON_STRUCT_HABITAT_DOME, true) >= 1;
+    case 5: return game->resources.population >= MOON_ACT1_CREW;
+    default: return game->victory_claimed || game->state == MOON_STATE_VICTORY;
+    }
+}
+
+/* Moves on when the current objective is met (also past several at once) */
+static void objectives_update(moon_game_t *game) {
+    bool advanced = false;
+    while (game->objective < MOON_OBJECTIVES && objective_done(game, game->objective)) {
+        game->objective++;
+        advanced = true;
+    }
+    if (advanced) {
+        notify(game, game->objective >= MOON_OBJECTIVES ? "ALL OBJECTIVES COMPLETE" : "OBJECTIVE COMPLETE", 3000);
+    }
+}
+
 void moon_game_update(moon_game_t *game, uint32_t delta_ms) {
     if (!game) return;
 
@@ -871,6 +927,7 @@ void moon_game_update(moon_game_t *game, uint32_t delta_ms) {
         moon_resources_tick(&game->resources, &game->grid, &game->structs);
     }
     moon_game_check_end(game);
+    objectives_update(game);
 }
 
 /* The run ends when the last colonist dies, or is won when Act I is complete. Either
@@ -1098,6 +1155,54 @@ static void render_undo_button(const moon_game_t *game, const moon_surface_t *su
     draw_button(surf, &game->ui.undo_btn, label, RGB565(35, 30, 15), COLOR_ENERGY_YELLOW, COLOR_LUNAR_WHITE);
 }
 
+static void render_objective(const moon_game_t *game, const moon_surface_t *surf) {
+    if (game->objectives_hidden) return;
+    const bool narrow = game->ui.narrow;
+    const moon_resources_t *res = &game->resources;
+    char text[72];
+    int n = game->objective;
+    int have = 0;
+    const char *fmt;
+    switch (n) {
+    case 0: fmt = narrow ? "Extractor (5) beside ice/mare" : "Build an Oxygen Extractor (5) beside ice or dark mare"; break;
+    case 1: have = count_built(game, MOON_STRUCT_SOLAR_ARRAY, false);
+            fmt = narrow ? "Solar Arrays (1): %d of 3" : "Power the base: Solar Arrays (1), %d of 3"; break;
+    case 2: fmt = narrow ? "Sinterer (4) for regolith" : "Build a Regolith Sinterer (4) for building material"; break;
+    case 3: have = count_built(game, MOON_STRUCT_BATTERY_BANK, false);
+            fmt = narrow ? "Batteries (2): %d of 2" : "Store the night: a second Battery Bank (2), %d of 2"; break;
+    case 4: fmt = narrow ? "Habitat (3) for more crew" : "Build a Habitat (3) for more crew"; break;
+    case 5: have = res->population;
+            fmt = narrow ? "Grow the crew: %d of 8" : "Grow the crew to 8 colonists: %d now"; break;
+    case 6: have = (int)res->lunar_day;
+            fmt = narrow ? "Act I: day %d of 6" : "Act I: reach day 6 with water and oxygen to spare (day %d)"; break;
+    default: fmt = narrow ? "Objectives done. O hides" : "All objectives complete. Keep building (O hides this)"; break;
+    }
+    int len = 0;
+    const char *f = fmt;
+    char pre[8] = { 0 };
+    if (n < MOON_OBJECTIVES) { pre[0] = (char)('1' + n); pre[1] = '/'; pre[2] = '7'; pre[3] = ' '; }
+    while (pre[len]) { text[len] = pre[len]; len++; }
+    /* a single %d at most */
+    for (; *f && len < (int)sizeof(text) - 12; f++) {
+        if (f[0] == '%' && f[1] == 'd') {
+            int v = have, digits = 1;
+            for (int t = v; t >= 10; t /= 10) digits++;
+            for (int d = digits - 1; d >= 0; d--) { text[len + d] = (char)('0' + v % 10); v /= 10; }
+            len += digits;
+            f++;
+        } else {
+            text[len++] = *f;
+        }
+    }
+    text[len] = '\0';
+    const moon_ui_rect_t *hb = &game->ui.hover_badge;
+    int w = len * MOON_FONT_W + 16, y = hb->y - 24;
+    bool done = n >= MOON_OBJECTIVES;
+    moon_blit_fill_rect(surf, hb->x, y, w, 20, RGB565(20, 26, 20));
+    moon_blit_rect_outline(surf, hb->x, y, w, 20, done ? COLOR_STATUS_GREEN : COLOR_GOLD_FOIL);
+    moon_blit_text(surf, hb->x + 8, y + 2, text, done ? COLOR_STATUS_GREEN : COLOR_LUNAR_WHITE, 0, true);
+}
+
 static const char *cause_name(int cause) {
     switch (cause) {
     case MOON_CAUSE_OXYGEN:   return "NO OXYGEN";
@@ -1146,6 +1251,15 @@ static void render_menu(const moon_game_t *game, const moon_surface_t *surf) {
         items[3] = "N:BACK";
         break;
     }
+    case MOON_MENU_TITLE:
+        moon_blit_text(surf, tx, ty, "MOONBASE LAMBDA", COLOR_GOLD_FOIL, 0, true);
+        moon_blit_text(surf, tx, row,      "South pole, day 1. 4 crew.", COLOR_LUNAR_WHITE, 0, true);
+        moon_blit_text(surf, tx, row + 16, "Power, water, air, regolith.", COLOR_LUNAR_WHITE, 0, true);
+        moon_blit_text(surf, tx, row + 32, "Pick a level.      Q:QUIT", COLOR_REGOLITH_LIGHT, 0, true);
+        items[0] = "1:CADET (EASY)";
+        items[1] = "2:ENGINEER (NORMAL)";
+        items[2] = "3:COMMANDER (HARD)";
+        break;
     case MOON_MENU_GAME_OVER:
         moon_blit_text_fmt(surf, tx, ty, COLOR_ALERT_RED, 0, true, "BASE LOST - %s", res->rules.name);
         moon_blit_text_fmt(surf, tx, row,       COLOR_LUNAR_WHITE, 0, true, "DAY REACHED  %d", (int)res->lunar_day);
@@ -1356,6 +1470,8 @@ void moon_game_render(moon_game_t *game, uint16_t *fb, int width, int height, in
                            "[%02d,%02d] %s E:%d R:%d%%", bx, by, tname,
                            ht ? ht->elevation : 0, ht ? ht->resource_val : 0);
     }
+
+    if (game->menu_page == MOON_MENU_CLOSED) render_objective(game, &surf);
 
     /* 8. Active Life Support / Crisis Warning Ticker Banner */
     int banner_y = (width < 800) ? 26 : 38;

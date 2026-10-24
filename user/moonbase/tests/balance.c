@@ -189,8 +189,8 @@ static void decide(player_t who) {
     }
 }
 
-typedef struct { int day_dead, day_end, peak_pop, act1_day; } result_t;
-typedef struct { int alive[2], act1[2], median_day[2], careless_dead, idle_median_death; } level_result_t;
+typedef struct { int day_dead, day_end, peak_pop, act1_day, objective; } result_t;
+typedef struct { int alive[2], act1[2], median_day[2], careless_dead, idle_median_death, objectives_done; } level_result_t;
 
 static uint32_t s_seed;   /* 0 = the default map */
 static const moon_rules_t *s_override;   /* replaces the level's rules when set */
@@ -201,7 +201,7 @@ static result_t run(player_t who, int days, bool verbose, const char *name) {
     moon_game_init(&g, 1024, 600);
     if (s_override) { g.resources.rules = *s_override; moon_resources_apply_start(&g.resources); }
     s_ext_x = -1; s_route_len = s_route_next = 0;
-    result_t out = { 0, 0, 0, 0 };
+    result_t out = { 0, 0, 0, 0, 0 };
     if (verbose) printf("-- %s\n day  pwr(prod/use)  batt/cap   O2    H2O   rgl  crew  LS  struct\n", name);
     int total_s = days * 180;
     for (int sec = 0; sec < total_s && g.running; sec++) {
@@ -220,6 +220,7 @@ static result_t run(player_t who, int days, bool verbose, const char *name) {
                         (int)g.state, (int)g.resources.lunar_day, g.resources.population, count_of(MOON_STRUCT_POWER_CONDUIT),
                         count_of(MOON_STRUCT_O2_EXTRACTOR), count_of(MOON_STRUCT_REGOLITH_PLANT), count_of(MOON_STRUCT_SOLAR_ARRAY),
                         count_of(MOON_STRUCT_BATTERY_BANK), count_of(MOON_STRUCT_HABITAT_DOME), g.resources.death_cause);
+    out.objective = g.objective;
     out.day_end = g.resources.lunar_day;
     out.peak_pop = g.resources.peak_population;
     if (g.state == MOON_STATE_GAME_OVER && !out.day_dead) out.day_dead = g.resources.lunar_day;
@@ -239,6 +240,7 @@ static level_result_t measure_level(int lv, int seeds, int days) {
             result_t x = run(k ? PLAYER_SLOW : PLAYER_GOOD, days, false, "");
             if (!x.day_dead) r.alive[k]++;
             if (x.act1_day) r.act1[k]++;
+            if (k == 0 && x.objective == MOON_OBJECTIVES) r.objectives_done++;
             act1_days[k][s] = x.act1_day ? x.act1_day : 99;
         }
         if (run(PLAYER_HABITAT_FIRST, days, false, "").day_dead) r.careless_dead++;
@@ -305,6 +307,7 @@ int main(int argc, char **argv) {
             /* Targets (plan/phase64 5.8, 64.13): over twelve maps */
             const level_result_t *e = &res[MOON_DIFFICULTY_EASY], *n = &res[MOON_DIFFICULTY_NORMAL], *h = &res[MOON_DIFFICULTY_HARD];
             assert(n->alive[0] == SEEDS && n->act1[0] == SEEDS);            /* a good player always wins on Normal ... */
+            assert(n->objectives_done == SEEDS && e->objectives_done == SEEDS); /* ... following the objective path to its end */
             assert(n->alive[1] >= SEEDS - 1 && n->act1[1] >= SEEDS - 1);    /* ... and so does a slow one */
             assert(n->careless_dead >= SEEDS - 1);                          /* Habitat before power loses */
             assert(n->idle_median_death <= 3);                              /* doing nothing loses within three days */

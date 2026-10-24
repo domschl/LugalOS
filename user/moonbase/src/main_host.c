@@ -16,6 +16,7 @@ int main(int argc, char **argv) {
     const char *dump_ppm = NULL;
     uint32_t seed = (uint32_t)time(NULL); /* a new map each run */
     int difficulty = MOON_DIFFICULTY_NORMAL;
+    bool difficulty_given = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--tab5") == 0) {
@@ -36,6 +37,7 @@ int main(int argc, char **argv) {
             seed = (uint32_t)strtoul(argv[i] + 7, NULL, 0);
         } else if (strncmp(argv[i], "--difficulty=", 13) == 0) {
             const char *d = argv[i] + 13;
+            difficulty_given = true;
             difficulty = (d[0] == 'e' || d[0] == 'c' || d[0] == '0') ? MOON_DIFFICULTY_EASY
                        : (d[0] == 'h' || d[0] == '2') ? MOON_DIFFICULTY_HARD : MOON_DIFFICULTY_NORMAL;
         } else if (strncmp(argv[i], "--dump-ppm=", 11) == 0) {
@@ -66,6 +68,7 @@ int main(int argc, char **argv) {
 
     s_game.seed_request = seed;
     s_game.difficulty_request = (uint8_t)(difficulty + 1);
+    s_game.show_title = !difficulty_given && max_frames == 0; /* automated runs skip the title */
     if (!moon_game_init(&s_game, width, height)) {
         moon_platform_log("[main] Fatal: failed to initialize game state.\n");
         moon_platform_shutdown();

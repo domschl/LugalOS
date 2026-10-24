@@ -398,6 +398,9 @@ bool moon_platform_poll_event(moon_event_t *ev) {
             case 'c': case 'C':
                 ev->key = MOON_KEY_C;
                 return true;
+            case 'o': case 'O':
+                ev->key = MOON_KEY_O;
+                return true;
             case '-': case '_':
                 ev->key = MOON_KEY_MINUS;
                 return true;
@@ -440,6 +443,7 @@ int moonbase_run(void) {
     uint32_t seed = 0;
     random_bytes(&seed, sizeof(seed));
     s_p4_game.seed_request = seed ? seed : 1;
+    s_p4_game.show_title = true;
     if (!moon_game_init(&s_p4_game, w, h)) {
         cprintf("moonbase: failed to initialize game engine\n");
         moon_platform_shutdown();
