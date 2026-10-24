@@ -1,5 +1,9 @@
 # LugalOS Storage & Filesystem Architecture
 
+[Documentation](../README.md) > [Administrator Manual](index.md) > **Storage & Filesystems**
+
+---
+
 LugalOS implements a unified Virtual Filesystem (VFS) layer supporting multiple FAT32 storage backends, synthetic system filesystems (`/proc/`, `/dev/`, `/srv/`), and in-memory RAM disks.
 
 ---
@@ -72,3 +76,7 @@ On headless appliances or boards without an SD card, LugalOS boots from `/flash0
 * Generated at build time by packing [`tools/sd_root/`](file:///home/dsc/Source/gith/domschl/lugalos/tools/sd_root) via `tools/create_flash_fs.py`.
 * On RP2350, it is compiled into `build/rp2350/flashfs.uf2` and flashed to an independent flash offset.
 * On ESP32-P4 and ESP32-C6, it is mapped into the XIP flash address space.
+
+---
+
+**Navigation:** [← Identity Guide](identity.md) | [Administrator Manual](index.md) | [Updates Guide →](updates.md) | [Documentation Index](../README.md)

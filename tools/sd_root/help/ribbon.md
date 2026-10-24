@@ -1,5 +1,9 @@
 # LugalOS Window Ribbon & Terminal System
 
+[Documentation](index.md) > [User Manual](user.md) > **Window Ribbon & Terminal System**
+
+---
+
 LugalOS features a native **Horizontal Tiling Window Ribbon** designed specifically for widescreen displays (such as the 7" 800×480 Waveshare RP2350-LCD-7 and the 7" 1024×600 Waveshare ESP32-P4-LCD-7B).
 
 Instead of overlapping windows or rigid vertical splits, LugalOS tiles windows side-by-side along an infinite horizontal ribbon. Users and applications can seamlessly navigate between terminals, graphical canvases, and application panes.
@@ -88,3 +92,7 @@ Graphical canvases in LugalOS are decoupled from terminal lifetimes and can be a
 * `lcd blank [min|Ns|off]`: Sets idle inactivity timeout before backlight turns off. Pressing any key or touching the screen wakes the display immediately.
 * `lcd reinit video|panel|phy|link` (ESP32-P4 panels): Redoes part of the panel's bring-up without a reboot: `video` restarts the pixel stream, `panel` also resets the panel and sends its init commands, `phy` restarts the MIPI-DSI link (PHY, clocks, timing) and leaves the panel alone, `link` does both. For a panel that stays black while everything reports normal.
 * `screenshot [path]`: Saves an uncompressed PBM image of the active display buffer directly to the filesystem.
+
+---
+
+**Navigation:** [← User Manual](user.md) | [Documentation Index](index.md)

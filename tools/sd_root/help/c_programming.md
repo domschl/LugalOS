@@ -1,5 +1,9 @@
 # C Programming on LugalOS: Compiler, Intrinsics & Syscall ABI
 
+[Documentation](index.md) > [Developer Manual](dev.md) > **C Programming & Compiler**
+
+---
+
 LugalOS features an on-device native C compiler (`chibicc`) capable of compiling C11 programs directly to unprivileged RISC-V user ELF binaries.
 
 ## 1. On-Device Compilation & Execution
@@ -122,3 +126,7 @@ User applications execute in unprivileged RISC-V User Mode (U-Mode):
   * `SYS_READ_FILE` (13): Read file from VFS.
   * `SYS_WRITE_FILE` (14): Write file to VFS.
   * `SYS_TICKS` (21): Read system preemption tick counter.
+
+---
+
+**Navigation:** [← Developer Manual](dev.md) | [Lisp Scripting →](lisp.md) | [Documentation Index](index.md)

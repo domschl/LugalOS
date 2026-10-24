@@ -1,12 +1,16 @@
 # LugalOS Z-Machine & Interactive Fiction
 
-LugalOS includes a native, freestanding Z-machine (Version 3) interpreter for interactive fiction, featuring an interactive split-screen real-time auto-mapper on the [window ribbon](doc/user/ribbon.md).
+[Documentation](../README.md) > [User Manual](index.md) > **Z-Machine & Interactive Fiction**
+
+---
+
+LugalOS includes a native, freestanding Z-machine (Version 3) interpreter for interactive fiction, featuring an interactive split-screen real-time auto-mapper on the [window ribbon](ribbon.md).
 
 ---
 
 ## 1. Overview & Architecture
 
-The LugalOS Z-machine environment allows playing classic Infocom titles and modern interactive fiction story files directly from the [shell](doc/user/shell.md) or Lisp REPL:
+The LugalOS Z-machine environment allows playing classic Infocom titles and modern interactive fiction story files directly from the [shell](shell.md) or Lisp REPL:
 
 * **Z-Machine Specification**: Implements the complete Version 3 specification (flat 128 KB address space, 61 opcodes, routine call frames, dictionary tokenization, and dynamic memory save/restore).
 * **Freestanding C & Zero FPU**: Pure integer arithmetic adhering strictly to the LugalOS kernel policy disabling floating-point hardware (`mstatus.FS = 0`).
@@ -103,7 +107,7 @@ Pressing `Enter` or `y` resumes the game from your exact position with the full 
 
 ## 5. Lisp Integration at the Game Prompt
 
-Following the same convention as the LugalOS [chess computer](doc/user/chess.md), typing an opening parenthesis `(` at the game prompt switches the line input to the Lisp evaluator:
+Following the same convention as the LugalOS [chess computer](chess.md), typing an opening parenthesis `(` at the game prompt switches the line input to the Lisp evaluator:
 
 ```text
 > (+ 19 23)
@@ -134,3 +138,7 @@ To add additional interactive fiction games:
 2. Rename the file using standard 8.3 FAT short filenames (e.g. `ENCHANTE.Z3`, `PLANETFA.Z3`, `HITCHHIK.Z3`).
 3. Copy the file into `/sd0/games/` using the 9P synchronization tool (`tools/p9sync.py`) or by mounting the MicroSD card on a host workstation.
 4. Launch the game using `zmachine <filename>`.
+
+---
+
+**Navigation:** [← User Manual](index.md) | [Documentation Index](../README.md)

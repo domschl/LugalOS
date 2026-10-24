@@ -129,6 +129,7 @@ python3 tools/p4flash.py --board tab5 --build build/esp32p4-tab5 --only boot,os 
 
 LugalOS maintains structured, in-depth documentation under [`doc/`](doc/):
 
+* **[About LugalOS](doc/about.md)**: Architectural overview, hardware specifications, and system concepts.
 * **[User Manual](doc/user/index.md)**:
   * [Shell & Command Environment](doc/user/shell.md)
   * [Text Editors: Full-Screen & Line Editors](doc/user/editors.md)
@@ -143,6 +144,7 @@ LugalOS maintains structured, in-depth documentation under [`doc/`](doc/):
   * [Plan 9 Networking & Host Integration](doc/admin/networking.md)
   * [Identity, Authentication & Security](doc/admin/identity.md)
   * [Storage & Filesystems](doc/admin/storage.md)
+  * [Target Hardware & Board Reference Guides](doc/admin/boards/index.md)
 * **[System Programmer Manual](doc/dev/index.md)**:
   * [On-Device C Programming & Syscalls](doc/dev/on_device/c_programming.md)
   * [Lisp Dialect, Primitives & Scripting](doc/dev/on_device/lisp_scripting.md)

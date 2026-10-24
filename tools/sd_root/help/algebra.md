@@ -1,5 +1,9 @@
 # LugalOS CAS: Algebra Manual (Simplification, Polynomials, Equations & Matrices)
 
+[Documentation](index.md) > [User Manual](user.md) > [CAS](cas.md) > **Algebra**
+
+---
+
 LugalOS features a self-contained exact Computer Algebra System running in Scheme-like Lisp. All computations use exact rational $\mathbb{Q}$ and Gaussian rational $\mathbb{Q}(i)$ arithmetic with zero floating-point overhead.
 
 ## 1. System Startup
@@ -153,3 +157,7 @@ Allows entering mathematical expressions in traditional infix notation:
 | matrix-solve | (matrix-solve A b) | Solve A*x = b |
 | calc | (calc "infix string") | Evaluate infix expression |
 ```
+
+---
+
+**Navigation:** [← CAS Manual](cas.md) | [Calculus Manual →](calculus.md) | [User Manual](user.md) | [Documentation Index](index.md)

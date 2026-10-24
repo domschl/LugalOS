@@ -1,5 +1,9 @@
 # LugalOS Interactive Graphics & Algorithm Demos (`demos`)
 
+[Documentation](index.md) > [User Manual](user.md) > **Graphics & Algorithm Demos**
+
+---
+
 LugalOS provides ready-to-run interactive demonstrations in Lisp and C, showcasing canvas graphics, cellular automata, chaotic attractors, and hardware acceleration across display targets.
 
 ## 1. Demos Directory Locations
@@ -66,3 +70,7 @@ In addition to Lisp demos, user-mode C applications can be compiled and executed
 lsh> cc /sd0/hello.c /ram0/hello.elf
 lsh> exec /ram0/hello.elf
 ```
+
+---
+
+**Navigation:** [← User Manual](user.md) | [Documentation Index](index.md)

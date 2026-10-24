@@ -1,5 +1,9 @@
 # LugalOS Shell & Command Environment
 
+[Documentation](index.md) > [User Manual](user.md) > **Shell & Command Environment**
+
+---
+
 The interactive shell (`lsh`) is the primary user interface for LugalOS across interactive display terminals and serial consoles. Built around a Plan 9–inspired philosophy, LugalOS exposes system metrics, hardware devices, and IPC channels as hierarchical file namespaces.
 
 ---
@@ -172,8 +176,12 @@ From `lsh`, you can immediately invoke native applications:
 
 ---
 
-## 6. On-Device Help Commands
+## 8. On-Device Help Commands
 
 * `help`: Displays a quick command reference categorized by topic.
 * `help test`: Displays internal hardware verification and self-test commands.
 * `help <topic>` or `man <topic>`: Opens the interactive topic viewer (e.g. `man editors`, `man ribbon`, `man cas`).
+
+---
+
+**Navigation:** [← User Manual](user.md) | [Documentation Index](index.md)

@@ -1,5 +1,9 @@
 # LugalOS System Programmer Manual
 
+[Documentation](../README.md) > **System Programmer Manual**
+
+---
+
 Welcome to the **LugalOS System Programmer Manual**. This guide provides comprehensive technical documentation for software developers building applications for LugalOS as well as kernel engineers extending the operating system.
 
 ---
@@ -52,3 +56,7 @@ doc/dev/
 
 ## 4. [Part D: Interconnect & Wire Protocols](protocols/llp.md)
 * **[LugalOS Link Protocol (LLP)](protocols/llp.md)**: Point-to-point interconnect protocol multiplexing 9P filesystem calls and 802.3 Ethernet frames between coprocessors (e.g. ESP32-P4 and ESP32-C6) with credit-based flow control, session negotiation, and link liveness.
+
+---
+
+**Navigation:** [← Documentation Index](../README.md)

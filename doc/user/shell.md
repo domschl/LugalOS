@@ -1,5 +1,9 @@
 # LugalOS Shell & Command Environment
 
+[Documentation](../README.md) > [User Manual](index.md) > **Shell & Command Environment**
+
+---
+
 The interactive shell (`lsh`) is the primary user interface for LugalOS across interactive display terminals and serial consoles. Built around a Plan 9–inspired philosophy, LugalOS exposes system metrics, hardware devices, and IPC channels as hierarchical file namespaces.
 
 ---
@@ -71,7 +75,7 @@ On a board with a battery (the M5Stack Tab5):
 * `cat /dev/power`: The same state as `key=value` lines (`mv`, `ma`, `mw`, `state`, `soc_pm` in 0.1 %, `minutes`, `charge`, `held`, `limit`, `chg_stat`), readable over 9P. Writing `charge MODE`, `limit N|off` or `off` to it does what the commands do.
 * The menu bar shows the charge level left of the clock, with `+` while charging.
 
-The charge level blends two estimates. One is the pack voltage, corrected for the voltage drop under load and read off a Li-ion discharge curve. The other counts the current in and out against the pack's capacity. The count keeps the number steady from second to second, and the voltage corrects it over several minutes. ([sensors](doc/user/sensors.md))
+The charge level blends two estimates. One is the pack voltage, corrected for the voltage drop under load and read off a Li-ion discharge curve. The other counts the current in and out against the pack's capacity. The count keeps the number steady from second to second, and the voltage corrects it over several minutes. ([sensors](sensors.md))
 
 ### Motion (IMU)
 On a board with a BMI270 (the M5Stack Tab5, or a module at 0x69):
@@ -83,8 +87,8 @@ On a board with a BMI270 (the M5Stack Tab5, or a module at 0x69):
 The BMI270 measures nothing until Bosch's configuration microcode (8 KB, BSD-3 licence, `drivers/bmi270_config.c`) has been uploaded to it. That takes about a second after boot, on the sensor task. The readings also appear in `sensor` and `/proc/sensor/bmi270`, not on MQTT.
 
 ### Firmware Updates
-* `cat /dev/ota`: The node's slots, boot record and update state. Commands (`begin`, `commit`, `switch`, `reboot`, ...) are written to it over 9P, usually by `tools/lota.py` ([updates](doc/admin/updates.md)).
-* `sdio ota [path]` (ESP32-P4): Installs LugalOS on a C6 still running the factory esp-hosted-mcu, over SDIO ([updates](doc/admin/updates.md)).
+* `cat /dev/ota`: The node's slots, boot record and update state. Commands (`begin`, `commit`, `switch`, `reboot`, ...) are written to it over 9P, usually by `tools/lota.py` ([updates](../admin/updates.md)).
+* `sdio ota [path]` (ESP32-P4): Installs LugalOS on a C6 still running the factory esp-hosted-mcu, over SDIO ([updates](../admin/updates.md)).
 
 ---
 
@@ -124,7 +128,7 @@ lsh> ps | wc -l
 
 ## 6. Kernel Logging & Diagnostics
 
-LugalOS features a ring buffer kernel logging subsystem ([logging](doc/dev/kernel/logging.md)):
+LugalOS features a ring buffer kernel logging subsystem ([logging](../dev/kernel/logging.md)):
 * `dmesg`: Displays kernel diagnostic ring messages. Background logs are silenced at the interactive prompt to keep typing clean.
 * `dmesg -c`: Dumps and clears the kernel log ring.
 * `dmesg -f`: Live follow mode (streams new kernel logs until `q` or `Ctrl-C`).
@@ -162,18 +166,22 @@ These are bring-up aids for developers. They read hardware state, and some chang
 ## 7. Built-in Applications & Languages
 
 From `lsh`, you can immediately invoke native applications:
-* `lisp`: Starts the interactive Scheme/Lisp REPL environment ([Lisp scripting](doc/user/cas.md)).
-* `e [file]`: Opens the full-screen Emacs editor ([editors](doc/user/editors.md)).
-* `ed [file]`: Opens the teletype line editor ([editors](doc/user/editors.md)).
-* `chess`: Launches the chess computer UI ([chess](doc/user/chess.md)).
-* `zmachine [story]`: Launches the Z-machine Version 3 interactive fiction interpreter with canvas auto-mapping ([interactive fiction](doc/user/zmachine.md)).
-* `cc <src> <dst>`: Compiles a C11 source file on-device to a native RISC-V ELF binary using `chibicc` ([C programming](doc/dev/on_device/c_programming.md)).
+* `lisp`: Starts the interactive Scheme/Lisp REPL environment ([Lisp scripting](cas.md)).
+* `e [file]`: Opens the full-screen Emacs editor ([editors](editors.md)).
+* `ed [file]`: Opens the teletype line editor ([editors](editors.md)).
+* `chess`: Launches the chess computer UI ([chess](chess.md)).
+* `zmachine [story]`: Launches the Z-machine Version 3 interactive fiction interpreter with canvas auto-mapping ([interactive fiction](zmachine.md)).
+* `cc <src> <dst>`: Compiles a C11 source file on-device to a native RISC-V ELF binary using `chibicc` ([C programming](../dev/on_device/c_programming.md)).
 * `exec <elf>`: Loads and executes a RISC-V ELF binary confined to a U-mode PMP memory domain.
 
 ---
 
-## 6. On-Device Help Commands
+## 8. On-Device Help Commands
 
 * `help`: Displays a quick command reference categorized by topic.
 * `help test`: Displays internal hardware verification and self-test commands.
 * `help <topic>` or `man <topic>`: Opens the interactive topic viewer (e.g. `man editors`, `man ribbon`, `man cas`).
+
+---
+
+**Navigation:** [← User Manual](index.md) | [Documentation Index](../README.md)

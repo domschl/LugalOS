@@ -100,4 +100,23 @@ python3 tests/hw/test_wifi.py
 ```
 
 ### Visual Regression Testing (`lcdterm_shots.py`)
-For display presets (RP2350-LCD-7 and ESP32-P4-LCD-7B), [`tests/hw/lcdterm_shots.py`](file:///home/dsc/Source/gith/domschl/lugalos/tests/hw/lcdterm_shots.py) plays a fixed terminal and ribbon scenario, fetches PBM screenshots over 9P, and compares them **pixel-by-pixel** against golden baseline images (masking the RTC clock). This guarantees that terminal rendering, font glyphs, and window splits never suffer visual regression.
+For display presets (RP2350-LCD-7 and ESP32-P4-LCD-7B), [`tests/hw/lcdterm_shots.py`](file:///home/dsc/Source/gith/domschl/lugalos/tests/hw/lcdterm_shots.py) plays automated shell scenarios, fetches PBM screenshots over 9P, and compares them **pixel-by-pixel** against golden baseline images (with the RTC clock area masked):
+
+```bash
+# Record baseline screenshots on RP2350 terminal:
+python3 tests/hw/lcdterm_shots.py --out golden_dir
+
+# Compare current build against baseline:
+python3 tests/hw/lcdterm_shots.py --compare golden_dir
+
+# Run ribbon scenario (multi-window, Rule 30/90, chess, CAS plot) on LCD-7B:
+python3 tests/hw/lcdterm_shots.py --scenario ribbon --board lcd7b
+```
+
+#### Notes on Visual Scenarios & Escapes:
+* **MicroSD 8.3 Names:** `/sd0` uses strict 8.3 FAT filenames; long names sharing a prefix will collide.
+* **Prerequisites for LCD-7B:** The ribbon scenario requires `/sd0/demos` and `/sd0/cas` (sync them with `python3 tools/p9sync.py --p4 lcd7b --src build/esp32p4-lcd7b/sd_root`).
+* **Console Hotkey Emulation:** From a serial connection, the GUI Cmd hotkeys map to:
+  * `ESC [ 1 ; 9 C` / `ESC [ 1 ; 9 D`: Cmd+Right / Cmd+Left (`;13` adds Ctrl).
+  * `ESC [ <codepoint> ; 9 u`: Cmd+character (e.g. Cmd+1 is `ESC [ 49 ; 9 u`, from `kernel/keyseq.h`).
+* **Serial Disambiguation:** When an ESP32-P4-NANO is connected simultaneously, run `test_rp2350.py --no-uart` to prevent its CP2102 adapter from being mistaken for an RP2350 UART dongle.

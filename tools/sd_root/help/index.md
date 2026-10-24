@@ -1,0 +1,94 @@
+# LugalOS Documentation
+
+Welcome to the documentation for **LugalOS**, a bare-metal, capability-isolated RISC-V microkernel operating system with Plan 9 IPC, exact Lisp algebra, on-device compilation, and horizontal tiling window ribbons.
+
+---
+
+## Documentation Structure
+
+The documentation is organized into three comprehensive manuals, an Architecture Decision Record (ADR) repository, and a generated on-device help system:
+
+```
+doc/
+├── user/             User Manual: Day-to-day operation, shell, and applications
+├── admin/            Administrator Manual: Hardware presets, flashing, and networking
+├── dev/              System Programmer Manual: C & Lisp APIs, kernel internals, and testing
+├── history/          Architecture Decision Records (ADRs)
+└── assets/           Hardware photographs, diagrams, and terminal screenshots
+```
+
+* **[About LugalOS](about.md)**: High-level architecture overview, hardware targets, on-device tools, and system concepts.
+
+---
+
+## 1. [User Manual](user.md)
+
+Guides for operating LugalOS interactively via terminals and serial consoles:
+
+* **[Shell & Commands](shell.md)**: Interactive `lsh` shell, file manipulation, pipeline & redirection model, procfs/devfs navigation, job control.
+* **[Text Editors](editors.md)**: Full-screen Emacs editor (`e`), teletype line editor (`ed`), keybindings, and buffer management.
+* **[Window Ribbon & Terminal](ribbon.md)**: Horizontal tiling window manager, touch gestures (tap, swipe), keyboard navigation (`Cmd+Left/Right`), split canvases, screenshots.
+* **[Chess Computer](chess.md)**: Operating the chess engine on RP2350 and display terminals, Lazy SMP dual-core search, TM1638 keypad controls, and game history.
+* **[Computer Algebra System (CAS)](cas.md)**: Exact symbolic mathematics, canonical polynomial simplification, equation solving, series expansion, and plotting.
+* **[Environmental Sensors & Telemetry](sensors.md)**: Autonomous sensor node operation, I2C environmental telemetry (BME280/BMP280), and MQTT 3.1.1 publishing.
+* **[Z-Machine & Interactive Fiction](zmachine.md)**: Playing Infocom and v3 stories, split-screen canvas auto-mapper, and save slot persistence.
+
+---
+
+## 2. [Administrator Manual](admin.md)
+
+Guides for hardware provisioning, flashing, networking, and storage:
+
+* **[Hardware Presets Matrix](presets.md)**: Comparison of all supported silicon targets (RP2350, ESP32-P4, ESP32-C6, QEMU RV32/RV64).
+* **[Firmware Flashing Guide](flashing.md)**: Step-by-step flashing procedures via `picotool`, `p4flash.py`, and `c6flash.py`.
+* **[Consoles & Serial Connections](consoles.md)**: Dynamic TTY port mapping, CDC-ACM dual ports, CH343P/CP2102 baud rates (921600 on ESP32-P4), and modem control (DTR/RTS).
+* **[Networking & Plan 9 Services](networking.md)**: 9P filesystem protocol, `p9sync.py` synchronization, `fuse-p9` host mounts, SLIP demultiplexing, and Wi-Fi / Ethernet setups.
+* **[Identity & Security Records](identity.md)**: Board provisioning, credential storage (`idstore`), Wi-Fi PSK derivation, and mutual authentication.
+* **[Storage & Filesystems](storage.md)**: MicroSD FAT32 formatting, flashfs ROM disks, and RAM disks.
+* **[Updating Nodes over 9P](updates.md)**: A/B partition updates, trial booting, and rollback.
+* **[Target Hardware & Board Reference Guides](boards.md)**: Operational guides for [ESP32-P4-LCD-7B](esp32p4_lcd7b.md), [M5Stack Tab5](esp32p4_tab5.md), [ESP32-C6](esp32c6.md), and [RP2350](rp2350.md).
+
+---
+
+## 3. [System Programmer Manual](dev.md)
+
+Guides for developing user-space applications and extending the LugalOS kernel:
+
+### Part A: On-Device Application Development
+* **[C Programming on LugalOS](c_programming.md)**: On-device compilation with `chibicc`, freestanding C subset (`lugal.h`), system call ABI, and ELF execution under PMP domains.
+* **[Lisp Scripting & Extensions](lisp.md)**: LugalOS Scheme/Lisp dialect, zero-SRAM builtins in Flash `.rodata`, standard library modules, macros, and CAS extensions.
+
+### Part B: Kernel & Driver Architecture
+* **[Microkernel Architecture](architecture.md)**: Capability-style memory domains (PMP on NOMMU, Sv39 page tables on MMU), copy-always message channels (`chan_t`), and U-mode task isolation.
+* **[Scheduler & SMP Multicore](scheduler.md)**: Priority tiers, preemptive timer scheduling, cross-hart scheduler lock hand-off, and atomic primitives (`spinlock_t`, `ylock_t`).
+* **[Tokenized Kernel Logging](logging.md)**: High-efficiency dictionary logging, `.rodata` format string pointers, varargs capturing in `klog_emit_tok()`, and deferred expansion via `klogd`.
+* **[Driver Framework](drivers.md)**: Confined U-mode driver tasks, hardware register window grants, IRQ dispatch, and fault containment.
+* **[Board Porting Guide](porting.md)**: Adding new SoCs and boards, linker layouts, clock trees, stage 2 bootloaders, and XIP flash mapping.
+
+### Part C: Testing Framework & QA
+* **[Testing Guide](testing.md)**: Unit tests, ASan/UBSan host harnesses, automated QEMU regression runner (`tests/runner.py`), and hardware-in-the-loop silicon suites (`tests/hw/`).
+
+### Part D: Wire & Interconnect Protocols
+* **[LugalOS Link Protocol (LLP)](llp.md)**: Point-to-point link protocol multiplexing 9P filesystem calls and raw 802.3 Ethernet frames between coprocessors with credit-based flow control.
+
+---
+
+## 4. [Architecture Decision Records (ADRs)](adr.md)
+
+Formal records documenting critical architectural choices, trade-offs, and historical rationale:
+
+* **[ADR 001: Zero Floating-Point in Kernel / M-Mode](001_zero_floating_point.md)**
+* **[ADR 002: Scheduler Lock Hand-Off Across Context Switches](002_sched_lock_handoff.md)**
+* **[ADR 003: Tokenized Dictionary Logging in Kernel Ring](003_tokenized_kernel_logging.md)**
+* **[ADR 004: Copy-Always Message Channels for IPC](004_copy_always_channels.md)**
+* **[ADR 005: Zero SRAM Builtins in Flash .rodata](005_zero_sram_builtins.md)**
+
+---
+
+## 5. On-Device Help System
+
+All chapters from the User and Administrator manuals are automatically compiled by `tools/gendocs.py` into 78-column plain-text help files stored on device storage at `/sd0/help/` (and `/flash0/help/`).
+
+On a running LugalOS terminal or serial console:
+* Type `help` for an overview of shell commands.
+* Type `help <topic>` or `man <topic>` to read interactive help with terminal paging and single-key `[1..9]` link jumps.

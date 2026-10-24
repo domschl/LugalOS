@@ -1,5 +1,9 @@
 # Mathematical Plotting & Canvas Visualization (`plot`)
 
+[Documentation](../README.md) > [User Manual](index.md) > [CAS](cas.md) > **Plotting**
+
+---
+
 LugalOS provides a hardware-accelerated 2D function and curve plotting subsystem (`/sd0/cas/plot.lisp`) that renders mathematical graphs directly into graphical terminal canvas windows across all display-equipped hardware targets (ESP32-P4-7B, Tab5, RP2350-Terminal).
 
 ## 1. Quick Start
@@ -64,3 +68,7 @@ Options are passed as an association list of key-value pairs:
 ## 5. Architectural Features
 * **Zero Floating-Point in Kernel / M-Mode**: All coordinate transformations, aspect ratio adjustments, and axis tick calculations use exact rational arithmetic and fixed-point math.
 * **Auto-Scaling**: Automatically calculates domain and range extents with padding and plots coordinate grid lines and numeric labels.
+
+---
+
+**Navigation:** [← Calculus Manual](calculus.md) | [CAS Manual](cas.md) | [User Manual](index.md) | [Documentation Index](../README.md)

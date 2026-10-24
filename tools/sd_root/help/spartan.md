@@ -1,5 +1,9 @@
 # Spartan Protocol & Gemtext Guide
 
+[Documentation](index.md) > [User Manual](user.md) > **Spartan Protocol & Gemtext Guide**
+
+---
+
 LugalOS adopts **Gemtext (`text/gemini`, `.gmi`)** as its native lightweight hypertext format and **Spartan (`spartan://`, port 300)** as its hypermedia networking transport.
 
 ## Gemtext Format (.gmi)
@@ -64,6 +68,10 @@ To protect system integrity while serving network requests:
 
 ## Related Topics
 
-=> reader.gmi Ribbon Reader Window Guide
-=> networking.gmi Network Architecture & Wi-Fi
-=> shell.gmi Shell & Console Manual
+* [Ribbon Reader Window Guide](reader.md)
+* [Networking & Wi-Fi Manual](networking.md)
+* [Shell & Console Manual](shell.md)
+
+---
+
+**Navigation:** [← Reader Guide](reader.md) | [User Manual](user.md) | [Documentation Index](index.md)

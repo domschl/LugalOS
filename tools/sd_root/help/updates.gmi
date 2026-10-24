@@ -1,8 +1,10 @@
 # Updating Nodes over 9P
 
+Documentation > Administrator Manual > Updating Nodes over 9P
+
 A node that supports updates takes a new image through two files in its own namespace, keeps the old image until the new one has proven itself, and goes back to the old one by itself if it does not. Because it is only 9P, any path to the node works: a host on the LAN, a P4 reaching its C6 through /c6, or the console's SLIP link.
 
-Supported so far: the ESP32-C6 (esp32c6, esp32c6-mini). The P4 and the RP2350 follow (plan/phase52remoteadmin.md).
+Supported so far: the ESP32-C6 (esp32c6, esp32c6-mini). The P4 and the RP2350 follow.
 
 ## The files
 
@@ -110,3 +112,11 @@ sdio ota [path]       # default /sd0/lugalos-c6-app.bin, then /sd0/firmware/luga
 ```
 
 esp-hosted-mcu writes the image into its passive slot, checks it and activates it; the P4 resets the C6, which comes up with LugalOS and LLP. A C6 that is already on LLP is refused (use /c6/dev/ota). This first boot is not a LugalOS trial: the kernel marks it VALID when it starts. Its safety net is the bootloader's own image check, and esp-hosted-mcu staying in the other slot until the first LugalOS self-update.
+
+Navigation: ← Storage Guide | Administrator Manual | Board Reference Guides → | Documentation Index
+
+### Related Topics
+=> index.gmi Documentation
+=> admin.gmi Administrator Manual
+=> storage.gmi ← Storage Guide
+=> boards.gmi Board Reference Guides →

@@ -13,5 +13,6 @@ Welcome to the autonomous LugalOS node Spartan capsule.
 => /help/cas.gmi Computer Algebra System (CAS)
 
 ## About LugalOS
+=> /help/about.gmi Architectural Overview & Philosophy
 LugalOS is a lightweight, capability-based operating system designed for RISC-V microcontrollers and display terminals.
 Zero permanent SRAM footprint, pure fixed-point mathematics, and native Plan 9 / Gemini / Spartan network capabilities.

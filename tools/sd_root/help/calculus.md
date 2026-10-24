@@ -1,5 +1,9 @@
 # LugalOS CAS: Calculus Manual (Differentiation, Integration, Limits & Series)
 
+[Documentation](index.md) > [User Manual](user.md) > [CAS](cas.md) > **Calculus**
+
+---
+
 LugalOS features a self-contained exact Computer Algebra System running in Scheme-like Lisp. All computations use exact rational $\mathbb{Q}$ and Gaussian rational $\mathbb{Q}(i)$ arithmetic with zero floating-point overhead.
 
 ## 1. System Startup
@@ -143,3 +147,7 @@ Transforms trigonometric expressions into polynomials or complex exponentials.
 | to-exponential| (to-exponential expr) | Convert trig to complex exp |
 | plot-diff | (plot-diff expr range opts) | Plot curve and its derivative |
 ```
+
+---
+
+**Navigation:** [← Algebra Manual](algebra.md) | [CAS Manual](cas.md) | [Plotting Manual →](plot.md) | [User Manual](user.md) | [Documentation Index](index.md)

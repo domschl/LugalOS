@@ -1,5 +1,9 @@
 # LugalOS Lisp Dialect, Primitives & Scripting
 
+[Documentation](../../README.md) > [Developer Manual](../index.md) > **Lisp Dialect, Primitives & Scripting**
+
+---
+
 LugalOS features a self-contained Scheme-like Lisp machine (`user/lisp/lisp.c`) that serves as the interactive system console, an appliance scripting language, and the mathematical runtime for the Computer Algebra System (CAS).
 
 ---
@@ -66,7 +70,7 @@ Lisp scripts can interact directly with system services and microcontroller hard
 * `(gpio-get <pin>)`: Read GPIO logic level.
 
 ### Sensors
-Readings come from the sensor hub's cache, so no call waits on the I2C bus. Values are integers in each channel's fixed-point unit ([sensors](doc/user/sensors.md)).
+Readings come from the sensor hub's cache, so no call waits on the I2C bus. Values are integers in each channel's fixed-point unit ([sensors](../../user/sensors.md)).
 * `(sensor-list)`: The detected devices, as symbols (`(bme280 ina226)`).
 * `(sensor-read)`: Everything, as `((hw (dev (chan . val) ...) ...) (inferred ...) (fused ...))`.
 * `(sensor-read 'dev)`: One device's channels; `(sensor-read 'ina226 'voltage)` one value; add `'age` for its age in seconds.
@@ -102,4 +106,8 @@ lsh> lisp
 (poly-factor '(+ (^ x 2) (* 5 x) 6) 'x)
 ;; => (* (+ x 2) (+ x 3))
 ```
-For complete CAS documentation, see [`doc/user/cas.md`](file:///home/dsc/Source/gith/domschl/lugalos/doc/user/cas.md).
+For complete CAS documentation, see the [CAS Manual](../../user/cas.md).
+
+---
+
+**Navigation:** [← C Programming](c_programming.md) | [Developer Manual](../index.md) | [Documentation Index](../../README.md)

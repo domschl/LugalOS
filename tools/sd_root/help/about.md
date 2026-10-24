@@ -1,0 +1,53 @@
+# About LugalOS
+
+[Documentation](index.md) > **About LugalOS**
+
+---
+
+**LugalOS** is a bare-metal, capability-isolated microkernel operating system built for RISC-V microcontrollers and workstations. Inspired by the minimalism of Plan 9 and the expressiveness of classic Lisp machines, LugalOS combines robust hardware-enforced memory domains with interactive developer ergonomics.
+
+---
+
+## 1. Architectural Highlights
+
+* **Capability-Enforced Microkernel Core**: Preemptive multitasking with hardware memory domain isolation—Physical Memory Protection (PMP) on NOMMU microcontrollers, Sv39 page tables on RV64—strictly confining device drivers and user applications.
+* **Plan 9 IPC & 9P Filesystem Networking**: Copy-always message channels (`chan_t`) form the fundamental IPC primitive. Serves and consumes 9P2000 filesystems over USB CDC-ACM, SLIP serial, and TCP.
+* **Exact Symbolic Computer Algebra System (CAS)**: Pure Lisp symbolic mathematics operating without hardware floating-point instructions: arbitrary-precision bignums, exact rationals $\mathbb{Q}$, Gaussian rationals $\mathbb{Q}(i)$, polynomial factorization, symbolic calculus, and power series.
+* **Horizontal Tiling Window Ribbon**: Multi-window graphical workspace on 7" and 5" LCD panels with smooth inertial scrolling, split canvases, touch gestures, and proportional serif typography.
+* **On-Device C11 Compilation**: Native `chibicc` compiler generating RISC-V ELF binaries directly on the microcontroller, executed as confined U-mode tasks.
+* **Zero Floating-Point in Kernel / M-Mode**: Boot code enforces `mstatus.FS = 0`. All mathematics, sensor telemetry scaling, and display coordinates use pure fixed-point or exact integer math.
+* **Zero SRAM Builtin Footprint**: Symbols, primitives, and standard library catalogs reside in Flash `.rodata` tables sorted for $O(\log N)$ binary search, preserving SRAM for application execution.
+
+---
+
+## 2. Supported Hardware Platforms
+
+* **Raspberry Pi Pico 2 & RP2350-LCD-7** (`rp2350-terminal`, `rp2350`): Dual Hazard3 RISC-V cores @ 150 MHz, dual CDC-ACM USB (console + 9P), 8 MB PSRAM, 7" 800×480 RGB LCD.
+* **Waveshare ESP32-P4-WIFI6-Touch-LCD-7B** (`esp32p4-lcd7b`): Dual-core RV32 @ 400 MHz (rev v3.2), 32 MB DDR PSRAM, 7" 1024×600 MIPI-DSI, GT911 touch, DWC2 USB host, SDIO link to C6 Wi-Fi 6 co-processor.
+* **M5Stack Tab5** (`esp32p4-tab5`): Dual-core RV32 @ 400 MHz (rev v1.3), 32 MB PSRAM, 5" 720×1280 portrait IPS with ST7121 TDDI, BMI270 IMU, INA226 fuel gauge, dual-orientation compositor.
+* **ESP32-P4-NANO** (`esp32p4`): Dual-core RV32 compute node with 100 Mbps RMII Ethernet and SDMMC storage.
+* **Waveshare ESP32-C6-Zero** (`esp32c6`): 160 MHz RV32IMAC low-power 802.11ax Wi-Fi node and LLP wireless coprocessor.
+* **QEMU RISC-V Virt Targets** (`rv32`, `rv64`, `rv64-smp`): Emulated NOMMU and Sv39 MMU virtual targets for continuous integration.
+
+---
+
+## 3. On-Device Applications & Tools
+
+* **Interactive Shell (`lsh`)**: Pipelines, I/O redirection, procfs/devfs navigation, background job control.
+* **Text Editors**: Full-screen Emacs-style editor (`e`) and teletype line editor (`ed`).
+* **Ribbon Reader (`reader`)**: Anti-aliased proportional serif document reader for Markdown and Gemtext.
+* **Chess Computer (`chess`)**: Interactive chess engine with Lazy SMP parallel search, opening book, and board display.
+* **Spartan & Gemini Client (`gem`)**: Hypertext browsing over the Spartan protocol and local `.gmi` files.
+
+---
+
+## 4. Documentation Navigation
+
+* **[Master Table of Contents](index.md)**: Complete catalog of all LugalOS manuals and topics.
+* **[User Manual](user.md)**: Daily shell operations, text editors, ribbon window manager, CAS, and sensors.
+* **[Administrator Manual](admin.md)**: Hardware presets, flashing guides, serial consoles, and 9P networking.
+* **[Developer Manual](dev.md)**: Microkernel internals, C & Lisp APIs, scheduling, and testing.
+
+---
+
+**Navigation:** [Documentation Index](index.md) | [User Manual](user.md) | [Admin Manual](admin.md)
