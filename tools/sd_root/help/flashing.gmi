@@ -77,11 +77,11 @@ tools/c6flash.py build/esp32c6 --only slot     # slot A only, the loader kept
 ```
 The script opens the port with DTR high and RTS low (opening with DTR low resets the chip) and verifies written blocks. After that, new builds go over 9P with tools/lota.py push, without the header.
 
-Navigation: ← Presets Matrix | Administrator Manual | Consoles Guide → | Documentation Index
+Navigation:  | Documentation Index
 
 ### Related Topics
 => index.gmi Documentation
 => admin.gmi Administrator Manual
 => updates.gmi Updating Nodes over 9P
-=> presets.gmi ← Presets Matrix
-=> consoles.gmi Consoles Guide →
+=> presets.gmi <- Presets Matrix
+=> consoles.gmi Consoles Guide ->

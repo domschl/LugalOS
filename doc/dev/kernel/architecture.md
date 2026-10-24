@@ -18,17 +18,17 @@ The LugalOS kernel adheres to three core tenets:
 LugalOS provides a unified memory domain interface (`mem_domain_t`) implemented by two hardware backends:
 
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│                        MEM_DOMAIN_T ABSTRACTION                        │
-├────────────────────────────────────┬───────────────────────────────────┤
-│        PMP BACKEND (NOMMU)         │        SV39 BACKEND (MMU)         │
-│        RP2350, ESP32-P4, ESP32-C6  │        QEMU RV64 Virt             │
-├────────────────────────────────────┼───────────────────────────────────┤
-│ • Physical Memory Protection (PMP) │ • 3-Level Hierarchical Page Table │
-│ • Power-of-two (NAPOT) or TOR      │ • 4 KB Virtual Page Frames        │
-│ • Hardware register grant windows  │ • Hardware MMU translation        │
-│ • Zero page-table memory overhead  │ • Full address space separation   │
-└────────────────────────────────────┴───────────────────────────────────┘
++------------------------------------------------------------------------+
+|                        MEM_DOMAIN_T ABSTRACTION                        |
+|------------------------------------+-----------------------------------+
+|        PMP BACKEND (NOMMU)         |        SV39 BACKEND (MMU)         |
+|        RP2350, ESP32-P4, ESP32-C6  |        QEMU RV64 Virt             |
+|------------------------------------+-----------------------------------+
+| * Physical Memory Protection (PMP) | * 3-Level Hierarchical Page Table |
+| * Power-of-two (NAPOT) or TOR      | * 4 KB Virtual Page Frames        |
+| * Hardware register grant windows  | * Hardware MMU translation        |
+| * Zero page-table memory overhead  | * Full address space separation   |
+\------------------------------------+-----------------------------------+
 ```
 
 ### PMP Domain Implementation (NOMMU)

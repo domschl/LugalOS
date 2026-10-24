@@ -1,4 +1,4 @@
-# LLP — the LugalOS link protocol, version 1.0
+# LLP -- the LugalOS link protocol, version 1.0
 
 **Status:** specified and host-tested in 49.1 (`plan/phase49_c6_network_nodes.md`).
 Implementations: `kernel/llp.c` (C, every target) and `host/llp/` (Python
@@ -21,7 +21,7 @@ a UART). One of them, the **radio**, has a Wi-Fi station. The other, the
 * **What neither can do for itself:** version check, session start, flow
   control on channels without it, and the radio's link state.
 
-The reasoning behind the split is in `plan/phase49_c6_network_nodes.md` §1:
+The reasoning behind the split is in `plan/phase49_c6_network_nodes.md` Section 1:
 frames, not 9P alone, because the host's outbound protocols (MQTT, NTP, a 9P
 client, a future web server) need its own IP stack.
 
@@ -43,7 +43,7 @@ Every frame, on every channel:
 | Offset | Size | Field | Meaning |
 |---|---|---|---|
 | 0 | u8 | `type` | `0x01` LINK, `0x02` ETH, `0x03` P9 |
-| 1 | u8 | `seq` | data frames: sequence number (§5.3); LINK: 0, ignored |
+| 1 | u8 | `seq` | data frames: sequence number (Section 5.3); LINK: 0, ignored |
 | 2 | u16 | `len` | payload length in bytes |
 | 4 | `len` | payload | |
 
@@ -57,16 +57,16 @@ whose HELLO announced that minor version or a later one.
 * **ETH:** one Ethernet II frame, destination MAC first, no FCS, 14 to 1514
   bytes. Shorter is dropped.
 * **P9:** one whole 9P2000 message. Its `size[4]` field must equal `len`, and
-  `len` ≥ 7. Anything else is dropped. Both directions carry both T- and
+  `len` >= 7. Anything else is dropped. Both directions carry both T- and
   R-messages: the 9P layer tells them apart by type parity, as `fs/p9_link.c`
   already does.
-* **LINK:** first byte is the operation (§4–§6). A LINK body shorter than its
+* **LINK:** first byte is the operation (Section 4-Section 6). A LINK body shorter than its
   operation needs is dropped. Bytes beyond what the operation defines are
   ignored, so a later minor version may extend a body.
 
 ### 3.3 Sizes
 
-* The protocol's ceiling is `len` ≤ **4096**.
+* The protocol's ceiling is `len` <= **4096**.
 * Each side announces the largest payload it accepts (`max_payload`, in HELLO).
   It must be at least **1514**: every node takes a whole Ethernet frame.
   A sender never exceeds its peer's value, and a receiver drops anything
@@ -84,11 +84,11 @@ whose HELLO announced that minor version or a later one.
 | 1 | u8 | `major` (1) |
 | 2 | u8 | `minor` (0) |
 | 3 | u8 | `role`: 1 host, 2 radio |
-| 4 | u8 | `flags`: bit 0 `UP` (the sender considers the link up), bit 1 `FLOW` (the sender's receive side uses LLP credits, §5) |
+| 4 | u8 | `flags`: bit 0 `UP` (the sender considers the link up), bit 1 `FLOW` (the sender's receive side uses LLP credits, Section 5) |
 | 5 | u32 | `session`: the sender's, nonzero, new at every start |
 | 9 | u32 | `peer_session`: the last `session` the sender saw from us, 0 if none |
 | 13 | u16 | `max_payload` |
-| 15 | u8 | `window`: with `FLOW`, the data frames the sender can accept now (§5.2); otherwise 0 |
+| 15 | u8 | `window`: with `FLOW`, the data frames the sender can accept now (Section 5.2); otherwise 0 |
 | 16 | 6 | `mac`: the radio's station MAC; zeros from a host |
 
 ### 4.2 The rules
@@ -149,7 +149,7 @@ only cut off (same session) keeps its fids, and nothing is remounted.
 ### 5.1 Who needs it
 
 * **SDIO** has flow control in hardware: the C6 slave's receive-buffer tokens
-  and its packet-length register (§7.2). Neither side sets `FLOW`, and LLP
+  and its packet-length register (Section 7.2). Neither side sets `FLOW`, and LLP
   sends data whenever the channel takes it.
 * **A UART** has none. The receiver sets `FLOW` and LLP's credits apply.
 
@@ -163,10 +163,10 @@ one the receiver has accounted for:
 **CREDIT** (`op 0x02`, 3 bytes): `u8 ack`, `u8 window`.
 
 * `ack` is the receiver's next expected sequence number. Every frame before it
-  has arrived or is known lost (§5.3).
+  has arrived or is known lost (Section 5.3).
 * `window` is how many data frames it can take now.
 * The sender may send while `(tx_seq - ack) mod 256 < window`.
-* `window` ≤ 64, so sequence arithmetic stays unambiguous.
+* `window` <= 64, so sequence arithmetic stays unambiguous.
 
 When the receiver sends CREDIT:
 
@@ -175,7 +175,7 @@ When the receiver sends CREDIT:
   advertised it, checked whenever the binding calls tick, which it does after
   consuming data;
 * in answer to every PROBE;
-* as the keepalive (§6).
+* as the keepalive (Section 6).
 
 A CREDIT that would acknowledge frames never sent is dropped. Data frames only
 consume credit. LINK frames never do, and a receiver must always be able to
@@ -189,7 +189,7 @@ starting at 0 per session.
 * `seq` ahead of the expected one by *g* (< 128): *g* frames were lost (CRC
   failures on a UART, for example). Count them, accept this frame, and expect
   `seq + 1` next.
-* `seq` behind (≥ 128): stale or duplicated. Drop it.
+* `seq` behind (>= 128): stale or duplicated. Drop it.
 
 A sender that has been held back for credit for **100 ms** sends:
 
@@ -220,7 +220,7 @@ past that frame and then drop it as stale.
   the radio when either changes, and once on every *up* event (the radio's
   binding does this; `llp.c` only carries it). Accepted only while UP (event
   *peer_state*). On SDIO the same two values are also mirrored
-  in a slave register (§7.2).
+  in a slave register (Section 7.2).
 
 ## 7. Bindings
 
@@ -244,11 +244,11 @@ SLIP_END  escape( header | payload | crc32 )  SLIP_END
   * frames whose header `len` disagrees with their size (*bad_len*);
   * frames longer than its buffer, which are dropped whole up to the next
     `END` (*overflow*).
-* Worst case on the wire: `2 + 2 × (4 + len + 4)` bytes.
+* Worst case on the wire: `2 + 2 x (4 + len + 4)` bytes.
 * The receiver sets `FLOW`. Its `window` is the number of frames its binding
   can buffer, at most 64.
 
-### 7.2 SDIO (P4 host ↔ C6 slave)
+### 7.2 SDIO (P4 host <-> C6 slave)
 
 The C6's SDIO slave in packet mode, used the way Espressif's own hosts use it
 (the "ESP SDIO slave protocol"). `kernel/include/kernel/llp_sdio.h` holds the
@@ -260,18 +260,18 @@ numbers both sides share; `drivers/sdio_esp32p4.c` is the host,
   with zeros to a multiple of 4 bytes, at most 4608 bytes in all. A receiver
   stops at the end of the packet or at a zero type byte. No LLP CRC: the bus
   has its own.
-* **The FIFO.** A transfer to function 1 address `0x1F800 − n` moves a packet
+* **The FIFO.** A transfer to function 1 address `0x1F800 - n` moves a packet
   of `n` bytes. Whole 512-byte blocks go in block mode, the rest in byte mode,
   each command addressed by what is still to come. Not one command rounded up
   to whole blocks: the slave stops answering commands after it.
-* **Host → C6.** The slave loads receive buffers of 512 bytes (12 of them) and
+* **Host -> C6.** The slave loads receive buffers of 512 bytes (12 of them) and
   counts them in its token register (`0x44`, bits 27:16, cumulative mod 4096).
-  A packet of `n` bytes uses ⌈n/512⌉. The host never writes more than the count
+  A packet of `n` bytes uses ceil(n/512). The host never writes more than the count
   allows: that is the flow control, so `FLOW` is not set and no credits flow.
   A receiver that cannot take a data frame yet leaves it in the channel.
-* **C6 → host.** The slave offers one packet at a time and counts the bytes
+* **C6 -> host.** The slave offers one packet at a time and counts the bytes
   offered in `PKT_LEN` (`0x60`, bits 19:0, cumulative). The host reads the
-  difference to what it has read. It reads one status window, `0x44`–`0x73`,
+  difference to what it has read. It reads one status window, `0x44`-`0x73`,
   per round: tokens, `PKT_LEN` and the shared bytes.
 * **The card interrupt.** After every change the host would otherwise poll
   for -- a packet offered, receive buffers loaded, a channel reset -- the slave
@@ -284,17 +284,17 @@ numbers both sides share; `drivers/sdio_esp32p4.c` is the host,
 * **Clock.** 40 MHz with the card in SDIO high-speed timing (CCCR `0x13`, EHS)
   on the LCD-7B; the host enables high speed only for a clock above 25 MHz,
   when the card supports it (SHS).
-* **Shared bytes** (`0x6C`–`0x73`, written by the slave): `'L' 'L' 'P'`, a
+* **Shared bytes** (`0x6C`-`0x73`, written by the slave): `'L' 'L' 'P'`, a
   generation, the radio's `link` and `rssi` (as in STATE), the number of
   receive buffers, the buffer size / 64.
-* **Channel reset.** The host writes bit 0 of `0x8D` (a host → slave
+* **Channel reset.** The host writes bit 0 of `0x8D` (a host -> slave
   interrupt). The slave drops everything in both directions, restarts both
   counters and publishes a new generation (never 0). The host adopts the
   counters when the generation changes. That happens after its own reset
   request, which it sends when it starts and after any failed transfer, and
   equally when the C6 restarted by itself. The LLP session above sees a
   restarted channel as lost frames, and a restarted peer as a new session
-  (§4.3).
+  (Section 4.3).
 * **Recovery on the host.** A data phase that never completes is ended with an
   I/O abort of function 1 (CCCR `0x06`, sent as a stop/abort command), then the
   controller's FIFO and DMA are reset. The microSD on the same controller's

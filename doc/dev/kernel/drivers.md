@@ -16,17 +16,17 @@ Each driver in LugalOS is structured as a dedicated task:
 * **Display Driver (`lcd_task`)**: Confined to display DMA descriptors and framebuffer memory.
 
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│                   ISOLATED DRIVER DOMAINS (U-MODE)                     │
-├────────────────────┬────────────────────┬──────────────────────────────┤
-│    UART DRIVER     │     I2C DRIVER     │         STORAGE DRIVER       │
-│  PMP: UART0 Window │  PMP: I2C0 Window  │      PMP: SPI1 / SDMMC Window│
-│  State: Private    │  State: Private    │      State: Private          │
-└─────────┬──────────┴─────────┬──────────┴──────────────┬───────────────┘
-          │ chan_call()        │ chan_call()             │ chan_call()
-┌─────────▼────────────────────▼─────────────────────────▼───────────────┐
-│                       LUGALOS MICROKERNEL CORE                         │
-└────────────────────────────────────────────────────────────────────────┘
++------------------------------------------------------------------------+
+|                   ISOLATED DRIVER DOMAINS (U-MODE)                     |
+|--------------------+--------------------+------------------------------+
+|    UART DRIVER     |     I2C DRIVER     |         STORAGE DRIVER       |
+|  PMP: UART0 Window |  PMP: I2C0 Window  |      PMP: SPI1 / SDMMC Window|
+|  State: Private    |  State: Private    |      State: Private          |
+\---------+----------+---------+----------+--------------+---------------+
+          | chan_call()        | chan_call()             | chan_call()
++---------v--------------------v-------------------------v---------------+
+|                       LUGALOS MICROKERNEL CORE                         |
+\------------------------------------------------------------------------+
 ```
 
 ---

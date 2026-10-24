@@ -23,21 +23,19 @@ Plotting automatically splits the screen to allocate a graphics canvas window ne
 
 ## 2. Core Plotting Commands
 
-```
 | Function | Signature | Description |
 | :--- | :--- | :--- |
 | plot | (plot expr '(var min max) [opts]) | Graphs y = f(x) over [min, max] with auto-scaled axes. |
 | plot-diff | (plot-diff expr '(var min max) [opts]) | Differentiates f(x) via CAS and graphs f(x) & f'(x) together. |
 | plot-multi | (plot-multi '(f1 f2 ...) '(var min max) [opts]) | Overlays multiple functions on shared coordinate axes. |
 | plot-parametric | (plot-parametric fx fy '(t min max) [opts]) | Graphs parametric curve (x(t), y(t)) for t in [min, max]. |
-```
 
 ## 3. Plotting Options (opts)
 
 Options are passed as an association list of key-value pairs:
 * `'title`: Title banner string displayed at the top of the canvas.
   Example: `'((title . "Harmonic Oscillator"))`
-* `'samples`: Number of sampled evaluation points across the domain (default: 40–50).
+* `'samples`: Number of sampled evaluation points across the domain (default: 40-50).
   Example: `'((samples . 60))`
 * `'layout`: Window arrangement:
   * `'split` (default): Shares display with the text terminal / shell.
@@ -71,4 +69,4 @@ Options are passed as an association list of key-value pairs:
 
 ---
 
-**Navigation:** [← Calculus Manual](calculus.md) | [CAS Manual](cas.md) | [User Manual](user.md) | [Documentation Index](index.md)
+**Navigation:** [<- Calculus Manual](calculus.md) | [CAS Manual](cas.md) | [User Manual](user.md) | [Documentation Index](index.md)

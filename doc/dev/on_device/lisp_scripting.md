@@ -110,4 +110,4 @@ For complete CAS documentation, see the [CAS Manual](../../user/cas.md).
 
 ---
 
-**Navigation:** [← C Programming](c_programming.md) | [Developer Manual](../index.md) | [Documentation Index](../../README.md)
+**Navigation:** [<- C Programming](c_programming.md) | [Developer Manual](../index.md) | [Documentation Index](../../README.md)

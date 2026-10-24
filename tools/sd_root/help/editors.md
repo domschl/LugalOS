@@ -89,4 +89,4 @@ lsh> ed /sd0/notes.txt
 
 ---
 
-**Navigation:** [← User Manual](user.md) | [Documentation Index](index.md)
+**Navigation:** [<- User Manual](user.md) | [Documentation Index](index.md)

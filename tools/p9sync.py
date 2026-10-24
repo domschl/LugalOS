@@ -126,8 +126,12 @@ def sync_tree(
         else:
             print(f"  [MKDIR]   {remote_dir}")
             if not dry_run:
-                sess.mkdir(remote_dir)
-            dirs_created += 1
+                try:
+                    sess.mkdir(remote_dir)
+                    dirs_created += 1
+                except Exception as e:
+                    if not dir_exists(remote_dir):
+                        print(f"  [MKDIR WARN] {remote_dir}: {e}")
 
     # 2. Transfer files
     for f in sorted(local_files):

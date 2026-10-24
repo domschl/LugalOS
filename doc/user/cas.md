@@ -1,4 +1,4 @@
-# LugalOS Computer Algebra System (CAS) — Overview & Index
+# LugalOS Computer Algebra System (CAS) -- Overview & Index
 
 [Documentation](../README.md) > [User Manual](index.md) > **Computer Algebra System (CAS)**
 
@@ -62,7 +62,6 @@ The CAS documentation is partitioned into focused, lightweight manuals:
 
 ## 4. Master Function Index
 
-```
 | Category | Function | Signature | Description |
 | :--- | :--- | :--- | :--- |
 | Algebra | simplify | (simplify expr) | Canonical term reduction |
@@ -78,8 +77,7 @@ The CAS documentation is partitioned into focused, lightweight manuals:
 | Plotting | plot | (plot "expr" '(x min max))| 2D function plotting |
 | Plotting | plot-multi | (plot-multi '("f1" "f2") ...)| Multi-curve plotting |
 | Plotting | plot-diff | (plot-diff "expr" ...) | Function vs derivative plot |
-```
 
 ---
 
-**Navigation:** [← User Manual](index.md) | [Documentation Index](../README.md)
+**Navigation:** [<- User Manual](index.md) | [Documentation Index](../README.md)

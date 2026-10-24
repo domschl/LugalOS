@@ -72,4 +72,4 @@ The LLM transport layer is exposed directly to the Lisp environment:
 
 ---
 
-**Navigation:** [← User Manual](index.md) | [Documentation Index](../README.md)
+**Navigation:** [<- User Manual](index.md) | [Documentation Index](../README.md)

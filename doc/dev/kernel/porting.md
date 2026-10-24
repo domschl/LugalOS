@@ -18,17 +18,17 @@ Before porting, verify that the target hardware satisfies LugalOS core invariant
 
 ```
 Step 1: Linker Script (linker/<target>.ld)
-   │
+   |
 Step 2: Low-Level Boot Assembly (arch/riscv/<target>/boot.S)
-   │
+   |
 Step 3: Early UART & Debug Console (drivers/uart_<target>.c)
-   │
+   |
 Step 4: Clock Tree & System Timer Bringup
-   │
+   |
 Step 5: Memory Domain Setup (PMP / Sv39)
-   │
+   |
 Step 6: CMake Preset & Board Definition (cmake/board-<target>.cmake)
-   │
+   |
 Step 7: Launch Microkernel & Shell (kernel/main.c)
 ```
 

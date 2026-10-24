@@ -141,4 +141,4 @@ To add additional interactive fiction games:
 
 ---
 
-**Navigation:** [← User Manual](index.md) | [Documentation Index](../README.md)
+**Navigation:** [<- User Manual](index.md) | [Documentation Index](../README.md)

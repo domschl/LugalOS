@@ -12,23 +12,23 @@ Welcome to the **LugalOS System Programmer Manual**. This guide provides compreh
 
 ```
 doc/dev/
-├── on_device/          # Part A: User-Space Application Development
-│   ├── c_programming.md   # C11 programming with chibicc, lugal.h, syscall ABI, ELF
-│   └── lisp_scripting.md  # Lisp machine runtime, zero-SRAM builtins, stdlib, CAS
-├── kernel/             # Part B: LugalOS Kernel & Driver Architecture
-│   ├── architecture.md    # Microkernel model, memory domains (PMP/Sv39), IPC channels
-│   ├── scheduler.md       # Priority tiers, preemption, cross-hart lock hand-off, SMP
-│   ├── concurrency.md     # Ownership comments, racescan, locks and lock order, waits, stress
-│   ├── logging.md         # Tokenized kernel logging macro system, klogd, rodata dictionary
-│   ├── drivers.md         # Confined U-mode driver framework, PMP register grants, IRQs
-│   └── porting.md         # Board bringup: linker scripts, clock trees, XIP flash
-├── protocols/          # Part D: Interconnect & Wire Protocols
-│   └── llp.md             # LugalOS Link Protocol (LLP): framing, flow control, 9P/Ethernet mux
-└── testing.md          # Part C: Testing Framework & QA
-    ├── Unit tests & pure algorithmic verifiers
-    ├── Host harnesses with ASan/UBSan (FAT32, cc, 9P, IP)
-    ├── Automated QEMU regression runner (tests/runner.py)
-    └── Hardware-in-the-loop silicon suites (tests/hw/)
+|-- on_device/          # Part A: User-Space Application Development
+|   |-- c_programming.md   # C11 programming with chibicc, lugal.h, syscall ABI, ELF
+|   \-- lisp_scripting.md  # Lisp machine runtime, zero-SRAM builtins, stdlib, CAS
+|-- kernel/             # Part B: LugalOS Kernel & Driver Architecture
+|   |-- architecture.md    # Microkernel model, memory domains (PMP/Sv39), IPC channels
+|   |-- scheduler.md       # Priority tiers, preemption, cross-hart lock hand-off, SMP
+|   |-- concurrency.md     # Ownership comments, racescan, locks and lock order, waits, stress
+|   |-- logging.md         # Tokenized kernel logging macro system, klogd, rodata dictionary
+|   |-- drivers.md         # Confined U-mode driver framework, PMP register grants, IRQs
+|   \-- porting.md         # Board bringup: linker scripts, clock trees, XIP flash
+|-- protocols/          # Part D: Interconnect & Wire Protocols
+|   \-- llp.md             # LugalOS Link Protocol (LLP): framing, flow control, 9P/Ethernet mux
+\-- testing.md          # Part C: Testing Framework & QA
+    |-- Unit tests & pure algorithmic verifiers
+    |-- Host harnesses with ASan/UBSan (FAT32, cc, 9P, IP)
+    |-- Automated QEMU regression runner (tests/runner.py)
+    \-- Hardware-in-the-loop silicon suites (tests/hw/)
 ```
 
 ---
@@ -59,4 +59,4 @@ doc/dev/
 
 ---
 
-**Navigation:** [← Documentation Index](index.md)
+**Navigation:** [<- Documentation Index](index.md)

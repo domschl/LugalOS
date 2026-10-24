@@ -20,4 +20,4 @@ Architecture Decision Records (ADRs) capture important architectural choices, th
 
 ---
 
-**Navigation:** [← Documentation Index](../../README.md)
+**Navigation:** [<- Documentation Index](../../README.md)

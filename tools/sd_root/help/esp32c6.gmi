@@ -100,7 +100,7 @@ If firmware fails to boot and UART is inaccessible:
 * Hardware Watchdog: MWDT0 is armed at boot (30-second timeout). Commands: wdt (status and reset cause), wdt test (stops petting watchdog to verify hardware reset).
 * Cold vs Warm Boot: PMU and LP registers retain state across software chip resets. Hardware radio bring-up tests should be verified after a complete USB cold power cycle (unplug ~10 seconds).
 
-Navigation: ← Board Reference Guides | Administrator Manual | Documentation Index
+Navigation: <- Board Reference Guides | Administrator Manual | Documentation Index
 
 ### Related Topics
 => index.gmi Documentation

@@ -60,4 +60,4 @@ When exposing 9P filesystem namespaces over TCP or untrusted links:
 
 ---
 
-**Navigation:** [← Networking Guide](networking.md) | [Administrator Manual](index.md) | [Storage Guide →](storage.md) | [Documentation Index](../README.md)
+**Navigation:** [<- Networking Guide](networking.md) | [Administrator Manual](index.md) | [Storage Guide ->](storage.md) | [Documentation Index](../README.md)

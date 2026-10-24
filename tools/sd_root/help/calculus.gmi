@@ -145,11 +145,11 @@ Transforms trigonometric expressions into polynomials or complex exponentials.
 | plot-diff | (plot-diff expr range opts) | Plot curve and its derivative |
 ```
 
-Navigation: ← Algebra Manual | CAS Manual | Plotting Manual → | User Manual | Documentation Index
+Navigation:  | User Manual | Documentation Index
 
 ### Related Topics
 => index.gmi Documentation
 => user.gmi User Manual
 => cas.gmi CAS
-=> algebra.gmi ← Algebra Manual
-=> plot.gmi Plotting Manual →
+=> algebra.gmi <- Algebra Manual
+=> plot.gmi Plotting Manual ->

@@ -68,7 +68,7 @@ ea is specialized to write and execute LugalOS CAS scripts:
 * Matrices: (load "/sd0/cas/matrix.lisp") -> (mat-det '((1 2)(3 4)))
 * Plotting: (load "/sd0/cas/plot.lisp") -> (plot '(sin x) -3 3)
 
-Navigation: ← User Manual | Documentation Index
+Navigation: <- User Manual | Documentation Index
 
 ### Related Topics
 => index.gmi Documentation

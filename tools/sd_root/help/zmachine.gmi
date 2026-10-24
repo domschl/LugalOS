@@ -126,7 +126,7 @@ To add additional interactive fiction games:
 3. Copy the file into /sd0/games/ using the 9P synchronization tool (tools/p9sync.py) or by mounting the MicroSD card on a host workstation.
 4. Launch the game using zmachine .
 
-Navigation: ← User Manual | Documentation Index
+Navigation: <- User Manual | Documentation Index
 
 ### Related Topics
 => index.gmi Documentation

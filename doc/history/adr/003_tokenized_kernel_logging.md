@@ -14,7 +14,7 @@ LugalOS adopts an in-kernel tokenized dictionary logging model:
 4. **Expansion occurs inside the kernel upon drain**: When `cat /proc/kmsg` or the background consumer `klogd` reads a record, the kernel expands the binary record back into human-readable text on the fly.
 
 ## Consequences
-* **Positive**: Ring buffer storage density improves by nearly **6×**, retaining ~18 boots in an 8 KB ring.
+* **Positive**: Ring buffer storage density improves by nearly **6x**, retaining ~18 boots in an 8 KB ring.
 * **Positive**: `printk()` never blocks, making logging safe from any interrupt or server context.
 * **Positive**: Zero external host dependency: log files remain directly human-readable over serial and Plan 9 network links.
 * **Negative**: Slightly higher CPU overhead at drain time to format strings dynamically.

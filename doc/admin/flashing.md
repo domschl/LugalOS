@@ -93,4 +93,4 @@ After that, new builds go over 9P with `tools/lota.py push`, without the header.
 
 ---
 
-**Navigation:** [← Presets Matrix](presets.md) | [Administrator Manual](index.md) | [Consoles Guide →](consoles.md) | [Documentation Index](../README.md)
+**Navigation:** [<- Presets Matrix](presets.md) | [Administrator Manual](index.md) | [Consoles Guide ->](consoles.md) | [Documentation Index](../README.md)

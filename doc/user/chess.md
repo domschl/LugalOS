@@ -13,7 +13,7 @@ LugalOS features a native chess computer system running across dedicated applian
 ### Dedicated Appliance (`rp2350-chess`)
 A standalone physical chess computer built with:
 * **Controller**: Raspberry Pi Pico 2 (RP2350 Hazard3 dual-core RISC-V).
-* **Display**: 1.8" 160×128 ST7735 SPI color TFT (displays active board, move highlights, and clock).
+* **Display**: 1.8" 160x128 ST7735 SPI color TFT (displays active board, move highlights, and clock).
 * **Keypad & Status**: TM1638 module featuring 8 pushbuttons, 8 dual-color LEDs, and an 8-digit 7-segment display (eval score and move counter).
 * **Storage**: MicroSD card over SPI (`/sd0/CHESS/`) holding opening books and game history.
 
@@ -31,8 +31,8 @@ On 7" LCD terminals, running `chess` opens a graphical chessboard canvas within 
 * **Search Architecture**: Alpha-Beta minimax search with quiescence search, MVV-LVA move ordering, and a lock-free transposition table.
 * **Lazy SMP Multicore Parallelism**:
   * Leverages both RISC-V CPU cores concurrently.
-  * In Lisp, `(perft 4 2)` splits move generation across both cores achieving **1.96×** speedup.
-  * `(chess 2)` runs a 2-core Lazy SMP search sharing transposition tables, achieving **1.60×** search speedup to fixed depth.
+  * In Lisp, `(perft 4 2)` splits move generation across both cores achieving **1.96x** speedup.
+  * `(chess 2)` runs a 2-core Lazy SMP search sharing transposition tables, achieving **1.60x** search speedup to fixed depth.
 
 ---
 
@@ -61,7 +61,7 @@ To promote a pawn, append the desired piece: `e7e8q` (queen) or `e7e8n` (knight)
 
 ### Hardware TM1638 Controls (Appliance Mode)
 On the physical appliance:
-* **Buttons S1–S3**: Cursor file/rank navigation across the board.
+* **Buttons S1-S3**: Cursor file/rank navigation across the board.
 * **Button S4**: Select piece / confirm destination square.
 * **Button S7**: Take back last move.
 * **Button S8**: Force computer to compute and play immediately.
@@ -76,4 +76,4 @@ On the physical appliance:
 
 ---
 
-**Navigation:** [← User Manual](index.md) | [Documentation Index](../README.md)
+**Navigation:** [<- User Manual](index.md) | [Documentation Index](../README.md)

@@ -40,4 +40,4 @@ The **LugalOS Administrator Manual** provides complete instructions for system p
 
 ---
 
-**Navigation:** [← Documentation Index](../README.md)
+**Navigation:** [<- Documentation Index](../README.md)

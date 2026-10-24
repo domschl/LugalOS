@@ -135,12 +135,12 @@ without the prefix). Status files are `key=value` lines:
 | File | Read | Write |
 | :--- | :--- | :--- |
 | `/c6/dev/wlan` | `state` (`idle`, `starting`, `not joined`, `joined`), `ssid`, `bssid`, `channel`, `rssi`, `mac`, `joins`, `last_disconnect` (IEEE reason code) | `join SSID PSKHEX`, `rejoin`, `scan` |
-| `/c6/proc/wlanscan` | the last scan: `aps=N`, then one line per access point: `bssid channel rssi auth ssid` (as many as fit) | — |
-| `/c6/proc/radio` | how far the radio started (`stage`), its return codes, frame counters and rings | — |
-| `/c6/proc/llp` | the C6's end of the link (the P4's own is `/proc/llp`) | — |
-| `/c6/proc/wdt` | the watchdog: `armed`, `timeout_s`, `feeds`, `last_reset`, `restarted_itself` | — |
-| `/c6/dev/reboot` | — | `reboot`, or `download` (into the ROM's download mode) |
-| `/c6/proc/version` | the C6's version, with its `tainted:` blob line | — |
+| `/c6/proc/wlanscan` | the last scan: `aps=N`, then one line per access point: `bssid channel rssi auth ssid` (as many as fit) | -- |
+| `/c6/proc/radio` | how far the radio started (`stage`), its return codes, frame counters and rings | -- |
+| `/c6/proc/llp` | the C6's end of the link (the P4's own is `/proc/llp`) | -- |
+| `/c6/proc/wdt` | the watchdog: `armed`, `timeout_s`, `feeds`, `last_reset`, `restarted_itself` | -- |
+| `/c6/dev/reboot` | -- | `reboot`, or `download` (into the ROM's download mode) |
+| `/c6/proc/version` | the C6's version, with its `tainted:` blob line | -- |
 
 `scan` is carried out by the radio's supervision loop, so only once the C6
 has a network to join. The radio samples the associated AP's `rssi`,
@@ -157,7 +157,7 @@ Checks of the channel itself:
 | :--- | :--- | :--- |
 | `llp` | either | role, link state, peer, counters, SDIO channel state (`/proc/llp`: the same as `key=value`) |
 | `llp loop on` / `llp loop off` | C6 | send the host's Ethernet frames back instead of to the radio |
-| `llp bench [count] [size]` | P4, RP2350 | `count` frames of `size` bytes (default 1000 × 1514) to a C6 in loop mode, each checked on return; prints KB/s each way |
+| `llp bench [count] [size]` | P4, RP2350 | `count` frames of `size` bytes (default 1000 x 1514) to a C6 in loop mode, each checked on return; prints KB/s each way |
 | `llp soak [seconds] [size]` | P4, RP2350 | the same for `seconds` (default 600) as a background task, so the console stays free; progress each minute and the result in the kernel log (`dmesg`). It pauses while the link is down and stops if the C6 restarts, whose bridge would put the frames on the air |
 | `llp host [baud]` | P4, RP2350 | the host role; on the RP2350 terminal on UART0 (H7) at `baud` (default the board file's) |
 | `llp radio uart [baud]` | C6 | the radio role on UART0 (the header's TX/RX) instead of the USB, at `baud` (default 115200) |
@@ -216,5 +216,5 @@ namespace is the terminal's `/c6`, as on the P4 boards (section 4).
 
 ---
 
-**Navigation:** [← Administrator Manual](admin.md) | [Identity & Provisioning →](identity.md) | [Documentation Index](index.md)
+**Navigation:** [<- Administrator Manual](admin.md) | [Identity & Provisioning ->](identity.md) | [Documentation Index](index.md)
 

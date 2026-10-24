@@ -129,4 +129,4 @@ User applications execute in unprivileged RISC-V User Mode (U-Mode):
 
 ---
 
-**Navigation:** [← Developer Manual](../index.md) | [Lisp Scripting →](lisp_scripting.md) | [Documentation Index](../../README.md)
+**Navigation:** [<- Developer Manual](../index.md) | [Lisp Scripting ->](lisp_scripting.md) | [Documentation Index](../../README.md)

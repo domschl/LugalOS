@@ -96,11 +96,11 @@ lsh> lisp
 ```
 For complete CAS documentation, see the CAS Manual.
 
-Navigation: ← C Programming | Developer Manual | Documentation Index
+Navigation: <- C Programming | Developer Manual | Documentation Index
 
 ### Related Topics
 => index.gmi Documentation
 => dev.gmi Developer Manual
 => sensors.gmi sensors
 => cas.gmi CAS Manual
-=> c_programming.gmi ← C Programming
+=> c_programming.gmi <- C Programming
