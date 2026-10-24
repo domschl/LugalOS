@@ -45,15 +45,17 @@ BIN_DIR := bin
 TARGET := $(BIN_DIR)/moonbase_host
 TEST_TARGET := $(BIN_DIR)/test_fixed_blitter
 LOGIC_TARGET := $(BIN_DIR)/test_game_logic
+BALANCE_TARGET := $(BIN_DIR)/balance
 LOGIC_SRC := tests/test_game_logic.c $(filter-out tests/test_fixed_blitter.c,$(TEST_SRC)) src/moon_game.c
 
-.PHONY: all run run_tab5 test clean
+.PHONY: all run run_tab5 test balance clean
 
-all: $(TARGET) $(TEST_TARGET) $(LOGIC_TARGET)
+all: $(TARGET) $(TEST_TARGET) $(LOGIC_TARGET) $(BALANCE_TARGET)
 
-test: $(TEST_TARGET) $(LOGIC_TARGET) $(TARGET)
+test: $(TEST_TARGET) $(LOGIC_TARGET) $(BALANCE_TARGET) $(TARGET)
 	./$(TEST_TARGET)
 	./$(LOGIC_TARGET)
+	./$(BALANCE_TARGET) check
 	SDL_VIDEO_DRIVER=dummy ./$(TARGET) --7b --test-frames=15
 	SDL_VIDEO_DRIVER=dummy ./$(TARGET) --tab5 --test-frames=15
 
@@ -62,6 +64,14 @@ $(TEST_TARGET): $(TEST_SRC) | $(BIN_DIR)
 
 $(LOGIC_TARGET): $(LOGIC_SRC) | $(BIN_DIR)
 	$(CC) $(CFLAGS) $^ -o $@
+
+# Balance runs: `make balance` prints the per-level table, `bin/balance sweep` / `one` / `seeds` explore
+BALANCE_SRC := tests/balance.c $(filter-out tests/test_fixed_blitter.c,$(TEST_SRC)) src/moon_game.c
+$(BALANCE_TARGET): $(BALANCE_SRC) | $(BIN_DIR)
+	$(CC) $(CFLAGS) $^ -o $@
+
+balance: $(BALANCE_TARGET)
+	./$(BALANCE_TARGET) levels 16
 
 $(BIN_DIR):
 	mkdir -p $(BIN_DIR)

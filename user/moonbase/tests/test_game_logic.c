@@ -889,8 +889,8 @@ static void test_menu_and_cancel(void) {
     click_rect(&g.ui.menu_btn);
     assert(g.menu_page == MOON_MENU_MAIN);
     click_rect(&g.ui.menu_item[2]);
-    assert(g.menu_page == MOON_MENU_CONFIRM_RESTART && g.structs.count == 5);
-    click_rect(&g.ui.menu_item[0]);
+    assert(g.menu_page == MOON_MENU_NEW_GAME && g.structs.count == 5);
+    click_rect(&g.ui.menu_item[1]);
     assert(g.menu_page == MOON_MENU_CLOSED && g.structs.count == 4 && g.running);
     assert(g.sim_ticks == 0 && !g.panel_open && g.structs.selected_build_type == MOON_STRUCT_NONE);
     assert(g.selected_tile_x == 32 && g.undo_kind == MOON_UNDO_NONE);
@@ -923,9 +923,11 @@ static void test_menu_and_cancel(void) {
     key(MOON_KEY_N);
     assert(g.menu_page == MOON_MENU_MAIN);
     key(MOON_KEY_R);
-    assert(g.menu_page == MOON_MENU_CONFIRM_RESTART);
-    g.structs.count = 9;                    /* marker: the restart must rebuild the base */
-    key(MOON_KEY_Y);
+    assert(g.menu_page == MOON_MENU_NEW_GAME);
+    key(MOON_KEY_T);                        /* not a chooser key */
+    assert(g.menu_page == MOON_MENU_NEW_GAME);
+    g.structs.count = 9;                    /* marker: a new game must rebuild the base */
+    key(MOON_KEY_2);
     assert(g.menu_page == MOON_MENU_CLOSED && g.structs.count == 4 && g.running);
     key(MOON_KEY_ESCAPE); key(MOON_KEY_Q); key(MOON_KEY_Y);
     assert(!g.running);
@@ -963,8 +965,10 @@ static void test_game_over(void) {
     assert(g.state == MOON_STATE_GAME_OVER && g.menu_page == MOON_MENU_GAME_OVER && !g.paused);
     assert(g.structs.count == 4 && g.running);
 
-    /* Restart (button): a clean base on a new map */
+    /* New game (button): the level chooser, then a clean base on a new map */
     click_rect(&g.ui.menu_item[2]);
+    assert(g.menu_page == MOON_MENU_NEW_GAME && g.state == MOON_STATE_GAME_OVER);
+    click_rect(&g.ui.menu_item[1]);
     assert(g.state == MOON_STATE_PLAYING && g.menu_page == MOON_MENU_CLOSED && g.running);
     assert(g.resources.population == MOON_LANDER_CREW && g.sim_ticks == 0 && g.structs.count == 4);
     assert(g.seed != seed0);
@@ -972,6 +976,8 @@ static void test_game_over(void) {
     /* Restart by key, and Quit by key and by button */
     g.resources.population = 0; ticks(1);
     key(MOON_KEY_R);
+    assert(g.menu_page == MOON_MENU_NEW_GAME);
+    key(MOON_KEY_2);
     assert(g.state == MOON_STATE_PLAYING && g.resources.population == MOON_LANDER_CREW);
     g.resources.population = 0; ticks(1);
     key(MOON_KEY_Q);
@@ -1045,7 +1051,9 @@ static void test_victory(void) {
     g.resources.lunar_day = MOON_ACT1_DAY; g.resources.population = MOON_ACT1_CREW;
     g.resources.ticks_since_blackout = MOON_LUNAR_DAY_TICKS;
     moon_game_check_end(&g);
-    click_rect(&g.ui.menu_item[2]);       /* Restart is the second of the three rows (1..3) */
+    click_rect(&g.ui.menu_item[2]);       /* New game is the second of the three rows (1..3) */
+    assert(g.menu_page == MOON_MENU_NEW_GAME);
+    key(MOON_KEY_2);
     assert(g.state == MOON_STATE_PLAYING && !g.victory_claimed && g.resources.lunar_day == 1);
     g.resources.lunar_day = MOON_ACT1_DAY; g.resources.population = MOON_ACT1_CREW;
     g.resources.ticks_since_blackout = MOON_LUNAR_DAY_TICKS;
@@ -1053,6 +1061,56 @@ static void test_victory(void) {
     key(MOON_KEY_Q);
     assert(!g.running);
     printf("[test] Act I victory check, overlay, Continue / Restart / Quit: PASS\n");
+}
+
+static void test_difficulty(void) {
+    /* The first game is Normal; the levels start with different stocks */
+    fresh();
+    assert(g.difficulty == MOON_DIFFICULTY_NORMAL);
+    int rgl[3];
+    for (int lv = 0; lv < MOON_DIFFICULTY_COUNT; lv++) {
+        key(MOON_KEY_ESCAPE); key(MOON_KEY_R);
+        assert(g.menu_page == MOON_MENU_NEW_GAME && g.menu_sel == g.difficulty);
+        key(MOON_KEY_1 + lv);
+        assert(g.menu_page == MOON_MENU_CLOSED && g.difficulty == lv);
+        assert(g.resources.rules.start_regolith_kg == g_moon_rules[lv].start_regolith_kg);
+        rgl[lv] = regolith();
+        assert(g.state == MOON_STATE_PLAYING && g.resources.population == MOON_LANDER_CREW);
+    }
+    assert(rgl[MOON_DIFFICULTY_EASY] > rgl[MOON_DIFFICULTY_NORMAL] && rgl[MOON_DIFFICULTY_NORMAL] > rgl[MOON_DIFFICULTY_HARD]);
+
+    /* The level survives plain restarts of the same session, and the idle crew lasts longer on Easy */
+    int dies[3];
+    for (int lv = 0; lv < MOON_DIFFICULTY_COUNT; lv++) {
+        fresh();
+        g.difficulty_request = (uint8_t)(lv + 1);
+        key(MOON_KEY_ESCAPE); key(MOON_KEY_R); key(MOON_KEY_1 + lv);
+        int sec = 0;
+        while (g.state == MOON_STATE_PLAYING && sec < 1000) { ticks(MOON_SIM_TICK_RATE_HZ); sec++; }
+        assert(g.state == MOON_STATE_GAME_OVER);
+        dies[lv] = sec;
+    }
+    assert(dies[MOON_DIFFICULTY_EASY] > dies[MOON_DIFFICULTY_NORMAL] && dies[MOON_DIFFICULTY_NORMAL] >= dies[MOON_DIFFICULTY_HARD]);
+
+    /* Back from the chooser returns to where it came from, and ESC does the same */
+    fresh();
+    key(MOON_KEY_ESCAPE); key(MOON_KEY_R); key(MOON_KEY_N);
+    assert(g.menu_page == MOON_MENU_MAIN);
+    key(MOON_KEY_R); key(MOON_KEY_ESCAPE);
+    assert(g.menu_page == MOON_MENU_MAIN);
+    g.resources.population = 0; g.menu_page = MOON_MENU_CLOSED; ticks(1);
+    assert(g.menu_page == MOON_MENU_GAME_OVER);
+    key(MOON_KEY_R);
+    assert(g.menu_page == MOON_MENU_NEW_GAME && g.menu_return == MOON_MENU_GAME_OVER);
+    key(MOON_KEY_ESCAPE);
+    assert(g.menu_page == MOON_MENU_GAME_OVER && g.state == MOON_STATE_GAME_OVER);
+
+    /* The level can also be asked for before the first init */
+    static moon_game_t h;
+    memset(&h, 0, sizeof(h));
+    h.difficulty_request = MOON_DIFFICULTY_HARD + 1;
+    assert(moon_game_init(&h, 1024, 600) && h.difficulty == MOON_DIFFICULTY_HARD);
+    printf("[test] Difficulty levels: chooser, stocks, survival time, Back: PASS\n");
 }
 
 static bool ice_near_lander(const moon_grid_t *grid) {
@@ -1078,7 +1136,7 @@ static void test_restarts_and_seeds(void) {
         /* some play, then restart through the menu */
         key(MOON_KEY_UP); key(MOON_KEY_1);
         ticks(2);
-        key(MOON_KEY_ESCAPE); key(MOON_KEY_R); key(MOON_KEY_Y);
+        key(MOON_KEY_ESCAPE); key(MOON_KEY_R); key(MOON_KEY_2);
         assert(g.menu_page == MOON_MENU_CLOSED);
     }
     for (int i = 0; i < RUNS; i++)
@@ -1124,6 +1182,7 @@ int main(void) {
     test_run_statistics();
     test_victory();
     test_restarts_and_seeds();
+    test_difficulty();
     printf("[test] All Milestone 64.9-64.12 tests passed cleanly.\n");
     return 0;
 }

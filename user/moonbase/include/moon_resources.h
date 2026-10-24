@@ -28,8 +28,26 @@
 #define MOON_LANDER_CREW          4
 #define MOON_HABITAT_CREW         8
 
+/* The numbers a difficulty level sets (flash table, copied into the sim state) */
+typedef struct {
+    const char *name;
+    uint16_t start_regolith_kg;
+    uint16_t start_o2_kg;
+    uint16_t start_water_l;
+    uint16_t start_battery_kwh;
+    uint8_t  energy_pct;           /* kWh a kW moves in one game second: a lunar night lasts
+                                    * 90 s, so 100 would need about twenty batteries */
+    uint8_t  sinterer_kg_per_min;  /* regolith a powered Sinterer bakes */
+    uint8_t  crew_use_pct;         /* O2 and water per colonist, 100 = 1 kg and 2 L per 30 s */
+} moon_rules_t;
+
+enum { MOON_DIFFICULTY_EASY = 0, MOON_DIFFICULTY_NORMAL, MOON_DIFFICULTY_HARD, MOON_DIFFICULTY_COUNT };
+extern const moon_rules_t g_moon_rules[MOON_DIFFICULTY_COUNT];
+
 /* Resource System State */
 typedef struct moon_resources_s {
+    moon_rules_t rules;             /* The difficulty this run plays by */
+
     /* Day / Night Cycle */
     uint32_t cycle_tick;            /* 0..MOON_LUNAR_DAY_TICKS - 1 */
     uint32_t lunar_day;             /* Day count (1, 2, 3...) */
@@ -84,13 +102,17 @@ enum { MOON_CAUSE_NONE = 0, MOON_CAUSE_OXYGEN, MOON_CAUSE_WATER, MOON_CAUSE_BLAC
 /* Act I is complete when the base has run itself for a while: enough crew, O2 and
  * water produced at least as fast as they are used, and no blackout for a whole
  * lunar day. */
-#define MOON_ACT1_DAY   4          /* lunar_day reached: three full days survived */
-#define MOON_ACT1_CREW  6
+#define MOON_ACT1_DAY   6          /* lunar_day reached: five full days survived */
+#define MOON_ACT1_CREW  8
 
 bool moon_resources_act1_complete(const moon_resources_t *res);
 
 /* Resource System Lifecycle & Updates */
-void moon_resources_init(moon_resources_t *res);
+/* Fresh state for a difficulty level; stocks come from that level's rules */
+void moon_resources_init(moon_resources_t *res, int difficulty);
+
+/* Set the starting stocks from res->rules (used by init and by the balance harness) */
+void moon_resources_apply_start(moon_resources_t *res);
 
 /* Discrete simulation tick (called every 250 ms) */
 void moon_resources_tick(moon_resources_t *res,

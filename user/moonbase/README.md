@@ -9,22 +9,23 @@
 You touch down at the lunar South Pole with an initial expedition lander and survival equipment. Your goal is to establish a permanent, self-sustaining outpost:
 
 - **Day/Night Diurnal Cycle**: The Sun follows an accelerated lunar day/night cycle. Solar panels generate power during the daytime; cryogenic fuel cell batteries must store sufficient charge to survive the lunar night.
-- **Power Grid**: Structures must be connected to power generators via power conduits or direct adjacency. The power grid is simulated using a breadth-first search graph solver.
-- **Life Support**: Habitat domes support colonist life support. Oxygen extractors harvest $O_2$ from regolith and ice pockets. If power or oxygen fails, life support degrades.
-- **Construction & Regolith**: Sintering plants quarry lunar regolith dust into structural materials used to build new facilities.
-- **Base Management**: Use the Inspector tool to inspect buildings, view power/efficiency metrics, toggle standby mode to conserve energy, or recycle structures for materials.
+- **Power Grid**: Structures are powered when they touch a powered structure or a power conduit. The grid is solved by a breadth-first search from the Lander. The night lasts as long as the day, so solar must produce about twice the base's load on average to refill the batteries that carry it through the night.
+- **Life Support**: Each colonist uses 1 kg of oxygen and 2 L of water every 30 s. Oxygen Extractors, built beside polar ice or basalt mare, make both. Low reserves are only warnings; the crew suffers when a tank is empty or the grid blacks out.
+- **Construction & Regolith**: Sintering plants bake lunar regolith into building material. If nothing produces regolith the Lander scoops up to 15 kg so the base can always afford a Sinterer.
+- **Base Management**: Select a building to inspect it, switch it to standby to save power, or recycle it for half its cost; `Z` undoes the last build or recycle.
+- **Difficulty**: Three levels (Cadet, Engineer, Commander) set the starting stocks, how far power goes, Sinterer output and how much the crew uses. Choose one from the menu's `R:NEW GAME`; the first game is Engineer. The levels are tuned with headless runs (`make balance`).
 
 ### Structure Catalog
 
-| Structure | Footprint | Cost | Description |
-| :--- | :---: | :---: | :--- |
-| **Expedition Lander** | 2×2 | — | Initial colony command module, radio beacon, and emergency backup battery. |
-| **Solar Array** | 1×1 | 25 kg | Photovoltaic generation during daylight (10 kW). |
-| **Battery Bank** | 1×1 | 40 kg | Cryogenic fuel cell battery storing up to 500 kWh for night operations. |
-| **Habitat Dome** | 2×2 | 100 kg | Pressurized living quarters for up to 4 colonists; requires continuous power & $O_2$. |
-| **Regolith Sinterer** | 1×1 | 50 kg | Excavates surface dust and sinters construction regolith blocks (1 kg/s). |
-| **O2 Extractor** | 1×1 | 60 kg | Electrolytic extraction plant generating oxygen for the base (0.2 kg/s). |
-| **Power Conduit** | 1×1 | 5 kg | Transmits electrical current between distant base facilities. |
+| Structure | Footprint | Cost | Power | Notes |
+| :--- | :---: | :---: | :---: | :--- |
+| **Expedition Lander** | 1×1 | — | +10 kW (RTG), uses 5 | Housing for 4 colonists, 50 kWh emergency battery. Cannot be recycled. |
+| **Solar Array** | 1×1 | 10 kg | up to +30 kW by day | Output follows the sun's height. |
+| **Battery Bank** | 1×1 | 20 kg | −1 kW | Stores 250 kWh for the night. |
+| **Habitat Dome** | 2×2 | 50 kg | −15 kW | Housing for 8 more colonists. |
+| **Regolith Sinterer** | 1×1 | 15 kg | −20 kW | 30 kg of regolith per minute while powered (Engineer). |
+| **Oxygen Extractor** | 1×1 | 25 kg | −25 kW | +20 kg O2 and +30 L water per minute; must stand beside ice or mare. |
+| **Power Conduit** | 1×1 | 2 kg | 0 | Carries power between facilities. |
 
 ---
 

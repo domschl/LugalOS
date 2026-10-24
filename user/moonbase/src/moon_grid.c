@@ -174,6 +174,25 @@ void moon_grid_generate(moon_grid_t *grid, uint32_t seed) {
             }
         }
     }
+
+    /* A basalt mare patch just outside the apron, in a direction the seed picks: an
+     * Extractor works beside mare as well as beside ice, so no map starts with the
+     * first source of water and oxygen a long cable run away. */
+    static const int8_t dirs[4][2] = { { 5, 4 }, { 4, -5 }, { -5, 4 }, { -4, -5 } };
+    const int8_t *dir = dirs[prng_next(&rng) & 3];
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            int gx = grid->lander_gx + dir[0] + dx;
+            int gy = grid->lander_gy + dir[1] + dy;
+            if (gx >= 0 && gx < MOON_MAP_SIZE_X && gy >= 0 && gy < MOON_MAP_SIZE_Y) {
+                moon_tile_t *t = &grid->tiles[gy][gx];
+                t->terrain = MOON_TERRAIN_BASALT_MARE;
+                t->elevation = 1;
+                t->resource_val = (uint8_t)prng_range(&rng, 70, 95);
+                t->flags &= (uint8_t)~MOON_TILE_FLAG_SHADOWED;
+            }
+        }
+    }
 }
 
 moon_tile_t* moon_grid_get_tile(moon_grid_t *grid, int gx, int gy) {
