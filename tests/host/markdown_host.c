@@ -281,6 +281,41 @@ static void test_inline_spans(void) {
     assert(strncmp(span.text, ".", span.len) == 0);
 
     assert(!md_span_next(&iter, &span));
+
+    /* Test bold and italic links */
+    const char *bold_link_line = "**[User Manual](user/index.md)** and *[Shell](user/shell.md)* and [**Editor**](user/editors.md)";
+    md_span_init(&iter, bold_link_line);
+
+    assert(md_span_next(&iter, &span) && (span.style & MD_STYLE_LINK) && (span.style & MD_STYLE_BOLD));
+    assert(strcmp(span.link_text, "User Manual") == 0);
+    assert(strcmp(span.link_url, "user/index.md") == 0);
+
+    assert(md_span_next(&iter, &span) && span.style == MD_STYLE_NONE);
+    assert(strncmp(span.text, " and ", span.len) == 0);
+
+    assert(md_span_next(&iter, &span) && (span.style & MD_STYLE_LINK) && (span.style & MD_STYLE_ITALIC));
+    assert(strcmp(span.link_text, "Shell") == 0);
+    assert(strcmp(span.link_url, "user/shell.md") == 0);
+
+    assert(md_span_next(&iter, &span) && span.style == MD_STYLE_NONE);
+    assert(strncmp(span.text, " and ", span.len) == 0);
+
+    assert(md_span_next(&iter, &span) && (span.style & MD_STYLE_LINK) && (span.style & MD_STYLE_BOLD));
+    assert(strcmp(span.link_text, "Editor") == 0);
+    assert(strcmp(span.link_url, "user/editors.md") == 0);
+
+    assert(!md_span_next(&iter, &span));
+
+    /* Test links and bold in list lines */
+    bool in_c = false, in_m = false;
+    md_line_t md_l;
+    assert(md_parse_line("1. **[User Manual](user/index.md)**", &in_c, &in_m, &md_l));
+    assert(md_l.type == MD_LINE_OLIST && md_l.order_num == 1);
+    md_span_init(&iter, md_l.text);
+    assert(md_span_next(&iter, &span) && (span.style & MD_STYLE_LINK) && (span.style & MD_STYLE_BOLD));
+    assert(strcmp(span.link_text, "User Manual") == 0);
+    assert(strcmp(span.link_url, "user/index.md") == 0);
+
     PASS();
 }
 
@@ -296,6 +331,41 @@ static void test_entities_and_no_html(void) {
     assert(md_span_next(&iter, &span) && span.style == MD_STYLE_NONE);
     assert(strcmp(span.text, "Tom & Jerry <3 <div class=\"box\">Hello</div>") == 0);
     assert(!md_span_next(&iter, &span));
+
+    /* Test bold and italic links */
+    const char *bold_link_line = "**[User Manual](user/index.md)** and *[Shell](user/shell.md)* and [**Editor**](user/editors.md)";
+    md_span_init(&iter, bold_link_line);
+
+    assert(md_span_next(&iter, &span) && (span.style & MD_STYLE_LINK) && (span.style & MD_STYLE_BOLD));
+    assert(strcmp(span.link_text, "User Manual") == 0);
+    assert(strcmp(span.link_url, "user/index.md") == 0);
+
+    assert(md_span_next(&iter, &span) && span.style == MD_STYLE_NONE);
+    assert(strncmp(span.text, " and ", span.len) == 0);
+
+    assert(md_span_next(&iter, &span) && (span.style & MD_STYLE_LINK) && (span.style & MD_STYLE_ITALIC));
+    assert(strcmp(span.link_text, "Shell") == 0);
+    assert(strcmp(span.link_url, "user/shell.md") == 0);
+
+    assert(md_span_next(&iter, &span) && span.style == MD_STYLE_NONE);
+    assert(strncmp(span.text, " and ", span.len) == 0);
+
+    assert(md_span_next(&iter, &span) && (span.style & MD_STYLE_LINK) && (span.style & MD_STYLE_BOLD));
+    assert(strcmp(span.link_text, "Editor") == 0);
+    assert(strcmp(span.link_url, "user/editors.md") == 0);
+
+    assert(!md_span_next(&iter, &span));
+
+    /* Test links and bold in list lines */
+    bool in_c = false, in_m = false;
+    md_line_t md_l;
+    assert(md_parse_line("1. **[User Manual](user/index.md)**", &in_c, &in_m, &md_l));
+    assert(md_l.type == MD_LINE_OLIST && md_l.order_num == 1);
+    md_span_init(&iter, md_l.text);
+    assert(md_span_next(&iter, &span) && (span.style & MD_STYLE_LINK) && (span.style & MD_STYLE_BOLD));
+    assert(strcmp(span.link_text, "User Manual") == 0);
+    assert(strcmp(span.link_url, "user/index.md") == 0);
+
     PASS();
 }
 
@@ -304,6 +374,17 @@ static void test_slug_and_resolve(void) {
     char slug[64];
     md_heading_slug("1. Quick Examples by Domain!", slug, sizeof(slug));
     assert(strcmp(slug, "1-quick-examples-by-domain") == 0);
+
+    /* Test heading with link */
+    char clean_title[128];
+    md_heading_clean_title("1. [User Manual](user/index.md)", clean_title, sizeof(clean_title));
+    assert(strcmp(clean_title, "1. User Manual") == 0);
+
+    md_heading_slug("1. [User Manual](user/index.md)", slug, sizeof(slug));
+    assert(strcmp(slug, "1-user-manual") == 0);
+
+    md_heading_clean_title("## **Quick Start** with `code`", clean_title, sizeof(clean_title));
+    assert(strcmp(clean_title, "Quick Start with code") == 0);
 
     char out[128];
     assert(md_resolve_url("/sd0/help/shell.md", "#builtins", out, sizeof(out)));

@@ -89,6 +89,7 @@ typedef struct {
     const char     *src;
     size_t          pos;
     size_t          len;
+    uint16_t        active_style;
 } md_span_iter_t;
 
 /* --- Parser Entry Points --- */
@@ -112,6 +113,9 @@ void md_span_init(md_span_iter_t *iter, const char *line);
 
 /* Yield next formatted inline span. Returns false when line is exhausted. */
 bool md_span_next(md_span_iter_t *iter, md_span_t *span);
+
+/* Clean markdown formatting and links from a heading title for display in Table of Contents. */
+void md_heading_clean_title(const char *heading_text, char *out_title, size_t out_sz);
 
 /* Generate a lowercase URL/anchor slug from a heading text.
  * e.g. "Quick Examples by Domain" -> "quick-examples-by-domain".

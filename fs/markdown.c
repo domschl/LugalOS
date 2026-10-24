@@ -359,14 +359,54 @@ int md_parse_table_cells(const char *line, char cells[MD_TABLE_MAX_COLS][MD_CELL
     return col;
 }
 
+void md_heading_clean_title(const char *heading_text, char *out_title, size_t out_sz) {
+    if (!heading_text || !out_title || out_sz == 0) return;
+    size_t o = 0;
+    const char *p = heading_text;
+    /* Trim leading heading hashes and spaces */
+    while (*p == '#' || *p == ' ' || *p == '\t') p++;
+    while (*p && *p != '\r' && *p != '\n' && o < out_sz - 1) {
+        /* If link: [label](url) -> extract label only */
+        if (*p == '[') {
+            const char *rb = strchr(p + 1, ']');
+            if (rb && rb[1] == '(') {
+                const char *rp = strchr(rb + 2, ')');
+                if (rp) {
+                    p++; /* skip '[' */
+                    while (p < rb && o < out_sz - 1) {
+                        if (*p != '*' && *p != '_' && *p != '`') {
+                            out_title[o++] = *p;
+                        }
+                        p++;
+                    }
+                    p = rp + 1; /* skip ')...' */
+                    continue;
+                }
+            }
+        }
+        /* Skip markdown formatting delimiters **, *, _, ` */
+        if (*p == '*' || *p == '_' || *p == '`') {
+            p++;
+            continue;
+        }
+        out_title[o++] = *p++;
+    }
+    /* Trim trailing spaces */
+    while (o > 0 && (out_title[o - 1] == ' ' || out_title[o - 1] == '\t')) o--;
+    out_title[o] = '\0';
+}
+
 /* --- Heading Slug Generator --- */
 
 void md_heading_slug(const char *heading_text, char *out_slug, size_t out_sz) {
     if (!heading_text || !out_slug || out_sz == 0) return;
 
+    char clean[MD_LINE_MAX];
+    md_heading_clean_title(heading_text, clean, sizeof(clean));
+
     size_t o = 0;
     bool last_was_dash = false;
-    const char *p = heading_text;
+    const char *p = clean;
 
     /* Trim leading non-alnum */
     while (*p && !md_is_alnum(*p)) p++;
@@ -472,6 +512,7 @@ void md_span_init(md_span_iter_t *iter, const char *line) {
     iter->src = line ? line : "";
     iter->pos = 0;
     iter->len = strlen(iter->src);
+    iter->active_style = MD_STYLE_NONE;
     /* Trim trailing \r\n */
     while (iter->len > 0 && (iter->src[iter->len - 1] == '\r' || iter->src[iter->len - 1] == '\n')) {
         iter->len--;
@@ -485,13 +526,73 @@ bool md_span_next(md_span_iter_t *iter, md_span_t *span) {
     span->style = MD_STYLE_NONE;
 
     const char *s = iter->src;
+
+    /* 1. Check for closing delimiters of currently active styles */
+    if ((iter->active_style & (MD_STYLE_BOLD | MD_STYLE_ITALIC)) == (MD_STYLE_BOLD | MD_STYLE_ITALIC)) {
+        if (iter->pos + 2 < iter->len &&
+            ((s[iter->pos] == '*' && s[iter->pos+1] == '*' && s[iter->pos+2] == '*') ||
+             (s[iter->pos] == '_' && s[iter->pos+1] == '_' && s[iter->pos+2] == '_'))) {
+            iter->active_style &= ~(MD_STYLE_BOLD | MD_STYLE_ITALIC);
+            iter->pos += 3;
+            if (iter->pos >= iter->len) return false;
+        }
+    }
+    if (iter->active_style & MD_STYLE_BOLD) {
+        if (iter->pos + 1 < iter->len &&
+            ((s[iter->pos] == '*' && s[iter->pos+1] == '*') ||
+             (s[iter->pos] == '_' && s[iter->pos+1] == '_'))) {
+            iter->active_style &= ~MD_STYLE_BOLD;
+            iter->pos += 2;
+            if (iter->pos >= iter->len) return false;
+        }
+    }
+    if (iter->active_style & MD_STYLE_ITALIC) {
+        if (iter->pos < iter->len && (s[iter->pos] == '*' || s[iter->pos] == '_')) {
+            iter->active_style &= ~MD_STYLE_ITALIC;
+            iter->pos += 1;
+            if (iter->pos >= iter->len) return false;
+        }
+    }
+
+    /* 2. Check for opening delimiters */
+    if (!(iter->active_style & (MD_STYLE_BOLD | MD_STYLE_ITALIC)) && iter->pos + 2 < iter->len &&
+        ((strncmp(s + iter->pos, "***", 3) == 0) || (strncmp(s + iter->pos, "___", 3) == 0))) {
+        char delim[4] = { s[iter->pos], s[iter->pos], s[iter->pos], '\0' };
+        const char *end = strstr(s + iter->pos + 3, delim);
+        if (end && (size_t)(end - s) < iter->len) {
+            iter->active_style |= (MD_STYLE_BOLD | MD_STYLE_ITALIC);
+            iter->pos += 3;
+        }
+    } else if (!(iter->active_style & MD_STYLE_BOLD) && iter->pos + 1 < iter->len &&
+        ((strncmp(s + iter->pos, "**", 2) == 0) || (strncmp(s + iter->pos, "__", 2) == 0))) {
+        char delim[3] = { s[iter->pos], s[iter->pos], '\0' };
+        const char *end = strstr(s + iter->pos + 2, delim);
+        if (end && (size_t)(end - s) < iter->len) {
+            iter->active_style |= MD_STYLE_BOLD;
+            iter->pos += 2;
+        }
+    } else if (!(iter->active_style & MD_STYLE_ITALIC) && iter->pos < iter->len &&
+               (s[iter->pos] == '*' || s[iter->pos] == '_')) {
+        char delim = s[iter->pos];
+        bool is_identifier_underscore = (delim == '_' && iter->pos > 0 && md_is_alnum(s[iter->pos - 1]));
+        bool followed_by_space = (iter->pos + 1 < iter->len && md_is_space(s[iter->pos + 1]));
+        if (!is_identifier_underscore && !followed_by_space) {
+            const char *end = strchr(s + iter->pos + 1, delim);
+            if (end && (size_t)(end - s) < iter->len && !md_is_space(*(end - 1))) {
+                iter->active_style |= MD_STYLE_ITALIC;
+                iter->pos += 1;
+            }
+        }
+    }
+
+    if (iter->pos >= iter->len) return false;
     size_t start = iter->pos;
 
-    /* 1. Inline Code (`code`) */
+    /* 3. Inline Code (`code`) */
     if (s[start] == '`') {
         const char *end = strchr(s + start + 1, '`');
         if (end && (size_t)(end - s) < iter->len) {
-            span->style = MD_STYLE_CODE;
+            span->style = iter->active_style | MD_STYLE_CODE;
             span->text = s + start + 1;
             span->len = (size_t)(end - (s + start + 1));
             iter->pos = (size_t)(end - s) + 1;
@@ -499,12 +600,12 @@ bool md_span_next(md_span_iter_t *iter, md_span_t *span) {
         }
     }
 
-    /* 2. Inline LaTeX Math ($math$) */
+    /* 4. Inline LaTeX Math ($math$) */
     if (s[start] == '$') {
         /* Check if not escaped */
         const char *end = strchr(s + start + 1, '$');
         if (end && (size_t)(end - s) < iter->len) {
-            span->style = MD_STYLE_MATH;
+            span->style = iter->active_style | MD_STYLE_MATH;
             span->text = s + start + 1;
             span->len = (size_t)(end - (s + start + 1));
             iter->pos = (size_t)(end - s) + 1;
@@ -512,13 +613,13 @@ bool md_span_next(md_span_iter_t *iter, md_span_t *span) {
         }
     }
 
-    /* 3. Inline Image (![alt](url)) */
+    /* 5. Inline Image (![alt](url)) */
     if (s[start] == '!' && start + 1 < iter->len && s[start + 1] == '[') {
         const char *rb = strchr(s + start + 2, ']');
         if (rb && rb[1] == '(') {
             const char *rp = strchr(rb + 2, ')');
             if (rp && (size_t)(rp - s) < iter->len) {
-                span->style = MD_STYLE_IMAGE;
+                span->style = iter->active_style | MD_STYLE_IMAGE;
                 size_t alt_len = (size_t)(rb - (s + start + 2));
                 if (alt_len >= sizeof(span->link_text)) alt_len = sizeof(span->link_text) - 1;
                 memcpy(span->link_text, s + start + 2, alt_len);
@@ -537,13 +638,13 @@ bool md_span_next(md_span_iter_t *iter, md_span_t *span) {
         }
     }
 
-    /* 4. Footnote Reference ([^id]) */
+    /* 6. Footnote Reference ([^id]) */
     if (s[start] == '[' && start + 1 < iter->len && s[start + 1] == '^') {
         const char *rb = strchr(s + start + 2, ']');
         if (rb && (size_t)(rb - s) < iter->len && rb[1] != ':') {
             size_t id_len = (size_t)(rb - (s + start + 2));
             if (id_len > 0 && id_len < sizeof(span->footnote_id)) {
-                span->style = MD_STYLE_FOOTNOTE;
+                span->style = iter->active_style | MD_STYLE_FOOTNOTE;
                 memcpy(span->footnote_id, s + start + 2, id_len);
                 span->footnote_id[id_len] = '\0';
                 span->text = span->footnote_id;
@@ -554,17 +655,31 @@ bool md_span_next(md_span_iter_t *iter, md_span_t *span) {
         }
     }
 
-    /* 5. Inline Hyperlink ([label](url)) */
+    /* 7. Inline Hyperlink ([label](url)) */
     if (s[start] == '[') {
         const char *rb = strchr(s + start + 1, ']');
         if (rb && rb[1] == '(') {
             const char *rp = strchr(rb + 2, ')');
             if (rp && (size_t)(rp - s) < iter->len) {
-                span->style = MD_STYLE_LINK;
+                span->style = iter->active_style | MD_STYLE_LINK;
                 size_t lbl_len = (size_t)(rb - (s + start + 1));
                 if (lbl_len >= sizeof(span->link_text)) lbl_len = sizeof(span->link_text) - 1;
                 memcpy(span->link_text, s + start + 1, lbl_len);
                 span->link_text[lbl_len] = '\0';
+
+                /* Strip inner bold or italic from link text and apply to style */
+                if (lbl_len >= 4 && span->link_text[0] == '*' && span->link_text[1] == '*' &&
+                    span->link_text[lbl_len - 2] == '*' && span->link_text[lbl_len - 1] == '*') {
+                    span->style |= MD_STYLE_BOLD;
+                    memmove(span->link_text, span->link_text + 2, lbl_len - 4);
+                    lbl_len -= 4;
+                    span->link_text[lbl_len] = '\0';
+                } else if (lbl_len >= 2 && span->link_text[0] == '*' && span->link_text[lbl_len - 1] == '*') {
+                    span->style |= MD_STYLE_ITALIC;
+                    memmove(span->link_text, span->link_text + 1, lbl_len - 2);
+                    lbl_len -= 2;
+                    span->link_text[lbl_len] = '\0';
+                }
 
                 size_t url_len = (size_t)(rp - (rb + 2));
                 if (url_len >= sizeof(span->link_url)) url_len = sizeof(span->link_url) - 1;
@@ -579,48 +694,7 @@ bool md_span_next(md_span_iter_t *iter, md_span_t *span) {
         }
     }
 
-    /* 6. Bold + Italic (***text*** or ___text___) */
-    if ((start + 2 < iter->len && s[start] == '*' && s[start+1] == '*' && s[start+2] == '*') ||
-        (start + 2 < iter->len && s[start] == '_' && s[start+1] == '_' && s[start+2] == '_')) {
-        const char delim[4] = { s[start], s[start], s[start], '\0' };
-        const char *end = strstr(s + start + 3, delim);
-        if (end && (size_t)(end - s) < iter->len) {
-            span->style = MD_STYLE_BOLD | MD_STYLE_ITALIC;
-            span->text = s + start + 3;
-            span->len = (size_t)(end - (s + start + 3));
-            iter->pos = (size_t)(end - s) + 3;
-            return true;
-        }
-    }
-
-    /* 7. Bold (**text** or __text__) */
-    if ((start + 1 < iter->len && s[start] == '*' && s[start+1] == '*') ||
-        (start + 1 < iter->len && s[start] == '_' && s[start+1] == '_')) {
-        const char delim[3] = { s[start], s[start], '\0' };
-        const char *end = strstr(s + start + 2, delim);
-        if (end && (size_t)(end - s) < iter->len) {
-            span->style = MD_STYLE_BOLD;
-            span->text = s + start + 2;
-            span->len = (size_t)(end - (s + start + 2));
-            iter->pos = (size_t)(end - s) + 2;
-            return true;
-        }
-    }
-
-    /* 8. Italic (*text* or _text_) */
-    if ((s[start] == '*' || s[start] == '_') && start + 1 < iter->len) {
-        char delim = s[start];
-        const char *end = strchr(s + start + 1, delim);
-        if (end && (size_t)(end - s) < iter->len && end > s + start + 1) {
-            span->style = MD_STYLE_ITALIC;
-            span->text = s + start + 1;
-            span->len = (size_t)(end - (s + start + 1));
-            iter->pos = (size_t)(end - s) + 1;
-            return true;
-        }
-    }
-
-    /* 9. Plain text up to next special delimiter */
+    /* 8. Plain text up to next special delimiter */
     size_t p = start;
     bool has_entities = false;
     while (p < iter->len) {
@@ -636,15 +710,31 @@ bool md_span_next(md_span_iter_t *iter, md_span_t *span) {
         /* Delimiter check at boundary */
         if (p > start) {
             if (s[p] == '`' || s[p] == '$' || s[p] == '[' ||
-                (s[p] == '!' && p + 1 < iter->len && s[p+1] == '[') ||
-                s[p] == '*' || s[p] == '_') {
+                (s[p] == '!' && p + 1 < iter->len && s[p+1] == '[')) {
                 break;
+            }
+            if (s[p] == '*' || s[p] == '_') {
+                /* Check if it is a closing delimiter for active style */
+                if ((iter->active_style & MD_STYLE_BOLD) && p + 1 < iter->len && s[p] == s[p+1]) {
+                    break;
+                }
+                if (iter->active_style & MD_STYLE_ITALIC) {
+                    break;
+                }
+                /* Or an opening delimiter */
+                if (p + 1 < iter->len && s[p] == s[p+1]) {
+                    break;
+                }
+                if (!md_is_space(s[p+1])) {
+                    break;
+                }
             }
         }
         p++;
     }
 
     size_t raw_len = p - start;
+    span->style = iter->active_style;
     if (has_entities) {
         /* Unescape and decode entities into span->unescaped */
         size_t o = 0;
