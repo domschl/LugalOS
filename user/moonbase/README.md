@@ -51,6 +51,7 @@ A tile is always **selected** (the gold frame; the minimap shows it as a white d
 - **Z**: Undo the last build or recycle. **Tab**: jump to the next building. **Enter**: open or close the inspector (when no brush is armed).
 - **Space**: Bring the view to the selection; again, to the Expedition Lander.
 - **O**: Hide or show the objective line. **P**: Pause / resume. **-** / **+**: simulation speed 1x, 2x, 4x. **T**: textured or fast terrain.
+- **F**: Toggle real-time frame time and performance phase instrumentation overlay.
 - **Backspace / 0**: End the brush or close the inspector.
 - **ESC** / **Q**: The same, and with nothing to cancel it opens the menu. Quitting is only possible through the menu's confirmation (or Ctrl-C on the P4).
 
@@ -102,4 +103,17 @@ python3 tools/p4flash.py --board tab5 --build build/esp32p4-tab5 --only boot,os 
 
 # Launch interactive game on hardware via LugalOS shell
 lsh> moonbase
+
+# Run hardware scenario benchmark (reports FPS, median/p95 times, and phase breakdown)
+lsh> moonbase bench
+
+# Run low-level blitter micro-benchmarks
+lsh> moonbase micro
+```
+
+### Hardware Verification Suite
+```bash
+# Run automated hardware-in-the-loop test suite on attached boards
+cd tests/hw && uv run test_moonbase.py --board lcd7b
+cd tests/hw && uv run test_moonbase.py --board tab5
 ```

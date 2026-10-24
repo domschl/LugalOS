@@ -72,6 +72,7 @@ bool moon_grid_pick(const moon_grid_t *grid, int32_t sx, int32_t sy,
 /* Terrain Rendering */
 void moon_grid_render_tile(const moon_grid_t *grid, const moon_surface_t *surf,
                            int gx, int gy, int32_t cam_x, int32_t cam_y,
+                           int32_t view_top,   /* tiles entirely above this row are skipped (the HUD covers them) */
                            int32_t hover_gx, int32_t hover_gy, bool hover_valid);
 
 void moon_grid_render(const moon_grid_t *grid, const moon_surface_t *surf,

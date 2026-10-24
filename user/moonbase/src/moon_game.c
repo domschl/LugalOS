@@ -43,12 +43,16 @@ static void game_reset(moon_game_t *game, int width, int height) {
                     game->seed_request ? game->seed_request :
                     game->seed ? game->seed * 1664525u + 1013904223u + game->sim_ticks : 19690720u;
     bool hide_objectives = game->objectives_hidden;
+    uint32_t (*clock_us)(void) = game->clock_us;
+    bool show_perf = game->show_perf;
     int difficulty = game->difficulty_request ? game->difficulty_request - 1
                    : (game->state != MOON_STATE_INIT) ? game->difficulty : MOON_DIFFICULTY_NORMAL;
     memset(game, 0, sizeof(*game));
     game->seed = seed;
     game->difficulty = (uint8_t)difficulty;
     game->objectives_hidden = hide_objectives;
+    game->clock_us = clock_us;
+    game->show_perf = show_perf;
 
     moon_textures_init();
 
@@ -79,6 +83,7 @@ static void game_reset(moon_game_t *game, int width, int height) {
     game->cam_start_y = game->cam_y;
     game->selected_tile_x = HOME_GX;
     game->selected_tile_y = HOME_GY;
+    game->dirty = MOON_DIRTY_WORLD;
     game->press_slot = -1;
     game->preview_slot = -1;
     game->last_slot = -1;
@@ -158,6 +163,7 @@ static const moon_structure_t *selected_structure(const moon_game_t *game) {
 static void notify(moon_game_t *game, const char *msg, uint32_t ms) {
     game->notify_msg = msg;
     game->notify_timer_ms = ms;
+    game->dirty = MOON_DIRTY_WORLD;
 }
 
 static void update_hover(moon_game_t *game, int px, int py) {
@@ -647,6 +653,7 @@ static void handle_key_down(moon_game_t *game, const moon_event_t *ev) {
     case MOON_KEY_T: toggle_texture(game); break;
     case MOON_KEY_P: toggle_pause(game); break;
     case MOON_KEY_O: game->objectives_hidden = !game->objectives_hidden; break;
+    case MOON_KEY_F: game->show_perf = !game->show_perf; break;
     case MOON_KEY_MINUS: set_speed(game, game->speed / 2); break;
     case MOON_KEY_PLUS:  set_speed(game, game->speed * 2); break;
 
@@ -728,7 +735,7 @@ static void click_map(moon_game_t *game) {
     }
 }
 
-void moon_game_handle_event(moon_game_t *game, const moon_event_t *ev) {
+static void handle_event_inner(moon_game_t *game, const moon_event_t *ev) {
     if (!game || !ev) return;
 
     switch (ev->type) {
@@ -854,6 +861,18 @@ void moon_game_handle_event(moon_game_t *game, const moon_event_t *ev) {
     }
 }
 
+void moon_game_handle_event(moon_game_t *game, const moon_event_t *ev) {
+    if (!game || !ev) return;
+    handle_event_inner(game, ev);
+    /* A moving pointer only matters when it changes what is lit or previewed, or drags the map */
+    if (ev->type != MOON_EVENT_POINTER_MOVE || game->pointer_down ||
+        game->hover_valid != game->shown_hover_valid ||
+        (game->hover_valid && (game->hover_tile_x != game->shown_hover_x || game->hover_tile_y != game->shown_hover_y)) ||
+        game->preview_slot != game->shown_preview) {
+        game->dirty = MOON_DIRTY_WORLD;
+    }
+}
+
 /* ---- Objectives: the tutorial path ---- */
 
 static int count_built(const moon_game_t *game, int type, bool powered_only) {
@@ -889,6 +908,47 @@ static void objectives_update(moon_game_t *game) {
     }
 }
 
+/* A digest of what the world pass draws that a sim tick can change: the tint step, each
+ * structure's state, the battery gauge, the warnings behind the banners, the objective line,
+ * the inspector and tile readout. When it has not changed only the top bar is stale. */
+static uint32_t world_signature(const moon_game_t *game) {
+    const moon_resources_t *r = &game->resources;
+    uint32_t h = 2166136261u;
+#define MIX(v) do { h ^= (uint32_t)(v); h *= 16777619u; } while (0)
+    int sun = fixed_to_int(r->solar_intensity * 256);
+    MIX(sun < 0 ? 0 : sun >= 256 ? 16 : (sun >> 4));                  /* 16 tint steps */
+    int pips = 0;
+    if (r->battery_capacity_kwh > 0) {
+        pips = (fixed_to_int(r->battery_stored_kwh) * 5 + r->battery_capacity_kwh / 10) / r->battery_capacity_kwh;
+        pips = pips < 0 ? 0 : pips > 5 ? 5 : pips;
+    }
+    MIX(pips);
+    for (int i = 1; i < MOON_MAX_STRUCTURES; i++) {
+        const moon_structure_t *s = &game->structs.list[i];
+        if (s->id) MIX((i << 8) | (s->type << 3) | (s->powered << 2) | (s->active << 1) | s->depleted);
+    }
+    MIX((r->population == 0) | (r->warning_crew_lost << 1) | (r->warning_cold << 2) | (r->power_brownout << 3) |
+        (r->warning_power << 4) | (r->warning_o2 << 5) | ((r->o2_stored_kg <= 0) << 6) |
+        (r->warning_water << 7) | ((r->water_stored_l <= 0) << 8));
+    MIX(game->objective);
+    MIX((game->objective == 1 ? count_built(game, MOON_STRUCT_SOLAR_ARRAY, false) :
+         game->objective == 3 ? count_built(game, MOON_STRUCT_BATTERY_BANK, false) :
+         game->objective == 5 ? r->population : game->objective == 6 ? (int)r->lunar_day : 0));
+    const moon_tile_t *st = moon_grid_get_tile_const(&game->grid, game->selected_tile_x, game->selected_tile_y);
+    MIX(st ? st->resource_val : 0);                                  /* the tile readout and "Ore left" */
+    const moon_structure_t *sel = selected_structure(game);
+    if (sel) {
+        MIX(moon_structure_ore_left(&game->grid, (moon_structure_type_t)sel->type, sel->gx, sel->gy));
+        MIX(sel->health);
+    }
+    if (game->hover_valid) {
+        const moon_tile_t *ht = moon_grid_get_tile_const(&game->grid, game->hover_tile_x, game->hover_tile_y);
+        MIX(ht ? ht->resource_val : 0);
+    }
+#undef MIX
+    return h;
+}
+
 void moon_game_update(moon_game_t *game, uint32_t delta_ms) {
     if (!game) return;
 
@@ -898,12 +958,14 @@ void moon_game_update(moon_game_t *game, uint32_t delta_ms) {
     game->frame_count++;
 
     if (game->notify_timer_ms > 0) {
-        if (delta_ms >= game->notify_timer_ms) game->notify_timer_ms = 0;
+        if (delta_ms >= game->notify_timer_ms) { game->notify_timer_ms = 0; game->dirty = MOON_DIRTY_WORLD; }
         else game->notify_timer_ms -= delta_ms;
     }
     if (game->undo_ms > 0) {
         game->undo_ms = (delta_ms >= game->undo_ms) ? 0 : game->undo_ms - delta_ms;
         if (game->undo_ms == 0) game->undo_kind = MOON_UNDO_NONE;
+        uint8_t secs = (uint8_t)((game->undo_ms + 999) / 1000);       /* the button counts seconds down */
+        if (secs != game->undo_secs_shown) { game->undo_secs_shown = secs; game->dirty = MOON_DIRTY_WORLD; }
     }
 
     /* The view eases toward a keyboard-selected tile (and works while paused) */
@@ -917,18 +979,33 @@ void moon_game_update(moon_game_t *game, uint32_t delta_ms) {
         game->cam_y += step_y;
         clamp_camera(game);
         if (game->cam_x == game->glide_x && game->cam_y == game->glide_y) game->glide = false;
+        game->dirty = MOON_DIRTY_WORLD;
     }
 
     if (game->paused || game->menu_page != MOON_MENU_CLOSED) return;
 
     game->last_tick_ms += delta_ms * game->speed;
+    bool ticked = false;
     while (game->last_tick_ms >= MOON_SIM_TICK_INTERVAL_MS) {
         game->last_tick_ms -= MOON_SIM_TICK_INTERVAL_MS;
         game->sim_ticks++;
         moon_resources_tick(&game->resources, &game->grid, &game->structs);
+        ticked = true;
     }
     moon_game_check_end(game);
     objectives_update(game);
+
+    if (ticked) {
+        /* Numbers moved. The world pass only needs redoing if something it shows moved too. */
+        uint32_t sig = world_signature(game);
+        if (sig != game->world_sig || game->state == MOON_STATE_GAME_OVER || game->state == MOON_STATE_VICTORY ||
+            game->menu_page != MOON_MENU_CLOSED) {
+            game->world_sig = sig;
+            game->dirty = MOON_DIRTY_WORLD;
+        } else if (game->dirty == MOON_DIRTY_NONE) {
+            game->dirty = MOON_DIRTY_HUD;
+        }
+    }
 }
 
 /* The run ends when the last colonist dies, or is won when Act I is complete. Either
@@ -1362,30 +1439,151 @@ static void render_selection_frame(const moon_game_t *game, const moon_surface_t
     moon_blit_line(surf, rx, ry, rx - L * 2, ry + L, COLOR_GOLD_FOIL);
 }
 
+static void render_hud_bar(const moon_game_t *game, const moon_surface_t *surf);
+static void render_build_ribbon(const moon_game_t *game, const moon_surface_t *surf);
+
+int moon_game_take_dirty(moon_game_t *game) {
+    int d = game->show_perf ? MOON_DIRTY_WORLD : game->dirty;   /* the timing overlay wants every frame */
+    game->dirty = MOON_DIRTY_NONE;
+    return d;
+}
+
+void moon_game_render_hud(moon_game_t *game, uint16_t *fb, int width, int height, int stride) {
+    if (!game || !fb) return;
+    moon_surface_t surf = moon_surface_make(fb, width, height, stride);
+    render_hud_bar(game, &surf);
+    render_build_ribbon(game, &surf);
+}
+
+void moon_game_note_frame(moon_game_t *game, uint32_t present_us, uint32_t frame_us) {
+    game->present_us = present_us;
+    game->frame_ring[game->frames_noted % MOON_PERF_RING] = frame_us;
+    game->frames_noted++;
+}
+
+void moon_game_frame_stats(const moon_game_t *game, uint32_t *median_us, uint32_t *p95_us) {
+    uint32_t n = game->frames_noted < MOON_PERF_RING ? game->frames_noted : MOON_PERF_RING;
+    *median_us = *p95_us = 0;
+    if (n == 0) return;
+    uint32_t v[MOON_PERF_RING];
+    for (uint32_t i = 0; i < n; i++) v[i] = game->frame_ring[i];
+    /* insertion sort: at most 256 values, run a few times a second at most */
+    for (uint32_t i = 1; i < n; i++) {
+        uint32_t x = v[i], j = i;
+        while (j > 0 && v[j - 1] > x) { v[j] = v[j - 1]; j--; }
+        v[j] = x;
+    }
+    *median_us = v[n / 2];
+    *p95_us = v[(n * 95) / 100 < n ? (n * 95) / 100 : n - 1];
+}
+
+/* F: where the time of a frame goes (microseconds measured with the platform's clock) */
+/* The top bar: day and clock, power, resources, crew. Opaque, so it can be redrawn alone. */
+static void render_hud_bar(const moon_game_t *game, const moon_surface_t *surf) {
+    const moon_resources_t *res = &game->resources;
+    uint16_t pwr_col = res->power_brownout ? COLOR_ALERT_RED : COLOR_ENERGY_YELLOW;
+    int batt_kwh = fixed_to_int(res->battery_stored_kwh);
+    int rgl_kg = fixed_to_int(res->regolith_stored_kg);
+    int o2_kg = fixed_to_int(res->o2_stored_kg);
+    uint16_t o2_col = res->warning_o2 ? COLOR_ALERT_RED : COLOR_LASER_CYAN;
+    int water_l = fixed_to_int(res->water_stored_l);
+    uint16_t water_col = res->warning_water ? COLOR_ALERT_RED : COLOR_SOLAR_BLUE;
+    uint16_t ls_col = (res->life_support_pct < 50) ? COLOR_ALERT_RED :
+                      ((res->life_support_pct < 80) ? COLOR_ENERGY_YELLOW : COLOR_STATUS_GREEN);
+
+    moon_clock_t clk = moon_resources_clock(res);
+    uint16_t clk_col = res->is_night ? COLOR_LASER_CYAN : COLOR_GOLD_FOIL;
+    int hud_text_x = game->ui.clock_cx + game->ui.clock_r + 6;
+
+    /* One table for both layouts: x, colour, format and four values per readout.
+     * The wide layout shows the clock's next event and a colour marker per item. */
+    const bool narrow = (surf->width < 800);
+    const int hud_h = game->ui.hud.h - 1;
+    moon_blit_fill_rect(surf, 0, 0, surf->width, hud_h, RGB565(14, 16, 20));
+    moon_blit_line(surf, 0, hud_h, surf->width - 1, hud_h, COLOR_GOLD_FOIL);
+    const int ty = narrow ? 4 : 8;
+
+    moon_blit_text_fmt(surf, hud_text_x, ty, clk_col, 0, true, narrow ? "D%02d %02d:%02d" : "D%02d %02d:%02d %s %d:%02d",
+                       res->lunar_day, clk.minutes / 60, clk.minutes % 60,
+                       clk.next_is_dusk ? "dusk" : "dawn", clk.next_in_min / 60, clk.next_in_min % 60);
+
+    struct { int16_t xw, xn; uint16_t col; const char *fw, *fn; int v[4]; } hud[] = {
+        { 226, 110, pwr_col, "PWR %d/%dkW BATT %d/%dkWh", "P:%d/%d",
+          { res->power_produced_kw, res->power_consumed_kw, batt_kwh, res->battery_capacity_kwh } },
+        { 0, 205, pwr_col, NULL, "B:%d", { batt_kwh } },
+        { 476, 280, COLOR_REGOLITH_LIGHT, "RGL %dkg", "R:%d", { rgl_kg } },
+        { 576, 360, o2_col, "O2 %dkg", "O2:%d", { o2_kg } },
+        { 666, 435, water_col, "H2O %dL", "W:%d", { water_l } },
+        { 756, 505, ls_col, "CREW %d/%d (LS:%d%%)", "CRW:%d/%d (%d%%)",
+          { res->population, res->max_population, res->life_support_pct } },
+    };
+    for (unsigned i = 0; i < sizeof(hud) / sizeof(hud[0]); i++) {
+        const char *fmt = narrow ? hud[i].fn : hud[i].fw;
+        if (!fmt) continue;
+        int x = narrow ? hud[i].xn : hud[i].xw + 10;
+        if (!narrow) moon_blit_fill_rect(surf, x - 10, 10, 6, 12, hud[i].col);
+        moon_blit_text_fmt(surf, x, ty, hud[i].col, 0, true, fmt, hud[i].v[0], hud[i].v[1], hud[i].v[2], hud[i].v[3]);
+    }
+
+    render_clock(game, surf);
+}
+
+/* True when every pixel of the view is inside the map's tiles: then drawing them all makes
+ * clearing first pointless. The corners are tested a couple of tiles inside the map, which
+ * also covers raised tiles shifting up. */
+static bool world_covers_view(const moon_game_t *game) {
+    const int w = game->screen_w, h = game->screen_h, top = game->ui.hud.h;
+    const int xs[4] = { 0, w - 1, 0, w - 1 }, ys[4] = { top, top, h - 1, h - 1 };
+    for (int i = 0; i < 4; i++) {
+        int32_t gx, gy;
+        moon_screen_to_grid(xs[i], ys[i], game->cam_x, game->cam_y, w, h, &gx, &gy);
+        if (gx < 3 || gy < 3 || gx > MOON_MAP_SIZE_X - 4 || gy > MOON_MAP_SIZE_Y - 4) return false;
+    }
+    return true;
+}
+
+static void render_perf(const moon_game_t *game, const moon_surface_t *surf) {
+    uint32_t med, p95;
+    moon_game_frame_stats(game, &med, &p95);
+    const moon_phase_us_t *p = &game->phase;
+    int bx = (surf->width - 360) / 2, by = game->ui.hud.h + 4;
+    moon_blit_fill_rect(surf, bx, by, 360, 38, RGB565(10, 14, 10));
+    moon_blit_rect_outline(surf, bx, by, 360, 38, COLOR_STATUS_GREEN);
+    moon_blit_text_fmt(surf, bx + 6, by + 3, COLOR_STATUS_GREEN, 0, true, "med %u.%u ms  p95 %u.%u ms  %u fps",
+                       (unsigned)(med / 1000), (unsigned)(med % 1000 / 100), (unsigned)(p95 / 1000), (unsigned)(p95 % 1000 / 100),
+                       (unsigned)(med ? 1000000u / med : 0));
+    moon_blit_text_fmt(surf, bx + 6, by + 19, COLOR_REGOLITH_LIGHT, 0, true, "w%u o%u m%u u%u p%u us",
+                       (unsigned)p->world, (unsigned)p->overlay, (unsigned)p->minimap, (unsigned)p->ui,
+                       (unsigned)game->present_us);
+}
+
 void moon_game_render(moon_game_t *game, uint16_t *fb, int width, int height, int stride) {
     if (!game || !fb) return;
 
     moon_surface_t surf = moon_surface_make(fb, width, height, stride);
+    uint32_t t_mark = game->clock_us ? game->clock_us() : 0;
+#define PHASE_END(field) do { if (game->clock_us) { uint32_t t_now = game->clock_us(); game->phase.field = t_now - t_mark; t_mark = t_now; } } while (0)
 
-    /* 1. Clear background to lunar deep space */
-    moon_blit_clear(&surf, COLOR_SPACE_BLACK);
+    /* 1. Clear background to lunar deep space, unless the tiles cover the whole view anyway
+     * (a pass over the frame is expensive on PSRAM) */
+    if (!world_covers_view(game)) moon_blit_clear(&surf, COLOR_SPACE_BLACK);
 
-    /* 2. Terrain and structures in one back-to-front pass, overlays on top */
-    moon_world_render(&game->structs, &game->grid, &surf,
-                      game->cam_x, game->cam_y,
-                      game->hover_tile_x, game->hover_tile_y, game->hover_valid);
-
-    /* Lunar day/night: dim the world, bluer at night. Badges and the UI stay bright. */
+    /* 2. Terrain and structures in one back-to-front pass, overlays on top. The day/night
+     * tint (dimmer and bluer at night) is folded into the drawing; badges and the UI stay bright. */
     {
         int sun = fixed_to_int(game->resources.solar_intensity * 256); /* 0..256 */
         if (sun < 0) sun = 0;
         if (sun < 256) {
-            moon_blit_tint_rect(&surf, 0, 34, width, height - 34 - 40,
-                                (uint16_t)(116 + sun * 140 / 256),
-                                (uint16_t)(128 + sun * 128 / 256),
-                                (uint16_t)(150 + sun * 106 / 256));
+            moon_blit_set_tint((uint16_t)(116 + sun * 140 / 256), (uint16_t)(128 + sun * 128 / 256),
+                               (uint16_t)(150 + sun * 106 / 256));
         }
     }
+    moon_world_render(&game->structs, &game->grid, &surf,
+                      game->cam_x, game->cam_y, game->ui.hud.h,
+                      game->hover_tile_x, game->hover_tile_y, game->hover_valid);
+    moon_blit_set_tint(256, 256, 256);
+    PHASE_END(world);
+
     moon_world_render_overlays(&game->structs, &game->grid, &surf, &game->resources,
                                game->cam_x, game->cam_y);
 
@@ -1412,64 +1610,23 @@ void moon_game_render(moon_game_t *game, uint16_t *fb, int width, int height, in
         }
     }
 
+    PHASE_END(overlay);
+
     /* 5. Render Bottom-Right Minimap Radar */
     moon_grid_render_minimap(&game->grid, &surf, game->ui.minimap.x, game->ui.minimap.y,
                              game->ui.minimap.w, game->ui.minimap.h,
                              game->cam_x, game->cam_y);
     moon_blit_fill_rect(&surf, game->ui.minimap.x + game->selected_tile_x - 1,
                         game->ui.minimap.y + game->selected_tile_y - 1, 3, 3, COLOR_LUNAR_WHITE);
+    PHASE_END(minimap);
 
     /* 6. Render Bottom Build Ribbon */
     render_build_ribbon(game, &surf);
     render_undo_button(game, &surf);
 
-    /* 7. Render Top HUD Bar (Title, Day/Night Clock, Power, O2, H2O, Materials, Crew) */
+    /* 7. Top HUD bar */
+    render_hud_bar(game, &surf);
     const moon_resources_t *res = &game->resources;
-    uint16_t pwr_col = res->power_brownout ? COLOR_ALERT_RED : COLOR_ENERGY_YELLOW;
-    int batt_kwh = fixed_to_int(res->battery_stored_kwh);
-    int rgl_kg = fixed_to_int(res->regolith_stored_kg);
-    int o2_kg = fixed_to_int(res->o2_stored_kg);
-    uint16_t o2_col = res->warning_o2 ? COLOR_ALERT_RED : COLOR_LASER_CYAN;
-    int water_l = fixed_to_int(res->water_stored_l);
-    uint16_t water_col = res->warning_water ? COLOR_ALERT_RED : COLOR_SOLAR_BLUE;
-    uint16_t ls_col = (res->life_support_pct < 50) ? COLOR_ALERT_RED :
-                      ((res->life_support_pct < 80) ? COLOR_ENERGY_YELLOW : COLOR_STATUS_GREEN);
-
-    moon_clock_t clk = moon_resources_clock(res);
-    uint16_t clk_col = res->is_night ? COLOR_LASER_CYAN : COLOR_GOLD_FOIL;
-    int hud_text_x = game->ui.clock_cx + game->ui.clock_r + 6;
-
-    /* One table for both layouts: x, colour, format and four values per readout.
-     * The wide layout shows the clock's next event and a colour marker per item. */
-    const bool narrow = (width < 800);
-    const int hud_h = game->ui.hud.h - 1;
-    moon_blit_fill_rect(&surf, 0, 0, width, hud_h, RGB565(14, 16, 20));
-    moon_blit_line(&surf, 0, hud_h, width - 1, hud_h, COLOR_GOLD_FOIL);
-    const int ty = narrow ? 4 : 8;
-
-    moon_blit_text_fmt(&surf, hud_text_x, ty, clk_col, 0, true, narrow ? "D%02d %02d:%02d" : "D%02d %02d:%02d %s %d:%02d",
-                       res->lunar_day, clk.minutes / 60, clk.minutes % 60,
-                       clk.next_is_dusk ? "dusk" : "dawn", clk.next_in_min / 60, clk.next_in_min % 60);
-
-    struct { int16_t xw, xn; uint16_t col; const char *fw, *fn; int v[4]; } hud[] = {
-        { 226, 110, pwr_col, "PWR %d/%dkW BATT %d/%dkWh", "P:%d/%d",
-          { res->power_produced_kw, res->power_consumed_kw, batt_kwh, res->battery_capacity_kwh } },
-        { 0, 205, pwr_col, NULL, "B:%d", { batt_kwh } },
-        { 476, 280, COLOR_REGOLITH_LIGHT, "RGL %dkg", "R:%d", { rgl_kg } },
-        { 576, 360, o2_col, "O2 %dkg", "O2:%d", { o2_kg } },
-        { 666, 435, water_col, "H2O %dL", "W:%d", { water_l } },
-        { 756, 505, ls_col, "CREW %d/%d (LS:%d%%)", "CRW:%d/%d (%d%%)",
-          { res->population, res->max_population, res->life_support_pct } },
-    };
-    for (unsigned i = 0; i < sizeof(hud) / sizeof(hud[0]); i++) {
-        const char *fmt = narrow ? hud[i].fn : hud[i].fw;
-        if (!fmt) continue;
-        int x = narrow ? hud[i].xn : hud[i].xw + 10;
-        if (!narrow) moon_blit_fill_rect(&surf, x - 10, 10, 6, 12, hud[i].col);
-        moon_blit_text_fmt(&surf, x, ty, hud[i].col, 0, true, fmt, hud[i].v[0], hud[i].v[1], hud[i].v[2], hud[i].v[3]);
-    }
-
-    render_clock(game, &surf);
 
     /* Tile readout: under the mouse, else the selected tile */
     {
@@ -1554,4 +1711,11 @@ void moon_game_render(moon_game_t *game, uint16_t *fb, int width, int height, in
         moon_blit_text(&surf, px + 10, py + 5, msg, COLOR_ENERGY_YELLOW, 0, true);
     }
     render_menu(game, &surf);
+    PHASE_END(ui);
+    game->shown_hover_valid = game->hover_valid;
+    game->shown_hover_x = game->hover_tile_x;
+    game->shown_hover_y = game->hover_tile_y;
+    game->shown_preview = game->preview_slot;
+    if (game->show_perf) render_perf(game, &surf);
+#undef PHASE_END
 }

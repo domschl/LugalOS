@@ -363,7 +363,7 @@ static int depth_key(const moon_structure_t *s) {
 
 static void draw_conduit_cables(const moon_surface_t *surf, const moon_grid_t *grid,
                                 int gx, int gy, int32_t sx, int32_t sy, bool powered) {
-    uint16_t cable_col = powered ? COLOR_ENERGY_YELLOW : RGB565(80, 85, 95);
+    uint16_t cable_col = moon_blit_tint_color(powered ? COLOR_ENERGY_YELLOW : RGB565(80, 85, 95));
     static const int dir[4][2] = { {1, 0}, {-1, 0}, {0, 1}, {0, -1} };
 
     for (int i = 0; i < 4; i++) {
@@ -376,17 +376,23 @@ static void draw_conduit_cables(const moon_surface_t *surf, const moon_grid_t *g
     }
 }
 
-static bool structure_visible(const moon_surface_t *surf, int32_t sx, int32_t sy) {
-    return !(sx + MOON_TILE_W < 0 || sx - MOON_TILE_W >= surf->width ||
-             sy + MOON_TILE_H < 30 || sy - 2 * MOON_TILE_H - 80 >= surf->height);
+static bool structure_visible(const moon_surface_t *surf, uint8_t type, int32_t sx, int32_t sy, int32_t view_top) {
+    if (type == MOON_STRUCT_POWER_CONDUIT) {
+        return !(sx + MOON_TILE_W < 0 || sx - MOON_TILE_W >= surf->width ||
+                 sy + MOON_TILE_HALF_H < view_top || sy - MOON_TILE_HALF_H >= surf->height);
+    }
+    moon_rect_t r;
+    sprite_rect(type, sx, sy, &r);
+    return !(r.x1 <= 0 || r.x0 >= surf->width || r.y1 <= view_top || r.y0 >= surf->height);
 }
 
 static void draw_structure_body(const moon_grid_t *grid, const moon_surface_t *surf,
-                                const moon_structure_t *s, int32_t cam_x, int32_t cam_y) {
+                                const moon_structure_t *s, int32_t cam_x, int32_t cam_y,
+                                int32_t view_top) {
     int32_t sx, sy;
     structure_anchor(grid, s->type, s->gx, s->gy, cam_x, cam_y,
                      surf->width, surf->height, &sx, &sy);
-    if (!structure_visible(surf, sx, sy)) return;
+    if (!structure_visible(surf, s->type, sx, sy, view_top)) return;
 
     if (s->type == MOON_STRUCT_POWER_CONDUIT) {
         draw_conduit_cables(surf, grid, s->gx, s->gy, sx, sy, s->powered);
@@ -447,7 +453,7 @@ static void draw_structure_overlay(const moon_grid_t *grid, const moon_surface_t
     int32_t sx, sy;
     structure_anchor(grid, s->type, s->gx, s->gy, cam_x, cam_y,
                      surf->width, surf->height, &sx, &sy);
-    if (!structure_visible(surf, sx, sy)) return;
+    if (!structure_visible(surf, s->type, sx, sy, 0)) return;
 
     if (s->type == MOON_STRUCT_POWER_CONDUIT) {
         draw_conduit_junction(surf, sx, sy, s->powered);
@@ -482,28 +488,65 @@ static void draw_structure_overlay(const moon_grid_t *grid, const moon_surface_t
     }
 }
 
+static inline int div_floor(int a, int b) {
+    int q = a / b;
+    int r = a % b;
+    if (r != 0 && ((a < 0) ^ (b < 0))) q--;
+    return q;
+}
+
 void moon_world_render(const moon_structure_mgr_t *mgr,
                        const moon_grid_t *grid,
                        const moon_surface_t *surf,
-                       int32_t cam_x, int32_t cam_y,
+                       int32_t cam_x, int32_t cam_y, int32_t view_top,
                        int32_t hover_gx, int32_t hover_gy, bool hover_valid) {
     if (!mgr || !grid || !surf) return;
 
+    /* Visible diagonal range: d = gx + gy.
+     * base_sy = d * MOON_TILE_HALF_H - cam_y + (surf->height / 2).
+     * Tiles on diagonal d have their bottom at base_sy + MOON_TILE_HALF_H.
+     * Margin of 2 diagonals for elevation and safety. */
+    int d_min = div_floor(view_top + cam_y - (surf->height / 2) - MOON_TILE_HALF_H, MOON_TILE_HALF_H) - 2;
+    if (d_min < 0) d_min = 0;
+
+    /* Sprites (up to 80px), overlays, and raised cliffs (up to 32px) reach upward from base_sy.
+     * A tile / structure on diagonal d can reach into the screen while base_sy - 128 < surf->height.
+     * Margin of 3 diagonals at the bottom. */
+    int d_max = div_floor(surf->height + 128 + cam_y - (surf->height / 2), MOON_TILE_HALF_H) + 3;
+    if (d_max >= MOON_MAP_SIZE_X + MOON_MAP_SIZE_Y - 1)
+        d_max = MOON_MAP_SIZE_X + MOON_MAP_SIZE_Y - 2;
+
     /* Back to front, one diagonal at a time: a tile, then the structure whose
      * front tile it is. Sprites reach upward over diagonals already drawn. */
-    for (int d = 0; d < MOON_MAP_SIZE_X + MOON_MAP_SIZE_Y - 1; d++) {
-        for (int gx = 0; gx <= d; gx++) {
-            int gy = d - gx;
-            if (gx >= MOON_MAP_SIZE_X || gy >= MOON_MAP_SIZE_Y) continue;
+    for (int d = d_min; d <= d_max; d++) {
+        int map_gx_min = d - (MOON_MAP_SIZE_Y - 1);
+        if (map_gx_min < 0) map_gx_min = 0;
+        int map_gx_max = d;
+        if (map_gx_max >= MOON_MAP_SIZE_X) map_gx_max = MOON_MAP_SIZE_X - 1;
 
-            moon_grid_render_tile(grid, surf, gx, gy, cam_x, cam_y,
+        /* Screen horizontal bounds:
+         * base_sx = (2*gx - d) * MOON_TILE_HALF_W - cam_x + (surf->width / 2).
+         * Allow 128 px margin on left and right for sprites and tile half-widths: */
+        int left_target = -128 + cam_x - (surf->width / 2);
+        int scr_gx_min = div_floor(d + div_floor(left_target, MOON_TILE_HALF_W), 2) - 2;
+
+        int right_target = surf->width + 128 + cam_x - (surf->width / 2);
+        int scr_gx_max = div_floor(d + div_floor(right_target + MOON_TILE_HALF_W - 1, MOON_TILE_HALF_W), 2) + 2;
+
+        int gx_start = map_gx_min > scr_gx_min ? map_gx_min : scr_gx_min;
+        int gx_end = map_gx_max < scr_gx_max ? map_gx_max : scr_gx_max;
+
+        for (int gx = gx_start; gx <= gx_end; gx++) {
+            int gy = d - gx;
+
+            moon_grid_render_tile(grid, surf, gx, gy, cam_x, cam_y, view_top,
                                   hover_gx, hover_gy, hover_valid);
 
             uint8_t id = grid->tiles[gy][gx].structure_id;
             if (id == 0 || id >= MOON_MAX_STRUCTURES) continue;
             const moon_structure_t *s = &mgr->list[id];
             if (s->id != id || depth_key(s) != d) continue;
-            draw_structure_body(grid, surf, s, cam_x, cam_y);
+            draw_structure_body(grid, surf, s, cam_x, cam_y, view_top);
         }
     }
 }

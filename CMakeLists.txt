@@ -935,6 +935,7 @@ if(LUGALOS_ENABLE_MOONBASE)
         user/moonbase/src/moon_structures.c
         user/moonbase/src/moon_resources.c
         user/moonbase/src/moon_ui.c
+        user/moonbase/src/moon_bench.c
         user/moonbase/src/moon_game.c)
     # One section per function so the linker drops what a target never calls
     # (the XIP image is size-bound on the Tab5).
@@ -944,7 +945,7 @@ if(LUGALOS_ENABLE_MOONBASE)
         user/moonbase/src/moon_grid.c user/moonbase/src/moon_sprites.c
         user/moonbase/src/moon_textures.c user/moonbase/src/moon_structures.c
         user/moonbase/src/moon_resources.c user/moonbase/src/moon_ui.c
-        user/moonbase/src/moon_game.c
+        user/moonbase/src/moon_bench.c user/moonbase/src/moon_game.c
         PROPERTIES COMPILE_OPTIONS -ffunction-sections)
 endif()
 

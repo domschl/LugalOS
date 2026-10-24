@@ -264,11 +264,11 @@ bool moon_grid_pick(const moon_grid_t *grid, int32_t sx, int32_t sy,
 
 void moon_grid_render_tile(const moon_grid_t *grid, const moon_surface_t *surf,
                            int gx, int gy, int32_t cam_x, int32_t cam_y,
+                           int32_t view_top,
                            int32_t hover_gx, int32_t hover_gy, bool hover_valid) {
     if (!grid || !surf) return;
     if (gx < 0 || gx >= MOON_MAP_SIZE_X || gy < 0 || gy >= MOON_MAP_SIZE_Y) return;
 
-    const int32_t view_top = 34; /* Reserve top HUD */
     const moon_tile_t *t = &grid->tiles[gy][gx];
 
     /* Calculate base screen coordinate (elevation = 0) */
@@ -341,7 +341,7 @@ void moon_grid_render(const moon_grid_t *grid, const moon_surface_t *surf,
     /* Diagonal wave: back to front */
     for (int d = 0; d < MOON_MAP_SIZE_X + MOON_MAP_SIZE_Y - 1; d++) {
         for (int gx = 0; gx <= d; gx++) {
-            moon_grid_render_tile(grid, surf, gx, d - gx, cam_x, cam_y,
+            moon_grid_render_tile(grid, surf, gx, d - gx, cam_x, cam_y, 0,
                                   hover_gx, hover_gy, hover_valid);
         }
     }

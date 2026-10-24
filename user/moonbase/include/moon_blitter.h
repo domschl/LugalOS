@@ -2,6 +2,7 @@
 #define MOON_BLITTER_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include "moon_config.h"
 #include "moon_fixed.h"
@@ -67,6 +68,12 @@ void moon_blit_iso_block(const moon_surface_t *surf, int sx, int sy,
                          uint16_t top_color, uint16_t left_color,
                          uint16_t right_color, uint16_t border_color);
 
+/* Optional cache of the baked tops of textured tiles. The platform hands over moon_tile_cache_bytes()
+ * of 4-byte aligned memory (PSRAM on the boards: about 8.7 MB, filled lazily as tiles come into
+ * view); NULL detaches it. Without it every tile is sampled as it is drawn, with the same result. */
+size_t moon_tile_cache_bytes(void);
+void moon_tile_cache_attach(void *mem);
+
 /* Procedural Textured Terrain & Stratified Geological Block Primitives */
 void moon_blit_iso_tile_textured(const moon_surface_t *surf, int sx, int sy,
                                  int half_w, int half_h,
@@ -77,6 +84,13 @@ void moon_blit_iso_block_textured(const moon_surface_t *surf, int sx, int sy,
                                   int half_w, int half_h, int height_px,
                                   int gx, int gy, uint8_t terrain,
                                   uint8_t flags, uint16_t border_color);
+
+/* World tint folded into the drawing: while set, the terrain, structure and cable routines
+ * below scale every colour they write by the given per-channel factors (256 = unchanged),
+ * with exactly the result of drawing untinted and then running moon_blit_tint_rect() over
+ * the frame, without the extra pass over memory. Set back to 256 for the UI. */
+void moon_blit_set_tint(uint16_t r_256, uint16_t g_256, uint16_t b_256);
+uint16_t moon_blit_tint_color(uint16_t color);   /* a colour as the set tint would draw it */
 
 /* Scale each colour channel of a rectangle (256 = unchanged, each <= 256) */
 void moon_blit_tint_rect(const moon_surface_t *surf, int x, int y, int w, int h,

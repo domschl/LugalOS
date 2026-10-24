@@ -25,6 +25,7 @@ SRC := src/platform_sdl3.c \
        src/moon_structures.c \
        src/moon_resources.c \
        src/moon_ui.c \
+       src/moon_bench.c \
        src/moon_game.c \
        src/main_host.c
 

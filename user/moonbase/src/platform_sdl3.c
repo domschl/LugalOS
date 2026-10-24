@@ -1,4 +1,5 @@
 #include "moon_platform.h"
+#include "moon_blitter.h"
 
 #include <SDL3/SDL.h>
 #include <stdio.h>
@@ -51,6 +52,7 @@ static uint32_t map_sdl_key(SDL_Keycode k) {
         case SDLK_N:         return MOON_KEY_N;
         case SDLK_C:         return MOON_KEY_C;
         case SDLK_O:         return MOON_KEY_O;
+        case SDLK_F:         return MOON_KEY_F;
         case SDLK_MINUS:     return MOON_KEY_MINUS;
         case SDLK_KP_MINUS:  return MOON_KEY_MINUS;
         case SDLK_EQUALS:    return MOON_KEY_PLUS;
@@ -59,6 +61,8 @@ static uint32_t map_sdl_key(SDL_Keycode k) {
         default:             return MOON_KEY_UNKNOWN;
     }
 }
+
+static void *s_tile_cache;   /* single task: the main loop */
 
 bool moon_platform_init(int width, int height, const char *title) {
     if (s_plat.initialized) return true;
@@ -111,12 +115,20 @@ bool moon_platform_init(int width, int height, const char *title) {
         return false;
     }
 
+    /* Baked terrain tops (see moon_tile_cache_attach); without them the host just samples slower */
+    s_tile_cache = malloc(moon_tile_cache_bytes());
+    if (s_tile_cache) moon_tile_cache_attach(s_tile_cache);
+
     s_plat.initialized = true;
     return true;
 }
 
 void moon_platform_shutdown(void) {
     if (!s_plat.initialized) return;
+
+    moon_tile_cache_attach(NULL);
+    free(s_tile_cache);
+    s_tile_cache = NULL;
 
     if (s_plat.framebuffer) {
         free(s_plat.framebuffer);
@@ -150,6 +162,10 @@ uint32_t moon_platform_get_ticks_ms(void) {
     return (uint32_t)SDL_GetTicks();
 }
 
+uint32_t moon_platform_get_ticks_us(void) {
+    return (uint32_t)(SDL_GetTicksNS() / 1000u);
+}
+
 void moon_platform_delay_ms(uint32_t ms) {
     SDL_Delay(ms);
 }
@@ -157,6 +173,15 @@ void moon_platform_delay_ms(uint32_t ms) {
 uint16_t* moon_platform_get_framebuffer(int *stride_pixels) {
     if (stride_pixels) *stride_pixels = s_plat.stride;
     return s_plat.framebuffer;
+}
+
+uint16_t* moon_platform_get_display_framebuffer(int *stride_pixels) {
+    return moon_platform_get_framebuffer(stride_pixels);
+}
+
+void moon_platform_present_rows(int y0, int y1) {
+    (void)y0; (void)y1;
+    moon_platform_present();
 }
 
 void moon_platform_present(void) {
