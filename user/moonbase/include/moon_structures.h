@@ -30,8 +30,8 @@ typedef struct {
     uint16_t    cost_regolith;  /* Sintered blocks or raw minerals */
     int16_t     power_kw;       /* + produced (day), - consumed */
     uint16_t    power_storage;  /* Battery capacity (kWh) */
-    int16_t     rate_o2;        /* + produced, - consumed (kg/day) */
-    int16_t     rate_water;     /* + produced, - consumed (L/day) */
+    int16_t     rate_o2;        /* + produced, - consumed (kg per minute) */
+    int16_t     rate_water;     /* + produced, - consumed (L per minute) */
     uint16_t    primary_color;
     uint16_t    accent_color;
     uint8_t     height_px;      /* 3D isometric height extrusion */

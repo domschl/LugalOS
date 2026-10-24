@@ -10,7 +10,7 @@ You touch down at the lunar South Pole with an initial expedition lander and sur
 
 - **Day/Night Diurnal Cycle**: The Sun follows an accelerated lunar day/night cycle. Solar panels generate power during the daytime; cryogenic fuel cell batteries must store sufficient charge to survive the lunar night.
 - **Power Grid**: Structures are powered when they touch a powered structure or a power conduit. The grid is solved by a breadth-first search from the Lander. The night lasts as long as the day, so solar must produce about twice the base's load on average to refill the batteries that carry it through the night.
-- **Life Support**: Each colonist uses 1 kg of oxygen and 2 L of water every 30 s. Oxygen Extractors, built beside polar ice or basalt mare, make both, but the deposits are finite: an Extractor draws one unit from the richest ice or mare tile beside it every few seconds (the tile's `R:` richness falls), and when nothing is left it idles (`DEPL`), uses no power, and a new one has to be built on fresh ground. Low reserves are only warnings; the crew suffers when a tank is empty or the grid blacks out.
+- **Life Support**: Each colonist uses 1 kg of oxygen and 2 L of water every 30 s, and every active pressurised structure draws more on top of that: the Lander 1 kg and 2 L per minute, each Habitat 5 kg and 10 L per minute (leaks and gardens), even when unpowered. A Habitat on standby is depressurised and draws nothing. Oxygen Extractors, built beside polar ice or basalt mare, make both, but the deposits are finite: an Extractor draws one unit from the richest ice or mare tile beside it every few seconds (the tile's `R:` richness falls), and when nothing is left it idles (`DEPL`), uses no power, and a new one has to be built on fresh ground. Low reserves are only warnings; the crew suffers when a tank is empty or the grid blacks out.
 - **Construction & Regolith**: A Regolith Sinterer quarries the ground around it: it takes one unit from the richest free regolith tile beside it for every kilogram it makes, so the `R:` richness on a tile is how much is there to dig (boulder fields are the richest, crater floors the poorest, ice and mare are left to the Extractors). Placing one shows `ore N`, the stock around it; when the patch is spent it idles (`DEPL`) and the next Sinterer has to go on fresh ground. A Sinterer bakes the regolith into building material. If nothing produces regolith the Lander scoops up to 15 kg so the base can always afford a Sinterer.
 - **Base Management**: Select a building to inspect it, switch it to standby to save power, or recycle it for half its cost; `Z` undoes the last build or recycle.
 - **Objectives**: A line at the bottom left walks you through the first hours (Extractor, solar, Sinterer, a second battery, Habitat, a crew of 8, Act I). `O` hides or shows it. Objectives stay done once reached.
@@ -21,10 +21,10 @@ You touch down at the lunar South Pole with an initial expedition lander and sur
 
 | Structure | Footprint | Cost | Power | Notes |
 | :--- | :---: | :---: | :---: | :--- |
-| **Expedition Lander** | 1×1 | — | +10 kW (RTG), uses 5 | Housing for 4 colonists, 50 kWh emergency battery. Cannot be recycled. |
+| **Expedition Lander** | 1×1 | — | +10 kW (RTG), uses 5 | Housing for 4 colonists, 50 kWh emergency battery; draws 1 kg O2 and 2 L water per minute. Cannot be recycled. |
 | **Solar Array** | 1×1 | 10 kg | up to +30 kW by day | Output follows the sun's height. |
 | **Battery Bank** | 1×1 | 20 kg | −1 kW | Stores 250 kWh for the night. |
-| **Habitat Dome** | 2×2 | 50 kg | −15 kW | Housing for 8 more colonists. |
+| **Habitat Dome** | 2×2 | 50 kg | −15 kW | Housing for 8 more colonists; draws 5 kg O2 and 10 L water per minute. |
 | **Regolith Sinterer** | 1×1 | 15 kg | −20 kW | 30 kg of regolith per minute (Engineer) while there is ground left to quarry beside it. |
 | **Oxygen Extractor** | 1×1 | 25 kg | −25 kW | +20 kg O2 and +30 L water per minute while the ice or mare beside it lasts. |
 | **Power Conduit** | 1×1 | 2 kg | 0 | Carries power between facilities. |

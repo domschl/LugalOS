@@ -197,6 +197,11 @@ void moon_resources_tick(moon_resources_t *res,
             total_housing += MOON_HABITAT_CREW;
         }
 
+        /* Pressurised structures leak and their gardens drink: a negative catalog rate is a
+         * standing draw, in kg or L per minute, on top of what the crew itself uses */
+        if (def->rate_o2 < 0) net_o2_milli += def->rate_o2 * 1000 / (MOON_SIM_TICK_RATE_HZ * 60);
+        if (def->rate_water < 0) net_water_milli += def->rate_water * 1000 / (MOON_SIM_TICK_RATE_HZ * 60);
+
         /* If connected to power grid */
         if (s->powered) {
             if (s->type == MOON_STRUCT_SOLAR_ARRAY) {
