@@ -192,8 +192,8 @@ bool flash_p4_init(void) {
  * **Step 2 is not needed at all, and the reason is the writable floor.** A
  * cache disable exists to stop stale lines answering for flash that has just
  * changed underneath them. This kernel can only ever write at or above
- * LUGALOS_P4_FLASH_WRITABLE_FLOOR (0x00110000), and the XIP window maps
- * LUGALOS_P4_OSIMAGE_BASE..+SIZE (0x00010000..0x00110000) -- the floor is
+ * LUGALOS_P4_FLASH_WRITABLE_FLOOR (0x00150000), and the XIP window maps
+ * LUGALOS_P4_OSIMAGE_BASE..+SIZE (0x00010000..0x00150000) -- the floor is
  * exactly the top of the mapped region. **No byte this driver can write is
  * ever mapped**, so nothing cached can go stale, and the `writable()` check a
  * few lines up is load-bearing for correctness rather than merely for safety.

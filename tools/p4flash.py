@@ -59,7 +59,7 @@ DEFAULT_BUILD = pathlib.Path(__file__).resolve().parent.parent / "build" / "esp3
 # match LUGALOS_P4_FLASH_WRITABLE_FLOOR in cmake/flash_layout_esp32p4.cmake;
 # they are deliberately two copies of one number, so that changing the layout
 # does not silently change what this script is willing to destroy.
-WRITABLE_FLOOR = 0x00110000
+WRITABLE_FLOOR = 0x00150000
 
 
 def read_layout(build: pathlib.Path):

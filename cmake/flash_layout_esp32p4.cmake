@@ -30,9 +30,9 @@
 #
 #   0x00000000  reserved, below the ROM's bootloader offset          8 KB
 #   0x00002000  second-stage bootloader (U4)                        56 KB
-#   0x00010000  OS image: .text + .rodata, executed in place         1 MB
-#   0x00110000  flash filesystem /flash0                           512 KB
-#   0x00190000  spare, contiguous                                 14.4 MB
+#   0x00010000  OS image: .text + .rodata, executed in place         1.25 MB
+#   0x00150000  flash filesystem /flash0                           512 KB
+#   0x001D0000  spare, contiguous                                 14.2 MB
 #
 # ### Why 0x2000 for the bootloader
 #
@@ -86,9 +86,9 @@ set(LUGALOS_P4_BOOTLOADER_SIZE 0x0000E000)  # 56 KB
 # U1/U2. .text and .rodata, mapped into the flash XIP window and executed in
 # place. Must be 64 KB-aligned: the MMU maps 64 KB pages.
 set(LUGALOS_P4_OSIMAGE_BASE   0x00010000)
-set(LUGALOS_P4_OSIMAGE_SIZE   0x00100000)   # 1 MB
+set(LUGALOS_P4_OSIMAGE_SIZE   0x00140000)   # 1.25 MB: the Tab5 build, the largest, needs more than 1 MB
 
-set(LUGALOS_P4_FLASHFS_BASE   0x00110000)
+set(LUGALOS_P4_FLASHFS_BASE   0x00150000)
 set(LUGALOS_P4_FLASHFS_SIZE   0x00100000)   # 1 MB -- must match the FAT32 image
 
 # The floor every write in drivers/flash_esp32p4.c is checked against.
@@ -100,7 +100,7 @@ set(LUGALOS_P4_FLASHFS_SIZE   0x00100000)   # 1 MB -- must match the FAT32 image
 # be modified by a running system" -- the bootloader and the OS image -- so a
 # second writable segment added later widens the filesystem without widening
 # what a stray write can reach.
-set(LUGALOS_P4_FLASH_WRITABLE_FLOOR 0x00110000)
+set(LUGALOS_P4_FLASH_WRITABLE_FLOOR 0x00150000)
 
 # The identity record (drivers/idstore_esp32p4.c): one 4 KB sector, the last
 # below 16 MB -- the top of the spare, so nothing growing upwards from the
