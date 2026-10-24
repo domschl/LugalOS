@@ -96,6 +96,13 @@ def read_segments(build: pathlib.Path):
     return segs
 
 
+def esptool_cmd() -> list[str]:
+    import shutil
+    if shutil.which("esptool"):
+        return ["esptool", "--chip", "esp32p4"]
+    return ["uv", "tool", "run", "--from", "esptool", "esptool", "--chip", "esp32p4"]
+
+
 def make_boot_image(build: pathlib.Path):
     """Turn the RAM half into the image the ROM can boot.
 
@@ -108,8 +115,7 @@ def make_boot_image(build: pathlib.Path):
     if not elf.exists():
         sys.exit("%s not found -- build the esp32p4 preset first" % elf)
     img = build / "lugalos-boot.img"
-    rc = subprocess.call(["esptool", "--chip", "esp32p4", "elf2image",
-                          "-o", str(img), str(elf)])
+    rc = subprocess.call(esptool_cmd() + ["elf2image", "-o", str(img), str(elf)])
     if rc != 0:
         sys.exit("elf2image failed on %s" % elf.name)
     return img
@@ -185,8 +191,7 @@ def main() -> int:
 
     # One esptool invocation for every segment, so the board enters download
     # mode once and the writes cannot be interleaved with a reset.
-    cmd = ["esptool", "--chip", "esp32p4", "--port", port, "--baud",
-           str(a.baud), "write-flash"]
+    cmd = esptool_cmd() + ["--port", port, "--baud", str(a.baud), "write-flash"]
     for name, base, img, actual in plan:
         print("  %-4s %8d bytes -> 0x%06x  (%s)" % (name, actual, base, img.name))
         cmd += [hex(base), str(img)]
@@ -204,8 +209,7 @@ def main() -> int:
         # An on-chip digest, not a re-read: a re-read can reproduce its own
         # transfer bug and look like agreement. Same reasoning the factory
         # backup's README records for how that image was verified.
-        vcmd = ["esptool", "--chip", "esp32p4", "--port", port, "--baud",
-                str(a.baud), "verify-flash"]
+        vcmd = esptool_cmd() + ["--port", port, "--baud", str(a.baud), "verify-flash"]
         for name, base, img, actual in plan:
             vcmd += [hex(base), str(img)]
         rc = subprocess.call(vcmd)

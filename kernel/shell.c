@@ -833,16 +833,24 @@ void pager_print_md_line(const char *raw, bool is_formatted, bool *in_code, bool
 
     switch (md.type) {
     case MD_LINE_H1:
-        cprintf("\033[1;36m# %s\033[0m\n", md.text);
+        cprintf("\033[1;36m# ");
+        pager_print_spans(md.text, link_idx);
+        cprintf("\033[0m\n");
         break;
     case MD_LINE_H2:
-        cprintf("\033[1;32m## %s\033[0m\n", md.text);
+        cprintf("\033[1;32m## ");
+        pager_print_spans(md.text, link_idx);
+        cprintf("\033[0m\n");
         break;
     case MD_LINE_H3:
-        cprintf("\033[1;33m### %s\033[0m\n", md.text);
+        cprintf("\033[1;33m### ");
+        pager_print_spans(md.text, link_idx);
+        cprintf("\033[0m\n");
         break;
     case MD_LINE_H4:
-        cprintf("\033[1;35m#### %s\033[0m\n", md.text);
+        cprintf("\033[1;35m#### ");
+        pager_print_spans(md.text, link_idx);
+        cprintf("\033[0m\n");
         break;
     case MD_LINE_ULIST:
         for (int i = 0; i < md.indent_level; i++) cprintf("  ");

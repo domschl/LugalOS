@@ -990,7 +990,7 @@ static void rdraw_mono_text(rdraw_t *rd, int x, int y, const char *s, uint32_t l
 
 /* Word wrapping and rich proportional / monospace span rendering */
 static int render_wrapped_spans(reader_state_t *r, rdraw_t *rd, int x0, int max_w,
-                                const char *text, int line_h,
+                                const char *text, int line_h, uint16_t extra_style,
                                 int scroll_y, int win_h, int *out_doc_y,
                                 int *inout_link_idx) {
     int cur_x = x0;
@@ -1099,8 +1099,8 @@ static int render_wrapped_spans(reader_state_t *r, rdraw_t *rd, int x0, int max_
                     rdraw_fill(rd, cur_x - 2, screen_y + 1, cur_x + (int)word_w + 1, screen_y + line_h - 3, 236, CANVAS1_GREY);
                     rdraw_mono_text(rd, cur_x, screen_y + 1, word_start, (uint32_t)word_len, (int)word_len);
                 } else {
-                    bool bold = (span.style & MD_STYLE_BOLD) != 0;
-                    bool italic = (span.style & MD_STYLE_ITALIC) != 0;
+                    bool bold = ((span.style | extra_style) & MD_STYLE_BOLD) != 0;
+                    bool italic = ((span.style | extra_style) & MD_STYLE_ITALIC) != 0;
                     rdraw_serif_text(rd, cur_x, screen_y, word_start, (uint32_t)word_len, bold, italic);
                     if (is_link) {
                         rdraw_hline(rd, cur_x, cur_x + (int)word_w, screen_y + line_h - 2, READER_LINK_LINE_GRAY8, CANVAS1_BLACK);
@@ -1190,7 +1190,7 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
                 md_line_t md;
                 if (md_parse_line(line_buf, &in_code, &in_math, &md)) {
                     if (md.type == MD_LINE_TEXT) {
-                        render_wrapped_spans(r, &rd, margin_x, max_w, md.text, READER_LINE_H, scroll_y, h, &doc_y, &link_idx);
+                        render_wrapped_spans(r, &rd, margin_x, max_w, md.text, READER_LINE_H, 0, scroll_y, h, &doc_y, &link_idx);
                         doc_y += 4;
                     }
                 }
@@ -1213,8 +1213,7 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
                     md.type == MD_LINE_H3 || md.type == MD_LINE_H4) {
                     if (r->toc_count < READER_TOC_MAX) {
                         reader_toc_entry_t *entry = &r->toc[r->toc_count++];
-                        strncpy(entry->title, md.text, sizeof(entry->title) - 1);
-                        entry->title[sizeof(entry->title) - 1] = '\0';
+                        md_heading_clean_title(md.text, entry->title, sizeof(entry->title));
                         entry->level = (md.type == MD_LINE_H1) ? 1 :
                                        (md.type == MD_LINE_H2) ? 2 :
                                        (md.type == MD_LINE_H3) ? 3 : 4;
@@ -1231,61 +1230,33 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
 
                 switch (md.type) {
                 case MD_LINE_H1:
-#if READER_IS_HIDPI
-                    if (screen_y + 40 >= 0 && screen_y < h) {
-                        rdraw_serif_text(&rd, margin_x, screen_y, md.text, strlen(md.text), true, false);
-                        rdraw_hline(&rd, margin_x, margin_x + max_w, screen_y + 32, READER_RULE_GRAY8, CANVAS1_BLACK);
+                    {
+                        int h1_line_h = READER_LINE_H + (READER_IS_HIDPI ? 6 : 4);
+                        render_wrapped_spans(r, &rd, margin_x, max_w, md.text, h1_line_h, MD_STYLE_BOLD, scroll_y, h, &doc_y, &link_idx);
+                        int rule_sy = doc_y - scroll_y - (READER_IS_HIDPI ? 6 : 3);
+                        if (rule_sy >= 0 && rule_sy < h) {
+                            rdraw_hline(&rd, margin_x, margin_x + max_w, rule_sy, READER_RULE_GRAY8, CANVAS1_BLACK);
+                        }
+                        doc_y += (READER_IS_HIDPI ? 8 : 4);
                     }
-                    doc_y += 44;
-#else
-                    if (screen_y + 26 >= 0 && screen_y < h) {
-                        rdraw_serif_text(&rd, margin_x, screen_y, md.text, strlen(md.text), true, false);
-                        rdraw_hline(&rd, margin_x, margin_x + max_w, screen_y + 19, READER_RULE_GRAY8, CANVAS1_BLACK);
-                    }
-                    doc_y += 30;
-#endif
                     break;
 
                 case MD_LINE_H2:
-#if READER_IS_HIDPI
-                    if (screen_y + 34 >= 0 && screen_y < h) {
-                        rdraw_serif_text(&rd, margin_x, screen_y, md.text, strlen(md.text), true, false);
+                    {
+                        int h2_line_h = READER_LINE_H + (READER_IS_HIDPI ? 4 : 2);
+                        render_wrapped_spans(r, &rd, margin_x, max_w, md.text, h2_line_h, MD_STYLE_BOLD, scroll_y, h, &doc_y, &link_idx);
+                        doc_y += (READER_IS_HIDPI ? 8 : 4);
                     }
-                    doc_y += 38;
-#else
-                    if (screen_y + 22 >= 0 && screen_y < h) {
-                        rdraw_serif_text(&rd, margin_x, screen_y, md.text, strlen(md.text), true, false);
-                    }
-                    doc_y += 24;
-#endif
                     break;
 
                 case MD_LINE_H3:
-#if READER_IS_HIDPI
-                    if (screen_y + 32 >= 0 && screen_y < h) {
-                        rdraw_serif_text(&rd, margin_x, screen_y, md.text, strlen(md.text), false, false);
-                    }
-                    doc_y += 34;
-#else
-                    if (screen_y + 20 >= 0 && screen_y < h) {
-                        rdraw_serif_text(&rd, margin_x, screen_y, md.text, strlen(md.text), false, false);
-                    }
-                    doc_y += 22;
-#endif
+                    render_wrapped_spans(r, &rd, margin_x, max_w, md.text, READER_LINE_H, MD_STYLE_BOLD, scroll_y, h, &doc_y, &link_idx);
+                    doc_y += (READER_IS_HIDPI ? 6 : 4);
                     break;
 
                 case MD_LINE_H4:
-#if READER_IS_HIDPI
-                    if (screen_y + 30 >= 0 && screen_y < h) {
-                        rdraw_serif_text(&rd, margin_x, screen_y, md.text, strlen(md.text), false, false);
-                    }
-                    doc_y += 32;
-#else
-                    if (screen_y + 18 >= 0 && screen_y < h) {
-                        rdraw_serif_text(&rd, margin_x, screen_y, md.text, strlen(md.text), false, false);
-                    }
-                    doc_y += 20;
-#endif
+                    render_wrapped_spans(r, &rd, margin_x, max_w, md.text, READER_LINE_H, 0, scroll_y, h, &doc_y, &link_idx);
+                    doc_y += (READER_IS_HIDPI ? 4 : 2);
                     break;
 
                 case MD_LINE_BLANK:
@@ -1303,12 +1274,12 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
                         if (screen_y + 30 >= 0 && screen_y < h) {
                             rdraw_fill(&rd, margin_x + indent_px + 8, screen_y + 12, margin_x + indent_px + 14, screen_y + 18, READER_FG_GRAY8, CANVAS1_BLACK);
                         }
-                        render_wrapped_spans(r, &rd, margin_x + indent_px + 24, max_w - indent_px - 24, md.text, READER_LINE_H, scroll_y, h, &doc_y, &link_idx);
+                        render_wrapped_spans(r, &rd, margin_x + indent_px + 24, max_w - indent_px - 24, md.text, READER_LINE_H, 0, scroll_y, h, &doc_y, &link_idx);
 #else
                         if (screen_y + 16 >= 0 && screen_y < h) {
                             rdraw_fill(&rd, margin_x + indent_px + 6, screen_y + 6, margin_x + indent_px + 9, screen_y + 9, READER_FG_GRAY8, CANVAS1_BLACK);
                         }
-                        render_wrapped_spans(r, &rd, margin_x + indent_px + 16, max_w - indent_px - 16, md.text, READER_LINE_H, scroll_y, h, &doc_y, &link_idx);
+                        render_wrapped_spans(r, &rd, margin_x + indent_px + 16, max_w - indent_px - 16, md.text, READER_LINE_H, 0, scroll_y, h, &doc_y, &link_idx);
 #endif
                         doc_y += 4;
                     }
@@ -1323,7 +1294,7 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
                         if (screen_y + READER_LINE_H >= 0 && screen_y < h) {
                             rdraw_serif_text(&rd, margin_x + indent_px, screen_y, num_str, strlen(num_str), true, false);
                         }
-                        render_wrapped_spans(r, &rd, margin_x + indent_px + pfx_w, max_w - indent_px - pfx_w, md.text, READER_LINE_H, scroll_y, h, &doc_y, &link_idx);
+                        render_wrapped_spans(r, &rd, margin_x + indent_px + pfx_w, max_w - indent_px - pfx_w, md.text, READER_LINE_H, 0, scroll_y, h, &doc_y, &link_idx);
                         doc_y += 4;
                     }
                     break;
@@ -1332,7 +1303,7 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
                     {
                         int q_start = doc_y;
 #if READER_IS_HIDPI
-                        render_wrapped_spans(r, &rd, margin_x + 24, max_w - 24, md.text, READER_LINE_H, scroll_y, h, &doc_y, &link_idx);
+                        render_wrapped_spans(r, &rd, margin_x + 24, max_w - 24, md.text, READER_LINE_H, MD_STYLE_ITALIC, scroll_y, h, &doc_y, &link_idx);
                         int q_h = doc_y - q_start;
                         int q_sy = q_start - scroll_y;
                         if (q_sy + q_h >= 0 && q_sy < h) {
@@ -1340,7 +1311,7 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
                         }
                         doc_y += 10;
 #else
-                        render_wrapped_spans(r, &rd, margin_x + 16, max_w - 16, md.text, READER_LINE_H, scroll_y, h, &doc_y, &link_idx);
+                        render_wrapped_spans(r, &rd, margin_x + 16, max_w - 16, md.text, READER_LINE_H, MD_STYLE_ITALIC, scroll_y, h, &doc_y, &link_idx);
                         int q_h = doc_y - q_start;
                         int q_sy = q_start - scroll_y;
                         if (q_sy + q_h >= 0 && q_sy < h) {
@@ -1367,7 +1338,7 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
                             rdraw_serif_text(&rd, margin_x + 16, screen_y, full_badge, strlen(full_badge), true, false);
                         }
                         doc_y += READER_LINE_H;
-                        render_wrapped_spans(r, &rd, margin_x + 16, max_w - 16, md.text, READER_LINE_H, scroll_y, h, &doc_y, &link_idx);
+                        render_wrapped_spans(r, &rd, margin_x + 16, max_w - 16, md.text, READER_LINE_H, 0, scroll_y, h, &doc_y, &link_idx);
                         int q_h = doc_y - q_start;
                         int q_sy = q_start - scroll_y;
                         if (q_sy + q_h >= 0 && q_sy < h) {
@@ -1422,7 +1393,7 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
                         if (screen_y + READER_LINE_H >= 0 && screen_y < h) {
                             rdraw_serif_text(&rd, margin_x, screen_y, badge, strlen(badge), true, false);
                         }
-                        render_wrapped_spans(r, &rd, margin_x + pfx_w, max_w - pfx_w, md.text, READER_LINE_H, scroll_y, h, &doc_y, &link_idx);
+                        render_wrapped_spans(r, &rd, margin_x + pfx_w, max_w - pfx_w, md.text, READER_LINE_H, 0, scroll_y, h, &doc_y, &link_idx);
                         doc_y += 6;
                     }
                     break;
@@ -1545,7 +1516,7 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
 
                 case MD_LINE_TEXT:
                 default:
-                    render_wrapped_spans(r, &rd, margin_x, max_w, md.text, READER_LINE_H, scroll_y, h, &doc_y, &link_idx);
+                    render_wrapped_spans(r, &rd, margin_x, max_w, md.text, READER_LINE_H, 0, scroll_y, h, &doc_y, &link_idx);
                     doc_y += 4;
                     break;
                 }
