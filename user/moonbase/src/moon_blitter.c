@@ -389,6 +389,78 @@ static uint16_t sample_cliff_pixel(int gx, int gy, int rel_x, int dy, uint8_t te
     return col;
 }
 
+void moon_blit_tint_rect(const moon_surface_t *surf, int x, int y, int w, int h,
+                         uint16_t r_256, uint16_t g_256, uint16_t b_256) {
+    if (!surf || !surf->pixels) return;
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > surf->width) w = surf->width - x;
+    if (y + h > surf->height) h = surf->height - y;
+    for (int j = 0; j < h; j++) {
+        uint16_t *row = surf->pixels + (y + j) * surf->stride + x;
+        for (int i = 0; i < w; i++) {
+            uint32_t c = row[i];
+            uint32_t r = (((c >> 11) & 0x1F) * r_256) >> 8;
+            uint32_t g = (((c >> 5) & 0x3F) * g_256) >> 8;
+            uint32_t b = ((c & 0x1F) * b_256) >> 8;
+            row[i] = (uint16_t)((r << 11) | (g << 5) | b);
+        }
+    }
+}
+
+/* Mean colours of the textured renderer, cached on first use (after
+ * moon_textures_init()). They give the flat mode the same palette.
+ * single task: render. */
+static uint16_t s_top_mean[MOON_TERRAIN_COUNT];
+static uint16_t s_cliff_mean[MOON_TERRAIN_COUNT][2];
+static bool s_means_ready;
+
+static uint16_t mean_of(uint32_t r, uint32_t g, uint32_t b, uint32_t n) {
+    return (uint16_t)((((r / n) & 0x1F) << 11) | (((g / n) & 0x3F) << 5) | ((b / n) & 0x1F));
+}
+
+static void compute_means(void) {
+    for (int t = 0; t < MOON_TERRAIN_COUNT; t++) {
+        uint32_t r = 0, g = 0, b = 0, n = 0;
+        /* A 4x4 block of tiles covers the texture's variation */
+        for (int gy = 0; gy < 4; gy++) {
+            for (int gx = 0; gx < 4; gx++) {
+                for (int y = -MOON_TILE_HALF_H; y <= MOON_TILE_HALF_H; y++) {
+                    int span = MOON_TILE_HALF_H - (y < 0 ? -y : y);
+                    int half = span * MOON_TILE_HALF_W / MOON_TILE_HALF_H;
+                    for (int x = -half; x <= half; x++) {
+                        uint16_t c = sample_terrain_pixel(gx, gy, x, y, 0, 0, (uint8_t)t, 0);
+                        r += (c >> 11) & 0x1F; g += (c >> 5) & 0x3F; b += c & 0x1F; n++;
+                    }
+                }
+            }
+        }
+        s_top_mean[t] = mean_of(r, g, b, n);
+
+        for (int face = 0; face < 2; face++) {
+            r = g = b = n = 0;
+            for (int dy = 0; dy < TEX_CLIFF_H; dy++) {
+                for (int x = 0; x < TEX_CLIFF_W; x++) {
+                    uint16_t c = sample_cliff_pixel(0, 0, x, dy, (uint8_t)t, face + 1);
+                    r += (c >> 11) & 0x1F; g += (c >> 5) & 0x3F; b += c & 0x1F; n++;
+                }
+            }
+            s_cliff_mean[t][face] = mean_of(r, g, b, n);
+        }
+    }
+    s_means_ready = true;
+}
+
+uint16_t moon_terrain_mean_color(uint8_t terrain) {
+    if (!s_means_ready) compute_means();
+    return s_top_mean[terrain < MOON_TERRAIN_COUNT ? terrain : 0];
+}
+
+uint16_t moon_cliff_mean_color(uint8_t terrain, int face_type) {
+    if (!s_means_ready) compute_means();
+    return s_cliff_mean[terrain < MOON_TERRAIN_COUNT ? terrain : 0][face_type == 1 ? 0 : 1];
+}
+
 void moon_blit_iso_tile_textured(const moon_surface_t *surf, int sx, int sy,
                                  int half_w, int half_h,
                                  int gx, int gy, uint8_t terrain,
@@ -484,6 +556,27 @@ void moon_blit_sprite(const moon_surface_t *dst, int dst_x, int dst_y,
                       const moon_surface_t *src, uint16_t key_color) {
     if (!dst || !src || !dst->pixels || !src->pixels) return;
     moon_blit_subsprite(dst, dst_x, dst_y, src, 0, 0, src->width, src->height, key_color);
+}
+
+void moon_blit_sprite_blend(const moon_surface_t *dst, int dst_x, int dst_y,
+                            const moon_surface_t *src, uint16_t key_color,
+                            uint16_t tint, uint16_t alpha_256) {
+    if (!dst || !src || !dst->pixels || !src->pixels) return;
+    if (alpha_256 > 256) alpha_256 = 256;
+    for (int y = 0; y < src->height; y++) {
+        int dy = dst_y + y;
+        if (dy < 0 || dy >= dst->height) continue;
+        for (int x = 0; x < src->width; x++) {
+            int dx = dst_x + x;
+            if (dx < 0 || dx >= dst->width) continue;
+            uint16_t c = src->pixels[y * src->stride + x];
+            if (c == key_color) continue;
+            /* Tint the sprite a quarter of the way, then mix with what is underneath */
+            c = moon_color_lerp(c, tint, FIXED_ONE / 4);
+            uint16_t *d = &dst->pixels[dy * dst->stride + dx];
+            *d = moon_color_lerp(*d, c, (fixed32_t)((alpha_256 * FIXED_ONE) >> 8));
+        }
+    }
 }
 
 void moon_blit_subsprite(const moon_surface_t *dst, int dst_x, int dst_y,

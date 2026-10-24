@@ -136,6 +136,8 @@ void moon_structure_mgr_init(moon_structure_mgr_t *mgr) {
     if (!mgr) return;
     memset(mgr, 0, sizeof(moon_structure_mgr_t));
     mgr->selected_build_type = MOON_STRUCT_NONE;
+    mgr->revision = 1;
+    mgr->solved_revision = 0;
 }
 
 bool moon_structure_can_place(const moon_grid_t *grid,
@@ -257,6 +259,7 @@ moon_structure_t* moon_structure_place(moon_grid_t *grid,
     }
 
     mgr->count++;
+    mgr->revision++;
     return s;
 }
 
@@ -288,31 +291,92 @@ void moon_structure_demolish(moon_grid_t *grid,
 
     memset(s, 0, sizeof(moon_structure_t));
     if (mgr->count > 0) mgr->count--;
+    mgr->revision++;
 }
 
-static void render_lander(const moon_surface_t *surf, int32_t sx, int32_t sy) {
-    /* Blit realistic 64x64 Lander sprite anchored at diamond bottom */
-    int dst_x = sx - (SPRITE_LANDER_W / 2);
-    int dst_y = sy + MOON_TILE_HALF_H - SPRITE_LANDER_H;
-    moon_blit_sprite(surf, dst_x, dst_y, &g_surf_lander, MOON_KEY_COLOR);
+/* Sprite catalog: NULL for structures drawn procedurally (conduits). Sprites are
+ * anchored by the bottom of the footprint diamond; the dome spans 2x2 tiles. */
+static const moon_surface_t *sprite_of(uint8_t type) {
+    switch (type) {
+        case MOON_STRUCT_LANDER:         return &g_surf_lander;
+        case MOON_STRUCT_SOLAR_ARRAY:    return &g_surf_solar_array;
+        case MOON_STRUCT_BATTERY_BANK:   return &g_surf_battery_bank;
+        case MOON_STRUCT_HABITAT_DOME:   return &g_surf_habitat_dome;
+        case MOON_STRUCT_REGOLITH_PLANT: return &g_surf_sinterer;
+        case MOON_STRUCT_O2_EXTRACTOR:   return &g_surf_o2_extractor;
+        default:                         return NULL;
+    }
 }
 
-/* Individual Structure Visual Renderers */
-static void render_solar_array(const moon_surface_t *surf, int32_t sx, int32_t sy) {
-    /* Blit realistic 64x48 Solar Array sprite */
-    int dst_x = sx - (SPRITE_SOLAR_ARRAY_W / 2);
-    int dst_y = sy + MOON_TILE_HALF_H - SPRITE_SOLAR_ARRAY_H;
-    moon_blit_sprite(surf, dst_x, dst_y, &g_surf_solar_array, MOON_KEY_COLOR);
+/* Screen point the sprite is anchored to: the origin tile's centre, moved to the
+ * middle of a multi-tile footprint. */
+static void structure_anchor(const moon_grid_t *grid, uint8_t type, int gx, int gy,
+                             int32_t cam_x, int32_t cam_y, int sw, int sh,
+                             int32_t *sx, int32_t *sy) {
+    const moon_tile_t *t = moon_grid_get_tile_const(grid, gx, gy);
+    moon_grid_to_screen(gx, gy, t ? t->elevation : 0, cam_x, cam_y, sw, sh, sx, sy);
+    if (type == MOON_STRUCT_HABITAT_DOME) {
+        *sx += MOON_TILE_HALF_W;
+        *sy += MOON_TILE_HALF_H / 2;
+    }
 }
 
-static void render_battery_bank(const moon_surface_t *surf, int32_t sx, int32_t sy,
-                                const struct moon_resources_s *res, bool active, bool powered) {
-    /* Blit realistic 64x48 Battery Bank sprite */
-    int dst_x = sx - (SPRITE_BATTERY_BANK_W / 2);
-    int dst_y = sy + MOON_TILE_HALF_H - SPRITE_BATTERY_BANK_H;
-    moon_blit_sprite(surf, dst_x, dst_y, &g_surf_battery_bank, MOON_KEY_COLOR);
+static void sprite_rect(uint8_t type, int32_t sx, int32_t sy, moon_rect_t *r) {
+    const moon_surface_t *spr = sprite_of(type);
+    int w = spr ? spr->width : 0;
+    int h = spr ? spr->height : 0;
+    int base = (type == MOON_STRUCT_HABITAT_DOME) ? MOON_TILE_H : MOON_TILE_HALF_H;
+    r->x0 = sx - w / 2;
+    r->y0 = sy + base - h;
+    r->x1 = r->x0 + w;
+    r->y1 = r->y0 + h;
+}
 
-    /* Dynamic LED charge level bar */
+/* Depth key: the diagonal of the footprint's front tile */
+static int depth_key(const moon_structure_t *s) {
+    return (s->gx + s->footprint_w - 1) + (s->gy + s->footprint_h - 1);
+}
+
+static void draw_conduit_cables(const moon_surface_t *surf, const moon_grid_t *grid,
+                                int gx, int gy, int32_t sx, int32_t sy, bool powered) {
+    uint16_t cable_col = powered ? COLOR_ENERGY_YELLOW : RGB565(80, 85, 95);
+    static const int dir[4][2] = { {1, 0}, {-1, 0}, {0, 1}, {0, -1} };
+
+    for (int i = 0; i < 4; i++) {
+        const moon_tile_t *n = moon_grid_get_tile_const(grid, gx + dir[i][0], gy + dir[i][1]);
+        if (!n || n->structure_id == 0) continue;
+        /* One screen step to the neighbour's tile centre in iso space */
+        int dx = (dir[i][0] - dir[i][1]) * MOON_TILE_HALF_W;
+        int dy = (dir[i][0] + dir[i][1]) * MOON_TILE_HALF_H;
+        moon_blit_line(surf, sx, sy, sx + dx, sy + dy, cable_col);
+    }
+}
+
+static bool structure_visible(const moon_surface_t *surf, int32_t sx, int32_t sy) {
+    return !(sx + MOON_TILE_W < 0 || sx - MOON_TILE_W >= surf->width ||
+             sy + MOON_TILE_H < 30 || sy - 2 * MOON_TILE_H - 80 >= surf->height);
+}
+
+static void draw_structure_body(const moon_grid_t *grid, const moon_surface_t *surf,
+                                const moon_structure_t *s, int32_t cam_x, int32_t cam_y) {
+    int32_t sx, sy;
+    structure_anchor(grid, s->type, s->gx, s->gy, cam_x, cam_y,
+                     surf->width, surf->height, &sx, &sy);
+    if (!structure_visible(surf, sx, sy)) return;
+
+    if (s->type == MOON_STRUCT_POWER_CONDUIT) {
+        draw_conduit_cables(surf, grid, s->gx, s->gy, sx, sy, s->powered);
+        return;
+    }
+    const moon_surface_t *spr = sprite_of(s->type);
+    if (!spr) return;
+    moon_rect_t r;
+    sprite_rect(s->type, sx, sy, &r);
+    moon_blit_sprite(surf, r.x0, r.y0, spr, MOON_KEY_COLOR);
+}
+
+static void draw_battery_led(const moon_surface_t *surf, int32_t sx, int32_t sy,
+                             const struct moon_resources_s *res, bool active, bool powered) {
     int bar_x = sx - 10;
     int bar_y = sy - 14;
     int bar_w = 20;
@@ -333,12 +397,8 @@ static void render_battery_bank(const moon_surface_t *surf, int32_t sx, int32_t 
                            ((pips >= 2) ? COLOR_ENERGY_YELLOW : COLOR_ALERT_RED);
 
         for (int p = 0; p < 5; p++) {
-            int px = bar_x + p * 4;
-            if (p < pips) {
-                moon_blit_fill_rect(surf, px, bar_y, 3, bar_h, led_col);
-            } else {
-                moon_blit_fill_rect(surf, px, bar_y, 3, bar_h, RGB565(30, 32, 38));
-            }
+            moon_blit_fill_rect(surf, bar_x + p * 4, bar_y, 3, bar_h,
+                                p < pips ? led_col : RGB565(30, 32, 38));
         }
     } else {
         /* Unpowered / standby: dark unlit pips */
@@ -348,143 +408,112 @@ static void render_battery_bank(const moon_surface_t *surf, int32_t sx, int32_t 
     }
 }
 
-static void render_habitat_dome(const moon_surface_t *surf, int32_t sx, int32_t sy) {
-    /* Blit realistic 96x80 2x2 Habitat Dome sprite centered on 2x2 footprint */
-    int dst_x = sx - (SPRITE_HABITAT_DOME_W / 2);
-    int dst_y = sy + MOON_TILE_H - SPRITE_HABITAT_DOME_H;
-    moon_blit_sprite(surf, dst_x, dst_y, &g_surf_habitat_dome, MOON_KEY_COLOR);
-}
-
-static void render_regolith_sinterer(const moon_surface_t *surf, int32_t sx, int32_t sy) {
-    /* Blit realistic 64x48 Regolith Sinterer sprite */
-    int dst_x = sx - (SPRITE_SINTERER_W / 2);
-    int dst_y = sy + MOON_TILE_HALF_H - SPRITE_SINTERER_H;
-    moon_blit_sprite(surf, dst_x, dst_y, &g_surf_sinterer, MOON_KEY_COLOR);
-}
-
-static void render_o2_extractor(const moon_surface_t *surf, int32_t sx, int32_t sy) {
-    /* Blit realistic 64x48 Oxygen Extractor sprite */
-    int dst_x = sx - (SPRITE_O2_EXTRACTOR_W / 2);
-    int dst_y = sy + MOON_TILE_HALF_H - SPRITE_O2_EXTRACTOR_H;
-    moon_blit_sprite(surf, dst_x, dst_y, &g_surf_o2_extractor, MOON_KEY_COLOR);
-}
-
-static void render_power_conduit(const moon_surface_t *surf, const moon_grid_t *grid,
-                                 int gx, int gy, int32_t sx, int32_t sy, bool powered) {
-    /* Directional cable connections to adjacent structures */
-    const moon_tile_t *e = moon_grid_get_tile_const(grid, gx + 1, gy);
-    const moon_tile_t *w = moon_grid_get_tile_const(grid, gx - 1, gy);
-    const moon_tile_t *s = moon_grid_get_tile_const(grid, gx, gy + 1);
-    const moon_tile_t *n = moon_grid_get_tile_const(grid, gx, gy - 1);
-
-    uint16_t cable_col = powered ? COLOR_ENERGY_YELLOW : RGB565(80, 85, 95);
-
-    /* +gx = Down-Right */
-    if (e && e->structure_id != 0) {
-        moon_blit_line(surf, sx, sy, sx + 16, sy + 8, cable_col);
-    }
-    /* -gx = Up-Left */
-    if (w && w->structure_id != 0) {
-        moon_blit_line(surf, sx, sy, sx - 16, sy - 8, cable_col);
-    }
-    /* +gy = Down-Left */
-    if (s && s->structure_id != 0) {
-        moon_blit_line(surf, sx, sy, sx - 16, sy + 8, cable_col);
-    }
-    /* -gy = Up-Right */
-    if (n && n->structure_id != 0) {
-        moon_blit_line(surf, sx, sy, sx + 16, sy - 8, cable_col);
-    }
-
-    /* Central insulated junction box */
+static void draw_conduit_junction(const moon_surface_t *surf, int32_t sx, int32_t sy, bool powered) {
     moon_blit_fill_rect(surf, sx - 4, sy - 4, 9, 9, RGB565(25, 28, 35));
     moon_blit_rect_outline(surf, sx - 4, sy - 4, 9, 9, COLOR_GOLD_FOIL);
     moon_blit_pixel(surf, sx, sy, powered ? COLOR_STATUS_GREEN : COLOR_ALERT_RED);
 }
 
-void moon_structure_render_all(const moon_structure_mgr_t *mgr,
-                               const moon_grid_t *grid,
-                               const moon_surface_t *surf,
-                               const struct moon_resources_s *res,
-                               int32_t cam_x, int32_t cam_y) {
+/* Everything that must stay readable above every sprite: status badges, the
+ * battery gauge and conduit junction boxes. */
+static void draw_structure_overlay(const moon_grid_t *grid, const moon_surface_t *surf,
+                                   const struct moon_resources_s *res,
+                                   const moon_structure_t *s,
+                                   int32_t cam_x, int32_t cam_y) {
+    int32_t sx, sy;
+    structure_anchor(grid, s->type, s->gx, s->gy, cam_x, cam_y,
+                     surf->width, surf->height, &sx, &sy);
+    if (!structure_visible(surf, sx, sy)) return;
+
+    if (s->type == MOON_STRUCT_POWER_CONDUIT) {
+        draw_conduit_junction(surf, sx, sy, s->powered);
+        return;
+    }
+    if (s->type == MOON_STRUCT_BATTERY_BANK) {
+        draw_battery_led(surf, sx, sy, res, s->active, s->powered);
+    }
+
+    const moon_structure_def_t *def = moon_structure_get_def((moon_structure_type_t)s->type);
+    if (!def) return;
+    int badge_y = (s->type == MOON_STRUCT_HABITAT_DOME) ? sy - 34 : sy - def->height_px - 8;
+
+    if (!s->active) {
+        /* Standby / Deactivated badge: yellow framed pill */
+        int bw = 24;
+        moon_blit_fill_rect(surf, sx - (bw / 2), badge_y, bw, 10, RGB565(30, 26, 10));
+        moon_blit_rect_outline(surf, sx - (bw / 2), badge_y, bw, 10, COLOR_ENERGY_YELLOW);
+        moon_blit_text(surf, sx - (bw / 2) + 3, badge_y + 1, "OFF", COLOR_ENERGY_YELLOW, 0, true);
+    } else if (!s->powered) {
+        /* No power / brownout failure badge: red framed pill */
+        int bw = 30;
+        moon_blit_fill_rect(surf, sx - (bw / 2), badge_y, bw, 10, RGB565(35, 10, 10));
+        moon_blit_rect_outline(surf, sx - (bw / 2), badge_y, bw, 10, COLOR_ALERT_RED);
+        moon_blit_text(surf, sx - (bw / 2) + 3, badge_y + 1, "!PWR", COLOR_ALERT_RED, 0, true);
+    }
+}
+
+void moon_world_render(const moon_structure_mgr_t *mgr,
+                       const moon_grid_t *grid,
+                       const moon_surface_t *surf,
+                       int32_t cam_x, int32_t cam_y,
+                       int32_t hover_gx, int32_t hover_gy, bool hover_valid) {
     if (!mgr || !grid || !surf) return;
+
+    /* Back to front, one diagonal at a time: a tile, then the structure whose
+     * front tile it is. Sprites reach upward over diagonals already drawn. */
+    for (int d = 0; d < MOON_MAP_SIZE_X + MOON_MAP_SIZE_Y - 1; d++) {
+        for (int gx = 0; gx <= d; gx++) {
+            int gy = d - gx;
+            if (gx >= MOON_MAP_SIZE_X || gy >= MOON_MAP_SIZE_Y) continue;
+
+            moon_grid_render_tile(grid, surf, gx, gy, cam_x, cam_y,
+                                  hover_gx, hover_gy, hover_valid);
+
+            uint8_t id = grid->tiles[gy][gx].structure_id;
+            if (id == 0 || id >= MOON_MAX_STRUCTURES) continue;
+            const moon_structure_t *s = &mgr->list[id];
+            if (s->id != id || depth_key(s) != d) continue;
+            draw_structure_body(grid, surf, s, cam_x, cam_y);
+        }
+    }
+}
+
+void moon_world_render_overlays(const moon_structure_mgr_t *mgr,
+                                const moon_grid_t *grid,
+                                const moon_surface_t *surf,
+                                const struct moon_resources_s *res,
+                                int32_t cam_x, int32_t cam_y) {
+    if (!mgr || !grid || !surf) return;
+    for (int i = 1; i < MOON_MAX_STRUCTURES; i++) {
+        if (mgr->list[i].id != 0) {
+            draw_structure_overlay(grid, surf, res, &mgr->list[i], cam_x, cam_y);
+        }
+    }
+}
+
+bool moon_structure_pick(const moon_structure_mgr_t *mgr, const moon_grid_t *grid,
+                         int32_t px, int32_t py, int32_t cam_x, int32_t cam_y,
+                         int32_t screen_w, int32_t screen_h, int *out_id) {
+    if (!mgr || !grid) return false;
+    int best = 0, best_key = -1;
 
     for (int i = 1; i < MOON_MAX_STRUCTURES; i++) {
         const moon_structure_t *s = &mgr->list[i];
-        if (s->id == 0) continue; /* NEVER skip inactive buildings */
-
-        const moon_structure_def_t *def = moon_structure_get_def((moon_structure_type_t)s->type);
-        if (!def) continue;
-
-        const moon_tile_t *t = moon_grid_get_tile_const(grid, s->gx, s->gy);
-        int elev = t ? t->elevation : 0;
-
+        if (s->id == 0 || s->type == MOON_STRUCT_POWER_CONDUIT) continue;
         int32_t sx, sy;
-        moon_grid_to_screen(s->gx, s->gy, elev, cam_x, cam_y,
-                            surf->width, surf->height, &sx, &sy);
-
-        /* Offset 2x2 habitat dome center */
-        if (s->type == MOON_STRUCT_HABITAT_DOME) {
-            sx += MOON_TILE_HALF_W;
-            sy += MOON_TILE_HALF_H / 2;
-        }
-
-        /* Viewport culling */
-        if (sx + MOON_TILE_W < 0 || sx - MOON_TILE_W >= surf->width ||
-            sy + MOON_TILE_H < 30 || sy - MOON_TILE_H - 30 >= surf->height) {
-            continue;
-        }
-
-        switch (s->type) {
-            case MOON_STRUCT_LANDER:
-                render_lander(surf, sx, sy);
-                break;
-            case MOON_STRUCT_SOLAR_ARRAY:
-                render_solar_array(surf, sx, sy);
-                break;
-            case MOON_STRUCT_BATTERY_BANK:
-                render_battery_bank(surf, sx, sy, res, s->active, s->powered);
-                break;
-            case MOON_STRUCT_HABITAT_DOME:
-                render_habitat_dome(surf, sx, sy);
-                break;
-            case MOON_STRUCT_REGOLITH_PLANT:
-                render_regolith_sinterer(surf, sx, sy);
-                break;
-            case MOON_STRUCT_O2_EXTRACTOR:
-                render_o2_extractor(surf, sx, sy);
-                break;
-            case MOON_STRUCT_POWER_CONDUIT:
-                render_power_conduit(surf, grid, s->gx, s->gy, sx, sy, s->powered);
-                break;
-            default:
-                break;
-        }
-
-        /* Floating operational status icon if disabled or unpowered */
-        if (s->type != MOON_STRUCT_POWER_CONDUIT) {
-            int badge_y = sy - def->height_px - 8;
-            if (s->type == MOON_STRUCT_HABITAT_DOME) {
-                badge_y = sy - 34;
-            }
-
-            if (!s->active) {
-                /* Standby / Deactivated badge: yellow framed pill */
-                int bw = 24;
-                int bh = 10;
-                moon_blit_fill_rect(surf, sx - (bw / 2), badge_y, bw, bh, RGB565(30, 26, 10));
-                moon_blit_rect_outline(surf, sx - (bw / 2), badge_y, bw, bh, COLOR_ENERGY_YELLOW);
-                moon_blit_text(surf, sx - (bw / 2) + 3, badge_y + 1, "OFF", COLOR_ENERGY_YELLOW, 0, true);
-            } else if (!s->powered) {
-                /* No power / brownout failure badge: red framed pill */
-                int bw = 30;
-                int bh = 10;
-                moon_blit_fill_rect(surf, sx - (bw / 2), badge_y, bw, bh, RGB565(35, 10, 10));
-                moon_blit_rect_outline(surf, sx - (bw / 2), badge_y, bw, bh, COLOR_ALERT_RED);
-                moon_blit_text(surf, sx - (bw / 2) + 3, badge_y + 1, "!PWR", COLOR_ALERT_RED, 0, true);
-            }
-        }
+        structure_anchor(grid, s->type, s->gx, s->gy, cam_x, cam_y, screen_w, screen_h, &sx, &sy);
+        moon_rect_t r;
+        sprite_rect(s->type, sx, sy, &r);
+        if (px < r.x0 || px >= r.x1 || py < r.y0 || py >= r.y1) continue;
+        /* Transparent pixels of the sprite do not count as a hit */
+        const moon_surface_t *spr = sprite_of(s->type);
+        if (spr && spr->pixels[(py - r.y0) * spr->stride + (px - r.x0)] == MOON_KEY_COLOR) continue;
+        int key = depth_key(s);
+        if (key > best_key) { best_key = key; best = i; }
     }
+    if (best == 0) return false;
+    if (out_id) *out_id = best;
+    return true;
 }
 
 void moon_structure_render_ghost(const moon_structure_mgr_t *mgr,
@@ -501,23 +530,31 @@ void moon_structure_render_ghost(const moon_structure_mgr_t *mgr,
     const char *reason = NULL;
     bool valid = moon_structure_can_place(grid, mgr, mgr->selected_build_type,
                                           hover_gx, hover_gy, &reason);
-
     uint16_t ghost_color = valid ? COLOR_STATUS_GREEN : COLOR_ALERT_RED;
 
-    /* Render ghost footprint diamonds */
+    /* Footprint outline, one diamond per tile */
     for (int dy = 0; dy < def->footprint_h; dy++) {
         for (int dx = 0; dx < def->footprint_w; dx++) {
-            int gx = hover_gx + dx;
-            int gy = hover_gy + dy;
-            const moon_tile_t *t = moon_grid_get_tile_const(grid, gx, gy);
-            int elev = t ? t->elevation : 0;
-
+            const moon_tile_t *t = moon_grid_get_tile_const(grid, hover_gx + dx, hover_gy + dy);
             int32_t sx, sy;
-            moon_grid_to_screen(gx, gy, elev, cam_x, cam_y, surf->width, surf->height, &sx, &sy);
-
-            moon_blit_iso_tile(surf, sx, sy, MOON_TILE_HALF_W, MOON_TILE_HALF_H,
-                               moon_color_dim(ghost_color, 120), ghost_color);
+            moon_grid_to_screen(hover_gx + dx, hover_gy + dy, t ? t->elevation : 0,
+                                cam_x, cam_y, surf->width, surf->height, &sx, &sy);
+            moon_blit_line(surf, sx, sy - MOON_TILE_HALF_H, sx + MOON_TILE_HALF_W, sy, ghost_color);
+            moon_blit_line(surf, sx + MOON_TILE_HALF_W, sy, sx, sy + MOON_TILE_HALF_H, ghost_color);
+            moon_blit_line(surf, sx, sy + MOON_TILE_HALF_H, sx - MOON_TILE_HALF_W, sy, ghost_color);
+            moon_blit_line(surf, sx - MOON_TILE_HALF_W, sy, sx, sy - MOON_TILE_HALF_H, ghost_color);
         }
+    }
+
+    /* Translucent sprite of what will be built */
+    const moon_surface_t *spr = sprite_of(def->type);
+    if (spr) {
+        int32_t sx, sy;
+        structure_anchor(grid, def->type, hover_gx, hover_gy, cam_x, cam_y,
+                         surf->width, surf->height, &sx, &sy);
+        moon_rect_t r;
+        sprite_rect(def->type, sx, sy, &r);
+        moon_blit_sprite_blend(surf, r.x0, r.y0, spr, MOON_KEY_COLOR, ghost_color, 140);
     }
 
     /* Print structure placement reason badge above mouse */

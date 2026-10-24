@@ -15,6 +15,15 @@
 /* 180 seconds total: 90s daytime (sunlight), 90s cryogenic night */
 #define MOON_LUNAR_DAY_TICKS      (180 * MOON_SIM_TICK_RATE_HZ)
 
+/* Casualty banner stays up for 8 seconds */
+#define MOON_CREW_LOST_BANNER_TICKS (8 * MOON_SIM_TICK_RATE_HZ)
+
+/* Emergency regolith scooping: with no producing Sinterer the Lander tops the
+ * stock up to this level (kg), so the base can never be stuck without the means
+ * to build a Sinterer. */
+#define MOON_REGOLITH_RESERVE_KG  15
+#define MOON_SCOOP_MILLI_PER_TICK 25      /* 0.1 kg/s */
+
 /* Life Support & Colony Capacity Constants */
 #define MOON_LANDER_CREW          4
 #define MOON_HABITAT_CREW         8
@@ -57,10 +66,11 @@ typedef struct moon_resources_s {
     uint8_t  life_support_pct;      /* 0..100% health */
     uint16_t casualty_timer_ticks;  /* Timer at 0% life support before crew loss */
     uint16_t growth_timer_ticks;    /* Timer at >95% life support before new arrival */
-    bool     warning_crew_lost;     /* Flag set when casualty occurs */
+    bool     warning_crew_lost;     /* True for MOON_CREW_LOST_BANNER_TICKS after a casualty */
+    uint16_t crew_lost_ticks;       /* Remaining ticks of the casualty banner */
     bool     warning_power;         /* Low power / blackout */
-    bool     warning_o2;            /* Oxygen depleted */
-    bool     warning_water;         /* Water depleted */
+    bool     warning_o2;            /* Oxygen low (under 15 kg) or empty */
+    bool     warning_water;         /* Water low (under 20 L) or empty */
     bool     warning_cold;          /* Cryogenic freezing in unheated habitat */
 } moon_resources_t;
 
@@ -75,5 +85,16 @@ void moon_resources_tick(moon_resources_t *res,
 /* Query whether a structure is connected to the Lander power grid */
 void moon_resources_solve_power_grid(moon_grid_t *grid,
                                      moon_structure_mgr_t *mgr);
+
+/* Earth-equivalent 24 h reading of the lunar cycle: dawn is 06:00, zenith 12:00,
+ * dusk 18:00 and the middle of the night 00:00. next_in_min is the base time
+ * until the next dawn or dusk. */
+typedef struct {
+    int  minutes;        /* 0..1439 since 00:00 */
+    int  next_in_min;    /* Minutes of base time until the next sunrise or sunset */
+    bool next_is_dusk;   /* The next event is sunset (false: sunrise) */
+} moon_clock_t;
+
+moon_clock_t moon_resources_clock(const moon_resources_t *res);
 
 #endif /* MOON_RESOURCES_H */

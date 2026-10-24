@@ -215,105 +215,114 @@ void moon_screen_to_grid(int32_t sx, int32_t sy,
     int64_t calc_gx = (num_y + num_x) / 2;
     int64_t calc_gy = (num_y - num_x) / 2;
 
-    *gx = (int32_t)(calc_gx >> FIXED_SHIFT);
-    *gy = (int32_t)(calc_gy >> FIXED_SHIFT);
+    /* moon_grid_to_screen() yields the tile centre, so round to the nearest tile */
+    *gx = (int32_t)((calc_gx + FIXED_ONE / 2) >> FIXED_SHIFT);
+    *gy = (int32_t)((calc_gy + FIXED_ONE / 2) >> FIXED_SHIFT);
 }
 
-static inline uint16_t get_terrain_top_color(uint8_t terrain) {
-    switch (terrain) {
-        case MOON_TERRAIN_ICE_DEPOSIT:    return RGB565(90, 180, 235);
-        case MOON_TERRAIN_BASALT_MARE:    return RGB565(42, 44, 50);
-        case MOON_TERRAIN_CRATER_RIM:     return RGB565(170, 170, 175);
-        case MOON_TERRAIN_CRATER_FLOOR:   return RGB565(25, 25, 30);
-        case MOON_TERRAIN_REGOLITH_ROUGH: return RGB565(75, 72, 78);
-        default:                          return RGB565(95, 93, 100);
+bool moon_grid_pick(const moon_grid_t *grid, int32_t sx, int32_t sy,
+                    int32_t cam_x, int32_t cam_y,
+                    int32_t screen_w, int32_t screen_h,
+                    int32_t *gx, int32_t *gy) {
+    /* Raised tiles are drawn shifted up by elevation * STEP, so test the highest
+     * levels first against the screen point lowered by that amount. */
+    if (grid) {
+        for (int e = MOON_ELEVATION_MAX; e >= 1; e--) {
+            int32_t cx, cy;
+            moon_screen_to_grid(sx, sy + e * MOON_ELEVATION_STEP_PX, cam_x, cam_y,
+                                screen_w, screen_h, &cx, &cy);
+            const moon_tile_t *t = moon_grid_get_tile_const(grid, cx, cy);
+            if (t && t->elevation == e) {
+                *gx = cx; *gy = cy;
+                return true;
+            }
+        }
+    }
+    moon_screen_to_grid(sx, sy, cam_x, cam_y, screen_w, screen_h, gx, gy);
+    return *gx >= 0 && *gx < MOON_MAP_SIZE_X && *gy >= 0 && *gy < MOON_MAP_SIZE_Y;
+}
+
+void moon_grid_render_tile(const moon_grid_t *grid, const moon_surface_t *surf,
+                           int gx, int gy, int32_t cam_x, int32_t cam_y,
+                           int32_t hover_gx, int32_t hover_gy, bool hover_valid) {
+    if (!grid || !surf) return;
+    if (gx < 0 || gx >= MOON_MAP_SIZE_X || gy < 0 || gy >= MOON_MAP_SIZE_Y) return;
+
+    const int32_t view_top = 34; /* Reserve top HUD */
+    const moon_tile_t *t = &grid->tiles[gy][gx];
+
+    /* Calculate base screen coordinate (elevation = 0) */
+    int32_t base_sx, base_sy;
+    moon_grid_to_screen(gx, gy, 0, cam_x, cam_y, surf->width, surf->height,
+                        &base_sx, &base_sy);
+
+    int height_px = t->elevation * MOON_ELEVATION_STEP_PX;
+
+    /* Viewport culling */
+    if (base_sx + MOON_TILE_HALF_W < 0 ||
+        base_sx - MOON_TILE_HALF_W >= surf->width ||
+        base_sy + MOON_TILE_HALF_H < view_top ||
+        base_sy - height_px - MOON_TILE_HALF_H >= surf->height) {
+        return;
+    }
+
+    /* Highlight hovered tile */
+    if (hover_valid && gx == hover_gx && gy == hover_gy) {
+        if (height_px > 0) {
+            moon_blit_iso_block(surf, base_sx, base_sy,
+                                MOON_TILE_HALF_W, MOON_TILE_HALF_H, height_px,
+                                COLOR_LASER_CYAN,
+                                moon_color_dim(COLOR_LASER_CYAN, 180),
+                                moon_color_dim(COLOR_LASER_CYAN, 220),
+                                COLOR_LUNAR_WHITE);
+        } else {
+            moon_blit_iso_tile(surf, base_sx, base_sy,
+                               MOON_TILE_HALF_W, MOON_TILE_HALF_H,
+                               COLOR_LASER_CYAN, COLOR_LUNAR_WHITE);
+        }
+        return;
+    }
+
+    uint16_t border_col = (t->flags & MOON_TILE_FLAG_FOUNDATION) ? COLOR_GOLD_FOIL : 0;
+    uint16_t cliff_rim = (border_col != 0) ? border_col : RGB565(48, 48, 54);
+
+    if (grid->textured_terrain) {
+        /* Seamless textured rendering with geological cliff stratification */
+        if (height_px > 0) {
+            moon_blit_iso_block_textured(surf, base_sx, base_sy,
+                                         MOON_TILE_HALF_W, MOON_TILE_HALF_H, height_px,
+                                         gx, gy, t->terrain, t->flags, cliff_rim);
+        } else {
+            moon_blit_iso_tile_textured(surf, base_sx, base_sy,
+                                        MOON_TILE_HALF_W, MOON_TILE_HALF_H,
+                                        gx, gy, t->terrain, t->flags, border_col);
+        }
+    } else {
+        /* High-performance flat-shaded retro terrain rendering */
+        uint16_t top_col = (t->flags & MOON_TILE_FLAG_FOUNDATION)
+                               ? RGB565(110, 110, 116) /* paver grey, as textured */
+                               : moon_terrain_mean_color(t->terrain);
+        if (height_px > 0) {
+            moon_blit_iso_block(surf, base_sx, base_sy,
+                                MOON_TILE_HALF_W, MOON_TILE_HALF_H, height_px,
+                                top_col, moon_cliff_mean_color(t->terrain, 1),
+                                moon_cliff_mean_color(t->terrain, 2), cliff_rim);
+        } else {
+            moon_blit_iso_tile(surf, base_sx, base_sy,
+                               MOON_TILE_HALF_W, MOON_TILE_HALF_H,
+                               top_col, border_col);
+        }
     }
 }
 
 void moon_grid_render(const moon_grid_t *grid, const moon_surface_t *surf,
                       int32_t cam_x, int32_t cam_y,
                       int32_t hover_gx, int32_t hover_gy, bool hover_valid) {
-    if (!grid || !surf) return;
-
-    int32_t view_left = 0;
-    int32_t view_top = 34; /* Reserve top HUD */
-    int32_t view_right = surf->width;
-    int32_t view_bottom = surf->height;
-
-    /* Render tiles diagonal wave: back to front order */
+    /* Diagonal wave: back to front */
     for (int d = 0; d < MOON_MAP_SIZE_X + MOON_MAP_SIZE_Y - 1; d++) {
         for (int gx = 0; gx <= d; gx++) {
-            int gy = d - gx;
-            if (gx >= MOON_MAP_SIZE_X || gy >= MOON_MAP_SIZE_Y) continue;
-
-            const moon_tile_t *t = &grid->tiles[gy][gx];
-
-            /* Calculate base screen coordinate (elevation = 0) */
-            int32_t base_sx, base_sy;
-            moon_grid_to_screen(gx, gy, 0, cam_x, cam_y, surf->width, surf->height,
-                                &base_sx, &base_sy);
-
-            int height_px = t->elevation * MOON_ELEVATION_STEP_PX;
-
-            /* Viewport culling */
-            if (base_sx + MOON_TILE_HALF_W < view_left ||
-                base_sx - MOON_TILE_HALF_W >= view_right ||
-                base_sy + MOON_TILE_HALF_H < view_top ||
-                base_sy - height_px - MOON_TILE_HALF_H >= view_bottom) {
-                continue;
-            }
-
-            uint16_t border_col = COLOR_REGOLITH_LIGHT;
-
-            /* Highlight hovered tile */
-            bool is_hover = (hover_valid && gx == hover_gx && gy == hover_gy);
-            if (is_hover) {
-                border_col = COLOR_LUNAR_WHITE;
-                if (height_px > 0) {
-                    moon_blit_iso_block(surf, base_sx, base_sy,
-                                        MOON_TILE_HALF_W, MOON_TILE_HALF_H, height_px,
-                                        COLOR_LASER_CYAN,
-                                        moon_color_dim(COLOR_LASER_CYAN, 180),
-                                        moon_color_dim(COLOR_LASER_CYAN, 220),
-                                        COLOR_LUNAR_WHITE);
-                } else {
-                    moon_blit_iso_tile(surf, base_sx, base_sy,
-                                       MOON_TILE_HALF_W, MOON_TILE_HALF_H,
-                                       COLOR_LASER_CYAN, COLOR_LUNAR_WHITE);
-                }
-            } else {
-                border_col = (t->flags & MOON_TILE_FLAG_FOUNDATION) ? COLOR_GOLD_FOIL : 0;
-
-                if (grid->textured_terrain) {
-                    /* Seamless textured rendering with geological cliff stratification */
-                    if (height_px > 0) {
-                        uint16_t cliff_rim = (border_col != 0) ? border_col : RGB565(48, 48, 54);
-                        moon_blit_iso_block_textured(surf, base_sx, base_sy,
-                                                     MOON_TILE_HALF_W, MOON_TILE_HALF_H, height_px,
-                                                     gx, gy, t->terrain, t->flags, cliff_rim);
-                    } else {
-                        moon_blit_iso_tile_textured(surf, base_sx, base_sy,
-                                                    MOON_TILE_HALF_W, MOON_TILE_HALF_H,
-                                                    gx, gy, t->terrain, t->flags, border_col);
-                    }
-                } else {
-                    /* High-performance flat-shaded retro terrain rendering */
-                    uint16_t top_col = get_terrain_top_color(t->terrain);
-                    if (t->flags & MOON_TILE_FLAG_FOUNDATION) top_col = COLOR_GOLD_FOIL;
-                    if (height_px > 0) {
-                        uint16_t left_col = moon_color_dim(top_col, 175);
-                        uint16_t right_col = moon_color_dim(top_col, 220);
-                        uint16_t cliff_rim = (border_col != 0) ? border_col : RGB565(48, 48, 54);
-                        moon_blit_iso_block(surf, base_sx, base_sy,
-                                            MOON_TILE_HALF_W, MOON_TILE_HALF_H, height_px,
-                                            top_col, left_col, right_col, cliff_rim);
-                    } else {
-                        moon_blit_iso_tile(surf, base_sx, base_sy,
-                                           MOON_TILE_HALF_W, MOON_TILE_HALF_H,
-                                           top_col, border_col);
-                    }
-                }
-            }
+            moon_grid_render_tile(grid, surf, gx, d - gx, cam_x, cam_y,
+                                  hover_gx, hover_gy, hover_valid);
         }
     }
 }
@@ -357,23 +366,28 @@ void moon_grid_render_minimap(const moon_grid_t *grid, const moon_surface_t *sur
                         break;
                 }
             }
+            if (t->structure_id != 0) c = COLOR_STATUS_GREEN;
             moon_blit_pixel(surf, map_x + gx, map_y + gy, c);
         }
     }
 
-    /* Camera viewport indicator box on minimap */
-    /* Map center is tile (32, 32). In isometric coordinates: */
-    /* Estimate visible tiles from cam_x and cam_y */
-    int32_t center_gx = 0, center_gy = 0;
-    moon_screen_to_grid(surf->width / 2, surf->height / 2,
-                        cam_x, cam_y, surf->width, surf->height,
-                        &center_gx, &center_gy);
-
-    int view_tile_span = (surf->width / MOON_TILE_W);
-    int cam_box_x = map_x + center_gx - (view_tile_span / 2);
-    int cam_box_y = map_y + center_gy - (view_tile_span / 4);
-    int cam_box_w = view_tile_span;
-    int cam_box_h = view_tile_span / 2;
-
-    moon_blit_rect_outline(surf, cam_box_x, cam_box_y, cam_box_w, cam_box_h, COLOR_ENERGY_YELLOW);
+    /* Viewport outline: the visible screen area (between the HUD bar and the
+     * ribbon) is a diamond in tile space, one corner per screen corner. */
+    const int32_t top = 34, bottom = surf->height - 40;
+    const int32_t sxs[4] = { 0, surf->width, surf->width, 0 };
+    const int32_t sys[4] = { top, top, bottom, bottom };
+    int px[4], py[4];
+    for (int i = 0; i < 4; i++) {
+        int32_t gx, gy;
+        moon_screen_to_grid(sxs[i], sys[i], cam_x, cam_y, surf->width, surf->height, &gx, &gy);
+        if (gx < 0) gx = 0;
+        if (gx > map_w - 1) gx = map_w - 1;
+        if (gy < 0) gy = 0;
+        if (gy > map_h - 1) gy = map_h - 1;
+        px[i] = map_x + gx;
+        py[i] = map_y + gy;
+    }
+    for (int i = 0; i < 4; i++) {
+        moon_blit_line(surf, px[i], py[i], px[(i + 1) % 4], py[(i + 1) % 4], COLOR_ENERGY_YELLOW);
+    }
 }

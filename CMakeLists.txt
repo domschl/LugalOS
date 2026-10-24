@@ -934,7 +934,18 @@ if(LUGALOS_ENABLE_MOONBASE)
         user/moonbase/src/moon_textures.c
         user/moonbase/src/moon_structures.c
         user/moonbase/src/moon_resources.c
+        user/moonbase/src/moon_ui.c
         user/moonbase/src/moon_game.c)
+    # One section per function so the linker drops what a target never calls
+    # (the XIP image is size-bound on the Tab5).
+    set_source_files_properties(
+        user/moonbase/src/platform_p4.c user/moonbase/src/moon_fixed.c
+        user/moonbase/src/moon_font8x16.c user/moonbase/src/moon_blitter.c
+        user/moonbase/src/moon_grid.c user/moonbase/src/moon_sprites.c
+        user/moonbase/src/moon_textures.c user/moonbase/src/moon_structures.c
+        user/moonbase/src/moon_resources.c user/moonbase/src/moon_ui.c
+        user/moonbase/src/moon_game.c
+        PROPERTIES COMPILE_OPTIONS -ffunction-sections)
 endif()
 
 if(LUGALOS_TARGET STREQUAL "RP2350")

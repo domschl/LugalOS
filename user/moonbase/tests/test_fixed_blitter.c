@@ -65,7 +65,7 @@ static void test_structure_catalog_and_placement(void) {
     assert(surf_buf != NULL);
     moon_surface_t surf = moon_surface_make(surf_buf, 1024, 600, 1024);
 
-    moon_structure_render_all(&mgr, &grid, &surf, NULL, 0, 32 * MOON_TILE_H);
+    moon_world_render(&mgr, &grid, &surf, 0, 32 * MOON_TILE_H, 0, 0, false);
 
     mgr.selected_build_type = MOON_STRUCT_BATTERY_BANK;
     moon_structure_render_ghost(&mgr, &grid, &surf, 0, 32 * MOON_TILE_H, 34, 32);
