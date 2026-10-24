@@ -13,7 +13,9 @@ You touch down at the lunar South Pole with an initial expedition lander and sur
 - **Life Support**: Each colonist uses 1 kg of oxygen and 2 L of water every 30 s. Oxygen Extractors, built beside polar ice or basalt mare, make both. Low reserves are only warnings; the crew suffers when a tank is empty or the grid blacks out.
 - **Construction & Regolith**: Sintering plants bake lunar regolith into building material. If nothing produces regolith the Lander scoops up to 15 kg so the base can always afford a Sinterer.
 - **Base Management**: Select a building to inspect it, switch it to standby to save power, or recycle it for half its cost; `Z` undoes the last build or recycle.
-- **Difficulty**: Three levels (Cadet, Engineer, Commander) set the starting stocks, how far power goes, Sinterer output and how much the crew uses. Choose one from the menu's `R:NEW GAME`; the first game is Engineer. The levels are tuned with headless runs (`make balance`).
+- **Objectives**: A line at the bottom left walks you through the first hours (Extractor, solar, Sinterer, a second battery, Habitat, a crew of 8, Act I). `O` hides or shows it. Objectives stay done once reached.
+- **Title page**: The game opens on a page where you pick the level (`1` Cadet, `2` Engineer, `3` Commander, `Q` quits). The map is the one chosen for this launch.
+- **Difficulty**: Three levels (Cadet, Engineer, Commander) set the starting stocks, how far power goes, Sinterer output and how much the crew uses. Pick one on the title page or from the menu's `R:NEW GAME`. The levels are tuned with headless runs (`make balance`).
 
 ### Structure Catalog
 
@@ -48,7 +50,7 @@ A tile is always **selected** (the gold frame; the minimap shows it as a white d
 - **1 – 6**: Build on the selected tile; **R**: recycle it; **E**: toggle standby. Press a build key twice for a brush, **Enter** applies the brush to the selected tile.
 - **Z**: Undo the last build or recycle. **Tab**: jump to the next building. **Enter**: open or close the inspector (when no brush is armed).
 - **Space**: Bring the view to the selection; again, to the Expedition Lander.
-- **P**: Pause / resume. **-** / **+**: simulation speed 1x, 2x, 4x. **T**: textured or fast terrain.
+- **O**: Hide or show the objective line. **P**: Pause / resume. **-** / **+**: simulation speed 1x, 2x, 4x. **T**: textured or fast terrain.
 - **Backspace / 0**: End the brush or close the inspector.
 - **ESC** / **Q**: The same, and with nothing to cancel it opens the menu. Quitting is only possible through the menu's confirmation (or Ctrl-C on the P4).
 

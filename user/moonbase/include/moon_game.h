@@ -24,7 +24,10 @@ enum { MOON_UNDO_NONE = 0, MOON_UNDO_BUILD, MOON_UNDO_RECYCLE };
 
 /* Menu pages */
 enum { MOON_MENU_CLOSED = 0, MOON_MENU_MAIN, MOON_MENU_CONFIRM_QUIT, MOON_MENU_NEW_GAME,
-       MOON_MENU_GAME_OVER, MOON_MENU_VICTORY };
+       MOON_MENU_GAME_OVER, MOON_MENU_VICTORY, MOON_MENU_TITLE };
+
+/* Objectives: a path through the first hours that doubles as the tutorial */
+#define MOON_OBJECTIVES 7
 
 typedef struct {
     moon_game_state_t state;
@@ -78,6 +81,10 @@ typedef struct {
     uint32_t seed_request;
     uint8_t  difficulty;        /* MOON_DIFFICULTY_*; kept over restarts */
     uint8_t  difficulty_request; /* before init or a restart: level + 1; 0 = keep */
+    bool     show_title;      /* Before init: open on the title page (level choice) */
+    bool     keep_seed;       /* Transient: the next reset keeps this run's map */
+    uint8_t  objective;       /* Current objective; MOON_OBJECTIVES = all done */
+    bool     objectives_hidden;
     bool     victory_claimed; /* Act I was completed and the player chose to go on */
 
     /* Layout table shared by drawing and hit-testing */

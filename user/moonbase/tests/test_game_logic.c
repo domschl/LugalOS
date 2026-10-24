@@ -1113,6 +1113,143 @@ static void test_difficulty(void) {
     printf("[test] Difficulty levels: chooser, stocks, survival time, Back: PASS\n");
 }
 
+/* A free tile touching the network, searched outward from the lander */
+static bool site_near_network(moon_structure_type_t type, int *ox, int *oy) {
+    for (int r = 1; r < 8; r++)
+        for (int y = 32 - r; y <= 32 + r; y++)
+            for (int x = 32 - r; x <= 32 + r; x++) {
+                if (abs(x - 32) != r && abs(y - 32) != r) continue;
+                if (!moon_structure_can_place(&g.grid, &g.structs, type, x, y, NULL)) continue;
+                static const int d[4][2] = { {1,0}, {-1,0}, {0,1}, {0,-1} };
+                const moon_structure_def_t *def = moon_structure_get_def(type);
+                for (int dy = 0; dy < def->footprint_h; dy++)
+                    for (int dx = 0; dx < def->footprint_w; dx++)
+                        for (int k = 0; k < 4; k++) {
+                            const moon_tile_t *n = moon_grid_get_tile_const(&g.grid, x + dx + d[k][0], y + dy + d[k][1]);
+                            bool inside = (d[k][0] + dx >= 0 && d[k][0] + dx < def->footprint_w && d[k][1] + dy >= 0 && d[k][1] + dy < def->footprint_h);
+                            if (!inside && n && n->structure_id) { *ox = x; *oy = y; return true; }
+                        }
+            }
+    return false;
+}
+
+static void put(moon_structure_type_t type) {
+    int x, y;
+    assert(site_near_network(type, &x, &y));
+    assert(moon_structure_place(&g.grid, &g.structs, type, x, y));
+}
+
+static void test_objectives(void) {
+    fresh();
+    assert(g.objective == 0 && !g.objectives_hidden);
+    ticks(2);
+    assert(g.objective == 0);
+
+    /* 0: a powered Extractor beside mare (a mare tile is put next to the lander) */
+    g.grid.tiles[32][30].terrain = MOON_TERRAIN_BASALT_MARE;
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_O2_EXTRACTOR, 31, 32));
+    ticks(1);
+    assert(g.objective == 1);
+
+    /* 1: three solar arrays (one is already there) */
+    put(MOON_STRUCT_SOLAR_ARRAY);
+    ticks(1);
+    assert(g.objective == 1);
+    put(MOON_STRUCT_SOLAR_ARRAY);
+    ticks(1);
+    assert(g.objective == 2);
+
+    /* 2: a powered Sinterer; 3: a second battery bank; 4: a Habitat */
+    put(MOON_STRUCT_REGOLITH_PLANT);
+    ticks(1);
+    assert(g.objective == 3);
+    ticks(1);
+    assert(g.objective == 3);
+    put(MOON_STRUCT_BATTERY_BANK);
+    ticks(1);
+    assert(g.objective == 4);
+    put(MOON_STRUCT_HABITAT_DOME);
+    ticks(1);
+    assert(g.objective == 5);
+
+    /* 5: crew of 8; 6: Act I itself */
+    g.resources.population = MOON_ACT1_CREW;
+    ticks(1);
+    assert(g.objective == 6);
+    g.resources.lunar_day = MOON_ACT1_DAY;
+    g.resources.ticks_since_blackout = MOON_LUNAR_DAY_TICKS;
+    g.resources.o2_rate_kg_per_tick = 1; g.resources.water_rate_l_per_tick = 1;
+    moon_game_check_end(&g);
+    assert(g.state == MOON_STATE_VICTORY);
+    key(MOON_KEY_C);
+    ticks(1);
+    assert(g.objective == MOON_OBJECTIVES);
+
+    /* Done stays done even if the base is rebuilt differently; a new game starts over */
+    moon_structure_demolish(&g.grid, &g.structs, 31, 32);
+    ticks(1);
+    assert(g.objective == MOON_OBJECTIVES);
+
+    /* O hides the line, and the choice survives a restart */
+    key(MOON_KEY_O);
+    assert(g.objectives_hidden);
+    key(MOON_KEY_ESCAPE); key(MOON_KEY_R); key(MOON_KEY_2);
+    assert(g.objective == 0 && g.objectives_hidden);
+    key(MOON_KEY_O);
+    assert(!g.objectives_hidden);
+
+    /* The line is drawn and fits both layouts */
+    for (int w = 0; w < 2; w++) {
+        static uint16_t fb[1024 * 600];
+        memset(&g, 0, sizeof(g));
+        assert(moon_game_init(&g, w ? 1024 : 640, w ? 600 : 360));
+        moon_game_render(&g, fb, g.screen_w, g.screen_h, g.screen_w);
+        bool found = false;
+        int y = g.ui.hover_badge.y - 24 + 4;
+        for (int x = g.ui.hover_badge.x + 8; x < g.screen_w / 2 && !found; x++) found = (fb[y * g.screen_w + x] != fb[(y - 30) * g.screen_w + x]);
+        assert(found);
+    }
+    printf("[test] Objectives: chain from the first Extractor to Act I, sticky, hide, restart: PASS\n");
+}
+
+static void test_title(void) {
+    static moon_game_t h;
+    memset(&h, 0, sizeof(h));
+    h.show_title = true;
+    h.seed_request = 424242;
+    assert(moon_game_init(&h, 1024, 600));
+    assert(h.menu_page == MOON_MENU_TITLE && h.seed == 424242 && h.running);
+    moon_game_t *save = &g;
+    (void)save;
+    memcpy(&g, &h, sizeof(g));
+
+    /* Frozen, and ESC cannot dismiss it */
+    uint32_t st = g.sim_ticks;
+    ticks(4);
+    assert(g.sim_ticks == st);
+    key(MOON_KEY_ESCAPE); key(MOON_KEY_P); key(MOON_KEY_1 + 5);
+    assert(g.menu_page == MOON_MENU_TITLE);
+
+    /* Picking a level starts the game on the same map */
+    static moon_tile_t before[MOON_MAP_SIZE_Y][MOON_MAP_SIZE_X];
+    memcpy(before, g.grid.tiles, sizeof(before));
+    click_rect(&g.ui.menu_item[3]);          /* the third button: Commander */
+    assert(g.menu_page == MOON_MENU_CLOSED && g.difficulty == MOON_DIFFICULTY_HARD);
+    assert(g.seed == 424242 && memcmp(before, g.grid.tiles, sizeof(before)) == 0);
+    assert(g.resources.rules.start_regolith_kg == g_moon_rules[MOON_DIFFICULTY_HARD].start_regolith_kg);
+
+    /* Keys 1 and 2, and Q leaves; a restart from the menu does not bring the title back */
+    memcpy(&g, &h, sizeof(g));
+    key(MOON_KEY_2);
+    assert(g.menu_page == MOON_MENU_CLOSED && g.difficulty == MOON_DIFFICULTY_NORMAL);
+    key(MOON_KEY_ESCAPE); key(MOON_KEY_R); key(MOON_KEY_1);
+    assert(g.menu_page == MOON_MENU_CLOSED && g.difficulty == MOON_DIFFICULTY_EASY && g.seed != 424242);
+    memcpy(&g, &h, sizeof(g));
+    key(MOON_KEY_Q);
+    assert(!g.running);
+    printf("[test] Title page: level choice, same map, frozen, Q quits: PASS\n");
+}
+
 static bool ice_near_lander(const moon_grid_t *grid) {
     for (int y = 0; y < MOON_MAP_SIZE_Y; y++)
         for (int x = 0; x < MOON_MAP_SIZE_X; x++)
@@ -1183,6 +1320,8 @@ int main(void) {
     test_victory();
     test_restarts_and_seeds();
     test_difficulty();
+    test_objectives();
+    test_title();
     printf("[test] All Milestone 64.9-64.12 tests passed cleanly.\n");
     return 0;
 }
