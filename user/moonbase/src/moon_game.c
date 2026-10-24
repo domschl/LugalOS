@@ -204,34 +204,15 @@ static void view_follow_selection(moon_game_t *game) {
 
 enum { DIR_UP, DIR_DOWN, DIR_LEFT, DIR_RIGHT };
 
-static bool tile_in_map(int gx, int gy) {
-    return gx >= 0 && gy >= 0 && gx < MOON_MAP_SIZE_X && gy < MOON_MAP_SIZE_Y;
-}
-
-/* One key press moves the selection by half a tile width in a screen direction. On the
- * diamond grid a pure screen-vertical or -horizontal move does not land on a tile
- * centre, so the step alternates between the two neighbours on that side (up goes
- * up-left, then up-right, ...): the line stays straight on screen, every tile can be
- * reached, and Down undoes Up and Right undoes Left. At the map edge the other
- * neighbour is used so the selection can still slide along it. */
-static void step_selection(moon_game_t *game, int dir) {
-    int gx = game->selected_tile_x, gy = game->selected_tile_y;
-    bool even = ((gx + gy) & 1) == 0;
-    int a[2], b[2]; /* preferred step, alternative step */
-    switch (dir) {
-    case DIR_UP:    a[0] = even ? -1 : 0; a[1] = even ? 0 : -1; b[0] = even ? 0 : -1; b[1] = even ? -1 : 0; break;
-    case DIR_DOWN:  a[0] = even ? 0 : 1;  a[1] = even ? 1 : 0;  b[0] = even ? 1 : 0;  b[1] = even ? 0 : 1;  break;
-    case DIR_LEFT:  a[0] = even ? 0 : -1; a[1] = even ? 1 : 0;  b[0] = even ? -1 : 0; b[1] = even ? 0 : 1;  break;
-    default:        a[0] = even ? 1 : 0;  a[1] = even ? 0 : -1; b[0] = even ? 0 : 1;  b[1] = even ? -1 : 0; break;
-    }
-    if (tile_in_map(gx + a[0], gy + a[1])) { gx += a[0]; gy += a[1]; }
-    else if (tile_in_map(gx + b[0], gy + b[1])) { gx += b[0]; gy += b[1]; }
-    game->selected_tile_x = gx;
-    game->selected_tile_y = gy;
-}
-
+/* The arrow keys are the map's four edge-neighbour moves, i.e. the diagonals on
+ * screen: the view rotated by 45 degrees. Up is up-left, Right up-right, Down
+ * down-right and Left down-left, so each key always moves to the adjacent tile
+ * it points toward and the opposite key undoes it. */
 static void move_selection(moon_game_t *game, int dir, int steps) {
-    for (int i = 0; i < steps; i++) step_selection(game, dir);
+    static const int8_t d[4][2] = {
+        [DIR_UP] = { -1, 0 }, [DIR_DOWN] = { 1, 0 }, [DIR_LEFT] = { 0, 1 }, [DIR_RIGHT] = { 0, -1 }
+    };
+    select_tile(game, game->selected_tile_x + d[dir][0] * steps, game->selected_tile_y + d[dir][1] * steps);
     view_follow_selection(game);
 }
 
