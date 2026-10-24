@@ -867,8 +867,8 @@ static void test_menu_and_cancel(void) {
     assert(g.sim_ticks == st);
     key(MOON_KEY_ESCAPE);
     assert(g.menu_page == MOON_MENU_CLOSED && g.running);
-    key(MOON_KEY_Q); key(MOON_KEY_Q);          /* menu, then closed again */
-    assert(g.running);
+    key(MOON_KEY_Q); key(MOON_KEY_ESCAPE);     /* menu, then closed again */
+    assert(g.running && g.menu_page == MOON_MENU_CLOSED);
 
     /* Quit asks first, and NO goes back */
     key(MOON_KEY_Q);
@@ -908,6 +908,26 @@ static void test_menu_and_cancel(void) {
         key(MOON_KEY_BACKSPACE);
         assert(!g.panel_open);
     }
+
+    /* Every menu entry has a visible key */
+    fresh();
+    key(MOON_KEY_ESCAPE);
+    bool tex = g.grid.textured_terrain;
+    key(MOON_KEY_T);
+    assert(g.grid.textured_terrain != tex && g.menu_page == MOON_MENU_MAIN);
+    key(MOON_KEY_Q);
+    assert(g.menu_page == MOON_MENU_CONFIRM_QUIT && g.running);
+    key(MOON_KEY_T);                        /* not a confirm key */
+    assert(g.menu_page == MOON_MENU_CONFIRM_QUIT);
+    key(MOON_KEY_N);
+    assert(g.menu_page == MOON_MENU_MAIN);
+    key(MOON_KEY_R);
+    assert(g.menu_page == MOON_MENU_CONFIRM_RESTART);
+    g.structs.count = 9;                    /* marker: the restart must rebuild the base */
+    key(MOON_KEY_Y);
+    assert(g.menu_page == MOON_MENU_CLOSED && g.structs.count == 4 && g.running);
+    key(MOON_KEY_ESCAPE); key(MOON_KEY_Q); key(MOON_KEY_Y);
+    assert(!g.running);
     printf("[test] Menu, quit/restart confirmation, identical cancel: PASS\n");
 }
 
