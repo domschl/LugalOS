@@ -52,10 +52,8 @@ void moon_ui_layout(moon_ui_layout_t *ui, int w, int h) {
     ui->insp_recycle = rect(ui->inspector.x + 8, aby, abw, MOON_UI_TOUCH_MIN);
     ui->insp_standby = rect(ui->inspector.x + 16 + abw, aby, abw, MOON_UI_TOUCH_MIN);
 
-    const int cw = 120;
-    const int cy = h - bar_h - MOON_UI_TOUCH_MIN - 8;
-    ui->confirm_ok = rect(w / 2 - cw - 6, cy, cw, MOON_UI_TOUCH_MIN);
-    ui->confirm_cancel = rect(w / 2 + 6, cy, cw, MOON_UI_TOUCH_MIN);
+    const int uw = 120;
+    ui->undo_btn = rect(w / 2 - uw / 2, h - bar_h - MOON_UI_TOUCH_MIN - 8, uw, MOON_UI_TOUCH_MIN);
 
     ui->hover_badge = rect(8, h - bar_h - 24, ui->narrow ? 170 : 210, 20);
 

@@ -520,16 +520,16 @@ void moon_structure_render_ghost(const moon_structure_mgr_t *mgr,
                                  const moon_grid_t *grid,
                                  const moon_surface_t *surf,
                                  int32_t cam_x, int32_t cam_y,
+                                 moon_structure_type_t type,
                                  int hover_gx, int hover_gy) {
     if (!mgr || !grid || !surf) return;
-    if (mgr->selected_build_type == MOON_STRUCT_NONE) return;
+    if (type == MOON_STRUCT_NONE) return;
 
-    const moon_structure_def_t *def = moon_structure_get_def(mgr->selected_build_type);
+    const moon_structure_def_t *def = moon_structure_get_def(type);
     if (!def) return;
 
     const char *reason = NULL;
-    bool valid = moon_structure_can_place(grid, mgr, mgr->selected_build_type,
-                                          hover_gx, hover_gy, &reason);
+    bool valid = moon_structure_can_place(grid, mgr, type, hover_gx, hover_gy, &reason);
     uint16_t ghost_color = valid ? COLOR_STATUS_GREEN : COLOR_ALERT_RED;
 
     /* Footprint outline, one diamond per tile */

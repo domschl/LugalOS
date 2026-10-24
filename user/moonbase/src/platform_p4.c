@@ -298,8 +298,6 @@ void moon_platform_present(void) {
     }
 }
 
-bool moon_platform_has_key_up(void) { return false; }
-
 bool moon_platform_poll_event(moon_event_t *ev) {
     /* 1. Touch events */
     if (s_qhead != s_qtail) {
@@ -313,6 +311,8 @@ bool moon_platform_poll_event(moon_event_t *ev) {
         key_event_t ke = keyseq_read_console();
         memset(ev, 0, sizeof(*ev));
         ev->type = MOON_EVENT_KEY_DOWN;
+        ev->mods = (ke.mods & KMOD_SHIFT) ? MOON_MOD_SHIFT : 0;
+        if (ke.key >= 'A' && ke.key <= 'Z') ev->mods = MOON_MOD_SHIFT; /* capital letter = Shift */
         switch (ke.key) {
             case KEY_UP:
                 ev->key = MOON_KEY_UP;
