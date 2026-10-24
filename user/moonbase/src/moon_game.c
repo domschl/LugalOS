@@ -621,6 +621,7 @@ static void handle_key_down(moon_game_t *game, const moon_event_t *ev) {
         return;
     }
 
+    game->touch_input = false;
     bool slot_key = (key >= MOON_KEY_1 && key <= MOON_KEY_6) || key == MOON_KEY_R || key == MOON_KEY_E;
     if (!slot_key) game->last_slot = -1;
     int steps = (ev->mods & MOON_MOD_SHIFT) ? 8 : 1;
@@ -932,6 +933,21 @@ void moon_game_update(moon_game_t *game, uint32_t delta_ms) {
 
 /* The run ends when the last colonist dies, or is won when Act I is complete. Either
  * way an overlay takes over (the sim is frozen while a menu page is open). */
+bool moon_game_ghost_target(const moon_game_t *game, int *gx, int *gy) {
+    bool brush = game->structs.selected_build_type != MOON_STRUCT_NONE || game->demolish_tool_active;
+    bool preview = game->preview_slot >= 1 && game->preview_slot <= 6;
+    if (!brush && !preview) return false;
+    if (brush && game->hover_valid) {
+        *gx = game->hover_tile_x;
+        *gy = game->hover_tile_y;
+        return true;
+    }
+    if (brush && game->touch_input) return false;
+    *gx = game->selected_tile_x;
+    *gy = game->selected_tile_y;
+    return true;
+}
+
 void moon_game_check_end(moon_game_t *game) {
     if (game->state != MOON_STATE_PLAYING && game->state != MOON_STATE_PAUSED) return;
 
@@ -1373,22 +1389,17 @@ void moon_game_render(moon_game_t *game, uint16_t *fb, int width, int height, in
     /* 4. Ghost of what the armed brush or the held / hovered build button would build,
      * and the recycle brush's target marker. A brush follows the pointer; a button
      * preview shows on the selected tile. */
-    {
+    int ghost_x, ghost_y;
+    if (moon_game_ghost_target(game, &ghost_x, &ghost_y)) {
         moon_structure_type_t gtype = game->structs.selected_build_type;
-        bool brush = (gtype != MOON_STRUCT_NONE);
-        if (!brush && game->preview_slot >= 1 && game->preview_slot <= 6) gtype = s_build_buttons[game->preview_slot - 1];
-        int tx = game->selected_tile_x, ty = game->selected_tile_y;
-        if ((brush || game->demolish_tool_active) && game->hover_valid) {
-            tx = game->hover_tile_x;
-            ty = game->hover_tile_y;
-        }
+        if (gtype == MOON_STRUCT_NONE && game->preview_slot >= 1 && game->preview_slot <= 6) gtype = s_build_buttons[game->preview_slot - 1];
         if (gtype != MOON_STRUCT_NONE) {
             moon_structure_render_ghost(&game->structs, &game->grid, &surf, game->cam_x, game->cam_y,
-                                        gtype, tx, ty);
+                                        gtype, ghost_x, ghost_y);
         } else if (game->demolish_tool_active) {
-            const moon_tile_t *ht = moon_grid_get_tile_const(&game->grid, tx, ty);
+            const moon_tile_t *ht = moon_grid_get_tile_const(&game->grid, ghost_x, ghost_y);
             int32_t hsx, hsy;
-            moon_grid_to_screen(tx, ty, ht ? ht->elevation : 0, game->cam_x, game->cam_y, width, height, &hsx, &hsy);
+            moon_grid_to_screen(ghost_x, ghost_y, ht ? ht->elevation : 0, game->cam_x, game->cam_y, width, height, &hsx, &hsy);
             moon_blit_iso_tile(&surf, hsx, hsy, MOON_TILE_HALF_W, MOON_TILE_HALF_H, moon_color_dim(COLOR_ALERT_RED, 120), COLOR_ALERT_RED);
             moon_blit_line(&surf, hsx - 10, hsy - 5, hsx + 10, hsy + 5, COLOR_LUNAR_WHITE);
             moon_blit_line(&surf, hsx - 10, hsy + 5, hsx + 10, hsy - 5, COLOR_LUNAR_WHITE);
