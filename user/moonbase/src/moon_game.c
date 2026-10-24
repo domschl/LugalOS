@@ -1023,7 +1023,7 @@ static void render_inspector_panel(const moon_game_t *game, const moon_surface_t
                                "STORAGE: %d kWh capacity", def->power_storage);
         } else if (def->rate_o2 != 0 || def->rate_water != 0) {
             moon_blit_text_fmt(surf, ip_x + 8, ip_y + 84, COLOR_LASER_CYAN, 0, true,
-                               "LIFE: %+d kg O2 / %+d L H2O", def->rate_o2, def->rate_water);
+                               "LIFE O2 %+d H2O %+d /min", def->rate_o2, def->rate_water);
         } else {
             moon_blit_text_fmt(surf, ip_x + 8, ip_y + 84, COLOR_REGOLITH_LIGHT, 0, true,
                                "COORDS: [%02d, %02d]", s->gx, s->gy);

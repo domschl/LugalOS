@@ -1345,6 +1345,51 @@ static void test_deposits(void) {
     printf("[test] Deposits: richest tile first, depletion, idle and power, placement rule, standby: PASS\n");
 }
 
+/* Pressurised structures draw O2 and water on top of the crew's use */
+static void test_pressurised_draw(void) {
+    fresh();
+    /* Lander only: 4 colonists (1 kg O2 and 2 L per 30 s each) and the Lander's own -1 / -2 per minute */
+    ticks(1);
+    const int crew_o2 = 4 * 1000 / (MOON_SIM_TICK_RATE_HZ * 30);
+    const int crew_h2o = 4 * 2000 / (MOON_SIM_TICK_RATE_HZ * 30);
+    const int lander_o2 = 1 * 1000 / (MOON_SIM_TICK_RATE_HZ * 60), lander_h2o = 2 * 1000 / (MOON_SIM_TICK_RATE_HZ * 60);
+    assert(g.resources.o2_rate_kg_per_tick == -(crew_o2 + lander_o2));
+    assert(g.resources.water_rate_l_per_tick == -(crew_h2o + lander_h2o));
+
+    /* A Habitat adds its own draw, and with it crew room */
+    int base_o2 = g.resources.o2_rate_kg_per_tick, base_h2o = g.resources.water_rate_l_per_tick;
+    put(MOON_STRUCT_HABITAT_DOME);
+    ticks(1);
+    assert(g.resources.o2_rate_kg_per_tick == base_o2 - 5 * 1000 / (MOON_SIM_TICK_RATE_HZ * 60));
+    assert(g.resources.water_rate_l_per_tick == base_h2o - 10 * 1000 / (MOON_SIM_TICK_RATE_HZ * 60));
+    assert(g.resources.max_population == MOON_LANDER_CREW + MOON_HABITAT_CREW);
+
+    /* Unpowered it still leaks; on standby (depressurised) it draws nothing */
+    int with_o2 = g.resources.o2_rate_kg_per_tick;
+    const moon_structure_t *hab = NULL;
+    for (int i = 1; i < MOON_MAX_STRUCTURES; i++) if (g.structs.list[i].id && g.structs.list[i].type == MOON_STRUCT_HABITAT_DOME) hab = &g.structs.list[i];
+    assert(hab);
+    g.structs.list[hab->id].powered = false;   /* the next solve restores it; the draw does not depend on it */
+    g.structs.list[hab->id].active = false;
+    moon_structure_mark_dirty(&g.structs);
+    ticks(1);
+    assert(g.resources.o2_rate_kg_per_tick == base_o2);
+    g.structs.list[hab->id].active = true;
+    moon_structure_mark_dirty(&g.structs);
+    ticks(1);
+    assert(g.resources.o2_rate_kg_per_tick == with_o2);
+
+    /* The stock follows the rate: with nothing producing, a Habitat shortens the reserves */
+    fresh();
+    ticks(MOON_SIM_TICK_RATE_HZ * 30);
+    int o2_alone = fixed_to_int(g.resources.o2_stored_kg);
+    fresh();
+    put(MOON_STRUCT_HABITAT_DOME);
+    ticks(MOON_SIM_TICK_RATE_HZ * 30);
+    assert(fixed_to_int(g.resources.o2_stored_kg) < o2_alone);
+    printf("[test] Pressurised structures: Lander and Habitat draw O2 and water, standby does not: PASS\n");
+}
+
 static void test_quarry(void) {
     fresh();
     g.resources.rules.sinterer_kg_per_min = 60;          /* a kilogram, so one unit, a second */
@@ -1480,6 +1525,7 @@ int main(void) {
     test_title();
     test_deposits();
     test_quarry();
+    test_pressurised_draw();
     printf("[test] All Milestone 64.9-64.12 tests passed cleanly.\n");
     return 0;
 }
