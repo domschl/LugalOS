@@ -499,18 +499,29 @@ static void test_select_first(void) {
     fresh();
     assert(g.selected_tile_x == 32 && g.selected_tile_y == 32 && !g.panel_open);
 
-    /* Move the selection with arrows and WASD; the view follows */
-    key(MOON_KEY_UP);                      /* (-1,-1) */
+    /* Arrows and WASD move the selection by half a tile width; the line stays straight
+     * on screen (up alternates up-left / up-right) */
+    int32_t sx0, sy0, sx, sy;
+    tile_screen(32, 32, &sx0, &sy0);
+    key(MOON_KEY_UP);
+    assert(g.selected_tile_x == 31 && g.selected_tile_y == 32);
     key(MOON_KEY_W);
-    assert(g.selected_tile_x == 30 && g.selected_tile_y == 30);
+    assert(g.selected_tile_x == 31 && g.selected_tile_y == 31);
+    tile_screen(31, 31, &sx, &sy);
+    assert(sx == sx0 && sy == sy0 - 32);
     key(MOON_KEY_RIGHT);
-    assert(g.selected_tile_x == 31 && g.selected_tile_y == 29);
-    key(MOON_KEY_A);
-    assert(g.selected_tile_x == 30 && g.selected_tile_y == 30);
-    for (int i = 0; i < 100; i++) moon_game_update(&g, 16);
-    int32_t sx, sy;
-    tile_screen(30, 30, &sx, &sy);
-    assert(abs(sx - 512) <= 2 && abs(sy - 300) <= 18); /* centred (elevation shifts it) */
+    key(MOON_KEY_D);
+    tile_screen(g.selected_tile_x, g.selected_tile_y, &sx, &sy);
+    assert(sy == sy0 - 32 && sx == sx0 + 64);
+    key(MOON_KEY_DOWN); key(MOON_KEY_DOWN); key(MOON_KEY_LEFT); key(MOON_KEY_LEFT);
+    assert(g.selected_tile_x == 32 && g.selected_tile_y == 32);
+
+    /* The view stays where it is while the selection moves inside the middle of the screen */
+    int cx = g.cam_x, cy = g.cam_y;
+    key(MOON_KEY_UP); key(MOON_KEY_RIGHT); key(MOON_KEY_DOWN);
+    for (int i = 0; i < 40; i++) moon_game_update(&g, 16);
+    assert(g.cam_x == cx && g.cam_y == cy && !g.glide);
+    g.selected_tile_x = 30; g.selected_tile_y = 30;
 
     /* 1 builds a solar array on the selection, nothing else needed */
     int before = regolith();
@@ -525,11 +536,11 @@ static void test_select_first(void) {
     assert(g.notify_msg != NULL && g.notify_timer_ms > 0);
     key(MOON_KEY_7); /* unmapped */
 
-    /* Shift moves 8 tiles and the selection stays on the map */
+    /* Shift moves 8 steps (4 tiles down the diagonal) and the selection stays on the map */
     moon_event_t ev; memset(&ev, 0, sizeof(ev));
     ev.type = MOON_EVENT_KEY_DOWN; ev.key = MOON_KEY_DOWN; ev.mods = MOON_MOD_SHIFT;
     moon_game_handle_event(&g, &ev);
-    assert(g.selected_tile_x == 38 && g.selected_tile_y == 38);
+    assert(g.selected_tile_x == 34 && g.selected_tile_y == 34);
     for (int i = 0; i < 10; i++) { ev.key = MOON_KEY_UP; moon_game_handle_event(&g, &ev); }
     assert(g.selected_tile_x == 0 && g.selected_tile_y == 0);
 
@@ -556,9 +567,81 @@ static void test_select_first(void) {
     printf("[test] Select-first: move selection, act on it, Tab, Shift jump, Space: PASS\n");
 }
 
+/* Every tile can be reached, and the opposite key undoes a step */
+static void test_keyboard_reach(void) {
+    fresh();
+    static bool seen[MOON_MAP_SIZE_Y][MOON_MAP_SIZE_X];
+    memset(seen, 0, sizeof(seen));
+    static const uint32_t keys[4] = { MOON_KEY_UP, MOON_KEY_DOWN, MOON_KEY_LEFT, MOON_KEY_RIGHT };
+    static const uint32_t undo[4] = { MOON_KEY_DOWN, MOON_KEY_UP, MOON_KEY_RIGHT, MOON_KEY_LEFT };
+
+    /* Inverse steps on both parities, away from and at the borders */
+    for (int gy = 2; gy < MOON_MAP_SIZE_Y - 2; gy += 7) {
+        for (int gx = 2; gx < MOON_MAP_SIZE_X - 2; gx += 5) {
+            for (int k = 0; k < 4; k++) {
+                g.selected_tile_x = gx; g.selected_tile_y = gy;
+                key(keys[k]);
+                assert(g.selected_tile_x != gx || g.selected_tile_y != gy);
+                key(undo[k]);
+                assert(g.selected_tile_x == gx && g.selected_tile_y == gy);
+            }
+        }
+    }
+
+    /* Breadth-first search over the real key handling: all 4096 tiles are reachable */
+    static int queue[MOON_MAP_SIZE_X * MOON_MAP_SIZE_Y];
+    int head = 0, tail = 0, visited = 0;
+    queue[tail++] = 32 * MOON_MAP_SIZE_X + 32;
+    seen[32][32] = true;
+    while (head < tail) {
+        int cur = queue[head++];
+        visited++;
+        for (int k = 0; k < 4; k++) {
+            g.selected_tile_x = cur % MOON_MAP_SIZE_X; g.selected_tile_y = cur / MOON_MAP_SIZE_X;
+            key(keys[k]);
+            int x = g.selected_tile_x, y = g.selected_tile_y;
+            if (!seen[y][x]) { seen[y][x] = true; queue[tail++] = y * MOON_MAP_SIZE_X + x; }
+        }
+    }
+    assert(visited == MOON_MAP_SIZE_X * MOON_MAP_SIZE_Y);
+
+    /* At the border the selection still slides along it, and holds at a corner */
+    g.selected_tile_x = 0; g.selected_tile_y = 20;
+    for (int i = 0; i < 6; i++) key(MOON_KEY_UP);
+    assert(g.selected_tile_x == 0 && g.selected_tile_y == 14);
+    g.selected_tile_x = 0; g.selected_tile_y = 0;
+    key(MOON_KEY_UP);
+    assert(g.selected_tile_x == 0 && g.selected_tile_y == 0);
+    printf("[test] Keyboard reaches every tile; opposite keys undo each other; edges: PASS\n");
+}
+
+/* The view scrolls rarely: only when the selection nears the border */
+static void test_view_follow(void) {
+    fresh();
+    int glides = 0;
+    int cx = g.cam_x, cy = g.cam_y;
+    key(MOON_KEY_RIGHT);
+    assert(!g.glide && g.cam_x == cx && g.cam_y == cy);
+
+    for (int i = 0; i < 60; i++) {
+        bool was = g.glide;
+        int32_t before_x = g.glide_x;
+        key(MOON_KEY_RIGHT);
+        if (g.glide && (!was || g.glide_x != before_x)) glides++;
+        moon_game_update(&g, 16);
+    }
+    /* 60 half-steps to the right: a few glides, not one per key press */
+    assert(glides >= 1 && glides <= 6);
+    for (int i = 0; i < 100; i++) moon_game_update(&g, 16);
+    int32_t sx, sy;
+    tile_screen(g.selected_tile_x, g.selected_tile_y, &sx, &sy);
+    assert(sx >= 0 && sx < 1024 && sy >= 34 && sy < 548);
+    printf("[test] View stays still until the selection nears the border (%d glides in 60 steps): PASS\n", glides);
+}
+
 static void test_standby_recycle_undo(void) {
     fresh();
-    key(MOON_KEY_UP); key(MOON_KEY_UP);                /* (30,30) */
+    g.selected_tile_x = 30; g.selected_tile_y = 30;
     int start = regolith();
     key(MOON_KEY_4);                                   /* Sinterer, 15 kg */
     assert(regolith() == start - 15 && struct_at(30, 30));
@@ -610,9 +693,9 @@ static void test_brush(void) {
     key(MOON_KEY_6);                       /* second press: brush, builds nothing */
     assert(g.structs.selected_build_type == MOON_STRUCT_POWER_CONDUIT);
     int n = g.structs.count;
-    key(MOON_KEY_RIGHT);                   /* (31,27) */
+    key(MOON_KEY_RIGHT);                   /* (30,28) is even: right goes to (31,28) */
     key(MOON_KEY_RETURN);                  /* Enter applies the brush there */
-    assert(g.structs.count == n + 1 && struct_at(31, 27));
+    assert(g.structs.count == n + 1 && struct_at(31, 28));
     click_tile(29, 29);                    /* a click selects and applies */
     assert(g.structs.count == n + 2 && struct_at(29, 29));
     assert(g.structs.selected_build_type == MOON_STRUCT_POWER_CONDUIT); /* still armed */
@@ -691,7 +774,8 @@ static outcome_t play(int device) {
 
     /* Select the tile, then press the button for what to build there */
     if (device == 2) {
-        key(MOON_KEY_UP); key(MOON_KEY_UP);              /* (32,32) -> (30,30) */
+        for (int i = 0; i < 4; i++) key(MOON_KEY_UP);    /* (32,32) -> (30,30) */
+        assert(g.selected_tile_x == T && g.selected_tile_y == T);
         key(MOON_KEY_4);
     } else {
         click_tile(T, T);
@@ -844,6 +928,8 @@ int main(void) {
     test_layout();
     test_clock_and_pause();
     test_select_first();
+    test_keyboard_reach();
+    test_view_follow();
     test_standby_recycle_undo();
     test_brush();
     test_button_validity_and_preview();
