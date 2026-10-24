@@ -67,7 +67,7 @@ lsh> cc /sd0/hello.c /ram0/hello.elf
 lsh> exec /ram0/hello.elf
 ```
 
-Navigation: ← User Manual | Documentation Index
+Navigation: <- User Manual | Documentation Index
 
 ### Related Topics
 => index.gmi Documentation

@@ -75,7 +75,7 @@ directly after boot.
 ### Lock order
 
 ylocks are taken in one order. The kernel learns it: when a context holding A takes B, the
-pair A→B is recorded, and a later B→A is reported once (report and continue, in every
+pair A->B is recorded, and a later B->A is reported once (report and continue, in every
 build). On the P4 panel, `g_frame_lock` is always taken after `console_lock`
 (`frame_begin()` takes both).
 

@@ -10,7 +10,7 @@
 
 ## 1. Architectural Highlights
 
-* **Capability-Enforced Microkernel Core**: Preemptive multitasking with hardware memory domain isolation—Physical Memory Protection (PMP) on NOMMU microcontrollers, Sv39 page tables on RV64—strictly confining device drivers and user applications.
+* **Capability-Enforced Microkernel Core**: Preemptive multitasking with hardware memory domain isolation--Physical Memory Protection (PMP) on NOMMU microcontrollers, Sv39 page tables on RV64--strictly confining device drivers and user applications.
 * **Plan 9 IPC & 9P Filesystem Networking**: Copy-always message channels (`chan_t`) form the fundamental IPC primitive. Serves and consumes 9P2000 filesystems over USB CDC-ACM, SLIP serial, and TCP.
 * **Exact Symbolic Computer Algebra System (CAS)**: Pure Lisp symbolic mathematics operating without hardware floating-point instructions: arbitrary-precision bignums, exact rationals $\mathbb{Q}$, Gaussian rationals $\mathbb{Q}(i)$, polynomial factorization, symbolic calculus, and power series.
 * **Horizontal Tiling Window Ribbon**: Multi-window graphical workspace on 7" and 5" LCD panels with smooth inertial scrolling, split canvases, touch gestures, and proportional serif typography.
@@ -22,9 +22,9 @@
 
 ## 2. Supported Hardware Platforms
 
-* **Raspberry Pi Pico 2 & RP2350-LCD-7** (`rp2350-terminal`, `rp2350`): Dual Hazard3 RISC-V cores @ 150 MHz, dual CDC-ACM USB (console + 9P), 8 MB PSRAM, 7" 800×480 RGB LCD.
-* **Waveshare ESP32-P4-WIFI6-Touch-LCD-7B** (`esp32p4-lcd7b`): Dual-core RV32 @ 400 MHz (rev v3.2), 32 MB DDR PSRAM, 7" 1024×600 MIPI-DSI, GT911 touch, DWC2 USB host, SDIO link to C6 Wi-Fi 6 co-processor.
-* **M5Stack Tab5** (`esp32p4-tab5`): Dual-core RV32 @ 400 MHz (rev v1.3), 32 MB PSRAM, 5" 720×1280 portrait IPS with ST7121 TDDI, BMI270 IMU, INA226 fuel gauge, dual-orientation compositor.
+* **Raspberry Pi Pico 2 & RP2350-LCD-7** (`rp2350-terminal`, `rp2350`): Dual Hazard3 RISC-V cores @ 150 MHz, dual CDC-ACM USB (console + 9P), 8 MB PSRAM, 7" 800x480 RGB LCD.
+* **Waveshare ESP32-P4-WIFI6-Touch-LCD-7B** (`esp32p4-lcd7b`): Dual-core RV32 @ 400 MHz (rev v3.2), 32 MB DDR PSRAM, 7" 1024x600 MIPI-DSI, GT911 touch, DWC2 USB host, SDIO link to C6 Wi-Fi 6 co-processor.
+* **M5Stack Tab5** (`esp32p4-tab5`): Dual-core RV32 @ 400 MHz (rev v1.3), 32 MB PSRAM, 5" 720x1280 portrait IPS with ST7121 TDDI, BMI270 IMU, INA226 fuel gauge, dual-orientation compositor.
 * **ESP32-P4-NANO** (`esp32p4`): Dual-core RV32 compute node with 100 Mbps RMII Ethernet and SDMMC storage.
 * **Waveshare ESP32-C6-Zero** (`esp32c6`): 160 MHz RV32IMAC low-power 802.11ax Wi-Fi node and LLP wireless coprocessor.
 * **QEMU RISC-V Virt Targets** (`rv32`, `rv64`, `rv64-smp`): Emulated NOMMU and Sv39 MMU virtual targets for continuous integration.

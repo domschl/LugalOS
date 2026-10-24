@@ -20,7 +20,7 @@
 | Waveshare ESP32-P4-WIFI6-Touch-LCD-7B | Waveshare ESP32-C6-Zero Wireless Node |
 | :---: | :---: |
 | ![ESP32-P4 7" Touch LCD Station](doc/assets/images/esp32-p4-terminal.jpg) | ![ESP32-C6-Zero Sensor Node](doc/assets/images/esp32-c6-sensor.jpg) |
-| *400 MHz dual-core RV32, 1024×600 MIPI-DSI, GT911 touch, 32 MB PSRAM, USB host.* | *160 MHz RV32IMAC, 512 KB SRAM, 802.11ax Wi-Fi 6, BME280 & TSL2591 telemetry.* |
+| *400 MHz dual-core RV32, 1024x600 MIPI-DSI, GT911 touch, 32 MB PSRAM, USB host.* | *160 MHz RV32IMAC, 512 KB SRAM, 802.11ax Wi-Fi 6, BME280 & TSL2591 telemetry.* |
 
 | Waveshare Pico-Clock-Green Radio Clock | Z-Machine & Canvas Auto-Mapper |
 | :---: | :---: |
@@ -33,9 +33,9 @@
 
 ## Key Capabilities at a Glance
 
-* **Capability-Enforced Microkernel Core**: Preemptive multitasking with hardware-enforced per-task memory domains—Physical Memory Protection (PMP) on NOMMU microcontrollers, Sv39 page tables on RV64—strictly confining drivers and user programs.
+* **Capability-Enforced Microkernel Core**: Preemptive multitasking with hardware-enforced per-task memory domains--Physical Memory Protection (PMP) on NOMMU microcontrollers, Sv39 page tables on RV64--strictly confining drivers and user programs.
 * **Driver Tasks Confined to PMP Windows**: UART, native USB CDC dual-ACM, SD/SPI block storage, I2C bus controllers, TFT canvas, and TM1638 drivers each run as separate U-mode tasks. A fault in one driver cannot corrupt the kernel or another driver.
-* **Dual-Core SMP Acceleration**: Both cores of the RP2350 (Hazard3) and ESP32-P4 run a shared scheduler. The chess engine achieves a **1.96×** speedup on move generation (`perft`) and **1.60×** on Lazy SMP alpha-beta search.
+* **Dual-Core SMP Acceleration**: Both cores of the RP2350 (Hazard3) and ESP32-P4 run a shared scheduler. The chess engine achieves a **1.96x** speedup on move generation (`perft`) and **1.60x** on Lazy SMP alpha-beta search.
 * **Exact Symbolic Computer Algebra System (CAS)**: Complete symbolic mathematics in pure Lisp without floating-point instructions: arbitrary-precision bignums, exact rationals $\mathbb{Q}$, Gaussian rationals $\mathbb{Q}(i)$, polynomial factorization, symbolic calculus, and power series.
 * **Plan 9 IPC & 9P Filesystem Networking**: Copy-always channels (`chan_t`) as the core IPC primitive. Serves and consumes 9P2000 filesystems over USB CDC-ACM, SLIP, and TCP. Sync files directly to running MicroSD cards without removing media via `tools/p9sync.py`.
 * **On-Device C11 Compilation & Binary Execution**: Native `chibicc` C11 compiler generates RISC-V ELF binaries directly on the microcontroller, executed as confined U-mode tasks.
@@ -48,10 +48,10 @@
 
 | Preset Name | Architecture | SoC / Board | Clock | RAM & Cache | Display & UI | Storage & Net | Role |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **`rp2350-terminal`** | RV32 Hazard3 | Waveshare RP2350-LCD-7 | 150 MHz | 520 KB SRAM + 8 MB PSRAM | 7" 800×480 RGB LCD, GT911 Touch | SD/SPI, Dual CDC USB | Workstation Terminal |
-| **`esp32p4-lcd7b`** | RV32 Dual-Core | ESP32-P4-WIFI6-LCD-7B (rev v3.2) | 400 MHz | 768 KB L2MEM + 32 MB PSRAM | 7" 1024×600 MIPI-DSI, GT911 Touch | SDMMC, USB Host, Wi-Fi 6 | High-Perf Ribbon Workstation |
-| **`esp32p4-tab5`** | RV32 Dual-Core | M5Stack Tab5 (rev v1.3) | 360–400 MHz | 768 KB L2MEM + 32 MB PSRAM | 5" 720×1280 MIPI-DSI, ST7121 Touch | SDMMC, USB Host, Dual Expander | 5" Portable Tablet / Reader |
-| **`esp32p4`** | RV32 Dual-Core | ESP32-P4-NANO (rev v1.3) | 360–400 MHz | 768 KB L2MEM + 32 MB PSRAM | Serial Console (921600 baud) | RMII Ethernet, SDMMC | Microkernel Compute Node |
+| **`rp2350-terminal`** | RV32 Hazard3 | Waveshare RP2350-LCD-7 | 150 MHz | 520 KB SRAM + 8 MB PSRAM | 7" 800x480 RGB LCD, GT911 Touch | SD/SPI, Dual CDC USB | Workstation Terminal |
+| **`esp32p4-lcd7b`** | RV32 Dual-Core | ESP32-P4-WIFI6-LCD-7B (rev v3.2) | 400 MHz | 768 KB L2MEM + 32 MB PSRAM | 7" 1024x600 MIPI-DSI, GT911 Touch | SDMMC, USB Host, Wi-Fi 6 | High-Perf Ribbon Workstation |
+| **`esp32p4-tab5`** | RV32 Dual-Core | M5Stack Tab5 (rev v1.3) | 360-400 MHz | 768 KB L2MEM + 32 MB PSRAM | 5" 720x1280 MIPI-DSI, ST7121 Touch | SDMMC, USB Host, Dual Expander | 5" Portable Tablet / Reader |
+| **`esp32p4`** | RV32 Dual-Core | ESP32-P4-NANO (rev v1.3) | 360-400 MHz | 768 KB L2MEM + 32 MB PSRAM | Serial Console (921600 baud) | RMII Ethernet, SDMMC | Microkernel Compute Node |
 | **`esp32c6`** | RV32IMAC | Waveshare ESP32-C6-Zero | 160 MHz | 512 KB SRAM, 8 MB Flash | Serial / JTAG Console | 802.11ax Wi-Fi, Flashfs | Low-Power Wireless Node |
 | **`rp2350-chess`** | RV32 Hazard3 | Raspberry Pi Pico 2 | 150 MHz | 520 KB SRAM | 1.8" ST7735 TFT, TM1638 Keypad | SD/SPI card | Dedicated Chess Computer |
 | **`rp2350-clock`** | RV32 Hazard3 | Waveshare Pico-Clock-Green | 150 MHz | 520 KB SRAM | SM16106 LED Matrix | DCF77 Radio, RTC | Precision Network Time Node |
@@ -103,24 +103,24 @@ python3 tools/p4flash.py --board tab5 --build build/esp32p4-tab5 --only boot,os 
 ## Microkernel Architecture Overview
 
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│                        USER SPACE APPLICATIONS                         │
-│   lsh (Shell)   •   Lisp REPL / CAS   •   e / ed (Editors)   •   Chess │
-│   chibicc (C Compiler)   •   User ELFs (Confined PMP / Sv39 Domains)   │
-└───────────────────────────────────┬────────────────────────────────────┘
-                                    │ System Calls (Pointer Validation)
-┌───────────────────────────────────▼────────────────────────────────────┐
-│                    ISOLATED U-MODE DRIVER DOMAINS                      │
-│   UART0 Console   •   USB CDC ACM   •   SD/SPI Storage   •   I2C RTC   │
-│   ST7735 TFT      •   TM1638 Keypad •   LCD Scanout DMA  •   Ethernet  │
-└───────────────────────────────────┬────────────────────────────────────┘
-                                    │ Copy-Always Message Channels
-┌───────────────────────────────────▼────────────────────────────────────┐
-│                       LUGALOS MICROKERNEL CORE                         │
-│   Preemptive / Priority Scheduler • Cross-Hart SMP Lock Hand-off (amoswap)│
-│   Physical Page Allocator (palloc)• Bulk PSRAM Zone  • VFS / DevFS     │
-│   Tokenized Dictionary Logger     • PMP / Sv39 Hardware Memory Manager │
-└────────────────────────────────────────────────────────────────────────┘
++------------------------------------------------------------------------+
+|                        USER SPACE APPLICATIONS                         |
+|   lsh (Shell)   *   Lisp REPL / CAS   *   e / ed (Editors)   *   Chess |
+|   chibicc (C Compiler)   *   User ELFs (Confined PMP / Sv39 Domains)   |
+\-----------------------------------+------------------------------------+
+                                    | System Calls (Pointer Validation)
++-----------------------------------v------------------------------------+
+|                    ISOLATED U-MODE DRIVER DOMAINS                      |
+|   UART0 Console   *   USB CDC ACM   *   SD/SPI Storage   *   I2C RTC   |
+|   ST7735 TFT      *   TM1638 Keypad *   LCD Scanout DMA  *   Ethernet  |
+\-----------------------------------+------------------------------------+
+                                    | Copy-Always Message Channels
++-----------------------------------v------------------------------------+
+|                       LUGALOS MICROKERNEL CORE                         |
+|   Preemptive / Priority Scheduler * Cross-Hart SMP Lock Hand-off (amoswap)|
+|   Physical Page Allocator (palloc)* Bulk PSRAM Zone  * VFS / DevFS     |
+|   Tokenized Dictionary Logger     * PMP / Sv39 Hardware Memory Manager |
+\------------------------------------------------------------------------+
 ```
 
 ---
@@ -172,4 +172,4 @@ This project was implemented with the help of AI agents:
 ## License & Acknowledgments
 
 LugalOS is licensed under the [MIT License](LICENSE).  
-Copyright © 2026 Dominik Schloesser and LugalOS Contributors.
+Copyright (c) 2026 Dominik Schloesser and LugalOS Contributors.

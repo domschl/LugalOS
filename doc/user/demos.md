@@ -73,4 +73,4 @@ lsh> exec /ram0/hello.elf
 
 ---
 
-**Navigation:** [← User Manual](index.md) | [Documentation Index](../README.md)
+**Navigation:** [<- User Manual](index.md) | [Documentation Index](../README.md)

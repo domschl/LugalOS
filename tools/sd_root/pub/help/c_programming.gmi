@@ -125,9 +125,9 @@ User applications execute in unprivileged RISC-V User Mode (U-Mode):
 * SYSWRITEFILE (14): Write file to VFS.
 * SYS_TICKS (21): Read system preemption tick counter.
 
-Navigation: ← Developer Manual | Lisp Scripting → | Documentation Index
+Navigation:  | Documentation Index
 
 ### Related Topics
 => index.gmi Documentation
 => dev.gmi Developer Manual
-=> lisp.gmi Lisp Scripting →
+=> lisp.gmi Lisp Scripting ->

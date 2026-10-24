@@ -4,7 +4,7 @@
 Accepted (2026-08-10)
 
 ## Context
-RISC-V microcontrollers vary significantly in hardware floating-point support. While the RP2350 (Hazard3) and ESP32-C6 do not feature a hardware standard FPU, other chips or virtual machines may. In embedded kernels, supporting floating-point registers in the scheduler requires saving and restoring 32 floating-point registers (`f0`–`f31`) plus status registers (`fcsr`) on every context switch, doubling context switch latency and consuming significant per-task kernel stack memory. Furthermore, compiler-generated soft-float calls (`libm`) introduce non-deterministic latencies, rounding errors, and memory bloat.
+RISC-V microcontrollers vary significantly in hardware floating-point support. While the RP2350 (Hazard3) and ESP32-C6 do not feature a hardware standard FPU, other chips or virtual machines may. In embedded kernels, supporting floating-point registers in the scheduler requires saving and restoring 32 floating-point registers (`f0`-`f31`) plus status registers (`fcsr`) on every context switch, doubling context switch latency and consuming significant per-task kernel stack memory. Furthermore, compiler-generated soft-float calls (`libm`) introduce non-deterministic latencies, rounding errors, and memory bloat.
 
 ## Decision
 The LugalOS kernel boots with `mstatus.FS = 0` (FPU disabled in Machine Status). 

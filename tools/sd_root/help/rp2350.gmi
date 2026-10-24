@@ -74,7 +74,7 @@ On the RP2350-LCD-7, header H7 exposes UART0 for high-speed Wi-Fi co-processing:
 * Autonomous Boot: An autonomous C6 booting without USB arms LLP on its UART0 automatically.
 * Power Supply: The C6 must receive 5V power from a separate USB charger. H7's 3.3V rail cannot sustain Wi-Fi transmit bursts.
 
-Navigation: ← Board Reference Guides | Administrator Manual | Documentation Index
+Navigation: <- Board Reference Guides | Administrator Manual | Documentation Index
 
 ### Related Topics
 => index.gmi Documentation

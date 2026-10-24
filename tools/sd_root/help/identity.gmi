@@ -50,10 +50,10 @@ When exposing 9P filesystem namespaces over TCP or untrusted links:
 ```
 * Unauthorized read or write requests to protected volumes (/sd0, /flash0) are rejected at the channel boundary before reaching filesystem drivers.
 
-Navigation: ← Networking Guide | Administrator Manual | Storage Guide → | Documentation Index
+Navigation:  | Documentation Index
 
 ### Related Topics
 => index.gmi Documentation
 => admin.gmi Administrator Manual
-=> networking.gmi ← Networking Guide
-=> storage.gmi Storage Guide →
+=> networking.gmi <- Networking Guide
+=> storage.gmi Storage Guide ->

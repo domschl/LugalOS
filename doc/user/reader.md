@@ -30,7 +30,7 @@ Unlike standard terminal windows that use fixed-pitch monospace fonts, the Reade
   * **Structural Hierarchy**: Bold section headings (H1, H2, H3, H4) scaled proportionally to display density, indexed into the dynamic Table of Contents (`[TOC]`).
   * **Admonition Callouts**: `> [!NOTE]`, `> [!TIP]`, `> [!WARNING]`, and `> [!CAUTION]` rendered with colored accent bars and styled badges.
   * **Structured Tables**: Multi-column Markdown grid tables (`| Header | ... |`) with cell padding and header separation rules.
-  * **Monospace Code Blocks**: Shaded code box (`gray=242`) with 8×16 monospace font (standard density) or 16×32 `Noto Sans Mono` (HiDPI).
+  * **Monospace Code Blocks**: Shaded code box (`gray=242`) with 8x16 monospace font (standard density) or 16x32 `Noto Sans Mono` (HiDPI).
 * **Typeset LaTeX Math Engine**:
   * Formatted with a freestanding Knuth Appendix G box layout engine (`drivers/latex_layout.c`) using dedicated math font tables (`drivers/font_math.c`).
   * **Inline Math**: `$E = mc^2$` embedded seamlessly within flowing paragraph text.
@@ -49,7 +49,7 @@ lsh> reader list
 
 ## Window Controls & Macintosh Close Box
 
-Every Reader window includes a classic Macintosh-style close box (`[■]`) at the left edge of its title bar:
+Every Reader window includes a classic Macintosh-style close box (`[X]`) at the left edge of its title bar:
 * **Close Box Tap / Click**: Tapping or clicking the close box closes that specific Reader instance immediately, releasing its PSRAM backing store and refocusing the ribbon.
 * **Maximize / Restore**: Pressing `Super+\` / `Cmd+\` toggles the focused Reader window between half-screen and full-screen ribbon width.
 * **Keyboard Close**: Pressing `q` or `Cmd-W` closes the active Reader window and returns focus to the terminal.
@@ -92,4 +92,4 @@ On touchscreen-equipped hardware (such as the Waveshare ESP32-P4 Touch LCD 7B an
 
 ---
 
-**Navigation:** [← User Manual](index.md) | [Spartan Guide →](spartan.md) | [Documentation Index](../README.md)
+**Navigation:** [<- User Manual](index.md) | [Spartan Guide ->](spartan.md) | [Documentation Index](../README.md)

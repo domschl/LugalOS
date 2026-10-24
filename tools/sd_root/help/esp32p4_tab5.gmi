@@ -44,7 +44,7 @@ Two expanders reside on SYS_I2C (GPIO31 SDA / GPIO32 SCL) at 0x43 and 0x44:
 * Charger control: Expander 0x44 controls IP2326 (Pin 7 = CHG_EN, Pin 5 = nQC).
 
 ### Battery Monitor (TI INA226)
-* Sits at I2C address 0x41 across a 5 mΩ shunt resistor on the internal 2S battery pack.
+* Sits at I2C address 0x41 across a 5 mOhm shunt resistor on the internal 2S battery pack.
 * LugalOS inverts current polarity so that positive current represents charging.
 * Commands:
 * power: Displays battery voltage, current, power draw, and charge state.
@@ -62,13 +62,13 @@ Two expanders reside on SYS_I2C (GPIO31 SDA / GPIO32 SCL) at 0x43 and 0x44:
 * Microcode Initialization: Bosch's proprietary microcode must be uploaded at boot (drivers/bmi270_config.c, taking ~1.3 seconds during the first sensor read).
 * Pacing Rule: The I2C kernel task serves one request at a time without queueing. High-frequency callers must yield between transfers to prevent starving other tasks.
 * Screen Rotation:
-* Supports four orientations: 0°, 90°, 180°, and 270° (lcd orient [0|90|180|270]).
+* Supports four orientations: 0 deg, 90 deg, 180 deg, and 270 deg (lcd orient [0|90|180|270]).
 * Automatic rotation via IMU: orient auto|off (sensor mappings: +X \to 270^\circ, -X \to 90^\circ, +Y \to 0^\circ, -Y \to 180^\circ).
 * Diagnostics: imu, imu watch.
 
 ## 5. Display Subsystem & Dual-Orientation Compositor
 
-* Panel: 5" 720×1280 MIPI-DSI ST7121 TDDI (Touch and Display Driver Integration).
+* Panel: 5" 720x1280 MIPI-DSI ST7121 TDDI (Touch and Display Driver Integration).
 * Interface: 2-lane MIPI-DSI @ 900 Mbps, DPI clock 70 MHz.
 * Scanout: Double-buffered RGB565 PSRAM framebuffer scanned out at 58 Hz.
 * Backlight: Active-high LEDC PWM on GPIO22.
@@ -76,12 +76,12 @@ Two expanders reside on SYS_I2C (GPIO31 SDA / GPIO32 SCL) at 0x43 and 0x44:
 > [!NOTE]
 > Address 0x28 is a secondary internal address of the ST7123 TDDI controller. Never probe or write to 0x28.
 * Dual-Orientation Compositor Modes:
-1. Landscape Normal LugalOS GUI (1280×720, 160×45 character cells): Optimized for multi-window Ribbon terminal operations with hardware blitting.
-2. Portrait Full-Screen Gemtext Reader (720×1280, 90×80 character cells): Optimized for long-form reading, documentation, and Spartan hypertext browsing. Press 'o' in reader to switch orientations dynamically.
+1. Landscape Normal LugalOS GUI (1280x720, 160x45 character cells): Optimized for multi-window Ribbon terminal operations with hardware blitting.
+2. Portrait Full-Screen Gemtext Reader (720x1280, 90x80 character cells): Optimized for long-form reading, documentation, and Spartan hypertext browsing. Press 'o' in reader to switch orientations dynamically.
 
 ## 6. Storage & Peripherals
 
-* MicroSD Card: 4-bit SDMMC Slot 0 (GPIO39–GPIO44) mounted at /sd0/ at 20 MHz.
+* MicroSD Card: 4-bit SDMMC Slot 0 (GPIO39-GPIO44) mounted at /sd0/ at 20 MHz.
 * USB Host: DWC2 OTG HS on Type-A port; 5V VBUS enabled via PI4IOE expander.
 * Grove Port A: Second independent I2C bus (I2C1, GPIO53 SDA / GPIO54 SCL; i2c scan 1) for connecting external sensors.
 * Real-Time Clock: Epson RX8130CE at 0x32 with coin-cell battery backup. Read at boot and synchronized via date or network NTP.
@@ -91,8 +91,8 @@ Two expanders reside on SYS_I2C (GPIO31 SDA / GPIO32 SCL) at 0x43 and 0x44:
 The Tab5 is a self-contained appliance containing an internal ESP32-C6 connected over SDIO:
 * Hardware Interconnect: SDMMC Slot 1 (CLK=12, CMD=13, D0-D3=11/10/9/8), with C6 reset line on GPIO15 (active low, CONFIGC6CHIPPUGPIO).
 * Factory Bootloader & PMP Domains:
-* The Tab5 factory ESP-IDF bootloader locks Physical Memory Protection (PMP) entries 0–2 and 15 (PMP_L).
-* The LugalOS microkernel dynamically probes locked entries at boot and allocates user domains exclusively in unlocked slots 3–14 without triggering traps.
+* The Tab5 factory ESP-IDF bootloader locks Physical Memory Protection (PMP) entries 0-2 and 15 (PMP_L).
+* The LugalOS microkernel dynamically probes locked entries at boot and allocates user domains exclusively in unlocked slots 3-14 without triggering traps.
 * Over-the-Air Updates over 9P:
 Updates to the internal C6 are performed through the P4 host over 9P/SDIO without opening the physical enclosure:
 ```bash
@@ -101,7 +101,7 @@ Updates to the internal C6 are performed through the P4 host over 9P/SDIO withou
 * Boot-Time Network Configuration:
 At boot, the Tab5 brings up LLP host mode, discovers the C6 over SDIO, mounts /c6, automatically pushes Wi-Fi credentials from /sd0/etc/wlan.env or the internal identity store to /c6/dev/wlan, registers network device wlan0, and launches the background DHCP client (dhcpc) to acquire an IP address.
 
-Navigation: ← Board Reference Guides | Administrator Manual | Documentation Index
+Navigation: <- Board Reference Guides | Administrator Manual | Documentation Index
 
 ### Related Topics
 => index.gmi Documentation

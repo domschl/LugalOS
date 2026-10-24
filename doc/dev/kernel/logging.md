@@ -1,6 +1,6 @@
 # LugalOS Tokenized Kernel Logging Macro System
 
-LugalOS implements a high-efficiency **tokenized dictionary logging subsystem** (`kernel/printk.c`, `kernel/klog.c`, `kernel/klogd.c`). Inspired by dictionary logging in systems like Zephyr, LugalOS achieves nearly **6× compression** in ring buffer storage without requiring host-side decoding tools.
+LugalOS implements a high-efficiency **tokenized dictionary logging subsystem** (`kernel/printk.c`, `kernel/klog.c`, `kernel/klogd.c`). Inspired by dictionary logging in systems like Zephyr, LugalOS achieves nearly **6x compression** in ring buffer storage without requiring host-side decoding tools.
 
 ---
 
@@ -26,7 +26,7 @@ LugalOS Tokenized Logging (Compact):
   { const char *fmt }               (4 bytes: pointer to .rodata string)
   { uint32_t timestamp }            (4 bytes)
   { uint32_t arg1, uint32_t arg2 }  (8 bytes: captured argument blob)
-  --> Total stored in RAM: 18 bytes (3.3× to 6× compression!)
+  --> Total stored in RAM: 18 bytes (3.3x to 6x compression!)
 ```
 
 ### Key Properties

@@ -11,11 +11,11 @@ This directory contains in-depth hardware reference documents, peripheral regist
 ## Supported Board Guides
 
 1. **[ESP32-P4-WIFI6-Touch-LCD-7B Guide](esp32p4_lcd7b.md)** (`esp32p4-lcd7b`)
-   * 7" 1024×600 MIPI-DSI workstation terminal (silicon revision v3.2).
+   * 7" 1024x600 MIPI-DSI workstation terminal (silicon revision v3.2).
    * DW-GDMA scanout, 32 MB DDR PSRAM tuning, GT911 touch, DWC2 OTG USB host, and SDIO high-speed link to ESP32-C6.
 
 2. **[M5Stack Tab5 Guide](esp32p4_tab5.md)** (`esp32p4-tab5`)
-   * 5" 720×1280 portable tablet (silicon revision v1.3).
+   * 5" 720x1280 portable tablet (silicon revision v1.3).
    * Dual PI4IOE expanders, ST7121 TDDI display & touch, BMI270 IMU, INA226 fuel gauge, PMP dynamic allocation, and dual-orientation compositor.
 
 3. **[ESP32-C6-Zero & C6-MINI Guide](esp32c6.md)** (`esp32c6`, `esp32c6-mini`)
@@ -35,4 +35,4 @@ This directory contains in-depth hardware reference documents, peripheral regist
 
 ---
 
-**Navigation:** [← Administrator Manual](../index.md) | [Documentation Index](../../README.md)
+**Navigation:** [<- Administrator Manual](../index.md) | [Documentation Index](../../README.md)

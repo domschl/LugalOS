@@ -371,12 +371,37 @@ def check_relative_markdown_links(repo_root: Path) -> bool:
     return True
 
 
+def check_embedded_font_characters(repo_root: Path) -> bool:
+    """Verifies that all markdown source documents use characters supported by embedded fonts (ASCII 0x20-0x7E)."""
+    md_files = sorted(list(repo_root.glob("doc/**/*.md")) + [repo_root / "README.md"])
+    violations = []
+    for md_file in md_files:
+        rel_path = str(md_file.relative_to(repo_root))
+        with open(md_file, encoding="utf-8") as f:
+            for line_no, line in enumerate(f, 1):
+                for ch in line:
+                    if ch not in "\n\r\t" and not (0x20 <= ord(ch) <= 0x7E):
+                        violations.append((rel_path, line_no, ch, ord(ch)))
+    if violations:
+        print(f"[FONT CHARSET VIOLATION] Found {len(violations)} character(s) outside embedded font range (ASCII 0x20-0x7E):")
+        for src, line_no, ch, cp in violations[:20]:
+            print(f"  {src}:{line_no}: character '{ch}' (U+{cp:04X})")
+        if len(violations) > 20:
+            print(f"  ... and {len(violations) - 20} more.")
+        return False
+    return True
+
+
 def generate_all(repo_root: Path, check_only: bool = False) -> bool:
     """Generates all configured help files. If check_only=True, verifies parity without writing."""
     all_ok = True
 
     # 1. Link integrity check
     if not check_relative_markdown_links(repo_root):
+        all_ok = False
+
+    # 2. Embedded font character set validation
+    if not check_embedded_font_characters(repo_root):
         all_ok = False
 
     for src_rel, gmi_rel in DOC_MAPPINGS.items():

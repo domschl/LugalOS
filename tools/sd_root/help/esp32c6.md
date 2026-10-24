@@ -116,4 +116,4 @@ If firmware fails to boot and UART is inaccessible:
 
 ---
 
-**Navigation:** [← Board Reference Guides](boards.md) | [Administrator Manual](admin.md) | [Documentation Index](index.md)
+**Navigation:** [<- Board Reference Guides](boards.md) | [Administrator Manual](admin.md) | [Documentation Index](index.md)

@@ -156,10 +156,10 @@ Allows entering mathematical expressions in traditional infix notation:
 | calc | (calc "infix string") | Evaluate infix expression |
 ```
 
-Navigation: ← CAS Manual | Calculus Manual → | User Manual | Documentation Index
+Navigation:  | User Manual | Documentation Index
 
 ### Related Topics
 => index.gmi Documentation
 => user.gmi User Manual
 => cas.gmi CAS
-=> calculus.gmi Calculus Manual →
+=> calculus.gmi Calculus Manual ->

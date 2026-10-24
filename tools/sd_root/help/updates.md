@@ -18,7 +18,7 @@ RP2350 follow.
 | File | Read | Write |
 | :--- | :--- | :--- |
 | `/dev/ota` | `board`, `chip`, `layout` (`loader`, `idf`, or `none`), `running` (slot `a`/`b`), `trial`, `fell_back`, `slot_a`/`slot_b` (build id or `empty`), `active`, `pending`, `tried`, `failed` (the boot record), `state` (`idle`, `receiving`, `received`, `committed`, `error`), `received`, `error` | `begin SIZE`, `commit`, `reboot`, `confirm`, `abort`, `switch` |
-| `/dev/otaimage` | — | the update image, in order from offset 0, after `begin` |
+| `/dev/otaimage` | -- | the update image, in order from offset 0, after `begin` |
 
 1. `begin SIZE`: the image's length in bytes.
 2. The image into `/dev/otaimage`. Its 256-byte header names the board and the
@@ -156,4 +156,4 @@ the first LugalOS self-update.
 
 ---
 
-**Navigation:** [← Storage Guide](storage.md) | [Administrator Manual](admin.md) | [Board Reference Guides →](boards.md) | [Documentation Index](index.md)
+**Navigation:** [<- Storage Guide](storage.md) | [Administrator Manual](admin.md) | [Board Reference Guides ->](boards.md) | [Documentation Index](index.md)

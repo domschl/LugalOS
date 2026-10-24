@@ -87,7 +87,7 @@ lsh> ed /sd0/notes.txt
 * Use e for writing C programs (C programming), modifying Lisp scripts, and interactive editing on terminals.
 * Use ed when connecting over low-baud wireless or raw UART serial links.
 
-Navigation: ← User Manual | Documentation Index
+Navigation: <- User Manual | Documentation Index
 
 ### Related Topics
 => index.gmi Documentation

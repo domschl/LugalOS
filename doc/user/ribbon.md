@@ -4,7 +4,7 @@
 
 ---
 
-LugalOS features a native **Horizontal Tiling Window Ribbon** designed specifically for widescreen displays (such as the 7" 800×480 Waveshare RP2350-LCD-7 and the 7" 1024×600 Waveshare ESP32-P4-LCD-7B).
+LugalOS features a native **Horizontal Tiling Window Ribbon** designed specifically for widescreen displays (such as the 7" 800x480 Waveshare RP2350-LCD-7 and the 7" 1024x600 Waveshare ESP32-P4-LCD-7B).
 
 Instead of overlapping windows or rigid vertical splits, LugalOS tiles windows side-by-side along an infinite horizontal ribbon. Users and applications can seamlessly navigate between terminals, graphical canvases, and application panes.
 
@@ -13,15 +13,15 @@ Instead of overlapping windows or rigid vertical splits, LugalOS tiles windows s
 ## 1. Ribbon Layout & Screen Geometry
 
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│ [1: lsh]  [2: Lorenz]  [3: Chess]       Minimap: [■ ■ □]     12:45 UTC │ top menu bar
-├───────────────────────────────┬────────────────────────────────────────┤
-│ lsh> cat /proc/meminfo        │     * * * * *                          │
-│ mem: 8192 pages total         │   *           *                        │ active / focused
-│ free: 6420 pages              │  *    CANVAS   *                       │ windows on ribbon
-│ lsh> _                        │   *           *                        │
-│                               │     * * * * *                          │
-└───────────────────────────────┴────────────────────────────────────────┘
++------------------------------------------------------------------------+
+| [1: lsh]  [2: Lorenz]  [3: Chess]       Minimap: [X X  ]     12:45 UTC | top menu bar
+|-------------------------------+----------------------------------------+
+| lsh> cat /proc/meminfo        |     * * * * *                          |
+| mem: 8192 pages total         |   *           *                        | active / focused
+| free: 6420 pages              |  *    CANVAS   *                       | windows on ribbon
+| lsh> _                        |   *           *                        |
+|                               |     * * * * *                          |
+\-------------------------------+----------------------------------------+
 ```
 
 The top of the screen displays a persistent status bar featuring:
@@ -34,7 +34,7 @@ The top of the screen displays a persistent status bar featuring:
 ## 2. Navigation & Window Controls
 
 ### Window Controls & Macintosh Close Box
-Every non-root window on the ribbon (terminals, canvases, and readers) features a classic Macintosh-style close box (`[■]`) at the left of its title bar:
+Every non-root window on the ribbon (terminals, canvases, and readers) features a classic Macintosh-style close box (`[X]`) at the left of its title bar:
 * **Tap / Click Close Box**: Immediately closes the window, reclaims its backing store and layout slot, and smoothly reflows the ribbon.
 * **Toggle Maximize (`Super+\` / `Cmd+\`)**: Toggles the active window between full-screen ribbon width and half-screen width.
 * **Close Window (`Super+W` / `Cmd+W`)**: Closes the active non-root window from keyboard.
@@ -52,7 +52,7 @@ Every non-root window on the ribbon (terminals, canvases, and readers) features 
 
 ### Touch Gestures (GT911 Capacitive Touch)
 * **Tap Window**: Tapping anywhere inside a window pane transfers focus to it.
-* **Tap Close Box**: Tapping the close box (`[■]`) in the top-left title bar closes the window.
+* **Tap Close Box**: Tapping the close box (`[X]`) in the top-left title bar closes the window.
 * **Tap Minimap**: Tapping a window block in the top minimap immediately scrolls the ribbon to that window.
 * **Swipe Left / Right**: Swiping sideways with a finger smoothly scrolls the ribbon.
 
@@ -95,4 +95,4 @@ Graphical canvases in LugalOS are decoupled from terminal lifetimes and can be a
 
 ---
 
-**Navigation:** [← User Manual](index.md) | [Documentation Index](../README.md)
+**Navigation:** [<- User Manual](index.md) | [Documentation Index](../README.md)

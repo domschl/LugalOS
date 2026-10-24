@@ -64,7 +64,7 @@ For deep hardware specifications, silicon revision differences, and peripheral p
 * ESP32-C6 Guide
 * RP2350 Hardware Guide
 
-Navigation: ← Administrator Manual | Networking Guide → | Documentation Index
+Navigation:  | Documentation Index
 
 ### Related Topics
 => index.gmi Documentation
@@ -73,4 +73,4 @@ Navigation: ← Administrator Manual | Networking Guide → | Documentation Inde
 => esp32p4_tab5.gmi M5Stack Tab5 Guide
 => esp32c6.gmi ESP32-C6 Guide
 => rp2350.gmi RP2350 Hardware Guide
-=> networking.gmi Networking Guide →
+=> networking.gmi Networking Guide ->

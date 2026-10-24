@@ -74,4 +74,4 @@ For deep hardware specifications, silicon revision differences, and peripheral p
 
 ---
 
-**Navigation:** [← Administrator Manual](index.md) | [Networking Guide →](networking.md) | [Documentation Index](../README.md)
+**Navigation:** [<- Administrator Manual](index.md) | [Networking Guide ->](networking.md) | [Documentation Index](../README.md)

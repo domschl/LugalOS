@@ -55,7 +55,7 @@ A board part may be sampled on its own period. The INA226 is read once a second,
 ```text
 lsh> sensor
 BME280 [0x76]:
-  Temperature: 21.45 °C
+  Temperature: 21.45  deg C
   Humidity:    48.20 %
   Pressure:    1013.25 hPa
 ```
@@ -139,4 +139,4 @@ Official component datasheets for all supported environmental and light sensors 
 
 ---
 
-**Navigation:** [← User Manual](user.md) | [Documentation Index](index.md)
+**Navigation:** [<- User Manual](user.md) | [Documentation Index](index.md)

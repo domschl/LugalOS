@@ -7,29 +7,29 @@ LugalOS maintains a comprehensive multi-tier testing framework spanning host uni
 ## 1. Multi-Tier Testing Architecture
 
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│                        TIER 4: HARDWARE SILICON                        │
-│   tests/hw/test_rp2350.py   •   tests/hw/test_esp32p4.py               │
-│   tests/hw/test_esp32c6.py  •   tests/hw/lcdterm_shots.py (PBM diffs)  │
-└───────────────────────────────────▲────────────────────────────────────┘
-                                    │ Silicon Verification
-┌───────────────────────────────────┴────────────────────────────────────┐
-│                    TIER 3: AUTOMATED QEMU RUNNER                       │
-│   tests/runner.py (376+ tests across RV32 NOMMU, RV64 MMU, RV64 SMP)   │
-│   Preemption • Memory Domains • Copy-Always Channels • FAT32 • Net • VM│
-└───────────────────────────────────▲────────────────────────────────────┘
-                                    │ Emulation & Architecture
-┌───────────────────────────────────┴────────────────────────────────────┐
-│                    TIER 2: HOST HARNESSES (ASan/UBSan)                 │
-│   tests/host/ (FAT32 engine, chibicc, 9P protocol, embedded IP stack)   │
-└───────────────────────────────────▲────────────────────────────────────┘
-                                    │ Memory Safety & Host Sanitizers
-┌───────────────────────────────────┴────────────────────────────────────┐
-│                     TIER 1: PURE ALGORITHMIC TESTS                     │
-│   tests/test_lisp_cas.py (Exact arithmetic, limits, Gaussian rationals)│
-│   tests/test_cas_simplify.py (AST canonical forms, polynomials)        │
-│   tools/gendocs.py --check (Documentation parity verification)         │
-└────────────────────────────────────────────────────────────────────────┘
++------------------------------------------------------------------------+
+|                        TIER 4: HARDWARE SILICON                        |
+|   tests/hw/test_rp2350.py   *   tests/hw/test_esp32p4.py               |
+|   tests/hw/test_esp32c6.py  *   tests/hw/lcdterm_shots.py (PBM diffs)  |
+\-----------------------------------^------------------------------------+
+                                    | Silicon Verification
++-----------------------------------+------------------------------------+
+|                    TIER 3: AUTOMATED QEMU RUNNER                       |
+|   tests/runner.py (376+ tests across RV32 NOMMU, RV64 MMU, RV64 SMP)   |
+|   Preemption * Memory Domains * Copy-Always Channels * FAT32 * Net * VM|
+\-----------------------------------^------------------------------------+
+                                    | Emulation & Architecture
++-----------------------------------+------------------------------------+
+|                    TIER 2: HOST HARNESSES (ASan/UBSan)                 |
+|   tests/host/ (FAT32 engine, chibicc, 9P protocol, embedded IP stack)   |
+\-----------------------------------^------------------------------------+
+                                    | Memory Safety & Host Sanitizers
++-----------------------------------+------------------------------------+
+|                     TIER 1: PURE ALGORITHMIC TESTS                     |
+|   tests/test_lisp_cas.py (Exact arithmetic, limits, Gaussian rationals)|
+|   tests/test_cas_simplify.py (AST canonical forms, polynomials)        |
+|   tools/gendocs.py --check (Documentation parity verification)         |
+\------------------------------------------------------------------------+
 ```
 
 ---

@@ -70,7 +70,7 @@ To protect system integrity while serving network requests:
 * Networking & Wi-Fi Manual
 * Shell & Console Manual
 
-Navigation: ← Reader Guide | User Manual | Documentation Index
+Navigation: <- Reader Guide | User Manual | Documentation Index
 
 ### Related Topics
 => index.gmi Documentation

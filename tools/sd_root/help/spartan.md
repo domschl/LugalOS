@@ -74,4 +74,4 @@ To protect system integrity while serving network requests:
 
 ---
 
-**Navigation:** [← Reader Guide](reader.md) | [User Manual](user.md) | [Documentation Index](index.md)
+**Navigation:** [<- Reader Guide](reader.md) | [User Manual](user.md) | [Documentation Index](index.md)

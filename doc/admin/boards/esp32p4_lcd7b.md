@@ -73,8 +73,8 @@ Runs 40 silicon tests covering PSRAM DDR tuning, CLIC interrupts, I2C peripheral
 ## 5. Display Subsystem (MIPI-DSI & DW-GDMA)
 
 * **Display Controller:** EK79007 driver over 2-lane MIPI-DSI running at 1 Gbps.
-* **Framebuffer:** `1024×600` native resolution in PSRAM (GRAY8 = 600 KB, scanned out by DW-GDMA at 60 Hz and re-armed via CLIC interrupt 18).
-* **Console Terminal:** Portable `drivers/lcdterm.c` renders a 126×34 character grid directly on the panel. Changing text rows are converted into framebuffer scanlines via a 16 ms periodic `lcdflush` kernel task.
+* **Framebuffer:** `1024x600` native resolution in PSRAM (GRAY8 = 600 KB, scanned out by DW-GDMA at 60 Hz and re-armed via CLIC interrupt 18).
+* **Console Terminal:** Portable `drivers/lcdterm.c` renders a 126x34 character grid directly on the panel. Changing text rows are converted into framebuffer scanlines via a 16 ms periodic `lcdflush` kernel task.
 * **Commands:**
   * `lcd` (link status), `lcd pattern [bars|hbars|ber|off]`, `lcd fb [gray|rgb565]`.
   * `lcd repaint`, `lcd termbench`, `lcd tee uart|off`.
@@ -114,7 +114,7 @@ Runs 40 silicon tests covering PSRAM DDR tuning, CLIC interrupts, I2C peripheral
 
 ## 7. SDIO Interconnect to ESP32-C6 Co-Processor
 
-* **Hardware Mapping:** SD/MMC Slot 1 (`GPIO14`–`GPIO19`) linked to ESP32-C6 SDIO slave; C6 hardware reset is wired to `GPIO54` (open-drain).
+* **Hardware Mapping:** SD/MMC Slot 1 (`GPIO14`-`GPIO19`) linked to ESP32-C6 SDIO slave; C6 hardware reset is wired to `GPIO54` (open-drain).
 * **Speed:** 40 MHz SDIO high-speed mode (microSD on Slot 0 operates at 20 MHz on a separate clock divider).
 * **Network Protocol:** LugalOS Link Protocol (LLP) runs across SDIO, enabling:
   1. Automated link establishment at boot.
@@ -137,4 +137,4 @@ Runs 40 silicon tests covering PSRAM DDR tuning, CLIC interrupts, I2C peripheral
 
 ---
 
-**Navigation:** [← Board Reference Guides](index.md) | [Administrator Manual](../index.md) | [Documentation Index](../../README.md)
+**Navigation:** [<- Board Reference Guides](index.md) | [Administrator Manual](../index.md) | [Documentation Index](../../README.md)

@@ -35,7 +35,7 @@ Plotting automatically splits the screen to allocate a graphics canvas window ne
 Options are passed as an association list of key-value pairs:
 * 'title: Title banner string displayed at the top of the canvas.
 Example: '((title . "Harmonic Oscillator"))
-* 'samples: Number of sampled evaluation points across the domain (default: 40–50).
+* 'samples: Number of sampled evaluation points across the domain (default: 40-50).
 Example: '((samples . 60))
 * 'layout: Window arrangement:
 * 'split (default): Shares display with the text terminal / shell.
@@ -67,10 +67,10 @@ Example: '((samples . 60))
 * Zero Floating-Point in Kernel / M-Mode: All coordinate transformations, aspect ratio adjustments, and axis tick calculations use exact rational arithmetic and fixed-point math.
 * Auto-Scaling: Automatically calculates domain and range extents with padding and plots coordinate grid lines and numeric labels.
 
-Navigation: ← Calculus Manual | CAS Manual | User Manual | Documentation Index
+Navigation: <- Calculus Manual | CAS Manual | User Manual | Documentation Index
 
 ### Related Topics
 => index.gmi Documentation
 => user.gmi User Manual
 => cas.gmi CAS
-=> calculus.gmi ← Calculus Manual
+=> calculus.gmi <- Calculus Manual

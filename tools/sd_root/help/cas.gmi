@@ -1,4 +1,4 @@
-# LugalOS Computer Algebra System (CAS) — Overview & Index
+# LugalOS Computer Algebra System (CAS) -- Overview & Index
 
 Documentation > User Manual > Computer Algebra System (CAS)
 
@@ -78,7 +78,7 @@ The CAS documentation is partitioned into focused, lightweight manuals:
 | Plotting | plot-diff | (plot-diff "expr" ...) | Function vs derivative plot |
 ```
 
-Navigation: ← User Manual | Documentation Index
+Navigation: <- User Manual | Documentation Index
 
 ### Related Topics
 => index.gmi Documentation

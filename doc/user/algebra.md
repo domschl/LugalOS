@@ -142,7 +142,6 @@ Allows entering mathematical expressions in traditional infix notation:
 
 ## 8. Algebra Quick Reference Summary
 
-```
 | Function | Signature | Description |
 | :--- | :--- | :--- |
 | simplify | (simplify expr) | Canonical simplification |
@@ -156,8 +155,7 @@ Allows entering mathematical expressions in traditional infix notation:
 | matrix-inv | (matrix-inv A) | Matrix inverse |
 | matrix-solve | (matrix-solve A b) | Solve A*x = b |
 | calc | (calc "infix string") | Evaluate infix expression |
-```
 
 ---
 
-**Navigation:** [← CAS Manual](cas.md) | [Calculus Manual →](calculus.md) | [User Manual](index.md) | [Documentation Index](../README.md)
+**Navigation:** [<- CAS Manual](cas.md) | [Calculus Manual ->](calculus.md) | [User Manual](index.md) | [Documentation Index](../README.md)

@@ -10,11 +10,11 @@ The documentation is organized into three comprehensive manuals, an Architecture
 
 ```
 doc/
-├── user/             User Manual: Day-to-day operation, shell, and applications
-├── admin/            Administrator Manual: Hardware presets, flashing, and networking
-├── dev/              System Programmer Manual: C & Lisp APIs, kernel internals, and testing
-├── history/          Architecture Decision Records (ADRs)
-└── assets/           Hardware photographs, diagrams, and terminal screenshots
+|-- user/             User Manual: Day-to-day operation, shell, and applications
+|-- admin/            Administrator Manual: Hardware presets, flashing, and networking
+|-- dev/              System Programmer Manual: C & Lisp APIs, kernel internals, and testing
+|-- history/          Architecture Decision Records (ADRs)
+\-- assets/           Hardware photographs, diagrams, and terminal screenshots
 ```
 
 * **[About LugalOS](about.md)**: High-level architecture overview, hardware targets, on-device tools, and system concepts.

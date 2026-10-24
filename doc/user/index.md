@@ -32,7 +32,7 @@ Welcome to the **LugalOS User Manual**. This guide covers interactive usage, dai
 7. **[Z-Machine & Interactive Fiction](zmachine.md)**
    * Playing Infocom and modern Version 3 (.z3) interactive fiction classics.
    * Real-time split-screen auto-mapper (`zmap`): dynamic graph discovery, room positioning, detail and zoom overview modes.
-   * Save slots (0–9), autosave, persistent sidecar `.map` files, and Lisp expression evaluation at the game prompt.
+   * Save slots (0-9), autosave, persistent sidecar `.map` files, and Lisp expression evaluation at the game prompt.
 8. **[Ribbon Reader & Typographic Viewer](reader.md)**
    * Dedicated document reader for long-form Markdown (`.md`) and Gemtext (`.gmi`).
    * Proportional serif typography, Knuth Appendix G mathematical typesetting, tables, and touch navigation.
@@ -54,4 +54,4 @@ When working on a physical LugalOS terminal or serial console:
 
 ---
 
-**Navigation:** [← Documentation Index](../README.md)
+**Navigation:** [<- Documentation Index](../README.md)

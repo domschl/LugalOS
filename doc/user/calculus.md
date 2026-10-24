@@ -134,7 +134,6 @@ Transforms trigonometric expressions into polynomials or complex exponentials.
 
 ## 7. Calculus Quick Reference Summary
 
-```
 | Function | Signature | Description |
 | :--- | :--- | :--- |
 | diff | (diff expr var [order]) | Symbolic derivative d^n/dx^n |
@@ -146,8 +145,7 @@ Transforms trigonometric expressions into polynomials or complex exponentials.
 | trig-reduce | (trig-reduce expr) | Reduce trig products to sums |
 | to-exponential| (to-exponential expr) | Convert trig to complex exp |
 | plot-diff | (plot-diff expr range opts) | Plot curve and its derivative |
-```
 
 ---
 
-**Navigation:** [← Algebra Manual](algebra.md) | [CAS Manual](cas.md) | [Plotting Manual →](plot.md) | [User Manual](index.md) | [Documentation Index](../README.md)
+**Navigation:** [<- Algebra Manual](algebra.md) | [CAS Manual](cas.md) | [Plotting Manual ->](plot.md) | [User Manual](index.md) | [Documentation Index](../README.md)
