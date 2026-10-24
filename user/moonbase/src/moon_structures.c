@@ -193,12 +193,12 @@ bool moon_structure_can_place(const moon_grid_t *grid,
 
     /* 3. Specialized Placement Rules */
     if (type == MOON_STRUCT_O2_EXTRACTOR) {
-        /* Must be adjacent to or on Polar Ice or Basalt Mare */
+        /* Must be beside Polar Ice or Basalt Mare that still has something to draw */
         bool near_deposit = false;
         for (int dy = -1; dy <= def->footprint_h; dy++) {
             for (int dx = -1; dx <= def->footprint_w; dx++) {
                 const moon_tile_t *t = moon_grid_get_tile_const(grid, gx + dx, gy + dy);
-                if (t && (t->terrain == MOON_TERRAIN_ICE_DEPOSIT || t->terrain == MOON_TERRAIN_BASALT_MARE)) {
+                if (t && (t->terrain == MOON_TERRAIN_ICE_DEPOSIT || t->terrain == MOON_TERRAIN_BASALT_MARE) && t->resource_val > 0) {
                     near_deposit = true;
                     break;
                 }
@@ -207,7 +207,7 @@ bool moon_structure_can_place(const moon_grid_t *grid,
         }
 
         if (!near_deposit) {
-            if (out_reason) *out_reason = "Must be placed near Ice or Basalt Mare";
+            if (out_reason) *out_reason = "Needs ice or mare with ore left";
             return false;
         }
     }
@@ -443,6 +443,12 @@ static void draw_structure_overlay(const moon_grid_t *grid, const moon_surface_t
         moon_blit_fill_rect(surf, sx - (bw / 2), badge_y, bw, 10, RGB565(30, 26, 10));
         moon_blit_rect_outline(surf, sx - (bw / 2), badge_y, bw, 10, COLOR_ENERGY_YELLOW);
         moon_blit_text(surf, sx - (bw / 2) + 3, badge_y + 1, "OFF", COLOR_ENERGY_YELLOW, 0, true);
+    } else if (s->depleted) {
+        /* Nothing left to draw: orange pill */
+        int bw = 34;
+        moon_blit_fill_rect(surf, sx - (bw / 2), badge_y, bw, 10, RGB565(40, 22, 8));
+        moon_blit_rect_outline(surf, sx - (bw / 2), badge_y, bw, 10, RGB565(230, 130, 30));
+        moon_blit_text(surf, sx - (bw / 2) + 3, badge_y + 1, "DEPL", RGB565(230, 130, 30), 0, true);
     } else if (!s->powered) {
         /* No power / brownout failure badge: red framed pill */
         int bw = 30;

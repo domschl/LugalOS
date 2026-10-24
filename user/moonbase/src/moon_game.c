@@ -1002,8 +1002,8 @@ static void render_inspector_panel(const moon_game_t *game, const moon_surface_t
         moon_blit_text_fmt(surf, ip_x + 8, ip_y + 6, COLOR_GOLD_FOIL, 0, true, "%s", def->name);
 
         /* Status */
-        const char *status_str = !s->active ? "STANDBY" : (s->powered ? "ONLINE" : "NO POWER");
-        uint16_t status_col = !s->active ? RGB565(140, 140, 150) : (s->powered ? COLOR_STATUS_GREEN : COLOR_ALERT_RED);
+        const char *status_str = !s->active ? "STANDBY" : s->depleted ? "DEPLETED" : (s->powered ? "ONLINE" : "NO POWER");
+        uint16_t status_col = !s->active ? RGB565(140, 140, 150) : s->depleted ? RGB565(230, 130, 30) : (s->powered ? COLOR_STATUS_GREEN : COLOR_ALERT_RED);
         moon_blit_text_fmt(surf, ip_x + 8, ip_y + 48, status_col, 0, true, "STATUS: [%s]", status_str);
 
         /* Power metrics */
@@ -1033,8 +1033,19 @@ static void render_inspector_panel(const moon_game_t *game, const moon_surface_t
         moon_blit_text_fmt(surf, ip_x + 8, ip_y + 102, COLOR_STATUS_GREEN, 0, true,
                            "STRUCTURAL INTEGRITY: %d%%", s->health);
 
-        moon_blit_text_fmt(surf, ip_x + 8, ip_y + 122, RGB565(160, 165, 175), 0, true,
-                           "Footprint: %dx%d tiles", s->footprint_w, s->footprint_h);
+        if (s->type == MOON_STRUCT_O2_EXTRACTOR) {
+            int left = 0;
+            for (int dy = -1; dy <= 1; dy++)
+                for (int dx = -1; dx <= 1; dx++) {
+                    const moon_tile_t *n = moon_grid_get_tile_const(&game->grid, s->gx + dx, s->gy + dy);
+                    if (n && (dx || dy) && (n->terrain == MOON_TERRAIN_ICE_DEPOSIT || n->terrain == MOON_TERRAIN_BASALT_MARE)) left += n->resource_val;
+                }
+            moon_blit_text_fmt(surf, ip_x + 8, ip_y + 122, left ? COLOR_LASER_CYAN : RGB565(230, 130, 30), 0, true,
+                               "Deposit left: %d", left);
+        } else {
+            moon_blit_text_fmt(surf, ip_x + 8, ip_y + 122, RGB565(160, 165, 175), 0, true,
+                               "Footprint: %dx%d tiles", s->footprint_w, s->footprint_h);
+        }
 
         
         if (s->type != MOON_STRUCT_LANDER) {

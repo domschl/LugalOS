@@ -50,6 +50,8 @@ typedef struct {
     bool     active;
     bool     powered;
     uint8_t  health;            /* 0..100% */
+    uint8_t  work;              /* Ticks toward the next unit drawn from a deposit */
+    bool     depleted;          /* An Extractor with no ore or ice left beside it */
 } moon_structure_t;
 
 /* Structure Manager */

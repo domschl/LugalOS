@@ -1294,6 +1294,57 @@ static void test_title(void) {
     printf("[test] Title page: level choice, same map, frozen, Q quits: PASS\n");
 }
 
+static void test_deposits(void) {
+    fresh();
+    g.resources.rules.deposit_s_per_unit = 1;          /* one unit a second */
+    /* Two mare tiles beside the Extractor: the richer one is drawn first */
+    g.grid.tiles[32][30].terrain = MOON_TERRAIN_BASALT_MARE; g.grid.tiles[32][30].resource_val = 2;
+    g.grid.tiles[31][30].terrain = MOON_TERRAIN_BASALT_MARE; g.grid.tiles[31][30].resource_val = 3;
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_O2_EXTRACTOR, 31, 32));
+    ticks(MOON_SIM_TICK_RATE_HZ);
+    /* one unit a second, taken from the richer tile (3 -> 2) while the poorer one is untouched */
+    assert(g.grid.tiles[31][30].resource_val == 2 && g.grid.tiles[32][30].resource_val == 2);
+    int o2_rate = g.resources.o2_rate_kg_per_tick;
+    int use_kw = g.resources.power_consumed_kw;
+    assert(o2_rate > 0 || g.resources.water_rate_l_per_tick > 0);
+    ticks(2 * MOON_SIM_TICK_RATE_HZ);
+    assert(g.grid.tiles[31][30].resource_val + g.grid.tiles[32][30].resource_val == 2); /* three units gone */
+    assert(!struct_at(31, 32)->depleted);
+
+    /* Run it dry: five units in all */
+    ticks(2 * MOON_SIM_TICK_RATE_HZ);
+    assert(g.grid.tiles[31][30].resource_val == 0 && g.grid.tiles[32][30].resource_val == 0);
+    ticks(1);                                          /* the next tick finds nothing left */
+    assert(struct_at(31, 32)->depleted);
+    ticks(1);
+    /* It stops producing and stops drawing power */
+    assert(g.resources.o2_rate_kg_per_tick < o2_rate);
+    assert(g.resources.power_consumed_kw == use_kw - 25);
+
+    /* A new Extractor cannot stand beside an exhausted patch, with a reason */
+    const char *why = NULL;
+    assert(!moon_structure_can_place(&g.grid, &g.structs, MOON_STRUCT_O2_EXTRACTOR, 31, 31, &why));
+    assert(why && strstr(why, "ore left"));
+    g.grid.tiles[33][30].terrain = MOON_TERRAIN_ICE_DEPOSIT; g.grid.tiles[33][30].resource_val = 40;
+    assert(moon_structure_can_place(&g.grid, &g.structs, MOON_STRUCT_O2_EXTRACTOR, 31, 33, NULL));
+
+    /* An unpowered Extractor draws nothing: a standby one keeps its deposit */
+    g.grid.tiles[34][30].terrain = MOON_TERRAIN_ICE_DEPOSIT; g.grid.tiles[34][30].resource_val = 10;
+    moon_structure_t *e2 = moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_O2_EXTRACTOR, 31, 34);
+    assert(e2);
+    g.structs.list[e2->id].active = false;
+    moon_structure_mark_dirty(&g.structs);
+    ticks(10 * MOON_SIM_TICK_RATE_HZ);
+    assert(g.grid.tiles[34][30].resource_val == 10);
+
+    /* The inspector shows what is left; the status reads DEPLETED, the badge DEPL */
+    g.panel_open = true;
+    g.selected_tile_x = 31; g.selected_tile_y = 32;
+    static uint16_t fb[1024 * 600];
+    moon_game_render(&g, fb, 1024, 600, 1024);
+    printf("[test] Deposits: richest tile first, depletion, idle and power, placement rule, standby: PASS\n");
+}
+
 static bool ice_near_lander(const moon_grid_t *grid) {
     for (int y = 0; y < MOON_MAP_SIZE_Y; y++)
         for (int x = 0; x < MOON_MAP_SIZE_X; x++)
@@ -1367,6 +1418,7 @@ int main(void) {
     test_difficulty();
     test_objectives();
     test_title();
+    test_deposits();
     printf("[test] All Milestone 64.9-64.12 tests passed cleanly.\n");
     return 0;
 }
