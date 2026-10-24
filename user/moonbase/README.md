@@ -51,6 +51,11 @@ A tile is always **selected** (the gold frame; the minimap shows it as a white d
 - **Backspace / 0**: End the brush or close the inspector.
 - **ESC** / **Q**: The same, and with nothing to cancel it opens the menu. Quitting is only possible through the menu's confirmation (or Ctrl-C on the P4).
 
+### How a run ends
+- **Game over**: when the last colonist dies, the sim stops and an overlay shows the day reached, the peak crew, the number of buildings, the cause (no oxygen, no water or a power blackout) and the map seed. `R` or its button restarts on a new map, `Q` or its button quits to the shell.
+- **Act I complete**: from day 4, with at least 6 crew, oxygen and water produced at least as fast as they are used, and no blackout for a whole lunar day, the base counts as self-sustaining. The overlay offers `C:CONTINUE` (or ESC), `R:RESTART` and `Q:QUIT`; it appears once per run.
+- **Maps**: every run has its own seed, shown in the menu and in both overlays. The host takes `--seed=N` to replay a map; the P4 picks a random seed at every launch. A restart derives the next seed from the last. The landing apron and a polar ice deposit within reach are guaranteed for every seed.
+
 ### Day/night clock
 The dial at the top left is a 24 h clock for the lunar cycle (one cycle is 180 s of game time): dawn is 06:00, zenith 12:00, dusk 18:00 and the middle of the night 00:00. The text beside it shows the lunar day, the time and the time until the next dusk or dawn.
 

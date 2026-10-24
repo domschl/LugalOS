@@ -37,7 +37,12 @@ static void camera_home(moon_game_t *game) {
 /* Fresh base. Keeps what belongs to the platform and the player's display choice. */
 static void game_reset(moon_game_t *game, int width, int height) {
     bool textured = (game->state != MOON_STATE_INIT) ? game->grid.textured_terrain : true;
+    /* A fresh seed per run: the requested one for the first, then one derived from
+     * the previous seed and how long that run lasted */
+    uint32_t seed = game->seed_request ? game->seed_request :
+                    game->seed ? game->seed * 1664525u + 1013904223u + game->sim_ticks : 19690720u;
     memset(game, 0, sizeof(*game));
+    game->seed = seed;
 
     moon_textures_init();
 
@@ -49,7 +54,7 @@ static void game_reset(moon_game_t *game, int width, int height) {
     moon_ui_layout(&game->ui, width, height);
 
     /* Generate procedural lunar terrain */
-    moon_grid_generate(&game->grid, 19690720);
+    moon_grid_generate(&game->grid, game->seed);
     game->grid.textured_terrain = textured;
 
     /* Initialize structure manager & place expedition landing site */
@@ -425,8 +430,26 @@ static void press_slot(moon_game_t *game, int slot) {
 
 /* ---- Menu ---- */
 
+/* Rows of the menu panel a page uses: the end-of-game pages keep their summary in
+ * the rows above the buttons */
 static int menu_item_count(const moon_game_t *game) {
-    return game->menu_page == MOON_MENU_MAIN ? MOON_UI_MENU_ITEMS : 2;
+    switch (game->menu_page) {
+    case MOON_MENU_MAIN:     return MOON_UI_MENU_ITEMS;
+    case MOON_MENU_VICTORY:  return 3;
+    default:                 return 2;
+    }
+}
+
+static int menu_first_row(const moon_game_t *game) {
+    switch (game->menu_page) {
+    case MOON_MENU_GAME_OVER: return 2;
+    case MOON_MENU_VICTORY:   return 1;
+    default:                  return 0;
+    }
+}
+
+static const moon_ui_rect_t *menu_item_rect(const moon_game_t *game, int i) {
+    return &game->ui.menu_item[menu_first_row(game) + i];
 }
 
 static void menu_open(moon_game_t *game) {
@@ -451,6 +474,18 @@ static void menu_activate(moon_game_t *game, int item) {
         if (item == 0) game_reset(game, game->screen_w, game->screen_h);
         else { game->menu_page = MOON_MENU_MAIN; game->menu_sel = 2; }
         break;
+    case MOON_MENU_GAME_OVER:
+        if (item == 0) game_reset(game, game->screen_w, game->screen_h);
+        else game->running = false;
+        break;
+    case MOON_MENU_VICTORY:
+        if (item == 0) {
+            game->victory_claimed = true;
+            game->menu_page = MOON_MENU_CLOSED;
+            game->state = game->paused ? MOON_STATE_PAUSED : MOON_STATE_PLAYING;
+        } else if (item == 1) game_reset(game, game->screen_w, game->screen_h);
+        else game->running = false;
+        break;
     default:
         break;
     }
@@ -459,6 +494,11 @@ static void menu_activate(moon_game_t *game, int item) {
 /* Same on every device: back out of the innermost thing (menu page, brush, inspector).
  * Returns false when there was nothing to back out of. */
 static bool cancel_action(moon_game_t *game) {
+    if (game->menu_page == MOON_MENU_GAME_OVER) return true;      /* the only ways out are the buttons */
+    if (game->menu_page == MOON_MENU_VICTORY) {
+        menu_activate(game, 0);                                   /* ESC continues playing */
+        return true;
+    }
     if (game->menu_page == MOON_MENU_CONFIRM_QUIT || game->menu_page == MOON_MENU_CONFIRM_RESTART) {
         game->menu_page = MOON_MENU_MAIN;
         return true;
@@ -494,7 +534,15 @@ static void handle_key_down(moon_game_t *game, const moon_event_t *ev) {
     /* Menu keys */
     if (game->menu_page != MOON_MENU_CLOSED) {
         int n = menu_item_count(game);
-        bool confirm = game->menu_page != MOON_MENU_MAIN;
+        bool confirm = game->menu_page == MOON_MENU_CONFIRM_QUIT || game->menu_page == MOON_MENU_CONFIRM_RESTART;
+        bool ending = game->menu_page == MOON_MENU_GAME_OVER || game->menu_page == MOON_MENU_VICTORY;
+        if (ending) {
+            /* Restart and Quit are immediate here: the run is over */
+            int restart = game->menu_page == MOON_MENU_VICTORY ? 1 : 0;
+            if (key == MOON_KEY_R) { menu_activate(game, restart); return; }
+            if (key == MOON_KEY_Q) { menu_activate(game, restart + 1); return; }
+            if (key == MOON_KEY_C && game->menu_page == MOON_MENU_VICTORY) { menu_activate(game, 0); return; }
+        }
         switch (key) {
         case MOON_KEY_ESCAPE: case MOON_KEY_BACKSPACE:
             cancel_action(game);
@@ -506,13 +554,13 @@ static void handle_key_down(moon_game_t *game, const moon_event_t *ev) {
             if (confirm) menu_activate(game, 0);
             break;
         case MOON_KEY_T:
-            if (!confirm) menu_activate(game, 1);
+            if (game->menu_page == MOON_MENU_MAIN) menu_activate(game, 1);
             break;
         case MOON_KEY_R:
-            if (!confirm) menu_activate(game, 2);
+            if (game->menu_page == MOON_MENU_MAIN) menu_activate(game, 2);
             break;
         case MOON_KEY_Q:
-            if (!confirm) menu_activate(game, 3);
+            if (game->menu_page == MOON_MENU_MAIN) menu_activate(game, 3);
             break;
         case MOON_KEY_UP: case MOON_KEY_W:
             game->menu_sel = (game->menu_sel + n - 1) % n;
@@ -579,7 +627,7 @@ static void handle_key_down(moon_game_t *game, const moon_event_t *ev) {
 
 static void click_menu(moon_game_t *game, int px, int py) {
     for (int i = 0; i < menu_item_count(game); i++) {
-        if (moon_ui_hit(&game->ui.menu_item[i], px, py)) {
+        if (moon_ui_hit(menu_item_rect(game, i), px, py)) {
             menu_activate(game, i);
             return;
         }
@@ -798,6 +846,24 @@ void moon_game_update(moon_game_t *game, uint32_t delta_ms) {
         game->sim_ticks++;
         moon_resources_tick(&game->resources, &game->grid, &game->structs);
     }
+    moon_game_check_end(game);
+}
+
+/* The run ends when the last colonist dies, or is won when Act I is complete. Either
+ * way an overlay takes over (the sim is frozen while a menu page is open). */
+void moon_game_check_end(moon_game_t *game) {
+    if (game->state != MOON_STATE_PLAYING && game->state != MOON_STATE_PAUSED) return;
+
+    bool lost = game->resources.population == 0;
+    bool won = !lost && !game->victory_claimed && moon_resources_act1_complete(&game->resources);
+    if (!lost && !won) return;
+
+    game->state = lost ? MOON_STATE_GAME_OVER : MOON_STATE_VICTORY;
+    game->menu_page = lost ? MOON_MENU_GAME_OVER : MOON_MENU_VICTORY;
+    game->menu_sel = 0;
+    game->panel_open = false;
+    game->pointer_down = false;
+    brush_set(game, -1);
 }
 
 static void render_inspector_panel(const moon_game_t *game, const moon_surface_t *surf) {
@@ -1008,33 +1074,66 @@ static void render_undo_button(const moon_game_t *game, const moon_surface_t *su
     draw_button(surf, &game->ui.undo_btn, label, RGB565(35, 30, 15), COLOR_ENERGY_YELLOW, COLOR_LUNAR_WHITE);
 }
 
+static const char *cause_name(int cause) {
+    switch (cause) {
+    case MOON_CAUSE_OXYGEN:   return "NO OXYGEN";
+    case MOON_CAUSE_WATER:    return "NO WATER";
+    case MOON_CAUSE_BLACKOUT: return "POWER BLACKOUT";
+    default:                  return "UNKNOWN";
+    }
+}
+
 static void render_menu(const moon_game_t *game, const moon_surface_t *surf) {
     if (game->menu_page == MOON_MENU_CLOSED) return;
     const moon_ui_layout_t *ui = &game->ui;
     const moon_ui_rect_t *p = &ui->menu_panel;
+    const moon_resources_t *res = &game->resources;
 
     moon_blit_tint_rect(surf, 0, 0, surf->width, surf->height, 110, 110, 120);
     moon_blit_fill_rect(surf, p->x, p->y, p->w, p->h, RGB565(14, 18, 24));
-    moon_blit_rect_outline(surf, p->x, p->y, p->w, p->h, COLOR_GOLD_FOIL);
+    moon_blit_rect_outline(surf, p->x, p->y, p->w, p->h,
+                           game->menu_page == MOON_MENU_GAME_OVER ? COLOR_ALERT_RED : COLOR_GOLD_FOIL);
 
-    const char *title = "MOONBASE LAMBDA";
     const char *items[MOON_UI_MENU_ITEMS];
-    int n = 2;
-    if (game->menu_page == MOON_MENU_MAIN) {
+    int n = menu_item_count(game);
+    int tx = p->x + 16, ty = p->y + 10, row = p->y + 36;
+    switch (game->menu_page) {
+    case MOON_MENU_MAIN:
+        moon_blit_text_fmt(surf, tx, ty, COLOR_GOLD_FOIL, 0, true, "MOONBASE SEED %u", (unsigned)game->seed);
         items[0] = "ESC:RESUME";
         items[1] = game->grid.textured_terrain ? "T:TERRAIN TEXTURED" : "T:TERRAIN FAST";
         items[2] = "R:RESTART";
         items[3] = "Q:QUIT";
-        n = MOON_UI_MENU_ITEMS;
-    } else {
-        title = (game->menu_page == MOON_MENU_CONFIRM_QUIT) ? "QUIT GAME?" : "RESTART? BASE IS LOST";
+        break;
+    case MOON_MENU_GAME_OVER:
+        moon_blit_text(surf, tx, ty, "BASE LOST", COLOR_ALERT_RED, 0, true);
+        moon_blit_text_fmt(surf, tx, row,       COLOR_LUNAR_WHITE, 0, true, "DAY REACHED  %d", (int)res->lunar_day);
+        moon_blit_text_fmt(surf, tx, row + 18,  COLOR_LUNAR_WHITE, 0, true, "PEAK CREW    %d", (int)res->peak_population);
+        moon_blit_text_fmt(surf, tx, row + 36,  COLOR_LUNAR_WHITE, 0, true, "BUILDINGS    %d", (int)game->structs.count);
+        moon_blit_text_fmt(surf, tx, row + 54,  COLOR_ALERT_RED, 0, true, "CAUSE  %s", cause_name(res->death_cause));
+        moon_blit_text_fmt(surf, tx, row + 72,  RGB565(110, 115, 125), 0, true, "SEED %u", (unsigned)game->seed);
+        items[0] = "R:RESTART";
+        items[1] = "Q:QUIT";
+        break;
+    case MOON_MENU_VICTORY:
+        moon_blit_text(surf, tx, ty, "ACT I COMPLETE", COLOR_STATUS_GREEN, 0, true);
+        moon_blit_text_fmt(surf, tx, row,      COLOR_LUNAR_WHITE, 0, true, "SELF-SUSTAINING: DAY %d", (int)res->lunar_day);
+        moon_blit_text_fmt(surf, tx, row + 18, COLOR_LUNAR_WHITE, 0, true, "CREW %d  SEED %u", (int)res->population, (unsigned)game->seed);
+        items[0] = "C:CONTINUE";
+        items[1] = "R:RESTART";
+        items[2] = "Q:QUIT";
+        break;
+    default:
+        moon_blit_text(surf, tx, ty,
+                       game->menu_page == MOON_MENU_CONFIRM_QUIT ? "QUIT GAME?" : "RESTART? BASE IS LOST",
+                       COLOR_GOLD_FOIL, 0, true);
         items[0] = (game->menu_page == MOON_MENU_CONFIRM_QUIT) ? "Y:YES, QUIT" : "Y:YES, RESTART";
         items[1] = "N:NO";
+        break;
     }
-    moon_blit_text(surf, p->x + 16, p->y + 10, title, COLOR_GOLD_FOIL, 0, true);
     for (int i = 0; i < n; i++) {
         bool sel = (i == game->menu_sel);
-        draw_button(surf, &ui->menu_item[i], items[i],
+        draw_button(surf, menu_item_rect(game, i), items[i],
                     sel ? RGB565(30, 45, 60) : RGB565(20, 24, 30),
                     sel ? COLOR_LASER_CYAN : RGB565(60, 65, 75), COLOR_LUNAR_WHITE);
     }
