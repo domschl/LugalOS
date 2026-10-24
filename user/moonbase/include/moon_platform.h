@@ -52,6 +52,8 @@ enum {
     MOON_KEY_P,
     MOON_KEY_MINUS,
     MOON_KEY_PLUS,
+    MOON_KEY_Y,
+    MOON_KEY_N,
 };
 
 #define MOON_MOD_SHIFT 1

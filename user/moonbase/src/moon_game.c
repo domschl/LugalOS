@@ -494,9 +494,25 @@ static void handle_key_down(moon_game_t *game, const moon_event_t *ev) {
     /* Menu keys */
     if (game->menu_page != MOON_MENU_CLOSED) {
         int n = menu_item_count(game);
+        bool confirm = game->menu_page != MOON_MENU_MAIN;
         switch (key) {
-        case MOON_KEY_ESCAPE: case MOON_KEY_Q: case MOON_KEY_BACKSPACE:
+        case MOON_KEY_ESCAPE: case MOON_KEY_BACKSPACE:
             cancel_action(game);
+            break;
+        case MOON_KEY_N:
+            if (confirm) cancel_action(game);
+            break;
+        case MOON_KEY_Y:
+            if (confirm) menu_activate(game, 0);
+            break;
+        case MOON_KEY_T:
+            if (!confirm) menu_activate(game, 1);
+            break;
+        case MOON_KEY_R:
+            if (!confirm) menu_activate(game, 2);
+            break;
+        case MOON_KEY_Q:
+            if (!confirm) menu_activate(game, 3);
             break;
         case MOON_KEY_UP: case MOON_KEY_W:
             game->menu_sel = (game->menu_sel + n - 1) % n;
@@ -801,6 +817,8 @@ static void render_inspector_panel(const moon_game_t *game, const moon_surface_t
     moon_blit_rect_outline(surf, cb->x, cb->y, cb->w, cb->h, COLOR_ALERT_RED);
     moon_blit_text(surf, cb->x + cb->w / 2 - 4, cb->y + cb->h / 2 - 8, "X", COLOR_ALERT_RED, 0, true);
 
+    moon_blit_text(surf, ip_x + 8, ip_y + 22, "Enter/Bksp: close", RGB565(110, 115, 125), 0, true);
+
     const moon_tile_t *tile = moon_grid_get_tile_const(&game->grid, game->selected_tile_x, game->selected_tile_y);
     if (!tile) return;
 
@@ -860,14 +878,14 @@ static void render_inspector_panel(const moon_game_t *game, const moon_surface_t
             const moon_ui_rect_t *rb = &ui->insp_recycle;
             moon_blit_fill_rect(surf, rb->x, rb->y, rb->w, rb->h, RGB565(45, 20, 20));
             moon_blit_rect_outline(surf, rb->x, rb->y, rb->w, rb->h, COLOR_ALERT_RED);
-            moon_blit_text(surf, rb->x + 6, rb->y + rb->h / 2 - 8, ui->narrow ? "RECYCLE" : "RECYCLE 50%", COLOR_LUNAR_WHITE, 0, true);
+            moon_blit_text(surf, rb->x + 6, rb->y + rb->h / 2 - 8, ui->narrow ? "R:RECYCLE" : "R:RECYCLE 50%", COLOR_LUNAR_WHITE, 0, true);
 
             const moon_ui_rect_t *ab = &ui->insp_standby;
             uint16_t act_bg = s->active ? RGB565(20, 45, 30) : RGB565(45, 40, 20);
             uint16_t act_border = s->active ? COLOR_STATUS_GREEN : COLOR_ENERGY_YELLOW;
             moon_blit_fill_rect(surf, ab->x, ab->y, ab->w, ab->h, act_bg);
             moon_blit_rect_outline(surf, ab->x, ab->y, ab->w, ab->h, act_border);
-            moon_blit_text(surf, ab->x + 6, ab->y + ab->h / 2 - 8, s->active ? "STANDBY" : "ACTIVATE", COLOR_LUNAR_WHITE, 0, true);
+            moon_blit_text(surf, ab->x + 6, ab->y + ab->h / 2 - 8, s->active ? "E:STANDBY" : "E:ACTIVATE", COLOR_LUNAR_WHITE, 0, true);
         } else {
             moon_blit_text(surf, ip_x + 8, ip_y + ip_h - 34, "EXPEDITION COMMAND ANCHOR", COLOR_GOLD_FOIL, 0, true);
         }
@@ -950,15 +968,14 @@ static void render_build_ribbon(const moon_game_t *game, const moon_surface_t *s
     }
 
     /* Pause, speed and menu */
-    const char *spd = game->speed == 4 ? (narrow ? "4x" : "SPD:4x") :
-                      game->speed == 2 ? (narrow ? "2x" : "SPD:2x") : (narrow ? "1x" : "SPD:1x");
-    draw_button(surf, &ui->pause_btn, game->paused ? (narrow ? "RUN" : "P:RUN") : (narrow ? "PAUSE" : "P:PAUSE"),
+    const char *spd = game->speed == 4 ? "+/-:4x" : game->speed == 2 ? "+/-:2x" : "+/-:1x";
+    draw_button(surf, &ui->pause_btn, game->paused ? "P:RUN" : "P:PAUSE",
                 game->paused ? RGB565(55, 45, 15) : RGB565(20, 24, 30),
                 game->paused ? COLOR_ENERGY_YELLOW : RGB565(60, 65, 75), COLOR_LUNAR_WHITE);
     draw_button(surf, &ui->speed_btn, spd,
                 game->speed > 1 ? RGB565(20, 40, 55) : RGB565(20, 24, 30),
                 game->speed > 1 ? COLOR_LASER_CYAN : RGB565(60, 65, 75), COLOR_LUNAR_WHITE);
-    draw_button(surf, &ui->menu_btn, "MENU", RGB565(20, 24, 30), RGB565(60, 65, 75), COLOR_LUNAR_WHITE);
+    draw_button(surf, &ui->menu_btn, "ESC:MENU", RGB565(20, 24, 30), RGB565(60, 65, 75), COLOR_LUNAR_WHITE);
 }
 
 /* 24 h dial: noon at the top, dawn left (06:00), dusk right (18:00), the night below */
@@ -1004,15 +1021,15 @@ static void render_menu(const moon_game_t *game, const moon_surface_t *surf) {
     const char *items[MOON_UI_MENU_ITEMS];
     int n = 2;
     if (game->menu_page == MOON_MENU_MAIN) {
-        items[0] = "RESUME";
-        items[1] = game->grid.textured_terrain ? "TERRAIN: TEX" : "TERRAIN: FAST";
-        items[2] = "RESTART";
-        items[3] = "QUIT";
+        items[0] = "ESC:RESUME";
+        items[1] = game->grid.textured_terrain ? "T:TERRAIN TEXTURED" : "T:TERRAIN FAST";
+        items[2] = "R:RESTART";
+        items[3] = "Q:QUIT";
         n = MOON_UI_MENU_ITEMS;
     } else {
         title = (game->menu_page == MOON_MENU_CONFIRM_QUIT) ? "QUIT GAME?" : "RESTART? BASE IS LOST";
-        items[0] = (game->menu_page == MOON_MENU_CONFIRM_QUIT) ? "YES, QUIT" : "YES, RESTART";
-        items[1] = "NO";
+        items[0] = (game->menu_page == MOON_MENU_CONFIRM_QUIT) ? "Y:YES, QUIT" : "Y:YES, RESTART";
+        items[1] = "N:NO";
     }
     moon_blit_text(surf, p->x + 16, p->y + 10, title, COLOR_GOLD_FOIL, 0, true);
     for (int i = 0; i < n; i++) {

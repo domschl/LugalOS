@@ -40,7 +40,7 @@ A tile is always **selected** (the gold frame; the minimap shows it as a white d
 - **Undo**: The `Z:UNDO` button above the ribbon (ten seconds) reverses the last build (full refund) or recycle.
 - **Brush**: Press the same build button twice (or double-tap it) to keep it armed: every tile you then tap or click gets that building (cables!). Press the button again, right-click or ESC to end it. `R` twice arms a recycle brush.
 - **Pan**: Drag on the map (touch, left or middle button); the mouse wheel pans too. The minimap jumps to a place.
-- **Pause, speed, menu**: The three buttons at the right of the ribbon. The menu has Resume, the terrain mode (textured or fast), Restart and Quit; Restart and Quit ask for confirmation.
+- **Pause, speed, menu**: The three buttons at the right of the ribbon. The menu (`ESC`) has Resume (`ESC`), the terrain mode (`T`), Restart (`R`) and Quit (`Q`); Restart and Quit ask for confirmation (`Y` / `N`). Every button shows its key in its label, in the ribbon, the inspector (`R` recycle, `E` standby, `Enter` or `Backspace` close) and the menu.
 
 ### Keyboard Controls
 - **Arrow keys / W, A, S, D**: Move the selection to the adjacent tile in the direction they point, with the map rotated by 45 degrees: **Up** goes up-left, **Right** up-right, **Down** down-right, **Left** down-left (Shift: 8 tiles). Every tile is reachable, the opposite key undoes a step, and two different keys make a straight line on screen (Up then Right goes straight up). The view stays still until the selection nears the edge of the map area, then glides to centre it.
