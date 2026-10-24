@@ -15,6 +15,7 @@ int main(int argc, char **argv) {
     const char *preset_name = "ESP32-P4-LCD-7B (1024x600)";
     const char *dump_ppm = NULL;
     uint32_t seed = (uint32_t)time(NULL); /* a new map each run */
+    int difficulty = MOON_DIFFICULTY_NORMAL;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--tab5") == 0) {
@@ -33,6 +34,10 @@ int main(int argc, char **argv) {
             max_frames = atoi(argv[i] + 14);
         } else if (strncmp(argv[i], "--seed=", 7) == 0) {
             seed = (uint32_t)strtoul(argv[i] + 7, NULL, 0);
+        } else if (strncmp(argv[i], "--difficulty=", 13) == 0) {
+            const char *d = argv[i] + 13;
+            difficulty = (d[0] == 'e' || d[0] == 'c' || d[0] == '0') ? MOON_DIFFICULTY_EASY
+                       : (d[0] == 'h' || d[0] == '2') ? MOON_DIFFICULTY_HARD : MOON_DIFFICULTY_NORMAL;
         } else if (strncmp(argv[i], "--dump-ppm=", 11) == 0) {
             dump_ppm = argv[i] + 11;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
@@ -43,6 +48,7 @@ int main(int argc, char **argv) {
             printf("  --tab5            Target Tab5 landscape preset (1280x720)\n");
             printf("  --tab5-portrait   Target Tab5 portrait preset (720x1280)\n");
             printf("  --seed=N          Map seed (default: the current time)\n");
+            printf("  --difficulty=L    easy|normal|hard (also cadet|engineer|commander, 0..2); default normal\n");
             printf("  --test-frames=N   Run exactly N frames then exit cleanly (for CI/tests)\n");
             return 0;
         }
@@ -59,6 +65,7 @@ int main(int argc, char **argv) {
     }
 
     s_game.seed_request = seed;
+    s_game.difficulty_request = (uint8_t)(difficulty + 1);
     if (!moon_game_init(&s_game, width, height)) {
         moon_platform_log("[main] Fatal: failed to initialize game state.\n");
         moon_platform_shutdown();

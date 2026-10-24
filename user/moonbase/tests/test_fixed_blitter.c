@@ -268,7 +268,7 @@ static void test_resource_simulation_and_day_night(void) {
     moon_structure_mgr_init(&mgr);
 
     moon_resources_t res;
-    moon_resources_init(&res);
+    moon_resources_init(&res, MOON_DIFFICULTY_NORMAL);
 
     /* 1. Initial State */
     assert(res.lunar_day == 1);

@@ -1,9 +1,28 @@
 #include "moon_resources.h"
 #include <string.h>
 
-void moon_resources_init(moon_resources_t *res) {
+/* Settled with the headless runs in tests/balance.c (`make balance`): over twelve maps
+ * a scripted good player survives and completes Act I, a careless one (Habitat before
+ * power) and an idle one lose. */
+const moon_rules_t g_moon_rules[MOON_DIFFICULTY_COUNT] = {
+    /*                      regolith o2  water battery energy sinterer crew */
+    [MOON_DIFFICULTY_EASY] = { "CADET", 120, 70, 100, 100, 5, 45, 80 },
+    [MOON_DIFFICULTY_NORMAL] = { "ENGINEER", 80, 50, 75, 40, 8, 30, 100 },
+    [MOON_DIFFICULTY_HARD] = { "COMMANDER", 50, 40, 60, 20, 10, 30, 130 },
+};
+
+void moon_resources_apply_start(moon_resources_t *res) {
+    res->regolith_stored_kg = fixed_from_int(res->rules.start_regolith_kg);
+    res->o2_stored_kg = fixed_from_int(res->rules.start_o2_kg);
+    res->water_stored_l = fixed_from_int(res->rules.start_water_l);
+    res->battery_stored_kwh = fixed_from_int(res->rules.start_battery_kwh);
+}
+
+void moon_resources_init(moon_resources_t *res, int difficulty) {
     if (!res) return;
+    if (difficulty < 0 || difficulty >= MOON_DIFFICULTY_COUNT) difficulty = MOON_DIFFICULTY_NORMAL;
     memset(res, 0, sizeof(*res));
+    res->rules = g_moon_rules[difficulty];
 
     /* Start at dawn of Day 1 (angle 20 degrees, sun rising) */
     res->lunar_day = 1;
@@ -17,18 +36,14 @@ void moon_resources_init(moon_resources_t *res) {
     res->power_consumed_kw = 5;
     res->power_net_kw = 5;
     res->battery_capacity_kwh = 50;
-    res->battery_stored_kwh = fixed_from_int(40);
     res->power_brownout = false;
 
     /* Starting Life Support & Materials */
     res->o2_capacity_kg = 100;
-    res->o2_stored_kg = fixed_from_int(50);
 
     res->water_capacity_l = 150;
-    res->water_stored_l = fixed_from_int(75);
 
     res->regolith_capacity_kg = 250;
-    res->regolith_stored_kg = fixed_from_int(60);
 
     /* Population */
     res->population = MOON_LANDER_CREW;
@@ -37,6 +52,7 @@ void moon_resources_init(moon_resources_t *res) {
     res->ticks_since_blackout = 0;
     res->max_population = MOON_LANDER_CREW;
     res->life_support_pct = 100;
+    moon_resources_apply_start(res);
 }
 
 void moon_resources_solve_power_grid(moon_grid_t *grid,
@@ -176,7 +192,7 @@ void moon_resources_tick(moon_resources_t *res,
                     net_o2_milli += (def->rate_o2 * 1000 / (MOON_SIM_TICK_RATE_HZ * 60));
                     net_water_milli += (def->rate_water * 1000 / (MOON_SIM_TICK_RATE_HZ * 60));
                 } else if (s->type == MOON_STRUCT_REGOLITH_PLANT) {
-                    net_regolith_milli += (30 * 1000 / (MOON_SIM_TICK_RATE_HZ * 60));
+                    net_regolith_milli += (res->rules.sinterer_kg_per_min * 1000 / (MOON_SIM_TICK_RATE_HZ * 60));
                 }
             }
         }
@@ -189,10 +205,9 @@ void moon_resources_tick(moon_resources_t *res,
     res->power_net_kw = total_gen_kw - total_use_kw;
 
     /* 4. Power Balance & Battery Charging / Discharging */
-    /* Net power in kW applied for 1 tick (0.25 s) in kWh: (kW * (1/4 s)) / 3600 = kW / 14400 */
-    /* Scaled by game factor 120x so lunar night forces meaningful battery reserves */
-    int32_t net_energy_unit = res->power_net_kw * 10; /* kWh * 10 / sec */
-    fixed32_t delta_kwh = fixed_div(fixed_from_int(net_energy_unit), fixed_from_int(MOON_SIM_TICK_RATE_HZ * 10));
+    /* One tick moves kW * (1/4 s) * MOON_ENERGY_PCT/100 kWh */
+    fixed32_t delta_kwh = fixed_div(fixed_from_int(res->power_net_kw * res->rules.energy_pct),
+                                    fixed_from_int(100 * MOON_SIM_TICK_RATE_HZ));
 
     res->battery_stored_kwh += delta_kwh;
     fixed32_t max_cap = fixed_from_int(res->battery_capacity_kwh);
@@ -215,8 +230,8 @@ void moon_resources_tick(moon_resources_t *res,
     /* 5. Life Support: Population Consumption */
     /* 1 kg O2 per colonist per 120s day; 2 L Water per colonist per 120s day */
     int32_t pop = res->population;
-    int32_t pop_o2_consume_milli = (pop * 1000) / (MOON_SIM_TICK_RATE_HZ * 30);
-    int32_t pop_water_consume_milli = (pop * 2000) / (MOON_SIM_TICK_RATE_HZ * 30);
+    int32_t pop_o2_consume_milli = (pop * 1000 * res->rules.crew_use_pct / 100) / (MOON_SIM_TICK_RATE_HZ * 30);
+    int32_t pop_water_consume_milli = (pop * 2000 * res->rules.crew_use_pct / 100) / (MOON_SIM_TICK_RATE_HZ * 30);
 
     net_o2_milli -= pop_o2_consume_milli;
     net_water_milli -= pop_water_consume_milli;

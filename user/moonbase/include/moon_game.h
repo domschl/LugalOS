@@ -23,7 +23,7 @@ enum { MOON_UNDO_NONE = 0, MOON_UNDO_BUILD, MOON_UNDO_RECYCLE };
 #define MOON_UNDO_WINDOW_MS 10000
 
 /* Menu pages */
-enum { MOON_MENU_CLOSED = 0, MOON_MENU_MAIN, MOON_MENU_CONFIRM_QUIT, MOON_MENU_CONFIRM_RESTART,
+enum { MOON_MENU_CLOSED = 0, MOON_MENU_MAIN, MOON_MENU_CONFIRM_QUIT, MOON_MENU_NEW_GAME,
        MOON_MENU_GAME_OVER, MOON_MENU_VICTORY };
 
 typedef struct {
@@ -76,6 +76,8 @@ typedef struct {
      * runs derive theirs from it. 0 = the fixed default seed. */
     uint32_t seed;
     uint32_t seed_request;
+    uint8_t  difficulty;        /* MOON_DIFFICULTY_*; kept over restarts */
+    uint8_t  difficulty_request; /* before init or a restart: level + 1; 0 = keep */
     bool     victory_claimed; /* Act I was completed and the player chose to go on */
 
     /* Layout table shared by drawing and hit-testing */
@@ -87,6 +89,7 @@ typedef struct {
 
     /* Modal menu: 0 closed, then the pages below */
     uint8_t  menu_page;
+    uint8_t  menu_return;     /* Page the new-game page goes back to */
     int      menu_sel;        /* Highlighted item (keyboard) */
 
     /* Input device in use */
