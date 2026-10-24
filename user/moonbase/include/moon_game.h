@@ -11,11 +11,11 @@
 
 /* Main Game State Machine */
 typedef enum {
-    MOON_STATE_INIT = 0,
-    MOON_STATE_LANDING,
+    MOON_STATE_INIT = 0,        /* Zeroed, before moon_game_init() */
     MOON_STATE_PLAYING,
     MOON_STATE_PAUSED,
-    MOON_STATE_GAME_OVER
+    MOON_STATE_GAME_OVER,       /* All crew lost: the overlay offers Restart / Quit */
+    MOON_STATE_VICTORY          /* Act I complete: Continue / Restart / Quit */
 } moon_game_state_t;
 
 /* Undo records */
@@ -23,7 +23,8 @@ enum { MOON_UNDO_NONE = 0, MOON_UNDO_BUILD, MOON_UNDO_RECYCLE };
 #define MOON_UNDO_WINDOW_MS 10000
 
 /* Menu pages */
-enum { MOON_MENU_CLOSED = 0, MOON_MENU_MAIN, MOON_MENU_CONFIRM_QUIT, MOON_MENU_CONFIRM_RESTART };
+enum { MOON_MENU_CLOSED = 0, MOON_MENU_MAIN, MOON_MENU_CONFIRM_QUIT, MOON_MENU_CONFIRM_RESTART,
+       MOON_MENU_GAME_OVER, MOON_MENU_VICTORY };
 
 typedef struct {
     moon_game_state_t state;
@@ -71,6 +72,12 @@ typedef struct {
     uint8_t pointer_button;   /* Button of the current press (1=primary/touch, 2=middle, 3=secondary) */
     int  press_region;        /* UI region the current press started in */
 
+    /* Map seed of this run; seed_request (set before init) picks the first one, later
+     * runs derive theirs from it. 0 = the fixed default seed. */
+    uint32_t seed;
+    uint32_t seed_request;
+    bool     victory_claimed; /* Act I was completed and the player chose to go on */
+
     /* Layout table shared by drawing and hit-testing */
     moon_ui_layout_t ui;
 
@@ -114,6 +121,9 @@ void moon_game_shutdown(moon_game_t *game);
 void moon_game_clamp_camera(moon_game_t *game);
 void moon_game_handle_event(moon_game_t *game, const moon_event_t *ev);
 void moon_game_update(moon_game_t *game, uint32_t delta_ms);
+
+/* Move to GAME_OVER or VICTORY when the base has failed or Act I is complete */
+void moon_game_check_end(moon_game_t *game);
 void moon_game_render(moon_game_t *game, uint16_t *fb, int width, int height, int stride);
 
 #endif /* MOON_GAME_H */

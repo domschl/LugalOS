@@ -1,7 +1,8 @@
 /* Milestone 64.9-64.11 regression tests: picking, power solver, life-support rules,
  * camera bounds, pointer routing, the regolith guard, depth-sorted rendering and
- * sprite picking, shared UI layout, pause and clock, and the same
- * play sequence by mouse, touch and keyboard. Headless (no SDL). */
+ * sprite picking, shared UI layout, pause and clock, the same
+ * play sequence by mouse, touch and keyboard, and the game flow (game over,
+ * Act I victory, restart with a new seed). Headless (no SDL). */
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -945,6 +946,157 @@ static void test_pointer_leave_and_hover(void) {
     printf("[test] Pointer leave and hover over UI: PASS\n");
 }
 
+static void test_game_over(void) {
+    fresh();
+    assert(g.state == MOON_STATE_PLAYING && g.menu_page == MOON_MENU_CLOSED);
+    uint32_t seed0 = g.seed;
+    g.panel_open = true;
+    g.resources.population = 0;
+    ticks(1);
+    assert(g.state == MOON_STATE_GAME_OVER && g.menu_page == MOON_MENU_GAME_OVER && !g.panel_open);
+
+    /* The sim is frozen and only the buttons lead out: ESC, P and build keys do nothing */
+    uint32_t st = g.sim_ticks;
+    ticks(8);
+    assert(g.sim_ticks == st);
+    key(MOON_KEY_ESCAPE); key(MOON_KEY_P); key(MOON_KEY_1); key(MOON_KEY_BACKSPACE);
+    assert(g.state == MOON_STATE_GAME_OVER && g.menu_page == MOON_MENU_GAME_OVER && !g.paused);
+    assert(g.structs.count == 4 && g.running);
+
+    /* Restart (button): a clean base on a new map */
+    click_rect(&g.ui.menu_item[2]);
+    assert(g.state == MOON_STATE_PLAYING && g.menu_page == MOON_MENU_CLOSED && g.running);
+    assert(g.resources.population == MOON_LANDER_CREW && g.sim_ticks == 0 && g.structs.count == 4);
+    assert(g.seed != seed0);
+
+    /* Restart by key, and Quit by key and by button */
+    g.resources.population = 0; ticks(1);
+    key(MOON_KEY_R);
+    assert(g.state == MOON_STATE_PLAYING && g.resources.population == MOON_LANDER_CREW);
+    g.resources.population = 0; ticks(1);
+    key(MOON_KEY_Q);
+    assert(!g.running);
+    fresh();
+    g.resources.population = 0; ticks(1);
+    click_rect(&g.ui.menu_item[3]);
+    assert(!g.running);
+    printf("[test] Game over: overlay, frozen sim, Restart and Quit: PASS\n");
+}
+
+static void test_run_statistics(void) {
+    /* Cause of death follows what ran out */
+    for (int cause = MOON_CAUSE_OXYGEN; cause <= MOON_CAUSE_BLACKOUT; cause++) {
+        fresh();
+        assert(g.resources.peak_population == MOON_LANDER_CREW && g.resources.death_cause == MOON_CAUSE_NONE);
+        g.resources.life_support_pct = 0;
+        if (cause == MOON_CAUSE_OXYGEN) g.resources.o2_stored_kg = 0;
+        if (cause == MOON_CAUSE_WATER) g.resources.water_stored_l = 0;
+        if (cause == MOON_CAUSE_BLACKOUT) {
+            /* a Sinterer on the grid outdraws the RTG; at night nothing else supplies it */
+            assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_REGOLITH_PLANT, 31, 32));
+            moon_resources_solve_power_grid(&g.grid, &g.structs);
+            g.resources.cycle_tick = 100 * MOON_SIM_TICK_RATE_HZ; /* night */
+            g.resources.battery_stored_kwh = 0;
+        }
+        ticks(MOON_SIM_TICK_RATE_HZ * 6);
+        assert(g.resources.population == MOON_LANDER_CREW - 1);
+        assert(g.resources.death_cause == cause);
+        assert(g.resources.peak_population == MOON_LANDER_CREW);
+    }
+    printf("[test] Run statistics: peak crew and cause of death: PASS\n");
+}
+
+static void test_victory(void) {
+    /* Each condition of "self-sustaining" matters */
+    fresh();
+    moon_resources_t *r = &g.resources;
+    r->lunar_day = MOON_ACT1_DAY; r->population = MOON_ACT1_CREW;
+    r->o2_rate_kg_per_tick = 0; r->water_rate_l_per_tick = 5;
+    r->ticks_since_blackout = MOON_LUNAR_DAY_TICKS;
+    assert(moon_resources_act1_complete(r));
+    r->lunar_day--;                       assert(!moon_resources_act1_complete(r)); r->lunar_day++;
+    r->population--;                      assert(!moon_resources_act1_complete(r)); r->population++;
+    r->o2_rate_kg_per_tick = -1;          assert(!moon_resources_act1_complete(r)); r->o2_rate_kg_per_tick = 0;
+    r->water_rate_l_per_tick = -1;        assert(!moon_resources_act1_complete(r)); r->water_rate_l_per_tick = 0;
+    r->ticks_since_blackout--;            assert(!moon_resources_act1_complete(r)); r->ticks_since_blackout++;
+    assert(moon_resources_act1_complete(r));
+
+    /* The overlay appears once, Continue keeps playing and does not ask again */
+    moon_game_check_end(&g);
+    assert(g.state == MOON_STATE_VICTORY && g.menu_page == MOON_MENU_VICTORY);
+    uint32_t st = g.sim_ticks;
+    ticks(4);
+    assert(g.sim_ticks == st);
+    key(MOON_KEY_C);
+    assert(g.state == MOON_STATE_PLAYING && g.menu_page == MOON_MENU_CLOSED && g.victory_claimed);
+    moon_game_check_end(&g);
+    assert(g.state == MOON_STATE_PLAYING);
+    ticks(2);
+    assert(g.sim_ticks > st);
+
+    /* ESC also continues; Restart gives a clean base and forgets the win; Quit leaves */
+    fresh();
+    g.resources.lunar_day = MOON_ACT1_DAY; g.resources.population = MOON_ACT1_CREW;
+    g.resources.ticks_since_blackout = MOON_LUNAR_DAY_TICKS;
+    moon_game_check_end(&g);
+    key(MOON_KEY_ESCAPE);
+    assert(g.state == MOON_STATE_PLAYING && g.victory_claimed);
+    fresh();
+    g.resources.lunar_day = MOON_ACT1_DAY; g.resources.population = MOON_ACT1_CREW;
+    g.resources.ticks_since_blackout = MOON_LUNAR_DAY_TICKS;
+    moon_game_check_end(&g);
+    click_rect(&g.ui.menu_item[2]);       /* Restart is the second of the three rows (1..3) */
+    assert(g.state == MOON_STATE_PLAYING && !g.victory_claimed && g.resources.lunar_day == 1);
+    g.resources.lunar_day = MOON_ACT1_DAY; g.resources.population = MOON_ACT1_CREW;
+    g.resources.ticks_since_blackout = MOON_LUNAR_DAY_TICKS;
+    moon_game_check_end(&g);
+    key(MOON_KEY_Q);
+    assert(!g.running);
+    printf("[test] Act I victory check, overlay, Continue / Restart / Quit: PASS\n");
+}
+
+static bool ice_near_lander(const moon_grid_t *grid) {
+    for (int y = 0; y < MOON_MAP_SIZE_Y; y++)
+        for (int x = 0; x < MOON_MAP_SIZE_X; x++)
+            if (grid->tiles[y][x].terrain == MOON_TERRAIN_ICE_DEPOSIT &&
+                (x - 32) * (x - 32) + (y - 32) * (y - 32) <= 12 * 12) return true;
+    return false;
+}
+
+static void test_restarts_and_seeds(void) {
+    fresh();
+    enum { RUNS = 50 };
+    uint32_t seeds[RUNS];
+    for (int i = 0; i < RUNS; i++) {
+        seeds[i] = g.seed;
+        /* every run starts from the same, complete base */
+        assert(g.structs.count == 4 && g.resources.population == MOON_LANDER_CREW);
+        assert(g.state == MOON_STATE_PLAYING && g.sim_ticks == 0);
+        assert(ice_near_lander(&g.grid));
+        const moon_tile_t *t = moon_grid_get_tile_const(&g.grid, 32, 32);
+        assert(t->terrain == MOON_TERRAIN_REGOLITH_FLAT && t->structure_id != 0);
+        /* some play, then restart through the menu */
+        key(MOON_KEY_UP); key(MOON_KEY_1);
+        ticks(2);
+        key(MOON_KEY_ESCAPE); key(MOON_KEY_R); key(MOON_KEY_Y);
+        assert(g.menu_page == MOON_MENU_CLOSED);
+    }
+    for (int i = 0; i < RUNS; i++)
+        for (int j = i + 1; j < RUNS; j++) assert(seeds[i] != seeds[j]);
+
+    /* The same seed always gives the same map; another seed another map */
+    static moon_game_t a, b;
+    memset(&a, 0, sizeof(a)); memset(&b, 0, sizeof(b));
+    a.seed_request = 12345; b.seed_request = 12345;
+    assert(moon_game_init(&a, 1024, 600) && moon_game_init(&b, 1024, 600));
+    assert(a.seed == 12345 && memcmp(a.grid.tiles, b.grid.tiles, sizeof(a.grid.tiles)) == 0);
+    b.seed_request = 54321;
+    memset(&b, 0, sizeof(b)); b.seed_request = 54321;
+    assert(moon_game_init(&b, 1024, 600) && memcmp(a.grid.tiles, b.grid.tiles, sizeof(a.grid.tiles)) != 0);
+    assert(ice_near_lander(&b.grid));
+    printf("[test] 50 restarts: clean base, new seed each, ice in reach, seeds reproducible: PASS\n");
+}
+
 int main(void) {
     test_picking();
     test_power_solver();
@@ -968,6 +1120,10 @@ int main(void) {
     test_touch_flow();
     test_menu_and_cancel();
     test_pointer_leave_and_hover();
-    printf("[test] All Milestone 64.9-64.11b tests passed cleanly.\n");
+    test_game_over();
+    test_run_statistics();
+    test_victory();
+    test_restarts_and_seeds();
+    printf("[test] All Milestone 64.9-64.12 tests passed cleanly.\n");
     return 0;
 }

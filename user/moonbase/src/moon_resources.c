@@ -32,6 +32,9 @@ void moon_resources_init(moon_resources_t *res) {
 
     /* Population */
     res->population = MOON_LANDER_CREW;
+    res->peak_population = MOON_LANDER_CREW;
+    res->death_cause = MOON_CAUSE_NONE;
+    res->ticks_since_blackout = 0;
     res->max_population = MOON_LANDER_CREW;
     res->life_support_pct = 100;
 }
@@ -266,6 +269,10 @@ void moon_resources_tick(moon_resources_t *res,
         }
     }
 
+    if (res->power_brownout) res->ticks_since_blackout = 0;
+    else if (res->ticks_since_blackout < UINT32_MAX) res->ticks_since_blackout++;
+    if (res->population > res->peak_population) res->peak_population = res->population;
+
     if (res->crew_lost_ticks > 0) res->crew_lost_ticks--;
     res->warning_crew_lost = (res->crew_lost_ticks > 0);
 
@@ -296,6 +303,8 @@ void moon_resources_tick(moon_resources_t *res,
                 res->casualty_timer_ticks = 0;
                 res->population--;
                 res->crew_lost_ticks = MOON_CREW_LOST_BANNER_TICKS;
+                res->death_cause = res->o2_stored_kg <= 0 ? MOON_CAUSE_OXYGEN :
+                                   res->water_stored_l <= 0 ? MOON_CAUSE_WATER : MOON_CAUSE_BLACKOUT;
             }
         }
         res->growth_timer_ticks = 0;
@@ -327,4 +336,11 @@ moon_clock_t moon_resources_clock(const moon_resources_t *res) {
     c.next_is_dusk = (t < day / 2);
     c.next_in_min = (int)(until * 1440 / day);
     return c;
+}
+
+bool moon_resources_act1_complete(const moon_resources_t *res) {
+    return res->lunar_day >= MOON_ACT1_DAY &&
+           res->population >= MOON_ACT1_CREW &&
+           res->o2_rate_kg_per_tick >= 0 && res->water_rate_l_per_tick >= 0 &&
+           res->ticks_since_blackout >= MOON_LUNAR_DAY_TICKS;
 }

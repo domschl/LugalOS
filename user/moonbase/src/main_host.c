@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "moon_platform.h"
 #include "moon_config.h"
 #include "moon_game.h"
@@ -13,6 +14,7 @@ int main(int argc, char **argv) {
     int max_frames = 0;
     const char *preset_name = "ESP32-P4-LCD-7B (1024x600)";
     const char *dump_ppm = NULL;
+    uint32_t seed = (uint32_t)time(NULL); /* a new map each run */
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--tab5") == 0) {
@@ -29,6 +31,8 @@ int main(int argc, char **argv) {
             preset_name = "ESP32-P4-LCD-7B (1024x600)";
         } else if (strncmp(argv[i], "--test-frames=", 14) == 0) {
             max_frames = atoi(argv[i] + 14);
+        } else if (strncmp(argv[i], "--seed=", 7) == 0) {
+            seed = (uint32_t)strtoul(argv[i] + 7, NULL, 0);
         } else if (strncmp(argv[i], "--dump-ppm=", 11) == 0) {
             dump_ppm = argv[i] + 11;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
@@ -38,6 +42,7 @@ int main(int argc, char **argv) {
             printf("  --7b              Target LCD-7B preset (1024x600, default)\n");
             printf("  --tab5            Target Tab5 landscape preset (1280x720)\n");
             printf("  --tab5-portrait   Target Tab5 portrait preset (720x1280)\n");
+            printf("  --seed=N          Map seed (default: the current time)\n");
             printf("  --test-frames=N   Run exactly N frames then exit cleanly (for CI/tests)\n");
             return 0;
         }
@@ -53,6 +58,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    s_game.seed_request = seed;
     if (!moon_game_init(&s_game, width, height)) {
         moon_platform_log("[main] Fatal: failed to initialize game state.\n");
         moon_platform_shutdown();

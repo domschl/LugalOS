@@ -72,7 +72,22 @@ typedef struct moon_resources_s {
     bool     warning_o2;            /* Oxygen low (under 15 kg) or empty */
     bool     warning_water;         /* Water low (under 20 L) or empty */
     bool     warning_cold;          /* Cryogenic freezing in unheated habitat */
+
+    /* Run statistics for the end-of-game summary */
+    uint16_t peak_population;
+    uint8_t  death_cause;           /* MOON_CAUSE_*: what killed the last colonist */
+    uint32_t ticks_since_blackout;  /* Ticks since power last failed */
 } moon_resources_t;
+
+enum { MOON_CAUSE_NONE = 0, MOON_CAUSE_OXYGEN, MOON_CAUSE_WATER, MOON_CAUSE_BLACKOUT };
+
+/* Act I is complete when the base has run itself for a while: enough crew, O2 and
+ * water produced at least as fast as they are used, and no blackout for a whole
+ * lunar day. */
+#define MOON_ACT1_DAY   4          /* lunar_day reached: three full days survived */
+#define MOON_ACT1_CREW  6
+
+bool moon_resources_act1_complete(const moon_resources_t *res);
 
 /* Resource System Lifecycle & Updates */
 void moon_resources_init(moon_resources_t *res);

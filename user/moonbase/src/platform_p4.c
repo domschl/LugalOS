@@ -21,6 +21,7 @@
 #include "kernel/keyseq.h"
 #include "kernel/palloc.h"
 #include "kernel/printk.h"
+#include "kernel/random.h"
 #include "kernel/sched.h"
 #include "kernel/time.h"
 
@@ -48,6 +49,7 @@ static uint16_t *s_canvas_fb_original = NULL; /* Original canvas slot backing bu
 static uint16_t *s_render_fb_original = NULL; /* Original palloc buffer for safe freeing */
 static int       s_cid = -1;
 static bool      s_allocated_fb = false;
+static bool      s_active = false;   /* single task: the moonbase command; between init and shutdown */
 static uint32_t  s_fb_pages = 0;
 static uint32_t  s_render_pages = 0;
 
@@ -139,6 +141,7 @@ bool moon_platform_init(int width, int height, const char *title) {
     req[2 + nl] = '\0';
     uint8_t reply[SCREEN_REPLY_LEN];
     (void)console_canvas(req, 3 + (uint32_t)nl, reply);
+    s_active = true; /* the terminal has lost its screen: from here on a failure must run the teardown */
 
     /* 2. Retrieve canvas backing buffer and slot ID */
     s_cid = lcdterm_get_canvas565_cid_by_name("moonbase");
@@ -196,8 +199,16 @@ bool moon_platform_init(int width, int height, const char *title) {
     return true;
 }
 
+/* Teardown order: stop the input sources first (the touch hook writes to the event
+ * queue and the console still holds key bytes), then give the terminal its canvas
+ * back, and only then free the buffers the canvas pointed at. Safe to call twice. */
 void moon_platform_shutdown(void) {
+    if (!s_active) return;
+    s_active = false;
+
     touch_set_hook(NULL);
+    s_qhead = s_qtail = 0;                 /* events queued but never read */
+    while (console_has_char()) (void)keyseq_read_console();
 
     /* Close canvas and return to text terminal */
     uint8_t req[SCREEN_CTITLE_MAX + 3];
@@ -384,6 +395,9 @@ bool moon_platform_poll_event(moon_event_t *ev) {
             case 'n': case 'N':
                 ev->key = MOON_KEY_N;
                 return true;
+            case 'c': case 'C':
+                ev->key = MOON_KEY_C;
+                return true;
             case '-': case '_':
                 ev->key = MOON_KEY_MINUS;
                 return true;
@@ -415,6 +429,7 @@ void moon_platform_log(const char *fmt, ...) {
 
 int moonbase_run(void) {
     if (!moon_platform_init(0, 0, "Moonbase Lambda")) {
+        moon_platform_shutdown(); /* gives the terminal its screen back if init got that far */
         cprintf("moonbase: failed to initialize bare-metal platform\n");
         return -1;
     }
@@ -422,6 +437,9 @@ int moonbase_run(void) {
     int w = moon_platform_get_width();
     int h = moon_platform_get_height();
 
+    uint32_t seed = 0;
+    random_bytes(&seed, sizeof(seed));
+    s_p4_game.seed_request = seed ? seed : 1;
     if (!moon_game_init(&s_p4_game, w, h)) {
         cprintf("moonbase: failed to initialize game engine\n");
         moon_platform_shutdown();
