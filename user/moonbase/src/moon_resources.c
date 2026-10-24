@@ -11,26 +11,25 @@ const moon_rules_t g_moon_rules[MOON_DIFFICULTY_COUNT] = {
     [MOON_DIFFICULTY_HARD]   = { "COMMANDER",  50, 40,  60,  20, 10, 30, 130,  6 },
 };
 
-/* An Extractor draws from the richest ice or mare tile beside it, one unit of that tile's
- * stock per rules.deposit_s_per_unit seconds. False (and `depleted`) when nothing is left. */
-static bool extractor_work(const moon_resources_t *res, moon_grid_t *grid, moon_structure_t *s) {
-    moon_tile_t *best = NULL;
-    for (int dy = -1; dy <= 1; dy++) {
-        for (int dx = -1; dx <= 1; dx++) {
-            moon_tile_t *t = moon_grid_get_tile(grid, s->gx + dx, s->gy + dy);
-            if (!t || (dx == 0 && dy == 0)) continue;
-            if ((t->terrain == MOON_TERRAIN_ICE_DEPOSIT || t->terrain == MOON_TERRAIN_BASALT_MARE) &&
-                t->resource_val > 0 && (!best || t->resource_val > best->resource_val)) {
-                best = t;
-            }
-        }
+/* Ground work of an Extractor (ice or mare) or a Sinterer (quarrying): one unit of the
+ * richest tile beside it is taken every rules.deposit_s_per_unit seconds, or per kilogram
+ * of regolith baked. False (and `depleted`) when the ground around it is spent. */
+static bool draw_from_ground(const moon_resources_t *res, moon_grid_t *grid, moon_structure_t *s) {
+    moon_tile_t *tile = moon_structure_ore_tile(grid, (moon_structure_type_t)s->type, s->gx, s->gy);
+    s->depleted = (tile == NULL);
+    if (!tile) return false;
+
+    bool take;
+    if (s->type == MOON_STRUCT_O2_EXTRACTOR) {
+        take = (++s->work >= (unsigned)res->rules.deposit_s_per_unit * MOON_SIM_TICK_RATE_HZ);
+        if (take) s->work = 0;
+    } else {
+        /* a unit per kilogram: kg/min is added every tick, a kilogram is 60 s of ticks */
+        s->work = (uint16_t)(s->work + res->rules.sinterer_kg_per_min);
+        take = (s->work >= 60 * MOON_SIM_TICK_RATE_HZ);
+        if (take) s->work = (uint16_t)(s->work - 60 * MOON_SIM_TICK_RATE_HZ);
     }
-    s->depleted = (best == NULL);
-    if (!best) return false;
-    if (++s->work >= (unsigned)res->rules.deposit_s_per_unit * MOON_SIM_TICK_RATE_HZ) {
-        s->work = 0;
-        best->resource_val--;
-    }
+    if (take) tile->resource_val--;
     return true;
 }
 
@@ -204,20 +203,22 @@ void moon_resources_tick(moon_resources_t *res,
                 /* Solar panels generate proportional to sun elevation */
                 int32_t solar_kw = fixed_to_int((int64_t)def->power_kw * res->solar_intensity);
                 total_gen_kw += solar_kw;
-            } else if (def->power_kw < 0 && !(s->type == MOON_STRUCT_O2_EXTRACTOR && s->depleted)) {
-                /* Consumer (an Extractor with nothing left to draw idles) */
+            } else if (def->power_kw < 0 && !s->depleted) {
+                /* Consumer (an Extractor or Sinterer with nothing left to draw idles) */
                 total_use_kw += (-def->power_kw);
             }
 
             /* Resource production from active industrial modules */
             if (!res->power_brownout) {
                 if (s->type == MOON_STRUCT_O2_EXTRACTOR) {
-                    if (extractor_work(res, grid, s)) {
+                    if (draw_from_ground(res, grid, s)) {
                         net_o2_milli += (def->rate_o2 * 1000 / (MOON_SIM_TICK_RATE_HZ * 60));
                         net_water_milli += (def->rate_water * 1000 / (MOON_SIM_TICK_RATE_HZ * 60));
                     }
                 } else if (s->type == MOON_STRUCT_REGOLITH_PLANT) {
-                    net_regolith_milli += (res->rules.sinterer_kg_per_min * 1000 / (MOON_SIM_TICK_RATE_HZ * 60));
+                    if (draw_from_ground(res, grid, s)) {
+                        net_regolith_milli += (res->rules.sinterer_kg_per_min * 1000 / (MOON_SIM_TICK_RATE_HZ * 60));
+                    }
                 }
             }
         }

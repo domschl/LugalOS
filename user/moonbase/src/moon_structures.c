@@ -140,6 +140,40 @@ void moon_structure_mgr_init(moon_structure_mgr_t *mgr) {
     mgr->solved_revision = 0;
 }
 
+/* Does this terrain count as a deposit (drawn by Extractors) rather than regolith? */
+static bool is_deposit(uint8_t terrain) {
+    return terrain == MOON_TERRAIN_ICE_DEPOSIT || terrain == MOON_TERRAIN_BASALT_MARE;
+}
+
+moon_tile_t* moon_structure_ore_tile(moon_grid_t *grid, moon_structure_type_t type, int gx, int gy) {
+    if (type != MOON_STRUCT_O2_EXTRACTOR && type != MOON_STRUCT_REGOLITH_PLANT) return NULL;
+    bool want_deposit = (type == MOON_STRUCT_O2_EXTRACTOR);
+    moon_tile_t *best = NULL;
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            moon_tile_t *t = moon_grid_get_tile(grid, gx + dx, gy + dy);
+            if (!t || (dx == 0 && dy == 0)) continue;
+            if (is_deposit(t->terrain) != want_deposit || t->resource_val == 0) continue;
+            if (!best || t->resource_val > best->resource_val) best = t;
+        }
+    }
+    return best;
+}
+
+int moon_structure_ore_left(const moon_grid_t *grid, moon_structure_type_t type, int gx, int gy) {
+    if (type != MOON_STRUCT_O2_EXTRACTOR && type != MOON_STRUCT_REGOLITH_PLANT) return 0;
+    bool want_deposit = (type == MOON_STRUCT_O2_EXTRACTOR);
+    int sum = 0;
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            const moon_tile_t *t = moon_grid_get_tile_const(grid, gx + dx, gy + dy);
+            if (!t || (dx == 0 && dy == 0)) continue;
+            if (is_deposit(t->terrain) == want_deposit) sum += t->resource_val;
+        }
+    }
+    return sum;
+}
+
 bool moon_structure_can_place(const moon_grid_t *grid,
                               const moon_structure_mgr_t *mgr,
                               moon_structure_type_t type,
@@ -192,24 +226,14 @@ bool moon_structure_can_place(const moon_grid_t *grid,
     }
 
     /* 3. Specialized Placement Rules */
-    if (type == MOON_STRUCT_O2_EXTRACTOR) {
+    if (type == MOON_STRUCT_O2_EXTRACTOR && moon_structure_ore_left(grid, type, gx, gy) == 0) {
         /* Must be beside Polar Ice or Basalt Mare that still has something to draw */
-        bool near_deposit = false;
-        for (int dy = -1; dy <= def->footprint_h; dy++) {
-            for (int dx = -1; dx <= def->footprint_w; dx++) {
-                const moon_tile_t *t = moon_grid_get_tile_const(grid, gx + dx, gy + dy);
-                if (t && (t->terrain == MOON_TERRAIN_ICE_DEPOSIT || t->terrain == MOON_TERRAIN_BASALT_MARE) && t->resource_val > 0) {
-                    near_deposit = true;
-                    break;
-                }
-            }
-            if (near_deposit) break;
-        }
-
-        if (!near_deposit) {
-            if (out_reason) *out_reason = "Needs ice or mare with ore left";
-            return false;
-        }
+        if (out_reason) *out_reason = "Needs ice or mare with ore left";
+        return false;
+    }
+    if (type == MOON_STRUCT_REGOLITH_PLANT && moon_structure_ore_left(grid, type, gx, gy) == 0) {
+        if (out_reason) *out_reason = "No regolith left to quarry here";
+        return false;
     }
 
     if (out_reason) *out_reason = "Placement Valid";
@@ -572,8 +596,24 @@ void moon_structure_render_ghost(const moon_structure_mgr_t *mgr,
     if (text_x < 10) text_x = 10;
     if (text_y < 40) text_y = 40;
 
-    moon_blit_fill_rect(surf, text_x - 4, text_y - 2, 220, 20, RGB565(14, 16, 20));
-    moon_blit_rect_outline(surf, text_x - 4, text_y - 2, 220, 20, ghost_color);
-    moon_blit_text_fmt(surf, text_x + 4, text_y + 2, ghost_color, 0, true,
-                       "[%s] %s", def->short_name, reason ? reason : "");
+    /* Extractors and Sinterers also say how much ground they would have to work with */
+    int ore = moon_structure_ore_left(grid, type, hover_gx, hover_gy);
+    bool show_ore = valid && (type == MOON_STRUCT_O2_EXTRACTOR || type == MOON_STRUCT_REGOLITH_PLANT);
+    char text[64];
+    int len = 0;
+    const char *parts[3] = { "[", def->short_name, "] " };
+    for (int p = 0; p < 3; p++) for (const char *c = parts[p]; *c && len < 40; c++) text[len++] = *c;
+    for (const char *c = reason ? reason : ""; *c && len < 52; c++) text[len++] = *c;
+    if (show_ore) {
+        const char *tag = "  ore ";
+        for (const char *c = tag; *c; c++) text[len++] = *c;
+        char digits[8]; int nd = 0;
+        for (int v = ore; v > 0 || nd == 0; v /= 10) digits[nd++] = (char)('0' + v % 10);
+        while (nd > 0) text[len++] = digits[--nd];
+    }
+    text[len] = '\0';
+    int box_w = len * MOON_FONT_W + 16;
+    moon_blit_fill_rect(surf, text_x - 4, text_y - 2, box_w, 20, RGB565(14, 16, 20));
+    moon_blit_rect_outline(surf, text_x - 4, text_y - 2, box_w, 20, ghost_color);
+    moon_blit_text(surf, text_x + 4, text_y + 2, text, ghost_color, 0, true);
 }

@@ -50,8 +50,8 @@ typedef struct {
     bool     active;
     bool     powered;
     uint8_t  health;            /* 0..100% */
-    uint8_t  work;              /* Ticks toward the next unit drawn from a deposit */
-    bool     depleted;          /* An Extractor with no ore or ice left beside it */
+    uint16_t work;              /* Progress toward the next unit drawn from the ground */
+    bool     depleted;          /* An Extractor or Sinterer with nothing left to draw beside it */
 } moon_structure_t;
 
 /* Structure Manager */
@@ -71,6 +71,12 @@ void moon_structure_mgr_init(moon_structure_mgr_t *mgr);
 
 /* Mark the structure set as changed so the power grid is re-solved on the next tick */
 static inline void moon_structure_mark_dirty(moon_structure_mgr_t *mgr) { if (mgr) mgr->revision++; }
+
+/* The ground a structure draws on, from the eight tiles around it: an Extractor takes
+ * ice or mare (a deposit), a Sinterer quarries the regolith (any other terrain). The
+ * stock of a tile is its resource_val. Other structure types draw on nothing. */
+moon_tile_t* moon_structure_ore_tile(moon_grid_t *grid, moon_structure_type_t type, int gx, int gy);
+int moon_structure_ore_left(const moon_grid_t *grid, moon_structure_type_t type, int gx, int gy);
 
 /* Placement Queries & Actions */
 bool moon_structure_can_place(const moon_grid_t *grid,

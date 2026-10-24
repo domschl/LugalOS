@@ -35,6 +35,15 @@ static int working_extractors(void) {
     return n;
 }
 
+static int working_sinterers(void) {
+    int n = 0;
+    for (int i = 1; i < MOON_MAX_STRUCTURES; i++) {
+        const moon_structure_t *s = &g.structs.list[i];
+        if (s->id && s->type == MOON_STRUCT_REGOLITH_PLANT && !s->depleted) n++;
+    }
+    return n;
+}
+
 static int count_of(moon_structure_type_t t) {
     int n = 0;
     for (int i = 1; i < MOON_MAX_STRUCTURES; i++) if (g.structs.list[i].id && g.structs.list[i].type == t) n++;
@@ -135,6 +144,20 @@ static int load_with(int extractors, int sinterers, int habitats, int extra_batt
 static int solar_for(int load) { return load > 10 ? (2 * load - 20 + 18) / 19 : 0; }
 static int kwh_for_night(int load) { return load > 10 ? (load - 10) * 90 * g.resources.rules.energy_pct / 100 : 0; }
 
+/* The site next to the network with the most ore around it (a Sinterer lives off the ground) */
+static bool build_ore_site(moon_structure_type_t t, int cost) {
+    if (regolith() < cost) return false;
+    const moon_structure_def_t *d = moon_structure_get_def(t);
+    int bx = -1, by = -1, best = 0;
+    for (int y = 14; y < 51; y++)
+        for (int x = 14; x < 51; x++) {
+            if (!ok_to_build(t, x, y) || !adjacent_to_network(x, y, d->footprint_w, d->footprint_h)) continue;
+            int ore = moon_structure_ore_left(&g.grid, t, x, y);
+            if (ore > best) { best = ore; bx = x; by = y; }
+        }
+    return bx >= 0 && build(t, bx, by);
+}
+
 static bool build_site(moon_structure_type_t t, int cost) {
     int x, y;
     return regolith() >= cost && find_site(t, &x, &y) && build(t, x, y);
@@ -177,9 +200,9 @@ static void decide(player_t who) {
 
     int habitats = count_of(MOON_STRUCT_HABITAT_DOME);
     /* 2. Income: power for the sinterer first */
-    if (count_of(MOON_STRUCT_REGOLITH_PLANT) == 0) {
+    if (working_sinterers() == 0) {
         if (count_of(MOON_STRUCT_SOLAR_ARRAY) < solar_for(load_with(1, 1, habitats, 0))) { build_site(MOON_STRUCT_SOLAR_ARRAY, 10); return; }
-        build_site(MOON_STRUCT_REGOLITH_PLANT, 15);
+        build_ore_site(MOON_STRUCT_REGOLITH_PLANT, 15);
         return;
     }
 
