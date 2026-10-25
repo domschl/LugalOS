@@ -396,7 +396,15 @@ static struct {
     uint32_t token, pkt_len;    /* the slave's, as last polled */
     uint8_t  shared[8];
     uint32_t polls, writes, reads, wbytes, rbytes, no_room, resyncs, failures, irqs;
+    /* Re-probing a slave that is gone, or that answers without speaking LLP
+     * (the factory esp-hosted-mcu): when, and how long to wait after that. */
+    uint64_t next_probe_ms;
+    uint32_t probe_gap_ms;
+    bool     told_not_llp;
 } g_llp;   /* guarded by: sdhost_acquire(1) */
+
+#define LLP_PROBE_GAP_MS      1000u
+#define LLP_PROBE_GAP_MAX_MS 60000u
 
 /* The card interrupt. The handler masks it and wakes the pump; the next poll
  * clears the slave's bit, then the controller's, reads the status and
@@ -528,16 +536,18 @@ int sdio_llp_open(void) {
  * up with both counters just restarted (whatever was in flight is gone), -1
  * when down. */
 int sdio_llp_poll(void) {
-    static uint64_t next_probe;
     if (g_hosted_ota_busy) return -1;
     sdhost_acquire(1);
     int rc = -1;
+    bool fresh = false;   /* the slave was found by a probe in this call */
     if (!g_info.present) {
         uint64_t now = time_get_ms();
-        if (now < next_probe) goto out;
-        next_probe = now + 1000u;
+        if (now < g_llp.next_probe_ms) goto out;
+        if (g_llp.probe_gap_ms == 0) g_llp.probe_gap_ms = LLP_PROBE_GAP_MS;
+        g_llp.next_probe_ms = now + g_llp.probe_gap_ms;
         if (probe_locked((uint32_t)CONFIG_SDIO_FREQ_KHZ) != 0) goto out;
         if (g_info.fn1_ready) hosted_detect_locked();
+        fresh = true;
     }
     if (g_irq_seen) {
         g_irq_seen = false;
@@ -549,9 +559,25 @@ int sdio_llp_poll(void) {
         g_llp.failures++;
         g_info.present = false;
         g_llp.up = false;
+        /* Found by the probe, yet its LLP status registers time out: not a
+         * LugalOS C6 (a booting one answers them, magic or not). Each try
+         * costs two failed transfers and their log lines, so back off. */
+        if (fresh || g_info.hosted_present) {
+            g_llp.probe_gap_ms = g_llp.probe_gap_ms * 2u > LLP_PROBE_GAP_MAX_MS
+                               ? LLP_PROBE_GAP_MAX_MS : g_llp.probe_gap_ms * 2u;
+            g_llp.next_probe_ms = time_get_ms() + g_llp.probe_gap_ms;
+            if (!g_llp.told_not_llp) {
+                g_llp.told_not_llp = true;
+                printk("[SDIO] the C6 answers but does not speak LLP (esp-hosted-mcu?): `sdio ota` "
+                       "installs LugalOS. Looking again at most every %u s.\n",
+                       (unsigned)(LLP_PROBE_GAP_MAX_MS / 1000u));
+            }
+        }
         goto out;
     }
     if (!magic_ok()) { g_llp.up = false; goto out; }
+    g_llp.probe_gap_ms = LLP_PROBE_GAP_MS;
+    g_llp.told_not_llp = false;
     if (g_llp.need_reset) {
         if (channel_reset_locked() != 0) goto out;
         g_llp.resyncs++;
@@ -1264,6 +1290,9 @@ int sdio_hosted_ota(const char *path) {
     sdio_c6_reset(20);
     g_info.present = false;
     g_llp.need_reset = true;
+    g_llp.probe_gap_ms = LLP_PROBE_GAP_MS;     /* look for it right away, not after a back-off */
+    g_llp.next_probe_ms = 0;
+    g_llp.told_not_llp = false;
     g_hosted_ota_busy = false;
 
     uint64_t llp_deadline = time_get_ms() + 5000u;
