@@ -45,8 +45,10 @@ set in commit cf924bb ("firmware: Update nvram settings for 43439", 2024-11-07)
 and the Pico SDK and MicroPython ship. embassy's copy still carries the old
 one. The two strings are the same length, so the file's layout is unchanged.
 Measured on one Pico 2 W, same place and supply, 200-ping runs: 3.3% lost
-with the old value (20 of 600), 0.9% with the new (12 of 1400); MicroPython
-on the same board lost none of 600.
+with the old value (20 of 600), 0.9% with the new (12 of 1400). Loss on
+this network varies through the day far more than that: later the same
+day, interleaved on the same board, MicroPython 1.29 (the Pico SDK's
+driver) lost 9.3% (74 of 800) and LugalOS 5.8% (46 of 800).
 
 ## Licence, and whether we may ship them
 

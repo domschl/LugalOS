@@ -196,6 +196,15 @@ static const uint16_t g_gspi_prog[6] = {
 #define REG_BP_ADDRESS_HIGH         0x1000Cu
 #define REG_BP_CHIP_CLOCK_CSR       0x1000Eu
 #define REG_BP_FUNCTION2_WATERMARK  0x10008u
+#define REG_BP_PULL_UP              0x1000Fu
+#define REG_BP_WAKEUP_CTRL          0x1001Eu
+#define REG_BP_SLEEP_CSR            0x1001Fu
+#define BP_WCTRL_WAKE_TILL_HT_AVAIL 0x02u
+#define BP_SLPCSR_KEEP_SDIO_ON      0x01u
+#define BP_FORCE_HT                 0x02u
+#define REG_BUS_BRCM_CARDCAP        0x00F0u
+#define BRCM_CARDCAP_CMD_NODEC      0x08u
+#define SPI_INTERRUPT_ENABLE_REG    0x0006u
 
 #define BP_ALP_AVAIL_REQ            0x08u
 #define BP_ALP_AVAIL                0x40u
@@ -883,6 +892,13 @@ static bool pio_gspi_transfer(const uint8_t *tx, uint32_t tx_len,
      * enough to drive it low. */
     pio_exec(0xA042); /* nop (mov y,y) side 0 -- park SCK low */
     pio_exec(0xA003); /* mov pins, null */
+    /* And hand WL_DATA back to the chip: an input until the next transfer
+     * turns it around. While CS is high the same line is the chip's
+     * host-wake output (cyw43_host_wake()), driven high when a frame is
+     * waiting; left an output after a write, we would hold it low against
+     * the chip. The Pico SDK ends every transfer this way
+     * (pio_sm_set_consecutive_pindirs(..., DATA_IN, 1, false)). */
+    pio_exec(0xE080); /* set pindirs, 0 */
     REG(PIO_CTRL) &= ~(1u << PIO_SM);
     REG(SIO_GPIO_OUT_SET) = WL_CS_MASK; /* deassert CS */
     return ok;
@@ -1252,6 +1268,23 @@ static bool cyw43_download_firmware(void) {
         time_delay_us(1000);
     }
     if (!f2) { printk("cyw43: F2 never became ready\n"); return false; }
+
+    /* The bus core's own clocking, as the Pico SDK's cyw43_ll_bus_init()
+     * sets it once F2 is up (its USE_KSO block): the SPI core wakes until
+     * the high-throughput clock is available, decodes no SDIO commands,
+     * keeps the HT clock forced and the SDIO core on while the radio's own
+     * power save comes and goes; pull-ups off. The host-wake line is
+     * serviced on that basis. */
+    uint32_t v = 0;
+    if (!cyw43_read_reg(BACKPLANE_FUNCTION, REG_BP_WAKEUP_CTRL, 1, &v)) return false;
+    if (!cyw43_write_reg(BACKPLANE_FUNCTION, REG_BP_WAKEUP_CTRL, 1, (v & 0xffu) | BP_WCTRL_WAKE_TILL_HT_AVAIL)) return false;
+    if (!cyw43_write_reg(BUS_FUNCTION, REG_BUS_BRCM_CARDCAP, 1, BRCM_CARDCAP_CMD_NODEC)) return false;
+    if (!cyw43_write_reg(BACKPLANE_FUNCTION, REG_BP_CHIP_CLOCK_CSR, 1, BP_FORCE_HT)) return false;
+    if (!cyw43_read_reg(BACKPLANE_FUNCTION, REG_BP_SLEEP_CSR, 1, &v)) return false;
+    if (!(v & BP_SLPCSR_KEEP_SDIO_ON) &&
+        !cyw43_write_reg(BACKPLANE_FUNCTION, REG_BP_SLEEP_CSR, 1, (v & 0xffu) | BP_SLPCSR_KEEP_SDIO_ON))
+        return false;
+    if (!cyw43_write_reg(BACKPLANE_FUNCTION, REG_BP_PULL_UP, 1, 0)) return false;
 
     return true;
 }
@@ -2258,6 +2291,18 @@ static bool cyw43_probe_locked(void) {
     if (!cyw43_read_reg_u32(BUS_FUNCTION, SPI_BUS_CONTROL, &bc)) return false;
     printk("cyw43: switched to 32-bit mode, bus control reads 0x%08x\n", bc);
 
+    /* Stale error bits cleared, and the interrupt sources the Pico SDK
+     * enables: FIFO underflow and overflow, command and data errors, F1
+     * overflow, and F2-packet-available -- the last is what raises the
+     * host-wake line. */
+    if (!cyw43_write_reg(BUS_FUNCTION, SPI_INTERRUPT_REGISTER, 2,
+                         SPI_INT_DATA_UNAVAILABLE | SPI_INT_COMMAND_ERROR | SPI_INT_DATA_ERROR | SPI_INT_F1_OVERFLOW))
+        return false;
+    if (!cyw43_write_reg(BUS_FUNCTION, SPI_INTERRUPT_ENABLE_REG, 2,
+                         SPI_INT_F2F3_RD_UNDERFLOW | SPI_INT_F2F3_WR_OVERFLOW | SPI_INT_COMMAND_ERROR |
+                         SPI_INT_DATA_ERROR | 0x0020u /* F2 packet available */ | SPI_INT_F1_OVERFLOW))
+        return false;
+
     if (!cyw43_download_firmware()) {
         printk("cyw43: firmware upload failed\n");
         return false;
@@ -2488,15 +2533,40 @@ static int cyw43_netif_send(netif_t *nif, const uint8_t *buf, uint32_t len) {
     return r;
 }
 
-/* How long to leave the bus alone after a poll that found nothing. Only the
- * idle case is throttled: a poll that returns a frame is followed immediately
- * by another, so a burst still drains at full speed and this costs bulk
- * transfers nothing. */
-#define CYW43_IDLE_POLL_GAP_US 1000u
+/* A bus poll even with the host-wake line quiet, in case an edge of it was
+ * missed while a transfer had the line turned around. */
+#define CYW43_QUIET_POLL_GAP_US 100000u
 
 /* guarded by: g_bus_lock (cyw43_lock()); cyw43_assert_bus_held() reports a caller that
  * reaches the bus without it. */
-static uint64_t g_next_poll_us;
+static uint64_t g_next_quiet_poll_us;
+/* guarded by: g_bus_lock (cyw43_lock()). The last bus poll produced a frame:
+ * poll again whatever the line says, as the SDK's had_successful_packet. */
+static bool g_rx_streaming;
+
+/* While CS is high, WL_DATA is the chip's host-wake output: high while it
+ * has something for us (F2-packet-available is among the interrupt sources
+ * enabled at bring-up). A GPIO read, no bus transaction. */
+static inline bool cyw43_host_wake(void) {
+    return (REG(SIO_GPIO_IN) & WL_DATA_MASK) != 0;
+}
+
+/* Clear the latched interrupt bits, counting the error ones, so the
+ * host-wake line falls once the chip's queue is empty. */
+static void bus_ack_interrupts(void) {
+    uint32_t v = 0;
+    if (!cyw43_read_reg(BUS_FUNCTION, SPI_INTERRUPT_REGISTER, 2, &v)) { g_bus_stats.reg_read_failed++; return; }
+    v &= 0xffffu;
+    if (!v) return;
+    uint32_t err = v & SPI_INT_ERRORS;
+    if (err & SPI_INT_DATA_UNAVAILABLE)  g_bus_stats.data_unavailable++;
+    if (err & SPI_INT_F2F3_RD_UNDERFLOW) g_bus_stats.rd_underflow++;
+    if (err & SPI_INT_F2F3_WR_OVERFLOW)  g_bus_stats.wr_overflow++;
+    if (err & SPI_INT_COMMAND_ERROR)     g_bus_stats.command_error++;
+    if (err & SPI_INT_DATA_ERROR)        g_bus_stats.data_error++;
+    if (err & SPI_INT_F1_OVERFLOW)       g_bus_stats.f1_overflow++;
+    (void)cyw43_write_reg(BUS_FUNCTION, SPI_INTERRUPT_REGISTER, 2, v);
+}
 
 static int cyw43_netif_poll(netif_t *nif) {
     /* Nothing to service while the firmware is down or being reloaded --
@@ -2504,29 +2574,26 @@ static int cyw43_netif_poll(netif_t *nif) {
      * behind a multi-second firmware upload just to be told "not yet". */
     if (!g_fw_ready) return 0;
 
-    /* Idle polling is not free here, and that is the whole reason for this.
-     * `netsrv` calls this every pass of a loop that never blocks, and unlike
-     * the ENC28J60 -- where poll() reads a cheap EPKTCNT register -- asking
-     * this radio whether a packet exists means a full bit-banged gSPI
-     * transaction over PIO, tens of thousands of times a second, holding the
-     * bus lock each time.
-     *
-     * On a headless board nobody noticed. On the Pico-Clock-Green, whose
-     * display is multiplexed in software, it is visible: the frame cadence is
-     * disturbed and the once-a-second digit redraw flickers. Skipping the bus
-     * for a millisecond after an empty poll removes almost all of that load
-     * for at most 1 ms of extra receive latency, which nothing here can
-     * measure. */
+    /* `netsrv` calls this every pass of a loop that never blocks. Asking
+     * the bus whether a frame is waiting is a full bit-banged gSPI
+     * transaction, and done that often it loads the CPU visibly (the
+     * Pico-Clock-Green's software-multiplexed display flickers); asking the
+     * host-wake line is a register read. So the bus is touched only when
+     * the line is up, while frames keep coming, or once per quiet gap --
+     * the way the Pico SDK's driver services the chip
+     * (cyw43_ll_sdpcm_poll_device()). */
     uint64_t now_us = time_get_us();
-    if (now_us < g_next_poll_us) return 0;
-
     cyw43_lock();
+    if (g_rx_count) { cyw43_unlock(); return 1; }   /* queued by an ioctl's or a send's pump */
+    if (!g_rx_streaming && !cyw43_host_wake() && now_us < g_next_quiet_poll_us) {
+        cyw43_unlock();
+        return 0;
+    }
+    if (!g_rx_streaming) bus_ack_interrupts();
     int r = cyw43_netif_poll_locked(nif);
+    g_rx_streaming = r > 0;
+    g_next_quiet_poll_us = now_us + CYW43_QUIET_POLL_GAP_US;
     cyw43_unlock();
-
-    /* Productive polls are not throttled -- come straight back for the next
-     * frame. Only an empty one earns the gap. */
-    g_next_poll_us = (r > 0) ? 0 : now_us + CYW43_IDLE_POLL_GAP_US;
     return r;
 }
 
