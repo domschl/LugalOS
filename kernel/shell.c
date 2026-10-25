@@ -6957,6 +6957,27 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "wifi stats") == 0) {
         cprintf("wifi: rx ring high-water %u, %u frames dropped (ring full)\n",
                 cyw43_rx_high_water(), cyw43_rx_overruns());
+        cyw43_bus_stats_t b;
+        cyw43_bus_stats(&b);
+        cprintf("bus:  %lu frames written, %lu read\n"
+                "      latched faults: %lu F2 read underflow, %lu F2 write overflow, %lu command error,\n"
+                "      %lu data error, %lu F1 overflow, %lu data unavailable (%lu status reads failed)\n"
+                "      receive drops: %lu short, %lu bad size word, %lu bad header length, %lu bad BDC, "
+                "%lu too long\n"
+                "      transmit credit: %lu waits, %lu gave up\n",
+                (unsigned long)b.tx_frames, (unsigned long)b.rx_frames,
+                (unsigned long)b.rd_underflow, (unsigned long)b.wr_overflow, (unsigned long)b.command_error,
+                (unsigned long)b.data_error, (unsigned long)b.f1_overflow, (unsigned long)b.data_unavailable,
+                (unsigned long)b.reg_read_failed,
+                (unsigned long)b.rx_short, (unsigned long)b.rx_bad_size, (unsigned long)b.rx_bad_hdr_len,
+                (unsigned long)b.rx_bad_bdc, (unsigned long)b.rx_too_long,
+                (unsigned long)b.credit_waits, (unsigned long)b.credit_timeouts);
+        if (b.chip_valid)
+            cprintf("chip: rx %lu good, %lu bad; tx %lu good, %lu bad (after retries)\n",
+                    (unsigned long)b.chip_rx_good, (unsigned long)b.chip_rx_bad,
+                    (unsigned long)b.chip_tx_good, (unsigned long)b.chip_tx_bad);
+        else
+            cprintf("chip: packet counters not available\n");
         return;
     } else if (strncmp(cmd_line, "wifi led", 8) == 0) {
         /* The LED is on the wireless chip's own GPIO 0, so this only does

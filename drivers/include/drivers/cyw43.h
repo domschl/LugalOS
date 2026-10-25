@@ -58,6 +58,20 @@ bool cyw43_is_ready(void);
  * gave up after a second (the frame was then not sent). */
 void cyw43_tx_stats(uint32_t *stalls, uint32_t *timeouts);
 
+/* Bus and radio health, for `wifi stats`: faults latched by the gSPI bus,
+ * frames the receive path dropped and why, transmit-credit waits, and the
+ * chip's own good/bad frame counts. */
+typedef struct {
+    uint32_t tx_frames, rx_frames;
+    uint32_t data_unavailable, rd_underflow, wr_overflow, command_error, data_error, f1_overflow;
+    uint32_t reg_read_failed;
+    uint32_t rx_short, rx_bad_size, rx_bad_hdr_len, rx_bad_bdc, rx_too_long;
+    uint32_t credit_waits, credit_timeouts;
+    bool     chip_valid;
+    uint32_t chip_rx_good, chip_rx_bad, chip_tx_good, chip_tx_bad;
+} cyw43_bus_stats_t;
+void cyw43_bus_stats(cyw43_bus_stats_t *out);
+
 /* NULL until cyw43_gspi_probe() has succeeded. */
 netif_t *cyw43_get_netif(void);
 

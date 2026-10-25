@@ -276,6 +276,7 @@ static const uint16_t g_gspi_prog[6] = {
 #define IOCTL_CMD_SET_ANTDIV        64u
 #define IOCTL_CMD_SET_PM            86u
 #define IOCTL_CMD_SET_GMODE         110u
+#define IOCTL_CMD_GET_PKTCNTS       166u
 #define IOCTL_CMD_SET_WSEC          134u
 #define IOCTL_CMD_SET_WPA_AUTH      165u
 #define IOCTL_CMD_SET_WSEC_PMK      268u
@@ -1272,12 +1273,51 @@ static bool g_ioctl_quiet;
  * reaches the bus without it. */
 static uint32_t g_wlan_buf[(4 + 2048) / 4];
 
+/* --- Bus health (`wifi stats`) ------------------------------------------
+ * The gSPI interrupt register latches what went wrong on the bus: a read of
+ * the F2 FIFO that ran dry, a write that overflowed it (a frame the chip
+ * then lost), a command or data error, an F1 overflow. Write-1-to-clear.
+ * Read and cleared after every frame each way, so a fault is counted
+ * against the transfer that caused it; the Pico SDK's cyw43-driver checks
+ * the same bits (BUS_OVERFLOW_UNDERFLOW). The receive path's own drops --
+ * a header whose size word fails its complement, a length that does not
+ * fit -- are counted beside them: before, each was a silent `return`.
+ * guarded by: g_bus_lock (cyw43_lock()), as everything on the bus. */
+#define SPI_INTERRUPT_REGISTER      0x0004u
+#define SPI_INT_DATA_UNAVAILABLE    0x0001u
+#define SPI_INT_F2F3_RD_UNDERFLOW   0x0002u
+#define SPI_INT_F2F3_WR_OVERFLOW    0x0004u
+#define SPI_INT_COMMAND_ERROR       0x0008u
+#define SPI_INT_DATA_ERROR          0x0010u
+#define SPI_INT_F1_OVERFLOW         0x0080u
+#define SPI_INT_ERRORS (SPI_INT_DATA_UNAVAILABLE | SPI_INT_F2F3_RD_UNDERFLOW | SPI_INT_F2F3_WR_OVERFLOW | \
+                        SPI_INT_COMMAND_ERROR | SPI_INT_DATA_ERROR | SPI_INT_F1_OVERFLOW)
+
+static cyw43_bus_stats_t g_bus_stats;
+
+static void bus_check_errors(void) {
+    uint32_t v = 0;
+    if (!cyw43_read_reg(BUS_FUNCTION, SPI_INTERRUPT_REGISTER, 4, &v)) { g_bus_stats.reg_read_failed++; return; }
+    uint32_t err = v & SPI_INT_ERRORS;
+    if (!err) return;
+    if (err & SPI_INT_DATA_UNAVAILABLE)  g_bus_stats.data_unavailable++;
+    if (err & SPI_INT_F2F3_RD_UNDERFLOW) g_bus_stats.rd_underflow++;
+    if (err & SPI_INT_F2F3_WR_OVERFLOW)  g_bus_stats.wr_overflow++;
+    if (err & SPI_INT_COMMAND_ERROR)     g_bus_stats.command_error++;
+    if (err & SPI_INT_DATA_ERROR)        g_bus_stats.data_error++;
+    if (err & SPI_INT_F1_OVERFLOW)       g_bus_stats.f1_overflow++;
+    (void)cyw43_write_reg(BUS_FUNCTION, SPI_INTERRUPT_REGISTER, 2, err);
+}
+
 /* Write a prepared SDPCM packet to function 2. The command word goes in
  * the first four bytes, the way the reference's wlan_write() does it. */
 static bool wlan_write(uint32_t len) {
     uint32_t padded = (len + 3u) & ~3u;
     g_wlan_buf[0] = make_cmd(1, 1, WLAN_FUNCTION, 0, padded);
-    return pio_gspi_transfer((const uint8_t *)g_wlan_buf, 4 + padded, NULL, 0);
+    bool ok = pio_gspi_transfer((const uint8_t *)g_wlan_buf, 4 + padded, NULL, 0);
+    g_bus_stats.tx_frames++;
+    bus_check_errors();
+    return ok;
 }
 
 /* Is there a control packet waiting, and how long is it? */
@@ -1504,6 +1544,36 @@ static bool tx_wait_credit(void) {
     return false;
 }
 
+static bool cyw43_ioctl(uint32_t kind, uint32_t cmd, uint32_t iface,
+                        uint8_t *data, uint32_t len, uint32_t *out_len);
+
+void cyw43_bus_stats(cyw43_bus_stats_t *out) {
+    cyw43_lock();
+    *out = g_bus_stats;
+    out->credit_waits = g_tx_stalls;
+    out->credit_timeouts = g_tx_stall_timeouts;
+    /* The chip's own count of frames it sent and received, good and bad
+     * (WLC_GET_PKTCNTS, Broadcom's get_pktcnt_t): a frame lost in the air
+     * after its retries shows up as tx_bad, not in any count above. */
+    uint8_t pc[20];
+    uint32_t got = 0;
+    memset(pc, 0, sizeof pc);
+    /* Quiet: this firmware may not have it (CYW43439 7.95 answers
+     * BCME_UNSUPPORTED), and `wifi stats` says so itself. */
+    bool was_quiet = g_ioctl_quiet;
+    g_ioctl_quiet = true;
+    out->chip_valid = g_fw_ready && cyw43_ioctl(IOCTL_GET, IOCTL_CMD_GET_PKTCNTS, 0, pc, sizeof pc, &got) &&
+                      got >= 16u;
+    g_ioctl_quiet = was_quiet;
+    if (out->chip_valid) {
+        out->chip_rx_good = get_u32(pc + 0);
+        out->chip_rx_bad  = get_u32(pc + 4);
+        out->chip_tx_good = get_u32(pc + 8);
+        out->chip_tx_bad  = get_u32(pc + 12);
+    }
+    cyw43_unlock();
+}
+
 void cyw43_tx_stats(uint32_t *stalls, uint32_t *timeouts) {
     if (stalls) *stalls = g_tx_stalls;
     if (timeouts) *timeouts = g_tx_stall_timeouts;
@@ -1519,12 +1589,18 @@ static int cyw43_pump(void) {
     static uint8_t rx[2048];
     if (plen > sizeof(rx)) return -1;
     if (!wlan_read(rx, plen)) return -1;
-    if (plen < SDPCM_HEADER_SIZE) return 1;
+    g_bus_stats.rx_frames++;
+    bus_check_errors();
+    if (plen < SDPCM_HEADER_SIZE) { g_bus_stats.rx_short++; return 1; }
+    if ((uint16_t)((rx[0] | (rx[1] << 8)) ^ (rx[2] | (rx[3] << 8))) != 0xffffu) {
+        g_bus_stats.rx_bad_size++;       /* a garbled header: nothing in it can be trusted */
+        return 1;
+    }
     tx_credit_update(rx);
 
     uint32_t hdr_len = rx[7];
     uint8_t channel = rx[5] & 0x0f;
-    if (hdr_len > plen) return 1;
+    if (hdr_len > plen) { g_bus_stats.rx_bad_hdr_len++; return 1; }
 
     if (channel == CHANNEL_TYPE_CONTROL) {
         if (hdr_len + CDC_HEADER_SIZE > plen) return 1;
@@ -1542,11 +1618,12 @@ static int cyw43_pump(void) {
     }
 
     if (channel == CHANNEL_TYPE_DATA) {
-        if (hdr_len + BDC_HEADER_SIZE > plen) return 1;
+        if (hdr_len + BDC_HEADER_SIZE > plen) { g_bus_stats.rx_bad_bdc++; return 1; }
         const uint8_t *bdc = rx + hdr_len;
         uint32_t off = hdr_len + BDC_HEADER_SIZE + (uint32_t)bdc[3] * 4u;
-        if (off > plen) return 1;
+        if (off > plen) { g_bus_stats.rx_bad_bdc++; return 1; }
         uint32_t n = plen - off;
+        if (n > NETIF_FRAME_MAX) g_bus_stats.rx_too_long++;
         /* Into a ring of CYW43_RX_RING frames the stack drains. A frame
          * arriving with the ring full is dropped rather than overwriting
          * one somebody is about to read, and counted here (`wifi stats`)
