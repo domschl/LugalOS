@@ -5,7 +5,14 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/* Each instance is ~7.5 KB of static state (links, history, table of
+ * contents). The ESP32-C6 has no display, only a RAM screen for Lisp's
+ * canvas, and keeps one: four cost it 30 KB of a heap it runs out of. */
+#if defined(CONFIG_BOARD_ESP32C6)
+#define READER_MAX_INSTANCES 1
+#else
 #define READER_MAX_INSTANCES 4
+#endif
 
 void reader_init(void);
 bool reader_open(const char *resource);
