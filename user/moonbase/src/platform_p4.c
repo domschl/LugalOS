@@ -13,6 +13,7 @@
 #include "moon_bench.h"
 
 #include "lugalos_config.h"
+#include "kernel/lock.h"
 #include "arch/esp32p4_intr.h"
 #include "drivers/dsi_esp32p4.h"
 #include "drivers/lcdterm.h"
@@ -31,41 +32,58 @@
 
 #if defined(CONFIG_BOARD_ESP32P4)
 
-/* 35 KB game state in PSRAM, zero SRAM footprint */
+/* 35 KB game state in PSRAM, zero SRAM footprint.
+ * single task: the one holding s_moon_session (moonbase_run()). */
 static moon_game_t s_p4_game BULK_BSS;
 
+/* One game at a time: its state, the textures and the blitter's caches are
+ * statics, and a second terminal starting `moonbase` would share them.
+ * accepted: a session_claim_t is claimed and released atomically by itself. */
+static session_claim_t s_moon_session;
+
+/* The display geometry and buffers below: single task: the moonbase session
+ * holder, which sets them in moon_platform_init() and clears them in
+ * moon_platform_shutdown(). The touch hook reads s_scale only: it is set
+ * before touch_set_hook() registers the hook and unregistered first. */
+
 #if defined(CONFIG_BOARD_TAB5)
-static int       s_scale = 2;         /* 2x HiDPI integer scale for 5" 294 DPI display (640x360 -> 1280x720) */
+static int       s_scale = 2;         /* accepted: see above. 2x HiDPI integer scale for 5" 294 DPI display (640x360 -> 1280x720) */
 #else
-static int       s_scale = 1;         /* 1x native for 7" 170 DPI display */
+static int       s_scale = 1;         /* accepted: see above. 1x native for 7" 170 DPI display */
 #endif
 
-static int       s_width = 1024;
-static int       s_height = 600;
-static uint32_t  s_stride = 1024;
-static int       s_virtual_w = 1024;
-static int       s_virtual_h = 600;
-static uint16_t *s_fb = NULL;                 /* Canvas slot buffer (visible to compositor) */
-static uint16_t *s_render_fb = NULL;          /* Off-screen render buffer (drawn by game) */
-static uint16_t *s_canvas_fb_original = NULL; /* Original canvas slot backing buffer */
-static uint16_t *s_render_fb_original = NULL; /* Original palloc buffer for safe freeing */
-static int       s_cid = -1;
-static bool      s_allocated_fb = false;
-static void       *s_tile_cache = NULL;     /* baked terrain tops (moon_tile_cache_attach) */
-static uint32_t   s_tile_cache_pages = 0;
+static int       s_width = 1024;   /* single task: the session holder */
+static int       s_height = 600;   /* single task: the session holder */
+static uint32_t  s_stride = 1024;   /* single task: the session holder */
+static int       s_virtual_w = 1024;   /* single task: the session holder */
+static int       s_virtual_h = 600;   /* single task: the session holder */
+static uint16_t *s_fb = NULL;                 /* single task: the session holder.  Canvas slot buffer (visible to compositor) */
+static uint16_t *s_render_fb = NULL;          /* single task: the session holder.  Off-screen render buffer (drawn by game) */
+static uint16_t *s_canvas_fb_original = NULL; /* single task: the session holder.  Original canvas slot backing buffer */
+static uint16_t *s_render_fb_original = NULL; /* single task: the session holder.  Original palloc buffer for safe freeing */
+static int       s_cid = -1;   /* single task: the session holder */
+static bool      s_allocated_fb = false;   /* single task: the session holder */
+static void       *s_tile_cache = NULL;     /* single task: the session holder.  baked terrain tops (moon_tile_cache_attach) */
+static uint32_t   s_tile_cache_pages = 0;   /* single task: the session holder */
 static bool      s_active = false;   /* single task: the moonbase command; between init and shutdown */
 static uint32_t  s_fb_pages = 0;
 static uint32_t  s_render_pages = 0;
 
 /* Touch event queue with move-coalescing */
 #define EVENT_QUEUE_SIZE 64
-static moon_event_t s_queue[EVENT_QUEUE_SIZE];
-static volatile int s_qhead = 0;
-static volatile int s_qtail = 0;
+/* The touch driver's hook pushes, the game pops: two tasks, on either hart.
+ * guarded by: s_qlock, for the ring and both indices -- the move-coalescing
+ * push rewrites an entry the game could otherwise be copying out. */
+static spinlock_t   s_qlock = SPINLOCK_INIT;
+static moon_event_t s_queue[EVENT_QUEUE_SIZE];   /* guarded by: s_qlock */
+static int          s_qhead = 0;                 /* guarded by: s_qlock */
+static int          s_qtail = 0;                 /* guarded by: s_qlock */
+/* single task: p4_touch_hook(), in the touch driver's context */
 static int s_last_touch_x = 0;
 static int s_last_touch_y = 0;
 
 static void queue_push(const moon_event_t *ev) {
+    uintptr_t f = spin_lock_irqsave(&s_qlock);
     /* If the event is POINTER_MOVE, coalesce with previous queued POINTER_MOVE to prevent queue overflow */
     if (ev->type == MOON_EVENT_POINTER_MOVE && s_qhead != s_qtail) {
         int prev = (s_qhead - 1 + EVENT_QUEUE_SIZE) % EVENT_QUEUE_SIZE;
@@ -74,6 +92,7 @@ static void queue_push(const moon_event_t *ev) {
             s_queue[prev].y = ev->y;
             s_queue[prev].dx += ev->dx;
             s_queue[prev].dy += ev->dy;
+            spin_unlock_irqrestore(&s_qlock, f);
             return;
         }
     }
@@ -83,6 +102,13 @@ static void queue_push(const moon_event_t *ev) {
         s_queue[s_qhead] = *ev;
         s_qhead = next;
     }
+    spin_unlock_irqrestore(&s_qlock, f);
+}
+
+static void queue_clear(void) {
+    uintptr_t f = spin_lock_irqsave(&s_qlock);
+    s_qhead = s_qtail = 0;
+    spin_unlock_irqrestore(&s_qlock, f);
 }
 
 static bool p4_touch_hook(int x, int y, int kind) {
@@ -116,7 +142,7 @@ bool moon_platform_init(int width, int height, const char *title) {
     (void)width;
     (void)height;
     (void)title;
-    s_qhead = s_qtail = 0;
+    queue_clear();
 
 #if defined(CONFIG_BOARD_TAB5)
     s_scale = 2;
@@ -217,7 +243,7 @@ void moon_platform_shutdown(void) {
     s_active = false;
 
     touch_set_hook(NULL);
-    s_qhead = s_qtail = 0;                 /* events queued but never read */
+    queue_clear();                         /* events queued but never read */
     while (console_has_char()) (void)keyseq_read_console();
 
     moon_tile_cache_attach(NULL);
@@ -365,11 +391,14 @@ void moon_platform_present_rows(int y0, int y1) {
 
 bool moon_platform_poll_event(moon_event_t *ev) {
     /* 1. Touch events */
+    uintptr_t f = spin_lock_irqsave(&s_qlock);
     if (s_qhead != s_qtail) {
         *ev = s_queue[s_qtail];
         s_qtail = (s_qtail + 1) % EVENT_QUEUE_SIZE;
+        spin_unlock_irqrestore(&s_qlock, f);
         return true;
     }
+    spin_unlock_irqrestore(&s_qlock, f);
 
     /* 2. Keyboard events via kernel keyseq decoder (VT escape sequences, arrow keys, etc.) */
     if (console_has_char()) {
@@ -492,7 +521,16 @@ void moon_platform_log(const char *fmt, ...) {
     cprintf("%s", line);
 }
 
+static int moonbase_run_claimed(const char *args);
+
 int moonbase_run(const char *args) {
+    if (!session_claim(&s_moon_session, "moonbase")) return -1;
+    int rc = moonbase_run_claimed(args);
+    session_release(&s_moon_session);
+    return rc;
+}
+
+static int moonbase_run_claimed(const char *args) {
     if (!moon_platform_init(0, 0, "Moonbase Lambda")) {
         moon_platform_shutdown(); /* gives the terminal its screen back if init got that far */
         cprintf("moonbase: failed to initialize bare-metal platform\n");
@@ -520,7 +558,7 @@ int moonbase_run(const char *args) {
         return 0;
     }
     if (args && strstr(args, "bench")) {
-        static moon_bench_result_t results[MOON_BENCH_SCENARIOS];
+        static moon_bench_result_t results[MOON_BENCH_SCENARIOS];   /* single task: the session holder */
         static uint32_t samples[4096] BULK_BSS;   /* single task: the moonbase command */
         int n = moon_bench_run(&s_p4_game, w, h, 6, results, samples, 4096);
         moon_platform_shutdown();

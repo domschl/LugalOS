@@ -1337,7 +1337,7 @@ static void render_menu(const moon_game_t *game, const moon_surface_t *surf) {
         static const char *const labels[MOON_DIFFICULTY_COUNT] = {
             "1:CADET (EASY)", "2:ENGINEER (NORMAL)", "3:COMMANDER (HARD)"
         };
-        static char text[MOON_DIFFICULTY_COUNT][24];
+        static char text[MOON_DIFFICULTY_COUNT][24];   /* single task: the moonbase session holder */
         moon_blit_text(surf, tx, ty, game->menu_return == MOON_MENU_MAIN ? "NEW GAME? BASE IS LOST" : "NEW GAME",
                        COLOR_GOLD_FOIL, 0, true);
         for (int i = 0; i < MOON_DIFFICULTY_COUNT; i++) {

@@ -520,7 +520,9 @@ static uint16_t s_cache_row_off[2 * CACHE_TILE_H + 1];
 #define CLIFF_VARIANTS (MOON_TERRAIN_COUNT * 2 * 4 * 4)
 #define CLIFF_PX (33 * 33)
 
+/* single task: the moonbase session holder (moonbase_run()'s claim). */
 static uint8_t *s_cliff_fp;
+/* single task: as s_cliff_fp. */
 static uint16_t *s_cliff_px;
 
 size_t moon_tile_cache_bytes(void) {

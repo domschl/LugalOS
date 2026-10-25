@@ -7,7 +7,8 @@
 #define BULK_BSS
 #endif
 
-/* 32 KB regolith texture unpacked into PSRAM / BSS */
+/* 32 KB regolith texture unpacked into PSRAM / BSS.
+ * single task: the moonbase session holder (moonbase_run()'s claim). */
 uint16_t g_tex_regolith[16384] BULK_BSS;
 
 static const uint16_t g_tex_regolith_pal[16] = {
@@ -531,7 +532,7 @@ static const uint8_t g_tex_regolith_4bit[8192] = {
 };
 
 void moon_textures_init(void) {
-    static bool s_inited = false;
+    static bool s_inited = false;   /* single task: the moonbase session holder */
     if (s_inited) return;
     s_inited = true;
 
