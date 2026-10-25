@@ -294,6 +294,14 @@ node_id_result_t node_identity_set_power(uint8_t mode, uint8_t limit_pct);
 /* Whether the display turns itself with the IMU (`orient auto|off`); false
  * when nothing is stored. */
 bool node_orient_auto(bool *on);
+
+/* The public key update images must be signed with (IDSTORE_FIELD_OTA_PUBKEY;
+ * kernel/ota.c). True and the key when one is stored. Setting it is a factory
+ * operation: the console's `otakey`, or tools/provision.py, never the network.
+ * NULL clears it. The caller checks the key is a valid P-256 point. */
+#define NODE_OTA_PUBKEY_LEN 64u
+bool node_ota_pubkey(uint8_t out[NODE_OTA_PUBKEY_LEN]);
+node_id_result_t node_identity_set_ota_pubkey(const uint8_t *key);
 node_id_result_t node_identity_set_orient_auto(bool on);
 node_id_result_t node_identity_clear_mqtt(void);
 

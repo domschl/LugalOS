@@ -8,6 +8,8 @@
  * offset ends the update with an error rather than leaving a hole. */
 
 #include "kernel/ota.h"
+#include "kernel/ota_sig.h"
+#include "kernel/identity.h"
 #include "kernel/device.h"
 #include "kernel/lock.h"
 #include "kernel/printk.h"
@@ -28,6 +30,13 @@ static struct {
     ota_image_header_t hdr;
     char               err[80];
     bool               confirmed;       /* this boot's trial confirmed */
+    /* The release key, read at boot by ota_start() (the 9P server task that
+     * checks an image cannot read the identity store) and refreshed by
+     * ota_release_key_changed(). */
+    bool               have_key;
+    uint8_t            key[NODE_OTA_PUBKEY_LEN];
+    uint64_t           unsigned_until_ms;   /* console override, one image, until then */
+    const char        *sig_status;          /* the current image's, once its header is in */
 } g;
 
 /* Zero is a free ylock: no first-use init, which two tasks could both run
@@ -53,6 +62,37 @@ static bool field_is(const char *field, uint32_t max, const char *want) {
     return n < max && strlen(want) == n && memcmp(field, want, n) == 0;
 }
 
+#ifndef CONFIG_OTA_REQUIRE_SIGNED
+#define CONFIG_OTA_REQUIRE_SIGNED 0
+#endif
+
+/* A node with a release key takes only images signed with it; so does a
+ * build that sets CONFIG_OTA_REQUIRE_SIGNED, key or not. Otherwise an
+ * unsigned image is taken. A signature that is there and wrong is refused
+ * everywhere. */
+static bool signature_required(void) { return g.have_key || CONFIG_OTA_REQUIRE_SIGNED; }
+
+static int check_signature(void) {
+    ota_sig_result_t r = ota_sig_check(&g.hdr, g.have_key ? g.key : NULL);
+    g.sig_status = ota_sig_result_str(r);
+    if (r == OTA_SIG_RESULT_OK) return 0;
+    if (r == OTA_SIG_RESULT_UNSIGNED || r == OTA_SIG_RESULT_NO_KEY) {
+        if (!signature_required()) return 0;
+        if (g.unsigned_until_ms && time_get_ms() < g.unsigned_until_ms) {
+            g.unsigned_until_ms = 0;
+            g.sig_status = "unsigned, allowed once from the console";
+            printk("[OTA] taking an unsigned image: allowed once from the console\n");
+            return 0;
+        }
+        return fail(r == OTA_SIG_RESULT_NO_KEY
+                    ? "the image is signed, but this node has no release key to check it with"
+                    : "the image is unsigned, and this node takes signed images only");
+    }
+    static char why[80];   /* guarded by: g_lock (check_signature() runs under it) */
+    ksnprintf(why, sizeof why, "refused: %s", ota_sig_result_str(r));
+    return fail(why);
+}
+
 /* The header just completed: is it an image this node may take? */
 static int check_header(const ota_board_info_t *info) {
     const ota_image_header_t *h = &g.hdr;
@@ -63,7 +103,7 @@ static int check_header(const ota_board_info_t *info) {
         return fail("a part of the image does not fit a slot");
     if ((uint64_t)OTA_HEADER_LEN + h->part_len[0] + h->part_len[1] != g.size)
         return fail("the header's parts do not add up to the size given to `begin`");
-    return 0;
+    return check_signature();
 }
 
 /* The header passed: only now is anything in flash touched. A committed image
@@ -177,6 +217,7 @@ int ota_ctl_write(const char *buf, uint32_t len) {
         } else {
             /* Nothing is erased until the header has arrived and is this board's. */
             memset(&g.hdr, 0, sizeof g.hdr);
+            g.sig_status = NULL;
             g.slot = info.running ^ 1;
             g.size = size;
             g.received = 0;
@@ -241,6 +282,17 @@ uint32_t ota_ctl_read(char *out, uint32_t cap) {
     if (ota_board_record(&rec))
         PUT("active=%c\npending=%c\ntried=%s\nfailed=%s\n", slot_letter(rec.active), slot_letter(rec.pending),
             rec.tried ? "yes" : "no", rec.failed ? "yes" : "no");
+    if (g.have_key) {
+        uint8_t id[OTA_KEY_ID_LEN];
+        ota_sig_key_id(g.key, id);
+        PUT("release_key=");
+        for (unsigned i = 0; i < OTA_KEY_ID_LEN; i++) PUT("%02x", id[i]);
+        PUT("\n");
+    } else {
+        PUT("release_key=none\n");
+    }
+    PUT("signatures=%s\n", signature_required() ? "required" : "optional");
+    if (g.sig_status) PUT("image_signature=%s\n", g.sig_status);
     PUT("state=%s\n", g_state_names[g.st]);
     if (g.st == ST_RECEIVING || g.st == ST_RECEIVED) PUT("received=%u/%u\n", (unsigned)g.received, (unsigned)g.size);
     if (g.st == ST_ERROR) PUT("error=%s\n", g.err);
@@ -282,7 +334,24 @@ static void trial_task(void *arg) {
     }
 }
 
+void ota_release_key_changed(void) {
+    uint8_t key[NODE_OTA_PUBKEY_LEN];
+    bool have = node_ota_pubkey(key);
+    lock();
+    g.have_key = have;
+    if (have) memcpy(g.key, key, sizeof key);
+    else memset(g.key, 0, sizeof g.key);
+    unlock();
+}
+
+void ota_allow_unsigned_once(uint32_t window_s) {
+    lock();
+    g.unsigned_until_ms = time_get_ms() + (uint64_t)window_s * 1000u;
+    unlock();
+}
+
 void ota_start(void) {
+    ota_release_key_changed();
     ota_board_boot();
     ota_board_info_t info;
     if (!ota_board_info(&info)) return;

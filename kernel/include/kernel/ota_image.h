@@ -54,11 +54,32 @@ typedef struct {
     uint32_t part_len[2];
     char     build_id[32];          /* /proc/buildid's second field */
     uint8_t  sha256[32];            /* over part 0 then part 1, as they follow */
-    uint8_t  reserved[132];
+    uint8_t  sig_alg;               /* OTA_SIG_NONE or OTA_SIG_P256 */
+    uint8_t  sig_pad[3];            /* zero */
+    uint8_t  key_id[8];             /* OTA_KEY_ID_LEN bytes of SHA-256 over the signer's public key */
+    uint8_t  sig[64];               /* ECDSA P-256, r then s, over SHA-256 of the first OTA_SIGNED_LEN bytes */
+    uint8_t  reserved[56];          /* zero */
     uint32_t crc;                   /* CRC-32 of the 252 bytes before it */
 } ota_image_header_t;
 
 _Static_assert(sizeof(ota_image_header_t) == OTA_HEADER_LEN, "the header is 256 bytes on the wire");
+
+/* ## Signatures (plan/phase52_remote_admin.md 52.7)
+ *
+ * The signature lives in what version 1 left reserved, and the version stays
+ * 1: the C6's permanent loader links ota_header_valid() and is never
+ * rewritten over the network, so a new version number would make it refuse
+ * every image from then on. A version-1 kernel without signature support
+ * ignores these bytes.
+ *
+ * What is signed is the header up to and including key_id. The header
+ * carries the SHA-256 of both parts, which `commit` checks against what is
+ * in flash, so the signature covers the parts too. It is checked when the
+ * header arrives, before anything is erased (kernel/ota_sig.c). */
+#define OTA_SIG_NONE       0u
+#define OTA_SIG_P256       1u               /* ECDSA P-256 over SHA-256 */
+#define OTA_KEY_ID_LEN     8u
+#define OTA_SIGNED_LEN     ((uint32_t)__builtin_offsetof(ota_image_header_t, sig))
 
 #define OTA_BOOTREC_MAGIC  0x42544f4cu         /* "LOTB" */
 #define OTA_SLOT_NONE      0xffu

@@ -89,6 +89,7 @@ The BMI270 measures nothing until Bosch's configuration microcode (8 KB, BSD-3 l
 ### Firmware Updates
 * `cat /dev/ota`: The node's slots, boot record and update state. Commands (`begin`, `commit`, `switch`, `reboot`, ...) are written to it over 9P, usually by `tools/lota.py` ([updates](updates.md)).
 * `sdio ota [path]` (ESP32-P4): Installs LugalOS on a C6 still running the factory esp-hosted-mcu, over SDIO ([updates](updates.md)).
+* `otakey`: The release key update images must be signed with (its key id), or `no release key`. `otakey set <128 hex>` stores the public key printed by `tools/lota.py keygen` or `pubkey`: from then on the node takes only images signed with it. `otakey clear` removes it. `otakey allow-unsigned` lets the next update image begun within 10 minutes be unsigned, once. A console-only command: an `ea` tool call cannot run it ([updates](updates.md#signed-images)).
 
 ---
 

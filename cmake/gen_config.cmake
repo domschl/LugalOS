@@ -177,6 +177,10 @@ set(_optional_keys
     # the panel scanned out turned by 180 degrees (1), for a board
     # whose glass is mounted the other way up from its inscriptions.
     CONFIG_LCD_ROTATE_180
+    # 1: update images must be signed even on a node with no release key
+    # installed (kernel/ota.c). Absent: a node without a key takes unsigned
+    # images; a node with one never does.
+    CONFIG_OTA_REQUIRE_SIGNED
     # Lisp's node pool, when a
     # board wants other than user/lisp/lisp.c's per-target default.
     CONFIG_LISP_NODE_POOL

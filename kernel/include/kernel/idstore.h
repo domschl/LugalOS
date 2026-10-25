@@ -124,6 +124,11 @@ typedef enum {
                                     * limit in % (0 = none). kernel/power.c applies it at boot. */
     IDSTORE_FIELD_ORIENT    = 12, /* instance scope: 1 byte -- 1 when the display turns
                                     * itself with the IMU (kernel/orient.c), 0 when not. */
+    IDSTORE_FIELD_OTA_PUBKEY = 13, /* device scope (factory): 64 bytes -- the P-256 public
+                                    * key update images must be signed with (X then Y,
+                                    * big-endian; kernel/ota.c). Public, but written only
+                                    * from the console or by tools/provision.py: whoever
+                                    * can replace it can install any image. */
 } idstore_field_type_t;
 
 typedef struct {

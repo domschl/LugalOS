@@ -76,6 +76,7 @@
 #include "kernel/timezone.h"
 #include "kernel/sha256.h"
 #include "kernel/crypto.h"
+#include "kernel/ota.h"
 #include "kernel/privilege.h"
 #include "kernel/random.h"
 #include "kernel/idstore.h"
@@ -3840,6 +3841,81 @@ static void cmd_mqttcfg(const char *arg) {
     mqttcfg_print_report();
 }
 
+/* --- `otakey`: the release key update images are signed with ---------------
+ * A factory setting (plan/phase52_remote_admin.md 52.7): a privileged command,
+ * so it runs for a person at the console and never for an agent's tool call. */
+static bool otakey_hex(const char *s, uint8_t *out, uint32_t len) {
+    for (uint32_t i = 0; i < len; i++) {
+        int v = 0;
+        for (int k = 0; k < 2; k++) {
+            char c = s[2 * i + (uint32_t)k];
+            int d = (c >= '0' && c <= '9') ? c - '0' : (c >= 'a' && c <= 'f') ? c - 'a' + 10 :
+                    (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+            if (d < 0) return false;
+            v = v * 16 + d;
+        }
+        out[i] = (uint8_t)v;
+    }
+    return s[2 * len] == '\0';
+}
+
+static void cmd_otakey(const char *arg) {
+    while (arg && *arg == ' ') arg++;
+    if (!arg || !*arg) {
+        uint8_t key[NODE_OTA_PUBKEY_LEN];
+        if (node_ota_pubkey(key)) {
+            uint8_t d[SHA256_DIGEST_LEN];
+            sha256(key, sizeof key, d);
+            cprintf("release key id ");
+            for (unsigned i = 0; i < 8; i++) cprintf("%02x", d[i]);
+            cprintf(": update images must be signed with it\n");
+        } else {
+            cprintf("no release key%s\n",
+#if defined(CONFIG_OTA_REQUIRE_SIGNED) && CONFIG_OTA_REQUIRE_SIGNED
+                    ": this build takes signed images only, so it takes none over the network"
+#else
+                    ": unsigned update images are taken"
+#endif
+                    );
+        }
+        return;
+    }
+    if (strncmp(arg, "set ", 4) == 0) {
+        const char *h = arg + 4;
+        while (*h == ' ') h++;
+        uint8_t key[NODE_OTA_PUBKEY_LEN];
+        if (!otakey_hex(h, key, sizeof key)) {
+            cprintf("otakey set: expected the public key as %u hex characters (X then Y)\n",
+                    (unsigned)(2 * sizeof key));
+            return;
+        }
+        if (!p256_pubkey_valid(key)) {
+            cprintf("otakey set: not a point on P-256 -- refused\n");
+            return;
+        }
+        node_id_result_t rc = node_identity_set_ota_pubkey(key);
+        cprintf("otakey: %s\n", rc == NODE_ID_OK ? "stored; update images must now be signed with it"
+                                                 : node_id_result_str(rc));
+    } else if (strcmp(arg, "clear") == 0) {
+        node_id_result_t rc = node_identity_set_ota_pubkey(NULL);
+        cprintf("otakey: %s\n", rc == NODE_ID_OK ? "cleared" : node_id_result_str(rc));
+    } else if (strcmp(arg, "allow-unsigned") == 0) {
+#if defined(CONFIG_OTA)
+        ota_allow_unsigned_once(600);
+        cprintf("otakey: the next update image begun within 10 minutes may be unsigned (once)\n");
+#else
+        cprintf("otakey: this board has no update path\n");
+#endif
+        return;
+    } else {
+        cprintf("usage: otakey [set <128 hex> | clear | allow-unsigned]\n");
+        return;
+    }
+#if defined(CONFIG_OTA)
+    ota_release_key_changed();
+#endif
+}
+
 static void cmd_wlan(const char *arg) {
     if (!arg || !*arg) { wlan_print_report(); return; }
 
@@ -6922,6 +6998,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         llp_node_start(LLP_NODE_RADIO);
         return;
 #endif
+    } else if (strcmp(cmd_line, "otakey") == 0 || strncmp(cmd_line, "otakey ", 7) == 0) {
+        cmd_otakey(cmd_line[6] ? &cmd_line[7] : NULL);
+        return;
     } else if (strcmp(cmd_line, "p9key") == 0) {
         cmd_p9key(NULL);
         return;

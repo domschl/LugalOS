@@ -130,6 +130,9 @@ int p256_sign(uint8_t sig[P256_SIG_LEN], const uint8_t priv[P256_PRIV_LEN],
  * not on the curve; CRYPTO_ERR_VERIFY otherwise. Needs no entropy. */
 int p256_verify(const uint8_t sig[P256_SIG_LEN], const uint8_t pub[P256_PUB_LEN],
                 const uint8_t *hash, uint32_t hash_len);
+/* True when `pub` is a point on the curve (and not the point at infinity):
+ * what a stored public key is checked with before it is trusted. */
+bool p256_pubkey_valid(const uint8_t pub[P256_PUB_LEN]);
 /* The shared X coordinate. CRYPTO_ERR_BAD_KEY for either key invalid. */
 int p256_ecdh(uint8_t shared[32], const uint8_t priv[P256_PRIV_LEN],
               const uint8_t peer_pub[P256_PUB_LEN]);

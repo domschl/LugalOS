@@ -1148,7 +1148,7 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
     list(APPEND SOURCES drivers/usbjtag_esp32c6.c drivers/idstore_esp32c6.c drivers/wdt_esp32c6.c)
     # its flash, written while executing from it, and updates through the
     # namespace (kernel/ota.c) into the slot the loader did not boot.
-    list(APPEND SOURCES drivers/flash_esp32c6.c drivers/ota_esp32c6.c kernel/ota.c kernel/ota_image.c)
+    list(APPEND SOURCES drivers/flash_esp32c6.c drivers/ota_esp32c6.c kernel/ota.c kernel/ota_image.c kernel/ota_sig.c)
     add_compile_definitions(CONFIG_OTA=1)
     # the hardware watchdog (drivers/wdt_esp32c6.c).
     # the board's one WS2812 (GPIO8) through the RMT pulse generator.

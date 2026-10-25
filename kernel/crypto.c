@@ -279,6 +279,14 @@ int p256_verify(const uint8_t sig[P256_SIG_LEN], const uint8_t pub[P256_PUB_LEN]
     return map_p256(p256_ecdsa_verify(sig, pub, hash, hash_len));
 }
 
+/* p256-m validates a peer key on every ECDH (on the curve, coordinates
+ * below p), so ECDH with the scalar 1 -- no secret involved -- is the check. */
+bool p256_pubkey_valid(const uint8_t pub[P256_PUB_LEN]) {
+    uint8_t one[P256_PRIV_LEN] = { 0 }, x[32];
+    one[P256_PRIV_LEN - 1] = 1;
+    return p256_ecdh_shared_secret(x, one, pub) == P256_SUCCESS;
+}
+
 int p256_ecdh(uint8_t shared[32], const uint8_t priv[P256_PRIV_LEN],
               const uint8_t peer_pub[P256_PUB_LEN]) {
     return map_p256(p256_ecdh_shared_secret(shared, priv, peer_pub));
