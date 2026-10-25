@@ -40,7 +40,16 @@
  * that ended. Not the RFC's 2*MSL, which on a LAN would be pure waste. */
 #define TCP_TIME_WAIT_MS    2000u
 
+/* Each connection costs two P9_MAX_MSIZE buffers, taken as one contiguous
+ * palloc run at first use (ensure_bufs()). The ESP32-C6 keeps 2: with the
+ * radio up it has about 4 free pages, and 4 connections' 8 pages did not fit,
+ * so the 9P listener never started there ("No memory for connection
+ * buffers"). */
+#if defined(CONFIG_BOARD_ESP32C6)
+#define TCP_MAX_CONNS 2
+#else
 #define TCP_MAX_CONNS 4
+#endif
 
 /* Q0's stream ring indexes the receive buffer modulo its size and lets the
  * byte counters wrap at 2^32. Both are only correct for a power-of-two size,
