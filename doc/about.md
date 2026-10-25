@@ -41,7 +41,40 @@
 
 ---
 
-## 4. Documentation Navigation
+## 4. Third-Party Code, Data & Origins
+
+LugalOS itself is licensed under the MIT License. Everything below came from elsewhere, is used under its own license, and is listed here when it is added to the tree.
+
+### Linked into firmware images
+
+* **Infineon CYW43439 firmware** (`rp2350-wifi`): the three blobs in `firmware/cyw43/` are uploaded to the Wi-Fi chip at every boot. Infineon Permissive Binary License 1.0, reproduced in `firmware/cyw43/LICENSE-permissive-binary-license-1.0.txt`. See `firmware/cyw43/README.md` for where they come from.
+* **Espressif Wi-Fi, PHY and coexistence libraries** (ESP32-C6): `libpp`, `libnet80211`, `libcore`, `libphy` and `libcoexist` from ESP-IDF (`components/esp_wifi/lib`, `esp_phy`, `esp_coex`), Apache License 2.0. They run in a confined U-mode domain (`cmake/radio_esp32c6.cmake`, `tools/c6_radio_libs.py`).
+* **wpa_supplicant** (ESP32-C6): ESP-IDF's port of hostap's `wpa_supplicant` (BSD license, with Espressif's port under Apache License 2.0), station side only, built into the same radio domain.
+* **sekigon-gonnoc's Pico-PIO-USB**: the three PIO programs of the USB host port (`drivers/piousb_rp2350.c`: `usb_tx_fs`, `usb_nrzi_decoder`, `usb_edge_detector`, and the low-speed `PRE` variant of the transmitter's end) are from [Pico-PIO-USB](https://github.com/sekigon-gonnoc/Pico-PIO-USB) (MIT License, quoted in that file's header), embedded as assembled instruction words. The host engine, hub and keyboard code around them are written for this tree.
+* **Cryptographic primitives** (phase 52): vendored under `third_party/crypto/` with their license files. Each library is listed here when it is added.
+
+### Fonts
+
+* **Frederic Cambus's Spleen**: the 8x16 terminal font (`drivers/font8x16.c`) is generated from [Spleen](https://github.com/fcambus/spleen) (BSD 2-Clause License, copied in full to `tools/fonts/LICENSE.spleen`) by `tools/gen_font_bdf.py`. The chess figurines and the replacement glyph are drawn in the generator for this tree.
+* **Google Noto Sans Mono and Noto Serif**: the multi-density font tables (`drivers/font_noto_mono.c`, `drivers/font_noto_serif.c`) are rendered from the system's Noto fonts by `tools/gen_noto_fonts.py` (SIL Open Font License 1.1).
+* **Liberation Serif / Noto Serif**: the reader's proportional serif tables (`drivers/font_serif.c`) are rendered by `tools/gen_serif_font.py` from whichever of the two is installed (both SIL Open Font License 1.1).
+
+### Host tools
+
+* **Microsoft UF2 Tools**: `tools/uf2conv.py` and `tools/uf2families.json` are from [Microsoft UF2](https://github.com/microsoft/uf2) (MIT License).
+* **Raspberry Pi Picotool**: used for RP2350 flashing, image analysis and partition tables, from the [Picotool repository](https://github.com/raspberrypi/picotool) (BSD 3-Clause License). It is not part of this tree.
+
+### References and adapted designs (no code linked)
+
+* **Igor Michalak's bare-metal-rp2350**: reference boot headers, RISC-V XOSC/PLL clock setup and dual-core reset patterns from [`bare-metal-rp2350`](https://github.com/igormichalak/bare-metal-rp2350).
+* **hathach's TinyUSB**: the RP2350 USB CDC ACM driver (`drivers/usb_cdc.c`) was checked against the DPRAM and endpoint-control layouts and the buffer-control write order in [TinyUSB](https://github.com/hathach/tinyusb)'s `rp2040_usb.c`/`usb_dpram.h` (MIT License). No TinyUSB code is linked.
+* **Rui Ueyama's chibicc**: the on-device C11 compiler's architecture is adapted from [`chibicc`](https://github.com/rui314/chibicc) (MIT License).
+* **ESP-IDF** (Apache License 2.0): ROM addresses, register sequences and data layouts (`esp_app_desc_t`, `otadata`, the esp-hosted-mcu RPC messages) are transcribed from ESP-IDF sources, as the comments at each use say.
+* **Ken Thompson & Bell Labs**: the Unix `ed` teletype editor, and the Plan 9 namespace model.
+
+---
+
+## 5. Documentation Navigation
 
 * **[Master Table of Contents](README.md)**: Complete catalog of all LugalOS manuals and topics.
 * **[User Manual](user/index.md)**: Daily shell operations, text editors, ribbon window manager, CAS, and sensors.
