@@ -38,7 +38,7 @@ static bool field_type_known(uint8_t type) {
            type == IDSTORE_FIELD_IPV4 || type == IDSTORE_FIELD_GRANTS ||
            type == IDSTORE_FIELD_MQTT || type == IDSTORE_FIELD_ALTITUDE ||
            type == IDSTORE_FIELD_SENSOR_CAL || type == IDSTORE_FIELD_POWER ||
-           type == IDSTORE_FIELD_ORIENT;
+           type == IDSTORE_FIELD_ORIENT || type == IDSTORE_FIELD_OTA_PUBKEY;
 }
 
 /* I3, kernel/include/kernel/idstore.h's own comment on this declaration

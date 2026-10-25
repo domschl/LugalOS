@@ -254,6 +254,11 @@ static void test_p256(int *failures) {
           p256_verify(sig, pub, hash, 32) == CRYPTO_ERR_BAD_KEY, failures);
     pub[63] ^= 0x01;
 
+    check("P-256 public key check accepts a valid key", p256_pubkey_valid(pub), failures);
+    pub[10] ^= 0x01;
+    check("P-256 public key check refuses a point off the curve", !p256_pubkey_valid(pub), failures);
+    pub[10] ^= 0x01;
+
     unhex(d2, 32, ECDH_D2);
     unhex(p2, 64, ECDH_P2);
     int rc = p256_ecdh(shared, priv, p2);

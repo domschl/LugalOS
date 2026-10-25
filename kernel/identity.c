@@ -323,6 +323,9 @@ typedef struct {
     const uint8_t *power;
     /* Auto-orientation on or off, one byte. */
     const uint8_t *orient;
+    /* The update-signing public key, NODE_OTA_PUBKEY_LEN bytes. */
+    const uint8_t *ota_pubkey;
+    bool           clear_ota_pubkey;
 } identity_patch_t;
 
 /* Reads whatever is currently on `dev` (if anything valid), then writes a
@@ -518,7 +521,18 @@ static int identity_store_write(const identity_patch_t *patch) {
         have_orient = idstore_get_field(oldp, IDSTORE_FIELD_ORIENT, &final_orient, 1) == 1;
     }
 
+    uint8_t  final_otakey[NODE_OTA_PUBKEY_LEN];
+    bool     have_otakey = false;
+    if (patch->ota_pubkey) {
+        memcpy(final_otakey, patch->ota_pubkey, sizeof(final_otakey));
+        have_otakey = true;
+    } else if (old_valid && !patch->clear_ota_pubkey) {
+        have_otakey = idstore_get_field(oldp, IDSTORE_FIELD_OTA_PUBKEY, final_otakey,
+                                        sizeof(final_otakey)) == (int)sizeof(final_otakey);
+    }
+
     if (have_ipv4)           rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_IPV4, final_ipv4, sizeof(final_ipv4));
+    if (have_otakey)         rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_OTA_PUBKEY, final_otakey, sizeof(final_otakey));
     if (have_power)          rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_POWER, final_power, sizeof(final_power));
     if (have_orient)         rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_ORIENT, &final_orient, 1);
     if (have_alt)            rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_ALTITUDE, final_alt, sizeof(final_alt));
@@ -901,6 +915,26 @@ bool node_orient_auto(bool *on) {
     }
     scratch_release(&sc);
     return ok;
+}
+
+bool node_ota_pubkey(uint8_t out[NODE_OTA_PUBKEY_LEN]) {
+    block_dev_t *dev = identity_store_device();
+    if (!dev) return false;
+    scratch_t sc;
+    if (!scratch_acquire(&sc, sizeof(idstore_t))) return false;
+    idstore_t *rec = (idstore_t *)sc.base;
+    bool ok = idstore_read(dev, rec) == IDSTORE_VALID &&
+              idstore_get_field(rec, IDSTORE_FIELD_OTA_PUBKEY, out, NODE_OTA_PUBKEY_LEN) == (int)NODE_OTA_PUBKEY_LEN;
+    scratch_release(&sc);
+    return ok;
+}
+
+node_id_result_t node_identity_set_ota_pubkey(const uint8_t *key) {
+    if (!identity_store_device()) return NODE_ID_ERR_NO_BACKEND;
+    identity_patch_t patch = { 0 };
+    if (key) patch.ota_pubkey = key;
+    else     patch.clear_ota_pubkey = true;
+    return identity_store_write(&patch) == 0 ? NODE_ID_OK : NODE_ID_ERR_WRITE_FAILED;
 }
 
 node_id_result_t node_identity_set_orient_auto(bool on) {

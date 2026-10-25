@@ -4,6 +4,7 @@
  * the header's checks. Then random sectors, which must never choose a slot
  * that does not exist. */
 #include "kernel/ota_image.h"
+#include "kernel/ota_sig.h"
 #include "shim.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,6 +26,79 @@ static void apply(ota_bootrec_t *sec[2], ota_boot_choice_t c) {
 }
 
 static void erased(ota_bootrec_t *r) { memset(r, 0xff, sizeof *r); }
+
+/* kernel/crypto.c is linked for the signature check, which needs no entropy:
+ * verification only. A board without a source would refuse key generation,
+ * and nothing here generates a key. */
+bool random_is_hardware(void) { return false; }
+
+static void unhex(uint8_t *out, size_t n, const char *hex) {
+    for (size_t i = 0; i < n; i++) {
+        unsigned v;
+        sscanf(hex + 2 * i, "%2x", &v);
+        out[i] = (uint8_t)v;
+    }
+}
+
+/* Signed by tools/lota.py's sign_image() (Python `cryptography`), with the
+ * test key d = SHA-256("lugalos ota test release key"): the host tool and the
+ * node's check agree on the format, not merely with themselves. */
+static const char *SIG_PUB =
+    "7c2f01ea7be77828a36f58789519eec94c1e7b4c48b5df2b94a261faa5e07e8c"
+    "24754218eb65690567c668fd686f5875aa374b9fc9c7bfeee9466fe635e301a2";
+static const char *SIG_HDR =
+    "4c4f544101000001657370333263362d7a65726f000000000000000000000000"
+    "6573703332633600000000000000ffff640000003f000000746573742d627569"
+    "6c642d31000000000000000000000000000000000000000095ccd3b5984d4759"
+    "39629ec928de9e799e2fbb7db6e961cdf6e9c0c6469a2cfc010000002e981780"
+    "c349efc07c32e00b69198426b78d191e15ae1eb58808bfd155f499bd68cd85b1"
+    "af25986b38dfa38e414c470435dfaa43490b525815182337486874e20a9f04e7"
+    "d7031b2700000000000000000000000000000000000000000000000000000000"
+    "000000000000000000000000000000000000000000000000000000004ee00418";
+
+static void signature_tests(void) {
+    char hex[513];
+    size_t k = 0;
+    for (const char *c = SIG_HDR; *c; c++) if (*c != ' ') hex[k++] = *c;
+    hex[k] = 0;
+    CHECK(k == 512, "vector is 256 bytes (%zu hex digits)", k);
+
+    ota_image_header_t h, t;
+    uint8_t pub[64], other[64];
+    unhex((uint8_t *)&h, sizeof h, hex);
+    unhex(pub, sizeof pub, SIG_PUB);
+    CHECK(ota_header_valid(&h), "signed header is still a valid version-1 header");
+    CHECK(ota_sig_check(&h, pub) == OTA_SIG_RESULT_OK, "lota.py's signature verifies");
+    CHECK(ota_sig_check(&h, NULL) == OTA_SIG_RESULT_NO_KEY, "no key: signed but unverifiable");
+    memcpy(other, pub, sizeof other);
+    other[63] ^= 1;
+    CHECK(ota_sig_check(&h, other) == OTA_SIG_RESULT_OTHER_KEY, "another key: refused by key id");
+
+    /* Every byte the signature covers, and every signature byte: one flipped
+     * bit each must be refused. */
+    for (uint32_t i = 0; i < OTA_SIGNED_LEN + 64u; i++) {
+        uint32_t at = i < OTA_SIGNED_LEN ? i : (uint32_t)__builtin_offsetof(ota_image_header_t, sig) + (i - OTA_SIGNED_LEN);
+        t = h;
+        ((uint8_t *)&t)[at] ^= (uint8_t)(1u << (i % 8));
+        ota_sig_result_t r = ota_sig_check(&t, pub);
+        CHECK(r != OTA_SIG_RESULT_OK, "flipped bit at header byte %u accepted", at);
+    }
+
+    t = h;
+    t.reserved[3] = 1;
+    CHECK(ota_sig_check(&t, pub) == OTA_SIG_RESULT_MALFORMED, "non-zero reserved bytes are refused");
+    t = h;
+    t.sig_alg = 7;
+    CHECK(ota_sig_check(&t, pub) == OTA_SIG_RESULT_MALFORMED, "an unknown algorithm is refused");
+
+    t = h;
+    t.sig_alg = OTA_SIG_NONE;
+    memset(t.key_id, 0, sizeof t.key_id);
+    memset(t.sig, 0, sizeof t.sig);
+    CHECK(ota_sig_check(&t, pub) == OTA_SIG_RESULT_UNSIGNED, "an unsigned header reads as unsigned");
+    t.sig[0] = 1;
+    CHECK(ota_sig_check(&t, pub) == OTA_SIG_RESULT_MALFORMED, "unsigned with signature bytes set is refused");
+}
 
 int main(int argc, char **argv) {
     unsigned iters = argc > 1 ? (unsigned)strtoul(argv[1], NULL, 0) : 2000;
@@ -187,6 +261,8 @@ int main(int argc, char **argv) {
         CHECK(!ota_idf_select_valid(&s[1]), "aborted trial rejected by bootloader");
         CHECK(ota_idf_active_sector(s) == 0, "bootloader falls back to s[0]");
     }
+
+    signature_tests();
 
     if (fails) { printf("%d failures (seed %#llx)\n", fails, (unsigned long long)seed); return 1; }
     printf("ota_host OK\n");

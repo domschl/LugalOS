@@ -17,13 +17,14 @@ RP2350 follow.
 
 | File | Read | Write |
 | :--- | :--- | :--- |
-| `/dev/ota` | `board`, `chip`, `layout` (`loader`, `idf`, or `none`), `running` (slot `a`/`b`), `trial`, `fell_back`, `slot_a`/`slot_b` (build id or `empty`), `active`, `pending`, `tried`, `failed` (the boot record), `state` (`idle`, `receiving`, `received`, `committed`, `error`), `received`, `error` | `begin SIZE`, `commit`, `reboot`, `confirm`, `abort`, `switch` |
+| `/dev/ota` | `board`, `chip`, `layout` (`loader`, `idf`, or `none`), `running` (slot `a`/`b`), `trial`, `fell_back`, `slot_a`/`slot_b` (build id or `empty`), `active`, `pending`, `tried`, `failed` (the boot record), `release_key` (key id or `none`), `signatures` (`required`, `optional`), `image_signature` (once an image's header is in), `state` (`idle`, `receiving`, `received`, `committed`, `error`), `received`, `error` | `begin SIZE`, `commit`, `reboot`, `confirm`, `abort`, `switch` |
 | `/dev/otaimage` | -- | the update image, in order from offset 0, after `begin` |
 
 1. `begin SIZE`: the image's length in bytes.
 2. The image into `/dev/otaimage`. Its 256-byte header names the board and the
-   chip: an image for another board is refused when its header arrives, before
-   anything is erased. Then the slot this boot is *not* running from is
+   chip, and carries the signature (below): an image for another board, or
+   one the node's signature policy refuses, is refused when its header
+   arrives, before anything is erased. Then the slot this boot is *not* running from is
    emptied and the image goes into it, one 4 KB sector at a time.
 3. `commit`: the node reads the slot back and checks its SHA-256 against the
    header; only then does it write the slot's header (a slot cut off half-way
@@ -57,8 +58,10 @@ uv run tools/lota.py push build/esp32c6-mini --tcp 192.168.178.160 --keyfile KEY
         --prefix /c6 --reboot --wait
 
 # A C6 on its own (the C6-Zero): its own 9P server. Its reboot ends the
-# session, so check the result on its console (`cat /dev/ota`):
-uv run tools/lota.py push build/esp32c6 --tcp 192.168.178.162 --keyfile KEYFILE --reboot
+# connection; --wait connects again once it is back, which needs a key that
+# survives the reboot (a grant: `peers add lugal HEX / rw` on its console --
+# a `p9key` lasts one boot):
+uv run tools/lota.py push build/esp32c6 --tcp 192.168.178.162 --keyfile KEYFILE --reboot --wait
 
 uv run tools/lota.py status --p4 lcd7b --prefix /c6
 
@@ -76,6 +79,39 @@ kernel's code zeroed -- it passes every check, boots and dies, which is how the
 fall-back is tested. `--no-board-check` sends an image for another board, to
 test the node's own refusal. `--rate KB/S` slows the upload down, for cutting
 the power in the middle of one by hand.
+
+## Signed images
+
+An update image can carry an ECDSA P-256 signature in its header, over the
+header's first 132 bytes. Those bytes include the SHA-256 of the image's
+parts, which `commit` checks against what landed in flash, so the signature
+covers the whole image. The node checks it when the header arrives, before
+anything is erased.
+
+| The node | Unsigned image | Signed with its key | Signed with another key, or damaged |
+| :--- | :--- | :--- | :--- |
+| no release key (`otakey`: `no release key`) | taken | taken (not checked) | refused if damaged |
+| release key installed | refused | taken | refused |
+| build with `CONFIG_OTA_REQUIRE_SIGNED=1` | refused | taken | refused |
+
+```bash
+uv run tools/lota.py keygen      # once: ~/.config/lugalos/keys/ota-release.pem (keep it safe)
+uv run tools/lota.py pubkey      # prints `otakey set <hex>`: type it on each node's console
+```
+
+From then on `image` and `push` sign with that key (`--sign-key` names
+another, `--no-sign` sends the image unsigned). Installing the key is a
+console-only, factory-style step. The network can never change it, and an
+`ea` tool call cannot either. To install an unsigned image on a node that
+requires signatures (an esp-hosted-mcu image, a test build), type
+`otakey allow-unsigned` at its console first: it lets exactly one image begun
+within 10 minutes through.
+
+`push --tamper sig|header|part` damages a signed image on purpose: the node
+must refuse the first two when the header arrives, and the third at `commit`.
+
+The key id `/dev/ota` reports is the first 8 bytes of the SHA-256 of the
+64-byte public key, the same id `lota.py` prints.
 
 ## The ESP32-C6's flash
 

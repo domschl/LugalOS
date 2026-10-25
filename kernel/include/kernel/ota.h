@@ -34,6 +34,14 @@ int ota_image_read(void *buf, uint32_t len, uint64_t off);
 /* At boot: on a trial boot, the task that confirms the image or gives up on it. */
 void ota_start(void);
 
+/* The release key in the identity store changed (`otakey`): read it again.
+ * Task context that may read the identity store -- not the 9P server. */
+void ota_release_key_changed(void);
+/* The console's override: the next image whose header arrives within
+ * `window_s` seconds may be unsigned, once. Never reachable from the network
+ * (the shell marks `otakey` privileged). */
+void ota_allow_unsigned_once(uint32_t window_s);
+
 /* --- the board's half (drivers/ota_<chip>.c) ------------------------------- */
 
 typedef struct {

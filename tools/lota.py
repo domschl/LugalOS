@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --quiet --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["pyserial"]
+# dependencies = ["pyserial", "cryptography"]
 # ///
 """Build a LugalOS update image, and update a node with it over 9P.
 
@@ -25,6 +25,17 @@ C6 beside a P4 through the P4's own namespace, over the P4's console (--p4,
 
 --break is for testing the fall-back: it zeroes 64 KB of the kernel's code
 before the hash is taken, so the image passes every check, boots, and dies.
+
+## Signing (plan/phase52_remote_admin.md 52.7)
+
+    lota.py keygen                      # -> ~/.config/lugalos/keys/ota-release.pem
+    lota.py pubkey                      # the public key, for `otakey set <hex>` on a node
+
+`image` and `push` sign every image with that key when it exists (--sign-key
+names another, --no-sign sends it unsigned): ECDSA P-256 over the header's
+first 132 bytes, which carry the SHA-256 of the parts. A node with a release
+key installed (`otakey`) takes only images signed with it, and checks the
+signature before it erases anything.
 """
 
 from __future__ import annotations
@@ -48,6 +59,95 @@ VERSION = 1
 HEADER_LEN = 256
 HEADER_FMT = "<IHH24s12sHHII32s32s132sI"
 assert struct.calcsize(HEADER_FMT) == HEADER_LEN
+
+# The signature fields inside the 132 bytes version 1 reserved
+# (kernel/include/kernel/ota_image.h): sig_alg, 3 pad, key_id[8], sig[64].
+SIG_ALG_OFF, KEY_ID_OFF, SIG_OFF, SIGNED_LEN = 120, 124, 132, 132
+SIG_ALG_P256 = 1
+DEFAULT_SIGNING_KEY = Path.home() / ".config" / "lugalos" / "keys" / "ota-release.pem"
+
+
+def load_signing_key(path: Path):
+    """The private key, PEM. `cryptography` is imported here and not at the
+    top: the build runs `lota.py app-image` under a plain python3."""
+    from cryptography.hazmat.primitives.serialization import load_pem_private_key
+    key = load_pem_private_key(path.read_bytes(), password=None)
+    from cryptography.hazmat.primitives.asymmetric import ec
+    if not isinstance(key, ec.EllipticCurvePrivateKey) or key.curve.name != "secp256r1":
+        sys.exit(f"{path}: not a P-256 private key")
+    return key
+
+
+def public_raw(key) -> bytes:
+    """64 bytes, X then Y: the form `otakey set` and the node take."""
+    n = key.public_key().public_numbers()
+    return n.x.to_bytes(32, "big") + n.y.to_bytes(32, "big")
+
+
+def key_id(pub: bytes) -> bytes:
+    return hashlib.sha256(pub).digest()[:8]
+
+
+def is_signed(image: bytes) -> bool:
+    return image[SIG_ALG_OFF] != 0
+
+
+def sign_image(image: bytes, key) -> bytes:
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+    hdr = bytearray(image[:HEADER_LEN])
+    hdr[SIG_ALG_OFF:SIG_ALG_OFF + 4] = bytes([SIG_ALG_P256, 0, 0, 0])
+    hdr[KEY_ID_OFF:KEY_ID_OFF + 8] = key_id(public_raw(key))
+    hdr[SIG_OFF:HEADER_LEN - 4] = bytes(HEADER_LEN - 4 - SIG_OFF)
+    r, s_ = decode_dss_signature(key.sign(bytes(hdr[:SIGNED_LEN]), ec.ECDSA(hashes.SHA256())))
+    hdr[SIG_OFF:SIG_OFF + 64] = r.to_bytes(32, "big") + s_.to_bytes(32, "big")
+    hdr[HEADER_LEN - 4:] = struct.pack("<I", zlib.crc32(bytes(hdr[:HEADER_LEN - 4])))
+    return bytes(hdr) + image[HEADER_LEN:]
+
+
+def maybe_sign(image: bytes, a: argparse.Namespace) -> tuple[bytes, str]:
+    """Signs `image` unless --no-sign, or it is signed already, or there is no key."""
+    if is_signed(image):
+        return image, "signed (as given), key id " + image[KEY_ID_OFF:KEY_ID_OFF + 8].hex()
+    if getattr(a, "no_sign", False):
+        return image, "unsigned (--no-sign)"
+    path = Path(a.sign_key) if getattr(a, "sign_key", None) else DEFAULT_SIGNING_KEY
+    if not path.exists():
+        if getattr(a, "sign_key", None):
+            sys.exit(f"{path}: no such signing key")
+        return image, f"unsigned (no signing key at {path}; `lota.py keygen` makes one)"
+    key = load_signing_key(path)
+    return sign_image(image, key), "signed, key id " + key_id(public_raw(key)).hex()
+
+
+def keygen(a: argparse.Namespace) -> int:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    out = Path(a.output) if a.output else DEFAULT_SIGNING_KEY
+    if out.exists() and not a.force:
+        sys.exit(f"{out} exists; --force replaces it (and every node that trusts it then refuses your images)")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    key = ec.generate_private_key(ec.SECP256R1())
+    pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                            serialization.NoEncryption())
+    fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(pem)
+    pub = public_raw(key)
+    print(f"{out}: new P-256 release key, key id {key_id(pub).hex()}")
+    print(f"on each node's console:  otakey set {pub.hex()}")
+    return 0
+
+
+def pubkey(a: argparse.Namespace) -> int:
+    path = Path(a.sign_key) if a.sign_key else DEFAULT_SIGNING_KEY
+    if not path.exists():
+        sys.exit(f"{path}: no signing key (`lota.py keygen` makes one)")
+    pub = public_raw(load_signing_key(path))
+    print(f"key id {key_id(pub).hex()}")
+    print(f"otakey set {pub.hex()}")
+    return 0
 
 
 def read_manifest(build: Path) -> dict[str, list[str]]:
@@ -345,7 +445,16 @@ def push(a: argparse.Namespace) -> int:
                 info = {"board": target_board, "build_id": bid}
             else:
                 sys.exit(f"{src}: not a LugalOS OTA image or ESP-IDF 0xE9 app binary")
-        print(f"image: {len(image)} bytes for {info['board']}, build {info.get('build_id', '?')}"
+        image, sig_note = maybe_sign(image, a)
+        if a.tamper:
+            b = bytearray(image)
+            at = {"sig": SIG_OFF + 5, "header": 60, "part": HEADER_LEN + len(image) // 3}[a.tamper]
+            b[at] ^= 0x01
+            if a.tamper != "part":
+                b[HEADER_LEN - 4:HEADER_LEN] = struct.pack("<I", zlib.crc32(bytes(b[:HEADER_LEN - 4])))
+            image = bytes(b)
+            sig_note += f", TAMPERED ({a.tamper} byte {at})"
+        print(f"image: {len(image)} bytes for {info['board']}, build {info.get('build_id', '?')}, {sig_note}"
               f"{' (BROKEN on purpose)' if a.broken else ''}")
         if st.get("board") != info["board"] and not a.no_board_check:
             sys.exit(f"the node is a {st.get('board')}, the image is for {info['board']}")
@@ -371,11 +480,26 @@ def push(a: argparse.Namespace) -> int:
         print(f"rebooting; waiting up to {a.wait_s} s for the new image to confirm")
         end = time.monotonic() + a.wait_s
         seen_trial = False
+        last_err = ""
+        answered_since_reboot = False
         while time.monotonic() < end:
             time.sleep(3)
             try:
                 st = node.status()
-            except Exception:
+                answered_since_reboot = True
+            except Exception as e:
+                last_err = str(e) or type(e).__name__
+                if a.tcp:
+                    # The node's own 9P server restarted with it: a new
+                    # connection, and a new session, once it is back.
+                    try:
+                        node.close()
+                    except Exception:
+                        pass
+                    try:
+                        node = Node(a)
+                    except Exception as e2:
+                        last_err = str(e2) or type(e2).__name__
                 continue                          # the node (or its mount) is restarting
             if st.get("running") != old_slot and st.get("trial") == "no":
                 print("confirmed:", show(st))
@@ -386,7 +510,12 @@ def push(a: argparse.Namespace) -> int:
             if st.get("trial") == "yes" and not seen_trial:
                 seen_trial = True
                 print("on trial:", show(st))
-        print("no answer in time; last seen:", show(st))
+        if not answered_since_reboot:
+            print(f"no answer since the reboot ({last_err or 'no reply'}): the node may be fine but "
+                  "unreachable to this session -- a key set with `p9key` lasts one boot only. "
+                  "Check its console: cat /dev/ota")
+        else:
+            print("no answer in time; last seen:", show(st))
         return 1
     finally:
         node.close()
@@ -437,6 +566,14 @@ def main() -> int:
     im.add_argument("build", type=Path)
     im.add_argument("-o", "--output", type=Path)
     im.add_argument("--idf", action="store_true", help="pack single-file ESP-IDF 0xE9 app image instead of loader split")
+    for p in (im,):
+        p.add_argument("--sign-key", help=f"PEM private key to sign with (default {DEFAULT_SIGNING_KEY}, if present)")
+        p.add_argument("--no-sign", action="store_true", help="leave the image unsigned")
+    kg = sub.add_parser("keygen", help="make a P-256 release key for signing update images")
+    kg.add_argument("-o", "--output", help=f"where to write it (default {DEFAULT_SIGNING_KEY})")
+    kg.add_argument("--force", action="store_true", help="replace an existing key")
+    pk = sub.add_parser("pubkey", help="print the release key's public half, for `otakey set`")
+    pk.add_argument("--sign-key", help=f"PEM private key (default {DEFAULT_SIGNING_KEY})")
     aim = sub.add_parser("app-image", help="build the single-file ESP-IDF 0xE9 application image (lugalos-c6-app.bin)")
     aim.add_argument("build", type=Path)
     aim.add_argument("-o", "--output", type=Path)
@@ -453,6 +590,11 @@ def main() -> int:
                            help="send no faster than this (testing a cut-off update by hand)")
             p.add_argument("--no-board-check", action="store_true",
                            help="send even to another board (testing the node's own refusal)")
+            p.add_argument("--sign-key", help=f"PEM private key to sign with (default {DEFAULT_SIGNING_KEY}, if present)")
+            p.add_argument("--no-sign", action="store_true", help="send the image unsigned")
+            p.add_argument("--tamper", choices=["sig", "header", "part"],
+                           help="damage the signed image (testing the node's refusal): a signature byte, "
+                                "a signed header byte (CRC fixed up), or a part byte")
         elif name == "switch":
             p.add_argument("--reboot", action="store_true", help="restart into the switched slot")
         elif name == "dump-other":
@@ -471,8 +613,14 @@ def main() -> int:
         out.write_bytes(raw)
         print(f"{out}: {len(raw)} bytes, {info['board']}, build {info['build_id']}, sha256 {info['sha256']}")
         return 0
+    if a.cmd == "keygen":
+        return keygen(a)
+    if a.cmd == "pubkey":
+        return pubkey(a)
     if a.cmd == "image":
         image, info = make_image(a.build, idf=a.idf)
+        image, sig_note = maybe_sign(image, a)
+        info["layout"] = f"{info['layout']}, {sig_note}"
         out = a.output or a.build / "lugalos-ota.img"
         out.write_bytes(image)
         print(f"{out}: {len(image)} bytes, {info['board']} ({info['layout']}), build {info['build_id']}, sha256 {info['sha256']}")

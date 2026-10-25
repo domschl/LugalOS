@@ -37,7 +37,8 @@ chibicc_host_SRC := chibicc_host.c $(wildcard $(ROOT)/user/chibicc/*.c)
 p9_host_SRC      := p9_host.c $(ROOT)/fs/9p.c $(ROOT)/kernel/sha256.c
 nvs_host_SRC     := nvs_host.c $(ROOT)/drivers/radio/nvs_ram.c
 ws2812_host_SRC  := ws2812_host.c $(ROOT)/drivers/ws2812.c
-ota_host_SRC     := ota_host.c $(ROOT)/kernel/ota_image.c
+ota_host_SRC     := ota_host.c $(ROOT)/kernel/ota_image.c $(ROOT)/kernel/ota_sig.c $(ROOT)/kernel/crypto.c $(ROOT)/kernel/sha256.c \
+                    $(ROOT)/third_party/crypto/monocypher/monocypher.c $(ROOT)/third_party/crypto/p256-m/p256-m.c
 llp_host_SRC     := llp_host.c $(ROOT)/kernel/llp.c $(ROOT)/kernel/crc32.c $(ROOT)/drivers/slip.c
 uprintf_host_SRC := uprintf_host.c $(ROOT)/drivers/radio/uprintf.c
 uheap_host_SRC   := uheap_host.c $(ROOT)/kernel/uheap.c
