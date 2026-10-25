@@ -77,6 +77,12 @@ int p9_link_service(p9_link_t *link);
  * call). */
 void p9_link_register_background(p9_link_t *link);
 void p9_link_unregister_background(p9_link_t *link);
+/* `link` has ended (its peer closed it, reset it, or stopped answering): the
+ * fids its peer held on this node's server are released by the server task
+ * (fs/include/fs/9p.h, p9_server_conn_closed()). For a link that served 9P
+ * without being registered as background -- a TCP server connection. A
+ * background link gets this from p9_link_unregister_background(). */
+void p9_link_closed(p9_link_t *link);
 void p9_link_background_poll(void);
 
 /* Starts the 9P server as a scheduled task (B4, resolving D4). Before this

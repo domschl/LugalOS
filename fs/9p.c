@@ -226,6 +226,7 @@ static int p9_pack_stat(uint8_t *out, uint32_t out_max, const char *name, uint64
  * so linear search is fine. */
 typedef struct {
     const void *conn;           // the connection this fid number belongs to
+    uint32_t seq;               // g_fid_seq when allocated: older than a close, or newer
     bool in_use;
     uint32_t fid_value;
     char path[128];             // resolved absolute VFS path
@@ -266,6 +267,10 @@ typedef struct {
  * loopback self-test). */
 static p9_fid_entry_t g_fid_table[P9_MAX_FIDS];
 static spinlock_t     g_fid_lock;
+/* guarded by: g_fid_lock. Counts fid allocations, so a connection's close can
+ * name the fids it owned: a new connection on the same link (a TCP slot taken
+ * again at once) allocates later ones. */
+static uint32_t       g_fid_seq;
 
 /* The request being processed, per execution context: which connection it
  * came in on and the auth policy in force. Per context, not one global,
@@ -323,6 +328,7 @@ static p9_fid_entry_t *p9_fid_alloc(uint32_t fid) {
                 memset(e, 0, sizeof(*e));
                 e->in_use = true;
                 e->conn = conn;
+                e->seq = ++g_fid_seq;
                 e->fid_value = fid;
                 e->vfs_fd = -1;
                 break;
@@ -344,6 +350,23 @@ static bool fid_slot_match(int i, bool all, const void *conn) {
 static void p9_fid_reset_all(void) {
     for (int i = 0; i < P9_MAX_FIDS; i++)
         if (fid_slot_match(i, true, NULL)) p9_fid_release(&g_fid_table[i]);
+}
+
+uint32_t p9_server_fid_seq(void) {
+    uintptr_t f = spin_lock_irqsave(&g_fid_lock);
+    uint32_t s = g_fid_seq;
+    spin_unlock_irqrestore(&g_fid_lock, f);
+    return s;
+}
+
+void p9_server_conn_closed(const void *conn, uint32_t seq) {
+    for (int i = 0; i < P9_MAX_FIDS; i++) {
+        uintptr_t f = spin_lock_irqsave(&g_fid_lock);
+        bool m = g_fid_table[i].in_use && g_fid_table[i].conn == conn &&
+                 (int32_t)(g_fid_table[i].seq - seq) <= 0;
+        spin_unlock_irqrestore(&g_fid_lock, f);
+        if (m) p9_fid_release(&g_fid_table[i]);
+    }
 }
 
 /* Tversion: this connection starts over; the others keep their fids. */
@@ -1800,6 +1823,14 @@ uint32_t p9_negotiated_iounit(void) {
 }
 
 static uint64_t g_p9_last_activity_us = 0;   /* accepted: a "recently used" hint */
+
+uint32_t p9_server_fids_in_use(void) {
+    uint32_t n = 0;
+    uintptr_t f = spin_lock_irqsave(&g_fid_lock);
+    for (int i = 0; i < P9_MAX_FIDS; i++) if (g_fid_table[i].in_use) n++;
+    spin_unlock_irqrestore(&g_fid_lock, f);
+    return n;
+}
 
 bool p9_is_connected(void) {
     for (int i = 0; i < P9_MAX_FIDS; i++) {

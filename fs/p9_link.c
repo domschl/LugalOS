@@ -213,12 +213,53 @@ void p9_link_register_background(p9_link_t *link) {
     else if (got == -2) printk("[9P Link] background transport slots full; '%s' not registered.\n", link->name ? link->name : "?");
 }
 
-void p9_link_unregister_background(p9_link_t *link) {
+/* Links that went away and still own fids on this node's server: drained by
+ * p9_link_background_poll() (fs/include/fs/9p.h, p9_server_conn_closed()).
+ * guarded by: g_bg_lock. */
+#define P9_LINK_MAX_CLOSED 8
+static struct { const void *conn; uint32_t seq; } g_closed[P9_LINK_MAX_CLOSED];
+static int g_closed_n;          /* guarded by: g_bg_lock */
+
+/* Under g_bg_lock. */
+static void closed_record_locked(const void *conn, uint32_t seq) {
+    if (g_closed_n < P9_LINK_MAX_CLOSED) {
+        g_closed[g_closed_n].conn = conn;
+        g_closed[g_closed_n].seq = seq;
+        g_closed_n++;
+    } else {
+        printk("[9P Link] more than %d links closed before the server task ran: the "
+               "fids of one stay until its slot is used again\n", P9_LINK_MAX_CLOSED);
+    }
+}
+
+void p9_link_closed(p9_link_t *link) {
+    uint32_t seq = p9_server_fid_seq();
     uintptr_t f = spin_lock_irqsave(&g_bg_lock);
+    closed_record_locked(link, seq);
+    spin_unlock_irqrestore(&g_bg_lock, f);
+}
+
+void p9_link_unregister_background(p9_link_t *link) {
+    uint32_t seq = p9_server_fid_seq();
+    uintptr_t f = spin_lock_irqsave(&g_bg_lock);
+    bool was = false;
     for (int i = 0; i < P9_LINK_MAX_BACKGROUND; i++) {
-        if (g_background_links[i] == link) g_background_links[i] = NULL;
+        if (g_background_links[i] == link) { g_background_links[i] = NULL; was = true; }
+    }
+    if (was) {
+        closed_record_locked(link, seq);
     }
     spin_unlock_irqrestore(&g_bg_lock, f);
+}
+
+static void drain_closed(void) {
+    struct { const void *conn; uint32_t seq; } todo[P9_LINK_MAX_CLOSED];
+    uintptr_t f = spin_lock_irqsave(&g_bg_lock);
+    int n = g_closed_n;
+    for (int i = 0; i < n; i++) { todo[i].conn = g_closed[i].conn; todo[i].seq = g_closed[i].seq; }
+    g_closed_n = 0;
+    spin_unlock_irqrestore(&g_bg_lock, f);
+    for (int i = 0; i < n; i++) p9_server_conn_closed(todo[i].conn, todo[i].seq);
 }
 
 /* --- The 9P server as a task --- *
@@ -275,6 +316,7 @@ int p9_server_task_start(void) {
 }
 
 void p9_link_background_poll(void) {
+    drain_closed();
     for (int i = 0; i < P9_LINK_MAX_BACKGROUND; i++) {
         p9_link_t *l = __atomic_load_n(&g_background_links[i], __ATOMIC_ACQUIRE);
         if (l) p9_link_service(l);

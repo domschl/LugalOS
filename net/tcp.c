@@ -40,6 +40,17 @@
  * that ended. Not the RFC's 2*MSL, which on a LAN would be pure waste. */
 #define TCP_TIME_WAIT_MS    2000u
 
+/* Keepalive, for the server's 9P connections only (MQTT's stream has its own,
+ * and a client connection is its owner's to watch). A peer that vanished
+ * without a FIN -- unplugged, out of radio range, a laptop asleep, a browser
+ * tab closed -- otherwise keeps its slot and its fids for good, and a node
+ * with 2 or 4 slots is unreachable after that many. Idle this long, a probe
+ * (an ACK for a byte already acknowledged, which any live TCP answers) every
+ * interval; this many unanswered and the connection is reset: ~90 s. */
+#define TCP_KA_IDLE_MS      60000u
+#define TCP_KA_INTERVAL_MS  10000u
+#define TCP_KA_PROBES       3u
+
 /* Each connection costs two P9_MAX_MSIZE buffers, taken as one contiguous
  * palloc run at first use (ensure_bufs()). The ESP32-C6 keeps 2: with the
  * radio up it has about 4 free pages, and 4 connections' 8 pages did not fit,
@@ -131,6 +142,8 @@ typedef struct {
     uint32_t rto_ms;
     uint32_t retries;
     uint64_t time_wait_at_ms;
+    uint64_t last_rx_ms;   /* any segment from the peer: keepalive's clock */
+    uint32_t ka_probes;    /* sent since then, unanswered */
 
     bool fin_sent;
     bool need_ack;         /* something changed that the peer should hear about */
@@ -315,6 +328,9 @@ static void conn_release(tcp_conn_t *c) {
      * property being maintained and code that pretends otherwise invites the
      * next reader to hand one out. */
     if (c->state != TCP_CLOSED && !c->is_stream) p9_link_unregister_background(&c->link);
+    /* A server connection's peer may hold fids on this node's 9P server;
+     * nothing else will release them now (p9_link_closed()). */
+    if (c->state != TCP_CLOSED && !c->is_stream && !c->is_client) p9_link_closed(&c->link);
     c->in_use = false;
     c->state = TCP_CLOSED;
     c->epoch++;            /* every link handed out for this slot is now stale */
@@ -323,6 +339,8 @@ static void conn_release(tcp_conn_t *c) {
     c->tx_len = 0;
     c->close_pending = false;
     c->rto_at_ms = 0;
+    c->last_rx_ms = 0;
+    c->ka_probes = 0;
     c->fin_sent = false;
     c->need_ack = false;
 }
@@ -882,6 +900,10 @@ void tcp_input(const uint8_t src[IPV4_LEN], const uint8_t *ip_hdr,
     uint32_t data_len = len - hdr_len;
 
     tcp_conn_t *c = find_conn(src, sport, dport);
+    if (c) {
+        c->last_rx_ms = time_get_ms();
+        c->ka_probes = 0;
+    }
     if (!c) {
         bool port_match = false;
         for (uint32_t i = 0; i < g_num_listeners; i++) {
@@ -1007,6 +1029,18 @@ void tcp_input(const uint8_t src[IPV4_LEN], const uint8_t *ip_hdr,
             break;
     }
 
+    /* An empty segment for a byte already received: a keepalive probe (ours
+     * is exactly that, TCP_KA_*). RFC 793 answers an unacceptable segment
+     * with an ACK; without one, an idle LugalOS client of another node's 9P
+     * server would be reset after the probes went unanswered. A pure ACK in
+     * order (seq == rcv_nxt) is not this and gets no reply. */
+    if (!data_len && !(flags & (TCP_SYN | TCP_FIN)) && seq_lt(seq, c->rcv_nxt) &&
+        (c->state == TCP_ESTABLISHED || c->state == TCP_CLOSE_WAIT ||
+         c->state == TCP_FIN_WAIT_1 || c->state == TCP_FIN_WAIT_2)) {
+        tcp_emit(c, TCP_ACK, c->snd_nxt, NULL, 0, false);
+        return;
+    }
+
     /* Data. In order only: anything else is dropped, and answered with a
      * duplicate ACK so the peer retransmits now rather than after its RTO.
      * §2 records why there is no reassembly queue. */
@@ -1078,6 +1112,20 @@ void tcp_service(void) {
         if (c->state == TCP_TIME_WAIT) {
             if ((int64_t)(now - c->time_wait_at_ms) >= 0) conn_release(c);
             continue;
+        }
+
+        if (c->state == TCP_ESTABLISHED && !c->is_client && !c->is_stream &&
+            c->rto_at_ms == 0 && c->last_rx_ms &&
+            (int64_t)(now - (c->last_rx_ms + TCP_KA_IDLE_MS +
+                             (uint64_t)c->ka_probes * TCP_KA_INTERVAL_MS)) >= 0) {
+            if (c->ka_probes >= TCP_KA_PROBES) {
+                printk("[TCP] %u.%u.%u.%u:%u stopped answering: connection reset\n",
+                       c->peer_ip[0], c->peer_ip[1], c->peer_ip[2], c->peer_ip[3], c->peer_port);
+                conn_abort(c);
+                continue;
+            }
+            (void)tcp_emit(c, TCP_ACK, c->snd_nxt - 1u, NULL, 0, false);
+            c->ka_probes++;
         }
 
         if (c->rto_at_ms && (int64_t)(now - c->rto_at_ms) >= 0) {
@@ -1216,6 +1264,7 @@ uint32_t tcp_conn_count(void) {
 }
 
 uint32_t tcp_accepted_total(void) { return g_accepted_total; }
+uint32_t tcp_max_conns(void) { return TCP_MAX_CONNS; }
 uint32_t tcp_reset_total(void) { return g_reset_total; }
 
 void tcp_conn_str(uint32_t index, char *out, uint32_t max) {

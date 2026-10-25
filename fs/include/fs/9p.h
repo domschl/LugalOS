@@ -163,6 +163,17 @@ int p9_server_process(const uint8_t *req_buf, uint32_t req_len,
  * request came in on; any stable pointer) scopes fid numbers and the
  * negotiated msize, so one client's Tversion resets only its own fids.
  * p9_server_process() is this with conn NULL. */
+/* A connection's fids outlive it unless someone says it ended: a client that
+ * vanished (killed, reset, unplugged) never sends the Tclunks. The link layer
+ * records p9_server_fid_seq() when a link goes away, and later -- in a task
+ * that may close VFS handles, never the network pump -- calls
+ * p9_server_conn_closed() with it: the fids `conn` allocated up to then are
+ * released, and a new connection on the same link keeps its own. */
+uint32_t p9_server_fid_seq(void);
+/* How many of the P9_MAX_FIDS slots are in use, across connections. */
+uint32_t p9_server_fids_in_use(void);
+void p9_server_conn_closed(const void *conn, uint32_t seq);
+
 int p9_server_process_conn(const void *conn, const uint8_t *req_buf, uint32_t req_len,
                            uint8_t *resp_buf, uint32_t resp_max,
                            p9_auth_policy_t policy);
