@@ -889,21 +889,25 @@ static void sdmmc_dma_arm(void) {
  * registers matter: RINTSTS carries the card-facing errors (CRC, timeouts)
  * and IDSTS the bus-facing ones (a descriptor the DMA could not fetch, a bus
  * error), and a transfer can fail in either without the other noticing. */
-static int sdmmc_dma_wait(uint32_t lba, const char *what) {
+/* `tag` names the transfer in a failure message: the card's block (`lba`) or,
+ * for an SDIO transfer to the C6, the function register address. */
+static int sdmmc_dma_wait(uint32_t tag, const char *what, bool sdio_addr) {
+    char where[24];
+    ksnprintf(where, sizeof where, sdio_addr ? "addr 0x%x" : "lba %u", (unsigned)tag);
     uint64_t deadline = time_get_us() + 3000000u;
     for (;;) {
         bool late = time_get_us() >= deadline;   /* before the reads: kernel/time.h */
         uint32_t st = REG(SD_RINTSTS);
         uint32_t id = REG(SD_IDSTS);
         if ((st & INT_DATA_ERRORS) || (id & IDSTS_ERRORS)) {
-            printk("[SDMMC] %s lba %u failed (RINTSTS 0x%x IDSTS 0x%x)\n",
-                   what, (unsigned)lba, (unsigned)st, (unsigned)id);
+            printk("[SDMMC] %s %s failed (RINTSTS 0x%x IDSTS 0x%x)\n",
+                   what, where, (unsigned)st, (unsigned)id);
             return -1;
         }
         if (st & INT_DATA_OVER) break;
         if (late) {
-            printk("[SDMMC] %s lba %u timed out (RINTSTS 0x%x IDSTS 0x%x FIFO %u)\n",
-                   what, (unsigned)lba, (unsigned)st, (unsigned)id,
+            printk("[SDMMC] %s %s timed out (RINTSTS 0x%x IDSTS 0x%x FIFO %u)\n",
+                   what, where, (unsigned)st, (unsigned)id,
                    (unsigned)sdmmc_fifo_count());
             return -1;
         }
@@ -922,8 +926,8 @@ static int sdmmc_dma_wait(uint32_t lba, const char *what) {
         t0 + 100000u);   /* the DMA itself needs microseconds; a preempted waiter longer */
     uint32_t waited = (uint32_t)(time_get_us() - t0);
     if (!done) {
-        printk("[SDMMC] %s lba %u: the DMA kept its descriptor 100 ms past the data's end\n",
-               what, (unsigned)lba);
+        printk("[SDMMC] %s %s: the DMA kept its descriptor 100 ms past the data's end\n",
+               what, where);
         return -1;
     }
     if (waited > 2u) {
@@ -948,7 +952,7 @@ static int sdmmc_hw_read_block(uint32_t lba, uint8_t *dst) {
                (unsigned)lba, (unsigned)status);
         return -1;
     }
-    if (sdmmc_dma_wait(lba, "read") != 0) { sdhost_data_reset(); return -1; }
+    if (sdmmc_dma_wait(lba, "read", false) != 0) { sdhost_data_reset(); return -1; }
 
     esp32p4_dcache_invalidate((uintptr_t)g_dma_buf, sizeof(g_dma_buf));
     memcpy(dst, g_dma_buf, 512);
@@ -967,7 +971,7 @@ static int sdmmc_hw_write_block(uint32_t lba, const uint8_t *src) {
                (unsigned)lba, (unsigned)status);
         return -1;
     }
-    if (sdmmc_dma_wait(lba, "write") != 0) { sdhost_data_reset(); return -1; }
+    if (sdmmc_dma_wait(lba, "write", false) != 0) { sdhost_data_reset(); return -1; }
 
     /* The card programs its flash with DAT0 held low, and may hold it for
      * milliseconds. Busy-polled, like the RP2350 driver's own write path:
@@ -1071,7 +1075,7 @@ void sdhost_dma_arm(sdhost_desc_t *d, uint8_t *buf, uint32_t len, uint32_t blksz
     sdmmc_dma_arm_on(d, buf, len, blksz);
 }
 
-int sdhost_dma_wait(uint32_t tag, const char *what) { return sdmmc_dma_wait(tag, what); }
+int sdhost_dma_wait(uint32_t tag, const char *what) { return sdmmc_dma_wait(tag, what, true); }
 
 void sdhost_data_reset(void) {
     /* First let the data state machine finish: a transfer the card never
@@ -1147,7 +1151,7 @@ static bool sdmmc_switch_high_speed(void) {
         sdhost_data_reset();
         return false;
     }
-    if (sdmmc_dma_wait(0, "switch") != 0) { sdhost_data_reset(); return false; }
+    if (sdmmc_dma_wait(0, "switch", false) != 0) { sdhost_data_reset(); return false; }
     esp32p4_dcache_invalidate((uintptr_t)g_dma_buf, sizeof(g_dma_buf));
     return (g_dma_buf[16] & 0x0Fu) == 1u;
 }
