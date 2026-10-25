@@ -147,6 +147,7 @@ LugalOS features a ring buffer kernel logging subsystem ([logging](logging.md)):
 * `tz [POSIX-TZ]`: Shows the time zone and whether summer time is in force; with a rule (`tz CET-1CEST,M3.5.0,M10.5.0/3`, `tz UTC0`) sets it.
 * `ntp [server-ip]`: Sets the clock over NTP; without an argument it asks the gateway.
 * `peers [...]`: The LLP peer table. `p9serve`: Runs the local 9P server on the console link (see the networking guide).
+* `wifi stats` (Pico 2 W): The CYW43439's health: the receive ring, frames over the bus each way, faults the bus latched (FIFO overflow and underflow, command and data errors), frames the receive path dropped and why, transmit-credit waits, and the chip's own packet counts where its firmware has them. `wifi probe`, `wifi join SSID PSKHEX`, `wifi leave`, `wifi recover`, `wifi trace on|off` bring the radio up by hand, join and leave, and debug it.
 
 ### Randomness & Cryptography
 * `randtest [bits]`: Measures the hardware entropy source and names it: on the RP2350 the TRNG (output bits, the time one 192-bit sample takes, and its health-test counts since boot) and the ring oscillator; on the ESP32-P4 and ESP32-C6 the RNG register's words. Prints `RANDTEST_OK` or `RANDTEST_WEAK`. On a board whose source is off or failed (QEMU, a C6 with its radio down, a P4 whose ADC noise source did not start, an RP2350 TRNG that failed its health tests), key generation and signing refuse.
