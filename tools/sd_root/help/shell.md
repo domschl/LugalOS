@@ -147,6 +147,12 @@ LugalOS features a ring buffer kernel logging subsystem ([logging](logging.md)):
 * `ntp [server-ip]`: Sets the clock over NTP; without an argument it asks the gateway.
 * `peers [...]`: The LLP peer table. `p9serve`: Runs the local 9P server on the console link (see the networking guide).
 
+### Randomness & Cryptography
+* `randtest [bits]`: Measures the hardware entropy source and names it: on the RP2350 the TRNG (output bits, the time one 192-bit sample takes, and its health-test counts since boot) and the ring oscillator; on the ESP32-P4 and ESP32-C6 the RNG register's words. Prints `RANDTEST_OK` or `RANDTEST_WEAK`. On a board whose source is off or failed (QEMU, a C6 with its radio down, a P4 whose ADC noise source did not start, an RP2350 TRNG that failed its health tests), key generation and signing refuse.
+* `cryptotest`: Known-answer tests of the primitives behind signed updates, TLS and protected 9P sessions: SHA-1, HKDF-SHA-256, X25519, ChaCha20-Poly1305 and P-256 ECDSA/ECDH, against their standards' vectors, plus tamper checks. Key generation and signing are skipped (and said to be) without hardware entropy. Prints `CRYPTO_SELFTEST_OK` or `CRYPTO_SELFTEST_FAIL`.
+* `cryptotest bench`: The time of each operation on this chip, in microseconds.
+* `hmacselftest`: SHA-256 and HMAC-SHA-256 against FIPS 180-4 and RFC 4231.
+
 ### Hardware Bring-up & Diagnostics
 These are bring-up aids for developers. They read hardware state, and some change it.
 * `peek ADDR [COUNT]` / `poke ADDR VALUE`: Read words from, or write a word to, a physical address (hex, `0x` optional). M-mode and unrestricted: a stray poke can hang the chip.

@@ -500,6 +500,11 @@ set_source_files_properties(fs/vfs_server.c PROPERTIES OBJECT_DEPENDS ${LUGALOS_
 # -fno-builtin does not prevent that; this does (the user programs above pass
 # the same flag for the same reason).
 set_source_files_properties(libc/string.c PROPERTIES COMPILE_OPTIONS -fno-tree-loop-distribute-patterns)
+# The vendored crypto files hold much more than the kernel calls (Monocypher's
+# Argon2, EdDSA, BLAKE2b and Elligator): one section per function and object,
+# so --gc-sections keeps only what kernel/crypto.c reaches.
+set_source_files_properties(third_party/crypto/monocypher/monocypher.c third_party/crypto/p256-m/p256-m.c
+    PROPERTIES COMPILE_OPTIONS "-ffunction-sections;-fdata-sections")
 
 # Per-board config header: platform
 # defaults and, where the board has real GPIO pins, a pin map -- generated
@@ -667,6 +672,14 @@ set(SOURCES
     # fiddly part is its arithmetic, and arithmetic should not be debugged by
     # flashing (same argument as drivers/dcf77_decode.c above).
     kernel/sha256.c
+    # Phase 52.6: SHA-1, HKDF, X25519, ChaCha20-Poly1305 and P-256 for signed
+    # images, TLS and protected 9P sessions; built everywhere for the same
+    # reason as sha256.c. The curve and cipher code is vendored (see
+    # third_party/crypto/*/ORIGIN.md and doc/about.md).
+    kernel/crypto.c
+    kernel/crypto_selftest.c
+    third_party/crypto/monocypher/monocypher.c
+    third_party/crypto/p256-m/p256-m.c
     # R3/R4: who this node is -- a
     # name and a MAC of its own. Above every wire on purpose: put
     # the MAC inside a driver, and the design went with the part.

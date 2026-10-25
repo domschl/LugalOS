@@ -51,7 +51,8 @@ LugalOS itself is licensed under the MIT License. Everything below came from els
 * **Espressif Wi-Fi, PHY and coexistence libraries** (ESP32-C6): `libpp`, `libnet80211`, `libcore`, `libphy` and `libcoexist` from ESP-IDF (`components/esp_wifi/lib`, `esp_phy`, `esp_coex`), Apache License 2.0. They run in a confined U-mode domain (`cmake/radio_esp32c6.cmake`, `tools/c6_radio_libs.py`).
 * **wpa_supplicant** (ESP32-C6): ESP-IDF's port of hostap's `wpa_supplicant` (BSD license, with Espressif's port under Apache License 2.0), station side only, built into the same radio domain.
 * **sekigon-gonnoc's Pico-PIO-USB**: the three PIO programs of the USB host port (`drivers/piousb_rp2350.c`: `usb_tx_fs`, `usb_nrzi_decoder`, `usb_edge_detector`, and the low-speed `PRE` variant of the transmitter's end) are from [Pico-PIO-USB](https://github.com/sekigon-gonnoc/Pico-PIO-USB) (MIT License, quoted in that file's header), embedded as assembled instruction words. The host engine, hub and keyboard code around them are written for this tree.
-* **Cryptographic primitives** (phase 52): vendored under `third_party/crypto/` with their license files. Each library is listed here when it is added.
+* **Monocypher** 4.0.3 by Loup Vaillant, Michael Savage and Fabio Scotoni: X25519, ChaCha20 and Poly1305 for TLS and protected 9P sessions, from [Monocypher](https://github.com/LoupVaillant/Monocypher) (dual CC0-1.0 / BSD 2-Clause; used under BSD 2-Clause). Unmodified in `third_party/crypto/monocypher/`, with `LICENCE.md` and `ORIGIN.md`.
+* **p256-m** by Manuel Pegourie-Gonnard: P-256 ECDSA and ECDH for TLS certificates and update-image signatures, from [p256-m](https://github.com/mpg/p256-m) (Apache License 2.0). Unmodified in `third_party/crypto/p256-m/`, with `LICENSE`, `apache-2.0.txt` and `ORIGIN.md`.
 
 ### Fonts
 

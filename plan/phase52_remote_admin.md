@@ -208,9 +208,13 @@ Moved here from phase 49 §10.
   it is the owner's CA that signs it.
 * **Scope:** server-side HTTPS first (the admin pages). Client-side TLS
   (MQTT to a broker, §1.6; the LLM client's `https://`) after that. TLS 1.3
-  with X25519 key exchange, `TLS_AES_128_GCM_SHA256` (mandatory in RFC 8446
-  §9.1) and optionally ChaCha20-Poly1305: all integer arithmetic, fine
-  without floating point. **The certificate key must be ECDSA P-256**
+  with X25519 key exchange and `TLS_CHACHA20_POLY1305_SHA256`: all integer
+  arithmetic, fine without floating point. *Changed 2026-10-25 (52.6):*
+  ChaCha20-Poly1305 is the software AEAD rather than AES-128-GCM. Every
+  major browser, OpenSSL and curl offer it, and it is constant-time in plain
+  C, which software AES is not without a slow bitsliced implementation.
+  `TLS_AES_128_GCM_SHA256` (RFC 8446 §9.1's mandatory suite) follows with
+  the P4's AES accelerator in 52.15b. **The certificate key must be ECDSA P-256**
   (re-checked 2026-10-25): no major browser accepts Ed25519 server
   certificates. P-256 ECDSA also serves image signatures (52.7), so there is
   one signature algorithm in the tree. Hardware accelerators where the chip
@@ -459,7 +463,7 @@ What the stub assumed, what the tree has now, and what that changes for Part B.
 | RP2350 flash is 4 MB | Pico 2 / 2 W: 4 MB. RP2350-LCD-7: 16 MB, but on the common 4 MB layout | Per-board layouts (52.9) |
 | P4 "plenty of room" | P4 OS segment grown to 1.25 MB (`7384290`); Tab5 XIP image 1.07 MB; 13.7 MB unused above `/flash0` | Slots of ≥ 2 MB each, with room to grow |
 | Entropy: "check each chip" | P4 has **no** source (`random.c` falls through to "NOT random"); RP2350 uses ROSC, not its TRNG | P4 entropy first (52.6) |
-| TLS: Ed25519 or P-256 | Only SHA-256/HMAC in the tree; browsers refuse Ed25519 server certificates | P-256 ECDSA + X25519 + AES-128-GCM (52.6, 52.15) |
+| TLS: Ed25519 or P-256 | Only SHA-256/HMAC in the tree; browsers refuse Ed25519 server certificates | P-256 ECDSA + X25519 + ChaCha20-Poly1305 (52.6, 52.15) |
 | `admin` grant level | Grants are `name, key, aname, read_only` | `admin` flag added (52.10) |
 | C6 SoftAP via the blob | Blob AP mode present, WPA2 authenticator stubbed (`radio_supp_os.c`) | RP2350W SoftAP first (52.12), C6 after (52.13) |
 | 49.10 shape open | 49.10 built: frames over UART, the RP2350 owns its IP | Dependency settled |
@@ -476,10 +480,9 @@ RP2350 (needs PSRAM: the RP2350-LCD-7) and the rev v3 P4 and sealed-C6 cases
 ### 3.3 Decisions for Part B (confirmed by the owner 2026-10-25)
 
 1. **Crypto: vendor well-reviewed libraries with compatible open licenses
-   (52.6).** Candidates: `p256-m` (P-256 ECDH/ECDSA, constant-time, ~2 KB
-   RAM, Apache-2.0) and Monocypher (X25519, ChaCha20-Poly1305; CC0/BSD),
-   plus a constant-time AES and GHASH (BearSSL's `aes_ct`/`ghash_ctmul`,
-   MIT). They go into `third_party/crypto/<lib>/` with their license files
+   (52.6).** Vendored: `p256-m` (P-256 ECDH/ECDSA, constant-time, Apache-2.0)
+   and Monocypher 4.0.3 (X25519, ChaCha20, Poly1305; BSD-2-Clause). No
+   software AES (see §1.5). They go into `third_party/crypto/<lib>/` with their license files
    and the exact upstream version, and are listed in `doc/about.md` §4
    ("Third-Party Code, Data & Origins", restored there 2026-10-25 after the
    README overhaul dropped it). The TLS 1.3 state machine, HKDF, ASN.1/DER
@@ -646,19 +649,37 @@ deferred without blocking anything after it.
 ```
 
 * **52.6 Entropy and crypto primitives.** *Boards: QEMU and host first, then
-  the NANO and the Pico 2 W.*
+  the NANO and the Pico 2 W.* **DONE 2026-10-25** on the host (ASan/UBSan),
+  QEMU rv32/rv64, the NANO, the C6-Zero and the Pico 2 W. Still to see on
+  hardware: the P4 v3.x `LP_TRNG` path (LCD-7B), written from IDF's
+  `rng_ll.h` but not yet run.
   * **P4 entropy:** port IDF's `bootloader_random_enable()` for the P4 (SAR
     ADC noise source; `${ESP_ROOT}/esp-idf/components/bootloader_support/src/`),
     read the RNG register, whiten through the existing SHA-256 pool, and make
-    `random_is_hardware()` true only while the source runs. Check the ADC's
-    other users (battery, `drivers/adc.c`) for conflicts.
+    `random_is_hardware()` true only while the source runs. *As built:*
+    `random_init()` in `kernel/random.c`, called at boot before
+    `node_identity_init()`. v1.x reads `LP_SYSTEM_REG_RNG_DATA_REG`, v3.x
+    also starts the `LP_TRNG` block. A liveness check (no repeated words,
+    every bit seen as 0 and 1) decides `random_is_hardware()`. No other
+    LugalOS code uses the P4's SAR ADC.
   * **RP2350 entropy:** use the TRNG block as the source and keep ROSC as the
-    fallback. Compare both with `randtest`.
+    fallback. Compare both with `randtest`. *As built:* the TRNG with its
+    health tests on (von Neumann, CRNGT, autocorrelation), unlike the SDK's
+    raw mode. CRNGT hits are retried. A stuck source or a timeout resets the
+    block, and four failures in a row make `random_is_hardware()` false until
+    reboot. One EHR per hold of `g_trng_lock`, because two callers sharing
+    an EHR would derive correlated keys. The lock is a yielding `ylock_t`,
+    not a spinlock: one EHR takes ~1.3 ms of polling, too long with
+    interrupts off. `SAMPLE_CNT1 = 256`, chosen from `randtest`'s sweep
+    (below).
   * **Primitives** (decision §3.3 #1), behind one in-tree API
-    (`kernel/crypto/`, alongside `kernel/sha256.c`): SHA-1 (WebSocket accept,
-    PBKDF2 for WPA), HKDF-SHA-256, AES-128 + GCM, X25519, P-256 ECDSA
-    sign/verify. ChaCha20-Poly1305 is optional. Anything that touches a
-    secret is constant-time. No floating point, no allocation.
+    (`kernel/include/kernel/crypto.h`; `kernel/crypto.c`,
+    `kernel/crypto_selftest.c`, alongside `kernel/sha256.c`): SHA-1
+    (WebSocket accept), HKDF-SHA-256, X25519, ChaCha20-Poly1305 (RFC 8439,
+    composed from Monocypher's ChaCha20 and Poly1305), and P-256 ECDSA/ECDH.
+    Anything that touches a secret is constant-time. No floating point, no
+    allocation. Key generation and signing return `CRYPTO_ERR_NO_ENTROPY`
+    without hardware entropy.
   * **Vendored code:** each library goes into `third_party/crypto/<lib>/`
     unmodified where possible, with its LICENSE file and a short
     `ORIGIN` note (upstream URL, version or commit, local changes). It is
@@ -671,8 +692,68 @@ deferred without blocking anything after it.
     An on-device `cryptotest` self-test on QEMU, the NANO and the Pico 2 W.
     `randtest` on all three boards (on the C6-Zero, with the radio on and
     off). Timings recorded per chip (P-256 sign,
-    X25519, AES-GCM MB/s), and code size per preset with
+    X25519, ChaCha20-Poly1305), and code size per preset with
     `tools/sizereport.py` (target: ≤ 40 KB).
+  * *Measured so far:* `crypto_host` passes 35 known-answer checks with and
+    without entropy, plus random round trips with single-bit tampering. On
+    QEMU rv32/rv64, `CRYPTO_SELFTEST_OK` with signing refused. Code:
+    `rp2350-wifi` +21.6 KB (930,948 → 952,524 bytes, everything from 52.6).
+    The unused Monocypher parts (Argon2, EdDSA, BLAKE2b, Elligator) are
+    dropped by `--gc-sections`. Stack: the deepest path (P-256 verify inside
+    the self-test) is about 1.5 KB on RV32. RAM: 0 bytes from the vendored
+    code. A 1 KB static benchmark buffer had pushed the Tab5's LOWRAM `.bss`
+    into core 1's stack, so the benchmark uses the stack instead. LOWRAM
+    headroom left: Tab5 320 B, LCD-7B 592 B, NANO 3.7 KB.
+  * *Hardware, 2026-10-25:*
+    * **NANO (P4 v1.3, 360 MHz):** `[Random] ... SAR ADC noise source on (56 us
+      per byte)`. The ADC was checked converting: `SAR1_DATA_STATUS`
+      changes between reads, and the control registers hold the values
+      written. `randtest 65536`: 49-50% ones, 49-50% flips, no repeated
+      words. Read at 1 us per word, the same register gave 58% ones, steadily.
+      That is why both ESP chips now read it at IDF's tested rate (P4: 5040
+      APB cycles per byte, computed from the measured APB clock; C6: 64 us per
+      byte), XORing every read in between. `cryptotest`: OK, with key
+      generation and signing live.
+    * **C6-Zero sensor node (160 MHz, radio up):** `randtest` 49-50% ones at
+      both rates, `cryptotest` OK. (The C6 measured fine at 1 us too, but
+      statistics cannot see a PRNG read faster than its noise feeds it.)
+    * `cryptotest bench`, microseconds per operation:
+
+      | | SHA-256 1 KB | ChaCha20-Poly1305 1 KB | X25519 | P-256 verify | P-256 ECDH | P-256 sign |
+      |---|---|---|---|---|---|---|
+      | NANO (P4) | 309 | 222 | 6,313 | 322,114 | 137,936 | 103,971 |
+      | C6-Zero | 783 | 609 | 20,145 | 407,828 | 186,676 | 208,389 |
+
+      P-256 is p256-m's conservative 16-bit-multiply build. A TLS handshake on
+      the P4 costs about 0.1 s of signing plus 6 ms of X25519. A signed C6
+      image costs about 0.4 s to verify. Both are fine. The ECC accelerator
+      (52.15b) and `MUL64_IS_CONSTANT_TIME` are the speed-ups if needed.
+    * **Pico 2 W (RP2350, 150 MHz):** `randtest`'s sweep over the TRNG
+      sample interval, 128 EHRs each:
+
+      | SAMPLE_CNT1 | ones | flips | stuck-source resets | per EHR |
+      |---|---|---|---|---|
+      | 64 | 49-50% | 40-42% | 2-4 | 0.35 ms |
+      | **256** (in use) | 49-50% | 49% | 0 | 1.3 ms |
+      | 1024 | 49-50% | 49-50% | 0 | 5.3 ms |
+
+      At 64 the oscillator has not decorrelated between samples. The
+      balancer evens out bias, not correlation, and the autocorrelation test
+      trips. `RANDTEST_OK` at 256. `cryptotest` OK with live key generation.
+      Bench: SHA-256 1 KB 780 us, ChaCha20-Poly1305 1 KB 598 us, X25519
+      15.8 ms, P-256 verify 413 ms, ECDH 192 ms, sign 208 ms.
+    * Regressions: `test_rp2350.py` 30/33 on the Pico 2 W. The three
+      failures were a second program (picocom) on the console during the
+      run, and no SD card in that Pico. `test_wifi.py` 5/5 on a freshly
+      booted board, and its 2-minute soak 60/60 echoes and 20/20 sessions.
+      `random_bytes()` now costs about 4 ms per 32 bytes on every chip,
+      with no visible effect on 9P authentication.
+    * Observed for 52.11: after a client was killed mid-run, the next
+      sessions failed with `walk: fid table full` until the board rebooted.
+      An abandoned TCP connection keeps its 9P fids until the connection is
+      reaped. Browsers drop WebSockets routinely, so the WebSocket link must
+      release a session's fids when its connection goes, and TCP's own
+      reaping deserves a look then.
 
 * **52.7 Signed update images.** *Closes both 52.5a items. Boards: the
   C6-Zero (loader layout) and the NANO's C6 (IDF layout), then the NANO itself
@@ -892,7 +973,7 @@ deferred without blocking anything after it.
     key_share, signature_algorithms, `record_size_limit`),
     HelloRetryRequest when no X25519 share is offered, then
     EncryptedExtensions, Certificate, CertificateVerify (ECDSA P-256),
-    Finished. AES-128-GCM records, alerts, KeyUpdate. No PSK, resumption,
+    Finished. ChaCha20-Poly1305 records, alerts, KeyUpdate. No PSK, resumption,
     0-RTT or client certificates yet (mTLS: phase 53's Gemini).
   * **Memory:** a 16 KB+ receive record buffer per session from PSRAM, and
     sent records ≤ 4 KB. At most two sessions. The handshake runs in
@@ -900,8 +981,9 @@ deferred without blocking anything after it.
   * Port 443. Port 80 redirects once a certificate is installed. Admin
     writes, including OTA upload from the page, are enabled over HTTPS. The
     page uses WebCrypto when it has a secure context.
-  * **52.15b Accelerators:** P4 AES, SHA and ECC/ECDSA behind the 52.6 API.
-    Same vectors, timings compared.
+  * **52.15b Accelerators:** P4 AES, SHA and ECC/ECDSA behind the 52.6 API,
+    and with the AES block `TLS_AES_128_GCM_SHA256` (GHASH in software,
+    constant-time). Same vectors, timings compared.
   * *Verification:* `tls.c` against OpenSSL on the host under ASan, plus a
     host fuzz harness for the record and handshake parsers. On the NANO:
     `openssl s_client -tls1_3`, curl, Firefox, Chrome, Safari (iOS), and

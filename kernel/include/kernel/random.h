@@ -30,6 +30,11 @@
  * never handed out directly). On a target without one it is derived from the
  * timer and a counter -- adequate for tests, useless against an adversary,
  * and flagged as such by random_is_hardware(). */
+/* Starts the hardware entropy source where one has to be started (the
+ * ESP32-P4's SAR ADC noise source, the RP2350's TRNG) and prints which source
+ * is in use. Once, at boot, before anything asks for bytes. */
+void random_init(void);
+
 void random_bytes(void *out, uint32_t len);
 
 /* True if the bytes come from a physical entropy source. */

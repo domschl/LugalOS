@@ -49,6 +49,7 @@
 #include "drivers/sensor_hub.h"
 #include "net/mqttd.h"
 #include "kernel/identity.h"
+#include "kernel/random.h"
 #include "arch/csr.h"
 #include "arch/trap.h"
 #include "arch/vmm.h"
@@ -317,6 +318,9 @@ void kernel_main(void) {
     /* Who this node is, before anything asks. netif_register() hands out the
      * MAC, so this must precede any driver probe that registers an
      * interface. See kernel/identity.h for the resolution order. */
+    /* The entropy source, before the first random byte: identity may
+     * generate a UID, and 9P draws its nonces from it. */
+    random_init();
     node_identity_init();
     printk("[Node] %s (name: %s; mac: %s)\n", node_name(),
            node_name_source(), node_mac_source());
