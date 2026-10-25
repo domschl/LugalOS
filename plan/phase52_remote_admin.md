@@ -754,16 +754,44 @@ deferred without blocking anything after it.
       booted board, and its 2-minute soak 60/60 echoes and 20/20 sessions.
       `random_bytes()` now costs about 4 ms per 32 bytes on every chip,
       with no visible effect on 9P authentication.
-    * Observed for 52.11: after a client was killed mid-run, the next
-      sessions failed with `walk: fid table full` until the board rebooted.
-      An abandoned TCP connection keeps its 9P fids until the connection is
-      reaped. Browsers drop WebSockets routinely, so the WebSocket link must
-      release a session's fids when its connection goes, and TCP's own
-      reaping deserves a look then.
+    * After a client was killed mid-run, the next sessions failed with
+      `walk: fid table full`. Fixed (`b44338b`): TCP keepalive reaps a
+      server connection whose peer vanished (~90 s), and a released link's
+      fids are freed by the 9P server task. For 52.11: a WebSocket link
+      must call `p9_link_closed()` when its connection ends, the same way.
 
 * **52.7 Signed update images.** *Closes both 52.5a items. Boards: the
   C6-Zero (loader layout) and the NANO's C6 (IDF layout), then the NANO itself
-  once 52.8 lands.*
+  once 52.8 lands.* **DONE 2026-10-25** (`84e7454`) for the C6. The P4 and
+  RP2350 backends get the same check through `kernel/ota.c` as they land.
+  * *As built:* the signature sits in the header's reserved bytes, so
+    `OTA_IMAGE_VERSION` stays 1 and the C6's permanent loader keeps
+    accepting images. It covers the header's first 132 bytes, which include
+    the parts' SHA-256 (`kernel/ota_sig.c`). Policy (`kernel/ota.c`): a node
+    with a release key (`otakey set`, `IDSTORE_FIELD_OTA_PUBKEY`) takes only
+    images signed with it, and so does a `CONFIG_OTA_REQUIRE_SIGNED` build
+    (the plan's `CONFIG_OTA_ALLOW_UNSIGNED`, inverted to fit the
+    absent-means-off config pattern). A damaged signature is refused
+    everywhere. `otakey allow-unsigned` lets one unsigned image through from
+    the console. `lota.py`: `keygen`, `pubkey`, signs by default,
+    `--tamper sig|header|part`, and `--wait` reconnects over TCP.
+  * *Verified:* `ota_host` checks a `lota.py`-signed header in C and refuses
+    every single-bit change of the 196 signed or signature bytes. On the
+    C6-Zero: unsigned, bad signature and changed header byte refused before
+    any erase (slot B untouched); a changed part byte refused at commit; a
+    signed image committed, booted on trial and confirmed (`--wait`
+    end-to-end); the override worked exactly once. On the NANO's C6 (IDF
+    layout, after `sdio ota` from esp-hosted-mcu): a signed image through
+    `/c6` committed, trialled and confirmed.
+  * *Gap, for 52.10:* `otakey` is console-only, and a sealed C6 (Tab5) has
+    no console. Proposed: the P4 hands its C6 the release key over LLP (a
+    link the C6 already trusts like a cable).
+  * *Found on the way and fixed:* `ea` ran an LLM's tool calls unconfirmed
+    and unrestricted (`03f6162`: confirmation, plus refusal of privileged
+    commands, primitives and `system/etc` writes inside a tool call). This
+    matters for 52.10's "factory part = console only" rule. Also: C6 9P
+    listener dead since TCP went to 4 slots (`a872382`), C6 heap exhausted
+    (`ef1a2eb`).
   * A signature trailer in `ota_image_header_t`'s next version: ECDSA P-256
     over the image's SHA-256. `kernel/ota.c` checks it at `commit`, before
     `set_pending`. `/dev/ota` shows `signed=` and `signer=`.
