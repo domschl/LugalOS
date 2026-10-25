@@ -54,6 +54,10 @@ bool cyw43_leave(void);
  * discover it as a timeout. */
 bool cyw43_is_ready(void);
 
+/* How often a send waited for the chip's transmit credit, and how often it
+ * gave up after a second (the frame was then not sent). */
+void cyw43_tx_stats(uint32_t *stalls, uint32_t *timeouts);
+
 /* NULL until cyw43_gspi_probe() has succeeded. */
 netif_t *cyw43_get_netif(void);
 
