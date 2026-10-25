@@ -972,6 +972,16 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("SHA-256/HMAC-SHA-256 Against FIPS and RFC 4231 Vectors (N1)",
                         hmac_ok, log if not hmac_ok else ""))
 
+        # 52.6, plan/phase52_remote_admin.md: the primitives behind signed
+        # images, TLS and protected 9P sessions, against their standards'
+        # vectors. QEMU has no entropy source, so this also checks that key
+        # generation and signing refuse there instead of using guessable bytes.
+        ok, log = session.send_and_expect("cryptotest\n",
+                                          r"CRYPTO_SELFTEST_(OK|FAIL)", timeout=120.0)
+        crypto_ok = ok and "CRYPTO_SELFTEST_OK" in log and "signing refuses without hardware entropy" in log
+        results.append(("SHA-1/HKDF/X25519/ChaCha20-Poly1305/P-256 Against Their Vectors (52.6)",
+                        crypto_ok, log if not crypto_ok else ""))
+
         # S1, plan/phase22_smp_locking_foundation.md: the two cross-hart lock
         # types, before anything is converted to use them.
         #

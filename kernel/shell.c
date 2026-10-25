@@ -75,6 +75,7 @@
 #include "drivers/pico_clock_ui.h"
 #include "kernel/timezone.h"
 #include "kernel/sha256.h"
+#include "kernel/crypto.h"
 #include "kernel/random.h"
 #include "kernel/idstore.h"
 #include "kernel/identity.h"
@@ -1355,6 +1356,7 @@ static void cmd_help_test(void) {
     cprintf("  sdbench [kb]    - SD card sequential read throughput benchmark\n");
     cprintf("  fsbench <dir>   - Filesystem write/read/verify benchmark\n");
     cprintf("  hmacselftest    - SHA-256 and HMAC-SHA-256 against RFC vectors\n");
+    cprintf("  cryptotest [bench] - SHA-1, HKDF, X25519, ChaCha20-Poly1305, P-256 vectors; timings\n");
     cprintf("  memselftest     - libc memcpy/memmove/memset byte reference\n");
     cprintf("  fmtselftest     - printk/ksnprintf format engine selftest\n");
     console_print_divider('-');
@@ -5803,6 +5805,12 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "hmacselftest") == 0) {
         sha256_selftest();
+        return;
+    } else if (strcmp(cmd_line, "cryptotest") == 0) {
+        (void)crypto_selftest();
+        return;
+    } else if (strcmp(cmd_line, "cryptotest bench") == 0) {
+        crypto_bench();
         return;
     } else if (strcmp(cmd_line, "umodetest") == 0) {
         umode_probe_run();
