@@ -1149,6 +1149,11 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
                     w.link_up ? "up" : "down",
                     w.rssi_valid ? "" : "stale ", (long)w.rssi_dbm,
                     (unsigned long)w.joins, (unsigned long)w.drops);
+                uint32_t stalls = 0, stall_timeouts = 0;
+                cyw43_tx_stats(&stalls, &stall_timeouts);
+                used += (uint32_t)ksnprintf(buf + used, cap - used,
+                    "wlan tx credit waits: %lu (%lu gave up)\n",
+                    (unsigned long)stalls, (unsigned long)stall_timeouts);
                 if (w.drops) {
                     /* A drop the AP announced and one we had to go and
                      * discover are different animals, and the distinction is

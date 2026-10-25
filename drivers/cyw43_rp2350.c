@@ -274,6 +274,8 @@ static const uint16_t g_gspi_prog[6] = {
 #define IOCTL_CMD_GET_BSSID         23u
 #define IOCTL_CMD_SET_SSID          26u
 #define IOCTL_CMD_SET_ANTDIV        64u
+#define IOCTL_CMD_SET_PM            86u
+#define IOCTL_CMD_SET_GMODE         110u
 #define IOCTL_CMD_SET_WSEC          134u
 #define IOCTL_CMD_SET_WPA_AUTH      165u
 #define IOCTL_CMD_SET_WSEC_PMK      268u
@@ -1456,6 +1458,57 @@ static void cyw43_handle_event(uint32_t type, uint32_t status, uint32_t reason,
     }
 }
 
+/* --- Transmit credit (SDPCM flow control) --------------------------------
+ * Every frame the chip sends carries, in its SDPCM header, a flow-control
+ * flag (byte 8) and a bus data credit (byte 9): the sequence number up to
+ * which the host may send. A frame sent past it -- or while flow control is
+ * on -- is dropped by the firmware without a word, which is how a burst of
+ * replies went missing (`test_wifi.py`: every echo request arrived, up to
+ * 20% of the replies never left). As the Pico SDK's cyw43-driver does: the
+ * credit starts at 1 (the first send would stall otherwise), it is taken
+ * from a frame only when it advances by at most 20 (a stale or garbled
+ * header's is ignored), and a send waits, reading frames meanwhile, while
+ * the next sequence number equals it.
+ * guarded by: g_bus_lock (cyw43_lock()), as everything on the bus. */
+static uint8_t  g_tx_credit = 1;
+static bool     g_tx_flow_off;
+static uint32_t g_tx_stalls, g_tx_stall_timeouts;
+
+static void tx_credit_update(const uint8_t *hdr) {
+    uint16_t size = (uint16_t)(hdr[0] | (hdr[1] << 8));
+    uint16_t comp = (uint16_t)(hdr[2] | (hdr[3] << 8));
+    if ((uint16_t)(size ^ comp) != 0xffffu) return;
+    g_tx_flow_off = hdr[8] != 0;
+    if ((hdr[5] & 0x0fu) < 3u) {
+        uint8_t advance = (uint8_t)(hdr[9] - g_tx_credit);
+        if (advance <= 20u) g_tx_credit = hdr[9];
+    }
+}
+
+static int cyw43_pump(void);
+
+/* True once the next frame may go; false after a second without credit. */
+static bool tx_wait_credit(void) {
+    if (!g_tx_flow_off && g_tx_credit != g_sdpcm_seq) return true;
+    g_tx_stalls++;
+    uint64_t deadline = time_get_ms() + 1000u;
+    while (time_get_ms() < deadline) {
+        int r = cyw43_pump();
+        if (r < 0) return false;
+        if (!g_tx_flow_off && g_tx_credit != g_sdpcm_seq) return true;
+        if (r == 0) time_delay_us(100);
+    }
+    if (g_tx_stall_timeouts++ == 0)
+        printk("cyw43: no transmit credit from the chip for 1 s (seq %u, credit %u, flow %s)\n",
+               (unsigned)g_sdpcm_seq, (unsigned)g_tx_credit, g_tx_flow_off ? "off" : "on");
+    return false;
+}
+
+void cyw43_tx_stats(uint32_t *stalls, uint32_t *timeouts) {
+    if (stalls) *stalls = g_tx_stalls;
+    if (timeouts) *timeouts = g_tx_stall_timeouts;
+}
+
 static int cyw43_pump(void) {
     uint32_t plen = 0;
     if (!wlan_packet_pending(&plen)) return -1;
@@ -1467,6 +1520,7 @@ static int cyw43_pump(void) {
     if (plen > sizeof(rx)) return -1;
     if (!wlan_read(rx, plen)) return -1;
     if (plen < SDPCM_HEADER_SIZE) return 1;
+    tx_credit_update(rx);
 
     uint32_t hdr_len = rx[7];
     uint8_t channel = rx[5] & 0x0f;
@@ -1493,17 +1547,11 @@ static int cyw43_pump(void) {
         uint32_t off = hdr_len + BDC_HEADER_SIZE + (uint32_t)bdc[3] * 4u;
         if (off > plen) return 1;
         uint32_t n = plen - off;
-        /* One frame in flight, like the ENC28J60's own RX path: if the
-         * stack has not taken the last one, this one is dropped rather
-         * than overwriting a frame somebody is about to read.
-         *
-         * Counted here rather than through netif_t's own rx_dropped,
-         * which net/netif.c owns and means something narrower ("a frame
-         * arrived and the stack had nowhere to put it"). This is the
-         * driver's own shortfall and belongs in the driver's own number
-         * -- measurable as occasional single-echo loss when ICMP and a
-         * 9P session are in flight together, and zero when either runs
-         * alone. Fixing it means a small ring here, not a deeper change. */
+        /* Into a ring of CYW43_RX_RING frames the stack drains. A frame
+         * arriving with the ring full is dropped rather than overwriting
+         * one somebody is about to read, and counted here (`wifi stats`)
+         * rather than in netif_t's rx_dropped, which net/netif.c owns and
+         * means "the stack had nowhere to put it". */
         if (n && n <= NETIF_FRAME_MAX) {
             if (g_rx_count < CYW43_RX_RING) {
                 memcpy(g_rx_ring[g_rx_head], rx + off, n);
@@ -1578,6 +1626,7 @@ static bool cyw43_ioctl(uint32_t kind, uint32_t cmd, uint32_t iface,
         return false;
     }
 
+    if (!tx_wait_credit()) return false;
     uint8_t *p = (uint8_t *)g_wlan_buf + 4;
     g_ioctl_id++;
     g_ioctl_reply.valid = false;
@@ -1932,6 +1981,7 @@ static int cyw43_netif_send_locked(netif_t *nif, const uint8_t *buf, uint32_t le
 
     uint32_t total = SDPCM_HEADER_SIZE + SDPCM_TX_PADDING + BDC_HEADER_SIZE + len;
     if (4 + total > sizeof(g_wlan_buf)) return -1;
+    if (!tx_wait_credit()) return -1;
 
     uint8_t *p = (uint8_t *)g_wlan_buf + 4;
     put_u16(p + 0, (uint16_t)total);
@@ -2174,6 +2224,23 @@ static bool cyw43_probe_locked(void) {
     time_delay_us(100000);
     if (!cyw43_set_iovar_u32("ampdu_mpdu", 4)) return false;
     time_delay_us(100000);
+
+    /* Power management, as both references set it and this driver did not:
+     * left alone the firmware keeps its own default, and on the Pico 2 W
+     * that lost 5-20% of ping replies -- every request arrived, every reply
+     * was handed over, and the C6-Zero and the gateway on the same network
+     * lost none. PM2 ("fast" power save) with the Pico SDK's
+     * CYW43_PERFORMANCE_PM parameters: back to sleep 200 ms after the last
+     * traffic, wake for every beacon and DTIM, listen interval 10 told to
+     * the AP; then 802.11g mode auto. Best-effort: a firmware that refuses
+     * keeps working as it did. */
+    bool pm_ok = cyw43_set_iovar_u32("pm2_sleep_ret", 200) &&
+                 cyw43_set_iovar_u32("bcn_li_bcn", 1) &&
+                 cyw43_set_iovar_u32("bcn_li_dtim", 1) &&
+                 cyw43_set_iovar_u32("assoc_listen", 10) &&
+                 cyw43_ioctl_set_u32(IOCTL_CMD_SET_PM, 0, 2) &&
+                 cyw43_ioctl_set_u32(IOCTL_CMD_SET_GMODE, 0, 1);
+    if (!pm_ok) printk("cyw43: power management not set; the firmware's default stays\n");
 
     g_fw_ready = true;
 
