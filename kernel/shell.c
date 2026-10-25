@@ -3381,11 +3381,6 @@ static void identity_print_report(void) {
     else                     cprintf("altitude: none\n");
 }
 
-/* Parses a run of hex pairs into `out`, the same shape cmd_p9key() already
- * uses -- kept separate rather than shared, matching how that function's own
- * loop is not shared with fs/9p.c's hexval()+p9_auth_key_for() either: three
- * short, independent parsers cost less than the coupling a shared one would
- * add between the auth gate, the console key and this command. */
 #if defined(CONFIG_BOARD_ESP32P4)
 /* `sdio ...`: the SD/MMC host's slot 1
  * toward the board's ESP32-C6. Numbers are hex, with or without 0x. */
