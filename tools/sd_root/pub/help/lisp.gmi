@@ -74,6 +74,9 @@ Readings come from the sensor hub's cache, so no call waits on the I2C bus. Valu
 * (write-file  ): Write string content to disk.
 * (spawn ): Launch an isolated U-mode program in the background.
 
+### Privileged Primitives
+poke, net-config, net-identity (with a name: renaming), identity-name, identity-provision, identity-key, peers-add, peers-remove and wlan-set change keys, identity, network configuration or memory. They work from the console and from scripts. Evaluated for an ea tool call they refuse and return #f, and file writes under any system/etc/ directory fail there too (kernel/include/kernel/privilege.h).
+
 ## 5. Computer Algebra System (CAS) Scripting
 
 To utilize symbolic mathematics in Lisp:

@@ -2,6 +2,7 @@
 #include "kernel/lock.h"
 #include "kernel/console.h"
 #include "kernel/shell.h"
+#include "kernel/privilege.h"
 #include "kernel/printk.h"
 #include "kernel/sched.h"
 #include "kernel/time.h"
@@ -145,7 +146,9 @@ int ea_eval_tool(const char *tool, const char *input, char *out_buf, size_t out_
 
         console_capture(out_buf, (uint32_t)(out_max - 1));
         lisp_lock();
+        untrusted_enter();
         lisp_val_t *res = lisp_eval_string(clean_code);
+        untrusted_leave();
         if (res) {
             lisp_print(res);
         }
@@ -159,7 +162,7 @@ int ea_eval_tool(const char *tool, const char *input, char *out_buf, size_t out_
 
     if (strcmp(tool, "sh") == 0 || strcmp(tool, "shell") == 0) {
         console_capture(out_buf, (uint32_t)(out_max - 1));
-        shell_exec(clean_code);
+        shell_exec_untrusted(clean_code);
         uint32_t len = console_capture_end();
         if (len == 0 && out_buf[0] == '\0') {
             strncpy(out_buf, "(ok)", out_max - 1);
@@ -311,7 +314,7 @@ int ea_eval_tool(const char *tool, const char *input, char *out_buf, size_t out_
             char cmd[128];
             ksnprintf(cmd, sizeof(cmd), "cc %s %s", src_path, elf_path);
             console_capture(out_buf, (uint32_t)(out_max - 1));
-            shell_exec(cmd);
+            shell_exec_untrusted(cmd);
             uint32_t clen = console_capture_end();
 
             /* Check if binary was generated */
@@ -321,7 +324,7 @@ int ea_eval_tool(const char *tool, const char *input, char *out_buf, size_t out_
                 /* Execute binary and capture stdout */
                 console_capture(out_buf, (uint32_t)(out_max - 1));
                 ksnprintf(cmd, sizeof(cmd), "exec %s", elf_path);
-                shell_exec(cmd);
+                shell_exec_untrusted(cmd);
                 uint32_t elen = console_capture_end();
                 if (elen == 0 || out_buf[0] == '\0') {
                     strncpy(out_buf, "Program executed successfully (no output)", out_max - 1);
@@ -425,7 +428,7 @@ static bool parse_react_action(char *resp, char *tool_out, size_t tool_sz,
 }
 
 int ea_run(const char *prompt, bool interactive, bool auto_confirm, const char *model_override, bool open_reader) {
-    (void)interactive; (void)auto_confirm;
+    (void)interactive;
     if (!prompt || !*prompt) return -1;
 
     llm_init();
@@ -505,8 +508,23 @@ int ea_run(const char *prompt, bool interactive, bool auto_confirm, const char *
         char tool[32];
         char code[1024];
         if (parse_react_action(resp, tool, sizeof(tool), code, sizeof(code))) {
-            cprintf("\n\033[1;34m--> [Executing Tool: %s]\033[0m\n", tool);
-            ea_eval_tool(tool, code, tool_obs, obs_sz);
+            /* The model chose this, and its reply came over the network: a
+             * person at the console says yes first (`ea -y` skips the
+             * question). Privileged operations refuse inside a tool call
+             * either way (kernel/include/kernel/privilege.h). */
+            bool run = auto_confirm;
+            if (!run) {
+                cprintf("\n\033[1;33m--> [Tool: %s]\033[0m\n%s\n\033[1;33mRun it? [y/N]\033[0m ", tool, code);
+                char c = console_getc();
+                cprintf("%c\n", (c >= ' ' && c < 127) ? c : ' ');
+                run = (c == 'y' || c == 'Y');
+            }
+            if (run) {
+                cprintf("\n\033[1;34m--> [Executing Tool: %s]\033[0m\n", tool);
+                ea_eval_tool(tool, code, tool_obs, obs_sz);
+            } else {
+                ksnprintf(tool_obs, obs_sz, "The user declined to run this %s action.", tool);
+            }
             cprintf("\033[36m<-- [Observation: %s]\033[0m\n\n", tool_obs);
 
             /* Append assistant turn and tool observation to history */
@@ -531,7 +549,7 @@ int ea_run(const char *prompt, bool interactive, bool auto_confirm, const char *
                     vfs_pwrite(wfd, (const uint8_t *)ans, strlen(ans), 0);
                     vfs_close(wfd);
                     cprintf("\n\033[1;32m[ea: Answer written to /ram0/ea_ans.md, opening Ribbon Reader...]\033[0m\n");
-                    shell_exec("reader /ram0/ea_ans.md");
+                    shell_exec_untrusted("reader /ram0/ea_ans.md");
                 } else {
                     cprintf("ea: failed to write /ram0/ea_ans.md\n");
                 }

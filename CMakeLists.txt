@@ -678,6 +678,8 @@ set(SOURCES
     # third_party/crypto/*/ORIGIN.md and doc/about.md).
     kernel/crypto.c
     kernel/crypto_selftest.c
+    # what an agent's tool call may not do (kernel/ea.c)
+    kernel/privilege.c
     third_party/crypto/monocypher/monocypher.c
     third_party/crypto/p256-m/p256-m.c
     # R3/R4: who this node is -- a
