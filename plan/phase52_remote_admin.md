@@ -650,9 +650,8 @@ deferred without blocking anything after it.
 
 * **52.6 Entropy and crypto primitives.** *Boards: QEMU and host first, then
   the NANO and the Pico 2 W.* **DONE 2026-10-25** on the host (ASan/UBSan),
-  QEMU rv32/rv64, the NANO, the C6-Zero and the Pico 2 W. Still to see on
-  hardware: the P4 v3.x `LP_TRNG` path (LCD-7B), written from IDF's
-  `rng_ll.h` but not yet run.
+  QEMU rv32/rv64, the NANO, the C6-Zero, the Pico 2 W and the LCD-7B (P4
+  v3.2: the `LP_TRNG` path).
   * **P4 entropy:** port IDF's `bootloader_random_enable()` for the P4 (SAR
     ADC noise source; `${ESP_ROOT}/esp-idf/components/bootloader_support/src/`),
     read the RNG register, whiten through the existing SHA-256 pool, and make
@@ -714,6 +713,13 @@ deferred without blocking anything after it.
       APB cycles per byte, computed from the measured APB clock; C6: 64 us per
       byte), XORing every read in between. `cryptotest`: OK, with key
       generation and signing live.
+    * **LCD-7B (P4 v3.2, 400 MHz):** `[Random] ... (51 us per byte)`.
+      `LP_TRNG` CFG reads 0x320003ff (sample enable, prescaler 255, timer on),
+      RSTN 1, DATE bit 31 set, and DATA changes between reads. The ADC
+      result changes too. `randtest 65536` 49% ones, 50% flips, no repeated
+      words. `cryptotest` OK. Bench: SHA-256 1 KB 291 us, ChaCha20-Poly1305
+      1 KB 200 us, X25519 10.6 ms, P-256 verify 159 ms, ECDH 77 ms, sign
+      85 ms.
     * **C6-Zero sensor node (160 MHz, radio up):** `randtest` 49-50% ones at
       both rates, `cryptotest` OK. (The C6 measured fine at 1 us too, but
       statistics cannot see a PRNG read faster than its noise feeds it.)
