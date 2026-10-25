@@ -8438,6 +8438,102 @@ def test_9p_between_nodes_over_tcp(rv64_elf: Path, rv32_elf: Path,
         session_b.close()
 
 
+def test_vanished_9p_client_is_reaped(rv64_elf: Path, rv32_elf: Path,
+                                      img64: Path, img32: Path) -> tuple[str, bool, str]:
+    """A 9P client that vanishes without closing -- power lost, out of radio
+    range, a browser tab closed -- must not keep the server's connection slot
+    and fids for good. Node A mounts node B over TCP and reads through the
+    mount, so B holds fids for it; then A's QEMU is killed, so no FIN ever
+    reaches B. B's keepalive (net/tcp.c) must reset the connection within
+    ~90 s, and the 9P server must release the fids (p9_link_closed()).
+
+    Before both, the slot and the fids stayed until B rebooted: with 2 or 4
+    slots and 8 fids, a few such clients made a node unreachable over 9P."""
+    import shutil
+    import socket as _socket
+
+    name = "A Vanished 9P Client's Connection And Fids Are Reaped (keepalive)"
+    probe = _socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+    key = "000102030405060708090a0b0c0d0e0f"
+
+    img_b = img64.with_name("test_vanish_b_sd.img")
+    img_a = img32.with_name("test_vanish_a_sd.img")
+    shutil.copyfile(img64, img_b)
+    shutil.copyfile(img32, img_a)
+    session_b = QemuSession(rv64_elf, img_b, "rv64")
+    session_a = QemuSession(rv32_elf, img_a, "rv32")
+    try:
+        session_b.start(extra_qemu_args=[
+            "-netdev", f"socket,id=n0,listen=127.0.0.1:{port}",
+            "-device", "virtio-net-device,netdev=n0,mac=52:54:00:12:34:56",
+        ])
+        ok, log = session_b.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"Node B did not boot: {log[-400:]}")
+        ok, log = session_b.send_and_expect(
+            'lisp\n(net-config "192.168.99.2" "255.255.255.0")\nexit', r"\[Net\] 192\.168\.99\.2", timeout=6.0)
+        if not ok:
+            return (name, False, f"Node B refused its address: {log[-400:]}")
+        ok, log = session_b.send_and_expect(f"p9key {key}", r"console key set", timeout=5.0)
+        if not ok:
+            return (name, False, f"Node B refused the key: {log[-400:]}")
+
+        session_a.start(extra_qemu_args=[
+            "-netdev", f"socket,id=n0,connect=127.0.0.1:{port}",
+            "-device", "virtio-net-device,netdev=n0,mac=52:54:00:12:34:57",
+        ])
+        ok, log = session_a.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"Node A did not boot: {log[-400:]}")
+        session_a.send_and_expect('lisp\n(net-config "192.168.99.3" "255.255.255.0")\nexit',
+                                  r"\[Net\] 192\.168\.99\.3", timeout=6.0)
+        session_a.send_and_expect(f"p9key {key}", r"console key set", timeout=5.0)
+        ok, log = session_a.send_and_expect('lisp\n(net-mount "peer" "192.168.99.2" 564)\nexit',
+                                            r"\[Net\] /peer mounted from 192\.168\.99\.2:564", timeout=12.0)
+        if not ok:
+            return (name, False, f"the mount failed: {log[-600:]}")
+        ok, log = session_a.send_and_expect("cat /peer/proc/version", expected_version(), timeout=8.0)
+        if not ok:
+            return (name, False, f"could not read through the mount: {log[-500:]}")
+
+        ok, log = session_b.send_and_expect("cat /proc/net", r"9p: \d+ of \d+ fids in use", timeout=8.0)
+        m = re.search(r"9p: (\d+) of (\d+) fids in use", log)
+        if not ok or not m or int(m.group(1)) == 0:
+            return (name, False, f"Node B holds no fids for A before it vanishes: {log[-500:]}")
+        held = int(m.group(1))
+
+        # First the live case: idle past the point where unanswered probes
+        # would reset the connection (60 s + 3 x 10 s). A is alive and must
+        # answer B's probes (an empty segment for an old byte gets an ACK),
+        # so the mount still works afterwards.
+        time.sleep(100.0)
+        ok, log = session_a.send_and_expect("cat /peer/proc/version", expected_version(), timeout=10.0)
+        if not ok:
+            return (name, False, f"an idle but live client lost its mount to keepalive: {log[-500:]}")
+
+        session_a.close()           # A vanishes: its QEMU is gone, and no FIN is ever sent
+
+        deadline = time.monotonic() + 150.0
+        while time.monotonic() < deadline:
+            time.sleep(10.0)
+            ok, log = session_b.send_and_expect("cat /proc/net", r"udp bindings:", timeout=8.0)
+            gone = not re.search(r"192\.168\.99\.3:\d+ -> :564 ESTABLISHED", log)
+            m = re.search(r"9p: (\d+) of", log)
+            if ok and gone and m and int(m.group(1)) == 0:
+                return (name, True, f"an idle live client kept its mount for 100 s; B held {held} "
+                                    f"fids for A, and after A vanished the connection was reset "
+                                    f"and the fids released")
+        return (name, False, f"after 150 s B still holds A's connection or fids: {log[-600:]}")
+    except Exception as e:
+        return (name, False, f"{type(e).__name__}: {e}")
+    finally:
+        session_a.close()
+        session_b.close()
+
+
 def test_identity_record_auth(rv64_elf: Path, rv32_elf: Path,
                               img64: Path, img32: Path) -> tuple[str, bool, str]:
     """I4, plan/phase21_identity_and_authentication.md: "a node with a key
@@ -9336,6 +9432,7 @@ def main() -> int:
         _run_single(test_9p_multinode_heterogeneous(rv64_elf, rv32_elf, img_for("rv64"), img_for("rv32")))
         _run_single(test_9p_remote_mount(rv64_elf, rv32_elf, img_for("rv64"), img_for("rv32")))
         _run_single(test_9p_between_nodes_over_tcp(rv64_elf, rv32_elf, img_for("rv64"), img_for("rv32")))
+        _run_single(test_vanished_9p_client_is_reaped(rv64_elf, rv32_elf, img_for("rv64"), img_for("rv32")))
         _run_single(test_identity_record_auth(rv64_elf, rv32_elf, img_for("rv64"), img_for("rv32")))
     else:
         print("\n[!] RV64 and/or RV32 binary not found. Skipping multi-node test.")

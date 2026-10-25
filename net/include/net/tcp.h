@@ -144,6 +144,8 @@ bool tcp_listening(uint16_t *port_out);
 uint32_t tcp_conn_count(void);
 void tcp_conn_str(uint32_t index, char *out, uint32_t max);
 uint32_t tcp_accepted_total(void);
+/* How many connection slots this build has (2 or 4). */
+uint32_t tcp_max_conns(void);
 uint32_t tcp_reset_total(void);
 
 #endif // NET_TCP_H

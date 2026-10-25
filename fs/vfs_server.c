@@ -1116,11 +1116,13 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
                     lport, (unsigned long)tcp_conn_count(),
                     (unsigned long)tcp_accepted_total(),
                     (unsigned long)tcp_reset_total());
-                for (uint32_t i = 0; i < 2; i++) {
+                for (uint32_t i = 0; i < tcp_max_conns(); i++) {
                     char line[80];
                     tcp_conn_str(i, line, sizeof(line));
                     if (line[0]) used += (uint32_t)ksnprintf(buf + used, cap - used, "  %s", line);
                 }
+                used += (uint32_t)ksnprintf(buf + used, cap - used, "9p: %lu of %u fids in use\n",
+                    (unsigned long)p9_server_fids_in_use(), (unsigned)P9_MAX_FIDS);
             } else {
                 used += (uint32_t)ksnprintf(buf + used, cap - used, "tcp: not listening\n");
             }
