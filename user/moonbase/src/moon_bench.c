@@ -5,7 +5,7 @@
 #include "moon_grid.h"
 #include <string.h>
 
-static volatile uint32_t s_sink;   /* keeps the read loop from being optimised away */
+static volatile uint32_t s_sink;   /* keeps the read loop from being optimised away. single task: the moonbase session holder */
 
 static void add_structures(moon_game_t *game, int target) {
     static const moon_structure_type_t cycle[] = {
