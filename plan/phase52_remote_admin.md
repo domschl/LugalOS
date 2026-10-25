@@ -1,11 +1,12 @@
 # Phase 52 — Remote admin: OTA over 9P, a web admin interface, first-time setup, TLS
 
-**Status: stub, written 2026-10-14; the identity, claiming and certificate
-decisions in §1.3 and §1.5 confirmed by the owner the same day.** Holds the
-key information so far; the milestones are elaborated later. Follows phase
-49, whose 49.8b builds the generic OTA shape and its first backend (the C6),
-and whose 49.8a makes a node's state readable as files. Everything here
-builds on those two.
+**Status: Part A done (52.1–52.5a, 2026-10-18). Part B re-checked against the
+tree and cut into milestones 52.6–52.16 on 2026-10-25 (§3.2, §4 Part B); its
+decisions were confirmed by the owner the same day (§3.3).** The identity, claiming and
+certificate decisions in §1.3 and §1.5 were confirmed by the owner on
+2026-10-14. Follows phase 49, whose 49.8b built the generic OTA shape and its
+first backend (the C6), and whose 49.8a made a node's state readable as files.
+Everything here builds on those two.
 
 **The idea in one line:** a LugalOS node is administered entirely through its
 9P namespace: updates, state and configuration. The web interface and the
@@ -53,13 +54,19 @@ board-level update.
   pairs, try-before-you-buy (a `FLASH_UPDATE` reboot, then `explicit_buy()`
   within a fixed 16.7 s watchdog), and address translation so either
   partition runs at `0x10000000` (datasheet §5.1.7, §5.1.17, §5.1.19, §5.10.4).
-  The image needs an IMAGE_DEF block. **Flash is tight at 4 MB**: today
-  1.5 MB is reserved for the OS (~470 KB used), plus `/flash0` and the
-  identity sector. Two slots mean shrinking them to about 1 MB each and
-  repartitioning every board once (UF2 + partition table), moving `/flash0`'s
-  contents along. Not every RP2350 preset has a network. The terminal is
-  updated over its USB 9P port (`if02`) or through a C6 (49.10); the same
-  files work on both.
+  The image needs an IMAGE_DEF block. **Flash is tight at 4 MB** (Pico 2,
+  Pico 2 W): today 1.5 MB is reserved for the OS, plus `/flash0` (1 MB) and
+  the identity sector. *Re-checked 2026-10-25:* the images are no longer
+  ~470 KB: `rp2350` 742 KB, `rp2350-terminal` 821 KB, `rp2350-wifi` 931 KB,
+  of which ~240 KB is the CYW43439 firmware (`cyw43_fw.c`). Two 1 MB slots
+  no longer fit the Wi-Fi build, and TLS and an HTTP server add more. See
+  52.9 for the layout. The **RP2350-LCD-7 terminal has 16 MB of flash**
+  (`cmake/board-rp2350-terminal.cmake`), so it doesn't share the 4 MB
+  problem, but today it uses the common 4 MB layout (`cmake/flash_layout.cmake`).
+  Every board is repartitioned once (UF2 + partition table), moving
+  `/flash0`'s contents along. Not every RP2350 preset has a network. The
+  terminal is updated over its USB 9P port (`if02`) or through a C6 (49.10);
+  the same files work on both.
 * **Updating a whole board.** P4 + C6 boards update C6 first, then the P4,
   checked against LLP's `HELLO` version. The result is a 7B or Tab5 updated
   entirely over Wi-Fi.
@@ -72,8 +79,18 @@ board-level update.
 
 ### 1.2 A remote admin web server
 
-* **Nothing exists yet:** there is no HTTP server in the tree (phase 49
-  §1.1 (f) names it as what comes next).
+* **What exists (re-checked 2026-10-25):** no HTTP *server* yet. There is an
+  HTTP/1.1 *client* (`net/http.c`, plain `http://` only, used by the phase 58
+  LLM client `net/llm.c`) and a Spartan *server* (`net/spartan.c`, phase 53).
+  The Spartan server shows how a second TCP service is wired today: a port in
+  the listener table, and a request/response handler called from
+  `tcp_service()` inside the network pump (`net/tcp.c`), which closes after
+  one reply. That shape doesn't fit HTTP + WebSocket (a long-lived
+  connection, a TLS handshake that takes milliseconds of CPU, file access
+  that may cross a remote mount). The HTTP server gets its own task and a
+  passive-open stream API (52.11). The WebSocket client of phase 62.12 is
+  not built yet. Its framing and SHA-1 are shared with this phase (52.6,
+  52.11).
 * **Architecture** (AGENTS.md): plain HTML, vanilla JavaScript and CSS,
   WebSockets + JSON. **A generic bridge, not endpoints per feature**: the page
   lists, reads and writes 9P files (`/proc/*`, ctl files, the OTA files) as
@@ -83,12 +100,26 @@ board-level update.
   directory, so a P4's page shows `/c6` as well.
 * **Where it runs:** the P4 boards and RP2350s with PSRAM (the TLS buffers,
   §1.5). The C6 serves at most the setup page in §1.3, if anything.
-* **Constraints:** `TCP_MAX_CONNS 2` (`net/tcp.c`), a receive window the size
-  of the 9P msize, and synchronous servers. The page's assets are static
-  files (on `/sd0` or `/flash0`, or in `.rodata` for a board with neither).
+* **Constraints:** `TCP_MAX_CONNS 4` and `TCP_MAX_LISTENERS 4` (`net/tcp.c`,
+  re-checked 2026-10-25; the plan said 2), shared by the 9P server, MQTT,
+  Spartan and now HTTP. Each connection's receive window is the 9P msize
+  (`P9_MAX_MSIZE`: 2 KB or 4 KB). Browsers open up to six parallel
+  connections per host, so the admin page is **one file** (HTML with inline
+  CSS and JavaScript, stored gzip-compressed), and the page needs one GET plus
+  one WebSocket. It lives on `/flash0`, or in `.rodata` for a board without
+  one.
 * **Authentication:** grants from `peers` (phase 21 §5.2), with an `admin`
-  level for writing the owner identity (§1.3). How a browser proves it holds
-  a key is open (§3).
+  level for writing the owner identity (§1.3). Grants today are
+  `name, key, aname, read_only` (`p9_grant_t`, `fs/include/fs/9p.h`), so
+  `admin` is new (52.10). How a browser proves it holds a key (§3 Q1;
+  decided 2026-10-25, §3.3 #3): **9P inside WebSocket binary frames.** The 9P server already
+  serves any `p9_link_t` (`fs/include/fs/p9_link.h`: `poll`, `send_frame`,
+  `recv_frame`, `auth_required`). A WebSocket connection becomes one more
+  link with `auth_required = true`. The browser runs a small 9P client and
+  answers the server's `Tauth` nonce with HMAC-SHA-256, exactly as
+  `fuse-p9` does. The grant check (aname subtree, read-only) stays where it
+  is, and the web adds no permission code of its own. The page gives its
+  JavaScript a JSON-shaped API (`ls`, `read`, `write`, `stat`) on top.
 
 ### 1.3 Two-part identity, claiming, and setup from a phone (decided)
 
@@ -125,9 +156,14 @@ board-level update.
   (~100 lines, fast enough on a phone). With TLS (§1.5), WebCrypto works for
   the admin pages.
 * **Missing pieces:**
-  * SoftAP mode in each radio. The C6 uses the Espressif blob's AP mode
-    (phase 45 and 49 left SoftAP out). The RP2350W's CYW43 has its own AP
-    mode.
+  * SoftAP mode in each radio. The RP2350W's CYW43 has its own AP mode,
+    and its firmware runs the WPA2 handshake itself, so it is the cheaper
+    first target (52.12). The C6 uses the Espressif blob's AP mode, but
+    *re-checked 2026-10-25* the WPA2 **authenticator** (the hostapd side of
+    the 4-way handshake) isn't built: `drivers/radio/radio_supp_os.c` stubs
+    `wpa_receive()`. A C6 SoftAP needs that part of IDF's `wpa_supplicant`
+    ported into the confined radio domain, plus a second LLP interface for
+    AP frames (52.13).
   * A DHCP server (the tree has only the client).
   * Optionally a catch-all DNS server, so phones open the setup page by
     themselves (captive portal).
@@ -171,18 +207,33 @@ Moved here from phase 49 §10.
   writes the certificate back. The certificate belongs in the owner part:
   it is the owner's CA that signs it.
 * **Scope:** server-side HTTPS first (the admin pages). Client-side TLS
-  (MQTT to a broker, §1.6) after that. TLS 1.3 with X25519, AES-GCM or
-  ChaCha20-Poly1305, Ed25519 or P-256: all integer arithmetic, fine without
-  floating point. Hardware accelerators where the chip has them (P4 and C6:
-  AES, SHA, ECC per their TRMs; RP2350: SHA-256), to verify.
+  (MQTT to a broker, §1.6; the LLM client's `https://`) after that. TLS 1.3
+  with X25519 key exchange, `TLS_AES_128_GCM_SHA256` (mandatory in RFC 8446
+  §9.1) and optionally ChaCha20-Poly1305: all integer arithmetic, fine
+  without floating point. **The certificate key must be ECDSA P-256**
+  (re-checked 2026-10-25): no major browser accepts Ed25519 server
+  certificates. P-256 ECDSA also serves image signatures (52.7), so there is
+  one signature algorithm in the tree. Hardware accelerators where the chip
+  has them (P4: AES, SHA, ECC, ECDSA; C6: AES, SHA, ECC; RP2350: SHA-256), to
+  verify, and only after the software path passes the test vectors.
+* **What exists:** SHA-256 and HMAC-SHA-256 (`kernel/sha256.c`, RFC 4231
+  self-test). Nothing else: no SHA-1, AES, GCM, X25519, P-256, HKDF or
+  ASN.1 (52.6).
 * **Memory:** about 16 KB of record buffer each way per connection, because
   browsers don't negotiate smaller records reliably. Fine on the P4
-  (PSRAM). **An RP2350 serving TLS needs PSRAM** (accepted restriction). This
-  is about the RP2350 ending TLS itself. Whether a non-PSRAM RP2350 can still
-  have Wi-Fi without TLS through a C6 is up to the 49.10 shape.
-* **Entropy:** TLS keys need a real random source. Check what feeds
-  `kernel/random` on each chip: the RP2350 has a hardware RNG; the ESP chips'
-  RNG is only truly random with RF or the ADC running.
+  (PSRAM). **An RP2350 serving TLS needs PSRAM** (accepted restriction).
+  *Decided 2026-10-25 (§3.3 #4):* TLS is a per-board capability
+  (`CONFIG_TLS_SERVER`). The Pico 2 W, and probably the C6-Zero, go without
+  it and use integrity-protected 9P sessions instead (52.11b).
+* **Entropy:** TLS keys need a real random source. What feeds
+  `kernel/random.c` (re-checked 2026-10-25):
+  * **RP2350:** ROSC `RANDOMBIT` phase noise, SHA-256 whitened. The chip also
+    has a dedicated TRNG block that isn't used yet.
+  * **C6:** the RNG, counted as hardware only while the radio's RF is on.
+  * **ESP32-P4: nothing.** It falls through to "timer+counter (NOT random)".
+    The P4 has no RF, so its RNG needs the SAR ADC noise source that IDF's
+    `bootloader_random_enable()` switches on. **This blocks any key
+    generation on the P4** and comes first (52.6).
 * **A benefit specific to this tree:** with TLS ending on the P4, the tainted
   C6 forwards only ciphertext. The Espressif blob can't read admin traffic or
   credentials.
@@ -333,8 +384,11 @@ make LugalOS's C6 image and OTA backend directly compatible with ESP-IDF's
 ## 2. Depends on
 
 * 49.8a (state and control as files, the same names on every radio node),
-  49.8b (OTA's generic shape and the C6 backend), and the 49.10 decision
-  (pure 9P versus frames for the RP2350 and its C6).
+  49.8b (OTA's generic shape and the C6 backend), and 49.10 (built: the
+  RP2350-terminal reaches Wi-Fi through a C6-Zero with frames over UART, and
+  owns its IP).
+* Phase 62.12 (the WebSocket client, not built yet): whichever comes first
+  writes `net/websocket.c`'s framing and the SHA-1, and the other reuses it.
 * Phase 21: identity, `peers` grants, the write policy; its §6 bootstrap rule
   is replaced by §1.3 here.
 * Phase 48: the dual resource profiles (for §1.6).
@@ -346,18 +400,31 @@ make LugalOS's C6 image and OTA backend directly compatible with ESP-IDF's
 
 1. How a browser authenticates against phase 21's key model (a key generated
    in the browser at claim time and kept there? a password derived to a key?).
+   *Proposed 2026-10-25:* at claim time the setup page generates a 256-bit
+   owner key with `crypto.getRandomValues()` (available without a secure
+   context, unlike `crypto.subtle`). It installs the key as the `admin` grant
+   `owner`, keeps it in the browser's storage, and offers it as a key file
+   for `fuse-p9`, `lota.py` and the CA script. Later sessions answer 9P's
+   `Tauth` nonce with HMAC-SHA-256 over the WebSocket link (§1.2). Other
+   browsers get the key file, or a per-browser grant added from an existing
+   session.
 2. How long setup mode stays open, and whether it closes after the first
-   failed attempt.
+   failed attempt. *Proposed:* 15 minutes from the trigger (or from boot,
+   when unclaimed), extended while a client is associated with the setup AP.
+   Five failed claim attempts close it until the next trigger. Settled in 52.10.
 3. The RP2350 repartition: slot sizes, what happens to `/flash0`, and moving
-   existing boards over once.
-4. Which buttons are usable per board, once checked on hardware.
+   existing boards over once. → 52.9.
+4. Which buttons are usable per board, once checked on hardware. → 52.10
+   (NANO, Pico 2 W first).
 5. Whether the C6 itself ever serves a page (stand-alone persona), or only
-   through a host.
+   through a host. *Proposed:* only through a host in this phase. A
+   stand-alone C6 is claimed over the console or 9P. Revisit with 52.13.
 6. Device certificates: the owner's CA signs them after claiming. Is there
    also a manufacturer's certificate in the factory part (proving the device
-   is genuine)?
+   is genuine)? *Proposed:* not in this phase. The factory part reserves a
+   field for it (52.10).
 7. For §1.6: certificate-based TLS or TLS-PSK on the sensor nodes, and which
-   brokers have to work.
+   brokers have to work. → 52.16 (investigation only).
 
 ### 3.1 Architectural review: `esp-hosted-mcu` OTA compatibility (Resolved 2026-10-17)
 
@@ -379,6 +446,70 @@ make LugalOS's C6 image and OTA backend directly compatible with ESP-IDF's
      accessible boards first (**Stage 1: ESP32-P4-NANO**, **Stage 2:
      ESP32-P4-WIFI6-Touch-LCD-7B**) before executing the zero-disassembly SDIO
      bootstrap on **Stage 3: M5Stack Tab5**.
+
+### 3.2 Re-check against the tree (2026-10-25, at `0db4903`)
+
+What the stub assumed, what the tree has now, and what that changes for Part B.
+
+| Plan said | Tree now | Consequence |
+|---|---|---|
+| No HTTP server; nothing to build on | HTTP client `net/http.c` (plain only), LLM client `net/llm.c`, Spartan server `net/spartan.c` | URL parsing and a TCP service exist. The server needs its own task and a passive stream API (52.11) |
+| `TCP_MAX_CONNS 2` | 4 connections, 4 listeners | Room for HTTP beside 9P and MQTT, still tight for a browser: a one-file page |
+| RP2350 OS ~470 KB, two ~1 MB slots | 742 / 821 / 931 KB (`rp2350` / `-terminal` / `-wifi`) | 1 MB slots don't fit the Wi-Fi build (52.9) |
+| RP2350 flash is 4 MB | Pico 2 / 2 W: 4 MB. RP2350-LCD-7: 16 MB, but on the common 4 MB layout | Per-board layouts (52.9) |
+| P4 "plenty of room" | P4 OS segment grown to 1.25 MB (`7384290`); Tab5 XIP image 1.07 MB; 13.7 MB unused above `/flash0` | Slots of ≥ 2 MB each, with room to grow |
+| Entropy: "check each chip" | P4 has **no** source (`random.c` falls through to "NOT random"); RP2350 uses ROSC, not its TRNG | P4 entropy first (52.6) |
+| TLS: Ed25519 or P-256 | Only SHA-256/HMAC in the tree; browsers refuse Ed25519 server certificates | P-256 ECDSA + X25519 + AES-128-GCM (52.6, 52.15) |
+| `admin` grant level | Grants are `name, key, aname, read_only` | `admin` flag added (52.10) |
+| C6 SoftAP via the blob | Blob AP mode present, WPA2 authenticator stubbed (`radio_supp_os.c`) | RP2350W SoftAP first (52.12), C6 after (52.13) |
+| 49.10 shape open | 49.10 built: frames over UART, the RP2350 owns its IP | Dependency settled |
+| WebSocket from scratch | Phase 62.12 also needs WebSocket + SHA-1; not built | Shared `net/websocket.c` (52.11) |
+| 52.5a open: IDF bootloader's locked PMP entries | `mem_domain.c` now probes locked entries and allocates around them (`c8cf01b`). Whether those entries also grant U-mode access to peripherals is unmeasured | Measure before the radio domain counts as confined behind IDF's bootloader (52.7a). The P4 uses its own loader (§3.3 #2) |
+| 52.5a open: unsigned images | Still unsigned | Signatures before `/dev/ota` is reachable from the web (52.7) |
+
+**Hardware on the desk (2026-10-25):** an ESP32-P4-NANO, a Pico 2 W
+(`rp2350-wifi`, no PSRAM) and a C6-Zero sensor node (`esp32c6`, stand-alone,
+the loader layout). Between them they cover all of Part B except TLS on an
+RP2350 (needs PSRAM: the RP2350-LCD-7) and the rev v3 P4 and sealed-C6 cases
+(LCD-7B, Tab5). Each milestone below names its first board.
+
+### 3.3 Decisions for Part B (confirmed by the owner 2026-10-25)
+
+1. **Crypto: vendor well-reviewed libraries with compatible open licenses
+   (52.6).** Candidates: `p256-m` (P-256 ECDH/ECDSA, constant-time, ~2 KB
+   RAM, Apache-2.0) and Monocypher (X25519, ChaCha20-Poly1305; CC0/BSD),
+   plus a constant-time AES and GHASH (BearSSL's `aes_ct`/`ghash_ctmul`,
+   MIT). They go into `third_party/crypto/<lib>/` with their license files
+   and the exact upstream version, and are listed in `doc/about.md` §4
+   ("Third-Party Code, Data & Origins", restored there 2026-10-25 after the
+   README overhaul dropped it). The TLS 1.3 state machine, HKDF, ASN.1/DER
+   and X.509 handling are written in-tree.
+2. **P4 boot layout: our own (52.8).** A permanent LugalOS loader at
+   `0x2000` with the C6's `LOTB` boot record and trial logic. It costs
+   nothing compared with IDF's bootloader and leaves the layout free. The
+   PMP measurement behind IDF's bootloader is still needed, but only for
+   the C6s that run behind it (52.7a).
+3. **The web transport: 9P (52.11).** 9P messages in WebSocket binary frames
+   (§1.2), with a JSON-shaped JavaScript API on top for the page's own code.
+4. **TLS is per board, not required everywhere (52.11b, 52.15).** Boards that
+   can't afford a TLS server, the Pico 2 W (no PSRAM) and probably the
+   C6-Zero (to be confirmed by 52.16's measurement), get a lighter
+   protection instead. Proposed policy:
+   * **TLS boards** (P4 boards, the RP2350-LCD-7 with PSRAM,
+     `CONFIG_TLS_SERVER`): admin writes over HTTPS. Plain HTTP is read-only.
+   * **Non-TLS boards:** after `Tauth`, every frame on a network 9P link
+     carries an HMAC-SHA-256 tag with a sequence number, keyed by a session
+     key derived from the grant key and the auth nonce. That stops session
+     hijacking, tampering and replay with the SHA-256 the tree already has,
+     but hides nothing. Writes are allowed on such a session. **Secrets**
+     (the WLAN PSK, grant keys, the owner key) are written only over the
+     setup AP, the console or USB. Update images are signed (52.7) anyway.
+   * On every board, the setup AP (WPA2 with the setup secret) allows the
+     claim.
+5. **Image signing: one factory key (52.7).** Its public half goes into the
+   factory part (`provision.py`). No owner key for now. Unsigned images are
+   accepted only through the console, or on a build with
+   `CONFIG_OTA_ALLOW_UNSIGNED` (development presets).
 
 ---
 
@@ -496,9 +627,304 @@ make LugalOS's C6 image and OTA backend directly compatible with ESP-IDF's
 
 ### Part B — P4 & RP2350 OTA, Web Admin, Claiming & TLS (§1.1–§1.6)
 
-* **52.6 ESP32-P4 & RP2350 OTA Backends (`drivers/ota_esp32p4.c`, `drivers/ota_rp2350.c`).**
-* **52.7 Two-Part Identity Store Split (Factory vs. Owner) & Claiming State Machine.**
-* **52.8 SoftAP Mode, DHCP Server & First-Time Phone Setup Page.**
-* **52.9 LugalOS CA Scripts, Device CSR Generation & TLS 1.3 Stack.**
-* **52.10 WebSocket-to-9P Generic Admin Server over HTTPS.**
+Cut 2026-10-25, replacing the five headings of the stub. The order follows the
+dependencies: entropy and crypto first (everything signs or encrypts), then
+signed images, then the two OTA backends, then identity and claiming, then the
+web server, then TLS. 52.12 (Pico 2 W) and 52.8 (NANO) can run in parallel with
+the boards on the desk. 52.13 (C6 SoftAP) is the largest unknown and can be
+deferred without blocking anything after it.
+
+```
+52.6 entropy+crypto ─┬─ 52.7 signed images (+7a C6 PMP) ─┬─ 52.8 P4 OTA, own loader (NANO → 7B, Tab5)
+                     │                                   └─ 52.9 RP2350 OTA (Pico 2 W → terminal)
+                     ├─ 52.10 identity split + claiming ── 52.11 httpd + WS + 9P link
+                     │                                      ├─ 52.11b protected 9P sessions (Pico 2 W, C6-Zero)
+                     │                                      ├─ 52.12 SoftAP setup (Pico 2 W)
+                     │                                      └─ 52.13 C6 SoftAP (NANO)  [deferrable]
+                     └─ 52.14 device key + CSR + CA ── 52.15 TLS 1.3 + HTTPS admin (NANO; TLS boards)
+                                                          └─ 52.16 integration, docs, review
+```
+
+* **52.6 Entropy and crypto primitives.** *Boards: QEMU and host first, then
+  the NANO and the Pico 2 W.*
+  * **P4 entropy:** port IDF's `bootloader_random_enable()` for the P4 (SAR
+    ADC noise source; `${ESP_ROOT}/esp-idf/components/bootloader_support/src/`),
+    read the RNG register, whiten through the existing SHA-256 pool, and make
+    `random_is_hardware()` true only while the source runs. Check the ADC's
+    other users (battery, `drivers/adc.c`) for conflicts.
+  * **RP2350 entropy:** use the TRNG block as the source and keep ROSC as the
+    fallback. Compare both with `randtest`.
+  * **Primitives** (decision §3.3 #1), behind one in-tree API
+    (`kernel/crypto/`, alongside `kernel/sha256.c`): SHA-1 (WebSocket accept,
+    PBKDF2 for WPA), HKDF-SHA-256, AES-128 + GCM, X25519, P-256 ECDSA
+    sign/verify. ChaCha20-Poly1305 is optional. Anything that touches a
+    secret is constant-time. No floating point, no allocation.
+  * **Vendored code:** each library goes into `third_party/crypto/<lib>/`
+    unmodified where possible, with its LICENSE file and a short
+    `ORIGIN` note (upstream URL, version or commit, local changes). It is
+    listed in `doc/about.md` §4 in the same commit. Check every license for
+    compatibility with MIT before importing. The vendored files are excluded
+    from the comment-style rules but not from `racescan` (they should have
+    no writable statics).
+  * *Verification:* `tests/host/crypto_host.c` under ASan/UBSan with RFC and
+    NIST vectors (Wycheproof where available), wired into `tests/runner.py`.
+    An on-device `cryptotest` self-test on QEMU, the NANO and the Pico 2 W.
+    `randtest` on all three boards (on the C6-Zero, with the radio on and
+    off). Timings recorded per chip (P-256 sign,
+    X25519, AES-GCM MB/s), and code size per preset with
+    `tools/sizereport.py` (target: ≤ 40 KB).
+
+* **52.7 Signed update images.** *Closes both 52.5a items. Boards: the
+  C6-Zero (loader layout) and the NANO's C6 (IDF layout), then the NANO itself
+  once 52.8 lands.*
+  * A signature trailer in `ota_image_header_t`'s next version: ECDSA P-256
+    over the image's SHA-256. `kernel/ota.c` checks it at `commit`, before
+    `set_pending`. `/dev/ota` shows `signed=` and `signer=`.
+  * Keys (decision §3.3 #5): one factory release key. Its public half is in
+    the factory part, written by `tools/provision.py`. Its private half stays
+    on the build host. `CONFIG_OTA_ALLOW_UNSIGNED` on development presets.
+    The console can always install an unsigned image.
+  * Raw `0xE9` images (esp-hosted-mcu's `network_adapter.bin`) carry no
+    signature of ours. They stay console-only (`sdio ota`, `lota.py` with
+    console access), never accepted over the network.
+  * `tools/lota.py keygen | sign | push` (it signs by default when a key is
+    configured; keys under `~/.config/lugalos/keys/`).
+  * *Verification:* host tests for the trailer. On the C6-Zero over 9P/TCP
+    and on the NANO's C6 over `/c6/dev/ota`: signed accepted, tampered (one
+    flipped byte) and unsigned refused before the slot is erased. Code size
+    measured on the C6-Zero and C6-MINI builds.
+  * **52.7a C6 isolation behind IDF's bootloader** (52.5a's other item).
+    Dump `pmpcfg*`/`pmpaddr*` as LugalOS finds them on the NANO's C6 (IDF
+    layout), decode what U-mode may reach, and try it from the radio domain
+    with a U-mode probe. If the locked entries open peripherals to U-mode,
+    record it in the board guides and an ADR, and decide whether the IDF
+    layout stays acceptable for the C6 or the loader layout replaces it once
+    LugalOS is installed.
+
+* **52.8 ESP32-P4 OTA backend (`drivers/ota_esp32p4.c`).**
+  * **52.8a Layout** (decision §3.3 #2: our own). A permanent loader at
+    `0x2000`, written once by `tools/p4flash.py`, as on the C6-Zero
+    (`arch/riscv/esp32c6/loader.c`, the `LOTB` boot record). It picks a slot
+    and loads that slot's RAM half. The loader is never rewritten over the
+    network. Share code with the C6 loader where the two chips allow it.
+  * **52.8b The backend on the NANO.** Two slots, each holding both halves
+    (the ROM-loaded RAM half and the XIP half), of ≥ 2 MB each.
+    *Proposed:* keep `/flash0` (`0x150000`) and the identity sector
+    (`0xFFF000`) where they are, put both slots above `/flash0`, and free
+    the old OS area. That means no data moves. Then:
+    * `xip_esp32p4.c` maps the active slot's XIP half.
+    * A trial boot arms the RTC watchdog. `ota_board_healthy()` is network
+      up + `/sd0` or `/flash0` mounted. Confirm or fall back as on the C6.
+    * `begin` refuses an image built for the other chip revision (v1.x
+      versus v3.x, `linker/esp32p4_memory_rev*.ld`) before erasing anything.
+    * `tools/p4flash.py --only layout` installs the new layout once.
+      `lota.py push --p4 nano` updates over 9P on `eth0`.
+  * *Verification (NANO):* update over Ethernet, trial confirmed. A
+    deliberately unhealthy image falls back (`fell_back=yes`). A wrong-revision
+    image is refused before erase. USB pulled mid-write: the old image boots.
+    `test_esp32p4.py` gains an OTA case, and the full suite stays green.
+  * **52.8c LCD-7B (rev v3.2) and Tab5.** The same tests, with the revision
+    check exercised in both directions.
+  * **52.8d Whole-board update.** `lota.py push-board`: the C6 first,
+    confirmed, then the P4, checked against LLP's `HELLO` version. A board
+    whose C6 and P4 disagree after the update reports it in `/dev/ota`.
+    Verified on the NANO, then the Tab5 over Wi-Fi only.
+
+* **52.9 RP2350 OTA backend (`drivers/ota_rp2350.c`).**
+  * **52.9a Layout.** *Proposed for 4 MB (Pico 2, Pico 2 W):* the partition
+    table in sector 0, slot A `0x001000–0x180000` (1.49 MB), `/flash0`
+    unchanged at `0x180000–0x280000`, slot B `0x280000–0x3FF000` (1.49 MB),
+    identity unchanged at `0x3FF000`. Both slots run at `0x10000000` through
+    the bootrom's address translation, and `/flash0` and the identity sector
+    don't move. The 931 KB Wi-Fi build leaves ~560 KB of headroom. If that
+    runs out, the CYW43 firmware (~240 KB) moves to its own partition
+    outside A/B. The **RP2350-LCD-7 (16 MB)** gets its own
+    `flash_layout_rp2350_terminal.cmake` with ≥ 4 MB slots.
+  * **52.9b The backend on the Pico 2 W.**
+    * IMAGE_DEF with version and TBYB flag (`arch/riscv/rp2350/boot_header.S`),
+      and per-partition UF2 families (`tools/elf2uf2_rp2350.py`).
+    * Writes go through `drivers/flash_rp2350.c`. `reboot` is a `FLASH_UPDATE`
+      reboot.
+    * **The bootrom's buy window is a fixed 16.7 s**, shorter than a Wi-Fi
+      join + DHCP. So `explicit_buy()` happens once the kernel is up and
+      flash is readable, and the network health check runs as our own second
+      trial stage (record + watchdog, as on the C6) that can still switch
+      back to the old slot.
+    * `lota.py push` over 9P on `wlan0`.
+  * *Verification (Pico 2 W):* update over Wi-Fi, trial confirmed. An image
+    that hangs before buy is reverted by the bootrom. An image that boots but
+    never joins Wi-Fi is reverted by the second stage. `/flash0`'s files
+    survive the first-time layout UF2. BOOTSEL + UF2 still recovers a board.
+  * **52.9c RP2350-LCD-7 terminal.** The 16 MB layout. Updates over USB 9P
+    (`if02`) and through the C6-Zero (49.10). Verified with `test_rp2350.py`
+    and `lcdterm_shots.py`.
+
+* **52.10 Two-part identity, the `admin` grant, claiming, triggers.**
+  *Boards: QEMU, then the Pico 2 W and the NANO for buttons.*
+  * **The split is a write policy, not a new record format.** The TLV record
+    (`kernel/idstore.c`) stays one record, so stored records need no
+    migration. A table classifies each field:
+    * **factory:** UID, DEVKEY, SETUP_SECRET (new), RELEASE_PUBKEY (new,
+      52.7), MFG_CERT (reserved, §3 Q6). Console and `provision.py` only.
+    * **owner:** NAME, WLAN_SSID, WLAN_PSK, IPV4, GRANTS, MQTT, ALTITUDE,
+      POWER, ORIENT, TLS_KEY and TLS_CERT (52.14). Writable over
+      authenticated 9P with `admin`, wiped by an owner reset.
+    * `SENSOR_CAL` *proposed:* survives an owner reset (it describes the
+      hardware), and `admin` may write it.
+  * **`admin` grants:** a fourth column in the grants text (old lines still
+    parse). `peers` shows it. The 9P server refuses writes to owner-identity
+    files without it.
+  * **Files:** `/dev/setup` (read: `state=unclaimed|setup|claimed`, time
+    left, failed attempts; write: `start`, `stop`, `claim …`) and
+    `/dev/owner/` (name, wlan, grants, …; secrets write-only). Factory fields
+    are never served (`idstore_path_is_secret()` already covers this).
+  * **The state machine:** setup-mode timeout and attempt limit (§3 Q2). An
+    unclaimed node in setup mode accepts an unauthenticated attach **only**
+    at `/dev/setup`, and only on the setup AP's interface. `CONFIG_NETWORK_CLAIM`
+    off removes the path at compile time.
+  * **Triggers:** console `setup start|stop|reset-owner`, `admin` over 9P
+    (setup only), and a long press. Pico 2 W BOOTSEL (read from SRAM with
+    XIP paused) and NANO BOOT (GPIO35), checked on hardware. Results go
+    into the board guides (§1.4's table).
+  * `tools/provision.py` generates the setup secret and prints it as text +
+    a QR payload (WPA `WIFI:` URI).
+  * *Verification:* QEMU tests: claim succeeds once, a second claim is
+    refused, an owner reset returns to unclaimed with factory fields intact,
+    and a build without the flag refuses outright. A host test for the field
+    policy. Long press on both boards.
+
+* **52.11 HTTP server, WebSocket, and 9P over WebSocket (plain HTTP).**
+  *Boards: QEMU (slirp), the NANO on `eth0`, the Pico 2 W on `wlan0`.*
+  * **TCP:** a passive-open stream API (`tcp_stream_listen()` /
+    `tcp_stream_accept()`), so a server task owns its connections and the
+    network pump never runs HTTP or VFS code.
+  * **`net/httpd.c`:** its own task on port 80. GET for the one page
+    (gzip, ETag), `Upgrade: websocket`, 404 otherwise. Two concurrent
+    sessions at most. Captive-portal probe URLs redirect to the setup page
+    while in setup mode.
+  * **`net/websocket.c`:** server and client framing (masking, fragments,
+    ping/pong, close), SHA-1 from 52.6. Shared with phase 62.12.
+  * **The 9P link:** a WebSocket session as a `p9_link_t` with
+    `auth_required`. A new link property, `read_only`, makes the 9P server
+    refuse `Twrite`/`Tcreate`/`Tremove`/`Twstat`. Plain HTTP sets it on TLS
+    boards. On non-TLS boards the session is integrity-protected instead
+    (52.11b). The setup AP is exempt everywhere (decision §3.3 #4).
+  * **The page** (`tools/web/admin.html`, one file, embedded gzip-compressed
+    by the build into `/flash0` or `.rodata`): SHA-256/HMAC and a 9P client
+    in plain JavaScript, plus views for `/proc`, a file browser, ctl files,
+    and the klog tail. OTA upload is enabled over HTTPS (52.15) or a protected
+    session (52.11b).
+  * `httpd start|stop|status` in the shell. `host/p9lib` gains a WebSocket
+    transport for tests.
+  * *Verification:* a QEMU test in `tests/runner.py` driving the page's
+    protocol from Python. On both boards in Firefox and Chrome: log in with a
+    key file, browse `/proc` and (NANO) `/c6`, and see writes refused on the
+    NANO. The page loads while 9P and MQTT hold the other slots. RAM cost
+    recorded.
+  * **52.11b Integrity-protected 9P sessions for non-TLS boards.** *Boards:
+    the Pico 2 W and the C6-Zero.*
+    * After a successful `Tauth`, both ends derive a session key
+      (HKDF-SHA-256 over the grant key and the nonce). Every later frame
+      carries a sequence number and a truncated HMAC-SHA-256 tag.
+    * A link property turns this on. It applies to TCP 9P links and to
+      WebSocket links on boards without `CONFIG_TLS_SERVER`. A frame with a
+      bad tag or sequence ends the session.
+    * The 9P server refuses writes to secret-bearing files (WLAN PSK,
+      grants, keys) on any network link without TLS, except the setup AP.
+    * The other ends: `host/p9lib` (so `fuse-p9`, `lota.py` and the CA
+      script), and the page's JavaScript.
+    * Wire format and threat coverage go in `doc/dev/` (protocols), stating
+      plainly that this gives integrity, not confidentiality.
+    * *Verification:* host tests for the framing. A QEMU test where a proxy
+      in between flips a byte, replays a frame and injects a frame, and each
+      is refused. On the C6-Zero and the Pico 2 W: `lota.py push` and
+      `fuse-p9` over a protected session, with the throughput cost
+      measured.
+
+* **52.12 SoftAP, DHCP server, captive DNS, phone setup (Pico 2 W).**
+  * **CYW43 AP mode** in `drivers/cyw43_rp2350.c`: WPA2-PSK from the setup
+    secret, done by the chip's firmware. `/dev/wlan` gains `ap start|stop`
+    with the same names as `/c6/dev/wlan`. AP or STA at a time (APSTA later).
+  * **`net/dhcpd.c`:** one /24, four leases, a static table.
+    **`net/dnsd.c`:** answers every A query with the node's address.
+  * **The setup page** (served only in setup mode): a scan list from
+    `/dev/wlan`, PBKDF2-HMAC-SHA1 (4096 iterations) in JavaScript so the
+    passphrase never leaves the phone, the owner key from
+    `crypto.getRandomValues()` (§3 Q1), the claim, and the key file
+    download. After a claim the AP closes and the node joins the network.
+  * *Verification:* an unclaimed Pico 2 W, set up from an Android phone, an
+    iPhone and a laptop. Join with the label secret, the page opens by
+    itself, claim, and the node joins the home Wi-Fi. `fuse-p9` then
+    authenticates with the downloaded key, a second claim is refused, and a
+    long press resets the node. Phase 21's I6 holds: no passphrase in any
+    frame (checked with a capture).
+
+* **52.13 C6 SoftAP for P4 boards** *(deferrable).* *Board: the NANO, then
+  the LCD-7B and the Tab5.*
+  * Port the WPA2 authenticator (IDF `wpa_supplicant`'s `src/ap/` +
+    `esp_hostap`) into the C6's confined radio domain, replacing the
+    `wpa_receive()` stub.
+  * `/c6/dev/wlan ap start`, and AP frames on a second LLP interface (`ap0`).
+    The P4 runs `dhcpd`, `dnsd` and `httpd` on `ap0` (D3: the P4 owns the IP).
+  * *Verification:* the C6-MINI's RAM and code size measured against §1.6's
+    budget. A phone-only setup of the NANO, then of the Tab5 (no cable but
+    power).
+
+* **52.14 Device TLS key, CSR, and the LugalOS CA.** *Board: the NANO.*
+  * The node generates a P-256 key (refused without hardware entropy, 52.6)
+    into the owner part (TLS_KEY, never served).
+  * `/dev/tls/csr` (PKCS#10, PEM, built on read; SAN: `<name>.local` and the
+    current addresses) and `/dev/tls/cert` (write a PEM chain, checked
+    against the key). A minimal DER writer and reader in-tree.
+  * `host/ca/` (Python, `uv`, `cryptography`, typed for `pyrefly`):
+    `lugalos-ca init` (the root key stays under `~/.config/lugalos/ca/`) and
+    `lugalos-ca issue --p4 nano | --host …`, which reads the CSR over 9P and
+    writes the certificate back.
+  * Admin manual: installing the root certificate on Linux, Firefox, Chrome,
+    Android and iOS.
+  * *Verification:* host tests for the DER code. `openssl req -verify` on the
+    CSR, `openssl verify` on the issued certificate. The key never appears
+    in any file served over 9P.
+
+* **52.15 TLS 1.3 server and HTTPS admin** (`CONFIG_TLS_SERVER` boards only).
+  *Board: the NANO; the RP2350-LCD-7 (PSRAM) after it.*
+  * **`net/tls.c`, server only:** ClientHello (supported_versions, X25519
+    key_share, signature_algorithms, `record_size_limit`),
+    HelloRetryRequest when no X25519 share is offered, then
+    EncryptedExtensions, Certificate, CertificateVerify (ECDSA P-256),
+    Finished. AES-128-GCM records, alerts, KeyUpdate. No PSK, resumption,
+    0-RTT or client certificates yet (mTLS: phase 53's Gemini).
+  * **Memory:** a 16 KB+ receive record buffer per session from PSRAM, and
+    sent records ≤ 4 KB. At most two sessions. The handshake runs in
+    `httpd`'s task.
+  * Port 443. Port 80 redirects once a certificate is installed. Admin
+    writes, including OTA upload from the page, are enabled over HTTPS. The
+    page uses WebCrypto when it has a secure context.
+  * **52.15b Accelerators:** P4 AES, SHA and ECC/ECDSA behind the 52.6 API.
+    Same vectors, timings compared.
+  * *Verification:* `tls.c` against OpenSSL on the host under ASan, plus a
+    host fuzz harness for the record and handshake parsers. On the NANO:
+    `openssl s_client -tls1_3`, curl, Firefox, Chrome, Safari (iOS), and
+    Chrome (Android). Handshake time with and without accelerators. An OTA
+    of the NANO from the browser.
+
+* **52.16 Integration, documentation, review; §1.6 investigation.**
+  * End to end: a Pico 2 W set up from a phone and updated from the
+    browser. The NANO administered over HTTPS, with a whole-board update
+    (52.8d) from the page.
+  * `tests/hw/`: OTA, httpd and TLS cases in `test_esp32p4.py`, and setup-mode
+    cases in `test_wifi.py` (skip cleanly without hardware).
+  * Docs: `doc/user/shell.md` (`setup`, `httpd`, `ota`, `tls`), the admin
+    manual (remote admin, CA, new flash layouts), `doc/dev/` (9P over
+    WebSocket), board guides (buttons, layouts). Then
+    `tools/gendocs.py --all` / `--check`.
+  * An ADR on the remote-administration trust model (what each path can
+    write, before and after claiming, with and without TLS). `racescan`
+    verdicts for every new static.
+  * **§1.6 and the C6-Zero's TLS question** (§3.3 #4), on the C6-Zero
+    sensor node: measure the sensor profile's free RAM with the radio and
+    MQTT up, and test TLS-PSK versus certificates against mosquitto
+    (`record_size_limit`). Record whether the C6-Zero is a TLS board or
+    stays on 52.11b's protected sessions. Building a TLS client there belongs
+    to a later phase.
 
