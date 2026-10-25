@@ -2051,6 +2051,9 @@ static bool cyw43_join_wpa2_locked(const char *ssid, const uint8_t psk[32]) {
  * reaches the bus without it. */
 static netif_t g_netif;
 static bool g_netif_registered;
+/* guarded by: g_bus_lock (cyw43_lock()). Registered under the bus lock,
+ * not yet attached to the stack (cyw43_attach_netif()). */
+static bool g_netif_attach_pending;
 
 static int cyw43_netif_send_locked(netif_t *nif, const uint8_t *buf, uint32_t len) {
     (void)nif;
@@ -2186,14 +2189,27 @@ static bool cyw43_register_netif(void) {
         return false;
     }
     g_netif_registered = true;
+    g_netif_attach_pending = true;
     printk("cyw43: wlan0 registered, mac %02x:%02x:%02x:%02x:%02x:%02x\n",
            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    return true;
+}
 
-    /* kernel/main.c attaches the stack and starts `netsrv` at boot, but
-     * only for an interface that already exists by then -- which this one
-     * does not, since it appears when `wifi probe` runs from the shell.
-     * Do the same two steps here, once, or the interface is registered
-     * and never pumped. */
+/* kernel/main.c attaches the stack and starts `netsrv` at boot, but only for
+ * an interface that already exists by then -- which this one does not, since
+ * it appears when the radio is probed. So the same steps here, once, or the
+ * interface is registered and never pumped.
+ *
+ * Caller must NOT hold the bus lock: net_stack_attach() takes the stack's
+ * lock, and `netsrv` takes the stack's lock and then the bus lock on every
+ * poll. Taking them in the other order here deadlocks the two tasks if
+ * `netsrv`, started a moment earlier, polls in between. */
+static void cyw43_attach_netif(void) {
+    cyw43_lock();
+    bool pending = g_netif_attach_pending;
+    g_netif_attach_pending = false;
+    cyw43_unlock();
+    if (!pending) return;
     net_stack_attach(&g_netif);
     if (net_task_start() < 0)
         printk("cyw43: netsrv did not start; frames will not be serviced\n");
@@ -2201,7 +2217,6 @@ static bool cyw43_register_netif(void) {
      * wins; without one, DHCP (net/dhcp.c defers to an explicit configuration, so starting it is
      * harmless on a board that has one). The C6 does the same (45.7). */
     dhcp_start();
-    return true;
 }
 
 static bool cyw43_probe_locked(void) {
@@ -2338,6 +2353,7 @@ bool cyw43_gspi_probe(void) {
     cyw43_lock();
     bool r = cyw43_probe_locked();
     cyw43_unlock();
+    if (r) cyw43_attach_netif();
     return r;
 }
 
