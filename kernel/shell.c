@@ -5668,6 +5668,28 @@ void shell_exec_untrusted(const char *cmd_line) {
     untrusted_leave();
 }
 
+/* `peek`/`poke`'s numbers: one hex word, `0x` optional, either case, then
+ * spaces. False when the word is empty or holds anything but hex digits. */
+static bool peek_hex(const char **pp, unsigned long *out) {
+    const char *q = *pp;
+    while (*q == ' ') q++;
+    if (q[0] == '0' && (q[1] == 'x' || q[1] == 'X')) q += 2;
+    unsigned long v = 0;
+    int digits = 0;
+    for (;; q++, digits++) {
+        char c = *q;
+        int d = (c >= '0' && c <= '9') ? c - '0' : (c >= 'a' && c <= 'f') ? c - 'a' + 10 :
+                (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+        if (d < 0) break;
+        v = v * 16u + (unsigned long)d;
+    }
+    if (digits == 0 || (*q && *q != ' ')) return false;
+    while (*q == ' ') q++;
+    *pp = q;
+    *out = v;
+    return true;
+}
+
 static void parse_and_eval_cmd(const char *cmd_line) {
     while (*cmd_line == ' ' || *cmd_line == '\t') cmd_line++;
     if (*cmd_line == '\0') return;
@@ -6055,14 +6077,17 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strncmp(cmd_line, "peek ", 5) == 0 || strncmp(cmd_line, "poke ", 5) == 0) {
         /* Bring-up aid: `peek ADDR [COUNT]` reads words, `poke ADDR VALUE` writes one.
          * Hex, no 0x needed. M-mode and unrestricted: a stray poke can hang the chip. */
+        /* A word that is not entirely hex is refused rather than read up to
+         * its first odd character: `peek 500DE040` once stopped at the `D`
+         * and read address 0x500, which halted the kernel. */
         const char *q = cmd_line + 5;
         unsigned long a = 0, v = 0;
-        while (*q == ' ') q++;
-        if (q[0] == '0' && q[1] == 'x') q += 2;
-        for (; (*q >= '0' && *q <= '9') || (*q >= 'a' && *q <= 'f'); q++) a = a * 16 + (unsigned)(*q <= '9' ? *q - '0' : *q - 'a' + 10);
-        while (*q == ' ') q++;
-        if (q[0] == '0' && q[1] == 'x') q += 2;
-        for (; (*q >= '0' && *q <= '9') || (*q >= 'a' && *q <= 'f'); q++) v = v * 16 + (unsigned)(*q <= '9' ? *q - '0' : *q - 'a' + 10);
+        bool have_v = false;
+        if (!peek_hex(&q, &a) || (*q && !(have_v = peek_hex(&q, &v))) || *q ||
+            (cmd_line[1] == 'o' && !have_v)) {
+            cprintf("usage: peek ADDR [COUNT] | poke ADDR VALUE   (hex, 0x optional)\n");
+            return;
+        }
         if (cmd_line[1] == 'o') {
             *(volatile uint32_t *)a = (uint32_t)v;
             cprintf("%08lx <- %08lx, reads back %08lx\n", a, v, (unsigned long)*(volatile uint32_t *)a);
