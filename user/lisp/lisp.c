@@ -2,6 +2,7 @@
 #if defined(CONFIG_BOARD_ESP32C6)
 #include "drivers/ws2812.h"
 #endif
+#include "kernel/privilege.h"
 #include "kernel/printk.h"
 #include "kernel/lock.h"
 #include "kernel/scratch.h"
@@ -4383,6 +4384,7 @@ static lisp_val_t *prim_peek(lisp_val_t *args, lisp_val_t *env) {
 
 static lisp_val_t *prim_poke(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
+    if (privileged_refused("poke")) return &false_val;
     lisp_val_t *a1 = lisp_list_ref(args, 0);
     lisp_val_t *a2 = lisp_list_ref(args, 1);
     if (!a1 || a1->type != LISP_INT || !a2 || a2->type != LISP_INT) return &false_val;
@@ -6263,6 +6265,7 @@ static lisp_val_t *prim_p9_remote_cat(lisp_val_t *args, lisp_val_t *env) {
  * bringing a network up. */
 static lisp_val_t *prim_net_config(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
+    if (privileged_refused("net-config")) return &false_val;
     uint8_t ip[4], mask[4], gw[4] = { 0, 0, 0, 0 };
     if (!args || args->type != LISP_PAIR) return &false_val;
     if (!ipv4_parse(get_str_val(args->u.pair.car), ip)) return &false_val;
@@ -6438,6 +6441,7 @@ static p9_link_t *net_mount_forget(const char *name) {
 static lisp_val_t *prim_net_identity(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     if (args && args->type == LISP_PAIR) {
+        if (privileged_refused("net-identity")) return &false_val;
         const char *want = get_str_val(args->u.pair.car);
         if (node_set_name(want) != 0) {
             cprintf("[Node] '%s' is not a usable name (letters, digits, '-', '.', "
@@ -6500,6 +6504,7 @@ static lisp_val_t *prim_identity(lisp_val_t *args, lisp_val_t *env) {
 /* `(identity-name "clock-01")` -- persists, unlike (net-identity "..."). */
 static lisp_val_t *prim_identity_name(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
+    if (privileged_refused("identity-name")) return &false_val;
     if (!args || args->type != LISP_PAIR) return &false_val;
     const char *name = get_str_val(args->u.pair.car);
     node_id_result_t rc = node_identity_rename_persistent(name);
@@ -6511,6 +6516,7 @@ static lisp_val_t *prim_identity_name(lisp_val_t *args, lisp_val_t *env) {
 /* `(identity-provision)` or `(identity-provision "--force")`. */
 static lisp_val_t *prim_identity_provision(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
+    if (privileged_refused("identity-provision")) return &false_val;
     bool force = false;
     if (args && args->type == LISP_PAIR) {
         const char *arg = get_str_val(args->u.pair.car);
@@ -6526,6 +6532,7 @@ static lisp_val_t *prim_identity_provision(lisp_val_t *args, lisp_val_t *env) {
 /* `(identity-key "aabbcc...")` or `(identity-key "--generate")`. */
 static lisp_val_t *prim_identity_key(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
+    if (privileged_refused("identity-key")) return &false_val;
     if (!args || args->type != LISP_PAIR) { cprintf("usage: (identity-key \"<hex>\"|\"--generate\")\n"); return &false_val; }
     const char *arg = get_str_val(args->u.pair.car);
 
@@ -6590,6 +6597,7 @@ static lisp_val_t *prim_peers(lisp_val_t *args, lisp_val_t *env) {
 /* `(peers-add "name" "hex" ["aname"] ["ro"|"rw"])`. */
 static lisp_val_t *prim_peers_add(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
+    if (privileged_refused("peers-add")) return &false_val;
     const char *name = get_str_val(lisp_list_ref(args, 0));
     const char *hex  = get_str_val(lisp_list_ref(args, 1));
     const char *tok3 = get_str_val(lisp_list_ref(args, 2));
@@ -6635,6 +6643,7 @@ static lisp_val_t *prim_peers_add(lisp_val_t *args, lisp_val_t *env) {
 /* `(peers-remove "name")`. */
 static lisp_val_t *prim_peers_remove(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
+    if (privileged_refused("peers-remove")) return &false_val;
     const char *name = get_str_val(lisp_list_ref(args, 0));
     if (!name || !name[0]) { cprintf("usage: (peers-remove \"name\")\n"); return &false_val; }
     p9_grant_result_t rc = p9_grants_remove(name);
@@ -6672,6 +6681,7 @@ static lisp_val_t *prim_wlan(lisp_val_t *args, lisp_val_t *env) {
  * (tools/provision.py's derive_wpa2_psk()), never a passphrase. */
 static lisp_val_t *prim_wlan_set(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
+    if (privileged_refused("wlan-set")) return &false_val;
     const char *ssid = get_str_val(lisp_list_ref(args, 0));
     const char *hex   = get_str_val(lisp_list_ref(args, 1));
     if (!ssid || !ssid[0] || !hex || !hex[0]) {

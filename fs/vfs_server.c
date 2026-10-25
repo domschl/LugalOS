@@ -1,3 +1,4 @@
+#include "kernel/privilege.h"
 #include "kernel/lock.h"
 #include "kernel/power.h"
 #include "fs/vfs.h"
@@ -2424,6 +2425,7 @@ static int vfs_open_into(vfs_handle_t *h, const char *path, int flags) {
 
 int vfs_open(const char *path, int flags) {
     if (!path) return -1;
+    if ((flags & (VFS_O_WRITE | VFS_O_CREATE | VFS_O_TRUNC)) && privileged_path_refused(path)) return -1;
 
     /* Find and take the slot as one step: two tasks opening at once would
      * otherwise both find the same free one. */
@@ -3078,6 +3080,7 @@ static int vfs_remove_on(mount_entry_t *m, const char *rel, bool is_root, const 
 }
 
 int vfs_remove(const char *path) {
+    if (privileged_path_refused(path)) return -1;
     bool is_root;
     const char *rel = NULL;
     mount_entry_t *m = mount_get(path, &rel, &is_root);

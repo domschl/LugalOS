@@ -76,6 +76,7 @@
 #include "kernel/timezone.h"
 #include "kernel/sha256.h"
 #include "kernel/crypto.h"
+#include "kernel/privilege.h"
 #include "kernel/random.h"
 #include "kernel/idstore.h"
 #include "kernel/identity.h"
@@ -5530,6 +5531,67 @@ static void shell_run_editor(const char *filename) {
     session_release(&g_editor_session);
 }
 
+/* --- commands an agent may not run -------------------------------------------
+ * Run through shell_exec_untrusted() (kernel/ea.c's tool calls), these refuse:
+ * they change keys, identity or network configuration, write arbitrary memory
+ * or install firmware. See kernel/include/kernel/privilege.h. */
+static const char *const g_privileged[] = {
+    "identity", "mqttcfg", "netcfg", "otakey", "p9key", "peers", "poke", "sdio", "wlan",
+};
+
+static bool privileged_cmd_refused(const char *cmd_line) {
+    if (!untrusted_active()) return false;
+    for (unsigned i = 0; i < sizeof g_privileged / sizeof g_privileged[0]; i++) {
+        size_t n = strlen(g_privileged[i]);
+        if (strncmp(cmd_line, g_privileged[i], n) == 0 && (cmd_line[n] == '\0' || cmd_line[n] == ' '))
+            return privileged_refused(g_privileged[i]);
+    }
+    return false;
+}
+
+/* `privselftest`: an agent's tool call cannot reach a privileged command, a
+ * privileged Lisp primitive or a protected path, however spelled -- and the
+ * same calls outside one still work. */
+static void privilege_selftest(void) {
+    int fails = 0;
+#define PCHECK(c, what) do { bool ok_ = (c); cprintf("  [%s] %s\n", ok_ ? "ok" : "FAIL", what); if (!ok_) fails++; } while (0)
+    char before[NODE_NAME_MAX];
+    strncpy(before, node_name(), sizeof before - 1);
+    before[sizeof before - 1] = 0;
+
+    untrusted_enter();
+    parse_and_eval_cmd("p9key");
+    PCHECK(g_shell_last_status == 1, "untrusted: `p9key` is refused");
+    parse_and_eval_cmd("version; otakey clear");
+    PCHECK(g_shell_last_status == 1, "untrusted: `otakey` after `;` is refused");
+    lisp_lock();
+    lisp_eval_string("(net-identity \"privtest-renamed\")");
+    lisp_unlock();
+    PCHECK(strcmp(node_name(), before) == 0, "untrusted: (net-identity ...) does not rename the node");
+    PCHECK(privileged_path_refused("/sd0/system/etc/auth/keys"), "untrusted: /sd0/system/etc/auth/keys is protected");
+    PCHECK(privileged_path_refused("/FLASH0//x/../SYSTEM/./Etc/p9key"), "untrusted: /FLASH0//x/../SYSTEM/./Etc/p9key is protected");
+    PCHECK(!privileged_path_refused("/ram0/notes.txt"), "untrusted: /ram0/notes.txt is not");
+    PCHECK(vfs_open("/ram0/system/etc/x", VFS_O_WRITE | VFS_O_CREATE) < 0, "untrusted: creating /ram0/system/etc/x fails");
+    untrusted_leave();
+
+    PCHECK(!untrusted_active(), "the untrusted state ends with untrusted_leave()");
+    PCHECK(!privileged_path_refused("/sd0/system/etc/auth/keys"), "trusted: the same path is allowed");
+    lisp_lock();
+    lisp_eval_string("(net-identity \"privtest-renamed\")");
+    lisp_unlock();
+    PCHECK(strcmp(node_name(), "privtest-renamed") == 0, "trusted: (net-identity ...) renames the node");
+    (void)node_set_name(before);
+#undef PCHECK
+    cprintf(fails ? "PRIV_SELFTEST_FAIL (%d)\n" : "PRIV_SELFTEST_OK\n", fails);
+}
+
+void shell_exec_untrusted(const char *cmd_line) {
+    if (!cmd_line) return;
+    untrusted_enter();
+    parse_and_eval_cmd(cmd_line);
+    untrusted_leave();
+}
+
 static void parse_and_eval_cmd(const char *cmd_line) {
     while (*cmd_line == ' ' || *cmd_line == '\t') cmd_line++;
     if (*cmd_line == '\0') return;
@@ -5545,6 +5607,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     }
 
     g_shell_last_status = 0;
+
+    if (privileged_cmd_refused(cmd_line)) {
+        g_shell_last_status = 1;
+        return;
+    }
 
     if (strcmp(cmd_line, "help") == 0) {
         cmd_help(NULL);
@@ -5805,6 +5872,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "hmacselftest") == 0) {
         sha256_selftest();
+        return;
+    } else if (strcmp(cmd_line, "privselftest") == 0) {
+        privilege_selftest();
         return;
     } else if (strcmp(cmd_line, "cryptotest") == 0) {
         (void)crypto_selftest();

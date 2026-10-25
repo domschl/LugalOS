@@ -152,6 +152,7 @@ LugalOS features a ring buffer kernel logging subsystem ([logging](../dev/kernel
 * `cryptotest`: Known-answer tests of the primitives behind signed updates, TLS and protected 9P sessions: SHA-1, HKDF-SHA-256, X25519, ChaCha20-Poly1305 and P-256 ECDSA/ECDH, against their standards' vectors, plus tamper checks. Key generation and signing are skipped (and said to be) without hardware entropy. Prints `CRYPTO_SELFTEST_OK` or `CRYPTO_SELFTEST_FAIL`.
 * `cryptotest bench`: The time of each operation on this chip, in microseconds.
 * `hmacselftest`: SHA-256 and HMAC-SHA-256 against FIPS 180-4 and RFC 4231.
+* `privselftest`: Checks that an `ea` tool call cannot run privileged commands or Lisp primitives, nor write under `system/etc/`, and that the same calls work outside one. Prints `PRIV_SELFTEST_OK` or `PRIV_SELFTEST_FAIL`.
 
 ### Hardware Bring-up & Diagnostics
 These are bring-up aids for developers. They read hardware state, and some change it.

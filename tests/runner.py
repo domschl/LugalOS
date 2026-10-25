@@ -982,6 +982,14 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("SHA-1/HKDF/X25519/ChaCha20-Poly1305/P-256 Against Their Vectors (52.6)",
                         crypto_ok, log if not crypto_ok else ""))
 
+        # An agent's tool call (kernel/ea.c) runs untrusted: privileged shell
+        # commands, Lisp primitives and system/etc paths refuse, however
+        # spelled, and work again outside (kernel/include/kernel/privilege.h).
+        ok, log = session.send_and_expect("privselftest\n", r"PRIV_SELFTEST_(OK|FAIL)", timeout=20.0)
+        priv_ok = ok and "PRIV_SELFTEST_OK" in log
+        results.append(("Agent Tool Calls Cannot Reach Privileged Commands, Primitives or Paths",
+                        priv_ok, log if not priv_ok else ""))
+
         # S1, plan/phase22_smp_locking_foundation.md: the two cross-hart lock
         # types, before anything is converted to use them.
         #
