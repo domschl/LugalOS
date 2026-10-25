@@ -15,16 +15,21 @@ carries a few frames":
   * a sustained soak, because a radio that works for a second and a radio
     that works for fifteen minutes are different claims
 
-Run it against a board that has already been brought up by hand:
+Run it against a Pico 2 W on the network. Store the WLAN credentials once
+(they survive reboots; the board joins and takes a DHCP lease by itself, and
+listens on 9P):
 
-    lsh> wifi probe
-    lsh> wifi join <ssid> <psk>
-    lsh> lisp
-         (net-config "192.168.178.21" "255.255.255.0" "192.168.178.1")
+    host$ python3 -c 'import hashlib,getpass; print(hashlib.pbkdf2_hmac("sha1",
+              getpass.getpass().encode(), b"<ssid>", 4096, 32).hex())'
+    lsh> wlan <ssid> <the 64 hex characters>
+    lsh> reboot
+
+Then, each boot, the test key, and the address `net` reports:
+
     lsh> p9key 000102030405060708090a0b0c0d0e0f
-    lsh> net listen 564
+    lsh> net
 
-    uv run test_wifi.py 192.168.178.21 [--soak-minutes 15]
+    uv run test_wifi.py <address> [--soak-minutes 15]
 
 There is no console interaction here on purpose: everything below goes over
 the air, so a pass means the network path worked, not that a serial cable
