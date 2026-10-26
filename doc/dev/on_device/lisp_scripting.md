@@ -54,6 +54,7 @@ LugalOS uses a two-tier library model:
    * `(require 'dict)`: Key-value association dictionaries and hash tables.
    * `(require 'matrix)`: Vector and matrix linear algebra routines.
    * `(require 'chart)`: Real-time graphical charting on the ribbon canvas.
+   * `(require 'ota)`: The node's update state as data, read from `/dev/ota`. `(ota-info)` returns an association list of `("key" . "value")` strings (`board`, `layout`, `version`, `running`, `trial`, `slot_a`, `slot_b`, `at_a`, `at_b`, ... ; see [updates](../../admin/updates.md)); `(ota-get "running")` returns one value or `#f`. Read-only.
 
 ---
 

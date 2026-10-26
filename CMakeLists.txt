@@ -62,7 +62,12 @@ elseif(LUGALOS_TARGET STREQUAL "RP2350")
     # the flash map, reaching the compiler here and the linker below as
     # --defsym, so drivers/flashdisk.c and linker/rp2350.ld cannot disagree
     # about where the filesystem segment starts.
-    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/flash_layout.cmake)
+    # The RP2350-LCD-7 has 16 MB and a map of its own that builds on the common one.
+    set(LUGALOS_FLASH_LAYOUT_FILE ${CMAKE_CURRENT_SOURCE_DIR}/cmake/flash_layout.cmake)
+    if(DEFINED LUGALOS_BOARD_FILE AND LUGALOS_BOARD_FILE MATCHES "board-rp2350-terminal")
+        set(LUGALOS_FLASH_LAYOUT_FILE ${CMAKE_CURRENT_SOURCE_DIR}/cmake/flash_layout_rp2350_terminal.cmake)
+    endif()
+    include(${LUGALOS_FLASH_LAYOUT_FILE})
     add_compile_definitions(
         LUGALOS_FLASHFS_BASE=${LUGALOS_FLASHFS_BASE}
         LUGALOS_FLASHFS_PHYS=${LUGALOS_FLASHFS_PHYS}
@@ -1582,8 +1587,8 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
     # The partition table, written once per board (tools/rp2350_ptable.py).
     add_custom_command(
         OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/ptable.uf2
-        COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/rp2350_ptable.py ${CMAKE_CURRENT_BINARY_DIR}/ptable.uf2
-        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/cmake/flash_layout.cmake ${CMAKE_CURRENT_SOURCE_DIR}/tools/rp2350_ptable.py
+        COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/rp2350_ptable.py --layout ${LUGALOS_FLASH_LAYOUT_FILE} ${CMAKE_CURRENT_BINARY_DIR}/ptable.uf2
+        DEPENDS ${LUGALOS_FLASH_LAYOUT_FILE} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/flash_layout.cmake ${CMAKE_CURRENT_SOURCE_DIR}/tools/rp2350_ptable.py
         COMMENT "Generating ptable.uf2 (the A/B partition table)"
     )
     add_custom_target(ptable_uf2 ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/ptable.uf2)

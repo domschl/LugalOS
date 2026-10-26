@@ -3911,6 +3911,82 @@ static void cmd_otakey(const char *arg) {
 #endif
 }
 
+/* --- `ota`: the update state, as a table ---------------------------------------
+ * /dev/ota's lines (kernel/ota.c), laid out for reading. */
+#if defined(CONFIG_OTA)
+static bool ota_kv(const char *text, const char *key, char *out, uint32_t cap) {
+    uint32_t klen = (uint32_t)strlen(key);
+    for (const char *p = text; *p; ) {
+        const char *eol = strchr(p, '\n');
+        uint32_t len = eol ? (uint32_t)(eol - p) : (uint32_t)strlen(p);
+        if (len > klen && strncmp(p, key, klen) == 0 && p[klen] == '=') {
+            uint32_t vlen = len - klen - 1;
+            if (vlen >= cap) vlen = cap - 1;
+            memcpy(out, p + klen + 1, vlen);
+            out[vlen] = 0;
+            return true;
+        }
+        if (!eol) break;
+        p = eol + 1;
+    }
+    out[0] = 0;
+    return false;
+}
+#endif
+
+static void cmd_ota(const char *arg) {
+#if defined(CONFIG_OTA)
+    (void)arg;
+    /* A heap page, not a static: the P4s' low RAM has no room for another 1 KB. */
+    char *text = palloc_pages(1);
+    if (!text) { cprintf("ota: out of memory\n"); return; }
+    uint32_t n = ota_ctl_read(text, 2048);
+    text[n] = 0;
+    char v[64], at[64], build[48];
+    if (ota_kv(text, "supported", v, sizeof v)) { palloc_free(text, 1); cprintf("ota: this board has no update path\n"); return; }
+    char board[32], chip[16], layout[16], running[4];
+    ota_kv(text, "board", board, sizeof board);
+    ota_kv(text, "chip", chip, sizeof chip);
+    ota_kv(text, "layout", layout, sizeof layout);
+    ota_kv(text, "running", running, sizeof running);
+    cprintf("%s (%s), flash layout: %s\n", board, chip, layout);
+    if (ota_kv(text, "version", v, sizeof v)) cprintf("running image version %s\n", v);
+    char active[4], pending[4];
+    ota_kv(text, "active", active, sizeof active);
+    ota_kv(text, "pending", pending, sizeof pending);
+    for (int s = 0; s < 2; s++) {
+        char key[12], ak[12];
+        ksnprintf(key, sizeof key, "slot_%c", 'a' + s);
+        ksnprintf(ak, sizeof ak, "at_%c", 'a' + s);
+        ota_kv(text, key, build, sizeof build);
+        ota_kv(text, ak, at, sizeof at);
+        bool is_run = running[0] == 'a' + s;
+        cprintf("slot %c  %s  at %s%s%s%s\n", 'a' + s, build[0] ? build : "?", at[0] ? at : "?",
+                is_run ? "  RUNNING" : "", active[0] == 'a' + s ? "  active" : "",
+                pending[0] == 'a' + s ? "  pending (the next boot tries it)" : "");
+    }
+    static const char *const others[] = { "loader", "table", "flashfs", "records", "identity" };
+    for (unsigned i = 0; i < sizeof others / sizeof others[0]; i++) {
+        char key[20];
+        ksnprintf(key, sizeof key, "at_%s", others[i]);
+        if (ota_kv(text, key, at, sizeof at)) cprintf("%s  at %s\n", others[i], at);
+    }
+    char tr[8], fb[8], fl[8], sg[16], rk[24];
+    ota_kv(text, "trial", tr, sizeof tr);
+    ota_kv(text, "fell_back", fb, sizeof fb);
+    ota_kv(text, "failed", fl, sizeof fl);
+    ota_kv(text, "signatures", sg, sizeof sg);
+    ota_kv(text, "release_key", rk, sizeof rk);
+    cprintf("trial %s, last trial %s, signatures %s, release key %s\n", tr,
+            strcmp(fb, "yes") == 0 ? "did not confirm" : "ok", sg, rk);
+    if (ota_kv(text, "state", v, sizeof v) && strcmp(v, "idle") != 0) cprintf("update state: %s\n", v);
+    palloc_free(text, 1);
+#else
+    (void)arg;
+    cprintf("ota: this board has no update path\n");
+#endif
+}
+
 static void cmd_wlan(const char *arg) {
     if (!arg || !*arg) { wlan_print_report(); return; }
 
@@ -7039,6 +7115,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         llp_node_start(LLP_NODE_RADIO);
         return;
 #endif
+    } else if (strcmp(cmd_line, "ota") == 0) {
+        cmd_ota(NULL);
+        return;
     } else if (strcmp(cmd_line, "otakey") == 0 || strncmp(cmd_line, "otakey ", 7) == 0) {
         cmd_otakey(cmd_line[6] ? &cmd_line[7] : NULL);
         return;

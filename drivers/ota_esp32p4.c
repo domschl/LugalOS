@@ -231,6 +231,19 @@ bool ota_board_healthy(void) {
     return nif && netif_link_up(nif);
 }
 
+uint32_t ota_board_map(char *out, uint32_t cap) {
+    int n = ksnprintf(out, cap,
+        "at_loader=0x%x+0x%x\nat_flashfs=0x%x+0x%x\nat_a=0x%x+0x%x\nat_b=0x%x+0x%x\n"
+        "at_records=0x%x+0x%x\nat_identity=0x%x+0x%x\n",
+        (unsigned)LUGALOS_P4_BOOTLOADER_BASE, 0xE000u,
+        (unsigned)LUGALOS_P4_FLASHFS_BASE, (unsigned)LUGALOS_P4_FLASHFS_SIZE,
+        (unsigned)LUGALOS_P4_SLOT_A_BASE, (unsigned)LUGALOS_P4_SLOT_SIZE,
+        (unsigned)LUGALOS_P4_SLOT_B_BASE, (unsigned)LUGALOS_P4_SLOT_SIZE,
+        (unsigned)LUGALOS_P4_BOOTREC_BASE, 2u * SECTOR,
+        (unsigned)LUGALOS_P4_IDENTITY_BASE, SECTOR);
+    return n < 0 ? 0 : (uint32_t)n < cap ? (uint32_t)n : cap;
+}
+
 bool ota_board_restart(void) { return board_reset_later(false, 300); }
 void ota_board_trial_tick(void) { }
 const char *ota_board_version(void) { return NULL; }

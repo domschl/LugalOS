@@ -11,7 +11,7 @@ Supported so far: the ESP32-C6 (esp32c6, esp32c6-mini) and the ESP32-P4 (esp32p4
 ```
 | File | Read | Write |
 | :--- | :--- | :--- |
-| /dev/ota | board, chip, layout (loader, idf, or none), running (slot a/b), trial, fellback, slota/slotb (build id or empty), active, pending, tried, failed (the boot record), releasekey (key id or none), signatures (required, optional), image_signature (once an image's header is in), state (idle, receiving, received, committed, error), received, error | begin SIZE, commit, reboot, confirm, abort, switch |
+| /dev/ota | board, chip, layout (loader, idf, partition, or none), version (boards whose bootrom orders images by one), running (slot a/b), trial, fellback, slota/slotb (build id or empty), ata/atb/atflashfs/atrecords/atidentity and atloader or attable (0xSTART+0xSIZE in flash), active, pending, tried, failed (the boot record), releasekey (key id or none), signatures (required, optional), imagesignature (once an image's header is in), state (idle, receiving, received, committed, error), received, error | begin SIZE, commit, reboot, confirm, abort, switch |
 | /dev/otaimage | -- | the update image, in order from offset 0, after begin |
 ```
 
@@ -100,6 +100,8 @@ A kernel loaded into RAM by c6run.py was not started by the loader: it cannot up
 
 ## The RP2350's flash
 
+The shell's ota command (and (ota-info) in Lisp) lays out the slots, their versions and the running one.
+
 ```
 | Storage offset | What |
 | :--- | :--- |
@@ -110,6 +112,8 @@ A kernel loaded into RAM by c6run.py was not started by the loader: it cannot up
 | 0x3FD000 | the boot records: two 4 KB sectors |
 | 0x3FF000 | the identity sector (read at 0x10800000) |
 ```
+
+The map is the Pico 2's (4 MB). The RP2350-LCD-7 has 16 MB and cmake/flashlayoutrp2350_terminal.cmake: the table, /flash0, the boot records and the identity sector stay where they are, and the slots become 4 MB each at 0x400000 and 0x800000 (a slot is exactly what one QMI translation window maps, which leaves the other windows for /flash0 and the identity). A board flashed with one map needs the first-time install again to take the other.
 
 The slots are a bootrom A/B pair: it boots the higher-versioned valid image, and maps only that partition at 0x10000000 (datasheet 5.1.19), so the kernel points spare QMI translation windows at /flash0 and the identity sector before it reads them (rp2350mapdatawindows()). PHYS names in cmake/flashlayout.cmake are storage offsets, BASE the windows.
 

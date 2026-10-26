@@ -302,6 +302,7 @@ uint32_t ota_ctl_read(char *out, uint32_t cap) {
         if (ota_board_header(s, &h) == 0) PUT("slot_%c=%.32s\n", slot_letter(s), h.build_id);
         else PUT("slot_%c=empty\n", slot_letter(s));
     }
+    if (n < cap) n += ota_board_map(out + n, cap - n);
     ota_board_record_t rec;
     if (ota_board_record(&rec))
         PUT("active=%c\npending=%c\ntried=%s\nfailed=%s\n", slot_letter(rec.active), slot_letter(rec.pending),
