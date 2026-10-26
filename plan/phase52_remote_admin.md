@@ -186,7 +186,8 @@ Setup mode, and the owner-part reset, are started by:
 
 | Board | Button | Note |
 |---|---|---|
-| ESP32-C6-Zero / C6-MINI | BOOT (GPIO9) | strap pin; **not wired up**: no C6-Zero attached to test. The GPIO input register is fixed (`0x6009103C`) |
+| ESP32-C6-Zero | BOOT (GPIO9) | **verified** 2026-10-26 (a sensor board): strap pin with an internal pull-up, readable once running; both actions fire. The GPIO input register is `0x6009103C` |
+| ESP32-C6-MINI | BOOT (GPIO9) | same pin; not wired up, not tested |
 | ESP32-P4 NANO | BOOT (GPIO35) | **verified**: low when pressed once the pad is switched to GPIO with its pull-up (after reset it is muxed elsewhere and reads 0); both actions fire. Never open the console with a tool that resets the board while holding it: that is download mode |
 | ESP32-P4 LCD-7B | BOOT (GPIO35) | same pin and code as the NANO; not tested on the board |
 | Pico 2 / Pico 2 W | BOOTSEL | **verified** on the Pico 2 W: read by floating the flash chip-select, from RAM, with interrupts off and core 1 parked (the flash-write handshake); both actions fire |

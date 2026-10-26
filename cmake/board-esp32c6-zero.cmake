@@ -52,3 +52,6 @@ set(CONFIG_LLP_UART_BAUD  921600)
 # heap that the radio, TCP and the identity store's 8 KB scratch compete for.
 set(CONFIG_LISP_NODE_POOL   512)
 set(CONFIG_LISP_STRING_POOL 192)
+
+# BOOT (GPIO9), a strapping pin with an internal pull-up; an ordinary input once running.
+set(CONFIG_SETUP_BUTTON_GPIO 9)
