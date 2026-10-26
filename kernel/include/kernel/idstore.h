@@ -129,7 +129,35 @@ typedef enum {
                                     * big-endian; kernel/ota.c). Public, but written only
                                     * from the console or by tools/provision.py: whoever
                                     * can replace it can install any image. */
+    IDSTORE_FIELD_SETUP_SECRET = 14, /* device scope (factory): the setup access point's WPA2 key,
+                                    * 8-32 printable ASCII characters, as printed on the label
+                                    * (tools/provision.py). Never served, never written from
+                                    * the network. */
+    IDSTORE_FIELD_MFG_CERT  = 15, /* device scope (factory): reserved for a manufacturer's
+                                    * certificate (plan/phase52 §3 Q6). Carried, never read. */
 } idstore_field_type_t;
+
+/* Who may change a field (plan/phase52_remote_admin.md §1.3). The record is
+ * one record; this is a write policy over it, not a second format.
+ *
+ *   FACTORY   the device itself: uid, device key, release key, setup secret,
+ *             manufacturer's certificate. Written from the console or by
+ *             tools/provision.py, never from the network, and kept by an
+ *             owner reset -- the device stays the same device.
+ *   OWNER     the installation: name, WLAN, IP, grants, MQTT, altitude, charge
+ *             mode, orientation. The only part the network may write, with
+ *             the `admin` grant (or, once, by claiming an unclaimed node), and
+ *             what an owner reset wipes.
+ *   HARDWARE  what describes this unit's parts (sensor calibration): kept by an
+ *             owner reset, writable with `admin`.
+ *
+ * A type this build does not know is FACTORY: the most restrictive reading. */
+typedef enum { IDSTORE_CLASS_FACTORY, IDSTORE_CLASS_OWNER, IDSTORE_CLASS_HARDWARE } idstore_class_t;
+
+idstore_class_t idstore_field_class(uint8_t type);
+/* Whether a client of the network may write `type`: never FACTORY, and the rest
+ * only with the admin grant. */
+bool idstore_field_network_writable(uint8_t type, bool admin);
 
 typedef struct {
     uint8_t  buf[IDSTORE_SIZE_BYTES];   /* the whole record, as read from the device */
