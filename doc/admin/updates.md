@@ -91,9 +91,14 @@ that has not confirmed. It ends by checking that the P4 runs the slot just writt
 not fallen back (a fall-back also ends with no trial and a similar build id), that the C6
 likewise, that both speak the same LLP version (the HELLO version in `/proc/llp`), and that
 they run the same build. A P4 that falls back after a confirmed C6 leaves a mixed board,
-reported as such (exit 2); `switch --prefix /c6 --reboot` takes the C6 back. A key set with
-`p9key` is gone after the P4 restarts, so over Wi-Fi the final check needs a key that
-survives a reboot (a grant); the update itself does not. `--break c6|p4` ruins that part's
+reported as such (exit 2); `switch --prefix /c6 --reboot` takes the C6 back.
+
+Over Wi-Fi the tool reconnects after each restart, which needs a key that survives one:
+a grant (`peers add lugal HEX / rw` on the P4's console, stored in its identity record;
+a `p9key` lasts one boot). The first update to a board with no grant has to go over the
+console. Tested on a Tab5 with nothing on the console: the C6, then the P4, then the check.
+
+`--break c6|p4` ruins that part's
 image, to test the order and the fall-back.
 
 The shell's `ota` shows the same pair on the board itself: the P4's table, then the C6's

@@ -878,9 +878,10 @@ deferred without blocking anything after it.
     a failed console attach left the port open for the next try; the wait for a
     C6 over the console reconnects (the Tab5's session ends with the C6's
     restart); a fall-back looks like success if only the trial and the build id are
-    checked. *Not done:* the update over Wi-Fi only: a `p9key` does not survive
-    the P4's restart, and the NANO and Tab5 have no stored 9P key to reconnect
-    with for the final check.
+    checked. *Over Wi-Fi only, on the Tab5 (nothing on the console):* with a stored
+    grant (`peers add lugal HEX / rw`, which survives the P4's restart; a `p9key`
+    does not) the whole board went C6 -> P4 -> check, the tool reconnecting after
+    each restart: C6 and P4 both confirmed, same build, LLP in step.
 
 * **52.9 RP2350 OTA backend (`drivers/ota_rp2350.c`).** **52.9a/b DONE 2026-10-26
   on the Pico 2 W; 52.9c DONE 2026-10-26 on the RP2350-LCD-7 (USB 9P only; through
