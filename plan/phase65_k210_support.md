@@ -149,6 +149,88 @@ The K210 BROM **loads an image into SRAM and jumps there — there is no XIP**
   (MaixPy) occupying flash will be overwritten when 65.5 first writes a
   layout; no backup is required (same stance as the C6 demo, phase 45 §4.1).
 
+### 1.5 Silicon truths, measured on the board (65.1, 2026-10-26)
+
+Probe: `tools/minimal_k210.{c,S}`, ISP-loaded, full 76-line `RPT` table
+captured at 115200. Every §1 "(verify)" resolves here.
+
+**Identity & baseline**
+
+| Item | Measured | Notes |
+|---|---|---|
+| `mvendorid` / `marchid` / `mimpid` | `0x4b5` (Canaan) / `0x4149` / `0x3030` | the custom core, as advertised |
+| `misa` | `0x112d` | claims `RV64 IMAFDC`; see the F entry below for the truth |
+| `mcycle` | works | **50.000 ± 0.01 cycles per `mtime` tick**; `mtime` is PLL-scaled (ratio fixed), so it is *not* the 25 MHz datasheet clock at BROM defaults |
+| `mtime` | advances; monotonic | CLINT timer `mtimecmp` IRQ fires and **re-arms across `mret`** (`timer_seen 3`) |
+| PMP | **none** | `csrw pmpcfg0/pmpaddr0` → illegal instruction (cause 2); even *reading* `pmpcfg0` is illegal. §1 confirmed. |
+| U-mode | **reachable** (better than the plan expected) | exit a trap with `MPP=U` + `mret`: `u_reached 1`; `csrr mvendorid` from U traps with cause 2. Design D1 stays (cooperative domains); enforcement is a *possible bonus*, not a dependency. |
+| Atomics | `amoswap.d`/`amoadd.d`/`lr.d`+`sc.d` all pass | §1's suspicion confirmed: the vendor march string lies; A exists and works. |
+| PLIC | `version 0x0004`, prio reg readable | delivery of external IRQs not yet exercised (65.3) |
+| CLINT IPI | hart0 `msip` → cause 3 delivered ✓ | see hart-1 note below |
+
+**Trap & return contract (the strangest silicon in this repo).** The core
+does not follow the modern RV64 model anywhere near trap entry:
+
+* `mepc`: the *hardware capture* is full width, but software writes only
+  **bits 15:0** (mask scan: bits 8–15 stick, ≥16 dead). Re-targeting a
+  return works because all code lives in one 64 KiB window below
+  `0x8000_xxxx` — the same trick the vendor SDK relies on.
+* `mret`: valid only with the hardware trap latch set; pops to `mepc`
+  (full captured width | software low-16). **`mret` from non-trap state is
+  effectively a no-op** (falls through). Resuming a handler with `jr`
+  instead of `mret` leaves the latch set — the *next* `mret` then pops
+  stale state (this produced days of `Tc` storms before being understood).
+* `mtvec`: writable, readback reflects the written low bits; trap delivery
+  lands on the handler via that window (probe: `_start` writes `mtvec =
+  trap_entry`, every cause thereafter arrives there — sync, `msip`, timer).
+* Handler contract for the kernel (crt.S does exactly this): save frame,
+  handle, `csrw mepc, resume; mret`. Never `jr` out of a handler. Requires
+  `mstatus.MIE` (BROM leaves it **off**: `mstatus_boot 0x7800`) plus per-
+  cause `mie` bits.
+* Delegation: `medeleg`/`mideleg` writable, zero after the crt-style
+  clear (they boot non-zero from BROM).
+
+**F/D — measured, then irrelevant (D2 unchanged).** F instructions
+(`fmv.w.x`/`fadd.s`/`fsw`, executed at the exact vendor crt.S startup point
+with `FS=11`) retire **without exceptions but return zero data** on this
+die; the vendor toolchain compiles C floats as `fadd.s` (hard F) yet
+soft-calls D (`__adddf3`) despite the `fd` marketing. No consequence for
+the kernel (we never emit F/D and hold `FS=0`), but two rules harden into
+law: **never link a vendor `lp64f` object into a LugalOS image**, and do
+not trust `misa` on this core.
+
+**Boot & SMP (ISP path).** After BROM's ISP jump only hart 0 runs;
+hart 1 executes the same image seconds later (observed: secondary path
+reached, release flag seen) but is **not** an synchronous second boot hart
+on this path — unlike flash boot, where the vendor `hello_world` printed
+`Core 0/1 Hello world` with stock `register_core1()` (spin flag + CLINT
+IPI). IPI delivery *to* hart 1 with our trap setup was not observed yet —
+SMP work inherits the vendor rendezvous recipe and must re-measure this.
+
+**Open, deferred:** SPI-NOR JEDEC ID (both SPI0/SPI1 MISO read `0xffff`
+with a bare SSI poke — the flash needs SDK-style `spi_init` + FPIOA mux +
+CS GPIO; 65.4 territory). PLIC external delivery → 65.3.
+
+**Reproducible bring-up recipe (this host):**
+
+```bash
+# probe: build + ISP load + hold port + watch at the ROM's baud (115200!).
+# kflash resets the port to -b after booting; 115200 is what the ROM left
+# UARTHS at — earlier "silent probe" mysteries were pure baud mismatch.
+./tools/build_minimal_k210.sh
+kflash -s -b 115200 -B bit -p /dev/ttyUSB0 -t build/k210/minimal_k210.elf
+# (wrap in `script -qec '…' /dev/null` so kflash's terminal gets a pty)
+
+# vendor reference build (proves our loader + a known-good binary):
+#   toolchain: kendryte-gnu-toolchain 8.2.0 (Ubuntu tarball) runs on Arch
+#   via libisl.so.19 -> /usr/lib/libisl.so.23 symlink (all 222 needed
+#   symbols present; kept in kendryte-toolchain/lib-host/)
+LD_LIBRARY_PATH=~/Source/gith/kendryte/kendryte-toolchain/lib-host \
+cmake -B /tmp/k210sdk_build -DPROJ=hello_world \
+  -DTOOLCHAIN=$HOME/Source/gith/kendryte/kendryte-toolchain/bin \
+  -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -G "Unix Makefiles" && make -C /tmp/k210sdk_build
+```
+
 ---
 
 ## 2. Decisions
@@ -258,7 +340,10 @@ starting `65.N:`. No QEMU exists for this chip: pure logic is host-tested,
 everything else is `tests/hw/test_k210.py`, which skips cleanly without the
 board.
 
-* **65.1 — Silicon truth probe.** Standalone C, no kernel, ISP-loaded
+* **65.1 — Silicon truth probe.** ✔ Done — measured table in §1.5
+  (atomics ✓, no PMP ✓, U-mode reachable, CLINT tick/IPI ✓, F data path
+  dead-but-silent; open: JEDEC ID → 65.4, PLIC delivery → 65.3).
+  Standalone C, no kernel, ISP-loaded
   (`tools/minimal_k210.{c,ld}` + entry.S + `tools/build_minimal_k210.sh`,
   same shape as the C6's 45.1/45.3a probes). Must measure and print:
   `misa`; whether `pmpcfg0`/`pmpaddr0` writes stick (expect: no PMP);
@@ -272,6 +357,9 @@ board.
   code is written**.
 
 * **65.2 — Host tooling: `tools/k210run.py` / `tools/k210flash.py`.**
+  (Interim, 65.1: `kflash -s -b 115200 -B bit -t` under a pty — recipe in
+  §1.5 — owns the port for the dev loop; `tools/k210run.py` is the WIP
+  replacement, its ISP greeting must match kflash's DTR/RTS choreography.)
   BROM ISP protocol (boot handshake, LZ4 sections, CRC), port discovery by
   `/dev/serial/by-id` (`1a86:7523`), DTR/RTS boot-line choreography,
   115200→1.5 Mbaud switch, and a console watcher with the same

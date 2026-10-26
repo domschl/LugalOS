@@ -1,0 +1,68 @@
+K210-PROBE 65.1 up (hart0)
+RPT f_early_fmv 0000
+RPT f_early_fsw 0000
+RPT uarths_div 0d38
+RPT mtvec 00c0
+RPT mepc_mask_00 00fe
+RPT mepc_mask_08 ff00
+RPT mepc_mask_16 0000
+RPT mepc_mask_24 0000
+RPT mepc_mask_32 0000
+RPT mepc_mask_40 0000
+RPT mepc_mask_48 0000
+RPT mepc_mask_56 0000
+RPT mstatus_boot 7800
+RPT mscratch_rw a5a5
+RPT mret_handler_reentries 0
+RPT mret_landed 1
+RPT hart1_magic 0000
+RPT hart1_after_release 4831
+RPT hart1_ipi_trapped 0
+RPT misa_cause 0000
+RPT misa 112d
+RPT mvendorid_cause 0000
+RPT mvendorid 04b5
+RPT marchid_cause 0000
+RPT marchid 4149
+RPT mimpid_cause 0000
+RPT mimpid 3030
+RPT hartid 0000
+RPT medeleg_cause 0000
+RPT medeleg 0000
+RPT mideleg_cause 0000
+RPT mideleg 0000
+RPT mcycle_cause 0000
+RPT mcycle_first 7c11
+RPT cycles_per_mtime_tick_x1000 50009
+RPT mtime_advanced 1402
+RPT sysctl_clk_freq 115200
+RPT sysctl_reset_status 0002
+RPT mret_skip_traps 1
+RPT mpp[0]=0
+RPT mpp[1]=1
+RPT mpp[2]=2
+RPT mpp[3]=3
+RPT u_reached 1
+RPT fs[0]=0
+RPT fs[1]=3
+RPT fs[2]=3
+RPT fs[3]=3
+RPT fpu_single_cause 0000
+RPT fpu_single_val 0000
+RPT fpu_double_cause 0000
+RPT fpu_double_val 0000
+RPT amoswap_cause 0000
+RPT amoswap_ok 1
+RPT amoadd_cause 0000
+RPT amoadd_ok 1
+RPT lrsc_cause 0000
+RPT lrsc_ok 1
+RPT plic_word0 0000
+RPT plic_version 0004
+RPT irq_unexpected 0
+RPT spi0_idr ffff
+RPT spi1_idr ffff
+RPT spi0_ssic_ver 312a
+RPT jedec_id 0000
+RPT unexpected_traps 3
+K210-PROBE DONE
