@@ -41,6 +41,9 @@
 #include "drivers/cyw43.h"    /* cyw43_autostart_task_start() */
 #include "kernel/radio_c6.h"
 #include "kernel/ota.h"
+#if defined(CONFIG_BOARD_RP2350)
+#include "arch/rp2350_bootrom.h"
+#endif
 #include "kernel/llp_node.h"    /* radio_c6_autostart() */
 #include "drivers/watchdog.h"   /* watchdog_start() */
 #include "kernel/taint.h"       /* the boot banner's taint, 45.9 */
@@ -159,6 +162,11 @@ void kernel_main(void) {
      * hands out memory that only becomes real once it has run. See
      * arch/riscv/common/trap.c for what this is and why E7 needed it. */
     esp32p4_l2_cache_shrink();
+#endif
+#if defined(CONFIG_BOARD_RP2350)
+    /* The bootrom mapped the booted partition and nothing else: the
+     * filesystem and identity windows, before anything reads either. */
+    rp2350_map_data_windows();
 #endif
     /* Boot bootstrap: the console UART and the kernel log sink must both
      * exist before anything can printk(), which the device registry itself

@@ -8,6 +8,7 @@
 #include "kernel/meminfo.h"
 #include "kernel/hart.h"
 #include "arch/rp2350_clocks.h"
+#include "lugalos_build_id.h"
 
 /* 36.1: clk_sys is CONFIG_CLK_SYS_HZ, a board fact (arch/rp2350_clocks.h),
  * and a value the PLL cannot produce within its datasheet limits fails the
@@ -56,7 +57,17 @@ embedded_block:
     .word _reset_handler  /* Initial PC address */
     .word SRAM_END        /* Initial SP address */
 
-    /* Item 3: BLOCK_ITEM_LAST */
+    /* Item 3: Version. The bootrom boots the higher version of an A/B pair
+     * (datasheet 5.1.7, 5.9.2.1); LUGALOS_BUILD_MAJOR/MINOR are in
+     * cmake/gen_build_id.cmake. No rollback version: no OTP rows. */
+    .byte 0x48    /* Type: Version */
+    .byte 0x02    /* Size: 2 words */
+    .byte 0x00    /* 8-bit pad */
+    .byte 0x00    /* no OTP row entries */
+    .hword LUGALOS_BUILD_MINOR
+    .hword LUGALOS_BUILD_MAJOR
+
+    /* Item 4: BLOCK_ITEM_LAST */
     .byte 0xff    /* Type: BLOCK_ITEM_LAST */
     .hword (embedded_block_end - embedded_block - 16) / 4
     .byte 0x00    /* 8-bit pad */

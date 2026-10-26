@@ -869,7 +869,36 @@ deferred without blocking anything after it.
     whose C6 and P4 disagree after the update reports it in `/dev/ota`.
     Verified on the NANO, then the Tab5 over Wi-Fi only.
 
-* **52.9 RP2350 OTA backend (`drivers/ota_rp2350.c`).**
+* **52.9 RP2350 OTA backend (`drivers/ota_rp2350.c`).** **52.9a/b DONE 2026-10-26
+  on the Pico 2 W; 52.9c (the terminal's 16 MB layout) open.** The notes below
+  were written before the bootrom's behaviour was measured; what was built:
+  * *As built:* `doc/admin/updates.md` has the map and the flow. Partition table
+    in sector 0 (`tools/rp2350_ptable.py`, picotool), slots at `0x1000` and
+    `0x280000` (0x17D000 each, the update header in the last sector), `/flash0`
+    and the identity sector outside them, read through QMI ATRANS1/2 windows the
+    kernel sets up first thing (`rp2350_map_data_windows()`, because the bootrom
+    maps only the booted partition). IMAGE_DEF got a VERSION item
+    (`LUGALOS_BUILD_MAJOR.MINOR`, `cmake/gen_build_id.cmake`).
+  * *Two stages, as planned:* the bootrom's TBYB flag (set by `lota.py`) and
+    `explicit_buy` as soon as the kernel is up; then our own trial with the boot
+    record, a 15 s deadman and a rollback that erases the failed slot's first sector.
+  * *Found:* `explicit_buy` erases the other partition unless the new image's
+    version is strictly higher: updating with the same build destroyed the
+    fallback. The node reports the real `version=` and `lota.py` raises the image's
+    above it. A BOOTSEL-copied UF2 goes to the slot the bootrom would not boot.
+    `picotool` needs a udev rule or root here (not available to the agent): all
+    flashing was by copying UF2 files to the BOOTSEL drive.
+  * *Verified (Pico 2 W):* first-time install over BOOTSEL keeping `/flash0` and the
+    Wi-Fi identity; update over the 9P serial port, flash-update boot under TBYB,
+    `explicit_buy` returned 0, trial confirmed (`active` follows); the same build
+    pushed twice (version bumped, fallback kept); a `--break` image reverted by
+    itself; a restart asked during a trial rolled back to the old slot with
+    `failed=yes` and the failed slot's first sector erased.
+  * *Not verified:* the 50 s give-up and the deadman paths (same rollback code, not
+    reached on their own), a power cycle mid-update or mid-trial, an update over
+    Wi-Fi, a signed image, the RP2350-LCD-7 and the other presets on hardware,
+    `test_rp2350.py` and `lcdterm_shots.py`.
+  * *Original notes:*
   * **52.9a Layout.** *Proposed for 4 MB (Pico 2, Pico 2 W):* the partition
     table in sector 0, slot A `0x001000–0x180000` (1.49 MB), `/flash0`
     unchanged at `0x180000–0x280000`, slot B `0x280000–0x3FF000` (1.49 MB),

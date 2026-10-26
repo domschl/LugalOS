@@ -270,7 +270,7 @@ int ota_ctl_write(const char *buf, uint32_t len) {
             printk("[OTA] switched active slot to %c\n", slot_letter(info.running ^ 1));
         }
     } else if (strcmp(line, "reboot") == 0) {
-        rc = board_reset_later(false, 300) ? 0 : -1;
+        rc = ota_board_restart() ? 0 : -1;
     } else if (strcmp(line, "confirm") == 0) {
         if (!info.trial || g.confirmed) rc = 0;
         else if (ota_board_confirm() == 0) { g.confirmed = true; printk("[OTA] slot %c confirmed\n", slot_letter(info.running)); }
@@ -294,6 +294,8 @@ uint32_t ota_ctl_read(char *out, uint32_t cap) {
 #define PUT(...) do { if (n < cap) n += (uint32_t)ksnprintf(out + n, cap - n, __VA_ARGS__); } while (0)
     PUT("board=%s\nchip=%s\nlayout=%s\nrunning=%c\n", LUGALOS_BOARD_ID, info.chip,
         info.layout ? info.layout : "loader", slot_letter(info.running));
+    const char *ver = ota_board_version();
+    if (ver) PUT("version=%s\n", ver);
     PUT("trial=%s\nfell_back=%s\n", info.trial && !g.confirmed ? "yes" : "no", info.fell_back ? "yes" : "no");
     for (int s = 0; s < (int)info.nslots; s++) {
         ota_image_header_t h;
@@ -336,6 +338,7 @@ static void trial_task(void *arg) {
     uint32_t give_up_s = info.trial_s > TRIAL_SETTLE_S + 10u ? info.trial_s - 10u : info.trial_s;
     for (;;) {
         task_sleep_ms(1000);
+        ota_board_trial_tick();
         uint32_t up_s = (uint32_t)(time_get_ms() / 1000u);
         if (up_s >= TRIAL_SETTLE_S && ota_board_healthy()) {
             lock();
@@ -350,7 +353,7 @@ static void trial_task(void *arg) {
         if (up_s >= give_up_s) {
             printk("[OTA] slot %c is not healthy after %u s: restarting into the previous image\n",
                    slot_letter(info.running), (unsigned)up_s);
-            (void)board_reset_later(false, 200);
+            (void)ota_board_restart();
             return;
         }
     }

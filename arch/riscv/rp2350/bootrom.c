@@ -39,6 +39,7 @@
 
 #define REBOOT2_FLAG_REBOOT_TYPE_NORMAL    0x0000
 #define REBOOT2_FLAG_REBOOT_TYPE_BOOTSEL   0x0002
+#define REBOOT2_FLAG_REBOOT_TYPE_FLASH_UPDATE 0x0004
 #define REBOOT2_FLAG_NO_RETURN_ON_SUCCESS  0x0100
 
 typedef void *(*rom_table_lookup_fn)(uint32_t code, uint32_t mask);
@@ -105,6 +106,58 @@ void rp2350_reboot_cancel(void) {
     WATCHDOG_CTRL &= ~WATCHDOG_ENABLE;
 }
 
+/* The QMI's address translation (datasheet 12.14.4): ATRANSn covers runtime
+ * 0x10000000 + n * 4 MB; BASE (bits 11:0) is the storage address of its first
+ * byte and SIZE (26:16) its length, both in 4 KB units. The bootrom has set
+ * ATRANS0 for the booted partition and left the rest empty. */
+#define QMI_ATRANS(n)  (*(volatile uint32_t *)(uintptr_t)(0x400d0000UL + 0x34UL + 4UL * (n)))
+
+static uint32_t atrans(uint32_t phys, uint32_t size) {
+    return ((size >> 12) << 16) | (phys >> 12);
+}
+
+void rp2350_map_data_windows(void) {
+    QMI_ATRANS(1) = atrans(LUGALOS_FLASHFS_PHYS, LUGALOS_FLASHFS_SIZE);
+    QMI_ATRANS(2) = atrans(LUGALOS_IDENTITY_PHYS, LUGALOS_IDENTITY_SIZE);
+}
+
+#define ROM_FUNC_GET_SYS_INFO   ROM_TABLE_CODE('G', 'S')
+#define SYS_INFO_BOOT_INFO      0x0040
+#define BOOT_TBYB_BUY_PENDING   0x1u
+
+typedef int (*rom_get_sys_info_fn)(uint32_t *out, uint32_t words, uint32_t flags);
+
+/* result[0] echoes the flag; then boot_word (diagnostic partition, boot type,
+ * partition, TBYB/update flags -- one byte each, low to high), a diagnostic
+ * word and the two reboot parameters. */
+static bool boot_info(uint32_t *boot_word) {
+    rom_get_sys_info_fn get = (rom_get_sys_info_fn)rp2350_rom_func_lookup(ROM_FUNC_GET_SYS_INFO);
+    uint32_t r[5];
+    if (!get || get(r, 5, SYS_INFO_BOOT_INFO) != 5 || r[0] != SYS_INFO_BOOT_INFO) return false;
+    *boot_word = r[1];
+    return true;
+}
+
+int rp2350_boot_slot(void) {
+    uint32_t w;
+    if (!boot_info(&w)) return -1;
+    int8_t partition = (int8_t)((w >> 16) & 0xffu);
+    return partition == 0 || partition == 1 ? partition : -1;
+}
+
+bool rp2350_boot_buy_pending(void) {
+    uint32_t w;
+    return boot_info(&w) && ((w >> 24) & BOOT_TBYB_BUY_PENDING);
+}
+
+bool rp2350_reboot_flash_update(uint32_t phys) {
+    rom_reboot_fn reboot = (rom_reboot_fn)rp2350_rom_func_lookup(ROM_FUNC_REBOOT);
+    if (!reboot) return false;
+    reboot(REBOOT2_FLAG_REBOOT_TYPE_FLASH_UPDATE | REBOOT2_FLAG_NO_RETURN_ON_SUCCESS,
+           10, 0x10000000u + phys, 0);
+    return false;
+}
+
 bool rp2350_reboot(void) {
     rom_reboot_fn reboot = (rom_reboot_fn)rp2350_rom_func_lookup(ROM_FUNC_REBOOT);
     if (!reboot) return false;
@@ -137,6 +190,11 @@ void rp2350_reboot_cancel(void) { }
 bool rp2350_reboot(void) {
     return false; /* likewise: nothing to ask for a reset here */
 }
+
+void rp2350_map_data_windows(void) { }
+int rp2350_boot_slot(void) { return -1; }
+bool rp2350_boot_buy_pending(void) { return false; }
+bool rp2350_reboot_flash_update(uint32_t phys) { (void)phys; return false; }
 
 void *rp2350_rom_func_lookup(uint32_t code) {
     (void)code;

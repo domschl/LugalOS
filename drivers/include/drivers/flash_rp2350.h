@@ -28,6 +28,11 @@
  */
 int flash_rp2350_write_sector(uint32_t flash_offs, const void *data);
 
+/* The bootrom's explicit_buy for an image entered under try-before-you-buy
+ * (datasheet 5.1.17). `scratch` is a word-aligned 4 KB buffer in SRAM. 0, or
+ * the bootrom's negative error code (-1 if it could not be called). */
+int flash_rp2350_explicit_buy(void *scratch);
+
 /* The `xipcycle` instrument (38.1): runs the same RAM-resident sequence as a
  * write -- XIP off, the bootrom's re-entry, the restore -- with the erase and
  * program left out, and reports the QMI registers and a timed uncached flash

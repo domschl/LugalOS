@@ -28,6 +28,24 @@ bool rp2350_reboot(void);
 bool rp2350_reboot_after_ms(uint32_t ms);
 void rp2350_reboot_cancel(void);
 
+/* The bootrom maps only the booted partition at 0x10000000. This points the
+ * QMI's spare address-translation windows at the filesystem and the identity
+ * sector (cmake/flash_layout.cmake) so they can be read through
+ * LUGALOS_FLASHFS_BASE and LUGALOS_IDENTITY_BASE. Before the first read of
+ * either; a no-op where the flash map has no such windows. */
+void rp2350_map_data_windows(void);
+
+/* The A/B slot the bootrom booted: 0 or 1, or -1 if this boot was not from
+ * the A/B pair (a RAM image, a BOOTSEL-loaded binary) or the ROM did not say. */
+int rp2350_boot_slot(void);
+/* This boot was entered under try-before-you-buy and rp2350_explicit_buy() has
+ * not yet been made (datasheet 5.1.17). */
+bool rp2350_boot_buy_pending(void);
+/* Restarts into the image at flash storage offset `phys`, a "flash update"
+ * boot: preferred whatever the versions, and a try-before-you-buy image only
+ * boots this way. Does not return on success. */
+bool rp2350_reboot_flash_update(uint32_t phys);
+
 /* Looks up a bootrom function by its two-character ROM table code (e.g.
  * ROM_TABLE_CODE('R','E') for flash_range_erase). Returns NULL if this build
  * has no bootrom or the code is not present on this silicon.
