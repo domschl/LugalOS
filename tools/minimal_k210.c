@@ -327,34 +327,87 @@ static volatile uint32_t *const spi1 = (volatile uint32_t *)0x53000000UL;
 static uint64_t spi_idr(void)      { return spi0[0x58 / 4]; }
 static uint64_t spi_ssic_ver(void) { return spi0[0x5c / 4]; }
 
+/* FPIOA: SPI1 is pad-muxed; until the flash pins carry the SPI1
+ * functions, the controller sees a floating bus (measured: MISO 0xffff
+ * with the BROM pad state). Maix Bit schematic 1.09: NOR on GPIO 27..32.
+ * Function numbers from the vendor fpioa table. */
+#define FPIOA_BASE 0x400A0000UL
+static void fpioa_fn(uint32_t pin, uint32_t fn)
+{
+    *(volatile uint32_t *)(FPIOA_BASE + 4 * pin) = fn | 0x100 /* force */;
+}
+static void fpioa_flash_pins(void)
+{
+    /* Schematic 1.09: the GD25LQ hangs off SPI0 (not SPI1!):
+     * SPI0_SCLK IO_27, MOSI IO_28, CS0 IO_29, MISO IO_30, IO2/IO3 31/32 */
+    fpioa_fn(27, 17);   /* SPI0_SCLK */
+    fpioa_fn(28, 4);    /* SPI0_D0   */
+    fpioa_fn(30, 5);    /* SPI0_D1   */
+    fpioa_fn(31, 6);    /* SPI0_D2   */
+    fpioa_fn(32, 7);    /* SPI0_D3   */
+}
+
 /* Trans/recv mode: ctrlr1+1 = 4 receive beats, the one transmit beat
  * carrying the command; the first received byte is MISO during the
  * command, the remaining three are the ID. Slow divider: SPI0's parent
  * frequency is unknown at this point. */
+/* software CS on pin 30 (GPIO function 0), vendor spi_nor-demo style:
+ * one trans-only frame for the command, one recv-only frame for the
+ * answer, CS held low across both by GPIO. The SSI's own CS cannot
+ * bridge two frames on this core. */
+#define GPIOHS_BASE 0x1A000000UL   /* same layout; HS pads = pins 24..44 */
+static volatile uint32_t *const gpio_dir  = (volatile uint32_t *)(GPIOHS_BASE + 0x04);
+static volatile uint32_t *const gpio_out  = (volatile uint32_t *)(GPIOHS_BASE + 0x00);
+static volatile uint32_t *const gpio_in   = (volatile uint32_t *)(GPIOHS_BASE + 0x50);
+static void cs_init(void) { fpioa_fn(29, 0); *gpio_out |= (1u << 29); *gpio_dir |= (1u << 29); }
+static void cs_low(void)  { *gpio_out &= ~(1u << 29); }
+static void cs_high(void) { *gpio_out |= (1u << 29); }
+
+static void report_sr(uint64_t v) { puth(v, 16); puts_("\n"); }
 static uint64_t jedec_try(void)
 {
-    /* Maix Bit: the NOR hangs off SPI1 (the SDK's spi_nor examples
-     * use SPI1); spi0 reads floating MISO (0xffff). Try both. */
-    volatile uint32_t *const spix = spi1;
-    spi1[SPI_SSIENR / 4] = 0;
-    spix[SPI_CTRLR0 / 4] = (7u) | (3u << 8);
-    spix[SPI_CTRLR1 / 4] = 3;
-    spix[SPI_BAUDR / 4] = 256;
-    spix[SPI_SER / 4] = 1;
+    /* SPI0 ctrlr0: TMOD latches at [10:8] but DFS reads zero —
+     * controller fixed at 8-bit frames; ndf unproven. Single CS
+     * window (GPIO), 5-beat transceive: [0x9f ff ff ff ff]; the JEDEC
+     * ID is beats 1..3. Raw beats printed for the record. */
+    volatile uint32_t *const sysctl = (volatile uint32_t *)SYSCTL_BASE;
+    sysctl[0x28 / 4] |= (1u << 5);                 /* apb2_clk_en          */
+    sysctl[0x2c / 4] |= (1u << 5) | (1u << 6);     /* gpio_clk_en, spi0    */
+    volatile uint32_t *const spix = spi0;
+    cs_init();
+    spix[SPI_SSIENR / 4] = 0;
+    spix[SPI_CTRLR0 / 4] = (1u << 8);              /* tmod = tx+rx(0)? no: */
+    spix[SPI_CTRLR0 / 4] = 0;                      /* tmod 00: trans+recv  */
+    spix[SPI_CTRLR1 / 4] = 0;
+    spix[SPI_BAUDR / 4] = 128;
+    report_sr(spix[SPI_SSIENR / 4]);               /* enables? 0=expect    */
     spix[SPI_SSIENR / 4] = 1;
-    spix[SPI_DR / 4] = 0x9f;
-    for (uint32_t i = 0; i < 4000000u; i++) {
-        if (!(spix[SPI_SR / 4] & 2))
-            break;
-    }
-    uint64_t id = 0;
+    report_sr(spix[SPI_SSIENR / 4]);               /* =expect 1             */
+    while (spix[SPI_SR / 4] & 0x2)
+        ;
+    cs_low();
+    for (int i = 0; i < 5; i++)
+        spix[SPI_DR / 4] = i ? 0xffu : 0x9fu;
+    for (uint32_t n = 0; n < 3000000u && (spix[SPI_SR / 4] & 0x2); n++)
+        ;
     uint32_t got = spix[SPI_RXFLR / 4];
-    if (got > 4)
-        got = 4;
-    for (uint32_t i = 0; i < got; i++)
-        id = (id << 8) | (spix[SPI_DR / 4] & 0xff);
-    spi0[SPI_SSIENR / 4] = 0;
-    return (got == 4) ? ((id >> 8) & 0xffffff) : 0;
+    puts_("RPT spi_got ");
+    report_sr(got);
+    uint64_t id = 0;
+    for (uint32_t i = 0; i < got; i++) {
+        uint64_t b = spix[SPI_DR / 4] & 0xff;
+        if (i >= 1 && i <= 3)
+            id = (id << 8) | b;
+        if (i < 6) {
+            puts_("RPT spi_b");
+            putc_('0' + (char)i);
+            putc_(' ');
+            report_sr(b);
+        }
+    }
+    cs_high();
+    spix[SPI_SSIENR / 4] = 0;
+    return id;
 }
 
 /* ------------------------------------------------------------------ */
@@ -631,7 +684,11 @@ void k210_probe_main(void)
     report_line("spi0_idr", spi_idr(), 16);
     report_line("spi1_idr", spi1[0x58 / 4], 16);
     report_line("spi0_ssic_ver", spi_ssic_ver(), 16);
-    report_line("jedec_id", jedec_try(), 16);
+    /* NOR RDID: deferred whole to 65.5 (measured so far: 0x20000000
+     * load-faults — no XIP; GPIO 0x19000000 stores fault; SSI enables
+     * and RX fills but framing/CS owner (SFC vs SSI + GPIOHS) unknown) */
+    (void)fpioa_flash_pins;
+    (void)jedec_try;
 
     report_line("unexpected_traps", (uint64_t)g_trap_unexpected, 0);
     puts_("K210-PROBE DONE\n");

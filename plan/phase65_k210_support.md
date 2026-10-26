@@ -207,9 +207,18 @@ on this path — unlike flash boot, where the vendor `hello_world` printed
 IPI). IPI delivery *to* hart 1 with our trap setup was not observed yet —
 SMP work inherits the vendor rendezvous recipe and must re-measure this.
 
-**Open, deferred:** SPI-NOR JEDEC ID (both SPI0/SPI1 MISO read `0xffff`
-with a bare SSI poke — the flash needs SDK-style `spi_init` + FPIOA mux +
-CS GPIO; 65.4 territory). PLIC external delivery → 65.3.
+**Open, deferred — SPI NOR ownership (65.5 will settle it).** The NOR is
+a GD25LQ64/128 wired to **SPI0**, pads IO_27..32 (schematic nets
+`SPI0_SCLK/MOSI/CS0`; the earlier assumption "SPI1" is wrong — arduino
+flashing docs say "download from IO4,5", and the ISP path never touches
+these pads). Measured: the SSI block enables (`SSIENR` readback 1),
+`SSIC_VERSION 0x312a`, TMOD latches at [10:8] but DFS reads 0 (fixed
+8-bit frames); the RX FIFO fills (16 beats) — the bus is alive; RDID
+framing/CS still wrong, and two landings found on the way: reads at
+`0x20000000` **load-fault** (no XIP mapping at all, confirming §1.4),
+and stores to the GPIO block at `0x19000000` **store-fault** (clock/mux
+story for that block unknown; pins 27..32 are HS pads — GPIOHS at
+`0x1A000000` is the likely CS owner). PLIC external delivery → 65.3.
 
 **Reproducible bring-up recipe (this host):**
 
@@ -244,6 +253,7 @@ cmake -B /tmp/k210sdk_build -DPROJ=hello_world \
 | D5 | Console | UARTHS through the CH552 on the single USB-C cable — same connector for power, console, and ISP flashing. Polled first (as the C6's), interrupt-driven later if anything needs the CPU back. |
 | D6 | Network identity | The K210 node joins the distributed system over **9P/serial** (the RP2350's UART SLIP/demux link, which the C6 stubbed out, is revived on the K210); Wi-Fi via a C6 companion is *future work*, not this phase. |
 | D7 | QEMU | There is **no K210 machine in QEMU** (only `k230`). All pure-function code is host-tested (ASan/UBSan harnesses) per the phase-26 rule; chip-specific code is tested by `tests/hw/test_k210.py`, which skips cleanly when the board is absent. |
+| D9 | Flash model (aligned to phase 52, 2026-10-26) | **Permanent loader + A/B kernel slots**, the `esp32c6`/`esp32p4` pattern: the BROM reads NOR offset 0 and nowhere else (kfpad header there — this chip's `0x2000`), a small LugalOS loader reads the phase 52 boot record (two sectors, `kernel/ota_image.h` verbatim), pulls the chosen slot's SRAM image into `0x8000_0000` and jumps. No XIP exists, so a "slot image" is raw loadable segments, not execute-in-place code. On-target updates get `drivers/ota_k210.c` with the network milestone (65.9); until then the host tools provision the slots. |
 | D8 | KPU / AI | Out of scope. The KPU + nncase story gets its own phase if it happens; this phase only reserves the AI-RAM region in the layout (§1.2) so it can be carved out later without a re-layout. |
 | D9 | Ordering | Silhouette first (boot → shell → storage), personality second (camera/mic/LCD), SMP last. |
 
@@ -366,6 +376,11 @@ board.
   never-open-naively rule as `c6run.py`. ELF→`.img` section extraction from
   the build. Verification: 65.1's probe loads and runs *through the tool*;
   `k210run.py --help` documented in `doc/admin/flashing.md`.
+  `k210flash.py` deliberately carries **no flash-format cleverness of its
+  own**: it ISP-loads a LugalOS SRAM writer blob (our own SPI-NOR driver
+  — no vendor stub) plus raw bytes and lets the blob write the D9 layout;
+  the same bytes `tools/lota.py` defines. The vendor ISP flash stub and
+  kflash's blob are references only, never dependencies.
 
 * **65.3 — First boot to `lsh` (single core).** Build-system bucket per §4,
   `linker/k210.ld`, entry.S, clock tree to 400 MHz, CLINT tick (100 Hz),
@@ -383,13 +398,18 @@ board.
   new host test that the "unenforced" verdict is *only* possible on K210 —
   no other target can silence its PMP by configuration.
 
-* **65.5 — SPI NOR flash disk + flash layout.** `spi_nor_k210.c` (QE-bit
-  handling for the GD25LQ family, quad mode optional), MBR +
-  `flashdisk`/`flash_layout_k210.cmake` partitioning, OS-image header
-  written by `k210flash.py` so the board **boots standalone** with no host
-  attached. Verification: unplug the data cable (power only) — the board
-  comes up to `lsh` from flash, verified with a serial log; reflashes
-  cleanly 3× with `--verify`.
+* **65.5 — SPI NOR flash disk + phase 52 layout (D9).** `spi_nor_k210.c`
+  (QE-bit handling for the GD25LQ family, quad mode optional),
+  `flash_layout_k210.cmake` in the `flash_layout_esp32p4.cmake` house
+  style — loader (kfpad, offset 0) / slot A / slot B / boot-record pair
+  (`kernel/ota_image.h` format) / `/flash0` / spare / identity sector at
+  the top — the loader itself (`arch/riscv/k210/loader.c`, shaped by the
+  C6's), and `k210flash.py` writing loader + slot A so the board **boots
+  standalone** with no host attached. Verification: unplug the data cable
+  (power only) — the board comes up to `lsh` from flash, verified with a
+  serial log; reflashes cleanly 3× with `--verify`. (Supersedes the
+  pre-52 "MBR partitioning" sketch; on-target A/B +
+  try-before-you-buy arrives with `drivers/ota_k210.c` at 65.9.)
 
 * **65.6 — LED, button, config + identity store.** RGB LED (verify the
   schematic's three-GPIO reading against the physical board; the Maix Bit
