@@ -11,6 +11,7 @@
  * XIP window does not map is ever written. */
 
 #include "kernel/ota.h"
+#include "kernel/device.h"
 #include "kernel/lock.h"
 #include "drivers/ota_esp32p4.h"
 #include "drivers/flash_esp32p4.h"
@@ -229,3 +230,7 @@ bool ota_board_healthy(void) {
     netif_t *nif = netif_find("wlan0");
     return nif && netif_link_up(nif);
 }
+
+bool ota_board_restart(void) { return board_reset_later(false, 300); }
+void ota_board_trial_tick(void) { }
+const char *ota_board_version(void) { return NULL; }

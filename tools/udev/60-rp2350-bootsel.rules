@@ -1,0 +1,17 @@
+# Lets the logged-in user talk to a Raspberry Pi RP2350 in BOOTSEL mode with
+# picotool, without sudo. uaccess grants the seat's active user an ACL on the
+# device node; no group membership is needed.
+#
+#   sudo cp tools/udev/60-rp2350-bootsel.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#
+# then unplug and replug the board, or put it into BOOTSEL again.
+#
+# The number matters: logind applies the ACL for a uaccess tag in
+# 73-seat-late.rules, so the tag has to be set before that file runs. A 99- name
+# tags the device (udevadm info shows it) and never gets the ACL.
+#
+# 2e8a:000f  RP2350 in BOOTSEL (PICOBOOT interface; the mass-storage drive needs nothing)
+# 2e8a:0003  RP2040 in BOOTSEL, for the other boards on the desk
+SUBSYSTEM=="usb", ATTRS{idVendor}=="2e8a", ATTRS{idProduct}=="000f", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="2e8a", ATTRS{idProduct}=="0003", TAG+="uaccess"

@@ -28,7 +28,6 @@
 #include "kernel/time.h"
 #include <string.h>
 
-#define FLASH_XIP_BASE 0x10000000u
 
 /* OTP's ECC-guarded read window presents each row as a 16-bit value, indexed
  * by row number -- `(uint16_t *)OTP_DATA_BASE + row`. Taken from the SDK's own
@@ -105,7 +104,7 @@ static int idstore_flash_write(block_dev_t *dev, const void *buf, uint32_t lba, 
     printk("[IdStore] writing the identity sector\n");
     time_delay_us(50000);
 
-    uint32_t offs = (uint32_t)LUGALOS_IDENTITY_BASE - FLASH_XIP_BASE;
+    uint32_t offs = (uint32_t)LUGALOS_IDENTITY_PHYS;   /* the storage offset, not the window the kernel reads it through */
     if (flash_rp2350_write_sector(offs, buf) != 0) return -1;
 
     /* Read back what actually landed. The write path turns off interrupts and

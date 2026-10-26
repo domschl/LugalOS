@@ -87,5 +87,15 @@ int  ota_board_confirm(void);
 bool ota_board_record(ota_board_record_t *out);
 /* The board's own test of a trial (its links up, say). */
 bool ota_board_healthy(void);
+/* The running image's version as "MAJOR.MINOR", or NULL if the board's boot
+ * does not order images by one. A board that does needs each update to carry a
+ * higher one, or the bootrom discards the old image when the new one commits. */
+const char *ota_board_version(void);
+/* Restarts into the image the next boot should run: the pending one, or the
+ * one `switch` named. False if the board cannot restart. */
+bool ota_board_restart(void);
+/* Once a second while a trial is unconfirmed, for a board whose deadman needs
+ * feeding. */
+void ota_board_trial_tick(void);
 
 #endif

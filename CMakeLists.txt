@@ -65,9 +65,17 @@ elseif(LUGALOS_TARGET STREQUAL "RP2350")
     include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/flash_layout.cmake)
     add_compile_definitions(
         LUGALOS_FLASHFS_BASE=${LUGALOS_FLASHFS_BASE}
+        LUGALOS_FLASHFS_PHYS=${LUGALOS_FLASHFS_PHYS}
         LUGALOS_FLASHFS_SIZE=${LUGALOS_FLASHFS_SIZE}
         LUGALOS_IDENTITY_BASE=${LUGALOS_IDENTITY_BASE}
-        LUGALOS_IDENTITY_SIZE=${LUGALOS_IDENTITY_SIZE})
+        LUGALOS_IDENTITY_PHYS=${LUGALOS_IDENTITY_PHYS}
+        LUGALOS_IDENTITY_SIZE=${LUGALOS_IDENTITY_SIZE}
+        LUGALOS_SLOT_A_PHYS=${LUGALOS_SLOT_A_PHYS}
+        LUGALOS_SLOT_B_PHYS=${LUGALOS_SLOT_B_PHYS}
+        LUGALOS_SLOT_SIZE=${LUGALOS_SLOT_SIZE}
+        LUGALOS_SLOT_HDR_OFF=${LUGALOS_SLOT_HDR_OFF}
+        LUGALOS_SLOT_SPAN=${LUGALOS_SLOT_SPAN}
+        LUGALOS_BOOTREC_PHYS=${LUGALOS_BOOTREC_PHYS})
 elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
     # 45.4, . The C6's HP core is RV32IMAC (datasheet:
     # no F, no FPU), M and U with no S-mode (misa 0x40903105, read off this
@@ -971,6 +979,10 @@ endif()
 
 if(LUGALOS_TARGET STREQUAL "RP2350")
     set(SOURCES arch/riscv/rp2350/boot_header.S ${SOURCES} drivers/uart_rp2350.c drivers/spisd_rp2350.c arch/riscv/rp2350/bootrom.c)
+    # updating the node's own image over its namespace (kernel/ota.c) into the
+    # A/B slot the bootrom did not boot from (drivers/ota_rp2350.c).
+    list(APPEND SOURCES drivers/ota_rp2350.c kernel/ota.c kernel/ota_image.c kernel/ota_sig.c)
+    add_compile_definitions(CONFIG_OTA=1)
     # LLP toward a radio on UART0, on a board whose file names the rate
     # (CONFIG_LLP_UART_BAUD: the terminal's header H7 and a C6 beside it).
     file(STRINGS "${LUGALOS_BOARD_FILE}" _llp_uart REGEX "^set\\(CONFIG_LLP_UART_BAUD")
@@ -1300,6 +1312,10 @@ if(DEFINED LUGALOS_BOARD_FILE)
         PROPERTIES OBJECT_DEPENDS ${LUGALOS_CONFIG_HEADER})
     set_source_files_properties(fs/vfs_server.c
         PROPERTIES OBJECT_DEPENDS "${LUGALOS_CONFIG_HEADER};${LUGALOS_BUILD_ID_HEADER}")
+    if(LUGALOS_TARGET STREQUAL "RP2350")
+        set_source_files_properties(arch/riscv/rp2350/boot_header.S drivers/ota_rp2350.c
+            PROPERTIES OBJECT_DEPENDS "${LUGALOS_CONFIG_HEADER};${LUGALOS_BUILD_ID_HEADER}")
+    endif()
     if(LUGALOS_TARGET STREQUAL "ESP32P4")
         set_source_files_properties(drivers/ota_esp32p4.c
             PROPERTIES OBJECT_DEPENDS "${LUGALOS_CONFIG_HEADER};${LUGALOS_BUILD_ID_HEADER}")
@@ -1382,10 +1398,7 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
     # is how this was found (an undefined-symbol link error, not a wrong
     # address).
     set(LUGALOS_FLASH_MAP_DEFSYMS
-        -Wl,--defsym=__flashfs_base=${LUGALOS_FLASHFS_BASE}
-        -Wl,--defsym=__flashfs_size=${LUGALOS_FLASHFS_SIZE}
-        -Wl,--defsym=__identity_base=${LUGALOS_IDENTITY_BASE}
-        -Wl,--defsym=__identity_size=${LUGALOS_IDENTITY_SIZE})
+        -Wl,--defsym=__slot_size=${LUGALOS_SLOT_SIZE})
     target_link_options(lugalos.elf PRIVATE ${LUGALOS_FLASH_MAP_DEFSYMS})
     # .ramfunc puts executable code inside .data (see linker/rp2350.ld for
     # why it lives there), so that PT_LOAD is genuinely RWX and ld says so.
@@ -1560,9 +1573,23 @@ endif()
 # edge makes ninja rebuild the UF2 whenever the image changes, and ALL makes
 # it part of an ordinary build rather than something only lugalos.elf drags in.
 if(LUGALOS_TARGET STREQUAL "RP2350")
+    # UF2 addresses are flash storage addresses behind the XIP base, not the
+    # runtime windows the kernel reads the filesystem through.
+    math(EXPR LUGALOS_FLASHFS_UF2_BASE "${LUGALOS_FLASH_BASE} + ${LUGALOS_FLASHFS_PHYS}" OUTPUT_FORMAT HEXADECIMAL)
+    # The board and chip an update image names (tools/lota.py reads it).
+    file(GENERATE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/flash.manifest
+         CONTENT "board ${LUGALOS_BOARD_ID} rp2350\n")
+    # The partition table, written once per board (tools/rp2350_ptable.py).
+    add_custom_command(
+        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/ptable.uf2
+        COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/rp2350_ptable.py ${CMAKE_CURRENT_BINARY_DIR}/ptable.uf2
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/cmake/flash_layout.cmake ${CMAKE_CURRENT_SOURCE_DIR}/tools/rp2350_ptable.py
+        COMMENT "Generating ptable.uf2 (the A/B partition table)"
+    )
+    add_custom_target(ptable_uf2 ALL DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/ptable.uf2)
     add_custom_command(
         OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/flashfs.uf2
-        COMMAND ${UF2CONV_PY} --family rp2350_riscv --base ${LUGALOS_FLASHFS_BASE} flashfs.bin -o flashfs.uf2
+        COMMAND ${UF2CONV_PY} --family RP2XXX_ABSOLUTE --base ${LUGALOS_FLASHFS_UF2_BASE} flashfs.bin -o flashfs.uf2
         DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/flashfs.bin
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
         COMMENT "Generating flashfs.uf2 (the filesystem segment, flashed on its own)"

@@ -203,11 +203,11 @@ def identity_flash_base(repo_root: Path) -> int:
     that nothing else knows them -- and a Python copy of 0x103FF000 would be
     a second place to forget when the map changes."""
     layout = repo_root / "cmake" / "flash_layout.cmake"
-    m = re.search(r"set\(\s*LUGALOS_IDENTITY_BASE\s+(0x[0-9A-Fa-f]+)",
+    m = re.search(r"set\(\s*LUGALOS_IDENTITY_PHYS\s+(0x[0-9A-Fa-f]+)",
                   layout.read_text())
     if not m:
-        sys.exit(f"could not find LUGALOS_IDENTITY_BASE in {layout}")
-    return int(m.group(1), 16)
+        sys.exit(f"could not find LUGALOS_IDENTITY_PHYS in {layout}")
+    return 0x10000000 + int(m.group(1), 16)   # a UF2 addresses flash behind the XIP base
 
 
 def write_uf2(record: bytes, out_path: str, repo_root: Path) -> str:
@@ -222,7 +222,7 @@ def write_uf2(record: bytes, out_path: str, repo_root: Path) -> str:
         tmp = tf.name
     try:
         r = subprocess.run(
-            [sys.executable, str(conv), "--family", "rp2350_riscv",
+            [sys.executable, str(conv), "--family", "RP2XXX_ABSOLUTE",
              "--base", hex(base), tmp, "-o", out_path],
             capture_output=True, text=True)
         if r.returncode != 0:

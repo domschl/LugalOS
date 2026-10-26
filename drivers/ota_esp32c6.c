@@ -10,6 +10,7 @@
  * keeps the radio and the channel to the host served in between. */
 
 #include "kernel/ota.h"
+#include "kernel/device.h"
 #include "kernel/lock.h"
 #include "drivers/ota_esp32c6.h"
 #include "drivers/flash_esp32c6.h"
@@ -480,3 +481,7 @@ bool ota_board_healthy(void) {
     }
     return true;
 }
+
+bool ota_board_restart(void) { return board_reset_later(false, 300); }
+void ota_board_trial_tick(void) { }
+const char *ota_board_version(void) { return NULL; }

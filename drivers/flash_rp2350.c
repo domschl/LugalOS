@@ -79,6 +79,7 @@
 #define ROM_FUNC_FLASH_RANGE_PROGRAM    ROM_TABLE_CODE('R', 'P')
 #define ROM_FUNC_FLASH_FLUSH_CACHE      ROM_TABLE_CODE('F', 'C')
 #define ROM_FUNC_FLASH_ENTER_CMD_XIP    ROM_TABLE_CODE('C', 'X')
+#define ROM_FUNC_EXPLICIT_BUY           ROM_TABLE_CODE('E', 'B')
 
 /* pico-sdk hardware_flash/flash.h and flash.c. The block size and block erase
  * command are what the ROM may use to erase large ranges more efficiently;
@@ -265,6 +266,53 @@ int flash_rp2350_write_sector(uint32_t flash_offs, const void *data) {
         return -1;
     }
     return flash_rom_op(flash_offs, (const uint8_t *)data, NULL);
+}
+
+/* An "explicit buy" (datasheet 5.4.8.4): the running image was entered under
+ * try-before-you-buy and says it is fine. The bootrom clears the TBYB flag
+ * (an erase and rewrite of the sector that holds it, hence the 4 KB scratch
+ * buffer) and, if this image is a version downgrade, erases the other
+ * partition's first sector. Run as the SDK runs it -- flash_safe_execute()
+ * around rom_explicit_buy() -- with the same protection as every other flash
+ * operation here: core 1 parked, interrupts off, the QSPI interface put back
+ * as it was found, dirty cache lines written back first. */
+typedef int (*rom_explicit_buy_fn)(uint8_t *buffer, uint32_t buffer_size);
+
+__attribute__((section(".ramfunc"), noinline))
+static int explicit_buy_ram(rom_explicit_buy_fn buy, uint8_t *scratch) {
+    qspi_state_t saved;
+    qspi_save(&saved);
+    for (uintptr_t a = XIP_SPACE_END - XIP_CACHE_BYTES; a < XIP_SPACE_END; a += XIP_CACHE_LINE) {
+        *(volatile uint8_t *)(XIP_MAINT_BASE + a + 1u) = 0;
+    }
+    __asm__ __volatile__("fence" ::: "memory");
+    int rc = buy(scratch, FLASH_SECTOR_SIZE);
+    qspi_restore(&saved);
+    __asm__ __volatile__("fence" ::: "memory");
+    return rc;
+}
+
+int flash_rp2350_explicit_buy(void *scratch) {
+    uintptr_t buf = (uintptr_t)scratch;
+    if ((buf & 3u) || buf < SRAM_BASE || buf > SRAM_END - FLASH_SECTOR_SIZE) {
+        printk("[Flash] explicit buy needs a word-aligned 4 KB buffer in SRAM\n");
+        return -1;
+    }
+    rom_explicit_buy_fn buy = (rom_explicit_buy_fn)rp2350_rom_func_lookup(ROM_FUNC_EXPLICIT_BUY);
+    if (!buy) {
+        printk("[Flash] bootrom explicit_buy not found\n");
+        return -1;
+    }
+    if (!smp_flash_park_request()) {
+        printk("[Flash] core 1 did not park; refusing to buy\n");
+        return -1;
+    }
+    uintptr_t saved;
+    __asm__ __volatile__("csrrci %0, mstatus, 0x8" : "=r"(saved));
+    int rc = explicit_buy_ram(buy, (uint8_t *)scratch);
+    if (saved & 0x8) __asm__ __volatile__("csrsi mstatus, 0x8");
+    smp_flash_park_release();
+    return rc;
 }
 
 static const char *read_cmd_name(uint32_t rfmt, uint32_t rcmd) {

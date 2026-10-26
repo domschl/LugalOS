@@ -11,8 +11,9 @@ to the node works: a host on the LAN, a P4 reaching its C6 through `/c6`, or
 the console's SLIP link.
 
 Supported so far: **the ESP32-C6** (`esp32c6`, `esp32c6-mini`) and **the
-ESP32-P4** (`esp32p4`, `esp32p4-lcd7b`, `esp32p4-tab5`). The RP2350
-follows.
+ESP32-P4** (`esp32p4`, `esp32p4-lcd7b`, `esp32p4-tab5`), and **the RP2350** (so far
+the Pico 2 W, `rp2350-wifi`; the other presets build the same backend, the
+RP2350-LCD-7's larger flash is not used yet).
 
 ## The files
 
@@ -130,6 +131,44 @@ The loader prints one line on the C6's UART0 at every boot, e.g.
 
 A kernel loaded into RAM by `c6run.py` was not started by the loader: it
 cannot update (`running=-`), and says so if asked.
+
+## The RP2350's flash
+
+| Storage offset | What |
+| :--- | :--- |
+| `0x000000` | the partition table (`tools/rp2350_ptable.py`, via picotool) |
+| `0x001000` | slot A, up to `0x17C000` bytes; its update header in the last sector at `0x17D000` |
+| `0x180000` | `/flash0`, 1 MB (read at `0x10400000`) |
+| `0x280000` | slot B, the same |
+| `0x3FD000` | the boot records: two 4 KB sectors |
+| `0x3FF000` | the identity sector (read at `0x10800000`) |
+
+The slots are a bootrom A/B pair: it boots the higher-versioned valid image, and
+maps only that partition at `0x10000000` (datasheet 5.1.19), so the kernel points
+spare QMI translation windows at `/flash0` and the identity sector before it reads
+them (`rp2350_map_data_windows()`). `_PHYS` names in `cmake/flash_layout.cmake` are
+storage offsets, `_BASE` the windows.
+
+How an update goes:
+
+1. `tools/lota.py push build/rp2350-wifi --serial IF02_PORT --reboot`. The image is
+   the build's `lugalos.bin`, flagged *try before you buy* and with its VERSION raised
+   above the running image's (`version=` in `/dev/ota`): the bootrom's `explicit_buy`
+   erases the old image unless the new one is strictly newer, so an update that is not
+   would destroy the fallback.
+2. `reboot` is a *flash update* boot of the new slot, the only boot that will run a
+   TBYB image. The kernel calls `explicit_buy` as soon as it is up (the bootrom gives
+   it 16.7 s), then judges the trial itself: confirmed when `/flash0` is mounted and,
+   with a Wi-Fi network configured, `wlan0` has joined.
+3. An image that dies before it buys is dropped by the bootrom's next reset. One that
+   buys and then fails -- it gives up after 50 s, a restart is asked for during the
+   trial, or the deadman (re-armed each second, 15 s) fires -- finds its record marked
+   `tried` at the next boot, erases its own first sector and restarts, so the old image
+   is the only one the bootrom can find. `fell_back=yes`, `failed=yes`.
+
+`switch` lasts until the next reset on this board: the bootrom boots the higher
+version again. A BOOTSEL-loaded `lugalos.uf2` copy lands in the slot the bootrom would
+not boot.
 
 ## The ESP32-P4's flash
 

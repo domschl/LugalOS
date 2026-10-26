@@ -262,11 +262,81 @@ def make_app_image(build: Path, broken: bool = False) -> tuple[bytes, dict]:
     return raw, info
 
 
-def make_image(build: Path, broken: bool = False, idf: bool = False) -> tuple[bytes, dict]:
+def patch_tbyb(binary: bytes) -> bytes:
+    """Flag the image try-before-you-buy (datasheet 5.9.3.1, EXE TBYB): the
+    bootrom then boots it only in a flash update boot, until it buys. The
+    IMAGE_DEF item sits in the block loop within the first 4 KB."""
+    data = bytearray(binary)
+    words = struct.unpack_from("<%dI" % (min(len(data), 4096) // 4), data)
+    for i, w in enumerate(words):
+        if w != 0xFFFFDED3:
+            continue
+        j = i + 1
+        while j < len(words):
+            item = words[j]
+            if item & 0x7F == 0x42:
+                flags = struct.unpack_from("<H", data, j * 4 + 2)[0]
+                struct.pack_into("<H", data, j * 4 + 2, flags | 0x8000)
+                return bytes(data)
+            size = (item >> 8) & 0xFFFF if item & 0x80 else (item >> 8) & 0xFF
+            if item & 0xFF == 0xFF or size == 0:
+                break
+            j += size
+    sys.exit("no IMAGE_DEF found in the first 4 KB of the image")
+
+
+def patch_version(binary: bytes, floor: tuple[int, int]) -> bytes:
+    """Make the image's VERSION item (major, minor) strictly higher than `floor`.
+
+    The bootrom's explicit_buy erases the other partition unless the bought
+    image is a higher version than it (datasheet 5.4.8.4), and a booted pair
+    is ordered by version: an update that is not strictly newer than the
+    running image destroys the fallback it was supposed to keep."""
+    data = bytearray(binary)
+    words = struct.unpack_from("<%dI" % (min(len(data), 4096) // 4), data)
+    for i, w in enumerate(words):
+        if w != 0xFFFFDED3:
+            continue
+        j = i + 1
+        while j < len(words):
+            item = words[j]
+            if item & 0x7F == 0x48:
+                minor, major = struct.unpack_from("<HH", data, j * 4 + 4)
+                if (major, minor) <= floor:
+                    major, minor = floor[0], floor[1] + 1
+                    if minor > 0xFFFF:
+                        major, minor = major + 1, 0
+                    struct.pack_into("<HH", data, j * 4 + 4, minor, major)
+                return bytes(data)
+            size = (item >> 8) & 0xFFFF if item & 0x80 else (item >> 8) & 0xFF
+            if item & 0xFF == 0xFF or size == 0:
+                break
+            j += size
+    sys.exit("no VERSION item in the image's first block")
+
+
+def make_image(build: Path, broken: bool = False, idf: bool = False,
+               running_version: tuple[int, int] | None = None) -> tuple[bytes, dict]:
     man = read_manifest(build)
     if "board" not in man:
         sys.exit(f"{build}/flash.manifest names no board: rebuild it")
     board, chip = man["board"]
+    if chip == "rp2350":
+        raw = (build / "lugalos.bin").read_bytes()
+        if running_version is not None:
+            raw = patch_version(raw, running_version)
+        parts = [patch_tbyb(raw), b""]
+        if broken:
+            # The IMAGE_DEF, the entry code and the first bytes stay: it passes
+            # the bootrom, calls explicit_buy, then dies in code that is zeroes.
+            img = bytearray(parts[0])
+            img[0x40000:0x50000] = bytes(0x10000)
+            parts[0] = bytes(img)
+        hdr = header(board, chip, build_id(build), parts)
+        info = {"board": board, "chip": chip, "build_id": build_id(build),
+                "part_len": [len(p) for p in parts], "sha256": hashlib.sha256(b"".join(parts)).hexdigest(),
+                "layout": "partition"}
+        return hdr + b"".join(parts), info
     if chip == "esp32p4":
         parts = parts_esp32p4(build)
         if broken:
@@ -338,8 +408,10 @@ class Node:
         elif a.tcp:
             host, _, port = a.tcp.partition(":")
             self.client = p9lib.connect_tcp(host, int(port or 564), timeout=30.0)
+        elif a.serial:
+            self.client = p9lib.connect_serial(a.serial, baudrate=115200, timeout=30.0)
         else:
-            sys.exit("say how to reach the node: --p4 BOARD or --tcp HOST[:PORT]")
+            sys.exit("say how to reach the node: --p4 BOARD, --tcp HOST[:PORT] or --serial PORT")
         self.sess = p9lib.Session(self.client, aname="/", key=key)
 
     def close(self) -> None:
@@ -439,7 +511,7 @@ class Node:
 
 
 def show(st: dict[str, str]) -> str:
-    keys = ("board", "layout", "running", "trial", "fell_back", "slot_a", "slot_b",
+    keys = ("board", "layout", "version", "running", "trial", "fell_back", "slot_a", "slot_b",
             "active", "pending", "state", "error")
     return ", ".join(f"{k}={st[k]}" for k in keys if k in st)
 
@@ -454,7 +526,11 @@ def push(a: argparse.Namespace) -> int:
             sys.exit("the node cannot update itself")
         is_idf = st.get("layout") == "idf"
         if src.is_dir():
-            image, info = make_image(src, broken=a.broken, idf=is_idf)
+            rv = None
+            if "version" in st:
+                major, _, minor = st["version"].partition(".")
+                rv = (int(major), int(minor))
+            image, info = make_image(src, broken=a.broken, idf=is_idf, running_version=rv)
         else:
             raw = src.read_bytes()
             if len(raw) >= HEADER_LEN and struct.unpack_from("<I", raw, 0)[0] == MAGIC:
@@ -632,6 +708,7 @@ def main() -> int:
             p.add_argument("--bytes", type=int, default=0, help="explicit byte count (0: auto-detect 0xE9 image size)")
         p.add_argument("--p4", metavar="BOARD", help="through a P4 board's console (nano|lcd7b|tab5)")
         p.add_argument("--tcp", metavar="HOST[:PORT]")
+        p.add_argument("--serial", metavar="PORT", help="the 9P port of an RP2350 (its USB interface 02)")
         p.add_argument("--key", help="9P key, hex")
         p.add_argument("--keyfile", help="file holding the 9P key, hex")
         p.add_argument("--prefix", default="", help="where the node's namespace is, e.g. /c6")
