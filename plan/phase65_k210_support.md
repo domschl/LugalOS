@@ -367,9 +367,14 @@ board.
   code is written**.
 
 * **65.2 — Host tooling: `tools/k210run.py` / `tools/k210flash.py`.**
-  (Interim, 65.1: `kflash -s -b 115200 -B bit -t` under a pty — recipe in
-  §1.5 — owns the port for the dev loop; `tools/k210run.py` is the WIP
-  replacement, its ISP greeting must match kflash's DTR/RTS choreography.)
+  ✔ 2/3 (2026-10-26): `k210run.py` delivered — SRAM ISP load + boot +
+  console ownership, verified by 65.1's probe reporting through it;
+  documented in `doc/admin/flashing.md` §4. `k210flash.py` moves to 65.5:
+  its writer blob needs the SPI-NOR owner question (SSI vs SFC, GPIOHS
+  CS) that §1.5 defers there, and shipping an unverifiable flash tool
+  against silicon we have not spoken to honestly is not this repo's way.
+  (Interim flash-image knowledge: `kflash -s -b 115200 -B bit -t` under a
+  pty — recipe in §1.5.)
   BROM ISP protocol (boot handshake, LZ4 sections, CRC), port discovery by
   `/dev/serial/by-id` (`1a86:7523`), DTR/RTS boot-line choreography,
   115200→1.5 Mbaud switch, and a console watcher with the same
