@@ -1402,8 +1402,17 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
     # them -- including minimal_rp2350.elf, the standalone hardware test, which
     # is how this was found (an undefined-symbol link error, not a wrong
     # address).
+    # Core 1's stack (linker/rp2350.ld) is needed by the SMP scheduler and by the
+    # PIO-USB host engine, and by nothing else: a persona with neither gives
+    # its 16 KB back to the heap.
+    if(LUGALOS_ENABLE_SMP OR DEFINED CONFIG_PIOUSB_DP_GPIO)
+        set(LUGALOS_STACK1_SIZE 16384)
+    else()
+        set(LUGALOS_STACK1_SIZE 0)
+    endif()
     set(LUGALOS_FLASH_MAP_DEFSYMS
-        -Wl,--defsym=__slot_size=${LUGALOS_SLOT_SIZE})
+        -Wl,--defsym=__slot_size=${LUGALOS_SLOT_SIZE}
+        -Wl,--defsym=__stack1_size=${LUGALOS_STACK1_SIZE})
     target_link_options(lugalos.elf PRIVATE ${LUGALOS_FLASH_MAP_DEFSYMS})
     # .ramfunc puts executable code inside .data (see linker/rp2350.ld for
     # why it lives there), so that PT_LOAD is genuinely RWX and ld says so.

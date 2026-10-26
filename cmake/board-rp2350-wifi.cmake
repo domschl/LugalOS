@@ -69,6 +69,12 @@ set(CONFIG_WL_DATA_GPIO 24)
 set(CONFIG_WL_CS_GPIO   25)
 set(CONFIG_WL_CLK_GPIO  29)
 
+# No sensor is fitted to this board's I2C pins, and the hub's probe of the
+# MICS-6814's address (0x04) has been answered at boot by nothing at all: it
+# then ran a sampler task (12 KB of a 280 KB heap) that read nothing for the
+# rest of the uptime. A Pico 2 W with a real MICS-6814 on it can take this out.
+set(CONFIG_SENSOR_SKIP "mics6814")
+
 # DS1307/DS3231 RTC pins. No RTC is fitted on this board; these are here
 # because drivers/i2c_rtc.c is unconditional on RP2350 and needs somewhere
 # to probe -- same reasoning as cmake/board-rp2350-gateway.cmake's own

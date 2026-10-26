@@ -303,9 +303,9 @@ endif()
 
 set(_string_keys CONFIG_TIMEZONE CONFIG_NODE_SEED CONFIG_NODE_PERSONA CONFIG_DCF77_P0_NTP)
 # Optional, and only emitted when a board file pins them: a node whose name or
-# MAC is a board fact (a soldered appliance, a MAC from a label) says so here
+# MAC is a board fact (and CONFIG_SENSOR_SKIP, below) (a soldered appliance, a MAC from a label) says so here
 # and the derivation stays out of the way.
-foreach(_key CONFIG_NODE_NAME CONFIG_NODE_MAC)
+foreach(_key CONFIG_NODE_NAME CONFIG_NODE_MAC CONFIG_SENSOR_SKIP)
     if(DEFINED ${_key})
         list(APPEND _string_keys ${_key})
     endif()

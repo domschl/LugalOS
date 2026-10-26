@@ -303,14 +303,15 @@ SECTIONS
      * note further down where SCRATCH_Y used to serve this purpose, and the
      * hardware failure that moved it here.
      *
-     * Unconditional rather than behind CONFIG_ENABLE_SMP, because a linker
-     * script cannot see the generated config header. It costs every RP2350
-     * persona 16 KB of ~360 KB; the 256 KB floor asserted below still
-     * holds. NOLOAD, so it occupies no flash. */
+     * __stack1_size arrives as --defsym from CMakeLists.txt: 16 KB where the
+     * SMP scheduler or the PIO-USB host engine runs on core 1, and none
+     * elsewhere -- 16 KB of a 280 KB heap, on the personas that can least
+     * spare it. The symbols stay, at one address, for kernel/smp.c. NOLOAD,
+     * so it occupies no flash. */
     .stack1 (NOLOAD) : {
         . = ALIGN(16);
         _stack1_bottom = .;
-        . += 16k;
+        . += __stack1_size;
         _stack1_top = .;
     } > RAM
 
