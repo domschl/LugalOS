@@ -58,12 +58,59 @@ int gpio_read_pin(uint32_t pin) {
     return (in & (1u << bit)) ? 1 : 0;
 }
 
-#elif defined(CONFIG_BOARD_ESP32P4) || defined(CONFIG_BOARD_ESP32C6)
+#elif defined(CONFIG_BOARD_ESP32P4)
+/* The P4's GPIO matrix (HP peripheral bus, 0x500E0000) and its IO_MUX; the pins are 0-54 and
+ * the registers come in a low (0-31) and a high (32-54) word. */
+#define GPIO_BASE               0x500E0000UL
+#define GPIO_OUT_W1TS(hi)       (GPIO_BASE + ((hi) ? 0x14u : 0x08u))
+#define GPIO_OUT_W1TC(hi)       (GPIO_BASE + ((hi) ? 0x18u : 0x0Cu))
+#define GPIO_ENABLE_W1TS(hi)    (GPIO_BASE + ((hi) ? 0x30u : 0x24u))
+#define GPIO_ENABLE_W1TC(hi)    (GPIO_BASE + ((hi) ? 0x34u : 0x28u))
+#define GPIO_IN(hi)             (GPIO_BASE + ((hi) ? 0x40u : 0x3Cu))
+#define IO_MUX_GPIO(pin)        (0x500E1000UL + 4u + 4u * (pin))
+#define IO_MUX_FUN_WPD          (1u << 7)
+#define IO_MUX_FUN_WPU          (1u << 8)
+#define IO_MUX_FUN_IE           (1u << 9)
+#define IO_MUX_FUN_DRV_2        (2u << 10)
+#define IO_MUX_MCU_SEL_GPIO     (1u << 12)
+#define GPIO_PINS               55u
+#define REG(addr)               (*(volatile uint32_t *)(uintptr_t)(addr))
+
+/* An input is the pad switched to the GPIO function with its input buffer on: after reset
+ * many pads (GPIO35, a strapping pin, is one) are muxed to another function with the buffer
+ * off, and read as a constant 0. */
+int gpio_set_mode(uint32_t pin, int mode) {
+    if (pin >= GPIO_PINS) return -1;
+    uint32_t hi = pin >> 5, bit = 1u << (pin & 31u);
+    if (mode == GPIO_MODE_OUT) {
+        REG(IO_MUX_GPIO(pin)) = IO_MUX_MCU_SEL_GPIO | IO_MUX_FUN_DRV_2;
+        REG(GPIO_ENABLE_W1TS(hi)) = bit;
+        return 0;
+    }
+    REG(GPIO_ENABLE_W1TC(hi)) = bit;
+    REG(IO_MUX_GPIO(pin)) = IO_MUX_MCU_SEL_GPIO | IO_MUX_FUN_DRV_2 | IO_MUX_FUN_IE |
+                            (mode == GPIO_MODE_PULLUP ? IO_MUX_FUN_WPU :
+                             mode == GPIO_MODE_PULLDOWN ? IO_MUX_FUN_WPD : 0u);
+    return 0;
+}
+
+int gpio_write_pin(uint32_t pin, int val) {
+    if (pin >= GPIO_PINS) return -1;
+    REG(val ? GPIO_OUT_W1TS(pin >> 5) : GPIO_OUT_W1TC(pin >> 5)) = 1u << (pin & 31u);
+    return 0;
+}
+
+int gpio_read_pin(uint32_t pin) {
+    if (pin >= GPIO_PINS) return -1;
+    return (REG(GPIO_IN(pin >> 5)) & (1u << (pin & 31u))) ? 1 : 0;
+}
+
+#elif defined(CONFIG_BOARD_ESP32C6)
 #define GPIO_OUT_W1TS_REG       0x60091008UL
 #define GPIO_OUT_W1TC_REG       0x6009100cUL
 #define GPIO_ENABLE_W1TS_REG    0x60091024UL
 #define GPIO_ENABLE_W1TC_REG    0x60091028UL
-#define GPIO_IN_REG             0x60091040UL
+#define GPIO_IN_REG             0x6009103cUL
 #define REG(addr)               (*(volatile uint32_t *)(uintptr_t)(addr))
 
 int gpio_set_mode(uint32_t pin, int mode) {
