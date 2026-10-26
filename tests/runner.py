@@ -5108,6 +5108,179 @@ def test_identity_altitude(elf_path: Path, img_path: Path, arch_name: str) -> tu
         session.close()
 
 
+def test_network_claim(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """52.10: a node is claimed once, by a client that knows its setup secret, and an owner reset
+    returns it to unclaimed with its factory part intact.
+
+    Driven through /dev/setup and /dev/owner from the node's own shell, which reaches the same
+    state machine a 9P client does (the 9P path is checked in tests/host/p9_host.c): a wrong
+    secret is refused and counted, the right one claims and closes the window, a second claim
+    finds no window, /dev/owner changes the name, and `setup reset-owner` wipes the owner part
+    -- grants and name -- while the uid, the device key and the setup secret stay, so the same
+    node can be claimed again."""
+    import shutil
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    import provision
+
+    name = "A Node Is Claimed Once; An Owner Reset Keeps Its Factory Part (52.10)"
+    arch_img = img_path.with_name(f"test_{arch_name}_claim_sd.img")
+    shutil.copyfile(img_path, arch_img)
+    secret = "ABCD-EFGH-JKMN"
+    key = "00112233445566778899aabbccddeeff"
+    id_img = img_path.with_name(f"test_{arch_name}_claim_id.img")
+    id_img.write_bytes(provision.build_record([
+        (provision.FIELD_UID, bytes.fromhex("a1a2a3a4a5a6a7a8")),
+        (provision.FIELD_NAME, b"preclaim"),
+        (provision.FIELD_DEVKEY, bytes(range(32))),
+        (provision.FIELD_SETUP_SECRET, secret.encode()),
+    ]))
+
+    session = QemuSession(elf_path, arch_img, arch_name)
+
+    def write(path: str, text: str) -> tuple[bool, str]:
+        return session.send_and_expect(f'(write-file "{path}" "{text}")', r"=> #[tf]", timeout=6.0)
+
+    def settled(path: str, pattern: str) -> tuple[bool, str]:
+        # The write returns at once; a worker task does it, and says so in the file.
+        log = ""
+        for _ in range(12):
+            ok, log = session.send_and_expect(f"cat {path}", r"result=\S", timeout=5.0)
+            if ok and "result=pending" not in log and re.search(pattern, log):
+                return True, log
+            time.sleep(0.4)
+        return False, log
+
+    try:
+        session.start(identity_img_path=id_img)
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+
+        # 1. Unclaimed with a secret: the window is open from boot.
+        ok, log = session.send_and_expect("cat /dev/setup", r"max_attempts=5", timeout=6.0)
+        if not ok or "state=setup" not in log:
+            return (name, False, f"a node with a secret and no admin grant should be in setup mode:\n{log[-400:]}")
+        ok, ident0 = session.send_and_expect("identity", r"key fingerprint", timeout=6.0)
+        uid0 = re.search(r"uid: (\S+)", ident0)
+        fp0 = re.search(r"key fingerprint: (\S+)", ident0)
+        if not uid0 or not fp0 or fp0.group(1) == "none":
+            return (name, False, f"the factory part is not as provisioned:\n{ident0[-400:]}")
+
+        # 2. A wrong secret is refused, and counted.
+        ok, log = write("/dev/setup", f"claim WRONG-SECRET1 {key}")
+        if "=> #t" not in log:
+            return (name, False, f"the write of a claim line was refused at once: {log[-300:]}")
+        ok, log = settled("/dev/setup", r"result=error: wrong setup secret")
+        if not ok or "failed_attempts=1" not in log:
+            return (name, False, f"a wrong secret was not refused and counted:\n{log[-400:]}")
+
+        # 3. The right one claims, names the node, and closes the window.
+        ok, log = write("/dev/setup", f"claim {secret} {key} name claimed1")
+        ok, log = settled("/dev/setup", r"result=ok: claimed")
+        if not ok or "state=claimed" not in log:
+            return (name, False, f"the claim did not succeed:\n{log[-400:]}")
+        ok, log = session.send_and_expect("peers", r"^owner\s+\S+\s+/\s+admin", timeout=6.0)
+        if not re.search(r"^owner\s+\S+\s+/\s+admin", log, re.MULTILINE):
+            return (name, False, f"the owner's admin grant is not listed:\n{log[-400:]}")
+        if key in log.lower():
+            return (name, False, "the owner key was printed")
+        ok, log = session.send_and_expect("identity", r"key fingerprint", timeout=6.0)
+        if "claimed1" not in log:
+            return (name, False, f"the claim did not set the name:\n{log[-300:]}")
+
+        # 4. A second claim finds no window.
+        ok, log = write("/dev/setup", f"claim {secret} {key}")
+        if "=> #f" not in log:
+            return (name, False, f"a second claim was not refused:\n{log[-300:]}")
+
+        # 5. The owner part changes through /dev/owner.
+        write("/dev/owner", "name renamed1")
+        ok, log = settled("/dev/setup", r"result=ok\b")
+        ok, log = session.send_and_expect("cat /dev/owner", r"grant=owner", timeout=6.0)
+        if "name=renamed1" not in log or "grant=owner / admin" not in log:
+            return (name, False, f"/dev/owner did not show the change:\n{log[-400:]}")
+        write("/dev/owner", "ungrant owner")
+        ok, log = settled("/dev/setup", r"result=error: that is the last admin grant")
+        if not ok:
+            return (name, False, f"the last admin grant could be removed over the network:\n{log[-400:]}")
+
+        # 6. An owner reset: unclaimed again, factory part intact.
+        ok, log = session.send_and_expect("setup reset-owner", r"unclaimed", timeout=8.0)
+        if "wiped" not in log:
+            return (name, False, f"the owner reset did not report:\n{log[-300:]}")
+        ok, log = session.send_and_expect("peers", r"no grants", timeout=6.0)
+        if "no grants" not in log.lower():
+            return (name, False, f"grants survived an owner reset:\n{log[-300:]}")
+        ok, ident1 = session.send_and_expect("identity", r"key fingerprint", timeout=6.0)
+        uid1 = re.search(r"uid: (\S+)", ident1)
+        fp1 = re.search(r"key fingerprint: (\S+)", ident1)
+        if not uid1 or uid1.group(1) != uid0.group(1) or not fp1 or fp1.group(1) != fp0.group(1):
+            return (name, False, f"the factory part changed across an owner reset:\n{ident0[-250:]}\n{ident1[-250:]}")
+        if "renamed1" in ident1 or "claimed1" in ident1:
+            return (name, False, f"the owner's name survived an owner reset:\n{ident1[-300:]}")
+        ok, log = session.send_and_expect("setup", r"secs_left", timeout=6.0)
+        if "setup secret: stored" not in log or "state=unclaimed" not in log:
+            return (name, False, f"after the reset the node should be unclaimed with its secret:\n{log[-400:]}")
+
+        # 7. And it can be claimed again: the reset closed the window, `setup start` reopens it.
+        ok, log = write("/dev/setup", f"claim {secret} {key}")
+        if "=> #f" not in log:
+            return (name, False, f"a claim got through a closed window:\n{log[-300:]}")
+        ok, log = session.send_and_expect("setup start", r"window open", timeout=6.0)
+        write("/dev/setup", f"claim {secret} {key}")
+        ok, log = settled("/dev/setup", r"result=ok: claimed")
+        if not ok:
+            return (name, False, f"a reset node could not be claimed again:\n{log[-400:]}")
+
+        # 8. Five wrong secrets close the window until the next trigger.
+        session.send_and_expect("setup reset-owner", r"unclaimed", timeout=8.0)
+        session.send_and_expect("setup start", r"window open", timeout=6.0)
+        for i in range(5):
+            write("/dev/setup", f"claim WRONG-SECRET{i} {key}")
+            settled("/dev/setup", r"result=error")
+        ok, log = session.send_and_expect("cat /dev/setup", r"max_attempts", timeout=6.0)
+        if "state=unclaimed" not in log or "setup is closed" not in log:
+            return (name, False, f"five failed claims did not close the window:\n{log[-400:]}")
+        ok, log = write("/dev/setup", f"claim {secret} {key}")
+        if "=> #f" not in log:
+            return (name, False, f"the right secret was taken after the window closed:\n{log[-300:]}")
+
+        return (name, True, "claim once, refused twice, owner reset keeps uid/key/secret, claimable again, closes after 5 failures")
+    except Exception as e:  # noqa: BLE001
+        return (name, False, f"{type(e).__name__}: {e}")
+    finally:
+        session.close()
+        arch_img.unlink(missing_ok=True)
+        id_img.unlink(missing_ok=True)
+
+
+def test_no_network_claim(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """52.10: a build without CONFIG_NETWORK_CLAIM cannot be claimed over the network, whatever the
+    state machine does: no /dev/setup, no /dev/owner, no window."""
+    name = "A Build Without CONFIG_NETWORK_CLAIM Cannot Be Claimed (52.10)"
+    session = QemuSession(elf_path, img_path, arch_name)
+    try:
+        session.start()
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+        ok, log = session.send_and_expect("setup", r"offers no claiming", timeout=6.0)
+        if not ok:
+            return (name, False, f"`setup` did not say the build offers no claiming:\n{log[-300:]}")
+        ok, log = session.send_and_expect("setup start", r"not started", timeout=6.0)
+        if not ok:
+            return (name, False, f"`setup start` opened a window in a build without the flag:\n{log[-300:]}")
+        for path in ("/dev/setup", "/dev/owner"):
+            ok, log = session.send_and_expect(f'(write-file "{path}" "claim X Y")', r"=> #[tf]", timeout=6.0)
+            if "=> #f" not in log:
+                return (name, False, f"{path} exists in a build without the flag:\n{log[-300:]}")
+        return (name, True, "no window, no /dev/setup, no /dev/owner")
+    except Exception as e:  # noqa: BLE001
+        return (name, False, f"{type(e).__name__}: {e}")
+    finally:
+        session.close()
+
+
 def test_identity_toolset(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
     """I3, plan/phase21_identity_and_authentication.md: the `identity`
     command family against a real (fresh) identity disk -- I3's own verify
@@ -9355,6 +9528,7 @@ def main() -> int:
         _run_single(test_identity_toolset(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_identity_altitude(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_grants_in_record(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_network_claim(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_wlan_credential_roundtrip(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_network_autoconfig(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_netif_virtio_net(rv64_elf, img_for("rv64"), "rv64"))
@@ -9404,6 +9578,7 @@ def main() -> int:
         _run_single(test_identity_store_provisioning(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_identity_toolset(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_grants_in_record(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_no_network_claim(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_wlan_credential_roundtrip(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_network_autoconfig(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_netif_virtio_net(rv32_elf, img_for("rv32"), "rv32"))

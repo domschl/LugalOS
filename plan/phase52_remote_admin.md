@@ -956,6 +956,15 @@ deferred without blocking anything after it.
 
 * **52.10 Two-part identity, the `admin` grant, claiming, triggers.**
   *Boards: QEMU, then the Pico 2 W and the NANO for buttons.*
+  * **Status 2026-10-26:** the field classes, the `admin` grant, `/dev/setup`,
+    `/dev/owner`, the setup window, `CONFIG_NETWORK_CLAIM`, the console `setup`
+    command, the setup secret in `provision.py`, and the tests (QEMU claim
+    cycle, a build without the flag, the host check of the unauthenticated
+    attach) are DONE. **Open:** the button triggers on the Pico 2 W and the
+    NANO (§1.4 table), and the setup access point that makes the unauthenticated
+    attach reachable (52.12 supplies `p9_link_is_setup_ap()`; until then a claim
+    comes over a cable or the console). `/dev/owner` is one file with a command
+    per line, not a directory: simpler, and a directory buys nothing before 52.11.
   * **The split is a write policy, not a new record format.** The TLV record
     (`kernel/idstore.c`) stays one record, so stored records need no
     migration. A table classifies each field:

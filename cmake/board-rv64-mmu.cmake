@@ -27,3 +27,7 @@ set(CONFIG_UART0_BASE       0x10000000)
 # cannot be justified, and a target with nothing to be confident *about* is
 # where that claim is checkable without hardware.
 set(CONFIG_ENABLE_NTP_SERVER 1)
+
+# Claiming over the network (kernel/setup.c): this target runs the test for it; rv32-nommu does not,
+# and runs the test that a build without the flag refuses.
+set(CONFIG_NETWORK_CLAIM 1)

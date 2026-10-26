@@ -704,6 +704,7 @@ set(SOURCES
     # name and a MAC of its own. Above every wire on purpose: put
     # the MAC inside a driver, and the design went with the part.
     kernel/identity.c
+    kernel/setup.c
     # N1: the nonce source for that gate, plus the measurement that says
     # whether the ring oscillator behind it is worth trusting.
     kernel/random.c
