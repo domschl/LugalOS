@@ -302,6 +302,7 @@ uint32_t owner_ctl_read(char *out, uint32_t cap) {
 }
 
 void setup_init(void) {
+    setup_button_start();
     char probe[NODE_SETUP_SECRET_MAX + 1];
     g_have_secret = node_setup_secret(probe, sizeof probe);
     memset(probe, 0, sizeof probe);
@@ -319,7 +320,7 @@ const char *setup_state_name(setup_state_t s) { return s == SETUP_CLAIMED ? "cla
 bool setup_start(void) { return false; }
 void setup_stop(void) { }
 bool setup_unauth_attach_ok(void) { return false; }
-void setup_init(void) { }
+void setup_init(void) { setup_button_start(); }
 uint32_t setup_ctl_read(char *out, uint32_t cap) { (void)out; (void)cap; return 0; }
 int setup_ctl_write(const char *buf, uint32_t len) { (void)buf; (void)len; return -1; }
 uint32_t owner_ctl_read(char *out, uint32_t cap) { (void)out; (void)cap; return 0; }
