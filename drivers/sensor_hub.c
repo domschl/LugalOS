@@ -79,8 +79,27 @@ bool    sensor_hub_is_mox_contaminated(void)   { return s_mox_contaminated; }
 bool    sensor_hub_is_fresh_air_verified(void) { return s_fresh_air_verified; }
 int32_t sensor_hub_co2_ratio_pct(void)         { return s_co2_ratio_pct; }
 
+#if defined(CONFIG_SENSOR_SKIP)
+/* CONFIG_SENSOR_SKIP, a board file's comma-separated list of drivers never to
+ * register: a part this board cannot carry, whose address a floating or noisy
+ * bus sometimes appears to answer. */
+static bool sensor_skipped(const char *name) {
+    size_t n = strlen(name);
+    for (const char *p = CONFIG_SENSOR_SKIP; *p; ) {
+        const char *e = p;
+        while (*e && *e != ',') e++;
+        if ((size_t)(e - p) == n && memcmp(p, name, n) == 0) return true;
+        p = *e ? e + 1 : e;
+    }
+    return false;
+}
+#endif
+
 static bool sensor_hub_register_locked(sensor_dev_t *dev) {
     if (!dev || s_driver_count >= SENSOR_HUB_MAX_DEVS) return false;
+#if defined(CONFIG_SENSOR_SKIP)
+    if (dev->name && sensor_skipped(dev->name)) return true;
+#endif
     for (uint32_t i = 0; i < s_driver_count; i++) {
         if (s_drivers[i] == dev) return true;
     }

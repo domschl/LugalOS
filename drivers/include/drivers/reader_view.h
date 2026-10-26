@@ -5,10 +5,14 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "lugalos_config.h"
+
 /* Each instance is ~7.5 KB of static state (links, history, table of
  * contents). The ESP32-C6 has no display, only a RAM screen for Lisp's
- * canvas, and keeps one: four cost it 30 KB of a heap it runs out of. */
-#if defined(CONFIG_BOARD_ESP32C6)
+ * canvas, and keeps one: four cost it 30 KB of a heap it runs out of. So does
+ * an RP2350 without a panel (a Pico 2 W, the clock, the gateway): its heap is
+ * 70 pages, and the compiler wants 28 of them at once. */
+#if defined(CONFIG_BOARD_ESP32C6) || (defined(CONFIG_BOARD_RP2350) && !defined(CONFIG_LCD_PCLK_GPIO))
 #define READER_MAX_INSTANCES 1
 #else
 #define READER_MAX_INSTANCES 4
