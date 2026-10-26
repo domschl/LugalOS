@@ -34,6 +34,7 @@
  * bytes are the image the bootrom looks for. */
 
 #include "kernel/ota.h"
+#include "lugalos_config.h"
 #include "kernel/device.h"
 #include "kernel/identity.h"
 #include "kernel/palloc.h"
@@ -401,16 +402,35 @@ const char *ota_board_version(void) {
     return NULL;
 }
 
+uint32_t ota_board_map(char *out, uint32_t cap) {
+    int n = ksnprintf(out, cap,
+        "at_table=0x%x+0x%x\nat_a=0x%x+0x%x\nat_b=0x%x+0x%x\n"
+        "at_flashfs=0x%x+0x%x\nat_records=0x%x+0x%x\nat_identity=0x%x+0x%x\n",
+        0u, SECTOR,
+        (unsigned)LUGALOS_SLOT_A_PHYS, (unsigned)LUGALOS_SLOT_SPAN,
+        (unsigned)LUGALOS_SLOT_B_PHYS, (unsigned)LUGALOS_SLOT_SPAN,
+        (unsigned)LUGALOS_FLASHFS_PHYS, (unsigned)LUGALOS_FLASHFS_SIZE,
+        (unsigned)LUGALOS_BOOTREC_PHYS, 2u * SECTOR,
+        (unsigned)LUGALOS_IDENTITY_PHYS, (unsigned)LUGALOS_IDENTITY_SIZE);
+    return n < 0 ? 0 : (uint32_t)n < cap ? (uint32_t)n : cap;
+}
+
 bool ota_board_restart(void) {
     return task_create("otarestart", restart_task, NULL) >= 0;
 }
 
-/* A trial is healthy when a volume is mounted and, if a Wi-Fi network is
- * configured, wlan0 has joined it. */
+/* A trial is healthy when a volume is mounted and, on a board with the
+ * CYW43439 and a Wi-Fi network configured, wlan0 has joined it. A board
+ * without the radio can carry a stored SSID (the identity sector outlives the
+ * firmware that wrote it) and must not be held to it. */
 bool ota_board_healthy(void) {
     if (!vfs_volume_mounted("flash0") && !vfs_volume_mounted("sd0")) return false;
+#if defined(CONFIG_WL_CS_GPIO)
     char ssid[NODE_WLAN_SSID_MAX + 1];
     if (!node_wlan_ssid(ssid, sizeof ssid)) return true;
     netif_t *nif = netif_find("wlan0");
     return nif && netif_link_up(nif);
+#else
+    return true;
+#endif
 }

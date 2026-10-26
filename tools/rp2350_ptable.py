@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The RP2350 partition table for cmake/flash_layout.cmake's map.
 
-    rp2350_ptable.py build/rp2350-wifi/ptable.uf2
+    rp2350_ptable.py [--layout cmake/flash_layout_rp2350_terminal.cmake] build/rp2350-wifi/ptable.uf2
 
 Slots A and B are an A/B pair for the bootrom (datasheet 5.1.7): it boots the
 higher-versioned valid image, and a try-before-you-buy image only in a flash
@@ -22,11 +22,17 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 LAYOUT = REPO / "cmake" / "flash_layout.cmake"
 
 
+layout_file = LAYOUT
+
+
 def layout_value(name: str) -> int:
-    m = re.search(r"set\(\s*%s\s+(0x[0-9A-Fa-f]+)" % name, LAYOUT.read_text())
-    if not m:
-        sys.exit("could not find %s in %s" % (name, LAYOUT))
-    return int(m.group(1), 16)
+    """From the board's layout file, which builds on the common one: a value it
+    sets itself wins, otherwise the common map's."""
+    for f in (layout_file, LAYOUT):
+        m = re.search(r"^set\(\s*%s\s+(0x[0-9A-Fa-f]+)" % name, f.read_text(), re.M)
+        if m:
+            return int(m.group(1), 16)
+    sys.exit("could not find %s in %s" % (name, layout_file))
 
 
 def find_picotool() -> str:
@@ -57,9 +63,14 @@ def table() -> dict:
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
+    global layout_file
+    args = sys.argv[1:]
+    if len(args) == 3 and args[0] == "--layout":
+        layout_file = pathlib.Path(args[1])
+        args = args[2:]
+    if len(args) != 1:
         sys.exit(__doc__)
-    out = pathlib.Path(sys.argv[1])
+    out = pathlib.Path(args[0])
     with tempfile.TemporaryDirectory() as d:
         j = pathlib.Path(d) / "pt.json"
         j.write_text(json.dumps(table()))

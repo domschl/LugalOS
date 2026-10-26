@@ -482,6 +482,25 @@ bool ota_board_healthy(void) {
     return true;
 }
 
+uint32_t ota_board_map(char *out, uint32_t cap) {
+    int n;
+    if (booted_by_idf() && idf_ensure_layout())
+        n = ksnprintf(out, cap, "at_a=0x%x+0x%x\nat_b=0x%x+0x%x\nat_records=0x%x+0x%x\n",
+                      (unsigned)g_idf.slot_base[0], (unsigned)g_idf.slot_size[0],
+                      (unsigned)g_idf.slot_base[1], (unsigned)g_idf.slot_size[1],
+                      (unsigned)g_idf.otadata_base, (unsigned)g_idf.otadata_size);
+    else
+        n = ksnprintf(out, cap,
+                      "at_loader=0x%x+0x%x\nat_records=0x%x+0x%x\nat_a=0x%x+0x%x\nat_b=0x%x+0x%x\n"
+                      "at_identity=0x%x+0x%x\n",
+                      (unsigned)LUGALOS_C6_LOADER_BASE, (unsigned)LUGALOS_C6_LOADER_SIZE,
+                      (unsigned)LUGALOS_C6_BOOTREC_BASE, 2u * SECTOR,
+                      (unsigned)LUGALOS_C6_SLOT_A_BASE, (unsigned)LUGALOS_C6_SLOT_SIZE,
+                      (unsigned)LUGALOS_C6_SLOT_B_BASE, (unsigned)LUGALOS_C6_SLOT_SIZE,
+                      (unsigned)LUGALOS_C6_IDENTITY_BASE, (unsigned)LUGALOS_C6_IDENTITY_SIZE);
+    return n < 0 ? 0 : (uint32_t)n < cap ? (uint32_t)n : cap;
+}
+
 bool ota_board_restart(void) { return board_reset_later(false, 300); }
 void ota_board_trial_tick(void) { }
 const char *ota_board_version(void) { return NULL; }

@@ -87,6 +87,10 @@ int  ota_board_confirm(void);
 bool ota_board_record(ota_board_record_t *out);
 /* The board's own test of a trial (its links up, say). */
 bool ota_board_healthy(void);
+/* Where things are in the board's flash, as lines `at_NAME=0xSTART+0xSIZE`
+ * (NAME: loader, table, a, b, flashfs, records, identity) for /dev/ota. The
+ * count of bytes written. */
+uint32_t ota_board_map(char *out, uint32_t cap);
 /* The running image's version as "MAJOR.MINOR", or NULL if the board's boot
  * does not order images by one. A board that does needs each update to carry a
  * higher one, or the bootrom discards the old image when the new one commits. */

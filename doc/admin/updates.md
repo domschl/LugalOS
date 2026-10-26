@@ -19,7 +19,7 @@ RP2350-LCD-7's larger flash is not used yet).
 
 | File | Read | Write |
 | :--- | :--- | :--- |
-| `/dev/ota` | `board`, `chip`, `layout` (`loader`, `idf`, or `none`), `running` (slot `a`/`b`), `trial`, `fell_back`, `slot_a`/`slot_b` (build id or `empty`), `active`, `pending`, `tried`, `failed` (the boot record), `release_key` (key id or `none`), `signatures` (`required`, `optional`), `image_signature` (once an image's header is in), `state` (`idle`, `receiving`, `received`, `committed`, `error`), `received`, `error` | `begin SIZE`, `commit`, `reboot`, `confirm`, `abort`, `switch` |
+| `/dev/ota` | `board`, `chip`, `layout` (`loader`, `idf`, `partition`, or `none`), `version` (boards whose bootrom orders images by one), `running` (slot `a`/`b`), `trial`, `fell_back`, `slot_a`/`slot_b` (build id or `empty`), `at_a`/`at_b`/`at_flashfs`/`at_records`/`at_identity` and `at_loader` or `at_table` (`0xSTART+0xSIZE` in flash), `active`, `pending`, `tried`, `failed` (the boot record), `release_key` (key id or `none`), `signatures` (`required`, `optional`), `image_signature` (once an image's header is in), `state` (`idle`, `receiving`, `received`, `committed`, `error`), `received`, `error` | `begin SIZE`, `commit`, `reboot`, `confirm`, `abort`, `switch` |
 | `/dev/otaimage` | -- | the update image, in order from offset 0, after `begin` |
 
 1. `begin SIZE`: the image's length in bytes.
@@ -134,6 +134,8 @@ cannot update (`running=-`), and says so if asked.
 
 ## The RP2350's flash
 
+The shell's `ota` command (and `(ota-info)` in Lisp) lays out the slots, their versions and the running one.
+
 | Storage offset | What |
 | :--- | :--- |
 | `0x000000` | the partition table (`tools/rp2350_ptable.py`, via picotool) |
@@ -142,6 +144,8 @@ cannot update (`running=-`), and says so if asked.
 | `0x280000` | slot B, the same |
 | `0x3FD000` | the boot records: two 4 KB sectors |
 | `0x3FF000` | the identity sector (read at `0x10800000`) |
+
+The map is the Pico 2's (4 MB). The **RP2350-LCD-7** has 16 MB and `cmake/flash_layout_rp2350_terminal.cmake`: the table, `/flash0`, the boot records and the identity sector stay where they are, and the slots become 4 MB each at `0x400000` and `0x800000` (a slot is exactly what one QMI translation window maps, which leaves the other windows for `/flash0` and the identity). A board flashed with one map needs the first-time install again to take the other.
 
 The slots are a bootrom A/B pair: it boots the higher-versioned valid image, and
 maps only that partition at `0x10000000` (datasheet 5.1.19), so the kernel points

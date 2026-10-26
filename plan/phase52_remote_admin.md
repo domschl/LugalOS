@@ -870,7 +870,8 @@ deferred without blocking anything after it.
     Verified on the NANO, then the Tab5 over Wi-Fi only.
 
 * **52.9 RP2350 OTA backend (`drivers/ota_rp2350.c`).** **52.9a/b DONE 2026-10-26
-  on the Pico 2 W; 52.9c (the terminal's 16 MB layout) open.** The notes below
+  on the Pico 2 W; 52.9c DONE 2026-10-26 on the RP2350-LCD-7 (USB 9P only; through
+  the C6-Zero, 49.10, not tried).** The notes below
   were written before the bootrom's behaviour was measured; what was built:
   * *As built:* `doc/admin/updates.md` has the map and the flow. Partition table
     in sector 0 (`tools/rp2350_ptable.py`, picotool), slots at `0x1000` and
@@ -898,6 +899,18 @@ deferred without blocking anything after it.
     reached on their own), a power cycle mid-update or mid-trial, an update over
     Wi-Fi, a signed image, the RP2350-LCD-7 and the other presets on hardware,
     `test_rp2350.py` and `lcdterm_shots.py`.
+  * **52.9c terminal:** `cmake/flash_layout_rp2350_terminal.cmake` (16 MB): the
+    table, `/flash0`, records and identity stay in the low 4 MB (so `provision.py`
+    and the first-time install are unchanged), the slots are 4 MB at `0x400000` and
+    `0x800000`: exactly one QMI window (ATRANS0), which leaves ATRANS1/2 for the data
+    windows. Verified on the terminal: first-time install with picotool (**write the
+    table, then `picotool reboot -u`, then the image**: loaded straight after the
+    table the image went to address 0 and overwrote it), update over USB 9P,
+    trial confirmed, same build again, `--break` reverted. Found: a stale SSID in the
+    identity sector made the "wlan0 joined" rule unsatisfiable on a board without the
+    radio; the rule now applies to CYW43439 builds only.
+  * **Inspection:** the shell's `ota` command, `/dev/ota`'s `at_*` lines and
+    `(require 'ota)` / `(ota-info)` show the layout, versions and the running slot.
   * *Original notes:*
   * **52.9a Layout.** *Proposed for 4 MB (Pico 2, Pico 2 W):* the partition
     table in sector 0, slot A `0x001000–0x180000` (1.49 MB), `/flash0`

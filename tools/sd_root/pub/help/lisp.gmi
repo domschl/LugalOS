@@ -46,6 +46,7 @@ LugalOS uses a two-tier library model:
 * (require 'dict): Key-value association dictionaries and hash tables.
 * (require 'matrix): Vector and matrix linear algebra routines.
 * (require 'chart): Real-time graphical charting on the ribbon canvas.
+* (require 'ota): The node's update state as data, read from /dev/ota. (ota-info) returns an association list of ("key" . "value") strings (board, layout, version, running, trial, slota, slotb, ata, atb, ... ; see updates); (ota-get "running") returns one value or #f. Read-only.
 
 ## 4. Hardware & System Primitives
 
@@ -104,6 +105,7 @@ Navigation: <- C Programming | Developer Manual | Documentation Index
 ### Related Topics
 => index.gmi Documentation
 => dev.gmi Developer Manual
+=> updates.gmi updates
 => sensors.gmi sensors
 => cas.gmi CAS Manual
 => c_programming.gmi <- C Programming
