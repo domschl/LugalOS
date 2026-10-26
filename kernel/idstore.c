@@ -38,7 +38,25 @@ static bool field_type_known(uint8_t type) {
            type == IDSTORE_FIELD_IPV4 || type == IDSTORE_FIELD_GRANTS ||
            type == IDSTORE_FIELD_MQTT || type == IDSTORE_FIELD_ALTITUDE ||
            type == IDSTORE_FIELD_SENSOR_CAL || type == IDSTORE_FIELD_POWER ||
-           type == IDSTORE_FIELD_ORIENT || type == IDSTORE_FIELD_OTA_PUBKEY;
+           type == IDSTORE_FIELD_ORIENT || type == IDSTORE_FIELD_OTA_PUBKEY ||
+           type == IDSTORE_FIELD_SETUP_SECRET || type == IDSTORE_FIELD_MFG_CERT;
+}
+
+idstore_class_t idstore_field_class(uint8_t type) {
+    switch (type) {
+        case IDSTORE_FIELD_NAME: case IDSTORE_FIELD_WLAN_SSID: case IDSTORE_FIELD_WLAN_PSK:
+        case IDSTORE_FIELD_IPV4: case IDSTORE_FIELD_GRANTS: case IDSTORE_FIELD_MQTT:
+        case IDSTORE_FIELD_ALTITUDE: case IDSTORE_FIELD_POWER: case IDSTORE_FIELD_ORIENT:
+            return IDSTORE_CLASS_OWNER;
+        case IDSTORE_FIELD_SENSOR_CAL:
+            return IDSTORE_CLASS_HARDWARE;
+        default:        /* uid, device key, release key, setup secret, certificate, and the unknown */
+            return IDSTORE_CLASS_FACTORY;
+    }
+}
+
+bool idstore_field_network_writable(uint8_t type, bool admin) {
+    return idstore_field_class(type) != IDSTORE_CLASS_FACTORY && admin;
 }
 
 /* I3, kernel/include/kernel/idstore.h's own comment on this declaration

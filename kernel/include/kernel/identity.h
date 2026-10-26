@@ -299,6 +299,17 @@ bool node_orient_auto(bool *on);
  * kernel/ota.c). True and the key when one is stored. Setting it is a factory
  * operation: the console's `otakey`, or tools/provision.py, never the network.
  * NULL clears it. The caller checks the key is a valid P-256 point. */
+/* The setup secret (the factory part's, plan/phase52_remote_admin.md 1.3): the setup access
+ * point's WPA2 key, printable ASCII; WPA2's own bounds are 8 and 63. */
+#define NODE_SETUP_SECRET_MIN 8u
+#define NODE_SETUP_SECRET_MAX 32u
+bool node_setup_secret(char *out, uint32_t cap);
+/* Console and tools/provision.py only: the secret is a factory field. */
+node_id_result_t node_identity_set_setup_secret(const char *secret);
+/* Wipes the owner part (name, WLAN, IP, grants, MQTT, altitude, charge mode, orientation) and
+ * keeps the factory part and the hardware's: the node is the same device, unclaimed. */
+node_id_result_t node_identity_reset_owner(void);
+
 #define NODE_OTA_PUBKEY_LEN 64u
 bool node_ota_pubkey(uint8_t out[NODE_OTA_PUBKEY_LEN]);
 node_id_result_t node_identity_set_ota_pubkey(const uint8_t *key);

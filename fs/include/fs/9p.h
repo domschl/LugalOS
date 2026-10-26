@@ -247,6 +247,7 @@ typedef struct {
     uint32_t key_len;
     char     aname[P9_MAX_NAME_LEN];   /* the subtree this peer may attach at; "/" is unrestricted */
     bool     read_only;
+    bool     admin;                    /* may write the owner part of the identity (52.10); implies read-write */
 } p9_grant_t;
 
 typedef enum {
@@ -268,6 +269,15 @@ uint32_t p9_grants_list(p9_grant_t *out, uint32_t cap);
  * a slot). `aname` NULL or "" means "/", unrestricted. */
 p9_grant_result_t p9_grants_add(const char *name, const uint8_t *key, uint32_t key_len,
                                 const char *aname, bool read_only);
+/* The same with the mode spelled out: `admin` grants read-write and the right to change the
+ * owner part of the identity over the network (fs/9p.c, kernel/setup.c). */
+p9_grant_result_t p9_grants_add_admin(const char *name, const uint8_t *key, uint32_t key_len,
+                                      const char *aname);
+/* Whether any grant carries `admin`: a node with one is claimed. Reads the RAM copy, so any
+ * task may ask. */
+bool p9_grants_has_admin(void);
+/* Empties the RAM copy of the grants after an owner reset wiped them from the record. */
+void p9_grants_cache_clear(void);
 
 /* Removes the entry for `name`. Nothing else needs to be told: the next
  * p9_auth_key_for()/p9_handle_tattach() call reads the file fresh, so

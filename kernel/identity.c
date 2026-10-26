@@ -326,6 +326,12 @@ typedef struct {
     /* The update-signing public key, NODE_OTA_PUBKEY_LEN bytes. */
     const uint8_t *ota_pubkey;
     bool           clear_ota_pubkey;
+    /* The setup secret (factory part), NODE_SETUP_SECRET_MIN..MAX printable characters. */
+    const char    *setup_secret; uint32_t setup_secret_len;
+    /* An owner reset: every field idstore_field_class() calls OWNER is left out of the new
+     * record; the factory part and the hardware's survive. Applied after the other members, so a
+     * patch that sets one of the owner fields and resets leaves it set (a claim does this). */
+    bool           reset_owner;
 } identity_patch_t;
 
 /* Reads whatever is currently on `dev` (if anything valid), then writes a
@@ -380,6 +386,9 @@ static int identity_store_write(const identity_patch_t *patch) {
                dev->name ? dev->name : "?");
     }
 
+    /* An owner reset leaves the owner part out of the record it writes. */
+    const bool keep_owner = !patch->reset_owner;
+
     uint8_t final_uid[NODE_UID_LEN];
     bool    have_uid = false;
     if (patch->uid) {
@@ -394,7 +403,7 @@ static int identity_store_write(const identity_patch_t *patch) {
     if (patch->name) {
         final_name_len = patch->name_len;
         memcpy(final_name, patch->name, final_name_len);
-    } else if (old_valid) {
+    } else if (old_valid && keep_owner) {
         int n = idstore_get_field(oldp, IDSTORE_FIELD_NAME, final_name, sizeof(final_name));
         if (n > 0) final_name_len = (uint32_t)n;
     }
@@ -414,7 +423,7 @@ static int identity_store_write(const identity_patch_t *patch) {
     if (patch->ssid) {
         final_ssid_len = patch->ssid_len;
         memcpy(final_ssid, patch->ssid, final_ssid_len);
-    } else if (old_valid && !patch->clear_wlan) {
+    } else if (old_valid && keep_owner && !patch->clear_wlan) {
         int n = idstore_get_field(oldp, IDSTORE_FIELD_WLAN_SSID, final_ssid, sizeof(final_ssid));
         if (n > 0) final_ssid_len = (uint32_t)n;
     }
@@ -424,7 +433,7 @@ static int identity_store_write(const identity_patch_t *patch) {
     if (patch->psk) {
         memcpy(final_psk, patch->psk, sizeof(final_psk));
         have_psk = true;
-    } else if (old_valid && !patch->clear_wlan) {
+    } else if (old_valid && keep_owner && !patch->clear_wlan) {
         have_psk = idstore_get_field(oldp, IDSTORE_FIELD_WLAN_PSK, final_psk, sizeof(final_psk)) == (int)sizeof(final_psk);
     }
 
@@ -433,7 +442,7 @@ static int identity_store_write(const identity_patch_t *patch) {
     if (patch->ipv4) {
         memcpy(final_ipv4, patch->ipv4, sizeof(final_ipv4));
         have_ipv4 = true;
-    } else if (old_valid && !patch->clear_ipv4) {
+    } else if (old_valid && keep_owner && !patch->clear_ipv4) {
         have_ipv4 = idstore_get_field(oldp, IDSTORE_FIELD_IPV4, final_ipv4,
                                       sizeof(final_ipv4)) == (int)sizeof(final_ipv4);
     }
@@ -458,7 +467,7 @@ static int identity_store_write(const identity_patch_t *patch) {
     } else if (patch->grants && patch->grants_len) {
         final_grants = patch->grants;
         final_grants_len = patch->grants_len;
-    } else if (old_valid) {
+    } else if (old_valid && keep_owner) {
         final_grants = (const char *)idstore_field_ptr(oldp, IDSTORE_FIELD_GRANTS,
                                                        &final_grants_len);
         if (!final_grants) final_grants_len = 0;
@@ -474,7 +483,7 @@ static int identity_store_write(const identity_patch_t *patch) {
         final_mqtt_len = patch->mqtt_len > sizeof(final_mqtt) ? (uint32_t)sizeof(final_mqtt)
                                                               : patch->mqtt_len;
         memcpy(final_mqtt, patch->mqtt, final_mqtt_len);
-    } else if (old_valid) {
+    } else if (old_valid && keep_owner) {
         int n = idstore_get_field(oldp, IDSTORE_FIELD_MQTT, final_mqtt, sizeof(final_mqtt));
         if (n > 0) final_mqtt_len = (uint32_t)n;
     }
@@ -484,7 +493,7 @@ static int identity_store_write(const identity_patch_t *patch) {
     if (patch->altitude) {
         memcpy(final_alt, patch->altitude, sizeof(final_alt));
         have_alt = true;
-    } else if (old_valid && !patch->clear_altitude) {
+    } else if (old_valid && keep_owner && !patch->clear_altitude) {
         have_alt = idstore_get_field(oldp, IDSTORE_FIELD_ALTITUDE, final_alt,
                                      sizeof(final_alt)) == (int)sizeof(final_alt);
     }
@@ -507,7 +516,7 @@ static int identity_store_write(const identity_patch_t *patch) {
     if (patch->power) {
         memcpy(final_power, patch->power, sizeof(final_power));
         have_power = true;
-    } else if (old_valid) {
+    } else if (old_valid && keep_owner) {
         have_power = idstore_get_field(oldp, IDSTORE_FIELD_POWER, final_power,
                                        sizeof(final_power)) == (int)sizeof(final_power);
     }
@@ -517,7 +526,7 @@ static int identity_store_write(const identity_patch_t *patch) {
     if (patch->orient) {
         final_orient = *patch->orient;
         have_orient = true;
-    } else if (old_valid) {
+    } else if (old_valid && keep_owner) {
         have_orient = idstore_get_field(oldp, IDSTORE_FIELD_ORIENT, &final_orient, 1) == 1;
     }
 
@@ -531,6 +540,21 @@ static int identity_store_write(const identity_patch_t *patch) {
                                         sizeof(final_otakey)) == (int)sizeof(final_otakey);
     }
 
+    /* The factory fields no setter above knows about: carried by pointer, as the grants are,
+     * or any write would drop them. */
+    if (patch->setup_secret && patch->setup_secret_len) {
+        rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_SETUP_SECRET, patch->setup_secret,
+                                       (uint16_t)patch->setup_secret_len);
+    } else if (old_valid) {
+        uint32_t sl = 0;
+        const uint8_t *sp = idstore_field_ptr(oldp, IDSTORE_FIELD_SETUP_SECRET, &sl);
+        if (sp && sl) rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_SETUP_SECRET, sp, (uint16_t)sl);
+    }
+    if (old_valid) {
+        uint32_t cl = 0;
+        const uint8_t *cp = idstore_field_ptr(oldp, IDSTORE_FIELD_MFG_CERT, &cl);
+        if (cp && cl) rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_MFG_CERT, cp, (uint16_t)cl);
+    }
     if (have_ipv4)           rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_IPV4, final_ipv4, sizeof(final_ipv4));
     if (have_otakey)         rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_OTA_PUBKEY, final_otakey, sizeof(final_otakey));
     if (have_power)          rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_POWER, final_power, sizeof(final_power));
@@ -1022,5 +1046,45 @@ node_id_result_t node_identity_clear_ipv4(void) {
     if (!identity_store_device()) return NODE_ID_ERR_NO_BACKEND;
     identity_patch_t patch = { .clear_ipv4 = true };
     if (identity_store_write(&patch) != 0) return NODE_ID_ERR_WRITE_FAILED;
+    return NODE_ID_OK;
+}
+
+/* --- The setup secret and the owner reset (plan/phase52_remote_admin.md 52.10) ----- */
+
+bool node_setup_secret(char *out, uint32_t cap) {
+    block_dev_t *dev = identity_store_device();
+    if (!dev || !out || cap == 0) return false;
+    scratch_t sc;
+    if (!scratch_acquire(&sc, sizeof(idstore_t))) return false;
+    idstore_t *rec = (idstore_t *)sc.base;
+    bool ok = false;
+    if (idstore_read(dev, rec) == IDSTORE_VALID) {
+        uint32_t len = 0;
+        const uint8_t *p = idstore_field_ptr(rec, IDSTORE_FIELD_SETUP_SECRET, &len);
+        if (p && len > 0 && len < cap) {
+            memcpy(out, p, len);
+            out[len] = 0;
+            ok = true;
+        }
+    }
+    scratch_release(&sc);
+    return ok;
+}
+
+node_id_result_t node_identity_set_setup_secret(const char *secret) {
+    if (!identity_store_device()) return NODE_ID_ERR_NO_BACKEND;
+    uint32_t n = secret ? (uint32_t)strlen(secret) : 0;
+    if (n < NODE_SETUP_SECRET_MIN || n > NODE_SETUP_SECRET_MAX) return NODE_ID_ERR_BAD_INPUT;
+    for (uint32_t i = 0; i < n; i++)
+        if ((unsigned char)secret[i] < 0x21 || (unsigned char)secret[i] > 0x7e) return NODE_ID_ERR_BAD_INPUT;
+    identity_patch_t patch = { .setup_secret = secret, .setup_secret_len = n };
+    return identity_store_write(&patch) == 0 ? NODE_ID_OK : NODE_ID_ERR_WRITE_FAILED;
+}
+
+node_id_result_t node_identity_reset_owner(void) {
+    if (!identity_store_device()) return NODE_ID_ERR_NO_BACKEND;
+    identity_patch_t patch = { .reset_owner = true };
+    if (identity_store_write(&patch) != 0) return NODE_ID_ERR_WRITE_FAILED;
+    node_identity_init();   /* the name in RAM is the record's again: the default */
     return NODE_ID_OK;
 }
