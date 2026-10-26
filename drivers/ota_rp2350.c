@@ -95,17 +95,21 @@ static int write_sector(uint32_t phys, const void *data, bool rollback) {
     return flash_rp2350_write_sector(phys, data);
 }
 
-/* A zeroed-to-ones page for a short write. NULL if there is no memory. */
-static uint8_t *page(void) {
-    if (!g_sec) g_sec = palloc_pages(1);
-    return g_sec;
+/* A page for one flash write, from the heap and back at once: this board's
+ * heap is 70 pages and the compiler wants 28 of them in one run, so nothing
+ * here holds a page between calls except the gather buffer of a transfer. */
+static int write_page(uint32_t phys, const void *head, uint32_t len, bool rollback) {
+    uint8_t *pg = palloc_pages(1);
+    if (!pg) return -1;
+    memset(pg, 0xff, SECTOR);
+    if (len) memcpy(pg, head, len);
+    int rc = write_sector(phys, pg, rollback);
+    palloc_free(pg, 1);
+    return rc;
 }
 
 static int erase_sector(uint32_t phys, bool rollback) {
-    uint8_t *pg = page();
-    if (!pg) return -1;
-    memset(pg, 0xff, SECTOR);
-    return write_sector(phys, pg, rollback);
+    return write_page(phys, NULL, 0, rollback);
 }
 
 bool ota_board_info(ota_board_info_t *out) {
@@ -124,7 +128,8 @@ bool ota_board_info(ota_board_info_t *out) {
 }
 
 int ota_board_begin(int slot) {
-    if (slot < 0 || slot > 1 || slot == running() || !page()) return -1;
+    if (slot < 0 || slot > 1 || slot == running()) return -1;
+    if (!g_sec && !(g_sec = palloc_pages(1))) return -1;
     g_sec_phys = 0;
     /* The header first, then the image's first sector: the slot is empty now,
      * and a slot cut off half-way has no block loop for the bootrom to find. */
@@ -206,11 +211,7 @@ int ota_board_seal(int slot, const ota_image_header_t *h) {
         printk("[OTA] slot %c's image is not flagged try-before-you-buy: not sealing it\n", 'a' + slot);
         return -1;
     }
-    uint8_t *pg = page();
-    if (!pg) return -1;
-    memset(pg, 0xff, SECTOR);
-    memcpy(pg, h, sizeof *h);
-    return write_sector(g_phys[slot] + LUGALOS_SLOT_HDR_OFF, pg, false);
+    return write_page(g_phys[slot] + LUGALOS_SLOT_HDR_OFF, h, sizeof *h, false);
 }
 
 int ota_board_header(int slot, ota_image_header_t *h) {
@@ -240,12 +241,8 @@ static int write_record(int active, int pending, bool tried, bool failed, bool r
     ota_bootrec_make(&nr, cur >= 0 ? r[cur].seq + 1u : 1u, (uint8_t)active, (uint8_t)pending);
     if (tried) nr.tried = 0;
     if (failed) nr.failed = 0;
-    uint8_t *pg = page();
-    if (!pg) return -1;
-    memset(pg, 0xff, SECTOR);
-    memcpy(pg, &nr, sizeof nr);
     ota_bootrec_t back;
-    if (write_sector(phys, pg, rollback) != 0) return -1;
+    if (write_page(phys, &nr, sizeof nr, rollback) != 0) return -1;
     flash_rd(phys, &back, sizeof back);
     return memcmp(&back, &nr, sizeof nr) == 0 ? 0 : -1;
 }
@@ -323,8 +320,9 @@ void ota_board_boot(void) {
     int run = running();
     if (run < 0) return;
     if (rp2350_boot_buy_pending()) {
-        uint8_t *pg = page();
+        uint8_t *pg = palloc_pages(1);
         int rc = pg ? flash_rp2350_explicit_buy(pg) : -1;
+        if (pg) palloc_free(pg, 1);
         printk("[OTA] explicit buy: %s (%d)\n", rc == 0 ? "done" : "refused", rc);
     }
     ota_bootrec_t r[2];
@@ -379,11 +377,7 @@ static void restart_task(void *arg) {
  * bootrom orders by: an update patched by tools/lota.py differs from the one
  * this build was compiled with. Read from the XIP window, where the booted
  * partition starts at 0x10000000. */
-/* guarded by: kernel/ota.c's lock, which ota_ctl_read() holds. */
-static char g_version[16];
-
-const char *ota_board_version(void) {
-    if (g_version[0]) return g_version;
+bool ota_board_version(char *out, uint32_t cap) {
     const volatile uint32_t *w = (const volatile uint32_t *)0x10000000u;
     for (unsigned i = 0; i < 1023; i++) {
         if (w[i] != PICOBIN_MARKER) continue;
@@ -391,15 +385,15 @@ const char *ota_board_version(void) {
             uint32_t item = w[j];
             if ((item & 0x7fu) == 0x48u) {
                 uint32_t v = w[j + 1];
-                ksnprintf(g_version, sizeof g_version, "%u.%u", (unsigned)(v >> 16), (unsigned)(v & 0xffffu));
-                return g_version;
+                ksnprintf(out, cap, "%u.%u", (unsigned)(v >> 16), (unsigned)(v & 0xffffu));
+                return true;
             }
             unsigned size = (item & 0x80u) ? (item >> 8) & 0xffffu : (item >> 8) & 0xffu;
             if ((item & 0xffu) == 0xffu || size == 0) break;
             j += size;
         }
     }
-    return NULL;
+    return false;
 }
 
 uint32_t ota_board_map(char *out, uint32_t cap) {

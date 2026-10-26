@@ -3951,9 +3951,10 @@ static void cmd_ota(const char *arg) {
     ota_kv(text, "running", running, sizeof running);
     cprintf("%s (%s), flash layout: %s\n", board, chip, layout);
     if (ota_kv(text, "version", v, sizeof v)) cprintf("running image version %s\n", v);
-    char active[4], pending[4];
+    char active[4], pending[4], tried[4];
     ota_kv(text, "active", active, sizeof active);
     ota_kv(text, "pending", pending, sizeof pending);
+    ota_kv(text, "tried", tried, sizeof tried);
     for (int s = 0; s < 2; s++) {
         char key[12], ak[12];
         ksnprintf(key, sizeof key, "slot_%c", 'a' + s);
@@ -3963,7 +3964,7 @@ static void cmd_ota(const char *arg) {
         bool is_run = running[0] == 'a' + s;
         cprintf("slot %c  %s  at %s%s%s%s\n", 'a' + s, build[0] ? build : "?", at[0] ? at : "?",
                 is_run ? "  RUNNING" : "", active[0] == 'a' + s ? "  active" : "",
-                pending[0] == 'a' + s ? "  pending (the next boot tries it)" : "");
+                pending[0] != 'a' + s ? "" : strcmp(tried, "yes") == 0 ? "  tried, did not confirm" : "  pending (the next boot tries it)");
     }
     static const char *const others[] = { "loader", "table", "flashfs", "records", "identity" };
     for (unsigned i = 0; i < sizeof others / sizeof others[0]; i++) {

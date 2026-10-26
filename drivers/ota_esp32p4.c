@@ -246,4 +246,4 @@ uint32_t ota_board_map(char *out, uint32_t cap) {
 
 bool ota_board_restart(void) { return board_reset_later(false, 300); }
 void ota_board_trial_tick(void) { }
-const char *ota_board_version(void) { return NULL; }
+bool ota_board_version(char *out, uint32_t cap) { (void)out; (void)cap; return false; }

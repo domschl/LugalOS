@@ -29,14 +29,14 @@ static struct {
     int                slot;
     uint32_t           size, received;
     ota_image_header_t *hdr;        /* a heap page while an update is under way, else NULL */
-    char               err[80];
+    const char        *err;             /* a string literal */
     bool               confirmed;       /* this boot's trial confirmed */
     /* The release key, read at boot by ota_start() (the 9P server task that
      * checks an image cannot read the identity store) and refreshed by
      * ota_release_key_changed(). */
     bool               have_key;
     uint8_t            key[NODE_OTA_PUBKEY_LEN];
-    uint64_t           unsigned_until_ms;   /* console override, one image, until then */
+    uint32_t           unsigned_until_s;    /* console override, one image, until then (uptime seconds) */
     const char        *sig_status;          /* the current image's, once its header is in */
 } g;
 
@@ -49,7 +49,7 @@ static void unlock(void) { ylock_release(&g_lock); }
 
 static int fail(const char *why) {
     g.st = ST_ERROR;
-    ksnprintf(g.err, sizeof g.err, "%s", why);
+    g.err = why;
     printk("[OTA] %s\n", why);
     return -1;
 }
@@ -84,8 +84,8 @@ static int check_signature(void) {
     if (r == OTA_SIG_RESULT_OK) return 0;
     if (r == OTA_SIG_RESULT_UNSIGNED || r == OTA_SIG_RESULT_NO_KEY) {
         if (!signature_required()) return 0;
-        if (g.unsigned_until_ms && time_get_ms() < g.unsigned_until_ms) {
-            g.unsigned_until_ms = 0;
+        if (g.unsigned_until_s && (uint32_t)(time_get_ms() / 1000u) < g.unsigned_until_s) {
+            g.unsigned_until_s = 0;
             g.sig_status = "unsigned, allowed once from the console";
             printk("[OTA] taking an unsigned image: allowed once from the console\n");
             return 0;
@@ -94,9 +94,7 @@ static int check_signature(void) {
                     ? "the image is signed, but this node has no release key to check it with"
                     : "the image is unsigned, and this node takes signed images only");
     }
-    char why[80];
-    ksnprintf(why, sizeof why, "refused: %s", ota_sig_result_str(r));
-    return fail(why);
+    return fail(ota_sig_result_str(r));
 }
 
 /* The header just completed: is it an image this node may take? */
@@ -240,7 +238,7 @@ int ota_ctl_write(const char *buf, uint32_t len) {
                 g.slot = info.running ^ 1;
                 g.size = size;
                 g.received = 0;
-                g.err[0] = 0;
+                g.err = NULL;
                 g.st = ST_RECEIVING;
             }
         }
@@ -278,7 +276,7 @@ int ota_ctl_write(const char *buf, uint32_t len) {
     } else if (strcmp(line, "abort") == 0) {
         release_hdr();
         g.st = ST_IDLE;
-        g.err[0] = 0;
+        g.err = NULL;
     } else {
         rc = -1;
     }
@@ -294,8 +292,8 @@ uint32_t ota_ctl_read(char *out, uint32_t cap) {
 #define PUT(...) do { if (n < cap) n += (uint32_t)ksnprintf(out + n, cap - n, __VA_ARGS__); } while (0)
     PUT("board=%s\nchip=%s\nlayout=%s\nrunning=%c\n", LUGALOS_BOARD_ID, info.chip,
         info.layout ? info.layout : "loader", slot_letter(info.running));
-    const char *ver = ota_board_version();
-    if (ver) PUT("version=%s\n", ver);
+    char ver[16];
+    if (ota_board_version(ver, sizeof ver)) PUT("version=%s\n", ver);
     PUT("trial=%s\nfell_back=%s\n", info.trial && !g.confirmed ? "yes" : "no", info.fell_back ? "yes" : "no");
     for (int s = 0; s < (int)info.nslots; s++) {
         ota_image_header_t h;
@@ -320,7 +318,7 @@ uint32_t ota_ctl_read(char *out, uint32_t cap) {
     if (g.sig_status) PUT("image_signature=%s\n", g.sig_status);
     PUT("state=%s\n", g_state_names[g.st]);
     if (g.st == ST_RECEIVING || g.st == ST_RECEIVED) PUT("received=%u/%u\n", (unsigned)g.received, (unsigned)g.size);
-    if (g.st == ST_ERROR) PUT("error=%s\n", g.err);
+    if (g.st == ST_ERROR) PUT("error=%s\n", g.err ? g.err : "?");
 #undef PUT
     unlock();
     return n < cap ? n : cap;
@@ -372,7 +370,7 @@ void ota_release_key_changed(void) {
 
 void ota_allow_unsigned_once(uint32_t window_s) {
     lock();
-    g.unsigned_until_ms = time_get_ms() + (uint64_t)window_s * 1000u;
+    g.unsigned_until_s = (uint32_t)(time_get_ms() / 1000u) + window_s;
     unlock();
 }
 
