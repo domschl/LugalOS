@@ -125,12 +125,17 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
         LUGALOS_P4_FLASHFS_SIZE=${LUGALOS_P4_FLASHFS_SIZE}
         LUGALOS_P4_FLASH_WRITABLE_FLOOR=${LUGALOS_P4_FLASH_WRITABLE_FLOOR}
         LUGALOS_P4_IDENTITY_BASE=${LUGALOS_P4_IDENTITY_BASE}
-        # U0/U2: where the execute-in-place OS image lives. The boot-time
-        # mapping in arch/riscv/common/xip_esp32p4.c points the flash window
-        # at this address, and tools/p4flash.py writes it there -- one
-        # definition reaching both, for the reason above.
+        # The update slots and boot records (drivers/ota_esp32p4.c, the loader
+        # arch/riscv/esp32p4/loader.c), and where a boot the loader did not
+        # start maps the execute-in-place half from
+        # (arch/riscv/common/xip_esp32p4.c) -- one definition reaching all of
+        # them, for the reason above.
         LUGALOS_P4_OSIMAGE_BASE=${LUGALOS_P4_OSIMAGE_BASE}
         LUGALOS_P4_OSIMAGE_SIZE=${LUGALOS_P4_OSIMAGE_SIZE}
+        LUGALOS_P4_SLOT_A_BASE=${LUGALOS_P4_SLOT_A_BASE}
+        LUGALOS_P4_SLOT_B_BASE=${LUGALOS_P4_SLOT_B_BASE}
+        LUGALOS_P4_SLOT_SIZE=${LUGALOS_P4_SLOT_SIZE}
+        LUGALOS_P4_BOOTREC_BASE=${LUGALOS_P4_BOOTREC_BASE}
         LUGALOS_P4_BOOTLOADER_BASE=${LUGALOS_P4_BOOTLOADER_BASE})
 
 elseif(LUGALOS_TARGET STREQUAL "K210")
@@ -1140,6 +1145,10 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
     # drivers/usbkbd_host.c. Empty unit unless the board file asks for it
     # (CONFIG_USBHOST_DWC2).
     list(APPEND SOURCES drivers/usbhost_esp32p4.c)
+    # updating the node's own image over its namespace (kernel/ota.c) into
+    # the slot the loader did not boot.
+    list(APPEND SOURCES drivers/ota_esp32p4.c kernel/ota.c kernel/ota_image.c kernel/ota_sig.c)
+    add_compile_definitions(CONFIG_OTA=1)
 elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
     # 45.4, . One driver again: the console, on the
     # USB-Serial/JTAG peripheral. No block device and no display -- the same stated
@@ -1291,6 +1300,10 @@ if(DEFINED LUGALOS_BOARD_FILE)
         PROPERTIES OBJECT_DEPENDS ${LUGALOS_CONFIG_HEADER})
     set_source_files_properties(fs/vfs_server.c
         PROPERTIES OBJECT_DEPENDS "${LUGALOS_CONFIG_HEADER};${LUGALOS_BUILD_ID_HEADER}")
+    if(LUGALOS_TARGET STREQUAL "ESP32P4")
+        set_source_files_properties(drivers/ota_esp32p4.c
+            PROPERTIES OBJECT_DEPENDS "${LUGALOS_CONFIG_HEADER};${LUGALOS_BUILD_ID_HEADER}")
+    endif()
     if(LUGALOS_TARGET STREQUAL "ESP32C6")
         set_source_files_properties(drivers/ota_esp32c6.c
             PROPERTIES OBJECT_DEPENDS "${LUGALOS_CONFIG_HEADER};${LUGALOS_BUILD_ID_HEADER}")
@@ -1440,10 +1453,38 @@ if(LUGALOS_TARGET STREQUAL "ESP32P4")
     # of the region is stale) or merely fit inside it (code segments).
     file(GENERATE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/flash_segments.txt
          CONTENT
-"boot ${LUGALOS_P4_BOOTLOADER_BASE} ${LUGALOS_P4_BOOTLOADER_SIZE} lugalos-boot.img fit
-os ${LUGALOS_P4_OSIMAGE_BASE} ${LUGALOS_P4_OSIMAGE_SIZE} lugalos-xip.bin fit
+"boot ${LUGALOS_P4_BOOTLOADER_BASE} ${LUGALOS_P4_BOOTLOADER_SIZE} lugalos-loader.img fit
 fs ${LUGALOS_P4_FLASHFS_BASE} ${LUGALOS_P4_FLASHFS_SIZE} flashfs.bin exact
 ")
+    # The slots and boot records, for tools/p4flash.py and tools/lota.py (the
+    # C6's manifest, below, has the same shape). `board` and `chip` are what
+    # an update image names; `rev` is the silicon revision the build is for.
+    if(NOT DEFINED CONFIG_ESP32P4_REV)
+        set(CONFIG_ESP32P4_REV 103)
+    endif()
+    file(GENERATE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/flash.manifest
+         CONTENT
+"flash 0x0 ${LUGALOS_P4_FLASH_SIZE} -
+loader ${LUGALOS_P4_BOOTLOADER_BASE} ${LUGALOS_P4_BOOTLOADER_SIZE} lugalos-loader.img
+bootrec ${LUGALOS_P4_BOOTREC_BASE} ${LUGALOS_P4_BOOTREC_SIZE} -
+slot_a ${LUGALOS_P4_SLOT_A_BASE} ${LUGALOS_P4_SLOT_SIZE} lugalos-ota.img
+slot_b ${LUGALOS_P4_SLOT_B_BASE} ${LUGALOS_P4_SLOT_SIZE} -
+osimage ${LUGALOS_P4_OSIMAGE_BASE} ${LUGALOS_P4_OSIMAGE_SIZE} lugalos-xip.bin
+parts 0x1000 0x20000 -
+board ${LUGALOS_BOARD_ID} esp32p4
+rev ${CONFIG_ESP32P4_REV}
+")
+    # The loader (arch/riscv/esp32p4/loader.c): its own small image, the one
+    # the boot ROM loads from 0x2000. tools/p4flash.py turns it into the ROM's
+    # format, as it does the kernel's RAM half before updates.
+    add_executable(lugalos-loader.elf arch/riscv/esp32p4/loader_entry.S arch/riscv/esp32p4/loader.c kernel/ota_image.c)
+    target_compile_options(lugalos-loader.elf PRIVATE -Os -fno-jump-tables)
+    target_link_options(lugalos-loader.elf PRIVATE -T${CMAKE_CURRENT_SOURCE_DIR}/linker/esp32p4_loader.ld
+                        -L${CMAKE_CURRENT_BINARY_DIR} -Wl,--defsym=CONFIG_L2_CACHE_BYTES=${LUGALOS_P4_L2_CACHE_BYTES}
+                        -nostdlib -static -Wl,--no-relax -Wl,--build-id=none -Wl,--no-warn-rwx-segments)
+    set_target_properties(lugalos-loader.elf PROPERTIES LINK_DEPENDS
+                          "${CMAKE_CURRENT_SOURCE_DIR}/linker/esp32p4_loader.ld;${CMAKE_CURRENT_BINARY_DIR}/esp32p4_memory.ld")
+    add_dependencies(lugalos.elf lugalos-loader.elf)
 endif()
 
 # The C6's flash manifest, for tools/c6run.py, tools/c6flash.py and

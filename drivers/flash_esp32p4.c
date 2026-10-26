@@ -41,6 +41,7 @@
  */
 
 #include "drivers/flash_esp32p4.h"
+#include "drivers/ota_esp32p4.h"
 #include "kernel/printk.h"
 #include "kernel/hart.h"
 #include "kernel/lock.h"
@@ -93,11 +94,22 @@ static bool       g_ready;
  * mistake at run time rather than only describing it. */
 static ylock_t g_flash_ylock;
 
+extern p4_boot_info_t g_p4_boot;                /* arch/riscv/common/xip_esp32p4.c */
+
+static inline bool overlaps(uint32_t addr, uint32_t end, uint32_t base, uint32_t size) {
+    return addr < base + size && end > base;
+}
+
+/* Nothing at or above the floor may be written except the slot this boot does
+ * not run from: the running one is mapped into the XIP window and cached, and
+ * a boot the loader did not start (load-ram) may be running from either. */
 static inline bool writable(uint32_t addr, uint32_t len) {
     uint32_t end = addr + len;
     if (end < addr) return false;                      /* wrapped */
     if (addr < (uint32_t)LUGALOS_P4_FLASH_WRITABLE_FLOOR) return false;
     if (end > (uint32_t)LUGALOS_P4_FLASH_SIZE) return false;
+    if (overlaps(addr, end, LUGALOS_P4_SLOT_A_BASE, 2u * LUGALOS_P4_SLOT_SIZE))
+        return ota_p4_slot_writable(addr, len);
     return true;
 }
 
@@ -189,15 +201,14 @@ bool flash_p4_init(void) {
  * selective disable, not a lazier version of it. It costs a few ticks of
  * latency per erase.
  *
- * **Step 2 is not needed at all, and the reason is the writable floor.** A
+ * **Step 2 is not needed at all, and the reason is the writable check.** A
  * cache disable exists to stop stale lines answering for flash that has just
  * changed underneath them. This kernel can only ever write at or above
- * LUGALOS_P4_FLASH_WRITABLE_FLOOR (0x00150000), and the XIP window maps
- * LUGALOS_P4_OSIMAGE_BASE..+SIZE (0x00010000..0x00150000) -- the floor is
- * exactly the top of the mapped region. **No byte this driver can write is
- * ever mapped**, so nothing cached can go stale, and the `writable()` check a
- * few lines up is load-bearing for correctness rather than merely for safety.
- * (The OS image is only ever rewritten by tools/p4flash.py, from download
+ * LUGALOS_P4_FLASH_WRITABLE_FLOOR (0x00150000), and of the slots only the one
+ * the XIP window does not map. **No byte this driver can write is ever
+ * mapped**, so nothing cached can go stale, and the `writable()` check a few
+ * lines up is load-bearing for correctness rather than merely for safety.
+ * (The running slot is only ever rewritten by tools/p4flash.py, from download
  * mode, with no kernel running to have cached anything.)
  *
  * Two things are enforced rather than remembered:

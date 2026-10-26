@@ -56,3 +56,6 @@ P4_RAM_CEIL    = 0x4ffa96b8;
 /* 296 KB of RAM less ~9 KB of loadable sections; the floor leaves the same
  * ~12 KB of slack for .boot/.utext/.data growth that v1.3's 360 has. */
 P4_HEAP_FLOOR  = 275K;
+
+/* Where the loader (linker/esp32p4_loader.ld) is linked: inside the space IDF's own second-stage bootloader occupies from v3.0 (0x4ffab2c0..0x4ffbafc0, bootloader.memory.ld.in), above the kernel's RAM, which ends at P4_RAM_CEIL. */
+P4_LOADER_BASE = 0x4ffae000;

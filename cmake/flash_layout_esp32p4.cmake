@@ -29,10 +29,18 @@
 # ## The map
 #
 #   0x00000000  reserved, below the ROM's bootloader offset          8 KB
-#   0x00002000  second-stage bootloader (U4)                        56 KB
-#   0x00010000  OS image: .text + .rodata, executed in place         1.25 MB
-#   0x00150000  flash filesystem /flash0                           512 KB
-#   0x001D0000  spare, contiguous                                 14.2 MB
+#   0x00002000  the permanent loader (arch/riscv/esp32p4/loader.c)  56 KB
+#   0x00010000  unused (the OS image lived here before updates)    1.25 MB
+#   0x00150000  flash filesystem /flash0                             1 MB
+#   0x00250000  slot A: header, RAM half, XIP half                   2 MB
+#   0x00450000  slot B                                               2 MB
+#   0x00650000  boot records (two sectors)                          64 KB
+#   0x00660000  spare, contiguous                                  ~9.9 MB
+#   0x00FFF000  identity record
+#
+# The slots sit above /flash0 so that nothing moves: a board running the
+# previous map keeps its filesystem and identity. See
+# drivers/include/drivers/ota_esp32p4.h for what a slot holds.
 #
 # ### Why 0x2000 for the bootloader
 #
@@ -83,10 +91,20 @@ set(LUGALOS_P4_FLASH_SIZE     0x01000000)   # 16 MB, GigaDevice c8 4018
 set(LUGALOS_P4_BOOTLOADER_BASE 0x00002000)
 set(LUGALOS_P4_BOOTLOADER_SIZE 0x0000E000)  # 56 KB
 
-# U1/U2. .text and .rodata, mapped into the flash XIP window and executed in
-# place. Must be 64 KB-aligned: the MMU maps 64 KB pages.
-set(LUGALOS_P4_OSIMAGE_BASE   0x00010000)
-set(LUGALOS_P4_OSIMAGE_SIZE   0x00140000)   # 1.25 MB: the Tab5 build, the largest, needs more than 1 MB
+# The update slots. A slot's XIP half starts PART1_OFF into it
+# (drivers/include/drivers/ota_esp32p4.h) and is mapped into the flash window
+# in 64 KB pages, so a slot base is 64 KB-aligned. 2 MB leaves a XIP half of
+# 1.875 MB; the Tab5 build, the largest, needs about 1.25 MB.
+set(LUGALOS_P4_SLOT_A_BASE    0x00250000)
+set(LUGALOS_P4_SLOT_B_BASE    0x00450000)
+set(LUGALOS_P4_SLOT_SIZE      0x00200000)
+# Two sectors, each holding at most one boot record (kernel/include/kernel/ota_image.h).
+set(LUGALOS_P4_BOOTREC_BASE   0x00650000)
+set(LUGALOS_P4_BOOTREC_SIZE   0x00010000)
+# Where a boot that was not started by the loader (esptool's load-ram) maps
+# the XIP half from: slot A's.
+math(EXPR LUGALOS_P4_OSIMAGE_BASE "${LUGALOS_P4_SLOT_A_BASE} + 0x20000" OUTPUT_FORMAT HEXADECIMAL)
+math(EXPR LUGALOS_P4_OSIMAGE_SIZE "${LUGALOS_P4_SLOT_SIZE} - 0x20000" OUTPUT_FORMAT HEXADECIMAL)
 
 set(LUGALOS_P4_FLASHFS_BASE   0x00150000)
 set(LUGALOS_P4_FLASHFS_SIZE   0x00100000)   # 1 MB -- must match the FAT32 image

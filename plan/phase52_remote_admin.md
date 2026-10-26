@@ -816,7 +816,31 @@ deferred without blocking anything after it.
     layout stays acceptable for the C6 or the loader layout replaces it once
     LugalOS is installed.
 
-* **52.8 ESP32-P4 OTA backend (`drivers/ota_esp32p4.c`).**
+* **52.8 ESP32-P4 OTA backend (`drivers/ota_esp32p4.c`).** **DONE 2026-10-26 for
+  the NANO (v1.3) and LCD-7B (v3.2); Tab5 not attached, not run; 52.8d open.**
+  * *As built:* the layout is `doc/admin/updates.md`'s P4 table: loader at
+    `0x2000`, `/flash0` unchanged, slots A/B at `0x250000`/`0x450000` (2 MB),
+    boot records at `0x650000`. The loader (`arch/riscv/esp32p4/loader.c`)
+    is a port of the C6's, linked at `P4_LOADER_BASE` per silicon revision
+    (`linker/esp32p4_memory_rev*.ld`). `flash_esp32p4.c` allows writes only
+    into the slot the XIP window does not map. `board_reset()` gained the P4's
+    ROM `software_reset`, which `reboot` needed.
+  * *Found on the way:* the L1 instruction cache must be invalidated after
+    the loader copies the RAM half (`fence.i` is not enough; the entry point
+    executed stale bytes, an illegal instruction). `Cache_WriteBack_All` takes
+    a cache map. The RTC slow clock measured near 73 kHz, not 136 kHz: a 60 s
+    hold fired after 112 s. The trial's health rule is the C6's: a volume
+    mounted, and `wlan0` joined if a network is configured (the NANO had
+    neither cable nor Wi-Fi, so "network up" could never confirm).
+    `kernel/ota.c` moved its header and verify buffer to the heap: the Tab5's
+    low RAM had 224 bytes to spare.
+  * *Verified:* NANO: unsigned image pushed over the console 9P, software
+    reboot, trial in B, confirmed (`active=b`); a `--break` image fell back
+    on its own watchdog at 57 s (`fell_back=yes`, `failed=yes`). LCD-7B: the
+    same cycle to confirmation. `racescan --check` clean.
+  * *Not verified:* signed images on the P4 (same `kernel/ota.c` path as the C6),
+    USB pulled mid-write, the wrong-revision refusal (the board id check
+    answers first), over Ethernet, the Tab5, `test_esp32p4.py`'s OTA case.
   * **52.8a Layout** (decision §3.3 #2: our own). A permanent loader at
     `0x2000`, written once by `tools/p4flash.py`, as on the C6-Zero
     (`arch/riscv/esp32c6/loader.c`, the `LOTB` boot record). It picks a slot

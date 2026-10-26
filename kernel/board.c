@@ -466,11 +466,23 @@ bool board_reset_download(void) {
 bool board_reset_download(void) { return false; }
 #endif
 
+#if defined(CONFIG_BOARD_ESP32P4)
+/* The P4's ROM restarts the whole system: IDF's esp_rom_software_reset_system(),
+ * `software_reset` in esp32p4.rom.ld, the same address on every revision. Its
+ * own address on purpose, as the C6's above. The loader (arch/riscv/esp32p4/loader.c)
+ * then picks the slot again. */
+#define P4_ROM_SOFTWARE_RESET 0x4fc00094u
+#endif
+
 bool board_reset(void) {
 #if defined(CONFIG_BOARD_RP2350)
     return rp2350_reboot();
 #elif defined(CONFIG_BOARD_ESP32C6)
     c6_reset(false);
+    return false;                      /* not reached */
+#elif defined(CONFIG_BOARD_ESP32P4)
+    uart_flush_critical();
+    ((void (*)(void))P4_ROM_SOFTWARE_RESET)();
     return false;                      /* not reached */
 #else
     return false;
@@ -492,7 +504,7 @@ static void reset_task(void *arg) {
 }
 
 bool board_reset_later(bool download, uint32_t ms) {
-#if defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32C6)
+#if defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32C6) || defined(CONFIG_BOARD_ESP32P4)
 #if !defined(CONFIG_BOARD_ESP32C6)
     if (download) return false;
 #endif

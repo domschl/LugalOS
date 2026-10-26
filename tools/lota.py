@@ -45,6 +45,7 @@ import hashlib
 import os
 import re
 import struct
+import subprocess
 import sys
 import time
 import zlib
@@ -166,10 +167,10 @@ def build_id(build: Path) -> str:
     return m.group(1)
 
 
-def header(board: str, chip: str, bid: str, parts: list[bytes]) -> bytes:
+def header(board: str, chip: str, bid: str, parts: list[bytes], rev: tuple[int, int] = (0, 0xFFFF)) -> bytes:
     sha = hashlib.sha256(b"".join(parts)).digest()
     body = struct.pack(HEADER_FMT, MAGIC, VERSION, HEADER_LEN, board.encode(), chip.encode(),
-                       0, 0xFFFF, len(parts[0]), len(parts[1]), bid.encode()[:31], sha, bytes(132), 0)
+                       rev[0], rev[1], len(parts[0]), len(parts[1]), bid.encode()[:31], sha, bytes(132), 0)
     return body[:-4] + struct.pack("<I", zlib.crc32(body[:-4]))
 
 
@@ -180,6 +181,23 @@ def parts_esp32c6(build: Path, flash_size: int) -> list[bytes]:
     ram_img = build / "lugalos-ram.img"
     r = c6run.esptool("elf2image", "--flash-mode", "dio", "--flash-freq", "40m",
                       "--flash-size", "%dMB" % (flash_size >> 20), "-o", str(ram_img), str(ram_elf))
+    if r.returncode != 0:
+        sys.exit("elf2image failed:\n" + (r.stderr or r.stdout)[-600:])
+    return [ram_img.read_bytes(), (build / "lugalos-xip.bin").read_bytes()]
+
+
+def p4_rev_range(man: dict[str, list[str]]) -> tuple[int, int]:
+    """The silicon revisions a P4 build runs on: v1.x (below 300) or v3.x and later."""
+    rev = int(man["rev"][0])
+    return (0, 299) if rev < 300 else (300, 0xFFFF)
+
+
+def parts_esp32p4(build: Path) -> list[bytes]:
+    """Part 0: the RAM half in the boot ROM's image format; part 1: the XIP half."""
+    import p4flash
+    ram_img = build / "lugalos-ram.img"
+    cmd = p4flash.esptool_cmd() + ["elf2image", "-o", str(ram_img), str(build / "lugalos-ram.elf")]
+    r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         sys.exit("elf2image failed:\n" + (r.stderr or r.stdout)[-600:])
     return [ram_img.read_bytes(), (build / "lugalos-xip.bin").read_bytes()]
@@ -249,6 +267,18 @@ def make_image(build: Path, broken: bool = False, idf: bool = False) -> tuple[by
     if "board" not in man:
         sys.exit(f"{build}/flash.manifest names no board: rebuild it")
     board, chip = man["board"]
+    if chip == "esp32p4":
+        parts = parts_esp32p4(build)
+        if broken:
+            # Zeroes are illegal instructions: the image passes every check, boots, and dies.
+            xip = bytearray(parts[1])
+            xip[0x10000:0x20000] = bytes(0x10000)
+            parts[1] = bytes(xip)
+        hdr = header(board, chip, build_id(build), parts, p4_rev_range(man))
+        info = {"board": board, "chip": chip, "build_id": build_id(build),
+                "part_len": [len(p) for p in parts], "sha256": hashlib.sha256(b"".join(parts)).hexdigest(),
+                "layout": "loader"}
+        return hdr + b"".join(parts), info
     if chip != "esp32c6":
         sys.exit(f"no update image format for {chip} yet")
     if idf:
