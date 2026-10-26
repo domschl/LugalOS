@@ -435,6 +435,30 @@ def feature_enabled(console_port: str, flag: str) -> bool:
     return cfg.get(flag, 1) != 0
 
 
+def sd_mounted(console_port: str) -> bool:
+    """Whether the board's /sd0 came up: a card in a reader that answered at boot.
+
+    The build can include the SD driver (ENABLE_SPISD) on a board that has no
+    reader, or no card in it -- a Pico 2 W, say -- and then the driver task has
+    nothing to serve. `cat /proc/meminfo` lists the volumes, and says
+    "/sd0/ (not mounted)" for one that did not come up.
+
+    Like feature_enabled(), only a positive "not mounted" skips: an unreadable
+    answer runs the test and lets it fail on its own terms.
+    """
+    try:
+        with serial.Serial(console_port, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+            ser.write(b"cat /proc/meminfo\n")
+            ser.flush()
+            out = drain(ser, quiet=0.5, deadline=5.0).decode("utf-8", "replace")
+    except Exception:
+        return True
+    return re.search(r"/sd0/\s*\(not mounted\)", out) is None
+
+
 def local_build_id(build_dir: "Path | None" = None) -> str | None:
     """The build id the local tree would produce. Returns None if no build
     exists.

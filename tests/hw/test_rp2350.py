@@ -1176,6 +1176,8 @@ def test_blk_task(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     if not rp2350.feature_enabled(ports.console, "ENABLE_SPISD"):
         return (name, True, "SKIPPED: this persona builds without the SD/block driver "
                              "(ENABLE_SPISD=0 in /proc/config)")
+    if not rp2350.sd_mounted(ports.console):
+        return (name, True, "SKIPPED: no SD card reader answered on this board (/sd0 is not mounted)")
     try:
         with serial.Serial(ports.console, 115200, timeout=2) as ser:
             ser.dtr = True
