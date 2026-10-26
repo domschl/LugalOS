@@ -180,14 +180,17 @@ Setup mode, and the owner-part reset, are started by:
 * the console (both), or the `admin` grant over 9P (setup mode only);
 * **a button**, as a long press (e.g. 5 s for setup mode, longer for the
   reset), so that a strap pin pressed at reset keeps its ROM meaning.
-  Candidates, **none verified yet**:
+  Held 5 s: a setup window (when the build offers claiming and the node has a
+  setup secret). Held 15 s: the owner reset. A button already down at boot must
+  be released first. Checked on hardware 2026-10-26 where marked:
 
 | Board | Button | Note |
 |---|---|---|
-| ESP32-C6-Zero / C6-MINI | BOOT (GPIO9) | strap pin; readable after boot? |
-| ESP32-P4 NANO / LCD-7B | BOOT (GPIO35) | strap, shared with the CH34x/CH343 DTR line on the dev setup |
+| ESP32-C6-Zero / C6-MINI | BOOT (GPIO9) | strap pin; **not wired up**: no C6-Zero attached to test. The GPIO input register is fixed (`0x6009103C`) |
+| ESP32-P4 NANO | BOOT (GPIO35) | **verified**: low when pressed once the pad is switched to GPIO with its pull-up (after reset it is muxed elsewhere and reads 0); both actions fire. Never open the console with a tool that resets the board while holding it: that is download mode |
+| ESP32-P4 LCD-7B | BOOT (GPIO35) | same pin and code as the NANO; not tested on the board |
+| Pico 2 / Pico 2 W | BOOTSEL | **verified** on the Pico 2 W: read by floating the flash chip-select, from RAM, with interrupts off and core 1 parked (the flash-write handshake); both actions fire |
 | LCD-7B, RP2350 touch terminal, Tab5 | touch (GT911 / ST7123) | e.g. a long press on the menu bar; no extra hardware |
-| RP2350 boards | BOOTSEL | readable only by briefly giving up the flash's CS (the SDK's trick: XIP stops meanwhile) |
 | Pico-Clock-Green | SET / UP / DOWN | already polled (`drivers/pico_clock_*.c`) |
 | RP2350 chess | TM1638 keys | already read |
 
@@ -960,8 +963,8 @@ deferred without blocking anything after it.
     `/dev/owner`, the setup window, `CONFIG_NETWORK_CLAIM`, the console `setup`
     command, the setup secret in `provision.py`, and the tests (QEMU claim
     cycle, a build without the flag, the host check of the unauthenticated
-    attach) are DONE. **Open:** the button triggers on the Pico 2 W and the
-    NANO (§1.4 table), and the setup access point that makes the unauthenticated
+    attach) are DONE, and so are the button triggers (§1.4 table; the C6 and the
+    LCD-7B are untested). **Open:** the setup access point that makes the unauthenticated
     attach reachable (52.12 supplies `p9_link_is_setup_ap()`; until then a claim
     comes over a cable or the console). `/dev/owner` is one file with a command
     per line, not a directory: simpler, and a directory buys nothing before 52.11.

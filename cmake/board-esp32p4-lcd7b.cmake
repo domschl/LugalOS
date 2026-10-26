@@ -178,3 +178,5 @@ set(CONFIG_SDIO_D2_GPIO    16)
 set(CONFIG_SDIO_D3_GPIO    17)
 set(CONFIG_SDIO_FREQ_KHZ   40000)   # SDIO high speed; the C6's slave answers at it
 set(CONFIG_C6_CHIP_PU_GPIO 54)
+
+set(CONFIG_SETUP_BUTTON_GPIO 35)   # BOOT, as on the NANO

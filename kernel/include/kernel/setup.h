@@ -40,6 +40,10 @@ typedef enum { SETUP_UNCLAIMED, SETUP_OPEN, SETUP_CLAIMED } setup_state_t;
  * secret, and starts the worker. */
 void setup_init(void);
 
+/* The button task (kernel/setup_button.c): a long press opens a setup window, a longer one resets
+ * the owner part. A no-op on a board that names no button. */
+void setup_button_start(void);
+
 setup_state_t setup_state(void);
 const char   *setup_state_name(setup_state_t s);
 

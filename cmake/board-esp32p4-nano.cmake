@@ -317,3 +317,5 @@ set(CONFIG_SDIO_FREQ_KHZ   40000)   # SDIO high speed; the C6's slave answers at
 # wlan0 -- re-decided once a second. LLP's host role starts at boot as on the 7B.
 set(CONFIG_NET_PREFER_WIRED 1)
 set(CONFIG_C6_CHIP_PU_GPIO 54)
+
+set(CONFIG_SETUP_BUTTON_GPIO 35)   # BOOT; a strapping pin, an ordinary input once running
