@@ -3934,16 +3934,12 @@ static bool ota_kv(const char *text, const char *key, char *out, uint32_t cap) {
 }
 #endif
 
-static void cmd_ota(const char *arg) {
 #if defined(CONFIG_OTA)
-    (void)arg;
-    /* A heap page, not a static: the P4s' low RAM has no room for another 1 KB. */
-    char *text = palloc_pages(1);
-    if (!text) { cprintf("ota: out of memory\n"); return; }
-    uint32_t n = ota_ctl_read(text, 2048);
-    text[n] = 0;
+/* One node's /dev/ota text (kernel/ota.c), laid out; false if the node has no update path.
+ * `run_build` gets the build id of the slot it runs from. */
+static bool ota_print_table(const char *text, char *run_build, uint32_t run_build_cap) {
     char v[64], at[64], build[48];
-    if (ota_kv(text, "supported", v, sizeof v)) { palloc_free(text, 1); cprintf("ota: this board has no update path\n"); return; }
+    if (ota_kv(text, "supported", v, sizeof v)) return false;
     char board[32], chip[16], layout[16], running[4];
     ota_kv(text, "board", board, sizeof board);
     ota_kv(text, "chip", chip, sizeof chip);
@@ -3981,6 +3977,56 @@ static void cmd_ota(const char *arg) {
     cprintf("trial %s, last trial %s, signatures %s, release key %s\n", tr,
             strcmp(fb, "yes") == 0 ? "did not confirm" : "ok", sg, rk);
     if (ota_kv(text, "state", v, sizeof v) && strcmp(v, "idle") != 0) cprintf("update state: %s\n", v);
+    char rk2[12];
+    run_build[0] = 0;
+    if (running[0] == 'a' || running[0] == 'b') {
+        ksnprintf(rk2, sizeof rk2, "slot_%c", running[0]);
+        ota_kv(text, rk2, run_build, run_build_cap);
+    }
+    return true;
+}
+
+/* The version an LLP peer announced, from a node's /proc/llp ("peer_version=1.0"). */
+static bool llp_peer_version(const char *path, char *buf, char *out, uint32_t cap) {
+    int n = vfs_read(path, buf, 2047);
+    if (n <= 0) return false;
+    buf[n] = 0;
+    return ota_kv(buf, "peer_version", out, cap);
+}
+#endif
+
+static void cmd_ota(const char *arg) {
+#if defined(CONFIG_OTA)
+    (void)arg;
+    /* Heap pages, not statics: the P4s' low RAM has no room for another 1 KB. */
+    char *text = palloc_pages(1);
+    if (!text) { cprintf("ota: out of memory\n"); return; }
+    uint32_t n = ota_ctl_read(text, 2048);
+    text[n] = 0;
+    char own[48];
+    if (!ota_print_table(text, own, sizeof own)) {
+        palloc_free(text, 1);
+        cprintf("ota: this board has no update path\n");
+        return;
+    }
+    /* The radio beside this node (a P4's C6, mounted at /c6), if there is one: its table too, and
+     * whether the pair is in step. Read here, in the shell's own task: /dev/ota is served by the
+     * 9P server, which must not become a client of the link it serves. */
+    int rn = vfs_read("/c6/dev/ota", text, 2047);
+    if (rn > 0) {
+        text[rn] = 0;
+        char radio[48], mine[16], theirs[16];
+        cprintf("\nradio (the C6 beside this node, via /c6):\n");
+        if (ota_print_table(text, radio, sizeof radio)) {
+            bool a = llp_peer_version("/c6/proc/llp", text, mine, sizeof mine);     /* what the C6 heard: this node's */
+            bool b = llp_peer_version("/proc/llp", text, theirs, sizeof theirs);   /* what this node heard: the C6's */
+            if (a && b)
+                cprintf("link: LLP %s here, %s on the radio: %s\n", mine, theirs,
+                        strcmp(mine, theirs) == 0 ? "in step" : "NOT in step");
+            cprintf("builds: this node %s, the radio %s: %s\n", own, radio,
+                    strcmp(own, radio) == 0 ? "the same" : "different");
+        }
+    }
     palloc_free(text, 1);
 #else
     (void)arg;

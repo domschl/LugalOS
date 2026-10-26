@@ -864,10 +864,23 @@ deferred without blocking anything after it.
     `test_esp32p4.py` gains an OTA case, and the full suite stays green.
   * **52.8c LCD-7B (rev v3.2) and Tab5.** The same tests, with the revision
     check exercised in both directions.
-  * **52.8d Whole-board update.** `lota.py push-board`: the C6 first,
-    confirmed, then the P4, checked against LLP's `HELLO` version. A board
-    whose C6 and P4 disagree after the update reports it in `/dev/ota`.
-    Verified on the NANO, then the Tab5 over Wi-Fi only.
+  * **52.8d Whole-board update.** **DONE 2026-10-26** (console transport).
+    `lota.py push-board`: the C6 first, confirmed, then the P4, then the pair
+    is checked (same LLP `HELLO` version, same build, each running the slot
+    just written). *Changed from the plan:* the disagreement is reported by the
+    tool (`lota.py status`, which now shows P4 and C6 side by side) and by
+    the shell's `ota`, not by `/dev/ota`: the 9P server that serves `/dev/ota`
+    would have to read `/c6/dev/ota` over the link it serves.
+    *Verified on the NANO:* C6 1050 -> 1072 and P4 1070 -> 1072, both
+    confirmed, same build, LLP in step; `--break c6` (the C6 falls back, the P4
+    is untouched); `--break p4` (the P4 falls back after a confirmed C6, reported
+    as a mixed board). *On the Tab5:* C6 953 -> 1072 and P4 1069 -> 1072. *Found:*
+    a failed console attach left the port open for the next try; the wait for a
+    C6 over the console reconnects (the Tab5's session ends with the C6's
+    restart); a fall-back looks like success if only the trial and the build id are
+    checked. *Not done:* the update over Wi-Fi only: a `p9key` does not survive
+    the P4's restart, and the NANO and Tab5 have no stored 9P key to reconnect
+    with for the final check.
 
 * **52.9 RP2350 OTA backend (`drivers/ota_rp2350.c`).** **52.9a/b DONE 2026-10-26
   on the Pico 2 W; 52.9c DONE 2026-10-26 on the RP2350-LCD-7 (USB 9P only; through

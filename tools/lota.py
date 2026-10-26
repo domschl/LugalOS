@@ -403,8 +403,15 @@ class Node:
             import p9sync
             self.port, _ = p4run.board_ports(a.p4)
             p9sync.p4_shell(self.port, "p9share")
-            self.client = p9lib.connect_open_serial(p4run.open_console(self.port), framing="slip",
-                                                    timeout=30.0, closer=p4run.close_console)
+            console = p4run.open_console(self.port)
+            try:
+                self.client = p9lib.connect_open_serial(console, framing="slip",
+                                                        timeout=30.0, closer=p4run.close_console)
+            except Exception:
+                # A console left open would be fought over by the next attempt, and opening it
+                # is what resets the board: the retry loops of push-board depend on this.
+                p4run.close_console(console)
+                raise
         elif a.tcp:
             host, _, port = a.tcp.partition(":")
             self.client = p9lib.connect_tcp(host, int(port or 564), timeout=30.0)
@@ -423,8 +430,16 @@ class Node:
                 time.sleep(0.3)
                 p9sync.p4_shell(self.port, "p9share off")
 
-    def status(self) -> dict[str, str]:
-        text = self.sess.read(self.prefix + "/dev/ota").decode(errors="replace")
+    def status(self, prefix: str | None = None) -> dict[str, str]:
+        text = self.sess.read((self.prefix if prefix is None else prefix) + "/dev/ota").decode(errors="replace")
+        return dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+
+    def read_kv(self, path: str) -> dict[str, str]:
+        """A node file of key=value lines (/proc/llp), or {} if it cannot be read."""
+        try:
+            text = self.sess.read(path).decode(errors="replace")
+        except Exception:
+            return {}
         return dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
 
     def ctl(self, cmd: str) -> None:
@@ -516,6 +531,123 @@ def show(st: dict[str, str]) -> str:
     return ", ".join(f"{k}={st[k]}" for k in keys if k in st)
 
 
+def running_build(st: dict[str, str]) -> str:
+    return st.get(f"slot_{st['running']}", "?") if st.get("running") in ("a", "b") else "?"
+
+
+def radio_state(node: Node) -> tuple[dict[str, str], dict[str, str]] | None:
+    """The C6 beside a P4, through its /c6 (status, link), or None if there is none."""
+    try:
+        radio = node.status("/c6")
+    except Exception:
+        return None
+    if "board" not in radio:
+        return None
+    return radio, {"p4_speaks": node.read_kv("/c6/proc/llp").get("peer_version", "?"),
+                   "c6_speaks": node.read_kv("/proc/llp").get("peer_version", "?")}
+
+
+def report_both(node: Node) -> bool:
+    """Prints a P4 and its C6 side by side; True if the pair is in step (same LLP version, same build)."""
+    own = node.status("")
+    print("this node:", show(own))
+    pair = radio_state(node)
+    if pair is None:
+        return True
+    radio, link = pair
+    print("the radio: ", show(radio))
+    same_llp = link["p4_speaks"] == link["c6_speaks"] != "?"
+    same_build = running_build(own) == running_build(radio)
+    print(f"link:       LLP {link['p4_speaks']} on the P4, {link['c6_speaks']} on the C6: "
+          f"{'in step' if same_llp else 'NOT in step'}")
+    print(f"builds:     P4 {running_build(own)}, C6 {running_build(radio)}: "
+          f"{'the same' if same_build else 'different'}")
+    return same_llp and same_build
+
+
+def push_board(a: argparse.Namespace) -> int:
+    """The whole board: the C6 first, until it has confirmed, then the P4, then the pair is checked.
+
+    The order is the point. The C6 runs the link the P4's update arrives over, and a P4 that
+    came up on a new LLP against an old C6 would be unreachable; so the radio goes first and
+    the P4 is not touched unless it confirmed. If the P4 then fails, the board is left with a
+    new C6 and the old P4 -- reported, not hidden -- and `switch --prefix /c6 --reboot` undoes it.
+    """
+    for k, v in (("reboot", True), ("wait", True), ("broken", False)):
+        if not hasattr(a, k): setattr(a, k, v)
+    p4_build = Path(a.source)
+    c6_build = Path(a.c6_build) if a.c6_build else p4_build.parent / "esp32c6-mini"
+    if not (c6_build / "flash.manifest").exists():
+        sys.exit(f"no C6 build at {c6_build}: build esp32c6-mini, or say where with --c6-build")
+    node = Node(a)
+    try:
+        before = node.status("")
+        p4_was_running = before.get("running")
+        c6_was_running = (radio_state(node) or ({}, {}))[0].get("running")
+        if before.get("chip") != "esp32p4" or radio_state(node) is None:
+            sys.exit("this is not a P4 with a C6 mounted at /c6: use `push` for a single node")
+        print("== before"); report_both(node)
+    finally:
+        node.close()
+
+    def part(prefix: str, build: Path, wait: bool, broken: bool) -> argparse.Namespace:
+        ns = argparse.Namespace(**vars(a))
+        ns.prefix, ns.source, ns.reboot, ns.wait, ns.broken = prefix, str(build), True, wait, broken
+        return ns
+
+    print("\n== the C6 first")
+    rc = push(part("/c6", c6_build, True, a.break_part == "c6"))
+    if rc != 0:
+        print("\nthe C6 did not take the update, so the P4 is untouched")
+        return rc
+
+    print("\n== then the P4")
+    over_net = bool(a.tcp)
+    rc = push(part("", p4_build, over_net, a.break_part == "p4"))
+    if rc == 2:
+        print("\nthe P4 fell back to its old image; the C6 runs the new one (`lota.py switch --prefix /c6 --reboot` undoes that)")
+    if not over_net:
+        # The console is the P4's own reset line: opening it ends a trial that has not confirmed,
+        # so look only after the trial has had its time to settle.
+        settle = 50
+        print(f"waiting {settle} s for the P4's trial before looking at it")
+        time.sleep(settle)
+
+    print("\n== after")
+    ok = False
+    for attempt in range(10):
+        try:
+            node = Node(a)
+            try:
+                ok = report_both(node)
+                st = node.status("")
+                rst = node.status("/c6")
+                confirmed = st.get("trial") == "no" and rst.get("trial") == "no"
+                # Each part must be running the slot just written: a fall-back also ends with
+                # no trial, and with builds that look alike.
+                p4_new = st.get("running") != p4_was_running and st.get("fell_back") != "yes"
+                c6_new = rst.get("running") != c6_was_running and rst.get("fell_back") != "yes"
+            finally:
+                node.close()
+            break
+        except Exception as e:
+            print(f"  (not reachable yet: {e})")
+            time.sleep(6)
+    else:
+        print("the board does not answer; check its console: ota")
+        return 1
+    if not confirmed:
+        print("one of the two is still on trial")
+        return 1
+    if not (p4_new and c6_new):
+        mixed = ", ".join(n for n, new in (("the P4", p4_new), ("the C6", c6_new)) if not new)
+        print(f"\n{mixed} did not take the update and runs the old image; the other part is new."
+              "\nThe pair may still be in step; `lota.py status` shows the slots.")
+        return 2
+    print("\nthe whole board is updated and in step" if ok else "\nthe board is up but the pair is NOT in step")
+    return 0 if ok else 2
+
+
 def push(a: argparse.Namespace) -> int:
     src = Path(a.source)
     node = Node(a)
@@ -588,14 +720,20 @@ def push(a: argparse.Namespace) -> int:
         seen_trial = False
         last_err = ""
         answered_since_reboot = False
+        failures = 0
         while time.monotonic() < end:
             time.sleep(3)
             try:
                 st = node.status()
                 answered_since_reboot = True
+                failures = 0
             except Exception as e:
                 last_err = str(e) or type(e).__name__
-                if a.tcp:
+                failures += 1
+                # Over the P4's console the session can end with the restart of the C6 behind it
+                # (the Tab5's does); reopening the console resets some boards, so only after it
+                # has stayed down for a while.
+                if a.tcp or (a.p4 and failures >= 3):
                     # The node's own 9P server restarted with it: a new
                     # connection, and a new session, once it is back.
                     try:
@@ -604,6 +742,7 @@ def push(a: argparse.Namespace) -> int:
                         pass
                     try:
                         node = Node(a)
+                        failures = 0
                     except Exception as e2:
                         last_err = str(e2) or type(e2).__name__
                 continue                          # the node (or its mount) is restarting
@@ -683,15 +822,21 @@ def main() -> int:
     aim = sub.add_parser("app-image", help="build the single-file ESP-IDF 0xE9 application image (lugalos-c6-app.bin)")
     aim.add_argument("build", type=Path)
     aim.add_argument("-o", "--output", type=Path)
-    for name in ("push", "status", "switch", "dump-other"):
+    for name in ("push", "push-board", "status", "switch", "dump-other"):
         p = sub.add_parser(name)
-        if name == "push":
+        if name in ("push", "push-board"):
             p.add_argument("source", help="a build directory, or an image file")
-            p.add_argument("--reboot", action="store_true", help="restart into the new image")
-            p.add_argument("--wait", action="store_true", help="then watch it confirm, or fall back")
+            if name == "push":
+                p.add_argument("--reboot", action="store_true", help="restart into the new image")
+                p.add_argument("--wait", action="store_true", help="then watch it confirm, or fall back")
             p.add_argument("--wait-s", type=int, default=150)
-            p.add_argument("--break", dest="broken", action="store_true",
-                           help="ruin the kernel's code (testing the fall-back)")
+            if name == "push":
+                p.add_argument("--break", dest="broken", action="store_true",
+                               help="ruin the kernel's code (testing the fall-back)")
+            else:
+                p.add_argument("--c6-build", help="the C6's build directory (default: esp32c6-mini beside the P4's)")
+                p.add_argument("--break", dest="break_part", choices=["c6", "p4"],
+                               help="ruin that part's code (testing the order and the fall-back)")
             p.add_argument("--rate", type=float, default=0.0, metavar="KB/S",
                            help="send no faster than this (testing a cut-off update by hand)")
             p.add_argument("--no-board-check", action="store_true",
@@ -701,6 +846,8 @@ def main() -> int:
             p.add_argument("--tamper", choices=["sig", "header", "part"],
                            help="damage the signed image (testing the node's refusal): a signature byte, "
                                 "a signed header byte (CRC fixed up), or a part byte")
+        elif name == "status":
+            p.add_argument("--single", action="store_true", help="only the node itself, not the C6 beside it")
         elif name == "switch":
             p.add_argument("--reboot", action="store_true", help="restart into the switched slot")
         elif name == "dump-other":
@@ -735,11 +882,16 @@ def main() -> int:
     if a.cmd == "status":
         node = Node(a)
         try:
+            if not a.prefix and not a.single and radio_state(node) is not None:
+                report_both(node)
+                return 0
             for k, v in node.status().items():
                 print(f"{k}={v}")
         finally:
             node.close()
         return 0
+    if a.cmd == "push-board":
+        return push_board(a)
     if a.cmd == "switch":
         return switch_slot(a)
     if a.cmd == "dump-other":
