@@ -91,10 +91,10 @@ bool ota_board_healthy(void);
  * (NAME: loader, table, a, b, flashfs, records, identity) for /dev/ota. The
  * count of bytes written. */
 uint32_t ota_board_map(char *out, uint32_t cap);
-/* The running image's version as "MAJOR.MINOR", or NULL if the board's boot
- * does not order images by one. A board that does needs each update to carry a
- * higher one, or the bootrom discards the old image when the new one commits. */
-const char *ota_board_version(void);
+/* The running image's version as "MAJOR.MINOR" in `out`, or false if the board's
+ * boot does not order images by one. A board that does needs each update to carry
+ * a higher one, or the bootrom discards the old image when the new one commits. */
+bool ota_board_version(char *out, uint32_t cap);
 /* Restarts into the image the next boot should run: the pending one, or the
  * one `switch` named. False if the board cannot restart. */
 bool ota_board_restart(void);

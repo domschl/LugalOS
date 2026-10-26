@@ -14,6 +14,12 @@ NUM_SECTORS: int = 2048  # 1024 KB (1 MB) image size
 RESERVED_SECTORS: int = 32
 FAT_SIZE_SECTORS: int = 16
 DATA_START_SECTOR: int = RESERVED_SECTORS + 2 * FAT_SIZE_SECTORS  # Sector 64
+# The SD card image the QEMU suite mounts: 2 MB. The staged content is about 0.7 MB and
+# the suite writes to the card (a screenshot of the canvas, the editor's saves), so it
+# needs room; at 1 MB it was 95% full and those tests failed on a full disk. The
+# /flash0 image (create_flash_fs.py) stays NUM_SECTORS: on hardware it must fill its
+# flash region exactly.
+SD_IMAGE_SECTORS: int = 4096
 
 
 def filename_to_83(name: str) -> bytes:
@@ -23,8 +29,11 @@ def filename_to_83(name: str) -> bytes:
     return (base + ext).encode("ascii")
 
 
-def build_fat32_image(output_path: str, src_dir: str | None = None) -> None:
-    img: bytearray = bytearray(NUM_SECTORS * SECTOR_SIZE)
+def build_fat32_image(output_path: str, src_dir: str | None = None, num_sectors: int = NUM_SECTORS) -> None:
+    # The FAT has one 4-byte entry per cluster (one cluster a sector).
+    fat_size: int = FAT_SIZE_SECTORS if num_sectors == NUM_SECTORS else -(-num_sectors // 128)
+    data_start: int = RESERVED_SECTORS + 2 * fat_size
+    img: bytearray = bytearray(num_sectors * SECTOR_SIZE)
 
     # Boot Sector (BPB)
     img[0:3] = b"\xeb\x58\x90"  # JMP
@@ -40,8 +49,8 @@ def build_fat32_image(output_path: str, src_dir: str | None = None) -> None:
     struct.pack_into("<H", img, 24, 63)  # Sectors per track
     struct.pack_into("<H", img, 26, 255)  # Number of heads
     struct.pack_into("<I", img, 28, 0)  # Hidden sectors
-    struct.pack_into("<I", img, 32, NUM_SECTORS)  # Total sectors 32
-    struct.pack_into("<I", img, 36, FAT_SIZE_SECTORS)  # FAT size 32 (16 sectors per FAT)
+    struct.pack_into("<I", img, 32, num_sectors)  # Total sectors 32
+    struct.pack_into("<I", img, 36, fat_size)  # FAT size 32 (16 sectors per FAT)
     struct.pack_into("<H", img, 40, 0)  # Ext flags
     struct.pack_into("<H", img, 42, 0)  # FS version
     struct.pack_into("<I", img, 44, 2)  # Root cluster (Cluster 2)
@@ -56,13 +65,13 @@ def build_fat32_image(output_path: str, src_dir: str | None = None) -> None:
     # FSInfo Sector (Sector 1)
     struct.pack_into("<I", img, 512, 0x41615252)  # Lead Sig
     struct.pack_into("<I", img, 512 + 484, 0x61417272)  # Struct Sig
-    struct.pack_into("<I", img, 512 + 488, NUM_SECTORS - DATA_START_SECTOR)  # Free clusters
+    struct.pack_into("<I", img, 512 + 488, num_sectors - data_start)  # Free clusters
     struct.pack_into("<I", img, 512 + 492, 2)  # Next free cluster
     img[512 + 510 : 512 + 512] = b"\x55\xaa"  # Trail Sig
 
     # FAT 1 & FAT 2 Base Offsets
     fat1_base: int = RESERVED_SECTORS * SECTOR_SIZE
-    fat2_base: int = (RESERVED_SECTORS + FAT_SIZE_SECTORS) * SECTOR_SIZE
+    fat2_base: int = (RESERVED_SECTORS + fat_size) * SECTOR_SIZE
 
     def set_fat_entry(clus: int, val: int) -> None:
         struct.pack_into("<I", img, fat1_base + clus * 4, val)
@@ -82,7 +91,7 @@ def build_fat32_image(output_path: str, src_dir: str | None = None) -> None:
 
         entries: list[str] = sorted(os.listdir(dir_path))
         curr_cluster: int = parent_cluster
-        dir_lba: int = DATA_START_SECTOR + (curr_cluster - 2)
+        dir_lba: int = data_start + (curr_cluster - 2)
         dir_offset_base: int = dir_lba * SECTOR_SIZE
 
         # Determine starting entry index (if parent_cluster != 2, index starts after '.' and '..')
@@ -102,7 +111,7 @@ def build_fat32_image(output_path: str, src_dir: str | None = None) -> None:
                 set_fat_entry(curr_cluster, next_cluster)
                 set_fat_entry(next_cluster, 0x0FFFFFFF)
                 curr_cluster = next_cluster
-                dir_lba = DATA_START_SECTOR + (curr_cluster - 2)
+                dir_lba = data_start + (curr_cluster - 2)
                 dir_offset_base = dir_lba * SECTOR_SIZE
                 entry_idx = 0
 
@@ -122,7 +131,7 @@ def build_fat32_image(output_path: str, src_dir: str | None = None) -> None:
                 struct.pack_into("<I", img, entry_offset + 28, 0)
 
                 # Initialize sub_cluster with '.' and '..'
-                sub_lba: int = DATA_START_SECTOR + (sub_cluster - 2)
+                sub_lba: int = data_start + (sub_cluster - 2)
                 sub_base: int = sub_lba * SECTOR_SIZE
 
                 # Entry 0: '.'
@@ -158,7 +167,7 @@ def build_fat32_image(output_path: str, src_dir: str | None = None) -> None:
                 # Write file content to clusters & update FAT chain
                 for c in range(clusters_needed):
                     cur_cluster: int = start_cluster + c
-                    data_lba: int = DATA_START_SECTOR + (cur_cluster - 2)
+                    data_lba: int = data_start + (cur_cluster - 2)
                     chunk_start: int = c * SECTOR_SIZE
                     chunk_end: int = min(file_size, chunk_start + SECTOR_SIZE)
                     chunk_data: bytes = content[chunk_start:chunk_end]
@@ -183,7 +192,7 @@ def build_fat32_image(output_path: str, src_dir: str | None = None) -> None:
         populate_dir(src_dir, 2)
 
     # Update FSInfo free cluster count & next free cluster pointer
-    struct.pack_into("<I", img, 512 + 488, (NUM_SECTORS - DATA_START_SECTOR) - (current_free_cluster - 2))
+    struct.pack_into("<I", img, 512 + 488, (num_sectors - data_start) - (current_free_cluster - 2))
     struct.pack_into("<I", img, 512 + 492, current_free_cluster)
 
     with open(output_path, "wb") as f:
@@ -236,4 +245,4 @@ if __name__ == "__main__":
         print(f"[SD Image] Preserving existing disk image '{out_file}' (up to date).")
         sys.exit(0)
 
-    build_fat32_image(out_file, sd_root)
+    build_fat32_image(out_file, sd_root, SD_IMAGE_SECTORS)

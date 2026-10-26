@@ -978,7 +978,9 @@ def test_c6_namespace(b: Board) -> tuple[str, bool, str]:
     if not gen:
         return name, False, f"no p9_generation in /proc/llp: {out.strip()[-300:]}"
     files = {
-        "/c6/dev/wlan": r"state=.*mac=([0-9a-f]{2}:){5}[0-9a-f]{2}",
+        # An idle C6 (nothing to join, which is a NANO whose identity holds no network) prints only
+        # its state; a joined one adds its MAC and the rest.
+        "/c6/dev/wlan": r"state=idle|state=.*mac=([0-9a-f]{2}:){5}[0-9a-f]{2}",
         "/c6/proc/llp": r"role=radio.*state=up.*peer_role=host",
         "/c6/proc/radio": r"blob=yes",
         "/c6/proc/wdt": r"armed=yes.*last_reset=",
@@ -1010,7 +1012,13 @@ def test_c6_namespace(b: Board) -> tuple[str, bool, str]:
     if "last_reset=software" not in got:
         return name, False, f"the C6 does not report the software reset: {got.strip()[-200:]}"
     rejoined = ""
-    if was_joined:
+    # The restarted C6 has only what the P4 hands it. A board whose identity holds no network
+    # (a NANO provisioned for nothing, its C6 joined by hand in an earlier run) has nothing to
+    # hand, and the C6 stays idle: that says nothing about the restart.
+    p4_net = c.cmd("wlan", deadline=8.0)
+    if was_joined and re.search(r"ssid:\s*none", p4_net):
+        rejoined = ", rejoin not checked (this P4 holds no credentials to hand its C6)"
+    elif was_joined:
         end = time.monotonic() + 45.0
         while time.monotonic() < end:
             if "state=joined" in c.cmd("cat /c6/dev/wlan", deadline=10.0):
@@ -1512,12 +1520,13 @@ def test_usb_keyboard(b: Board) -> tuple[str, bool, str]:
 
 def test_touch(b: Board) -> tuple[str, bool, str]:
     """47.12: the GT911 or ST7121/ST7123 answered at boot with the panel's resolution, is
-    polled every 20 ms (the poll count moves), and the bus has no errors."""
+    polled every 20 ms (the poll count moves), and the bus has no errors. A GT911 sits at 0x5D
+    or 0x14, whichever level its INT pin had at reset; the LCD-7B's answers at 0x14."""
     name = "touch: GT911 or ST7121 found, polled, no I2C errors (47.12)"
     out = b.console_session.cmd("ts", deadline=10.0)
     if _no_display(out) or "no touch controller" in out or "no GT911" in out:
         return name, True, "SKIPPED (no touch controller on this board)"
-    m = re.search(r"(?:GT911 at 0x5[dD]|ST712[13] at 0x55), (\d+)x(\d+)", out)
+    m = re.search(r"(?:GT911 at 0x(?:5[dD]|14)|ST712[13] at 0x55), (\d+)x(\d+)", out)
     p0 = re.search(r"(\d+) polls", out)
     if not m or not p0:
         return name, False, f"no touch controller: {out.strip()[-300:]}"
