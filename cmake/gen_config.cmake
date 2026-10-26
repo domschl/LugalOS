@@ -181,6 +181,10 @@ set(_optional_keys
     # installed (kernel/ota.c). Absent: a node without a key takes unsigned
     # images; a node with one never does.
     CONFIG_OTA_REQUIRE_SIGNED
+    # 1: this build offers claiming over the network (kernel/setup.c): /dev/setup and /dev/owner,
+    # the setup window, the unauthenticated attach for a claim. Absent: a node is provisioned from
+    # its console only, and cannot be claimed over the network whatever a bug does to the state machine.
+    CONFIG_NETWORK_CLAIM
     # Lisp's node pool, when a
     # board wants other than user/lisp/lisp.c's per-target default.
     CONFIG_LISP_NODE_POOL

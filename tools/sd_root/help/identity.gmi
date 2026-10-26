@@ -50,6 +50,20 @@ When exposing 9P filesystem namespaces over TCP or untrusted links:
 ```
 * Unauthorized read or write requests to protected volumes (/sd0, /flash0) are rejected at the channel boundary before reaching filesystem drivers.
 
+## 4. Claiming a Node and the Owner Part
+
+The identity record has a factory part (uid, device key, release key, setup secret), which only the console and tools/provision.py write, and an owner part (name, Wi-Fi, IP, grants, MQTT, altitude, power) that survives nothing: setup reset-owner wipes it. Sensor calibration describes the hardware and survives a reset.
+
+A node is claimed when a grant carries admin; otherwise it is unclaimed. An unclaimed node with a setup secret opens a 15-minute setup window at boot (and on setup start). While it is open, a client that knows the secret writes one line to /dev/setup:
+
+```text
+claim SECRET OWNERKEYHEX [name NAME] [wlan SSID PSKHEX64]
+```
+
+The owner key becomes the owner admin grant, the window closes, and from then on /dev/owner accepts name, wlan, grant, ungrant and setup start|stop from an admin peer. Five wrong secrets close the window until the next trigger. The last admin grant cannot be removed over the network, and an owner reset is physical: the console, never 9P. The write returns at once and a worker task does it; read the outcome from result= in /dev/setup.
+
+The setup secret is the WPA2 key of the node's setup access point (52.12). tools/provision.py --setup-secret-generate prints it with the label text and a WIFI: QR payload. A build without CONFIGNETWORKCLAIM has no /dev/setup, no /dev/owner and no window.
+
 Navigation:  | Documentation Index
 
 ### Related Topics

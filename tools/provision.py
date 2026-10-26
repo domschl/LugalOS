@@ -54,6 +54,7 @@ FIELD_IPV4 = 6      # 12 bytes: ip[4] mask[4] gw[4], dotted-quad order
 FIELD_GRANTS = 7    # the peer grants list, as the text fs/9p.c parses
 FIELD_MQTT = 8      # where this node publishes; see build_mqtt_blob() below
 FIELD_ALTITUDE = 9  # metres above sea level, int16 big-endian (phase 40, item 11)
+FIELD_SETUP_SECRET = 14  # factory part: the setup access point's WPA2 key (kernel/idstore.h)
 
 WLAN_PSK_LEN = 32  # WPA2's PSK is always 256 bits -- kernel/identity.h's NODE_WLAN_PSK_LEN
 
@@ -273,6 +274,13 @@ def main() -> int:
                          "rw. This is the INBOUND direction -- who may attach to "
                          "this board -- and is not the same as --key, which is what "
                          "this board presents when it dials out.")
+    ap.add_argument("--setup-secret", metavar="TEXT",
+                    help="the node's setup secret (factory part, plan/phase52 1.3): the WPA2 key of its "
+                         "setup access point, 8-32 printable characters. Printed once, with the "
+                         "WIFI: URI a phone's camera reads as a QR code.")
+    ap.add_argument("--setup-secret-generate", action="store_true",
+                    help="mint one: twelve characters in groups of four, from an alphabet without "
+                         "the lookalikes (0/O, 1/I/L)")
     ap.add_argument("--uf2", metavar="FILE",
                     help="also write the record as a UF2 for the RP2350's identity "
                          "sector, so a board with no console can be provisioned by "
@@ -404,6 +412,18 @@ def main() -> int:
             sys.exit("--altitude: expected -500..9000 metres")
         fields.append((FIELD_ALTITUDE, args.altitude.to_bytes(2, "big", signed=True)))
 
+    if args.setup_secret and args.setup_secret_generate:
+        sys.exit("--setup-secret and --setup-secret-generate are alternatives, not a pair")
+    setup_secret = args.setup_secret
+    if args.setup_secret_generate:
+        alphabet = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"   # no 0 O 1 I L
+        raw = "".join(secrets.choice(alphabet) for _ in range(12))
+        setup_secret = "-".join(raw[i:i + 4] for i in range(0, 12, 4))
+    if setup_secret:
+        if not 8 <= len(setup_secret) <= 32 or any(not 0x21 <= ord(c) <= 0x7e for c in setup_secret):
+            sys.exit("--setup-secret: 8-32 printable ASCII characters, no spaces")
+        fields.append((FIELD_SETUP_SECRET, setup_secret.encode("ascii")))
+
     record = build_record(fields)
     with open(args.output, "wb") as f:
         f.write(record)
@@ -415,6 +435,13 @@ def main() -> int:
     else:
         mqtt_note = ""
 
+    if setup_secret:
+        # The setup access point is named from the uid (52.12 uses the same rule), so the label and
+        # the node agree without either having to be told the other's name.
+        ap_ssid = "LugalOS-" + uid[-2:].hex().upper()
+        print(f"setup secret: {setup_secret}")
+        print(f"  label text: join {ap_ssid} with {setup_secret}")
+        print(f"  QR payload: WIFI:T:WPA;S:{ap_ssid};P:{setup_secret};;   (qrencode -t ANSIUTF8 'that')")
     msg = f"wrote {args.output}: name={args.name!r} uid={uid.hex()}"
     if psk_hex:
         msg += f" wlan_ssid={args.wlan_ssid!r} wlan_psk={psk_hex}"

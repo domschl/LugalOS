@@ -16,6 +16,7 @@
 #include "fs/9p.h"
 #include "fs/vfs.h"
 #include "kernel/identity.h"
+#include "kernel/setup.h"
 #include "shim.h"
 
 #include <signal.h>
@@ -169,6 +170,9 @@ node_id_result_t node_identity_set_grants(const char *text, uint32_t len) {
     (void)text; (void)len;
     return NODE_ID_ERR_NO_BACKEND;
 }
+static int g_setup_open, g_setup_ap;
+bool setup_unauth_attach_ok(void) { return g_setup_open != 0; }
+bool p9_link_is_setup_ap(void) { return g_setup_ap != 0; }
 static uint64_t g_rand_state = 1;
 void random_bytes(void *out, uint32_t len) {
     for (uint32_t i = 0; i < len; i++) ((uint8_t *)out)[i] = (uint8_t)host_rand(&g_rand_state);
@@ -244,6 +248,63 @@ static void run_frames(const uint8_t (*frames)[P9_MAX_MSIZE], const uint32_t *le
     }
 }
 
+
+/* One request, one reply; the reply's type, or 0 if it did not parse. */
+static unsigned rpc(p9_msg_t *m, p9_auth_policy_t policy, p9_msg_t *back) {
+    static uint8_t req[P9_MAX_MSIZE], resp[P9_MAX_MSIZE];
+    int n = p9_serialize(m, req, sizeof req);
+    int r = n > 0 ? p9_server_process(req, (uint32_t)n, resp, sizeof resp, policy) : -1;
+    if (r <= 0 || p9_deserialize(resp, (uint32_t)r, back) != 0) return 0;
+    return back->type;
+}
+
+/* 52.10: the one door an unclaimed node leaves open. */
+static void claim_door_checks(void) {
+    p9_msg_t m, back;
+    int bad = 0;
+#define EXPECT(cond, what) do { if (!(cond)) { fprintf(stderr, "FAIL: %s\n", what); bad = 1; } } while (0)
+    ns_reset();
+    ns_add("/dev", 1, 0);
+    ns_add("/dev/setup", 0, 10);
+    ns_add("/dev/owner", 0, 10);
+    p9_init();
+    memset(&m, 0, sizeof m); m.type = P9_TVERSION; m.tag = P9_NOTAG; m.msize = P9_MAX_MSIZE;
+    rpc(&m, P9_AUTH_REQUIRED, &back);
+
+    for (int variant = 0; variant < 4; variant++) {
+        g_setup_open = variant & 1;
+        g_setup_ap = (variant >> 1) & 1;
+        memset(&m, 0, sizeof m); m.type = P9_TATTACH; m.tag = 2; m.fid = 20; m.afid = P9_NOFID;
+        snprintf(m.uname, sizeof m.uname, "stranger"); snprintf(m.aname, sizeof m.aname, "/dev/setup");
+        unsigned t = rpc(&m, P9_AUTH_REQUIRED, &back);
+        EXPECT((t == P9_RATTACH) == (variant == 3), "an unauthenticated attach to /dev/setup needs an open window AND the setup link");
+        memset(&m, 0, sizeof m); m.type = P9_TATTACH; m.tag = 3; m.fid = 21; m.afid = P9_NOFID;
+        snprintf(m.uname, sizeof m.uname, "stranger"); snprintf(m.aname, sizeof m.aname, "/");
+        EXPECT(rpc(&m, P9_AUTH_REQUIRED, &back) == P9_RERROR, "an unauthenticated attach reached something other than /dev/setup");
+        memset(&m, 0, sizeof m); m.type = P9_TATTACH; m.tag = 4; m.fid = 22; m.afid = P9_NOFID;
+        snprintf(m.uname, sizeof m.uname, "stranger"); snprintf(m.aname, sizeof m.aname, "/dev/owner");
+        EXPECT(rpc(&m, P9_AUTH_REQUIRED, &back) == P9_RERROR, "an unauthenticated attach reached /dev/owner");
+        memset(&m, 0, sizeof m); m.type = P9_TCLUNK; m.tag = 5; m.fid = 20; rpc(&m, P9_AUTH_REQUIRED, &back);
+    }
+
+    /* The setup attach may write /dev/setup; a cable (no authentication required) is admin and may write /dev/owner. */
+    g_setup_open = g_setup_ap = 1;
+    memset(&m, 0, sizeof m); m.type = P9_TATTACH; m.tag = 6; m.fid = 30; m.afid = P9_NOFID;
+    snprintf(m.uname, sizeof m.uname, "stranger"); snprintf(m.aname, sizeof m.aname, "/dev/setup");
+    EXPECT(rpc(&m, P9_AUTH_REQUIRED, &back) == P9_RATTACH, "setup attach");
+    memset(&m, 0, sizeof m); m.type = P9_TOPEN; m.tag = 7; m.fid = 30; m.mode = P9_OWRITE;
+    EXPECT(rpc(&m, P9_AUTH_REQUIRED, &back) == P9_ROPEN, "the setup attach could not open /dev/setup for writing");
+    memset(&m, 0, sizeof m); m.type = P9_TATTACH; m.tag = 8; m.fid = 31; m.afid = P9_NOFID;
+    snprintf(m.uname, sizeof m.uname, "cable"); snprintf(m.aname, sizeof m.aname, "/dev/owner");
+    EXPECT(rpc(&m, P9_AUTH_NOT_REQUIRED, &back) == P9_RATTACH, "cable attach to /dev/owner");
+    memset(&m, 0, sizeof m); m.type = P9_TOPEN; m.tag = 9; m.fid = 31; m.mode = P9_OWRITE;
+    EXPECT(rpc(&m, P9_AUTH_NOT_REQUIRED, &back) == P9_ROPEN, "a cable (admin) could not open /dev/owner for writing");
+    g_setup_open = g_setup_ap = 0;
+#undef EXPECT
+    if (bad) exit(1);
+    printf("p9_host: the claim door opens only for /dev/setup, an open window and the setup link\n");
+}
+
 static volatile sig_atomic_t g_iter = -1;
 static uint64_t g_seed0;
 static void on_alarm(int sig) {
@@ -281,6 +342,7 @@ int main(int argc, char **argv) {
     run_frames((const uint8_t (*)[P9_MAX_MSIZE])g_frames, g_flen, g_nframes, P9_AUTH_NOT_REQUIRED);
     ns_reset();
     run_frames((const uint8_t (*)[P9_MAX_MSIZE])g_frames, g_flen, g_nframes, P9_AUTH_REQUIRED);
+    claim_door_checks();
     printf("p9_host: %d-frame session round-trips and runs under both policies\n", g_nframes);
 
     static uint8_t mut[64][P9_MAX_MSIZE];

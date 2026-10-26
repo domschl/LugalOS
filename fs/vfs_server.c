@@ -40,6 +40,7 @@
 #endif
 #include "kernel/llp_node.h"
 #include "kernel/ota.h"
+#include "kernel/setup.h"
 #include "kernel/klog.h"
 #include "kernel/device.h"
 #include "net/ip.h"
@@ -2305,6 +2306,10 @@ static const char *g_dev_names[]  = { "uart", "null", "zero", "eeprom", "clipboa
     /* updating this node's image (kernel/ota.h): the ctl file and the image */
     "ota", "otaimage",
 #endif
+#if defined(CONFIG_NETWORK_CLAIM)
+    /* claiming the node, and its owner part (kernel/setup.h) */
+    "setup", "owner",
+#endif
 #if defined(CONFIG_BATT_CELLS)
     /* the board battery's state (kernel/power.h) */
     "power",
@@ -2539,6 +2544,16 @@ int vfs_pread(int fd, void *buf, uint32_t count, uint64_t offset) {
                 memcpy(buf, st + offset, k);
                 return (int)k;
 #endif
+#if defined(CONFIG_NETWORK_CLAIM)
+            } else if (strcmp(h->rel_path, "setup") == 0 || strcmp(h->rel_path, "owner") == 0) {
+                char st[512];
+                uint32_t len = h->rel_path[0] == 's' ? setup_ctl_read(st, sizeof st) : owner_ctl_read(st, sizeof st);
+                if (offset >= len) return 0;
+                uint32_t k = len - (uint32_t)offset;
+                if (k > count) k = count;
+                memcpy(buf, st + offset, k);
+                return (int)k;
+#endif
 #if defined(CONFIG_BATT_CELLS)
             } else if (strcmp(h->rel_path, "power") == 0) {
                 char st[256];
@@ -2610,6 +2625,12 @@ int vfs_pwrite(int fd, const void *buf, uint32_t count, uint64_t offset) {
 #if defined(CONFIG_BATT_CELLS)
             } else if (strcmp(h->rel_path, "power") == 0) {
                 return power_ctl_write((const char *)buf, count);
+#endif
+#if defined(CONFIG_NETWORK_CLAIM)
+            } else if (strcmp(h->rel_path, "setup") == 0) {
+                return setup_ctl_write((const char *)buf, count);
+            } else if (strcmp(h->rel_path, "owner") == 0) {
+                return owner_ctl_write((const char *)buf, count);
 #endif
 #if defined(CONFIG_OTA)
             } else if (strcmp(h->rel_path, "ota") == 0) {

@@ -41,6 +41,7 @@
 #include "drivers/cyw43.h"    /* cyw43_autostart_task_start() */
 #include "kernel/radio_c6.h"
 #include "kernel/ota.h"
+#include "kernel/setup.h"
 #if defined(CONFIG_BOARD_RP2350)
 #include "arch/rp2350_bootrom.h"
 #endif
@@ -659,6 +660,8 @@ void kernel_main(void) {
      * and is the wrong one: it runs from vfs_init(), long before any bus has
      * been scanned. */
     p9_grants_cache_load();
+    /* The grants decide whether the node is claimed, so after them. */
+    setup_init();
 
     if (netif_default()) {
         net_stack_attach(netif_default());

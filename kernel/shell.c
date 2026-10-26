@@ -77,6 +77,7 @@
 #include "kernel/sha256.h"
 #include "kernel/crypto.h"
 #include "kernel/ota.h"
+#include "kernel/setup.h"
 #include "kernel/privilege.h"
 #include "kernel/random.h"
 #include "kernel/idstore.h"
@@ -3593,7 +3594,7 @@ static void peers_print_report(void) {
         char fp[KEY_FINGERPRINT_HEX_LEN + 1];
         key_fingerprint_hex(entries[i].key, entries[i].key_len, fp);
         cprintf("%-16s %-16s %-20s %s\n", entries[i].name, fp, entries[i].aname,
-                entries[i].read_only ? "ro" : "rw");
+                entries[i].admin ? "admin" : entries[i].read_only ? "ro" : "rw");
     }
 }
 
@@ -3621,7 +3622,7 @@ static void cmd_peers(const char *arg) {
     const char *rest = &arg[i];
 
     if (strcmp(sub, "add") == 0) {
-        char name[P9_MAX_NAME_LEN], hexstr[160], tok3[P9_MAX_NAME_LEN], tok4[4];
+        char name[P9_MAX_NAME_LEN], hexstr[160], tok3[P9_MAX_NAME_LEN], tok4[8];
         const char *p = rest;
         p = next_token(p, name, sizeof(name));
         p = next_token(p, hexstr, sizeof(hexstr));
@@ -3629,7 +3630,7 @@ static void cmd_peers(const char *arg) {
         next_token(p, tok4, sizeof(tok4));
 
         if (name[0] == '\0' || hexstr[0] == '\0') {
-            cprintf("usage: peers add <name> <hex> [<aname>] [ro|rw]\n");
+            cprintf("usage: peers add <name> <hex> [<aname>] [ro|rw|admin]\n");
             return;
         }
 
@@ -3637,11 +3638,14 @@ static void cmd_peers(const char *arg) {
         strncpy(aname, "/", sizeof(aname) - 1);
         aname[sizeof(aname) - 1] = '\0';
         bool read_only = false;
+        bool admin = false;
         if (strcmp(tok3, "ro") == 0)      read_only = true;
         else if (strcmp(tok3, "rw") == 0) read_only = false;
+        else if (strcmp(tok3, "admin") == 0) admin = true;
         else if (tok3[0])                 strncpy(aname, tok3, sizeof(aname) - 1);
         if (strcmp(tok4, "ro") == 0)      read_only = true;
         else if (strcmp(tok4, "rw") == 0) read_only = false;
+        else if (strcmp(tok4, "admin") == 0) admin = true;
 
         uint8_t key[P9_AUTH_KEY_MAX];
         uint32_t klen = parse_hex_bytes(hexstr, key, sizeof(key));
@@ -3657,10 +3661,11 @@ static void cmd_peers(const char *arg) {
             cprintf("peers add: this rewrites the identity record; on flash-backed\n"
                     "           boards the write reboots the board when it completes.\n");
         }
-        p9_grant_result_t rc = p9_grants_add(name, key, klen, aname, read_only);
+        p9_grant_result_t rc = admin ? p9_grants_add_admin(name, key, klen, aname)
+                                     : p9_grants_add(name, key, klen, aname, read_only);
         memset(key, 0, sizeof(key));
         if (rc != P9_GRANT_OK) { cprintf("peers add: %s\n", p9_grant_result_str(rc)); return; }
-        cprintf("peers: granted '%s' at %s (%s)\n", name, aname, read_only ? "ro" : "rw");
+        cprintf("peers: granted '%s' at %s (%s)\n", name, aname, admin ? "admin" : read_only ? "ro" : "rw");
         return;
     }
 
@@ -4032,6 +4037,47 @@ static void cmd_ota(const char *arg) {
     (void)arg;
     cprintf("ota: this board has no update path\n");
 #endif
+}
+
+/* --- `setup`: claiming, and the owner part of the identity (kernel/setup.h) ---------- */
+static void cmd_setup(const char *arg) {
+    while (arg && *arg == ' ') arg++;
+    if (!arg || !*arg) {
+        char secret[NODE_SETUP_SECRET_MAX + 1];
+        bool have = node_setup_secret(secret, sizeof secret);
+        memset(secret, 0, sizeof secret);
+        setup_state_t st = setup_state();
+        cprintf("setup: %s\n", setup_state_name(st));
+        cprintf("  setup secret: %s\n", have ? "stored" : "none (setup secret TEXT stores one)");
+#if defined(CONFIG_NETWORK_CLAIM)
+        char text[256];
+        uint32_t n = setup_ctl_read(text, sizeof text - 1);
+        text[n] = 0;
+        cprintf("%s", text);
+#else
+        cprintf("  this build offers no claiming over the network (CONFIG_NETWORK_CLAIM is off)\n");
+#endif
+        return;
+    }
+    if (strcmp(arg, "start") == 0) {
+        cprintf(setup_start() ? "setup: window open for %u s\n"
+                              : "setup: not started -- this build offers no network claiming, or the node has no setup secret (%u)\n",
+                (unsigned)SETUP_WINDOW_S);
+    } else if (strcmp(arg, "stop") == 0) {
+        setup_stop();
+        cprintf("setup: window closed\n");
+    } else if (strcmp(arg, "reset-owner") == 0) {
+        node_id_result_t rc = setup_reset_owner();
+        cprintf("setup reset-owner: %s\n", rc == NODE_ID_OK ? "the owner part is wiped; the node is unclaimed (its factory part is kept)"
+                                                              : node_id_result_str(rc));
+    } else if (strncmp(arg, "secret ", 7) == 0) {
+        const char *t = arg + 7;
+        while (*t == ' ') t++;
+        node_id_result_t rc = node_identity_set_setup_secret(t);
+        cprintf("setup secret: %s\n", rc == NODE_ID_OK ? "stored" : node_id_result_str(rc));
+    } else {
+        cprintf("usage: setup [start | stop | reset-owner | secret TEXT]\n");
+    }
 }
 
 static void cmd_wlan(const char *arg) {
@@ -5730,7 +5776,7 @@ static void shell_run_editor(const char *filename) {
  * they change keys, identity or network configuration, write arbitrary memory
  * or install firmware. See kernel/include/kernel/privilege.h. */
 static const char *const g_privileged[] = {
-    "identity", "mqttcfg", "netcfg", "otakey", "p9key", "peers", "poke", "sdio", "wlan",
+    "identity", "mqttcfg", "netcfg", "otakey", "p9key", "peers", "poke", "sdio", "setup", "wlan",
 };
 
 static bool privileged_cmd_refused(const char *cmd_line) {
@@ -7164,6 +7210,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
 #endif
     } else if (strcmp(cmd_line, "ota") == 0) {
         cmd_ota(NULL);
+        return;
+    } else if (strcmp(cmd_line, "setup") == 0 || strncmp(cmd_line, "setup ", 6) == 0) {
+        cmd_setup(cmd_line[5] ? &cmd_line[6] : NULL);
         return;
     } else if (strcmp(cmd_line, "otakey") == 0 || strncmp(cmd_line, "otakey ", 7) == 0) {
         cmd_otakey(cmd_line[6] ? &cmd_line[7] : NULL);

@@ -11,6 +11,7 @@
 #include "kernel/hart.h"
 #include "kernel/lock.h"
 #include "kernel/palloc.h"
+#include "kernel/setup.h"
 #include <string.h>
 
 /* --- Bounds-checked wire cursors (closes B11, plan/completed/2026-08-07_review_
@@ -245,6 +246,13 @@ typedef struct {
      * when it is set. */
     bool read_only;
 
+    /* 52.10: set at Tattach from the grant, like read_only, and carried down the same way.
+     * `admin`: the grant has it, or the link needs no authentication (a cable is the console).
+     * `setup_attach`: an attach with no authentication, allowed only to /dev/setup while a
+     * setup window is open on a link that is the setup access point (p9_link_is_setup_ap()). */
+    bool admin;
+    bool setup_attach;
+
     /* N2: an auth fid. Not a file, not on any disk, and deliberately in the
      * same table -- 9P gives an afid a fid number from the same space, and a
      * client clunks it the same way. `is_auth` is what keeps it out of every
@@ -472,6 +480,9 @@ static bool parse_grant_line(const char *line, const char *line_end, p9_grant_t 
     const char *m = ae;
     while (m < line_end && (*m == ' ' || *m == '\t')) m++;
     g->read_only = (line_end - m >= 2 && m[0] == 'r' && m[1] == 'o');
+    /* "ad": admin, which is read-write and more. An older build reading the line takes it for "rw",
+     * the narrower reading of the two it knows. */
+    g->admin = (line_end - m >= 2 && m[0] == 'a' && m[1] == 'd');
 
     return true;
 }
@@ -564,6 +575,29 @@ void p9_grants_cache_load(void) {
     spin_unlock_irqrestore(&g_auth_lock, f);
 }
 
+void p9_grants_cache_clear(void) {
+    uintptr_t f = spin_lock_irqsave(&g_auth_lock);
+    g_grants_cache_len = 0;
+    g_grants_cached = false;
+    spin_unlock_irqrestore(&g_auth_lock, f);
+}
+
+/* The cache only, as a plain scan of its text for a mode word "ad": no parse buffer, so the
+ * 9P server task (which has little stack) may ask on every write. */
+bool p9_grants_has_admin(void) {
+    bool found = false;
+    uintptr_t f = spin_lock_irqsave(&g_auth_lock);
+    const char *p = g_grants_cache, *end = g_grants_cache + (g_grants_cached ? g_grants_cache_len : 0);
+    while (p < end && !found) {
+        const char *e = p;
+        while (e < end && *e != '\n') e++;
+        if (e - p >= 3 && e[-2] == 'a' && e[-1] == 'd' && e[-3] == ' ') found = true;
+        p = e < end ? e + 1 : e;
+    }
+    spin_unlock_irqrestore(&g_auth_lock, f);
+    return found;
+}
+
 uint32_t p9_grants_list(p9_grant_t *out, uint32_t cap) {
     char buf[P9_GRANTS_BUF_MAX];
 
@@ -638,15 +672,33 @@ static uint32_t p9_grant_serialize(const p9_grant_t *entries, uint32_t count, ch
         out[used++] = ' ';
         for (const char *s = entries[i].aname; *s; s++) out[used++] = *s;
         out[used++] = ' ';
-        out[used++] = 'r';
-        out[used++] = entries[i].read_only ? 'o' : 'w';
+        if (entries[i].admin) {
+            out[used++] = 'a';
+            out[used++] = 'd';
+        } else {
+            out[used++] = 'r';
+            out[used++] = entries[i].read_only ? 'o' : 'w';
+        }
         out[used++] = '\n';
     }
     return used;
 }
 
+static p9_grant_result_t p9_grants_add_mode(const char *name, const uint8_t *key, uint32_t key_len,
+                                            const char *aname, bool read_only, bool admin);
+
 p9_grant_result_t p9_grants_add(const char *name, const uint8_t *key, uint32_t key_len,
                                 const char *aname, bool read_only) {
+    return p9_grants_add_mode(name, key, key_len, aname, read_only, false);
+}
+
+p9_grant_result_t p9_grants_add_admin(const char *name, const uint8_t *key, uint32_t key_len,
+                                      const char *aname) {
+    return p9_grants_add_mode(name, key, key_len, aname, false, true);
+}
+
+static p9_grant_result_t p9_grants_add_mode(const char *name, const uint8_t *key, uint32_t key_len,
+                                            const char *aname, bool read_only, bool admin) {
     if (!name || !name[0] || strlen(name) >= P9_MAX_NAME_LEN) return P9_GRANT_ERR_BAD_INPUT;
     if (!key || key_len == 0 || key_len > P9_AUTH_KEY_MAX) return P9_GRANT_ERR_BAD_INPUT;
     if (aname && aname[0] && (strlen(aname) >= P9_MAX_NAME_LEN || aname[0] != '/')) return P9_GRANT_ERR_BAD_INPUT;
@@ -667,7 +719,8 @@ p9_grant_result_t p9_grants_add(const char *name, const uint8_t *key, uint32_t k
     g.key_len = key_len;
     if (aname && aname[0]) strncpy(g.aname, aname, sizeof(g.aname) - 1);
     else g.aname[0] = '/';
-    g.read_only = read_only;
+    g.read_only = read_only && !admin;
+    g.admin = admin;
 
     if (replace_idx >= 0) entries[replace_idx] = g;
     else entries[count++] = g;
@@ -1052,15 +1105,34 @@ static bool p9_path_within(const char *prefix, const char *path) {
     return path[n] == '\0' || path[n] == '/';
 }
 
+/* Whether the link this request arrived on is the setup access point's. The access point
+ * (52.12) overrides it; until then no link is, and an unclaimed node takes a claim over a cable
+ * (a link that needs no authentication) or from its console only. */
+__attribute__((weak)) bool p9_link_is_setup_ap(void) { return false; }
+
+/* 52.10: the files that change the identity need more than a read-write grant. /dev/owner is the
+ * owner part: `admin`. /dev/setup takes a claim: `admin`, or the attach that /dev/setup alone
+ * allows an unclaimed node to take unauthenticated. */
+static bool p9_write_allowed(const p9_fid_entry_t *e) {
+    if (strcmp(e->path, "/dev/owner") == 0) return e->admin;
+    if (strcmp(e->path, "/dev/setup") == 0) return e->admin || e->setup_attach;
+    return true;
+}
+
 static void p9_handle_tattach(const p9_msg_t *req, p9_msg_t *resp) {
     bool grant_matched = false;
     bool grant_read_only = false;
+    bool grant_admin = false;
+    bool setup_attach = false;
 
     /* The gate. On a transport that requires it, an attach is only as good as
      * the afid it names: the afid must exist, be an auth fid, have had a
      * verified response written to it, and have been established for the same
      * identity now being claimed. */
-    if (cur_policy() == P9_AUTH_REQUIRED) {
+    if (cur_policy() == P9_AUTH_REQUIRED && req->afid == P9_NOFID &&
+        strcmp(req->aname, "/dev/setup") == 0 && setup_unauth_attach_ok() && p9_link_is_setup_ap()) {
+        setup_attach = true;       /* an unclaimed node's one open door: see kernel/setup.h */
+    } else if (cur_policy() == P9_AUTH_REQUIRED) {
         if (req->afid == P9_NOFID) {
             resp->type = P9_RERROR;
             resp->ename = "attach: this link requires authentication (no afid)";
@@ -1093,6 +1165,7 @@ static void p9_handle_tattach(const p9_msg_t *req, p9_msg_t *resp) {
         if (p9_grants_find(req->uname, &g)) {
             grant_matched = true;
             grant_read_only = g.read_only;
+            grant_admin = g.admin;
             char granted[128];
             if (g.aname[0] == '\0' || strcmp(g.aname, "/") == 0) {
                 strncpy(granted, "/", sizeof(granted) - 1);
@@ -1150,6 +1223,10 @@ static void p9_handle_tattach(const p9_msg_t *req, p9_msg_t *resp) {
     strncpy(e->path, path, sizeof(e->path) - 1);
     e->path[sizeof(e->path) - 1] = '\0';
     e->read_only = grant_matched && grant_read_only;
+    /* A cable (no authentication) is the console's equivalent; an authenticated peer is admin only
+     * by its grant; the setup attach is neither and reaches /dev/setup alone. */
+    e->admin = cur_policy() != P9_AUTH_REQUIRED || (grant_matched && grant_admin);
+    e->setup_attach = setup_attach;
     /* An aname that doesn't resolve to a real VFS path (e.g. a bare export
      * name a client made up) is still treated as an attachable directory
      * root rather than rejected outright -- matches this server's historic
@@ -1182,6 +1259,8 @@ static void p9_handle_twalk(const p9_msg_t *req, p9_msg_t *resp) {
             dst->is_dir = src->is_dir;
             dst->qid = src->qid;
             dst->read_only = src->read_only;  /* I5: a grant's mode follows every fid descended from it */
+            dst->admin = src->admin;
+            dst->setup_attach = src->setup_attach;
         }
         resp->type = P9_RWALK;
         resp->nwqid = 0;
@@ -1232,6 +1311,8 @@ static void p9_handle_twalk(const p9_msg_t *req, p9_msg_t *resp) {
     dst->is_dir = final_is_dir;
     dst->qid = (nwalked > 0) ? qids[nwalked - 1] : src->qid;
     dst->read_only = src->read_only;  /* I5: a grant's mode follows every fid descended from it */
+    dst->admin = src->admin;
+    dst->setup_attach = src->setup_attach;
 
     resp->type = P9_RWALK;
     resp->nwqid = nwalked;
@@ -1270,6 +1351,9 @@ static void p9_handle_topen(const p9_msg_t *req, p9_msg_t *resp) {
          * read_only check already fails at, for the same reason. */
         if (e->read_only && (flags & (VFS_O_WRITE | VFS_O_TRUNC))) {
             resp->type = P9_RERROR; resp->ename = "open: this peer is granted read-only access"; return;
+        }
+        if ((flags & (VFS_O_WRITE | VFS_O_TRUNC)) && !p9_write_allowed(e)) {
+            resp->type = P9_RERROR; resp->ename = "open: writing this file needs the admin grant"; return;
         }
 
         int fd = vfs_open(e->path, flags);
@@ -1452,6 +1536,9 @@ static void p9_handle_twrite(const p9_msg_t *req, p9_msg_t *resp) {
      * through Topen's own gate -- still refused, same reason either way. */
     if (e->read_only) {
         resp->type = P9_RERROR; resp->ename = "write: this peer is granted read-only access"; return;
+    }
+    if (!p9_write_allowed(e)) {
+        resp->type = P9_RERROR; resp->ename = "write: this file needs the admin grant"; return;
     }
 
     int n = vfs_pwrite(e->vfs_fd, req->data, req->count, req->offset);
