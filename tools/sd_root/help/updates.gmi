@@ -49,6 +49,14 @@ uv run tools/lota.py push build/esp32c6 --tcp 192.168.178.162 --keyfile KEYFILE 
 
 uv run tools/lota.py status --p4 lcd7b --prefix /c6
 
+# A P4 and the C6 beside it, side by side: both slots, versions and trials, the LLP
+# version each end speaks and whether the two run the same build (--single: just the P4):
+uv run tools/lota.py status --p4 nano
+
+# The whole board: the C6 first, until it has confirmed, then the P4, then the pair is
+# checked (build/esp32c6-mini beside the P4's build directory, or --c6-build):
+uv run tools/lota.py push-board build/esp32p4 --p4 nano
+
 # Boot the other slot's image next (e.g. back to the factory esp-hosted-mcu):
 uv run tools/lota.py switch --p4 tab5 --prefix /c6 --reboot
 
@@ -56,6 +64,10 @@ uv run tools/lota.py switch --p4 tab5 --prefix /c6 --reboot
 # SHA-256 checked):
 uv run tools/lota.py dump-other --p4 tab5 --prefix /c6 -o ota0-factory.bin
 ```
+
+push-board does the C6 first because the C6 carries the link the P4's update arrives over, and stops there if the C6 does not confirm (the P4 is untouched). Then the P4: over TCP it waits for the confirmation like push --wait; over the console it waits 50 s for the trial to settle first, because opening the console resets some boards and would end a trial that has not confirmed. It ends by checking that the P4 runs the slot just written and has not fallen back (a fall-back also ends with no trial and a similar build id), that the C6 likewise, that both speak the same LLP version (the HELLO version in /proc/llp), and that they run the same build. A P4 that falls back after a confirmed C6 leaves a mixed board, reported as such (exit 2); switch --prefix /c6 --reboot takes the C6 back. A key set with p9key is gone after the P4 restarts, so over Wi-Fi the final check needs a key that survives a reboot (a grant); the update itself does not. --break c6|p4 ruins that part's image, to test the order and the fall-back.
+
+The shell's ota shows the same pair on the board itself: the P4's table, then the C6's (read through /c6 by the shell, not by /dev/ota, whose 9P server must not become a client of the link it serves), the LLP versions and whether the builds match.
 
 --wait follows /dev/ota until the new image has confirmed (exit 0) or the node has fallen back (exit 2). --break sends an image with 64 KB of the kernel's code zeroed -- it passes every check, boots and dies, which is how the fall-back is tested. --no-board-check sends an image for another board, to test the node's own refusal. --rate KB/S slows the upload down, for cutting the power in the middle of one by hand.
 
