@@ -114,7 +114,18 @@ _start:
      * loaded. Disarm them before anything slow happens -- a full boot takes
      * longer than they allow, and the symptom is a kernel that reaches its
      * shell and then resets. See xip_esp32p4.c. */
+    /* What the loader passed (drivers/include/drivers/ota_esp32p4.h): a0 its
+     * magic, a1 the XIP half's flash address, a2 flags, a3 the slot. Kept in
+     * saved registers across the watchdog call, then handed to the mapping. */
+    mv s2, a0
+    mv s3, a1
+    mv s4, a2
+    mv s5, a3
     call esp32p4_boot_wdt_disable
+    mv a0, s2
+    mv a1, s3
+    mv a2, s4
+    mv a3, s5
     call esp32p4_xip_map
 #if CONFIG_ENABLE_SMP
 .Lp4_skip_boot_setup:

@@ -73,3 +73,6 @@ P4_LOWRAM_CEIL = 0x4ff3f000;                       /* below the ROM's constant-a
 P4_RAM_FLOOR   = 0x4ff00000;                       /* nothing below: L2MEM starts here */
 P4_RAM_CEIL    = 0x4ffc0000 - CONFIG_L2_CACHE_BYTES; /* the cache is the top of L2MEM */
 P4_HEAP_FLOOR  = 360K;                             /* see the ASSERT in linker/esp32p4.ld */
+
+/* Where the loader (linker/esp32p4_loader.ld) is linked: inside the space IDF's own second-stage bootloader occupies below v3.0 (0x4ff28ed0..0x4ff38bd0, bootloader.memory.ld.in), clear of the kernel's loaded sections at 0x4ff40000 and above. */
+P4_LOADER_BASE = 0x4ff2c000;

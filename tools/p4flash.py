@@ -104,17 +104,17 @@ def esptool_cmd() -> list[str]:
 
 
 def make_boot_image(build: pathlib.Path):
-    """Turn the RAM half into the image the ROM can boot.
+    """Turn the loader into the image the ROM can boot.
 
-    The build emits lugalos-ram.elf -- the loadable sections that stay in
-    L2MEM, with the flash-resident ones removed -- and the ROM wants an ESP
-    image: segments with load addresses, a header and a checksum. `elf2image`
-    is what produces that, and it lives here rather than in CMake because
-    esptool is this script's dependency and not the build's."""
-    elf = build / "lugalos-ram.elf"
+    The build emits lugalos-loader.elf (arch/riscv/esp32p4/loader.c) and the
+    ROM wants an ESP image: segments with load addresses, a header and a
+    checksum. `elf2image` is what produces that, and it lives here rather
+    than in CMake because esptool is this script's dependency and not the
+    build's."""
+    elf = build / "lugalos-loader.elf"
     if not elf.exists():
         sys.exit("%s not found -- build the esp32p4 preset first" % elf)
-    img = build / "lugalos-boot.img"
+    img = build / "lugalos-loader.img"
     rc = subprocess.call(esptool_cmd() + ["elf2image", "-o", str(img), str(elf)])
     if rc != 0:
         sys.exit("elf2image failed on %s" % elf.name)
@@ -131,13 +131,23 @@ def main() -> int:
     ap.add_argument("--reset-port", help="port whose DTR/RTS reach the board's reset")
     ap.add_argument("--baud", type=int, default=921600)
     ap.add_argument("--only", help="comma-separated segments to write "
-                    "(boot,os,fs); default all three")
+                    "(boot,rec,os,fs); default all. boot is the permanent loader, rec the "
+                    "boot records (erased: slot A boots), os slot A, fs /flash0. os also "
+                    "erases the records, or a board last updated into slot B would "
+                    "keep booting it")
     ap.add_argument("--verify", action="store_true",
                     help="re-verify with esptool's on-chip digest afterwards")
     a = ap.parse_args()
 
     segs = read_segments(a.build)
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+    import lota
+    man = lota.read_manifest(a.build)
+    segs.append(("rec", int(man["bootrec"][0], 0), int(man["bootrec"][1], 0), "bootrec-erased.bin", "exact"))
+    segs.append(("os", int(man["slot_a"][0], 0), int(man["slot_a"][1], 0), "lugalos-slot-a.img", "fit"))
     wanted = set(a.only.split(",")) if a.only else {n for n, *_ in segs}
+    if "os" in wanted:
+        wanted.add("rec")
     unknown = wanted - {n for n, *_ in segs}
     if unknown:
         sys.exit("no such segment: %s (have: %s)"
@@ -147,6 +157,12 @@ def main() -> int:
     # sizes are checked.
     if "boot" in wanted:
         make_boot_image(a.build)
+    if "rec" in wanted:
+        (a.build / "bootrec-erased.bin").write_bytes(b"\xff" * int(man["bootrec"][1], 0))
+    if "os" in wanted:
+        image, _ = lota.make_image(a.build)
+        offsets = (int(man["parts"][0], 0), int(man["parts"][1], 0))
+        (a.build / "lugalos-slot-a.img").write_bytes(lota.slot_image(image, offsets))
 
     plan = []
     for name, base, size, artifact, mode in segs:
@@ -174,7 +190,6 @@ def main() -> int:
                      % (base, WRITABLE_FLOOR))
         plan.append((name, base, img, actual))
 
-    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
     import p4run  # ports and reset live there; one implementation, not two
     bport, brport = p4run.board_ports(a.board)
     port = a.port or p4run.console_port(bport)

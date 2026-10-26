@@ -25,6 +25,7 @@
 
 #include <stdint.h>
 #include "lugalos_config.h"
+#include "drivers/ota_esp32p4.h"
 
 #if defined(CONFIG_BOARD_ESP32P4)
 
@@ -155,6 +156,10 @@ BOOT_TEXT void esp32p4_boot_wdt_disable(void) {
     p = (volatile uint32_t *)(uintptr_t)LP_WDT_SWD_WPROTECT; *p = 0u;
 }
 
+/* Which slot this boot came from, for the update backend (drivers/ota_esp32p4.c).
+ * In .data, not .bss: it is written before the kernel clears .bss. */
+__attribute__((section(".data"))) p4_boot_info_t g_p4_boot = { 0, 0, 0, 0 };
+
 typedef void (*rom_cache_op_t)(void);
 typedef void (*rom_cache_map_op_t)(uint32_t map);
 typedef int  (*rom_mmu_set_t)(uint32_t sensitive, uint32_t vaddr, uint32_t paddr,
@@ -229,7 +234,22 @@ BOOT_TEXT static void flash_clock_80m(void) {
     (void)config_clk(1u, 1u);
 }
 
-BOOT_TEXT void esp32p4_xip_map(void) {
+/* `magic` == OTA_P4_BOOT_MAGIC: the loader (arch/riscv/esp32p4/loader.c) booted
+ * this kernel and names the XIP half to map; otherwise (esptool's load-ram)
+ * slot A's, and the boot cannot update. */
+BOOT_TEXT void esp32p4_xip_map(uint32_t magic, uint32_t xip_base, uint32_t flags, uint32_t slot) {
+    if (magic != OTA_P4_BOOT_MAGIC || xip_base % 0x10000u || slot > 1u ||
+        xip_base != (uint32_t)(slot ? LUGALOS_P4_SLOT_B_BASE : LUGALOS_P4_SLOT_A_BASE) + OTA_P4_PART1_OFF) {
+        magic = 0;
+        xip_base = (uint32_t)LUGALOS_P4_OSIMAGE_BASE;
+        flags = 0;
+        slot = 0;
+    }
+    g_p4_boot.magic = magic;
+    g_p4_boot.xip_base = xip_base;
+    g_p4_boot.flags = flags;
+    g_p4_boot.slot = slot;
+
     rom_cache_op_t     dis_l2 = (rom_cache_op_t)(uintptr_t)ROM_CACHE_DISABLE_L2_CACHE;
     rom_cache_op_t     en_l2  = (rom_cache_op_t)(uintptr_t)ROM_CACHE_ENABLE_L2_CACHE;
     rom_cache_map_op_t inval  = (rom_cache_map_op_t)(uintptr_t)ROM_CACHE_INVALIDATE_ALL;
@@ -273,7 +293,7 @@ BOOT_TEXT void esp32p4_xip_map(void) {
      * mapping by 0x20 to satisfy that around its image headers; we map a raw
      * binary and need no such adjustment. `fixed` is 0: consecutive virtual
      * pages follow consecutive physical ones. */
-    (void)mmu(0u, 0x40000000u, (uint32_t)LUGALOS_P4_OSIMAGE_BASE,
+    (void)mmu(0u, 0x40000000u, xip_base,
               MMU_PAGE_KB, (uint32_t)(uintptr_t)_xip_pages, 0u);
 
     /* Invalidating L1 is fine and disabling it is not: an invalidate only

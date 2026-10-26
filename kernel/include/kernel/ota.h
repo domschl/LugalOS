@@ -51,6 +51,7 @@ typedef struct {
     bool     fell_back;         /* the last trial did not confirm */
     uint32_t part_max[2];       /* the largest part 0 / part 1 a slot holds */
     const char *chip;
+    uint16_t chip_rev;          /* the silicon's, major * 100 + minor; 0: not checked */
     const char *layout;         /* "loader" or "idf" */
     uint32_t trial_s;           /* the watchdog's deadline for a trial */
 } ota_board_info_t;

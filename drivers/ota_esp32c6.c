@@ -119,6 +119,7 @@ bool ota_c6_idf_writable(uint32_t addr, uint32_t len) {
 bool ota_board_info(ota_board_info_t *out) {
     out->nslots = 2;
     out->chip = "esp32c6";
+    out->chip_rev = 0;
     out->trial_s = OTA_C6_TRIAL_S;
     if (booted_by_idf() && idf_ensure_layout()) {
         uint32_t other = g_c6_boot.slot ^ 1u;

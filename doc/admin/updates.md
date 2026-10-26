@@ -10,8 +10,9 @@ back to the old one by itself if it does not. Because it is only 9P, any path
 to the node works: a host on the LAN, a P4 reaching its C6 through `/c6`, or
 the console's SLIP link.
 
-Supported so far: **the ESP32-C6** (`esp32c6`, `esp32c6-mini`). The P4 and the
-RP2350 follow.
+Supported so far: **the ESP32-C6** (`esp32c6`, `esp32c6-mini`) and **the
+ESP32-P4** (`esp32p4`, `esp32p4-lcd7b`, `esp32p4-tab5`). The RP2350
+follows.
 
 ## The files
 
@@ -129,6 +130,33 @@ The loader prints one line on the C6's UART0 at every boot, e.g.
 
 A kernel loaded into RAM by `c6run.py` was not started by the loader: it
 cannot update (`running=-`), and says so if asked.
+
+## The ESP32-P4's flash
+
+| Offset | What |
+| :--- | :--- |
+| `0x002000` | the loader (`arch/riscv/esp32p4/loader.c`), 2.7 KB: the image the boot ROM starts. Written only by `p4flash.py --only boot`, never over the network. |
+| `0x150000` | `/flash0`, 1 MB |
+| `0x250000` | slot A, 2 MB: the image header, the kernel's RAM half at +4 KB, its XIP half at +128 KB |
+| `0x450000` | slot B, the same |
+| `0x650000` | the boot records: two 4 KB sectors |
+| `0xFFF000` | the identity sector |
+
+The map is `cmake/flash_layout_esp32p4.cmake`. `0x010000-0x150000`, where the
+OS image used to be, is unused. `p4flash.py --only boot,os` writes the loader
+and slot A and erases the boot records, so slot A boots; `/flash0` and the
+identity are left alone. Push over any 9P path to the P4:
+`uv run tools/lota.py push build/esp32p4 --p4 nano --reboot` (the console), or
+`--tcp HOST --keyfile KEYFILE`. Opening the console resets the board, so
+`--wait` over `--p4` cannot watch a trial: check with `status` afterwards.
+
+The loader prints `[loader] slot B, BUILDID (trial)` on UART0 at 115200. A trial
+is healthy when `/flash0` or `/sd0` is mounted and, if a Wi-Fi network is
+configured, the C6's `wlan0` has joined. The trial watchdog is the RTC
+watchdog, set for 60 s (the P4's slow clock runs near 73 kHz, measured).
+`begin` also refuses an image built for another silicon revision. A kernel
+loaded by `p4run.py` (esptool `load-ram`) was not started by the loader and
+cannot update.
 
 ### ESP-IDF partition layout (`layout=idf`)
 
