@@ -492,3 +492,52 @@ board.
   autofocus camera features, FFT/SHA/AES hardware blocks (SHA-256 in
   hardware is a candidate later win for `idstore`/9P auth cost).
 * MicroPython/MaixPy binary compatibility, Arduino compatibility layer.
+
+---
+
+## 9. Milestone completion record
+
+### 65.3 — First boot to `lsh` (single core) — DONE
+
+Boot banner, full subsystem init and an **interactive `lsh`** over the USB
+cable, verified end to end (`ps`, `df` typed by the host, real output
+back). `cmake --preset k210 && ninja -C build/k210`, then
+`tools/k210run.py --load build/k210/lugalos.elf --exec "ps"`.
+
+What 65.3 turned out to be, beyond the build-system bucket:
+
+* **The UARTHS frame is not SiFive's.** The vendor table (`uarths.h`) puts
+  `rxctrl` at +0x0C (bit0 `rxen`), `ie` at +0x10, `ip` at +0x14. Writing
+  `ie = 0` at the SiFive offset (+0x0C) clears `rxen` and kills the
+  receiver with TX still perfect — the single most expensive way to lose
+  a day. `drivers/uart_k210.c` now carries the table and both traps as
+  comments.
+* **A `rxdata` read POPS the FIFO** (blob-proven). Console-status polling
+  (`uart_has_char`) must read `ip.rxwm` (a hardware level on this die),
+  never `rxdata`; a peek-then-get pair at the FIFO drops one byte per
+  poll.
+* **`ip` on this die is plain RW, not W1C.** Writing 1 to `ip.rxwm`
+  asserts the PLIC source; the "write-1-clear" idiom the standard frame
+  invites self-latches IRQ 33 forever. Clear with 0.
+* **The K210 PLIC collapses claim and complete into one register**
+  (`claim_complete`, per the vendor header): the kernel's write-back of
+  the id to the claim address is *correct* here, and the SiFive split
+  (complete at claim+0x1000) writes hart 1's claim instead.
+* **Unhandled level sources are now masked at first sight** by the
+  generic PLIC trap path (mirroring the P4's CLIC policy). The K210 BROM
+  leaves source 33 enabled and priority armed; without the mask, one
+  keystroke storm-firewalls the machine at ~250 Hz.
+* **Clock:** no clock-tree programming was needed — the BROM's ISP
+  already runs the PLL (UART divisor 0x0d38 against a ~390 MHz parent
+  answers at exactly 115200). `CONFIG_CPU_FREQ_MHZ 400` is the vendor
+  ceiling; the measured reality is ~390 MHz. `mtime` stays CPU/50.
+* **ISP fast mode on this link:** the 0xC6 "stage0" baud switch exists
+  for RAM boot, and after it `MEMORY_WRITE` runs at ~9 KB/s over the
+  CH552 — slower than plain 115200. kflash's own note (CH340/CH552
+  boards skip the fast path) is confirmed from silicon; 115200 is the
+  k210run default.
+* **No-PMP backend:** `mem_domain.c` grew the K210 arm — domain
+  bookkeeping stays software-valid, `mem_domain_enforced()` says false,
+  the backend reports itself `"none"`, and every isolation self-test
+  degrades to its honest "unenforced" report. Formalizing that surface
+  (banner text, `/proc/node` line) remains 65.4.

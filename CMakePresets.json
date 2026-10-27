@@ -256,6 +256,27 @@
         "LUGALOS_C6_MODULE": "MINI",
         "LUGALOS_BOARD_FILE": "${sourceDir}/cmake/board-esp32c6-mini.cmake"
       }
+    },
+    {
+      "name": "k210",
+      "displayName": "Kendryte K210 (Maix Bit)",
+      "description": "Kendryte K210: RV64IMAC @ 400 MHz (BROM default), 6 MB SRAM, M-mode only (no PMP/S-mode/MMU), UARTHS console.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/k210",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-k210.cmake",
+        "LUGALOS_ENABLE_SMP": "OFF",
+        "LUGALOS_ENABLE_CC": "OFF",
+        "LUGALOS_ENABLE_ED": "OFF",
+        "LUGALOS_ENABLE_SPISD": "OFF",
+        "LUGALOS_ENABLE_SDMMC": "OFF",
+        "LUGALOS_ENABLE_ST7735": "OFF",
+        "LUGALOS_ENABLE_TM1638": "OFF",
+        "LUGALOS_ENABLE_CHESS": "OFF",
+        "LUGALOS_ENABLE_PICO_CLOCK_GREEN": "OFF",
+        "LUGALOS_ENABLE_DCF77": "OFF",
+        "LUGALOS_ENABLE_GPS": "OFF"
+      }
     }
   ],
   "buildPresets": [
@@ -318,6 +339,10 @@
     {
       "name": "esp32c6-mini",
       "configurePreset": "esp32c6-mini"
+    },
+    {
+      "name": "k210",
+      "configurePreset": "k210"
     }
   ]
 }

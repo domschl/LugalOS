@@ -134,10 +134,16 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
         LUGALOS_P4_BOOTLOADER_BASE=${LUGALOS_P4_BOOTLOADER_BASE})
 
 elseif(LUGALOS_TARGET STREQUAL "K210")
-    set(ARCH_MARCH "rv64gc_zicsr_zifencei")
-    set(ARCH_MABI "lp64d")
-    set(LINKER_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/linker/qemu-rv64.ld")
-    add_compile_definitions(CONFIG_TARGET_RV64=1 CONFIG_MMU=1 CONFIG_MODE_S=1 CONFIG_BOARD_K210=1)
+    # 65.3. The pre-65 rows here (rv64gc/lp64d/MMU/S-mode) described a chip
+    # the 65.1 probe does not find: the K210 core has no PMP, no S-mode and
+    # no MMU, F retires-but-zero, and the AGENTS.md integer-only ABI rule
+    # closes D2. rv64imac + lp64, M-mode, no MMU -- exactly what §1.5
+    # measured, and the same CONFIG shape the QEMU rv32 target runs
+    # (CONFIG_MODE_M + CONFIG_NOMMU), only 64-bit wide.
+    set(ARCH_MARCH "rv64imac_zicsr_zifencei")
+    set(ARCH_MABI "lp64")
+    set(LINKER_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/linker/k210.ld")
+    add_compile_definitions(CONFIG_TARGET_RV64=1 CONFIG_NOMMU=1 CONFIG_MODE_M=1 CONFIG_BOARD_K210=1)
 else()
     message(FATAL_ERROR "Unknown LUGALOS_TARGET: ${LUGALOS_TARGET}")
 endif()
@@ -530,6 +536,8 @@ if(NOT DEFINED LUGALOS_BOARD_FILE)
         set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-esp32p4-nano.cmake")
     elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
         set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-esp32c6-zero.cmake")
+    elseif(LUGALOS_TARGET STREQUAL "K210")
+        set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-k210.cmake")
     endif()
 endif()
 
@@ -1190,6 +1198,12 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
     # console (drivers/usbjtag_esp32c6.c), or over SDIO to a P4 on a module
     # that has one (drivers/sdio_slave_esp32c6.c, empty without CONFIG_SDIO_SLAVE).
     list(APPEND SOURCES kernel/llp_node.c drivers/sdio_slave_esp32c6.c)
+elseif(LUGALOS_TARGET STREQUAL "K210")
+    # 65.3, . One driver: the console, on UARTHS. No block device
+    # (the SPI NOR owner question is 65.5, §1.5), no display, no radio,
+    # no identity store (the flash arrives first). The same stated
+    # emptiness the C6 declared at 45.4.
+    list(APPEND SOURCES drivers/uart_k210.c libc/libgcc_k210.c)
 else()
     # QEMU targets: VirtIO block device + 16550 UART + VirtIO console (9P link, A3)
     list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c drivers/virtio_console.c)
@@ -1208,7 +1222,7 @@ else()
 endif()
 
 # Architecture-specific memory management source
-if(LUGALOS_TARGET MATCHES "RV32_NOMMU" OR LUGALOS_TARGET STREQUAL "RP2350" OR LUGALOS_TARGET STREQUAL "ESP32P4" OR LUGALOS_TARGET STREQUAL "ESP32C6")
+if(LUGALOS_TARGET MATCHES "RV32_NOMMU" OR LUGALOS_TARGET STREQUAL "RP2350" OR LUGALOS_TARGET STREQUAL "ESP32P4" OR LUGALOS_TARGET STREQUAL "ESP32C6" OR LUGALOS_TARGET STREQUAL "K210")
     list(APPEND SOURCES arch/riscv/rv32_nommu/vmm.c)
 else()
     list(APPEND SOURCES arch/riscv/rv64_mmu/vmm.c)

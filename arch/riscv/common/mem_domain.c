@@ -30,13 +30,13 @@ uint32_t mem_domain_activations(unsigned hart) {
     return (hart < MAX_HARTS) ? g_domain_activations[hart] : 0;
 }
 
-#if defined(CONFIG_MODE_M)
+#if defined(CONFIG_MODE_M) && !defined(CONFIG_BOARD_K210)
 static bool pmp_is_covered_locked(uintptr_t base, uintptr_t size, uint8_t perms);
 #endif
 
 int mem_domain_add(mem_domain_t *d, uintptr_t base, uintptr_t size, uint8_t perms) {
     if (!d) return -1;
-#if defined(CONFIG_MODE_M)
+#if defined(CONFIG_MODE_M) && !defined(CONFIG_BOARD_K210)
     if (pmp_is_covered_locked(base, size, perms)) {
         return 0; /* already granted by locked bootloader entry */
     }
@@ -84,13 +84,43 @@ bool mem_domain_permits(const mem_domain_t *d, uintptr_t base, uintptr_t len,
             return (d->regions[i].perms & perms) == perms;
         }
     }
-#if defined(CONFIG_MODE_M)
+#if defined(CONFIG_MODE_M) && !defined(CONFIG_BOARD_K210)
     if (pmp_is_covered_locked(base, len, perms)) return true;
 #endif
     return false;
 }
 
-#if defined(CONFIG_MODE_M)
+#if defined(CONFIG_BOARD_K210)
+
+/* The K210's T-Head C0 cores implement no PMP at all: every pmpcfg/pmpaddr
+ * access raises an illegal instruction -- measured on silicon in the 65.1
+ * probe, both reads and writes, so even the "one deny-all entry" idiom that
+ * masks a missing PMP on other parts is unavailable. The honest backend is
+ * therefore a no-op that reports itself unenforced: domain bookkeeping
+ * (regions, permits()) stays valid for the syscall boundary's software
+ * checks, but no hardware isolates anything. Enforcing isolation on this
+ * part would require the vendor MPU option (not fitted on K210) or software
+ * MPUs -- out of scope; the cooperative-domain verdict is recorded in
+ * plan/phase65_k210_support.md. */
+
+int mem_domain_activate(const mem_domain_t *d) {
+    if (d) g_domain_activations[hart_id()]++;
+    return 0;
+}
+
+bool mem_domain_enforced(void) { return false; }
+
+const char *mem_domain_backend_name(void) { return "none"; }
+
+int mem_domain_prepare(mem_domain_t *d) { (void)d; return 0; }
+
+void mem_domain_destroy(mem_domain_t *d) {
+    if (!d) return;
+    d->count = 0;
+    d->arch_priv = NULL;
+}
+
+#elif defined(CONFIG_MODE_M)
 
 /* Permission bit order differs by silicon -- this is erratum RP2350-E6, not a
  * choice. The RP2350 datasheet (§3.8.3.2) states:

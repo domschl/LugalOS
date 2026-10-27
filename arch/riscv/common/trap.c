@@ -736,6 +736,15 @@ static inline volatile uint32_t *plic_claim_reg(void) {
 static inline uint32_t plic_claim(void) {
     return *plic_claim_reg();
 }
+/* K210's PLIC (and the T-Head parts generally) collapse claim and complete
+ * into ONE register -- a read pops the highest pending source, a write of
+ * the id ends it (kendryte-standalone-sdk plic.h: `claim_complete`). The
+ * standard SiFive split (complete at claim+0x1000) must NOT be followed
+ * here: on the K210 that address is hart 1's claim_complete, so "completing"
+ * there corrupts the other core's interrupt state (measured: with the split
+ * form, source 33 re-fires forever at ~250 Hz -- each write to the wrong
+ * register leaving the level source active). QEMU's PLIC tolerates the
+ * write-to-claim form too, so this one shape serves both. */
 static inline void plic_complete(uint32_t irq_num) {
     *plic_claim_reg() = irq_num;
 }
@@ -1133,7 +1142,23 @@ void trap_handler(trap_frame_t *frame) {
         if (code == QEMU_EXT_CAUSE) {
             uint32_t irq_num = plic_claim();
             if (irq_num != 0) { /* 0 means "nothing claimable" per the PLIC spec */
-                devirq_dispatch(irq_num);
+                if (devirq_dispatch(irq_num) != 0) {
+                    /* Same survival rule as the P4's CLIC path above: a
+                     * level-triggered source nobody claims re-enters this
+                     * trap forever the moment it is retaken -- measured on
+                     * the K210 as IRQ 33 flooding at ~250 Hz, each fire a
+                     * printk_critical, with every task starved between the
+                     * traps. Mask the line (clear this target's enable bit)
+                     * and say so; a driver that wants it later re-enables
+                     * through arch_irq_enable(). */
+                    volatile uint32_t *en = (volatile uint32_t *)(uintptr_t)
+                        (QEMU_PLIC_BASE + 0x2000u + plic_context() * 0x80u
+                         + 4u * (irq_num / 32u));
+                    *en &= ~(1u << (irq_num % 32u));
+                    printk_critical("[DevIRQ] Masked IRQ %u: no handler, and a "
+                           "level-triggered source would re-enter forever\n",
+                           (unsigned)irq_num);
+                }
                 plic_complete(irq_num);
             }
             return;

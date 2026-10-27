@@ -28,7 +28,7 @@
 #include "drivers/sdmmc.h"
 #endif
 
-#if !defined(CONFIG_BOARD_RP2350) && !defined(CONFIG_BOARD_ESP32P4) && !defined(CONFIG_BOARD_ESP32C6)
+#if !defined(CONFIG_BOARD_RP2350) && !defined(CONFIG_BOARD_ESP32P4) && !defined(CONFIG_BOARD_ESP32C6) && !defined(CONFIG_BOARD_K210)
 #include "drivers/virtio_console.h"
 #include "drivers/virtio_blk.h"
 #include "drivers/virtio_net.h"
@@ -186,6 +186,10 @@ static void *get_enc28j60(void)   { return enc28j60_get_netif(); }
 #endif
 #elif defined(CONFIG_BOARD_ESP32C6)
 /* ESP32-C6 network interface. */
+#elif defined(CONFIG_BOARD_K210)
+/* K210 (65.3): no netif, no block device yet -- the SPI NOR is a 65.5
+ * owner, and until it has one the board states its emptiness like the C6
+ * did at 45.4. */
 #elif defined(CONFIG_BOARD_ESP32P4)
 /* The P4's Ethernet MAC and the IP101GRI it drives over RMII. A netif like
  * ENC28J60 above. */
@@ -328,6 +332,8 @@ static void *get_llp(void) { return llp_node_p9_link(); }
 static const dev_driver_t dev_llp = {
     .name = "llp", .kind = DEV_KIND_P9LINK, .get = get_llp,
 };
+#elif defined(CONFIG_BOARD_K210)
+/* K210: nothing registers beyond the unconditional entries (65.3). */
 #elif defined(CONFIG_BOARD_ESP32P4)
 /* ESP32-P4 device table: registers the EMAC network interface and SDMMC block
  * device. Unconditionally registered devices cover the rest. */
@@ -421,6 +427,8 @@ void board_register_devices(void) {
 #elif defined(CONFIG_BOARD_ESP32C6)
     /* Nothing beyond the unconditional entries above (45.4), and LLP (49.3). */
     dev_register(&dev_llp);
+#elif defined(CONFIG_BOARD_K210)
+    /* Nothing beyond the unconditional entries above (65.3). */
 #elif defined(CONFIG_BOARD_ESP32P4)
     dev_register(&dev_emac);
     dev_register(&dev_sdmmc);

@@ -93,4 +93,28 @@ After that, new builds go over 9P with `tools/lota.py push`, without the header.
 
 ---
 
+## 4. K210 (Maix Bit) -- `tools/k210run.py`
+
+The K210 has no flash tool yet (that is 65.5); the dev loop is the BROM
+ISP: `k210run.py` loads a build's ELF segments straight into SRAM and
+boots them, then stays attached -- it owns the port for its whole life,
+which matters because the CH552 download circuit drives the K210's reset
+and boot lines from DTR/RTS: closing the port drops the board back to
+whatever sits in flash. **Never open the port with `screen`/`cu`.**
+
+```bash
+./tools/build_minimal_k210.sh                      # or a kernel build later
+tools/k210run.py --load build/k210/minimal_k210.elf --capture 15
+tools/k210run.py --load x.elf --until K210-PROBE-DONE --send ''
+```
+
+The ISP runs at 115200 -- the same baud the BROM leaves UARTHS at, so the
+console needs no switch (unlike every claim about 1.5 Mbaud: the ISP
+stays at 115200 here, matching what the ROM itself configured). The port
+is discovered by `/dev/serial/by-id` (`1a86:7523`), overridable with
+`--port`. Frames are SLIP (`C0`/`DB` escapes); ops are NOP (greeting),
+`MEMORY_WRITE` (crc32 + address + data) and `MEMORY_BOOT`.
+
+---
+
 **Navigation:** [<- Presets Matrix](presets.md) | [Administrator Manual](admin.md) | [Consoles Guide ->](consoles.md) | [Documentation Index](index.md)

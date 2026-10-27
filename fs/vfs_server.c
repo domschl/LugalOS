@@ -80,7 +80,7 @@ static fat32_fs_t g_fat32_flash;
  * /ram0 and /flash0 are memcpy and would gain nothing for the 512 bytes. */
 #if (defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_SPISD) || \
     (defined(CONFIG_BOARD_ESP32P4) && CONFIG_ENABLE_SDMMC) || \
-    (!defined(CONFIG_BOARD_RP2350) && !defined(CONFIG_BOARD_ESP32P4) && !defined(CONFIG_BOARD_ESP32C6))
+    (!defined(CONFIG_BOARD_RP2350) && !defined(CONFIG_BOARD_ESP32P4) && !defined(CONFIG_BOARD_ESP32C6) && !defined(CONFIG_BOARD_K210))
 #define VFS_SD_FAT_CACHE 1
 static uint32_t g_sd_fat_cache[128];
 #endif
@@ -465,6 +465,9 @@ void vfs_server_init(void) {
 #elif defined(CONFIG_BOARD_ESP32C6)
     /* no block device on this board (no card slot;
      * /flash0 arrives with 45.4.3), so /sd0 stays unmounted and `df` says so. */
+#elif defined(CONFIG_BOARD_K210)
+    /* no block device on this board (65.3): the SPI NOR is a 65.5 owner,
+     * so /sd0 stays unmounted and `df` says so. */
 #elif defined(CONFIG_BOARD_ESP32P4)
     /* the microSD card in the NANO's
      * own slot, on the SD/MMC host controller rather than on a SPI bus.
@@ -3031,6 +3034,8 @@ static int vfs_format_volume(mount_entry_t *m, const char *path, const char *lab
         block_dev_t *dev = spisd_get_device();
 #elif defined(CONFIG_BOARD_ESP32C6)
         block_dev_t *dev = NULL;   /* no block device (45.4) */
+#elif defined(CONFIG_BOARD_K210)
+        block_dev_t *dev = NULL;   /* no block device (65.3) */
 #elif defined(CONFIG_BOARD_ESP32P4)
         block_dev_t *dev = sdmmc_get_device();   /* 35.2 */
 #else

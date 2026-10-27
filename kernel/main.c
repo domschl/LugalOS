@@ -59,7 +59,7 @@
 #include "fs/9p.h"
 #include "lisp.h"
 
-#if !defined(CONFIG_BOARD_RP2350) && !defined(CONFIG_BOARD_ESP32P4) && !defined(CONFIG_BOARD_ESP32C6)
+#if !defined(CONFIG_BOARD_RP2350) && !defined(CONFIG_BOARD_ESP32P4) && !defined(CONFIG_BOARD_ESP32C6) && !defined(CONFIG_BOARD_K210)
 #include "drivers/virtio_console.h"
 #include "drivers/virtio_blk.h"
 #elif defined(CONFIG_BOARD_ESP32C6)
@@ -554,6 +554,9 @@ void kernel_main(void) {
     spisd_task_start();
 #elif defined(CONFIG_BOARD_ESP32C6)
     /* No block device on this board yet (45.4); nothing to start. */
+#elif defined(CONFIG_BOARD_K210)
+    /* No block device on this board yet (65.3): the SPI NOR is 65.5's;
+     * nothing to start. */
 #elif defined(CONFIG_BOARD_ESP32P4)
     /* The microSD card on the SD/MMC
      * host. Same endpoint name and same batching as the two above, and the
