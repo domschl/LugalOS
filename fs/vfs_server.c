@@ -1055,6 +1055,11 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
             "persona: %s\nbuild seed: %s\ntaint: %s\n", CONFIG_NODE_PERSONA, CONFIG_NODE_SEED, LUGALOS_TAINT);
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "9P uname: %s\n", node_name());
+        /* The isolation verdict, askable over 9P like everything else:
+         * a host deciding whether to trust this node with an unattended
+         * multi-program workload reads this, not the boot log. */
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "domains: %s\n", mem_domain_status());
         return (int)used;
     } else if (strcmp(rel, "net") == 0) {
         /* the interface, its
@@ -1236,6 +1241,25 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "LugalOS v%s (Bare-Metal RISC-V Lisp Machine)%s%s\n", LUGALOS_VERSION,
             LUGALOS_TAINTED ? " tainted: " : "", LUGALOS_TAINTED ? LUGALOS_TAINT : "");
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "machine: %s, %s, %s\n",
+#if defined(CONFIG_TARGET_RV32)
+            "rv32imac",
+#elif defined(CONFIG_BOARD_K210)
+            "rv64imac",
+#elif defined(CONFIG_TARGET_RV64)
+            "rv64gc",
+#else
+            "riscv",
+#endif
+#if defined(CONFIG_NOMMU)
+            "nommu",
+#elif defined(CONFIG_MMU)
+            "sv39",
+#else
+            "?mmu",
+#endif
+            mem_domain_status());
         return (int)used;
     } else if (strcmp(rel, "cpuinfo") == 0) {
         /* S0, : which hart is

@@ -152,4 +152,10 @@ bool mem_domain_enforced(void);
  * function rather than every caller re-deriving it from the same macros. */
 const char *mem_domain_backend_name(void);
 
+/* One-line human verdict for the reporting surfaces (boot banner,
+ * /proc/node, /proc/version): either the backend's name when domains are
+ * enforced, or the honest sentence when they are not -- with the reason,
+ * because "unenforced" without the why reads like a bug. */
+const char *mem_domain_status(void);
+
 #endif /* LUGALOS_KERNEL_MEM_DOMAIN_H */

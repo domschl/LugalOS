@@ -541,3 +541,35 @@ What 65.3 turned out to be, beyond the build-system bucket:
   the backend reports itself `"none"`, and every isolation self-test
   degrades to its honest "unenforced" report. Formalizing that surface
   (banner text, `/proc/node` line) remains 65.4.
+
+### 65.4 — The unenforced-domain mode — DONE
+
+The verdict sentence — `domains: unenforced (silicon: no pmp)` — now
+appears where each surface can be checked, including over 9P:
+
+* boot: `[Arch] domains: unenforced (silicon: no pmp)` beside the ISA
+  line (and the ISA line now says the truth: `RV64IMAC`, not the generic
+  `RV64GC` the pre-65 template carried);
+* `/proc/version`: `machine: rv64imac, nommu, unenforced (silicon: no pmp)`;
+* `/proc/node`: `domains: …` via `mem_domain_status()`, the one helper
+  every surface asks, so the wording cannot drift between them.
+
+Verified on Maix Bit silicon, not by compilation alone:
+
+* `usertest` — U-mode transition is real on the C0 core:
+  `Last ecall trap cause: 8 (U-mode -- privilege level really dropped)`,
+  clean return;
+* `deputytest` — `DEPUTY_REFUSED` / target `UNTOUCHED`: the software
+  deputy checks do the whole job the test claims even with no hardware
+  behind them, which is exactly the split this milestone asked for;
+* `lockselftest` 17/17, `preempttest` PREEMPTED, `priostress` FAIR —
+  the scheduler suite runs on the first tick-preempted K210 context;
+* host test `tests/test_k210_unenforced.py` pins the contract structurally:
+  exactly one backend reports `enforced() == false`, it lives inside the
+  `CONFIG_BOARD_K210` arm and nothing else can select it, and the PMP and
+  Sv39 arms keep their honest claims. The plan's "unenforced is only
+  possible on K210" is now a checked property, not a hope.
+
+(`isolationtest` and the fault-expecting probes are not run on K210 —
+with no PMP they would prove nothing and claim more than they test; the
+deputy/usertest pair above is the load-bearing subset.)

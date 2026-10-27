@@ -291,6 +291,12 @@ void kernel_main(void) {
      * Nothing is lost: the same three facts, 45 bytes instead of 135. */
 #if defined(CONFIG_TARGET_RV32)
 #  define BOOT_ARCH "RV32IMAC"
+#elif defined(CONFIG_BOARD_K210)
+   /* Not "RV64GC": the C extension exists on the T-Core, but 65.1 measured
+    * the F data path dead and the AGENTS.md integer-only rule closes D —
+    * the image is rv64imac, and the banner must not claim an ISA the
+    * build does not compile for. */
+#  define BOOT_ARCH "RV64IMAC"
 #elif defined(CONFIG_TARGET_RV64)
 #  define BOOT_ARCH "RV64GC"
 #else
@@ -309,6 +315,12 @@ void kernel_main(void) {
 #  define BOOT_PRIV "M-mode"
 #endif
     printk("[Arch] " BOOT_ARCH ", " BOOT_MM ", " BOOT_PRIV "\n");
+    /* Only says anything when enforcement is absent -- a kernel that HAS
+     * hardware domains states it in /proc, one that cannot must say so
+     * where everyone looks first. */
+    if (!mem_domain_enforced()) {
+        printk("[Arch] domains: %s\n", mem_domain_status());
+    }
 
     /* Hardware: what exists is a per-board table (kernel/board.c), not a
      * sequence of #ifs here. */

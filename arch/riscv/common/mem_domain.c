@@ -112,6 +112,13 @@ bool mem_domain_enforced(void) { return false; }
 
 const char *mem_domain_backend_name(void) { return "none"; }
 
+const char *mem_domain_status(void) {
+    /* The plan's sentence for this case, spelled once: the absence is a
+     * silicon fact, not a configuration one, and saying so is the whole
+     * point of reporting it. */
+    return "unenforced (silicon: no pmp)";
+}
+
 int mem_domain_prepare(mem_domain_t *d) { (void)d; return 0; }
 
 void mem_domain_destroy(mem_domain_t *d) {
@@ -484,6 +491,8 @@ bool mem_domain_enforced(void) { return true; }
 
 const char *mem_domain_backend_name(void) { return "PMP"; }
 
+const char *mem_domain_status(void) { return "pmp"; }
+
 /* PMP regions are written at activation; there is nothing to build ahead. */
 int mem_domain_prepare(mem_domain_t *d) { (void)d; return 0; }
 
@@ -629,6 +638,10 @@ int mem_domain_activate(const mem_domain_t *d) {
 bool mem_domain_enforced(void) { return vmm_paging_enabled(); }
 
 const char *mem_domain_backend_name(void) { return "Sv39"; }
+
+const char *mem_domain_status(void) {
+    return vmm_paging_enabled() ? "sv39" : "unenforced (paging not enabled)";
+}
 
 /* Builds the domain's page tables now, if they are not built yet ( * review). They used to be built at the domain's first *activation* -- and
  * the first activation of a new program's domain is the context switch into

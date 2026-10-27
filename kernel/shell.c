@@ -4347,7 +4347,8 @@ static void run_user_task(const char *name, void (*body)(void *), int hart) {
 
 static void cmd_usertest(int hart) {
     if (!mem_domain_enforced()) {
-        printk("[UserTest] NOTE: this build cannot enforce domains (S-mode; Sv39 is B5).\n");
+        printk("[UserTest] NOTE: this build cannot enforce domains (%s).\n",
+               mem_domain_status());
     }
     run_user_task("usertest", usertest_body, hart);
 
