@@ -194,6 +194,14 @@ static inline uint64_t read_hardware_counter_us(void) {
         lo_again = P4_REG(SYSTIMER_UNIT0_VALUE_LO);
     } while (lo != lo_again);
     return (((uint64_t)hi << 32) | lo) / SYSTIMER_TICKS_PER_US;
+#elif defined(CONFIG_BOARD_K210)
+    /* 7.8125 MHz, measured (see the TICK_HZ comment in kernel/ticker.c
+     * for the number's provenance). One microsecond is 125/16 ticks, so
+     * this is exact integer arithmetic: us = ticks * 16 / 125. With the
+     * generic /10 below the whole kernel clock ran 28% slow on silicon
+     * -- invisible to the ticker, which calibrates against this same
+     * function, and obvious the moment a host timestamps the boot log. */
+    return CLINT_MTIME * 16 / 125;
 #elif !defined(CONFIG_MODE_S)
     return CLINT_MTIME / 10; /* 10 MHz ticks -> microseconds */
 #else

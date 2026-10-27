@@ -437,8 +437,18 @@ static bool arch_ticker_init(void) {
 #define CLINT_MTIMECMP (*(volatile uint64_t *)(CLINT_BASE + 0x4000))
 #define CLINT_MTIME    (*(volatile uint64_t *)(CLINT_BASE + 0xBFF8))
 
+#if defined(CONFIG_BOARD_K210)
+/* K210's CLINT mtime runs at core/50, and the core runs where the BROM's
+ * PLL left it: 390.625 MHz, so mtime is 7.8125 MHz -- not the 8 MHz the
+ * datasheet's 400 MHz round number suggests, and not QEMU's 10. Measured
+ * host-side against wall clock (blob: 200 x 200k-tick segments over a
+ * serial-anchored interval; repeatable to 0.1%). 7812500 = 125/16 MHz
+ * exactly, which keeps the 100 Hz interval an integer (78125 ticks). */
+#define TICK_HZ 7812500UL
+#else
 /* QEMU's virt machine clocks the CLINT at 10 MHz. */
 #define TICK_HZ 10000000UL
+#endif
 
 static uint64_t now(void) { return CLINT_MTIME; }
 
