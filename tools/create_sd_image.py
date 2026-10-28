@@ -16,6 +16,25 @@ FAT_SIZE_SECTORS: int = 16
 DATA_START_SECTOR: int = RESERVED_SECTORS + 2 * FAT_SIZE_SECTORS  # Sector 64
 
 
+def configure_geometry(num_sectors: int) -> None:
+    """Resize the image, deriving the FAT size from the cluster count.
+
+    Every geometry consumer in this module reads these module globals
+    at build time. The default 2048 sectors yields exactly the values
+    the hand-written 1 MB layout used (FAT 16 sectors, data start 64),
+    so existing images are byte-for-byte unchanged; 4096 gives the
+    2 MB /flash0 partition the K210's flash map reserves.
+    """
+    global NUM_SECTORS, FAT_SIZE_SECTORS, DATA_START_SECTOR
+    NUM_SECTORS = num_sectors
+    fat = 1
+    for _ in range(4):  # fixed point: clusters <-> fat entries
+        clusters = num_sectors - RESERVED_SECTORS - 2 * fat
+        fat = max(1, ((clusters + 2) * 4 + 511) // 512)
+    FAT_SIZE_SECTORS = fat
+    DATA_START_SECTOR = RESERVED_SECTORS + 2 * fat
+
+
 def filename_to_83(name: str) -> bytes:
     parts = name.split(".")
     base = parts[0][:8].upper().ljust(8)
@@ -231,6 +250,8 @@ if __name__ == "__main__":
 
     out_file: str = args[0] if len(args) > 0 else "lugalos_sd.img"
     sd_root: str = args[1] if len(args) > 1 else os.path.join(os.path.dirname(__file__), "sd_root")
+    if len(args) > 2:
+        configure_geometry(int(args[2]))
 
     if if_stale and os.path.exists(out_file) and not newer_than_image(sd_root, out_file):
         print(f"[SD Image] Preserving existing disk image '{out_file}' (up to date).")

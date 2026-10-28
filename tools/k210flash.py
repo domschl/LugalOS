@@ -119,13 +119,34 @@ class WriterBlob:
         # The blob announces itself with 'K'. The announcement usually
         # arrives while k210run's boot() is still draining the boot
         # window, so the leaked prefix counts as the hello too.
-        if b"K" in leak:
-            return
-        deadline = time.monotonic() + 3
-        while time.monotonic() < deadline:
-            if self.ser.read(1) == b"K":
-                return
-        raise RuntimeError("writer blob did not say hello")
+        if b"K" not in leak:
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                if self.ser.read(1) == b"K":
+                    break
+            else:
+                raise RuntimeError("writer blob did not say hello")
+        # Link desync, the ugly真相: this CH552 link mirrors TX bytes
+        # back late. Whatever the ISP download wrote drains out after
+        # the blob boots and lands in the blob's UART FIFO, where a
+        # 'K'-headed fragment becomes a bogus frame -- its reply or
+        # echo then masquerades as an ack, deterministically killing
+        # the first W. Cure: dribble NUL filler long enough to (a) let
+        # the bridge's backlog drain to the host and (b) push the
+        # blob's FIFO past its queued junk (NULs never start a frame,
+        # the blob discards them). Then drain the host side and start
+        # with both ends empty.
+        self.ser.timeout = 0.2
+        for _ in range(24):
+            self.ser.write(b"\0" * 64)
+            time.sleep(0.05)
+            self.ser.read(8192)
+        # one throwaway status op absorbs any last queued reply
+        try:
+            self._req("S", 0, resp=1)
+        except Exception:
+            pass
+        self.ser.reset_input_buffer()
 
     def _req(self, op: str, addr: int, payload: bytes = b"",
              resp: int = 0) -> bytes:
@@ -143,12 +164,29 @@ class WriterBlob:
         if resp:
             data = self._read_n(resp, timeout=5)
             return data
+        # ack path: read a first byte, resynchronising past any echo
+        # of a queued bogus frame. 'K' means the blob is replaying a
+        # frame header (8 bytes); swallow the rest and take the next
+        # byte as the ack. '-' (checksum fail of OUR frame) retries.
         ack = self.ser.read(1)
+        if ack == b"K":
+            self._read_n(7, timeout=2)
+            ack = self.ser.read(1)
         if ack != b"+":
-            # one retry: the protocol is idempotent per frame
+            # one retry: the protocol is idempotent per frame. Flush
+            # first -- a stale response queued before the retry must
+            # not masquerade as the fresh ack.
+            self.ser.reset_input_buffer()
             self.ser.write(frame)
             ack = self.ser.read(1)
             if ack != b"+":
+                import os
+                if os.environ.get("K210_BLOB_DEBUG"):
+                    tail = self._read_n(48, timeout=1.0)
+                    raise RuntimeError(
+                        f"op {op}@{addr:#x} -> {ack!r}\n"
+                        f"  frame({len(frame)}): {frame[:12].hex()}\n"
+                        f"  follow-up stream: {tail!r}")
                 raise RuntimeError(f"op {op}@{addr:#x} -> {ack!r}")
         return b""
 
@@ -228,7 +266,8 @@ def build_blob_if_needed(build_dir: str) -> str:
     ld = os.path.join(here, "minimal_k210.ld")
     out = os.path.join(build_dir, "k210_wblob.elf")
     if os.path.exists(out) and os.path.getmtime(out) > max(
-            os.path.getmtime(src), os.path.getmtime(entry)):
+            os.path.getmtime(src), os.path.getmtime(entry),
+            os.path.getmtime(ld)):
         return out
     cc = subprocess.run(["bash", "-lc",
                          "command -v riscv64-elf-gcc || command -v riscv64-unknown-elf-gcc"],
@@ -241,7 +280,9 @@ def build_blob_if_needed(build_dir: str) -> str:
                     "-Wall", "-march=rv64imac_zicsr_zifencei", "-mabi=lp64",
                     "-mcmodel=medany", "-fno-pic", "-fno-stack-protector",
                     "-c", src, "-o", objs[0]], check=True)
-    subprocess.run([cc, "-nostdlib", "-c", entry, "-o", objs[1]], check=True)
+    subprocess.run([cc, "-nostdlib", "-march=rv64imac_zicsr_zifencei",
+                    "-mabi=lp64", "-c", entry, "-o", objs[1]],
+                   check=True)
     subprocess.run([f"{cc[:-3]}ld", "-T", ld, "-o", out] + objs, check=True,
                    capture_output=True)   # the RWX-segment warning is expected
     return out
@@ -353,14 +394,37 @@ def main() -> None:
     isp.close()
     if args.capture_after > 0:
         print(f"console after reset into flash ({args.capture_after:.0f}s):")
-        run = k210run.K210Isp(port, to_isp=False)
-        t_end = time.monotonic() + args.capture_after
-        while time.monotonic() < t_end:
-            b = run.ser.read(256)
-            if b:
-                sys.stdout.write(b.decode(errors="replace"))
-                sys.stdout.flush()
-        run.close()
+        # A soft reset can catch the NOR mid-transaction (CS fell with
+        # clocks running), and the BROM then rejects the header: its
+        # own "exit code 233" complaint. A second reset boots clean —
+        # the vendor tool retries the same way. Pulse until the
+        # loader identifies itself.
+        for attempt in range(4):
+            run = k210run.K210Isp(port, to_isp=False)
+            run.ser.dtr = True; run.ser.rts = True
+            time.sleep(0.25)
+            run.ser.reset_input_buffer()
+            run.ser.dtr = False; run.ser.rts = False
+            buf = b""
+            t_end = time.monotonic() + args.capture_after
+            while time.monotonic() < t_end:
+                b = run.ser.read(256)
+                if b:
+                    buf += b
+                    sys.stdout.write(b.decode(errors="replace"))
+                    sys.stdout.flush()
+                if b"lsh" in buf or b"233" in buf:
+                    break
+                if b"[loader]" in buf and \
+                        time.monotonic() + 70 > t_end:
+                    # The kernel streams in at tens of KB/s; give the
+                    # banner time to arrive once the loader is alive.
+                    t_end = time.monotonic() + 70
+            run.close()
+            if b"[loader]" in buf or b"lsh" in buf:
+                break
+            print(f"\n(no loader on attempt {attempt}; re-pulsing reset)")
+            time.sleep(0.4)
 
 
 if __name__ == "__main__":

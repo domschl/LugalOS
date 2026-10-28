@@ -12,7 +12,7 @@ from pathlib import Path
 tools_dir = Path(__file__).resolve().parent
 sys.path.insert(0, str(tools_dir))
 
-from create_sd_image import build_fat32_image
+from create_sd_image import build_fat32_image, configure_geometry
 
 def generate_flash_fs_c(output_c_path: str, src_dir: str) -> None:
     temp_img_path = output_c_path + ".tmp.bin"
@@ -62,7 +62,12 @@ if __name__ == "__main__":
                     help="directory tree to place into the image")
     ap.add_argument("--format", choices=("c", "bin"), default=None,
                     help="output format; inferred from the output extension when omitted")
+    ap.add_argument("--sectors", type=int, default=None,
+                    help="image size in 512-byte sectors (default 2048 = 1 MB); "
+                         "match the board's flash-map fs partition")
     args = ap.parse_args()
+    if args.sectors is not None:
+        configure_geometry(args.sectors)
 
     fmt = args.format or ("bin" if args.output.endswith(".bin") else "c")
     outdir = os.path.dirname(args.output)

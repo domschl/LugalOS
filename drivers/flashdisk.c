@@ -9,6 +9,9 @@
 #if defined(CONFIG_BOARD_ESP32P4)
 #include "drivers/flash_esp32p4.h"
 #endif
+#if defined(CONFIG_BOARD_K210)
+#include "drivers/spi_nor_k210.h"
+#endif
 #include <string.h>
 
 /* Where the FAT32 image lives, and it is not the same answer on every target.
@@ -48,6 +51,13 @@ static const uint32_t g_flash_fs_size = (uint32_t)LUGALOS_FLASHFS_SIZE;
  * surviving a power cycle, and until now flashdisk_write_blocks() printed
  * "read-only" on every target including RP2350. */
 static const uint32_t g_flash_fs_size = (uint32_t)LUGALOS_P4_FLASHFS_SIZE;
+#elif defined(CONFIG_BOARD_K210)
+/* Same shape as the P4's arm: no XIP window exists, so every access is
+ * an SPI transaction through drivers/spi_nor_k210.c, and /flash0 is
+ * writable — the same done-condition (a shell-written file surviving
+ * a power cycle) that made the P4's writable. The segment lives at
+ * LUGALOS_K210_FLASHFS_BASE in cmake/flash_layout_k210.cmake. */
+static const uint32_t g_flash_fs_size = (uint32_t)LUGALOS_K210_FLASHFS_SIZE;
 #elif defined(CONFIG_BOARD_ESP32C6)
 /* the RAM-resident first form has no /flash0 --
  * the image is delivered by load-ram and the filesystem has nowhere to live
@@ -70,13 +80,16 @@ static int flashdisk_read_blocks(block_dev_t *dev, void *buf, uint32_t lba, uint
 #if defined(CONFIG_BOARD_ESP32P4)
     return flash_p4_read((uint32_t)LUGALOS_P4_FLASHFS_BASE + lba * FLASH_BLOCK_SIZE,
                          buf, count * FLASH_BLOCK_SIZE);
+#elif defined(CONFIG_BOARD_K210)
+    return spi_nor_k210_read((uint32_t)LUGALOS_K210_FLASHFS_BASE + lba * FLASH_BLOCK_SIZE,
+                             buf, count * FLASH_BLOCK_SIZE);
 #else
     memcpy(buf, g_flash_fs_start + (lba * FLASH_BLOCK_SIZE), count * FLASH_BLOCK_SIZE);
     return 0;
 #endif
 }
 
-#if defined(CONFIG_BOARD_ESP32P4)
+#if defined(CONFIG_BOARD_ESP32P4) || defined(CONFIG_BOARD_K210)
 /* One flash sector, staged in RAM.
  *
  * NOR flash erases in 4 KB sectors and programs within them, while the
@@ -90,7 +103,20 @@ static int flashdisk_read_blocks(block_dev_t *dev, void *buf, uint32_t lba, uint
  * path of a filesystem that may itself be servicing a low-memory condition,
  * and an allocation that can fail here turns a slow write into a lost one. It
  * costs 4 KB of .bss against a 276 KB heap. */
-static uint8_t g_p4_sector[FLASH_P4_SECTOR_SIZE];
+#if defined(CONFIG_BOARD_ESP32P4)
+#define FLASH_RW_BASE    LUGALOS_P4_FLASHFS_BASE
+#define FLASH_RW_SECTOR  FLASH_P4_SECTOR_SIZE
+static int flash_rw_read(uint32_t a, void *b, uint32_t l)  { return flash_p4_read(a, b, l); }
+static int flash_rw_erase(uint32_t a)                       { return flash_p4_erase_sector(a); }
+static int flash_rw_write(uint32_t a, const void *b, uint32_t l) { return flash_p4_write(a, b, l); }
+#else
+#define FLASH_RW_BASE    LUGALOS_K210_FLASHFS_BASE
+#define FLASH_RW_SECTOR  0x1000u
+static int flash_rw_read(uint32_t a, void *b, uint32_t l)  { return spi_nor_k210_read(a, b, l); }
+static int flash_rw_erase(uint32_t a)                       { return spi_nor_k210_erase_sector(a); }
+static int flash_rw_write(uint32_t a, const void *b, uint32_t l) { return spi_nor_k210_write(a, b, l); }
+#endif
+static uint8_t g_p4_sector[FLASH_RW_SECTOR];
 
 static int flashdisk_write_blocks(block_dev_t *dev, const void *buf, uint32_t lba, uint32_t count) {
     (void)dev;
@@ -100,11 +126,11 @@ static int flashdisk_write_blocks(block_dev_t *dev, const void *buf, uint32_t lb
     const uint8_t *in = (const uint8_t *)buf;
     for (uint32_t i = 0; i < count; i++) {
         uint32_t off    = (lba + i) * FLASH_BLOCK_SIZE;
-        uint32_t sector = off & ~(FLASH_P4_SECTOR_SIZE - 1u);
+        uint32_t sector = off & ~(FLASH_RW_SECTOR - 1u);
         uint32_t within = off - sector;
-        uint32_t addr   = (uint32_t)LUGALOS_P4_FLASHFS_BASE + sector;
+        uint32_t addr   = (uint32_t)FLASH_RW_BASE + sector;
 
-        if (flash_p4_read(addr, g_p4_sector, FLASH_P4_SECTOR_SIZE) != 0) return -1;
+        if (flash_rw_read(addr, g_p4_sector, FLASH_RW_SECTOR) != 0) return -1;
 
         /* Nothing to do is worth detecting: flash wears out, and a filesystem
          * rewriting an unchanged block is common enough (FAT updates, a
@@ -116,8 +142,8 @@ static int flashdisk_write_blocks(block_dev_t *dev, const void *buf, uint32_t lb
         }
 
         memcpy(g_p4_sector + within, in, FLASH_BLOCK_SIZE);
-        if (flash_p4_erase_sector(addr) != 0) return -1;
-        if (flash_p4_write(addr, g_p4_sector, FLASH_P4_SECTOR_SIZE) != 0) return -1;
+        if (flash_rw_erase(addr) != 0) return -1;
+        if (flash_rw_write(addr, g_p4_sector, FLASH_RW_SECTOR) != 0) return -1;
         in += FLASH_BLOCK_SIZE;
     }
     return 0;
@@ -164,6 +190,30 @@ block_dev_t *flashdisk_get_device(void) {
                    "            tools/p4flash.py writes it; the kernel is loaded "
                    "separately into RAM.\n",
                    (unsigned)LUGALOS_P4_FLASHFS_BASE);
+        }
+    }
+#elif defined(CONFIG_BOARD_K210)
+    /* Same three answers as the P4's registration: does the part speak,
+     * can the segment be read, and is it blank. */
+    if (spi_nor_k210_init() != 0) {
+        printk("[FlashDisk] SPI NOR did not answer RDID\n");
+        return NULL;
+    }
+    printk("[FlashDisk] SPI NOR %s (%u KB) at 0x%06x\n", spi_nor_k210_part(),
+           (unsigned)(spi_nor_k210_capacity() / 1024u),
+           (unsigned)LUGALOS_K210_FLASHFS_BASE);
+    {
+        uint8_t head[4];
+        if (spi_nor_k210_read((uint32_t)LUGALOS_K210_FLASHFS_BASE, head, sizeof(head)) != 0) {
+            printk("[FlashDisk] /flash0 segment at 0x%06x could not be read\n",
+                   (unsigned)LUGALOS_K210_FLASHFS_BASE);
+            return NULL;
+        }
+        if (head[0] == 0xFF && head[1] == 0xFF && head[2] == 0xFF && head[3] == 0xFF) {
+            printk("[FlashDisk] /flash0 segment at 0x%06x is erased -- flash "
+                   "flashfs.bin there too.\n"
+                   "            tools/k210flash.py writes it.\n",
+                   (unsigned)LUGALOS_K210_FLASHFS_BASE);
         }
     }
 #endif

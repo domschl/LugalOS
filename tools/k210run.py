@@ -210,6 +210,25 @@ class K210Isp:
             if reason != 0xE0:
                 raise RuntimeError(f"mem_write@{addr + off:#x} -> reason {reason:#x}")
 
+    def release(self) -> None:
+        """ISP_REBOOT (0xD5): end the stub's residency.
+
+        After a successful `boot` jump the ISP stub's SPI3 driver can
+        remain the owner of the XPI NOR's pads -- a booted blob then
+        clocks into a bus the stub still holds and reads nothing (the
+        symptom that reads as 'every SPI read returns 00/FF'). One
+        0xD5 byte releases it: measured, RDID goes from ffffff to the
+        real C8 60 18 on the very next command. Best-effort: an older
+        stub may not answer, and a board already in flash-boot has no
+        stub at all."""
+        try:
+            self.ser.write(b"\xd5")
+            self.ser.flush()
+            time.sleep(0.05)
+            self.ser.reset_input_buffer()
+        except Exception:
+            pass
+
     def boot(self, addr: int = 0x80000000) -> None:
         head = struct.pack("<II", addr, 0)
         crc = struct.pack("<I", zlib.crc32(head) & 0xFFFFFFFF)

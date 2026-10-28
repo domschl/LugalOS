@@ -73,6 +73,8 @@ static volatile uint32_t *sp;            /* current controller window */
 #define SPI_DR            sp[0x60 / 4]
 
 #define CAPACITY          0x01000000u          /* GD25LQ128 */
+#define SRAM_LO           0x80000000ULL        /* the only memory a peek may touch */
+#define SRAM_HI           0x80600000ULL
 #define SPIN_MAX          20000000u
 
 static void tx1(uint8_t b) {
@@ -415,6 +417,19 @@ void k210_probe_main(void) {
             uint32_t got = spi_xfer(c, 4, buf, 4 + len);
             tx1('x'); tx1((uint8_t)got); tx1((uint8_t)(got >> 8));
             for (uint32_t i = 0; i < 4 + len; i++) tx1(buf[i]);
+            break;
+        }
+        case 'A': {   /* peek 16 bytes at a raw 64-bit address (payload[0:8]).
+                       * Hard-restricted to SRAM: an early build accepted any
+                       * address, and a stray frame aimed at unmapped space
+                       * takes the whole bus down -- the blob is dead, and a
+                       * provisioning tool then hangs in the strangest ways. */
+            uint64_t a = 0;
+            for (int i = 0; i < 8 && i < (int)len; i++)
+                a |= (uint64_t)payload[i] << (8 * i);
+            if (a < SRAM_LO || a + 16 > SRAM_HI) { tx1('_'); break; }
+            for (int i = 0; i < 16; i++)
+                tx1((uint8_t)REG(a + (uint64_t)i));
             break;
         }
         case 'V': {   /* dump sysctl words the SPI path runs on: clk_en_cent,

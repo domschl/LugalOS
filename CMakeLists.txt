@@ -144,6 +144,17 @@ elseif(LUGALOS_TARGET STREQUAL "K210")
     set(ARCH_MABI "lp64")
     set(LINKER_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/linker/k210.ld")
     add_compile_definitions(CONFIG_TARGET_RV64=1 CONFIG_NOMMU=1 CONFIG_MODE_M=1 CONFIG_BOARD_K210=1)
+    # One definition of the NOR map (65.5): the kernel's /flash0, the
+    # loader's slot choices and tools/k210flash.py's arguments all come
+    # from this file -- the flash_layout_esp32p4.cmake discipline.
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/flash_layout_k210.cmake)
+    add_compile_definitions(
+        LUGALOS_K210_FLASHFS_BASE=${LUGALOS_K210_FLASHFS_BASE}
+        LUGALOS_K210_FLASHFS_SIZE=${LUGALOS_K210_FLASHFS_SIZE}
+        LUGALOS_K210_FLASH_WRITABLE_FLOOR=${LUGALOS_K210_FLASH_WRITABLE_FLOOR}
+        LUGALOS_K210_BOOTREC_BASE=${LUGALOS_K210_BOOTREC_BASE}
+        LUGALOS_K210_SLOT_A_BASE=${LUGALOS_K210_SLOT_A_BASE}
+        LUGALOS_K210_SLOT_B_BASE=${LUGALOS_K210_SLOT_B_BASE})
 else()
     message(FATAL_ERROR "Unknown LUGALOS_TARGET: ${LUGALOS_TARGET}")
 endif()
@@ -403,6 +414,14 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
     set(FLASH_FS_OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/flashfs.bin)
     set(FLASH_FS_SOURCE "")
     set(FLASH_FS_COMMENT "Generating flashfs.bin (its own flash segment, not linked in)")
+elseif(LUGALOS_TARGET STREQUAL "K210")
+    # 65.5: the K210's NOR carries a 2 MB /flash0 partition
+    # (cmake/flash_layout_k210.cmake), so the image is sized to match —
+    # the 1 MB default fills up at first provisioning.
+    set(FLASH_FS_SECTORS_ARG "--sectors=4096")
+    set(FLASH_FS_OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/flashfs.bin)
+    set(FLASH_FS_SOURCE "")
+    set(FLASH_FS_COMMENT "Generating flashfs.bin (2 MB: the K210 /flash0 partition)")
 elseif(LUGALOS_TARGET STREQUAL "ESP32P4" OR LUGALOS_TARGET STREQUAL "ESP32C6")
     # E2,  (and 45.4 for the C6): built as a raw image, and linked
     # into nothing, because there is nowhere to put it yet.
@@ -428,7 +447,7 @@ endif()
 add_custom_command(
     OUTPUT ${FLASH_FS_OUTPUT}
     ${SD_STAGE_COMMANDS}
-    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_flash_fs.py ${FLASH_FS_OUTPUT} ${SD_STAGE}
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_flash_fs.py ${FLASH_FS_OUTPUT} ${SD_STAGE} ${FLASH_FS_SECTORS_ARG}
     DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_flash_fs.py ${CMAKE_CURRENT_SOURCE_DIR}/tools/create_sd_image.py
             ${SD_ROOT_FILES}
             ${CAS_FILES}
@@ -439,7 +458,8 @@ add_custom_command(
 
 # On RP2350 the image is not a source file, so nothing would build it without
 # a target that depends on it. lugalos.elf is made to depend on this below.
-if(LUGALOS_TARGET STREQUAL "RP2350" OR LUGALOS_TARGET STREQUAL "ESP32P4")
+if(LUGALOS_TARGET STREQUAL "RP2350" OR LUGALOS_TARGET STREQUAL "ESP32P4"
+   OR LUGALOS_TARGET STREQUAL "K210")
     add_custom_target(flashfs_image DEPENDS ${FLASH_FS_OUTPUT})
 endif()
 
@@ -1199,11 +1219,10 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
     # that has one (drivers/sdio_slave_esp32c6.c, empty without CONFIG_SDIO_SLAVE).
     list(APPEND SOURCES kernel/llp_node.c drivers/sdio_slave_esp32c6.c)
 elseif(LUGALOS_TARGET STREQUAL "K210")
-    # 65.3, . One driver: the console, on UARTHS. No block device
-    # (the SPI NOR owner question is 65.5, §1.5), no display, no radio,
-    # no identity store (the flash arrives first). The same stated
-    # emptiness the C6 declared at 45.4.
-    list(APPEND SOURCES drivers/uart_k210.c libc/libgcc_k210.c)
+    # . Console on UARTHS, and the SPI NOR block device behind
+    # /flash0 (drivers/spi_nor_k210.c). No display, no radio, no
+    # identity store yet (the flash it lives in is now there).
+    list(APPEND SOURCES drivers/uart_k210.c libc/libgcc_k210.c drivers/spi_nor_k210.c)
 else()
     # QEMU targets: VirtIO block device + 16550 UART + VirtIO console (9P link, A3)
     list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c drivers/virtio_console.c)
@@ -1490,6 +1509,36 @@ board ${LUGALOS_BOARD_ID} esp32c6
                         -nostdlib -static -Wl,--no-relax -Wl,--build-id=none -Wl,--no-warn-rwx-segments)
     set_target_properties(lugalos-loader.elf PROPERTIES LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/linker/esp32c6_loader.ld)
     add_dependencies(lugalos.elf lugalos-loader.elf)
+endif()
+
+# The K210 flash manifest (65.5): one definition of the NOR map, read by
+# tools/k210flash.py rather than retyped there. Same columns as the C6's
+# manifest. The artifacts are ELFs on purpose — the tool knows segment
+# layout from pyelftools and the BROM's framing (flag, length, image,
+# sha256) is computed from the linked bytes, so there is no objcopy step
+# to fall out of sync with the link.
+if(LUGALOS_TARGET STREQUAL "K210")
+    file(GENERATE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/flash.manifest
+         CONTENT "flash 0x0 ${LUGALOS_K210_FLASH_SIZE} -
+loader ${LUGALOS_K210_LOADER_BASE} ${LUGALOS_K210_LOADER_SIZE} lugalos-loader.elf
+bootrec ${LUGALOS_K210_BOOTREC_BASE} 0x2000 -
+slot_a ${LUGALOS_K210_SLOT_A_BASE} ${LUGALOS_K210_SLOT_SIZE} lugalos.elf
+slot_b ${LUGALOS_K210_SLOT_B_BASE} ${LUGALOS_K210_SLOT_SIZE} -
+fs ${LUGALOS_K210_FLASHFS_BASE} ${LUGALOS_K210_FLASHFS_SIZE} flashfs.bin
+board ${LUGALOS_BOARD_ID} k210
+")
+    # The loader (arch/riscv/k210/loader.c): its own small image at
+    # 0x80000000, the one that sits behind the BROM's framing at flash
+    # offset 0 and loads the chosen slot.
+    add_executable(lugalos-loader.elf arch/riscv/k210/loader_entry.S arch/riscv/k210/loader.c kernel/ota_image.c)
+    target_compile_options(lugalos-loader.elf PRIVATE -Os -fno-jump-tables)
+    target_link_options(lugalos-loader.elf PRIVATE -T${CMAKE_CURRENT_SOURCE_DIR}/linker/k210_loader.ld
+                        -nostdlib -static -Wl,--build-id=none -Wl,--no-warn-rwx-segments)
+    set_target_properties(lugalos-loader.elf PROPERTIES LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/linker/k210_loader.ld)
+    add_dependencies(lugalos.elf lugalos-loader.elf)
+    # tools/k210flash.py writes flashfs.bin into the /flash0 segment, so
+    # the artifact has to exist even when nothing links it.
+    add_dependencies(lugalos.elf flashfs_image)
 endif()
 
 # UF2 converter: official uf2conv.py with RP2350 RISC-V family support

@@ -12,6 +12,8 @@ ENTRY(_start)
 
 MEMORY
 {
+    /* Full 6 MiB on-chip SRAM; the BROM loads flash images here and
+     * enters at 0x80000000 (vendor kflash boots at this base too). */
     RAM (rwx) : ORIGIN = 0x80000000, LENGTH = 6M
 }
 

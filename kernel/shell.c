@@ -396,6 +396,25 @@ static void cmd_flashinfo(void) {
         cprintf("\n");
     }
 }
+#endif
+
+#if defined(CONFIG_BOARD_K210)
+/* flashtest below speaks the P4-named flashdisk surface; the K210
+ * backend is drivers/spi_nor_k210.c. Aliases, not a second copy: the
+ * guard/erase/program sequence is the same test on both boards. */
+#include "drivers/spi_nor_k210.h"
+#define flash_p4_init()          (spi_nor_k210_init() == 0)
+#define flash_p4_read(a, b, l)   spi_nor_k210_read(a, b, l)
+#define flash_p4_write(a, b, l)  spi_nor_k210_write(a, b, l)
+#define flash_p4_erase_sector(a) spi_nor_k210_erase_sector(a)
+#define FLASH_P4_SECTOR_SIZE     0x1000u
+#define LUGALOS_P4_FLASHFS_BASE  LUGALOS_K210_FLASHFS_BASE
+#define LUGALOS_P4_FLASHFS_SIZE  LUGALOS_K210_FLASHFS_SIZE
+#define LUGALOS_P4_FLASH_WRITABLE_FLOOR \
+    LUGALOS_K210_FLASH_WRITABLE_FLOOR
+#endif
+
+#if defined(CONFIG_BOARD_ESP32P4) || defined(CONFIG_BOARD_K210)
 
 /* E6: erase, program, read back -- and prove the guard refuses.
  *
@@ -465,7 +484,9 @@ static void cmd_flashtest(void) {
                 ? "PASS: the guard holds, and erase/program/read-back agree."
                 : "FAIL: see the flags above.");
 }
+#endif
 
+#if defined(CONFIG_BOARD_ESP32P4)
 /* E4: the state of the tick, read straight out of the hardware, plus the two
  * measurements that a register dump cannot make.
  *
@@ -6317,14 +6338,21 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         dsi_lcd_command(cmd_line + 3);
         return;
 #endif
+#endif
+#if defined(CONFIG_BOARD_ESP32P4) || defined(CONFIG_BOARD_K210)
+    /* flashtest is board-neutral flashdisk exercising: the guard, an
+     * erase, and a program/read-back at the tail of the filesystem
+     * region. Shared by both NOR-bearing targets. */
+    } else if (strcmp(cmd_line, "flashtest") == 0) {
+        cmd_flashtest();
+        return;
+#endif
+#if defined(CONFIG_BOARD_ESP32P4)
     } else if (strcmp(cmd_line, "flashinfo") == 0) {
         cmd_flashinfo();
         return;
     } else if (strcmp(cmd_line, "i2cdiag") == 0) {
         { extern void i2c_p4_diag(void); i2c_p4_diag(); }
-        return;
-    } else if (strcmp(cmd_line, "flashtest") == 0) {
-        cmd_flashtest();
         return;
 #endif
 #if defined(CONFIG_SDIO_SLAVE)

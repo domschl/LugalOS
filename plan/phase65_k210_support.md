@@ -1,6 +1,7 @@
 # Phase 65 — The K210 Maix Bit: a 64-bit LugalOS node without a fence
 
-**Status: planned, not started. Written 2026-10-26.** A Maix Bit (Canaan
+**Status: in progress — 65.1–65.5 done (see §9); the board boots
+standalone from SPI flash to `lsh`.** Written 2026-10-26. A Maix Bit (Canaan
 K210) is connected over USB and ready for testing and flashing
 (`/dev/serial/by-id/usb-1a86_USB2.0-Serial-if00-port0` → `ttyUSB0`, the
 onboard CH552 enumerating as a CH340-class bridge, VID:PID `1a86:7523`).
@@ -90,14 +91,15 @@ Consequences, stated up front:
 | AXI/GDMA | `0x50000000` | — | DMAC |
 | GPIO | `0x50200000` | — | 32 slow GPIOs |
 | UART1–3 | `0x5021_0000`…`0x5023_0000` | — | 16550-style |
-| SPI3 | `0x504C0000` | — | external SPI (SD card, displays) |
+| SPI3 | `0x54000000` | — | **the system NOR's controller** — dedicated pads, not FPIOA-muxable; external SPI on the headers is SPI0 at `0x52000000` (measured 65.5; vendor `k210_platform.h` + live RDID) |
+| SYSCTL | `0x50440000` | — | clock enables `0x28` central / `0x2c` peripheral; `0x50020000` is **not** SYSCTL — writes there silently vanish (measured) |
 | I2C0–2 | `0x5028_0000`… | — | |
-| FPIOA | `0x52000000` region (`0x502B0000`) | — | **pin mux: every function reaches every pin only through FPIOA** |
+| FPIOA | `0x502B0000` | — | **pin mux: every function reaches every pin only through FPIOA** (function `24+n` drives GPIOHS bit `n`; function `0` is slow GPIO, unusable on HS pads) |
 | SHA256 / AES | `0x502C0000` / `0x50460000` | — | hardware crypto, later |
 | TIMERS 0–2 | `0x502D0000`… | — | PWM-capable |
 | WDT0/1 | `0x50400000`/`0x50410000` | — | |
 | OTP | `0x50420000` | 4 KB | 1 kbit eFuse-style per page; MAC/serial usage TBD |
-| SPI0 NOR ("SPIFF") | `0x58000000` region | — | **attached: GD25LQ64/128 (8 or 16 MB) per schematic rev 1.09** — JEDEC ID probe decides; **not XIP** (§1.4) |
+| SPI0 | `0x52000000` | — | external SPI only (breakout header pads IO_26..32); **the NOR is not on it** |
 
 There is **no PSRAM and no MMU**; everything LugalOS runs from — code,
 rodata, heap, framebuffer, Lisp pools — comes out of 6 MB of flat SRAM,
@@ -108,7 +110,7 @@ which by this tree's standards is enormous (the C6 port ships in ≈ 500 KB).
 | Item | Detail |
 | :--- | :--- |
 | Download circuit | Onboard **CH552T** USB↔UART (`1a86:7523`), up to 1.5 Mbaud, drives K210 reset/boot lines (one-click ISP, like an ESP toolchain). The currently attached board appears as `usb-1a86_USB2.0-Serial-if00-port0`. |
-| SPI NOR flash | `GD25LQ64` or `GD25LQ128` (8/16 MB) on SPI0 |
+| SPI NOR flash | **GD25LQ128 (16 MB), JEDEC `0xC86018` measured** — on the dedicated flash pads behind the **SPI3** controller (`0x54000000`); the schematic's PDF text layer interleaves the `SPI0_*` header-net column with the flash table, which is where the earlier "NOR on SPI0, IO_26..32" reading came from |
 | MicroSD slot | SD 1-bit (usable in SPI mode as first transport) |
 | RGB LED | driven from GPIOs (nets `LED_R/G/B` ↔ `IO_12/13/14`, 4K7 series) — direct-driven tri-color, **not** WS2812 **(confirm against the physical board)** |
 | User button | `USR` button + `RST` button |
@@ -207,18 +209,27 @@ on this path — unlike flash boot, where the vendor `hello_world` printed
 IPI). IPI delivery *to* hart 1 with our trap setup was not observed yet —
 SMP work inherits the vendor rendezvous recipe and must re-measure this.
 
-**Open, deferred — SPI NOR ownership (65.5 will settle it).** The NOR is
-a GD25LQ64/128 wired to **SPI0**, pads IO_27..32 (schematic nets
-`SPI0_SCLK/MOSI/CS0`; the earlier assumption "SPI1" is wrong — arduino
-flashing docs say "download from IO4,5", and the ISP path never touches
-these pads). Measured: the SSI block enables (`SSIENR` readback 1),
-`SSIC_VERSION 0x312a`, TMOD latches at [10:8] but DFS reads 0 (fixed
-8-bit frames); the RX FIFO fills (16 beats) — the bus is alive; RDID
-framing/CS still wrong, and two landings found on the way: reads at
-`0x20000000` **load-fault** (no XIP mapping at all, confirming §1.4),
-and stores to the GPIO block at `0x19000000` **store-fault** (clock/mux
-story for that block unknown; pins 27..32 are HS pads — GPIOHS at
-`0x1A000000` is the likely CS owner). PLIC external delivery → 65.3.
+**Settled in 65.5 — SPI NOR ownership.** The NOR is **not** on SPI0 and
+never was: the schematic PDF's text layer interleaves the `SPI0_*`
+breakout-header column with the flash pin table (balls K1/G2/J1/G1/H1/L1
+under the "SPI3" section note), and the vendor's own flash HAL
+(`k210-hal-flash.c`) has always used **`SPI_DEVICE_3`**. The live probe
+column finally read **JEDEC `0xC86018` = GD25LQ128 (16 MB)** at
+`0x54000000` with no FPIOA step — the flash pads are dedicated and
+belong to the SPI3 block. The 65.1 "bus alive, RDID garbage" state on
+SPI0 was two compounding errors: SPI0's device clock had never been
+gated on (the clock writes went to `0x50020000`, which is not SYSCTL —
+SYSCTL is `0x50440000`, and the enable that matters is `clk_en_peri`
+bit 7 for SPI3, not bit 4/5), and the pads muxed belonged to the
+header, not the flash. Related corrected geography: GPIOHS is
+`0x38001000` (SiFive layout: input_val `0x00`, input_en `0x04`,
+output_en `0x08`, output_val `0x0c`, pullup_en `0x10` — and HS bit `n`
+is FPIOA function `24+n`); `0x1A000000` does not exist (load-faults),
+which also explains the 65.1 GPIO store-fault (the slow GPIO block is
+at `0x50200000`). Reads at `0x20000000` faulting (no XIP) stands.
+DW-SSI quirks on this part, measured: `SR` reads 6 at idle and its
+busy bit never clears — pace on TXFLR level only (vendor: FIFO depth
+32); RXFLR is 6 bits. PLIC external delivery → 65.3.
 
 **Reproducible bring-up recipe (this host):**
 
@@ -573,3 +584,67 @@ Verified on Maix Bit silicon, not by compilation alone:
 (`isolationtest` and the fault-expecting probes are not run on K210 —
 with no PMP they would prove nothing and claim more than they test; the
 deputy/usertest pair above is the load-bearing subset.)
+
+### 65.5 — SPI NOR flash disk + phase 52 layout — DONE
+
+The board now boots standalone: BROM → loader (offset 0) → boot-record
+choice → slot A → kernel → `lsh`, no host attached beyond a power-only
+cable. Verified end-to-end on Maix Bit silicon, provisioning re-flashed
+3× with `--verify` byte-exact.
+
+What was built:
+
+* `drivers/spi_nor_k210.c` — GD25LQ128 (JEDEC `0xC86018`) on **SPI3
+  `0x54000000`** with dedicated pads (§1.5 corrected the schematic's
+  net-name interleaving); single-line mode, QE untouched at 0;
+  `flashtest` passes with the 0x020000 write-floor guard.
+* `cmake/flash_layout_k210.cmake` — loader 64 K/0, boot records 2×4 K
+  at 0x10000, slots A/B 2 M each, `/flash0` 2 M at 0x420000, identity
+  sector at 0xFFF000. The `/flash0` FAT image is generated at the
+  matching 2 M (`create_sd_image.py --sectors` geometry argument; the
+  1 M default is unchanged for every other board).
+* `arch/riscv/k210/loader.c` — 2.5 KB self-relocating loader in the
+  C6's shape: validates the OTA header + boot-record pair, streams the
+  slot blob to `0x80000000`, prints a checksum of what landed, jumps.
+* `tools/k210flash.py` — provisions the whole map through an on-board
+  writer blob (this repo's own SPI driver in SRAM, ISP-loaded; the
+  vendor flash stub is never used), verifies every page and retries,
+  then captures the flash-boot console with reset retries.
+
+Silicon lessons that changed code, not just comments:
+
+* **NOR state survives the K210's soft reset, and a reset that lands
+  mid-transaction leaves the part mid-command.** The BROM then rejects
+  the header — its own "boot failed with exit code 233" complaint.
+  Recovery is a second reset pulse; both host tools now pulse up to
+  four times until the loader identifies itself. A power cycle is the
+  only thing that clears the part electrically, so *every* init path
+  (loader, blob, kernel) opens with the `FF/66/99/E9` + `WRSR 0x00`
+  quiesce sequence: 3-byte address mode restored, stale block-protect
+  cleared (a protected program completes WIP-clean while writing
+  nothing — the worst possible silent failure).
+* **The SSIC's RX beat accounting must count, not store.** Phantom
+  beats beyond the expected count are a property of this variant; the
+  drain stores the first `4+chunk` and counts the rest. An unclamped
+  storing drain overran its stack buffer, and an unbounded *pre*-drain
+  never terminates (the FIFO refills faster than polling) — the second
+  hang was real, the first corrupted the kernel blob only when a stale
+  image was involved (§ below).
+* **CH552 late-echo on this dock.** Bytes written during an ISP
+  download drain out of the bridge after the blob boots and land in the
+  blob's UART FIFO, where a `K`-headed fragment becomes a bogus frame
+  whose reply later masquerades as an ack. `WriterBlob.__init__` now
+  dribbles NUL filler until both ends are empty before speaking the
+  protocol.
+* **A stale SRAM image is its own worst enemy.** During a link-base
+  experiment (`0x80000000` → `0x80400000` and back), a kernel re-linked
+  but not re-provisioned produced a plausible boot that died with
+  pointers into the old base — the *previous* image still resident in
+  SRAM was partly executing. Symptom to remember: correct banner +
+  addresses pointing outside the loaded image ⇒ reprovision before
+  debugging anything else. The experiment also proved BROM loads flash
+  images at `0x80000000` and enters there (vendor `kflash.boot()`
+  defaults to the same base), so `linker/k210.ld` keeps that base.
+* **Loader reads are ~15 KB/s** (per-byte MMIO pacing at BAUDR=64 on a
+  ~6 MHz SCLK); a cold flash boot reaches `lsh` in ≈45 s. Streaming
+  speed is a polish item, not a milestone blocker.
