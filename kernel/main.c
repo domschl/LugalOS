@@ -654,6 +654,8 @@ void kernel_main(void) {
 #if defined(CONFIG_BOARD_ESP32C6)
     watchdog_start();                     /* 45.8: an unattended node must not stay hung */
     radio_c6_autostart();                 /* the same policy for the C6's radio (45.8) */
+#elif defined(CONFIG_BOARD_K210)
+    watchdog_start();                     /* 65.7: the same rule on the K210 */
 #endif
 
     /* The IP stack, on whatever

@@ -1226,7 +1226,7 @@ elseif(LUGALOS_TARGET STREQUAL "K210")
     # identity store yet (the flash it lives in is now there).
     list(APPEND SOURCES drivers/uart_k210.c libc/libgcc_k210.c drivers/spi_nor_k210.c
          drivers/idstore_k210.c drivers/ledbtn_k210.c
-         drivers/ws2812.c drivers/ws2812_k210.c)
+         drivers/ws2812.c drivers/ws2812_k210.c drivers/wdt_k210.c)
 else()
     # QEMU targets: VirtIO block device + 16550 UART + VirtIO console (9P link, A3)
     list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c drivers/virtio_console.c)

@@ -8,8 +8,8 @@
 #include "drivers/sdio_slave_esp32c6.h"
 #include "drivers/ws2812.h"
 #include "kernel/radio_c6.h"
-#include "drivers/watchdog.h"
 #endif
+#include "drivers/watchdog.h"
 #if defined(CONFIG_BOARD_K210)
 #include "drivers/ledbtn_k210.h"
 #include "drivers/ws2812.h"
@@ -6238,7 +6238,8 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "radio probe") == 0) {
         radio_c6_probe();
         return;
-#if defined(CONFIG_BOARD_ESP32C6)
+#endif
+#if defined(CONFIG_BOARD_ESP32C6) || defined(CONFIG_BOARD_K210)
     } else if (strcmp(cmd_line, "wdt") == 0) {
         watchdog_report();
         return;
@@ -6246,6 +6247,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         watchdog_withhold();
         return;
 #endif
+#if defined(CONFIG_BOARD_ESP32C6)
     } else if (strcmp(cmd_line, "radio rejoin") == 0) {
         radio_c6_rejoin();
         return;

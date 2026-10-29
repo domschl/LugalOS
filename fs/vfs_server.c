@@ -36,8 +36,8 @@
 #include "kernel/clipboard.h"
 #if defined(CONFIG_BOARD_ESP32C6)
 #include "kernel/radio_c6.h"
-#include "drivers/watchdog.h"
 #endif
+#include "drivers/watchdog.h"   /* /proc/wdt: C6 and K210 have the hardware */
 #include "kernel/llp_node.h"
 #include "kernel/ota.h"
 #include "kernel/klog.h"
@@ -1472,6 +1472,8 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
     else if (strcmp(rel, "wlanscan") == 0) {
         return (int)radio_c6_scan_render(buf, cap);
     }
+#endif
+#if defined(CONFIG_BOARD_ESP32C6) || defined(CONFIG_BOARD_K210)
     else if (strcmp(rel, "wdt") == 0) {
         return (int)watchdog_proc_render(buf, cap);
     }
@@ -2303,7 +2305,10 @@ static const char *g_proc_names[] = { "ps", "meminfo", "version", "cpuinfo", "df
     "llp",
 #endif
 #if defined(CONFIG_BOARD_ESP32C6)
-    "radio", "wlanscan", "wdt",
+    "radio", "wlanscan",
+#endif
+#if defined(CONFIG_BOARD_ESP32C6) || defined(CONFIG_BOARD_K210)
+    "wdt",
 #endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_GPS
     "gps",
