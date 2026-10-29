@@ -1,5 +1,8 @@
 # Phase 65 — The K210 Maix Bit: a 64-bit LugalOS node without a fence
 
+Status: CANCELLED 2026-10-29
+Hardware platform Maix Bit v1 expectations not holding for LugalOS.
+
 **Status: planned, not started. Written 2026-10-26.** A Maix Bit (Canaan
 K210) is connected over USB and ready for testing and flashing
 (`/dev/serial/by-id/usb-1a86_USB2.0-Serial-if00-port0` → `ttyUSB0`, the
