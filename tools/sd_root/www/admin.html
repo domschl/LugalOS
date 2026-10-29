@@ -1,3 +1,329 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>LugalOS admin</title></head>
-<body><h1>LugalOS admin</h1><p>The page is being built.</p></body></html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LugalOS admin</title>
+<style>
+:root { --bg:#f6f6f4; --fg:#1d1d1b; --mut:#6b6b66; --card:#fff; --line:#d8d8d2; --acc:#1b5e9b; --bad:#a32020; --ok:#1d7a3a; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#161615; --fg:#e8e8e3; --mut:#9a9a92; --card:#201f1e; --line:#37362f; --acc:#6fb0e8; --bad:#ff7b7b; --ok:#6fcf8c; }
+}
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.45 system-ui, sans-serif; }
+header { display:flex; gap:1rem; align-items:center; padding:.6rem 1rem; border-bottom:1px solid var(--line); background:var(--card); flex-wrap:wrap; }
+header h1 { font-size:1.05rem; margin:0; }
+header .st { color:var(--mut); font-size:.85rem; margin-left:auto; }
+nav { display:flex; gap:.25rem; padding:.5rem 1rem 0; flex-wrap:wrap; }
+nav button { border:1px solid var(--line); border-bottom:none; background:transparent; color:var(--fg); padding:.4rem .9rem; border-radius:6px 6px 0 0; cursor:pointer; font:inherit; }
+nav button.on { background:var(--card); color:var(--acc); font-weight:600; }
+main { padding:0 1rem 2rem; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:0 6px 6px 6px; padding:1rem; max-width:62rem; }
+input, textarea, select { font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--line); border-radius:4px; padding:.35rem .5rem; }
+input[type=text], input[type=password] { width:100%; max-width:34rem; }
+textarea { width:100%; min-height:10rem; font-family:ui-monospace, monospace; font-size:.85rem; }
+button.act { background:var(--acc); color:var(--bg); border:none; border-radius:4px; padding:.4rem .9rem; cursor:pointer; font:inherit; }
+button.act:disabled { opacity:.5; cursor:default; }
+label { display:block; margin:.6rem 0 .2rem; color:var(--mut); font-size:.85rem; }
+pre { margin:0; white-space:pre-wrap; word-break:break-word; font:.85rem/1.4 ui-monospace, monospace; max-height:60vh; overflow:auto; }
+.err { color:var(--bad); } .ok { color:var(--ok); } .mut { color:var(--mut); }
+table { border-collapse:collapse; width:100%; } td, th { text-align:left; padding:.2rem .5rem; border-bottom:1px solid var(--line); font-size:.9rem; }
+td a { color:var(--acc); cursor:pointer; text-decoration:none; } td a:hover { text-decoration:underline; }
+.path { font-family:ui-monospace, monospace; margin-bottom:.5rem; }
+.row { display:flex; gap:.5rem; flex-wrap:wrap; align-items:center; margin:.5rem 0; }
+.hide { display:none; }
+</style>
+</head>
+<body>
+<header><h1>LugalOS admin</h1><span id="who" class="mut"></span><span class="st" id="status">not connected</span></header>
+
+<main id="login">
+  <form class="card" id="loginform" style="margin-top:1rem" onsubmit="return false">
+    <p>Sign in with this node's key. The key is hashed in this page and never sent: the node proves nothing to you, you prove the key to it with a challenge it chose.</p>
+    <label for="uname">User</label><input id="uname" type="text" value="lugal" autocomplete="username">
+    <label for="key">Key (hex)</label><input id="key" type="password" autocomplete="current-password" spellcheck="false">
+    <div class="row"><button class="act" id="go" type="submit">Sign in</button><span id="lerr" class="err"></span></div>
+    <p class="mut">This page was loaded over plain HTTP: what you read and write can be seen, and a session cannot change the node unless its console allowed it (<code>httpd write on</code>).</p>
+  </form>
+</main>
+
+<div id="app" class="hide">
+  <nav id="tabs"></nav>
+  <main>
+    <div class="card" id="view"></div>
+  </main>
+</div>
+
+<script id="core">
+/* SHA-256, HMAC and a 9P client. No DOM here: tests/runner.py runs this script under node. */
+'use strict';
+const K256 = new Uint32Array([
+ 0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+ 0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+ 0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+ 0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2]);
+
+function sha256(data) {
+  const h = new Uint32Array([0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19]);
+  const n = data.length, padded = new Uint8Array(((n + 9 + 63) >> 6) << 6);
+  padded.set(data); padded[n] = 0x80;
+  const dv = new DataView(padded.buffer);
+  dv.setUint32(padded.length - 8, Math.floor(n / 0x20000000));
+  dv.setUint32(padded.length - 4, (n << 3) >>> 0);
+  const w = new Uint32Array(64), rotr = (x, r) => (x >>> r) | (x << (32 - r));
+  for (let off = 0; off < padded.length; off += 64) {
+    for (let i = 0; i < 16; i++) w[i] = dv.getUint32(off + 4 * i);
+    for (let i = 16; i < 64; i++) {
+      const s0 = rotr(w[i-15], 7) ^ rotr(w[i-15], 18) ^ (w[i-15] >>> 3);
+      const s1 = rotr(w[i-2], 17) ^ rotr(w[i-2], 19) ^ (w[i-2] >>> 10);
+      w[i] = (w[i-16] + s0 + w[i-7] + s1) | 0;
+    }
+    let [a, b, c, d, e, f, g, hh] = h;
+    for (let i = 0; i < 64; i++) {
+      const t1 = (hh + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + K256[i] + w[i]) | 0;
+      const t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) | 0;
+      hh = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
+    }
+    h[0] += a; h[1] += b; h[2] += c; h[3] += d; h[4] += e; h[5] += f; h[6] += g; h[7] += hh;
+  }
+  const out = new Uint8Array(32), o = new DataView(out.buffer);
+  for (let i = 0; i < 8; i++) o.setUint32(4 * i, h[i]);
+  return out;
+}
+
+function concat(...parts) {
+  const out = new Uint8Array(parts.reduce((s, p) => s + p.length, 0));
+  let o = 0; for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
+}
+
+function hmacSha256(key, msg) {
+  if (key.length > 64) key = sha256(key);
+  const ip = new Uint8Array(64).fill(0x36), op = new Uint8Array(64).fill(0x5c);
+  for (let i = 0; i < key.length; i++) { ip[i] ^= key[i]; op[i] ^= key[i]; }
+  return sha256(concat(op, sha256(concat(ip, msg))));
+}
+
+function hexToBytes(s) {
+  s = s.replace(/\s+/g, '');
+  if (!/^([0-9a-fA-F]{2})+$/.test(s)) throw new Error('the key is hexadecimal, two digits per byte');
+  const out = new Uint8Array(s.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(s.substr(2 * i, 2), 16);
+  return out;
+}
+
+const T = { version: 100, auth: 102, attach: 104, walk: 110, open: 112, create: 114, read: 116, write: 118, clunk: 120, stat: 124, error: 107 };
+const OREAD = 0, OWRITE = 1, ORDWR = 2, OTRUNC = 0x10, NOFID = 0xFFFFFFFF;
+const enc = new TextEncoder(), dec = new TextDecoder();
+
+class W {  /* a message body being written */
+  constructor() { this.a = []; }
+  u8(v) { this.a.push(v & 255); return this; }
+  u16(v) { return this.u8(v).u8(v >> 8); }
+  u32(v) { return this.u16(v & 0xffff).u16(v >>> 16); }
+  u64(v) { return this.u32(v % 4294967296).u32(Math.floor(v / 4294967296)); }
+  str(s) { const b = enc.encode(s); this.u16(b.length); for (const x of b) this.a.push(x); return this; }
+  bytes(b) { for (const x of b) this.a.push(x); return this; }
+  done() { return Uint8Array.from(this.a); }
+}
+class R {  /* a message body being read */
+  constructor(b) { this.b = b; this.dv = new DataView(b.buffer, b.byteOffset, b.byteLength); this.p = 0; }
+  u8() { return this.b[this.p++]; }
+  u16() { const v = this.dv.getUint16(this.p, true); this.p += 2; return v; }
+  u32() { const v = this.dv.getUint32(this.p, true); this.p += 4; return v; }
+  u64() { const lo = this.u32(), hi = this.u32(); return hi * 4294967296 + lo; }
+  str() { const n = this.u16(); const s = dec.decode(this.b.subarray(this.p, this.p + n)); this.p += n; return s; }
+  take(n) { const s = this.b.subarray(this.p, this.p + n); this.p += n; return s; }
+}
+
+class P9 {
+  constructor(url) { this.url = url; this.tag = 1; this.q = Promise.resolve(); this.msize = 4096; this.fid = 2; }
+  connect() {
+    return new Promise((res, rej) => {
+      const ws = this.ws = new WebSocket(this.url, '9p');
+      ws.binaryType = 'arraybuffer';
+      ws.onopen = () => res();
+      ws.onerror = () => rej(new Error('cannot reach the node'));
+      ws.onclose = () => { this.closed = true; if (this.cur) this.cur.rej(new Error('connection closed')); if (this.onclose) this.onclose(); };
+      ws.onmessage = (ev) => { if (this.cur) this.cur.res(new Uint8Array(ev.data)); };
+    });
+  }
+  close() { try { this.ws.close(); } catch (e) { /* already gone */ } }
+  /* One request at a time: the server's fid table is small and it answers in order. */
+  rpc(type, body) {
+    const run = () => new Promise((res, rej) => {
+      if (this.closed) return rej(new Error('connection closed'));
+      const tag = this.tag; this.tag = this.tag >= 0xfffe ? 1 : this.tag + 1;
+      const n = 7 + body.length, m = new Uint8Array(n), dv = new DataView(m.buffer);
+      dv.setUint32(0, n, true); m[4] = type; dv.setUint16(5, tag, true); m.set(body, 7);
+      const timer = setTimeout(() => { this.cur = null; rej(new Error('the node did not answer')); }, 20000);
+      this.cur = { res: (r) => {
+        clearTimeout(timer); this.cur = null;
+        const rd = new R(r.subarray(4)); const t = rd.u8(); rd.u16();
+        if (t === T.error) rej(new Error(rd.str())); else res({ type: t, rd });
+      }, rej: (e) => { clearTimeout(timer); rej(e); } };
+      this.ws.send(m);
+    });
+    const p = this.q.then(run, run);
+    this.q = p.catch(() => {});
+    return p;
+  }
+  async login(uname, key) {
+    const r = await this.rpc(T.version, new W().u32(4096).str('9P2000').done());
+    this.msize = Math.min(r.rd.u32(), 4096);
+    await this.rpc(T.auth, new W().u32(0).str(uname).str('/').done());
+    const nonce = (await this.rpc(T.read, new W().u32(0).u64(0).u32(32).done())).rd;
+    const n = nonce.u32(), challenge = nonce.take(n);
+    const mac = hmacSha256(key, concat(challenge, enc.encode(uname), enc.encode('/')));
+    await this.rpc(T.write, new W().u32(0).u64(0).u32(mac.length).bytes(mac).done());
+    await this.rpc(T.attach, new W().u32(1).u32(0).str(uname).str('/').done());
+  }
+  async walk(path) {
+    const fid = this.fid; this.fid = this.fid >= 60 ? 2 : this.fid + 1;
+    const names = path.split('/').filter((s) => s.length);
+    const r = await this.rpc(T.walk, (() => { const w = new W().u32(1).u32(fid).u16(names.length); names.forEach((s) => w.str(s)); return w.done(); })());
+    /* A short walk leaves the fid on the last directory that was found: not the file asked for. */
+    if (r.rd.u16() !== names.length) { await this.clunk(fid); throw new Error('no such file: ' + path); }
+    return fid;
+  }
+  async clunk(fid) { try { await this.rpc(T.clunk, new W().u32(fid).done()); } catch (e) { /* the fid is gone either way */ } }
+  async readAll(fid, max) {
+    const chunks = []; let off = 0;
+    for (;;) {
+      const r = (await this.rpc(T.read, new W().u32(fid).u64(off).u32(this.msize - 24).done())).rd;
+      const n = r.u32(); if (!n) break;
+      chunks.push(r.take(n).slice()); off += n;
+      if (max && off >= max) break;
+    }
+    return concat(...chunks);
+  }
+  async read(path, max) {
+    const fid = await this.walk(path);
+    try { await this.rpc(T.open, new W().u32(fid).u8(OREAD).done()); return await this.readAll(fid, max); }
+    finally { await this.clunk(fid); }
+  }
+  async list(path) {
+    const raw = await this.read(path), out = []; let p = 0;
+    while (p + 2 <= raw.length) {
+      const size = raw[p] | (raw[p + 1] << 8);
+      const r = new R(raw.subarray(p + 2, p + 2 + size));
+      r.u16(); r.u32(); const qt = r.u8(); r.u32(); r.u64();
+      const mode = r.u32(); r.u32(); r.u32(); const length = r.u64(); const name = r.str();
+      out.push({ name, dir: (qt & 0x80) !== 0, length, mode });
+      p += 2 + size;
+    }
+    return out;
+  }
+  async write(path, data, truncate) {
+    const fid = await this.walk(path);
+    try {
+      await this.rpc(T.open, new W().u32(fid).u8(OWRITE | (truncate ? OTRUNC : 0)).done());
+      let off = 0; const step = this.msize - 24;
+      do {
+        const part = data.subarray(off, off + step);
+        const n = (await this.rpc(T.write, new W().u32(fid).u64(off).u32(part.length).bytes(part).done())).rd.u32();
+        if (!n && part.length) throw new Error('the node took no bytes');
+        off += n;
+      } while (off < data.length);
+    } finally { await this.clunk(fid); }
+  }
+}
+if (typeof module !== 'undefined') module.exports = { sha256, hmacSha256, hexToBytes, P9, concat };
+</script>
+
+<script id="ui">
+'use strict';
+if (typeof document !== 'undefined') (() => {
+  const $ = (id) => document.getElementById(id);
+  let p9 = null, tab = 'files', cwd = '/', timer = null;
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const text = (b) => new TextDecoder().decode(b);
+  const setStatus = (s, cls) => { $('status').textContent = s; $('status').className = 'st ' + (cls || ''); };
+
+  const TABS = [['files', 'Files'], ['status', 'Status'], ['log', 'Log'], ['node', 'Node']];
+  const STATUS_FILES = ['/proc/version', '/proc/uptime', '/proc/meminfo', '/proc/net', '/proc/ota', '/dev/ota', '/dev/setup'];
+
+  function drawTabs() {
+    $('tabs').innerHTML = TABS.map(([id, label]) => `<button data-t="${id}" class="${id === tab ? 'on' : ''}">${label}</button>`).join('');
+    $('tabs').querySelectorAll('button').forEach((b) => b.onclick = () => { tab = b.dataset.t; show(); });
+  }
+  function show() {
+    clearInterval(timer); timer = null; drawTabs();
+    ({ files: viewFiles, status: viewStatus, log: viewLog, node: viewNode }[tab])();
+  }
+  const fail = (e) => `<p class="err">${esc(e.message || e)}</p>`;
+
+  async function viewFiles() {
+    const v = $('view');
+    try {
+      const rows = (await p9.list(cwd)).sort((a, b) => (b.dir - a.dir) || a.name.localeCompare(b.name));
+      const up = cwd === '/' ? '' : `<tr><td><a data-p="${esc(cwd.replace(/\/[^/]*$/, '') || '/')}" data-d="1">..</a></td><td></td></tr>`;
+      v.innerHTML = `<div class="path">${esc(cwd)}</div><table>${up}${rows.map((r) =>
+        `<tr><td><a data-p="${esc((cwd === '/' ? '' : cwd) + '/' + r.name)}" data-d="${r.dir ? 1 : 0}">${esc(r.name)}${r.dir ? '/' : ''}</a></td><td class="mut">${r.dir ? '' : r.length + ' B'}</td></tr>`).join('')}</table>`;
+      v.querySelectorAll('a').forEach((a) => a.onclick = () => { if (a.dataset.d === '1') { cwd = a.dataset.p; viewFiles(); } else openFile(a.dataset.p); });
+    } catch (e) { v.innerHTML = fail(e); }
+  }
+  async function openFile(path) {
+    const v = $('view');
+    try {
+      const data = await p9.read(path, 65536);
+      v.innerHTML = `<div class="path">${esc(path)} <a id="back" style="cursor:pointer;color:var(--acc)">&larr; back</a></div>
+        <textarea id="body" spellcheck="false">${esc(text(data))}</textarea>
+        <div class="row"><button class="act" id="save">Write</button><label style="margin:0"><input type="checkbox" id="trunc" checked> replace the file</label><span id="msg"></span></div>
+        <p class="mut">Shows the first 64 KB. A control file takes the text as a command; unchecking "replace" writes from the start without truncating.</p>`;
+      $('back').onclick = viewFiles;
+      $('save').onclick = async () => {
+        $('msg').textContent = '…'; $('msg').className = '';
+        try { await p9.write(path, new TextEncoder().encode($('body').value), $('trunc').checked); $('msg').textContent = 'written'; $('msg').className = 'ok'; }
+        catch (e) { $('msg').textContent = e.message; $('msg').className = 'err'; }
+      };
+    } catch (e) { v.innerHTML = fail(e) + '<p><a id="back" style="cursor:pointer;color:var(--acc)">&larr; back</a></p>'; $('back').onclick = viewFiles; }
+  }
+
+  async function viewStatus() {
+    const v = $('view');
+    const draw = async () => {
+      let html = '';
+      for (const f of STATUS_FILES) {
+        try { html += `<h3 style="margin:.8rem 0 .2rem">${esc(f)}</h3><pre>${esc(text(await p9.read(f, 8192)))}</pre>`; }
+        catch (e) { /* this node has no such file */ }
+      }
+      v.innerHTML = html || '<p class="mut">nothing to show</p>';
+    };
+    await draw(); timer = setInterval(draw, 5000);
+  }
+  async function viewLog() {
+    const v = $('view');
+    v.innerHTML = '<pre id="log"></pre>';
+    const draw = async () => {
+      try { const t = text(await p9.read('/proc/kmsg', 65536)); const el = $('log'); if (el) { el.textContent = t.split('\n').slice(-200).join('\n'); el.scrollTop = el.scrollHeight; } }
+      catch (e) { v.innerHTML = fail(e); clearInterval(timer); }
+    };
+    await draw(); timer = setInterval(draw, 3000);
+  }
+  async function viewNode() {
+    const v = $('view');
+    let html = '';
+    for (const f of ['/dev/setup', '/dev/owner']) {
+      try { html += `<h3 style="margin:.2rem 0">${esc(f)}</h3><pre>${esc(text(await p9.read(f, 4096)))}</pre>`; } catch (e) { html += `<p class="mut">${esc(f)}: ${esc(e.message)}</p>`; }
+    }
+    v.innerHTML = html + '<p class="mut">Change the owner part by writing a line to <code>/dev/owner</code> in the Files view (<code>name NAME</code>, <code>wlan SSID PSKHEX</code>, <code>grant NAME KEYHEX [rw|ro|admin]</code>). It needs the admin grant and a session that may write.</p>';
+  }
+
+  $('loginform').onsubmit = async (ev) => {
+    ev.preventDefault();
+    $('lerr').textContent = ''; $('go').disabled = true; setStatus('connecting…');
+    try {
+      const key = hexToBytes($('key').value), uname = $('uname').value || 'lugal';
+      p9 = new P9((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/9p');
+      await p9.connect(); await p9.login(uname, key);
+      p9.onclose = () => { setStatus('disconnected', 'err'); $('app').classList.add('hide'); $('login').classList.remove('hide'); $('lerr').textContent = 'the connection ended'; $('go').disabled = false; };
+      $('login').classList.add('hide'); $('app').classList.remove('hide');
+      $('who').textContent = uname + ' @ ' + location.host; setStatus('connected', 'ok'); $('key').value = '';
+      cwd = '/'; show();
+    } catch (e) { if (p9) p9.close(); $('lerr').textContent = /attach|auth/i.test(e.message) ? 'The node refused that key: ' + e.message : e.message; setStatus('not connected'); $('go').disabled = false; }
+  };
+})();
+</script>
+</body>
+</html>

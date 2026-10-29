@@ -57,8 +57,8 @@ typedef struct {
 } hsess_t;
 
 /* single task: httpd (everything below, except the flags it reads from the console). */
-static hsess_t   g_sess[HTTPD_MAX_SESSIONS];
-static uint8_t  *g_pool;              /* HTTPD_MAX_SESSIONS * (ibuf + obuf), one palloc run */
+static hsess_t  *g_sess;              /* HTTPD_MAX_SESSIONS of them, at the start of the pool */
+static uint8_t  *g_pool;              /* the sessions, then each one's ibuf and obuf: one palloc run, taken by httpd_start() */
 static uint32_t  g_pool_pages;
 static uint16_t  g_port;
 static int       g_pid = -1;
@@ -404,7 +404,7 @@ static void httpd_task(void *arg) {
     tcp_stream_unlisten(g_port);
     palloc_free(g_pool, g_pool_pages);
     g_pool = NULL;
-    memset(g_sess, 0, sizeof g_sess);
+    g_sess = NULL;
     g_run = false;
     g_pid = -1;
 }
@@ -412,12 +412,14 @@ static void httpd_task(void *arg) {
 int httpd_start(uint16_t port) {
     if (g_run) return 0;
     if (port == 0) port = HTTPD_DEFAULT_PORT;
-    g_pool_pages = (HTTPD_MAX_SESSIONS * (P9_MAX_MSIZE + HTTPD_OBUF) + 4095u) / 4096u;
+    const uint32_t table = (HTTPD_MAX_SESSIONS * (uint32_t)sizeof(hsess_t) + 15u) & ~15u;
+    g_pool_pages = (table + HTTPD_MAX_SESSIONS * (P9_MAX_MSIZE + HTTPD_OBUF) + 4095u) / 4096u;
     g_pool = (uint8_t *)palloc_pages(g_pool_pages);
     if (!g_pool) { printk("[Httpd] no memory for %u session pages\n", (unsigned)g_pool_pages); return -1; }
-    memset(g_sess, 0, sizeof g_sess);
+    g_sess = (hsess_t *)g_pool;
+    memset(g_sess, 0, table);
     for (uint32_t i = 0; i < HTTPD_MAX_SESSIONS; i++) {
-        g_sess[i].ibuf = g_pool + i * (P9_MAX_MSIZE + HTTPD_OBUF);
+        g_sess[i].ibuf = g_pool + table + i * (P9_MAX_MSIZE + HTTPD_OBUF);
         g_sess[i].obuf = g_sess[i].ibuf + P9_MAX_MSIZE;
         g_sess[i].fd = -1;
     }
@@ -449,7 +451,7 @@ void httpd_stop(void) {
 
 uint32_t httpd_status(char *out, uint32_t cap) {
     uint32_t live = 0, ws = 0;
-    for (uint32_t i = 0; i < HTTPD_MAX_SESSIONS; i++) {
+    for (uint32_t i = 0; g_run && g_sess && i < HTTPD_MAX_SESSIONS; i++) {
         if (g_sess[i].st != H_FREE) live++;
         if (g_sess[i].st == H_WS) ws++;
     }

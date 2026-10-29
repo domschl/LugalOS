@@ -5212,6 +5212,42 @@ def test_httpd_websocket_9p(elf_path: Path, img_path: Path, arch_name: str) -> t
                 if "read-only" not in str(e) and "read only" not in str(e):
                     return (name, False, f"the refusal gave no reason: {e}")
 
+        # 4b. The page's own protocol code (SHA-256, HMAC, the 9P client in tools/sd_root/www/admin.html)
+        #     under node, against this guest: what a browser does, minus the DOM.
+        node = shutil.which("node")
+        if node:
+            import tempfile
+            page = (Path(__file__).resolve().parent.parent / "tools" / "sd_root" / "www" / "admin.html").read_text()
+            core = re.search(r'<script id="core">\n(.*?)</script>', page, re.S)
+            if not core:
+                return (name, False, "tools/sd_root/www/admin.html has no <script id=\"core\">")
+            with tempfile.TemporaryDirectory() as td:
+                cjs = Path(td) / "core.js"
+                cjs.write_text(core.group(1))
+                r = subprocess.run([node, str(Path(__file__).resolve().parent / "web" / "admin_core_check.js"),
+                                    str(cjs), "127.0.0.1", str(port), key.hex()],
+                                   capture_output=True, text=True, timeout=120)
+            out = r.stdout + r.stderr
+            if r.returncode != 0 or "crypto: ok" not in out:
+                return (name, False, f"the page's protocol code failed under node:\n{out[-600:]}")
+            if "read-only" not in out and "read only" not in out:
+                return (name, False, f"the page's write was not refused as read-only:\n{out[-300:]}")
+            m = re.search(r"init\.lisp: (\d+)", out)
+            if not m or int(m.group(1)) != len(expected_init_lisp()):
+                return (name, False, f"the page's client read init.lisp wrongly:\n{out[-300:]}")
+            if not (Path(__file__).resolve().parent.parent / "tools" / "sd_root" / "www" / "admin.html").stat().st_size == int(
+                    re.search(r"admin\.html via 9P: (\d+)", out).group(1)):
+                return (name, False, f"the page read over 9P differs in size from the file:\n{out[-300:]}")
+
+        # 4c. And the page itself, in a real browser if there is one: sign in, browse, be refused a write.
+        browser = shutil.which("chromium") or shutil.which("google-chrome") or shutil.which("chromium-browser")
+        if node and browser:
+            r = subprocess.run([node, str(Path(__file__).resolve().parent / "web" / "browser_check.js"), browser,
+                                f"http://127.0.0.1:{port}/", "lugal", key.hex()],
+                               capture_output=True, text=True, timeout=120)
+            if "browser: ok" not in r.stdout:
+                return (name, False, f"the page in a browser failed:\n{(r.stdout + r.stderr)[-600:]}")
+
         # 5. Allowed at the console, a new session may write.
         session.send_and_expect("httpd write on", r"ALLOWED", timeout=5.0)
         with p9lib.Session(p9lib.connect_ws("127.0.0.1", port), key=key) as sess:
