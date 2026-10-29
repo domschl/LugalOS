@@ -1125,12 +1125,15 @@ static void p9_handle_tattach(const p9_msg_t *req, p9_msg_t *resp) {
     bool grant_read_only = false;
     bool grant_admin = false;
     bool setup_attach = false;
+    bool public_attach = false;
 
     /* The gate. On a transport that requires it, an attach is only as good as
      * the afid it names: the afid must exist, be an auth fid, have had a
      * verified response written to it, and have been established for the same
      * identity now being claimed. */
-    if (policy_needs_auth() && req->afid == P9_NOFID &&
+    if (policy_needs_auth() && req->afid == P9_NOFID && strcmp(req->aname, "/proc/board") == 0) {
+        public_attach = true;      /* which board is this: identifying facts only (kernel/boardinfo.h) */
+    } else if (policy_needs_auth() && req->afid == P9_NOFID &&
         strcmp(req->aname, "/dev/setup") == 0 && setup_unauth_attach_ok() && p9_link_is_setup_ap()) {
         setup_attach = true;       /* an unclaimed node's one open door: see kernel/setup.h */
     } else if (policy_needs_auth()) {
@@ -1223,7 +1226,7 @@ static void p9_handle_tattach(const p9_msg_t *req, p9_msg_t *resp) {
     bool exists = (vfs_stat(path, &st) == 0);
     strncpy(e->path, path, sizeof(e->path) - 1);
     e->path[sizeof(e->path) - 1] = '\0';
-    e->read_only = (grant_matched && grant_read_only) || cur_policy() == P9_AUTH_REQUIRED_RO;
+    e->read_only = (grant_matched && grant_read_only) || cur_policy() == P9_AUTH_REQUIRED_RO || public_attach;
     /* A cable (no authentication) is the console's equivalent; an authenticated peer is admin only
      * by its grant; the setup attach is neither and reaches /dev/setup alone. */
     e->admin = !policy_needs_auth() || (grant_matched && grant_admin);

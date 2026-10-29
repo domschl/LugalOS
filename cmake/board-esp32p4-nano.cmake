@@ -319,3 +319,6 @@ set(CONFIG_NET_PREFER_WIRED 1)
 set(CONFIG_C6_CHIP_PU_GPIO 54)
 
 set(CONFIG_SETUP_BUTTON_GPIO 35)   # BOOT; a strapping pin, an ordinary input once running
+
+# Named by /proc/board and the banner (kernel/boardinfo.h).
+set(CONFIG_BOARD_DESC "Waveshare ESP32-P4-NANO")

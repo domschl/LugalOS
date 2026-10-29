@@ -705,6 +705,7 @@ set(SOURCES
     # the MAC inside a driver, and the design went with the part.
     kernel/identity.c
     kernel/setup.c
+    kernel/boardinfo.c
     kernel/setup_button.c
     # N1: the nonce source for that gate, plus the measurement that says
     # whether the ring oscillator behind it is worth trusting.

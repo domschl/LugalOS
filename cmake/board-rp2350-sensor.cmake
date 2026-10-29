@@ -91,3 +91,6 @@ set(CONFIG_WL_CLK_GPIO  29)
 # Deliberately no CONFIG_UART1_*, no CONFIG_ETH_*, no display, no DCF77: none
 # of it is fitted, and a pin reservation for a part that does not exist is how
 # GP16 became a bus fight on the gateway persona once already.
+
+# Named by /proc/board and the banner (kernel/boardinfo.h).
+set(CONFIG_BOARD_DESC "Raspberry Pi Pico 2 W (sensor)")

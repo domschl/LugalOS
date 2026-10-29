@@ -44,3 +44,6 @@ set(CONFIG_SDIO_SLAVE 1)
 # heap that the radio, TCP and the identity store's 8 KB scratch compete for.
 set(CONFIG_LISP_NODE_POOL   512)
 set(CONFIG_LISP_STRING_POOL 192)
+
+# Named by /proc/board and the banner (kernel/boardinfo.h).
+set(CONFIG_BOARD_DESC "Waveshare ESP32-C6-MINI-1 module")

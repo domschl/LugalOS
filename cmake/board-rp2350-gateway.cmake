@@ -127,3 +127,6 @@ set(CONFIG_UART1_RX_GPIO  9)
 set(CONFIG_I2C_RTC_BASE     0x40090000) # I2C0
 set(CONFIG_I2C_RTC_SDA_GPIO 4)
 set(CONFIG_I2C_RTC_SCL_GPIO 5)
+
+# Named by /proc/board and the banner (kernel/boardinfo.h).
+set(CONFIG_BOARD_DESC "Raspberry Pi Pico 2 with ENC28J60")

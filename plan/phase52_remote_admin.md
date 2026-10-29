@@ -1048,6 +1048,13 @@ deferred without blocking anything after it.
     key file, browse `/proc` and (NANO) `/c6`, and see writes refused on the
     NANO. The page loads while 9P and MQTT hold the other slots. RAM cost
     recorded.
+    * **Board identification, 2026-10-29:** `/proc/board` (public, also
+    `GET /board` and an unauthenticated read-only 9P attach to that one
+    path), the `board` command, a banner line on every console, the boot log
+    line `[Init] LugalOS Lisp System: <preset> v<version> (<hardware>, <chip>) "<name>" uid <uid>`,
+    `(board-info)`, and the admin page's header before and after sign-in.
+    Open: the host tools print the line first and take `--expect`; the USB
+    descriptor strings.
   * **52.11b Integrity-protected 9P sessions for non-TLS boards.** *Boards:
     the Pico 2 W and the C6-Zero.*
     * After a successful `Tauth`, both ends derive a session key

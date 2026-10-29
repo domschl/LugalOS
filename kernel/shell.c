@@ -78,6 +78,7 @@
 #include "kernel/crypto.h"
 #include "kernel/ota.h"
 #include "kernel/setup.h"
+#include "kernel/boardinfo.h"
 #include "net/httpd.h"
 #include "kernel/privilege.h"
 #include "kernel/random.h"
@@ -4040,6 +4041,14 @@ static void cmd_ota(const char *arg) {
 #endif
 }
 
+/* --- `board`: which board is this (kernel/boardinfo.h) ------------------------------- */
+static void cmd_board(void) {
+    char text[320];
+    uint32_t n = board_info_text(text, sizeof text - 1);
+    text[n] = 0;
+    cprintf("%s", text);
+}
+
 /* --- `httpd`: the admin web server (net/httpd.c) ------------------------------------- */
 static void cmd_httpd(const char *arg) {
     while (arg && *arg == ' ') arg++;
@@ -7239,6 +7248,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "ota") == 0) {
         cmd_ota(NULL);
         return;
+    } else if (strcmp(cmd_line, "board") == 0) {
+        cmd_board();
+        return;
     } else if (strcmp(cmd_line, "httpd") == 0 || strncmp(cmd_line, "httpd ", 6) == 0) {
         cmd_httpd(cmd_line[5] ? &cmd_line[6] : NULL);
         return;
@@ -7701,6 +7713,11 @@ void shell_run(void) {
     klog_drain();
 
     cprintf("\nLugalOS Interactive Console Shell (`lsh`)\n");
+    {
+        char line[160];
+        board_info_line(line, sizeof line);
+        cprintf("%s\n", line);
+    }
     cprintf("Type 'help' for commands, 'cat /proc/ps' for tasks, 'ls /dev/' for devices.\n");
 
     /* 37.5a: while the prompt waits for a key, a program that lost its

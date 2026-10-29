@@ -295,3 +295,6 @@ set(CONFIG_WL_ON_GPIO   23)
 set(CONFIG_WL_DATA_GPIO 24)
 set(CONFIG_WL_CS_GPIO   25)
 set(CONFIG_WL_CLK_GPIO  29)
+
+# Named by /proc/board and the banner (kernel/boardinfo.h).
+set(CONFIG_BOARD_DESC "Waveshare Pico-Clock-Green")

@@ -58,6 +58,7 @@
 #include "kernel/sched.h"
 #include "kernel/mem_domain.h"
 #include "kernel/version.h"
+#include "kernel/boardinfo.h"
 #include <string.h>
 #include <stdbool.h>
 
@@ -1208,6 +1209,11 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
         used += (uint32_t)path_format(buf + used, cap - used);
         used += (uint32_t)ksnprintf(buf + used, cap - used, "\n");
         return (int)used;
+    } else if (strcmp(rel, "board") == 0) {
+        /* Which board and which build: readable without a grant (fs/9p.c's public attach), so it
+         * holds nothing but identifying facts -- see kernel/boardinfo.h. */
+        used += board_info_text(buf + used, cap - used);
+        return (int)used;
     } else if (strcmp(rel, "buildid") == 0) {
         /* Deliberately its own file rather than extra lines on /proc/version:
          * tests/hw/ needs to ask "is this board running the firmware I just
@@ -2269,7 +2275,7 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
 
 /* Unsized on purpose: /proc/dcf77 exists only where a receiver does, and the
  * one caller that walks this list already derives the count with sizeof. */
-static const char *g_proc_names[] = { "ps", "meminfo", "version", "cpuinfo", "df", "kmsg", "devices", "buildid", "path", "ports", "config", "net", "node", "clock", "sensors", "sensor",
+static const char *g_proc_names[] = { "ps", "meminfo", "version", "board", "cpuinfo", "df", "kmsg", "devices", "buildid", "path", "ports", "config", "net", "node", "clock", "sensors", "sensor",
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)
     "usbhost",
 #endif

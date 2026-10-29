@@ -37,6 +37,7 @@ static const builtin_t builtins[] = {
     BUILTIN_PRIM("bignum?", prim_bignum_p),
     BUILTIN_PRIM("bind", prim_bind),
     BUILTIN_PRIM("board", prim_board),
+    BUILTIN_PRIM("board-info", prim_board_info),
     BUILTIN_PRIM("boolean?", prim_boolean_p),
     BUILTIN_PRIM("boot-program", prim_boot_program),
     BUILTIN_PRIM("caaar", prim_caaar),

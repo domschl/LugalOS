@@ -55,6 +55,7 @@ LugalOS uses a two-tier library model:
    * `(require 'matrix)`: Vector and matrix linear algebra routines.
    * `(require 'chart)`: Real-time graphical charting on the ribbon canvas.
    * `(require 'ota)`: The node's update state as data, read from `/dev/ota`. `(ota-info)` returns an association list of `("key" . "value")` strings (`board`, `layout`, `version`, `running`, `trial`, `slot_a`, `slot_b`, `at_a`, `at_b`, ... ; see [updates](../../admin/updates.md)); `(ota-get "running")` returns one value or `#f`. Read-only.
+3. **Board identity**: `(board)` returns the board file's id (`esp32p4-nano`); `(board-info)` returns the one-line description the console banner and the boot log use: `PRESET vVERSION (HARDWARE, CHIP) "NAME" uid UID`. The same facts, one per line, are `/proc/board`.
 
 ---
 

@@ -81,6 +81,10 @@ async function main() {
 
     await drv.navigate(url);
     await waitFor("document.readyState === 'complete' && !!document.getElementById('go')", 'the sign-in page');
+    await waitFor("document.getElementById('board').textContent.length > 10", 'the board line before sign-in');
+    const boardLine = await ev("document.getElementById('board').textContent + ' | ' + document.title");
+    if (!/uid [0-9a-f]+|uid none/.test(boardLine) || !/LugalOS admin/.test(boardLine)) throw new Error('the board line: ' + boardLine);
+    console.log('board: ' + boardLine);
     await ev(`document.getElementById('uname').value = ${JSON.stringify(user)}; document.getElementById('key').value = ${JSON.stringify(key)}; document.getElementById('go').click();`);
     await waitFor("document.getElementById('status').textContent === 'connected'", 'sign-in');
     await waitFor("document.querySelectorAll('#view table a').length > 0", 'the root listing');
