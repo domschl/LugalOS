@@ -48,6 +48,17 @@ bool cyw43_led_set(bool on);
 bool cyw43_join_wpa2(const char *ssid, const uint8_t psk[32]);
 bool cyw43_leave(void);
 
+/* --- The radio as an access point (52.12) ---
+ *
+ * The chip is an access point or a station, never both at once. The firmware does the WPA2
+ * handshake; `passphrase` is 8-63 characters (the setup secret). Start from a freshly probed radio. The
+ * station supervisor is held off with cyw43_sta_hold() for as long as the access point is up. */
+bool cyw43_ap_start(const char *ssid, const char *passphrase, uint8_t channel);
+void cyw43_ap_stop(void);
+bool cyw43_ap_active(void);
+uint32_t cyw43_ap_clients(void);
+void cyw43_sta_hold(bool hold);
+
 /* True once the firmware is uploaded and answering ioctls -- i.e. once
  * cyw43_gspi_probe() has succeeded. Everything else here (join, the LED,
  * the netif) is meaningless before that, so callers can check rather than

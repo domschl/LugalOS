@@ -869,6 +869,8 @@ set(SOURCES
     # 52.11: WebSocket framing, shared by the admin web server and the phase 62.12 client
     net/websocket.c
     net/httpd.c
+    # 52.12: the setup access point's address server and DNS responder
+    net/dhcpd.c
     net/llm.c
     # P3: timestamped GPIO
     # edge capture. Built for every target because the ring is portable and is

@@ -80,6 +80,7 @@
 #include "kernel/setup.h"
 #include "kernel/boardinfo.h"
 #include "net/httpd.h"
+#include "net/dhcpd.h"
 #include "kernel/privilege.h"
 #include "kernel/random.h"
 #include "kernel/idstore.h"
@@ -4041,6 +4042,22 @@ static void cmd_ota(const char *arg) {
 #endif
 }
 
+/* Splits `s` on spaces into up to three words; returns how many. (The shell has no sscanf.) */
+static int sscanf_3(const char *s, char *a, uint32_t acap, char *b, uint32_t bcap, char *c, uint32_t ccap) {
+    char *outs[3] = { a, b, c };
+    uint32_t caps[3] = { acap, bcap, ccap };
+    int n = 0;
+    while (n < 3) {
+        while (*s == ' ') s++;
+        if (!*s) break;
+        uint32_t k = 0;
+        while (*s && *s != ' ') { if (k + 1 < caps[n]) outs[n][k++] = *s; s++; }
+        outs[n][k] = 0;
+        n++;
+    }
+    return n;
+}
+
 /* --- `board`: which board is this (kernel/boardinfo.h) ------------------------------- */
 static void cmd_board(void) {
     char text[320];
@@ -7103,6 +7120,37 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         cprintf("wifi: the radio is not up yet -- run `wifi probe` first "
                 "(it resets the chip and uploads its firmware)\n");
         return;
+    } else if (strcmp(cmd_line, "wifi ap") == 0) {
+        cprintf("wifi ap: %s, %u client%s\n", cyw43_ap_active() ? "up" : "down", (unsigned)cyw43_ap_clients(),
+                cyw43_ap_clients() == 1 ? "" : "s");
+    } else if (strcmp(cmd_line, "wifi ap stop") == 0) {
+        setup_net_services_stop();
+        cyw43_ap_stop();
+        cyw43_sta_hold(false);
+        dhcp_hold(false);
+        cprintf("wifi ap: down\n");
+    } else if (strncmp(cmd_line, "wifi ap start ", 14) == 0) {
+        /* wifi ap start SSID PASSPHRASE [CHANNEL]: by hand, for trying the radio; the setup access point
+         * (kernel/setup_ap.c) is what a node runs on its own. */
+        char ssid[40], pass[72], chs[8] = "";
+        int n = sscanf_3(cmd_line + 14, ssid, sizeof ssid, pass, sizeof pass, chs, sizeof chs);
+        if (n < 2) { cprintf("usage: wifi ap start SSID PASSPHRASE [CHANNEL]\n"); return; }
+        uint8_t ch = 0;
+        for (const char *d = chs; *d >= '0' && *d <= '9'; d++) ch = (uint8_t)(ch * 10u + (uint8_t)(*d - '0'));
+        cyw43_sta_hold(true);
+        dhcp_hold(true);
+        bool ok = cyw43_ap_start(ssid, pass, ch);
+        if (ok) {
+            static const uint8_t ip[4] = { 192, 168, 4, 1 }, mask[4] = { 255, 255, 255, 0 }, none[4] = { 0, 0, 0, 0 };
+            net_set_address(ip, mask, none);
+            static const dhcpd_config_t cfg = { .server_ip = { 192, 168, 4, 1 }, .mask = { 255, 255, 255, 0 },
+                                                .first_ip = { 192, 168, 4, 10 }, .portal_uri = "http://192.168.4.1/" };
+            if (setup_net_services_start(&cfg) != 0) cprintf("wifi ap: could not start the address server\n");
+        } else {
+            cyw43_sta_hold(false);
+            dhcp_hold(false);
+        }
+        cprintf(ok ? "wifi ap: up as 192.168.4.1/24\n" : "wifi ap: could not start\n");
     } else if (strcmp(cmd_line, "wifi leave") == 0) {
         cprintf(cyw43_leave() ? "wifi: left\n" : "wifi: still associated\n");
         return;

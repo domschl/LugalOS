@@ -280,9 +280,11 @@ static const uint16_t g_gspi_prog[6] = {
 #define IOCTL_CMD_DISASSOC          52u
 #define IOCTL_CMD_SET_INFRA         20u
 #define IOCTL_CMD_SET_AUTH          22u
+#define IOCTL_CMD_SET_CHANNEL       30u
 #define IOCTL_CMD_GET_BSSID         23u
 #define IOCTL_CMD_SET_SSID          26u
 #define IOCTL_CMD_SET_ANTDIV        64u
+#define IOCTL_CMD_SET_AP           118u
 #define IOCTL_CMD_SET_PM            86u
 #define IOCTL_CMD_SET_GMODE         110u
 #define IOCTL_CMD_GET_PKTCNTS       166u
@@ -479,6 +481,8 @@ static void cyw43_assert_bus_held(const char *who) {
 #define CYW43_EV_SET_SSID     0u
 #define CYW43_EV_AUTH         3u
 #define CYW43_EV_DEAUTH_IND   6u
+#define CYW43_EV_ASSOC_IND    8u
+#define CYW43_EV_REASSOC_IND 10u
 /* WLC_GET_RSSI. The firmware returns a signed dBm; -30 is next to the AP and
  * anything past about -75 is where a 2.4 GHz link starts dropping frames. */
 #define IOCTL_CMD_GET_RSSI    127u
@@ -1458,12 +1462,26 @@ static struct {
  * what happened -- deciding what to do about it belongs to the caller that
  * asked for the join (drivers' own autostart task), where there is a stack to
  * wait on and a policy to apply. */
+/* Access-point mode (cyw43_ap_start()). guarded by: g_bus_lock for the writes, the event handler (which
+ * runs under it) for the count; read unlocked for status. */
+static bool     g_ap_active;
+static uint32_t g_ap_clients;
+static volatile bool g_sta_hold;     /* the station supervisor stands aside while the radio is an access point */
+
 static void cyw43_handle_event(uint32_t type, uint32_t status, uint32_t reason,
                                uint16_t flags, uint8_t itf) {
+
     if (g_event_trace) {
         printk("cyw43: ev type=%u status=%u reason=%u flags=0x%x itf=%u\n",
                (unsigned)type, (unsigned)status, (unsigned)reason,
                (unsigned)flags, (unsigned)itf);
+    }
+    if (g_ap_active) {
+        /* An access point has no join to track: the events that matter are its clients coming and going,
+         * and the station state machine must not read them as its own link dropping. */
+        if (type == CYW43_EV_ASSOC_IND || type == CYW43_EV_REASSOC_IND) g_ap_clients++;
+        else if ((type == CYW43_EV_DISASSOC_IND || type == CYW43_EV_DEAUTH_IND) && g_ap_clients) g_ap_clients--;
+        return;
     }
     switch (type) {
     case CYW43_EV_SET_SSID:
@@ -2181,6 +2199,7 @@ static int cyw43_netif_recv(netif_t *nif, uint8_t *buf, uint32_t max_len);
 static bool cyw43_set_event_mask(void) {
     static const uint8_t wanted_events[] = {
         CYW43_EV_SET_SSID, CYW43_EV_AUTH, CYW43_EV_DEAUTH_IND,
+        CYW43_EV_ASSOC_IND, CYW43_EV_REASSOC_IND,
         CYW43_EV_DISASSOC, CYW43_EV_DISASSOC_IND,
         CYW43_EV_LINK, CYW43_EV_PSK_SUP,
     };
@@ -2517,6 +2536,87 @@ static bool cyw43_leave_locked(void) {
     return false;
 }
 
+/* --- Access-point mode ----------------------------------------------------------------
+ *
+ * The firmware runs the whole WPA2 authenticator itself; this only configures it, in the order the
+ * reference drivers use for the CYW43439: radio down, "apsta" off (the chip is an access point or a
+ * station, not both), radio up, AP mode on, then SSID, channel, security and the passphrase (the
+ * firmware derives the PMK from a passphrase here -- unlike a join, where this driver hands over the
+ * derived one), and finally the BSS up. Start from a freshly probed radio: this does not undo a join. */
+static bool cyw43_ap_start_locked(const char *ssid, const char *passphrase, uint8_t channel) {
+    if (!g_fw_ready) { printk("cyw43: the radio is not up\n"); return false; }
+    uint32_t sl = 0, pl = 0;
+    while (ssid[sl]) sl++;
+    while (passphrase && passphrase[pl]) pl++;
+    if (sl == 0 || sl > 32 || pl < 8 || pl > 63) {
+        printk("cyw43: an access point needs an SSID (1-32) and a passphrase (8-63 characters)\n");
+        return false;
+    }
+    if (channel < 1 || channel > 11) channel = 6;
+
+    if (!cyw43_ioctl(IOCTL_SET, IOCTL_CMD_DOWN, 0, NULL, 0, NULL)) return false;
+    if (!cyw43_set_iovar_u32("apsta", 0)) return false;
+    if (!cyw43_ioctl(IOCTL_SET, IOCTL_CMD_UP, 0, NULL, 0, NULL)) return false;
+    if (!cyw43_set_event_mask()) return false;           /* WLC_DOWN dropped it */
+    if (!cyw43_ioctl_set_u32(IOCTL_CMD_SET_AP, 0, 1)) return false;
+
+    uint8_t si[4 + 4 + 32];                              /* bsscfg index, then a wlc_ssid_t */
+    memset(si, 0, sizeof si);
+    put_u32(si, 0);
+    put_u32(si + 4, sl);
+    memcpy(si + 8, ssid, sl);
+    if (!cyw43_set_iovar("bsscfg:ssid", si, sizeof si)) return false;
+    if (!cyw43_ioctl_set_u32(IOCTL_CMD_SET_CHANNEL, 0, channel)) return false;
+    if (!cyw43_set_iovar_u32x2("bsscfg:wsec", 0, WSEC_AES)) return false;
+    if (!cyw43_set_iovar_u32x2("bsscfg:wpa_auth", 0, 0x0084u)) return false;   /* WPA2-PSK, and WPA-PSK clients */
+    time_delay_us(100000);
+
+    uint8_t pk[68];                                      /* WLC_SET_WSEC_PMK: len, flags (1: a passphrase), key[64] */
+    memset(pk, 0, sizeof pk);
+    put_u16(pk + 0, (uint16_t)pl);
+    put_u16(pk + 2, 1);
+    memcpy(pk + 4, passphrase, pl);
+    bool ok = cyw43_ioctl(IOCTL_SET, IOCTL_CMD_SET_WSEC_PMK, 0, pk, sizeof pk, NULL);
+    memset(pk, 0, sizeof pk);
+    if (!ok) return false;
+
+    (void)cyw43_set_iovar_u32("2g_mrate", 22);           /* multicast at 11 Mbit/s rather than 1: best effort */
+    if (!cyw43_set_iovar_u32x2("bss", 0, 1)) return false;
+
+    g_ap_clients = 0;
+    g_ap_active = true;
+    g_link_up = true;                                    /* carrier, for the stack */
+    printk("cyw43: access point \"%s\" up on channel %u\n", ssid, (unsigned)channel);
+    return true;
+}
+
+static void cyw43_ap_stop_locked(void) {
+    if (!g_ap_active) return;
+    (void)cyw43_set_iovar_u32x2("bss", 0, 0);
+    (void)cyw43_ioctl_set_u32(IOCTL_CMD_SET_AP, 0, 0);
+    g_ap_active = false;
+    g_ap_clients = 0;
+    g_link_up = false;
+    printk("cyw43: access point down\n");
+}
+
+bool cyw43_ap_start(const char *ssid, const char *passphrase, uint8_t channel) {
+    cyw43_lock();
+    bool r = cyw43_ap_start_locked(ssid, passphrase, channel);
+    cyw43_unlock();
+    return r;
+}
+
+void cyw43_ap_stop(void) {
+    cyw43_lock();
+    cyw43_ap_stop_locked();
+    cyw43_unlock();
+}
+
+bool cyw43_ap_active(void) { return g_ap_active; }
+uint32_t cyw43_ap_clients(void) { return g_ap_clients; }
+void cyw43_sta_hold(bool hold) { g_sta_hold = hold; }
+
 bool cyw43_leave(void) {
     cyw43_lock();
     bool r = cyw43_leave_locked();
@@ -2723,6 +2823,7 @@ static void cyw43_autostart_body(void *arg) {
     uint64_t last_probe_ms = 0;
     unsigned probe_fails = 0;
     for (;;) {
+        if (g_sta_hold) { was_up = false; attempt = 0; wifi_sleep_ms(500); continue; }   /* the radio is an access point */
         if (g_link_up) {
             if (!was_up) {
                 printk("cyw43: link up (\"%s\")\n", ssid);

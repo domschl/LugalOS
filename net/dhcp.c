@@ -40,6 +40,10 @@ typedef struct {
 static dhcp_rx_t g_rx;
 static uint32_t g_xid;
 static bool g_owned;          /* the address in use is one this client set (so it may renew it) */
+/* accepted: set from the task that runs the access point, read by the client task; one pass late is harmless. */
+static volatile bool g_hold;  /* the interface is an access point: this client has nothing to ask for */
+
+void dhcp_hold(bool hold) { g_hold = hold; if (hold) g_owned = false; }
 /* accepted: the DHCP task sets the server, the resolver copies it unlocked. */
 static uint8_t g_dns[4];
 static bool g_has_dns;
@@ -155,7 +159,7 @@ static void dhcp_task(void *arg) {
     (void)arg;
     for (;;) {
         netif_t *nif = (netif_t *)net_state()->nif;
-        if (!nif || !netif_link_up(nif)) { task_sleep_ms(500); continue; }
+        if (g_hold || !nif || !netif_link_up(nif)) { task_sleep_ms(500); continue; }
 
         /* Until we hold an address the stack must still be willing to send and to accept a
          * broadcast: "configured" with 0.0.0.0, which `ip_send` uses as the source address. */
@@ -189,7 +193,7 @@ static void dhcp_task(void *arg) {
         if (wait < 30) wait = 30;
         for (uint32_t s = 0; s < wait; s++) {
             task_sleep_ms(1000);
-            if (!netif_link_up(nif)) break;                                /* link lost: acquire again when it is back */
+            if (!netif_link_up(nif) || g_hold) break;                      /* link lost: acquire again when it is back */
             if (net_state()->nif != nif) break;                            /* the stack moved: acquire on the new one */
         }
     }

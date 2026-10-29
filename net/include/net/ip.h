@@ -117,6 +117,9 @@ int net_task_start(void);
  * network's server, and renews it. Idempotent; returns the task's pid. */
 int dhcp_start(void);
 bool dhcp_dns_server(uint8_t out[IPV4_LEN]);
+/* While held, the client asks for nothing and renews nothing: the interface is an access point with an
+ * address of its own (52.12). Holding forgets that the address in use was the client's. */
+void dhcp_hold(bool hold);
 
 /* --- The shared transmit path ---
  * Callers write their payload at net_tx_payload() and hand the length to
