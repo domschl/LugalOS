@@ -1020,7 +1020,24 @@ deferred without blocking anything after it.
       RAM: `httpd start` costs 8 pages on the Pico 2 W (4 stack + 1 session
       pool of 2 buffers + table; 31 of 80 heap pages stayed free) and
       6.6 KB of its 16 KB stack. `/flash0/www/` arrives on the Pico by
-      `picotool load flashfs.uf2`, not by OTA. Firefox 158 (WebDriver BiDi) and Chromium both pass on both boards and in the QEMU test. Open: gzip, 52.11b.
+      `picotool load flashfs.uf2`, not by OTA.
+    * *The Pico 2 W's radio and a whole-image update (found and fixed
+      2026-10-29):* the update over Wi-Fi killed the radio 130-450 KB in, 7 of
+      7 times (a write to flash was the first suspect and was not the cause:
+      the same run with the flash write skipped died too). A trace ring of
+      the bus operations showed a status word announcing a frame length that
+      the stream never carries (592, 822, 1280, 1413), a read that returned
+      payload with no frame header, and the first 16 bytes of it found in the
+      image: the chip's receive FIFO had lost its place, and it reads its
+      "length" from whatever bytes lie at the head. The cause is a bus
+      transfer that the CPU polls with interrupts on (`pio_gspi_transfer()`);
+      masking them for the length of each transfer (at most 0.7 ms) fixed it:
+      7 of 7 failed before, 7 of 7 completed after (4 with a real commit, 3
+      more on the clean build), 20 s each. Reads and ping floods never found
+      it, which is why a receive-heavy test is now in
+      `tests/hw/test_wifi.py --update`. Power save, the idle gap, a double
+      status read and the KSO wake were tried and ruled out.
+    * Firefox 158 (WebDriver BiDi) and Chromium both pass on both boards and in the QEMU test. Open: gzip, 52.11b.
   *Boards: QEMU (slirp), the NANO on `eth0`, the Pico 2 W on `wlan0`.*
   * **TCP:** a passive-open stream API (`tcp_stream_listen()` /
     `tcp_stream_accept()`), so a server task owns its connections and the
