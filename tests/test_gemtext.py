@@ -9,7 +9,7 @@ Verifies:
    - Unambiguous link following ('1' -> c_programming.gmi)
    - History stack pop ('b' -> back to editors.gmi)
    - Clean quit ('q' -> lsh prompt)
-   - 'gem /sd0/help/shell.gmi' direct path browsing
+   - 'gem /sd0/pub/help/shell.gmi' direct path browsing
 """
 
 from __future__ import annotations
@@ -144,11 +144,11 @@ def run_qemu_tests() -> bool:
             print(f"    [FAIL] Exit to shell:\n{log}")
             all_passed = False
 
-        # Test 6: Direct path browsing with 'gem /sd0/help/shell.gmi'
-        print("  Testing 'gem /sd0/help/shell.gmi'...")
-        ok, log = session.send_and_expect("gem /sd0/help/shell.gmi", r"Shell", timeout=4.0, sentinel=False)
+        # Test 6: Direct path browsing with 'gem /sd0/pub/help/shell.gmi'
+        print("  Testing 'gem /sd0/pub/help/shell.gmi'...")
+        ok, log = session.send_and_expect("gem /sd0/pub/help/shell.gmi", r"Shell", timeout=4.0, sentinel=False)
         if ok:
-            print("    [PASS] gem /sd0/help/shell.gmi opened successfully")
+            print("    [PASS] gem /sd0/pub/help/shell.gmi opened successfully")
         else:
             print(f"    [FAIL] gem direct path:\n{log}")
             all_passed = False
@@ -193,8 +193,8 @@ def run_qemu_tests() -> bool:
             all_passed = False
 
         # Test 11: Dedicated Ribbon Reader window
-        print("  Checking 'reader /sd0/help/shell.gmi' in ribbon...")
-        ok, log = session.send_and_expect("reader /sd0/help/shell.gmi", r"reader: opened .* in ribbon", timeout=4.0)
+        print("  Checking 'reader /sd0/pub/help/shell.gmi' in ribbon...")
+        ok, log = session.send_and_expect("reader /sd0/pub/help/shell.gmi", r"reader: opened .* in ribbon", timeout=4.0)
         if ok:
             print("    [PASS] reader opened in ribbon")
         else:

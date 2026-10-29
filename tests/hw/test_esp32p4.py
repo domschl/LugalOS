@@ -1686,8 +1686,8 @@ def test_gemtext_reader_window(b: Board) -> tuple[str, bool, str]:
     n0, _ = _ribbon(b)
     if n0 < 0:
         return name, True, "SKIPPED (no ribbon on this board)"
-    out = b.console_session.cmd("reader /sd0/help/shell.gmi", deadline=5.0)
-    if "opened '/sd0/help/shell.gmi' in ribbon" not in out:
+    out = b.console_session.cmd("reader /sd0/pub/help/shell.gmi", deadline=5.0)
+    if "opened '/sd0/pub/help/shell.gmi' in ribbon" not in out:
         return name, False, f"reader command failed: {out.strip()}"
     n1, act = _ribbon(b)
     if n1 != 2 or act != 1:
@@ -1708,7 +1708,7 @@ def test_reader_anti_aliased_typography(b: Board) -> tuple[str, bool, str]:
     n0, _ = _ribbon(b)
     if n0 < 0:
         return name, True, "SKIPPED (no ribbon on this board)"
-    out = b.console_session.cmd("reader /sd0/help/about.gmi", deadline=5.0)
+    out = b.console_session.cmd("reader /sd0/pub/help/about.gmi", deadline=5.0)
     if "opened" not in out:
         return name, False, f"reader open failed: {out.strip()}"
     n1, act = _ribbon(b)
@@ -1796,7 +1796,7 @@ def test_ribbon_slide_and_reader_smooth_scroll(b: Board) -> tuple[str, bool, str
             break
         _raw(b, b"\x1b[119;9u\r", 1.0)
     # Open Reader window
-    out = b.console_session.cmd("reader /sd0/help/about.gmi", deadline=5.0)
+    out = b.console_session.cmd("reader /sd0/pub/help/about.gmi", deadline=5.0)
     if "opened" not in out:
         return name, False, f"reader open failed: {out.strip()}"
     n1, act = _ribbon(b)

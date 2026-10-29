@@ -244,6 +244,13 @@ def convert_markdown_to_gemtext(md_content: str, src_rel: str = "") -> str:
     return "\n".join(res).strip() + "\n"
 
 
+# Topics mirrored as Gemtext into pub/help for the Spartan capsule. Every other topic is shipped as help/NAME.md only:
+# the shell, the reader, `ea` and the capsule all read Markdown (and convert it on the fly).
+SPARTAN_TOPICS: set[str] = {
+    "index", "toc", "about", "shell", "reader", "spartan",
+    "editors", "c_programming", "lisp", "networking", "cas",
+}
+
 DOC_MAPPINGS: dict[str, str] = {
     # Portals & Master Index
     "doc/README.md": "tools/sd_root/help/index.gmi",
@@ -440,40 +447,32 @@ def generate_all(repo_root: Path, check_only: bool = False) -> bool:
                     print(f"[DRIFT] Markdown file content mismatch: {md_rel}")
                     all_ok = False
 
-            # Verify Gemtext file
-            if not gmi_path.exists():
-                print(f"[DRIFT] Missing generated file: {gmi_rel}")
-                all_ok = False
-            else:
-                existing_gmi = gmi_path.read_text(encoding="utf-8")
-                if existing_gmi != gmi_out:
-                    print(f"[DRIFT] Gemtext file content mismatch: {gmi_rel}")
+            # Verify the capsule's Gemtext mirror
+            if stem in SPARTAN_TOPICS:
+                pub_rel = f"tools/sd_root/pub/help/{stem}.gmi"
+                pub_path = repo_root / pub_rel
+                if not pub_path.exists():
+                    print(f"[DRIFT] Missing generated file: {pub_rel}")
                     all_ok = False
+                elif pub_path.read_text(encoding="utf-8") != gmi_out:
+                    print(f"[DRIFT] Gemtext file content mismatch: {pub_rel}")
+                    all_ok = False
+            if gmi_path.exists():
+                print(f"[DRIFT] Stale generated file (help topics ship as Markdown only): {gmi_rel}")
+                all_ok = False
         else:
             # Write help/*.md
             md_path.parent.mkdir(parents=True, exist_ok=True)
             md_path.write_text(md_out, encoding="utf-8")
 
-            # Write help/*.gmi
-            gmi_path.parent.mkdir(parents=True, exist_ok=True)
-            gmi_path.write_text(gmi_out, encoding="utf-8")
-
-            # Mirror public topics to pub/help for Spartan capsule (Gemtext protocol)
-            spartan_topics = {
-                "index", "toc", "about", "shell", "reader", "spartan",
-                "editors", "c_programming", "lisp", "networking", "cas"
-            }
-            if stem in spartan_topics:
+            if stem in SPARTAN_TOPICS:
                 pub_gmi = repo_root / f"tools/sd_root/pub/help/{stem}.gmi"
                 pub_gmi.parent.mkdir(parents=True, exist_ok=True)
                 pub_gmi.write_text(gmi_out, encoding="utf-8")
 
-            # If this was index.gmi, also mirror as toc.md / toc.gmi
+            # index is also the table of contents
             if stem == "index":
-                toc_md = repo_root / "tools/sd_root/help/toc.md"
-                toc_gmi = repo_root / "tools/sd_root/help/toc.gmi"
-                toc_md.write_text(md_out, encoding="utf-8")
-                toc_gmi.write_text(gmi_out, encoding="utf-8")
+                (repo_root / "tools/sd_root/help/toc.md").write_text(md_out, encoding="utf-8")
                 (repo_root / "tools/sd_root/pub/help/toc.gmi").write_text(gmi_out, encoding="utf-8")
 
             print(f"[GEN] {src_rel} -> {stem}.md ({len(md_out)} B) & {stem}.gmi ({len(gmi_out)} B)")

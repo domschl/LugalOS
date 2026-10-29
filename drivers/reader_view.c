@@ -593,7 +593,7 @@ void reader_feed_key(int c) {
         }
         if (c == 0x08 || c == '?' || c == 'h') {
             /* Emacs Ctrl-H or '?' / 'h' -> open Reader Help */
-            reader_open_instance(rid, "/sd0/help/reader.gmi");
+            reader_open_instance(rid, "/sd0/help/reader.md");
             reader_update_instance(rid);
             return;
         }

@@ -1188,7 +1188,7 @@ static void pager_view_file_locked(const char *initial_resource, bool is_topic, 
                                     s_help_stack[s_help_depth].title[sizeof(s_help_stack[0].title) - 1] = '\0';
                                     s_help_depth++;
                                 }
-                                strncpy(cur_resource, "/sd0/help/reader.gmi", sizeof(cur_resource) - 1);
+                                strncpy(cur_resource, "/sd0/help/reader.md", sizeof(cur_resource) - 1);
                                 cur_resource[sizeof(cur_resource) - 1] = '\0';
                                 strncpy(cur_title, "Reader Guide", sizeof(cur_title) - 1);
                                 cur_title[sizeof(cur_title) - 1] = '\0';

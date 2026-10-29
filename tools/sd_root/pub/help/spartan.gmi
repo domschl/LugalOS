@@ -22,7 +22,7 @@ LugalOS provides two complementary viewers for Gemtext documents:
 1. Terminal Viewer (gem):
 Operates in standard VT100/ANSI consoles and virtual terminals.
 ```
-   lsh> gem /sd0/help/shell.gmi
+   lsh> gem /sd0/pub/help/shell.gmi
    lsh> gem spartan://spartan.mozz.us/
 ```
 * Press 1 .. 9 to follow visible links.
@@ -33,7 +33,7 @@ Operates in standard VT100/ANSI consoles and virtual terminals.
 2. Ribbon Reader (reader):
 Opens a dedicated window in the horizontal window ribbon with variable-pitch serif typography and touch navigation.
 ```
-   lsh> reader /sd0/help/spartan.gmi
+   lsh> reader /sd0/pub/help/spartan.gmi
 ```
 
 ## Spartan Protocol (spartan://)

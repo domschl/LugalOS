@@ -33,7 +33,7 @@ ea models
 * `lisp`: Evaluates symbolic math expressions in the kernel Lisp machine.
 * `sh`: Executes system shell commands (`mem`, `ps`, `sensor`, `net`, etc.).
 * `cc`: Writes C source to `/sd0/tmp/ea_prog.c`, compiles via `chibicc`, and runs the ELF under U-mode memory confinement.
-* `help`: Queries system Gemtext documentation from `/sd0/help/*.gmi`.
+* `help`: Queries the system documentation in `/sd0/help/*.md`.
 
 ### Confirmation and limits
 The model chooses each tool call, and its reply comes over the network. So `ea` shows every call (the tool and its code) and runs it only after you answer `y` at the console. Any other key declines, and the model is told so. `ea -y` runs tool calls without asking.
