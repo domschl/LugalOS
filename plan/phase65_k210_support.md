@@ -651,17 +651,42 @@ Silicon lessons that changed code, not just comments:
 
 ### 65.6 — LED, button, config + identity store — DONE
 
-* **RGB LED** (`drivers/ledbtn_k210.c`, shell `led R G B` / `led off`):
-  the schematic reading is confirmed — IO_12 **green**, IO_13 **red**,
-  IO_14 **blue** (columns D11/D12/C11, resistors R17 B / R18 G / R19 R),
-  common **anode** ("LEDA" on 3V3, cathode "LEDK" out through 4K7), so
-  every color is **active low**: drive 0 to light. `drivers/gpio.c` grew
-  the K210 backend (FPIOA function 56+n, SiFive GPIO block: DATA=latch
-  +0x00, DIRECTION +0x04, DATA_INPUT +0x50 — inputs must read +0x50,
-  DATA reads the latch back). On/off only; no PWM armed (IO12–14 do
-  carry PWM functions if fades ever matter). The `led` command from 45.5
-  keeps its words on both boards: on C6 0–255 per channel, on K210
-  any nonzero component lights that color.
+* **The LED is a board-revision lottery, and is unsupported by default
+  — decision, not defeat.** The attached board proved it: every
+  documented expectation from the 1.09 schematic failed on it.
+
+  | revision | serial bridge | tri-color LED | MEMS mic |
+  | :-- | :-- | :-- | :-- |
+  | ~1.0 (attached) | 1a86:7523 bridge | **WS2812-class part, DIN on an undocumented IO** | absent |
+  | 1.09 (only published schematic) | CH552T | common-anode RGB, IO12 G / IO13 R / IO14 B, active low, 4K7 | present |
+
+  (One self-correction: 1a86:7523 is not evidence of a CH340 — the
+  CH552T enumerates with that very ID in UART-bridge mode, so the
+  download chip may well be as documented; what differs for certain is
+  the LED and the mic.) Evidence for the WS2812 reading on the early
+  board: static level changes on any probed pad latch the LED to a
+  stuck color — a NeoPixel DIN behaving exactly like one — and the
+  vendor tree ships for precisely this: a FreeRTOS SPI-encoded
+  ws2812b driver (`lib/drivers/src/misc/ws2812b/ws2812b.cpp`, 2.5 MHz
+  SPI, DFS32) and an arduino-k210 cycle-counted NoePixelWrap.
+
+  What shipped instead of further blind probing:
+  `drivers/ledbtn_k210.c` keeps the 1.09 static wiring (opt-in mode),
+  `drivers/ws2812_k210.c` implements the addressable mode — GRB
+  bit-bang with M-mode IRQs masked for the ~80 µs frame, timing
+  calibrated against CLINT mtime (no CPU-frequency constant; the
+  ws2812.h "never bit-bang" rule is a *flash-XIP* constraint and does
+  not bind an SRAM-executing, cache-off core, as the vendor's own
+  Arduino core agrees) — and `ledpin <io>` / `ledprobe [loop]` make
+  the pin discoverable from the shell. Discovery never completed
+  (a 10000× calibration slip was found and fixed; the candidate-pad
+  walk then never produced a visible flash on the attached board, and
+  finding the pin needs an oscilloscope or the actual early schematic),
+  so the honest shipped state is: **LED unsupported by default, both
+  wirings available as documented opt-ins**. `drivers/gpio.c` grew the
+  K210 backend either way (FPIOA function 56+n, SiFive GPIO block:
+  DATA=latch +0x00, DIRECTION +0x04, DATA_INPUT +0x50 — inputs must
+  read +0x50, DATA reads the latch back).
 * **The KEY is a strap, not a button** — measured, not assumed. KEY sits
   on IO_16, the ISP boot strap, and the CH552's auto-programming
   transistors (Q1/Q2 by the USB-C section) share that net. A poke/peek

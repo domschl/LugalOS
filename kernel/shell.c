@@ -12,6 +12,7 @@
 #endif
 #if defined(CONFIG_BOARD_K210)
 #include "drivers/ledbtn_k210.h"
+#include "drivers/ws2812.h"
 #include "kernel/sched.h"
 #endif
 #include "kernel/printk.h"
@@ -6101,10 +6102,80 @@ static void parse_and_eval_cmd(const char *cmd_line) {
             cprintf("led: the pulse generator never finished a frame\n");
 #endif
 #if defined(CONFIG_BOARD_K210)
+        } else if (k210_ws2812_getpin() >= 0) {
+            if (!ws2812_set((uint8_t)v[0], (uint8_t)v[1], (uint8_t)v[2]))
+                cprintf("led: ws2812 frame failed\n");
         } else {
             k210_led_set(v[0], v[1], v[2]);
 #endif
         }
+        return;
+#endif
+#if defined(CONFIG_BOARD_K210)
+    } else if (strcmp(cmd_line, "ledpin") == 0 ||
+               strncmp(cmd_line, "ledpin ", 7) == 0) {
+        /* Which IO the WS2812-class LED hangs on, board-variant-wise,
+         * is not documented anywhere trustworthy -- set it here. -1 (or
+         * no argument) disarms the addressable LED and returns the
+         * three-GPIO semantics of the 1.09-wiring boards. */
+        if (strcmp(cmd_line, "ledpin") == 0 || cmd_line[7] == 0) {
+            int cur = k210_ws2812_getpin();
+            cprintf("ledpin: %s\n", cur < 0 ? "addressable LED off (static 3-GPIO mode)" : "");
+            if (cur >= 0) cprintf("ledpin: IO%d\n", cur);
+            cprintf("usage: ledpin <0..31> | ledpin -1\n");
+            return;
+        }
+        int n = 0; const char *p = cmd_line + 7;
+        bool neg = false;
+        if (*p == '-') { neg = true; p++; }
+        if (*p < '0' || *p > '9') { cprintf("ledpin: expected a number\n"); return; }
+        while (*p >= '0' && *p <= '9') n = n * 10 + (*p++ - '0');
+        while (*p == ' ') p++;
+        if (*p) { cprintf("ledpin: trailing text\n"); return; }
+        k210_ws2812_pin(neg ? -n : n);
+        cprintf("ledpin: %s\n", neg || n > 31 ? "addressable LED off" : "addressable LED armed");
+        return;
+    } else if (strcmp(cmd_line, "ledprobe loop") == 0) {
+        /* Same walk, forever: survives the operator needing a moment;
+         * reset (or a fresh ISP load) is the only exit. Two flashes
+         * per pad make the label->color correlation unmistakable. */
+        static const uint8_t cand[] = {21, 12, 13, 14, 15, 16, 17, 18,
+                                       19, 20, 22, 23, 11, 10, 9, 8,
+                                       7, 6, 5, 4, 3, 2, 1, 0};
+        cprintf("ledprobe loop: bright green, two flashes per pad, 1 s each -- watch the LED\n");
+        for (;;) {
+            for (unsigned i = 0; i < sizeof(cand); i++) {
+                k210_ws2812_pin(cand[i]);
+                cprintf("ledprobe: IO%u\n", (unsigned)cand[i]);
+                (void)ws2812_set(0, 255, 0);
+                task_sleep_ms(250u);
+                (void)ws2812_set(0, 0, 0);
+                task_sleep_ms(150u);
+                (void)ws2812_set(0, 255, 0);
+                task_sleep_ms(600u);
+                (void)ws2812_set(0, 0, 0);
+            }
+        }
+        return;
+    } else if (strcmp(cmd_line, "ledprobe") == 0) {
+        /* Walk every candidate pad, 24 bright-green bits at each, 1 s
+         * apart. Watch the LED: the IO printed just before it flashes
+         * is the DIN pin. Harmless elsewhere -- an unconnected pad
+         * just sees a waveform nobody listens to (IO16 is the boot
+         * strap: the frame is a level pattern, no reset path). */
+        static const uint8_t cand[] = {21, 12, 13, 14, 15, 16, 17, 18,
+                                       19, 20, 22, 23, 11, 10, 9, 8,
+                                       7, 6, 5, 4, 3, 2, 1, 0};
+        cprintf("ledprobe: bright green, 1 s per pad -- watch the LED and note the IO\n");
+        for (unsigned i = 0; i < sizeof(cand); i++) {
+            k210_ws2812_pin(cand[i]);
+            (void)ws2812_set(0, 255, 0);
+            cprintf("ledprobe: IO%u\n", (unsigned)cand[i]);
+            task_sleep_ms(1000u);
+            (void)ws2812_set(0, 0, 0);
+        }
+        k210_ws2812_pin(-1);
+        cprintf("ledprobe: done. Arm the pin that flashed with: ledpin <io>\n");
         return;
 #endif
 #if defined(CONFIG_BOARD_K210)
@@ -6116,7 +6187,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
          * edge pair, debounced by requiring the same reading twice. */
         if (strcmp(cmd_line, "button") == 0) {
             cprintf("KEY (IO16): %s\n", k210_button_pressed() ? "pressed" : "released");
-            cprintf("  note: IO16 is the ISP boot strap, shared with the CH552 download\n"
+            cprintf("  note: IO16 is the ISP boot strap, shared with the download bridge\n"
                     "  transistors -- on this board it reads low whenever the USB link\n"
                     "  holds it, so \"released\" may not be reachable while connected.\n");
             return;

@@ -13,7 +13,7 @@
  * resistors R17 LED_B / R18 LED_G / R19 LED_R).
  *
  * There is one key, labeled KEY, on IO_16 — but IO_16 is also the BOOT
- * strap, and the CH552's auto-programming transistors sit on that net.
+ * strap, and the download bridge's auto-programming transistors sit on that net.
  * Measured on the board: the line reads LOW in every FPIOA pull
  * configuration (no pull; the bit12 pull that made MISO readable; the
  * bit14 the arduino-k210 header calls PU), and toggling DTR/RTS resets

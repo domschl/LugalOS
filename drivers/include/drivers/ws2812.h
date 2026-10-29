@@ -44,4 +44,13 @@ void ws2812_encode(uint32_t *out, uint8_t r, uint8_t g, uint8_t b, bool rgb_orde
 bool ws2812_init(void);
 bool ws2812_set(uint8_t r, uint8_t g, uint8_t b);
 
+#if defined(CONFIG_BOARD_K210)
+/* The K210 boards carry this LED on no fixed pin (board variants
+ * disagree and no schematic is trusted): k210_ws2812_pin() arms one,
+ * -1 disarms (ws2812_set then refuses, and the three-GPIO LED of the
+ * 1.09 schematic keeps its static-level driver). */
+void k210_ws2812_pin(int pin);
+int  k210_ws2812_getpin(void);
+#endif
+
 #endif
