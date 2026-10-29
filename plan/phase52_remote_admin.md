@@ -1012,7 +1012,15 @@ deferred without blocking anything after it.
     its protocol code runs under node and the whole page in headless Chromium,
     both from the QEMU test. The session table lives in the pool `httpd start`
     takes, not in `.bss`: the Tab5 and LCD-7B have 56 and 328 bytes of low RAM
-    left. Open: gzip, the Pico 2 W and NANO runs, Firefox, 52.11b.
+    left.
+    * *Hardware, 2026-10-29:* NANO (wlan0 via its C6) and Pico 2 W (wlan0):
+      the page loads (18.7 KB in 0.25-0.3 s), and the page's sign-in, file
+      browser, refused write and log work in a real Chromium on both;
+      `connect_ws()` reads `/flash0` over the WebSocket on the Pico.
+      RAM: `httpd start` costs 8 pages on the Pico 2 W (4 stack + 1 session
+      pool of 2 buffers + table; 31 of 80 heap pages stayed free) and
+      6.6 KB of its 16 KB stack. `/flash0/www/` arrives on the Pico by
+      `picotool load flashfs.uf2`, not by OTA. Open: gzip, Firefox, 52.11b.
   *Boards: QEMU (slirp), the NANO on `eth0`, the Pico 2 W on `wlan0`.*
   * **TCP:** a passive-open stream API (`tcp_stream_listen()` /
     `tcp_stream_accept()`), so a server task owns its connections and the
