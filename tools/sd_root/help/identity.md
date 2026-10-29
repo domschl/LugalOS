@@ -76,6 +76,8 @@ The setup secret is the WPA2 key of the node's setup access point (52.12). `tool
 
 `/proc/board` (shell: `board`, web: `GET /board`) answers without a key, on any link: `preset`, `board`, `hardware`, `chip`, `version`, `build`, `tainted`, `name` and `uid`. It is the one path a 9P client may attach to without authentication (attach with the path `/proc/board`; the fid is read-only), so a discovery tool or the admin page's sign-in screen can say which board it is talking to before it has a key. It holds nothing about the network or the owner.
 
+The host tools use it. `lota`, `p9sync` and the `p9` command print `target: NAME -- HARDWARE, CHIP, preset PRESET vVERSION build BUILD, uid UID` before they act, and take `--expect NAME_OR_UID` (a name, a uid of four digits or more, a preset or a board id): a board that does not match, or cannot say who it is, is refused before anything is written. With several boards attached `p9sync` will not guess a port; name one with `--serial`.
+
 ---
 
 **Navigation:** [<- Networking Guide](networking.md) | [Administrator Manual](admin.md) | [Storage Guide ->](storage.md) | [Documentation Index](index.md)

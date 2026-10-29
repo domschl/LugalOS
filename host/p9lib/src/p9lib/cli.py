@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 from . import Session, connect_serial, connect_tcp, connect_unix
+from .board import add_expect_argument, identify
 from .client import P9Error
 
 
@@ -56,6 +57,8 @@ def _connect(args: argparse.Namespace) -> Session:
     else:
         print("error: one of --serial, --unix or --tcp is required", file=sys.stderr)
         sys.exit(2)
+    identify(client, args.expect, destructive=args.func.__name__ in ("cmd_put", "cmd_rm", "cmd_mkdir"),
+             quiet=args.quiet)
     return Session(client, aname=args.aname, uname=args.uname, key=_auth_key(args))
 
 
@@ -127,6 +130,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--framing", choices=("raw", "slip"), default="raw",
                     help="'raw' for virtio-console/USB-CDC (default), 'slip' for a UART link")
     p.add_argument("--aname", default="/", help="attach root (default '/')")
+    add_expect_argument(p, "change")
+    p.add_argument("--quiet", action="store_true", help="do not print which board answered")
     p.add_argument("--tcp", metavar="HOST[:PORT]",
                    help="9P over TCP, e.g. 192.168.1.50 or 192.168.1.50:564 "
                         "(the gateway persona's Ethernet link)")

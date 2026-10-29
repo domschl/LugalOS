@@ -1053,8 +1053,10 @@ deferred without blocking anything after it.
     path), the `board` command, a banner line on every console, the boot log
     line `[Init] LugalOS Lisp System: <preset> v<version> (<hardware>, <chip>) "<name>" uid <uid>`,
     `(board-info)`, and the admin page's header before and after sign-in.
-    Open: the host tools print the line first and take `--expect`; the USB
-    descriptor strings.
+    The host tools (`lota`, `p9sync`, `p9`) print the line first and take
+    `--expect` (checked on the NANO and the Pico 2 W); `p9sync` refuses to guess
+    among several boards. Open: the console tools (`p4run`, `c6run`, `p4flash`,
+    `c6flash`), which pick a board by name, and the USB descriptor strings.
   * **52.11b Integrity-protected 9P sessions for non-TLS boards.** *Boards:
     the Pico 2 W and the C6-Zero.*
     * After a successful `Tauth`, both ends derive a session key
