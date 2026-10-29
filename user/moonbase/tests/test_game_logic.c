@@ -110,6 +110,7 @@ static void test_power_solver(void) {
 static void test_life_support_rules(void) {
     /* Low battery alone must not hurt the crew */
     fresh();
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_BATTERY_BANK, 33, 33));
     assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_HABITAT_DOME, 31, 30));
     moon_resources_solve_power_grid(&g.grid, &g.structs);
     g.resources.cycle_tick = 100 * MOON_SIM_TICK_RATE_HZ; /* night */
@@ -146,7 +147,8 @@ static void test_life_support_rules(void) {
 
     /* Recycling a battery clamps stored energy to the new capacity */
     fresh();
-    ticks(1); /* capacity now includes the battery bank */
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_BATTERY_BANK, 33, 33));
+    ticks(1); /* capacity now includes the battery bank (50 kWh lander + 250 kWh battery) */
     assert(g.resources.battery_capacity_kwh == 300);
     g.resources.battery_stored_kwh = fixed_from_int(300);
     moon_structure_demolish(&g.grid, &g.structs, 33, 33);
@@ -492,7 +494,7 @@ static void check_layout(int w, int h) {
     moon_ui_layout_t ui;
     moon_ui_layout(&ui, w, h);
     const moon_ui_rect_t *touch[] = {
-        &ui.pause_btn, &ui.speed_btn, &ui.menu_btn, &ui.insp_recycle, &ui.insp_standby,
+        &ui.cat_btn, &ui.pause_btn, &ui.speed_btn, &ui.menu_btn, &ui.insp_recycle, &ui.insp_standby,
         &ui.undo_btn, &ui.menu_item[0], &ui.menu_item[1],
         &ui.menu_item[2], &ui.menu_item[3], &ui.minimap_zone
     };
@@ -504,10 +506,10 @@ static void check_layout(int w, int h) {
     for (int i = 0; i < MOON_UI_RIBBON_SLOTS; i++) {
         assert(ui.ribbon[i].w >= MOON_UI_TOUCH_MIN && ui.ribbon[i].h >= MOON_UI_TOUCH_MIN);
         assert(ui.ribbon[i].x + ui.ribbon[i].w <= w);
-        assert(!overlap(&ui.ribbon[i], &ui.pause_btn) && !overlap(&ui.ribbon[i], &ui.menu_btn));
+        assert(!overlap(&ui.ribbon[i], &ui.cat_btn) && !overlap(&ui.ribbon[i], &ui.pause_btn) && !overlap(&ui.ribbon[i], &ui.menu_btn));
         for (int j = i + 1; j < MOON_UI_RIBBON_SLOTS; j++) assert(!overlap(&ui.ribbon[i], &ui.ribbon[j]));
     }
-    assert(!overlap(&ui.pause_btn, &ui.speed_btn) && !overlap(&ui.speed_btn, &ui.menu_btn));
+    assert(!overlap(&ui.cat_btn, &ui.pause_btn) && !overlap(&ui.pause_btn, &ui.speed_btn) && !overlap(&ui.speed_btn, &ui.menu_btn));
     /* Panels that can be open together must not share pixels */
     assert(!overlap(&ui.inspector, &ui.minimap_zone));
     assert(!overlap(&ui.inspector, &ui.hud));
@@ -826,7 +828,7 @@ static void test_button_validity_and_preview(void) {
     /* Selection on the lander: nothing can be built there */
     for (int i = 1; i <= 6; i++) {
         key(MOON_KEY_0 + i);
-        assert(struct_at(32, 32)->type == MOON_STRUCT_LANDER && g.structs.count == 4);
+        assert(struct_at(32, 32)->type == MOON_STRUCT_LANDER && g.structs.count == 1);
         g.last_slot = -1;
     }
 
@@ -845,10 +847,10 @@ static void test_button_validity_and_preview(void) {
     ptr(MOON_EVENT_POINTER_MOVE, cx, cy - 120, 1);
     assert(g.preview_slot == -1);
     ptr(MOON_EVENT_POINTER_UP, cx, cy - 120, 1);
-    assert(g.structs.count == 4);
+    assert(g.structs.count == 1);
     ptr(MOON_EVENT_POINTER_DOWN, cx, cy, 1);
     ptr(MOON_EVENT_POINTER_UP, cx, cy, 1);
-    assert(struct_at(30, 30) && g.structs.count == 5);
+    assert(struct_at(30, 30) && g.structs.count == 2);
     s_touch = 0;
 
     /* Too poor: refused with a reason, nothing built */
@@ -856,7 +858,7 @@ static void test_button_validity_and_preview(void) {
     g.selected_tile_x = 29; g.selected_tile_y = 29;
     g.last_slot = -1;
     key(MOON_KEY_3);
-    assert(g.structs.count == 5);
+    assert(g.structs.count == 2);
     printf("[test] Button validity, hover preview, touch peek: PASS\n");
 }
 
@@ -879,7 +881,7 @@ static outcome_t play(int device) {
         click_tile(T, T);
         click_rect(&g.ui.ribbon[4]);
     }
-    assert(g.structs.count == 5);
+    assert(g.structs.count == 2);
     const moon_structure_t *s = struct_at(T, T);
     assert(s && s->type == MOON_STRUCT_REGOLITH_PLANT && s->active);
     assert(g.selected_tile_x == T && g.selected_tile_y == T);
@@ -907,7 +909,7 @@ static void test_three_devices(void) {
     assert(m.standby_seen && f.standby_seen && k.standby_seen);
     assert(m.undone && f.undone && k.undone);
     assert(m.tile_free && f.tile_free && k.tile_free);
-    assert(m.structures == 4 && f.structures == 4 && k.structures == 4);
+    assert(m.structures == 1 && f.structures == 1 && k.structures == 1);
     assert(m.regolith == f.regolith && m.regolith == k.regolith);
     printf("[test] Select, build, standby, undo, recycle by mouse, touch, keyboard: PASS (%d kg)\n", m.regolith);
 }
@@ -920,11 +922,11 @@ static void test_touch_flow(void) {
     /* A tap on bare ground only selects it: no panel, no hover left behind */
     click_tile(35, 35);
     assert(g.selected_tile_x == 35 && g.selected_tile_y == 35 && !g.panel_open && !g.hover_valid);
-    assert(g.structs.count == 4 && regolith() == rgl);
+    assert(g.structs.count == 1 && regolith() == rgl);
 
     /* A tap on a building selects it and opens the inspector */
-    click_tile(34, 32);
-    assert(g.panel_open && selected_structure_type() == MOON_STRUCT_SOLAR_ARRAY);
+    click_tile(32, 32);
+    assert(g.panel_open && selected_structure_type() == MOON_STRUCT_LANDER);
 
     /* A 10 px wobble is a tap; 30 px is a drag that pans and does not select */
     g.panel_open = false;
@@ -1015,13 +1017,13 @@ static void test_menu_and_cancel(void) {
     fresh();
     click_tile(30, 30);
     click_rect(&g.ui.ribbon[4]);
-    assert(g.structs.count == 5);
+    assert(g.structs.count == 2);
     click_rect(&g.ui.menu_btn);
     assert(g.menu_page == MOON_MENU_MAIN);
     click_rect(&g.ui.menu_item[2]);
-    assert(g.menu_page == MOON_MENU_NEW_GAME && g.structs.count == 5);
+    assert(g.menu_page == MOON_MENU_NEW_GAME && g.structs.count == 2);
     click_rect(&g.ui.menu_item[1]);
-    assert(g.menu_page == MOON_MENU_CLOSED && g.structs.count == 4 && g.running);
+    assert(g.menu_page == MOON_MENU_CLOSED && g.structs.count == 1 && g.running);
     assert(g.sim_ticks == 0 && !g.panel_open && g.structs.selected_build_type == MOON_STRUCT_NONE);
     assert(g.selected_tile_x == 32 && g.undo_kind == MOON_UNDO_NONE);
 
@@ -1058,7 +1060,7 @@ static void test_menu_and_cancel(void) {
     assert(g.menu_page == MOON_MENU_NEW_GAME);
     g.structs.count = 9;                    /* marker: a new game must rebuild the base */
     key(MOON_KEY_2);
-    assert(g.menu_page == MOON_MENU_CLOSED && g.structs.count == 4 && g.running);
+    assert(g.menu_page == MOON_MENU_CLOSED && g.structs.count == 1 && g.running);
     key(MOON_KEY_ESCAPE); key(MOON_KEY_Q); key(MOON_KEY_Y);
     assert(!g.running);
     printf("[test] Menu, quit/restart confirmation, identical cancel: PASS\n");
@@ -1093,14 +1095,14 @@ static void test_game_over(void) {
     assert(g.sim_ticks == st);
     key(MOON_KEY_ESCAPE); key(MOON_KEY_P); key(MOON_KEY_1); key(MOON_KEY_BACKSPACE);
     assert(g.state == MOON_STATE_GAME_OVER && g.menu_page == MOON_MENU_GAME_OVER && !g.paused);
-    assert(g.structs.count == 4 && g.running);
+    assert(g.structs.count == 1 && g.running);
 
     /* New game (button): the level chooser, then a clean base on a new map */
     click_rect(&g.ui.menu_item[2]);
     assert(g.menu_page == MOON_MENU_NEW_GAME && g.state == MOON_STATE_GAME_OVER);
     click_rect(&g.ui.menu_item[1]);
     assert(g.state == MOON_STATE_PLAYING && g.menu_page == MOON_MENU_CLOSED && g.running);
-    assert(g.resources.population == MOON_LANDER_CREW && g.sim_ticks == 0 && g.structs.count == 4);
+    assert(g.resources.population == MOON_LANDER_CREW && g.sim_ticks == 0 && g.structs.count == 1);
     assert(g.seed != seed0);
 
     /* Restart by key, and Quit by key and by button */
@@ -1281,7 +1283,10 @@ static void test_objectives(void) {
     ticks(1);
     assert(g.objective == 1);
 
-    /* 1: three solar arrays (one is already there) */
+    /* 1: three solar arrays */
+    put(MOON_STRUCT_SOLAR_ARRAY);
+    ticks(1);
+    assert(g.objective == 1);
     put(MOON_STRUCT_SOLAR_ARRAY);
     ticks(1);
     assert(g.objective == 1);
@@ -1289,10 +1294,11 @@ static void test_objectives(void) {
     ticks(1);
     assert(g.objective == 2);
 
-    /* 2: a powered Sinterer; 3: a second battery bank; 4: a Habitat */
+    /* 2: a powered Sinterer; 3: two battery banks; 4: a Habitat */
     put(MOON_STRUCT_REGOLITH_PLANT);
     ticks(1);
     assert(g.objective == 3);
+    put(MOON_STRUCT_BATTERY_BANK);
     ticks(1);
     assert(g.objective == 3);
     put(MOON_STRUCT_BATTERY_BANK);
@@ -1551,7 +1557,7 @@ static void test_restarts_and_seeds(void) {
     for (int i = 0; i < RUNS; i++) {
         seeds[i] = g.seed;
         /* every run starts from the same, complete base */
-        assert(g.structs.count == 4 && g.resources.population == MOON_LANDER_CREW);
+        assert(g.structs.count == 1 && g.resources.population == MOON_LANDER_CREW);
         assert(g.state == MOON_STATE_PLAYING && g.sim_ticks == 0);
         assert(ice_near_lander(&g.grid));
         const moon_tile_t *t = moon_grid_get_tile_const(&g.grid, 32, 32);

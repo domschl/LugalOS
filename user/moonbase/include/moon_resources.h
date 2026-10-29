@@ -74,6 +74,14 @@ typedef struct moon_resources_s {
     int32_t  water_capacity_l;
     int32_t  water_rate_l_per_tick; /* Net delta */
 
+    /* Cryogenic Hydrolox Propellant (LH2 & LOX in kg) */
+    fixed32_t lh2_stored_kg;        /* 16.16 fixed-point liquid hydrogen */
+    int32_t  lh2_capacity_kg;
+    int32_t  lh2_rate_kg_per_tick;
+    fixed32_t lox_stored_kg;        /* 16.16 fixed-point liquid oxygen */
+    int32_t  lox_capacity_kg;
+    int32_t  lox_rate_kg_per_tick;
+
     /* Regolith / Pavers (kg) */
     fixed32_t regolith_stored_kg;   /* 16.16 fixed-point building stock */
     int32_t  regolith_capacity_kg;

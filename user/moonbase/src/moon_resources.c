@@ -6,9 +6,9 @@
  * power) and an idle one lose. */
 const moon_rules_t g_moon_rules[MOON_DIFFICULTY_COUNT] = {
     /*                      regolith o2  water battery energy sinterer crew deposit */
-    [MOON_DIFFICULTY_EASY]   = { "CADET",     120, 70, 100, 100,  5, 45,  80, 12 },
-    [MOON_DIFFICULTY_NORMAL] = { "ENGINEER",   80, 50,  75,  40,  8, 30, 100,  8 },
-    [MOON_DIFFICULTY_HARD]   = { "COMMANDER",  50, 40,  60,  20, 10, 30, 130,  6 },
+    [MOON_DIFFICULTY_EASY]   = { "CADET",     150, 70, 100,  50,  5, 45,  80, 12 },
+    [MOON_DIFFICULTY_NORMAL] = { "ENGINEER",  110, 50,  75,  40,  8, 30, 100,  8 },
+    [MOON_DIFFICULTY_HARD]   = { "COMMANDER",  80, 40,  60,  20, 10, 30, 130,  6 },
 };
 
 /* Ground work of an Extractor (ice or mare) or a Sinterer (quarrying): one unit of the
@@ -62,10 +62,10 @@ void moon_resources_init(moon_resources_t *res, int difficulty) {
 
     /* Starting Life Support & Materials */
     res->o2_capacity_kg = 100;
-
     res->water_capacity_l = 150;
-
     res->regolith_capacity_kg = 250;
+    res->lh2_capacity_kg = 0;
+    res->lox_capacity_kg = 0;
 
     /* Population */
     res->population = MOON_LANDER_CREW;
@@ -178,6 +178,10 @@ void moon_resources_tick(moon_resources_t *res,
     int32_t net_o2_milli = 0;
     int32_t net_water_milli = 0;
     int32_t net_regolith_milli = 0;
+    int32_t net_lh2_milli = 0;
+    int32_t net_lox_milli = 0;
+    int32_t total_lh2_cap = 0;
+    int32_t total_lox_cap = 0;
 
     for (int i = 0; i < MOON_MAX_STRUCTURES; i++) {
         moon_structure_t *s = &mgr->list[i];
@@ -195,6 +199,9 @@ void moon_resources_tick(moon_resources_t *res,
             total_use_kw += 5;             /* Base command & comms */
         } else if (s->type == MOON_STRUCT_HABITAT_DOME) {
             total_housing += MOON_HABITAT_CREW;
+        } else if (s->type == MOON_STRUCT_CRYO_DEWAR) {
+            total_lh2_cap += 250;
+            total_lox_cap += 2000;
         }
 
         /* Pressurised structures leak and their gardens drink: a negative catalog rate is a
@@ -224,6 +231,17 @@ void moon_resources_tick(moon_resources_t *res,
                     if (draw_from_ground(res, grid, s)) {
                         net_regolith_milli += (res->rules.sinterer_kg_per_min * 1000 / (MOON_SIM_TICK_RATE_HZ * 60));
                     }
+                } else if (s->type == MOON_STRUCT_HYDROLOX_PLANT) {
+                    /* Only crack water if water reserves are above safe drinking threshold (20 L)
+                     * and storage dewar capacity is available for LH2 or LOX */
+                    if (res->water_stored_l > fixed_from_int(20) &&
+                        (res->lh2_stored_kg < fixed_from_int(total_lh2_cap) ||
+                         res->lox_stored_kg < fixed_from_int(total_lox_cap))) {
+                        /* Cracks 18 L/min water -> 2 kg/min LH2 + 16 kg/min LOX (1:8 stoichiometric mass) */
+                        net_water_milli -= (18 * 1000 / (MOON_SIM_TICK_RATE_HZ * 60));
+                        net_lh2_milli   += (2 * 1000 / (MOON_SIM_TICK_RATE_HZ * 60));
+                        net_lox_milli   += (16 * 1000 / (MOON_SIM_TICK_RATE_HZ * 60));
+                    }
                 }
             }
         }
@@ -231,6 +249,8 @@ void moon_resources_tick(moon_resources_t *res,
 
     res->max_population = (uint16_t)total_housing;
     res->battery_capacity_kwh = total_battery_cap;
+    res->lh2_capacity_kg = total_lh2_cap;
+    res->lox_capacity_kg = total_lox_cap;
     res->power_produced_kw = total_gen_kw;
     res->power_consumed_kw = total_use_kw;
     res->power_net_kw = total_gen_kw - total_use_kw;
@@ -270,6 +290,8 @@ void moon_resources_tick(moon_resources_t *res,
     res->o2_rate_kg_per_tick = net_o2_milli;
     res->water_rate_l_per_tick = net_water_milli;
     res->regolith_rate_kg_per_tick = net_regolith_milli;
+    res->lh2_rate_kg_per_tick = net_lh2_milli;
+    res->lox_rate_kg_per_tick = net_lox_milli;
 
     /* Update O2 */
     fixed32_t delta_o2 = fixed_div(fixed_from_int(net_o2_milli), fixed_from_int(1000));
@@ -305,6 +327,25 @@ void moon_resources_tick(moon_resources_t *res,
     }
     if (res->regolith_stored_kg < 0) {
         res->regolith_stored_kg = 0;
+    }
+
+    /* Update Cryogenic Propellants (LH2 & LOX) */
+    fixed32_t delta_lh2 = fixed_div(fixed_from_int(net_lh2_milli), fixed_from_int(1000));
+    res->lh2_stored_kg += delta_lh2;
+    if (res->lh2_stored_kg > fixed_from_int(res->lh2_capacity_kg)) {
+        res->lh2_stored_kg = fixed_from_int(res->lh2_capacity_kg);
+    }
+    if (res->lh2_stored_kg < 0) {
+        res->lh2_stored_kg = 0;
+    }
+
+    fixed32_t delta_lox = fixed_div(fixed_from_int(net_lox_milli), fixed_from_int(1000));
+    res->lox_stored_kg += delta_lox;
+    if (res->lox_stored_kg > fixed_from_int(res->lox_capacity_kg)) {
+        res->lox_stored_kg = fixed_from_int(res->lox_capacity_kg);
+    }
+    if (res->lox_stored_kg < 0) {
+        res->lox_stored_kg = 0;
     }
 
     /* Emergency scooping by the Lander when nothing else produces regolith */

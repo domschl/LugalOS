@@ -127,7 +127,11 @@ typedef struct {
 
     /* Input device in use */
     bool     touch_input;     /* Last pointer event came from a finger */
-    int8_t   press_slot;      /* Ribbon button under the current press, or -1 */
+    /* Hierarchical Build Menu / Category Tab (0 = BASE / Survival, 1 = CRYO / Spaceport) */
+    uint8_t  build_category;
+
+    /* Ribbon button under the current press, or -1 */
+    int8_t   press_slot;
     int8_t   preview_slot;    /* Build button hovered or held: the ghost shows it */
     int8_t   last_slot;       /* Slot of the previous press with nothing in between; -1 */
 
@@ -144,6 +148,11 @@ typedef struct {
     /* Live HUD Notification Badge */
     const char *notify_msg;
     uint32_t notify_timer_ms;
+
+    /* Animated Expedition Lander Touchdown Sequence */
+    bool     landing_active;
+    uint32_t landing_elapsed_ms;
+    int32_t  landing_y_offset;
 
     /* Frame and Tick Counters */
     uint32_t frame_count;

@@ -36,4 +36,14 @@ extern const moon_surface_t g_surf_sinterer;
 extern const uint16_t g_sprite_o2_extractor[3072];
 extern const moon_surface_t g_surf_o2_extractor;
 
+#define SPRITE_HYDROLOX_PLANT_W 96
+#define SPRITE_HYDROLOX_PLANT_H 80
+extern const uint16_t g_sprite_hydrolox_plant[7680];
+extern const moon_surface_t g_surf_hydrolox_plant;
+
+#define SPRITE_CRYO_DEWAR_W 64
+#define SPRITE_CRYO_DEWAR_H 48
+extern const uint16_t g_sprite_cryo_dewar[3072];
+extern const moon_surface_t g_surf_cryo_dewar;
+
 #endif /* MOON_SPRITES_H */

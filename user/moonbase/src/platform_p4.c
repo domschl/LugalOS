@@ -487,6 +487,9 @@ bool moon_platform_poll_event(moon_event_t *ev) {
             case 'f': case 'F':
                 ev->key = MOON_KEY_F;
                 return true;
+            case 'b': case 'B':
+                ev->key = MOON_KEY_B;
+                return true;
             case '-': case '_':
                 ev->key = MOON_KEY_MINUS;
                 return true;
