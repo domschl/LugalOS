@@ -88,9 +88,9 @@ console still works and `net` still says `link up`. `wifi stats` shows `2 F2 rea
 `cyw43: ioctl cmd 166 timed out`; `wifi recover` (level 1) does not bring it back, `wifi probe` and a
 new `wifi join` do. The host's push dies with `Connection reset by peer` once the keepalive gives up.
 
-**What it is not** (all measured the same day): not the protection (it happens on the first
-attempt's pace, and protected reads run at the speed of plain ones, 97 KB/s each, 2 MB through with
-the radio healthy); not flash writes alone (a full image written over the cable while pinging the
+**What it is probably not** (measured the same day): the protection's cost (protected reads run at
+the speed of plain ones, 97 KB/s each, 2 MB through with the radio healthy; a plain write push could
+not be tried, plain writes being refused); flash writes alone (a full image written over the cable while pinging the
 board for 22 s: no loss, no wedge); not the heap (30 of 80 pages free); not a long erase (the OTA
 writes one 4 KB sector at a time).
 
