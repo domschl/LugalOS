@@ -1032,8 +1032,9 @@ deferred without blocking anything after it.
       "length" from whatever bytes lie at the head. The cause is a bus
       transfer that the CPU polls with interrupts on (`pio_gspi_transfer()`);
       masking them for the length of each transfer (at most 0.7 ms) fixed it:
-      7 of 7 failed before, 7 of 7 completed after (4 with a real commit, 3
-      more on the clean build), 20 s each. Reads and ping floods never found
+      7 of 7 failed before, 8 of 8 completed after (3 with the flash write
+      skipped, 5 with a real commit, 4 of those on the clean build), about 20
+      s each. Reads and ping floods never found
       it, which is why a receive-heavy test is now in
       `tests/hw/test_wifi.py --update`. Power save, the idle gap, a double
       status read and the KSO wake were tried and ruled out.
