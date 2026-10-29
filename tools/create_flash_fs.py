@@ -12,11 +12,22 @@ from pathlib import Path
 tools_dir = Path(__file__).resolve().parent
 sys.path.insert(0, str(tools_dir))
 
-from create_sd_image import build_fat32_image
+from create_sd_image import build_fat32_image, NUM_SECTORS
 
 def generate_flash_fs_c(output_c_path: str, src_dir: str) -> None:
     temp_img_path = output_c_path + ".tmp.bin"
-    build_fat32_image(temp_img_path, src_dir)
+    # Linked into the kernel (the QEMU presets), the image has no flash region to fill exactly, so it grows in
+    # 512 KB steps when the staged content outgrows it; the raw images for hardware (generate_flash_fs_bin)
+    # keep their size and fail loudly.
+    sectors = NUM_SECTORS
+    while True:
+        try:
+            build_fat32_image(temp_img_path, src_dir, num_sectors=sectors)
+            break
+        except ValueError:
+            if sectors >= 8 * NUM_SECTORS:
+                raise
+            sectors += NUM_SECTORS // 2
 
     with open(temp_img_path, "rb") as f:
         data = f.read()

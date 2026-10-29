@@ -191,6 +191,9 @@ def build_fat32_image(output_path: str, src_dir: str | None = None, num_sectors:
     if src_dir and os.path.isdir(src_dir):
         populate_dir(src_dir, 2)
 
+    if current_free_cluster - 2 > num_sectors - data_start:
+        raise ValueError(f"the content needs {current_free_cluster - 2} sectors of data and the "
+                         f"{num_sectors}-sector image holds {num_sectors - data_start}")
     # Update FSInfo free cluster count & next free cluster pointer
     struct.pack_into("<I", img, 512 + 488, (num_sectors - data_start) - (current_free_cluster - 2))
     struct.pack_into("<I", img, 512 + 492, current_free_cluster)

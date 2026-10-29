@@ -49,10 +49,11 @@ pre { background:var(--bg); border:1px solid var(--line); border-radius:6px; pad
   <h2 style="margin:.1rem 0 .5rem;font-size:1.1rem">This node is yours</h2>
   <p>Save this key now. It is the only copy: anything that wants to manage this node needs it.</p>
   <pre id="key"></pre>
-  <button id="cp" class="alt" type="button">Copy the key</button>
+  <button id="cp" type="button">Copy the key</button>
   <button id="dl" class="alt" type="button">Save the key as a file</button>
+  <p class="mut">Paste the copied key into a password manager or a note. A phone's sign-in sheet often cannot save files: if Save only shows the key as text, use Copy, or press and hold the key above.</p>
   <p id="after" class="mut"></p>
-  <button id="fin" type="button">I saved the key</button>
+  <button id="fin" class="alt" type="button">I saved the key</button>
 </div>
 </main>
 
@@ -187,7 +188,7 @@ if (typeof document !== 'undefined') (() => {
     };
     $('dl').onclick = () => {
       const a = document.createElement('a');
-      a.href = URL.createObjectURL(new Blob([keyHex + '\n'], { type: 'text/plain' }));
+      a.href = URL.createObjectURL(new Blob([keyHex + '\n'], { type: 'application/octet-stream' }));
       a.download = (name || 'lugalos') + '-owner.key'; a.click();
     };
     $('fin').onclick = async () => {
