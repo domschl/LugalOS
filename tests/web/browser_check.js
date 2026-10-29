@@ -11,6 +11,13 @@ async function main() {
   try {
     b = await openBrowser(chromium);
     const { drv, ev, waitFor, errors: consoleErrors, done } = b;
+    // The setup page forwards a new owner here with the key after a '#': it fills the form and leaves no trace.
+    await drv.navigate(url.replace(/\/?$/, '/') + '#key=' + key);
+    await waitFor("document.readyState === 'complete'", 'the page');
+    await sleep(500);
+    const hand = await ev("document.getElementById('uname').value + '|' + location.hash + '|' + location.href");
+    if (!hand.startsWith('owner||') || hand.includes(key) || (await ev("document.getElementById('key').value.length")) !== key.length) throw new Error('the key stayed in the address, or the form was not filled: ' + hand.replace(key, '<key>') + ' key field length ' + await ev("document.getElementById('key').value.length") + ' want ' + key.length);
+    console.log('hand-off: ok (key in the form, address clean)');
     await drv.navigate(url);
     await waitFor("document.readyState === 'complete' && !!document.getElementById('go')", 'the sign-in page');
     await waitFor("document.getElementById('board').textContent.length > 10", 'the board line before sign-in');

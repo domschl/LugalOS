@@ -54,6 +54,8 @@ pre { background:var(--bg); border:1px solid var(--line); border-radius:6px; pad
   <p class="mut">Paste the copied key into a password manager or a note. A phone's sign-in sheet often cannot save files: if Save only shows the key as text, use Copy, or press and hold the key above.</p>
   <p id="after" class="mut"></p>
   <button id="fin" class="alt" type="button">I saved the key</button>
+  <p id="go-wrap" class="hide"><a id="addr" href="#"></a></p>
+  <p id="addr-note" class="mut hide">The link carries the key after a #; it stays in your browser and is not sent to the node. Do not bookmark or share it.</p>
 </div>
 </main>
 
@@ -201,11 +203,14 @@ if (typeof document !== 'undefined') (() => {
       $('key').textContent = '';
       $('cp').classList.add('hide'); $('dl').classList.add('hide'); $('fin').classList.add('hide');
       if (!ssid || !host) { $('after').textContent = 'Done. The node closes this setup network.'; return; }
-      $('after').textContent = 'Done. The node is joining "' + ssid + '" (about a minute). Make sure this device is on that Wi-Fi again; this page then takes you to the node at http://' + host + '/ by itself. Sign in there as owner with the key.';
+      $('after').textContent = 'Done. The node is joining "' + ssid + '" (about a minute). Make sure this device is on that Wi-Fi again; this page then takes you to the node by itself. If this sheet closes first, open the address below in Safari: the key you copied is the password, user owner.';
       const target = 'http://' + host + '/';
+      const link = target + '#key=' + keyHex;
+      $('addr').textContent = target; $('addr').href = link;
+      $('go-wrap').classList.remove('hide'); $('addr-note').classList.remove('hide');
       for (let i = 0; i < 90; i++) {
         await new Promise((r) => setTimeout(r, 2000));
-        try { await fetch(target + 'board', { mode: 'no-cors', cache: 'no-store' }); location.href = target; return; } catch (e) { /* not there yet */ }
+        try { await fetch(target + 'board', { mode: 'no-cors', cache: 'no-store' }); location.href = link; return; } catch (e) { /* not there yet */ }
       }
       $('after').textContent = 'The node did not appear at http://' + host + '/. Is this device on "' + ssid + '"? Try that address in a few minutes.';
     };

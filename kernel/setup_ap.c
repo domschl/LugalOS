@@ -102,6 +102,11 @@ static void setup_ap_task(void *arg) {
             if (!g_closing_since_ms) g_closing_since_ms = now;
             else if (now - g_closing_since_ms >= AP_CLOSE_GRACE_MS) tear_down();
         }
+        /* A claimed node on a network serves the admin page: the setup page sends its owner to NAME.local, and
+         * what answers there is this. Sign-in is the owner's key; the page is the same one the console starts. */
+        if (!g_up && setup_state() == SETUP_CLAIMED && net_state()->configured && !httpd_running(NULL)) {
+            if (httpd_start(80) == 0) printk("[SetupAP] claimed node on the network: admin page on port 80\n");
+        }
     }
 }
 

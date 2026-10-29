@@ -345,6 +345,16 @@ if (typeof document !== 'undefined') (() => {
     v.innerHTML = html + '<p class="mut">Change the owner part by writing a line to <code>/dev/owner</code> in the Files view (<code>name NAME</code>, <code>wlan SSID PSKHEX</code>, <code>grant NAME KEYHEX [rw|ro|admin]</code>). It needs the admin grant and a session that may write.</p>';
   }
 
+  // The setup page forwards here with the new owner's key after a '#': it never reaches the node, and it is
+  // wiped from the address bar as soon as it is in the form. The person still presses Sign in, which is what
+  // makes a phone offer to remember the password.
+  const m = /^#key=((?:[0-9a-fA-F]{2}){16,64})$/.exec(location.hash);
+  if (m) {
+    $('key').value = m[1]; $('uname').value = 'owner';
+    history.replaceState(null, '', location.pathname + location.search);
+    $('go').focus();
+  }
+
   $('loginform').onsubmit = async (ev) => {
     ev.preventDefault();
     $('lerr').textContent = ''; $('go').disabled = true; setStatus('connecting…');
