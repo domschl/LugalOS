@@ -111,6 +111,16 @@ that makes the next occurrence leave that evidence: a `[Stuck Guest]` block in
 the run log, and an `[Attempt]` line per architecture attempt with its
 duration and first failure.
 
+## The runner sat 22 minutes on its first rv64 guest (once)
+
+**Seen:** 2026-10-29, `tests/runner.py` after 52.11b: the host checks passed, `[Target: RV64 Sv39 MMU Virtual
+Memory]` printed, and nothing followed for 22 minutes with one `qemu-system-riscv64` running. No
+`[Stuck Guest]` report came, so the runner was waiting on something other than a silent console. Stopped by
+hand. The same test alone passed, and two full runs (one before, one after) passed 527/527 and 529/529.
+**What would settle it:** the next occurrence, before stopping it: the guest's `/proc/ps` and
+`/proc/kmsg` over its console, and `py-spy dump` (or a SIGUSR1 traceback) of the runner to see which wait
+it is in.
+
 ## A kernel wild jump into `.rodata` during `exec` (QEMU, once)
 
 **Seen:** once with a cause code, `soak14/run25` (2026-09-14), RV64 SMP:
