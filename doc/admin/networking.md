@@ -218,3 +218,7 @@ namespace is the terminal's `/c6`, as on the P4 boards (section 4).
 
 **Navigation:** [<- Administrator Manual](index.md) | [Identity & Provisioning ->](identity.md) | [Documentation Index](../README.md)
 
+
+## Multicast DNS
+
+Every node answers multicast DNS (UDP 5353, group 224.0.0.251) for one name, `NODENAME.local`, with its own address, so a node whose address a router chose can be reached by name. Only A queries for that one name are answered; other names and record types are not. The name is the node name and must be a valid host label (letters, digits, hyphens). On the Pico 2 W's radio the group is added to the chip's multicast filter when it joins a network.

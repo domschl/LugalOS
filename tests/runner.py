@@ -5646,6 +5646,10 @@ def test_setup_page_and_claim(elf_path: Path, img_path: Path, arch_name: str) ->
     pr.bind(("127.0.0.1", 0))
     port = pr.getsockname()[1]
     pr.close()
+    mu = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+    mu.bind(("127.0.0.1", 0))
+    mdns_port = mu.getsockname()[1]
+    mu.close()
 
     def http(raw: bytes) -> bytes:
         s = _socket.create_connection(("127.0.0.1", port), timeout=15.0)
@@ -5748,7 +5752,7 @@ def test_setup_page_and_claim(elf_path: Path, img_path: Path, arch_name: str) ->
                 return (name, False, f"the page's crypto failed its vectors:\n{(r.stdout + r.stderr)[-500:]}")
 
             session.start(identity_img_path=id_img, extra_qemu_args=[
-                "-netdev", f"user,id=n0,hostfwd=tcp:127.0.0.1:{port}-10.0.2.15:80",
+                "-netdev", f"user,id=n0,hostfwd=tcp:127.0.0.1:{port}-10.0.2.15:80,hostfwd=udp:127.0.0.1:{mdns_port}-10.0.2.15:5353",
                 "-device", "virtio-net-device,netdev=n0",
             ])
             ok, log = session.send_and_expect("", r"Type 'help' for commands", timeout=8.0)
@@ -5758,6 +5762,25 @@ def test_setup_page_and_claim(elf_path: Path, img_path: Path, arch_name: str) ->
             ok, log = session.send_and_expect("httpd start", r"httpd: (running|could)", timeout=6.0)
             if "running" not in log:
                 return (name, False, f"httpd did not start: {log[-300:]}")
+
+            # 0. The node answers to <name>.local (RFC 6762): the way a person finds it on the home network.
+            def mdns(host: str) -> bytes:
+                qn = b"".join(bytes([len(x)]) + x.encode() for x in host.split(".")) + b"\x00"
+                us = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+                us.settimeout(3.0)
+                us.sendto(b"\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00" + qn + b"\x00\x01\x00\x01", ("127.0.0.1", mdns_port))
+                try:
+                    return us.recvfrom(512)[0]
+                except OSError:
+                    return b""
+                finally:
+                    us.close()
+
+            ans = mdns("SetupTest.local")
+            if not ans or ans[-4:] != bytes([10, 0, 2, 15]) or not ans[2] & 0x80:
+                return (name, False, f"no mDNS answer for setuptest.local with the node's address: {ans!r}")
+            if mdns("somebody-else.local"):
+                return (name, False, "the node answered an mDNS query for another host")
 
             # 1. Off the setup network: the admin page, and a shut door.
             adm = http(b"GET / HTTP/1.1\r\nHost: 192.168.4.1\r\n\r\n")

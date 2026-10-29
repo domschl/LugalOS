@@ -40,10 +40,10 @@ td a { color:var(--acc); cursor:pointer; text-decoration:none; } td a:hover { te
 <header><h1>LugalOS admin</h1><span id="board" title="this board"></span><span id="who" class="mut"></span><span class="st" id="status">not connected</span></header>
 
 <main id="login">
-  <form class="card" id="loginform" style="margin-top:1rem" onsubmit="return false">
+  <form class="card" id="loginform" style="margin-top:1rem" method="post" action="#" autocomplete="on" onsubmit="return false">
     <p>Sign in with this node's key. The key is hashed in this page and never sent: the node proves nothing to you, you prove the key to it with a challenge it chose.</p>
-    <label for="uname">User</label><input id="uname" type="text" value="lugal" autocomplete="username">
-    <label for="key">Key (hex)</label><input id="key" type="password" autocomplete="current-password" spellcheck="false">
+    <label for="uname">User</label><input id="uname" name="username" type="text" value="owner" autocomplete="username" autocapitalize="none" autocorrect="off">
+    <label for="key">Key (hex)</label><input id="key" name="password" type="password" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false">
     <div class="row"><button class="act" id="go" type="submit">Sign in</button><span id="lerr" class="err"></span></div>
     <p class="mut">This page was loaded over plain HTTP: what you read and write can be seen, and a session cannot change the node unless its console allowed it (<code>httpd write on</code>).</p>
   </form>
@@ -349,7 +349,7 @@ if (typeof document !== 'undefined') (() => {
     ev.preventDefault();
     $('lerr').textContent = ''; $('go').disabled = true; setStatus('connecting…');
     try {
-      const key = hexToBytes($('key').value), uname = $('uname').value || 'lugal';
+      const key = hexToBytes($('key').value), uname = $('uname').value || 'owner';
       p9 = new P9((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/9p');
       await p9.connect(); await p9.login(uname, key);
       p9.onclose = () => { setStatus('disconnected', 'err'); $('app').classList.add('hide'); $('login').classList.remove('hide'); $('lerr').textContent = 'the connection ended'; $('go').disabled = false; };

@@ -39,7 +39,7 @@ pre { background:var(--bg); border:1px solid var(--line); border-radius:6px; pad
   <label for="pass">Your Wi-Fi password</label>
   <input id="pass" type="password" autocomplete="off">
   <label for="name">A name for this node (optional)</label>
-  <input id="name" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="kitchen-sensor">
+  <input id="name" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="kitchen-sensor" pattern="[A-Za-z0-9]([A-Za-z0-9\-]{0,61}[A-Za-z0-9])?" title="letters, digits and hyphens: the node is found by this name">
   <button id="go" type="submit">Claim this node</button>
   <p class="mut">Your Wi-Fi password is turned into a key here, in this page; the password itself is never sent to the node.</p>
   <p id="msg"></p>
@@ -174,11 +174,14 @@ if (typeof document !== 'undefined') (() => {
   // Shown after the claim, and again if the page is reloaded before the owner says the key is saved: this device
   // is on the setup network for as long as the node keeps it up, and the key lives nowhere else.
   const showKey = (keyHex, name, ssid) => {
+    const label = (name || boardName || '').toLowerCase();
+    const host = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(label) ? label + '.local' : '';
     try { sessionStorage.setItem('lugalos-owner', JSON.stringify({ keyHex, name, ssid })); } catch (e) { /* private mode */ }
     $('form').classList.add('hide'); $('done').classList.remove('hide');
     $('key').textContent = keyHex;
     $('after').textContent = (ssid ? 'The node joins "' + ssid + '" when you tap the button below.' : 'The node has no Wi-Fi of its own yet.')
-      + ' This setup network stays up for ten minutes, so there is time.';
+      + ' This setup network stays up for ten minutes, so there is time.'
+      + (host && ssid ? ' Afterwards you find the node at http://' + host + '/ and sign in there with the key (user: owner).' : '');
     $('cp').onclick = async () => {
       try { await navigator.clipboard.writeText(keyHex); } catch (e) {
         const r = document.createRange(); r.selectNodeContents($('key')); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
@@ -196,17 +199,24 @@ if (typeof document !== 'undefined') (() => {
       try { await fetch('/setup-done', { cache: 'no-store' }); } catch (e) { /* the node is already leaving */ }
       try { sessionStorage.removeItem('lugalos-owner'); } catch (e) { /* nothing stored */ }
       $('key').textContent = '';
-      $('after').textContent = ssid ? 'Done. The node is leaving this setup network and joining "' + ssid + '". Reconnect this device to your own Wi-Fi.'
-                                    : 'Done. The node closes this setup network.';
       $('cp').classList.add('hide'); $('dl').classList.add('hide'); $('fin').classList.add('hide');
+      if (!ssid || !host) { $('after').textContent = 'Done. The node closes this setup network.'; return; }
+      $('after').textContent = 'Done. The node is joining "' + ssid + '" (about a minute). Make sure this device is on that Wi-Fi again; this page then takes you to the node at http://' + host + '/ by itself. Sign in there as owner with the key.';
+      const target = 'http://' + host + '/';
+      for (let i = 0; i < 90; i++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        try { await fetch(target + 'board', { mode: 'no-cors', cache: 'no-store' }); location.href = target; return; } catch (e) { /* not there yet */ }
+      }
+      $('after').textContent = 'The node did not appear at http://' + host + '/. Is this device on "' + ssid + '"? Try that address in a few minutes.';
     };
   };
   try { const kept = JSON.parse(sessionStorage.getItem('lugalos-owner') || 'null'); if (kept && kept.keyHex) showKey(kept.keyHex, kept.name, kept.ssid); } catch (e) { /* none */ }
 
+  let boardName = '';
   fetch('/board', { cache: 'no-store' }).then((r) => r.text()).then((t) => {
     const kv = {}; t.split('\n').forEach((l) => { const i = l.indexOf('='); if (i > 0) kv[l.slice(0, i)] = l.slice(i + 1); });
     if (kv.preset) $('board').innerHTML = esc(kv.name || kv.board) + ' &middot; ' + esc(kv.hardware) + ' &middot; uid ' + esc(kv.uid);
-    if (kv.name) document.title = 'Set up ' + kv.name;
+    if (kv.name) { document.title = 'Set up ' + kv.name; boardName = kv.name; }
   }).catch(() => {});
 
   $('form').onsubmit = async (ev) => {

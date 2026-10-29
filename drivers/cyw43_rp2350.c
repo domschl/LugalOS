@@ -1986,6 +1986,11 @@ static bool cyw43_join_wpa2_locked(const char *ssid, const uint8_t psk[32]) {
 
     if (!cyw43_set_iovar_u32("ampdu_ba_wsize", 8)) return false;
 
+    /* The firmware drops multicast frames that are not on its list. One group is wanted: 224.0.0.251, mDNS
+     * (net/mdnsd.c). The list is a count and the MACs; a refusal costs the .local name, not the join. */
+    static const uint8_t mdns_group[4 + 6] = { 1, 0, 0, 0, 0x01, 0x00, 0x5e, 0x00, 0x00, 0xfb };
+    (void)cyw43_set_iovar("mcast_list", mdns_group, sizeof mdns_group);
+
     if (!cyw43_ioctl_set_u32(IOCTL_CMD_SET_WSEC, 0, WSEC_AES)) return false;
     if (!cyw43_set_iovar_u32x2("bsscfg:sup_wpa", 0, 1)) return false;
     if (!cyw43_set_iovar_u32x2("bsscfg:sup_wpa2_eapver", 0, 0xFFFFFFFFu)) return false;

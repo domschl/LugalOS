@@ -1,4 +1,5 @@
 #include "net/ntp_server.h"
+#include "net/mdnsd.h"
 #include "net/ip.h"
 #include "net/net_internal.h"
 #include "net/tcp.h"
@@ -146,6 +147,7 @@ static int net_set_address_locked(const uint8_t ip[IPV4_LEN], const uint8_t mask
         cprintf("[Net] address set, but the 9P listener could not start\n");
     }
 
+    if (mdnsd_start() != 0) cprintf("[Net] address set, but UDP 5353 could not be bound\n");
 #if CONFIG_ENABLE_NTP_SERVER
     /* And time, for the same reason and in the same place (P6). Here rather
      * than in main() because on a wireless persona the netif does not exist

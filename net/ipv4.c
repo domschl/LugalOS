@@ -57,6 +57,10 @@ int ip_send(uint8_t proto, const uint8_t dst[IPV4_LEN], uint32_t payload_len) {
     for (uint32_t i = 0; i < IPV4_LEN; i++) if (dst[i] != 0xff) { is_broadcast = false; break; }
     if (is_broadcast) {
         memcpy(dst_mac, net_broadcast_mac(), NETIF_MAC_LEN);
+    } else if (dst[0] >= 224 && dst[0] <= 239) {
+        /* A multicast group has a MAC derived from its address (RFC 1112 section 6.4): nothing to resolve. */
+        dst_mac[0] = 0x01; dst_mac[1] = 0x00; dst_mac[2] = 0x5e;
+        dst_mac[3] = dst[1] & 0x7f; dst_mac[4] = dst[2]; dst_mac[5] = dst[3];
     } else {
         uint8_t hop[IPV4_LEN];
         if (next_hop(dst, hop) != 0) { st->drop_no_route++; return -1; }
@@ -119,7 +123,8 @@ void ip_input(const uint8_t *frame, uint32_t len) {
     bool mine = st->configured && memcmp(h + 16, st->ip, IPV4_LEN) == 0;
     bool bcast = true;
     for (uint32_t i = 0; i < IPV4_LEN; i++) if (h[16 + i] != 0xff) { bcast = false; break; }
-    if (!mine && !bcast) { st->drop_not_for_us++; return; }
+    bool mdns_group = h[16] == 224 && h[17] == 0 && h[18] == 0 && h[19] == 251;   /* the one group joined */
+    if (!mine && !bcast && !mdns_group) { st->drop_not_for_us++; return; }
 
     const uint8_t *src = h + 12;
     /* The sender's MAC is right there in the frame we are already holding. */
