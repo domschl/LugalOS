@@ -4120,6 +4120,24 @@ static void cmd_setup(const char *arg) {
     } else if (strcmp(arg, "stop") == 0) {
         setup_stop();
         cprintf("setup: window closed\n");
+    } else if (strncmp(arg, "net ", 4) == 0) {
+        /* setup net A.B.C.D/N | off: the network the claim door opens on. A Pico 2 W's setup access point sets
+         * it by itself; this is for a wired setup network, and for the tests. */
+        const char *a2 = arg + 4;
+        while (*a2 == ' ') a2++;
+        if (strcmp(a2, "off") == 0) { setup_net_clear(); cprintf("setup net: none\n"); return; }
+        char ipbuf[20];
+        uint32_t k = 0;
+        while (a2[k] && a2[k] != '/' && k < sizeof ipbuf - 1) { ipbuf[k] = a2[k]; k++; }
+        ipbuf[k] = 0;
+        uint8_t ip[4], mask[4] = { 0, 0, 0, 0 };
+        uint32_t bits = 0;
+        const char *sl = a2 + k;
+        if (*sl == '/') for (sl++; *sl >= '0' && *sl <= '9'; sl++) bits = bits * 10u + (uint32_t)(*sl - '0');
+        if (!ipv4_parse(ipbuf, ip) || bits == 0 || bits > 32) { cprintf("usage: setup net A.B.C.D/N | off\n"); return; }
+        for (uint32_t i = 0; i < bits; i++) mask[i / 8] |= (uint8_t)(0x80u >> (i % 8));
+        setup_net_set(ip, mask);
+        cprintf("setup net: %s/%u\n", ipbuf, (unsigned)bits);
     } else if (strcmp(arg, "reset-owner") == 0) {
         node_id_result_t rc = setup_reset_owner();
         cprintf("setup reset-owner: %s\n", rc == NODE_ID_OK ? "the owner part is wiped; the node is unclaimed (its factory part is kept)"
@@ -4130,7 +4148,7 @@ static void cmd_setup(const char *arg) {
         node_id_result_t rc = node_identity_set_setup_secret(t);
         cprintf("setup secret: %s\n", rc == NODE_ID_OK ? "stored" : node_id_result_str(rc));
     } else {
-        cprintf("usage: setup [start | stop | reset-owner | secret TEXT]\n");
+        cprintf("usage: setup [start | stop | reset-owner | secret TEXT | net A.B.C.D/N | net off]\n");
     }
 }
 

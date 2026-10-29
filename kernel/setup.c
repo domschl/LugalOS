@@ -15,6 +15,9 @@
 #if defined(CONFIG_NETWORK_CLAIM)
 
 #define REQ_LINE_MAX 320u
+/* A claim runs p9_grants_add_admin() (its parse and serialise buffers are about 5 KB) on top of an identity
+ * write; three pages overflow into the next task's stack; the claim peaks at 11.9 KB. */
+#define SETUP_WORKER_STACK_PAGES 5u
 
 /* guarded by: g_lock; the 9P server task and the shell queue requests and read the state, the
  * worker runs them. */
@@ -161,13 +164,25 @@ static void do_claim(const char *args) {
     if (klen < 16) { claim_failed("the owner key must be 16 to 64 bytes of hex"); return; }
 
     char name[NODE_NAME_MAX] = "", ssid[NODE_WLAN_SSID_MAX + 1] = "", pskhex[NODE_WLAN_PSK_LEN * 2 + 2] = "";
+    uint32_t ssid_len = 0;
+    bool wlan_given = false;
     while (*args) {
         args = tok(args, word, sizeof word);
         if (strcmp(word, "name") == 0) {
             args = tok(args, name, sizeof name);
         } else if (strcmp(word, "wlan") == 0) {
+            wlan_given = true;
             args = tok(args, ssid, sizeof ssid);
+            ssid_len = (uint32_t)strlen(ssid);
             args = tok(args, pskhex, sizeof pskhex);
+        } else if (strcmp(word, "wlanhex") == 0) {
+            /* The SSID as hex: a network's name may hold spaces, which this line is split on. */
+            char ssidhex[NODE_WLAN_SSID_MAX * 2 + 2];
+            wlan_given = true;
+            args = tok(args, ssidhex, sizeof ssidhex);
+            args = tok(args, pskhex, sizeof pskhex);
+            ssid_len = hex_bytes(ssidhex, (uint8_t *)ssid, NODE_WLAN_SSID_MAX);
+            ssid[ssid_len] = 0;
         } else {
             memset(key, 0, sizeof key);
             claim_failed("unknown claim option");
@@ -175,13 +190,13 @@ static void do_claim(const char *args) {
         }
     }
     uint8_t psk[NODE_WLAN_PSK_LEN];
-    if (ssid[0] && hex_bytes(pskhex, psk, sizeof psk) != NODE_WLAN_PSK_LEN) {
+    if (wlan_given && (!ssid_len || hex_bytes(pskhex, psk, sizeof psk) != NODE_WLAN_PSK_LEN)) {
         memset(key, 0, sizeof key);
         claim_failed("the WLAN key is the 64 hex characters of the derived PSK");
         return;
     }
     if (name[0] && node_identity_rename_persistent(name) != NODE_ID_OK) { memset(key, 0, sizeof key); claim_failed("bad node name"); return; }
-    if (ssid[0] && node_identity_set_wlan(ssid, (uint32_t)strlen(ssid), psk, sizeof psk) != NODE_ID_OK) {
+    if (ssid_len && node_identity_set_wlan(ssid, ssid_len, psk, sizeof psk) != NODE_ID_OK) {
         memset(key, 0, sizeof key);
         claim_failed("could not store the WLAN");
         return;
@@ -202,15 +217,18 @@ static void do_owner(const char *args) {
         char name[NODE_NAME_MAX];
         tok(args, name, sizeof name);
         set_result(name[0] && node_identity_rename_persistent(name) == NODE_ID_OK ? "ok" : "error: bad node name");
-    } else if (strcmp(cmd, "wlan") == 0) {
-        char ssid[NODE_WLAN_SSID_MAX + 1], pskhex[NODE_WLAN_PSK_LEN * 2 + 2];
+    } else if (strcmp(cmd, "wlan") == 0 || strcmp(cmd, "wlanhex") == 0) {
+        char ssid[NODE_WLAN_SSID_MAX + 1], ssidtxt[NODE_WLAN_SSID_MAX * 2 + 2], pskhex[NODE_WLAN_PSK_LEN * 2 + 2];
         uint8_t psk[NODE_WLAN_PSK_LEN];
-        args = tok(args, ssid, sizeof ssid);
+        args = tok(args, ssidtxt, sizeof ssidtxt);
         tok(args, pskhex, sizeof pskhex);
-        if (!ssid[0] || hex_bytes(pskhex, psk, sizeof psk) != NODE_WLAN_PSK_LEN) {
-            set_result("error: wlan SSID PSKHEX, the PSK being the 64 hex characters of the derived key");
+        uint32_t ssid_len;
+        if (cmd[4] == 'h') { ssid_len = hex_bytes(ssidtxt, (uint8_t *)ssid, NODE_WLAN_SSID_MAX); }
+        else { strncpy(ssid, ssidtxt, sizeof ssid - 1); ssid[sizeof ssid - 1] = 0; ssid_len = (uint32_t)strlen(ssid); }
+        if (!ssid_len || hex_bytes(pskhex, psk, sizeof psk) != NODE_WLAN_PSK_LEN) {
+            set_result("error: wlan SSID PSKHEX (or wlanhex SSIDHEX PSKHEX), the PSK being the 64 hex characters of the derived key");
         } else {
-            set_result(node_identity_set_wlan(ssid, (uint32_t)strlen(ssid), psk, sizeof psk) == NODE_ID_OK
+            set_result(node_identity_set_wlan(ssid, ssid_len, psk, sizeof psk) == NODE_ID_OK
                        ? "ok" : "error: could not store the WLAN");
         }
         memset(psk, 0, sizeof psk);
@@ -296,7 +314,7 @@ static int queue(const char *buf, uint32_t len, bool owner) {
      * that anyone on the LAN can read, protected or not (a protected session is integrity, not
      * secrecy): the console, a cable, TLS (52.15) or the setup access point (52.12). */
     if (!p9_request_confidential()) {
-        const bool secret = !owner || strncmp(buf, "wlan ", 5) == 0 || strncmp(buf, "grant ", 6) == 0;
+        const bool secret = !owner || strncmp(buf, "wlan", 4) == 0 || strncmp(buf, "grant ", 6) == 0;
         if (secret && !p9_link_is_setup_ap()) {
             set_result("error: that carries a secret, and this link can be read on the network: use the console, a cable or TLS");
             return -1;
@@ -352,7 +370,7 @@ void setup_init(void) {
     char probe[NODE_SETUP_SECRET_MAX + 1];
     g_have_secret = node_setup_secret(probe, sizeof probe);
     memset(probe, 0, sizeof probe);
-    if (task_create_sized("setupd", setup_worker, NULL, 3) < 0) printk("[Setup] could not start the worker\n");
+    if (task_create_sized("setupd", setup_worker, NULL, SETUP_WORKER_STACK_PAGES) < 0) printk("[Setup] could not start the worker\n");
     if (g_have_secret && !p9_grants_has_admin()) {
         (void)window_open(false);
         printk("[Setup] unclaimed: a setup window is open for %u s\n", (unsigned)SETUP_WINDOW_S);

@@ -33,8 +33,6 @@
 #define HTTPD_OBUF  (P9_MAX_MSIZE + WS_HDR_MAX)
 #define HTTPD_PAGE_A  "/flash0/www/admin.html"
 #define HTTPD_PAGE_B  "/sd0/www/admin.html"
-#define HTTPD_SETUP_A "/flash0/www/setup.html"
-#define HTTPD_SETUP_B "/sd0/www/setup.html"
 
 typedef enum { H_FREE, H_REQUEST, H_FILE, H_WS, H_CLOSING } hstate_t;
 
@@ -49,6 +47,7 @@ typedef struct {
     bool        ping_out;
     bool        close_after_drain;
     int         fd;                   /* H_FILE */
+    const char *mem;                  /* H_FILE from memory (the setup page, in the image), else NULL */
     uint32_t    file_left, file_off;
     /* H_WS: one frame at a time. */
     uint8_t     hbuf[WS_HDR_MAX];
@@ -235,6 +234,26 @@ static void start_file(hsess_t *h, const char *first, const char *second) {
     g_pages++;
 }
 
+#if defined(CONFIG_NETWORK_CLAIM)
+/* The setup page is part of the firmware image (tools/embed_page.py), not a file: an unclaimed node serves it
+ * whatever its filesystems hold. */
+extern const char g_setup_page[];
+extern const unsigned g_setup_page_len;
+
+static void start_setup_page(hsess_t *h) {
+    int n = ksnprintf((char *)h->obuf, HTTPD_OBUF,
+                      "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: %u\r\n"
+                      "Connection: close\r\nCache-Control: no-store\r\n\r\n", g_setup_page_len);
+    h->olen = (uint32_t)n;
+    h->osent = 0;
+    h->mem = g_setup_page;
+    h->file_left = g_setup_page_len;
+    h->file_off = 0;
+    h->st = H_FILE;
+    g_pages++;
+}
+#endif
+
 /* A complete request is in ibuf (NUL-terminated at ilen). */
 static void handle_request(hsess_t *h) {
     char *req = (char *)h->ibuf;
@@ -254,7 +273,11 @@ static void handle_request(hsess_t *h) {
         (void)header_value(req, "Host", host, sizeof host);
         bool ours = strcmp(host, SETUP_AP_IP_STR) == 0;
         if (ours && (strcmp(path, "/") == 0 || strcmp(path, "/index.html") == 0 || strcmp(path, "/setup.html") == 0)) {
-            start_file(h, HTTPD_SETUP_A, HTTPD_SETUP_B);
+#if defined(CONFIG_NETWORK_CLAIM)
+            start_setup_page(h);
+#else
+            reply_redirect(h, "http://" SETUP_AP_IP_STR "/");
+#endif
         } else {
             reply_redirect(h, "http://" SETUP_AP_IP_STR "/");
         }
@@ -394,7 +417,9 @@ static void sess_step(hsess_t *h) {
         if (!drain(h)) return;
         if (h->file_left == 0) { sess_close(h); return; }
         uint32_t n = h->file_left < HTTPD_OBUF ? h->file_left : HTTPD_OBUF;
-        int r = vfs_pread(h->fd, h->obuf, n, h->file_off);
+        int r;
+        if (h->mem) { memcpy(h->obuf, h->mem + h->file_off, n); r = (int)n; }
+        else r = vfs_pread(h->fd, h->obuf, n, h->file_off);
         if (r <= 0) { sess_close(h); return; }       /* short: the connection ends early, which the browser notices */
         h->olen = (uint32_t)r;
         h->osent = 0;

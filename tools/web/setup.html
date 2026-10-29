@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Set up this node</title>
+<style>
+:root { --bg:#f6f6f4; --fg:#1d1d1b; --mut:#6b6b66; --card:#fff; --line:#d8d8d2; --acc:#1b5e9b; --bad:#a32020; --ok:#1d7a3a; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#161615; --fg:#e8e8e3; --mut:#9a9a92; --card:#201f1e; --line:#37362f; --acc:#6fb0e8; --bad:#ff7b7b; --ok:#6fcf8c; }
+}
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.45 system-ui, sans-serif; }
+main { max-width:34rem; margin:0 auto; padding:1rem 16px 3rem; }
+h1 { font-size:1.25rem; margin:.4rem 0 .2rem; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:1rem; margin-top:1rem; }
+label { display:block; margin:.8rem 0 .2rem; color:var(--mut); font-size:.85rem; }
+input { width:100%; font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:.55rem .6rem; }
+button { font:inherit; border:none; border-radius:6px; padding:.65rem 1.1rem; cursor:pointer; background:var(--acc); color:var(--bg); margin-top:1rem; width:100%; }
+button.alt { background:transparent; color:var(--acc); border:1px solid var(--acc); }
+button:disabled { opacity:.5; cursor:default; }
+.mut { color:var(--mut); font-size:.9rem; } .err { color:var(--bad); } .ok { color:var(--ok); }
+code, pre { font-family:ui-monospace, monospace; font-size:.85rem; word-break:break-all; white-space:pre-wrap; }
+pre { background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:.6rem; }
+.hide { display:none; }
+</style>
+</head>
+<body>
+<main>
+<h1>Set up this node</h1>
+<div id="board" class="mut">&nbsp;</div>
+
+<form class="card" id="form" onsubmit="return false">
+  <p>You are connected to this node's own setup network. Tell it which Wi-Fi to join, and it becomes yours.</p>
+  <label for="secret">Setup secret (on the label)</label>
+  <input id="secret" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false">
+  <label for="ssid">Your Wi-Fi network's name</label>
+  <input id="ssid" type="text" autocomplete="off" autocapitalize="none" spellcheck="false">
+  <label for="pass">Your Wi-Fi password</label>
+  <input id="pass" type="password" autocomplete="off">
+  <label for="name">A name for this node (optional)</label>
+  <input id="name" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="kitchen-sensor">
+  <button id="go" type="submit">Claim this node</button>
+  <p class="mut">Your Wi-Fi password is turned into a key here, in this page; the password itself is never sent to the node.</p>
+  <p id="msg"></p>
+</form>
+
+<div class="card hide" id="done">
+  <h2 style="margin:.1rem 0 .5rem;font-size:1.1rem">This node is yours</h2>
+  <p>Save this key now. It is the only copy: anything that wants to manage this node needs it.</p>
+  <pre id="key"></pre>
+  <button id="dl" class="alt" type="button">Save the key as a file</button>
+  <p id="after" class="mut"></p>
+</div>
+</main>
+
+<script id="core">
+/* SHA-1, HMAC, PBKDF2 and a tiny 9P client for /dev/setup. No DOM here: tests/runner.py runs this script under node. */
+'use strict';
+function sha1(data) {
+  const h = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0];
+  const n = data.length, padded = new Uint8Array(((n + 9 + 63) >> 6) << 6);
+  padded.set(data); padded[n] = 0x80;
+  const dv = new DataView(padded.buffer);
+  dv.setUint32(padded.length - 8, Math.floor(n / 0x20000000));
+  dv.setUint32(padded.length - 4, (n << 3) >>> 0);
+  const w = new Uint32Array(80), rol = (x, r) => (x << r) | (x >>> (32 - r));
+  for (let off = 0; off < padded.length; off += 64) {
+    for (let i = 0; i < 16; i++) w[i] = dv.getUint32(off + 4 * i);
+    for (let i = 16; i < 80; i++) w[i] = rol(w[i-3] ^ w[i-8] ^ w[i-14] ^ w[i-16], 1);
+    let [a, b, c, d, e] = h;
+    for (let i = 0; i < 80; i++) {
+      const f = i < 20 ? (b & c) | (~b & d) : i < 40 ? b ^ c ^ d : i < 60 ? (b & c) | (b & d) | (c & d) : b ^ c ^ d;
+      const k = i < 20 ? 0x5A827999 : i < 40 ? 0x6ED9EBA1 : i < 60 ? 0x8F1BBCDC : 0xCA62C1D6;
+      const t = (rol(a, 5) + f + e + k + w[i]) | 0;
+      e = d; d = c; c = rol(b, 30); b = a; a = t;
+    }
+    h[0] = (h[0] + a) | 0; h[1] = (h[1] + b) | 0; h[2] = (h[2] + c) | 0; h[3] = (h[3] + d) | 0; h[4] = (h[4] + e) | 0;
+  }
+  const out = new Uint8Array(20), o = new DataView(out.buffer);
+  for (let i = 0; i < 5; i++) o.setUint32(4 * i, h[i] >>> 0);
+  return out;
+}
+function cat(...parts) {
+  const out = new Uint8Array(parts.reduce((s, p) => s + p.length, 0));
+  let o = 0; for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
+}
+function hmacSha1(key, msg) {
+  if (key.length > 64) key = sha1(key);
+  const ip = new Uint8Array(64).fill(0x36), op = new Uint8Array(64).fill(0x5c);
+  for (let i = 0; i < key.length; i++) { ip[i] ^= key[i]; op[i] ^= key[i]; }
+  return sha1(cat(op, sha1(cat(ip, msg))));
+}
+/* PBKDF2-HMAC-SHA1 (RFC 8018): what WPA2 does to a passphrase, with the SSID as salt. */
+function pbkdf2Sha1(pass, salt, iterations, dkLen) {
+  const out = new Uint8Array(dkLen);
+  for (let block = 1, off = 0; off < dkLen; block++, off += 20) {
+    let u = hmacSha1(pass, cat(salt, Uint8Array.of(block >>> 24, block >>> 16, block >>> 8, block)));
+    const t = u.slice();
+    for (let i = 1; i < iterations; i++) { u = hmacSha1(pass, u); for (let j = 0; j < 20; j++) t[j] ^= u[j]; }
+    out.set(t.subarray(0, Math.min(20, dkLen - off)), off);
+  }
+  return out;
+}
+const enc = new TextEncoder(), dec = new TextDecoder();
+function toHex(b) { return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join(''); }
+function wpaPsk(passphrase, ssid) { return pbkdf2Sha1(enc.encode(passphrase), enc.encode(ssid), 4096, 32); }
+
+/* 9P, unauthenticated, to the one file a node opens to its own setup network. */
+class W { constructor() { this.a = []; }
+  u8(v) { this.a.push(v & 255); return this; } u16(v) { return this.u8(v).u8(v >> 8); }
+  u32(v) { return this.u16(v & 0xffff).u16(v >>> 16); } u64(v) { return this.u32(v % 4294967296).u32(Math.floor(v / 4294967296)); }
+  str(s) { const b = enc.encode(s); this.u16(b.length); for (const x of b) this.a.push(x); return this; }
+  bytes(b) { for (const x of b) this.a.push(x); return this; } done() { return Uint8Array.from(this.a); } }
+class SetupLink {
+  constructor(url) { this.url = url; this.tag = 1; this.q = Promise.resolve(); }
+  connect() {
+    return new Promise((res, rej) => {
+      const ws = this.ws = new WebSocket(this.url, '9p'); ws.binaryType = 'arraybuffer';
+      ws.onopen = () => res(); ws.onerror = () => rej(new Error('cannot reach the node'));
+      ws.onclose = () => { this.closed = true; if (this.cur) this.cur.rej(new Error('connection closed')); };
+      ws.onmessage = (ev) => { if (this.cur) this.cur.res(new Uint8Array(ev.data)); };
+    });
+  }
+  close() { try { this.ws.close(); } catch (e) { /* gone */ } }
+  rpc(type, body) {
+    const run = () => new Promise((res, rej) => {
+      if (this.closed) return rej(new Error('connection closed'));
+      const tag = this.tag++, n = 7 + body.length, m = new Uint8Array(n), dv = new DataView(m.buffer);
+      dv.setUint32(0, n, true); m[4] = type; dv.setUint16(5, tag, true); m.set(body, 7);
+      const timer = setTimeout(() => { this.cur = null; rej(new Error('the node did not answer')); }, 15000);
+      this.cur = { res: (r) => { clearTimeout(timer); this.cur = null;
+        if (r[4] === 107) { const l = r[7] | (r[8] << 8); rej(new Error(dec.decode(r.subarray(9, 9 + l)))); } else res(r); },
+        rej: (e) => { clearTimeout(timer); rej(e); } };
+      this.ws.send(m);
+    });
+    const p = this.q.then(run, run); this.q = p.catch(() => {}); return p;
+  }
+  /* Version, attach to /dev/setup with no authentication, open it. */
+  async open() {
+    await this.rpc(100, new W().u32(4096).str('9P2000').done());
+    await this.rpc(104, new W().u32(1).u32(0xFFFFFFFF).str('setup').str('/dev/setup').done());
+    await this.rpc(110, new W().u32(1).u32(2).u16(0).done());
+    await this.rpc(112, new W().u32(2).u8(2).done());          // ORDWR
+  }
+  async read() {
+    const r = await this.rpc(116, new W().u32(2).u64(0).u32(1000).done());
+    const n = r[7] | (r[8] << 8) | (r[9] << 16) | (r[10] << 24);
+    const t = dec.decode(r.subarray(11, 11 + n)), kv = {};
+    t.split('\n').forEach((l) => { const i = l.indexOf('='); if (i > 0) kv[l.slice(0, i)] = l.slice(i + 1); });
+    return kv;
+  }
+  async write(text) { const d = enc.encode(text); await this.rpc(118, new W().u32(2).u64(0).u32(d.length).bytes(d).done()); }
+}
+/* The claim line the node parses (kernel/setup.c): the SSID as hex, because a name may hold spaces. */
+function claimLine(secret, keyHex, name, ssid, pskHex) {
+  return 'claim ' + secret + ' ' + keyHex + (name ? ' name ' + name : '') + (ssid ? ' wlanhex ' + toHex(enc.encode(ssid)) + ' ' + pskHex : '');
+}
+if (typeof module !== 'undefined') module.exports = { sha1, hmacSha1, pbkdf2Sha1, wpaPsk, toHex, claimLine, SetupLink };
+</script>
+
+<script id="ui">
+'use strict';
+if (typeof document !== 'undefined') (() => {
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const say = (t, cls) => { $('msg').textContent = t; $('msg').className = cls || ''; };
+  const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  fetch('/board', { cache: 'no-store' }).then((r) => r.text()).then((t) => {
+    const kv = {}; t.split('\n').forEach((l) => { const i = l.indexOf('='); if (i > 0) kv[l.slice(0, i)] = l.slice(i + 1); });
+    if (kv.preset) $('board').innerHTML = esc(kv.name || kv.board) + ' &middot; ' + esc(kv.hardware) + ' &middot; uid ' + esc(kv.uid);
+    if (kv.name) document.title = 'Set up ' + kv.name;
+  }).catch(() => {});
+
+  $('form').onsubmit = async (ev) => {
+    ev.preventDefault();
+    const secret = $('secret').value.trim(), ssid = $('ssid').value, pass = $('pass').value, name = $('name').value.trim();
+    if (!secret) return say('Enter the setup secret from the label.', 'err');
+    if (ssid && (pass.length < 8 || pass.length > 63)) return say('A Wi-Fi password is 8 to 63 characters.', 'err');
+    if (!ssid && pass) return say('Enter the network name as well, or clear the password.', 'err');
+    $('go').disabled = true;
+    let link;
+    try {
+      say('Working out your Wi-Fi key…');
+      await pause(60);                                        // let the page paint before the key derivation holds it
+      const psk = ssid ? toHex(wpaPsk(pass, ssid)) : '';
+      const key = new Uint8Array(32); crypto.getRandomValues(key);
+      const keyHex = toHex(key);
+      say('Claiming…');
+      link = new SetupLink('ws://' + location.host + '/9p');
+      await link.connect(); await link.open();
+      await link.write(claimLine(secret, keyHex, name, ssid, psk));
+      let res = '';
+      for (let i = 0; i < 60; i++) {
+        await pause(500);
+        const kv = await link.read();
+        res = kv.result || '';
+        if (res && res !== 'pending') break;
+      }
+      if (!/^ok/.test(res)) { say('The node said: ' + (res || 'nothing') + (/wrong setup secret/.test(res) ? ' Check the label.' : ''), 'err'); $('go').disabled = false; return; }
+      $('form').classList.add('hide'); $('done').classList.remove('hide');
+      $('key').textContent = keyHex;
+      $('after').textContent = ssid ? 'The node is leaving this setup network now and joining "' + ssid + '". Reconnect this device to your own Wi-Fi.'
+                                    : 'The node is yours. It has no Wi-Fi of its own yet; give it one with the key above.';
+      $('dl').onclick = () => {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([keyHex + '\n'], { type: 'text/plain' }));
+        a.download = (name || 'lugalos') + '-owner.key'; a.click();
+      };
+    } catch (e) { say(e.message, 'err'); $('go').disabled = false; }
+    finally { if (link) link.close(); }
+  };
+})();
+</script>
+</body>
+</html>

@@ -918,6 +918,29 @@ set(SOURCES
     user/lisp/lisp.c
 )
 
+# The setup page, inside the image (52.12): an unclaimed node serves it whatever its filesystems hold. Only a
+# board that offers network claiming carries it. (This file reads board files as scripts elsewhere; here one
+# line of it is all that is needed.)
+set(LUGALOS_NETWORK_CLAIM FALSE)
+if(DEFINED LUGALOS_BOARD_FILE)
+    file(STRINGS ${LUGALOS_BOARD_FILE} _claim_line REGEX "^set\\(CONFIG_NETWORK_CLAIM +1\\)")
+    if(_claim_line)
+        set(LUGALOS_NETWORK_CLAIM TRUE)
+    endif()
+endif()
+if(LUGALOS_NETWORK_CLAIM)
+    add_custom_command(
+        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/setup_page.c
+        COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_page.py
+                ${CMAKE_CURRENT_BINARY_DIR}/setup_page.c
+                ${CMAKE_CURRENT_SOURCE_DIR}/tools/web/setup.html g_setup_page
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_page.py
+                ${CMAKE_CURRENT_SOURCE_DIR}/tools/web/setup.html
+        COMMENT "Embedding the setup page"
+    )
+    list(APPEND SOURCES ${CMAKE_CURRENT_BINARY_DIR}/setup_page.c)
+endif()
+
 # Optional subsystems (F1/F2, ): each is a
 # self-contained leaf with exactly one outside touchpoint, gated to match in
 # lisp.c/shell.c via the CONFIG_ENABLE_CC/CONFIG_ENABLE_ED generated defines.

@@ -5609,6 +5609,157 @@ def test_protected_sessions(elf_path: Path, img_path: Path, arch_name: str) -> t
         id_img.unlink(missing_ok=True)
 
 
+def test_setup_page_and_claim(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """52.12: the setup page as a phone sees it, and a claim made by the page's own code.
+
+    The setup access point cannot exist under QEMU, so the setup network is named from the console (`setup net`)
+    as a wired setup network would be: the peer is the host through slirp, 10.0.2.2. Checks: off that network
+    the claim door is shut and the page is the admin page; on it, the setup page is served at the node's own
+    address, a captive-portal probe or a foreign Host is redirected there, and a claim made by the page's
+    JavaScript (key derived in the browser: PBKDF2 against Python's own) over an unauthenticated WebSocket is
+    accepted once. The key it returns then authenticates as the owner, with admin rights, and a second claim is
+    refused."""
+    import shutil
+    import socket as _socket
+    import subprocess as _sp
+    import tempfile
+    import hashlib
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "host" / "p9lib" / "src"))
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    import p9lib
+    import provision
+
+    name = "The Setup Page, Captive Redirects, And A Claim From The Page's Own Code (52.12)"
+    node = shutil.which("node")
+    if not node:
+        return (name, True, "SKIPPED (no node)")
+    arch_img = img_path.with_name(f"test_{arch_name}_setuppage_sd.img")
+    shutil.copyfile(img_path, arch_img)
+    id_img = img_path.with_name(f"test_{arch_name}_setuppage_id.img")
+    secret = "ABCD-EFGH-JKMN"
+    id_img.write_bytes(provision.build_record([
+        (provision.FIELD_UID, bytes.fromhex("c1c2c3c4c5c6c7c8")),
+        (provision.FIELD_NAME, b"setuptest"),
+        (provision.FIELD_SETUP_SECRET, secret.encode()),
+    ]))
+    pr = _socket.socket()
+    pr.bind(("127.0.0.1", 0))
+    port = pr.getsockname()[1]
+    pr.close()
+
+    def http(raw: bytes) -> bytes:
+        s = _socket.create_connection(("127.0.0.1", port), timeout=15.0)
+        s.sendall(raw)
+        out = b""
+        try:
+            while True:
+                d = s.recv(65536)
+                if not d:
+                    break
+                out += d
+        except OSError:
+            pass
+        s.close()
+        return out
+
+    page = (Path(__file__).resolve().parent.parent / "tools" / "web" / "setup.html").read_text()
+    core = re.search(r'<script id="core">\n(.*?)</script>', page, re.S)
+    if not core:
+        return (name, False, "tools/web/setup.html has no <script id=\"core\">")
+    session = QemuSession(elf_path, arch_img, arch_name)
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            cjs = Path(td) / "core.js"
+            cjs.write_text(core.group(1))
+            checker = str(Path(__file__).resolve().parent / "web" / "setup_core_check.js")
+
+            def claim(ssid: str, pw: str, nm: str) -> subprocess.CompletedProcess:
+                return _sp.run([node, checker, str(cjs), "127.0.0.1", str(port), secret, ssid, pw, nm],
+                               capture_output=True, text=True, timeout=120)
+
+            r = _sp.run([node, checker, str(cjs)], capture_output=True, text=True, timeout=60)
+            if r.returncode != 0 or "setup core: ok" not in r.stdout:
+                return (name, False, f"the page's crypto failed its vectors:\n{(r.stdout + r.stderr)[-500:]}")
+
+            session.start(identity_img_path=id_img, extra_qemu_args=[
+                "-netdev", f"user,id=n0,hostfwd=tcp:127.0.0.1:{port}-10.0.2.15:80",
+                "-device", "virtio-net-device,netdev=n0",
+            ])
+            ok, log = session.send_and_expect("", r"Type 'help' for commands", timeout=8.0)
+            if not ok:
+                return (name, False, f"guest did not reach the shell: {log[-400:]}")
+            session.send_and_expect('lisp\n(net-config "10.0.2.15" "255.255.255.0" "10.0.2.2")\nexit', r"\[Net\] 10\.0\.2\.15", timeout=6.0)
+            ok, log = session.send_and_expect("httpd start", r"httpd: (running|could)", timeout=6.0)
+            if "running" not in log:
+                return (name, False, f"httpd did not start: {log[-300:]}")
+
+            # 1. Off the setup network: the admin page, and a shut door.
+            adm = http(b"GET / HTTP/1.1\r\nHost: 192.168.4.1\r\n\r\n")
+            if b"LugalOS admin" not in adm or b"Set up this node" in adm:
+                return (name, False, f"off the setup network GET / is not the admin page: {adm[:120]!r}")
+            r = claim("Net", "password1", "x")
+            if "result: ok" in r.stdout:
+                return (name, False, "a claim was accepted from outside the setup network")
+
+            # 2. On it: the page, and the captive-portal behaviour.
+            ok, log = session.send_and_expect("setup net 10.0.2.0/24", r"setup net: 10\.0\.2\.0/24", timeout=5.0)
+            if not ok:
+                return (name, False, f"`setup net` did not take: {log[-200:]}")
+            pg = http(b"GET / HTTP/1.1\r\nHost: 192.168.4.1\r\n\r\n")
+            body = pg.split(b"\r\n\r\n", 1)[1] if b"\r\n\r\n" in pg else b""
+            m = re.search(rb"Content-Length: (\d+)", pg)
+            if not pg.startswith(b"HTTP/1.1 200") or body != page.encode() or not m or int(m.group(1)) != len(body):
+                return (name, False, f"the setup page was not served intact: {pg[:140]!r}")
+            for raw, what in ((b"GET /generate_204 HTTP/1.1\r\nHost: connectivitycheck.gstatic.com\r\n\r\n", "an Android probe"),
+                              (b"GET /hotspot-detect.html HTTP/1.1\r\nHost: captive.apple.com\r\n\r\n", "an iOS probe"),
+                              (b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n", "a foreign Host"),
+                              (b"GET /favicon.ico HTTP/1.1\r\nHost: 192.168.4.1\r\n\r\n", "a favicon")):
+                rd = http(raw)
+                if not rd.startswith(b"HTTP/1.1 302") or b"Location: http://192.168.4.1/" not in rd:
+                    return (name, False, f"{what} was not redirected to the setup page: {rd[:140]!r}")
+            if b"preset=" not in http(b"GET /board HTTP/1.1\r\nHost: x\r\n\r\n"):
+                return (name, False, "/board is gone on the setup network")
+
+            # 3. The claim, made by the page's own code. A wrong secret first: counted, and the window stays.
+            bad = _sp.run([node, checker, str(cjs), "127.0.0.1", str(port), "WRONG-SECRET1", "Net", "password1", "x"],
+                          capture_output=True, text=True, timeout=120)
+            if "wrong setup secret" not in bad.stdout:
+                return (name, False, f"a wrong secret was not refused by the node:\n{(bad.stdout + bad.stderr)[-300:]}")
+            ssid, pw = "My Home Net", "correct horse battery"
+            r = claim(ssid, pw, "claimed-node")
+            if "state before: setup" not in r.stdout or "result: ok: claimed" not in r.stdout:
+                return (name, False, f"the claim from the page's code failed:\n{(r.stdout + r.stderr)[-500:]}")
+            key = bytes.fromhex(re.search(r"key: ([0-9a-f]{64})", r.stdout).group(1))
+
+            # 4. What the node stored: the state, the name, and the Wi-Fi key derived in the browser.
+            ok, log = session.send_and_expect("setup", r"secs_left", timeout=6.0)
+            if "setup: claimed" not in log:
+                return (name, False, f"the node is not claimed after the claim:\n{log[-300:]}")
+            psk = hashlib.pbkdf2_hmac("sha1", pw.encode(), ssid.encode(), 4096, 32)
+            fp = hashlib.sha256(psk).hexdigest()[:16]
+            ok, log = session.send_and_expect("cat /proc/node", r"wlan psk fingerprint", timeout=6.0)
+            if f"wlan ssid: {ssid}" not in log or f"wlan psk fingerprint: {fp}" not in log or "claimed-node" not in log:
+                return (name, False, f"the node did not store what the page derived (want ssid {ssid!r}, psk fingerprint {fp}):\n{log[-400:]}")
+
+            # 5. The key it returned is the owner's: an admin who can read the owner part, over a protected session.
+            with p9lib.Session(p9lib.connect_ws("127.0.0.1", port), uname="owner", key=key) as own:
+                text = own.read("/dev/owner").decode()
+                if "name=claimed-node" not in text or "grant=owner / admin" not in text:
+                    return (name, False, f"/dev/owner as the new owner:\n{text}")
+
+            # 6. Claimed once: a second claim finds the door shut.
+            again = claim("Other", "password2", "y")
+            if "result: ok" in again.stdout or again.returncode == 0:
+                return (name, False, f"a second claim was not refused:\n{again.stdout[-300:]}")
+        return (name, True, "page and probes served, wrong secret refused, claimed from the page's code, key and Wi-Fi key as derived, second claim refused")
+    except Exception as e:  # noqa: BLE001
+        return (name, False, f"{type(e).__name__}: {e}")
+    finally:
+        session.close()
+        arch_img.unlink(missing_ok=True)
+        id_img.unlink(missing_ok=True)
+
+
 def test_network_claim(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
     """52.10: a node is claimed once, by a client that knows its setup secret, and an owner reset
     returns it to unclaimed with its factory part intact.
@@ -10030,6 +10181,7 @@ def main() -> int:
         _run_single(test_identity_altitude(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_grants_in_record(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_network_claim(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_setup_page_and_claim(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_httpd_websocket_9p(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_protected_sessions(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_wlan_credential_roundtrip(rv64_elf, img_for("rv64"), "rv64"))
