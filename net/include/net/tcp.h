@@ -101,6 +101,21 @@ typedef struct tcp_stream {
     bool     open;
 } tcp_stream_t;
 
+/* --- The passive open, as a stream (52.11) ---
+ *
+ * A server task, not the network pump, owns these connections: it listens on a port, accepts
+ * what has connected, reads and writes bytes on its own schedule, and closes. The pump only
+ * acknowledges and retransmits, so no HTTP or VFS work ever runs on its call stack. The slots
+ * are the same TCP_MAX_CONNS the 9P listener and the dialled streams share.
+ *
+ * A stream has no keepalive: the owner must close one whose peer has gone quiet (a WebSocket
+ * ping that goes unanswered ends in the retransmission limit's reset). */
+int  tcp_stream_listen(uint16_t port);
+void tcp_stream_unlisten(uint16_t port);
+/* 1 and `s` filled in (and the peer's address in `peer_ip`, if given) when a connection is
+ * waiting on `port`; 0 when none is. Non-blocking. */
+int  tcp_stream_accept(uint16_t port, tcp_stream_t *s, uint8_t peer_ip[IPV4_LEN]);
+
 /* Dials `ip`:`port` into a caller-supplied handle. The stream is not usable
  * until tcp_stream_ready() says so. Returns 0, or -1 when there is no address
  * configured, no free slot, or no memory. */

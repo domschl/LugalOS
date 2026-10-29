@@ -5108,6 +5108,158 @@ def test_identity_altitude(elf_path: Path, img_path: Path, arch_name: str) -> tu
         session.close()
 
 
+def test_httpd_websocket_9p(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """52.11: the admin web server. A page over HTTP, and 9P over a WebSocket on the same port.
+
+    The browser's protocol is driven from Python (p9lib.connect_ws): the same Tauth/Tattach as every
+    other link, on a carrier of masked binary frames. Checks: the page and a 404; a malformed upgrade
+    is refused; an attach without a key is refused; with the key a file reads (a message bigger than
+    one TCP segment); a web session is read-only by default and a write is refused with a reason,
+    until the console allows it; a session that ends releases its slot and its fids; and a client that
+    sends garbage frames is dropped without harm to the next."""
+    import shutil
+    import socket as _socket
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "host" / "p9lib" / "src"))
+    import p9lib
+
+    name = "Admin Web Server: Page, And 9P Over A WebSocket, Read-Only Until Allowed (52.11)"
+    arch_img = img_path.with_name(f"test_{arch_name}_httpd_sd.img")
+    shutil.copyfile(img_path, arch_img)
+    key = bytes(range(32, 48))
+
+    probe = _socket.socket()
+    probe.bind(("127.0.0.1", 0))
+    port = probe.getsockname()[1]
+    probe.close()
+
+    def http(raw: bytes) -> bytes:
+        s = _socket.create_connection(("127.0.0.1", port), timeout=15.0)
+        s.sendall(raw)
+        out = b""
+        try:
+            while True:
+                d = s.recv(65536)
+                if not d:
+                    break
+                out += d
+        except OSError:
+            pass
+        s.close()
+        return out
+
+    session = QemuSession(elf_path, arch_img, arch_name)
+    try:
+        session.start(extra_qemu_args=[
+            "-netdev", f"user,id=n0,hostfwd=tcp:127.0.0.1:{port}-10.0.2.15:80",
+            "-device", "virtio-net-device,netdev=n0",
+        ])
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+        ok, log = session.send_and_expect(
+            'lisp\n(net-config "10.0.2.15" "255.255.255.0" "10.0.2.2")\nexit', r"\[Net\] 10\.0\.2\.15", timeout=6.0)
+        if not ok:
+            return (name, False, f"(net-config) did not take: {log[-400:]}")
+        ok, log = session.send_and_expect(f"p9key {key.hex()}", r"console key set", timeout=5.0)
+        ok, log = session.send_and_expect("httpd start", r"httpd: (running|could not)", timeout=6.0)
+        if "running" not in log:
+            return (name, False, f"httpd did not start: {log[-300:]}")
+
+        # 1. The page, and a 404.
+        page = http(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+        if not page.startswith(b"HTTP/1.1 200") or b"LugalOS" not in page:
+            return (name, False, f"GET / answered {page[:120]!r}")
+        want_len = re.search(rb"Content-Length: (\d+)", page)
+        body = page.split(b"\r\n\r\n", 1)[1]
+        if not want_len or int(want_len.group(1)) != len(body):
+            return (name, False, "the page's Content-Length does not match its body")
+        nf = http(b"GET /nothing HTTP/1.1\r\nHost: x\r\n\r\n")
+        if not nf.startswith(b"HTTP/1.1 404"):
+            return (name, False, f"GET /nothing answered {nf[:60]!r}")
+        bad = http(b"GET /9p HTTP/1.1\r\nHost: x\r\n\r\n")
+        if not bad.startswith(b"HTTP/1.1 400"):
+            return (name, False, f"/9p without an upgrade answered {bad[:60]!r}")
+        post = http(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
+        if not post.startswith(b"HTTP/1.1 405"):
+            return (name, False, f"POST answered {post[:60]!r}")
+
+        # 2. An attach with no key is refused.
+        anon = p9lib.connect_ws("127.0.0.1", port)
+        try:
+            anon.version()
+            anon.attach(1)
+            return (name, False, "an unauthenticated attach succeeded over a WebSocket")
+        except Exception:
+            pass
+        finally:
+            anon.close()
+
+        # 3. With the key: a read bigger than one message, and the namespace.
+        with p9lib.Session(p9lib.connect_ws("127.0.0.1", port), key=key) as sess:
+            if b"LugalOS" not in sess.read("/proc/version"):
+                return (name, False, "/proc/version did not read over the WebSocket")
+            names = {st.name for st in sess.listdir("/")}
+            if not {"proc", "sd0"} <= names:
+                return (name, False, f"ls / is missing mounts: {sorted(names)}")
+            init = sess.read("/sd0/system/etc/init.lisp")
+            if len(init) != len(expected_init_lisp()):
+                return (name, False, f"init.lisp came back {len(init)} bytes")
+            # 4. Read-only by default.
+            try:
+                sess.write("/ram0/webtest.txt", b"nope", create=True)
+                return (name, False, "a web session wrote while writes were not allowed")
+            except Exception as e:  # noqa: BLE001
+                if "read-only" not in str(e) and "read only" not in str(e):
+                    return (name, False, f"the refusal gave no reason: {e}")
+
+        # 5. Allowed at the console, a new session may write.
+        session.send_and_expect("httpd write on", r"ALLOWED", timeout=5.0)
+        with p9lib.Session(p9lib.connect_ws("127.0.0.1", port), key=key) as sess:
+            sess.write("/ram0/webtest.txt", b"written over a websocket", create=True)
+            if sess.read("/ram0/webtest.txt") != b"written over a websocket":
+                return (name, False, "the write did not read back")
+        session.send_and_expect("httpd write off", r"read-only", timeout=5.0)
+
+        # 6. Garbage frames drop that client only.
+        s = _socket.create_connection(("127.0.0.1", port), timeout=15.0)
+        s.sendall(b"GET /9p HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                  b"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n")
+        s.recv(1024)
+        s.sendall(b"\xc2\x80\x00\x00\x00\x00")           # a reserved bit, masked, empty
+        end = b""
+        try:
+            while True:
+                d = s.recv(1024)
+                if not d:
+                    break
+                end += d
+        except OSError:
+            pass
+        s.close()
+        if not end.startswith(b"\x88"):
+            return (name, False, f"a reserved-bit frame was not answered with a close: {end[:8]!r}")
+        with p9lib.Session(p9lib.connect_ws("127.0.0.1", port), key=key) as sess:
+            if b"LugalOS" not in sess.read("/proc/version"):
+                return (name, False, "the server did not survive a bad client")
+
+        # 7. Nothing left behind.
+        ok, log = session.send_and_expect("httpd status", r"writes:", timeout=6.0)
+        m = re.search(r"sessions: (\d+) of", log)
+        if not m or int(m.group(1)) != 0:
+            time.sleep(1.0)
+            ok, log = session.send_and_expect("httpd status", r"writes:", timeout=6.0)
+            m = re.search(r"sessions: (\d+) of", log)
+        if not m or int(m.group(1)) != 0:
+            return (name, False, f"sessions left open after every client ended:\n{log[-300:]}")
+        ok, log = session.send_and_expect("httpd stop", r"httpd: stopped", timeout=6.0)
+        return (name, True, "page, 404/400/405, anonymous attach refused, read-only by default, write when allowed, bad frame survived")
+    except Exception as e:  # noqa: BLE001
+        return (name, False, f"{type(e).__name__}: {e}")
+    finally:
+        session.close()
+        arch_img.unlink(missing_ok=True)
+
+
 def test_network_claim(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
     """52.10: a node is claimed once, by a client that knows its setup secret, and an owner reset
     returns it to unclaimed with its factory part intact.
@@ -9529,6 +9681,7 @@ def main() -> int:
         _run_single(test_identity_altitude(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_grants_in_record(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_network_claim(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_httpd_websocket_9p(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_wlan_credential_roundtrip(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_network_autoconfig(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_netif_virtio_net(rv64_elf, img_for("rv64"), "rv64"))
@@ -9579,6 +9732,7 @@ def main() -> int:
         _run_single(test_identity_toolset(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_grants_in_record(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_no_network_claim(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_httpd_websocket_9p(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_wlan_credential_roundtrip(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_network_autoconfig(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_netif_virtio_net(rv32_elf, img_for("rv32"), "rv32"))

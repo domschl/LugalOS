@@ -52,6 +52,8 @@ bool     p9_is_connected(void);
 typedef enum {
     P9_AUTH_NOT_REQUIRED = 0,   /* a local channel, or an attached cable */
     P9_AUTH_REQUIRED     = 1,   /* anything reachable over a network */
+    P9_AUTH_REQUIRED_RO  = 2,   /* as REQUIRED, and every fid is read-only whatever the grant says:
+                                 * a link with no integrity protection (plain HTTP, 52.11) */
 } p9_auth_policy_t;
 
 /* Bounds for the in-kernel fid table and Twalk's name list -- both are
