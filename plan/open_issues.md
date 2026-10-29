@@ -94,9 +94,14 @@ duration and first failure.
 Memory]` printed, and nothing followed for 22 minutes with one `qemu-system-riscv64` running. No
 `[Stuck Guest]` report came, so the runner was waiting on something other than a silent console. Stopped by
 hand. The same test alone passed, and two full runs (one before, one after) passed 527/527 and 529/529.
-**What would settle it:** the next occurrence, before stopping it: the guest's `/proc/ps` and
-`/proc/kmsg` over its console, and `py-spy dump` (or a SIGUSR1 traceback) of the runner to see which wait
-it is in.
+**Ruled out:** the guest (the target passes alone, 8 of 8 in a loop with a 10-minute traceback timer, and
+in 5 full runs since); the host-side patterns (the multi-`.*` ones are literal-anchored and cheap, and
+every wait in `QemuSession` has a deadline). Not captured, because it was stopped by hand first: whether the
+runner was spinning or sleeping.
+**What would settle it:** `tests/runner.py` now prints the stack of every thread to stderr if it makes no
+interaction with a guest for 7 minutes, and again every 7 minutes (`WATCHDOG_S`). On the next occurrence,
+look there before stopping it, and note the runner's CPU use (`ps -o pcpu`): a spin points at a regex, a
+sleep at a wait without a deadline.
 
 ## A kernel wild jump into `.rodata` during `exec` (QEMU, once)
 
