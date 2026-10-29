@@ -105,6 +105,8 @@ static void setup_ap_task(void *arg) {
     }
 }
 
+void radio_credentials_changed(void) { cyw43_creds_changed(); }
+
 void setup_ap_start(void) {
     if (task_create_sized("setupap", setup_ap_task, NULL, 4) < 0) printk("[SetupAP] could not start the task\n");
 }

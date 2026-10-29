@@ -1113,6 +1113,18 @@ deferred without blocking anything after it.
     long press resets the node. Phase 21's I6 holds: no passphrase in any
     frame (checked with a capture).
 
+  * **Status 2026-10-29 (Pico 2 W):** the CYW43 access point (`cyw43_ap_start()`),
+    `net/dhcpd.c` (four leases, RFC 8910 option) and the catch-all DNS responder,
+    `kernel/setup_ap.c` (raises `LugalOS-XXXX` with the window, tears it down and
+    restarts the station supervisor), the captive redirects in `httpd`, the setup
+    page (`tools/web/setup.html`, embedded in the image because `/flash0` is
+    full), the claim over an unauthenticated WebSocket from the setup network
+    only, and the QEMU test of the page's own code are DONE. Checked on
+    hardware: a laptop joined the WPA2 network, got a lease with the node as
+    router and DNS, and pinged it. **Open:** the scan list (an access point
+    cannot scan: it needs a scan before the AP comes up), phones, the home
+    Wi-Fi join after a claim end to end, and a packet capture for I6.
+
 * **52.13 C6 SoftAP for P4 boards** *(deferrable).* *Board: the NANO, then
   the LCD-7B and the Tab5.*
   * Port the WPA2 authenticator (IDF `wpa_supplicant`'s `src/ap/` +

@@ -399,6 +399,7 @@ int owner_ctl_write(const char *buf, uint32_t len) { (void)buf; (void)len; retur
 node_id_result_t setup_reset_owner(void) {
     node_id_result_t rc = node_identity_reset_owner();
     if (rc == NODE_ID_OK) {
+        radio_credentials_changed();
         p9_grants_cache_clear();
         setup_stop();
         printk("[Setup] owner part wiped: the node is unclaimed\n");

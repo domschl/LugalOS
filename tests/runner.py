@@ -5666,6 +5666,72 @@ def test_setup_page_and_claim(elf_path: Path, img_path: Path, arch_name: str) ->
     core = re.search(r'<script id="core">\n(.*?)</script>', page, re.S)
     if not core:
         return (name, False, "tools/web/setup.html has no <script id=\"core\">")
+    import threading
+
+    class Recorder(threading.Thread):
+        """A TCP relay in front of the guest's web port that keeps every byte the client sends."""
+        def __init__(self, target_port: int) -> None:
+            super().__init__(daemon=True)
+            self.target = target_port
+            self.srv = _socket.socket()
+            self.srv.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+            self.srv.bind(("127.0.0.1", 0))
+            self.srv.listen(4)
+            self.port = self.srv.getsockname()[1]
+            self.sent = b""
+            self.live = True
+
+        def run(self) -> None:
+            while self.live:
+                try:
+                    c, _ = self.srv.accept()
+                except OSError:
+                    return
+                g = _socket.create_connection(("127.0.0.1", self.target), timeout=15)
+                threading.Thread(target=self.pump, args=(c, g, True), daemon=True).start()
+                threading.Thread(target=self.pump, args=(g, c, False), daemon=True).start()
+
+        def pump(self, src, dst, record: bool) -> None:
+            try:
+                while True:
+                    d = src.recv(65536)
+                    if not d:
+                        break
+                    if record:
+                        self.sent += d
+                    dst.sendall(d)
+            except OSError:
+                pass
+            finally:
+                for x in (src, dst):
+                    try:
+                        x.shutdown(_socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+
+        def websocket_payloads(self) -> bytes:
+            """Every WebSocket message payload in the recorded stream, unmasked, after each HTTP upgrade request."""
+            out, data = b"", self.sent
+            while b"\r\n\r\n" in data:
+                _, _, data = data.partition(b"\r\n\r\n")
+                while len(data) >= 2:
+                    n, off = data[1] & 0x7F, 2
+                    if n == 126:
+                        n, off = int.from_bytes(data[2:4], "big"), 4
+                    elif n == 127:
+                        n, off = int.from_bytes(data[2:10], "big"), 10
+                    masked = bool(data[1] & 0x80)
+                    mk = data[off:off + 4] if masked else b""
+                    off += 4 if masked else 0
+                    if len(data) < off + n:
+                        break
+                    pl = data[off:off + n]
+                    out += bytes(c ^ mk[i & 3] for i, c in enumerate(pl)) if masked else pl
+                    data = data[off + n:]
+                    if data[:4] == b"GET ":
+                        break
+            return out
+
     session = QemuSession(elf_path, arch_img, arch_name)
     try:
         with tempfile.TemporaryDirectory() as td:
@@ -5726,7 +5792,11 @@ def test_setup_page_and_claim(elf_path: Path, img_path: Path, arch_name: str) ->
             if "wrong setup secret" not in bad.stdout:
                 return (name, False, f"a wrong secret was not refused by the node:\n{(bad.stdout + bad.stderr)[-300:]}")
             ssid, pw = "My Home Net", "correct horse battery"
-            r = claim(ssid, pw, "claimed-node")
+            rec = Recorder(port)
+            rec.start()
+            r = _sp.run([node, checker, str(cjs), "127.0.0.1", str(rec.port), secret, ssid, pw, "claimed-node"],
+                        capture_output=True, text=True, timeout=120)
+            rec.live = False
             if "state before: setup" not in r.stdout or "result: ok: claimed" not in r.stdout:
                 return (name, False, f"the claim from the page's code failed:\n{(r.stdout + r.stderr)[-500:]}")
             key = bytes.fromhex(re.search(r"key: ([0-9a-f]{64})", r.stdout).group(1))
@@ -5740,6 +5810,14 @@ def test_setup_page_and_claim(elf_path: Path, img_path: Path, arch_name: str) ->
             ok, log = session.send_and_expect("cat /proc/node", r"wlan psk fingerprint", timeout=6.0)
             if f"wlan ssid: {ssid}" not in log or f"wlan psk fingerprint: {fp}" not in log or "claimed-node" not in log:
                 return (name, False, f"the node did not store what the page derived (want ssid {ssid!r}, psk fingerprint {fp}):\n{log[-400:]}")
+
+            # 4b. Phase 21's I6: the passphrase never reaches the node. Everything the client sent -- the HTTP request
+            #     and each WebSocket message -- holds the derived key and nothing from which the passphrase follows.
+            seen = rec.sent + rec.websocket_payloads()
+            if pw.encode() in seen or pw.replace(" ", "+").encode() in seen:
+                return (name, False, "the Wi-Fi passphrase crossed the wire")
+            if psk.hex().encode() not in rec.websocket_payloads():
+                return (name, False, "the derived Wi-Fi key was not in the claim (the check of the capture is not looking at the claim)")
 
             # 5. The key it returned is the owner's: an admin who can read the owner part, over a protected session.
             with p9lib.Session(p9lib.connect_ws("127.0.0.1", port), uname="owner", key=key) as own:

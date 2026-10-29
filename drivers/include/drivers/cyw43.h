@@ -59,6 +59,11 @@ bool cyw43_ap_active(void);
 uint32_t cyw43_ap_clients(void);
 void cyw43_sta_hold(bool hold);
 
+/* The identity record's Wi-Fi settings changed -- a claim stored new ones, an owner reset wiped them. A running
+ * supervisor reads them again and rejoins (or leaves, with none); a stopped one is started by
+ * cyw43_autostart_task_start(). */
+void cyw43_creds_changed(void);
+
 /* True once the firmware is uploaded and answering ioctls -- i.e. once
  * cyw43_gspi_probe() has succeeded. Everything else here (join, the LED,
  * the netif) is meaningless before that, so callers can check rather than

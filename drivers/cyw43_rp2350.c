@@ -2772,6 +2772,10 @@ static void wifi_sleep_ms(uint32_t ms) { task_sleep_ms(ms); }
 /* guarded by: single task -- set before the supervisor task is created and cleared by it on the way out; a
  * second start while it runs is refused, so a claim can ask for the supervisor without checking. */
 static volatile bool g_sup_active;
+/* The identity record's Wi-Fi settings changed (a claim, an owner reset): the supervisor reads them again. */
+static volatile bool g_creds_dirty;
+
+void cyw43_creds_changed(void) { g_creds_dirty = true; }
 
 static void cyw43_autostart_body(void *arg) {
     (void)arg;
@@ -2829,6 +2833,23 @@ static void cyw43_autostart_body(void *arg) {
     uint64_t last_probe_ms = 0;
     unsigned probe_fails = 0;
     for (;;) {
+        if (g_creds_dirty) {
+            g_creds_dirty = false;
+            if (!node_wlan_ssid(ssid, sizeof ssid) || !node_wlan_psk(psk)) {
+                /* The settings are gone (an owner reset): a node with no network to join leaves the one it is on. */
+                printk("cyw43: no Wi-Fi settings any more -- leaving\n");
+                (void)cyw43_leave();
+                memset(psk, 0, sizeof psk);
+                g_link_up = false;
+                g_sup_active = false;
+                task_set_exit_status(0);
+                return;
+            }
+            printk("cyw43: new Wi-Fi settings: \"%s\"\n", ssid);
+            g_link_up = false;
+            was_up = false;
+            attempt = 0;
+        }
         if (g_sta_hold) { was_up = false; attempt = 0; wifi_sleep_ms(500); continue; }   /* the radio is an access point */
         if (g_link_up) {
             if (!was_up) {
@@ -3005,7 +3026,7 @@ void cyw43_link_status(cyw43_link_status_t *out) {
 }
 
 int cyw43_autostart_task_start(void) {
-    if (g_sup_active) return 0;
+    if (g_sup_active) { g_creds_dirty = true; return 0; }   /* running: it takes the new settings */
     g_sup_active = true;
     /* Three pages. idstore_read() alone puts a 4 KB record buffer on this
      * stack before anything else happens, and the firmware upload runs on top

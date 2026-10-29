@@ -713,6 +713,9 @@ bool node_wlan_psk(uint8_t out[NODE_WLAN_PSK_LEN]) {
     return idstore_get_field(&rec, IDSTORE_FIELD_WLAN_PSK, out, NODE_WLAN_PSK_LEN) == (int)NODE_WLAN_PSK_LEN;
 }
 
+/* A radio that joins networks learns that the settings it joined with changed (kernel/setup_ap.c); no-op elsewhere. */
+__attribute__((weak)) void radio_credentials_changed(void) { }
+
 node_id_result_t node_identity_set_wlan(const char *ssid, uint32_t ssid_len,
                                         const uint8_t *psk, uint32_t psk_len) {
     if (!ssid || ssid_len == 0 || ssid_len > NODE_WLAN_SSID_MAX) return NODE_ID_ERR_BAD_INPUT;
@@ -720,6 +723,7 @@ node_id_result_t node_identity_set_wlan(const char *ssid, uint32_t ssid_len,
     if (!identity_store_device()) return NODE_ID_ERR_NO_BACKEND;
     identity_patch_t patch = { .ssid = ssid, .ssid_len = ssid_len, .psk = psk, .psk_len = psk_len };
     if (identity_store_write(&patch) != 0) return NODE_ID_ERR_WRITE_FAILED;
+    radio_credentials_changed();
     return NODE_ID_OK;
 }
 
@@ -1039,6 +1043,7 @@ node_id_result_t node_identity_clear_wlan(void) {
     if (!identity_store_device()) return NODE_ID_ERR_NO_BACKEND;
     identity_patch_t patch = { .clear_wlan = true };
     if (identity_store_write(&patch) != 0) return NODE_ID_ERR_WRITE_FAILED;
+    radio_credentials_changed();
     return NODE_ID_OK;
 }
 

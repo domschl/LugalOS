@@ -186,6 +186,10 @@ bool node_wlan_psk(uint8_t out[NODE_WLAN_PSK_LEN]);
  * weak enough to guess produces a PSK indistinguishable from a strong
  * one's). Any existing UID/name/device key on record is carried forward
  * unchanged. */
+/* Called after the stored Wi-Fi settings change (set, cleared, or wiped by an owner reset): a radio that joined with
+ * the old ones joins with the new, or leaves. A no-op where the node has no such radio. */
+void radio_credentials_changed(void);
+
 node_id_result_t node_identity_set_wlan(const char *ssid, uint32_t ssid_len,
                                         const uint8_t *psk, uint32_t psk_len);
 

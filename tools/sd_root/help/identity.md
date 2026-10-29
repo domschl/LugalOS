@@ -72,6 +72,14 @@ The owner key becomes the `owner` admin grant, the window closes, and from then 
 
 The setup secret is the WPA2 key of the node's setup access point (52.12). `tools/provision.py --setup-secret-generate` prints it with the label text and a `WIFI:` QR payload. A build without `CONFIG_NETWORK_CLAIM` has no `/dev/setup`, no `/dev/owner` and no window.
 
+### Claiming a Pico 2 W from a phone
+
+An unclaimed Pico 2 W with a setup secret and no Wi-Fi of its own raises a Wi-Fi network named `LugalOS-XXXX` (XXXX: the last two bytes of its UID, printed on its label by `tools/provision.py`), protected by WPA2 with the **setup secret** as the password. Join it from a phone or a laptop; the address, the name server and the page's address all come from the node (`192.168.4.1`), so the setup page opens by itself where the system checks for a captive portal, or at `http://192.168.4.1/`.
+
+The page asks for the setup secret again (a phone cannot read the Wi-Fi password it joined with), the name and password of **your own** Wi-Fi, and optionally a name for the node. The password is turned into a key in the page (PBKDF2, 4096 rounds, the network name as salt) and only the key is sent. The page makes a random owner key, claims the node with it, and shows the key once with a button to save it as a file: nothing else holds a copy, and it is what `lota`, `p9` and the admin page sign in with (user `owner`). The node then closes its setup network and joins yours. Closing takes about 30 seconds; the radio is reset each way.
+
+The window stays open 15 minutes and closes after five wrong secrets. A node that already has Wi-Fi credentials stored boots as a station and raises no setup network unless asked (`setup start`, or a long press of the board's button). The console command `setup net A.B.C.D/N` names a wired network as the setup network; it is also how the QEMU test reaches the page.
+
 ### Protected sessions, and secrets
 
 Over TCP and WebSocket (no TLS) a client that offers `9P2000.lp` gets an integrity-protected session once it has authenticated; a client that does not gets a read-only one. Integrity is not secrecy: a node refuses to take a WLAN key, a grant's key or a claim over such a link. Set them from the console, a cable or (when it exists) the setup access point. See [protected 9P sessions](protected_9p.md).
