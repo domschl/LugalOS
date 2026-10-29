@@ -1002,6 +1002,13 @@ deferred without blocking anything after it.
     policy. Long press on both boards.
 
 * **52.11 HTTP server, WebSocket, and 9P over WebSocket (plain HTTP).**
+  * **Status 2026-10-29:** the stream listener (`tcp_stream_listen()`/
+    `tcp_stream_accept()`), `net/websocket.c` (+ `tests/host/websocket_host.c`),
+    `net/httpd.c` with `httpd` in the shell, the read-only link property
+    (`P9_AUTH_REQUIRED_RO`), `connect_ws()` in `host/p9lib` and the QEMU test
+    are DONE. The `httpd` task needs 6 stack pages (11 KB high-water on a
+    read). Open: the admin page itself, gzip, the RAM figures on the Pico 2 W,
+    the NANO and browser checks, 52.11b.
   *Boards: QEMU (slirp), the NANO on `eth0`, the Pico 2 W on `wlan0`.*
   * **TCP:** a passive-open stream API (`tcp_stream_listen()` /
     `tcp_stream_accept()`), so a server task owns its connections and the

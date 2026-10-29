@@ -80,6 +80,128 @@ def connect_tcp(host: str, port: int = 564, timeout: float = 30.0) -> P9Client:
     return P9Client(s, framing="raw")
 
 
+class WebSocketAdapter:
+    """A WebSocket (RFC 6455, client side) as the socket-like object P9Client expects: each
+    sendall() is one masked binary frame holding one whole 9P message, and recv() hands back the
+    bytes of the binary messages that arrive, however the peer cut them into frames.
+
+    Control frames are answered here (ping -> pong) and a close frame reads as end of stream."""
+
+    def __init__(self, sock: socket.socket, leftover: bytes = b"") -> None:
+        self._s = sock
+        self._raw = leftover        # bytes off the wire, not yet parsed into frames
+        self._data = b""            # payload bytes ready for the caller
+        self._closed = False
+
+    def _need(self, n: int) -> bool:
+        while len(self._raw) < n:
+            chunk = self._s.recv(65536)
+            if not chunk:
+                return False
+            self._raw += chunk
+        return True
+
+    def _frame(self) -> bool:
+        """Reads one frame; False at end of stream."""
+        if not self._need(2):
+            return False
+        b0, b1 = self._raw[0], self._raw[1]
+        n, off = b1 & 0x7F, 2
+        if n == 126:
+            if not self._need(4):
+                return False
+            n, off = int.from_bytes(self._raw[2:4], "big"), 4
+        elif n == 127:
+            if not self._need(10):
+                return False
+            n, off = int.from_bytes(self._raw[2:10], "big"), 10
+        masked = bool(b1 & 0x80)
+        if masked:
+            off += 4
+        if not self._need(off + n):
+            return False
+        payload = self._raw[off:off + n]
+        if masked:
+            mask = self._raw[off - 4:off]
+            payload = bytes(c ^ mask[i & 3] for i, c in enumerate(payload))
+        self._raw = self._raw[off + n:]
+        op = b0 & 0x0F
+        if op in (0x0, 0x1, 0x2):
+            self._data += payload
+        elif op == 0x9:
+            self._send(0xA, payload)
+        elif op == 0x8:
+            self._closed = True
+            return False
+        return True
+
+    def _send(self, op: int, payload: bytes) -> None:
+        import os
+        mask = os.urandom(4)
+        n = len(payload)
+        hdr = bytes([0x80 | op])
+        if n < 126:
+            hdr += bytes([0x80 | n])
+        elif n <= 0xFFFF:
+            hdr += bytes([0x80 | 126]) + n.to_bytes(2, "big")
+        else:
+            hdr += bytes([0x80 | 127]) + n.to_bytes(8, "big")
+        body = bytes(c ^ mask[i & 3] for i, c in enumerate(payload))
+        self._s.sendall(hdr + mask + body)
+
+    def sendall(self, data: bytes) -> None:
+        self._send(0x2, bytes(data))
+
+    def recv(self, n: int) -> bytes:
+        while not self._data:
+            if self._closed or not self._frame():
+                return b""
+        out, self._data = self._data[:n], self._data[n:]
+        return out
+
+    def settimeout(self, t: float) -> None:
+        self._s.settimeout(t)
+
+    def close(self) -> None:
+        try:
+            if not self._closed:
+                self._send(0x8, (1000).to_bytes(2, "big"))
+        except OSError:
+            pass
+        self._s.close()
+
+
+def connect_ws(host: str, port: int = 80, path: str = "/9p", timeout: float = 30.0) -> P9Client:
+    """9P over a WebSocket: the admin web server's transport (net/httpd.c). The same server, the
+    same Tauth/Tattach, the same P9Client; only the carrier differs."""
+    import base64
+    import hashlib
+    import os
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    s.connect((host, port))
+    key = base64.b64encode(os.urandom(16)).decode()
+    s.sendall((f"GET {path} HTTP/1.1\r\nHost: {host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+               f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: 9p\r\n\r\n").encode())
+    buf = b""
+    while b"\r\n\r\n" not in buf:
+        chunk = s.recv(4096)
+        if not chunk:
+            raise P9Error(f"{host}:{port} closed during the WebSocket handshake")
+        buf += chunk
+    head, _, rest = buf.partition(b"\r\n\r\n")
+    status = head.split(b"\r\n", 1)[0].decode(errors="replace")
+    if " 101 " not in status:
+        s.close()
+        raise P9Error(f"WebSocket upgrade refused: {status}")
+    want = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
+    if f"sec-websocket-accept: {want}".lower() not in head.decode(errors="replace").lower():
+        s.close()
+        raise P9Error("WebSocket upgrade answered with the wrong Sec-WebSocket-Accept")
+    return P9Client(WebSocketAdapter(s, rest), framing="raw")
+
+
 def connect_serial(port: str, baudrate: int = 115200, timeout: float = 30.0,
                     framing: str = "raw", warm_up: bool = True) -> P9Client:
     """A real serial port -- RP2350's USB-CDC ACM1 "net" port (framing=

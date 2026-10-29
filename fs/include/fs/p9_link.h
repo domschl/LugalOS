@@ -37,6 +37,11 @@ typedef struct p9_link {
      * attach -- see p9_auth_have_keys(). */
     bool auth_required;
 
+    /* 52.11: with auth_required, every fid on this link is read-only whatever its grant says -- a
+     * link whose bytes nothing protects (an HTTP WebSocket) cannot carry a write that a hostile
+     * LAN could not forge or replay. */
+    bool read_only;
+
     /* Optional, for a link whose peer can be absent or restart (an LLP
      * channel). NULL: always up, and the peer never restarts.
      *

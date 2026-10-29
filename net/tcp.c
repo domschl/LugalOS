@@ -162,6 +162,9 @@ typedef struct {
      * called for one. */
     bool is_stream;
 
+    /* A stream accepted on a stream listener, not yet taken by tcp_stream_accept(). */
+    bool accept_pending;
+
     /* Q0: the owner has closed a stream whose send buffer has not drained.
      * A FIN occupies the sequence number after the last data byte, so sending
      * one while bytes are still buffered gives it *their* number and the data
@@ -190,6 +193,9 @@ static uint8_t *g_bufs;                /* one palloc run, carved per connection 
 #define TCP_MAX_LISTENERS 4
 static uint16_t g_listen_ports[TCP_MAX_LISTENERS];
 static uint32_t g_num_listeners;
+/* Listeners whose connections are streams for a server task (tcp_stream_accept()), not 9P links. */
+static uint16_t g_stream_ports[TCP_MAX_LISTENERS];
+static uint32_t g_num_stream_listeners;
 static uint32_t g_accepted_total, g_reset_total;
 /* Not a secure ISN. A LAN-local server behind a pre-shared-key auth gate
  * (§1's threat model) does not defend against an off-path attacker
@@ -571,7 +577,7 @@ static tcp_conn_t *recycle_finished(void) {
 }
 
 static void accept_syn(const uint8_t src[IPV4_LEN], const uint8_t *seg,
-                       uint16_t sport, uint16_t dport, uint32_t hdr_len) {
+                       uint16_t sport, uint16_t dport, uint32_t hdr_len, bool stream) {
     tcp_conn_t *c = free_conn();
     if (!c) c = recycle_finished();
     if (!c) {
@@ -605,7 +611,12 @@ static void accept_syn(const uint8_t src[IPV4_LEN], const uint8_t *seg,
     g_iss_counter += 0x10000u + (uint32_t)time_get_ms();
     c->snd_wnd = rd16(seg + 14);
 
-    conn_init_link(c);
+    if (stream) {
+        c->is_stream = true;        /* no link face: see tcp_stream_open_locked() */
+        c->accept_pending = true;
+    } else {
+        conn_init_link(c);
+    }
     tcp_emit(c, TCP_SYN | TCP_ACK, c->snd_nxt, NULL, 0, true);
     c->snd_nxt++;                                 /* our SYN consumes one too */
     c->rto_ms = TCP_RTO_INITIAL_MS;
@@ -905,12 +916,15 @@ void tcp_input(const uint8_t src[IPV4_LEN], const uint8_t *ip_hdr,
         c->ka_probes = 0;
     }
     if (!c) {
-        bool port_match = false;
+        bool port_match = false, stream_match = false;
         for (uint32_t i = 0; i < g_num_listeners; i++) {
             if (g_listen_ports[i] == dport) { port_match = true; break; }
         }
+        for (uint32_t i = 0; i < g_num_stream_listeners; i++) {
+            if (g_stream_ports[i] == dport) { port_match = stream_match = true; break; }
+        }
         if ((flags & TCP_SYN) && !(flags & TCP_ACK) && port_match) {
-            accept_syn(src, seg, sport, dport, hdr_len);
+            accept_syn(src, seg, sport, dport, hdr_len, stream_match);
         } else {
             tcp_reset_stray(src, seg, len, data_len);
         }
@@ -1236,6 +1250,45 @@ static int tcp_listen_locked(uint16_t port) {
     return 0;
 }
 
+static int tcp_stream_listen_locked(uint16_t port) {
+    if (port == 0) return -1;
+    if (ensure_bufs() != 0) return -1;
+    for (uint32_t i = 0; i < g_num_stream_listeners; i++) {
+        if (g_stream_ports[i] == port) return 0;
+    }
+    if (g_num_stream_listeners >= TCP_MAX_LISTENERS) return -1;
+    g_stream_ports[g_num_stream_listeners++] = port;
+    return 0;
+}
+
+static void tcp_stream_unlisten_locked(uint16_t port) {
+    for (uint32_t i = 0; i < g_num_stream_listeners; i++) {
+        if (g_stream_ports[i] != port) continue;
+        for (uint32_t j = i; j + 1 < g_num_stream_listeners; j++) g_stream_ports[j] = g_stream_ports[j + 1];
+        g_num_stream_listeners--;
+        break;
+    }
+}
+
+/* The oldest connection on `port` whose handshake is done and that nobody has taken. A peer that
+ * already closed is still handed out: its buffered bytes are the request. */
+static int tcp_stream_accept_locked(uint16_t port, tcp_stream_t *s, uint8_t peer_ip[IPV4_LEN]) {
+    if (!s) return -1;
+    s->open = false;
+    for (uint32_t i = 0; i < TCP_MAX_CONNS; i++) {
+        tcp_conn_t *c = &g_conns[i];
+        if (!c->in_use || !c->is_stream || !c->accept_pending || c->local_port != port) continue;
+        if (c->state != TCP_ESTABLISHED && c->state != TCP_CLOSE_WAIT) continue;
+        c->accept_pending = false;
+        s->index = i;
+        s->epoch = c->epoch;
+        s->open = true;
+        if (peer_ip) memcpy(peer_ip, c->peer_ip, IPV4_LEN);
+        return 1;
+    }
+    return 0;
+}
+
 static void tcp_unlisten_locked(void) {
     g_num_listeners = 0;
 }
@@ -1371,6 +1424,26 @@ void tcp_stream_close(tcp_stream_t *s) {
     net_lock();
     tcp_stream_close_locked(s);
     net_unlock();
+}
+
+int tcp_stream_listen(uint16_t port) {
+    net_lock();
+    int r = tcp_stream_listen_locked(port);
+    net_unlock();
+    return r;
+}
+
+void tcp_stream_unlisten(uint16_t port) {
+    net_lock();
+    tcp_stream_unlisten_locked(port);
+    net_unlock();
+}
+
+int tcp_stream_accept(uint16_t port, tcp_stream_t *s, uint8_t peer_ip[IPV4_LEN]) {
+    net_lock();
+    int r = tcp_stream_accept_locked(port, s, peer_ip);
+    net_unlock();
+    return r;
 }
 
 int tcp_listen(uint16_t port) {

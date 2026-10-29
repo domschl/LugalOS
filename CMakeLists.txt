@@ -864,6 +864,9 @@ set(SOURCES
     # Phase 58: DNS client, HTTP/1.1 transport and LLM engine
     net/dns.c
     net/http.c
+    # 52.11: WebSocket framing, shared by the admin web server and the phase 62.12 client
+    net/websocket.c
+    net/httpd.c
     net/llm.c
     # P3: timestamped GPIO
     # edge capture. Built for every target because the ring is portable and is

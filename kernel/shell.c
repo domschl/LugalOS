@@ -78,6 +78,7 @@
 #include "kernel/crypto.h"
 #include "kernel/ota.h"
 #include "kernel/setup.h"
+#include "net/httpd.h"
 #include "kernel/privilege.h"
 #include "kernel/random.h"
 #include "kernel/idstore.h"
@@ -4039,6 +4040,33 @@ static void cmd_ota(const char *arg) {
 #endif
 }
 
+/* --- `httpd`: the admin web server (net/httpd.c) ------------------------------------- */
+static void cmd_httpd(const char *arg) {
+    while (arg && *arg == ' ') arg++;
+    if (!arg || !*arg || strcmp(arg, "status") == 0) {
+        char text[384];
+        uint32_t n = httpd_status(text, sizeof text - 1);
+        text[n] = 0;
+        cprintf("%s", text);
+    } else if (strncmp(arg, "start", 5) == 0 && (arg[5] == 0 || arg[5] == ' ')) {
+        uint32_t port = 0;
+        for (const char *d = arg[5] ? arg + 6 : ""; *d >= '0' && *d <= '9' && port < 65536u; d++) port = port * 10u + (uint32_t)(*d - '0');
+        cprintf(httpd_start((uint16_t)port) == 0 ? "httpd: running\n" : "httpd: could not start (is the network up?)\n");
+    } else if (strcmp(arg, "stop") == 0) {
+        httpd_stop();
+        cprintf("httpd: stopped\n");
+    } else if (strcmp(arg, "write on") == 0) {
+        httpd_set_write(true);
+        cprintf("httpd: writes over plain HTTP are ALLOWED -- nothing protects those bytes from a hostile network\n"
+                "       (applies to sessions opened from now on)\n");
+    } else if (strcmp(arg, "write off") == 0) {
+        httpd_set_write(false);
+        cprintf("httpd: web sessions are read-only\n");
+    } else {
+        cprintf("usage: httpd [status | start [PORT] | stop | write on|off]\n");
+    }
+}
+
 /* --- `setup`: claiming, and the owner part of the identity (kernel/setup.h) ---------- */
 static void cmd_setup(const char *arg) {
     while (arg && *arg == ' ') arg++;
@@ -5776,7 +5804,7 @@ static void shell_run_editor(const char *filename) {
  * they change keys, identity or network configuration, write arbitrary memory
  * or install firmware. See kernel/include/kernel/privilege.h. */
 static const char *const g_privileged[] = {
-    "identity", "mqttcfg", "netcfg", "otakey", "p9key", "peers", "poke", "sdio", "setup", "wlan",
+    "httpd", "identity", "mqttcfg", "netcfg", "otakey", "p9key", "peers", "poke", "sdio", "setup", "wlan",
 };
 
 static bool privileged_cmd_refused(const char *cmd_line) {
@@ -7210,6 +7238,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
 #endif
     } else if (strcmp(cmd_line, "ota") == 0) {
         cmd_ota(NULL);
+        return;
+    } else if (strcmp(cmd_line, "httpd") == 0 || strncmp(cmd_line, "httpd ", 6) == 0) {
+        cmd_httpd(cmd_line[5] ? &cmd_line[6] : NULL);
         return;
     } else if (strcmp(cmd_line, "setup") == 0 || strncmp(cmd_line, "setup ", 6) == 0) {
         cmd_setup(cmd_line[5] ? &cmd_line[6] : NULL);

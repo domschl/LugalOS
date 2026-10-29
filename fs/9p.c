@@ -954,6 +954,7 @@ bool p9_auth_path_is_secret(const char *path) { return p9_path_is_secret(path); 
 /* The policy in force for the request being processed: its context's (see
  * g_req above), set once per call from p9_server_process()'s argument. */
 static p9_auth_policy_t cur_policy(void) { return req_ctx()->policy; }
+static bool policy_needs_auth(void) { return cur_policy() != P9_AUTH_NOT_REQUIRED; }
 
 static void p9_handle_tauth(const p9_msg_t *req, p9_msg_t *resp) {
     if (req->afid == P9_NOFID) {
@@ -1129,10 +1130,10 @@ static void p9_handle_tattach(const p9_msg_t *req, p9_msg_t *resp) {
      * the afid it names: the afid must exist, be an auth fid, have had a
      * verified response written to it, and have been established for the same
      * identity now being claimed. */
-    if (cur_policy() == P9_AUTH_REQUIRED && req->afid == P9_NOFID &&
+    if (policy_needs_auth() && req->afid == P9_NOFID &&
         strcmp(req->aname, "/dev/setup") == 0 && setup_unauth_attach_ok() && p9_link_is_setup_ap()) {
         setup_attach = true;       /* an unclaimed node's one open door: see kernel/setup.h */
-    } else if (cur_policy() == P9_AUTH_REQUIRED) {
+    } else if (policy_needs_auth()) {
         if (req->afid == P9_NOFID) {
             resp->type = P9_RERROR;
             resp->ename = "attach: this link requires authentication (no afid)";
@@ -1222,10 +1223,10 @@ static void p9_handle_tattach(const p9_msg_t *req, p9_msg_t *resp) {
     bool exists = (vfs_stat(path, &st) == 0);
     strncpy(e->path, path, sizeof(e->path) - 1);
     e->path[sizeof(e->path) - 1] = '\0';
-    e->read_only = grant_matched && grant_read_only;
+    e->read_only = (grant_matched && grant_read_only) || cur_policy() == P9_AUTH_REQUIRED_RO;
     /* A cable (no authentication) is the console's equivalent; an authenticated peer is admin only
      * by its grant; the setup attach is neither and reaches /dev/setup alone. */
-    e->admin = cur_policy() != P9_AUTH_REQUIRED || (grant_matched && grant_admin);
+    e->admin = !policy_needs_auth() || (grant_matched && grant_admin);
     e->setup_attach = setup_attach;
     /* An aname that doesn't resolve to a real VFS path (e.g. a bare export
      * name a client made up) is still treated as an attachable directory

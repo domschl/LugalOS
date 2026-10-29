@@ -168,8 +168,9 @@ static int p9_route_frame(p9_link_t *link, const uint8_t *buf, uint32_t len) {
     g_serving_link = link;
     g_serving_pid = sched_current_pid();
     int resp_len = p9_server_process_conn(link, buf, len, resp_buf, sizeof(resp_buf),
-                                          link->auth_required ? P9_AUTH_REQUIRED
-                                                              : P9_AUTH_NOT_REQUIRED);
+                                          !link->auth_required ? P9_AUTH_NOT_REQUIRED
+                                          : link->read_only    ? P9_AUTH_REQUIRED_RO
+                                                               : P9_AUTH_REQUIRED);
     g_serving_link = outer_link;
     g_serving_pid = outer_pid;
     if (resp_len < 7) return -1;
