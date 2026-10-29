@@ -169,3 +169,5 @@ set(CONFIG_SDIO_D3_GPIO    8)
 set(CONFIG_C6_CHIP_PU_GPIO 15)
 set(CONFIG_SDIO_FREQ_KHZ   40000)   # SDIO high speed; C6 slave answers at it
 
+# Named by /proc/board and the banner (kernel/boardinfo.h).
+set(CONFIG_BOARD_DESC "M5Stack Tab5")

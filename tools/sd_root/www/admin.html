@@ -13,6 +13,8 @@
 body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.45 system-ui, sans-serif; }
 header { display:flex; gap:1rem; align-items:center; padding:.6rem 1rem; border-bottom:1px solid var(--line); background:var(--card); flex-wrap:wrap; }
 header h1 { font-size:1.05rem; margin:0; }
+header #board { font-weight:600; }
+header #board small { color:var(--mut); font-weight:400; margin-left:.4rem; }
 header .st { color:var(--mut); font-size:.85rem; margin-left:auto; }
 nav { display:flex; gap:.25rem; padding:.5rem 1rem 0; flex-wrap:wrap; }
 nav button { border:1px solid var(--line); border-bottom:none; background:transparent; color:var(--fg); padding:.4rem .9rem; border-radius:6px 6px 0 0; cursor:pointer; font:inherit; }
@@ -35,7 +37,7 @@ td a { color:var(--acc); cursor:pointer; text-decoration:none; } td a:hover { te
 </style>
 </head>
 <body>
-<header><h1>LugalOS admin</h1><span id="who" class="mut"></span><span class="st" id="status">not connected</span></header>
+<header><h1>LugalOS admin</h1><span id="board" title="this board"></span><span id="who" class="mut"></span><span class="st" id="status">not connected</span></header>
 
 <main id="login">
   <form class="card" id="loginform" style="margin-top:1rem" onsubmit="return false">
@@ -239,6 +241,17 @@ if (typeof document !== 'undefined') (() => {
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const text = (b) => new TextDecoder().decode(b);
   const setStatus = (s, cls) => { $('status').textContent = s; $('status').className = 'st ' + (cls || ''); };
+
+  /* Which board is this? /board answers before anyone has signed in (the same facts as /proc/board). */
+  async function showBoard() {
+    try {
+      const kv = {}; (await (await fetch('/board', { cache: 'no-store' })).text()).split('\n').forEach((l) => { const i = l.indexOf('='); if (i > 0) kv[l.slice(0, i)] = l.slice(i + 1); });
+      if (!kv.preset) return;
+      $('board').innerHTML = esc(kv.name || kv.board) + '<small>' + esc(kv.hardware) + ' &middot; ' + esc(kv.preset) + ' v' + esc(kv.version) + ' &middot; ' + esc(kv.chip) + ' &middot; uid ' + esc(kv.uid) + '</small>';
+      document.title = (kv.name || kv.board) + ' \u2014 LugalOS admin';
+    } catch (e) { /* an older node: no /board */ }
+  }
+  showBoard();
 
   const TABS = [['files', 'Files'], ['status', 'Status'], ['log', 'Log'], ['node', 'Node']];
   const STATUS_FILES = ['/proc/version', '/proc/uptime', '/proc/meminfo', '/proc/net', '/proc/ota', '/dev/ota', '/dev/setup'];

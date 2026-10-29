@@ -31,3 +31,6 @@ set(CONFIG_ENABLE_NTP_SERVER 1)
 # Claiming over the network (kernel/setup.c): this target runs the test for it; rv32-nommu does not,
 # and runs the test that a build without the flag refuses.
 set(CONFIG_NETWORK_CLAIM 1)
+
+# Named by /proc/board and the banner (kernel/boardinfo.h).
+set(CONFIG_BOARD_DESC "QEMU virt, rv64 Sv39")

@@ -310,11 +310,17 @@ if(NOT DEFINED CONFIG_NODE_PERSONA)
     set(CONFIG_NODE_PERSONA "${_persona}")
 endif()
 
-set(_string_keys CONFIG_TIMEZONE CONFIG_NODE_SEED CONFIG_NODE_PERSONA CONFIG_DCF77_P0_NTP)
+# The preset is the build directory's name (build/rp2350-wifi): the software a node was built as,
+# which the board file alone (esp32p4-nano for the esp32p4 preset) does not say.
+if(NOT DEFINED CONFIG_PRESET)
+    get_filename_component(CONFIG_PRESET "${CMAKE_BINARY_DIR}" NAME)
+endif()
+set(_string_keys CONFIG_TIMEZONE CONFIG_NODE_SEED CONFIG_NODE_PERSONA CONFIG_DCF77_P0_NTP CONFIG_PRESET)
 # Optional, and only emitted when a board file pins them: a node whose name or
 # MAC is a board fact (and CONFIG_SENSOR_SKIP, below) (a soldered appliance, a MAC from a label) says so here
 # and the derivation stays out of the way.
-foreach(_key CONFIG_NODE_NAME CONFIG_NODE_MAC CONFIG_SENSOR_SKIP)
+# CONFIG_BOARD_DESC is the board's human name, for /proc/board (kernel/boardinfo.h).
+foreach(_key CONFIG_NODE_NAME CONFIG_NODE_MAC CONFIG_SENSOR_SKIP CONFIG_BOARD_DESC)
     if(DEFINED ${_key})
         list(APPEND _string_keys ${_key})
     endif()

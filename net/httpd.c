@@ -9,6 +9,7 @@
 #include "fs/vfs.h"
 #include "fs/9p.h"
 #include "fs/p9_link.h"
+#include "kernel/boardinfo.h"
 #include "kernel/palloc.h"
 #include "kernel/printk.h"
 #include "kernel/sched.h"
@@ -235,6 +236,12 @@ static void handle_request(hsess_t *h) {
         }
         (void)header_value(req, "Sec-WebSocket-Protocol", proto, sizeof proto);
         start_ws(h, key, token_in(proto, "9p"));
+        return;
+    }
+    if (strcmp(path, "/board") == 0) {          /* the same public facts as /proc/board */
+        char text[320];
+        board_info_text(text, sizeof text);
+        reply_and_close(h, "200 OK", "text/plain; charset=utf-8", text);
         return;
     }
     if (strcmp(path, "/") == 0 || strcmp(path, "/index.html") == 0 || strcmp(path, "/admin.html") == 0) {

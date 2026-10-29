@@ -287,6 +287,23 @@ static void claim_door_checks(void) {
         memset(&m, 0, sizeof m); m.type = P9_TCLUNK; m.tag = 5; m.fid = 20; rpc(&m, P9_AUTH_REQUIRED, &back);
     }
 
+    /* /proc/board is the one path anybody may attach to, read-only; nothing else is public. */
+    ns_add("/proc", 1, 0);
+    ns_add("/proc/board", 0, 40);
+    memset(&m, 0, sizeof m); m.type = P9_TATTACH; m.tag = 10; m.fid = 40; m.afid = P9_NOFID;
+    snprintf(m.uname, sizeof m.uname, "stranger"); snprintf(m.aname, sizeof m.aname, "/proc/board");
+    EXPECT(rpc(&m, P9_AUTH_REQUIRED, &back) == P9_RATTACH, "an unauthenticated attach to /proc/board was refused");
+    memset(&m, 0, sizeof m); m.type = P9_TOPEN; m.tag = 11; m.fid = 40; m.mode = P9_OREAD;
+    EXPECT(rpc(&m, P9_AUTH_REQUIRED, &back) == P9_ROPEN, "the public /proc/board could not be opened for reading");
+    memset(&m, 0, sizeof m); m.type = P9_TATTACH; m.tag = 12; m.fid = 41; m.afid = P9_NOFID;
+    snprintf(m.uname, sizeof m.uname, "stranger"); snprintf(m.aname, sizeof m.aname, "/proc/board");
+    rpc(&m, P9_AUTH_REQUIRED, &back);
+    memset(&m, 0, sizeof m); m.type = P9_TOPEN; m.tag = 13; m.fid = 41; m.mode = P9_OWRITE;
+    EXPECT(rpc(&m, P9_AUTH_REQUIRED, &back) == P9_RERROR, "the public /proc/board was opened for writing");
+    memset(&m, 0, sizeof m); m.type = P9_TATTACH; m.tag = 14; m.fid = 42; m.afid = P9_NOFID;
+    snprintf(m.uname, sizeof m.uname, "stranger"); snprintf(m.aname, sizeof m.aname, "/proc");
+    EXPECT(rpc(&m, P9_AUTH_REQUIRED, &back) == P9_RERROR, "an unauthenticated attach to /proc was accepted");
+
     /* The setup attach may write /dev/setup; a cable (no authentication required) is admin and may write /dev/owner. */
     g_setup_open = g_setup_ap = 1;
     memset(&m, 0, sizeof m); m.type = P9_TATTACH; m.tag = 6; m.fid = 30; m.afid = P9_NOFID;

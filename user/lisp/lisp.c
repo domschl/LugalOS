@@ -39,6 +39,7 @@
 #include "drivers/sensor_hub.h"
 #include <limits.h>
 #include "kernel/identity.h"
+#include "kernel/boardinfo.h"
 #include "kernel/sha256.h"
 #include "kernel/klog.h"
 #include "kernel/sched.h"
@@ -5961,6 +5962,15 @@ static lisp_val_t *prim_board(lisp_val_t *args, lisp_val_t *env) {
 #else
     return make_str("qemu-virt");
 #endif
+}
+
+/* `(board-info)`: the one-line description of this board that the console banner and the boot log
+ * use -- preset, version, hardware, chip, name, uid (kernel/boardinfo.h). */
+static lisp_val_t *prim_board_info(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    char line[160];
+    board_info_line(line, sizeof line);
+    return make_str(line);
 }
 
 static lisp_val_t *prim_arch(lisp_val_t *args, lisp_val_t *env) {

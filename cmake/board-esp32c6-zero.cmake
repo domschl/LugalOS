@@ -55,3 +55,6 @@ set(CONFIG_LISP_STRING_POOL 192)
 
 # BOOT (GPIO9), a strapping pin with an internal pull-up; an ordinary input once running.
 set(CONFIG_SETUP_BUTTON_GPIO 9)
+
+# Named by /proc/board and the banner (kernel/boardinfo.h).
+set(CONFIG_BOARD_DESC "Waveshare ESP32-C6-Zero")

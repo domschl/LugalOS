@@ -7,6 +7,7 @@
  *   GET /9p + Upgrade    a WebSocket whose binary messages are 9P messages, served by the same
  *                        server as every other link, with auth_required: nothing is reachable
  *                        before a Tauth/Tattach with a granted key
+ *   GET /board           the public facts of /proc/board, as text: which board this is, before sign-in
  *   anything else        404
  *
  * Its own task owns the connections (tcp_stream_accept()); the network pump never runs HTTP,

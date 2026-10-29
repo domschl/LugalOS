@@ -154,3 +154,6 @@ set(CONFIG_LCD_ROTATE_180 1)
 #   UART1 GP8/9  -- hard-wired to the SP3485 RS485 transceiver (plan §7)
 #   SPI0 GP2-5   -- the XL2515 CAN controller, INT GP1, RST GP46
 #   GP40         -- battery ADC
+
+# Named by /proc/board and the banner (kernel/boardinfo.h).
+set(CONFIG_BOARD_DESC "Waveshare RP2350-LCD-7")

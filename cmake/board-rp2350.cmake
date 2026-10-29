@@ -70,3 +70,6 @@ set(CONFIG_I2C_RTC_SDA_GPIO 4)
 set(CONFIG_I2C_RTC_SCL_GPIO 5)
 
 set(CONFIG_SETUP_BUTTON_BOOTSEL 1)
+
+# Named by /proc/board and the banner (kernel/boardinfo.h).
+set(CONFIG_BOARD_DESC "Raspberry Pi Pico 2")

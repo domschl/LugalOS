@@ -83,7 +83,9 @@
 ;;    kernel messages until a login shell takes it over" is a decision made
 ;;    here, at boot, rather than one compiled into the kernel.
 
-(display "[Init] LugalOS Lisp System Initialized successfully!\n")
+(display "[Init] LugalOS Lisp System: ")
+(display (board-info))
+(newline)
 
 ;; 6. Launch interactive Lugal Console Shell -- unless something more
 ;;    specific applies, checked in priority order:

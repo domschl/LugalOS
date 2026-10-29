@@ -27,3 +27,6 @@ set(CONFIG_UART0_BASE       0x10000000)
 # cannot be justified, and a target with nothing to be confident *about* is
 # where that claim is checkable without hardware.
 set(CONFIG_ENABLE_NTP_SERVER 1)
+
+# Named by /proc/board and the banner (kernel/boardinfo.h).
+set(CONFIG_BOARD_DESC "QEMU virt, rv32 without MMU")

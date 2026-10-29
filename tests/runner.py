@@ -5153,9 +5153,9 @@ def test_httpd_websocket_9p(elf_path: Path, img_path: Path, arch_name: str) -> t
             "-netdev", f"user,id=n0,hostfwd=tcp:127.0.0.1:{port}-10.0.2.15:80",
             "-device", "virtio-net-device,netdev=n0",
         ])
-        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        ok, boot_log = session.send_and_expect("", r"Type 'help' for commands", timeout=8.0)
         if not ok:
-            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+            return (name, False, f"guest did not reach the shell: {boot_log[-400:]}")
         ok, log = session.send_and_expect(
             'lisp\n(net-config "10.0.2.15" "255.255.255.0" "10.0.2.2")\nexit', r"\[Net\] 10\.0\.2\.15", timeout=6.0)
         if not ok:
@@ -5193,6 +5193,45 @@ def test_httpd_websocket_9p(elf_path: Path, img_path: Path, arch_name: str) -> t
             pass
         finally:
             anon.close()
+
+        # 2b. Which board is this? Answered to anyone: over HTTP, and over 9P with no key for that one
+        #     path -- and nothing else, and not for writing.
+        info = http(b"GET /board HTTP/1.1\r\nHost: x\r\n\r\n").split(b"\r\n\r\n", 1)[1].decode()
+        facts = dict(l.split("=", 1) for l in info.splitlines() if "=" in l)
+        if not {"preset", "board", "hardware", "chip", "version", "build", "name", "uid"} <= set(facts):
+            return (name, False, f"GET /board is missing facts: {info!r}")
+        if facts["preset"] != arch_name or "QEMU" not in facts["hardware"]:
+            return (name, False, f"GET /board describes another board: {info!r}")
+        pub = p9lib.connect_ws("127.0.0.1", port)
+        try:
+            pub.version()
+            pub.attach(1, aname="/proc/board")
+            pub.walk(1, 2, [])
+            pub.open(2)
+            if pub.read(2, 0, 512).decode() != info:
+                return (name, False, "/proc/board over 9P differs from GET /board")
+            try:
+                pub.walk(1, 3, [])
+                pub.open(3, p9lib.client.OWRITE)
+                return (name, False, "the public /proc/board was opened for writing")
+            except p9lib.P9Error:
+                pass
+            for denied in ("/proc", "/", "/proc/version"):
+                try:
+                    pub.attach(4, aname=denied)
+                    return (name, False, f"an unauthenticated attach to {denied} succeeded")
+                except p9lib.P9Error:
+                    pass
+        finally:
+            pub.close()
+        ok, log = session.send_and_expect("board", r"uid=", timeout=6.0)
+        if "preset=" + arch_name not in log or "hardware=QEMU" not in log:
+            return (name, False, f"`board` did not describe the node:\n{log[-300:]}")
+        # The boot log and the console banner name the board too.
+        if not re.search(r"\[Init\] LugalOS Lisp System: " + re.escape(arch_name) + r" v\S+ \(QEMU", boot_log):
+            return (name, False, f"the boot log does not name the board:\n{boot_log[-500:]}")
+        if not re.search(r"Interactive Console Shell[^\n]*\n" + re.escape(arch_name) + r" v\S+ \(QEMU[^\n]*uid", boot_log):
+            return (name, False, f"the console banner does not name the board:\n{boot_log[-500:]}")
 
         # 3. With the key: a read bigger than one message, and the namespace.
         with p9lib.Session(p9lib.connect_ws("127.0.0.1", port), key=key) as sess:
