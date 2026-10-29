@@ -69,6 +69,7 @@ Guides for developing user-space applications and extending the LugalOS kernel:
 * **[Testing Guide](dev/testing.md)**: Unit tests, ASan/UBSan host harnesses, automated QEMU regression runner (`tests/runner.py`), and hardware-in-the-loop silicon suites (`tests/hw/`).
 
 ### Part D: Wire & Interconnect Protocols
+* **[Protected 9P sessions](dev/protocols/protected_9p.md)**: Integrity for 9P over TCP and WebSocket without TLS (`9P2000.lp`): key derivation, per-frame tags, test vectors, and why secrets stay off a readable link.
 * **[LugalOS Link Protocol (LLP)](dev/protocols/llp.md)**: Point-to-point link protocol multiplexing 9P filesystem calls and raw 802.3 Ethernet frames between coprocessors with credit-based flow control.
 
 ---

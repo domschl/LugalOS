@@ -114,6 +114,19 @@ function hexToBytes(s) {
   return out;
 }
 
+/* Protected sessions (fs/include/fs/p9_protect.h): after the auth response is accepted every frame, both
+ * ways, is followed by an 8-byte tag. Integrity, not secrecy. */
+const enc0 = new TextEncoder();
+function sessionKey(key, nonce, uname, aname) {
+  const prk = hmacSha256(nonce, key);
+  return hmacSha256(prk, concat(enc0.encode('LugalOS 9P v1\0' + uname + '\0' + aname + '\0'), Uint8Array.of(1)));
+}
+function frameTag(key, dir, seq, frame) {
+  const head = new Uint8Array(5); head[0] = dir; new DataView(head.buffer).setUint32(1, seq, true);
+  return hmacSha256(key, concat(head, frame)).subarray(0, 8);
+}
+function sameBytes(a, b) { let d = a.length ^ b.length; for (let i = 0; i < a.length && i < b.length; i++) d |= a[i] ^ b[i]; return d === 0; }
+
 const T = { version: 100, auth: 102, attach: 104, walk: 110, open: 112, create: 114, read: 116, write: 118, clunk: 120, stat: 124, error: 107 };
 const OREAD = 0, OWRITE = 1, ORDWR = 2, OTRUNC = 0x10, NOFID = 0xFFFFFFFF;
 const enc = new TextEncoder(), dec = new TextDecoder();
@@ -158,26 +171,35 @@ class P9 {
       const tag = this.tag; this.tag = this.tag >= 0xfffe ? 1 : this.tag + 1;
       const n = 7 + body.length, m = new Uint8Array(n), dv = new DataView(m.buffer);
       dv.setUint32(0, n, true); m[4] = type; dv.setUint16(5, tag, true); m.set(body, 7);
+      let out = m;
+      if (this.prot) { out = concat(m, frameTag(this.prot.key, 0, this.prot.tx++, m)); }
       const timer = setTimeout(() => { this.cur = null; rej(new Error('the node did not answer')); }, 20000);
       this.cur = { res: (r) => {
         clearTimeout(timer); this.cur = null;
+        if (this.prot) {
+          const frame = r.subarray(0, r.length - 8);
+          if (r.length < 15 || !sameBytes(r.subarray(r.length - 8), frameTag(this.prot.key, 1, this.prot.rx, frame))) { rej(new Error('a frame from the node failed its integrity check')); return; }
+          this.prot.rx++; r = frame;
+        }
         const rd = new R(r.subarray(4)); const t = rd.u8(); rd.u16();
         if (t === T.error) rej(new Error(rd.str())); else res({ type: t, rd });
       }, rej: (e) => { clearTimeout(timer); rej(e); } };
-      this.ws.send(m);
+      this.ws.send(out);
     });
     const p = this.q.then(run, run);
     this.q = p.catch(() => {});
     return p;
   }
   async login(uname, key) {
-    const r = await this.rpc(T.version, new W().u32(4096).str('9P2000').done());
+    const r = await this.rpc(T.version, new W().u32(4096).str('9P2000.lp').done());
     this.msize = Math.min(r.rd.u32(), 4096);
+    this.lp = r.rd.str() === '9P2000.lp';
     await this.rpc(T.auth, new W().u32(0).str(uname).str('/').done());
     const nonce = (await this.rpc(T.read, new W().u32(0).u64(0).u32(32).done())).rd;
     const n = nonce.u32(), challenge = nonce.take(n);
     const mac = hmacSha256(key, concat(challenge, enc.encode(uname), enc.encode('/')));
     await this.rpc(T.write, new W().u32(0).u64(0).u32(mac.length).bytes(mac).done());
+    if (this.lp) this.prot = { key: sessionKey(key, challenge, uname, '/'), tx: 0, rx: 0 };   // the Rwrite was the last plain frame
     await this.rpc(T.attach, new W().u32(1).u32(0).str(uname).str('/').done());
   }
   async walk(path) {
@@ -230,7 +252,7 @@ class P9 {
     } finally { await this.clunk(fid); }
   }
 }
-if (typeof module !== 'undefined') module.exports = { sha256, hmacSha256, hexToBytes, P9, concat };
+if (typeof module !== 'undefined') module.exports = { sha256, hmacSha256, hexToBytes, P9, concat, sessionKey, frameTag };
 </script>
 
 <script id="ui">

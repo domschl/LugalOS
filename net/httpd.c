@@ -57,6 +57,7 @@ typedef struct {
     uint32_t    msg_len;              /* bytes of the message being assembled / ready in ibuf */
     bool        msg_ready;
     p9_link_t   link;
+    p9_prot_t   prot;                 /* the protected session's state (fs/p9_protect.h) */
 } hsess_t;
 
 /* single task: httpd (everything below, except the flags it reads from the console). */
@@ -87,6 +88,8 @@ static int ws_link_poll(p9_link_t *l) {
     hsess_t *h = link_sess(l);
     return h->st == H_WS && h->msg_ready && h->olen == 0 ? 1 : 0;
 }
+
+static p9_prot_t *ws_link_prot(p9_link_t *l) { return &link_sess(l)->prot; }
 
 static int ws_link_recv(p9_link_t *l, uint8_t *buf, uint32_t max) {
     hsess_t *h = link_sess(l);
@@ -186,7 +189,10 @@ static void start_ws(hsess_t *h, const char *key, bool want_9p) {
     h->link.send_frame = ws_link_send;
     h->link.ctx = h;
     h->link.auth_required = true;
-    h->link.read_only = !g_write_ok;
+    /* Plain HTTP: a client that offers the protected-session extension (9P2000.lp, after Tauth) may
+     * write; one that does not is read-only unless the console allowed plain writes. */
+    h->link.prot_get = ws_link_prot;
+    h->link.plain_writes_ok = g_write_ok;
     h->st = H_WS;
     g_ws_total++;
 }
@@ -378,6 +384,7 @@ static void sess_step(hsess_t *h) {
     if (!drain(h)) return;
     if (h->st == H_WS) ws_read(h);
     if (h->st == H_WS && h->msg_ready && h->olen == 0) (void)p9_link_service(&h->link);
+    if (h->st == H_WS && h->prot.state == P9_PROT_DEAD) { ws_close_now(h, 1008); return; }   /* a frame failed its tag */
     if (h->st == H_WS && h->olen) (void)drain(h);
     if (h->st != H_WS) return;
     /* A peer that has gone quiet is asked once; a reset follows if the segment is never

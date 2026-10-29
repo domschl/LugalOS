@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "fs/p9_protect.h"
 
 /* Transport-agnostic 9P link -- the
  * 9P server (fs/9p.c, A2) never knows what wire it's running over. A
@@ -41,6 +42,15 @@ typedef struct p9_link {
      * link whose bytes nothing protects (an HTTP WebSocket) cannot carry a write that a hostile
      * LAN could not forge or replay. */
     bool read_only;
+
+    /* 52.11b: a plaintext network link (no TLS) that can carry a protected session (p9_protect.h).
+     * `prot_get` returns the state for this link, or NULL if none can be had; it is called when
+     * Tversion offers the extension, and `prot` is set from then on. A link with `prot_get` serves
+     * a client that did not offer the extension read-only -- unless `plain_writes_ok`, which only the
+     * console can set (`httpd write on`) -- and nothing secret may be written over it. */
+    p9_prot_t *(*prot_get)(struct p9_link *link);
+    p9_prot_t *prot;
+    bool plain_writes_ok;
 
     /* Optional, for a link whose peer can be absent or restart (an LLP
      * channel). NULL: always up, and the peer never restarts.

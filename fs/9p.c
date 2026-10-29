@@ -1,4 +1,5 @@
 #include "fs/9p.h"
+#include "fs/p9_protect.h"
 #include "fs/vfs.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
@@ -290,6 +291,7 @@ static uint32_t       g_fid_seq;
 typedef struct {
     const void       *conn;     /* NULL: the only one */
     p9_auth_policy_t  policy;
+    uint32_t          link_flags;   /* P9_LINK_* */
 } p9_req_ctx_t;
 static p9_req_ctx_t g_req[MAX_TASKS + MAX_HARTS];
 
@@ -1512,13 +1514,13 @@ static void p9_handle_twrite(const p9_msg_t *req, p9_msg_t *resp) {
 
         uint8_t expect[SHA256_DIGEST_LEN];
         p9_auth_expected(e, key, key_len, expect);
-        memset(key, 0, sizeof(key));
 
         /* Constant-time, and not memcmp(): see kernel/sha256.h. */
         bool ok = sha256_verify(expect, req->data, SHA256_DIGEST_LEN);
         memset(expect, 0, sizeof(expect));
 
         if (!ok) {
+            memset(key, 0, sizeof(key));
             /* The nonce is burned either way. Without this, a client could
              * sit on one challenge and grind guesses against it; with it,
              * every attempt costs a fresh Tauth and a fresh nonce. */
@@ -1527,6 +1529,15 @@ static void p9_handle_twrite(const p9_msg_t *req, p9_msg_t *resp) {
         }
 
         e->authed = true;
+        {
+            /* A protected session: the key both ends now derive from the grant key and this
+             * challenge. A link that did not agree to the extension ignores it. */
+            uint8_t sk[32];
+            p9_protect_derive(key, key_len, e->nonce, e->auth_uname, e->auth_aname, sk);
+            p9_link_session_authenticated(req_ctx()->conn, sk);
+            memset(sk, 0, sizeof sk);
+            memset(key, 0, sizeof(key));
+        }
         resp->type = P9_RWRITE;
         resp->count = req->count;
         return;
@@ -1629,7 +1640,7 @@ int p9_serialize(const p9_msg_t *msg, uint8_t *buf, uint32_t buf_size) {
         case P9_TVERSION:
         case P9_RVERSION:
             wcur_u32(&c, msg->msize);
-            wcur_str(&c, "9P2000");
+            wcur_str(&c, msg->lp ? "9P2000.lp" : "9P2000");
             break;
         case P9_TATTACH:
             wcur_u32(&c, msg->fid);
@@ -1757,6 +1768,7 @@ int p9_deserialize(const uint8_t *buf, uint32_t len, p9_msg_t *msg) {
             ok = rcur_u32(&c, &msg->msize);
             char proto[16];
             if (ok) ok = rcur_str(&c, proto, sizeof(proto));
+            msg->lp = ok && strcmp(proto, "9P2000.lp") == 0;
             break;
         }
         case P9_TATTACH: {
@@ -1961,10 +1973,27 @@ static int process_request(const uint8_t *req_buf, uint32_t req_len,
 
 int p9_server_process_conn(const void *conn, const uint8_t *req_buf, uint32_t req_len,
                            uint8_t *resp_buf, uint32_t resp_max, p9_auth_policy_t policy) {
+    return p9_server_process_link(conn, req_buf, req_len, resp_buf, resp_max, policy, 0);
+}
+
+__attribute__((weak)) bool p9_link_session_offered(const void *conn) { (void)conn; return false; }
+__attribute__((weak)) void p9_link_session_authenticated(const void *conn, const uint8_t key[32]) { (void)conn; (void)key; }
+__attribute__((weak)) bool p9_link_session_active(const void *conn) { (void)conn; return false; }
+
+bool p9_request_confidential(void) {
+    /* Outside a request (the console, a script) the context slot of this task is the idle one:
+     * its flags are zero. A request on a plaintext link set PLAINTEXT for as long as it runs. */
+    return (req_ctx()->link_flags & P9_LINK_PLAINTEXT) == 0;
+}
+
+int p9_server_process_link(const void *conn, const uint8_t *req_buf, uint32_t req_len,
+                           uint8_t *resp_buf, uint32_t resp_max, p9_auth_policy_t policy,
+                           uint32_t link_flags) {
     p9_req_ctx_t *ctx = req_ctx();
     p9_req_ctx_t outer = *ctx;
     ctx->conn = conn;
     ctx->policy = policy;
+    ctx->link_flags = link_flags;
     g_p9_last_activity_us = time_get_us();
     int rc = process_request(req_buf, req_len, resp_buf, resp_max);
     *ctx = outer;
@@ -1998,8 +2027,15 @@ static int process_request(const uint8_t *req_buf, uint32_t req_len,
 
     switch (req.type) {
         case P9_TVERSION:
+            if (p9_link_session_active(req_ctx()->conn)) {
+                /* The session key belongs to one connection and one auth: a second Tversion would
+                 * reset the fids and leave the key standing. */
+                resp.type = P9_RERROR; resp.ename = "version: a protected session is running";
+                break;
+            }
             p9_fid_reset_conn(); // Tversion (re)initializes this connection
             resp.type = P9_RVERSION;
+            resp.lp = req.lp && p9_link_session_offered(req_ctx()->conn);
             resp.msize = (req.msize > 0 && req.msize < P9_MAX_MSIZE) ? req.msize : P9_MAX_MSIZE;
             /* Remember what was agreed. It used to be computed here, sent,
              * and forgotten, which left p9_serialize() with nothing to

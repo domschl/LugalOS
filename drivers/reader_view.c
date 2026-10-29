@@ -99,7 +99,9 @@ typedef struct {
  * and the active flag), which the compositor reads under it. accepted: the
  * scroll position and the drawing into a live surface happen from the input
  * path without it; the compositor can show a frame mid-draw. */
-static reader_state_t s_readers[READER_MAX_INSTANCES];
+/* BULK_BSS: link tables, history and contents, touched at the speed of a person -- PSRAM where there
+ * is one, which returns about 30 KB of low RAM on the P4 boards. */
+static reader_state_t s_readers[READER_MAX_INSTANCES] BULK_BSS;
 static uint8_t        s_active_reader_rid = 0;
 static uint32_t       s_reader_seq[READER_MAX_INSTANCES];
 

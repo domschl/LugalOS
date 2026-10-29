@@ -822,6 +822,7 @@ set(SOURCES
     fs/fat32.c
     fs/vfs_server.c
     fs/9p.c
+    fs/p9_protect.c
     fs/p9_link.c
     fs/gemtext.c
     fs/markdown.c

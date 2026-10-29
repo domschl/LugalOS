@@ -68,6 +68,25 @@ MAX_NAME_LEN = 32
 SLIP_END, SLIP_ESC, SLIP_ESC_END, SLIP_ESC_ESC = 0xC0, 0xDB, 0xDC, 0xDD
 
 
+TAG_LEN = 8          # the integrity tag after each frame of a protected session (fs/include/fs/p9_protect.h)
+
+
+def derive_session_key(key: bytes, nonce: bytes, uname: str, aname: str) -> bytes:
+    """K = HKDF-SHA-256(salt = nonce, ikm = key, info = "LugalOS 9P v1" 0 uname 0 aname 0), one block."""
+    import hashlib
+    import hmac
+    prk = hmac.new(nonce, key, hashlib.sha256).digest()
+    info = b"LugalOS 9P v1\0" + uname.encode() + b"\0" + aname.encode() + b"\0\x01"
+    return hmac.new(prk, info, hashlib.sha256).digest()
+
+
+def frame_tag(key: bytes, direction: int, seq: int, frame: bytes) -> bytes:
+    """HMAC-SHA-256(K, dir || seq (u32 LE) || frame), the first 8 bytes. dir: 0 client to server."""
+    import hashlib
+    import hmac
+    return hmac.new(key, bytes([direction]) + struct.pack("<I", seq & 0xFFFFFFFF) + frame, hashlib.sha256).digest()[:TAG_LEN]
+
+
 class P9Error(Exception):
     pass
 
@@ -187,10 +206,16 @@ class P9Client:
     stream-like object exposing sendall/recv/settimeout/close (a raw
     socket, or transport.SerialSocketAdapter over a real serial port)."""
 
-    def __init__(self, sock, framing: str = "raw") -> None:
+    def __init__(self, sock, framing: str = "raw", offer_lp: bool = True) -> None:
         if framing not in ("raw", "slip"):
             raise ValueError(f"unknown framing {framing!r}")
         self._sock = sock
+        # 9P2000.lp, protected sessions: offered to every raw-framed server, which agrees only on a
+        # network link without TLS. `lp` says whether it agreed; _prot is [key, tx_seq, rx_seq] once
+        # the auth response was accepted, and every frame after that carries a tag.
+        self.offer_lp = offer_lp and framing == "raw"
+        self.lp = False
+        self._prot: list | None = None
         self._next_tag = 1
         self._framing = framing
         self.console_text = bytearray()   # console bytes between SLIP frames (shared wire)
@@ -274,6 +299,12 @@ class P9Client:
             if size < 7:
                 raise P9Error(f"malformed reply: declared size {size} < 7")
             rest = self._recv_exact(size - 4)
+            if self._prot:
+                tag = self._recv_exact(TAG_LEN)
+                want = frame_tag(self._prot[0], 1, self._prot[2], struct.pack("<I", size) + rest)
+                if not __import__("hmac").compare_digest(tag, want):
+                    raise P9Error("a frame from the node failed its integrity check")
+                self._prot[2] += 1
             resp_type, resp_tag = struct.unpack("<BH", rest[:3])
             resp_body = rest[3:]
         return resp_type, resp_tag, resp_body
@@ -285,6 +316,9 @@ class P9Client:
         if self._framing == "slip":
             self._sock.sendall(slip_encode(raw_frame))
         else:
+            if self._prot:
+                raw_frame += frame_tag(self._prot[0], 0, self._prot[1], raw_frame)
+                self._prot[1] += 1
             self._sock.sendall(raw_frame)
 
         # This client only ever has one request outstanding at a time, so
@@ -328,10 +362,12 @@ class P9Client:
         both callers here, leaving read_all()/write_all() chunking at a
         hardcoded 1024 that merely *happened* to fit. It now sets .msize, and
         those defaults derive from it."""
-        rtype, body = self._roundtrip(TVERSION, struct.pack("<I", msize) + _pack_str("9P2000"))
+        rtype, body = self._roundtrip(
+            TVERSION, struct.pack("<I", msize) + _pack_str("9P2000.lp" if self.offer_lp else "9P2000"))
         if rtype != RVERSION:
             raise P9Error(f"expected Rversion, got type {rtype}")
         self.msize = struct.unpack_from("<I", body, 0)[0]
+        self.lp = self.offer_lp and _unpack_str(body, 4)[0] == "9P2000.lp"
         return self.msize
 
     def io_chunk(self) -> int:
@@ -395,6 +431,9 @@ class P9Client:
         n = self.write(afid, 0, mac)
         if n != len(mac):
             raise P9Error(f"auth: server accepted {n} of {len(mac)} response bytes")
+        if self.lp:
+            # The Rwrite was the last plain frame in both directions.
+            self._prot = [derive_session_key(key, nonce, uname, aname), 0, 0]
 
     def walk(self, fid: int, newfid: int, names: list[str]) -> int:
         if len(names) > MAX_WALK_ELEM:
