@@ -257,6 +257,16 @@ static void setup_worker(void *arg) {
 static int queue(const char *buf, uint32_t len, bool owner) {
     while (len && (buf[len - 1] == '\n' || buf[len - 1] == '\r' || buf[len - 1] == ' ')) len--;
     if (len == 0 || len >= REQ_LINE_MAX) return -1;
+    /* Secrets -- a WLAN key, a grant's key, the owner key of a claim -- do not cross a network link
+     * that anyone on the LAN can read, protected or not (a protected session is integrity, not
+     * secrecy): the console, a cable, TLS (52.15) or the setup access point (52.12). */
+    if (!p9_request_confidential()) {
+        const bool secret = !owner || strncmp(buf, "wlan ", 5) == 0 || strncmp(buf, "grant ", 6) == 0;
+        if (secret && !p9_link_is_setup_ap()) {
+            set_result("error: that carries a secret, and this link can be read on the network: use the console, a cable or TLS");
+            return -1;
+        }
+    }
     if (!owner && setup_state() != SETUP_OPEN) return -1;
     uintptr_t f = spin_lock_irqsave(&g_lock);
     bool busy = g_pending;

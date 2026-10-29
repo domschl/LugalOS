@@ -5263,16 +5263,29 @@ def test_httpd_websocket_9p(elf_path: Path, img_path: Path, arch_name: str) -> t
             init = sess.read("/sd0/system/etc/init.lisp")
             if len(init) != len(expected_init_lisp()):
                 return (name, False, f"init.lisp came back {len(init)} bytes")
-            # 4. Read-only by default.
+            # 3b. A session that offered the protected-session extension may write: every frame after
+            #     the auth response is tagged, so a forged or replayed write is refused (52.11b).
+            sess.write("/ram0/protected.txt", b"written in a protected session", create=True)
+            if sess.read("/ram0/protected.txt") != b"written in a protected session":
+                return (name, False, "a protected session's write did not read back")
+            if not sess.client.lp or sess.client._prot is None:
+                return (name, False, "the session was not protected")
+
+        # 4. A client that does not offer the extension is read-only, whatever its key.
+        with p9lib.Session(p9lib.connect_ws("127.0.0.1", port, protect=False), key=key) as sess:
+            if b"LugalOS" not in sess.read("/proc/version"):
+                return (name, False, "a plain session could not read")
             try:
                 sess.write("/ram0/webtest.txt", b"nope", create=True)
-                return (name, False, "a web session wrote while writes were not allowed")
+                return (name, False, "a plain web session wrote while plain writes were not allowed")
             except Exception as e:  # noqa: BLE001
                 if "read-only" not in str(e) and "read only" not in str(e):
                     return (name, False, f"the refusal gave no reason: {e}")
 
         # 4b. The page's own protocol code (SHA-256, HMAC, the 9P client in tools/sd_root/www/admin.html)
         #     under node, against this guest: what a browser does, minus the DOM.
+        with p9lib.Session(p9lib.connect_ws("127.0.0.1", port), key=key) as mk:
+            mk.write("/ram0/page.txt", b"made by the harness", create=True)
         node = shutil.which("node")
         if node:
             import tempfile
@@ -5289,8 +5302,8 @@ def test_httpd_websocket_9p(elf_path: Path, img_path: Path, arch_name: str) -> t
             out = r.stdout + r.stderr
             if r.returncode != 0 or "crypto: ok" not in out:
                 return (name, False, f"the page's protocol code failed under node:\n{out[-600:]}")
-            if "read-only" not in out and "read only" not in out:
-                return (name, False, f"the page's write was not refused as read-only:\n{out[-300:]}")
+            if "write: written" not in out:
+                return (name, False, f"the page's protected session could not write:\n{out[-300:]}")
             m = re.search(r"init\.lisp: (\d+)", out)
             if not m or int(m.group(1)) != len(expected_init_lisp()):
                 return (name, False, f"the page's client read init.lisp wrongly:\n{out[-300:]}")
@@ -5310,7 +5323,7 @@ def test_httpd_websocket_9p(elf_path: Path, img_path: Path, arch_name: str) -> t
 
         # 5. Allowed at the console, a new session may write.
         session.send_and_expect("httpd write on", r"ALLOWED", timeout=5.0)
-        with p9lib.Session(p9lib.connect_ws("127.0.0.1", port), key=key) as sess:
+        with p9lib.Session(p9lib.connect_ws("127.0.0.1", port, protect=False), key=key) as sess:
             sess.write("/ram0/webtest.txt", b"written over a websocket", create=True)
             if sess.read("/ram0/webtest.txt") != b"written over a websocket":
                 return (name, False, "the write did not read back")
@@ -5354,6 +5367,214 @@ def test_httpd_websocket_9p(elf_path: Path, img_path: Path, arch_name: str) -> t
     finally:
         session.close()
         arch_img.unlink(missing_ok=True)
+
+
+def test_protected_sessions(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """52.11b: a 9P session over TCP is integrity-protected after the auth response, and a proxy that
+    alters, replays, injects or drops a frame, or alters a reply, ends it.
+
+    The proxy sits between the client and the guest's forwarded port and speaks enough 9P framing to
+    find frame boundaries: the first four frames each way (Tversion, Tauth, Tread, Twrite of the
+    auth exchange) are plain, every later one is followed by an 8-byte tag. Each case runs on a fresh
+    connection and must end with the session dead, the file unchanged, and the guest still serving."""
+    import shutil
+    import socket as _socket
+    import struct as _struct
+    import threading
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "host" / "p9lib" / "src"))
+    import p9lib
+
+    name = "Protected 9P Sessions Over TCP: Tampered, Replayed, Injected And Dropped Frames Are Refused (52.11b)"
+    arch_img = img_path.with_name(f"test_{arch_name}_protect_sd.img")
+    shutil.copyfile(img_path, arch_img)
+    key = bytes(range(64, 80))
+
+    def free_port() -> int:
+        pr = _socket.socket()
+        pr.bind(("127.0.0.1", 0))
+        n = pr.getsockname()[1]
+        pr.close()
+        return n
+
+    guest_port, proxy_port = free_port(), free_port()
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    import provision
+    id_img = img_path.with_name(f"test_{arch_name}_protect_id.img")
+    id_img.write_bytes(provision.build_record([
+        (provision.FIELD_UID, bytes.fromhex("b1b2b3b4b5b6b7b8")),
+        (provision.FIELD_NAME, b"protect"),
+    ]))
+
+    class Proxy(threading.Thread):
+        """One connection, frame-aware; `act(direction, index, frame)` returns the byte chunks to forward."""
+        def __init__(self, act):
+            super().__init__(daemon=True)
+            self.act = act
+            self.srv = _socket.socket()
+            self.srv.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+            self.srv.bind(("127.0.0.1", proxy_port))
+            self.srv.listen(1)
+            self.socks = []
+
+        def run(self):
+            try:
+                c, _ = self.srv.accept()
+                g = _socket.create_connection(("127.0.0.1", guest_port), timeout=15)
+                self.socks = [c, g]
+                t = threading.Thread(target=self.pump, args=(c, g, 0), daemon=True)
+                t.start()
+                self.pump(g, c, 1)
+            except OSError:
+                pass
+
+        def pump(self, src, dst, direction):
+            buf, index = b"", 0
+            try:
+                while True:
+                    d = src.recv(65536)
+                    if not d:
+                        break
+                    buf += d
+                    while len(buf) >= 4:
+                        size = _struct.unpack_from("<I", buf, 0)[0]
+                        total = size + (8 if index >= 4 else 0)
+                        if len(buf) < total:
+                            break
+                        frame, buf = buf[:total], buf[total:]
+                        for chunk in self.act(direction, index, frame):
+                            dst.sendall(chunk)
+                        index += 1
+            except OSError:
+                pass
+            finally:
+                for x in (src, dst):
+                    try:
+                        x.shutdown(_socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+
+        def stop(self):
+            for x in self.socks + [self.srv]:
+                try:
+                    x.close()
+                except OSError:
+                    pass
+
+    def flip(frame):
+        b = bytearray(frame)
+        b[len(b) // 2] ^= 0x01
+        return bytes(b)
+
+    def untouched(direction, index, frame):
+        return [frame]
+
+    session = QemuSession(elf_path, arch_img, arch_name)
+    try:
+        session.start(identity_img_path=id_img, extra_qemu_args=[
+            "-netdev", f"user,id=n0,hostfwd=tcp:127.0.0.1:{guest_port}-10.0.2.15:564",
+            "-device", "virtio-net-device,netdev=n0",
+        ])
+        ok, log = session.send_and_expect("", r"Type 'help' for commands", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+        session.send_and_expect('lisp\n(net-config "10.0.2.15" "255.255.255.0" "10.0.2.2")\nexit', r"\[Net\] 10\.0\.2\.15", timeout=6.0)
+        session.send_and_expect(f"p9key {key.hex()}", r"console key set", timeout=5.0)
+
+        # 1. A protected session reads and writes; a plain one reads and is refused writes.
+        with p9lib.Session(p9lib.connect_tcp("127.0.0.1", guest_port, timeout=15), key=key) as s1:
+            if not s1.client.lp or s1.client._prot is None:
+                return (name, False, "the TCP session was not protected")
+            s1.write("/ram0/p.txt", b"original", create=True)
+            if s1.read("/ram0/p.txt") != b"original":
+                return (name, False, "a protected write did not read back")
+            big = s1.read("/sd0/system/etc/init.lisp")
+            if len(big) != len(expected_init_lisp()):
+                return (name, False, f"a multi-frame protected read came back {len(big)} bytes")
+        with p9lib.Session(p9lib.connect_tcp("127.0.0.1", guest_port, timeout=15, protect=False), key=key) as s2:
+            if b"LugalOS" not in s2.read("/proc/version"):
+                return (name, False, "a plain session could not read")
+            try:
+                s2.write("/ram0/p.txt", b"plain", create=False)
+                return (name, False, "a plain session wrote over a network link")
+            except Exception as e:  # noqa: BLE001
+                if "read-only" not in str(e):
+                    return (name, False, f"the plain write was refused without a reason: {e}")
+
+        # 1b. Integrity is not secrecy: an admin over a protected session may change the owner's name,
+        #     but a secret (a WLAN key, a grant) is refused on a link anyone on the LAN can read.
+        if arch_name == "rv64":
+            # The console key answers for every user name (fs/9p.c p9_auth_key_for()), so the admin
+            # grant carries the same key: what makes it an admin is the grant found at attach.
+            ok, log = session.send_and_expect(f"peers add webadmin {key.hex()} / admin", r"granted", timeout=6.0)
+            with p9lib.Session(p9lib.connect_tcp("127.0.0.1", guest_port, timeout=15), uname="webadmin", key=key) as adm:
+                adm.write("/dev/owner", b"name via-protected-tcp", create=False, truncate=False)
+                for _ in range(10):
+                    time.sleep(0.4)
+                    if b"name=via-protected-tcp" in adm.read("/dev/owner"):
+                        break
+                else:
+                    return (name, False, "a protected admin session could not rename the node")
+                for line in (b"wlan ssid " + b"ab" * 32, b"grant eve " + b"cd" * 16 + b" / rw"):
+                    try:
+                        adm.write("/dev/owner", line, create=False, truncate=False)
+                        return (name, False, f"a secret was accepted over a plaintext network link: {line[:12]!r}")
+                    except Exception:  # noqa: BLE001
+                        pass
+                if b"carries a secret" not in adm.read("/dev/setup"):
+                    return (name, False, "the refusal of a secret gave no reason")
+            ok, log = session.send_and_expect("peers", r"webadmin", timeout=6.0)
+            if re.search(r"^eve\s", log, re.MULTILINE):
+                return (name, False, "a grant arrived over a plaintext link")
+
+        # 2. Tampering. `victim` is what the client does on the proxied session after the auth exchange.
+        def victim(c):
+            with p9lib.Session(c, key=key) as s:
+                s.read("/proc/version")                       # frames 4.. are tagged
+                s.write("/ram0/p.txt", b"TAMPERED-WRITE", create=False)
+                s.read("/ram0/p.txt")
+
+        cases = {
+            "an altered request":   lambda d, i, f: [flip(f)] if (d == 0 and i == 7) else [f],
+            "a replayed request":   lambda d, i, f: [f, f] if (d == 0 and i == 7) else [f],
+            "an injected request":  lambda d, i, f: [f, _struct.pack("<IBH", 7, 120, 99) + b"\0" * 8] if (d == 0 and i == 5) else [f],
+            "a dropped request":    lambda d, i, f: [] if (d == 0 and i == 6) else [f],
+            "an altered reply":     lambda d, i, f: [flip(f)] if (d == 1 and i == 7) else [f],
+            "a reflected reply":    lambda d, i, f: [f, f] if (d == 1 and i == 6) else [f],
+        }
+        for label, act in cases.items():
+            proxy = Proxy(act)
+            proxy.start()
+            died = False
+            try:
+                client = p9lib.connect_tcp("127.0.0.1", proxy_port, timeout=6)
+                victim(client)
+            except Exception:  # noqa: BLE001 -- any failure is the session ending
+                died = True
+            finally:
+                proxy.stop()
+            if not died:
+                return (name, False, f"{label} was not refused: the session ran to the end")
+            time.sleep(0.3)
+            with p9lib.Session(p9lib.connect_tcp("127.0.0.1", guest_port, timeout=15), key=key) as chk:
+                now = chk.read("/ram0/p.txt")
+                if label.startswith("an altered request") and now == b"TAMPERED-WRITE":
+                    return (name, False, "an altered write was applied")
+                if now not in (b"original", b"TAMPERED-WRITE"):
+                    return (name, False, f"{label}: the file holds {now!r}")
+                chk.write("/ram0/p.txt", b"original", create=False)
+
+        # 3. The guest said so.
+        ok, log = session.send_and_expect("cat /proc/kmsg", r"integrity check", timeout=8.0)
+        if "failed its integrity check" not in log:
+            return (name, False, f"the guest did not log a failed check:\n{log[-400:]}")
+        return (name, True, "protected read/write; plain client read-only; altered, replayed, injected, dropped and reflected frames ended the session")
+    except Exception as e:  # noqa: BLE001
+        return (name, False, f"{type(e).__name__}: {e}")
+    finally:
+        session.close()
+        arch_img.unlink(missing_ok=True)
+        id_img.unlink(missing_ok=True)
 
 
 def test_network_claim(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
@@ -9778,6 +9999,7 @@ def main() -> int:
         _run_single(test_grants_in_record(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_network_claim(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_httpd_websocket_9p(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_protected_sessions(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_wlan_credential_roundtrip(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_network_autoconfig(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_netif_virtio_net(rv64_elf, img_for("rv64"), "rv64"))
@@ -9829,6 +10051,7 @@ def main() -> int:
         _run_single(test_grants_in_record(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_no_network_claim(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_httpd_websocket_9p(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_protected_sessions(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_wlan_credential_roundtrip(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_network_autoconfig(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_netif_virtio_net(rv32_elf, img_for("rv32"), "rv32"))

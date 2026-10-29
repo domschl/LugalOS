@@ -337,6 +337,10 @@ static void conn_release(tcp_conn_t *c) {
     /* A server connection's peer may hold fids on this node's 9P server;
      * nothing else will release them now (p9_link_closed()). */
     if (c->state != TCP_CLOSED && !c->is_stream && !c->is_client) p9_link_closed(&c->link);
+    if (c->link.prot) {
+        memset(c->link.prot, 0, sizeof *c->link.prot);   /* the session key goes with the connection */
+        c->link.prot = NULL;
+    }
     c->in_use = false;
     c->state = TCP_CLOSED;
     c->epoch++;            /* every link handed out for this slot is now stale */
@@ -382,8 +386,12 @@ static tcp_conn_t *link_conn(p9_link_t *link) {
  * the same reasoning drivers/virtio_console.c's link uses. */
 static uint32_t framed_len(const tcp_conn_t *c) {
     if (c->rx_len < 4) return 0;
-    return (uint32_t)c->rx[0] | ((uint32_t)c->rx[1] << 8) |
-           ((uint32_t)c->rx[2] << 16) | ((uint32_t)c->rx[3] << 24);
+    uint32_t n = (uint32_t)c->rx[0] | ((uint32_t)c->rx[1] << 8) |
+                 ((uint32_t)c->rx[2] << 16) | ((uint32_t)c->rx[3] << 24);
+    /* A protected session (fs/p9_protect.h): each frame is followed by its tag, which is the
+     * link layer's to check; the stream just has to hand it the two together. */
+    if (c->link.prot && c->link.prot->state == P9_PROT_ACTIVE) n += P9_TAG_LEN;
+    return n;
 }
 
 static int link_poll(p9_link_t *link);
@@ -392,7 +400,7 @@ static int link_poll_locked(p9_link_t *link) {
     if (!c || !c->in_use) return -1;
     uint32_t declared = framed_len(c);
     if (declared == 0) return 0;
-    if (declared < 7 || declared > P9_MAX_MSIZE) return -1;   /* corrupt stream */
+    if (declared < 7 || declared > P9_MAX_MSIZE) return -1;   /* corrupt stream (the tag counts) */
     return (c->rx_len >= declared) ? 1 : 0;
 }
 
@@ -444,8 +452,24 @@ static int link_send_frame_locked(p9_link_t *link, const uint8_t *buf, uint32_t 
     return (int)len;
 }
 
+/* The state of a protected session, one per connection slot, in a page taken the first time a
+ * client offers the extension: a board whose peers never do pays nothing, and the link structs stay
+ * small (the Tab5 has bytes of low RAM to spare).
+ * single task: netsrv (the 9P handler that asks runs there). */
+static p9_prot_t *g_prot_slots;
+
+static p9_prot_t *tcp_prot_get(p9_link_t *link) {
+    tcp_conn_t *c = link_conn(link);
+    if (!c) return NULL;
+    if (!g_prot_slots) g_prot_slots = (p9_prot_t *)palloc_pages(1);
+    return g_prot_slots ? &g_prot_slots[c - g_conns] : NULL;
+}
+
 static void conn_init_link(tcp_conn_t *c) {
     c->link.name = c->is_client ? "tcpout" : "tcpnet";
+    /* A server connection can carry a protected session; a dialled one is the client. */
+    c->link.prot_get = c->is_client ? NULL : tcp_prot_get;
+    c->link.prot = NULL;
     c->link.poll = link_poll;
     c->link.send_frame = link_send_frame;
     c->link.recv_frame = link_recv_frame;
@@ -1167,6 +1191,11 @@ void tcp_service(void) {
                 net_unlock();
                 p9_link_service(&c->link);
                 net_lock();
+                /* A frame that failed its tag ends the connection: nothing it carried can be trusted. */
+                if (c->in_use && c->link.prot && c->link.prot->state == P9_PROT_DEAD) {
+                    conn_abort(c);
+                    continue;
+                }
             } else if (spartan_server_running(NULL) && c->local_port == spartan_server_port()) {
                 uint32_t consumed = 0;
                 uint32_t out_len = 0;

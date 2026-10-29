@@ -1,5 +1,5 @@
 // Drives the admin page in a real (headless) Chromium through the DevTools protocol: signs in with
-// a key, browses /proc, opens a file, is refused a write on a read-only session, reads the log.
+// a key, browses /proc, opens a file, is refused a write on a session that cannot write there, reads the log.
 //
 //   node browser_check.js CHROMIUM URL USER KEYHEX
 'use strict';
@@ -98,7 +98,7 @@ async function main() {
     await ev("document.getElementById('save').click()");
     await waitFor("document.getElementById('msg').textContent.length > 1 && document.getElementById('msg').textContent !== '…'", 'the write answer');
     const msg = await ev("document.getElementById('msg').textContent");
-    if (!/read-only/.test(msg)) throw new Error('the write was not refused as read-only: ' + msg);
+    if (msg === 'written') throw new Error('a write to /proc/version succeeded');
 
     await ev("[...document.querySelectorAll('#tabs button')].find(b => b.textContent === 'Log').click()");
     await waitFor("document.getElementById('log') && document.getElementById('log').textContent.length > 20", 'the log');

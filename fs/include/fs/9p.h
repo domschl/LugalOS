@@ -118,6 +118,7 @@ typedef struct {
     uint32_t    afid;    // Tauth/Tattach: the auth fid, or P9_NOFID for none
     uint32_t    newfid;
     uint32_t    msize;
+    bool        lp;      // Tversion/Rversion: the "9P2000.lp" extension (protected sessions, p9_protect.h)
     uint64_t    offset;
     uint32_t    count;
     uint8_t     mode;    // Topen/Tcreate mode byte (P9_OREAD/OWRITE/ORDWR + flags)
@@ -179,6 +180,31 @@ void p9_server_conn_closed(const void *conn, uint32_t seq);
 int p9_server_process_conn(const void *conn, const uint8_t *req_buf, uint32_t req_len,
                            uint8_t *resp_buf, uint32_t resp_max,
                            p9_auth_policy_t policy);
+
+/* As p9_server_process_conn(), for a link that can carry protected sessions (fs/p9_protect.h).
+ * P9_LINK_PLAINTEXT: its bytes can be read on the way, so nothing secret may be written over it
+ * (p9_request_confidential()). The link layer (fs/p9_link.c) provides the two hooks below; a
+ * server built without it (the host tests) gets no-ops. */
+#define P9_LINK_PLAINTEXT 1u
+int p9_server_process_link(const void *conn, const uint8_t *req_buf, uint32_t req_len,
+                           uint8_t *resp_buf, uint32_t resp_max,
+                           p9_auth_policy_t policy, uint32_t link_flags);
+
+/* True on the setup access point's link (52.12): the one network link a secret may cross without TLS,
+ * because the owner is standing next to the node. False until that exists. */
+bool p9_link_is_setup_ap(void);
+
+/* Whether a secret (a WLAN key, a grant's key) may be written by the request being served: false
+ * only on a plaintext network link. True for the console and for any request outside the 9P server. */
+bool p9_request_confidential(void);
+
+/* Tversion offered "9P2000.lp" on `conn`: true if the link will protect the session. */
+bool p9_link_session_offered(const void *conn);
+/* The auth response on `conn` was accepted: the session key (the Rwrite goes out plain, then every
+ * frame carries a tag). */
+void p9_link_session_authenticated(const void *conn, const uint8_t key[32]);
+/* A protected session is running on `conn`: a second Tversion is refused. */
+bool p9_link_session_active(const void *conn);
 
 /* --- The auth gate ---
  *

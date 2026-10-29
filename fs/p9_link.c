@@ -167,14 +167,30 @@ static int p9_route_frame(p9_link_t *link, const uint8_t *buf, uint32_t len) {
     int outer_pid = g_serving_pid;
     g_serving_link = link;
     g_serving_pid = sched_current_pid();
-    int resp_len = p9_server_process_conn(link, buf, len, resp_buf, sizeof(resp_buf),
-                                          !link->auth_required ? P9_AUTH_NOT_REQUIRED
-                                          : link->read_only    ? P9_AUTH_REQUIRED_RO
-                                                               : P9_AUTH_REQUIRED);
+    /* A protected session (p9_protect.h): this request arrived tagged if the session was already
+     * active, and its reply is tagged the same way. The session becomes active only after the
+     * Rwrite that accepted the auth response has gone out plain. */
+    const bool tagged = link->prot && link->prot->state == P9_PROT_ACTIVE;
+    const bool plaintext = link->prot_get != NULL;
+    p9_auth_policy_t policy = !link->auth_required ? P9_AUTH_NOT_REQUIRED
+                              : (link->read_only || (plaintext && !tagged && !link->plain_writes_ok))
+                                    ? P9_AUTH_REQUIRED_RO
+                                    : P9_AUTH_REQUIRED;
+    int resp_len = p9_server_process_link(link, buf, len, resp_buf, sizeof(resp_buf) - (plaintext ? P9_TAG_LEN : 0),
+                                          policy, plaintext ? P9_LINK_PLAINTEXT : 0);
     g_serving_link = outer_link;
     g_serving_pid = outer_pid;
     if (resp_len < 7) return -1;
+    if (tagged) {
+        p9_protect_tag(link->prot->key, P9_DIR_S2C, link->prot->tx_seq++, resp_buf, (uint32_t)resp_len,
+                       resp_buf + resp_len);
+        resp_len += (int)P9_TAG_LEN;
+    }
     if (link->send_frame(link, resp_buf, (uint32_t)resp_len) < 0) return -1;
+    if (link->prot && link->prot->state == P9_PROT_ARMED) {
+        link->prot->state = P9_PROT_ACTIVE;
+        link->prot->rx_seq = link->prot->tx_seq = 0;
+    }
     return 1;
 }
 
@@ -184,12 +200,28 @@ static int p9_link_pump(p9_link_t *link) {
 
     static uint8_t rx_buf[P9_MAX_MSIZE];
 
+    if (link->prot && link->prot->state == P9_PROT_DEAD) return -1;
     ylock_acquire(&g_pump_lock);
     int ready = link->poll(link);
     if (ready <= 0) { ylock_release(&g_pump_lock); return ready; }
 
     int rx_len = link->recv_frame(link, rx_buf, sizeof(rx_buf));
     if (rx_len < 7) { ylock_release(&g_pump_lock); return -1; }
+    if (link->prot && link->prot->state == P9_PROT_ACTIVE) {
+        p9_prot_t *pr = link->prot;
+        if (rx_len < (int)(7 + P9_TAG_LEN) ||
+            !p9_protect_verify(pr->key, P9_DIR_C2S, pr->rx_seq, rx_buf, (uint32_t)rx_len - P9_TAG_LEN,
+                               rx_buf + rx_len - P9_TAG_LEN)) {
+            /* Altered, replayed, reordered, injected or untagged: the first one ends the session. */
+            memset(pr->key, 0, sizeof pr->key);
+            pr->state = P9_PROT_DEAD;
+            printk("[9P Link] '%s': a frame failed its integrity check; session ended\n", link->name ? link->name : "?");
+            ylock_release(&g_pump_lock);
+            return -1;
+        }
+        pr->rx_seq++;
+        rx_len -= (int)P9_TAG_LEN;
+    }
 
     int r = p9_route_frame(link, rx_buf, (uint32_t)rx_len);
     ylock_release(&g_pump_lock);
@@ -198,6 +230,31 @@ static int p9_link_pump(p9_link_t *link) {
 
 int p9_link_service(p9_link_t *link) {
     return p9_link_pump(link);
+}
+
+/* The hooks fs/9p.c calls (declared in fs/include/fs/9p.h). `conn` is the link a request arrived on,
+ * or NULL for a request that did not come over one. */
+bool p9_link_session_offered(const void *conn) {
+    p9_link_t *l = (p9_link_t *)(uintptr_t)conn;
+    if (!l || !l->prot_get) return false;
+    p9_prot_t *pr = l->prot_get(l);
+    if (!pr) return false;
+    memset(pr, 0, sizeof *pr);
+    pr->state = P9_PROT_OFFERED;
+    l->prot = pr;
+    return true;
+}
+
+void p9_link_session_authenticated(const void *conn, const uint8_t key[32]) {
+    p9_link_t *l = (p9_link_t *)(uintptr_t)conn;
+    if (!l || !l->prot || l->prot->state != P9_PROT_OFFERED) return;
+    memcpy(l->prot->key, key, P9_SESSION_KEY_LEN);
+    l->prot->state = P9_PROT_ARMED;
+}
+
+bool p9_link_session_active(const void *conn) {
+    const p9_link_t *l = (const p9_link_t *)(uintptr_t)conn;
+    return l && l->prot && (l->prot->state == P9_PROT_ACTIVE || l->prot->state == P9_PROT_ARMED);
 }
 
 void p9_link_register_background(p9_link_t *link) {

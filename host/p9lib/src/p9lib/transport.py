@@ -60,7 +60,7 @@ def connect_unix(path: str, timeout: float = 5.0, framing: str = "raw") -> P9Cli
     return P9Client(s, framing=framing)
 
 
-def connect_tcp(host: str, port: int = 564, timeout: float = 30.0) -> P9Client:
+def connect_tcp(host: str, port: int = 564, timeout: float = 30.0, protect: bool = True) -> P9Client:
     """A 9P server reachable over TCP -- the gateway persona's Ethernet link
     (plan/phase18_networking_and_auth.md), on 564, the port IANA assigns to
     the Plan 9 file service.
@@ -77,7 +77,7 @@ def connect_tcp(host: str, port: int = 564, timeout: float = 30.0) -> P9Client:
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(timeout)
     s.connect((host, port))
-    return P9Client(s, framing="raw")
+    return P9Client(s, framing="raw", offer_lp=protect)
 
 
 class WebSocketAdapter:
@@ -171,7 +171,7 @@ class WebSocketAdapter:
         self._s.close()
 
 
-def connect_ws(host: str, port: int = 80, path: str = "/9p", timeout: float = 30.0) -> P9Client:
+def connect_ws(host: str, port: int = 80, path: str = "/9p", timeout: float = 30.0, protect: bool = True) -> P9Client:
     """9P over a WebSocket: the admin web server's transport (net/httpd.c). The same server, the
     same Tauth/Tattach, the same P9Client; only the carrier differs."""
     import base64
@@ -199,7 +199,7 @@ def connect_ws(host: str, port: int = 80, path: str = "/9p", timeout: float = 30
     if f"sec-websocket-accept: {want}".lower() not in head.decode(errors="replace").lower():
         s.close()
         raise P9Error("WebSocket upgrade answered with the wrong Sec-WebSocket-Accept")
-    return P9Client(WebSocketAdapter(s, rest), framing="raw")
+    return P9Client(WebSocketAdapter(s, rest), framing="raw", offer_lp=protect)
 
 
 def connect_serial(port: str, baudrate: int = 115200, timeout: float = 30.0,

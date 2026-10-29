@@ -72,6 +72,10 @@ The owner key becomes the `owner` admin grant, the window closes, and from then 
 
 The setup secret is the WPA2 key of the node's setup access point (52.12). `tools/provision.py --setup-secret-generate` prints it with the label text and a `WIFI:` QR payload. A build without `CONFIG_NETWORK_CLAIM` has no `/dev/setup`, no `/dev/owner` and no window.
 
+### Protected sessions, and secrets
+
+Over TCP and WebSocket (no TLS) a client that offers `9P2000.lp` gets an integrity-protected session once it has authenticated; a client that does not gets a read-only one. Integrity is not secrecy: a node refuses to take a WLAN key, a grant's key or a claim over such a link. Set them from the console, a cable or (when it exists) the setup access point. See [protected 9P sessions](../dev/protocols/protected_9p.md).
+
 ### Which board is this?
 
 `/proc/board` (shell: `board`, web: `GET /board`) answers without a key, on any link: `preset`, `board`, `hardware`, `chip`, `version`, `build`, `tainted`, `name` and `uid`. It is the one path a 9P client may attach to without authentication (attach with the path `/proc/board`; the fid is read-only), so a discovery tool or the admin page's sign-in screen can say which board it is talking to before it has a key. It holds nothing about the network or the owner.
