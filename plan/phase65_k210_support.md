@@ -648,3 +648,58 @@ Silicon lessons that changed code, not just comments:
 * **Loader reads are ~15 KB/s** (per-byte MMIO pacing at BAUDR=64 on a
   ~6 MHz SCLK); a cold flash boot reaches `lsh` in ≈45 s. Streaming
   speed is a polish item, not a milestone blocker.
+
+### 65.6 — LED, button, config + identity store — DONE
+
+* **RGB LED** (`drivers/ledbtn_k210.c`, shell `led R G B` / `led off`):
+  the schematic reading is confirmed — IO_12 **green**, IO_13 **red**,
+  IO_14 **blue** (columns D11/D12/C11, resistors R17 B / R18 G / R19 R),
+  common **anode** ("LEDA" on 3V3, cathode "LEDK" out through 4K7), so
+  every color is **active low**: drive 0 to light. `drivers/gpio.c` grew
+  the K210 backend (FPIOA function 56+n, SiFive GPIO block: DATA=latch
+  +0x00, DIRECTION +0x04, DATA_INPUT +0x50 — inputs must read +0x50,
+  DATA reads the latch back). On/off only; no PWM armed (IO12–14 do
+  carry PWM functions if fades ever matter). The `led` command from 45.5
+  keeps its words on both boards: on C6 0–255 per channel, on K210
+  any nonzero component lights that color.
+* **The KEY is a strap, not a button** — measured, not assumed. KEY sits
+  on IO_16, the ISP boot strap, and the CH552's auto-programming
+  transistors (Q1/Q2 by the USB-C section) share that net. A poke/peek
+  campaign over the live shell showed IO_16 reading low in *every* FPIOA
+  pull configuration — no pull, the bit12 pull that made SPI MISO
+  readable, and the bit14 that the arduino-k210 header documents as PU —
+  while toggling DTR/RTS reset the chip through the same pair. While the
+  USB link is connected, pressed and released are electrically
+  indistinguishable. `button` / `button wait` report the raw level and
+  print that caveat with it; the Maix Bit has no second user input.
+* **FPIOA flag bits, final account:** the empirical word `(1<<16)|
+  (3<<5)|(1<<12)` powers pads and was proven on outputs (NOR HOLD#/WP#)
+  and on MISO's idle behavior — but "which pull bit is which" was never
+  confirmed from the TRM, the arduino-k210 `fpioa_io_config` struct puts
+  PU at bit14/PD at bit15 with a different DS field position entirely,
+  and neither story made IO_16 read released. The drivers carry that
+  honesty as a comment; do not "fix" the working word toward either
+  header without a new measurement.
+* **Identity store** (`drivers/idstore_k210.c`): one 4 KB sector at
+  `LUGALOS_K210_IDENTITY_BASE = 0xFFF000` — the last sector of the NOR,
+  outside every written region of `k210flash.py`, same policy as every
+  board: never in a manifest, survives every reflash. Whole-sector
+  erase-program-verify through `drivers/spi_nor_k210.c`, strong
+  `identity_store_device()`. Verified on silicon: `identity provision`
+  → `[IdStore] writing the identity sector` → `uid: 624200c8f93a4522
+  (record)`; a later re-provisioning (which rewrote loader, boot record
+  and slot A around the sector) left that exact uid readable at the
+  next cold boot — the phase-21 persistence claim, demonstrated.
+* **Boot-order quirk worth keeping in mind:** `node_identity_init()`
+  runs before the flashdisk task exists, so the idstore backend calls
+  `spi_nor_k210_init()` itself (idempotent) — otherwise the first read
+  of the session silently answers "unprovisioned" for a sector that
+  holds a perfect record.
+* **RNG, answered honestly:** the K210 has no documented entropy source
+  (SHA512/KPU are deterministic accelerators; no ring oscillator or TRNG
+  in any public map). `kernel/random.c` grew a K210 branch that says so
+  in `random_source()`, `random_is_hardware()` is false,
+  `randtest` prints `RANDTEST_SKIP` with the reason, and `identity key
+  --generate` refuses (`no hardware entropy source on this target`) —
+  the C6's RF rule, transplanted. An ADC-noise campaign could earn a
+  true source later (the P4 precedent exists); until measured, no claim.

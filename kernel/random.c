@@ -387,6 +387,30 @@ const char *random_source(void) {
                            : "RNG without its noise source (NOT random)";
 }
 
+#elif defined(CONFIG_BOARD_K210)
+
+/* The K210 has no documented entropy source for the general case (65.6):
+ * the crypto blocks (SHA512, KPU) are deterministic accelerators, there
+ * is no ring oscillator or PLL-jitter reader in any public register map,
+ * and no vendor driver claims one. Rather than sample something quietly
+ * and call it entropy, the board reports the truth: not hardware, and
+ * `identity key --generate` refuses with NO_ENTROPY the way the C6 rule
+ * refuses without its radio. random_bytes() still hashes timer+counter,
+ * which is fine for public identifiers (a UID provisioned into the
+ * identity sector) and worthless against an adversary.
+ *
+ * An open question for a later milestone, deliberately not decided
+ * here: the SAR ADC's floating inputs probably do carry thermal noise
+ * the way the P4's internal channel does, and one measured campaign
+ * (sample, count LSB jitter, decorrelate) could earn this branch a
+ * true source. Until that measurement exists, the answer is no. */
+bool random_is_hardware(void) { return false; }
+const char *random_source(void) {
+    return "none: K210 has no documented entropy source (key generation refuses)";
+}
+
+void random_init(void) {}
+
 #else  /* the QEMU targets: no entropy source at all, and it must show */
 
 bool random_is_hardware(void) { return false; }

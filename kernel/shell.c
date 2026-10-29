@@ -10,6 +10,10 @@
 #include "kernel/radio_c6.h"
 #include "drivers/watchdog.h"
 #endif
+#if defined(CONFIG_BOARD_K210)
+#include "drivers/ledbtn_k210.h"
+#include "kernel/sched.h"
+#endif
 #include "kernel/printk.h"
 #include "kernel/console.h"
 #include "kernel/klog.h"
@@ -6066,9 +6070,12 @@ static void parse_and_eval_cmd(const char *cmd_line) {
          * QEMU as well as on the board with the panel. */
         (void)vtterm_selftest();
         return;
-#if defined(CONFIG_BOARD_ESP32C6)
+#if defined(CONFIG_BOARD_ESP32C6) || defined(CONFIG_BOARD_K210)
     } else if (strncmp(cmd_line, "led", 3) == 0 && (cmd_line[3] == 0 || cmd_line[3] == ' ')) {
-        /* 45.5: `led R G B` (0-255 each), `led off`, `led` alone for usage. */
+        /* 45.5: `led R G B` (0-255 each), `led off`, `led` alone for usage.
+         * On the K210 (65.6) the same words mean on/off: the Maix Bit's
+         * LED is a common-anode tri-color through 4K7s, three GPIOs, no
+         * PWM armed -- any nonzero component lights that color. */
         unsigned v[3] = {0, 0, 0};
         const char *q = cmd_line + 3;
         int n = 0;
@@ -6086,9 +6093,52 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         }
         if (n != 3 || *q) {
             cprintf("usage: led R G B   (0-255 each)   |   led off\n");
+#if defined(CONFIG_BOARD_K210)
+            cprintf("       (this LED is on/off: any nonzero value lights that color)\n");
+#endif
+#if defined(CONFIG_BOARD_ESP32C6)
         } else if (!ws2812_set((uint8_t)v[0], (uint8_t)v[1], (uint8_t)v[2])) {
             cprintf("led: the pulse generator never finished a frame\n");
+#endif
+#if defined(CONFIG_BOARD_K210)
+        } else {
+            k210_led_set(v[0], v[1], v[2]);
+#endif
         }
+        return;
+#endif
+#if defined(CONFIG_BOARD_K210)
+    } else if (strcmp(cmd_line, "button") == 0 ||
+               strncmp(cmd_line, "button ", 8) == 0) {
+        /* The Maix Bit's single KEY (IO_16): the ISP boot selector, which
+         * is simply a pulled-up input low while held after boot. `button`
+         * reports the level; `button wait` blocks until a press-release
+         * edge pair, debounced by requiring the same reading twice. */
+        if (strcmp(cmd_line, "button") == 0) {
+            cprintf("KEY (IO16): %s\n", k210_button_pressed() ? "pressed" : "released");
+            cprintf("  note: IO16 is the ISP boot strap, shared with the CH552 download\n"
+                    "  transistors -- on this board it reads low whenever the USB link\n"
+                    "  holds it, so \"released\" may not be reachable while connected.\n");
+            return;
+        }
+        if (strcmp(cmd_line, "button wait") == 0) {
+            cprintf("KEY: waiting for a press (10 s)...\n");
+            bool prev = k210_button_pressed();
+            for (unsigned tick = 0; tick < 1000u; tick++) {
+                task_sleep_ms(10u);
+                bool now = k210_button_pressed();
+                if (now != prev) {
+                    task_sleep_ms(20u);                 /* settle */
+                    bool again = k210_button_pressed(); /* debounce: same twice */
+                    if (again == now) {
+                        cprintf("KEY: %s\n", now ? "pressed" : "released");
+                        prev = now;
+                    }
+                }
+            }
+            return;
+        }
+        cprintf("usage: button | button wait\n");
         return;
 #endif
     } else if (strncmp(cmd_line, "peek ", 5) == 0 || strncmp(cmd_line, "poke ", 5) == 0) {

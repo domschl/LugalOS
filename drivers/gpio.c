@@ -88,6 +88,63 @@ int gpio_read_pin(uint32_t pin) {
     return (REG(GPIO_IN_REG) & (1u << pin)) ? 1 : 0;
 }
 
+#elif defined(CONFIG_BOARD_K210)
+/* K210 GPIO, 65.6. The block at 0x50200000 is SiFive-shaped (vendor
+ * lib/drivers/include/gpio.h spells every offset): DATA is the OUTPUT
+ * latch, DIRECTION 1 = output, SOURCE 1 = output driven by the PWMP
+ * block instead of the latch, and DATA_INPUT at +0x50 is the actual
+ * pad state -- reading DATA back on an input reads the latch, not
+ * the pin, so reads here go to +0x50 unconditionally.
+ *
+ * The pad mux is the FPIOA at 0x502B0000: function 56+n is GPIO_n,
+ * one config word per pad. The flag word below is the one proven on
+ * this silicon by the loader and the writer blob (it drove the NOR's
+ * HOLD#/WP# lines and left MISO readable with its pull enabled):
+ * bit16 powers the pad on, bits[6:5]=3 are the drive selector, and
+ * bit12 enables the pad's pull. The arduino-k210 copy of the SDK
+ * documents this struct's bit positions differently -- the empirical
+ * word works on C0 silicon and that is what counts; do not "fix" it
+ * toward that header. Pulls here are pull-up only: the same flag the
+ * MISO bring-up used, and all this board needs (the KEY input).
+ * Pin numbers are IO_n from the schematic, 0..31. */
+#define K210_GPIO_BASE      0x50200000UL
+#define GPIO_DATA           (K210_GPIO_BASE + 0x00u)
+#define GPIO_DIRECTION      (K210_GPIO_BASE + 0x04u)
+#define GPIO_SOURCE         (K210_GPIO_BASE + 0x08u)
+#define GPIO_DATA_INPUT     (K210_GPIO_BASE + 0x50u)
+
+#define K210_FPIOA_BASE     0x502B0000UL
+#define FPIOA_PAD_CFG(p)    (K210_FPIOA_BASE + 4u * (uint32_t)(p))
+#define FPIOA_FN_GPIO(n)    (56u + (uint32_t)(n))
+#define FPIOA_PAD_FLAGS     ((1u << 16) | (3u << 5) | (1u << 12))
+
+#define REG(addr)           (*(volatile uint32_t *)(uintptr_t)(addr))
+
+static void fpioa_take_gpio(uint32_t pin) {
+    REG(FPIOA_PAD_CFG(pin)) = FPIOA_FN_GPIO(pin) | FPIOA_PAD_FLAGS;
+}
+
+int gpio_set_mode(uint32_t pin, int mode) {
+    if (pin > 31) return -1;
+    fpioa_take_gpio(pin);
+    REG(GPIO_SOURCE) &= ~(1u << pin);          /* output side drives from the latch */
+    if (mode == GPIO_MODE_OUT) REG(GPIO_DIRECTION) |= (1u << pin);
+    else                       REG(GPIO_DIRECTION) &= ~(1u << pin);
+    return 0;
+}
+
+int gpio_write_pin(uint32_t pin, int val) {
+    if (pin > 31) return -1;
+    if (val) REG(GPIO_DATA) |= (1u << pin);
+    else     REG(GPIO_DATA) &= ~(1u << pin);
+    return 0;
+}
+
+int gpio_read_pin(uint32_t pin) {
+    if (pin > 31) return -1;
+    return (REG(GPIO_DATA_INPUT) & (1u << pin)) ? 1 : 0;
+}
+
 #else
 /* QEMU / Mock fallback */
 /* accepted: the `gpio` command's shadow of what it set; two terminals at once can leave

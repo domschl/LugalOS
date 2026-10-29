@@ -154,7 +154,9 @@ elseif(LUGALOS_TARGET STREQUAL "K210")
         LUGALOS_K210_FLASH_WRITABLE_FLOOR=${LUGALOS_K210_FLASH_WRITABLE_FLOOR}
         LUGALOS_K210_BOOTREC_BASE=${LUGALOS_K210_BOOTREC_BASE}
         LUGALOS_K210_SLOT_A_BASE=${LUGALOS_K210_SLOT_A_BASE}
-        LUGALOS_K210_SLOT_B_BASE=${LUGALOS_K210_SLOT_B_BASE})
+        LUGALOS_K210_SLOT_B_BASE=${LUGALOS_K210_SLOT_B_BASE}
+        LUGALOS_K210_FLASH_SIZE=${LUGALOS_K210_FLASH_SIZE}
+        LUGALOS_K210_IDENTITY_BASE=${LUGALOS_K210_IDENTITY_BASE})
 else()
     message(FATAL_ERROR "Unknown LUGALOS_TARGET: ${LUGALOS_TARGET}")
 endif()
@@ -1222,7 +1224,8 @@ elseif(LUGALOS_TARGET STREQUAL "K210")
     # . Console on UARTHS, and the SPI NOR block device behind
     # /flash0 (drivers/spi_nor_k210.c). No display, no radio, no
     # identity store yet (the flash it lives in is now there).
-    list(APPEND SOURCES drivers/uart_k210.c libc/libgcc_k210.c drivers/spi_nor_k210.c)
+    list(APPEND SOURCES drivers/uart_k210.c libc/libgcc_k210.c drivers/spi_nor_k210.c
+         drivers/idstore_k210.c drivers/ledbtn_k210.c)
 else()
     # QEMU targets: VirtIO block device + 16550 UART + VirtIO console (9P link, A3)
     list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c drivers/virtio_console.c)
