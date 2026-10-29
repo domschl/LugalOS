@@ -389,6 +389,8 @@ def slot_image(image: bytes, part_offsets: tuple[int, int]) -> bytes:
 class Node:
     """A 9P session to the node, and the paths of its update files."""
 
+    _announced = False      # the target line is printed once per run
+
     def __init__(self, a: argparse.Namespace) -> None:
         import p9lib
         self.p4 = a.p4
@@ -419,6 +421,11 @@ class Node:
             self.client = p9lib.connect_serial(a.serial, baudrate=115200, timeout=30.0)
         else:
             sys.exit("say how to reach the node: --p4 BOARD, --tcp HOST[:PORT] or --serial PORT")
+        # Which board is this? Said once per run (push-board reconnects while the board reboots),
+        # but --expect is checked on every connection.
+        p9lib.identify(self.client, a.expect, destructive=a.cmd in ("push", "push-board", "switch"),
+                       quiet=Node._announced)
+        Node._announced = True
         self.sess = p9lib.Session(self.client, aname="/", key=key)
 
     def close(self) -> None:
@@ -858,6 +865,9 @@ def main() -> int:
         p.add_argument("--serial", metavar="PORT", help="the 9P port of an RP2350 (its USB interface 02)")
         p.add_argument("--key", help="9P key, hex")
         p.add_argument("--keyfile", help="file holding the 9P key, hex")
+        p.add_argument("--expect", metavar="NAME_OR_UID",
+                       help="refuse to update any board but this one: its name, uid (four digits or more), "
+                            "preset or board id, as `board` prints them")
         p.add_argument("--prefix", default="", help="where the node's namespace is, e.g. /c6")
     a = ap.parse_args()
 

@@ -32,9 +32,15 @@ from .client import (
     slip_decode,
     slip_encode,
 )
+from .board import add_expect_argument, board_line, identify, matches, read_board
 from .transport import SerialSocketAdapter, connect_open_serial, connect_serial, connect_tcp, connect_unix, connect_ws, warm_up_9p
 
 __all__ = [
+    "add_expect_argument",
+    "board_line",
+    "identify",
+    "matches",
+    "read_board",
     "P9Client",
     "P9Error",
     "Session",

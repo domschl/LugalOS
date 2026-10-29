@@ -164,8 +164,9 @@ def main() -> int:
     parser.add_argument(
         "--serial",
         metavar="PORT",
-        default=find_default_serial(),
-        help="serial port for 9P (default: auto-detected from /dev/serial/by-id/*-if02)",
+        default=None,
+        help="serial port for 9P (default: the one LugalOS board's /dev/serial/by-id/*-if02; "
+             "with several attached you must name one)",
     )
     parser.add_argument(
         "--baud",
@@ -205,6 +206,7 @@ def main() -> int:
              "needs --key, set on the board first with `p9key HEX`",
     )
     parser.add_argument("--key", metavar="HEX", help="the board's p9key, for --tcp")
+    p9lib.add_expect_argument(parser, "sync to")
     parser.add_argument(
         "-v", "--verbose",
         action="store_true",
@@ -213,6 +215,11 @@ def main() -> int:
 
     args = parser.parse_args()
 
+    if args.serial is None and not args.p4 and not args.tcp:
+        found = sorted(glob.glob("/dev/serial/by-id/*LugalOS*-if02"))
+        if len(found) > 1:
+            sys.exit("Error: several LugalOS boards are attached; say which with --serial:\n  " + "\n  ".join(found))
+        args.serial = find_default_serial()
     if args.tcp and not args.key:
         sys.exit("Error: --tcp needs --key (set it on the board with `p9key HEX`).")
     if args.p4 and not args.tcp:
@@ -236,6 +243,7 @@ def main() -> int:
     else:
         client = p9lib.connect_serial(args.serial, baudrate=args.baud)
     try:
+        p9lib.identify(client, args.expect, destructive=not args.dry_run)
         with p9lib.Session(client, aname="/", key=key) as sess:
             print(f"Syncing local '{args.src}' -> remote '{args.dst}' {'[DRY RUN]' if args.dry_run else ''}...")
             dirs, synced, skipped, total_bytes = sync_tree(

@@ -5224,6 +5224,26 @@ def test_httpd_websocket_9p(elf_path: Path, img_path: Path, arch_name: str) -> t
                     pass
         finally:
             pub.close()
+        # The host tools' guard: identify() reads the same facts, accepts the right --expect (name, uid
+        # prefix of four or more digits, preset, board) and refuses the rest.
+        idc = p9lib.connect_ws("127.0.0.1", port)
+        try:
+            if p9lib.identify(idc, facts["name"], quiet=True) != facts:
+                return (name, False, "identify() read other facts than GET /board")
+            has_uid = facts["uid"] != "none"      # QEMU nodes have none, and "none" must never count as a match
+            for good in (facts["name"].upper(), facts["preset"], facts["board"]) + ((facts["uid"][:6],) if has_uid else ()):
+                if not p9lib.matches(facts, good):
+                    return (name, False, f"--expect {good!r} did not match the board")
+            for bad in ("", "nobody", "none", facts["uid"][:3], facts["uid"][:6] + "0" * 4):
+                if p9lib.matches(facts, bad):
+                    return (name, False, f"--expect {bad!r} matched the wrong board")
+            try:
+                p9lib.identify(idc, "nobody", quiet=True)
+                return (name, False, "identify() accepted a board that is not the expected one")
+            except SystemExit:
+                pass
+        finally:
+            idc.close()
         ok, log = session.send_and_expect("board", r"uid=", timeout=6.0)
         if "preset=" + arch_name not in log or "hardware=QEMU" not in log:
             return (name, False, f"`board` did not describe the node:\n{log[-300:]}")
