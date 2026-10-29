@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import faulthandler
 import hashlib
 import re
 import select
@@ -100,6 +101,17 @@ def _symbolize(elf_path: Path, addr: int) -> str:
         except (OSError, subprocess.SubprocessError):
             pass
     return name
+
+
+# A stall watchdog. The runner once sat 22 minutes on its first guest with QEMU alive and nothing printed
+# (2026-10-29), and by the time it was stopped nothing said where it was waiting. Every interaction with a
+# guest re-arms this; if none happens for WATCHDOG_S the stack of every thread goes to stderr, and again
+# every WATCHDOG_S while it lasts. It changes nothing else.
+WATCHDOG_S = 420
+
+
+def _watchdog() -> None:
+    faulthandler.dump_traceback_later(WATCHDOG_S, repeat=True, file=sys.stderr)
 
 
 class QemuSession:
@@ -262,6 +274,7 @@ class QemuSession:
         QEMU stopped; every later call fails at once instead of timing out."""
         if self.process is None or self.process.stdin is None:
             return False
+        _watchdog()
         fd = self.process.stdin.fileno()
         view = memoryview(data)
         deadline = time.time() + self.STDIN_WRITE_TIMEOUT_S
@@ -513,6 +526,7 @@ class QemuSession:
         platforms and every I/O transport tried, stopped reproducing once
         that one change landed -- the file-based read stayed in as
         legitimate hardening, not as the fix that actually mattered. """
+        _watchdog()
         if self._stuck_reason is not None:
             return False, f"[Stuck Guest] not sent: {self._stuck_reason} (see the report above)"
         if not self.process or self.process.stdin is None or self._log_file is None:
