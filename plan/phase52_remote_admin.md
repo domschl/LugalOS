@@ -1007,8 +1007,12 @@ deferred without blocking anything after it.
     `net/httpd.c` with `httpd` in the shell, the read-only link property
     (`P9_AUTH_REQUIRED_RO`), `connect_ws()` in `host/p9lib` and the QEMU test
     are DONE. The `httpd` task needs 6 stack pages (11 KB high-water on a
-    read). Open: the admin page itself, gzip, the RAM figures on the Pico 2 W,
-    the NANO and browser checks, 52.11b.
+    read). The admin page (`tools/sd_root/www/admin.html`, served from
+    `/flash0/www/` or `/sd0/www/`: sign-in, files, status, log, node) is DONE;
+    its protocol code runs under node and the whole page in headless Chromium,
+    both from the QEMU test. The session table lives in the pool `httpd start`
+    takes, not in `.bss`: the Tab5 and LCD-7B have 56 and 328 bytes of low RAM
+    left. Open: gzip, the Pico 2 W and NANO runs, Firefox, 52.11b.
   *Boards: QEMU (slirp), the NANO on `eth0`, the Pico 2 W on `wlan0`.*
   * **TCP:** a passive-open stream API (`tcp_stream_listen()` /
     `tcp_stream_accept()`), so a server task owns its connections and the
