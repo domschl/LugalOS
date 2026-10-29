@@ -192,8 +192,7 @@ static void decide(player_t who) {
 
     /* 1. Water and oxygen: power for the extractor, a route of conduits, the extractor */
     if (working_extractors() == 0) {
-        /* only solar until the extractor is covered; batteries wait for income */
-        if (count_of(MOON_STRUCT_SOLAR_ARRAY) < solar_for(load_with(1, 0, 0, 0))) { build_site(MOON_STRUCT_SOLAR_ARRAY, 10); return; }
+        if (ensure_supply(load_with(1, 0, 0, 0))) return;
         build_extractor();
         return;
     }

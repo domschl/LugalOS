@@ -334,6 +334,8 @@ The foundational survival loop is closed in Act I. The following features, mecha
 
 ---
 
+---
+
 ## 6. Act I Implementation Summary & Features Delivered
 
 Act I (*Survival & Bootstrapping*) is fully implemented and running on both the SDL3 host simulator and bare-metal LugalOS ESP32-P4 hardware.
@@ -360,3 +362,29 @@ Act I (*Survival & Bootstrapping*) is fully implemented and running on both the 
    - **ESP32-P4-WIFI6-Touch-LCD-7B**: Native 1024×600 borderless fullscreen presentation with cache writebacks and front/back buffer flipping.
    - **M5Stack Tab5**: 1280×720 physical presentation with 2× integer HiDPI scaling (640×360 virtual viewport).
    - Zero-crash cleanup restoring terminal text mode, repainting canvas, and synchronizing scanout.
+
+---
+
+## 7. Act II Phase-Plan: Hydrolox Starship Connection & Municipal Expansion
+
+**Goal**: Transform Moonbase Lambda from an isolated, survival-stage outpost into a thriving interplanetary spaceport connected to Earth via recurring **Hydrolox ($LH_2 / LOX$) Starship** trade runs.
+
+### 7.1 Act II Narrative & Economy Directives
+* **Hydrolox Propellant Paradigm**: Our lunar Starship variant uses liquid hydrogen and liquid oxygen ($LH_2 / LOX$) instead of methalox. Water extracted from polar crater ice is split by high-voltage electrolysis into cryogenic $LH_2$ and $LOX$.
+* **The Starship Loop**:
+  1. Starship arrives from Earth on orbital retro-burn carrying scientific cargo, heavy manufacturing tools, and specialized colonists.
+  2. Starship touches down on a reinforced, dust-deflecting landing pad.
+  3. Cargo and crew are transferred to base storage / habitats.
+  4. The colony refuels the Starship's cryogenic tanks with lunar-produced $LH_2$ and $LOX$.
+  5. Starship launches back toward Earth before its launch window closes, returning research data and mined lunar minerals.
+
+### 7.2 Act II Milestone Breakdown
+
+| Milestone | Status | Title | Deliverables & Verification |
+| :---: | :---: | :--- | :--- |
+| **64.16** | **PENDING** | **Cryogenic Propellant Economy & Electrolysis** | Implement $LH_2$ and $LOX$ resource tracking in `moon_resources_t`. High-power 2×2 Hydrolox Electrolyzer structure splitting $H_2O$ ($2 H_2O \to 2 H_2 + O_2$; 1:8 mass ratio). Cryogenic dewar tanks with thermal insulation & boil-off mechanics during lunar night. HUD propellant gauge. |
+| **64.17** | **PENDING** | **Hierarchical Build Sheet & Tech Progression** | Evolve beyond the flat 6-building ribbon: structured categorized build sheets (Power/Storage, Life Support/Cryo, Spaceport/Logistics). Minimum clearance rules and sintered foundation requirements. |
+| **64.18** | **PENDING** | **Reinforced Starship Landing Pad** | 4×4 sintered regolith spaceport apron with blast-deflection berms and cryo umbilical conduits. Protects neighboring solar arrays and habitats from high-velocity exhaust regolith scouring. |
+| **64.19** | **PENDING** | **Starship Flight & Engine Plume Animation** | Procedural multi-state Starship flight sequence: orbital approach, ease-out retro-propulsion with pale-blue/cyan hydrolox plume & shock diamonds, landing gear extension, touchdown dust skirts, umbilical hookup, cryogenic loading meter, and vertical ascent return burn. |
+| **64.20** | **PENDING** | **Earth-Moon Trade, Personnel & Victory Loop** | Earth cargo manifests (specialist colonists, heavy machinery, high-yield reactors). Starship turnaround timer / launch window pressure. Act II Victory Condition: Successfully support, refuel, and dispatch the first commercial Hydrolox Starship return mission. Headless balance test in `tests/balance.c`. |
+

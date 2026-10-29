@@ -26,7 +26,7 @@ typedef struct {
     int            clock_cx, clock_cy, clock_r;   /* Day/night dial inside the HUD */
     moon_ui_rect_t ribbon_bar;
     moon_ui_rect_t ribbon[MOON_UI_RIBBON_SLOTS];
-    moon_ui_rect_t pause_btn, speed_btn, menu_btn;
+    moon_ui_rect_t cat_btn, pause_btn, speed_btn, menu_btn;
     moon_ui_rect_t minimap;            /* The 64x64 map itself */
     moon_ui_rect_t minimap_zone;       /* Map plus frame: the hit area */
     moon_ui_rect_t inspector;

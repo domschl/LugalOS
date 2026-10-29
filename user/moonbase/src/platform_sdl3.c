@@ -53,6 +53,7 @@ static uint32_t map_sdl_key(SDL_Keycode k) {
         case SDLK_C:         return MOON_KEY_C;
         case SDLK_O:         return MOON_KEY_O;
         case SDLK_F:         return MOON_KEY_F;
+        case SDLK_B:         return MOON_KEY_B;
         case SDLK_MINUS:     return MOON_KEY_MINUS;
         case SDLK_KP_MINUS:  return MOON_KEY_MINUS;
         case SDLK_EQUALS:    return MOON_KEY_PLUS;

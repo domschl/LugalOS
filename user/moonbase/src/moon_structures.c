@@ -109,6 +109,40 @@ static const moon_structure_def_t s_catalog[MOON_STRUCT_COUNT] = {
         .desc           = "Electrolyzes ice & reduces ilmenite for closed-loop oxygen and water."
     },
 
+    [MOON_STRUCT_HYDROLOX_PLANT] = {
+        .type           = MOON_STRUCT_HYDROLOX_PLANT,
+        .name           = "Hydrolox Plant",
+        .short_name     = "HYDROLOX",
+        .footprint_w    = 2,
+        .footprint_h    = 2,
+        .cost_regolith  = 80,
+        .power_kw       = -60,      /* -60 kW high-power cracking */
+        .power_storage  = 0,
+        .rate_o2        = 0,
+        .rate_water     = 0,
+        .primary_color  = RGB565(50, 140, 200),
+        .accent_color   = COLOR_LASER_CYAN,
+        .height_px      = 28,
+        .desc           = "Cracks water into LH2 and LOX cryogenic rocket propellants."
+    },
+
+    [MOON_STRUCT_CRYO_DEWAR] = {
+        .type           = MOON_STRUCT_CRYO_DEWAR,
+        .name           = "Cryo Dewar",
+        .short_name     = "DEWAR",
+        .footprint_w    = 1,
+        .footprint_h    = 1,
+        .cost_regolith  = 35,
+        .power_kw       = -5,       /* 5 kW active cryocooling */
+        .power_storage  = 0,
+        .rate_o2        = 0,
+        .rate_water     = 0,
+        .primary_color  = RGB565(180, 190, 210),
+        .accent_color   = COLOR_ENERGY_YELLOW,
+        .height_px      = 20,
+        .desc           = "Vacuum-insulated sphere storing 250kg LH2 and 2,000kg LOX."
+    },
+
     [MOON_STRUCT_POWER_CONDUIT] = {
         .type           = MOON_STRUCT_POWER_CONDUIT,
         .name           = "Power Conduit",
@@ -328,6 +362,8 @@ static const moon_surface_t *sprite_of(uint8_t type) {
         case MOON_STRUCT_HABITAT_DOME:   return &g_surf_habitat_dome;
         case MOON_STRUCT_REGOLITH_PLANT: return &g_surf_sinterer;
         case MOON_STRUCT_O2_EXTRACTOR:   return &g_surf_o2_extractor;
+        case MOON_STRUCT_HYDROLOX_PLANT: return &g_surf_hydrolox_plant;
+        case MOON_STRUCT_CRYO_DEWAR:     return &g_surf_cryo_dewar;
         default:                         return NULL;
     }
 }
@@ -340,8 +376,7 @@ static void structure_anchor(const moon_grid_t *grid, uint8_t type, int gx, int 
     const moon_tile_t *t = moon_grid_get_tile_const(grid, gx, gy);
     moon_grid_to_screen(gx, gy, t ? t->elevation : 0, cam_x, cam_y, sw, sh, sx, sy);
     if (type == MOON_STRUCT_HABITAT_DOME) {
-        *sx += MOON_TILE_HALF_W;
-        *sy += MOON_TILE_HALF_H / 2;
+        /* centered */;
     }
 }
 
@@ -349,7 +384,7 @@ static void sprite_rect(uint8_t type, int32_t sx, int32_t sy, moon_rect_t *r) {
     const moon_surface_t *spr = sprite_of(type);
     int w = spr ? spr->width : 0;
     int h = spr ? spr->height : 0;
-    int base = (type == MOON_STRUCT_HABITAT_DOME) ? MOON_TILE_H : MOON_TILE_HALF_H;
+    int base = (type == MOON_STRUCT_HABITAT_DOME || type == MOON_STRUCT_HYDROLOX_PLANT) ? 20 : MOON_TILE_HALF_H;
     r->x0 = sx - w / 2;
     r->y0 = sy + base - h;
     r->x1 = r->x0 + w;
@@ -403,6 +438,23 @@ static void draw_structure_body(const moon_grid_t *grid, const moon_surface_t *s
     moon_rect_t r;
     sprite_rect(s->type, sx, sy, &r);
     moon_blit_sprite(surf, r.x0, r.y0, spr, MOON_KEY_COLOR);
+}
+
+static void draw_meter_bar(const moon_surface_t *surf, int32_t sx, int32_t sy,
+                            int pips, int max_pips, uint16_t active_col) {
+    int bar_w = max_pips * 4;
+    int bar_x = sx - (bar_w / 2);
+    int bar_y = sy;
+    int bar_h = 4;
+
+    /* Dark bezel */
+    moon_blit_fill_rect(surf, bar_x - 1, bar_y - 1, bar_w + 2, bar_h + 2, RGB565(15, 18, 22));
+    moon_blit_rect_outline(surf, bar_x - 1, bar_y - 1, bar_w + 2, bar_h + 2, RGB565(40, 45, 55));
+
+    for (int p = 0; p < max_pips; p++) {
+        uint16_t col = (p < pips) ? active_col : RGB565(30, 32, 38);
+        moon_blit_fill_rect(surf, bar_x + p * 4, bar_y, 3, bar_h, col);
+    }
 }
 
 static void draw_battery_led(const moon_surface_t *surf, int32_t sx, int32_t sy,
@@ -461,6 +513,38 @@ static void draw_structure_overlay(const moon_grid_t *grid, const moon_surface_t
     }
     if (s->type == MOON_STRUCT_BATTERY_BANK) {
         draw_battery_led(surf, sx, sy, res, s->active, s->powered);
+    } else if (s->type == MOON_STRUCT_HYDROLOX_PLANT) {
+        /* Status bar above plant: cyan if cracking water, yellow if storage full, red if out of water / unpowered */
+        if (s->active && s->powered && res) {
+            int water_l = fixed_to_int(res->water_stored_l);
+            int lh2_cap = res->lh2_capacity_kg;
+            int lox_cap = res->lox_capacity_kg;
+            int lh2_stored = fixed_to_int(res->lh2_stored_kg);
+            int lox_stored = fixed_to_int(res->lox_stored_kg);
+            bool full = (lh2_cap > 0 && lh2_stored >= lh2_cap) || (lox_cap > 0 && lox_stored >= lox_cap);
+            if (water_l >= 20 && !full) {
+                draw_meter_bar(surf, sx, sy - 28, 5, 5, COLOR_LASER_CYAN);
+            } else if (full) {
+                draw_meter_bar(surf, sx, sy - 28, 5, 5, COLOR_ENERGY_YELLOW);
+            } else {
+                draw_meter_bar(surf, sx, sy - 28, 1, 5, COLOR_ALERT_RED);
+            }
+        } else {
+            draw_meter_bar(surf, sx, sy - 28, 0, 5, RGB565(30, 32, 38));
+        }
+    } else if (s->type == MOON_STRUCT_CRYO_DEWAR) {
+        /* Fuel fill level bar: stored propellant vs capacity */
+        if (s->active && res) {
+            int total_cap = res->lh2_capacity_kg + res->lox_capacity_kg;
+            int total_stored = fixed_to_int(res->lh2_stored_kg) + fixed_to_int(res->lox_stored_kg);
+            int pips = (total_cap > 0) ? (total_stored * 5 + (total_cap / 10)) / total_cap : 0;
+            if (pips > 5) pips = 5;
+            if (pips < 0) pips = 0;
+            uint16_t col = s->powered ? RGB565(120, 210, 255) : COLOR_ALERT_RED;
+            draw_meter_bar(surf, sx, sy - 20, pips, 5, col);
+        } else {
+            draw_meter_bar(surf, sx, sy - 20, 0, 5, RGB565(30, 32, 38));
+        }
     }
 
     const moon_structure_def_t *def = moon_structure_get_def((moon_structure_type_t)s->type);
