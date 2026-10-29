@@ -26,6 +26,11 @@ const [browser, url, secret, ssid, pass, name] = process.argv.slice(2);
     if (!shown) throw new Error('claim failed: ' + await ev("document.getElementById('msg').textContent"));
     const key = await ev("document.getElementById('key').textContent");
     const after = await ev("document.getElementById('after').textContent");
+    // The key stays on screen, copyable, until the person says it is saved; then it is wiped from the page.
+    await ev("document.getElementById('cp').click()");
+    await waitFor("document.getElementById('cp').textContent === 'Copied'", 'the copy button', 5000);
+    await ev("document.getElementById('fin').click()");
+    await waitFor("document.getElementById('key').textContent === '' && /^Done/.test(document.getElementById('after').textContent)", 'the page to finish');
     if (!/^[0-9a-f]{64}$/.test(key)) throw new Error('the page showed no key: ' + key);
     console.log('title: ' + title);
     console.log('board: ' + boardLine);

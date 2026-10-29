@@ -49,8 +49,10 @@ pre { background:var(--bg); border:1px solid var(--line); border-radius:6px; pad
   <h2 style="margin:.1rem 0 .5rem;font-size:1.1rem">This node is yours</h2>
   <p>Save this key now. It is the only copy: anything that wants to manage this node needs it.</p>
   <pre id="key"></pre>
+  <button id="cp" class="alt" type="button">Copy the key</button>
   <button id="dl" class="alt" type="button">Save the key as a file</button>
   <p id="after" class="mut"></p>
+  <button id="fin" type="button">I saved the key</button>
 </div>
 </main>
 
@@ -168,6 +170,38 @@ if (typeof document !== 'undefined') (() => {
   const say = (t, cls) => { $('msg').textContent = t; $('msg').className = cls || ''; };
   const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 
+  // Shown after the claim, and again if the page is reloaded before the owner says the key is saved: this device
+  // is on the setup network for as long as the node keeps it up, and the key lives nowhere else.
+  const showKey = (keyHex, name, ssid) => {
+    try { sessionStorage.setItem('lugalos-owner', JSON.stringify({ keyHex, name, ssid })); } catch (e) { /* private mode */ }
+    $('form').classList.add('hide'); $('done').classList.remove('hide');
+    $('key').textContent = keyHex;
+    $('after').textContent = (ssid ? 'The node joins "' + ssid + '" when you tap the button below.' : 'The node has no Wi-Fi of its own yet.')
+      + ' This setup network stays up for ten minutes, so there is time.';
+    $('cp').onclick = async () => {
+      try { await navigator.clipboard.writeText(keyHex); } catch (e) {
+        const r = document.createRange(); r.selectNodeContents($('key')); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+        try { document.execCommand('copy'); } catch (e2) { /* the key is selected: copy it by hand */ }
+      }
+      $('cp').textContent = 'Copied';
+    };
+    $('dl').onclick = () => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([keyHex + '\n'], { type: 'text/plain' }));
+      a.download = (name || 'lugalos') + '-owner.key'; a.click();
+    };
+    $('fin').onclick = async () => {
+      $('fin').disabled = true;
+      try { await fetch('/setup-done', { cache: 'no-store' }); } catch (e) { /* the node is already leaving */ }
+      try { sessionStorage.removeItem('lugalos-owner'); } catch (e) { /* nothing stored */ }
+      $('key').textContent = '';
+      $('after').textContent = ssid ? 'Done. The node is leaving this setup network and joining "' + ssid + '". Reconnect this device to your own Wi-Fi.'
+                                    : 'Done. The node closes this setup network.';
+      $('cp').classList.add('hide'); $('dl').classList.add('hide'); $('fin').classList.add('hide');
+    };
+  };
+  try { const kept = JSON.parse(sessionStorage.getItem('lugalos-owner') || 'null'); if (kept && kept.keyHex) showKey(kept.keyHex, kept.name, kept.ssid); } catch (e) { /* none */ }
+
   fetch('/board', { cache: 'no-store' }).then((r) => r.text()).then((t) => {
     const kv = {}; t.split('\n').forEach((l) => { const i = l.indexOf('='); if (i > 0) kv[l.slice(0, i)] = l.slice(i + 1); });
     if (kv.preset) $('board').innerHTML = esc(kv.name || kv.board) + ' &middot; ' + esc(kv.hardware) + ' &middot; uid ' + esc(kv.uid);
@@ -200,15 +234,7 @@ if (typeof document !== 'undefined') (() => {
         if (res && res !== 'pending') break;
       }
       if (!/^ok/.test(res)) { say('The node said: ' + (res || 'nothing') + (/wrong setup secret/.test(res) ? ' Check the label.' : ''), 'err'); $('go').disabled = false; return; }
-      $('form').classList.add('hide'); $('done').classList.remove('hide');
-      $('key').textContent = keyHex;
-      $('after').textContent = ssid ? 'The node is leaving this setup network now and joining "' + ssid + '". Reconnect this device to your own Wi-Fi.'
-                                    : 'The node is yours. It has no Wi-Fi of its own yet; give it one with the key above.';
-      $('dl').onclick = () => {
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(new Blob([keyHex + '\n'], { type: 'text/plain' }));
-        a.download = (name || 'lugalos') + '-owner.key'; a.click();
-      };
+      showKey(keyHex, name, ssid);
     } catch (e) { say(e.message, 'err'); $('go').disabled = false; }
     finally { if (link) link.close(); }
   };

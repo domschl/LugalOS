@@ -272,6 +272,11 @@ static void handle_request(hsess_t *h) {
         char host[64] = "";
         (void)header_value(req, "Host", host, sizeof host);
         bool ours = strcmp(host, SETUP_AP_IP_STR) == 0;
+        if (ours && strcmp(path, "/setup-done") == 0) {
+            setup_ap_release();
+            reply_and_close(h, "200 OK", "text/plain", "ok\n");
+            return;
+        }
         if (ours && (strcmp(path, "/") == 0 || strcmp(path, "/index.html") == 0 || strcmp(path, "/setup.html") == 0)) {
 #if defined(CONFIG_NETWORK_CLAIM)
             start_setup_page(h);

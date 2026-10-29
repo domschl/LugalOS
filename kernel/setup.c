@@ -24,6 +24,7 @@
 static spinlock_t g_lock;
 static uint64_t   g_open_until_ms;          /* 0: no window */
 static uint32_t   g_attempts;               /* failed claims in this window */
+static uint64_t   g_hold_until_ms;          /* 0: none; else the setup network stays up until then (see setup_ap_release) */
 static char       g_result[96] = "none";    /* the last request's outcome */
 static bool       g_pending;                /* a request is queued or running */
 static char       g_req[REQ_LINE_MAX];
@@ -60,6 +61,7 @@ bool setup_start(void) { return window_open(true); }
 void setup_stop(void) {
     uintptr_t f = spin_lock_irqsave(&g_lock);
     g_open_until_ms = 0;
+    g_hold_until_ms = 0;
     g_forced = false;
     spin_unlock_irqrestore(&g_lock, f);
 }
@@ -86,7 +88,17 @@ bool setup_net_contains(const uint8_t ip[4]) {
     return in;
 }
 
+void setup_ap_release(void) {
+    uintptr_t f = spin_lock_irqsave(&g_lock);
+    g_hold_until_ms = 0;
+    spin_unlock_irqrestore(&g_lock, f);
+}
+
 bool setup_ap_wanted(void) {
+    uintptr_t f = spin_lock_irqsave(&g_lock);
+    bool held = g_hold_until_ms != 0 && time_get_ms() < g_hold_until_ms;
+    spin_unlock_irqrestore(&g_lock, f);
+    if (held) return true;
     if (setup_state() != SETUP_OPEN) return false;
     char ssid[NODE_WLAN_SSID_MAX + 1];
     return g_forced || !node_wlan_ssid(ssid, sizeof ssid);
@@ -148,6 +160,14 @@ static void claim_failed(const char *why) {
     printk("[Setup] claim refused: %s%s\n", why, closed ? " (setup closed)" : "");
 }
 
+/* The owner's key is on the claimer's screen and nowhere else: keep the setup network up so the page stays
+ * reachable until they say they saved it (setup_ap_release), or SETUP_HOLD_S passes. */
+static void hold_setup_net(void) {
+    uintptr_t f = spin_lock_irqsave(&g_lock);
+    g_hold_until_ms = time_get_ms() + (uint64_t)SETUP_HOLD_S * 1000u;
+    spin_unlock_irqrestore(&g_lock, f);
+}
+
 /* name, wlan, then the admin grant last: the grant is what makes the node claimed, so a failure
  * before it leaves the node unclaimed, and the client can ask again. */
 static void do_claim(const char *args) {
@@ -206,6 +226,7 @@ static void do_claim(const char *args) {
     memset(psk, 0, sizeof psk);
     if (rc != P9_GRANT_OK) { claim_failed(p9_grant_result_str(rc)); return; }
     setup_stop();
+    hold_setup_net();
     set_result("ok: claimed");
     printk("[Setup] node claimed\n");
 }
@@ -388,6 +409,7 @@ void setup_net_set(const uint8_t ip[4], const uint8_t mask[4]) { (void)ip; (void
 void setup_net_clear(void) { }
 bool setup_net_contains(const uint8_t ip[4]) { (void)ip; return false; }
 bool setup_ap_wanted(void) { return false; }
+void setup_ap_release(void) { }
 void setup_init(void) { setup_button_start(); }
 uint32_t setup_ctl_read(char *out, uint32_t cap) { (void)out; (void)cap; return 0; }
 int setup_ctl_write(const char *buf, uint32_t len) { (void)buf; (void)len; return -1; }

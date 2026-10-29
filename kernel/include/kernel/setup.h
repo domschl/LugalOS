@@ -68,6 +68,12 @@ bool setup_net_contains(const uint8_t ip[4]);
  * no owner boots as the station it was set up to be. Polled by kernel/setup_ap.c. */
 bool setup_ap_wanted(void);
 
+/* After a claim the setup network stays up for up to SETUP_HOLD_S seconds, so the page that shows the new
+ * owner key stays reachable while the claimer saves it. The page ends the hold through `GET /setup-done`
+ * (net/httpd.c); setup_stop() ends it too. */
+#define SETUP_HOLD_S 600u
+void setup_ap_release(void);
+
 /* Opens a window of SETUP_WINDOW_S seconds, with the attempts counted again. False in a build
  * without CONFIG_NETWORK_CLAIM, or on a node with no setup secret to claim with. */
 bool setup_start(void);

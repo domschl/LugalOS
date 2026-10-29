@@ -5763,6 +5763,8 @@ def test_setup_page_and_claim(elf_path: Path, img_path: Path, arch_name: str) ->
             adm = http(b"GET / HTTP/1.1\r\nHost: 192.168.4.1\r\n\r\n")
             if b"LugalOS admin" not in adm or b"Set up this node" in adm:
                 return (name, False, f"off the setup network GET / is not the admin page: {adm[:120]!r}")
+            if http(b"GET /setup-done HTTP/1.1\r\nHost: 192.168.4.1\r\n\r\n").startswith(b"HTTP/1.1 200"):
+                return (name, False, "/setup-done answered off the setup network")
             r = claim("Net", "password1", "x")
             if "result: ok" in r.stdout:
                 return (name, False, "a claim was accepted from outside the setup network")
@@ -5783,6 +5785,9 @@ def test_setup_page_and_claim(elf_path: Path, img_path: Path, arch_name: str) ->
                 rd = http(raw)
                 if not rd.startswith(b"HTTP/1.1 302") or b"Location: http://192.168.4.1/" not in rd:
                     return (name, False, f"{what} was not redirected to the setup page: {rd[:140]!r}")
+            done = http(b"GET /setup-done HTTP/1.1\r\nHost: 192.168.4.1\r\n\r\n")
+            if not done.startswith(b"HTTP/1.1 200") or not done.endswith(b"ok\n"):
+                return (name, False, f"/setup-done did not answer on the setup network: {done[:100]!r}")
             if b"preset=" not in http(b"GET /board HTTP/1.1\r\nHost: x\r\n\r\n"):
                 return (name, False, "/board is gone on the setup network")
 
