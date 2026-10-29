@@ -5240,13 +5240,14 @@ def test_httpd_websocket_9p(elf_path: Path, img_path: Path, arch_name: str) -> t
                 return (name, False, f"the page read over 9P differs in size from the file:\n{out[-300:]}")
 
         # 4c. And the page itself, in a real browser if there is one: sign in, browse, be refused a write.
-        browser = shutil.which("chromium") or shutil.which("google-chrome") or shutil.which("chromium-browser")
-        if node and browser:
+        browsers = [b for b in (shutil.which("chromium") or shutil.which("google-chrome") or shutil.which("chromium-browser"),
+                                shutil.which("firefox")) if b]
+        for browser in browsers if node else []:
             r = subprocess.run([node, str(Path(__file__).resolve().parent / "web" / "browser_check.js"), browser,
                                 f"http://127.0.0.1:{port}/", "lugal", key.hex()],
                                capture_output=True, text=True, timeout=120)
             if "browser: ok" not in r.stdout:
-                return (name, False, f"the page in a browser failed:\n{(r.stdout + r.stderr)[-600:]}")
+                return (name, False, f"the page in {Path(browser).name} failed:\n{(r.stdout + r.stderr)[-600:]}")
 
         # 5. Allowed at the console, a new session may write.
         session.send_and_expect("httpd write on", r"ALLOWED", timeout=5.0)

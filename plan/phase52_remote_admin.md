@@ -1020,7 +1020,7 @@ deferred without blocking anything after it.
       RAM: `httpd start` costs 8 pages on the Pico 2 W (4 stack + 1 session
       pool of 2 buffers + table; 31 of 80 heap pages stayed free) and
       6.6 KB of its 16 KB stack. `/flash0/www/` arrives on the Pico by
-      `picotool load flashfs.uf2`, not by OTA. Open: gzip, Firefox, 52.11b.
+      `picotool load flashfs.uf2`, not by OTA. Firefox 158 (WebDriver BiDi) and Chromium both pass on both boards and in the QEMU test. Open: gzip, 52.11b.
   *Boards: QEMU (slirp), the NANO on `eth0`, the Pico 2 W on `wlan0`.*
   * **TCP:** a passive-open stream API (`tcp_stream_listen()` /
     `tcp_stream_accept()`), so a server task owns its connections and the
