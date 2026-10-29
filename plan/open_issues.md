@@ -80,6 +80,29 @@ missing or not contacting, only a meter says.
 
 ---
 
+## Updating a Pico 2 W over Wi-Fi wedges its radio
+
+**Seen:** 2026-10-29, twice out of two (`lota.py push --tcp` to a `rp2350-wifi`, over a protected
+session). About 200 KB into the image (6 s at 34 KB/s) the board stops answering ARP and ping; the
+console still works and `net` still says `link up`. `wifi stats` shows `2 F2 read underflow` and
+`cyw43: ioctl cmd 166 timed out`; `wifi recover` (level 1) does not bring it back, `wifi probe` and a
+new `wifi join` do. The host's push dies with `Connection reset by peer` once the keepalive gives up.
+
+**What it is not** (all measured the same day): not the protection (it happens on the first
+attempt's pace, and protected reads run at the speed of plain ones, 97 KB/s each, 2 MB through with
+the radio healthy); not flash writes alone (a full image written over the cable while pinging the
+board for 22 s: no loss, no wedge); not the heap (30 of 80 pages free); not a long erase (the OTA
+writes one 4 KB sector at a time).
+
+**Suspects:** the flash write (interrupts masked, the other core parked) landing in the middle of a
+CYW43 bus transaction while the radio is receiving; the 9P server and the radio's pump share the
+`netsrv` task, so a write blocks the receive path for its 50 ms. **Cable and USB updates are
+unaffected**; so is the P4 over Wi-Fi (its C6 has its own CPU).
+
+**Destination:** the next Pico 2 W session (52.12 needs this radio). **First step:** log the bus
+state at each sector write (`flash_rp2350_write_sector()` is the one call), and see whether the
+underflow follows the first write that overlaps a receive.
+
 # B. Unexplained intermittents
 
 Each: what was seen, how often, what is already armed to catch it, and **what

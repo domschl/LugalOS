@@ -2040,6 +2040,9 @@ static int process_request(const uint8_t *req_buf, uint32_t req_len,
             /* Remember what was agreed. It used to be computed here, sent,
              * and forgotten, which left p9_serialize() with nothing to
              * derive an honest iounit from -- so it hardcoded one. */
+            /* A protected session appends a tag to every frame, and the link's buffers hold msize bytes:
+             * the size a client may use shrinks by the tag, both ways. */
+            if (resp.lp && resp.msize > P9_MAX_MSIZE - P9_TAG_LEN) resp.msize = P9_MAX_MSIZE - P9_TAG_LEN;
             msize_set(resp.msize);
             break;
         case P9_TAUTH:
