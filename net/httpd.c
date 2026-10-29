@@ -18,8 +18,10 @@
 
 #if defined(CONFIG_BOARD_RP2350)
 #define HTTPD_MAX_SESSIONS 1u       /* SRAM: a session is two message buffers */
+#define HTTPD_STACK_PAGES  4u       /* 6.6 KB high-water on a read (msize 2048) */
 #else
 #define HTTPD_MAX_SESSIONS 2u
+#define HTTPD_STACK_PAGES  6u       /* 11 KB high-water on a read (msize 4096) */
 #endif
 
 #define HTTPD_REQ_MAX       1536u   /* request line + headers; the message buffer is at least this */
@@ -431,7 +433,7 @@ int httpd_start(uint16_t port) {
     }
     g_port = port;
     g_want_stop = false;
-    g_pid = task_create_sized("httpd", httpd_task, NULL, 6);
+    g_pid = task_create_sized("httpd", httpd_task, NULL, HTTPD_STACK_PAGES);
     if (g_pid < 0) {
         tcp_stream_unlisten(port);
         palloc_free(g_pool, g_pool_pages);
