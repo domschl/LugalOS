@@ -443,6 +443,16 @@ void net_stack_detach(void) {
     net_unlock();
 }
 
+void net_clear_address(void) {
+    net_lock();
+    net_state_t *st = net_mutable_state();
+    memset(st->ip, 0, IPV4_LEN);
+    memset(st->mask, 0, IPV4_LEN);
+    memset(st->gw, 0, IPV4_LEN);
+    st->configured = false;
+    net_unlock();
+}
+
 int net_set_address(const uint8_t ip[IPV4_LEN], const uint8_t mask[IPV4_LEN],
                     const uint8_t gw[IPV4_LEN]) {
     net_lock();

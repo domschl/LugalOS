@@ -13,6 +13,7 @@
 #include "kernel/palloc.h"
 #include "kernel/printk.h"
 #include "kernel/sched.h"
+#include "kernel/setup.h"
 #include "kernel/time.h"
 #include <stddef.h>
 #include <string.h>
@@ -32,6 +33,8 @@
 #define HTTPD_OBUF  (P9_MAX_MSIZE + WS_HDR_MAX)
 #define HTTPD_PAGE_A  "/flash0/www/admin.html"
 #define HTTPD_PAGE_B  "/sd0/www/admin.html"
+#define HTTPD_SETUP_A "/flash0/www/setup.html"
+#define HTTPD_SETUP_B "/sd0/www/setup.html"
 
 typedef enum { H_FREE, H_REQUEST, H_FILE, H_WS, H_CLOSING } hstate_t;
 
@@ -56,6 +59,7 @@ typedef struct {
     uint8_t     ctl[128];             /* a control frame's payload */
     uint32_t    msg_len;              /* bytes of the message being assembled / ready in ibuf */
     bool        msg_ready;
+    uint8_t     peer[4];
     p9_link_t   link;
     p9_prot_t   prot;                 /* the protected session's state (fs/p9_protect.h) */
 } hsess_t;
@@ -137,6 +141,18 @@ static void reply_and_close(hsess_t *h, const char *status, const char *ctype, c
     h->st = H_CLOSING;
 }
 
+/* A captive portal's answer to every request that is not for the setup page: phones and laptops probe a
+ * known address on joining and open a sign-in sheet when the answer is not the one they expect. */
+static void reply_redirect(hsess_t *h, const char *location) {
+    int n = ksnprintf((char *)h->obuf, HTTPD_OBUF,
+                      "HTTP/1.1 302 Found\r\nLocation: %s\r\nContent-Length: 0\r\nConnection: close\r\n"
+                      "Cache-Control: no-store\r\n\r\n", location);
+    h->olen = n > 0 ? (uint32_t)n : 0;
+    h->osent = 0;
+    h->close_after_drain = true;
+    h->st = H_CLOSING;
+}
+
 /* Case-insensitive search of a header's value in the request block; copies it, trimmed. */
 static bool header_value(const char *req, const char *name, char *out, uint32_t cap) {
     uint32_t nl = (uint32_t)strlen(name);
@@ -192,18 +208,19 @@ static void start_ws(hsess_t *h, const char *key, bool want_9p) {
     /* Plain HTTP: a client that offers the protected-session extension (9P2000.lp, after Tauth) may
      * write; one that does not is read-only unless the console allowed plain writes. */
     h->link.prot_get = ws_link_prot;
+    h->link.setup_net = setup_net_contains(h->peer);
     h->link.plain_writes_ok = g_write_ok;
     h->st = H_WS;
     g_ws_total++;
 }
 
-static void start_file(hsess_t *h) {
-    h->fd = vfs_open(HTTPD_PAGE_A, VFS_O_READ);
-    if (h->fd < 0) h->fd = vfs_open(HTTPD_PAGE_B, VFS_O_READ);
+static void start_file(hsess_t *h, const char *first, const char *second) {
+    h->fd = vfs_open(first, VFS_O_READ);
+    if (h->fd < 0) h->fd = vfs_open(second, VFS_O_READ);
     vfs_stat_t st;
     if (h->fd < 0 || vfs_fstat(h->fd, &st) != 0) {
         if (h->fd >= 0) { vfs_close(h->fd); h->fd = -1; }
-        reply_and_close(h, "404 Not Found", "text/plain", "the admin page is not installed on this node\n");
+        reply_and_close(h, "404 Not Found", "text/plain", "that page is not installed on this node\n");
         g_not_found++;
         return;
     }
@@ -230,6 +247,19 @@ static void handle_request(hsess_t *h) {
     path[i] = 0;
 
     char v[96];
+    if (setup_net_contains(h->peer) && strcmp(path, "/9p") != 0 && strcmp(path, "/board") != 0) {
+        /* On the setup network the only page is the setup page, at the node's own address; everything
+         * else -- a probe for a known host, a favicon, a page the user typed -- goes there. */
+        char host[64] = "";
+        (void)header_value(req, "Host", host, sizeof host);
+        bool ours = strcmp(host, SETUP_AP_IP_STR) == 0;
+        if (ours && (strcmp(path, "/") == 0 || strcmp(path, "/index.html") == 0 || strcmp(path, "/setup.html") == 0)) {
+            start_file(h, HTTPD_SETUP_A, HTTPD_SETUP_B);
+        } else {
+            reply_redirect(h, "http://" SETUP_AP_IP_STR "/");
+        }
+        return;
+    }
     if (strcmp(path, "/9p") == 0) {
         char key[80], proto[64] = "";
         bool up = header_value(req, "Upgrade", v, sizeof v) && token_in(v, "websocket");
@@ -251,7 +281,7 @@ static void handle_request(hsess_t *h) {
         return;
     }
     if (strcmp(path, "/") == 0 || strcmp(path, "/index.html") == 0 || strcmp(path, "/admin.html") == 0) {
-        start_file(h);
+        start_file(h, HTTPD_PAGE_A, HTTPD_PAGE_B);
         return;
     }
     g_not_found++;
@@ -409,6 +439,7 @@ static void httpd_task(void *arg) {
             uint8_t peer[4];
             if (tcp_stream_accept(g_port, &s, peer) != 1) break;
             free_slot->s = s;
+            memcpy(free_slot->peer, peer, 4);
             free_slot->st = H_REQUEST;
             free_slot->ilen = 0;
             free_slot->started_ms = time_get_ms();

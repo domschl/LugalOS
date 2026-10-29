@@ -87,3 +87,7 @@ set(CONFIG_SETUP_BUTTON_BOOTSEL 1)
 
 # Named by /proc/board and the banner (kernel/boardinfo.h).
 set(CONFIG_BOARD_DESC "Raspberry Pi Pico 2 W")
+
+# Claiming over the network (kernel/setup.c), through the setup access point (kernel/setup_ap.c): an unclaimed
+# node with a setup secret raises "LugalOS-XXXX" and serves the setup page.
+set(CONFIG_NETWORK_CLAIM 1)

@@ -707,6 +707,7 @@ set(SOURCES
     kernel/setup.c
     kernel/boardinfo.c
     kernel/setup_button.c
+    kernel/setup_ap.c
     # N1: the nonce source for that gate, plus the measurement that says
     # whether the ring oscillator behind it is worth trusting.
     kernel/random.c

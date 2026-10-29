@@ -1108,10 +1108,10 @@ static bool p9_path_within(const char *prefix, const char *path) {
     return path[n] == '\0' || path[n] == '/';
 }
 
-/* Whether the link this request arrived on is the setup access point's. The access point
- * (52.12) overrides it; until then no link is, and an unclaimed node takes a claim over a cable
- * (a link that needs no authentication) or from its console only. */
-__attribute__((weak)) bool p9_link_is_setup_ap(void) { return false; }
+/* Whether the link this request arrived on is on the setup network (the node's own access point, 52.12):
+ * the server that owns the connection says so per session (p9_link_t.setup_net). Weak so the host
+ * test's harness can stand in for it. */
+__attribute__((weak)) bool p9_link_is_setup_ap(void) { return (req_ctx()->link_flags & P9_LINK_SETUP_NET) != 0; }
 
 /* 52.10: the files that change the identity need more than a read-write grant. /dev/owner is the
  * owner part: `admin`. /dev/setup takes a claim: `admin`, or the attach that /dev/setup alone
@@ -1983,7 +1983,7 @@ __attribute__((weak)) bool p9_link_session_active(const void *conn) { (void)conn
 bool p9_request_confidential(void) {
     /* Outside a request (the console, a script) the context slot of this task is the idle one:
      * its flags are zero. A request on a plaintext link set PLAINTEXT for as long as it runs. */
-    return (req_ctx()->link_flags & P9_LINK_PLAINTEXT) == 0;
+    return (req_ctx()->link_flags & P9_LINK_PLAINTEXT) == 0 || (req_ctx()->link_flags & P9_LINK_SETUP_NET) != 0;
 }
 
 int p9_server_process_link(const void *conn, const uint8_t *req_buf, uint32_t req_len,

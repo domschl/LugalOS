@@ -173,11 +173,11 @@ static int p9_route_frame(p9_link_t *link, const uint8_t *buf, uint32_t len) {
     const bool tagged = link->prot && link->prot->state == P9_PROT_ACTIVE;
     const bool plaintext = link->prot_get != NULL;
     p9_auth_policy_t policy = !link->auth_required ? P9_AUTH_NOT_REQUIRED
-                              : (link->read_only || (plaintext && !tagged && !link->plain_writes_ok))
+                              : (link->read_only || (plaintext && !tagged && !link->plain_writes_ok && !link->setup_net))
                                     ? P9_AUTH_REQUIRED_RO
                                     : P9_AUTH_REQUIRED;
     int resp_len = p9_server_process_link(link, buf, len, resp_buf, sizeof(resp_buf) - (plaintext ? P9_TAG_LEN : 0),
-                                          policy, plaintext ? P9_LINK_PLAINTEXT : 0);
+                                          policy, (plaintext ? P9_LINK_PLAINTEXT : 0) | (link->setup_net ? P9_LINK_SETUP_NET : 0));
     g_serving_link = outer_link;
     g_serving_pid = outer_pid;
     if (resp_len < 7) return -1;

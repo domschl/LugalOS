@@ -34,7 +34,13 @@
 #define SETUP_WINDOW_S      900u    /* how long a setup window stays open */
 #define SETUP_MAX_ATTEMPTS  5u      /* failed claims that close it until the next trigger */
 
+/* The setup access point's own address and network (kernel/setup_ap.c). */
+#define SETUP_AP_IP_STR "192.168.4.1"
+
 typedef enum { SETUP_UNCLAIMED, SETUP_OPEN, SETUP_CLAIMED } setup_state_t;
+
+/* The task that raises and lowers the setup access point with the window (a Pico 2 W; a no-op elsewhere). */
+void setup_ap_start(void);
 
 /* Boot task, after the grants are loaded: opens the window on an unclaimed node that has a setup
  * secret, and starts the worker. */
@@ -46,6 +52,21 @@ void setup_button_start(void);
 
 setup_state_t setup_state(void);
 const char   *setup_state_name(setup_state_t s);
+
+/* --- The setup network (52.12) ---
+ *
+ * The one network the claim door opens on: the setup access point's, or any network the console names with
+ * `setup net`. An unauthenticated attach to /dev/setup is accepted only from a peer on it (fs/9p.c asks
+ * through the link, kernel/setup.c answers), and secrets may cross it unencrypted because the owner stands
+ * next to the node, inside a WPA2 link keyed by the setup secret. */
+void setup_net_set(const uint8_t ip[4], const uint8_t mask[4]);
+void setup_net_clear(void);
+bool setup_net_contains(const uint8_t ip[4]);
+
+/* Should the setup access point be up right now? A window is open, and either someone asked for it (the
+ * console, a button) or the node has no Wi-Fi of its own to join: a node provisioned with credentials and
+ * no owner boots as the station it was set up to be. Polled by kernel/setup_ap.c. */
+bool setup_ap_wanted(void);
 
 /* Opens a window of SETUP_WINDOW_S seconds, with the attempts counted again. False in a build
  * without CONFIG_NETWORK_CLAIM, or on a node with no setup secret to claim with. */

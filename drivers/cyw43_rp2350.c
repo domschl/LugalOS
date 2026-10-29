@@ -2769,6 +2769,10 @@ static void wifi_sleep_ms(uint32_t ms) { task_sleep_ms(ms); }
  * within one measurement cycle rather than one working day. */
 #define RX_SILENCE_MS (5u * 60u * 1000u)
 
+/* guarded by: single task -- set before the supervisor task is created and cleared by it on the way out; a
+ * second start while it runs is refused, so a claim can ask for the supervisor without checking. */
+static volatile bool g_sup_active;
+
 static void cyw43_autostart_body(void *arg) {
     (void)arg;
 
@@ -2779,6 +2783,7 @@ static void cyw43_autostart_body(void *arg) {
          * own. Silent -- a board with no credentials is the normal case for
          * a fresh one, not a fault to report on every boot. */
         memset(psk, 0, sizeof(psk));
+        g_sup_active = false;
         task_set_exit_status(0);
         return;
     }
@@ -2794,6 +2799,7 @@ static void cyw43_autostart_body(void *arg) {
     if (!up) {
         printk("cyw43: autostart gave up -- the radio did not come up\n");
         memset(psk, 0, sizeof(psk));
+        g_sup_active = false;
         task_set_exit_status(1);
         return;
     }
@@ -2999,11 +3005,14 @@ void cyw43_link_status(cyw43_link_status_t *out) {
 }
 
 int cyw43_autostart_task_start(void) {
+    if (g_sup_active) return 0;
+    g_sup_active = true;
     /* Three pages. idstore_read() alone puts a 4 KB record buffer on this
      * stack before anything else happens, and the firmware upload runs on top
      * of that -- the same reasoning that gives `netsrv` three. */
     int pid = task_create_driver("wifiup", cyw43_autostart_body, NULL, 3);
     if (pid < 0) {
+        g_sup_active = false;
         printk("cyw43: could not start the autostart task\n");
         return pid;
     }

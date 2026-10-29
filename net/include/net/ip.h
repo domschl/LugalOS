@@ -69,6 +69,9 @@ void net_stack_detach(void);
 int net_set_address(const uint8_t ip[IPV4_LEN], const uint8_t mask[IPV4_LEN],
                     const uint8_t gw[IPV4_LEN]);
 
+/* Forgets the address (the setup access point's, when its window closes), so the DHCP client may ask for one. */
+void net_clear_address(void);
+
 bool net_configured(void);
 
 /* True when a wireless interface ("wlan0") is attached, its link is up, and it holds a configured IP address. */

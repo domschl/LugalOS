@@ -48,6 +48,12 @@ typedef struct p9_link {
      * Tversion offers the extension, and `prot` is set from then on. A link with `prot_get` serves
      * a client that did not offer the extension read-only -- unless `plain_writes_ok`, which only the
      * console can set (`httpd write on`) -- and nothing secret may be written over it. */
+    /* 52.12: the peer is on the setup network (kernel/setup.h): a node's own access point, WPA2-keyed by the
+     * setup secret. Such a link is neither read-only for want of a protected session nor barred from
+     * carrying a secret, and it alone may attach to /dev/setup without authenticating. Set by the server
+     * that owns the connection, per session. */
+    bool setup_net;
+
     p9_prot_t *(*prot_get)(struct p9_link *link);
     p9_prot_t *prot;
     bool plain_writes_ok;

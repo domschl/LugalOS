@@ -26,6 +26,9 @@ static bool       g_pending;                /* a request is queued or running */
 static char       g_req[REQ_LINE_MAX];
 static bool       g_req_owner;              /* /dev/owner (admin) rather than /dev/setup (claim) */
 static bool       g_have_secret;            /* set once at boot, and by `setup secret` */
+static bool       g_forced;                 /* the window was opened on purpose, not by boot */
+static uint8_t    g_net_ip[4], g_net_mask[4];
+static bool       g_net_set;
 
 setup_state_t setup_state(void) {
     if (p9_grants_has_admin()) return SETUP_CLAIMED;
@@ -39,19 +42,51 @@ const char *setup_state_name(setup_state_t s) {
     return s == SETUP_CLAIMED ? "claimed" : s == SETUP_OPEN ? "setup" : "unclaimed";
 }
 
-bool setup_start(void) {
+static bool window_open(bool forced) {
     if (!g_have_secret) return false;
     uintptr_t f = spin_lock_irqsave(&g_lock);
     g_open_until_ms = time_get_ms() + (uint64_t)SETUP_WINDOW_S * 1000u;
     g_attempts = 0;
+    g_forced = forced;
     spin_unlock_irqrestore(&g_lock, f);
     return true;
 }
 
+bool setup_start(void) { return window_open(true); }
+
 void setup_stop(void) {
     uintptr_t f = spin_lock_irqsave(&g_lock);
     g_open_until_ms = 0;
+    g_forced = false;
     spin_unlock_irqrestore(&g_lock, f);
+}
+
+void setup_net_set(const uint8_t ip[4], const uint8_t mask[4]) {
+    uintptr_t f = spin_lock_irqsave(&g_lock);
+    memcpy(g_net_ip, ip, 4);
+    memcpy(g_net_mask, mask, 4);
+    g_net_set = true;
+    spin_unlock_irqrestore(&g_lock, f);
+}
+
+void setup_net_clear(void) {
+    uintptr_t f = spin_lock_irqsave(&g_lock);
+    g_net_set = false;
+    spin_unlock_irqrestore(&g_lock, f);
+}
+
+bool setup_net_contains(const uint8_t ip[4]) {
+    uintptr_t f = spin_lock_irqsave(&g_lock);
+    bool in = g_net_set;
+    for (int i = 0; in && i < 4; i++) in = (ip[i] & g_net_mask[i]) == (g_net_ip[i] & g_net_mask[i]);
+    spin_unlock_irqrestore(&g_lock, f);
+    return in;
+}
+
+bool setup_ap_wanted(void) {
+    if (setup_state() != SETUP_OPEN) return false;
+    char ssid[NODE_WLAN_SSID_MAX + 1];
+    return g_forced || !node_wlan_ssid(ssid, sizeof ssid);
 }
 
 bool setup_unauth_attach_ok(void) { return setup_state() == SETUP_OPEN; }
@@ -313,12 +348,13 @@ uint32_t owner_ctl_read(char *out, uint32_t cap) {
 
 void setup_init(void) {
     setup_button_start();
+    setup_ap_start();
     char probe[NODE_SETUP_SECRET_MAX + 1];
     g_have_secret = node_setup_secret(probe, sizeof probe);
     memset(probe, 0, sizeof probe);
     if (task_create_sized("setupd", setup_worker, NULL, 3) < 0) printk("[Setup] could not start the worker\n");
     if (g_have_secret && !p9_grants_has_admin()) {
-        (void)setup_start();
+        (void)window_open(false);
         printk("[Setup] unclaimed: a setup window is open for %u s\n", (unsigned)SETUP_WINDOW_S);
     }
 }
@@ -330,6 +366,10 @@ const char *setup_state_name(setup_state_t s) { return s == SETUP_CLAIMED ? "cla
 bool setup_start(void) { return false; }
 void setup_stop(void) { }
 bool setup_unauth_attach_ok(void) { return false; }
+void setup_net_set(const uint8_t ip[4], const uint8_t mask[4]) { (void)ip; (void)mask; }
+void setup_net_clear(void) { }
+bool setup_net_contains(const uint8_t ip[4]) { (void)ip; return false; }
+bool setup_ap_wanted(void) { return false; }
 void setup_init(void) { setup_button_start(); }
 uint32_t setup_ctl_read(char *out, uint32_t cap) { (void)out; (void)cap; return 0; }
 int setup_ctl_write(const char *buf, uint32_t len) { (void)buf; (void)len; return -1; }

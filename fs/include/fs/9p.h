@@ -186,6 +186,7 @@ int p9_server_process_conn(const void *conn, const uint8_t *req_buf, uint32_t re
  * (p9_request_confidential()). The link layer (fs/p9_link.c) provides the two hooks below; a
  * server built without it (the host tests) gets no-ops. */
 #define P9_LINK_PLAINTEXT 1u
+#define P9_LINK_SETUP_NET 2u    /* the peer is on the setup network: see p9_link_t.setup_net */
 int p9_server_process_link(const void *conn, const uint8_t *req_buf, uint32_t req_len,
                            uint8_t *resp_buf, uint32_t resp_max,
                            p9_auth_policy_t policy, uint32_t link_flags);
