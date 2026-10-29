@@ -5488,6 +5488,24 @@ def test_protected_sessions(elf_path: Path, img_path: Path, arch_name: str) -> t
             s1.write("/ram0/p.txt", b"original", create=True)
             if s1.read("/ram0/p.txt") != b"original":
                 return (name, False, "a protected write did not read back")
+            # A frame of the largest size the node offered, tag included, fits the link's buffers: the
+            # client uses the whole msize, not the 1 KB chunks Session.write() and read() default to.
+            c1 = s1.client
+            fid = s1._alloc_work_fid()
+            s1._walk_or_raise(fid, ["ram0", "p.txt"], "/ram0/p.txt", "walk to")
+            c1.open(fid, mode=p9lib.client.OWRITE)
+            block = bytes(range(256)) * 16
+            block = block[:c1.io_chunk()]
+            if c1.write(fid, 0, block) != len(block):
+                return (name, False, f"a maximal protected write of {len(block)} bytes was cut short")
+            c1.clunk(fid)
+            fid = s1._alloc_work_fid()
+            s1._walk_or_raise(fid, ["ram0", "p.txt"], "/ram0/p.txt", "walk to")
+            c1.open(fid)
+            if c1.read(fid, 0, c1.io_chunk()) != block:
+                return (name, False, "a maximal protected read did not return what was written")
+            c1.clunk(fid)
+            s1.write("/ram0/p.txt", b"original", create=False)
             big = s1.read("/sd0/system/etc/init.lisp")
             if len(big) != len(expected_init_lisp()):
                 return (name, False, f"a multi-frame protected read came back {len(big)} bytes")
