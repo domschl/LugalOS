@@ -14,6 +14,10 @@ carries a few frames":
     breaks first when a transport is marginal
   * a sustained soak, because a radio that works for a second and a radio
     that works for fifteen minutes are different claims
+  * with --update BUILD_DIR: a whole firmware image pushed to the board over
+    the air. This is the one test that has the board *receive* a megabyte of
+    TCP; reads and pings do not (a bus transfer that an interrupt interrupts
+    corrupts the chip's receive FIFO, and only sustained receive finds it)
 
 Run it against a board that has already been brought up by hand:
 
@@ -172,6 +176,37 @@ def test_repeated_sessions(b: Board) -> tuple[str, bool, str]:
     return name, True, "10/10, paced past TIME_WAIT"
 
 
+def test_update_over_wifi(b: Board, build_dir: Path) -> tuple[str, bool, str]:
+    """A whole image over TCP into the inactive slot (tools/lota.py push, no reboot): it must reach
+    "committed", and the radio must be unharmed after it -- no loss on a ping burst, a session that
+    still answers. Pushes the board's own build, so the pending slot it leaves behind is the same
+    firmware (a reboot would boot it).
+
+    This is what failed until the bus transfer masked interrupts: 7 of 7 updates died 130-450 KB in,
+    the radio silent from then on and only `wifi probe` bringing it back."""
+    name = "ota: a whole image over the air, committed, radio unharmed"
+    cmd = [sys.executable, str(REPO_ROOT / "tools" / "lota.py"), "push", str(build_dir),
+           "--tcp", f"{b.host}:{b.port}", "--key", b.key.hex(), "--no-sign"]
+    t0 = time.monotonic()
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    took = time.monotonic() - t0
+    out = (r.stdout + r.stderr).replace("\r", "\n")
+    if r.returncode != 0 or "state=committed" not in out:
+        return name, False, f"the update did not commit (exit {r.returncode}, {took:.0f} s): {out.strip()[-300:]}"
+    loss, _ = ping(b.host, 20)
+    if loss > 10:
+        return name, False, f"committed in {took:.0f} s, but the radio then lost {loss}% of 20 echoes"
+    try:
+        s = session(b)
+        try:
+            s.read("/proc/version")
+        finally:
+            s.close()
+    except Exception as e:  # noqa: BLE001
+        return name, False, f"committed in {took:.0f} s, but the session after it failed: {e}"
+    return name, True, f"committed in {took:.0f} s; {loss}% loss after"
+
+
 def test_soak(b: Board, minutes: float) -> tuple[str, bool, str]:
     """R5's own criterion. Alternates ICMP and a real 9P read so that both
     the data path and the stack above it stay exercised, rather than
@@ -208,6 +243,9 @@ def main() -> int:
     ap.add_argument("host", help="the board's IP address on the WiFi network")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--key", default=DEFAULT_KEY, help="9P auth key, as hex")
+    ap.add_argument("--update", metavar="BUILD_DIR", type=Path,
+                    help="also push this build over the air into the inactive slot (changes the "
+                         "board's pending slot to a copy of that build)")
     ap.add_argument("--soak-minutes", type=float, default=0,
                     help="also run the sustained soak, for this many minutes")
     args = ap.parse_args()
@@ -234,12 +272,19 @@ def main() -> int:
         print(f"  [{'PASS' if ok else 'FAIL'}] {name}" + (f" -- {detail}" if detail else ""))
         failed += not ok
 
+    extra = 0
+    if args.update:
+        extra += 1
+        name, ok, detail = test_update_over_wifi(b, args.update)
+        print(f"  [{'PASS' if ok else 'FAIL'}] {name} -- {detail}")
+        failed += not ok
+
     if args.soak_minutes > 0:
         name, ok, detail = test_soak(b, args.soak_minutes)
         print(f"  [{'PASS' if ok else 'FAIL'}] {name} -- {detail}")
         failed += not ok
 
-    total = len(tests) + (1 if args.soak_minutes > 0 else 0)
+    total = len(tests) + extra + (1 if args.soak_minutes > 0 else 0)
     print(f"\nResult: {total - failed} / {total} passed")
     return 1 if failed else 0
 

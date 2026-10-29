@@ -738,6 +738,18 @@ static void pio_gspi_init(void) {
 static bool pio_gspi_transfer(const uint8_t *tx, uint32_t tx_len,
                                uint8_t *rx, uint32_t rx_len) {
     cyw43_assert_bus_held("pio_gspi_transfer");
+    /* Interrupts stay masked from here to the last line: the transfer is polled by the CPU, and an
+     * interrupt that holds it up mid-frame leaves the chip's receive FIFO at the wrong place. The
+     * chip then reads the first bytes at the head of the FIFO -- payload, not a frame header -- as
+     * a length, reports that in its status register, and hands over garbage; the radio stops
+     * answering a few frames later. Measured on a Pico 2 W taking a 987 KB update over TCP: with
+     * interrupts enabled it failed within 130-450 KB in 7 of 7 attempts (and the same traffic as
+     * UDP, or as a read, never did); masked, 4 of 4 completed, the last with a real commit. The
+     * likely mechanism is a stalled PIO FIFO stretching the clock past what the chip accepts, which
+     * was not separately shown.
+     *
+     * The longest hold is the longest frame, 4 + 2048 bytes at the 25 MHz bit clock: 0.7 ms. */
+    uintptr_t irq_state = irq_save();
     REG(PIO_CTRL) &= ~(1u << PIO_SM); /* SM_ENABLE[SM] = 0 */
 
     uint32_t wrap_top = rx ? (GSPI_OFFSET_END - 1u) : (GSPI_OFFSET_LP1_END - 1u);
@@ -901,6 +913,7 @@ static bool pio_gspi_transfer(const uint8_t *tx, uint32_t tx_len,
     pio_exec(0xE080); /* set pindirs, 0 */
     REG(PIO_CTRL) &= ~(1u << PIO_SM);
     REG(SIO_GPIO_OUT_SET) = WL_CS_MASK; /* deassert CS */
+    irq_restore(irq_state);
     return ok;
 }
 
