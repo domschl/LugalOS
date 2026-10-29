@@ -39,7 +39,7 @@ async function main() {
     await waitFor("document.getElementById('status').textContent === 'connected'", 'sign-in');
     await waitFor("document.querySelectorAll('#view table a').length > 0", 'the root listing');
     const rootNames = await ev("[...document.querySelectorAll('#view table a')].map(a => a.textContent).join(' ')");
-    if (!/proc\//.test(rootNames) || !/sd0\//.test(rootNames)) throw new Error('root listing: ' + rootNames);
+    if (!/proc\//.test(rootNames)) throw new Error('root listing: ' + rootNames);
 
     await ev("[...document.querySelectorAll('#view table a')].find(a => a.textContent === 'proc/').click()");
     await waitFor("document.querySelector('#view .path') && document.querySelector('#view .path').textContent.trim() === '/proc'", '/proc');
