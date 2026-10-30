@@ -82,6 +82,9 @@ typedef struct moon_resources_s {
     int32_t  lox_capacity_kg;
     int32_t  lox_rate_kg_per_tick;
 
+    /* High-Yield Modular Reactor Power (Starship trade delivery) */
+    int32_t  reactor_power_kw;      /* +kW baseline nuclear/radioisotope generation */
+
     /* Regolith / Pavers (kg) */
     fixed32_t regolith_stored_kg;   /* 16.16 fixed-point building stock */
     int32_t  regolith_capacity_kg;

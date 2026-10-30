@@ -535,20 +535,22 @@ static void press_slot(moon_game_t *game, int slot) {
  * the rows above the buttons */
 static int menu_item_count(const moon_game_t *game) {
     switch (game->menu_page) {
-    case MOON_MENU_MAIN:     return MOON_UI_MENU_ITEMS;
-    case MOON_MENU_VICTORY:  return 3;
-    case MOON_MENU_TITLE:    return 3;   /* the three levels */
-    case MOON_MENU_NEW_GAME: return 4;   /* three levels and Back */
-    default:                 return 2;
+    case MOON_MENU_MAIN:         return MOON_UI_MENU_ITEMS;
+    case MOON_MENU_VICTORY:
+    case MOON_MENU_VICTORY_ACT2: return 3;
+    case MOON_MENU_TITLE:        return 3;   /* the three levels */
+    case MOON_MENU_NEW_GAME:     return 4;   /* three levels and Back */
+    default:                     return 2;
     }
 }
 
 static int menu_first_row(const moon_game_t *game) {
     switch (game->menu_page) {
-    case MOON_MENU_GAME_OVER: return 2;
-    case MOON_MENU_VICTORY:   return 1;
-    case MOON_MENU_TITLE:     return 1;
-    default:                  return 0;
+    case MOON_MENU_GAME_OVER:    return 2;
+    case MOON_MENU_VICTORY:
+    case MOON_MENU_VICTORY_ACT2: return 1;
+    case MOON_MENU_TITLE:        return 1;
+    default:                     return 0;
     }
 }
 
@@ -610,6 +612,15 @@ static void menu_activate(moon_game_t *game, int item) {
         } else if (item == 1) open_new_game(game, MOON_MENU_VICTORY);
         else game->running = false;
         break;
+    case MOON_MENU_VICTORY_ACT2:
+        if (item == 0) {
+            game->act2_victory = true;
+            game->act2_victory_claimed = true;
+            game->menu_page = MOON_MENU_CLOSED;
+            game->state = game->paused ? MOON_STATE_PAUSED : MOON_STATE_PLAYING;
+        } else if (item == 1) open_new_game(game, MOON_MENU_VICTORY_ACT2);
+        else game->running = false;
+        break;
     default:
         break;
     }
@@ -619,7 +630,7 @@ static void menu_activate(moon_game_t *game, int item) {
  * Returns false when there was nothing to back out of. */
 static bool cancel_action(moon_game_t *game) {
     if (game->menu_page == MOON_MENU_GAME_OVER || game->menu_page == MOON_MENU_TITLE) return true; /* the only ways out are the buttons */
-    if (game->menu_page == MOON_MENU_VICTORY) {
+    if (game->menu_page == MOON_MENU_VICTORY || game->menu_page == MOON_MENU_VICTORY_ACT2) {
         menu_activate(game, 0);                                   /* ESC continues playing */
         return true;
     }
@@ -664,13 +675,18 @@ static void handle_key_down(moon_game_t *game, const moon_event_t *ev) {
         int n = menu_item_count(game);
         bool confirm = game->menu_page == MOON_MENU_CONFIRM_QUIT;
         bool newgame = game->menu_page == MOON_MENU_NEW_GAME;
-        bool ending = game->menu_page == MOON_MENU_GAME_OVER || game->menu_page == MOON_MENU_VICTORY;
+        bool ending = game->menu_page == MOON_MENU_GAME_OVER ||
+                      game->menu_page == MOON_MENU_VICTORY ||
+                      game->menu_page == MOON_MENU_VICTORY_ACT2;
         if (ending) {
             /* Restart and Quit are immediate here: the run is over */
-            int restart = game->menu_page == MOON_MENU_VICTORY ? 1 : 0;
+            int restart = (game->menu_page == MOON_MENU_VICTORY || game->menu_page == MOON_MENU_VICTORY_ACT2) ? 1 : 0;
             if (key == MOON_KEY_R) { menu_activate(game, restart); return; }
             if (key == MOON_KEY_Q) { menu_activate(game, restart + 1); return; }
-            if (key == MOON_KEY_C && game->menu_page == MOON_MENU_VICTORY) { menu_activate(game, 0); return; }
+            if (key == MOON_KEY_C && (game->menu_page == MOON_MENU_VICTORY || game->menu_page == MOON_MENU_VICTORY_ACT2)) {
+                menu_activate(game, 0);
+                return;
+            }
         }
         if ((newgame || game->menu_page == MOON_MENU_TITLE) && key >= MOON_KEY_1 && key <= MOON_KEY_3) {
             menu_activate(game, (int)(key - MOON_KEY_1));
@@ -899,6 +915,8 @@ static void handle_event_inner(moon_game_t *game, const moon_event_t *ev) {
             game->starship.state_timer_ms = 0;
             game->starship.alt_px = 0;
             game->starship.umbilical_pct = 100;
+            moon_starship_deliver_cargo(&game->starship, &game->resources);
+            notify(game, "CARGO UNLOADED: +4 CREW, +100kg PARTS, +30kW REACTOR", 4000);
             game->dirty = MOON_DIRTY_WORLD;
             return;
         }
@@ -907,6 +925,11 @@ static void handle_event_inner(moon_game_t *game, const moon_event_t *ev) {
             game->starship.state = MOON_STARSHIP_DEPARTED;
             game->starship.state_timer_ms = 0;
             game->starship.alt_px = 450;
+            if (!game->starship.window_expired &&
+                game->starship.lh2_loaded_kg >= game->starship.lh2_target_kg &&
+                game->starship.lox_loaded_kg >= game->starship.lox_target_kg) {
+                game->starship.commercial_mission_success = true;
+            }
             game->dirty = MOON_DIRTY_WORLD;
             return;
         }
@@ -1224,11 +1247,21 @@ void moon_game_check_end(moon_game_t *game) {
     if (game->state != MOON_STATE_PLAYING && game->state != MOON_STATE_PAUSED) return;
 
     bool lost = game->resources.population == 0;
-    bool won = !lost && !game->victory_claimed && moon_resources_act1_complete(&game->resources);
-    if (!lost && !won) return;
+    bool won_act1 = !lost && !game->victory_claimed && moon_resources_act1_complete(&game->resources);
+    bool won_act2 = !lost && !game->act2_victory && game->starship.commercial_mission_success;
+    if (!lost && !won_act1 && !won_act2) return;
 
-    game->state = lost ? MOON_STATE_GAME_OVER : MOON_STATE_VICTORY;
-    game->menu_page = lost ? MOON_MENU_GAME_OVER : MOON_MENU_VICTORY;
+    if (lost) {
+        game->state = MOON_STATE_GAME_OVER;
+        game->menu_page = MOON_MENU_GAME_OVER;
+    } else if (won_act2) {
+        game->starship.commercial_mission_success = false;
+        game->state = MOON_STATE_VICTORY;
+        game->menu_page = MOON_MENU_VICTORY_ACT2;
+    } else {
+        game->state = MOON_STATE_VICTORY;
+        game->menu_page = MOON_MENU_VICTORY;
+    }
     game->menu_sel = 0;
     game->panel_open = false;
     game->pointer_down = false;
@@ -1562,7 +1595,11 @@ static void render_inspector_panel(const moon_game_t *game, const moon_surface_t
             moon_blit_text_fmt(surf, ip_x + 8, y0, st_col, 0, true, "STATUS: [%s]", st_str);
             moon_blit_text(surf, ip_x + 8, y1, "POWER: -10 kW (Guidance)", COLOR_ENERGY_YELLOW, 0, true);
             moon_blit_text(surf, ip_x + 8, y2, "APRON: 4x4 Sintered Basalt", COLOR_GOLD_FOIL, 0, true);
-            moon_blit_text(surf, ip_x + 8, y3, "BLAST DEFENSE: Berm Prot", COLOR_LUNAR_WHITE, 0, true);
+            if (game->starship.manifest.delivered) {
+                moon_blit_text(surf, ip_x + 8, y3, "CARGO: Specialists & Reactor Active", COLOR_STATUS_GREEN, 0, true);
+            } else {
+                moon_blit_text(surf, ip_x + 8, y3, "BLAST DEFENSE: Berm Prot", COLOR_LUNAR_WHITE, 0, true);
+            }
 
             const moon_starship_t *ship = &game->starship;
             switch (ship->state) {
@@ -1594,14 +1631,17 @@ static void render_inspector_panel(const moon_game_t *game, const moon_surface_t
                     int tot_cur = lh2_cur + lox_cur;
                     int tot_tgt = lh2_tgt + lox_tgt;
                     int pct = (tot_tgt > 0) ? (tot_cur * 100) / tot_tgt : 0;
+                    int rem_s = (int)(ship->turnaround_timer_ms / 1000);
+                    uint16_t timer_col = (rem_s < 30) ? COLOR_ALERT_RED : COLOR_ENERGY_YELLOW;
+
                     if (pct >= 100) {
-                        moon_blit_text(surf, ip_x + 8, y4, "REFUELING: 100% COMPLETE", COLOR_STATUS_GREEN, 0, true);
+                        moon_blit_text_fmt(surf, ip_x + 8, y4, COLOR_STATUS_GREEN, 0, true, "REFUELING: 100%% (WINDOW: %ds)", rem_s);
                         moon_blit_text(surf, ip_x + 8, y5, "RETURN: Press [L] to Launch", COLOR_STATUS_GREEN, 0, true);
                     } else if (ship->umbilical_pct < 100) {
                         moon_blit_text_fmt(surf, ip_x + 8, y4, COLOR_LASER_CYAN, 0, true, "UMBILICAL: Docking (%d%%)", ship->umbilical_pct);
-                        moon_blit_text(surf, ip_x + 8, y5, "STATUS: Coupling Servicing Mast", COLOR_ENERGY_YELLOW, 0, true);
+                        moon_blit_text_fmt(surf, ip_x + 8, y5, timer_col, 0, true, "WINDOW: %ds | Coupling Mast", rem_s);
                     } else {
-                        moon_blit_text_fmt(surf, ip_x + 8, y4, COLOR_LASER_CYAN, 0, true, "REFUELING: %d%% Loaded", pct);
+                        moon_blit_text_fmt(surf, ip_x + 8, y4, timer_col, 0, true, "WINDOW: %ds | %d%% Loaded", rem_s, pct);
                         moon_blit_text_fmt(surf, ip_x + 8, y5, COLOR_GOLD_FOIL, 0, true, "H2: %d/%dkg O2: %d/%dkg",
                                            lh2_cur, lh2_tgt, lox_cur, lox_tgt);
                     }
@@ -1857,7 +1897,25 @@ static void render_objective(const moon_game_t *game, const moon_surface_t *surf
             fmt = narrow ? "Grow the crew: %d of 8" : "Grow the crew to 8 colonists: %d now"; break;
     case 6: have = (int)res->lunar_day;
             fmt = narrow ? "Act I: day %d of 6" : "Act I: reach day 6 with water and oxygen to spare (day %d)"; break;
-    default: fmt = narrow ? "Objectives done. O hides" : "All objectives complete. Keep building (O hides this)"; break;
+    default:
+        if (!game->act2_victory) {
+            if (count_built(game, MOON_STRUCT_HYDROLOX_PLANT, true) == 0) {
+                fmt = narrow ? "Act II: Build Hydrolox (LIFE 3)" : "Act II: Pave 2x2 foundations & build Hydrolox Plant (LIFE 3)";
+            } else if (count_built(game, MOON_STRUCT_CRYO_DEWAR, true) == 0) {
+                fmt = narrow ? "Act II: Build Cryo Dewar (LIFE 4)" : "Act II: Build Cryo Dewar storage for H2/LOX (LIFE 4)";
+            } else if (count_built(game, MOON_STRUCT_LANDING_PAD, true) == 0) {
+                fmt = narrow ? "Act II: Pave 4x4 Pad (LOGI 3)" : "Act II: Pave 4x4 foundation apron & build Landing Pad (LOGISTICS 3)";
+            } else if (game->starship.state == MOON_STARSHIP_ORBIT) {
+                fmt = narrow ? "Act II: Press [L] to Call Ship" : "Act II: Press [L] or inspect Landing Pad to call Starship";
+            } else if (game->starship.state == MOON_STARSHIP_SERVICING) {
+                fmt = narrow ? "Act II: Refuel Ship & Launch [L]" : "Act II: Refuel Starship (250kg H2, 2000kg O2) & Launch [L]";
+            } else {
+                fmt = narrow ? "Act II: Starship in flight" : "Act II: Starship transit to Earth in progress";
+            }
+        } else {
+            fmt = narrow ? "Act II Complete! (O hides)" : "Act II Complete: Spaceport operational! (O hides this)";
+        }
+        break;
     }
     int len = 0;
     const char *f = fmt;
@@ -1879,7 +1937,7 @@ static void render_objective(const moon_game_t *game, const moon_surface_t *surf
     text[len] = '\0';
     const moon_ui_rect_t *hb = &game->ui.hover_badge;
     int w = len * MOON_FONT_W + 16, y = hb->y - 24;
-    bool done = n >= MOON_OBJECTIVES;
+    bool done = (n >= MOON_OBJECTIVES && game->act2_victory);
     moon_blit_fill_rect(surf, hb->x, y, w, 20, RGB565(20, 26, 20));
     moon_blit_rect_outline(surf, hb->x, y, w, 20, done ? COLOR_STATUS_GREEN : COLOR_GOLD_FOIL);
     moon_blit_text(surf, hb->x + 8, y + 2, text, done ? COLOR_STATUS_GREEN : COLOR_LUNAR_WHITE, 0, true);
@@ -1956,6 +2014,17 @@ static void render_menu(const moon_game_t *game, const moon_surface_t *surf) {
         moon_blit_text(surf, tx, ty, "ACT I COMPLETE", COLOR_STATUS_GREEN, 0, true);
         moon_blit_text_fmt(surf, tx, row,      COLOR_LUNAR_WHITE, 0, true, "SELF-SUSTAINING: DAY %d", (int)res->lunar_day);
         moon_blit_text_fmt(surf, tx, row + 18, COLOR_LUNAR_WHITE, 0, true, "CREW %d  SEED %u", (int)res->population, (unsigned)game->seed);
+        items[0] = "C:CONTINUE";
+        items[1] = "R:NEW GAME";
+        items[2] = "Q:QUIT";
+        break;
+    case MOON_MENU_VICTORY_ACT2:
+        moon_blit_text(surf, tx, ty, "ACT II COMPLETE", COLOR_STATUS_GREEN, 0, true);
+        moon_blit_text(surf, tx, row,      "SPACEPORT OPERATIONAL", COLOR_LASER_CYAN, 0, true);
+        moon_blit_text_fmt(surf, tx, row + 18, COLOR_LUNAR_WHITE, 0, true, "HYDROLOX STARSHIP DISPATCHED: DAY %d", (int)res->lunar_day);
+        moon_blit_text_fmt(surf, tx, row + 36, COLOR_LUNAR_WHITE, 0, true, "CREW %d  SEED %u  REACTOR +%dkW",
+                           (int)res->population, (unsigned)game->seed, (int)res->reactor_power_kw);
+        moon_blit_text(surf, tx, row + 54, "EARTH TRADE ROUTE ESTABLISHED", COLOR_GOLD_FOIL, 0, true);
         items[0] = "C:CONTINUE";
         items[1] = "R:NEW GAME";
         items[2] = "Q:QUIT";

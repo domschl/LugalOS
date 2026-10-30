@@ -304,6 +304,162 @@ static level_result_t measure_level(int lv, int seeds, int days) {
     return r;
 }
 
+static bool find_act2_site(int w, int h, int *ox, int *oy) {
+    for (int r = 3; r < 20; r++) {
+        for (int y = 32 - r; y <= 32 + r; y++) {
+            for (int x = 32 - r; x <= 32 + r; x++) {
+                if (abs(x - 32) != r && abs(y - 32) != r) continue;
+                if (x < 2 || y < 2 || x + w >= MOON_MAP_SIZE_X - 2 || y + h >= MOON_MAP_SIZE_Y - 2) continue;
+                bool ok = true;
+                for (int dy = 0; dy < h && ok; dy++) {
+                    for (int dx = 0; dx < w && ok; dx++) {
+                        if (!moon_structure_can_place(&g.grid, &g.structs, MOON_STRUCT_FOUNDATION_PAD, x + dx, y + dy, NULL)) {
+                            ok = false;
+                        }
+                    }
+                }
+                if (!ok) continue;
+                for (int i = 0; i < MOON_MAX_STRUCTURES; i++) {
+                    const moon_structure_t *s = &g.structs.list[i];
+                    if (!s->id) continue;
+                    if (s->type == MOON_STRUCT_LANDER || s->type == MOON_STRUCT_HABITAT_DOME) {
+                        if (x + w - 1 >= s->gx - 1 && x <= s->gx + s->footprint_w &&
+                            y + h - 1 >= s->gy - 1 && y <= s->gy + s->footprint_h) {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                if (ok) {
+                    *ox = x; *oy = y;
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+static void connect_to_network(int target_x, int target_y) {
+    int bx = 32, by = 32, bdist = 999;
+    for (int y = 0; y < MOON_MAP_SIZE_Y; y++) {
+        for (int x = 0; x < MOON_MAP_SIZE_X; x++) {
+            if (tile(x, y)->structure_id) {
+                int d = abs(x - target_x) + abs(y - target_y);
+                if (d < bdist) { bdist = d; bx = x; by = y; }
+            }
+        }
+    }
+    int cx = bx, cy = by;
+    while (cx != target_x || cy != target_y) {
+        if (cx < target_x) cx++;
+        else if (cx > target_x) cx--;
+        else if (cy < target_y) cy++;
+        else if (cy > target_y) cy--;
+        if (!tile(cx, cy)->structure_id) {
+            moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_POWER_CONDUIT, cx, cy);
+        }
+    }
+}
+
+static void test_act2_balance(void) {
+    memset(&g, 0, sizeof(g));
+    s_seed = 0;
+    g.seed_request = 0;
+    moon_game_init(&g, 1024, 600);
+    s_override = &g_moon_rules[MOON_DIFFICULTY_NORMAL];
+    g.resources.rules = *s_override;
+    moon_resources_apply_start(&g.resources);
+
+    /* 1. Fast-forward through Act I with scripted good player until Act I victory */
+    for (int sec = 0; sec < 10 * 180 && g.running; sec++) {
+        if (g.state == MOON_STATE_VICTORY) {
+            key(MOON_KEY_C); /* Continue into Act II */
+            break;
+        }
+        decide(PLAYER_GOOD);
+        step_ms(1000);
+    }
+    assert(g.victory_claimed);
+    assert(g.state == MOON_STATE_PLAYING);
+
+    /* 2. Establish Act II infrastructure:
+     * - Pave 2x2 foundation for Hydrolox Plant
+     * - Place Hydrolox Plant
+     * - Place Cryo Dewars
+     * - Pave 4x4 foundation apron for Landing Pad
+     * - Place Landing Pad
+     * - Connect conduits to grid */
+    int hx = 0, hy = 0;
+    assert(find_act2_site(2, 2, &hx, &hy));
+    for (int dy = 0; dy < 2; dy++)
+        for (int dx = 0; dx < 2; dx++)
+            moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_FOUNDATION_PAD, hx + dx, hy + dy);
+
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_HYDROLOX_PLANT, hx, hy) != NULL);
+    connect_to_network(hx, hy);
+
+    /* Place two Cryo Dewars nearby */
+    int dx1 = 0, dy1 = 0;
+    assert(find_act2_site(1, 1, &dx1, &dy1));
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_CRYO_DEWAR, dx1, dy1) != NULL);
+    connect_to_network(dx1, dy1);
+
+    int dx2 = 0, dy2 = 0;
+    assert(find_act2_site(1, 1, &dx2, &dy2));
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_CRYO_DEWAR, dx2, dy2) != NULL);
+    connect_to_network(dx2, dy2);
+
+    /* Pave 4x4 foundation for Landing Pad */
+    int px = 0, py = 0;
+    assert(find_act2_site(4, 4, &px, &py));
+    for (int dy = 0; dy < 4; dy++)
+        for (int dx = 0; dx < 4; dx++)
+            moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_FOUNDATION_PAD, px + dx, py + dy);
+
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_LANDING_PAD, px, py) != NULL);
+    connect_to_network(px, py);
+
+    /* Re-solve power grid */
+    moon_resources_solve_power_grid(&g.grid, &g.structs);
+
+    /* Stock propellants in Cryo Dewars (250 kg LH2, 2000 kg LOX) */
+    g.resources.lh2_stored_kg = fixed_from_int(250);
+    g.resources.lox_stored_kg = fixed_from_int(2000);
+
+    /* 3. Call Starship to spaceport */
+    key(MOON_KEY_L);
+    assert(g.starship.state == MOON_STARSHIP_APPROACH);
+
+    /* Skip descent directly into servicing via Space key */
+    key(MOON_KEY_SPACE);
+    assert(g.starship.state == MOON_STARSHIP_SERVICING);
+    assert(g.starship.manifest.delivered);
+    assert(g.resources.reactor_power_kw == 30);
+
+    /* Refuel Starship across servicing */
+    step_ms(20100);
+    assert(g.starship.lh2_loaded_kg == g.starship.lh2_target_kg);
+    assert(g.starship.lox_loaded_kg == g.starship.lox_target_kg);
+    assert(g.starship.state == MOON_STARSHIP_PRELAUNCH);
+
+    /* Advance through ascent and orbital departure */
+    step_ms(1500); /* Prelaunch to Ascent */
+    assert(g.starship.state == MOON_STARSHIP_ASCENT);
+    step_ms(3200); /* Ascent to Departed */
+
+    /* Check Act II Victory condition */
+    assert(g.state == MOON_STATE_VICTORY);
+    assert(g.menu_page == MOON_MENU_VICTORY_ACT2);
+
+    /* Continue into free play */
+    key(MOON_KEY_C);
+    assert(g.state == MOON_STATE_PLAYING);
+    assert(g.act2_victory);
+
+    printf("[test] Act II Balance: Spaceport trade, cryogenic refueling & commercial return victory: PASS\n");
+}
+
 static int days_arg(int argc, char **argv) { return argc > 2 ? atoi(argv[2]) : 8; }
 
 int main(int argc, char **argv) {
@@ -375,7 +531,12 @@ int main(int argc, char **argv) {
             assert(!month.day_dead && month.day_end >= 30);
             assert(dry >= 1 && working_extractors() >= 1);
             printf("[test] Balance: good player wins every level, careless and idle players lose on Normal and Hard: PASS\n");
+            test_act2_balance();
         }
+        return 0;
+    }
+    if (argc > 1 && strcmp(argv[1], "act2") == 0) {
+        test_act2_balance();
         return 0;
     }
     if (argc > 1 && strcmp(argv[1], "seeds") == 0) {

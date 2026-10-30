@@ -23,6 +23,15 @@ typedef enum {
 } moon_starship_state_t;
 
 #define MOON_STARSHIP_MAX_DUST 24
+#define MOON_STARSHIP_WINDOW_MS 180000  /* 180 s (1 full lunar day) Earth return launch window */
+
+/* Earth Trade Cargo Manifest (Milestone 64.20) */
+typedef struct {
+    uint8_t   colonists;        /* Specialist colonists (+4 crew) */
+    uint16_t  regolith_blocks;  /* Heavy machinery & prefabricated building stock (+100 kg) */
+    uint16_t  reactor_power_kw; /* High-yield modular fission reactor (+30 kW baseline power) */
+    bool      delivered;        /* True once transferred to base at touchdown */
+} moon_cargo_manifest_t;
 
 typedef struct {
     int32_t x;          /* Offset in pixels from pad center (sx, sy + 48) */
@@ -48,6 +57,12 @@ typedef struct {
     fixed32_t lox_target_kg;    /* Refueling target for return burn (2000 kg) */
     uint8_t   umbilical_pct;    /* 0..100: Extension percentage of cryogenic gantry arm */
 
+    /* Earth Trade Cargo Manifest & Launch Window (Milestone 64.20) */
+    moon_cargo_manifest_t manifest;
+    uint32_t  turnaround_timer_ms; /* Milliseconds remaining in Earth return launch window */
+    bool      window_expired;      /* True if turnaround timer expired before full refueling */
+    bool      commercial_mission_success; /* True when refueled ship departs for Earth */
+
     /* Procedural Plume & Particulate FX */
     moon_dust_particle_t dust[MOON_STARSHIP_MAX_DUST];
     uint8_t  dust_count;
@@ -56,6 +71,9 @@ typedef struct {
 
 /* Initialize the Starship simulation state */
 void moon_starship_init(moon_starship_t *ship);
+
+/* Unload Earth cargo manifest (specialists, machinery, modular reactor) into base reserves */
+void moon_starship_deliver_cargo(moon_starship_t *ship, moon_resources_t *res);
 
 /* Find the first active, powered Starship Landing Pad on the grid */
 bool moon_starship_find_pad(const moon_structure_mgr_t *mgr, int32_t *out_gx, int32_t *out_gy);
