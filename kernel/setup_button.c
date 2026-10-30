@@ -78,7 +78,8 @@ static void setup_button_task(void *arg) {
         status_led_button((uint32_t)held);
         if (!setup_done && held >= SETUP_BUTTON_SETUP_MS) {
             setup_done = true;
-            printk(setup_start() ? "[Setup] button: setup window open\n"
+            if (setup_state() == SETUP_CLAIMED) printk("[Setup] button: this node is claimed; hold 15 s to reset the owner first\n");
+            else printk(setup_start() ? "[Setup] button: setup window open\n"
                                  : "[Setup] button: no setup window (no setup secret, or a build without network claiming)\n");
         }
         if (!reset_done && held >= SETUP_BUTTON_RESET_MS) {

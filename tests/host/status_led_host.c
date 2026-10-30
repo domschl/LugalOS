@@ -33,6 +33,7 @@ int main(void) {
     CHECK(!status_led_level((status_led_pattern_t)99, 0), "an unknown pattern is dark");
 
     status_led_in_t in = { 0 };
+    in.setup_possible = true;
     CHECK(status_led_choose(&in) == STATUS_LED_OFF, "nothing configured: off");
     in.net_up = true;
     CHECK(status_led_choose(&in) == STATUS_LED_JOINED, "network up: joined");
@@ -48,6 +49,9 @@ int main(void) {
     CHECK(status_led_choose(&in) == STATUS_LED_SETUP, "a short hold changes nothing");
     in.button_held_ms = SETUP_BUTTON_SETUP_MS;
     CHECK(status_led_choose(&in) == STATUS_LED_SOLID, "held long enough for setup: solid");
+    in.setup_possible = false;
+    CHECK(status_led_choose(&in) == STATUS_LED_SETUP, "a claimed node has no setup window to announce");
+    in.setup_possible = true;
     in.button_held_ms = SETUP_BUTTON_RESET_MS;
     CHECK(status_led_choose(&in) == STATUS_LED_RESET, "held for the reset: fast blink");
     in.button_held_ms = 0; in.reset_shown = true;

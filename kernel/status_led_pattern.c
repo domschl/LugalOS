@@ -15,7 +15,7 @@ static const pat_t PATTERNS[] = {
 
 status_led_pattern_t status_led_choose(const status_led_in_t *in) {
     if (in->button_held_ms >= SETUP_BUTTON_RESET_MS || in->reset_shown) return STATUS_LED_RESET;
-    if (in->button_held_ms >= SETUP_BUTTON_SETUP_MS) return STATUS_LED_SOLID;
+    if (in->setup_possible && in->button_held_ms >= SETUP_BUTTON_SETUP_MS) return STATUS_LED_SOLID;
     if (in->setup_ap) return STATUS_LED_SETUP;
     if (in->net_up) return STATUS_LED_JOINED;
     if (in->wlan_set) return in->net_down_s < STATUS_LED_FAILED_AFTER_S ? STATUS_LED_JOINING : STATUS_LED_FAILED;

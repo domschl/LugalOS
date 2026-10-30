@@ -5,7 +5,7 @@
  *
  * Patterns, on a 100 ms grid:
  *   SETUP    1 Hz blink                   the setup access point is (about to be) up
- *   SOLID    on                           a button is held long enough to open setup; let go now
+ *   SOLID    on                           the button is held long enough to open setup on an unclaimed node; let go now
  *   RESET    5 Hz blink                   the owner reset went through
  *   JOINING  two short flashes per second  a Wi-Fi network is configured and not joined yet
  *   JOINED   one short flash per 3 s      the network is up
@@ -38,6 +38,7 @@ typedef enum {
 
 typedef struct {
     uint32_t button_held_ms;     /* how long the setup button has been down, 0 if up */
+    bool     setup_possible;     /* the node is unclaimed, so a setup window can do something */
     bool     reset_shown;        /* an owner reset happened within STATUS_LED_RESET_SHOW_MS */
     bool     setup_ap;           /* setup_ap_wanted() */
     bool     net_up;             /* an interface holds an address */

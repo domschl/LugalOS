@@ -71,6 +71,7 @@ static void status_led_task(void *arg) {
         in.button_held_ms = g_held_ms;
         uint32_t reset_at = g_reset_at_ms;
         in.reset_shown = reset_at && (uint32_t)now - (reset_at - 1u) < STATUS_LED_RESET_SHOW_MS;
+        in.setup_possible = setup_state() != SETUP_CLAIMED;
         in.setup_ap = setup_ap_wanted();
         in.net_up = net_state()->configured;
         if (in.net_up) last_up_ms = now;
