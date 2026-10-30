@@ -2077,6 +2077,172 @@ static void test_starship_landing_pad(void) {
     printf("[test] Reinforced Starship Landing Pad (Milestone 64.18): PASS\n");
 }
 
+/* Milestone 64.19: Starship Flight & Spaceport Refueling Sequence verification */
+static void advance_ms(int ms) {
+    while (ms > 0) {
+        int slice = (ms > 50) ? 50 : ms;
+        moon_game_update(&g, slice);
+        ms -= slice;
+    }
+}
+
+static void test_starship_flight_animation(void) {
+    fresh();
+    static uint16_t fb[1024 * 600];
+
+    /* Flatten wide test zone and establish powered landing pad */
+    for (int y = 20; y <= 45; y++) {
+        for (int x = 20; x <= 45; x++) {
+            g.grid.tiles[y][x].terrain = MOON_TERRAIN_REGOLITH_FLAT;
+            g.grid.tiles[y][x].elevation = 0;
+            g.grid.tiles[y][x].flags &= ~(MOON_TILE_FLAG_FOUNDATION | MOON_TILE_FLAG_OCCUPIED);
+        }
+    }
+
+    g.resources.regolith_stored_kg = fixed_from_int(1000);
+    g.resources.battery_stored_kwh = fixed_from_int(500);
+
+    /* Prerequisites & 4x4 sintered pad foundation */
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_REGOLITH_PLANT, 25, 25));
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_HABITAT_DOME, 25, 27));
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_CRYO_DEWAR, 25, 30));
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_CRYO_DEWAR, 25, 31));
+
+    int px = 35, py = 35;
+    for (int dy = 0; dy < 4; dy++) {
+        for (int dx = 0; dx < 4; dx++) {
+            assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_FOUNDATION_PAD, px + dx, py + dy));
+        }
+    }
+
+    moon_structure_t *pad = moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_LANDING_PAD, px, py);
+    assert(pad != NULL);
+
+    /* Connect pad to grid */
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_POWER_CONDUIT, 33, 32));
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_POWER_CONDUIT, 34, 32));
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_POWER_CONDUIT, 35, 32));
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_POWER_CONDUIT, 35, 33));
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_POWER_CONDUIT, 35, 34));
+    moon_resources_solve_power_grid(&g.grid, &g.structs);
+    assert(pad->powered);
+
+    /* 1. Initial State: Starship in Orbit */
+    assert(g.starship.state == MOON_STARSHIP_ORBIT);
+    assert(g.starship.alt_px == 360);
+
+    /* 2. Dispatch Starship via Key 'L' */
+    g.selected_tile_x = px;
+    g.selected_tile_y = py;
+    g.panel_open = true;
+    key(MOON_KEY_L);
+    assert(g.starship.state == MOON_STARSHIP_APPROACH);
+    assert(g.starship.has_pad);
+    assert(g.starship.pad_gx == px && g.starship.pad_gy == py);
+
+    /* 3. Orbital Approach (1500 ms) -> Retro Burn */
+    advance_ms(750);
+    assert(g.starship.state == MOON_STARSHIP_APPROACH);
+    assert(g.starship.alt_px < 360 && g.starship.alt_px > 240);
+
+    advance_ms(750);
+    assert(g.starship.state == MOON_STARSHIP_RETRO);
+    assert(g.starship.alt_px == 240);
+
+    /* 4. Retro Burn (3000 ms) with ease-out deceleration, plume & shock diamonds */
+    advance_ms(1500);
+    assert(g.starship.state == MOON_STARSHIP_RETRO);
+    assert(g.starship.alt_px < 240 && g.starship.alt_px > 40);
+
+    /* Render during retro burn: verifies plume, diamonds, and screen clipping */
+    moon_game_render(&g, fb, 1024, 600, 1024);
+
+    advance_ms(1500);
+    assert(g.starship.state == MOON_STARSHIP_GEAR_EXTEND);
+    assert(g.starship.alt_px == 40);
+
+    /* 5. Final Flare (1200 ms) -> Touchdown */
+    advance_ms(600);
+    assert(g.starship.state == MOON_STARSHIP_GEAR_EXTEND);
+    assert(g.starship.alt_px < 40 && g.starship.alt_px > 0);
+
+    advance_ms(600);
+    assert(g.starship.state == MOON_STARSHIP_TOUCHDOWN);
+    assert(g.starship.alt_px == 0);
+    assert(g.starship.dust_count > 0);
+
+    /* 6. Touchdown dust expansion (1000 ms) -> Servicing */
+    advance_ms(1000);
+    assert(g.starship.state == MOON_STARSHIP_SERVICING);
+    assert(g.starship.alt_px == 0);
+
+    /* 7. Servicing: Umbilical Arm Extension (1000 ms) */
+    advance_ms(500);
+    assert(g.starship.umbilical_pct > 0 && g.starship.umbilical_pct < 100);
+
+    advance_ms(500);
+    assert(g.starship.umbilical_pct == 100);
+
+    /* 8. Cryogenic Propellant Loading */
+    /* Base has zero propellant: transfer should be idle */
+    g.resources.lh2_stored_kg = 0;
+    g.resources.lox_stored_kg = 0;
+    advance_ms(500);
+    assert(g.starship.lh2_loaded_kg == 0);
+    assert(g.starship.lox_loaded_kg == 0);
+
+    /* Supply base reserves with 300 kg LH2 and 2500 kg LOX */
+    g.resources.lh2_stored_kg = fixed_from_int(300);
+    g.resources.lox_stored_kg = fixed_from_int(2500);
+
+    /* Partial fuel load */
+    advance_ms(10000); /* 10s: 1000 kg LOX, 125 kg LH2 */
+    assert(g.starship.lox_loaded_kg >= fixed_from_int(900));
+    assert(g.starship.lh2_loaded_kg >= fixed_from_int(100));
+    assert(g.resources.lox_stored_kg < fixed_from_int(2500));
+    assert(g.resources.lh2_stored_kg < fixed_from_int(300));
+
+    /* Render during servicing: verifies cryogenic loading meter & umbilical arm */
+    moon_game_render(&g, fb, 1024, 600, 1024);
+
+    /* Complete refueling to 250 kg LH2 and 2000 kg LOX -> advances to Prelaunch */
+    advance_ms(10200);
+    assert(g.starship.lh2_loaded_kg == g.starship.lh2_target_kg);
+    assert(g.starship.lox_loaded_kg == g.starship.lox_target_kg);
+    assert(g.starship.state == MOON_STARSHIP_PRELAUNCH);
+
+    /* 9. Prelaunch (1500 ms): Umbilical retracts -> Vertical Ascent Burn */
+    advance_ms(1500);
+    assert(g.starship.state == MOON_STARSHIP_ASCENT);
+    assert(g.starship.umbilical_pct == 0);
+
+    /* 10. Ascent Burn (3200 ms): Accelerates up to orbit */
+    advance_ms(1600);
+    assert(g.starship.state == MOON_STARSHIP_ASCENT);
+    assert(g.starship.alt_px > 0 && g.starship.alt_px < 450);
+
+    /* Render during ascent */
+    moon_game_render(&g, fb, 1024, 600, 1024);
+
+    advance_ms(1600);
+    assert(g.starship.state == MOON_STARSHIP_DEPARTED);
+    assert(g.starship.alt_px == 450);
+
+    /* 11. Departed (1000 ms) -> Reset to Orbit */
+    advance_ms(1000);
+    assert(g.starship.state == MOON_STARSHIP_ORBIT);
+
+    /* 12. Skip Animation with Space Key Test */
+    assert(moon_starship_call(&g.starship, px, py));
+    assert(g.starship.state == MOON_STARSHIP_APPROACH);
+    key(MOON_KEY_SPACE);
+    assert(g.starship.state == MOON_STARSHIP_SERVICING);
+    assert(g.starship.alt_px == 0);
+    assert(g.starship.alt_px == 0);
+
+    printf("[test] Starship Flight & Spaceport Refueling (Milestone 64.19): PASS\n");
+}
+
 int main(void) {
     test_picking();
     test_power_solver();
@@ -2120,6 +2286,7 @@ int main(void) {
     test_foundation_recycle_and_undo();
     test_hydrolox_dewar_and_inspector_clarity();
     test_starship_landing_pad();
-    printf("[test] All Milestone 64.9-64.12, 64.17 & 64.18 tests passed cleanly.\n");
+    test_starship_flight_animation();
+    printf("[test] All Milestone 64.9-64.12, 64.17 - 64.19 tests passed cleanly.\n");
     return 0;
 }

@@ -8,6 +8,7 @@
 #include "moon_structures.h"
 #include "moon_resources.h"
 #include "moon_ui.h"
+#include "moon_starship.h"
 
 /* Main Game State Machine */
 typedef enum {
@@ -161,6 +162,9 @@ typedef struct {
     bool     landing_active;
     uint32_t landing_elapsed_ms;
     int32_t  landing_y_offset;
+
+    /* Animated Starship Flight & Spaceport Refueling Sequence (Milestone 64.19) */
+    moon_starship_t starship;
 
     /* Frame and Tick Counters */
     uint32_t frame_count;

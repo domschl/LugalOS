@@ -24,6 +24,7 @@ SRC := src/platform_sdl3.c \
        src/moon_textures.c \
        src/moon_structures.c \
        src/moon_resources.c \
+       src/moon_starship.c \
        src/moon_ui.c \
        src/moon_bench.c \
        src/moon_game.c \
@@ -38,6 +39,7 @@ TEST_SRC := tests/test_fixed_blitter.c \
             src/moon_textures.c \
             src/moon_structures.c \
             src/moon_resources.c \
+            src/moon_starship.c \
             src/moon_ui.c
 
 OBJ_DIR := build_host

@@ -385,7 +385,7 @@ Act I (*Survival & Bootstrapping*) is fully implemented and running on both the 
 | **64.16** | **COMPLETE** | **Cryogenic Propellant Economy & Electrolysis** | Implement $LH_2$ and $LOX$ resource tracking in `moon_resources_t`. High-power 2×2 Hydrolox Electrolyzer structure splitting $H_2O$ ($2 H_2O \to 2 H_2 + O_2$; 1:8 mass ratio). Cryogenic dewar tanks with thermal insulation & boil-off mechanics during lunar night. HUD propellant gauge. |
 | **64.17** | **COMPLETE** | **Hierarchical Build Sheet & Tech Progression** | Evolve beyond the flat 6-building ribbon: structured categorized build sheets (Power/Storage, Life Support/Cryo, Spaceport/Logistics). Minimum clearance rules and sintered foundation requirements. |
 | **64.18** | **COMPLETE** | **Reinforced Starship Landing Pad** | 4×4 sintered regolith spaceport apron with blast-deflection berms and cryo umbilical conduits. Protects neighboring solar arrays and habitats from high-velocity exhaust regolith scouring. |
-| **64.19** | **PENDING** | **Starship Flight & Engine Plume Animation** | Procedural multi-state Starship flight sequence: orbital approach, ease-out retro-propulsion with pale-blue/cyan hydrolox plume & shock diamonds, landing gear extension, touchdown dust skirts, umbilical hookup, cryogenic loading meter, and vertical ascent return burn. |
+| **64.19** | **COMPLETE** | **Starship Flight & Engine Plume Animation** | Procedural multi-state Starship flight sequence: orbital approach, ease-out retro-propulsion with pale-blue/cyan hydrolox plume & shock diamonds, landing gear extension, touchdown dust skirts, umbilical hookup, cryogenic loading meter, and vertical ascent return burn. |
 | **64.20** | **PENDING** | **Earth-Moon Trade, Personnel & Victory Loop** | Earth cargo manifests (specialist colonists, heavy machinery, high-yield reactors). Starship turnaround timer / launch window pressure. Act II Victory Condition: Successfully support, refuel, and dispatch the first commercial Hydrolox Starship return mission. Headless balance test in `tests/balance.c`. |
 
 ### 7.3 Act II Implementation Notes
@@ -442,6 +442,30 @@ Act I (*Survival & Bootstrapping*) is fully implemented and running on both the 
   - `python3 tools/gendocs.py --check` clean: 0 drift.
   - Built freestanding ELF for `build/esp32p4-tab5` via Ninja.
   - Flashed to connected M5Stack Tab5 hardware (`/dev/ttyACM0`) and verified via `tools/p4run.py`.
+
+**64.19 implementation notes, Starship flight sequence, plume & refueling animation (2026-10-30).** Delivered:
+- **Procedural Multi-State Starship Flight Engine (`moon_starship.c`, `moon_starship.h`)**:
+  - Complete 9-state sequence: `MOON_STARSHIP_ORBIT`, `MOON_STARSHIP_APPROACH`, `MOON_STARSHIP_RETRO`, `MOON_STARSHIP_GEAR_EXTEND`, `MOON_STARSHIP_TOUCHDOWN`, `MOON_STARSHIP_SERVICING`, `MOON_STARSHIP_PRELAUNCH`, `MOON_STARSHIP_ASCENT`, `MOON_STARSHIP_DEPARTED`.
+  - Pure integer fixed-point physics (zero float instructions in kernel/M-mode).
+  - Smooth ease-out quadratic deceleration on descent ($Z: 360 \to 240 \to 40 \to 0\text{ px}$) and ease-in quadratic acceleration on vertical ascent ($Z: 0 \to 450\text{ px}$).
+  - Quick-skip capability: Space or Enter key skips descent directly to servicing, or ascent to departed.
+- **Visual Assets & Procedural Effects**:
+  - $48 \times 128$ px stainless steel Lunar Starship sprite (`g_surf_starship`, `SPRITE_STARSHIP_W/H`) with TPS heatshield tiles and landing gear.
+  - Pale-blue/cyan hydrolox exhaust plume (`COLOR_LASER_CYAN`, `RGB565(240, 255, 255)`, `RGB565(40, 140, 230)`) with 4 pulsating supersonic shock diamond nodes and flame flicker.
+  - Ground-effect flame deflection: when $Z < \text{plume length}$, exhaust splits and deflects outward along the 4×4 pad berms.
+  - Expanding touchdown and liftoff dust skirts: 24 particulate puffs expanding radially across the 4×4 sintered apron using a 16-point dimetric fixed-point trigonometric table.
+  - Articulated gantry umbilical arm: extends from pad tower ($tx, ty$) to ship propellant port ($sx, sy$) with frosty cryogenic coupling and boil-off vapor venting.
+- **Cryogenic Loading Economy**:
+  - Automatically draws $LH_2$ and $LOX$ from base reserves (1:8 mass ratio: 12.5 kg/s $LH_2$, 100 kg/s $LOX$) up to return burn requirements (250 kg $LH_2$, 2,000 kg $LOX$).
+  - Floating 10-pip cryogenic loading meter above the Starship displaying live fuel state.
+  - Real-time telemetry, stage progression, and diagnostic readouts in the Landing Pad inspector panel.
+  - Interactive dispatch and launch control via key `L` or inspector controls.
+- **Verification**:
+  - 100% pass across all unit tests, including dedicated `test_starship_flight_animation` (`make -C user/moonbase test`).
+  - Racescan clean: 0 shared unmarked statics (`python3 tools/racescan.py --check`).
+  - Documentation clean: 0 drift (`python3 tools/gendocs.py --check`).
+  - Verified freestanding ELF build for `esp32p4-tab5` with Ninja.
+
 
 
 

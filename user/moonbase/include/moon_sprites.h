@@ -51,4 +51,9 @@ extern const moon_surface_t g_surf_cryo_dewar;
 extern const uint16_t g_sprite_landing_pad[57344];
 extern const moon_surface_t g_surf_landing_pad;
 
+#define SPRITE_STARSHIP_W 48
+#define SPRITE_STARSHIP_H 128
+extern const uint16_t g_sprite_starship[6144];
+extern const moon_surface_t g_surf_starship;
+
 #endif /* MOON_SPRITES_H */
