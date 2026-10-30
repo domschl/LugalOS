@@ -382,9 +382,41 @@ Act I (*Survival & Bootstrapping*) is fully implemented and running on both the 
 
 | Milestone | Status | Title | Deliverables & Verification |
 | :---: | :---: | :--- | :--- |
-| **64.16** | **PENDING** | **Cryogenic Propellant Economy & Electrolysis** | Implement $LH_2$ and $LOX$ resource tracking in `moon_resources_t`. High-power 2×2 Hydrolox Electrolyzer structure splitting $H_2O$ ($2 H_2O \to 2 H_2 + O_2$; 1:8 mass ratio). Cryogenic dewar tanks with thermal insulation & boil-off mechanics during lunar night. HUD propellant gauge. |
-| **64.17** | **PENDING** | **Hierarchical Build Sheet & Tech Progression** | Evolve beyond the flat 6-building ribbon: structured categorized build sheets (Power/Storage, Life Support/Cryo, Spaceport/Logistics). Minimum clearance rules and sintered foundation requirements. |
+| **64.16** | **COMPLETE** | **Cryogenic Propellant Economy & Electrolysis** | Implement $LH_2$ and $LOX$ resource tracking in `moon_resources_t`. High-power 2×2 Hydrolox Electrolyzer structure splitting $H_2O$ ($2 H_2O \to 2 H_2 + O_2$; 1:8 mass ratio). Cryogenic dewar tanks with thermal insulation & boil-off mechanics during lunar night. HUD propellant gauge. |
+| **64.17** | **COMPLETE** | **Hierarchical Build Sheet & Tech Progression** | Evolve beyond the flat 6-building ribbon: structured categorized build sheets (Power/Storage, Life Support/Cryo, Spaceport/Logistics). Minimum clearance rules and sintered foundation requirements. |
 | **64.18** | **PENDING** | **Reinforced Starship Landing Pad** | 4×4 sintered regolith spaceport apron with blast-deflection berms and cryo umbilical conduits. Protects neighboring solar arrays and habitats from high-velocity exhaust regolith scouring. |
 | **64.19** | **PENDING** | **Starship Flight & Engine Plume Animation** | Procedural multi-state Starship flight sequence: orbital approach, ease-out retro-propulsion with pale-blue/cyan hydrolox plume & shock diamonds, landing gear extension, touchdown dust skirts, umbilical hookup, cryogenic loading meter, and vertical ascent return burn. |
 | **64.20** | **PENDING** | **Earth-Moon Trade, Personnel & Victory Loop** | Earth cargo manifests (specialist colonists, heavy machinery, high-yield reactors). Starship turnaround timer / launch window pressure. Act II Victory Condition: Successfully support, refuel, and dispatch the first commercial Hydrolox Starship return mission. Headless balance test in `tests/balance.c`. |
+
+### 7.3 Act II Implementation Notes
+
+**64.16 implementation notes, cryogenics & 2×2 structures (2026-10-29).** Delivered:
+- **Cryogenic Resource Economy**: $LH_2$ and $LOX$ tracking added to `moon_resources_t` with 1:8 stoichiometric mass ratio cracking from polar water ($2 H_2O \to 2 H_2 + O_2$).
+- **Structures**:
+  - `MOON_STRUCT_HYDROLOX_PLANT` (2×2 footprint, 60 kW demand, cracks water into cryogenic propellants).
+  - `MOON_STRUCT_CRYO_DEWAR` (1×1 footprint, vacuum-insulated sphere storing 250 kg $LH_2$ and 2,000 kg $LOX$ with 5 kW active cryocooling and night boil-off dissipation).
+- **Sprite Geometry & Alignment**: 2×2 isometric footprint anchoring corrected to `base = 48` (`MOON_TILE_H + MOON_TILE_HALF_H`), ensuring multi-tile structure sprites sit flush inside the bottom vertex of the 2×2 footprint diamond with zero rightward drift.
+- **Overlays**: Real-time status badges and resource meter progress bars on active buildings.
+
+**64.17 implementation notes, hierarchical build sheet & tech progression (2026-10-30).** Delivered:
+- **Hierarchical Build Sheets (`moon_build_category_t`)**:
+  - `MOON_CAT_POWER`: Solar Array (1), Battery Bank (2), Power Conduit (3).
+  - `MOON_CAT_LIFECRYO`: O2 Extractor (1), Habitat Dome (2), Hydrolox Plant (3), Cryo Dewar (4), Power Conduit (5).
+  - `MOON_CAT_LOGISTICS`: Regolith Sinterer (1), Foundation Pad (2), Power Conduit (3).
+  - Power Conduit mapped across all categories to eliminate friction when wiring grids.
+  - Category cycling supported via keyboard (`B` key) and touch/mouse (`cat_btn`) with color-coded badges (Gold/Amber, Cyan, Gold) and live HUD toast notifications (`BUILD SHEET: ...`).
+- **Sintered Foundation Pad (`MOON_STRUCT_FOUNDATION_PAD`)**:
+  - 1×1 sintered regolith paver costing 5 kg regolith. Sets `MOON_TILE_FLAG_FOUNDATION` without occupying the structure slot (`MOON_TILE_FLAG_OCCUPIED`), allowing structures to be constructed on top.
+  - Bare foundation pads can be inspected, recycled for 2 kg regolith, or undone within the 10 s undo window.
+  - Sintered foundation prerequisite: Hydrolox Plant requires all 4 footprint tiles to be paved foundations (`"Requires sintered foundation"`).
+- **Hazardous Facility Safety Clearance Buffer**:
+  - Cryogenic Hydrolox Plant requires a $\ge 1$-tile safety buffer from crew habitats (`MOON_STRUCT_HABITAT_DOME`) and expedition lander (`MOON_STRUCT_LANDER`). Direct adjacency is refused with `"Safety: clearance from habitat required"` (and `"Safety: clearance from Hydrolox plant required"` when placing habitats near Hydrolox).
+- **Tech Progression**:
+  - Foundation Pad requires an active/built Regolith Sinterer (`"Requires Regolith Sinterer"`).
+  - Advanced Cryogenics (Hydrolox Plant & Cryo Dewar) require an established Habitat Dome (`"Tech locked: Requires Habitat Dome"`).
+- **Verification**:
+  - 100% pass on host test suite (`make -C user/moonbase test`, including `balance check`).
+  - Racescan clean: 0 shared unmarked statics.
+  - Verified on M5Stack Tab5 bare-metal hardware.
+
 

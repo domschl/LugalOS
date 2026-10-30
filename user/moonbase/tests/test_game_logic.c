@@ -729,8 +729,8 @@ static void test_standby_recycle_undo(void) {
     fresh();
     g.selected_tile_x = 30; g.selected_tile_y = 30;
     int start = regolith();
-    key(MOON_KEY_4);                                   /* Sinterer, 15 kg */
-    assert(regolith() == start - 15 && struct_at(30, 30));
+    key(MOON_KEY_2);                                   /* Battery Bank, 20 kg */
+    assert(regolith() == start - 20 && struct_at(30, 30));
 
     /* E toggles standby on the selection; the ribbon says what a press will do */
     key(MOON_KEY_E);
@@ -743,11 +743,11 @@ static void test_standby_recycle_undo(void) {
     assert(!struct_at(30, 30) && regolith() == start);
 
     /* Recycle gives half back, and undo restores the building for that half */
-    key(MOON_KEY_4);
+    key(MOON_KEY_2);
     key(MOON_KEY_R);
-    assert(!struct_at(30, 30) && regolith() == start - 15 + 7);
+    assert(!struct_at(30, 30) && regolith() == start - 20 + 10);
     key(MOON_KEY_Z);
-    assert(struct_at(30, 30) && regolith() == start - 15);
+    assert(struct_at(30, 30) && regolith() == start - 20);
 
     /* The window closes */
     key(MOON_KEY_R);
@@ -774,9 +774,9 @@ static void test_brush(void) {
     g.selected_tile_x = 30; g.selected_tile_y = 28;
 
     /* Pressing the same build key twice with nothing between arms it as a brush */
-    key(MOON_KEY_6);                       /* builds a conduit */
+    key(MOON_KEY_3);                       /* builds a conduit */
     assert(struct_at(30, 28));
-    key(MOON_KEY_6);                       /* second press: brush, builds nothing */
+    key(MOON_KEY_3);                       /* second press: brush, builds nothing */
     assert(g.structs.selected_build_type == MOON_STRUCT_POWER_CONDUIT);
     int n = g.structs.count;
     key(MOON_KEY_RIGHT);                   /* (30,28) -> (30,27) */
@@ -790,9 +790,9 @@ static void test_brush(void) {
     key(MOON_KEY_0);
     assert(g.structs.selected_build_type == MOON_STRUCT_NONE);
     key(MOON_KEY_DOWN);
-    key(MOON_KEY_6);
+    key(MOON_KEY_3);
     key(MOON_KEY_DOWN);
-    key(MOON_KEY_6);
+    key(MOON_KEY_3);
     assert(g.structs.selected_build_type == MOON_STRUCT_NONE);
 
     /* Recycle brush: the first R recycles the selected conduit, the second arms the
@@ -844,7 +844,7 @@ static void test_button_validity_and_preview(void) {
     g.resources.regolith_stored_kg = fixed_from_int(5);
     g.selected_tile_x = 29; g.selected_tile_y = 29;
     g.last_slot = -1;
-    key(MOON_KEY_3);
+    key(MOON_KEY_2);
     assert(g.structs.count == 2);
     printf("[test] Button validity, hover preview, touch peek: PASS\n");
 }
@@ -863,14 +863,14 @@ static outcome_t play(int device) {
         key(MOON_KEY_UP); key(MOON_KEY_UP);              /* (32,32) -> (30,32) */
         key(MOON_KEY_RIGHT); key(MOON_KEY_RIGHT);        /* -> (30,30) */
         assert(g.selected_tile_x == T && g.selected_tile_y == T);
-        key(MOON_KEY_4);
+        key(MOON_KEY_1);
     } else {
         click_tile(T, T);
-        click_rect(&g.ui.ribbon[4]);
+        click_rect(&g.ui.ribbon[1]);
     }
     assert(g.structs.count == 2);
     const moon_structure_t *s = struct_at(T, T);
-    assert(s && s->type == MOON_STRUCT_REGOLITH_PLANT && s->active);
+    assert(s && s->type == MOON_STRUCT_SOLAR_ARRAY && s->active);
     assert(g.selected_tile_x == T && g.selected_tile_y == T);
 
     /* Standby */
@@ -880,7 +880,7 @@ static outcome_t play(int device) {
     /* Undo it all, then build again and recycle for good */
     if (device == 2) key(MOON_KEY_Z); else click_rect(&g.ui.undo_btn);
     o.undone = !struct_at(T, T);
-    if (device == 2) key(MOON_KEY_4); else click_rect(&g.ui.ribbon[4]);
+    if (device == 2) key(MOON_KEY_1); else click_rect(&g.ui.ribbon[1]);
     assert(struct_at(T, T));
     if (device == 2) key(MOON_KEY_R); else click_rect(&g.ui.ribbon[7]);
 
@@ -938,8 +938,8 @@ static void test_touch_brush(void) {
     fresh();
     g.resources.regolith_stored_kg = fixed_from_int(100);
     s_touch = 1;
-    click_rect(&g.ui.ribbon[6]);
-    click_rect(&g.ui.ribbon[6]);                       /* second tap on the button arms the brush */
+    click_rect(&g.ui.ribbon[3]);
+    click_rect(&g.ui.ribbon[3]);                       /* second tap on the button arms the brush */
     assert(g.structs.selected_build_type == MOON_STRUCT_POWER_CONDUIT);
     int n = g.structs.count, gx, gy;
     g.notify_timer_ms = 0;
@@ -1003,7 +1003,7 @@ static void test_menu_and_cancel(void) {
     /* Restart: confirm, then a clean base */
     fresh();
     click_tile(30, 30);
-    click_rect(&g.ui.ribbon[4]);
+    click_rect(&g.ui.ribbon[1]);
     assert(g.structs.count == 2);
     click_rect(&g.ui.menu_btn);
     assert(g.menu_page == MOON_MENU_MAIN);
@@ -1018,7 +1018,7 @@ static void test_menu_and_cancel(void) {
     for (int how = 0; how < 4; how++) {
         fresh();
         key(MOON_KEY_3); key(MOON_KEY_3);
-        assert(g.structs.selected_build_type == MOON_STRUCT_HABITAT_DOME);
+        assert(g.structs.selected_build_type == MOON_STRUCT_POWER_CONDUIT);
         if (how == 0) { ptr(MOON_EVENT_POINTER_DOWN, 500, 300, 3); ptr(MOON_EVENT_POINTER_UP, 500, 300, 3); }
         if (how == 1) key(MOON_KEY_BACKSPACE);
         if (how == 2) key(MOON_KEY_ESCAPE);
@@ -1571,6 +1571,240 @@ static void test_restarts_and_seeds(void) {
     printf("[test] 50 restarts: clean base, new seed each, ice in reach, seeds reproducible: PASS\n");
 }
 
+static void test_categorized_build_sheets(void) {
+    fresh();
+    /* Starts at MOON_CAT_POWER */
+    assert(g.build_category == MOON_CAT_POWER);
+
+    /* Category 0: Power & Energy Storage */
+    key(MOON_KEY_1); key(MOON_KEY_1);
+    assert(g.structs.selected_build_type == MOON_STRUCT_SOLAR_ARRAY);
+    key(MOON_KEY_0);
+
+    key(MOON_KEY_2); key(MOON_KEY_2);
+    assert(g.structs.selected_build_type == MOON_STRUCT_BATTERY_BANK);
+    key(MOON_KEY_0);
+
+    key(MOON_KEY_3); key(MOON_KEY_3);
+    assert(g.structs.selected_build_type == MOON_STRUCT_POWER_CONDUIT);
+    key(MOON_KEY_0);
+
+    /* Unmapped slot does nothing */
+    key(MOON_KEY_4);
+    assert(g.structs.selected_build_type == MOON_STRUCT_NONE);
+
+    /* Pressing B cycles to MOON_CAT_LIFECRYO */
+    key(MOON_KEY_B);
+    assert(g.build_category == MOON_CAT_LIFECRYO);
+
+    key(MOON_KEY_1); key(MOON_KEY_1);
+    assert(g.structs.selected_build_type == MOON_STRUCT_O2_EXTRACTOR);
+    key(MOON_KEY_0);
+
+    key(MOON_KEY_2); key(MOON_KEY_2);
+    assert(g.structs.selected_build_type == MOON_STRUCT_HABITAT_DOME);
+    key(MOON_KEY_0);
+
+    key(MOON_KEY_3); key(MOON_KEY_3);
+    assert(g.structs.selected_build_type == MOON_STRUCT_HYDROLOX_PLANT);
+    key(MOON_KEY_0);
+
+    key(MOON_KEY_4); key(MOON_KEY_4);
+    assert(g.structs.selected_build_type == MOON_STRUCT_CRYO_DEWAR);
+    key(MOON_KEY_0);
+
+    key(MOON_KEY_5); key(MOON_KEY_5);
+    assert(g.structs.selected_build_type == MOON_STRUCT_POWER_CONDUIT);
+    key(MOON_KEY_0);
+
+    key(MOON_KEY_6);
+    assert(g.structs.selected_build_type == MOON_STRUCT_NONE);
+
+    /* Pressing B cycles to MOON_CAT_LOGISTICS */
+    key(MOON_KEY_B);
+    assert(g.build_category == MOON_CAT_LOGISTICS);
+
+    key(MOON_KEY_1); key(MOON_KEY_1);
+    assert(g.structs.selected_build_type == MOON_STRUCT_REGOLITH_PLANT);
+    key(MOON_KEY_0);
+
+    key(MOON_KEY_2); key(MOON_KEY_2);
+    assert(g.structs.selected_build_type == MOON_STRUCT_FOUNDATION_PAD);
+    key(MOON_KEY_0);
+
+    key(MOON_KEY_3); key(MOON_KEY_3);
+    assert(g.structs.selected_build_type == MOON_STRUCT_POWER_CONDUIT);
+    key(MOON_KEY_0);
+
+    key(MOON_KEY_4);
+    assert(g.structs.selected_build_type == MOON_STRUCT_NONE);
+
+    /* Pressing B cycles back to MOON_CAT_POWER */
+    key(MOON_KEY_B);
+    assert(g.build_category == MOON_CAT_POWER);
+
+    /* Clicking cat_btn also cycles */
+    click_rect(&g.ui.cat_btn);
+    assert(g.build_category == MOON_CAT_LIFECRYO);
+    click_rect(&g.ui.cat_btn);
+    assert(g.build_category == MOON_CAT_LOGISTICS);
+    click_rect(&g.ui.cat_btn);
+    assert(g.build_category == MOON_CAT_POWER);
+
+    printf("[test] Categorized build sheets & ribbon cycling: PASS\n");
+}
+
+static void test_tech_progression_rules(void) {
+    fresh();
+    const char *reason = NULL;
+
+    /* 1. Foundation Pad requires Sinterer */
+    assert(!moon_structure_can_place(&g.grid, &g.structs, MOON_STRUCT_FOUNDATION_PAD, 30, 30, &reason));
+    assert(strcmp(reason, "Requires Regolith Sinterer") == 0);
+
+    /* 2. Hydrolox Plant & Dewar require Habitat Dome */
+    assert(!moon_structure_can_place(&g.grid, &g.structs, MOON_STRUCT_HYDROLOX_PLANT, 28, 28, &reason));
+    assert(strcmp(reason, "Tech locked: Requires Habitat Dome") == 0);
+
+    assert(!moon_structure_can_place(&g.grid, &g.structs, MOON_STRUCT_CRYO_DEWAR, 30, 30, &reason));
+    assert(strcmp(reason, "Tech locked: Requires Habitat Dome") == 0);
+
+    /* Build Sinterer */
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_REGOLITH_PLANT, 31, 32));
+    /* Now Foundation Pad is unlocked */
+    assert(moon_structure_can_place(&g.grid, &g.structs, MOON_STRUCT_FOUNDATION_PAD, 30, 30, &reason));
+
+    /* Build Habitat Dome */
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_HABITAT_DOME, 29, 29));
+    /* Now Cryo Dewar is unlocked */
+    assert(moon_structure_can_place(&g.grid, &g.structs, MOON_STRUCT_CRYO_DEWAR, 30, 28, &reason));
+
+    printf("[test] Tech progression locks & unlocking: PASS\n");
+}
+
+static void test_foundation_and_clearance_rules(void) {
+    fresh();
+    const char *reason = NULL;
+
+    /* Flatten test region */
+    for (int y = 26; y <= 36; y++) {
+        for (int x = 26; x <= 36; x++) {
+            g.grid.tiles[y][x].terrain = MOON_TERRAIN_REGOLITH_FLAT;
+            g.grid.tiles[y][x].elevation = 1;
+            g.grid.tiles[y][x].flags &= ~(MOON_TILE_FLAG_FOUNDATION | MOON_TILE_FLAG_OCCUPIED);
+        }
+    }
+    /* Restore lander tile at (32, 32) */
+    g.grid.tiles[32][32].flags |= MOON_TILE_FLAG_FOUNDATION | MOON_TILE_FLAG_OCCUPIED;
+    g.grid.tiles[32][32].structure_id = 1;
+
+    /* Build prerequisites: Sinterer at (31, 32), Habitat Dome at (29, 29) */
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_REGOLITH_PLANT, 31, 32));
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_HABITAT_DOME, 29, 29));
+
+    /* 0. Terrain restrictions for Foundation Pad */
+    g.grid.tiles[26][26].terrain = MOON_TERRAIN_CRATER_RIM;
+    assert(!moon_structure_can_place(&g.grid, &g.structs, MOON_STRUCT_FOUNDATION_PAD, 26, 26, &reason));
+    assert(strcmp(reason, "Terrain too steep (Crater Rim)") == 0);
+
+    g.grid.tiles[26][27].terrain = MOON_TERRAIN_REGOLITH_ROUGH;
+    assert(!moon_structure_can_place(&g.grid, &g.structs, MOON_STRUCT_FOUNDATION_PAD, 27, 26, &reason));
+    assert(strcmp(reason, "Boulder field (Requires clearing)") == 0);
+
+    g.grid.tiles[26][28].terrain = MOON_TERRAIN_ICE_DEPOSIT;
+    assert(!moon_structure_can_place(&g.grid, &g.structs, MOON_STRUCT_FOUNDATION_PAD, 28, 26, &reason));
+    assert(strcmp(reason, "Requires flat regolith") == 0);
+
+    /* 1. Foundation Pad paving */
+    assert(moon_structure_can_place(&g.grid, &g.structs, MOON_STRUCT_FOUNDATION_PAD, 33, 29, NULL));
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_FOUNDATION_PAD, 33, 29));
+    assert(g.grid.tiles[29][33].flags & MOON_TILE_FLAG_FOUNDATION);
+    assert(!(g.grid.tiles[29][33].flags & MOON_TILE_FLAG_OCCUPIED));
+
+    /* Cannot pave already paved tile */
+    assert(!moon_structure_can_place(&g.grid, &g.structs, MOON_STRUCT_FOUNDATION_PAD, 33, 29, &reason));
+    assert(strcmp(reason, "Foundation already paved") == 0);
+
+    /* 2. Hydrolox Plant requires all 4 tiles to be foundation */
+    assert(!moon_structure_can_place(&g.grid, &g.structs, MOON_STRUCT_HYDROLOX_PLANT, 33, 29, &reason));
+    assert(strcmp(reason, "Requires sintered foundation") == 0);
+
+    /* Pave remaining 3 tiles */
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_FOUNDATION_PAD, 34, 29));
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_FOUNDATION_PAD, 33, 30));
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_FOUNDATION_PAD, 34, 30));
+
+    /* Now all 4 tiles are foundation -> can place Hydrolox! */
+    assert(moon_structure_can_place(&g.grid, &g.structs, MOON_STRUCT_HYDROLOX_PLANT, 33, 29, &reason));
+
+    /* 3. Safety Clearance: Hydrolox Plant vs Lander */
+    /* Pave (32, 33), (33, 33), (32, 34), (33, 34) adjacent to Lander at (32, 32) */
+    g.grid.tiles[33][32].flags |= MOON_TILE_FLAG_FOUNDATION;
+    g.grid.tiles[33][33].flags |= MOON_TILE_FLAG_FOUNDATION;
+    g.grid.tiles[34][32].flags |= MOON_TILE_FLAG_FOUNDATION;
+    g.grid.tiles[34][33].flags |= MOON_TILE_FLAG_FOUNDATION;
+    assert(!moon_structure_can_place(&g.grid, &g.structs, MOON_STRUCT_HYDROLOX_PLANT, 32, 33, &reason));
+    assert(strcmp(reason, "Safety: clearance from habitat required") == 0);
+
+    /* Safety Clearance: Hydrolox Plant vs Habitat Dome */
+    /* Habitat is at (29, 29). Footprint [29..30] x [29..30]. Try (27, 28) adjacent */
+    g.grid.tiles[28][27].flags |= MOON_TILE_FLAG_FOUNDATION;
+    g.grid.tiles[28][28].flags |= MOON_TILE_FLAG_FOUNDATION;
+    g.grid.tiles[29][27].flags |= MOON_TILE_FLAG_FOUNDATION;
+    g.grid.tiles[29][28].flags |= MOON_TILE_FLAG_FOUNDATION;
+    assert(!moon_structure_can_place(&g.grid, &g.structs, MOON_STRUCT_HYDROLOX_PLANT, 27, 28, &reason));
+    assert(strcmp(reason, "Safety: clearance from habitat required") == 0);
+
+    /* Place Hydrolox at (33, 29) */
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_HYDROLOX_PLANT, 33, 29));
+
+    /* Try placing Habitat Dome bordering Hydrolox */
+    assert(!moon_structure_can_place(&g.grid, &g.structs, MOON_STRUCT_HABITAT_DOME, 31, 28, &reason));
+    assert(strcmp(reason, "Safety: clearance from Hydrolox plant required") == 0);
+
+    printf("[test] Sintered foundation and hazard clearance rules: PASS\n");
+}
+
+static void test_foundation_recycle_and_undo(void) {
+    fresh();
+    g.resources.regolith_stored_kg = fixed_from_int(100);
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_REGOLITH_PLANT, 31, 32));
+
+    /* Switch to LOGISTICS category */
+    while (g.build_category != MOON_CAT_LOGISTICS) key(MOON_KEY_B);
+    g.selected_tile_x = 30; g.selected_tile_y = 30;
+    g.grid.tiles[30][30].terrain = MOON_TERRAIN_REGOLITH_FLAT;
+    g.grid.tiles[30][30].flags &= ~(MOON_TILE_FLAG_FOUNDATION | MOON_TILE_FLAG_OCCUPIED);
+
+    int r0 = regolith();
+    /* Key 2 in LOGISTICS is Foundation Pad (cost 5 kg) */
+    key(MOON_KEY_2);
+    assert((g.grid.tiles[30][30].flags & MOON_TILE_FLAG_FOUNDATION));
+    assert(regolith() == r0 - 5);
+
+    /* Undo build: refunds 5 kg and clears foundation */
+    key(MOON_KEY_Z);
+    assert(!(g.grid.tiles[30][30].flags & MOON_TILE_FLAG_FOUNDATION));
+    assert(regolith() == r0);
+
+    /* Place again */
+    key(MOON_KEY_2);
+    assert((g.grid.tiles[30][30].flags & MOON_TILE_FLAG_FOUNDATION));
+    assert(regolith() == r0 - 5);
+
+    /* Recycle foundation: 50% refund = 2 kg */
+    key(MOON_KEY_R);
+    assert(!(g.grid.tiles[30][30].flags & MOON_TILE_FLAG_FOUNDATION));
+    assert(regolith() == r0 - 5 + 2);
+
+    /* Undo recycle: restores foundation, takes 2 kg back */
+    key(MOON_KEY_Z);
+    assert((g.grid.tiles[30][30].flags & MOON_TILE_FLAG_FOUNDATION));
+    assert(regolith() == r0 - 5);
+
+    printf("[test] Foundation pad undo and recycle: PASS\n");
+}
+
 int main(void) {
     test_picking();
     test_power_solver();
@@ -1608,6 +1842,10 @@ int main(void) {
     test_deposits();
     test_quarry();
     test_pressurised_draw();
-    printf("[test] All Milestone 64.9-64.12 tests passed cleanly.\n");
+    test_categorized_build_sheets();
+    test_tech_progression_rules();
+    test_foundation_and_clearance_rules();
+    test_foundation_recycle_and_undo();
+    printf("[test] All Milestone 64.9-64.12 & 64.17 tests passed cleanly.\n");
     return 0;
 }

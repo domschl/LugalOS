@@ -19,6 +19,7 @@ typedef enum {
     MOON_STRUCT_HYDROLOX_PLANT, /* High-power water cracking & cryogenic liquefaction */
     MOON_STRUCT_CRYO_DEWAR,     /* Vacuum-insulated LH2/LOX storage sphere */
     MOON_STRUCT_POWER_CONDUIT,  /* Surface power cable linking buildings */
+    MOON_STRUCT_FOUNDATION_PAD, /* Sintered regolith foundation pad */
     MOON_STRUCT_COUNT
 } moon_structure_type_t;
 
