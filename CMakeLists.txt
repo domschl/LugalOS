@@ -1003,6 +1003,7 @@ if(LUGALOS_ENABLE_MOONBASE)
         user/moonbase/src/moon_textures.c
         user/moonbase/src/moon_structures.c
         user/moonbase/src/moon_resources.c
+        user/moonbase/src/moon_starship.c
         user/moonbase/src/moon_ui.c
         user/moonbase/src/moon_bench.c
         user/moonbase/src/moon_game.c)
@@ -1013,7 +1014,8 @@ if(LUGALOS_ENABLE_MOONBASE)
         user/moonbase/src/moon_font8x16.c user/moonbase/src/moon_blitter.c
         user/moonbase/src/moon_grid.c user/moonbase/src/moon_sprites.c
         user/moonbase/src/moon_textures.c user/moonbase/src/moon_structures.c
-        user/moonbase/src/moon_resources.c user/moonbase/src/moon_ui.c
+        user/moonbase/src/moon_resources.c user/moonbase/src/moon_starship.c
+        user/moonbase/src/moon_ui.c
         user/moonbase/src/moon_bench.c user/moonbase/src/moon_game.c
         PROPERTIES COMPILE_OPTIONS -ffunction-sections)
 endif()

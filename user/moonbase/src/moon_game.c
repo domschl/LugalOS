@@ -74,6 +74,7 @@ static void game_reset(moon_game_t *game, int width, int height) {
     /* Initialize resource & life support simulation */
     moon_resources_init(&game->resources, game->difficulty);
     moon_resources_solve_power_grid(&game->grid, &game->structs);
+    moon_starship_init(&game->starship);
 
     camera_home(game);
     game->cam_start_x = game->cam_x;
@@ -738,6 +739,41 @@ static void handle_key_down(moon_game_t *game, const moon_event_t *ev) {
 
     case MOON_KEY_T: toggle_texture(game); break;
     case MOON_KEY_B: toggle_build_category(game); break;
+    case MOON_KEY_L: {
+        int32_t pad_gx = 0, pad_gy = 0;
+        bool has_pad = false;
+        const moon_tile_t *st = moon_grid_get_tile_const(&game->grid, game->selected_tile_x, game->selected_tile_y);
+        if (st && st->structure_id != 0 && st->structure_id < MOON_MAX_STRUCTURES &&
+            game->structs.list[st->structure_id].type == MOON_STRUCT_LANDING_PAD) {
+            pad_gx = game->structs.list[st->structure_id].gx;
+            pad_gy = game->structs.list[st->structure_id].gy;
+            has_pad = true;
+        } else {
+            has_pad = moon_starship_find_pad(&game->structs, &pad_gx, &pad_gy);
+        }
+
+        if (has_pad) {
+            if (game->starship.state == MOON_STARSHIP_ORBIT || game->starship.state == MOON_STARSHIP_DEPARTED) {
+                if (moon_starship_call(&game->starship, pad_gx, pad_gy)) {
+                    notify(game, "STARSHIP DISPATCHED: APPROACHING SPACEPORT", 3000);
+                    game->dirty = MOON_DIRTY_WORLD;
+                }
+            } else if (game->starship.state == MOON_STARSHIP_SERVICING) {
+                if (game->starship.lh2_loaded_kg >= game->starship.lh2_target_kg &&
+                    game->starship.lox_loaded_kg >= game->starship.lox_target_kg) {
+                    if (moon_starship_launch(&game->starship)) {
+                        notify(game, "STARSHIP RETURN LAUNCH AUTHORIZED", 3000);
+                        game->dirty = MOON_DIRTY_WORLD;
+                    }
+                } else {
+                    notify(game, "REFUELING INCOMPLETE - PROPELLANT REQUIRED", 3000);
+                }
+            }
+        } else {
+            notify(game, "NO ACTIVE STARSHIP LANDING PAD AVAILABLE", 3000);
+        }
+        break;
+    }
     case MOON_KEY_P: toggle_pause(game); break;
     case MOON_KEY_O: game->objectives_hidden = !game->objectives_hidden; break;
     case MOON_KEY_F: game->show_perf = !game->show_perf; break;
@@ -850,6 +886,27 @@ static void handle_event_inner(moon_game_t *game, const moon_event_t *ev) {
         } else if (ev->type == MOON_EVENT_POINTER_DOWN) {
             game->landing_active = false;
             game->landing_y_offset = 0;
+            game->dirty = MOON_DIRTY_WORLD;
+            return;
+        }
+    }
+
+    if (game->starship.state == MOON_STARSHIP_APPROACH ||
+        game->starship.state == MOON_STARSHIP_RETRO ||
+        game->starship.state == MOON_STARSHIP_GEAR_EXTEND) {
+        if (ev->type == MOON_EVENT_KEY_DOWN && (ev->key == MOON_KEY_SPACE || ev->key == MOON_KEY_RETURN)) {
+            game->starship.state = MOON_STARSHIP_SERVICING;
+            game->starship.state_timer_ms = 0;
+            game->starship.alt_px = 0;
+            game->starship.umbilical_pct = 100;
+            game->dirty = MOON_DIRTY_WORLD;
+            return;
+        }
+    } else if (game->starship.state == MOON_STARSHIP_ASCENT) {
+        if (ev->type == MOON_EVENT_KEY_DOWN && (ev->key == MOON_KEY_SPACE || ev->key == MOON_KEY_RETURN)) {
+            game->starship.state = MOON_STARSHIP_DEPARTED;
+            game->starship.state_timer_ms = 0;
+            game->starship.alt_px = 450;
             game->dirty = MOON_DIRTY_WORLD;
             return;
         }
@@ -1111,6 +1168,12 @@ void moon_game_update(moon_game_t *game, uint32_t delta_ms) {
             int64_t rem = (int64_t)(total_ms - game->landing_elapsed_ms);
             game->landing_y_offset = (int32_t)((260 * rem * rem) / ((int64_t)total_ms * total_ms));
         }
+        game->dirty = MOON_DIRTY_WORLD;
+    }
+
+    /* Animated Starship Flight & Spaceport Refueling Sequence (Milestone 64.19) */
+    moon_starship_update(&game->starship, &game->structs, &game->resources, delta_ms);
+    if (game->starship.state != MOON_STARSHIP_ORBIT) {
         game->dirty = MOON_DIRTY_WORLD;
     }
 
@@ -1500,8 +1563,64 @@ static void render_inspector_panel(const moon_game_t *game, const moon_surface_t
             moon_blit_text(surf, ip_x + 8, y1, "POWER: -10 kW (Guidance)", COLOR_ENERGY_YELLOW, 0, true);
             moon_blit_text(surf, ip_x + 8, y2, "APRON: 4x4 Sintered Basalt", COLOR_GOLD_FOIL, 0, true);
             moon_blit_text(surf, ip_x + 8, y3, "BLAST DEFENSE: Berm Prot", COLOR_LUNAR_WHITE, 0, true);
-            moon_blit_text(surf, ip_x + 8, y4, "UMBILICAL: LH2/LOX Ready", COLOR_LASER_CYAN, 0, true);
-            moon_blit_text(surf, ip_x + 8, y5, "STARSHIP: Awaiting Run", COLOR_ENERGY_YELLOW, 0, true);
+
+            const moon_starship_t *ship = &game->starship;
+            switch (ship->state) {
+                case MOON_STARSHIP_ORBIT:
+                    moon_blit_text(surf, ip_x + 8, y4, "STARSHIP: In Cislunar Orbit", COLOR_ENERGY_YELLOW, 0, true);
+                    moon_blit_text(surf, ip_x + 8, y5, "FLIGHT: Press [L] to Call", COLOR_STATUS_GREEN, 0, true);
+                    break;
+                case MOON_STARSHIP_APPROACH:
+                    moon_blit_text(surf, ip_x + 8, y4, "STARSHIP: Orbital Approach", COLOR_LASER_CYAN, 0, true);
+                    moon_blit_text_fmt(surf, ip_x + 8, y5, COLOR_LASER_CYAN, 0, true, "TELEMETRY: Alt %dm (RCS)", ship->alt_px);
+                    break;
+                case MOON_STARSHIP_RETRO:
+                    moon_blit_text(surf, ip_x + 8, y4, "STARSHIP: Retro-Propulsion", COLOR_ALERT_RED, 0, true);
+                    moon_blit_text_fmt(surf, ip_x + 8, y5, COLOR_LASER_CYAN, 0, true, "HYDROLOX BURN: Alt %dm", ship->alt_px);
+                    break;
+                case MOON_STARSHIP_GEAR_EXTEND:
+                    moon_blit_text(surf, ip_x + 8, y4, "STARSHIP: Final Flare", COLOR_ENERGY_YELLOW, 0, true);
+                    moon_blit_text(surf, ip_x + 8, y5, "LANDING GEAR: Deployed", COLOR_STATUS_GREEN, 0, true);
+                    break;
+                case MOON_STARSHIP_TOUCHDOWN:
+                    moon_blit_text(surf, ip_x + 8, y4, "STARSHIP: Touchdown on Apron", COLOR_STATUS_GREEN, 0, true);
+                    moon_blit_text(surf, ip_x + 8, y5, "ENGINES: Cutoff / Dust Skirt", COLOR_LUNAR_WHITE, 0, true);
+                    break;
+                case MOON_STARSHIP_SERVICING: {
+                    int lh2_cur = fixed_to_int(ship->lh2_loaded_kg);
+                    int lh2_tgt = fixed_to_int(ship->lh2_target_kg);
+                    int lox_cur = fixed_to_int(ship->lox_loaded_kg);
+                    int lox_tgt = fixed_to_int(ship->lox_target_kg);
+                    int tot_cur = lh2_cur + lox_cur;
+                    int tot_tgt = lh2_tgt + lox_tgt;
+                    int pct = (tot_tgt > 0) ? (tot_cur * 100) / tot_tgt : 0;
+                    if (pct >= 100) {
+                        moon_blit_text(surf, ip_x + 8, y4, "REFUELING: 100% COMPLETE", COLOR_STATUS_GREEN, 0, true);
+                        moon_blit_text(surf, ip_x + 8, y5, "RETURN: Press [L] to Launch", COLOR_STATUS_GREEN, 0, true);
+                    } else if (ship->umbilical_pct < 100) {
+                        moon_blit_text_fmt(surf, ip_x + 8, y4, COLOR_LASER_CYAN, 0, true, "UMBILICAL: Docking (%d%%)", ship->umbilical_pct);
+                        moon_blit_text(surf, ip_x + 8, y5, "STATUS: Coupling Servicing Mast", COLOR_ENERGY_YELLOW, 0, true);
+                    } else {
+                        moon_blit_text_fmt(surf, ip_x + 8, y4, COLOR_LASER_CYAN, 0, true, "REFUELING: %d%% Loaded", pct);
+                        moon_blit_text_fmt(surf, ip_x + 8, y5, COLOR_GOLD_FOIL, 0, true, "H2: %d/%dkg O2: %d/%dkg",
+                                           lh2_cur, lh2_tgt, lox_cur, lox_tgt);
+                    }
+                    break;
+                }
+                case MOON_STARSHIP_PRELAUNCH:
+                    moon_blit_text(surf, ip_x + 8, y4, "STARSHIP: Pre-Ignition Warmup", COLOR_ENERGY_YELLOW, 0, true);
+                    moon_blit_text(surf, ip_x + 8, y5, "UMBILICAL: Disconnected / Safe", COLOR_STATUS_GREEN, 0, true);
+                    break;
+                case MOON_STARSHIP_ASCENT:
+                    moon_blit_text(surf, ip_x + 8, y4, "STARSHIP: Vertical Ascent Burn", COLOR_ALERT_RED, 0, true);
+                    moon_blit_text_fmt(surf, ip_x + 8, y5, COLOR_LASER_CYAN, 0, true, "RAPTOR ASCENT: Alt %dm", ship->alt_px);
+                    break;
+                case MOON_STARSHIP_DEPARTED:
+                    moon_blit_text(surf, ip_x + 8, y4, "STARSHIP: Orbit Achieved", COLOR_STATUS_GREEN, 0, true);
+                    moon_blit_text(surf, ip_x + 8, y5, "TRANSIT: Return to Earth", COLOR_ENERGY_YELLOW, 0, true);
+                    break;
+            }
+
             moon_blit_text_fmt(surf, ip_x + 8, y6, COLOR_STATUS_GREEN, 0, true,
                                "Integrity: %d%%", s->health);
             break;
@@ -2053,6 +2172,9 @@ void moon_game_render(moon_game_t *game, uint16_t *fb, int width, int height, in
 
     moon_world_render_overlays(&game->structs, &game->grid, &surf, &game->resources,
                                game->cam_x, game->cam_y);
+
+    /* Render Starship rocket, hydrolox plume & shock diamonds, dust skirts, and umbilical */
+    moon_starship_render(&game->starship, &game->grid, &surf, game->cam_x, game->cam_y);
 
     /* 3. Selection frame around the selected structure's footprint (or tile) */
     render_selection_frame(game, &surf);
