@@ -1298,28 +1298,36 @@ static void render_inspector_panel(const moon_game_t *game, const moon_surface_t
             int stock_val = fixed_to_int(game->resources.regolith_stored_kg);
             int stock_cap = game->resources.regolith_capacity_kg;
             bool brownout = game->resources.power_brownout;
+            bool full = (stock_val >= stock_cap);
 
-            const char *st_str = "BAKING BLOCKS";
+            const char *st_str = "BAKING PAVERS";
             uint16_t st_col = COLOR_STATUS_GREEN;
             if (!s->active) {
                 st_str = "STANDBY";
                 st_col = RGB565(140, 140, 150);
             } else if (s->depleted || left == 0) {
-                st_str = "DEPLETED";
+                st_str = "QUARRY DEPLETED";
                 st_col = RGB565(230, 130, 30);
             } else if (!s->powered || brownout) {
                 st_str = "NO POWER";
                 st_col = COLOR_ALERT_RED;
+            } else if (full) {
+                st_str = "SILO FULL (IDLE)";
+                st_col = COLOR_ENERGY_YELLOW;
             }
 
             moon_blit_text_fmt(surf, ip_x + 8, y0, st_col, 0, true, "STATUS: [%s]", st_str);
-            moon_blit_text_fmt(surf, ip_x + 8, y1, COLOR_ENERGY_YELLOW, 0, true, "POWER: -20 kW (Demand)");
+            if (!s->active || s->depleted || left == 0 || !s->powered || brownout || full) {
+                moon_blit_text(surf, ip_x + 8, y1, "POWER: Idle (0 kW Demand)", COLOR_ENERGY_YELLOW, 0, true);
+            } else {
+                moon_blit_text_fmt(surf, ip_x + 8, y1, COLOR_ENERGY_YELLOW, 0, true, "POWER: -20 kW (Furnace)");
+            }
             moon_blit_text_fmt(surf, ip_x + 8, y2, COLOR_REGOLITH_LIGHT, 0, true, "OUTPUT: +%d kg/min Pavers", rate);
             moon_blit_text_fmt(surf, ip_x + 8, y3, left ? COLOR_LASER_CYAN : RGB565(230, 130, 30), 0, true,
-                               "QUARRY ORE: %d kg left", left);
+                               "QUARRY ORE: %d units left", left);
             moon_blit_text_fmt(surf, ip_x + 8, y4, COLOR_LUNAR_WHITE, 0, true,
                                "BASE STOCK: %d / %d kg", stock_val, stock_cap);
-            moon_blit_text(surf, ip_x + 8, y5, "Quarries 8 adj tiles", COLOR_GOLD_FOIL, 0, true);
+            moon_blit_text(surf, ip_x + 8, y5, full ? "Silo Full: Quarrying paused" : "Quarries 8 adj tiles", COLOR_GOLD_FOIL, 0, true);
             moon_blit_text_fmt(surf, ip_x + 8, y6, COLOR_STATUS_GREEN, 0, true,
                                "Integrity: %d%%", s->health);
             break;
@@ -1603,8 +1611,8 @@ static void render_build_ribbon(const moon_game_t *game, const moon_surface_t *s
         },
         [MOON_CAT_LOGISTICS] = {
             "E:STANDBY",
-            "1:SINT  15t", "2:PAVER  5t", "3:CABLE  2t",
-            "-", "-", "-",
+            "1:SINT  15t", "2:PAVER  5t", "3:PAD  120t",
+            "4:CABLE  2t", "-", "-",
             "R:RECYCLE"
         }
     };
@@ -1624,8 +1632,8 @@ static void render_build_ribbon(const moon_game_t *game, const moon_surface_t *s
         },
         [MOON_CAT_LOGISTICS] = {
             "E:STBY",
-            "1:SINT", "2:PAVR", "3:WIRE",
-            "-", "-", "-",
+            "1:SINT", "2:PAVR", "3:PAD",
+            "4:WIRE", "-", "-",
             "R:RECY"
         }
     };
