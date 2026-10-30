@@ -127,9 +127,7 @@ int main(int argc, char **argv) {
             moon_game_render_hud(&s_game, disp, width, height, stride);
         }
         if (fb) {
-            uint32_t t0 = moon_platform_get_ticks_us();
             moon_game_render(&s_game, fb, width, height, stride);
-            uint32_t t1 = moon_platform_get_ticks_us();
 
             if (dump_ppm && max_frames > 0 && s_game.frame_count >= (uint32_t)max_frames) {
                 FILE *fp = fopen(dump_ppm, "wb");

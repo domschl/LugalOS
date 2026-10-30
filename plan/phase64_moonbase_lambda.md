@@ -384,7 +384,7 @@ Act I (*Survival & Bootstrapping*) is fully implemented and running on both the 
 | :---: | :---: | :--- | :--- |
 | **64.16** | **COMPLETE** | **Cryogenic Propellant Economy & Electrolysis** | Implement $LH_2$ and $LOX$ resource tracking in `moon_resources_t`. High-power 2×2 Hydrolox Electrolyzer structure splitting $H_2O$ ($2 H_2O \to 2 H_2 + O_2$; 1:8 mass ratio). Cryogenic dewar tanks with thermal insulation & boil-off mechanics during lunar night. HUD propellant gauge. |
 | **64.17** | **COMPLETE** | **Hierarchical Build Sheet & Tech Progression** | Evolve beyond the flat 6-building ribbon: structured categorized build sheets (Power/Storage, Life Support/Cryo, Spaceport/Logistics). Minimum clearance rules and sintered foundation requirements. |
-| **64.18** | **PENDING** | **Reinforced Starship Landing Pad** | 4×4 sintered regolith spaceport apron with blast-deflection berms and cryo umbilical conduits. Protects neighboring solar arrays and habitats from high-velocity exhaust regolith scouring. |
+| **64.18** | **COMPLETE** | **Reinforced Starship Landing Pad** | 4×4 sintered regolith spaceport apron with blast-deflection berms and cryo umbilical conduits. Protects neighboring solar arrays and habitats from high-velocity exhaust regolith scouring. |
 | **64.19** | **PENDING** | **Starship Flight & Engine Plume Animation** | Procedural multi-state Starship flight sequence: orbital approach, ease-out retro-propulsion with pale-blue/cyan hydrolox plume & shock diamonds, landing gear extension, touchdown dust skirts, umbilical hookup, cryogenic loading meter, and vertical ascent return burn. |
 | **64.20** | **PENDING** | **Earth-Moon Trade, Personnel & Victory Loop** | Earth cargo manifests (specialist colonists, heavy machinery, high-yield reactors). Starship turnaround timer / launch window pressure. Act II Victory Condition: Successfully support, refuel, and dispatch the first commercial Hydrolox Starship return mission. Headless balance test in `tests/balance.c`. |
 
@@ -418,5 +418,30 @@ Act I (*Survival & Bootstrapping*) is fully implemented and running on both the 
   - 100% pass on host test suite (`make -C user/moonbase test`, including `balance check`).
   - Racescan clean: 0 shared unmarked statics.
   - Verified on M5Stack Tab5 bare-metal hardware.
+
+**64.18 implementation notes, reinforced starship landing pad (2026-10-30).** Delivered:
+- **Structure Definition & 4×4 Isometric Geometry**:
+  - Added `MOON_STRUCT_LANDING_PAD` in `moon_structures.h` with 4×4 tile footprint (`footprint_w = 4, footprint_h = 4`).
+  - Cost: 120 kg sintered regolith, power consumption -10 kW (telemetry, guidance beacons, cryogenic umbilical chill).
+  - Sprite: $128 \times 96$ RGB565 isometric pixel art with blast berms, landing target markings, and cryogenic umbilical mast.
+  - Geometry alignment: Anchored at `base = 60` px to seat the bottom berm vertex directly onto the 4×4 diamond bottom vertex ($sy + 56$ to $sy + 60$), while allowing the umbilical mast to rise gracefully above the northern quadrant.
+- **Hierarchical Build Sheet Integration**:
+  - Added to `MOON_CAT_LOGISTICS` as Slot 3 (`MOON_KEY_3`).
+  - Re-indexed Power Conduit to Slot 4 in Logistics.
+- **Placement Prerequisites & Safety Clearance Rules**:
+  - **Tech Progression Lock**: Requires both Habitat Dome and Cryogenics (Hydrolox Plant or Cryo Dewar). Placement blocked with `"Tech locked: Requires Habitat & Cryogenics"`.
+  - **16-Tile Sintered Foundation Apron**: All 16 tiles ($4 \times 4$) must be paved with `MOON_TILE_FLAG_FOUNDATION`. Placement blocked with `"Requires 4x4 sintered foundation"`.
+  - **Rocket Engine Scouring Clearance**: Must maintain $\ge 1$ tile clearance from crew habitats (`MOON_STRUCT_HABITAT_DOME`) and expedition anchor (`MOON_STRUCT_LANDER`). Refused with `"Safety: clearance from habitat required"` (and reciprocally `"Safety: clearance from landing pad required"` when placing habitats).
+- **Inspector Panel & Overlays**:
+  - Real-time status line: `[SPACEPORT READY]`, `[UNPOWERED / NO GUID]`, or `[STANDBY]`.
+  - Detailed diagnostic lines: `-10 kW (Guidance)`, `4x4 Sintered Basalt`, `Berm Prot`, `UMBILICAL: LH2/LOX Ready`, `STARSHIP: Awaiting Run`.
+  - Sprite meter bar: 5/5 cyan when active/powered, 2/5 yellow when unpowered, 0/5 grey in standby/brownout.
+- **Verification**:
+  - 100% pass across `test_fixed_blitter`, `test_game_logic`, and `balance` (`make -C user/moonbase test`).
+  - Static race check (`python3 tools/racescan.py --check`) clean: 0 shared unmarked statics.
+  - `python3 tools/gendocs.py --check` clean: 0 drift.
+  - Built freestanding ELF for `build/esp32p4-tab5` via Ninja.
+  - Flashed to connected M5Stack Tab5 hardware (`/dev/ttyACM0`) and verified via `tools/p4run.py`.
+
 
 

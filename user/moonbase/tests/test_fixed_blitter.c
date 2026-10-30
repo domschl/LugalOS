@@ -23,8 +23,8 @@ static void test_structure_catalog_and_placement(void) {
         const moon_structure_def_t *def = moon_structure_get_def((moon_structure_type_t)t);
         assert(def != NULL);
         assert(def->name != NULL);
-        assert(def->footprint_w >= 1 && def->footprint_w <= 2);
-        assert(def->footprint_h >= 1 && def->footprint_h <= 2);
+        assert(def->footprint_w >= 1 && def->footprint_w <= 4);
+        assert(def->footprint_h >= 1 && def->footprint_h <= 4);
     }
 
     /* 2. Initial expedition lander */

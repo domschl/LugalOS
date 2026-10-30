@@ -445,8 +445,8 @@ static const moon_structure_type_t s_build_buttons[MOON_CAT_COUNT][6] = {
     [MOON_CAT_LOGISTICS] = {
         MOON_STRUCT_REGOLITH_PLANT,
         MOON_STRUCT_FOUNDATION_PAD,
+        MOON_STRUCT_LANDING_PAD,
         MOON_STRUCT_POWER_CONDUIT,
-        MOON_STRUCT_NONE,
         MOON_STRUCT_NONE,
         MOON_STRUCT_NONE
     }
@@ -1471,6 +1471,29 @@ static void render_inspector_panel(const moon_game_t *game, const moon_surface_t
             moon_blit_text_fmt(surf, ip_x + 8, y4, COLOR_LASER_CYAN, 0, true,
                                "Coords: [%02d, %02d]", s->gx, s->gy);
             moon_blit_text(surf, ip_x + 8, y5, "Footprint: 1x1 tile", RGB565(160, 165, 175), 0, true);
+            moon_blit_text_fmt(surf, ip_x + 8, y6, COLOR_STATUS_GREEN, 0, true,
+                               "Integrity: %d%%", s->health);
+            break;
+        }
+
+        case MOON_STRUCT_LANDING_PAD: {
+            bool brownout = game->resources.power_brownout;
+            const char *st_str = "SPACEPORT READY";
+            uint16_t st_col = COLOR_STATUS_GREEN;
+            if (!s->active) {
+                st_str = "STANDBY";
+                st_col = RGB565(140, 140, 150);
+            } else if (!s->powered || brownout) {
+                st_str = "UNPOWERED / NO GUID";
+                st_col = COLOR_ALERT_RED;
+            }
+
+            moon_blit_text_fmt(surf, ip_x + 8, y0, st_col, 0, true, "STATUS: [%s]", st_str);
+            moon_blit_text(surf, ip_x + 8, y1, "POWER: -10 kW (Guidance)", COLOR_ENERGY_YELLOW, 0, true);
+            moon_blit_text(surf, ip_x + 8, y2, "APRON: 4x4 Sintered Basalt", COLOR_GOLD_FOIL, 0, true);
+            moon_blit_text(surf, ip_x + 8, y3, "BLAST DEFENSE: Berm Prot", COLOR_LUNAR_WHITE, 0, true);
+            moon_blit_text(surf, ip_x + 8, y4, "UMBILICAL: LH2/LOX Ready", COLOR_LASER_CYAN, 0, true);
+            moon_blit_text(surf, ip_x + 8, y5, "STARSHIP: Awaiting Run", COLOR_ENERGY_YELLOW, 0, true);
             moon_blit_text_fmt(surf, ip_x + 8, y6, COLOR_STATUS_GREEN, 0, true,
                                "Integrity: %d%%", s->health);
             break;
