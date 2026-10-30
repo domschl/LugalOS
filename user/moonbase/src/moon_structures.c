@@ -384,7 +384,7 @@ static void sprite_rect(uint8_t type, int32_t sx, int32_t sy, moon_rect_t *r) {
     const moon_surface_t *spr = sprite_of(type);
     int w = spr ? spr->width : 0;
     int h = spr ? spr->height : 0;
-    int base = (type == MOON_STRUCT_HABITAT_DOME || type == MOON_STRUCT_HYDROLOX_PLANT) ? 20 : MOON_TILE_HALF_H;
+    int base = (type == MOON_STRUCT_HABITAT_DOME || type == MOON_STRUCT_HYDROLOX_PLANT) ? 48 : MOON_TILE_HALF_H;
     r->x0 = sx - w / 2;
     r->y0 = sy + base - h;
     r->x1 = r->x0 + w;
@@ -523,14 +523,14 @@ static void draw_structure_overlay(const moon_grid_t *grid, const moon_surface_t
             int lox_stored = fixed_to_int(res->lox_stored_kg);
             bool full = (lh2_cap > 0 && lh2_stored >= lh2_cap) || (lox_cap > 0 && lox_stored >= lox_cap);
             if (water_l >= 20 && !full) {
-                draw_meter_bar(surf, sx, sy - 28, 5, 5, COLOR_LASER_CYAN);
+                draw_meter_bar(surf, sx, sy - 36, 5, 5, COLOR_LASER_CYAN);
             } else if (full) {
-                draw_meter_bar(surf, sx, sy - 28, 5, 5, COLOR_ENERGY_YELLOW);
+                draw_meter_bar(surf, sx, sy - 36, 5, 5, COLOR_ENERGY_YELLOW);
             } else {
-                draw_meter_bar(surf, sx, sy - 28, 1, 5, COLOR_ALERT_RED);
+                draw_meter_bar(surf, sx, sy - 36, 1, 5, COLOR_ALERT_RED);
             }
         } else {
-            draw_meter_bar(surf, sx, sy - 28, 0, 5, RGB565(30, 32, 38));
+            draw_meter_bar(surf, sx, sy - 36, 0, 5, RGB565(30, 32, 38));
         }
     } else if (s->type == MOON_STRUCT_CRYO_DEWAR) {
         /* Fuel fill level bar: stored propellant vs capacity */
@@ -549,7 +549,7 @@ static void draw_structure_overlay(const moon_grid_t *grid, const moon_surface_t
 
     const moon_structure_def_t *def = moon_structure_get_def((moon_structure_type_t)s->type);
     if (!def) return;
-    int badge_y = (s->type == MOON_STRUCT_HABITAT_DOME) ? sy - 34 : sy - def->height_px - 8;
+    int badge_y = (s->type == MOON_STRUCT_HABITAT_DOME || s->type == MOON_STRUCT_HYDROLOX_PLANT) ? sy - 38 : sy - def->height_px - 8;
 
     if (!s->active) {
         /* Standby / Deactivated badge: yellow framed pill */

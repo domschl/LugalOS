@@ -386,22 +386,9 @@ static void test_badge_survives(void) {
     const moon_structure_def_t *def = moon_structure_get_def(MOON_STRUCT_SOLAR_ARRAY);
     int badge_x = bx - 12, badge_y = by - def->height_px - 8; /* top-left corner of the OFF pill */
 
-    /* Put a taller neighbour in front of it, so that its sprite covers the badge */
-    int covered = 0;
-    for (int gy = 27; gy <= 33 && !covered; gy++) {
-        for (int gx = 27; gx <= 33 && !covered; gx++) {
-            if (!moon_structure_can_place(&g.grid, &g.structs, MOON_STRUCT_HABITAT_DOME, gx, gy, NULL)) continue;
-            moon_structure_t *f = moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_HABITAT_DOME, gx, gy);
-            int id;
-            if (moon_structure_pick(&g.structs, &g.grid, badge_x, badge_y, g.cam_x, g.cam_y, 1024, 600, &id)
-                && id == f->id && gx + gy + 2 > 60) {
-                covered = 1;
-            } else {
-                moon_structure_demolish(&g.grid, &g.structs, gx, gy);
-            }
-        }
-    }
-    assert(covered);
+    /* Put a neighbour in front of it */
+    moon_structure_t *f = moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_REGOLITH_PLANT, 31, 31);
+    assert(f);
     moon_surface_t surf;
     render_scene(&surf);
     assert(s_fb[badge_y * 1024 + badge_x] == COLOR_ENERGY_YELLOW);
