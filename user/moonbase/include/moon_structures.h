@@ -117,7 +117,7 @@ void moon_world_render_overlays(const moon_structure_mgr_t *mgr,
                                 const struct moon_resources_s *res,
                                 int32_t cam_x, int32_t cam_y);
 
-/* Render Expedition Lander descent touchdown animation (Milestones 64.16 & 64.21) */
+/* Render Expedition Lander descent touchdown animation */
 void moon_lander_render(const moon_grid_t *grid,
                         const moon_surface_t *surf,
                         int32_t cam_x, int32_t cam_y,

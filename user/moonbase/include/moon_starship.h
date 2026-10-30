@@ -9,7 +9,7 @@
 #include "moon_resources.h"
 #include "moon_structures.h"
 
-/* Starship Flight & Spaceport Refueling State Machine (Milestone 64.19) */
+/* Starship Flight & Spaceport Refueling State Machine */
 typedef enum {
     MOON_STARSHIP_ORBIT = 0,    /* In orbital standby / awaiting landing call */
     MOON_STARSHIP_APPROACH,     /* High-altitude orbital entry & RCS orientation (descent from 360 px) */
@@ -25,7 +25,7 @@ typedef enum {
 #define MOON_STARSHIP_MAX_DUST 24
 #define MOON_STARSHIP_WINDOW_MS 180000  /* 180 s (1 full lunar day) Earth return launch window */
 
-/* Earth Trade Cargo Manifest (Milestone 64.20) */
+/* Earth Trade Cargo Manifest */
 typedef struct {
     uint8_t   colonists;        /* Specialist colonists (+4 crew) */
     uint16_t  regolith_blocks;  /* Heavy machinery & prefabricated building stock (+100 kg) */
@@ -57,7 +57,7 @@ typedef struct {
     fixed32_t lox_target_kg;    /* Refueling target for return burn (2000 kg) */
     uint8_t   umbilical_pct;    /* 0..100: Extension percentage of cryogenic gantry arm */
 
-    /* Earth Trade Cargo Manifest & Launch Window (Milestone 64.20) */
+    /* Earth Trade Cargo Manifest & Launch Window */
     moon_cargo_manifest_t manifest;
     uint32_t  turnaround_timer_ms; /* Milliseconds remaining in Earth return launch window */
     bool      window_expired;      /* True if turnaround timer expired before full refueling */

@@ -1,4 +1,4 @@
-/* Milestone 64.9-64.11 regression tests: picking, power solver, life-support rules,
+/* Regression tests: picking, power solver, life-support rules,
  * camera bounds, pointer routing, the regolith guard, depth-sorted rendering and
  * sprite picking, shared UI layout, pause and clock, the same
  * play sequence by mouse, touch and keyboard, and the game flow (game over,
@@ -2031,7 +2031,7 @@ static void test_hydrolox_dewar_and_inspector_clarity(void) {
     printf("[test] Hydrolox & Dewar simulation and detailed inspector clarity: PASS\n");
 }
 
-/* Milestone 64.18: Reinforced Starship Landing Pad verification */
+/* Reinforced Starship Landing Pad verification */
 static void test_starship_landing_pad(void) {
     fresh();
     const char *reason = NULL;
@@ -2136,10 +2136,10 @@ static void test_starship_landing_pad(void) {
     assert(g.structs.selected_build_type == MOON_STRUCT_LANDING_PAD);
     key(MOON_KEY_0);
 
-    printf("[test] Reinforced Starship Landing Pad (Milestone 64.18): PASS\n");
+    printf("[test] Reinforced Starship Landing Pad: PASS\n");
 }
 
-/* Milestone 64.19: Starship Flight & Spaceport Refueling Sequence verification */
+/* Starship Flight & Spaceport Refueling Sequence verification */
 static void advance_ms(int ms) {
     while (ms > 0) {
         int slice = (ms > 50) ? 50 : ms;
@@ -2301,7 +2301,7 @@ static void test_starship_flight_animation(void) {
     assert(g.starship.state == MOON_STARSHIP_SERVICING);
     assert(g.starship.alt_px == 0);
 
-    printf("[test] Starship Flight & Spaceport Refueling (Milestone 64.19): PASS\n");
+    printf("[test] Starship Flight & Spaceport Refueling: PASS\n");
 }
 
 static void test_earth_moon_trade_and_act2_victory(void) {
@@ -2425,7 +2425,7 @@ static void test_earth_moon_trade_and_act2_victory(void) {
     assert(g.act2_victory_claimed);
     assert(g.menu_page == MOON_MENU_CLOSED);
 
-    printf("[test] Earth-Moon Trade, Personnel & Act II Victory Loop (Milestone 64.20): PASS\n");
+    printf("[test] Earth-Moon Trade, Personnel & Act II Victory Loop: PASS\n");
 }
 
 int main(void) {

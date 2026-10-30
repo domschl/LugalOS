@@ -1208,7 +1208,7 @@ void moon_game_update(moon_game_t *game, uint32_t delta_ms) {
     }
     game->structs.lander_y_offset = game->landing_y_offset;
 
-    /* Animated Starship Flight & Spaceport Refueling Sequence (Milestone 64.19) */
+    /* Animated Starship Flight & Spaceport Refueling Sequence */
     moon_starship_update(&game->starship, &game->structs, &game->resources, delta_ms);
     if (game->starship.state != MOON_STARSHIP_ORBIT) {
         game->dirty = MOON_DIRTY_WORLD;

@@ -165,7 +165,7 @@ typedef struct {
     uint32_t landing_elapsed_ms;
     int32_t  landing_y_offset;
 
-    /* Animated Starship Flight & Spaceport Refueling Sequence (Milestone 64.19) */
+    /* Animated Starship Flight & Spaceport Refueling Sequence */
     moon_starship_t starship;
 
     /* Frame and Tick Counters */

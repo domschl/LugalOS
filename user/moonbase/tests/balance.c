@@ -508,7 +508,7 @@ int main(int argc, char **argv) {
             }
         }
         if (check) {
-            /* Targets (plan/phase64 5.8, 64.13): over twelve maps */
+            /* Targets: over twelve maps */
             const level_result_t *e = &res[MOON_DIFFICULTY_EASY], *n = &res[MOON_DIFFICULTY_NORMAL], *h = &res[MOON_DIFFICULTY_HARD];
             assert(n->alive[0] == SEEDS && n->act1[0] == SEEDS);            /* a good player always wins on Normal ... */
             assert(n->objectives_done == SEEDS && e->objectives_done == SEEDS); /* ... following the objective path to its end */
