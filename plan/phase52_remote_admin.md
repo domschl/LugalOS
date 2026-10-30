@@ -1141,6 +1141,17 @@ deferred without blocking anything after it.
   on a mode switch; both are accepted. The scan list, `/dev/wlan ap start|stop`,
   Android and the packet capture for I6 move to the TLS milestones' hardware pass.
 
+* **52.13 C6 SoftAP for P4 boards** *(deferrable).* *Board: the NANO, then
+  the LCD-7B and the Tab5.*
+  * Port the WPA2 authenticator (IDF `wpa_supplicant`'s `src/ap/` +
+    `esp_hostap`) into the C6's confined radio domain, replacing the
+    `wpa_receive()` stub.
+  * `/c6/dev/wlan ap start`, and AP frames on a second LLP interface (`ap0`).
+    The P4 runs `dhcpd`, `dnsd` and `httpd` on `ap0` (D3: the P4 owns the IP).
+  * *Verification:* the C6-MINI's RAM and code size measured against §1.6's
+    budget. A phone-only setup of the NANO, then of the Tab5 (no cable but
+    power).
+
 * **52.13b C6-Zero stand-alone, sensor configuration.** *Board: the C6-Zero, no P4.*
   * A C6-Zero on its own USB port is a node of its own (sensor persona: its own IP,
     I2C sensors, MQTT), not a radio for a P4. Provision it from the console
@@ -1158,17 +1169,6 @@ deferred without blocking anything after it.
     BME280 and publishes it over MQTT, takes an OTA update, and reports its free
     heap with the sensors, MQTT, `httpd` and `mdnsd` all running (the budget of
     phase 49's "small and tainted" C6).
-
-* **52.13 C6 SoftAP for P4 boards** *(deferrable).* *Board: the NANO, then
-  the LCD-7B and the Tab5.*
-  * Port the WPA2 authenticator (IDF `wpa_supplicant`'s `src/ap/` +
-    `esp_hostap`) into the C6's confined radio domain, replacing the
-    `wpa_receive()` stub.
-  * `/c6/dev/wlan ap start`, and AP frames on a second LLP interface (`ap0`).
-    The P4 runs `dhcpd`, `dnsd` and `httpd` on `ap0` (D3: the P4 owns the IP).
-  * *Verification:* the C6-MINI's RAM and code size measured against §1.6's
-    budget. A phone-only setup of the NANO, then of the Tab5 (no cable but
-    power).
 
 * **52.14 Device TLS key, CSR, and the LugalOS CA.** *Board: the NANO.*
   * The node generates a P-256 key (refused without hardware entropy, 52.6)
