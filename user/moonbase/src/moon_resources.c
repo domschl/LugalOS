@@ -232,8 +232,16 @@ void moon_resources_tick(moon_resources_t *res,
                 int32_t solar_kw = fixed_to_int((int64_t)def->power_kw * res->solar_intensity);
                 total_gen_kw += solar_kw;
             } else if (def->power_kw < 0 && !s->depleted) {
-                /* Consumer (an Extractor or Sinterer with nothing left to draw idles) */
-                total_use_kw += (-def->power_kw);
+                /* Consumer (an Extractor or Sinterer with nothing left to draw idles).
+                 * A Sinterer also idles when regolith storage is full (max capacity). */
+                bool idling = false;
+                if (s->type == MOON_STRUCT_REGOLITH_PLANT &&
+                    res->regolith_stored_kg >= fixed_from_int(res->regolith_capacity_kg)) {
+                    idling = true;
+                }
+                if (!idling) {
+                    total_use_kw += (-def->power_kw);
+                }
             }
 
             /* Resource production from active industrial modules */
@@ -244,8 +252,11 @@ void moon_resources_tick(moon_resources_t *res,
                         net_water_milli += (def->rate_water * 1000 / (MOON_SIM_TICK_RATE_HZ * 60));
                     }
                 } else if (s->type == MOON_STRUCT_REGOLITH_PLANT) {
-                    if (draw_from_ground(res, grid, s)) {
-                        net_regolith_milli += (res->rules.sinterer_kg_per_min * 1000 / (MOON_SIM_TICK_RATE_HZ * 60));
+                    /* Only quarry and bake regolith if storage capacity is available */
+                    if (res->regolith_stored_kg < fixed_from_int(res->regolith_capacity_kg)) {
+                        if (draw_from_ground(res, grid, s)) {
+                            net_regolith_milli += (res->rules.sinterer_kg_per_min * 1000 / (MOON_SIM_TICK_RATE_HZ * 60));
+                        }
                     }
                 } else if (s->type == MOON_STRUCT_HYDROLOX_PLANT) {
                     /* Only crack water if water reserves are above safe drinking threshold (20 L)

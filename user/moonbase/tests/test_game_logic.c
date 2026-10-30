@@ -1513,6 +1513,28 @@ static void test_quarry(void) {
     g.grid.tiles[35][36].resource_val = 40;
     assert(moon_structure_can_place(&g.grid, &g.structs, MOON_STRUCT_REGOLITH_PLANT, 37, 36, NULL));
 
+    /* Silo Full Check: When storage reaches 250 kg, Sinterer idles and does not deplete ground */
+    fresh();
+    g.resources.rules.sinterer_kg_per_min = 60;
+    g.resources.regolith_stored_kg = fixed_from_int(250);
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_REGOLITH_PLANT, 31, 32));
+    int ore_start = moon_structure_ore_left(&g.grid, MOON_STRUCT_REGOLITH_PLANT, 31, 32);
+    assert(ore_start > 0);
+    ticks(1);
+    /* Regolith storage is full: Sinterer idles, does not draw 20 kW furnace power */
+    assert(g.resources.power_consumed_kw == 5); /* Lander base 5 kW only */
+    ticks(MOON_SIM_TICK_RATE_HZ * 3);
+    assert(moon_structure_ore_left(&g.grid, MOON_STRUCT_REGOLITH_PLANT, 31, 32) == ore_start); /* Ground untouched! */
+    assert(regolith() == 250);
+
+    /* When regolith is consumed below 250, quarrying resumes */
+    g.resources.regolith_stored_kg = fixed_from_int(200);
+    ticks(1);
+    assert(g.resources.power_consumed_kw == 25); /* 5 kW + 20 kW furnace */
+    ticks(MOON_SIM_TICK_RATE_HZ * 3);
+    assert(moon_structure_ore_left(&g.grid, MOON_STRUCT_REGOLITH_PLANT, 31, 32) < ore_start); /* Ground drawn */
+    assert(regolith() > 200);
+
     /* Richness differs by ground: boulder fields are the best, crater floors poor */
     fresh();
     long sum[MOON_TERRAIN_COUNT] = { 0 }, n[MOON_TERRAIN_COUNT] = { 0 };
