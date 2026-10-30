@@ -1343,6 +1343,7 @@ static uint32_t g_wlan_buf[(4 + 2048) / 4];
 #define SPI_INT_ERRORS (SPI_INT_DATA_UNAVAILABLE | SPI_INT_F2F3_RD_UNDERFLOW | SPI_INT_F2F3_WR_OVERFLOW | \
                         SPI_INT_COMMAND_ERROR | SPI_INT_DATA_ERROR | SPI_INT_F1_OVERFLOW)
 
+/* guarded by: g_bus_lock (cyw43_lock()) for every write; the snapshot read in cyw43_bus_stats() may be one count behind. */
 static cyw43_bus_stats_t g_bus_stats;
 
 static void bus_check_errors(void) {

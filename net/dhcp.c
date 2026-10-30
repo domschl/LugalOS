@@ -39,6 +39,7 @@ typedef struct {
 
 static dhcp_rx_t g_rx;
 static uint32_t g_xid;
+/* accepted: dhcp_hold() clears it from the task that raises the access point, while the client is held off; a client pass that reads it late renews once more than it should. */
 static bool g_owned;          /* the address in use is one this client set (so it may renew it) */
 /* accepted: set from the task that runs the access point, read by the client task; one pass late is harmless. */
 static volatile bool g_hold;  /* the interface is an access point: this client has nothing to ask for */
