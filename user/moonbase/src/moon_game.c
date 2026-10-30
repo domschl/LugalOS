@@ -586,6 +586,9 @@ static void menu_activate(moon_game_t *game, int item) {
         if (item < MOON_DIFFICULTY_COUNT) {
             game->difficulty_request = (uint8_t)(item + 1);
             game_reset(game, game->screen_w, game->screen_h);
+            game->landing_active = true;
+            game->landing_elapsed_ms = 0;
+            game->landing_y_offset = 260;
         } else {
             game->menu_page = game->menu_return;
             game->menu_sel = (game->menu_return == MOON_MENU_MAIN) ? 2 : 0;
@@ -894,15 +897,24 @@ static void handle_event_inner(moon_game_t *game, const moon_event_t *ev) {
         /* Pressing space, enter, or tapping skips the landing sequence */
         if (ev->type == MOON_EVENT_KEY_DOWN) {
             if (ev->key == MOON_KEY_SPACE || ev->key == MOON_KEY_RETURN) {
-                game->landing_active = false;
-                game->landing_y_offset = 0;
-                game->dirty = MOON_DIRTY_WORLD;
+                if (game->landing_elapsed_ms >= 350) {
+                    game->landing_active = false;
+                    game->landing_y_offset = 0;
+                    game->dirty = MOON_DIRTY_WORLD;
+                    notify(game, "TOUCHDOWN CONFIRMED: EXPEDITION 1 SAFELY LANDED AT SOUTH POLE", 4000);
+                }
                 return;
             }
         } else if (ev->type == MOON_EVENT_POINTER_DOWN) {
-            game->landing_active = false;
-            game->landing_y_offset = 0;
-            game->dirty = MOON_DIRTY_WORLD;
+            if (game->landing_elapsed_ms >= 350) {
+                game->landing_active = false;
+                game->landing_y_offset = 0;
+                game->dirty = MOON_DIRTY_WORLD;
+                notify(game, "TOUCHDOWN CONFIRMED: EXPEDITION 1 SAFELY LANDED AT SOUTH POLE", 4000);
+            }
+            return;
+        } else if (ev->type == MOON_EVENT_POINTER_UP || ev->type == MOON_EVENT_POINTER_MOVE) {
+            /* Absorb touch move/up events during the landing sequence */
             return;
         }
     }
@@ -1186,6 +1198,7 @@ void moon_game_update(moon_game_t *game, uint32_t delta_ms) {
         if (game->landing_elapsed_ms >= total_ms) {
             game->landing_active = false;
             game->landing_y_offset = 0;
+            notify(game, "TOUCHDOWN CONFIRMED: EXPEDITION 1 SAFELY LANDED AT SOUTH POLE", 4000);
         } else {
             /* Smooth deceleration (ease-out quadratic): y = 260 * (rem / total)^2 */
             int64_t rem = (int64_t)(total_ms - game->landing_elapsed_ms);
@@ -1193,6 +1206,7 @@ void moon_game_update(moon_game_t *game, uint32_t delta_ms) {
         }
         game->dirty = MOON_DIRTY_WORLD;
     }
+    game->structs.lander_y_offset = game->landing_y_offset;
 
     /* Animated Starship Flight & Spaceport Refueling Sequence (Milestone 64.19) */
     moon_starship_update(&game->starship, &game->structs, &game->resources, delta_ms);
@@ -2233,6 +2247,7 @@ void moon_game_render(moon_game_t *game, uint16_t *fb, int width, int height, in
                                (uint16_t)(150 + sun * 106 / 256));
         }
     }
+    game->structs.lander_y_offset = game->landing_y_offset;
     moon_world_render(&game->structs, &game->grid, &surf,
                       game->cam_x, game->cam_y, game->ui.hud.h,
                       game->hover_tile_x, game->hover_tile_y, game->hover_valid);
@@ -2241,6 +2256,12 @@ void moon_game_render(moon_game_t *game, uint16_t *fb, int width, int height, in
 
     moon_world_render_overlays(&game->structs, &game->grid, &surf, &game->resources,
                                game->cam_x, game->cam_y);
+
+    /* Render Expedition Lander descent touchdown sequence */
+    if (game->landing_y_offset > 0) {
+        moon_lander_render(&game->grid, &surf, game->cam_x, game->cam_y,
+                           game->landing_y_offset, game->landing_elapsed_ms);
+    }
 
     /* Render Starship rocket, hydrolox plume & shock diamonds, dust skirts, and umbilical */
     moon_starship_render(&game->starship, &game->grid, &surf, game->cam_x, game->cam_y);

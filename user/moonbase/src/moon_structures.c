@@ -608,9 +608,40 @@ static bool structure_visible(const moon_surface_t *surf, uint8_t type, int32_t 
     return !(r.x1 <= 0 || r.x0 >= surf->width || r.y1 <= view_top || r.y0 >= surf->height);
 }
 
+static void draw_lander_ground_shadow(const moon_surface_t *surf, int32_t sx, int32_t sy, int32_t alt) {
+    /* Target beacon optical alignment marks on the ground */
+    uint16_t mark_col = (alt < 80) ? COLOR_GOLD_FOIL : RGB565(80, 85, 95);
+    moon_blit_pixel(surf, sx - 16, sy, mark_col);
+    moon_blit_pixel(surf, sx + 16, sy, mark_col);
+    moon_blit_pixel(surf, sx, sy - 8, mark_col);
+    moon_blit_pixel(surf, sx, sy + 8, mark_col);
+
+    /* Dynamic ground shadow: darker and crisper as altitude decreases */
+    int rx = 18 - (alt > 160 ? 8 : (alt / 20));
+    int ry = rx / 2;
+    if (ry < 2) ry = 2;
+
+    for (int dy = -ry; dy <= ry; dy++) {
+        int w = rx - (dy < 0 ? -dy : dy) * 2;
+        if (w <= 0) continue;
+        for (int dx = -w; dx <= w; dx++) {
+            int px = sx + dx;
+            int py = sy + 4 + dy;
+            if (px >= 0 && px < surf->width && py >= 0 && py < surf->height) {
+                uint16_t c = surf->pixels[py * surf->stride + px];
+                /* 50% dark shadow tint */
+                uint16_t r = (c >> 11) & 0x1F;
+                uint16_t g = (c >> 5) & 0x3F;
+                uint16_t b = c & 0x1F;
+                surf->pixels[py * surf->stride + px] = ((r >> 1) << 11) | ((g >> 1) << 5) | (b >> 1);
+            }
+        }
+    }
+}
+
 static void draw_structure_body(const moon_grid_t *grid, const moon_surface_t *surf,
                                 const moon_structure_t *s, int32_t cam_x, int32_t cam_y,
-                                int32_t view_top) {
+                                int32_t view_top, int32_t lander_y_offset) {
     int32_t sx, sy;
     structure_anchor(grid, s->type, s->gx, s->gy, cam_x, cam_y,
                      surf->width, surf->height, &sx, &sy);
@@ -620,6 +651,15 @@ static void draw_structure_body(const moon_grid_t *grid, const moon_surface_t *s
         draw_conduit_cables(surf, grid, s->gx, s->gy, sx, sy, s->powered);
         return;
     }
+
+    if (s->type == MOON_STRUCT_LANDER && lander_y_offset > 0) {
+        /* While in descent flight, the lander sprite and plume are rendered
+         * as an aerial vessel above the world pass, but we draw the landing zone
+         * target marker and shadow on the ground */
+        draw_lander_ground_shadow(surf, sx, sy, lander_y_offset);
+        return;
+    }
+
     const moon_surface_t *spr = sprite_of(s->type);
     if (!spr) return;
     moon_rect_t r;
@@ -832,7 +872,7 @@ void moon_world_render(const moon_structure_mgr_t *mgr,
             if (id == 0 || id >= MOON_MAX_STRUCTURES) continue;
             const moon_structure_t *s = &mgr->list[id];
             if (s->id != id || depth_key(s) != d) continue;
-            draw_structure_body(grid, surf, s, cam_x, cam_y, view_top);
+            draw_structure_body(grid, surf, s, cam_x, cam_y, view_top, mgr->lander_y_offset);
         }
     }
 }
@@ -945,4 +985,103 @@ void moon_structure_render_ghost(const moon_structure_mgr_t *mgr,
     moon_blit_fill_rect(surf, text_x - 4, text_y - 2, box_w, 20, RGB565(14, 16, 20));
     moon_blit_rect_outline(surf, text_x - 4, text_y - 2, box_w, 20, ghost_color);
     moon_blit_text(surf, text_x + 4, text_y + 2, text, ghost_color, 0, true);
+}
+
+void moon_lander_render(const moon_grid_t *grid,
+                        const moon_surface_t *surf,
+                        int32_t cam_x, int32_t cam_y,
+                        int32_t alt,
+                        uint32_t elapsed_ms) {
+    if (!grid || !surf || alt <= 0) return;
+
+    /* Lander tile is (32, 32) */
+    const moon_tile_t *t = moon_grid_get_tile_const(grid, 32, 32);
+    int32_t sx, sy;
+    moon_grid_to_screen(32, 32, t ? t->elevation : 0, cam_x, cam_y,
+                        surf->width, surf->height, &sx, &sy);
+
+    /* Culling check */
+    if (sx + 40 < 0 || sx - 40 >= surf->width ||
+        sy + 20 < 0 || (sy - 48 - alt) >= surf->height) return;
+
+    /* 1. Low-altitude radial dust skirts on the regolith */
+    if (alt <= 45) {
+        uint32_t tick = elapsed_ms >> 4;
+        static const int8_t cos_table[16] = { 16, 15, 11, 6, 0, -6, -11, -15, -16, -15, -11, -6, 0, 6, 11, 15 };
+        static const int8_t sin_table[16] = { 0, 6, 11, 15, 16, 15, 11, 6, 0, -6, -11, -15, -16, -15, -11, -6 };
+        for (int p = 0; p < 16; p++) {
+            uint32_t h = (p * 2654435761u + tick * 1103515245u);
+            int phase = (h & 0xF); /* 0..15 */
+            int angle_bin = (p * 4) + (phase & 3);
+            int dist = 8 + (phase * 2) + ((45 - alt) / 2);
+            int dx = (cos_table[angle_bin & 15] * dist) / 16;
+            int dy = (sin_table[angle_bin & 15] * dist) / 32; /* 2:1 isometric aspect ratio */
+            int px = sx + dx;
+            int py = sy + 4 + dy;
+            if (px >= 0 && px < surf->width && py >= 0 && py < surf->height) {
+                uint16_t dust_col = (phase < 8) ? COLOR_LUNAR_WHITE : COLOR_REGOLITH_LIGHT;
+                moon_blit_pixel(surf, px, py, dust_col);
+            }
+        }
+    }
+
+    /* 2. Hypergolic Descent Rocket Plume & Core */
+    int nozzle_y = sy + 4 - alt;
+    int flame_h = (alt > 35) ? (24 + ((int)(elapsed_ms / 35) & 7)) : alt;
+    if (flame_h > 0) {
+        for (int dy = 0; dy <= flame_h; dy++) {
+            int py = nozzle_y + dy;
+            if (py < 0 || py >= surf->height) continue;
+            int w = (dy < flame_h / 3) ? (2 + dy / 2) :
+                    ((flame_h - dy) * 4 / (flame_h ? flame_h : 1));
+            if (w < 1) w = 1;
+            if (w > 5) w = 5;
+
+            for (int dx = -w; dx <= w; dx++) {
+                int px = sx + dx;
+                if (px < 0 || px >= surf->width) continue;
+                int adx = dx < 0 ? -dx : dx;
+                uint16_t col;
+                if (adx == 0 && dy < flame_h * 3 / 4) {
+                    col = (dy < flame_h / 2) ? COLOR_LUNAR_WHITE : COLOR_ENERGY_YELLOW;
+                } else if (adx <= 1 && dy < flame_h - 2) {
+                    col = COLOR_ENERGY_YELLOW;
+                } else if (adx <= 2) {
+                    col = COLOR_GOLD_FOIL;
+                } else {
+                    col = RGB565(230, 90, 20);
+                }
+                moon_blit_pixel(surf, px, py, col);
+            }
+        }
+
+        /* Ground deflection plume flare when alt <= 25 */
+        if (alt <= 25) {
+            int flare_w = (25 - alt) / 2 + 6;
+            int fpy = sy + 4;
+            for (int fdx = -flare_w; fdx <= flare_w; fdx++) {
+                int px = sx + fdx;
+                if (px >= 0 && px < surf->width && fpy >= 0 && fpy < surf->height) {
+                    int afdx = fdx < 0 ? -fdx : fdx;
+                    uint16_t fcol = (afdx < 4) ? COLOR_ENERGY_YELLOW :
+                                    (afdx < flare_w - 2) ? COLOR_GOLD_FOIL : RGB565(220, 80, 20);
+                    moon_blit_pixel(surf, px, fpy, fcol);
+                }
+            }
+        }
+    }
+
+    /* 3. Cold-Gas RCS Reaction Control Thruster Puffs */
+    if (((elapsed_ms / 60) & 3) == 1) {
+        moon_blit_pixel(surf, sx - 20, nozzle_y - 12, COLOR_LASER_CYAN);
+        moon_blit_pixel(surf, sx - 21, nozzle_y - 12, COLOR_LUNAR_WHITE);
+    } else if (((elapsed_ms / 60) & 3) == 2) {
+        moon_blit_pixel(surf, sx + 20, nozzle_y - 12, COLOR_LASER_CYAN);
+        moon_blit_pixel(surf, sx + 21, nozzle_y - 12, COLOR_LUNAR_WHITE);
+    }
+
+    /* 4. Lander Sprite */
+    int spr_x = sx - 32;
+    int spr_y = (sy - 48) - alt;
+    moon_blit_sprite(surf, spr_x, spr_y, &g_surf_lander, MOON_KEY_COLOR);
 }

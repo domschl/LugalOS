@@ -1373,6 +1373,68 @@ static void test_title(void) {
     printf("[test] Title page: level choice, same map, frozen, Q quits: PASS\n");
 }
 
+static void test_expedition_lander_touchdown(void) {
+    memset(&g, 0, sizeof(g));
+    g.show_title = true;
+    assert(moon_game_init(&g, 1024, 600));
+    assert(g.menu_page == MOON_MENU_TITLE);
+
+    /* Click Cadet difficulty: menu_item[1] */
+    click_rect(&g.ui.menu_item[1]);
+    assert(g.menu_page == MOON_MENU_CLOSED);
+    assert(g.landing_active);
+    assert(g.landing_y_offset == 260);
+    assert(g.landing_elapsed_ms == 0);
+
+    /* Debounce test: touches and keys within the first 350 ms do not abort the sequence */
+    ptr(MOON_EVENT_POINTER_DOWN, 512, 300, 1);
+    assert(g.landing_active);
+    assert(g.landing_y_offset == 260);
+
+    key(MOON_KEY_SPACE);
+    assert(g.landing_active);
+    assert(g.landing_y_offset == 260);
+
+    /* Frame render at alt=260 px */
+    static uint16_t fb[1024 * 600];
+    moon_game_render(&g, fb, 1024, 600, 1024);
+    assert(g.structs.lander_y_offset == 260);
+
+    /* Advance by 1300 ms in 50 ms slices (halfway) */
+    for (int i = 0; i < 26; i++) moon_game_update(&g, 50);
+    assert(g.landing_active);
+    /* y = 260 * (1300/2600)^2 = 260 * 0.25 = 65 */
+    assert(g.landing_y_offset == 65);
+    assert(g.structs.lander_y_offset == 65);
+
+    /* Render at alt=65 px */
+    moon_game_render(&g, fb, 1024, 600, 1024);
+
+    /* Advance by another 1300 ms (reaches 2600 ms touchdown) */
+    for (int i = 0; i < 26; i++) moon_game_update(&g, 50);
+    assert(!g.landing_active);
+    assert(g.landing_y_offset == 0);
+    assert(g.structs.lander_y_offset == 0);
+    assert(g.notify_msg && strstr(g.notify_msg, "TOUCHDOWN CONFIRMED") != NULL);
+
+    /* Render on the ground */
+    moon_game_render(&g, fb, 1024, 600, 1024);
+
+    /* Test intentional skip after 350 ms */
+    memset(&g, 0, sizeof(g));
+    g.show_title = true;
+    assert(moon_game_init(&g, 1024, 600));
+    click_rect(&g.ui.menu_item[2]);
+    assert(g.landing_active && g.landing_y_offset == 260);
+    for (int i = 0; i < 8; i++) moon_game_update(&g, 50); /* 400 ms */
+    assert(g.landing_active);
+    ptr(MOON_EVENT_POINTER_DOWN, 512, 300, 1);
+    assert(!g.landing_active);
+    assert(g.landing_y_offset == 0);
+
+    printf("[test] Expedition Lander Touchdown Animation & Touch Debounce: PASS\n");
+}
+
 static void test_deposits(void) {
     fresh();
     g.resources.rules.deposit_s_per_unit = 1;          /* one unit a second */
@@ -2400,6 +2462,7 @@ int main(void) {
     test_difficulty();
     test_objectives();
     test_title();
+    test_expedition_lander_touchdown();
     test_deposits();
     test_quarry();
     test_pressurised_draw();

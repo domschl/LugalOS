@@ -80,6 +80,11 @@ int main(int argc, char **argv) {
         moon_platform_shutdown();
         return 1;
     }
+    if (!s_game.show_title && max_frames == 0 && !bench && !micro) {
+        s_game.landing_active = true;
+        s_game.landing_elapsed_ms = 0;
+        s_game.landing_y_offset = 260;
+    }
 
     s_game.clock_us = moon_platform_get_ticks_us;
     if (micro) {

@@ -65,6 +65,7 @@ typedef struct {
     uint8_t          selected_build_type; /* 0 = inspection mode, 1..COUNT = build tool */
     uint32_t         revision;            /* Bumped whenever the set or active state of structures changes */
     uint32_t         solved_revision;     /* Revision the power grid was last solved for */
+    int32_t          lander_y_offset;     /* Descent animation vertical offset in pixels */
 } moon_structure_mgr_t;
 
 /* Catalog Access */
@@ -115,6 +116,13 @@ void moon_world_render_overlays(const moon_structure_mgr_t *mgr,
                                 const moon_surface_t *surf,
                                 const struct moon_resources_s *res,
                                 int32_t cam_x, int32_t cam_y);
+
+/* Render Expedition Lander descent touchdown animation (Milestones 64.16 & 64.21) */
+void moon_lander_render(const moon_grid_t *grid,
+                        const moon_surface_t *surf,
+                        int32_t cam_x, int32_t cam_y,
+                        int32_t alt,
+                        uint32_t elapsed_ms);
 
 /* Front-most structure whose visible sprite pixels contain the screen point */
 bool moon_structure_pick(const moon_structure_mgr_t *mgr, const moon_grid_t *grid,
