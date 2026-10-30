@@ -49,9 +49,10 @@ pre { background:var(--bg); border:1px solid var(--line); border-radius:6px; pad
   <h2 style="margin:.1rem 0 .5rem;font-size:1.1rem">This node is yours</h2>
   <p>Save this key now. It is the only copy: anything that wants to manage this node needs it.</p>
   <pre id="key"></pre>
-  <button id="cp" type="button">Copy the key</button>
+  <button id="cp" type="button">Copy the link</button>
+  <button id="ck" class="alt" type="button">Copy only the key</button>
   <button id="dl" class="alt" type="button">Save the key as a file</button>
-  <p class="mut">Paste the copied key into a password manager or a note. A phone's sign-in sheet often cannot save files: if Save only shows the key as text, use Copy, or press and hold the key above.</p>
+  <p class="mut">The link holds the node's address and the key: paste it into a browser's address bar once the node is on your Wi-Fi, and the sign-in form comes up with the key filled in. A phone's sign-in sheet often cannot save files: if Save only shows the key as text, use Copy.</p>
   <p id="after" class="mut"></p>
   <button id="fin" class="alt" type="button">I saved the key</button>
   <p id="go-wrap" class="hide"><a id="addr" href="#"></a></p>
@@ -184,13 +185,19 @@ if (typeof document !== 'undefined') (() => {
     $('after').textContent = (ssid ? 'The node joins "' + ssid + '" when you tap the button below.' : 'The node has no Wi-Fi of its own yet.')
       + ' This setup network stays up for ten minutes, so there is time.'
       + (host && ssid ? ' Afterwards you find the node at http://' + host + '/ and sign in there with the key (user: owner).' : '');
-    $('cp').onclick = async () => {
-      try { await navigator.clipboard.writeText(keyHex); } catch (e) {
-        const r = document.createRange(); r.selectNodeContents($('key')); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
-        try { document.execCommand('copy'); } catch (e2) { /* the key is selected: copy it by hand */ }
+    const link = host && ssid ? 'http://' + host + '/#key=' + keyHex : keyHex;
+    const copy = (btn, text, done) => async () => {
+      try { await navigator.clipboard.writeText(text); } catch (e) {
+        const t = document.createElement('textarea'); t.value = text; document.body.appendChild(t); t.select();
+        try { document.execCommand('copy'); } catch (e2) { /* copy by hand from the key shown above */ }
+        t.remove();
       }
-      $('cp').textContent = 'Copied';
+      btn.textContent = done;
     };
+    $('cp').textContent = host && ssid ? 'Copy the link' : 'Copy the key';
+    $('cp').onclick = copy($('cp'), link, 'Copied');
+    $('ck').onclick = copy($('ck'), keyHex, 'Key copied');
+    if (!(host && ssid)) $('ck').classList.add('hide');
     $('dl').onclick = () => {
       const a = document.createElement('a');
       a.href = URL.createObjectURL(new Blob([keyHex + '\n'], { type: 'application/octet-stream' }));
@@ -201,11 +208,10 @@ if (typeof document !== 'undefined') (() => {
       try { await fetch('/setup-done', { cache: 'no-store' }); } catch (e) { /* the node is already leaving */ }
       try { sessionStorage.removeItem('lugalos-owner'); } catch (e) { /* nothing stored */ }
       $('key').textContent = '';
-      $('cp').classList.add('hide'); $('dl').classList.add('hide'); $('fin').classList.add('hide');
+      $('cp').classList.add('hide'); $('ck').classList.add('hide'); $('dl').classList.add('hide'); $('fin').classList.add('hide');
       if (!ssid || !host) { $('after').textContent = 'Done. The node closes this setup network.'; return; }
-      $('after').textContent = 'Done. The node is joining "' + ssid + '" (about a minute). Make sure this device is on that Wi-Fi again; this page then takes you to the node by itself. If this sheet closes first, open the address below in Safari: the key you copied is the password, user owner.';
+      $('after').textContent = 'Done. The node is joining "' + ssid + '" (about a minute). Make sure this device is on that Wi-Fi again; this page then takes you to the node by itself. If this sheet closes first, wait until the node\'s light flashes once every 3 seconds, then paste the copied link into your browser.';
       const target = 'http://' + host + '/';
-      const link = target + '#key=' + keyHex;
       $('addr').textContent = target; $('addr').href = link;
       $('go-wrap').classList.remove('hide'); $('addr-note').classList.remove('hide');
       for (let i = 0; i < 90; i++) {
