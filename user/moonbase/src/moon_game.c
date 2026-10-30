@@ -290,7 +290,20 @@ static void add_regolith(moon_game_t *game, int kg) {
 static bool recycle_at(moon_game_t *game, int gx, int gy) {
     const moon_tile_t *t = moon_grid_get_tile_const(&game->grid, gx, gy);
     const moon_structure_t *s = t ? find_structure(game, t->structure_id) : NULL;
-    if (!s) { notify(game, "NOTHING TO RECYCLE", 1500); return false; }
+    if (!s) {
+        if (t && (t->flags & MOON_TILE_FLAG_FOUNDATION) &&
+            (gx != game->grid.lander_gx || gy != game->grid.lander_gy)) {
+            const moon_structure_def_t *def = moon_structure_get_def(MOON_STRUCT_FOUNDATION_PAD);
+            int refund = def ? def->cost_regolith / 2 : 2;
+            add_regolith(game, refund);
+            moon_structure_demolish(&game->grid, &game->structs, gx, gy);
+            moon_resources_solve_power_grid(&game->grid, &game->structs);
+            undo_record(game, MOON_UNDO_RECYCLE, MOON_STRUCT_FOUNDATION_PAD, gx, gy, refund);
+            return true;
+        }
+        notify(game, "NOTHING TO RECYCLE", 1500);
+        return false;
+    }
     if (s->type == MOON_STRUCT_LANDER) { notify(game, "THE LANDER CANNOT BE RECYCLED", 2000); return false; }
 
     int type = s->type, ox = s->gx, oy = s->gy;
@@ -350,19 +363,40 @@ static void undo_last(moon_game_t *game) {
     const moon_structure_t *s = t ? find_structure(game, t->structure_id) : NULL;
 
     if (game->undo_kind == MOON_UNDO_BUILD) {
-        if (!s || s->type != game->undo_type) { notify(game, "CANNOT UNDO", 1500); game->undo_kind = MOON_UNDO_NONE; return; }
-        moon_structure_demolish(&game->grid, &game->structs, game->undo_x, game->undo_y);
-        add_regolith(game, game->undo_refund_kg);
+        if (game->undo_type == MOON_STRUCT_FOUNDATION_PAD) {
+            if (!t || !(t->flags & MOON_TILE_FLAG_FOUNDATION) || t->structure_id != 0) {
+                notify(game, "CANNOT UNDO", 1500); game->undo_kind = MOON_UNDO_NONE; return;
+            }
+            moon_structure_demolish(&game->grid, &game->structs, game->undo_x, game->undo_y);
+            add_regolith(game, game->undo_refund_kg);
+        } else {
+            if (!s || s->type != game->undo_type) { notify(game, "CANNOT UNDO", 1500); game->undo_kind = MOON_UNDO_NONE; return; }
+            moon_structure_demolish(&game->grid, &game->structs, game->undo_x, game->undo_y);
+            add_regolith(game, game->undo_refund_kg);
+        }
     } else {
         fixed32_t give_back = fixed_from_int(game->undo_refund_kg);
-        if (s || game->resources.regolith_stored_kg < give_back ||
-            !moon_structure_place(&game->grid, &game->structs, (moon_structure_type_t)game->undo_type,
-                                  game->undo_x, game->undo_y)) {
+        if (game->resources.regolith_stored_kg < give_back) {
             notify(game, "CANNOT UNDO", 1500);
             game->undo_kind = MOON_UNDO_NONE;
             return;
         }
-        game->resources.regolith_stored_kg -= give_back;
+        if (game->undo_type == MOON_STRUCT_FOUNDATION_PAD) {
+            if (!moon_structure_place(&game->grid, &game->structs, MOON_STRUCT_FOUNDATION_PAD, game->undo_x, game->undo_y)) {
+                notify(game, "CANNOT UNDO", 1500);
+                game->undo_kind = MOON_UNDO_NONE;
+                return;
+            }
+            game->resources.regolith_stored_kg -= give_back;
+        } else {
+            if (s || !moon_structure_place(&game->grid, &game->structs, (moon_structure_type_t)game->undo_type,
+                                          game->undo_x, game->undo_y)) {
+                notify(game, "CANNOT UNDO", 1500);
+                game->undo_kind = MOON_UNDO_NONE;
+                return;
+            }
+            game->resources.regolith_stored_kg -= give_back;
+        }
     }
     moon_resources_solve_power_grid(&game->grid, &game->structs);
     select_tile(game, game->undo_x, game->undo_y);
@@ -388,21 +422,38 @@ static void toggle_texture(moon_game_t *game) {
 
 /* ---- Brush: a build type or recycle that stays armed for repeated use ---- */
 
-/* Category 0: Act I Life & Infrastructure
- * Category 1: Act II Cryogenics & Spaceport */
-static const moon_structure_type_t s_build_buttons[2][6] = {
-    {
-        MOON_STRUCT_SOLAR_ARRAY, MOON_STRUCT_BATTERY_BANK, MOON_STRUCT_HABITAT_DOME,
-        MOON_STRUCT_REGOLITH_PLANT, MOON_STRUCT_O2_EXTRACTOR, MOON_STRUCT_POWER_CONDUIT
+/* Category 0: Power & Energy Storage
+ * Category 1: Life Support & Cryogenics
+ * Category 2: Spaceport & Logistics */
+static const moon_structure_type_t s_build_buttons[MOON_CAT_COUNT][6] = {
+    [MOON_CAT_POWER] = {
+        MOON_STRUCT_SOLAR_ARRAY,
+        MOON_STRUCT_BATTERY_BANK,
+        MOON_STRUCT_POWER_CONDUIT,
+        MOON_STRUCT_NONE,
+        MOON_STRUCT_NONE,
+        MOON_STRUCT_NONE
     },
-    {
-        MOON_STRUCT_HYDROLOX_PLANT, MOON_STRUCT_CRYO_DEWAR, MOON_STRUCT_POWER_CONDUIT,
-        MOON_STRUCT_SOLAR_ARRAY, MOON_STRUCT_BATTERY_BANK, MOON_STRUCT_HABITAT_DOME
+    [MOON_CAT_LIFECRYO] = {
+        MOON_STRUCT_O2_EXTRACTOR,
+        MOON_STRUCT_HABITAT_DOME,
+        MOON_STRUCT_HYDROLOX_PLANT,
+        MOON_STRUCT_CRYO_DEWAR,
+        MOON_STRUCT_POWER_CONDUIT,
+        MOON_STRUCT_NONE
+    },
+    [MOON_CAT_LOGISTICS] = {
+        MOON_STRUCT_REGOLITH_PLANT,
+        MOON_STRUCT_FOUNDATION_PAD,
+        MOON_STRUCT_POWER_CONDUIT,
+        MOON_STRUCT_NONE,
+        MOON_STRUCT_NONE,
+        MOON_STRUCT_NONE
     }
 };
 
 static inline moon_structure_type_t get_build_button_type(const moon_game_t *game, int idx) {
-    uint8_t cat = game->build_category > 1 ? 0 : game->build_category;
+    uint8_t cat = game->build_category >= MOON_CAT_COUNT ? 0 : game->build_category;
     return s_build_buttons[cat][idx];
 }
 
@@ -410,7 +461,8 @@ static inline moon_structure_type_t get_build_button_type(const moon_game_t *gam
 static int brush_slot(const moon_game_t *game) {
     if (game->demolish_tool_active) return SLOT_RECYCLE;
     for (int i = 0; i < 6; i++) {
-        if (game->structs.selected_build_type == get_build_button_type(game, i)) return i + 1;
+        moon_structure_type_t t = get_build_button_type(game, i);
+        if (t != MOON_STRUCT_NONE && game->structs.selected_build_type == t) return i + 1;
     }
     return -1;
 }
@@ -419,19 +471,30 @@ static void brush_set(moon_game_t *game, int slot) {
     game->structs.selected_build_type = MOON_STRUCT_NONE;
     game->demolish_tool_active = false;
     if (slot == SLOT_RECYCLE) game->demolish_tool_active = true;
-    else if (slot >= 1 && slot <= 6) game->structs.selected_build_type = get_build_button_type(game, slot - 1);
+    else if (slot >= 1 && slot <= 6) {
+        moon_structure_type_t t = get_build_button_type(game, slot - 1);
+        if (t != MOON_STRUCT_NONE) game->structs.selected_build_type = t;
+    }
 }
 
 static void brush_apply(moon_game_t *game) {
     int slot = brush_slot(game);
     if (slot == SLOT_RECYCLE) recycle_at(game, game->selected_tile_x, game->selected_tile_y);
-    else if (slot >= 1) build_at_selection(game, game->structs.selected_build_type);
+    else if (slot >= 1) {
+        moon_structure_type_t t = get_build_button_type(game, slot - 1);
+        if (t != MOON_STRUCT_NONE) build_at_selection(game, t);
+    }
 }
 
 static void toggle_build_category(moon_game_t *game) {
-    game->build_category = (game->build_category == 0) ? 1 : 0;
+    game->build_category = (game->build_category + 1) % MOON_CAT_COUNT;
     game->dirty = MOON_DIRTY_WORLD;
-    notify(game, game->build_category == 0 ? "BUILD CATEGORY: BASE (ACT I)" : "BUILD CATEGORY: CRYO / SPACEPORT (ACT II)", 2500);
+    const char *msgs[MOON_CAT_COUNT] = {
+        "BUILD SHEET: POWER & STORAGE",
+        "BUILD SHEET: LIFE SUPPORT & CRYO",
+        "BUILD SHEET: SPACEPORT & LOGISTICS"
+    };
+    notify(game, msgs[game->build_category], 2500);
 }
 
 /* A build / recycle / standby button or key. One press acts on the selected tile;
@@ -442,6 +505,9 @@ static void press_slot(moon_game_t *game, int slot) {
         game->last_slot = -1;
         toggle_standby_selected(game);
         return;
+    }
+    if (slot >= 1 && slot <= 6) {
+        if (get_build_button_type(game, slot - 1) == MOON_STRUCT_NONE) return;
     }
     int armed = brush_slot(game);
     bool again = (game->last_slot == slot);
@@ -736,7 +802,19 @@ static void click_inspector(moon_game_t *game, int px, int py) {
         return;
     }
     const moon_structure_t *s = selected_structure(game);
-    if (!s || s->type == MOON_STRUCT_LANDER) return;
+    if (!s || s->type == MOON_STRUCT_LANDER) {
+        if (!s) {
+            const moon_tile_t *t = moon_grid_get_tile_const(&game->grid, game->selected_tile_x, game->selected_tile_y);
+            if (t && (t->flags & MOON_TILE_FLAG_FOUNDATION) &&
+                (game->selected_tile_x != game->grid.lander_gx || game->selected_tile_y != game->grid.lander_gy)) {
+                if (moon_ui_hit(&ui->insp_recycle, px, py)) {
+                    recycle_at(game, game->selected_tile_x, game->selected_tile_y);
+                    game->panel_open = false;
+                }
+            }
+        }
+        return;
+    }
     if (moon_ui_hit(&ui->insp_recycle, px, py)) {
         recycle_at(game, game->selected_tile_x, game->selected_tile_y);
         game->panel_open = false;
@@ -1200,7 +1278,16 @@ static void render_inspector_panel(const moon_game_t *game, const moon_surface_t
         moon_blit_text_fmt(surf, ip_x + 8, ip_y + 90, COLOR_GOLD_FOIL, 0, true,
                            "Mineral Richness: %d%%", tile->resource_val);
 
-        if (tile->terrain == MOON_TERRAIN_ICE_DEPOSIT) {
+        if (tile->flags & MOON_TILE_FLAG_FOUNDATION) {
+            moon_blit_text(surf, ip_x + 8, ip_y + 118, "Sintered foundation pad.", COLOR_GOLD_FOIL, 0, true);
+            moon_blit_text(surf, ip_x + 8, ip_y + 134, "Load-bearing base ready.", COLOR_LUNAR_WHITE, 0, true);
+            if (game->selected_tile_x != game->grid.lander_gx || game->selected_tile_y != game->grid.lander_gy) {
+                const moon_ui_rect_t *rb = &ui->insp_recycle;
+                moon_blit_fill_rect(surf, rb->x, rb->y, rb->w, rb->h, RGB565(45, 20, 20));
+                moon_blit_rect_outline(surf, rb->x, rb->y, rb->w, rb->h, COLOR_ALERT_RED);
+                moon_blit_text(surf, rb->x + 6, rb->y + rb->h / 2 - 8, ui->narrow ? "R:RECYCLE" : "R:RECYCLE 50%", COLOR_LUNAR_WHITE, 0, true);
+            }
+        } else if (tile->terrain == MOON_TERRAIN_ICE_DEPOSIT) {
             moon_blit_text(surf, ip_x + 8, ip_y + 118, "Water ice cold trap.", COLOR_LASER_CYAN, 0, true);
             moon_blit_text(surf, ip_x + 8, ip_y + 134, "Ideal for O2 Extractor.", COLOR_LUNAR_WHITE, 0, true);
         } else if (tile->terrain == MOON_TERRAIN_BASALT_MARE) {
@@ -1235,44 +1322,67 @@ static void render_build_ribbon(const moon_game_t *game, const moon_surface_t *s
     moon_blit_fill_rect(surf, 0, ui->ribbon_bar.y, ui->ribbon_bar.w, ui->ribbon_bar.h, RGB565(10, 12, 16));
     moon_blit_line(surf, 0, ui->ribbon_bar.y, ui->ribbon_bar.w - 1, ui->ribbon_bar.y, COLOR_GOLD_FOIL);
 
-    static const char *labels[2][8] = {
-        {
+    static const char *labels[MOON_CAT_COUNT][8] = {
+        [MOON_CAT_POWER] = {
             "E:STANDBY",
-            "1:SOLAR 10t", "2:BATT  20t", "3:HAB   50t",
-            "4:SINT  15t", "5:OXY   25t", "6:CABLE  2t",
+            "1:SOLAR 10t", "2:BATT  20t", "3:CABLE  2t",
+            "-", "-", "-",
             "R:RECYCLE"
         },
-        {
+        [MOON_CAT_LIFECRYO] = {
             "E:STANDBY",
-            "1:HYDRO 80t", "2:DEWAR 40t", "3:CABLE  2t",
-            "4:SOLAR 10t", "5:BATT  20t", "6:HAB   50t",
+            "1:OXY   25t", "2:HAB   50t", "3:HYDRO 80t",
+            "4:DEWAR 35t", "5:CABLE  2t", "-",
+            "R:RECYCLE"
+        },
+        [MOON_CAT_LOGISTICS] = {
+            "E:STANDBY",
+            "1:SINT  15t", "2:PAVER  5t", "3:CABLE  2t",
+            "-", "-", "-",
             "R:RECYCLE"
         }
     };
 
-    static const char *labels_narrow[2][8] = {
-        {
+    static const char *labels_narrow[MOON_CAT_COUNT][8] = {
+        [MOON_CAT_POWER] = {
             "E:STBY",
-            "1:SOL", "2:BAT", "3:HAB",
-            "4:SINT", "5:OXY", "6:WIRE",
+            "1:SOL", "2:BAT", "3:WIRE",
+            "-", "-", "-",
             "R:RECY"
         },
-        {
+        [MOON_CAT_LIFECRYO] = {
             "E:STBY",
-            "1:HYDR", "2:DEW", "3:WIRE",
-            "4:SOL", "5:BAT", "6:HAB",
+            "1:OXY", "2:HAB", "3:HYD",
+            "4:DEW", "5:WIRE", "-",
+            "R:RECY"
+        },
+        [MOON_CAT_LOGISTICS] = {
+            "E:STBY",
+            "1:SINT", "2:PAVR", "3:WIRE",
+            "-", "-", "-",
             "R:RECY"
         }
     };
 
     const moon_structure_t *sel = selected_structure(game);
     int armed = brush_slot(game);
-    uint8_t cat = game->build_category > 1 ? 0 : game->build_category;
+    uint8_t cat = game->build_category >= MOON_CAT_COUNT ? 0 : game->build_category;
     for (int i = 0; i < MOON_UI_RIBBON_SLOTS; i++) {
         /* Enabled when the button could act on the selected tile right now */
         bool enabled;
-        if (i >= 1 && i <= 6) enabled = build_possible(game, s_build_buttons[cat][i - 1], NULL);
-        else enabled = (sel && sel->type != MOON_STRUCT_LANDER);
+        if (i >= 1 && i <= 6) {
+            moon_structure_type_t t = s_build_buttons[cat][i - 1];
+            enabled = (t != MOON_STRUCT_NONE) && build_possible(game, t, NULL);
+        } else {
+            enabled = (sel && sel->type != MOON_STRUCT_LANDER);
+            if (i == SLOT_RECYCLE && !enabled) {
+                const moon_tile_t *t = moon_grid_get_tile_const(&game->grid, game->selected_tile_x, game->selected_tile_y);
+                if (t && (t->flags & MOON_TILE_FLAG_FOUNDATION) &&
+                    (game->selected_tile_x != game->grid.lander_gx || game->selected_tile_y != game->grid.lander_gy)) {
+                    enabled = true;
+                }
+            }
+        }
         bool selected = (i == armed);
 
         uint16_t bg = selected ? (i == SLOT_RECYCLE ? RGB565(55, 20, 20) : RGB565(30, 45, 60)) : RGB565(20, 24, 30);
@@ -1285,9 +1395,13 @@ static void render_build_ribbon(const moon_game_t *game, const moon_surface_t *s
     }
 
     /* Category, pause, speed and menu */
-    const char *cat_label = narrow ? (cat == 0 ? "B:BASE" : "B:CRYO") : (cat == 0 ? "B:ACT I" : "B:ACT II");
-    uint16_t cat_bg = (cat == 1) ? RGB565(25, 45, 60) : RGB565(20, 24, 30);
-    uint16_t cat_border = (cat == 1) ? COLOR_LASER_CYAN : RGB565(60, 65, 75);
+    static const char *cat_labels[MOON_CAT_COUNT] = { "B:POWER", "B:LIFE/CRYO", "B:LOGISTICS" };
+    static const char *cat_labels_narrow[MOON_CAT_COUNT] = { "B:POWR", "B:LIFE", "B:LOGI" };
+    const char *cat_label = narrow ? cat_labels_narrow[cat] : cat_labels[cat];
+    uint16_t cat_bg = (cat == MOON_CAT_POWER) ? RGB565(35, 30, 15) :
+                      (cat == MOON_CAT_LIFECRYO) ? RGB565(20, 40, 55) : RGB565(35, 30, 20);
+    uint16_t cat_border = (cat == MOON_CAT_POWER) ? COLOR_ENERGY_YELLOW :
+                          (cat == MOON_CAT_LIFECRYO) ? COLOR_LASER_CYAN : COLOR_GOLD_FOIL;
     draw_button(surf, &ui->cat_btn, cat_label, cat_bg, cat_border, COLOR_LUNAR_WHITE);
 
     const char *spd = game->speed == 4 ? "+/-:4x" : game->speed == 2 ? "+/-:2x" : "+/-:1x";
@@ -1339,13 +1453,13 @@ static void render_objective(const moon_game_t *game, const moon_surface_t *surf
     int have = 0;
     const char *fmt;
     switch (n) {
-    case 0: fmt = narrow ? "Extractor (5) beside ice/mare" : "Build an Oxygen Extractor (5) beside ice or dark mare"; break;
+    case 0: fmt = narrow ? "Extractor (LIFE 1) on ice" : "Build Oxygen Extractor (LIFE 1) beside ice/mare"; break;
     case 1: have = count_built(game, MOON_STRUCT_SOLAR_ARRAY, false);
             fmt = narrow ? "Solar Arrays (1): %d of 3" : "Power the base: Solar Arrays (1), %d of 3"; break;
-    case 2: fmt = narrow ? "Sinterer (4) for regolith" : "Build a Regolith Sinterer (4) for building material"; break;
+    case 2: fmt = narrow ? "Sinterer (LOGI 1) for ore" : "Build Regolith Sinterer (LOGISTICS 1) for regolith"; break;
     case 3: have = count_built(game, MOON_STRUCT_BATTERY_BANK, false);
             fmt = narrow ? "Batteries (2): %d of 2" : "Store the night: a second Battery Bank (2), %d of 2"; break;
-    case 4: fmt = narrow ? "Habitat (3) for more crew" : "Build a Habitat (3) for more crew"; break;
+    case 4: fmt = narrow ? "Habitat (LIFE 2) for crew" : "Build a Habitat Dome (LIFE 2) for more crew"; break;
     case 5: have = res->population;
             fmt = narrow ? "Grow the crew: %d of 8" : "Grow the crew to 8 colonists: %d now"; break;
     case 6: have = (int)res->lunar_day;

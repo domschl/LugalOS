@@ -158,6 +158,23 @@ static const moon_structure_def_t s_catalog[MOON_STRUCT_COUNT] = {
         .accent_color   = COLOR_REGOLITH_DARK,
         .height_px      = 2,
         .desc           = "Superconducting surface line distributing power across modules."
+    },
+
+    [MOON_STRUCT_FOUNDATION_PAD] = {
+        .type           = MOON_STRUCT_FOUNDATION_PAD,
+        .name           = "Foundation Pad",
+        .short_name     = "PAVER",
+        .footprint_w    = 1,
+        .footprint_h    = 1,
+        .cost_regolith  = 5,
+        .power_kw       = 0,
+        .power_storage  = 0,
+        .rate_o2        = 0,
+        .rate_water     = 0,
+        .primary_color  = COLOR_GOLD_FOIL,
+        .accent_color   = COLOR_REGOLITH_DARK,
+        .height_px      = 1,
+        .desc           = "Sintered interlocking pavers providing load-bearing foundation."
     }
 };
 
@@ -213,7 +230,6 @@ bool moon_structure_can_place(const moon_grid_t *grid,
                               moon_structure_type_t type,
                               int gx, int gy,
                               const char **out_reason) {
-    (void)mgr;
     const moon_structure_def_t *def = moon_structure_get_def(type);
     if (!def || def->type == MOON_STRUCT_NONE) {
         if (out_reason) *out_reason = "Invalid structure type";
@@ -233,6 +249,35 @@ bool moon_structure_can_place(const moon_grid_t *grid,
         return false;
     }
 
+    /* Helper: check if a structure of `t` exists in mgr */
+    if (mgr) {
+        if (type == MOON_STRUCT_FOUNDATION_PAD) {
+            bool has_sinterer = false;
+            for (uint8_t i = 1; i < MOON_MAX_STRUCTURES; i++) {
+                if (mgr->list[i].id == i && mgr->list[i].type == MOON_STRUCT_REGOLITH_PLANT) {
+                    has_sinterer = true;
+                    break;
+                }
+            }
+            if (!has_sinterer) {
+                if (out_reason) *out_reason = "Requires Regolith Sinterer";
+                return false;
+            }
+        } else if (type == MOON_STRUCT_HYDROLOX_PLANT || type == MOON_STRUCT_CRYO_DEWAR) {
+            bool has_hab = false;
+            for (uint8_t i = 1; i < MOON_MAX_STRUCTURES; i++) {
+                if (mgr->list[i].id == i && mgr->list[i].type == MOON_STRUCT_HABITAT_DOME) {
+                    has_hab = true;
+                    break;
+                }
+            }
+            if (!has_hab) {
+                if (out_reason) *out_reason = "Tech locked: Requires Habitat Dome";
+                return false;
+            }
+        }
+    }
+
     /* 2. Tile Footprint & Collision Check */
     for (int dy = 0; dy < def->footprint_h; dy++) {
         for (int dx = 0; dx < def->footprint_w; dx++) {
@@ -247,19 +292,80 @@ bool moon_structure_can_place(const moon_grid_t *grid,
                 return false;
             }
 
-            if (t->terrain == MOON_TERRAIN_CRATER_RIM) {
-                if (out_reason) *out_reason = "Terrain too steep (Crater Rim)";
-                return false;
-            }
+            if (type == MOON_STRUCT_FOUNDATION_PAD) {
+                if (t->flags & MOON_TILE_FLAG_FOUNDATION) {
+                    if (out_reason) *out_reason = "Foundation already paved";
+                    return false;
+                }
+                if (t->terrain != MOON_TERRAIN_REGOLITH_FLAT) {
+                    if (t->terrain == MOON_TERRAIN_CRATER_RIM) {
+                        if (out_reason) *out_reason = "Terrain too steep (Crater Rim)";
+                    } else if (t->terrain == MOON_TERRAIN_REGOLITH_ROUGH) {
+                        if (out_reason) *out_reason = "Boulder field (Requires clearing)";
+                    } else {
+                        if (out_reason) *out_reason = "Requires flat regolith";
+                    }
+                    return false;
+                }
+            } else {
+                if (t->terrain == MOON_TERRAIN_CRATER_RIM) {
+                    if (out_reason) *out_reason = "Terrain too steep (Crater Rim)";
+                    return false;
+                }
 
-            if (t->terrain == MOON_TERRAIN_REGOLITH_ROUGH) {
-                if (out_reason) *out_reason = "Boulder field (Requires clearing)";
-                return false;
+                if (t->terrain == MOON_TERRAIN_REGOLITH_ROUGH) {
+                    if (out_reason) *out_reason = "Boulder field (Requires clearing)";
+                    return false;
+                }
             }
         }
     }
 
-    /* 3. Specialized Placement Rules */
+    /* 3. Sintered Foundation Requirement for Hydrolox Plant */
+    if (type == MOON_STRUCT_HYDROLOX_PLANT) {
+        for (int dy = 0; dy < def->footprint_h; dy++) {
+            for (int dx = 0; dx < def->footprint_w; dx++) {
+                const moon_tile_t *t = moon_grid_get_tile_const(grid, gx + dx, gy + dy);
+                if (!t || !(t->flags & MOON_TILE_FLAG_FOUNDATION)) {
+                    if (out_reason) *out_reason = "Requires sintered foundation";
+                    return false;
+                }
+            }
+        }
+    }
+
+    /* 4. Minimum Safety Clearance Rules */
+    if (mgr) {
+        if (type == MOON_STRUCT_HYDROLOX_PLANT) {
+            /* 1-tile clearance around 2x2 footprint: [gx-1 .. gx+2] x [gy-1 .. gy+2] */
+            for (int cy = gy - 1; cy <= gy + def->footprint_h; cy++) {
+                for (int cx = gx - 1; cx <= gx + def->footprint_w; cx++) {
+                    const moon_tile_t *ct = moon_grid_get_tile_const(grid, cx, cy);
+                    if (!ct || ct->structure_id == 0 || ct->structure_id >= MOON_MAX_STRUCTURES) continue;
+                    uint8_t stype = mgr->list[ct->structure_id].type;
+                    if (stype == MOON_STRUCT_HABITAT_DOME || stype == MOON_STRUCT_LANDER) {
+                        if (out_reason) *out_reason = "Safety: clearance from habitat required";
+                        return false;
+                    }
+                }
+            }
+        } else if (type == MOON_STRUCT_HABITAT_DOME) {
+            /* 1-tile clearance around 2x2 footprint: [gx-1 .. gx+2] x [gy-1 .. gy+2] */
+            for (int cy = gy - 1; cy <= gy + def->footprint_h; cy++) {
+                for (int cx = gx - 1; cx <= gx + def->footprint_w; cx++) {
+                    const moon_tile_t *ct = moon_grid_get_tile_const(grid, cx, cy);
+                    if (!ct || ct->structure_id == 0 || ct->structure_id >= MOON_MAX_STRUCTURES) continue;
+                    uint8_t stype = mgr->list[ct->structure_id].type;
+                    if (stype == MOON_STRUCT_HYDROLOX_PLANT) {
+                        if (out_reason) *out_reason = "Safety: clearance from Hydrolox plant required";
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+
+    /* 5. Specialized Placement Rules */
     if (type == MOON_STRUCT_O2_EXTRACTOR && moon_structure_ore_left(grid, type, gx, gy) == 0) {
         /* Must be beside Polar Ice or Basalt Mare that still has something to draw */
         if (out_reason) *out_reason = "Needs ice or mare with ore left";
@@ -283,6 +389,26 @@ moon_structure_t* moon_structure_place(moon_grid_t *grid,
 
     const moon_structure_def_t *def = moon_structure_get_def(type);
     if (!def) return NULL;
+
+    if (type == MOON_STRUCT_FOUNDATION_PAD) {
+        moon_tile_t *t = moon_grid_get_tile(grid, gx, gy);
+        if (t) {
+            t->flags |= MOON_TILE_FLAG_FOUNDATION;
+        }
+        mgr->revision++;
+        /* single task: the moonbase session holder */
+        static moon_structure_t s_foundation_dummy;
+        s_foundation_dummy.id = 0;
+        s_foundation_dummy.type = MOON_STRUCT_FOUNDATION_PAD;
+        s_foundation_dummy.gx = (uint8_t)gx;
+        s_foundation_dummy.gy = (uint8_t)gy;
+        s_foundation_dummy.footprint_w = 1;
+        s_foundation_dummy.footprint_h = 1;
+        s_foundation_dummy.active = true;
+        s_foundation_dummy.powered = true;
+        s_foundation_dummy.health = 100;
+        return &s_foundation_dummy;
+    }
 
     /* Find empty structure slot (1..MOON_MAX_STRUCTURES-1) */
     uint8_t slot_id = 0;
@@ -326,7 +452,16 @@ void moon_structure_demolish(moon_grid_t *grid,
                              int gx, int gy) {
     if (!grid || !mgr) return;
     moon_tile_t *t = moon_grid_get_tile(grid, gx, gy);
-    if (!t || t->structure_id == 0) return;
+    if (!t) return;
+
+    if (t->structure_id == 0) {
+        if ((t->flags & MOON_TILE_FLAG_FOUNDATION) &&
+            (gx != grid->lander_gx || gy != grid->lander_gy)) {
+            t->flags &= ~MOON_TILE_FLAG_FOUNDATION;
+            mgr->revision++;
+        }
+        return;
+    }
 
     uint8_t id = t->structure_id;
     if (id >= MOON_MAX_STRUCTURES) return;

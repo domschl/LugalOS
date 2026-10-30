@@ -36,6 +36,14 @@ enum { MOON_MENU_CLOSED = 0, MOON_MENU_MAIN, MOON_MENU_CONFIRM_QUIT, MOON_MENU_N
 /* Objectives: a path through the first hours that doubles as the tutorial */
 #define MOON_OBJECTIVES 7
 
+/* Hierarchical Build Menu Categories */
+typedef enum {
+    MOON_CAT_POWER = 0,     /* Power & Energy Storage */
+    MOON_CAT_LIFECRYO,      /* Life Support & Cryogenics */
+    MOON_CAT_LOGISTICS,     /* Spaceport & Logistics */
+    MOON_CAT_COUNT
+} moon_build_category_t;
+
 typedef struct {
     moon_game_state_t state;
     bool     running;

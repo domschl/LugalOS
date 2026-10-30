@@ -50,17 +50,32 @@ static int count_of(moon_structure_type_t t) {
     return n;
 }
 
+typedef struct {
+    uint8_t category;
+    uint32_t key;
+} build_key_t;
+
 /* Build `type` on tile (x,y) through the keyboard path; false if the game refused */
 static bool build(moon_structure_type_t type, int x, int y) {
-    static const uint32_t keys[MOON_STRUCT_COUNT] = {
-        [MOON_STRUCT_SOLAR_ARRAY] = MOON_KEY_1, [MOON_STRUCT_BATTERY_BANK] = MOON_KEY_2,
-        [MOON_STRUCT_HABITAT_DOME] = MOON_KEY_3, [MOON_STRUCT_REGOLITH_PLANT] = MOON_KEY_4,
-        [MOON_STRUCT_O2_EXTRACTOR] = MOON_KEY_5, [MOON_STRUCT_POWER_CONDUIT] = MOON_KEY_6,
+    static const build_key_t s_keys[MOON_STRUCT_COUNT] = {
+        [MOON_STRUCT_SOLAR_ARRAY]   = { MOON_CAT_POWER,     MOON_KEY_1 },
+        [MOON_STRUCT_BATTERY_BANK]  = { MOON_CAT_POWER,     MOON_KEY_2 },
+        [MOON_STRUCT_POWER_CONDUIT] = { MOON_CAT_POWER,     MOON_KEY_3 },
+        [MOON_STRUCT_O2_EXTRACTOR]  = { MOON_CAT_LIFECRYO,  MOON_KEY_1 },
+        [MOON_STRUCT_HABITAT_DOME]  = { MOON_CAT_LIFECRYO,  MOON_KEY_2 },
+        [MOON_STRUCT_HYDROLOX_PLANT]= { MOON_CAT_LIFECRYO,  MOON_KEY_3 },
+        [MOON_STRUCT_CRYO_DEWAR]    = { MOON_CAT_LIFECRYO,  MOON_KEY_4 },
+        [MOON_STRUCT_REGOLITH_PLANT]= { MOON_CAT_LOGISTICS, MOON_KEY_1 },
+        [MOON_STRUCT_FOUNDATION_PAD]= { MOON_CAT_LOGISTICS, MOON_KEY_2 },
     };
+    if (type >= MOON_STRUCT_COUNT || s_keys[type].key == 0) return false;
+    while (g.build_category != s_keys[type].category) {
+        key(MOON_KEY_B);
+    }
     int before = g.structs.count;
     g.selected_tile_x = x; g.selected_tile_y = y;
     g.last_slot = -1;
-    key(keys[type]);
+    key(s_keys[type].key);
     return g.structs.count == before + 1;
 }
 
