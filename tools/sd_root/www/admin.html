@@ -43,7 +43,7 @@ td a { color:var(--acc); cursor:pointer; text-decoration:none; } td a:hover { te
   <form class="card" id="loginform" style="margin-top:1rem" method="post" action="#" autocomplete="on" onsubmit="return false">
     <p>Sign in with this node's key. The key is hashed in this page and never sent: the node proves nothing to you, you prove the key to it with a challenge it chose.</p>
     <label for="uname">User</label><input id="uname" name="username" type="text" value="owner" autocomplete="username" autocapitalize="none" autocorrect="off">
-    <label for="key">Key (hex)</label><input id="key" name="password" type="password" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false">
+    <label for="key">Password (the key, in hex)</label><input id="key" name="password" type="password" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false">
     <div class="row"><button class="act" id="go" type="submit">Sign in</button><span id="lerr" class="err"></span></div>
     <p class="mut">This page was loaded over plain HTTP: what you read and write can be seen, and a session cannot change the node unless its console allowed it (<code>httpd write on</code>).</p>
   </form>
@@ -364,7 +364,7 @@ if (typeof document !== 'undefined') (() => {
       await p9.connect(); await p9.login(uname, key);
       p9.onclose = () => { setStatus('disconnected', 'err'); $('app').classList.add('hide'); $('login').classList.remove('hide'); $('lerr').textContent = 'the connection ended'; $('go').disabled = false; };
       $('login').classList.add('hide'); $('app').classList.remove('hide');
-      $('who').textContent = uname + ' @ ' + location.host; setStatus('connected', 'ok'); $('key').value = '';
+      $('who').textContent = uname + ' @ ' + location.host; setStatus('connected', 'ok'); setTimeout(() => { $('key').value = ''; }, 5000);
       cwd = '/'; show();
     } catch (e) { if (p9) p9.close(); $('lerr').textContent = /attach|auth/i.test(e.message) ? 'The node refused that key: ' + e.message : e.message; setStatus('not connected'); $('go').disabled = false; }
   };
