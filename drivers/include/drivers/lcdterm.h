@@ -112,6 +112,7 @@ uint16_t *lcdterm_get_canvas565_backing(uint8_t cid, uint32_t *out_stride, int *
 uint16_t *lcdterm_get_canvas565_by_name(const char *name, uint32_t *out_stride, int *out_w, int *out_h);
 int lcdterm_get_canvas565_cid_by_name(const char *name);
 bool lcdterm_set_canvas565_backing(uint8_t cid, uint16_t *buf);
+bool lcdterm_set_canvas565_geometry(uint8_t cid, uint16_t *buf, uint32_t stride, uint16_t w, uint16_t h);
 int lcdterm_get_visible_canvases565(uint8_t *out_cids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins);
 
 typedef struct {
@@ -149,6 +150,10 @@ static inline int lcdterm_get_canvas565_cid_by_name(const char *name) {
 }
 static inline bool lcdterm_set_canvas565_backing(uint8_t cid, uint16_t *buf) {
     (void)cid; (void)buf;
+    return false;
+}
+static inline bool lcdterm_set_canvas565_geometry(uint8_t cid, uint16_t *buf, uint32_t stride, uint16_t w, uint16_t h) {
+    (void)cid; (void)buf; (void)stride; (void)w; (void)h;
     return false;
 }
 static inline int lcdterm_get_visible_canvases565(uint8_t *out_cids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins) {

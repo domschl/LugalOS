@@ -16,6 +16,7 @@
 #include "kernel/lock.h"
 #include "arch/esp32p4_intr.h"
 #include "drivers/dsi_esp32p4.h"
+#include "drivers/ppa_esp32p4.h"
 #include "drivers/lcdterm.h"
 #include "drivers/touch.h"
 #include "drivers/screen.h"
@@ -216,9 +217,18 @@ bool moon_platform_init(int width, int height, const char *title) {
     /* Clear both framebuffers to black */
     memset(s_fb, 0, (size_t)s_stride * s_height * sizeof(uint16_t));
     esp32p4_extmem_writeback((uintptr_t)s_fb, (size_t)s_stride * s_height * sizeof(uint16_t));
+    esp32p4_extmem_invalidate((uintptr_t)s_fb, (size_t)s_stride * s_height * sizeof(uint16_t));
     if (s_render_fb != s_fb) {
         memset(s_render_fb, 0, (size_t)s_virtual_w * s_virtual_h * sizeof(uint16_t));
         esp32p4_extmem_writeback((uintptr_t)s_render_fb, (size_t)s_virtual_w * s_virtual_h * sizeof(uint16_t));
+    }
+    if (s_cid >= 0) {
+        console_lock();
+        console_frame_lock();
+        lcdterm_set_canvas565_geometry((uint8_t)s_cid, s_fb, (uint32_t)s_virtual_w,
+                                       (uint16_t)s_virtual_w, (uint16_t)s_virtual_h);
+        console_frame_unlock();
+        console_unlock();
     }
 
     /* Baked terrain tops: about 8.7 MB of PSRAM, a lot faster than sampling every pixel */
@@ -264,9 +274,14 @@ void moon_platform_shutdown(void) {
     uint8_t reply[SCREEN_REPLY_LEN];
     (void)console_canvas(req, 3 + (uint32_t)nl, reply);
 
-    /* Restore original canvas backing pointer if double-buffering swapped backing */
+    /* Restore original canvas backing pointer and full resolution if double-buffering swapped backing */
     if (s_cid >= 0 && s_canvas_fb_original) {
-        lcdterm_set_canvas565_backing((uint8_t)s_cid, s_canvas_fb_original);
+        console_lock();
+        console_frame_lock();
+        lcdterm_set_canvas565_geometry((uint8_t)s_cid, s_canvas_fb_original,
+                                       (uint32_t)s_width, (uint16_t)s_width, (uint16_t)s_height);
+        console_frame_unlock();
+        console_unlock();
     }
 
     if (s_render_fb_original && s_render_fb_original != s_canvas_fb_original && s_render_pages > 0) {
@@ -323,6 +338,14 @@ static void upscale_rows(int y0, int y1) {
     if (y0 < 0) y0 = 0;
     if (y1 > s_virtual_h) y1 = s_virtual_h;
     if (y0 >= y1) return;
+    if (ppa_srm_rgb565(s_render_fb, (uint32_t)s_virtual_w, (uint32_t)s_virtual_h,
+                       0u, (uint32_t)y0, (uint32_t)s_virtual_w, (uint32_t)(y1 - y0),
+                       s_fb, s_stride, (uint32_t)s_height,
+                       0u, (uint32_t)(y0 * 2),
+                       2u, 0u, 2u, 0u,
+                       0u, true, false)) {
+        return;
+    }
     for (int y = y0; y < y1; y++) {
         const uint32_t *src_row32 = (const uint32_t *)(s_render_fb + (size_t)y * s_virtual_w);
         uint32_t *dst0 = (uint32_t *)(s_fb + ((size_t)y * 2) * s_stride);
@@ -347,44 +370,47 @@ static void upscale_rows(int y0, int y1) {
 void moon_platform_present(void) {
     if (!s_render_fb) return;
 
-    if (s_scale == 2 && s_fb && s_render_fb && s_render_fb != s_fb) {
+    /* Write back the rendered virtual frame and swap front/back canvas pointers.
+     * On Tab5 (s_scale == 2), the display compositor's PPA SRM pass scales the
+     * 640x360 canvas by 2x and rotates it 90 deg CCW into fb_back() in a single
+     * hardware DMA operation; only fall back to upscale_rows() if no canvas slot. */
+    if (s_render_fb != s_fb && s_cid >= 0) {
+        esp32p4_extmem_writeback((uintptr_t)s_render_fb,
+                                 (size_t)s_virtual_w * s_virtual_h * sizeof(uint16_t));
+        console_lock();
+        console_frame_lock();
+        uint16_t *tmp = s_fb;
+        s_fb = s_render_fb;
+        s_render_fb = tmp;
+        lcdterm_set_canvas565_geometry((uint8_t)s_cid, s_fb, (uint32_t)s_virtual_w,
+                                       (uint16_t)s_virtual_w, (uint16_t)s_virtual_h);
+        lcdterm_damage();
+        console_frame_unlock();
+        console_unlock();
+    } else if (s_scale == 2 && s_fb && s_render_fb && s_render_fb != s_fb) {
         upscale_rows(0, s_virtual_h);
         lcdterm_damage();
     } else {
-        /* 1x presentation: write back and swap front/back pointers */
-        esp32p4_extmem_writeback((uintptr_t)s_render_fb, (size_t)s_stride * s_height * sizeof(uint16_t));
-        if (s_render_fb != s_fb && s_cid >= 0) {
-            console_lock();
-            uint16_t *tmp = s_fb;
-            s_fb = s_render_fb;
-            s_render_fb = tmp;
-            lcdterm_set_canvas565_backing((uint8_t)s_cid, s_fb);
-            lcdterm_damage();
-            console_unlock();
-        } else {
-            lcdterm_damage();
-        }
+        esp32p4_extmem_writeback((uintptr_t)s_render_fb,
+                                 (size_t)s_virtual_w * s_virtual_h * sizeof(uint16_t));
+        lcdterm_damage();
     }
 }
 
-/* The buffer on screen: the Tab5 composes in its 640x360 frame and upscales, the 7B shows s_fb
- * (after a swap that is the frame just drawn) */
+/* The buffer currently on screen (after the front/back swap in moon_platform_present). */
 uint16_t* moon_platform_get_display_framebuffer(int *stride_pixels) {
-    if (s_scale == 2 && s_render_fb && s_render_fb != s_fb) {
-        if (stride_pixels) *stride_pixels = s_virtual_w;
-        return s_render_fb;
-    }
-    if (stride_pixels) *stride_pixels = (int)s_stride;
+    if (stride_pixels) *stride_pixels = s_virtual_w;
     return s_fb;
 }
 
 void moon_platform_present_rows(int y0, int y1) {
-    if (s_scale == 2 && s_fb && s_render_fb && s_render_fb != s_fb) {
-        upscale_rows(y0, y1);
-    } else if (s_fb) {
+    if (s_fb) {
         if (y0 < 0) y0 = 0;
-        if (y1 > s_height) y1 = s_height;
-        if (y0 < y1) esp32p4_extmem_writeback((uintptr_t)(s_fb + (size_t)y0 * s_stride), (size_t)(y1 - y0) * s_stride * sizeof(uint16_t));
+        if (y1 > s_virtual_h) y1 = s_virtual_h;
+        if (y0 < y1) {
+            esp32p4_extmem_writeback((uintptr_t)(s_fb + (size_t)y0 * s_virtual_w),
+                                     (size_t)(y1 - y0) * s_virtual_w * sizeof(uint16_t));
+        }
     }
     lcdterm_damage();
 }
