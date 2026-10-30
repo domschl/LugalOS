@@ -186,6 +186,10 @@ set(_optional_keys
     # names the RP2350's BOOTSEL button instead, which is not on a pin the GPIO block can read.
     CONFIG_SETUP_BUTTON_GPIO
     CONFIG_SETUP_BUTTON_BOOTSEL
+    # The status LED that shows a headless node's mode (kernel/status_led.c): a GPIO driving an LED
+    # (CONFIG_STATUS_LED_ACTIVE_LOW 1 when it lights at a low level), the Pico 2 W's LED behind the Wi-Fi chip
+    # (CONFIG_STATUS_LED_CYW43 1) or the one RGB pixel of a C6-Zero (CONFIG_STATUS_LED_WS2812 1). Absent: none.
+    CONFIG_STATUS_LED_GPIO CONFIG_STATUS_LED_ACTIVE_LOW CONFIG_STATUS_LED_CYW43 CONFIG_STATUS_LED_WS2812
     # 1: this build offers claiming over the network (kernel/setup.c): /dev/setup and /dev/owner,
     # the setup window, the unauthenticated attach for a claim. Absent: a node is provisioned from
     # its console only, and cannot be claimed over the network whatever a bug does to the state machine.

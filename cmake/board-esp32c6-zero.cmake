@@ -55,6 +55,8 @@ set(CONFIG_LISP_STRING_POOL 192)
 
 # BOOT (GPIO9), a strapping pin with an internal pull-up; an ordinary input once running.
 set(CONFIG_SETUP_BUTTON_GPIO 9)
+# The RGB pixel on GPIO8 shows the node's mode in colour (kernel/status_led.c).
+set(CONFIG_STATUS_LED_WS2812 1)
 
 # Named by /proc/board and the banner (kernel/boardinfo.h).
 set(CONFIG_BOARD_DESC "Waveshare ESP32-C6-Zero")

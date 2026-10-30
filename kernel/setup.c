@@ -4,6 +4,7 @@
 
 #include "lugalos_config.h"
 #include "kernel/setup.h"
+#include "kernel/status_led.h"
 #include "kernel/identity.h"
 #include "kernel/lock.h"
 #include "kernel/printk.h"
@@ -387,6 +388,7 @@ uint32_t owner_ctl_read(char *out, uint32_t cap) {
 
 void setup_init(void) {
     setup_button_start();
+    status_led_start();
     setup_ap_start();
     char probe[NODE_SETUP_SECRET_MAX + 1];
     g_have_secret = node_setup_secret(probe, sizeof probe);
@@ -410,7 +412,7 @@ void setup_net_clear(void) { }
 bool setup_net_contains(const uint8_t ip[4]) { (void)ip; return false; }
 bool setup_ap_wanted(void) { return false; }
 void setup_ap_release(void) { }
-void setup_init(void) { setup_button_start(); }
+void setup_init(void) { setup_button_start(); status_led_start(); }
 uint32_t setup_ctl_read(char *out, uint32_t cap) { (void)out; (void)cap; return 0; }
 int setup_ctl_write(const char *buf, uint32_t len) { (void)buf; (void)len; return -1; }
 uint32_t owner_ctl_read(char *out, uint32_t cap) { (void)out; (void)cap; return 0; }

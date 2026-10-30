@@ -319,6 +319,10 @@ set(CONFIG_NET_PREFER_WIRED 1)
 set(CONFIG_C6_CHIP_PU_GPIO 54)
 
 set(CONFIG_SETUP_BUTTON_GPIO 35)   # BOOT; a strapping pin, an ordinary input once running
+# The board has no user LED. An LED (with its resistor) between a free header GPIO and ground shows
+# the node's mode (kernel/status_led.c): name the pin here, and add CONFIG_STATUS_LED_ACTIVE_LOW 1 for
+# an LED wired to 3V3 instead.
+# set(CONFIG_STATUS_LED_GPIO <pin>)
 
 # Named by /proc/board and the banner (kernel/boardinfo.h).
 set(CONFIG_BOARD_DESC "Waveshare ESP32-P4-NANO")

@@ -11,6 +11,7 @@
 #if defined(CONFIG_SETUP_BUTTON_GPIO) || defined(CONFIG_SETUP_BUTTON_BOOTSEL)
 
 #include "kernel/setup.h"
+#include "kernel/status_led.h"
 #include "kernel/printk.h"
 #include "kernel/sched.h"
 #include "kernel/time.h"
@@ -20,8 +21,6 @@
 #include <stdint.h>
 
 #define SETUP_BUTTON_POLL_MS    100u
-#define SETUP_BUTTON_SETUP_MS   5000u
-#define SETUP_BUTTON_RESET_MS   15000u
 
 #if defined(CONFIG_SETUP_BUTTON_GPIO)
 #include "drivers/gpio.h"
@@ -72,10 +71,11 @@ static void setup_button_task(void *arg) {
     bool setup_done = false, reset_done = false;
     for (;;) {
         task_sleep_ms(SETUP_BUTTON_POLL_MS);
-        if (!button_down()) { since = 0; setup_done = reset_done = false; continue; }
+        if (!button_down()) { since = 0; setup_done = reset_done = false; status_led_button(0); continue; }
         uint64_t now = time_get_ms();
         if (!since) since = now;
         uint64_t held = now - since;
+        status_led_button((uint32_t)held);
         if (!setup_done && held >= SETUP_BUTTON_SETUP_MS) {
             setup_done = true;
             printk(setup_start() ? "[Setup] button: setup window open\n"
@@ -83,7 +83,12 @@ static void setup_button_task(void *arg) {
         }
         if (!reset_done && held >= SETUP_BUTTON_RESET_MS) {
             reset_done = true;
-            printk("[Setup] button: owner reset %s\n", setup_reset_owner() == NODE_ID_OK ? "done" : "failed");
+            bool ok = setup_reset_owner() == NODE_ID_OK;
+            printk("[Setup] button: owner reset %s\n", ok ? "done" : "failed");
+            if (ok) {
+                status_led_reset_done();
+                (void)setup_start();
+            }
         }
     }
 }

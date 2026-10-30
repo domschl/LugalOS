@@ -22,7 +22,7 @@ BASE    := -std=gnu11 -g -fno-omit-frame-pointer $(INC) $(WARN) -DLUGALOS_HOST_T
 ASAN    := -O1 -fsanitize=address,undefined -fno-sanitize-recover=all
 PLAIN   := -O1
 
-HARNESSES := fat32_host chibicc_host p9_host net_host kobj_host uheap_host uprintf_host nvs_host ws2812_host llp_host ota_host gemtext_host spartan_host llm_host markdown_host latex_math_host crypto_host websocket_host p9_protect_host dhcpd_host mdnsd_host
+HARNESSES := fat32_host chibicc_host p9_host net_host kobj_host uheap_host uprintf_host nvs_host ws2812_host llp_host ota_host gemtext_host spartan_host llm_host markdown_host latex_math_host crypto_host websocket_host p9_protect_host dhcpd_host mdnsd_host status_led_host
 
 latex_math_host_SRC := latex_math_host.c $(ROOT)/fs/latex_math.c $(ROOT)/drivers/font_math.c $(ROOT)/drivers/latex_layout.c $(ROOT)/drivers/font_serif.c $(ROOT)/drivers/font_noto_serif.c $(ROOT)/drivers/canvas1.c $(ROOT)/drivers/font8x16.c $(ROOT)/drivers/fbtext.c
 
@@ -32,6 +32,7 @@ websocket_host_SRC := websocket_host.c $(ROOT)/net/websocket.c $(ROOT)/kernel/cr
                     $(ROOT)/third_party/crypto/monocypher/monocypher.c $(ROOT)/third_party/crypto/p256-m/p256-m.c
 dhcpd_host_SRC   := dhcpd_host.c $(ROOT)/net/dhcpd.c
 mdnsd_host_SRC   := mdnsd_host.c $(ROOT)/net/mdnsd.c
+status_led_host_SRC := status_led_host.c $(ROOT)/kernel/status_led_pattern.c
 p9_protect_host_SRC := p9_protect_host.c $(ROOT)/fs/p9_protect.c $(ROOT)/kernel/sha256.c
 markdown_host_SRC := markdown_host.c $(ROOT)/fs/markdown.c
 llm_host_SRC     := llm_host.c $(ROOT)/net/dns.c $(ROOT)/net/http.c $(ROOT)/net/llm.c

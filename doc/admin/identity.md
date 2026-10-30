@@ -76,9 +76,22 @@ The setup secret is the WPA2 key of the node's setup access point (52.12). `tool
 
 An unclaimed Pico 2 W with a setup secret and no Wi-Fi of its own raises a Wi-Fi network named `LugalOS-XXXX` (XXXX: the last two bytes of its UID, printed on its label by `tools/provision.py`), protected by WPA2 with the **setup secret** as the password. Join it from a phone or a laptop; the address, the name server and the page's address all come from the node (`192.168.4.1`), so the setup page opens by itself where the system checks for a captive portal, or at `http://192.168.4.1/`.
 
-The page asks for the setup secret again (a phone cannot read the Wi-Fi password it joined with), the name and password of **your own** Wi-Fi, and optionally a name for the node. The password is turned into a key in the page (PBKDF2, 4096 rounds, the network name as salt) and only the key is sent. The page makes a random owner key, claims the node with it, and shows the key with buttons to copy it or save it as a file: nothing else holds a copy, and it is what `lota`, `p9` and the admin page sign in with (user `owner`). The node keeps its setup network up, with the page reachable, until you tap **I saved the key** (or ten minutes pass), so the key stays on screen as long as you need it, and survives a reload of the page. Then it closes the setup network and joins yours,, and the page takes you to `http://NODENAME.local/` once the node answers there. Sign in as `owner` with the key. The name must be letters, digits and hyphens. Closing takes about 30 seconds; the radio is reset each way.
+The page asks for the setup secret again (a phone cannot read the Wi-Fi password it joined with), the name and password of **your own** Wi-Fi, and optionally a name for the node. The password is turned into a key in the page (PBKDF2, 4096 rounds, the network name as salt) and only the key is sent. The page makes a random owner key, claims the node with it, and shows the key with buttons to copy a link (the node's address and the key, to paste into a browser once the node is on your Wi-Fi), to copy the key alone, or to save it as a file: nothing else holds a copy, and it is what `lota`, `p9` and the admin page sign in with (user `owner`). The node keeps its setup network up, with the page reachable, until you tap **I saved the key** (or ten minutes pass), so the key stays on screen as long as you need it, and survives a reload of the page. Then it closes the setup network and joins yours, and the page takes you to `http://NODENAME.local/` once the node answers there. If the phone closes the page when it changes network, paste the copied link into the browser when the light shows the network is up. Sign in as `owner` with the key. The name must be letters, digits and hyphens. Closing takes about 30 seconds; the radio is reset each way.
 
 The window stays open 15 minutes and closes after five wrong secrets. A node that already has Wi-Fi credentials stored boots as a station and raises no setup network unless asked (`setup start`, or a long press of the board's button). The console command `setup net A.B.C.D/N` names a wired network as the setup network; it is also how the QEMU test reaches the page.
+
+### The status LED
+
+A headless node shows its mode on a light (`kernel/status_led.c`): the Pico 2 W's LED, the C6-Zero's RGB pixel (a colour per pattern), or an LED on a GPIO (`CONFIG_STATUS_LED_GPIO` in the board's cmake file, `CONFIG_STATUS_LED_ACTIVE_LOW 1` if it lights at a low level; the P4-NANO has none of its own). Hold the board's button for 5 seconds to open a setup window: the light turns solid, release it. Hold it for 15 seconds to reset the owner: the light blinks fast, and the node then goes into setup mode.
+
+| Light | Meaning |
+|---|---|
+| 1 blink per second | the setup network is (about to be) up |
+| solid | button held long enough for setup, let go now |
+| 5 blinks per second | owner reset done |
+| 2 short flashes per second | a Wi-Fi network is set and not joined yet |
+| 1 short flash every 3 seconds | the network is up |
+| 3 short flashes every 3 seconds | the network was not joined for 30 seconds |
 
 ### Protected sessions, and secrets
 

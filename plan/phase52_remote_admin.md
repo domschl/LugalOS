@@ -1125,6 +1125,16 @@ deferred without blocking anything after it.
     cannot scan: it needs a scan before the AP comes up), phones, the home
     Wi-Fi join after a claim end to end, and a packet capture for I6.
 
+  * **Status 2026-10-30 (Pico 2 W):** checked on an iPhone and a laptop: claim, the
+    key held on screen until the owner taps "I saved the key" (the AP stays up
+    meanwhile, `/setup-done`), the node joins the home Wi-Fi, answers to `NAME.local`
+    (mDNS, `net/mdnsd.c`) and serves the admin page, which takes the key from
+    `#key=`. The copied link carries address and key, because a phone's captive sheet
+    closes when it changes network. The status LED (`kernel/status_led.c`) shows setup
+    (1 Hz), reset (5 Hz), joining, joined and failed on the Pico 2 W's LED, the
+    C6-Zero's pixel or a GPIO. **Open:** the scan list, `/dev/wlan ap start|stop`,
+    Android, the packet capture for I6.
+
 * **52.13 C6 SoftAP for P4 boards** *(deferrable).* *Board: the NANO, then
   the LCD-7B and the Tab5.*
   * Port the WPA2 authenticator (IDF `wpa_supplicant`'s `src/ap/` +
