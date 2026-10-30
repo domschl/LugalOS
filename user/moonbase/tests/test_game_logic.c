@@ -1805,6 +1805,144 @@ static void test_foundation_recycle_and_undo(void) {
     printf("[test] Foundation pad undo and recycle: PASS\n");
 }
 
+/* Detailed inspector clarity & Hydrolox / Dewar simulation verification */
+static void test_hydrolox_dewar_and_inspector_clarity(void) {
+    fresh();
+    static uint16_t fb[1024 * 600];
+
+    /* Flatten test region */
+    for (int y = 25; y <= 37; y++) {
+        for (int x = 25; x <= 37; x++) {
+            g.grid.tiles[y][x].terrain = MOON_TERRAIN_REGOLITH_FLAT;
+            g.grid.tiles[y][x].elevation = 1;
+            g.grid.tiles[y][x].flags &= ~(MOON_TILE_FLAG_FOUNDATION | MOON_TILE_FLAG_OCCUPIED);
+        }
+    }
+    /* Restore lander tile at (32, 32) */
+    g.grid.tiles[32][32].flags |= MOON_TILE_FLAG_FOUNDATION | MOON_TILE_FLAG_OCCUPIED;
+    g.grid.tiles[32][32].structure_id = 1;
+
+    /* Build tech prerequisites: Sinterer at (31, 32), Habitat Dome at (26, 26) */
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_REGOLITH_PLANT, 31, 32));
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_HABITAT_DOME, 26, 26));
+
+    /* Provide plenty of regolith, water, and power */
+    g.resources.regolith_stored_kg = fixed_from_int(500);
+    g.resources.water_stored_l = fixed_from_int(100);
+
+    /* Power network connection from Lander (32, 32) to Hydrolox at (33, 29) */
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_BATTERY_BANK, 32, 31));
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_POWER_CONDUIT, 33, 31));
+    g.resources.battery_stored_kwh = fixed_from_int(500);
+
+    /* 1. Lay 2x2 foundation pads for Hydrolox Plant at (33, 29) */
+    int hx = 33, hy = 29;
+    for (int dy = 0; dy < 2; dy++) {
+        for (int dx = 0; dx < 2; dx++) {
+            assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_FOUNDATION_PAD, hx + dx, hy + dy));
+        }
+    }
+
+    /* 2. Build Hydrolox Plant BEFORE Cryo Dewar (lower id in structs list) */
+    moon_structure_t *plant = moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_HYDROLOX_PLANT, hx, hy);
+    assert(plant);
+    moon_resources_solve_power_grid(&g.grid, &g.structs);
+    assert(plant->powered);
+
+    /* Tick sim: with no Cryo Dewar built, capacities are 0, so plant must NOT crack */
+    ticks(4);
+    assert(g.resources.lh2_capacity_kg == 0);
+    assert(g.resources.lox_capacity_kg == 0);
+    assert(g.resources.lh2_rate_kg_per_tick == 0);
+    assert(g.resources.lox_rate_kg_per_tick == 0);
+
+    /* Inspect Hydrolox Plant without Cryo Dewar */
+    g.panel_open = true;
+    g.selected_tile_x = hx; g.selected_tile_y = hy;
+    moon_game_render(&g, fb, 1024, 600, 1024);
+
+    /* 3. Now build Cryo Dewar (higher id in structs list) */
+    moon_structure_t *dewar = moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_CRYO_DEWAR, 35, 29);
+    assert(dewar);
+    assert(dewar->id > plant->id);
+    moon_resources_solve_power_grid(&g.grid, &g.structs);
+    assert(dewar->powered);
+
+    /* Provide battery reserves so plant cracks without brownout */
+    g.resources.battery_stored_kwh = fixed_from_int(500);
+
+    /* Tick sim: two-pass aggregation means Hydrolox plant now sees dewar capacity and cracks! */
+    ticks(4);
+    assert(g.resources.lh2_capacity_kg == 250);
+    assert(g.resources.lox_capacity_kg == 2000);
+    assert(g.resources.lh2_rate_kg_per_tick > 0);
+    assert(g.resources.lox_rate_kg_per_tick > 0);
+    assert(g.resources.water_rate_l_per_tick < 0);
+
+    /* Inspect Hydrolox Plant while actively cracking */
+    moon_game_render(&g, fb, 1024, 600, 1024);
+
+    /* Inspect Cryo Dewar */
+    g.selected_tile_x = 35; g.selected_tile_y = 29;
+    moon_game_render(&g, fb, 1024, 600, 1024);
+
+    /* 4. Water threshold guard: drop water to 20 L -> cracking must pause */
+    g.resources.water_stored_l = fixed_from_int(20);
+    ticks(4);
+    assert(g.resources.lh2_rate_kg_per_tick == 0);
+    assert(g.resources.lox_rate_kg_per_tick == 0);
+
+    /* Inspect Hydrolox Plant under low water condition */
+    g.selected_tile_x = hx; g.selected_tile_y = hy;
+    moon_game_render(&g, fb, 1024, 600, 1024);
+
+    /* 5. Tank full guard: restore water, fill dewar tanks to max -> cracking must pause */
+    g.resources.water_stored_l = fixed_from_int(100);
+    g.resources.lh2_stored_kg = fixed_from_int(250);
+    g.resources.lox_stored_kg = fixed_from_int(2000);
+    ticks(4);
+    assert(g.resources.lh2_rate_kg_per_tick == 0);
+    assert(g.resources.lox_rate_kg_per_tick == 0);
+
+    /* Inspect Hydrolox Plant when dewars full */
+    moon_game_render(&g, fb, 1024, 600, 1024);
+
+    /* 6. Verify inspector rendering on remaining structure types */
+    /* Sinterer */
+    g.selected_tile_x = 31; g.selected_tile_y = 32;
+    moon_game_render(&g, fb, 1024, 600, 1024);
+
+    /* Habitat Dome */
+    g.selected_tile_x = 26; g.selected_tile_y = 26;
+    moon_game_render(&g, fb, 1024, 600, 1024);
+
+    /* Solar Array & Battery Bank */
+    moon_structure_t *sol = moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_SOLAR_ARRAY, 31, 30);
+    assert(sol);
+    g.selected_tile_x = 31; g.selected_tile_y = 30;
+    moon_game_render(&g, fb, 1024, 600, 1024);
+
+    moon_structure_t *bat = moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_BATTERY_BANK, 31, 34);
+    assert(bat);
+    g.selected_tile_x = 31; g.selected_tile_y = 34;
+    moon_game_render(&g, fb, 1024, 600, 1024);
+
+    /* Conduit & Foundation pad */
+    moon_structure_t *cnd = moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_POWER_CONDUIT, 31, 35);
+    assert(cnd);
+    g.selected_tile_x = 31; g.selected_tile_y = 35;
+    moon_game_render(&g, fb, 1024, 600, 1024);
+
+    g.selected_tile_x = 33; g.selected_tile_y = 29;
+    moon_game_render(&g, fb, 1024, 600, 1024);
+
+    /* Lander */
+    g.selected_tile_x = 32; g.selected_tile_y = 32;
+    moon_game_render(&g, fb, 1024, 600, 1024);
+
+    printf("[test] Hydrolox & Dewar simulation and detailed inspector clarity: PASS\n");
+}
+
 int main(void) {
     test_picking();
     test_power_solver();
@@ -1846,6 +1984,7 @@ int main(void) {
     test_tech_progression_rules();
     test_foundation_and_clearance_rules();
     test_foundation_recycle_and_undo();
+    test_hydrolox_dewar_and_inspector_clarity();
     printf("[test] All Milestone 64.9-64.12 & 64.17 tests passed cleanly.\n");
     return 0;
 }
