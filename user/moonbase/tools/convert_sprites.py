@@ -158,7 +158,8 @@ def main():
         ("assets/sinterer.jpg", "sinterer", 64, 48),
         ("assets/o2_extractor.jpg", "o2_extractor", 64, 48),
         ("assets/hydrolox_plant.jpg", "hydrolox_plant", 96, 80),
-        ("assets/cryo_dewar.jpg", "cryo_dewar", 64, 48)
+        ("assets/cryo_dewar.jpg", "cryo_dewar", 64, 48),
+        ("assets/landing_pad.jpg", "landing_pad", 128, 96)
     ]
 
     sprites = []

@@ -175,6 +175,23 @@ static const moon_structure_def_t s_catalog[MOON_STRUCT_COUNT] = {
         .accent_color   = COLOR_REGOLITH_DARK,
         .height_px      = 1,
         .desc           = "Sintered interlocking pavers providing load-bearing foundation."
+    },
+
+    [MOON_STRUCT_LANDING_PAD] = {
+        .type           = MOON_STRUCT_LANDING_PAD,
+        .name           = "Starship Landing Pad",
+        .short_name     = "STARPAD",
+        .footprint_w    = 4,
+        .footprint_h    = 4,
+        .cost_regolith  = 120,      /* 120 kg sintered regolith spaceport apron */
+        .power_kw       = -10,      /* 10 kW telemetry, beacon guidance & cryo umbilical */
+        .power_storage  = 0,
+        .rate_o2        = 0,
+        .rate_water     = 0,
+        .primary_color  = RGB565(180, 160, 60),
+        .accent_color   = COLOR_GOLD_FOIL,
+        .height_px      = 36,
+        .desc           = "4x4 sintered regolith spaceport apron with blast berms & cryo umbilical."
     }
 };
 
@@ -275,6 +292,19 @@ bool moon_structure_can_place(const moon_grid_t *grid,
                 if (out_reason) *out_reason = "Tech locked: Requires Habitat Dome";
                 return false;
             }
+        } else if (type == MOON_STRUCT_LANDING_PAD) {
+            bool has_hab = false;
+            bool has_cryo = false;
+            for (uint8_t i = 1; i < MOON_MAX_STRUCTURES; i++) {
+                if (mgr->list[i].id == i) {
+                    if (mgr->list[i].type == MOON_STRUCT_HABITAT_DOME) has_hab = true;
+                    if (mgr->list[i].type == MOON_STRUCT_HYDROLOX_PLANT || mgr->list[i].type == MOON_STRUCT_CRYO_DEWAR) has_cryo = true;
+                }
+            }
+            if (!has_hab || !has_cryo) {
+                if (out_reason) *out_reason = "Tech locked: Requires Habitat & Cryogenics";
+                return false;
+            }
         }
     }
 
@@ -321,13 +351,17 @@ bool moon_structure_can_place(const moon_grid_t *grid,
         }
     }
 
-    /* 3. Sintered Foundation Requirement for Hydrolox Plant */
-    if (type == MOON_STRUCT_HYDROLOX_PLANT) {
+    /* 3. Sintered Foundation Requirement for Hydrolox Plant & Starship Landing Pad */
+    if (type == MOON_STRUCT_HYDROLOX_PLANT || type == MOON_STRUCT_LANDING_PAD) {
         for (int dy = 0; dy < def->footprint_h; dy++) {
             for (int dx = 0; dx < def->footprint_w; dx++) {
                 const moon_tile_t *t = moon_grid_get_tile_const(grid, gx + dx, gy + dy);
                 if (!t || !(t->flags & MOON_TILE_FLAG_FOUNDATION)) {
-                    if (out_reason) *out_reason = "Requires sintered foundation";
+                    if (out_reason) {
+                        *out_reason = (type == MOON_STRUCT_LANDING_PAD)
+                                      ? "Requires 4x4 sintered foundation"
+                                      : "Requires sintered foundation";
+                    }
                     return false;
                 }
             }
@@ -358,6 +392,22 @@ bool moon_structure_can_place(const moon_grid_t *grid,
                     uint8_t stype = mgr->list[ct->structure_id].type;
                     if (stype == MOON_STRUCT_HYDROLOX_PLANT) {
                         if (out_reason) *out_reason = "Safety: clearance from Hydrolox plant required";
+                        return false;
+                    } else if (stype == MOON_STRUCT_LANDING_PAD) {
+                        if (out_reason) *out_reason = "Safety: clearance from landing pad required";
+                        return false;
+                    }
+                }
+            }
+        } else if (type == MOON_STRUCT_LANDING_PAD) {
+            /* 1-tile clearance around 4x4 footprint: [gx-1 .. gx+4] x [gy-1 .. gy+4] */
+            for (int cy = gy - 1; cy <= gy + def->footprint_h; cy++) {
+                for (int cx = gx - 1; cx <= gx + def->footprint_w; cx++) {
+                    const moon_tile_t *ct = moon_grid_get_tile_const(grid, cx, cy);
+                    if (!ct || ct->structure_id == 0 || ct->structure_id >= MOON_MAX_STRUCTURES) continue;
+                    uint8_t stype = mgr->list[ct->structure_id].type;
+                    if (stype == MOON_STRUCT_HABITAT_DOME || stype == MOON_STRUCT_LANDER) {
+                        if (out_reason) *out_reason = "Safety: clearance from habitat required";
                         return false;
                     }
                 }
@@ -499,6 +549,7 @@ static const moon_surface_t *sprite_of(uint8_t type) {
         case MOON_STRUCT_O2_EXTRACTOR:   return &g_surf_o2_extractor;
         case MOON_STRUCT_HYDROLOX_PLANT: return &g_surf_hydrolox_plant;
         case MOON_STRUCT_CRYO_DEWAR:     return &g_surf_cryo_dewar;
+        case MOON_STRUCT_LANDING_PAD:    return &g_surf_landing_pad;
         default:                         return NULL;
     }
 }
@@ -519,7 +570,8 @@ static void sprite_rect(uint8_t type, int32_t sx, int32_t sy, moon_rect_t *r) {
     const moon_surface_t *spr = sprite_of(type);
     int w = spr ? spr->width : 0;
     int h = spr ? spr->height : 0;
-    int base = (type == MOON_STRUCT_HABITAT_DOME || type == MOON_STRUCT_HYDROLOX_PLANT) ? 48 : MOON_TILE_HALF_H;
+    int base = (type == MOON_STRUCT_LANDING_PAD) ? 60 :
+               (type == MOON_STRUCT_HABITAT_DOME || type == MOON_STRUCT_HYDROLOX_PLANT) ? 48 : MOON_TILE_HALF_H;
     r->x0 = sx - w / 2;
     r->y0 = sy + base - h;
     r->x1 = r->x0 + w;
@@ -683,11 +735,23 @@ static void draw_structure_overlay(const moon_grid_t *grid, const moon_surface_t
         } else {
             draw_meter_bar(surf, sx, sy - 20, 0, 5, RGB565(30, 32, 38));
         }
+    } else if (s->type == MOON_STRUCT_LANDING_PAD) {
+        /* Starship Landing Pad guidance transponders & beacons indicator:
+         * Cyan when active, powered, and grid stable; yellow if unpowered; red if brownout */
+        if (s->active && s->powered && res && !res->power_brownout) {
+            draw_meter_bar(surf, sx, sy - 40, 5, 5, COLOR_LASER_CYAN);
+        } else if (s->active && !s->powered) {
+            draw_meter_bar(surf, sx, sy - 40, 2, 5, COLOR_ENERGY_YELLOW);
+        } else {
+            draw_meter_bar(surf, sx, sy - 40, 0, 5, RGB565(30, 32, 38));
+        }
     }
 
     const moon_structure_def_t *def = moon_structure_get_def((moon_structure_type_t)s->type);
     if (!def) return;
-    int badge_y = (s->type == MOON_STRUCT_HABITAT_DOME || s->type == MOON_STRUCT_HYDROLOX_PLANT) ? sy - 38 : sy - def->height_px - 8;
+    int badge_y = (s->type == MOON_STRUCT_LANDING_PAD) ? sy - 44 :
+                  (s->type == MOON_STRUCT_HABITAT_DOME || s->type == MOON_STRUCT_HYDROLOX_PLANT) ? sy - 38 :
+                  sy - def->height_px - 8;
 
     if (!s->active) {
         /* Standby / Deactivated badge: yellow framed pill */

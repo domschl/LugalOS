@@ -1633,10 +1633,14 @@ static void test_categorized_build_sheets(void) {
     key(MOON_KEY_0);
 
     key(MOON_KEY_3); key(MOON_KEY_3);
+    assert(g.structs.selected_build_type == MOON_STRUCT_LANDING_PAD);
+    key(MOON_KEY_0);
+
+    key(MOON_KEY_4); key(MOON_KEY_4);
     assert(g.structs.selected_build_type == MOON_STRUCT_POWER_CONDUIT);
     key(MOON_KEY_0);
 
-    key(MOON_KEY_4);
+    key(MOON_KEY_5);
     assert(g.structs.selected_build_type == MOON_STRUCT_NONE);
 
     /* Pressing B cycles back to MOON_CAT_POWER */
@@ -1943,6 +1947,114 @@ static void test_hydrolox_dewar_and_inspector_clarity(void) {
     printf("[test] Hydrolox & Dewar simulation and detailed inspector clarity: PASS\n");
 }
 
+/* Milestone 64.18: Reinforced Starship Landing Pad verification */
+static void test_starship_landing_pad(void) {
+    fresh();
+    const char *reason = NULL;
+    static uint16_t fb[1024 * 600];
+
+    /* Flatten wide test zone */
+    for (int y = 20; y <= 44; y++) {
+        for (int x = 20; x <= 44; x++) {
+            g.grid.tiles[y][x].terrain = MOON_TERRAIN_REGOLITH_FLAT;
+            g.grid.tiles[y][x].elevation = 1;
+            g.grid.tiles[y][x].flags &= ~(MOON_TILE_FLAG_FOUNDATION | MOON_TILE_FLAG_OCCUPIED);
+        }
+    }
+    g.grid.tiles[32][32].flags |= MOON_TILE_FLAG_FOUNDATION | MOON_TILE_FLAG_OCCUPIED;
+    g.grid.tiles[32][32].structure_id = 1;
+
+    g.resources.regolith_stored_kg = fixed_from_int(1000);
+    g.resources.battery_stored_kwh = fixed_from_int(500);
+
+    /* 1. Tech Progression: Cannot place Starship Landing Pad without Habitat & Cryogenics */
+    assert(!moon_structure_can_place(&g.grid, &g.structs, MOON_STRUCT_LANDING_PAD, 35, 35, &reason));
+    assert(strcmp(reason, "Tech locked: Requires Habitat & Cryogenics") == 0);
+
+    /* Build prerequisites: Sinterer, Habitat Dome, Cryo Dewar */
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_REGOLITH_PLANT, 31, 32));
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_HABITAT_DOME, 26, 26));
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_CRYO_DEWAR, 26, 28));
+
+    /* 2. Sintered Foundation Requirement: 4x4 unpaved must fail */
+    assert(!moon_structure_can_place(&g.grid, &g.structs, MOON_STRUCT_LANDING_PAD, 35, 35, &reason));
+    assert(strcmp(reason, "Requires 4x4 sintered foundation") == 0);
+
+    /* Partially pave 15 of 16 tiles -> still fails */
+    int px = 35, py = 35;
+    for (int dy = 0; dy < 4; dy++) {
+        for (int dx = 0; dx < 4; dx++) {
+            if (dx == 3 && dy == 3) continue;
+            assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_FOUNDATION_PAD, px + dx, py + dy));
+        }
+    }
+    assert(!moon_structure_can_place(&g.grid, &g.structs, MOON_STRUCT_LANDING_PAD, px, py, &reason));
+    assert(strcmp(reason, "Requires 4x4 sintered foundation") == 0);
+
+    /* Pave 16th tile -> foundation complete */
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_FOUNDATION_PAD, px + 3, py + 3));
+
+    /* 3. Safety Clearance: Cannot place adjacent to Lander at (32, 32) */
+    /* Pave 4x4 zone adjacent to lander at (32, 33) */
+    for (int dy = 0; dy < 4; dy++) {
+        for (int dx = 0; dx < 4; dx++) {
+            g.grid.tiles[33 + dy][32 + dx].flags |= MOON_TILE_FLAG_FOUNDATION;
+        }
+    }
+    assert(!moon_structure_can_place(&g.grid, &g.structs, MOON_STRUCT_LANDING_PAD, 32, 33, &reason));
+    assert(strcmp(reason, "Safety: clearance from habitat required") == 0);
+
+    /* 4. Place Starship Landing Pad at (35, 35) with clearance */
+    assert(moon_structure_can_place(&g.grid, &g.structs, MOON_STRUCT_LANDING_PAD, px, py, &reason));
+    const moon_structure_def_t *pad_def = moon_structure_get_def(MOON_STRUCT_LANDING_PAD);
+    assert(pad_def != NULL);
+    assert(pad_def->cost_regolith == 120);
+    assert(pad_def->power_kw == -10);
+    moon_structure_t *pad = moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_LANDING_PAD, px, py);
+    assert(pad);
+    assert(pad->footprint_w == 4 && pad->footprint_h == 4);
+
+    /* 5. Safety Clearance: Cannot place Habitat Dome adjacent to Starship Landing Pad */
+    /* Landing pad is at [35..38] x [35..38]. Try placing Habitat Dome at (33, 35) (adjacent) */
+    for (int dy = 0; dy < 2; dy++) {
+        for (int dx = 0; dx < 2; dx++) {
+            g.grid.tiles[35 + dy][33 + dx].flags |= MOON_TILE_FLAG_FOUNDATION;
+        }
+    }
+    assert(!moon_structure_can_place(&g.grid, &g.structs, MOON_STRUCT_HABITAT_DOME, 33, 35, &reason));
+    assert(strcmp(reason, "Safety: clearance from landing pad required") == 0);
+
+    /* 6. Power Grid & Simulation Loop */
+    /* Connect pad to Lander power grid via conduits */
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_POWER_CONDUIT, 33, 32));
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_POWER_CONDUIT, 34, 32));
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_POWER_CONDUIT, 35, 32));
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_POWER_CONDUIT, 35, 33));
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_POWER_CONDUIT, 35, 34));
+    moon_resources_solve_power_grid(&g.grid, &g.structs);
+    assert(pad->powered);
+
+    ticks(4);
+    /* Pad draws -10 kW for telemetry & cryo umbilical chill */
+    assert(g.resources.power_consumed_kw >= 15); /* 5 kW lander + 10 kW pad */
+
+    /* 7. Inspector Panel Rendering on Landing Pad */
+    g.panel_open = true;
+    g.selected_tile_x = px; g.selected_tile_y = py;
+    moon_game_render(&g, fb, 1024, 600, 1024);
+
+    /* 8. Ribbon selection in MOON_CAT_LOGISTICS */
+    while (g.build_category != MOON_CAT_LOGISTICS) {
+        key(MOON_KEY_B);
+    }
+    assert(g.build_category == MOON_CAT_LOGISTICS);
+    key(MOON_KEY_3); key(MOON_KEY_3);
+    assert(g.structs.selected_build_type == MOON_STRUCT_LANDING_PAD);
+    key(MOON_KEY_0);
+
+    printf("[test] Reinforced Starship Landing Pad (Milestone 64.18): PASS\n");
+}
+
 int main(void) {
     test_picking();
     test_power_solver();
@@ -1985,6 +2097,7 @@ int main(void) {
     test_foundation_and_clearance_rules();
     test_foundation_recycle_and_undo();
     test_hydrolox_dewar_and_inspector_clarity();
-    printf("[test] All Milestone 64.9-64.12 & 64.17 tests passed cleanly.\n");
+    test_starship_landing_pad();
+    printf("[test] All Milestone 64.9-64.12, 64.17 & 64.18 tests passed cleanly.\n");
     return 0;
 }

@@ -67,6 +67,7 @@ static bool build(moon_structure_type_t type, int x, int y) {
         [MOON_STRUCT_CRYO_DEWAR]    = { MOON_CAT_LIFECRYO,  MOON_KEY_4 },
         [MOON_STRUCT_REGOLITH_PLANT]= { MOON_CAT_LOGISTICS, MOON_KEY_1 },
         [MOON_STRUCT_FOUNDATION_PAD]= { MOON_CAT_LOGISTICS, MOON_KEY_2 },
+        [MOON_STRUCT_LANDING_PAD]   = { MOON_CAT_LOGISTICS, MOON_KEY_3 },
     };
     if (type >= MOON_STRUCT_COUNT || s_keys[type].key == 0) return false;
     while (g.build_category != s_keys[type].category) {
