@@ -1135,6 +1135,30 @@ deferred without blocking anything after it.
     C6-Zero's pixel or a GPIO. **Open:** the scan list, `/dev/wlan ap start|stop`,
     Android, the packet capture for I6.
 
+* **52.12 is closed (2026-10-30).** Setup works from an iPhone and a laptop on the
+  Pico 2 W. A claimed node ignores the 5 s press (a Wi-Fi change then needs the 15 s
+  factory reset), and the Pico 2 W's LED is dark while the radio reloads its firmware
+  on a mode switch; both are accepted. The scan list, `/dev/wlan ap start|stop`,
+  Android and the packet capture for I6 move to the TLS milestones' hardware pass.
+
+* **52.13b C6-Zero stand-alone, sensor configuration.** *Board: the C6-Zero, no P4.*
+  * A C6-Zero on its own USB port is a node of its own (sensor persona: its own IP,
+    I2C sensors, MQTT), not a radio for a P4. Provision it from the console
+    (`wlan`, `name`, `grant`), or claim it over 9P once it is on a network.
+  * The status LED pixel shows the mode (`kernel/status_led.c`): blue blink in
+    setup, green flash when joined, amber while joining, red when not joined. The
+    BOOT button does the 5 s and 15 s presses of `kernel/setup_button.c`.
+  * The node answers to `NAME.local` (`net/mdnsd.c`) and serves the admin page
+    (`httpd`) with the owner key after a claim, as the Pico 2 W does.
+  * A phone setup (SoftAP) waits for 52.13's authenticator; until then this
+    milestone provisions from the console.
+  * *Verification:* a C6-Zero alone: joins the home Wi-Fi from stored credentials,
+    shows each LED pattern (power-up, joined, a wrong password, a 15 s reset), is
+    found as `NAME.local`, signs in at the admin page with the owner key, reads a
+    BME280 and publishes it over MQTT, takes an OTA update, and reports its free
+    heap with the sensors, MQTT, `httpd` and `mdnsd` all running (the budget of
+    phase 49's "small and tainted" C6).
+
 * **52.13 C6 SoftAP for P4 boards** *(deferrable).* *Board: the NANO, then
   the LCD-7B and the Tab5.*
   * Port the WPA2 authenticator (IDF `wpa_supplicant`'s `src/ap/` +
