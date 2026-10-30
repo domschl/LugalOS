@@ -570,7 +570,7 @@ static void sprite_rect(uint8_t type, int32_t sx, int32_t sy, moon_rect_t *r) {
     const moon_surface_t *spr = sprite_of(type);
     int w = spr ? spr->width : 0;
     int h = spr ? spr->height : 0;
-    int base = (type == MOON_STRUCT_LANDING_PAD) ? 56 :
+    int base = (type == MOON_STRUCT_LANDING_PAD) ? 112 :
                (type == MOON_STRUCT_HABITAT_DOME || type == MOON_STRUCT_HYDROLOX_PLANT) ? 48 : MOON_TILE_HALF_H;
     r->x0 = sx - w / 2;
     r->y0 = sy + base - h;
@@ -739,17 +739,17 @@ static void draw_structure_overlay(const moon_grid_t *grid, const moon_surface_t
         /* Starship Landing Pad guidance transponders & beacons indicator:
          * Cyan when active, powered, and grid stable; yellow if unpowered; red if brownout */
         if (s->active && s->powered && res && !res->power_brownout) {
-            draw_meter_bar(surf, sx, sy - 58, 5, 5, COLOR_LASER_CYAN);
+            draw_meter_bar(surf, sx, sy - 116, 5, 5, COLOR_LASER_CYAN);
         } else if (s->active && !s->powered) {
-            draw_meter_bar(surf, sx, sy - 58, 2, 5, COLOR_ENERGY_YELLOW);
+            draw_meter_bar(surf, sx, sy - 116, 2, 5, COLOR_ENERGY_YELLOW);
         } else {
-            draw_meter_bar(surf, sx, sy - 58, 0, 5, RGB565(30, 32, 38));
+            draw_meter_bar(surf, sx, sy - 116, 0, 5, RGB565(30, 32, 38));
         }
     }
 
     const moon_structure_def_t *def = moon_structure_get_def((moon_structure_type_t)s->type);
     if (!def) return;
-    int badge_y = (s->type == MOON_STRUCT_LANDING_PAD) ? sy - 62 :
+    int badge_y = (s->type == MOON_STRUCT_LANDING_PAD) ? sy - 128 :
                   (s->type == MOON_STRUCT_HABITAT_DOME || s->type == MOON_STRUCT_HYDROLOX_PLANT) ? sy - 38 :
                   sy - def->height_px - 8;
 

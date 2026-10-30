@@ -46,9 +46,9 @@ extern const moon_surface_t g_surf_hydrolox_plant;
 extern const uint16_t g_sprite_cryo_dewar[3072];
 extern const moon_surface_t g_surf_cryo_dewar;
 
-#define SPRITE_LANDING_PAD_W 128
-#define SPRITE_LANDING_PAD_H 112
-extern const uint16_t g_sprite_landing_pad[14336];
+#define SPRITE_LANDING_PAD_W 256
+#define SPRITE_LANDING_PAD_H 224
+extern const uint16_t g_sprite_landing_pad[57344];
 extern const moon_surface_t g_surf_landing_pad;
 
 #endif /* MOON_SPRITES_H */
