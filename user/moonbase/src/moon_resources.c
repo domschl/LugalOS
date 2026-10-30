@@ -170,18 +170,43 @@ void moon_resources_tick(moon_resources_t *res,
     }
 
     /* 3. Aggregate Generation, Capacity, and Consumption */
-    int32_t total_gen_kw = 0;
-    int32_t total_use_kw = 0;
+    /* Pass 3a: Aggregate static capacities across all active structures */
     int32_t total_battery_cap = 0;
     int32_t total_housing = 0;
+    int32_t total_lh2_cap = 0;
+    int32_t total_lox_cap = 0;
 
+    for (int i = 0; i < MOON_MAX_STRUCTURES; i++) {
+        const moon_structure_t *s = &mgr->list[i];
+        if (s->id == 0 || !s->active) continue;
+
+        const moon_structure_def_t *def = moon_structure_get_def((moon_structure_type_t)s->type);
+        if (!def) continue;
+
+        total_battery_cap += def->power_storage;
+        if (s->type == MOON_STRUCT_LANDER) {
+            total_housing += MOON_LANDER_CREW;
+        } else if (s->type == MOON_STRUCT_HABITAT_DOME) {
+            total_housing += MOON_HABITAT_CREW;
+        } else if (s->type == MOON_STRUCT_CRYO_DEWAR) {
+            total_lh2_cap += 250;
+            total_lox_cap += 2000;
+        }
+    }
+
+    res->max_population = (uint16_t)total_housing;
+    res->battery_capacity_kwh = total_battery_cap;
+    res->lh2_capacity_kg = total_lh2_cap;
+    res->lox_capacity_kg = total_lox_cap;
+
+    /* Pass 3b: Aggregate generation, consumption, life-support draw, and production */
+    int32_t total_gen_kw = 0;
+    int32_t total_use_kw = 0;
     int32_t net_o2_milli = 0;
     int32_t net_water_milli = 0;
     int32_t net_regolith_milli = 0;
     int32_t net_lh2_milli = 0;
     int32_t net_lox_milli = 0;
-    int32_t total_lh2_cap = 0;
-    int32_t total_lox_cap = 0;
 
     for (int i = 0; i < MOON_MAX_STRUCTURES; i++) {
         moon_structure_t *s = &mgr->list[i];
@@ -190,18 +215,9 @@ void moon_resources_tick(moon_resources_t *res,
         const moon_structure_def_t *def = moon_structure_get_def((moon_structure_type_t)s->type);
         if (!def) continue;
 
-        /* Battery capacity counts whether powered or not */
-        total_battery_cap += def->power_storage;
-
         if (s->type == MOON_STRUCT_LANDER) {
-            total_housing += MOON_LANDER_CREW;
             total_gen_kw += def->power_kw; /* Baseline RTG generator */
             total_use_kw += 5;             /* Base command & comms */
-        } else if (s->type == MOON_STRUCT_HABITAT_DOME) {
-            total_housing += MOON_HABITAT_CREW;
-        } else if (s->type == MOON_STRUCT_CRYO_DEWAR) {
-            total_lh2_cap += 250;
-            total_lox_cap += 2000;
         }
 
         /* Pressurised structures leak and their gardens drink: a negative catalog rate is a
@@ -235,6 +251,7 @@ void moon_resources_tick(moon_resources_t *res,
                     /* Only crack water if water reserves are above safe drinking threshold (20 L)
                      * and storage dewar capacity is available for LH2 or LOX */
                     if (res->water_stored_l > fixed_from_int(20) &&
+                        (total_lh2_cap > 0 || total_lox_cap > 0) &&
                         (res->lh2_stored_kg < fixed_from_int(total_lh2_cap) ||
                          res->lox_stored_kg < fixed_from_int(total_lox_cap))) {
                         /* Cracks 18 L/min water -> 2 kg/min LH2 + 16 kg/min LOX (1:8 stoichiometric mass) */
@@ -247,10 +264,6 @@ void moon_resources_tick(moon_resources_t *res,
         }
     }
 
-    res->max_population = (uint16_t)total_housing;
-    res->battery_capacity_kwh = total_battery_cap;
-    res->lh2_capacity_kg = total_lh2_cap;
-    res->lox_capacity_kg = total_lox_cap;
     res->power_produced_kw = total_gen_kw;
     res->power_consumed_kw = total_use_kw;
     res->power_net_kw = total_gen_kw - total_use_kw;

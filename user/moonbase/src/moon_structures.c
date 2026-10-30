@@ -649,17 +649,20 @@ static void draw_structure_overlay(const moon_grid_t *grid, const moon_surface_t
     if (s->type == MOON_STRUCT_BATTERY_BANK) {
         draw_battery_led(surf, sx, sy, res, s->active, s->powered);
     } else if (s->type == MOON_STRUCT_HYDROLOX_PLANT) {
-        /* Status bar above plant: cyan if cracking water, yellow if storage full, red if out of water / unpowered */
-        if (s->active && s->powered && res) {
+        /* Status bar above plant: cyan if cracking water, yellow if storage full or no dewar, red if out of water / unpowered */
+        if (s->active && s->powered && res && !res->power_brownout) {
             int water_l = fixed_to_int(res->water_stored_l);
             int lh2_cap = res->lh2_capacity_kg;
             int lox_cap = res->lox_capacity_kg;
             int lh2_stored = fixed_to_int(res->lh2_stored_kg);
             int lox_stored = fixed_to_int(res->lox_stored_kg);
-            bool full = (lh2_cap > 0 && lh2_stored >= lh2_cap) || (lox_cap > 0 && lox_stored >= lox_cap);
-            if (water_l >= 20 && !full) {
+            bool has_dewar = (lh2_cap > 0 || lox_cap > 0);
+            bool space_avail = has_dewar && (lh2_stored < lh2_cap || lox_stored < lox_cap);
+            bool cracking = (water_l > 20) && space_avail;
+
+            if (cracking) {
                 draw_meter_bar(surf, sx, sy - 36, 5, 5, COLOR_LASER_CYAN);
-            } else if (full) {
+            } else if (!has_dewar || !space_avail) {
                 draw_meter_bar(surf, sx, sy - 36, 5, 5, COLOR_ENERGY_YELLOW);
             } else {
                 draw_meter_bar(surf, sx, sy - 36, 1, 5, COLOR_ALERT_RED);

@@ -1210,45 +1210,288 @@ static void render_inspector_panel(const moon_game_t *game, const moon_surface_t
         /* Title */
         moon_blit_text_fmt(surf, ip_x + 8, ip_y + 6, COLOR_GOLD_FOIL, 0, true, "%s", def->name);
 
-        /* Status */
-        const char *status_str = !s->active ? "STANDBY" : s->depleted ? "DEPLETED" : (s->powered ? "ONLINE" : "NO POWER");
-        uint16_t status_col = !s->active ? RGB565(140, 140, 150) : s->depleted ? RGB565(230, 130, 30) : (s->powered ? COLOR_STATUS_GREEN : COLOR_ALERT_RED);
-        moon_blit_text_fmt(surf, ip_x + 8, ip_y + 48, status_col, 0, true, "STATUS: [%s]", status_str);
+        int y0 = ip_y + 44;
+        int y1 = ip_y + 60;
+        int y2 = ip_y + 76;
+        int y3 = ip_y + 92;
+        int y4 = ip_y + 108;
+        int y5 = ip_y + 124;
+        int y6 = ip_y + 140;
 
-        /* Power metrics */
-        if (def->power_kw > 0) {
-            moon_blit_text_fmt(surf, ip_x + 8, ip_y + 66, COLOR_ENERGY_YELLOW, 0, true,
-                               "POWER: +%d kW (Gen)", def->power_kw);
-        } else if (def->power_kw < 0) {
-            moon_blit_text_fmt(surf, ip_x + 8, ip_y + 66, COLOR_ENERGY_YELLOW, 0, true,
-                               "POWER: %d kW (Demand)", def->power_kw);
-        } else {
-            moon_blit_text(surf, ip_x + 8, ip_y + 66, "POWER: Passive", COLOR_REGOLITH_LIGHT, 0, true);
+        switch (s->type) {
+        case MOON_STRUCT_HYDROLOX_PLANT: {
+            int water_l = fixed_to_int(game->resources.water_stored_l);
+            int lh2_cap = game->resources.lh2_capacity_kg;
+            int lox_cap = game->resources.lox_capacity_kg;
+            int lh2_val = fixed_to_int(game->resources.lh2_stored_kg);
+            int lox_val = fixed_to_int(game->resources.lox_stored_kg);
+            bool has_dewar = (lh2_cap > 0 || lox_cap > 0);
+            bool space_avail = has_dewar && (lh2_val < lh2_cap || lox_val < lox_cap);
+            bool brownout = game->resources.power_brownout;
+
+            const char *st_str = "CRACKING WATER";
+            uint16_t st_col = COLOR_STATUS_GREEN;
+            if (!s->active) {
+                st_str = "STANDBY";
+                st_col = RGB565(140, 140, 150);
+            } else if (!s->powered || brownout) {
+                st_str = "NO POWER";
+                st_col = COLOR_ALERT_RED;
+            } else if (!has_dewar) {
+                st_str = "NEEDS CRYO DEWAR";
+                st_col = RGB565(240, 160, 40);
+            } else if (water_l <= 20) {
+                st_str = "LOW WATER (>20L)";
+                st_col = RGB565(240, 160, 40);
+            } else if (!space_avail) {
+                st_str = "DEWARS FULL";
+                st_col = COLOR_ENERGY_YELLOW;
+            }
+
+            moon_blit_text_fmt(surf, ip_x + 8, y0, st_col, 0, true, "STATUS: [%s]", st_str);
+            moon_blit_text_fmt(surf, ip_x + 8, y1, COLOR_ENERGY_YELLOW, 0, true, "POWER: -60 kW (Cracking)");
+            moon_blit_text(surf, ip_x + 8, y2, "INPUT: Water 18 L/min", COLOR_LASER_CYAN, 0, true);
+            moon_blit_text(surf, ip_x + 8, y3, "OUTPUT: +2 LH2 /min", RGB565(120, 210, 255), 0, true);
+            moon_blit_text(surf, ip_x + 8, y4, "OUTPUT: +16 LOX /min", COLOR_LASER_CYAN, 0, true);
+            if (has_dewar) {
+                moon_blit_text_fmt(surf, ip_x + 8, y5, COLOR_REGOLITH_LIGHT, 0, true,
+                                   "DEWAR: %d/%d H2 %d/%d O2", lh2_val, lh2_cap, lox_val, lox_cap);
+            } else {
+                moon_blit_text(surf, ip_x + 8, y5, "DEWAR: None! Build 1x1", COLOR_ALERT_RED, 0, true);
+            }
+            moon_blit_text_fmt(surf, ip_x + 8, y6, COLOR_STATUS_GREEN, 0, true,
+                               "Integrity: %d%%", s->health);
+            break;
         }
 
-        /* Storage & Life Support */
-        if (def->power_storage > 0) {
-            moon_blit_text_fmt(surf, ip_x + 8, ip_y + 84, COLOR_ENERGY_YELLOW, 0, true,
-                               "STORAGE: %d kWh capacity", def->power_storage);
-        } else if (def->rate_o2 != 0 || def->rate_water != 0) {
-            moon_blit_text_fmt(surf, ip_x + 8, ip_y + 84, COLOR_LASER_CYAN, 0, true,
-                               "LIFE O2 %+d H2O %+d /min", def->rate_o2, def->rate_water);
-        } else {
-            moon_blit_text_fmt(surf, ip_x + 8, ip_y + 84, COLOR_REGOLITH_LIGHT, 0, true,
-                               "COORDS: [%02d, %02d]", s->gx, s->gy);
+        case MOON_STRUCT_CRYO_DEWAR: {
+            int lh2_cap = 250;
+            int lox_cap = 2000;
+            int lh2_val = fixed_to_int(game->resources.lh2_stored_kg);
+            int lox_val = fixed_to_int(game->resources.lox_stored_kg);
+            bool brownout = game->resources.power_brownout;
+
+            const char *st_str = "CRYOPRESERVED";
+            uint16_t st_col = COLOR_STATUS_GREEN;
+            if (!s->active) {
+                st_str = "STANDBY";
+                st_col = RGB565(140, 140, 150);
+            } else if (!s->powered || brownout) {
+                st_str = "NO CHILL / UNPWR";
+                st_col = COLOR_ALERT_RED;
+            }
+
+            moon_blit_text_fmt(surf, ip_x + 8, y0, st_col, 0, true, "STATUS: [%s]", st_str);
+            moon_blit_text_fmt(surf, ip_x + 8, y1, COLOR_ENERGY_YELLOW, 0, true, "POWER: -5 kW (Active Chill)");
+            moon_blit_text(surf, ip_x + 8, y2, "CAP: 250 H2, 2,000 O2 kg", RGB565(120, 210, 255), 0, true);
+            moon_blit_text_fmt(surf, ip_x + 8, y3, COLOR_LUNAR_WHITE, 0, true, "STORED LH2: %d / %d kg", lh2_val, lh2_cap);
+            moon_blit_text_fmt(surf, ip_x + 8, y4, COLOR_LASER_CYAN, 0, true, "STORED LOX: %d / %d kg", lox_val, lox_cap);
+            moon_blit_text(surf, ip_x + 8, y5, "Rocket Propellant Store", COLOR_GOLD_FOIL, 0, true);
+            moon_blit_text_fmt(surf, ip_x + 8, y6, COLOR_STATUS_GREEN, 0, true,
+                               "Integrity: %d%%", s->health);
+            break;
         }
 
-        /* Integrity */
-        moon_blit_text_fmt(surf, ip_x + 8, ip_y + 102, COLOR_STATUS_GREEN, 0, true,
-                           "STRUCTURAL INTEGRITY: %d%%", s->health);
+        case MOON_STRUCT_REGOLITH_PLANT: {
+            int left = moon_structure_ore_left(&game->grid, MOON_STRUCT_REGOLITH_PLANT, s->gx, s->gy);
+            int rate = game->resources.rules.sinterer_kg_per_min;
+            int stock_val = fixed_to_int(game->resources.regolith_stored_kg);
+            int stock_cap = game->resources.regolith_capacity_kg;
+            bool brownout = game->resources.power_brownout;
 
-        if (s->type == MOON_STRUCT_O2_EXTRACTOR || s->type == MOON_STRUCT_REGOLITH_PLANT) {
-            int left = moon_structure_ore_left(&game->grid, (moon_structure_type_t)s->type, s->gx, s->gy);
-            moon_blit_text_fmt(surf, ip_x + 8, ip_y + 122, left ? COLOR_LASER_CYAN : RGB565(230, 130, 30), 0, true,
-                               s->type == MOON_STRUCT_O2_EXTRACTOR ? "Deposit left: %d" : "Ore left: %d", left);
-        } else {
-            moon_blit_text_fmt(surf, ip_x + 8, ip_y + 122, RGB565(160, 165, 175), 0, true,
-                               "Footprint: %dx%d tiles", s->footprint_w, s->footprint_h);
+            const char *st_str = "BAKING BLOCKS";
+            uint16_t st_col = COLOR_STATUS_GREEN;
+            if (!s->active) {
+                st_str = "STANDBY";
+                st_col = RGB565(140, 140, 150);
+            } else if (s->depleted || left == 0) {
+                st_str = "DEPLETED";
+                st_col = RGB565(230, 130, 30);
+            } else if (!s->powered || brownout) {
+                st_str = "NO POWER";
+                st_col = COLOR_ALERT_RED;
+            }
+
+            moon_blit_text_fmt(surf, ip_x + 8, y0, st_col, 0, true, "STATUS: [%s]", st_str);
+            moon_blit_text_fmt(surf, ip_x + 8, y1, COLOR_ENERGY_YELLOW, 0, true, "POWER: -20 kW (Demand)");
+            moon_blit_text_fmt(surf, ip_x + 8, y2, COLOR_REGOLITH_LIGHT, 0, true, "OUTPUT: +%d kg/min Pavers", rate);
+            moon_blit_text_fmt(surf, ip_x + 8, y3, left ? COLOR_LASER_CYAN : RGB565(230, 130, 30), 0, true,
+                               "QUARRY ORE: %d kg left", left);
+            moon_blit_text_fmt(surf, ip_x + 8, y4, COLOR_LUNAR_WHITE, 0, true,
+                               "BASE STOCK: %d / %d kg", stock_val, stock_cap);
+            moon_blit_text(surf, ip_x + 8, y5, "Quarries 8 adj tiles", COLOR_GOLD_FOIL, 0, true);
+            moon_blit_text_fmt(surf, ip_x + 8, y6, COLOR_STATUS_GREEN, 0, true,
+                               "Integrity: %d%%", s->health);
+            break;
+        }
+
+        case MOON_STRUCT_O2_EXTRACTOR: {
+            int left = moon_structure_ore_left(&game->grid, MOON_STRUCT_O2_EXTRACTOR, s->gx, s->gy);
+            bool brownout = game->resources.power_brownout;
+
+            const char *st_str = "EXTRACTING";
+            uint16_t st_col = COLOR_STATUS_GREEN;
+            if (!s->active) {
+                st_str = "STANDBY";
+                st_col = RGB565(140, 140, 150);
+            } else if (s->depleted || left == 0) {
+                st_str = "DEPLETED";
+                st_col = RGB565(230, 130, 30);
+            } else if (!s->powered || brownout) {
+                st_str = "NO POWER";
+                st_col = COLOR_ALERT_RED;
+            }
+
+            moon_blit_text_fmt(surf, ip_x + 8, y0, st_col, 0, true, "STATUS: [%s]", st_str);
+            moon_blit_text_fmt(surf, ip_x + 8, y1, COLOR_ENERGY_YELLOW, 0, true, "POWER: -25 kW (Demand)");
+            moon_blit_text(surf, ip_x + 8, y2, "OUTPUT: +20 O2, +30 H2O", COLOR_LASER_CYAN, 0, true);
+            moon_blit_text_fmt(surf, ip_x + 8, y3, left ? COLOR_LASER_CYAN : RGB565(230, 130, 30), 0, true,
+                               "GROUND DEPOSIT: %d", left);
+            moon_blit_text(surf, ip_x + 8, y4, "Draws Ice Cold Traps", COLOR_LUNAR_WHITE, 0, true);
+            moon_blit_text(surf, ip_x + 8, y5, "Footprint: 1x1 tile", RGB565(160, 165, 175), 0, true);
+            moon_blit_text_fmt(surf, ip_x + 8, y6, COLOR_STATUS_GREEN, 0, true,
+                               "Integrity: %d%%", s->health);
+            break;
+        }
+
+        case MOON_STRUCT_HABITAT_DOME: {
+            int pop = game->resources.population;
+            int max_pop = game->resources.max_population;
+
+            const char *st_str = s->active ? "PRESSURIZED" : "STANDBY";
+            uint16_t st_col = s->active ? COLOR_STATUS_GREEN : RGB565(140, 140, 150);
+
+            moon_blit_text_fmt(surf, ip_x + 8, y0, st_col, 0, true, "STATUS: [%s]", st_str);
+            moon_blit_text(surf, ip_x + 8, y1, "POWER: Passive (0 kW)", COLOR_REGOLITH_LIGHT, 0, true);
+            moon_blit_text(surf, ip_x + 8, y2, "HOUSING: +8 Crew Berths", COLOR_GOLD_FOIL, 0, true);
+            moon_blit_text(surf, ip_x + 8, y3, "UPKEEP: -3 O2, -5 H2O /m", COLOR_LASER_CYAN, 0, true);
+            moon_blit_text_fmt(surf, ip_x + 8, y4, COLOR_LUNAR_WHITE, 0, true, "BASE CREW: %d / %d", pop, max_pop);
+            moon_blit_text(surf, ip_x + 8, y5, "Footprint: 2x2 tiles", RGB565(160, 165, 175), 0, true);
+            moon_blit_text_fmt(surf, ip_x + 8, y6, COLOR_STATUS_GREEN, 0, true,
+                               "Integrity: %d%%", s->health);
+            break;
+        }
+
+        case MOON_STRUCT_LANDER: {
+            int pop = game->resources.population;
+            int max_pop = game->resources.max_population;
+
+            moon_blit_text(surf, ip_x + 8, y0, "STATUS: [COMMAND ANCHOR]", COLOR_GOLD_FOIL, 0, true);
+            moon_blit_text(surf, ip_x + 8, y1, "POWER: +10 kW (RTG)", COLOR_ENERGY_YELLOW, 0, true);
+            moon_blit_text(surf, ip_x + 8, y2, "CREW BERTH: 4 Colonists", COLOR_GOLD_FOIL, 0, true);
+            moon_blit_text(surf, ip_x + 8, y3, "UPKEEP: -1 O2, -2 H2O /m", COLOR_LASER_CYAN, 0, true);
+            moon_blit_text(surf, ip_x + 8, y4, "BASE LOAD: -5 kW Comms", COLOR_ENERGY_YELLOW, 0, true);
+            moon_blit_text_fmt(surf, ip_x + 8, y5, COLOR_LUNAR_WHITE, 0, true, "COLONY CREW: %d / %d", pop, max_pop);
+            moon_blit_text(surf, ip_x + 8, y6, "EXPEDITION CORE MODULE", COLOR_GOLD_FOIL, 0, true);
+            break;
+        }
+
+        case MOON_STRUCT_SOLAR_ARRAY: {
+            int32_t solar_kw = fixed_to_int((int64_t)def->power_kw * game->resources.solar_intensity);
+            int32_t pct = fixed_to_int(game->resources.solar_intensity * 100);
+
+            const char *st_str = "GENERATING";
+            uint16_t st_col = COLOR_STATUS_GREEN;
+            if (!s->active) {
+                st_str = "STANDBY";
+                st_col = RGB565(140, 140, 150);
+            } else if (solar_kw <= 0) {
+                st_str = "LUNAR NIGHT";
+                st_col = COLOR_ALERT_RED;
+            } else if (solar_kw < def->power_kw / 2) {
+                st_str = "LOW SUN";
+                st_col = RGB565(240, 160, 40);
+            }
+
+            moon_blit_text_fmt(surf, ip_x + 8, y0, st_col, 0, true, "STATUS: [%s]", st_str);
+            moon_blit_text_fmt(surf, ip_x + 8, y1, COLOR_ENERGY_YELLOW, 0, true, "POWER: +%d kW (Max 15)", solar_kw);
+            moon_blit_text_fmt(surf, ip_x + 8, y2, COLOR_LASER_CYAN, 0, true, "SUN INTENSITY: %d%%", pct);
+            moon_blit_text_fmt(surf, ip_x + 8, y3, COLOR_ENERGY_YELLOW, 0, true,
+                               "GRID SUPPLY: %d kW", game->resources.power_produced_kw);
+            moon_blit_text_fmt(surf, ip_x + 8, y4, COLOR_ENERGY_YELLOW, 0, true,
+                               "GRID DEMAND: %d kW", game->resources.power_consumed_kw);
+            moon_blit_text(surf, ip_x + 8, y5, "Footprint: 1x1 tile", RGB565(160, 165, 175), 0, true);
+            moon_blit_text_fmt(surf, ip_x + 8, y6, COLOR_STATUS_GREEN, 0, true,
+                               "Integrity: %d%%", s->health);
+            break;
+        }
+
+        case MOON_STRUCT_BATTERY_BANK: {
+            int stored_kwh = fixed_to_int(game->resources.battery_stored_kwh);
+            int cap_kwh = game->resources.battery_capacity_kwh;
+            int net_kw = game->resources.power_net_kw;
+
+            const char *st_str = "BALANCED";
+            uint16_t st_col = COLOR_LASER_CYAN;
+            if (!s->active) {
+                st_str = "STANDBY";
+                st_col = RGB565(140, 140, 150);
+            } else if (net_kw > 0) {
+                st_str = "CHARGING";
+                st_col = COLOR_STATUS_GREEN;
+            } else if (net_kw < 0) {
+                st_str = "DISCHARGING";
+                st_col = RGB565(240, 160, 40);
+            }
+
+            moon_blit_text_fmt(surf, ip_x + 8, y0, st_col, 0, true, "STATUS: [%s]", st_str);
+            moon_blit_text_fmt(surf, ip_x + 8, y1, COLOR_ENERGY_YELLOW, 0, true, "CAPACITY: 120 kWh");
+            moon_blit_text_fmt(surf, ip_x + 8, y2, COLOR_ENERGY_YELLOW, 0, true,
+                               "STORED: %d / %d kWh", stored_kwh, cap_kwh);
+            moon_blit_text_fmt(surf, ip_x + 8, y3, net_kw >= 0 ? COLOR_STATUS_GREEN : COLOR_ALERT_RED, 0, true,
+                               "GRID FLOW: %+d kW", net_kw);
+            moon_blit_text(surf, ip_x + 8, y4, "Solid-State Storage", COLOR_LUNAR_WHITE, 0, true);
+            moon_blit_text(surf, ip_x + 8, y5, "Footprint: 1x1 tile", RGB565(160, 165, 175), 0, true);
+            moon_blit_text_fmt(surf, ip_x + 8, y6, COLOR_STATUS_GREEN, 0, true,
+                               "Integrity: %d%%", s->health);
+            break;
+        }
+
+        case MOON_STRUCT_POWER_CONDUIT: {
+            const char *st_str = s->powered ? "ENERGIZED" : "NO GRID";
+            uint16_t st_col = s->powered ? COLOR_STATUS_GREEN : COLOR_ALERT_RED;
+
+            moon_blit_text_fmt(surf, ip_x + 8, y0, st_col, 0, true, "STATUS: [%s]", st_str);
+            moon_blit_text(surf, ip_x + 8, y1, "POWER: Superconducting", COLOR_ENERGY_YELLOW, 0, true);
+            moon_blit_text(surf, ip_x + 8, y2, "Lossless Power Line", COLOR_LUNAR_WHITE, 0, true);
+            moon_blit_text(surf, ip_x + 8, y3, "Distributes Energy", COLOR_REGOLITH_LIGHT, 0, true);
+            moon_blit_text_fmt(surf, ip_x + 8, y4, COLOR_LASER_CYAN, 0, true,
+                               "Coords: [%02d, %02d]", s->gx, s->gy);
+            moon_blit_text(surf, ip_x + 8, y5, "Footprint: 1x1 tile", RGB565(160, 165, 175), 0, true);
+            moon_blit_text_fmt(surf, ip_x + 8, y6, COLOR_STATUS_GREEN, 0, true,
+                               "Integrity: %d%%", s->health);
+            break;
+        }
+
+        case MOON_STRUCT_FOUNDATION_PAD: {
+            moon_blit_text(surf, ip_x + 8, y0, "STATUS: [FOUNDATION PAD]", COLOR_GOLD_FOIL, 0, true);
+            moon_blit_text(surf, ip_x + 8, y1, "Sintered Regolith Base", COLOR_LUNAR_WHITE, 0, true);
+            moon_blit_text(surf, ip_x + 8, y2, "Supports 2x2 Habitat", COLOR_ENERGY_YELLOW, 0, true);
+            moon_blit_text(surf, ip_x + 8, y3, "Supports 2x2 Hydrolox", COLOR_LASER_CYAN, 0, true);
+            moon_blit_text_fmt(surf, ip_x + 8, y4, COLOR_LASER_CYAN, 0, true,
+                               "Coords: [%02d, %02d]", s->gx, s->gy);
+            moon_blit_text(surf, ip_x + 8, y5, "Footprint: 1x1 tile", RGB565(160, 165, 175), 0, true);
+            moon_blit_text_fmt(surf, ip_x + 8, y6, COLOR_STATUS_GREEN, 0, true,
+                               "Integrity: %d%%", s->health);
+            break;
+        }
+
+        default: {
+            const char *status_str = !s->active ? "STANDBY" : s->depleted ? "DEPLETED" : (s->powered ? "ONLINE" : "NO POWER");
+            uint16_t status_col = !s->active ? RGB565(140, 140, 150) : s->depleted ? RGB565(230, 130, 30) : (s->powered ? COLOR_STATUS_GREEN : COLOR_ALERT_RED);
+            moon_blit_text_fmt(surf, ip_x + 8, y0, status_col, 0, true, "STATUS: [%s]", status_str);
+            if (def->power_kw > 0) {
+                moon_blit_text_fmt(surf, ip_x + 8, y1, COLOR_ENERGY_YELLOW, 0, true, "POWER: +%d kW (Gen)", def->power_kw);
+            } else if (def->power_kw < 0) {
+                moon_blit_text_fmt(surf, ip_x + 8, y1, COLOR_ENERGY_YELLOW, 0, true, "POWER: %d kW (Demand)", def->power_kw);
+            } else {
+                moon_blit_text(surf, ip_x + 8, y1, "POWER: Passive", COLOR_REGOLITH_LIGHT, 0, true);
+            }
+            moon_blit_text_fmt(surf, ip_x + 8, y2, COLOR_LASER_CYAN, 0, true, "Coords: [%02d, %02d]", s->gx, s->gy);
+            moon_blit_text_fmt(surf, ip_x + 8, y3, RGB565(160, 165, 175), 0, true, "Footprint: %dx%d tiles", s->footprint_w, s->footprint_h);
+            moon_blit_text_fmt(surf, ip_x + 8, y4, COLOR_STATUS_GREEN, 0, true, "Integrity: %d%%", s->health);
+            break;
+        }
         }
 
         
