@@ -42,6 +42,7 @@
 
 #include "drivers/esp32p4_dsi_regs.h"
 #include "drivers/esp32p4_ledc_regs.h"
+#include "drivers/ppa_esp32p4.h"
 #include "drivers/font8x16.h"
 #include "drivers/ribbon.h"
 #include "drivers/i2c_bus.h"
@@ -911,6 +912,7 @@ static cell_key_t        g_t_cell_key[2][TERM_CELL_SLOTS];
 #define cells_forget() ((void)0)
 #endif
 static uint32_t          s_reader_drawn_seq[2][4];   /* guarded by: g_frame_lock */
+static bool              g_fb_cpu_cached[2] = { true, true };   /* guarded by: g_frame_lock */
 
 static inline uint8_t *fb_front(void) {
     return g_fb_pool[g_front_idx];
@@ -1275,6 +1277,8 @@ static bool fb_start(fb_fmt_t fmt) {
     g_dirty_x0[1] = 0; g_dirty_x1[1] = 2047u;
     cells_forget();
     memset(s_reader_drawn_seq, 0xff, sizeof s_reader_drawn_seq);
+    g_fb_cpu_cached[0] = true;
+    g_fb_cpu_cached[1] = true;
 
     g_fb_bpp = bpp; g_fb_bytes = bytes; g_fb_pages = pages; g_fb_fmt = fmt;
     bridge_format(bpp, fmt == FB_RGB565 ? 2u : 12u);
@@ -1955,10 +1959,12 @@ static void term_draw(void) {
         }
         n++;
     }
+    uint32_t cpu_n = n;
 
     /* 2c. Composite visible RGB565 color canvases onto fb_back() */
     for (int i = 0; i < sn->nc; i++) {
         uint32_t c_stride = sn->cstride[i];
+        int c_w = sn->cw[i];
         int c_h = sn->ch[i];
         const uint16_t *c_buf = sn->cbuf[i];
 
@@ -1966,37 +1972,110 @@ static void term_draw(void) {
         int y0 = sn->cy0[i];
         int y1 = sn->cy1[i];
 
+        bool scale2x = (c_w > 0 && c_h > 0 &&
+                        (x1 - x0 + 1) == c_w * 2 &&
+                        (y1 - y0 + 1) == c_h * 2);
+        int eff_h = scale2x ? (c_h * 2) : c_h;
+
         int cl_x0 = x0 < 0 ? 0 : x0;
         int cl_x1 = x1 >= (int)g_tbe.w ? (int)g_tbe.w - 1 : x1;
         int cl_y0 = y0 < 0 ? 0 : y0;
         int cl_y1 = y1 >= (int)g_tbe.h ? (int)g_tbe.h - 1 : y1;
         if (cl_x0 > cl_x1 || cl_y0 > cl_y1) continue;
 
+        int src_y0 = cl_y0 - y0;
+        int src_y1 = cl_y1 - y0;
+        if (src_y0 < 0) { cl_y0 += -src_y0; src_y0 = 0; }
+        if (src_y1 >= eff_h) { cl_y1 -= (src_y1 - (eff_h - 1)); src_y1 = eff_h - 1; }
+        if (cl_y0 > cl_y1) continue;
+
         int blit_w = cl_x1 - cl_x0 + 1;
+        int blit_h = cl_y1 - cl_y0 + 1;
         int src_x_off = cl_x0 - x0;
+        int scale_sh = scale2x ? 1 : 0;
+
+        /* Hardware PPA SRM fast path for RGB565 canvases across all orientations
+         * (including fused 2x upscale + rotation for virtual-resolution canvases). */
+        uint32_t ppa_src_x = (uint32_t)(src_x_off >> scale_sh);
+        uint32_t ppa_src_y = (uint32_t)(src_y0 >> scale_sh);
+        uint32_t ppa_blk_w = (uint32_t)(blit_w >> scale_sh);
+        uint32_t ppa_blk_h = (uint32_t)(blit_h >> scale_sh);
+        uint32_t scale_int = scale2x ? 2u : 1u;
+
+        if (fmt == FB_RGB565 && src_x_off >= 0 && ppa_blk_w > 0 && ppa_blk_h > 0 &&
+            ppa_src_x + ppa_blk_w <= c_stride && ppa_src_y + ppa_blk_h <= (uint32_t)c_h) {
+            unsigned rot_ccw = 0;
+            uint32_t dst_x = 0, dst_y = 0;
+            if (g_lcd_rot == 270) {
+                rot_ccw = 90u;
+                dst_x = (uint32_t)cl_y0;
+                dst_y = 1279u - (uint32_t)cl_x1;
+            } else if (g_lcd_rot == 90) {
+                rot_ccw = 270u;
+                dst_x = 719u - (uint32_t)cl_y1;
+                dst_y = (uint32_t)cl_x0;
+            } else if (g_lcd_rot == 180) {
+                rot_ccw = 180u;
+                dst_x = DSI_LCD_H_RES - 1u - (uint32_t)cl_x1;
+                dst_y = DSI_LCD_V_RES - 1u - (uint32_t)cl_y1;
+            } else {
+                rot_ccw = 0u;
+                dst_x = (uint32_t)cl_x0;
+                dst_y = (uint32_t)cl_y0;
+            }
+            if (cpu_n > 0) {
+                if (g_lcd_rot == 90 || g_lcd_rot == 270) {
+                    if (flush_py0 >= 0 && flush_py1 >= flush_py0) {
+                        unsigned py0 = flush_py0 < 0 ? 0u : (unsigned)flush_py0;
+                        unsigned py1 = flush_py1 >= (int)DSI_LCD_V_RES ? DSI_LCD_V_RES : (unsigned)flush_py1 + 1u;
+                        fb_flush_buffer(fb, py0, py1);
+                    } else {
+                        fb_flush_buffer(fb, 0, DSI_LCD_V_RES);
+                    }
+                } else {
+                    fb_flush_buffer(fb, (unsigned)lo, (unsigned)hi + 1u);
+                }
+                cpu_n = 0;
+                g_fb_cpu_cached[back_idx] = true;
+            }
+            bool inv_dst = g_fb_cpu_cached[back_idx];
+            bool flush_src = !(x0 == 0 && y0 == 0 && blit_w == (int)g_tbe.w && blit_h == (int)g_tbe.h);
+            if (ppa_srm_rgb565(c_buf, c_stride, (uint32_t)c_h,
+                               ppa_src_x, ppa_src_y, ppa_blk_w, ppa_blk_h,
+                               (uint16_t *)fb, DSI_LCD_H_RES, DSI_LCD_V_RES,
+                               dst_x, dst_y,
+                               scale_int, 0u, scale_int, 0u,
+                               rot_ccw, flush_src, inv_dst)) {
+                if (inv_dst && blit_w == (int)g_tbe.w && blit_h == (int)g_tbe.h) {
+                    g_fb_cpu_cached[back_idx] = false;
+                }
+                n++;
+                continue;
+            }
+        }
 
         for (int y = cl_y0; y <= cl_y1; y++) {
-            int src_y = y - y0;
+            int src_y = (y - y0) >> scale_sh;
             if (src_y < 0 || src_y >= c_h) continue;
-            const uint16_t *src_line = c_buf + (size_t)src_y * c_stride + src_x_off;
+            const uint16_t *src_line = c_buf + (size_t)src_y * c_stride + (src_x_off >> scale_sh);
 
             if (g_lcd_rot == 270) {
                 for (int x = 0; x < blit_w; x++) {
                     unsigned py = 1279u - (cl_x0 + x);
                     unsigned px = y;
-                    ((uint16_t *)fb)[(size_t)py * 720u + px] = src_line[x];
+                    ((uint16_t *)fb)[(size_t)py * 720u + px] = src_line[x >> scale_sh];
                 }
             } else if (g_lcd_rot == 90) {
                 for (int x = 0; x < blit_w; x++) {
                     unsigned py = cl_x0 + x;
                     unsigned px = 719u - y;
-                    ((uint16_t *)fb)[(size_t)py * 720u + px] = src_line[x];
+                    ((uint16_t *)fb)[(size_t)py * 720u + px] = src_line[x >> scale_sh];
                 }
             } else if (g_lcd_rot == 180) {
                 unsigned py = DSI_LCD_V_RES - 1u - (unsigned)y;
                 for (int x = 0; x < blit_w; x++) {
                     unsigned px = DSI_LCD_H_RES - 1u - (unsigned)(cl_x0 + x);
-                    uint16_t pix = src_line[x];
+                    uint16_t pix = src_line[x >> scale_sh];
                     if (fmt == FB_RGB565) {
                         ((uint16_t *)fb)[(size_t)py * DSI_LCD_H_RES + px] = pix;
                     } else {
@@ -2008,13 +2087,16 @@ static void term_draw(void) {
                     }
                 }
             } else {
-                if (fmt == FB_RGB565) {
+                if (fmt == FB_RGB565 && !scale_sh) {
                     uint16_t *dst_line = (uint16_t *)fb + (size_t)y * DSI_LCD_H_RES + cl_x0;
                     memcpy(dst_line, src_line, (size_t)blit_w * sizeof(uint16_t));
+                } else if (fmt == FB_RGB565) {
+                    uint16_t *dst_line = (uint16_t *)fb + (size_t)y * DSI_LCD_H_RES + cl_x0;
+                    for (int x = 0; x < blit_w; x++) dst_line[x] = src_line[x >> scale_sh];
                 } else {
                     uint8_t *dst_line = fb + (size_t)y * DSI_LCD_H_RES + cl_x0;
                     for (int x = 0; x < blit_w; x++) {
-                        uint16_t pix = src_line[x];
+                        uint16_t pix = src_line[x >> scale_sh];
                         uint8_t r = (uint8_t)((pix >> 11) & 0x1fu);
                         uint8_t g = (uint8_t)((pix >> 5) & 0x3fu);
                         uint8_t b = (uint8_t)(pix & 0x1fu);
@@ -2036,6 +2118,7 @@ static void term_draw(void) {
             if ((int)cur_pymax > flush_py1) flush_py1 = (int)cur_pymax;
         }
         n++;
+        cpu_n++;
     }
 
     /* 2d. Composite visible anti-aliased Terminal windows onto fb_back() */
@@ -2150,6 +2233,7 @@ static void term_draw(void) {
                                 }
                             }
                             n += nd;
+                            cpu_n += nd;
                         }
                         continue;
                     }
@@ -2229,6 +2313,7 @@ static void term_draw(void) {
                         }
                         span_rows(&lo, &hi, cell_y0, cell_y0 + 31);
                         n++;
+                        cpu_n++;
                     }
                 }
             }
@@ -2238,7 +2323,7 @@ static void term_draw(void) {
 #endif
 
     /* 3. Flush written rows and arm VSYNC flip */
-    if (n) {
+    if (cpu_n) {
         if (g_lcd_rot == 90 || g_lcd_rot == 270) {
             if (flush_py0 >= 0 && flush_py1 >= flush_py0) {
                 if (flush_py0 < 0) flush_py0 = 0;
@@ -2250,6 +2335,7 @@ static void term_draw(void) {
         } else {
             fb_flush_buffer(fb, (unsigned)lo, (unsigned)hi + 1u);
         }
+        g_fb_cpu_cached[back_idx] = true;
     }
     if (g_double_buffered && (n || rearm)) dsi_lcd_flip(false);
 
@@ -2321,8 +2407,13 @@ static bool term_capture(const uint8_t **fb, unsigned *w, unsigned *h, unsigned 
         g_t_due = false;
         if (g_double_buffered) (void)gdma_wait_flip(50000u);
     }
-    frame_end();
     uint8_t *front = fb_front();
+    if (front) {
+        esp32p4_extmem_invalidate((uintptr_t)front, g_fb_bytes);
+        g_fb_cpu_cached[0] = true;
+        g_fb_cpu_cached[1] = true;
+    }
+    frame_end();
     if (!front) return false;
     *fb = front;
     *w = DSI_LCD_H_RES;
@@ -2500,6 +2591,12 @@ static void term_report(void) {
             (unsigned)g_front_idx, g_flip_pending ? "pending" : "-", g_t_due ? "yes" : "no",
             g_t_hold ? "yes" : "no", g_t_force ? "yes" : "no", lcdterm_is_animating() ? "yes" : "no",
             g_lcd_rot, (unsigned long)g_flips);
+    uint32_t ppa_ops = 0, ppa_errs = 0, ppa_last_us = 0;
+    ppa_get_stats(&ppa_ops, &ppa_errs, &ppa_last_us);
+    if (ppa_ops || ppa_errs) {
+        cprintf("     ppa srm:  %lu ops, %lu errs, last %lu us\n",
+                (unsigned long)ppa_ops, (unsigned long)ppa_errs, (unsigned long)ppa_last_us);
+    }
     lcdterm_report();
 }
 

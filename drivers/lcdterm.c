@@ -818,6 +818,16 @@ bool lcdterm_set_canvas565_backing(uint8_t cid, uint16_t *buf) {
     return true;
 }
 
+bool lcdterm_set_canvas565_geometry(uint8_t cid, uint16_t *buf, uint32_t stride, uint16_t w, uint16_t h) {
+    if (!g_scr || cid >= SCREEN_MAX_CANVASES) return false;
+    if (g_scr->canvases[cid].format != CANVAS_FMT_RGB565) return false;
+    g_scr->canvases[cid].buf565 = buf;
+    g_scr->canvases[cid].stride565 = stride;
+    g_scr->canvases[cid].w565 = w;
+    g_scr->canvases[cid].h565 = h;
+    return true;
+}
+
 int lcdterm_get_visible_canvases565(uint8_t *out_cids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins) {
     if (!g_scr || max_wins <= 0) return 0;
     int count = 0;

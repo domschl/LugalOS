@@ -311,14 +311,29 @@ Performance analysis: On ESP32-P4 with software rasterization into external PSRA
 
 **64.13 implementation notes, resource use (2026-10-24).** Done: the draw half of 5.7.4. The catalog already carried negative `rate_o2` and `rate_water` for the Lander (-1, -2) and the Habitat (-5, -10) that the sim ignored; they are now a standing draw in kg and L per minute (the catalog comments said "per day", which was never true) for every *active* structure, powered or not, in `moon_resources_tick()`. Standby means depressurised, so a Habitat on standby draws nothing. A Habitat therefore costs a quarter of an Extractor's oxygen and a third of its water on top of its 8 crew; with 12 colonists the base needs three Extractors, which the scripted player already builds when a rate turns negative, so the balance table did not move. `make test` pins the exact rates (Lander alone, with a Habitat, unpowered, on standby) and the effect on the stock.
 
-### 5.9 Dedicated Performance Optimization Phase: Hardware PPA (Bridge between Act II & Act III)
+### 5.9 Dedicated Performance Optimization Phase: Hardware PPA (Bridge between Act II & Act III) — **DONE (2026-10-30)**
 
-Hardware benchmarks on the M5Stack Tab5 revealed that CPU software 2× upscaling of the 640×360 virtual frame to 1280×720 physical resolution is bounded by external PSRAM bus bandwidth (~36 MB/s sustained under active MIPI-DSI DMA read contention), consuming ~74 ms per frame in `Present`. 
+Hardware benchmarks on the M5Stack Tab5 revealed that CPU software 2× upscaling of the 640×360 virtual frame to 1280×720 physical resolution plus the 270° rotated strided CPU blit into `fb_back()` (`720×1280`) was bounded by external PSRAM bus bandwidth (~36 MB/s sustained under active MIPI-DSI DMA read contention), consuming ~75.8 ms per frame in `Present` and ~55 ms in `lcdflush`.
 
-To achieve 15–20 fps on Tab5, a dedicated **Hardware PPA (Pixel Processing Accelerator)** driver phase will be executed between Act II and Act III:
-- **Architectural Scope**: Implement a freestanding ESP32-P4 PPA driver (`drivers/ppa_esp32p4.c`) utilizing the chip's hardware Scale-Rotate-Mirror (SRM) 2D AXI DMA engine.
-- **Offloaded Scaling**: The game rasterizer will continue writing the 640×360 frame, while the hardware PPA handles the 2× nearest-neighbor upscale directly into the display buffer at ~35 Mpixels/sec (~26 ms), completely eliminating CPU upscale overhead and L1/L2 cache evictions.
-- **System-Wide Reusability**: The PPA driver will be available as a core LugalOS graphics primitive, benefiting window blitting, image decoding, and desktop ribbon scaling across all graphical applications.
+Delivered:
+- **Freestanding ESP32-P4 PPA SRM + 2D-DMA Driver ([`drivers/ppa_esp32p4.c`](../drivers/ppa_esp32p4.c), [`drivers/include/drivers/ppa_esp32p4.h`](../drivers/include/drivers/ppa_esp32p4.h), [`drivers/include/drivers/esp32p4_ppa_regs.h`](../drivers/include/drivers/esp32p4_ppa_regs.h))**:
+  - Drives the ESP32-P4 Pixel Processing Accelerator (PPA) Scale-Rotate-Mirror (SRM) block (`0x50087000`) coupled to 2D-DMA channel 0 TX/RX (`0x50088000`) in descriptor-port (`dscr_port`) mode with 128-byte AXI bursts.
+  - Supports both ESP32-P4 rev v1.3 (Tab5: `16×16` macroblocks, `18×18` port block) and rev v3.2 (LCD-7B: `32×32` macroblocks, `34×34` port block), including the `DIG-734` macroblock reorder bypass workaround.
+  - Non-cacheable L2MEM DMA2D descriptors (`SRAM_NONCACHE_OFFSET`) serialized under `g_ppa_lock` (`ylock_t`, zero leaf-spinlock nesting).
+- **Fused Single-Pass 2× Upscale + 90° CCW Rotation in [`drivers/dsi_esp32p4.c`](../drivers/dsi_esp32p4.c) & [`user/moonbase/src/platform_p4.c`](../user/moonbase/src/platform_p4.c)**:
+  - On M5Stack Tab5 (`s_scale == 2`), `moon_platform_present()` writes back only the 460 KB `640×360` render buffer and performs a zero-copy double-buffered pointer swap (`lcdterm_set_canvas565_geometry()`), reducing game-thread `present` from **75.8 ms to 0.74–0.79 ms (~96× faster)**.
+  - In `term_draw()` (`step 2c`), `ppa_srm_rgb565()` reads the `640×360` canvas backing buffer and performs both the **2× upscale and 90° CCW rotation** (`g_lcd_rot == 270`) directly into the `720×1280` `fb_back()` in PSRAM in a **single 15.7 ms hardware DMA pass**, eliminating CPU cache pollution and cutting PSRAM traffic by 2.6×.
+  - Tracks per-buffer CPU cache residency (`g_fb_cpu_cached[2]`) so steady-state PPA frames skip redundant 1.84 MB CPU cache writebacks while remaining 100% coherent across terminal transitions and `lcd shot` captures.
+
+**Measured M5Stack Tab5 Hardware Benchmarks (`moonbase bench`, ESP32-P4 rev v1.3 @ 400 MHz)**:
+
+| Scenario | Before PPA (CPU) | With PPA SRM (Fused 2× + Rot) | Speedup |
+| :--- | :-: | :-: | :-: |
+| **Pan, 3 structures, textured** | 190.7 ms (`5 fps`), `present` 75,825 µs | **70.6 ms (`14 fps`)**, `present` **793 µs** | **2.7× frame time (`95.6×` present)** |
+| **Pan, 3 structures, flat** | 120.8 ms (`8 fps`), `present` 75,653 µs | **39.8 ms (`25 fps`)**, `present` **5,061 µs** | **3.0× frame time (`3.1×` FPS)** |
+| **Pan, 30 structures, textured** | 189.3 ms (`5 fps`), `present` 75,959 µs | **71.1 ms (`14 fps`)**, `present` **738 µs** | **2.7× frame time (`102.9×` present)** |
+| **Pan, 30 structures, flat** | 122.7 ms (`8 fps`), `present` 75,493 µs | **41.3 ms (`24 fps`)**, `present` **2,143 µs** | **3.0× frame time (`3.0×` FPS)** |
+| **Idle (nothing pressed)** | 15.7% busy | **6.8% busy** | **2.3× lower CPU load** |
 
 ### 5.10 Handoff to Act II Planning
 
