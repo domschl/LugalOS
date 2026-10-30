@@ -2238,9 +2238,132 @@ static void test_starship_flight_animation(void) {
     key(MOON_KEY_SPACE);
     assert(g.starship.state == MOON_STARSHIP_SERVICING);
     assert(g.starship.alt_px == 0);
-    assert(g.starship.alt_px == 0);
 
     printf("[test] Starship Flight & Spaceport Refueling (Milestone 64.19): PASS\n");
+}
+
+static void test_earth_moon_trade_and_act2_victory(void) {
+    fresh();
+    static uint16_t fb[1024 * 600];
+
+    /* 1. Setup Base with Sinterer, Habitat Dome (capacity 12), Dewars, and Landing Pad */
+    for (int y = 20; y <= 45; y++) {
+        for (int x = 20; x <= 45; x++) {
+            g.grid.tiles[y][x].terrain = MOON_TERRAIN_REGOLITH_FLAT;
+            g.grid.tiles[y][x].elevation = 0;
+            g.grid.tiles[y][x].flags &= ~(MOON_TILE_FLAG_FOUNDATION | MOON_TILE_FLAG_OCCUPIED);
+        }
+    }
+
+    g.resources.regolith_stored_kg = fixed_from_int(100);
+    g.resources.battery_stored_kwh = fixed_from_int(500);
+    g.resources.o2_stored_kg = fixed_from_int(5000);
+    g.resources.water_stored_l = fixed_from_int(5000);
+
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_REGOLITH_PLANT, 25, 25));
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_HABITAT_DOME, 25, 27));
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_CRYO_DEWAR, 25, 30));
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_CRYO_DEWAR, 25, 31));
+
+    int px = 35, py = 35;
+    for (int dy = 0; dy < 4; dy++) {
+        for (int dx = 0; dx < 4; dx++) {
+            assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_FOUNDATION_PAD, px + dx, py + dy));
+        }
+    }
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_LANDING_PAD, px, py));
+
+    /* Conduits */
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_POWER_CONDUIT, 33, 32));
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_POWER_CONDUIT, 34, 32));
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_POWER_CONDUIT, 35, 32));
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_POWER_CONDUIT, 35, 33));
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_POWER_CONDUIT, 35, 34));
+
+    /* Conduits to Dewars and Habitat */
+    for (int x = 26; x <= 31; x++) {
+        assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_POWER_CONDUIT, x, 32));
+    }
+    assert(moon_structure_place(&g.grid, &g.structs, MOON_STRUCT_POWER_CONDUIT, 25, 32));
+
+    ticks(1);
+    assert(g.resources.max_population == 12);
+    g.resources.population = 8;
+    int baseline_gen = g.resources.power_produced_kw;
+    int starting_reg = fixed_to_int(g.resources.regolith_stored_kg);
+
+    /* 2. Test Cargo Delivery on Touchdown */
+    assert(moon_starship_call(&g.starship, px, py));
+    assert(!g.starship.manifest.delivered);
+    assert(g.starship.manifest.colonists == 4);
+    assert(g.starship.manifest.regolith_blocks == 100);
+    assert(g.starship.manifest.reactor_power_kw == 30);
+
+    /* Advance through approach (1500 ms) + retro (3000 ms) + flare (1200 ms) + touchdown (1000 ms) */
+    advance_ms(6700);
+    assert(g.starship.state == MOON_STARSHIP_SERVICING);
+    assert(g.starship.manifest.delivered);
+    assert(g.resources.population == 12);
+    assert(fixed_to_int(g.resources.regolith_stored_kg) == starting_reg + 100);
+    assert(g.resources.reactor_power_kw == 30);
+    ticks(1);
+    assert(g.resources.power_produced_kw == baseline_gen + 30);
+
+    /* 3. Test Launch Window Turnaround Timer & Expiration / Abort */
+    /* Empty base propellant reserves so refueling cannot happen */
+    g.resources.lh2_stored_kg = 0;
+    g.resources.lox_stored_kg = 0;
+    assert(g.starship.turnaround_timer_ms > 0 && g.starship.turnaround_timer_ms <= MOON_STARSHIP_WINDOW_MS);
+
+    /* Advance by remaining launch window duration */
+    advance_ms(g.starship.turnaround_timer_ms);
+    assert(g.starship.window_expired);
+    assert(g.starship.state == MOON_STARSHIP_PRELAUNCH);
+    assert(!g.starship.commercial_mission_success);
+
+    /* Starship aborts to orbit */
+    advance_ms(1500 + 3200 + 1000);
+    assert(g.starship.state == MOON_STARSHIP_ORBIT);
+    assert(!g.act2_victory);
+    moon_game_check_end(&g);
+    assert(g.state == MOON_STATE_PLAYING);
+
+    /* 4. Test Successful Trade, Refueling & Act II Victory */
+    /* Refill base cryo dewars */
+    g.resources.lh2_stored_kg = fixed_from_int(300);
+    g.resources.lox_stored_kg = fixed_from_int(2500);
+
+    assert(moon_starship_call(&g.starship, px, py));
+    /* Skip descent directly into servicing */
+    key(MOON_KEY_SPACE);
+    assert(g.starship.state == MOON_STARSHIP_SERVICING);
+    assert(g.starship.turnaround_timer_ms == MOON_STARSHIP_WINDOW_MS);
+
+    /* Wait for refueling: 20 seconds at full speed -> advances to Prelaunch */
+    advance_ms(20100);
+    assert(g.starship.lh2_loaded_kg == g.starship.lh2_target_kg);
+    assert(g.starship.lox_loaded_kg == g.starship.lox_target_kg);
+    assert(g.starship.state == MOON_STARSHIP_PRELAUNCH);
+
+    advance_ms(1500); /* Prelaunch to Ascent */
+    assert(g.starship.state == MOON_STARSHIP_ASCENT);
+    advance_ms(3200); /* Ascent to Departed */
+
+    /* Act II Victory Trigger */
+    assert(g.state == MOON_STATE_VICTORY);
+    assert(g.menu_page == MOON_MENU_VICTORY_ACT2);
+
+    /* Verify rendering of Act II Victory overlay */
+    moon_game_render(&g, fb, 1024, 600, 1024);
+
+    /* Continue into Free-Play */
+    key(MOON_KEY_C);
+    assert(g.state == MOON_STATE_PLAYING);
+    assert(g.act2_victory);
+    assert(g.act2_victory_claimed);
+    assert(g.menu_page == MOON_MENU_CLOSED);
+
+    printf("[test] Earth-Moon Trade, Personnel & Act II Victory Loop (Milestone 64.20): PASS\n");
 }
 
 int main(void) {
@@ -2287,6 +2410,7 @@ int main(void) {
     test_hydrolox_dewar_and_inspector_clarity();
     test_starship_landing_pad();
     test_starship_flight_animation();
-    printf("[test] All Milestone 64.9-64.12, 64.17 - 64.19 tests passed cleanly.\n");
+    test_earth_moon_trade_and_act2_victory();
+    printf("[test] All Milestone 64.9-64.12, 64.17 - 64.20 tests passed cleanly.\n");
     return 0;
 }

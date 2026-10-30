@@ -32,7 +32,7 @@ typedef struct {
 
 /* Menu pages */
 enum { MOON_MENU_CLOSED = 0, MOON_MENU_MAIN, MOON_MENU_CONFIRM_QUIT, MOON_MENU_NEW_GAME,
-       MOON_MENU_GAME_OVER, MOON_MENU_VICTORY, MOON_MENU_TITLE };
+       MOON_MENU_GAME_OVER, MOON_MENU_VICTORY, MOON_MENU_VICTORY_ACT2, MOON_MENU_TITLE };
 
 /* Objectives: a path through the first hours that doubles as the tutorial */
 #define MOON_OBJECTIVES 7
@@ -102,6 +102,8 @@ typedef struct {
     uint8_t  objective;       /* Current objective; MOON_OBJECTIVES = all done */
     bool     objectives_hidden;
     bool     victory_claimed; /* Act I was completed and the player chose to go on */
+    bool     act2_victory;    /* Act II completed: commercial Starship refueled and returned to Earth */
+    bool     act2_victory_claimed; /* Act II complete and the player chose to go on into free play */
 
     /* Instrumentation: the platform sets clock_us (NULL: no timing) and reports each
      * frame; F shows the overlay */

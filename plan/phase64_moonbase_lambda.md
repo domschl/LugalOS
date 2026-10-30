@@ -386,7 +386,7 @@ Act I (*Survival & Bootstrapping*) is fully implemented and running on both the 
 | **64.17** | **COMPLETE** | **Hierarchical Build Sheet & Tech Progression** | Evolve beyond the flat 6-building ribbon: structured categorized build sheets (Power/Storage, Life Support/Cryo, Spaceport/Logistics). Minimum clearance rules and sintered foundation requirements. |
 | **64.18** | **COMPLETE** | **Reinforced Starship Landing Pad** | 4×4 sintered regolith spaceport apron with blast-deflection berms and cryo umbilical conduits. Protects neighboring solar arrays and habitats from high-velocity exhaust regolith scouring. |
 | **64.19** | **COMPLETE** | **Starship Flight & Engine Plume Animation** | Procedural multi-state Starship flight sequence: orbital approach, ease-out retro-propulsion with pale-blue/cyan hydrolox plume & shock diamonds, landing gear extension, touchdown dust skirts, umbilical hookup, cryogenic loading meter, and vertical ascent return burn. |
-| **64.20** | **PENDING** | **Earth-Moon Trade, Personnel & Victory Loop** | Earth cargo manifests (specialist colonists, heavy machinery, high-yield reactors). Starship turnaround timer / launch window pressure. Act II Victory Condition: Successfully support, refuel, and dispatch the first commercial Hydrolox Starship return mission. Headless balance test in `tests/balance.c`. |
+| **64.20** | **COMPLETE** | **Earth-Moon Trade, Personnel & Victory Loop** | Earth cargo manifests (specialist colonists, heavy machinery, high-yield reactors). Starship turnaround timer / launch window pressure. Act II Victory Condition: Successfully support, refuel, and dispatch the first commercial Hydrolox Starship return mission. Headless balance test in `tests/balance.c`. |
 
 ### 7.3 Act II Implementation Notes
 
@@ -462,6 +462,29 @@ Act I (*Survival & Bootstrapping*) is fully implemented and running on both the 
   - Interactive dispatch and launch control via key `L` or inspector controls.
 - **Verification**:
   - 100% pass across all unit tests, including dedicated `test_starship_flight_animation` (`make -C user/moonbase test`).
+  - Racescan clean: 0 shared unmarked statics (`python3 tools/racescan.py --check`).
+  - Documentation clean: 0 drift (`python3 tools/gendocs.py --check`).
+  - Verified freestanding ELF build for `esp32p4-tab5` with Ninja.
+
+**64.20 implementation notes, Earth-Moon trade, personnel & victory loop (2026-10-30).** Delivered:
+- **Earth Trade Cargo Manifest (`moon_cargo_manifest_t`)**:
+  - Arriving Starships carry an Earth cargo manifest: 4 specialist colonists, 100 kg prefabricated sintered components / heavy machinery, and a 30 kW high-yield compact modular reactor.
+  - Automatically offloaded upon touchdown at the spaceport pad (or immediately when skipping descent via Space/Enter).
+  - Colonists move directly into available habitat dome housing; regolith adds to building stockpiles up to silo capacity; high-yield modular reactor provides +30 kW baseline continuous generation day and night, directly resolving industrial nighttime power deficits.
+- **Turnaround Timer & Launch Window Pressure**:
+  - 180-second countdown (`MOON_STARSHIP_WINDOW_MS`) during pad servicing reflecting orbital transfer windows.
+  - Real-time window telemetry in the Landing Pad inspector panel (`WINDOW: %ds | %d%% Loaded`) with flashing red/amber alert borders on both the inspector and floating cryogenic meter when under 30 seconds.
+  - Window timeout with incomplete propellant loads aborts the Starship back to orbit to protect spacecraft integrity, requiring the colony to stockpile propellants in Cryo Dewars before recalling.
+- **Act II Victory Condition & Menu Flow (`MOON_MENU_VICTORY_ACT2`)**:
+  - Completing cryogenic refueling and dispatching the return flight to Earth triggers Act II Victory upon clearing orbit (`MOON_STARSHIP_DEPARTED`).
+  - Victory menu displays: `"ACT II COMPLETE"`, `"SPACEPORT OPERATIONAL"`, `"HYDROLOX STARSHIP DISPATCHED: DAY %d"`, `"CREW %d SEED %u REACTOR +%dkW"`, `"EARTH TRADE ROUTE ESTABLISHED"`.
+  - Seamless continuation into endless free play via `C` key or `C:CONTINUE` button (`game->act2_victory = true`).
+- **Dynamic Context-Sensitive Act II Objective Ribbon**:
+  - HUD objective banner automatically transitions to Act II progression once Act I is completed, sequentially guiding the player through paving foundations, building the Hydrolox Plant, placing Cryo Dewars, paving the 4×4 pad apron, calling the Starship, and refueling/launching the return flight.
+- **Comprehensive Verification & Headless Balance Suite**:
+  - Dedicated unit tests in `test_game_logic.c` (`test_earth_moon_trade_and_act2_victory`) validating cargo manifests, touchdown unloading, reactor generation, window timeout aborts, propellant transfers, and Act II victory triggers.
+  - Dedicated headless balance test in `tests/balance.c` (`test_act2_balance`, runnable via `./bin/balance act2` and `make test`) verifying end-to-end Act I victory, Act II infrastructure construction, conduit network connection, Starship servicing, and commercial mission victory.
+  - 100% pass on host test suite (`make -C user/moonbase test`).
   - Racescan clean: 0 shared unmarked statics (`python3 tools/racescan.py --check`).
   - Documentation clean: 0 drift (`python3 tools/gendocs.py --check`).
   - Verified freestanding ELF build for `esp32p4-tab5` with Ninja.

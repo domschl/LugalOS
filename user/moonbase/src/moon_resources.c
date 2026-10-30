@@ -59,6 +59,7 @@ void moon_resources_init(moon_resources_t *res, int difficulty) {
     res->power_net_kw = 5;
     res->battery_capacity_kwh = 50;
     res->power_brownout = false;
+    res->reactor_power_kw = 0;
 
     /* Starting Life Support & Materials */
     res->o2_capacity_kg = 100;
@@ -207,6 +208,11 @@ void moon_resources_tick(moon_resources_t *res,
     int32_t net_regolith_milli = 0;
     int32_t net_lh2_milli = 0;
     int32_t net_lox_milli = 0;
+
+    /* Baseline generation from delivered high-yield reactor modules (day & night) */
+    if (res->reactor_power_kw > 0) {
+        total_gen_kw += res->reactor_power_kw;
+    }
 
     for (int i = 0; i < MOON_MAX_STRUCTURES; i++) {
         moon_structure_t *s = &mgr->list[i];

@@ -20,6 +20,40 @@ void moon_starship_init(moon_starship_t *ship) {
     ship->alt_px = 360;
     ship->lh2_target_kg = fixed_from_int(250);   /* Standard Starship Hydrolox tank load */
     ship->lox_target_kg = fixed_from_int(2000);
+    ship->turnaround_timer_ms = MOON_STARSHIP_WINDOW_MS;
+    ship->manifest.colonists = 4;
+    ship->manifest.regolith_blocks = 100;
+    ship->manifest.reactor_power_kw = 30;
+    ship->manifest.delivered = false;
+    ship->window_expired = false;
+    ship->commercial_mission_success = false;
+}
+
+void moon_starship_deliver_cargo(moon_starship_t *ship, moon_resources_t *res) {
+    if (!ship || ship->manifest.delivered) return;
+    ship->manifest.delivered = true;
+    ship->turnaround_timer_ms = MOON_STARSHIP_WINDOW_MS;
+
+    if (res) {
+        /* 1. Specialist colonists arrive and move into base housing */
+        if (res->population < res->max_population) {
+            uint16_t room = res->max_population - res->population;
+            uint16_t add = (ship->manifest.colonists < room) ? ship->manifest.colonists : room;
+            res->population += add;
+            if (res->population > res->peak_population) {
+                res->peak_population = res->population;
+            }
+        }
+
+        /* 2. Heavy machinery & prefabricated structural components */
+        res->regolith_stored_kg += fixed_from_int(ship->manifest.regolith_blocks);
+        if (res->regolith_stored_kg > fixed_from_int(res->regolith_capacity_kg)) {
+            res->regolith_stored_kg = fixed_from_int(res->regolith_capacity_kg);
+        }
+
+        /* 3. High-yield compact modular reactor (+30 kW continuous power) */
+        res->reactor_power_kw += ship->manifest.reactor_power_kw;
+    }
 }
 
 bool moon_starship_find_pad(const moon_structure_mgr_t *mgr, int32_t *out_gx, int32_t *out_gy) {
@@ -50,6 +84,15 @@ bool moon_starship_call(moon_starship_t *ship, int32_t pad_gx, int32_t pad_gy) {
     ship->lox_loaded_kg = 0;
     ship->umbilical_pct = 0;
     ship->dust_count = 0;
+    ship->turnaround_timer_ms = MOON_STARSHIP_WINDOW_MS;
+    ship->window_expired = false;
+    ship->commercial_mission_success = false;
+
+    /* Fresh cargo manifest arriving from Earth */
+    ship->manifest.colonists = 4;
+    ship->manifest.regolith_blocks = 100;
+    ship->manifest.reactor_power_kw = 30;
+    ship->manifest.delivered = false;
     return true;
 }
 
@@ -59,6 +102,14 @@ bool moon_starship_launch(moon_starship_t *ship) {
         return false;
     }
 
+    if (ship->state == MOON_STARSHIP_SERVICING) {
+        if (ship->lh2_loaded_kg < ship->lh2_target_kg ||
+            ship->lox_loaded_kg < ship->lox_target_kg) {
+            return false; /* Refueling not complete */
+        }
+    }
+
+    ship->commercial_mission_success = true;
     ship->state = MOON_STARSHIP_PRELAUNCH;
     ship->state_timer_ms = 0;
     return true;
@@ -180,17 +231,29 @@ void moon_starship_update(moon_starship_t *ship,
                 ship->state = MOON_STARSHIP_SERVICING;
                 ship->state_timer_ms = 0;
                 ship->umbilical_pct = 0;
+                moon_starship_deliver_cargo(ship, res);
             }
             break;
         }
 
         case MOON_STARSHIP_SERVICING: {
             ship->alt_px = 0;
+            if (!ship->manifest.delivered) {
+                moon_starship_deliver_cargo(ship, res);
+            }
+
             /* Umbilical arm extends over 1.0 second */
             if (ship->umbilical_pct < 100) {
                 uint32_t step = (delta_ms * 100) / 1000;
                 if (step == 0) step = 1;
                 ship->umbilical_pct = (uint8_t)((ship->umbilical_pct + step > 100) ? 100 : ship->umbilical_pct + step);
+            }
+
+            /* Turnaround timer counts down towards launch window close */
+            if (ship->turnaround_timer_ms > delta_ms) {
+                ship->turnaround_timer_ms -= delta_ms;
+            } else {
+                ship->turnaround_timer_ms = 0;
             }
 
             /* Propellant transfer once umbilical is locked in */
@@ -224,12 +287,21 @@ void moon_starship_update(moon_starship_t *ship,
                     ship->lh2_loaded_kg += d_lh2;
                 }
 
-                /* Automatically advance to prelaunch when fully fueled */
+                /* Automatically advance to prelaunch when fully refueled */
                 if (ship->lh2_loaded_kg >= ship->lh2_target_kg &&
                     ship->lox_loaded_kg >= ship->lox_target_kg) {
                     ship->state = MOON_STARSHIP_PRELAUNCH;
                     ship->state_timer_ms = 0;
                 }
+            }
+
+            /* Launch window expiry: abort to orbit if turnaround window closed before refueling */
+            if (ship->turnaround_timer_ms == 0 && ship->state == MOON_STARSHIP_SERVICING) {
+                ship->window_expired = true;
+                ship->state = MOON_STARSHIP_PRELAUNCH;
+                ship->state_timer_ms = 0;
+                ship->lh2_loaded_kg = 0;
+                ship->lox_loaded_kg = 0;
             }
             break;
         }
@@ -261,6 +333,11 @@ void moon_starship_update(moon_starship_t *ship,
                 ship->state = MOON_STARSHIP_DEPARTED;
                 ship->state_timer_ms = 0;
                 ship->alt_px = 450;
+                if (!ship->window_expired &&
+                    ship->lh2_loaded_kg >= ship->lh2_target_kg &&
+                    ship->lox_loaded_kg >= ship->lox_target_kg) {
+                    ship->commercial_mission_success = true;
+                }
             } else {
                 int64_t t = (int64_t)ship->state_timer_ms;
                 ship->alt_px = (int32_t)((450 * t * t) / ((int64_t)dur * dur));
@@ -429,6 +506,7 @@ static void render_cryo_meter(const moon_surface_t *surf,
                               int32_t ship_cx, int32_t ship_top_y,
                               fixed32_t lh2, fixed32_t lh2_max,
                               fixed32_t lox, fixed32_t lox_max,
+                              uint32_t turnaround_timer_ms,
                               uint32_t frame) {
     int max_pips = 10;
     int total_max = fixed_to_int(lh2_max) + fixed_to_int(lox_max);
@@ -441,9 +519,13 @@ static void render_cryo_meter(const moon_surface_t *surf,
     int bar_y = ship_top_y - 12;
     int bar_h = 4;
 
-    /* Bezel */
+    /* Bezel with launch window warning */
+    uint16_t border_col = RGB565(50, 60, 75);
+    if (turnaround_timer_ms < 30000 && pips < max_pips) {
+        border_col = ((frame >> 3) & 1) ? COLOR_ALERT_RED : COLOR_ENERGY_YELLOW;
+    }
     moon_blit_fill_rect(surf, bar_x - 1, bar_y - 1, bar_w + 2, bar_h + 2, RGB565(15, 18, 22));
-    moon_blit_rect_outline(surf, bar_x - 1, bar_y - 1, bar_w + 2, bar_h + 2, RGB565(50, 60, 75));
+    moon_blit_rect_outline(surf, bar_x - 1, bar_y - 1, bar_w + 2, bar_h + 2, border_col);
 
     uint16_t fill_col = (pips == max_pips && ((frame >> 2) & 1)) ? COLOR_STATUS_GREEN : COLOR_LASER_CYAN;
 
@@ -512,6 +594,7 @@ void moon_starship_render(const moon_starship_t *ship,
         render_cryo_meter(surf, ship_cx, sprite_y,
                           ship->lh2_loaded_kg, ship->lh2_target_kg,
                           ship->lox_loaded_kg, ship->lox_target_kg,
+                          ship->turnaround_timer_ms,
                           ship->anim_frame);
     }
 }
