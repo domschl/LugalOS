@@ -1083,7 +1083,8 @@ deferred without blocking anything after it.
       reading `/proc/kmsg` 16.2 KB/s protected against 17.5 KB/s plain (7 %); a plain session's write
       is refused, now naming the link rather than the grant (`472e8b8`). `fuse-p9` had been running
       unprotected, on a stale copy of p9lib in its virtualenv, so every write through the mount was EIO
-      (`84468b7`); now it writes at 23.5 KB/s. The Pico 2 W's run is still open.
+      (`84468b7`); now it writes at 23.5 KB/s. **Pico 2 W** over Wi-Fi: reads 58.1 KB/s protected against
+      63.0 KB/s plain (8 %), a protected write 77 KB/s to `/ram0`, a plain write refused. **52.11b is done.**
     * After a successful `Tauth`, both ends derive a session key
       (HKDF-SHA-256 over the grant key and the nonce). Every later frame
       carries a sequence number and a truncated HMAC-SHA-256 tag.
@@ -1274,6 +1275,12 @@ deferred without blocking anything after it.
     of the NANO from the browser.
 
 * **52.16 Integration, documentation, review; §1.6 investigation.**
+  * *Status 2026-10-31:* ADR 006 (the trust model) and `doc/dev/protocols/web_admin.md` written;
+    `test_esp32p4.py` gained `test_ota_state` and `test_https_admin` (both skip cleanly). From the
+    browser (the page's Update tab, `tests/web/update_check.js`): the NANO over HTTPS (52.15) and the
+    **Pico 2 W over plain HTTP with a protected session**, 1 MB in 52 s, confirmed, the old build kept in
+    the other slot. Open: a Pico 2 W set up from a phone again end to end on today's build, the setup-mode
+    cases in `test_wifi.py`, and the boards not on the desk (LCD-7B, Tab5, RP2350-LCD-7).
   * *§1.6, measured 2026-10-31:* a C6-Zero with radio, sensors, MQTT, mDNS, httpd and 9P running has 5
     free pages (20 KB). A TLS session needs ~21 KB of record buffers on top: the C6-Zero is not a TLS
     board and stays on 52.11b's protected sessions. TLS-PSK against mosquitto is a client, for a later phase.
