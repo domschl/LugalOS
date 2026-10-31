@@ -52,20 +52,15 @@
 #define TCP_KA_PROBES       3u
 
 /* Each connection costs two P9_MAX_MSIZE buffers, taken as one contiguous
- * palloc run at first use (ensure_bufs()). The ESP32-C6 keeps 2: with the
- * radio up it has about 4 free pages, and 4 connections' 8 pages did not fit,
- * so the 9P listener never started there ("No memory for connection
- * buffers"). */
-#if defined(CONFIG_BOARD_ESP32C6)
-#define TCP_MAX_CONNS 2
-#else
+ * palloc run at first use (ensure_bufs()): 16 KB for four on the RP2350 and the
+ * ESP32-C6 (msize 2048). Four is MQTT, a 9P session, and the admin page's load
+ * and WebSocket, whose closed load holds its slot through TIME_WAIT. */
 #define TCP_MAX_CONNS 4
-#endif
 
 /* Q0's stream ring indexes the receive buffer modulo its size and lets the
  * byte counters wrap at 2^32. Both are only correct for a power-of-two size,
- * which P9_MAX_MSIZE is on every target today (2048 on RP2350, 4096
- * elsewhere). Asserted rather than assumed, because the failure would be a
+ * which P9_MAX_MSIZE is on every target today (2048 on RP2350 and the
+ * ESP32-C6, 4096 elsewhere). Asserted rather than assumed, because the failure would be a
  * silently misplaced byte rather than a build error. */
 _Static_assert((P9_MAX_MSIZE & (P9_MAX_MSIZE - 1)) == 0,
                "P9_MAX_MSIZE must be a power of two for the stream receive ring");

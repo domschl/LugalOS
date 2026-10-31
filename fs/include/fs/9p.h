@@ -19,7 +19,8 @@
  * msize is negotiated per connection (see p9_server_process()'s P9_TVERSION
  * case), so a peer asking for more is simply answered with this and must
  * respect it. */
-#if defined(CONFIG_BOARD_RP2350)
+#if defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32C6)
+/* The C6 too: with its radio, sensors, MQTT and the admin page up, 4096 left a C6-Zero no free page. */
 #define P9_MAX_MSIZE 2048
 #else
 #define P9_MAX_MSIZE 4096

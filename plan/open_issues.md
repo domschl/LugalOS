@@ -303,11 +303,11 @@ worth doing if it ever causes an operational problem; full account in
 
 # C. Deliberate limits that look like faults
 
-## Rapid 9P reconnects are refused (2 slots, 2 s TIME_WAIT)
+## Rapid 9P reconnects are refused (4 slots, 2 s TIME_WAIT)
 
-The third connect in a tight open/close loop is refused. `net/tcp.c` keeps
-`TCP_MAX_CONNS = 2` and `TCP_TIME_WAIT_MS = 2000`, both deliberate and
-commented. Listed because a `ConnectionRefusedError` looks like a transport
+A connect in a tight open/close loop is refused once every slot is open or in
+TIME_WAIT. `net/tcp.c` keeps `TCP_MAX_CONNS = 4` and `TCP_TIME_WAIT_MS = 2000`,
+both deliberate and commented. Listed because a `ConnectionRefusedError` looks like a transport
 failure and cost an investigation in R5; `tests/hw/test_wifi.py` paces past
 TIME_WAIT. Raising the limit is trivial when a workload needs it.
 

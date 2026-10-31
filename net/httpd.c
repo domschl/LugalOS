@@ -21,6 +21,9 @@
 #if defined(CONFIG_BOARD_RP2350)
 #define HTTPD_MAX_SESSIONS 1u       /* SRAM: a session is two message buffers */
 #define HTTPD_STACK_PAGES  4u       /* 6.6 KB high-water on a read (msize 2048) */
+#elif defined(CONFIG_BOARD_ESP32C6)
+#define HTTPD_MAX_SESSIONS 1u       /* the whole heap is 63 pages, and the radio, MQTT and sensors share it */
+#define HTTPD_STACK_PAGES  4u       /* 7.1 KB high-water measured on a C6-Zero at msize 4096 */
 #else
 #define HTTPD_MAX_SESSIONS 2u
 #define HTTPD_STACK_PAGES  6u       /* 11 KB high-water on a read (msize 4096) */
