@@ -979,6 +979,10 @@ deferred without blocking anything after it.
       authenticated 9P with `admin`, wiped by an owner reset.
     * `SENSOR_CAL` *proposed:* survives an owner reset (it describes the
       hardware), and `admin` may write it.
+  * *Found 2026-10-31 (`b757651`):* the NANO's BOOT (GPIO35) is also the Ethernet MAC's RMII TXD1. As a
+    button it took TXD1 from the MAC, and once the MAC had it back (the suite's EMAC tests) its low
+    level read as a held button: an owner reset 15 s later, grants, Wi-Fi and HTTPS key gone. The NANO
+    has no setup button now, and `setup_button.c` refuses a button on any `CONFIG_EMAC_*` pin.
   * **`admin` grants:** a fourth column in the grants text (old lines still
     parse). `peers` shows it. The 9P server refuses writes to owner-identity
     files without it.

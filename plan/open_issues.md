@@ -286,6 +286,19 @@ passed 25/25.
 and the next boot's `[CLK] last reset:` line. USB up and panel down is
 before the console exists.
 
+## The NANO over its C6 stops answering on Wi-Fi (three times, 2026-10-31)
+
+Seen three times in one afternoon on the ESP32-P4-NANO (C6-MINI as its radio, build 1243): the C6
+reports `state=joined` and the P4 holds its DHCP address, but this host's pings go unanswered (no
+ICMP reaches the P4's counters) and its ARP entry is right; the C6-Zero and the Pico 2 W on the same
+access point answer throughout. Once an explicit `rejoin` made it worse (the C6 could not rejoin:
+"bssid pin dropped", repeated attempts); a restart of the C6 through `/c6/dev/reboot` recovered it,
+and once it recovered by itself within minutes. A whole-image update over this path ran at 12 KB/s
+on the same afternoon, against 50 KB/s in the morning. Not explained: the access point dropping or
+power-saving the station, or the C6's receive path. **Evidence that would settle it:** the C6's
+`radio stats` (frames received for its own MAC, power-save state) taken during an episode, and the
+access point's view of the station.
+
 ## The ENC28J60 clears MACON1.MARXEN / ECON1.RXEN when idle
 
 **Seen:** within seconds on an idle gateway with the module attached.
