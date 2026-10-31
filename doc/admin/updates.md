@@ -145,6 +145,10 @@ must refuse the first two when the header arrives, and the third at `commit`.
 The key id `/dev/ota` reports is the first 8 bytes of the SHA-256 of the
 64-byte public key, the same id `lota.py` prints.
 
+## From the admin page
+
+The admin page's **Update** tab does what `lota.py push` does, from a browser: choose an image file (`tools/lota.py image build/PRESET` writes `lugalos-ota.img`, signed with your release key), **Send**, and once the node has checked and committed it, **Restart into it**. The new image boots on trial exactly as after `lota.py`, and the Status tab shows whether it confirmed itself or fell back. The node refuses an unsigned or damaged image and says why. Writing needs the `admin` grant on a session that may write: HTTPS on a board that has it (see [HTTPS certificates](tls.md)), a protected session on one that does not. Checked on an ESP32-P4-NANO from Chromium over HTTPS and Wi-Fi: 1.17 MB in 31 s, a tampered image refused at commit.
+
 ## The ESP32-C6's flash
 
 | Offset (C6-MINI) | What |

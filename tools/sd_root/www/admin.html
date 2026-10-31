@@ -238,7 +238,7 @@ class P9 {
     }
     return out;
   }
-  async write(path, data, truncate) {
+  async write(path, data, truncate, progress) {
     const fid = await this.walk(path);
     try {
       await this.rpc(T.open, new W().u32(fid).u8(OWRITE | (truncate ? OTRUNC : 0)).done());
@@ -248,6 +248,7 @@ class P9 {
         const n = (await this.rpc(T.write, new W().u32(fid).u64(off).u32(part.length).bytes(part).done())).rd.u32();
         if (!n && part.length) throw new Error('the node took no bytes');
         off += n;
+        if (progress) progress(off, data.length);
       } while (off < data.length);
     } finally { await this.clunk(fid); }
   }
@@ -278,7 +279,7 @@ if (typeof document !== 'undefined') (() => {
   }
   showBoard();
 
-  const TABS = [['files', 'Files'], ['status', 'Status'], ['log', 'Log'], ['node', 'Node']];
+  const TABS = [['files', 'Files'], ['status', 'Status'], ['log', 'Log'], ['node', 'Node'], ['update', 'Update']];
   const STATUS_FILES = ['/proc/version', '/proc/uptime', '/proc/meminfo', '/proc/net', '/proc/ota', '/dev/ota', '/dev/setup'];
 
   function drawTabs() {
@@ -287,7 +288,7 @@ if (typeof document !== 'undefined') (() => {
   }
   function show() {
     clearInterval(timer); timer = null; viewGen++; drawTabs();
-    ({ files: viewFiles, status: viewStatus, log: viewLog, node: viewNode }[tab])();
+    ({ files: viewFiles, status: viewStatus, log: viewLog, node: viewNode, update: viewUpdate }[tab])();
   }
   const fail = (e) => `<p class="err">${esc(e.message || e)}</p>`;
 
@@ -349,6 +350,55 @@ if (typeof document !== 'undefined') (() => {
     }
     if (!live()) return;
     v.innerHTML = html + '<p class="mut">Change the owner part by writing a line to <code>/dev/owner</code> in the Files view (<code>name NAME</code>, <code>wlan SSID PSKHEX</code>, <code>grant NAME KEYHEX [rw|ro|admin]</code>). It needs the admin grant and a session that may write.</p>';
+  }
+
+  /* An update: the image goes to /dev/otaimage between `begin SIZE` and `commit` on /dev/ota, which checks
+   * its header, signature and SHA-256 before the slot counts. The new image then boots on trial and falls
+   * back by itself if it does not come up healthy. */
+  async function viewUpdate() {
+    const v = $('view');
+    v.innerHTML = `<pre id="ota">…</pre>
+      <p>An update image, signed with your release key: <code>tools/lota.py image build/PRESET</code> writes <code>lugalos-ota.img</code>.</p>
+      <div class="row"><input type="file" id="img"><button class="act" id="send" disabled>Send</button><button class="act" id="restart" disabled>Restart into it</button></div>
+      <div class="row"><progress id="prog" max="1" value="0" style="width:100%"></progress></div>
+      <p id="omsg"></p>
+      <p class="mut">Writing needs the admin grant on a session that may write: HTTPS, or a protected session on a board without it.</p>`;
+    const ota = async () => {
+      let t = '';
+      try { t = text(await p9.read('/dev/ota', 4096)); } catch (e) { t = e.message; }
+      if ($('ota')) $('ota').textContent = t;
+      return t;
+    };
+    const say = (m, cls) => { $('omsg').textContent = m; $('omsg').className = cls || ''; };
+    await ota();
+    $('img').onchange = () => { $('send').disabled = !$('img').files.length; };
+    $('send').onclick = async () => {
+      const f = $('img').files[0]; if (!f) return;
+      $('send').disabled = true; $('restart').disabled = true;
+      const data = new Uint8Array(await f.arrayBuffer()), t0 = Date.now();
+      try {
+        say('sending ' + data.length + ' bytes…');
+        await p9.write('/dev/ota', new TextEncoder().encode('begin ' + data.length), false);
+        await p9.write('/dev/otaimage', data, false, (n, all) => {
+          $('prog').value = n / all;
+          say('sending: ' + Math.round(n / 1024) + ' of ' + Math.round(all / 1024) + ' KB, ' + Math.round(n / 1024 / Math.max((Date.now() - t0) / 1000, 0.001)) + ' KB/s');
+        });
+        await p9.write('/dev/ota', new TextEncoder().encode('commit'), false);
+        await ota();
+        say('committed: restart to boot it on trial', 'ok');
+        $('restart').disabled = false;
+      } catch (e) {
+        const st = await ota(), why = /^error=(.*)$/m.exec(st);
+        say('refused: ' + (why ? why[1] : e.message), 'err');
+        try { await p9.write('/dev/ota', new TextEncoder().encode('abort'), false); } catch (e2) { /* the session may be gone */ }
+        $('send').disabled = false;
+      }
+    };
+    $('restart').onclick = async () => {
+      $('restart').disabled = true;
+      try { await p9.write('/dev/ota', new TextEncoder().encode('reboot'), false); } catch (e) { /* the node may go before it answers */ }
+      say('restarting: sign in again in a minute; Status shows whether the new image confirmed itself', 'ok');
+    };
   }
 
   // The setup page forwards here with the new owner's key after a '#': it never reaches the node, and it is
