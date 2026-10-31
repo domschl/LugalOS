@@ -251,6 +251,12 @@ void radio_main(uintptr_t arg) {
                 }
             }
             if (ctx->connected && (tick % 25) == 0) sample_ap(ctx);          /* every 5 s */
+            if ((tick % 25) == 0) {
+                uint32_t f, l, n;
+                radio_osi_heap_stats(&f, &l, &n);
+                ctx->heap_free = f; ctx->heap_largest = l; ctx->heap_fails = n;
+                if (!ctx->heap_min_free || f < ctx->heap_min_free) ctx->heap_min_free = f;
+            }
             if (ctx->scan_req) {
                 /* A blocking scan of every channel, beside the association: the blob leaves the
                  * channel between beacons, so the link stays up. */

@@ -64,6 +64,9 @@ typedef struct {
     volatile uint32_t disc_reason;
     volatile uint32_t rejoin_req;       /* kernel -> radio: drop the association and join again (a link that carries nothing) */
     volatile uint32_t joins;            /* successful associations since start, for `radio stats` */
+    /* The radio heap, sampled every 5 s: free bytes, the largest free block, the lowest free seen, and
+     * the allocations refused since start. */
+    volatile uint32_t heap_free, heap_largest, heap_min_free, heap_fails;
     /* The associated AP, sampled every few seconds while connected (rssi -127: none yet). */
     volatile int32_t  rssi;
     volatile uint8_t  bssid[6];

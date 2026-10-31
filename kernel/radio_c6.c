@@ -33,6 +33,7 @@
 #include "kernel/console.h"
 #include "kernel/printk.h"
 #include "kernel/identity.h"
+#include "kernel/device.h"
 #include "arch/umode.h"
 #include "lugalos_config.h"
 #include "../drivers/radio/radio_main.h"
@@ -190,6 +191,8 @@ void radio_c6_stats(void) {
             (unsigned)c->connected, (unsigned)c->disc_reason, (unsigned)c->rx_calls, (unsigned)c->rx_dropped,
             (unsigned)c->tx_sent, (unsigned)c->tx_errors, (unsigned)c->rings->rx.head, (unsigned)c->rings->rx.tail,
             (unsigned)c->rings->tx.head, (unsigned)c->rings->tx.tail);
+    cprintf("radio: heap free %u (lowest %u), largest block %u, refused allocations %u\n",
+            (unsigned)c->heap_free, (unsigned)c->heap_min_free, (unsigned)c->heap_largest, (unsigned)c->heap_fails);
 #endif
 }
 int radio_netif_register(radio_ctx_t *ctx);
@@ -296,6 +299,12 @@ void radio_c6_rejoin(void) {
  * minutes (ARP, broadcasts), so RX_SILENCE_MS without a single received frame means the link is up in
  * name only, and a rejoin costs a few seconds where not doing one costs the board. */
 #define RX_SILENCE_MS (5u * 60u * 1000u)
+/* And the one it cannot recover from: a radio whose own heap has refused allocations since it started
+ * (the blob's buffers, 1848 bytes) can later fail every rejoin while its heap looks fine again: seen
+ * twice on 2026-10-31, on a C6-Zero 3.5 h into a run and on a NANO's C6. Down this long after such a
+ * refusal, the node restarts, which is what brought both back by hand. A radio whose heap never refused
+ * (an access point switched off) keeps retrying, with no restart loop. */
+#define JOIN_STARVED_MS (10u * 60u * 1000u)
 
 #if defined(CONFIG_RADIO_C6)
 /* The network the `wlan` task joins: from the identity record at boot, or from
@@ -321,9 +330,22 @@ static void wlan_join_task(void *arg) {
     }
     uint32_t last_rx = c->rx_calls;
     uint64_t last_change = time_get_ms();
+    uint64_t down_since = 0;
     for (;;) {
         task_sleep_ms(10000);
         uint64_t now = time_get_ms();
+        if (!c->connected) {
+            if (!down_since) down_since = now;
+            else if (now - down_since >= JOIN_STARVED_MS && c->heap_fails != 0) {
+                printk("[wlan] not joined for %u s, and the radio heap has refused %u allocations since it started "
+                       "(%u bytes free, largest %u): restarting\n", (unsigned)((now - down_since) / 1000u),
+                       (unsigned)c->heap_fails, (unsigned)c->heap_free, (unsigned)c->heap_largest);
+                (void)board_reset_later(false, 500);
+                down_since = now;
+            }
+        } else {
+            down_since = 0;
+        }
         if (!c->connected || c->rx_calls != last_rx) { last_rx = c->rx_calls; last_change = now; continue; }
         if (now - last_change >= RX_SILENCE_MS) {
             printk("[wlan] connected, but nothing received for %u s -- rejoining\n", (unsigned)(RX_SILENCE_MS / 1000));
@@ -491,6 +513,10 @@ uint32_t radio_c6_proc_render(char *out, uint32_t cap) {
         (unsigned)c->stage, stage_name(c->stage), (unsigned)c->rc_init, (unsigned)c->rc_start, (unsigned)c->ap_count,
         (unsigned)c->connected, (unsigned)c->joins, (unsigned)c->disc_reason, (unsigned)c->rx_calls,
         (unsigned)c->rx_dropped, (unsigned)c->tx_sent, (unsigned)c->tx_errors);
+    if (n < cap)
+        n += (uint32_t)ksnprintf(out + n, cap - n, "heap_free=%u\nheap_min_free=%u\nheap_largest=%u\nheap_refused=%u\n",
+                                 (unsigned)c->heap_free, (unsigned)c->heap_min_free, (unsigned)c->heap_largest,
+                                 (unsigned)c->heap_fails);
     if (n < cap && c->rings)
         n += (uint32_t)ksnprintf(out + n, cap - n, "ring_rx=%u/%u\nring_tx=%u/%u\n",
                                  (unsigned)c->rings->rx.head, (unsigned)c->rings->rx.tail,

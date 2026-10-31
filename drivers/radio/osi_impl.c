@@ -125,6 +125,14 @@ RADIO_TEXT uint32_t radio_osi_get_free_heap_size(void) {
     return n;
 }
 
+RADIO_TEXT void radio_osi_heap_stats(uint32_t *free_bytes, uint32_t *largest, uint32_t *fails) {
+    K(KOBJ_OP_MUTEX_LOCK, g_r.heap_lock, FOREVER, 0, 0, 0);
+    *free_bytes = uheap_free_bytes(&g_r.heap);
+    *largest = uheap_largest_free(&g_r.heap);
+    *fails = g_r.alloc_fails;
+    K(KOBJ_OP_MUTEX_UNLOCK, g_r.heap_lock, 0, 0, 0, 0);
+}
+
 /* ---- chip facts and entries with nothing to do ----------------------------- */
 
 RADIO_TEXT bool radio_osi_env_is_chip(void) { return true; }
