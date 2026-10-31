@@ -1077,6 +1077,13 @@ deferred without blocking anything after it.
     `c6flash`), which pick a board by name, and the USB descriptor strings.
   * **52.11b Integrity-protected 9P sessions for non-TLS boards.** *Boards:
     the Pico 2 W and the C6-Zero.*
+    * **Status 2026-10-31:** built 2026-10-29 (`4a5b34b`); on the C6-Zero over Wi-Fi: a signed
+      update over a protected session ran at 41 KB/s against 42 KB/s unprotected (flash-bound; 29 KB/s
+      since the C6 went to msize 2048), and reconnected after the restart with a stored `admin` grant;
+      reading `/proc/kmsg` 16.2 KB/s protected against 17.5 KB/s plain (7 %); a plain session's write
+      is refused, now naming the link rather than the grant (`472e8b8`). `fuse-p9` had been running
+      unprotected, on a stale copy of p9lib in its virtualenv, so every write through the mount was EIO
+      (`84468b7`); now it writes at 23.5 KB/s. The Pico 2 W's run is still open.
     * After a successful `Tauth`, both ends derive a session key
       (HKDF-SHA-256 over the grant key and the nonce). Every later frame
       carries a sequence number and a truncated HMAC-SHA-256 tag.
@@ -1153,6 +1160,23 @@ deferred without blocking anything after it.
     power).
 
 * **52.13b C6-Zero stand-alone, sensor configuration.** *Board: the C6-Zero, no P4.*
+  * **Status 2026-10-31:** verified on the C6-Zero sensor node except the light and the button (they
+    need someone watching): it joins Wi-Fi from its record, answers as `esp32c6-zero-b914.local`, takes
+    signed updates over Wi-Fi (1050 -> 1235 -> 1241, each confirmed), publishes BME280 and TSL2591
+    readings to the broker every 10 s, and serves the admin page by itself once claimed
+    (`CONFIG_HTTPD_WHEN_CLAIMED`; the page is in the image, `CONFIG_HTTPD_ADMIN_EMBED`, 8.3 KB gzip).
+    Chromium and Firefox sign in while MQTT and a 9P session are connected. `test_esp32c6.py` 21/21.
+    * *Free memory, everything running* (radio, sensors, MQTT, mDNS, httpd, 9P): **0 pages** at first:
+      a walk into `/proc` failed and an update was refused for want of a page. Now **5 pages (20 KB)**:
+      the light's and button's tasks went from 16 KB stacks to 4 KB (`ebfb5de`; they read the 4 KB
+      identity record every 100 ms), and the C6 took the RP2350's msize 2048, one web session and four
+      TCP connections (`55fa4a2`; `.bss` 150 -> 130 KB). Still tight: in the LLP radio role (a modem for a
+      host) with MQTT and httpd up, the suite saw 0 KB free. Phase 66 is where the stacks get sized per board
+      (`sensor_hub` 12 KB holds 0.9 KB, `mqttsrv` 8 KB holds 1 KB).
+    * *Found on the way:* an older build's identity write dropped the fields it did not know (the setup
+      secret disappeared under 1050): a rewrite now carries them (`b46f47f`).
+    * *Open:* each light pattern seen, and a 15 s BOOT press (also measures `setupbtn`'s stack on its
+      deepest path).
   * A C6-Zero on its own USB port is a node of its own (sensor persona: its own IP,
     I2C sensors, MQTT), not a radio for a P4. Provision it from the console
     (`wlan`, `name`, `grant`), or claim it over 9P once it is on a network.
