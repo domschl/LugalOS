@@ -82,7 +82,7 @@ The window stays open 15 minutes and closes after five wrong secrets. A node tha
 
 ### The status LED
 
-A headless node shows its mode on a light (`kernel/status_led.c`): the Pico 2 W's LED, the C6-Zero's RGB pixel (a colour per pattern), or an LED on a GPIO (`CONFIG_STATUS_LED_GPIO` in the board's cmake file, `CONFIG_STATUS_LED_ACTIVE_LOW 1` if it lights at a low level; the P4-NANO has none of its own). Hold the board's button for 5 seconds to open a setup window: the light turns solid, release it. Hold it for 15 seconds to reset the owner: the light blinks fast, and the node then goes into setup mode.
+A headless node shows its mode on a light (`kernel/status_led.c`): the Pico 2 W's LED, the C6-Zero's RGB pixel (a colour per pattern), or an LED on a GPIO (`CONFIG_STATUS_LED_GPIO` in the board's cmake file, `CONFIG_STATUS_LED_ACTIVE_LOW 1` if it lights at a low level; the P4-NANO has none of its own). The button is BOOTSEL on a Pico 2 and 2 W, BOOT on the ESP32-P4 LCD-7B and the C6-Zero; the ESP32-P4-NANO has none (its BOOT pin is also the Ethernet MAC's TXD1), so there it is the console's `setup start` and `setup reset-owner`. Hold the board's button for 5 seconds to open a setup window: the light turns solid, release it. Hold it for 15 seconds to reset the owner: the light blinks fast, and the node then goes into setup mode.
 
 | Light | Meaning |
 |---|---|
