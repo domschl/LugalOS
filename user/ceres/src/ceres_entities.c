@@ -17,6 +17,7 @@ void ceres_entities_init(ceres_entities_t *pool) {
     pool->spawn_cycle = 0;
     pool->aerial_spawn_timer = 90;
     pool->aerial_formation_cycle = 0;
+    pool->aerial_rng_seed = 0x20261031;
 }
 
 bool ceres_entities_spawn_target(ceres_entities_t *pool, ceres_target_type_t type, int32_t world_x, int32_t ground_y) {
@@ -60,14 +61,56 @@ bool ceres_entities_spawn_target(ceres_entities_t *pool, ceres_target_type_t typ
         case CERES_TARGET_SURVIVOR:
             t->w = SPRITE_SURVIVOR_W;
             t->h = SPRITE_SURVIVOR_H;
+            t->hp = 1;
+            t->linked_barrier_idx = -1;
+            break;
+        case CERES_TARGET_GENERATOR:
+            t->w = SPRITE_GENERATOR_W;
+            t->h = SPRITE_GENERATOR_H;
+            t->hp = 1;
+            t->linked_barrier_idx = -1;
+            break;
+        case CERES_TARGET_REACTOR_CORE:
+            t->w = SPRITE_CORE_W;
+            t->h = SPRITE_CORE_H;
+            t->hp = 3;
+            t->linked_barrier_idx = -1;
             break;
         default:
             t->w = 16;
             t->h = 16;
+            t->hp = 1;
+            t->linked_barrier_idx = -1;
             break;
     }
 
     pool->active_targets++;
+    return true;
+}
+
+bool ceres_entities_spawn_barrier(ceres_entities_t *pool, int32_t world_x, int generator_idx) {
+    if (!pool) return false;
+
+    int slot = -1;
+    for (int i = 0; i < CERES_MAX_BARRIERS; i++) {
+        if (!pool->barriers[i].active) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot == -1) return false;
+
+    ceres_laser_barrier_t *b = &pool->barriers[slot];
+    b->active = true;
+    b->world_x = world_x;
+    b->generator_idx = generator_idx;
+    b->anim_phase = 0;
+
+    if (generator_idx >= 0 && generator_idx < CERES_MAX_GROUND_TARGETS) {
+        pool->targets[generator_idx].linked_barrier_idx = slot;
+    }
+
+    pool->active_barriers++;
     return true;
 }
 
@@ -546,6 +589,43 @@ void ceres_entities_update(ceres_entities_t *pool, const ceres_terrain_t *terrai
         pool->active_targets++;
     }
 
+    /* 4b. Update Laser Barriers & Link with Generators */
+    pool->active_barriers = 0;
+    for (int b = 0; b < CERES_MAX_BARRIERS; b++) {
+        ceres_laser_barrier_t *barr = &pool->barriers[b];
+        if (!barr->active) continue;
+
+        barr->anim_phase++;
+
+        /* If linked generator is destroyed, barrier collapses! */
+        if (barr->generator_idx >= 0 && barr->generator_idx < CERES_MAX_GROUND_TARGETS) {
+            if (!pool->targets[barr->generator_idx].active) {
+                barr->active = false;
+                pool->total_barriers_down++;
+                if (terrain) {
+                    int bsx = barr->world_x - (int)terrain->camera_col;
+                    if (bsx >= 0 && bsx < playfield_w) {
+                        int c_y = 0, f_y = 0;
+                        ceres_terrain_sample(terrain, bsx, &c_y, &f_y);
+                        ceres_entities_spawn_sparks(pool, INT_TO_FIXED(bsx), INT_TO_FIXED((c_y + f_y) / 2), COLOR_LASER_CYAN, 8);
+                    }
+                }
+                continue;
+            }
+        }
+
+        /* Check if scrolled past off screen left */
+        if (terrain) {
+            int bsx = barr->world_x - (int)terrain->camera_col;
+            if (bsx < -32) {
+                barr->active = false;
+                continue;
+            }
+        }
+
+        pool->active_barriers++;
+    }
+
     /* 5. Update Aerial Enemies */
     pool->active_aerials = 0;
     int camera_col = terrain ? (int)terrain->camera_col : 0;
@@ -687,7 +767,7 @@ void ceres_entities_update(ceres_entities_t *pool, const ceres_terrain_t *terrai
         pool->aerial_formation_cycle++;
 
         int spawn_x = playfield_w + 40;
-        int spawn_y = 60 + (int)(prng_step(&pool->next_spawn_world_x) % 180);
+        int spawn_y = 60 + (int)(prng_step(&pool->aerial_rng_seed) % 180);
 
         if (wave == 0) {
             /* Undulating Saucer Squadron (4 saucers) */
@@ -835,6 +915,30 @@ ceres_interaction_t ceres_entities_resolve_collisions(ceres_entities_t *pool, co
                     t->cracked = true;
                     res.bunker_breached = true;
                     res.score_delta += 100;
+                } else if (t->type == CERES_TARGET_GENERATOR) {
+                    t->active = false;
+                    pool->total_targets_destroyed++;
+                    ceres_entities_spawn_explosion(pool, INT_TO_FIXED(sx + t->w / 2), INT_TO_FIXED(target_top + t->h / 2), 2);
+                    ceres_entities_spawn_sparks(pool, INT_TO_FIXED(sx + t->w / 2), INT_TO_FIXED(target_top), COLOR_LASER_CYAN, 12);
+                    res.score_delta += 200;
+                    res.barrier_collapsed = true;
+                    for (int bi = 0; bi < CERES_MAX_BARRIERS; bi++) {
+                        if (pool->barriers[bi].active && pool->barriers[bi].generator_idx == i) {
+                            pool->barriers[bi].active = false;
+                            pool->total_barriers_down++;
+                        }
+                    }
+                } else if (t->type == CERES_TARGET_REACTOR_CORE) {
+                    t->hp -= 3;
+                    if (t->hp <= 0) {
+                        t->active = false;
+                        pool->total_targets_destroyed++;
+                        pool->total_cores_destroyed++;
+                        ceres_entities_spawn_explosion(pool, INT_TO_FIXED(sx + t->w / 2), INT_TO_FIXED(target_top + t->h / 2), 3);
+                        ceres_entities_spawn_sparks(pool, INT_TO_FIXED(sx + t->w / 2), INT_TO_FIXED(target_top), COLOR_THRUSTER_ORANGE, 24);
+                        res.score_delta += 5000;
+                        res.core_destroyed = true;
+                    }
                 }
                 break;
             }
@@ -880,6 +984,21 @@ ceres_interaction_t ceres_entities_resolve_collisions(ceres_entities_t *pool, co
                     pool->total_targets_destroyed++;
                     ceres_entities_spawn_explosion(pool, INT_TO_FIXED(sx + t->w / 2), INT_TO_FIXED(target_top + t->h / 2), 1);
                     res.score_delta += t->launched ? 50 : 150;
+                } else if (t->type == CERES_TARGET_GENERATOR) {
+                    /* Armored generator pylon deflects forward laser - requires bomb */
+                    ceres_entities_spawn_sparks(pool, INT_TO_FIXED(laser_right), INT_TO_FIXED(ly), COLOR_LASER_CYAN, 4);
+                } else if (t->type == CERES_TARGET_REACTOR_CORE) {
+                    laser->active = false;
+                    t->hp--;
+                    ceres_entities_spawn_sparks(pool, INT_TO_FIXED(sx + t->w / 2), INT_TO_FIXED(ly), COLOR_LASER_CYAN, 5);
+                    if (t->hp <= 0) {
+                        t->active = false;
+                        pool->total_targets_destroyed++;
+                        pool->total_cores_destroyed++;
+                        ceres_entities_spawn_explosion(pool, INT_TO_FIXED(sx + t->w / 2), INT_TO_FIXED(target_top + t->h / 2), 3);
+                        res.score_delta += 5000;
+                        res.core_destroyed = true;
+                    }
                 }
                 break;
             }
@@ -1034,6 +1153,39 @@ ceres_interaction_t ceres_entities_resolve_collisions(ceres_entities_t *pool, co
         }
     }
 
+    /* 9. Laser Barrier Collisions */
+    for (int bi = 0; bi < CERES_MAX_BARRIERS; bi++) {
+        ceres_laser_barrier_t *barr = &pool->barriers[bi];
+        if (!barr->active) continue;
+
+        int bsx = barr->world_x - camera_col;
+        if (bsx < -16 || bsx > CERES_VIRTUAL_W + 16) continue;
+
+        int c_y = 0, f_y = 0;
+        ceres_terrain_sample(terrain, bsx, &c_y, &f_y);
+
+        /* Barrier vs Player Ship */
+        int ship_cx = ship_x + ship_w / 2;
+        int ship_cy = ship_y + ship_h / 2;
+        if (ship_cx >= bsx - (ship_w / 2 + 3) && ship_cx <= bsx + (ship_w / 2 + 3) &&
+            ship_cy >= c_y && ship_cy <= f_y) {
+            res.player_hit = true;
+        }
+
+        /* Barrier vs Forward Lasers */
+        for (int l = 0; l < CERES_MAX_LASERS; l++) {
+            ceres_laser_t *laser = &pool->lasers[l];
+            if (!laser->active) continue;
+            int lx = FIXED_TO_INT(laser->x);
+            int lr = lx + LASER_SPAN_PX;
+            int ly = FIXED_TO_INT(laser->y);
+            if (lr >= bsx - 2 && lx <= bsx + 2 && ly >= c_y && ly <= f_y) {
+                laser->active = false;
+                ceres_entities_spawn_sparks(pool, INT_TO_FIXED(bsx), laser->y, COLOR_LASER_CYAN, 4);
+            }
+        }
+    }
+
     return res;
 }
 
@@ -1111,6 +1263,12 @@ void ceres_entities_render(const ceres_entities_t *pool, const ceres_terrain_t *
                     break;
                 case CERES_TARGET_CRYO_BUNKER:
                     sprite = &g_surf_cryo_bunker;
+                    break;
+                case CERES_TARGET_GENERATOR:
+                    sprite = &g_surf_generator;
+                    break;
+                case CERES_TARGET_REACTOR_CORE:
+                    sprite = &g_surf_core;
                     break;
                 default:
                     break;
@@ -1246,6 +1404,50 @@ void ceres_entities_render(const ceres_entities_t *pool, const ceres_terrain_t *
                 break;
             default:
                 break;
+        }
+    }
+
+    /* 7. Render Active Laser Barriers / Force Fields */
+    for (int b = 0; b < CERES_MAX_BARRIERS; b++) {
+        const ceres_laser_barrier_t *barr = &pool->barriers[b];
+        if (!barr->active) continue;
+
+        int bsx = barr->world_x - camera_col;
+        if (bsx < 0 || bsx >= surf->width) continue;
+
+        int c_y = 0, f_y = 0;
+        if (terrain) {
+            ceres_terrain_sample(terrain, bsx, &c_y, &f_y);
+        } else {
+            c_y = CERES_HUD_HEIGHT;
+            f_y = surf->height - 8;
+        }
+
+        /* Emitter Nodes at Ceiling and Floor */
+        ceres_blit_pixel(surf, bsx - 2, c_y, COLOR_STAR_WHITE);
+        ceres_blit_pixel(surf, bsx - 1, c_y, COLOR_STAR_WHITE);
+        ceres_blit_pixel(surf, bsx,     c_y, COLOR_STAR_WHITE);
+        ceres_blit_pixel(surf, bsx + 1, c_y, COLOR_STAR_WHITE);
+        ceres_blit_pixel(surf, bsx + 2, c_y, COLOR_STAR_WHITE);
+
+        ceres_blit_pixel(surf, bsx - 2, f_y, COLOR_STAR_WHITE);
+        ceres_blit_pixel(surf, bsx - 1, f_y, COLOR_STAR_WHITE);
+        ceres_blit_pixel(surf, bsx,     f_y, COLOR_STAR_WHITE);
+        ceres_blit_pixel(surf, bsx + 1, f_y, COLOR_STAR_WHITE);
+        ceres_blit_pixel(surf, bsx + 2, f_y, COLOR_STAR_WHITE);
+
+        /* Pulsating high-voltage laser barrier */
+        uint16_t beam_color = (barr->anim_phase & 4) ? COLOR_LASER_CYAN : COLOR_STAR_WHITE;
+        uint16_t arc_color  = (barr->anim_phase & 2) ? COLOR_THRUSTER_YELLOW : COLOR_LASER_CYAN;
+
+        for (int y = c_y + 1; y < f_y; y++) {
+            ceres_blit_pixel(surf, bsx, y, beam_color);
+            if ((y + barr->anim_phase) % 6 == 0) {
+                ceres_blit_pixel(surf, bsx - 1, y, arc_color);
+            }
+            if ((y - barr->anim_phase) % 6 == 0) {
+                ceres_blit_pixel(surf, bsx + 1, y, arc_color);
+            }
         }
     }
 }

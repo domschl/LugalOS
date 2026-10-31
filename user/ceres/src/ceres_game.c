@@ -17,6 +17,16 @@ static const ceres_target_type_t s_spawn_pattern[] = {
     CERES_TARGET_RADAR,
 };
 
+static const char *s_sector_names[CERES_SECTOR_COUNT + 1] = {
+    "",
+    "MOUNTAIN APPROACH",
+    "CRYSTAL CAVERN",
+    "ASTEROID TRENCH",
+    "FORTIFIED BASE",
+    "THE LABYRINTH",
+    "REACTOR STRONGHOLD",
+};
+
 static void get_target_dims(ceres_target_type_t type, int *w, int *h) {
     switch (type) {
         case CERES_TARGET_FUEL_SILO:   *w = SPRITE_FUEL_SILO_W;   *h = SPRITE_FUEL_SILO_H;   break;
@@ -24,6 +34,8 @@ static void get_target_dims(ceres_target_type_t type, int *w, int *h) {
         case CERES_TARGET_RADAR:       *w = SPRITE_RADAR_DISH_W;  *h = SPRITE_RADAR_DISH_H;  break;
         case CERES_TARGET_CRYO_BUNKER: *w = SPRITE_CRYO_BUNKER_W; *h = SPRITE_CRYO_BUNKER_H; break;
         case CERES_TARGET_SURVIVOR:    *w = SPRITE_SURVIVOR_W;    *h = SPRITE_SURVIVOR_H;    break;
+        case CERES_TARGET_GENERATOR:   *w = SPRITE_GENERATOR_W;   *h = SPRITE_GENERATOR_H;   break;
+        case CERES_TARGET_REACTOR_CORE:*w = SPRITE_CORE_W;        *h = SPRITE_CORE_H;        break;
         default:                       *w = 16;                   *h = 16;                   break;
     }
 }
@@ -163,6 +175,22 @@ bool ceres_game_init(ceres_game_t *g, int w, int h) {
     }
     g->entities.next_spawn_world_x = search_col;
 
+    /* Initialize Sector Progression & Objectives */
+    g->sector_start_col = 0;
+    g->sector_length = CERES_SECTOR_LENGTH_COLS;
+    g->loop_count = 1;
+    g->meltdown_timer = 0;
+    g->screen_shake = 0;
+    g->core_spawned = false;
+
+    /* Initial Sector Welcome Banner */
+    g->banner_timer = 90;
+    const char *init_msg = "SECTOR 1: MOUNTAIN APPROACH";
+    for (int i = 0; i < 31 && init_msg[i]; i++) {
+        g->banner_text[i] = init_msg[i];
+        g->banner_text[i + 1] = '\0';
+    }
+
     return true;
 }
 
@@ -296,14 +324,48 @@ void ceres_game_update(ceres_game_t *g, uint32_t delta_ms) {
         }
     }
 
-    g->scroll_x += 2;
+    int advance_px = (g->meltdown_timer > 0) ? 4 : 2;
+    g->scroll_x += advance_px;
 
-    /* 2. Advance Streaming Cavern Terrain & Parallax (2.0 pixels/frame) */
-    ceres_terrain_advance(&g->terrain, INT_TO_FIXED(2));
+    /* 2. Advance Streaming Cavern Terrain & Parallax */
+    ceres_terrain_advance(&g->terrain, INT_TO_FIXED(advance_px));
+
+    /* Sector Progression & Milestone Trigger */
+    if (g->terrain.camera_col >= g->sector_start_col + g->sector_length) {
+        if (g->player.sector < CERES_SECTOR_COUNT) {
+            g->player.sector++;
+            g->sector_start_col = g->terrain.camera_col;
+            g->terrain.sector = g->player.sector;
+            /* Milestone Sector Banner */
+            g->banner_timer = 90;
+            const char *name = s_sector_names[g->player.sector];
+            int bpos = 0;
+            const char *pfx = "SECTOR ";
+            while (*pfx && bpos < 30) g->banner_text[bpos++] = *pfx++;
+            g->banner_text[bpos++] = '0' + g->player.sector;
+            g->banner_text[bpos++] = ':';
+            g->banner_text[bpos++] = ' ';
+            while (*name && bpos < 30) g->banner_text[bpos++] = *name++;
+            g->banner_text[bpos] = '\0';
+            /* Partial fuel reward */
+            g->player.fuel += 200;
+            if (g->player.fuel > 1000) g->player.fuel = 1000;
+        }
+    }
 
     /* 3. Stream Dynamic Ground Targets ahead of camera onto flat plateaus */
     while (g->entities.next_spawn_world_x + 40 <= g->terrain.generated_col_end) {
-        ceres_target_type_t t_type = s_spawn_pattern[g->entities.spawn_cycle % 8];
+        uint32_t target_sector = (g->entities.next_spawn_world_x / g->sector_length) + 1;
+        ceres_target_type_t t_type;
+        if (target_sector == 4 && (g->entities.spawn_cycle % 3) == 1) {
+            t_type = CERES_TARGET_GENERATOR;
+        } else if (target_sector >= 6 && !g->core_spawned &&
+                   (g->entities.next_spawn_world_x >= 5 * g->sector_length + g->sector_length - 450)) {
+            t_type = CERES_TARGET_REACTOR_CORE;
+        } else {
+            t_type = s_spawn_pattern[g->entities.spawn_cycle % 8];
+        }
+
         int w = 0, h = 0;
         get_target_dims(t_type, &w, &h);
 
@@ -311,6 +373,20 @@ void ceres_game_update(ceres_game_t *g, uint32_t delta_ms) {
         int site = find_ground_spawn_site(g, g->entities.next_spawn_world_x, max_search, w, h);
         if (site != -1) {
             spawn_target_at_site(g, t_type, site);
+            if (t_type == CERES_TARGET_REACTOR_CORE) {
+                g->core_spawned = true;
+            }
+            if (t_type == CERES_TARGET_GENERATOR) {
+                /* Find slot of just-spawned generator and link laser barrier 90 cols ahead */
+                int gen_slot = -1;
+                for (int k = CERES_MAX_GROUND_TARGETS - 1; k >= 0; k--) {
+                    if (g->entities.targets[k].active && g->entities.targets[k].world_x == site) {
+                        gen_slot = k;
+                        break;
+                    }
+                }
+                ceres_entities_spawn_barrier(&g->entities, site + 90, gen_slot);
+            }
             g->entities.spawn_cycle++;
             g->entities.next_spawn_world_x = (uint32_t)site + 130;
         } else {
@@ -496,11 +572,29 @@ void ceres_game_update(ceres_game_t *g, uint32_t delta_ms) {
             g->banner_text[i + 1] = '\0';
         }
     }
+    if (res.barrier_collapsed) {
+        g->banner_timer = 60;
+        const char *msg = "FORCE FIELD DOWN!";
+        for (int i = 0; i < 31 && msg[i]; i++) {
+            g->banner_text[i] = msg[i];
+            g->banner_text[i + 1] = '\0';
+        }
+    }
+    if (res.core_destroyed) {
+        g->meltdown_timer = 180; /* 3 seconds @ 60 FPS */
+        g->screen_shake = 8;
+        g->banner_timer = 120;
+        const char *msg = "CORE CRITICAL! EVACUATE!";
+        for (int i = 0; i < 31 && msg[i]; i++) {
+            g->banner_text[i] = msg[i];
+            g->banner_text[i + 1] = '\0';
+        }
+    }
     if (g->banner_timer > 0) {
         g->banner_timer--;
     }
 
-    /* Fatal SAM Rocket Impact */
+    /* Fatal SAM Rocket / Laser Barrier Impact */
     if (res.player_hit && g->player.alive && g->player.invincible_frames == 0) {
         g->player.alive = false;
         g->player.respawn_timer = 60;
@@ -508,6 +602,41 @@ void ceres_game_update(ceres_game_t *g, uint32_t delta_ms) {
         ceres_entities_spawn_explosion(&g->entities, INT_TO_FIXED(g->player.x), INT_TO_FIXED(g->player.y), 2);
         if (g->player.lives < 0) {
             g->state = CERES_STATE_GAMEOVER;
+        }
+    }
+
+    /* 8. Meltdown Sequence & Loop Rollover */
+    if (g->meltdown_timer > 0) {
+        g->meltdown_timer--;
+        g->screen_shake = (g->meltdown_timer & 2) ? 4 : 0;
+        if ((g->frame_count % 4) == 0) {
+            int rx = 60 + (int)(g->frame_count % (g->width - 120));
+            ceres_entities_spawn_thruster_ember(&g->entities, INT_TO_FIXED(rx), INT_TO_FIXED(g->height / 2));
+        }
+
+        if (g->meltdown_timer == 0) {
+            /* Successful Escape & Loop Rollover! */
+            g->loop_count++;
+            g->player.sector = 1;
+            g->terrain.sector = 1;
+            g->sector_start_col = 0;
+            g->terrain.camera_x_fp = 0;
+            g->terrain.camera_col = 0;
+            g->scroll_x = 0;
+            g->entities.next_spawn_world_x = 140;
+            g->core_spawned = false;
+            g->player.fuel = 1000;
+            g->player.invincible_frames = 90;
+            g->player.score += 10000 + (uint32_t)(g->player.rescued * 1000);
+            if (g->player.score > g->player.hi_score) {
+                g->player.hi_score = g->player.score;
+            }
+            g->banner_timer = 120;
+            const char *msg = "MISSION ACCOMPLISHED!";
+            for (int i = 0; i < 31 && msg[i]; i++) {
+                g->banner_text[i] = msg[i];
+                g->banner_text[i + 1] = '\0';
+            }
         }
     }
 }
@@ -582,9 +711,15 @@ void ceres_game_render(ceres_game_t *g, uint16_t *fb, int w, int h, int stride) 
     ceres_blit_line(&surf, 0, 31, w - 1, 31, RGB565(60, 60, 90));
 
     /* Row 1: Score, Hi-Score, Sector, Ships */
-    ceres_blit_text_fmt(&surf, 8, 4, COLOR_HUD_TEXT, 0, true,
-                           "SCORE: %06u   HI: %06u   SECTOR: %d   SHIPS: ",
-                           g->player.score, g->player.hi_score, g->player.sector);
+    if (g->loop_count > 1) {
+        ceres_blit_text_fmt(&surf, 8, 4, COLOR_HUD_TEXT, 0, true,
+                               "SCORE: %06u  HI: %06u  SEC: %d (L%u)  SHIPS: ",
+                               g->player.score, g->player.hi_score, g->player.sector, g->loop_count);
+    } else {
+        ceres_blit_text_fmt(&surf, 8, 4, COLOR_HUD_TEXT, 0, true,
+                               "SCORE: %06u  HI: %06u  SECTOR: %d  SHIPS: ",
+                               g->player.score, g->player.hi_score, g->player.sector);
+    }
 
     /* Ship Icons in HUD */
     int ship_icon_x = 420;
@@ -600,13 +735,20 @@ void ceres_game_render(ceres_game_t *g, uint16_t *fb, int w, int h, int stride) 
 
     /* Temporary In-Game Notification Banner */
     if (g->banner_timer > 0 && g->state == CERES_STATE_PLAYING) {
-        int bw = 200;
+        int bw = 230;
         int bh = 22;
         int bx = (w - bw) / 2;
         int by = 36;
-        ceres_blit_fill_rect(&surf, bx, by, bw, bh, RGB565(8, 24, 8));
-        ceres_blit_rect_outline(&surf, bx, by, bw, bh, COLOR_SURVIVOR_GREEN);
-        ceres_blit_text(&surf, bx + 16, by + 3, g->banner_text, COLOR_STAR_WHITE, 0, true);
+        uint16_t border_col = (g->meltdown_timer > 0) ? COLOR_HUD_ALERT : COLOR_SURVIVOR_GREEN;
+        ceres_blit_fill_rect(&surf, bx, by, bw, bh, RGB565(8, 16, 8));
+        ceres_blit_rect_outline(&surf, bx, by, bw, bh, border_col);
+        ceres_blit_text(&surf, bx + 12, by + 3, g->banner_text, COLOR_STAR_WHITE, 0, true);
+    }
+
+    /* Meltdown Emergency Siren Strobe */
+    if (g->meltdown_timer > 0 && ((g->frame_count / 6) & 1)) {
+        ceres_blit_fill_rect(&surf, 0, 0, w, 3, COLOR_HUD_ALERT);
+        ceres_blit_fill_rect(&surf, 0, h - 3, w, 3, COLOR_HUD_ALERT);
     }
 
     int fuel_bar_x = 8 + 6 * CERES_FONT_W;

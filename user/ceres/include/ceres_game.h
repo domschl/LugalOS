@@ -19,6 +19,18 @@ typedef enum {
     CERES_STATE_VICTORY,
 } ceres_game_state_t;
 
+#define CERES_SECTOR_COUNT        6
+#define CERES_SECTOR_LENGTH_COLS  1800
+
+typedef enum {
+    CERES_SECTOR_MOUNTAIN = 1,
+    CERES_SECTOR_CAVERN   = 2,
+    CERES_SECTOR_TRENCH   = 3,
+    CERES_SECTOR_BASE     = 4,
+    CERES_SECTOR_LABYRINTH= 5,
+    CERES_SECTOR_STRONGHOLD = 6,
+} ceres_sector_t;
+
 /* Active Player Craft State */
 typedef struct {
     int32_t  x;             /* Screen X position (pixels) */
@@ -90,6 +102,14 @@ typedef struct {
     /* On-Screen Notification Banner (e.g. HEROIC RESCUE! +1000) */
     uint16_t              banner_timer;
     char                  banner_text[32];
+
+    /* Sector & Meltdown State */
+    uint32_t              sector_start_col; /* Starting column of current sector */
+    uint32_t              sector_length;    /* Length of sector in columns */
+    uint32_t              loop_count;       /* Completed game loops */
+    uint16_t              meltdown_timer;   /* Base Meltdown alarm frames */
+    uint8_t               screen_shake;     /* Screen tremor intensity (pixels) */
+    bool                  core_spawned;     /* Sector 6 core has been spawned */
 } ceres_game_t;
 
 /* Engine Lifecycle Hooks */

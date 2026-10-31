@@ -113,7 +113,19 @@ typedef enum {
     CERES_TARGET_SAM_SILO,      /* Subterranean vertical rocket launcher (+150 pts) */
     CERES_TARGET_CRYO_BUNKER,   /* Reinforced shelter; bombing cracks open and frees survivor (+100 pts) */
     CERES_TARGET_SURVIVOR,      /* Stranded human astronaut waiting for tractor scoop rescue */
+    CERES_TARGET_GENERATOR,     /* Power generator pylon; bombing drops laser fence (+200 pts) */
+    CERES_TARGET_REACTOR_CORE,  /* Sector 6 alien core; triggers base meltdown (+5000 pts) */
 } ceres_target_type_t;
+
+#define CERES_MAX_BARRIERS 4
+
+/* Laser Barrier / Force Field */
+typedef struct {
+    bool     active;
+    int32_t  world_x;       /* World column index */
+    int      generator_idx; /* Associated generator index in pool->targets */
+    uint8_t  anim_phase;    /* Beam pulsation / electric hum animation phase */
+} ceres_laser_barrier_t;
 
 /* Ground Installation Entity */
 typedef struct {
@@ -126,6 +138,8 @@ typedef struct {
     bool                launched;    /* SAM Silo: rocket has launched */
     bool                cracked;     /* Cryo-Bunker: breached */
     uint32_t            anim_timer;  /* Beacon blink / arm waving timer */
+    int8_t              hp;          /* Hit points (e.g. 3 for reactor core) */
+    int                 linked_barrier_idx; /* Linked barrier in pool->barriers (-1 if none) */
 } ceres_ground_target_t;
 
 /* Collision and Interaction Result */
@@ -137,6 +151,8 @@ typedef struct {
     bool heroic_rescue;       /* Mid-air parachute rescue */
     bool sam_launched;
     bool player_hit;
+    bool barrier_collapsed;   /* Generator destroyed, laser fence dropped */
+    bool core_destroyed;      /* Reactor core detonated */
 } ceres_interaction_t;
 
 /* Fixed Entity Pool Context (Embedded directly in ceres_game_t) */
@@ -147,6 +163,7 @@ typedef struct {
     ceres_ground_target_t targets[CERES_MAX_GROUND_TARGETS];
     ceres_sam_rocket_t    sam_rockets[CERES_MAX_SAM_ROCKETS];
     ceres_aerial_t        aerials[CERES_MAX_AERIAL_ENEMIES];
+    ceres_laser_barrier_t barriers[CERES_MAX_BARRIERS];
 
     uint8_t               laser_cooldown;
     uint8_t               bomb_cooldown;
@@ -154,6 +171,7 @@ typedef struct {
     uint32_t              spawn_cycle;
     uint32_t              aerial_spawn_timer;
     uint8_t               aerial_formation_cycle;
+    uint32_t              aerial_rng_seed;
 
     /* Metrics & Diagnostics */
     uint32_t              active_lasers;
@@ -162,6 +180,7 @@ typedef struct {
     uint32_t              active_targets;
     uint32_t              active_sam_rockets;
     uint32_t              active_aerials;
+    uint32_t              active_barriers;
     uint32_t              total_lasers_fired;
     uint32_t              total_bombs_dropped;
     uint32_t              total_bomb_detonations;
@@ -171,13 +190,16 @@ typedef struct {
     uint32_t              total_survivors_rescued;
     uint32_t              total_aerials_destroyed;
     uint32_t              total_parachutes_rescued;
+    uint32_t              total_barriers_down;
+    uint32_t              total_cores_destroyed;
 } ceres_entities_t;
 
 /* Entity Pool Management */
 void ceres_entities_init(ceres_entities_t *pool);
 
-/* Spawning Installations & Missiles */
+/* Spawning Installations, Missiles & Barriers */
 bool ceres_entities_spawn_target(ceres_entities_t *pool, ceres_target_type_t type, int32_t world_x, int32_t ground_y);
+bool ceres_entities_spawn_barrier(ceres_entities_t *pool, int32_t world_x, int generator_idx);
 bool ceres_entities_launch_sam(ceres_entities_t *pool, fixed32_t launch_x, fixed32_t launch_y);
 
 /* Spawning Aerial Enemies & Formations */

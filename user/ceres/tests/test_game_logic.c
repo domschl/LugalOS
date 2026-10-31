@@ -779,6 +779,109 @@ static void test_aerial_collision_with_player_ship(void) {
     printf("[test] Lethal enemy craft collision and respawn protection passed.\n");
 }
 
+static void test_sector_4_generator_and_laser_barrier(void) {
+    printf("[test] Checking Sector 4 Power Generator & Laser Barrier collapse...\n");
+    ceres_game_t g;
+    ceres_game_init(&g, 640, 360);
+    g.player.invincible_frames = 0;
+
+    /* Spawn generator at world_x = 300, ground_y = 310 */
+    bool spawned_gen = ceres_entities_spawn_target(&g.entities, CERES_TARGET_GENERATOR, 300, 310);
+    assert(spawned_gen);
+    int gen_idx = -1;
+    for (int i = 0; i < CERES_MAX_GROUND_TARGETS; i++) {
+        if (g.entities.targets[i].active && g.entities.targets[i].type == CERES_TARGET_GENERATOR) {
+            gen_idx = i;
+            break;
+        }
+    }
+    assert(gen_idx != -1);
+
+    /* Spawn linked laser barrier at world_x = 390 */
+    bool spawned_barr = ceres_entities_spawn_barrier(&g.entities, 390, gen_idx);
+    assert(spawned_barr);
+    assert(g.entities.active_barriers == 1);
+    assert(g.entities.barriers[0].active);
+
+    /* Test 1: Laser fired at active barrier is blocked/absorbed */
+    ceres_entities_fire_laser(&g.entities, INT_TO_FIXED(380), INT_TO_FIXED(200));
+    ceres_entities_update(&g.entities, &g.terrain, 640, 360);
+    ceres_interaction_t res_laser = ceres_entities_resolve_collisions(&g.entities, &g.terrain, 100, 200, 28, 14, false);
+    assert(!res_laser.player_hit);
+
+    /* Test 2: Ship flying into active barrier takes lethal hit */
+    ceres_interaction_t res_barr = ceres_entities_resolve_collisions(&g.entities, &g.terrain, 390 - 14, 200, 28, 14, false);
+    assert(res_barr.player_hit);
+
+    /* Test 3: Bombing the generator drops the laser fence */
+    ceres_entities_drop_bomb(&g.entities, INT_TO_FIXED(300 + 10), INT_TO_FIXED(300));
+    ceres_entities_update(&g.entities, &g.terrain, 640, 360);
+    ceres_interaction_t res_bomb = ceres_entities_resolve_collisions(&g.entities, &g.terrain, 100, 200, 28, 14, false);
+    assert(res_bomb.barrier_collapsed);
+    assert(!g.entities.targets[gen_idx].active); /* Generator destroyed */
+    assert(!g.entities.barriers[0].active);      /* Barrier collapsed */
+
+    /* Test 4: Ship can now pass through barrier column safely */
+    ceres_interaction_t res_pass = ceres_entities_resolve_collisions(&g.entities, &g.terrain, 390 - 14, 200, 28, 14, false);
+    assert(!res_pass.player_hit);
+
+    printf("[test] Sector 4 Power Generator & Laser Barrier collapse passed.\n");
+}
+
+static void test_sector_6_reactor_core_and_meltdown(void) {
+    printf("[test] Checking Sector 6 Reactor Core detonation, Meltdown & Loop Rollover...\n");
+    ceres_game_t g;
+    ceres_game_init(&g, 640, 360);
+    g.player.sector = 6;
+    g.terrain.sector = 6;
+
+    /* Spawn Reactor Core */
+    bool spawned_core = ceres_entities_spawn_target(&g.entities, CERES_TARGET_REACTOR_CORE, 400, 320);
+    assert(spawned_core);
+    int core_idx = -1;
+    for (int i = 0; i < CERES_MAX_GROUND_TARGETS; i++) {
+        if (g.entities.targets[i].active && g.entities.targets[i].type == CERES_TARGET_REACTOR_CORE) {
+            core_idx = i;
+            break;
+        }
+    }
+    assert(core_idx != -1);
+    assert(g.entities.targets[core_idx].hp == 3);
+
+    /* Twin pulse laser hit inflicts damage */
+    ceres_entities_fire_laser(&g.entities, INT_TO_FIXED(390), INT_TO_FIXED(310));
+    ceres_entities_update(&g.entities, &g.terrain, 640, 360);
+    ceres_entities_resolve_collisions(&g.entities, &g.terrain, 100, 200, 28, 14, false);
+    assert(g.entities.targets[core_idx].active);
+    assert(g.entities.targets[core_idx].hp == 1);
+
+    /* Direct Bomb hit finishes off Reactor Core */
+    ceres_entities_drop_bomb(&g.entities, INT_TO_FIXED(400 + 10), INT_TO_FIXED(310));
+    ceres_entities_update(&g.entities, &g.terrain, 640, 360);
+    ceres_interaction_t res_core = ceres_entities_resolve_collisions(&g.entities, &g.terrain, 100, 200, 28, 14, false);
+    assert(res_core.core_destroyed);
+    assert(!g.entities.targets[core_idx].active);
+    assert(res_core.score_delta >= 5000);
+
+    /* Apply interaction to game state to initiate Meltdown */
+    g.player.score += res_core.score_delta;
+    g.meltdown_timer = 180;
+    assert(g.meltdown_timer == 180);
+
+    /* Run meltdown countdown */
+    for (int f = 0; f < 180; f++) {
+        ceres_game_update(&g, 16);
+    }
+
+    /* Verify Loop Rollover on Meltdown expiry */
+    assert(g.meltdown_timer == 0);
+    assert(g.loop_count == 2);          /* Loop 2! */
+    assert(g.player.sector == 1);       /* Rolled over to Sector 1 */
+    assert(g.player.fuel == 1000);      /* Refueled */
+    assert(g.player.score >= 15000);    /* Core + Loop completion bonus */
+    printf("[test] Sector 6 Reactor Core detonation, Meltdown & Loop Rollover passed.\n");
+}
+
 int main(void) {
     printf("=== Ceres Alpha Logic Unit Tests ===\n");
     test_initialization();
@@ -800,6 +903,8 @@ int main(void) {
     test_aerial_enemy_spawning_and_kinematics();
     test_harvester_abduction_and_midair_rescue();
     test_aerial_collision_with_player_ship();
+    test_sector_4_generator_and_laser_barrier();
+    test_sector_6_reactor_core_and_meltdown();
     printf("=== All Logic Tests Passed Cleanly! ===\n");
     return 0;
 }

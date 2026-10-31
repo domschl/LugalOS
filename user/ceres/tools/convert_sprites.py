@@ -49,15 +49,18 @@ def isolate_and_crop(im, threshold=24):
         visited.add((x, y))
 
         r, g, b = px[x, y][:3]
+        a = px[x, y][3] if len(px[x, y]) >= 4 else 255
         is_magenta = (r > 215 and g < 40 and b > 215)
         is_dark = max(r, g, b) <= threshold
+        is_transparent = (a < 128)
 
-        if is_dark or is_magenta:
+        if is_dark or is_magenta or is_transparent:
             bg.add((x, y))
             for nx, ny in [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)]:
                 if 0 <= nx < w and 0 <= ny < h and (nx, ny) not in visited:
                     nr, ng, nb = px[nx, ny][:3]
-                    if max(nr, ng, nb) <= threshold or (nr > 215 and ng < 40 and nb > 215):
+                    na = px[nx, ny][3] if len(px[nx, ny]) >= 4 else 255
+                    if max(nr, ng, nb) <= threshold or (nr > 215 and ng < 40 and nb > 215) or na < 128:
                         queue.append((nx, ny))
 
     # Bounding box of non-background
@@ -274,6 +277,8 @@ def main():
         ("meteor.png", "meteor", 18, 18, "center"),
         ("harvester.png", "harvester", 24, 20, "center"),
         ("parachutist.png", "parachutist", 16, 24, "center"),
+        ("generator.png", "generator", 24, 20, "bottom"),
+        ("core.png", "core", 28, 28, "center"),
     ]
 
     sprites = []

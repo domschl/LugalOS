@@ -67,6 +67,16 @@ extern const uint8_t  g_packed_harvester[240];
 extern const uint16_t g_palette_parachutist[16];
 extern const uint8_t  g_packed_parachutist[192];
 
+#define SPRITE_GENERATOR_W 24
+#define SPRITE_GENERATOR_H 20
+extern const uint16_t g_palette_generator[16];
+extern const uint8_t  g_packed_generator[240];
+
+#define SPRITE_CORE_W 28
+#define SPRITE_CORE_H 28
+extern const uint16_t g_palette_core[16];
+extern const uint8_t  g_packed_core[392];
+
 /* PSRAM Decompression Buffers (owned by ceres_game_t) */
 typedef struct {
     uint16_t fuel_silo[768];
@@ -81,6 +91,8 @@ typedef struct {
     uint16_t meteor[324];
     uint16_t harvester[480];
     uint16_t parachutist[384];
+    uint16_t generator[480];
+    uint16_t core[784];
 } ceres_sprite_buffers_t;
 
 /* Live RGB565 Surfaces (pointing into ceres_sprite_buffers_t) */
@@ -97,6 +109,8 @@ typedef struct {
     ceres_surface_t meteor;
     ceres_surface_t harvester;
     ceres_surface_t parachutist;
+    ceres_surface_t generator;
+    ceres_surface_t core;
 } ceres_surfaces_t;
 
 /* Global surfaces accessed during gameplay */
@@ -112,6 +126,8 @@ extern ceres_surface_t g_surf_fighter;
 extern ceres_surface_t g_surf_meteor;
 extern ceres_surface_t g_surf_harvester;
 extern ceres_surface_t g_surf_parachutist;
+extern ceres_surface_t g_surf_generator;
+extern ceres_surface_t g_surf_core;
 
 /* Fast PSRAM Unpacker called once at initialization */
 void ceres_sprites_unpack(ceres_sprite_buffers_t *bufs, ceres_surfaces_t *surfs);

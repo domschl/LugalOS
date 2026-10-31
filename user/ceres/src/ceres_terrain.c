@@ -51,7 +51,7 @@ static void pick_next_segment(ceres_terrain_t *t) {
     int r_type = rand_range(&t->seed, 0, 100);
 
     if (t->sector == 1) {
-        /* Sector 1: Open Mountainous Terrain (Ceiling retracted to HUD) */
+        /* Sector 1: Mountain Approach (Ceiling retracted to HUD) */
         t->target_ceil_y = CERES_HUD_HEIGHT;
 
         if (r_type < 40) {
@@ -70,8 +70,8 @@ static void pick_next_segment(ceres_terrain_t *t) {
             t->segment_len = rand_range(&t->seed, 48, 72);
             t->target_floor_y = rand_range(&t->seed, 335, 348);
         }
-    } else {
-        /* Sector 2+: Subterranean Cavern (Active ceiling and floor stalactites) */
+    } else if (t->sector == 2) {
+        /* Sector 2: Crystal Cavern (Active ceiling and floor stalactites) */
         t->segment_type = CERES_COL_CAVERN | CERES_COL_FLAT;
         t->segment_len = rand_range(&t->seed, 48, 70);
 
@@ -88,14 +88,68 @@ static void pick_next_segment(ceres_terrain_t *t) {
             t->target_floor_y = rand_range(&t->seed, 320, 344);
             t->target_ceil_y = rand_range(&t->seed, 48, 75);
         }
+    } else if (t->sector == 3) {
+        /* Sector 3: Asteroid Trench (Jagged, steep undulating trench) */
+        t->segment_type = CERES_COL_CAVERN;
+        t->segment_len = rand_range(&t->seed, 36, 54);
+        if (r_type < 40) {
+            t->target_floor_y = rand_range(&t->seed, 275, 305);
+            t->target_ceil_y = rand_range(&t->seed, 75, 105);
+        } else {
+            t->target_floor_y = rand_range(&t->seed, 295, 330);
+            t->target_ceil_y = rand_range(&t->seed, 55, 85);
+        }
+    } else if (t->sector == 4) {
+        /* Sector 4: Fortified Base (Level platforms for generators and laser barriers) */
+        t->segment_type = CERES_COL_CAVERN | CERES_COL_FLAT;
+        t->segment_len = rand_range(&t->seed, 60, 85);
+        if (r_type < 60) {
+            /* Base interior hangar corridor */
+            t->target_floor_y = rand_range(&t->seed, 305, 325);
+            t->target_ceil_y = rand_range(&t->seed, 55, 75);
+        } else {
+            /* Elevated conduit platform */
+            t->target_floor_y = rand_range(&t->seed, 260, 285);
+            t->target_ceil_y = rand_range(&t->seed, 80, 100);
+        }
+    } else if (t->sector == 5) {
+        /* Sector 5: The Labyrinth (Winding, steep climbs and tight clearance) */
+        t->segment_type = CERES_COL_CAVERN;
+        t->segment_len = rand_range(&t->seed, 40, 60);
+        if (r_type < 45) {
+            /* Steep ascent shaft */
+            t->target_floor_y = rand_range(&t->seed, 230, 260);
+            t->target_ceil_y = rand_range(&t->seed, 48, 70);
+        } else if (r_type < 80) {
+            /* Steep descent shaft */
+            t->target_floor_y = rand_range(&t->seed, 315, 342);
+            t->target_ceil_y = rand_range(&t->seed, 120, 145);
+        } else {
+            /* Tight undulating corridor */
+            t->target_floor_y = rand_range(&t->seed, 270, 295);
+            t->target_ceil_y = rand_range(&t->seed, 85, 110);
+        }
+    } else {
+        /* Sector 6: Reactor Stronghold (Corridor leading into final reactor hall) */
+        t->segment_type = CERES_COL_CAVERN | CERES_COL_FLAT;
+        t->segment_len = rand_range(&t->seed, 55, 80);
+        if (r_type < 70) {
+            /* Reinforced reactor facility corridor */
+            t->target_floor_y = rand_range(&t->seed, 300, 325);
+            t->target_ceil_y = rand_range(&t->seed, 55, 80);
+        } else {
+            /* Grand reactor containment hall */
+            t->target_floor_y = 330;
+            t->target_ceil_y = 50;
+        }
+    }
 
-        /* Enforce minimum corridor clearance */
-        if (t->target_floor_y - t->target_ceil_y < MIN_CORRIDOR_CLEARANCE) {
-            t->target_floor_y = t->target_ceil_y + MIN_CORRIDOR_CLEARANCE;
-            if (t->target_floor_y > CERES_VIRTUAL_H - 12) {
-                t->target_floor_y = CERES_VIRTUAL_H - 12;
-                t->target_ceil_y = t->target_floor_y - MIN_CORRIDOR_CLEARANCE;
-            }
+    /* Enforce minimum corridor clearance */
+    if (t->target_floor_y - t->target_ceil_y < MIN_CORRIDOR_CLEARANCE) {
+        t->target_floor_y = t->target_ceil_y + MIN_CORRIDOR_CLEARANCE;
+        if (t->target_floor_y > CERES_VIRTUAL_H - 12) {
+            t->target_floor_y = CERES_VIRTUAL_H - 12;
+            t->target_ceil_y = t->target_floor_y - MIN_CORRIDOR_CLEARANCE;
         }
     }
 }

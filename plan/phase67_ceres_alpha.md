@@ -280,7 +280,7 @@ flowchart TD
   - Abductor picks up survivor if player fails to intercept; shooting abductor drops survivor with parachute.
   - Ship collision with rock or enemy craft triggers ship destruction, life deduction, and respawn checkpoint.
 
-### Milestone 67.6: 6-Sector Progression, Objectives & Core Detonation
+### Milestone 67.6: 6-Sector Progression, Objectives & Core Detonation — **COMPLETE**
 * **Deliverables**:
   - Complete 6-sector level pipeline:
     1. *Mountain Approach*
