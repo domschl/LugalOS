@@ -318,7 +318,9 @@ set(CONFIG_SDIO_FREQ_KHZ   40000)   # SDIO high speed; the C6's slave answers at
 set(CONFIG_NET_PREFER_WIRED 1)
 set(CONFIG_C6_CHIP_PU_GPIO 54)
 
-set(CONFIG_SETUP_BUTTON_GPIO 35)   # BOOT; a strapping pin, an ordinary input once running
+# No setup button: BOOT (GPIO35) is also the Ethernet MAC's RMII TXD1 (above). Read as a button it
+# took TXD1 from the MAC, and once the MAC had it back its low level read as a held button: an owner
+# reset 15 s later (found 2026-10-31). Setup mode and the owner reset are the console's here.
 # The board has no user LED. An LED (with its resistor) between a free header GPIO and ground shows
 # the node's mode (kernel/status_led.c): name the pin here, and add CONFIG_STATUS_LED_ACTIVE_LOW 1 for
 # an LED wired to 3V3 instead.

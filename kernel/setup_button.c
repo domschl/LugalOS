@@ -25,6 +25,40 @@
 #if defined(CONFIG_SETUP_BUTTON_GPIO)
 #include "drivers/gpio.h"
 
+/* The button's pin must be the button's alone. A pin a peripheral drives (the ESP32-P4-NANO's BOOT is
+ * also the Ethernet MAC's TXD1) reads as a button held whenever the peripheral drives it low, and
+ * taking it as an input takes it from the peripheral. */
+#if defined(CONFIG_EMAC_MDC_GPIO) && CONFIG_EMAC_MDC_GPIO == CONFIG_SETUP_BUTTON_GPIO
+#error "the setup button's pin is CONFIG_EMAC_MDC_GPIO: the MAC drives it, and a low level held 15 s reads as an owner reset"
+#endif
+#if defined(CONFIG_EMAC_MDIO_GPIO) && CONFIG_EMAC_MDIO_GPIO == CONFIG_SETUP_BUTTON_GPIO
+#error "the setup button's pin is CONFIG_EMAC_MDIO_GPIO: the MAC drives it, and a low level held 15 s reads as an owner reset"
+#endif
+#if defined(CONFIG_EMAC_PHY_RST_GPIO) && CONFIG_EMAC_PHY_RST_GPIO == CONFIG_SETUP_BUTTON_GPIO
+#error "the setup button's pin is CONFIG_EMAC_PHY_RST_GPIO: the MAC drives it, and a low level held 15 s reads as an owner reset"
+#endif
+#if defined(CONFIG_EMAC_RMII_CLK_GPIO) && CONFIG_EMAC_RMII_CLK_GPIO == CONFIG_SETUP_BUTTON_GPIO
+#error "the setup button's pin is CONFIG_EMAC_RMII_CLK_GPIO: the MAC drives it, and a low level held 15 s reads as an owner reset"
+#endif
+#if defined(CONFIG_EMAC_TX_EN_GPIO) && CONFIG_EMAC_TX_EN_GPIO == CONFIG_SETUP_BUTTON_GPIO
+#error "the setup button's pin is CONFIG_EMAC_TX_EN_GPIO: the MAC drives it, and a low level held 15 s reads as an owner reset"
+#endif
+#if defined(CONFIG_EMAC_TXD0_GPIO) && CONFIG_EMAC_TXD0_GPIO == CONFIG_SETUP_BUTTON_GPIO
+#error "the setup button's pin is CONFIG_EMAC_TXD0_GPIO: the MAC drives it, and a low level held 15 s reads as an owner reset"
+#endif
+#if defined(CONFIG_EMAC_TXD1_GPIO) && CONFIG_EMAC_TXD1_GPIO == CONFIG_SETUP_BUTTON_GPIO
+#error "the setup button's pin is CONFIG_EMAC_TXD1_GPIO: the MAC drives it, and a low level held 15 s reads as an owner reset"
+#endif
+#if defined(CONFIG_EMAC_CRS_DV_GPIO) && CONFIG_EMAC_CRS_DV_GPIO == CONFIG_SETUP_BUTTON_GPIO
+#error "the setup button's pin is CONFIG_EMAC_CRS_DV_GPIO: the MAC drives it, and a low level held 15 s reads as an owner reset"
+#endif
+#if defined(CONFIG_EMAC_RXD0_GPIO) && CONFIG_EMAC_RXD0_GPIO == CONFIG_SETUP_BUTTON_GPIO
+#error "the setup button's pin is CONFIG_EMAC_RXD0_GPIO: the MAC drives it, and a low level held 15 s reads as an owner reset"
+#endif
+#if defined(CONFIG_EMAC_RXD1_GPIO) && CONFIG_EMAC_RXD1_GPIO == CONFIG_SETUP_BUTTON_GPIO
+#error "the setup button's pin is CONFIG_EMAC_RXD1_GPIO: the MAC drives it, and a low level held 15 s reads as an owner reset"
+#endif
+
 static void button_init(void) { (void)gpio_set_mode(CONFIG_SETUP_BUTTON_GPIO, GPIO_MODE_PULLUP); }
 static bool button_down(void) { return gpio_read_pin(CONFIG_SETUP_BUTTON_GPIO) == 0; }
 
