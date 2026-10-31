@@ -122,6 +122,27 @@ static bool spawn_target_at_site(ceres_game_t *g, ceres_target_type_t type, int 
     return ceres_entities_spawn_target(&g->entities, type, site, base_y);
 }
 
+static void apply_volume(ceres_game_t *g, int percent) {
+    if (percent < 0) percent = 0;
+    if (percent > 100) percent = 100;
+    g->volume_percent = (uint8_t)percent;
+    g->volume_toast_frames = 120; /* 2.0s toast @ 60 FPS */
+
+#if defined(CONFIG_BOARD_TAB5)
+    int sfx_vol = (percent == 0) ? 0 : 220;
+    int amb_vol = (percent == 0) ? 0 : 150;
+#elif defined(CONFIG_BOARD_ESP32P4)
+    int sfx_vol = (percent == 0) ? 0 : 160;
+    int amb_vol = (percent == 0) ? 0 : 120;
+#else
+    int sfx_vol = (percent * 256) / 100;
+    int amb_vol = (percent * 200) / 100;
+#endif
+    ceres_sound_set_volume(sfx_vol);
+    ceres_ambient_set_volume(amb_vol);
+    ceres_platform_set_volume(percent);
+}
+
 bool ceres_game_init(ceres_game_t *g, int w, int h) {
     if (!g) return false;
     memset(g, 0, sizeof(*g));
@@ -173,7 +194,7 @@ bool ceres_game_init(ceres_game_t *g, int w, int h) {
     ceres_entities_init(&g->entities);
 
     /* Initialize Streaming Cavern Heightfield Engine */
-    ceres_terrain_init(&g->terrain, g->player.sector, 0x19810425);
+    ceres_terrain_init(&g->terrain, g->player.sector, 0x19810425, g->height);
 
     /* Pre-spawn initial ground installations across opening landscape on flat plateaus */
     uint32_t search_col = 140;
@@ -200,6 +221,20 @@ bool ceres_game_init(ceres_game_t *g, int w, int h) {
     g->meltdown_timer = 0;
     g->screen_shake = 0;
     g->core_spawned = false;
+
+    /* Initialize Volume State */
+#if defined(CONFIG_BOARD_TAB5)
+    g->volume_percent = 70;
+#elif defined(CONFIG_BOARD_ESP32P4)
+    g->volume_percent = 60;
+#else
+    g->volume_percent = 65;
+#endif
+    g->volume_toast_frames = 0;
+    g->volume_entry_active = false;
+    g->volume_entry_frames = 0;
+    apply_volume(g, (int)g->volume_percent);
+    g->volume_toast_frames = 0; /* Clear toast so initial banner displays cleanly */
 
     /* Initial Sector Welcome Banner */
     g->banner_timer = 90;
@@ -275,6 +310,41 @@ void ceres_game_handle_event(ceres_game_t *g, const ceres_event_t *ev) {
             case CERES_KEY_ESCAPE:
                 g->running = false;
                 break;
+            case CERES_KEY_V:
+                if (g->volume_entry_active) {
+                    int next_vol = g->volume_percent + 20;
+                    if (next_vol > 100) next_vol = 0;
+                    apply_volume(g, next_vol);
+                } else {
+                    g->volume_entry_active = true;
+                    g->volume_entry_frames = 150;
+                    g->volume_toast_frames = 150;
+                }
+                break;
+            case CERES_KEY_0: case CERES_KEY_1: case CERES_KEY_2:
+            case CERES_KEY_3: case CERES_KEY_4: case CERES_KEY_5:
+            case CERES_KEY_6: case CERES_KEY_7: case CERES_KEY_8:
+            case CERES_KEY_9: {
+                int digit = (int)(ev->key - CERES_KEY_0);
+                int new_vol = (digit == 0) ? 0 : ((digit == 9) ? 100 : digit * 10);
+                g->volume_entry_active = false;
+                apply_volume(g, new_vol);
+                break;
+            }
+            case CERES_KEY_MINUS: {
+                int v = (int)g->volume_percent - 10;
+                if (v < 0) v = 0;
+                g->volume_entry_active = false;
+                apply_volume(g, v);
+                break;
+            }
+            case CERES_KEY_PLUS: {
+                int v = (int)g->volume_percent + 10;
+                if (v > 100) v = 100;
+                g->volume_entry_active = false;
+                apply_volume(g, v);
+                break;
+            }
             default:
                 break;
         }
@@ -625,6 +695,15 @@ void ceres_game_update(ceres_game_t *g, uint32_t delta_ms) {
     if (g->banner_timer > 0) {
         g->banner_timer--;
     }
+    if (g->volume_toast_frames > 0) {
+        g->volume_toast_frames--;
+    }
+    if (g->volume_entry_frames > 0) {
+        g->volume_entry_frames--;
+        if (g->volume_entry_frames == 0) {
+            g->volume_entry_active = false;
+        }
+    }
 
     /* Fatal SAM Rocket / Laser Barrier Impact */
     if (res.player_hit && g->player.alive && g->player.invincible_frames == 0) {
@@ -766,24 +845,39 @@ void ceres_game_render(ceres_game_t *g, uint16_t *fb, int w, int h, int stride) 
     ceres_blit_line(&surf, 0, 31, w - 1, 31, RGB565(60, 60, 90));
 
     /* Row 1: Score, Hi-Score, Sector, Ships */
-    if (g->loop_count > 1) {
-        ceres_blit_text_fmt(&surf, 8, 4, COLOR_HUD_TEXT, 0, true,
-                               "SCORE: %06u  HI: %06u  SEC: %d (L%u)  SHIPS: ",
-                               g->player.score, g->player.hi_score, g->player.sector, g->loop_count);
+    int ship_icon_x;
+    if (w < 600) {
+        if (g->loop_count > 1) {
+            ceres_blit_text_fmt(&surf, 8, 4, COLOR_HUD_TEXT, 0, true,
+                                "SC:%06u HI:%06u S:%d(L%u) ",
+                                g->player.score, g->player.hi_score, g->player.sector, g->loop_count);
+            ship_icon_x = 248;
+        } else {
+            ceres_blit_text_fmt(&surf, 8, 4, COLOR_HUD_TEXT, 0, true,
+                                "SC:%06u HI:%06u SEC:%d ",
+                                g->player.score, g->player.hi_score, g->player.sector);
+            ship_icon_x = 240;
+        }
     } else {
-        ceres_blit_text_fmt(&surf, 8, 4, COLOR_HUD_TEXT, 0, true,
-                               "SCORE: %06u  HI: %06u  SECTOR: %d  SHIPS: ",
-                               g->player.score, g->player.hi_score, g->player.sector);
+        if (g->loop_count > 1) {
+            ceres_blit_text_fmt(&surf, 8, 4, COLOR_HUD_TEXT, 0, true,
+                                "SCORE: %06u  HI: %06u  SEC: %d (L%u)  SHIPS: ",
+                                g->player.score, g->player.hi_score, g->player.sector, g->loop_count);
+        } else {
+            ceres_blit_text_fmt(&surf, 8, 4, COLOR_HUD_TEXT, 0, true,
+                                "SCORE: %06u  HI: %06u  SECTOR: %d  SHIPS: ",
+                                g->player.score, g->player.hi_score, g->player.sector);
+        }
+        ship_icon_x = 420;
     }
 
     /* Ship Icons in HUD */
-    int ship_icon_x = 420;
     for (int i = 0; i < g->player.lives; i++) {
-        ceres_blit_text(&surf, ship_icon_x + i * 24, 4, "[>", COLOR_SHIP_COCKPIT, 0, true);
+        ceres_blit_text(&surf, ship_icon_x + i * 20, 4, "[>", COLOR_SHIP_COCKPIT, 0, true);
     }
 
     /* Live Frame Rate in HUD */
-    ceres_blit_text_fmt(&surf, w - 80, 4, COLOR_STAR_DIM, 0, true, "%2u FPS", g->fps);
+    ceres_blit_text_fmt(&surf, w - 64, 4, COLOR_STAR_DIM, 0, true, "%2u FPS", g->fps);
 
     /* Row 2: Fuel Gauge Bar and Rescue Counter */
     ceres_blit_text(&surf, 8, 18, "FUEL [", COLOR_HUD_TEXT, 0, true);
@@ -798,6 +892,25 @@ void ceres_game_render(ceres_game_t *g, uint16_t *fb, int w, int h, int stride) 
         ceres_blit_fill_rect(&surf, bx, by, bw, bh, RGB565(8, 16, 8));
         ceres_blit_rect_outline(&surf, bx, by, bw, bh, border_col);
         ceres_blit_text(&surf, bx + 12, by + 3, g->banner_text, COLOR_STAR_WHITE, 0, true);
+    }
+
+    /* Volume Toast Overlay */
+    if (g->volume_toast_frames > 0) {
+        int tw = 240;
+        int th = 22;
+        int tx = (w - tw) / 2;
+        int ty = (g->banner_timer > 0) ? 62 : 36;
+        ceres_blit_fill_rect(&surf, tx, ty, tw, th, RGB565(12, 16, 28));
+        ceres_blit_rect_outline(&surf, tx, ty, tw, th, COLOR_LASER_CYAN);
+        if (g->volume_entry_active) {
+            ceres_blit_text_fmt(&surf, tx + 14, ty + 3, COLOR_LASER_CYAN, 0, true,
+                                "SET VOL (0-9): %u%%", (unsigned)g->volume_percent);
+        } else if (g->volume_percent == 0) {
+            ceres_blit_text(&surf, tx + 32, ty + 3, "[ VOLUME: MUTED ]", COLOR_HUD_ALERT, 0, true);
+        } else {
+            ceres_blit_text_fmt(&surf, tx + 40, ty + 3, COLOR_STAR_WHITE, 0, true,
+                                "VOLUME: %u%%", (unsigned)g->volume_percent);
+        }
     }
 
     /* Meltdown Emergency Siren Strobe */
@@ -834,14 +947,14 @@ void ceres_game_render(ceres_game_t *g, uint16_t *fb, int w, int h, int stride) 
     }
 
     /* Rescue Status in HUD */
-    ceres_blit_text_fmt(&surf, 320, 18,
+    ceres_blit_text_fmt(&surf, (w < 600) ? 230 : 320, 18,
                            COLOR_SURVIVOR_GREEN, 0, true,
                            "RESCUED: %d/%d", g->player.rescued, g->player.total_rescued);
 
     /* Live Projectile Counters in HUD */
-    ceres_blit_text_fmt(&surf, w - 210, 18, COLOR_LASER_CYAN, 0, true,
-                           "LASER: [SPC] %u", g->entities.active_lasers);
-    ceres_blit_text_fmt(&surf, w - 90, 18, COLOR_BOMB_YELLOW, 0, true,
+    ceres_blit_text_fmt(&surf, w - ((w < 600) ? 170 : 210), 18, COLOR_LASER_CYAN, 0, true,
+                           (w < 600) ? "LSR:%u" : "LASER: [SPC] %u", g->entities.active_lasers);
+    ceres_blit_text_fmt(&surf, w - ((w < 600) ? 80 : 90), 18, COLOR_BOMB_YELLOW, 0, true,
                            "BOMB: %u/2", g->entities.active_bombs);
 
     /* 6. Game Over Overlay */
@@ -856,7 +969,7 @@ void ceres_game_render(ceres_game_t *g, uint16_t *fb, int w, int h, int stride) 
         ceres_blit_text(&surf, gx + 20, gy + 38, "PRESS SPACE OR 'R' TO RETRY", COLOR_STAR_WHITE, 0, true);
     } else if (g->state == CERES_STATE_PAUSED) {
         int pw = 336;
-        int ph = 78;
+        int ph = 94;
         int px = (w - pw) / 2;
         int py = (h - ph) / 2;
         ceres_blit_fill_rect(&surf, px, py, pw, ph, RGB565(8, 8, 16));
@@ -864,6 +977,7 @@ void ceres_game_render(ceres_game_t *g, uint16_t *fb, int w, int h, int stride) 
         ceres_blit_text(&surf, px + 120, py + 8, "== PAUSED ==", COLOR_STAR_WHITE, 0, true);
         ceres_blit_text(&surf, px + 24, py + 26, "MOVE: ARROWS / WASD", COLOR_HUD_TEXT, 0, true);
         ceres_blit_text(&surf, px + 24, py + 42, "FIRE: SPACE (LASER)  B/ENTER (BOMB)", COLOR_HUD_TEXT, 0, true);
-        ceres_blit_text(&surf, px + 24, py + 58, "P: RESUME   R: RETRY   Q: QUIT", COLOR_STAR_DIM, 0, true);
+        ceres_blit_text(&surf, px + 24, py + 58, "VOL:  V (THEN 0-9 OR CYCLE) / +/-", COLOR_HUD_TEXT, 0, true);
+        ceres_blit_text(&surf, px + 24, py + 74, "P: RESUME   R: RETRY   Q: QUIT", COLOR_STAR_DIM, 0, true);
     }
 }

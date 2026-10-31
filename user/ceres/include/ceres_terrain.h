@@ -9,7 +9,7 @@
 #include "ceres_fixed.h"
 #include "ceres_textures.h"
 
-#define CERES_RING_COLS       1024
+#define CERES_RING_COLS       2048
 #define CERES_RING_MASK       (CERES_RING_COLS - 1)
 
 #define CERES_HUD_HEIGHT      32
@@ -46,6 +46,7 @@ typedef struct {
     uint32_t                 camera_col;         /* Integer camera column (camera_x_fp >> 16) */
     int                      sector;             /* Current sector index (1..6) */
     uint32_t                 seed;
+    int                      playfield_h;        /* Virtual playfield height in pixels */
 
     /* Generator State Machine */
     int                      cur_floor_y;
@@ -64,7 +65,7 @@ typedef struct {
 } ceres_terrain_t;
 
 /* Lifecycle & Streaming API */
-void ceres_terrain_init(ceres_terrain_t *t, int sector, uint32_t seed);
+void ceres_terrain_init(ceres_terrain_t *t, int sector, uint32_t seed, int playfield_h);
 void ceres_terrain_advance(ceres_terrain_t *t, fixed32_t delta_x_fp);
 void ceres_terrain_render(const ceres_terrain_t *t, const ceres_surface_t *surf, int view_w, int view_h);
 

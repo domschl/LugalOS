@@ -59,6 +59,7 @@ enum {
     MOON_KEY_F,
     MOON_KEY_B,
     MOON_KEY_L,
+    MOON_KEY_V,
 };
 
 #define MOON_MOD_SHIFT 1
@@ -91,6 +92,10 @@ void     moon_platform_delay_ms(uint32_t ms);
 /* 16-Bit RGB565 Framebuffer Access */
 uint16_t* moon_platform_get_framebuffer(int *stride_pixels);
 void      moon_platform_present(void);
+
+/* Audio Stream Pumping: continuously refills audio buffer. Called every frame loop iteration. */
+void      moon_platform_pump_audio(void);
+void      moon_platform_set_volume(int percent);
 
 /* Partial updates: draw into the buffer that is being shown (not the one frames are composed
  * in, which on a double-buffered board is a frame old) and publish only some rows of it. */

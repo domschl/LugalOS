@@ -10,6 +10,9 @@
 #include "moon_game.h"
 #include "moon_sprites.h"
 
+void moon_platform_set_volume(int percent) { (void)percent; }
+void moon_platform_pump_audio(void) { }
+
 static moon_game_t g;
 
 static void fresh(void) {

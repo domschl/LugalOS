@@ -13,7 +13,7 @@
 #include "ceres_ambient.h"
 #include <string.h>
 
-#define CHIME_VOICES 2
+#define CHIME_VOICES 3
 
 /* 256-entry sine table mapped to [-32767, 32767] */
 static const int16_t s_sin_tab[256] = {
@@ -86,7 +86,7 @@ typedef struct {
  * single task: ceres_game */
 static bool                 s_ambient_enabled = true;
 /* single task: ceres_game */
-static int                  s_master_vol = 160;   /* [0..256] */
+static int                  s_master_vol = CERES_AMBIENT_DEFAULT_VOLUME;   /* [0..256] */
 /* single task: ceres_game */
 static ceres_ambient_mood_t s_mood = CERES_AMBIENT_MOOD_DEEP_SPACE;
 /* single task: ceres_game */
@@ -101,12 +101,24 @@ static uint32_t             s_drone_step_a = 0;
 static uint32_t             s_drone_phase_b = 0;
 /* single task: ceres_game */
 static uint32_t             s_drone_step_b = 0;
+/* single task: ceres_game */
+static uint32_t             s_drone_phase_oct = 0;
+/* single task: ceres_game */
+static uint32_t             s_drone_step_oct = 0;
+/* single task: ceres_game */
+static uint32_t             s_drone_phase_fifth = 0;
+/* single task: ceres_game */
+static uint32_t             s_drone_step_fifth = 0;
 
 /* Harmonic Pad Layer */
 /* single task: ceres_game */
-static uint32_t             s_pad_phase = 0;
+static uint32_t             s_pad_phase_a = 0;
 /* single task: ceres_game */
-static uint32_t             s_pad_step = 0;
+static uint32_t             s_pad_step_a = 0;
+/* single task: ceres_game */
+static uint32_t             s_pad_phase_b = 0;
+/* single task: ceres_game */
+static uint32_t             s_pad_step_b = 0;
 /* single task: ceres_game */
 static uint32_t             s_pad_lfo_phase = 0;
 /* single task: ceres_game */
@@ -152,20 +164,24 @@ static uint32_t ambient_rand(void) {
 
 static void update_mood_tuning(void) {
     uint32_t root_hz10;
+    uint32_t third_hz10;
     uint32_t fifth_hz10;
 
     switch (s_mood) {
         case CERES_AMBIENT_MOOD_CAVERN:
             root_hz10 = 654;    /* C2 = 65.4 Hz */
+            third_hz10 = 1556;  /* Eb3 = 155.6 Hz */
             fifth_hz10 = 980;   /* G2 = 98.0 Hz */
             break;
         case CERES_AMBIENT_MOOD_TENSE:
             root_hz10 = 824;    /* E2 = 82.4 Hz */
+            third_hz10 = 1960;  /* G3 = 196.0 Hz */
             fifth_hz10 = 1235;  /* B2 = 123.5 Hz */
             break;
         case CERES_AMBIENT_MOOD_DEEP_SPACE:
         default:
             root_hz10 = 734;    /* D2 = 73.4 Hz */
+            third_hz10 = 1746;  /* F3 = 174.6 Hz */
             fifth_hz10 = 1100;  /* A2 = 110.0 Hz */
             break;
     }
@@ -173,20 +189,27 @@ static void update_mood_tuning(void) {
     /* Detuned dual oscillators (0.8 Hz acoustic beat) */
     s_drone_step_a = AMBIENT_HZ10_TO_STEP(root_hz10 - 4);
     s_drone_step_b = AMBIENT_HZ10_TO_STEP(root_hz10 + 4);
+    /* Psychoacoustic upper harmonics (octave and fifth) */
+    s_drone_step_oct = AMBIENT_HZ10_TO_STEP(root_hz10 * 2);
+    s_drone_step_fifth = AMBIENT_HZ10_TO_STEP(fifth_hz10 * 2);
 
-    /* Harmonic pad */
-    s_pad_step = AMBIENT_HZ10_TO_STEP(fifth_hz10);
+    /* Harmonic pad 2-voice chord */
+    s_pad_step_a = AMBIENT_HZ10_TO_STEP(fifth_hz10);
+    s_pad_step_b = AMBIENT_HZ10_TO_STEP(third_hz10);
 }
 
 void ceres_ambient_init(void) {
     s_ambient_enabled = true;
-    s_master_vol = 160;
+    s_master_vol = CERES_AMBIENT_DEFAULT_VOLUME;
     s_mood = CERES_AMBIENT_MOOD_DEEP_SPACE;
     s_duck_level = 0;
 
     s_drone_phase_a = 0;
     s_drone_phase_b = 0;
-    s_pad_phase = 0;
+    s_drone_phase_oct = 0;
+    s_drone_phase_fifth = 0;
+    s_pad_phase_a = 0;
+    s_pad_phase_b = 0;
     s_pad_lfo_phase = 0;
     /* Slow ~13.5 sec pad breathing LFO (0.074 Hz) */
     s_pad_lfo_step = (uint32_t)(((uint64_t)65536u * 74u) / ((uint64_t)CERES_AMBIENT_SAMPLE_RATE * 1000u));
@@ -238,7 +261,7 @@ void ceres_ambient_duck(int duck_amount) {
     if (s_duck_level > 220) s_duck_level = 220; /* Keep subtle ambience audible even during heavy duck */
 }
 
-static void trigger_generative_chime(void) {
+static void trigger_single_chime(uint32_t hz10) {
     /* Find an available chime voice, or steal the oldest decaying voice */
     chime_voice_t *chosen = NULL;
     for (int i = 0; i < CHIME_VOICES; i++) {
@@ -250,20 +273,11 @@ static void trigger_generative_chime(void) {
     if (!chosen) {
         /* Steal lowest envelope voice */
         chosen = &s_chimes[0];
-        if (s_chimes[1].env < chosen->env) {
-            chosen = &s_chimes[1];
+        for (int i = 1; i < CHIME_VOICES; i++) {
+            if (s_chimes[i].env < chosen->env) {
+                chosen = &s_chimes[i];
+            }
         }
-    }
-
-    /* Select note from current mood's modal pitch pool */
-    uint32_t hz10;
-    uint32_t r = ambient_rand();
-    if (s_mood == CERES_AMBIENT_MOOD_CAVERN) {
-        hz10 = s_scale_cavern[r % (sizeof(s_scale_cavern) / sizeof(s_scale_cavern[0]))];
-    } else if (s_mood == CERES_AMBIENT_MOOD_TENSE) {
-        hz10 = s_scale_tense[r % (sizeof(s_scale_tense) / sizeof(s_scale_tense[0]))];
-    } else {
-        hz10 = s_scale_deep_space[r % (sizeof(s_scale_deep_space) / sizeof(s_scale_deep_space[0]))];
     }
 
     chosen->active = true;
@@ -276,31 +290,67 @@ static void trigger_generative_chime(void) {
     chosen->env = 0;
     /* 40 ms soft attack (~882 samples) */
     chosen->env_attack = (65536 / (CERES_AMBIENT_SAMPLE_RATE * 40 / 1000));
-    chosen->volume = 3600 + (int32_t)(ambient_rand() % 1200);
+    chosen->volume = 4800 + (int32_t)(ambient_rand() % 1600);
+}
 
-    /* Next chime interval: 2.0 to 4.5 seconds */
-    s_chime_timer = (int32_t)(CERES_AMBIENT_SAMPLE_RATE * (20 + (ambient_rand() % 25)) / 10);
+static void trigger_generative_chime(void) {
+    /* Select note from current mood's modal pitch pool */
+    uint32_t hz10;
+    uint32_t r = ambient_rand();
+    if (s_mood == CERES_AMBIENT_MOOD_CAVERN) {
+        hz10 = s_scale_cavern[r % (sizeof(s_scale_cavern) / sizeof(s_scale_cavern[0]))];
+    } else if (s_mood == CERES_AMBIENT_MOOD_TENSE) {
+        hz10 = s_scale_tense[r % (sizeof(s_scale_tense) / sizeof(s_scale_tense[0]))];
+    } else {
+        hz10 = s_scale_deep_space[r % (sizeof(s_scale_deep_space) / sizeof(s_scale_deep_space[0]))];
+    }
+
+    trigger_single_chime(hz10);
+
+    /* 30% chance of a twin chime starlight chord */
+    if ((ambient_rand() % 10) < 3) {
+        uint32_t r2 = ambient_rand();
+        uint32_t hz10_b;
+        if (s_mood == CERES_AMBIENT_MOOD_CAVERN) {
+            hz10_b = s_scale_cavern[r2 % (sizeof(s_scale_cavern) / sizeof(s_scale_cavern[0]))];
+        } else if (s_mood == CERES_AMBIENT_MOOD_TENSE) {
+            hz10_b = s_scale_tense[r2 % (sizeof(s_scale_tense) / sizeof(s_scale_tense[0]))];
+        } else {
+            hz10_b = s_scale_deep_space[r2 % (sizeof(s_scale_deep_space) / sizeof(s_scale_deep_space[0]))];
+        }
+        trigger_single_chime(hz10_b);
+    }
+
+    /* Next chime interval: 1.2 to 2.5 seconds */
+    s_chime_timer = (int32_t)(CERES_AMBIENT_SAMPLE_RATE * (12 + (ambient_rand() % 14)) / 10);
 }
 
 void ceres_ambient_render(int16_t *buffer, int num_samples) {
     if (!s_ambient_enabled || !buffer || num_samples <= 0) return;
 
     for (int i = 0; i < num_samples; i++) {
-        /* 1. Sub-Bass Detuned Chorus Drone */
+        /* 1. Sub-Bass Detuned Chorus Drone + Psychoacoustic Harmonics */
         int16_t s_a = ambient_sine((uint16_t)s_drone_phase_a);
         int16_t s_b = ambient_sine((uint16_t)s_drone_phase_b);
+        int16_t s_oct = ambient_sine((uint16_t)s_drone_phase_oct);
+        int16_t s_fifth = ambient_sine((uint16_t)s_drone_phase_fifth);
         s_drone_phase_a += s_drone_step_a;
         s_drone_phase_b += s_drone_step_b;
-        int32_t drone_sample = (s_a + s_b) / 2;
+        s_drone_phase_oct += s_drone_step_oct;
+        s_drone_phase_fifth += s_drone_step_fifth;
+        /* 50% beating root + 30% octave + 20% fifth (psychoacoustic warmth on small speakers) */
+        int32_t drone_sample = (((int32_t)(s_a + s_b) / 2) * 5 + (int32_t)s_oct * 3 + (int32_t)s_fifth * 2) / 10;
 
-        /* 2. Harmonic Pad with LFO Breathing */
-        int16_t s_pad = ambient_sine((uint16_t)s_pad_phase);
+        /* 2. Harmonic Pad with LFO Breathing (2-voice chord) */
+        int16_t s_pad_a = ambient_sine((uint16_t)s_pad_phase_a);
+        int16_t s_pad_b = ambient_sine((uint16_t)s_pad_phase_b);
         int16_t s_pad_lfo = ambient_sine((uint16_t)s_pad_lfo_phase);
-        s_pad_phase += s_pad_step;
+        s_pad_phase_a += s_pad_step_a;
+        s_pad_phase_b += s_pad_step_b;
         s_pad_lfo_phase += s_pad_lfo_step;
-        /* Map LFO [-32767..32767] to [8000..32767] */
-        int32_t pad_gain = 8000 + (((int32_t)s_pad_lfo + 32768) * 24767 >> 16);
-        int32_t pad_sample = ((int32_t)s_pad * pad_gain) >> 15;
+        /* Map LFO [-32767..32767] to [12000..30000] */
+        int32_t pad_gain = 12000 + (((int32_t)s_pad_lfo + 32768) * 18000 >> 16);
+        int32_t pad_sample = (((int32_t)(s_pad_a + s_pad_b) / 2) * pad_gain) >> 15;
 
         /* 3. Celestial Solar Wind (Filtered Pink Noise) */
         uint32_t noise_bit = ((s_wind_lfsr >> 0) ^ (s_wind_lfsr >> 2) ^ (s_wind_lfsr >> 3) ^ (s_wind_lfsr >> 5)) & 1u;
@@ -309,10 +359,10 @@ void ceres_ambient_render(int16_t *buffer, int num_samples) {
 
         int16_t s_wind_lfo = ambient_sine((uint16_t)s_wind_lfo_phase);
         s_wind_lfo_phase += s_wind_lfo_step;
-        /* Dynamic filter cutoff alpha: [6..22] */
-        int32_t alpha = 6 + (((int32_t)s_wind_lfo + 32768) * 16 >> 16);
+        /* Dynamic filter cutoff alpha: [8..24] */
+        int32_t alpha = 8 + (((int32_t)s_wind_lfo + 32768) * 16 >> 16);
         s_wind_lp += ((raw_noise - s_wind_lp) * alpha) >> 8;
-        int32_t wind_sample = s_wind_lp;
+        int32_t wind_sample = s_wind_lp * 2;
 
         /* 4. Generative Crystalline Starlight Chimes */
         if (s_chime_timer > 0) {
@@ -344,8 +394,8 @@ void ceres_ambient_render(int16_t *buffer, int num_samples) {
                     v->state = CHIME_STATE_DECAY;
                 }
             } else if (v->state == CHIME_STATE_DECAY) {
-                /* Long natural exponential decay (~2.5 sec) */
-                v->env -= (v->env >> 11) + 1;
+                /* Long natural crystalline exponential decay (~2.2 sec ring) */
+                v->env -= (v->env >> 14) + 1;
                 if (v->env <= 0) {
                     v->env = 0;
                     v->active = false;
@@ -365,10 +415,10 @@ void ceres_ambient_render(int16_t *buffer, int num_samples) {
         int32_t effective_vol = (s_master_vol * (256 - s_duck_level)) >> 8;
 
         /* Balance Master Ambient Mix */
-        int32_t ambient_sum = (drone_sample * 24) / 100 +  /* Warm sub-bass rumble */
-                              (pad_sample   * 20) / 100 +  /* Breathing fifth */
-                              (wind_sample  * 12) / 100 +  /* Interstellar solar wind */
-                              (chime_mix    * 40) / 100;   /* Crystalline stars */
+        int32_t ambient_sum = (drone_sample * 26) / 100 +  /* Warm psychoacoustic sub-bass */
+                              (pad_sample   * 32) / 100 +  /* Breathing pad chord */
+                              (wind_sample  * 14) / 100 +  /* Interstellar solar wind */
+                              (chime_mix    * 28) / 100;   /* Crystalline stars */
 
         int32_t scaled_ambient = (ambient_sum * effective_vol) >> 8;
 

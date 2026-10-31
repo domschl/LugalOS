@@ -11,7 +11,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define CERES_AUDIO_SAMPLE_RATE 22050
+#define CERES_AUDIO_SAMPLE_RATE 16000
 
 typedef enum {
     CERES_SFX_NONE = 0,
@@ -40,5 +40,9 @@ void ceres_sound_render(int16_t *buffer, int num_samples);
 /* Enable / disable sound output */
 void ceres_sound_set_enabled(bool enabled);
 bool ceres_sound_is_enabled(void);
+
+/* Set / get SFX master volume [0..256] */
+void ceres_sound_set_volume(int volume);
+int  ceres_sound_get_volume(void);
 
 #endif /* CERES_SOUND_H */

@@ -13,7 +13,7 @@
 #include "moon_ambient.h"
 #include <string.h>
 
-#define CHIME_VOICES 2
+#define CHIME_VOICES 3
 
 /* 256-entry sine table mapped to [-32767, 32767] */
 static const int16_t s_sin_tab[256] = {
@@ -84,7 +84,7 @@ typedef struct {
  * single task: moon_game */
 static bool                s_ambient_enabled = true;
 /* single task: moon_game */
-static int                 s_master_vol = 160;   /* [0..256] */
+static int                 s_master_vol = MOON_AMBIENT_DEFAULT_VOLUME;   /* [0..256] */
 /* single task: moon_game */
 static moon_ambient_mood_t s_mood = MOON_AMBIENT_MOOD_TRANQUIL;
 /* single task: moon_game */
@@ -99,12 +99,24 @@ static uint32_t            s_drone_step_a = 0;
 static uint32_t            s_drone_phase_b = 0;
 /* single task: moon_game */
 static uint32_t            s_drone_step_b = 0;
+/* single task: moon_game */
+static uint32_t            s_drone_phase_oct = 0;
+/* single task: moon_game */
+static uint32_t            s_drone_step_oct = 0;
+/* single task: moon_game */
+static uint32_t            s_drone_phase_fifth = 0;
+/* single task: moon_game */
+static uint32_t            s_drone_step_fifth = 0;
 
 /* Harmonic Pad Layer */
 /* single task: moon_game */
-static uint32_t            s_pad_phase = 0;
+static uint32_t            s_pad_phase_a = 0;
 /* single task: moon_game */
-static uint32_t            s_pad_step = 0;
+static uint32_t            s_pad_step_a = 0;
+/* single task: moon_game */
+static uint32_t            s_pad_phase_b = 0;
+/* single task: moon_game */
+static uint32_t            s_pad_step_b = 0;
 /* single task: moon_game */
 static uint32_t            s_pad_lfo_phase = 0;
 /* single task: moon_game */
@@ -149,38 +161,49 @@ static uint32_t ambient_rand(void) {
 
 static void update_mood_tuning(void) {
     uint32_t root_hz10;
+    uint32_t third_hz10;
     uint32_t fifth_hz10;
 
     switch (s_mood) {
         case MOON_AMBIENT_MOOD_SUBTERRANEAN:
             root_hz10 = 654;    /* C2 = 65.4 Hz */
+            third_hz10 = 1556;  /* Eb3 = 155.6 Hz */
             fifth_hz10 = 980;   /* G2 = 98.0 Hz */
             break;
         case MOON_AMBIENT_MOOD_INDUSTRIAL:
             root_hz10 = 824;    /* E2 = 82.4 Hz */
+            third_hz10 = 1960;  /* G3 = 196.0 Hz */
             fifth_hz10 = 1235;  /* B2 = 123.5 Hz */
             break;
         case MOON_AMBIENT_MOOD_TRANQUIL:
         default:
             root_hz10 = 734;    /* D2 = 73.4 Hz */
+            third_hz10 = 1746;  /* F3 = 174.6 Hz */
             fifth_hz10 = 1100;  /* A2 = 110.0 Hz */
             break;
     }
 
     s_drone_step_a = MOON_AMBIENT_HZ10_TO_STEP(root_hz10 - 4);
     s_drone_step_b = MOON_AMBIENT_HZ10_TO_STEP(root_hz10 + 4);
-    s_pad_step = MOON_AMBIENT_HZ10_TO_STEP(fifth_hz10);
+    s_drone_step_oct = MOON_AMBIENT_HZ10_TO_STEP(root_hz10 * 2);
+    s_drone_step_fifth = MOON_AMBIENT_HZ10_TO_STEP(fifth_hz10 * 2);
+
+    s_pad_step_a = MOON_AMBIENT_HZ10_TO_STEP(fifth_hz10);
+    s_pad_step_b = MOON_AMBIENT_HZ10_TO_STEP(third_hz10);
 }
 
 void moon_ambient_init(void) {
     s_ambient_enabled = true;
-    s_master_vol = 160;
+    s_master_vol = MOON_AMBIENT_DEFAULT_VOLUME;
     s_mood = MOON_AMBIENT_MOOD_TRANQUIL;
     s_duck_level = 0;
 
     s_drone_phase_a = 0;
     s_drone_phase_b = 0;
-    s_pad_phase = 0;
+    s_drone_phase_oct = 0;
+    s_drone_phase_fifth = 0;
+    s_pad_phase_a = 0;
+    s_pad_phase_b = 0;
     s_pad_lfo_phase = 0;
     s_pad_lfo_step = (uint32_t)(((uint64_t)65536u * 74u) / ((uint64_t)MOON_AMBIENT_SAMPLE_RATE * 1000u));
 
@@ -230,7 +253,7 @@ void moon_ambient_duck(int duck_amount) {
     if (s_duck_level > 220) s_duck_level = 220;
 }
 
-static void trigger_generative_chime(void) {
+static void trigger_single_chime(uint32_t hz10) {
     chime_voice_t *chosen = NULL;
     for (int i = 0; i < CHIME_VOICES; i++) {
         if (!s_chimes[i].active) {
@@ -240,19 +263,11 @@ static void trigger_generative_chime(void) {
     }
     if (!chosen) {
         chosen = &s_chimes[0];
-        if (s_chimes[1].env < chosen->env) {
-            chosen = &s_chimes[1];
+        for (int i = 1; i < CHIME_VOICES; i++) {
+            if (s_chimes[i].env < chosen->env) {
+                chosen = &s_chimes[i];
+            }
         }
-    }
-
-    uint32_t hz10;
-    uint32_t r = ambient_rand();
-    if (s_mood == MOON_AMBIENT_MOOD_SUBTERRANEAN) {
-        hz10 = s_scale_subterranean[r % (sizeof(s_scale_subterranean) / sizeof(s_scale_subterranean[0]))];
-    } else if (s_mood == MOON_AMBIENT_MOOD_INDUSTRIAL) {
-        hz10 = s_scale_industrial[r % (sizeof(s_scale_industrial) / sizeof(s_scale_industrial[0]))];
-    } else {
-        hz10 = s_scale_tranquil[r % (sizeof(s_scale_tranquil) / sizeof(s_scale_tranquil[0]))];
     }
 
     chosen->active = true;
@@ -263,37 +278,75 @@ static void trigger_generative_chime(void) {
     chosen->step_over = (chosen->step_fund * 241) / 100;
     chosen->env = 0;
     chosen->env_attack = (65536 / (MOON_AMBIENT_SAMPLE_RATE * 40 / 1000));
-    chosen->volume = 3600 + (int32_t)(ambient_rand() % 1200);
+    chosen->volume = 4800 + (int32_t)(ambient_rand() % 1600);
+}
 
-    s_chime_timer = (int32_t)(MOON_AMBIENT_SAMPLE_RATE * (20 + (ambient_rand() % 25)) / 10);
+static void trigger_generative_chime(void) {
+    uint32_t hz10;
+    uint32_t r = ambient_rand();
+    if (s_mood == MOON_AMBIENT_MOOD_SUBTERRANEAN) {
+        hz10 = s_scale_subterranean[r % (sizeof(s_scale_subterranean) / sizeof(s_scale_subterranean[0]))];
+    } else if (s_mood == MOON_AMBIENT_MOOD_INDUSTRIAL) {
+        hz10 = s_scale_industrial[r % (sizeof(s_scale_industrial) / sizeof(s_scale_industrial[0]))];
+    } else {
+        hz10 = s_scale_tranquil[r % (sizeof(s_scale_tranquil) / sizeof(s_scale_tranquil[0]))];
+    }
+
+    trigger_single_chime(hz10);
+
+    /* 30% chance of a twin chime starlight chord */
+    if ((ambient_rand() % 10) < 3) {
+        uint32_t r2 = ambient_rand();
+        uint32_t hz10_b;
+        if (s_mood == MOON_AMBIENT_MOOD_SUBTERRANEAN) {
+            hz10_b = s_scale_subterranean[r2 % (sizeof(s_scale_subterranean) / sizeof(s_scale_subterranean[0]))];
+        } else if (s_mood == MOON_AMBIENT_MOOD_INDUSTRIAL) {
+            hz10_b = s_scale_industrial[r2 % (sizeof(s_scale_industrial) / sizeof(s_scale_industrial[0]))];
+        } else {
+            hz10_b = s_scale_tranquil[r2 % (sizeof(s_scale_tranquil) / sizeof(s_scale_tranquil[0]))];
+        }
+        trigger_single_chime(hz10_b);
+    }
+
+    /* Next chime interval: 1.2 to 2.5 seconds */
+    s_chime_timer = (int32_t)(MOON_AMBIENT_SAMPLE_RATE * (12 + (ambient_rand() % 14)) / 10);
 }
 
 void moon_ambient_render(int16_t *buffer, int num_samples) {
     if (!s_ambient_enabled || !buffer || num_samples <= 0) return;
 
     for (int i = 0; i < num_samples; i++) {
+        /* 1. Sub-Bass Lunar Drone + Psychoacoustic Harmonics */
         int16_t s_a = ambient_sine((uint16_t)s_drone_phase_a);
         int16_t s_b = ambient_sine((uint16_t)s_drone_phase_b);
+        int16_t s_oct = ambient_sine((uint16_t)s_drone_phase_oct);
+        int16_t s_fifth = ambient_sine((uint16_t)s_drone_phase_fifth);
         s_drone_phase_a += s_drone_step_a;
         s_drone_phase_b += s_drone_step_b;
-        int32_t drone_sample = (s_a + s_b) / 2;
+        s_drone_phase_oct += s_drone_step_oct;
+        s_drone_phase_fifth += s_drone_step_fifth;
+        int32_t drone_sample = (((int32_t)(s_a + s_b) / 2) * 5 + (int32_t)s_oct * 3 + (int32_t)s_fifth * 2) / 10;
 
-        int16_t s_pad = ambient_sine((uint16_t)s_pad_phase);
+        /* 2. Harmonic Pad with LFO Breathing (2-voice chord) */
+        int16_t s_pad_a = ambient_sine((uint16_t)s_pad_phase_a);
+        int16_t s_pad_b = ambient_sine((uint16_t)s_pad_phase_b);
         int16_t s_pad_lfo = ambient_sine((uint16_t)s_pad_lfo_phase);
-        s_pad_phase += s_pad_step;
+        s_pad_phase_a += s_pad_step_a;
+        s_pad_phase_b += s_pad_step_b;
         s_pad_lfo_phase += s_pad_lfo_step;
-        int32_t pad_gain = 8000 + (((int32_t)s_pad_lfo + 32768) * 24767 >> 16);
-        int32_t pad_sample = ((int32_t)s_pad * pad_gain) >> 15;
+        int32_t pad_gain = 12000 + (((int32_t)s_pad_lfo + 32768) * 18000 >> 16);
+        int32_t pad_sample = (((int32_t)(s_pad_a + s_pad_b) / 2) * pad_gain) >> 15;
 
+        /* 3. Solar Wind / Regolith Whispers (Filtered Pink Noise) */
         uint32_t noise_bit = ((s_wind_lfsr >> 0) ^ (s_wind_lfsr >> 2) ^ (s_wind_lfsr >> 3) ^ (s_wind_lfsr >> 5)) & 1u;
         s_wind_lfsr = (s_wind_lfsr >> 1) | (noise_bit << 15);
         int32_t raw_noise = (int32_t)(int16_t)s_wind_lfsr;
 
         int16_t s_wind_lfo = ambient_sine((uint16_t)s_wind_lfo_phase);
         s_wind_lfo_phase += s_wind_lfo_step;
-        int32_t alpha = 6 + (((int32_t)s_wind_lfo + 32768) * 16 >> 16);
+        int32_t alpha = 8 + (((int32_t)s_wind_lfo + 32768) * 16 >> 16);
         s_wind_lp += ((raw_noise - s_wind_lp) * alpha) >> 8;
-        int32_t wind_sample = s_wind_lp;
+        int32_t wind_sample = s_wind_lp * 2;
 
         if (s_chime_timer > 0) {
             s_chime_timer--;
@@ -323,7 +376,8 @@ void moon_ambient_render(int16_t *buffer, int num_samples) {
                     v->state = CHIME_STATE_DECAY;
                 }
             } else if (v->state == CHIME_STATE_DECAY) {
-                v->env -= (v->env >> 11) + 1;
+                /* Long natural crystalline exponential decay (~2.2 sec ring) */
+                v->env -= (v->env >> 14) + 1;
                 if (v->env <= 0) {
                     v->env = 0;
                     v->active = false;
@@ -338,10 +392,10 @@ void moon_ambient_render(int16_t *buffer, int num_samples) {
         }
 
         int32_t effective_vol = (s_master_vol * (256 - s_duck_level)) >> 8;
-        int32_t ambient_sum = (drone_sample * 24) / 100 +
-                              (pad_sample   * 20) / 100 +
-                              (wind_sample  * 12) / 100 +
-                              (chime_mix    * 40) / 100;
+        int32_t ambient_sum = (drone_sample * 26) / 100 +  /* Warm psychoacoustic sub-bass */
+                              (pad_sample   * 32) / 100 +  /* Breathing pad chord */
+                              (wind_sample  * 14) / 100 +  /* Solar wind */
+                              (chime_mix    * 28) / 100;   /* Crystalline stars */
 
         int32_t scaled_ambient = (ambient_sum * effective_vol) >> 8;
 

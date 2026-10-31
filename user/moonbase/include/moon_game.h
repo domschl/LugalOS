@@ -160,6 +160,11 @@ typedef struct {
     const char *notify_msg;
     uint32_t notify_timer_ms;
 
+    /* Volume Adjustment & Entry State */
+    bool     volume_entry_active;
+    uint32_t volume_entry_ms;
+    uint8_t  volume_percent;
+
     /* Animated Expedition Lander Touchdown Sequence */
     bool     landing_active;
     uint32_t landing_elapsed_ms;

@@ -33,6 +33,19 @@ typedef enum {
     CERES_KEY_P,         /* Pause / Unpause */
     CERES_KEY_Q,         /* Quit */
     CERES_KEY_R,         /* Restart / Retry */
+    CERES_KEY_V,         /* Volume Adjust Mode / Cycle */
+    CERES_KEY_0,
+    CERES_KEY_1,
+    CERES_KEY_2,
+    CERES_KEY_3,
+    CERES_KEY_4,
+    CERES_KEY_5,
+    CERES_KEY_6,
+    CERES_KEY_7,
+    CERES_KEY_8,
+    CERES_KEY_9,
+    CERES_KEY_MINUS,     /* Volume Down */
+    CERES_KEY_PLUS,      /* Volume Up */
 } ceres_key_t;
 
 #define CERES_MOD_SHIFT 1
@@ -60,6 +73,9 @@ void      ceres_platform_present(void);
 
 /* Input Event Polling */
 bool      ceres_platform_poll_event(ceres_event_t *out_ev);
+
+/* Audio Hardware Volume (0..100 percent) */
+void      ceres_platform_set_volume(int percent);
 
 /* Diagnostic Logging */
 void      ceres_platform_log(const char *fmt, ...);

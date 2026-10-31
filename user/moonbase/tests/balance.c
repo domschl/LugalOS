@@ -7,6 +7,9 @@
 #include <string.h>
 #include "moon_game.h"
 
+void moon_platform_set_volume(int percent) { (void)percent; }
+void moon_platform_pump_audio(void) { }
+
 static moon_game_t g;
 
 static void key(uint32_t k) {

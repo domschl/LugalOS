@@ -11,7 +11,15 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define MOON_AMBIENT_SAMPLE_RATE 22050
+#define MOON_AMBIENT_SAMPLE_RATE 16000
+
+#if defined(CONFIG_BOARD_TAB5)
+#define MOON_AMBIENT_DEFAULT_VOLUME 100
+#elif defined(CONFIG_BOARD_ESP32P4)
+#define MOON_AMBIENT_DEFAULT_VOLUME 60
+#else
+#define MOON_AMBIENT_DEFAULT_VOLUME 120
+#endif
 
 typedef enum {
     MOON_AMBIENT_MOOD_TRANQUIL = 0, /* Low root drone, celestial chimes, solar wind (default lunar surface) */

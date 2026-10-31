@@ -103,6 +103,12 @@ typedef struct {
     uint16_t              banner_timer;
     char                  banner_text[32];
 
+    /* Volume Toast Notification & Entry State */
+    uint16_t              volume_toast_frames; /* Frames remaining for volume toast */
+    bool                  volume_entry_active; /* Waiting for 0-9 after 'v' pressed */
+    uint16_t              volume_entry_frames; /* Timeout for waiting for 0-9 */
+    uint8_t               volume_percent;      /* 0..100 */
+
     /* Sector & Meltdown State */
     uint32_t              sector_start_col; /* Starting column of current sector */
     uint32_t              sector_length;    /* Length of sector in columns */

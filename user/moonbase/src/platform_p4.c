@@ -9,12 +9,14 @@
 #include "moon_platform.h"
 #include "moon_config.h"
 #include "moon_game.h"
+#include "moon_ambient.h"
 #include "moonbase.h"
 #include "moon_bench.h"
 
 #include "lugalos_config.h"
 #include "kernel/lock.h"
 #include "arch/esp32p4_intr.h"
+#include "drivers/audio_esp32p4.h"
 #include "drivers/dsi_esp32p4.h"
 #include "drivers/ppa_esp32p4.h"
 #include "drivers/lcdterm.h"
@@ -110,6 +112,22 @@ static void queue_clear(void) {
     uintptr_t f = spin_lock_irqsave(&s_qlock);
     s_qhead = s_qtail = 0;
     spin_unlock_irqrestore(&s_qlock, f);
+}
+
+/* Audio streaming scratch buffer (mono synthesis before stereo fan-out)
+ * single task: the one holding s_moon_session (moonbase_run()). */
+static int16_t s_moon_mono_buf[AUDIO_P4_CHUNK_SAMPLES];
+
+static void moon_p4_audio_render(int16_t *stereo_buf, int samples, void *user) {
+    (void)user;
+    if (samples > AUDIO_P4_CHUNK_SAMPLES) samples = AUDIO_P4_CHUNK_SAMPLES;
+    memset(s_moon_mono_buf, 0, (size_t)samples * sizeof(int16_t));
+    moon_ambient_render(s_moon_mono_buf, samples);
+    for (int i = 0; i < samples; i++) {
+        int16_t s = s_moon_mono_buf[i];
+        stereo_buf[i * 2]     = s;
+        stereo_buf[i * 2 + 1] = s;
+    }
 }
 
 static bool p4_touch_hook(int x, int y, int kind) {
@@ -240,6 +258,10 @@ bool moon_platform_init(int width, int height, const char *title) {
     /* Hook touch subsystem */
     touch_set_hook(p4_touch_hook);
 
+    /* Initialize ambient space synthesizer & start circular audio DMA streaming */
+    moon_ambient_init();
+    audio_p4_start(moon_p4_audio_render, NULL);
+
     printk("[moonbase] Bare-metal platform initialized: %dx%d (virtual %dx%d, scale=%d, stride=%lu) at %p (render_fb=%p, cid=%d)\n",
            s_width, s_height, s_virtual_w, s_virtual_h, s_scale, (unsigned long)s_stride, (void *)s_fb, (void *)s_render_fb, s_cid);
     return true;
@@ -251,6 +273,9 @@ bool moon_platform_init(int width, int height, const char *title) {
 void moon_platform_shutdown(void) {
     if (!s_active) return;
     s_active = false;
+
+    /* Stop audio DMA stream and mute power amplifier */
+    audio_p4_stop();
 
     touch_set_hook(NULL);
     queue_clear();                         /* events queued but never read */
@@ -370,6 +395,8 @@ static void upscale_rows(int y0, int y1) {
 void moon_platform_present(void) {
     if (!s_render_fb) return;
 
+    moon_platform_pump_audio();
+
     /* Write back the rendered virtual frame and swap front/back canvas pointers.
      * On Tab5 (s_scale == 2), the display compositor's PPA SRM pass scales the
      * 640x360 canvas by 2x and rotates it 90 deg CCW into fb_back() in a single
@@ -395,6 +422,17 @@ void moon_platform_present(void) {
                                  (size_t)s_virtual_w * s_virtual_h * sizeof(uint16_t));
         lcdterm_damage();
     }
+
+    /* Refill circular audio DMA buffer non-blockingly (~16.6ms frame cadence) */
+    moon_platform_pump_audio();
+}
+
+void moon_platform_pump_audio(void) {
+    audio_p4_pump();
+}
+
+void moon_platform_set_volume(int percent) {
+    audio_p4_set_volume(percent);
 }
 
 /* The buffer currently on screen (after the front/back swap in moon_platform_present). */
@@ -519,6 +557,9 @@ bool moon_platform_poll_event(moon_event_t *ev) {
             case 'l': case 'L':
                 ev->key = MOON_KEY_L;
                 return true;
+            case 'v': case 'V':
+                ev->key = MOON_KEY_V;
+                return true;
             case '-': case '_':
                 ev->key = MOON_KEY_MINUS;
                 return true;
@@ -615,6 +656,9 @@ static int moonbase_run_claimed(const char *args) {
 
         moon_game_update(&s_p4_game, delta);
 
+        /* Pump audio before potential heavy rendering passes */
+        moon_platform_pump_audio();
+
         /* Draw only what is stale: nothing, the top bar and ribbon, or the whole frame */
         int dirty = moon_game_take_dirty(&s_p4_game);
         int stride = 0;
@@ -623,6 +667,7 @@ static int moonbase_run_claimed(const char *args) {
             if (fb) {
                 uint32_t t0 = moon_platform_get_ticks_us();
                 moon_game_render(&s_p4_game, fb, w, h, stride);
+                moon_platform_pump_audio();
                 uint32_t t1 = moon_platform_get_ticks_us();
                 moon_platform_present();
                 uint32_t t2 = moon_platform_get_ticks_us();
@@ -636,6 +681,9 @@ static int moonbase_run_claimed(const char *args) {
                 moon_platform_present_rows(s_p4_game.ui.ribbon_bar.y, h);
             }
         }
+
+        /* Pump audio continuously every frame, regardless of visual dirty state */
+        moon_platform_pump_audio();
 
         /* Sleep for what is left of the 16 ms frame, not a fixed 16 ms on top of the work */
         uint32_t spent = moon_platform_get_ticks_ms() - now;

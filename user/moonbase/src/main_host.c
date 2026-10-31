@@ -87,6 +87,7 @@ int main(int argc, char **argv) {
         s_game.landing_active = true;
         s_game.landing_elapsed_ms = 0;
         s_game.landing_y_offset = 260;
+        s_game.structs.lander_y_offset = 260;
     }
 
     s_game.clock_us = moon_platform_get_ticks_us;
@@ -165,7 +166,10 @@ int main(int argc, char **argv) {
             if (dirty == MOON_DIRTY_WORLD) moon_game_note_frame(&s_game, moon_platform_get_ticks_us() - t1, moon_platform_get_ticks_us() - t1);
         }
 
-        /* 5. Frame rate limiter (target 60 FPS) */
+        /* 5. Feed procedural ambient audio continuously every frame, even when visuals are static */
+        moon_platform_pump_audio();
+
+        /* 6. Frame rate limiter (target 60 FPS) */
         uint32_t frame_elapsed = moon_platform_get_ticks_ms() - current_time;
         if (frame_elapsed < MOON_FRAME_TIME_MS) {
             moon_platform_delay_ms(MOON_FRAME_TIME_MS - frame_elapsed);

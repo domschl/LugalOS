@@ -16,6 +16,8 @@
 #include <assert.h>
 #include <string.h>
 
+void ceres_platform_set_volume(int percent) { (void)percent; }
+
 static void test_initialization(void) {
     printf("[test] Checking game initialization...\n");
     ceres_game_t g;
@@ -298,7 +300,7 @@ static void test_projectile_terrain_collision(void) {
     ceres_entities_init(&pool);
 
     ceres_terrain_t terrain;
-    ceres_terrain_init(&terrain, 2, 0x19810425);
+    ceres_terrain_init(&terrain, 2, 0x19810425, 360);
 
     /* Sample terrain at x = 120 */
     int ceil_y = 0, floor_y = 0;
@@ -355,7 +357,7 @@ static void test_particles_physics_and_decay(void) {
 static void test_terrain_streaming(void) {
     printf("[test] Checking terrain ring buffer streaming & geometry...\n");
     ceres_terrain_t t;
-    ceres_terrain_init(&t, 1, 0x12345678);
+    ceres_terrain_init(&t, 1, 0x12345678, 360);
 
     /* Verify initial columns */
     assert(t.generated_col_end == CERES_RING_COLS);
@@ -373,7 +375,7 @@ static void test_terrain_streaming(void) {
     assert(t.generated_col_end >= 2500 + 640);
 
     /* Test Sector 2 cavern generation with ceiling and clearance */
-    ceres_terrain_init(&t, 2, 0x87654321);
+    ceres_terrain_init(&t, 2, 0x87654321, 360);
     for (int step = 0; step < 500; step++) {
         ceres_terrain_advance(&t, INT_TO_FIXED(2));
     }
@@ -393,7 +395,7 @@ static void test_terrain_streaming(void) {
 static void test_terrain_collision(void) {
     printf("[test] Checking terrain collision queries...\n");
     ceres_terrain_t t;
-    ceres_terrain_init(&t, 2, 0x19810425);
+    ceres_terrain_init(&t, 2, 0x19810425, 360);
 
     int ceil_y = 0, floor_y = 0;
     bool sampled = ceres_terrain_sample(&t, 100, &ceil_y, &floor_y);
@@ -477,7 +479,7 @@ static void test_cryo_bunker_breach(void) {
     ceres_entities_t pool;
     ceres_entities_init(&pool);
     ceres_terrain_t t;
-    ceres_terrain_init(&t, 1, 0x12345678);
+    ceres_terrain_init(&t, 1, 0x12345678, 360);
 
     /* Spawn Cryo-Bunker at world_x = 200, ground_y = 320 */
     ceres_entities_spawn_target(&pool, CERES_TARGET_CRYO_BUNKER, 200, 320);
@@ -507,7 +509,7 @@ static void test_sam_silo_proximity_launch_and_interception(void) {
     ceres_entities_t pool;
     ceres_entities_init(&pool);
     ceres_terrain_t t;
-    ceres_terrain_init(&t, 1, 0x12345678);
+    ceres_terrain_init(&t, 1, 0x12345678, 360);
 
     /* Spawn SAM Silo at world_x = 300, ground_y = 320 */
     ceres_entities_spawn_target(&pool, CERES_TARGET_SAM_SILO, 300, 320);
@@ -934,7 +936,7 @@ static void test_ambient_synthesizer(void) {
     printf("[test] Checking Generative Space Ambient Synthesizer...\n");
     ceres_ambient_init();
     assert(ceres_ambient_is_enabled());
-    assert(ceres_ambient_get_volume() == 160);
+    assert(ceres_ambient_get_volume() == CERES_AMBIENT_DEFAULT_VOLUME);
     assert(ceres_ambient_get_mood() == CERES_AMBIENT_MOOD_DEEP_SPACE);
 
     int16_t buffer[1024];

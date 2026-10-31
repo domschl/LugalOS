@@ -5,7 +5,11 @@
 #include "moon_grid.h"
 #include "moon_structures.h"
 #include "moon_textures.h"
+#include "moon_ambient.h"
+#include "moon_platform.h"
 #include <string.h>
+
+static void moon_apply_volume(moon_game_t *game, int percent);
 
 #define MOON_MAX_FRAME_DELTA_MS 100
 #define DRAG_LIMIT_MOUSE_PX     6     /* Movement that turns a press into a drag */
@@ -63,6 +67,19 @@ static void game_reset(moon_game_t *game, int width, int height) {
     game->speed = 1;
     moon_ui_layout(&game->ui, width, height);
 
+    /* Volume default configuration */
+#if defined(CONFIG_BOARD_TAB5)
+    game->volume_percent = 70;
+#elif defined(CONFIG_BOARD_ESP32P4)
+    game->volume_percent = 60;
+#else
+    game->volume_percent = 65;
+#endif
+    game->volume_entry_active = false;
+    game->volume_entry_ms = 0;
+    moon_apply_volume(game, game->volume_percent);
+    game->notify_msg = NULL; /* Clear notify so game start doesn't show volume toast */
+
     /* Generate procedural lunar terrain */
     moon_grid_generate(&game->grid, game->seed);
     game->grid.textured_terrain = textured;
@@ -94,6 +111,9 @@ bool moon_game_init(moon_game_t *game, int width, int height) {
     if (title) {
         game->menu_page = MOON_MENU_TITLE;
         game->menu_sel = game->difficulty;
+        game->landing_active = false;
+        game->landing_y_offset = -1;
+        game->structs.lander_y_offset = -1;
     }
     return true;
 }
@@ -163,6 +183,40 @@ static void notify(moon_game_t *game, const char *msg, uint32_t ms) {
     game->notify_msg = msg;
     game->notify_timer_ms = ms;
     game->dirty = MOON_DIRTY_WORLD;
+}
+
+static void moon_apply_volume(moon_game_t *game, int percent) {
+    if (percent < 0) percent = 0;
+    if (percent > 100) percent = 100;
+    game->volume_percent = (uint8_t)percent;
+
+#if defined(CONFIG_BOARD_TAB5)
+    int amb_vol = (percent == 0) ? 0 : 150;
+#elif defined(CONFIG_BOARD_ESP32P4)
+    int amb_vol = (percent == 0) ? 0 : 120;
+#else
+    int amb_vol = (percent * 200) / 100;
+#endif
+    moon_ambient_set_volume(amb_vol);
+    moon_platform_set_volume(percent);
+
+    static const char *vol_msgs[] = {
+        "[ VOLUME: MUTED ]",
+        "[ VOLUME: 10% ]",
+        "[ VOLUME: 20% ]",
+        "[ VOLUME: 30% ]",
+        "[ VOLUME: 40% ]",
+        "[ VOLUME: 50% ]",
+        "[ VOLUME: 60% ]",
+        "[ VOLUME: 70% ]",
+        "[ VOLUME: 80% ]",
+        "[ VOLUME: 90% ]",
+        "[ VOLUME: 100% (MAX) ]"
+    };
+    int idx = (percent + 5) / 10;
+    if (idx < 0) idx = 0;
+    if (idx > 10) idx = 10;
+    notify(game, vol_msgs[idx], 2000);
 }
 
 static void update_hover(moon_game_t *game, int px, int py) {
@@ -589,6 +643,7 @@ static void menu_activate(moon_game_t *game, int item) {
             game->landing_active = true;
             game->landing_elapsed_ms = 0;
             game->landing_y_offset = 260;
+            game->structs.lander_y_offset = 260;
         } else {
             game->menu_page = game->menu_return;
             game->menu_sel = (game->menu_return == MOON_MENU_MAIN) ? 2 : 0;
@@ -602,6 +657,7 @@ static void menu_activate(moon_game_t *game, int item) {
         game->landing_active = true;
         game->landing_elapsed_ms = 0;
         game->landing_y_offset = 260;
+        game->structs.lander_y_offset = 260;
         break;
     case MOON_MENU_GAME_OVER:
         if (item == 0) open_new_game(game, MOON_MENU_GAME_OVER);
@@ -734,11 +790,40 @@ static void handle_key_down(moon_game_t *game, const moon_event_t *ev) {
     }
 
     game->touch_input = false;
+    if (game->volume_entry_active) {
+        if (key >= MOON_KEY_0 && key <= MOON_KEY_9) {
+            int digit = (int)(key - MOON_KEY_0);
+            int v = (digit == 0) ? 0 : ((digit == 9) ? 100 : digit * 10);
+            game->volume_entry_active = false;
+            game->volume_entry_ms = 0;
+            moon_apply_volume(game, v);
+            return;
+        } else if (key == MOON_KEY_MINUS || key == MOON_KEY_PLUS) {
+            int v = (int)game->volume_percent + (key == MOON_KEY_PLUS ? 10 : -10);
+            if (v < 0) v = 0;
+            if (v > 100) v = 100;
+            game->volume_entry_ms = 2500;
+            moon_apply_volume(game, v);
+            return;
+        }
+    }
+
     bool slot_key = (key >= MOON_KEY_1 && key <= MOON_KEY_6) || key == MOON_KEY_R || key == MOON_KEY_E;
     if (!slot_key) game->last_slot = -1;
     int steps = (ev->mods & MOON_MOD_SHIFT) ? 8 : 1;
 
     switch (key) {
+    case MOON_KEY_V:
+        if (game->volume_entry_active) {
+            int next = game->volume_percent + 20;
+            if (next > 100) next = 0;
+            moon_apply_volume(game, next);
+        } else {
+            game->volume_entry_active = true;
+            game->volume_entry_ms = 2500;
+            notify(game, "[ SET VOL: PRESS 0-9 OR +/- ]", 2500);
+        }
+        break;
     case MOON_KEY_ESCAPE:
     case MOON_KEY_Q:
         escape_action(game);
@@ -1170,6 +1255,14 @@ void moon_game_update(moon_game_t *game, uint32_t delta_ms) {
         if (delta_ms >= game->notify_timer_ms) { game->notify_timer_ms = 0; game->dirty = MOON_DIRTY_WORLD; }
         else game->notify_timer_ms -= delta_ms;
     }
+    if (game->volume_entry_ms > 0) {
+        if (delta_ms >= game->volume_entry_ms) {
+            game->volume_entry_ms = 0;
+            game->volume_entry_active = false;
+        } else {
+            game->volume_entry_ms -= delta_ms;
+        }
+    }
     if (game->undo_ms > 0) {
         game->undo_ms = (delta_ms >= game->undo_ms) ? 0 : game->undo_ms - delta_ms;
         if (game->undo_ms == 0) game->undo_kind = MOON_UNDO_NONE;
@@ -1191,8 +1284,8 @@ void moon_game_update(moon_game_t *game, uint32_t delta_ms) {
         game->dirty = MOON_DIRTY_WORLD;
     }
 
-    /* Expedition Lander Touchdown Animation */
-    if (game->landing_active) {
+    /* Expedition Lander Touchdown Animation (active mission play only) */
+    if (game->landing_active && game->menu_page == MOON_MENU_CLOSED) {
         game->landing_elapsed_ms += delta_ms;
         const uint32_t total_ms = 2600;
         if (game->landing_elapsed_ms >= total_ms) {

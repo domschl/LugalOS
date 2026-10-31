@@ -20,11 +20,29 @@ static inline int rand_range(uint32_t *state, int min_v, int max_v) {
     return min_v + (int)(r % (uint32_t)(max_v - min_v + 1));
 }
 
+static inline int scale_y(const ceres_terrain_t *t, int y) {
+    if (t->playfield_h == CERES_VIRTUAL_H || t->playfield_h <= 0) return y;
+    if (y <= CERES_HUD_HEIGHT) return y;
+    int playable = t->playfield_h - CERES_HUD_HEIGHT;
+    int base_playable = CERES_VIRTUAL_H - CERES_HUD_HEIGHT;
+    int scaled = CERES_HUD_HEIGHT + ((y - CERES_HUD_HEIGHT) * playable + base_playable / 2) / base_playable;
+    if (scaled > t->playfield_h - 8) scaled = t->playfield_h - 8;
+    return scaled;
+}
+
+static inline int min_clearance(const ceres_terrain_t *t) {
+    if (t->playfield_h == CERES_VIRTUAL_H || t->playfield_h <= 0) return MIN_CORRIDOR_CLEARANCE;
+    return (MIN_CORRIDOR_CLEARANCE * (t->playfield_h - CERES_HUD_HEIGHT)) / (CERES_VIRTUAL_H - CERES_HUD_HEIGHT);
+}
+
 static void init_stars(ceres_terrain_t *t) {
     uint32_t r = t->seed ? t->seed : 0x19810425;
+    int max_y = (t->playfield_h > 0) ? t->playfield_h : CERES_VIRTUAL_H;
+    int star_span = max_y - CERES_HUD_HEIGHT - 32;
+    if (star_span < 16) star_span = 16;
     for (int i = 0; i < CERES_PARALLAX_STARS; i++) {
-        t->stars[i].x = (int16_t)(terrain_rand(&r) % CERES_VIRTUAL_W);
-        t->stars[i].y = (int16_t)(CERES_HUD_HEIGHT + 4 + (terrain_rand(&r) % (CERES_VIRTUAL_H - CERES_HUD_HEIGHT - 32)));
+        t->stars[i].x = (int16_t)(terrain_rand(&r) % CERES_PRESET_TAB5_W);
+        t->stars[i].y = (int16_t)(CERES_HUD_HEIGHT + 4 + (terrain_rand(&r) % (uint32_t)star_span));
 
         if (i < 24) {
             /* Layer 1: Distant dim stars (0.5 px/frame) */
@@ -58,17 +76,17 @@ static void pick_next_segment(ceres_terrain_t *t) {
             /* Flat Plain / Plateau */
             t->segment_type = CERES_COL_FLAT;
             t->segment_len = rand_range(&t->seed, 50, 80);
-            t->target_floor_y = rand_range(&t->seed, 312, 330);
+            t->target_floor_y = scale_y(t, rand_range(&t->seed, 312, 330));
         } else if (r_type < 70) {
             /* Mountain Ridge with Summit Mesa */
             t->segment_type = CERES_COL_FLAT;
             t->segment_len = rand_range(&t->seed, 50, 75);
-            t->target_floor_y = rand_range(&t->seed, 210, 255);
+            t->target_floor_y = scale_y(t, rand_range(&t->seed, 210, 255));
         } else {
             /* Crater Basin with Flat Floor */
             t->segment_type = CERES_COL_CRATER | CERES_COL_FLAT;
             t->segment_len = rand_range(&t->seed, 48, 72);
-            t->target_floor_y = rand_range(&t->seed, 335, 348);
+            t->target_floor_y = scale_y(t, rand_range(&t->seed, 335, 348));
         }
     } else if (t->sector == 2) {
         /* Sector 2: Crystal Cavern (Active ceiling and floor stalactites) */
@@ -77,27 +95,27 @@ static void pick_next_segment(ceres_terrain_t *t) {
 
         if (r_type < 35) {
             /* Flat cavern floor section */
-            t->target_floor_y = rand_range(&t->seed, 290, 320);
-            t->target_ceil_y = rand_range(&t->seed, 60, 90);
+            t->target_floor_y = scale_y(t, rand_range(&t->seed, 290, 320));
+            t->target_ceil_y = scale_y(t, rand_range(&t->seed, 60, 90));
         } else if (r_type < 70) {
             /* Narrowing Chasm / Squeeze */
-            t->target_floor_y = rand_range(&t->seed, 250, 280);
-            t->target_ceil_y = rand_range(&t->seed, 90, 120);
+            t->target_floor_y = scale_y(t, rand_range(&t->seed, 250, 280));
+            t->target_ceil_y = scale_y(t, rand_range(&t->seed, 90, 120));
         } else {
             /* Wide cavern chamber */
-            t->target_floor_y = rand_range(&t->seed, 320, 344);
-            t->target_ceil_y = rand_range(&t->seed, 48, 75);
+            t->target_floor_y = scale_y(t, rand_range(&t->seed, 320, 344));
+            t->target_ceil_y = scale_y(t, rand_range(&t->seed, 48, 75));
         }
     } else if (t->sector == 3) {
         /* Sector 3: Asteroid Trench (Jagged, steep undulating trench) */
         t->segment_type = CERES_COL_CAVERN;
         t->segment_len = rand_range(&t->seed, 36, 54);
         if (r_type < 40) {
-            t->target_floor_y = rand_range(&t->seed, 275, 305);
-            t->target_ceil_y = rand_range(&t->seed, 75, 105);
+            t->target_floor_y = scale_y(t, rand_range(&t->seed, 275, 305));
+            t->target_ceil_y = scale_y(t, rand_range(&t->seed, 75, 105));
         } else {
-            t->target_floor_y = rand_range(&t->seed, 295, 330);
-            t->target_ceil_y = rand_range(&t->seed, 55, 85);
+            t->target_floor_y = scale_y(t, rand_range(&t->seed, 295, 330));
+            t->target_ceil_y = scale_y(t, rand_range(&t->seed, 55, 85));
         }
     } else if (t->sector == 4) {
         /* Sector 4: Fortified Base (Level platforms for generators and laser barriers) */
@@ -105,12 +123,12 @@ static void pick_next_segment(ceres_terrain_t *t) {
         t->segment_len = rand_range(&t->seed, 60, 85);
         if (r_type < 60) {
             /* Base interior hangar corridor */
-            t->target_floor_y = rand_range(&t->seed, 305, 325);
-            t->target_ceil_y = rand_range(&t->seed, 55, 75);
+            t->target_floor_y = scale_y(t, rand_range(&t->seed, 305, 325));
+            t->target_ceil_y = scale_y(t, rand_range(&t->seed, 55, 75));
         } else {
             /* Elevated conduit platform */
-            t->target_floor_y = rand_range(&t->seed, 260, 285);
-            t->target_ceil_y = rand_range(&t->seed, 80, 100);
+            t->target_floor_y = scale_y(t, rand_range(&t->seed, 260, 285));
+            t->target_ceil_y = scale_y(t, rand_range(&t->seed, 80, 100));
         }
     } else if (t->sector == 5) {
         /* Sector 5: The Labyrinth (Winding, steep climbs and tight clearance) */
@@ -118,16 +136,16 @@ static void pick_next_segment(ceres_terrain_t *t) {
         t->segment_len = rand_range(&t->seed, 40, 60);
         if (r_type < 45) {
             /* Steep ascent shaft */
-            t->target_floor_y = rand_range(&t->seed, 230, 260);
-            t->target_ceil_y = rand_range(&t->seed, 48, 70);
+            t->target_floor_y = scale_y(t, rand_range(&t->seed, 230, 260));
+            t->target_ceil_y = scale_y(t, rand_range(&t->seed, 48, 70));
         } else if (r_type < 80) {
             /* Steep descent shaft */
-            t->target_floor_y = rand_range(&t->seed, 315, 342);
-            t->target_ceil_y = rand_range(&t->seed, 120, 145);
+            t->target_floor_y = scale_y(t, rand_range(&t->seed, 315, 342));
+            t->target_ceil_y = scale_y(t, rand_range(&t->seed, 120, 145));
         } else {
             /* Tight undulating corridor */
-            t->target_floor_y = rand_range(&t->seed, 270, 295);
-            t->target_ceil_y = rand_range(&t->seed, 85, 110);
+            t->target_floor_y = scale_y(t, rand_range(&t->seed, 270, 295));
+            t->target_ceil_y = scale_y(t, rand_range(&t->seed, 85, 110));
         }
     } else {
         /* Sector 6: Reactor Stronghold (Corridor leading into final reactor hall) */
@@ -135,21 +153,23 @@ static void pick_next_segment(ceres_terrain_t *t) {
         t->segment_len = rand_range(&t->seed, 55, 80);
         if (r_type < 70) {
             /* Reinforced reactor facility corridor */
-            t->target_floor_y = rand_range(&t->seed, 300, 325);
-            t->target_ceil_y = rand_range(&t->seed, 55, 80);
+            t->target_floor_y = scale_y(t, rand_range(&t->seed, 300, 325));
+            t->target_ceil_y = scale_y(t, rand_range(&t->seed, 55, 80));
         } else {
             /* Grand reactor containment hall */
-            t->target_floor_y = 330;
-            t->target_ceil_y = 50;
+            t->target_floor_y = scale_y(t, 330);
+            t->target_ceil_y = scale_y(t, 50);
         }
     }
 
     /* Enforce minimum corridor clearance */
-    if (t->target_floor_y - t->target_ceil_y < MIN_CORRIDOR_CLEARANCE) {
-        t->target_floor_y = t->target_ceil_y + MIN_CORRIDOR_CLEARANCE;
-        if (t->target_floor_y > CERES_VIRTUAL_H - 12) {
-            t->target_floor_y = CERES_VIRTUAL_H - 12;
-            t->target_ceil_y = t->target_floor_y - MIN_CORRIDOR_CLEARANCE;
+    int clearance = min_clearance(t);
+    int max_floor = (t->playfield_h > 0) ? t->playfield_h - 12 : CERES_VIRTUAL_H - 12;
+    if (t->target_floor_y - t->target_ceil_y < clearance) {
+        t->target_floor_y = t->target_ceil_y + clearance;
+        if (t->target_floor_y > max_floor) {
+            t->target_floor_y = max_floor;
+            t->target_ceil_y = t->target_floor_y - clearance;
         }
     }
 }
@@ -210,7 +230,7 @@ static void generate_next_column(ceres_terrain_t *t) {
     t->generated_col_end++;
 }
 
-void ceres_terrain_init(ceres_terrain_t *t, int sector, uint32_t seed) {
+void ceres_terrain_init(ceres_terrain_t *t, int sector, uint32_t seed, int playfield_h) {
     if (!t) return;
     memset(t, 0, sizeof(*t));
 
@@ -219,11 +239,13 @@ void ceres_terrain_init(ceres_terrain_t *t, int sector, uint32_t seed) {
 
     t->sector = (sector > 0) ? sector : 1;
     t->seed = seed ? seed : 0x19810425;
+    t->playfield_h = (playfield_h > 0) ? playfield_h : CERES_VIRTUAL_H;
     t->camera_x_fp = 0;
     t->camera_col = 0;
 
-    t->cur_floor_y = DEFAULT_FLOOR_Y;
-    t->target_floor_y = DEFAULT_FLOOR_Y;
+    int def_floor = scale_y(t, DEFAULT_FLOOR_Y);
+    t->cur_floor_y = def_floor;
+    t->target_floor_y = def_floor;
     t->cur_ceil_y = DEFAULT_CEIL_Y;
     t->target_ceil_y = DEFAULT_CEIL_Y;
     t->segment_len = 32;
@@ -245,7 +267,7 @@ void ceres_terrain_advance(ceres_terrain_t *t, fixed32_t delta_x_fp) {
     t->camera_col = (uint32_t)fixed_to_int(t->camera_x_fp);
 
     /* Generate new columns at the right edge ahead of the viewport */
-    uint32_t target_col = t->camera_col + CERES_VIRTUAL_W + 64;
+    uint32_t target_col = t->camera_col + CERES_PRESET_TAB5_W + 64;
     while (t->generated_col_end < target_col) {
         generate_next_column(t);
     }
@@ -259,7 +281,7 @@ void ceres_terrain_advance(ceres_terrain_t *t, fixed32_t delta_x_fp) {
         if (shift < 1 && (t->camera_col & 1)) shift = 1;
         t->stars[i].x -= (int16_t)shift;
         if (t->stars[i].x < 0) {
-            t->stars[i].x += (int16_t)CERES_VIRTUAL_W;
+            t->stars[i].x += (int16_t)CERES_PRESET_TAB5_W;
         }
     }
 }
@@ -340,7 +362,7 @@ void ceres_terrain_render(const ceres_terrain_t *t, const ceres_surface_t *surf,
 }
 
 bool ceres_terrain_sample(const ceres_terrain_t *t, int screen_x, int *out_ceil_y, int *out_floor_y) {
-    if (!t || screen_x < 0 || screen_x >= CERES_VIRTUAL_W) return false;
+    if (!t || screen_x < 0 || screen_x >= CERES_PRESET_TAB5_W) return false;
 
     uint32_t world_col = t->camera_col + (uint32_t)screen_x;
     const ceres_column_t *col = &t->ring[world_col & CERES_RING_MASK];
@@ -356,7 +378,7 @@ bool ceres_terrain_check_collision(const ceres_terrain_t *t, int x, int y, int w
     int x0 = x;
     int x1 = x + w;
     if (x0 < 0) x0 = 0;
-    if (x1 > CERES_VIRTUAL_W) x1 = CERES_VIRTUAL_W;
+    if (x1 > CERES_PRESET_TAB5_W) x1 = CERES_PRESET_TAB5_W;
 
     for (int sx = x0; sx < x1; sx++) {
         uint32_t world_col = t->camera_col + (uint32_t)sx;
