@@ -408,13 +408,19 @@ def test_llp_modem(c: Console):
                   "%s, ping %.0f ms, %d/%d frames, %s KB heap free" % (
                       ip_str(lease.ip), min(rtts), st.tx_frames, st.rx_frames, heap.group(1) if heap else "?"))
     finally:
+        # The role lasts until a reset: restart, or a stand-alone node tested with --no-load stays off
+        # its own network (no interface of its own) until someone resets it.
+        try:
+            node.type_line("reboot")
+        except Exception:
+            pass
         node.close()
 
 
 TESTS = [test_boots, test_heap, test_tick_rate, test_preemption, test_locks, test_priostress,
          test_pmp, test_umode, test_isolation, test_deputy, test_kobj_kernel, test_kobj_umode,
          test_radio_shim, test_led, test_radio_scan_or_join, test_radio_ip, test_i2c_sensors, test_taint, test_watchdog, test_still_alive,
-         test_llp_modem]   # last: the radio role lasts until the next reset
+         test_llp_modem]   # last: the radio role lasts until a reset, which the test then does
 
 
 def main() -> int:
