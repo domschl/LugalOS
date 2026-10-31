@@ -15,7 +15,7 @@ typedef enum {
 } ceres_event_type_t;
 
 /* Standard Key Codes for cross-platform arcade controls */
-enum {
+typedef enum {
     CERES_KEY_UNKNOWN = 0,
     CERES_KEY_ESCAPE,
     CERES_KEY_RETURN,
@@ -33,7 +33,7 @@ enum {
     CERES_KEY_P,         /* Pause / Unpause */
     CERES_KEY_Q,         /* Quit */
     CERES_KEY_R,         /* Restart / Retry */
-};
+} ceres_key_t;
 
 #define CERES_MOD_SHIFT 1
 

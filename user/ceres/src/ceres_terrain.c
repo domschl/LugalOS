@@ -217,7 +217,13 @@ void ceres_terrain_render(const ceres_terrain_t *t, const ceres_surface_t *surf,
     int render_h = (view_h < surf->height) ? view_h : surf->height;
     int stride = surf->stride;
 
-    /* 1. Fast Vertical Column Rasterization */
+    if (render_w <= 0 || render_h <= CERES_HUD_HEIGHT) return;
+    if (render_w > CERES_PRESET_TAB5_W) render_w = CERES_PRESET_TAB5_W;
+
+    uint16_t ceils[CERES_PRESET_TAB5_W];
+    uint16_t floors[CERES_PRESET_TAB5_W];
+
+    /* 1. Fast column bounds pre-sampling (contiguous linear access to ring buffer) */
     for (int x = 0; x < render_w; x++) {
         uint32_t world_col = t->camera_col + (uint32_t)x;
         const ceres_column_t *col = &t->ring[world_col & CERES_RING_MASK];
@@ -228,58 +234,52 @@ void ceres_terrain_render(const ceres_terrain_t *t, const ceres_surface_t *surf,
         if (fy > render_h) fy = render_h;
         if (fy < cy) fy = cy;
 
-        uint32_t tu = world_col & (TEX_ROCK_W - 1);
-        uint16_t *p = surf->pixels + (size_t)CERES_HUD_HEIGHT * stride + x;
+        ceils[x] = (uint16_t)cy;
+        floors[x] = (uint16_t)fy;
+    }
 
-        /* A. Ceiling Rock (if cavern ceiling is active below HUD) */
-        if (cy > CERES_HUD_HEIGHT) {
-            for (int y = CERES_HUD_HEIGHT; y < cy; y++) {
+    /* 2. Cache-Friendly Row-Major Rasterization (consecutive 16-bit stores prevent PSRAM thrashing) */
+    uint32_t tu_base = t->camera_col & (TEX_ROCK_W - 1);
+
+    for (int y = CERES_HUD_HEIGHT; y < render_h; y++) {
+        uint16_t *line = surf->pixels + (size_t)y * stride;
+        uint32_t tv = (uint32_t)y & (TEX_ROCK_H - 1);
+        const uint16_t *tex_row = &t->tex_rock[tv * TEX_ROCK_W];
+
+        for (int x = 0; x < render_w; x++) {
+            int cy = (int)ceils[x];
+            int fy = (int)floors[x];
+
+            if (y < cy) {
                 if (y == cy - 1) {
-                    *p = COLOR_ROCK_EDGE;   /* Highlighted cavern ceiling rim */
+                    line[x] = COLOR_ROCK_EDGE;
                 } else if (y == cy - 2) {
-                    *p = COLOR_ROCK_LIGHT;  /* Under-rim specular highlight */
+                    line[x] = COLOR_ROCK_LIGHT;
                 } else {
-                    /* Seamless basalt/slate cavern rock texture */
-                    uint32_t tv = (uint32_t)y & (TEX_ROCK_H - 1);
-                    *p = t->tex_rock[(tv * TEX_ROCK_W) + tu];
+                    line[x] = tex_row[(tu_base + (uint32_t)x) & (TEX_ROCK_W - 1)];
                 }
-                p += stride;
-            }
-        }
-
-        /* B. Flight Area (Open Space Corridor) */
-        int flight_len = fy - cy;
-        for (int y = 0; y < flight_len; y++) {
-            *p = COLOR_SPACE_BLACK;
-            p += stride;
-        }
-
-        /* C. Floor Rock with Seamless Geological Texture */
-        for (int y = fy; y < render_h; y++) {
-            if (y == fy) {
-                *p = COLOR_ROCK_EDGE;       /* Illuminated ridgeline */
-            } else if (y == fy + 1) {
-                *p = COLOR_ROCK_LIGHT;      /* Forward sunlit slope */
+            } else if (y < fy) {
+                line[x] = COLOR_SPACE_BLACK;
             } else {
-                /* Seamless basalt/slate cavern rock texture */
-                uint32_t tv = (uint32_t)y & (TEX_ROCK_H - 1);
-                *p = t->tex_rock[(tv * TEX_ROCK_W) + tu];
+                if (y == fy) {
+                    line[x] = COLOR_ROCK_EDGE;
+                } else if (y == fy + 1) {
+                    line[x] = COLOR_ROCK_LIGHT;
+                } else {
+                    line[x] = tex_row[(tu_base + (uint32_t)x) & (TEX_ROCK_W - 1)];
+                }
             }
-            p += stride;
         }
     }
 
-    /* 2. Parallax Starfield Overlay (Occluded by Rock Geometry) */
+    /* 3. Parallax Starfield Overlay (Occluded by Rock Geometry) */
     for (int i = 0; i < CERES_PARALLAX_STARS; i++) {
         int sx = t->stars[i].x;
         int sy = t->stars[i].y;
         if (sx < 0 || sx >= render_w || sy < CERES_HUD_HEIGHT || sy >= render_h) continue;
 
-        uint32_t world_col = t->camera_col + (uint32_t)sx;
-        const ceres_column_t *col = &t->ring[world_col & CERES_RING_MASK];
-
         /* Only render star if inside the open flight space */
-        if (sy >= (int)col->ceil_y && sy < (int)col->floor_y) {
+        if (sy >= (int)ceils[sx] && sy < (int)floors[sx]) {
             surf->pixels[(size_t)sy * stride + sx] = t->stars[i].color;
         }
     }

@@ -84,17 +84,90 @@ static void test_weapons_and_scoring(void) {
     ceres_game_t g;
     ceres_game_init(&g, 640, 360);
 
-    /* Fire laser */
+    /* Fire laser & key release */
     ceres_event_t ev_fire = { .type = CERES_EVENT_KEY_DOWN, .key = CERES_KEY_SPACE };
     ceres_game_handle_event(&g, &ev_fire);
     assert(g.player.laser_fired);
+    assert(g.key_fire);
     assert(g.entities.total_lasers_fired == 2);
+    ceres_event_t ev_fire_up = { .type = CERES_EVENT_KEY_UP, .key = CERES_KEY_SPACE };
+    ceres_game_handle_event(&g, &ev_fire_up);
+    assert(!g.key_fire);
 
-    /* Drop bomb */
+    /* Drop bomb with B & key release */
     ceres_event_t ev_bomb = { .type = CERES_EVENT_KEY_DOWN, .key = CERES_KEY_B };
     ceres_game_handle_event(&g, &ev_bomb);
     assert(g.player.bomb_dropped);
+    assert(g.key_bomb);
     assert(g.entities.total_bombs_dropped == 1);
+    ceres_event_t ev_bomb_up = { .type = CERES_EVENT_KEY_UP, .key = CERES_KEY_B };
+    ceres_game_handle_event(&g, &ev_bomb_up);
+    assert(!g.key_bomb);
+
+    /* Drop bomb with Enter (CERES_KEY_RETURN) & key release */
+    ceres_event_t ev_enter = { .type = CERES_EVENT_KEY_DOWN, .key = CERES_KEY_RETURN };
+    ceres_game_handle_event(&g, &ev_enter);
+    assert(g.key_bomb);
+    ceres_event_t ev_enter_up = { .type = CERES_EVENT_KEY_UP, .key = CERES_KEY_RETURN };
+    ceres_game_handle_event(&g, &ev_enter_up);
+    assert(!g.key_bomb);
+
+    /* Directional keys press & release toggling */
+    ceres_event_t ev_up = { .type = CERES_EVENT_KEY_DOWN, .key = CERES_KEY_UP };
+    ceres_game_handle_event(&g, &ev_up);
+    assert(g.key_up);
+    ceres_event_t ev_up_rel = { .type = CERES_EVENT_KEY_UP, .key = CERES_KEY_UP };
+    ceres_game_handle_event(&g, &ev_up_rel);
+    assert(!g.key_up);
+
+    ceres_event_t ev_w = { .type = CERES_EVENT_KEY_DOWN, .key = CERES_KEY_W };
+    ceres_game_handle_event(&g, &ev_w);
+    assert(g.key_up);
+    ceres_event_t ev_w_rel = { .type = CERES_EVENT_KEY_UP, .key = CERES_KEY_W };
+    ceres_game_handle_event(&g, &ev_w_rel);
+    assert(!g.key_up);
+
+    ceres_event_t ev_dn = { .type = CERES_EVENT_KEY_DOWN, .key = CERES_KEY_DOWN };
+    ceres_game_handle_event(&g, &ev_dn);
+    assert(g.key_down);
+    ceres_event_t ev_dn_rel = { .type = CERES_EVENT_KEY_UP, .key = CERES_KEY_DOWN };
+    ceres_game_handle_event(&g, &ev_dn_rel);
+    assert(!g.key_down);
+
+    ceres_event_t ev_s = { .type = CERES_EVENT_KEY_DOWN, .key = CERES_KEY_S };
+    ceres_game_handle_event(&g, &ev_s);
+    assert(g.key_down);
+    ceres_event_t ev_s_rel = { .type = CERES_EVENT_KEY_UP, .key = CERES_KEY_S };
+    ceres_game_handle_event(&g, &ev_s_rel);
+    assert(!g.key_down);
+
+    ceres_event_t ev_lf = { .type = CERES_EVENT_KEY_DOWN, .key = CERES_KEY_LEFT };
+    ceres_game_handle_event(&g, &ev_lf);
+    assert(g.key_left);
+    ceres_event_t ev_lf_rel = { .type = CERES_EVENT_KEY_UP, .key = CERES_KEY_LEFT };
+    ceres_game_handle_event(&g, &ev_lf_rel);
+    assert(!g.key_left);
+
+    ceres_event_t ev_a = { .type = CERES_EVENT_KEY_DOWN, .key = CERES_KEY_A };
+    ceres_game_handle_event(&g, &ev_a);
+    assert(g.key_left);
+    ceres_event_t ev_a_rel = { .type = CERES_EVENT_KEY_UP, .key = CERES_KEY_A };
+    ceres_game_handle_event(&g, &ev_a_rel);
+    assert(!g.key_left);
+
+    ceres_event_t ev_rt = { .type = CERES_EVENT_KEY_DOWN, .key = CERES_KEY_RIGHT };
+    ceres_game_handle_event(&g, &ev_rt);
+    assert(g.key_right);
+    ceres_event_t ev_rt_rel = { .type = CERES_EVENT_KEY_UP, .key = CERES_KEY_RIGHT };
+    ceres_game_handle_event(&g, &ev_rt_rel);
+    assert(!g.key_right);
+
+    ceres_event_t ev_d = { .type = CERES_EVENT_KEY_DOWN, .key = CERES_KEY_D };
+    ceres_game_handle_event(&g, &ev_d);
+    assert(g.key_right);
+    ceres_event_t ev_d_rel = { .type = CERES_EVENT_KEY_UP, .key = CERES_KEY_D };
+    ceres_game_handle_event(&g, &ev_d_rel);
+    assert(!g.key_right);
 
     /* Pause toggle */
     ceres_event_t ev_pause = { .type = CERES_EVENT_KEY_DOWN, .key = CERES_KEY_P };

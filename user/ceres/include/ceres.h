@@ -1,4 +1,4 @@
-/* user/ceres/include/scroller.h — Ceres Alpha main entry point */
+/* user/ceres/include/ceres.h — Ceres Alpha main entry point */
 #ifndef CERES_H
 #define CERES_H
 

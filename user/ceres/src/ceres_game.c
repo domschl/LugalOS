@@ -115,6 +115,7 @@ bool ceres_game_init(ceres_game_t *g, int w, int h) {
     g->height = (h > 0) ? h : CERES_VIRTUAL_H;
     g->state = CERES_STATE_PLAYING;
     g->running = true;
+    g->fps = 60;
 
     /* Initialize Player */
     g->player.x = 80;
@@ -205,6 +206,7 @@ void ceres_game_handle_event(ceres_game_t *g, const ceres_event_t *ev) {
                 break;
             case CERES_KEY_B:
             case CERES_KEY_K:
+            case CERES_KEY_RETURN:
                 g->key_bomb = true;
                 if (g->player.alive && ceres_entities_drop_bomb(&g->entities, INT_TO_FIXED(g->player.x), INT_TO_FIXED(g->player.y))) {
                     g->player.bomb_dropped = true;
@@ -253,6 +255,7 @@ void ceres_game_handle_event(ceres_game_t *g, const ceres_event_t *ev) {
                 break;
             case CERES_KEY_B:
             case CERES_KEY_K:
+            case CERES_KEY_RETURN:
                 g->key_bomb = false;
                 break;
             default:
@@ -266,6 +269,12 @@ void ceres_game_update(ceres_game_t *g, uint32_t delta_ms) {
 
     g->frame_count++;
     g->frames_since_fps++;
+    g->last_fps_update += delta_ms;
+    if (g->last_fps_update >= 1000) {
+        g->fps = (g->frames_since_fps * 1000) / g->last_fps_update;
+        g->frames_since_fps = 0;
+        g->last_fps_update = 0;
+    }
 
     /* 1. Player Death & Respawn Sequencing */
     if (!g->player.alive) {
@@ -572,6 +581,9 @@ void ceres_game_render(ceres_game_t *g, uint16_t *fb, int w, int h, int stride) 
         ceres_blit_text(&surf, ship_icon_x + i * 24, 4, "[>", COLOR_SHIP_COCKPIT, 0, true);
     }
 
+    /* Live Frame Rate in HUD */
+    ceres_blit_text_fmt(&surf, w - 80, 4, COLOR_STAR_DIM, 0, true, "%2u FPS", g->fps);
+
     /* Row 2: Fuel Gauge Bar and Rescue Counter */
     ceres_blit_text(&surf, 8, 18, "FUEL [", COLOR_HUD_TEXT, 0, true);
 
@@ -624,12 +636,15 @@ void ceres_game_render(ceres_game_t *g, uint16_t *fb, int w, int h, int stride) 
         ceres_blit_text(&surf, gx + 80, gy + 16, "GAME OVER", COLOR_HUD_ALERT, 0, true);
         ceres_blit_text(&surf, gx + 20, gy + 38, "PRESS SPACE OR 'R' TO RETRY", COLOR_STAR_WHITE, 0, true);
     } else if (g->state == CERES_STATE_PAUSED) {
-        int pw = 120;
-        int ph = 30;
+        int pw = 336;
+        int ph = 78;
         int px = (w - pw) / 2;
         int py = (h - ph) / 2;
-        ceres_blit_fill_rect(&surf, px, py, pw, ph, RGB565(10, 10, 10));
-        ceres_blit_rect_outline(&surf, px, py, pw, ph, COLOR_STAR_WHITE);
-        ceres_blit_text(&surf, px + 36, py + 8, "PAUSED", COLOR_STAR_WHITE, 0, true);
+        ceres_blit_fill_rect(&surf, px, py, pw, ph, RGB565(8, 8, 16));
+        ceres_blit_rect_outline(&surf, px, py, pw, ph, COLOR_LASER_CYAN);
+        ceres_blit_text(&surf, px + 120, py + 8, "== PAUSED ==", COLOR_STAR_WHITE, 0, true);
+        ceres_blit_text(&surf, px + 24, py + 26, "MOVE: ARROWS / WASD", COLOR_HUD_TEXT, 0, true);
+        ceres_blit_text(&surf, px + 24, py + 42, "FIRE: SPACE (LASER)  B/ENTER (BOMB)", COLOR_HUD_TEXT, 0, true);
+        ceres_blit_text(&surf, px + 24, py + 58, "P: RESUME   R: RETRY   Q: QUIT", COLOR_STAR_DIM, 0, true);
     }
 }
