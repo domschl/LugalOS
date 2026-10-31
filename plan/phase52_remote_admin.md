@@ -1227,6 +1227,30 @@ deferred without blocking anything after it.
     in any file served over 9P.
 
 * **52.15 TLS 1.3 server and HTTPS admin** (`CONFIG_TLS_SERVER` boards only).
+  * **DONE 2026-10-31 on the NANO** (`d35b7e5`, `f408f15`); 52.15b (accelerators) not started.
+    *As built:* `net/tls.c`, transport-independent (non-blocking recv/send callbacks): TLS 1.3 only,
+    TLS_CHACHA20_POLY1305_SHA256, X25519 with a HelloRetryRequest when the client led with another group,
+    ECDSA P-256, KeyUpdate (answering update_requested), alerts, the middlebox-compatibility CCS. No PSK,
+    resumption, 0-RTT, client certificates, ALPN or `record_size_limit` (Chrome does not send it, so the
+    16 KB receive record is needed anyway); a handshake message must fit one record. httpd listens on 443
+    while the identity holds a key and its certificate, reloads them when `kernel/tls_cert.c` changes them,
+    and takes each session's record buffers (20.8 KB) from the bulk zone: PSRAM on a P4. Over HTTPS an admin
+    peer writes, secrets included (the link is not "plaintext"); plain HTTP then only reads, and the page
+    on port 80 answers 302 to `https://HOST/` (302, not 301: HTTPS goes away with the certificate). The
+    P4 boards start httpd when claimed (`CONFIG_HTTPD_WHEN_CLAIMED`). The page is in every image now,
+    served gzip to browsers, because the NANO's SD card held a page older than its firmware (the key
+    hand-off failed). The page gained an **Update** tab (`begin`, `/dev/otaimage`, `commit`, `reboot`).
+  * *Verified:* `tests/host/tls_host.c` against `openssl s_client` (verification, data both ways, HRR,
+    KeyUpdate, AES-GCM-only / P-256-only / TLS 1.2 refused) and a fuzz of ClientHellos and records under
+    ASan (found the ServerHello buffer 26 bytes short for a 32-byte session id). QEMU (virtio-rng):
+    Python `ssl`, `s_client` and curl verify against the CA; 9P over `wss://` writes 32 KB at 296 KB/s
+    while plain HTTP only reads; a refused TLS 1.2 client does not disturb the next; the page signs in
+    over HTTPS in Chromium and Firefox. **NANO over Wi-Fi:** handshake ~130 ms, the 21 KB page in 0.55 s,
+    `wss://` 30 KB/s write and 42 KB/s read to the SD card, Chromium and Firefox sign in, and an **OTA from
+    the browser** (Chromium, HTTPS): a tampered image refused at commit, a signed 1.17 MB image sent in
+    31 s, restarted into and confirmed. 38 pages free with HTTPS up, no SRAM fallbacks.
+  * *Not verified:* Safari (iOS) and Chrome (Android) (no phone in this session), the LCD-7B and Tab5,
+    the RP2350-LCD-7 (`CONFIG_TLS_SERVER` not set there yet), and 52.15b.
   *Board: the NANO; the RP2350-LCD-7 (PSRAM) after it.*
   * **`net/tls.c`, server only:** ClientHello (supported_versions, X25519
     key_share, signature_algorithms, `record_size_limit`),
@@ -1250,6 +1274,9 @@ deferred without blocking anything after it.
     of the NANO from the browser.
 
 * **52.16 Integration, documentation, review; §1.6 investigation.**
+  * *§1.6, measured 2026-10-31:* a C6-Zero with radio, sensors, MQTT, mDNS, httpd and 9P running has 5
+    free pages (20 KB). A TLS session needs ~21 KB of record buffers on top: the C6-Zero is not a TLS
+    board and stays on 52.11b's protected sessions. TLS-PSK against mosquitto is a client, for a later phase.
   * End to end: a Pico 2 W set up from a phone and updated from the
     browser. The NANO administered over HTTPS, with a whole-board update
     (52.8d) from the page.
