@@ -286,27 +286,21 @@ passed 25/25.
 and the next boot's `[CLK] last reset:` line. USB up and panel down is
 before the console exists.
 
-## The NANO over its C6 stops answering on Wi-Fi (three times, 2026-10-31)
+## A C6 up an hour or more could not rejoin a network it lost (found 2026-10-31)
 
-Seen three times in one afternoon on the ESP32-P4-NANO (C6-MINI as its radio, build 1243): the C6
-reports `state=joined` and the P4 holds its DHCP address, but this host's pings go unanswered (no
-ICMP reaches the P4's counters) and its ARP entry is right; the C6-Zero and the Pico 2 W on the same
-access point answer throughout. Once an explicit `rejoin` made it worse (the C6 could not rejoin:
-"bssid pin dropped", repeated attempts); a restart of the C6 through `/c6/dev/reboot` recovered it,
-and once it recovered by itself within minutes. A whole-image update over this path ran at 12 KB/s
-on the same afternoon, against 50 KB/s in the morning.
-
-The C6-Zero did the same that evening, 3.5 h into a run: after a `radio rejoin` it never joined again
-(rejoin attempts every 2, 5, 15, 30 s, the BSSID pin dropped) until restarted. Its radio heap had
-refused 1848-byte allocations five times earlier in the run (from 360 s on); the failing attempts
-refused none that were counted (only malloc counted then). A freshly started C6, Zero or MINI,
-rejoins in 2-3 s. The refusals came in bursts within minutes of every boot: 1848-byte receive
-buffers, of which IDF's defaults allowed 16 in flight in a heap with 13.6 KB free, so a burst of
-broadcasts could leave nothing for the WPA2 handshake. **Fix and mitigation** (`4d30bf6`): 6 static
-and 6 dynamic receive buffers (17.3 KB free once joined, no refusal across a 1.2 MB update), every
-refused allocation counted, and a node not joined for 15 minutes restarts. `radio stats` and
-`/proc/radio` show the heap. **Evidence that would close it:** a 4-hour run on both C6s logging the
-heap every minute and a rejoin every hour (restarted on the fixed build, 2026-10-31 evening).
+Seen on every C6 that afternoon and evening (the C6-Zero, the NANO's, the Tab5's): after an hour or
+more of uptime, once the link was lost (or a `rejoin` asked for), every attempt failed until the C6
+was restarted; freshly started, each rejoined in 2-3 s. A capture after 65 minutes showed the
+association succeed (`auth -> assoc -> run`) and fall back to `init` 2.5 s later, again and again,
+with the blob's log lines **350 ms apart** (1 ms at boot). **Cause:** `radio_osi_log_timestamp()`
+divided microseconds by 1000 with a subtraction loop, one step per millisecond of uptime: 4.25 million
+steps, about 340 ms, per log line an hour in, and a reconnection logs dozens of lines, so the radio
+thread stalled past the WPA2 handshake's timeout. The spinning radio thread also starved the kernel's
+Wi-Fi supervisor, so its restart rule could not fire. **Fixed** (`5929206`): constant-time division
+(and the same in `radio_osi_get_time()`). On the way: the receive buffers that could take the whole
+radio heap were capped (`4d30bf6`, no refusals since), and a C6 not joined for 15 minutes restarts
+(`775efc9`, `4d30bf6`). **To close it:** a rejoin requested over 9P after more than an hour of uptime,
+on the C6-Zero and the NANO's C6 (running from 2026-10-31 evening).
 
 ## The ENC28J60 clears MACON1.MARXEN / ECON1.RXEN when idle
 
