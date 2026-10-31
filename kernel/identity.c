@@ -5,6 +5,7 @@
 #include "kernel/crypto.h"
 #include "kernel/random.h"
 #include "kernel/printk.h"
+#include "kernel/llp_node.h"
 #include "drivers/sensor_hub.h"
 #include "lugalos_config.h"
 #include <string.h>
@@ -754,8 +755,10 @@ bool node_wlan_psk(uint8_t out[NODE_WLAN_PSK_LEN]) {
     return idstore_get_field(&rec, IDSTORE_FIELD_WLAN_PSK, out, NODE_WLAN_PSK_LEN) == (int)NODE_WLAN_PSK_LEN;
 }
 
-/* A radio that joins networks learns that the settings it joined with changed (kernel/setup_ap.c); no-op elsewhere. */
-__attribute__((weak)) void radio_credentials_changed(void) { }
+/* A radio that joins networks learns that the settings it joined with changed: the Pico 2 W's own
+ * (kernel/setup_ap.c overrides this), or a radio behind an LLP link (a P4's C6). */
+__attribute__((weak)) void llp_node_credentials_changed(void) { }   /* a build without LLP */
+__attribute__((weak)) void radio_credentials_changed(void) { llp_node_credentials_changed(); }
 
 node_id_result_t node_identity_set_wlan(const char *ssid, uint32_t ssid_len,
                                         const uint8_t *psk, uint32_t psk_len) {

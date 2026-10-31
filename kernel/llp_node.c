@@ -663,6 +663,10 @@ static volatile bool g_c6_mounted, g_c6_attaching;
 static uint32_t g_c6_attach_at;                /* when the last attempt started */
 static bool g_c6_fail_said;                    /* a failure is said once per radio */
 #define C6_ATTACH_RETRY_MS 5000u
+/* accepted: a word-sized flag; set by whoever stored new credentials, cleared by the pump. */
+static volatile bool g_creds_changed;
+
+void llp_node_credentials_changed(void) { g_creds_changed = true; }
 
 static void c6_attach_task(void *arg) {
     (void)arg;
@@ -743,6 +747,13 @@ static void handle_events(uint32_t now) {
             }
             if (new_peer) { g_c6_mounted = false; g_c6_attach_at = 0; g_c6_fail_said = false; }
         }
+    }
+    /* New credentials on this host reach the radio the way they do at boot: attach again, which hands them
+     * over unless the radio has joined a network already (it has to restart to change networks). */
+    if (g_creds_changed && g_role == LLP_NODE_HOST && g_link.state == LLP_UP && g_c6_mounted && !g_c6_attaching) {
+        g_creds_changed = false;
+        if (g_link.peer_link) printk("[LLP] new Wi-Fi credentials: the radio is joined already; restart it to change networks\n");
+        else g_c6_mounted = false;
     }
     if (g_role == LLP_NODE_HOST && g_link.state == LLP_UP && !g_c6_mounted && !g_c6_attaching &&
         (g_c6_attach_at == 0 || now - g_c6_attach_at >= C6_ATTACH_RETRY_MS)) {

@@ -75,4 +75,8 @@ void llp_node_bench(uint32_t count, uint32_t size);
  * is down and stops if the radio restarts. */
 void llp_node_soak(uint32_t seconds, uint32_t size);
 
+/* The identity's Wi-Fi credentials changed: a host hands them to its radio (kernel/identity.h,
+ * radio_credentials_changed()). */
+void llp_node_credentials_changed(void);
+
 #endif
