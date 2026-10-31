@@ -958,6 +958,12 @@ bool p9_auth_path_is_secret(const char *path) { return p9_path_is_secret(path); 
 static p9_auth_policy_t cur_policy(void) { return req_ctx()->policy; }
 static bool policy_needs_auth(void) { return cur_policy() != P9_AUTH_NOT_REQUIRED; }
 
+/* The refusal for a write on a read-only fid, naming why: the link takes writes only on a protected
+ * session (the client did not offer 9P2000.lp), or the grant is read-only. */
+#define P9_RO_LINK "this session is read-only: writes need a protected session (9P2000.lp) on this link"
+#define P9_RO_GRANT "this peer is granted read-only access"
+#define read_only_ename(op) (cur_policy() == P9_AUTH_REQUIRED_RO ? op ": " P9_RO_LINK : op ": " P9_RO_GRANT)
+
 static void p9_handle_tauth(const p9_msg_t *req, p9_msg_t *resp) {
     if (req->afid == P9_NOFID) {
         resp->type = P9_RERROR; resp->ename = "auth: afid may not be NOFID"; return;
@@ -1340,7 +1346,7 @@ static void p9_handle_topen(const p9_msg_t *req, p9_msg_t *resp) {
      * is a file or a directory, so it is checked once, ahead of the
      * is_dir split below rather than duplicated into both branches. */
     if (e->read_only && (req->mode & P9_ORCLOSE)) {
-        resp->type = P9_RERROR; resp->ename = "open: this peer is granted read-only access"; return;
+        resp->type = P9_RERROR; resp->ename = read_only_ename("open"); return;
     }
 
     if (!e->is_dir) {
@@ -1356,7 +1362,7 @@ static void p9_handle_topen(const p9_msg_t *req, p9_msg_t *resp) {
          * at open time -- the same point vfs_open()'s own mount-level
          * read_only check already fails at, for the same reason. */
         if (e->read_only && (flags & (VFS_O_WRITE | VFS_O_TRUNC))) {
-            resp->type = P9_RERROR; resp->ename = "open: this peer is granted read-only access"; return;
+            resp->type = P9_RERROR; resp->ename = read_only_ename("open"); return;
         }
         if ((flags & (VFS_O_WRITE | VFS_O_TRUNC)) && !p9_write_allowed(e)) {
             resp->type = P9_RERROR; resp->ename = "open: writing this file needs the admin grant"; return;
@@ -1381,7 +1387,7 @@ static void p9_handle_tcreate(const p9_msg_t *req, p9_msg_t *resp) {
     if (!e->is_dir) { resp->type = P9_RERROR; resp->ename = "create: fid is not a directory"; return; }
     if (e->is_open) { resp->type = P9_RERROR; resp->ename = "create: fid already open"; return; }
     if (e->read_only) {
-        resp->type = P9_RERROR; resp->ename = "create: this peer is granted read-only access"; return;
+        resp->type = P9_RERROR; resp->ename = read_only_ename("create"); return;
     }
 
     char newpath[128];
@@ -1550,7 +1556,7 @@ static void p9_handle_twrite(const p9_msg_t *req, p9_msg_t *resp) {
      * reached only if a client walks straight to Twrite without going
      * through Topen's own gate -- still refused, same reason either way. */
     if (e->read_only) {
-        resp->type = P9_RERROR; resp->ename = "write: this peer is granted read-only access"; return;
+        resp->type = P9_RERROR; resp->ename = read_only_ename("write"); return;
     }
     if (!p9_write_allowed(e)) {
         resp->type = P9_RERROR; resp->ename = "write: this file needs the admin grant"; return;
@@ -1609,7 +1615,7 @@ static void p9_handle_tremove(const p9_msg_t *req, p9_msg_t *resp) {
      * comment on that, unaffected by why the remove failed. */
     if (e->read_only) {
         p9_fid_release(e);
-        resp->type = P9_RERROR; resp->ename = "remove: this peer is granted read-only access"; return;
+        resp->type = P9_RERROR; resp->ename = read_only_ename("remove"); return;
     }
 
     int rc = e->is_dir ? vfs_rmdir(e->path) : vfs_remove(e->path);
