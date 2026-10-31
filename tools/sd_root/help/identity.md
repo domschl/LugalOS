@@ -60,7 +60,7 @@ When exposing 9P filesystem namespaces over TCP or untrusted links:
 
 ## 4. Claiming a Node and the Owner Part
 
-The identity record has a **factory part** (uid, device key, release key, setup secret), which only the console and `tools/provision.py` write, and an **owner part** (name, Wi-Fi, IP, grants, MQTT, altitude, power) that survives nothing: `setup reset-owner` wipes it. Sensor calibration describes the hardware and survives a reset.
+The identity record has a **factory part** (uid, device key, release key, setup secret), which only the console and `tools/provision.py` write, and an **owner part** (name, Wi-Fi, IP, grants, MQTT, altitude, power) that survives nothing: `setup reset-owner` wipes it. Sensor calibration describes the hardware and survives a reset. A field written by a newer build than the one running (after an update fell back) is kept by every write but an owner reset, which drops it: the older build cannot tell whose it is.
 
 A node is **claimed** when a grant carries `admin`; otherwise it is **unclaimed**. An unclaimed node with a setup secret opens a 15-minute **setup window** at boot (and on `setup start`). While it is open, a client that knows the secret writes one line to `/dev/setup`:
 

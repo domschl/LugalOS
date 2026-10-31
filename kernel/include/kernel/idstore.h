@@ -203,6 +203,13 @@ void idstore_writer_init(idstore_writer_t *w);
  * the record. */
 int idstore_writer_add_field(idstore_writer_t *w, uint8_t type, const void *val, uint16_t len);
 
+/* Appends every field of `old` whose type this build does not know, verbatim.
+ * A rewrite that left them out would delete what a newer build stored (an
+ * update that fell back to this build, then any identity change, would cost
+ * the newer build's fields). `*carried` (may be NULL) gets the count. Returns
+ * 0, or -1 if one did not fit. */
+int idstore_writer_carry_unknown(idstore_writer_t *w, const idstore_t *old, uint32_t *carried);
+
 /* Finalises magic/version/length/CRC32 and writes all IDSTORE_BLOCKS blocks
  * to `dev`. Returns 0, or -1 if the device write failed. */
 int idstore_writer_commit(idstore_writer_t *w, block_dev_t *dev);

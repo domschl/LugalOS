@@ -4985,6 +4985,64 @@ def test_identity_store_provisioning(elf_path: Path, img_path: Path, arch_name: 
         session2.close()
 
 
+def test_identity_keeps_newer_fields(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """A record holding a field type this build does not know (as a newer build would leave it after an
+    update fell back) keeps that field byte for byte through an ordinary identity write, and loses it on
+    an owner reset. Read back from the identity disk itself, not from the guest's account of it."""
+    import shutil
+    import struct
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    import provision
+
+    name = "Identity Store: A Rewrite Keeps Fields A Newer Build Stored; An Owner Reset Drops Them"
+    arch_img = img_path.with_name(f"test_{arch_name}_idnewer_sd.img")
+    shutil.copyfile(img_path, arch_img)
+    id_img = img_path.with_name(f"test_{arch_name}_idnewer_id.img")
+    future_type, future_val = 200, bytes.fromhex("a1b2c3d4e5f60718")
+    id_img.write_bytes(provision.build_record([
+        (provision.FIELD_UID, bytes.fromhex("0102030405060708")),
+        (future_type, future_val),
+        (provision.FIELD_NAME, b"before-rename"),
+    ]))
+
+    def fields() -> dict[int, bytes]:
+        raw = id_img.read_bytes()
+        length = struct.unpack_from("<H", raw, 6)[0]
+        out: dict[int, bytes] = {}
+        off = 12
+        while off + 3 <= length:
+            t, n = struct.unpack_from("<BH", raw, off)
+            out[t] = raw[off + 3:off + 3 + n]
+            off += 3 + n
+        return out
+
+    session = QemuSession(elf_path, arch_img, arch_name)
+    try:
+        session.start(identity_img_path=id_img)
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+        ok, log = session.send_and_expect("identity name after-rename", r"identity: renamed|identity name: \S+", timeout=8.0)
+        if not ok:
+            return (name, False, f"identity name did not answer: {log[-400:]}")
+        f = fields()
+        if f.get(provision.FIELD_NAME) != b"after-rename":
+            return (name, False, f"the rename did not reach the disk: {f}")
+        if f.get(future_type) != future_val:
+            return (name, False, f"the rename dropped the newer build's field: {f}")
+        ok, log = session.send_and_expect("setup reset-owner", r"unclaimed|usage|refuse", timeout=8.0)
+        f = fields()
+        if future_type in f:
+            return (name, False, f"an owner reset kept the newer build's field:\n{log[-400:]}")
+        if f.get(provision.FIELD_UID) != bytes.fromhex("0102030405060708"):
+            return (name, False, f"an owner reset lost the uid: {f}")
+        return (name, True, "kept through a rename, dropped by an owner reset, uid kept")
+    except Exception as e:
+        return (name, False, f"{type(e).__name__}: {e}")
+    finally:
+        session.close()
+
+
 def test_grants_in_record(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
     """I5 + the record backend: a grant the host provisioned, honoured by the
     board, with no SD card involved.
@@ -10283,6 +10341,7 @@ def main() -> int:
         _run_single(test_identity_grants_cap(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_node_identity(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_identity_store_provisioning(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_identity_keeps_newer_fields(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_identity_toolset(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_identity_altitude(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_grants_in_record(rv64_elf, img_for("rv64"), "rv64"))
@@ -10337,6 +10396,7 @@ def main() -> int:
         _run_single(test_identity_grants_cap(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_node_identity(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_identity_store_provisioning(rv32_elf, img_for("rv32"), "rv32"))
+        _run_single(test_identity_keeps_newer_fields(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_identity_toolset(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_grants_in_record(rv32_elf, img_for("rv32"), "rv32"))
         _run_single(test_no_network_claim(rv32_elf, img_for("rv32"), "rv32"))

@@ -184,6 +184,26 @@ int idstore_writer_add_field(idstore_writer_t *w, uint8_t type, const void *val,
     return 0;
 }
 
+int idstore_writer_carry_unknown(idstore_writer_t *w, const idstore_t *old, uint32_t *carried) {
+    uint32_t n = 0;
+    int rc = 0;
+    uint32_t off = IDSTORE_HEADER_LEN;
+    uint32_t end = IDSTORE_HEADER_LEN + old->fields_len;
+    while (off + 3u <= end) {
+        uint8_t  type = old->buf[off];
+        uint16_t flen = (uint16_t)rd_u16le(&old->buf[off + 1]);
+        uint32_t voff = off + 3u;
+        if (voff + flen > end) break;
+        if (!field_type_known(type)) {
+            rc |= idstore_writer_add_field(w, type, &old->buf[voff], flen);
+            n++;
+        }
+        off = voff + flen;
+    }
+    if (carried) *carried = n;
+    return rc;
+}
+
 int idstore_writer_commit(idstore_writer_t *w, block_dev_t *dev) {
     if (!dev || !dev->write_blocks) return -1;
 
@@ -329,6 +349,20 @@ int idstore_selftest(void) {
         cprintf("  [%s] an unknown field type is skipped and counted, and fields after it still parse\n",
                 ok ? "ok" : "FAIL");
         if (!ok) failures++;
+
+        /* A rewrite keeps it: the record read above, rewritten with only the fields this build
+         * knows plus idstore_writer_carry_unknown(), still holds type 200 with its bytes. */
+        idstore_writer_init(&w);
+        uint32_t carried = 0;
+        bool ok2 = idstore_writer_add_field(&w, IDSTORE_FIELD_NAME, name, (uint16_t)strlen(name)) == 0;
+        ok2 = ok2 && idstore_writer_carry_unknown(&w, &rec, &carried) == 0 && carried == 1;
+        ok2 = ok2 && idstore_writer_commit(&w, &g_fake_dev) == 0;
+        ok2 = ok2 && idstore_read(&g_fake_dev, &rec) == IDSTORE_VALID && rec.unknown_fields_skipped == 1;
+        uint8_t got_future[4] = {0};
+        ok2 = ok2 && idstore_get_field(&rec, 200, got_future, sizeof(got_future)) == (int)sizeof(future);
+        ok2 = ok2 && memcmp(got_future, future, sizeof(future)) == 0;
+        cprintf("  [%s] a rewrite carries an unknown field forward byte for byte\n", ok2 ? "ok" : "FAIL");
+        if (!ok2) failures++;
     }
 
     /* I3: a devkey field round-trips like any other -- it is a secret only
@@ -416,7 +450,7 @@ int idstore_selftest(void) {
     palloc_free(g_fake_disk, 1);
     g_fake_disk = NULL;
 
-    if (failures == 0) cprintf("IDSTORE_SELFTEST_OK (8/8)\n");
+    if (failures == 0) cprintf("IDSTORE_SELFTEST_OK (9/9)\n");
     else               cprintf("IDSTORE_SELFTEST_FAIL (%d failed)\n", failures);
     return failures;
 }

@@ -563,6 +563,17 @@ static int identity_store_write(const identity_patch_t *patch) {
     if (final_mqtt_len)      rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_MQTT, final_mqtt, (uint16_t)final_mqtt_len);
     if (final_grants_len)    rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_GRANTS, final_grants, final_grants_len);
     if (final_scal_len)      rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_SENSOR_CAL, final_scal, (uint16_t)final_scal_len);
+    /* Fields a newer build wrote are kept. An owner reset drops them: this build cannot tell a
+     * newer owner secret from a factory field, and a reset that kept an owner's key would not be
+     * one. */
+    if (old_valid && oldp->unknown_fields_skipped) {
+        if (keep_owner) {
+            rc |= idstore_writer_carry_unknown(wp, oldp, NULL);
+        } else {
+            printk("[Identity] owner reset: dropping %u field(s) a newer build stored\n",
+                   (unsigned)oldp->unknown_fields_skipped);
+        }
+    }
     memset(final_key, 0, sizeof(final_key));
     memset(final_psk, 0, sizeof(final_psk));
 
