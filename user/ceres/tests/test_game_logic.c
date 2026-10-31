@@ -969,6 +969,22 @@ static void test_ambient_synthesizer(void) {
     ceres_ambient_duck(160);
     ceres_ambient_render(buffer, 512);
 
+    /* Test West Coast Buchla Wavefolder */
+    assert(ceres_ambient_get_wavefold() == 256);
+    ceres_ambient_set_wavefold(128); /* Below 256 clamped */
+    assert(ceres_ambient_get_wavefold() == 256);
+    ceres_ambient_set_wavefold(2048); /* Above 1024 clamped */
+    assert(ceres_ambient_get_wavefold() == 1024);
+
+    ceres_ambient_set_wavefold(768); /* Active multi-stage wavefolding */
+    assert(ceres_ambient_get_wavefold() == 768);
+    memset(buffer, 0, sizeof(buffer));
+    ceres_ambient_render(buffer, 1024);
+    for (int i = 0; i < 1024; i++) {
+        assert(buffer[i] >= -32768 && buffer[i] <= 32767);
+    }
+    ceres_ambient_set_wavefold(256); /* Reset to bypass */
+
     /* Test volume disable */
     ceres_ambient_set_enabled(false);
     assert(!ceres_ambient_is_enabled());

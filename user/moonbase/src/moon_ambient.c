@@ -91,6 +91,16 @@ static moon_ambient_mood_t s_mood = MOON_AMBIENT_MOOD_TRANQUIL;
 /* single task: moon_game */
 static int                 s_duck_level = 0;     /* [0..256] */
 
+/* West Coast Buchla Wavefolder State
+ * single task: moon_game */
+static int                 s_target_fold_drive = 256;  /* [256..1024], default unity bypass */
+/* single task: moon_game */
+static int                 s_current_fold_drive = 256;
+/* single task: moon_game */
+static int32_t             s_fold_filter_drone = 0;
+/* single task: moon_game */
+static int32_t             s_fold_filter_pad = 0;
+
 /* Drone Layer */
 /* single task: moon_game */
 static uint32_t            s_drone_phase_a = 0;
@@ -198,6 +208,10 @@ void moon_ambient_init(void) {
     s_master_vol = MOON_AMBIENT_DEFAULT_VOLUME;
     s_mood = MOON_AMBIENT_MOOD_TRANQUIL;
     s_duck_level = 0;
+    s_target_fold_drive = 256;
+    s_current_fold_drive = 256;
+    s_fold_filter_drone = 0;
+    s_fold_filter_pad = 0;
 
     s_drone_phase_a = 0;
     s_drone_phase_b = 0;
@@ -223,10 +237,57 @@ void moon_ambient_init(void) {
 
 void moon_ambient_set_enabled(bool enabled) {
     s_ambient_enabled = enabled;
+    moon_cyber_set_enabled(enabled);
 }
 
 bool moon_ambient_is_enabled(void) {
     return s_ambient_enabled;
+}
+
+void moon_ambient_set_wavefold(int fold_drive) {
+    if (fold_drive < 256) fold_drive = 256;
+    if (fold_drive > 1024) fold_drive = 1024;
+    s_target_fold_drive = fold_drive;
+}
+
+int moon_ambient_get_wavefold(void) {
+    return s_target_fold_drive;
+}
+
+/* Multi-stage Buchla wavefolder with 1-pole low-pass smoothing filter.
+ * Pure fixed-point integer math (zero float, M-mode mstatus.FS = 0 safe). */
+static inline int32_t moon_wavefold(int32_t sample, int fold_drive, int32_t *filter_state) {
+    if (fold_drive <= 256) {
+        *filter_state = sample;
+        return sample;
+    }
+
+    /* Drive input into folding threshold */
+    int32_t x = (sample * fold_drive) >> 8;
+    const int32_t THRESH = 18000;
+
+    /* Multi-stage symmetrical folding */
+    if (x > THRESH) {
+        x = (2 * THRESH) - x;
+        if (x < -THRESH) {
+            x = -(2 * THRESH) - x;
+            if (x > THRESH) {
+                x = (2 * THRESH) - x;
+            }
+        }
+    } else if (x < -THRESH) {
+        x = -(2 * THRESH) - x;
+        if (x > THRESH) {
+            x = (2 * THRESH) - x;
+            if (x < -THRESH) {
+                x = -(2 * THRESH) - x;
+            }
+        }
+    }
+
+    /* 1-pole low-pass smoothing filter (eliminates harsh digital aliasing, warm analog tone) */
+    *filter_state += (x - *filter_state) >> 2;
+    return *filter_state;
 }
 
 void moon_ambient_set_volume(int volume) {
@@ -339,6 +400,17 @@ void moon_ambient_render(int16_t *buffer, int num_samples) {
         s_pad_lfo_phase += s_pad_lfo_step;
         int32_t pad_gain = 12000 + (((int32_t)s_pad_lfo + 32768) * 18000 >> 16);
         int32_t pad_sample = (((int32_t)(s_pad_a + s_pad_b) / 2) * pad_gain) >> 15;
+
+        /* Slew fold drive smoothly towards target (Buchla LPG vactrol slew) */
+        if (s_current_fold_drive != s_target_fold_drive) {
+            int delta = (s_target_fold_drive - s_current_fold_drive) >> 7;
+            if (delta == 0) delta = (s_target_fold_drive > s_current_fold_drive) ? 1 : -1;
+            s_current_fold_drive += delta;
+        }
+
+        /* West Coast Buchla wavefolding on pure sine drone and pad */
+        drone_sample = moon_wavefold(drone_sample, s_current_fold_drive, &s_fold_filter_drone);
+        pad_sample   = moon_wavefold(pad_sample,   s_current_fold_drive, &s_fold_filter_pad);
 
         /* 3. Solar Wind / Regolith Whispers (Filtered Pink Noise) */
         uint32_t noise_bit = ((s_wind_lfsr >> 0) ^ (s_wind_lfsr >> 2) ^ (s_wind_lfsr >> 3) ^ (s_wind_lfsr >> 5)) & 1u;

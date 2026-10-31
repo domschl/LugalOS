@@ -169,6 +169,7 @@ bool ceres_game_init(ceres_game_t *g, int w, int h) {
     /* Initialize Audio Engine */
     ceres_sound_init();
     ceres_cyber_reset();
+    ceres_ambient_set_wavefold(256);
     ceres_ambient_set_mood(CERES_AMBIENT_MOOD_DEEP_SPACE);
 
     /* Load Persistent High Score & Rescue Tallies */
@@ -814,6 +815,33 @@ void ceres_game_update(ceres_game_t *g, uint32_t delta_ms) {
     }
     telem.survivor_visible = survivor_visible;
     ceres_cyber_update_telemetry(&telem);
+
+    /* West Coast Buchla wavefolder modulation based on combat telemetry */
+    int fold = 256; /* Unity clean bypass default */
+    if (g->meltdown_timer > 0) {
+        fold = 920; /* Meltdown: maximum overdriven screaming analog harmonics */
+    } else if (g->player.low_fuel_alert || g->player.fuel < 200) {
+        /* Sputtering unstable wavefold jitter */
+        fold = 420 + ((g->frame_count & 4) ? 180 : -100);
+    } else {
+        /* Sector-based timbral wavefolding */
+        switch (g->player.sector) {
+            case 1: fold = 256; break; /* Mountain: pure deep space sines */
+            case 2: fold = 360; break; /* Crystal Cavern: glassy resonant shimmer */
+            case 3: fold = 300; break; /* Trench: deep rumble */
+            case 4: fold = 540; break; /* Fortified Base: gritty industrial reedy hum */
+            case 5: fold = 460; break; /* Labyrinth: tense subterranean overtones */
+            case 6: fold = 650; break; /* Reactor Stronghold: pulsing alien core */
+            default: fold = 256; break;
+        }
+        /* Forward thruster boost adds an aggressive growl */
+        if (g->player.thrust_boost > 0) {
+            fold += 100;
+        } else if (g->player.thrust_boost < 0) {
+            fold -= 40;
+        }
+    }
+    ceres_ambient_set_wavefold(fold);
 }
 
 /* Render Ship with Pitch Tilt & Animated Thruster Plume */
