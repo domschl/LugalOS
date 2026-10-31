@@ -10,6 +10,7 @@
 #include "moon_game.h"
 #include "moon_sprites.h"
 #include "moon_cyber.h"
+#include "moon_ambient.h"
 
 void moon_platform_set_volume(int percent) { (void)percent; }
 void moon_platform_pump_audio(void) { }
@@ -2520,6 +2521,37 @@ static void test_dynamic_cybernetic_voice(void) {
     printf("[test] Dynamic Cybernetic Voice & Telemetry Sequencer: PASS\n");
 }
 
+static void test_west_coast_wavefolding(void) {
+    printf("[test] Checking West Coast Buchla Wavefolder in Ambient Synth...\n");
+
+    moon_ambient_init();
+    assert(moon_ambient_get_wavefold() == 256);
+
+    /* Clamping checks */
+    moon_ambient_set_wavefold(100);
+    assert(moon_ambient_get_wavefold() == 256);
+    moon_ambient_set_wavefold(4096);
+    assert(moon_ambient_get_wavefold() == 1024);
+
+    /* Render with wavefolder drive */
+    moon_ambient_set_wavefold(600);
+    assert(moon_ambient_get_wavefold() == 600);
+
+    int16_t buf[2048];
+    memset(buf, 0, sizeof(buf));
+    moon_ambient_render(buf, 2048);
+    bool non_zero = false;
+    for (int i = 0; i < 2048; i++) {
+        if (buf[i] != 0) non_zero = true;
+        assert(buf[i] >= -32768 && buf[i] <= 32767);
+    }
+    assert(non_zero);
+
+    moon_ambient_set_wavefold(256);
+    assert(moon_ambient_get_wavefold() == 256);
+    printf("[test] West Coast Buchla Wavefolder: PASS\n");
+}
+
 int main(void) {
     test_picking();
     test_power_solver();
@@ -2567,6 +2599,7 @@ int main(void) {
     test_starship_flight_animation();
     test_earth_moon_trade_and_act2_victory();
     test_dynamic_cybernetic_voice();
+    test_west_coast_wavefolding();
     printf("[test] All Milestone 64.9-64.12, 64.17 - 64.21 tests passed cleanly.\n");
     return 0;
 }

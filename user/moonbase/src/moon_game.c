@@ -79,6 +79,7 @@ static void game_reset(moon_game_t *game, int width, int height) {
     game->volume_entry_active = false;
     game->volume_entry_ms = 0;
     moon_cyber_reset();
+    moon_ambient_set_wavefold(256);
     moon_apply_volume(game, game->volume_percent);
     game->notify_msg = NULL; /* Clear notify so game start doesn't show volume toast */
 
@@ -1324,6 +1325,27 @@ void moon_game_update(moon_game_t *game, uint32_t delta_ms) {
     telem.landing_active = game->landing_active;
     telem.starship_state = (uint8_t)game->starship.state;
     moon_cyber_update_telemetry(&telem);
+
+    /* West Coast Buchla wavefolder modulation based on colony telemetry */
+    int fold = 256; /* Unity clean bypass default */
+    if (game->resources.life_support_pct < 40 ||
+        game->resources.warning_o2 || game->resources.warning_water || game->resources.warning_cold) {
+        fold = 820; /* Life support emergency: snarling alarm harmonics */
+    } else if (game->resources.power_brownout) {
+        fold = 700; /* Power brownout: heavy buzzing electrical hum */
+    } else if (game->landing_active || game->starship.state > 0) {
+        fold = 580; /* Rocket thrust & aerospace resonance */
+    } else if (game->resources.is_night) {
+        fold = 380; /* Frozen cryogenic lunar night: hollow, brittle frost tones */
+    } else {
+        /* Daylight operations: pure calm sine baseline, subtle fold under heavy power surplus */
+        if (game->resources.power_net_kw > 40) {
+            fold = 340; /* High generation surplus: gentle energetic warmth */
+        } else {
+            fold = 256; /* Pure clean sine tranquility */
+        }
+    }
+    moon_ambient_set_wavefold(fold);
 
     if (game->paused || game->menu_page != MOON_MENU_CLOSED) return;
 

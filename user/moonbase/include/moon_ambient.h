@@ -43,6 +43,11 @@ int  moon_ambient_get_volume(void);
 void moon_ambient_set_mood(moon_ambient_mood_t mood);
 moon_ambient_mood_t moon_ambient_get_mood(void);
 
+/* West Coast Buchla wavefolder drive [256..1024]
+ * 256 = clean pure sine bypass (1.0x), 512 = 1st fold (2.0x), 768 = 2nd fold (3.0x), 1024 = heavy fold (4.0x) */
+void moon_ambient_set_wavefold(int fold_drive);
+int  moon_ambient_get_wavefold(void);
+
 /* Trigger audio ducking (e.g. on rocket launch / meteorite impact)
  * Temporarily reduces ambient volume by duck_amount [0..256] and smoothly recovers. */
 void moon_ambient_duck(int duck_amount);
