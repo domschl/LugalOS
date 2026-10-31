@@ -259,7 +259,10 @@ if (typeof module !== 'undefined') module.exports = { sha256, hmacSha256, hexToB
 'use strict';
 if (typeof document !== 'undefined') (() => {
   const $ = (id) => document.getElementById(id);
-  let p9 = null, tab = 'files', cwd = '/', timer = null;
+  let p9 = null, tab = 'files', cwd = '/', timer = null, viewGen = 0;
+  /* Each view draws only while it is the one shown: a slow answer to an earlier view must not paint over
+   * the view the person has moved to. */
+  const current = () => { const g = viewGen; return () => g === viewGen; };
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const text = (b) => new TextDecoder().decode(b);
   const setStatus = (s, cls) => { $('status').textContent = s; $('status').className = 'st ' + (cls || ''); };
@@ -283,25 +286,27 @@ if (typeof document !== 'undefined') (() => {
     $('tabs').querySelectorAll('button').forEach((b) => b.onclick = () => { tab = b.dataset.t; show(); });
   }
   function show() {
-    clearInterval(timer); timer = null; drawTabs();
+    clearInterval(timer); timer = null; viewGen++; drawTabs();
     ({ files: viewFiles, status: viewStatus, log: viewLog, node: viewNode }[tab])();
   }
   const fail = (e) => `<p class="err">${esc(e.message || e)}</p>`;
 
   async function viewFiles() {
-    const v = $('view');
+    const v = $('view'), live = current();
     try {
       const rows = (await p9.list(cwd)).sort((a, b) => (b.dir - a.dir) || a.name.localeCompare(b.name));
+      if (!live()) return;
       const up = cwd === '/' ? '' : `<tr><td><a data-p="${esc(cwd.replace(/\/[^/]*$/, '') || '/')}" data-d="1">..</a></td><td></td></tr>`;
       v.innerHTML = `<div class="path">${esc(cwd)}</div><table>${up}${rows.map((r) =>
         `<tr><td><a data-p="${esc((cwd === '/' ? '' : cwd) + '/' + r.name)}" data-d="${r.dir ? 1 : 0}">${esc(r.name)}${r.dir ? '/' : ''}</a></td><td class="mut">${r.dir ? '' : r.length + ' B'}</td></tr>`).join('')}</table>`;
       v.querySelectorAll('a').forEach((a) => a.onclick = () => { if (a.dataset.d === '1') { cwd = a.dataset.p; viewFiles(); } else openFile(a.dataset.p); });
-    } catch (e) { v.innerHTML = fail(e); }
+    } catch (e) { if (live()) v.innerHTML = fail(e); }
   }
   async function openFile(path) {
-    const v = $('view');
+    const v = $('view'), live = current();
     try {
       const data = await p9.read(path, 65536);
+      if (!live()) return;
       v.innerHTML = `<div class="path">${esc(path)} <a id="back" style="cursor:pointer;color:var(--acc)">&larr; back</a></div>
         <textarea id="body" spellcheck="false">${esc(text(data))}</textarea>
         <div class="row"><button class="act" id="save">Write</button><label style="margin:0"><input type="checkbox" id="trunc" checked> replace the file</label><span id="msg"></span></div>
@@ -312,36 +317,37 @@ if (typeof document !== 'undefined') (() => {
         try { await p9.write(path, new TextEncoder().encode($('body').value), $('trunc').checked); $('msg').textContent = 'written'; $('msg').className = 'ok'; }
         catch (e) { $('msg').textContent = e.message; $('msg').className = 'err'; }
       };
-    } catch (e) { v.innerHTML = fail(e) + '<p><a id="back" style="cursor:pointer;color:var(--acc)">&larr; back</a></p>'; $('back').onclick = viewFiles; }
+    } catch (e) { if (!live()) return; v.innerHTML = fail(e) + '<p><a id="back" style="cursor:pointer;color:var(--acc)">&larr; back</a></p>'; $('back').onclick = viewFiles; }
   }
 
   async function viewStatus() {
-    const v = $('view');
+    const v = $('view'), live = current();
     const draw = async () => {
       let html = '';
       for (const f of STATUS_FILES) {
         try { html += `<h3 style="margin:.8rem 0 .2rem">${esc(f)}</h3><pre>${esc(text(await p9.read(f, 8192)))}</pre>`; }
         catch (e) { /* this node has no such file */ }
       }
-      v.innerHTML = html || '<p class="mut">nothing to show</p>';
+      if (live()) v.innerHTML = html || '<p class="mut">nothing to show</p>';
     };
     await draw(); timer = setInterval(draw, 5000);
   }
   async function viewLog() {
-    const v = $('view');
+    const v = $('view'), live = current();
     v.innerHTML = '<pre id="log"></pre>';
     const draw = async () => {
       try { const t = text(await p9.read('/proc/kmsg', 65536)); const el = $('log'); if (el) { el.textContent = t.split('\n').slice(-200).join('\n'); el.scrollTop = el.scrollHeight; } }
-      catch (e) { v.innerHTML = fail(e); clearInterval(timer); }
+      catch (e) { if (live()) { v.innerHTML = fail(e); clearInterval(timer); } }
     };
     await draw(); timer = setInterval(draw, 3000);
   }
   async function viewNode() {
-    const v = $('view');
+    const v = $('view'), live = current();
     let html = '';
     for (const f of ['/dev/setup', '/dev/owner']) {
       try { html += `<h3 style="margin:.2rem 0">${esc(f)}</h3><pre>${esc(text(await p9.read(f, 4096)))}</pre>`; } catch (e) { html += `<p class="mut">${esc(f)}: ${esc(e.message)}</p>`; }
     }
+    if (!live()) return;
     v.innerHTML = html + '<p class="mut">Change the owner part by writing a line to <code>/dev/owner</code> in the Files view (<code>name NAME</code>, <code>wlan SSID PSKHEX</code>, <code>grant NAME KEYHEX [rw|ro|admin]</code>). It needs the admin grant and a session that may write.</p>';
   }
 
