@@ -294,10 +294,17 @@ ICMP reaches the P4's counters) and its ARP entry is right; the C6-Zero and the 
 access point answer throughout. Once an explicit `rejoin` made it worse (the C6 could not rejoin:
 "bssid pin dropped", repeated attempts); a restart of the C6 through `/c6/dev/reboot` recovered it,
 and once it recovered by itself within minutes. A whole-image update over this path ran at 12 KB/s
-on the same afternoon, against 50 KB/s in the morning. Not explained: the access point dropping or
-power-saving the station, or the C6's receive path. **Evidence that would settle it:** the C6's
-`radio stats` (frames received for its own MAC, power-save state) taken during an episode, and the
-access point's view of the station.
+on the same afternoon, against 50 KB/s in the morning.
+
+The C6-Zero did the same that evening, 3.5 h into a run: after a `radio rejoin` it never joined again
+(rejoin attempts every 2, 5, 15, 30 s, the BSSID pin dropped) until restarted. Its radio heap had
+refused 1848-byte allocations five times earlier in the run (from 360 s on); the failing attempts
+refused none. A freshly started C6, Zero or MINI, rejoins in 2-3 s, with 13.8 KB of its 54 KB radio
+heap free in one block. Mitigation (`775efc9`): down 10 minutes after such a refusal, the node
+restarts. Diagnostics: `radio stats` and `/proc/radio` show the heap's free, lowest, largest block
+and refusals. **Evidence that would settle it:** a 4-hour run on both C6s logging those every minute
+and a rejoin every hour (started 2026-10-31 evening), and the C6's frames received for its own MAC
+during an episode.
 
 ## The ENC28J60 clears MACON1.MARXEN / ECON1.RXEN when idle
 
