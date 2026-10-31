@@ -1195,6 +1195,22 @@ deferred without blocking anything after it.
     phase 49's "small and tainted" C6).
 
 * **52.14 Device TLS key, CSR, and the LugalOS CA.** *Board: the NANO.*
+  * **DONE 2026-10-31** (`5c39d1f`). *As built:* `/dev/tls` (status; `keygen`, `rekey`, `clear`),
+    `/dev/tlscsr` and `/dev/tlscert` (flat names, as `/dev/ota` and `/dev/otaimage`, not a `/dev/tls/`
+    directory), admin-only writes, and a `tls` command, on `CONFIG_TLS_SERVER` boards (the P4s and QEMU).
+    The key (`IDSTORE_FIELD_TLS_KEY`, private + public, 96 bytes) and the certificate (`..._TLS_CERT`,
+    DER, at most 1536 bytes, only the leaf: our CA signs leaves directly) are owner fields. The request
+    is built on the first read and kept until the key or certificate changes, so a client reading it in
+    parts gets one signature. `kernel/der.c` (DER, base64, PEM) and `kernel/x509.c` (request out,
+    certificate in). `host/ca`: `lugalos-ca init | issue | show`, 825-day certificates (iOS's limit),
+    refusing requests for names outside `.local` or public addresses. Admin manual: `doc/admin/tls.md`.
+  * *Verified:* `der_host` (ASan/UBSan); a QEMU test with virtio-rng (new: `drivers/virtio_rng.c`, so
+    QEMU has entropy when a test asks for it) where OpenSSL verifies the request and the certificate the
+    real `lugalos-ca` issued over 9P, a certificate for another key and a non-admin `keygen` are refused,
+    the private key read off the identity disk is in no served file, and an owner reset removes it. On
+    the NANO over Wi-Fi: issued for `esp32p4-nano-2fdf.local` and 192.168.178.172, `openssl verify` OK.
+  * *Found on the way:* the CSR's signature buffer was one byte short when both r and s need a pad
+    (one request in four; the host test found it, QEMU had been lucky).
   * The node generates a P-256 key (refused without hardware entropy, 52.6)
     into the owner part (TLS_KEY, never served).
   * `/dev/tls/csr` (PKCS#10, PEM, built on read; SAN: `<name>.local` and the
