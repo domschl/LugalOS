@@ -4048,6 +4048,7 @@ static void cmd_ota(const char *arg) {
 #endif
 }
 
+#if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_WL_CS_GPIO)
 /* Splits `s` on spaces into up to three words; returns how many. (The shell has no sscanf.) */
 static int sscanf_3(const char *s, char *a, uint32_t acap, char *b, uint32_t bcap, char *c, uint32_t ccap) {
     char *outs[3] = { a, b, c };
@@ -4063,6 +4064,7 @@ static int sscanf_3(const char *s, char *a, uint32_t acap, char *b, uint32_t bca
     }
     return n;
 }
+#endif
 
 /* --- `board`: which board is this (kernel/boardinfo.h) ------------------------------- */
 static void cmd_board(void) {
