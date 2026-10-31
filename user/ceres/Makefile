@@ -24,6 +24,7 @@ SRC := src/platform_sdl3.c \
        src/ceres_terrain.c \
        src/ceres_entities.c \
        src/ceres_sound.c \
+       src/ceres_ambient.c \
        src/ceres_storage.c \
        src/ceres_game.c \
        src/main_host.c
@@ -37,6 +38,7 @@ TEST_SRC := tests/test_game_logic.c \
             src/ceres_terrain.c \
             src/ceres_entities.c \
             src/ceres_sound.c \
+            src/ceres_ambient.c \
             src/ceres_storage.c \
             src/ceres_game.c
 
@@ -49,6 +51,7 @@ LOOP_TEST_SRC := tests/test_ceres_loop.c \
                  src/ceres_terrain.c \
                  src/ceres_entities.c \
                  src/ceres_sound.c \
+                 src/ceres_ambient.c \
                  src/ceres_storage.c \
                  src/ceres_game.c
 

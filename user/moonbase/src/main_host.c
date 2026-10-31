@@ -6,6 +6,7 @@
 #include "moon_config.h"
 #include "moon_game.h"
 #include "moon_bench.h"
+#include "moon_ambient.h"
 
 static moon_game_t s_game;
 
@@ -71,6 +72,8 @@ int main(int argc, char **argv) {
         moon_platform_log("[main] Fatal: failed to initialize platform.\n");
         return 1;
     }
+
+    moon_ambient_init();
 
     s_game.seed_request = seed;
     s_game.difficulty_request = (uint8_t)(difficulty + 1);

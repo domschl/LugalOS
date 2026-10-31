@@ -8,6 +8,7 @@
 #include "ceres_entities.h"
 #include "ceres_game.h"
 #include "ceres_sound.h"
+#include "ceres_ambient.h"
 #include "ceres_storage.h"
 
 #include <stdio.h>
@@ -929,6 +930,56 @@ static void test_chiptune_audio_synthesizer(void) {
     printf("[test] Chiptune Audio Synthesizer passed.\n");
 }
 
+static void test_ambient_synthesizer(void) {
+    printf("[test] Checking Generative Space Ambient Synthesizer...\n");
+    ceres_ambient_init();
+    assert(ceres_ambient_is_enabled());
+    assert(ceres_ambient_get_volume() == 160);
+    assert(ceres_ambient_get_mood() == CERES_AMBIENT_MOOD_DEEP_SPACE);
+
+    int16_t buffer[1024];
+    memset(buffer, 0, sizeof(buffer));
+
+    /* Render ambient audio stream */
+    ceres_ambient_render(buffer, 1024);
+
+    /* Verify non-zero output from drone / wind / pad layers */
+    bool non_zero = false;
+    for (int i = 0; i < 1024; i++) {
+        if (buffer[i] != 0) {
+            non_zero = true;
+            break;
+        }
+    }
+    assert(non_zero);
+
+    /* Test mood switching */
+    ceres_ambient_set_mood(CERES_AMBIENT_MOOD_CAVERN);
+    assert(ceres_ambient_get_mood() == CERES_AMBIENT_MOOD_CAVERN);
+    ceres_ambient_render(buffer, 512);
+
+    ceres_ambient_set_mood(CERES_AMBIENT_MOOD_TENSE);
+    assert(ceres_ambient_get_mood() == CERES_AMBIENT_MOOD_TENSE);
+    ceres_ambient_render(buffer, 512);
+
+    /* Test ducking */
+    ceres_ambient_duck(160);
+    ceres_ambient_render(buffer, 512);
+
+    /* Test volume disable */
+    ceres_ambient_set_enabled(false);
+    assert(!ceres_ambient_is_enabled());
+    memset(buffer, 0, sizeof(buffer));
+    ceres_ambient_render(buffer, 512);
+    for (int i = 0; i < 512; i++) {
+        assert(buffer[i] == 0);
+    }
+
+    ceres_ambient_set_enabled(true);
+    ceres_ambient_set_mood(CERES_AMBIENT_MOOD_DEEP_SPACE);
+    printf("[test] Generative Space Ambient Synthesizer passed.\n");
+}
+
 static void test_high_score_storage_persistence(void) {
     printf("[test] Checking High-Score & Stats persistent storage save/load...\n");
     ceres_save_data_t save;
@@ -979,6 +1030,7 @@ int main(void) {
     test_sector_4_generator_and_laser_barrier();
     test_sector_6_reactor_core_and_meltdown();
     test_chiptune_audio_synthesizer();
+    test_ambient_synthesizer();
     test_high_score_storage_persistence();
     printf("=== All Logic Tests Passed Cleanly! ===\n");
     return 0;

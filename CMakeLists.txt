@@ -1013,6 +1013,7 @@ if(LUGALOS_ENABLE_MOONBASE)
         user/moonbase/src/moon_resources.c
         user/moonbase/src/moon_starship.c
         user/moonbase/src/moon_ui.c
+        user/moonbase/src/moon_ambient.c
         user/moonbase/src/moon_bench.c
         user/moonbase/src/moon_game.c)
     # One section per function so the linker drops what a target never calls
@@ -1023,7 +1024,7 @@ if(LUGALOS_ENABLE_MOONBASE)
         user/moonbase/src/moon_grid.c user/moonbase/src/moon_sprites.c
         user/moonbase/src/moon_textures.c user/moonbase/src/moon_structures.c
         user/moonbase/src/moon_resources.c user/moonbase/src/moon_starship.c
-        user/moonbase/src/moon_ui.c
+        user/moonbase/src/moon_ui.c user/moonbase/src/moon_ambient.c
         user/moonbase/src/moon_bench.c user/moonbase/src/moon_game.c
         PROPERTIES COMPILE_OPTIONS -ffunction-sections)
 endif()
@@ -1038,6 +1039,7 @@ if(LUGALOS_ENABLE_CERES OR LUGALOS_ENABLE_SCROLLER)
         user/ceres/src/ceres_terrain.c
         user/ceres/src/ceres_entities.c
         user/ceres/src/ceres_sound.c
+        user/ceres/src/ceres_ambient.c
         user/ceres/src/ceres_storage.c
         user/ceres/src/ceres_game.c)
     set_source_files_properties(
@@ -1050,6 +1052,7 @@ if(LUGALOS_ENABLE_CERES OR LUGALOS_ENABLE_SCROLLER)
         user/ceres/src/ceres_terrain.c
         user/ceres/src/ceres_entities.c
         user/ceres/src/ceres_sound.c
+        user/ceres/src/ceres_ambient.c
         user/ceres/src/ceres_storage.c
         user/ceres/src/ceres_game.c
         PROPERTIES COMPILE_OPTIONS -ffunction-sections)

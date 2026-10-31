@@ -3,6 +3,7 @@
 #include "ceres_game.h"
 #include "ceres_sprites.h"
 #include "ceres_sound.h"
+#include "ceres_ambient.h"
 #include "ceres_storage.h"
 #include <string.h>
 
@@ -145,6 +146,7 @@ bool ceres_game_init(ceres_game_t *g, int w, int h) {
 
     /* Initialize Audio Engine */
     ceres_sound_init();
+    ceres_ambient_set_mood(CERES_AMBIENT_MOOD_DEEP_SPACE);
 
     /* Load Persistent High Score & Rescue Tallies */
     ceres_save_data_t save;
@@ -366,6 +368,15 @@ void ceres_game_update(ceres_game_t *g, uint32_t delta_ms) {
             /* Partial fuel reward */
             g->player.fuel += 200;
             if (g->player.fuel > 1000) g->player.fuel = 1000;
+
+            /* Adaptive ambient mood based on sector environment */
+            if (g->player.sector == 2 || g->player.sector == 5) {
+                ceres_ambient_set_mood(CERES_AMBIENT_MOOD_CAVERN);
+            } else if (g->player.sector == 4 || g->player.sector == 6) {
+                ceres_ambient_set_mood(CERES_AMBIENT_MOOD_TENSE);
+            } else {
+                ceres_ambient_set_mood(CERES_AMBIENT_MOOD_DEEP_SPACE);
+            }
         }
     }
 
@@ -603,6 +614,8 @@ void ceres_game_update(ceres_game_t *g, uint32_t delta_ms) {
         g->meltdown_timer = 180; /* 3 seconds @ 60 FPS */
         g->screen_shake = 8;
         g->banner_timer = 120;
+        ceres_ambient_set_mood(CERES_AMBIENT_MOOD_TENSE);
+        ceres_ambient_duck(180);
         const char *msg = "CORE CRITICAL! EVACUATE!";
         for (int i = 0; i < 31 && msg[i]; i++) {
             g->banner_text[i] = msg[i];
@@ -648,6 +661,7 @@ void ceres_game_update(ceres_game_t *g, uint32_t delta_ms) {
             /* Successful Escape & Loop Rollover! */
             g->loop_count++;
             g->player.sector = 1;
+            ceres_ambient_set_mood(CERES_AMBIENT_MOOD_DEEP_SPACE);
             g->terrain.sector = 1;
             g->sector_start_col = 0;
             g->terrain.camera_x_fp = 0;

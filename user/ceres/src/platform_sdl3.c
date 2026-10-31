@@ -3,6 +3,7 @@
 #include "ceres_platform.h"
 #include "ceres_blitter.h"
 #include "ceres_sound.h"
+#include "ceres_ambient.h"
 
 #include <SDL3/SDL.h>
 #include <stdio.h>
@@ -168,10 +169,14 @@ void ceres_platform_present(void) {
     if (s_plat.audio_stream) {
         int queued_bytes = SDL_GetAudioStreamQueued(s_plat.audio_stream);
         int target_bytes = (int)(CERES_AUDIO_SAMPLE_RATE * sizeof(int16_t) / 20); /* ~50ms audio cushion */
-        if (queued_bytes < target_bytes) {
+        int top_up_chunks = 0;
+        while (queued_bytes < target_bytes && top_up_chunks < 8) {
             int16_t pcm[512];
             ceres_sound_render(pcm, 512);
+            ceres_ambient_render(pcm, 512);
             SDL_PutAudioStreamData(s_plat.audio_stream, pcm, sizeof(pcm));
+            queued_bytes += (int)sizeof(pcm);
+            top_up_chunks++;
         }
     }
 

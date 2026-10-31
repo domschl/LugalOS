@@ -5,6 +5,7 @@
  */
 
 #include "ceres_sound.h"
+#include "ceres_ambient.h"
 #include <string.h>
 
 #define CH_PULSE_COUNT    2
@@ -73,6 +74,7 @@ void ceres_sound_init(void) {
     memset(&s_noise, 0, sizeof(s_noise));
     memset(&s_arp, 0, sizeof(s_arp));
     s_noise.lfsr = 0xACE1u;
+    ceres_ambient_init();
 }
 
 void ceres_sound_set_enabled(bool enabled) {
@@ -88,6 +90,7 @@ void ceres_sound_play(ceres_sfx_id_t sfx) {
 
     switch (sfx) {
         case CERES_SFX_LASER: {
+            ceres_ambient_duck(15);
             /* High-pitch rapid downward sweep (~1800 Hz down to 350 Hz over 90 ms) */
             voice_pulse_t *v = &s_pulse[0];
             v->active = true;
@@ -102,6 +105,7 @@ void ceres_sound_play(ceres_sfx_id_t sfx) {
         }
 
         case CERES_SFX_BOMB_DROP: {
+            ceres_ambient_duck(10);
             /* Descending smooth whistle (~900 Hz down to 220 Hz over 320 ms) */
             voice_tri_t *v = &s_tri;
             v->active = true;
@@ -115,6 +119,7 @@ void ceres_sound_play(ceres_sfx_id_t sfx) {
         }
 
         case CERES_SFX_EXPLOSION_TINY: {
+            ceres_ambient_duck(25);
             /* Short high-frequency burst (50 ms) */
             voice_noise_t *v = &s_noise;
             v->active = true;
@@ -126,6 +131,7 @@ void ceres_sound_play(ceres_sfx_id_t sfx) {
         }
 
         case CERES_SFX_EXPLOSION_MED: {
+            ceres_ambient_duck(80);
             /* Crunchy ground target blast with bass rumble (260 ms) */
             voice_noise_t *v = &s_noise;
             v->active = true;
@@ -147,6 +153,7 @@ void ceres_sound_play(ceres_sfx_id_t sfx) {
         }
 
         case CERES_SFX_EXPLOSION_HUGE: {
+            ceres_ambient_duck(160);
             /* Deep, long seismic reactor blast (650 ms) */
             voice_noise_t *v = &s_noise;
             v->active = true;
@@ -167,6 +174,7 @@ void ceres_sound_play(ceres_sfx_id_t sfx) {
         }
 
         case CERES_SFX_RESCUE_CHIME: {
+            ceres_ambient_duck(25);
             /* Joyful 4-note ascending major arpeggio: C5 (523), E5 (659), G5 (784), C6 (1046) */
             s_arp.active = true;
             s_arp.notes[0] = 523;
@@ -181,6 +189,7 @@ void ceres_sound_play(ceres_sfx_id_t sfx) {
         }
 
         case CERES_SFX_HEROIC_CHIME: {
+            ceres_ambient_duck(35);
             /* Grand fanfare: C5 (523), G5 (784), C6 (1046), E6 (1318), G6 (1568) */
             s_arp.active = true;
             s_arp.notes[0] = 523;
@@ -196,6 +205,7 @@ void ceres_sound_play(ceres_sfx_id_t sfx) {
         }
 
         case CERES_SFX_LOW_FUEL: {
+            ceres_ambient_duck(20);
             /* Urgent two-tone alert (880 Hz beep) */
             voice_pulse_t *v = &s_pulse[1];
             v->active = true;
@@ -210,6 +220,7 @@ void ceres_sound_play(ceres_sfx_id_t sfx) {
         }
 
         case CERES_SFX_BARRIER_DOWN: {
+            ceres_ambient_duck(60);
             /* Electric arc zap */
             voice_noise_t *vn = &s_noise;
             vn->active = true;
@@ -231,6 +242,7 @@ void ceres_sound_play(ceres_sfx_id_t sfx) {
         }
 
         case CERES_SFX_SIREN_PULSE: {
+            ceres_ambient_duck(40);
             /* Alternating siren tone */
             voice_pulse_t *v = &s_pulse[1];
             v->active = true;
@@ -289,7 +301,7 @@ void ceres_sound_render(int16_t *buffer, int num_samples) {
             voice_pulse_t *v = &s_pulse[p];
             if (!v->active) continue;
 
-            uint16_t cycle_pos = (uint16_t)(v->phase >> 16);
+            uint16_t cycle_pos = (uint16_t)v->phase;
             uint16_t threshold = 0x8000; /* 50% */
             if (v->duty == 1) threshold = 0x4000; /* 25% */
             else if (v->duty == 2) threshold = 0x2000; /* 12.5% */
@@ -310,7 +322,7 @@ void ceres_sound_render(int16_t *buffer, int num_samples) {
 
         /* 3. Triangle Wave Channel */
         if (s_tri.active) {
-            uint16_t pos = (uint16_t)(s_tri.phase >> 16);
+            uint16_t pos = (uint16_t)s_tri.phase;
             int16_t sample;
             if (pos < 0x8000) {
                 /* Rising slope -vol .. +vol */

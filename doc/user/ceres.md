@@ -90,10 +90,11 @@ Throughout the caverns, human astronaut personnel are stranded or imprisoned in 
 
 ---
 
-## 5. Chiptune Audio Synthesizer
+## 5. Chiptune Audio & Generative Space Ambient Synthesizer
 
-Ceres Alpha features a procedural audio synthesizer implemented entirely with pure fixed-point and integer arithmetic (zero floating-point math, fully safe for RISC-V M-mode `mstatus.FS = 0`):
+Ceres Alpha features a procedural audio engine and generative ambient synthesizer implemented entirely with pure fixed-point and integer arithmetic (zero floating-point math, fully safe for RISC-V M-mode `mstatus.FS = 0`):
 
+### Chiptune Sound Effects Engine
 * **Pulse Wave Voices**:
   * Dual-channel pulse wave generator with selectable duty cycles (50%, 25%, 12.5%).
   * Synthesizes rapid laser pew frequency sweeps, low-fuel alert beeps, and the meltdown siren.
@@ -104,6 +105,14 @@ Ceres Alpha features a procedural audio synthesizer implemented entirely with pu
   * Produces realistic explosion debris rumbles, rocket ignition blasts, and electric barrier arc discharges.
 * **Arpeggiated Chime Channel**:
   * Sequenced 4-note and 5-note major arpeggios for rescue celebrations and mission completion fanfares.
+
+### Generative Space Ambient Synthesizer
+* **Deep Sub-Bass Chorus Drone**: Detuned dual oscillators (e.g. D2 root at 73.0 Hz and 73.8 Hz) generating an organic 0.8 Hz acoustic beating pulse.
+* **Harmonic Breathing Pad**: Consonant fifth chord tones with ultra-slow LFO volume swelling (~13.5 second cycle).
+* **Generative Crystalline Starlight Chimes**: Sparse modal bell tones (D Dorian / Pentatonic) with soft 40 ms attack and 2.41x inharmonic metallic overtone, algorithmically triggered at organic 2 to 4.5 second intervals.
+* **Celestial Solar Wind**: Whispering pink noise dynamically shaped by a 26-second sweeping low-pass filter LFO.
+* **Dynamic Audio Ducking**: Master ambient volume smoothly ducks by 15-70% during weapon blasts and detonations, recovering gracefully over 1.5 seconds to preserve mix headroom.
+* **Adaptive Sector Moods**: Ambient tuning and scales adapt automatically to the environment (Deep Space, Subterranean Cavern, Tense Meltdown).
 
 On host systems, audio streams in real-time at 22,050 Hz via SDL3 audio device streams.
 
