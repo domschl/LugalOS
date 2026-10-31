@@ -868,6 +868,12 @@ deferred without blocking anything after it.
     `test_esp32p4.py` gains an OTA case, and the full suite stays green.
   * **52.8c LCD-7B (rev v3.2) and Tab5.** The same tests, with the revision
     check exercised in both directions.
+    **DONE 2026-10-31** (both back on the desk): release key installed on each, then `lota.py
+    push-board` over Wi-Fi with signed images, C6 first: LCD-7B C6 962 -> 1269 (49 KB/s), P4 1262 ->
+    1269 (44 KB/s); Tab5 (sealed C6) C6 1072 -> 1269, P4 -> 1269 (90 KB/s); both confirmed, in step.
+    Each board's image sent to the other with `--no-board-check`: refused before erase ("the image is
+    for another board"), slots untouched. The revision check itself cannot be reached with these
+    presets: the board id answers first.
   * **52.8d Whole-board update.** **DONE 2026-10-26** (console transport).
     `lota.py push-board`: the C6 first, confirmed, then the P4, then the pair
     is checked (same LLP `HELLO` version, same build, each running the slot
@@ -1254,8 +1260,12 @@ deferred without blocking anything after it.
     `wss://` 30 KB/s write and 42 KB/s read to the SD card, Chromium and Firefox sign in, and an **OTA from
     the browser** (Chromium, HTTPS): a tampered image refused at commit, a signed 1.17 MB image sent in
     31 s, restarted into and confirmed. 38 pages free with HTTPS up, no SRAM fallbacks.
-  * *Not verified:* Safari (iOS) and Chrome (Android) (no phone in this session), the LCD-7B and Tab5,
-    the RP2350-LCD-7 (`CONFIG_TLS_SERVER` not set there yet), and 52.15b.
+  * *LCD-7B and Tab5, 2026-10-31:* certificates issued over Wi-Fi; HTTPS handshake 0.28 / 0.25 s, the
+    page in 0.63 / 0.41 s, plain HTTP redirected; the admin page signs in over HTTPS in Chromium and
+    Firefox on both; an OTA from the browser on each (a tampered image refused at commit, a signed one
+    committed, restarted into and confirmed).
+  * *Not verified:* Safari (iOS) and Chrome (Android) (no phone in this session), the RP2350-LCD-7
+    (`CONFIG_TLS_SERVER` not set there yet), and 52.15b.
   *Board: the NANO; the RP2350-LCD-7 (PSRAM) after it.*
   * **`net/tls.c`, server only:** ClientHello (supported_versions, X25519
     key_share, signature_algorithms, `record_size_limit`),
