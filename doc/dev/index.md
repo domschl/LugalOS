@@ -55,6 +55,7 @@ doc/dev/
 ---
 
 ## 4. [Part D: Interconnect & Wire Protocols](protocols/llp.md)
+* **[The web admin transport](protocols/web_admin.md)**: 9P over WebSocket on HTTP and HTTPS, the endpoints, and the TLS 1.3 profile.
 * **[Protected 9P sessions](protocols/protected_9p.md)**: Integrity for 9P over TCP and WebSocket without TLS: the `9P2000.lp` version, the session key derived from the grant key and the auth challenge, the per-frame tag, test vectors, and why secrets still stay off a readable link.
 * **[LugalOS Link Protocol (LLP)](protocols/llp.md)**: Point-to-point interconnect protocol multiplexing 9P filesystem calls and 802.3 Ethernet frames between coprocessors (e.g. ESP32-P4 and ESP32-C6) with credit-based flow control, session negotiation, and link liveness.
 
