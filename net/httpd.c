@@ -178,7 +178,7 @@ static bool token_in(const char *list, const char *tok) {
         while (*p == ' ' || *p == ',') p++;
         uint32_t i = 0;
         while (i < tl && p[i] && ((p[i] | 0x20) == (tok[i] | 0x20))) i++;
-        if (i == tl && (p[i] == 0 || p[i] == ',' || p[i] == ' ')) return true;
+        if (i == tl && (p[i] == 0 || p[i] == ',' || p[i] == ' ' || p[i] == ';')) return true;
         while (*p && *p != ',') p++;
     }
     return false;
@@ -213,12 +213,42 @@ static void start_ws(hsess_t *h, const char *key, bool want_9p) {
     g_ws_total++;
 }
 
-static void start_file(hsess_t *h, const char *first, const char *second) {
+#if defined(CONFIG_HTTPD_ADMIN_EMBED)
+/* The admin page in the image, gzip-compressed (tools/embed_page.py --gzip): the page of a board with no
+ * filesystem. Every browser takes gzip; a client that does not say so is told why it gets nothing. */
+extern const char g_admin_page_gz[];
+extern const unsigned g_admin_page_gz_len;
+
+static bool start_embedded_admin(hsess_t *h, bool gzip_ok) {
+    if (!gzip_ok) {
+        reply_and_close(h, "406 Not Acceptable", "text/plain", "this node keeps its page gzip-compressed\n");
+        return true;
+    }
+    int n = ksnprintf((char *)h->obuf, HTTPD_OBUF,
+                      "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Encoding: gzip\r\n"
+                      "Content-Length: %u\r\nConnection: close\r\nCache-Control: no-cache\r\n\r\n",
+                      g_admin_page_gz_len);
+    h->olen = (uint32_t)n;
+    h->osent = 0;
+    h->mem = g_admin_page_gz;
+    h->file_left = g_admin_page_gz_len;
+    h->file_off = 0;
+    h->st = H_FILE;
+    g_pages++;
+    return true;
+}
+#endif
+
+static void start_file(hsess_t *h, const char *first, const char *second, bool gzip_ok) {
+    (void)gzip_ok;
     h->fd = vfs_open(first, VFS_O_READ);
     if (h->fd < 0) h->fd = vfs_open(second, VFS_O_READ);
     vfs_stat_t st;
     if (h->fd < 0 || vfs_fstat(h->fd, &st) != 0) {
         if (h->fd >= 0) { vfs_close(h->fd); h->fd = -1; }
+#if defined(CONFIG_HTTPD_ADMIN_EMBED)
+        if (start_embedded_admin(h, gzip_ok)) return;
+#endif
         reply_and_close(h, "404 Not Found", "text/plain", "that page is not installed on this node\n");
         g_not_found++;
         return;
@@ -309,7 +339,8 @@ static void handle_request(hsess_t *h) {
         return;
     }
     if (strcmp(path, "/") == 0 || strcmp(path, "/index.html") == 0 || strcmp(path, "/admin.html") == 0) {
-        start_file(h, HTTPD_PAGE_A, HTTPD_PAGE_B);
+        bool gz = header_value(req, "Accept-Encoding", v, sizeof v) && token_in(v, "gzip");
+        start_file(h, HTTPD_PAGE_A, HTTPD_PAGE_B, gz);
         return;
     }
     g_not_found++;

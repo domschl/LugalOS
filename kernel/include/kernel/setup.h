@@ -83,6 +83,11 @@ void setup_stop(void);
  * unclaimed with its factory part. Console and buttons only. */
 node_id_result_t setup_reset_owner(void);
 
+/* The node has an address (net_set_address(), called with no lock held). On a board with
+ * CONFIG_HTTPD_WHEN_CLAIMED a claimed node then serves its admin page: the owner signs in at NAME.local
+ * with their key. A claim made on the console while the node is up takes effect at its next address. */
+void setup_address_set(void);
+
 /* May an attach with no authentication reach /dev/setup? Only with a window open, on a link the
  * caller says is the setup access point's (fs/9p.c asks). */
 bool setup_unauth_attach_ok(void);

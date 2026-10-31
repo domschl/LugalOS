@@ -60,3 +60,8 @@ set(CONFIG_STATUS_LED_WS2812 1)
 
 # Named by /proc/board and the banner (kernel/boardinfo.h).
 set(CONFIG_BOARD_DESC "Waveshare ESP32-C6-Zero")
+
+# No filesystem on its own, so the admin page is part of the image (gzip, about 8 KB of flash).
+set(CONFIG_HTTPD_ADMIN_EMBED 1)
+# A claimed C6-Zero serves that page at NAME.local once it has an address, as a Pico 2 W does after a claim.
+set(CONFIG_HTTPD_WHEN_CLAIMED 1)

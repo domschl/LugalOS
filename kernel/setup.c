@@ -11,6 +11,7 @@
 #include "kernel/sched.h"
 #include "kernel/time.h"
 #include "fs/9p.h"
+#include "net/httpd.h"
 #include <string.h>
 
 #if defined(CONFIG_NETWORK_CLAIM)
@@ -428,4 +429,11 @@ node_id_result_t setup_reset_owner(void) {
         printk("[Setup] owner part wiped: the node is unclaimed\n");
     }
     return rc;
+}
+
+void setup_address_set(void) {
+#if defined(CONFIG_HTTPD_WHEN_CLAIMED)
+    if (setup_state() == SETUP_CLAIMED && !httpd_running(NULL) && httpd_start(80) == 0)
+        printk("[Setup] claimed node on the network: admin page on port 80\n");
+#endif
 }

@@ -7,6 +7,7 @@
 #include "kernel/console.h"
 #include "fs/9p.h"
 #include "kernel/identity.h"
+#include "kernel/setup.h"
 #include "kernel/sched.h"
 #include "kernel/time.h"
 #include "kernel/lock.h"
@@ -460,5 +461,6 @@ int net_set_address(const uint8_t ip[IPV4_LEN], const uint8_t mask[IPV4_LEN],
     net_lock();
     int r = net_set_address_locked(ip, mask, gw);
     net_unlock();
+    if (r == 0) setup_address_set();    /* after the unlock: it may start a server, which listens */
     return r;
 }
