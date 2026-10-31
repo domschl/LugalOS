@@ -949,8 +949,6 @@ def test_c6_namespace(b: Board) -> tuple[str, bool, str]:
     the P4 hands it). Runs before the SDIO probe, which takes the slot from the
     link."""
     name = "/c6: the C6's state as files, remounted after a C6 restart (49.8a)"
-    if is_tab5(b):
-        return name, True, "SKIPPED (C6 networking deferred to future phase on Tab5)"
     c = b.console_session
 
     def llp_state(deadline_s: float, min_gen: int = 0) -> tuple[bool, str]:
@@ -1072,8 +1070,6 @@ def _wifi_up(b: Board, deadline_s: float = 90.0) -> tuple[str | None, str]:
     the P4 hands its C6 by itself), the ones in ~/.config/lugalos/wifi.env go straight to the C6's
     /dev/wlan, in its RAM only -- that line carries the key and is never echoed into a result."""
     c = b.console_session
-    if is_tab5(b):
-        return None, "SKIPPED (C6 networking deferred to future phase on Tab5)"
     out = c.cmd("cat /proc/llp", deadline=8.0)
     if "cannot" in out:
         return None, "SKIPPED (no LLP on this board)"
@@ -1110,6 +1106,22 @@ def _host_ip_towards(addr: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _clears_console_key(test):
+    """The test sets a console key (`p9key`) for its own 9P session; clear it afterwards. Left set, it
+    overrides the board's stored grants until the next boot, and every tool with a grant is refused."""
+    @functools.wraps(test)
+    def run(b: Board) -> tuple[str, bool, str]:
+        try:
+            return test(b)
+        finally:
+            try:
+                b.console_session.cmd("p9key clear", deadline=8.0)
+            except Exception:  # noqa: BLE001
+                pass
+    return run
+
+
+@_clears_console_key
 def test_wifi_through_c6(b: Board) -> tuple[str, bool, str]:
     """49.7, plan/phase49_c6_network_nodes.md: the P4 on Wi-Fi through its C6.
 
@@ -1229,6 +1241,7 @@ def test_https_admin(b: Board) -> tuple[str, bool, str]:
                         f"{'verified against ' + str(ca) if ca.exists() else 'not verified (no CA on this host)'}")
 
 
+@_clears_console_key
 def test_rejoin_keeps_9p(b: Board) -> tuple[str, bool, str]:
     """49.7: a rejoin on the C6 does not end a 9P session on the P4.
 
