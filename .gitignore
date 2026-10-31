@@ -49,3 +49,7 @@ tests/lisp_bench*hw*.json
 # Obsidian editor state
 .obsidian/
 
+# Game save data files
+*.dat
+
+

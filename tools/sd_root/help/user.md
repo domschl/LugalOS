@@ -43,6 +43,9 @@ Welcome to the **LugalOS User Manual**. This guide covers interactive usage, dai
     * Autonomous ReAct reasoning agent loop with on-device tool access (`lisp`, `sh`, `cc`, `help`).
 11. **[Graphics & Algorithm Demos](demos.md)**
     * Ready-to-run interactive simulations: Rule 30/90/110 cellular automata and 3D Lorenz strange attractor.
+12. **[Ceres Alpha: Subterranean Arcade Scroller](ceres.md)**
+    * Fast-paced 2D arcade horizontal scroller on ESP32-P4 displays (M5Stack Tab5 and LCD-7B).
+    * Procedural caverns, search & rescue operations, 6-sector campaign, laser barriers, reactor meltdown, chiptune audio, and high-score persistence.
 
 ---
 

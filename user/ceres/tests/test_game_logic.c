@@ -7,6 +7,8 @@
 #include "ceres_fixed.h"
 #include "ceres_entities.h"
 #include "ceres_game.h"
+#include "ceres_sound.h"
+#include "ceres_storage.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -882,6 +884,77 @@ static void test_sector_6_reactor_core_and_meltdown(void) {
     printf("[test] Sector 6 Reactor Core detonation, Meltdown & Loop Rollover passed.\n");
 }
 
+static void test_chiptune_audio_synthesizer(void) {
+    printf("[test] Checking Chiptune Audio Synthesizer channels & PCM rendering...\n");
+    ceres_sound_init();
+    assert(ceres_sound_is_enabled());
+
+    /* Buffer for audio samples */
+    int16_t buffer[1024];
+
+    /* Playing with no SFX produces silence */
+    ceres_sound_render(buffer, 1024);
+    for (int i = 0; i < 1024; i++) {
+        assert(buffer[i] == 0);
+    }
+
+    /* Trigger Laser SFX */
+    ceres_sound_play(CERES_SFX_LASER);
+    ceres_sound_render(buffer, 512);
+
+    /* Verify non-zero output */
+    bool non_zero = false;
+    for (int i = 0; i < 512; i++) {
+        if (buffer[i] != 0) {
+            non_zero = true;
+            break;
+        }
+    }
+    assert(non_zero);
+
+    /* Trigger Explosion and Rescue Chime */
+    ceres_sound_play(CERES_SFX_EXPLOSION_HUGE);
+    ceres_sound_play(CERES_SFX_RESCUE_CHIME);
+    ceres_sound_render(buffer, 1024);
+
+    /* Test disabling sound */
+    ceres_sound_set_enabled(false);
+    assert(!ceres_sound_is_enabled());
+    ceres_sound_play(CERES_SFX_LASER);
+    ceres_sound_render(buffer, 256);
+    for (int i = 0; i < 256; i++) {
+        assert(buffer[i] == 0);
+    }
+    ceres_sound_set_enabled(true);
+    printf("[test] Chiptune Audio Synthesizer passed.\n");
+}
+
+static void test_high_score_storage_persistence(void) {
+    printf("[test] Checking High-Score & Stats persistent storage save/load...\n");
+    ceres_save_data_t save;
+    memset(&save, 0, sizeof(save));
+    save.hi_score = 48500;
+    save.total_rescued = 18;
+    save.games_played = 5;
+    save.highest_sector = 6;
+
+    /* Save to persistent medium */
+    bool save_ok = ceres_storage_save(&save);
+    assert(save_ok);
+
+    /* Load back and verify integrity */
+    ceres_save_data_t loaded;
+    bool load_ok = ceres_storage_load(&loaded);
+    assert(load_ok);
+    assert(loaded.magic == CERES_SAVE_MAGIC);
+    assert(loaded.version == CERES_SAVE_VERSION);
+    assert(loaded.hi_score == 48500);
+    assert(loaded.total_rescued == 18);
+    assert(loaded.games_played == 5);
+    assert(loaded.highest_sector == 6);
+    printf("[test] High-Score & Stats persistent storage passed.\n");
+}
+
 int main(void) {
     printf("=== Ceres Alpha Logic Unit Tests ===\n");
     test_initialization();
@@ -905,6 +978,8 @@ int main(void) {
     test_aerial_collision_with_player_ship();
     test_sector_4_generator_and_laser_barrier();
     test_sector_6_reactor_core_and_meltdown();
+    test_chiptune_audio_synthesizer();
+    test_high_score_storage_persistence();
     printf("=== All Logic Tests Passed Cleanly! ===\n");
     return 0;
 }

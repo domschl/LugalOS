@@ -2,6 +2,8 @@
 
 #include "ceres_game.h"
 #include "ceres_sprites.h"
+#include "ceres_sound.h"
+#include "ceres_storage.h"
 #include <string.h>
 
 #define SHIP_SPEED 3
@@ -140,6 +142,20 @@ bool ceres_game_init(ceres_game_t *g, int w, int h) {
     g->player.sector = 1;
     g->player.rescued = 0;
     g->player.total_rescued = 3;
+
+    /* Initialize Audio Engine */
+    ceres_sound_init();
+
+    /* Load Persistent High Score & Rescue Tallies */
+    ceres_save_data_t save;
+    if (ceres_storage_load(&save)) {
+        if (save.hi_score > g->player.hi_score) {
+            g->player.hi_score = save.hi_score;
+        }
+        if (save.total_rescued > (uint32_t)g->player.total_rescued) {
+            g->player.total_rescued = (int)save.total_rescued;
+        }
+    }
     g->player.thruster_on = true;
     g->player.thrust_boost = 0;
     g->player.alive = true;
@@ -506,6 +522,9 @@ void ceres_game_update(ceres_game_t *g, uint32_t delta_ms) {
             g->player.fuel--;
         }
         g->player.low_fuel_alert = (g->player.fuel <= 200 && g->player.fuel > 0);
+        if (g->player.low_fuel_alert && (g->frame_count % 60) == 0) {
+            ceres_sound_play(CERES_SFX_LOW_FUEL);
+        }
 
         if (g->player.invincible_frames > 0) {
             g->player.invincible_frames--;
@@ -602,6 +621,14 @@ void ceres_game_update(ceres_game_t *g, uint32_t delta_ms) {
         ceres_entities_spawn_explosion(&g->entities, INT_TO_FIXED(g->player.x), INT_TO_FIXED(g->player.y), 2);
         if (g->player.lives < 0) {
             g->state = CERES_STATE_GAMEOVER;
+
+            /* Save high score on game over */
+            ceres_save_data_t save;
+            save.hi_score = g->player.hi_score;
+            save.total_rescued = g->player.total_rescued + (uint32_t)g->player.rescued;
+            save.games_played = g->loop_count;
+            save.highest_sector = (uint32_t)g->player.sector;
+            ceres_storage_save(&save);
         }
     }
 
@@ -609,6 +636,9 @@ void ceres_game_update(ceres_game_t *g, uint32_t delta_ms) {
     if (g->meltdown_timer > 0) {
         g->meltdown_timer--;
         g->screen_shake = (g->meltdown_timer & 2) ? 4 : 0;
+        if ((g->frame_count % 30) == 0) {
+            ceres_sound_play(CERES_SFX_SIREN_PULSE);
+        }
         if ((g->frame_count % 4) == 0) {
             int rx = 60 + (int)(g->frame_count % (g->width - 120));
             ceres_entities_spawn_thruster_ember(&g->entities, INT_TO_FIXED(rx), INT_TO_FIXED(g->height / 2));
@@ -631,6 +661,17 @@ void ceres_game_update(ceres_game_t *g, uint32_t delta_ms) {
             if (g->player.score > g->player.hi_score) {
                 g->player.hi_score = g->player.score;
             }
+            g->player.total_rescued += (uint32_t)g->player.rescued;
+            g->player.rescued = 0;
+
+            /* Save triumphant loop completion */
+            ceres_save_data_t save;
+            save.hi_score = g->player.hi_score;
+            save.total_rescued = g->player.total_rescued;
+            save.games_played = g->loop_count;
+            save.highest_sector = CERES_SECTOR_COUNT;
+            ceres_storage_save(&save);
+
             g->banner_timer = 120;
             const char *msg = "MISSION ACCOMPLISHED!";
             for (int i = 0; i < 31 && msg[i]; i++) {

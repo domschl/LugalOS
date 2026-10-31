@@ -2,6 +2,7 @@
 
 #include "ceres_entities.h"
 #include "ceres_sprites.h"
+#include "ceres_sound.h"
 #include <string.h>
 
 /* Fast deterministic PRNG without static state */
@@ -271,6 +272,7 @@ bool ceres_entities_fire_laser(ceres_entities_t *pool, fixed32_t ship_x, fixed32
 
     pool->laser_cooldown = CERES_LASER_COOLDOWN;
     pool->total_lasers_fired += 2;
+    ceres_sound_play(CERES_SFX_LASER);
     return true;
 }
 
@@ -299,6 +301,7 @@ bool ceres_entities_drop_bomb(ceres_entities_t *pool, fixed32_t ship_x, fixed32_
 
     pool->bomb_cooldown = CERES_BOMB_COOLDOWN;
     pool->total_bombs_dropped++;
+    ceres_sound_play(CERES_SFX_BOMB_DROP);
     return true;
 }
 
@@ -336,6 +339,14 @@ void ceres_entities_spawn_sparks(ceres_entities_t *pool, fixed32_t x, fixed32_t 
 void ceres_entities_spawn_explosion(ceres_entities_t *pool, fixed32_t x, fixed32_t y, int size_preset) {
     if (!pool) return;
     int count = (size_preset > 0) ? 16 : 8;
+
+    if (size_preset >= 3) {
+        ceres_sound_play(CERES_SFX_EXPLOSION_HUGE);
+    } else if (size_preset >= 1) {
+        ceres_sound_play(CERES_SFX_EXPLOSION_MED);
+    } else {
+        ceres_sound_play(CERES_SFX_EXPLOSION_TINY);
+    }
 
     uint32_t seed = (uint32_t)x ^ ((uint32_t)y << 7) ^ 0xDEADBEEFu;
     for (int i = 0; i < count; i++) {
@@ -922,6 +933,7 @@ ceres_interaction_t ceres_entities_resolve_collisions(ceres_entities_t *pool, co
                     ceres_entities_spawn_sparks(pool, INT_TO_FIXED(sx + t->w / 2), INT_TO_FIXED(target_top), COLOR_LASER_CYAN, 12);
                     res.score_delta += 200;
                     res.barrier_collapsed = true;
+                    ceres_sound_play(CERES_SFX_BARRIER_DOWN);
                     for (int bi = 0; bi < CERES_MAX_BARRIERS; bi++) {
                         if (pool->barriers[bi].active && pool->barriers[bi].generator_idx == i) {
                             pool->barriers[bi].active = false;
@@ -1030,6 +1042,7 @@ ceres_interaction_t ceres_entities_resolve_collisions(ceres_entities_t *pool, co
                 res.survivor_rescued = true;
                 res.fuel_delta += 200;  /* +20% Fuel Bonus */
                 res.score_delta += 500; /* Major rescue award */
+                ceres_sound_play(CERES_SFX_RESCUE_CHIME);
 
                 /* Golden rescue sparkle celebration */
                 ceres_entities_spawn_sparks(pool, INT_TO_FIXED(surv_cx), INT_TO_FIXED(ship_cy + 8), COLOR_SURVIVOR_GREEN, 10);
@@ -1141,6 +1154,7 @@ ceres_interaction_t ceres_entities_resolve_collisions(ceres_entities_t *pool, co
                 res.heroic_rescue = true;
                 res.fuel_delta += 300;
                 res.score_delta += 1000;
+                ceres_sound_play(CERES_SFX_HEROIC_CHIME);
                 ceres_entities_spawn_sparks(pool, a->x + INT_TO_FIXED(a->w / 2), a->y + INT_TO_FIXED(a->h / 2), COLOR_SURVIVOR_GREEN, 14);
                 ceres_entities_spawn_sparks(pool, a->x + INT_TO_FIXED(a->w / 2), a->y + INT_TO_FIXED(a->h / 2), COLOR_STAR_WHITE, 8);
             } else {

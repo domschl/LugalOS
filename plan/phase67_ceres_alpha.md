@@ -294,7 +294,7 @@ flowchart TD
 * **Verification**:
   - Full game playthrough verified on host headless test harness (`user/ceres/tests/test_ceres_loop.c`).
 
-### Milestone 67.7: Chiptune Audio, Scoring, High-Score Persistence & Silicon Validation
+### Milestone 67.7: Chiptune Audio, Scoring, High-Score Persistence & Silicon Validation — **COMPLETE**
 * **Deliverables**:
   - Chiptune sound effects: Laser pew, bomb whistle, explosion rumble, low-fuel alarm, survivor rescue chime, stage fanfare via ESP32-P4 I2S/ES8311 driver (`drivers/es8311.c`) and SDL3 audio.
   - Arcade HUD: Score, High Score, Fuel meter, Rescued survivor counter (`RESCUED: X/Y`), Sector indicator, Lives counter.

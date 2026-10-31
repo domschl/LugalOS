@@ -449,7 +449,19 @@ int ceres_run(const char *args) {
 }
 
 static int ceres_run_claimed(const char *args) {
-    (void)args;
+    int max_frames = 0;
+    if (args && *args) {
+        const char *p = args;
+        while (*p == ' ') p++;
+        if (strncmp(p, "--frames=", 9) == 0) p += 9;
+        int val = 0;
+        while (*p >= '0' && *p <= '9') {
+            val = val * 10 + (*p - '0');
+            p++;
+        }
+        max_frames = val;
+    }
+
     p4_input_reset();
     if (!ceres_platform_init(0, 0, "Ceres Alpha")) {
         ceres_platform_shutdown();
@@ -470,6 +482,7 @@ static int ceres_run_claimed(const char *args) {
 
     while (s_p4_game.running) {
         if (console_interrupt_requested()) break;
+        if (max_frames > 0 && s_p4_game.frame_count >= (uint32_t)max_frames) break;
 
         uint32_t now = ceres_platform_get_ticks_ms();
         uint32_t delta = now - last_time;
@@ -496,6 +509,10 @@ static int ceres_run_claimed(const char *args) {
     }
 
     ceres_platform_shutdown();
+    if (max_frames > 0) {
+        cprintf("ceres: completed %u frames (%u FPS avg), score=%u, hi=%u\n",
+                s_p4_game.frame_count, s_p4_game.fps, s_p4_game.player.score, s_p4_game.player.hi_score);
+    }
     return 0;
 }
 

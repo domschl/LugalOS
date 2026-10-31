@@ -2,6 +2,7 @@
 
 #include "ceres_platform.h"
 #include "ceres_blitter.h"
+#include "ceres_sound.h"
 
 #include <SDL3/SDL.h>
 #include <stdio.h>
@@ -9,14 +10,15 @@
 #include <stdarg.h>
 
 static struct {
-    SDL_Window   *window;
-    SDL_Renderer *renderer;
-    SDL_Texture  *texture;
-    uint16_t     *framebuffer;
-    int           width;
-    int           height;
-    int           stride;
-    bool          initialized;
+    SDL_Window      *window;
+    SDL_Renderer    *renderer;
+    SDL_Texture     *texture;
+    SDL_AudioStream *audio_stream;
+    uint16_t        *framebuffer;
+    int              width;
+    int              height;
+    int              stride;
+    bool             initialized;
 } s_plat;
 
 static uint32_t map_sdl_key(SDL_Keycode k) {
@@ -44,7 +46,7 @@ static uint32_t map_sdl_key(SDL_Keycode k) {
 bool ceres_platform_init(int width, int height, const char *title) {
     if (s_plat.initialized) return true;
 
-    if (!SDL_Init(SDL_INIT_VIDEO)) {
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO)) {
         fprintf(stderr, "[ceres_platform] SDL_Init failed: %s\n", SDL_GetError());
         return false;
     }
@@ -82,6 +84,16 @@ bool ceres_platform_init(int width, int height, const char *title) {
         return false;
     }
 
+    /* Initialize SDL3 Audio Stream */
+    SDL_AudioSpec spec;
+    spec.channels = 1;
+    spec.format = SDL_AUDIO_S16LE;
+    spec.freq = CERES_AUDIO_SAMPLE_RATE;
+    s_plat.audio_stream = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, NULL, NULL);
+    if (s_plat.audio_stream) {
+        SDL_ResumeAudioStreamDevice(s_plat.audio_stream);
+    }
+
     s_plat.framebuffer = (uint16_t *)malloc(s_plat.width * s_plat.height * sizeof(uint16_t));
     if (!s_plat.framebuffer) {
         fprintf(stderr, "[ceres_platform] Failed to allocate framebuffer\n");
@@ -100,6 +112,10 @@ bool ceres_platform_init(int width, int height, const char *title) {
 void ceres_platform_shutdown(void) {
     if (!s_plat.initialized) return;
 
+    if (s_plat.audio_stream) {
+        SDL_DestroyAudioStream(s_plat.audio_stream);
+        s_plat.audio_stream = NULL;
+    }
     if (s_plat.framebuffer) {
         free(s_plat.framebuffer);
         s_plat.framebuffer = NULL;
@@ -147,6 +163,17 @@ uint16_t* ceres_platform_get_framebuffer(int *stride_pixels) {
 
 void ceres_platform_present(void) {
     if (!s_plat.initialized || !s_plat.framebuffer) return;
+
+    /* Feed Procedural Audio Stream */
+    if (s_plat.audio_stream) {
+        int queued_bytes = SDL_GetAudioStreamQueued(s_plat.audio_stream);
+        int target_bytes = (int)(CERES_AUDIO_SAMPLE_RATE * sizeof(int16_t) / 20); /* ~50ms audio cushion */
+        if (queued_bytes < target_bytes) {
+            int16_t pcm[512];
+            ceres_sound_render(pcm, 512);
+            SDL_PutAudioStreamData(s_plat.audio_stream, pcm, sizeof(pcm));
+        }
+    }
 
     SDL_UpdateTexture(s_plat.texture, NULL, s_plat.framebuffer, s_plat.stride * sizeof(uint16_t));
     SDL_RenderClear(s_plat.renderer);
