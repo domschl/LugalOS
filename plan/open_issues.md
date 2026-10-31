@@ -299,12 +299,14 @@ on the same afternoon, against 50 KB/s in the morning.
 The C6-Zero did the same that evening, 3.5 h into a run: after a `radio rejoin` it never joined again
 (rejoin attempts every 2, 5, 15, 30 s, the BSSID pin dropped) until restarted. Its radio heap had
 refused 1848-byte allocations five times earlier in the run (from 360 s on); the failing attempts
-refused none. A freshly started C6, Zero or MINI, rejoins in 2-3 s, with 13.8 KB of its 54 KB radio
-heap free in one block. Mitigation (`775efc9`): down 10 minutes after such a refusal, the node
-restarts. Diagnostics: `radio stats` and `/proc/radio` show the heap's free, lowest, largest block
-and refusals. **Evidence that would settle it:** a 4-hour run on both C6s logging those every minute
-and a rejoin every hour (started 2026-10-31 evening), and the C6's frames received for its own MAC
-during an episode.
+refused none that were counted (only malloc counted then). A freshly started C6, Zero or MINI,
+rejoins in 2-3 s. The refusals came in bursts within minutes of every boot: 1848-byte receive
+buffers, of which IDF's defaults allowed 16 in flight in a heap with 13.6 KB free, so a burst of
+broadcasts could leave nothing for the WPA2 handshake. **Fix and mitigation** (`4d30bf6`): 6 static
+and 6 dynamic receive buffers (17.3 KB free once joined, no refusal across a 1.2 MB update), every
+refused allocation counted, and a node not joined for 15 minutes restarts. `radio stats` and
+`/proc/radio` show the heap. **Evidence that would close it:** a 4-hour run on both C6s logging the
+heap every minute and a rejoin every hour (restarted on the fixed build, 2026-10-31 evening).
 
 ## The ENC28J60 clears MACON1.MARXEN / ECON1.RXEN when idle
 
