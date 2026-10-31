@@ -305,6 +305,18 @@ flowchart TD
   - `python3 tests/runner.py` passes 100%.
   - Hardware benchmarks confirm solid 60 FPS on ESP32-P4 hardware with <15% CPU load thanks to PPA SRM.
 
+### Milestone 67.8: Dynamic Cybernetic Voice & Meltdown Telemetry Sequencer — **PLANNED**
+* **Deliverables**:
+  - Second procedural audio voice: 16-step rhythmic cybernetic ostinato synth layered over generative space ambient bed.
+  - Reactive tempo, duty cycle, and pitch modulation based on combat telemetry:
+    - Sectors 1-3: Steady 128 BPM cyber-runner pluck.
+    - Low Fuel: Sputtering clock skips.
+    - Survivor on screen: Resonant high-register sonar ping.
+    - Sector 4-5: Tense 140 BPM Phrygian ostinato.
+    - Sector 6 Meltdown Alert: Breakneck 175 BPM alarm arpeggio with chromatic escalation.
+* **Verification**:
+  - Headless test suite validation and silicon audio playback verification.
+
 ---
 
 ## 6. Verification & Hardware-in-the-Loop Testing
