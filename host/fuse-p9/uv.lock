@@ -14,7 +14,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "fusepy", specifier = ">=3.0.1" },
-    { name = "p9lib", extras = ["serial"], directory = "../p9lib" },
+    { name = "p9lib", extras = ["serial"], editable = "../p9lib" },
 ]
 
 [[package]]
@@ -26,7 +26,7 @@ sdist = { url = "https://files.pythonhosted.org/packages/04/0b/4506cb2e831cea4b0
 [[package]]
 name = "p9lib"
 version = "0.1.0"
-source = { directory = "../p9lib" }
+source = { editable = "../p9lib" }
 dependencies = [
     { name = "pyserial" },
 ]

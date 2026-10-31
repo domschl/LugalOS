@@ -19,4 +19,4 @@ build-backend = "hatchling.build"
 packages = ["src/fuse_p9"]
 
 [tool.uv.sources]
-p9lib = { path = "../p9lib" }
+p9lib = { path = "../p9lib", editable = true }
