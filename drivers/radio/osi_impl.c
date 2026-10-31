@@ -428,13 +428,33 @@ RADIO_TEXT int64_t radio_osi_esp_timer_get_time(void) {
  * which is wall-clock only once SNTP has set it. */
 typedef struct { long sec; long usec; } r_os_time_t;
 
+/* `n / d` and `n % d` by shift-and-subtract, a fixed number of steps whatever `n` is (U-mode text has no 64-bit
+ * division). A loop subtracting `d` once per unit costs a step per millisecond of uptime: an hour in,
+ * each blob log line took 340 ms in the timestamp alone, and a reconnection's burst of log lines
+ * stalled the radio thread past the WPA2 handshake's timeout -- no rejoin succeeded until a restart
+ * (2026-10-31). 64 steps; the quotient must fit 32 bits. */
+static RADIO_TEXT uint32_t udiv64_32(uint64_t n, uint32_t d, uint64_t *rem) {
+    /* Restoring division, one bit of `n` per step, shifting only by constants: a shift by a variable
+     * count is a libgcc call (__ashldi3), which this domain should not depend on. */
+    uint64_t r = 0;
+    uint32_t q = 0;
+    for (int i = 0; i < 64; i++) {
+        r = (r << 1) | (n >> 63);
+        n <<= 1;
+        q <<= 1;
+        if (r >= d) { r -= d; q |= 1u; }
+    }
+    if (rem) *rem = r;
+    return q;
+}
+
 RADIO_TEXT int radio_osi_get_time(void *t) {
     int64_t us = radio_osi_esp_timer_get_time();
     r_os_time_t *tv = (r_os_time_t *)t;
     if (!tv) return -1;
-    long sec = 0;
-    while (us >= 1000000) { us -= 1000000; sec++; }      /* no 64-bit division in U-mode text */
-    tv->sec = sec; tv->usec = (long)us;
+    uint64_t rem = 0;
+    tv->sec = (long)udiv64_32(us > 0 ? (uint64_t)us : 0, 1000000u, &rem);
+    tv->usec = (long)rem;
     return 0;
 }
 
@@ -507,9 +527,7 @@ RADIO_TEXT bool radio_osi_event_pop(int32_t *id, uint8_t *data, uint32_t *size) 
 
 RADIO_TEXT uint32_t radio_osi_log_timestamp(void) {
     int64_t us = radio_osi_esp_timer_get_time();
-    uint32_t ms = 0;
-    while (us >= 1000) { us -= 1000; ms++; }
-    return ms;
+    return udiv64_32(us > 0 ? (uint64_t)us : 0, 1000u, NULL);
 }
 
 RADIO_TEXT void radio_osi_log_writev(unsigned level, const char *tag, const char *fmt, va_list ap) {
