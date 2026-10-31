@@ -60,8 +60,7 @@ static void status_led_task(void *arg) {
 
     bool shown = false, shown_valid = false;
     status_led_pattern_t shown_p = STATUS_LED_OFF;
-    uint64_t last_up_ms = 0, ssid_at_ms = 0;
-    bool wlan_set = false;
+    uint64_t last_up_ms = 0;
 
     for (;;) {
         task_sleep_ms(STATUS_LED_STEP_MS);
@@ -76,12 +75,7 @@ static void status_led_task(void *arg) {
         in.net_up = net_state()->configured;
         if (in.net_up) last_up_ms = now;
         in.net_down_s = (uint32_t)((now - last_up_ms) / 1000u);
-        if (now - ssid_at_ms >= 1000u || !ssid_at_ms) {
-            char ssid[NODE_WLAN_SSID_MAX + 1];
-            wlan_set = node_wlan_ssid(ssid, sizeof ssid);
-            ssid_at_ms = now ? now : 1;
-        }
-        in.wlan_set = wlan_set;
+        in.wlan_set = node_wlan_configured();
 
         status_led_pattern_t p = status_led_choose(&in);
         bool on = status_led_level(p, (uint32_t)now);
@@ -91,7 +85,9 @@ static void status_led_task(void *arg) {
 }
 
 void status_led_start(void) {
-    if (task_create_sized("statusled", status_led_task, NULL, 4) < 0) printk("[Led] could not start the status LED task\n");
+    /* One page: a step is under 1 KB deep (the WS2812 frame, or one gSPI transfer to the Pico 2 W's
+     * radio). Nothing here may read the identity record, a 4 KB buffer: see node_wlan_configured(). */
+    if (task_create_sized("statusled", status_led_task, NULL, 1) < 0) printk("[Led] could not start the status LED task\n");
 }
 
 #else

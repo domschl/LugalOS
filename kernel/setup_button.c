@@ -95,7 +95,9 @@ static void setup_button_task(void *arg) {
 }
 
 void setup_button_start(void) {
-    if (task_create_sized("setupbtn", setup_button_task, NULL, 4) < 0) printk("[Setup] could not start the button task\n");
+    /* One page: the deepest path is the 15 s owner reset, an identity rewrite whose records live on
+     * the heap (kernel/scratch.h), about 1.5 KB of stack with the flash write under it. */
+    if (task_create_sized("setupbtn", setup_button_task, NULL, 1) < 0) printk("[Setup] could not start the button task\n");
 }
 
 #else

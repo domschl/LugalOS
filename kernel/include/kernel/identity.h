@@ -172,6 +172,10 @@ node_id_result_t node_identity_generate_key(void);
  * when there is no backend or no SSID field. */
 bool node_wlan_ssid(char *out, uint32_t cap);
 
+/* Whether the record holds an SSID, from memory: no flash read and no 4 KB record on the caller's
+ * stack, so a task that polls it (the status light, the setup access point) may be small. */
+bool node_wlan_configured(void);
+
 /* The provisioned WPA2 PSK -- the *derived* 256-bit key
  * (tools/provision.py's derive_wpa2_psk()), never the passphrase, which
  * this node never sees. Returns false (and leaves `out` untouched) when

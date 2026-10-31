@@ -38,6 +38,10 @@ __attribute__((weak)) bool board_unique_id(uint8_t out[8]) {
  * every board answers until a backend is configured. */
 __attribute__((weak)) block_dev_t *identity_store_device(void) { return NULL; }
 
+/* accepted: a word-sized flag, set at boot and after every identity commit (identity_store_write()
+ * is the one writer); a poller that reads it a moment early sees the new value at its next look. */
+static volatile bool g_wlan_configured;
+
 /* Weak, so a board with a factory MAC in its silicon can supply it. The
  * default is "this part has no address of its own", which is true of both
  * QEMU targets and of the RP2350 (its OTP carries a chip id, not an IEEE
@@ -161,6 +165,8 @@ void node_identity_init(void) {
     block_dev_t *id_dev = identity_store_device();
     idstore_t rec;
     bool rec_valid = id_dev && idstore_read(id_dev, &rec) == IDSTORE_VALID;
+
+    g_wlan_configured = rec_valid && idstore_get_field(&rec, IDSTORE_FIELD_WLAN_SSID, NULL, 0) > 0;
 
     char rec_name[NODE_NAME_MAX];
     int rec_name_len = rec_valid
@@ -598,6 +604,7 @@ static int identity_store_write(const identity_patch_t *patch) {
         result = -1;
     } else {
         result = idstore_writer_commit(wp, dev);
+        if (result == 0) g_wlan_configured = final_ssid_len > 0;
         if (result != 0) {
             printk("[Identity] write_blocks('%s') returned %d for %u block(s) at lba 0\n",
                    dev->name ? dev->name : "?", result, (unsigned)IDSTORE_BLOCKS);
@@ -697,6 +704,8 @@ node_id_result_t node_identity_generate_key(void) {
 }
 
 /* --- WLAN credentials: storage and toolset for SSID and PSK. --- */
+
+bool node_wlan_configured(void) { return g_wlan_configured; }
 
 bool node_wlan_ssid(char *out, uint32_t cap) {
     block_dev_t *dev = identity_store_device();

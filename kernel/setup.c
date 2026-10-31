@@ -101,8 +101,7 @@ bool setup_ap_wanted(void) {
     spin_unlock_irqrestore(&g_lock, f);
     if (held) return true;
     if (setup_state() != SETUP_OPEN) return false;
-    char ssid[NODE_WLAN_SSID_MAX + 1];
-    return g_forced || !node_wlan_ssid(ssid, sizeof ssid);
+    return g_forced || !node_wlan_configured();
 }
 
 bool setup_unauth_attach_ok(void) { return setup_state() == SETUP_OPEN; }
