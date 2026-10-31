@@ -80,6 +80,7 @@
 #include "kernel/setup.h"
 #include "kernel/boardinfo.h"
 #include "net/httpd.h"
+#include "kernel/tls_cert.h"
 #include "net/dhcpd.h"
 #include "kernel/privilege.h"
 #include "kernel/random.h"
@@ -4075,6 +4076,35 @@ static void cmd_board(void) {
 }
 
 /* --- `httpd`: the admin web server (net/httpd.c) ------------------------------------- */
+#if defined(CONFIG_TLS_SERVER)
+/* The HTTPS key and certificate (kernel/tls_cert.h): the same text and commands as /dev/tls, plus the
+ * request and the certificate printed. */
+static void cmd_tls(const char *arg) {
+    while (arg && *arg == ' ') arg++;
+    if (!arg || !*arg || strcmp(arg, "status") == 0) {
+        char text[512];
+        uint32_t n = tls_ctl_read(text, sizeof text - 1);
+        text[n] = 0;
+        cprintf("%s", text);
+    } else if (strcmp(arg, "keygen") == 0 || strcmp(arg, "rekey") == 0 || strcmp(arg, "clear") == 0) {
+        int rc = arg[0] == 'k' ? tls_keygen(false) : arg[0] == 'r' ? tls_keygen(true) : tls_clear();
+        cprintf("tls %s: %s\n", arg, tls_result_str(rc));
+    } else if (strcmp(arg, "csr") == 0 || strcmp(arg, "cert") == 0) {
+        char chunk[257];
+        uint64_t off = 0;
+        int n;
+        while ((n = arg[1] == 's' ? tls_csr_read(chunk, 256, off) : tls_certfile_read(chunk, 256, off)) > 0) {
+            chunk[n] = 0;
+            cprintf("%s", chunk);
+            off += (uint64_t)n;
+        }
+        if (off == 0) cprintf("tls %s: none\n", arg);
+    } else {
+        cprintf("usage: tls [status | keygen | rekey | clear | csr | cert]\n");
+    }
+}
+#endif
+
 static void cmd_httpd(const char *arg) {
     while (arg && *arg == ' ') arg++;
     if (!arg || !*arg || strcmp(arg, "status") == 0) {
@@ -5856,7 +5886,7 @@ static void shell_run_editor(const char *filename) {
  * they change keys, identity or network configuration, write arbitrary memory
  * or install firmware. See kernel/include/kernel/privilege.h. */
 static const char *const g_privileged[] = {
-    "httpd", "identity", "mqttcfg", "netcfg", "otakey", "p9key", "peers", "poke", "sdio", "setup", "wlan",
+    "httpd", "identity", "mqttcfg", "netcfg", "otakey", "p9key", "peers", "poke", "sdio", "setup", "tls", "wlan",
 };
 
 static bool privileged_cmd_refused(const char *cmd_line) {
@@ -7333,6 +7363,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "board") == 0) {
         cmd_board();
         return;
+#if defined(CONFIG_TLS_SERVER)
+    } else if (strcmp(cmd_line, "tls") == 0 || strncmp(cmd_line, "tls ", 4) == 0) {
+        cmd_tls(cmd_line[3] ? &cmd_line[4] : NULL);
+        return;
+#endif
     } else if (strcmp(cmd_line, "httpd") == 0 || strncmp(cmd_line, "httpd ", 6) == 0) {
         cmd_httpd(cmd_line[5] ? &cmd_line[6] : NULL);
         return;

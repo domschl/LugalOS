@@ -183,3 +183,6 @@ set(CONFIG_SETUP_BUTTON_GPIO 35)   # BOOT, as on the NANO
 
 # Named by /proc/board and the banner (kernel/boardinfo.h).
 set(CONFIG_BOARD_DESC "Waveshare ESP32-P4-WIFI6-Touch-LCD-7B")
+
+# HTTPS: the node's own key, its certificate request and its certificate (kernel/tls_cert.c).
+set(CONFIG_TLS_SERVER 1)

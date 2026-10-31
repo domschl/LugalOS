@@ -716,6 +716,9 @@ set(SOURCES
     kernel/boardinfo.c
     kernel/setup_button.c
     kernel/status_led.c
+    kernel/der.c
+    kernel/x509.c
+    kernel/tls_cert.c
     kernel/status_led_pattern.c
     kernel/setup_ap.c
     # N1: the nonce source for that gate, plus the measurement that says

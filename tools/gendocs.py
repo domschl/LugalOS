@@ -283,6 +283,7 @@ DOC_MAPPINGS: dict[str, str] = {
     "doc/admin/identity.md": "tools/sd_root/help/identity.gmi",
     "doc/admin/storage.md": "tools/sd_root/help/storage.gmi",
     "doc/admin/updates.md": "tools/sd_root/help/updates.gmi",
+    "doc/admin/tls.md": "tools/sd_root/help/tls.gmi",
 
     # Board Reference Guides
     "doc/admin/boards/index.md": "tools/sd_root/help/boards.gmi",

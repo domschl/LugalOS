@@ -1,0 +1,22 @@
+[project]
+name = "lugalos-ca"
+version = "0.1.0"
+description = "The owner's certificate authority for LugalOS nodes' HTTPS (plan/phase52 52.14)"
+requires-python = ">=3.11"
+dependencies = ["cryptography>=42", "p9lib"]
+
+[project.scripts]
+lugalos-ca = "lugalos_ca.cli:main"
+
+[tool.uv.sources]
+p9lib = { path = "../p9lib", editable = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lugalos_ca"]
+
+[tool.pyrefly]
+project-includes = ["src"]

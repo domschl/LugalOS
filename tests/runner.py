@@ -5441,6 +5441,146 @@ def test_httpd_websocket_9p(elf_path: Path, img_path: Path, arch_name: str) -> t
         arch_img.unlink(missing_ok=True)
 
 
+def test_tls_identity(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """52.14: the node makes its own HTTPS key, hands out a certificate request OpenSSL accepts, and
+    installs the certificate host/ca issues for it -- and only that one, and only from an admin peer.
+    The private key, read off the identity disk afterwards, appears in no file the node serves, and an
+    owner reset takes it away. Needs entropy: the guest gets QEMU's virtio-rng."""
+    import shutil
+    import socket as _socket
+    import subprocess
+    import tempfile
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "host" / "p9lib" / "src"))
+    import p9lib
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    import provision
+
+    name = "HTTPS Identity: Own Key, A CSR OpenSSL Verifies, The CA's Certificate Installed, The Key Never Served (52.14)"
+    root = Path(__file__).resolve().parent.parent
+    openssl = shutil.which("openssl")
+    if not openssl:
+        return (name, True, "skipped: no openssl on this host")
+    arch_img = img_path.with_name(f"test_{arch_name}_tls_sd.img")
+    shutil.copyfile(img_path, arch_img)
+    id_img = img_path.with_name(f"test_{arch_name}_tls_id.img")
+    id_img.write_bytes(provision.build_record([
+        (provision.FIELD_UID, bytes.fromhex("c1c2c3c4c5c6c7c8"), ),
+        (provision.FIELD_NAME, b"tlsnode"),
+    ]))
+    key = bytes(range(96, 112))
+    pr = _socket.socket()
+    pr.bind(("127.0.0.1", 0))
+    port = pr.getsockname()[1]
+    pr.close()
+
+    def ca(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["uv", "run", "--project", str(root / "host" / "ca"), "lugalos-ca", "--dir", cadir, *args],
+                              capture_output=True, text=True, timeout=180)
+
+    def tls_status(sess) -> dict[str, str]:
+        return dict(l.partition("=")[::2] for l in sess.read("/dev/tls").decode().splitlines())
+
+    session = QemuSession(elf_path, arch_img, arch_name)
+    tmp = tempfile.TemporaryDirectory()
+    cadir = str(Path(tmp.name) / "ca")
+    try:
+        session.start(identity_img_path=id_img, extra_qemu_args=[
+            "-device", "virtio-rng-device",
+            "-netdev", f"user,id=n0,hostfwd=tcp:127.0.0.1:{port}-10.0.2.15:564",
+            "-device", "virtio-net-device,netdev=n0",
+        ])
+        ok, log = session.send_and_expect("", r"Type 'help' for commands", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+        session.send_and_expect('lisp\n(net-config "10.0.2.15" "255.255.255.0" "10.0.2.2")\nexit', r"\[Net\] 10\.0\.2\.15", timeout=6.0)
+        ok, log = session.send_and_expect("tls", r"names=\S+", timeout=8.0)
+        if "key=none" not in log or "cert=none" not in log:
+            return (name, False, f"a fresh node reports a key or certificate:\n{log[-300:]}")
+
+        # 1. Only an admin peer may ask for a key: the console key alone attaches without `admin`.
+        session.send_and_expect(f"p9key {key.hex()}", r"console key set", timeout=5.0)
+        with p9lib.Session(p9lib.connect_tcp("127.0.0.1", port, timeout=15), key=key) as s:
+            try:
+                s.write("/dev/tls", b"keygen\n", create=False, truncate=False)
+                return (name, False, "a peer without the admin grant made the node generate a key")
+            except p9lib.P9Error:
+                pass
+        session.send_and_expect(f"peers add lugal {key.hex()} / admin", r"granted", timeout=10.0)
+
+        # 2. The CA issues over 9P: keygen, CSR, certificate, installed.
+        r = ca("init", "--name", "LugalOS Test CA")
+        if r.returncode != 0:
+            return (name, False, f"lugalos-ca init failed:\n{r.stdout}{r.stderr}")
+        csr_path, crt_path = Path(tmp.name) / "node.csr", Path(tmp.name) / "node.crt"
+        r = ca("issue", "--tcp", f"127.0.0.1:{port}", "--key", key.hex(), "--save-csr", str(csr_path),
+               "--save-cert", str(crt_path))
+        if r.returncode != 0:
+            return (name, False, f"lugalos-ca issue failed:\n{r.stdout}{r.stderr}")
+        v = subprocess.run([openssl, "req", "-in", str(csr_path), "-noout", "-verify", "-text"],
+                           capture_output=True, text=True)
+        if v.returncode != 0 or "DNS:tlsnode.local" not in v.stdout or "IP Address:10.0.2.15" not in v.stdout:
+            return (name, False, f"OpenSSL does not accept the node's request:\n{v.stdout[-600:]}{v.stderr[-300:]}")
+        v = subprocess.run([openssl, "verify", "-CAfile", str(Path(cadir) / "ca.crt.pem"), str(crt_path)],
+                           capture_output=True, text=True)
+        if v.returncode != 0:
+            return (name, False, f"OpenSSL does not verify the issued certificate:\n{v.stdout}{v.stderr}")
+
+        with p9lib.Session(p9lib.connect_tcp("127.0.0.1", port, timeout=15), key=key) as s:
+            st = tls_status(s)
+            if st.get("cert") != "installed" or st.get("matches_key") != "yes" or st.get("subject") != "tlsnode.local":
+                return (name, False, f"/dev/tls after issuing: {st}")
+            if s.read("/dev/tlscert").strip() != crt_path.read_bytes().strip():
+                return (name, False, "/dev/tlscert does not read back the installed certificate")
+
+            # 3. A certificate for another key is refused, and the installed one stays.
+            other = subprocess.run([openssl, "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256",
+                                    "-nodes", "-keyout", "/dev/null", "-subj", "/CN=tlsnode.local", "-days", "1"],
+                                   capture_output=True, timeout=30)
+            try:
+                s.write("/dev/tlscert", other.stdout, create=False, truncate=False)
+                return (name, False, "a certificate for another key was installed")
+            except p9lib.P9Error:
+                pass
+            if tls_status(s).get("matches_key") != "yes":
+                return (name, False, "a refused certificate replaced the installed one")
+
+            # 4. The private key is on the identity disk and in no file the node serves.
+            raw = id_img.read_bytes()
+            length = int.from_bytes(raw[6:8], "little")
+            off, priv = 12, b""
+            while off + 3 <= length:
+                t, n = raw[off], int.from_bytes(raw[off + 1:off + 3], "little")
+                if t == 16:
+                    priv = raw[off + 3:off + 3 + 32]
+                off += 3 + n
+            if len(priv) != 32:
+                return (name, False, "no TLS key field on the identity disk")
+            served = b""
+            for d in ("/dev", "/proc"):
+                for st_ in s.listdir(d):
+                    if st_.name in ("uart", "zero", "otaimage", "kmsg"):
+                        continue
+                    try:
+                        served += s.read(f"{d}/{st_.name}")
+                    except p9lib.P9Error:
+                        pass
+            if priv in served or priv.hex().encode() in served.lower():
+                return (name, False, "the private key appears in a served file")
+
+        # 5. An owner reset takes the key and the certificate away.
+        session.send_and_expect("setup reset-owner", r"unclaimed", timeout=10.0)
+        ok, log = session.send_and_expect("tls", r"names=\S+", timeout=8.0)
+        if "key=none" not in log or "cert=none" not in log:
+            return (name, False, f"an owner reset left the key or the certificate:\n{log[-300:]}")
+        return (name, True, "admin-only keygen, CSR and certificate verified by OpenSSL, wrong key refused, "
+                            "key never served, wiped by an owner reset")
+    except Exception as e:
+        return (name, False, f"{type(e).__name__}: {e}")
+    finally:
+        session.close()
+        tmp.cleanup()
+
+
 def test_protected_sessions(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
     """52.11b: a 9P session over TCP is integrity-protected after the auth response, and a proxy that
     alters, replays, injects or drops a frame, or alters a reply, ends it.
@@ -10349,6 +10489,7 @@ def main() -> int:
         _run_single(test_setup_page_and_claim(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_httpd_websocket_9p(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_protected_sessions(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_tls_identity(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_wlan_credential_roundtrip(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_network_autoconfig(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_netif_virtio_net(rv64_elf, img_for("rv64"), "rv64"))

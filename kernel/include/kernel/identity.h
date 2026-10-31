@@ -318,6 +318,16 @@ node_id_result_t node_identity_set_setup_secret(const char *secret);
  * keeps the factory part and the hardware's: the node is the same device, unclaimed. */
 node_id_result_t node_identity_reset_owner(void);
 
+/* The HTTPS server's key (private 32 bytes, then public X and Y) and its certificate (DER), in the
+ * owner part. The getters read the record into heap scratch, not onto the caller's stack. */
+#define NODE_TLS_KEY_LEN  96u
+#define NODE_TLS_CERT_MAX 1536u
+bool node_tls_key(uint8_t out[NODE_TLS_KEY_LEN]);
+bool node_tls_cert(uint8_t *out, uint32_t cap, uint32_t *len_out);
+node_id_result_t node_identity_set_tls_key(const uint8_t key[NODE_TLS_KEY_LEN]);  /* drops the certificate */
+node_id_result_t node_identity_set_tls_cert(const uint8_t *der, uint32_t len);
+node_id_result_t node_identity_clear_tls(void);                                     /* key and certificate */
+
 #define NODE_OTA_PUBKEY_LEN 64u
 bool node_ota_pubkey(uint8_t out[NODE_OTA_PUBKEY_LEN]);
 node_id_result_t node_identity_set_ota_pubkey(const uint8_t *key);

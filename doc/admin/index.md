@@ -35,7 +35,10 @@ The **LugalOS Administrator Manual** provides complete instructions for system p
 7. **[Updating Nodes over 9P](updates.md)**
    * A/B slots, a permanent loader, trial boots that confirm themselves or fall back.
    * `tools/lota.py`: building an update image and sending it over any 9P path (e.g. to a P4's C6 through `/c6`).
-8. **[Target Hardware & Board Reference Guides](boards/index.md)**
+8. **[HTTPS Certificates: Your Own CA](tls.md)**
+   * `host/ca`: a root key on your computer; a node's own key, its request and its certificate.
+   * Installing the root certificate on Linux, Chrome, Firefox, Windows, macOS, Android and iOS.
+9. **[Target Hardware & Board Reference Guides](boards/index.md)**
    * Deep dive operational guides, hardware pinouts, power sequencing, and errata for [ESP32-P4-LCD-7B](boards/esp32p4_lcd7b.md), [M5Stack Tab5](boards/esp32p4_tab5.md), [ESP32-C6](boards/esp32c6.md), and [RP2350](boards/rp2350.md).
 
 ---

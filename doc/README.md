@@ -46,6 +46,7 @@ Guides for hardware provisioning, flashing, networking, and storage:
 * **[Identity & Security Records](admin/identity.md)**: Board provisioning, credential storage (`idstore`), Wi-Fi PSK derivation, and mutual authentication.
 * **[Storage & Filesystems](admin/storage.md)**: MicroSD FAT32 formatting, flashfs ROM disks, and RAM disks.
 * **[Updating Nodes over 9P](admin/updates.md)**: A/B partition updates, trial booting, and rollback.
+* **[HTTPS Certificates](admin/tls.md)**: Your own certificate authority (`host/ca`), a node's key and certificate, and trusting the root on each system.
 * **[Target Hardware & Board Reference Guides](admin/boards/index.md)**: Operational guides for [ESP32-P4-LCD-7B](admin/boards/esp32p4_lcd7b.md), [M5Stack Tab5](admin/boards/esp32p4_tab5.md), [ESP32-C6](admin/boards/esp32c6.md), and [RP2350](admin/boards/rp2350.md).
 
 ---

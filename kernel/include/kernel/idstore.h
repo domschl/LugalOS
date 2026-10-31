@@ -135,6 +135,12 @@ typedef enum {
                                     * the network. */
     IDSTORE_FIELD_MFG_CERT  = 15, /* device scope (factory): reserved for a manufacturer's
                                     * certificate (plan/phase52 §3 Q6). Carried, never read. */
+    IDSTORE_FIELD_TLS_KEY   = 16, /* instance scope (owner), secret: the HTTPS server's P-256 key,
+                                    * private scalar (32 bytes) then public X, Y (64), generated on
+                                    * the node (kernel/tls_cert.c). Never served, never written from
+                                    * outside: the network can only ask for a new one. */
+    IDSTORE_FIELD_TLS_CERT  = 17, /* instance scope (owner): the certificate for that key, DER, as
+                                    * the owner's CA issued it (host/ca). Public. */
 } idstore_field_type_t;
 
 /* Who may change a field (plan/phase52_remote_admin.md §1.3). The record is

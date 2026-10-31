@@ -1119,11 +1119,13 @@ static bool p9_path_within(const char *prefix, const char *path) {
  * test's harness can stand in for it. */
 __attribute__((weak)) bool p9_link_is_setup_ap(void) { return (req_ctx()->link_flags & P9_LINK_SETUP_NET) != 0; }
 
-/* 52.10: the files that change the identity need more than a read-write grant. /dev/owner is the
- * owner part: `admin`. /dev/setup takes a claim: `admin`, or the attach that /dev/setup alone
- * allows an unclaimed node to take unauthenticated. */
+/* The files that change the identity need more than a read-write grant. /dev/owner is the owner
+ * part: `admin`, and so are the HTTPS key and certificate (/dev/tls, /dev/tlscert). /dev/setup takes
+ * a claim: `admin`, or the attach that /dev/setup alone allows an unclaimed node to take
+ * unauthenticated. */
 static bool p9_write_allowed(const p9_fid_entry_t *e) {
     if (strcmp(e->path, "/dev/owner") == 0) return e->admin;
+    if (strcmp(e->path, "/dev/tls") == 0 || strcmp(e->path, "/dev/tlscert") == 0) return e->admin;
     if (strcmp(e->path, "/dev/setup") == 0) return e->admin || e->setup_attach;
     return true;
 }

@@ -2,6 +2,7 @@
 #include "kernel/sha256.h"
 #include "kernel/idstore.h"
 #include "kernel/scratch.h"
+#include "kernel/crypto.h"
 #include "kernel/random.h"
 #include "kernel/printk.h"
 #include "drivers/sensor_hub.h"
@@ -334,6 +335,11 @@ typedef struct {
     bool           clear_ota_pubkey;
     /* The setup secret (factory part), NODE_SETUP_SECRET_MIN..MAX printable characters. */
     const char    *setup_secret; uint32_t setup_secret_len;
+    /* The HTTPS key (NODE_TLS_KEY_LEN bytes) and its certificate (DER). A new key drops the
+     * certificate, which named the old one. */
+    const uint8_t *tls_key;
+    const uint8_t *tls_cert; uint32_t tls_cert_len;
+    bool           clear_tls;
     /* An owner reset: every field idstore_field_class() calls OWNER is left out of the new
      * record; the factory part and the hardware's survive. Applied after the other members, so a
      * patch that sets one of the owner fields and resets leaves it set (a claim does this). */
@@ -560,6 +566,21 @@ static int identity_store_write(const identity_patch_t *patch) {
         uint32_t cl = 0;
         const uint8_t *cp = idstore_field_ptr(oldp, IDSTORE_FIELD_MFG_CERT, &cl);
         if (cp && cl) rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_MFG_CERT, cp, (uint16_t)cl);
+    }
+    /* The HTTPS key and certificate: owner fields, carried by pointer like the grants. */
+    if (patch->tls_key) {
+        rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_TLS_KEY, patch->tls_key, NODE_TLS_KEY_LEN);
+    } else if (old_valid && keep_owner && !patch->clear_tls) {
+        uint32_t kl = 0;
+        const uint8_t *kp = idstore_field_ptr(oldp, IDSTORE_FIELD_TLS_KEY, &kl);
+        if (kp && kl == NODE_TLS_KEY_LEN) rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_TLS_KEY, kp, (uint16_t)kl);
+    }
+    if (patch->tls_cert && patch->tls_cert_len) {
+        rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_TLS_CERT, patch->tls_cert, (uint16_t)patch->tls_cert_len);
+    } else if (old_valid && keep_owner && !patch->clear_tls && !patch->tls_key) {
+        uint32_t cl = 0;
+        const uint8_t *cp = idstore_field_ptr(oldp, IDSTORE_FIELD_TLS_CERT, &cl);
+        if (cp && cl) rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_TLS_CERT, cp, (uint16_t)cl);
     }
     if (have_ipv4)           rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_IPV4, final_ipv4, sizeof(final_ipv4));
     if (have_otakey)         rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_OTA_PUBKEY, final_otakey, sizeof(final_otakey));
@@ -1112,4 +1133,49 @@ node_id_result_t node_identity_reset_owner(void) {
     if (identity_store_write(&patch) != 0) return NODE_ID_ERR_WRITE_FAILED;
     node_identity_init();   /* the name in RAM is the record's again: the default */
     return NODE_ID_OK;
+}
+
+/* One field of the record into `out`, through heap scratch: the record is 4 KB, too much for the
+ * stacks of the tasks that ask (the 9P server's, the web server's). Returns the field's length, or -1. */
+static int identity_field_copy(uint8_t type, uint8_t *out, uint32_t cap) {
+    block_dev_t *dev = identity_store_device();
+    if (!dev) return -1;
+    scratch_t sc;
+    if (!scratch_acquire(&sc, sizeof(idstore_t))) return -1;
+    idstore_t *rec = (idstore_t *)sc.base;
+    int n = idstore_read(dev, rec) == IDSTORE_VALID ? idstore_get_field(rec, type, out, cap) : -1;
+    crypto_wipe_bytes(rec, sizeof *rec);
+    scratch_release(&sc);
+    return n;
+}
+
+bool node_tls_key(uint8_t out[NODE_TLS_KEY_LEN]) {
+    return identity_field_copy(IDSTORE_FIELD_TLS_KEY, out, NODE_TLS_KEY_LEN) == (int)NODE_TLS_KEY_LEN;
+}
+
+bool node_tls_cert(uint8_t *out, uint32_t cap, uint32_t *len_out) {
+    int n = identity_field_copy(IDSTORE_FIELD_TLS_CERT, out, cap);
+    if (n <= 0 || (uint32_t)n > cap) return false;
+    if (len_out) *len_out = (uint32_t)n;
+    return true;
+}
+
+node_id_result_t node_identity_set_tls_key(const uint8_t key[NODE_TLS_KEY_LEN]) {
+    if (!key) return NODE_ID_ERR_BAD_INPUT;
+    if (!identity_store_device()) return NODE_ID_ERR_NO_BACKEND;
+    identity_patch_t patch = { .tls_key = key };
+    return identity_store_write(&patch) != 0 ? NODE_ID_ERR_WRITE_FAILED : NODE_ID_OK;
+}
+
+node_id_result_t node_identity_set_tls_cert(const uint8_t *der, uint32_t len) {
+    if (!der || len == 0 || len > NODE_TLS_CERT_MAX) return NODE_ID_ERR_BAD_INPUT;
+    if (!identity_store_device()) return NODE_ID_ERR_NO_BACKEND;
+    identity_patch_t patch = { .tls_cert = der, .tls_cert_len = len };
+    return identity_store_write(&patch) != 0 ? NODE_ID_ERR_WRITE_FAILED : NODE_ID_OK;
+}
+
+node_id_result_t node_identity_clear_tls(void) {
+    if (!identity_store_device()) return NODE_ID_ERR_NO_BACKEND;
+    identity_patch_t patch = { .clear_tls = true };
+    return identity_store_write(&patch) != 0 ? NODE_ID_ERR_WRITE_FAILED : NODE_ID_OK;
 }

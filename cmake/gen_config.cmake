@@ -210,6 +210,9 @@ set(_optional_keys
     # 1: a claimed node starts the admin web server (port 80) when it gets an address (kernel/setup.c,
     # setup_address_set()). The Pico 2 W does this from its setup access point's task instead.
     CONFIG_HTTPD_WHEN_CLAIMED
+    # 1: this board serves HTTPS (plan/phase52 52.14-52.15): its own P-256 key, a certificate request and
+    # the certificate the owner's CA issued, as /dev/tls, /dev/tlscsr and /dev/tlscert (kernel/tls_cert.c).
+    CONFIG_TLS_SERVER
     # Lisp's node pool, when a
     # board wants other than user/lisp/lisp.c's per-target default.
     CONFIG_LISP_NODE_POOL

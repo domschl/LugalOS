@@ -40,6 +40,7 @@
 #endif
 #include "kernel/llp_node.h"
 #include "kernel/ota.h"
+#include "kernel/tls_cert.h"
 #include "kernel/setup.h"
 #include "kernel/klog.h"
 #include "kernel/device.h"
@@ -2316,6 +2317,10 @@ static const char *g_dev_names[]  = { "uart", "null", "zero", "eeprom", "clipboa
     /* claiming the node, and its owner part (kernel/setup.h) */
     "setup", "owner",
 #endif
+#if defined(CONFIG_TLS_SERVER)
+    /* the HTTPS key, its certificate request and its certificate (kernel/tls_cert.h) */
+    "tls", "tlscsr", "tlscert",
+#endif
 #if defined(CONFIG_BATT_CELLS)
     /* the board battery's state (kernel/power.h) */
     "power",
@@ -2550,6 +2555,20 @@ int vfs_pread(int fd, void *buf, uint32_t count, uint64_t offset) {
                 memcpy(buf, st + offset, k);
                 return (int)k;
 #endif
+#if defined(CONFIG_TLS_SERVER)
+            } else if (strcmp(h->rel_path, "tls") == 0) {
+                char st[512];
+                uint32_t len = tls_ctl_read(st, sizeof st);
+                if (offset >= len) return 0;
+                uint32_t k = len - (uint32_t)offset;
+                if (k > count) k = count;
+                memcpy(buf, st + offset, k);
+                return (int)k;
+            } else if (strcmp(h->rel_path, "tlscsr") == 0) {
+                return tls_csr_read(buf, count, offset);
+            } else if (strcmp(h->rel_path, "tlscert") == 0) {
+                return tls_certfile_read(buf, count, offset);
+#endif
 #if defined(CONFIG_NETWORK_CLAIM)
             } else if (strcmp(h->rel_path, "setup") == 0 || strcmp(h->rel_path, "owner") == 0) {
                 char st[512];
@@ -2631,6 +2650,12 @@ int vfs_pwrite(int fd, const void *buf, uint32_t count, uint64_t offset) {
 #if defined(CONFIG_BATT_CELLS)
             } else if (strcmp(h->rel_path, "power") == 0) {
                 return power_ctl_write((const char *)buf, count);
+#endif
+#if defined(CONFIG_TLS_SERVER)
+            } else if (strcmp(h->rel_path, "tls") == 0) {
+                return tls_ctl_write((const char *)buf, count);
+            } else if (strcmp(h->rel_path, "tlscert") == 0) {
+                return tls_certfile_write(buf, count, offset);
 #endif
 #if defined(CONFIG_NETWORK_CLAIM)
             } else if (strcmp(h->rel_path, "setup") == 0) {

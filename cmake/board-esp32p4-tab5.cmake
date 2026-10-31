@@ -171,3 +171,6 @@ set(CONFIG_SDIO_FREQ_KHZ   40000)   # SDIO high speed; C6 slave answers at it
 
 # Named by /proc/board and the banner (kernel/boardinfo.h).
 set(CONFIG_BOARD_DESC "M5Stack Tab5")
+
+# HTTPS: the node's own key, its certificate request and its certificate (kernel/tls_cert.c).
+set(CONFIG_TLS_SERVER 1)

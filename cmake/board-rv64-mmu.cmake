@@ -34,3 +34,6 @@ set(CONFIG_NETWORK_CLAIM 1)
 
 # Named by /proc/board and the banner (kernel/boardinfo.h).
 set(CONFIG_BOARD_DESC "QEMU virt, rv64 Sv39")
+
+# HTTPS: the node's own key, its certificate request and its certificate (kernel/tls_cert.c).
+set(CONFIG_TLS_SERVER 1)

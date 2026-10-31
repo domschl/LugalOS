@@ -326,3 +326,6 @@ set(CONFIG_SETUP_BUTTON_GPIO 35)   # BOOT; a strapping pin, an ordinary input on
 
 # Named by /proc/board and the banner (kernel/boardinfo.h).
 set(CONFIG_BOARD_DESC "Waveshare ESP32-P4-NANO")
+
+# HTTPS: the node's own key, its certificate request and its certificate (kernel/tls_cert.c).
+set(CONFIG_TLS_SERVER 1)

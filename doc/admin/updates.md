@@ -293,4 +293,4 @@ the first LugalOS self-update.
 
 ---
 
-**Navigation:** [<- Storage Guide](storage.md) | [Administrator Manual](index.md) | [Board Reference Guides ->](boards/index.md) | [Documentation Index](../README.md)
+**Navigation:** [<- Storage Guide](storage.md) | [Administrator Manual](index.md) | [HTTPS Certificates ->](tls.md) | [Documentation Index](../README.md)
