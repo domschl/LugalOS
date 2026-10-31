@@ -101,10 +101,10 @@ MEMORY
      * maps a raw binary -- and copying the 0x20 without the format that
      * needs it would be a magic number with a false explanation.
      *
-     * 1280 KB matches LUGALOS_P4_OSIMAGE_SIZE in
+     * 1920 KB matches LUGALOS_P4_OSIMAGE_SIZE in
      * cmake/flash_layout_esp32p4.cmake; the ASSERT at the bottom is what
      * keeps the two from drifting. */
-    XIP    (rx)  : ORIGIN = 0x40000000, LENGTH = 1280K
+    XIP    (rx)  : ORIGIN = 0x40000000, LENGTH = 1920K
 }
 
 ENTRY(_start)
@@ -404,12 +404,12 @@ SECTIONS
            "linker/esp32p4.ld: the XIP window must start on a 64 KB MMU page boundary")
 
     /* The flash half must fit the segment reserved for it in
-     * cmake/flash_layout_esp32p4.cmake (LUGALOS_P4_OSIMAGE_SIZE, 1.25 MB). The
+     * cmake/flash_layout_esp32p4.cmake (LUGALOS_P4_OSIMAGE_SIZE, 1.875 MB). The
      * two numbers are deliberately in two files -- one is a property of the
      * link, the other of the flash map -- so this is what keeps them
      * agreeing. Overflowing it would write the OS image over /flash0. */
     ASSERT(_xip_end - _xip_start <= LENGTH(XIP),
-           "linker/esp32p4.ld: .text + .rodata overflow the 1.25 MB OS image segment; raise LUGALOS_P4_OSIMAGE_SIZE and this region together")
+           "linker/esp32p4.ld: .text + .rodata overflow the 1.875 MB OS image segment; raise LUGALOS_P4_OSIMAGE_SIZE and this region together")
 
     /* .stack is given an explicit address rather than a region, because a
      * region-assigned section is packed against the previous one and there

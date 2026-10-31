@@ -621,6 +621,164 @@ static void test_targets_and_astronauts_bedrock_alignment(void) {
     printf("[test] Targets and astronauts bedrock alignment passed.\n");
 }
 
+static void test_aerial_enemy_spawning_and_kinematics(void) {
+    printf("[test] Checking aerial enemy spawning, sine wave kinematics & laser interception...\n");
+    ceres_game_t g;
+    ceres_game_init(&g, 640, 360);
+
+    /* 1. Spawn a Saucer, a Fighter, and a Meteor */
+    bool s_ok = ceres_entities_spawn_aerial(&g.entities, CERES_AERIAL_SAUCER, INT_TO_FIXED(400), INT_TO_FIXED(150));
+    bool f_ok = ceres_entities_spawn_aerial(&g.entities, CERES_AERIAL_FIGHTER, INT_TO_FIXED(450), INT_TO_FIXED(80));
+    bool m_ok = ceres_entities_spawn_aerial(&g.entities, CERES_AERIAL_METEOR, INT_TO_FIXED(500), INT_TO_FIXED(120));
+    assert(s_ok && f_ok && m_ok);
+    assert(g.entities.active_aerials == 3);
+
+    /* 2. Run an update and check kinematics */
+    ceres_entities_update(&g.entities, &g.terrain, 640, 360);
+
+    /* Find active saucer and check sine oscillation */
+    int saucer_idx = -1;
+    for (int i = 0; i < CERES_MAX_AERIAL_ENEMIES; i++) {
+        if (g.entities.aerials[i].active && g.entities.aerials[i].type == CERES_AERIAL_SAUCER) {
+            saucer_idx = i;
+            break;
+        }
+    }
+    assert(saucer_idx != -1);
+    assert(g.entities.aerials[saucer_idx].x < INT_TO_FIXED(400)); /* Moved left */
+
+    /* 3. Laser Interception of Saucer */
+    /* Fire laser directly towards the saucer */
+    fixed32_t sx = g.entities.aerials[saucer_idx].x;
+    fixed32_t sy = g.entities.aerials[saucer_idx].y;
+    ceres_entities_fire_laser(&g.entities, sx - INT_TO_FIXED(20), sy + INT_TO_FIXED(6));
+
+    ceres_interaction_t res = ceres_entities_resolve_collisions(
+        &g.entities, &g.terrain,
+        g.player.x, g.player.y, SPRITE_PLAYER_SHIP_W, SPRITE_PLAYER_SHIP_H, false
+    );
+
+    /* Saucer destroyed, awards +200 points */
+    assert(res.score_delta == 200);
+    assert(!g.entities.aerials[saucer_idx].active);
+    assert(g.entities.total_aerials_destroyed == 1);
+    printf("[test] Aerial enemy spawning, sine wave kinematics & laser interception passed.\n");
+}
+
+static void test_harvester_abduction_and_midair_rescue(void) {
+    printf("[test] Checking Harvester abductor drone, survivor snatch & mid-air heroic parachute rescue...\n");
+    ceres_game_t g;
+    ceres_game_init(&g, 640, 360);
+
+    /* 1. Spawn a ground survivor at world X = 300, ground Y = 280 */
+    ceres_entities_spawn_target(&g.entities, CERES_TARGET_SURVIVOR, 300, 280);
+
+    /* Camera starts at column 0, so screen X of survivor is 300 */
+    int surv_sx = 300;
+
+    /* 2. Spawn Harvester abductor directly above survivor at Y = 40 */
+    ceres_entities_spawn_harvester(&g.entities, INT_TO_FIXED(surv_sx), INT_TO_FIXED(40));
+
+    int harv_idx = -1;
+    for (int i = 0; i < CERES_MAX_AERIAL_ENEMIES; i++) {
+        if (g.entities.aerials[i].active && g.entities.aerials[i].type == CERES_AERIAL_HARVESTER) {
+            harv_idx = i;
+            break;
+        }
+    }
+    assert(harv_idx != -1);
+    assert(!g.entities.aerials[harv_idx].carrying_survivor);
+
+    /* 3. Run updates so Harvester descends and snatches survivor */
+    for (int f = 0; f < 130; f++) {
+        ceres_entities_update(&g.entities, &g.terrain, 640, 360);
+        if (g.entities.aerials[harv_idx].carrying_survivor) break;
+    }
+
+    /* Verify Harvester snatched the survivor */
+    assert(g.entities.aerials[harv_idx].carrying_survivor);
+    assert(g.entities.aerials[harv_idx].vy < 0); /* Ascending toward space */
+
+    /* 4. Shoot the Harvester with a laser to liberate the survivor! */
+    fixed32_t hx = g.entities.aerials[harv_idx].x;
+    fixed32_t hy = g.entities.aerials[harv_idx].y;
+
+    /* Harvester has 3 HP, bring to 1 HP for single shot */
+    g.entities.aerials[harv_idx].hp = 1;
+    ceres_entities_fire_laser(&g.entities, hx - INT_TO_FIXED(20), hy + INT_TO_FIXED(6));
+
+    ceres_interaction_t res = ceres_entities_resolve_collisions(
+        &g.entities, &g.terrain,
+        10, 10, SPRITE_PLAYER_SHIP_W, SPRITE_PLAYER_SHIP_H, false
+    );
+
+    /* Harvester destroyed: +400 pts, survivor liberated on parachute! */
+    assert(res.score_delta >= 400);
+
+    /* Verify Harvester is no longer active */
+    bool harvester_alive = false;
+    for (int i = 0; i < CERES_MAX_AERIAL_ENEMIES; i++) {
+        if (g.entities.aerials[i].active && g.entities.aerials[i].type == CERES_AERIAL_HARVESTER) {
+            harvester_alive = true;
+            break;
+        }
+    }
+    assert(!harvester_alive);
+
+    /* 5. Check that a parachuting survivor entity was spawned */
+    int para_idx = -1;
+    for (int i = 0; i < CERES_MAX_AERIAL_ENEMIES; i++) {
+        if (g.entities.aerials[i].active && g.entities.aerials[i].type == CERES_AERIAL_PARACHUTE) {
+            para_idx = i;
+            break;
+        }
+    }
+    assert(para_idx != -1);
+    assert(g.entities.aerials[para_idx].vy > 0); /* Descending with parachute */
+
+    /* 6. Player ship flies to intercept descending parachutist mid-air */
+    int para_sx = FIXED_TO_INT(g.entities.aerials[para_idx].x);
+    int para_sy = FIXED_TO_INT(g.entities.aerials[para_idx].y);
+
+    ceres_interaction_t rescue_res = ceres_entities_resolve_collisions(
+        &g.entities, &g.terrain,
+        para_sx, para_sy, SPRITE_PLAYER_SHIP_W, SPRITE_PLAYER_SHIP_H, false
+    );
+
+    /* Verify Heroic Mid-Air Rescue! */
+    assert(rescue_res.heroic_rescue);
+    assert(rescue_res.survivor_rescued);
+    assert(rescue_res.score_delta == 1000); /* +1000 Heroic Rescue Bonus */
+    assert(rescue_res.fuel_delta == 300);   /* +300 Fuel Bonus */
+    assert(!g.entities.aerials[para_idx].active);
+    assert(g.entities.total_parachutes_rescued == 1);
+    printf("[test] Harvester abductor drone, survivor snatch & mid-air heroic parachute rescue passed.\n");
+}
+
+static void test_aerial_collision_with_player_ship(void) {
+    printf("[test] Checking lethal enemy craft collision and respawn protection...\n");
+    ceres_game_t g;
+    ceres_game_init(&g, 640, 360);
+
+    /* 1. Shielded test: spawn protection protects the player from death */
+    assert(g.player.invincible_frames > 0);
+    ceres_entities_spawn_fighter(&g.entities, INT_TO_FIXED(g.player.x), INT_TO_FIXED(g.player.y));
+    ceres_game_update(&g, 16);
+    assert(g.player.alive); /* Protected by spawn shield! */
+
+    /* 2. Unshielded test: lethal collision */
+    g.player.invincible_frames = 0;
+    ceres_entities_spawn_fighter(&g.entities, INT_TO_FIXED(g.player.x), INT_TO_FIXED(g.player.y));
+    int init_lives = g.player.lives;
+    ceres_game_update(&g, 16);
+
+    /* Ship destroyed, entering respawn timer */
+    assert(!g.player.alive);
+    assert(g.player.lives == init_lives - 1);
+    assert(g.player.respawn_timer > 0);
+    printf("[test] Lethal enemy craft collision and respawn protection passed.\n");
+}
+
 int main(void) {
     printf("=== Ceres Alpha Logic Unit Tests ===\n");
     test_initialization();
@@ -639,6 +797,9 @@ int main(void) {
     test_tractor_scoop_and_rescue();
     test_fuel_economy_and_flameout();
     test_targets_and_astronauts_bedrock_alignment();
+    test_aerial_enemy_spawning_and_kinematics();
+    test_harvester_abduction_and_midair_rescue();
+    test_aerial_collision_with_player_ship();
     printf("=== All Logic Tests Passed Cleanly! ===\n");
     return 0;
 }

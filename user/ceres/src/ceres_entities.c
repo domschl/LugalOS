@@ -15,6 +15,8 @@ void ceres_entities_init(ceres_entities_t *pool) {
     memset(pool, 0, sizeof(*pool));
     pool->next_spawn_world_x = 240;
     pool->spawn_cycle = 0;
+    pool->aerial_spawn_timer = 90;
+    pool->aerial_formation_cycle = 0;
 }
 
 bool ceres_entities_spawn_target(ceres_entities_t *pool, ceres_target_type_t type, int32_t world_x, int32_t ground_y) {
@@ -94,6 +96,104 @@ bool ceres_entities_launch_sam(ceres_entities_t *pool, fixed32_t launch_x, fixed
     pool->active_sam_rockets++;
     pool->total_sams_launched++;
     return true;
+}
+
+bool ceres_entities_spawn_aerial(ceres_entities_t *pool, ceres_aerial_type_t type, fixed32_t x, fixed32_t y) {
+    if (!pool || type == CERES_AERIAL_NONE) return false;
+
+    int slot = -1;
+    for (int i = 0; i < CERES_MAX_AERIAL_ENEMIES; i++) {
+        if (!pool->aerials[i].active) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot == -1) return false;
+
+    ceres_aerial_t *a = &pool->aerials[slot];
+    a->active = true;
+    a->type = type;
+    a->x = x;
+    a->y = y;
+    a->base_y = y;
+    a->anim_timer = 0;
+    a->carrying_survivor = false;
+    a->target_survivor_idx = -1;
+
+    switch (type) {
+        case CERES_AERIAL_SAUCER:
+            a->w = SPRITE_SAUCER_W;
+            a->h = SPRITE_SAUCER_H;
+            a->vx = -INT_TO_FIXED(3);
+            a->vy = 0;
+            a->hp = 1;
+            break;
+        case CERES_AERIAL_FIGHTER:
+            a->w = SPRITE_FIGHTER_W;
+            a->h = SPRITE_FIGHTER_H;
+            a->vx = -INT_TO_FIXED(4);
+            a->vy = INT_TO_FIXED(1);
+            a->hp = 1;
+            break;
+        case CERES_AERIAL_METEOR:
+            a->w = SPRITE_METEOR_W;
+            a->h = SPRITE_METEOR_H;
+            a->vx = -INT_TO_FIXED(2) - (FIXED_ONE / 2);
+            a->vy = FIXED_ONE / 4;
+            a->hp = 2;
+            break;
+        case CERES_AERIAL_HARVESTER:
+            a->w = SPRITE_HARVESTER_W;
+            a->h = SPRITE_HARVESTER_H;
+            a->vx = -INT_TO_FIXED(2);
+            a->vy = 0;
+            a->hp = 3;
+            break;
+        case CERES_AERIAL_PARACHUTE:
+            a->w = SPRITE_PARACHUTIST_W;
+            a->h = SPRITE_PARACHUTIST_H;
+            a->vx = -FIXED_ONE / 2;
+            a->vy = FIXED_ONE / 2;
+            a->hp = 1;
+            break;
+        default:
+            a->w = 16;
+            a->h = 16;
+            a->vx = -INT_TO_FIXED(2);
+            a->vy = 0;
+            a->hp = 1;
+            break;
+    }
+
+    pool->active_aerials++;
+    return true;
+}
+
+void ceres_entities_spawn_saucer_wave(ceres_entities_t *pool, fixed32_t start_x, fixed32_t base_y, int count) {
+    if (!pool || count <= 0) return;
+    for (int i = 0; i < count; i++) {
+        fixed32_t sx = start_x + INT_TO_FIXED(i * 30);
+        if (ceres_entities_spawn_aerial(pool, CERES_AERIAL_SAUCER, sx, base_y)) {
+            for (int s = 0; s < CERES_MAX_AERIAL_ENEMIES; s++) {
+                if (pool->aerials[s].active && pool->aerials[s].type == CERES_AERIAL_SAUCER && pool->aerials[s].x == sx) {
+                    pool->aerials[s].anim_timer = (uint8_t)(i * 20);
+                    break;
+                }
+            }
+        }
+    }
+}
+
+void ceres_entities_spawn_fighter(ceres_entities_t *pool, fixed32_t start_x, fixed32_t start_y) {
+    ceres_entities_spawn_aerial(pool, CERES_AERIAL_FIGHTER, start_x, start_y);
+}
+
+void ceres_entities_spawn_meteor(ceres_entities_t *pool, fixed32_t start_x, fixed32_t start_y) {
+    ceres_entities_spawn_aerial(pool, CERES_AERIAL_METEOR, start_x, start_y);
+}
+
+void ceres_entities_spawn_harvester(ceres_entities_t *pool, fixed32_t start_x, fixed32_t start_y) {
+    ceres_entities_spawn_aerial(pool, CERES_AERIAL_HARVESTER, start_x, start_y);
 }
 
 bool ceres_entities_fire_laser(ceres_entities_t *pool, fixed32_t ship_x, fixed32_t ship_y) {
@@ -446,7 +546,165 @@ void ceres_entities_update(ceres_entities_t *pool, const ceres_terrain_t *terrai
         pool->active_targets++;
     }
 
-    /* 5. Update Particles */
+    /* 5. Update Aerial Enemies */
+    pool->active_aerials = 0;
+    int camera_col = terrain ? (int)terrain->camera_col : 0;
+
+    for (int a_idx = 0; a_idx < CERES_MAX_AERIAL_ENEMIES; a_idx++) {
+        ceres_aerial_t *a = &pool->aerials[a_idx];
+        if (!a->active) continue;
+
+        a->anim_timer++;
+
+        switch (a->type) {
+            case CERES_AERIAL_SAUCER: {
+                a->x += a->vx;
+                /* Undulate with smooth sine wave */
+                uint8_t phase = (uint8_t)(a->anim_timer * 3);
+                a->y = a->base_y + fixed_mul(INT_TO_FIXED(22), fixed_sin(phase));
+                break;
+            }
+            case CERES_AERIAL_FIGHTER: {
+                a->x += a->vx;
+                a->y += a->vy;
+                /* Pull up from dive if reaching lower zone */
+                if (a->y > a->base_y + INT_TO_FIXED(70)) {
+                    a->vy = -FIXED_ONE / 2;
+                }
+                break;
+            }
+            case CERES_AERIAL_METEOR: {
+                a->x += a->vx;
+                a->y += a->vy;
+                /* Occasional dust particle */
+                if ((a->anim_timer % 8) == 0) {
+                    ceres_entities_spawn_sparks(pool, a->x + INT_TO_FIXED(a->w / 2), a->y + INT_TO_FIXED(a->h / 2), COLOR_METEOR_BROWN, 1);
+                }
+                break;
+            }
+            case CERES_AERIAL_HARVESTER: {
+                if (!a->carrying_survivor) {
+                    /* Look for a ground survivor to abduct */
+                    int nearest_surv = -1;
+                    int min_dx = 9999;
+                    for (int t_idx = 0; t_idx < CERES_MAX_GROUND_TARGETS; t_idx++) {
+                        const ceres_ground_target_t *tgt = &pool->targets[t_idx];
+                        if (!tgt->active || tgt->type != CERES_TARGET_SURVIVOR) continue;
+                        int sx = tgt->world_x - camera_col;
+                        if (sx < 0 || sx >= playfield_w) continue;
+                        int dx = FIXED_TO_INT(a->x) - sx;
+                        if (dx < 0) dx = -dx;
+                        if (dx < min_dx) {
+                            min_dx = dx;
+                            nearest_surv = t_idx;
+                        }
+                    }
+
+                    if (nearest_surv != -1) {
+                        ceres_ground_target_t *tgt = &pool->targets[nearest_surv];
+                        int sx = tgt->world_x - camera_col;
+                        int surv_y = tgt->y;
+
+                        if (min_dx <= 24) {
+                            /* Vertically aligned: descend with abduction beam */
+                            a->vx = 0;
+                            a->vy = INT_TO_FIXED(2);
+                            a->x = INT_TO_FIXED(sx + tgt->w / 2 - a->w / 2);
+                            a->y += a->vy;
+
+                            if (FIXED_TO_INT(a->y) + a->h >= surv_y - 4) {
+                                /* Grab survivor! */
+                                a->carrying_survivor = true;
+                                tgt->active = false;
+                                pool->active_targets--;
+                                a->vy = -INT_TO_FIXED(2); /* Ascend with victim! */
+                                ceres_entities_spawn_sparks(pool, a->x + INT_TO_FIXED(a->w / 2), a->y + INT_TO_FIXED(a->h), COLOR_THRUSTER_YELLOW, 8);
+                            }
+                        } else {
+                            /* Move horizontally towards survivor */
+                            a->vx = (FIXED_TO_INT(a->x) > sx) ? -INT_TO_FIXED(2) : INT_TO_FIXED(2);
+                            a->vy = 0;
+                            a->x += a->vx;
+                        }
+                    } else {
+                        /* Normal patrol flight */
+                        a->x += a->vx;
+                    }
+                } else {
+                    /* Ascend towards space with abducted human */
+                    a->y += a->vy;
+                    if (a->y < -INT_TO_FIXED(24)) {
+                        /* Escaped! Victim lost */
+                        a->active = false;
+                        continue;
+                    }
+                }
+                break;
+            }
+            case CERES_AERIAL_PARACHUTE: {
+                a->x += a->vx;
+                a->y += a->vy;
+
+                /* Check if safely landed on ground floor */
+                if (terrain) {
+                    int px = FIXED_TO_INT(a->x) + a->w / 2;
+                    int floor_y = playfield_h;
+                    if (px >= 0 && px < playfield_w) {
+                        ceres_terrain_sample(terrain, px, NULL, &floor_y);
+                    }
+                    if (FIXED_TO_INT(a->y) + a->h >= floor_y) {
+                        /* Safe landing: turns into a ground survivor waiting for rescue! */
+                        ceres_entities_spawn_target(pool, CERES_TARGET_SURVIVOR, camera_col + px - SPRITE_SURVIVOR_W / 2, floor_y);
+                        a->active = false;
+                        ceres_entities_spawn_sparks(pool, a->x + INT_TO_FIXED(a->w / 2), INT_TO_FIXED(floor_y), COLOR_SURVIVOR_GREEN, 4);
+                        continue;
+                    }
+                }
+                break;
+            }
+            default:
+                a->x += a->vx;
+                break;
+        }
+
+        int ax = FIXED_TO_INT(a->x);
+        int ay = FIXED_TO_INT(a->y);
+
+        if (ax < -48 || ax > playfield_w + 140 || ay < -40 || ay > playfield_h + 40) {
+            a->active = false;
+            continue;
+        }
+
+        pool->active_aerials++;
+    }
+
+    /* 6. Aerial Enemy Formation Spawner */
+    if (pool->aerial_spawn_timer > 0) {
+        pool->aerial_spawn_timer--;
+    } else {
+        pool->aerial_spawn_timer = 200; /* Spawn formation every ~3.3 seconds */
+        uint8_t wave = pool->aerial_formation_cycle % 4;
+        pool->aerial_formation_cycle++;
+
+        int spawn_x = playfield_w + 40;
+        int spawn_y = 60 + (int)(prng_step(&pool->next_spawn_world_x) % 180);
+
+        if (wave == 0) {
+            /* Undulating Saucer Squadron (4 saucers) */
+            ceres_entities_spawn_saucer_wave(pool, INT_TO_FIXED(spawn_x), INT_TO_FIXED(spawn_y), 4);
+        } else if (wave == 1) {
+            /* Fast Diving Interceptor */
+            ceres_entities_spawn_fighter(pool, INT_TO_FIXED(spawn_x), INT_TO_FIXED(spawn_y - 30));
+        } else if (wave == 2) {
+            /* Alien Harvester Abductor */
+            ceres_entities_spawn_harvester(pool, INT_TO_FIXED(spawn_x), INT_TO_FIXED(50));
+        } else {
+            /* Tumbling Basalt Meteor */
+            ceres_entities_spawn_meteor(pool, INT_TO_FIXED(spawn_x), INT_TO_FIXED(spawn_y));
+        }
+    }
+
+    /* 7. Update Particles */
     pool->active_particles = 0;
     for (int p = 0; p < CERES_MAX_PARTICLES; p++) {
         ceres_particle_t *part = &pool->particles[p];
@@ -678,6 +936,104 @@ ceres_interaction_t ceres_entities_resolve_collisions(ceres_entities_t *pool, co
         }
     }
 
+    /* 7. Weapon vs Aerial Enemies */
+    for (int a_idx = 0; a_idx < CERES_MAX_AERIAL_ENEMIES; a_idx++) {
+        ceres_aerial_t *a = &pool->aerials[a_idx];
+        if (!a->active || a->type == CERES_AERIAL_PARACHUTE) continue;
+
+        int ax = FIXED_TO_INT(a->x);
+        int ay = FIXED_TO_INT(a->y);
+
+        /* Laser collision check */
+        for (int l = 0; l < CERES_MAX_LASERS; l++) {
+            ceres_laser_t *laser = &pool->lasers[l];
+            if (!laser->active) continue;
+
+            int lx = FIXED_TO_INT(laser->x);
+            int lr = lx + LASER_SPAN_PX;
+            int ly = FIXED_TO_INT(laser->y);
+
+            if (lr >= ax && lx <= ax + a->w && ly >= ay && ly <= ay + a->h) {
+                laser->active = false;
+                a->hp--;
+                if (a->hp <= 0) {
+                    a->active = false;
+                    pool->total_aerials_destroyed++;
+                    ceres_entities_spawn_explosion(pool, a->x + INT_TO_FIXED(a->w / 2), a->y + INT_TO_FIXED(a->h / 2), 1);
+
+                    if (a->type == CERES_AERIAL_SAUCER)        res.score_delta += 200;
+                    else if (a->type == CERES_AERIAL_FIGHTER)   res.score_delta += 150;
+                    else if (a->type == CERES_AERIAL_METEOR)    res.score_delta += 75;
+                    else if (a->type == CERES_AERIAL_HARVESTER) {
+                        res.score_delta += 400;
+                        if (a->carrying_survivor) {
+                            /* Liberate survivor on parachute! */
+                            ceres_entities_spawn_aerial(pool, CERES_AERIAL_PARACHUTE, a->x + INT_TO_FIXED(4), a->y + INT_TO_FIXED(10));
+                        }
+                    }
+                } else {
+                    ceres_entities_spawn_sparks(pool, INT_TO_FIXED(lr), INT_TO_FIXED(ly), COLOR_STAR_WHITE, 4);
+                }
+                break;
+            }
+        }
+
+        /* Bomb collision check (if still active) */
+        if (!a->active) continue;
+        for (int b = 0; b < CERES_MAX_BOMBS; b++) {
+            ceres_bomb_t *bomb = &pool->bombs[b];
+            if (!bomb->active) continue;
+
+            int bx = FIXED_TO_INT(bomb->x);
+            int by = FIXED_TO_INT(bomb->y);
+
+            if (bx >= ax && bx <= ax + a->w && by >= ay && by <= ay + a->h) {
+                bomb->active = false;
+                a->active = false;
+                pool->total_bomb_detonations++;
+                pool->total_aerials_destroyed++;
+                ceres_entities_spawn_explosion(pool, a->x + INT_TO_FIXED(a->w / 2), a->y + INT_TO_FIXED(a->h / 2), 2);
+                res.score_delta += 250;
+                if (a->type == CERES_AERIAL_HARVESTER && a->carrying_survivor) {
+                    ceres_entities_spawn_aerial(pool, CERES_AERIAL_PARACHUTE, a->x + INT_TO_FIXED(4), a->y + INT_TO_FIXED(10));
+                }
+                break;
+            }
+        }
+    }
+
+    /* 8. Player Craft vs Aerial Enemies */
+    for (int a_idx = 0; a_idx < CERES_MAX_AERIAL_ENEMIES; a_idx++) {
+        ceres_aerial_t *a = &pool->aerials[a_idx];
+        if (!a->active) continue;
+
+        int ax = FIXED_TO_INT(a->x);
+        int ay = FIXED_TO_INT(a->y);
+
+        if (ax + a->w >= ship_x && ax <= ship_x + ship_w &&
+            ay + a->h >= ship_y && ay <= ship_y + ship_h) {
+
+            if (a->type == CERES_AERIAL_PARACHUTE) {
+                /* HEROIC MID-AIR RESCUE! */
+                a->active = false;
+                pool->total_survivors_rescued++;
+                pool->total_parachutes_rescued++;
+                res.survivor_rescued = true;
+                res.heroic_rescue = true;
+                res.fuel_delta += 300;
+                res.score_delta += 1000;
+                ceres_entities_spawn_sparks(pool, a->x + INT_TO_FIXED(a->w / 2), a->y + INT_TO_FIXED(a->h / 2), COLOR_SURVIVOR_GREEN, 14);
+                ceres_entities_spawn_sparks(pool, a->x + INT_TO_FIXED(a->w / 2), a->y + INT_TO_FIXED(a->h / 2), COLOR_STAR_WHITE, 8);
+            } else {
+                /* Deadly collision with enemy craft or meteor */
+                a->active = false;
+                ceres_entities_spawn_explosion(pool, a->x + INT_TO_FIXED(a->w / 2), a->y + INT_TO_FIXED(a->h / 2), 2);
+                res.player_hit = true;
+                break;
+            }
+        }
+    }
+
     return res;
 }
 
@@ -846,6 +1202,50 @@ void ceres_entities_render(const ceres_entities_t *pool, const ceres_terrain_t *
         } else {
             /* 1x1 particle */
             ceres_blit_pixel(surf, px, py, part->color);
+        }
+    }
+
+    /* 6. Render Aerial Enemies */
+    for (int i = 0; i < CERES_MAX_AERIAL_ENEMIES; i++) {
+        const ceres_aerial_t *a = &pool->aerials[i];
+        if (!a->active) continue;
+
+        int sx = FIXED_TO_INT(a->x);
+        int sy = FIXED_TO_INT(a->y);
+
+        switch (a->type) {
+            case CERES_AERIAL_SAUCER:
+                ceres_blit_sprite(surf, sx, sy, &g_surf_saucer, CERES_KEY_COLOR);
+                break;
+            case CERES_AERIAL_FIGHTER:
+                ceres_blit_sprite(surf, sx, sy, &g_surf_fighter, CERES_KEY_COLOR);
+                break;
+            case CERES_AERIAL_METEOR:
+                ceres_blit_sprite(surf, sx, sy, &g_surf_meteor, CERES_KEY_COLOR);
+                break;
+            case CERES_AERIAL_HARVESTER:
+                ceres_blit_sprite(surf, sx, sy, &g_surf_harvester, CERES_KEY_COLOR);
+                /* Draw glowing amber tractor beam if descending */
+                if (a->vy > 0 && !a->carrying_survivor) {
+                    int beam_top = sy + a->h;
+                    int beam_bot = beam_top + 36;
+                    if (beam_bot > surf->height) beam_bot = surf->height;
+                    for (int by = beam_top; by < beam_bot; by += 2) {
+                        int spread = (by - beam_top) / 4;
+                        ceres_blit_pixel(surf, sx + a->w / 2 - spread, by, COLOR_THRUSTER_YELLOW);
+                        ceres_blit_pixel(surf, sx + a->w / 2 + spread, by, COLOR_THRUSTER_YELLOW);
+                    }
+                }
+                /* Draw dangling captured victim if carrying */
+                if (a->carrying_survivor) {
+                    ceres_blit_sprite(surf, sx + a->w / 2 - SPRITE_SURVIVOR_W / 2, sy + a->h - 4, &g_surf_survivor, CERES_KEY_COLOR);
+                }
+                break;
+            case CERES_AERIAL_PARACHUTE:
+                ceres_blit_sprite(surf, sx, sy, &g_surf_parachutist, CERES_KEY_COLOR);
+                break;
+            default:
+                break;
         }
     }
 }

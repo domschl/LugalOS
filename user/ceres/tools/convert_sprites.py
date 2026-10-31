@@ -269,6 +269,11 @@ def main():
         ("cryo_bunker.png", "cryo_bunker", 32, 24, "bottom"),
         ("survivor.png", "survivor", 16, 18, "bottom"),
         ("player_ship.png", "player_ship", 28, 14, "center"),
+        ("saucer.png", "saucer", 24, 14, "center"),
+        ("fighter.png", "fighter", 20, 12, "center"),
+        ("meteor.png", "meteor", 18, 18, "center"),
+        ("harvester.png", "harvester", 24, 20, "center"),
+        ("parachutist.png", "parachutist", 16, 24, "center"),
     ]
 
     sprites = []

@@ -268,7 +268,7 @@ flowchart TD
   - `tools/racescan.py --check` passes with 0 shared unmarked statics.
   - `tools/gendocs.py --check` passes with 0 drift.
 
-### Milestone 67.5: Aerial Enemies, Alien Harvesters & Mid-Air Rescue
+### Milestone 67.5: Aerial Enemies, Alien Harvesters & Mid-Air Rescue — **COMPLETE**
 * **Deliverables**:
   - Sine-wave undulating alien saucers, diving fighters, and tumbling meteors.
   - Alien "Harvester" abductor drones that target stranded survivors on the ground and winch them upward.

@@ -86,6 +86,10 @@ typedef struct {
     /* Performance Metrics */
     uint32_t              last_frame_us;
     uint32_t              last_render_us;
+
+    /* On-Screen Notification Banner (e.g. HEROIC RESCUE! +1000) */
+    uint16_t              banner_timer;
+    char                  banner_text[32];
 } ceres_game_t;
 
 /* Engine Lifecycle Hooks */

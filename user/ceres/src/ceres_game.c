@@ -488,6 +488,17 @@ void ceres_game_update(ceres_game_t *g, uint32_t delta_ms) {
     if (res.survivor_rescued) {
         g->player.rescued++;
     }
+    if (res.heroic_rescue) {
+        g->banner_timer = 90;
+        const char *msg = "HEROIC RESCUE! +1000";
+        for (int i = 0; i < 31 && msg[i]; i++) {
+            g->banner_text[i] = msg[i];
+            g->banner_text[i + 1] = '\0';
+        }
+    }
+    if (g->banner_timer > 0) {
+        g->banner_timer--;
+    }
 
     /* Fatal SAM Rocket Impact */
     if (res.player_hit && g->player.alive && g->player.invincible_frames == 0) {
@@ -586,6 +597,17 @@ void ceres_game_render(ceres_game_t *g, uint16_t *fb, int w, int h, int stride) 
 
     /* Row 2: Fuel Gauge Bar and Rescue Counter */
     ceres_blit_text(&surf, 8, 18, "FUEL [", COLOR_HUD_TEXT, 0, true);
+
+    /* Temporary In-Game Notification Banner */
+    if (g->banner_timer > 0 && g->state == CERES_STATE_PLAYING) {
+        int bw = 200;
+        int bh = 22;
+        int bx = (w - bw) / 2;
+        int by = 36;
+        ceres_blit_fill_rect(&surf, bx, by, bw, bh, RGB565(8, 24, 8));
+        ceres_blit_rect_outline(&surf, bx, by, bw, bh, COLOR_SURVIVOR_GREEN);
+        ceres_blit_text(&surf, bx + 16, by + 3, g->banner_text, COLOR_STAR_WHITE, 0, true);
+    }
 
     int fuel_bar_x = 8 + 6 * CERES_FONT_W;
     int fuel_bar_w = 120;
