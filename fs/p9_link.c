@@ -918,18 +918,30 @@ static int remote_pread_locked(p9_remote_mount_t *mount, uint32_t fid, void *buf
 
 static int remote_pwrite_locked(p9_remote_mount_t *mount, uint32_t fid, const void *buf, uint32_t count, uint64_t offset) {
     if (!mount || !mount->in_use || !buf) return -1;
-    if (count > sizeof(g_remote_tx) - 64) count = sizeof(g_remote_tx) - 64; // framing headroom
-
-    p9_msg_t req, resp;
-    memset(&req, 0, sizeof(req));
-    req.type = P9_TWRITE;
-    req.tag = p9_remote_next_tag(mount);
-    req.fid = fid;
-    req.offset = offset;
-    req.count = count;
-    req.data = (const uint8_t *)buf;
-    if (p9_remote_xchg(mount, &req, &resp) < 0 || resp.type != P9_RWRITE) return -1;
-    return (int)resp.count;
+    /* Each Twrite fits the smaller of our buffer and the msize the peer agreed (a C6 radio takes 2048
+     * where this node takes 4096), less framing headroom; a longer write goes as several, so a caller
+     * sees one write either way. */
+    uint32_t msize = (mount->msize > 0 && mount->msize < sizeof(g_remote_tx)) ? mount->msize
+                                                                              : (uint32_t)sizeof(g_remote_tx);
+    uint32_t chunk = msize - 64u;
+    const uint8_t *p = (const uint8_t *)buf;
+    uint32_t done = 0;
+    while (done < count) {
+        uint32_t n = count - done < chunk ? count - done : chunk;
+        p9_msg_t req, resp;
+        memset(&req, 0, sizeof(req));
+        req.type = P9_TWRITE;
+        req.tag = p9_remote_next_tag(mount);
+        req.fid = fid;
+        req.offset = offset + done;
+        req.count = n;
+        req.data = p + done;
+        if (p9_remote_xchg(mount, &req, &resp) < 0 || resp.type != P9_RWRITE) return done ? (int)done : -1;
+        if (resp.count > n) return -1;            // defensive: the peer claimed more than was sent
+        done += resp.count;
+        if (resp.count < n) break;                // the peer took less: report what it took
+    }
+    return (int)done;
 }
 
 /* Unpacks one 9P "stat" wire entry (the format fs/9p.c's p9_pack_stat()
