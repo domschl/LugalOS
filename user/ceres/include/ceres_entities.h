@@ -1,0 +1,164 @@
+/* user/ceres/include/ceres_entities.h — Fixed Entity Pools & Projectile Kinematics */
+#ifndef CERES_ENTITIES_H
+#define CERES_ENTITIES_H
+
+#include <stdint.h>
+#include <stdbool.h>
+#include "ceres_config.h"
+#include "ceres_fixed.h"
+#include "ceres_blitter.h"
+#include "ceres_terrain.h"
+
+/* Entity Pool Capacities */
+#define CERES_MAX_LASERS         8    /* Up to 4 simultaneous twin pulses */
+#define CERES_MAX_BOMBS          4    /* Up to 2 simultaneous falling bombs */
+#define CERES_MAX_PARTICLES      64   /* Debris, explosion sparks & thruster embers */
+#define CERES_MAX_GROUND_TARGETS 24   /* Ground installations across active terrain */
+#define CERES_MAX_SAM_ROCKETS    8    /* Vertical surface-to-air interceptors */
+
+/* Weapon Cooldowns (Frames @ 60 FPS) */
+#define CERES_LASER_COOLDOWN     8    /* ~133 ms between bursts */
+#define CERES_BOMB_COOLDOWN      15   /* ~250 ms between drops */
+
+/* Weapon Kinetic Constants (16.16 Fixed-Point) */
+#define LASER_SPEED_FIXED           INT_TO_FIXED(12)      /* 12.0 px/frame */
+#define LASER_SPAN_PX               12                    /* Visual beam length */
+
+#define BOMB_INITIAL_VX_FIXED       INT_TO_FIXED(3)       /* Forward momentum */
+#define BOMB_INITIAL_VY_FIXED       (FIXED_ONE * 3 / 2)   /* 1.5 px/frame downward */
+#define BOMB_GRAVITY_FIXED          (FIXED_ONE / 5)       /* 0.20 px/frame^2 downward */
+#define BOMB_MAX_VY_FIXED           INT_TO_FIXED(7)       /* Terminal fall speed */
+#define BOMB_RADIUS_PX              3
+
+/* SAM Rocket Kinematics */
+#define SAM_INITIAL_VY_FIXED        (-INT_TO_FIXED(3))    /* 3.0 px/frame upward */
+#define SAM_ACCEL_VY_FIXED          (-FIXED_ONE / 16)     /* Upward acceleration */
+#define SAM_MAX_VY_FIXED            (-INT_TO_FIXED(6))    /* Terminal climb speed */
+#define SAM_TRIGGER_DIST_PX         190                   /* Player proximity launch trigger */
+
+/* Forward Twin Pulse Laser */
+typedef struct {
+    bool      active;
+    fixed32_t x;            /* 16.16 subpixel X */
+    fixed32_t y;            /* 16.16 subpixel Y */
+    fixed32_t vx;           /* 16.16 forward velocity */
+    int       life_frames;  /* Remaining flight frames */
+} ceres_laser_t;
+
+/* Falling Gravity Bomb */
+typedef struct {
+    bool      active;
+    fixed32_t x;            /* 16.16 subpixel X */
+    fixed32_t y;            /* 16.16 subpixel Y */
+    fixed32_t vx;           /* 16.16 forward velocity */
+    fixed32_t vy;           /* 16.16 downward velocity (accelerated by gravity) */
+    int       life_frames;  /* Remaining flight frames */
+} ceres_bomb_t;
+
+/* Visual Particle / Spark / Debris */
+typedef struct {
+    bool      active;
+    fixed32_t x;            /* 16.16 subpixel X */
+    fixed32_t y;            /* 16.16 subpixel Y */
+    fixed32_t vx;           /* Velocity X */
+    fixed32_t vy;           /* Velocity Y */
+    uint16_t  color;        /* RGB565 */
+    uint8_t   life;         /* Current frames remaining */
+    uint8_t   max_life;     /* Total lifespan */
+} ceres_particle_t;
+
+/* Surface-to-Air Rocket (SAM) */
+typedef struct {
+    bool      active;
+    fixed32_t x;            /* 16.16 subpixel X */
+    fixed32_t y;            /* 16.16 subpixel Y */
+    fixed32_t vx;           /* Velocity X (drifts with wind/scroll) */
+    fixed32_t vy;           /* Velocity Y (upward vertical climb) */
+    int       life_frames;  /* Remaining flight frames */
+} ceres_sam_rocket_t;
+
+/* Ground Target Types */
+typedef enum {
+    CERES_TARGET_NONE = 0,
+    CERES_TARGET_FUEL_SILO,     /* Pressurized fuel depot (+250 fuel on destruction) */
+    CERES_TARGET_RADAR,         /* Motorized tracking radar dish (+100 pts) */
+    CERES_TARGET_SAM_SILO,      /* Subterranean vertical rocket launcher (+150 pts) */
+    CERES_TARGET_CRYO_BUNKER,   /* Reinforced shelter; bombing cracks open and frees survivor (+100 pts) */
+    CERES_TARGET_SURVIVOR,      /* Stranded human astronaut waiting for tractor scoop rescue */
+} ceres_target_type_t;
+
+/* Ground Installation Entity */
+typedef struct {
+    bool                active;
+    ceres_target_type_t type;
+    int32_t             world_x;     /* World column index */
+    int32_t             y;           /* Ground elevation (bedrock seam) */
+    int32_t             w;           /* Width (px) */
+    int32_t             h;           /* Height (px) */
+    bool                launched;    /* SAM Silo: rocket has launched */
+    bool                cracked;     /* Cryo-Bunker: breached */
+    uint32_t            anim_timer;  /* Beacon blink / arm waving timer */
+} ceres_ground_target_t;
+
+/* Collision and Interaction Result */
+typedef struct {
+    int  fuel_delta;
+    int  score_delta;
+    bool bunker_breached;
+    bool survivor_rescued;
+    bool sam_launched;
+    bool player_hit;
+} ceres_interaction_t;
+
+/* Fixed Entity Pool Context (Embedded directly in ceres_game_t) */
+typedef struct {
+    ceres_laser_t         lasers[CERES_MAX_LASERS];
+    ceres_bomb_t          bombs[CERES_MAX_BOMBS];
+    ceres_particle_t      particles[CERES_MAX_PARTICLES];
+    ceres_ground_target_t targets[CERES_MAX_GROUND_TARGETS];
+    ceres_sam_rocket_t    sam_rockets[CERES_MAX_SAM_ROCKETS];
+
+    uint8_t               laser_cooldown;
+    uint8_t               bomb_cooldown;
+    uint32_t              next_spawn_world_x;
+    uint32_t              spawn_cycle;
+
+    /* Metrics & Diagnostics */
+    uint32_t              active_lasers;
+    uint32_t              active_bombs;
+    uint32_t              active_particles;
+    uint32_t              active_targets;
+    uint32_t              active_sam_rockets;
+    uint32_t              total_lasers_fired;
+    uint32_t              total_bombs_dropped;
+    uint32_t              total_bomb_detonations;
+    uint32_t              total_laser_rock_hits;
+    uint32_t              total_targets_destroyed;
+    uint32_t              total_sams_launched;
+    uint32_t              total_survivors_rescued;
+} ceres_entities_t;
+
+/* Entity Pool Management */
+void ceres_entities_init(ceres_entities_t *pool);
+
+/* Spawning Installations & Missiles */
+bool ceres_entities_spawn_target(ceres_entities_t *pool, ceres_target_type_t type, int32_t world_x, int32_t ground_y);
+bool ceres_entities_launch_sam(ceres_entities_t *pool, fixed32_t launch_x, fixed32_t launch_y);
+
+/* Weapon Triggers */
+bool ceres_entities_fire_laser(ceres_entities_t *pool, fixed32_t ship_x, fixed32_t ship_y);
+bool ceres_entities_drop_bomb(ceres_entities_t *pool, fixed32_t ship_x, fixed32_t ship_y);
+
+/* Particle Spawners */
+void ceres_entities_spawn_sparks(ceres_entities_t *pool, fixed32_t x, fixed32_t y, uint16_t color, int count);
+void ceres_entities_spawn_explosion(ceres_entities_t *pool, fixed32_t x, fixed32_t y, int size_preset);
+void ceres_entities_spawn_thruster_ember(ceres_entities_t *pool, fixed32_t x, fixed32_t y);
+
+/* Simulation, Collisions & Rendering */
+void ceres_entities_update(ceres_entities_t *pool, const ceres_terrain_t *terrain, int playfield_w, int playfield_h);
+ceres_interaction_t ceres_entities_resolve_collisions(ceres_entities_t *pool, const ceres_terrain_t *terrain,
+                                                     int ship_x, int ship_y, int ship_w, int ship_h,
+                                                     bool tractor_active);
+void ceres_entities_render(const ceres_entities_t *pool, const ceres_terrain_t *terrain, const ceres_surface_t *surf);
+
+#endif /* CERES_ENTITIES_H */

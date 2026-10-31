@@ -1,0 +1,571 @@
+/* user/ceres/tests/test_game_logic.c — Unit Tests for Ceres Alpha Logic & Blitter */
+
+#include "ceres_config.h"
+#include "ceres_platform.h"
+#include "ceres_blitter.h"
+#include "ceres_sprites.h"
+#include "ceres_fixed.h"
+#include "ceres_entities.h"
+#include "ceres_game.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <assert.h>
+#include <string.h>
+
+static void test_initialization(void) {
+    printf("[test] Checking game initialization...\n");
+    ceres_game_t g;
+    bool ok = ceres_game_init(&g, 640, 360);
+    assert(ok);
+    assert(g.width == 640);
+    assert(g.height == 360);
+    assert(g.state == CERES_STATE_PLAYING);
+    assert(g.running == true);
+    assert(g.player.fuel == 1000);
+    assert(g.player.lives == 3);
+    assert(g.player.score == 0);
+    assert(g.player.x == 80);
+    assert(g.player.y == 180);
+    assert(g.player.bank == 0);
+    assert(g.entities.active_lasers == 0);
+    assert(g.entities.active_bombs == 0);
+    assert(g.entities.active_particles == 0);
+    printf("[test] Initialization passed.\n");
+}
+
+static void test_flight_boundaries(void) {
+    printf("[test] Checking flight corridor clamping...\n");
+    ceres_game_t g;
+    ceres_game_init(&g, 640, 360);
+
+    /* Test boundary clamp left */
+    g.key_left = true;
+    for (int i = 0; i < 200; i++) {
+        ceres_game_update(&g, 16);
+    }
+    assert(g.player.x >= 32);
+    assert(g.player.thrust_boost == -1);
+
+    /* Test boundary clamp right */
+    g.key_left = false;
+    g.key_right = true;
+    for (int i = 0; i < 500; i++) {
+        ceres_game_update(&g, 16);
+    }
+    assert(g.player.x <= 640 - 128);
+    assert(g.player.thrust_boost == 1);
+
+    /* Test boundary clamp up against ceiling/HUD */
+    g.key_right = false;
+    g.key_up = true;
+    for (int i = 0; i < 200; i++) {
+        ceres_game_update(&g, 16);
+    }
+    assert(g.player.y >= CERES_HUD_HEIGHT + 6);
+    assert(g.player.bank == 1); /* Climbing bank */
+
+    /* Test boundary clamp down against floor */
+    g.key_up = false;
+    g.key_down = true;
+    for (int i = 0; i < 500; i++) {
+        ceres_game_update(&g, 16);
+    }
+    assert(g.player.bank == -1); /* Diving bank */
+
+    int ceil_y = 0, floor_y = 0;
+    ceres_terrain_sample(&g.terrain, g.player.x, &ceil_y, &floor_y);
+    assert(g.player.y <= floor_y - 6);
+    printf("[test] Flight corridor clamping passed.\n");
+}
+
+static void test_weapons_and_scoring(void) {
+    printf("[test] Checking weapons input & controls...\n");
+    ceres_game_t g;
+    ceres_game_init(&g, 640, 360);
+
+    /* Fire laser */
+    ceres_event_t ev_fire = { .type = CERES_EVENT_KEY_DOWN, .key = CERES_KEY_SPACE };
+    ceres_game_handle_event(&g, &ev_fire);
+    assert(g.player.laser_fired);
+    assert(g.entities.total_lasers_fired == 2);
+
+    /* Drop bomb */
+    ceres_event_t ev_bomb = { .type = CERES_EVENT_KEY_DOWN, .key = CERES_KEY_B };
+    ceres_game_handle_event(&g, &ev_bomb);
+    assert(g.player.bomb_dropped);
+    assert(g.entities.total_bombs_dropped == 1);
+
+    /* Pause toggle */
+    ceres_event_t ev_pause = { .type = CERES_EVENT_KEY_DOWN, .key = CERES_KEY_P };
+    ceres_game_handle_event(&g, &ev_pause);
+    assert(g.state == CERES_STATE_PAUSED);
+    ceres_game_handle_event(&g, &ev_pause);
+    assert(g.state == CERES_STATE_PLAYING);
+
+    /* Quit */
+    ceres_event_t ev_quit = { .type = CERES_EVENT_KEY_DOWN, .key = CERES_KEY_Q };
+    ceres_game_handle_event(&g, &ev_quit);
+    assert(!g.running);
+    printf("[test] Weapons input & controls passed.\n");
+}
+
+static void test_laser_kinematics(void) {
+    printf("[test] Checking laser projectile physics & cooldowns...\n");
+    ceres_entities_t pool;
+    ceres_entities_init(&pool);
+
+    fixed32_t sx = INT_TO_FIXED(100);
+    fixed32_t sy = INT_TO_FIXED(150);
+
+    /* Fire initial twin laser */
+    bool fired = ceres_entities_fire_laser(&pool, sx, sy);
+    assert(fired);
+    assert(pool.total_lasers_fired == 2);
+    assert(pool.laser_cooldown == CERES_LASER_COOLDOWN);
+
+    /* Verify two lasers placed at upper and lower offsets */
+    int active_cnt = 0;
+    fixed32_t y1 = 0, y2 = 0;
+    for (int i = 0; i < CERES_MAX_LASERS; i++) {
+        if (pool.lasers[i].active) {
+            assert(pool.lasers[i].vx == LASER_SPEED_FIXED);
+            if (active_cnt == 0) y1 = pool.lasers[i].y;
+            else if (active_cnt == 1) y2 = pool.lasers[i].y;
+            active_cnt++;
+        }
+    }
+    assert(active_cnt == 2);
+    assert(y1 == sy - INT_TO_FIXED(3));
+    assert(y2 == sy + INT_TO_FIXED(3));
+
+    /* Immediate next trigger fails due to cooldown */
+    bool refired = ceres_entities_fire_laser(&pool, sx, sy);
+    assert(!refired);
+
+    /* Advance kinematics without terrain for 10 frames */
+    for (int f = 0; f < 10; f++) {
+        ceres_entities_update(&pool, NULL, 640, 360);
+    }
+
+    /* Verify straight forward trajectory: y unchanged, x increased by 10 * speed */
+    for (int i = 0; i < CERES_MAX_LASERS; i++) {
+        if (pool.lasers[i].active) {
+            fixed32_t expected_x = (sx + INT_TO_FIXED(8)) + 10 * LASER_SPEED_FIXED;
+            assert(pool.lasers[i].x == expected_x);
+            assert(pool.lasers[i].y == y1 || pool.lasers[i].y == y2);
+        }
+    }
+
+    /* Cooldown has now expired (10 frames > 8) */
+    assert(pool.laser_cooldown == 0);
+    bool second_burst = ceres_entities_fire_laser(&pool, sx, sy);
+    assert(second_burst);
+    assert(pool.total_lasers_fired == 4);
+
+    printf("[test] Laser projectile kinematics passed.\n");
+}
+
+static void test_bomb_parabola(void) {
+    printf("[test] Checking bomb parabolic trajectory & 2-bomb arcade limit...\n");
+    ceres_entities_t pool;
+    ceres_entities_init(&pool);
+
+    fixed32_t sx = INT_TO_FIXED(50);
+    fixed32_t sy = INT_TO_FIXED(100);
+
+    /* Drop 1st bomb */
+    bool dropped1 = ceres_entities_drop_bomb(&pool, sx, sy);
+    assert(dropped1);
+    assert(pool.total_bombs_dropped == 1);
+
+    /* Update 1 frame to register active bomb count */
+    ceres_entities_update(&pool, NULL, 640, 360);
+    assert(pool.active_bombs == 1);
+
+    /* Force cooldown clear to test concurrent active limit */
+    pool.bomb_cooldown = 0;
+    bool dropped2 = ceres_entities_drop_bomb(&pool, sx, sy);
+    assert(dropped2);
+    ceres_entities_update(&pool, NULL, 640, 360);
+    assert(pool.active_bombs == 2);
+
+    /* Third drop must be blocked because active_bombs >= 2 (Arcade authenticity) */
+    pool.bomb_cooldown = 0;
+    bool dropped3 = ceres_entities_drop_bomb(&pool, sx, sy);
+    assert(!dropped3);
+
+    /* Check parabolic trajectory of bomb 1 */
+    /* Find bomb 0 */
+    ceres_bomb_t *b = &pool.bombs[0];
+
+    for (int t = 0; t < 15; t++) {
+        fixed32_t prev_y = b->y;
+        fixed32_t prev_vy = b->vy;
+        ceres_entities_update(&pool, NULL, 640, 360);
+        if (!b->active) break;
+
+        /* Downward velocity must strictly increase by gravity each step */
+        assert(b->vy == prev_vy + BOMB_GRAVITY_FIXED);
+        /* Displacement must match velocity */
+        assert(b->y == prev_y + b->vy);
+        /* Horizontal motion is constant linear */
+        assert(b->vx == BOMB_INITIAL_VX_FIXED);
+    }
+
+    printf("[test] Bomb parabolic trajectory passed.\n");
+}
+
+static void test_projectile_terrain_collision(void) {
+    printf("[test] Checking projectile-terrain collision and detonations...\n");
+    ceres_entities_t pool;
+    ceres_entities_init(&pool);
+
+    ceres_terrain_t terrain;
+    ceres_terrain_init(&terrain, 2, 0x19810425);
+
+    /* Sample terrain at x = 120 */
+    int ceil_y = 0, floor_y = 0;
+    ceres_terrain_sample(&terrain, 120, &ceil_y, &floor_y);
+
+    /* 1. Fire laser directly into ceiling rock */
+    bool fired = ceres_entities_fire_laser(&pool, INT_TO_FIXED(80), INT_TO_FIXED(ceil_y - 2));
+    assert(fired);
+
+    /* Update entities with terrain: laser should strike ceiling and explode into sparks */
+    for (int f = 0; f < 10; f++) {
+        ceres_entities_update(&pool, &terrain, 640, 360);
+    }
+    assert(pool.total_laser_rock_hits > 0);
+    assert(pool.active_particles > 0);
+
+    /* 2. Drop bomb just above the floor so it hits quickly */
+    pool.bomb_cooldown = 0;
+    bool dropped = ceres_entities_drop_bomb(&pool, INT_TO_FIXED(120), INT_TO_FIXED(floor_y - 10));
+    assert(dropped);
+
+    uint32_t prev_detonations = pool.total_bomb_detonations;
+    for (int f = 0; f < 15; f++) {
+        ceres_entities_update(&pool, &terrain, 640, 360);
+    }
+    /* Bomb must have hit the floor and detonated */
+    assert(pool.total_bomb_detonations > prev_detonations);
+    assert(pool.active_bombs == 0);
+
+    printf("[test] Projectile-terrain collisions and detonations passed.\n");
+}
+
+static void test_particles_physics_and_decay(void) {
+    printf("[test] Checking particle explosion pool and lifecycle...\n");
+    ceres_entities_t pool;
+    ceres_entities_init(&pool);
+
+    /* Spawn explosion at (200, 200) */
+    ceres_entities_spawn_explosion(&pool, INT_TO_FIXED(200), INT_TO_FIXED(200), 1);
+    assert(pool.active_particles == 0); /* will count on update */
+
+    ceres_entities_update(&pool, NULL, 640, 360);
+    assert(pool.active_particles > 8);
+
+    /* Advance 40 frames: all particles must naturally decay and return to 0 */
+    for (int f = 0; f < 40; f++) {
+        ceres_entities_update(&pool, NULL, 640, 360);
+    }
+    assert(pool.active_particles == 0);
+
+    printf("[test] Particle physics and decay passed.\n");
+}
+
+static void test_terrain_streaming(void) {
+    printf("[test] Checking terrain ring buffer streaming & geometry...\n");
+    ceres_terrain_t t;
+    ceres_terrain_init(&t, 1, 0x12345678);
+
+    /* Verify initial columns */
+    assert(t.generated_col_end == CERES_RING_COLS);
+    for (int i = 0; i < CERES_RING_COLS; i++) {
+        assert(t.ring[i].ceil_y >= CERES_HUD_HEIGHT);
+        assert(t.ring[i].floor_y > t.ring[i].ceil_y);
+        assert(t.ring[i].floor_y <= 360);
+    }
+
+    /* Advance 2500 world columns (wrapping ring buffer >2x) */
+    for (int step = 0; step < 1250; step++) {
+        ceres_terrain_advance(&t, INT_TO_FIXED(2));
+    }
+    assert(t.camera_col == 2500);
+    assert(t.generated_col_end >= 2500 + 640);
+
+    /* Test Sector 2 cavern generation with ceiling and clearance */
+    ceres_terrain_init(&t, 2, 0x87654321);
+    for (int step = 0; step < 500; step++) {
+        ceres_terrain_advance(&t, INT_TO_FIXED(2));
+    }
+
+    bool ceiling_descended = false;
+    for (int i = 0; i < CERES_RING_COLS; i++) {
+        if (t.ring[i].ceil_y > CERES_HUD_HEIGHT + 10) {
+            ceiling_descended = true;
+        }
+        int clearance = (int)t.ring[i].floor_y - (int)t.ring[i].ceil_y;
+        assert(clearance >= 100); /* Corridor remains navigable */
+    }
+    assert(ceiling_descended);
+    printf("[test] Terrain streaming and Sector 2 cavern passed.\n");
+}
+
+static void test_terrain_collision(void) {
+    printf("[test] Checking terrain collision queries...\n");
+    ceres_terrain_t t;
+    ceres_terrain_init(&t, 2, 0x19810425);
+
+    int ceil_y = 0, floor_y = 0;
+    bool sampled = ceres_terrain_sample(&t, 100, &ceil_y, &floor_y);
+    assert(sampled);
+    assert(ceil_y < floor_y);
+
+    /* Safe spot in mid-corridor: no collision */
+    int mid_y = (ceil_y + floor_y) / 2;
+    assert(!ceres_terrain_check_collision(&t, 100, mid_y - 4, 16, 8));
+
+    /* Rock ceiling intrusion: collision detected */
+    assert(ceres_terrain_check_collision(&t, 100, ceil_y - 2, 16, 8));
+
+    /* Rock floor intrusion: collision detected */
+    assert(ceres_terrain_check_collision(&t, 100, floor_y - 2, 16, 8));
+    printf("[test] Terrain collision queries passed.\n");
+}
+
+static void test_render_safety(void) {
+    printf("[test] Checking render buffer bounds safety...\n");
+    ceres_game_t g;
+    ceres_game_init(&g, 640, 360);
+
+    size_t sz = 640 * 360 * sizeof(uint16_t);
+    uint16_t *fb = (uint16_t *)malloc(sz);
+    assert(fb);
+    memset(fb, 0, sz);
+
+    /* Fire some weapons to populate entity rendering */
+    ceres_entities_fire_laser(&g.entities, INT_TO_FIXED(100), INT_TO_FIXED(150));
+    ceres_entities_drop_bomb(&g.entities, INT_TO_FIXED(120), INT_TO_FIXED(160));
+    ceres_entities_spawn_explosion(&g.entities, INT_TO_FIXED(200), INT_TO_FIXED(200), 1);
+
+    /* Render several frames */
+    for (int f = 0; f < 30; f++) {
+        ceres_game_update(&g, 16);
+        ceres_game_render(&g, fb, 640, 360, 640);
+    }
+
+    free(fb);
+    printf("[test] Render safety passed.\n");
+}
+
+static void test_ground_targets_and_fuel_replenishment(void) {
+    printf("[test] Checking ground target bombing & fuel replenishment...\n");
+    ceres_game_t g;
+    ceres_game_init(&g, 640, 360);
+
+    /* Drain fuel partially */
+    g.player.fuel = 500;
+    uint32_t init_score = g.player.score;
+
+    int real_floor = 0;
+    ceres_terrain_sample(&g.terrain, 220, NULL, &real_floor);
+    bool ok = ceres_entities_spawn_target(&g.entities, CERES_TARGET_FUEL_SILO, 220, real_floor);
+    assert(ok);
+
+    /* Position ship and drop bomb so it falls into [220..252] */
+    g.player.x = 115;
+    g.player.y = 210;
+    ceres_entities_drop_bomb(&g.entities, INT_TO_FIXED(g.player.x), INT_TO_FIXED(g.player.y));
+
+    /* Advance simulation until bomb hits silo */
+    bool hit = false;
+    for (int f = 0; f < 40; f++) {
+        ceres_game_update(&g, 16);
+        if (g.player.fuel > 500) {
+            hit = true;
+            break;
+        }
+    }
+
+    assert(hit);
+    assert(g.player.fuel >= 740); /* 500 + 250 - minor consumption */
+    assert(g.player.score == init_score + 150); /* +150 for fuel silo */
+    printf("[test] Ground target bombing & fuel replenishment passed.\n");
+}
+
+static void test_cryo_bunker_breach(void) {
+    printf("[test] Checking cryo-bunker breach & survivor liberation...\n");
+    ceres_entities_t pool;
+    ceres_entities_init(&pool);
+    ceres_terrain_t t;
+    ceres_terrain_init(&t, 1, 0x12345678);
+
+    /* Spawn Cryo-Bunker at world_x = 200, ground_y = 320 */
+    ceres_entities_spawn_target(&pool, CERES_TARGET_CRYO_BUNKER, 200, 320);
+
+    /* 1. Laser hitting bunker should deflect (sparks fly, bunker survives) */
+    ceres_entities_fire_laser(&pool, INT_TO_FIXED(160), INT_TO_FIXED(310));
+    ceres_entities_update(&pool, &t, 640, 360);
+    ceres_interaction_t res1 = ceres_entities_resolve_collisions(&pool, &t, 80, 100, 28, 14, false);
+    assert(!res1.bunker_breached);
+    assert(pool.targets[0].type == CERES_TARGET_CRYO_BUNKER);
+
+    /* 2. Direct bomb impact breaches bunker and frees survivor! */
+    ceres_entities_drop_bomb(&pool, INT_TO_FIXED(205), INT_TO_FIXED(300));
+    ceres_entities_update(&pool, &t, 640, 360);
+    ceres_interaction_t res2 = ceres_entities_resolve_collisions(&pool, &t, 80, 100, 28, 14, false);
+    assert(res2.bunker_breached);
+    assert(res2.score_delta == 100);
+    /* Target has now morphed into a freed survivor! */
+    assert(pool.targets[0].type == CERES_TARGET_SURVIVOR);
+    assert(pool.targets[0].w == SPRITE_SURVIVOR_W);
+    assert(pool.targets[0].h == SPRITE_SURVIVOR_H);
+    printf("[test] Cryo-bunker breach & survivor liberation passed.\n");
+}
+
+static void test_sam_silo_proximity_launch_and_interception(void) {
+    printf("[test] Checking SAM proximity launch and laser interception...\n");
+    ceres_entities_t pool;
+    ceres_entities_init(&pool);
+    ceres_terrain_t t;
+    ceres_terrain_init(&t, 1, 0x12345678);
+
+    /* Spawn SAM Silo at world_x = 300, ground_y = 320 */
+    ceres_entities_spawn_target(&pool, CERES_TARGET_SAM_SILO, 300, 320);
+    assert(!pool.targets[0].launched);
+
+    /* Player at ship_x = 80 (distance 220 > trigger 190) -> should not launch yet */
+    ceres_interaction_t res_far = ceres_entities_resolve_collisions(&pool, &t, 80, 200, 28, 14, false);
+    assert(!res_far.sam_launched);
+    assert(!pool.targets[0].launched);
+
+    /* Player approaches to ship_x = 130 (distance 170 <= trigger 190) -> LAUNCH! */
+    ceres_interaction_t res_near = ceres_entities_resolve_collisions(&pool, &t, 130, 200, 28, 14, false);
+    assert(res_near.sam_launched);
+    assert(pool.targets[0].launched);
+    assert(pool.active_sam_rockets == 1);
+    assert(pool.sam_rockets[0].active);
+
+    /* SAM Rocket ascends upward under negative vy */
+    fixed32_t init_y = pool.sam_rockets[0].y;
+    ceres_entities_update(&pool, &t, 640, 360);
+    assert(pool.sam_rockets[0].y < init_y); /* Clambering upward */
+
+    /* Intercept rocket with laser */
+    int rx = FIXED_TO_INT(pool.sam_rockets[0].x);
+    int ry = FIXED_TO_INT(pool.sam_rockets[0].y);
+    ceres_entities_fire_laser(&pool, INT_TO_FIXED(rx - 20), INT_TO_FIXED(ry + 10));
+    ceres_entities_update(&pool, &t, 640, 360);
+    ceres_interaction_t res_hit = ceres_entities_resolve_collisions(&pool, &t, 130, 200, 28, 14, false);
+    assert(res_hit.score_delta >= 100); /* Awarded for destroying SAM */
+    assert(!pool.sam_rockets[0].active); /* Rocket destroyed! */
+    printf("[test] SAM proximity launch and laser interception passed.\n");
+}
+
+static void test_tractor_scoop_and_rescue(void) {
+    printf("[test] Checking tractor scoop pickup & rescue bonus...\n");
+    ceres_game_t g;
+    ceres_game_init(&g, 640, 360);
+
+    /* Set fuel to 400 */
+    g.player.fuel = 400;
+    uint32_t init_score = g.player.score;
+
+    /* Spawn survivor at world_x = 200, ground_y = 300 */
+    ceres_entities_spawn_target(&g.entities, CERES_TARGET_SURVIVOR, 200, 300);
+
+    /* Position ship right above survivor in low-pass scoop zone */
+    g.player.x = 200 + SPRITE_SURVIVOR_W / 2;
+    g.player.y = 300 - 40; /* 40 pixels above ground */
+
+    /* Run update */
+    ceres_game_update(&g, 16);
+
+    /* Verify survivor was rescued! */
+    assert(g.player.rescued == 1);
+    assert(g.player.fuel >= 590); /* +200 fuel bonus (400 + 200 - 1 consumption) */
+    assert(g.player.score == init_score + 500); /* +500 rescue score */
+    printf("[test] Tractor scoop pickup & rescue bonus passed.\n");
+}
+
+static void test_fuel_economy_and_flameout(void) {
+    printf("[test] Checking fuel depletion and unpowered flameout glide...\n");
+    ceres_game_t g;
+    ceres_game_init(&g, 640, 360);
+
+    /* Set fuel very low */
+    g.player.fuel = 5;
+    assert(g.player.thruster_on);
+
+    /* Run 30 frames to exhaust fuel to 0 */
+    for (int f = 0; f < 30; f++) {
+        ceres_game_update(&g, 16);
+    }
+
+    assert(g.player.fuel == 0);
+    assert(!g.player.thruster_on); /* Thruster extinguished */
+
+    /* In unpowered glide: gravity pulls craft downward */
+    int prev_y = g.player.y;
+    ceres_game_update(&g, 16);
+    assert(g.player.y > prev_y); /* Dropping under gravity */
+    printf("[test] Fuel depletion and unpowered flameout glide passed.\n");
+}
+
+static void test_targets_and_astronauts_bedrock_alignment(void) {
+    printf("[test] Checking targets and astronauts bedrock alignment (no rock clipping)...\n");
+    ceres_game_t g;
+    ceres_game_init(&g, 640, 360);
+
+    /* Run 600 frames of gameplay simulation (1200 px of camera scrolling) */
+    for (int f = 0; f < 600; f++) {
+        ceres_game_update(&g, 16);
+
+        for (int i = 0; i < CERES_MAX_GROUND_TARGETS; i++) {
+            const ceres_ground_target_t *t = &g.entities.targets[i];
+            if (!t->active) continue;
+
+            int sx = t->world_x - (int)g.terrain.camera_col;
+            if (sx >= -t->w && sx < g.width) {
+                /* Target is on or near screen: test every column across footprint */
+                for (int dx = 0; dx < t->w; dx++) {
+                    uint32_t col_idx = (uint32_t)(t->world_x + dx) & CERES_RING_MASK;
+                    int floor_y = (int)g.terrain.ring[col_idx].floor_y;
+                    int ceil_y = (int)g.terrain.ring[col_idx].ceil_y;
+
+                    /* 1. Bedrock must not rise above the base of the target */
+                    assert(floor_y >= t->y);
+
+                    /* 2. Ceiling rock must not penetrate the top of the target */
+                    assert(ceil_y <= t->y - t->h);
+                }
+            }
+        }
+    }
+    printf("[test] Targets and astronauts bedrock alignment passed.\n");
+}
+
+int main(void) {
+    printf("=== Ceres Alpha Logic Unit Tests ===\n");
+    test_initialization();
+    test_flight_boundaries();
+    test_weapons_and_scoring();
+    test_laser_kinematics();
+    test_bomb_parabola();
+    test_projectile_terrain_collision();
+    test_particles_physics_and_decay();
+    test_terrain_streaming();
+    test_terrain_collision();
+    test_render_safety();
+    test_ground_targets_and_fuel_replenishment();
+    test_cryo_bunker_breach();
+    test_sam_silo_proximity_launch_and_interception();
+    test_tractor_scoop_and_rescue();
+    test_fuel_economy_and_flameout();
+    test_targets_and_astronauts_bedrock_alignment();
+    printf("=== All Logic Tests Passed Cleanly! ===\n");
+    return 0;
+}

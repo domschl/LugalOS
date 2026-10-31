@@ -186,6 +186,7 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/user/chess/include
     ${CMAKE_CURRENT_SOURCE_DIR}/user/zmachine
     ${CMAKE_CURRENT_SOURCE_DIR}/user/moonbase/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/user/ceres/include
 )
 
 # UBSan only makes sense on QEMU targets (bare metal has no abort/printf runtime)
@@ -251,6 +252,11 @@ option(LUGALOS_ENABLE_ZMACHINE "Build the Z-machine v3 interpreter (user/zmachin
 # user/moonbase: Moonbase Lambda 2D isometric lunar city-builder simulation.
 # Targets ESP32-P4 with 32 MB PSRAM and RGB565 display.
 option(LUGALOS_ENABLE_MOONBASE "Build the Moonbase Lambda lunar city-builder (user/moonbase)" ON)
+
+# user/ceres: Ceres Alpha 2D horizontal arcade scroller.
+# Targets ESP32-P4 with 32 MB PSRAM and RGB565 display.
+option(LUGALOS_ENABLE_CERES "Build the Ceres Alpha 2D horizontal arcade scroller (user/ceres)" ON)
+option(LUGALOS_ENABLE_SCROLLER "Backwards-compatible alias for LUGALOS_ENABLE_CERES" ON)
 
 # Same mechanism again: the
 # Pico-Clock-Green baseboard persona wires GP10-13 (SPI1/SD card on every
@@ -614,6 +620,7 @@ if(DEFINED LUGALOS_BOARD_FILE)
         -DENABLE_GPS=${LUGALOS_ENABLE_GPS}
         -DENABLE_RIBBON_ANIMATION=${LUGALOS_ENABLE_RIBBON_ANIMATION}
         -DENABLE_MOONBASE=${LUGALOS_ENABLE_MOONBASE}
+        -DENABLE_SCROLLER=${LUGALOS_ENABLE_SCROLLER}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_config.cmake)
     # add_custom_command(OUTPUT ...), not a bare add_custom_target(COMMAND ...)
     # -- the same distinction lugalos_build_id.h above already depends on, and
@@ -648,6 +655,7 @@ if(DEFINED LUGALOS_BOARD_FILE)
             -DENABLE_GPS=${LUGALOS_ENABLE_GPS}
             -DENABLE_RIBBON_ANIMATION=${LUGALOS_ENABLE_RIBBON_ANIMATION}
             -DENABLE_MOONBASE=${LUGALOS_ENABLE_MOONBASE}
+            -DENABLE_SCROLLER=${LUGALOS_ENABLE_SCROLLER}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_config.cmake
         DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/_always_rebuild
                 ${LUGALOS_BOARD_FILE}
@@ -1017,6 +1025,29 @@ if(LUGALOS_ENABLE_MOONBASE)
         user/moonbase/src/moon_resources.c user/moonbase/src/moon_starship.c
         user/moonbase/src/moon_ui.c
         user/moonbase/src/moon_bench.c user/moonbase/src/moon_game.c
+        PROPERTIES COMPILE_OPTIONS -ffunction-sections)
+endif()
+if(LUGALOS_ENABLE_CERES OR LUGALOS_ENABLE_SCROLLER)
+    list(APPEND SOURCES
+        user/ceres/src/platform_p4.c
+        user/ceres/src/ceres_fixed.c
+        user/ceres/src/ceres_font8x16.c
+        user/ceres/src/ceres_blitter.c
+        user/ceres/src/ceres_sprites.c
+        user/ceres/src/ceres_textures.c
+        user/ceres/src/ceres_terrain.c
+        user/ceres/src/ceres_entities.c
+        user/ceres/src/ceres_game.c)
+    set_source_files_properties(
+        user/ceres/src/platform_p4.c
+        user/ceres/src/ceres_fixed.c
+        user/ceres/src/ceres_font8x16.c
+        user/ceres/src/ceres_blitter.c
+        user/ceres/src/ceres_sprites.c
+        user/ceres/src/ceres_textures.c
+        user/ceres/src/ceres_terrain.c
+        user/ceres/src/ceres_entities.c
+        user/ceres/src/ceres_game.c
         PROPERTIES COMPILE_OPTIONS -ffunction-sections)
 endif()
 

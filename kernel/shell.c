@@ -128,6 +128,9 @@
 #if CONFIG_ENABLE_MOONBASE
 #include "moonbase.h"
 #endif
+#if CONFIG_ENABLE_CERES || CONFIG_ENABLE_SCROLLER
+#include "ceres.h"
+#endif
 #include "kernel/path.h"
 #include "arch/pmp.h"
 #include "kernel/umode_probe.h"
@@ -1298,6 +1301,9 @@ static void cmd_help_summary(void) {
     cprintf("  chess           - Play chess (appliance & canvas ribbon)\n");
 #if CONFIG_ENABLE_MOONBASE
     cprintf("  moonbase        - 2D isometric lunar city-builder simulation\n");
+#endif
+#if CONFIG_ENABLE_CERES || CONFIG_ENABLE_SCROLLER
+    cprintf("  ceres           - Ceres Alpha: 2D horizontal arcade scroller\n");
 #endif
     cprintf("  canvas [split|full|close] - Manage graphics canvas\n");
     cprintf("  cc <src> <dst>  - Compile C11 source to RISC-V ELF (chibicc)\n");
@@ -5990,6 +5996,14 @@ static void parse_and_eval_cmd(const char *cmd_line) {
 #if CONFIG_ENABLE_MOONBASE
     } else if (strcmp(cmd_line, "moonbase") == 0 || strncmp(cmd_line, "moonbase ", 9) == 0) {
         moonbase_run(cmd_line[8] ? cmd_line + 9 : "");
+        return;
+#endif
+#if CONFIG_ENABLE_CERES || CONFIG_ENABLE_SCROLLER
+    } else if (strcmp(cmd_line, "ceres") == 0 || strncmp(cmd_line, "ceres ", 6) == 0) {
+        ceres_run(cmd_line[5] ? cmd_line + 6 : "");
+        return;
+    } else if (strcmp(cmd_line, "scroller") == 0 || strncmp(cmd_line, "scroller ", 9) == 0) {
+        ceres_run(cmd_line[8] ? cmd_line + 9 : "");
         return;
 #endif
     } else if (strcmp(cmd_line, "spartand") == 0) {
