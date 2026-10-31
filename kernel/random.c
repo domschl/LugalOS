@@ -387,12 +387,20 @@ const char *random_source(void) {
                            : "RNG without its noise source (NOT random)";
 }
 
-#else  /* the QEMU targets: no entropy source at all, and it must show */
+#else  /* the QEMU targets: QEMU's virtio-rng when the machine has one, else nothing, and it must show */
 
-bool random_is_hardware(void) { return false; }
-const char *random_source(void) { return "timer+counter (NOT random)"; }
+#include "drivers/virtio_rng.h"
 
-void random_init(void) {}
+/* accepted: a word-sized flag; set once if the device stops answering, never cleared. */
+static volatile bool g_vrng_failed;
+
+bool random_is_hardware(void) { return virtio_rng_present() && !g_vrng_failed; }
+const char *random_source(void) {
+    if (!virtio_rng_present()) return "timer+counter (NOT random)";
+    return g_vrng_failed ? "virtio-rng, stopped answering (NOT random)" : "virtio-rng (the host's), SHA-256 whitened";
+}
+
+void random_init(void) { (void)virtio_rng_init(); }
 
 #endif
 
@@ -457,6 +465,13 @@ void random_bytes(void *out, uint32_t len) {
         for (unsigned i = 0; i < 16; i++) pool[i] = rng_word();
         sha256_update(&ctx, pool, sizeof(pool));
         memset(pool, 0, sizeof(pool));
+#else
+        if (virtio_rng_present() && !g_vrng_failed) {
+            uint8_t pool[64];
+            if (virtio_rng_read(pool, sizeof pool)) sha256_update(&ctx, pool, sizeof pool);
+            else g_vrng_failed = true;
+            memset(pool, 0, sizeof pool);
+        }
 #endif
 
         uint8_t digest[SHA256_DIGEST_LEN];
@@ -688,6 +703,11 @@ int random_selftest(unsigned bits) {
 int random_selftest(unsigned bits) {
     (void)bits;
     cprintf("Entropy source: %s\n", random_source());
+    if (random_is_hardware()) {
+        cprintf("RANDTEST_SKIP (the bytes come from the host's generator through virtio-rng;\n"
+                "  there is no silicon here to measure. Key generation and signing work.)\n");
+        return 0;
+    }
     cprintf("RANDTEST_SKIP (this target has no hardware entropy source; the\n"
             "  measurement is a hardware deliverable and there is nothing here\n"
             "  to measure. random_bytes() still returns bytes -- they are fine\n"

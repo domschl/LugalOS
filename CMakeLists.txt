@@ -1329,7 +1329,7 @@ else()
     # R1: the first netif. QEMU-only by construction -- it is a virtio-mmio
     # device, and the RP2350 has no virtio anything. This is the interface the
     # IP stack is developed and tested against before R4 fits real silicon.
-    list(APPEND SOURCES drivers/virtio_net.c)
+    list(APPEND SOURCES drivers/virtio_net.c drivers/virtio_rng.c)
 endif()
 
 # Architecture-specific memory management source
