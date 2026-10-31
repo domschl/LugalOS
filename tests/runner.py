@@ -5581,6 +5581,188 @@ def test_tls_identity(elf_path: Path, img_path: Path, arch_name: str) -> tuple[s
         tmp.cleanup()
 
 
+def test_https_admin(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """52.15: with a key and a certificate from its owner's CA, the admin server speaks TLS 1.3 on 443.
+    Python's ssl, OpenSSL's s_client and curl verify it against the CA and fetch the page; 9P over wss://
+    writes as an admin peer, while plain HTTP now only reads and sends the page to https; a refused
+    TLS 1.2 client does not hurt the next one; and the page runs in real browsers over HTTPS."""
+    import base64
+    import hashlib
+    import shutil
+    import socket as _socket
+    import ssl
+    import subprocess
+    import tempfile
+    import time as _time
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "host" / "p9lib" / "src"))
+    import p9lib
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    import provision
+
+    name = "HTTPS Admin: TLS 1.3 Verified By Python, OpenSSL, curl And Browsers; wss:// Writes, Plain HTTP Reads (52.15)"
+    root = Path(__file__).resolve().parent.parent
+    openssl = shutil.which("openssl")
+    if not openssl:
+        return (name, True, "skipped: no openssl on this host")
+    arch_img = img_path.with_name(f"test_{arch_name}_https_sd.img")
+    shutil.copyfile(img_path, arch_img)
+    id_img = img_path.with_name(f"test_{arch_name}_https_id.img")
+    id_img.write_bytes(provision.build_record([
+        (provision.FIELD_UID, bytes.fromhex("d1d2d3d4d5d6d7d8")),
+        (provision.FIELD_NAME, b"httpsnode"),
+    ]))
+    key = bytes(range(112, 128))
+
+    def free_port() -> int:
+        pr = _socket.socket()
+        pr.bind(("127.0.0.1", 0))
+        n = pr.getsockname()[1]
+        pr.close()
+        return n
+
+    p9_port, http_port, https_port = free_port(), free_port(), free_port()
+    tmp = tempfile.TemporaryDirectory()
+    cadir = str(Path(tmp.name) / "ca")
+    ca_pem = Path(cadir) / "ca.crt.pem"
+
+    def ca(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["uv", "run", "--project", str(root / "host" / "ca"), "lugalos-ca", "--dir", cadir, *args],
+                              capture_output=True, text=True, timeout=180)
+
+    def https_get(path: str, ctx: ssl.SSLContext) -> tuple[str, str, bytes]:
+        with _socket.create_connection(("127.0.0.1", https_port), timeout=20) as raw:
+            with ctx.wrap_socket(raw, server_hostname="httpsnode.local") as s:
+                ver, cipher = s.version() or "", (s.cipher() or ("",))[0]
+                s.sendall(f"GET {path} HTTP/1.1\r\nHost: httpsnode.local\r\nAccept-Encoding: identity\r\n\r\n".encode())
+                data = b""
+                while True:
+                    d = s.recv(65536)
+                    if not d:
+                        break
+                    data += d
+                return ver, cipher, data
+
+    session = QemuSession(elf_path, arch_img, arch_name)
+    try:
+        session.start(identity_img_path=id_img, extra_qemu_args=[
+            "-device", "virtio-rng-device",
+            "-netdev", f"user,id=n0,hostfwd=tcp:127.0.0.1:{p9_port}-10.0.2.15:564,"
+                       f"hostfwd=tcp:127.0.0.1:{http_port}-10.0.2.15:80,hostfwd=tcp:127.0.0.1:{https_port}-10.0.2.15:443",
+            "-device", "virtio-net-device,netdev=n0",
+        ])
+        ok, log = session.send_and_expect("", r"Type 'help' for commands", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+        session.send_and_expect('lisp\n(net-config "10.0.2.15" "255.255.255.0" "10.0.2.2")\nexit', r"\[Net\] 10\.0\.2\.15", timeout=6.0)
+        session.send_and_expect(f"peers add lugal {key.hex()} / admin", r"granted", timeout=10.0)
+        ok, log = session.send_and_expect("httpd start", r"httpd: running|could not", timeout=10.0)
+        if "no HTTPS" not in log and "HTTPS on" in log:
+            return (name, False, "HTTPS came up with no key or certificate")
+        r = ca("init", "--name", "LugalOS HTTPS Test CA")
+        if r.returncode != 0:
+            return (name, False, f"lugalos-ca init failed:\n{r.stdout}{r.stderr}")
+        r = ca("issue", "--tcp", f"127.0.0.1:{p9_port}", "--key", key.hex(), "--also", "127.0.0.1")
+        if r.returncode != 0:
+            return (name, False, f"lugalos-ca issue failed:\n{r.stdout}{r.stderr}")
+        # The server picks the certificate up by itself.
+        up = False
+        for _ in range(40):
+            ok, log = session.send_and_expect("httpd status", r"https: \S+", timeout=5.0)
+            if "https: on" in log:
+                up = True
+                break
+            _time.sleep(0.25)
+        if not up:
+            return (name, False, f"HTTPS did not come up after the certificate was installed:\n{log[-400:]}")
+
+        # 1. Python's ssl: TLS 1.3, ChaCha20-Poly1305, the certificate verified against the CA, the page.
+        ctx = ssl.create_default_context(cafile=str(ca_pem))
+        t0 = _time.monotonic()
+        ver, cipher, data = https_get("/", ctx)
+        handshake_page_s = _time.monotonic() - t0
+        if ver != "TLSv1.3" or "CHACHA20" not in cipher or b" 200 " not in data.split(b"\r\n", 1)[0] or b"LugalOS" not in data:
+            return (name, False, f"https GET /: {ver} {cipher} {data[:200]!r}")
+        # A client that does not trust the CA is refused by its own verification.
+        try:
+            https_get("/", ssl.create_default_context())
+            return (name, False, "a client without the CA accepted the certificate")
+        except ssl.SSLCertVerificationError:
+            pass
+
+        # 2. OpenSSL and curl.
+        o = subprocess.run([openssl, "s_client", "-connect", f"127.0.0.1:{https_port}", "-servername", "httpsnode.local",
+                            "-CAfile", str(ca_pem), "-verify_return_error", "-tls1_3", "-brief"],
+                           input="", capture_output=True, text=True, timeout=30)
+        if "Verification: OK" not in o.stdout + o.stderr:
+            return (name, False, f"s_client did not verify:\n{(o.stdout + o.stderr)[-500:]}")
+        if shutil.which("curl"):
+            c = subprocess.run(["curl", "-sS", "--cacert", str(ca_pem), "--resolve", f"httpsnode.local:{https_port}:127.0.0.1",
+                                "-o", "/dev/null", "-w", "%{http_code}", f"https://httpsnode.local:{https_port}/board"],
+                               capture_output=True, text=True, timeout=30)
+            if c.stdout != "200":
+                return (name, False, f"curl over HTTPS: {c.stdout} {c.stderr}")
+
+        # 3. Plain HTTP: the page is redirected, a 9P session only reads (protected or not).
+        with _socket.create_connection(("127.0.0.1", http_port), timeout=10) as s:
+            s.sendall(b"GET / HTTP/1.1\r\nHost: httpsnode.local:8080\r\n\r\n")
+            head = s.recv(4096).decode(errors="replace")
+        # 302, not 301: a browser keeps a 301 for good, and HTTPS goes away with the certificate.
+        if " 302 " not in head.split("\r\n", 1)[0] or "Location: https://httpsnode.local/" not in head:
+            return (name, False, f"plain GET / was not redirected to https:\n{head[:300]}")
+        with p9lib.Session(p9lib.connect_ws("127.0.0.1", http_port, timeout=15), key=key) as s:
+            try:
+                s.write("/ram0/plain.txt", b"x", create=True)
+                return (name, False, "a protected session over plain HTTP wrote while HTTPS is up")
+            except p9lib.P9Error:
+                pass
+
+        # 4. wss://: an admin peer writes, with no protected-session extension (TLS protects the bytes).
+        with p9lib.Session(p9lib.connect_ws("127.0.0.1", https_port, timeout=15, tls=ctx,
+                                            server_hostname="httpsnode.local"), key=key) as s:
+            if s.client.lp:
+                return (name, False, "the wss:// link agreed to the protected-session extension")
+            s.write("/ram0/https.txt", b"written over wss", create=True)
+            if s.read("/ram0/https.txt") != b"written over wss":
+                return (name, False, "a write over wss:// did not read back")
+            big = bytes(range(256)) * 128
+            t0 = _time.monotonic()
+            s.write("/ram0/big.bin", big, create=True)
+            back = s.read("/ram0/big.bin")
+            rate = 2 * len(big) / 1024 / (_time.monotonic() - t0)
+            if back != big:
+                return (name, False, "32 KB over wss:// came back different")
+
+        # 5. A TLS 1.2 client is refused; the server serves the next one.
+        o = subprocess.run([openssl, "s_client", "-connect", f"127.0.0.1:{https_port}", "-tls1_2"],
+                           input="", capture_output=True, text=True, timeout=30)
+        ver, _, data = https_get("/board", ctx)
+        if ver != "TLSv1.3" or b"httpsnode" not in data:
+            return (name, False, f"after a refused TLS 1.2 client: {ver} {data[:120]!r}")
+
+        # 6. The page in real browsers over HTTPS.
+        node = shutil.which("node")
+        cert_der = ssl.PEM_cert_to_DER_cert(ssl.get_server_certificate(("127.0.0.1", https_port)))
+        spki = subprocess.run([openssl, "x509", "-inform", "DER", "-pubkey", "-noout"], input=cert_der, capture_output=True).stdout
+        spki_der = subprocess.run([openssl, "pkey", "-pubin", "-outform", "DER"], input=spki, capture_output=True).stdout
+        env = dict(os.environ, LUGAL_BROWSER_SPKI=base64.b64encode(hashlib.sha256(spki_der).digest()).decode(),
+                   LUGAL_BROWSER_CA=str(ca_pem))
+        browsers = [b for b in (shutil.which("chromium") or shutil.which("google-chrome"),
+                                shutil.which("firefox") if shutil.which("certutil") else None) if b]
+        for browser in browsers if node else []:
+            b = subprocess.run([node, str(root / "tests" / "web" / "browser_check.js"), browser,
+                                f"https://127.0.0.1:{https_port}/", "lugal", key.hex()],
+                               capture_output=True, text=True, timeout=150, env=env)
+            if "browser: ok" not in b.stdout:
+                return (name, False, f"the page over HTTPS in {Path(browser).name} failed:\n{(b.stdout + b.stderr)[-600:]}")
+        return (name, True, f"handshake + page {handshake_page_s:.2f} s, wss:// {rate:.0f} KB/s, "
+                            f"browsers: {', '.join(Path(b).name for b in browsers) if node else 'none'}")
+    except Exception as e:
+        return (name, False, f"{type(e).__name__}: {e}")
+    finally:
+        session.close()
+        tmp.cleanup()
+
+
 def test_protected_sessions(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
     """52.11b: a 9P session over TCP is integrity-protected after the auth response, and a proxy that
     alters, replays, injects or drops a frame, or alters a reply, ends it.
@@ -10490,6 +10672,7 @@ def main() -> int:
         _run_single(test_httpd_websocket_9p(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_protected_sessions(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_tls_identity(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_https_admin(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_wlan_credential_roundtrip(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_network_autoconfig(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_netif_virtio_net(rv64_elf, img_for("rv64"), "rv64"))

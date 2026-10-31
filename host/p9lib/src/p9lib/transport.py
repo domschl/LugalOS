@@ -9,6 +9,7 @@ library.
 from __future__ import annotations
 
 import socket
+import ssl
 import time
 
 from .client import P9Client, P9Error
@@ -171,9 +172,11 @@ class WebSocketAdapter:
         self._s.close()
 
 
-def connect_ws(host: str, port: int = 80, path: str = "/9p", timeout: float = 30.0, protect: bool = True) -> P9Client:
+def connect_ws(host: str, port: int = 80, path: str = "/9p", timeout: float = 30.0, protect: bool = True,
+               tls: "ssl.SSLContext | None" = None, server_hostname: str | None = None) -> P9Client:
     """9P over a WebSocket: the admin web server's transport (net/httpd.c). The same server, the
-    same Tauth/Tattach, the same P9Client; only the carrier differs."""
+    same Tauth/Tattach, the same P9Client; only the carrier differs. With `tls` (an ssl.SSLContext
+    that trusts the node's CA) it is wss://, checked against `server_hostname` (default `host`)."""
     import base64
     import hashlib
     import os
@@ -181,8 +184,11 @@ def connect_ws(host: str, port: int = 80, path: str = "/9p", timeout: float = 30
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(timeout)
     s.connect((host, port))
+    name = server_hostname or host
+    if tls is not None:
+        s = tls.wrap_socket(s, server_hostname=name)
     key = base64.b64encode(os.urandom(16)).decode()
-    s.sendall((f"GET {path} HTTP/1.1\r\nHost: {host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+    s.sendall((f"GET {path} HTTP/1.1\r\nHost: {name}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
                f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: 9p\r\n\r\n").encode())
     buf = b""
     while b"\r\n\r\n" not in buf:

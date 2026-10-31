@@ -2,7 +2,7 @@
 
 A node that serves HTTPS (the ESP32-P4 boards, and the QEMU targets for testing; `CONFIG_TLS_SERVER`) proves who it is with a certificate. No public certificate authority will issue one for a name like `esp32p4-nano-2fdf.local`, so you run your own: a root key on your computer (`host/ca`), whose root certificate you install once on every device that opens the nodes' admin pages. The node makes its own key and never gives it out; the CA signs the node's request and the node keeps the certificate.
 
-The HTTPS server itself is plan 52.15. Until it lands, the key and the certificate are made, checked and stored as described here, and the admin page is plain HTTP.
+Once a node holds a key and a certificate for it, its admin server also speaks HTTPS on port 443 (TLS 1.3 only: ChaCha20-Poly1305, X25519, an ECDSA P-256 certificate; `net/tls.c`). It picks a new certificate up by itself. From then on plain HTTP on port 80 only reads: a request for the page is redirected to `https://NAME.local/`, and a 9P session over plain HTTP or a plain WebSocket is read-only, protected or not. Over HTTPS an `admin` peer may write, secrets included (TLS protects them on the way). `httpd status` says whether HTTPS is on. 9P over TCP (port 564) is unchanged: protected sessions, as before.
 
 ---
 
@@ -41,6 +41,8 @@ The same steps by hand, at the console or over 9P:
 | write a PEM certificate to `/dev/tlscert` | Installs it if it is for this node's key; refused otherwise. A chain may follow; only the first certificate is kept. |
 
 Writing `/dev/tls` and `/dev/tlscert` over 9P needs the `admin` grant. The private key is in the identity record's owner part; no file serves it, and an owner reset deletes it.
+
+Measured on an ESP32-P4-NANO over Wi-Fi: the handshake takes about 130 ms (the P-256 signature most of it), the 21 KB admin page arrives in 0.55 s, and a 9P session over `wss://` writes 30 KB/s and reads 42 KB/s to the SD card.
 
 ## 3. Install the root certificate on your devices
 

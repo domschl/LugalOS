@@ -204,9 +204,6 @@ set(_optional_keys
     # the setup window, the unauthenticated attach for a claim. Absent: a node is provisioned from
     # its console only, and cannot be claimed over the network whatever a bug does to the state machine.
     CONFIG_NETWORK_CLAIM
-    # 1: the admin page is in the image (gzip, tools/embed_page.py), served when neither /flash0/www/admin.html
-    # nor /sd0/www/admin.html exists: for a board with no filesystem, such as a C6-Zero on its own.
-    CONFIG_HTTPD_ADMIN_EMBED
     # 1: a claimed node starts the admin web server (port 80) when it gets an address (kernel/setup.c,
     # setup_address_set()). The Pico 2 W does this from its setup access point's task instead.
     CONFIG_HTTPD_WHEN_CLAIMED

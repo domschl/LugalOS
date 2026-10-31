@@ -17,7 +17,9 @@ async function connectRetry(url, tries = 80) {
 }
 
 async function startChromium(chromium, dir, port, errors) {
-  const proc = spawn(chromium, ['--headless=new', '--no-sandbox', '--disable-gpu', `--user-data-dir=${dir}`,
+  // LUGAL_BROWSER_SPKI: the base64 SHA-256 of a test node's public key, so HTTPS to it is trusted without a CA store.
+  const extra = process.env.LUGAL_BROWSER_SPKI ? [`--ignore-certificate-errors-spki-list=${process.env.LUGAL_BROWSER_SPKI}`] : [];
+  const proc = spawn(chromium, ['--headless=new', '--no-sandbox', '--disable-gpu', `--user-data-dir=${dir}`, ...extra,
                                 `--remote-debugging-port=${port}`, 'about:blank'], { stdio: 'ignore' });
   let target;
   for (let i = 0; i < 60 && !target; i++) {
@@ -43,6 +45,12 @@ async function startChromium(chromium, dir, port, errors) {
 
 async function startFirefox(chromium, dir, port) {
   fs.writeFileSync(path.join(dir, 'user.js'), 'user_pref("remote.active-protocols", 1);\nuser_pref("browser.shell.checkDefaultBrowser", false);\nuser_pref("datareporting.policy.dataSubmissionEnabled", false);\n');
+  // LUGAL_BROWSER_CA: a test CA's PEM, trusted in this throwaway profile (needs NSS's certutil).
+  if (process.env.LUGAL_BROWSER_CA) {
+    const { execFileSync } = require('child_process');
+    execFileSync('certutil', ['-N', '-d', `sql:${dir}`, '--empty-password']);
+    execFileSync('certutil', ['-A', '-d', `sql:${dir}`, '-t', 'C,,', '-n', 'lugalos-test-ca', '-i', process.env.LUGAL_BROWSER_CA]);
+  }
   const proc = spawn(chromium, ['--headless', '--no-remote', '--profile', dir, `--remote-debugging-port=${port}`, 'about:blank'], { stdio: 'ignore' });
   const ws = await connectRetry(`ws://127.0.0.1:${port}/session`);
   let id = 0; const waiting = new Map();

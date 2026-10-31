@@ -84,8 +84,9 @@ def load_ca(d: Path) -> tuple[ec.EllipticCurvePrivateKey, x509.Certificate]:
 
 
 def build_cert(csr: x509.CertificateSigningRequest, ca_key: ec.EllipticCurvePrivateKey,
-               ca_cert: x509.Certificate, days: int) -> x509.Certificate:
-    """A server certificate for what the request names: its subject, its subjectAltNames, its key."""
+               ca_cert: x509.Certificate, days: int, also: list[str] | None = None) -> x509.Certificate:
+    """A server certificate for what the request names (its subject, its subjectAltNames, its key),
+    plus the names in `also`, which the CA's owner chose to add."""
     if not csr.is_signature_valid:
         raise ValueError("the request's signature does not verify")
     pub = csr.public_key()
@@ -100,6 +101,13 @@ def build_cert(csr: x509.CertificateSigningRequest, ca_key: ec.EllipticCurvePriv
             raise ValueError(f"the request names {n.value!r}; a node's names end in .local")
         if isinstance(n, x509.IPAddress) and not n.value.is_private:
             raise ValueError(f"the request names the public address {n.value}")
+    names: list[x509.GeneralName] = list(san)
+    for extra in also or []:
+        try:
+            names.append(x509.IPAddress(ipaddress.ip_address(extra)))
+        except ValueError:
+            names.append(x509.DNSName(extra))
+    san = x509.SubjectAlternativeName(names)
     now = datetime.datetime.now(datetime.timezone.utc)
     ski = ca_cert.extensions.get_extension_for_class(x509.SubjectKeyIdentifier).value
     return (x509.CertificateBuilder()
@@ -144,7 +152,7 @@ def cmd_issue(a: argparse.Namespace) -> int:
         csr = x509.load_pem_x509_csr(pem)
         if a.save_csr:
             Path(a.save_csr).write_bytes(pem)
-        cert = build_cert(csr, ca_key, ca_cert, a.days)
+        cert = build_cert(csr, ca_key, ca_cert, a.days, a.also)
         names = ", ".join(str(n.value) for n in cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value)
         out = cert.public_bytes(serialization.Encoding.PEM)
         if a.save_cert:
@@ -185,6 +193,8 @@ def main(argv: list[str] | None = None) -> int:
     ps.add_argument("--uname", default="lugal", help="the grant's name (default lugal)")
     ps.add_argument("--days", type=int, default=DEFAULT_DAYS)
     ps.add_argument("--rekey", action="store_true", help="have the node make a new key first")
+    ps.add_argument("--also", action="append", metavar="NAME|IP",
+                    help="another name or address for the certificate (a port-forwarded one, say); repeatable")
     ps.add_argument("--save-csr", metavar="FILE", help="keep the node's request")
     ps.add_argument("--save-cert", metavar="FILE", help="keep the issued certificate")
     sub.add_parser("show", help="the root certificate's path and fingerprint")

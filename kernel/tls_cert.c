@@ -11,6 +11,7 @@
 #include "kernel/printk.h"
 #include "kernel/scratch.h"
 #include "net/ip.h"
+#include "net/httpd.h"
 #include <string.h>
 
 #define CSR_DER_MAX 1024u
@@ -73,7 +74,7 @@ int tls_keygen(bool replace) {
     }
     crypto_wipe_bytes(key, sizeof key);
     ylock_release(&g_lock);
-    if (rc == TLS_OK) printk("[TLS] a new key (the certificate, if any, went with the old one)\n");
+    if (rc == TLS_OK) { printk("[TLS] a new key (the certificate, if any, went with the old one)\n"); httpd_tls_changed(); }
     return rc;
 }
 
@@ -82,6 +83,7 @@ int tls_clear(void) {
     int rc = node_identity_clear_tls() == NODE_ID_OK ? TLS_OK : TLS_ERR_STORE;
     if (rc == TLS_OK) forget_csr();
     ylock_release(&g_lock);
+    if (rc == TLS_OK) httpd_tls_changed();
     return rc;
 }
 
@@ -226,7 +228,7 @@ static int try_install(void) {
         else if (!node_tls_key(key)) rc = TLS_ERR_NO_KEY;
         else if (!crypto_equal(ci.pub, key + 32, 64)) rc = TLS_ERR_WRONG_KEY;
         else if (node_identity_set_tls_cert(der, (uint32_t)n) != NODE_ID_OK) rc = TLS_ERR_STORE;
-        else { rc = TLS_OK; forget_csr(); printk("[TLS] certificate installed: %s, from %s, until %s\n",
+        else { rc = TLS_OK; forget_csr(); httpd_tls_changed(); printk("[TLS] certificate installed: %s, from %s, until %s\n",
                                                   ci.subject_cn, ci.issuer_cn, ci.not_after); }
         crypto_wipe_bytes(key, sizeof key);
     }

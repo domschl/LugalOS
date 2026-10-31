@@ -883,6 +883,7 @@ set(SOURCES
     # 52.11: WebSocket framing, shared by the admin web server and the phase 62.12 client
     net/websocket.c
     net/httpd.c
+    net/tls.c
     # 52.12: the setup access point's address server and DNS responder
     net/dhcpd.c
     net/mdnsd.c
@@ -955,27 +956,18 @@ if(LUGALOS_NETWORK_CLAIM)
     list(APPEND SOURCES ${CMAKE_CURRENT_BINARY_DIR}/setup_page.c)
 endif()
 
-# The admin page, inside the image and gzip-compressed, for a board with no filesystem to hold it (net/httpd.c
-# serves it when neither /flash0/www/ nor /sd0/www/ has the file).
-set(LUGALOS_HTTPD_ADMIN_EMBED FALSE)
-if(DEFINED LUGALOS_BOARD_FILE)
-    file(STRINGS ${LUGALOS_BOARD_FILE} _admin_embed_line REGEX "^set\\(CONFIG_HTTPD_ADMIN_EMBED +1\\)")
-    if(_admin_embed_line)
-        set(LUGALOS_HTTPD_ADMIN_EMBED TRUE)
-    endif()
-endif()
-if(LUGALOS_HTTPD_ADMIN_EMBED)
-    add_custom_command(
-        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/admin_page.c
-        COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_page.py --gzip
-                ${CMAKE_CURRENT_BINARY_DIR}/admin_page.c
-                ${CMAKE_CURRENT_SOURCE_DIR}/tools/sd_root/www/admin.html g_admin_page_gz
-        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_page.py
-                ${CMAKE_CURRENT_SOURCE_DIR}/tools/sd_root/www/admin.html
-        COMMENT "Embedding the admin page (gzip)"
-    )
-    list(APPEND SOURCES ${CMAKE_CURRENT_BINARY_DIR}/admin_page.c)
-endif()
+# The admin page, inside the image and gzip-compressed (net/httpd.c serves it to every browser): it is
+# updated with the firmware, which a copy on /flash0 or /sd0 is not.
+add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/admin_page.c
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_page.py --gzip
+            ${CMAKE_CURRENT_BINARY_DIR}/admin_page.c
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/sd_root/www/admin.html g_admin_page_gz
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_page.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/sd_root/www/admin.html
+    COMMENT "Embedding the admin page (gzip)"
+)
+list(APPEND SOURCES ${CMAKE_CURRENT_BINARY_DIR}/admin_page.c)
 
 # Optional subsystems (F1/F2, ): each is a
 # self-contained leaf with exactly one outside touchpoint, gated to match in

@@ -15,6 +15,12 @@
 #include "kernel/sched.h"
 #include "kernel/setup.h"
 #include "kernel/time.h"
+#if defined(CONFIG_TLS_SERVER)
+#include "net/tls.h"
+#include "kernel/crypto.h"
+#include "kernel/identity.h"
+#include "kernel/tls_cert.h"
+#endif
 #include <stddef.h>
 #include <string.h>
 
@@ -64,6 +70,10 @@ typedef struct {
     uint8_t     peer[4];
     p9_link_t   link;
     p9_prot_t   prot;                 /* the protected session's state (fs/p9_protect.h) */
+#if defined(CONFIG_TLS_SERVER)
+    bool        tls_on;               /* accepted on the HTTPS port: every byte goes through `tls` */
+    tls_t       tls;
+#endif
 } hsess_t;
 
 /* single task: httpd (everything below, except the flags it reads from the console). */
@@ -75,6 +85,22 @@ static int       g_pid = -1;
 static uint32_t  g_requests, g_pages, g_ws_total, g_not_found, g_bad;
 /* accepted: written by the console task, read by the httpd task; a stale read costs one pass. */
 static volatile bool g_run, g_want_stop, g_write_ok;
+
+#if defined(CONFIG_TLS_SERVER)
+#define HTTPS_PORT 443
+#define TLS_SESS_BYTES ((TLS_RECORD_MAX + TLS_TX_CAP + 15u) & ~15u)
+/* single task: httpd. The key (32 bytes), the certificate (NODE_TLS_CERT_MAX), then each session's
+ * record buffers, in bulk pages (PSRAM on a P4): taken when HTTPS comes up, wiped and returned when it
+ * goes. */
+static uint8_t  *g_tls_mem;
+static uint32_t  g_tls_pages, g_tls_cert_len, g_tls_sessions;
+static bool      g_tls_on;
+#endif
+/* accepted: set by whoever changed the key or the certificate (kernel/tls_cert.c), read by httpd, which
+ * reloads them when no HTTPS session is open. */
+static volatile bool g_tls_dirty;
+
+void httpd_tls_changed(void) { g_tls_dirty = true; }
 
 void httpd_set_write(bool allow) { g_write_ok = allow; }
 bool httpd_write_allowed(void) { return g_write_ok; }
@@ -117,11 +143,50 @@ static int ws_link_send(p9_link_t *l, const uint8_t *buf, uint32_t len) {
     return (int)len;
 }
 
+/* --- the bytes of a session: TCP, or TLS over it ------------------------------------- */
+
+#if defined(CONFIG_TLS_SERVER)
+static int tls_tcp_recv(void *io, uint8_t *buf, uint32_t len) {
+    tcp_stream_t *st = (tcp_stream_t *)io;
+    int n = tcp_stream_read(st, buf, len);
+    return n == 0 && tcp_stream_peer_closed(st) ? -1 : n;
+}
+static int tls_tcp_send(void *io, const uint8_t *buf, uint32_t len) {
+    return tcp_stream_write((tcp_stream_t *)io, buf, len);
+}
+#endif
+
+/* Bytes from the peer: 0 when none are ready, negative when the connection is over. */
+static int sread(hsess_t *h, uint8_t *buf, uint32_t len) {
+#if defined(CONFIG_TLS_SERVER)
+    if (h->tls_on) { int r = tls_read(&h->tls, buf, len); return r < 0 ? -1 : r; }
+#endif
+    return tcp_stream_read(&h->s, buf, len);
+}
+
+/* The peer closed (with no bytes left). Over TLS the end comes out of sread() instead. */
+static bool speer_closed(hsess_t *h) {
+#if defined(CONFIG_TLS_SERVER)
+    if (h->tls_on) return false;
+#endif
+    return tcp_stream_peer_closed(&h->s);
+}
+
+static int swrite(hsess_t *h, const uint8_t *buf, uint32_t len) {
+#if defined(CONFIG_TLS_SERVER)
+    if (h->tls_on) { int r = tls_write(&h->tls, buf, len); return r < 0 ? -1 : r; }
+#endif
+    return tcp_stream_write(&h->s, buf, len);
+}
+
 /* --- sessions ----------------------------------------------------------------------- */
 
 static void sess_close(hsess_t *h) {
     if (h->st == H_WS) p9_link_closed(&h->link);
     if (h->fd >= 0) vfs_close(h->fd);
+#if defined(CONFIG_TLS_SERVER)
+    if (h->tls_on) { tls_close(&h->tls); tls_wipe(&h->tls); }
+#endif
     tcp_stream_close(&h->s);
     uint8_t *ib = h->ibuf, *ob = h->obuf;
     memset(h, 0, sizeof *h);
@@ -212,21 +277,26 @@ static void start_ws(hsess_t *h, const char *key, bool want_9p) {
     h->link.prot_get = ws_link_prot;
     h->link.setup_net = setup_net_contains(h->peer);
     h->link.plain_writes_ok = g_write_ok;
+#if defined(CONFIG_TLS_SERVER)
+    if (h->tls_on) {
+        /* TLS protects the bytes: not a plaintext link, so an admin peer may write, secrets included. */
+        h->link.prot_get = NULL;
+        h->link.plain_writes_ok = false;
+    } else if (g_tls_on && !h->link.setup_net) {
+        h->link.read_only = !g_write_ok;            /* HTTPS is up: plain HTTP only reads */
+    }
+#endif
     h->st = H_WS;
     g_ws_total++;
 }
 
-#if defined(CONFIG_HTTPD_ADMIN_EMBED)
-/* The admin page in the image, gzip-compressed (tools/embed_page.py --gzip): the page of a board with no
- * filesystem. Every browser takes gzip; a client that does not say so is told why it gets nothing. */
+/* The admin page in the image, gzip-compressed (tools/embed_page.py --gzip): it is updated with the
+ * firmware, so the page and the node it talks to always match. A file on /flash0 or /sd0 is not:
+ * an update replaces the image and leaves the file as it was. */
 extern const char g_admin_page_gz[];
 extern const unsigned g_admin_page_gz_len;
 
-static bool start_embedded_admin(hsess_t *h, bool gzip_ok) {
-    if (!gzip_ok) {
-        reply_and_close(h, "406 Not Acceptable", "text/plain", "this node keeps its page gzip-compressed\n");
-        return true;
-    }
+static void start_embedded_admin(hsess_t *h) {
     int n = ksnprintf((char *)h->obuf, HTTPD_OBUF,
                       "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Encoding: gzip\r\n"
                       "Content-Length: %u\r\nConnection: close\r\nCache-Control: no-cache\r\n\r\n",
@@ -238,22 +308,18 @@ static bool start_embedded_admin(hsess_t *h, bool gzip_ok) {
     h->file_off = 0;
     h->st = H_FILE;
     g_pages++;
-    return true;
 }
-#endif
 
-static void start_file(hsess_t *h, const char *first, const char *second, bool gzip_ok) {
-    (void)gzip_ok;
-    h->fd = vfs_open(first, VFS_O_READ);
-    if (h->fd < 0) h->fd = vfs_open(second, VFS_O_READ);
+/* The page for a client that takes gzip is the image's own; one that does not (a script) gets a copy
+ * from a filesystem if there is one. */
+static void start_page(hsess_t *h, bool gzip_ok) {
+    if (gzip_ok) { start_embedded_admin(h); return; }
+    h->fd = vfs_open(HTTPD_PAGE_A, VFS_O_READ);
+    if (h->fd < 0) h->fd = vfs_open(HTTPD_PAGE_B, VFS_O_READ);
     vfs_stat_t st;
     if (h->fd < 0 || vfs_fstat(h->fd, &st) != 0) {
         if (h->fd >= 0) { vfs_close(h->fd); h->fd = -1; }
-#if defined(CONFIG_HTTPD_ADMIN_EMBED)
-        if (start_embedded_admin(h, gzip_ok)) return;
-#endif
-        reply_and_close(h, "404 Not Found", "text/plain", "that page is not installed on this node\n");
-        g_not_found++;
+        reply_and_close(h, "406 Not Acceptable", "text/plain", "this node keeps its page gzip-compressed\n");
         return;
     }
     int n = ksnprintf((char *)h->obuf, HTTPD_OBUF,
@@ -342,8 +408,19 @@ static void handle_request(hsess_t *h) {
         return;
     }
     if (strcmp(path, "/") == 0 || strcmp(path, "/index.html") == 0 || strcmp(path, "/admin.html") == 0) {
+#if defined(CONFIG_TLS_SERVER)
+        if (!h->tls_on && g_tls_on) {               /* the page over HTTPS, where it may write */
+            char host[64] = "", loc[96];
+            (void)header_value(req, "Host", host, sizeof host);
+            for (char *c = host; *c; c++) if (*c == ':') { *c = 0; break; }
+            if (!host[0]) ksnprintf(host, sizeof host, "%s.local", node_name());
+            ksnprintf(loc, sizeof loc, "https://%s/", host);
+            reply_redirect(h, loc);
+            return;
+        }
+#endif
         bool gz = header_value(req, "Accept-Encoding", v, sizeof v) && token_in(v, "gzip");
-        start_file(h, HTTPD_PAGE_A, HTTPD_PAGE_B, gz);
+        start_page(h, gz);
         return;
     }
     g_not_found++;
@@ -353,12 +430,15 @@ static void handle_request(hsess_t *h) {
 /* Hands the owed bytes to the stream; true if everything went. */
 static bool drain(hsess_t *h) {
     while (h->osent < h->olen) {
-        int n = tcp_stream_write(&h->s, h->obuf + h->osent, h->olen - h->osent);
+        int n = swrite(h, h->obuf + h->osent, h->olen - h->osent);
         if (n < 0) { h->close_after_drain = true; h->olen = h->osent; return true; }
         if (n == 0) return false;
         h->osent += (uint32_t)n;
     }
     h->olen = h->osent = 0;
+#if defined(CONFIG_TLS_SERVER)
+    if (h->tls_on && !tls_flush(&h->tls)) return false;   /* the last record is still going out */
+#endif
     return true;
 }
 
@@ -386,10 +466,10 @@ static void ws_read(hsess_t *h) {
         if (h->msg_ready) return;                   /* the 9P request goes first */
         if (!h->have_hdr) {
             uint8_t b;
-            int n = tcp_stream_read(&h->s, &b, 1);
+            int n = sread(h, &b, 1);
             if (n < 0) { h->st = H_CLOSING; h->close_after_drain = true; return; }
             if (n == 0) {
-                if (tcp_stream_peer_closed(&h->s)) { h->st = H_CLOSING; h->close_after_drain = true; }
+                if (speer_closed(h)) { h->st = H_CLOSING; h->close_after_drain = true; }
                 return;
             }
             h->last_rx_ms = time_get_ms();
@@ -410,7 +490,7 @@ static void ws_read(hsess_t *h) {
         uint8_t *dst = (ctl ? h->ctl : h->ibuf + h->msg_len) + h->got;
         uint32_t want = h->hdr.payload_len - h->got;
         if (want) {
-            int n = tcp_stream_read(&h->s, dst, want);
+            int n = sread(h, dst, want);
             if (n < 0) { h->st = H_CLOSING; h->close_after_drain = true; return; }
             if (n == 0) return;
             h->last_rx_ms = time_get_ms();
@@ -440,14 +520,14 @@ static void sess_step(hsess_t *h) {
     case H_FREE:
         return;
     case H_REQUEST: {
-        int n = tcp_stream_read(&h->s, h->ibuf + h->ilen, HTTPD_REQ_MAX - 1 - h->ilen);
+        int n = sread(h, h->ibuf + h->ilen, HTTPD_REQ_MAX - 1 - h->ilen);
         if (n < 0) { sess_close(h); return; }
         if (n > 0) {
             h->ilen += (uint32_t)n;
             h->ibuf[h->ilen] = 0;
             if (strstr((char *)h->ibuf, "\r\n\r\n")) { handle_request(h); return; }
             if (h->ilen >= HTTPD_REQ_MAX - 1) { reply_and_close(h, "431 Request Header Fields Too Large", "text/plain", "too big\n"); g_bad++; return; }
-        } else if (tcp_stream_peer_closed(&h->s) || now - h->started_ms > HTTPD_REQ_TIMEOUT_MS) {
+        } else if (speer_closed(h) || now - h->started_ms > HTTPD_REQ_TIMEOUT_MS) {
             sess_close(h);
         }
         return;
@@ -492,26 +572,105 @@ static void sess_step(hsess_t *h) {
     }
 }
 
+#if defined(CONFIG_TLS_SERVER)
+static void https_down(void) {
+    if (g_tls_on) tcp_stream_unlisten(HTTPS_PORT);
+    if (g_tls_mem) {
+        crypto_wipe_bytes(g_tls_mem, 32);
+        palloc_free(g_tls_mem, g_tls_pages);
+    }
+    g_tls_mem = NULL;
+    g_tls_on = false;
+}
+
+/* HTTPS on port 443 when the identity holds a key and a certificate for it; off otherwise. */
+static void https_up(void) {
+    https_down();
+    uint8_t key[NODE_TLS_KEY_LEN];
+    if (!node_tls_key(key)) return;
+    g_tls_pages = (32u + NODE_TLS_CERT_MAX + HTTPD_MAX_SESSIONS * TLS_SESS_BYTES + 4095u) / 4096u;
+    uint8_t *mem = (uint8_t *)palloc_pages_bulk(g_tls_pages);
+    tls_cert_info_t ci;
+    uint32_t len = 0;
+    const char *why = NULL;
+    if (!mem) why = "no memory for its buffers";
+    else if (!node_tls_cert(mem + 32, NODE_TLS_CERT_MAX, &len)) why = "no certificate (lugalos-ca issue)";
+    else if (tls_cert_parse(mem + 32, len, &ci) != TLS_OK || !crypto_equal(ci.pub, key + 32, 64)) why = "the certificate is not for this key";
+    else if (tcp_stream_listen(HTTPS_PORT) != 0) why = "cannot listen on port 443";
+    if (why) {
+        crypto_wipe_bytes(key, sizeof key);
+        if (mem) palloc_free(mem, g_tls_pages);
+        printk("[Httpd] no HTTPS: %s\n", why);
+        return;
+    }
+    memcpy(mem, key, 32);
+    crypto_wipe_bytes(key, sizeof key);
+    g_tls_mem = mem;
+    g_tls_cert_len = len;
+    g_tls_on = true;
+    printk("[Httpd] HTTPS on port %u for %s, until %s\n", (unsigned)HTTPS_PORT, ci.subject_cn, ci.not_after);
+}
+
+static uint8_t *tls_rx_of(const hsess_t *h) {
+    return g_tls_mem + 32u + NODE_TLS_CERT_MAX + (uint32_t)(h - g_sess) * TLS_SESS_BYTES;
+}
+#endif
+
+/* A connection waiting on either port, into `h`. */
+static bool accept_into(hsess_t *h) {
+    tcp_stream_t s;
+    uint8_t peer[4];
+    bool tls = false;
+    int a = tcp_stream_accept(g_port, &s, peer);
+#if defined(CONFIG_TLS_SERVER)
+    if (a != 1 && g_tls_on) { a = tcp_stream_accept(HTTPS_PORT, &s, peer); tls = a == 1; }
+#endif
+    if (a != 1) return false;
+    h->s = s;
+    memcpy(h->peer, peer, 4);
+    h->st = H_REQUEST;
+    h->ilen = 0;
+    h->started_ms = time_get_ms();
+#if defined(CONFIG_TLS_SERVER)
+    h->tls_on = tls;
+    if (tls) {
+        uint8_t *rx = tls_rx_of(h);
+        tls_server_init(&h->tls, g_tls_mem + 32, g_tls_cert_len, g_tls_mem, tls_tcp_recv, tls_tcp_send, &h->s,
+                        rx, rx + TLS_RECORD_MAX);
+        g_tls_sessions++;
+    }
+#else
+    (void)tls;
+#endif
+    return true;
+}
+
 static void httpd_task(void *arg) {
     (void)arg;
+#if defined(CONFIG_TLS_SERVER)
+    https_up();
+    g_tls_dirty = false;
+#endif
     while (!g_want_stop) {
+#if defined(CONFIG_TLS_SERVER)
+        if (g_tls_dirty) {
+            bool busy = false;
+            for (uint32_t i = 0; i < HTTPD_MAX_SESSIONS; i++) if (g_sess[i].st != H_FREE && g_sess[i].tls_on) busy = true;
+            if (!busy) { g_tls_dirty = false; https_up(); }
+        }
+#endif
         for (;;) {
             hsess_t *free_slot = NULL;
             for (uint32_t i = 0; i < HTTPD_MAX_SESSIONS; i++) if (g_sess[i].st == H_FREE) { free_slot = &g_sess[i]; break; }
-            if (!free_slot) break;
-            tcp_stream_t s;
-            uint8_t peer[4];
-            if (tcp_stream_accept(g_port, &s, peer) != 1) break;
-            free_slot->s = s;
-            memcpy(free_slot->peer, peer, 4);
-            free_slot->st = H_REQUEST;
-            free_slot->ilen = 0;
-            free_slot->started_ms = time_get_ms();
+            if (!free_slot || !accept_into(free_slot)) break;
         }
         for (uint32_t i = 0; i < HTTPD_MAX_SESSIONS; i++) sess_step(&g_sess[i]);
         task_sleep_ms(3);
     }
     for (uint32_t i = 0; i < HTTPD_MAX_SESSIONS; i++) if (g_sess[i].st != H_FREE) sess_close(&g_sess[i]);
+#if defined(CONFIG_TLS_SERVER)
+    https_down();
+#endif
     tcp_stream_unlisten(g_port);
     palloc_free(g_pool, g_pool_pages);
     g_pool = NULL;
@@ -572,5 +731,13 @@ uint32_t httpd_status(char *out, uint32_t cap) {
                      g_run ? "running" : "stopped", (unsigned)g_port, (unsigned)live, (unsigned)HTTPD_MAX_SESSIONS,
                      (unsigned)ws, (unsigned)g_requests, (unsigned)g_pages, (unsigned)g_ws_total, (unsigned)g_not_found,
                      (unsigned)g_bad, g_write_ok ? "ALLOWED over plain HTTP" : "refused (read-only links)");
-    return n < 0 ? 0 : (uint32_t)(n < (int)cap ? n : (int)cap);
+    if (n < 0) return 0;
+    if ((uint32_t)n > cap) n = (int)cap;
+#if defined(CONFIG_TLS_SERVER)
+    int m = ksnprintf(out + n, cap - (uint32_t)n, "https: %s\nhttps_sessions: %u\n",
+                      g_tls_on ? "on (port 443; plain HTTP reads only)" : "off (no key and certificate: tls, lugalos-ca issue)",
+                      (unsigned)g_tls_sessions);
+    if (m > 0) n += m;
+#endif
+    return (uint32_t)(n < (int)cap ? n : (int)cap);
 }

@@ -329,3 +329,5 @@ set(CONFIG_BOARD_DESC "Waveshare ESP32-P4-NANO")
 
 # HTTPS: the node's own key, its certificate request and its certificate (kernel/tls_cert.c).
 set(CONFIG_TLS_SERVER 1)
+# A claimed node starts the admin server (HTTP, and HTTPS once it has a certificate) when it gets an address.
+set(CONFIG_HTTPD_WHEN_CLAIMED 1)
