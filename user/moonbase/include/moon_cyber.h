@@ -57,6 +57,7 @@ void moon_cyber_update_telemetry(const moon_cyber_telemetry_t *telem);
 void moon_cyber_set_state(moon_cyber_state_t state);
 moon_cyber_state_t moon_cyber_get_state(void);
 int  moon_cyber_get_current_bpm(void);
+uint8_t moon_cyber_get_bar_index(void);
 
 /* Audio rendering: renders/mixes into 16-bit PCM buffer (accumulates with saturation) */
 void moon_cyber_render(int16_t *buffer, int num_samples);

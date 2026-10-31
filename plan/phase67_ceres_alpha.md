@@ -205,6 +205,7 @@ flowchart TD
     M4 --> M5["67.5 Aerial Enemies, Waves & Collision"]
     M5 --> M6["67.6 6-Sector Progression & Core Detonation"]
     M6 --> M7["67.7 Chiptune Audio, High Scores & HW Polish"]
+    M7 --> M8["67.8 Dynamic Cybernetic Voice & Meltdown Telemetry"]
 ```
 
 ### Milestone 67.1: Dual-Target HAL & Virtual Canvas — **COMPLETE**
@@ -305,17 +306,23 @@ flowchart TD
   - `python3 tests/runner.py` passes 100%.
   - Hardware benchmarks confirm solid 60 FPS on ESP32-P4 hardware with <15% CPU load thanks to PPA SRM.
 
-### Milestone 67.8: Dynamic Cybernetic Voice & Meltdown Telemetry Sequencer — **PLANNED**
+### Milestone 67.8: Dynamic Cybernetic Voice & Meltdown Telemetry Sequencer — **COMPLETE**
 * **Deliverables**:
-  - Second procedural audio voice: 16-step rhythmic cybernetic ostinato synth layered over generative space ambient bed.
+  - Second procedural audio voice: 16-step rhythmic cybernetic ostinato synth (`user/ceres/src/ceres_cyber.c`, `user/ceres/include/ceres_cyber.h`) layered over generative space ambient bed in 16 kHz audio pipeline.
+  - Three Generative Variation Systems:
+    1. **4-Bar Phrasing**: $A \to A \to B \to \text{Fill}$ phrase cycle preventing loop monotony (`bar_a`, `bar_b`, `bar_fill` slices).
+    2. **Contextual Telemetry Micro-Modulations**: Thruster boost/brake dynamics, pitch-bank octave steering on turnaround fills, and rescue streak accent boosts.
+    3. **Procedural Micro-Ornamentation**: 16-bit deterministic Galois LFSR grace notes, octave-up sparkles, and dynamic duty-cycle timbre morphing.
   - Reactive tempo, duty cycle, and pitch modulation based on combat telemetry:
+    - Title / Cruising: Relaxed 108 BPM E-minor pentatonic pulse.
     - Sectors 1-3: Steady 128 BPM cyber-runner pluck.
-    - Low Fuel: Sputtering clock skips.
-    - Survivor on screen: Resonant high-register sonar ping.
+    - Low Fuel: Sputtering clock skips (75 BPM broken meter).
+    - Survivor on screen / tractor scoop / parachute: Resonant high-register sonar ping (120 BPM).
     - Sector 4-5: Tense 140 BPM Phrygian ostinato.
     - Sector 6 Meltdown Alert: Breakneck 175 BPM alarm arpeggio with chromatic escalation.
 * **Verification**:
-  - Headless test suite validation and silicon audio playback verification.
+  - Host test suite `make -C user/ceres test` passed 100% under AddressSanitizer and UndefinedBehaviorSanitizer.
+  - Hardware-in-the-loop tests verified on ESP32-P4 LCD-7B and M5Stack Tab5.
 
 ---
 

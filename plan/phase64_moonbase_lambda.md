@@ -518,6 +518,10 @@ Act I (*Survival & Bootstrapping*) is fully implemented and running on both the 
   - `MOON_CYBER_LIFE_CRITICAL` (140 BPM): Rapid 16th-note warning sequence with tritone/minor-2nd intervals and resonant ringing decay (urgent medical/telemetry alarm when O2/water low or life support < 40%).
   - `MOON_CYBER_STARSHIP_DESCENT` (120 BPM): Driving aerospace approach arpeggio with alternating octaves during lander/starship descent.
   - `MOON_CYBER_STARSHIP_LAUNCH` (150 BPM): Fast ascending arpeggios spanning 2 octaves during refueling completion and orbital ascent.
+- **Generative Variation Systems**:
+  - **4-Bar Phrasing**: $A \to A \to B \to \text{Fill}$ phrase cycle preventing loop monotony (`bar_a`, `bar_b`, `bar_fill` slices).
+  - **Contextual Telemetry Micro-Modulations**: Power net surplus/deficit dynamics, aerospace climb/descent octave steering on turnaround fills, and life support warning accents.
+  - **Procedural Micro-Ornamentation**: 16-bit deterministic Galois LFSR grace notes, octave-up sparkles, and dynamic duty-cycle timbre morphing.
 - **Mix Staging & Interleaving**:
   - Integrated directly into the 16 kHz audio rendering pipeline, automatically pumped across DMA frames on both ESP32-P4 hardware and Host SDL3.
   - Telemetry parameters evaluated dynamically during `moon_game_update()` and smoothed to prevent clicks or pitch pops.

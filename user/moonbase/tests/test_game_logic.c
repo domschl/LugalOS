@@ -2489,6 +2489,23 @@ static void test_dynamic_cybernetic_voice(void) {
     }
     assert(non_zero);
 
+    /* 3. 4-Bar Phrasing Evolution (A -> A -> B -> Turnaround Fill) */
+    assert(moon_cyber_get_bar_index() <= 3);
+    for (int bar = 0; bar < 8; bar++) {
+        int16_t chunk[2048];
+        memset(chunk, 0, sizeof(chunk));
+        moon_cyber_render(chunk, 2048);
+    }
+    assert(moon_cyber_get_bar_index() <= 3);
+
+    /* 4. Contextual modulation */
+    telem.starship_state = 0;
+    telem.life_support_pct = 50;
+    telem.power_net_kw = 80; /* Power surplus */
+    moon_cyber_update_telemetry(&telem);
+    memset(buf, 0, sizeof(buf));
+    moon_cyber_render(buf, 2048);
+
     /* Verify volume mute works */
     moon_cyber_set_volume(0);
     memset(buf, 0, sizeof(buf));
@@ -2499,6 +2516,7 @@ static void test_dynamic_cybernetic_voice(void) {
 
     moon_cyber_reset();
     assert(moon_cyber_get_state() == MOON_CYBER_CALM);
+    assert(moon_cyber_get_bar_index() == 0);
     printf("[test] Dynamic Cybernetic Voice & Telemetry Sequencer: PASS\n");
 }
 

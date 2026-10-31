@@ -1059,6 +1059,7 @@ if(LUGALOS_ENABLE_CERES OR LUGALOS_ENABLE_SCROLLER)
         user/ceres/src/ceres_entities.c
         user/ceres/src/ceres_sound.c
         user/ceres/src/ceres_ambient.c
+        user/ceres/src/ceres_cyber.c
         user/ceres/src/ceres_storage.c
         user/ceres/src/ceres_game.c)
     set_source_files_properties(
@@ -1072,6 +1073,7 @@ if(LUGALOS_ENABLE_CERES OR LUGALOS_ENABLE_SCROLLER)
         user/ceres/src/ceres_entities.c
         user/ceres/src/ceres_sound.c
         user/ceres/src/ceres_ambient.c
+        user/ceres/src/ceres_cyber.c
         user/ceres/src/ceres_storage.c
         user/ceres/src/ceres_game.c
         PROPERTIES COMPILE_OPTIONS -ffunction-sections)
