@@ -59,6 +59,8 @@ typedef struct {
  * single task: ceres_game */
 static bool          s_sound_enabled = true;
 /* single task: ceres_game */
+static int           s_sfx_volume = 256;
+/* single task: ceres_game */
 static voice_pulse_t s_pulse[CH_PULSE_COUNT];
 /* single task: ceres_game */
 static voice_tri_t   s_tri;
@@ -69,6 +71,7 @@ static seq_arp_t     s_arp;
 
 void ceres_sound_init(void) {
     s_sound_enabled = true;
+    s_sfx_volume = 256;
     memset(s_pulse, 0, sizeof(s_pulse));
     memset(&s_tri, 0, sizeof(s_tri));
     memset(&s_noise, 0, sizeof(s_noise));
@@ -83,6 +86,16 @@ void ceres_sound_set_enabled(bool enabled) {
 
 bool ceres_sound_is_enabled(void) {
     return s_sound_enabled;
+}
+
+void ceres_sound_set_volume(int volume) {
+    if (volume < 0) volume = 0;
+    if (volume > 256) volume = 256;
+    s_sfx_volume = volume;
+}
+
+int ceres_sound_get_volume(void) {
+    return s_sfx_volume;
 }
 
 void ceres_sound_play(ceres_sfx_id_t sfx) {
@@ -264,7 +277,7 @@ void ceres_sound_play(ceres_sfx_id_t sfx) {
 void ceres_sound_render(int16_t *buffer, int num_samples) {
     if (!buffer || num_samples <= 0) return;
 
-    if (!s_sound_enabled) {
+    if (!s_sound_enabled || s_sfx_volume == 0) {
         memset(buffer, 0, (size_t)num_samples * sizeof(int16_t));
         return;
     }
@@ -365,6 +378,9 @@ void ceres_sound_render(int16_t *buffer, int num_samples) {
                 s_noise.active = false;
             }
         }
+
+        /* Apply master SFX volume scaling */
+        mix = (mix * s_sfx_volume) >> 8;
 
         /* Saturation Limiter [-32768, 32767] */
         if (mix > 32767) mix = 32767;

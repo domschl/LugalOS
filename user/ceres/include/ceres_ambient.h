@@ -11,7 +11,15 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define CERES_AMBIENT_SAMPLE_RATE 22050
+#define CERES_AMBIENT_SAMPLE_RATE 16000
+
+#if defined(CONFIG_BOARD_TAB5)
+#define CERES_AMBIENT_DEFAULT_VOLUME 100
+#elif defined(CONFIG_BOARD_ESP32P4)
+#define CERES_AMBIENT_DEFAULT_VOLUME 60
+#else
+#define CERES_AMBIENT_DEFAULT_VOLUME 120
+#endif
 
 typedef enum {
     CERES_AMBIENT_MOOD_DEEP_SPACE = 0, /* Low root drone, celestial chimes, solar wind (default) */

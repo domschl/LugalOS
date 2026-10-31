@@ -41,6 +41,7 @@ TEST_SRC := tests/test_fixed_blitter.c \
             src/moon_structures.c \
             src/moon_resources.c \
             src/moon_starship.c \
+            src/moon_ambient.c \
             src/moon_ui.c
 
 OBJ_DIR := build_host

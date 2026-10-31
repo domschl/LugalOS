@@ -149,6 +149,7 @@ int  i2c_tab5_touch_fw_version(void);
 /* The PI4IOE5V6408 expanders (0x43, 0x44): set the OUT_SET bits in `mask` to
  * `bits`, keeping the others; read any register (-1 on a bus error). */
 bool i2c_tab5_expander_update(uint8_t addr, uint8_t mask, uint8_t bits);
+bool i2c_tab5_expander_reg_update(uint8_t addr, uint8_t reg, uint8_t mask, uint8_t bits);
 int  i2c_tab5_expander_read(uint8_t addr, uint8_t reg);
 #endif
 #endif

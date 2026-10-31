@@ -8,11 +8,14 @@
 #include "ceres_platform.h"
 #include "ceres_config.h"
 #include "ceres_game.h"
+#include "ceres_sound.h"
+#include "ceres_ambient.h"
 #include "ceres.h"
 
 #include "lugalos_config.h"
 #include "kernel/lock.h"
 #include "arch/esp32p4_intr.h"
+#include "drivers/audio_esp32p4.h"
 #include "drivers/dsi_esp32p4.h"
 #include "drivers/ppa_esp32p4.h"
 #include "drivers/lcdterm.h"
@@ -95,6 +98,23 @@ static void p4_queue_push(const ceres_event_t *ev) {
     }
 }
 
+/* Audio streaming scratch buffer (mono synthesis before stereo fan-out)
+ * single task: the one holding s_ceres_session (ceres_run()). */
+static int16_t s_ceres_mono_buf[AUDIO_P4_CHUNK_SAMPLES];
+
+static void ceres_p4_audio_render(int16_t *stereo_buf, int samples, void *user) {
+    (void)user;
+    if (samples > AUDIO_P4_CHUNK_SAMPLES) samples = AUDIO_P4_CHUNK_SAMPLES;
+    memset(s_ceres_mono_buf, 0, (size_t)samples * sizeof(int16_t));
+    ceres_sound_render(s_ceres_mono_buf, samples);
+    ceres_ambient_render(s_ceres_mono_buf, samples);
+    for (int i = 0; i < samples; i++) {
+        int16_t s = s_ceres_mono_buf[i];
+        stereo_buf[i * 2]     = s;
+        stereo_buf[i * 2 + 1] = s;
+    }
+}
+
 static void p4_input_reset(void) {
     memset(s_held_keys, 0, sizeof(s_held_keys));
     s_event_head = 0;
@@ -159,6 +179,19 @@ static ceres_key_t map_console_key(uint32_t raw_key) {
         case 'k': case 'K':   return CERES_KEY_K;
         case 'p': case 'P':   return CERES_KEY_P;
         case 'r': case 'R':   return CERES_KEY_R;
+        case 'v': case 'V':   return CERES_KEY_V;
+        case '0':             return CERES_KEY_0;
+        case '1':             return CERES_KEY_1;
+        case '2':             return CERES_KEY_2;
+        case '3':             return CERES_KEY_3;
+        case '4':             return CERES_KEY_4;
+        case '5':             return CERES_KEY_5;
+        case '6':             return CERES_KEY_6;
+        case '7':             return CERES_KEY_7;
+        case '8':             return CERES_KEY_8;
+        case '9':             return CERES_KEY_9;
+        case '-': case '_':   return CERES_KEY_MINUS;
+        case '+': case '=':   return CERES_KEY_PLUS;
         default:              return CERES_KEY_UNKNOWN;
     }
 }
@@ -177,7 +210,7 @@ bool ceres_platform_init(int width, int height, const char *title) {
         dsi_lcd_set_orientation(270);
     }
 #else
-    s_scale = 1;
+    s_scale = 2;
     s_width = CERES_PRESET_LCD7B_W;  /* 1024 */
     s_height = CERES_PRESET_LCD7B_H; /* 600 */
 #endif
@@ -256,12 +289,21 @@ bool ceres_platform_init(int width, int height, const char *title) {
 
     printk("[ceres] Bare-metal platform initialized: %dx%d (virtual %dx%d, scale=%d) fb=%p render=%p cid=%d\n",
            s_width, s_height, s_virtual_w, s_virtual_h, s_scale, (void *)s_fb, (void *)s_render_fb, s_cid);
+
+    /* 5. Initialize audio subsystem & start non-blocking circular DMA streaming */
+    ceres_sound_init();
+    ceres_ambient_init();
+    audio_p4_start(ceres_p4_audio_render, NULL);
+
     return true;
 }
 
 void ceres_platform_shutdown(void) {
     if (!s_active) return;
     s_active = false;
+
+    /* Stop audio DMA stream and mute power amplifier */
+    audio_p4_stop();
 
     p4_input_reset();
     while (console_has_char()) (void)keyseq_read_console();
@@ -355,6 +397,13 @@ void ceres_platform_present(void) {
                                  (size_t)s_virtual_w * s_virtual_h * sizeof(uint16_t));
         lcdterm_damage();
     }
+
+    /* Refill circular audio DMA buffer non-blockingly (~16.6ms frame cadence) */
+    audio_p4_pump();
+}
+
+void ceres_platform_set_volume(int percent) {
+    audio_p4_set_volume(percent);
 }
 
 bool ceres_platform_poll_event(ceres_event_t *ev) {
@@ -496,12 +545,17 @@ static int ceres_run_claimed(const char *args) {
 
         ceres_game_update(&s_p4_game, delta);
 
+        /* Pump audio continuously before and after rendering passes */
+        audio_p4_pump();
+
         int stride = 0;
         uint16_t *fb = ceres_platform_get_framebuffer(&stride);
         if (fb) {
             ceres_game_render(&s_p4_game, fb, w, h, stride);
+            audio_p4_pump();
             ceres_platform_present();
         }
+        audio_p4_pump();
 
         /* 60 FPS frame delay (~16.6 ms) */
         uint32_t spent = ceres_platform_get_ticks_ms() - now;

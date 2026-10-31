@@ -1023,7 +1023,7 @@ ceres_interaction_t ceres_entities_resolve_collisions(ceres_entities_t *pool, co
         if (!t->active || t->type != CERES_TARGET_SURVIVOR) continue;
 
         int sx = t->world_x - camera_col;
-        if (sx < -20 || sx > CERES_VIRTUAL_W + 20) continue;
+        if (sx < -20 || sx > CERES_PRESET_TAB5_W + 20) continue;
 
         int surv_cx = sx + t->w / 2;
         int surv_cy = t->y - t->h / 2;
@@ -1173,7 +1173,7 @@ ceres_interaction_t ceres_entities_resolve_collisions(ceres_entities_t *pool, co
         if (!barr->active) continue;
 
         int bsx = barr->world_x - camera_col;
-        if (bsx < -16 || bsx > CERES_VIRTUAL_W + 16) continue;
+        if (bsx < -16 || bsx > CERES_PRESET_TAB5_W + 16) continue;
 
         int c_y = 0, f_y = 0;
         ceres_terrain_sample(terrain, bsx, &c_y, &f_y);

@@ -159,7 +159,8 @@ These are bring-up aids for developers. They read hardware state, and some chang
 * smpinfo, clocks (ESP32-P4, RP2350): second-hart state and the measured clock tree. cpufreq MHz (ESP32-P4 only) changes the CPU clock under live drivers: re-check measurements from a clean boot. xipcycle (RP2350) exercises the flash/XIP park handshake without writing; flashinfo (ESP32-P4) reports the flash chip.
 * intrdump, clicdump (ESP32-P4): Interrupt controller state. pmpinfo reports usable PMP regions and granularity; pmpdump dumps every PMP register.
 * i2cdiag (ESP32-P4): I2C controller diagnostics; emac scan: Ethernet PHY addresses found on the MDIO bus.
-* audiotest [status|init|dump|amp on|off] (ESP32-P4): Hardware diagnostic tool for audio codecs (ES8388 on Tab5, ES8311 on LCD-7B/NANO), power amplifier control (NS4150B), and I2S0 peripheral clock gate and reset verification.
+* audiotest [status|init|dump|reg [register] [value]|exp|amp on|off|vol [0-100]|tone [hz] [ms]|chord|melody] (ESP32-P4): Hardware diagnostic tool for audio codecs (ES8388 on Tab5, ES8311 on LCD-7B/NANO), power amplifier control (NS4150B), and I2S0 peripheral AHB-GDMA streaming audio. reg reads or writes codec registers, exp dumps IO expanders on Tab5, vol sets hardware codec output volume (0-100%), tone plays a pure fixed-point sine wave, chord plays a 4-voice celestial ambient chime chord, and melody plays Beethoven Fuer Elise.
+* volume [0-100] (ESP32-P4): Query or adjust hardware audio volume percentage (0% to 100%).
 * kbd [desc|on|off], kbdlog [s]: The USB keyboard host: state, descriptors, switching it off to leave the port to usbprobe, and a log of reports for s seconds (default 30).
 * usbprobe, usbprobe loop, boardprobe, uart1pins, uart1test [ms] (RP2350): PIO-USB and UART1 pin and loopback probes for board bring-up.
 * led R G B / led off (ESP32-C6): The on-board RGB LED, 0-255 per channel.

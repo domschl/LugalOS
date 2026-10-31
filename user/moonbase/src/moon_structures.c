@@ -1,6 +1,7 @@
 #include "moon_structures.h"
 #include "moon_sprites.h"
 #include "moon_resources.h"
+#include "moon_platform.h"
 #include <string.h>
 
 /* Static Catalog of Structures */
@@ -652,12 +653,18 @@ static void draw_structure_body(const moon_grid_t *grid, const moon_surface_t *s
         return;
     }
 
-    if (s->type == MOON_STRUCT_LANDER && lander_y_offset > 0) {
-        /* While in descent flight, the lander sprite and plume are rendered
-         * as an aerial vessel above the world pass, but we draw the landing zone
-         * target marker and shadow on the ground */
-        draw_lander_ground_shadow(surf, sx, sy, lander_y_offset);
-        return;
+    if (s->type == MOON_STRUCT_LANDER) {
+        if (lander_y_offset < 0) {
+            /* While awaiting mission start on the title menu, lander has not yet arrived */
+            return;
+        }
+        if (lander_y_offset > 0) {
+            /* While in descent flight, the lander sprite and plume are rendered
+             * as an aerial vessel above the world pass, but we draw the landing zone
+             * target marker and shadow on the ground */
+            draw_lander_ground_shadow(surf, sx, sy, lander_y_offset);
+            return;
+        }
     }
 
     const moon_surface_t *spr = sprite_of(s->type);
@@ -843,8 +850,12 @@ void moon_world_render(const moon_structure_mgr_t *mgr,
         d_max = MOON_MAP_SIZE_X + MOON_MAP_SIZE_Y - 2;
 
     /* Back to front, one diagonal at a time: a tile, then the structure whose
-     * front tile it is. Sprites reach upward over diagonals already drawn. */
+     * front tile it is. Sprites reach upward over diagonals already drawn.
+     * Periodically pump audio DMA to prevent ring buffer starvation during heavy passes. */
     for (int d = d_min; d <= d_max; d++) {
+        if ((d & 7) == 0) {
+            moon_platform_pump_audio();
+        }
         int map_gx_min = d - (MOON_MAP_SIZE_Y - 1);
         if (map_gx_min < 0) map_gx_min = 0;
         int map_gx_max = d;
@@ -883,6 +894,7 @@ void moon_world_render_overlays(const moon_structure_mgr_t *mgr,
                                 const struct moon_resources_s *res,
                                 int32_t cam_x, int32_t cam_y) {
     if (!mgr || !grid || !surf) return;
+    moon_platform_pump_audio();
     for (int i = 1; i < MOON_MAX_STRUCTURES; i++) {
         if (mgr->list[i].id != 0) {
             draw_structure_overlay(grid, surf, res, &mgr->list[i], cam_x, cam_y);

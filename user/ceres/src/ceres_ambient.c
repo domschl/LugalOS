@@ -86,7 +86,7 @@ typedef struct {
  * single task: ceres_game */
 static bool                 s_ambient_enabled = true;
 /* single task: ceres_game */
-static int                  s_master_vol = 160;   /* [0..256] */
+static int                  s_master_vol = CERES_AMBIENT_DEFAULT_VOLUME;   /* [0..256] */
 /* single task: ceres_game */
 static ceres_ambient_mood_t s_mood = CERES_AMBIENT_MOOD_DEEP_SPACE;
 /* single task: ceres_game */
@@ -200,7 +200,7 @@ static void update_mood_tuning(void) {
 
 void ceres_ambient_init(void) {
     s_ambient_enabled = true;
-    s_master_vol = 160;
+    s_master_vol = CERES_AMBIENT_DEFAULT_VOLUME;
     s_mood = CERES_AMBIENT_MOOD_DEEP_SPACE;
     s_duck_level = 0;
 

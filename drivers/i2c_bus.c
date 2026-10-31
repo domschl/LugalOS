@@ -660,6 +660,10 @@ bool i2c_tab5_expander_update(uint8_t addr, uint8_t mask, uint8_t bits) {
     return expander_update_reg(addr, 0x05u, mask, bits);
 }
 
+bool i2c_tab5_expander_reg_update(uint8_t addr, uint8_t reg, uint8_t mask, uint8_t bits) {
+    return expander_update_reg(addr, reg, mask, bits);
+}
+
 int i2c_tab5_expander_read(uint8_t addr, uint8_t reg) {
     uint8_t v = 0;
     return i2c_xfer(addr, &reg, 1, &v, 1) ? (int)v : -1;

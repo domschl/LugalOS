@@ -57,6 +57,7 @@ static uint32_t map_sdl_key(SDL_Keycode k) {
         case SDLK_F:         return MOON_KEY_F;
         case SDLK_B:         return MOON_KEY_B;
         case SDLK_L:         return MOON_KEY_L;
+        case SDLK_V:         return MOON_KEY_V;
         case SDLK_MINUS:     return MOON_KEY_MINUS;
         case SDLK_KP_MINUS:  return MOON_KEY_MINUS;
         case SDLK_EQUALS:    return MOON_KEY_PLUS;
@@ -203,28 +204,36 @@ void moon_platform_present_rows(int y0, int y1) {
     moon_platform_present();
 }
 
+void moon_platform_pump_audio(void) {
+    if (!s_plat.initialized || !s_plat.audio_stream) return;
+
+    /* Feed Procedural Ambient Audio Stream with ~100ms cushion */
+    int queued_bytes = SDL_GetAudioStreamQueued(s_plat.audio_stream);
+    int target_bytes = (int)(MOON_AMBIENT_SAMPLE_RATE * sizeof(int16_t) / 10); /* ~100ms cushion */
+    int top_up_chunks = 0;
+    while (queued_bytes < target_bytes && top_up_chunks < 8) {
+        int16_t pcm[512];
+        memset(pcm, 0, sizeof(pcm));
+        moon_ambient_render(pcm, 512);
+        SDL_PutAudioStreamData(s_plat.audio_stream, pcm, sizeof(pcm));
+        queued_bytes += (int)sizeof(pcm);
+        top_up_chunks++;
+    }
+}
+
 void moon_platform_present(void) {
     if (!s_plat.initialized || !s_plat.framebuffer) return;
 
-    /* Feed Procedural Ambient Audio Stream */
-    if (s_plat.audio_stream) {
-        int queued_bytes = SDL_GetAudioStreamQueued(s_plat.audio_stream);
-        int target_bytes = (int)(MOON_AMBIENT_SAMPLE_RATE * sizeof(int16_t) / 20); /* ~50ms cushion */
-        int top_up_chunks = 0;
-        while (queued_bytes < target_bytes && top_up_chunks < 8) {
-            int16_t pcm[512];
-            memset(pcm, 0, sizeof(pcm));
-            moon_ambient_render(pcm, 512);
-            SDL_PutAudioStreamData(s_plat.audio_stream, pcm, sizeof(pcm));
-            queued_bytes += (int)sizeof(pcm);
-            top_up_chunks++;
-        }
-    }
+    moon_platform_pump_audio();
 
     SDL_UpdateTexture(s_plat.texture, NULL, s_plat.framebuffer, s_plat.stride * sizeof(uint16_t));
     SDL_RenderClear(s_plat.renderer);
     SDL_RenderTexture(s_plat.renderer, s_plat.texture, NULL, NULL);
     SDL_RenderPresent(s_plat.renderer);
+}
+
+void moon_platform_set_volume(int percent) {
+    (void)percent;
 }
 
 bool moon_platform_poll_event(moon_event_t *ev) {

@@ -1287,6 +1287,7 @@ static void cmd_help_summary(void) {
     cprintf("  power [charge|limit|off|log] - Battery, charging, power off, CSV log\n");
 #if defined(CONFIG_BOARD_ESP32P4)
     cprintf("  audiotest [cmd] - Audio hardware diagnostics (codec, PA, I2S0)\n");
+    cprintf("  volume [0-100]  - Get or set audio output volume\n");
 #endif
     cprintf("  imu [watch [s]] - Accelerometer, gyroscope, pitch and roll\n");
     cprintf("  orient [auto|off] - Turn the display with the board (IMU)\n");
@@ -7078,6 +7079,10 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "audiotest") == 0 || strncmp(cmd_line, "audiotest ", 10) == 0) {
         extern void audiotest_cmd(const char *arg);
         audiotest_cmd(cmd_line + 9);
+        return;
+    } else if (strcmp(cmd_line, "volume") == 0 || strncmp(cmd_line, "volume ", 7) == 0) {
+        extern void volume_cmd(const char *arg);
+        volume_cmd(cmd_line + 6);
         return;
 #endif
     } else if (strcmp(cmd_line, "imu") == 0 || strncmp(cmd_line, "imu ", 4) == 0) {

@@ -6,6 +6,8 @@
 #include <assert.h>
 #include "ceres_game.h"
 
+void ceres_platform_set_volume(int percent) { (void)percent; }
+
 int main(void) {
     printf("=== Ceres Alpha Full 6-Sector Campaign Headless Test ===\n");
 

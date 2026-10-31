@@ -84,7 +84,7 @@ typedef struct {
  * single task: moon_game */
 static bool                s_ambient_enabled = true;
 /* single task: moon_game */
-static int                 s_master_vol = 160;   /* [0..256] */
+static int                 s_master_vol = MOON_AMBIENT_DEFAULT_VOLUME;   /* [0..256] */
 /* single task: moon_game */
 static moon_ambient_mood_t s_mood = MOON_AMBIENT_MOOD_TRANQUIL;
 /* single task: moon_game */
@@ -194,7 +194,7 @@ static void update_mood_tuning(void) {
 
 void moon_ambient_init(void) {
     s_ambient_enabled = true;
-    s_master_vol = 160;
+    s_master_vol = MOON_AMBIENT_DEFAULT_VOLUME;
     s_mood = MOON_AMBIENT_MOOD_TRANQUIL;
     s_duck_level = 0;
 

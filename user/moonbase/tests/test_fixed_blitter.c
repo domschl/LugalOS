@@ -9,6 +9,9 @@
 #include "moon_structures.h"
 #include "moon_resources.h"
 
+void moon_platform_set_volume(int percent) { (void)percent; }
+void moon_platform_pump_audio(void) { }
+
 static void test_structure_catalog_and_placement(void) {
     printf("[test] Checking structure catalog, footprints & placement rules...\n");
 

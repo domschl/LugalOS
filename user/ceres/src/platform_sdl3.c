@@ -40,6 +40,19 @@ static uint32_t map_sdl_key(SDL_Keycode k) {
         case SDLK_P:         return CERES_KEY_P;
         case SDLK_Q:         return CERES_KEY_Q;
         case SDLK_R:         return CERES_KEY_R;
+        case SDLK_V:         return CERES_KEY_V;
+        case SDLK_0:         return CERES_KEY_0;
+        case SDLK_1:         return CERES_KEY_1;
+        case SDLK_2:         return CERES_KEY_2;
+        case SDLK_3:         return CERES_KEY_3;
+        case SDLK_4:         return CERES_KEY_4;
+        case SDLK_5:         return CERES_KEY_5;
+        case SDLK_6:         return CERES_KEY_6;
+        case SDLK_7:         return CERES_KEY_7;
+        case SDLK_8:         return CERES_KEY_8;
+        case SDLK_9:         return CERES_KEY_9;
+        case SDLK_MINUS:     return CERES_KEY_MINUS;
+        case SDLK_EQUALS:    return CERES_KEY_PLUS;
         default:             return CERES_KEY_UNKNOWN;
     }
 }
@@ -184,6 +197,10 @@ void ceres_platform_present(void) {
     SDL_RenderClear(s_plat.renderer);
     SDL_RenderTexture(s_plat.renderer, s_plat.texture, NULL, NULL);
     SDL_RenderPresent(s_plat.renderer);
+}
+
+void ceres_platform_set_volume(int percent) {
+    (void)percent;
 }
 
 bool ceres_platform_poll_event(ceres_event_t *ev) {
