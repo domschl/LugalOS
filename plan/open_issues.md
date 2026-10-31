@@ -299,8 +299,9 @@ thread stalled past the WPA2 handshake's timeout. The spinning radio thread also
 Wi-Fi supervisor, so its restart rule could not fire. **Fixed** (`5929206`): constant-time division
 (and the same in `radio_osi_get_time()`). On the way: the receive buffers that could take the whole
 radio heap were capped (`4d30bf6`, no refusals since), and a C6 not joined for 15 minutes restarts
-(`775efc9`, `4d30bf6`). **To close it:** a rejoin requested over 9P after more than an hour of uptime,
-on the C6-Zero and the NANO's C6 (running from 2026-10-31 evening).
+(`775efc9`, `4d30bf6`). **Verified:** after 70 minutes of uptime, a rejoin requested over 9P with no
+console attached came back in 4 s on the C6-Zero and 3 s on the NANO's C6. Kept here until it has
+held for a few days of unattended running; then it moves to section D.
 
 ## The ENC28J60 clears MACON1.MARXEN / ECON1.RXEN when idle
 
