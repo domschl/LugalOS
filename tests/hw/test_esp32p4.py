@@ -49,6 +49,7 @@ import hashlib
 import importlib.util
 import re
 import secrets
+import socket
 import subprocess
 import sys
 import time
@@ -1163,6 +1164,71 @@ def test_wifi_through_c6(b: Board) -> tuple[str, bool, str]:
                         f"and /c6/proc/version; MQTT {topic} reached {host_ip}")
 
 
+def test_ota_state(b: Board) -> tuple[str, bool, str]:
+    """52.8: the update layout as the node reports it: the loader layout, a slot running and active,
+    no trial left hanging, and the signature policy stated. Reads only; updating is tools/lota.py's."""
+    name = "Updates: the loader layout, a confirmed slot, no trial pending (52.8)"
+    out = b.console_session.cmd("cat /dev/ota", deadline=8.0)
+    kv = dict(l.partition("=")[::2] for l in out.splitlines() if "=" in l)
+    if "layout" not in kv:
+        return name, True, "SKIPPED (no /dev/ota on this build)"
+    ok = (kv.get("layout") == "loader" and kv.get("running") in ("a", "b") and kv.get("active") == kv.get("running")
+          and kv.get("trial") == "no" and kv.get("signatures") in ("required", "optional"))
+    return name, ok, (f"running {kv.get('running')} ({kv.get('slot_' + kv.get('running', 'a'), '?')}), "
+                      f"trial {kv.get('trial')}, fell_back {kv.get('fell_back')}, signatures {kv.get('signatures')}")
+
+
+def test_https_admin(b: Board) -> tuple[str, bool, str]:
+    """52.15: with a key and a certificate from the owner's CA (lugalos-ca issue), the admin server
+    answers TLS 1.3 on 443 with ChaCha20-Poly1305, verified against ~/.config/lugalos/ca/ca.crt.pem when
+    that exists, and plain HTTP sends the page to https. Skips without the network or a certificate."""
+    import ssl
+    name = "HTTPS admin: TLS 1.3 on 443, the CA's certificate, plain HTTP redirected (52.15)"
+    c = b.console_session
+    addr, why = _wifi_up(b)
+    if addr is None:
+        return name, why.startswith("SKIPPED"), why
+    st = c.cmd("httpd status", deadline=8.0)
+    if "httpd: running" not in st:
+        c.cmd("httpd start", deadline=10.0)
+        st = c.cmd("httpd status", deadline=8.0)
+    if "https: on" not in st:
+        return name, True, "SKIPPED (no HTTPS: the node has no certificate yet; lugalos-ca issue)"
+    tls = c.cmd("tls", deadline=8.0)
+    subject = re.search(r"subject=(\S+)", tls)
+    host = subject.group(1) if subject else addr
+    ca = Path.home() / ".config" / "lugalos" / "ca" / "ca.crt.pem"
+    if ca.exists():
+        ctx = ssl.create_default_context(cafile=str(ca))
+    else:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    try:
+        t0 = time.monotonic()
+        with socket.create_connection((addr, 443), timeout=20) as raw, ctx.wrap_socket(raw, server_hostname=host) as s:
+            hs = time.monotonic() - t0
+            ver, cipher = s.version(), (s.cipher() or ("",))[0]
+            s.sendall(f"GET /board HTTP/1.1\r\nHost: {host}\r\n\r\n".encode())
+            data = b""
+            while True:
+                d = s.recv(4096)
+                if not d:
+                    break
+                data += d
+    except (OSError, ssl.SSLError) as e:
+        return name, False, f"{addr}:443: {e}"
+    if ver != "TLSv1.3" or "CHACHA20" not in cipher or b" 200 " not in data[:20]:
+        return name, False, f"{ver} {cipher} {data[:80]!r}"
+    with socket.create_connection((addr, 80), timeout=10) as s:
+        s.sendall(f"GET / HTTP/1.1\r\nHost: {host}\r\n\r\n".encode())
+        head = s.recv(2048).decode(errors="replace")
+    if " 302 " not in head.split("\r\n", 1)[0] or f"https://{host}/" not in head:
+        return name, False, f"plain GET / was not sent to https: {head[:120]!r}"
+    return name, True, (f"{host}: {ver} {cipher}, handshake {hs * 1000:.0f} ms, "
+                        f"{'verified against ' + str(ca) if ca.exists() else 'not verified (no CA on this host)'}")
+
+
 def test_rejoin_keeps_9p(b: Board) -> tuple[str, bool, str]:
     """49.7: a rejoin on the C6 does not end a 9P session on the P4.
 
@@ -1924,6 +1990,8 @@ TESTS = [
     test_c6_namespace,
     test_wifi_through_c6,
     test_rejoin_keeps_9p,
+    test_ota_state,
+    test_https_admin,
     test_sd_card_present,
     test_sdio_slot1,
     test_sd_bus_is_four_bit,
