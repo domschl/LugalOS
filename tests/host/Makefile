@@ -52,6 +52,10 @@ kobj_host_SRC    := kobj_host.c $(ROOT)/kernel/kobj.c
 net_host_SRC     := net_host.c $(ROOT)/net/arp.c $(ROOT)/net/ipv4.c $(ROOT)/net/icmp.c \
                     $(ROOT)/net/udp.c $(ROOT)/net/spartan.c $(ROOT)/fs/gemtext.c $(ROOT)/fs/markdown.c $(OUT)/gen/tcp.c
 
+# `make` alone builds every harness: the generated-source rule below would otherwise be the first
+# target, and so the default.
+.DEFAULT_GOAL := all
+
 # net/tcp.c orders its buffer writes with RISC-V fences; the host gets the
 # equivalent C11 fence, in a copy, so the source itself stays as it is.
 $(OUT)/gen/tcp.c: $(ROOT)/net/tcp.c
