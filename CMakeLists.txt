@@ -1239,6 +1239,8 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
     # drivers/usbkbd_host.c. Empty unit unless the board file asks for it
     # (CONFIG_USBHOST_DWC2).
     list(APPEND SOURCES drivers/usbhost_esp32p4.c)
+    # Audio diagnostic & hardware verification tool (ES8311, ES8388, I2S0, PA).
+    list(APPEND SOURCES drivers/audiotest_esp32p4.c)
     # updating the node's own image over its namespace (kernel/ota.c) into
     # the slot the loader did not boot.
     list(APPEND SOURCES drivers/ota_esp32p4.c kernel/ota.c kernel/ota_image.c kernel/ota_sig.c)
