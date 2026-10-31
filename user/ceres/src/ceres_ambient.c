@@ -11,6 +11,7 @@
  */
 
 #include "ceres_ambient.h"
+#include "ceres_cyber.h"
 #include <string.h>
 
 #define CHIME_VOICES 3
@@ -204,6 +205,8 @@ void ceres_ambient_init(void) {
     s_mood = CERES_AMBIENT_MOOD_DEEP_SPACE;
     s_duck_level = 0;
 
+    ceres_cyber_init();
+
     s_drone_phase_a = 0;
     s_drone_phase_b = 0;
     s_drone_phase_oct = 0;
@@ -229,6 +232,7 @@ void ceres_ambient_init(void) {
 
 void ceres_ambient_set_enabled(bool enabled) {
     s_ambient_enabled = enabled;
+    ceres_cyber_set_enabled(enabled);
 }
 
 bool ceres_ambient_is_enabled(void) {
@@ -239,6 +243,7 @@ void ceres_ambient_set_volume(int volume) {
     if (volume < 0) volume = 0;
     if (volume > 256) volume = 256;
     s_master_vol = volume;
+    ceres_cyber_set_volume((volume * 140) / 256);
 }
 
 int ceres_ambient_get_volume(void) {
@@ -428,4 +433,7 @@ void ceres_ambient_render(int16_t *buffer, int num_samples) {
         else if (out < -32768) out = -32768;
         buffer[i] = (int16_t)out;
     }
+
+    /* Mix reactive cybernetic sequencer voice */
+    ceres_cyber_render(buffer, num_samples);
 }

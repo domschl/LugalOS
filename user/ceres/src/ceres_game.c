@@ -4,6 +4,7 @@
 #include "ceres_sprites.h"
 #include "ceres_sound.h"
 #include "ceres_ambient.h"
+#include "ceres_cyber.h"
 #include "ceres_storage.h"
 #include <string.h>
 
@@ -167,6 +168,7 @@ bool ceres_game_init(ceres_game_t *g, int w, int h) {
 
     /* Initialize Audio Engine */
     ceres_sound_init();
+    ceres_cyber_reset();
     ceres_ambient_set_mood(CERES_AMBIENT_MOOD_DEEP_SPACE);
 
     /* Load Persistent High Score & Rescue Tallies */
@@ -773,6 +775,45 @@ void ceres_game_update(ceres_game_t *g, uint32_t delta_ms) {
             }
         }
     }
+
+    /* Dynamic Cybernetic Voice: feed combat and flight telemetry every frame */
+    ceres_cyber_telemetry_t telem;
+    memset(&telem, 0, sizeof(telem));
+    telem.sector = g->player.sector;
+    telem.fuel = g->player.fuel;
+    telem.low_fuel_alert = g->player.low_fuel_alert;
+    telem.alive = g->player.alive;
+    telem.tractor_active = g->player.tractor_active;
+    telem.meltdown_timer = g->meltdown_timer;
+    telem.game_active = (g->state == CERES_STATE_PLAYING);
+    telem.thrust_boost = (int8_t)g->player.thrust_boost;
+    telem.pitch_bank = (int8_t)g->player.bank;
+    telem.rescue_event = (g->banner_timer == 90 && g->player.rescued > 0);
+
+    bool survivor_visible = g->player.tractor_active;
+    if (!survivor_visible) {
+        for (int i = 0; i < CERES_MAX_AERIAL_ENEMIES; i++) {
+            if (g->entities.aerials[i].active &&
+                g->entities.aerials[i].type == CERES_AERIAL_PARACHUTE) {
+                survivor_visible = true;
+                break;
+            }
+        }
+    }
+    if (!survivor_visible) {
+        for (int i = 0; i < CERES_MAX_GROUND_TARGETS; i++) {
+            const ceres_ground_target_t *tgt = &g->entities.targets[i];
+            if (tgt->active && tgt->type == CERES_TARGET_SURVIVOR) {
+                int sx = tgt->world_x - (int)g->scroll_x;
+                if (sx >= -20 && sx <= g->width + 20) {
+                    survivor_visible = true;
+                    break;
+                }
+            }
+        }
+    }
+    telem.survivor_visible = survivor_visible;
+    ceres_cyber_update_telemetry(&telem);
 }
 
 /* Render Ship with Pitch Tilt & Animated Thruster Plume */

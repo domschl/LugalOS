@@ -11,6 +11,7 @@
  */
 
 #include "moon_ambient.h"
+#include "moon_cyber.h"
 #include <string.h>
 
 #define CHIME_VOICES 3
@@ -217,6 +218,7 @@ void moon_ambient_init(void) {
     s_seq_rng = 0x9B41u;
 
     update_mood_tuning();
+    moon_cyber_init();
 }
 
 void moon_ambient_set_enabled(bool enabled) {
@@ -231,6 +233,7 @@ void moon_ambient_set_volume(int volume) {
     if (volume < 0) volume = 0;
     if (volume > 256) volume = 256;
     s_master_vol = volume;
+    moon_cyber_set_volume((volume * 140) / 256);
 }
 
 int moon_ambient_get_volume(void) {
@@ -404,4 +407,7 @@ void moon_ambient_render(int16_t *buffer, int num_samples) {
         else if (out < -32768) out = -32768;
         buffer[i] = (int16_t)out;
     }
+
+    /* Mix reactive cybernetic sequencer voice */
+    moon_cyber_render(buffer, num_samples);
 }

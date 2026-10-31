@@ -402,6 +402,7 @@ Act I (*Survival & Bootstrapping*) is fully implemented and running on both the 
 | **64.18** | **COMPLETE** | **Reinforced Starship Landing Pad** | 4×4 sintered regolith spaceport apron with blast-deflection berms and cryo umbilical conduits. Protects neighboring solar arrays and habitats from high-velocity exhaust regolith scouring. |
 | **64.19** | **COMPLETE** | **Starship Flight & Engine Plume Animation** | Procedural multi-state Starship flight sequence: orbital approach, ease-out retro-propulsion with pale-blue/cyan hydrolox plume & shock diamonds, landing gear extension, touchdown dust skirts, umbilical hookup, cryogenic loading meter, and vertical ascent return burn. |
 | **64.20** | **COMPLETE** | **Earth-Moon Trade, Personnel & Victory Loop** | Earth cargo manifests (specialist colonists, heavy machinery, high-yield reactors). Starship turnaround timer / launch window pressure. Act II Victory Condition: Successfully support, refuel, and dispatch the first commercial Hydrolox Starship return mission. Headless balance test in `tests/balance.c`. |
+| **64.21** | **COMPLETE** | **Dynamic Cybernetic Voice & Adaptive Telemetry Sequencer** | Reactive 16-step procedural cybernetic ostinato synth voice layered over ambient pad/drone. Pure fixed-point step sequencer modulating tempo (75-150 BPM), rhythm, scale, duty cycle, and pluck decay dynamically based on colony telemetry (calm, night freeze, brownout, life support crisis, Starship approach, orbital launch). Integrated mix in 16 kHz audio engine. |
 
 ### 7.3 Act II Implementation Notes
 
@@ -503,6 +504,28 @@ Act I (*Survival & Bootstrapping*) is fully implemented and running on both the 
   - Racescan clean: 0 shared unmarked statics (`python3 tools/racescan.py --check`).
   - Documentation clean: 0 drift (`python3 tools/gendocs.py --check`).
   - Verified freestanding ELF build for `esp32p4-tab5` with Ninja.
+
+**64.21 implementation notes, dynamic cybernetic voice & telemetry sequencer (2026-10-31).** Design & Implementation:
+- **Reactive Cybernetic Sequencer Engine (`moon_cyber.h`, `moon_cyber.c`)**:
+  - Second procedural synth voice layered over generative ambient drones, mixed at calibrated volume (~50-65% of ambient) in upper-mid register (500 Hz - 2.5 kHz) for acoustic clarity on small built-in speakers.
+  - Variable pulse-wave oscillator (12.5%, 25%, 50% duty cycle) with percussive pluck envelope (instant attack, exponential decay) synthesized entirely with pure fixed-point arithmetic (zero float instructions in M-mode).
+  - 16-step circular pattern sequencer driven by dynamic sample-clock accumulator:
+    $$\Delta\text{samples} = \frac{\text{sample\_rate} \times 60}{\text{BPM} \times 4}$$
+- **Telemetry State Bindings (`moon_cyber_state_t`)**:
+  - `MOON_CYBER_CALM` (105 BPM): Relaxed 4/4 minor pentatonic sequence, warm 25% duty pulse, tight keystroke plucks (steady laboratory/mainframe pulse during day with ample power & life support).
+  - `MOON_CYBER_NIGHT_COLD` (85 BPM): Sparse nocturnal rhythm with falling melodic intervals, muted 50% square wave (subtle ticking clock during frozen lunar nights).
+  - `MOON_CYBER_BROWNOUT` (75 BPM): Syncopated, irregular skips with low root pulses (warning when batteries empty and demand exceeds generation).
+  - `MOON_CYBER_LIFE_CRITICAL` (140 BPM): Rapid 16th-note warning sequence with tritone/minor-2nd intervals and resonant ringing decay (urgent medical/telemetry alarm when O2/water low or life support < 40%).
+  - `MOON_CYBER_STARSHIP_DESCENT` (120 BPM): Driving aerospace approach arpeggio with alternating octaves during lander/starship descent.
+  - `MOON_CYBER_STARSHIP_LAUNCH` (150 BPM): Fast ascending arpeggios spanning 2 octaves during refueling completion and orbital ascent.
+- **Generative Variation Systems**:
+  - **4-Bar Phrasing**: $A \to A \to B \to \text{Fill}$ phrase cycle preventing loop monotony (`bar_a`, `bar_b`, `bar_fill` slices).
+  - **Contextual Telemetry Micro-Modulations**: Power net surplus/deficit dynamics, aerospace climb/descent octave steering on turnaround fills, and life support warning accents.
+  - **Procedural Micro-Ornamentation**: 16-bit deterministic Galois LFSR grace notes, octave-up sparkles, and dynamic duty-cycle timbre morphing.
+- **Mix Staging & Interleaving**:
+  - Integrated directly into the 16 kHz audio rendering pipeline, automatically pumped across DMA frames on both ESP32-P4 hardware and Host SDL3.
+  - Telemetry parameters evaluated dynamically during `moon_game_update()` and smoothed to prevent clicks or pitch pops.
+
 
 
 

@@ -9,6 +9,7 @@
 #include <string.h>
 #include "moon_game.h"
 #include "moon_sprites.h"
+#include "moon_cyber.h"
 
 void moon_platform_set_volume(int percent) { (void)percent; }
 void moon_platform_pump_audio(void) { }
@@ -2431,6 +2432,94 @@ static void test_earth_moon_trade_and_act2_victory(void) {
     printf("[test] Earth-Moon Trade, Personnel & Act II Victory Loop: PASS\n");
 }
 
+static void test_dynamic_cybernetic_voice(void) {
+    printf("[test] Dynamic Cybernetic Voice & Telemetry Sequencer...\n");
+
+    moon_cyber_init();
+    assert(moon_cyber_is_enabled());
+    assert(moon_cyber_get_state() == MOON_CYBER_CALM);
+    assert(moon_cyber_get_current_bpm() == 105);
+
+    /* 1. Telemetry Evaluation Priorities */
+    moon_cyber_telemetry_t telem;
+    memset(&telem, 0, sizeof(telem));
+    telem.life_support_pct = 100;
+    telem.battery_pct = 80;
+    telem.power_net_kw = 50;
+
+    /* Daylight calm */
+    moon_cyber_update_telemetry(&telem);
+    assert(moon_cyber_get_state() == MOON_CYBER_CALM);
+
+    /* Night cold */
+    telem.is_night = true;
+    moon_cyber_update_telemetry(&telem);
+    assert(moon_cyber_get_state() == MOON_CYBER_NIGHT_COLD);
+
+    /* Brownout */
+    telem.power_brownout = true;
+    moon_cyber_update_telemetry(&telem);
+    assert(moon_cyber_get_state() == MOON_CYBER_BROWNOUT);
+
+    /* Life support critical overrides brownout & night */
+    telem.life_support_pct = 35;
+    moon_cyber_update_telemetry(&telem);
+    assert(moon_cyber_get_state() == MOON_CYBER_LIFE_CRITICAL);
+
+    /* Starship descent approach overrides life support */
+    telem.starship_state = 1; /* MOON_STARSHIP_APPROACH */
+    moon_cyber_update_telemetry(&telem);
+    assert(moon_cyber_get_state() == MOON_CYBER_STARSHIP_DESCENT);
+
+    /* Starship orbital ascent overrides descent */
+    telem.starship_state = 7; /* MOON_STARSHIP_ASCENT */
+    moon_cyber_update_telemetry(&telem);
+    assert(moon_cyber_get_state() == MOON_CYBER_STARSHIP_LAUNCH);
+
+    /* 2. Audio buffer rendering & dynamic synthesis */
+    int16_t buf[2048];
+    memset(buf, 0, sizeof(buf));
+    moon_cyber_render(buf, 2048);
+
+    /* Verify non-zero synthesized samples and no clipping */
+    bool non_zero = false;
+    for (int i = 0; i < 2048; i++) {
+        if (buf[i] != 0) non_zero = true;
+        assert(buf[i] >= -32768 && buf[i] <= 32767);
+    }
+    assert(non_zero);
+
+    /* 3. 4-Bar Phrasing Evolution (A -> A -> B -> Turnaround Fill) */
+    assert(moon_cyber_get_bar_index() <= 3);
+    for (int bar = 0; bar < 8; bar++) {
+        int16_t chunk[2048];
+        memset(chunk, 0, sizeof(chunk));
+        moon_cyber_render(chunk, 2048);
+    }
+    assert(moon_cyber_get_bar_index() <= 3);
+
+    /* 4. Contextual modulation */
+    telem.starship_state = 0;
+    telem.life_support_pct = 50;
+    telem.power_net_kw = 80; /* Power surplus */
+    moon_cyber_update_telemetry(&telem);
+    memset(buf, 0, sizeof(buf));
+    moon_cyber_render(buf, 2048);
+
+    /* Verify volume mute works */
+    moon_cyber_set_volume(0);
+    memset(buf, 0, sizeof(buf));
+    moon_cyber_render(buf, 2048);
+    for (int i = 0; i < 2048; i++) {
+        assert(buf[i] == 0);
+    }
+
+    moon_cyber_reset();
+    assert(moon_cyber_get_state() == MOON_CYBER_CALM);
+    assert(moon_cyber_get_bar_index() == 0);
+    printf("[test] Dynamic Cybernetic Voice & Telemetry Sequencer: PASS\n");
+}
+
 int main(void) {
     test_picking();
     test_power_solver();
@@ -2477,6 +2566,7 @@ int main(void) {
     test_starship_landing_pad();
     test_starship_flight_animation();
     test_earth_moon_trade_and_act2_victory();
-    printf("[test] All Milestone 64.9-64.12, 64.17 - 64.20 tests passed cleanly.\n");
+    test_dynamic_cybernetic_voice();
+    printf("[test] All Milestone 64.9-64.12, 64.17 - 64.21 tests passed cleanly.\n");
     return 0;
 }

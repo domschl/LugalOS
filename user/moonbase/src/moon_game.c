@@ -6,6 +6,7 @@
 #include "moon_structures.h"
 #include "moon_textures.h"
 #include "moon_ambient.h"
+#include "moon_cyber.h"
 #include "moon_platform.h"
 #include <string.h>
 
@@ -77,6 +78,7 @@ static void game_reset(moon_game_t *game, int width, int height) {
 #endif
     game->volume_entry_active = false;
     game->volume_entry_ms = 0;
+    moon_cyber_reset();
     moon_apply_volume(game, game->volume_percent);
     game->notify_msg = NULL; /* Clear notify so game start doesn't show volume toast */
 
@@ -1306,6 +1308,22 @@ void moon_game_update(moon_game_t *game, uint32_t delta_ms) {
     if (game->starship.state != MOON_STARSHIP_ORBIT) {
         game->dirty = MOON_DIRTY_WORLD;
     }
+
+    /* Dynamic Cybernetic Voice: feed colony telemetry every frame */
+    moon_cyber_telemetry_t telem;
+    memset(&telem, 0, sizeof(telem));
+    telem.life_support_pct = game->resources.life_support_pct;
+    int32_t bat_cap = game->resources.battery_capacity_kwh;
+    telem.battery_pct = (bat_cap > 0) ? (int32_t)((game->resources.battery_stored_kwh >> 16) * 100 / bat_cap) : 0;
+    telem.power_net_kw = game->resources.power_net_kw;
+    telem.is_night = game->resources.is_night;
+    telem.power_brownout = game->resources.power_brownout;
+    telem.warning_o2 = game->resources.warning_o2;
+    telem.warning_water = game->resources.warning_water;
+    telem.warning_cold = game->resources.warning_cold;
+    telem.landing_active = game->landing_active;
+    telem.starship_state = (uint8_t)game->starship.state;
+    moon_cyber_update_telemetry(&telem);
 
     if (game->paused || game->menu_page != MOON_MENU_CLOSED) return;
 

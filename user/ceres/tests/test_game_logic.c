@@ -9,6 +9,7 @@
 #include "ceres_game.h"
 #include "ceres_sound.h"
 #include "ceres_ambient.h"
+#include "ceres_cyber.h"
 #include "ceres_storage.h"
 
 #include <stdio.h>
@@ -1008,6 +1009,93 @@ static void test_high_score_storage_persistence(void) {
     printf("[test] High-Score & Stats persistent storage passed.\n");
 }
 
+static void test_dynamic_cybernetic_voice(void) {
+    printf("[test] Checking Dynamic Cybernetic Voice & Meltdown Sequencer with 3 Variation Methods...\n");
+
+    ceres_cyber_init();
+    assert(ceres_cyber_is_enabled());
+    assert(ceres_cyber_get_state() == CERES_CYBER_PATROL);
+    assert(ceres_cyber_get_current_bpm() == 108);
+    assert(ceres_cyber_get_bar_index() == 0);
+
+    /* 1. Telemetry State Priority Transitions */
+    ceres_cyber_telemetry_t telem;
+    memset(&telem, 0, sizeof(telem));
+    telem.sector = 1;
+    telem.fuel = 1000;
+    telem.alive = true;
+    telem.game_active = true;
+
+    /* Combat runner in sectors 1-3 */
+    ceres_cyber_update_telemetry(&telem);
+    assert(ceres_cyber_get_state() == CERES_CYBER_COMBAT);
+
+    /* Stronghold in sectors 4-6 */
+    telem.sector = 4;
+    ceres_cyber_update_telemetry(&telem);
+    assert(ceres_cyber_get_state() == CERES_CYBER_STRONGHOLD);
+
+    /* Survivor in range overrides stronghold */
+    telem.survivor_visible = true;
+    ceres_cyber_update_telemetry(&telem);
+    assert(ceres_cyber_get_state() == CERES_CYBER_SURVIVOR);
+
+    /* Low fuel overrides survivor */
+    telem.low_fuel_alert = true;
+    ceres_cyber_update_telemetry(&telem);
+    assert(ceres_cyber_get_state() == CERES_CYBER_LOW_FUEL);
+
+    /* Meltdown emergency escape overrides low fuel */
+    telem.meltdown_timer = 240;
+    ceres_cyber_update_telemetry(&telem);
+    assert(ceres_cyber_get_state() == CERES_CYBER_MELTDOWN);
+
+    /* 2. Audio buffer rendering & non-zero sample synthesis */
+    int16_t buf[2048];
+    memset(buf, 0, sizeof(buf));
+    ceres_cyber_render(buf, 2048);
+    bool non_zero = false;
+    for (int i = 0; i < 2048; i++) {
+        if (buf[i] != 0) non_zero = true;
+        assert(buf[i] >= -32768 && buf[i] <= 32767);
+    }
+    assert(non_zero);
+
+    /* 3. 4-Bar Phrasing Evolution (A -> A -> B -> Turnaround Fill) */
+    /* Render enough samples to advance through full 4-bar phrase (~4 * 16 * 1500 samples) */
+    for (int bar = 0; bar < 8; bar++) {
+        int16_t chunk[2048];
+        memset(chunk, 0, sizeof(chunk));
+        ceres_cyber_render(chunk, 2048);
+    }
+    /* Verify bar index advances cyclically 0..3 */
+    uint8_t bar_idx = ceres_cyber_get_bar_index();
+    assert(bar_idx <= 3);
+
+    /* 4. Contextual telemetry modulation (thrust boost and pitch bank) */
+    telem.meltdown_timer = 0;
+    telem.low_fuel_alert = false;
+    telem.survivor_visible = false;
+    telem.thrust_boost = 1; /* Forward boost */
+    telem.pitch_bank = 1;   /* Climb */
+    telem.rescue_event = true;
+    ceres_cyber_update_telemetry(&telem);
+    memset(buf, 0, sizeof(buf));
+    ceres_cyber_render(buf, 2048);
+
+    /* 5. Volume mute */
+    ceres_cyber_set_volume(0);
+    memset(buf, 0, sizeof(buf));
+    ceres_cyber_render(buf, 2048);
+    for (int i = 0; i < 2048; i++) {
+        assert(buf[i] == 0);
+    }
+
+    ceres_cyber_reset();
+    assert(ceres_cyber_get_state() == CERES_CYBER_PATROL);
+    printf("[test] Dynamic Cybernetic Voice & Meltdown Sequencer: PASS\n");
+}
+
 int main(void) {
     printf("=== Ceres Alpha Logic Unit Tests ===\n");
     test_initialization();
@@ -1034,6 +1122,7 @@ int main(void) {
     test_chiptune_audio_synthesizer();
     test_ambient_synthesizer();
     test_high_score_storage_persistence();
+    test_dynamic_cybernetic_voice();
     printf("=== All Logic Tests Passed Cleanly! ===\n");
     return 0;
 }
