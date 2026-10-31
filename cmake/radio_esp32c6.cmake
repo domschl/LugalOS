@@ -57,6 +57,11 @@ extern void radio_osi_task_delay(uint32_t);
     endforeach()
     file(MAKE_DIRECTORY "${_STUB}/sys")
     file(WRITE "${_STUB}/sys/lock.h" "#pragma once\n#include_next <sys/lock.h>\n#ifndef _LOCK_T_DEFINED_BY_RADIO\n#define _LOCK_T_DEFINED_BY_RADIO\ntypedef int _lock_t;\n#endif\n")
+    # The receive buffers come out of the radio's own heap (54 KB, kernel/radio_c6.c's arena, 13.6 KB free
+    # once joined), 1848 bytes each. IDF's 16 dynamic ones could take the whole heap in a burst of
+    # broadcasts, and then the allocations an association needs (the WPA2 handshake) failed: a C6 that
+    # lost its link could not rejoin (2026-10-31). 6 static and 6 dynamic (11 KB at most in flight), with
+    # the block-ack window below the dynamic count.
     file(WRITE "${_STUB}/sdkconfig.h" [=[
 #pragma once
 #define CONFIG_IDF_TARGET_ESP32C6 1
@@ -70,8 +75,8 @@ extern void radio_osi_task_delay(uint32_t);
 #define CONFIG_ESP_COEX_ENABLED 1
 #define CONFIG_ESP_PHY_ENABLED 1
 #define CONFIG_ESP_WIFI_ENABLED 1
-#define CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM 8
-#define CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM 16
+#define CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM 6
+#define CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM 6
 #define CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER 1
 #define CONFIG_ESP_WIFI_TX_BUFFER_TYPE 1
 #define CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM 16
@@ -81,7 +86,7 @@ extern void radio_osi_task_delay(uint32_t);
 #define CONFIG_ESP_WIFI_AMPDU_TX_ENABLED 1
 #define CONFIG_ESP_WIFI_TX_BA_WIN 6
 #define CONFIG_ESP_WIFI_AMPDU_RX_ENABLED 1
-#define CONFIG_ESP_WIFI_RX_BA_WIN 6
+#define CONFIG_ESP_WIFI_RX_BA_WIN 5
 #define CONFIG_ESP_WIFI_SOFTAP_BEACON_MAX_LEN 752
 #define CONFIG_ESP_WIFI_MGMT_SBUF_NUM 32
 #define CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE 1

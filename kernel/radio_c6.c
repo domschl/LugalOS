@@ -299,12 +299,11 @@ void radio_c6_rejoin(void) {
  * minutes (ARP, broadcasts), so RX_SILENCE_MS without a single received frame means the link is up in
  * name only, and a rejoin costs a few seconds where not doing one costs the board. */
 #define RX_SILENCE_MS (5u * 60u * 1000u)
-/* And the one it cannot recover from: a radio whose own heap has refused allocations since it started
- * (the blob's buffers, 1848 bytes) can later fail every rejoin while its heap looks fine again: seen
- * twice on 2026-10-31, on a C6-Zero 3.5 h into a run and on a NANO's C6. Down this long after such a
- * refusal, the node restarts, which is what brought both back by hand. A radio whose heap never refused
- * (an access point switched off) keeps retrying, with no restart loop. */
-#define JOIN_STARVED_MS (10u * 60u * 1000u)
+/* And the one it cannot recover from: a radio that has lost its link and fails every rejoin, which
+ * happened twice on 2026-10-31 (a C6-Zero 3.5 h into a run, a NANO's C6) and needed a restart by hand.
+ * Not joined for this long, the node restarts. A node whose access point is off therefore restarts
+ * every 15 minutes until it is back: a few seconds each time, and the rejoin it was attempting anyway. */
+#define JOIN_GIVE_UP_MS (15u * 60u * 1000u)
 
 #if defined(CONFIG_RADIO_C6)
 /* The network the `wlan` task joins: from the identity record at boot, or from
@@ -336,10 +335,10 @@ static void wlan_join_task(void *arg) {
         uint64_t now = time_get_ms();
         if (!c->connected) {
             if (!down_since) down_since = now;
-            else if (now - down_since >= JOIN_STARVED_MS && c->heap_fails != 0) {
-                printk("[wlan] not joined for %u s, and the radio heap has refused %u allocations since it started "
-                       "(%u bytes free, largest %u): restarting\n", (unsigned)((now - down_since) / 1000u),
-                       (unsigned)c->heap_fails, (unsigned)c->heap_free, (unsigned)c->heap_largest);
+            else if (now - down_since >= JOIN_GIVE_UP_MS) {
+                printk("[wlan] not joined for %u s (radio heap %u bytes free, largest %u, %u refused since start): "
+                       "restarting\n", (unsigned)((now - down_since) / 1000u), (unsigned)c->heap_free,
+                       (unsigned)c->heap_largest, (unsigned)c->heap_fails);
                 (void)board_reset_later(false, 500);
                 down_since = now;
             }

@@ -106,6 +106,8 @@ RADIO_TEXT void *radio_osi_calloc(size_t n, size_t size) {
     K(KOBJ_OP_MUTEX_LOCK, g_r.heap_lock, FOREVER, 0, 0, 0);
     void *p = uheap_calloc(&g_r.heap, (uint32_t)n, (uint32_t)size);
     K(KOBJ_OP_MUTEX_UNLOCK, g_r.heap_lock, 0, 0, 0, 0);
+    if (!p && n && size && g_r.alloc_fails++ < 16)
+        radio_osi_log_write(3, "radio", "heap: calloc of %u bytes FAILED", (unsigned)(n * size));
     return p;
 }
 
@@ -115,6 +117,7 @@ RADIO_TEXT void *radio_osi_realloc(void *ptr, size_t size) {
     K(KOBJ_OP_MUTEX_LOCK, g_r.heap_lock, FOREVER, 0, 0, 0);
     void *p = uheap_realloc(&g_r.heap, ptr, (uint32_t)size);
     K(KOBJ_OP_MUTEX_UNLOCK, g_r.heap_lock, 0, 0, 0, 0);
+    if (!p && size && g_r.alloc_fails++ < 16) radio_osi_log_write(3, "radio", "heap: realloc to %u bytes FAILED", (unsigned)size);
     return p;
 }
 
