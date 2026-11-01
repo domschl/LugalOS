@@ -317,7 +317,21 @@ static volatile bool g_join_busy;
 
 /* Starts the radio on g_join_*, then supervises the link for the life of the
  * board. `arg` non-NULL: the credentials came from the LLP host. */
+/* accepted: set once by the join task before anything reads it. */
+static volatile bool g_joined_for_host;
+
+/* The identity's Wi-Fi credentials changed (`wlan`, an owner reset, /dev/owner). The radio keeps the ones
+ * it joined with and cannot be told new ones while it runs, so a stand-alone C6 restarts: it then joins
+ * with the new credentials, or without any stays off the network (dark), as an owner reset means. A C6
+ * that is an LLP host's radio joins with the host's credentials, not its own: nothing to do. */
+void radio_credentials_changed(void) {
+    if (g_joined_for_host) return;
+    printk("[wlan] Wi-Fi credentials %s: restarting\n", node_wlan_configured() ? "changed" : "cleared");
+    (void)board_reset_later(false, 1000);
+}
+
 static void wlan_join_task(void *arg) {
+    g_joined_for_host = arg != NULL;
     printk("[wlan] joining \"%s\" %s\n", g_join_ssid, arg ? "for the LLP host" : "from the identity record");
     int rc = radio_c6_start(g_join_ssid, g_join_psk);
     memset(g_join_psk, 0, sizeof(g_join_psk));

@@ -665,11 +665,27 @@ static bool g_c6_fail_said;                    /* a failure is said once per rad
 #define C6_ATTACH_RETRY_MS 5000u
 /* accepted: a word-sized flag; set by whoever stored new credentials, cleared by the pump. */
 static volatile bool g_creds_changed;
+/* guarded by: the attach hand-off below (the pump sets it and starts c6attach, which does the restart;
+ * a new peer clears it). The radio keeps the credentials it joined with while it runs: restarting it is
+ * how it learns that they changed (or were cleared, by an owner reset). Further changes meanwhile wait
+ * for the new radio, which the attach hands the credentials of the moment. */
+static volatile bool g_c6_restart_pending, g_c6_restart_sent;
+
 
 void llp_node_credentials_changed(void) { g_creds_changed = true; }
 
 static void c6_attach_task(void *arg) {
     (void)arg;
+    if (g_c6_restart_pending && !g_c6_restart_sent) {
+        /* One task, not a second beside it: a board with a few free pages cannot hold two 16 KB stacks. */
+        int fd = vfs_open("/c6/dev/reboot", VFS_O_WRITE);
+        int rc = fd >= 0 ? vfs_pwrite(fd, "reboot", 6, 0) : -1;
+        if (fd >= 0) vfs_close(fd);
+        if (rc == 6) { g_c6_restart_sent = true; printk("[LLP] Wi-Fi credentials changed: the radio restarts to take them\n"); }
+        else { printk("[LLP] Wi-Fi credentials changed, but the radio would not restart (restart it by hand)\n"); g_c6_restart_pending = false; }
+        g_c6_attaching = false;
+        return;
+    }
     uint32_t gen = g_p9.generation;
     (void)vfs_unmount("c6");
     bool ok = vfs_mount_remote("c6", &g_p9) == 0;
@@ -745,15 +761,23 @@ static void handle_events(uint32_t now) {
                     printk("[LLP] could not register wlan0\n");
                 }
             }
-            if (new_peer) { g_c6_mounted = false; g_c6_attach_at = 0; g_c6_fail_said = false; }
+            if (new_peer) { g_c6_mounted = false; g_c6_attach_at = 0; g_c6_fail_said = false; g_c6_restart_pending = false; g_c6_restart_sent = false; }
         }
     }
     /* New credentials on this host reach the radio the way they do at boot: attach again, which hands them
      * over unless the radio has joined a network already (it has to restart to change networks). */
     if (g_creds_changed && g_role == LLP_NODE_HOST && g_link.state == LLP_UP && g_c6_mounted && !g_c6_attaching) {
         g_creds_changed = false;
-        if (g_link.peer_link) printk("[LLP] new Wi-Fi credentials: the radio is joined already; restart it to change networks\n");
-        else g_c6_mounted = false;
+        if (g_c6_restart_pending) {
+            /* the radio that comes back is attached afresh and given the current credentials */
+        } else if (g_link.peer_link) {
+            g_c6_restart_pending = true;           /* the attach below does the restart */
+            g_c6_restart_sent = false;
+            g_c6_mounted = false;
+            g_c6_attach_at = 0;
+        } else {
+            g_c6_mounted = false;
+        }
     }
     if (g_role == LLP_NODE_HOST && g_link.state == LLP_UP && !g_c6_mounted && !g_c6_attaching &&
         (g_c6_attach_at == 0 || now - g_c6_attach_at >= C6_ATTACH_RETRY_MS)) {
