@@ -380,6 +380,10 @@ def test_claim_cycle(b: Board, console_port: str, iface: str) -> tuple[str, bool
             return name, False, "could not read the node's uid at the console"
         ssid_ap = "LugalOS-" + uid[-4:].upper()
         secret = secrets.token_urlsafe(12)[:16]
+        # A console key overrides every grant: left set, it would accept any key and the
+        # final check would not test the new owner key.
+        if "cleared" not in con.run("p9key clear"):
+            return name, False, "the console did not clear its p9key"
         if "stored" not in con.run(f"setup secret {secret}"):
             return name, False, "the console did not store the setup secret"
         if "wiped" not in con.run("setup reset-owner", wait=4):

@@ -106,7 +106,8 @@ uv run --project host/p9lib --with pyserial python3 tests/hw/test_wifi.py 192.16
 ```
 
 `--key` is any key the node accepts: a grant, or a `p9key` set at its console for the run (clear it
-afterwards with `p9key clear`: while set it overrides the stored grants).
+afterwards with `p9key clear`: while set it overrides the stored grants). The claim cycle clears the
+console key itself before it resets the owner, so the final check really uses the new owner key.
 
 ### Visual Regression Testing (`lcdterm_shots.py`)
 For display presets (RP2350-LCD-7 and ESP32-P4-LCD-7B), [`tests/hw/lcdterm_shots.py`](file:///home/dsc/Source/gith/domschl/lugalos/tests/hw/lcdterm_shots.py) plays automated shell scenarios, fetches PBM screenshots over 9P, and compares them **pixel-by-pixel** against golden baseline images (with the RTC clock area masked):
