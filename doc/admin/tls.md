@@ -33,9 +33,9 @@ The same steps by hand, at the console or over 9P:
 | | |
 | :--- | :--- |
 | `tls` or `cat /dev/tls` | The key's fingerprint, the certificate's subject, issuer and dates, whether certificate and key match, and the names a request would carry. |
-| `tls keygen`, `echo keygen > /dev/tls` | Makes a key when there is none. Refused without hardware entropy. |
-| `tls rekey`, `echo rekey > /dev/tls` | A new key; the old certificate is deleted with the old key. |
-| `tls clear`, `echo clear > /dev/tls` | Deletes the key and the certificate. |
+| `tls keygen`; over 9P write `keygen` to `/dev/tls` | Makes a key when there is none. Refused without hardware entropy. |
+| `tls rekey`; over 9P write `rekey` to `/dev/tls` | A new key; the old certificate is deleted with the old key. |
+| `tls clear`; over 9P write `clear` to `/dev/tls` | Deletes the key and the certificate. |
 | `tls csr`, `cat /dev/tlscsr` | The certificate request (PKCS#10, PEM). Built once and kept, so a client reading it in parts gets one request. |
 | `tls cert`, `cat /dev/tlscert` | The installed certificate (PEM). |
 | write a PEM certificate to `/dev/tlscert` | Installs it if it is for this node's key; refused otherwise. A chain may follow; only the first certificate is kept. |
