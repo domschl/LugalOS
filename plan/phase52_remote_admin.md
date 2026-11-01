@@ -1,10 +1,11 @@
 # Phase 52 — Remote admin: OTA over 9P, a web admin interface, first-time setup, TLS
 
-**Status: Part A done (52.1–52.5a, 2026-10-18). Part B re-checked against the
-tree and cut into milestones 52.6–52.16 on 2026-10-25 (§3.2, §4 Part B); its
-decisions were confirmed by the owner the same day (§3.3).** **Part B status 2026-11-01:** 52.6-52.12,
-52.7a, 52.13b, 52.14 and 52.15 done; 52.16 open (the hardware pass with phones and the RP2350-LCD-7). 52.13 (a setup access point on the C6 for P4
-boards) and 52.15b (the P4's crypto hardware) moved to phase 68 (advanced remote admin). The identity, claiming and
+**Status: done (2026-11-01, version 0.18.1).** Part A (52.1-52.5a) done 2026-10-18. Part B re-checked
+against the tree and cut into milestones 52.6-52.16 on 2026-10-25 (§3.2, §4 Part B), its decisions
+confirmed by the owner the same day (§3.3); 52.6-52.12, 52.7a, 52.13b and 52.14-52.16 done. Moved to
+phase 68 (advanced remote admin): 52.13 (a setup access point on the C6 for P4 boards, 68.2), 52.15b
+(the P4's crypto hardware, 68.1), and the phone checks 52.16 left open (Chrome on Android, a Pico 2 W
+set up from an Android phone, 68.4). The identity, claiming and
 certificate decisions in §1.3 and §1.5 were confirmed by the owner on
 2026-10-14. Follows phase 49, whose 49.8b built the generic OTA shape and its
 first backend (the C6), and whose 49.8a made a node's state readable as files.
@@ -1327,19 +1328,19 @@ deferred without blocking anything after it.
     Chrome (Android). Handshake time with and without accelerators. An OTA
     of the NANO from the browser.
 
-* **52.16 Integration, documentation, review; §1.6 investigation.**
+* **52.16 Integration, documentation, review; §1.6 investigation.** **DONE 2026-11-01** (the Android checks moved to 68.4).
   * *Status 2026-10-31:* ADR 006 (the trust model) and `doc/dev/protocols/web_admin.md` written;
     `test_esp32p4.py` gained `test_ota_state` and `test_https_admin` (both skip cleanly). From the
     browser (the page's Update tab, `tests/web/update_check.js`): the NANO over HTTPS (52.15) and the
     **Pico 2 W over plain HTTP with a protected session**, 1 MB in 52 s, confirmed, the old build kept in
     the other slot. The LCD-7B and Tab5: suites green (52/52), HTTPS and a browser OTA on each.
-    **Open, the hardware pass:** a Pico 2 W set up from a phone again end to end on today's build (and
-    Android), Safari (iOS) and Chrome (Android) over HTTPS, one 15 s press on the C6-Zero, the
-    RP2350-LCD-7 (TLS not enabled there yet; both done 2026-11-01, below). *2026-11-01:* the setup-mode cases in `test_wifi.py`
+    **The hardware pass** (open on 2026-10-31): a Pico 2 W set up from a phone again end to end on today's
+    build (and Android), Safari (iOS) and Chrome (Android) over HTTPS, one 15 s press on the C6-Zero, the
+    RP2350-LCD-7 (TLS not enabled there yet). All but the two Android checks done 2026-11-01, below. *2026-11-01:* the setup-mode cases in `test_wifi.py`
     done, and the Pico 2 W claimed from scratch through its setup access point by the host playing the
     phone (`--claim-cycle`: PASS). It found two firmware bugs, both fixed: `%X` printed lowercase (the
     access point was `LugalOS-b797`, the label says `B797`), and a new setup secret did not take effect
-    until the window closed. 52.7a done (ADR 007). The 15 s press on the C6-Zero by hand: fast red, then unclaimed with no Wi-Fi and its pixel dark, as designed (there is no C6 access point to fall into; doc/admin/identity.md said otherwise and was corrected). TLS enabled on the RP2350-LCD-7 (+13 KB code, `tls keygen` 0.4 s). With a C6-Zero on H7 (flashed to today's build, radio role armed by hand because its USB was on the PC): claimed, certificate from `lugalos-ca issue --tcp`, then TLS 1.3 with ChaCha20-Poly1305 verified against the owner's CA, handshake 0.34 s (P4: 0.13-0.28 s), the page in 1.0 s, plain HTTP redirected, and a `wss://` sign-in as `owner` in 2.4 s. Safari (iOS) and Chrome (Linux host), each with the owner's root installed: the Tab5's page shown as a secure connection with a valid chain (by the owner). Still open: Chrome (Android), and a Pico 2 W set up from an Android phone.
+    until the window closed. 52.7a done (ADR 007). The 15 s press on the C6-Zero by hand: fast red, then unclaimed with no Wi-Fi and its pixel dark, as designed (there is no C6 access point to fall into; doc/admin/identity.md said otherwise and was corrected). TLS enabled on the RP2350-LCD-7 (+13 KB code, `tls keygen` 0.4 s). With a C6-Zero on H7 (flashed to today's build, radio role armed by hand because its USB was on the PC): claimed, certificate from `lugalos-ca issue --tcp`, then TLS 1.3 with ChaCha20-Poly1305 verified against the owner's CA, handshake 0.34 s (P4: 0.13-0.28 s), the page in 1.0 s, plain HTTP redirected, and a `wss://` sign-in as `owner` in 2.4 s. Safari (iOS) and Chrome (Linux host), each with the owner's root installed: the Tab5's page shown as a secure connection with a valid chain (by the owner). Chrome (Android) and a Pico 2 W set up from an Android phone moved to phase 68 (68.4), as did a fresh certificate for the LCD-7B, whose key and certificate an owner-reset test had removed (`lugalos-ca issue --tcp esp32p4-lcd7b-4ed2.local`).
   * *§1.6, measured 2026-10-31:* a C6-Zero with radio, sensors, MQTT, mDNS, httpd and 9P running has 5
     free pages (20 KB). A TLS session needs ~21 KB of record buffers on top: the C6-Zero is not a TLS
     board and stays on 52.11b's protected sessions. TLS-PSK against mosquitto is a client, for a later phase.

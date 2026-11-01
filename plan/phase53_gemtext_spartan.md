@@ -307,6 +307,6 @@ Phase 53 Milestones:
 
 Gemini (`gemini://`, port 1965) builds on the identical Gemtext document representation and line-oriented semantics established in this phase. However, Gemini mandates TLS 1.2/1.3 and uses Client TLS Certificates (mTLS) for authentication.
 
-Once Phase 52 delivers the LugalOS Certificate Authority and TLS stack:
+Phase 52 (done 2026-11-01) delivered the owner's certificate authority (`host/ca`, `lugalos-ca`) and a TLS 1.3 server (`net/tls.c`, server side only, no client certificates yet). Building on them:
 1. `gemini://` client and server will directly wrap the Gemtext engine built in M53.1 and M53.6.
 2. LugalOS client certificates issued by the owner CA will be passed in TLS handshakes, authenticating users against `peers` capability grants without tokens or cookies.

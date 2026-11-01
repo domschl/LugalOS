@@ -1,7 +1,8 @@
 # Phase 68 — Advanced remote admin: crypto hardware, phone setup of P4 boards, a pocket console
 
-**Status: placeholder. Written 2026-11-01. Not scheduled.** Follows phase 52 (remote admin), whose
-52.15b and 52.13 move here, and whose trust model (ADR 006) every milestone below keeps.
+**Status: placeholder. Written 2026-11-01. Not scheduled.** Follows phase 52 (remote admin, done 2026-11-01), whose
+52.15b and 52.13 move here with the two Android checks 52.16 left open, and whose trust model (ADR 006)
+every milestone below keeps.
 Milestone scheme: `68.1`, `68.2`, …
 
 ---
@@ -75,6 +76,19 @@ for that to work:
   * *Verification:* a C6-Zero provisioned from nothing to a claimed node on the home Wi-Fi with the
     pocket console only; unplugged and plugged in again mid-menu without a hang; sensors on the same
     bus keep reading meanwhile.
+
+* **68.4 The phone checks phase 52 left open** (from 52.16). *Boards: the Pico 2 W, a P4 board, an
+  Android phone.* No new code expected; each is a check against what phase 52 built, and a bug it
+  finds is fixed where it lies.
+  * Chrome (Android) over HTTPS with the owner's root installed (`doc/admin/tls.md`, the Android
+    steps): a P4 board's page shown as secure. Safari (iOS) and Chrome (Linux) passed on the Tab5 on
+    2026-11-01.
+  * A Pico 2 W set up from an Android phone, end to end through its setup access point (52.12): the
+    captive page opens, the claim takes, the node joins the home network. The iPhone did this in 52.12
+    and the host playing the phone in `test_wifi.py --claim-cycle`.
+  * The LCD-7B's certificate again (`lugalos-ca issue --tcp esp32p4-lcd7b-4ed2.local --keyfile
+    ~/.config/lugalos/keys/lcd7b.p9key`): an owner-reset test removed its key and certificate.
+  * *Verification:* each check by the owner on the phone; the result recorded here.
 
 ## 2. Depends on
 
