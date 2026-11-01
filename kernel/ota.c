@@ -17,6 +17,7 @@
 #include "kernel/sched.h"
 #include "kernel/sha256.h"
 #include "kernel/time.h"
+#include "kernel/version.h"
 #include <string.h>
 
 typedef enum { ST_IDLE, ST_RECEIVING, ST_RECEIVED, ST_COMMITTED, ST_ERROR } ota_state_t;
@@ -297,8 +298,21 @@ uint32_t ota_ctl_read(char *out, uint32_t cap) {
     PUT("trial=%s\nfell_back=%s\n", info.trial && !g.confirmed ? "yes" : "no", info.fell_back ? "yes" : "no");
     for (int s = 0; s < (int)info.nslots; s++) {
         ota_image_header_t h;
-        if (ota_board_header(s, &h) == 0) PUT("slot_%c=%.32s\n", slot_letter(s), h.build_id);
-        else PUT("slot_%c=empty\n", slot_letter(s));
+        bool sealed = ota_board_header(s, &h) == 0;
+        if (s == info.running) {
+            /* The running slot is named by the build that is running. A slot
+             * rewritten by a programmer (picotool, esptool) keeps the update
+             * header of the image it replaced, since that header sits outside
+             * the programmed image; say so rather than name the old build. */
+            PUT("slot_%c=%s\n", slot_letter(s), LUGALOS_BUILD_ID);
+            if (!sealed) PUT("slot_%c_header=none\n", slot_letter(s));
+            else if (strncmp(h.build_id, LUGALOS_BUILD_ID, sizeof h.build_id) != 0)
+                PUT("slot_%c_header=%.32s\n", slot_letter(s), h.build_id);
+        } else if (sealed) {
+            PUT("slot_%c=%.32s\n", slot_letter(s), h.build_id);
+        } else {
+            PUT("slot_%c=empty\n", slot_letter(s));
+        }
     }
     if (n < cap) n += ota_board_map(out + n, cap - n);
     ota_board_record_t rec;

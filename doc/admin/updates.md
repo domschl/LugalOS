@@ -206,7 +206,10 @@ How an update goes:
 
 `switch` lasts until the next reset on this board: the bootrom boots the higher
 version again. A BOOTSEL-loaded `lugalos.uf2` copy lands in the slot the bootrom would
-not boot.
+not boot. It does not carry the slot's update header (that sits in the slot's last
+sector, and only `lota.py` writes it, signed), so the slot keeps the header of the image
+it replaced: `/dev/ota` names the running slot by the build that is running and adds
+`slot_b_header=OLD` when the header disagrees, but the other slot's name may be stale.
 
 ## The ESP32-P4's flash
 
