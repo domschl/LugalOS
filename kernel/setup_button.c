@@ -129,9 +129,11 @@ static void setup_button_task(void *arg) {
 }
 
 void setup_button_start(void) {
-    /* One page: the deepest path is the 15 s owner reset, an identity rewrite whose records live on
-     * the heap (kernel/scratch.h), about 1.5 KB of stack with the flash write under it. */
-    if (task_create_sized("setupbtn", setup_button_task, NULL, 1) < 0) printk("[Setup] could not start the button task\n");
+    /* Two pages: the deepest path is the 15 s owner reset, an identity rewrite with the flash write
+     * under it: 4900 bytes measured on an ESP32-P4 (the ROM's flash routines and a trap frame are not
+     * in the compiler's frame sizes). One page ran 848 bytes past its end there, and on the C6-Zero
+     * the reset ended in a watchdog restart. */
+    if (task_create_sized("setupbtn", setup_button_task, NULL, 2) < 0) printk("[Setup] could not start the button task\n");
 }
 
 #else
