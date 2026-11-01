@@ -95,9 +95,18 @@ python3 tests/hw/test_esp32p4.py --board lcd7b
 # Test ESP32-C6-Zero
 python3 tests/hw/test_esp32c6.py
 
-# Test CYW43439 Wi-Fi link and network traffic
-python3 tests/hw/test_wifi.py
+# Test CYW43439 Wi-Fi link and network traffic, and setup mode on a claimed node
+uv run --project host/p9lib python3 tests/hw/test_wifi.py 192.168.178.171 --key HEX
+
+# The phone setup, end to end, with a spare Wi-Fi interface on this machine as the phone.
+# WIPES THE NODE'S OWNER PART (grants, owner key, Wi-Fi); the new owner key goes to
+# ~/.config/lugalos/keys/NAME.p9key
+uv run --project host/p9lib --with pyserial python3 tests/hw/test_wifi.py 192.168.178.171 --key HEX \
+    --claim-cycle --console /dev/serial/by-id/usb-LugalOS_...-if00 --wifi-iface wlp6s0
 ```
+
+`--key` is any key the node accepts: a grant, or a `p9key` set at its console for the run (clear it
+afterwards with `p9key clear`: while set it overrides the stored grants).
 
 ### Visual Regression Testing (`lcdterm_shots.py`)
 For display presets (RP2350-LCD-7 and ESP32-P4-LCD-7B), [`tests/hw/lcdterm_shots.py`](file:///home/dsc/Source/gith/domschl/lugalos/tests/hw/lcdterm_shots.py) plays automated shell scenarios, fetches PBM screenshots over 9P, and compares them **pixel-by-pixel** against golden baseline images (with the RTC clock area masked):
