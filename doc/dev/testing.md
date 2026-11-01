@@ -92,8 +92,10 @@ python3 tests/hw/test_rp2350.py
 python3 tests/hw/test_esp32p4.py --board tab5
 python3 tests/hw/test_esp32p4.py --board lcd7b
 
-# Test ESP32-C6-Zero
+# Test ESP32-C6-Zero: what is running, or this build loaded first (overwrites slot A:
+# restore with tools/c6flash.py build/esp32c6 --only slot)
 python3 tests/hw/test_esp32c6.py
+python3 tests/hw/test_esp32c6.py --clobber-slot-a
 
 # Test CYW43439 Wi-Fi link and network traffic, and setup mode on a claimed node
 uv run --project host/p9lib python3 tests/hw/test_wifi.py 192.168.178.171 --key HEX

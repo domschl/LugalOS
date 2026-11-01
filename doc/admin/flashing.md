@@ -79,8 +79,11 @@ To run a kernel without writing the loader or a slot's RAM half (the XIP half
 goes to slot A's, the RAM half is loaded over USB):
 ```bash
 ninja -C build/esp32c6
-tools/c6run.py --kernel build/esp32c6 --run
+tools/c6run.py --kernel build/esp32c6 --clobber-slot-a
 ```
+Slot A then holds a flash half without its RAM half, and a board booting slot A
+crashes at boot after a reset until `tools/c6flash.py build/esp32c6 --only slot`
+writes it again: a development board's loop, not a deployed node's.
 
 ### Permanent Flash Programming
 The C6's flash holds a small permanent **loader** at `0x0` (what the boot ROM

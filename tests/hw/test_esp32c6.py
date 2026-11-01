@@ -14,14 +14,16 @@ at the top of SRAM -- are exercised here or nowhere. The portable kernel
 the silicon, because what QEMU cannot show is that it behaves the same on a core
 that is not QEMU's.
 
-**This suite loads the kernel itself**: tools/c6run.py --kernel writes the
-flash-resident half (only if it changed) and delivers the RAM half over the
-board's one USB cable; nobody has to press BOOT. Pass --no-load to test whatever
-is already running (for instance after tools/c6flash.py).
+**This suite can load the kernel itself** (--clobber-slot-a): like
+tools/c6run.py --kernel it writes the flash-resident half (only if it changed),
+into slot A, and delivers the RAM half over the board's one USB cable; nobody has
+to press BOOT. Slot A then no longer boots by itself until tools/c6flash.py BUILD
+--only slot writes it again, so this is for development boards. Without the flag
+it tests whatever is already running.
 
 Usage:
-    uv run test_esp32c6.py                 # auto-detect, load, test
-    uv run test_esp32c6.py --no-load       # test what is running
+    uv run test_esp32c6.py                 # auto-detect, test what is running
+    uv run test_esp32c6.py --clobber-slot-a  # load this build first (slot A overwritten)
     uv run test_esp32c6.py --port /dev/serial/by-id/usb-Espressif_...
 """
 
@@ -427,7 +429,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--port")
     ap.add_argument("--board", help="zero, nano, ... -- a port from ~/.config/lugalos/c6-ports.env")
-    ap.add_argument("--no-load", action="store_true", help="test whatever is running")
+    ap.add_argument("--clobber-slot-a", action="store_true",
+                    help="load the build first: its flash half overwrites slot A (restore with "
+                         "tools/c6flash.py BUILD --only slot)")
+    ap.add_argument("--no-load", action="store_true", help="test whatever is running (the default)")
     ap.add_argument("--build", type=Path, default=BUILD_DIR,
                     help="the build to load (default build/esp32c6; the NANO's C6: build/esp32c6-mini)")
     a = ap.parse_args()
@@ -440,11 +445,11 @@ def main() -> int:
         print("SKIP: %s" % e)
         return 0
 
-    if not a.no_load:
+    if a.clobber_slot_a and not a.no_load:
         if not (build / "lugalos-ram.elf").exists():
             print("SKIP: %s is not built (ninja -C %s)" % (build, build))
             return 0
-        c6run.kernel_flash_if_changed(port, str(build))
+        c6run.kernel_flash_if_changed(port, str(build), clobber_slot=True)
         if not c6run.load(port, c6run.image_for(str(build / "lugalos-ram.elf"))):
             print("FAIL: could not load the kernel")
             return 1

@@ -18,12 +18,17 @@ fixed in one place.
     tools/c6run.py IMAGE.elf                 load into RAM and run, watch 8 s
     tools/c6run.py IMAGE.elf --listen-secs 20
     tools/c6run.py --ports                   show what was found
-    tools/c6run.py --kernel build/esp32c6    run the LugalOS kernel: write the flash-
+    tools/c6run.py --kernel build/esp32c6 --clobber-slot-a
+                                             run the LugalOS kernel: write the flash-
                                              resident half if it changed, load the
                                              RAM half, watch the console
 
-**Nothing here writes flash.** `esptool load-ram` delivers the image into HP
-SRAM and jumps to it; a reset restores whatever is in flash.
+Loading an IMAGE writes no flash: `esptool load-ram` delivers it into HP SRAM and
+jumps to it, and a reset restores whatever is in flash. --kernel is different: the
+kernel's flash-resident half goes to the address the manifest gives it, which is
+inside slot A. Slot A then holds a flash half without its RAM half, and a board
+booting slot A crashes at boot until `tools/c6flash.py BUILD --only slot` (or an
+update over 9P) writes the slot again. So --kernel asks for --clobber-slot-a.
 
 Env: LUGALOS_C6_PORT overrides autodetection.
 """
@@ -118,7 +123,21 @@ def load(port, img, tries=3):
     return False
 
 
-def kernel_flash_if_changed(port, bdir):
+def slot_overlap(bdir):
+    """The slot the kernel's flash-resident half lands in, or None."""
+    man = {}
+    for line in open(os.path.join(bdir, "flash.manifest")):
+        f = line.split()
+        if len(f) == 4:
+            man[f[0]] = (int(f[1], 0), int(f[2], 0))
+    base, size = man["osimage"]
+    for slot in ("slot_a", "slot_b"):
+        if slot in man and base < man[slot][0] + man[slot][1] and man[slot][0] < base + size:
+            return slot
+    return None
+
+
+def kernel_flash_if_changed(port, bdir, clobber_slot=False):
     """The kernel is two images (plan/phase45 45.4.2): .text/.rodata run in place
     from flash, the rest is loaded to SRAM. Write the first at the address the
     build's manifest gives (build/<preset>/flash.manifest -- the one definition of
@@ -132,6 +151,11 @@ def kernel_flash_if_changed(port, bdir):
         if len(f) == 4:
             man[f[0]] = (int(f[1], 0), int(f[2], 0), f[3])
     base, size, art = man["osimage"]
+    slot = slot_overlap(bdir)
+    if slot and not clobber_slot:
+        sys.exit("the kernel's flash half goes to %#x, inside %s: a board booting %s would crash at boot "
+                 "afterwards. Pass --clobber-slot-a for a development board; restore with "
+                 "tools/c6flash.py %s --only slot" % (base, slot, slot, bdir))
     path = os.path.join(bdir, art)
     data = open(path, "rb").read()
     if len(data) > size:
@@ -186,6 +210,9 @@ def main():
     ap.add_argument("--port")
     ap.add_argument("--board", help="zero, nano, ... -- a port from ~/.config/lugalos/c6-ports.env")
     ap.add_argument("--kernel", metavar="BUILD_DIR", help="a LugalOS build directory (build/esp32c6)")
+    ap.add_argument("--clobber-slot-a", action="store_true",
+                    help="with --kernel: allow writing the flash half into slot A (the board no longer "
+                         "boots slot A by itself until c6flash.py --only slot)")
     ap.add_argument("--listen", action="store_true", help="watch the console and exit")
     ap.add_argument("--cmd", action="append", default=[], metavar="LINE", help="type LINE at the console after the listen window (repeatable)")
     ap.add_argument("--cmd-wait", type=float, default=1.5, help="seconds to read after each --cmd")
@@ -199,7 +226,7 @@ def main():
         return
     port = find_port(a.port, a.board)
     if a.kernel:
-        kernel_flash_if_changed(port, a.kernel)
+        kernel_flash_if_changed(port, a.kernel, a.clobber_slot_a)
         a.image = os.path.join(a.kernel, "lugalos-ram.elf")
         a.expect = "LugalOS" if a.expect == "[C6_MINIMAL]" else a.expect
     if a.image:

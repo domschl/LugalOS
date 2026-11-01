@@ -104,7 +104,7 @@ ninja -C build/<preset>
   * Interactive console: `python3 tools/p4run.py --board <board> --run`
 * **ESP32-C6 Boards (Zero, MINI):**
   * Permanent flash: `tools/c6flash.py build/esp32c6`
-  * Fast dev loop: `tools/c6run.py --kernel build/esp32c6 --cmd "preempttest" --cmd-wait 8`
+  * Fast dev loop (development boards only: overwrites slot A, see the C6 guide): `tools/c6run.py --kernel build/esp32c6 --clobber-slot-a --cmd "preempttest" --cmd-wait 8`
 * **MicroSD 9P Storage Sync (`tools/p9sync.py`):**
   * RP2350: `uv run --project host/p9lib python3 tools/p9sync.py --serial /dev/serial/by-id/...-if02 --src build/rp2350-terminal/sd_root --dst /sd0`
   * ESP32-P4: `tools/p9sync.py --p4 <board> --src build/<preset>/sd_root`

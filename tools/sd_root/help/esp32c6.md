@@ -39,8 +39,10 @@ The flash partition layout is defined in `build/esp32c6/flash.manifest` (generat
 Loads the RAM portion over USB and writes only changed XIP flash pages:
 ```bash
 ninja -C build/esp32c6
-tools/c6run.py --kernel build/esp32c6 --cmd "preempttest" --cmd-wait 8
+tools/c6run.py --kernel build/esp32c6 --clobber-slot-a --cmd "preempttest" --cmd-wait 8
 ```
+
+The XIP half goes into slot A, without its RAM half: a board booting slot A crashes at boot after a reset until `tools/c6flash.py build/esp32c6 --only slot` (or an update over 9P) writes the slot again. Use it on development boards; `--clobber-slot-a` is the acknowledgement, and without it `c6run.py` refuses.
 
 ### Flashing Standalone Firmware
 Installs the permanent loader, erases boot records, writes Slot A, verifies, and resets:
