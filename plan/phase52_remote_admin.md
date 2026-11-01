@@ -1339,7 +1339,7 @@ deferred without blocking anything after it.
     done, and the Pico 2 W claimed from scratch through its setup access point by the host playing the
     phone (`--claim-cycle`: PASS). It found two firmware bugs, both fixed: `%X` printed lowercase (the
     access point was `LugalOS-b797`, the label says `B797`), and a new setup secret did not take effect
-    until the window closed. 52.7a done (ADR 007).
+    until the window closed. 52.7a done (ADR 007). The 15 s press on the C6-Zero by hand: fast red, then unclaimed with no Wi-Fi and its pixel dark, as designed (there is no C6 access point to fall into; doc/admin/identity.md said otherwise and was corrected). TLS enabled on the RP2350-LCD-7 (+13 KB code, `tls keygen` 0.4 s); HTTPS there still to be tried, with a C6-Zero on H7 for its Wi-Fi.
   * *§1.6, measured 2026-10-31:* a C6-Zero with radio, sensors, MQTT, mDNS, httpd and 9P running has 5
     free pages (20 KB). A TLS session needs ~21 KB of record buffers on top: the C6-Zero is not a TLS
     board and stays on 52.11b's protected sessions. TLS-PSK against mosquitto is a client, for a later phase.
