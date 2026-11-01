@@ -169,6 +169,8 @@ with no USB host, arms LLP on its UART0 after 2 s. Both run at 921600 baud (CONF
 lcd tee uart is refused. /proc/llp shows the wire, the rate and the UART's receive errors; /c6/proc/llp the C6's.
 * Two power supplies: the terminal from its own USB, the C6 from its
 own USB-C, on a charger. The C6 draws up to ~350 mA in transmit bursts, more than the terminal's 3V3 rail has to spare: from H7's 3V3 the C6 joins only with no USB keyboard on J7, and its Wi-Fi suffers under load even then. On a charger the C6 sees no USB host and arms LLP on UART0 as before; on a PC's USB port it would not (see below).
+* GND (H7 pin 2) must be wired once the C6 is on its own charger: on a PC's
+USB the two boards shared ground through the PC, on a charger they share none. A noisy charger can still corrupt the terminal-to-C6 direction with the ground wired (seen 2026-11-01: one frame in five, pings of 0.3-1.7 s, HTTPS stalling; another charger fixed it). The symptom is serialcrc and serialrunt climbing in /c6/proc/llp while the terminal's own /proc/llp stays clean.
 * Debugging both ends: with the C6's USB attached to a PC it does not arm
 by itself, and the terminal's traffic on H7 arrives at the C6's console as input; park the terminal (BOOTSEL) to type llp radio uart 921600 at the C6.
 

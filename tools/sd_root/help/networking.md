@@ -211,6 +211,12 @@ namespace is the terminal's `/c6`, as on the P4 boards (section 4).
   with no USB keyboard on J7, and its Wi-Fi suffers under load even then. On a
   charger the C6 sees no USB host and arms LLP on UART0 as before; on a PC's
   USB port it would not (see below).
+* **GND (H7 pin 2) must be wired** once the C6 is on its own charger: on a PC's
+  USB the two boards shared ground through the PC, on a charger they share none.
+  A noisy charger can still corrupt the terminal-to-C6 direction with the ground
+  wired (seen 2026-11-01: one frame in five, pings of 0.3-1.7 s, HTTPS stalling;
+  another charger fixed it). The symptom is `serial_crc` and `serial_runt`
+  climbing in `/c6/proc/llp` while the terminal's own `/proc/llp` stays clean.
 * **Debugging both ends:** with the C6's USB attached to a PC it does not arm
   by itself, and the terminal's traffic on H7 arrives at the C6's console as
   input; park the terminal (BOOTSEL) to type `llp radio uart 921600` at the C6.
