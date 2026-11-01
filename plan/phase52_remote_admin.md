@@ -1186,8 +1186,11 @@ deferred without blocking anything after it.
       (`sensor_hub` 12 KB holds 0.9 KB, `mqttsrv` 8 KB holds 1 KB).
     * *Found on the way:* an older build's identity write dropped the fields it did not know (the setup
       secret disappeared under 1050): a rewrite now carries them (`b46f47f`).
-    * *Open:* each light pattern seen, and a 15 s BOOT press (also measures `setupbtn`'s stack on its
-      deepest path).
+    * *Light and button, 2026-11-01 (by the owner):* joined shows a short flash every 3 s; a 15 s BOOT
+      press shows fast red, and the node, now without Wi-Fi, goes dark. That press also found the
+      button task's stack too small since `ebfb5de`: the C6-Zero restarted by watchdog after the reset,
+      and the LCD-7B crashed (848 bytes past its end). Measured 4900 bytes on the P4; two pages since
+      `0b74c5f`. To repeat once on the C6-Zero and the LCD-7B with the fix.
   * A C6-Zero on its own USB port is a node of its own (sensor persona: its own IP,
     I2C sensors, MQTT), not a radio for a P4. Provision it from the console
     (`wlan`, `name`, `grant`), or claim it over 9P once it is on a network.
