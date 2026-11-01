@@ -88,6 +88,26 @@ that makes the next occurrence leave that evidence: a `[Stuck Guest]` block in
 the run log, and an `[Attempt]` line per architecture attempt with its
 duration and first failure.
 
+## rv32 crashed in its own trap vector during the B6 confinement test (once)
+
+**Seen:** 2026-11-01, `tests/runner.py` (534/534 after a retry): the first rv32 attempt stopped at
+`Loaded User Program Is Confined By Its Domain (B6)` (`exec uisolate.elf`, a U-mode store to
+0x40000000 that must fault and kill the task). The `[Stuck Guest]` report: hart 0 in M-mode at
+`pc=0x800000b0 <trap_vector_entry+0x0>`, `mcause=2` (illegal instruction), `mepc=0x800000b2`,
+`sp=0x80000080`. That is a trap frame (144 bytes) sitting over the trap vector itself
+(0x80000080-0x8000010f covers 0x800000b0): the frame's saves had overwritten the vector's first
+instructions, so every trap re-trapped on the garbage. The guest printed no fault marker, so the runner
+took it for a host stall. The second attempt passed; `uisolate.elf` alone passed 300 times in a row.
+**Reading:** a trap path that kept trapping while the stack descended (each kernel-mode re-entry
+subtracts 144 from sp) until it reached the start of the image. The candidate checked and ruled out: a
+U-mode trap with the hart record's `kernel_sp` at zero (only `SETUP_HART_POINTER` at boot writes zero).
+**Armed since:** the runner names a hart parked on `trap_vector_entry+0x0` as a guest crash, and ends a
+session after three silent commands instead of letting every remaining test time out (the first attempt
+here took 66 minutes).
+**What would settle it:** the stack pointer at the first nested trap, not the last. A QEMU `-d int`
+trace of the rv32 target (or a `mscratch`-independent guard in the vector that halts on an sp below the
+kernel stacks) during a full rv32 attempt that reproduces it.
+
 ## The runner sat 22 minutes on its first rv64 guest (once)
 
 **Seen:** 2026-10-29, `tests/runner.py` after 52.11b: the host checks passed, `[Target: RV64 Sv39 MMU Virtual

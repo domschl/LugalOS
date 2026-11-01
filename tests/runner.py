@@ -386,7 +386,14 @@ class QemuSession:
         head = (f"  [Stuck Guest] {self.arch}: {self._stuck_reason or 'silent at a timeout'}; "
                 f"last command {self._last_command[:80]!r}, "
                 f"{time.time() - self._last_command_at:.1f} s ago")
-        out = [head, self._hart_summary()]
+        harts = self._hart_summary()
+        out = [head, harts]
+        if re.search(r"pc=0x[0-9a-f]+ <trap_vector_entry\+0x0\b", harts):
+            # A hart parked on the vector's first instruction is re-trapping
+            # there: the guest crashed inside its own trap path, which also
+            # means it could not print a fault marker.
+            out.append("  [Stuck Guest] a hart is looping in the trap vector: "
+                       "a guest crash, not a host stall")
         if ask_console and self._stuck_reason is None:
             ps = self._ask_console("cat /proc/ps", 3.0)
             kmsg = self._ask_console("cat /proc/kmsg", 3.0)
@@ -453,6 +460,10 @@ class QemuSession:
     # back to lsh/Lisp (it rebooted the guest, or a program is reading input);
     # returning after this is the old behaviour plus a bounded grace.
     SENTINEL_GRACE_S = 3.0
+
+    # Consecutive commands with no output at all (not even their echo) after
+    # which send_and_expect() treats the guest as stuck and ends the session.
+    SILENT_TIMEOUTS_STUCK = 3
 
     def send_and_expect(self, command: str, expected_pattern: str, timeout: float = 4.0,
                         sentinel: "bool | None" = None) -> tuple[bool, str]:
@@ -617,6 +628,21 @@ class QemuSession:
         # answering something else. close() captures its state if the session
         # ends that way (phase 40, item 1).
         self._silent_timeouts = self._silent_timeouts + 1 if not accumulated else 0
+        if command and self._silent_timeouts >= self.SILENT_TIMEOUTS_STUCK:
+            # The console echoes every line it reads, so this many commands in
+            # a row with no output at all is a guest that has stopped. Ending
+            # the session here makes every later test fail at once, and the
+            # retry starts in seconds instead of after every remaining test
+            # has waited out its own timeout.
+            report = self._capture_stuck_state()
+            self._stuck_reason = (f"no output to {self._silent_timeouts} "
+                                  f"commands in a row")
+            STUCK_REPORTS.append(report)
+            print(report)
+            try:
+                self.process.kill()
+            except OSError:
+                pass
         return False, accumulated.decode("utf-8", "replace")
 
     @staticmethod
@@ -4660,7 +4686,8 @@ def test_qemu_architecture_with_retry(
         if not looks_like_host_stall:
             return results
         print(f"  [Retry] {arch_name}: {len(failed)} failure(s) with no fault "
-              f"marker (possible QEMU host-stdio stall, not a guest crash) -- "
+              f"marker (a QEMU host-stdio stall, or a guest that stopped before "
+              f"it could print one: see any [Stuck Guest] report above) -- "
               f"retrying the whole run from a fresh boot "
               f"(attempt {attempt}/{max_attempts}) before treating as real.")
         results = attempt_once(attempt)
