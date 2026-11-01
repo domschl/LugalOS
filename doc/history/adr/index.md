@@ -18,6 +18,7 @@ Architecture Decision Records (ADRs) capture important architectural choices, th
 | **[ADR 004](004_copy_always_channels.md)** | Copy-Always Message Channels for Microkernel IPC | Accepted | 2026-08-15 |
 | **[ADR 005](005_zero_sram_builtins.md)** | Zero SRAM Builtins in Flash `.rodata` Tables | Accepted | 2026-09-28 |
 | **[ADR 006](006_remote_admin_trust_model.md)** | Remote Administration Trust Model | Accepted | 2026-10-31 |
+| **[ADR 007](007_c6_peripheral_confinement.md)** | Confining U-mode on the ESP32-C6 with the APM; the Residue Behind the Factory Bootloader | Accepted | 2026-11-01 |
 
 ---
 

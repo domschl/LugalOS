@@ -11,9 +11,10 @@
  *   heap and stack    palloc'd, each one NAPOT block
  *   the chip's ROM    code (512 KB) and its working data (0x4087c000, 16 KB), which the
  *                     blob's ROM-resident halves read and write (45.3a)
- *   the modem         0x600A0000 (64 KB: MAC, baseband, PHY), PMU/LP_AON, PCR
+ *   the peripherals   the modem (0x600A0000, 64 KB: MAC, baseband, PHY), PMU/LP_AON, PCR, UART0 and
+ *                     the SAR ADC (k_radio_mmio), granted by the APM as well
  *
- * That is twelve regions of the C6's sixteen PMP entries (MEM_DOMAIN_MAX_REGIONS).
+ * That is thirteen regions of the C6's sixteen PMP entries (MEM_DOMAIN_MAX_REGIONS).
  * PMP restricts the CPU and not the MAC's DMA (plan §4.5): this contains bugs,
  * and the `tainted` label (not here yet: 45.9) is what covers trust.
  *
@@ -71,22 +72,89 @@ static void *g_rstack;
 static void *g_rarena;
 static int g_rpid = -1;
 
-/* The C6 has a second fence in front of its peripherals besides the PMP: the HP APM
- * (access permission management, TRM ch. 16), whose reset state (region 0 = the whole
- * address space, attribute 0) denies every REE mode -- which is U-mode -- *by returning
- * zeros to reads and dropping writes*, silently. The radio's first reads of the modem
- * block showed it: M-mode saw 0x7e600000 where U-mode saw 0. The PMP is the finer fence
- * and the one that is ours (it grants the radio exactly three peripheral windows), so
- * the APM is opened for REE0 (the CPU in U-mode) and REE2 (the modem's DMA, and every other master at its
- * reset mode), R/W/X each; the PMP still decides for the CPU. REE1 stays closed: it is the SDIO slave's,
- * fenced to its channel buffers by a region of its own (drivers/sdio_slave_esp32c6.c). */
-#define HP_APM_REGION0_PMS_ATTR (*(volatile uint32_t *)0x6009900cu)
-/* The LP APM fences the LP peripherals (PMU, LP clock/reset, LP_AON) the same way, and its reset state is
- * just as closed. The PHY library switches the RF blocks' power (PMU_RF_PWC: the TX/RX, clock-generator and
- * PLL I2C buses) itself while it calibrates; from U-mode, behind a closed LP APM, those writes vanished and
- * a cold chip's PLL calibration timed out ("pll_cal exceeds 2ms", no access point found). Opened like the
- * HP APM; the PMP grants the radio only the PMU/LP_AON window of it. */
-#define LP_APM_REGION0_PMS_ATTR (*(volatile uint32_t *)0x600b380cu)
+/* The peripheral windows the radio's code touches, granted to it twice: by the PMP (its domain) and by
+ * the APM below. */
+static const struct { uint32_t base, size; } k_radio_mmio[] = {
+    { 0x600A0000u, 65536 },   /* MAC, baseband, PHY, modem */
+    { 0x600B0000u, 8192 },    /* PMU, LP_CLKRST, eFuse, LP_AON */
+    { 0x60096000u, 4096 },    /* PCR */
+    /* UART0: the chip ROM's PHY and clock code waits for its transmitter to drain before it changes a
+     * clock (uart_tx_wait_idle reads UART_STATUS) -- found as a load fault at 0x6000001c on the first
+     * cold run. */
+    { 0x60000000u, 4096 },
+    /* The SAR ADC, which holds the temperature sensor the PHY's calibration reads: not touched on a
+     * warm chip, a load fault at 0x6000e000 on a cold one. */
+    { 0x6000E000u, 4096 },
+};
+#define RADIO_MMIO_N (sizeof(k_radio_mmio) / sizeof(k_radio_mmio[0]))
+
+/* The C6 has a second fence in front of its peripherals besides the PMP: the APM (access permission
+ * management, TRM ch. 16). For the CPU it filters the peripherals and LP memory, not HP SRAM or ROM.
+ * Its reset state denies every REE mode -- U-mode is REE0 -- by returning zeros to reads and dropping
+ * writes, silently, and one region granting an access is enough (overlapping regions add up).
+ *
+ * The PMP alone would be enough behind LugalOS's own loader. Behind an ESP-IDF bootloader up to v5.2
+ * (the factory one on boards with a C6 beside a P4) the PMP has a locked entry granting R/W on all of
+ * 0x60000000-0x600fffff to every mode, which no later entry can take back. So the APM grants REE0
+ * exactly the radio's windows above and nothing else, on every C6:
+ *
+ *   HP APM   region 0: the whole address space, REE2 only (the modem's DMA and every other master at
+ *            its reset mode). It must stay enabled over everything: with filters on and no region
+ *            covering an address, machine-mode accesses are filtered as well (IDF's TEE notes the same).
+ *            Region 1: the SDIO slave's DMA (REE1), set by drivers/sdio_slave_esp32c6.c.
+ *            Regions 2..: one per window, REE0 read/write.
+ *   LP APM   region 0: the whole address space, REE1 and REE2. Regions 1..3: the windows in the LP
+ *            peripherals (0x600B0000-0x600BFFFF), REE0 read/write: the PHY library switches the RF
+ *            blocks' power (PMU_RF_PWC) itself while it calibrates, and behind a closed LP APM a cold
+ *            chip's PLL calibration timed out ("pll_cal exceeds 2ms").
+ *
+ * What the APM does not fence is the CPU subsystem (0x20000000-0x2fffffff: the PLIC and CLINT), and the
+ * same old bootloader locks a PMP entry granting that too: on those boards U-mode can still mask or
+ * raise machine interrupts (ADR 007). */
+#define HP_APM_BASE            0x60099000u
+#define LP_APM_BASE            0x600B3800u
+#define APM_FILTER_EN(b)       (*(volatile uint32_t *)((b) + 0x00u))
+#define APM_REGION_START(b, n) (*(volatile uint32_t *)((b) + 0x04u + 12u * (uint32_t)(n)))
+#define APM_REGION_END(b, n)   (*(volatile uint32_t *)((b) + 0x08u + 12u * (uint32_t)(n)))
+#define APM_REGION_ATTR(b, n)  (*(volatile uint32_t *)((b) + 0x0Cu + 12u * (uint32_t)(n)))
+#define APM_REE0_RW            0x006u           /* R (bit 2) | W (bit 1) of REE0's field [2:0] */
+#define APM_REE1_ALL           0x070u
+#define APM_REE2_ALL           0x700u
+#define HP_APM_FIRST_REGION    2u
+#define HP_APM_REGIONS         16u
+#define LP_APM_REGIONS         4u
+#define LP_PERI_LO             0x600B0000u
+#define LP_PERI_HI             0x600BFFFFu
+
+/* M-mode, before the radio's domain is entered. False if the windows do not fit the regions (then the
+ * radio does not start: a U-mode with the APM half-configured would be neither confined nor working). */
+static bool radio_apm_confine(void) {
+    uint32_t hp = HP_APM_FIRST_REGION, lp = 1u, hp_en = 0, lp_en = 0;
+    for (uint32_t i = 0; i < RADIO_MMIO_N; i++) {
+        uint32_t lo = k_radio_mmio[i].base, hi = lo + k_radio_mmio[i].size - 1u;
+        if (hp >= HP_APM_REGIONS) return false;
+        APM_REGION_START(HP_APM_BASE, hp) = lo;
+        APM_REGION_END(HP_APM_BASE, hp) = hi;
+        APM_REGION_ATTR(HP_APM_BASE, hp) = APM_REE0_RW;
+        hp_en |= 1u << hp++;
+        if (lo >= LP_PERI_LO && hi <= LP_PERI_HI) {
+            if (lp >= LP_APM_REGIONS) return false;
+            APM_REGION_START(LP_APM_BASE, lp) = lo;
+            APM_REGION_END(LP_APM_BASE, lp) = hi;
+            APM_REGION_ATTR(LP_APM_BASE, lp) = APM_REE0_RW;
+            lp_en |= 1u << lp++;
+        }
+    }
+    APM_REGION_START(HP_APM_BASE, 0) = 0;
+    APM_REGION_END(HP_APM_BASE, 0) = 0xFFFFFFFFu;
+    APM_REGION_ATTR(HP_APM_BASE, 0) = APM_REE2_ALL;
+    APM_FILTER_EN(HP_APM_BASE) |= 1u | hp_en;
+    APM_REGION_START(LP_APM_BASE, 0) = 0;
+    APM_REGION_END(LP_APM_BASE, 0) = 0xFFFFFFFFu;
+    APM_REGION_ATTR(LP_APM_BASE, 0) = APM_REE1_ALL | APM_REE2_ALL;
+    APM_FILTER_EN(LP_APM_BASE) |= 1u | lp_en;
+    return true;
+}
 
 static void radio_task(void *arg) {
     (void)arg;
@@ -97,8 +165,7 @@ static void radio_task(void *arg) {
     ctx->arena_bytes = ARENA_PAGES * 4096u;
     ctx->stage = RADIO_STAGE_NONE;
 
-    HP_APM_REGION0_PMS_ATTR = 0x707u;
-    LP_APM_REGION0_PMS_ATTR = 0x777u;
+    bool apm_ok = radio_apm_confine();
     /* The chip's boot-time clock setup (drivers/radio/plat_esp32c6.c) runs here, in M-mode, not in the
      * radio's domain: part of it writes the LP_CLKRST block, which is behind the LP APM -- a second
      * permission controller, closed to U-mode by reading zeros and dropping writes, exactly as the HP
@@ -125,16 +192,9 @@ static void radio_task(void *arg) {
     bad |= mem_domain_add(&g_rdomain, (uintptr_t)g_rstack, STACK_PAGES * 4096u, MEM_R | MEM_W);
     bad |= mem_domain_add(&g_rdomain, 0x40000000u, 512u * 1024, MEM_R | MEM_X);   /* ROM code */
     bad |= mem_domain_add(&g_rdomain, 0x4087c000u, 16384, MEM_R | MEM_W);        /* ROM data */
-    bad |= mem_domain_add(&g_rdomain, 0x600A0000u, 65536, MEM_R | MEM_W);        /* MAC, baseband, PHY, modem */
-    bad |= mem_domain_add(&g_rdomain, 0x600B0000u, 8192, MEM_R | MEM_W);         /* PMU, LP_AON */
-    bad |= mem_domain_add(&g_rdomain, 0x60096000u, 4096, MEM_R | MEM_W);         /* PCR */
-    /* UART0: the chip ROM's PHY and clock code waits for its transmitter to drain before it changes a
-     * clock (uart_tx_wait_idle reads UART_STATUS) -- found as a load fault at 0x6000001c on the first
-     * cold run. */
-    bad |= mem_domain_add(&g_rdomain, 0x60000000u, 4096, MEM_R | MEM_W);
-    /* And the SAR ADC, which holds the temperature sensor the PHY's calibration reads: not touched on a
-     * warm chip, a load fault at 0x6000e000 on a cold one. */
-    bad |= mem_domain_add(&g_rdomain, 0x6000E000u, 4096, MEM_R | MEM_W);
+    for (uint32_t i = 0; i < RADIO_MMIO_N; i++)
+        bad |= mem_domain_add(&g_rdomain, k_radio_mmio[i].base, k_radio_mmio[i].size, MEM_R | MEM_W);
+    bad |= !apm_ok;
     if (bad || task_set_domain(sched_current_pid(), &g_rdomain) != 0) {
         printk("[radio] Refusing to enter U-mode: the domain is not enforceable\n");
         ctx->stage = RADIO_STAGE_FAILED;
@@ -152,7 +212,6 @@ void radio_c6_probe(void) {
     volatile uint32_t *c = (volatile uint32_t *)0x600AD000u;
     uint32_t a = *c; for (volatile int i = 0; i < 400000; i++) { } uint32_t b = *c;
     cprintf("probe: modem counter before early init: %08x -> %08x (%s)\n", (unsigned)a, (unsigned)b, a != b ? "running" : "STOPPED");
-    *(volatile uint32_t *)0x6009900cu = 0x777u;
     radio_plat_early_init();
     a = *c; for (volatile int i = 0; i < 400000; i++) { } b = *c;
     cprintf("probe: after early init: %08x -> %08x (%s)\n", (unsigned)a, (unsigned)b, a != b ? "running" : "STOPPED");

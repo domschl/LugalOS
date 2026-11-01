@@ -3,7 +3,7 @@
 **Status: Part A done (52.1–52.5a, 2026-10-18). Part B re-checked against the
 tree and cut into milestones 52.6–52.16 on 2026-10-25 (§3.2, §4 Part B); its
 decisions were confirmed by the owner the same day (§3.3).** **Part B status 2026-11-01:** 52.6-52.12,
-52.13b, 52.14 and 52.15 done; 52.7a and 52.16 open. 52.13 (a setup access point on the C6 for P4
+52.7a, 52.13b, 52.14 and 52.15 done; 52.16 open (the hardware pass with phones and the RP2350-LCD-7). 52.13 (a setup access point on the C6 for P4
 boards) and 52.15b (the P4's crypto hardware) moved to phase 68 (advanced remote admin). The identity, claiming and
 certificate decisions in §1.3 and §1.5 were confirmed by the owner on
 2026-10-14. Follows phase 49, whose 49.8b built the generic OTA shape and its
@@ -814,7 +814,7 @@ deferred without blocking anything after it.
     and on the NANO's C6 over `/c6/dev/ota`: signed accepted, tampered (one
     flipped byte) and unsigned refused before the slot is erased. Code size
     measured on the C6-Zero and C6-MINI builds.
-  * **52.7a C6 isolation behind IDF's bootloader** (52.5a's other item).
+  * **52.7a C6 isolation behind IDF's bootloader** (52.5a's other item). **DONE 2026-11-01.**
     Dump `pmpcfg*`/`pmpaddr*` as LugalOS finds them on the NANO's C6 (IDF
     layout), decode what U-mode may reach, and try it from the radio domain
     with a U-mode probe. If the locked entries open peripherals to U-mode,
@@ -842,8 +842,12 @@ deferred without blocking anything after it.
       interrupts: a denial of service, not a way into M-mode (`mtvec` is a CSR). Only another
       bootloader removes it, and rewriting a C6's bootloader over SDIO has no fallback if it is cut
       short: unacceptable on the sealed Tab5, possible over a cable where the C6's pins are reachable.
-    * **Decision pending (owner):** the APM confinement, and whether entry 0 is accepted on the
-      IDF-layout C6s. Then the ADR.
+    * **Decided by the owner 2026-11-01, DONE the same day ([ADR 007](../doc/history/adr/007_c6_peripheral_confinement.md)):**
+      the APM confines U-mode on every C6 (`radio_apm_confine()`: HP APM region 0 for REE2 only, one
+      REE0 region per radio window; the LP APM likewise), and entry 0 is accepted on the IDF-layout
+      C6s. Measured after: on the NANO's and the Tab5's C6 the interrupt matrix, GPIO, INTPRI and LP_IO
+      read 0 from U-mode (the PLIC still answers); behind the loader (LCD-7B, C6-Zero) every probe
+      faults; the radio joins on all four.
 
 * **52.8 ESP32-P4 OTA backend (`drivers/ota_esp32p4.c`).** **DONE**: the NANO (v1.3) and LCD-7B
   (v3.2) 2026-10-26, 52.8d (whole board) 2026-10-26, the Tab5 and both boards over Wi-Fi with signed
@@ -1331,8 +1335,11 @@ deferred without blocking anything after it.
     the other slot. The LCD-7B and Tab5: suites green (52/52), HTTPS and a browser OTA on each.
     **Open, the hardware pass:** a Pico 2 W set up from a phone again end to end on today's build (and
     Android), Safari (iOS) and Chrome (Android) over HTTPS, one 15 s press on the C6-Zero, the
-    RP2350-LCD-7 (TLS not enabled there yet). **Open, on the desk:** the setup-mode cases in
-    `test_wifi.py`, 52.7a.
+    RP2350-LCD-7 (TLS not enabled there yet). *2026-11-01:* the setup-mode cases in `test_wifi.py`
+    done, and the Pico 2 W claimed from scratch through its setup access point by the host playing the
+    phone (`--claim-cycle`: PASS). It found two firmware bugs, both fixed: `%X` printed lowercase (the
+    access point was `LugalOS-b797`, the label says `B797`), and a new setup secret did not take effect
+    until the window closed. 52.7a done (ADR 007).
   * *§1.6, measured 2026-10-31:* a C6-Zero with radio, sensors, MQTT, mDNS, httpd and 9P running has 5
     free pages (20 KB). A TLS session needs ~21 KB of record buffers on top: the C6-Zero is not a TLS
     board and stays on 52.11b's protected sessions. TLS-PSK against mosquitto is a client, for a later phase.

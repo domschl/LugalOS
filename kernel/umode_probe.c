@@ -328,16 +328,21 @@ int umode_probe_read(uintptr_t addr, uint32_t *value) {
 
 #if defined(CONFIG_BOARD_ESP32C6)
 /* What a U-mode task with no grant for them reaches, read by the kernel and then from U-mode: the
- * machine-mode interrupt controller and timer (in the CPU subsystem, 0x20000000-0x2fffffff), two
- * peripherals no driver domain is granted, and kernel RAM as the control (must fault). An old ESP-IDF
- * bootloader (the C6's factory one) leaves PMP entries locked that grant the first two ranges to
- * U-mode; no later entry can take a lower-numbered locked grant back. */
+ * machine-mode interrupt controller and timer (in the CPU subsystem, 0x20000000-0x2fffffff), one
+ * register each of the HP, CPU and LP peripherals no driver domain is granted, and kernel RAM as the
+ * control (must fault). The peripheral probes are version registers, which never read 0: the APM
+ * answers a denied read with 0 instead of a fault. An old ESP-IDF bootloader (the C6's factory one)
+ * leaves PMP entries locked that grant the CPU subsystem and the peripherals to U-mode; no later entry
+ * can take a lower-numbered locked grant back, so on those boards the peripherals are fenced by the
+ * APM alone (kernel/radio_c6.c) and the CPU subsystem not at all. */
 uint32_t umode_reach_render(char *buf, uint32_t cap) {
     static const struct { const char *name; uintptr_t addr; } probes[] = {
         { "plic_m_enable", 0x20001000u },   /* PLIC_MXINT_ENABLE */
         { "clint_m_mtime", 0x20001808u },   /* CLINT_MINT_MTIME_L */
-        { "intmtx",        0x60010000u },   /* the interrupt matrix's first map register */
-        { "gpio_in",       0x6009103Cu },   /* GPIO_IN */
+        { "intmtx",        0x600107FCu },   /* INTMTX_CORE0_INTERRUPT_REG_DATE */
+        { "gpio",          0x600916FCu },   /* GPIO_DATE */
+        { "intpri",        0x600C50A0u },   /* INTPRI_DATE (CPU peripherals) */
+        { "lp_io",         0x600B23FCu },   /* LP_IO_DATE (LP peripherals, outside the radio's window) */
     };
     uint32_t n = (uint32_t)ksnprintf(buf, cap, "umode reach (kernel read / U-mode read):\n");
     for (unsigned i = 0; i <= sizeof(probes) / sizeof(probes[0]) && n + 80 < cap; i++) {
@@ -346,7 +351,7 @@ uint32_t umode_reach_render(char *buf, uint32_t cap) {
         uint32_t m = *(volatile uint32_t *)a, u = 0;
         int rc = umode_probe_read(a, &u);
         const char *verdict = rc < 0 ? "not run" : rc == 0 ? "blocked (fault)"
-                            : (u == 0 && m != 0) ? "zeros (filtered on the bus?)" : "REACHED";
+                            : (u == 0 && m != 0) ? "blocked (APM: reads 0)" : "REACHED";
         n += (uint32_t)ksnprintf(buf + n, cap - n, "  %-14s %08lx  m=%08lx u=%08lx  %s\n", name,
                                  (unsigned long)a, (unsigned long)m, rc == 1 ? (unsigned long)u : 0ul, verdict);
     }

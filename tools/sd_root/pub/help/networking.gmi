@@ -114,7 +114,7 @@ What the C6 exports, read through /c6 on the P4 (or on the C6 itself without the
 | /c6/proc/wlanscan | the last scan: aps=N, then one line per access point: bssid channel rssi auth ssid (as many as fit) | -- |
 | /c6/proc/radio | how far the radio started (stage), its return codes, frame counters and rings | -- |
 | /c6/proc/llp | the C6's end of the link (the P4's own is /proc/llp) | -- |
-| /c6/proc/pmp | the PMP entries as the hardware holds them (L = locked by the bootloader, applies to U-mode too), then what a U-mode task with no grants reaches: the interrupt controller, the timer, two peripherals and kernel RAM, each blocked (fault) or REACHED. /proc/pmp on any other PMP board shows the entries alone | -- |
+| /c6/proc/pmp | the PMP entries as the hardware holds them (L = locked by the bootloader, applies to U-mode too), then what a U-mode task with no grants reaches: the interrupt controller, the timer, one register each of the HP, CPU and LP peripherals, and kernel RAM, each blocked (fault) (the PMP), blocked (APM: reads 0) or REACHED. /proc/pmp on any other PMP board shows the entries alone | -- |
 | /c6/proc/wdt | the watchdog: armed, timeouts, feeds, lastreset, restarted_itself | -- |
 | /c6/dev/reboot | -- | reboot, or download (into the ROM's download mode) |
 | /c6/proc/version | the C6's version, with its tainted: blob line | -- |
