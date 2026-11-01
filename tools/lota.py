@@ -712,11 +712,17 @@ def push(a: argparse.Namespace) -> int:
             step = "commit"
             node.ctl("commit")
         except Exception as e:
-            # The node says why in /dev/ota; a 9P write error says only that it failed (and where).
-            why = node.status().get("error", "")
-            print(f"\nthe node refused the update at {step}: {why or e}" + (f" ({e})" if why and str(e) not in why else ""))
-            node.ctl("abort")
-            return 1
+            st = node.status()
+            if step == "commit" and st.get("state") == "committed":
+                # The node committed; only its answer was lost on the way (a P4's link to its C6 can drop
+                # one, plan/open_issues.md). Its own state is the truth.
+                print(f"\nthe answer to commit was lost ({e}), but the node reports the image committed")
+            else:
+                # The node says why in /dev/ota; a 9P write error says only that it failed (and where).
+                why = st.get("error", "")
+                print(f"\nthe node refused the update at {step}: {why or e}" + (f" ({e})" if why and str(e) not in why else ""))
+                node.ctl("abort")
+                return 1
         st = node.status()
         print("committed:", show(st))
         if not a.reboot:

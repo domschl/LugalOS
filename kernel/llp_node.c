@@ -816,10 +816,17 @@ static uint32_t activity(void) {
     return s->tx_frames + s->rx_frames + s->tx_link + s->rx_link;
 }
 
+/* single task: the pump (written), /proc/llp (read; a torn value is a diagnostic). The longest time
+ * between two turns of the pump: a pump kept off the CPU for LLP_DEAD_MS looks like a dead peer to
+ * the other side. */
+static uint32_t g_pump_gap_max_ms, g_pump_last_ms;
+
 static void pump(void *arg) {
     (void)arg;
     for (;;) {
         uint32_t now = now_ms();
+        if (g_pump_last_ms && now - g_pump_last_ms > g_pump_gap_max_ms) g_pump_gap_max_ms = now - g_pump_last_ms;
+        g_pump_last_ms = now;
         uint32_t before = activity();
         uint32_t seq = g_tx_seq;
 #if CHAN_PACKET
@@ -1154,6 +1161,7 @@ uint32_t llp_node_proc_render(char *buf, uint32_t cap) {
     PUT("serial_frames=%u\nserial_crc=%u\nserial_runt=%u\nserial_overflow=%u\n",
         (unsigned)g_srx.frames, (unsigned)g_srx.crc_err, (unsigned)g_srx.runt, (unsigned)g_srx.overflow);
 #endif
+    PUT("pump_gap_max_ms=%u\n", (unsigned)g_pump_gap_max_ms);
 #if defined(CONFIG_BOARD_ESP32C6) && !CHAN_PACKET
     {
         uint32_t lr, cr, ct;

@@ -286,6 +286,22 @@ passed 25/25.
 and the next boot's `[CLK] last reset:` line. USB up and panel down is
 before the console exists.
 
+## A P4 hears nothing from its C6 for 3 s, now and then: the link drops (found 2026-11-01)
+
+**Seen:** pushing an update to a P4 board's C6 (`lota.py push ... --prefix /c6`), about 1 push in 10
+on the Tab5 (4 of ~45) and once on the NANO: `commit` answers "I/O error", although the C6 committed
+(its log: "verified; the next boot tries it once"). At that moment the P4 logs `[LLP] link down` and
+`link up` 20-500 ms later with the same peer session, and its `downs` counter rises; the C6 never sees
+the link drop. `commit` takes 1.2 s on the C6 (1.16 s of it the slot's SHA-256, yielding every 4 KB).
+**Ruled out:** a stalled pump on either side (`pump_gap_max_ms` in `/proc/llp`: 30 ms on the P4, 69 ms
+on the C6 across a failure), the C6 refusing to send (`refused=0`, `held_for_credit=0`), and an SDIO
+error (none logged then, `channel_restarts` unchanged). So the C6 believes it sent its keepalives, and
+the P4 polled every 20 ms and read nothing for `LLP_DEAD_MS` (3 s): the frames are lost or late
+between the C6's SDIO slave and the P4's reads. **Worked around:** `lota.py` reads the node's state
+after an error at `commit` and goes on when it says committed. **What would settle it:** on both
+sides, the time of the last frame sent and received, and the SDIO slave's token and packet length as
+the P4 last read them, frozen at the moment the P4 declares the link down.
+
 ## A C6 up an hour or more could not rejoin a network it lost (found 2026-10-31)
 
 Seen on every C6 that afternoon and evening (the C6-Zero, the NANO's, the Tab5's): after an hour or
