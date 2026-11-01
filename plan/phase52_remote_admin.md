@@ -821,6 +821,29 @@ deferred without blocking anything after it.
     record it in the board guides and an ADR, and decide whether the IDF
     layout stays acceptable for the C6 or the loader layout replaces it once
     LugalOS is installed.
+  * **Measured 2026-11-01** (`/proc/pmp`, with a U-mode read probe, `kernel/umode_probe.c`). The NANO's
+    and Tab5's C6 (IDF layout, factory bootloader): 4 entries locked. Entry 0 NAPOT rwx over
+    `0x20000000-0x2fffffff` (CPU subsystem: PLIC_MX at `0x20001000`, CLINT_M at `0x20001800`), entry 1
+    off, entry 2 TOR r-x over the ROM (`0x40000000-0x4004ffff`), entry 15 NAPOT rw over the peripherals
+    (`0x60000000-0x600fffff`). This matches ESP-IDF up to v5.2.x, which locked entries 0-4 and 15 in
+    the bootloader; since then the bootloader locks only PMA (deny) entries and leaves PMP to the app.
+    A U-mode task granted only its stack, code and one block **reads the PLIC enable, the interrupt
+    matrix and GPIO_IN, the same values the kernel reads**; kernel RAM faults. The LCD-7B's C6 (loader
+    layout): nothing locked, every probe faults. The C6 kernel also opens the HP APM's region 0 to
+    REE0 (U-mode) for the radio, so on an IDF-layout C6 nothing but the locked entries stands between
+    the radio's U-mode code and the peripherals.
+    * Entry 15 cannot be shadowed in PMP: a deny entry above the domain's entries would need the
+      radio's five peripheral windows as entries of their own, 14 of the 12 entries left. The HP APM
+      can do it instead: 16 address regions with per-mode permissions, U-mode being REE0, so region 0
+      split around `0x60000000-0x600fffff` plus the radio's windows confines every U-mode task on
+      every C6, whatever the bootloader left (defence in depth on the loader layout too).
+    * Entry 0 cannot be overridden (the lowest-numbered matching entry wins, and the PLIC is inside
+      the CPU, behind no APM). On an IDF-layout C6 the radio's code can mask or raise machine
+      interrupts: a denial of service, not a way into M-mode (`mtvec` is a CSR). Only another
+      bootloader removes it, and rewriting a C6's bootloader over SDIO has no fallback if it is cut
+      short: unacceptable on the sealed Tab5, possible over a cable where the C6's pins are reachable.
+    * **Decision pending (owner):** the APM confinement, and whether entry 0 is accepted on the
+      IDF-layout C6s. Then the ADR.
 
 * **52.8 ESP32-P4 OTA backend (`drivers/ota_esp32p4.c`).** **DONE**: the NANO (v1.3) and LCD-7B
   (v3.2) 2026-10-26, 52.8d (whole board) 2026-10-26, the Tab5 and both boards over Wi-Fi with signed

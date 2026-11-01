@@ -452,6 +452,66 @@ int mem_domain_activate(const mem_domain_t *d) {
 
 bool mem_domain_enforced(void) { return true; }
 
+static uint8_t pmpcfg_byte(int idx) {
+    uintptr_t w = 0;
+#if __riscv_xlen == 32
+    switch (idx >> 2) {
+        case 0: w = read_csr(pmpcfg0); break;
+        case 1: w = read_csr(pmpcfg1); break;
+#if PMP_ENTRIES > 8
+        case 2: w = read_csr(pmpcfg2); break;
+        case 3: w = read_csr(pmpcfg3); break;
+#endif
+        default: break;
+    }
+    return (uint8_t)(w >> ((idx & 3) * 8));
+#else
+    if (idx < 8) w = read_csr(pmpcfg0);
+    return (uint8_t)(w >> ((idx & 7) * 8));
+#endif
+}
+
+/* /proc/pmp: every enabled or locked entry as the hardware holds it now, read on the calling task (a
+ * kernel task, so its unlocked entries are whatever the last domain switch left). What matters is the
+ * locked ones: a bootloader may leave entries locked (L), which apply to every privilege level,
+ * U-mode included, and which no later write can change until a reset. A locked entry with permissions
+ * grants them to every U-mode domain, unless a lower-numbered entry matches the address first. */
+uint32_t pmp_proc_render(char *buf, uint32_t cap) {
+    pmp_probe_locked();
+    uint32_t n = 0;
+    int locked = 0, ugrants = 0;
+    for (int i = 0; i < PMP_ENTRIES; i++) {
+        uint8_t c = pmpcfg_byte(i);
+        if (c & 0x80u) { locked++; if (c & (PMP_R | PMP_W | PMP_X)) ugrants++; }
+    }
+    int end = g_pmp_dynamic_start + g_pmp_dynamic_avail - 1;
+    n += (uint32_t)ksnprintf(buf + n, cap - n, "entries=%d locked=%d locked_grants=%d dynamic=%d..%d\n",
+                             PMP_ENTRIES, locked, ugrants, g_pmp_dynamic_start, end);
+    n += (uint32_t)ksnprintf(buf + n, cap - n, "idx cfg mode  perm lock range\n");
+    for (int i = 0; i < PMP_ENTRIES && n + 80 < cap; i++) {
+        uint8_t c = pmpcfg_byte(i);
+        uint8_t mode = (c >> 3) & 3u;
+        if (mode == 0 && !(c & 0x80u)) continue;
+        uintptr_t a = pmpaddr_read(i), lo = 0, hi = 0;
+        const char *mname = "OFF";
+        if (mode == 1) {                        /* TOR: from the previous entry's address */
+            mname = "TOR"; lo = i > 0 ? pmpaddr_read(i - 1) << 2 : 0; hi = (a << 2) - 1;
+        } else if (mode == 2) {
+            mname = "NA4"; lo = a << 2; hi = lo + 3;
+        } else if (mode == 3) {
+            mname = "NAPOT";
+            uint32_t ones = (~a == 0) ? 32u : (uint32_t)__builtin_ctz(~a);
+            uintptr_t mask = ones >= 32 ? (uintptr_t)-1 : (((uintptr_t)1 << ones) - 1);
+            lo = (a & ~mask) << 2;
+            hi = ones >= 29 ? (uintptr_t)-1 : lo + (((uintptr_t)8 << ones) - 1);
+        }
+        n += (uint32_t)ksnprintf(buf + n, cap - n, "%-3d %02x  %-5s %c%c%c  %s    %08lx-%08lx\n", i, c, mname,
+                                 (c & PMP_R) ? 'r' : '-', (c & PMP_W) ? 'w' : '-', (c & PMP_X) ? 'x' : '-',
+                                 (c & 0x80u) ? "L" : "-", (unsigned long)lo, (unsigned long)hi);
+    }
+    return n;
+}
+
 const char *mem_domain_backend_name(void) { return "PMP"; }
 
 /* PMP regions are written at activation; there is nothing to build ahead. */
@@ -467,6 +527,10 @@ void mem_domain_destroy(mem_domain_t *d) {
 }
 
 #else /* CONFIG_MODE_S -- Sv39 (B5) */
+
+uint32_t pmp_proc_render(char *buf, uint32_t cap) {
+    return (uint32_t)ksnprintf(buf, cap, "entries=0 (S-mode: domains are Sv39 page tables)\n");
+}
 
 #include "arch/vmm.h"
 

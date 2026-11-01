@@ -58,6 +58,7 @@
 #include "kernel/ipc.h"
 #include "kernel/sched.h"
 #include "kernel/mem_domain.h"
+#include "kernel/umode_probe.h"
 #include "kernel/version.h"
 #include "kernel/boardinfo.h"
 #include <string.h>
@@ -1457,6 +1458,13 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
         return (int)watchdog_proc_render(buf, cap);
     }
 #endif
+    else if (strcmp(rel, "pmp") == 0) {
+        uint32_t n = pmp_proc_render(buf, cap);
+#if defined(CONFIG_BOARD_ESP32C6)
+        n += umode_reach_render(buf + n, cap - n);
+#endif
+        return (int)n;
+    }
     else if (strcmp(rel, "sensors") == 0) {
         /* the environment sensor, for a
          * reader that is not on this board.
@@ -2276,7 +2284,7 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
 
 /* Unsized on purpose: /proc/dcf77 exists only where a receiver does, and the
  * one caller that walks this list already derives the count with sizeof. */
-static const char *g_proc_names[] = { "ps", "meminfo", "version", "board", "cpuinfo", "df", "kmsg", "devices", "buildid", "path", "ports", "config", "net", "node", "clock", "sensors", "sensor",
+static const char *g_proc_names[] = { "ps", "meminfo", "version", "board", "cpuinfo", "df", "kmsg", "devices", "buildid", "path", "ports", "config", "net", "node", "clock", "sensors", "sensor", "pmp",
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)
     "usbhost",
 #endif

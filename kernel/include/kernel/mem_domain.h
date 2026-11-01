@@ -145,6 +145,10 @@ void mem_domain_destroy(mem_domain_t *d);
 
 bool mem_domain_enforced(void);
 
+/* /proc/pmp: the PMP entries as the hardware holds them, locked ones marked (arch/riscv/common/mem_domain.c).
+ * Returns the bytes written into buf (at most cap - 1, NUL-terminated). */
+uint32_t pmp_proc_render(char *buf, uint32_t cap);
+
 /* "PMP" or "Sv39" -- which backend this build's domains are enforced by,
  * so a reporting surface (`ps`'s own "Isol" column) can say which kind of
  * hardware-backed isolation a task actually has, not just that it has one.

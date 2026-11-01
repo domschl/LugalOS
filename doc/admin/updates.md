@@ -273,6 +273,19 @@ partition table's OTA slots. esp-hosted-mcu's table for the C6:
   `fell_back=yes`.
 * **An image that is not LugalOS** (esp-hosted-mcu's `network_adapter.bin`)
   can be pushed too; it is marked VALID directly, with no trial.
+* **Weaker isolation behind the factory bootloader.** The factory bootloader on
+  the NANO's and the Tab5's C6 (an ESP-IDF older than v5.2.2) leaves PMP
+  entries locked, and a locked entry applies to U-mode too: entry 0 grants
+  read, write and execute on `0x20000000-0x2fffffff` (the CPU's interrupt
+  controller and timer), entry 15 read and write on every peripheral
+  (`0x60000000-0x600fffff`). `/c6/proc/pmp` shows the entries and what a U-mode
+  task with no grants reaches: on these two C6s it reads the interrupt
+  controller, the interrupt matrix and GPIO; kernel RAM stays closed. Behind
+  LugalOS's own loader (the LCD-7B's C6, the C6-Zero) nothing is locked and
+  every such read faults. The radio runs in U-mode, so on an IDF-layout C6 a
+  fault in the vendor's radio code can reach any peripheral and the interrupt
+  controller. The bootloader cannot be replaced over the air without risking
+  the C6 (there is no second bootloader to fall back to).
 * **After the first LugalOS self-update** both slots hold LugalOS and the
   factory esp-hosted-mcu is gone; back it up first (`lota.py dump-other`).
   The Tab5's is in `~/Source/gith/esp/tab5-factory-flash/tab5-c6-ota0-factory.bin`,

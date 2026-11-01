@@ -41,6 +41,9 @@
 #include "kernel/printk.h"
 #include "kernel/mem_domain.h"
 #include "kernel/device.h"
+#include "kernel/ipc.h"
+#include "kernel/printk.h"
+#include "kernel/umode_probe.h"
 #include "arch/umode.h"
 #include "lugalos_config.h"
 #include <stdint.h>
@@ -119,6 +122,8 @@ extern char _bss_start[];
  * kernel address the domain does not cover -- the exact mistake this file is
  * built to catch. Byte offsets 8..11 of the shared block. */
 #define UPROBE_FORBIDDEN_SLOT 8
+/* The read probe's word, bytes 16..19, little-endian. */
+#define UPROBE_READ_VALUE 16
 
 UPROBE_UATTR static void uprobe_umode_body(void) {
     volatile uint8_t *shared = g_uprobe_shared;
@@ -155,6 +160,32 @@ UPROBE_UATTR static void uprobe_umode_body(void) {
     shared[UPROBE_MARK_SURVIVED] = 1;
     for (;;) { }
 }
+
+/* The read probe: one 32-bit load from the address in the forbidden slot, the word recorded, then a
+ * clean exit. Whether it faults, reads zeros or reads what the kernel reads is the answer. */
+UPROBE_UATTR static void uprobe_read_body(void) {
+    volatile uint8_t *shared = g_uprobe_shared;
+    shared[UPROBE_MARK_ENTERED] = 1;
+    uintptr_t addr = 0;
+    for (int i = 3; i >= 0; i--) {
+        addr = (addr << 8) | (uintptr_t)shared[UPROBE_FORBIDDEN_SLOT + i];
+    }
+    shared[UPROBE_MARK_ABOUT_TO] = 1;
+    uint32_t v = *(volatile uint32_t *)addr;
+    for (int i = 0; i < 4; i++) shared[UPROBE_READ_VALUE + i] = (uint8_t)(v >> (8 * i));
+    shared[UPROBE_MARK_SURVIVED] = 1;
+    register long a0 __asm__("a0") = SYS_UEXIT;
+    register long a1 __asm__("a1") = 0;
+    __asm__ volatile("ecall" : "+r"(a0) : "r"(a1) : "memory");
+    for (;;) { }
+}
+
+/* accepted: set by the kernel half before the probe task starts, read by that task; one probe at a
+ * time (g_uprobe_busy). */
+static void (*g_uprobe_entry)(void);
+/* guarded by: itself, an atomic exchange: the write probe (the shell) and the read probe (/proc/pmp,
+ * on the 9P task) share the stack, the block and the domain. */
+static int g_uprobe_busy;
 
 /* Kernel-mode half: build the domain, then make the one-way jump.
  *
@@ -203,6 +234,10 @@ static void uprobe_task_body(void *arg) {
         printk("[UProbe] Could not find an address outside the domain to test with.\n");
         return;
     }
+    if (g_uprobe_entry == uprobe_read_body) {
+        forbidden = 0;                       /* the read probe's address is already in the block */
+        for (int i = 3; i >= 0; i--) forbidden = (forbidden << 8) | g_uprobe_shared[UPROBE_FORBIDDEN_SLOT + i];
+    }
     for (int i = 0; i < 4; i++) {
         g_uprobe_shared[UPROBE_FORBIDDEN_SLOT + i] =
             (uint8_t)((forbidden >> (8 * i)) & 0xffu);
@@ -214,7 +249,7 @@ static void uprobe_task_body(void *arg) {
         return;
     }
 
-    arch_enter_user(uprobe_umode_body,
+    arch_enter_user(g_uprobe_entry,
                     (uintptr_t)g_uprobe_stack + sizeof(g_uprobe_stack), 0, 0, 0);
 }
 
@@ -223,12 +258,18 @@ void umode_probe_run(void) {
         printk("[UProbe] No enforced memory domains on this build -- nothing to test.\n");
         return;
     }
+    if (__atomic_exchange_n(&g_uprobe_busy, 1, __ATOMIC_ACQUIRE)) {
+        printk("[UProbe] Another probe is running\n");
+        return;
+    }
 
     for (uint32_t i = 0; i < UPROBE_SHARED_BYTES; i++) g_uprobe_shared[i] = 0;
 
+    g_uprobe_entry = uprobe_umode_body;
     g_uprobe_pid = task_create("uprobe", uprobe_task_body, NULL);
     if (g_uprobe_pid < 0) {
         printk("[UProbe] Could not create the probe task\n");
+        __atomic_store_n(&g_uprobe_busy, 0, __ATOMIC_RELEASE);
         return;
     }
 
@@ -261,4 +302,54 @@ void umode_probe_run(void) {
     } else {
         printk("[UProbe] FAIL: incomplete -- see the flags above.\n");
     }
+    __atomic_store_n(&g_uprobe_busy, 0, __ATOMIC_RELEASE);
 }
+
+int umode_probe_read(uintptr_t addr, uint32_t *value) {
+    if (!mem_domain_enforced()) return -1;
+    if (__atomic_exchange_n(&g_uprobe_busy, 1, __ATOMIC_ACQUIRE)) return -1;
+    for (uint32_t i = 0; i < UPROBE_SHARED_BYTES; i++) g_uprobe_shared[i] = 0;
+    for (int i = 0; i < 4; i++) g_uprobe_shared[UPROBE_FORBIDDEN_SLOT + i] = (uint8_t)(addr >> (8 * i));
+    g_uprobe_entry = uprobe_read_body;
+    int rc = -1;
+    g_uprobe_pid = task_create("uprobe", uprobe_task_body, NULL);
+    if (g_uprobe_pid >= 0) {
+        for (int i = 0; i < 200000 && sched_task_state(g_uprobe_pid) != TASK_DEAD; i++) sched_yield();
+        if (sched_task_state(g_uprobe_pid) == TASK_DEAD && g_uprobe_shared[UPROBE_MARK_ABOUT_TO]) {
+            rc = g_uprobe_shared[UPROBE_MARK_SURVIVED] ? 1 : 0;
+            uint32_t v = 0;
+            for (int i = 3; i >= 0; i--) v = (v << 8) | g_uprobe_shared[UPROBE_READ_VALUE + i];
+            if (value) *value = v;
+        }
+    }
+    __atomic_store_n(&g_uprobe_busy, 0, __ATOMIC_RELEASE);
+    return rc;
+}
+
+#if defined(CONFIG_BOARD_ESP32C6)
+/* What a U-mode task with no grant for them reaches, read by the kernel and then from U-mode: the
+ * machine-mode interrupt controller and timer (in the CPU subsystem, 0x20000000-0x2fffffff), two
+ * peripherals no driver domain is granted, and kernel RAM as the control (must fault). An old ESP-IDF
+ * bootloader (the C6's factory one) leaves PMP entries locked that grant the first two ranges to
+ * U-mode; no later entry can take a lower-numbered locked grant back. */
+uint32_t umode_reach_render(char *buf, uint32_t cap) {
+    static const struct { const char *name; uintptr_t addr; } probes[] = {
+        { "plic_m_enable", 0x20001000u },   /* PLIC_MXINT_ENABLE */
+        { "clint_m_mtime", 0x20001808u },   /* CLINT_MINT_MTIME_L */
+        { "intmtx",        0x60010000u },   /* the interrupt matrix's first map register */
+        { "gpio_in",       0x6009103Cu },   /* GPIO_IN */
+    };
+    uint32_t n = (uint32_t)ksnprintf(buf, cap, "umode reach (kernel read / U-mode read):\n");
+    for (unsigned i = 0; i <= sizeof(probes) / sizeof(probes[0]) && n + 80 < cap; i++) {
+        const char *name = i < sizeof(probes) / sizeof(probes[0]) ? probes[i].name : "kernel_ram";
+        uintptr_t a = i < sizeof(probes) / sizeof(probes[0]) ? probes[i].addr : (uintptr_t)_bss_start + 4096;
+        uint32_t m = *(volatile uint32_t *)a, u = 0;
+        int rc = umode_probe_read(a, &u);
+        const char *verdict = rc < 0 ? "not run" : rc == 0 ? "blocked (fault)"
+                            : (u == 0 && m != 0) ? "zeros (filtered on the bus?)" : "REACHED";
+        n += (uint32_t)ksnprintf(buf + n, cap - n, "  %-14s %08lx  m=%08lx u=%08lx  %s\n", name,
+                                 (unsigned long)a, (unsigned long)m, rc == 1 ? (unsigned long)u : 0ul, verdict);
+    }
+    return n;
+}
+#endif

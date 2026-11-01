@@ -704,14 +704,17 @@ def push(a: argparse.Namespace) -> int:
         if st.get("board") != info["board"] and not a.no_board_check:
             sys.exit(f"the node is a {st.get('board')}, the image is for {info['board']}")
         old_slot = st.get("running")
+        step = "begin"
         try:
             node.ctl(f"begin {len(image)}")
+            step = "send"
             node.send(image, a.rate)
+            step = "commit"
             node.ctl("commit")
         except Exception as e:
-            # The node says why in /dev/ota; a 9P write error says only that it failed.
-            why = node.status().get("error", str(e))
-            print(f"\nthe node refused the update: {why}")
+            # The node says why in /dev/ota; a 9P write error says only that it failed (and where).
+            why = node.status().get("error", "")
+            print(f"\nthe node refused the update at {step}: {why or e}" + (f" ({e})" if why and str(e) not in why else ""))
             node.ctl("abort")
             return 1
         st = node.status()
