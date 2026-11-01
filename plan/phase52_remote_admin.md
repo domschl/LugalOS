@@ -188,8 +188,8 @@ Setup mode, and the owner-part reset, are started by:
 |---|---|---|
 | ESP32-C6-Zero | BOOT (GPIO9) | **verified** 2026-10-26 (a sensor board): strap pin with an internal pull-up, readable once running; both actions fire. The GPIO input register is `0x6009103C` |
 | ESP32-C6-MINI | BOOT (GPIO9) | same pin; not wired up, not tested |
-| ESP32-P4 NANO | BOOT (GPIO35) | **verified**: low when pressed once the pad is switched to GPIO with its pull-up (after reset it is muxed elsewhere and reads 0); both actions fire. Never open the console with a tool that resets the board while holding it: that is download mode |
-| ESP32-P4 LCD-7B | BOOT (GPIO35) | same pin and code as the NANO; not tested on the board |
+| ESP32-P4 NANO | none (was BOOT, GPIO35) | **removed 2026-10-31**: GPIO35 is also the Ethernet MAC's TXD1; read as a button it took TXD1 and, once the MAC drove it, a held button wiped the owner part |
+| ESP32-P4 LCD-7B | none (was BOOT, GPIO35) | **removed 2026-11-01** (owner's decision): the setup button is for headless and appliance-style boards only; a board with a screen and a keyboard has its console. Tested before removal: the 15 s press crashed on a one-page stack, fixed in `0b74c5f` |
 | Pico 2 / Pico 2 W | BOOTSEL | **verified** on the Pico 2 W: read by floating the flash chip-select, from RAM, with interrupts off and core 1 parked (the flash-write handshake); both actions fire |
 | LCD-7B, RP2350 touch terminal, Tab5 | touch (GT911 / ST7123) | e.g. a long press on the menu bar; no extra hardware |
 | Pico-Clock-Green | SET / UP / DOWN | already polled (`drivers/pico_clock_*.c`) |

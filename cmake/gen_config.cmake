@@ -194,6 +194,8 @@ set(_optional_keys
     # The pin of a button (active low, with a pull-up) whose long press starts setup mode and,
     # longer, resets the owner part (kernel/setup_button.c). CONFIG_SETUP_BUTTON_BOOTSEL 1
     # names the RP2350's BOOTSEL button instead, which is not on a pin the GPIO block can read.
+    # Only for headless boards and appliance-style presets: a board with a screen and a keyboard
+    # has its console for that, and a button held by accident would wipe the owner part.
     CONFIG_SETUP_BUTTON_GPIO
     CONFIG_SETUP_BUTTON_BOOTSEL
     # The status LED that shows a headless node's mode (kernel/status_led.c): a GPIO driving an LED

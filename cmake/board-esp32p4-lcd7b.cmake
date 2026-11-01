@@ -179,7 +179,9 @@ set(CONFIG_SDIO_D3_GPIO    17)
 set(CONFIG_SDIO_FREQ_KHZ   40000)   # SDIO high speed; the C6's slave answers at it
 set(CONFIG_C6_CHIP_PU_GPIO 54)
 
-set(CONFIG_SETUP_BUTTON_GPIO 35)   # BOOT, as on the NANO
+# No setup button: the setup button is for headless and appliance-style boards. This one has a screen
+# and a keyboard, so `setup start` and `setup reset-owner` at its console do the same, and BOOT held by
+# accident would wipe the owner part.
 
 # Named by /proc/board and the banner (kernel/boardinfo.h).
 set(CONFIG_BOARD_DESC "Waveshare ESP32-P4-WIFI6-Touch-LCD-7B")
