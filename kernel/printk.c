@@ -175,9 +175,9 @@ static char fmt_scan(const char **pp) {
     return *p;
 }
 
-static void print_num(putc_fn pc, void *ctx, unsigned long num, int base) {
+static void print_num(putc_fn pc, void *ctx, unsigned long num, int base, bool upper) {
     char buf[64];
-    const char digits[] = "0123456789abcdef";
+    const char *digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
     int i = 0;
 
     if (num == 0) {
@@ -206,7 +206,7 @@ static void print_timestamp(putc_fn pc, puts_fn ps, void *ctx) {
     else if (sec < 1000) ps(ctx, "  ");
     else if (sec < 10000) ps(ctx, " ");
 
-    print_num(pc, ctx, sec, 10);
+    print_num(pc, ctx, sec, 10, false);
     pc(ctx, '.');
     pc(ctx, '0' + ((msec / 100) % 10));
     pc(ctx, '0' + ((msec / 10) % 10));
@@ -374,7 +374,7 @@ static int vprintk_src(putc_fn pc, puts_fn ps, void *ctx,
                     for (int w = 0; w < width - digits; w++) pc(ctx, pad);
                 }
                 if (val < 0 && !zero_pad) pc(ctx, '-');
-                print_num(pc, ctx, mag, 10);
+                print_num(pc, ctx, mag, 10, false);
                 if (width > digits && left_pad) {
                     for (int w = 0; w < width - digits; w++) pc(ctx, ' ');
                 }
@@ -390,7 +390,7 @@ static int vprintk_src(putc_fn pc, puts_fn ps, void *ctx,
                     char pad = zero_pad ? '0' : ' ';
                     for (int w = 0; w < width - digits; w++) pc(ctx, pad);
                 }
-                print_num(pc, ctx, val, 10);
+                print_num(pc, ctx, val, 10, false);
                 if (width > digits && left_pad) {
                     for (int w = 0; w < width - digits; w++) pc(ctx, ' ');
                 }
@@ -408,7 +408,7 @@ static int vprintk_src(putc_fn pc, puts_fn ps, void *ctx,
                     char pad = zero_pad ? '0' : ' ';
                     for (int w = 0; w < width - digits; w++) pc(ctx, pad);
                 }
-                print_num(pc, ctx, val, 16);
+                print_num(pc, ctx, val, 16, *p == 'X');
                 if (width > digits && left_pad) {
                     for (int w = 0; w < width - digits; w++) pc(ctx, ' ');
                 }
