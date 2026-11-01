@@ -2,7 +2,9 @@
 
 **Status: Part A done (52.1–52.5a, 2026-10-18). Part B re-checked against the
 tree and cut into milestones 52.6–52.16 on 2026-10-25 (§3.2, §4 Part B); its
-decisions were confirmed by the owner the same day (§3.3).** The identity, claiming and
+decisions were confirmed by the owner the same day (§3.3).** **Part B status 2026-11-01:** 52.6-52.12,
+52.13b, 52.14 and 52.15 done; 52.7a and 52.16 open. 52.13 (a setup access point on the C6 for P4
+boards) and 52.15b (the P4's crypto hardware) moved to phase 68 (advanced remote admin). The identity, claiming and
 certificate decisions in §1.3 and §1.5 were confirmed by the owner on
 2026-10-14. Follows phase 49, whose 49.8b built the generic OTA shape and its
 first backend (the C6), and whose 49.8a made a node's state readable as files.
@@ -820,8 +822,9 @@ deferred without blocking anything after it.
     layout stays acceptable for the C6 or the loader layout replaces it once
     LugalOS is installed.
 
-* **52.8 ESP32-P4 OTA backend (`drivers/ota_esp32p4.c`).** **DONE 2026-10-26 for
-  the NANO (v1.3) and LCD-7B (v3.2); Tab5 not attached, not run; 52.8d open.**
+* **52.8 ESP32-P4 OTA backend (`drivers/ota_esp32p4.c`).** **DONE**: the NANO (v1.3) and LCD-7B
+  (v3.2) 2026-10-26, 52.8d (whole board) 2026-10-26, the Tab5 and both boards over Wi-Fi with signed
+  images 2026-10-31 (52.8c).
   * *As built:* the layout is `doc/admin/updates.md`'s P4 table: loader at
     `0x2000`, `/flash0` unchanged, slots A/B at `0x250000`/`0x450000` (2 MB),
     boot records at `0x650000`. The loader (`arch/riscv/esp32p4/loader.c`)
@@ -970,8 +973,9 @@ deferred without blocking anything after it.
     `/dev/owner`, the setup window, `CONFIG_NETWORK_CLAIM`, the console `setup`
     command, the setup secret in `provision.py`, and the tests (QEMU claim
     cycle, a build without the flag, the host check of the unauthenticated
-    attach) are DONE, and so are the button triggers (§1.4 table; the C6 and the
-    LCD-7B are untested). **Open:** the setup access point that makes the unauthenticated
+    attach) are DONE, and so are the button triggers (§1.4 table). *2026-11-01:* the C6-Zero's
+    button verified; the P4 boards have none (the NANO's pin clashes with the Ethernet MAC, the LCD-7B
+    and Tab5 have a console): the button is for headless and appliance-style boards only. **Open:** the setup access point that makes the unauthenticated
     attach reachable (52.12 supplies `p9_link_is_setup_ap()`; until then a claim
     comes over a cable or the console). `/dev/owner` is one file with a command
     per line, not a directory: simpler, and a directory buys nothing before 52.11.
@@ -1002,7 +1006,7 @@ deferred without blocking anything after it.
     off removes the path at compile time.
   * **Triggers:** console `setup start|stop|reset-owner`, `admin` over 9P
     (setup only), and a long press. Pico 2 W BOOTSEL (read from SRAM with
-    XIP paused) and NANO BOOT (GPIO35), checked on hardware. Results go
+    XIP paused) and C6-Zero BOOT (GPIO9), checked on hardware. Results go
     into the board guides (§1.4's table).
   * `tools/provision.py` generates the setup secret and prints it as text +
     a QR payload (WPA `WIFI:` URI).
@@ -1157,9 +1161,10 @@ deferred without blocking anything after it.
   Pico 2 W. A claimed node ignores the 5 s press (a Wi-Fi change then needs the 15 s
   factory reset), and the Pico 2 W's LED is dark while the radio reloads its firmware
   on a mode switch; both are accepted. The scan list, `/dev/wlan ap start|stop`,
-  Android and the packet capture for I6 move to the TLS milestones' hardware pass.
+  Android and the packet capture for I6 move to 52.16's hardware pass.
 
-* **52.13 C6 SoftAP for P4 boards** *(deferrable).* *Board: the NANO, then
+* **52.13 C6 SoftAP for P4 boards.** **Moved to phase 68** (68.2, `plan/phase68_advanced_remote_admin.md`)
+  on 2026-11-01; the text below is kept as that milestone's starting point. *Board: the NANO, then
   the LCD-7B and the Tab5.*
   * Port the WPA2 authenticator (IDF `wpa_supplicant`'s `src/ap/` +
     `esp_hostap`) into the C6's confined radio domain, replacing the
@@ -1190,7 +1195,10 @@ deferred without blocking anything after it.
       press shows fast red, and the node, now without Wi-Fi, goes dark. That press also found the
       button task's stack too small since `ebfb5de`: the C6-Zero restarted by watchdog after the reset,
       and the LCD-7B crashed (848 bytes past its end). Measured 4900 bytes on the P4; two pages since
-      `0b74c5f`. To repeat once on the C6-Zero and the LCD-7B with the fix.
+      `0b74c5f`. Repeated with the fix: no crash, but both nodes stayed on Wi-Fi with no credentials stored
+      (a running radio keeps its network). Since `8798739` a credential change (`wlan`, `wlan clear`, an
+      owner reset) restarts the radio: a stand-alone C6 restarts, a P4 restarts its C6. Checked from the
+      console on both; one more 15 s press on the C6-Zero by hand is in 52.16's hardware pass.
   * A C6-Zero on its own USB port is a node of its own (sensor persona: its own IP,
     I2C sensors, MQTT), not a radio for a P4. Provision it from the console
     (`wlan`, `name`, `grant`), or claim it over 9P once it is on a network.
@@ -1241,7 +1249,8 @@ deferred without blocking anything after it.
     in any file served over 9P.
 
 * **52.15 TLS 1.3 server and HTTPS admin** (`CONFIG_TLS_SERVER` boards only).
-  * **DONE 2026-10-31 on the NANO** (`d35b7e5`, `f408f15`); 52.15b (accelerators) not started.
+  * **DONE 2026-10-31 on the NANO** (`d35b7e5`, `f408f15`), then the LCD-7B and Tab5; 52.15b
+    (accelerators) moved to phase 68 (68.1).
     *As built:* `net/tls.c`, transport-independent (non-blocking recv/send callbacks): TLS 1.3 only,
     TLS_CHACHA20_POLY1305_SHA256, X25519 with a HelloRetryRequest when the client led with another group,
     ECDSA P-256, KeyUpdate (answering update_requested), alerts, the middlebox-compatibility CCS. No PSK,
@@ -1267,8 +1276,8 @@ deferred without blocking anything after it.
     page in 0.63 / 0.41 s, plain HTTP redirected; the admin page signs in over HTTPS in Chromium and
     Firefox on both; an OTA from the browser on each (a tampered image refused at commit, a signed one
     committed, restarted into and confirmed).
-  * *Not verified:* Safari (iOS) and Chrome (Android) (no phone in this session), the RP2350-LCD-7
-    (`CONFIG_TLS_SERVER` not set there yet), and 52.15b.
+  * *Not verified:* Safari (iOS) and Chrome (Android) (in 52.16's hardware pass), the RP2350-LCD-7
+    (`CONFIG_TLS_SERVER` not set there yet).
   *Board: the NANO; the RP2350-LCD-7 (PSRAM) after it.*
   * **`net/tls.c`, server only:** ClientHello (supported_versions, X25519
     key_share, signature_algorithms, `record_size_limit`),
@@ -1296,8 +1305,11 @@ deferred without blocking anything after it.
     `test_esp32p4.py` gained `test_ota_state` and `test_https_admin` (both skip cleanly). From the
     browser (the page's Update tab, `tests/web/update_check.js`): the NANO over HTTPS (52.15) and the
     **Pico 2 W over plain HTTP with a protected session**, 1 MB in 52 s, confirmed, the old build kept in
-    the other slot. Open: a Pico 2 W set up from a phone again end to end on today's build, the setup-mode
-    cases in `test_wifi.py`, and the boards not on the desk (LCD-7B, Tab5, RP2350-LCD-7).
+    the other slot. The LCD-7B and Tab5: suites green (52/52), HTTPS and a browser OTA on each.
+    **Open, the hardware pass:** a Pico 2 W set up from a phone again end to end on today's build (and
+    Android), Safari (iOS) and Chrome (Android) over HTTPS, one 15 s press on the C6-Zero, the
+    RP2350-LCD-7 (TLS not enabled there yet). **Open, on the desk:** the setup-mode cases in
+    `test_wifi.py`, 52.7a.
   * *§1.6, measured 2026-10-31:* a C6-Zero with radio, sensors, MQTT, mDNS, httpd and 9P running has 5
     free pages (20 KB). A TLS session needs ~21 KB of record buffers on top: the C6-Zero is not a TLS
     board and stays on 52.11b's protected sessions. TLS-PSK against mosquitto is a client, for a later phase.
