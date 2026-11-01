@@ -17,6 +17,7 @@
 #include "kernel/printk.h"
 #include "kernel/sched.h"
 #include "kernel/time.h"
+#include "kernel/sha256.h"
 #include "net/dhcpd.h"
 #include "net/httpd.h"
 #include "net/ip.h"
@@ -33,6 +34,8 @@ static const uint8_t AP_NONE[4] = { 0, 0, 0, 0 };
 static bool     g_up;
 static bool     g_httpd_ours;       /* httpd was started by this task, so this task stops it */
 static uint64_t g_closing_since_ms;
+static uint8_t  g_secret_hash[SHA256_DIGEST_LEN];   /* of the passphrase the access point was opened with */
+static uint64_t g_secret_checked_ms;
 
 /* "LugalOS-" and the last two bytes of the UID, in capitals: on the label beside the secret
  * (tools/provision.py prints the same). A node without a UID uses its MAC. */
@@ -48,6 +51,7 @@ static void ssid_for(char *out, uint32_t cap) {
 static bool bring_up(void) {
     char secret[NODE_SETUP_SECRET_MAX + 1], ssid[16];
     if (!node_setup_secret(secret, sizeof secret)) return false;
+    sha256(secret, (uint32_t)strlen(secret), g_secret_hash);
     ssid_for(ssid, sizeof ssid);
     printk("[SetupAP] opening \"%s\"\n", ssid);
 
@@ -87,6 +91,17 @@ static void tear_down(void) {
     if (cyw43_gspi_probe() && node_wlan_ssid(ssid, sizeof ssid)) (void)cyw43_autostart_task_start();
 }
 
+/* True if the stored setup secret is no longer the access point's passphrase: a new secret (the old
+ * label may have leaked) must lock out the old one now, not when the window closes. */
+static bool secret_changed(void) {
+    char secret[NODE_SETUP_SECRET_MAX + 1];
+    uint8_t h[SHA256_DIGEST_LEN];
+    if (!node_setup_secret(secret, sizeof secret)) return true;
+    sha256(secret, (uint32_t)strlen(secret), h);
+    memset(secret, 0, sizeof secret);
+    return memcmp(h, g_secret_hash, sizeof h) != 0;
+}
+
 static void setup_ap_task(void *arg) {
     (void)arg;
     for (;;) {
@@ -97,6 +112,14 @@ static void setup_ap_task(void *arg) {
             if (!g_up) task_sleep_ms(30000);       /* do not hammer a radio that will not start */
         } else if (g_up && want) {
             g_closing_since_ms = 0;
+            uint64_t now = time_get_ms();
+            if (now - g_secret_checked_ms >= 2000u) {
+                g_secret_checked_ms = now;
+                if (secret_changed()) {
+                    printk("[SetupAP] the setup secret changed: reopening with the new one\n");
+                    tear_down();                   /* the next pass brings it up again */
+                }
+            }
         } else if (g_up && !want) {
             uint64_t now = time_get_ms();
             if (!g_closing_since_ms) g_closing_since_ms = now;
