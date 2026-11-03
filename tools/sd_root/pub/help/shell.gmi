@@ -49,6 +49,7 @@ LugalOS supports multiple mounted FAT32 volumes:
 
 ### Process & Resource Inspection
 * ps (alias for cat /proc/ps): Lists running tasks, their priority tier, current CPU core (Hart), execution state, memory domain isolation status (PMP, Sv39, or - for a kernel-mode task), and each task's stack high-water mark against its size.
+* svc: Lists the jobs on the service host, the one task that runs the small periodic jobs (the watchdog's feed, the setup button, the status LED): each job's period, how often it has run, and its longest step in microseconds. A long step delays every other job on the host.
 * top: Interactive real-time process, CPU, and memory monitor. Press q to exit.
 * meminfo (alias for cat /proc/meminfo): Shows total, used, and free page frames in the physical allocator (palloc), including bulk PSRAM pools.
 * cat /proc/pages: Every allocated page run and who asked for it, one line each: zone (f SRAM, b bulk/PSRAM), base address, pages, the return address into the allocator's caller, and the task when the run is that task's stack. The addresses are named on the host by tools/ramledger.py, which sums the pages by subsystem. When the list does not fit one page, its last line says how many runs were left out.
