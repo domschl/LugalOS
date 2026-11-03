@@ -7,8 +7,14 @@ The link-time floor in linker/rp2350.ld catches a heap regression. This says
 phase 9's H4, phase 13's STRING_POOL_SIZE follow-up, and phase 15).
 
     python3 tools/sizereport.py build/rp2350/lugalos.elf
-    python3 tools/sizereport.py build/rp2350/lugalos.elf --check tools/sizereport-rp2350.json
-    python3 tools/sizereport.py build/rp2350/lugalos.elf --update tools/sizereport-rp2350.json
+    python3 tools/sizereport.py build/rp2350/lugalos.elf --check tools/ram_baselines/rp2350.json
+    python3 tools/sizereport.py build/rp2350/lugalos.elf --update tools/ram_baselines/rp2350.json
+    python3 tools/sizereport.py --all --check     # every preset built here
+    python3 tools/sizereport.py --all --update    # re-baseline every preset built here
+
+Files are grouped by subsystem (tools/ramsubsys.py), the same grouping
+tools/ramledger.py uses for pages at runtime. Baselines are keyed by build
+directory: build/<dir>/lugalos.elf against tools/ram_baselines/<dir>.json.
 
 --check compares against a recorded baseline and exits non-zero if static RAM
 grew. That is deliberately blunt: on RP2350 .bss and the heap are the same
@@ -24,6 +30,12 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ramsubsys  # noqa: E402
+
+REPO = Path(__file__).resolve().parent.parent
+BASELINES = REPO / "tools" / "ram_baselines"
 
 NM_CANDIDATES = ["riscv64-elf-nm", "riscv64-unknown-elf-nm", "riscv32-unknown-elf-nm",
                  "llvm-nm", "nm"]
@@ -81,6 +93,34 @@ def symbol_types(readelf, elf):
     return types
 
 
+def section_ranges(readelf, elf):
+    """[(start, end, name)] of the allocated sections, for naming symbols that
+    carry no line info (the vendor radio blob, linker-made objects)."""
+    out = subprocess.run([readelf, "-SW", elf], capture_output=True, text=True).stdout
+    ranges = []
+    for line in out.splitlines():
+        m = line.split("]", 1)
+        if len(m) != 2:
+            continue
+        parts = m[1].split()
+        if len(parts) < 5 or not parts[0].startswith("."):
+            continue
+        try:
+            addr, size = int(parts[2], 16), int(parts[4], 16)
+        except ValueError:
+            continue
+        if addr and size:
+            ranges.append((addr, addr + size, parts[0]))
+    return ranges
+
+
+def section_of(ranges, addr):
+    for lo, hi, name in ranges:
+        if lo <= addr < hi:
+            return name
+    return "?"
+
+
 def short_src(src):
     src = src.rsplit(":", 1)[0]
     for marker in ("lugalos/",):
@@ -112,7 +152,9 @@ def collect(nm, elf, readelf=None):
     if not (bulk_end > bulk_start and not (ram_start <= bulk_start < ram_end)):
         bulk_start = bulk_end = 0       # absent, or inside SRAM (counted there)
 
-    types = symbol_types(readelf or find_readelf(nm), elf)
+    readelf = readelf or find_readelf(nm)
+    types = symbol_types(readelf, elf)
+    sections = section_ranges(readelf, elf)
     out = subprocess.run([nm, "-S", "-l", elf], capture_output=True, text=True).stdout
     per_file, total, ram_code = {}, 0, 0
     bulk_per_file, bulk_total = {}, 0
@@ -127,7 +169,8 @@ def collect(nm, elf, readelf=None):
         if size == 0:
             continue
         kind = types.get((parts[3], addr))
-        src = short_src(parts[4]) if len(parts) >= 5 else "(no line info)"
+        src = (short_src(parts[4]) if len(parts) >= 5
+               else f"(no line info: {section_of(sections, addr)})")
         if ram_start <= addr < ram_end:
             if kind == "OBJECT":
                 per_file[src] = per_file.get(src, 0) + size
@@ -141,7 +184,9 @@ def collect(nm, elf, readelf=None):
     kernel_end = symbol_value(nm, elf, "_kernel_end")
     heap_end = symbol_value(nm, elf, "_heap_end")
     heap = (heap_end - kernel_end) if (kernel_end and heap_end) else 0
-    return {"per_file": per_file, "total": total + ram_code, "ram_code": ram_code,
+    return {"per_file": per_file, "per_subsystem": ramsubsys.group(per_file),
+            "bulk_per_subsystem": ramsubsys.group(bulk_per_file),
+            "total": total + ram_code, "ram_code": ram_code,
             "bulk_per_file": bulk_per_file, "bulk_total": bulk_total,
             "heap_bytes": heap, "heap_pages": heap // 4096}
 
@@ -158,8 +203,19 @@ def report_files(cur_files, base_files, show_delta):
         print(f"{cur:9d}  {mark:>8}  {n}")
 
 
-def report(data, baseline=None):
+def report(data, baseline=None, files=True):
     b = baseline or {}
+    print(f"{'bytes':>9}  {'delta':>8}  subsystem (static RAM)")
+    print("-" * 64)
+    report_files(data["per_subsystem"], b.get("per_subsystem", {}), baseline is not None)
+    if data.get("bulk_per_subsystem"):
+        print(f"{'':>9}  {'':>8}  -- in BULK_BSS (PSRAM) --")
+        report_files(data["bulk_per_subsystem"], b.get("bulk_per_subsystem", {}), baseline is not None)
+    print()
+    if not files:
+        d = data["total"] - b.get("total", data["total"])
+        print(f"{data['total']:9d}  {(f'{d:+d}' if baseline else ''):>8}  == static RAM total ==")
+        return
     print(f"{'bytes':>9}  {'delta':>8}  source")
     print("-" * 64)
     report_files(data["per_file"], b.get("per_file", {}), baseline is not None)
@@ -179,21 +235,83 @@ def report(data, baseline=None):
         print(f"{data['bulk_total']:9d}  {(f'{db:+d}' if baseline else ''):>8}  == BULK_BSS total (PSRAM) ==")
 
 
+def preset_builds() -> list[str]:
+    """Build directory names of the presets in CMakePresets.json, in order."""
+    presets = json.loads((REPO / "CMakePresets.json").read_text())
+    out = []
+    for p in presets.get("configurePresets", []):
+        d = p.get("binaryDir", "")
+        if d and not p.get("hidden"):
+            name = d.rsplit("/", 1)[-1]
+            if name not in out:
+                out.append(name)
+    return out
+
+
+def compare(data, baseline) -> tuple[int, int]:
+    return (data["total"] - baseline["total"],
+            data.get("bulk_total", 0) - baseline.get("bulk_total", 0))
+
+
+def run_all(nm, check: bool, update: bool) -> int:
+    """Every preset with a build here: one line each, and a non-zero exit if
+    any grew or has no baseline. Presets not built here are listed as such."""
+    BASELINES.mkdir(exist_ok=True)
+    failed = 0
+    print(f"{'build':<16} {'static':>8} {'delta':>7} {'heap pg':>7} {'bulk':>9} {'delta':>8}  result")
+    print("-" * 72)
+    for name in preset_builds():
+        elf = REPO / "build" / name / "lugalos.elf"
+        if not elf.exists():
+            print(f"{name:<16} {'':>8} {'':>7} {'':>7} {'':>9} {'':>8}  not built here")
+            continue
+        data = collect(nm, str(elf))
+        bp = BASELINES / f"{name}.json"
+        if update:
+            bp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+            print(f"{name:<16} {data['total']:8d} {'':>7} {data['heap_pages']:7d} "
+                  f"{data['bulk_total']:9d} {'':>8}  baseline written")
+            continue
+        if not bp.exists():
+            print(f"{name:<16} {data['total']:8d} {'':>7} {data['heap_pages']:7d} "
+                  f"{data['bulk_total']:9d} {'':>8}  NO BASELINE")
+            failed += 1
+            continue
+        grew, bulk_grew = compare(data, json.loads(bp.read_text()))
+        bad = check and (grew > 0 or bulk_grew > 0)
+        failed += bad
+        print(f"{name:<16} {data['total']:8d} {grew:+7d} {data['heap_pages']:7d} "
+              f"{data['bulk_total']:9d} {bulk_grew:+8d}  {'GREW' if bad else 'ok'}")
+    if failed:
+        print(f"\n[sizereport] FAIL: {failed} build(s) grew or have no baseline. If intended, "
+              "re-baseline with `python3 tools/sizereport.py --all --update` and review the diff.")
+        return 1
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("elf")
+    ap.add_argument("elf", nargs="?")
     ap.add_argument("--nm")
-    ap.add_argument("--check", metavar="BASELINE")
-    ap.add_argument("--update", metavar="BASELINE")
+    ap.add_argument("--check", metavar="BASELINE", nargs="?", const="")
+    ap.add_argument("--update", metavar="BASELINE", nargs="?", const="")
+    ap.add_argument("--all", action="store_true",
+                    help="every preset in CMakePresets.json that is built here")
+    ap.add_argument("--subsystems", action="store_true",
+                    help="the subsystem table only, without the per-file list")
     args = ap.parse_args()
 
     nm = find_nm(args.nm)
+    if args.all:
+        return run_all(nm, check=args.check is not None, update=args.update is not None)
+    if not args.elf:
+        ap.error("give an ELF, or --all")
     data = collect(nm, args.elf)
 
     if args.update:
         Path(args.update).write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
-        report(data)
+        report(data, files=not args.subsystems)
         print(f"\n[sizereport] baseline written to {args.update}")
         return 0
 
@@ -202,19 +320,18 @@ def main() -> int:
         bp = Path(args.check)
         if not bp.exists():
             print(f"[sizereport] no baseline at {bp}; run with --update first")
-            report(data)
+            report(data, files=not args.subsystems)
             return 0
         baseline = json.loads(bp.read_text())
 
-    report(data, baseline)
+    report(data, baseline, files=not args.subsystems)
 
     if baseline:
-        grew = data["total"] - baseline["total"]
-        bulk_grew = data.get("bulk_total", 0) - baseline.get("bulk_total", 0)
+        grew, bulk_grew = compare(data, baseline)
         if grew > 0:
             print(f"\n[sizereport] FAIL: static RAM grew by {grew} bytes "
                   f"({grew / 4096:.1f} heap pages).")
-            print("[sizereport] On RP2350 this is heap nothing else can have. If the")
+            print("[sizereport] This is heap nothing else can have. If the")
             print("[sizereport] growth is intended, re-baseline with --update.")
             return 1
         if bulk_grew > 0:

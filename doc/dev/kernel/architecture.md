@@ -8,7 +8,7 @@ LugalOS is engineered as a true capability-isolated microkernel operating system
 
 The LugalOS kernel adheres to three core tenets:
 1. **Minimal Privileged Core**: Only the scheduler, physical page allocator, IPC channel engine, and trap dispatcher execute in RISC-V Machine Mode (M-Mode) or Supervisor Mode (S-Mode).
-2. **Hardware-Enforced Memory Domains**: All driver tasks (UART, USB, SD, I2C, displays) and user programs execute in unprivileged User Mode (U-Mode), strictly constrained by hardware memory windows.
+2. **Hardware-Enforced Memory Domains**: User programs, and the drivers and vendor code that have been moved into domains, execute in unprivileged User Mode (U-Mode), strictly constrained by hardware memory windows. Which components that is differs by board; see [section 5](#5-where-isolation-applies-today).
 3. **Copy-Always IPC Channels**: Shared memory concurrency across tasks is disallowed. All cross-task communication takes place through copy-always message channels (`chan_t`), eliminating pointer race conditions and use-after-free vulnerabilities.
 
 ---
@@ -59,3 +59,19 @@ System calls cross from U-Mode into the kernel via the RISC-V `ecall` instructio
 3. User argument pointers are copied and checked against domain bounds.
 4. Syscall executes synchronously in the kernel or yields to a message server.
 5. Control returns to U-Mode via `mret` / `sret`.
+
+---
+
+## 5. Where Isolation Applies Today
+
+The domain machinery is the same on every board, but not every component runs in a domain. Services and many drivers are **kernel-mode tasks**: they have their own stack and are reached through channels, but they share the kernel's address space. The `Isol` column of `ps` shows which is which on a running board (`PMP` or `Sv39` for a confined task, `-` for a kernel-mode one).
+
+| Component | RP2350 | ESP32-P4 / ESP32-C6 |
+| :--- | :--- | :--- |
+| Drivers: UART, USB CDC, SPI SD, I2C, ST7735, LCD terminal, USB keyboard, clock display | U-mode, own domain (`driver_umode_enter()`, `drivers/driver_task.c`) | kernel-mode tasks (UART, SDMMC via `driver_task_start()`) |
+| Services: httpd, MQTT, the 9P server, sensor hub, DHCP, setup, klogd, LLP | kernel-mode tasks | kernel-mode tasks |
+| Vendor Wi-Fi code | - | U-mode on the C6 ([ADR 007](../../history/adr/007_c6_peripheral_confinement.md)) |
+| ELF user programs | U-mode | U-mode |
+
+For a kernel-mode task the channel still copies every message (ADR 004), so moving it into a domain later changes no caller. What the microkernel structure costs such a task in RAM (its stack, its endpoint buffers) is measured per board by the RAM ledger ([Testing Guide](../testing.md#ram-ledger)).
+

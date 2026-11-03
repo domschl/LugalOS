@@ -230,6 +230,20 @@ bool sched_task_info_ex(uint32_t index, int *pid, int *state, const char **name,
     return true;
 }
 
+/* The task whose palloc'd kernel stack starts at `base`, for /proc/pages.
+ * Read without g_sched_lock, as sched_task_info_ex() is: a diagnostic that
+ * may name a task that has just exited. */
+bool sched_stack_owner(uintptr_t base, int *pid, const char **name) {
+    for (int i = 0; i < MAX_TASKS; i++) {
+        if (g_tasks[i].state == TASK_UNUSED || !g_tasks[i].stack_base) continue;
+        if ((uintptr_t)g_tasks[i].stack_base != base) continue;
+        if (pid)  *pid = g_tasks[i].pid;
+        if (name) *name = g_tasks[i].name;
+        return true;
+    }
+    return false;
+}
+
 /* Attaches a memory domain to a task. Separate from task_create() because a
  * task's regions usually depend on resources allocated after it exists (its
  * own user stack, for one). */

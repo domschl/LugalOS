@@ -54,9 +54,10 @@ LugalOS supports multiple mounted FAT32 volumes:
 ## 3. System & Process Monitoring
 
 ### Process & Resource Inspection
-* `ps` (alias for `cat /proc/ps`): Lists running tasks, their priority tier, current CPU core (Hart), execution state, and memory domain isolation status (`PMP`, `Sv39`, or `-`).
+* `ps` (alias for `cat /proc/ps`): Lists running tasks, their priority tier, current CPU core (Hart), execution state, memory domain isolation status (`PMP`, `Sv39`, or `-` for a kernel-mode task), and each task's stack high-water mark against its size.
 * `top`: Interactive real-time process, CPU, and memory monitor. Press `q` to exit.
 * `meminfo` (alias for `cat /proc/meminfo`): Shows total, used, and free page frames in the physical allocator (`palloc`), including bulk PSRAM pools.
+* `cat /proc/pages`: Every allocated page run and who asked for it, one line each: zone (`f` SRAM, `b` bulk/PSRAM), base address, pages, the return address into the allocator's caller, and the task when the run is that task's stack. The addresses are named on the host by `tools/ramledger.py`, which sums the pages by subsystem. When the list does not fit one page, its last line says how many runs were left out.
 * `uname`: Prints the OS build name, release version, and hardware architecture target.
 
 ### Real-Time Clock & Timestamps

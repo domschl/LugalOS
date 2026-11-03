@@ -822,6 +822,34 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
                 "/sd0/            %9u  %9u  %9u     %3u%% /sd0/\n", total_b, used_b, free_b, pct);
         }
         return (int)used;
+    } else if (strcmp(rel, "pages") == 0) {
+        /* Every allocated page run and who asked for it (66.1): zone,
+         * base, pages, the return address into palloc's caller, and the
+         * task when the run is its kernel stack. Addresses only; the host
+         * names them from the ELF (tools/ramledger.py). Terse, because a
+         * P4 has more runs than the one-page buffer has lines of prose:
+         * when it fills, the last line says how many runs were left out. */
+        used += (uint32_t)ksnprintf(buf + used, cap - used, "# zone base pages caller [pid task]\n");
+        palloc_cursor_t cur = {0};
+        palloc_run_t run;
+        uint32_t left_out = 0, left_pages = 0;
+        while (palloc_run_next(&cur, &run)) {
+            if (cap - used < 64) { left_out++; left_pages += run.pages; continue; }
+            used += (uint32_t)ksnprintf(buf + used, cap - used, "%c %08lx %u %08lx",
+                                        run.bulk ? 'b' : 'f', (unsigned long)run.base,
+                                        run.pages, (unsigned long)run.caller);
+            int spid;
+            const char *sname;
+            if (sched_stack_owner(run.base, &spid, &sname)) {
+                used += (uint32_t)ksnprintf(buf + used, cap - used, " %d %s", spid, sname ? sname : "?");
+            }
+            used += (uint32_t)ksnprintf(buf + used, cap - used, "\n");
+        }
+        if (left_out) {
+            used += (uint32_t)ksnprintf(buf + used, cap - used, "# %u runs (%u pages) not shown\n",
+                                        left_out, left_pages);
+        }
+        return (int)used;
     } else if (strcmp(rel, "meminfo") == 0) {
         /* B2: real allocator numbers instead of a fixed string. The bump
          * allocator this replaced had nothing meaningful to report -- it
@@ -2284,7 +2312,7 @@ static int vfs_generate_proc_content(const char *rel, char *buf, uint32_t cap) {
 
 /* Unsized on purpose: /proc/dcf77 exists only where a receiver does, and the
  * one caller that walks this list already derives the count with sizeof. */
-static const char *g_proc_names[] = { "ps", "meminfo", "version", "board", "cpuinfo", "df", "kmsg", "devices", "buildid", "path", "ports", "config", "net", "node", "clock", "sensors", "sensor", "pmp",
+static const char *g_proc_names[] = { "ps", "meminfo", "pages", "version", "board", "cpuinfo", "df", "kmsg", "devices", "buildid", "path", "ports", "config", "net", "node", "clock", "sensors", "sensor", "pmp",
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)
     "usbhost",
 #endif

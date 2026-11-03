@@ -348,6 +348,8 @@ bool        sched_task_info(uint32_t index, int *pid, int *state, const char **n
  * tasks and loaded user programs; false for tasks that run in kernel-mode only.
  * This is what powers `ps`'s "Isol" column: it reads the field
  * mem_domain_activate() inspects. */
+/* The task whose kernel stack starts at `base` (/proc/pages); false if none. */
+bool        sched_stack_owner(uintptr_t base, int *pid, const char **name);
 bool        sched_task_info_ex(uint32_t index, int *pid, int *state, const char **name,
                                long *exit_status, bool *exited_clean, bool *has_domain);
 

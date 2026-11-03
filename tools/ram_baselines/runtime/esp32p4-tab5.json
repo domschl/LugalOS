@@ -1,0 +1,222 @@
+{
+  "build": "1304.2c4a86a6+",
+  "bulk": {
+    "fallbacks": 0,
+    "free": 6008,
+    "largest_run": 5888,
+    "peak": 1738,
+    "total": 7746
+  },
+  "fast": {
+    "free": 24,
+    "largest_run": 20,
+    "peak": 75,
+    "total": 93
+  },
+  "missing": [],
+  "not_shown": null,
+  "owners": {
+    "bulk": {
+      "display": {
+        "detail": {
+          "dsi_lcd_term_start (dsi_esp32p4.c)": 58,
+          "fb_start (dsi_esp32p4.c)": 900,
+          "lcdterm_init (lcdterm.c)": 256
+        },
+        "pages": 1214,
+        "runs": 5
+      },
+      "fs": {
+        "detail": {
+          "ramdisk_init (ramdisk.c)": 512
+        },
+        "pages": 512,
+        "runs": 1
+      },
+      "httpd": {
+        "detail": {
+          "https_up (httpd.c)": 11
+        },
+        "pages": 11,
+        "runs": 1
+      },
+      "vfs": {
+        "detail": {
+          "vfs_open_into_on (vfs_server.c)": 1
+        },
+        "pages": 1,
+        "runs": 1
+      }
+    },
+    "fast": {
+      "httpd": {
+        "detail": {
+          "httpd_start (httpd.c)": 5
+        },
+        "pages": 5,
+        "runs": 1
+      },
+      "llp": {
+        "detail": {
+          "take (llp_node.c)": 18
+        },
+        "pages": 18,
+        "runs": 6
+      },
+      "net": {
+        "detail": {
+          "ensure_bufs (tcp.c)": 8,
+          "net_stack_attach_locked (stack.c)": 1
+        },
+        "pages": 9,
+        "runs": 2
+      },
+      "shell": {
+        "detail": {
+          "scratch_acquire (scratch.c)": 2
+        },
+        "pages": 2,
+        "runs": 1
+      },
+      "stack": {
+        "detail": {
+          "dhcpc": 1,
+          "httpd": 6,
+          "i2c": 1,
+          "kbd": 2,
+          "klogd": 1,
+          "lcdflush": 2,
+          "llp": 2,
+          "netsrv": 3,
+          "orient": 4,
+          "p9srv": 3,
+          "power": 1,
+          "power_auto": 3,
+          "sdblk": 1,
+          "sensor_hub": 3,
+          "touch": 1,
+          "uart": 1
+        },
+        "pages": 35,
+        "runs": 16
+      }
+    }
+  },
+  "stacks": [
+    {
+      "isolation": "-",
+      "pid": 1,
+      "size": 8192,
+      "task": "lcdflush",
+      "used": 2908
+    },
+    {
+      "isolation": "-",
+      "pid": 2,
+      "size": 4096,
+      "task": "uart",
+      "used": 568
+    },
+    {
+      "isolation": "-",
+      "pid": 3,
+      "size": 4096,
+      "task": "sdblk",
+      "used": 652
+    },
+    {
+      "isolation": "-",
+      "pid": 4,
+      "size": 4096,
+      "task": "i2c",
+      "used": 652
+    },
+    {
+      "isolation": "-",
+      "pid": 5,
+      "size": 4096,
+      "task": "touch",
+      "used": 1084
+    },
+    {
+      "isolation": "-",
+      "pid": 6,
+      "size": 8192,
+      "task": "kbd",
+      "used": 248
+    },
+    {
+      "isolation": "-",
+      "pid": 7,
+      "size": 12288,
+      "task": "sensor_hub",
+      "used": 1036
+    },
+    {
+      "isolation": "-",
+      "pid": 8,
+      "size": 4096,
+      "task": "power",
+      "used": 296
+    },
+    {
+      "isolation": "-",
+      "pid": 9,
+      "size": 12288,
+      "task": "power_auto",
+      "used": 5272
+    },
+    {
+      "isolation": "-",
+      "pid": 10,
+      "size": 16384,
+      "task": "orient",
+      "used": 1020
+    },
+    {
+      "isolation": "-",
+      "pid": 11,
+      "size": 12288,
+      "task": "p9srv",
+      "used": 652
+    },
+    {
+      "isolation": "-",
+      "pid": 12,
+      "size": 8192,
+      "task": "llp",
+      "used": 1768
+    },
+    {
+      "isolation": "-",
+      "pid": 13,
+      "size": 12288,
+      "task": "netsrv",
+      "used": 4708
+    },
+    {
+      "isolation": "-",
+      "pid": 14,
+      "size": 4096,
+      "task": "dhcpc",
+      "used": 1052
+    },
+    {
+      "isolation": "-",
+      "pid": 16,
+      "size": 4096,
+      "task": "klogd",
+      "used": 1544
+    },
+    {
+      "isolation": "-",
+      "pid": 17,
+      "size": 24576,
+      "task": "httpd",
+      "used": 1292
+    }
+  ],
+  "waited_for": [
+    "httpd"
+  ]
+}

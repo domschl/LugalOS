@@ -1441,29 +1441,27 @@ endif()
 #     cmake --build build/rp2350 --target sizereport
 #     cmake --build build/rp2350 --target sizecheck    # fails if it grew
 #
-# `sizecheck` compares against tools/sizereport-<board>.json; re-baseline with
-# `python3 tools/sizereport.py <elf> --update <baseline>` when growth is
-# intended, so the new numbers land in a reviewable diff.
-if(DEFINED LUGALOS_BOARD_FILE)
-    get_filename_component(_board_stem "${LUGALOS_BOARD_FILE}" NAME_WE)
-    string(REPLACE "board-" "" _board_stem "${_board_stem}")
-    set(LUGALOS_SIZE_BASELINE
-        ${CMAKE_CURRENT_SOURCE_DIR}/tools/sizereport-${_board_stem}.json)
+# `sizecheck` compares against tools/ram_baselines/<build dir>.json; re-baseline
+# with `python3 tools/sizereport.py <elf> --update <baseline>` (or `--all
+# --update` for every preset) when growth is intended, so the new numbers land
+# in a reviewable diff. tests/runner.py checks every preset built (66.1).
+get_filename_component(_build_stem "${CMAKE_BINARY_DIR}" NAME)
+set(LUGALOS_SIZE_BASELINE
+    ${CMAKE_CURRENT_SOURCE_DIR}/tools/ram_baselines/${_build_stem}.json)
 
-    add_custom_target(sizereport
-        COMMAND ${CMAKE_COMMAND} -E echo "== static RAM, ${_board_stem} =="
-        COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/sizereport.py
-                $<TARGET_FILE:lugalos.elf> --nm ${CMAKE_NM}
-        DEPENDS lugalos.elf
-        USES_TERMINAL)
+add_custom_target(sizereport
+    COMMAND ${CMAKE_COMMAND} -E echo "== static RAM, ${_build_stem} =="
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/sizereport.py
+            $<TARGET_FILE:lugalos.elf> --nm ${CMAKE_NM}
+    DEPENDS lugalos.elf
+    USES_TERMINAL)
 
-    add_custom_target(sizecheck
-        COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/sizereport.py
-                $<TARGET_FILE:lugalos.elf> --nm ${CMAKE_NM}
-                --check ${LUGALOS_SIZE_BASELINE}
-        DEPENDS lugalos.elf
-        USES_TERMINAL)
-endif()
+add_custom_target(sizecheck
+    COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/sizereport.py
+            $<TARGET_FILE:lugalos.elf> --nm ${CMAKE_NM}
+            --check ${LUGALOS_SIZE_BASELINE}
+    DEPENDS lugalos.elf
+    USES_TERMINAL)
 
 # Every build with an LLP node says so (kernel/llp_node.c: its shell commands, /proc/llp).
 if("kernel/llp_node.c" IN_LIST SOURCES)

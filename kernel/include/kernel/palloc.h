@@ -160,4 +160,29 @@ void palloc_extra_stats(uint32_t *peak_used_pages, uint32_t *largest_free_run);
  * allocations. */
 void palloc_report_alloc(void *p, uint32_t pages, void *caller_ra);
 
+/* ---- Who holds the pages (/proc/pages, 66.1) ----------------------------
+ *
+ * Every allocation records the return address into palloc's caller on the
+ * first page of its run. The kernel prints the addresses; the host resolves
+ * them against the ELF (tools/ramledger.py), so no allocation site carries
+ * a tag of its own. A run allocated through a wrapper (task stacks, balloc's
+ * arena, the ELF loader) names the wrapper: /proc/pages adds the task for a
+ * stack. */
+typedef struct {
+    uintptr_t base;
+    uint32_t  pages;
+    uintptr_t caller;   /* 0: not known */
+    bool      bulk;     /* in the bulk zone */
+} palloc_run_t;
+
+/* Zero-initialise, then call palloc_run_next() until it returns false. Each
+ * call takes the allocator's lock for one run only, so a concurrent
+ * allocation can be missed or seen, never torn. */
+typedef struct {
+    uint32_t zone;      /* 0 fast, 1 bulk, 2 done */
+    uint32_t page;
+} palloc_cursor_t;
+
+bool palloc_run_next(palloc_cursor_t *c, palloc_run_t *out);
+
 #endif /* LUGALOS_KERNEL_PALLOC_H */

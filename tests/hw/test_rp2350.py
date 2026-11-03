@@ -579,6 +579,37 @@ def test_memory_margins(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         return (name, False, str(e))
 
 
+def test_ram_ledger(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """66.1: every page in use has an owner in /proc/pages, and no task's
+    stack is above 90% of its size. After test_memory_margins, for the same
+    reason: by then the suite has driven every task this board starts."""
+    import importlib.util
+    name = "RAM ledger: every page owned, no stack above 90% (66.1)"
+    spec = importlib.util.spec_from_file_location(
+        "ramledger", Path(__file__).resolve().parents[2] / "tools" / "ramledger.py")
+    rl = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rl)
+    try:
+        with serial.Serial(ports.console, 115200, timeout=0.2) as ser:
+            ser.reset_input_buffer()
+
+            def run(cmd: str) -> str:
+                ser.write(cmd.encode() + b"\r")
+                out, end = b"", time.time() + 6.0
+                while time.time() < end:
+                    out += ser.read(4096)
+                    # Done at a prompt on a line of its own: the echo of the
+                    # command is a prompt too, but it ends the first line.
+                    if b"\n" in out and b"lsh>" in out.rsplit(b"\n", 1)[1]:
+                        break
+                return out.decode("utf-8", "replace")
+
+            ok, detail = rl.check_console(run)
+    except serial.SerialException as e:
+        return name, False, f"console: {e}"
+    return name, ok, detail
+
+
 def test_pmp_probe(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     """B3 prep (D2): read this silicon's actual PMP configuration.
 
@@ -2328,6 +2359,7 @@ def main() -> int:
     tests.append(test_type_ahead)
     tests.append(test_balloc_arena)
     tests.append(test_memory_margins)
+    tests.append(test_ram_ledger)
     tests.append(test_c6_wifi)
     # Last, and it has to stay last: it deliberately exhausts the Lisp node
     # pool, which leaves the evaluator returning nil until the board reboots.

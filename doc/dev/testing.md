@@ -111,6 +111,39 @@ uv run --project host/p9lib --with pyserial python3 tests/hw/test_wifi.py 192.16
 afterwards with `p9key clear`: while set it overrides the stored grants). The claim cycle clears the
 console key itself before it resets the owner, so the final check really uses the new owner key.
 
+### RAM Ledger
+
+Where each preset's RAM goes, in two halves that group by the same subsystems (`tools/ramsubsys.py`):
+
+* **Static** (`.bss`, `.data`, code in SRAM, and `BULK_BSS` in PSRAM): `tools/sizereport.py`, read off the ELF.
+  Each preset has a baseline in `tools/ram_baselines/<build dir>.json`, and `tests/runner.py` fails if any
+  built preset grew past its own. Growth that is intended is re-baselined, so the numbers land in the diff:
+
+  ```bash
+  python3 tools/sizereport.py build/esp32c6/lugalos.elf --subsystems   # one preset, by subsystem
+  python3 tools/sizereport.py --all --check                            # every preset built here
+  python3 tools/sizereport.py --all --update                           # re-baseline after intended growth
+  ```
+
+* **Runtime** (pages from the page allocator): `tools/ramledger.py` reads `/proc/meminfo`, `/proc/ps` and
+  `/proc/pages` from a running board and names every page run's caller from the ELF. It refuses an ELF
+  whose build id is not the one the board runs. Task stacks are listed with their high-water marks.
+
+  ```bash
+  python3 tools/ramledger.py --c6 zero --elf build/esp32c6/lugalos.elf --wait-tasks mqttsrv,httpd
+  python3 tools/ramledger.py --p4 tab5 --elf build/esp32p4-tab5/lugalos.elf --json tab5.json
+  python3 tools/ramledger.py --rp2350 /dev/serial/by-id/...-if00 --elf build/rp2350-wifi/lugalos.elf
+  ```
+
+  `--wait-tasks` waits until the named services run, so the figures describe the board under its normal
+  load rather than just after boot. `--check` also fails when a page in use has no run in `/proc/pages`
+  or a stack is above `--max-stack-pct` (90) of its size. Recorded runs are kept in
+  `tools/ram_baselines/runtime/`.
+
+The silicon suites (`test_esp32c6.py`, `test_esp32p4.py`, `test_rp2350.py`) end with the same check
+(`RAM ledger: every page owned, no stack above 90%`), run after the rest of the suite has driven the
+board's tasks.
+
 ### Visual Regression Testing (`lcdterm_shots.py`)
 For display presets (RP2350-LCD-7 and ESP32-P4-LCD-7B), [`tests/hw/lcdterm_shots.py`](file:///home/dsc/Source/gith/domschl/lugalos/tests/hw/lcdterm_shots.py) plays automated shell scenarios, fetches PBM screenshots over 9P, and compares them **pixel-by-pixel** against golden baseline images (with the RTC clock area masked):
 

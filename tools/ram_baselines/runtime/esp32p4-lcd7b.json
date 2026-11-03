@@ -1,0 +1,191 @@
+{
+  "build": "1304.2c4a86a6+",
+  "bulk": {
+    "fallbacks": 0,
+    "free": 6671,
+    "largest_run": 6656,
+    "peak": 1107,
+    "total": 7778
+  },
+  "fast": {
+    "free": 10,
+    "largest_run": 7,
+    "peak": 63,
+    "total": 71
+  },
+  "missing": [],
+  "not_shown": null,
+  "owners": {
+    "bulk": {
+      "display": {
+        "detail": {
+          "dsi_lcd_term_start (dsi_esp32p4.c)": 38,
+          "fb_start (dsi_esp32p4.c)": 300,
+          "lcdterm_init (lcdterm.c)": 256
+        },
+        "pages": 594,
+        "runs": 4
+      },
+      "fs": {
+        "detail": {
+          "ramdisk_init (ramdisk.c)": 512
+        },
+        "pages": 512,
+        "runs": 1
+      },
+      "vfs": {
+        "detail": {
+          "vfs_open_into_on (vfs_server.c)": 1
+        },
+        "pages": 1,
+        "runs": 1
+      }
+    },
+    "fast": {
+      "httpd": {
+        "detail": {
+          "httpd_start (httpd.c)": 5
+        },
+        "pages": 5,
+        "runs": 1
+      },
+      "llp": {
+        "detail": {
+          "take (llp_node.c)": 18
+        },
+        "pages": 18,
+        "runs": 6
+      },
+      "net": {
+        "detail": {
+          "ensure_bufs (tcp.c)": 8,
+          "net_stack_attach_locked (stack.c)": 1
+        },
+        "pages": 9,
+        "runs": 2
+      },
+      "shell": {
+        "detail": {
+          "scratch_acquire (scratch.c)": 2
+        },
+        "pages": 2,
+        "runs": 1
+      },
+      "stack": {
+        "detail": {
+          "dhcpc": 1,
+          "httpd": 6,
+          "i2c": 1,
+          "kbd": 2,
+          "klogd": 1,
+          "lcdflush": 2,
+          "llp": 2,
+          "netsrv": 3,
+          "p9srv": 3,
+          "sdblk": 1,
+          "sensor_hub": 3,
+          "touch": 1,
+          "uart": 1
+        },
+        "pages": 27,
+        "runs": 13
+      }
+    }
+  },
+  "stacks": [
+    {
+      "isolation": "-",
+      "pid": 1,
+      "size": 8192,
+      "task": "lcdflush",
+      "used": 796
+    },
+    {
+      "isolation": "-",
+      "pid": 2,
+      "size": 4096,
+      "task": "uart",
+      "used": 508
+    },
+    {
+      "isolation": "-",
+      "pid": 3,
+      "size": 4096,
+      "task": "sdblk",
+      "used": 876
+    },
+    {
+      "isolation": "-",
+      "pid": 4,
+      "size": 4096,
+      "task": "i2c",
+      "used": 636
+    },
+    {
+      "isolation": "-",
+      "pid": 5,
+      "size": 4096,
+      "task": "touch",
+      "used": 696
+    },
+    {
+      "isolation": "-",
+      "pid": 6,
+      "size": 8192,
+      "task": "kbd",
+      "used": 500
+    },
+    {
+      "isolation": "-",
+      "pid": 7,
+      "size": 12288,
+      "task": "sensor_hub",
+      "used": 792
+    },
+    {
+      "isolation": "-",
+      "pid": 8,
+      "size": 12288,
+      "task": "p9srv",
+      "used": 652
+    },
+    {
+      "isolation": "-",
+      "pid": 9,
+      "size": 8192,
+      "task": "llp",
+      "used": 1004
+    },
+    {
+      "isolation": "-",
+      "pid": 10,
+      "size": 12288,
+      "task": "netsrv",
+      "used": 4708
+    },
+    {
+      "isolation": "-",
+      "pid": 11,
+      "size": 4096,
+      "task": "dhcpc",
+      "used": 1052
+    },
+    {
+      "isolation": "-",
+      "pid": 12,
+      "size": 4096,
+      "task": "klogd",
+      "used": 1528
+    },
+    {
+      "isolation": "-",
+      "pid": 13,
+      "size": 24576,
+      "task": "httpd",
+      "used": 1044
+    }
+  ],
+  "waited_for": [
+    "httpd"
+  ]
+}

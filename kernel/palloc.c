@@ -17,6 +17,7 @@ typedef struct {
     uintptr_t base;             /* page-aligned first managed address */
     uint32_t  num_pages;
     uint8_t  *bitmap;
+    uintptr_t *owner;           /* per page: caller's return address, OWNER_CONT, or 0 */
     uint32_t  max_pages;        /* the bitmap's capacity */
     /* Live page count and its high-water mark.
      *
@@ -37,14 +38,24 @@ typedef struct {
     uintptr_t uncached_delta;
 } zone_t;
 
-static uint8_t g_fast_bitmap[(PALLOC_MAX_PAGES + 7) / 8];
+static uint8_t   g_fast_bitmap[(PALLOC_MAX_PAGES + 7) / 8];
+/* Who asked for each run (palloc_run_next()): the first page of a run holds
+ * the return address into palloc's caller, every further page OWNER_CONT.
+ * In SRAM: the fast zone is allocated from before the PSRAM is up.
+ * guarded by: g_palloc_lock, as is everything in a zone_t. */
+static uintptr_t g_fast_owner[PALLOC_MAX_PAGES];
 /* guarded by: g_palloc_lock (below), as is the bulk zone and its fallback
  * count. */
-static zone_t  g_fast = { .bitmap = g_fast_bitmap, .max_pages = PALLOC_MAX_PAGES };
+static zone_t  g_fast = { .bitmap = g_fast_bitmap, .owner = g_fast_owner, .max_pages = PALLOC_MAX_PAGES };
 
 #if defined(CONFIG_PALLOC_BULK_PAGES)
 static uint8_t g_bulk_bitmap[(CONFIG_PALLOC_BULK_PAGES + 7) / 8];
-static zone_t  g_bulk = { .bitmap = g_bulk_bitmap, .max_pages = CONFIG_PALLOC_BULK_PAGES };   /* guarded by: g_palloc_lock */
+/* In the bulk class itself (PSRAM where there is some: 32 KB on a P4). Only
+ * touched by bulk allocations, which cannot happen before
+ * palloc_init_bulk(), i.e. before the PSRAM is up.
+ * guarded by: g_palloc_lock */
+static uintptr_t g_bulk_owner[CONFIG_PALLOC_BULK_PAGES] BULK_BSS;
+static zone_t  g_bulk = { .bitmap = g_bulk_bitmap, .owner = g_bulk_owner, .max_pages = CONFIG_PALLOC_BULK_PAGES };   /* guarded by: g_palloc_lock */
 #define BULK_ZONE (&g_bulk)
 #else
 #define BULK_ZONE ((zone_t *)NULL)
@@ -58,6 +69,12 @@ static uint32_t g_bulk_fallbacks;   /* guarded by: g_palloc_lock */
  * spinlock_t -- and on RP2350 that also keeps it in .bss where
  * tools/sizereport.py can see it (see kernel/lock.h). */
 static spinlock_t g_palloc_lock;
+
+/* A page that continues the run before it. Return addresses are at least
+ * 2-aligned (RVC), so 1 is never one; OWNER_UNKNOWN marks a run whose caller
+ * was not known. */
+#define OWNER_CONT    ((uintptr_t)1)
+#define OWNER_UNKNOWN ((uintptr_t)3)
 
 static inline bool bit_get(const zone_t *z, uint32_t i) {
     return (z->bitmap[i / 8] >> (i % 8)) & 1u;
@@ -76,6 +93,7 @@ static uint32_t zone_setup(zone_t *z, uintptr_t start, uintptr_t end, const char
     uintptr_t e = end & ~((uintptr_t)PAGE_SIZE - 1);
 
     memset(z->bitmap, 0, (z->max_pages + 7) / 8);
+    memset(z->owner, 0, z->max_pages * sizeof(z->owner[0]));
     z->used_pages = 0;
     z->peak_used = 0;
     z->base = s;
@@ -183,7 +201,11 @@ static void *zone_alloc(zone_t *z, uint32_t n, uint32_t align_pages, void *calle
         }
         if (!run_ok) continue;
 
-        for (uint32_t j = 0; j < n; j++) bit_set(z, i + j);
+        for (uint32_t j = 0; j < n; j++) {
+            bit_set(z, i + j);
+            z->owner[i + j] = OWNER_CONT;
+        }
+        z->owner[i] = caller ? (uintptr_t)caller : OWNER_UNKNOWN;
         z->used_pages += n;
         if (z->used_pages > z->peak_used) z->peak_used = z->used_pages;
         spin_unlock_irqrestore(&g_palloc_lock, irqf);
@@ -247,6 +269,7 @@ void palloc_free(void *p, uint32_t n) {
             bit_clear(z, idx + j);
             z->used_pages--;
         }
+        z->owner[idx + j] = 0;
     }
     spin_unlock_irqrestore(&g_palloc_lock, irqf);
 }
@@ -324,4 +347,44 @@ bool palloc_bulk_stats(palloc_zone_stats_t *out) {
     out->fallbacks = g_bulk_fallbacks;
     spin_unlock_irqrestore(&g_palloc_lock, irqf);
     return true;
+}
+
+/* One zone's next run at or after page `*i`, under the lock; advances `*i`
+ * past it. A page that is allocated but marked OWNER_CONT with no run start
+ * before it (the head of its run was freed on its own) starts a run of
+ * unknown caller rather than being skipped: every allocated page is
+ * reported exactly once. */
+static bool zone_next_run(const zone_t *z, uint32_t *i, palloc_run_t *out) {
+    uintptr_t irqf = spin_lock_irqsave(&g_palloc_lock);
+    uint32_t p = *i;
+    while (p < z->num_pages && !bit_get(z, p)) p++;
+    if (p >= z->num_pages) {
+        spin_unlock_irqrestore(&g_palloc_lock, irqf);
+        *i = p;
+        return false;
+    }
+    uintptr_t who = z->owner[p];
+    uint32_t q = p + 1;
+    while (q < z->num_pages && bit_get(z, q) && z->owner[q] == OWNER_CONT) q++;
+    out->base = z->base + (uintptr_t)p * PAGE_SIZE;
+    out->pages = q - p;
+    out->caller = (who == OWNER_CONT || who == OWNER_UNKNOWN) ? 0 : who;
+    spin_unlock_irqrestore(&g_palloc_lock, irqf);
+    *i = q;
+    return true;
+}
+
+bool palloc_run_next(palloc_cursor_t *c, palloc_run_t *out) {
+    if (!c || !out) return false;
+    if (c->zone == 0) {
+        if (zone_next_run(&g_fast, &c->page, out)) { out->bulk = false; return true; }
+        c->zone = 1;
+        c->page = 0;
+    }
+    zone_t *b = BULK_ZONE;
+    if (c->zone == 1 && b && b->num_pages) {
+        if (zone_next_run(b, &c->page, out)) { out->bulk = true; return true; }
+    }
+    c->zone = 2;
+    return false;
 }

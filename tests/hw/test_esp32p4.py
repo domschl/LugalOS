@@ -249,6 +249,18 @@ def test_boots(b: Board) -> tuple[str, bool, str]:
     return name, True, ""
 
 
+def test_ram_ledger(b: Board) -> tuple[str, bool, str]:
+    """66.1: every page in use has an owner in /proc/pages, in both zones,
+    and no task's stack is above 90% of its size. Last in the suite, so the
+    stacks have seen everything it does."""
+    name = "RAM ledger: every page owned, no stack above 90% (66.1)"
+    spec = importlib.util.spec_from_file_location("ramledger", REPO_ROOT / "tools" / "ramledger.py")
+    rl = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rl)
+    ok, detail = rl.check_console(lambda cmd: b.console_session.cmd(cmd))
+    return name, ok, detail
+
+
 def test_proc_readable(b: Board) -> tuple[str, bool, str]:
     name = "/proc answers"
     out = b.console_session.cmd("cat /proc/version")
@@ -2032,6 +2044,7 @@ TESTS = [
     test_tab5_orientation,
     test_tab5_portrait_180_terminals,
     test_orient_auto,
+    test_ram_ledger,
 ]
 
 

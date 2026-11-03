@@ -6816,6 +6816,22 @@ def test_racescan_ownership() -> tuple[bool, str]:
     return True, "clean: " + ", ".join(builds)
 
 
+def test_static_ram_baselines() -> tuple[bool, str]:
+    """Phase 66.1: no preset's static RAM (SRAM or BULK_BSS) grew past its
+    baseline in tools/ram_baselines/ (tools/sizereport.py --all --check).
+    Presets not built here are skipped; a built preset without a baseline
+    fails, so a new preset arrives with its numbers."""
+    import sys as _sys
+    repo = Path(__file__).resolve().parent.parent
+    r = subprocess.run([_sys.executable, str(repo / "tools" / "sizereport.py"), "--all", "--check"],
+                       cwd=repo, capture_output=True, text=True, timeout=600)
+    out = (r.stdout + r.stderr).strip()
+    checked = [ln.split()[0] for ln in out.splitlines() if ln.rstrip().endswith(" ok")]
+    if r.returncode != 0:
+        return False, out[-4000:]
+    return True, "within baseline: " + (", ".join(checked) if checked else "no preset built")
+
+
 def test_host_wpa2_psk_derivation() -> tuple[bool, str]:
     """I6's host-side verify point: "a known passphrase and SSID derive
     the PSK the standard gives." No QEMU -- tools/provision.py's
@@ -10611,6 +10627,15 @@ def main() -> int:
     ok, info = test_racescan_ownership()
     total_tests += 1
     name = "Ownership Of Shared Statics And No Blocking In Handlers (tools/racescan.py --check, 63.9)"
+    if ok:
+        passed_tests += 1
+        print(f"  [PASS] {name} -- {info}")
+    else:
+        print(f"  [FAIL] {name}\n    Log Output:\n{info}")
+
+    ok, info = test_static_ram_baselines()
+    total_tests += 1
+    name = "Static RAM Of Every Built Preset Within Its Baseline (tools/sizereport.py --all --check, 66.1)"
     if ok:
         passed_tests += 1
         print(f"  [PASS] {name} -- {info}")

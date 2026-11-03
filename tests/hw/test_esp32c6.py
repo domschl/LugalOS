@@ -93,6 +93,22 @@ def _t(name, ok, detail=""):
     return name, bool(ok), detail
 
 
+def _load_ramledger():
+    spec = importlib.util.spec_from_file_location("ramledger", REPO_ROOT / "tools" / "ramledger.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_ram_ledger(c: Console):
+    """66.1: every page in use has an owner in /proc/pages, and no task's stack
+    is above 90% of its size. Late in the suite, so the stacks have seen it; before
+    test_llp_modem, which ends in a reset."""
+    rl = _load_ramledger()
+    ok, detail = rl.check_console(lambda cmd: c.run(cmd, r"lsh>", 8)[1])
+    return _t("RAM ledger: every page owned, no stack above 90% (66.1)", ok, detail)
+
+
 def test_boots(c: Console):
     ok, out = c.run("version", r"LugalOS v[\d.]+", 5)
     return _t("boots to a shell and answers `version`", ok, out[-120:])
@@ -422,7 +438,7 @@ def test_llp_modem(c: Console):
 TESTS = [test_boots, test_heap, test_tick_rate, test_preemption, test_locks, test_priostress,
          test_pmp, test_umode, test_isolation, test_deputy, test_kobj_kernel, test_kobj_umode,
          test_radio_shim, test_led, test_radio_scan_or_join, test_radio_ip, test_i2c_sensors, test_taint, test_watchdog, test_still_alive,
-         test_llp_modem]   # last: the radio role lasts until a reset, which the test then does
+         test_ram_ledger, test_llp_modem]   # last: the radio role lasts until a reset, which the test then does
 
 
 def main() -> int:
