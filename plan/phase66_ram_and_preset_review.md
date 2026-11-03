@@ -99,7 +99,7 @@ per-endpoint buffers and the two copies per call**, not isolation (they have non
 | SRAM / stack / PSRAM review | Feasible; returns not exhausted, sizes have never been set per board. |
 | Flash → SD | Little RAM effect (`.rodata` is XIP). Matters for fitting two OTA slots on 4 MB parts. Low priority. |
 | Tailored presets | Feasible; the largest lever. Board files mix silicon facts with policy today. |
-| Swapping processes out | **Not feasible** without an MMU: no relocation, kernel tasks hold pointers into their stacks. Replaced by on-demand services (66.5). |
+| Swapping processes out | **Not feasible** without an MMU: no relocation, kernel tasks hold pointers into their stacks. On-demand services were the planned replacement (66.5), dropped: a service reserves at start or allocates per request. |
 | Process groups with a shared stack | Not feasible for tasks that block midway. Replaced by a service host running timer-driven jobs as callbacks (66.6). |
 | Build-time unikernel | Feasible as **folding** (66.7): the seam exists in `driver_task_t`'s `serve(ctx, req, len, resp, cap)`. |
 | TLS on the C6-Zero sensor node | Feasible once 66.2/66.3 free ~6–8 pages under load (§1.3 numbers). Server: RAM only, the code exists. MQTT client: new code (66.3b). |
@@ -383,7 +383,6 @@ Measured savings of 66.1–66.7 per board decide whether 66.8–66.10 are schedu
 | End of 66.3 | Stack pages saved (exact from the table change); free pages under load (confirms the margins) | sizereport; load scenarios | yes |
 | End of 66.3b | Free pages on the C6-Zero under load, with no session and with each TLS session open; record buffer size the broker accepted | load scenario plus TLS cases in `test_esp32c6.py` | yes (C6-Zero) |
 | End of 66.4 | LOWRAM free (static), heap pages gained (runtime) | sizereport; `/proc/meminfo` on Tab5, LCD-7B, NANO | yes |
-| End of 66.5 | Free pages idle vs. with each service active | load scenarios, idle and active variants | yes |
 | End of 66.6 | Pages saved by retired tasks | load scenarios | yes |
 | End of 66.7 | Pages and buffers saved per folded endpoint; folded vs. unfolded twin | load scenarios on both twins | yes (QEMU for the twin) |
 
