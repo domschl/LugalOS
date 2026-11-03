@@ -1,22 +1,22 @@
 {
-  "build": "1304.2c4a86a6+",
+  "build": "1308.43501865+",
   "bulk": {
     "fallbacks": 0,
-    "free": 6671,
+    "free": 6669,
     "largest_run": 6656,
     "peak": 1107,
-    "total": 7778
+    "total": 7776
   },
   "fast": {
-    "free": 10,
+    "free": 11,
     "largest_run": 7,
-    "peak": 63,
+    "peak": 62,
     "total": 71
   },
   "load": {
-    "9p": 98,
-    "errors": 55,
-    "http": 182,
+    "9p": 71,
+    "errors": 54,
+    "http": 63,
     "https": 0
   },
   "missing": [],
@@ -89,11 +89,11 @@
           "netsrv": 3,
           "p9srv": 3,
           "sdblk": 1,
-          "sensor_hub": 3,
+          "sensor_hub": 2,
           "touch": 1,
           "uart": 1
         },
-        "pages": 27,
+        "pages": 26,
         "runs": 13
       }
     }
@@ -105,7 +105,7 @@
       "pid": 1,
       "size": 8192,
       "task": "lcdflush",
-      "used": 796
+      "used": 724
     },
     {
       "isolation": "-",
@@ -119,7 +119,7 @@
       "pid": 3,
       "size": 4096,
       "task": "sdblk",
-      "used": 900
+      "used": 652
     },
     {
       "isolation": "-",
@@ -133,21 +133,21 @@
       "pid": 5,
       "size": 4096,
       "task": "touch",
-      "used": 988
+      "used": 892
     },
     {
       "isolation": "-",
       "pid": 6,
       "size": 8192,
       "task": "kbd",
-      "used": 636
+      "used": 248
     },
     {
       "isolation": "-",
       "pid": 7,
-      "size": 12288,
+      "size": 8192,
       "task": "sensor_hub",
-      "used": 948
+      "used": 792
     },
     {
       "isolation": "-",
@@ -161,14 +161,14 @@
       "pid": 9,
       "size": 8192,
       "task": "llp",
-      "used": 1132
+      "used": 1060
     },
     {
       "isolation": "-",
       "pid": 10,
       "size": 12288,
       "task": "netsrv",
-      "used": 4708
+      "used": 4724
     },
     {
       "isolation": "-",
@@ -180,16 +180,16 @@
     {
       "isolation": "-",
       "pid": 12,
-      "size": 4096,
-      "task": "klogd",
-      "used": 1528
+      "size": 24576,
+      "task": "httpd",
+      "used": 1180
     },
     {
       "isolation": "-",
       "pid": 13,
-      "size": 24576,
-      "task": "httpd",
-      "used": 1484
+      "size": 4096,
+      "task": "klogd",
+      "used": 1528
     }
   ],
   "waited_for": [

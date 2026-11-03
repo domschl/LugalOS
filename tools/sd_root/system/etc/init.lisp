@@ -27,6 +27,16 @@
 ;;    With PSRAM (the RP2350-LCD-7, 38.6) none of that applies: the storage
 ;;    comes from the PSRAM's page zone, not the heap, so /ram0 is 2 MB and
 ;;    always mounted (sign-off S3, plan/phase38_psram.md).
+;;
+;;    A sensor or radio node (/proc/config's first line names the profile,
+;;    66.2) does without one: updates go to flash, and its 9P clients read
+;;    sensors and /proc, not scratch files. On a Pico 2 W without a card that
+;;    is 16 of its 84 heap pages. An older kernel's first line is something
+;;    else, and the rules below apply as before.
+(define cfg-head (let ((c (read-file "/proc/config")))
+                   (if (and (string? c) (>= (string-length c) 14)) (substring c 0 14) "              ")))
+(if (or (= cfg-head "PROFILE=sensor") (= (substring cfg-head 0 13) "PROFILE=radio"))
+    (display "[Init] a sensor or radio node: no RAM disk\n")
 (if (> (psram) 0)
     (mount-ramdisk 2048)
 (if (or (= (board) "rp2350")
@@ -37,7 +47,7 @@
         (mount-ramdisk 64))
     (if (= (arch) "rv32")
         (mount-ramdisk 64)
-        (mount-ramdisk 512))))
+        (mount-ramdisk 512)))))
 
 ;; 2. Command search path (C1). Typing a bare name at the shell runs
 ;;    /<vol>/system/bin/<name>.elf from the first volume in this list that

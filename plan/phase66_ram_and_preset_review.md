@@ -208,6 +208,39 @@ per-endpoint buffers and the two copies per call**, not isolation (they have non
 
 ### 66.3 Right-sizing per profile (scheduled)
 
+* **DONE 2026-11-03 (the C6-Zero target met).** *Free pages under the loaded scenario (66.1):*
+
+  | Board | 66.1 | Now | What did it |
+  | :--- | :--- | :--- | :--- |
+  | C6-Zero (release image) | 5 / 68 | **14 / 74** | release image, sizes below, radio stack |
+  | Pico 2 W (dev image) | 19 / 80 | **40 / 84** | sizes below, no `/ram0` (16 pages) |
+  | LCD-7B | 10 / 71 | 11 / 71 | `sensor_hub` stack |
+  | Tab5 | 24 / 93 | 25 / 93 | `sensor_hub` stack |
+
+  *As built:*
+  * Profile keys `CONFIG_KLOG_RING_KB`, `CONFIG_SHELL_HISTORY`, `CONFIG_MAX_VTERMS` (defaults 8 KB,
+    10, 8); the sensor and radio profiles take 4 KB, 2, 4.
+  * On boards without a panel the reader's one instance has 8 links, 8 contents entries and 2 history
+    steps (~2 KB instead of ~7.5 KB).
+  * The C6's `.udata_kobj` region is 4 KB (3.1 KB used; 8 KB before), and outgrowing it fails the link.
+  * Stacks: `sensor_hub` 3 -> 2 pages (1.0 KB high-water on four boards); the radio's main U-mode
+    stack 16 -> 8 KB (1.1 KB used through boot, scans, a rejoin and the loaded hour). The others keep
+    their sizes: each was set for a path the loaded scenario does not drive, and the code says which
+    (httpd 7-11 KB on a 9P read, the setup worker 11.9 KB in a claim, p9srv filling 8 KB with a remote
+    mount nested in a request, orient's 16 KB repaint, the setup button's 4.9 KB reset press).
+  * `init.lisp` mounts no `/ram0` on a sensor or radio node (it reads `PROFILE=` from `/proc/config`;
+    an older kernel's first line differs, and the old rules apply).
+  * Static RAM: sensor and radio presets -15.4 KB, panel-less RP2350s -5.5 KB, others unchanged.
+* *Measured, not adopted:* `-ffunction-sections -fdata-sections` everywhere: -1.7 KB static and -24 KB
+  code on the C6, -1.1 KB and -15 KB on the Tab5, no heap page on either. It changes every section's
+  placement for a flash-only gain; left for a phase that needs the flash.
+* *Measured, not changed:* the radio arena (64 KB, one NAPOT region): the blob's heap peaks at ~38 KB
+  of its ~54 KB, so 32 KB cannot hold it and 48 KB (two regions) would leave under 1 KB.
+* *Not done, no measured need yet:* `MAX_TASKS`, the 9P link count/msize/waiters and the endpoint
+  buffers as profile keys; session buffers allocated at session start; LLP's 18 pages on the P4s.
+* *Found:* on the P4 the static RAM 66.2 freed (the mark bitmaps, -8.5 KB) is in LOWRAM, whose
+  boundary with the heap is fixed: it does not reach the heap until 66.4 makes the boundary move.
+
 * Candidates measured in 66.1/66.2: task stacks (the C6-Zero holds 33 pages of stack and uses 28.7 KB
   under load); the Pico 2 W's `/ram0` (16 pages of SRAM); the setup tasks' stacks while unclaimed;
   LLP's 18 pages on the P4s; the C6's `.udata_kobj` NAPOT region (8 KB, 3.1 KB used: 4 KB would do);

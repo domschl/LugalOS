@@ -32,15 +32,15 @@ LugalOS supports a range of distinct hardware presets across RISC-V microcontrol
 A preset is a **board** and a **profile** (`cmake/lugalos_layers.cmake`):
 
 * The **board** (`cmake/board-<name>.cmake`) is what the hardware is: addresses, pins, memory sizes, what the hardware can do (`CONFIG_NETWORK_CLAIM`: it has a setup access point), and which drivers its hardware needs (`LUGALOS_ENABLE_SPISD`, `LUGALOS_ENABLE_SDMMC`, ...). Its name is the board id an update image is checked against.
-* The **profile** (`cmake/profile-<name>.cmake`) is what the node is for: which software it carries (`LUGALOS_ENABLE_CC`, `LUGALOS_ENABLE_CHESS`, ...) and the policy and sizes that follow (Lisp pools, TLS, the RAM disk, the buddy arena).
+* The **profile** (`cmake/profile-<name>.cmake`) is what the node is for: which software it carries (`LUGALOS_ENABLE_CC`, `LUGALOS_ENABLE_CHESS`, ...) and the policy and sizes that follow (Lisp pools, TLS, the RAM disk, the buddy arena, `CONFIG_KLOG_RING_KB`, `CONFIG_SHELL_HISTORY`, `CONFIG_MAX_VTERMS`).
 
 A key in the wrong layer stops the configure. A command-line `-DLUGALOS_ENABLE_...` does not override a layer; another profile does.
 
 | Profile | Presets | Carries |
 | :--- | :--- | :--- |
 | `workstation` | `esp32p4`, `esp32p4-lcd7b`, `esp32p4-tab5`, `rp2350-terminal` | Everything: CAS, chess (512 KB table), games, `cc`, `ed`, HTTPS admin, 65536 Lisp nodes in PSRAM |
-| `sensor` | `esp32c6`, `rp2350-wifi`, `rp2350-sensor` | Sensors, MQTT, 9P, the admin page once claimed; no compiler, editor or games |
-| `radio` | `esp32c6-mini` | The Wi-Fi modem beside a P4 (LLP over SDIO) |
+| `sensor` | `esp32c6`, `rp2350-wifi`, `rp2350-sensor` | Sensors, MQTT, 9P, the admin page once claimed; no compiler, editor or games. Sized for a node without a screen: a 4 KB log ring, two lines of shell history, four terminals, no RAM disk (`init.lisp` reads the profile from `/proc/config`) |
+| `radio` | `esp32c6-mini` | The Wi-Fi modem beside a P4 (LLP over SDIO), sized as `sensor` |
 | `chess` | `rp2350-chess`, `rp2350-smp` | The ST7735/TM1638 chess computer |
 | `clock` | `rp2350-clock` | The LED clock: DCF-77, NTP server |
 | `gateway` | `rp2350-gateway` | Ethernet and the UART1 downlink |

@@ -1,15 +1,15 @@
 {
-  "build": "1305.b6b78e5a+",
+  "build": "1308.43501865+",
   "bulk": null,
   "fast": {
-    "free": 19,
-    "largest_run": 19,
-    "peak": 61,
-    "total": 80
+    "free": 40,
+    "largest_run": 40,
+    "peak": 44,
+    "total": 84
   },
   "load": {
-    "9p": 98,
-    "errors": 118,
+    "9p": 99,
+    "errors": 117,
     "http": 0,
     "https": 0
   },
@@ -18,13 +18,6 @@
   "owners": {
     "bulk": {},
     "fast": {
-      "fs": {
-        "detail": {
-          "ramdisk_init (ramdisk.c)": 16
-        },
-        "pages": 16,
-        "runs": 1
-      },
       "mqtt": {
         "detail": {
           "ensure_bufs (mqtt.c)": 1
@@ -58,7 +51,7 @@
           "netsrv": 3,
           "p9srv": 3,
           "sdblk": 1,
-          "sensor_hub": 3,
+          "sensor_hub": 2,
           "setupap": 4,
           "setupbtn": 2,
           "setupd": 5,
@@ -67,7 +60,7 @@
           "usbcdc": 1,
           "wifiup": 3
         },
-        "pages": 36,
+        "pages": 35,
         "runs": 17
       },
       "vfs": {
@@ -119,9 +112,9 @@
     {
       "isolation": "-",
       "pid": 6,
-      "size": 12288,
+      "size": 8192,
       "task": "sensor_hub",
-      "used": 964
+      "used": 792
     },
     {
       "isolation": "-",
@@ -135,7 +128,7 @@
       "pid": 8,
       "size": 12288,
       "task": "wifiup",
-      "used": 4708
+      "used": 4692
     },
     {
       "isolation": "-",
@@ -156,14 +149,14 @@
       "pid": 11,
       "size": 16384,
       "task": "setupap",
-      "used": 644
+      "used": 532
     },
     {
       "isolation": "-",
       "pid": 12,
       "size": 20480,
       "task": "setupd",
-      "used": 2356
+      "used": 2292
     },
     {
       "isolation": "-",
@@ -198,7 +191,7 @@
       "pid": 17,
       "size": 8192,
       "task": "mqttsrv",
-      "used": 980
+      "used": 884
     }
   ],
   "waited_for": [

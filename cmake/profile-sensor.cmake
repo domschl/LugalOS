@@ -18,3 +18,10 @@ set(CONFIG_BALLOC_ARENA_PAGES 4)
 # A claimed node starts the admin server when it gets an address: the owner
 # signs in at NAME.local.
 set(CONFIG_HTTPD_WHEN_CLAIMED 1)
+
+# Sized for a node without a screen (66.3): half the log ring (half the dmesg
+# history), two lines of shell history, four terminals (the console and 9P
+# shells). Each is a page or so of a heap the radio, TCP and the sensors share.
+set(CONFIG_KLOG_RING_KB   4)
+set(CONFIG_SHELL_HISTORY  2)
+set(CONFIG_MAX_VTERMS     4)

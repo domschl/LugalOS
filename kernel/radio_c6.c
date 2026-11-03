@@ -63,7 +63,9 @@ const uint32_t g_radio_text_marker __attribute__((section(".radio_text_marker"),
 extern char _radio_text_start[], _radio_data_start[], _radio_bss_start[], _radio_bss_end[], _utext_kobj_start[], _udata_kobj_start[], _udata_kobj_end[];
 
 #define ARENA_PAGES 16          /* 64 KB (one NAPOT region): the frame rings (10 KB) and the radio heap */
-#define STACK_PAGES 4           /* 16 KB: the main thread's stack, with the context at its bottom */
+/* 8 KB: the main thread's stack, with the context (736 B) at its bottom. Measured on the C6-Zero
+ * (66.3): 1.1 KB used through boot, a join and a loaded hour; 16 KB before. */
+#define STACK_PAGES 2
 
 /* single task: radio_c6_start() (one per boot, claimed there) sets them up
  * before it creates the radio task, which owns them after. */

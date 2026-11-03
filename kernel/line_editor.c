@@ -1,4 +1,5 @@
 #include "kernel/line_editor.h"
+#include "lugalos_config.h"
 #include "kernel/lock.h"
 #include "kernel/klog.h"
 #include "kernel/printk.h"
@@ -18,7 +19,12 @@
  * <vol>/system/history.lisp, which keeps everything and is where a long
  * record belongs. Up-arrow through the last eight is what an interactive
  * session actually uses. */
+/* A profile may keep fewer lines (CONFIG_SHELL_HISTORY): 512 bytes each. */
+#if defined(CONFIG_SHELL_HISTORY)
+#define MAX_HIST_ITEMS CONFIG_SHELL_HISTORY
+#else
 #define MAX_HIST_ITEMS 10
+#endif
 #define MAX_LINE_LEN 512
 
 /* strncpy() doesn't null-terminate when src is exactly dst_size-1 or more

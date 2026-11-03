@@ -47,7 +47,15 @@
  *
  * One page on the RP2350, whose heap is 87 of them. Y5a's other half is the
  * terser boot output, which is worth more than any size here. */
+/* A profile may set its own (CONFIG_KLOG_RING_KB): a headless sensor or radio
+ * node takes 4 KB -- half the dmesg history, and an early-boot burst beyond it
+ * lost on the console before klogd drains, for a page of a 69-page heap. */
+#include "lugalos_config.h"
+#if defined(CONFIG_KLOG_RING_KB)
+#define KLOG_RING_SIZE ((CONFIG_KLOG_RING_KB) * 1024)
+#else
 #define KLOG_RING_SIZE 8192
+#endif
 #define KLOG_MAX_SINKS 4
 
 /* The largest message a single record can carry, in payload bytes (Y5b).

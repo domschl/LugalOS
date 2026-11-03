@@ -217,12 +217,13 @@ SECTIONS
     /* After the radio's 32 KB block, not before it: that block must be self-aligned, and
      * 0x40808000 is the first 32 KB boundary after the U-mode text -- placed ahead of it,
      * this 8 KB region only turned the rest of that boundary into padding. */
-    .udata_kobj (NOLOAD) : ALIGN(8192) {
+    .udata_kobj (NOLOAD) : ALIGN(4096) {
         _udata_kobj_start = .;
         *(.udata_kobj .udata_kobj.*)
-        /* 8 KB, a power of two (one NAPOT region): the shim's state, ~3 KB. Was 32 KB while it also held the
-         * radioosi test's 24 KB arena, which now comes from the heap for the test's duration (45.8). */
-        . = _udata_kobj_start + 8192;
+        /* 4 KB, a power of two (one NAPOT region): the shim's state, 3.1 KB (66.3; 8 KB before). The
+         * radioosi test's arena comes from the heap for the test's duration (45.8). Outgrowing it is a link
+         * error: the location counter cannot move backwards. */
+        . = _udata_kobj_start + 4096;
         _udata_kobj_end = .;
     } > RAM
     ASSERT(_radio_bss_end <= _radio_data_start + 32768,

@@ -35,9 +35,17 @@
 #include "drivers/dsi_esp32p4.h"
 #endif
 
+/* Without a panel (the C6, an RP2350 without the LCD) the one instance is for a
+ * help page at most: smaller tables, ~2 KB instead of ~7.5 KB of static RAM. */
+#if defined(CONFIG_BOARD_ESP32C6) || (defined(CONFIG_BOARD_RP2350) && !defined(CONFIG_LCD_PCLK_GPIO))
+#define READER_LINKS_MAX   8
+#define READER_TOC_MAX     8
+#define READER_STACK_MAX   2
+#else
 #define READER_LINKS_MAX   32
 #define READER_TOC_MAX     32
 #define READER_STACK_MAX   8
+#endif
 
 #if defined(CONFIG_FONT_HIDPI) || (defined(CONFIG_FONT_CELL_H) && (CONFIG_FONT_CELL_H == 32))
 #define READER_IS_HIDPI    1

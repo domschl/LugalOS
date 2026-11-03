@@ -1,23 +1,23 @@
 {
-  "build": "1304.2c4a86a6+",
+  "build": "1308.43501865+",
   "bulk": {
     "fallbacks": 0,
-    "free": 6004,
+    "free": 6006,
     "largest_run": 5888,
-    "peak": 2761,
-    "total": 7746
+    "peak": 1738,
+    "total": 7744
   },
   "fast": {
-    "free": 24,
-    "largest_run": 20,
-    "peak": 77,
+    "free": 25,
+    "largest_run": 25,
+    "peak": 69,
     "total": 93
   },
   "load": {
-    "9p": 101,
+    "9p": 106,
     "errors": 1,
-    "http": 700,
-    "https": 88
+    "http": 622,
+    "https": 102
   },
   "missing": [],
   "not_shown": null,
@@ -45,13 +45,6 @@
         },
         "pages": 11,
         "runs": 1
-      },
-      "shell": {
-        "detail": {
-          "vterm_create (vterm.c)": 4
-        },
-        "pages": 4,
-        "runs": 2
       },
       "vfs": {
         "detail": {
@@ -106,11 +99,11 @@
           "power": 1,
           "power_auto": 3,
           "sdblk": 1,
-          "sensor_hub": 3,
+          "sensor_hub": 2,
           "touch": 1,
           "uart": 1
         },
-        "pages": 35,
+        "pages": 34,
         "runs": 16
       }
     }
@@ -122,47 +115,47 @@
       "pid": 1,
       "size": 8192,
       "task": "lcdflush",
-      "used": 2924
+      "used": 2908
     },
     {
       "isolation": "-",
       "pid": 2,
       "size": 4096,
       "task": "uart",
-      "used": 596
+      "used": 568
     },
     {
       "isolation": "-",
       "pid": 3,
       "size": 4096,
       "task": "sdblk",
-      "used": 956
+      "used": 652
     },
     {
       "isolation": "-",
       "pid": 4,
       "size": 4096,
       "task": "i2c",
-      "used": 668
+      "used": 652
     },
     {
       "isolation": "-",
       "pid": 5,
       "size": 4096,
       "task": "touch",
-      "used": 1020
+      "used": 908
     },
     {
       "isolation": "-",
       "pid": 6,
       "size": 8192,
       "task": "kbd",
-      "used": 636
+      "used": 572
     },
     {
       "isolation": "-",
       "pid": 7,
-      "size": 12288,
+      "size": 8192,
       "task": "sensor_hub",
       "used": 1036
     },
@@ -171,7 +164,7 @@
       "pid": 8,
       "size": 4096,
       "task": "power",
-      "used": 612
+      "used": 588
     },
     {
       "isolation": "-",
@@ -185,7 +178,7 @@
       "pid": 10,
       "size": 16384,
       "task": "orient",
-      "used": 1084
+      "used": 1020
     },
     {
       "isolation": "-",
@@ -199,35 +192,35 @@
       "pid": 12,
       "size": 8192,
       "task": "llp",
-      "used": 1768
+      "used": 1148
     },
     {
       "isolation": "-",
       "pid": 13,
       "size": 12288,
       "task": "netsrv",
-      "used": 4708
+      "used": 5052
     },
     {
       "isolation": "-",
       "pid": 14,
       "size": 4096,
       "task": "dhcpc",
-      "used": 1052
+      "used": 1832
+    },
+    {
+      "isolation": "-",
+      "pid": 15,
+      "size": 24576,
+      "task": "httpd",
+      "used": 2476
     },
     {
       "isolation": "-",
       "pid": 16,
       "size": 4096,
       "task": "klogd",
-      "used": 1544
-    },
-    {
-      "isolation": "-",
-      "pid": 17,
-      "size": 24576,
-      "task": "httpd",
-      "used": 2396
+      "used": 1480
     }
   ],
   "waited_for": [

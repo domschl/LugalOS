@@ -20,7 +20,14 @@
  * its contents are repainted onto the screen.
  */
 
+/* A profile may set fewer (CONFIG_MAX_VTERMS): ~430 bytes each, and a node
+ * without a screen only ever has its console and a few 9P shells. */
+#include "lugalos_config.h"
+#if defined(CONFIG_MAX_VTERMS)
+#define MAX_VTERMS          ((unsigned)(CONFIG_MAX_VTERMS))
+#else
 #define MAX_VTERMS          8u
+#endif
 #define VTERM_RX_BUF_SIZE   128u
 #define VTERM_TITLE_MAX     32u
 /* A terminal's shell stack: the RP2350's 16 KB boot stack on RV32, and twice

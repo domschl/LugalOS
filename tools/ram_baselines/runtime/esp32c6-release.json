@@ -1,0 +1,221 @@
+{
+  "build": "1308.43501865+",
+  "bulk": null,
+  "fast": {
+    "free": 14,
+    "largest_run": 14,
+    "peak": 60,
+    "total": 74
+  },
+  "load": {
+    "9p": 99,
+    "errors": 59,
+    "http": 110,
+    "https": 0
+  },
+  "missing": [],
+  "not_shown": null,
+  "owners": {
+    "bulk": {},
+    "fast": {
+      "httpd": {
+        "detail": {
+          "httpd_start (httpd.c)": 2
+        },
+        "pages": 2,
+        "runs": 1
+      },
+      "kernel": {
+        "detail": {
+          "kos_q_create (kobj_sched.c)": 1
+        },
+        "pages": 1,
+        "runs": 1
+      },
+      "mqtt": {
+        "detail": {
+          "ensure_bufs (mqtt.c)": 1
+        },
+        "pages": 1,
+        "runs": 1
+      },
+      "net": {
+        "detail": {
+          "ensure_bufs (tcp.c)": 4,
+          "net_stack_attach_locked (stack.c)": 1
+        },
+        "pages": 5,
+        "runs": 2
+      },
+      "radio": {
+        "detail": {
+          "radio_c6_start (radio_c6.c)": 18
+        },
+        "pages": 18,
+        "runs": 2
+      },
+      "stack": {
+        "detail": {
+          "dhcpc": 1,
+          "httpd": 4,
+          "i2c": 1,
+          "klogd": 1,
+          "mqttd": 3,
+          "mqttsrv": 2,
+          "netsrv": 3,
+          "p9srv": 3,
+          "radio": 2,
+          "sensor_hub": 2,
+          "setupbtn": 2,
+          "statusled": 1,
+          "uthread": 4,
+          "wdog": 1,
+          "wlan": 2
+        },
+        "pages": 32,
+        "runs": 18
+      },
+      "vfs": {
+        "detail": {
+          "vfs_open_into_on (vfs_server.c)": 1
+        },
+        "pages": 1,
+        "runs": 1
+      }
+    }
+  },
+  "problems": [],
+  "stacks": [
+    {
+      "isolation": "-",
+      "pid": 1,
+      "size": 4096,
+      "task": "i2c",
+      "used": 572
+    },
+    {
+      "isolation": "-",
+      "pid": 2,
+      "size": 8192,
+      "task": "sensor_hub",
+      "used": 916
+    },
+    {
+      "isolation": "-",
+      "pid": 3,
+      "size": 12288,
+      "task": "p9srv",
+      "used": 588
+    },
+    {
+      "isolation": "-",
+      "pid": 4,
+      "size": 4096,
+      "task": "wdog",
+      "used": 500
+    },
+    {
+      "isolation": "-",
+      "pid": 5,
+      "size": 8192,
+      "task": "wlan",
+      "used": 4800
+    },
+    {
+      "isolation": "-",
+      "pid": 6,
+      "size": 8192,
+      "task": "setupbtn",
+      "used": 564
+    },
+    {
+      "isolation": "-",
+      "pid": 7,
+      "size": 4096,
+      "task": "statusled",
+      "used": 612
+    },
+    {
+      "isolation": "-",
+      "pid": 8,
+      "size": 12288,
+      "task": "mqttd",
+      "used": 5300
+    },
+    {
+      "isolation": "PMP",
+      "pid": 9,
+      "size": 8192,
+      "task": "radio",
+      "used": 1740
+    },
+    {
+      "isolation": "PMP",
+      "pid": 10,
+      "size": 4096,
+      "task": "uthread",
+      "used": 896
+    },
+    {
+      "isolation": "PMP",
+      "pid": 11,
+      "size": 4096,
+      "task": "uthread",
+      "used": 872
+    },
+    {
+      "isolation": "PMP",
+      "pid": 12,
+      "size": 4096,
+      "task": "uthread",
+      "used": 872
+    },
+    {
+      "isolation": "-",
+      "pid": 13,
+      "size": 4096,
+      "task": "klogd",
+      "used": 1020
+    },
+    {
+      "isolation": "PMP",
+      "pid": 14,
+      "size": 4096,
+      "task": "uthread",
+      "used": 1388
+    },
+    {
+      "isolation": "-",
+      "pid": 15,
+      "size": 12288,
+      "task": "netsrv",
+      "used": 4740
+    },
+    {
+      "isolation": "-",
+      "pid": 16,
+      "size": 4096,
+      "task": "dhcpc",
+      "used": 1052
+    },
+    {
+      "isolation": "-",
+      "pid": 17,
+      "size": 16384,
+      "task": "httpd",
+      "used": 1340
+    },
+    {
+      "isolation": "-",
+      "pid": 18,
+      "size": 8192,
+      "task": "mqttsrv",
+      "used": 1036
+    }
+  ],
+  "waited_for": [
+    "httpd",
+    "mqttsrv",
+    "sensor_hub"
+  ]
+}

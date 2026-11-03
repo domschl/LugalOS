@@ -355,7 +355,7 @@ int sensor_hub_sampler_start(uint32_t period_s) {
     if (s_active_count != 0) {
         if (period_s != 0) s_sample_period_s = period_s;
         if (s_sampler_pid < 0)
-            s_sampler_pid = task_create_sized("sensor_hub", sensor_hub_sampler_body, NULL, 3);
+            s_sampler_pid = task_create_sized("sensor_hub", sensor_hub_sampler_body, NULL, 2);   /* 1.0 KB high-water on four boards (66.1) */
         pid = s_sampler_pid;
     }
     ylock_release(&s_hub_lock);

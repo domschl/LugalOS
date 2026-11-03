@@ -232,6 +232,7 @@ set(_optional_keys
     # Lisp's node pool, when a
     # board wants other than user/lisp/lisp.c's per-target default.
     CONFIG_LISP_NODE_POOL
+    CONFIG_KLOG_RING_KB CONFIG_SHELL_HISTORY CONFIG_MAX_VTERMS
     # and its string pool (slots, both tiers),
     # likewise when a board wants other than the per-target default.
     CONFIG_LISP_STRING_POOL
