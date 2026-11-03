@@ -105,6 +105,7 @@
     "kernel/smp.c": 80,
     "kernel/status_led.c": 8,
     "kernel/stress.c": 3058,
+    "kernel/svchost.c": 33,
     "kernel/sysreg.c": 4,
     "kernel/ticker.c": 37,
     "kernel/time.c": 49,
@@ -173,7 +174,7 @@
     "fs": 4160,
     "httpd": 70,
     "identity": 4237,
-    "kernel": 14258,
+    "kernel": 14291,
     "lisp": 1115,
     "llp": 3579,
     "log": 8322,
@@ -189,5 +190,5 @@
     "vfs": 4111
   },
   "ram_code": 1806,
-  "total": 218870
+  "total": 218903
 }

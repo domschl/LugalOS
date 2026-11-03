@@ -70,3 +70,28 @@ This design guarantees that an outgoing task cannot be claimed by another hart u
 LugalOS provides two kernel synchronization primitives:
 1. `spinlock_t`: Built using RISC-V `amoswap.w.aqrl` with local interrupt masking (`spin_lock_irqsave()`). Used for short critical sections (scheduler, page allocator, klog ring).
 2. `ylock_t`: A yielding lock that spins briefly and then calls `sched_yield()` if contention persists. Re-entrant by the same task, ideal for long console operations and block transfers.
+
+---
+
+## 6. The Service Host: Small Periodic Jobs on One Task
+
+A task costs at least one page of stack, and the smallest boards have 74 pages. Work that wakes on a timer, looks at something and goes back to sleep does not need a task of its own. It registers a job on the service host (`kernel/svchost.c`, `kernel/include/kernel/svchost.h`), one task that calls each job's step function every `period_ms`:
+
+```c
+static svc_job_t g_led_job = { .name = "statusled", .period_ms = STATUS_LED_STEP_MS,
+                               .init = led_init, .step = status_led_step };
+svc_register(&g_led_job);            /* starts the host on the first job */
+```
+
+Today the jobs are the C6's watchdog feed, the setup button and the status LED. On the C6-Zero they used four pages of stack as three tasks; the host uses two.
+
+The rules for a job:
+
+* **A step returns.** It may block briefly, for a register write, an I2C transfer or a flash rewrite. Every other job waits that long, so a step must not wait on the network, a user or the SD card. A lock another task can hold for long is taken with a try-lock, and the step retries next time: the Pico 2 W's LED is on the radio chip, and a join holds that bus for over a second (`cyw43_led_try_set()`).
+* **Its deepest path fits `SVC_STACK_PAGES`** (two pages). The deepest today is the setup button's owner reset, which rewrites the identity record (about 4.9 KB).
+* **Its state is static**, owned by the host's task. The `svc_job_t` itself must be static, and it is never unregistered.
+* **The watchdog sees the host.** The C6's feed is a job, so a step that never returns stops the feed and the board resets, as for any hung task.
+
+`svc` in the shell lists the jobs with their run counts and longest step. A longest step that grows means a job is holding up the others.
+
+Work that blocks for long (the DHCP client, the Tab5's display rotation, which repaints the screen, and its power log, which appends to the card) stays a task. So do the setup access point and its worker, even on a claimed node: an owner reset reopens setup, and restarting a task then could fail for lack of memory. A service reserves its memory when it starts, or allocates per request and refuses cleanly; it is never started on demand.

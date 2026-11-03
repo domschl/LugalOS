@@ -20,6 +20,7 @@
 #include "drivers/watchdog.h"
 #include "kernel/printk.h"
 #include "kernel/sched.h"
+#include "kernel/svchost.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -51,7 +52,7 @@ typedef uint32_t (*rom_reset_reason_fn)(int cpu);
 /* single task: the boot, before any reader runs; constant after. */
 static volatile bool g_armed, g_withhold;
 static uint32_t g_reason;
-/* single task: the wdog task. */
+/* single task: the service host. */
 static uint32_t g_feeds;
 
 static void wdt_feed(void) {
@@ -101,20 +102,19 @@ bool watchdog_last_reset_was_watchdog(void) {
            g_reason == 0x0D || g_reason == 0x10 || g_reason == 0x11 || g_reason == 0x12;
 }
 
-static void wdog_task(void *arg) {
-    (void)arg;
-    for (;;) {
-        if (!g_withhold) wdt_feed();
-        task_sleep_ms(WDT_TIMEOUT_MS / 4);
-    }
+/* A job on the service host, so a step there that never returns stops the feed too. */
+static void wdog_step(uint64_t now) {
+    (void)now;
+    if (!g_withhold) wdt_feed();
 }
+static svc_job_t g_wdog_job = { .name = "wdog", .period_ms = WDT_TIMEOUT_MS / 4, .step = wdog_step };
 
 void watchdog_start(void) {
     g_reason = rom_reset_reason(0);
     printk("[WDT] last reset: %s (0x%02x)%s\n", watchdog_reset_reason(), (unsigned)g_reason,
            watchdog_last_reset_was_watchdog() ? " -- this node restarted itself" : "");
     wdt_arm(WDT_TIMEOUT_MS);
-    if (task_create_sized("wdog", wdog_task, NULL, 1) < 0) {   /* one page: it sleeps and writes a register */
+    if (!svc_register(&g_wdog_job)) {
         /* Without its feeder the watchdog would reset a healthy board in 30 s: disarm it instead. */
         REG(TIMG0_WDTWPROTECT) = WDT_WKEY;
         REG(TIMG0_WDTCONFIG0) = 0;

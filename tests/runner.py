@@ -8059,7 +8059,12 @@ def test_mqttd_file_source(elf_path: Path, img_path: Path, arch_name: str) -> tu
             time.sleep(0.2)
         if temps()[:1] != [b"-12.34"]:
             return (name, False, f"expected -12.34 first, got {temps()}")
-        colds = [p.payload for p in broker.publishes if p.topic.endswith("/cold")]
+        # The two sources publish independently: wait for the second too.
+        def cold_list() -> list:
+            return [p.payload for p in broker.publishes if p.topic.endswith("/cold")]
+        while time.time() < deadline and not cold_list():
+            time.sleep(0.2)
+        colds = cold_list()
         if colds[:1] != [b"-5.00"]:
             return (name, False, f"the filtered negative source published {colds}")
 

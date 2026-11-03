@@ -368,6 +368,22 @@ def test_watchdog(c: Console):
                                                          m2.group(2) if m2 else "?", reason.group(1) if reason else "?"))
 
 
+def test_service_host(c: Console):
+    """66.6: the watchdog's feed, the setup button and the status LED are jobs on one task
+    (kernel/svchost.c), each running, none with a task of its own."""
+    _, out = c.run("svc", r"lsh>", 6)
+    jobs = {m.group(1): (int(m.group(2)), int(m.group(3)), int(m.group(4)))
+            for m in re.finditer(r"^\s+(\S+)\s+every\s+(\d+) ms\s+(\d+) runs\s+longest (\d+) us", out, re.M)}
+    _, ps = c.run("ps", r"lsh>", 6)
+    own = [n for n in ("wdog", "setupbtn", "statusled") if re.search(r"\b%s\b" % n, ps)]
+    want = {"wdog", "setupbtn", "statusled"}
+    good = want <= set(jobs) and all(jobs[n][1] > 0 for n in want) and not own and "svchost" in ps
+    longest = max((v[2] for v in jobs.values()), default=0)
+    return _t("one service host runs the watchdog feed, setup button and status LED", good,
+              "%s; longest step %d us%s" % (", ".join("%s %d runs" % (n, jobs[n][1]) for n in sorted(jobs)),
+                                           longest, "; own tasks: " + ",".join(own) if own else ""))
+
+
 def test_still_alive(c: Console):
     """A kernel that boots and then resets (the flash-boot watchdogs, a crash) looks
     perfect to every quick test above and dies minutes later -- the P4's phase 32
@@ -461,7 +477,7 @@ def test_llp_modem(c: Console):
 
 TESTS = [test_boots, test_heap, test_tick_rate, dev_only(test_preemption), dev_only(test_locks), dev_only(test_priostress),
          test_pmp, dev_only(test_umode), dev_only(test_isolation), dev_only(test_deputy), dev_only(test_kobj_kernel), dev_only(test_kobj_umode),
-         dev_only(test_radio_shim), test_led, test_radio_scan_or_join, test_radio_ip, test_i2c_sensors, test_taint, test_watchdog, test_still_alive,
+         dev_only(test_radio_shim), test_led, test_radio_scan_or_join, test_radio_ip, test_i2c_sensors, test_taint, test_watchdog, test_service_host, test_still_alive,
          test_ram_ledger, test_llp_modem]   # last: the radio role lasts until a reset, which the test then does
 
 

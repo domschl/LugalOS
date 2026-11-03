@@ -5,7 +5,7 @@
   "heap_bytes": 124076032,
   "heap_pages": 30292,
   "per_file": {
-    "(no line info: .rodata)": 13183,
+    "(no line info: .rodata)": 13210,
     "(no line info: .sdata)": 9,
     "arch/riscv/common/elf.c": 1852,
     "arch/riscv/common/mem_domain.c": 8,
@@ -110,6 +110,7 @@
     "kernel/smp.c": 72,
     "kernel/status_led.c": 8,
     "kernel/stress.c": 914,
+    "kernel/svchost.c": 57,
     "kernel/ticker.c": 25,
     "kernel/time.c": 49,
     "kernel/timezone.c": 113,
@@ -162,7 +163,7 @@
     "user/zmachine/ztext.c": 27
   },
   "per_subsystem": {
-    "(no line info: .rodata)": 13183,
+    "(no line info: .rodata)": 13210,
     "(no line info: .sdata)": 9,
     "9p": 64680,
     "agent": 3501,
@@ -178,7 +179,7 @@
     "fs": 823,
     "httpd": 184,
     "identity": 669,
-    "kernel": 71305,
+    "kernel": 71362,
     "lisp": 4920824,
     "llp": 4324,
     "log": 8370,
@@ -192,6 +193,6 @@
     "usb": 672,
     "vfs": 4766
   },
-  "ram_code": 1138380,
-  "total": 7549311
+  "ram_code": 1140076,
+  "total": 7551091
 }

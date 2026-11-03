@@ -4,14 +4,14 @@
 #include "lugalos_config.h"
 #include "kernel/status_led.h"
 #include "kernel/identity.h"
-#include "kernel/sched.h"
+#include "kernel/svchost.h"
 #include "kernel/setup.h"
 #include "kernel/time.h"
 #include "kernel/printk.h"
 #include "net/ip.h"
 #include <stddef.h>
 
-/* accepted: the button task is the only writer and the LED task the only reader; each is one word,
+/* accepted: the button's job is the only writer and the LED's the only reader; each is one word,
  * so a read is never torn and a stale one only delays the light by a step. */
 static volatile uint32_t g_held_ms;
 static volatile uint32_t g_reset_at_ms;     /* the reset's time plus one; 0 = none */
@@ -39,10 +39,12 @@ static bool led_put(bool on, status_led_pattern_t p) {
 #elif defined(CONFIG_STATUS_LED_CYW43)
 #include "drivers/cyw43.h"
 static void led_init(void) { }
-/* The light is on the Wi-Fi chip's own GPIO, so it exists only while the firmware runs. */
+/* The light is on the Wi-Fi chip's own GPIO, so it exists only while the firmware runs. A busy
+ * bus (a join holds it for over a second) is not waited for: the step would hold up every job on
+ * the service host. The change is tried again on the next step. */
 static bool led_put(bool on, status_led_pattern_t p) {
     (void)p;
-    return cyw43_is_ready() && cyw43_led_set(on);
+    return cyw43_is_ready() && cyw43_led_try_set(on);
 }
 #else
 #include "drivers/ws2812.h"
@@ -54,40 +56,38 @@ static bool led_put(bool on, status_led_pattern_t p) {
 }
 #endif
 
-static void status_led_task(void *arg) {
-    (void)arg;
-    led_init();
+/* single task: the service host. What the light shows now, and when the network was last up. */
+static struct {
+    bool shown, shown_valid;
+    status_led_pattern_t shown_p;
+    uint64_t last_up_ms;
+} g_led;
 
-    bool shown = false, shown_valid = false;
-    status_led_pattern_t shown_p = STATUS_LED_OFF;
-    uint64_t last_up_ms = 0;
+static void status_led_step(uint64_t now) {
+    status_led_in_t in = { 0 };
+    in.button_held_ms = g_held_ms;
+    uint32_t reset_at = g_reset_at_ms;
+    in.reset_shown = reset_at && (uint32_t)now - (reset_at - 1u) < STATUS_LED_RESET_SHOW_MS;
+    in.setup_possible = setup_state() != SETUP_CLAIMED;
+    in.setup_ap = setup_ap_wanted();
+    in.net_up = net_state()->configured;
+    if (in.net_up) g_led.last_up_ms = now;
+    in.net_down_s = (uint32_t)((now - g_led.last_up_ms) / 1000u);
+    in.wlan_set = node_wlan_configured();
 
-    for (;;) {
-        task_sleep_ms(STATUS_LED_STEP_MS);
-        uint64_t now = time_get_ms();
-
-        status_led_in_t in = { 0 };
-        in.button_held_ms = g_held_ms;
-        uint32_t reset_at = g_reset_at_ms;
-        in.reset_shown = reset_at && (uint32_t)now - (reset_at - 1u) < STATUS_LED_RESET_SHOW_MS;
-        in.setup_possible = setup_state() != SETUP_CLAIMED;
-        in.setup_ap = setup_ap_wanted();
-        in.net_up = net_state()->configured;
-        if (in.net_up) last_up_ms = now;
-        in.net_down_s = (uint32_t)((now - last_up_ms) / 1000u);
-        in.wlan_set = node_wlan_configured();
-
-        status_led_pattern_t p = status_led_choose(&in);
-        bool on = status_led_level(p, (uint32_t)now);
-        if (shown_valid && on == shown && p == shown_p) continue;
-        if (led_put(on, p)) { shown = on; shown_p = p; shown_valid = true; }
-    }
+    status_led_pattern_t p = status_led_choose(&in);
+    bool on = status_led_level(p, (uint32_t)now);
+    if (g_led.shown_valid && on == g_led.shown && p == g_led.shown_p) return;
+    if (led_put(on, p)) { g_led.shown = on; g_led.shown_p = p; g_led.shown_valid = true; }
 }
 
+/* A step is under 1 KB deep (the WS2812 frame, or one gSPI transfer to the Pico 2 W's radio).
+ * Nothing here may read the identity record, a 4 KB buffer: see node_wlan_configured(). */
+static svc_job_t g_led_job = { .name = "statusled", .period_ms = STATUS_LED_STEP_MS,
+                               .init = led_init, .step = status_led_step };
+
 void status_led_start(void) {
-    /* One page: a step is under 1 KB deep (the WS2812 frame, or one gSPI transfer to the Pico 2 W's
-     * radio). Nothing here may read the identity record, a 4 KB buffer: see node_wlan_configured(). */
-    if (task_create_sized("statusled", status_led_task, NULL, 1) < 0) printk("[Led] could not start the status LED task\n");
+    if (!svc_register(&g_led_job)) printk("[Led] the status LED is not driven\n");
 }
 
 #else

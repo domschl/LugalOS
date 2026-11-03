@@ -2645,6 +2645,13 @@ bool cyw43_led_set(bool on) {
     return r;
 }
 
+bool cyw43_led_try_set(bool on) {
+    if (!ylock_try_acquire(&g_bus_lock)) return false;
+    bool r = cyw43_led_set_locked(on);
+    cyw43_unlock();
+    return r;
+}
+
 static int cyw43_netif_send(netif_t *nif, const uint8_t *buf, uint32_t len) {
     cyw43_lock();
     int r = cyw43_netif_send_locked(nif, buf, len);

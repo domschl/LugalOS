@@ -694,6 +694,7 @@ set(SOURCES
     kernel/boardinfo.c
     kernel/setup_button.c
     kernel/status_led.c
+    kernel/svchost.c
     kernel/der.c
     kernel/x509.c
     kernel/tls_cert.c

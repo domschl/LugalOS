@@ -2,8 +2,8 @@
   "bulk_per_file": {},
   "bulk_per_subsystem": {},
   "bulk_total": 0,
-  "heap_bytes": 344064,
-  "heap_pages": 84,
+  "heap_bytes": 339968,
+  "heap_pages": 83,
   "per_file": {
     "(no line info: .data)": 27,
     "arch/riscv/common/elf.c": 1468,
@@ -74,10 +74,12 @@
     "kernel/sched.c": 2501,
     "kernel/setup.c": 453,
     "kernel/setup_ap.c": 50,
+    "kernel/setup_button.c": 64,
     "kernel/shell.c": 2479,
     "kernel/smp.c": 8,
-    "kernel/status_led.c": 8,
+    "kernel/status_led.c": 64,
     "kernel/stress.c": 749,
+    "kernel/svchost.c": 33,
     "kernel/ticker.c": 37,
     "kernel/time.c": 49,
     "kernel/timezone.c": 101,
@@ -111,8 +113,8 @@
     "drivers": 2920,
     "fs": 64,
     "httpd": 70,
-    "identity": 631,
-    "kernel": 12877,
+    "identity": 695,
+    "kernel": 12966,
     "lisp": 48395,
     "log": 4226,
     "mqtt": 4220,
@@ -127,5 +129,5 @@
     "vfs": 4111
   },
   "ram_code": 434,
-  "total": 171419
+  "total": 171572
 }

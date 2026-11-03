@@ -39,6 +39,9 @@ bool cyw43_gspi_probe(void);
  * whole stack rather than a GPIO poke. Returns false if the ioctl did not
  * complete. */
 bool cyw43_led_set(bool on);
+/* The same, but false at once if the bus is busy (a join, a firmware upload): for a caller that
+ * must not wait, the status LED on the service host, which tries again on its next step. */
+bool cyw43_led_try_set(bool on);
 
 /* Associate with a WPA2-PSK network, using the *derived* 32-byte PSK
  * rather than a passphrase -- which is what this node stores. The firmware would accept

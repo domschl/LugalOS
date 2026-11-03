@@ -13,7 +13,7 @@
 #include "kernel/setup.h"
 #include "kernel/status_led.h"
 #include "kernel/printk.h"
-#include "kernel/sched.h"
+#include "kernel/svchost.h"
 #include "kernel/time.h"
 #include "kernel/hart.h"
 #include <stdbool.h>
@@ -96,44 +96,50 @@ static bool button_down(void) {
 }
 #endif
 
-static void setup_button_task(void *arg) {
-    (void)arg;
-    button_init();
-    while (button_down()) task_sleep_ms(SETUP_BUTTON_POLL_MS);
+/* single task: the service host. */
+static struct {
+    bool released;                  /* seen up since boot: a button held at power-up does nothing */
+    uint64_t since;                 /* when the current press began; 0 = not pressed */
+    bool setup_done, reset_done;
+} g_btn;
 
-    uint64_t since = 0;
-    bool setup_done = false, reset_done = false;
-    for (;;) {
-        task_sleep_ms(SETUP_BUTTON_POLL_MS);
-        if (!button_down()) { since = 0; setup_done = reset_done = false; status_led_button(0); continue; }
-        uint64_t now = time_get_ms();
-        if (!since) since = now;
-        uint64_t held = now - since;
-        status_led_button((uint32_t)held);
-        if (!setup_done && held >= SETUP_BUTTON_SETUP_MS) {
-            setup_done = true;
-            if (setup_state() == SETUP_CLAIMED) printk("[Setup] button: this node is claimed; hold 15 s to reset the owner first\n");
-            else printk(setup_start() ? "[Setup] button: setup window open\n"
-                                 : "[Setup] button: no setup window (no setup secret, or a build without network claiming)\n");
-        }
-        if (!reset_done && held >= SETUP_BUTTON_RESET_MS) {
-            reset_done = true;
-            bool ok = setup_reset_owner() == NODE_ID_OK;
-            printk("[Setup] button: owner reset %s\n", ok ? "done" : "failed");
-            if (ok) {
-                status_led_reset_done();
-                (void)setup_start();
-            }
+static void button_step(uint64_t now) {
+    bool down = button_down();
+    if (!g_btn.released) { g_btn.released = !down; return; }
+    if (!down) {
+        g_btn.since = 0;
+        g_btn.setup_done = g_btn.reset_done = false;
+        status_led_button(0);
+        return;
+    }
+    if (!g_btn.since) g_btn.since = now;
+    uint64_t held = now - g_btn.since;
+    status_led_button((uint32_t)held);
+    if (!g_btn.setup_done && held >= SETUP_BUTTON_SETUP_MS) {
+        g_btn.setup_done = true;
+        if (setup_state() == SETUP_CLAIMED) printk("[Setup] button: this node is claimed; hold 15 s to reset the owner first\n");
+        else printk(setup_start() ? "[Setup] button: setup window open\n"
+                             : "[Setup] button: no setup window (no setup secret, or a build without network claiming)\n");
+    }
+    /* The deepest step on the service host (SVC_STACK_PAGES): an identity rewrite with the flash
+     * write under it, 4900 bytes measured on an ESP32-P4 (the ROM's flash routines and a trap
+     * frame are not in the compiler's frame sizes). */
+    if (!g_btn.reset_done && held >= SETUP_BUTTON_RESET_MS) {
+        g_btn.reset_done = true;
+        bool ok = setup_reset_owner() == NODE_ID_OK;
+        printk("[Setup] button: owner reset %s\n", ok ? "done" : "failed");
+        if (ok) {
+            status_led_reset_done();
+            (void)setup_start();
         }
     }
 }
 
+static svc_job_t g_button_job = { .name = "setupbtn", .period_ms = SETUP_BUTTON_POLL_MS,
+                                  .init = button_init, .step = button_step };
+
 void setup_button_start(void) {
-    /* Two pages: the deepest path is the 15 s owner reset, an identity rewrite with the flash write
-     * under it: 4900 bytes measured on an ESP32-P4 (the ROM's flash routines and a trap frame are not
-     * in the compiler's frame sizes). One page ran 848 bytes past its end there, and on the C6-Zero
-     * the reset ended in a watchdog restart. */
-    if (task_create_sized("setupbtn", setup_button_task, NULL, 2) < 0) printk("[Setup] could not start the button task\n");
+    if (!svc_register(&g_button_job)) printk("[Setup] the setup button is not watched\n");
 }
 
 #else

@@ -1,15 +1,15 @@
 {
-  "build": "1308.43501865+",
+  "build": "1313.a7e2f642+",
   "bulk": null,
   "fast": {
     "free": 40,
     "largest_run": 40,
-    "peak": 44,
-    "total": 84
+    "peak": 43,
+    "total": 83
   },
   "load": {
-    "9p": 99,
-    "errors": 117,
+    "9p": 96,
+    "errors": 118,
     "http": 0,
     "https": 0
   },
@@ -53,15 +53,14 @@
           "sdblk": 1,
           "sensor_hub": 2,
           "setupap": 4,
-          "setupbtn": 2,
           "setupd": 5,
-          "statusled": 1,
+          "svchost": 2,
           "uart": 1,
           "usbcdc": 1,
           "wifiup": 3
         },
-        "pages": 35,
-        "runs": 17
+        "pages": 34,
+        "runs": 16
       },
       "vfs": {
         "detail": {
@@ -114,7 +113,7 @@
       "pid": 6,
       "size": 8192,
       "task": "sensor_hub",
-      "used": 792
+      "used": 932
     },
     {
       "isolation": "-",
@@ -128,70 +127,63 @@
       "pid": 8,
       "size": 12288,
       "task": "wifiup",
-      "used": 4692
+      "used": 4392
     },
     {
       "isolation": "-",
       "pid": 9,
       "size": 8192,
-      "task": "setupbtn",
-      "used": 532
+      "task": "svchost",
+      "used": 1108
     },
     {
       "isolation": "-",
       "pid": 10,
-      "size": 4096,
-      "task": "statusled",
-      "used": 1028
+      "size": 16384,
+      "task": "setupap",
+      "used": 484
     },
     {
       "isolation": "-",
       "pid": 11,
-      "size": 16384,
-      "task": "setupap",
-      "used": 532
-    },
-    {
-      "isolation": "-",
-      "pid": 12,
       "size": 20480,
       "task": "setupd",
       "used": 2292
     },
     {
       "isolation": "-",
-      "pid": 13,
+      "pid": 12,
       "size": 12288,
       "task": "mqttd",
       "used": 4600
     },
     {
       "isolation": "-",
-      "pid": 14,
+      "pid": 13,
       "size": 4096,
       "task": "klogd",
-      "used": 1512
+      "used": 1796
     },
     {
       "isolation": "-",
-      "pid": 15,
+      "pid": 14,
       "size": 12288,
       "task": "netsrv",
       "used": 4280
     },
     {
       "isolation": "-",
-      "pid": 16,
+      "pid": 15,
       "size": 4096,
       "task": "dhcpc",
       "used": 964
     },
     {
       "isolation": "-",
-      "pid": 17,
+      "pid": 16,
       "size": 8192,
       "task": "mqttsrv",
-      "used": 884
+      "used": 980
     }
   ],
   "waited_for": [

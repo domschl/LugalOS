@@ -1492,6 +1492,7 @@ def test_qemu_bridge(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     marker_name = f"hwbridge_{uuid.uuid4().hex[:12]}.txt"
     marker_value = uuid.uuid4().hex
 
+    marker_path: str | None = None
     proc: subprocess.Popen | None = None
     ser: serial.Serial | None = None
     sock: socket.socket | None = None
@@ -1503,15 +1504,9 @@ def test_qemu_bridge(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         with serial.Serial(ports.console, 115200, timeout=2) as console:
             time.sleep(0.3)
             console.reset_input_buffer()
-            # Asked as a *boolean*, deliberately. Returning the path from the
-            # guest would put the answer inside the command text too, and the
-            # line editor echoes every keystroke -- so a check for "/ram0"
-            # would match the echo and always say yes, which is exactly what
-            # it did on the first attempt. "#t" cannot appear in the command.
-            console.write(b'lisp\n(mounted? "/ram0")\nexit\n')
-            console.flush()
-            vol_reply = rp2350.drain(console, quiet=0.5, deadline=6.0).decode("utf-8", "replace")
-            volume = "/ram0" if "=> #t" in vol_reply else "/sd0"
+            volume = scratch_volume(console)
+            if volume is None:
+                return (name, True, NO_SCRATCH)
             marker_path = f"{volume}/{marker_name}"
 
             console.reset_input_buffer()
@@ -1650,6 +1645,14 @@ def test_qemu_bridge(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
                 proc.kill()
         bridge_img = REPO_ROOT / "build" / "rp2350_hw_bridge_test_sd.img"
         bridge_img.unlink(missing_ok=True)
+        if marker_path:
+            try:
+                with serial.Serial(ports.console, 115200, timeout=2) as console:
+                    console.write(f"rm {marker_path}\n".encode())
+                    console.flush()
+                    rp2350.drain(console, quiet=0.5, deadline=4.0)
+            except Exception:
+                pass
 
 
 def test_node_pool_exhaustion(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
@@ -1908,6 +1911,23 @@ def test_large_image(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         return (name, False, str(e))
 
 
+NO_SCRATCH = "SKIPPED: no writable volume (a sensor or radio profile has no /ram0, /sd0 has no card, /flash0 is read-only)"
+
+
+def scratch_volume(ser) -> str | None:
+    """The first volume a test may write a short-lived file to, /ram0 or /sd0; None if neither is
+    mounted (/flash0 is read-only at run time). A sensor or radio profile has no /ram0 (init.lisp).
+    Asked as a boolean: the line editor echoes the command, so a reply naming the path would match
+    the echo."""
+    for vol in ("/ram0", "/sd0"):
+        ser.reset_input_buffer()
+        ser.write(f'lisp\n(mounted? "{vol}")\nexit\n'.encode())
+        ser.flush()
+        if "=> #t" in rp2350.drain(ser, quiet=0.5, deadline=6.0).decode("utf-8", "replace"):
+            return vol
+    return None
+
+
 def test_heap_on_demand(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     """C6/C7 on real silicon: cc costs nothing while idle.
 
@@ -1993,6 +2013,10 @@ def test_heap_on_demand(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
             ser.dtr = True
             time.sleep(0.3)
             ser.reset_input_buffer()
+            vol = scratch_volume(ser)
+            if vol is None:
+                return (name, True, NO_SCRATCH)
+            elf = f"{vol}/hwtest_cc.elf"
             out = ""
             ser.write(b"cat /proc/meminfo\n")
             ser.flush()
@@ -2004,10 +2028,13 @@ def test_heap_on_demand(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
                 # On rp2350-clock /sd0 never mounts (GP10-13 drive the LED
                 # matrix, not an SD bus), and /flash0 is built from the same
                 # tools/sd_root tree on every persona.
-                ser.write(b"cc /flash0/prime.c /ram0/hwtest_cc.elf\n")
+                ser.write(f"cc /flash0/prime.c {elf}\n".encode())
                 ser.flush()
                 out += rp2350.drain(ser, quiet=1.0, deadline=30.0).decode("utf-8", "replace")
                 used.append(settled_used(ser))
+            ser.write(f"rm {elf}\n".encode())
+            ser.flush()
+            rp2350.drain(ser, quiet=0.5, deadline=6.0)
 
         total = re.search(r"Pages Total: (\d+)", out)
         settled = all(u is not None for u in used)

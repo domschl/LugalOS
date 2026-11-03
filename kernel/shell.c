@@ -25,6 +25,7 @@
 #include "kernel/keyseq.h"
 #include "kernel/screenshot.h"
 #include "kernel/sched.h"
+#include "kernel/svchost.h"
 #include "kernel/lock.h"
 #if defined(CONFIG_KOBJ)
 #include "kernel/kobj_sched.h"
@@ -1289,6 +1290,7 @@ static void cmd_help_summary(void) {
     cprintf("\nSystem & Diagnostics:\n");
     cprintf("  uname           - Show OS build target and architecture\n");
     cprintf("  ps              - List processes and isolation domains (/proc/ps)\n");
+    cprintf("  svc             - Jobs on the service host: periods, runs, longest step\n");
     cprintf("  top             - Real-time system monitor\n");
     cprintf("  meminfo         - Physical memory and page pool status\n");
     cprintf("  date [ISO]      - Show or set date and RTC time\n");
@@ -6543,6 +6545,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
             unsigned long n = v ? v : 1;
             for (unsigned long i = 0; i < n; i++) cprintf("%08lx: %08lx\n", a + 4 * i, (unsigned long)*(volatile uint32_t *)(a + 4 * i));
         }
+        return;
+    } else if (strcmp(cmd_line, "svc") == 0) {
+        svc_report();
         return;
 #if defined(CONFIG_BOARD_ESP32C6)
     } else if (strcmp(cmd_line, "radio probe") == 0) {

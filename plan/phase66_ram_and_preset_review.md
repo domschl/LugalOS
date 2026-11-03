@@ -359,6 +359,28 @@ still exit and return its pages: nothing asks for them again. That part moves to
 
 ### 66.6 Service host
 
+* **DONE 2026-11-03.** `kernel/svchost.c`: one task, two pages, runs registered jobs every
+  `period_ms`. Jobs: the C6's watchdog feed, the setup button and the status LED.
+  * C6-Zero (release): `wdog`, `setupbtn` and `statusled` were 4 pages of stack, the host is 2. Idle
+    15 of 74 free (13 before); under the loaded scenario 15 free at the end, 10 at the lowest (MQTT
+    plain: the 66.3b figures, 10 and 5, had MQTT over TLS, 3 pages more). Suite 23/23 with a new
+    `test_service_host`.
+  * Pico 2 W: `setupbtn` and `statusled` were 3 pages, the host is 2. Idle and under load 40 of
+    83 free. Suite 35/35.
+  * Found on the way: on the Pico 2 W the LED's step took up to 1.1 s, waiting for the radio's bus
+    during a join, and held up the button with it. It now uses a try-lock
+    (`cyw43_led_try_set()`) and retries on the next step: 2 ms at most.
+  * Found on the way: since 66.3 the sensor profile has no `/ram0`, and the Pico suite's compiler
+    test (C6/C7) and bridge test (T3) wrote there. They now use `/ram0` or `/sd0` when mounted and
+    skip with the reason on a board with neither (`/flash0` is read-only).
+  * Not folded: the DHCP client (waits on the network), the Tab5's `orient` (a turn repaints the
+    whole terminal, 16 KB deep) and `power_auto` (appends to the card). The Tab5's 1-page `power`
+    would gain nothing: the Tab5 runs no other job, so a host would cost more than the task.
+  * *Exit for good* (from 66.5): not done. The setup access point and its worker are not over once
+    the node is claimed: the 15 s button hold resets the owner and reopens setup, and `setupap` also
+    starts the admin page on a claimed node. Ending them would mean restarting them on demand
+    later, which 66.5 ruled out.
+
 * One task runs timer-driven, non-blocking jobs as callbacks: status LED, watchdog, setup
   button, power, sensor sampling, DHCP renewal, OTA trial. Each now costs 1–3 pages of stack.
 * Tasks whose work is over for good exit and return their pages (from 66.5): the setup access point
