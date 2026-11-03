@@ -110,7 +110,14 @@
  * own on-demand move-list pools (user/chess/src/search.c) needed to
  * allocate, quietly eaten enough of the heap that they no longer fit. */
 #define NODE_POOL_SIZE 1024
-#elif defined(CONFIG_BOARD_ESP32P4) || defined(CONFIG_BOARD_ESP32C6)
+#elif defined(CONFIG_BOARD_ESP32C6)
+/* Lisp-light: a C6 runs configuration and small sensor scripts, not the CAS.
+ * 1024 nodes and 384 string slots cost 46 KB of static RAM; a sensor node used
+ * 11 nodes after boot. Half the nodes and half the strings return ~23 KB to a
+ * heap that the radio, TCP and the identity store's 8 KB scratch compete for.
+ * A profile may set CONFIG_LISP_NODE_POOL / _STRING_POOL instead. */
+#define NODE_POOL_SIZE 512
+#elif defined(CONFIG_BOARD_ESP32P4)
 /* E2,  (and 45.4, the C6, whose SRAM is smaller
  * still: 496 KB with the ROM's 16 KB fenced off): the RP2350 figure, for the RP2350
  * reason, on a board with the same shape of budget.
@@ -419,7 +426,9 @@ static lisp_val_t *alloc_node(lisp_type_t type) {
 /* 38.5: a board file may size it, as it may size the node pool. The LCD-7
  * keeps both in PSRAM and takes eight times the default (sign-off S2). */
 #define STRING_POOL_SIZE CONFIG_LISP_STRING_POOL
-#elif defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32P4) || defined(CONFIG_BOARD_ESP32C6)
+#elif defined(CONFIG_BOARD_ESP32C6)
+#define STRING_POOL_SIZE 192            /* Lisp-light: see NODE_POOL_SIZE */
+#elif defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32P4)
 /* Fixed at 384 on both real boards, and deliberately not the NODE_POOL_SIZE/2
  * ratio -- see the paragraph above for why that ratio was the bug rather than
  * the rule. */
@@ -588,10 +597,22 @@ static char *intern_string(const char *src) {
  * plan/completed/2026-08-07_review_and_remediation.md) stays untouched. */
 #define NODE_MARK_BITS_SIZE ((NODE_POOL_SIZE + 7) / 8)
 #define STRING_MARK_BITS_SIZE ((STRING_POOL_SIZE + 7) / 8)
+/* In PSRAM on the ESP32-P4 (8 KB at 65536 nodes), where the L2 cache holds
+ * the whole bitmap through a collection. Measured on the Tab5 (66.2), 300000
+ * short-lived pairs, 64 collections: 1068 ms and a 19.2 ms worst pause with
+ * the bitmap in SRAM, 1099 ms and 20.4 ms in PSRAM -- 3 % for 8 KB of the
+ * internal RAM the P4 is shortest of. In SRAM on the RP2350,
+ * whose 16 KB XIP cache also serves the code. Cleared at the start of every
+ * collection, so BULK_BSS's late zeroing does not matter. */
+#if defined(CONFIG_BOARD_ESP32P4)
+#define GC_MARK_BITS_PLACE BULK_BSS
+#else
+#define GC_MARK_BITS_PLACE
+#endif
 /* guarded by: g_lisp_lock (lisp_lock()): every evaluation holds it, every shell command
  * that is a Lisp form too. */
-static uint8_t node_mark_bits[NODE_MARK_BITS_SIZE];
-static uint8_t string_mark_bits[STRING_MARK_BITS_SIZE];
+static uint8_t node_mark_bits[NODE_MARK_BITS_SIZE] GC_MARK_BITS_PLACE;
+static uint8_t string_mark_bits[STRING_MARK_BITS_SIZE] GC_MARK_BITS_PLACE;
 
 /* Explicit, array-based work-list instead of C recursion for the mark
  * phase: a live structure can be an arbitrarily long list or deeply nested

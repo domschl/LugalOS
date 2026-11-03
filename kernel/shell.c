@@ -196,6 +196,7 @@ static inline void execute_illegal_instruction(void) {
     __asm__ __volatile__(".4byte 0xc0001073");
 }
 
+#if CONFIG_DEV
 /* Two halves of one question: does an exception reach the trap vector?
  *
  * The timing margin was initially unknown -- the
@@ -242,7 +243,9 @@ static void cmd_trapselftest(bool fatal) {
     cprintf("[Trap Selftest] Run 'trapselftest fatal' for the unrecovered dump "
             "(halts the system).\n");
 }
+#endif
 
+#if CONFIG_DEV
 /* `sdbench w [kb]` and `fsbench <dir> [kb]`: benchmark filesystem throughput,
  * which is how /ram0 in SRAM and in PSRAM were compared.
  *
@@ -259,7 +262,9 @@ static void cmd_trapselftest(bool fatal) {
 static uint8_t sdbench_pattern(uint32_t off) {
     return (uint8_t)(off ^ (off >> 8) ^ (off >> 16) ^ 0x5a);
 }
+#endif
 
+#if CONFIG_DEV
 static void cmd_fsbench(const char *dir, const char *name, unsigned kb) {
     char path[64], label[24];
     ksnprintf(label, sizeof(label), "%s", strcmp(name, "sdbench") == 0 ? "sdbench w" : name);
@@ -328,6 +333,7 @@ static void cmd_fsbench(const char *dir, const char *name, unsigned kb) {
     if (bad) cprintf("VERIFY FAILED: %u bad bytes, first at %u\n", (unsigned)bad, (unsigned)first_bad);
     else cprintf("verified\n");
 }
+#endif
 
 #if defined(CONFIG_BOARD_ESP32C6)
 /* 45.4.3: where is the tick? One line per link in the chain -- the system timer's
@@ -416,6 +422,7 @@ static void cmd_flashinfo(void) {
  * first is where the filesystem image goes, and a self-test should not sit on
  * top of the thing it will later be asked not to disturb. */
 
+#if CONFIG_DEV
 static void cmd_flashtest(void) {
     if (!flash_p4_init()) { cprintf("[FlashTest] flash not available\n"); return; }
 
@@ -473,6 +480,7 @@ static void cmd_flashtest(void) {
                 ? "PASS: the guard holds, and erase/program/read-back agree."
                 : "FAIL: see the flags above.");
 }
+#endif
 
 /* E4: the state of the tick, read straight out of the hardware, plus the two
  * measurements that a register dump cannot make.
@@ -1287,7 +1295,9 @@ static void cmd_help_summary(void) {
     cprintf("  rtc             - Display RTC status and temperature\n");
     cprintf("  power [charge|limit|off|log] - Battery, charging, power off, CSV log\n");
 #if defined(CONFIG_BOARD_ESP32P4)
+#if CONFIG_DEV
     cprintf("  audiotest [cmd] - Audio hardware diagnostics (codec, PA, I2S0)\n");
+#endif
     cprintf("  volume [0-100]  - Get or set audio output volume\n");
 #endif
     cprintf("  imu [watch [s]] - Accelerometer, gyroscope, pitch and roll\n");
@@ -1331,51 +1341,73 @@ static void cmd_help_test(void) {
     cprintf("\nLugalOS Hardware Tests, Benchmarks & Isolation Checks:\n");
     console_print_divider('-');
     cprintf("Scheduler & Memory Domains:\n");
+#if CONFIG_DEV
     cprintf("  taskdemo        - Spawn cooperative tasks and verify interleaving\n");
     cprintf("  preempttest     - Verify timer preemption of non-yielding CPU hog\n");
     cprintf("  priotest        - Verify high-priority task preempts lower tiers\n");
     cprintf("  priostress      - Verify same-tier fair CPU sharing\n");
+#endif
     cprintf("  pmpinfo         - Report usable PMP regions and granularity\n");
     cprintf("  pmpdump         - Per-register PMP configuration dump\n");
+#if CONFIG_DEV
     cprintf("  usertest        - Run U-mode task and syscall back to kernel\n");
     cprintf("  isolationtest [hart] - U-mode task writes kernel RAM (must fault)\n");
     cprintf("  deputytest      - U-mode asks kernel to write kernel RAM (refused)\n");
     cprintf("  chanechotest    - chan_call() echo into real U-mode server\n");
     cprintf("  trapselftest    - Execute illegal instruction (test fault handler)\n");
     cprintf("\nDriver Task PMP Isolation Fault Checks:\n");
+#endif
 #if defined(CONFIG_BOARD_RP2350)
+#if CONFIG_DEV
     cprintf("  heartbeatisotest - Heartbeat driver task domain check\n");
     cprintf("  uartisotest     - UART0 driver task domain check\n");
     cprintf("  usbisotest      - USB CDC driver task domain check\n");
     cprintf("  i2cisotest      - I2C controller driver task domain check\n");
 #endif
+#endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
+#if CONFIG_DEV
     cprintf("  tm1638isotest   - TM1638 keypad driver task domain check\n");
 #endif
+#endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
+#if CONFIG_DEV
     cprintf("  st7735isotest   - ST7735 SPI display driver task domain check\n");
 #endif
+#endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_SPISD
+#if CONFIG_DEV
     cprintf("  blkisotest      - Block SD/SPI driver task domain check\n");
 #endif
+#endif
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_LCD_PCLK_GPIO)
+#if CONFIG_DEV
     cprintf("  lcdtermisotest  - LCD terminal emulator domain check\n");
 #endif
+#endif
     cprintf("\nMulticore SMP & Concurrency Checks:\n");
+#if CONFIG_DEV
     cprintf("  lockselftest    - Atomic spinlocks, interrupt masking, ylock\n");
     cprintf("  chanqtest       - chan_call_wait(): FIFO turns, hand-off, deadlines\n");
+#endif
     cprintf("  lockcheck [pairs] - Lock faults, learned lock order, console_lock hold times\n");
+#if CONFIG_DEV
     cprintf("  stress [s]      - Worker tasks on the shared paths, checked; STRESS_OK/FAIL\n");
+#endif
     cprintf("  smpstart [join] - Launch secondary CPU core\n");
+#if CONFIG_DEV
     cprintf("  smptest         - Multi-hart atomic counter and lock race test\n");
+#endif
     cprintf("  smpload         - Background CPU load across all online harts\n");
     cprintf("\nBenchmarks & Subsystem Selftests:\n");
+#if CONFIG_DEV
     cprintf("  sdbench [kb]    - SD card sequential read throughput benchmark\n");
     cprintf("  fsbench <dir>   - Filesystem write/read/verify benchmark\n");
     cprintf("  hmacselftest    - SHA-256 and HMAC-SHA-256 against RFC vectors\n");
     cprintf("  cryptotest [bench] - SHA-1, HKDF, X25519, ChaCha20-Poly1305, P-256 vectors; timings\n");
     cprintf("  memselftest     - libc memcpy/memmove/memset byte reference\n");
     cprintf("  fmtselftest     - printk/ksnprintf format engine selftest\n");
+#endif
     console_print_divider('-');
     cprintf("\n");
 }
@@ -2532,6 +2564,7 @@ static void cmd_p9auth(const char *arg) {
  * (tests/netpeer.py, plan §4a). This is the pair R1 is verified with. */
 static void cmd_net_status(void) { net_print_status(); }
 
+#if CONFIG_DEV
 /* A frame with somewhere to go and nothing to say: broadcast destination, our
  * own MAC as source, an EtherType of 0x88b5 (IEEE-reserved for local
  * experimental use, so it can never be mistaken for a real protocol), and a
@@ -2551,7 +2584,9 @@ static uint32_t build_test_frame(netif_t *nif, uint8_t *out, uint32_t seq) {
     while (o < 60) out[o++] = 0;
     return o;
 }
+#endif
 
+#if CONFIG_DEV
 static void cmd_net_txtest(unsigned count) {
     netif_t *nif = netif_default();
     if (!nif) { cprintf("net: no interfaces.\n"); return; }
@@ -2566,7 +2601,9 @@ static void cmd_net_txtest(unsigned count) {
     cprintf("net: %u/%u test frames sent on %s (%lu tx errors total)\n",
             sent, count, nif->name, (unsigned long)nif->tx_errors);
 }
+#endif
 
+#if CONFIG_DEV
 static void cmd_net_rxtest(unsigned count) {
     netif_t *nif = netif_default();
     if (!nif) { cprintf("net: no interfaces.\n"); return; }
@@ -2596,6 +2633,7 @@ static void cmd_net_rxtest(unsigned count) {
     if (got < count) cprintf("net: gave up after %u/%u frames\n", got, count);
     else cprintf("net: rxtest done, %u frames\n", got);
 }
+#endif
 
 /* `net udpecho [port]` -- binds a UDP port and echoes whatever arrives back
  * to its sender.
@@ -2671,6 +2709,7 @@ static void cmd_net_udpecho(unsigned port) {
     cprintf("net: echoing UDP on port %u\n", port);
 }
 
+#if CONFIG_DEV
 /* `net echotest <ip> <port> [bytes]` -- Q0's byte stream, end to end.
  *
  * The counterpart to `net txtest`/`net rxtest` one layer up: those prove a
@@ -2688,7 +2727,9 @@ static void cmd_net_udpecho(unsigned port) {
 static uint8_t echotest_byte(uint32_t i) {
     return (uint8_t)(i * 31u + (i >> 8) * 7u + 13u);
 }
+#endif
 
+#if CONFIG_DEV
 static void cmd_net_echotest(const char *arg) {
     while (*arg == ' ') arg++;
 
@@ -2805,6 +2846,7 @@ static void cmd_net_echotest(const char *arg) {
                 peer_closed ? ", peer had closed" : "");
     }
 }
+#endif
 
 static void shell_mqtt_message(const char *topic, const uint8_t *payload,
                                uint32_t len, bool retained, void *ctx);
@@ -4335,6 +4377,7 @@ static void cmd_klog(const char *arg) {
     printk("[klog] Sink '%s' %s\n", name, detach ? "detached" : "attached");
 }
 
+#if CONFIG_DEV
 /* B2: proves the cooperative scheduler actually switches, rather than
  * merely bookkeeping as the pre-B2 shim did.
  *
@@ -4351,6 +4394,7 @@ static void taskdemo_body(void *arg) {
         sched_yield();
     }
 }
+#endif
 
 /* B3: proves the M->U transition and the trap path's stack swap.
  *
@@ -4405,18 +4449,21 @@ __attribute__((always_inline)) static inline void usys_exit(void) {
     __asm__ __volatile__("mv a0, %0\n ecall" :: "r"(SYS_UEXIT) : "a0");
 }
 
+#if CONFIG_DEV
 UATTR static void user_probe(void) {
     usys_putc('U'); usys_putc('M'); usys_putc('O'); usys_putc('D');
     usys_putc('E'); usys_putc('_'); usys_putc('O'); usys_putc('K');
     usys_exit();
     for (;;) { }
 }
+#endif
 
 /* The isolation probe: a store into kernel memory the task was never granted.
  * Under a correct domain it faults and the task is terminated. */
 /* accepted: a command's or selftest's own state; one run at a time. */
 static volatile uintptr_t g_kernel_canary = 0xC0FFEE;
 
+#if CONFIG_DEV
 UATTR static void user_intruder(void) {
     g_kernel_canary = 0xDEAD;
     /* Only reached if the store was NOT stopped. Report explicitly: silence
@@ -4426,6 +4473,7 @@ UATTR static void user_intruder(void) {
     usys_exit();
     for (;;) { }
 }
+#endif
 
 /* The confused-deputy probe: can a U-mode task get the KERNEL to write to
  * kernel memory on its behalf? SYS_READ_FILE's `buf` is a destination the
@@ -4435,6 +4483,7 @@ UATTR static void user_intruder(void) {
 /* accepted: a command's or selftest's own state; one run at a time. */
 static volatile uintptr_t g_deputy_target = 0xFEEDFACE;
 
+#if CONFIG_DEV
 UATTR static void user_deputy(void) {
     /* volatile, because gcc recognises a run of consecutive char stores and
      * turns it back into a copy from a .rodata blob -- defeating the whole
@@ -4472,7 +4521,9 @@ UATTR static void user_deputy(void) {
     usys_exit();
     for (;;) { }
 }
+#endif
 
+#if CONFIG_DEV
 /* A full page, page-aligned: one rule that satisfies both backends. PMP needs
  * power-of-two and self-aligned; Sv39 cannot grant anything finer than a page,
  * so a sub-page region would silently hand U-mode the rest of the page. Taking
@@ -4486,8 +4537,13 @@ UATTR static void user_deputy(void) {
  * the grant is unchanged -- only where the page comes from moved. */
 /* accepted: a command's or selftest's own state; one run at a time. */
 static scratch_t g_user_stack_sc;
+#endif
+#if CONFIG_DEV
 static uint8_t *g_user_stack;
+#endif
+#if CONFIG_DEV
 static mem_domain_t g_user_domain;
+#endif
 
 /* Set only once a task has actually reached U-mode. Without it the isolation
  * report is a false positive on any core where the domain could not be
@@ -4506,6 +4562,7 @@ static volatile bool g_user_entered;
 /* accepted: a command's or selftest's own state; one run at a time. */
 static volatile int g_user_hart = -1;
 
+#if CONFIG_DEV
 static void user_task_common(void (*entry)(void)) {
     /* A static domain reused by every run: the previous run's page tables
      * are returned first . mem_domain_init() zeroes the
@@ -4543,11 +4600,16 @@ static void user_task_common(void (*entry)(void)) {
      * return address. */
     arch_enter_user(entry, (uintptr_t)g_user_stack + 4096, 0, 0, 0);
 }
+#endif
 
+#if CONFIG_DEV
 static void usertest_body(void *arg)  { (void)arg; user_task_common(user_probe); }
+#if CONFIG_DEV
 static void intruder_body(void *arg)  { (void)arg; user_task_common(user_intruder); }
+#if CONFIG_DEV
 static void deputy_body(void *arg)    { (void)arg; user_task_common(user_deputy); }
 
+#if CONFIG_DEV
 /* X5: parse the optional trailing hart id these probes now accept. Anything
  * that is not a plain number in range means "unpinned", which is the old
  * behaviour -- a typo must not silently pin to hart 0. */
@@ -4558,7 +4620,12 @@ static int shell_hart_arg(const char *a) {
     for (; *a >= '0' && *a <= '9'; a++) h = h * 10 + (*a - '0');
     return (h < MAX_HARTS) ? h : -1;
 }
+#endif
+#endif
+#endif
+#endif
 
+#if CONFIG_DEV
 /* `hart` is -1 for "wherever the scheduler puts it" -- the behaviour every
  * caller had before X5 -- or a hart id to pin to. Pinning is what makes
  * "a domain fault is handled correctly on a hart that is not the primary"
@@ -4627,7 +4694,9 @@ static void run_user_task(const char *name, void (*body)(void *), int hart) {
                (hart >= 0 && g_user_hart != hart) ? " -- NOT the hart it was pinned to" : "");
     }
 }
+#endif
 
+#if CONFIG_DEV
 static void cmd_usertest(int hart) {
     if (!mem_domain_enforced()) {
         printk("[UserTest] NOTE: this build cannot enforce domains (S-mode; Sv39 is B5).\n");
@@ -4640,7 +4709,9 @@ static void cmd_usertest(int hart) {
                   : "NOT U-mode -- the transition did not happen");
     printk("[UserTest] Returned to kernel mode; task ended cleanly.\n");
 }
+#endif
 
+#if CONFIG_DEV
 static void cmd_deputytest(int hart) {
     g_deputy_target = 0xFEEDFACE;
     printk("[Deputy] Kernel target at %p holds 0x%lx before.\n",
@@ -4655,7 +4726,9 @@ static void cmd_deputytest(int hart) {
            g_deputy_target == 0xFEEDFACE ? "UNTOUCHED"
                                          : "OVERWRITTEN VIA THE KERNEL");
 }
+#endif
 
+#if CONFIG_DEV
 /* Verifies if a real client
  * blocking on chan_call() into a real U-mode server -- which itself blocks
  * mid-ecall-trap inside SYS_CHAN_SERVE_WAIT, waiting to be woken by that
@@ -4672,12 +4745,23 @@ static void cmd_deputytest(int hart) {
  * `chanechotest` probe rather than permanent .bss. */
 /* accepted: a command's or selftest's own state; one run at a time. */
 static scratch_t       g_echo_ustack_sc;
+#endif
+#if CONFIG_DEV
 static uint8_t        *g_echo_ustack;
+#endif
+#if CONFIG_DEV
 static mem_domain_t    g_echo_domain;
+#endif
+#if CONFIG_DEV
 /* accepted: a command's or selftest's own state; one run at a time. */
 static uint8_t         g_echo_req[16];
+#endif
+#if CONFIG_DEV
 static uint8_t         g_echo_resp[16];
+#endif
+#if CONFIG_DEV
 static chan_endpoint_t *g_echo_ep;
+#endif
 static volatile bool    g_echo_entered;   /* accepted: a selftest's handshake flag */
 
 __attribute__((always_inline)) static inline long echo_usys_chan_serve_wait(const char *name, uint8_t *buf, long buf_max) {
@@ -4697,6 +4781,7 @@ __attribute__((always_inline)) static inline long echo_usys_chan_serve_reply(con
     return r_a0;
 }
 
+#if CONFIG_DEV
 UATTR static void echo_umode_body(void) {
     /* Not a string literal: a literal lands in ordinary .rodata, outside
      * every region this task's domain grants, so strncpy_from_user()
@@ -4717,7 +4802,9 @@ UATTR static void echo_umode_body(void) {
     usys_exit();
     for (;;) { }
 }
+#endif
 
+#if CONFIG_DEV
 static void echo_task_body(void *arg) {
     (void)arg;
     /* task_create() can hand control to this task before
@@ -4750,6 +4837,7 @@ static void echo_task_body(void *arg) {
     g_echo_entered = true;
     arch_enter_user(echo_umode_body, (uintptr_t)g_echo_ustack + 4096, 0, 0, 0);
 }
+#endif
 
 /* `lockcheck`: the lock checker's counters, the learned lock order and the
  * console_lock hold times (kernel/lock.c, kernel/console.c). */
@@ -4787,6 +4875,7 @@ static void cmd_lockcheck(bool pairs) {
         cprintf("  %s %u ms: task %d, %s\n", i ? "     " : "last:", (unsigned)ms, pid, site ? site : "?");
 }
 
+#if CONFIG_DEV
 static void cmd_chan_echo_test(void) {
     /* Refuse a repeat run before committing anything to it.
      *
@@ -4861,7 +4950,9 @@ static void cmd_chan_echo_test(void) {
         printk("[ChanEcho] Task did not exit; keeping its stack\n");
     }
 }
+#endif
 
+#if CONFIG_DEV
 static void cmd_usertest_isolation(int hart) {
     /* State the enforcement capability here, not only in usertest: this is
      * the command whose result is meaningless without it. A "BREACHED" line
@@ -4888,6 +4979,7 @@ static void cmd_usertest_isolation(int hart) {
            g_kernel_canary == 0xC0FFEE ? "ISOLATED (kernel memory untouched)"
                                        : "BREACHED (user task wrote kernel memory)");
 }
+#endif
 
 #if defined(CONFIG_BOARD_RP2350)
 /* Isolation verification:
@@ -4898,6 +4990,7 @@ static void cmd_usertest_isolation(int hart) {
  * that U-mode isolation works in the abstract. */
 extern bool heartbeat_isolation_test(uintptr_t *out_canary, bool *out_exited_clean);
 
+#if CONFIG_DEV
 static void cmd_heartbeat_isolation_test(void) {
     if (!mem_domain_enforced()) {
         printk("[HeartbeatIso] NOTE: this build cannot enforce domains; the write below is EXPECTED to succeed.\n");
@@ -4917,6 +5010,7 @@ static void cmd_heartbeat_isolation_test(void) {
            exited_clean ? "yes" : "no");
 }
 #endif
+#endif
 
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
 /* Driver task verification:
@@ -4925,6 +5019,7 @@ static void cmd_heartbeat_isolation_test(void) {
  * that also serves a real chan_call() endpoint (heartbeat has none). */
 extern bool tm1638_isolation_test(uintptr_t *out_canary, bool *out_exited_clean);
 
+#if CONFIG_DEV
 static void cmd_tm1638_isolation_test(void) {
     if (!mem_domain_enforced()) {
         printk("[TM1638Iso] NOTE: this build cannot enforce domains; the write below is EXPECTED to succeed.\n");
@@ -4944,6 +5039,7 @@ static void cmd_tm1638_isolation_test(void) {
            exited_clean ? "yes" : "no");
 }
 #endif
+#endif
 
 #if defined(CONFIG_BOARD_RP2350)
 /* Driver task verification:
@@ -4954,6 +5050,7 @@ static void cmd_tm1638_isolation_test(void) {
  * built unconditionally for every RP2350 persona. */
 extern bool i2c_isolation_test(uintptr_t *out_canary, bool *out_exited_clean);
 
+#if CONFIG_DEV
 static void cmd_i2c_isolation_test(void) {
     if (!mem_domain_enforced()) {
         printk("[I2CIso] NOTE: this build cannot enforce domains; the write below is EXPECTED to succeed.\n");
@@ -4972,6 +5069,7 @@ static void cmd_i2c_isolation_test(void) {
     printk("[I2CIso] Task exited cleanly: %s (expected: no -- the store should fault)\n",
            exited_clean ? "yes" : "no");
 }
+#endif
 #endif
 
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_PICO_CLOCK_GREEN
@@ -5014,6 +5112,7 @@ static void cmd_clock_isolation_test(void) {
  * hardware-controller grant (SPI0) at once. */
 extern bool st7735_isolation_test(uintptr_t *out_canary, bool *out_exited_clean);
 
+#if CONFIG_DEV
 static void cmd_st7735_isolation_test(void) {
     if (!mem_domain_enforced()) {
         printk("[ST7735Iso] NOTE: this build cannot enforce domains; the write below is EXPECTED to succeed.\n");
@@ -5033,6 +5132,7 @@ static void cmd_st7735_isolation_test(void) {
            exited_clean ? "yes" : "no");
 }
 #endif
+#endif
 
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_SPISD
 /* Driver task verification:
@@ -5042,6 +5142,7 @@ static void cmd_st7735_isolation_test(void) {
  * from st7735's SPI0). */
 extern bool blk_isolation_test(uintptr_t *out_canary, bool *out_exited_clean);
 
+#if CONFIG_DEV
 static void cmd_blk_isolation_test(void) {
     if (!mem_domain_enforced()) {
         printk("[BlkIso] NOTE: this build cannot enforce domains; the write below is EXPECTED to succeed.\n");
@@ -5061,6 +5162,7 @@ static void cmd_blk_isolation_test(void) {
            exited_clean ? "yes" : "no");
 }
 #endif
+#endif
 
 #if defined(CONFIG_BOARD_RP2350)
 /* Driver task verification:
@@ -5071,6 +5173,7 @@ static void cmd_blk_isolation_test(void) {
  * always built for RP2350, unlike the optional peripherals above. */
 extern bool uart_isolation_test(uintptr_t *out_canary, bool *out_exited_clean);
 
+#if CONFIG_DEV
 static void cmd_uart_isolation_test(void) {
     if (!mem_domain_enforced()) {
         printk("[UartIso] NOTE: this build cannot enforce domains; the write below is EXPECTED to succeed.\n");
@@ -5089,6 +5192,7 @@ static void cmd_uart_isolation_test(void) {
     printk("[UartIso] Task exited cleanly: %s (expected: no -- the store should fault)\n",
            exited_clean ? "yes" : "no");
 }
+#endif
 
 /* Driver task verification:
  * heartbeatisotest/tm1638isotest/i2cisotest/st7735isotest/blkisotest/
@@ -5099,6 +5203,7 @@ static void cmd_uart_isolation_test(void) {
  * built for RP2350, same as uart. */
 extern bool usb_cdc_isolation_test(uintptr_t *out_canary, bool *out_exited_clean);
 
+#if CONFIG_DEV
 static void cmd_usb_isolation_test(void) {
     if (!mem_domain_enforced()) {
         printk("[UsbIso] NOTE: this build cannot enforce domains; the write below is EXPECTED to succeed.\n");
@@ -5118,6 +5223,7 @@ static void cmd_usb_isolation_test(void) {
            exited_clean ? "yes" : "no");
 }
 #endif
+#endif
 
 /* B6: preemption, tested by something that cannot work without it.
  *
@@ -5132,12 +5238,15 @@ static void cmd_usb_isolation_test(void) {
  * machine and taking every later test down with it. */
 static volatile uint32_t g_preempt_flag;   /* accepted: a selftest's handshake flag */
 
+#if CONFIG_DEV
 static void preempt_spinner(void *arg) {
     (void)arg;
     for (volatile uint32_t i = 0; i < 300000u; i++) { /* no yield, on purpose */ }
     g_preempt_flag = 1;
 }
+#endif
 
+#if CONFIG_DEV
 static void cmd_preempttest(void) {
     if (!ticker_enabled()) {
         cprintf("[Preempt] No preemption timer on this build -- cannot test.\n");
@@ -5161,6 +5270,7 @@ static void cmd_preempttest(void) {
             g_preempt_flag ? "PREEMPTED (a task ran without anyone yielding)"
                            : "NOT PREEMPTED");
 }
+#endif
 
 /* Proves next_runnable() picks by
  * priority tier, not merely by ring position. Four never-yielding hogs are
@@ -5189,6 +5299,7 @@ static void cmd_preempttest(void) {
 static volatile uint32_t g_urgent_ran;
 static volatile uint64_t g_urgent_woken_tick;
 
+#if CONFIG_DEV
 static void priotest_hog_body(void *arg) {
     (void)arg;
     /* No yield, on purpose -- these exist purely to occupy ring slots a
@@ -5199,14 +5310,18 @@ static void priotest_hog_body(void *arg) {
      * dilute round-robin for whatever runs next. */
     for (volatile uint32_t i = 0; i < 20000000u; i++) { }
 }
+#endif
 
+#if CONFIG_DEV
 static void priotest_urgent_body(void *arg) {
     (void)arg;
     task_block(); /* parks until cmd_priotest() unblocks it below */
     g_urgent_woken_tick = ticker_ticks();
     g_urgent_ran = 1;
 }
+#endif
 
+#if CONFIG_DEV
 static void cmd_priotest(void) {
     if (!ticker_enabled()) {
         cprintf("[PrioTest] No preemption timer on this build -- cannot test.\n");
@@ -5248,6 +5363,7 @@ static void cmd_priotest(void) {
             (g_urgent_ran && ticks_to_run <= 2) ? "BOUNDED (priority won)"
                                                 : "NOT BOUNDED");
 }
+#endif
 
 /* Priority test:
  * ever proves one TASK_PRIO_INTERRUPT task against a field of NORMAL-tier
@@ -5290,6 +5406,7 @@ static volatile uint64_t g_stress_finish_tick[2];
 
 static volatile long g_stress_sink[2]; /* accepted: per-task: keeps the optimizer from eliminating the loop below without sharing a write target between the two concurrently-running tasks */
 
+#if CONFIG_DEV
 static void priostress_body(void *arg) {
     int id = (int)(intptr_t)arg;
     /* Overwrite, not accumulate: `long` is 32 bits on rv32, and summing i
@@ -5302,7 +5419,9 @@ static void priostress_body(void *arg) {
     g_stress_finish_tick[id] = ticker_ticks();
     g_stress_done[id] = 1;
 }
+#endif
 
+#if CONFIG_DEV
 static void cmd_priostress(void) {
     if (!ticker_enabled()) {
         cprintf("[PrioStress] No preemption timer on this build -- cannot test.\n");
@@ -5353,7 +5472,9 @@ static void cmd_priostress(void) {
             fair ? "FAIR (both same-tier tasks shared the CPU)"
                  : "UNFAIR (one task-table slot starved the other)");
 }
+#endif
 
+#if CONFIG_DEV
 static void cmd_taskdemo(void) {
     uint32_t before_total = 0, before_free = 0;
     palloc_stats(&before_total, &before_free);
@@ -5386,7 +5507,9 @@ static void cmd_taskdemo(void) {
     printk("[TaskDemo] Done. Heap pages free before=%u after=%u\n",
            before_free, after_free);
 }
+#endif
 
+#if CONFIG_DEV
 /* Proves task_create_sized() works
  * at a stack size other than TASK_STACK_PAGES, and that palloc_free() is
  * called for exactly the number of pages that were actually allocated (not
@@ -5398,7 +5521,9 @@ static void sizedtaskdemo_body(void *arg) {
     printk("[SizedTaskDemo] Running on a 1-page stack\n");
     sched_yield();
 }
+#endif
 
+#if CONFIG_DEV
 static void cmd_sizedtaskdemo(void) {
     uint32_t before_total = 0, before_free = 0;
     palloc_stats(&before_total, &before_free);
@@ -5424,7 +5549,9 @@ static void cmd_sizedtaskdemo(void) {
     printk("[SizedTaskDemo] Done. Heap pages free before=%u after=%u\n",
            before_free, after_free);
 }
+#endif
 
+#if CONFIG_DEV
 /* Exercises balloc_alloc()/
  * balloc_free() -- rounding to the next power of two, self-alignment to
  * that size (Rule 6: this is what makes a block usable as a PMP region
@@ -5475,6 +5602,7 @@ static void cmd_ballocdemo(void) {
     printk("[BAllocDemo] Done. After churn: largest=%u arena=%u\n",
            free_after, arena_bytes);
 }
+#endif
 
 /* 37.5b: `e` evaluates and stays (kernel/editor.c). What the evaluation
  * prints is captured rather than drawn over the text, and the status line
@@ -5903,6 +6031,7 @@ static bool privileged_cmd_refused(const char *cmd_line) {
     return false;
 }
 
+#if CONFIG_DEV
 /* `privselftest`: an agent's tool call cannot reach a privileged command, a
  * privileged Lisp primitive or a protected path, however spelled -- and the
  * same calls outside one still work. */
@@ -5938,6 +6067,7 @@ static void privilege_selftest(void) {
 #undef PCHECK
     cprintf(fails ? "PRIV_SELFTEST_FAIL (%d)\n" : "PRIV_SELFTEST_OK\n", fails);
 }
+#endif
 
 void shell_exec_untrusted(const char *cmd_line) {
     if (!cmd_line) return;
@@ -6227,6 +6357,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         while (*fn == ' ') fn++;
         shell_run_editor(fn);
         return;
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "edbench") == 0 || strncmp(cmd_line, "edbench ", 8) == 0) {
         /* 38.7: `edbench [kb] [dir]`. */
         const char *a = cmd_line + 7;
@@ -6235,46 +6366,67 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         while (*a >= '0' && *a <= '9') kb = kb * 10u + (unsigned)(*a++ - '0');
         while (*a == ' ') a++;
         (void)editor_bench(kb, a);
+#endif
     } else if (strncmp(cmd_line, "vterm", 5) == 0 && (cmd_line[5] == '\0' || cmd_line[5] == ' ')) {
         cmd_vterm(cmd_line);
         return;
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "vtermselftest") == 0) {
         int fails = vterm_selftest();
         cprintf("vterm selftest: %s\n", fails == 0 ? "PASSED" : "FAILED");
         return;
+#endif
     } else if (strncmp(cmd_line, "ribbon", 6) == 0 && (cmd_line[6] == '\0' || cmd_line[6] == ' ')) {
         cmd_ribbon(cmd_line);
         return;
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "ribbonselftest") == 0) {
         ribbon_selftest();
         return;
+#endif
     } else if (strncmp(cmd_line, "canvas", 6) == 0 && (cmd_line[6] == '\0' || cmd_line[6] == ' ')) {
         cmd_canvas(cmd_line);
         return;
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "editselftest") == 0) {
         (void)editor_selftest();
         return;
+#endif
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "hmacselftest") == 0) {
         sha256_selftest();
         return;
+#endif
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "privselftest") == 0) {
         privilege_selftest();
         return;
+#endif
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "cryptotest") == 0) {
         (void)crypto_selftest();
         return;
+#endif
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "cryptotest bench") == 0) {
         crypto_bench();
         return;
+#endif
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "umodetest") == 0) {
         umode_probe_run();
         return;
+#endif
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "usbselftest") == 0) {
         (void)usb_crc_selftest();
         return;
+#endif
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "usbkbdselftest") == 0) {
         (void)usbkbd_selftest();
         return;
+#endif
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)
     } else if (strcmp(cmd_line, "usbprobe") == 0) {
         piousb_probe();
@@ -6325,16 +6477,20 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         else
             cprintf("screenshot: nothing saved (no screen yet, or no card)\n");
         return;
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "keyselftest") == 0) {
         /* The key parser
          * every text input uses, against byte strings. */
         (void)keyseq_selftest();
         return;
+#endif
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "vtselftest") == 0) {
         /* Terminal selftest runs on
          * QEMU as well as on the board with the panel. */
         (void)vtterm_selftest();
         return;
+#endif
 #if defined(CONFIG_BOARD_ESP32C6)
     } else if (strncmp(cmd_line, "led", 3) == 0 && (cmd_line[3] == 0 || cmd_line[3] == ' ')) {
         /* 45.5: `led R G B` (0-255 each), `led off`, `led` alone for usage. */
@@ -6390,9 +6546,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "wdt") == 0) {
         watchdog_report();
         return;
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "wdt test") == 0) {
         watchdog_withhold();
         return;
+#endif
 #endif
     } else if (strcmp(cmd_line, "radio rejoin") == 0) {
         radio_c6_rejoin();
@@ -6426,12 +6584,17 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         cmd_intrdump();
         return;
 #endif
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "lockselftest") == 0) {
         lock_selftest();
         return;
+#endif
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "chanqtest") == 0) {
         (void)chan_selftest();
         return;
+#endif
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "stress") == 0 || strncmp(cmd_line, "stress ", 7) == 0) {
         unsigned long secs = 0;
         for (const char *q = cmd_line + 6; *q && *q != 'o' && *q != 'n'; q++)   /* up to `only=` / `norot` */
@@ -6441,33 +6604,48 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         if (strncmp(cmd_line, "stress bg", 9) == 0) stress_start_bg((uint32_t)secs);
         else (void)stress_run((uint32_t)secs);
         return;
+#endif
     } else if (strcmp(cmd_line, "lockcheck") == 0 || strcmp(cmd_line, "lockcheck pairs") == 0) {
         cmd_lockcheck(cmd_line[9] == ' ');
         return;
 #if defined(CONFIG_KOBJ)
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "kobjselftest") == 0) {
         kobj_selftest();
+        return;
+#endif
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "kobjutest") == 0) {
         kobj_utest();
+        return;
+#endif
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "radioosi") == 0) {
         radio_osi_test();
-#endif
         return;
+#endif
+#endif
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "zonetest") == 0) {
         /* The bulk page zone. */
         extern void zone_selftest(void);
         zone_selftest();
         return;
+#endif
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "memselftest") == 0) {
         /* Libc word loops. */
         extern void mem_selftest(void);
         mem_selftest();
         return;
+#endif
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "fmtselftest") == 0) {
         /* The printf engine. */
         extern void fmt_selftest(void);
         fmt_selftest();
         return;
+#endif
 #if defined(LCDTERM_PRESENT)
     } else if (strncmp(cmd_line, "lcd blank", 9) == 0 && (cmd_line[9] == 0 || cmd_line[9] == ' ')) {
         /* 47.11: idle blanking, on either panel. `lcd blank 10` is ten
@@ -6514,11 +6692,13 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strncmp(cmd_line, "emac loopback stress", 20) == 0) {
         emac_loopback_stress((uint32_t)shell_trailing_uint(&cmd_line[20]));
         return;
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "emac loopback") == 0) {
         /* Z2. Proves the descriptor rings and the cache discipline with no
          * PHY and no cable in the picture. */
         emac_loopback_test();
         return;
+#endif
     } else if (strcmp(cmd_line, "emac") == 0 || strcmp(cmd_line, "emac scan") == 0) {
         /* Spelled like `i2c scan` and
          * for the same reason: a table a human asked for about what is
@@ -6538,12 +6718,14 @@ static void parse_and_eval_cmd(const char *cmd_line) {
          * inserted since boot. */
         sdmmc_info_report();
         return;
+#if CONFIG_DEV
     } else if (strncmp(cmd_line, "sdbench", 7) == 0 && strncmp(cmd_line, "sdbench w", 9) != 0) {
         /* 35.5. The instrument the phase plan's §7 asks for: a rate with a
          * sample size attached, because a rate without one is not a
          * measurement. */
         sdmmc_bench_report((uint32_t)shell_trailing_uint(&cmd_line[7]));
         return;
+#endif
     } else if (strcmp(cmd_line, "clicdump") == 0) {
         cmd_clicdump();
         return;
@@ -6613,9 +6795,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "i2cdiag") == 0) {
         { extern void i2c_p4_diag(void); i2c_p4_diag(); }
         return;
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "flashtest") == 0) {
         cmd_flashtest();
         return;
+#endif
 #endif
 #if defined(CONFIG_SDIO_SLAVE)
     } else if (strcmp(cmd_line, "sdio") == 0) {
@@ -6627,10 +6811,12 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         sdio_slave_report();
         return;
 #endif
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "trapselftest") == 0 ||
                strcmp(cmd_line, "trapselftest fatal") == 0) {
         cmd_trapselftest(strcmp(cmd_line, "trapselftest fatal") == 0);
         return;
+#endif
     } else if (strcmp(cmd_line, "flashpark") == 0) {
         /* X7 step 6: exercise the park handshake without turning XIP off.
          *
@@ -6695,36 +6881,50 @@ static void parse_and_eval_cmd(const char *cmd_line) {
                 "(needs CONFIG_ENABLE_SMP on an RP2350 target)\n");
 #endif
         return;
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "smptest") == 0) {
         smp_selftest();
         return;
+#endif
     } else if (strcmp(cmd_line, "smpload") == 0) {
         smp_load_cmd(NULL);
         return;
     } else if (strncmp(cmd_line, "smpload ", 8) == 0) {
         smp_load_cmd(&cmd_line[8]);
         return;
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "randtest") == 0) {
         random_selftest(4096);
         return;
+#endif
+#if CONFIG_DEV
     } else if (strncmp(cmd_line, "randtest ", 9) == 0) {
         unsigned bits = 0;
         for (const char *d = &cmd_line[9]; *d >= '0' && *d <= '9'; d++)
             bits = bits * 10u + (unsigned)(*d - '0');
         random_selftest(bits);
         return;
+#endif
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "edgecapselftest") == 0) {
         edgecap_selftest();
         return;
+#endif
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "timeselftest") == 0) {
         time_selftest();
         return;
+#endif
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "disciplineselftest") == 0) {
         discipline_selftest();
         return;
+#endif
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "idstoreselftest") == 0) {
         idstore_selftest();
         return;
+#endif
     } else if (strcmp(cmd_line, "identity") == 0) {
         cmd_identity(NULL);
         return;
@@ -6749,12 +6949,16 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strncmp(cmd_line, "netcfg ", 7) == 0) {
         cmd_netcfg(&cmd_line[7]);
         return;
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "dcf77selftest") == 0) {
         dcf77_selftest();
         return;
+#endif
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "clockuiselftest") == 0) {
         clock_ui_selftest();
         return;
+#endif
     } else if (strcmp(cmd_line, "i2c") == 0 || strcmp(cmd_line, "i2c scan") == 0) {
         i2c_scan_bus();
         return;
@@ -6913,9 +7117,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         else cprintf("Not a POSIX TZ rule: '%s' (kept %s).\n"
                      "Expected e.g. CET-1CEST,M3.5.0,M10.5.0/3 or UTC0\n", arg, tz_get());
         return;
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "tzselftest") == 0) {
         tz_selftest();
         return;
+#endif
     } else if (strncmp(cmd_line, "mkfs.vfat ", 10) == 0) {
         /* `mkfs.vfat VOL [LABEL]`: `format` under the name people look for. */
         char vol[32] = {0}, label[16] = {0};
@@ -6938,10 +7144,13 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         /* 38.0: recount free space from the FAT, repairing a stale FSInfo. */
         vfs_fat_recount();
         return;
+#if CONFIG_DEV
     } else if (strncmp(cmd_line, "sdbench w", 9) == 0) {
         /* 36.2: before any board's `sdbench`, which would match first. */
         cmd_fsbench("/sd0", "sdbench", shell_trailing_uint(&cmd_line[9]));
         return;
+#endif
+#if CONFIG_DEV
     } else if (strncmp(cmd_line, "fsbench ", 8) == 0) {
         /* `fsbench <dir> [kb]` (38.6): `sdbench w` on any volume. */
         const char *a = &cmd_line[8];
@@ -6953,10 +7162,13 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         while (n > 1 && dir[n - 1] == '/') dir[--n] = '\0';
         cmd_fsbench(dir, "fsbench", shell_trailing_uint(a + n));
         return;
+#endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_SPISD
+#if CONFIG_DEV
     } else if (strncmp(cmd_line, "sdbench", 7) == 0) {
         spisd_bench_report((uint32_t)shell_trailing_uint(&cmd_line[7]));
         return;
+#endif
 #endif
     } else if (strcmp(cmd_line, "lisp") == 0) {
         lisp_repl();
@@ -6985,6 +7197,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "lcd") == 0) {
         lcd7_report();
         return;
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "lcdtermisotest") == 0) {
         /* 36.6a: the same claim as st7735isotest and the others, against the
          * lcdterm domain -- a store into kernel memory must fault, and the
@@ -6998,6 +7211,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         else cprintf("[LcdtermIso] canary 0x%lx, exited %s: LCDTERM_ISOLATION_FAIL\n",
                      (unsigned long)canary, exited_clean ? "yes" : "no");
         return;
+#endif
     } else if (strncmp(cmd_line, "lcd colour ", 11) == 0 || strncmp(cmd_line, "lcd color ", 10) == 0) {
         /* 36.3. Hex, because RGB565 is read as hex everywhere it is written
          * down (f800 red, 07e0 green, 001f blue, ffff white). */
@@ -7015,10 +7229,13 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "lcd repaint") == 0) {
         lcdterm_repaint();
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "lcd test text") == 0) {
         /* 36.5 */
         if (lcdterm_text_test() != 0) cprintf("lcd test text: panel not running\n");
         return;
+#endif
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "lcd outbench") == 0) {
         /* 36.6: 20 full lines through the real console path (console_putc,
          * so whatever the tee is set to), timed on the board itself -- the
@@ -7035,6 +7252,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         cprintf("lcd outbench: 1980 characters in %lu us = %lu chars/s\n",
                 (unsigned long)us, (unsigned long)(1980ull * 1000000u / (us ? us : 1)));
         return;
+#endif
     } else if (strncmp(cmd_line, "lcd tee", 7) == 0) {
         const char *m = cmd_line + 7;
         while (*m == ' ') m++;
@@ -7053,11 +7271,13 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strncmp(cmd_line, "lcd scroll", 10) == 0) {
         lcdterm_scroll_test(shell_trailing_uint(&cmd_line[10]));
         return;
+#if CONFIG_DEV
     } else if (strncmp(cmd_line, "lcd test ", 9) == 0) {
         /* 36.4: patterns that fail in a way that names the fault. */
         if (lcd7_test_pattern(cmd_line + 9) != 0)
             cprintf("lcd test: clear, border, ruler, stripes, checker, grid or invert\n");
         return;
+#endif
     } else if (strncmp(cmd_line, "lcd colours ", 12) == 0 || strncmp(cmd_line, "lcd colors ", 11) == 0) {
         const char *h = cmd_line + (cmd_line[8] == 'u' ? 12 : 11);   /* "colours" vs "colors" */
         uint32_t v[2] = { 0, 0 };
@@ -7088,6 +7308,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "uart1pins") == 0) {
         uart1_pin_test();
         return;
+#if CONFIG_DEV
     } else if (strncmp(cmd_line, "uart1test", 9) == 0) {
         unsigned ms = 0;
         for (const char *d = &cmd_line[9]; ; d++) {
@@ -7097,6 +7318,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         }
         uart1_wire_test(ms);
         return;
+#endif
 #endif
     } else if (strcmp(cmd_line, "net") == 0) {
         cmd_net_status();
@@ -7108,10 +7330,12 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         power_cmd(cmd_line + 5);
         return;
 #if defined(CONFIG_BOARD_ESP32P4)
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "audiotest") == 0 || strncmp(cmd_line, "audiotest ", 10) == 0) {
         extern void audiotest_cmd(const char *arg);
         audiotest_cmd(cmd_line + 9);
         return;
+#endif
     } else if (strcmp(cmd_line, "volume") == 0 || strncmp(cmd_line, "volume ", 7) == 0) {
         extern void volume_cmd(const char *arg);
         volume_cmd(cmd_line + 6);
@@ -7150,9 +7374,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strncmp(cmd_line, "ntp ", 4) == 0) {
         cmd_ntp(&cmd_line[4]);
         return;
+#if CONFIG_DEV
     } else if (strncmp(cmd_line, "net txtest", 10) == 0) {
         cmd_net_txtest(shell_trailing_uint(&cmd_line[10]));
         return;
+#endif
     } else if (strncmp(cmd_line, "net listen", 10) == 0) {
         unsigned port = shell_trailing_uint(&cmd_line[10]);
         const char *rest = &cmd_line[10];
@@ -7166,15 +7392,19 @@ static void parse_and_eval_cmd(const char *cmd_line) {
             cprintf("net: could not listen\n");
         }
         return;
+#if CONFIG_DEV
     } else if (strncmp(cmd_line, "net echotest", 12) == 0) {
         cmd_net_echotest(&cmd_line[12]);
         return;
+#endif
     } else if (strncmp(cmd_line, "net udpecho", 11) == 0) {
         cmd_net_udpecho(shell_trailing_uint(&cmd_line[11]));
         return;
+#if CONFIG_DEV
     } else if (strncmp(cmd_line, "net rxtest", 10) == 0) {
         cmd_net_rxtest(shell_trailing_uint(&cmd_line[10]));
         return;
+#endif
 #if defined(CONFIG_BOARD_RP2350) && defined(CONFIG_ETH_CS_GPIO)
     } else if (strcmp(cmd_line, "net regs") == 0) {
         enc28j60_dump_regs();
@@ -7341,18 +7571,22 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "llp loop on") == 0 || strcmp(cmd_line, "llp loop off") == 0) {
         llp_node_set_loop(cmd_line[10] == 'n');
         return;
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "llp bench") == 0 || strncmp(cmd_line, "llp bench ", 10) == 0) {
         /* llp bench [count [size]], decimal */
         const char *p = cmd_line + 9;
         uint32_t count = dec_word(&p), size = dec_word(&p);
         llp_node_bench(count ? count : 1000u, size ? size : 1514u);
         return;
+#endif
+#if CONFIG_DEV
     } else if (strncmp(cmd_line, "llp soak ", 9) == 0) {
         /* llp soak seconds [size], decimal */
         const char *p = cmd_line + 8;
         uint32_t secs = dec_word(&p), size = dec_word(&p);
         llp_node_soak(secs ? secs : 600u, size ? size : 1514u);
         return;
+#endif
     } else if (strcmp(cmd_line, "llp host") == 0 || strncmp(cmd_line, "llp host ", 9) == 0) {
         /* llp host [baud]: a rate for a serial channel (the RP2350's UART0) */
         const char *p = cmd_line + 8;
@@ -7397,9 +7631,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strncmp(cmd_line, "p9key ", 6) == 0) {
         cmd_p9key(&cmd_line[6]);
         return;
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "p9authselftest") == 0) {
         p9_auth_selftest();
         return;
+#endif
     } else if (strcmp(cmd_line, "p9auth") == 0) {
         cmd_p9auth(NULL);
         return;
@@ -7415,86 +7651,128 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "pmpinfo") == 0) {
         pmp_report();
         return;
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "usertest") == 0) {
         cmd_usertest(-1);
         return;
+#endif
+#if CONFIG_DEV
     } else if (strncmp(cmd_line, "usertest ", 9) == 0) {
         cmd_usertest(shell_hart_arg(&cmd_line[9]));
         return;
+#endif
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "isolationtest") == 0) {
         cmd_usertest_isolation(-1);
         return;
+#endif
+#if CONFIG_DEV
     } else if (strncmp(cmd_line, "isolationtest ", 14) == 0) {
         cmd_usertest_isolation(shell_hart_arg(&cmd_line[14]));
         return;
+#endif
 #if defined(CONFIG_BOARD_RP2350)
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "heartbeatisotest") == 0) {
         cmd_heartbeat_isolation_test();
         return;
 #endif
+#endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "tm1638isotest") == 0) {
         cmd_tm1638_isolation_test();
         return;
 #endif
+#endif
 #if defined(CONFIG_BOARD_RP2350)
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "i2cisotest") == 0) {
         cmd_i2c_isolation_test();
         return;
 #endif
+#endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "st7735isotest") == 0) {
         cmd_st7735_isolation_test();
         return;
 #endif
+#endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_SPISD
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "blkisotest") == 0) {
         cmd_blk_isolation_test();
         return;
 #endif
+#endif
 #if defined(CONFIG_BOARD_RP2350)
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "uartisotest") == 0) {
         cmd_uart_isolation_test();
         return;
+#endif
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "usbisotest") == 0) {
         cmd_usb_isolation_test();
         return;
 #endif
+#endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_PICO_CLOCK_GREEN
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "clockisotest") == 0) {
         cmd_clock_isolation_test();
         return;
 #endif
+#endif
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "deputytest") == 0) {
         cmd_deputytest(-1);
         return;
+#endif
+#if CONFIG_DEV
     } else if (strncmp(cmd_line, "deputytest ", 11) == 0) {
         cmd_deputytest(shell_hart_arg(&cmd_line[11]));
         return;
+#endif
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "chanechotest") == 0) {
         cmd_chan_echo_test();
         return;
+#endif
     } else if (strcmp(cmd_line, "pmpdump") == 0) {
         pmp_dump();
         return;
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "preempttest") == 0) {
         cmd_preempttest();
         return;
+#endif
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "priotest") == 0) {
         cmd_priotest();
         return;
+#endif
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "priostress") == 0) {
         cmd_priostress();
         return;
+#endif
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "taskdemo") == 0) {
         cmd_taskdemo();
         return;
+#endif
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "sizedtaskdemo") == 0) {
         cmd_sizedtaskdemo();
         return;
+#endif
+#if CONFIG_DEV
     } else if (strcmp(cmd_line, "ballocdemo") == 0) {
         cmd_ballocdemo();
         return;
+#endif
     } else if (strcmp(cmd_line, "uartstats") == 0) {
         /* Driver task verify: exposes
          * uart_write_call_count() so a test can confirm console output

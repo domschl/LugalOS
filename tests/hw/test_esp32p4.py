@@ -253,6 +253,29 @@ def test_boots(b: Board) -> tuple[str, bool, str]:
     return name, True, ""
 
 
+_DEV: bool | None = None
+
+
+def _is_dev(b: Board) -> bool:
+    """Whether the image carries the dev-only commands (/proc/config DEV, 66.2). An
+    image older than that has no DEV line and is a dev image."""
+    global _DEV
+    if _DEV is None:
+        m = re.search(r"^DEV=(\d)", b.console_session.cmd("cat /proc/config"), re.M)
+        _DEV = m is None or m.group(1) != "0"
+    return _DEV
+
+
+def dev_only(fn):
+    """A case that drives a dev-only command: SKIPPED on a release image."""
+    def run(b: Board) -> tuple[str, bool, str]:
+        if not _is_dev(b):
+            return f"{fn.__name__}: needs a dev image", True, "SKIPPED: release image (DEV=0)"
+        return fn(b)
+    run.__name__ = fn.__name__
+    return run
+
+
 def test_ram_ledger(b: Board) -> tuple[str, bool, str]:
     """66.1: every page in use has an owner in /proc/pages, in both zones,
     and no task's stack is above 90% of its size. Last in the suite, so the
@@ -2008,7 +2031,7 @@ TESTS = [
     test_flash_write_while_executing,
     test_chibicc_compiles,
     test_preemption,
-    test_umode,
+    dev_only(test_umode),
     test_i2c_bus,
     test_i2c_stable,
     test_sensor_selftest,
@@ -2017,9 +2040,9 @@ TESTS = [
     test_sampler_advances,
     test_9p_over_the_wire,
     test_emac_phy,
-    test_emac_loopback,
+    dev_only(test_emac_loopback),
     test_emac_link,
-    test_emac_frames,
+    dev_only(test_emac_frames),
     test_node_identity_from_silicon,
     test_lan_node,
     test_c6_namespace,
@@ -2036,7 +2059,7 @@ TESTS = [
     test_psram_up,
     test_psram_pattern,
     test_dsi_pattern,
-    test_dsi_framebuffer,
+    dev_only(test_dsi_framebuffer),
     test_lcd_terminal,
     test_backlight_pwm,
     test_idle_blank,

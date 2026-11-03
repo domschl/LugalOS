@@ -4,7 +4,7 @@
     "kernel/palloc.c": 32768,
     "kernel/zonetest.c": 64,
     "user/ceres/src/platform_p4.c": 31896,
-    "user/lisp/lisp.c": 67584,
+    "user/lisp/lisp.c": 1532288,
     "user/moonbase/src/moon_textures.c": 32768,
     "user/moonbase/src/platform_p4.c": 41100
   },
@@ -13,10 +13,10 @@
     "app:moonbase": 73868,
     "display": 30304,
     "kernel": 32768,
-    "lisp": 67584,
+    "lisp": 1532288,
     "selftest": 64
   },
-  "bulk_total": 236484,
+  "bulk_total": 1701188,
   "heap_bytes": 380928,
   "heap_pages": 93,
   "per_file": {
@@ -139,7 +139,8 @@
     "user/chibicc/pools.c": 17,
     "user/chibicc/preprocess.c": 29,
     "user/chibicc/tokenize.c": 17,
-    "user/lisp/lisp.c": 1419,
+    "user/ed/ed.c": 100,
+    "user/lisp/lisp.c": 1115,
     "user/moonbase/src/moon_ambient.c": 217,
     "user/moonbase/src/moon_bench.c": 4,
     "user/moonbase/src/moon_blitter.c": 377,
@@ -155,6 +156,7 @@
     "agent": 987,
     "app:cc": 462,
     "app:ceres": 2057,
+    "app:ed": 100,
     "app:moonbase": 4211,
     "audio": 25361,
     "chess": 21338,
@@ -166,7 +168,7 @@
     "httpd": 70,
     "identity": 4237,
     "kernel": 14254,
-    "lisp": 1419,
+    "lisp": 1115,
     "llp": 3579,
     "log": 8322,
     "mqtt": 4220,
@@ -180,5 +182,5 @@
     "vfs": 4111
   },
   "ram_code": 1806,
-  "total": 223789
+  "total": 223585
 }

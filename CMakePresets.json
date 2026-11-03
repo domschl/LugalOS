@@ -13,7 +13,8 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/rv32",
       "cacheVariables": {
-        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-rv32-nommu.cmake"
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-rv32-nommu.cmake",
+        "LUGALOS_PROFILE": "qemu"
       }
     },
     {
@@ -23,7 +24,8 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/rv64",
       "cacheVariables": {
-        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-rv64-mmu.cmake"
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-rv64-mmu.cmake",
+        "LUGALOS_PROFILE": "qemu"
       }
     },
     {
@@ -33,7 +35,8 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/rp2350",
       "cacheVariables": {
-        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-rp2350.cmake"
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-rp2350.cmake",
+        "LUGALOS_PROFILE": "chess"
       }
     },
     {
@@ -45,13 +48,7 @@
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-rp2350.cmake",
         "LUGALOS_BOARD_FILE": "${sourceDir}/cmake/board-rp2350-clock.cmake",
-        "LUGALOS_ENABLE_SPISD": "OFF",
-        "LUGALOS_ENABLE_ST7735": "OFF",
-        "LUGALOS_ENABLE_TM1638": "OFF",
-        "LUGALOS_ENABLE_CHESS": "OFF",
-        "LUGALOS_ENABLE_PICO_CLOCK_GREEN": "ON",
-        "LUGALOS_ENABLE_DCF77": "ON",
-        "LUGALOS_ENABLE_GPS": "OFF"
+        "LUGALOS_PROFILE": "clock"
       }
     },
     {
@@ -63,13 +60,7 @@
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-rp2350.cmake",
         "LUGALOS_BOARD_FILE": "${sourceDir}/cmake/board-rp2350-gateway.cmake",
-        "LUGALOS_ENABLE_SPISD": "ON",
-        "LUGALOS_ENABLE_ST7735": "OFF",
-        "LUGALOS_ENABLE_TM1638": "OFF",
-        "LUGALOS_ENABLE_CHESS": "OFF",
-        "LUGALOS_ENABLE_PICO_CLOCK_GREEN": "OFF",
-        "LUGALOS_ENABLE_DCF77": "OFF",
-        "LUGALOS_ENABLE_GPS": "OFF"
+        "LUGALOS_PROFILE": "gateway"
       }
     },
     {
@@ -81,13 +72,7 @@
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-rp2350.cmake",
         "LUGALOS_BOARD_FILE": "${sourceDir}/cmake/board-rp2350-wifi.cmake",
-        "LUGALOS_ENABLE_SPISD": "ON",
-        "LUGALOS_ENABLE_ST7735": "OFF",
-        "LUGALOS_ENABLE_TM1638": "OFF",
-        "LUGALOS_ENABLE_CHESS": "OFF",
-        "LUGALOS_ENABLE_PICO_CLOCK_GREEN": "OFF",
-        "LUGALOS_ENABLE_DCF77": "OFF",
-        "LUGALOS_ENABLE_GPS": "OFF"
+        "LUGALOS_PROFILE": "sensor"
       }
     },
     {
@@ -99,13 +84,7 @@
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-rp2350.cmake",
         "LUGALOS_BOARD_FILE": "${sourceDir}/cmake/board-rp2350-sensor.cmake",
-        "LUGALOS_ENABLE_SPISD": "OFF",
-        "LUGALOS_ENABLE_ST7735": "OFF",
-        "LUGALOS_ENABLE_TM1638": "OFF",
-        "LUGALOS_ENABLE_CHESS": "OFF",
-        "LUGALOS_ENABLE_PICO_CLOCK_GREEN": "OFF",
-        "LUGALOS_ENABLE_DCF77": "OFF",
-        "LUGALOS_ENABLE_GPS": "OFF"
+        "LUGALOS_PROFILE": "sensor"
       }
     },
     {
@@ -117,13 +96,7 @@
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-rp2350.cmake",
         "LUGALOS_BOARD_FILE": "${sourceDir}/cmake/board-rp2350-terminal.cmake",
-        "LUGALOS_ENABLE_SPISD": "ON",
-        "LUGALOS_ENABLE_ST7735": "OFF",
-        "LUGALOS_ENABLE_TM1638": "OFF",
-        "LUGALOS_ENABLE_CHESS": "ON",
-        "LUGALOS_ENABLE_PICO_CLOCK_GREEN": "OFF",
-        "LUGALOS_ENABLE_DCF77": "OFF",
-        "LUGALOS_ENABLE_GPS": "OFF"
+        "LUGALOS_PROFILE": "workstation"
       }
     },
     {
@@ -135,16 +108,7 @@
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-esp32p4.cmake",
         "LUGALOS_ENABLE_SMP": "ON",
-        "LUGALOS_ENABLE_CC": "ON",
-        "LUGALOS_ENABLE_ED": "OFF",
-        "LUGALOS_ENABLE_SPISD": "OFF",
-        "LUGALOS_ENABLE_SDMMC": "ON",
-        "LUGALOS_ENABLE_ST7735": "OFF",
-        "LUGALOS_ENABLE_TM1638": "OFF",
-        "LUGALOS_ENABLE_CHESS": "ON",
-        "LUGALOS_ENABLE_PICO_CLOCK_GREEN": "OFF",
-        "LUGALOS_ENABLE_DCF77": "OFF",
-        "LUGALOS_ENABLE_GPS": "OFF"
+        "LUGALOS_PROFILE": "workstation"
       }
     },
     {
@@ -155,18 +119,9 @@
       "binaryDir": "${sourceDir}/build/esp32p4-lcd7b",
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-esp32p4.cmake",
+        "LUGALOS_BOARD_FILE": "${sourceDir}/cmake/board-esp32p4-lcd7b.cmake",
         "LUGALOS_ENABLE_SMP": "ON",
-        "LUGALOS_ENABLE_CC": "ON",
-        "LUGALOS_ENABLE_ED": "OFF",
-        "LUGALOS_ENABLE_SPISD": "OFF",
-        "LUGALOS_ENABLE_SDMMC": "ON",
-        "LUGALOS_ENABLE_ST7735": "OFF",
-        "LUGALOS_ENABLE_TM1638": "OFF",
-        "LUGALOS_ENABLE_CHESS": "ON",
-        "LUGALOS_ENABLE_PICO_CLOCK_GREEN": "OFF",
-        "LUGALOS_ENABLE_DCF77": "OFF",
-        "LUGALOS_ENABLE_GPS": "OFF",
-        "LUGALOS_BOARD_FILE": "${sourceDir}/cmake/board-esp32p4-lcd7b.cmake"
+        "LUGALOS_PROFILE": "workstation"
       }
     },
     {
@@ -177,18 +132,9 @@
       "binaryDir": "${sourceDir}/build/esp32p4-tab5",
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-esp32p4.cmake",
+        "LUGALOS_BOARD_FILE": "${sourceDir}/cmake/board-esp32p4-tab5.cmake",
         "LUGALOS_ENABLE_SMP": "ON",
-        "LUGALOS_ENABLE_CC": "ON",
-        "LUGALOS_ENABLE_ED": "OFF",
-        "LUGALOS_ENABLE_SPISD": "OFF",
-        "LUGALOS_ENABLE_SDMMC": "ON",
-        "LUGALOS_ENABLE_ST7735": "OFF",
-        "LUGALOS_ENABLE_TM1638": "OFF",
-        "LUGALOS_ENABLE_CHESS": "ON",
-        "LUGALOS_ENABLE_PICO_CLOCK_GREEN": "OFF",
-        "LUGALOS_ENABLE_DCF77": "OFF",
-        "LUGALOS_ENABLE_GPS": "OFF",
-        "LUGALOS_BOARD_FILE": "${sourceDir}/cmake/board-esp32p4-tab5.cmake"
+        "LUGALOS_PROFILE": "workstation"
       }
     },
     {
@@ -199,7 +145,8 @@
       "binaryDir": "${sourceDir}/build/rv64-smp",
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-rv64-mmu.cmake",
-        "LUGALOS_ENABLE_SMP": "ON"
+        "LUGALOS_ENABLE_SMP": "ON",
+        "LUGALOS_PROFILE": "qemu"
       }
     },
     {
@@ -210,7 +157,8 @@
       "binaryDir": "${sourceDir}/build/rp2350-smp",
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-rp2350.cmake",
-        "LUGALOS_ENABLE_SMP": "ON"
+        "LUGALOS_ENABLE_SMP": "ON",
+        "LUGALOS_PROFILE": "chess"
       }
     },
     {
@@ -221,17 +169,7 @@
       "binaryDir": "${sourceDir}/build/esp32c6",
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-esp32c6.cmake",
-        "LUGALOS_ENABLE_SMP": "OFF",
-        "LUGALOS_ENABLE_CC": "OFF",
-        "LUGALOS_ENABLE_ED": "OFF",
-        "LUGALOS_ENABLE_SPISD": "OFF",
-        "LUGALOS_ENABLE_SDMMC": "OFF",
-        "LUGALOS_ENABLE_ST7735": "OFF",
-        "LUGALOS_ENABLE_TM1638": "OFF",
-        "LUGALOS_ENABLE_CHESS": "OFF",
-        "LUGALOS_ENABLE_PICO_CLOCK_GREEN": "OFF",
-        "LUGALOS_ENABLE_DCF77": "OFF",
-        "LUGALOS_ENABLE_GPS": "OFF"
+        "LUGALOS_PROFILE": "sensor"
       }
     },
     {
@@ -242,19 +180,9 @@
       "binaryDir": "${sourceDir}/build/esp32c6-mini",
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-esp32c6.cmake",
-        "LUGALOS_ENABLE_SMP": "OFF",
-        "LUGALOS_ENABLE_CC": "OFF",
-        "LUGALOS_ENABLE_ED": "OFF",
-        "LUGALOS_ENABLE_SPISD": "OFF",
-        "LUGALOS_ENABLE_SDMMC": "OFF",
-        "LUGALOS_ENABLE_ST7735": "OFF",
-        "LUGALOS_ENABLE_TM1638": "OFF",
-        "LUGALOS_ENABLE_CHESS": "OFF",
-        "LUGALOS_ENABLE_PICO_CLOCK_GREEN": "OFF",
-        "LUGALOS_ENABLE_DCF77": "OFF",
-        "LUGALOS_ENABLE_GPS": "OFF",
         "LUGALOS_C6_MODULE": "MINI",
-        "LUGALOS_BOARD_FILE": "${sourceDir}/cmake/board-esp32c6-mini.cmake"
+        "LUGALOS_BOARD_FILE": "${sourceDir}/cmake/board-esp32c6-mini.cmake",
+        "LUGALOS_PROFILE": "radio"
       }
     }
   ],

@@ -98,21 +98,12 @@
     "net/stack.c": 186,
     "net/tcp.c": 688,
     "net/udp.c": 48,
-    "user/chibicc/codegen.c": 94,
-    "user/chibicc/main.c": 20,
-    "user/chibicc/parse.c": 285,
-    "user/chibicc/pools.c": 17,
-    "user/chibicc/preprocess.c": 29,
-    "user/chibicc/tokenize.c": 17,
-    "user/ed/ed.c": 100,
     "user/lisp/lisp.c": 48395
   },
   "per_subsystem": {
     "(no line info: .data)": 27,
     "9p": 39389,
     "agent": 987,
-    "app:cc": 462,
-    "app:ed": 100,
     "clock-app": 136,
     "crypto": 38,
     "display": 7625,
@@ -135,5 +126,5 @@
     "vfs": 4111
   },
   "ram_code": 434,
-  "total": 187335
+  "total": 186773
 }

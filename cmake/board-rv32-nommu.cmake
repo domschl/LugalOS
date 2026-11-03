@@ -6,12 +6,6 @@
 # physical silicon, so this board file only carries platform defaults.
 
 set(CONFIG_PALLOC_MAX_PAGES 4096)
-set(CONFIG_LISP_NODE_POOL   65536)
-
-# Buddy-allocator arena (kernel/balloc.h), in pages: 16 = 64 KB.
-# Kept here where the heap is large and .bss is immaterial;
-# RP2350 lowers it to 4 where .bss and the heap share a tighter budget.
-set(CONFIG_BALLOC_ARENA_PAGES 16)
 
 # a stand-in bulk page zone, 2 MB of ordinary
 # RAM right above the fast zone, so the suite runs the zone code, the
@@ -19,17 +13,5 @@ set(CONFIG_BALLOC_ARENA_PAGES 16)
 set(CONFIG_PALLOC_BULK_PAGES 512)
 set(CONFIG_UART0_BASE       0x10000000)
 
-# P6: the NTP server, on the QEMU targets so the suite can exercise it.
-#
-# These boards have no radio, so the server here can only ever answer
-# "unsynchronised" -- which is exactly the property most worth testing. §4's
-# whole claim is that admitting ignorance beats advertising a confidence that
-# cannot be justified, and a target with nothing to be confident *about* is
-# where that claim is checkable without hardware.
-set(CONFIG_ENABLE_NTP_SERVER 1)
-
 # Named by /proc/board and the banner (kernel/boardinfo.h).
 set(CONFIG_BOARD_DESC "QEMU virt, rv32 without MMU")
-
-# HTTPS: the node's own key, its certificate request and its certificate (kernel/tls_cert.c).
-set(CONFIG_TLS_SERVER 1)

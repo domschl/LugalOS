@@ -172,6 +172,33 @@ per-endpoint buffers and the two copies per call**, not isolation (they have non
 
 ### 66.2 Board/profile split, dev/production split (scheduled)
 
+* **DONE 2026-11-03.** *As built:* `cmake/lugalos_layers.cmake` defines the two layers and checks
+  them (a key in the wrong layer stops the configure). Board files keep hardware facts, capabilities
+  (`NETWORK_CLAIM`: a setup access point) and hardware-specific tuning (`CHESS_HOT_RAM`, the RP2350's
+  XIP cache), and name the drivers their hardware needs (`LUGALOS_ENABLE_SPISD`, ...; drivers default
+  OFF). Seven profiles (`qemu`, `workstation`, `sensor`, `radio`, `chess`, `clock`, `gateway`) own the
+  software flags and the policy keys (Lisp pools, buddy arena, TLS, httpd-when-claimed, RAM disk, chess
+  table, NTP server, the clock's behaviour). Presets name a board and a profile, plus SMP. The C6's
+  Lisp-light pools became the C6 default in `user/lisp/lisp.c`. `/proc/config` starts with `PROFILE=`
+  and `DEV=`. `LUGALOS_DEV` (ON by default): a release image (`-DLUGALOS_DEV=OFF`) leaves out 73
+  shell commands (self-tests, isolation checks, scheduler tests, demos, benchmarks) and their helpers;
+  diagnostics stay, and so does `/proc/pmp`'s live U-mode probe (ADR 007's fence). The silicon suites
+  report dev-only cases as SKIPPED on a release image.
+* *Verified:* every preset whose policy did not change is byte-identical (`sizereport --all`, +0);
+  QEMU 535/535; the Tab5 53/53 on the new build; the C6-Zero release image 22/22 (9 skipped).
+* *Unifications (owner's choice: one policy per profile), measured:* the NANO gets the workstation
+  Lisp pools (65536 nodes, +1.4 MB PSRAM) and the 512 KB chess table; the P4s get `ed` (+108 B); the
+  Pico 2 W and rp2350-sensor lose `cc`, `ed` and the games (-562 B) and gain httpd-when-claimed.
+* *Found on the way:* the NANO's LOWRAM could not take the 8 KB Lisp mark bitmap, so on the P4 the
+  bitmaps moved to PSRAM (a 66.4 item done early): -8.5 KB SRAM on the LCD-7B and Tab5; GC on the
+  Tab5, 300000 short-lived pairs, 1068 -> 1099 ms (+3 %), worst pause 19.2 -> 20.4 ms.
+* *Release against dev, the C6-Zero:* static RAM 177.0 -> 169.8 KB, code -71 KB, heap 68 -> 69 pages;
+  under the loaded scenario 6 free pages (dev: 5). Small, as expected: test code runs on demand and
+  holds no pages; the gain is its statics.
+* *Moved to 66.3:* turning the remaining hard-coded sizes into profile keys (`MAX_TASKS`, klog ring,
+  9P links/msize/waiters, endpoint buffers, vterms, the reader view on headless boards), each with
+  the value it is measured to need.
+
 * `board-*.cmake`: silicon facts only. New `profile-*.cmake`: personas (terminal, sensor,
   gateway, radio modem, appliance) owning feature selection and every size: `MAX_TASKS`, klog
   ring, 9P links/msize/waiters, Lisp pools, endpoint buffers, vterms, reader view. A preset is a
@@ -180,6 +207,12 @@ per-endpoint buffers and the two copies per call**, not isolation (they have non
   either run against a dev image or skip what a production image lacks.
 
 ### 66.3 Right-sizing per profile (scheduled)
+
+* Candidates measured in 66.1/66.2: task stacks (the C6-Zero holds 33 pages of stack and uses 28.7 KB
+  under load); the Pico 2 W's `/ram0` (16 pages of SRAM); the setup tasks' stacks while unclaimed;
+  LLP's 18 pages on the P4s; the C6's `.udata_kobj` NAPOT region (8 KB, 3.1 KB used: 4 KB would do);
+  `-ffunction-sections -fdata-sections` everywhere (today only a few files), so unreferenced functions
+  and data in shared files drop out.
 
 * Task stacks from the 66.1 tables plus a fixed margin, per board.
 * The sizes 66.2 made configurable, set per profile from 66.1's measurements.

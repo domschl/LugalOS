@@ -1347,7 +1347,11 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
          * platform-default and pin-map values actually baked into this
          * image, so a wrong value in cmake/board-*.cmake is visible from a
          * running board -- including over 9P from a remote node -- rather
-         * than only from reading the generator's output by hand. */
+         * than only from reading the generator's output by hand. PROFILE
+         * and DEV first: what the image is for, and whether it carries the
+         * test suites' commands (cmake/lugalos_layers.cmake). */
+        used += (uint32_t)ksnprintf(buf + used, cap - used,
+            "PROFILE=%s\nDEV=%d\n", CONFIG_PROFILE, CONFIG_DEV);
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "PALLOC_MAX_PAGES=%d\n", CONFIG_PALLOC_MAX_PAGES);
         used += (uint32_t)ksnprintf(buf + used, cap - used,

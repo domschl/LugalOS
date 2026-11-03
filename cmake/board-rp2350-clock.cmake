@@ -14,18 +14,6 @@
 
 set(CONFIG_PALLOC_MAX_PAGES 128)
 
-# Buddy-allocator arena (kernel/balloc.h), in pages. 4 = 16 KB, against 16
-# (64 KB) on the QEMU targets.
-#
-# This board is the reason the constant is per-board at all (§1.1,
-# ). It is paid twice: the arena itself
-# comes out of the heap on first use, and the buddy tree is permanent .bss
-# whose size scales with this number -- 2046 bytes at 4 pages, 8190 at 16 --
-# and on RP2350 .bss and the heap are the same 512 KB budget. 4 pages still
-# leaves better than 2x headroom for the largest thing that actually calls
-# this allocator (`ballocdemo`'s churn holds 7264 bytes of blocks at peak).
-set(CONFIG_BALLOC_ARENA_PAGES 4)
-
 # UART0: PL011, the board's console/9P wire -- unaffected by this baseboard,
 # same GP0/GP1 as cmake/board-rp2350.cmake.
 set(CONFIG_UART0_BASE     0x40070000)
@@ -65,33 +53,6 @@ set(CONFIG_CLOCK_BUZZER_GPIO    14)
 # returns the raw reading, because a sensor driver that quietly hands back a
 # fudged value is a trap for every other caller. Becomes a menu item in C3.
 set(CONFIG_CLOCK_TEMP_OFFSET_C  -2)
-
-# 1 Hz colon blink on the idle screen. Off, deliberately: the whole point of
-# the C2 idle screen is a display that does not change on its own. The key
-# exists for whoever disagrees.
-set(CONFIG_CLOCK_COLON_BLINK     0)
-
-# Boot-progress beacon: one click on the buzzer per CLOCK_BOOT_MARK() and a
-# latching LED count on the top row. OFF -- an appliance should not click when
-# it is plugged in.
-#
-# Kept in the tree rather than deleted, because it earned it: this board has
-# no console, no LED and no SD card, and on 2026-08-23 the beacon was the only
-# instrument that could say anything at all about a boot that stopped before
-# the display existed. It localised "the clock will not start on a USB power
-# adapter" down to a single function call, one bisect at a time. Set to 1 and
-# scatter CLOCK_BOOT_MARK(n) over the suspect region; the count you hear is
-# the number of marks passed, and the LEDs latch so a hang leaves its last
-# mark lit.
-set(CONFIG_CLOCK_BOOT_BEACON     0)
-
-# The nightly automatic DCF-77 sync (phase17 D4), in LOCAL time. Off the hour
-# deliberately: the longwave band is quieter there, and every other radio
-# clock in the house is listening on the hour. 03:17 also covers the European
-# DST changeover at 03:00 CEST / 02:00 CET.
-set(CONFIG_DCF77_AUTO_HOUR       3)
-set(CONFIG_DCF77_AUTO_MIN       17)
-set(CONFIG_DCF77_AUTO_ENABLED    1)
 
 # GP3 is the DS3231's square-wave output on this baseboard. It gets no config
 # key, only this comment: nothing reads it, and L1's rule is that a
@@ -243,36 +204,6 @@ set(CONFIG_GPS_UBX_PERSIST 1)
 # measured a different one on different hardware.
 set(CONFIG_DCF77_DELAY_US 37886)
 
-# Serve time to the segment (P6). On this persona only: it is the one with a
-# radio and a receiver. A board without a time source can still run the server
-# honestly -- it would answer LI 3 / stratum 16 forever -- but a port that is
-# not listening states that more clearly than one that is listening to say no.
-set(CONFIG_ENABLE_NTP_SERVER 1)
-
-# --- P0: the measurement instrument -------------------------------
-#
-# TEMPORARY, and it should go back to 0 the day P0 concludes. While this is 1
-# the persona is an instrument rather than an appliance: it never sets its own
-# clock from the radio (auto-sync is turned off at boot), and it asks a
-# reference server what time it is once a minute, forever.
-#
-# The reference is site-specific and lives here rather than in the identity
-# record because the board has to be carried to where the reception is, which
-# power-cycles it -- so the address has to survive a reboot with nothing typed,
-# and a record format change is not worth one measurement. 192.168.178.23 is
-# this bench's GPS-disciplined stratum-1; 192.168.178.1 is the gateway and is
-# NOT a reference clock.
-#
-# Results are read from /proc/dcf77log over 9P -- the board is on WiFi and
-# already answers on tcp/564, so nothing new is broadcast or stored.
-# 0 now that P0 and P4 are finished. It broadcasts a sample a minute to the
-# segment, which was the instrument those milestones were built on and is
-# noise on a network the clock is otherwise only serving time to. Set it to 1
-# to re-run either measurement; nothing else depends on it.
-set(CONFIG_DCF77_P0_LOG        0)
-set(CONFIG_DCF77_P0_NTP        "192.168.178.23")
-set(CONFIG_DCF77_P0_PERIOD_S  60)
-
 # --- CYW43439 wireless -----------------------------------------------------
 #
 # The board under the Pico-Clock-Green baseboard is a Pico 2 W, so the radio
@@ -298,3 +229,7 @@ set(CONFIG_WL_CLK_GPIO  29)
 
 # Named by /proc/board and the banner (kernel/boardinfo.h).
 set(CONFIG_BOARD_DESC "Waveshare Pico-Clock-Green")
+
+# Drivers for the hardware on this board (cmake/lugalos_layers.cmake).
+set(LUGALOS_ENABLE_PICO_CLOCK_GREEN ON)
+set(LUGALOS_ENABLE_DCF77 ON)

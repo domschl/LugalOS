@@ -109,6 +109,30 @@ def test_ram_ledger(c: Console):
     return _t("RAM ledger: every page owned, no stack above 90% (66.1)", ok, detail)
 
 
+_DEV: bool | None = None
+
+
+def _is_dev(c: Console) -> bool:
+    """Whether the image carries the dev-only commands (/proc/config DEV, 66.2). An
+    image older than that has no DEV line and is a dev image."""
+    global _DEV
+    if _DEV is None:
+        _, out = c.run("cat /proc/config", r"lsh>", 5)
+        m = re.search(r"^DEV=(\d)", out, re.M)
+        _DEV = m is None or m.group(1) != "0"
+    return _DEV
+
+
+def dev_only(fn):
+    """A case that drives a dev-only command: SKIPPED on a release image."""
+    def run(c: Console):
+        if not _is_dev(c):
+            return _t(f"{fn.__name__}: needs a dev image", True, "SKIPPED: release image (DEV=0)")
+        return fn(c)
+    run.__name__ = fn.__name__
+    return run
+
+
 def test_boots(c: Console):
     ok, out = c.run("version", r"LugalOS v[\d.]+", 5)
     return _t("boots to a shell and answers `version`", ok, out[-120:])
@@ -435,9 +459,9 @@ def test_llp_modem(c: Console):
         node.close()
 
 
-TESTS = [test_boots, test_heap, test_tick_rate, test_preemption, test_locks, test_priostress,
-         test_pmp, test_umode, test_isolation, test_deputy, test_kobj_kernel, test_kobj_umode,
-         test_radio_shim, test_led, test_radio_scan_or_join, test_radio_ip, test_i2c_sensors, test_taint, test_watchdog, test_still_alive,
+TESTS = [test_boots, test_heap, test_tick_rate, dev_only(test_preemption), dev_only(test_locks), dev_only(test_priostress),
+         test_pmp, dev_only(test_umode), dev_only(test_isolation), dev_only(test_deputy), dev_only(test_kobj_kernel), dev_only(test_kobj_umode),
+         dev_only(test_radio_shim), test_led, test_radio_scan_or_join, test_radio_ip, test_i2c_sensors, test_taint, test_watchdog, test_still_alive,
          test_ram_ledger, test_llp_modem]   # last: the radio role lasts until a reset, which the test then does
 
 

@@ -27,17 +27,26 @@ LugalOS supports a range of distinct hardware presets across RISC-V microcontrol
 
 ---
 
-## 2. Hardware Profiles: Full vs Minimal
+## 2. Boards and Profiles
 
-LugalOS operates with two memory resource profiles:
-1. **Full Profile (Boards with PSRAM)**:
-   * `rp2350-terminal`, `esp32p4-lcd7b`, `esp32p4-tab5`, `esp32p4`, and QEMU.
-   * Allocates bulk pools (`BULK_BSS`) in PSRAM for 16k-64k Lisp nodes, graphical framebuffers, and full standard libraries.
-2. **Minimal Profile (Boards without PSRAM)**:
-   * `esp32c6`, `rp2350-chess`, `rp2350-clock`, `rp2350-wifi`.
-   * Strict `.bss` budgeting: 1,024 Lisp node pool, lean boot libraries, on-demand module loading via `(require 'pkg)`. Zero SRAM impact on physical heap allocator (`palloc`).
+A preset is a **board** and a **profile** (`cmake/lugalos_layers.cmake`):
 
----
+* The **board** (`cmake/board-<name>.cmake`) is what the hardware is: addresses, pins, memory sizes, what the hardware can do (`CONFIG_NETWORK_CLAIM`: it has a setup access point), and which drivers its hardware needs (`LUGALOS_ENABLE_SPISD`, `LUGALOS_ENABLE_SDMMC`, ...). Its name is the board id an update image is checked against.
+* The **profile** (`cmake/profile-<name>.cmake`) is what the node is for: which software it carries (`LUGALOS_ENABLE_CC`, `LUGALOS_ENABLE_CHESS`, ...) and the policy and sizes that follow (Lisp pools, TLS, the RAM disk, the buddy arena).
+
+A key in the wrong layer stops the configure. A command-line `-DLUGALOS_ENABLE_...` does not override a layer; another profile does.
+
+| Profile | Presets | Carries |
+| :--- | :--- | :--- |
+| `workstation` | `esp32p4`, `esp32p4-lcd7b`, `esp32p4-tab5`, `rp2350-terminal` | Everything: CAS, chess (512 KB table), games, `cc`, `ed`, HTTPS admin, 65536 Lisp nodes in PSRAM |
+| `sensor` | `esp32c6`, `rp2350-wifi`, `rp2350-sensor` | Sensors, MQTT, 9P, the admin page once claimed; no compiler, editor or games |
+| `radio` | `esp32c6-mini` | The Wi-Fi modem beside a P4 (LLP over SDIO) |
+| `chess` | `rp2350-chess`, `rp2350-smp` | The ST7735/TM1638 chess computer |
+| `clock` | `rp2350-clock` | The LED clock: DCF-77, NTP server |
+| `gateway` | `rp2350-gateway` | Ethernet and the UART1 downlink |
+| `qemu` | `rv32`, `rv64`, `rv64-smp` | Everything, for the automated suite |
+
+Besides the two layers a preset sets `LUGALOS_ENABLE_SMP`, and the build sets `LUGALOS_DEV`: ON by default, a **dev image** with the self-tests and demo commands the test suites drive; `cmake --preset esp32c6 -DLUGALOS_DEV=OFF` builds a **release image** without them. `/proc/config` names the profile and whether the image is a dev build.
 
 ## 3. Display Density Profiles & Typography
 

@@ -579,6 +579,17 @@ def test_memory_margins(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         return (name, False, str(e))
 
 
+def dev_only(fn):
+    """A case that drives a dev-only command (66.2): SKIPPED on a release image.
+    An image older than 66.2 reports no DEV and counts as a dev image."""
+    def run(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+        if not rp2350.feature_enabled(ports.console, "DEV"):
+            return f"{fn.__name__}: needs a dev image", True, "SKIPPED: release image (DEV=0)"
+        return fn(ports)
+    run.__name__ = fn.__name__
+    return run
+
+
 def test_ram_ledger(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
     """66.1: every page in use has an owner in /proc/pages, and no task's
     stack is above 90% of its size. After test_memory_margins, for the same
@@ -2348,7 +2359,7 @@ def main() -> int:
     # umode_isolation/test_user_elf/test_process_abi each load their own
     # program before that point too); a heap-budget re-analysis is tracked as
     # M5 follow-up work rather than fixed here.
-    tests = [test_firmware_freshness, test_pmp_probe, test_flash_path_restores_qspi, test_psram, test_bulk_zone, test_ram0_in_psram, test_editor_in_psram, test_canvas_store, test_lcd_terminal_status, test_chess_hot_path, test_priostress, test_uart_task, test_blk_task, test_i2c_task, test_st7735_task, test_tm1638_task, test_heap_on_demand, test_umode_isolation, test_user_elf, test_usb_cdc_net_link, test_usb_cdc_net_resync, test_uart_demux_shared_wire, test_i2c_repeated_start]
+    tests = [test_firmware_freshness, test_pmp_probe, test_flash_path_restores_qspi, test_psram, dev_only(test_bulk_zone), dev_only(test_ram0_in_psram), dev_only(test_editor_in_psram), test_canvas_store, test_lcd_terminal_status, test_chess_hot_path, dev_only(test_priostress), test_uart_task, test_blk_task, test_i2c_task, test_st7735_task, test_tm1638_task, test_heap_on_demand, dev_only(test_umode_isolation), test_user_elf, test_usb_cdc_net_link, test_usb_cdc_net_resync, test_uart_demux_shared_wire, test_i2c_repeated_start]
     if not args.skip_qemu_bridge:
         tests.append(test_qemu_bridge)
     tests.append(test_process_abi)
@@ -2357,8 +2368,8 @@ def main() -> int:
     tests.append(test_board_config)
     tests.append(test_concurrent_user_programs)
     tests.append(test_type_ahead)
-    tests.append(test_balloc_arena)
-    tests.append(test_memory_margins)
+    tests.append(dev_only(test_balloc_arena))
+    tests.append(dev_only(test_memory_margins))
     tests.append(test_ram_ledger)
     tests.append(test_c6_wifi)
     # Last, and it has to stay last: it deliberately exhausts the Lisp node

@@ -110,7 +110,7 @@
     "net/netif.c": 12,
     "net/ntp.c": 76,
     "net/spartan.c": 15,
-    "net/stack.c": 186,
+    "net/stack.c": 194,
     "net/tcp.c": 688,
     "net/udp.c": 48,
     "user/chess/include/zobrist_tables.h": 6784,
@@ -151,7 +151,7 @@
     "llp": 4091,
     "log": 8322,
     "mqtt": 4220,
-    "net": 1602,
+    "net": 1610,
     "ota": 126,
     "selftest": 1654,
     "sensors": 8689,
@@ -161,5 +161,5 @@
     "vfs": 4111
   },
   "ram_code": 24484,
-  "total": 195921
+  "total": 195929
 }

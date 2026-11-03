@@ -15,7 +15,6 @@
 # rp2350-terminal preset.
 
 set(CONFIG_PALLOC_MAX_PAGES 128)
-set(CONFIG_BALLOC_ARENA_PAGES 4)
 
 # clk_sys at 144 MHz, not the 150 every other persona runs (36.1, plan §3.3).
 # PIO-USB wants a multiple of 12 MHz -- at 150 the full-speed TX divider is
@@ -25,19 +24,6 @@ set(CONFIG_BALLOC_ARENA_PAGES 4)
 # /5 /2. arch/rp2350_clocks.h derives the rest, and every UART/SPI/I2C/PWM
 # divider follows it.
 set(CONFIG_CLK_SYS_HZ 144000000)
-
-# Lisp's node pool. 37.3a raised it to 2048 (from the RP2350's 1024) for the
-# showcase's cellular automaton, at about 20 KB -- five heap pages -- of SRAM.
-set(CONFIG_LISP_NODE_POOL 65536)
-
-# 38.5 (, sign-off S2): the pools are BULK_BSS, so on
-# this board they live in PSRAM and the 2048 above became 65 536 -- 1 MB of
-# nodes, 256 KB of GC work stack. Measured ~1.7x slower than SRAM per node
-# touched, accepted for "basically
-# unlimited" nodes. The node mark bitmap stays in SRAM: 8 KB at this size.
-# The string pool at eight times the RP2350 default of 384 slots (both
-# tiers: 2560 x 32 B and 512 x 128 B, 144 KB).
-set(CONFIG_LISP_STRING_POOL 3072)
 
 # UART0 on GP16/GP17, header H7 (pin 1 3V3, 2 GND, 3 RXD0, 4 TXD0).
 #
@@ -74,15 +60,6 @@ set(CONFIG_PSRAM_BYTES   8388608)
 # The bulk page zone's capacity (38.4): the whole chip's worth of pages; the
 # zone itself starts after BULK_BSS, so it uses fewer. A 256-byte bitmap.
 set(CONFIG_PALLOC_BULK_PAGES 2048)
-# /ram0's cap (38.6): its storage comes from the bulk zone, so the cap is a
-# share of PSRAM, not of the heap. init.lisp mounts 2 MB at boot (sign-off
-# S3); `(mount-ramdisk 4096)` can ask for up to this.
-set(CONFIG_RAMDISK_MAX_KB 4096)
-# The chess transposition table (38.7, sign-off S4): 512 KB in PSRAM, against
-# 32 KB in SRAM on the other personas. Depth 8 on the bench position took
-# 26.0 s against 33.9 s; 1 MB bought 4 % more and 4 MB 5 % -- the owner
-# chose 512 KB.
-set(CONFIG_CHESS_TT_KB 512)
 # The chess engine's hot path in SRAM (38.9): search, move generation, make/
 # unmake, evaluation, bitboards and the TT code, and their tables -- ~32 KB of
 # the heap PSRAM gave back, so the node rate no longer depends on how the link
@@ -158,8 +135,5 @@ set(CONFIG_LCD_ROTATE_180 1)
 # Named by /proc/board and the banner (kernel/boardinfo.h).
 set(CONFIG_BOARD_DESC "Waveshare RP2350-LCD-7")
 
-# HTTPS: the node's own key, its certificate request and its certificate (kernel/tls_cert.c).
-# The record buffers come from the heap, which PSRAM backs on this board.
-set(CONFIG_TLS_SERVER 1)
-# A claimed node starts the admin server (HTTP, and HTTPS once it has a certificate) when it gets an address.
-set(CONFIG_HTTPD_WHEN_CLAIMED 1)
+# Drivers for the hardware on this board (cmake/lugalos_layers.cmake).
+set(LUGALOS_ENABLE_SPISD ON)

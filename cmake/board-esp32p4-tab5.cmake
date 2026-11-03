@@ -14,7 +14,6 @@ set(CONFIG_BOARD_TAB5 1)
 set(CONFIG_ESP32P4_REV 103)
 
 set(CONFIG_PALLOC_MAX_PAGES 128)
-set(CONFIG_BALLOC_ARENA_PAGES 4)
 
 # --- Console: Native USB-Serial/JTAG (J8 USB-C) + UART0 (GPIO37/38) -------
 #
@@ -44,9 +43,6 @@ set(CONFIG_L2_CACHE_KB    128)
 set(CONFIG_PSRAM_BYTES       33554432)
 set(CONFIG_PALLOC_BULK_PAGES 8192)
 set(CONFIG_PSRAM_SPEED_MHZ   200)
-set(CONFIG_RAMDISK_MAX_KB    4096)
-set(CONFIG_LISP_NODE_POOL    65536)
-set(CONFIG_LISP_STRING_POOL  3072)
 
 # --- Internal System I2C (I2C0 routed via GPIO matrix to GPIO31/32) -------
 #
@@ -172,7 +168,5 @@ set(CONFIG_SDIO_FREQ_KHZ   40000)   # SDIO high speed; C6 slave answers at it
 # Named by /proc/board and the banner (kernel/boardinfo.h).
 set(CONFIG_BOARD_DESC "M5Stack Tab5")
 
-# HTTPS: the node's own key, its certificate request and its certificate (kernel/tls_cert.c).
-set(CONFIG_TLS_SERVER 1)
-# A claimed node starts the admin server (HTTP, and HTTPS once it has a certificate) when it gets an address.
-set(CONFIG_HTTPD_WHEN_CLAIMED 1)
+# Drivers for the hardware on this board (cmake/lugalos_layers.cmake).
+set(LUGALOS_ENABLE_SDMMC ON)

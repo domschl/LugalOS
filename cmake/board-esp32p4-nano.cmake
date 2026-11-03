@@ -20,16 +20,6 @@ set(CONFIG_ESP32P4_REV 103)
 # figure is 512 and not the chip's 768.
 set(CONFIG_PALLOC_MAX_PAGES 128)
 
-# Buddy-allocator arena (kernel/balloc.h), in pages: 4 = 16 KB, the RP2350
-# figure rather than QEMU's 16.
-#
-# The reason is the RP2350 board file's reason, unchanged: this constant is
-# paid twice -- the arena itself comes out of the heap, and the buddy tree is
-# permanent .bss whose size scales with it (2046 bytes at 4 pages, 8190 at
-# 16) -- and on this board, as on that one, .bss and the heap are the same
-# half-megabyte. QEMU's 16 is free against 128 MB; here it is not.
-set(CONFIG_BALLOC_ARENA_PAGES 4)
-
 # --- UART0: the console, and the only wire this board has in E2 ----------
 #
 # 0x500CA000 = DR_REG_HPPERIPH1_BASE (0x500C0000) + 0xA000. TRM Table 9.3-2
@@ -227,7 +217,6 @@ set(CONFIG_L2_CACHE_KB 128)
 # against this at every boot.
 set(CONFIG_PSRAM_BYTES 33554432)
 set(CONFIG_PALLOC_BULK_PAGES 8192)
-set(CONFIG_RAMDISK_MAX_KB 4096)
 # 200 MHz hex DDR via DQS timing tuning at boot (47.3b); 20 is the fallback.
 set(CONFIG_PSRAM_SPEED_MHZ 200)
 
@@ -313,9 +302,6 @@ set(CONFIG_SDIO_D1_GPIO    15)
 set(CONFIG_SDIO_D2_GPIO    16)
 set(CONFIG_SDIO_D3_GPIO    17)
 set(CONFIG_SDIO_FREQ_KHZ   40000)   # SDIO high speed; the C6's slave answers at it
-# Two interfaces, one stack: eth0 while its cable has a carrier, else the C6's
-# wlan0 -- re-decided once a second. LLP's host role starts at boot as on the 7B.
-set(CONFIG_NET_PREFER_WIRED 1)
 set(CONFIG_C6_CHIP_PU_GPIO 54)
 
 # No setup button: BOOT (GPIO35) is also the Ethernet MAC's RMII TXD1 (above). Read as a button it
@@ -329,7 +315,5 @@ set(CONFIG_C6_CHIP_PU_GPIO 54)
 # Named by /proc/board and the banner (kernel/boardinfo.h).
 set(CONFIG_BOARD_DESC "Waveshare ESP32-P4-NANO")
 
-# HTTPS: the node's own key, its certificate request and its certificate (kernel/tls_cert.c).
-set(CONFIG_TLS_SERVER 1)
-# A claimed node starts the admin server (HTTP, and HTTPS once it has a certificate) when it gets an address.
-set(CONFIG_HTTPD_WHEN_CLAIMED 1)
+# Drivers for the hardware on this board (cmake/lugalos_layers.cmake).
+set(LUGALOS_ENABLE_SDMMC ON)

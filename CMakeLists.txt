@@ -212,17 +212,85 @@ if(ENABLE_SANITIZERS)
     endif()
 endif()
 
-# Software feature flags: which optional,
-# self-contained subsystems get built in at all. A build persona choice
-# ("sensor node doesn't need cc"), orthogonal to which board, so these are
-# plain cache options rather than facts in cmake/board-*.cmake. Default ON
-# everywhere -- this phase changes what *can* be built, not what tests exercise
-# by default. Baked into lugalos_config.h below so C code gates uniformly with
-# #if CONFIG_ENABLE_CC regardless of target.
-option(LUGALOS_ENABLE_CC "Build the in-kernel C compiler (cc, chibicc)" ON)
+# The board: what the hardware is (cmake/lugalos_layers.cmake). One
+# LUGALOS_TARGET can have several -- a bare Pico 2, the Pico-Clock-Green
+# baseboard wiring the same pins to other parts, the RP2350-LCD-7. A preset
+# names one with LUGALOS_BOARD_FILE; without one, the target's default. The
+# K210 has no board file, so config generation is skipped there.
+if(NOT DEFINED LUGALOS_BOARD_FILE)
+    if(LUGALOS_TARGET STREQUAL "RV32_NOMMU")
+        set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-rv32-nommu.cmake")
+    elseif(LUGALOS_TARGET STREQUAL "RV64_MMU")
+        set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-rv64-mmu.cmake")
+    elseif(LUGALOS_TARGET STREQUAL "RP2350")
+        set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-rp2350.cmake")
+    elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
+        set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-esp32p4-nano.cmake")
+    elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
+        set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-esp32c6-zero.cmake")
+    endif()
+endif()
 
-# waking a second hart, behind a
-# build-time gate that is OFF by default.
+# The profile: what the node is for (cmake/lugalos_layers.cmake). A preset
+# names one; without one, the target's usual persona.
+if(NOT DEFINED LUGALOS_PROFILE)
+    if(LUGALOS_TARGET STREQUAL "RV32_NOMMU" OR LUGALOS_TARGET STREQUAL "RV64_MMU")
+        set(LUGALOS_PROFILE qemu)
+    elseif(LUGALOS_TARGET STREQUAL "RP2350")
+        set(LUGALOS_PROFILE chess)
+    elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
+        set(LUGALOS_PROFILE workstation)
+    elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
+        set(LUGALOS_PROFILE sensor)
+    endif()
+endif()
+
+# Board and profile, read here so their choices decide the source list below,
+# and again by cmake/gen_config.cmake for the generated header. Every
+# LUGALOS_ENABLE_* except SMP comes from one of the two: the board names the
+# drivers for its hardware, the profile the software. A -D on the command line
+# does not override them; a different profile does.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/lugalos_layers.cmake)
+if(DEFINED LUGALOS_BOARD_FILE)
+    set(LUGALOS_PROFILE_FILE ${CMAKE_CURRENT_SOURCE_DIR}/cmake/profile-${LUGALOS_PROFILE}.cmake)
+    if(NOT EXISTS ${LUGALOS_PROFILE_FILE})
+        message(FATAL_ERROR "LUGALOS_PROFILE=${LUGALOS_PROFILE}: no ${LUGALOS_PROFILE_FILE}")
+    endif()
+    lugalos_read_layers(${LUGALOS_BOARD_FILE} ${LUGALOS_PROFILE_FILE})
+    message(STATUS "LugalOS: board ${LUGALOS_BOARD_FILE}, profile ${LUGALOS_PROFILE}")
+endif()
+
+# A dev image carries the self-tests, stress tests and demo commands the test
+# suites drive; a release image (-DLUGALOS_DEV=OFF) leaves them out.
+option(LUGALOS_DEV "Build the self-tests, stress tests and demo commands" ON)
+
+# Feature flags, all set by the layers above and baked into lugalos_config.h
+# below, so C code gates uniformly with #if CONFIG_ENABLE_CC on every target.
+#
+# Software, chosen by the profile:
+#   LUGALOS_ENABLE_CC                the in-kernel C compiler (cc, chibicc)
+#   LUGALOS_ENABLE_ED                the ed line editor
+#   LUGALOS_ENABLE_CHESS             the chess engine
+#   LUGALOS_ENABLE_ZMACHINE          the Z-machine v3 interpreter (user/zmachine); the
+#                                    game itself is data, staged to /sd0/games/
+#   LUGALOS_ENABLE_MOONBASE          Moonbase Lambda (user/moonbase), for the P4s' PSRAM and RGB565
+#   LUGALOS_ENABLE_CERES             Ceres Alpha (user/ceres), likewise (SCROLLER is its old name)
+#   LUGALOS_ENABLE_RIBBON_ANIMATION  the ribbon's window slide animation
+#
+# Drivers, chosen by the board for the hardware it carries:
+#   LUGALOS_ENABLE_SPISD             SD card over SPI1 (RP2350). spisd_rp2350.c stubs itself
+#                                    when off, so fs/vfs_server.c needs no matching #if.
+#   LUGALOS_ENABLE_SDMMC             SD card on the SD/MMC host (ESP32-P4), stubbed the same way
+#   LUGALOS_ENABLE_ST7735            the ST7735 TFT canvas (RP2350)
+#   LUGALOS_ENABLE_TM1638            the TM1638 7-segment/keypad/LEDs (RP2350), its own flag:
+#                                    useful without the display
+#   LUGALOS_ENABLE_PICO_CLOCK_GREEN  the Pico-Clock-Green SM16106/SM5166P LED matrix and LDR
+#   LUGALOS_ENABLE_DCF77             the DCF-77 longwave receiver (Pico-Clock-Green)
+#   LUGALOS_ENABLE_GPS               a GPS module's pulse per second, the transfer standard
+#                                    for calibrating the DCF-77 path
+#
+# And one build choice of the preset's own: LUGALOS_ENABLE_SMP, waking a
+# second hart, behind a build-time gate that is OFF by default.
 #
 # The gate is the point, not a formality. Every board persona in this tree
 # boots on one hart today, and a regression in second-hart bring-up must not
@@ -230,75 +298,6 @@ option(LUGALOS_ENABLE_CC "Build the in-kernel C compiler (cc, chibicc)" ON)
 # mechanism for. With it off, arch/riscv/common/entry.S parks secondary harts
 # exactly as it did before existed.
 option(LUGALOS_ENABLE_SMP "Wake secondary harts (SMP multi-core support)" OFF)
-option(LUGALOS_ENABLE_ED "Build the ed line editor" ON)
-
-# Same mechanism, RP2350-only hardware.
-# Three independent flags, not one -- the TM1638 keypad/7-segment/LEDs are
-# useful on their own in a board persona with no display attached, so it
-# would be wrong to bundle it with the canvas driver. CONFIG_ENABLE_CHESS is
-# defined now with no consumer yet (H4 is what makes it real, the same shape
-# F0 defined ENABLE_CC/ENABLE_ED before F1/F2 had anything to gate).
-option(LUGALOS_ENABLE_ST7735 "Build the ST7735 TFT canvas driver (RP2350 only)" ON)
-option(LUGALOS_ENABLE_TM1638 "Build the TM1638 7-segment/keypad/LED driver (RP2350 only)" ON)
-option(LUGALOS_ENABLE_CHESS "Build the chess engine (RP2350 only; H4, not yet implemented)" ON)
-
-# user/zmachine: Z-machine v3 interpreter (zmem/zvm/ztext/zparse/zsave).
-# Freestanding core, same leaf shape as the chess engine; nothing outside
-# references it until the shell command lands, and --gc-sections keeps the
-# image flat until then. The game itself is data: games/zork1/zork1-mit.z3
-# is staged to /sd0/games/ (MIT-built from in-tree ZIL source).
-option(LUGALOS_ENABLE_ZMACHINE "Build the Z-machine v3 interpreter (user/zmachine)" ON)
-
-# user/moonbase: Moonbase Lambda 2D isometric lunar city-builder simulation.
-# Targets ESP32-P4 with 32 MB PSRAM and RGB565 display.
-option(LUGALOS_ENABLE_MOONBASE "Build the Moonbase Lambda lunar city-builder (user/moonbase)" ON)
-
-# user/ceres: Ceres Alpha 2D horizontal arcade scroller.
-# Targets ESP32-P4 with 32 MB PSRAM and RGB565 display.
-option(LUGALOS_ENABLE_CERES "Build the Ceres Alpha 2D horizontal arcade scroller (user/ceres)" ON)
-option(LUGALOS_ENABLE_SCROLLER "Backwards-compatible alias for LUGALOS_ENABLE_CERES" ON)
-
-# Same mechanism again: the
-# Pico-Clock-Green baseboard persona wires GP10-13 (SPI1/SD card on every
-# other RP2350 persona) to its own display hardware instead, so that persona
-# builds with this OFF. Default ON -- unlike ENABLE_ST7735/TM1638/CHESS
-# above, spisd_rp2350.c isn't gated out of CMakeLists.txt's source list at
-# all; it stubs itself internally via #if CONFIG_ENABLE_SPISD instead, so
-# fs/vfs_server.c's spisd_get_device() call sites need no matching #if.
-option(LUGALOS_ENABLE_SPISD "Build SD-card support via SPI1 (RP2350 only)" ON)
-
-# the ESP32-P4's own SD/MMC host, which
-# is a different peripheral from the SPI card reader above and so a different
-# flag -- the two are never both meaningful on one board. Default ON and
-# stubbed internally rather than gated out of the source list, exactly like
-# ENABLE_SPISD and for the same reason: fs/vfs_server.c, kernel/board.c and
-# kernel/shell.c call into it without a matching #if. The NANO's SD pins
-# (GPIO39-44) collide with nothing else on that board, so this is OFF only
-# when someone deliberately wants the pads back.
-option(LUGALOS_ENABLE_SDMMC "Build SD-card support via the SD/MMC host controller (ESP32-P4 only)" ON)
-
-# L2: the SM16106/SM5166P LED matrix +
-# LDR driver for the Pico-Clock-Green baseboard persona specifically.
-# Default OFF, opposite of ENABLE_ST7735/TM1638/CHESS/SPISD above -- those
-# four all have their pin facts defined in the *default* board file
-# (cmake/board-rp2350.cmake), so defaulting ON is harmless there. This one's
-# CONFIG_CLOCK_* pins only exist in cmake/board-rp2350-clock.cmake, so
-# defaulting it ON would break the default persona's build the moment
-# something actually consumed those undefined macros.
-option(LUGALOS_ENABLE_PICO_CLOCK_GREEN "Build the Pico-Clock-Green SM16106/SM5166P LED matrix driver (RP2350 only)" OFF)
-
-# D2: the DCF-77 longwave receiver wired
-# to GP27/GP28 on the Pico-Clock-Green persona. Default OFF for the same
-# reason ENABLE_PICO_CLOCK_GREEN is: its CONFIG_DCF77_* pin facts exist only
-# in cmake/board-rp2350-clock.cmake, so defaulting it ON would break every
-# other persona's build the moment something consumed those macros.
-option(LUGALOS_ENABLE_DCF77 "Build the DCF-77 longwave time-signal receiver driver (RP2350 only)" OFF)
-# P3b: a GPS module read for
-# its pulse per second, as a transfer standard for calibrating the DCF-77
-# path. Its own flag rather than DCF77's -- a board could want one without the
-# other, and only the calibration wants both.
-option(LUGALOS_ENABLE_GPS "Build the GPS/PPS reference driver (RP2350 only)" OFF)
-option(LUGALOS_ENABLE_RIBBON_ANIMATION "Enable window slide animation on the ribbon" ON)
 
 # --- U-mode user programs ------
 #
@@ -533,30 +532,6 @@ set_source_files_properties(third_party/crypto/monocypher/monocypher.c third_par
 # Per-board config header: platform
 # defaults and, where the board has real GPIO pins, a pin map -- generated
 # write-if-changed before every build, same shape as lugalos_build_id above.
-# K210 has no board file yet (no real drivers reference it today); config
-# generation is skipped there rather than inventing placeholder data.
-# Overridable: a single LUGALOS_TARGET
-# can have more than one board persona sharing the same arch/ABI/linker
-# script -- e.g. RP2350's default chess-computer persona vs. the
-# Pico-Clock-Green baseboard persona, which wires several of the same pins
-# to different hardware. Callers select a non-default persona with
-# -DLUGALOS_BOARD_FILE=cmake/board-rp2350-clock.cmake (or via a
-# CMakePresets.json preset); the branch below only fires when nothing
-# overrode it already.
-if(NOT DEFINED LUGALOS_BOARD_FILE)
-    if(LUGALOS_TARGET STREQUAL "RV32_NOMMU")
-        set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-rv32-nommu.cmake")
-    elseif(LUGALOS_TARGET STREQUAL "RV64_MMU")
-        set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-rv64-mmu.cmake")
-    elseif(LUGALOS_TARGET STREQUAL "RP2350")
-        set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-rp2350.cmake")
-    elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
-        set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-esp32p4-nano.cmake")
-    elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
-        set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-esp32c6-zero.cmake")
-    endif()
-endif()
-
 # The board's name, from its board file (cmake/board-esp32c6-mini.cmake ->
 # "esp32c6-mini"): what an update image names as the board it is for, and
 # what a node compares it with before it accepts one (kernel/ota.c).
@@ -584,7 +559,6 @@ add_compile_definitions(LUGALOS_BOARD_ID="${LUGALOS_BOARD_ID}")
 # link error instead of a heap whose top bytes accept stores and then lose
 # them, which is E7 and cost a session to find.
 if(LUGALOS_TARGET STREQUAL "ESP32P4" AND DEFINED LUGALOS_BOARD_FILE)
-    include(${LUGALOS_BOARD_FILE})
     if(NOT DEFINED CONFIG_L2_CACHE_KB)
         message(FATAL_ERROR "${LUGALOS_BOARD_FILE} does not set CONFIG_L2_CACHE_KB; "
                             "linker/esp32p4.ld needs it to place the RAM region")
@@ -611,7 +585,8 @@ endif()
 if(DEFINED LUGALOS_BOARD_FILE)
     set(LUGALOS_CONFIG_HEADER ${CMAKE_CURRENT_BINARY_DIR}/lugalos_config.h)
     execute_process(COMMAND ${CMAKE_COMMAND}
-        -DBOARD=${LUGALOS_BOARD_FILE} -DOUT=${LUGALOS_CONFIG_HEADER}
+        -DBOARD=${LUGALOS_BOARD_FILE} -DPROFILE=${LUGALOS_PROFILE_FILE} -DOUT=${LUGALOS_CONFIG_HEADER}
+        -DDEV=${LUGALOS_DEV} -DENABLE_CERES=${LUGALOS_ENABLE_CERES}
         -DENABLE_CC=${LUGALOS_ENABLE_CC} -DENABLE_ED=${LUGALOS_ENABLE_ED} -DENABLE_SMP=${LUGALOS_ENABLE_SMP}
         -DENABLE_ST7735=${LUGALOS_ENABLE_ST7735} -DENABLE_TM1638=${LUGALOS_ENABLE_TM1638}
         -DENABLE_CHESS=${LUGALOS_ENABLE_CHESS} -DENABLE_ZMACHINE=${LUGALOS_ENABLE_ZMACHINE} -DENABLE_SPISD=${LUGALOS_ENABLE_SPISD} -DENABLE_SDMMC=${LUGALOS_ENABLE_SDMMC}
@@ -646,7 +621,8 @@ if(DEFINED LUGALOS_BOARD_FILE)
     # allocator against a heap that is not the one it got.
     add_custom_command(OUTPUT ${LUGALOS_CONFIG_HEADER}
         COMMAND ${CMAKE_COMMAND}
-            -DBOARD=${LUGALOS_BOARD_FILE} -DOUT=${LUGALOS_CONFIG_HEADER}
+            -DBOARD=${LUGALOS_BOARD_FILE} -DPROFILE=${LUGALOS_PROFILE_FILE} -DOUT=${LUGALOS_CONFIG_HEADER}
+            -DDEV=${LUGALOS_DEV} -DENABLE_CERES=${LUGALOS_ENABLE_CERES}
             -DENABLE_CC=${LUGALOS_ENABLE_CC} -DENABLE_ED=${LUGALOS_ENABLE_ED} -DENABLE_SMP=${LUGALOS_ENABLE_SMP}
             -DENABLE_ST7735=${LUGALOS_ENABLE_ST7735} -DENABLE_TM1638=${LUGALOS_ENABLE_TM1638}
             -DENABLE_CHESS=${LUGALOS_ENABLE_CHESS} -DENABLE_ZMACHINE=${LUGALOS_ENABLE_ZMACHINE} -DENABLE_SPISD=${LUGALOS_ENABLE_SPISD} -DENABLE_SDMMC=${LUGALOS_ENABLE_SDMMC}
@@ -659,6 +635,8 @@ if(DEFINED LUGALOS_BOARD_FILE)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_config.cmake
         DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/_always_rebuild
                 ${LUGALOS_BOARD_FILE}
+                ${LUGALOS_PROFILE_FILE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/cmake/lugalos_layers.cmake
                 ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_config.cmake
         COMMENT "Refreshing board config")
     add_custom_target(lugalos_config ALL DEPENDS ${LUGALOS_CONFIG_HEADER})
@@ -934,16 +912,8 @@ set(SOURCES
 )
 
 # The setup page, inside the image (52.12): an unclaimed node serves it whatever its filesystems hold. Only a
-# board that offers network claiming carries it. (This file reads board files as scripts elsewhere; here one
-# line of it is all that is needed.)
-set(LUGALOS_NETWORK_CLAIM FALSE)
-if(DEFINED LUGALOS_BOARD_FILE)
-    file(STRINGS ${LUGALOS_BOARD_FILE} _claim_line REGEX "^set\\(CONFIG_NETWORK_CLAIM +1\\)")
-    if(_claim_line)
-        set(LUGALOS_NETWORK_CLAIM TRUE)
-    endif()
-endif()
-if(LUGALOS_NETWORK_CLAIM)
+# board that offers network claiming carries it.
+if(CONFIG_NETWORK_CLAIM)
     add_custom_command(
         OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/setup_page.c
         COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_page.py
@@ -1087,8 +1057,7 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
     add_compile_definitions(CONFIG_OTA=1)
     # LLP toward a radio on UART0, on a board whose file names the rate
     # (CONFIG_LLP_UART_BAUD: the terminal's header H7 and a C6 beside it).
-    file(STRINGS "${LUGALOS_BOARD_FILE}" _llp_uart REGEX "^set\\(CONFIG_LLP_UART_BAUD")
-    if(_llp_uart)
+    if(DEFINED CONFIG_LLP_UART_BAUD)
         list(APPEND SOURCES kernel/llp_node.c)
     endif()
     # H1/H2: independently toggleable, per H3
@@ -1164,9 +1133,6 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
     # `cmake -P` process, so its CONFIG_* values are not variables here.
     # Read it into this scope purely to answer one question: does this
     # persona wire a wireless chip at all?
-    if(DEFINED LUGALOS_BOARD_FILE)
-        include(${LUGALOS_BOARD_FILE})
-    endif()
     if(DEFINED CONFIG_WL_CS_GPIO)
         add_custom_command(
             OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/cyw43_fw.c

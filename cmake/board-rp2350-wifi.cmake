@@ -22,11 +22,6 @@
 
 set(CONFIG_PALLOC_MAX_PAGES 128)
 
-# Same 4 pages (16 KB) as every other RP2350 persona (§1.1,
-# ) -- this board has nothing unusually
-# heavy on the buddy allocator either.
-set(CONFIG_BALLOC_ARENA_PAGES 4)
-
 # UART0: the console, GP0/GP1, unchanged from every other RP2350 persona.
 set(CONFIG_UART0_BASE     0x40070000)
 set(CONFIG_UART0_TX_GPIO  0)
@@ -93,3 +88,6 @@ set(CONFIG_BOARD_DESC "Raspberry Pi Pico 2 W")
 # Claiming over the network (kernel/setup.c), through the setup access point (kernel/setup_ap.c): an unclaimed
 # node with a setup secret raises "LugalOS-XXXX" and serves the setup page.
 set(CONFIG_NETWORK_CLAIM 1)
+
+# Drivers for the hardware on this board (cmake/lugalos_layers.cmake).
+set(LUGALOS_ENABLE_SPISD ON)

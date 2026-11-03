@@ -17,7 +17,6 @@
 #   nothing. No sensors: GPIO0/1, the C6-Zero's I2C pins, are not connected.
 
 set(CONFIG_PALLOC_MAX_PAGES 124)
-set(CONFIG_BALLOC_ARENA_PAGES 4)
 
 # UART0: a second console beside the USB one (drivers/usbjtag_esp32c6.c). On
 # the NANO header P2 pins 20/22 (C6_U0RXD/U0TXD); on the LCD-7B header H4
@@ -37,13 +36,6 @@ set(CONFIG_CPU_FREQ_MHZ   160)
 # The SDIO slave toward the P4 (IO_MUX function 0 of GPIO18..23, fixed): LLP's
 # channel on this module, instead of the USB port the C6-Zero uses.
 set(CONFIG_SDIO_SLAVE 1)
-
-# Lisp-light: a C6 runs configuration and small sensor scripts, not the CAS.
-# 1024 nodes and 384 string slots cost 46 KB of static RAM; a sensor node used
-# 11 nodes after boot. Half the nodes and half the strings return ~23 KB to a
-# heap that the radio, TCP and the identity store's 8 KB scratch compete for.
-set(CONFIG_LISP_NODE_POOL   512)
-set(CONFIG_LISP_STRING_POOL 192)
 
 # Named by /proc/board and the banner (kernel/boardinfo.h).
 set(CONFIG_BOARD_DESC "Waveshare ESP32-C6-MINI-1 module")

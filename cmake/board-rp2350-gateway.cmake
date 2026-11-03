@@ -20,12 +20,6 @@
 
 set(CONFIG_PALLOC_MAX_PAGES 128)
 
-# Same 4 pages (16 KB) as the other two RP2350 personas, and for the same
-# reason: the arena comes out of
-# the heap on first use and the buddy tree is permanent .bss, both on the same
-# 512 KB budget. Nothing on this persona is a heavy balloc caller.
-set(CONFIG_BALLOC_ARENA_PAGES 4)
-
 # UART0: the console, GP0/GP1, unchanged from every other RP2350 persona.
 set(CONFIG_UART0_BASE     0x40070000)
 set(CONFIG_UART0_TX_GPIO  0)
@@ -130,3 +124,6 @@ set(CONFIG_I2C_RTC_SCL_GPIO 5)
 
 # Named by /proc/board and the banner (kernel/boardinfo.h).
 set(CONFIG_BOARD_DESC "Raspberry Pi Pico 2 with ENC28J60")
+
+# Drivers for the hardware on this board (cmake/lugalos_layers.cmake).
+set(LUGALOS_ENABLE_SPISD ON)

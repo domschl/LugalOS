@@ -27,7 +27,6 @@
 # preset.
 
 set(CONFIG_PALLOC_MAX_PAGES 128)
-set(CONFIG_BALLOC_ARENA_PAGES 4)
 
 # UART0: the console, GP0/GP1, unchanged from every other RP2350 persona. Kept
 # even though the appliance runs headless -- a sensor node that cannot be

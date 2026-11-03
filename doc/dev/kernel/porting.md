@@ -68,4 +68,4 @@ This enables immediate `printk()` diagnostic logging before the scheduler starts
 Ensure the core's PMP granularity is detected and wire it into `kernel/mem_domain_pmp.c`.
 
 ### Step 6: CMake Preset
-Add a preset in `CMakePresets.json` referencing your board file `cmake/board-<target>.cmake`. Define board macros (`CONFIG_BOARD_<TARGET>`, `CONFIG_CLK_SYS_HZ`, etc.).
+Add a preset in `CMakePresets.json` naming your board file `cmake/board-<target>.cmake` and a profile (`LUGALOS_PROFILE`, a `cmake/profile-<name>.cmake`). The board holds hardware facts only (`CONFIG_CLK_SYS_HZ`, pins, memory sizes, the drivers its hardware needs); policy and software choices belong in the profile (see [Hardware Presets](../../admin/presets.md#2-boards-and-profiles)). Target macros such as `CONFIG_BOARD_<TARGET>` come from `CMakeLists.txt`.

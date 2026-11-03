@@ -13,9 +13,6 @@
 # RAM-resident until 45.4.3 moves it to flash.
 set(CONFIG_PALLOC_MAX_PAGES 124)
 
-# The buddy arena (kernel/balloc.h), in pages: the RP2350/P4 figure.
-set(CONFIG_BALLOC_ARENA_PAGES 4)
-
 # UART0, the chip's own: TRM / reg_base.h DR_REG_UART0_BASE. It is *not* the
 # console on the C6-Zero -- the USB-C port is wired to the USB-Serial/JTAG
 # peripheral below -- but it is a mandatory key and a real peripheral, and the
@@ -46,13 +43,6 @@ set(CONFIG_CPU_FREQ_MHZ   160)
 # on its header H7 (cmake/board-rp2350-terminal.cmake: the two must agree).
 set(CONFIG_LLP_UART_BAUD  921600)
 
-# Lisp-light: a C6 runs configuration and small sensor scripts, not the CAS.
-# 1024 nodes and 384 string slots cost 46 KB of static RAM; a sensor node used
-# 11 nodes after boot. Half the nodes and half the strings return ~23 KB to a
-# heap that the radio, TCP and the identity store's 8 KB scratch compete for.
-set(CONFIG_LISP_NODE_POOL   512)
-set(CONFIG_LISP_STRING_POOL 192)
-
 # BOOT (GPIO9), a strapping pin with an internal pull-up; an ordinary input once running.
 set(CONFIG_SETUP_BUTTON_GPIO 9)
 # The RGB pixel on GPIO8 shows the node's mode in colour (kernel/status_led.c).
@@ -60,6 +50,3 @@ set(CONFIG_STATUS_LED_WS2812 1)
 
 # Named by /proc/board and the banner (kernel/boardinfo.h).
 set(CONFIG_BOARD_DESC "Waveshare ESP32-C6-Zero")
-
-# A claimed C6-Zero serves that page at NAME.local once it has an address, as a Pico 2 W does after a claim.
-set(CONFIG_HTTPD_WHEN_CLAIMED 1)
