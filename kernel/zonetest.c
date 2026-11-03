@@ -13,6 +13,10 @@
  *      counted as a fallback;
  *   6. a BULK_BSS object lies in PSRAM (on a board with one), is zero at
  *      boot, and holds what is written.
+ *   7. every free page of the fast zone (SRAM) takes a pattern of its own
+ *      address and still holds it once all of them are taken -- the whole
+ *      heap, including what linker/esp32p4_memory_rev3.ld hands over from the
+ *      ROM's download buffers (66.4); the highest page reached is printed.
  *
  * Takes every free bulk page for a moment (step 5), so anything else asking
  * for bulk memory meanwhile falls back too; a test command, not a background
@@ -120,7 +124,13 @@ void zone_selftest(void) {
      * since boot can check the zeroing; later runs find their own pattern
      * cleared again below. */
 #if defined(CONFIG_PSRAM_BYTES)
-    check((uintptr_t)g_bulk_probe >= 0x11000000u && (uintptr_t)g_bulk_probe < 0x12000000u,
+    /* The PSRAM window: the RP2350's QMI maps it at 0x11000000, the P4's MMU at 0x48000000. */
+#if defined(CONFIG_BOARD_ESP32P4)
+    const uintptr_t psram_lo = 0x48000000u;
+#else
+    const uintptr_t psram_lo = 0x11000000u;
+#endif
+    check((uintptr_t)g_bulk_probe >= psram_lo && (uintptr_t)g_bulk_probe < psram_lo + (uintptr_t)CONFIG_PSRAM_BYTES,
           "a BULK_BSS object is in the PSRAM window");
 #endif
     uint32_t nz = 0;
@@ -134,6 +144,31 @@ void zone_selftest(void) {
     g_probe_seen = true;
     cprintf("zonetest: BULK_BSS probe at 0x%08lx\n", (unsigned long)(uintptr_t)g_bulk_probe);
 #endif
+    /* 7. The whole fast zone. Each page is chained to the last through its first word, so no table
+     * is needed; the rest of it carries its own address. Takes every free SRAM page for a moment. */
+    {
+        uintptr_t *head = NULL, top = 0;
+        uint32_t taken = 0, wrong = 0;
+        for (;;) {
+            uintptr_t *pg = (uintptr_t *)palloc_pages(1);
+            if (!pg) break;
+            for (uint32_t w = 1; w < 4096u / sizeof(uintptr_t); w++) pg[w] = (uintptr_t)&pg[w] ^ (uintptr_t)0x5a5aa5a5u;
+            pg[0] = (uintptr_t)head;
+            head = pg;
+            if ((uintptr_t)pg > top) top = (uintptr_t)pg;
+            taken++;
+        }
+        for (uintptr_t *pg = head; pg; ) {
+            for (uint32_t w = 1; w < 4096u / sizeof(uintptr_t); w++)
+                if (pg[w] != ((uintptr_t)&pg[w] ^ (uintptr_t)0x5a5aa5a5u)) { wrong++; break; }
+            uintptr_t *next = (uintptr_t *)pg[0];
+            palloc_free(pg, 1);
+            pg = next;
+        }
+        check(wrong == 0, "every fast page holds its pattern while the whole heap is taken");
+        cprintf("zonetest: fast zone, %lu pages taken and given back, the highest at 0x%08lx, %lu wrong\n",
+                (unsigned long)taken, (unsigned long)top, (unsigned long)wrong);
+    }
     cprintf("zonetest: bulk zone %lu pages at 0x%08lx (%lu free), %lu chunks to exhaust it, "
             "fallbacks %lu -- ZONETEST_%s\n",
             (unsigned long)z.total_pages, (unsigned long)z.base, (unsigned long)z.free_pages,

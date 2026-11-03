@@ -314,6 +314,28 @@ The acceptance test for 66.2/66.3: the RAM they free on the C6-Zero is spent on 
 
 ### 66.4 ESP32-P4 memory layout
 
+* **DONE 2026-11-03 for the heap; the rest measured and left.**
+  * *The ROM's download buffers on rev v3 (the LCD-7B):* the heap now runs to `P4_HEAP_TOP` = 0x4ffba000,
+    over the buffers (0x4ffa96b8..0x4ffbafc0) that the ROM uses only in download mode and that an IDF
+    application has as ordinary RAM (`APP_USABLE_DIRAM_END`). Loadable sections still stop below them
+    (the loader runs there); the ROM's start-up stacks and its run-time data above stay untouched.
+    LCD-7B heap 71 -> 88 pages; under the loaded scenario **28 of 88 free** (11 of 71 before).
+    Verified: `test_esp32p4.py` 53/53; `zonetest`'s new step 7 takes every free fast page up to the
+    last reclaimed one (0x4ffb9000), holds a pattern in each and gives them back (0 wrong); flash
+    writes, an OTA state check, Wi-Fi through the C6 and the SD card after it. Rev v1.3 (Tab5, NANO)
+    has no such region: its download buffers are in LOWRAM, under `.bss` and the stacks.
+  * *The LOWRAM/RAM boundary:* not moved. LOWRAM's unused tail is 1-2 pages on each P4 (NANO 4.1 KB,
+    LCD-7B 9.4 KB, Tab5 9.1 KB). On v1.3 LOWRAM may hold only NOLOAD sections and loadables must start
+    at 0x4ff40000, so the tail could join the heap only as a second SRAM zone; on v3 the two regions
+    could merge. Worth it only together with moving statics to PSRAM, and no P4 is short of heap now
+    (NANO 93 pages, Tab5 25 of 93 free, LCD-7B 28 of 88 under load).
+  * *Statics to PSRAM:* the Lisp mark bitmaps moved in 66.2 (8.5 KB). Others (`g_chess_pos` 8.4 KB,
+    9P waiters 8 KB, the log ring 8 KB, shell history 5 KB, the sensor caches 5 KB) would add LOWRAM
+    headroom for future statics, not heap; left until a static needs the room. `s_audio_buf` (24 KB)
+    was not examined.
+  * *Found on the way:* `zonetest`'s BULK_BSS check assumed the RP2350's PSRAM window (0x11000000)
+    and failed on every P4; it now uses the board's.
+
 * LOWRAM/RAM boundary computed by the linker instead of a fixed 252 KB.
 * Non-DMA, non-hot `.bss` to `.bulk_bss` (PSRAM); `s_audio_buf`'s DMA requirement verified.
 * Reclaim the ROM download buffers after boot, once core 1's start-up stack is accounted for.

@@ -57,5 +57,15 @@ P4_RAM_CEIL    = 0x4ffa96b8;
  * ~12 KB of slack for .boot/.utext/.data growth that v1.3's 360 has. */
 P4_HEAP_FLOOR  = 275K;
 
+/* Where the heap ends, above RAM's end (66.4). The ROM's download buffers, 0x4ffa96b8..0x4ffbafc0, are
+ * used only in download mode (IDF bootloader.memory.ld.in, the appendix's region 1); an IDF application
+ * on v3 has them as ordinary RAM from its first instruction (heap/port/esp32p4/memory_layout.c:
+ * APP_USABLE_DIRAM_END = 0x4ffbafc0). Our loader runs in them too, but only before the kernel starts:
+ * nothing *loadable* may be placed there (RAM stops at P4_RAM_CEIL), while the heap, which the kernel
+ * takes at palloc_init(), may. It stops at the page below 0x4ffbafc0: the ROM's start-up stacks (core
+ * 1's is in use until core 1 has its own), its start-up data and the data its flash routines read at
+ * run time (from 0x4ffbfbb0) stay untouched. 17 pages on the LCD-7B. */
+P4_HEAP_TOP    = 0x4ffba000;
+
 /* Where the loader (linker/esp32p4_loader.ld) is linked: inside the space IDF's own second-stage bootloader occupies from v3.0 (0x4ffab2c0..0x4ffbafc0, bootloader.memory.ld.in), above the kernel's RAM, which ends at P4_RAM_CEIL. */
 P4_LOADER_BASE = 0x4ffae000;

@@ -17,8 +17,8 @@
     "selftest": 64
   },
   "bulk_total": 1701188,
-  "heap_bytes": 290816,
-  "heap_pages": 71,
+  "heap_bytes": 360448,
+  "heap_pages": 88,
   "per_file": {
     "(no line info: .data)": 15,
     "arch/riscv/common/bod_esp32p4.c": 1,

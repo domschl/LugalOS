@@ -242,7 +242,7 @@ SECTIONS
      * from 253.5 KB to under 8 KB, and the heap from 128 KB to ~376 KB. */
     . = ALIGN(4096);
     _kernel_end = .;
-    _heap_end = ORIGIN(RAM) + LENGTH(RAM);
+    _heap_end = P4_HEAP_TOP;                /* RAM's end, or above it (esp32p4_memory_rev3.ld) */
 
     /* --- and now the half the loader must not touch --------------------- */
 
@@ -369,6 +369,8 @@ SECTIONS
      * the two a link error rather than a corruption. */
     ASSERT(ORIGIN(RAM) + LENGTH(RAM) <= P4_RAM_CEIL,
            "linker/esp32p4.ld: RAM reaches the L2 cache's storage (v1.3) or the ROM's data (v3.x) -- P4_RAM_CEIL; RAM's LENGTH and CONFIG_L2_CACHE_KB disagree; see esp32p4_l2_cache_shrink()")
+    ASSERT(P4_HEAP_TOP >= ORIGIN(RAM) + LENGTH(RAM),
+           "linker/esp32p4.ld: P4_HEAP_TOP is below RAM's end: the heap would not cover RAM")
     ASSERT(ORIGIN(RAM) >= P4_LOAD_FLOOR,
            "loadable sections would land where the ROM is still using memory while it loads us (P4_LOAD_FLOOR) -- see the header comment")
     /* .text used to be checked against that boundary too. After U1 it is not
