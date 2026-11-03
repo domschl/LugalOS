@@ -4,7 +4,8 @@
 Milestone scheme: `66.1`, `66.2`, …
 
 * **Scheduled:** 66.1–66.3 (measure, split, right-size), 66.3b (TLS on the C6-Zero sensor node),
-  then 66.4–66.7 (P4 layout, on-demand services, service host, folding of kernel-mode endpoints).
+  then 66.4, 66.6, 66.7 (P4 layout, service host, folding of kernel-mode endpoints). 66.5 (on-demand
+  services) dropped: see there.
 * **Optional, decided at the review after 66.7:** 66.8–66.10 (folding of U-mode drivers, a full
   build-time unikernel, an ESP32-C3 budget target).
 
@@ -319,15 +320,27 @@ The acceptance test for 66.2/66.3: the RAM they free on the C6-Zero is spent on 
 * Not on the RP2350: its PSRAM shares the QMI with flash and is unreachable during flash writes,
   so no stacks there.
 
-### 66.5 On-demand services
+### 66.5 On-demand services -- dropped (2026-11-03, owner's decision)
 
-* Services start on first connection or claim and exit when idle, returning their pages
-  (`CONFIG_HTTPD_WHEN_CLAIMED` is the first instance): httpd, setup AP, mDNS responder, OTA trial.
+Stopping an idle service frees pages only until something else takes them; the service's next start can
+then fail -- the admin page unreachable when it is wanted, under a load nobody can reproduce. A service
+that does not fit should fail at boot, where it is seen and tested. The rule instead, for every service:
+
+* **reserve at start** what it needs to run, or
+* **allocate per request** with a clean refusal when there is no room (a refused connection the client
+  retries) and a margin measured under the loaded scenario (66.1),
+* never stop and restart on demand.
+
+66.3b's per-session TLS records follow the second form (the C6-Zero's lowest point under load is the
+5-page margin). A task whose work is over for good (the setup access point once a node is claimed) may
+still exit and return its pages: nothing asks for them again. That part moves to 66.6.
 
 ### 66.6 Service host
 
 * One task runs timer-driven, non-blocking jobs as callbacks: status LED, watchdog, setup
   button, power, sensor sampling, DHCP renewal, OTA trial. Each now costs 1–3 pages of stack.
+* Tasks whose work is over for good exit and return their pages (from 66.5): the setup access point
+  and its worker once the node is claimed (36 KB of stack held on an unclaimed Pico 2 W).
 
 ### 66.7 Folding of kernel-mode endpoints
 
