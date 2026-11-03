@@ -341,6 +341,9 @@ typedef struct {
     const uint8_t *tls_key;
     const uint8_t *tls_cert; uint32_t tls_cert_len;
     bool           clear_tls;
+    /* The CA the node's TLS clients trust; kept across `tls clear`, dropped by an owner reset. */
+    const uint8_t *tls_ca;
+    bool           clear_tls_ca;
     /* An owner reset: every field idstore_field_class() calls OWNER is left out of the new
      * record; the factory part and the hardware's survive. Applied after the other members, so a
      * patch that sets one of the owner fields and resets leaves it set (a claim does this). */
@@ -582,6 +585,13 @@ static int identity_store_write(const identity_patch_t *patch) {
         uint32_t cl = 0;
         const uint8_t *cp = idstore_field_ptr(oldp, IDSTORE_FIELD_TLS_CERT, &cl);
         if (cp && cl) rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_TLS_CERT, cp, (uint16_t)cl);
+    }
+    if (patch->tls_ca) {
+        rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_TLS_CA, patch->tls_ca, NODE_TLS_CA_LEN);
+    } else if (old_valid && keep_owner && !patch->clear_tls_ca) {
+        uint32_t al = 0;
+        const uint8_t *ap = idstore_field_ptr(oldp, IDSTORE_FIELD_TLS_CA, &al);
+        if (ap && al == NODE_TLS_CA_LEN) rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_TLS_CA, ap, (uint16_t)al);
     }
     if (have_ipv4)           rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_IPV4, final_ipv4, sizeof(final_ipv4));
     if (have_otakey)         rc |= idstore_writer_add_field(wp, IDSTORE_FIELD_OTA_PUBKEY, final_otakey, sizeof(final_otakey));
@@ -858,6 +868,7 @@ static uint32_t mqtt_serialise(const node_mqtt_t *cfg, uint8_t *out) {
     o = mqtt_put_str(out, o, cfg->username, NODE_MQTT_USER_MAX);
     o = mqtt_put_str(out, o, cfg->password, NODE_MQTT_PASS_MAX);
     o = mqtt_put_str(out, o, cfg->prefix,   NODE_MQTT_PREFIX_MAX);
+    if (cfg->tls) out[o++] = NODE_MQTT_FLAG_TLS;
     return o;
 }
 
@@ -897,6 +908,7 @@ bool node_mqtt(node_mqtt_t *out) {
     mqtt_get_str(buf, (uint32_t)n, &o, out->username, NODE_MQTT_USER_MAX);
     mqtt_get_str(buf, (uint32_t)n, &o, out->password, NODE_MQTT_PASS_MAX);
     mqtt_get_str(buf, (uint32_t)n, &o, out->prefix,   NODE_MQTT_PREFIX_MAX);
+    out->tls = o < (uint32_t)n && (buf[o] & NODE_MQTT_FLAG_TLS);
     return true;
 }
 
@@ -1174,6 +1186,16 @@ node_id_result_t node_identity_set_tls_cert(const uint8_t *der, uint32_t len) {
     if (!der || len == 0 || len > NODE_TLS_CERT_MAX) return NODE_ID_ERR_BAD_INPUT;
     if (!identity_store_device()) return NODE_ID_ERR_NO_BACKEND;
     identity_patch_t patch = { .tls_cert = der, .tls_cert_len = len };
+    return identity_store_write(&patch) != 0 ? NODE_ID_ERR_WRITE_FAILED : NODE_ID_OK;
+}
+
+bool node_tls_ca(uint8_t out[NODE_TLS_CA_LEN]) {
+    return identity_field_copy(IDSTORE_FIELD_TLS_CA, out, NODE_TLS_CA_LEN) == (int)NODE_TLS_CA_LEN;
+}
+
+node_id_result_t node_identity_set_tls_ca(const uint8_t *pub) {
+    if (!identity_store_device()) return NODE_ID_ERR_NO_BACKEND;
+    identity_patch_t patch = { .tls_ca = pub, .clear_tls_ca = pub == NULL };
     return identity_store_write(&patch) != 0 ? NODE_ID_ERR_WRITE_FAILED : NODE_ID_OK;
 }
 

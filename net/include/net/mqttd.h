@@ -168,6 +168,7 @@ typedef struct {
     const char *username;      /* copied; the caller's storage need not last */
     const char *password;
     const char *prefix;        /* NULL/"" = "lugalos" */
+    bool        tls;           /* TLS to the broker (mqtt_config_t.tls) */
 } mqttd_config_t;
 
 /* Five seconds: at the BME280's x1 oversampling a conversion is under 10 ms,

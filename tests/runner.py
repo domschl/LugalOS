@@ -5608,6 +5608,118 @@ def test_tls_identity(elf_path: Path, img_path: Path, arch_name: str) -> tuple[s
         tmp.cleanup()
 
 
+def test_mqtt_tls(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
+    """66.3b: MQTT over TLS. The node checks the broker's certificate against the CA installed on
+    /dev/tlsca (lugalos-ca trust, over 9P from an admin peer) and the address it dialled. A broker
+    with that CA's certificate for 10.0.2.2 gets the CONNECT and a PUBLISH; one whose certificate comes
+    from another CA, and one whose certificate names another address, are refused in the handshake.
+    Needs entropy: the guest gets QEMU's virtio-rng."""
+    import shutil
+    import socket as _socket
+    import ssl
+    import subprocess
+    import tempfile
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from mqttbroker import MqttBroker
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    import provision
+
+    name = "MQTT Over TLS: The Owner's CA On /dev/tlsca, Another CA And Another Address Refused (66.3b)"
+    root = Path(__file__).resolve().parent.parent
+    if not shutil.which("uv"):
+        return (name, True, "skipped: no uv on this host")
+    arch_img = img_path.with_name(f"test_{arch_name}_mqtls_sd.img")
+    shutil.copyfile(img_path, arch_img)
+    id_img = img_path.with_name(f"test_{arch_name}_mqtls_id.img")
+    id_img.write_bytes(provision.build_record([
+        (provision.FIELD_UID, bytes.fromhex("d1d2d3d4d5d6d7d8"), ),
+        (provision.FIELD_NAME, b"mqtlsnode"),
+    ]))
+    key = bytes(range(112, 128))
+    pr = _socket.socket()
+    pr.bind(("127.0.0.1", 0))
+    port = pr.getsockname()[1]
+    pr.close()
+    tmp = tempfile.TemporaryDirectory()
+    t = Path(tmp.name)
+
+    def ca(cadir: Path, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["uv", "run", "--project", str(root / "host" / "ca"), "lugalos-ca", "--dir", str(cadir), *args],
+                              capture_output=True, text=True, timeout=180)
+
+    def ctx_for(crt: Path, keyfile: Path) -> ssl.SSLContext:
+        c = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        c.minimum_version = ssl.TLSVersion.TLSv1_3
+        c.load_cert_chain(str(crt), str(keyfile))
+        return c
+
+    for cadir, cn in ((t / "ca", "LugalOS Test CA"), (t / "other", "Another CA")):
+        r = ca(cadir, "init", "--name", cn)
+        if r.returncode != 0:
+            return (name, False, f"lugalos-ca init failed:\n{r.stdout}{r.stderr}")
+    for cadir, names, out in ((t / "ca", ["10.0.2.2"], t / "good"), (t / "other", ["10.0.2.2"], t / "foreign"),
+                              (t / "ca", ["10.0.2.99"], t / "misnamed")):
+        r = ca(cadir, "server", *names, "--out", str(out))
+        if r.returncode != 0:
+            return (name, False, f"lugalos-ca server failed:\n{r.stdout}{r.stderr}")
+    good = ctx_for(t / "good" / "10.0.2.2.crt.pem", t / "good" / "10.0.2.2.key.pem")
+    foreign = ctx_for(t / "foreign" / "10.0.2.2.crt.pem", t / "foreign" / "10.0.2.2.key.pem")
+    misnamed = ctx_for(t / "misnamed" / "10.0.2.99.crt.pem", t / "misnamed" / "10.0.2.99.key.pem")
+
+    session = QemuSession(elf_path, arch_img, arch_name)
+    brokers: list[MqttBroker] = []
+    try:
+        session.start(identity_img_path=id_img, extra_qemu_args=[
+            "-device", "virtio-rng-device",
+            "-netdev", f"user,id=n0,hostfwd=tcp:127.0.0.1:{port}-10.0.2.15:564",
+            "-device", "virtio-net-device,netdev=n0",
+        ])
+        ok, log = session.send_and_expect("", r"Type 'help' for commands", timeout=8.0)
+        if not ok:
+            return (name, False, f"guest did not reach the shell: {log[-400:]}")
+        session.send_and_expect('lisp\n(net-config "10.0.2.15" "255.255.255.0" "10.0.2.2")\nexit', r"\[Net\] 10\.0\.2\.15", timeout=6.0)
+
+        # Without a CA the client refuses to start the handshake.
+        b = MqttBroker(tls=good)
+        brokers.append(b)
+        ok, log = session.send_and_expect(f"mqtt connect tls://10.0.2.2:{b.port}", r"mqtt: (TLS failed|state CONNECTED)", timeout=25.0)
+        if "TLS failed" not in log:
+            return (name, False, f"a TLS connect with no CA installed did not fail as such:\n{log[-500:]}")
+
+        session.send_and_expect(f"p9key {key.hex()}", r"console key set", timeout=5.0)
+        session.send_and_expect(f"peers add lugal {key.hex()} / admin", r"granted", timeout=10.0)
+        r = ca(t / "ca", "trust", "--tcp", f"127.0.0.1:{port}", "--key", key.hex())
+        if r.returncode != 0:
+            return (name, False, f"lugalos-ca trust failed:\n{r.stdout}{r.stderr}")
+        ok, log = session.send_and_expect("cat /dev/tlsca", r"ca=p256", timeout=8.0)
+        if not ok:
+            return (name, False, f"/dev/tlsca does not report the CA:\n{log[-300:]}")
+
+        ok, log = session.send_and_expect(f"mqtt connect tls://10.0.2.2:{b.port}", r"state CONNECTED|mqtt: (TLS|the broker|no |not )", timeout=30.0)
+        if "CONNECTED" not in log:
+            return (name, False, f"the TLS connect to the CA's broker failed:\n{log[-600:]}")
+        session.send_and_expect("mqtt pub lugalos/tls/check over-tls", r"mqtt: published|mqtt: ", timeout=15.0)
+        if not b.wait_for_publish(timeout=10.0) or not any(p.payload == b"over-tls" for p in b.publishes):
+            return (name, False, f"the broker saw {[(p.topic, p.payload) for p in b.publishes]!r}, not the publish")
+        session.send_and_expect("mqtt disconnect", r"mqtt: ", timeout=10.0)
+
+        for ctx, what in ((foreign, "a certificate from another CA"), (misnamed, "a certificate for another address")):
+            bb = MqttBroker(tls=ctx)
+            brokers.append(bb)
+            ok, log = session.send_and_expect(f"mqtt connect tls://10.0.2.2:{bb.port}", r"state CONNECTED|mqtt: (TLS|the broker|no |not )", timeout=30.0)
+            if "CONNECTED" in log or bb.connect is not None:
+                return (name, False, f"the client accepted {what}:\n{log[-500:]}")
+        return (name, True, "")
+    finally:
+        for b in brokers:
+            b.close()
+        session.close()
+        tmp.cleanup()
+        for f in (arch_img, id_img):
+            if f.exists():
+                f.unlink()
+
+
 def test_https_admin(elf_path: Path, img_path: Path, arch_name: str) -> tuple[str, bool, str]:
     """52.15: with a key and a certificate from its owner's CA, the admin server speaks TLS 1.3 on 443.
     Python's ssl, OpenSSL's s_client and curl verify it against the CA and fetch the page; 9P over wss://
@@ -10725,6 +10837,7 @@ def main() -> int:
         _run_single(test_protected_sessions(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_tls_identity(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_https_admin(rv64_elf, img_for("rv64"), "rv64"))
+        _run_single(test_mqtt_tls(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_wlan_credential_roundtrip(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_network_autoconfig(rv64_elf, img_for("rv64"), "rv64"))
         _run_single(test_netif_virtio_net(rv64_elf, img_for("rv64"), "rv64"))

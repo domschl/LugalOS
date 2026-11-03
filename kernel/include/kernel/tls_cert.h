@@ -47,10 +47,25 @@ typedef struct {
 } tls_cert_info_t;
 int tls_cert_parse(const uint8_t *der, uint32_t len, tls_cert_info_t *out);
 
+/* A peer's certificate, as a TLS client checks it (net/tls.c): signed (ECDSA P-256, SHA-256) by the
+ * holder of `ca_pub`, and naming `host` -- an IPv4 address in dotted form against its iPAddress
+ * subjectAltNames, anything else against its dNSNames (ASCII case ignored), and against the subject CN
+ * when it has no subjectAltName. Dates are not checked: a node's clock is not trusted to be set.
+ * `out` gets the fields (the peer's public key for its CertificateVerify). TLS_OK, TLS_ERR_CERT for
+ * one this code cannot read or one with a bad signature, TLS_ERR_WRONG_KEY for one naming another host. */
+int tls_cert_check(const uint8_t *der, uint32_t len, const uint8_t ca_pub[64], const char *host,
+                   tls_cert_info_t *out);
+
 /* A PKCS#10 request for `pub`, signed with `priv`, CN = `cn`, SAN dNSName `cn` and, if `ip` is not
  * NULL, iPAddress `ip`. Returns its length in `out`, or a TLS_ERR_*. Target-independent (host test). */
 int tls_csr_build(const uint8_t priv[32], const uint8_t pub[64], const char *cn, const uint8_t ip[4],
                   uint8_t *out, uint32_t cap);
+
+/* /dev/tlsca: the CA the node's TLS clients trust (66.3b). read: `ca=none`, or `ca=p256`, its key's
+ * fingerprint and, while the CA certificate written last is known, its name. write (admin): the CA's
+ * certificate, PEM, from offset 0 (only its public key is kept, IDSTORE_FIELD_TLS_CA), or `clear`. */
+uint32_t tls_ca_read(char *out, uint32_t cap);
+int tls_ca_write(const void *buf, uint32_t count, uint64_t off);
 
 /* The /dev files. */
 uint32_t tls_ctl_read(char *out, uint32_t cap);

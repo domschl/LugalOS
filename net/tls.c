@@ -1,13 +1,16 @@
-/* A TLS 1.3 server: ChaCha20-Poly1305, X25519, ECDSA P-256 (net/include/net/tls.h). The section
- * numbers are RFC 8446's. */
+/* A TLS 1.3 server and client: ChaCha20-Poly1305, X25519, ECDSA P-256 (net/include/net/tls.h). The
+ * section numbers are RFC 8446's. */
 
 #include "net/tls.h"
 #include "kernel/crypto.h"
 #include "kernel/der.h"
 #include "kernel/random.h"
+#include "kernel/tls_cert.h"
 #include <string.h>
 
-enum { ST_HELLO, ST_WAIT_FIN, ST_OPEN, ST_CLOSED, ST_FAILED };
+/* A server: HELLO -> WAIT_FIN -> OPEN. A client: HELLO (its ClientHello sent) -> C_EE -> C_CERT ->
+ * C_CV -> C_FIN -> OPEN. */
+enum { ST_HELLO, ST_WAIT_FIN, ST_OPEN, ST_CLOSED, ST_FAILED, ST_C_EE, ST_C_CERT, ST_C_CV, ST_C_FIN };
 
 #define CT_CCS        20
 #define CT_ALERT      21
@@ -16,6 +19,7 @@ enum { ST_HELLO, ST_WAIT_FIN, ST_OPEN, ST_CLOSED, ST_FAILED };
 
 #define HS_CLIENT_HELLO  1
 #define HS_SERVER_HELLO  2
+#define HS_NEW_SESSION_TICKET 4
 #define HS_ENC_EXT       8
 #define HS_CERTIFICATE  11
 #define HS_CERT_VERIFY  15
@@ -23,6 +27,8 @@ enum { ST_HELLO, ST_WAIT_FIN, ST_OPEN, ST_CLOSED, ST_FAILED };
 #define HS_KEY_UPDATE   24
 #define HS_MESSAGE_HASH 254
 
+#define EXT_SERVER_NAME         0
+#define EXT_MAX_FRAGMENT_LEN    1
 #define EXT_SUPPORTED_GROUPS   10
 #define EXT_SIG_ALGS           13
 #define EXT_SUPPORTED_VERSIONS 43
@@ -33,6 +39,7 @@ enum { ST_HELLO, ST_WAIT_FIN, ST_OPEN, ST_CLOSED, ST_FAILED };
 #define AL_BAD_MAC         20
 #define AL_RECORD_OVERFLOW 22
 #define AL_HS_FAILURE      40
+#define AL_BAD_CERT        42
 #define AL_ILLEGAL_PARAM   47
 #define AL_DECODE          50
 #define AL_DECRYPT         51
@@ -86,6 +93,18 @@ static void make_nonce(const uint8_t iv[12], uint64_t seq, uint8_t out[12]) {
     for (int i = 0; i < 8; i++) out[11 - i] ^= (uint8_t)(seq >> (8 * i));
 }
 
+/* The keys a side writes and reads with: a server writes with the server's, a client with the client's. */
+static uint8_t  *w_key(tls_t *t)    { return t->client ? t->c_key : t->s_key; }
+static uint8_t  *w_iv(tls_t *t)     { return t->client ? t->c_iv : t->s_iv; }
+static uint64_t *w_seq(tls_t *t)    { return t->client ? &t->c_seq : &t->s_seq; }
+static uint8_t  *w_secret(tls_t *t) { return t->client ? t->c_secret : t->s_secret; }
+static bool      w_enc(const tls_t *t) { return t->client ? t->c_enc : t->s_enc; }
+static uint8_t  *r_key(tls_t *t)    { return t->client ? t->s_key : t->c_key; }
+static uint8_t  *r_iv(tls_t *t)     { return t->client ? t->s_iv : t->c_iv; }
+static uint64_t *r_seq(tls_t *t)    { return t->client ? &t->s_seq : &t->c_seq; }
+static uint8_t  *r_secret(tls_t *t) { return t->client ? t->s_secret : t->c_secret; }
+static bool      r_enc(const tls_t *t) { return t->client ? t->s_enc : t->c_enc; }
+
 /* --- records out ------------------------------------------------------------------------------ */
 
 static void put_u16(uint8_t *p, uint32_t v) { p[0] = (uint8_t)(v >> 8); p[1] = (uint8_t)v; }
@@ -115,8 +134,8 @@ static void enc_seal(tls_t *t, uint32_t len, uint8_t inner_type) {
     h[0] = CT_APP; h[1] = 3; h[2] = 3;
     put_u16(h + 3, ct_len + CHACHAPOLY_TAG_LEN);
     uint8_t nonce[12];
-    make_nonce(t->s_iv, t->s_seq++, nonce);
-    chachapoly_seal(body, body + ct_len, t->s_key, nonce, h, 5, body, ct_len);
+    make_nonce(w_iv(t), (*w_seq(t))++, nonce);
+    chachapoly_seal(body, body + ct_len, w_key(t), nonce, h, 5, body, ct_len);
     t->tx_len += 5 + ct_len + CHACHAPOLY_TAG_LEN;
 }
 
@@ -140,7 +159,7 @@ static int fail(tls_t *t, uint8_t desc) {
     t->alert = desc;
     t->tx_len = t->tx_sent = 0;
     uint8_t a[2] = { 2, desc };
-    if (t->s_enc) { memcpy(enc_body(t), a, 2); enc_seal(t, 2, CT_ALERT); }
+    if (w_enc(t)) { memcpy(enc_body(t), a, 2); enc_seal(t, 2, CT_ALERT); }
     else (void)put_plain(t, CT_ALERT, a, 2);
     (void)tls_flush(t);
     t->st = ST_FAILED;
@@ -397,8 +416,11 @@ static void next_secret(uint8_t secret[32]) {
     crypto_wipe_bytes(n, sizeof n);
 }
 
+static int client_msg(tls_t *t, const uint8_t *m, uint32_t n, bool enc);
+
 static int handshake_msg(tls_t *t, const uint8_t *m, uint32_t n, bool enc) {
     uint8_t type = m[0];
+    if (t->client && t->st != ST_OPEN) return client_msg(t, m, n, enc);
     if (t->st == ST_HELLO && !enc && type == HS_CLIENT_HELLO) return client_hello(t, m, n);
     if (t->st == ST_WAIT_FIN && enc && type == HS_FINISHED) {
         if (n != 4 + 32 || !crypto_equal(m + 4, t->expect_fin, 32)) return fail(t, AL_DECRYPT);
@@ -411,21 +433,22 @@ static int handshake_msg(tls_t *t, const uint8_t *m, uint32_t n, bool enc) {
     }
     if (t->st == ST_OPEN && enc && type == HS_KEY_UPDATE) {             /* §4.6.3 */
         if (n != 5 || m[4] > 1) return fail(t, AL_DECODE);
-        next_secret(t->c_secret);
-        set_keys(t->c_secret, t->c_key, t->c_iv);
-        t->c_seq = 0;
+        next_secret(r_secret(t));
+        set_keys(r_secret(t), r_key(t), r_iv(t));
+        *r_seq(t) = 0;
         if (m[4] == 1) {
             static const uint8_t ku[5] = { HS_KEY_UPDATE, 0, 0, 1, 0 };
             if (enc_room(t) < sizeof ku) return fail(t, AL_INTERNAL);
             memcpy(enc_body(t), ku, sizeof ku);
             enc_seal(t, sizeof ku, CT_HANDSHAKE);
-            next_secret(t->s_secret);
-            set_keys(t->s_secret, t->s_key, t->s_iv);
-            t->s_seq = 0;
+            next_secret(w_secret(t));
+            set_keys(w_secret(t), w_key(t), w_iv(t));
+            *w_seq(t) = 0;
             (void)tls_flush(t);
         }
         return 0;
     }
+    if (t->client && t->st == ST_OPEN && enc && type == HS_NEW_SESSION_TICKET) return 0;   /* §4.6.1: no resumption */
     return fail(t, AL_UNEXPECTED);
 }
 
@@ -439,7 +462,7 @@ static int pull_record(tls_t *t) {
             want = 5 - t->rx_len;
         } else {
             uint32_t body = (uint32_t)t->rx[3] << 8 | t->rx[4];
-            if (body > 16384u + 256u) return fail(t, AL_RECORD_OVERFLOW);
+            if (body > 16384u + 256u || 5 + body > t->rx_cap) return fail(t, AL_RECORD_OVERFLOW);
             if (t->rx_len == 5 + body) return 1;
             want = 5 + body - t->rx_len;
         }
@@ -460,15 +483,15 @@ static int process_record(tls_t *t) {
         t->rx_len = 0;
         return 0;
     }
-    if (t->c_enc) {
+    if (r_enc(t)) {
         if (type != CT_APP) return fail(t, AL_UNEXPECTED);
         if (len < 1 + CHACHAPOLY_TAG_LEN) return fail(t, AL_BAD_MAC);
         uint8_t nonce[12];
-        make_nonce(t->c_iv, t->c_seq, nonce);
+        make_nonce(r_iv(t), *r_seq(t), nonce);
         len -= CHACHAPOLY_TAG_LEN;
-        if (chachapoly_open(body, t->c_key, nonce, t->rx, 5, body, len, body + len) != CRYPTO_OK)
+        if (chachapoly_open(body, r_key(t), nonce, t->rx, 5, body, len, body + len) != CRYPTO_OK)
             return fail(t, AL_BAD_MAC);
-        t->c_seq++;
+        (*r_seq(t))++;
         while (len > 0 && body[len - 1] == 0) len--;               /* §5.2: padding */
         if (len == 0) return fail(t, AL_UNEXPECTED);
         type = body[--len];
@@ -519,6 +542,7 @@ void tls_server_init(tls_t *t, const uint8_t *cert, uint32_t cert_len, const uin
     t->send = send;
     t->io = io;
     t->rx = rx;
+    t->rx_cap = TLS_RECORD_MAX;
     t->tx = tx;
     t->st = ST_HELLO;
     sha256_init(&t->transcript);
@@ -536,9 +560,12 @@ int tls_read(tls_t *t, uint8_t *buf, uint32_t cap) {
         }
         if (t->st == ST_CLOSED) return TLS_EOF;
         if (t->st == ST_FAILED) return TLS_FAIL;
-        /* During the handshake our flight goes out before more of the client's is read: tx then never
-         * holds more than one flight. */
-        if (t->st != ST_OPEN && !tls_flush(t)) return 0;
+        /* What is owed goes out first. During the handshake our flight goes before more of the peer's
+         * is read (tx then never holds more than one flight); once open, a record tls_write() could not
+         * send at once (a client's first request, while TCP still waits for an ACK) moves with the
+         * caller's next read instead of waiting for its next write. */
+        bool flushed = tls_flush(t);
+        if (t->st != ST_OPEN && !flushed) return 0;
         int r = pull_record(t);
         if (r <= 0) return r;
         r = process_record(t);
@@ -561,7 +588,7 @@ int tls_write(tls_t *t, const uint8_t *buf, uint32_t len) {
 bool tls_established(const tls_t *t) { return t->st == ST_OPEN; }
 
 void tls_close(tls_t *t) {
-    if (t->s_enc && (t->st == ST_OPEN || t->st == ST_WAIT_FIN) && enc_room(t) >= 2) {
+    if (w_enc(t) && t->st != ST_CLOSED && t->st != ST_FAILED && enc_room(t) >= 2) {
         static const uint8_t a[2] = { 1, AL_CLOSE_NOTIFY };
         memcpy(enc_body(t), a, 2);
         enc_seal(t, 2, CT_ALERT);
@@ -577,4 +604,230 @@ void tls_wipe(tls_t *t) {
     crypto_wipe_bytes(t->s_key, sizeof t->s_key);
     crypto_wipe_bytes(t->c_ap, sizeof t->c_ap);
     crypto_wipe_bytes(t->expect_fin, sizeof t->expect_fin);
+    crypto_wipe_bytes(t->eph, sizeof t->eph);
+    crypto_wipe_bytes(t->master, sizeof t->master);
+}
+
+/* --- the client ------------------------------------------------------------------------------ */
+
+/* The ClientHello (§4.1.2): the one suite, X25519 with a share, ECDSA P-256, the server's name, and
+ * 4 KB records asked for (RFC 6066 §4). A 32-byte legacy_session_id puts the exchange in middlebox
+ * compatibility mode (§D.4), which the server answers with its own ChangeCipherSpec. */
+static uint32_t client_hello_msg(tls_t *t, uint8_t *out, uint32_t cap, const uint8_t pub[32]) {
+    uint32_t hl = (uint32_t)strlen(t->host);
+    if (hl > 255 || 4 + 2 + 32 + 33 + 4 + 2 + 2 + 9 + hl + 5 + 7 + 8 + 8 + 42 > cap) return 0;
+    uint32_t o = 4;
+    out[0] = HS_CLIENT_HELLO;
+    out[o++] = 3; out[o++] = 3;
+    random_bytes(out + o, 32); o += 32;
+    out[o++] = 32;
+    random_bytes(t->sid, 32); t->sid_len = 32;
+    memcpy(out + o, t->sid, 32); o += 32;
+    put_u16(out + o, 2); put_u16(out + o + 2, SUITE_CHACHA); o += 4;
+    out[o++] = 1; out[o++] = 0;                                     /* compression: null */
+    uint32_t ext_at = o;
+    o += 2;
+    /* server_name: a host_name entry, unless the host is an address (RFC 6066 §3 forbids those). */
+    bool is_ip = true;
+    for (const char *c = t->host; *c; c++) if (!((*c >= '0' && *c <= '9') || *c == '.')) is_ip = false;
+    if (!is_ip) {
+        put_u16(out + o, EXT_SERVER_NAME); put_u16(out + o + 2, 5 + hl);
+        put_u16(out + o + 4, 3 + hl); out[o + 6] = 0; put_u16(out + o + 7, hl);
+        memcpy(out + o + 9, t->host, hl);
+        o += 9 + hl;
+    }
+    put_u16(out + o, EXT_MAX_FRAGMENT_LEN); put_u16(out + o + 2, 1); out[o + 4] = 4; o += 5;   /* 2^12 */
+    put_u16(out + o, EXT_SUPPORTED_VERSIONS); put_u16(out + o + 2, 3); out[o + 4] = 2; put_u16(out + o + 5, 0x0304); o += 7;
+    put_u16(out + o, EXT_SUPPORTED_GROUPS); put_u16(out + o + 2, 4); put_u16(out + o + 4, 2); put_u16(out + o + 6, GROUP_X25519); o += 8;
+    put_u16(out + o, EXT_SIG_ALGS); put_u16(out + o + 2, 4); put_u16(out + o + 4, 2); put_u16(out + o + 6, SIG_ECDSA_P256); o += 8;
+    put_u16(out + o, EXT_KEY_SHARE); put_u16(out + o + 2, 38); put_u16(out + o + 4, 36);
+    put_u16(out + o + 6, GROUP_X25519); put_u16(out + o + 8, 32); memcpy(out + o + 10, pub, 32); o += 42;
+    put_u16(out + ext_at, o - ext_at - 2);
+    put_u24(out + 1, o - 4);
+    return o;
+}
+
+bool tls_client_init(tls_t *t, const char *host, const uint8_t ca_pub[64],
+                     tls_recv_fn recv, tls_send_fn send, void *io, uint8_t *rx, uint32_t rx_cap, uint8_t *tx) {
+    memset(t, 0, sizeof *t);
+    t->client = true;
+    t->host = host;
+    t->ca_pub = ca_pub;
+    t->recv = recv; t->send = send; t->io = io;
+    t->rx = rx; t->rx_cap = rx_cap; t->tx = tx;
+    t->st = ST_HELLO;
+    sha256_init(&t->transcript);
+    uint8_t pub[32], ch[512];
+    if (rx_cap < TLS_CLIENT_RX_MAX || x25519_keypair(t->eph, pub) != CRYPTO_OK) { t->st = ST_FAILED; return false; }
+    uint32_t n = client_hello_msg(t, ch, sizeof ch, pub);
+    if (n == 0 || !put_plain(t, CT_HANDSHAKE, ch, n)) { t->st = ST_FAILED; return false; }
+    sha256_update(&t->transcript, ch, n);
+    return true;
+}
+
+/* §4.1.3. Derives the handshake secrets and keys, and keeps the master secret for after the server's
+ * Finished. */
+static int server_hello_in(tls_t *t, const uint8_t *m, uint32_t n) {
+    span_t r = { m + 4, n - 4 }, rnd, sid, exts;
+    uint32_t legacy, suite, comp;
+    if (!rd_u16(&r, &legacy) || !rd_bytes(&r, 32, &rnd) || !rd_vec8(&r, &sid) || !rd_u16(&r, &suite) ||
+        !rd_u8(&r, &comp) || !rd_vec16(&r, &exts) || r.n != 0) return fail(t, AL_DECODE);
+    if (memcmp(rnd.p, HRR_RANDOM, 32) == 0) return fail(t, AL_HS_FAILURE);   /* we offered X25519, and only it */
+    if (sid.n != t->sid_len || memcmp(sid.p, t->sid, sid.n) != 0 || suite != SUITE_CHACHA || comp != 0)
+        return fail(t, AL_ILLEGAL_PARAM);
+    bool v13 = false;
+    const uint8_t *share = NULL;
+    while (exts.n) {
+        uint32_t type, v, g;
+        span_t data, kx;
+        if (!rd_u16(&exts, &type) || !rd_vec16(&exts, &data)) return fail(t, AL_DECODE);
+        if (type == EXT_SUPPORTED_VERSIONS && rd_u16(&data, &v) && v == 0x0304) v13 = true;
+        if (type == EXT_KEY_SHARE && rd_u16(&data, &g) && rd_vec16(&data, &kx) && g == GROUP_X25519 && kx.n == 32)
+            share = kx.p;
+    }
+    if (!v13) return fail(t, AL_PROTOCOL_VER);
+    if (!share) return fail(t, AL_HS_FAILURE);
+    sha256_update(&t->transcript, m, n);
+
+    uint8_t shared[32];
+    int rc = x25519_shared(shared, t->eph, share);
+    crypto_wipe_bytes(t->eph, sizeof t->eph);
+    if (rc != CRYPTO_OK) return fail(t, AL_ILLEGAL_PARAM);
+    uint8_t zeros[32] = { 0 }, empty[32], s[32], derived[32], hs[32], h[32];
+    sha256("", 0, empty);
+    hkdf_sha256_extract(NULL, 0, zeros, 32, s);
+    derive_secret(s, "derived", empty, derived);
+    hkdf_sha256_extract(derived, 32, shared, 32, hs);
+    crypto_wipe_bytes(shared, sizeof shared);
+    transcript_hash(t, h);
+    derive_secret(hs, "c hs traffic", h, t->c_secret);
+    derive_secret(hs, "s hs traffic", h, t->s_secret);
+    set_keys(t->c_secret, t->c_key, t->c_iv);
+    set_keys(t->s_secret, t->s_key, t->s_iv);
+    t->c_seq = t->s_seq = 0;
+    t->c_enc = t->s_enc = true;
+    derive_secret(hs, "derived", empty, derived);
+    hkdf_sha256_extract(derived, 32, zeros, 32, t->master);
+    crypto_wipe_bytes(hs, sizeof hs);
+    crypto_wipe_bytes(s, sizeof s);
+    crypto_wipe_bytes(derived, sizeof derived);
+    t->st = ST_C_EE;
+    return 0;
+}
+
+/* §4.3.1. A receive buffer smaller than a full record needs the server to have taken max_fragment_length. */
+static int enc_ext_in(tls_t *t, const uint8_t *m, uint32_t n) {
+    span_t r = { m + 4, n - 4 }, exts;
+    if (!rd_vec16(&r, &exts) || r.n != 0) return fail(t, AL_DECODE);
+    while (exts.n) {
+        uint32_t type, v;
+        span_t data;
+        if (!rd_u16(&exts, &type) || !rd_vec16(&exts, &data)) return fail(t, AL_DECODE);
+        if (type == EXT_MAX_FRAGMENT_LEN) {
+            if (!rd_u8(&data, &v) || v != 4) return fail(t, AL_ILLEGAL_PARAM);
+            t->mfl_ok = true;
+        }
+    }
+    if (!t->mfl_ok && t->rx_cap < TLS_RECORD_MAX) return fail(t, AL_HS_FAILURE);
+    sha256_update(&t->transcript, m, n);
+    t->st = ST_C_CERT;
+    return 0;
+}
+
+/* §4.4.2: the leaf is the first entry; it must come from our CA and name the host. The rest of the
+ * chain is not needed: the CA issues leaves directly. */
+static int certificate_in(tls_t *t, const uint8_t *m, uint32_t n) {
+    span_t r = { m + 4, n - 4 }, ctx, list;
+    uint32_t l;
+    if (!rd_vec8(&r, &ctx) || ctx.n != 0 || r.n < 3) return fail(t, AL_DECODE);
+    l = (uint32_t)r.p[0] << 16 | (uint32_t)r.p[1] << 8 | r.p[2];
+    r.p += 3; r.n -= 3;
+    if (!rd_bytes(&r, l, &list) || r.n != 0 || list.n < 3) return fail(t, AL_DECODE);
+    uint32_t cl = (uint32_t)list.p[0] << 16 | (uint32_t)list.p[1] << 8 | list.p[2];
+    if (cl == 0 || cl > list.n - 3) return fail(t, AL_DECODE);
+    tls_cert_info_t ci;
+    int rc = tls_cert_check(list.p + 3, cl, t->ca_pub, t->host, &ci);
+    if (rc != TLS_OK) return fail(t, AL_BAD_CERT);
+    memcpy(t->peer_pub, ci.pub, 64);
+    sha256_update(&t->transcript, m, n);
+    t->st = ST_C_CV;
+    return 0;
+}
+
+/* §4.4.3: the server's signature over the transcript so far, with the key its certificate holds. */
+static int cert_verify_in(tls_t *t, const uint8_t *m, uint32_t n) {
+    span_t r = { m + 4, n - 4 }, sigv;
+    uint32_t alg;
+    if (!rd_u16(&r, &alg) || !rd_vec16(&r, &sigv) || r.n != 0) return fail(t, AL_DECODE);
+    if (alg != SIG_ECDSA_P256) return fail(t, AL_ILLEGAL_PARAM);
+    der_span_t in = { sigv.p, sigv.n }, seq, ri, si;
+    uint8_t sig[64];
+    if (!der_expect(&in, DER_SEQUENCE, &seq) || !der_expect(&seq, DER_INTEGER, &ri) ||
+        !der_expect(&seq, DER_INTEGER, &si)) return fail(t, AL_DECODE);
+    for (int k = 0; k < 2; k++) {
+        der_span_t v = k ? si : ri;
+        while (v.len > 0 && v.p[0] == 0) { v.p++; v.len--; }
+        if (v.len > 32) return fail(t, AL_DECODE);
+        memset(sig + 32 * k, 0, 32);
+        memcpy(sig + 32 * k + 32 - v.len, v.p, v.len);
+    }
+    uint8_t content[64 + 33 + 1 + 32], h[32];
+    memset(content, 0x20, 64);
+    memcpy(content + 64, "TLS 1.3, server CertificateVerify", 33);
+    content[97] = 0;
+    transcript_hash(t, content + 98);
+    sha256(content, sizeof content, h);
+    if (p256_verify(sig, t->peer_pub, h, 32) != CRYPTO_OK) return fail(t, AL_DECRYPT);
+    sha256_update(&t->transcript, m, n);
+    t->st = ST_C_FIN;
+    return 0;
+}
+
+/* §4.4.4: the server's Finished checked, ours sent (after the compatibility ChangeCipherSpec), and the
+ * application keys in place. */
+static int server_finished_in(tls_t *t, const uint8_t *m, uint32_t n) {
+    uint8_t fk[32], h[32], want[32];
+    expand_label(t->s_secret, "finished", NULL, 0, fk, 32);
+    transcript_hash(t, h);
+    hmac_sha256(fk, 32, h, 32, want);
+    if (n != 4 + 32 || !crypto_equal(m + 4, want, 32)) { crypto_wipe_bytes(fk, sizeof fk); return fail(t, AL_DECRYPT); }
+    sha256_update(&t->transcript, m, n);
+
+    uint8_t c_ap[32], s_ap[32];
+    transcript_hash(t, h);
+    derive_secret(t->master, "c ap traffic", h, c_ap);
+    derive_secret(t->master, "s ap traffic", h, s_ap);
+    crypto_wipe_bytes(t->master, sizeof t->master);
+
+    static const uint8_t one = 1;
+    if (!put_plain(t, CT_CCS, &one, 1) || enc_room(t) < 36) return fail(t, AL_INTERNAL);
+    uint8_t *b = enc_body(t);
+    expand_label(t->c_secret, "finished", NULL, 0, fk, 32);
+    b[0] = HS_FINISHED;
+    put_u24(b + 1, 32);
+    hmac_sha256(fk, 32, h, 32, b + 4);
+    enc_seal(t, 36, CT_HANDSHAKE);
+    crypto_wipe_bytes(fk, sizeof fk);
+
+    memcpy(t->c_secret, c_ap, 32);
+    memcpy(t->s_secret, s_ap, 32);
+    crypto_wipe_bytes(c_ap, sizeof c_ap);
+    crypto_wipe_bytes(s_ap, sizeof s_ap);
+    set_keys(t->c_secret, t->c_key, t->c_iv);
+    set_keys(t->s_secret, t->s_key, t->s_iv);
+    t->c_seq = t->s_seq = 0;
+    t->st = ST_OPEN;
+    (void)tls_flush(t);
+    return 0;
+}
+
+static int client_msg(tls_t *t, const uint8_t *m, uint32_t n, bool enc) {
+    uint8_t type = m[0];
+    if (t->st == ST_HELLO && !enc && type == HS_SERVER_HELLO) return server_hello_in(t, m, n);
+    if (!enc) return fail(t, AL_UNEXPECTED);
+    if (t->st == ST_C_EE && type == HS_ENC_EXT) return enc_ext_in(t, m, n);
+    if (t->st == ST_C_CERT && type == HS_CERTIFICATE) return certificate_in(t, m, n);
+    if (t->st == ST_C_CV && type == HS_CERT_VERIFY) return cert_verify_in(t, m, n);
+    if (t->st == ST_C_FIN && type == HS_FINISHED) return server_finished_in(t, m, n);
+    return fail(t, AL_UNEXPECTED);
 }

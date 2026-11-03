@@ -1,17 +1,17 @@
 {
-  "build": "1308.43501865+",
+  "build": "1309.f336f9b0+",
   "bulk": null,
   "fast": {
-    "free": 14,
-    "largest_run": 14,
-    "peak": 60,
+    "free": 10,
+    "largest_run": 10,
+    "peak": 69,
     "total": 74
   },
   "load": {
-    "9p": 99,
-    "errors": 59,
-    "http": 110,
-    "https": 0
+    "9p": 30,
+    "errors": 29,
+    "http": 92,
+    "https": 49
   },
   "missing": [],
   "not_shown": null,
@@ -20,10 +20,11 @@
     "fast": {
       "httpd": {
         "detail": {
-          "httpd_start (httpd.c)": 2
+          "httpd_start (httpd.c)": 2,
+          "https_up (httpd.c)": 1
         },
-        "pages": 2,
-        "runs": 1
+        "pages": 3,
+        "runs": 2
       },
       "kernel": {
         "detail": {
@@ -34,10 +35,11 @@
       },
       "mqtt": {
         "detail": {
-          "ensure_bufs (mqtt.c)": 1
+          "ensure_bufs (mqtt.c)": 1,
+          "tls_up (mqtt.c)": 3
         },
-        "pages": 1,
-        "runs": 1
+        "pages": 4,
+        "runs": 2
       },
       "net": {
         "detail": {
@@ -98,7 +100,7 @@
       "pid": 2,
       "size": 8192,
       "task": "sensor_hub",
-      "used": 916
+      "used": 752
     },
     {
       "isolation": "-",
@@ -112,70 +114,70 @@
       "pid": 4,
       "size": 4096,
       "task": "wdog",
-      "used": 500
+      "used": 272
     },
     {
       "isolation": "-",
       "pid": 5,
       "size": 8192,
       "task": "wlan",
-      "used": 4800
+      "used": 4740
     },
     {
       "isolation": "-",
       "pid": 6,
       "size": 8192,
       "task": "setupbtn",
-      "used": 564
+      "used": 500
     },
     {
       "isolation": "-",
       "pid": 7,
       "size": 4096,
       "task": "statusled",
-      "used": 612
+      "used": 588
     },
     {
       "isolation": "-",
       "pid": 8,
       "size": 12288,
       "task": "mqttd",
-      "used": 5300
+      "used": 5124
     },
     {
       "isolation": "PMP",
       "pid": 9,
+      "size": 4096,
+      "task": "uthread",
+      "used": 872
+    },
+    {
+      "isolation": "PMP",
+      "pid": 10,
       "size": 8192,
       "task": "radio",
       "used": 1740
     },
     {
       "isolation": "PMP",
-      "pid": 10,
+      "pid": 11,
       "size": 4096,
       "task": "uthread",
       "used": 896
     },
     {
-      "isolation": "PMP",
-      "pid": 11,
-      "size": 4096,
-      "task": "uthread",
-      "used": 872
-    },
-    {
-      "isolation": "PMP",
-      "pid": 12,
-      "size": 4096,
-      "task": "uthread",
-      "used": 872
-    },
-    {
       "isolation": "-",
-      "pid": 13,
+      "pid": 12,
       "size": 4096,
       "task": "klogd",
       "used": 1020
+    },
+    {
+      "isolation": "PMP",
+      "pid": 13,
+      "size": 4096,
+      "task": "uthread",
+      "used": 872
     },
     {
       "isolation": "PMP",
@@ -203,14 +205,14 @@
       "pid": 17,
       "size": 16384,
       "task": "httpd",
-      "used": 1340
+      "used": 2412
     },
     {
       "isolation": "-",
       "pid": 18,
       "size": 8192,
       "task": "mqttsrv",
-      "used": 1036
+      "used": 1204
     }
   ],
   "waited_for": [

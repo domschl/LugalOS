@@ -14,6 +14,10 @@ static const uint8_t OID_CN[]         = { 0x55, 0x04, 0x03 };                   
 static const uint8_t OID_EXT_REQ[]    = { 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x0e }; /* 1.2.840.113549.1.9.14 */
 static const uint8_t OID_SAN[]        = { 0x55, 0x1d, 0x11 };                                     /* 2.5.29.17 */
 
+static bool oid_is(der_span_t oid, const uint8_t *want, uint32_t n) {
+    return oid.len == n && memcmp(oid.p, want, n) == 0;
+}
+
 static void put_spki(der_writer_t *w, const uint8_t pub[64]) {
     der_begin(w, DER_SEQUENCE);
       der_begin(w, DER_SEQUENCE);
@@ -151,4 +155,85 @@ int tls_cert_parse(const uint8_t *der, uint32_t len, tls_cert_info_t *out) {
     name_cn(issuer, out->issuer_cn, sizeof out->issuer_cn);
     name_cn(subject, out->subject_cn, sizeof out->subject_cn);
     return TLS_OK;
+}
+
+/* An INTEGER's value as a 32-byte big-endian number (leading zeros dropped, then left-padded). */
+static bool int32(der_span_t v, uint8_t out[32]) {
+    while (v.len > 0 && v.p[0] == 0) { v.p++; v.len--; }
+    if (v.len > 32) return false;
+    memset(out, 0, 32);
+    memcpy(out + 32 - v.len, v.p, v.len);
+    return true;
+}
+
+static bool dotted_ipv4(const char *s, uint8_t ip[4]) {
+    for (int i = 0; i < 4; i++) {
+        uint32_t v = 0, digits = 0;
+        while (*s >= '0' && *s <= '9') { v = v * 10u + (uint32_t)(*s++ - '0'); if (++digits > 3) return false; }
+        if (digits == 0 || v > 255) return false;
+        ip[i] = (uint8_t)v;
+        if (i < 3 && *s++ != '.') return false;
+    }
+    return *s == 0;
+}
+
+static bool name_eq(const uint8_t *a, uint32_t n, const char *host) {
+    if (strlen(host) != n) return false;
+    for (uint32_t i = 0; i < n; i++) {
+        uint8_t x = a[i], y = (uint8_t)host[i];
+        if (x >= 'A' && x <= 'Z') x = (uint8_t)(x + 32);
+        if (y >= 'A' && y <= 'Z') y = (uint8_t)(y + 32);
+        if (x != y) return false;
+    }
+    return true;
+}
+
+/* 1: the subjectAltName names `host`; 0: it names others; -1: the certificate has none. */
+static int san_names(der_span_t tbs, const char *host) {
+    uint8_t ip[4];
+    bool is_ip = dotted_ipv4(host, ip);
+    der_span_t x;
+    uint8_t tag;
+    while (der_next(&tbs, &tag, &x)) {
+        if (tag != DER_CTX(3)) continue;                         /* extensions, after the key */
+        der_span_t exts, ext;
+        if (!der_expect(&x, DER_SEQUENCE, &exts)) return -1;
+        while (der_expect(&exts, DER_SEQUENCE, &ext)) {
+            der_span_t oid, val, gn;
+            if (!der_expect(&ext, DER_OID, &oid) || !oid_is(oid, OID_SAN, sizeof OID_SAN)) continue;
+            if (!der_next(&ext, &tag, &val)) return 0;
+            if (tag != DER_OCTET_STRING && !der_next(&ext, &tag, &val)) return 0;   /* past `critical` */
+            if (!der_expect(&val, DER_SEQUENCE, &gn)) return 0;
+            der_span_t n;
+            while (der_next(&gn, &tag, &n)) {
+                if (is_ip && tag == DER_CTX_PRIM(7) && n.len == 4 && memcmp(n.p, ip, 4) == 0) return 1;
+                if (!is_ip && tag == DER_CTX_PRIM(2) && name_eq(n.p, n.len, host)) return 1;
+            }
+            return 0;
+        }
+    }
+    return -1;
+}
+
+int tls_cert_check(const uint8_t *der, uint32_t len, const uint8_t ca_pub[64], const char *host,
+                   tls_cert_info_t *out) {
+    if (tls_cert_parse(der, len, out) != TLS_OK) return TLS_ERR_CERT;
+    der_span_t in = { der, len }, cert, tbs_whole, tbs, alg, oid, bits, sv, r, s;
+    uint8_t tag;
+    if (!der_expect(&in, DER_SEQUENCE, &cert) || !der_next_raw(&cert, &tbs_whole)) return TLS_ERR_CERT;
+    if (!der_expect(&cert, DER_SEQUENCE, &alg) || !der_expect(&alg, DER_OID, &oid) ||
+        !oid_is(oid, OID_ECDSA_SHA256, sizeof OID_ECDSA_SHA256)) return TLS_ERR_CERT;
+    if (!der_next(&cert, &tag, &bits) || tag != DER_BIT_STRING || bits.len < 2 || bits.p[0] != 0) return TLS_ERR_CERT;
+    der_span_t inner = { bits.p + 1, bits.len - 1 };
+    uint8_t sig[P256_SIG_LEN], hash[SHA256_DIGEST_LEN];
+    if (!der_expect(&inner, DER_SEQUENCE, &sv) || !der_expect(&sv, DER_INTEGER, &r) ||
+        !der_expect(&sv, DER_INTEGER, &s) || !int32(r, sig) || !int32(s, sig + 32)) return TLS_ERR_CERT;
+    sha256(tbs_whole.p, tbs_whole.len, hash);
+    if (p256_verify(sig, ca_pub, hash, sizeof hash) != CRYPTO_OK) return TLS_ERR_CERT;
+
+    der_span_t whole = tbs_whole;
+    if (!der_expect(&whole, DER_SEQUENCE, &tbs)) return TLS_ERR_CERT;
+    int named = san_names(tbs, host);
+    if (named < 0) named = strcmp(out->subject_cn, host) == 0;
+    return named ? TLS_OK : TLS_ERR_WRONG_KEY;
 }

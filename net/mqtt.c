@@ -8,6 +8,10 @@
 #include "kernel/time.h"
 #include "kernel/lock.h"
 #include "kernel/palloc.h"
+#include "kernel/crypto.h"
+#if defined(CONFIG_TLS_CLIENT)
+#include "net/tls.h"
+#endif
 #include <string.h>
 
 /* See net/include/net/mqtt.h for what this speaks and what it deliberately
@@ -112,6 +116,14 @@ static struct {
     uint16_t        ack_wait_id;    /* the SUBACK/UNSUBACK we are waiting for, 0 = none */
     bool            ack_seen;
     uint8_t         ack_granted;    /* SUBACK's returned QoS, 0x80 = refused */
+
+#if defined(CONFIG_TLS_CLIENT)
+    /* TLS to the broker (66.3b): the session, the CA's key and the records, in TLS_CLIENT_PAGES taken
+     * at connect and returned when the connection goes. An idle node holds none, and nothing of it is
+     * static. */
+    bool            tls_on;
+    struct tls_conn *tls_mem;
+#endif
 } g;   /* guarded by: g_client_lock (below) */
 
 /* One task inside the client at a time.
@@ -195,6 +207,7 @@ const char *mqtt_err_str(int rc) {
         case MQTT_ERR_TOOBIG:     return "the topic and payload do not fit in one packet";
         case MQTT_ERR_STATE:      return "not connected";
         case MQTT_ERR_BADARG:     return "bad argument";
+        case MQTT_ERR_TLS:        return "TLS failed: no CA installed (/dev/tlsca), no memory, or the broker's certificate was refused";
     }
     return "unknown error";
 }
@@ -213,6 +226,82 @@ static const char *connack_str(uint8_t rc) {
     return "unknown return code";
 }
 
+/* --- The transport: the TCP stream, or TLS over it --- */
+
+#if defined(CONFIG_TLS_CLIENT)
+typedef struct tls_conn {
+    tls_t   tls;
+    uint8_t ca[NODE_TLS_CA_LEN];
+    uint8_t rx[TLS_CLIENT_RX_MAX];
+    uint8_t tx[TLS_TX_CAP];
+} tls_conn_t;
+#define TLS_CLIENT_PAGES ((uint32_t)((sizeof(tls_conn_t) + 4095u) / 4096u))
+#define MQTT_TLS_HANDSHAKE_MS 20000u
+
+static int tls_tcp_recv(void *io, uint8_t *buf, uint32_t len) {
+    tcp_stream_t *st = (tcp_stream_t *)io;
+    int n = tcp_stream_read(st, buf, len);
+    return n == 0 && tcp_stream_peer_closed(st) ? -1 : n;
+}
+static int tls_tcp_send(void *io, const uint8_t *buf, uint32_t len) {
+    return tcp_stream_write((tcp_stream_t *)io, buf, len);
+}
+#endif
+
+static int tr_write(const uint8_t *buf, uint32_t len) {
+#if defined(CONFIG_TLS_CLIENT)
+    if (g.tls_on) { int n = tls_write(&g.tls_mem->tls, buf, len); return n < 0 ? -1 : n; }
+#endif
+    return tcp_stream_write(&g.stream, buf, len);
+}
+
+static int tr_read(uint8_t *buf, uint32_t cap) {
+#if defined(CONFIG_TLS_CLIENT)
+    if (g.tls_on) { int n = tls_read(&g.tls_mem->tls, buf, cap); return n < 0 ? -1 : n; }
+#endif
+    return tcp_stream_read(&g.stream, buf, cap);
+}
+
+static void tr_close(void) {
+#if defined(CONFIG_TLS_CLIENT)
+    if (g.tls_on) { tls_close(&g.tls_mem->tls); tls_wipe(&g.tls_mem->tls); g.tls_on = false; }
+    if (g.tls_mem) {
+        crypto_wipe_bytes(g.tls_mem, TLS_CLIENT_PAGES * 4096u);
+        palloc_free(g.tls_mem, TLS_CLIENT_PAGES);
+        g.tls_mem = NULL;
+    }
+#endif
+    tcp_stream_close(&g.stream);
+}
+
+#if defined(CONFIG_TLS_CLIENT)
+/* The handshake, on a TCP stream that is up. The broker's certificate must come from the owner's CA and
+ * carry its address (net/tls.h). */
+static int tls_up(uint64_t deadline) {
+    g.tls_mem = (tls_conn_t *)palloc_pages_bulk(TLS_CLIENT_PAGES);
+    if (!g.tls_mem) return MQTT_ERR_TLS;
+    tls_conn_t *c = g.tls_mem;
+    if (!node_tls_ca(c->ca)) {
+        printk("[MQTT] TLS: no CA installed to check the broker against (/dev/tlsca)\n");
+        return MQTT_ERR_TLS;
+    }
+    if (!tls_client_init(&c->tls, g.broker_str, c->ca, tls_tcp_recv, tls_tcp_send, &g.stream,
+                         c->rx, sizeof c->rx, c->tx)) return MQTT_ERR_TLS;
+    g.tls_on = true;
+    while (!tls_established(&c->tls)) {
+        uint8_t none[1];
+        if (tls_read(&c->tls, none, 0) < 0) {
+            printk("[MQTT] TLS handshake with %s failed (alert %u)\n", g.broker_str, c->tls.alert);
+            return MQTT_ERR_TLS;
+        }
+        if (console_interrupt_requested()) return MQTT_ERR_INTERRUPTED;
+        if (time_get_ms() >= deadline) return MQTT_ERR_TIMEOUT;
+        sched_yield();
+    }
+    return 0;
+}
+#endif
+
 /* --- Sending ---
  *
  * write_all() is where the stream's partial-write contract is absorbed, so
@@ -223,7 +312,7 @@ static int write_all(const uint8_t *buf, uint32_t len, uint32_t timeout_ms) {
     uint32_t sent = 0;
     uint64_t deadline = time_get_ms() + timeout_ms;
     while (sent < len) {
-        int n = tcp_stream_write(&g.stream, buf + sent, len - sent);
+        int n = tr_write(buf + sent, len - sent);
         if (n < 0) return MQTT_ERR_TCP;
         if (n > 0) {
             sent += (uint32_t)n;
@@ -408,7 +497,7 @@ static int feed(const uint8_t *data, uint32_t len) {
 }
 
 static void drop_connection(void) {
-    tcp_stream_close(&g.stream);
+    tr_close();
     g.state = MQTT_CLOSED;
     g.rx_len = 0;
     g.skip = 0;
@@ -427,7 +516,7 @@ void mqtt_service(void) {
 
     uint8_t buf[256];
     for (;;) {
-        int n = tcp_stream_read(&g.stream, buf, sizeof(buf));
+        int n = tr_read(buf, sizeof(buf));
         if (n < 0) { drop_connection(); ylock_release(&g_client_lock); return; }
         if (n == 0) break;
         int rc = feed(buf, (uint32_t)n);
@@ -487,7 +576,10 @@ static int mqtt_connect_locked(const mqtt_config_t *cfg, uint32_t timeout_ms) {
 
     g.cfg = *cfg;
     g.keepalive_s = cfg->keepalive_s ? cfg->keepalive_s : (uint16_t)MQTT_DEFAULT_KEEPALIVE;
-    uint16_t port = cfg->port ? cfg->port : (uint16_t)MQTT_DEFAULT_PORT;
+    uint16_t port = cfg->port ? cfg->port : (uint16_t)(cfg->tls ? MQTT_DEFAULT_TLS_PORT : MQTT_DEFAULT_PORT);
+#if !defined(CONFIG_TLS_CLIENT)
+    if (cfg->tls) return MQTT_ERR_TLS;                /* this build has no TLS client */
+#endif
 
     /* The client id defaults to the node's own name, which the identity
      * record already makes per-board -- see the header on why sharing one is
@@ -521,6 +613,15 @@ static int mqtt_connect_locked(const mqtt_config_t *cfg, uint32_t timeout_ms) {
         sched_yield();
     }
     if (ready < 0) { drop_connection(); return MQTT_ERR_TCP; }
+#if defined(CONFIG_TLS_CLIENT)
+    if (cfg->tls) {
+        /* The handshake has its own allowance: two P-256 verifications take ~1 s on a C6 and ~8 s
+         * under QEMU, and the CONNACK below still gets the caller's whole timeout after it. */
+        int trc = tls_up(time_get_ms() + MQTT_TLS_HANDSHAKE_MS);
+        if (trc != 0) { drop_connection(); return trc; }
+        deadline = time_get_ms() + (timeout_ms ? timeout_ms : 5000u);
+    }
+#endif
 
     /* --- CONNECT --- */
     uint8_t flags = CF_CLEAN_SESSION;
@@ -713,11 +814,11 @@ void mqtt_disconnect(void) {
 
 void mqtt_print_status(void) {
     if (g.state == MQTT_CLOSED && !g.connected_once) {
-        cprintf("mqtt: not connected. `mqtt connect <ip>[:port]` to dial one.\n");
+        cprintf("mqtt: not connected. `mqtt connect [tls://]<ip>[:port]` to dial one.\n");
         return;
     }
-    cprintf("mqtt: broker %s:%u, client-id \"%s\"\n",
-            g.broker_str, g.cfg.port ? g.cfg.port : (uint16_t)MQTT_DEFAULT_PORT,
+    cprintf("mqtt: broker %s%s:%u, client-id \"%s\"\n", g.cfg.tls ? "tls://" : "",
+            g.broker_str, g.cfg.port ? g.cfg.port : (uint16_t)(g.cfg.tls ? MQTT_DEFAULT_TLS_PORT : MQTT_DEFAULT_PORT),
             g.client_id);
     if (g.state == MQTT_CONNECTED) {
         uint64_t up = (time_get_ms() - g.ctr.connected_at_ms) / 1000u;

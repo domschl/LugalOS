@@ -2,11 +2,16 @@
 
     lugalos-ca init [--name NAME]                       # once: a P-256 root key and certificate
     lugalos-ca issue --tcp HOST --keyfile KEY [--days N] # a node's certificate, over 9P
+    lugalos-ca trust --tcp HOST --keyfile KEY            # install the root on a node, for its TLS clients
+    lugalos-ca server NAME|IP... --out DIR               # a key and certificate for a server the nodes dial
     lugalos-ca show                                      # where the root certificate is, its fingerprint
 
 `issue` asks the node for a key if it has none (`keygen` to /dev/tls), reads its request
 (/dev/tlscsr), checks the request's signature, signs a certificate for the names in it, writes it
-to /dev/tlscert and reads /dev/tls back to see it took. The node's key never leaves the node.
+to /dev/tlscert and reads /dev/tls back to see it took. The node's key never leaves the node. It
+also installs the root on the node (/dev/tlsca), as `trust` does alone: the node's TLS clients (MQTT
+to a broker) accept only servers whose certificate this CA issued. `server` makes such a certificate,
+and its key, for a broker (mosquitto's certfile and keyfile).
 
 The root key stays in ~/.config/lugalos/ca/ (mode 0600). Install ca.crt.pem as a trusted root on
 every device that opens the nodes' admin pages (doc/admin/tls.md says how, per system).
@@ -159,12 +164,83 @@ def cmd_issue(a: argparse.Namespace) -> int:
             Path(a.save_cert).write_bytes(out)
         sess.write("/dev/tlscert", out, create=False, truncate=False)
         st = status(sess.read("/dev/tls"))
+        trusted = install_root(sess, ca_cert)
     finally:
         sess.close()
     if st.get("cert") != "installed" or st.get("matches_key") != "yes":
         print(f"the node did not take the certificate: {st}", file=sys.stderr)
         return 1
     print(f"issued and installed: {names}, until {st.get('not_after')} (the node's key {st.get('key_fingerprint')})")
+    print("the node's TLS clients trust this CA" if trusted else "this node has no /dev/tlsca (an older build): root not installed")
+    return 0
+
+
+def install_root(sess, ca_cert: x509.Certificate) -> bool:
+    """Writes the root to /dev/tlsca; False when the node has no such file (a build before 66.3b)."""
+    try:
+        sess.write("/dev/tlsca", ca_cert.public_bytes(serialization.Encoding.PEM), create=False, truncate=False)
+    except Exception:
+        return False
+    return status(sess.read("/dev/tlsca")).get("ca") == "p256"
+
+
+def cmd_trust(a: argparse.Namespace) -> int:
+    from p9lib import Session, connect_tcp
+
+    _, ca_cert = load_ca(Path(a.dir))
+    key = bytes.fromhex(Path(a.keyfile).read_text().strip()) if a.keyfile else bytes.fromhex(a.key)
+    host, _, port = a.tcp.partition(":")
+    sess = Session(connect_tcp(host, int(port) if port else 564), key=key, uname=a.uname)
+    try:
+        ok = install_root(sess, ca_cert)
+        st = status(sess.read("/dev/tlsca")) if ok else {}
+    finally:
+        sess.close()
+    if not ok:
+        print("the node did not take the root (no /dev/tlsca, or not an admin grant)", file=sys.stderr)
+        return 1
+    print(f"the node's TLS clients trust this CA (fingerprint {st.get('ca_fingerprint')})")
+    return 0
+
+
+def cmd_server(a: argparse.Namespace) -> int:
+    """A P-256 key and a certificate for a server on the owner's network (a broker), for the names and
+    addresses given; written to DIR as NAME.key.pem (0600) and NAME.crt.pem."""
+    ca_key, ca_cert = load_ca(Path(a.dir))
+    names: list[x509.GeneralName] = []
+    for n in a.names:
+        try:
+            ip = ipaddress.ip_address(n)
+            if not ip.is_private:
+                raise ValueError(f"{n} is a public address")
+            names.append(x509.IPAddress(ip))
+        except ValueError as e:
+            if "public" in str(e):
+                raise
+            names.append(x509.DNSName(n))
+    key = ec.generate_private_key(ec.SECP256R1())
+    now = datetime.datetime.now(datetime.timezone.utc)
+    ski = ca_cert.extensions.get_extension_for_class(x509.SubjectKeyIdentifier).value
+    cert = (x509.CertificateBuilder()
+            .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, a.names[0])]))
+            .issuer_name(ca_cert.subject).public_key(key.public_key())
+            .serial_number(int.from_bytes(secrets.token_bytes(16), "big") >> 1)
+            .not_valid_before(now - datetime.timedelta(hours=1))
+            .not_valid_after(now + datetime.timedelta(days=a.days))
+            .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+            .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
+            .add_extension(x509.SubjectAlternativeName(names), critical=False)
+            .add_extension(x509.AuthorityKeyIdentifier.from_issuer_subject_key_identifier(ski), critical=False)
+            .sign(ca_key, hashes.SHA256()))
+    out = Path(a.out)
+    out.mkdir(parents=True, exist_ok=True)
+    kp, cp = out / f"{a.names[0]}.key.pem", out / f"{a.names[0]}.crt.pem"
+    kp.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                     serialization.NoEncryption()))
+    os.chmod(kp, 0o600)
+    cp.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    print(f"key:         {kp}")
+    print(f"certificate: {cp}  ({', '.join(a.names)}, {a.days} days)")
     return 0
 
 
@@ -197,10 +273,21 @@ def main(argv: list[str] | None = None) -> int:
                     help="another name or address for the certificate (a port-forwarded one, say); repeatable")
     ps.add_argument("--save-csr", metavar="FILE", help="keep the node's request")
     ps.add_argument("--save-cert", metavar="FILE", help="keep the issued certificate")
+    pt = sub.add_parser("trust", help="install the root on a node, for its TLS clients (/dev/tlsca)")
+    pt.add_argument("--tcp", required=True, metavar="HOST[:PORT]")
+    gt = pt.add_mutually_exclusive_group(required=True)
+    gt.add_argument("--keyfile", help="file holding the 9P key (an admin grant), hex")
+    gt.add_argument("--key", help="the 9P key, hex")
+    pt.add_argument("--uname", default="lugal", help="the grant's name (default lugal)")
+    pv = sub.add_parser("server", help="a key and certificate for a server the nodes dial (a broker)")
+    pv.add_argument("names", nargs="+", metavar="NAME|IP", help="its names and private addresses")
+    pv.add_argument("--out", required=True, metavar="DIR")
+    pv.add_argument("--days", type=int, default=DEFAULT_DAYS)
     sub.add_parser("show", help="the root certificate's path and fingerprint")
     a = p.parse_args(argv)
     try:
-        return {"init": cmd_init, "issue": cmd_issue, "show": cmd_show}[a.cmd](a)
+        return {"init": cmd_init, "issue": cmd_issue, "trust": cmd_trust, "server": cmd_server,
+                "show": cmd_show}[a.cmd](a)
     except ValueError as e:
         print(f"refused: {e}", file=sys.stderr)
         return 1

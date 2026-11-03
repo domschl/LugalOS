@@ -75,6 +75,10 @@ LugalOS incorporates a native, zero-dependency MQTT 3.1.1 client running directl
 # Connect to broker
 lsh> mqtt connect 192.168.1.100:1883 [username] [password]
 
+# The same over TLS (port 8883 unless given): the broker's certificate must come from
+# the CA on /dev/tlsca and name its address -- see the HTTPS certificates guide
+lsh> mqtt connect tls://192.168.1.100
+
 # Publish a single message
 lsh> mqtt pub lugalos/nodes/livingroom/temp "21.45"
 
@@ -114,6 +118,7 @@ An environmental node can be provisioned once so that it boots, joins Wi-Fi, and
    ```text
    lsh> mqttcfg 192.168.1.100:1883 10
    ```
+   or, to a broker with a certificate from your LugalOS CA, `mqttcfg tls://192.168.1.100 10` ([MQTT over TLS](tls.md#4-the-node-as-a-client-mqtt-over-tls)).
 3. Reboot the board. The kernel automatically:
    * Connects to the wireless access point.
    * Probes the I2C sensors.

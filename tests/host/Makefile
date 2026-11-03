@@ -32,7 +32,7 @@ websocket_host_SRC := websocket_host.c $(ROOT)/net/websocket.c $(ROOT)/kernel/cr
                     $(ROOT)/third_party/crypto/monocypher/monocypher.c $(ROOT)/third_party/crypto/p256-m/p256-m.c
 der_host_SRC     := der_host.c $(ROOT)/kernel/der.c $(ROOT)/kernel/x509.c $(ROOT)/kernel/crypto.c $(ROOT)/kernel/sha256.c \
                     $(ROOT)/third_party/crypto/monocypher/monocypher.c $(ROOT)/third_party/crypto/p256-m/p256-m.c
-tls_host_SRC     := tls_host.c $(ROOT)/net/tls.c $(ROOT)/kernel/der.c $(ROOT)/kernel/crypto.c $(ROOT)/kernel/sha256.c \
+tls_host_SRC     := tls_host.c $(ROOT)/net/tls.c $(ROOT)/kernel/der.c $(ROOT)/kernel/x509.c $(ROOT)/kernel/crypto.c $(ROOT)/kernel/sha256.c \
                     $(ROOT)/third_party/crypto/monocypher/monocypher.c $(ROOT)/third_party/crypto/p256-m/p256-m.c
 dhcpd_host_SRC   := dhcpd_host.c $(ROOT)/net/dhcpd.c
 mdnsd_host_SRC   := mdnsd_host.c $(ROOT)/net/mdnsd.c

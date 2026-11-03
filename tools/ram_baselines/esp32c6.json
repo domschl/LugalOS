@@ -103,13 +103,14 @@
     "kernel/ticker.c": 25,
     "kernel/time.c": 49,
     "kernel/timezone.c": 101,
+    "kernel/tls_cert.c": 29,
     "kernel/umode_probe.c": 828,
     "kernel/vterm.c": 1729,
     "kernel/zonetest.c": 4,
     "net/arp.c": 196,
     "net/dhcp.c": 47,
     "net/dns.c": 349,
-    "net/httpd.c": 38,
+    "net/httpd.c": 55,
     "net/llm.c": 261,
     "net/mqtt.c": 248,
     "net/mqttd.c": 3972,
@@ -126,11 +127,11 @@
     "9p": 28745,
     "agent": 987,
     "clock-app": 136,
-    "crypto": 4,
+    "crypto": 33,
     "display": 2129,
     "drivers": 288,
     "fs": 36,
-    "httpd": 53,
+    "httpd": 70,
     "identity": 128,
     "kernel": 19129,
     "lisp": 24755,
@@ -148,5 +149,5 @@
     "vfs": 3599
   },
   "ram_code": 16638,
-  "total": 161597
+  "total": 161643
 }

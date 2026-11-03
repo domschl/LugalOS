@@ -2883,6 +2883,8 @@ static void cmd_mqtt(const char *arg) {
     if (strncmp(arg, "connect", 7) == 0) {
         const char *a = arg + 7;
         while (*a == ' ') a++;
+        bool tls = strncmp(a, "tls://", 6) == 0;
+        if (tls) a += 6;
 
         char host[24];
         uint32_t n = 0;
@@ -2891,8 +2893,9 @@ static void cmd_mqtt(const char *arg) {
 
         mqtt_config_t cfg;
         memset(&cfg, 0, sizeof(cfg));
+        cfg.tls = tls;
         if (!ipv4_parse(host, cfg.broker)) {
-            cprintf("usage: mqtt connect <ip>[:port] [user [password]]\n");
+            cprintf("usage: mqtt connect [tls://]<ip>[:port] [user [password]]\n");
             return;
         }
         if (*a == ':') {
@@ -2926,8 +2929,8 @@ static void cmd_mqtt(const char *arg) {
         }
 
         console_interrupt_clear();
-        cprintf("mqtt: connecting to %s:%u...\n", host,
-                cfg.port ? cfg.port : (unsigned)MQTT_DEFAULT_PORT);
+        cprintf("mqtt: connecting to %s%s:%u...\n", cfg.tls ? "tls://" : "", host,
+                cfg.port ? cfg.port : (unsigned)(cfg.tls ? MQTT_DEFAULT_TLS_PORT : MQTT_DEFAULT_PORT));
         int rc = mqtt_connect(&cfg, 8000u);
         if (rc != 0) {
             cprintf("mqtt: %s\n", mqtt_err_str(rc));
@@ -3836,11 +3839,12 @@ static void mqttcfg_print_report(void) {
     node_mqtt_t m;
     if (!node_mqtt(&m)) {
         cprintf("broker : none stored -- this board publishes nothing by itself\n");
-        cprintf("         set one with `mqttcfg <ip>[:port] [sample_s] [user [pass]]`\n");
+        cprintf("         set one with `mqttcfg [tls://]<ip>[:port] [sample_s] [user [pass]]`\n");
         return;
     }
-    cprintf("broker : %u.%u.%u.%u:%u\n", m.broker[0], m.broker[1], m.broker[2],
-            m.broker[3], m.port ? m.port : (unsigned)MQTT_DEFAULT_PORT);
+    cprintf("broker : %s%u.%u.%u.%u:%u\n", m.tls ? "tls://" : "", m.broker[0], m.broker[1], m.broker[2],
+            m.broker[3], m.port ? m.port : (unsigned)(m.tls ? MQTT_DEFAULT_TLS_PORT : MQTT_DEFAULT_PORT));
+    if (m.tls) cprintf("tls    : the broker's certificate from the CA in /dev/tlsca, naming its address\n");
     cprintf("sample : %us\n", m.sample_s ? m.sample_s : (unsigned)MQTTD_DEFAULT_SAMPLE_S);
     cprintf("user   : %s\n", m.username[0] ? m.username : "(none)");
     cprintf("pass   : %s\n", m.password[0] ? "set" : "(none)");
@@ -3868,8 +3872,10 @@ static void cmd_mqttcfg(const char *arg) {
     node_mqtt_t m;
     memset(&m, 0, sizeof(m));
 
+    char *hp = hostpart;
+    if (strncmp(hp, "tls://", 6) == 0) { m.tls = true; hp += 6; }
     char *colon = NULL;
-    for (char *c = hostpart; *c; c++) if (*c == ':') { colon = c; break; }
+    for (char *c = hp; *c; c++) if (*c == ':') { colon = c; break; }
     if (colon) {
         *colon = '\0';
         unsigned port = 0;
@@ -3877,8 +3883,8 @@ static void cmd_mqttcfg(const char *arg) {
             port = port * 10u + (unsigned)(*d - '0');
         m.port = (uint16_t)port;
     }
-    if (!ipv4_parse(hostpart, m.broker)) {
-        cprintf("usage: mqttcfg <ip>[:port] [sample_s] [user [pass]] | mqttcfg clear\n");
+    if (!ipv4_parse(hp, m.broker)) {
+        cprintf("usage: mqttcfg [tls://]<ip>[:port] [sample_s] [user [pass]] | mqttcfg clear\n");
         return;
     }
     for (const char *d = sample; *d >= '0' && *d <= '9'; d++)

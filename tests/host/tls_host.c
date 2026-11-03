@@ -1,4 +1,9 @@
-/* Host test of net/tls.c, the TLS 1.3 server.
+/* Host test of net/tls.c, the TLS 1.3 server and client.
+ *
+ * The client, against OpenSSL's s_server (-rev) with a CA, a key and a certificate made here: a
+ * handshake to a name and to an address the certificate carries, with 4 KB records (max_fragment_length)
+ * and a line echoed back reversed; refused for a name the certificate does not carry and for another
+ * CA.
  *
  * Interop, against OpenSSL's s_client over a real loopback socket (skipped if there is no `openssl`):
  * a full handshake with certificate verification and data both ways; a client whose first key share
@@ -12,6 +17,7 @@
 #include "net/tls.h"
 #include "kernel/crypto.h"
 #include "kernel/der.h"
+#include "kernel/tls_cert.h"
 #include "shim.h"
 #include <arpa/inet.h>
 #include <errno.h>
@@ -279,6 +285,120 @@ static void test_fuzz(unsigned iters) {
     }
 }
 
+
+/* --- the client, against s_server -------------------------------------------------------------- */
+
+static int sh(const char *dir, const char *cmd) {
+    char full[1024];
+    snprintf(full, sizeof full, "cd %s && ( %s ) >/dev/null 2>&1", dir, cmd);   /* the command's own > still applies */
+    return system(full);
+}
+
+static bool ca_pub_from(const char *path, uint8_t pub[64]) {
+    char pem[4096];
+    FILE *f = fopen(path, "r");
+    if (!f) return false;
+    size_t n = fread(pem, 1, sizeof pem - 1, f);
+    fclose(f);
+    uint8_t der[2048];
+    int dl = pem_decode(pem, (uint32_t)n, "CERTIFICATE", der, sizeof der, NULL);
+    tls_cert_info_t ci;
+    if (dl <= 0 || tls_cert_parse(der, (uint32_t)dl, &ci) != TLS_OK) return false;
+    memcpy(pub, ci.pub, 64);
+    return true;
+}
+
+/* One session to 127.0.0.1:port as `host`: handshake, "hello" out, its reverse back. */
+static bool client_session(uint16_t port, const char *host, const uint8_t ca[64], char *reply, size_t cap,
+                           uint8_t *alert, bool *mfl) {
+    static uint8_t rx[TLS_CLIENT_RX_MAX], tx[TLS_TX_CAP];
+    int c = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in a = { .sin_family = AF_INET, .sin_port = htons(port), .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
+    if (connect(c, (struct sockaddr *)&a, sizeof a) != 0) { close(c); return false; }
+    tls_t t;
+    bool ok = tls_client_init(&t, host, ca, sock_recv, sock_send, &c, rx, sizeof rx, tx);
+    bool sent = false;
+    size_t got = 0;
+    reply[0] = 0;
+    for (int spins = 0; ok && spins < 3000 && !strchr(reply, '\n'); spins++) {
+        char buf[256];
+        int n = tls_read(&t, (uint8_t *)buf, sizeof buf - 1);
+        if (n < 0) { ok = false; break; }
+        if (n > 0 && got + (size_t)n < cap) { memcpy(reply + got, buf, (size_t)n); got += (size_t)n; reply[got] = 0; }
+        if (tls_established(&t) && !sent) sent = tls_write(&t, (const uint8_t *)"hello\n", 6) == 6;
+        if (n == 0) { struct pollfd p = { c, POLLIN, 0 }; (void)poll(&p, 1, 5); }
+    }
+    *alert = t.alert;
+    *mfl = t.mfl_ok;
+    tls_close(&t);
+    tls_wipe(&t);
+    close(c);
+    return ok && strncmp(reply, "olleh", 5) == 0;
+}
+
+static void test_client(void) {
+    if (system("command -v openssl >/dev/null 2>&1") != 0) { printf("tls_host: no openssl, client interop skipped\n"); return; }
+    char dir[] = "/tmp/tls_host_cli_XXXXXX";
+    if (!mkdtemp(dir)) return;
+    int rc = 0;
+    rc |= sh(dir, "openssl ecparam -name prime256v1 -genkey -noout -out ca.key");
+    rc |= sh(dir, "openssl req -x509 -new -key ca.key -subj /CN=TestCA -days 10 -sha256 -out ca.pem");
+    rc |= sh(dir, "openssl ecparam -name prime256v1 -genkey -noout -out other.key");
+    rc |= sh(dir, "openssl req -x509 -new -key other.key -subj /CN=OtherCA -days 10 -sha256 -out other.pem");
+    rc |= sh(dir, "openssl ecparam -name prime256v1 -genkey -noout -out srv.key");
+    rc |= sh(dir, "openssl req -new -key srv.key -subj /CN=broker.local -out srv.csr");
+    rc |= sh(dir, "printf 'subjectAltName=DNS:broker.local,IP:127.0.0.1\\n' > ext");
+    rc |= sh(dir, "openssl x509 -req -in srv.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 10 -sha256 -extfile ext -out srv.pem");
+    uint8_t ca[64], other[64];
+    char path[256];
+    snprintf(path, sizeof path, "%s/ca.pem", dir);
+    bool have = rc == 0 && ca_pub_from(path, ca);
+    snprintf(path, sizeof path, "%s/other.pem", dir);
+    have = have && ca_pub_from(path, other);
+    if (!have) { printf("FAIL: tls_host client: could not make the test CA and certificate\n"); fails++; return; }
+
+    int ps = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in a = { .sin_family = AF_INET, .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
+    socklen_t al = sizeof a;
+    bind(ps, (struct sockaddr *)&a, sizeof a);
+    getsockname(ps, (struct sockaddr *)&a, &al);
+    uint16_t port = ntohs(a.sin_port);
+    close(ps);
+    char cmd[512];
+    snprintf(cmd, sizeof cmd, "cd %s && exec openssl s_server -quiet -rev -tls1_3 -accept %u -cert srv.pem -key srv.key", dir, port);
+    pid_t pid = fork();
+    if (pid == 0) { int nul = open("/dev/null", O_RDWR); dup2(nul, 1); dup2(nul, 2); execl("/bin/sh", "sh", "-c", cmd, (char *)NULL); _exit(127); }
+    for (int i = 0; i < 50; i++) {                       /* until it listens */
+        int c = socket(AF_INET, SOCK_STREAM, 0);
+        struct sockaddr_in b = { .sin_family = AF_INET, .sin_port = htons(port), .sin_addr.s_addr = htonl(INADDR_LOOPBACK) };
+        int up = connect(c, (struct sockaddr *)&b, sizeof b) == 0;
+        close(c);
+        if (up) break;
+        usleep(100000);
+    }
+    char reply[256];
+    uint8_t alert;
+    bool mfl;
+    struct { const char *host; const uint8_t *ca; bool want; const char *what; } cases[] = {
+        { "127.0.0.1", ca, true, "by address" },
+        { "broker.local", ca, true, "by name" },
+        { "other.local", ca, false, "a name the certificate does not carry" },
+        { "broker.local", other, false, "a certificate from another CA" },
+    };
+    for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        bool ok = client_session(port, cases[i].host, cases[i].ca, reply, sizeof reply, &alert, &mfl);
+        if (ok != cases[i].want || (ok && !mfl)) {
+            printf("FAIL: tls_host client %s: %s (alert %u, max_fragment_length %s, reply '%.40s')\n", cases[i].what,
+                   ok ? "accepted" : "refused", alert, mfl ? "taken" : "not taken", reply);
+            fails++;
+        }
+    }
+    kill(pid, SIGTERM);
+    waitpid(pid, NULL, 0);
+    snprintf(cmd, sizeof cmd, "rm -rf %s", dir);
+    (void)system(cmd);
+}
+
 int main(int argc, char **argv) {
     unsigned iters = argc > 1 ? (unsigned)strtoul(argv[1], NULL, 0) : 2000;
     g_state = argc > 2 ? strtoull(argv[2], NULL, 0) : 0x40c0ffee;
@@ -289,7 +409,8 @@ int main(int argc, char **argv) {
     signal(SIGPIPE, SIG_IGN);
     test_fuzz(iters);
     test_interop();
+    test_client();
     if (fails) { printf("tls_host: %d failure(s)\n", fails); return 1; }
-    printf("tls_host: handshake, HRR, KeyUpdate and refusals against OpenSSL; %u fuzzed records: ok\n", iters);
+    printf("tls_host: handshake, HRR, KeyUpdate and refusals against OpenSSL; the client against s_server; %u fuzzed records: ok\n", iters);
     return 0;
 }

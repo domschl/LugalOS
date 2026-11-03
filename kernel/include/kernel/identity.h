@@ -257,7 +257,8 @@ node_id_result_t node_identity_set_grants(const char *text, uint32_t len);
 
 /* ip[4] + three u16 + three length-prefixed strings, at their maxima. */
 #define NODE_MQTT_BLOB_MAX (4u + 6u + (1u + NODE_MQTT_USER_MAX) + \
-                            (1u + NODE_MQTT_PASS_MAX) + (1u + NODE_MQTT_PREFIX_MAX))
+                            (1u + NODE_MQTT_PASS_MAX) + (1u + NODE_MQTT_PREFIX_MAX) + 1u)
+#define NODE_MQTT_FLAG_TLS  0x01u
 
 typedef struct {
     uint8_t  broker[NODE_IPV4_LEN];
@@ -267,6 +268,7 @@ typedef struct {
     char     username[NODE_MQTT_USER_MAX + 1];
     char     password[NODE_MQTT_PASS_MAX + 1];
     char     prefix[NODE_MQTT_PREFIX_MAX + 1];
+    bool     tls;                 /* TLS to the broker, its certificate from the CA in node_tls_ca() */
 } node_mqtt_t;
 
 /* Whether the identity store reads back valid *at this moment*. Boot-time
@@ -327,6 +329,11 @@ bool node_tls_cert(uint8_t *out, uint32_t cap, uint32_t *len_out);
 node_id_result_t node_identity_set_tls_key(const uint8_t key[NODE_TLS_KEY_LEN]);  /* drops the certificate */
 node_id_result_t node_identity_set_tls_cert(const uint8_t *der, uint32_t len);
 node_id_result_t node_identity_clear_tls(void);                                     /* key and certificate */
+
+/* The CA the node's TLS clients trust (IDSTORE_FIELD_TLS_CA): its P-256 public key. NULL clears it. */
+#define NODE_TLS_CA_LEN 64u
+bool node_tls_ca(uint8_t out[NODE_TLS_CA_LEN]);
+node_id_result_t node_identity_set_tls_ca(const uint8_t *pub);
 
 #define NODE_OTA_PUBKEY_LEN 64u
 bool node_ota_pubkey(uint8_t out[NODE_OTA_PUBKEY_LEN]);

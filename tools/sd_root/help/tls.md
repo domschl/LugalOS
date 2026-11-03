@@ -1,6 +1,6 @@
 # HTTPS Certificates: Your Own Certificate Authority
 
-A node that serves HTTPS (the ESP32-P4 boards, the RP2350-LCD-7, and the QEMU targets for testing; `CONFIG_TLS_SERVER`) proves who it is with a certificate. No public certificate authority will issue one for a name like `esp32p4-nano-2fdf.local`, so you run your own: a root key on your computer (`host/ca`), whose root certificate you install once on every device that opens the nodes' admin pages. The node makes its own key and never gives it out; the CA signs the node's request and the node keeps the certificate.
+A node that serves HTTPS (the ESP32-P4 boards, the RP2350-LCD-7, the sensor nodes, and the QEMU targets for testing; `CONFIG_TLS_SERVER`) proves who it is with a certificate. No public certificate authority will issue one for a name like `esp32p4-nano-2fdf.local`, so you run your own: a root key on your computer (`host/ca`), whose root certificate you install once on every device that opens the nodes' admin pages. The node makes its own key and never gives it out; the CA signs the node's request and the node keeps the certificate.
 
 Once a node holds a key and a certificate for it, its admin server also speaks HTTPS on port 443 (TLS 1.3 only: ChaCha20-Poly1305, X25519, an ECDSA P-256 certificate; `net/tls.c`). It picks a new certificate up by itself. From then on plain HTTP on port 80 only reads: a request for the page is redirected to `https://NAME.local/`, and a 9P session over plain HTTP or a plain WebSocket is read-only, protected or not. Over HTTPS an `admin` peer may write, secrets included (TLS protects them on the way). `httpd status` says whether HTTPS is on. 9P over TCP (port 564) is unchanged: protected sessions, as before.
 
@@ -22,7 +22,7 @@ The CA talks to the node over 9P with an **admin** grant (see [Identity](identit
 uv run --project host/ca lugalos-ca issue --tcp esp32p4-nano-2fdf.local --keyfile ~/.config/lugalos/keys/nano.p9key
 ```
 
-It asks the node for a key if it has none, reads the node's certificate request, checks its signature and that it names only `.local` names and private addresses, signs a certificate valid for 825 days, writes it to the node and reads it back. `--rekey` has the node make a new key first; `--save-csr FILE` and `--save-cert FILE` keep copies (`openssl req -in FILE -noout -verify -text`, `openssl verify -CAfile ~/.config/lugalos/ca/ca.crt.pem FILE`).
+It asks the node for a key if it has none, installs the root on the node for its TLS clients (`/dev/tlsca`, section 4), reads the node's certificate request, checks its signature and that it names only `.local` names and private addresses, signs a certificate valid for 825 days, writes it to the node and reads it back. `--rekey` has the node make a new key first; `--save-csr FILE` and `--save-cert FILE` keep copies (`openssl req -in FILE -noout -verify -text`, `openssl verify -CAfile ~/.config/lugalos/ca/ca.crt.pem FILE`).
 
 The certificate names `NAME.local` and the address the node had when it made the request. Use the name: a DHCP address can change, and then only the name still matches. Issue again after renaming a node, after `--rekey`, after an owner reset (which deletes the key and the certificate), and before the 825 days run out.
 
@@ -44,6 +44,8 @@ Writing `/dev/tls` and `/dev/tlscert` over 9P needs the `admin` grant. The priva
 
 Measured on an ESP32-P4-NANO over Wi-Fi: the handshake takes about 130 ms (the P-256 signature most of it), the 21 KB admin page arrives in 0.55 s, and a 9P session over `wss://` writes 30 KB/s and reads 42 KB/s to the SD card.
 
+A session's TLS records (about 21 KB) are taken when it opens and returned when it closes; while no one is connected, HTTPS holds one page for the key and certificate. On the ESP32-C6-Zero sensor node (66.3b): handshakes of 0.36-0.64 s, and through 52 HTTPS sessions during the loaded scenario the node never had fewer than 7 free pages (4 with MQTT over TLS connected as well).
+
 ## 3. Install the root certificate on your devices
 
 Install `ca.crt.pem` (a file that contains no secret) as a trusted root. Check the fingerprint against `lugalos-ca show` wherever the system displays one.
@@ -61,6 +63,32 @@ Install `ca.crt.pem` (a file that contains no secret) as a trusted root. Check t
 **Android:** copy the file to the phone, then *Settings > Security & privacy > More security settings > Encryption & credentials > Install a certificate > CA certificate* (the path differs a little between makers; search the settings for "CA certificate"). Chrome and the system browser trust it; apps that do not opt in to user-installed CAs do not.
 
 **iPhone and iPad:** send the file to the device (AirDrop, mail, or a download in Safari), open it, and allow the profile download. Then *Settings > General > VPN & Device Management*, select the profile and *Install*. Finally *Settings > General > About > Certificate Trust Settings*, and turn on full trust for the LugalOS CA. iOS refuses server certificates valid for more than 825 days, which is why `issue` stops there.
+
+## 4. The node as a client: MQTT over TLS
+
+A node with `CONFIG_TLS_CLIENT` (the sensor and workstation profiles, QEMU) can publish to its broker over TLS 1.3. It trusts one CA, your LugalOS CA, and accepts a broker only if its certificate comes from that CA **and** names the address the node dials. Dates are not checked: a node's clock is not trusted to be set.
+
+1. **Give the node the root.** `lugalos-ca issue` does it along with the node's certificate; on its own:
+   ```bash
+   uv run --project host/ca lugalos-ca trust --tcp NODE --keyfile ~/.config/lugalos/keys/NODE.p9key
+   ```
+   The node keeps only the root's public key, in its identity record's owner part (an owner reset deletes it). `cat /dev/tlsca` shows its fingerprint; an admin peer may write a CA certificate (PEM) or `clear` to it.
+
+2. **Give the broker a certificate from the same CA**, for the address the nodes dial:
+   ```bash
+   uv run --project host/ca lugalos-ca server 192.168.178.32 --out ~/broker-tls
+   ```
+   This writes `192.168.178.32.key.pem` (mode 0600) and `192.168.178.32.crt.pem`. In mosquitto:
+   ```text
+   listener 8883
+   certfile /path/192.168.178.32.crt.pem
+   keyfile  /path/192.168.178.32.key.pem
+   tls_version tlsv1.3
+   ```
+
+3. **Point the node at it with `tls://`** (port 8883 unless given): `mqttcfg tls://192.168.178.32 10` stores it, `mqtt connect tls://192.168.178.32` tries it once. `mqttcfg` shows the setting; a refused handshake prints `TLS failed` and the reason is in the log.
+
+The client offers what the server does (ChaCha20-Poly1305, X25519, ECDSA P-256) and asks for 4 KB records (`max_fragment_length`, which OpenSSL and mosquitto honour), so a connection holds about 8.5 KB, three pages, while it is up.
 
 ---
 

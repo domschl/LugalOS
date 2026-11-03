@@ -264,3 +264,69 @@ int tls_certfile_write(const void *buf, uint32_t count, uint64_t off) {
     ylock_release(&g_lock);
     return ret;
 }
+
+/* --- /dev/tlsca ------------------------------------------------------------------------------- */
+
+/* guarded by: g_lock. The CA certificate as written, until its block is complete. */
+static cert_stage_t *g_ca_stage;
+
+uint32_t tls_ca_read(char *out, uint32_t cap) {
+    uint8_t pub[NODE_TLS_CA_LEN];
+    if (!node_tls_ca(pub)) return (uint32_t)ksnprintf(out, cap, "ca=none\n");
+    uint8_t h[SHA256_DIGEST_LEN];
+    char fp[17];
+    sha256(pub, sizeof pub, h);
+    hex8(h, fp);
+    uint32_t n = (uint32_t)ksnprintf(out, cap, "ca=p256\nca_fingerprint=%s\n", fp);
+    return n < cap ? n : cap;
+}
+
+/* Takes the first complete certificate block in g_ca_stage. TLS_OK, 1 while incomplete, or TLS_ERR_*. */
+static int try_install_ca(void) {
+    cert_stage_t *s = g_ca_stage;
+    uint8_t *der = (uint8_t *)palloc_pages(1);
+    if (!der) return TLS_ERR_MEMORY;
+    int rc;
+    int n = pem_decode(s->text, s->len, "CERTIFICATE", der, 4096, NULL);
+    if (n < 0) {
+        static const char END[] = "-----END CERTIFICATE-----";
+        bool ended = false;
+        for (uint32_t i = 0; i + sizeof END - 1 <= s->len && !ended; i++) ended = memcmp(s->text + i, END, sizeof END - 1) == 0;
+        rc = ended ? TLS_ERR_CERT : 1;
+    } else {
+        tls_cert_info_t ci;
+        if (tls_cert_parse(der, (uint32_t)n, &ci) != TLS_OK || !p256_pubkey_valid(ci.pub)) rc = TLS_ERR_CERT;
+        else if (node_identity_set_tls_ca(ci.pub) != NODE_ID_OK) rc = TLS_ERR_STORE;
+        else { rc = TLS_OK; printk("[TLS] clients now trust %s\n", ci.subject_cn); }
+    }
+    palloc_free(der, 1);
+    return rc;
+}
+
+int tls_ca_write(const void *buf, uint32_t count, uint64_t off) {
+    if (off == 0 && count >= 5 && memcmp(buf, "clear", 5) == 0) {
+        return node_identity_set_tls_ca(NULL) == NODE_ID_OK ? (int)count : -1;
+    }
+    ylock_acquire(&g_lock);
+    int ret = -1;
+    if (off == 0) {
+        if (!g_ca_stage) g_ca_stage = (cert_stage_t *)palloc_pages(1);
+        if (g_ca_stage) g_ca_stage->len = 0;
+    }
+    cert_stage_t *s = g_ca_stage;
+    if (s && off == s->len && s->len + count <= sizeof s->text) {
+        memcpy(s->text + s->len, buf, count);
+        s->len += count;
+        int rc = try_install_ca();
+        if (rc == 1) {
+            ret = (int)count;
+        } else {
+            if (rc == TLS_OK) ret = (int)count;
+            else printk("[TLS] CA refused: %s\n", tls_result_str(rc));
+            palloc_free(s, 1);
+            g_ca_stage = NULL;
+        }
+    }
+    ylock_release(&g_lock);
+    return ret;
+}

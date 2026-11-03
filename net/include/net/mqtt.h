@@ -54,6 +54,7 @@
  */
 
 #define MQTT_DEFAULT_PORT      1883u
+#define MQTT_DEFAULT_TLS_PORT  8883u
 #define MQTT_DEFAULT_KEEPALIVE 60u
 
 /* §3.5: the inbound reassembly bound. A packet larger than this is counted
@@ -72,7 +73,9 @@ typedef enum {
 
 typedef struct {
     uint8_t     broker[IPV4_LEN];
-    uint16_t    port;             /* 0 = MQTT_DEFAULT_PORT */
+    uint16_t    port;             /* 0 = MQTT_DEFAULT_PORT, or MQTT_DEFAULT_TLS_PORT with `tls` */
+    bool        tls;              /* TLS 1.3, the broker's certificate from the CA in node_tls_ca() and
+                                   * naming its address (CONFIG_TLS_CLIENT; refused without it) */
     uint16_t    keepalive_s;      /* 0 = MQTT_DEFAULT_KEEPALIVE */
     const char *client_id;        /* NULL/"" = node_name() */
     const char *username;         /* NULL/"" = none */
@@ -191,6 +194,7 @@ uint8_t mqtt_last_connack(void);
 #define MQTT_ERR_TOOBIG      -7  /* topic + payload exceed MQTT_TX_MAX */
 #define MQTT_ERR_STATE       -8  /* not connected */
 #define MQTT_ERR_BADARG      -9
+#define MQTT_ERR_TLS        -10  /* no CA to check the broker against, no memory, or the handshake failed */
 
 const char *mqtt_err_str(int rc);
 

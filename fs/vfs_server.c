@@ -2361,6 +2361,10 @@ static const char *g_dev_names[]  = { "uart", "null", "zero", "eeprom", "clipboa
     /* the HTTPS key, its certificate request and its certificate (kernel/tls_cert.h) */
     "tls", "tlscsr", "tlscert",
 #endif
+#if defined(CONFIG_TLS_SERVER) || defined(CONFIG_TLS_CLIENT)
+    /* the CA the node's TLS clients trust (kernel/tls_cert.h) */
+    "tlsca",
+#endif
 #if defined(CONFIG_BATT_CELLS)
     /* the board battery's state (kernel/power.h) */
     "power",
@@ -2609,6 +2613,16 @@ int vfs_pread(int fd, void *buf, uint32_t count, uint64_t offset) {
             } else if (strcmp(h->rel_path, "tlscert") == 0) {
                 return tls_certfile_read(buf, count, offset);
 #endif
+#if defined(CONFIG_TLS_SERVER) || defined(CONFIG_TLS_CLIENT)
+            } else if (strcmp(h->rel_path, "tlsca") == 0) {
+                char st[128];
+                uint32_t len = tls_ca_read(st, sizeof st);
+                if (offset >= len) return 0;
+                uint32_t k = len - (uint32_t)offset;
+                if (k > count) k = count;
+                memcpy(buf, st + offset, k);
+                return (int)k;
+#endif
 #if defined(CONFIG_NETWORK_CLAIM)
             } else if (strcmp(h->rel_path, "setup") == 0 || strcmp(h->rel_path, "owner") == 0) {
                 char st[512];
@@ -2696,6 +2710,10 @@ int vfs_pwrite(int fd, const void *buf, uint32_t count, uint64_t offset) {
                 return tls_ctl_write((const char *)buf, count);
             } else if (strcmp(h->rel_path, "tlscert") == 0) {
                 return tls_certfile_write(buf, count, offset);
+#endif
+#if defined(CONFIG_TLS_SERVER) || defined(CONFIG_TLS_CLIENT)
+            } else if (strcmp(h->rel_path, "tlsca") == 0) {
+                return tls_ca_write(buf, count, offset);
 #endif
 #if defined(CONFIG_NETWORK_CLAIM)
             } else if (strcmp(h->rel_path, "setup") == 0) {

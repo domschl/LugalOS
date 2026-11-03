@@ -22,3 +22,6 @@ set(CONFIG_ENABLE_NTP_SERVER 1)
 
 # HTTPS: the node's own key, its certificate request and its certificate (kernel/tls_cert.c).
 set(CONFIG_TLS_SERVER 1)
+
+# The TLS client (66.3b): MQTT to a broker over TLS, its certificate from the owner's CA (/dev/tlsca).
+set(CONFIG_TLS_CLIENT 1)

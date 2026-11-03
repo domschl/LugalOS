@@ -254,6 +254,41 @@ per-endpoint buffers and the two copies per call**, not isolation (they have non
 
 ### 66.3b TLS on the C6-Zero sensor node (scheduled)
 
+* **DONE 2026-11-03.** Both halves, on the C6-Zero release image, under the loaded scenario:
+
+  | | Free pages (of 74) |
+  | :--- | :--- |
+  | HTTPS up, MQTT over TLS connected, idle | 10 |
+  | lowest, through 49 HTTPS sessions, 9P and MQTT publishing over TLS | 5 (the margin) |
+
+  *HTTPS:* `CONFIG_TLS_SERVER` in the sensor profile (+42 bytes static). httpd now takes a session's
+  ~21 KB of records at accept and returns them at close (all TLS boards): an idle HTTPS server holds
+  one page. Verified with curl and `openssl s_client` against the CA (TLS 1.3, ChaCha20-Poly1305,
+  handshakes 0.36-0.64 s on the C6, 172 ms on the Tab5); `test_esp32p4.py`'s HTTPS case on the Tab5.
+  *MQTT over TLS:* a TLS 1.3 client in `net/tls.c` (the server's record layer and key schedule, made
+  role-aware; ClientHello, ServerHello, EncryptedExtensions, Certificate, CertificateVerify, Finished;
+  session tickets ignored). It asks for 4 KB records (`max_fragment_length`; OpenSSL and mosquitto
+  take it), so a connection holds three pages, taken at connect and returned at close, with the
+  session state in them (+4 bytes static). `kernel/x509.c` `tls_cert_check()`: the broker's
+  certificate signed by the CA and naming the address dialled (subjectAltName, else CN); dates not
+  checked. The CA is the owner field `IDSTORE_FIELD_TLS_CA` (its 64-byte key), on `/dev/tlsca`
+  (admin writes). `mqttcfg tls://IP` / `mqtt connect tls://IP` (8883 unless given); the TLS flag is a
+  trailing byte of the MQTT field, written only when set. `CONFIG_TLS_CLIENT` in the sensor,
+  workstation and qemu profiles. `host/ca`: `issue` also installs the root, `trust` alone, `server`
+  makes a broker's key and certificate. Admin guide section 4.
+  *Verified:* `tls_host` against `openssl s_server` under ASan (by name, by address, a foreign CA and
+  a name the certificate lacks); a QEMU test (`test_mqtt_tls`: no CA refused, the CA's broker gets a
+  PUBLISH, another CA's and another address's refused); the C6-Zero against mosquitto 2.1.2 on this
+  host (TLS 1.3, ChaCha20-Poly1305, publishing every 10 s, keepalive answered through the load).
+  *Found on the way:* a record `tls_write()` could not hand to TCP at once stayed queued until the
+  next write: the client's CONNECT, two runs in three under QEMU (seen in a packet capture: sent
+  only with the close, 8 s later). `tls_read()` now sends what is owed first. The handshake has its
+  own allowance (20 s; ~8 s under QEMU), and the CONNACK still gets the caller's timeout after it.
+  *Not done:* a fuzz of the client's parsing of a hostile server flight (the server side has one).
+  The C6-Zero's key and certificate, and the root on its `/dev/tlsca`, come from a throwaway test CA:
+  `lugalos-ca issue --tcp esp32c6-zero-86c2.local --rekey` from the owner's CA replaces them. Its broker
+  is nalanda again (plain 1883): nalanda has no TLS listener.
+
 The acceptance test for 66.2/66.3: the RAM they free on the C6-Zero is spent on TLS.
 
 * **Budget:** in the sensor profile's load scenario, at least 11 free pages before a TLS session

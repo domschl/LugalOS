@@ -2,10 +2,10 @@
   "bulk_per_file": {},
   "bulk_per_subsystem": {},
   "bulk_total": 0,
-  "heap_bytes": 125636608,
-  "heap_pages": 30673,
+  "heap_bytes": 125632512,
+  "heap_pages": 30672,
   "per_file": {
-    "(no line info: .rodata)": 8365,
+    "(no line info: .rodata)": 8382,
     "(no line info: .sdata)": 9,
     "arch/riscv/common/elf.c": 1484,
     "arch/riscv/common/mem_domain.c": 116,
@@ -64,7 +64,7 @@
     "fs/p9_chan.c": 12340,
     "fs/p9_link.c": 24836,
     "fs/p9_protect.c": 14,
-    "fs/vfs_server.c": 4274,
+    "fs/vfs_server.c": 4278,
     "kernel/balloc.c": 8199,
     "kernel/board.c": 296,
     "kernel/boardinfo.c": 17,
@@ -110,7 +110,7 @@
     "kernel/ticker.c": 25,
     "kernel/time.c": 49,
     "kernel/timezone.c": 113,
-    "kernel/tls_cert.c": 68,
+    "kernel/tls_cert.c": 98,
     "kernel/umode_probe.c": 720,
     "kernel/vterm.c": 3441,
     "kernel/x509.c": 38,
@@ -129,7 +129,7 @@
     "net/spartan.c": 15,
     "net/stack.c": 192,
     "net/tcp.c": 712,
-    "net/tls.c": 50,
+    "net/tls.c": 51,
     "net/udp.c": 48,
     "net/websocket.c": 102,
     "third_party/crypto/monocypher/monocypher.c": 200,
@@ -160,7 +160,7 @@
     "user/zmachine/ztext.c": 27
   },
   "per_subsystem": {
-    "(no line info: .rodata)": 8365,
+    "(no line info: .rodata)": 8382,
     "(no line info: .sdata)": 9,
     "9p": 64084,
     "agent": 3497,
@@ -170,7 +170,7 @@
     "build": 1057918,
     "chess": 44412,
     "clock-app": 484,
-    "crypto": 1011,
+    "crypto": 1042,
     "display": 52521,
     "drivers": 42914,
     "fs": 427,
@@ -189,8 +189,8 @@
     "storage": 20684,
     "tools": 256,
     "usb": 672,
-    "vfs": 4274
+    "vfs": 4278
   },
-  "ram_code": 1159966,
-  "total": 6189708
+  "ram_code": 1168910,
+  "total": 6198704
 }

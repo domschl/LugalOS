@@ -102,6 +102,9 @@ typedef enum {
                                     *   u8 len + username
                                     *   u8 len + password
                                     *   u8 len + topic prefix
+                                    *   [u8 flags]  bit 0: TLS (66.3b). Absent: none; written only
+                                    *               when set, so a record without it is unchanged
+                                    *               and an older build stops before it.
                                     *
                                     * **One field, for IDSTORE_FIELD_IPV4's reason**: a broker
                                     * address without its port and credentials is not a
@@ -141,6 +144,9 @@ typedef enum {
                                     * outside: the network can only ask for a new one. */
     IDSTORE_FIELD_TLS_CERT  = 17, /* instance scope (owner): the certificate for that key, DER, as
                                     * the owner's CA issued it (host/ca). Public. */
+    IDSTORE_FIELD_TLS_CA    = 18, /* instance scope (owner): 64 bytes, the P-256 public key (X, Y) of
+                                    * the CA whose certificates the node's TLS clients accept (MQTT
+                                    * to a broker, 66.3b): the owner's LugalOS CA. Public. */
 } idstore_field_type_t;
 
 /* Who may change a field (plan/phase52_remote_admin.md §1.3). The record is

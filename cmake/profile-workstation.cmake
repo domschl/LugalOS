@@ -40,3 +40,6 @@ set(CONFIG_HTTPD_WHEN_CLAIMED 1)
 # Two interfaces, one stack, where a board has both: eth0 while its cable has a
 # carrier, else wlan0 -- re-decided once a second. Inert without a wired MAC.
 set(CONFIG_NET_PREFER_WIRED 1)
+
+# The TLS client (66.3b): MQTT to a broker over TLS, its certificate from the owner's CA (/dev/tlsca).
+set(CONFIG_TLS_CLIENT 1)

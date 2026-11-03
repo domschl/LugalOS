@@ -22,6 +22,7 @@ peer that can only behave correctly cannot test an implementation.
 from __future__ import annotations
 
 import socket
+import ssl
 import threading
 import time
 
@@ -131,8 +132,12 @@ class MqttBroker:
 
     def __init__(self, connack_rc: int = 0, split_headers: bool = False,
                  stall_after: int | None = None, keep_listening: bool = True,
-                 port: int = 0, host: str = "127.0.0.1"):
+                 port: int = 0, host: str = "127.0.0.1", tls: "ssl.SSLContext | None" = None):
         self.connack_rc = connack_rc
+        # A server-side SSLContext: each connection is wrapped in TLS before MQTT is read (66.3b).
+        # A failed handshake is counted in tls_failures and the broker goes back to accept().
+        self.tls = tls
+        self.tls_failures = 0
         self.split_headers = split_headers
         self.stall_after = stall_after
         # Defaults to True since 2026-09-14. A test instrument that stops
@@ -264,6 +269,15 @@ class MqttBroker:
                 return
             with self._lock:
                 self.connections += 1
+            if self.tls is not None:
+                try:
+                    conn.settimeout(15.0)
+                    conn = self.tls.wrap_socket(conn, server_side=True)
+                except (ssl.SSLError, OSError):
+                    with self._lock:
+                        self.tls_failures += 1
+                    conn.close()
+                    continue
             self._conn = conn
             self._serve_conn(conn)
             if not self.keep_listening:

@@ -107,7 +107,7 @@
     "kernel/ticker.c": 37,
     "kernel/time.c": 49,
     "kernel/timezone.c": 101,
-    "kernel/tls_cert.c": 25,
+    "kernel/tls_cert.c": 29,
     "kernel/umode_probe.c": 720,
     "kernel/vterm.c": 3441,
     "kernel/zonetest.c": 5,
@@ -165,7 +165,7 @@
     "audio": 25361,
     "chess": 21338,
     "clock-app": 136,
-    "crypto": 34,
+    "crypto": 38,
     "display": 3627,
     "drivers": 1720,
     "fs": 4160,
@@ -187,5 +187,5 @@
     "vfs": 4111
   },
   "ram_code": 1806,
-  "total": 218479
+  "total": 218483
 }

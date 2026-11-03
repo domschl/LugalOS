@@ -229,6 +229,7 @@ set(_optional_keys
     # 1: this board serves HTTPS (plan/phase52 52.14-52.15): its own P-256 key, a certificate request and
     # the certificate the owner's CA issued, as /dev/tls, /dev/tlscsr and /dev/tlscert (kernel/tls_cert.c).
     CONFIG_TLS_SERVER
+    CONFIG_TLS_CLIENT
     # Lisp's node pool, when a
     # board wants other than user/lisp/lisp.c's per-target default.
     CONFIG_LISP_NODE_POOL

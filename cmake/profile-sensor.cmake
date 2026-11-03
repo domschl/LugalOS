@@ -25,3 +25,10 @@ set(CONFIG_HTTPD_WHEN_CLAIMED 1)
 set(CONFIG_KLOG_RING_KB   4)
 set(CONFIG_SHELL_HISTORY  2)
 set(CONFIG_MAX_VTERMS     4)
+
+# HTTPS for the admin page (66.3b): the node's own key and certificate (kernel/tls_cert.c), one page while
+# it is up, and a session's ~21 KB of records only while that session is open (net/httpd.c).
+set(CONFIG_TLS_SERVER 1)
+
+# The TLS client (66.3b): MQTT to a broker over TLS, its certificate from the owner's CA (/dev/tlsca).
+set(CONFIG_TLS_CLIENT 1)

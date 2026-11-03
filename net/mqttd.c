@@ -320,6 +320,7 @@ static bool connect_once(void) {
     memset(&mc, 0, sizeof(mc));
     memcpy(mc.broker, g.cfg.broker, IPV4_LEN);
     mc.port = g.cfg.port;
+    mc.tls = g.cfg.tls;
     mc.keepalive_s = g.cfg.keepalive_s;
     if (g.username[0]) mc.username = g.username;
     if (g.password[0]) mc.password = g.password;
@@ -473,6 +474,7 @@ static void mqttd_configure(const mqttd_config_t *cfg) {
     memset(&g.cfg, 0, sizeof(g.cfg));
     memcpy(g.cfg.broker, cfg->broker, IPV4_LEN);
     g.cfg.port = cfg->port;
+    g.cfg.tls = cfg->tls;
     g.cfg.sample_s = cfg->sample_s;
     g.cfg.keepalive_s = cfg->keepalive_s;
     /* Copied, not pointed at: the caller's strings are usually a shell
@@ -544,6 +546,7 @@ static void mqttd_autostart_body(void *arg) {
     memset(&cfg, 0, sizeof(cfg));
     memcpy(cfg.broker, m.broker, IPV4_LEN);
     cfg.port = m.port;
+    cfg.tls = m.tls;
     cfg.sample_s = m.sample_s;
     cfg.keepalive_s = m.keepalive_s;
     if (m.username[0]) cfg.username = m.username;

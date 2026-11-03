@@ -73,6 +73,7 @@ typedef struct {
 #if defined(CONFIG_TLS_SERVER)
     bool        tls_on;               /* accepted on the HTTPS port: every byte goes through `tls` */
     tls_t       tls;
+    uint8_t    *tls_buf;              /* this session's record buffers (TLS_SESS_PAGES), its own while open */
 #endif
 } hsess_t;
 
@@ -89,9 +90,11 @@ static volatile bool g_run, g_want_stop, g_write_ok;
 #if defined(CONFIG_TLS_SERVER)
 #define HTTPS_PORT 443
 #define TLS_SESS_BYTES ((TLS_RECORD_MAX + TLS_TX_CAP + 15u) & ~15u)
-/* single task: httpd. The key (32 bytes), the certificate (NODE_TLS_CERT_MAX), then each session's
- * record buffers, in bulk pages (PSRAM on a P4): taken when HTTPS comes up, wiped and returned when it
- * goes. */
+#define TLS_SESS_PAGES ((TLS_SESS_BYTES + 4095u) / 4096u)
+/* single task: httpd. The key (32 bytes) and the certificate (NODE_TLS_CERT_MAX), in bulk pages (PSRAM
+ * on a P4): taken when HTTPS comes up, wiped and returned when it goes. A session's record buffers
+ * (~21 KB) are its own, taken at accept and returned at close (66.3b): an idle HTTPS server holds one
+ * page, not one per session it might have. */
 static uint8_t  *g_tls_mem;
 static uint32_t  g_tls_pages, g_tls_cert_len, g_tls_sessions;
 static bool      g_tls_on;
@@ -186,6 +189,10 @@ static void sess_close(hsess_t *h) {
     if (h->fd >= 0) vfs_close(h->fd);
 #if defined(CONFIG_TLS_SERVER)
     if (h->tls_on) { tls_close(&h->tls); tls_wipe(&h->tls); }
+    if (h->tls_buf) {
+        crypto_wipe_bytes(h->tls_buf, TLS_SESS_BYTES);
+        palloc_free(h->tls_buf, TLS_SESS_PAGES);
+    }
 #endif
     tcp_stream_close(&h->s);
     uint8_t *ib = h->ibuf, *ob = h->obuf;
@@ -588,7 +595,7 @@ static void https_up(void) {
     https_down();
     uint8_t key[NODE_TLS_KEY_LEN];
     if (!node_tls_key(key)) return;
-    g_tls_pages = (32u + NODE_TLS_CERT_MAX + HTTPD_MAX_SESSIONS * TLS_SESS_BYTES + 4095u) / 4096u;
+    g_tls_pages = (32u + NODE_TLS_CERT_MAX + 4095u) / 4096u;
     uint8_t *mem = (uint8_t *)palloc_pages_bulk(g_tls_pages);
     tls_cert_info_t ci;
     uint32_t len = 0;
@@ -611,9 +618,6 @@ static void https_up(void) {
     printk("[Httpd] HTTPS on port %u for %s, until %s\n", (unsigned)HTTPS_PORT, ci.subject_cn, ci.not_after);
 }
 
-static uint8_t *tls_rx_of(const hsess_t *h) {
-    return g_tls_mem + 32u + NODE_TLS_CERT_MAX + (uint32_t)(h - g_sess) * TLS_SESS_BYTES;
-}
 #endif
 
 /* A connection waiting on either port, into `h`. */
@@ -634,7 +638,16 @@ static bool accept_into(hsess_t *h) {
 #if defined(CONFIG_TLS_SERVER)
     h->tls_on = tls;
     if (tls) {
-        uint8_t *rx = tls_rx_of(h);
+        uint8_t *rx = (uint8_t *)palloc_pages_bulk(TLS_SESS_PAGES);
+        if (!rx) {
+            /* No room for a session's records: refused, as a full server refuses. */
+            printk("[Httpd] HTTPS connection refused: no memory for its records\n");
+            tcp_stream_close(&h->s);
+            h->st = H_FREE;
+            h->tls_on = false;
+            return false;
+        }
+        h->tls_buf = rx;
         tls_server_init(&h->tls, g_tls_mem + 32, g_tls_cert_len, g_tls_mem, tls_tcp_recv, tls_tcp_send, &h->s,
                         rx, rx + TLS_RECORD_MAX);
         g_tls_sessions++;
