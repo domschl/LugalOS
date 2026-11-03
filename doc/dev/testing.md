@@ -136,9 +136,12 @@ Where each preset's RAM goes, in two halves that group by the same subsystems (`
   ```
 
   `--wait-tasks` waits until the named services run, so the figures describe the board under its normal
-  load rather than just after boot. `--check` also fails when a page in use has no run in `/proc/pages`
+  load rather than just after boot. `--load HOST` then drives the node from this host for `--load-secs`
+  (60) before the capture: two threads fetching the admin page over HTTP and HTTPS, one opening 9P
+  sessions (`Tversion`, no grant needed). High-water marks and `Pages Peak` keep what the load drove
+  them to. It does not cover paths that need an owner key (`wss://` sign-in, OTA upload). `--check` also fails when a page in use has no run in `/proc/pages`
   or a stack is above `--max-stack-pct` (90) of its size. Recorded runs are kept in
-  `tools/ram_baselines/runtime/`.
+  `tools/ram_baselines/runtime/`: `<preset>.json` under load, `<preset>-idle.json` without.
 
 The silicon suites (`test_esp32c6.py`, `test_esp32p4.py`, `test_rp2350.py`) end with the same check
 (`RAM ledger: every page owned, no stack above 90%`), run after the rest of the suite has driven the

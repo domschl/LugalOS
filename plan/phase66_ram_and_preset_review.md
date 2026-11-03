@@ -123,47 +123,45 @@ per-endpoint buffers and the two copies per call**, not isolation (they have non
 
 ### 66.1 Resource ledger (scheduled)
 
-* **Status 2026-11-03: built; baselines recorded for the C6-Zero, Tab5 and LCD-7B; the Pico 2 W open.**
+* **DONE 2026-11-03.**
   *As built:* `palloc` records the return address into its caller on the first page of every run
   (`g_fast_owner` in SRAM, 0.5 KB; `g_bulk_owner` in `BULK_BSS`), and `/proc/pages` lists each run with
   its zone, size, caller and, for a task stack, the task. `tools/ramledger.py` captures `/proc/buildid`,
   `meminfo`, `ps` and `pages` from a board (`--c6`, `--p4`, `--rp2350`, or a saved `--capture`),
-  refuses an ELF of another build, names the callers with `addr2line` and sums pages by subsystem.
-  `tools/ramsubsys.py` is the one grouping, used by it and by `tools/sizereport.py`, which now reports
-  by subsystem, names symbols without line info by section (the radio blob's `.radio_bss`), and has
-  `--all --check/--update`. Baselines moved to `tools/ram_baselines/<build dir>.json`, all 15 presets;
-  `tests/runner.py` checks them. The silicon suites end with a ledger case (every page in use owned,
-  no stack above 90%). `ps` already showed isolation and stack high-water; no new view was needed.
-  `doc/dev/kernel/architecture.md` corrected (§1.1's table).
-* *Measured* (build 1304, steady state after boot; `tools/ram_baselines/runtime/`):
+  refuses an ELF of another build, names the callers with `addr2line` and sums pages by subsystem;
+  `--load HOST` drives HTTP, HTTPS and 9P sessions first. `tools/ramsubsys.py` is the one grouping,
+  used by it and by `tools/sizereport.py`, which now reports by subsystem, names symbols without line
+  info by section (the radio blob's `.radio_bss`), and has `--all --check/--update`. Baselines moved to
+  `tools/ram_baselines/<build dir>.json`, all 15 presets; `tests/runner.py` checks them. The silicon
+  suites end with a ledger case (every page in use owned, no stack above 90%). `ps` already showed
+  isolation and stack high-water; no new view was needed. `doc/dev/kernel/architecture.md` corrected
+  (section 1.1's table). Racescan clean on its five builds.
+* *Measured* (`tools/ram_baselines/runtime/`; idle = steady state after boot, loaded = after 60 s of
+  `--load`):
 
-  | Board | Pages free / total | Stacks: pages held / KB used | Next largest owners |
+  | Board | Pages free idle / loaded / total | Stacks: pages held / KB used (loaded) | Next largest owners (pages) |
   | :--- | :--- | :--- | :--- |
-  | C6-Zero (radio, sensors, MQTT connected, httpd) | 8 / 68 | 30 / 22 KB | radio 20, TCP 4, httpd 2 |
-  | Tab5 (C6 link, httpd, display) | 24 / 93 | 35 / 24 KB | LLP `take()` 18, TCP 8, httpd 5 |
-  | LCD-7B (C6 link, httpd, display) | 10 / 71 | 27 / 15 KB | LLP `take()` 18, TCP 8, httpd 5 |
+  | C6-Zero (radio, BME280, MQTT publishing to nalanda, httpd) | 8 / **5** / 68 | 33 / 28.6 KB | radio 20, TCP 4, httpd 2 |
+  | Pico 2 W (unclaimed: setup AP and worker, MQTT; httpd off) | 21 / 19 / 80 | 36 / 26.8 KB | `/ram0` 16, TCP 4 |
+  | Tab5 (C6 link, HTTPS, display) | 24 / 24 / 93 | 35 / 27 KB | LLP `take()` 18, TCP 8, httpd 5 |
+  | LCD-7B (C6 link, HTTP, display) | 10 / 10 / 71 | 27 / 16 KB | LLP `take()` 18, TCP 8, httpd 5 |
 
-  Every page in use is accounted for on all three. Stacks are the largest owner everywhere, and the
-  high-water marks are steady-state figures: the active scenario (an HTTPS session, a 9P session, MQTT
-  publishing) still has to run before 66.3 sizes anything from them (httpd's phase 52 figure under TLS
-  was 11 KB, against 1 KB here).
-* *Open:* the Pico 2 W (`picotool` on this host is an x86 binary; the ARM host needs a native build or
-  another flashing route); the active-load scenario; `tools/racescan.py --check` (needs libclang ≥ 19,
-  not on this host) for the two new statics, which carry `guarded by:` verdicts.
-* *Found on the way:* the C6-Zero `esp32c6-zero-86c2` has no broker stored (`mqttcfg`: none), so it
-  publishes nothing; measured with a session-only `mqtt connect` to nalanda.
-
-* `tools/sizereport.py` grouped by subsystem; checked-in baselines for **every** preset, checked
-  by `tests/runner.py` (today only the RP2350 has one).
-* Owner tags on `palloc` pages (task pid, or a subsystem tag for kernel allocations), shown in
-  `/proc/meminfo`.
-* Stack high-water export: the hardware suites read every task's high-water mark after a defined
-  load scenario and write a per-board stack table.
-* **Standard load scenarios** per profile (e.g. sensor node: radio, sensors, MQTT, mDNS, httpd,
-  one 9P session; terminal: plus vterms, Lisp, SD), run by the hardware suites, reporting free
-  pages, bulk pages and SRAM fallbacks.
-* `/proc` view of each task's mode (U / kernel / folded) and any isolation waiver.
-* Correct `doc/dev/kernel/architecture.md` to the table in §1.1.
+  Every page in use is accounted for on all four. Stacks are the largest owner everywhere, at 12–20%
+  use. Candidates for 66.3: the Pico 2 W's `/ram0` (64 KB of SRAM on a board without PSRAM), the
+  setup tasks (36 KB of stack held while unclaimed, 3 KB used), LLP's 18 pages on the P4s, and the
+  stacks generally. Under 88 HTTPS sessions the Tab5's httpd peaked at 2.4 KB of its 24 KB stack;
+  phase 52's 11 KB was on paths the load does not drive (`wss://` sign-in, OTA upload, which need an
+  owner key), so 66.3 measures those before it sizes httpd.
+* *Found on the way:*
+  * The C6-Zero `esp32c6-zero-86c2` had no broker stored, so it published nothing; nalanda
+    (192.168.178.32:1883) stored with `mqttcfg` at the owner's request.
+  * The Pico 2 W has no A/B partition table (`/dev/ota`: `layout=none`); updated by 1200-baud touch
+    and a copy to the BOOTSEL drive.
+  * `test_esp32p4.py`'s update-state case fails after any `p4flash.py` install: the boot records are
+    erased, so `/dev/ota` says `active=-`. Its Wi-Fi case needs this host's firewall open for the
+    test's own broker (a random port).
+  * The host harnesses fail to build on an aarch64 host: `third_party/crypto/p256-m` enables its
+    32-bit Arm assembly for any `__ARM_ARCH >= 6` with profile 'A', which includes AArch64.
 
 ### 66.2 Board/profile split, dev/production split (scheduled)
 

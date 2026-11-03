@@ -13,6 +13,12 @@
     "peak": 63,
     "total": 71
   },
+  "load": {
+    "9p": 98,
+    "errors": 55,
+    "http": 182,
+    "https": 0
+  },
   "missing": [],
   "not_shown": null,
   "owners": {
@@ -92,6 +98,7 @@
       }
     }
   },
+  "problems": [],
   "stacks": [
     {
       "isolation": "-",
@@ -105,14 +112,14 @@
       "pid": 2,
       "size": 4096,
       "task": "uart",
-      "used": 508
+      "used": 540
     },
     {
       "isolation": "-",
       "pid": 3,
       "size": 4096,
       "task": "sdblk",
-      "used": 876
+      "used": 900
     },
     {
       "isolation": "-",
@@ -126,35 +133,35 @@
       "pid": 5,
       "size": 4096,
       "task": "touch",
-      "used": 696
+      "used": 988
     },
     {
       "isolation": "-",
       "pid": 6,
       "size": 8192,
       "task": "kbd",
-      "used": 500
+      "used": 636
     },
     {
       "isolation": "-",
       "pid": 7,
       "size": 12288,
       "task": "sensor_hub",
-      "used": 792
+      "used": 948
     },
     {
       "isolation": "-",
       "pid": 8,
       "size": 12288,
       "task": "p9srv",
-      "used": 652
+      "used": 700
     },
     {
       "isolation": "-",
       "pid": 9,
       "size": 8192,
       "task": "llp",
-      "used": 1004
+      "used": 1132
     },
     {
       "isolation": "-",
@@ -182,7 +189,7 @@
       "pid": 13,
       "size": 24576,
       "task": "httpd",
-      "used": 1044
+      "used": 1484
     }
   ],
   "waited_for": [

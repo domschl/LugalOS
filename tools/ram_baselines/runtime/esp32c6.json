@@ -2,10 +2,16 @@
   "build": "1304.2c4a86a6+",
   "bulk": null,
   "fast": {
-    "free": 8,
-    "largest_run": 8,
-    "peak": 60,
+    "free": 5,
+    "largest_run": 5,
+    "peak": 63,
     "total": 68
+  },
+  "load": {
+    "9p": 98,
+    "errors": 58,
+    "http": 131,
+    "https": 0
   },
   "missing": [],
   "not_shown": null,
@@ -54,6 +60,7 @@
           "httpd": 4,
           "i2c": 1,
           "klogd": 1,
+          "mqttd": 3,
           "mqttsrv": 2,
           "netsrv": 3,
           "p9srv": 3,
@@ -65,8 +72,8 @@
           "wdog": 1,
           "wlan": 2
         },
-        "pages": 30,
-        "runs": 17
+        "pages": 33,
+        "runs": 18
       },
       "vfs": {
         "detail": {
@@ -77,13 +84,14 @@
       }
     }
   },
+  "problems": [],
   "stacks": [
     {
       "isolation": "-",
       "pid": 1,
       "size": 4096,
       "task": "i2c",
-      "used": 516
+      "used": 572
     },
     {
       "isolation": "-",
@@ -118,28 +126,28 @@
       "pid": 6,
       "size": 8192,
       "task": "setupbtn",
-      "used": 620
+      "used": 564
     },
     {
       "isolation": "-",
       "pid": 7,
       "size": 4096,
       "task": "statusled",
-      "used": 668
+      "used": 612
     },
     {
-      "isolation": "PMP",
+      "isolation": "-",
       "pid": 8,
-      "size": 4096,
-      "task": "uthread",
-      "used": 1388
+      "size": 12288,
+      "task": "mqttd",
+      "used": 5300
     },
     {
       "isolation": "PMP",
       "pid": 9,
       "size": 4096,
       "task": "uthread",
-      "used": 860
+      "used": 872
     },
     {
       "isolation": "PMP",
@@ -170,29 +178,36 @@
       "used": 1020
     },
     {
-      "isolation": "-",
+      "isolation": "PMP",
       "pid": 14,
+      "size": 4096,
+      "task": "uthread",
+      "used": 1388
+    },
+    {
+      "isolation": "-",
+      "pid": 15,
       "size": 12288,
       "task": "netsrv",
       "used": 4740
     },
     {
       "isolation": "-",
-      "pid": 15,
+      "pid": 16,
       "size": 4096,
       "task": "dhcpc",
       "used": 1052
     },
     {
       "isolation": "-",
-      "pid": 16,
+      "pid": 17,
       "size": 16384,
       "task": "httpd",
-      "used": 668
+      "used": 1436
     },
     {
       "isolation": "-",
-      "pid": 17,
+      "pid": 18,
       "size": 8192,
       "task": "mqttsrv",
       "used": 1020

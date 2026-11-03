@@ -1,0 +1,191 @@
+{
+  "build": "1305.b6b78e5a+",
+  "bulk": null,
+  "fast": {
+    "free": 21,
+    "largest_run": 21,
+    "peak": 59,
+    "total": 80
+  },
+  "missing": [],
+  "not_shown": null,
+  "owners": {
+    "bulk": {},
+    "fast": {
+      "fs": {
+        "detail": {
+          "ramdisk_init (ramdisk.c)": 16
+        },
+        "pages": 16,
+        "runs": 1
+      },
+      "mqtt": {
+        "detail": {
+          "ensure_bufs (mqtt.c)": 1
+        },
+        "pages": 1,
+        "runs": 1
+      },
+      "net": {
+        "detail": {
+          "ensure_bufs (tcp.c)": 4,
+          "net_stack_attach_locked (stack.c)": 1
+        },
+        "pages": 5,
+        "runs": 2
+      },
+      "shell": {
+        "detail": {
+          "scratch_acquire (scratch.c)": 2
+        },
+        "pages": 2,
+        "runs": 1
+      },
+      "stack": {
+        "detail": {
+          "dhcpc": 1,
+          "heartbeat": 1,
+          "i2c": 1,
+          "klogd": 1,
+          "mqttd": 3,
+          "netsrv": 3,
+          "p9srv": 3,
+          "sdblk": 1,
+          "sensor_hub": 3,
+          "setupap": 4,
+          "setupbtn": 2,
+          "setupd": 5,
+          "statusled": 1,
+          "uart": 1,
+          "usbcdc": 1,
+          "wifiup": 3
+        },
+        "pages": 34,
+        "runs": 16
+      },
+      "vfs": {
+        "detail": {
+          "vfs_open_into_on (vfs_server.c)": 1
+        },
+        "pages": 1,
+        "runs": 1
+      }
+    }
+  },
+  "problems": [],
+  "stacks": [
+    {
+      "isolation": "PMP",
+      "pid": 1,
+      "size": 4096,
+      "task": "usbcdc",
+      "used": 680
+    },
+    {
+      "isolation": "PMP",
+      "pid": 2,
+      "size": 4096,
+      "task": "uart",
+      "used": 760
+    },
+    {
+      "isolation": "PMP",
+      "pid": 3,
+      "size": 4096,
+      "task": "heartbeat",
+      "used": 680
+    },
+    {
+      "isolation": "PMP",
+      "pid": 4,
+      "size": 4096,
+      "task": "sdblk",
+      "used": 760
+    },
+    {
+      "isolation": "PMP",
+      "pid": 5,
+      "size": 4096,
+      "task": "i2c",
+      "used": 760
+    },
+    {
+      "isolation": "-",
+      "pid": 6,
+      "size": 12288,
+      "task": "sensor_hub",
+      "used": 792
+    },
+    {
+      "isolation": "-",
+      "pid": 7,
+      "size": 12288,
+      "task": "p9srv",
+      "used": 564
+    },
+    {
+      "isolation": "-",
+      "pid": 8,
+      "size": 12288,
+      "task": "wifiup",
+      "used": 4708
+    },
+    {
+      "isolation": "-",
+      "pid": 9,
+      "size": 8192,
+      "task": "setupbtn",
+      "used": 532
+    },
+    {
+      "isolation": "-",
+      "pid": 10,
+      "size": 4096,
+      "task": "statusled",
+      "used": 708
+    },
+    {
+      "isolation": "-",
+      "pid": 11,
+      "size": 16384,
+      "task": "setupap",
+      "used": 532
+    },
+    {
+      "isolation": "-",
+      "pid": 12,
+      "size": 20480,
+      "task": "setupd",
+      "used": 2356
+    },
+    {
+      "isolation": "-",
+      "pid": 13,
+      "size": 12288,
+      "task": "mqttd",
+      "used": 4600
+    },
+    {
+      "isolation": "-",
+      "pid": 14,
+      "size": 4096,
+      "task": "klogd",
+      "used": 1512
+    },
+    {
+      "isolation": "-",
+      "pid": 15,
+      "size": 12288,
+      "task": "netsrv",
+      "used": 4280
+    },
+    {
+      "isolation": "-",
+      "pid": 16,
+      "size": 4096,
+      "task": "dhcpc",
+      "used": 964
+    }
+  ],
+  "waited_for": []
+}

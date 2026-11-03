@@ -12,6 +12,7 @@ with their high-water marks, which is what 66.3 sizes them from.
     tools/ramledger.py --rp2350 /dev/serial/by-id/...-if00 --elf build/rp2350-wifi/lugalos.elf
     tools/ramledger.py --capture saved.txt --elf ...       # a capture from before
     ... --wait-tasks mqttsrv,httpd --timeout 120           # the load scenario's services first
+    ... --load 192.168.178.25 --load-secs 60               # the active scenario first
     ... --json out.json                                    # for tools/ram_baselines/runtime/
 
 The ELF must be the image the board runs: the tool compares the build id in
@@ -76,6 +77,69 @@ def capture_rp2350(port: str, cmd_wait: float) -> str:
             while time.time() < until:
                 out.extend(s.read(4096))
     return out.decode("utf-8", "replace")
+
+
+# ---- the active scenario -----------------------------------------------------
+
+def run_load(host: str, secs: float) -> dict[str, int]:
+    """Drives the node's network services from this host for `secs` seconds:
+    two threads fetching the admin page over HTTP and HTTPS (TLS where the node
+    has a certificate; not verified, the point is the work, not the trust), and
+    one opening a 9P session on port 564 and sending Tversion (no grant needed
+    for that). The ledger is read afterwards: stack high-water marks and
+    'Pages Peak' keep what the load drove them to."""
+    import socket
+    import ssl
+    import struct
+    import threading
+    counts = {"http": 0, "https": 0, "9p": 0, "errors": 0}
+    lock = threading.Lock()
+    stop = time.time() + secs
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+
+    def bump(k: str) -> None:
+        with lock:
+            counts[k] += 1
+
+    def get(tls: bool) -> None:
+        port = 443 if tls else 80
+        while time.time() < stop:
+            try:
+                with socket.create_connection((host, port), timeout=5) as raw:
+                    sock = ctx.wrap_socket(raw, server_hostname=host) if tls else raw
+                    sock.sendall(b"GET / HTTP/1.1\r\nHost: " + host.encode() +
+                                 b"\r\nAccept-Encoding: gzip\r\nConnection: close\r\n\r\n")
+                    while sock.recv(4096):
+                        pass
+                bump("https" if tls else "http")
+            except OSError:
+                bump("errors")
+                time.sleep(1)
+
+    def ninep() -> None:
+        msg = b"9P2000"
+        body = struct.pack("<BHIH", 100, 0xFFFF, 8192, len(msg)) + msg
+        tversion = struct.pack("<I", 4 + len(body)) + body
+        while time.time() < stop:
+            try:
+                with socket.create_connection((host, 564), timeout=5) as sock:
+                    sock.sendall(tversion)
+                    sock.recv(64)
+                bump("9p")
+            except OSError:
+                bump("errors")
+                time.sleep(1)
+            time.sleep(0.5)
+
+    threads = [threading.Thread(target=get, args=(False,)), threading.Thread(target=get, args=(True,)),
+               threading.Thread(target=ninep)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    return counts
 
 
 # ---- parsing ----------------------------------------------------------------
@@ -267,6 +331,8 @@ def main() -> int:
     ap.add_argument("--wait-tasks", default="", help="comma-separated tasks that must be running first")
     ap.add_argument("--timeout", type=float, default=120.0, help="how long to wait for them, seconds")
     ap.add_argument("--cmd-wait", type=float, default=2.5)
+    ap.add_argument("--load", metavar="HOST", help="drive HTTP, HTTPS and 9P on HOST before the capture")
+    ap.add_argument("--load-secs", type=float, default=60.0)
     ap.add_argument("--save", type=Path, help="keep the raw console text here")
     ap.add_argument("--json", type=Path, help="write the ledger as JSON")
     ap.add_argument("--allow-build-mismatch", action="store_true")
@@ -295,6 +361,13 @@ def main() -> int:
             break
         print(f"[ramledger] waiting for {', '.join(sorted(missing))} ...", file=sys.stderr)
         time.sleep(10)
+    load = None
+    if a.load and not missing:
+        print(f"[ramledger] load on {a.load} for {a.load_secs:.0f} s ...", file=sys.stderr)
+        load = run_load(a.load, a.load_secs)
+        print(f"[ramledger] load done: {load}", file=sys.stderr)
+        text = grab()
+        d = parse(text)
     if a.save:
         a.save.write_text(text)
     if missing:
@@ -311,6 +384,7 @@ def main() -> int:
     L = ledger(d, a.elf)
     L["waited_for"] = sorted(want)
     L["missing"] = sorted(missing)
+    L["load"] = load
     print_ledger(L)
     bad = problems(d, a.max_stack_pct) if a.check else []
     for p in bad:

@@ -2,16 +2,22 @@
   "build": "1304.2c4a86a6+",
   "bulk": {
     "fallbacks": 0,
-    "free": 6008,
+    "free": 6004,
     "largest_run": 5888,
-    "peak": 1738,
+    "peak": 2761,
     "total": 7746
   },
   "fast": {
     "free": 24,
     "largest_run": 20,
-    "peak": 75,
+    "peak": 77,
     "total": 93
+  },
+  "load": {
+    "9p": 101,
+    "errors": 1,
+    "http": 700,
+    "https": 88
   },
   "missing": [],
   "not_shown": null,
@@ -39,6 +45,13 @@
         },
         "pages": 11,
         "runs": 1
+      },
+      "shell": {
+        "detail": {
+          "vterm_create (vterm.c)": 4
+        },
+        "pages": 4,
+        "runs": 2
       },
       "vfs": {
         "detail": {
@@ -102,48 +115,49 @@
       }
     }
   },
+  "problems": [],
   "stacks": [
     {
       "isolation": "-",
       "pid": 1,
       "size": 8192,
       "task": "lcdflush",
-      "used": 2908
+      "used": 2924
     },
     {
       "isolation": "-",
       "pid": 2,
       "size": 4096,
       "task": "uart",
-      "used": 568
+      "used": 596
     },
     {
       "isolation": "-",
       "pid": 3,
       "size": 4096,
       "task": "sdblk",
-      "used": 652
+      "used": 956
     },
     {
       "isolation": "-",
       "pid": 4,
       "size": 4096,
       "task": "i2c",
-      "used": 652
+      "used": 668
     },
     {
       "isolation": "-",
       "pid": 5,
       "size": 4096,
       "task": "touch",
-      "used": 1084
+      "used": 1020
     },
     {
       "isolation": "-",
       "pid": 6,
       "size": 8192,
       "task": "kbd",
-      "used": 248
+      "used": 636
     },
     {
       "isolation": "-",
@@ -157,7 +171,7 @@
       "pid": 8,
       "size": 4096,
       "task": "power",
-      "used": 296
+      "used": 612
     },
     {
       "isolation": "-",
@@ -171,14 +185,14 @@
       "pid": 10,
       "size": 16384,
       "task": "orient",
-      "used": 1020
+      "used": 1084
     },
     {
       "isolation": "-",
       "pid": 11,
       "size": 12288,
       "task": "p9srv",
-      "used": 652
+      "used": 700
     },
     {
       "isolation": "-",
@@ -213,7 +227,7 @@
       "pid": 17,
       "size": 24576,
       "task": "httpd",
-      "used": 1292
+      "used": 2396
     }
   ],
   "waited_for": [
