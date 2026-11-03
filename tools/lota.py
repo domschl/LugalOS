@@ -160,6 +160,24 @@ def read_manifest(build: Path) -> dict[str, list[str]]:
     return man
 
 
+BOOTREC_MAGIC = 0x42544F4C      # "LOTB", kernel/include/kernel/ota_image.h
+BOOTREC_SECTOR = 4096
+SLOT_NONE = 0xFF
+
+
+def bootrec_slot_a(region_size: int) -> bytes:
+    """The boot-record region as a cable install leaves it: a record in the
+    first sector naming slot A active and nothing pending (sequence 1), the
+    second sector erased. The loader boots A either way; with the record the
+    node also reports A as its active slot (/dev/ota `active=a`), as it does
+    after an update, instead of `active=-`. Layout and CRC as
+    ota_bootrec_make(): CRC-32 of the 12 bytes before it, then `tried` and
+    `failed` as all ones."""
+    head = struct.pack("<IIBBxx", BOOTREC_MAGIC, 1, 0, SLOT_NONE)
+    rec = head + struct.pack("<I", zlib.crc32(head)) + b"\xff" * 8
+    return rec + b"\xff" * (region_size - len(rec))
+
+
 def build_id(build: Path) -> str:
     m = re.search(r'LUGALOS_BUILD_ID "([^"]*)"', (build / "lugalos_build_id.h").read_text())
     if not m:

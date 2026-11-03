@@ -1674,6 +1674,12 @@ if(LUGALOS_TARGET STREQUAL "ESP32P4" OR LUGALOS_TARGET STREQUAL "ESP32C6")
     set(UF2_COMMANDS COMMAND ${CMAKE_COMMAND} -E true)
 else()
     set(UF2_COMMANDS COMMAND ${UF2CONV_PY} --family rp2350_riscv --base ${LUGALOS_FLASH_BASE} lugalos.bin -o lugalos.uf2)
+    if(LUGALOS_TARGET STREQUAL "RP2350")
+        # RP2350-E10: an A2 bootrom drops a drag-and-drop download into a partition
+        # without this leading block (tools/uf2_e10.py).
+        list(APPEND UF2_COMMANDS COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/tools/uf2_e10.py
+             lugalos.uf2 ${LUGALOS_E10_SECTOR_PHYS})
+    endif()
 endif()
 # flashfs.uf2 gets its own producer rule rather than riding lugalos.elf's
 # POST_BUILD, and the difference is not cosmetic: a POST_BUILD only runs when

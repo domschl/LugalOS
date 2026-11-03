@@ -17,6 +17,8 @@ RP2350 boards generate standard UF2 firmware files. The build outputs three imag
 
 The kernel runs from one of two slots the bootrom treats as an A/B pair (`doc/admin/updates.md`). A board that was flashed before the partition table existed needs the **first-time install**: BOOTSEL, then copy `ptable.uf2`, wait for the drive to settle, then copy `lugalos.uf2` to the BOOTSEL drive. `/flash0` and the identity sector are in the same place as before and survive it. With `picotool`, write the table, then **reboot into BOOTSEL (`picotool reboot -u`) before loading the image**: the bootrom reads the table at boot, and an image loaded before that is treated as an absolute write at flash address 0, which overwrites the table. After that, `lugalos.uf2` copied to the drive goes to the slot that is *not* the one the bootrom would boot, and the board restarts into it; or update over the network with `tools/lota.py push` and no BOOTSEL at all.
 
+Both steps run from the console port with no button: `python3 tests/hw/flash.py --uf2 build/<preset>/lugalos.uf2 --ptable --verify` writes the table and then the image (later updates drop `--ptable`). Every RP2350 `lugalos.uf2` starts with one block for erratum **RP2350-E10**: an A2 bootrom ignores a drag-and-drop download into a partition unless an absolute-family block comes first. The SDK aims that block at the end of flash, which on a 4 MB Pico wraps to the identity sector; LugalOS's goes to an unused sector (`LUGALOS_E10_SECTOR_PHYS`, `cmake/flash_layout.cmake`). Where `picotool` cannot run on the build host (the SDK tools ship an x86-64 binary), `tools/rp2350_ptable.py` encodes `ptable.uf2` itself.
+
 ### Method A: Automated BOOTSEL via 1200-Baud Touch
 LugalOS's USB CDC stack implements the 1200-baud touch protocol on the console port (`if00`). Opening and immediately closing the port at 1200 baud arms a deferred bootrom reset directly into BOOTSEL mode:
 
@@ -89,7 +91,7 @@ writes it again: a development board's loop, not a deployed node's.
 The C6's flash holds a small permanent **loader** at `0x0` (what the boot ROM
 starts), two **boot records**, and two **slots**, each with one update image
 (see [Updating Nodes over 9P](updates.md)). Through the header pins (or the
-C6-Zero's USB), `c6flash.py` writes the loader, erases the boot records and
+C6-Zero's USB), `c6flash.py` writes the loader, a boot record naming slot A active, and
 puts the build into slot A:
 ```bash
 ninja -C build/esp32c6

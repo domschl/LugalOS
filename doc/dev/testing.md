@@ -83,6 +83,10 @@ The runner executes over **376 distinct test cases** across three virtual target
 
 Hardware tests communicate with physical development boards over serial and USB CDC interfaces. They are safe to run speculatively: if a target board is not connected, the test skips cleanly rather than failing.
 
+### The Test Machine
+* **Serial ports:** the user running the suites is in the group that owns `/dev/ttyACM*` (`uucp` on Arch, `dialout` on Debian and Ubuntu).
+* **One inbound port: TCP 1883.** Boards on the LAN connect to the test broker the suites start on this host (`tests/mqttbroker.py`), always on 1883. Everything else is this host connecting out to the boards. A local mosquitto must not be running during the suites, since it would hold the port.
+
 ### Running Silicon Suites
 ```bash
 # Test RP2350 microcontrollers (RP2350-LCD-7, Pico 2, Pico 2 W)

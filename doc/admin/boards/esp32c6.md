@@ -45,7 +45,7 @@ tools/c6run.py --kernel build/esp32c6 --clobber-slot-a --cmd "preempttest" --cmd
 The XIP half goes into slot A, without its RAM half: a board booting slot A crashes at boot after a reset until `tools/c6flash.py build/esp32c6 --only slot` (or an update over 9P) writes the slot again. Use it on development boards; `--clobber-slot-a` is the acknowledgement, and without it `c6run.py` refuses.
 
 ### Flashing Standalone Firmware
-Installs the permanent loader, erases boot records, writes Slot A, verifies, and resets:
+Installs the permanent loader, writes a boot record naming Slot A active, writes Slot A, verifies, and resets:
 ```bash
 tools/c6flash.py build/esp32c6
 tools/c6flash.py build/esp32c6 --only slot     # updates slot A only, keeps loader

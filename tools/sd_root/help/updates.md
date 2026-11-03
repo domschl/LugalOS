@@ -224,7 +224,8 @@ it replaced: `/dev/ota` names the running slot by the build that is running and 
 
 The map is `cmake/flash_layout_esp32p4.cmake`. `0x010000-0x150000`, where the
 OS image used to be, is unused. `p4flash.py --only boot,os` writes the loader
-and slot A and erases the boot records, so slot A boots; `/flash0` and the
+and slot A and a boot record naming slot A active, so slot A boots and `/dev/ota`
+says so; `/flash0` and the
 identity are left alone. Push over any 9P path to the P4:
 `uv run tools/lota.py push build/esp32p4 --p4 nano --reboot` (the console), or
 `--tcp HOST --keyfile KEYFILE`. Opening the console resets the board, so

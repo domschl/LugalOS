@@ -19,7 +19,7 @@ the one definition), never typed here:
 
     loader   0x000000   arch/riscv/esp32c6/loader.c: what the boot ROM loads;
                         it boots a slot. Written through the header pins only.
-    bootrec  0x010000   the boot records: erased, so the board boots slot A
+    bootrec  0x010000   the boot records: slot A active, nothing pending
     slot_a   0x020000   the update image (tools/lota.py), laid out as a slot
 
 Slot B is left alone, and updates over 9P (tools/lota.py push) are how it gets
@@ -67,9 +67,9 @@ def main():
         writes.append(("loader", int(man["loader"][0], 0), loader_img))
     if a.only is None:
         # A fresh board: no record, so the loader boots slot A, which comes next.
-        erased = build / "bootrec-erased.bin"
-        erased.write_bytes(b"\xff" * int(man["bootrec"][1], 0))
-        writes.append(("bootrec", int(man["bootrec"][0], 0), erased))
+        rec = build / "bootrec-slot-a.bin"
+        rec.write_bytes(lota.bootrec_slot_a(int(man["bootrec"][1], 0)))
+        writes.append(("bootrec", int(man["bootrec"][0], 0), rec))
     if a.only in (None, "slot"):
         image, info = lota.make_image(build)
         (build / "lugalos-ota.img").write_bytes(image)

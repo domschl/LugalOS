@@ -9,6 +9,13 @@ volume, the UF2 is copied onto it, and it reboots into the new firmware.
     uv run flash.py                      # flash build/rp2350/lugalos.uf2
     uv run flash.py --uf2 path/to.uf2
     uv run flash.py --verify             # also check /proc/buildid afterwards
+    uv run flash.py --uf2 build/rp2350-wifi/lugalos.uf2 --ptable
+                                         # first-time install: the A/B partition
+                                         # table (ptable.uf2 beside the image), then
+                                         # the image into slot A
+
+A partitioned board needs the RP2350-E10 block every lugalos.uf2 starts with
+(tools/uf2_e10.py): an A2 bootrom drops a download into a partition without it.
 
 A console that answers nothing is not necessarily a wedged board: on the
 clock persona the shell sits behind an application that owns the terminal
@@ -265,11 +272,26 @@ def wait_for_console(timeout: float = 25.0, console: str | None = None) -> str |
     return None
 
 
+def copy_uf2(vol: str, uf2: Path) -> None:
+    """Not shutil.copyfile(): its close() flushes this process's own buffers,
+    but not necessarily all the way through the OS/USB stack to the device --
+    found the hard way, three consecutive flashes each reporting success while
+    the board kept coming back reporting the *previous* build's id. os.fsync()
+    forces the write out before this function considers the copy done."""
+    dest = Path(vol) / uf2.name
+    with open(uf2, "rb") as src, open(dest, "wb") as dst:
+        shutil.copyfileobj(src, dst)
+        dst.flush()
+        os.fsync(dst.fileno())
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--uf2", default=str(DEFAULT_UF2), help="UF2 image to flash")
     ap.add_argument("--console", help="Override auto-detected console port")
+    ap.add_argument("--ptable", action="store_true",
+                    help="first-time install: write ptable.uf2 (beside the image) first")
     ap.add_argument("--verify", action="store_true",
                     help="Read /proc/buildid afterwards and compare with the local build")
     args = ap.parse_args()
@@ -366,17 +388,36 @@ def main() -> int:
         else:
             print(f"[*] BOOTSEL volume mounted: {vol}")
 
-    # Not shutil.copyfile(): its close() flushes this process's own
-    # buffers, but not necessarily all the way through the OS/USB stack to
-    # the device -- found the hard way, three consecutive flashes each
-    # reporting success while the board kept coming back reporting the
-    # *previous* build's id. os.fsync() forces the write out before this
-    # function considers the copy done.
-    dest = Path(vol) / uf2.name
-    with open(uf2, "rb") as src, open(dest, "wb") as dst:
-        shutil.copyfileobj(src, dst)
-        dst.flush()
-        os.fsync(dst.fileno())
+    if args.ptable:
+        table = uf2.parent / "ptable.uf2"
+        if not table.exists():
+            print(f"[!] No {table}: build the preset first")
+            return 1
+        print(f"[*] Writing the partition table ({table})...")
+        copy_uf2(vol, table)
+        # The bootrom reboots after the table. With nothing in the slots it
+        # comes back in BOOTSEL; if it finds an old image to boot, touch again.
+        gone = time.time() + 10.0
+        while time.time() < gone and bootsel_volumes():
+            time.sleep(0.2)
+        vol2 = wait_for_bootsel(timeout=20.0)
+        if not vol2:
+            console = wait_for_console(timeout=10.0, console=args.console)
+            if console:
+                print("[*] An old image booted; touching again for the image itself")
+                touch_1200(console)
+                vol2 = wait_for_bootsel()
+        if not vol2:
+            dev = bootsel_block_device()
+            vol2 = try_mount(dev) if dev else None
+        if not vol2:
+            print("[!] The board did not come back in BOOTSEL after the partition table.")
+            return 1
+        vol = vol2
+        time.sleep(0.7)
+        print(f"[*] Partition table written; BOOTSEL again at {vol}")
+
+    copy_uf2(vol, uf2)
     print("[*] UF2 copied and synced; waiting for the board to leave BOOTSEL...")
 
     # The definitive signal the bootrom has actually consumed the whole

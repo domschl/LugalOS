@@ -65,6 +65,10 @@ from p9lib import connect_tcp  # noqa: E402
 sys.path.insert(0, str(REPO_ROOT / "tests"))
 from mqttbroker import MqttBroker  # noqa: E402
 
+# The port the test broker listens on: the board connects to this host, so it is the one
+# inbound port a test machine needs open (doc/dev/testing.md).
+MQTT_TEST_PORT = 1883
+
 BUILD_DIR = REPO_ROOT / "build" / "esp32p4"   # --build overrides
 
 
@@ -1171,7 +1175,13 @@ def test_wifi_through_c6(b: Board) -> tuple[str, bool, str]:
     host_ip = _host_ip_towards(addr)
     if host_ip is None:
         return name, False, f"no route from this host to {addr}"
-    broker = MqttBroker(host="0.0.0.0")
+    # 1883, the one port a test machine opens for the boards (doc/dev/testing.md): the board
+    # connects in. A broker already on it (a local mosquitto) is reported, not worked around.
+    try:
+        broker = MqttBroker(host="0.0.0.0", port=MQTT_TEST_PORT)
+    except OSError as e:
+        return name, False, (f"{addr}: echoes and 9P fine, but the test broker cannot listen on "
+                             f"{MQTT_TEST_PORT} ({e}); is a local mosquitto running?")
     topic, payload = f"lugalos/test/{secrets.token_hex(4)}", f"wifi-{secrets.token_hex(4)}"
     try:
         c.cmd(f"mqtt connect {host_ip}:{broker.port}", deadline=20.0)
@@ -1183,7 +1193,7 @@ def test_wifi_through_c6(b: Board) -> tuple[str, bool, str]:
         broker.close()
     if not seen or (topic, payload) not in pubs:
         return name, False, (f"{addr}: echoes and 9P fine, but the broker at {host_ip}:{broker.port} saw "
-                             f"{pubs or 'nothing'} ({broker.connections} connections; a firewall?)")
+                             f"{pubs or 'nothing'} ({broker.connections} connections; is TCP {MQTT_TEST_PORT} open on this host?)")
     return name, True, (f"{addr}: {got}/20 echoes, {rtt.group(1) if rtt else '?'} ms; 9P read /proc/version "
                         f"and /c6/proc/version; MQTT {topic} reached {host_ip}")
 

@@ -155,13 +155,20 @@ per-endpoint buffers and the two copies per call**, not isolation (they have non
 * *Found on the way:*
   * The C6-Zero `esp32c6-zero-86c2` had no broker stored, so it published nothing; nalanda
     (192.168.178.32:1883) stored with `mqttcfg` at the owner's request.
-  * The Pico 2 W has no A/B partition table (`/dev/ota`: `layout=none`); updated by 1200-baud touch
-    and a copy to the BOOTSEL drive.
-  * `test_esp32p4.py`'s update-state case fails after any `p4flash.py` install: the boot records are
-    erased, so `/dev/ota` says `active=-`. Its Wi-Fi case needs this host's firewall open for the
-    test's own broker (a random port).
-  * The host harnesses fail to build on an aarch64 host: `third_party/crypto/p256-m` enables its
-    32-bit Arm assembly for any `__ARM_ARCH >= 6` with profile 'A', which includes AArch64.
+  * *Fixed 2026-11-03:* the Pico 2 W had no A/B partition table (`layout=none`). Partitioned by
+    1200-baud touch and `ptable.uf2`; the kernel UF2 then failed silently: it is an A2 chip (erratum
+    RP2350-E10). Every RP2350 `lugalos.uf2` now starts with the E10 block (`tools/uf2_e10.py`), aimed
+    at an unused sector (`LUGALOS_E10_SECTOR_PHYS`) rather than the SDK's end of flash, which on a
+    4 MB part is the identity sector. `tools/rp2350_ptable.py` encodes the table itself where
+    `picotool` cannot run; `tests/hw/flash.py --ptable` does the first-time install. Verified: the
+    identity survived, `layout=partition`, and the next update went to slot A.
+  * *Fixed:* `p4flash.py` and `c6flash.py` write a boot record naming slot A active instead of
+    erasing the records (`tools/lota.py bootrec_slot_a()`), so `/dev/ota` says `active=a` after a
+    cable install and `test_esp32p4.py`'s update-state case passes (Tab5).
+  * *Fixed:* the hardware test broker listens on 1883, the one inbound port a test machine opens
+    (`doc/dev/testing.md`); the Tab5's Wi-Fi case passes.
+  * *Fixed:* `third_party/crypto/p256-m` excludes its 32-bit Arm assembly on AArch64 (noted in
+    `ORIGIN.md`); the host harnesses build and pass on an ARM64 host.
 
 ### 66.2 Board/profile split, dev/production split (scheduled)
 

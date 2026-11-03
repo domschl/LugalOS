@@ -56,3 +56,12 @@ set(LUGALOS_FLASHFS_SIZE    0x00100000)   # 1 MB -- must match the FAT32 image
 set(LUGALOS_IDENTITY_PHYS   0x003FF000)
 set(LUGALOS_IDENTITY_BASE   0x10800000)
 set(LUGALOS_IDENTITY_SIZE   0x00001000)   # one 4 KB sector
+
+# The sector a lugalos.uf2's leading RP2350-E10 block lands in (tools/uf2_e10.py).
+# On an A2 chip the bootrom reads the partition table before it has set up the
+# flash, so a download into a partition fails unless an absolute-family block
+# comes first; the bootrom writes that block, which erases its sector. The SDK
+# aims it at the end of flash, which on a 4 MB part wraps to the identity
+# sector. This one is unused on every RP2350 layout: past slot A's header and
+# below /flash0 here, and inside the free first 4 MB on the RP2350-LCD-7.
+set(LUGALOS_E10_SECTOR_PHYS 0x0017F000)

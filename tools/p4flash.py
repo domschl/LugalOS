@@ -132,8 +132,8 @@ def main() -> int:
     ap.add_argument("--baud", type=int, default=921600)
     ap.add_argument("--only", help="comma-separated segments to write "
                     "(boot,rec,os,fs); default all. boot is the permanent loader, rec the "
-                    "boot records (erased: slot A boots), os slot A, fs /flash0. os also "
-                    "erases the records, or a board last updated into slot B would "
+                    "boot records (slot A active, nothing pending), os slot A, fs /flash0. os "
+                    "also rewrites the records, or a board last updated into slot B would "
                     "keep booting it")
     ap.add_argument("--verify", action="store_true",
                     help="re-verify with esptool's on-chip digest afterwards")
@@ -143,7 +143,7 @@ def main() -> int:
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
     import lota
     man = lota.read_manifest(a.build)
-    segs.append(("rec", int(man["bootrec"][0], 0), int(man["bootrec"][1], 0), "bootrec-erased.bin", "exact"))
+    segs.append(("rec", int(man["bootrec"][0], 0), int(man["bootrec"][1], 0), "bootrec-slot-a.bin", "exact"))
     segs.append(("os", int(man["slot_a"][0], 0), int(man["slot_a"][1], 0), "lugalos-slot-a.img", "fit"))
     wanted = set(a.only.split(",")) if a.only else {n for n, *_ in segs}
     if "os" in wanted:
@@ -158,7 +158,7 @@ def main() -> int:
     if "boot" in wanted:
         make_boot_image(a.build)
     if "rec" in wanted:
-        (a.build / "bootrec-erased.bin").write_bytes(b"\xff" * int(man["bootrec"][1], 0))
+        (a.build / "bootrec-slot-a.bin").write_bytes(lota.bootrec_slot_a(int(man["bootrec"][1], 0)))
     if "os" in wanted:
         image, _ = lota.make_image(a.build)
         offsets = (int(man["parts"][0], 0), int(man["parts"][1], 0))
