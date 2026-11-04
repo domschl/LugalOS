@@ -1507,7 +1507,12 @@ static bool st_rows(ed_t *e, const char *const *want, unsigned n) {
         uint32_t r = row_end(e, s, &eol);
         uint32_t wl = (uint32_t)strlen(want[i]);
         if (r - s != wl || memcmp(e->buf + s, want[i], wl) != 0) {
-            cprintf("    row %u: '%.*s' want '%s'\n", i, (int)(r - s), e->buf + s, want[i]);
+            /* Copied: the kernel's formatter has no "%.*s". */
+            char got[64];
+            uint32_t gl = r - s < sizeof got - 1 ? r - s : (uint32_t)sizeof got - 1;
+            memcpy(got, e->buf + s, gl);
+            got[gl] = 0;
+            cprintf("    row %u: '%s' want '%s'\n", i, got, want[i]);
             return false;
         }
         s = next_row(e, s);

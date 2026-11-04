@@ -146,11 +146,12 @@ int tls_ctl_write(const char *buf, uint32_t count) {
     uint32_t len = count;
     while (len && (buf[len - 1] == '\n' || buf[len - 1] == '\r' || buf[len - 1] == ' ')) len--;
     int rc;
-    if (len == 6 && memcmp(buf, "keygen", 6) == 0) rc = tls_keygen(false);
-    else if (len == 5 && memcmp(buf, "rekey", 5) == 0) rc = tls_keygen(true);
-    else if (len == 5 && memcmp(buf, "clear", 5) == 0) rc = tls_clear();
+    const char *what;
+    if (len == 6 && memcmp(buf, "keygen", 6) == 0) { what = "keygen"; rc = tls_keygen(false); }
+    else if (len == 5 && memcmp(buf, "rekey", 5) == 0) { what = "rekey"; rc = tls_keygen(true); }
+    else if (len == 5 && memcmp(buf, "clear", 5) == 0) { what = "clear"; rc = tls_clear(); }
     else return -1;
-    if (rc != TLS_OK) printk("[TLS] %.*s: %s\n", (int)len, buf, tls_result_str(rc));
+    if (rc != TLS_OK) printk("[TLS] %s: %s\n", what, tls_result_str(rc));
     return rc == TLS_OK ? (int)count : -1;
 }
 
