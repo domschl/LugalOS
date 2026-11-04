@@ -427,17 +427,28 @@ still exit and return its pages: nothing asks for them again. That part moves to
 
 Measured savings of 66.1–66.7 per board decide whether 66.8–66.10 are scheduled.
 
-### 66.8 Folding of U-mode drivers (optional)
+* **Held 2026-11-04.** Free pages under the loaded scenario, 66.1 -> 66.7: C6-Zero (release)
+  5 of 68 -> 16 of 74 (lowest 11); Pico 2 W 19 of 80 -> 40 of 83; LCD-7B 11 of 71 -> 28 of 88;
+  Tab5 25 of 93 (unchanged). Owner's decision: 66.8 and 66.9 dropped, the measurement half of
+  66.10 scheduled; a C3 port decided after it.
+
+### 66.8 Folding of U-mode drivers -- dropped (review after 66.7)
+
+It would waive the memory isolation of the Pico 2 W's drivers for about 5 pages, on a board with
+40 free under load.
 
 * As 66.7 for the RP2350's U-mode drivers: an explicit isolation waiver per preset, with an ADR.
 
-### 66.9 Build-time unikernel evaluation (optional)
+### 66.9 Build-time unikernel evaluation -- dropped (review after 66.7)
+
+What is left (the scheduler, the channel tables, the long-running tasks) is small against the
+pages already gained.
 
 * Whatever overhead remains after 66.7/66.8 (scheduler, channel tables, remaining tasks), and
   whether a further step is worth a second semantics for every service. Expected: folding covers
   most of it.
 
-### 66.10 ESP32-C3 budget target (optional)
+### 66.10 ESP32-C3 budget target (measurement scheduled; the port decided after it)
 
 * A C6 or QEMU rv32 preset with `palloc` capped to a C3-equivalent budget, running the sensor
   profile's load scenario. A C3 port (atomics without the A extension) only after that fits.
