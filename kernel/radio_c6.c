@@ -259,6 +259,25 @@ void radio_c6_stats(void) {
 int radio_netif_register(radio_ctx_t *ctx);
 void radio_c6_trace(int on) { g_kobj_trace = on; }
 
+/* The radio's arena and stack, taken once and kept. Called at boot by radio_c6_autostart(), before
+ * the other services start: the arena is a 64 KB block on a 64 KB boundary (one NAPOT region),
+ * which has the fewest places it can go -- on a small heap one -- and a page some short-lived task
+ * takes there first would keep the radio from starting at all. The arena before the stack, for
+ * the same reason. False if either is not there; neither is then held. */
+/* single task: the boot (radio_c6_autostart()), then the one radio_c6_start() of this boot
+ * (claimed by s_starting), which takes them. g_rstack and g_rarena stay NULL until then: they
+ * mean "the radio was started". */
+static void *g_res_arena, *g_res_stack;
+
+static bool radio_reserve(void) {
+    if (!g_res_arena) g_res_arena = palloc_pages_aligned(ARENA_PAGES, ARENA_PAGES);
+    if (g_res_arena && !g_res_stack) g_res_stack = palloc_pages_aligned(STACK_PAGES, STACK_PAGES);
+    if (g_res_arena && g_res_stack) return true;
+    if (g_res_arena) palloc_free(g_res_arena, ARENA_PAGES);
+    g_res_arena = NULL;
+    return false;
+}
+
 int radio_c6_start(const char *ssid, const char *psk) {
     /* The blob's initialised data is loaded once, with the image; a second start would run
      * it from the state the first one left. Until the kernel keeps a pristine copy, one
@@ -270,13 +289,13 @@ int radio_c6_start(const char *ssid, const char *psk) {
         cprintf("radio: already started in this boot -- reset the board to start it again\n");
         return 1;
     }
-    g_rstack = palloc_pages_aligned(STACK_PAGES, STACK_PAGES);
-    g_rarena = palloc_pages_aligned(ARENA_PAGES, ARENA_PAGES);
-    if (!g_rstack || !g_rarena) {
+    if (!radio_reserve()) {
         cprintf("radio: out of memory for the radio's heap/stack\n");
         s_starting = false;
         return 1;
     }
+    g_rarena = g_res_arena;
+    g_rstack = g_res_stack;
     radio_ctx_t *c0 = (radio_ctx_t *)g_rstack;
     c0->join = 0;
     if (ssid && psk) {
@@ -603,6 +622,7 @@ uint32_t radio_c6_proc_render(char *out, uint32_t cap) {
 
 void radio_c6_autostart(void) {
 #if defined(CONFIG_RADIO_C6)
+    if (!radio_reserve()) printk("[wlan] no room for the radio's 72 KB arena and stack: it will not start\n");
     if (task_create("wlan", wlan_autostart_task, NULL) < 0) printk("[wlan] could not create the autostart task\n");
 #endif
 }
