@@ -115,11 +115,16 @@ the power in the middle of one by hand.
 ## When a push fails
 
 * **`no Rversion from ... after warm-up retries`**, or **`connection closed while reading a SLIP
-  frame`** partway through: the P4 is not answering 9P on its console, most often because it is
-  hung. Check with `python3 tools/p4run.py --board BOARD --listen --listen-secs 10 --cmd version`
-  (no reply: it is hung), reset it with `python3 tools/p4run.py --board BOARD --run --listen-secs 30`,
-  wait for `lsh>`, and push again. A push only ever writes the slot that is not running, so an
-  interrupted one leaves the running image as it was.
+  frame`** partway through (p9lib's read timed out): the P4 stopped answering 9P on its console.
+  Ping the board: if it answers, the board is running and only its console is stuck (a known
+  intermittent on the LCD-7B, [open issues](open_issues.md)). Push over Wi-Fi instead
+  (`--tcp HOST --keyfile KEY`), or reset the board with
+  `python3 tools/p4run.py --board BOARD --run --listen-secs 30`, wait for `lsh>`, and push again.
+  If it does not answer pings either, it is hung: the reset is the way back. A push only ever
+  writes the slot that is not running, so an interrupted one leaves the running image as it was.
+* **`the image is unsigned, and this node takes signed images only`**: the node has a release key
+  (`release_key=` in `/dev/ota`) and this host has no signing key. Copy the key to
+  `~/.config/lugalos/keys/ota-release.pem`; `lota.py pubkey` must print the node's key id.
 * **`state=receiving`** (or `received`) in `/dev/ota` with no push running: an earlier upload
   was cut off. The next `begin` starts over; `abort` clears it by hand.
 * **`fell_back=yes`** after a push: the new image did not confirm its trial and the board went

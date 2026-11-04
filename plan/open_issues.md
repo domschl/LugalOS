@@ -322,6 +322,21 @@ after an error at `commit` and goes on when it says committed. **What would sett
 sides, the time of the last frame sent and received, and the SDIO slave's token and packet length as
 the P4 last read them, frozen at the moment the P4 declares the link down.
 
+## The LCD-7B's 9P over its console stops answering partway through a session (found 2026-11-04)
+
+**Seen:** `lota.py push`/`push-board --p4 lcd7b`, 3 of 6 sessions while updating to 0.19.0, with the P4 on
+build `1315.4128a2fa+`: a walk or a read of `/dev/ota` gets no reply, and p9lib reports "connection
+closed while reading a SLIP frame" (its read timed out: pyserial returns nothing on a timeout), or "no
+Rversion ... after warm-up retries" when the next session starts. Afterwards the console does not
+answer typed commands either (one stray byte), while the board answers pings and serves 9P over
+Wi-Fi: not a hung board, a stuck console. A reset (`p4run.py --run`) or the reboot into a new image
+restores it. The other sessions ran to the end, one of them a whole C6 update through `/c6`. Not
+seen on the Tab5 in this round (its console was used once, for a C6 push).
+**Worked around:** `push-board --tcp HOST --keyfile KEY`; both P4s were updated that way.
+**What would settle it:** whether 0.19.0 does it too; and, at the moment it happens, read over 9P on
+TCP: the console demultiplexer's state (`/proc/uartdemux`, or what it has instead), the 9P link's
+counters and the tail of `/proc/kmsg`.
+
 ## A C6 up an hour or more could not rejoin a network it lost (found 2026-10-31)
 
 Seen on every C6 that afternoon and evening (the C6-Zero, the NANO's, the Tab5's): after an hour or
