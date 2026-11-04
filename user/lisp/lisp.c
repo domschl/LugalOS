@@ -5197,7 +5197,6 @@ static lisp_val_t *prim_chess_console(lisp_val_t *args, lisp_val_t *env) {
 
 static lisp_val_t *prim_chess_touch(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
-    console_set_title("Chess");
     lisp_park_t park;
     lisp_park(&park);
     chess_touch_run();

@@ -17,7 +17,7 @@
 #include <stdint.h>
 #include "drivers/canvas1.h"
 
-#define UGUI_MAX_HITBOXES   48
+#define UGUI_MAX_HITBOXES   128
 
 /* Paper-and-ink GRAY8 palette */
 #define UGUI_GRAY_PAPER     250u    /* Soft book-grade paper/cream (0xFA) */

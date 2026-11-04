@@ -3139,10 +3139,6 @@ static void chess_touch_draw(void) {
             int sx = bx + f * sq_sz;
             int sy = by + r * sq_sz;
 
-            /* Hit-box for this square */
-            ugui_add_hit(&g_touch_ui_ctx, (ugui_rect_t){ (int16_t)sx, (int16_t)sy, (int16_t)sq_sz, (int16_t)sq_sz },
-                         (uint16_t)(CHESS_TOUCH_ID_SQUARE_BASE + sq), 0);
-
             bool dark = ((rank + file) % 2) == 0;
             unsigned bg_pat = dark ? CANVAS1_GREY : CANVAS1_WHITE;
             canvas1_fill(c1, sx, sy, sx + sq_sz - 1, sy + sq_sz - 1, bg_pat);
@@ -3388,6 +3384,7 @@ static void chess_touch_draw(void) {
     uint8_t sreq[1] = { 'S' }, sreply[SCREEN_REPLY_LEN];
     (void)console_canvas(sreq, 1, sreply);
 #if defined(LCDTERM_PRESENT)
+    lcdterm_repaint();
     lcdterm_damage();
 #endif
 }
@@ -3419,70 +3416,78 @@ static bool chess_touch_apply_move(Move m) {
 static void chess_touch_handle_tap(int tx, int ty) {
     int16_t hit_idx = -1;
     uint16_t id = ugui_hit_test(&g_touch_ui_ctx, tx, ty, &hit_idx);
-    if (id == 0) return;
 
-    if (id >= CHESS_TOUCH_ID_SQUARE_BASE && id < CHESS_TOUCH_ID_SQUARE_BASE + 64) {
-        int sq = id - CHESS_TOUCH_ID_SQUARE_BASE;
-        if (g_touch_pending_promo) return;
+    if (id == 0) {
+        if (g_touch_sq_sz > 0 &&
+            tx >= g_touch_board_x && tx < g_touch_board_x + 8 * g_touch_sq_sz &&
+            ty >= g_touch_board_y && ty < g_touch_board_y + 8 * g_touch_sq_sz) {
+            if (g_touch_pending_promo) return;
+            int f = (tx - g_touch_board_x) / g_touch_sq_sz;
+            int r = (ty - g_touch_board_y) / g_touch_sq_sz;
+            if (f < 0 || f >= 8 || r < 0 || r >= 8) return;
+            int rank = g_touch_flip ? r : (7 - r);
+            int file = g_touch_flip ? (7 - f) : f;
+            int sq = rank * 8 + file;
 
-        if (g_touch_sel_sq < 0) {
-            /* First tap: select source piece if it belongs to current side */
-            int piece = g_chess_pos.board[sq];
-            if (piece != NO_PIECE) {
-                int side = (g_chess_pos.color_bbs[WHITE] & (1ULL << sq)) ? WHITE : BLACK;
-                if (side == g_chess_pos.side) {
-                    g_touch_sel_sq = sq;
-                    chess_touch_draw();
-                }
-            }
-        } else {
-            /* Second tap: destination or select new piece */
-            int from = g_touch_sel_sq;
-            int to = sq;
-
-            MoveList list;
-            generate_moves(&g_chess_pos, &list);
-            bool only_promo = false;
-            Move valid_move = 0;
-
-            for (int i = 0; i < list.count; i++) {
-                Move m = list.moves[i];
-                if (MOVE_FROM(m) == from && MOVE_TO(m) == to) {
-                    if (make_move(&g_chess_pos, m)) {
-                        unmake_move(&g_chess_pos);
-                        if (move_is_promo(m)) {
-                            only_promo = true;
-                        } else {
-                            valid_move = m;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if (only_promo) {
-                g_touch_pending_from = from;
-                g_touch_pending_to = to;
-                g_touch_pending_promo = true;
-                chess_touch_draw();
-                return;
-            }
-
-            if (valid_move != 0) {
-                chess_touch_apply_move(valid_move);
-            } else {
-                /* Not a valid move: check if tapping another of own pieces */
+            if (g_touch_sel_sq < 0) {
+                /* First tap: select source piece if it belongs to current side */
                 int piece = g_chess_pos.board[sq];
                 if (piece != NO_PIECE) {
                     int side = (g_chess_pos.color_bbs[WHITE] & (1ULL << sq)) ? WHITE : BLACK;
                     if (side == g_chess_pos.side) {
                         g_touch_sel_sq = sq;
                         chess_touch_draw();
-                        return;
                     }
                 }
-                g_touch_sel_sq = -1;
-                chess_touch_draw();
+            } else {
+                /* Second tap: destination or select new piece */
+                int from = g_touch_sel_sq;
+                int to = sq;
+
+                MoveList list;
+                generate_moves(&g_chess_pos, &list);
+                bool only_promo = false;
+                Move valid_move = 0;
+
+                for (int i = 0; i < list.count; i++) {
+                    Move m = list.moves[i];
+                    if (MOVE_FROM(m) == from && MOVE_TO(m) == to) {
+                        if (make_move(&g_chess_pos, m)) {
+                            unmake_move(&g_chess_pos);
+                            if (move_is_promo(m)) {
+                                only_promo = true;
+                            } else {
+                                valid_move = m;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (only_promo) {
+                    g_touch_pending_from = from;
+                    g_touch_pending_to = to;
+                    g_touch_pending_promo = true;
+                    chess_touch_draw();
+                    return;
+                }
+
+                if (valid_move != 0) {
+                    chess_touch_apply_move(valid_move);
+                } else {
+                    /* Not a valid move: check if tapping another of own pieces */
+                    int piece = g_chess_pos.board[sq];
+                    if (piece != NO_PIECE) {
+                        int side = (g_chess_pos.color_bbs[WHITE] & (1ULL << sq)) ? WHITE : BLACK;
+                        if (side == g_chess_pos.side) {
+                            g_touch_sel_sq = sq;
+                            chess_touch_draw();
+                            return;
+                        }
+                    }
+                    g_touch_sel_sq = -1;
+                    chess_touch_draw();
+                }
             }
         }
         return;
@@ -3664,20 +3669,25 @@ void chess_touch_run(void) {
         ChessAbort a = chess_abort_requested();
         if (a != CHESS_ABORT_NONE) break;
 
+        if (console_has_char()) {
+            char c = console_getc();
+            if (c == 0x03 || c == 'q' || c == 'Q') break;
+        }
+
         if (console_canvas_poll_closed()) break;
+
+        int cur_w = 0, cur_h = 0;
+        if (cb_canvas(&cur_w, &cur_h) && (cur_w != g_touch_win_w || cur_h != g_touch_win_h)) {
+            chess_touch_draw();
+        }
 
         int tx, ty;
         if (console_canvas_poll_tap(&tx, &ty)) {
             chess_touch_handle_tap(tx, ty);
         }
 
-        if (console_has_char()) {
-            char c = console_getc();
-            if (c == 0x03 || c == 'q' || c == 'Q') break;
-        }
-
         sched_yield();
-        time_delay_us(20000);
+        time_delay_us(10000);
     }
 
     g_touch_active = false;

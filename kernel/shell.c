@@ -8227,6 +8227,7 @@ static void shell_idle_poll(void) {
             console_set_active_win_type(RIBBON_WIN_LAUNCHER);
             launcher_update();
         }
+        console_set_title("lsh");
     }
 }
 
