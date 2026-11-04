@@ -16,6 +16,8 @@
 #include "drivers/font_noto_mono.h"
 #endif
 #include "drivers/lcdterm_attr.h"
+#include "drivers/osk.h"
+#include "drivers/usbkbd_task.h"
 
 #if defined(CONFIG_BOARD_RP2350)
 #define CANVAS_SUPPORT_RGB565 0
@@ -1125,6 +1127,30 @@ LCDTERM_UTEXT static void draw_all_from(screen_t *scr, bool restore) {
                 vtterm_repaint(&scr->terms[t].vt);
             }
         }
+#if defined(TOUCH_PRESENT)
+        if (scr->ribbon.active_idx < scr->ribbon.count) {
+            const ribbon_win_t *act_w = &scr->ribbon.wins[scr->ribbon.active_idx];
+            if (act_w->type == RIBBON_WIN_TERM) {
+                int32_t vx0 = act_w->rx0 - xv;
+                int32_t vx1 = act_w->rx1 - xv;
+                int win_w = (int)(vx1 - vx0 - 1);
+                if (win_w > 0 && vx1 >= 0 && vx0 < (int32_t)cv->w) {
+                    if (osk_is_visible()) {
+                        int osk_h = osk_get_height();
+                        int osk_y0 = tile_y1 - osk_h;
+                        osk_draw(cv, (int)vx0 + 1, osk_y0, win_w, osk_h);
+                    } else if (!usbkbd_is_present()) {
+                        int sc = (int)CHROME_SCALE;
+                        int btn_w = 64 * sc;
+                        int btn_h = 22 * sc;
+                        int btn_x = (int)vx1 - btn_w - 6 * sc;
+                        int btn_y = tile_y1 - btn_h - 6 * sc;
+                        osk_draw_toggle_button(cv, btn_x, btn_y, btn_w, btn_h);
+                    }
+                }
+            }
+        }
+#endif
     } else {
         vtterm_repaint(&scr->vt);
     }
@@ -1200,9 +1226,19 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout) {
         vtterm_set_logical_cols(&scr->terms[t].vt, w->cols);
         vtterm_set_col_offset(&scr->terms[t].vt, (uint16_t)col_off);
 
+        unsigned term_rows = rows;
+#if defined(TOUCH_PRESENT)
+        if (i == scr->ribbon.active_idx && osk_is_visible()) {
+            int osk_rows = osk_get_text_rows((int)FONT_CELL_H);
+            if ((int)term_rows > osk_rows + 2) {
+                term_rows -= (unsigned)osk_rows;
+            }
+        }
+#endif
+
         fbtext_t text;
         fbtext_init(&text, scr->cv.fb + SCREEN_TEXT_Y * scr->cv.stride + (uint32_t)c0 * FONT_CELL_BYTES, scr->cv.stride,
-                    (unsigned)win_c, rows);
+                    (unsigned)win_c, term_rows);
         text.xbyte = (uint16_t)(c0 * FONT_CELL_BYTES);
         text.whole_rows = (win_c == scr->full_cols && c0 == 1);
         vtterm_resize(&scr->terms[t].vt, &text);
@@ -2177,6 +2213,44 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
                 reply[11] = w->vterm_id;
                 return;
             }
+#if defined(TOUCH_PRESENT)
+            if (w->type == RIBBON_WIN_TERM) {
+                int vx0 = (int)(w->rx0 - scr->ribbon.x_view);
+                int vx1 = (int)(w->rx1 - scr->ribbon.x_view);
+                int win_w = vx1 - vx0 - 1;
+                int tile_y1 = SCREEN_TEXT_Y + (int)FONT_CELL_H * (int)SCREEN_TEXT_ROWS(scr->cv.h) + 1;
+                if (osk_is_visible()) {
+                    int osk_h = osk_get_height();
+                    int osk_y0 = tile_y1 - osk_h;
+                    if (py >= osk_y0 && py < tile_y1 && px >= vx0 && px < vx1) {
+                        int cx = px - (vx0 + 1);
+                        int cy = py - osk_y0;
+                        if (osk_handle_tap(cx, cy, win_w, osk_h)) {
+                            place(scr, scr->layout);
+                            draw_all_from(scr, false);
+                            screen_flush();
+                            reply[0] = 0;
+                            return;
+                        }
+                    }
+                } else if (!usbkbd_is_present()) {
+                    int sc = (int)CHROME_SCALE;
+                    int btn_w = 64 * sc;
+                    int btn_h = 22 * sc;
+                    int btn_x = vx1 - btn_w - 6 * sc;
+                    int btn_y = tile_y1 - btn_h - 6 * sc;
+                    if ((px >= btn_x && px < btn_x + btn_w && py >= btn_y && py < btn_y + btn_h) ||
+                        (py >= tile_y1 - 60 * sc && py < tile_y1)) {
+                        osk_set_visible(true);
+                        place(scr, scr->layout);
+                        draw_all_from(scr, false);
+                        screen_flush();
+                        reply[0] = 0;
+                        return;
+                    }
+                }
+            }
+#endif
             status = 0;
         } else if (idx >= 0) {
             int32_t start_xv = scr->ribbon.x_view;

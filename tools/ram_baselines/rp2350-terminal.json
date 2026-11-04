@@ -1,18 +1,18 @@
 {
   "bulk_per_file": {
-    "drivers/launcher_view.c": 4440,
-    "drivers/reader_view.c": 32640,
+    "drivers/launcher_view.c": 5400,
+    "drivers/reader_view.c": 36480,
     "kernel/palloc.c": 8192,
     "kernel/zonetest.c": 64,
     "user/lisp/lisp.c": 1523712
   },
   "bulk_per_subsystem": {
-    "display": 37080,
+    "display": 41880,
     "kernel": 8192,
     "lisp": 1523712,
     "selftest": 64
   },
-  "bulk_total": 1569048,
+  "bulk_total": 1573848,
   "heap_bytes": 299008,
   "heap_pages": 73,
   "per_file": {
@@ -118,7 +118,7 @@
     "user/chess/include/zobrist_tables.h": 6784,
     "user/chess/src/bitboard.c": 2176,
     "user/chess/src/chess_platform.c": 8,
-    "user/chess/src/chess_ui.c": 11385,
+    "user/chess/src/chess_ui.c": 12365,
     "user/chess/src/evaluation.c": 3072,
     "user/chess/src/perft.c": 17,
     "user/chess/src/pgn.c": 2580,
@@ -140,7 +140,7 @@
     "agent": 987,
     "app:cc": 462,
     "app:ed": 100,
-    "chess": 32891,
+    "chess": 33871,
     "clock-app": 136,
     "crypto": 67,
     "display": 2860,
@@ -163,5 +163,5 @@
     "vfs": 4111
   },
   "ram_code": 24484,
-  "total": 196593
+  "total": 197573
 }
