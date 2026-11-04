@@ -114,6 +114,17 @@ static uint32_t zone_setup(zone_t *z, uintptr_t start, uintptr_t end, const char
 }
 
 void palloc_init(uintptr_t start, uintptr_t end) {
+#if defined(CONFIG_HEAP_CAP_PAGES)
+    /* A budget measurement (LUGALOS_HEAP_CAP_PAGES): the heap a smaller chip would leave, on this
+     * one. The pages above the cap are not managed at all. */
+    uintptr_t s0 = (start + PAGE_SIZE - 1) & ~((uintptr_t)PAGE_SIZE - 1);
+    if (end > s0 + (uintptr_t)CONFIG_HEAP_CAP_PAGES * PAGE_SIZE) {
+        printk("[PAlloc] heap capped at %u pages (LUGALOS_HEAP_CAP_PAGES): %u KB left unmanaged\n",
+               (unsigned)CONFIG_HEAP_CAP_PAGES,
+               (unsigned)((end - (s0 + (uintptr_t)CONFIG_HEAP_CAP_PAGES * PAGE_SIZE)) / 1024u));
+        end = s0 + (uintptr_t)CONFIG_HEAP_CAP_PAGES * PAGE_SIZE;
+    }
+#endif
     zone_setup(&g_fast, start, end, "heap");
     printk("[PAlloc] Page allocator: %u pages of %d bytes at 0x%lx (%u KB)\n",
            g_fast.num_pages, PAGE_SIZE, (unsigned long)g_fast.base,

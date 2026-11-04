@@ -450,6 +450,37 @@ pages already gained.
 
 ### 66.10 ESP32-C3 budget target (measurement scheduled; the port decided after it)
 
+* **Measured 2026-11-04.** The budget: an ESP32-C3 leaves 0x3FC80000 (after its fixed 16 KB
+  instruction cache) to 0x3FCDE710 (the ROM's data) = 377.8 KB, against the C6's 496 KB region
+  measured the same way (both including the ROM's start-up stack, which is reclaimed): 118 KB, 30
+  pages less. With the same static image, a C3 has **44 heap pages** where the C6 has 74. Assumed,
+  not measured: that the C3's Wi-Fi blob and image need the same static RAM and the same 16-page
+  arena as the C6's.
+* `LUGALOS_HEAP_CAP_PAGES` (a measurement setting, `/proc/config` shows it) caps the page allocator.
+  `esp32c6-release` capped at 44 (`build/esp32c6-c3budget`), on the C6-Zero:
+  * The radio did not start: its arena must be one 64 KB-aligned block, a 44-page heap has one such
+    place, and a short-lived task (`llpuart`) had a page in it when the radio asked. Fixed for
+    every C6 (reserve at start, 66.5's rule): `radio_c6_autostart()` takes the arena, then the stack,
+    before the other services start; the radio's own stack no longer takes the arena's only place,
+    and a failed start no longer leaks the stack's pages.
+  * Then the radio joins and DHCP gets a lease, and the heap is full at idle: TCP gets no
+    connection buffers (MQTT never connects), HTTPS no session pool, and the shell cannot read
+    `/proc/meminfo` (`cat: out of memory`).
+  * What the full node uses (uncapped ledger, idle): 58 pages. Wi-Fi arena 18 and radio task 2,
+    blob threads 4, network task 3, DHCP 1, buffers 5, HTTPS 7 (stack 4, session pool 2,
+    certificate 1), 9P 3, MQTT 6 (publisher 3, subscriber 2, buffer 1), sensors 2, service host 2,
+    log 1, `wlan` 2, kernel and VFS 2. Under load the peak is 63.
+* **Verdict: the current sensor node does not fit a C3,** short by 14 pages at idle and by about 24
+  with the load and the 5-page margin. Without the admin page and 9P (both owner tools) it needs
+  48; with the stacks cut to what they use (MQTT and network tasks 3 -> 2, sensors and subscriber
+  2 -> 1) and TCP's buffers halved for one MQTT connection, an estimated 42: 2 pages of margin,
+  no MQTT over TLS (3 pages), no HTTPS, no 9P. That is a different product (an MQTT-only beacon),
+  not this sensor node made smaller. The floor of a LugalOS Wi-Fi node as built, with its
+  admin features, is about 63 pages at peak plus the margin: some 270 KB of heap beside about
+  150 KB of static RAM.
+* After the restore, the C6-Zero (`esp32c6-release`, uncapped, radio reserved at start): 16 of 74
+  free at the end of the load, peak 63, `lockcheck` clean, suite 23/23.
+
 * A C6 or QEMU rv32 preset with `palloc` capped to a C3-equivalent budget, running the sensor
   profile's load scenario. A C3 port (atomics without the A extension) only after that fits.
 

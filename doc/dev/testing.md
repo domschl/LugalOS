@@ -154,6 +154,13 @@ The silicon suites (`test_esp32c6.py`, `test_esp32p4.py`, `test_rp2350.py`) end 
 (`RAM ledger: every page owned, no stack above 90%`), run after the rest of the suite has driven the
 board's tasks.
 
+**A smaller chip's budget:** `LUGALOS_HEAP_CAP_PAGES=N` caps the page allocator at N pages, so a board can be run on the heap a smaller chip would leave. It's a measurement setting, not a configuration; `/proc/config` shows `HEAP_CAP_PAGES=` when it is set. For example, an ESP32-C3's budget on a C6-Zero:
+
+```bash
+cmake --preset esp32c6-release -B build/esp32c6-c3budget -DLUGALOS_HEAP_CAP_PAGES=44
+ninja -C build/esp32c6-c3budget
+```
+
 ### Visual Regression Testing (`lcdterm_shots.py`)
 For display presets (RP2350-LCD-7 and ESP32-P4-LCD-7B), [`tests/hw/lcdterm_shots.py`](file:///home/dsc/Source/gith/domschl/lugalos/tests/hw/lcdterm_shots.py) plays automated shell scenarios, fetches PBM screenshots over 9P, and compares them **pixel-by-pixel** against golden baseline images (with the RTC clock area masked):
 

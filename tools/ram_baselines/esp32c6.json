@@ -90,7 +90,7 @@
     "kernel/path.c": 68,
     "kernel/power.c": 176,
     "kernel/privilege.c": 8,
-    "kernel/radio_c6.c": 961,
+    "kernel/radio_c6.c": 969,
     "kernel/radio_intr.c": 228,
     "kernel/radio_netif_c6.c": 61,
     "kernel/radio_osi_test.c": 252,
@@ -142,7 +142,7 @@
     "mqtt": 4220,
     "net": 1602,
     "ota": 158,
-    "radio": 26169,
+    "radio": 26177,
     "selftest": 2449,
     "sensors": 8688,
     "shell": 6876,
@@ -151,5 +151,5 @@
     "vfs": 3599
   },
   "ram_code": 16638,
-  "total": 161888
+  "total": 161896
 }

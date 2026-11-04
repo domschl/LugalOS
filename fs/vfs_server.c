@@ -1354,6 +1354,9 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
             "PROFILE=%s\nDEV=%d\n", CONFIG_PROFILE, CONFIG_DEV);
         /* The endpoints this preset folds (no task: drivers/driver_task.c), as the preset wrote
          * them: comma-separated. Empty when nothing is folded. */
+#if defined(CONFIG_HEAP_CAP_PAGES)
+        used += (uint32_t)ksnprintf(buf + used, cap - used, "HEAP_CAP_PAGES=%d\n", CONFIG_HEAP_CAP_PAGES);
+#endif
         used += (uint32_t)ksnprintf(buf + used, cap - used, "FOLD=");
 #if defined(CONFIG_FOLD)
         {

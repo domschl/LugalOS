@@ -373,6 +373,9 @@ string(APPEND _content "#define CONFIG_PALLOC_MAX_PAGES ${CONFIG_PALLOC_MAX_PAGE
 string(APPEND _content "#define CONFIG_BALLOC_ARENA_PAGES ${CONFIG_BALLOC_ARENA_PAGES}\n")
 string(APPEND _content "#define CONFIG_UART0_BASE ${CONFIG_UART0_BASE}\n")
 string(APPEND _content "#define CONFIG_DEV ${CONFIG_DEV}\n")
+if(DEFINED HEAP_CAP_PAGES AND HEAP_CAP_PAGES GREATER 0)
+    string(APPEND _content "#define CONFIG_HEAP_CAP_PAGES ${HEAP_CAP_PAGES}\n")
+endif()
 # The folded endpoints, padded with spaces for driver_task_fold_wanted().
 if(DEFINED FOLD AND NOT FOLD STREQUAL "")
     string(REGEX MATCH "[^a-z0-9_,]" _bad "${FOLD}")
