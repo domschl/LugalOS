@@ -100,6 +100,7 @@ int lcdterm_text_test(void);
 void lcdterm_scroll_test(unsigned n);
 void lcdterm_report(void);
 canvas1_t *lcdterm_get_canvas_backing(uint8_t cid);
+int        lcdterm_get_canvas_cid_by_name(const char *name);
 canvas1_t *lcdterm_get_reader_backing(uint8_t rid);
 #if defined(LCDTERM_PRESENT)
 bool lcdterm_is_animating(void);

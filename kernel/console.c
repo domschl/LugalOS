@@ -230,6 +230,31 @@ static volatile uint32_t g_tap_xy;     /* x << 16 | y */
 static volatile int      g_scroll_dy = 0;
 static volatile uint32_t g_scroll_ms = 0;
 
+/* accepted: one-word touch/close latches for active RIBBON_WIN_CANVAS windows;
+ * written by run_hotkey() on the input pump path, consumed by the canvas app. */
+static volatile uint32_t g_canvas_tap_xy = 0;
+static volatile bool     g_canvas_tap_pending = false;
+static volatile bool     g_canvas_closed = false;
+
+bool console_canvas_poll_tap(int *out_x, int *out_y) {
+    if (!__atomic_exchange_n(&g_canvas_tap_pending, false, __ATOMIC_ACQ_REL)) {
+        return false;
+    }
+    uint32_t xy = g_canvas_tap_xy;
+    if (out_x) *out_x = (int)(int16_t)(xy >> 16);
+    if (out_y) *out_y = (int)(int16_t)(xy & 0xFFFFu);
+    return true;
+}
+
+bool console_canvas_poll_closed(void) {
+    return __atomic_exchange_n(&g_canvas_closed, false, __ATOMIC_ACQ_REL);
+}
+
+void console_canvas_clear_events(void) {
+    g_canvas_tap_pending = false;
+    g_canvas_closed = false;
+}
+
 void console_touch_tap(unsigned x, unsigned y) {
     if (note_input(true)) return;
     g_tap_xy = ((uint32_t)x << 16) | (y & 0xFFFFu);
@@ -348,6 +373,10 @@ static void run_hotkey(void) {
             if (closed_type == 1 /* RIBBON_WIN_TERM */ && closed_vid > 0) {
                 vterm_destroy(closed_vid);
             }
+            if (closed_type == 2 /* RIBBON_WIN_CANVAS */) {
+                g_canvas_closed = true;
+                g_active_win_type = launcher_is_active() ? 4 : 1;
+            }
             if (closed_type == 3 /* RIBBON_WIN_READER */) {
                 reader_close_instance(closed_vid);
                 g_active_win_type = 1;
@@ -382,8 +411,16 @@ static void run_hotkey(void) {
                 if (closed_type == 1 /* RIBBON_WIN_TERM */ && closed_vid > 0) {
                     vterm_destroy(closed_vid);
                 }
+                if (closed_type == 2 /* RIBBON_WIN_CANVAS */) {
+                    g_canvas_closed = true;
+                    g_active_win_type = launcher_is_active() ? 4 : 1;
+                }
                 if (closed_type == 3 /* RIBBON_WIN_READER */) {
                     reader_close_instance(closed_vid);
+                    g_active_win_type = 1;
+                }
+                if (closed_type == 4 /* RIBBON_WIN_LAUNCHER */) {
+                    launcher_close();
                     g_active_win_type = 1;
                 }
                 vterm_set_active(reply[1]);
@@ -404,6 +441,9 @@ static void run_hotkey(void) {
                     (void)launcher_tap(cx, cy);
                 } else if (g_active_win_type == 3 /* RIBBON_WIN_READER */ && reader_is_active()) {
                     (void)reader_tap(cx, cy);
+                } else if (g_active_win_type == 2 /* RIBBON_WIN_CANVAS */) {
+                    g_canvas_tap_xy = ((uint32_t)(uint16_t)cx << 16) | (uint16_t)cy;
+                    g_canvas_tap_pending = true;
                 }
             }
         }

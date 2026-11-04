@@ -63,8 +63,9 @@ void launcher_report(void) { cprintf("launcher: not present on headless board\n"
 #define LAUNCHER_MAX_DOCS       24
 
 #define LAUNCHER_ID_APP_READER   1
-#define LAUNCHER_ID_APP_MOONBASE 2
-#define LAUNCHER_ID_APP_TERMINAL 3
+#define LAUNCHER_ID_APP_CHESS    2
+#define LAUNCHER_ID_APP_MOONBASE 3
+#define LAUNCHER_ID_APP_TERMINAL 4
 #define LAUNCHER_ID_VOL_STEP     10
 #define LAUNCHER_ID_BL_STEP      20
 #define LAUNCHER_ID_ORIENT_SEG   30
@@ -77,6 +78,13 @@ static const uint16_t k_icon_reader[16] = {
     0x4008, 0x57E8, 0x4008, 0x57E8,
     0x4008, 0x57C8, 0x4008, 0x57E8,
     0x4008, 0x4008, 0x7FF8, 0x0000
+};
+
+static const uint16_t k_icon_chess[16] = {
+    0x0000, 0x03C0, 0x0FE0, 0x1FE0,
+    0x3DE0, 0x3BE0, 0x3C00, 0x3F00,
+    0x3FC0, 0x1FF0, 0x0FF8, 0x0FF8,
+    0x1FFC, 0x3FFE, 0x3FFE, 0x0000
 };
 
 static const uint16_t k_icon_moonbase[16] = {
@@ -377,16 +385,20 @@ void launcher_draw(const canvas1_t *c, int w, int h) {
         y += 24 * s;
 
         int card_gap = 8 * s;
-        int card_w = (left_w - 2 * card_gap) / 3;
-        int card_h = 68 * s;
+        int card_w = (left_w - card_gap) / 2;
+        int card_h = 56 * s;
         ugui_card(&surf, &s_launcher.ui_ctx,
                   (ugui_rect_t){ (int16_t)pad, (int16_t)y, (int16_t)card_w, (int16_t)card_h },
                   k_icon_reader, "Reader", "Docs", LAUNCHER_ID_APP_READER, false);
         ugui_card(&surf, &s_launcher.ui_ctx,
                   (ugui_rect_t){ (int16_t)(pad + card_w + card_gap), (int16_t)y, (int16_t)card_w, (int16_t)card_h },
+                  k_icon_chess, "Chess", "Game", LAUNCHER_ID_APP_CHESS, false);
+        y += card_h + card_gap;
+        ugui_card(&surf, &s_launcher.ui_ctx,
+                  (ugui_rect_t){ (int16_t)pad, (int16_t)y, (int16_t)card_w, (int16_t)card_h },
                   k_icon_moonbase, "Moonbase", "Game", LAUNCHER_ID_APP_MOONBASE, false);
         ugui_card(&surf, &s_launcher.ui_ctx,
-                  (ugui_rect_t){ (int16_t)(pad + 2 * (card_w + card_gap)), (int16_t)y, (int16_t)card_w, (int16_t)card_h },
+                  (ugui_rect_t){ (int16_t)(pad + card_w + card_gap), (int16_t)y, (int16_t)card_w, (int16_t)card_h },
                   k_icon_terminal, "Terminal", "Shell", LAUNCHER_ID_APP_TERMINAL, false);
         y += card_h + 14 * s;
 
@@ -483,16 +495,20 @@ void launcher_draw(const canvas1_t *c, int w, int h) {
         y += 24 * s;
 
         int card_gap = 8 * s;
-        int card_w = (inner_w - 2 * card_gap) / 3;
-        int card_h = 64 * s;
+        int card_w = (inner_w - card_gap) / 2;
+        int card_h = 56 * s;
         ugui_card(&surf, &s_launcher.ui_ctx,
                   (ugui_rect_t){ (int16_t)pad, (int16_t)y, (int16_t)card_w, (int16_t)card_h },
                   k_icon_reader, "Reader", "Docs", LAUNCHER_ID_APP_READER, false);
         ugui_card(&surf, &s_launcher.ui_ctx,
                   (ugui_rect_t){ (int16_t)(pad + card_w + card_gap), (int16_t)y, (int16_t)card_w, (int16_t)card_h },
+                  k_icon_chess, "Chess", "Game", LAUNCHER_ID_APP_CHESS, false);
+        y += card_h + card_gap;
+        ugui_card(&surf, &s_launcher.ui_ctx,
+                  (ugui_rect_t){ (int16_t)pad, (int16_t)y, (int16_t)card_w, (int16_t)card_h },
                   k_icon_moonbase, "Moonbase", "Game", LAUNCHER_ID_APP_MOONBASE, false);
         ugui_card(&surf, &s_launcher.ui_ctx,
-                  (ugui_rect_t){ (int16_t)(pad + 2 * (card_w + card_gap)), (int16_t)y, (int16_t)card_w, (int16_t)card_h },
+                  (ugui_rect_t){ (int16_t)(pad + card_w + card_gap), (int16_t)y, (int16_t)card_w, (int16_t)card_h },
                   k_icon_terminal, "Terminal", "Shell", LAUNCHER_ID_APP_TERMINAL, false);
         y += card_h + 12 * s;
 
@@ -672,6 +688,11 @@ bool launcher_tap(int client_x, int client_y) {
     if (id == LAUNCHER_ID_APP_READER) {
         const char *doc = (s_launcher.doc_count > 0) ? s_launcher.docs[0].path : "index.md";
         open_doc_in_reader(doc);
+        return true;
+    }
+    if (id == LAUNCHER_ID_APP_CHESS) {
+        strncpy(s_launcher.pending_cmd, "chess touch", sizeof(s_launcher.pending_cmd) - 1);
+        s_launcher.pending_cmd[sizeof(s_launcher.pending_cmd) - 1] = '\0';
         return true;
     }
     if (id == LAUNCHER_ID_APP_MOONBASE) {

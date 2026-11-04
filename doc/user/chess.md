@@ -20,8 +20,10 @@ A standalone physical chess computer built with:
 ![LugalOS Chess Appliance](../assets/images/LugalOS_chess.jpg)
 *LugalOS running isolated driver tasks for TFT, TM1638 keypad, and chess engine on RP2350.*
 
-### Graphical Ribbon Mode (`rp2350-terminal`, `esp32p4-lcd7b`)
-On 7" LCD terminals, running `chess` opens a graphical chessboard canvas within the horizontal window ribbon. You can play using USB keyboards or serial console input while viewing crisp piece graphics.
+### Graphical Ribbon & Touch Modes (`rp2350-terminal`, `esp32p4-lcd7b`, `esp32p4-tab5`)
+On LCD terminal targets, Chess provides two distinct UX modes:
+* **Terminal Mode (`chess`)**: Opens a side-by-side split window (`SCREEN_LAYOUT_SPLIT_WIDE`) pairing a VT terminal with a graphical board. Moves are entered using keyboard algebraic notation.
+* **Touch Mode (`chess touch`)**: Opens a full-height interactive graphical chessboard window (`SCREEN_LAYOUT_CANVAS`) designed for stylus and touch-screen play, complete with tap piece movement, promotion selection, and a Classic Mac (`ugui`) control panel. Also directly launchable from the Touch Launcher (`RIBBON_WIN_LAUNCHER`).
 
 ---
 
@@ -41,14 +43,29 @@ On 7" LCD terminals, running `chess` opens a graphical chessboard canvas within 
 ### Launching the Game
 From the shell:
 ```text
-lsh> chess
+lsh> chess          # Terminal keyboard mode
+lsh> chess touch    # Standalone touch mode
 ```
 Or from the Lisp REPL:
 ```lisp
 lsh> lisp
-(chess)       ; Single-core search
-(chess 2)     ; Dual-core Lazy SMP search
+(chess)             ; Terminal mode (single-core search)
+(chess 2)           ; Dual-core Lazy SMP search
+(chess-touch)       ; Touch mode
 ```
+Or simply tap the **Chess** card in the Touch Launcher.
+
+### Touch Controls & On-Screen Interface
+When playing in Touch Mode:
+* **Piece Selection & Movement**: Tap any piece of the side to move to select it. The board highlights the selected piece and draws dotted targets on all legal destination squares. Tap a destination dot to execute the move.
+* **Pawn Promotion**: Moving a pawn to the 8th rank displays an on-screen promotion dialog with Queen, Rook, Bishop, and Knight icons.
+* **Toolbar & Navigation**:
+  * `< Back` / `Fwd >`: Step through game history (undo/redo).
+  * `Stop` / `Go`: Interrupt an in-progress search or command the computer to calculate and play immediately for the active side.
+  * `Level [-] [+]`: Adjust engine search depth / thinking budget on the fly.
+  * `Analyse`: Toggles live score evaluation display (`+1.23`, `-0.45`, `M2`) and the principal variation (PV) move line.
+  * `Options`: Modal menu providing New Game, Board Inversion (Flip White/Black), Engine Auto-Play toggle, Game Save/Load, and Exit to Launcher/Shell.
+  * **Window Close Box**: Tapping the top-left titlebar close box returns cleanly to the ribbon.
 
 ### Move Input (Algebraic Notation)
 Enter standard coordinate notation:

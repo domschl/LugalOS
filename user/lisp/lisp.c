@@ -5195,17 +5195,29 @@ static lisp_val_t *prim_chess_console(lisp_val_t *args, lisp_val_t *env) {
     return &true_val;
 }
 
+static lisp_val_t *prim_chess_touch(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    console_set_title("Chess");
+    lisp_park_t park;
+    lisp_park(&park);
+    chess_touch_run();
+    lisp_unpark(&park);
+    return &true_val;
+}
+
 /* `chess` (J0/J1, ): the by-default,
  * always-discoverable entry point the user's own proposal names --
  * dispatches to chess_run() where the hardware for it exists (same as
- * `chess-run` above), otherwise to J1's text console REPL
- * (chess_console_run(), chess_ui.c) rather than chess-selftest's
- * fixed-position benchmark, which is not "playing chess" and would be a
- * misleading stand-in. chess-run/chess-console/chess-selftest keep
- * working as the lower-level, hardware-independent-of-choice names
- * either way. */
+ * `chess-run` above), otherwise to touch or text console REPL. */
 static lisp_val_t *prim_chess(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
+    /* If first argument is string "touch", dispatch to touch mode */
+    lisp_val_t *a0 = lisp_list_ref(args, 0);
+    if (a0 && a0->type == LISP_STRING) {
+        const char *s = get_str_val(a0);
+        if (s && strcmp(s, "touch") == 0) return prim_chess_touch(NULL, env);
+        if (s && strcmp(s, "console") == 0) return prim_chess_console(NULL, env);
+    }
     /* `(chess [cores])`, X8b: how many cores the engine may search on for
      * this session. 1 is the default and the pre-X8b behaviour; the setting
      * is cleared when the session ends, so it never leaks into the next. */

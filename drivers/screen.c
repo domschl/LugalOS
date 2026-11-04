@@ -1702,6 +1702,11 @@ LCDTERM_UTEXT bool screen_set_layout_vterm_named_fmt(screen_t *scr, uint8_t vid,
         }
 
         uint8_t act = (t_win >= 0) ? (uint8_t)t_win : scr->ribbon.active_idx;
+        if ((layout == SCREEN_LAYOUT_CANVAS || layout == SCREEN_LAYOUT_FULLSCREEN) &&
+            scr->ribbon.active_idx < scr->ribbon.count &&
+            scr->ribbon.wins[scr->ribbon.active_idx].type == RIBBON_WIN_LAUNCHER) {
+            act = scr->ribbon.active_idx;
+        }
         uint8_t insert_idx;
         if (scr->swapped) {
             insert_idx = act;
@@ -2163,11 +2168,11 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
         }
         if (idx >= 0 && idx == (int)scr->ribbon.active_idx) {
             const ribbon_win_t *w = &scr->ribbon.wins[idx];
-            if (w->type == RIBBON_WIN_READER || w->type == RIBBON_WIN_LAUNCHER) {
+            if (w->type == RIBBON_WIN_READER || w->type == RIBBON_WIN_LAUNCHER || w->type == RIBBON_WIN_CANVAS) {
                 int cx = px - (w->rx0 - scr->ribbon.x_view);
                 int cy = py - (SCREEN_TILE_Y + SCREEN_TITLEBAR_H);
                 reply[0] = 0;
-                reply[1] = w->vterm_id;
+                reply[1] = window_vterm(scr, (uint8_t)idx);
                 reply[2] = (uint8_t)(cx & 0xff);
                 reply[3] = (uint8_t)((cx >> 8) & 0xff);
                 reply[4] = (uint8_t)(cy & 0xff);

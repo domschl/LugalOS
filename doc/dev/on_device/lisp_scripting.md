@@ -85,6 +85,8 @@ Readings come from the sensor hub's cache, so no call waits on the I2C bus. Valu
 * `(read-file <path>)`: Read file content directly into a Lisp string.
 * `(write-file <path> <string>)`: Write string content to disk.
 * `(spawn <elf-path>)`: Launch an isolated U-mode program in the background.
+* `(chess [threads])`: Launch the interactive chess engine in split-terminal keyboard mode (optional multicore Lazy SMP search).
+* `(chess-touch)`: Launch the touch-first graphical chess game with interactive piece movement and Classic Mac toolbar controls.
 
 ### Privileged Primitives
 `poke`, `net-config`, `net-identity` (with a name: renaming), `identity-name`, `identity-provision`, `identity-key`, `peers-add`, `peers-remove` and `wlan-set` change keys, identity, network configuration or memory. They work from the console and from scripts. Evaluated for an `ea` tool call they refuse and return `#f`, and file writes under any `system/etc/` directory fail there too (`kernel/include/kernel/privilege.h`).

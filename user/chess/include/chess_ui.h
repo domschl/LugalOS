@@ -36,6 +36,10 @@ void chess_perft_cores(int max_depth, int cores);
  * Returns on 'quit', same as chess_run() below on Ctrl-C/STOP. */
 void chess_console_run(void);
 
+/* Touch-mode chess UI: full-window interactive touch canvas with Classic Mac
+ * ugui menu controls (Back, Fwd, Stop, Go, Level, Analyse, Options). */
+void chess_touch_run(void);
+
 /* the canvas board (the
  * RP2350-LCD-7's, or a RAM screen's on QEMU) drawn from the starting
  * position and checked pixel by pixel. Prints CHESSBOARD_SELFTEST_OK/_FAIL;

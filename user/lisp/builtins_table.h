@@ -128,6 +128,9 @@ static const builtin_t builtins[] = {
 #if CONFIG_ENABLE_CHESS
     BUILTIN_PRIM("chess-selftest", prim_chess_selftest),
 #endif
+#if CONFIG_ENABLE_CHESS
+    BUILTIN_PRIM("chess-touch", prim_chess_touch),
+#endif
     BUILTIN_PRIM("clipboard", prim_clipboard),
     BUILTIN_PRIM("clipboard-set", prim_clipboard_set),
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_PICO_CLOCK_GREEN

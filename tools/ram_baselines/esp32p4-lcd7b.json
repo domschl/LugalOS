@@ -77,7 +77,7 @@
     "kernel/chan.c": 1348,
     "kernel/chan_selftest.c": 172,
     "kernel/clipboard.c": 20,
-    "kernel/console.c": 703,
+    "kernel/console.c": 709,
     "kernel/device.c": 140,
     "kernel/devirq.c": 134,
     "kernel/discipline.c": 82,
@@ -132,7 +132,7 @@
     "user/ceres/src/platform_p4.c": 1382,
     "user/chess/src/bitboard.c": 2176,
     "user/chess/src/chess_platform.c": 8,
-    "user/chess/src/chess_ui.c": 10771,
+    "user/chess/src/chess_ui.c": 11385,
     "user/chess/src/perft.c": 17,
     "user/chess/src/pgn.c": 2580,
     "user/chess/src/position.c": 48,
@@ -164,7 +164,7 @@
     "app:ed": 100,
     "app:moonbase": 4211,
     "audio": 25361,
-    "chess": 21338,
+    "chess": 21952,
     "clock-app": 136,
     "crypto": 38,
     "display": 3627,
@@ -182,11 +182,11 @@
     "radio": 12564,
     "selftest": 3962,
     "sensors": 8688,
-    "shell": 12987,
+    "shell": 12993,
     "storage": 7456,
     "usb": 1212,
     "vfs": 4111
   },
   "ram_code": 1806,
-  "total": 218035
+  "total": 218655
 }

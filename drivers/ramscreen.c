@@ -116,6 +116,16 @@ canvas1_t *ramscreen_get_canvas_backing(uint8_t cid) {
     return &g_rs->canvases[cid].backing;
 }
 
+int ramscreen_get_canvas_cid_by_name(const char *name) {
+    if (!g_rs || !name) return -1;
+    for (uint32_t i = 0; i < SCREEN_MAX_CANVASES; i++) {
+        if (g_rs->canvases[i].in_use && strcmp(g_rs->canvases[i].name, name) == 0) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
 canvas1_t *ramscreen_get_reader_backing(uint8_t rid) {
     if (!g_rs || rid >= SCREEN_MAX_READERS || !g_rs->readers[rid].in_use) return NULL;
     return &g_rs->readers[rid].backing;

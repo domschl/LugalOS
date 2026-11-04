@@ -193,7 +193,7 @@ From `lsh`, you can immediately invoke native applications:
 * `lisp`: Starts the interactive Scheme/Lisp REPL environment ([Lisp scripting](cas.md)).
 * `e [file]`: Opens the full-screen Emacs editor ([editors](editors.md)).
 * `ed [file]`: Opens the teletype line editor ([editors](editors.md)).
-* `chess`: Launches the chess computer UI ([chess](chess.md)).
+* `chess [touch]`: Launches the chess computer UI ([chess](chess.md)). Running bare `chess` opens the split-terminal keyboard REPL; running `chess touch` opens the standalone touch-first graphical board with tap piece selection and Classic Mac toolbar controls.
 * `moonbase`: Launches Moonbase Lambda, a 2D isometric lunar city-builder simulation (includes a top-right touch `[EXIT]` HUD button).
 * `ceres` (or `scroller`): Launches Ceres Alpha, a 2D horizontal arcade scroller set in the subterranean cavern network of dwarf planet Ceres. Controls: Arrow keys or `W`/`A`/`S`/`D` (thrust), `Space` (laser), `B` / `K` / `Enter` (bomb), `P` (pause), `R` (retry), `Q` / `Esc` (quit).
 * `launcher [open|close|status]`: Opens, focuses, closes, or queries the Touch Launcher (`RIBBON_WIN_LAUNCHER`) window on the ribbon. Automatically opened on terminal boards when no USB keyboard is attached at boot or when a keyboard is unplugged ([ribbon](ribbon.md)).

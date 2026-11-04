@@ -57,6 +57,10 @@
 #include "kernel/screenshot.h"
 #include "lisp.h"
 #include "chess_pieces_data.h"
+#include "drivers/ugui.h"
+#include "drivers/lcdterm.h"
+#include "drivers/ramscreen.h"
+#include "drivers/ribbon.h"
 
 #define STANDARD_START_FEN "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 
@@ -471,6 +475,8 @@ static bool chess_pump_console(const char *prompt) {
 static void tm_search_ticker_tick(void);
 #endif
 
+static void chess_touch_search_poll(void);
+
 /* search.c's check_up_time() calls this every 2048 nodes -- a cooperative
  * poll already wired into the engine's inner loop. Sets `stop_search`,
  * which pv_search()/quiescence() already check on the way back out of
@@ -490,6 +496,7 @@ void search_poll_stop_callback(void) {
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
     tm_search_ticker_tick();
 #endif
+    chess_touch_search_poll();
 }
 
 static void format_move(Move m, char *out) {
@@ -508,14 +515,6 @@ static void format_move(Move m, char *out) {
     }
 }
 
-#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_TM1638
-/* Uppercase, fixed 4 chars, no promo suffix -- the TM1638 ticker's own
- * move format (design agreed with the user 2026-08-12), distinct from
- * format_move() above (lowercase, promo-aware) which every other display
- * in this file already uses. Placed here, guarded, next to format_move()
- * rather than inside the TM1638-only region further below, since draw_
- * chess_status_thinking() (further down still, TM1638+DISPLAY-only) also
- * needs it and textually precedes that region. */
 static void tm_format_move4(Move m, char *out) {
     int from = MOVE_FROM(m);
     int to = MOVE_TO(m);
@@ -526,31 +525,6 @@ static void tm_format_move4(Move m, char *out) {
     out[4] = '\0';
 }
 
-/* Compact White-POV score for the TM1638 search ticker and the TFT status
- * line (design agreed with the user 2026-08-12). Always shown as if White
- * is reading the eval, even while the engine is calculating for Black --
- * g_search_score itself is side-to-move-relative like every other score
- * this file prints (chess_ui.c:730's own comment), so `searching_side`
- * (g_search_root_side) un-flips it here. Range -99.9..+99.9 pawns
- * (clamped), no leading '+' on positive values; mate scores become
- * "M25"/"-M25" instead -- leading minus when White is the one getting
- * mated, mirroring search.c's own UCI "score mate -N" convention
- * (search.c:765-771).
- *
- * `out` must have room for 6 bytes (worst case "-99.9\0"). Right-aligned
- * within its 4 physical digit positions (found live to read as noticeably
- * more natural for a numeric field than the left-aligned first version)
- * -- built into a scratch buffer first since the total physical width
- * isn't known until the number itself is generated, then copied out with
- * leading-space padding. The '.' relies on tm1638_display_string()'s own
- * non-consuming decimal-point trick (drivers/tm1638_rp2350.c) --
- * physical digit *positions* actually consumed on the 7-segment display
- * (`phys` below) are tracked separately from characters written (`n`),
- * since the dot doesn't occupy one; the padding *count* has to use
- * `phys`, not the scratch buffer's raw length, for the same reason.
- * draw_chess_status() (TFT, no such physical-digit constraint, trims the
- * leading padding back off) reuses this verbatim anyway, for one shared
- * number format across both displays rather than two. */
 static void tm_format_score_compact(int score, int searching_side, char *out) {
     char tmp[6];
     int n = 0, phys = 0;
@@ -588,7 +562,23 @@ static void tm_format_score_compact(int score, int searching_side, char *out) {
     for (int i = 0; i < n; i++) out[op++] = tmp[i];
     out[op] = '\0';
 }
-#endif /* CONFIG_BOARD_RP2350 && CONFIG_ENABLE_TM1638 */
+
+static int tm_probe_pv(const Position *pos, Move first_move, char out[][6], int max_moves) {
+    if (first_move == 0 || max_moves <= 0) return 0;
+    *g_chess_scratch = *pos;
+    int n = 0;
+    tm_format_move4(first_move, out[n++]);
+    if (!make_move(g_chess_scratch, first_move)) return n;
+    while (n < max_moves) {
+        int score;
+        Move m;
+        if (!probe_tt_entry(g_chess_scratch->hash_key, &score, &m) || m == 0) break;
+        if (!make_move(g_chess_scratch, m)) break;
+        tm_format_move4(m, out[n]);
+        n++;
+    }
+    return n;
+}
 
 /* Runs the engine's own iterative-deepening search and retrieves the move
  * it settled on -- the same two-step "callback, then TT fallback" shape
@@ -1786,48 +1776,6 @@ static void tm_new_game(Position *pos) {
 }
 
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
-/* Reconstructs a short PV starting from `first_move` (the caller's own
- * already-known, reliable root move -- g_search_best_move, tracked
- * directly via search_progress_callback(), not TT-dependent), then
- * extends it by walking the transposition table the same way search.c's
- * own UCI "pv" line does internally (search.c:777-800), redone here
- * since search.c never exposes its PV as data, only prints it.
- *
- * Found live to matter, not just theoretical: probing the TT for the
- * *root* move too (the first version's approach) intermittently returned
- * nothing at all after a while -- tt.c's table is small (32 KB,
- * LUGALCHESS_EMBEDDED) and direct-mapped with no collision chaining, so
- * a long session (several searches deep, more so under "go" self-play)
- * can evict even the root position's own entry via an unrelated hash
- * collision, which read as the whole PV display randomly going blank.
- * Taking the root move directly instead means the PV can never show
- * zero moves while a search is genuinely in progress; only the extension
- * beyond the first move is still TT-probed and can legitimately dead-end
- * early, which is normal, not an error. Writes up to `max_moves`
- * uppercase 4-char move strings (tm_format_move4()'s own convention, the
- * same one the TM1638 side of this ticker uses -- matching it here too
- * rather than format_move()'s lowercase, per the user's own example)
- * into `out`, returns the count actually found. Uses the shared
- * on-demand scratch Position (g_chess_scratch) rather than a second
- * permanent static -- safe since chess_run()'s own call stack never
- * re-enters this while a previous call is still using it (single-
- * threaded, cooperative code). */
-static int tm_probe_pv(const Position *pos, Move first_move, char out[][6], int max_moves) {
-    if (first_move == 0 || max_moves <= 0) return 0;
-    *g_chess_scratch = *pos;
-    int n = 0;
-    tm_format_move4(first_move, out[n++]);
-    if (!make_move(g_chess_scratch, first_move)) return n;
-    while (n < max_moves) {
-        int score;
-        Move m;
-        if (!probe_tt_entry(g_chess_scratch->hash_key, &score, &m) || m == 0) break;
-        if (!make_move(g_chess_scratch, m)) break;
-        tm_format_move4(m, out[n]);
-        n++;
-    }
-    return n;
-}
 
 /* Status line, both idle and live-during-search -- one function instead
  * of two (design revised 2026-08-12: the first version's live-only
@@ -3018,4 +2966,723 @@ void chess_console_run(void) {
     chess_console_run_locked();
     chess_unclaim();
 }
+
+/* ========================================================================= *
+ * Touch-First Chess Mode: Full-Window Interactive Canvas with ugui Chrome   *
+ * ========================================================================= */
+
+#define CHESS_TOUCH_ID_BACK       1
+#define CHESS_TOUCH_ID_FWD        2
+#define CHESS_TOUCH_ID_GO         3
+#define CHESS_TOUCH_ID_STOP       4
+#define CHESS_TOUCH_ID_ANALYSE    5
+#define CHESS_TOUCH_ID_LEVEL_DEC  6
+#define CHESS_TOUCH_ID_LEVEL_INC  7
+#define CHESS_TOUCH_ID_OPT_TOGGLE 8
+#define CHESS_TOUCH_ID_NEW        9
+#define CHESS_TOUCH_ID_FLIP       10
+#define CHESS_TOUCH_ID_AUTO       11
+#define CHESS_TOUCH_ID_SAVE       12
+#define CHESS_TOUCH_ID_LOAD       13
+#define CHESS_TOUCH_ID_QUIT       14
+#define CHESS_TOUCH_ID_PROMO_Q    20
+#define CHESS_TOUCH_ID_PROMO_R    21
+#define CHESS_TOUCH_ID_PROMO_B    22
+#define CHESS_TOUCH_ID_PROMO_N    23
+#define CHESS_TOUCH_ID_SQUARE_BASE 100 /* 100 .. 163 */
+
+/* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
+static bool       g_touch_active = false;
+static bool       g_touch_flip = false;
+static bool       g_touch_auto_reply = true;
+static bool       g_touch_analysing = false;
+static bool       g_touch_show_options = false;
+static int        g_touch_sel_sq = -1;
+static int        g_touch_pending_from = -1;
+static int        g_touch_pending_to = -1;
+static bool       g_touch_pending_promo = false;
+static ugui_ctx_t g_touch_ui_ctx;
+static int        g_touch_win_w = 0;
+static int        g_touch_win_h = 0;
+static int        g_touch_board_x = 0;
+static int        g_touch_board_y = 0;
+static int        g_touch_sq_sz = 52;
+static uint64_t   g_touch_last_tick_ms = 0;
+
+static void chess_touch_draw(void);
+
+static void chess_touch_search_poll(void) {
+    if (!g_touch_active) return;
+    (void)console_has_char(); /* pumps hotkeys, tap & close events */
+    if (console_canvas_poll_closed()) {
+        stop_search = true;
+        g_touch_active = false;
+        return;
+    }
+    int tx, ty;
+    if (console_canvas_poll_tap(&tx, &ty)) {
+        int16_t hit_idx = -1;
+        uint16_t id = ugui_hit_test(&g_touch_ui_ctx, tx, ty, &hit_idx);
+        if (id == CHESS_TOUCH_ID_STOP || id == CHESS_TOUCH_ID_GO ||
+            id == CHESS_TOUCH_ID_ANALYSE || (g_touch_analysing && id != 0)) {
+            stop_search = true;
+            g_touch_analysing = false;
+        }
+    }
+    uint64_t now = time_get_ms();
+    if (now - g_touch_last_tick_ms >= 500) {
+        g_touch_last_tick_ms = now;
+        chess_touch_draw();
+    }
+}
+
+static canvas1_t *chess_touch_get_backing(void) {
+#if defined(LCDTERM_PRESENT)
+    int cid = lcdterm_get_canvas_cid_by_name("chess");
+    if (cid >= 0) {
+        canvas1_t *c = lcdterm_get_canvas_backing((uint8_t)cid);
+        if (c) return c;
+    }
+#endif
+    int rcid = ramscreen_get_canvas_cid_by_name("chess");
+    if (rcid >= 0) {
+        return ramscreen_get_canvas_backing((uint8_t)rcid);
+    }
+    return NULL;
+}
+
+static void chess_touch_draw(void) {
+    int w = 0, h = 0;
+    if (!cb_canvas(&w, &h) || w <= 0 || h <= 0) return;
+    g_touch_win_w = w;
+    g_touch_win_h = h;
+
+    canvas1_t *c1 = chess_touch_get_backing();
+    if (!c1) return;
+
+    const int s = CHROME_SCALE;
+    ugui_surface_t surf;
+    surf.c1 = c1;
+    surf.aa_fb = NULL;
+    surf.aa_stride = 0;
+    surf.w = w;
+    surf.h = h;
+    surf.scale = s;
+
+    ugui_begin(&g_touch_ui_ctx);
+    ugui_fill(&surf, (ugui_rect_t){ 0, 0, (int16_t)w, (int16_t)h }, UGUI_GRAY_PAPER, CANVAS1_WHITE);
+
+    bool landscape = (w >= h);
+    int pad = 10 * s;
+
+    /* Compute board square size */
+    int avail_board_h = landscape ? (h - 2 * pad) : (h / 2);
+    int avail_board_w = landscape ? (w * 56 / 100) : (w - 2 * pad);
+    int max_board_dim = avail_board_w < avail_board_h ? avail_board_w : avail_board_h;
+
+    int sq_sz = 52;
+    if (max_board_dim >= 8 * 72) sq_sz = 72;
+    else if (max_board_dim >= 8 * 64) sq_sz = 64;
+    else if (max_board_dim >= 8 * 56) sq_sz = 56;
+    else if (max_board_dim >= 8 * 52) sq_sz = 52;
+    else sq_sz = max_board_dim / 8;
+    if (sq_sz < 32) sq_sz = 32;
+
+    int board_px = 8 * sq_sz;
+    g_touch_sq_sz = sq_sz;
+
+    int bx = pad;
+    int by = pad + (avail_board_h - board_px) / 2;
+    if (!landscape) {
+        bx = (w - board_px) / 2;
+        by = pad;
+    }
+    g_touch_board_x = bx;
+    g_touch_board_y = by;
+
+    /* Draw board outer frame with ugui_box_shadow */
+    ugui_box_shadow(&surf, (ugui_rect_t){ (int16_t)(bx - 2), (int16_t)(by - 2),
+                                          (int16_t)(board_px + 4), (int16_t)(board_px + 4) }, false);
+
+    /* Last move squares */
+    int last_from = -1, last_to = -1;
+    if (g_chess_pos.history_ply > 0) {
+        Move lm = g_chess_pos.history[g_chess_pos.history_ply - 1].move;
+        last_from = MOVE_FROM(lm);
+        last_to = MOVE_TO(lm);
+    }
+
+    /* Legal destinations from selected square */
+    MoveList legals;
+    legals.count = 0;
+    if (g_touch_sel_sq >= 0) {
+        MoveList all_moves;
+        generate_moves(&g_chess_pos, &all_moves);
+        for (int i = 0; i < all_moves.count; i++) {
+            Move m = all_moves.moves[i];
+            if (MOVE_FROM(m) == g_touch_sel_sq) {
+                if (make_move(&g_chess_pos, m)) {
+                    unmake_move(&g_chess_pos);
+                    if (legals.count < 32) legals.moves[legals.count++] = m;
+                }
+            }
+        }
+    }
+
+    /* Render squares and pieces */
+    for (int r = 0; r < 8; r++) {
+        for (int f = 0; f < 8; f++) {
+            int rank = g_touch_flip ? r : (7 - r);
+            int file = g_touch_flip ? (7 - f) : f;
+            int sq = rank * 8 + file;
+
+            int sx = bx + f * sq_sz;
+            int sy = by + r * sq_sz;
+
+            /* Hit-box for this square */
+            ugui_add_hit(&g_touch_ui_ctx, (ugui_rect_t){ (int16_t)sx, (int16_t)sy, (int16_t)sq_sz, (int16_t)sq_sz },
+                         (uint16_t)(CHESS_TOUCH_ID_SQUARE_BASE + sq), 0);
+
+            bool dark = ((rank + file) % 2) == 0;
+            unsigned bg_pat = dark ? CANVAS1_GREY : CANVAS1_WHITE;
+            canvas1_fill(c1, sx, sy, sx + sq_sz - 1, sy + sq_sz - 1, bg_pat);
+
+            /* Last move highlight: double corner frame */
+            if (sq == last_from || sq == last_to) {
+                canvas1_fill(c1, sx + 1, sy + 1, sx + sq_sz - 2, sy + 2, CANVAS1_BLACK);
+                canvas1_fill(c1, sx + 1, sy + sq_sz - 3, sx + sq_sz - 2, sy + sq_sz - 2, CANVAS1_BLACK);
+                canvas1_fill(c1, sx + 1, sy + 1, sx + 2, sy + sq_sz - 2, CANVAS1_BLACK);
+                canvas1_fill(c1, sx + sq_sz - 3, sy + 1, sx + sq_sz - 2, sy + sq_sz - 2, CANVAS1_BLACK);
+            }
+
+            /* Selected square highlight: inverted inner border */
+            if (sq == g_touch_sel_sq) {
+                canvas1_fill(c1, sx, sy, sx + sq_sz - 1, sy + 2 * s, CANVAS1_BLACK);
+                canvas1_fill(c1, sx, sy + sq_sz - 1 - 2 * s, sx + sq_sz - 1, sy + sq_sz - 1, CANVAS1_BLACK);
+                canvas1_fill(c1, sx, sy, sx + 2 * s, sy + sq_sz - 1, CANVAS1_BLACK);
+                canvas1_fill(c1, sx + sq_sz - 1 - 2 * s, sy, sx + sq_sz - 1, sy + sq_sz - 1, CANVAS1_BLACK);
+            }
+
+            /* Draw piece */
+            int piece = g_chess_pos.board[sq];
+            if (piece != NO_PIECE && (unsigned)piece < 6u) {
+                bool white = (g_chess_pos.color_bbs[WHITE] & (1ULL << sq)) != 0;
+                int ox = sx + (sq_sz - 48) / 2;
+                int oy = sy + (sq_sz - 48) / 2;
+                for (int py = 0; py < 48; py++) {
+                    int dy = oy + py;
+                    if (dy < 0 || dy >= h) continue;
+                    uint64_t w_str = canvas_white_strokes[piece][py];
+                    uint64_t w_bod = canvas_white_body[piece][py];
+                    uint64_t b_fg  = canvas_black_fg[piece][py];
+                    uint64_t b_hal = canvas_black_halo[piece][py];
+                    for (int px = 0; px < 48; px++) {
+                        int dx = ox + px;
+                        if (dx < 0 || dx >= w) continue;
+                        uint64_t bit = 1ULL << (47 - px);
+                        if (white) {
+                            if (w_str & bit) {
+                                canvas1_fill(c1, dx, dy, dx, dy, CANVAS1_BLACK);
+                            } else if (w_bod & bit) {
+                                canvas1_fill(c1, dx, dy, dx, dy, CANVAS1_WHITE);
+                            }
+                        } else {
+                            if (b_fg & bit) {
+                                canvas1_fill(c1, dx, dy, dx, dy, CANVAS1_BLACK);
+                            } else if (b_hal & bit) {
+                                canvas1_fill(c1, dx, dy, dx, dy, CANVAS1_WHITE);
+                            }
+                        }
+                    }
+                }
+            }
+
+            /* Legal destination marker */
+            if (g_touch_sel_sq >= 0) {
+                bool is_legal = false;
+                for (int i = 0; i < legals.count; i++) {
+                    if (MOVE_TO(legals.moves[i]) == sq) { is_legal = true; break; }
+                }
+                if (is_legal) {
+                    if (piece == NO_PIECE) {
+                        /* Dot in center */
+                        int cx = sx + sq_sz / 2;
+                        int cy = sy + sq_sz / 2;
+                        int dot_r = 3 * s;
+                        canvas1_fill(c1, cx - dot_r, cy - dot_r, cx + dot_r, cy + dot_r, CANVAS1_BLACK);
+                    } else {
+                        /* Corner brackets for capture */
+                        int cw = 6 * s;
+                        canvas1_fill(c1, sx, sy, sx + cw, sy + 2 * s, CANVAS1_BLACK);
+                        canvas1_fill(c1, sx, sy, sx + 2 * s, sy + cw, CANVAS1_BLACK);
+                        canvas1_fill(c1, sx + sq_sz - 1 - cw, sy, sx + sq_sz - 1, sy + 2 * s, CANVAS1_BLACK);
+                        canvas1_fill(c1, sx + sq_sz - 1 - 2 * s, sy, sx + sq_sz - 1, sy + cw, CANVAS1_BLACK);
+                        canvas1_fill(c1, sx, sy + sq_sz - 1 - 2 * s, sx + cw, sy + sq_sz - 1, CANVAS1_BLACK);
+                        canvas1_fill(c1, sx, sy + sq_sz - 1 - cw, sx + 2 * s, sy + sq_sz - 1, CANVAS1_BLACK);
+                        canvas1_fill(c1, sx + sq_sz - 1 - cw, sy + sq_sz - 1 - 2 * s, sx + sq_sz - 1, sy + sq_sz - 1, CANVAS1_BLACK);
+                        canvas1_fill(c1, sx + sq_sz - 1 - 2 * s, sy + sq_sz - 1 - cw, sx + sq_sz - 1, sy + sq_sz - 1, CANVAS1_BLACK);
+                    }
+                }
+            }
+        }
+    }
+
+    /* Control Panel Layout */
+    int ctrl_x = landscape ? (bx + board_px + 14 * s) : pad;
+    int ctrl_y = landscape ? pad : (by + board_px + 12 * s);
+    int ctrl_w = landscape ? (w - ctrl_x - pad) : (w - 2 * pad);
+    if (ctrl_w < 120 * s) ctrl_w = 120 * s;
+
+    /* Status & Eval Card */
+    int card_h = 56 * s;
+    ugui_box_shadow(&surf, (ugui_rect_t){ (int16_t)ctrl_x, (int16_t)ctrl_y, (int16_t)ctrl_w, (int16_t)card_h }, false);
+
+    /* Status title */
+    char status_title[40];
+    ChessOutcome outcome = chess_game_outcome(&g_chess_pos);
+    if (outcome == CHESS_CHECKMATE_WHITE) strncpy(status_title, "Black Wins (Checkmate)", sizeof(status_title));
+    else if (outcome == CHESS_CHECKMATE_BLACK) strncpy(status_title, "White Wins (Checkmate)", sizeof(status_title));
+    else if (outcome == CHESS_STALEMATE) strncpy(status_title, "Draw (Stalemate)", sizeof(status_title));
+    else if (outcome == CHESS_DRAW_REPETITION) strncpy(status_title, "Draw (Repetition)", sizeof(status_title));
+    else if (outcome == CHESS_DRAW_50MOVE) strncpy(status_title, "Draw (50-move rule)", sizeof(status_title));
+    else if (g_touch_analysing) strncpy(status_title, "Analysing...", sizeof(status_title));
+    else if (chess_in_check(&g_chess_pos)) {
+        ksnprintf(status_title, sizeof(status_title), "%s (Check!)",
+                  (g_chess_pos.side == WHITE) ? "White to Move" : "Black to Move");
+    } else {
+        strncpy(status_title, (g_chess_pos.side == WHITE) ? "White to Move" : "Black to Move", sizeof(status_title));
+    }
+    ugui_text_serif(&surf, ctrl_x + 8 * s, ctrl_y + 6 * s, status_title, (uint32_t)strlen(status_title), true, false, false);
+
+    /* Eval & depth line */
+    char eval_line[48];
+    char sc_buf[8];
+    tm_format_score_compact(g_search_score, g_search_root_side, sc_buf);
+    char *trimmed_sc = sc_buf;
+    while (*trimmed_sc == ' ') trimmed_sc++;
+    ksnprintf(eval_line, sizeof(eval_line), "Lv %d  Depth %d  Eval %s",
+              g_console_search_level, g_search_depth, trimmed_sc);
+    ugui_text_mono(&surf, ctrl_x + 8 * s, ctrl_y + 24 * s, eval_line, (uint32_t)strlen(eval_line), false, false);
+
+    /* PV / Last move line */
+    char pv_line[48];
+    if (g_touch_analysing || g_search_best_move != 0) {
+        char pv[3][6];
+        int n_pv = tm_probe_pv(&g_chess_pos, g_search_best_move, pv, 3);
+        int q = 0;
+        q += ksnprintf(pv_line, sizeof(pv_line), "PV: ");
+        for (int i = 0; i < n_pv && q < (int)sizeof(pv_line) - 6; i++) {
+            q += ksnprintf(pv_line + q, sizeof(pv_line) - q, "%s ", pv[i]);
+        }
+    } else if (last_from >= 0 && last_to >= 0) {
+        char mv4[6];
+        Move lm = g_chess_pos.history[g_chess_pos.history_ply - 1].move;
+        tm_format_move4(lm, mv4);
+        ksnprintf(pv_line, sizeof(pv_line), "Last: %s (ply %d)", mv4, g_chess_pos.history_ply);
+    } else {
+        strncpy(pv_line, "Standard Starting Position", sizeof(pv_line));
+    }
+    ugui_text_mono(&surf, ctrl_x + 8 * s, ctrl_y + 38 * s, pv_line, (uint32_t)strlen(pv_line), false, false);
+
+    int cur_y = ctrl_y + card_h + 10 * s;
+
+    /* Move Navigation Row: [< Back]  Ply N/M  [Fwd >] */
+    int btn_w = (ctrl_w - 8 * s) / 3;
+    int btn_h = 24 * s;
+    ugui_button(&surf, &g_touch_ui_ctx,
+                (ugui_rect_t){ (int16_t)ctrl_x, (int16_t)cur_y, (int16_t)btn_w, (int16_t)btn_h },
+                "< Back", CHESS_TOUCH_ID_BACK, false);
+
+    char ply_str[16];
+    ksnprintf(ply_str, sizeof(ply_str), "Ply %d/%d", g_chess_pos.history_ply, g_console_max_history_ply);
+    int tx = ctrl_x + btn_w + 4 * s;
+    int tw = ctrl_w - 2 * (btn_w + 4 * s);
+    int str_w = ugui_text_serif_width(&surf, ply_str, (uint32_t)strlen(ply_str));
+    ugui_text_serif(&surf, tx + (tw - str_w) / 2, cur_y + 4 * s, ply_str, (uint32_t)strlen(ply_str), true, false, false);
+
+    ugui_button(&surf, &g_touch_ui_ctx,
+                (ugui_rect_t){ (int16_t)(ctrl_x + ctrl_w - btn_w), (int16_t)cur_y, (int16_t)btn_w, (int16_t)btn_h },
+                "Fwd >", CHESS_TOUCH_ID_FWD, false);
+
+    cur_y += btn_h + 10 * s;
+
+    /* Action Row: [ Go / Play ]  [ Analyse ] */
+    int act_w = (ctrl_w - 6 * s) / 2;
+    ugui_button(&surf, &g_touch_ui_ctx,
+                (ugui_rect_t){ (int16_t)ctrl_x, (int16_t)cur_y, (int16_t)act_w, (int16_t)btn_h },
+                "Go", CHESS_TOUCH_ID_GO, false);
+    ugui_button(&surf, &g_touch_ui_ctx,
+                (ugui_rect_t){ (int16_t)(ctrl_x + act_w + 6 * s), (int16_t)cur_y, (int16_t)act_w, (int16_t)btn_h },
+                g_touch_analysing ? "Stop Anal." : "Analyse", CHESS_TOUCH_ID_ANALYSE, g_touch_analysing);
+
+    cur_y += btn_h + 10 * s;
+
+    /* Level Stepper Row */
+    static const char *const k_level_names[8] = { "1s", "2s", "5s", "10s", "15s", "30s", "60s", "Inf" };
+    char lv_val[20];
+    int l_idx = g_console_search_level - 1;
+    if (l_idx < 0) l_idx = 0;
+    if (l_idx > 7) l_idx = 7;
+    ksnprintf(lv_val, sizeof(lv_val), "Lv %d (%s)", g_console_search_level, k_level_names[l_idx]);
+    ugui_stepper(&surf, &g_touch_ui_ctx,
+                 (ugui_rect_t){ (int16_t)ctrl_x, (int16_t)cur_y, (int16_t)ctrl_w, (int16_t)btn_h },
+                 "Search", lv_val, CHESS_TOUCH_ID_LEVEL_DEC, CHESS_TOUCH_ID_LEVEL_INC);
+
+    cur_y += btn_h + 10 * s;
+
+    /* Options / Extra Controls Row */
+    ugui_button(&surf, &g_touch_ui_ctx,
+                (ugui_rect_t){ (int16_t)ctrl_x, (int16_t)cur_y, (int16_t)ctrl_w, (int16_t)btn_h },
+                g_touch_show_options ? "Hide Options" : "Options...", CHESS_TOUCH_ID_OPT_TOGGLE, g_touch_show_options);
+
+    cur_y += btn_h + 8 * s;
+
+    if (g_touch_show_options) {
+        int opt_w = (ctrl_w - 6 * s) / 2;
+        ugui_toolbar_button(&surf, &g_touch_ui_ctx,
+                            (ugui_rect_t){ (int16_t)ctrl_x, (int16_t)cur_y, (int16_t)opt_w, (int16_t)(20 * s) },
+                            "New Game", CHESS_TOUCH_ID_NEW, false);
+        ugui_toolbar_button(&surf, &g_touch_ui_ctx,
+                            (ugui_rect_t){ (int16_t)(ctrl_x + opt_w + 6 * s), (int16_t)cur_y, (int16_t)opt_w, (int16_t)(20 * s) },
+                            g_touch_flip ? "White View" : "Black View", CHESS_TOUCH_ID_FLIP, false);
+        cur_y += 22 * s;
+
+        ugui_toolbar_button(&surf, &g_touch_ui_ctx,
+                            (ugui_rect_t){ (int16_t)ctrl_x, (int16_t)cur_y, (int16_t)opt_w, (int16_t)(20 * s) },
+                            g_touch_auto_reply ? "Auto: ON" : "Auto: OFF", CHESS_TOUCH_ID_AUTO, false);
+        ugui_toolbar_button(&surf, &g_touch_ui_ctx,
+                            (ugui_rect_t){ (int16_t)(ctrl_x + opt_w + 6 * s), (int16_t)cur_y, (int16_t)opt_w, (int16_t)(20 * s) },
+                            "Save Game", CHESS_TOUCH_ID_SAVE, false);
+        cur_y += 22 * s;
+
+        ugui_toolbar_button(&surf, &g_touch_ui_ctx,
+                            (ugui_rect_t){ (int16_t)ctrl_x, (int16_t)cur_y, (int16_t)opt_w, (int16_t)(20 * s) },
+                            "Load Game", CHESS_TOUCH_ID_LOAD, false);
+        ugui_toolbar_button(&surf, &g_touch_ui_ctx,
+                            (ugui_rect_t){ (int16_t)(ctrl_x + opt_w + 6 * s), (int16_t)cur_y, (int16_t)opt_w, (int16_t)(20 * s) },
+                            "Quit Chess", CHESS_TOUCH_ID_QUIT, false);
+        cur_y += 24 * s;
+    }
+
+    /* Promotion Picker Overlay (when pawn reaches 8th/1st rank) */
+    if (g_touch_pending_promo) {
+        int promo_w = ctrl_w;
+        int promo_btn_w = (promo_w - 6 * s) / 4;
+        ugui_section_header(&surf, ctrl_x, cur_y, promo_w, "PROMOTE PAWN");
+        cur_y += 18 * s;
+        ugui_button(&surf, &g_touch_ui_ctx,
+                    (ugui_rect_t){ (int16_t)ctrl_x, (int16_t)cur_y, (int16_t)promo_btn_w, (int16_t)(24 * s) },
+                    "Queen", CHESS_TOUCH_ID_PROMO_Q, true);
+        ugui_button(&surf, &g_touch_ui_ctx,
+                    (ugui_rect_t){ (int16_t)(ctrl_x + promo_btn_w + 2 * s), (int16_t)cur_y, (int16_t)promo_btn_w, (int16_t)(24 * s) },
+                    "Rook", CHESS_TOUCH_ID_PROMO_R, false);
+        ugui_button(&surf, &g_touch_ui_ctx,
+                    (ugui_rect_t){ (int16_t)(ctrl_x + 2 * (promo_btn_w + 2 * s)), (int16_t)cur_y, (int16_t)promo_btn_w, (int16_t)(24 * s) },
+                    "Bishop", CHESS_TOUCH_ID_PROMO_B, false);
+        ugui_button(&surf, &g_touch_ui_ctx,
+                    (ugui_rect_t){ (int16_t)(ctrl_x + 3 * (promo_btn_w + 2 * s)), (int16_t)cur_y, (int16_t)promo_btn_w, (int16_t)(24 * s) },
+                    "Knight", CHESS_TOUCH_ID_PROMO_N, false);
+    }
+
+    /* Flush frame to display */
+    uint8_t sreq[1] = { 'S' }, sreply[SCREEN_REPLY_LEN];
+    (void)console_canvas(sreq, 1, sreply);
+#if defined(LCDTERM_PRESENT)
+    lcdterm_damage();
+#endif
+}
+
+static bool chess_touch_apply_move(Move m) {
+    if (!make_move(&g_chess_pos, m)) return false;
+    g_console_max_history_ply = g_chess_pos.history_ply;
+    console_autosave(&g_chess_pos);
+    chess_show(&g_chess_pos);
+    g_touch_sel_sq = -1;
+    g_touch_pending_promo = false;
+    chess_touch_draw();
+
+    if (!console_report_outcome(&g_chess_pos) && g_touch_auto_reply) {
+        int time_ms = level_times_ms[g_console_search_level - 1];
+        chess_touch_draw();
+        Move reply = chess_think(&g_chess_pos, 64, time_ms);
+        if (reply != 0 && make_move(&g_chess_pos, reply)) {
+            g_console_max_history_ply = g_chess_pos.history_ply;
+            console_autosave(&g_chess_pos);
+            chess_show(&g_chess_pos);
+            console_report_outcome(&g_chess_pos);
+        }
+    }
+    chess_touch_draw();
+    return true;
+}
+
+static void chess_touch_handle_tap(int tx, int ty) {
+    int16_t hit_idx = -1;
+    uint16_t id = ugui_hit_test(&g_touch_ui_ctx, tx, ty, &hit_idx);
+    if (id == 0) return;
+
+    if (id >= CHESS_TOUCH_ID_SQUARE_BASE && id < CHESS_TOUCH_ID_SQUARE_BASE + 64) {
+        int sq = id - CHESS_TOUCH_ID_SQUARE_BASE;
+        if (g_touch_pending_promo) return;
+
+        if (g_touch_sel_sq < 0) {
+            /* First tap: select source piece if it belongs to current side */
+            int piece = g_chess_pos.board[sq];
+            if (piece != NO_PIECE) {
+                int side = (g_chess_pos.color_bbs[WHITE] & (1ULL << sq)) ? WHITE : BLACK;
+                if (side == g_chess_pos.side) {
+                    g_touch_sel_sq = sq;
+                    chess_touch_draw();
+                }
+            }
+        } else {
+            /* Second tap: destination or select new piece */
+            int from = g_touch_sel_sq;
+            int to = sq;
+
+            MoveList list;
+            generate_moves(&g_chess_pos, &list);
+            bool only_promo = false;
+            Move valid_move = 0;
+
+            for (int i = 0; i < list.count; i++) {
+                Move m = list.moves[i];
+                if (MOVE_FROM(m) == from && MOVE_TO(m) == to) {
+                    if (make_move(&g_chess_pos, m)) {
+                        unmake_move(&g_chess_pos);
+                        if (move_is_promo(m)) {
+                            only_promo = true;
+                        } else {
+                            valid_move = m;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (only_promo) {
+                g_touch_pending_from = from;
+                g_touch_pending_to = to;
+                g_touch_pending_promo = true;
+                chess_touch_draw();
+                return;
+            }
+
+            if (valid_move != 0) {
+                chess_touch_apply_move(valid_move);
+            } else {
+                /* Not a valid move: check if tapping another of own pieces */
+                int piece = g_chess_pos.board[sq];
+                if (piece != NO_PIECE) {
+                    int side = (g_chess_pos.color_bbs[WHITE] & (1ULL << sq)) ? WHITE : BLACK;
+                    if (side == g_chess_pos.side) {
+                        g_touch_sel_sq = sq;
+                        chess_touch_draw();
+                        return;
+                    }
+                }
+                g_touch_sel_sq = -1;
+                chess_touch_draw();
+            }
+        }
+        return;
+    }
+
+    if (id == CHESS_TOUCH_ID_PROMO_Q || id == CHESS_TOUCH_ID_PROMO_R ||
+        id == CHESS_TOUCH_ID_PROMO_B || id == CHESS_TOUCH_ID_PROMO_N) {
+        int promo_piece = QUEEN;
+        if (id == CHESS_TOUCH_ID_PROMO_R) promo_piece = ROOK;
+        else if (id == CHESS_TOUCH_ID_PROMO_B) promo_piece = BISHOP;
+        else if (id == CHESS_TOUCH_ID_PROMO_N) promo_piece = KNIGHT;
+
+        MoveList list;
+        generate_moves(&g_chess_pos, &list);
+        for (int i = 0; i < list.count; i++) {
+            Move m = list.moves[i];
+            if (MOVE_FROM(m) == g_touch_pending_from && MOVE_TO(m) == g_touch_pending_to &&
+                move_is_promo(m) && move_promo_piece(m) == promo_piece) {
+                chess_touch_apply_move(m);
+                break;
+            }
+        }
+        return;
+    }
+
+    if (id == CHESS_TOUCH_ID_BACK) {
+        if (g_chess_pos.history_ply > 0) {
+            unmake_move(&g_chess_pos);
+            chess_show(&g_chess_pos);
+            g_touch_sel_sq = -1;
+            chess_touch_draw();
+        }
+        return;
+    }
+
+    if (id == CHESS_TOUCH_ID_FWD) {
+        if (g_chess_pos.history_ply < g_console_max_history_ply) {
+            Move m = g_chess_pos.history[g_chess_pos.history_ply].move;
+            if (make_move(&g_chess_pos, m)) {
+                chess_show(&g_chess_pos);
+                g_touch_sel_sq = -1;
+                chess_touch_draw();
+            }
+        }
+        return;
+    }
+
+    if (id == CHESS_TOUCH_ID_GO) {
+        int time_ms = level_times_ms[g_console_search_level - 1];
+        chess_touch_draw();
+        Move m = chess_think(&g_chess_pos, 64, time_ms);
+        if (m != 0 && make_move(&g_chess_pos, m)) {
+            g_console_max_history_ply = g_chess_pos.history_ply;
+            console_autosave(&g_chess_pos);
+            chess_show(&g_chess_pos);
+            console_report_outcome(&g_chess_pos);
+        }
+        chess_touch_draw();
+        return;
+    }
+
+    if (id == CHESS_TOUCH_ID_ANALYSE) {
+        if (g_touch_analysing) {
+            g_touch_analysing = false;
+        } else {
+            g_touch_analysing = true;
+            chess_touch_draw();
+            (void)chess_think(&g_chess_pos, 64, -1);
+            g_touch_analysing = false;
+        }
+        chess_touch_draw();
+        return;
+    }
+
+    if (id == CHESS_TOUCH_ID_LEVEL_DEC) {
+        if (g_console_search_level > 1) {
+            g_console_search_level--;
+            chess_touch_draw();
+        }
+        return;
+    }
+
+    if (id == CHESS_TOUCH_ID_LEVEL_INC) {
+        if (g_console_search_level < 8) {
+            g_console_search_level++;
+            chess_touch_draw();
+        }
+        return;
+    }
+
+    if (id == CHESS_TOUCH_ID_OPT_TOGGLE) {
+        g_touch_show_options = !g_touch_show_options;
+        chess_touch_draw();
+        return;
+    }
+
+    if (id == CHESS_TOUCH_ID_NEW) {
+        console_new_game(&g_chess_pos);
+        g_touch_sel_sq = -1;
+        chess_touch_draw();
+        return;
+    }
+
+    if (id == CHESS_TOUCH_ID_FLIP) {
+        g_touch_flip = !g_touch_flip;
+        chess_touch_draw();
+        return;
+    }
+
+    if (id == CHESS_TOUCH_ID_AUTO) {
+        g_touch_auto_reply = !g_touch_auto_reply;
+        chess_touch_draw();
+        return;
+    }
+
+    if (id == CHESS_TOUCH_ID_SAVE) {
+        (void)console_write_pgn(&g_chess_pos, console_save_path());
+        chess_touch_draw();
+        return;
+    }
+
+    if (id == CHESS_TOUCH_ID_LOAD) {
+        if (pgn_load(g_chess_scratch, console_save_path()) == 0 &&
+            is_position_valid(g_chess_scratch)) {
+            g_chess_pos = *g_chess_scratch;
+            clear_tt();
+            g_console_max_history_ply = g_chess_pos.history_ply;
+        }
+        g_touch_sel_sq = -1;
+        chess_touch_draw();
+        return;
+    }
+
+    if (id == CHESS_TOUCH_ID_QUIT) {
+        g_touch_active = false;
+        return;
+    }
+}
+
+void chess_touch_run(void) {
+    if (!chess_claim()) return;
+    if (!chess_ensure_init()) {
+        chess_unclaim();
+        return;
+    }
+
+    console_canvas_clear_events();
+    console_resume_or_new(&g_chess_pos);
+
+    /* Open full-window canvas in ribbon titled "Chess" */
+    uint8_t req[16];
+    req[0] = 'L';
+    req[1] = SCREEN_LAYOUT_CANVAS;
+    memcpy(req + 2, "chess", 6);
+    uint8_t reply[SCREEN_REPLY_LEN];
+    (void)console_canvas(req, 8, reply);
+
+    req[0] = 'T';
+    req[1] = 'C'; req[2] = 'h'; req[3] = 'e'; req[4] = 's'; req[5] = 's';
+    (void)console_canvas(req, 6, reply);
+
+    req[0] = 'K'; req[1] = 1;
+    (void)console_canvas(req, 2, reply);
+
+    req[0] = 'F'; req[1] = 0;
+    (void)console_canvas(req, 2, reply);
+
+    console_set_active_win_type(RIBBON_WIN_CANVAS);
+
+    g_touch_active = true;
+    g_touch_sel_sq = -1;
+    g_touch_pending_promo = false;
+    g_touch_analysing = false;
+    g_touch_show_options = false;
+
+    chess_touch_draw();
+
+    while (g_touch_active) {
+        ChessAbort a = chess_abort_requested();
+        if (a != CHESS_ABORT_NONE) break;
+
+        if (console_canvas_poll_closed()) break;
+
+        int tx, ty;
+        if (console_canvas_poll_tap(&tx, &ty)) {
+            chess_touch_handle_tap(tx, ty);
+        }
+
+        if (console_has_char()) {
+            char c = console_getc();
+            if (c == 0x03 || c == 'q' || c == 'Q') break;
+        }
+
+        sched_yield();
+        time_delay_us(20000);
+    }
+
+    g_touch_active = false;
+    chess_session_end();
+    chess_unclaim();
+}
+
 
