@@ -1335,7 +1335,15 @@ uint32_t i2c_task_call_count(void) { return g_i2c_calls; }
 
 void i2c_fail_counts(i2c_fail_counts_t *out) { *out = g_i2c_fails; }
 
+#if !defined(CONFIG_BOARD_RP2350)
+/* single task: written by i2c_task_start() at boot, before any caller; the framework's after. */
+static driver_task_t g_i2c_task;
+#endif
+
 bool i2c_task_alive(void) {
+#if !defined(CONFIG_BOARD_RP2350)
+    return driver_task_alive(&g_i2c_task);
+#endif
     if (g_i2c_task_pid < 0) return false;
     int st = sched_task_state(g_i2c_task_pid);
     return st != TASK_UNUSED && st != TASK_DEAD;
@@ -1652,57 +1660,41 @@ static void i2c_task_body(void *arg) {
  * Both are checked: chan_call() refuses a call that would close a wait-for
  * cycle (Y3), and console_lock() reports a console write from inside a serve
  * callback (Y5). See kernel/lock.h. */
-static void i2c_task_body(void *arg) {
-    (void)arg;
-    while (!g_i2c_ep) sched_yield();
-
-    for (;;) {
-        uint32_t req_len = chan_serve_wait(g_i2c_ep);
-        if (req_len < 1) { chan_serve_reply(g_i2c_ep, 0); continue; }
-
-        uint8_t op = g_i2c_req[0];
-        switch (op) {
-        case I2C_OP_XFER: {
-            bool ok = false;
-            uint32_t rlen = 0;
-            if (req_len >= 4) {
-                uint8_t addr = g_i2c_req[1];
-                uint32_t wlen = g_i2c_req[2];
-                rlen = g_i2c_req[3];
-                if (wlen <= I2C_XFER_WMAX && rlen <= I2C_XFER_RMAX &&
-                    (uint32_t)req_len >= 4u + wlen) {
-                    ok = i2c_xfer_raw_bus(0, addr, &g_i2c_req[4], (int)wlen,
-                                          &g_i2c_resp[1], (int)rlen);
-                }
-            }
-            if (!ok) rlen = 0;
-            g_i2c_resp[0] = ok ? 1 : 0;
-            chan_serve_reply(g_i2c_ep, 1 + rlen);
-            break;
+static uint32_t i2c_serve(void *ctx, const uint8_t *req, uint32_t req_len,
+                          uint8_t *resp, uint32_t resp_cap) {
+    (void)ctx; (void)resp_cap;
+    switch (req[0]) {
+    case I2C_OP_XFER: {
+        bool ok = false;
+        uint32_t rlen = 0;
+        if (req_len >= 4) {
+            uint8_t addr = req[1];
+            uint32_t wlen = req[2];
+            rlen = req[3];
+            if (wlen <= I2C_XFER_WMAX && rlen <= I2C_XFER_RMAX && req_len >= 4u + wlen)
+                ok = i2c_xfer_raw_bus(0, addr, &req[4], (int)wlen, &resp[1], (int)rlen);
         }
-        case I2C_OP_XFER_BUS: {
-            bool ok = false;
-            uint32_t rlen = 0;
-            if (req_len >= 5) {
-                uint8_t bus = g_i2c_req[1];
-                uint8_t addr = g_i2c_req[2];
-                uint32_t wlen = g_i2c_req[3];
-                rlen = g_i2c_req[4];
-                if (wlen <= I2C_XFER_WMAX && rlen <= I2C_XFER_RMAX &&
-                    (uint32_t)req_len >= 5u + wlen) {
-                    ok = i2c_xfer_raw_bus(bus, addr, &g_i2c_req[5], (int)wlen,
-                                          &g_i2c_resp[1], (int)rlen);
-                }
-            }
-            if (!ok) rlen = 0;
-            g_i2c_resp[0] = ok ? 1 : 0;
-            chan_serve_reply(g_i2c_ep, 1 + rlen);
-            break;
+        if (!ok) rlen = 0;
+        resp[0] = ok ? 1 : 0;
+        return 1 + rlen;
+    }
+    case I2C_OP_XFER_BUS: {
+        bool ok = false;
+        uint32_t rlen = 0;
+        if (req_len >= 5) {
+            uint8_t bus = req[1];
+            uint8_t addr = req[2];
+            uint32_t wlen = req[3];
+            rlen = req[4];
+            if (wlen <= I2C_XFER_WMAX && rlen <= I2C_XFER_RMAX && req_len >= 5u + wlen)
+                ok = i2c_xfer_raw_bus(bus, addr, &req[5], (int)wlen, &resp[1], (int)rlen);
         }
-        default:
-            chan_serve_reply(g_i2c_ep, 0);
-            break;
-        }
+        if (!ok) rlen = 0;
+        resp[0] = ok ? 1 : 0;
+        return 1 + rlen;
+    }
+    default:
+        return 0;
     }
 }
 
@@ -1715,6 +1707,18 @@ static void i2c_task_body(void *arg) {
  * the task is not alive, same as every boot-time read before this ever
  * ran. */
 int i2c_task_start(void) {
+#if !defined(CONFIG_BOARD_RP2350)
+    const driver_task_spec_t spec = {
+        .name = "i2c", .serve = i2c_serve,
+        .req = g_i2c_req, .req_cap = sizeof(g_i2c_req),
+        .resp = g_i2c_resp, .resp_cap = sizeof(g_i2c_resp),
+        .min_req_len = 1, .stack_pages = 1, .priority = DRIVER_PRIO_DEFAULT,
+    };
+    int rc = driver_task_start(&g_i2c_task, &spec);
+    if (rc < 0) return -1;
+    g_i2c_ep = driver_task_endpoint(&g_i2c_task);
+    return rc;
+#else
     int pid = task_create_driver("i2c", i2c_task_body, NULL, 1);
     if (pid < 0) {
         printk("[I2C] Could not start the i2c task; RTC/EEPROM stay on direct hardware access.\n");
@@ -1729,6 +1733,7 @@ int i2c_task_start(void) {
     g_i2c_task_pid = pid;
     printk("[I2C] Driver running as task #%d, reachable via chan_call(\"i2c\", ...)\n", pid);
     return pid;
+#endif
 }
 
 /* Waits its turn in the endpoint's FIFO (chan_call_wait()), so a client

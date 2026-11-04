@@ -206,9 +206,16 @@ typedef struct {
      * caller silently fall back to direct access?" -- is answered by this
      * being nonzero and growing, and several tests assert exactly that. */
     uint32_t           calls;
+
+    /* Folded by the preset (CONFIG_FOLD): no task, pid stays -1, and serve()
+     * runs in each caller's context. See driver_task.c. */
+    bool               folded;
 } driver_task_t;
 
 /* Creates the task, registers the endpoint, and returns the pid (or -1).
+ * For an endpoint the preset folds (driver_task_fold_wanted()) there is no
+ * task: the endpoint is registered with serve() as its handler and 0 is
+ * returned.
  *
  * Failure is not fatal by construction: every caller's facade checks
  * driver_task_alive() and falls back to direct hardware access, which is
@@ -220,6 +227,9 @@ int driver_task_start(driver_task_t *dt, const driver_task_spec_t *spec);
  * failed -- the one question every facade function asks before choosing
  * between the endpoint and the hardware. */
 bool driver_task_alive(const driver_task_t *dt);
+
+/* True if this build's preset folds the endpoint `name` (LUGALOS_FOLD). */
+bool driver_task_fold_wanted(const char *name);
 
 static inline uint32_t driver_task_call_count(const driver_task_t *dt) {
     return dt ? dt->calls : 0u;

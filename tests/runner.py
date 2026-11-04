@@ -6928,6 +6928,47 @@ def test_racescan_ownership() -> tuple[bool, str]:
     return True, "clean: " + ", ".join(builds)
 
 
+def test_servecheck() -> tuple[bool, str]:
+    """Phase 66.7, guardrail 2: a driver's serve() is reached only through the
+    driver-task framework, so folding an endpoint changes no caller
+    (tools/servecheck.py)."""
+    import sys as _sys
+    repo = Path(__file__).resolve().parent.parent
+    r = subprocess.run([_sys.executable, str(repo / "tools" / "servecheck.py")],
+                       cwd=repo, capture_output=True, text=True, timeout=120)
+    out = (r.stdout + r.stderr).strip()
+    return r.returncode == 0, out[-4000:]
+
+
+def test_fold_twin_shape(elf: Path, img: Path) -> tuple[str, bool, str]:
+    """Phase 66.7, guardrail 3: the folded twin (preset rv32-fold) really is
+    folded -- its /proc/config names the endpoints, no task serves them, and
+    each one still answers: the console (uart), the card (blk) and a bus scan
+    (i2c). The core suite run on it before this is the rest of the proof."""
+    name = "Folded Twin: uart, blk and i2c Served With No Task (rv32-fold, 66.7)"
+    session = QemuSession(elf, img, "rv32")
+    try:
+        session.start()
+        ok, log = session.send_and_expect("", r"LugalOS Interactive Console Shell", timeout=15.0)
+        if not ok:
+            return (name, False, f"no shell: {log[-400:]}")
+        ok, cfg = session.send_and_expect("cat /proc/config", r"FOLD=[^\r\n]*", timeout=6.0)
+        m = re.search(r"FOLD=([a-z0-9_,]*)", cfg)
+        if not m or set(m.group(1).split(",")) != {"uart", "blk", "i2c"}:
+            return (name, False, f"/proc/config: {m.group(0) if m else 'no FOLD line'}")
+        _, ps = session.send_and_expect("ps", r"lsh>", timeout=6.0)
+        tasks = [n for n in ("uart", "blk", "i2c") if re.search(r"^\s*\d+\s+\w+\s+%s\b" % n, ps, re.M)]
+        if tasks:
+            return (name, False, f"still a task: {tasks}\n{ps[-800:]}")
+        ok_blk, _ = session.send_and_expect("ls /sd0", r"PRIME\s+C", timeout=6.0)
+        ok_i2c, _ = session.send_and_expect("i2c", r"Found \d+ I2C device", timeout=6.0)
+        if not (ok_blk and ok_i2c):
+            return (name, False, f"blk answered: {ok_blk}, i2c answered: {ok_i2c}")
+        return (name, True, "")
+    finally:
+        session.close()
+
+
 def test_static_ram_baselines() -> tuple[bool, str]:
     """Phase 66.1: no preset's static RAM (SRAM or BULK_BSS) grew past its
     baseline in tools/ram_baselines/ (tools/sizereport.py --all --check).
@@ -10750,6 +10791,15 @@ def main() -> int:
     else:
         print(f"  [FAIL] {name}\n    Log Output:\n{info}")
 
+    ok, info = test_servecheck()
+    total_tests += 1
+    name = "Serve Callbacks Reached Only Through The Driver-Task Framework (tools/servecheck.py, 66.7)"
+    if ok:
+        passed_tests += 1
+        print(f"  [PASS] {name} -- {info}")
+    else:
+        print(f"  [FAIL] {name}\n    Log Output:\n{info}")
+
     ok, info = test_static_ram_baselines()
     total_tests += 1
     name = "Static RAM Of Every Built Preset Within Its Baseline (tools/sizereport.py --all --check, 66.1)"
@@ -10939,6 +10989,18 @@ def main() -> int:
     else:
         print("\n[i] build/rv64-smp not present; skipping the two-hart target "
               "(cmake --preset rv64-smp && cmake --build --preset rv64-smp)")
+
+    # 6. The folded twin (66.7): rv32 with its driver endpoints folded, through
+    # the same core suite. Built by `cmake --preset rv32-fold`; skipped when absent.
+    fold_elf = build_dir / "rv32-fold" / "lugalos.elf"
+    if fold_elf.exists():
+        print("\n[Target: RV32, Endpoints Folded (rv32-fold)]")
+        for name, ok, log in test_qemu_architecture_with_retry(fold_elf, img_for("rv32-fold"), "rv32"):
+            _run_single((f"{name} [folded]", ok, log))
+        _run_single(test_fold_twin_shape(fold_elf, img_for("rv32-fold")))
+    else:
+        print("\n[i] build/rv32-fold not present; skipping the folded twin "
+              "(cmake --preset rv32-fold && cmake --build --preset rv32-fold)")
 
     duration = time.time() - start_time
     print("\n----------------------------------------------------------------------")

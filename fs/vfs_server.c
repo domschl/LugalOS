@@ -1352,6 +1352,23 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
          * test suites' commands (cmake/lugalos_layers.cmake). */
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "PROFILE=%s\nDEV=%d\n", CONFIG_PROFILE, CONFIG_DEV);
+        /* The endpoints this preset folds (no task: drivers/driver_task.c), as the preset wrote
+         * them: comma-separated. Empty when nothing is folded. */
+        used += (uint32_t)ksnprintf(buf + used, cap - used, "FOLD=");
+#if defined(CONFIG_FOLD)
+        {
+            char list[sizeof CONFIG_FOLD];
+            uint32_t n = 0;
+            for (const char *f = CONFIG_FOLD; *f; f++) {
+                if (*f != ' ') list[n++] = *f;
+                else if (n && list[n - 1] != ',') list[n++] = ',';
+            }
+            if (n && list[n - 1] == ',') n--;
+            list[n] = 0;
+            used += (uint32_t)ksnprintf(buf + used, cap - used, "%s", list);
+        }
+#endif
+        used += (uint32_t)ksnprintf(buf + used, cap - used, "\n");
         used += (uint32_t)ksnprintf(buf + used, cap - used,
             "PALLOC_MAX_PAGES=%d\n", CONFIG_PALLOC_MAX_PAGES);
         used += (uint32_t)ksnprintf(buf + used, cap - used,

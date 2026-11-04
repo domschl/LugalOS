@@ -76,6 +76,9 @@ The runner executes over **376 distinct test cases** across three virtual target
 1. **RV32 NOMMU Target**: Validates PMP memory domain isolation, cooperative/preemptive task switches, and device driver confinements.
 2. **RV64 MMU Target**: Validates Sv39 3-level page tables, virtual address space creation and destruction, and 64-bit bignum arithmetic.
 3. **RV64 SMP Multicore Target**: Validates dual-hart scheduler lock hand-offs, atomic `amoswap` contention, and cross-hart thread synchronization.
+4. **RV32 Folded Twin** (`rv32-fold`): the RV32 core suite again, with the `uart`, `blk` and `i2c` endpoints folded (no driver tasks), and a check that they are folded and still answer. A folded build must behave like its unfolded twin ([ADR 008](../history/adr/008_folded_endpoints.md)). Built with `cmake --preset rv32-fold`, skipped when absent.
+
+The static checks run first: `tools/racescan.py --check` (ownership of shared statics), `tools/sizereport.py --all --check` (static RAM against its baseline) and `tools/servecheck.py` (no direct calls to a driver's `serve()`: only the framework may, so an endpoint can be folded).
 
 ---
 

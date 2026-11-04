@@ -264,6 +264,12 @@ endif()
 # suites drive; a release image (-DLUGALOS_DEV=OFF) leaves them out.
 option(LUGALOS_DEV "Build the self-tests, stress tests and demo commands" ON)
 
+# Endpoints this preset folds (66.7): their serve() runs in the caller's
+# context, with no task of their own. A comma-separated list of endpoint
+# names, e.g. "i2c" or "uart,blk,i2c"; empty folds nothing. A property of the
+# preset, never of a driver (doc/history/adr/008_folded_endpoints.md).
+set(LUGALOS_FOLD "" CACHE STRING "Endpoints to fold, comma-separated (e.g. i2c,uart)")
+
 # Feature flags, all set by the layers above and baked into lugalos_config.h
 # below, so C code gates uniformly with #if CONFIG_ENABLE_CC on every target.
 #
@@ -586,7 +592,7 @@ if(DEFINED LUGALOS_BOARD_FILE)
     set(LUGALOS_CONFIG_HEADER ${CMAKE_CURRENT_BINARY_DIR}/lugalos_config.h)
     execute_process(COMMAND ${CMAKE_COMMAND}
         -DBOARD=${LUGALOS_BOARD_FILE} -DPROFILE=${LUGALOS_PROFILE_FILE} -DOUT=${LUGALOS_CONFIG_HEADER}
-        -DDEV=${LUGALOS_DEV} -DENABLE_CERES=${LUGALOS_ENABLE_CERES}
+        -DDEV=${LUGALOS_DEV} -DFOLD=${LUGALOS_FOLD} -DENABLE_CERES=${LUGALOS_ENABLE_CERES}
         -DENABLE_CC=${LUGALOS_ENABLE_CC} -DENABLE_ED=${LUGALOS_ENABLE_ED} -DENABLE_SMP=${LUGALOS_ENABLE_SMP}
         -DENABLE_ST7735=${LUGALOS_ENABLE_ST7735} -DENABLE_TM1638=${LUGALOS_ENABLE_TM1638}
         -DENABLE_CHESS=${LUGALOS_ENABLE_CHESS} -DENABLE_ZMACHINE=${LUGALOS_ENABLE_ZMACHINE} -DENABLE_SPISD=${LUGALOS_ENABLE_SPISD} -DENABLE_SDMMC=${LUGALOS_ENABLE_SDMMC}
@@ -622,7 +628,7 @@ if(DEFINED LUGALOS_BOARD_FILE)
     add_custom_command(OUTPUT ${LUGALOS_CONFIG_HEADER}
         COMMAND ${CMAKE_COMMAND}
             -DBOARD=${LUGALOS_BOARD_FILE} -DPROFILE=${LUGALOS_PROFILE_FILE} -DOUT=${LUGALOS_CONFIG_HEADER}
-            -DDEV=${LUGALOS_DEV} -DENABLE_CERES=${LUGALOS_ENABLE_CERES}
+            -DDEV=${LUGALOS_DEV} -DFOLD=${LUGALOS_FOLD} -DENABLE_CERES=${LUGALOS_ENABLE_CERES}
             -DENABLE_CC=${LUGALOS_ENABLE_CC} -DENABLE_ED=${LUGALOS_ENABLE_ED} -DENABLE_SMP=${LUGALOS_ENABLE_SMP}
             -DENABLE_ST7735=${LUGALOS_ENABLE_ST7735} -DENABLE_TM1638=${LUGALOS_ENABLE_TM1638}
             -DENABLE_CHESS=${LUGALOS_ENABLE_CHESS} -DENABLE_ZMACHINE=${LUGALOS_ENABLE_ZMACHINE} -DENABLE_SPISD=${LUGALOS_ENABLE_SPISD} -DENABLE_SDMMC=${LUGALOS_ENABLE_SDMMC}

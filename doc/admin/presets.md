@@ -17,6 +17,7 @@ LugalOS supports a range of distinct hardware presets across RISC-V microcontrol
 | **`esp32p4-tab5`** | RV32 Dual-Core | M5Stack Tab5 (rev v1.3) | 360-400 MHz | 768 KB L2MEM + 32 MB PSRAM | 5" 720x1280 MIPI-DSI, ST7121 Touch | SDMMC, USB Host, Dual Expander | 5" Portable Tablet / Reader |
 | **`esp32p4`** | RV32 Dual-Core | ESP32-P4-NANO (rev v1.3) | 360-400 MHz | 768 KB L2MEM + 32 MB PSRAM | Serial Console (921600 baud) | RMII Ethernet, SDMMC | Microkernel Compute Node |
 | **`esp32c6`** | RV32IMAC | Waveshare ESP32-C6-Zero | 160 MHz | 512 KB SRAM, 8 MB Flash | Serial / JTAG Console | 802.11ax Wi-Fi, Flashfs | Low-Power Wireless Node |
+| **`esp32c6-release`** | RV32IMAC | Waveshare ESP32-C6-Zero | 160 MHz | 512 KB SRAM, 8 MB Flash | Serial / JTAG Console | 802.11ax Wi-Fi, Flashfs | The same node deployed: release image, `i2c` folded |
 | **`rp2350-chess`** | RV32 Hazard3 | Raspberry Pi Pico 2 | 150 MHz | 520 KB SRAM | 1.8" ST7735 TFT, TM1638 Keypad | SD/SPI card | Dedicated Chess Computer |
 | **`rp2350-clock`** | RV32 Hazard3 | Waveshare Pico-Clock-Green | 150 MHz | 520 KB SRAM | SM16106 LED Matrix | DCF77 Radio, RTC | Precision Network Time Node |
 | **`rp2350-gateway`** | RV32 Hazard3 | Raspberry Pi Pico 2 | 150 MHz | 520 KB SRAM | Serial Console | ENC28J60 Ethernet, USB 9P | Network Gateway Node |
@@ -24,6 +25,7 @@ LugalOS supports a range of distinct hardware presets across RISC-V microcontrol
 | **`rv32`** | RV32 NOMMU | QEMU `virt` machine | Emulated | 128 MB RAM | VirtIO Console | VirtIO Blk, VirtIO Net | 32-bit Microkernel CI Target |
 | **`rv64`** | RV64 Sv39 MMU| QEMU `virt` machine | Emulated | 128 MB RAM | VirtIO Console | VirtIO Blk, VirtIO Net | 64-bit Virtual Memory Target |
 | **`rv64-smp`** | RV64 SMP | QEMU `virt` (2 harts) | Emulated | 128 MB RAM | VirtIO Console | VirtIO Blk, VirtIO Net | Multicore SMP CI Target |
+| **`rv32-fold`** | RV32 NOMMU | QEMU `virt` machine | Emulated | 128 MB RAM | VirtIO Console | VirtIO Blk, VirtIO Net | `rv32` with `uart`, `blk` and `i2c` folded: the folded twin |
 
 ---
 
@@ -47,6 +49,8 @@ A key in the wrong layer stops the configure. A command-line `-DLUGALOS_ENABLE_.
 | `qemu` | `rv32`, `rv64`, `rv64-smp` | Everything, for the automated suite |
 
 Besides the two layers a preset sets `LUGALOS_ENABLE_SMP`, and the build sets `LUGALOS_DEV`: ON by default, a **dev image** with the self-tests and demo commands the test suites drive; `cmake --preset esp32c6 -DLUGALOS_DEV=OFF` builds a **release image** without them. `/proc/config` names the profile and whether the image is a dev build.
+
+A preset may also **fold** driver endpoints, `LUGALOS_FOLD` (a comma-separated list such as `i2c` or `uart,blk,i2c`). A folded driver has no task of its own: its requests are served in the caller's context, which saves the driver's stack (one page for the C6's `i2c`). Callers and drivers do not change. `esp32c6-release` folds `i2c` and turns `LUGALOS_DEV` off; `esp32c6` is the same node unfolded, with its test commands. `/proc/config` lists what is folded (`FOLD=`). Which endpoints may fold, and why, is [ADR 008](../history/adr/008_folded_endpoints.md).
 
 ## 3. Display Density Profiles & Typography
 

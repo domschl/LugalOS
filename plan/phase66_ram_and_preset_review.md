@@ -388,6 +388,33 @@ still exit and return its pages: nothing asks for them again. That part moves to
 
 ### 66.7 Folding of kernel-mode endpoints
 
+* **DONE 2026-11-04.** ADR 008 (`doc/history/adr/008_folded_endpoints.md`).
+  * *The seam:* the C6/P4 kernel-mode I2C loop, the last hand-written one in kernel mode, now runs on
+    `driver_task_t` (`i2c_serve()`). The other hand-written loops are the RP2350's U-mode drivers
+    (66.8). The 9P server, the net services and `sensor_hub` are not request/reply endpoints: their
+    tasks wait on the network or a timer.
+  * *Folding:* `LUGALOS_FOLD` (preset, comma-separated) -> `CONFIG_FOLD`. `driver_task_start()`
+    registers a folded endpoint as an inline chan handler (the kind `p9` and `console` already
+    are): same claim and FIFO, same copies, no task. The handler refuses interrupt context and
+    callers with no task, as a task endpoint does. A folded serve() inside another serve keeps the
+    outer serve mark (invariant 1).
+  * *Guardrails:* 1. a preset property only; 2. `tools/servecheck.py` in the runner (no direct
+    calls to a serve callback, none outside `drivers/driver_task.c`; checked by planting both
+    kinds); 3. `rv32-fold` (uart, blk, i2c folded) runs the RV32 core suite plus a shape check, with
+    `rv32` as its twin, and on hardware `esp32c6-release` (i2c folded, DEV off) has `esp32c6` as its
+    twin; 4. `/proc/config` `FOLD=`, a boot line, no task in `/proc/ps`; ADR 008.
+  * *Measured, C6-Zero, `esp32c6-release`:* under the loaded scenario **16 of 74 free at the end, 11
+    at the lowest** (66.6: 15 and 10). `lockcheck` after the load: 0 faults, 0 inversions, 44 lock
+    pairs. Suite 23/23. `sensor_hub`, the I2C caller, peaks at 1148 of 8192 B with serve() on it.
+  * *Found on the way:* the U-mode domain table (`g_umode_domains`, 1.4 KB of `.bss`) was linked
+    into every board with a driver task; only the RP2350 runs U-mode drivers. Gated: the C6 kept
+    its 74th heap page, the P4s gain 548 B, QEMU 1 KB. And the kernel's formatter has no `%.*s`:
+    `kernel/tls_cert.c` used it in an error message whose `%s` would then have read the length as
+    a pointer, and `kernel/editor.c`'s self-test likewise. Both rewritten.
+  * *Not folded:* the P4s' `uart`, `sdblk` and `i2c` (3 pages, but no P4 is short of heap); the
+    UARTs would also lose their `TASK_PRIO_INTERRUPT`. Possible per preset, through `rv32-fold`'s
+    coverage of the same kinds of driver.
+
 * Move the hand-written serve loops (i2c, usb_cdc, spisd, 9P, net services) onto the common
   `driver_task_t` seam first; worthwhile on its own.
 * Folded mode, per endpoint, per preset: `driver_task_call()` takes a per-endpoint mutex and

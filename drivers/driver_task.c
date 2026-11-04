@@ -10,6 +10,9 @@
 #include "kernel/lock.h"
 #include "kernel/mem_domain.h"
 #include "kernel/device.h"
+#include "kernel/devirq.h"
+#include "lugalos_config.h"
+#include <string.h>
 #include "arch/umode.h"
 #include <stddef.h>
 
@@ -60,6 +63,64 @@ static void driver_task_body(void *arg) {
     }
 }
 
+/* --- Folded endpoints ---------------------------------------------------
+ *
+ * A preset may fold an endpoint (LUGALOS_FOLD, CONFIG_FOLD): no task, and
+ * serve() runs in the caller's context as an inline chan handler. The
+ * endpoint's claim and FIFO (kernel/chan.c ep_claim()) serialize callers
+ * exactly as they serialize callers of a task endpoint, and the request and
+ * response are copied in and out the same way, so a driver cannot tell. What
+ * changes: the caller's stack carries serve()'s depth, serve() runs at the
+ * caller's priority, and it is not listed in /proc/ps. The rule for which
+ * endpoints may fold: doc/history/adr/008_folded_endpoints.md. */
+
+bool driver_task_fold_wanted(const char *name) {
+#if defined(CONFIG_FOLD)
+    /* " i2c uart ": names padded with spaces, so "i2c" cannot match "i2c2". */
+    const char *list = CONFIG_FOLD;
+    size_t n = strlen(name);
+    for (const char *p = list; (p = strstr(p, name)) != NULL; p++)
+        if (p > list && p[-1] == ' ' && p[n] == ' ') return true;
+#else
+    (void)name;
+#endif
+    return false;
+}
+
+static int driver_fold_handler(void *ctx, const uint8_t *req, uint32_t req_len,
+                               uint8_t *resp, uint32_t resp_cap) {
+    driver_task_t *dt = (driver_task_t *)ctx;
+    /* The calls a task endpoint refuses (chan_call_task(): no task to block,
+     * or an interrupt handler), refused here too, so the folded preset and
+     * its unfolded twin answer them alike. */
+    if (sched_current_pid() < 0 || devirq_in_handler()) return -1;
+    if (req_len < dt->spec.min_req_len) return 0;
+    dt->calls++;      /* under the endpoint's claim, like the task's own count */
+    /* Invariant 1 as on the task. The caller may itself be inside a serve
+     * callback (a folded endpoint called from another driver's serve), so
+     * its mark is put back rather than cleared. */
+    const char *outer = lock_serve_what();
+    lock_serve_enter(dt->spec.name);
+    uint32_t n = dt->spec.serve(dt->spec.ctx, req, req_len, resp, resp_cap);
+    if (outer) lock_serve_enter(outer);
+    else       lock_serve_leave();
+    return (int)(n > resp_cap ? resp_cap : n);
+}
+
+static int driver_fold_start(driver_task_t *dt, const driver_task_spec_t *spec) {
+    if (chan_register(spec->name, driver_fold_handler, dt, spec->req, spec->req_cap,
+                      spec->resp, spec->resp_cap) != 0) {
+        printk("[%s] Could not register the folded %s endpoint; callers stay on direct hardware access.\n",
+               spec->name, spec->name);
+        return -1;
+    }
+    dt->folded = true;
+    dt->ep = chan_lookup(spec->name);
+    printk("[%s] Driver folded: served in the caller's context, reachable via chan_call(\"%s\", ...)\n",
+           spec->name, spec->name);
+    return 0;
+}
+
 int driver_task_start(driver_task_t *dt, const driver_task_spec_t *spec) {
     if (!dt || !spec || !spec->name || !spec->serve) return -1;
     if (!spec->req || !spec->resp) return -1;
@@ -68,6 +129,8 @@ int driver_task_start(driver_task_t *dt, const driver_task_spec_t *spec) {
     dt->ep    = NULL;
     dt->pid   = -1;
     dt->calls = 0;
+    dt->folded = false;
+    if (driver_task_fold_wanted(spec->name)) return driver_fold_start(dt, spec);
 
     uint32_t pages = spec->stack_pages ? spec->stack_pages : 1u;
 
@@ -102,6 +165,7 @@ int driver_task_start(driver_task_t *dt, const driver_task_spec_t *spec) {
 }
 
 bool driver_task_alive(const driver_task_t *dt) {
+    if (dt && dt->folded) return dt->ep != NULL;
     if (!dt || dt->pid < 0) return false;
     int st = sched_task_state(dt->pid);
     return st != TASK_UNUSED && st != TASK_DEAD;
@@ -121,6 +185,10 @@ int driver_task_call(driver_task_t *dt, const uint8_t *req, uint32_t req_len,
 
 /* --- The U-mode domain -------- */
 
+/* Only the RP2350 runs drivers in U-mode (its PMP confines U-mode tasks; the
+ * C6's U-mode code is the radio, kernel/radio_c6.c, with a domain of its own).
+ * Elsewhere the table would be 1.4 KB of .bss nobody uses. */
+#if defined(CONFIG_BOARD_RP2350)
 /* One per driver that enters U-mode: a task builds its domain once, on its
  * own first pass through its body, and never again. Static rather than on the
  * task's stack because task_set_domain() keeps a pointer to it -- a domain
@@ -178,3 +246,11 @@ int driver_umode_enter(const driver_umode_spec_t *spec) {
     arch_enter_user(spec->body, top, 0, spec->arg, 0);
     return -1;   /* not reached: arch_enter_user() does not return */
 }
+#else
+int driver_umode_enter(const driver_umode_spec_t *spec) {
+    printk("[%s] Refusing to enter U-mode: no U-mode drivers on this board; %s\n",
+           spec && spec->name ? spec->name : "driver",
+           spec && spec->fallback ? spec->fallback : "falling back to direct hardware access.");
+    return -1;
+}
+#endif

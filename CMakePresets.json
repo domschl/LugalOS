@@ -18,6 +18,18 @@
       }
     },
     {
+      "name": "rv32-fold",
+      "displayName": "QEMU RV32 (NOMMU), endpoints folded",
+      "description": "rv32-nommu with its driver endpoints folded (LUGALOS_FOLD): the uart, blk and i2c drivers run in their callers' context, with no task. The folded twin tests/runner.py runs the core suite on (doc/history/adr/008_folded_endpoints.md).",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/rv32-fold",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-rv32-nommu.cmake",
+        "LUGALOS_PROFILE": "qemu",
+        "LUGALOS_FOLD": "uart,blk,i2c"
+      }
+    },
+    {
       "name": "rv64-mmu",
       "displayName": "QEMU RV64 (Sv39 MMU)",
       "description": "QEMU virt machine, 64-bit RISC-V, Sv39 MMU, S-mode.",
@@ -173,6 +185,19 @@
       }
     },
     {
+      "name": "esp32c6-release",
+      "displayName": "ESP32-C6-Zero, release image",
+      "description": "The C6-Zero as a deployed sensor node: no self-tests or demo commands (LUGALOS_DEV=OFF), and the i2c endpoint folded into its callers (LUGALOS_FOLD). The esp32c6 preset is its unfolded dev twin.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/esp32c6-release",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-esp32c6.cmake",
+        "LUGALOS_PROFILE": "sensor",
+        "LUGALOS_DEV": "OFF",
+        "LUGALOS_FOLD": "i2c"
+      }
+    },
+    {
       "name": "esp32c6-mini",
       "displayName": "ESP32-C6-MINI-1 (beside the P4 on the ESP32-P4-NANO / LCD-7B)",
       "description": "ESP32-C6-MINI-1 module on ESP32-P4: 4 MB flash, USB console on header P2, SDIO slave to P4.",
@@ -190,6 +215,10 @@
     {
       "name": "rv32-nommu",
       "configurePreset": "rv32-nommu"
+    },
+    {
+      "name": "rv32-fold",
+      "configurePreset": "rv32-fold"
     },
     {
       "name": "rv64-mmu",
@@ -242,6 +271,10 @@
     {
       "name": "esp32c6",
       "configurePreset": "esp32c6"
+    },
+    {
+      "name": "esp32c6-release",
+      "configurePreset": "esp32c6-release"
     },
     {
       "name": "esp32c6-mini",
