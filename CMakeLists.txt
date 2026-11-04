@@ -772,7 +772,9 @@ set(SOURCES
     drivers/font_noto_serif.c
     drivers/font_math.c
     drivers/latex_layout.c
+    drivers/ugui.c
     drivers/reader_view.c
+    drivers/launcher_view.c
     drivers/ribbon.c
     # the same screen in RAM, for Lisp's canvas where there is no panel.
     drivers/ramscreen.c

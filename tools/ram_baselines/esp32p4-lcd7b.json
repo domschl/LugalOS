@@ -1,22 +1,23 @@
 {
   "bulk_per_file": {
-    "drivers/reader_view.c": 30304,
+    "drivers/launcher_view.c": 4440,
+    "drivers/reader_view.c": 32640,
     "kernel/palloc.c": 32768,
     "kernel/zonetest.c": 64,
     "user/ceres/src/platform_p4.c": 31896,
     "user/lisp/lisp.c": 1532288,
     "user/moonbase/src/moon_textures.c": 32768,
-    "user/moonbase/src/platform_p4.c": 41100
+    "user/moonbase/src/platform_p4.c": 41116
   },
   "bulk_per_subsystem": {
     "app:ceres": 31896,
-    "app:moonbase": 73868,
-    "display": 30304,
+    "app:moonbase": 73884,
+    "display": 37080,
     "kernel": 32768,
     "lisp": 1532288,
     "selftest": 64
   },
-  "bulk_total": 1701188,
+  "bulk_total": 1707980,
   "heap_bytes": 360448,
   "heap_pages": 88,
   "per_file": {
@@ -98,7 +99,7 @@
     "kernel/privilege.c": 8,
     "kernel/random.c": 9,
     "kernel/sched.c": 2501,
-    "kernel/shell.c": 2991,
+    "kernel/shell.c": 2998,
     "kernel/smp.c": 80,
     "kernel/status_led.c": 8,
     "kernel/stress.c": 3057,
@@ -181,11 +182,11 @@
     "radio": 12564,
     "selftest": 3962,
     "sensors": 8688,
-    "shell": 12980,
+    "shell": 12987,
     "storage": 7456,
     "usb": 1212,
     "vfs": 4111
   },
   "ram_code": 1806,
-  "total": 218028
+  "total": 218035
 }

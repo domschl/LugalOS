@@ -148,6 +148,7 @@ static bool undo_available(const moon_game_t *game) {
 
 static int ui_region(const moon_game_t *game, int px, int py) {
     const moon_ui_layout_t *ui = &game->ui;
+    if (moon_ui_hit(&ui->exit_btn, px, py)) return UI_HUD;
     if (game->menu_page != MOON_MENU_CLOSED) return UI_MENU;
     if (undo_available(game) && moon_ui_hit(&ui->undo_btn, px, py)) return UI_UNDO;
     if (moon_ui_hit(&ui->ribbon_bar, px, py)) return UI_RIBBON;
@@ -1098,7 +1099,20 @@ static void handle_event_inner(moon_game_t *game, const moon_event_t *ev) {
                     }
                     case UI_MINIMAP:   click_minimap(game, ev->x, ev->y); break;
                     case UI_INSPECTOR: click_inspector(game, ev->x, ev->y); break;
-                    case UI_HUD:       break;
+                    case UI_HUD:
+                        if (moon_ui_hit(&game->ui.exit_btn, ev->x, ev->y)) {
+                            if (game->menu_page == MOON_MENU_TITLE ||
+                                game->menu_page == MOON_MENU_CONFIRM_QUIT ||
+                                game->menu_page == MOON_MENU_GAME_OVER ||
+                                game->menu_page == MOON_MENU_VICTORY ||
+                                game->menu_page == MOON_MENU_VICTORY_ACT2) {
+                                game->running = false;
+                            } else {
+                                game->menu_page = MOON_MENU_CONFIRM_QUIT;
+                                game->menu_sel = 0;
+                            }
+                        }
+                        break;
                     default:           click_map(game); break;
                     }
                 }
@@ -2188,6 +2202,7 @@ static void render_menu(const moon_game_t *game, const moon_surface_t *surf) {
                     sel ? RGB565(30, 45, 60) : RGB565(20, 24, 30),
                     sel ? COLOR_LASER_CYAN : RGB565(60, 65, 75), COLOR_LUNAR_WHITE);
     }
+    draw_button(surf, &ui->exit_btn, "EXIT", RGB565(45, 18, 18), COLOR_ALERT_RED, COLOR_LUNAR_WHITE);
 }
 
 /* Outline and surveyor brackets around the selected tile, or around the whole
@@ -2328,6 +2343,7 @@ static void render_hud_bar(const moon_game_t *game, const moon_surface_t *surf) 
     }
 
     render_clock(game, surf);
+    draw_button(surf, &game->ui.exit_btn, "EXIT", RGB565(45, 18, 18), COLOR_ALERT_RED, COLOR_LUNAR_WHITE);
 }
 
 /* True when every pixel of the view is inside the map's tiles: then drawing them all makes

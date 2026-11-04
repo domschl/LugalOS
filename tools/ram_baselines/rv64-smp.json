@@ -2,10 +2,10 @@
   "bulk_per_file": {},
   "bulk_per_subsystem": {},
   "bulk_total": 0,
-  "heap_bytes": 124076032,
-  "heap_pages": 30292,
+  "heap_bytes": 124059648,
+  "heap_pages": 30288,
   "per_file": {
-    "(no line info: .rodata)": 13210,
+    "(no line info: .rodata)": 13239,
     "(no line info: .sdata)": 9,
     "arch/riscv/common/elf.c": 1852,
     "arch/riscv/common/mem_domain.c": 8,
@@ -32,6 +32,7 @@
     "drivers/i2c_bus.c": 266,
     "drivers/i2c_rtc.c": 30,
     "drivers/ina226.c": 232,
+    "drivers/launcher_view.c": 4736,
     "drivers/loopback_net.c": 2060,
     "drivers/mcp9808.c": 228,
     "drivers/mhz19b.c": 172,
@@ -40,7 +41,7 @@
     "drivers/radio/osi_impl.c": 3464,
     "drivers/ramdisk.c": 60,
     "drivers/ramscreen.c": 96,
-    "drivers/reader_view.c": 30365,
+    "drivers/reader_view.c": 32701,
     "drivers/ribbon.c": 4,
     "drivers/screen.c": 64,
     "drivers/sensor.c": 1456,
@@ -162,7 +163,7 @@
     "user/zmachine/ztext.c": 27
   },
   "per_subsystem": {
-    "(no line info: .rodata)": 13210,
+    "(no line info: .rodata)": 13239,
     "(no line info: .sdata)": 9,
     "9p": 64680,
     "agent": 3501,
@@ -173,7 +174,7 @@
     "chess": 44932,
     "clock-app": 616,
     "crypto": 1054,
-    "display": 52781,
+    "display": 59853,
     "drivers": 42566,
     "fs": 823,
     "httpd": 184,
@@ -192,6 +193,6 @@
     "usb": 672,
     "vfs": 4766
   },
-  "ram_code": 1140134,
-  "total": 7550157
+  "ram_code": 1159960,
+  "total": 7577084
 }

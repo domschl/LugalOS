@@ -49,6 +49,7 @@
 #include "drivers/lcdterm.h"
 #include "drivers/screen.h"
 #include "drivers/reader_view.h"
+#include "drivers/launcher_view.h"
 #include "drivers/font_noto_mono.h"
 #include "drivers/vtterm.h"
 #include "arch/esp32p4_intr.h"
@@ -1667,13 +1668,18 @@ static term_go_t term_snapshot(unsigned y0, unsigned y1) {
         sn->cbuf[k] = buf; sn->cstride[k] = st; sn->cw[k] = w; sn->ch[k] = h;
     }
 
-    /* Readers by their place in the visible list, as s_reader_drawn_seq is. */
+    /* Readers and Launcher by their place in the visible list, as s_reader_drawn_seq is. */
     uint8_t rids[4];
     sn->nr = lcdterm_get_visible_readers(rids, sn->rx0, sn->ry0, sn->rx1, sn->ry1, 4);
     for (int i = 0; i < sn->nr; i++) {
-        sn->rseq[i] = reader_get_seq(rids[i]);
         sn->rstride[i] = 0; sn->rw[i] = 0; sn->rh[i] = 0;
-        sn->rbuf[i] = reader_get_aa_backing(rids[i], &sn->rstride[i], &sn->rw[i], &sn->rh[i]);
+        if (rids[i] & 0x80u) {
+            sn->rseq[i] = launcher_get_seq();
+            sn->rbuf[i] = launcher_get_aa_backing(&sn->rstride[i], &sn->rw[i], &sn->rh[i]);
+        } else {
+            sn->rseq[i] = reader_get_seq(rids[i]);
+            sn->rbuf[i] = reader_get_aa_backing(rids[i], &sn->rstride[i], &sn->rw[i], &sn->rh[i]);
+        }
     }
 
     sn->nt = 0;
@@ -2631,6 +2637,16 @@ int dsi_lcd_term_start(void) {
 
 int dsi_lcd_get_orientation(void) {
     return g_lcd_rot;
+}
+
+void dsi_lcd_set_backlight(unsigned level) {
+    if (level > 100u) level = 100u;
+    if (level) g_bl_level = level;
+    backlight(level != 0);
+}
+
+unsigned dsi_lcd_get_backlight(void) {
+    return g_bl_on ? g_bl_level : 0u;
 }
 
 int dsi_lcd_set_orientation(int rot) {

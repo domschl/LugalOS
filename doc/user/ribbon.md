@@ -50,11 +50,22 @@ Every non-root window on the ribbon (terminals, canvases, and readers) features 
 | `Cmd+1`..`Cmd+9` | `ESC [ 49 ; 9 u` | Jump directly to window index 1..9 |
 | `Cmd+Shift+3` | `Super+Shift+3` | Capture full-screen PBM screenshot to `/sd0/screenshots/` |
 
-### Touch Gestures (GT911 Capacitive Touch)
+### Touch Gestures (GT911 / ST7121 Capacitive Touch)
 * **Tap Window**: Tapping anywhere inside a window pane transfers focus to it.
+* **Tap System Title (`LugalOS`)**: Tapping the top-left `LugalOS` title in the menu bar opens or focuses the Touch Launcher window.
 * **Tap Close Box**: Tapping the close box (`[X]`) in the top-left title bar closes the window.
 * **Tap Minimap**: Tapping a window block in the top minimap immediately scrolls the ribbon to that window.
 * **Swipe Left / Right**: Swiping sideways with a finger smoothly scrolls the ribbon.
+
+### Touch UX Mode & Launcher (`RIBBON_WIN_LAUNCHER`)
+On touch-enabled terminal boards (such as the M5Stack Tab5 and Waveshare ESP32-P4-LCD-7B), LugalOS supports a **Touch UX Mode** powered by the classic Macintosh micro-toolkit (`ugui`):
+* **HiDPI Window Chrome (`CHROME_SCALE`)**: On high-DPI displays (`FONT_CELL_W == 16` on Tab5), the menu bar, window title bars, racing stripes, close boxes, and status icons automatically scale by $2\times$ (`CHROME_SCALE = 2`) for ergonomic finger touch targets.
+* **Touch Launcher (`launcher [open|close|status]`)**: A dedicated Ribbon window providing touch-friendly tabs:
+  * **Apps**: Icon cards to launch **Reader**, **Moonbase Lambda**, and **New Shell**.
+  * **Library**: Scrollable list of local documentation and handbooks (`/sd0/help/*.md`, `/sd0/pub/help/*.gmi`, `/sd0/docs/*.md`) that open directly in the Reader window.
+  * **Settings**: Touch steppers and toggles for audio **Volume** (`0-100%`), panel **Brightness** (`10-100%`), display **Orientation** (`Landscape` / `Portrait`), and IMU **Auto-Rotate** (`ON` / `OFF`).
+* **Reader Touch Sub-Header**: Every Reader window renders a fixed top action bar (`[< Back]`, `[Contents]`, `[Rotate]`, `[Top]`) for keyboard-free navigation.
+* **Automatic Keyboard Hot-Plug Detection**: If no USB keyboard is attached ~1.5 seconds after boot (or when a USB keyboard is unplugged), LugalOS automatically opens and focuses the Touch Launcher window. Plugging a keyboard back in leaves open windows undisturbed.
 
 ---
 

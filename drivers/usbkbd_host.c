@@ -445,6 +445,15 @@ const usbkbd_state_t *usbkbd_state(void) { return 0; }
 
 #endif
 
+bool usbkbd_is_present(void) {
+    const usbkbd_state_t *k = usbkbd_state();
+    if (!k) return false;
+    for (uint32_t i = 0; i < USBKBD_MAX_DEV; i++) {
+        if (k->dev[i].addr && k->dev[i].is_kbd) return true;
+    }
+    return false;
+}
+
 /* --- Reporting (every target; nothing to report without the port) -------- */
 
 static const char *phase_name(uint32_t p) {

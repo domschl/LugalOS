@@ -47,7 +47,7 @@
     "drivers/radio/radio_netif.c": 4,
     "drivers/ramdisk.c": 36,
     "drivers/ramscreen.c": 28,
-    "drivers/reader_view.c": 2097,
+    "drivers/reader_view.c": 2681,
     "drivers/sdio_slave_esp32c6.c": 55,
     "drivers/sensor_hub.c": 7504,
     "drivers/sgp30.c": 76,
@@ -129,7 +129,7 @@
     "agent": 987,
     "clock-app": 136,
     "crypto": 4,
-    "display": 2129,
+    "display": 2713,
     "drivers": 380,
     "fs": 36,
     "httpd": 53,
@@ -150,5 +150,5 @@
     "vfs": 3599
   },
   "ram_code": 16634,
-  "total": 161247
+  "total": 161831
 }

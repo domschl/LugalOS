@@ -756,16 +756,17 @@ int lcdterm_get_visible_readers(uint8_t *out_rids, int *out_x0, int *out_y0, int
     int sw = (int)g_scr->cv.w;
     int sh = (int)g_scr->cv.h;
     int text_rows = (int)SCREEN_TEXT_ROWS(sh);
-    int tile_y0 = SCREEN_TILE_Y + 17;
+    int tile_y0 = SCREEN_TILE_Y + SCREEN_TITLEBAR_H;
     int tile_y1 = SCREEN_TEXT_Y + (int)FONT_CELL_H * text_rows - 1;
 
     for (uint8_t i = 0; i < g_scr->ribbon.count && count < max_wins; i++) {
         const ribbon_win_t *w = &g_scr->ribbon.wins[i];
-        if (w->type == RIBBON_WIN_READER) {
+        if (w->type == RIBBON_WIN_READER || w->type == RIBBON_WIN_LAUNCHER) {
             int cx0 = (int)w->rx0 - (int)g_scr->ribbon.x_view + 1;
             int cx1 = (int)w->rx1 - (int)g_scr->ribbon.x_view - 1;
             if (cx1 >= 0 && cx0 < sw) {
-                if (out_rids) out_rids[count] = w->vterm_id;
+                uint8_t tag = (w->type == RIBBON_WIN_LAUNCHER) ? (uint8_t)(0x80u | w->vterm_id) : w->vterm_id;
+                if (out_rids) out_rids[count] = tag;
                 if (out_x0) out_x0[count] = cx0;
                 if (out_y0) out_y0[count] = tile_y0;
                 if (out_x1) out_x1[count] = cx1;
@@ -834,7 +835,7 @@ int lcdterm_get_visible_canvases565(uint8_t *out_cids, int *out_x0, int *out_y0,
     int sw = (int)g_scr->cv.w;
     int sh = (int)g_scr->cv.h;
     int text_rows = (int)SCREEN_TEXT_ROWS(sh);
-    int tile_y0 = SCREEN_TILE_Y + 17;
+    int tile_y0 = SCREEN_TILE_Y + SCREEN_TITLEBAR_H;
     int tile_y1 = SCREEN_TEXT_Y + (int)FONT_CELL_H * text_rows - 1;
 
     for (uint8_t i = 0; i < g_scr->ribbon.count && count < max_wins; i++) {

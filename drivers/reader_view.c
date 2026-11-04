@@ -10,6 +10,7 @@
 
 #include "kernel/orient.h"
 #include "drivers/reader_view.h"
+#include "drivers/ugui.h"
 #include "drivers/font_serif.h"
 #include "drivers/font_noto_serif.h"
 #include "drivers/font_noto_mono.h"
@@ -97,6 +98,7 @@ typedef struct {
     reader_toc_entry_t  toc[READER_TOC_MAX];
     int                 toc_count;
     bool                toc_mode;
+    ugui_ctx_t          ui_ctx;
     uint8_t            *aa_buf;        /* Anti-aliased 8-bpp (GRAY8) surface in PSRAM */
     uint32_t            aa_stride;
     int                 aa_w, aa_h;
@@ -506,13 +508,47 @@ bool reader_back(void) {
     return reader_back_instance(s_active_reader_rid);
 }
 
+enum {
+    READER_UI_BACK     = 1,
+    READER_UI_CONTENTS = 2,
+    READER_UI_ROTATE   = 3,
+    READER_UI_TOP      = 4,
+};
+
 bool reader_tap_instance(uint8_t rid, int client_x, int client_y) {
     if (rid >= READER_MAX_INSTANCES || !s_readers[rid].active) return false;
     reader_state_t *r = &s_readers[rid];
 
+    uint16_t hit = ugui_hit_test(&r->ui_ctx, client_x, client_y, NULL);
+    if (hit == READER_UI_BACK) {
+        (void)reader_back_instance(rid);
+        return true;
+    }
+    if (hit == READER_UI_CONTENTS) {
+        r->toc_mode = !r->toc_mode;
+        reader_update_instance(rid);
+        return true;
+    }
+    if (hit == READER_UI_ROTATE) {
+        console_hotkey(CONSOLE_HOTKEY_ORIENT);
+        return true;
+    }
+    if (hit == READER_UI_TOP) {
+        r->scroll_y = 0;
+        r->toc_mode = false;
+        reader_update_instance(rid);
+        return true;
+    }
+
+    int bar_h = 26 * (int)CHROME_SCALE;
+    if (client_y < bar_h) {
+        return false;
+    }
+
+    int pad_y = 4 * (int)CHROME_SCALE;
     for (int i = 0; i < r->link_count; i++) {
         if (client_x >= r->links[i].x0 && client_x <= r->links[i].x1 &&
-            client_y >= r->links[i].y0 && client_y <= r->links[i].y1) {
+            client_y >= r->links[i].y0 - pad_y && client_y <= r->links[i].y1 + pad_y) {
             char target[128];
             strncpy(target, r->links[i].url, sizeof(target) - 1);
             target[sizeof(target) - 1] = '\0';
@@ -1138,9 +1174,66 @@ static int render_wrapped_spans(reader_state_t *r, rdraw_t *rd, int x0, int max_
     return cur_y;
 }
 
+static void draw_reader_action_bar(reader_state_t *r, rdraw_t *rd, int w, int h) {
+    int sc = (int)CHROME_SCALE;
+    int bar_h = 26 * sc;
+    ugui_surface_t surf = {
+        .c1 = rd->c,
+        .aa_fb = rd->aa_fb,
+        .aa_stride = rd->aa_stride,
+        .w = w,
+        .h = h,
+        .scale = sc,
+    };
+
+    ugui_rect_t bar_rect = { .x = 0, .y = 0, .w = (int16_t)w, .h = (int16_t)bar_h };
+    ugui_fill(&surf, bar_rect, UGUI_GRAY_TOOLBAR, CANVAS1_WHITE);
+    ugui_hline(&surf, 0, w - 1, bar_h - sc, sc, UGUI_GRAY_BORDER, CANVAS1_BLACK);
+
+    int btn_h = 18 * sc;
+    int btn_y = (bar_h - btn_h - sc) / 2;
+    int pad_x = 8 * sc;
+    int gap = 8 * sc;
+
+    ugui_rect_t b_back = { .x = (int16_t)pad_x, .y = (int16_t)btn_y, .w = (int16_t)(58 * sc), .h = (int16_t)btn_h };
+    ugui_toolbar_button(&surf, &r->ui_ctx, b_back, "< Back", READER_UI_BACK, false);
+
+    ugui_rect_t b_toc = {
+        .x = (int16_t)(b_back.x + b_back.w + gap),
+        .y = (int16_t)btn_y,
+        .w = (int16_t)(72 * sc),
+        .h = (int16_t)btn_h,
+    };
+    ugui_toolbar_button(&surf, &r->ui_ctx, b_toc, "Contents", READER_UI_CONTENTS, r->toc_mode);
+
+    ugui_rect_t b_top = {
+        .x = (int16_t)(w - pad_x - 46 * sc),
+        .y = (int16_t)btn_y,
+        .w = (int16_t)(46 * sc),
+        .h = (int16_t)btn_h,
+    };
+    ugui_toolbar_button(&surf, &r->ui_ctx, b_top, "Top", READER_UI_TOP, false);
+
+#if defined(CONFIG_BOARD_TAB5)
+    ugui_rect_t b_rot = {
+        .x = (int16_t)(b_top.x - gap - 60 * sc),
+        .y = (int16_t)btn_y,
+        .w = (int16_t)(60 * sc),
+        .h = (int16_t)btn_h,
+    };
+    if (b_rot.x > b_toc.x + b_toc.w + gap) {
+        ugui_toolbar_button(&surf, &r->ui_ctx, b_rot, "Rotate", READER_UI_ROTATE, false);
+    }
+#endif
+}
+
 void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
     if (w <= 0 || h <= 0 || rid >= READER_MAX_INSTANCES) return;
     reader_state_t *r = &s_readers[rid];
+    int sc = (int)CHROME_SCALE;
+    int bar_h = 26 * sc;
+
+    ugui_begin(&r->ui_ctx);
 
     rdraw_t rd = {
         .c = c,
@@ -1154,7 +1247,8 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
     rdraw_fill(&rd, 0, 0, w - 1, h - 1, READER_BG_GRAY8, CANVAS1_WHITE);
 
     if (!r->active || !r->path[0]) {
-        rdraw_serif_text(&rd, READER_MARGIN_X, 32, "No document loaded. Use 'reader <file.md>' to open.", 51, false, false);
+        rdraw_serif_text(&rd, READER_MARGIN_X, bar_h + 16 * sc, "No document loaded. Use 'reader <file.md>' to open.", 51, false, false);
+        draw_reader_action_bar(r, &rd, w, h);
         return;
     }
 
@@ -1169,7 +1263,8 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
     if (fd < 0) {
         char err[128];
         ksnprintf(err, sizeof(err), "Cannot open document: %s", file_to_open);
-        rdraw_serif_text(&rd, READER_MARGIN_X, 32, err, strlen(err), false, false);
+        rdraw_serif_text(&rd, READER_MARGIN_X, bar_h + 16 * sc, err, strlen(err), false, false);
+        draw_reader_action_bar(r, &rd, w, h);
         return;
     }
 
@@ -1177,7 +1272,7 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
     int max_w = w - 2 * margin_x;
     if (max_w < 60) max_w = 60;
 
-    int doc_y = 16;
+    int doc_y = bar_h + 12 * sc;
     int scroll_y = r->scroll_y;
     int link_idx = 0;
     r->link_count = 0;
@@ -1543,10 +1638,10 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
     /* Render interactive Table of Contents overlay if in TOC mode */
     if (r->toc_mode) {
         rdraw_fill(&rd, 0, 0, w - 1, h - 1, READER_BG_GRAY8, CANVAS1_WHITE);
-        int ty = 24;
-        rdraw_serif_text(&rd, margin_x, ty, "Table of Contents (press 't' to return)", 39, true, false);
-        rdraw_hline(&rd, margin_x, margin_x + max_w, ty + 20, READER_RULE_GRAY8, CANVAS1_BLACK);
-        ty += 34;
+        int ty = bar_h + 12 * sc;
+        rdraw_serif_text(&rd, margin_x, ty, "Table of Contents (tap heading or 'Contents' to return)", 55, true, false);
+        rdraw_hline(&rd, margin_x, margin_x + max_w, ty + READER_LINE_H + 2 * sc, READER_RULE_GRAY8, CANVAS1_BLACK);
+        ty += READER_LINE_H + 12 * sc;
 
         r->link_count = 0;
         if (r->toc_count == 0) {
@@ -1554,68 +1649,54 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
         } else {
             for (int i = 0; i < r->toc_count && i < READER_TOC_MAX; i++) {
                 reader_toc_entry_t *entry = &r->toc[i];
-                int indent_px = (entry->level > 1) ? (entry->level - 1) * 20 : 0;
+                int indent_px = (entry->level > 1) ? (entry->level - 1) * 16 * sc : 0;
                 int entry_x = margin_x + indent_px;
                 char num_prefix[16];
                 ksnprintf(num_prefix, sizeof(num_prefix), "[%d] ", i + 1);
                 int pfx_w = rdraw_serif_text(&rd, entry_x, ty, num_prefix, strlen(num_prefix), true, false);
-                int title_w = rdraw_serif_text(&rd, entry_x + pfx_w, ty, entry->title, strlen(entry->title), false, false);
+                (void)rdraw_serif_text(&rd, entry_x + pfx_w, ty, entry->title, strlen(entry->title), false, false);
 
                 if (r->link_count < READER_LINKS_MAX) {
                     reader_link_t *lnk = &r->links[r->link_count++];
-                    lnk->x0 = (int16_t)entry_x;
+                    lnk->x0 = (int16_t)margin_x;
                     lnk->y0 = (int16_t)ty;
-                    lnk->x1 = (int16_t)(entry_x + pfx_w + title_w);
+                    lnk->x1 = (int16_t)(margin_x + max_w);
                     lnk->y1 = (int16_t)(ty + READER_LINE_H);
                     lnk->num = i + 1;
                     char slug[64];
                     md_heading_slug(entry->title, slug, sizeof(slug));
                     ksnprintf(lnk->url, sizeof(lnk->url), "#%s", slug);
                 }
-                ty += READER_LINE_H + 4;
-                if (ty >= h - 24) break;
+                ty += READER_LINE_H + 4 * sc;
+                if (ty >= h - 16 * sc) break;
             }
         }
+        draw_reader_action_bar(r, &rd, w, h);
         s_reader_seq[rid]++;
         return;
     }
 
     /* Render right scrollbar if document exceeds window height */
     if (r->total_h > h) {
-#if READER_IS_HIDPI
-        int sb_w = 8;
-        int sb_x = w - sb_w - 4;
-        int thumb_h = (h * h) / r->total_h;
-        if (thumb_h < 32) thumb_h = 32;
-#else
-        int sb_w = 4;
-        int sb_x = w - sb_w - 2;
-        int thumb_h = (h * h) / r->total_h;
-        if (thumb_h < 16) thumb_h = 16;
-#endif
-        int thumb_y = (r->scroll_y * (h - thumb_h)) / (r->total_h - h);
-        rdraw_fill(&rd, sb_x, 0, sb_x + sb_w, h - 1, READER_SB_TRACK_GRAY8, CANVAS1_GREY);
-        rdraw_fill(&rd, sb_x, thumb_y, sb_x + sb_w, thumb_y + thumb_h, READER_SB_THUMB_GRAY8, CANVAS1_BLACK);
+        int sb_w = 4 * sc;
+        int sb_x = w - sb_w - 2 * sc;
+        ugui_surface_t surf = {
+            .c1 = rd.c,
+            .aa_fb = rd.aa_fb,
+            .aa_stride = rd.aa_stride,
+            .w = w,
+            .h = h,
+            .scale = sc,
+        };
+        ugui_rect_t track = {
+            .x = (int16_t)sb_x,
+            .y = (int16_t)bar_h,
+            .w = (int16_t)sb_w,
+            .h = (int16_t)(h - bar_h),
+        };
+        ugui_scrollbar(&surf, track, r->scroll_y, r->total_h, h);
     }
-    s_reader_seq[rid]++;
-
-    /* Render right scrollbar if document exceeds window height */
-    if (r->total_h > h) {
-#if READER_IS_HIDPI
-        int sb_w = 8;
-        int sb_x = w - sb_w - 4;
-        int thumb_h = (h * h) / r->total_h;
-        if (thumb_h < 32) thumb_h = 32;
-#else
-        int sb_w = 4;
-        int sb_x = w - sb_w - 2;
-        int thumb_h = (h * h) / r->total_h;
-        if (thumb_h < 16) thumb_h = 16;
-#endif
-        int thumb_y = (r->scroll_y * (h - thumb_h)) / (r->total_h - h);
-        rdraw_fill(&rd, sb_x, 0, sb_x + sb_w, h - 1, READER_SB_TRACK_GRAY8, CANVAS1_GREY);
-        rdraw_fill(&rd, sb_x, thumb_y, sb_x + sb_w, thumb_y + thumb_h, READER_SB_THUMB_GRAY8, CANVAS1_BLACK);
-    }
+    draw_reader_action_bar(r, &rd, w, h);
     s_reader_seq[rid]++;
 }
 

@@ -1555,7 +1555,7 @@ def test_lcd_terminal(b: Board) -> tuple[str, bool, str]:
     in its window, converted from the 1-bpp frame into the scanned-out one at
     most once per frame -- fast enough for a busy console, and `lcd colours`
     switches a coloured pair to RGB565 and a gray one back to GRAY8."""
-    term_dim = "78 x 21" if is_tab5(b) else "126 x 34"
+    term_dim = "78 x 19" if is_tab5(b) else "126 x 34"
     name = f"the terminal on the panel: {term_dim}, frame-paced, colours (47.7)"
     out = b.console_session.cmd("lcd", deadline=10.0)
     if "Unknown" in out or "Unbound" in out or "not found" in out.lower():
@@ -1778,6 +1778,7 @@ def test_ribbon_hotkeys(b: Board) -> tuple[str, bool, str]:
     terminal, Cmd+Left / Cmd+Right move the focus, Cmd+W closes the focused
     terminal, and one window is left."""
     name = "ribbon: Cmd+Enter, Cmd+Left/Right, Cmd+W over serial (47.8)"
+    b.console_session.cmd("launcher close", deadline=5.0)
     n0, _ = _ribbon(b)
     if n0 < 0:
         return name, True, "SKIPPED (no ribbon on this board)"
@@ -2024,6 +2025,32 @@ def test_tab5_portrait_180_terminals(b: Board) -> tuple[str, bool, str]:
     return name, True, f"{count} terminals at 180 deg, board answering"
 
 
+def test_touch_launcher(b: Board) -> tuple[str, bool, str]:
+    """70.3: Touch Launcher window (RIBBON_WIN_LAUNCHER) and ugui self-test."""
+    name = "touch UX: ugui self-test and Ribbon Launcher window (70.3)"
+    uout = b.console_session.cmd("uguiselftest", deadline=10.0)
+    if "PASS" not in uout:
+        return name, False, f"uguiselftest failed: {uout.strip()[-200:]}"
+    n0, _ = _ribbon(b)
+    if n0 < 0:
+        return name, True, "SKIPPED (no ribbon on this board)"
+    b.console_session.cmd("launcher close", deadline=5.0)
+    out = b.console_session.cmd("launcher open", deadline=5.0)
+    if "opened" not in out:
+        return name, False, f"launcher open failed: {out.strip()}"
+    st = b.console_session.cmd("launcher status", deadline=5.0)
+    if "launcher: open" not in st:
+        return name, False, f"launcher status unexpected: {st.strip()}"
+    rlist = b.console_session.cmd("ribbon", deadline=5.0)
+    if "Launcher" not in rlist:
+        return name, False, f"ribbon does not report Launcher window:\n{rlist}"
+    b.console_session.cmd("launcher close", deadline=5.0)
+    n2, _ = _ribbon(b)
+    if n2 != 1:
+        return name, False, f"expected 1 window after closing launcher, got {n2}"
+    return name, True, "uguiselftest PASS, Launcher opened in ribbon and closed cleanly"
+
+
 TESTS = [
     test_boots,
     test_proc_readable,
@@ -2071,6 +2098,7 @@ TESTS = [
     test_ribbon_hotkeys,
     test_gemtext_reader_window,
     test_reader_anti_aliased_typography,
+    test_touch_launcher,
     test_screenshot_color_mode,
     test_color_canvas_rgb565,
     test_ribbon_slide_and_reader_smooth_scroll,

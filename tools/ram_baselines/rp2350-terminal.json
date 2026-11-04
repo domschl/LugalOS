@@ -1,17 +1,18 @@
 {
   "bulk_per_file": {
-    "drivers/reader_view.c": 30304,
+    "drivers/launcher_view.c": 4440,
+    "drivers/reader_view.c": 32640,
     "kernel/palloc.c": 8192,
     "kernel/zonetest.c": 64,
     "user/lisp/lisp.c": 1523712
   },
   "bulk_per_subsystem": {
-    "display": 30304,
+    "display": 37080,
     "kernel": 8192,
     "lisp": 1523712,
     "selftest": 64
   },
-  "bulk_total": 1562272,
+  "bulk_total": 1569048,
   "heap_bytes": 299008,
   "heap_pages": 73,
   "per_file": {
@@ -89,7 +90,7 @@
     "kernel/privilege.c": 8,
     "kernel/random.c": 38,
     "kernel/sched.c": 2501,
-    "kernel/shell.c": 2479,
+    "kernel/shell.c": 2486,
     "kernel/smp.c": 9,
     "kernel/status_led.c": 8,
     "kernel/stress.c": 749,
@@ -156,11 +157,11 @@
     "ota": 126,
     "selftest": 1654,
     "sensors": 8689,
-    "shell": 12468,
+    "shell": 12475,
     "storage": 3152,
     "usb": 20928,
     "vfs": 4111
   },
   "ram_code": 24484,
-  "total": 195966
+  "total": 195973
 }

@@ -15,6 +15,7 @@
 #include "drivers/lcd7.h"
 #include "drivers/lcdterm.h"
 #include "drivers/reader_view.h"
+#include "drivers/launcher_view.h"
 #include "drivers/dsi_esp32p4.h"
 #include <string.h>
 
@@ -269,6 +270,17 @@ void console_sync_readers(void) {
                         reader_update_instance(rid);
                     }
                 }
+            } else if (reply[1] == 4 /* RIBBON_WIN_LAUNCHER */) {
+                uint8_t lid = reply[2];
+                int rx0 = (int)(reply[4] | (reply[5] << 8));
+                int rx1 = (int)(reply[6] | (reply[7] << 8));
+                int lw = rx1 - rx0 - 1;
+                int lh = (int)(reply[10] | (reply[11] << 8));
+                if (lw > 0) {
+                    if (launcher_set_target(lid, lw, lh)) {
+                        launcher_update();
+                    }
+                }
             }
         }
     }
@@ -340,6 +352,10 @@ static void run_hotkey(void) {
                 reader_close_instance(closed_vid);
                 g_active_win_type = 1;
             }
+            if (closed_type == 4 /* RIBBON_WIN_LAUNCHER */) {
+                launcher_close();
+                g_active_win_type = 1;
+            }
             vterm_set_active(reply[1]);
             console_sync_readers();
         }
@@ -374,19 +390,31 @@ static void run_hotkey(void) {
                 console_sync_readers();
                 return;
             }
+            if (reply[8] == 0xAA) {
+                (void)launcher_open();
+                return;
+            }
             if (reply[10] != 0) g_active_win_type = reply[10];
             if (reply[10] == 3 /* RIBBON_WIN_READER */) reader_set_active_instance(reply[11]);
             vterm_set_active(reply[1]);
             int cx = (int)(reply[2] | (reply[3] << 8));
             int cy = (int)(reply[4] | (reply[5] << 8));
-            if ((cx != 0 || cy != 0) && reader_is_active()) {
-                (void)reader_tap(cx, cy);
+            if (cx != 0 || cy != 0) {
+                if (g_active_win_type == 4 /* RIBBON_WIN_LAUNCHER */ && launcher_is_active()) {
+                    (void)launcher_tap(cx, cy);
+                } else if (g_active_win_type == 3 /* RIBBON_WIN_READER */ && reader_is_active()) {
+                    (void)reader_tap(cx, cy);
+                }
             }
         }
         return;
     }
     if (hk == CONSOLE_HOTKEY_SCROLL_UP || hk == CONSOLE_HOTKEY_SCROLL_DOWN) {
-        if (reader_is_active()) {
+        if (g_active_win_type == 4 /* RIBBON_WIN_LAUNCHER */ && launcher_is_active()) {
+            g_scroll_dy = 0;
+            g_scroll_ms = 0;
+            launcher_scroll(hk == CONSOLE_HOTKEY_SCROLL_UP ? -1 : 1);
+        } else if (reader_is_active()) {
             int dy = g_scroll_dy;
             uint32_t ms = g_scroll_ms;
             g_scroll_dy = 0;
@@ -839,7 +867,14 @@ static void console_pump(void) {
     blank_check();
     for (unsigned i = 0; i < g_ninputs; i++) {
         const console_input_t *src = g_inputs[i];
-        if (src->local && g_active_win_type == 3 /* RIBBON_WIN_READER */ && reader_is_active()) {
+        if (src->local && g_active_win_type == 4 /* RIBBON_WIN_LAUNCHER */ && launcher_is_active()) {
+            while (src->has_char()) {
+                int c = src->getc();
+                if (c < 0) break;
+                if (note_input(src->local)) continue;
+                launcher_feed_key(c);
+            }
+        } else if (src->local && g_active_win_type == 3 /* RIBBON_WIN_READER */ && reader_is_active()) {
             while (src->has_char()) {
                 int c = src->getc();
                 if (c < 0) break;

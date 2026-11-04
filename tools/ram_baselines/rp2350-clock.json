@@ -36,7 +36,7 @@
     "drivers/pico_clock_ui.c": 136,
     "drivers/ramdisk.c": 36,
     "drivers/ramscreen.c": 28,
-    "drivers/reader_view.c": 2097,
+    "drivers/reader_view.c": 2681,
     "drivers/sensor_hub.c": 7504,
     "drivers/sgp30.c": 76,
     "drivers/tmp117.c": 76,
@@ -118,7 +118,7 @@
     "app:ed": 100,
     "clock-app": 3542,
     "crypto": 38,
-    "display": 2129,
+    "display": 2713,
     "drivers": 2920,
     "fs": 64,
     "httpd": 53,
@@ -137,5 +137,5 @@
     "vfs": 3599
   },
   "ram_code": 358,
-  "total": 181054
+  "total": 181638
 }

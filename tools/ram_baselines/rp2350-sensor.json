@@ -2,8 +2,8 @@
   "bulk_per_file": {},
   "bulk_per_subsystem": {},
   "bulk_total": 0,
-  "heap_bytes": 348160,
-  "heap_pages": 85,
+  "heap_bytes": 344064,
+  "heap_pages": 84,
   "per_file": {
     "(no line info: .data)": 9,
     "arch/riscv/common/elf.c": 1468,
@@ -32,7 +32,7 @@
     "drivers/pico_clock_ui.c": 136,
     "drivers/ramdisk.c": 36,
     "drivers/ramscreen.c": 28,
-    "drivers/reader_view.c": 2097,
+    "drivers/reader_view.c": 2681,
     "drivers/sensor_hub.c": 7504,
     "drivers/sgp30.c": 76,
     "drivers/tmp117.c": 76,
@@ -105,7 +105,7 @@
     "agent": 987,
     "clock-app": 136,
     "crypto": 67,
-    "display": 2129,
+    "display": 2713,
     "drivers": 2920,
     "fs": 64,
     "httpd": 70,
@@ -124,5 +124,5 @@
     "vfs": 3599
   },
   "ram_code": 358,
-  "total": 167210
+  "total": 167794
 }

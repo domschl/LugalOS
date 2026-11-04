@@ -17,6 +17,7 @@ void moon_ui_layout(moon_ui_layout_t *ui, int w, int h) {
 
     const int hud_h = ui->narrow ? 24 : 32;
     ui->hud = rect(0, 0, w, hud_h + 1);
+    ui->exit_btn = rect(w - (ui->narrow ? 46 : 56), 2, ui->narrow ? 44 : 52, hud_h - 4);
     ui->clock_r = ui->narrow ? 9 : 13;
     ui->clock_cx = 6 + ui->clock_r;
     ui->clock_cy = hud_h / 2;

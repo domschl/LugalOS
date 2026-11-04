@@ -67,10 +67,11 @@
 #define RIBBON_COLS_TWO_FIFTHS(w)  ((uint8_t)(2u * RIBBON_COLS_PAIR(w) / 5u))
 
 typedef enum {
-    RIBBON_WIN_EMPTY  = 0,
-    RIBBON_WIN_TERM   = 1,
-    RIBBON_WIN_CANVAS = 2,
-    RIBBON_WIN_READER = 3,
+    RIBBON_WIN_EMPTY    = 0,
+    RIBBON_WIN_TERM     = 1,
+    RIBBON_WIN_CANVAS   = 2,
+    RIBBON_WIN_READER   = 3,
+    RIBBON_WIN_LAUNCHER = 4,
 } ribbon_win_type_t;
 
 enum {
@@ -147,6 +148,9 @@ int ribbon_find_canvas(const ribbon_t *r);
 
 /* Find first window index of type RIBBON_WIN_READER, or -1 if none. */
 int ribbon_find_reader(const ribbon_t *r);
+
+/* Find first window index of type RIBBON_WIN_LAUNCHER, or -1 if none. */
+int ribbon_find_launcher(const ribbon_t *r);
 
 /* Find window index of type RIBBON_WIN_CANVAS matching canvas_id slot, or -1 if none. */
 int ribbon_find_canvas_slot(const ribbon_t *r, uint8_t canvas_id);

@@ -71,7 +71,9 @@
 #include "drivers/touch.h"
 #include "drivers/vtterm.h"
 #include "drivers/ribbon.h"
+#include "drivers/ugui.h"
 #include "drivers/reader_view.h"
+#include "drivers/launcher_view.h"
 #include "drivers/dcf77_decode.h"
 #include "drivers/pico_clock_ui.h"
 #include "kernel/timezone.h"
@@ -1597,6 +1599,51 @@ static void cmd_reader(const char *arg) {
         /* Fallback to terminal viewer if graphical ribbon is absent */
         cmd_gem(arg);
     }
+}
+
+static void cmd_launcher(const char *arg) {
+    if (arg) {
+        while (*arg == ' ' || *arg == '\t') arg++;
+    }
+    if (arg && strcmp(arg, "status") == 0) {
+        launcher_report();
+        return;
+    }
+    if (arg && strcmp(arg, "close") == 0) {
+        uint8_t rreq[2] = { 'R', 0 }, rreply[SCREEN_REPLY_LEN];
+        if (console_canvas(rreq, 1, rreply) && rreply[0] == 0) {
+            uint8_t wcount = rreply[1];
+            for (uint8_t w = 0; w < wcount; w++) {
+                rreq[1] = w;
+                if (console_canvas(rreq, 2, rreply) && rreply[0] == 0) {
+                    if (rreply[1] == RIBBON_WIN_LAUNCHER) {
+                        uint8_t jreq[2] = { 'J', w };
+                        (void)console_canvas(jreq, 2, rreply);
+                        uint8_t creq[1] = { 'C' };
+                        (void)console_canvas(creq, 1, rreply);
+                        launcher_close();
+                        console_set_active_win_type(RIBBON_WIN_TERM);
+                        vterm_set_active(rreply[1]);
+                        console_sync_readers();
+                        cprintf("launcher: closed\n");
+                        return;
+                    }
+                }
+            }
+        }
+        launcher_close();
+        cprintf("launcher: closed\n");
+        return;
+    }
+    if (!arg || !*arg || strcmp(arg, "open") == 0) {
+        if (launcher_open()) {
+            cprintf("launcher: opened in ribbon [slot %u]\n", (unsigned)launcher_get_slot_id());
+        } else {
+            cprintf("launcher: cannot open (no graphical ribbon)\n");
+        }
+        return;
+    }
+    cprintf("Usage: launcher [open | close | status]\n");
 }
 
 static void cmd_spartand(const char *arg) {
@@ -5842,10 +5889,13 @@ static void cmd_ribbon(const char *cmd_line) {
                         (reply[9] == 1) ? "RGB565" : "1-bpp",
                         (i == active) ? " *" : "");
             else if (type == RIBBON_WIN_READER)
-                cprintf("  [%d] Reader (slot %d, %d cols, rx %ld..%ld)%s\n",
+                cprintf("  [%d] Reader   (slot %d, %d cols, rx %ld..%ld)%s\n",
+                        i, id, cols, (long)rx0, (long)rx1, (i == active) ? " *" : "");
+            else if (type == RIBBON_WIN_LAUNCHER)
+                cprintf("  [%d] Launcher (slot %d, %d cols, rx %ld..%ld)%s\n",
                         i, id, cols, (long)rx0, (long)rx1, (i == active) ? " *" : "");
             else
-                cprintf("  [%d] Term   (vterm %d, %d cols, rx %ld..%ld)%s\n",
+                cprintf("  [%d] Term     (vterm %d, %d cols, rx %ld..%ld)%s\n",
                         i, id, cols, (long)rx0, (long)rx1, (i == active) ? " *" : "");
         }
         return;
@@ -6167,6 +6217,19 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         while (*arg == ' ') arg++;
         cmd_reader(arg);
         return;
+    } else if (strcmp(cmd_line, "launcher") == 0) {
+        cmd_launcher(NULL);
+        return;
+    } else if (strncmp(cmd_line, "launcher ", 9) == 0) {
+        const char *arg = cmd_line + 9;
+        while (*arg == ' ') arg++;
+        cmd_launcher(arg);
+        return;
+#if CONFIG_DEV
+    } else if (strcmp(cmd_line, "uguiselftest") == 0) {
+        cprintf("uguiselftest: %s\n", ugui_selftest() ? "PASS" : "FAIL");
+        return;
+#endif
 #if CONFIG_ENABLE_MOONBASE
     } else if (strcmp(cmd_line, "moonbase") == 0 || strncmp(cmd_line, "moonbase ", 9) == 0) {
         moonbase_run(cmd_line[8] ? cmd_line + 9 : "");
@@ -8123,10 +8186,55 @@ static void parse_and_eval_cmd(const char *cmd_line) {
 }
 
 
+/* single task: polled only from the boot shell's readline idle hook. */
+static bool     s_serial_cmd_seen  = false;
+#if defined(LCDTERM_PRESENT) && defined(TOUCH_PRESENT)
+static bool     s_boot_kbd_checked = false;
+static bool     s_prev_kbd_present = false;
+static uint32_t s_kbd_poll_ms      = 0;
+#endif
+
+static void shell_idle_poll(void) {
+    lisp_canvas_poll();
+
+#if defined(LCDTERM_PRESENT) && defined(TOUCH_PRESENT)
+    uint32_t now_ms = (uint32_t)time_get_ms();
+    if (now_ms - s_kbd_poll_ms >= 200u) {
+        s_kbd_poll_ms = now_ms;
+        bool cur_kbd = usbkbd_is_present();
+        if (!s_boot_kbd_checked) {
+            if (now_ms >= 1500u) {
+                s_boot_kbd_checked = true;
+                s_prev_kbd_present = cur_kbd;
+                if (!cur_kbd && !s_serial_cmd_seen && !launcher_is_active()) {
+                    (void)launcher_open();
+                }
+            }
+        } else {
+            if (s_prev_kbd_present && !cur_kbd) {
+                /* USB keyboard was disconnected: bring up the Touch Launcher */
+                (void)launcher_open();
+            }
+            s_prev_kbd_present = cur_kbd;
+        }
+    }
+#endif
+
+    char touch_cmd[64];
+    if (launcher_poll_exec(touch_cmd, sizeof(touch_cmd))) {
+        parse_and_eval_cmd(touch_cmd);
+        if (launcher_is_active()) {
+            console_set_active_win_type(RIBBON_WIN_LAUNCHER);
+            launcher_update();
+        }
+    }
+}
+
 void shell_run(void) {
     char buf[512];
     line_editor_init();
     line_editor_load_history(10);
+    launcher_init();
 
     /* Hand the console to the log consumer and drain all boot logs before the shell banner */
     klogd_start();
@@ -8143,15 +8251,16 @@ void shell_run(void) {
     /* 37.5a: while the prompt waits for a key, a program that lost its
      * canvas (a hotkey changed the split) redraws it -- not only after the
      * next Enter. */
-    readline_set_idle(lisp_canvas_poll);
+    readline_set_idle(shell_idle_poll);
 
     while (1) {
         /* 37.1: back at the prompt, the shell is what is running. 37.3b:
          * and a program that lost its canvas gets to redraw it. */
         console_set_title("lsh");
-        lisp_canvas_poll();
+        shell_idle_poll();
         int idx = readline_interactive("lsh> ", buf, sizeof(buf));
         if (idx == 0) continue;
+        s_serial_cmd_seen = true;
         /* The Lisp engine's
          * one safe point to collect garbage at -- see lisp_gc_safepoint()'s
          * declaration in user/lisp/include/lisp.h. This loop qualifies for

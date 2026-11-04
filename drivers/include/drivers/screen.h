@@ -54,12 +54,14 @@
  * CANVAS output still lands in the shadow, and a narrower window keeps each
  * row's left part. */
 
-#define SCREEN_MENU_H        20
-#define SCREEN_TILE_Y        22
+#define CHROME_SCALE         ((FONT_CELL_W == 16u) ? 2 : 1)
+#define SCREEN_MENU_H        (20 * CHROME_SCALE)
+#define SCREEN_TILE_Y        (22 * CHROME_SCALE)
+#define SCREEN_TITLEBAR_H    (17 * CHROME_SCALE)
 #define SCREEN_TEXT_X        (FONT_CELL_W)
-#define SCREEN_TEXT_Y        40
+#define SCREEN_TEXT_Y        (40 * CHROME_SCALE)
 #define SCREEN_TEXT_COLS(w)  ((unsigned)(w) / (unsigned)FONT_CELL_W - 2u)
-#define SCREEN_TEXT_ROWS(h)  (((unsigned)(h) - SCREEN_TEXT_Y - 3u) / (unsigned)FONT_CELL_H)
+#define SCREEN_TEXT_ROWS(h)  (((unsigned)(h) > (unsigned)(SCREEN_TEXT_Y + 3 * CHROME_SCALE)) ? (((unsigned)(h) - (unsigned)SCREEN_TEXT_Y - 3u * (unsigned)CHROME_SCALE) / (unsigned)FONT_CELL_H) : 1u)
 
 #define SCREEN_RIGHT_MAX  24u           /* bytes of UTF-8, with the NUL */
 #define SCREEN_NAME_MAX   16u

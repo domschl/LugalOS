@@ -78,6 +78,7 @@ typedef struct {
  * the port from the kernel (usbprobe then answers "busy"). */
 int usbkbd_start(void);
 const usbkbd_state_t *usbkbd_state(void);
+bool usbkbd_is_present(void);
 
 /* `kbd`: what was found, where enumeration stands. `kbdlog [s]`: events. */
 void usbkbd_report(void);

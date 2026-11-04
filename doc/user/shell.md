@@ -194,8 +194,9 @@ From `lsh`, you can immediately invoke native applications:
 * `e [file]`: Opens the full-screen Emacs editor ([editors](editors.md)).
 * `ed [file]`: Opens the teletype line editor ([editors](editors.md)).
 * `chess`: Launches the chess computer UI ([chess](chess.md)).
-* `moonbase`: Launches Moonbase Lambda, a 2D isometric lunar city-builder simulation.
+* `moonbase`: Launches Moonbase Lambda, a 2D isometric lunar city-builder simulation (includes a top-right touch `[EXIT]` HUD button).
 * `ceres` (or `scroller`): Launches Ceres Alpha, a 2D horizontal arcade scroller set in the subterranean cavern network of dwarf planet Ceres. Controls: Arrow keys or `W`/`A`/`S`/`D` (thrust), `Space` (laser), `B` / `K` / `Enter` (bomb), `P` (pause), `R` (retry), `Q` / `Esc` (quit).
+* `launcher [open|close|status]`: Opens, focuses, closes, or queries the Touch Launcher (`RIBBON_WIN_LAUNCHER`) window on the ribbon. Automatically opened on terminal boards when no USB keyboard is attached at boot or when a keyboard is unplugged ([ribbon](ribbon.md)).
 * `zmachine [story]`: Launches the Z-machine Version 3 interactive fiction interpreter with canvas auto-mapping ([interactive fiction](zmachine.md)).
 * `cc <src> <dst>`: Compiles a C11 source file on-device to a native RISC-V ELF binary using `chibicc` ([C programming](../dev/on_device/c_programming.md)).
 * `exec <elf>`: Loads and executes a RISC-V ELF binary confined to a U-mode PMP memory domain.

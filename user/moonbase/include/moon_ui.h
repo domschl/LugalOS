@@ -23,6 +23,7 @@ typedef struct {
     bool narrow;                       /* Compact layout (Tab5's 640x360) */
 
     moon_ui_rect_t hud;
+    moon_ui_rect_t exit_btn;           /* Top-right touch escape hatch */
     int            clock_cx, clock_cy, clock_r;   /* Day/night dial inside the HUD */
     moon_ui_rect_t ribbon_bar;
     moon_ui_rect_t ribbon[MOON_UI_RIBBON_SLOTS];

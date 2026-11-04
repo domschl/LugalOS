@@ -5,9 +5,8 @@
  */
 
 #include "drivers/font_serif.h"
-#include "drivers/lcdterm_attr.h"
 
-LCDTERM_URODATA const uint8_t font_serif_widths[128] = {
+const uint8_t font_serif_widths[128] = {
   0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
   0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,
   4,  5,  6,  8,  8, 12, 12,  3,  5,  5,  8,  8,  4,  5,  4,  4,
@@ -18,7 +17,7 @@ LCDTERM_URODATA const uint8_t font_serif_widths[128] = {
   8,  8,  5,  6,  4,  8,  8, 11,  8,  8,  7,  7,  3,  7,  8,  8,
 };
 
-LCDTERM_URODATA const uint16_t font_serif_glyphs[95][16] = {
+const uint16_t font_serif_glyphs[95][16] = {
     /* 0x20 ' ' (w=4) */
     { 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000 },
     /* 0x21 '!' (w=5) */
@@ -2019,7 +2018,7 @@ const uint8_t font_serif_aa_glyphs[95][16][8] = {
     },
 };
 
-LCDTERM_UTEXT unsigned font_serif_text_width(const char *s, uint32_t len) {
+unsigned font_serif_text_width(const char *s, uint32_t len) {
     if (!s) return 0;
     unsigned total = 0;
     for (uint32_t i = 0; i < len && s[i]; i++) {
@@ -2028,7 +2027,7 @@ LCDTERM_UTEXT unsigned font_serif_text_width(const char *s, uint32_t len) {
     return total;
 }
 
-LCDTERM_UTEXT int canvas1_serif_glyph(const canvas1_t *c, int x, int y, char ch, bool bold, bool italic) {
+int canvas1_serif_glyph(const canvas1_t *c, int x, int y, char ch, bool bold, bool italic) {
     uint8_t w = font_serif_char_width(ch);
     const uint16_t *g = font_serif_get_glyph(ch);
     int ax = x + (int)c->ox;
@@ -2061,7 +2060,7 @@ LCDTERM_UTEXT int canvas1_serif_glyph(const canvas1_t *c, int x, int y, char ch,
     return (int)w;
 }
 
-LCDTERM_UTEXT int canvas1_serif_text(const canvas1_t *c, int x, int y, const char *s, uint32_t len, bool bold, bool italic) {
+int canvas1_serif_text(const canvas1_t *c, int x, int y, const char *s, uint32_t len, bool bold, bool italic) {
     if (!s) return 0;
     int cur_x = x;
     for (uint32_t i = 0; i < len && s[i]; i++) {

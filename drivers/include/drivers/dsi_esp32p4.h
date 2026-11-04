@@ -51,6 +51,8 @@ int dsi_lcd_term_task_start(void);
 void dsi_lcd_command(const char *args);
 int dsi_lcd_set_orientation(int rot);
 int dsi_lcd_get_orientation(void);
+void dsi_lcd_set_backlight(unsigned level);
+unsigned dsi_lcd_get_backlight(void);
 
 #endif
 

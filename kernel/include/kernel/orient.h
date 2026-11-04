@@ -19,6 +19,8 @@ void orient_init(void);
 
 /* Called by every manual orientation change. */
 void orient_manual(void);
+bool orient_is_auto(void);
+void orient_set_auto(bool on);
 
 /* The decision, separate from the IMU and the display so it can be tested.
  * Feed one sample at a time (accel in mg, gyro in 0.1 deg/s); returns the

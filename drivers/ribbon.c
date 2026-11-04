@@ -138,6 +138,16 @@ LCDTERM_UTEXT int ribbon_insert(ribbon_t *r, uint8_t idx, uint8_t type, uint8_t 
         r->wins[idx].title[4] = 'e';
         r->wins[idx].title[5] = 'r';
         r->wins[idx].title[6] = '\0';
+    } else if (type == RIBBON_WIN_LAUNCHER) {
+        r->wins[idx].title[0] = 'L';
+        r->wins[idx].title[1] = 'a';
+        r->wins[idx].title[2] = 'u';
+        r->wins[idx].title[3] = 'n';
+        r->wins[idx].title[4] = 'c';
+        r->wins[idx].title[5] = 'h';
+        r->wins[idx].title[6] = 'e';
+        r->wins[idx].title[7] = 'r';
+        r->wins[idx].title[8] = '\0';
     } else {
         r->wins[idx].title[0] = 'T';
         r->wins[idx].title[1] = 'e';
@@ -306,6 +316,19 @@ LCDTERM_UTEXT int ribbon_find_reader(const ribbon_t *r) {
     }
     for (uint8_t i = 0; i < r->count; i++) {
         if (r->wins[i].type == RIBBON_WIN_READER) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+LCDTERM_UTEXT int ribbon_find_launcher(const ribbon_t *r) {
+    if (!r || r->count == 0) return -1;
+    if (r->active_idx < r->count && r->wins[r->active_idx].type == RIBBON_WIN_LAUNCHER) {
+        return (int)r->active_idx;
+    }
+    for (uint8_t i = 0; i < r->count; i++) {
+        if (r->wins[i].type == RIBBON_WIN_LAUNCHER) {
             return (int)i;
         }
     }

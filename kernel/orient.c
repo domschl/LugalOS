@@ -165,6 +165,16 @@ void orient_manual(void) {
     if (g_mode == ORIENT_AUTO) g_mode = ORIENT_PAUSED;
 }
 
+bool orient_is_auto(void) {
+    return g_mode == ORIENT_AUTO;
+}
+
+void orient_set_auto(bool on) {
+    if (!ORIENT_PRESENT || g_task < 0) return;
+    g_mode = on ? ORIENT_AUTO : ORIENT_OFF;
+    (void)node_identity_set_orient_auto(on);
+}
+
 static const char *mode_name(orient_mode_t m) {
     return m == ORIENT_AUTO ? "auto" : m == ORIENT_PAUSED ? "paused (a manual turn; `orient auto` resumes)" : "off";
 }
