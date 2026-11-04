@@ -36,7 +36,6 @@
     "drivers/bme680.c": 124,
     "drivers/bmi270.c": 104,
     "drivers/ccs811.c": 76,
-    "drivers/driver_task.c": 548,
     "drivers/dsi_esp32p4.c": 3286,
     "drivers/edgecap.c": 20,
     "drivers/flash_esp32p4.c": 13,
@@ -170,7 +169,7 @@
     "clock-app": 136,
     "crypto": 38,
     "display": 3891,
-    "drivers": 1850,
+    "drivers": 1302,
     "fs": 4160,
     "httpd": 70,
     "identity": 4237,
@@ -190,5 +189,5 @@
     "vfs": 4111
   },
   "ram_code": 1806,
-  "total": 218963
+  "total": 218415
 }

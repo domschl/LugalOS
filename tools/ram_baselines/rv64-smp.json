@@ -22,7 +22,6 @@
     "drivers/bmi270_config.c": 8200,
     "drivers/ccs811.c": 210,
     "drivers/dcf77_decode.c": 216,
-    "drivers/driver_task.c": 1092,
     "drivers/edgecap.c": 36,
     "drivers/flashdisk.c": 48,
     "drivers/font8x16.c": 3680,
@@ -175,7 +174,7 @@
     "clock-app": 616,
     "crypto": 1054,
     "display": 52781,
-    "drivers": 43658,
+    "drivers": 42566,
     "fs": 823,
     "httpd": 184,
     "identity": 669,
@@ -193,6 +192,6 @@
     "usb": 672,
     "vfs": 4766
   },
-  "ram_code": 1140622,
-  "total": 7551737
+  "ram_code": 1140134,
+  "total": 7550157
 }

@@ -73,10 +73,12 @@
     "kernel/privilege.c": 8,
     "kernel/random.c": 38,
     "kernel/sched.c": 2501,
+    "kernel/setup_button.c": 64,
     "kernel/shell.c": 2479,
     "kernel/smp.c": 8,
     "kernel/status_led.c": 8,
     "kernel/stress.c": 749,
+    "kernel/svchost.c": 33,
     "kernel/ticker.c": 37,
     "kernel/time.c": 49,
     "kernel/timezone.c": 101,
@@ -126,8 +128,8 @@
     "drivers": 2920,
     "fs": 64,
     "httpd": 53,
-    "identity": 128,
-    "kernel": 12877,
+    "identity": 192,
+    "kernel": 12910,
     "lisp": 48392,
     "log": 8322,
     "mqtt": 4220,
@@ -141,5 +143,5 @@
     "vfs": 4111
   },
   "ram_code": 434,
-  "total": 194502
+  "total": 194599
 }
