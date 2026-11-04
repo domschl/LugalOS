@@ -15,7 +15,7 @@ LugalOS maintains a comprehensive multi-tier testing framework spanning host uni
                                     | Silicon Verification
 +-----------------------------------+------------------------------------+
 |                    TIER 3: AUTOMATED QEMU RUNNER                       |
-|   tests/runner.py (376+ tests across RV32 NOMMU, RV64 MMU, RV64 SMP)   |
+|   tests/runner.py (750 tests: RV32, RV64, RV64 SMP, RV32 folded twin) |
 |   Preemption * Memory Domains * Copy-Always Channels * FAT32 * Net * VM|
 \-----------------------------------^------------------------------------+
                                     | Emulation & Architecture
@@ -72,7 +72,7 @@ python3 tests/runner.py
 ```
 
 ### Coverage
-The runner executes over **376 distinct test cases** across three virtual targets:
+The runner executes about **750 test cases** (750 at the end of phase 66) across four virtual targets:
 1. **RV32 NOMMU Target**: Validates PMP memory domain isolation, cooperative/preemptive task switches, and device driver confinements.
 2. **RV64 MMU Target**: Validates Sv39 3-level page tables, virtual address space creation and destruction, and 64-bit bignum arithmetic.
 3. **RV64 SMP Multicore Target**: Validates dual-hart scheduler lock hand-offs, atomic `amoswap` contention, and cross-hart thread synchronization.

@@ -1,13 +1,24 @@
 # Phase 66 — RAM, Presets, and Folding: Scaling LugalOS Down
 
-**Status: scoped 2026-11-03, not started. Independent of phase 52.**
+**Status: CLOSED 2026-11-04. Independent of phase 52.**
 Milestone scheme: `66.1`, `66.2`, …
 
-* **Scheduled:** 66.1–66.3 (measure, split, right-size), 66.3b (TLS on the C6-Zero sensor node),
-  then 66.4, 66.6, 66.7 (P4 layout, service host, folding of kernel-mode endpoints). 66.5 (on-demand
-  services) dropped: see there.
-* **Optional, decided at the review after 66.7:** 66.8–66.10 (folding of U-mode drivers, a full
-  build-time unikernel, an ESP32-C3 budget target).
+* **Done:** 66.1 (RAM ledger), 66.2 (board/profile split, dev and release images), 66.3 (headless
+  profiles right-sized), 66.3b (HTTPS and MQTT over TLS on the C6-Zero), 66.4 (the LCD-7B's heap over
+  the ROM's download buffers), 66.6 (service host), 66.7 (folded endpoints, ADR 008), and the
+  measurement half of 66.10 (an ESP32-C3's budget on a C6).
+* **Dropped:** 66.5 (on-demand services: a service reserves at start or allocates per request),
+  66.8 (folding of U-mode drivers) and 66.9 (a build-time unikernel), at the review after 66.7.
+* **Not pursued:** a C3 port, and any further downscaling (see "Closing" at the end).
+
+**Result**, free pages under the loaded scenario, from 66.1 to the close:
+
+| Board | 66.1 | Closed | |
+| :--- | ---: | ---: | :--- |
+| ESP32-C6-Zero (`esp32c6-release`) | 5 of 68 | 16 of 74 | lowest 11; with HTTPS and MQTT over TLS |
+| Pico 2 W (`rp2350-wifi`) | 19 of 80 | 40 of 83 | |
+| ESP32-P4 LCD-7B | 11 of 71 | 28 of 88 | |
+| M5Stack Tab5 | 25 of 93 | 25 of 93 | not changed by this phase |
 
 ---
 
@@ -501,3 +512,36 @@ pages already gained.
 
 QEMU gives runtime numbers for the generic parts (scheduler, 9P, channels, folding) without a
 board; radio, display and sensor numbers need the boards.
+
+---
+
+## Closing (2026-11-04)
+
+**Owner's decision: LugalOS is not scaled down further.** The 66.10 measurement shows what a
+smaller build would be: on an ESP32-C3's 44 pages the sensor node is full at idle, and what would
+fit (an estimated 42 pages, 2 of margin) is an MQTT-only beacon without its admin page, 9P, TLS or
+the margin under load -- without the properties that make it a LugalOS node (remote
+administration over 9P and HTTPS, owner-held identity, isolation and the measured margins). The
+C3 port is not pursued, and the C6-Zero (74 pages) is the smallest Wi-Fi board LugalOS targets.
+`LUGALOS_HEAP_CAP_PAGES` stays as a measurement setting.
+
+What the phase leaves in place, besides the pages:
+
+* **Measured memory**: the RAM ledger (`/proc/pages`, `tools/ramledger.py`, a check in every
+  hardware suite), static baselines per preset (`tools/sizereport.py` in the runner), runtime
+  baselines in `tools/ram_baselines/runtime/`.
+* **Build layers**: board (hardware) and profile (policy) checked apart; dev and release images;
+  `/proc/config` names the profile, the image kind and the folded endpoints.
+* **Rules** (doc/dev/kernel/architecture.md section 7): reserve at start or allocate per request,
+  never start on demand; the service host for small periodic jobs; folding per preset, with its
+  guardrails (ADR 008, `tools/servecheck.py`, the `rv32-fold` and `esp32c6-release` twins).
+* **Fixes found by the measurements**: the RP2350 E10 UF2 block and partition-table encoder, the
+  P4 flash records, the TLS client's lost flush, the Pico 2 W LED's 1.1 s step, the U-mode domain
+  table built on every board, the kernel formatter's missing `%.*s` (a crash path in
+  `kernel/tls_cert.c`), and the C6 radio's arena now reserved at boot.
+
+Open, outside this phase: the C6-Zero's TLS credentials are from a test CA (reissue with
+`lugalos-ca issue --tcp esp32c6-zero-86c2.local --rekey`); nalanda has no TLS listener; no fuzz
+yet for the TLS client's parsing of a hostile server flight; the C6s that are the P4s' radios get
+the radio reservation when next reflashed (untested there).
+

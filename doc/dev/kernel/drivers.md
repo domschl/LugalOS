@@ -1,67 +1,62 @@
 # LugalOS Driver Framework & Hardware Isolation
 
-In traditional monolithic operating systems, device drivers execute in the same privileged address space as the kernel. A single bug or stray pointer in a third-party driver can corrupt kernel data structures and crash the entire system.
+A driver in LugalOS owns its hardware through a task and is reached through a channel endpoint, so no other code touches its registers while it runs. Whether that task is also confined to a memory domain depends on the board: on the RP2350 the drivers run in U-mode, each in its own PMP domain; on the ESP32-P4, the ESP32-C6 and QEMU they are kernel-mode tasks. A preset can also fold a kernel-mode driver, so that it has no task at all.
 
-In LugalOS, **every driver runs as an independent User-Mode task**, strictly confined to a hardware-enforced memory domain.
-
----
-
-## 1. Confined U-Mode Driver Tasks
-
-Each driver in LugalOS is structured as a dedicated task:
-* **UART Driver (`uart_task`)**: Confined to UART0 register window and its circular FIFO buffer.
-* **USB CDC ACM Driver (`usb_cdc_task`)**: Confined to USB controller registers and DPRAM.
-* **Block Storage Driver (`blk_task`)**: Confined to SPI / SDMMC peripheral registers.
-* **I2C Bus Driver (`i2c_task`)**: Manages the shared I2C bus for RTC and environmental sensors.
-* **Display Driver (`lcd_task`)**: Confined to display DMA descriptors and framebuffer memory.
-
-```
-+------------------------------------------------------------------------+
-|                   ISOLATED DRIVER DOMAINS (U-MODE)                     |
-|--------------------+--------------------+------------------------------+
-|    UART DRIVER     |     I2C DRIVER     |         STORAGE DRIVER       |
-|  PMP: UART0 Window |  PMP: I2C0 Window  |      PMP: SPI1 / SDMMC Window|
-|  State: Private    |  State: Private    |      State: Private          |
-\---------+----------+---------+----------+--------------+---------------+
-          | chan_call()        | chan_call()             | chan_call()
-+---------v--------------------v-------------------------v---------------+
-|                       LUGALOS MICROKERNEL CORE                         |
-\------------------------------------------------------------------------+
-```
+The contract, with a worked example, is the header comment of `drivers/include/drivers/driver_task.h`. This page is the overview.
 
 ---
 
-## 2. Hardware Register Windows (PMP Grants)
+## 1. The Four Parts of a Driver
 
-During task initialization, the driver framework grants the task access only to the physical registers it requires:
+1. **The register half.** Which bits in which register on this chip. Never shared between chips.
+2. **The task half.** A `driver_task_t` and a `serve()` callback: the driver's wire protocol, one request at a time. The framework (`drivers/driver_task.c`) owns the loop, the endpoint, the reply and the count of calls served; `driver_task_start()` creates it.
+3. **The facade.** The functions everyone else calls (`uart_putc()`, `blk_read()`, `i2c_xfer()`). Each asks `driver_task_alive()` and either calls the endpoint (`driver_task_call()`) or, when no task owns the hardware (during boot, or if the task never started), touches the hardware itself.
+4. **A U-mode domain**, on the RP2350 only (section 3).
 
-```c
-mem_domain_t *dom = mem_domain_create();
-/* Grant code and private stack */
-mem_domain_grant_region(dom, code_start, code_size, PERM_RX);
-mem_domain_grant_region(dom, stack_start, stack_size, PERM_RW);
-/* Grant only the specific peripheral register window */
-mem_domain_grant_device(dom, UART0_BASE, UART0_SIZE, PERM_RW);
-task_set_domain(driver_task, dom);
-```
-
-### Verification via Isolation Self-Tests
-To prove that hardware confinement is real rather than assumed, every driver includes a dedicated `<driver>isotest` command (e.g. `uartisotest`, `blkisotest`, `i2cisotest`, `usbisotest`):
-* The test deliberately causes the driver task to store into kernel memory outside its grant.
-* Hardware raises an Access Fault trap immediately.
-* The test verifies that a canary in kernel memory remains completely untouched.
+Three invariants hold inside `serve()`, and the first two are checked at run time (`kernel/lock.h`): no console output (`printk()` is fine, `cprintf()` is not); no call back into anything that could call this same endpoint (`chan_call()` refuses a call that would close a wait cycle); and only the driver touches its hardware while it is alive.
 
 ---
 
-## 3. Interrupt Handling & Event Notification
+## 2. Where Drivers Run, per Board
 
-Hardware interrupts (IRQs) are handled via a two-stage model:
-1. **Top Half (Kernel Trap Handler)**: Acknowledges the hardware interrupt, masks the line if necessary, and unblocks the driver's task queue or posts an event.
-2. **Bottom Half (U-Mode Driver Task)**: The driver task wakes up in its isolated memory domain, drains hardware FIFOs, and handles the request asynchronously.
+| Board | Drivers | How |
+| :--- | :--- | :--- |
+| RP2350 | UART, USB CDC, SPI SD, I2C, ST7735, TM1638, LCD terminal, USB keyboard, clock display | U-mode tasks, each in its own PMP domain (`driver_umode_enter()`) |
+| ESP32-P4 | UART, SDMMC (`sdblk`), I2C | kernel-mode driver tasks (`driver_task_start()`) |
+| ESP32-C6 | I2C | a kernel-mode driver task; folded in `esp32c6-release` (section 4) |
+| QEMU | UART (16550), virtio block (`blk`), I2C | kernel-mode driver tasks; all three folded in `rv32-fold` |
+
+The ESP32-C6's vendor Wi-Fi code is not a driver in this sense, but it runs in U-mode too, in a domain of its own (`kernel/radio_c6.c`, [ADR 007](../../history/adr/007_c6_peripheral_confinement.md)). `ps` shows each task's isolation: `PMP` or `Sv39` for a confined task, `-` for a kernel-mode one.
 
 ---
 
-## 4. Calling a Driver Task
+## 3. U-Mode Domains (RP2350)
+
+A driver that confines itself calls `driver_umode_enter()` from its own task, with a `driver_umode_spec_t`: its stack, the register windows it needs and any shared data region. The framework builds the `mem_domain_t` (`mem_domain_add()` per region, always including the shared `.utext` page the task executes from), attaches it with `task_set_domain()` and drops to U-mode. From then on a store outside the grants is an access fault. Up to `MEM_DOMAIN_MAX_REGIONS` regions fit a domain: 5, or 14 on the C6, whose radio domain needs them.
+
+If the domain cannot be enforced, or no domain slot is left, the driver says so and keeps running without the confinement; it never claims isolation it does not have. On every other board `driver_umode_enter()` refuses at once, and its domain table is not built.
+
+A dev image can prove the confinement on the hardware: each confined driver has an isolation test (`uartisotest`, `blkisotest`, `i2cisotest`, `usbisotest`, ...) that makes the driver store outside its grant and checks that the store faulted and that a canary in kernel memory is untouched.
+
+---
+
+## 4. Folded Endpoints (per Preset)
+
+A preset may **fold** kernel-mode endpoints: `LUGALOS_FOLD` in `CMakePresets.json`, a comma-separated list of endpoint names. `driver_task_start()` then registers `serve()` as an inline channel handler and creates no task. A caller goes through the same claim, FIFO and copies as before, but `serve()` runs on the caller's stack and at the caller's priority, so the driver costs no task and no stack. Callers and drivers do not change: folding is a property of the preset, never of the code.
+
+* **Which endpoints may fold**: a `serve()` that returns in bounded time (or blocks only whoever calls it), fits its callers' stacks, needs no priority of its own, is not pinned to a hart and runs in kernel mode. The rule and its reasons: [ADR 008](../../history/adr/008_folded_endpoints.md).
+* **Guardrails**: `tools/servecheck.py`, run by `tests/runner.py`, refuses any direct call to a serve callback, so every call goes through the framework. Every folded preset has an unfolded twin that runs the same suite: `rv32-fold` and `rv32` on QEMU, `esp32c6-release` and `esp32c6` on the C6-Zero.
+* **Visible at run time**: `/proc/config` lists the folded endpoints (`FOLD=`), the boot log says `Driver folded`, and a folded endpoint has no task in `ps`.
+
+---
+
+## 5. Interrupts
+
+A peripheral's interrupt handler is attached with `devirq_attach()` (`kernel/devirq.h`). `arch/riscv/common/trap.c` resolves which line fired (the PLIC, the RP2350's `meinext`, the P4's CLIC) and calls `devirq_dispatch()`. The handler acknowledges the hardware and wakes whoever is waiting with `task_unblock()`. A driver that waits records the waiting task when it begins to wait (`sched_current_pid()`), not when it starts, so the same code works when the driver is folded and the caller is the one waiting. Interrupt-shared state is guarded with `spin_lock_irqsave()` on both sides, and the task is woken only after the lock is released ([Concurrency](concurrency.md)).
+
+---
+
+## 6. Calling a Driver
 
 An endpoint serves one request at a time. A caller that finds it busy waits its turn with
 `chan_call_wait(ep, req, len, resp, max, wait_ms)` (`kernel/chan.h`), or with

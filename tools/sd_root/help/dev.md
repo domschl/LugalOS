@@ -16,11 +16,11 @@ doc/dev/
 |   |-- c_programming.md   # C11 programming with chibicc, lugal.h, syscall ABI, ELF
 |   \-- lisp_scripting.md  # Lisp machine runtime, zero-SRAM builtins, stdlib, CAS
 |-- kernel/             # Part B: LugalOS Kernel & Driver Architecture
-|   |-- architecture.md    # Microkernel model, memory domains (PMP/Sv39), IPC channels
-|   |-- scheduler.md       # Priority tiers, preemption, cross-hart lock hand-off, SMP
+|   |-- architecture.md    # Microkernel model, domains, channels, build layers, memory rules
+|   |-- scheduler.md       # Priority tiers, preemption, lock hand-off, SMP, service host
 |   |-- concurrency.md     # Ownership comments, racescan, locks and lock order, waits, stress
 |   |-- logging.md         # Tokenized kernel logging macro system, klogd, rodata dictionary
-|   |-- drivers.md         # Confined U-mode driver framework, PMP register grants, IRQs
+|   |-- drivers.md         # Driver tasks, U-mode domains (RP2350), folding, IRQs
 |   \-- porting.md         # Board bringup: linker scripts, clock trees, XIP flash
 |-- protocols/          # Part D: Interconnect & Wire Protocols
 |   \-- llp.md             # LugalOS Link Protocol (LLP): framing, flow control, 9P/Ethernet mux
@@ -40,11 +40,11 @@ doc/dev/
 ---
 
 ## 2. [Part B: LugalOS Kernel & Driver Architecture](architecture.md)
-* **[Microkernel Architecture](architecture.md)**: Hardware-isolated tasks, PMP regions on NOMMU, Sv39 page tables on MMU, copy-always channels (`chan_t`), and the syscall validation boundary.
-* **[Scheduler & Multicore SMP](scheduler.md)**: Preemptive round-robin scheduler with static priority tiers, atomic primitives (`spinlock_t`, `ylock_t`), the critical cross-hart scheduler lock hand-off across `ctx_switch()`, and Lazy SMP.
+* **[Microkernel Architecture](architecture.md)**: Tasks and memory domains (PMP regions on NOMMU, Sv39 page tables on MMU), copy-always channel endpoints, the syscall boundary, where isolation applies per board, the board/profile/preset layers, and the memory rules (reserve at start, the service host, folding, the RAM ledger).
+* **[Scheduler & Multicore SMP](scheduler.md)**: Preemptive round-robin scheduler with static priority tiers, atomic primitives (`spinlock_t`, `ylock_t`), the critical cross-hart scheduler lock hand-off across `ctx_switch()`, Lazy SMP, and the service host that runs small periodic jobs on one task.
 * **[Concurrency: Shared State, Locks and Waits](concurrency.md)**: The ownership comment on every shared static and `racescan.py`, spinlocks vs ylocks and the learned lock order, `chan_call_wait()` and timed polls, and the stress harness.
 * **[Tokenized Kernel Logging Macro System](logging.md)**: Zero-overhead logging capturing format-string addresses in `.rodata` and vararg binary blobs in the ring buffer, expanded on drain by `klogd`.
-* **[Driver Framework & Fault Isolation](drivers.md)**: Running drivers as confined U-mode tasks with fine-grained PMP hardware register grants and asynchronous message queues.
+* **[Driver Framework & Fault Isolation](drivers.md)**: The four parts of a driver, where drivers run per board (U-mode domains on the RP2350, kernel-mode tasks elsewhere), folding a driver into its callers per preset, interrupts, and calling a driver.
 * **[Board Porting Guide](porting.md)**: Step-by-step instructions for porting LugalOS to new RISC-V microcontrollers, clock trees, and XIP memory layouts.
 
 ---

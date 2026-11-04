@@ -10,7 +10,7 @@ Tasks are tracked in a fixed-size table `g_tasks[MAX_TASKS]`. Each task has its 
 
 ### Static Priority Tiers
 Rather than dynamic priority decay, LugalOS uses static roles:
-* `TASK_PRIO_INTERRUPT` (3): Critical driver tasks (e.g. UART, display scanout, radio supervisor). Always chosen first when runnable.
+* `TASK_PRIO_INTERRUPT` (3): Critical driver tasks (e.g. UART, display scanout, radio supervisor). Always chosen first when runnable. A driver folded into its callers has no task and runs at the caller's tier.
 * `TASK_PRIO_NORMAL` (2): Default tier for interactive applications, shell (`lsh`), and user ELFs.
 * `TASK_PRIO_BACKGROUND` (1): Asynchronous workers, deferred log flushers (`klogd`), and file caches.
 * `TASK_PRIO_IDLE` (0): The idle loop running `wfi` (Wait For Interrupt) to conserve power.

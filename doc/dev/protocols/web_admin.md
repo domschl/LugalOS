@@ -38,7 +38,7 @@ Ping and pong keep a quiet session alive: the server pings after 15 s without a 
 
 A handshake message must arrive within one record. The server sends a ChangeCipherSpec after its first ServerHello when the client sent a session id (middlebox compatibility, Appendix D.4).
 
-The engine is transport-independent: `tls_server_init()` takes non-blocking `recv` and `send` functions and two buffers (`TLS_RECORD_MAX`, `TLS_TX_CAP`); httpd hands it a TCP stream and buffers from the bulk zone, `tests/host/tls_host.c` a socket.
+The engine is transport-independent: `tls_server_init()` takes non-blocking `recv` and `send` functions and two buffers (`TLS_RECORD_MAX`, `TLS_TX_CAP`); httpd hands it a TCP stream and a session's buffers, taken from the bulk zone when the connection is accepted and wiped and returned when it closes (an idle server holds none), and `tests/host/tls_host.c` a socket. The same engine is the client of MQTT over TLS (`tls_client_init()`, [TLS guide](../../admin/tls.md)).
 
 ---
 

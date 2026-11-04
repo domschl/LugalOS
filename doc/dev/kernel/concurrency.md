@@ -105,6 +105,12 @@ A driver task owns its hardware. Callers reach it with
   no task, or from the context that holds the endpoint (recursion).
 - Never write a retry loop around plain `chan_call()`.
 
+A folded driver (a preset's `LUGALOS_FOLD`, [Drivers](drivers.md#4-folded-endpoints-per-preset))
+has no task: its `serve()` runs in the caller's context under the same endpoint claim, so the
+rules above are unchanged, and `driver_task_alive()` is true once the endpoint is registered.
+What changes is whose stack and priority `serve()` runs on, and that it runs under the
+caller's ylocks: `lockcheck` learns those orders on the folded build too.
+
 A facade touches the hardware itself only when `driver_task_alive()` is false (boot, before
 the task exists). A failed call while the task is alive is an error, not a reason to go
 around the task. A client that issues long sequences (the BMI270's microcode upload) pauses
@@ -163,7 +169,9 @@ gives the deepest worker stack.
 ## 6. Checklist for New Code
 
 1. A new writable static reached from two contexts gets a verdict comment.
-2. Hardware is touched by its driver task, or under the owner's hardware lock.
+2. Hardware is touched by its driver (its task, or its folded `serve()` under the endpoint's
+   claim), or under the owner's hardware lock. A `serve()` callback is reached only through
+   the framework (`tools/servecheck.py`).
 3. Waits go through `chan_call_wait()` or `time_poll_until_us()`, never hand-written loops.
 4. Handler-shared words: a spinlock on both sides, or a single-store protocol written down.
 5. Shared clock and reset words: `sysreg_update()`.

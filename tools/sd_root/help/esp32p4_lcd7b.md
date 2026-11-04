@@ -26,6 +26,7 @@ This document provides in-depth hardware specifications, peripheral register det
 > In revision v3.2, L2MEM cache lines and ROM data reside at opposite ends of the address space, and the Core-Local Interrupt Controller (CLIC) uses standard RISC-V layout.
 > A binary compiled for v1.3 will halt at boot with `[Chip] ... Halted.`
 
+* **Heap Over the ROM's Download Buffers:** On v3.x the boot ROM's download-mode buffers (`0x4ffa96b8`-`0x4ffbafc0`) sit just above the kernel's RAM. They are used only in download mode, so the heap runs over them to `P4_HEAP_TOP` (`0x4ffba000`, `linker/esp32p4_memory_rev3.ld`): 88 heap pages instead of 71. Nothing loadable is placed there (the second-stage loader runs in that range), and the ROM's start-up stacks and its run-time data above `0x4ffbfbb0` stay untouched. `zonetest` fills every free heap page and checks it. On v1.3 (NANO, Tab5) the buffers are in LOWRAM, under `.bss`, and there is nothing to reclaim.
 * **Board Disambiguation:** When multiple P4 boards are attached, explicit port assignments are loaded from `~/.config/lugalos/p4-ports.env`. Always pass `--board lcd7b` to flashing and console scripts.
 
 ---

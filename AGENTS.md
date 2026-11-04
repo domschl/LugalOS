@@ -83,7 +83,9 @@ LugalOS supports distinct hardware presets. If a task requires testing against a
 | `rp2350-gateway` | RP2350 Gateway | Network gateway persona (ENC28J60 Ethernet / USB 9P / UART1 downlink) |
 | `rp2350-wifi` | RP2350 CYW43439 | Raspberry Pi Pico 2 W with CYW43439 Wi-Fi |
 | `esp32c6` | ESP32-C6 RV32 | Waveshare ESP32-C6-Zero (RV32IMAC @ 160 MHz, 512 KB SRAM, 8 MB flash, USB-Serial/JTAG) |
+| `esp32c6-release` | ESP32-C6 RV32 | The C6-Zero as a deployed node: release image (no self-tests), `i2c` folded; `esp32c6` is its dev twin |
 | `rv32` | RISC-V 32-bit NOMMU | QEMU virt machine (32-bit microkernel test target) |
+| `rv32-fold` | RISC-V 32-bit NOMMU | `rv32` with `uart`, `blk` and `i2c` folded into their callers: the folded twin the runner tests |
 | `rv64` | RISC-V 64-bit Sv39 MMU | QEMU virt machine (64-bit virtual memory target) |
 | `rv64-smp` | RISC-V 64-bit SMP | Dual-core SMP virtual machine |
 
