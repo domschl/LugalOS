@@ -16,8 +16,8 @@
 #include "drivers/font_noto_mono.h"
 #endif
 #include "drivers/lcdterm_attr.h"
+#include "drivers/touch.h"
 #include "drivers/osk.h"
-#include "drivers/usbkbd_task.h"
 
 #if defined(CONFIG_BOARD_RP2350)
 #define CANVAS_SUPPORT_RGB565 0
@@ -1131,15 +1131,17 @@ LCDTERM_UTEXT static void draw_all_from(screen_t *scr, bool restore) {
         if (scr->ribbon.active_idx < scr->ribbon.count) {
             const ribbon_win_t *act_w = &scr->ribbon.wins[scr->ribbon.active_idx];
             if (act_w->type == RIBBON_WIN_TERM) {
+                int32_t xv = scr->ribbon.x_view;
+                int tile_y1 = SCREEN_TEXT_Y + (int)FONT_CELL_H * (int)SCREEN_TEXT_ROWS(cv->h) + 1;
                 int32_t vx0 = act_w->rx0 - xv;
                 int32_t vx1 = act_w->rx1 - xv;
                 int win_w = (int)(vx1 - vx0 - 1);
                 if (win_w > 0 && vx1 >= 0 && vx0 < (int32_t)cv->w) {
-                    if (osk_is_visible()) {
+                    if (scr->osk_visible) {
                         int osk_h = osk_get_height();
                         int osk_y0 = tile_y1 - osk_h;
-                        osk_draw(cv, (int)vx0 + 1, osk_y0, win_w, osk_h);
-                    } else if (!usbkbd_is_present()) {
+                        osk_draw(cv, (int)vx0 + 1, osk_y0, win_w, osk_h, scr->osk_modifiers);
+                    } else {
                         int sc = (int)CHROME_SCALE;
                         int btn_w = 64 * sc;
                         int btn_h = 22 * sc;
@@ -1228,7 +1230,7 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout) {
 
         unsigned term_rows = rows;
 #if defined(TOUCH_PRESENT)
-        if (i == scr->ribbon.active_idx && osk_is_visible()) {
+        if (i == scr->ribbon.active_idx && scr->osk_visible) {
             int osk_rows = osk_get_text_rows((int)FONT_CELL_H);
             if ((int)term_rows > osk_rows + 2) {
                 term_rows -= (unsigned)osk_rows;
@@ -1429,6 +1431,8 @@ void screen_init_rot(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsig
     scr->locked = 0;
     scr->swapped = 0;
     scr->status_flags = 0;
+    scr->osk_visible = 1;
+    scr->osk_modifiers = 0;
     scr->animating = false;
     scr->store_gen[0] = scr->store_gen[1] = scr->store_gen[2] = scr->store_gen[3] = 0;
     const char *name = "LugalOS";
@@ -2102,6 +2106,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
         if (ribbon_focus_step(&scr->ribbon, -1)) {
             screen_animate_ribbon(scr, 255, 0, 0, 255, 0, 0, start_xv);
             status = 0;
+            reply[1] = window_vterm(scr, scr->ribbon.active_idx);
             reply[10] = scr->ribbon.wins[scr->ribbon.active_idx].type;
             reply[11] = scr->ribbon.wins[scr->ribbon.active_idx].vterm_id;
         } else {
@@ -2113,6 +2118,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
         if (ribbon_focus_step(&scr->ribbon, 1)) {
             screen_animate_ribbon(scr, 255, 0, 0, 255, 0, 0, start_xv);
             status = 0;
+            reply[1] = window_vterm(scr, scr->ribbon.active_idx);
             reply[10] = scr->ribbon.wins[scr->ribbon.active_idx].type;
             reply[11] = scr->ribbon.wins[scr->ribbon.active_idx].vterm_id;
         } else {
@@ -2167,6 +2173,9 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
         if (ribbon_focus(&scr->ribbon, target)) {
             screen_animate_ribbon(scr, 255, 0, 0, 255, 0, 0, start_xv);
             status = 0;
+            reply[1] = window_vterm(scr, scr->ribbon.active_idx);
+            reply[10] = scr->ribbon.wins[scr->ribbon.active_idx].type;
+            reply[11] = scr->ribbon.wins[scr->ribbon.active_idx].vterm_id;
         } else {
             status = 1;
         }
@@ -2219,32 +2228,71 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
                 int vx1 = (int)(w->rx1 - scr->ribbon.x_view);
                 int win_w = vx1 - vx0 - 1;
                 int tile_y1 = SCREEN_TEXT_Y + (int)FONT_CELL_H * (int)SCREEN_TEXT_ROWS(scr->cv.h) + 1;
-                if (osk_is_visible()) {
+                bool kbd_attached = (n >= 6 && req[5] != 0);
+
+                if (scr->osk_visible) {
                     int osk_h = osk_get_height();
                     int osk_y0 = tile_y1 - osk_h;
                     if (py >= osk_y0 && py < tile_y1 && px >= vx0 && px < vx1) {
                         int cx = px - (vx0 + 1);
                         int cy = py - osk_y0;
-                        if (osk_handle_tap(cx, cy, win_w, osk_h)) {
+                        uint16_t key = osk_hit_test(cx, cy, win_w, osk_h, scr->osk_modifiers);
+                        if (key == OSK_KEY_SHIFT) {
+                            scr->osk_modifiers ^= OSK_MOD_SHIFT;
                             place(scr, scr->layout);
                             draw_all_from(scr, false);
-                            screen_flush();
                             reply[0] = 0;
                             return;
                         }
+                        if (key == OSK_KEY_CTRL) {
+                            scr->osk_modifiers ^= OSK_MOD_CTRL;
+                            place(scr, scr->layout);
+                            draw_all_from(scr, false);
+                            reply[0] = 0;
+                            return;
+                        }
+                        if (key == OSK_KEY_SYM) {
+                            scr->osk_modifiers ^= OSK_MOD_SYM;
+                            place(scr, scr->layout);
+                            draw_all_from(scr, false);
+                            reply[0] = 0;
+                            return;
+                        }
+                        if (key == OSK_KEY_HIDE) {
+                            scr->osk_visible = 0;
+                            place(scr, scr->layout);
+                            draw_all_from(scr, false);
+                            reply[0] = 0;
+                            return;
+                        }
+                        if (key != 0 && key != 0xFFFF) {
+                            scr->osk_modifiers &= ~(OSK_MOD_SHIFT | OSK_MOD_CTRL);
+                            place(scr, scr->layout);
+                            draw_all_from(scr, false);
+                            reply[0] = 0;
+                            reply[1] = window_vterm(scr, (uint8_t)idx);
+                            reply[6] = (uint8_t)(key & 0xff);
+                            reply[7] = (uint8_t)((key >> 8) & 0xff);
+                            reply[8] = 0xBB;
+                            reply[10] = w->type;
+                            reply[11] = w->vterm_id;
+                            return;
+                        }
+                        reply[0] = 0;
+                        return;
                     }
-                } else if (!usbkbd_is_present()) {
+                } else if (!kbd_attached) {
                     int sc = (int)CHROME_SCALE;
                     int btn_w = 64 * sc;
                     int btn_h = 22 * sc;
                     int btn_x = vx1 - btn_w - 6 * sc;
                     int btn_y = tile_y1 - btn_h - 6 * sc;
                     if ((px >= btn_x && px < btn_x + btn_w && py >= btn_y && py < btn_y + btn_h) ||
-                        (py >= tile_y1 - 60 * sc && py < tile_y1)) {
-                        osk_set_visible(true);
+                        (py >= tile_y1 - 60 * sc && py < tile_y1) ||
+                        (px >= vx0 && px < vx1 && py >= SCREEN_TILE_Y + SCREEN_TITLEBAR_H && py < tile_y1)) {
+                        scr->osk_visible = 1;
                         place(scr, scr->layout);
                         draw_all_from(scr, false);
-                        screen_flush();
                         reply[0] = 0;
                         return;
                     }
@@ -2257,6 +2305,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
             if (ribbon_focus(&scr->ribbon, (uint8_t)idx)) {
                 screen_animate_ribbon(scr, 255, 0, 0, 255, 0, 0, start_xv);
                 status = 0;
+                reply[1] = window_vterm(scr, (uint8_t)idx);
                 reply[10] = scr->ribbon.wins[idx].type;
                 reply[11] = scr->ribbon.wins[idx].vterm_id;
             } else {
@@ -2412,9 +2461,35 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
         if (idx >= 0 && ribbon_focus(&scr->ribbon, (uint8_t)idx)) {
             screen_animate_ribbon(scr, 255, 0, 0, 255, 0, 0, start_xv);
             status = 0;
+            reply[1] = window_vterm(scr, (uint8_t)idx);
+            reply[10] = scr->ribbon.wins[idx].type;
+            reply[11] = scr->ribbon.wins[idx].vterm_id;
         } else {
             status = 1;
         }
+    } else if (op == 'k') {
+        /* On-Screen Keyboard visibility & modifier control:
+         * req[1]: 0 = hide, 1 = show, 2 = toggle
+         * req[2]: modifier flags (bit 0 = shift, bit 1 = ctrl, bit 2 = sym) */
+        if (n >= 2) {
+            if (req[1] == 2) {
+                scr->osk_visible = (uint8_t)!scr->osk_visible;
+            } else {
+                scr->osk_visible = req[1] ? 1u : 0u;
+            }
+            if (n >= 3) {
+                scr->osk_modifiers = req[2];
+            }
+            (void)place(scr, scr->layout);
+            draw_all_from(scr, false);
+            status = 0;
+        } else {
+            status = 1;
+        }
+        reply[0] = status;
+        reply[1] = scr->osk_visible;
+        reply[2] = scr->osk_modifiers;
+        return;
     } else if (op == 'R') {
         /* the ribbon. Bare: the window count, the focus and the
          * viewport. With an index: that window -- one per request, because

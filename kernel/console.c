@@ -16,6 +16,8 @@
 #include "drivers/lcdterm.h"
 #include "drivers/reader_view.h"
 #include "drivers/launcher_view.h"
+#include "drivers/osk.h"
+#include "drivers/usbkbd_task.h"
 #include "drivers/dsi_esp32p4.h"
 #include <string.h>
 
@@ -343,6 +345,10 @@ static void run_hotkey(void) {
             if (reply[10] != 0) g_active_win_type = reply[10];
             if (reply[10] == 3 /* RIBBON_WIN_READER */) reader_set_active_instance(reply[11]);
             vterm_set_active(reply[1]);
+            if (g_active_win_type == 1 /* RIBBON_WIN_TERM */ && !usbkbd_is_present()) {
+                uint8_t kreq[2] = { 'k', 1 };
+                (void)console_canvas(kreq, 2, reply);
+            }
         }
         return;
     }
@@ -352,6 +358,10 @@ static void run_hotkey(void) {
             if (reply[10] != 0) g_active_win_type = reply[10];
             if (reply[10] == 3 /* RIBBON_WIN_READER */) reader_set_active_instance(reply[11]);
             vterm_set_active(reply[1]);
+            if (g_active_win_type == 1 /* RIBBON_WIN_TERM */ && !usbkbd_is_present()) {
+                uint8_t kreq[2] = { 'k', 1 };
+                (void)console_canvas(kreq, 2, reply);
+            }
         }
         return;
     }
@@ -397,14 +407,38 @@ static void run_hotkey(void) {
             if (reply[10] != 0) g_active_win_type = reply[10];
             if (reply[10] == 3 /* RIBBON_WIN_READER */) reader_set_active_instance(reply[11]);
             vterm_set_active(reply[1]);
+            if (g_active_win_type == 1 /* RIBBON_WIN_TERM */ && !usbkbd_is_present()) {
+                uint8_t kreq[2] = { 'k', 1 };
+                (void)console_canvas(kreq, 2, reply);
+            }
         }
         return;
     }
     if (hk == CONSOLE_HOTKEY_TAP) {
         uint32_t xy = g_tap_xy;
-        uint8_t req[5] = { 'P', (uint8_t)(xy >> 16), (uint8_t)(xy >> 24), (uint8_t)xy, (uint8_t)(xy >> 8) };
+        uint8_t req[6] = {
+            'P',
+            (uint8_t)(xy >> 16),
+            (uint8_t)(xy >> 24),
+            (uint8_t)xy,
+            (uint8_t)(xy >> 8),
+            (uint8_t)(usbkbd_is_present() ? 1 : 0)
+        };
         uint8_t reply[SCREEN_REPLY_LEN];
-        if (console_canvas(req, 5, reply) && reply[0] == 0) {
+        if (console_canvas(req, 6, reply) && reply[0] == 0) {
+            if (reply[8] == 0xBB) {
+                uint16_t key = (uint16_t)(reply[6] | (reply[7] << 8));
+                vterm_t *vt = vterm_active();
+                if (vt) {
+                    if (key == OSK_KEY_UP) vterm_feed_bytes(vt, "\x1b[A", 3);
+                    else if (key == OSK_KEY_DOWN) vterm_feed_bytes(vt, "\x1b[B", 3);
+                    else if (key == OSK_KEY_LEFT) vterm_feed_bytes(vt, "\x1b[D", 3);
+                    else if (key == OSK_KEY_RIGHT) vterm_feed_bytes(vt, "\x1b[C", 3);
+                    else if (key == OSK_KEY_CTRL_C) vterm_feed_char(vt, 0x03);
+                    else if (key > 0 && key < 0x100) vterm_feed_char(vt, (char)key);
+                }
+                return;
+            }
             if (reply[8] == 0xCC) {
                 uint8_t closed_type = reply[10];
                 uint8_t closed_vid = reply[11];
@@ -434,6 +468,10 @@ static void run_hotkey(void) {
             if (reply[10] != 0) g_active_win_type = reply[10];
             if (reply[10] == 3 /* RIBBON_WIN_READER */) reader_set_active_instance(reply[11]);
             vterm_set_active(reply[1]);
+            if (g_active_win_type == 1 /* RIBBON_WIN_TERM */ && !usbkbd_is_present()) {
+                uint8_t kreq[2] = { 'k', 1 };
+                (void)console_canvas(kreq, 2, reply);
+            }
             int cx = (int)(reply[2] | (reply[3] << 8));
             int cy = (int)(reply[4] | (reply[5] << 8));
             if (cx != 0 || cy != 0) {

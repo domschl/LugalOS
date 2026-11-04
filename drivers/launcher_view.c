@@ -42,6 +42,8 @@ void launcher_report(void) { cprintf("launcher: not present on headless board\n"
 #include "drivers/lcdterm.h"
 #include "drivers/ramscreen.h"
 #include "drivers/battery.h"
+#include "drivers/usbkbd_task.h"
+#include "kernel/vterm.h"
 #include "fs/vfs.h"
 #include "kernel/console.h"
 #include "kernel/orient.h"
@@ -704,6 +706,11 @@ bool launcher_tap(int client_x, int client_y) {
         uint8_t req[2] = { 'V', 0 }, reply[SCREEN_REPLY_LEN];
         if (console_canvas(req, 2, reply) && reply[0] == 0) {
             console_set_active_win_type(RIBBON_WIN_TERM);
+            vterm_set_active(0);
+            if (!usbkbd_is_present()) {
+                uint8_t kreq[2] = { 'k', 1 };
+                (void)console_canvas(kreq, 2, reply);
+            }
         }
         return true;
     }

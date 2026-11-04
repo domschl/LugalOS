@@ -60,19 +60,20 @@ SECTIONS
      * lcdterm domain still grants a single R/X text region like every other
      * driver. Only the RP2350-LCD-7 persona has anything here; on the others
      * the section is empty and reserves nothing. */
-    /* 32 KB since (16 KB in 37.1a, 8 KB in 36.6a): the full glyph table,
-     * the screen's chrome, ribbon window manager and canvas1.c's drawing. */
-    .lcdtermtext : ALIGN(32768) {
+    /* 64 KB (32 KB in 47.x, 16 KB in 37.1a, 8 KB in 36.6a): the full glyph table,
+     * the screen's chrome, ribbon window manager, launcher, on-screen keyboard,
+     * and canvas1.c's drawing. */
+    .lcdtermtext : ALIGN(65536) {
         _lcdtermtext_start = .;
         *(.lcdtermtext .lcdtermtext.*)
         *(.lcdtermrodata .lcdtermrodata.*)
         _lcdtermtext_content_end = ABSOLUTE(.);
         /* Pad to the full region only when something is in it. ABSOLUTE(),
          * because `.` inside an output section is section-relative. */
-        . = _lcdtermtext_start + ((ABSOLUTE(.) > _lcdtermtext_start) ? 32768 : 0);
+        . = _lcdtermtext_start + ((ABSOLUTE(.) > _lcdtermtext_start) ? 65536 : 0);
     } > FLASH
     _lcdtermtext_used = _lcdtermtext_content_end - _lcdtermtext_start;
-    ASSERT(_lcdtermtext_used <= 32768, "lcdterm's U-mode code and font outgrew their 32 KB region")
+    ASSERT(_lcdtermtext_used <= 65536, "lcdterm's U-mode code and font outgrew their 64 KB region")
 
     /* the USB keyboard task's own U-mode region -- drivers/usbkbd.c's
      * portable half and drivers/usbkbd_rp2350.c's task (drivers/kbd_attr.h).

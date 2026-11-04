@@ -6,25 +6,29 @@
  * - Classic Mac beveled button aesthetics using 1-bpp canvas
  * - Direct coordinate geometry hit testing (zero dynamic allocation, no hitbox limits)
  * - Sticky Shift, sticky Ctrl, and Symbols mode toggle
- * - Feeds keys directly into active vterm
+ * - Feeds keys directly into active vterm via kernel/console.c
  * - Scale-aware (CHROME_SCALE = 1 on 8x16 panels, 2 on 16x32 panels)
  * - Zero float in M-mode, freestanding C, LCDTERM_UTEXT for U-mode compatibility.
  */
 
 #include "drivers/osk.h"
+#include "drivers/touch.h"
 #include "lugalos_config.h"
 
 #if !defined(TOUCH_PRESENT)
 
-bool osk_is_visible(void) { return false; }
-void osk_set_visible(bool visible) { (void)visible; }
-void osk_toggle(void) {}
 int osk_get_height(void) { return 0; }
 int osk_get_text_rows(int cell_h) { (void)cell_h; return 0; }
-void osk_draw(const canvas1_t *cv, int x0, int y0, int w, int h) { (void)cv; (void)x0; (void)y0; (void)w; (void)h; }
-void osk_draw_toggle_button(const canvas1_t *cv, int btn_x, int btn_y, int btn_w, int btn_h) { (void)cv; (void)btn_x; (void)btn_y; (void)btn_w; (void)btn_h; }
-bool osk_handle_tap(int client_x, int client_y, int w, int h) { (void)client_x; (void)client_y; (void)w; (void)h; return false; }
-bool osk_handle_toggle_tap(int client_x, int client_y, int btn_x, int btn_y, int btn_w, int btn_h) { (void)client_x; (void)client_y; (void)btn_x; (void)btn_y; (void)btn_w; (void)btn_h; return false; }
+void osk_draw(const canvas1_t *cv, int x0, int y0, int w, int h, uint8_t modifiers) {
+    (void)cv; (void)x0; (void)y0; (void)w; (void)h; (void)modifiers;
+}
+void osk_draw_toggle_button(const canvas1_t *cv, int btn_x, int btn_y, int btn_w, int btn_h) {
+    (void)cv; (void)btn_x; (void)btn_y; (void)btn_w; (void)btn_h;
+}
+uint16_t osk_hit_test(int client_x, int client_y, int w, int h, uint8_t modifiers) {
+    (void)client_x; (void)client_y; (void)w; (void)h; (void)modifiers;
+    return 0;
+}
 
 #else
 
@@ -32,38 +36,20 @@ bool osk_handle_toggle_tap(int client_x, int client_y, int btn_x, int btn_y, int
 #include "drivers/font8x16.h"
 #include "drivers/lcdterm_attr.h"
 #include "drivers/screen.h"
-#include "drivers/usbkbd_task.h"
-#include "kernel/console.h"
-#include "kernel/vterm.h"
 
 #define OSK_TOTAL_WEIGHT    120u
 
-#define OSK_KEY_NONE        0
-#define OSK_KEY_ESC         0x1B
-#define OSK_KEY_TAB         '\t'
-#define OSK_KEY_ENTER       '\r'
-#define OSK_KEY_BKSP        0x7F
-#define OSK_KEY_SHIFT       0x101
-#define OSK_KEY_CTRL        0x102
-#define OSK_KEY_SYM         0x103
-#define OSK_KEY_HIDE        0x104
-#define OSK_KEY_UP          0x105
-#define OSK_KEY_DOWN        0x106
-#define OSK_KEY_LEFT        0x107
-#define OSK_KEY_RIGHT       0x108
-#define OSK_KEY_CTRL_C      0x109
-
 typedef struct {
-    const char *norm;
-    const char *shift;
-    const char *sym;
+    char norm[6];
+    char shift[6];
+    char sym[6];
     uint16_t code;
     uint16_t shift_code;
     uint16_t sym_code;
     uint8_t weight;
 } osk_key_t;
 
-static const osk_key_t k_row0[] = {
+static const osk_key_t k_row0[] LCDTERM_URODATA = {
     { "Esc", "Esc", "Esc", OSK_KEY_ESC,  OSK_KEY_ESC,  OSK_KEY_ESC,  10 },
     { "1",   "!",   "~",   '1',          '!',          '~',          10 },
     { "2",   "@",   "`",   '2',          '@',          '`',          10 },
@@ -78,7 +64,7 @@ static const osk_key_t k_row0[] = {
     { "Del", "Del", "Del", OSK_KEY_BKSP, OSK_KEY_BKSP, OSK_KEY_BKSP, 10 },
 };
 
-static const osk_key_t k_row1[] = {
+static const osk_key_t k_row1[] LCDTERM_URODATA = {
     { "Tab", "Tab", "Tab", OSK_KEY_TAB,  OSK_KEY_TAB,  OSK_KEY_TAB,  10 },
     { "q",   "Q",   "{",   'q',          'Q',          '{',          10 },
     { "w",   "W",   "}",   'w',          'W',          '}',          10 },
@@ -93,7 +79,7 @@ static const osk_key_t k_row1[] = {
     { "-",   "_",   "|",   '-',          '_',          '|',          10 },
 };
 
-static const osk_key_t k_row2[] = {
+static const osk_key_t k_row2[] LCDTERM_URODATA = {
     { "Ctrl", "Ctrl", "Ctrl", OSK_KEY_CTRL,  OSK_KEY_CTRL,  OSK_KEY_CTRL,  12 },
     { "a",    "A",    "1",    'a',           'A',           '1',            9 },
     { "s",    "S",    "2",    's',           'S',           '2',            9 },
@@ -108,7 +94,7 @@ static const osk_key_t k_row2[] = {
     { "Ret",  "Ret",  "Ret",  OSK_KEY_ENTER, OSK_KEY_ENTER, OSK_KEY_ENTER, 18 },
 };
 
-static const osk_key_t k_row3[] = {
+static const osk_key_t k_row3[] LCDTERM_URODATA = {
     { "Shft", "Shft", "Shft", OSK_KEY_SHIFT, OSK_KEY_SHIFT, OSK_KEY_SHIFT, 14 },
     { "z",    "Z",    "'",    'z',           'Z',           '\'',           9 },
     { "x",    "X",    "\"",   'x',           'X',           '\"',           9 },
@@ -123,7 +109,7 @@ static const osk_key_t k_row3[] = {
     { "Shft", "Shft", "Shft", OSK_KEY_SHIFT, OSK_KEY_SHIFT, OSK_KEY_SHIFT, 15 },
 };
 
-static const osk_key_t k_row4[] = {
+static const osk_key_t k_row4[] LCDTERM_URODATA = {
     { "Sym",   "Sym",   "ABC",   OSK_KEY_SYM,    OSK_KEY_SYM,    OSK_KEY_SYM,    12 },
     { "^C",    "^C",    "^C",    OSK_KEY_CTRL_C, OSK_KEY_CTRL_C, OSK_KEY_CTRL_C, 10 },
     { "(",     "(",     "[",     '(',            '(',            '[',             9 },
@@ -140,42 +126,13 @@ typedef struct {
     uint8_t count;
 } osk_row_t;
 
-static const osk_row_t k_rows[5] = {
+static const osk_row_t k_rows[5] LCDTERM_URODATA = {
     { k_row0, sizeof(k_row0) / sizeof(k_row0[0]) },
     { k_row1, sizeof(k_row1) / sizeof(k_row1[0]) },
     { k_row2, sizeof(k_row2) / sizeof(k_row2[0]) },
     { k_row3, sizeof(k_row3) / sizeof(k_row3[0]) },
     { k_row4, sizeof(k_row4) / sizeof(k_row4[0]) },
 };
-
-/* single task: screen task */
-static bool s_osk_visible = false;
-/* single task: screen task */
-static bool s_shift = false;
-/* single task: screen task */
-static bool s_ctrl = false;
-/* single task: screen task */
-static bool s_sym = false;
-/* single task: screen task */
-static bool s_initialized = false;
-
-LCDTERM_UTEXT bool osk_is_visible(void) {
-    if (!s_initialized) {
-        s_initialized = true;
-        s_osk_visible = !usbkbd_is_present();
-    }
-    return s_osk_visible;
-}
-
-LCDTERM_UTEXT void osk_set_visible(bool visible) {
-    s_initialized = true;
-    s_osk_visible = visible;
-}
-
-LCDTERM_UTEXT void osk_toggle(void) {
-    s_initialized = true;
-    s_osk_visible = !s_osk_visible;
-}
 
 LCDTERM_UTEXT int osk_get_height(void) {
     int sc = (int)CHROME_SCALE;
@@ -197,75 +154,58 @@ LCDTERM_UTEXT static unsigned cstr_len(const char *s) {
 LCDTERM_UTEXT static void get_key_rect(int osk_x, int osk_y, int osk_w, int r_idx, int k_idx,
                                        int *out_x, int *out_y, int *out_w, int *out_h) {
     int sc = (int)CHROME_SCALE;
-    int pad_x = 4 * sc;
-    int pad_y = 4 * sc;
-    int row_h = 28 * sc;
-    int gap_x = 2 * sc;
-    int gap_y = 2 * sc;
-
-    int avail_w = osk_w - 2 * pad_x;
-    if (avail_w < 60) avail_w = 60;
-
-    int y = osk_y + pad_y + r_idx * row_h;
-    int h = row_h - gap_y;
-
+    int pad = 4 * sc;
+    int gap = 3 * sc;
+    int row_h = 25 * sc;
+    int avail_w = osk_w - 2 * pad;
     const osk_row_t *row = &k_rows[r_idx];
-    uint32_t w_accum = 0;
-    for (int i = 0; i < k_idx; i++) {
-        w_accum += row->keys[i].weight;
+
+    int total_gaps = (row->count - 1) * gap;
+    int weight_w = avail_w - total_gaps;
+    if (weight_w < (int)row->count) weight_w = (int)row->count;
+
+    int cur_x = osk_x + pad;
+    for (int k = 0; k < k_idx; k++) {
+        int kw = (int)((uint32_t)row->keys[k].weight * (uint32_t)weight_w / OSK_TOTAL_WEIGHT);
+        if (kw < 1) kw = 1;
+        cur_x += kw + gap;
     }
 
-    int x_start = osk_x + pad_x + (int)((uint32_t)avail_w * w_accum / OSK_TOTAL_WEIGHT);
-    int x_end   = osk_x + pad_x + (int)((uint32_t)avail_w * (w_accum + row->keys[k_idx].weight) / OSK_TOTAL_WEIGHT);
-    int w = (x_end - x_start) - gap_x;
-    if (w < 4) w = 4;
+    int kw = (int)((uint32_t)row->keys[k_idx].weight * (uint32_t)weight_w / OSK_TOTAL_WEIGHT);
+    if (kw < 1) kw = 1;
+    if (k_idx == row->count - 1) {
+        kw = (osk_x + osk_w - pad) - cur_x;
+        if (kw < 1) kw = 1;
+    }
 
-    *out_x = x_start;
-    *out_y = y;
-    *out_w = w;
-    *out_h = h;
+    *out_x = cur_x;
+    *out_y = osk_y + pad + r_idx * (row_h + gap);
+    *out_w = kw;
+    *out_h = row_h;
 }
 
 LCDTERM_UTEXT static void draw_key_label(const canvas1_t *cv, int kx, int ky, int kw, int kh,
-                                         const char *label, unsigned fg_pat, int sc) {
-    if (!cv || !label || !*label) return;
+                                        const char *label, unsigned fg_pat, int sc) {
+    if (!label) return;
     unsigned len = cstr_len(label);
-    int cw = 8 * sc;
-    int ch = 16 * sc;
-    int tw = (int)len * cw;
-    int tx = kx + (kw - tw) / 2;
-    int ty = ky + (kh - ch) / 2;
-    if (tx < kx + sc) tx = kx + sc;
+    if (len == 0) return;
+
+    int glyph_w = (sc == 2) ? 16 : 8;
+    int glyph_h = (sc == 2) ? 32 : 16;
+    int total_text_w = (int)len * glyph_w;
+
+    int tx = kx + (kw - total_text_w) / 2;
+    int ty = ky + (kh - glyph_h) / 2;
+    if (tx < kx) tx = kx;
 
     if (sc == 1) {
-        /* Standard 8x16 1-bpp font */
-        for (unsigned i = 0; i < len; i++) {
-            uint8_t code = (uint8_t)label[i];
-            if (code < FONT8X16_FIRST) code = FONT8X16_REPLACEMENT;
-            const uint8_t *g = font8x16_glyphs[code - FONT8X16_FIRST];
-            for (int r = 0; r < 16; r++) {
-                uint8_t bits = g[r];
-                if (!bits) continue;
-                for (int b = 0; b < 8; b++) {
-                    if ((bits >> b) & 1u) {
-                        int px = tx + (int)i * 8 + b;
-                        int py = ty + r;
-                        if (px >= 0 && px < (int)cv->w && py >= 0 && py < (int)cv->h) {
-                            canvas1_fill(cv, px, py, px, py, fg_pat);
-                        }
-                    }
-                }
-            }
-        }
+        (void)canvas1_text(cv, tx, ty, label, len, len, 0, 16, fg_pat == CANVAS1_WHITE);
     } else {
-        /* 2x scaled 16x32 font */
         for (unsigned i = 0; i < len; i++) {
-            uint8_t code = (uint8_t)label[i];
-            if (code < FONT8X16_FIRST) code = FONT8X16_REPLACEMENT;
-            const uint8_t *g = font8x16_glyphs[code - FONT8X16_FIRST];
+            uint8_t ch = (uint8_t)label[i];
+            const uint8_t *glyph = font8x16_glyphs[ch];
             for (int r = 0; r < 16; r++) {
-                uint8_t bits = g[r];
-                if (!bits) continue;
+                uint8_t bits = glyph[r];
                 for (int b = 0; b < 8; b++) {
                     if ((bits >> b) & 1u) {
                         int px = tx + (int)i * 16 + b * 2;
@@ -280,9 +220,12 @@ LCDTERM_UTEXT static void draw_key_label(const canvas1_t *cv, int kx, int ky, in
     }
 }
 
-LCDTERM_UTEXT void osk_draw(const canvas1_t *cv, int x0, int y0, int w, int h) {
+LCDTERM_UTEXT void osk_draw(const canvas1_t *cv, int x0, int y0, int w, int h, uint8_t modifiers) {
     if (!cv || w <= 0 || h <= 0) return;
     int sc = (int)CHROME_SCALE;
+    bool s_shift = (modifiers & OSK_MOD_SHIFT) != 0;
+    bool s_ctrl  = (modifiers & OSK_MOD_CTRL)  != 0;
+    bool s_sym   = (modifiers & OSK_MOD_SYM)   != 0;
 
     /* Keyboard container background fill (clean white) */
     canvas1_fill(cv, x0, y0, x0 + w - 1, y0 + h - 1, CANVAS1_WHITE);
@@ -345,11 +288,16 @@ LCDTERM_UTEXT void osk_draw_toggle_button(const canvas1_t *cv, int btn_x, int bt
     canvas1_vline(cv, btn_x, btn_y, btn_y + btn_h - 1, CANVAS1_BLACK);
     canvas1_vline(cv, btn_x + btn_w - 1, btn_y, btn_y + btn_h - 1, CANVAS1_BLACK);
 
-    draw_key_label(cv, btn_x, btn_y, btn_w, btn_h, "Keybd", CANVAS1_BLACK, sc);
+    char btn_label[6];
+    btn_label[0] = 'K'; btn_label[1] = 'e'; btn_label[2] = 'y'; btn_label[3] = 'b'; btn_label[4] = 'd'; btn_label[5] = '\0';
+    draw_key_label(cv, btn_x, btn_y, btn_w, btn_h, btn_label, CANVAS1_BLACK, sc);
 }
 
-LCDTERM_UTEXT bool osk_handle_tap(int client_x, int client_y, int w, int h) {
-    if (client_x < 0 || client_y < 0 || client_x >= w || client_y >= h) return false;
+LCDTERM_UTEXT uint16_t osk_hit_test(int client_x, int client_y, int w, int h, uint8_t modifiers) {
+    if (client_x < 0 || client_y < 0 || client_x >= w || client_y >= h) return 0;
+    bool s_shift = (modifiers & OSK_MOD_SHIFT) != 0;
+    bool s_ctrl  = (modifiers & OSK_MOD_CTRL)  != 0;
+    bool s_sym   = (modifiers & OSK_MOD_SYM)   != 0;
 
     /* Hit test across rows and keys */
     for (int r = 0; r < 5; r++) {
@@ -361,44 +309,12 @@ LCDTERM_UTEXT bool osk_handle_tap(int client_x, int client_y, int w, int h) {
                 client_y >= ky && client_y < ky + kh) {
                 const osk_key_t *key = &row->keys[k];
 
-                if (key->code == OSK_KEY_SHIFT) {
-                    s_shift = !s_shift;
-                    return true;
-                }
-                if (key->code == OSK_KEY_CTRL) {
-                    s_ctrl = !s_ctrl;
-                    return true;
-                }
-                if (key->code == OSK_KEY_SYM) {
-                    s_sym = !s_sym;
-                    return true;
-                }
-                if (key->code == OSK_KEY_HIDE) {
-                    s_osk_visible = false;
-                    return true;
-                }
-
-                vterm_t *vt = vterm_active();
-
-                if (key->code == OSK_KEY_UP) {
-                    if (vt) vterm_feed_bytes(vt, "\x1b[A", 3);
-                    return true;
-                }
-                if (key->code == OSK_KEY_DOWN) {
-                    if (vt) vterm_feed_bytes(vt, "\x1b[B", 3);
-                    return true;
-                }
-                if (key->code == OSK_KEY_LEFT) {
-                    if (vt) vterm_feed_bytes(vt, "\x1b[D", 3);
-                    return true;
-                }
-                if (key->code == OSK_KEY_RIGHT) {
-                    if (vt) vterm_feed_bytes(vt, "\x1b[C", 3);
-                    return true;
-                }
-                if (key->code == OSK_KEY_CTRL_C) {
-                    if (vt) vterm_feed_char(vt, 0x03);
-                    return true;
+                if (key->code == OSK_KEY_SHIFT || key->code == OSK_KEY_CTRL ||
+                    key->code == OSK_KEY_SYM   || key->code == OSK_KEY_HIDE ||
+                    key->code == OSK_KEY_UP    || key->code == OSK_KEY_DOWN ||
+                    key->code == OSK_KEY_LEFT  || key->code == OSK_KEY_RIGHT ||
+                    key->code == OSK_KEY_CTRL_C) {
+                    return key->code;
                 }
 
                 /* Resolve character code based on modifiers */
@@ -409,29 +325,12 @@ LCDTERM_UTEXT bool osk_handle_tap(int client_x, int client_y, int w, int h) {
                 if (s_ctrl) {
                     if (code >= 'a' && code <= 'z') code = (uint16_t)(code - 'a' + 1);
                     else if (code >= 'A' && code <= 'Z') code = (uint16_t)(code - 'A' + 1);
-                    s_ctrl = false;
                 }
-                if (s_shift) {
-                    s_shift = false;
-                }
-
-                if (vt && code > 0 && code < 0x100) {
-                    vterm_feed_char(vt, (char)code);
-                }
-                return true;
+                return code;
             }
         }
     }
-    return true; /* Tap was on keyboard container padding */
-}
-
-LCDTERM_UTEXT bool osk_handle_toggle_tap(int client_x, int client_y, int btn_x, int btn_y, int btn_w, int btn_h) {
-    if (client_x >= btn_x && client_x < btn_x + btn_w &&
-        client_y >= btn_y && client_y < btn_y + btn_h) {
-        osk_set_visible(true);
-        return true;
-    }
-    return false;
+    return 0xFFFF; /* Tap was on keyboard container padding */
 }
 
 #endif /* TOUCH_PRESENT */

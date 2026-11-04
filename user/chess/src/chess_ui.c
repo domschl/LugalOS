@@ -2792,12 +2792,16 @@ static void canvas_board_draw(const Position *pos) {
     }
 }
 
+/* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
+static bool g_touch_active = false;
+
 #if !(defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735)
 /* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
 static int g_chess_damage = -1;
 static int g_chess_last_w = -1, g_chess_last_h = -1;
 
 static void chess_canvas_poll(void) {
+    if (g_touch_active) return;
     int w, h;
     if (!cb_canvas(&w, &h)) return;
     uint8_t req[1] = { 'S' }, reply[SCREEN_REPLY_LEN];
@@ -2928,6 +2932,7 @@ int chess_canvas_selftest(void) {
  * keypad and no TFT (H3's three independent flags) gets exactly the outputs it
  * has. */
 static void chess_show(const Position *pos) {
+    if (g_touch_active) return;
     print_board(pos);
 #if !(defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735)
     canvas_board_draw(pos);     /* 37.4 */
@@ -2992,7 +2997,6 @@ void chess_console_run(void) {
 #define CHESS_TOUCH_ID_SQUARE_BASE 100 /* 100 .. 163 */
 
 /* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
-static bool       g_touch_active = false;
 static bool       g_touch_flip = false;
 static bool       g_touch_auto_reply = true;
 static bool       g_touch_analysing = false;
@@ -3393,7 +3397,6 @@ static bool chess_touch_apply_move(Move m) {
     if (!make_move(&g_chess_pos, m)) return false;
     g_console_max_history_ply = g_chess_pos.history_ply;
     console_autosave(&g_chess_pos);
-    chess_show(&g_chess_pos);
     g_touch_sel_sq = -1;
     g_touch_pending_promo = false;
     chess_touch_draw();
@@ -3405,7 +3408,6 @@ static bool chess_touch_apply_move(Move m) {
         if (reply != 0 && make_move(&g_chess_pos, reply)) {
             g_console_max_history_ply = g_chess_pos.history_ply;
             console_autosave(&g_chess_pos);
-            chess_show(&g_chess_pos);
             console_report_outcome(&g_chess_pos);
         }
     }
@@ -3516,7 +3518,6 @@ static void chess_touch_handle_tap(int tx, int ty) {
     if (id == CHESS_TOUCH_ID_BACK) {
         if (g_chess_pos.history_ply > 0) {
             unmake_move(&g_chess_pos);
-            chess_show(&g_chess_pos);
             g_touch_sel_sq = -1;
             chess_touch_draw();
         }
@@ -3527,7 +3528,6 @@ static void chess_touch_handle_tap(int tx, int ty) {
         if (g_chess_pos.history_ply < g_console_max_history_ply) {
             Move m = g_chess_pos.history[g_chess_pos.history_ply].move;
             if (make_move(&g_chess_pos, m)) {
-                chess_show(&g_chess_pos);
                 g_touch_sel_sq = -1;
                 chess_touch_draw();
             }
@@ -3542,7 +3542,6 @@ static void chess_touch_handle_tap(int tx, int ty) {
         if (m != 0 && make_move(&g_chess_pos, m)) {
             g_console_max_history_ply = g_chess_pos.history_ply;
             console_autosave(&g_chess_pos);
-            chess_show(&g_chess_pos);
             console_report_outcome(&g_chess_pos);
         }
         chess_touch_draw();

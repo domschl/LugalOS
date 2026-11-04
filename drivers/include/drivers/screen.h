@@ -123,6 +123,8 @@ typedef struct {
     uint8_t   store_ok;                 /* 38.8: bit L-1 -- layout L's store holds its canvas */
     uint8_t   redrawing;                /* 38.8: between 'D' 1 and 'D' 0 */
     uint8_t   status_flags;             /* Top bar indicators: SD mounted, 9P active, Wi-Fi connected */
+    uint8_t   osk_visible;              /* 1 if on-screen keyboard is expanded in active terminal */
+    uint8_t   osk_modifiers;            /* Bit 0: shift, Bit 1: ctrl, Bit 2: sym */
     uint8_t  *store;                    /* 38.8: SCREEN_STORES slots, or NULL */
     uint32_t  store_slot;               /* bytes per slot */
     uint32_t  draw_gen;                 /* bumped by every drawing request */
