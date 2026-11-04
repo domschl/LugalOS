@@ -1,6 +1,6 @@
 # Phase 66 — RAM, Presets, and Folding: Scaling LugalOS Down
 
-**Status: CLOSED 2026-11-04. Independent of phase 52.**
+**Status: CLOSED 2026-11-04, version 0.19.0. Independent of phase 52.**
 Milestone scheme: `66.1`, `66.2`, …
 
 * **Done:** 66.1 (RAM ledger), 66.2 (board/profile split, dev and release images), 66.3 (headless
