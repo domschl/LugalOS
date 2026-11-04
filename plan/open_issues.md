@@ -80,6 +80,22 @@ missing or not contacting, only a meter says.
 
 ---
 
+## The P4 panels lose every second frame while flash is written (found 2026-11-04)
+
+**Seen:** the LCD-7B's screen flickers rapidly during an update. Measured with `lcd fps`: 60.0 Hz
+idle, 28 Hz while a file is written to `/flash0` over 9P, with no DMA error and no bridge underrun.
+**Cause:** the scan-out DMA sends one frame per descriptor, and `gdma_isr()` re-arms it at each
+frame end (`drivers/dsi_esp32p4.c`, as IDF's `mipi_dsi_dma_trans_done_cb()`). A sector erase masks
+interrupts on the writing core for tens of milliseconds and parks the other
+(`drivers/flash_esp32p4.c`: the trap handler is in flash, so no interrupt may be taken while the
+chip is busy). The frame end waits, and the panel gets no picture for that frame. IDF does not
+show it because it keeps IRAM-resident interrupt handlers running during flash operations. The
+Tab5 uses the same driver and very likely shows it too (not measured).
+**Shape of a fix**, in order of preference: a scan-out that runs without the CPU (the DW-AXI-DMAC's
+reload multi-block mode, the interrupt only for double-buffer flips), to be measured with `lcd fps`
+during writes; or the MSPI's erase auto-suspend, so a sector erase no longer needs interrupts
+masked at all (chip- and flash-dependent, a larger change). **Destination:** the owner's choice.
+
 # B. Unexplained intermittents
 
 Each: what was seen, how often, what is already armed to catch it, and **what
