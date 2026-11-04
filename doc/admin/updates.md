@@ -10,10 +10,10 @@ back to the old one by itself if it does not. Because it is only 9P, any path
 to the node works: a host on the LAN, a P4 reaching its C6 through `/c6`, or
 the console's SLIP link.
 
-Supported so far: **the ESP32-C6** (`esp32c6`, `esp32c6-mini`) and **the
-ESP32-P4** (`esp32p4`, `esp32p4-lcd7b`, `esp32p4-tab5`), and **the RP2350** (so far
-the Pico 2 W, `rp2350-wifi`; the other presets build the same backend, the
-RP2350-LCD-7's larger flash is not used yet).
+Supported: **the ESP32-C6** (`esp32c6`, `esp32c6-release`, `esp32c6-mini`), **the
+ESP32-P4** (`esp32p4`, `esp32p4-lcd7b`, `esp32p4-tab5`), and **the RP2350** (every
+preset builds the backend; tested on the Pico 2 W, `rp2350-wifi`, and the RP2350-LCD-7
+with its 16 MB layout, below).
 
 ## The files
 
@@ -112,6 +112,19 @@ fall-back is tested. `--no-board-check` sends an image for another board, to
 test the node's own refusal. `--rate KB/S` slows the upload down, for cutting
 the power in the middle of one by hand.
 
+## When a push fails
+
+* **`no Rversion from ... after warm-up retries`**, or **`connection closed while reading a SLIP
+  frame`** partway through: the P4 is not answering 9P on its console, most often because it is
+  hung. Check with `python3 tools/p4run.py --board BOARD --listen --listen-secs 10 --cmd version`
+  (no reply: it is hung), reset it with `python3 tools/p4run.py --board BOARD --run --listen-secs 30`,
+  wait for `lsh>`, and push again. A push only ever writes the slot that is not running, so an
+  interrupted one leaves the running image as it was.
+* **`state=receiving`** (or `received`) in `/dev/ota` with no push running: an earlier upload
+  was cut off. The next `begin` starts over; `abort` clears it by hand.
+* **`fell_back=yes`** after a push: the new image did not confirm its trial and the board went
+  back to the old one. The image is still in the other slot; the boot log on the console says why.
+
 ## Signed images
 
 An update image can carry an ECDSA P-256 signature in its header, over the
@@ -172,7 +185,7 @@ The shell's `ota` command (and `(ota-info)` in Lisp) lays out the slots, their v
 
 | Storage offset | What |
 | :--- | :--- |
-| `0x000000` | the partition table (`tools/rp2350_ptable.py`, via picotool) |
+| `0x000000` | the partition table (`tools/rp2350_ptable.py`; written once with `tests/hw/flash.py --ptable`, no picotool needed, see [Flashing](flashing.md)) |
 | `0x001000` | slot A, up to `0x17C000` bytes; its update header in the last sector at `0x17D000` |
 | `0x180000` | `/flash0`, 1 MB (read at `0x10400000`) |
 | `0x280000` | slot B, the same |

@@ -24,6 +24,7 @@ doc/dev/
 |   \-- porting.md         # Board bringup: linker scripts, clock trees, XIP flash
 |-- protocols/          # Part D: Interconnect & Wire Protocols
 |   \-- llp.md             # LugalOS Link Protocol (LLP): framing, flow control, 9P/Ethernet mux
+|-- releasing.md        # Part C: Making a release (version, tag, GitHub release)
 \-- testing.md          # Part C: Testing Framework & QA
     |-- Unit tests & pure algorithmic verifiers
     |-- Host harnesses with ASan/UBSan (FAT32, cc, 9P, IP)
@@ -51,6 +52,7 @@ doc/dev/
 
 ## 3. [Part C: Testing Framework & QA](testing.md)
 * **[Testing Guide](testing.md)**: How to run and extend the LugalOS test suite across unit tests, host harnesses with AddressSanitizer, automated QEMU regression tests, and physical hardware-in-the-loop tests.
+* **[Making a Release](releasing.md)**: The version, a clean build id, the tests, installing on the boards, and the tag and GitHub release.
 
 ---
 
