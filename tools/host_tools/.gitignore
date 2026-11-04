@@ -1,0 +1,14 @@
+# makepkg's output beside each PKGBUILD: its work directories, the
+# downloaded sources and the built packages (aarch64, x86_64 or any).
+# The PKGBUILDs, and any patch or .install file next to them, stay tracked.
+*/src/
+*/pkg/
+*.tar.gz
+*.tar.xz
+*.tar.bz2
+*.tar.zst
+*.zip
+*.pkg.tar
+*.pkg.tar.*
+*.sig
+*.log
