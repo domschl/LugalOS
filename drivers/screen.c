@@ -2239,21 +2239,18 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
                         uint16_t key = osk_hit_test(cx, cy, win_w, osk_h, scr->osk_modifiers);
                         if (key == OSK_KEY_SHIFT) {
                             scr->osk_modifiers ^= OSK_MOD_SHIFT;
-                            place(scr, scr->layout);
                             draw_all_from(scr, false);
                             reply[0] = 0;
                             return;
                         }
                         if (key == OSK_KEY_CTRL) {
                             scr->osk_modifiers ^= OSK_MOD_CTRL;
-                            place(scr, scr->layout);
                             draw_all_from(scr, false);
                             reply[0] = 0;
                             return;
                         }
                         if (key == OSK_KEY_SYM) {
                             scr->osk_modifiers ^= OSK_MOD_SYM;
-                            place(scr, scr->layout);
                             draw_all_from(scr, false);
                             reply[0] = 0;
                             return;
@@ -2267,7 +2264,6 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
                         }
                         if (key != 0 && key != 0xFFFF) {
                             scr->osk_modifiers &= ~(OSK_MOD_SHIFT | OSK_MOD_CTRL);
-                            place(scr, scr->layout);
                             draw_all_from(scr, false);
                             reply[0] = 0;
                             reply[1] = window_vterm(scr, (uint8_t)idx);

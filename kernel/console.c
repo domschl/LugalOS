@@ -313,6 +313,8 @@ void console_sync_readers(void) {
     }
 }
 
+static void console_feed_active_bytes(const char *s, uint32_t n);
+
 /* From an input wait only: a hotkey draws (a layout change) or writes 48 KB
  * to the SD card (a screenshot), neither of which belongs inside a print. */
 static void run_hotkey(void) {
@@ -428,14 +430,19 @@ static void run_hotkey(void) {
         if (console_canvas(req, 6, reply) && reply[0] == 0) {
             if (reply[8] == 0xBB) {
                 uint16_t key = (uint16_t)(reply[6] | (reply[7] << 8));
-                vterm_t *vt = vterm_active();
-                if (vt) {
-                    if (key == OSK_KEY_UP) vterm_feed_bytes(vt, "\x1b[A", 3);
-                    else if (key == OSK_KEY_DOWN) vterm_feed_bytes(vt, "\x1b[B", 3);
-                    else if (key == OSK_KEY_LEFT) vterm_feed_bytes(vt, "\x1b[D", 3);
-                    else if (key == OSK_KEY_RIGHT) vterm_feed_bytes(vt, "\x1b[C", 3);
-                    else if (key == OSK_KEY_CTRL_C) vterm_feed_char(vt, 0x03);
-                    else if (key > 0 && key < 0x100) vterm_feed_char(vt, (char)key);
+                if (key == OSK_KEY_UP) {
+                    console_feed_active_bytes("\x1b[A", 3);
+                } else if (key == OSK_KEY_DOWN) {
+                    console_feed_active_bytes("\x1b[B", 3);
+                } else if (key == OSK_KEY_LEFT) {
+                    console_feed_active_bytes("\x1b[D", 3);
+                } else if (key == OSK_KEY_RIGHT) {
+                    console_feed_active_bytes("\x1b[C", 3);
+                } else if (key == OSK_KEY_CTRL_C) {
+                    console_feed_active_bytes("\x03", 1);
+                } else if (key > 0 && key < 0x100) {
+                    char c = (char)key;
+                    console_feed_active_bytes(&c, 1);
                 }
                 return;
             }
@@ -857,6 +864,26 @@ static int pushback_get(void) {
  * would do the same. A ylock, because uart_getc() may block (a chan_call to
  * the uart task on RP2350). Zero-initialised, like g_console_lock. */
 static ylock_t g_input_lock;
+
+/* Feed input bytes to whichever terminal is currently active.
+ * For vterm 0 (the root console / boot shell), routes to the pushback ring;
+ * for secondary terminals (vterm 1..N), routes to their vterm rx_buf. */
+static void console_feed_active_bytes(const char *s, uint32_t n) {
+    if (!s || n == 0) return;
+    vterm_t *act = vterm_active();
+    if (act && act->id > 0) {
+        (void)vterm_feed_bytes(act, s, n);
+    } else {
+        ylock_acquire(&g_input_lock);
+        for (uint32_t i = 0; i < n; i++) {
+            if (pushback_full()) break;
+            char c = s[i];
+            if (c == 0x03) g_interrupt_pending = true;
+            pushback_put(c);
+        }
+        ylock_release(&g_input_lock);
+    }
+}
 
 /* 36.9: the registered input sources (kernel/include/kernel/console.h). */
 /* single task: the boot, before any reader runs; constant after. */

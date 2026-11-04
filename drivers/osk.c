@@ -112,13 +112,13 @@ static const osk_key_t k_row3[] LCDTERM_URODATA = {
 static const osk_key_t k_row4[] LCDTERM_URODATA = {
     { "Sym",   "Sym",   "ABC",   OSK_KEY_SYM,    OSK_KEY_SYM,    OSK_KEY_SYM,    12 },
     { "^C",    "^C",    "^C",    OSK_KEY_CTRL_C, OSK_KEY_CTRL_C, OSK_KEY_CTRL_C, 10 },
-    { "(",     "(",     "[",     '(',            '(',            '[',             9 },
-    { ")",     ")",     "]",     ')',            ')',            ']',             9 },
-    { "Space", "Space", "Space", ' ',            ' ',            ' ',            40 },
-    { "/",     "\\",    "|",     '/',            '\\',           '|',             9 },
+    { "Space", "Space", "Space", ' ',            ' ',            ' ',            36 },
+    { "Lt",    "Lt",    "Lt",    OSK_KEY_LEFT,   OSK_KEY_LEFT,   OSK_KEY_LEFT,   10 },
+    { "Rt",    "Rt",    "Rt",    OSK_KEY_RIGHT,  OSK_KEY_RIGHT,  OSK_KEY_RIGHT,  10 },
     { "Up",    "Up",    "Up",    OSK_KEY_UP,     OSK_KEY_UP,     OSK_KEY_UP,     10 },
     { "Dn",    "Dn",    "Dn",    OSK_KEY_DOWN,   OSK_KEY_DOWN,   OSK_KEY_DOWN,   10 },
-    { "Hide",  "Hide",  "Hide",  OSK_KEY_HIDE,   OSK_KEY_HIDE,   OSK_KEY_HIDE,   11 },
+    { "/",     "\\",    "|",     '/',            '\\',           '|',            10 },
+    { "Hide",  "Hide",  "Hide",  OSK_KEY_HIDE,   OSK_KEY_HIDE,   OSK_KEY_HIDE,   12 },
 };
 
 typedef struct {
@@ -185,7 +185,7 @@ LCDTERM_UTEXT static void get_key_rect(int osk_x, int osk_y, int osk_w, int r_id
 }
 
 LCDTERM_UTEXT static void draw_key_label(const canvas1_t *cv, int kx, int ky, int kw, int kh,
-                                        const char *label, unsigned fg_pat, int sc) {
+                                         const char *label, int sc) {
     if (!label) return;
     unsigned len = cstr_len(label);
     if (len == 0) return;
@@ -199,11 +199,12 @@ LCDTERM_UTEXT static void draw_key_label(const canvas1_t *cv, int kx, int ky, in
     if (tx < kx) tx = kx;
 
     if (sc == 1) {
-        (void)canvas1_text(cv, tx, ty, label, len, len, 0, 16, fg_pat == CANVAS1_WHITE);
+        (void)canvas1_text(cv, tx, ty, label, len, len, 0, 16, false);
     } else {
         for (unsigned i = 0; i < len; i++) {
             uint8_t ch = (uint8_t)label[i];
-            const uint8_t *glyph = font8x16_glyphs[ch];
+            if (ch < FONT8X16_FIRST || ch > 0x7E) ch = '?';
+            const uint8_t *glyph = font8x16_glyphs[ch - FONT8X16_FIRST];
             for (int r = 0; r < 16; r++) {
                 uint8_t bits = glyph[r];
                 for (int b = 0; b < 8; b++) {
@@ -211,7 +212,7 @@ LCDTERM_UTEXT static void draw_key_label(const canvas1_t *cv, int kx, int ky, in
                         int px = tx + (int)i * 16 + b * 2;
                         int py = ty + r * 2;
                         if (px >= 0 && px + 1 < (int)cv->w && py >= 0 && py + 1 < (int)cv->h) {
-                            canvas1_fill(cv, px, py, px + 1, py + 1, fg_pat);
+                            canvas1_fill(cv, px, py, px + 1, py + 1, CANVAS1_BLACK);
                         }
                     }
                 }
@@ -252,9 +253,7 @@ LCDTERM_UTEXT void osk_draw(const canvas1_t *cv, int x0, int y0, int w, int h, u
             canvas1_fill(cv, kx + kw, ky + shadow, kx + kw + shadow - 1, ky + kh + shadow - 1, CANVAS1_BLACK);
 
             /* Key interior fill */
-            unsigned bg_pat = is_active ? CANVAS1_BLACK : CANVAS1_WHITE;
-            unsigned fg_pat = is_active ? CANVAS1_WHITE : CANVAS1_BLACK;
-            canvas1_fill(cv, kx, ky, kx + kw - 1, ky + kh - 1, bg_pat);
+            canvas1_fill(cv, kx, ky, kx + kw - 1, ky + kh - 1, CANVAS1_WHITE);
 
             /* Outer 1px black border */
             canvas1_hline(cv, kx, kx + kw - 1, ky, CANVAS1_BLACK);
@@ -267,7 +266,12 @@ LCDTERM_UTEXT void osk_draw(const canvas1_t *cv, int x0, int y0, int w, int h, u
             if (s_sym) label = key->sym;
             else if (s_shift) label = key->shift;
 
-            draw_key_label(cv, kx, ky, kw, kh, label, fg_pat, sc);
+            draw_key_label(cv, kx, ky, kw, kh, label, sc);
+
+            /* Invert active modifier keys (classic Mac inverted button style) */
+            if (is_active) {
+                canvas1_invert(cv, kx, ky, kx + kw - 1, ky + kh - 1);
+            }
         }
     }
 }
@@ -290,7 +294,7 @@ LCDTERM_UTEXT void osk_draw_toggle_button(const canvas1_t *cv, int btn_x, int bt
 
     char btn_label[6];
     btn_label[0] = 'K'; btn_label[1] = 'e'; btn_label[2] = 'y'; btn_label[3] = 'b'; btn_label[4] = 'd'; btn_label[5] = '\0';
-    draw_key_label(cv, btn_x, btn_y, btn_w, btn_h, btn_label, CANVAS1_BLACK, sc);
+    draw_key_label(cv, btn_x, btn_y, btn_w, btn_h, btn_label, sc);
 }
 
 LCDTERM_UTEXT uint16_t osk_hit_test(int client_x, int client_y, int w, int h, uint8_t modifiers) {
