@@ -84,6 +84,8 @@ typedef struct {
     uint8_t  vterm_id;   /* for RIBBON_WIN_TERM: associated vterm ID */
     uint8_t  cols;       /* width in text columns (e.g. 38, 48, 64, 98) */
     uint8_t  flags;      /* RIBBON_FLAG_* */
+    int16_t  owner_pid;  /* owning process PID, or -1 if unowned/kernel */
+    int16_t  reserved;
     int32_t  rx0;        /* ribbon horizontal left frame coordinate (px) */
     int32_t  rx1;        /* ribbon horizontal right frame coordinate (px) */
     char     title[RIBBON_TITLE_MAX];  /* window title */
@@ -130,6 +132,10 @@ bool ribbon_resize_active(ribbon_t *r, bool expand);
 
 /* Set title of window at idx. */
 void ribbon_set_title(ribbon_t *r, uint8_t idx, const char *title);
+
+/* Set/get process owner PID for window at idx. */
+void    ribbon_set_owner_pid(ribbon_t *r, uint8_t idx, int16_t pid);
+int16_t ribbon_get_owner_pid(const ribbon_t *r, uint8_t idx);
 
 /* Calculate ideal viewport x offset so window idx is visible on screen. */
 int32_t ribbon_compute_viewport(const ribbon_t *r, uint8_t idx, int32_t current_x);

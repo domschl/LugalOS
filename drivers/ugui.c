@@ -521,6 +521,13 @@ void ugui_list_row(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r,
     if (prefix && *prefix) {
         int pw = ugui_text_serif(s, cx, ty, prefix, (uint32_t)strlen(prefix), true, false, selected);
         cx += pw + 6 * sc;
+    } else {
+        int dot_sz = 3 * sc;
+        int dot_y = r.y + (r.h - dot_sz) / 2;
+        ugui_rect_t dot = { (int16_t)cx, (int16_t)dot_y, (int16_t)dot_sz, (int16_t)dot_sz };
+        ugui_fill(s, dot, selected ? UGUI_GRAY_PAPER : UGUI_GRAY_INK,
+                  selected ? CANVAS1_WHITE : CANVAS1_BLACK);
+        cx += dot_sz + 8 * sc;
     }
     if (title && *title) {
         ugui_text_serif(s, cx, ty, title, (uint32_t)strlen(title), false, false, selected);

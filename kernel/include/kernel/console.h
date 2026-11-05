@@ -388,9 +388,11 @@ char console_getc(void);
  * a push-back that does not fit is dropped. */
 void console_ungetc(char c);
 
-/* Touch tap and close-box event latches for active RIBBON_WIN_CANVAS windows. */
+/* Touch tap, keyboard, and close-box event queues for active RIBBON_WIN_CANVAS windows. */
 bool console_canvas_poll_tap(int *out_x, int *out_y);
 bool console_canvas_poll_closed(void);
+bool console_canvas_has_key(void);
+int  console_canvas_getc(void);
 void console_canvas_clear_events(void);
 
 #endif /* LUGALOS_KERNEL_CONSOLE_H */

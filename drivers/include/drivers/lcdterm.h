@@ -112,6 +112,7 @@ int lcdterm_get_visible_readers(uint8_t *out_rids, int *out_x0, int *out_y0, int
 uint16_t *lcdterm_get_canvas565_backing(uint8_t cid, uint32_t *out_stride, int *out_w, int *out_h);
 uint16_t *lcdterm_get_canvas565_by_name(const char *name, uint32_t *out_stride, int *out_w, int *out_h);
 int lcdterm_get_canvas565_cid_by_name(const char *name);
+bool lcdterm_is_canvas_active(uint8_t cid);
 bool lcdterm_set_canvas565_backing(uint8_t cid, uint16_t *buf);
 bool lcdterm_set_canvas565_geometry(uint8_t cid, uint16_t *buf, uint32_t stride, uint16_t w, uint16_t h);
 int lcdterm_get_visible_canvases565(uint8_t *out_cids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins);
@@ -148,6 +149,10 @@ static inline uint16_t *lcdterm_get_canvas565_by_name(const char *name, uint32_t
 static inline int lcdterm_get_canvas565_cid_by_name(const char *name) {
     (void)name;
     return -1;
+}
+static inline bool lcdterm_is_canvas_active(uint8_t cid) {
+    (void)cid;
+    return false;
 }
 static inline bool lcdterm_set_canvas565_backing(uint8_t cid, uint16_t *buf) {
     (void)cid; (void)buf;

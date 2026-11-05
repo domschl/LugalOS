@@ -34,6 +34,7 @@ LCDTERM_UTEXT static void win_zero(ribbon_win_t *dst) {
     for (unsigned i = 0; i < sizeof(ribbon_win_t) / sizeof(uint32_t); i++) {
         d[i] = 0;
     }
+    dst->owner_pid = -1;
 }
 
 LCDTERM_UTEXT void ribbon_init(ribbon_t *r, uint16_t screen_w, uint16_t screen_h) {
@@ -49,6 +50,8 @@ LCDTERM_UTEXT void ribbon_init(ribbon_t *r, uint16_t screen_w, uint16_t screen_h
         r->wins[i].vterm_id = 0;
         r->wins[i].cols = 0;
         r->wins[i].flags = 0;
+        r->wins[i].owner_pid = -1;
+        r->wins[i].reserved = 0;
         r->wins[i].rx0 = 0;
         r->wins[i].rx1 = 0;
         r->wins[i].title[0] = '\0';
@@ -120,6 +123,8 @@ LCDTERM_UTEXT int ribbon_insert(ribbon_t *r, uint8_t idx, uint8_t type, uint8_t 
     r->wins[idx].vterm_id = vterm_id;
     r->wins[idx].cols = cols ? cols : (uint8_t)(r->screen_w / (unsigned)FONT_CELL_W - 2u);
     r->wins[idx].flags = 0;
+    r->wins[idx].owner_pid = -1;
+    r->wins[idx].reserved = 0;
     if (title && title[0]) {
         cstr_copy(r->wins[idx].title, title, sizeof(r->wins[idx].title));
     } else if (type == RIBBON_WIN_CANVAS) {
@@ -274,6 +279,16 @@ LCDTERM_UTEXT bool ribbon_toggle_maximize(ribbon_t *r) {
 LCDTERM_UTEXT void ribbon_set_title(ribbon_t *r, uint8_t idx, const char *title) {
     if (!r || idx >= r->count) return;
     cstr_copy(r->wins[idx].title, title, sizeof(r->wins[idx].title));
+}
+
+LCDTERM_UTEXT void ribbon_set_owner_pid(ribbon_t *r, uint8_t idx, int16_t pid) {
+    if (!r || idx >= r->count) return;
+    r->wins[idx].owner_pid = pid;
+}
+
+LCDTERM_UTEXT int16_t ribbon_get_owner_pid(const ribbon_t *r, uint8_t idx) {
+    if (!r || idx >= r->count) return -1;
+    return r->wins[idx].owner_pid;
 }
 
 LCDTERM_UTEXT int ribbon_find_vterm(const ribbon_t *r, uint8_t vterm_id) {

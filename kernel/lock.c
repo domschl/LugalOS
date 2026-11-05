@@ -1238,7 +1238,18 @@ int lock_selftest(void) {
 
 bool session_claim(session_claim_t *c, const char *what) {
     int me = sched_context_id() + 1;
-    if (__atomic_load_n(&c->owner, __ATOMIC_ACQUIRE) == me) { c->depth++; return true; }
+    int curr = __atomic_load_n(&c->owner, __ATOMIC_ACQUIRE);
+    if (curr == me) { c->depth++; return true; }
+    if (curr > 0) {
+        int owner_pid = curr - 1;
+        if (owner_pid < MAX_TASKS) {
+            int st = sched_task_state(owner_pid);
+            if (st == TASK_UNUSED || st == TASK_DEAD) {
+                __atomic_store_n(&c->owner, 0, __ATOMIC_RELEASE);
+                c->depth = 0;
+            }
+        }
+    }
     int expect = 0;
     if (!__atomic_compare_exchange_n(&c->owner, &expect, me, false,
                                      __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {

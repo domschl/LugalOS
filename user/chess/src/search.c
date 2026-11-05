@@ -240,7 +240,7 @@ bool search_state_init(unsigned hart) {
     if (g_search[hart] == NULL) {
         uint32_t pages = ((uint32_t)sizeof(search_state_t) + (uint32_t)PAGE_SIZE - 1)
                        / (uint32_t)PAGE_SIZE;
-        search_state_t *st = (search_state_t *)palloc_pages(pages);
+        search_state_t *st = (search_state_t *)palloc_pages_bulk(pages);
         if (st == NULL) return false;
         memset(st, 0, sizeof(*st));
         st->pool_pages = 0;
@@ -267,7 +267,7 @@ bool search_state_init(unsigned hart) {
     uint32_t q_bytes  = (uint32_t)(MAX_SEARCH_PLYS * sizeof(CaptureList));
     uint32_t bytes = pv_bytes + q_bytes;
     st->pool_pages = (bytes + (uint32_t)PAGE_SIZE - 1) / (uint32_t)PAGE_SIZE;
-    uint8_t *block = (uint8_t *)palloc_pages(st->pool_pages);
+    uint8_t *block = (uint8_t *)palloc_pages_bulk(st->pool_pages);
     if (block == NULL) {
         st->pool_pages = 0;
         return false;
@@ -937,7 +937,7 @@ static bool search_helper_start(const Position *pos, int depth) {
     if (g_helper_pos == NULL) {
         g_helper_pos_pages = ((uint32_t)sizeof(Position) + (uint32_t)PAGE_SIZE - 1)
                            / (uint32_t)PAGE_SIZE;
-        g_helper_pos = (Position *)palloc_pages(g_helper_pos_pages);
+        g_helper_pos = (Position *)palloc_pages_bulk(g_helper_pos_pages);
         if (g_helper_pos == NULL) { g_helper_pos_pages = 0; return false; }
     }
 

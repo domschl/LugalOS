@@ -19,6 +19,8 @@
 #include "drivers/osk.h"
 #include "drivers/usbkbd_task.h"
 #include "drivers/dsi_esp32p4.h"
+#include "kernel/event.h"
+#include "kernel/shell.h"
 #include <string.h>
 
 /* See kernel/include/kernel/console.h. The formatting engine lives in
@@ -232,29 +234,116 @@ static volatile uint32_t g_tap_xy;     /* x << 16 | y */
 static volatile int      g_scroll_dy = 0;
 static volatile uint32_t g_scroll_ms = 0;
 
-/* accepted: one-word touch/close latches for active RIBBON_WIN_CANVAS windows;
- * written by run_hotkey() on the input pump path, consumed by the canvas app. */
-static volatile uint32_t g_canvas_tap_xy = 0;
-static volatile bool     g_canvas_tap_pending = false;
+static void console_pump(void);
+static void run_hotkey(void);
+
+#define CANVAS_TAP_RING_SIZE 16
+/* accepted: circular SPSC tap ring for active RIBBON_WIN_CANVAS windows;
+ * written by run_hotkey() on the input pump path, consumed by console_canvas_poll_tap(). */
+static volatile uint32_t g_canvas_tap_ring[CANVAS_TAP_RING_SIZE];
+static volatile uint32_t g_canvas_tap_head = 0;
+static volatile uint32_t g_canvas_tap_tail = 0;
 static volatile bool     g_canvas_closed = false;
 
-bool console_canvas_poll_tap(int *out_x, int *out_y) {
-    if (!__atomic_exchange_n(&g_canvas_tap_pending, false, __ATOMIC_ACQ_REL)) {
+#define CANVAS_KEY_RING_SIZE 32
+/* accepted: circular SPSC key ring for active RIBBON_WIN_CANVAS windows;
+ * written by console_pump() / console_feed_active_bytes(), consumed by console_canvas_getc(). */
+static volatile char     g_canvas_key_ring[CANVAS_KEY_RING_SIZE];
+static volatile uint32_t g_canvas_key_head = 0;
+static volatile uint32_t g_canvas_key_tail = 0;
+
+#define WIN_EVENT_RING_SIZE 32
+/* accepted: circular SPSC window event queue for the active window;
+ * written by console_pump() / run_hotkey(), consumed by window_poll_event(). */
+static volatile win_event_t g_win_event_ring[WIN_EVENT_RING_SIZE];
+static volatile uint32_t   g_win_event_head = 0;
+static volatile uint32_t   g_win_event_tail = 0;
+
+bool window_push_event(const win_event_t *ev) {
+    if (!ev) return false;
+    uint32_t head = g_win_event_head;
+    uint32_t next = (head + 1u) % WIN_EVENT_RING_SIZE;
+    if (next == g_win_event_tail) return false;
+    g_win_event_ring[head] = *ev;
+    __atomic_store_n(&g_win_event_head, next, __ATOMIC_RELEASE);
+    return true;
+}
+
+bool window_poll_event(win_event_t *out_ev) {
+    console_pump();
+    run_hotkey();
+    uint32_t tail = g_win_event_tail;
+    if (tail == __atomic_load_n(&g_win_event_head, __ATOMIC_ACQUIRE)) {
         return false;
     }
-    uint32_t xy = g_canvas_tap_xy;
+    if (out_ev) {
+        *out_ev = g_win_event_ring[tail];
+    }
+    __atomic_store_n(&g_win_event_tail, (tail + 1u) % WIN_EVENT_RING_SIZE, __ATOMIC_RELEASE);
+    return true;
+}
+
+static void console_canvas_feed_key(char c) {
+    uint32_t head = g_canvas_key_head;
+    uint32_t next = (head + 1u) % CANVAS_KEY_RING_SIZE;
+    if (next != g_canvas_key_tail) {
+        g_canvas_key_ring[head] = c;
+        __atomic_store_n(&g_canvas_key_head, next, __ATOMIC_RELEASE);
+    }
+    win_event_t wev;
+    memset(&wev, 0, sizeof(wev));
+    wev.type = WIN_EV_KEY_DOWN;
+    wev.key = (uint32_t)(uint8_t)c;
+    (void)window_push_event(&wev);
+}
+
+bool console_canvas_poll_tap(int *out_x, int *out_y) {
+    console_pump();
+    run_hotkey();
+    uint32_t tail = g_canvas_tap_tail;
+    if (tail == __atomic_load_n(&g_canvas_tap_head, __ATOMIC_ACQUIRE)) {
+        return false;
+    }
+    uint32_t xy = g_canvas_tap_ring[tail];
+    __atomic_store_n(&g_canvas_tap_tail, (tail + 1u) % CANVAS_TAP_RING_SIZE, __ATOMIC_RELEASE);
     if (out_x) *out_x = (int)(int16_t)(xy >> 16);
     if (out_y) *out_y = (int)(int16_t)(xy & 0xFFFFu);
     return true;
 }
 
 bool console_canvas_poll_closed(void) {
+    console_pump();
+    run_hotkey();
     return __atomic_exchange_n(&g_canvas_closed, false, __ATOMIC_ACQ_REL);
 }
 
+bool console_canvas_has_key(void) {
+    console_pump();
+    run_hotkey();
+    return g_canvas_key_tail != __atomic_load_n(&g_canvas_key_head, __ATOMIC_ACQUIRE);
+}
+
+int console_canvas_getc(void) {
+    console_pump();
+    run_hotkey();
+    uint32_t tail = g_canvas_key_tail;
+    if (tail == __atomic_load_n(&g_canvas_key_head, __ATOMIC_ACQUIRE)) {
+        return -1;
+    }
+    char c = g_canvas_key_ring[tail];
+    __atomic_store_n(&g_canvas_key_tail, (tail + 1u) % CANVAS_KEY_RING_SIZE, __ATOMIC_RELEASE);
+    return (unsigned char)c;
+}
+
 void console_canvas_clear_events(void) {
-    g_canvas_tap_pending = false;
+    __atomic_store_n(&g_canvas_tap_tail, __atomic_load_n(&g_canvas_tap_head, __ATOMIC_RELAXED), __ATOMIC_RELEASE);
+    __atomic_store_n(&g_canvas_key_tail, __atomic_load_n(&g_canvas_key_head, __ATOMIC_RELAXED), __ATOMIC_RELEASE);
+    __atomic_store_n(&g_win_event_tail, __atomic_load_n(&g_win_event_head, __ATOMIC_RELAXED), __ATOMIC_RELEASE);
     g_canvas_closed = false;
+}
+
+void window_clear_events(void) {
+    console_canvas_clear_events();
 }
 
 void console_touch_tap(unsigned x, unsigned y) {
@@ -318,135 +407,70 @@ static void console_feed_active_bytes(const char *s, uint32_t n);
 /* From an input wait only: a hotkey draws (a layout change) or writes 48 KB
  * to the SD card (a screenshot), neither of which belongs inside a print. */
 static void run_hotkey(void) {
-    /* Taken, not read then cleared: every task in an input wait calls this,
-     * and two of them on two harts both saw one Super+Enter and opened two
-     * terminals for it. */
-    unsigned hk = __atomic_exchange_n(&g_hotkey, 0u, __ATOMIC_ACQ_REL);
-    if (!hk) return;
-    if (hk == CONSOLE_HOTKEY_SCREENSHOT) {
-        char path[48];
-        (void)screenshot_save(NULL, path, sizeof(path));
-        return;
-    }
-    if (hk == CONSOLE_HOTKEY_NEW_TERM) {
-        int vid = shell_spawn_terminal(NULL);
-        if (vid >= 0) {
-            /* 0 columns: the screen's own half (drivers/ribbon.h, D7) --
-             * 48 on the RP2350's 800 px, 62 on the LCD-7B's 1024. */
-            uint8_t req[3] = { 'N', (uint8_t)vid, 0 }, reply[SCREEN_REPLY_LEN];
-            (void)console_canvas(req, 3, reply);
-            g_active_win_type = 1;
-            vterm_set_active(vid);
-            console_sync_readers();
+    for (int iter = 0; iter < 4; iter++) {
+        unsigned hk = __atomic_exchange_n(&g_hotkey, 0u, __ATOMIC_ACQ_REL);
+        if (!hk) break;
+        if (hk == CONSOLE_HOTKEY_SCREENSHOT) {
+            char path[48];
+            (void)screenshot_save(NULL, path, sizeof(path));
+            continue;
         }
-        return;
-    }
-    if (hk == CONSOLE_HOTKEY_FOCUS_LEFT) {
-        uint8_t req[1] = { '<' }, reply[SCREEN_REPLY_LEN];
-        if (console_canvas(req, 1, reply) && reply[0] == 0) {
-            if (reply[10] != 0) g_active_win_type = reply[10];
-            if (reply[10] == 3 /* RIBBON_WIN_READER */) reader_set_active_instance(reply[11]);
-            vterm_set_active(reply[1]);
-            if (g_active_win_type == 1 /* RIBBON_WIN_TERM */ && !usbkbd_is_present()) {
-                uint8_t kreq[2] = { 'k', 1 };
-                (void)console_canvas(kreq, 2, reply);
-            }
-        }
-        return;
-    }
-    if (hk == CONSOLE_HOTKEY_FOCUS_RIGHT) {
-        uint8_t req[1] = { '>' }, reply[SCREEN_REPLY_LEN];
-        if (console_canvas(req, 1, reply) && reply[0] == 0) {
-            if (reply[10] != 0) g_active_win_type = reply[10];
-            if (reply[10] == 3 /* RIBBON_WIN_READER */) reader_set_active_instance(reply[11]);
-            vterm_set_active(reply[1]);
-            if (g_active_win_type == 1 /* RIBBON_WIN_TERM */ && !usbkbd_is_present()) {
-                uint8_t kreq[2] = { 'k', 1 };
-                (void)console_canvas(kreq, 2, reply);
-            }
-        }
-        return;
-    }
-    if (hk == CONSOLE_HOTKEY_MOVE_LEFT) {
-        uint8_t req[1] = { '[' }, reply[SCREEN_REPLY_LEN];
-        (void)console_canvas(req, 1, reply);
-        return;
-    }
-    if (hk == CONSOLE_HOTKEY_MOVE_RIGHT) {
-        uint8_t req[1] = { ']' }, reply[SCREEN_REPLY_LEN];
-        (void)console_canvas(req, 1, reply);
-        return;
-    }
-    if (hk == CONSOLE_HOTKEY_CLOSE) {
-        uint8_t req[1] = { 'C' }, reply[SCREEN_REPLY_LEN];
-        if (console_canvas(req, 1, reply) && reply[0] == 0) {
-            uint8_t closed_type = reply[10];
-            uint8_t closed_vid = reply[11];
-            if (closed_type == 1 /* RIBBON_WIN_TERM */ && closed_vid > 0) {
-                vterm_destroy(closed_vid);
-            }
-            if (closed_type == 2 /* RIBBON_WIN_CANVAS */) {
-                g_canvas_closed = true;
-                g_active_win_type = launcher_is_active() ? 4 : 1;
-            }
-            if (closed_type == 3 /* RIBBON_WIN_READER */) {
-                reader_close_instance(closed_vid);
+        if (hk == CONSOLE_HOTKEY_NEW_TERM) {
+            int vid = shell_spawn_terminal(NULL);
+            if (vid >= 0) {
+                /* 0 columns: the screen's own half (drivers/ribbon.h, D7) --
+                 * 48 on the RP2350's 800 px, 62 on the LCD-7B's 1024. */
+                uint8_t req[3] = { 'N', (uint8_t)vid, 0 }, reply[SCREEN_REPLY_LEN];
+                (void)console_canvas(req, 3, reply);
                 g_active_win_type = 1;
-            }
-            if (closed_type == 4 /* RIBBON_WIN_LAUNCHER */) {
-                launcher_close();
-                g_active_win_type = 1;
-            }
-            vterm_set_active(reply[1]);
-            console_sync_readers();
-        }
-        return;
-    }
-    if (hk >= CONSOLE_HOTKEY_JUMP_BASE && hk <= CONSOLE_HOTKEY_JUMP_BASE + 8) {
-        uint8_t target_idx = (uint8_t)(hk - CONSOLE_HOTKEY_JUMP_BASE);
-        uint8_t req[2] = { 'J', target_idx }, reply[SCREEN_REPLY_LEN];
-        if (console_canvas(req, 2, reply) && reply[0] == 0) {
-            if (reply[10] != 0) g_active_win_type = reply[10];
-            if (reply[10] == 3 /* RIBBON_WIN_READER */) reader_set_active_instance(reply[11]);
-            vterm_set_active(reply[1]);
-            if (g_active_win_type == 1 /* RIBBON_WIN_TERM */ && !usbkbd_is_present()) {
-                uint8_t kreq[2] = { 'k', 1 };
-                (void)console_canvas(kreq, 2, reply);
-            }
-        }
-        return;
-    }
-    if (hk == CONSOLE_HOTKEY_TAP) {
-        uint32_t xy = g_tap_xy;
-        uint8_t req[6] = {
-            'P',
-            (uint8_t)(xy >> 16),
-            (uint8_t)(xy >> 24),
-            (uint8_t)xy,
-            (uint8_t)(xy >> 8),
-            (uint8_t)(usbkbd_is_present() ? 1 : 0)
-        };
-        uint8_t reply[SCREEN_REPLY_LEN];
-        if (console_canvas(req, 6, reply) && reply[0] == 0) {
-            if (reply[8] == 0xBB) {
-                uint16_t key = (uint16_t)(reply[6] | (reply[7] << 8));
-                if (key == OSK_KEY_UP) {
-                    console_feed_active_bytes("\x1b[A", 3);
-                } else if (key == OSK_KEY_DOWN) {
-                    console_feed_active_bytes("\x1b[B", 3);
-                } else if (key == OSK_KEY_LEFT) {
-                    console_feed_active_bytes("\x1b[D", 3);
-                } else if (key == OSK_KEY_RIGHT) {
-                    console_feed_active_bytes("\x1b[C", 3);
-                } else if (key == OSK_KEY_CTRL_C) {
-                    console_feed_active_bytes("\x03", 1);
-                } else if (key > 0 && key < 0x100) {
-                    char c = (char)key;
-                    console_feed_active_bytes(&c, 1);
+                vterm_set_active(vid);
+                if (!usbkbd_is_present()) {
+                    uint8_t kreq[2] = { 'k', 1 };
+                    (void)console_canvas(kreq, 2, reply);
                 }
-                return;
+                console_sync_readers();
             }
-            if (reply[8] == 0xCC) {
+            continue;
+        }
+        if (hk == CONSOLE_HOTKEY_FOCUS_LEFT) {
+            uint8_t req[1] = { '<' }, reply[SCREEN_REPLY_LEN];
+            if (console_canvas(req, 1, reply) && reply[0] == 0) {
+                if (reply[10] != 0) g_active_win_type = reply[10];
+                if (reply[10] == 3 /* RIBBON_WIN_READER */) reader_set_active_instance(reply[11]);
+                vterm_set_active(reply[1]);
+                if (g_active_win_type == 1 /* RIBBON_WIN_TERM */ && !usbkbd_is_present()) {
+                    uint8_t kreq[2] = { 'k', 1 };
+                    (void)console_canvas(kreq, 2, reply);
+                }
+            }
+            continue;
+        }
+        if (hk == CONSOLE_HOTKEY_FOCUS_RIGHT) {
+            uint8_t req[1] = { '>' }, reply[SCREEN_REPLY_LEN];
+            if (console_canvas(req, 1, reply) && reply[0] == 0) {
+                if (reply[10] != 0) g_active_win_type = reply[10];
+                if (reply[10] == 3 /* RIBBON_WIN_READER */) reader_set_active_instance(reply[11]);
+                vterm_set_active(reply[1]);
+                if (g_active_win_type == 1 /* RIBBON_WIN_TERM */ && !usbkbd_is_present()) {
+                    uint8_t kreq[2] = { 'k', 1 };
+                    (void)console_canvas(kreq, 2, reply);
+                }
+            }
+            continue;
+        }
+        if (hk == CONSOLE_HOTKEY_MOVE_LEFT) {
+            uint8_t req[1] = { '[' }, reply[SCREEN_REPLY_LEN];
+            (void)console_canvas(req, 1, reply);
+            continue;
+        }
+        if (hk == CONSOLE_HOTKEY_MOVE_RIGHT) {
+            uint8_t req[1] = { ']' }, reply[SCREEN_REPLY_LEN];
+            (void)console_canvas(req, 1, reply);
+            continue;
+        }
+        if (hk == CONSOLE_HOTKEY_CLOSE) {
+            uint8_t req[1] = { 'C' }, reply[SCREEN_REPLY_LEN];
+            if (console_canvas(req, 1, reply) && reply[0] == 0) {
                 uint8_t closed_type = reply[10];
                 uint8_t closed_vid = reply[11];
                 if (closed_type == 1 /* RIBBON_WIN_TERM */ && closed_vid > 0) {
@@ -454,86 +478,207 @@ static void run_hotkey(void) {
                 }
                 if (closed_type == 2 /* RIBBON_WIN_CANVAS */) {
                     g_canvas_closed = true;
-                    g_active_win_type = launcher_is_active() ? 4 : 1;
+                    win_event_t wev;
+                    memset(&wev, 0, sizeof(wev));
+                    wev.type = WIN_EV_CLOSE_REQUEST;
+                    (void)window_push_event(&wev);
                 }
                 if (closed_type == 3 /* RIBBON_WIN_READER */) {
                     reader_close_instance(closed_vid);
-                    g_active_win_type = 1;
                 }
                 if (closed_type == 4 /* RIBBON_WIN_LAUNCHER */) {
                     launcher_close();
-                    g_active_win_type = 1;
+                }
+                if (reply[12] != 0) {
+                    g_active_win_type = reply[12];
+                    if (reply[12] == 3 /* RIBBON_WIN_READER */) {
+                        reader_set_active_instance(reply[13]);
+                    }
+                } else {
+                    g_active_win_type = launcher_is_active() ? 4 : 1;
                 }
                 vterm_set_active(reply[1]);
                 console_sync_readers();
-                return;
             }
-            if (reply[8] == 0xAA) {
-                (void)launcher_open();
-                return;
-            }
-            if (reply[10] != 0) g_active_win_type = reply[10];
-            if (reply[10] == 3 /* RIBBON_WIN_READER */) reader_set_active_instance(reply[11]);
-            vterm_set_active(reply[1]);
-            if (g_active_win_type == 1 /* RIBBON_WIN_TERM */ && !usbkbd_is_present()) {
-                uint8_t kreq[2] = { 'k', 1 };
-                (void)console_canvas(kreq, 2, reply);
-            }
-            int cx = (int)(reply[2] | (reply[3] << 8));
-            int cy = (int)(reply[4] | (reply[5] << 8));
-            if (cx != 0 || cy != 0) {
-                if (g_active_win_type == 4 /* RIBBON_WIN_LAUNCHER */ && launcher_is_active()) {
-                    (void)launcher_tap(cx, cy);
-                } else if (g_active_win_type == 3 /* RIBBON_WIN_READER */ && reader_is_active()) {
-                    (void)reader_tap(cx, cy);
-                } else if (g_active_win_type == 2 /* RIBBON_WIN_CANVAS */) {
-                    g_canvas_tap_xy = ((uint32_t)(uint16_t)cx << 16) | (uint16_t)cy;
-                    g_canvas_tap_pending = true;
+            continue;
+        }
+        if (hk >= CONSOLE_HOTKEY_JUMP_BASE && hk <= CONSOLE_HOTKEY_JUMP_BASE + 8) {
+            uint8_t target_idx = (uint8_t)(hk - CONSOLE_HOTKEY_JUMP_BASE);
+            uint8_t req[2] = { 'J', target_idx }, reply[SCREEN_REPLY_LEN];
+            if (console_canvas(req, 2, reply) && reply[0] == 0) {
+                if (reply[10] != 0) g_active_win_type = reply[10];
+                if (reply[10] == 3 /* RIBBON_WIN_READER */) reader_set_active_instance(reply[11]);
+                vterm_set_active(reply[1]);
+                if (g_active_win_type == 1 /* RIBBON_WIN_TERM */ && !usbkbd_is_present()) {
+                    uint8_t kreq[2] = { 'k', 1 };
+                    (void)console_canvas(kreq, 2, reply);
                 }
             }
+            continue;
         }
-        return;
-    }
-    if (hk == CONSOLE_HOTKEY_SCROLL_UP || hk == CONSOLE_HOTKEY_SCROLL_DOWN) {
-        if (g_active_win_type == 4 /* RIBBON_WIN_LAUNCHER */ && launcher_is_active()) {
-            g_scroll_dy = 0;
-            g_scroll_ms = 0;
-            launcher_scroll(hk == CONSOLE_HOTKEY_SCROLL_UP ? -1 : 1);
-        } else if (reader_is_active()) {
-            int dy = g_scroll_dy;
-            uint32_t ms = g_scroll_ms;
-            g_scroll_dy = 0;
-            g_scroll_ms = 0;
-            if (ms > 0 && dy != 0) {
-                reader_touch_fling(dy, ms);
-            } else {
-                reader_scroll(hk == CONSOLE_HOTKEY_SCROLL_UP ? -160 : 160);
+        if (hk == CONSOLE_HOTKEY_TAP) {
+            uint32_t xy = g_tap_xy;
+            uint8_t req[6] = {
+                'P',
+                (uint8_t)(xy >> 16),
+                (uint8_t)(xy >> 24),
+                (uint8_t)xy,
+                (uint8_t)(xy >> 8),
+                (uint8_t)(usbkbd_is_present() ? 1 : 0)
+            };
+            uint8_t reply[SCREEN_REPLY_LEN];
+            if (console_canvas(req, 6, reply) && reply[0] == 0) {
+                if (reply[8] == 0xBB) {
+                    uint16_t key = (uint16_t)(reply[6] | (reply[7] << 8));
+                    uint8_t mods = reply[9];
+                    if (mods & OSK_MOD_CMD) {
+                        if (key == OSK_KEY_ENTER || key == '\r' || key == '\n') {
+                            console_hotkey(CONSOLE_HOTKEY_NEW_TERM);
+                            continue;
+                        } else if (key == 'w' || key == 'W') {
+                            console_hotkey(CONSOLE_HOTKEY_CLOSE);
+                            continue;
+                        } else if (key == OSK_KEY_LEFT) {
+                            console_hotkey(CONSOLE_HOTKEY_FOCUS_LEFT);
+                            continue;
+                        } else if (key == OSK_KEY_RIGHT) {
+                            console_hotkey(CONSOLE_HOTKEY_FOCUS_RIGHT);
+                            continue;
+                        }
+                    }
+                    if (key == OSK_KEY_UP) {
+                        console_feed_active_bytes("\x1b[A", 3);
+                    } else if (key == OSK_KEY_DOWN) {
+                        console_feed_active_bytes("\x1b[B", 3);
+                    } else if (key == OSK_KEY_LEFT) {
+                        console_feed_active_bytes("\x1b[D", 3);
+                    } else if (key == OSK_KEY_RIGHT) {
+                        console_feed_active_bytes("\x1b[C", 3);
+                    } else if (key == OSK_KEY_CTRL_C) {
+                        console_feed_active_bytes("\x03", 1);
+                    } else if (key > 0 && key < 0x100) {
+                        char c = (char)key;
+                        console_feed_active_bytes(&c, 1);
+                    }
+                    continue;
+                }
+                if (reply[8] == 0xCC) {
+                    uint8_t closed_type = reply[10];
+                    uint8_t closed_vid = reply[11];
+                    if (closed_type == 1 /* RIBBON_WIN_TERM */ && closed_vid > 0) {
+                        vterm_destroy(closed_vid);
+                    }
+                    if (closed_type == 2 /* RIBBON_WIN_CANVAS */) {
+                        g_canvas_closed = true;
+                        win_event_t wev;
+                        memset(&wev, 0, sizeof(wev));
+                        wev.type = WIN_EV_CLOSE_REQUEST;
+                        (void)window_push_event(&wev);
+                    }
+                    if (closed_type == 3 /* RIBBON_WIN_READER */) {
+                        reader_close_instance(closed_vid);
+                    }
+                    if (closed_type == 4 /* RIBBON_WIN_LAUNCHER */) {
+                        launcher_close();
+                    }
+                    if (reply[12] != 0) {
+                        g_active_win_type = reply[12];
+                        if (reply[12] == 3 /* RIBBON_WIN_READER */) {
+                            reader_set_active_instance(reply[13]);
+                        }
+                    } else {
+                        g_active_win_type = launcher_is_active() ? 4 : 1;
+                    }
+                    vterm_set_active(reply[1]);
+                    console_sync_readers();
+                    continue;
+                }
+                if (reply[8] == 0xAA) {
+                    (void)launcher_open();
+                    continue;
+                }
+                if (reply[10] != 0) g_active_win_type = reply[10];
+                if (reply[10] == 3 /* RIBBON_WIN_READER */) reader_set_active_instance(reply[11]);
+                vterm_set_active(reply[1]);
+                if (g_active_win_type == 1 /* RIBBON_WIN_TERM */ && !usbkbd_is_present()) {
+                    uint8_t kreq[2] = { 'k', 1 };
+                    (void)console_canvas(kreq, 2, reply);
+                }
+                int cx = (int)(reply[2] | (reply[3] << 8));
+                int cy = (int)(reply[4] | (reply[5] << 8));
+                if (cx != 0 || cy != 0) {
+                    if (g_active_win_type == 4 /* RIBBON_WIN_LAUNCHER */ && launcher_is_active()) {
+                        (void)launcher_tap(cx, cy);
+                        shell_check_launcher_exec();
+                    } else if (g_active_win_type == 3 /* RIBBON_WIN_READER */ && reader_is_active()) {
+                        (void)reader_tap(cx, cy);
+                    } else if (g_active_win_type == 2 /* RIBBON_WIN_CANVAS */) {
+                        uint32_t head = g_canvas_tap_head;
+                        uint32_t next = (head + 1u) % CANVAS_TAP_RING_SIZE;
+                        if (next != g_canvas_tap_tail) {
+                            g_canvas_tap_ring[head] = ((uint32_t)(uint16_t)cx << 16) | (uint16_t)cy;
+                            __atomic_store_n(&g_canvas_tap_head, next, __ATOMIC_RELEASE);
+                        }
+                        win_event_t wev_down;
+                        memset(&wev_down, 0, sizeof(wev_down));
+                        wev_down.type = WIN_EV_POINTER_DOWN;
+                        wev_down.button = 1;
+                        wev_down.x = (int16_t)cx;
+                        wev_down.y = (int16_t)cy;
+                        (void)window_push_event(&wev_down);
+                        win_event_t wev_up;
+                        memset(&wev_up, 0, sizeof(wev_up));
+                        wev_up.type = WIN_EV_POINTER_UP;
+                        wev_up.button = 1;
+                        wev_up.x = (int16_t)cx;
+                        wev_up.y = (int16_t)cy;
+                        (void)window_push_event(&wev_up);
+                    }
+                }
             }
+            continue;
         }
-        return;
-    }
-    if (hk == CONSOLE_HOTKEY_TOGGLE_MAX) {
-        uint8_t req[1] = { 'M' }, reply[SCREEN_REPLY_LEN];
-        (void)console_canvas(req, 1, reply);
-        console_sync_readers();
-        return;
-    }
-    if (hk == CONSOLE_HOTKEY_ORIENT) {
+        if (hk == CONSOLE_HOTKEY_SCROLL_UP || hk == CONSOLE_HOTKEY_SCROLL_DOWN) {
+            if (g_active_win_type == 4 /* RIBBON_WIN_LAUNCHER */ && launcher_is_active()) {
+                g_scroll_dy = 0;
+                g_scroll_ms = 0;
+                launcher_scroll(hk == CONSOLE_HOTKEY_SCROLL_UP ? -1 : 1);
+            } else if (reader_is_active()) {
+                int dy = g_scroll_dy;
+                uint32_t ms = g_scroll_ms;
+                g_scroll_dy = 0;
+                g_scroll_ms = 0;
+                if (ms > 0 && dy != 0) {
+                    reader_touch_fling(dy, ms);
+                } else {
+                    reader_scroll(hk == CONSOLE_HOTKEY_SCROLL_UP ? -160 : 160);
+                }
+            }
+            continue;
+        }
+        if (hk == CONSOLE_HOTKEY_TOGGLE_MAX) {
+            uint8_t req[1] = { 'M' }, reply[SCREEN_REPLY_LEN];
+            (void)console_canvas(req, 1, reply);
+            console_sync_readers();
+            continue;
+        }
+        if (hk == CONSOLE_HOTKEY_ORIENT) {
 #if defined(CONFIG_BOARD_TAB5)
-        int cur = dsi_lcd_get_orientation();
-        int next = (cur == 0 || cur == 180) ? 270 : 0;
-        orient_manual();
-        dsi_lcd_set_orientation(next);
-        console_sync_readers();
-        if (reader_is_active()) {
-            reader_update();
-        }
+            int cur = dsi_lcd_get_orientation();
+            int next = (cur == 0 || cur == 180) ? 270 : 0;
+            orient_manual();
+            dsi_lcd_set_orientation(next);
+            console_sync_readers();
+            if (reader_is_active()) {
+                reader_update();
+            }
 #endif
-        return;
+            continue;
+        }
+        uint8_t req[2] = { 'w', (uint8_t)(hk == CONSOLE_HOTKEY_RIGHT ? 1 : -1) }, reply[SCREEN_REPLY_LEN];
+        (void)console_canvas(req, 2, reply);
+        console_sync_readers();
     }
-    uint8_t req[2] = { 'w', (uint8_t)(hk == CONSOLE_HOTKEY_RIGHT ? 1 : -1) }, reply[SCREEN_REPLY_LEN];
-    (void)console_canvas(req, 2, reply);
-    console_sync_readers();
 }
 
 void console_bind(console_putc_fn putc) {
@@ -870,6 +1015,12 @@ static ylock_t g_input_lock;
  * for secondary terminals (vterm 1..N), routes to their vterm rx_buf. */
 static void console_feed_active_bytes(const char *s, uint32_t n) {
     if (!s || n == 0) return;
+    if (g_active_win_type == 2 /* RIBBON_WIN_CANVAS */) {
+        for (uint32_t i = 0; i < n; i++) {
+            console_canvas_feed_key(s[i]);
+        }
+        return;
+    }
     vterm_t *act = vterm_active();
     if (act && act->id > 0) {
         (void)vterm_feed_bytes(act, s, n);
@@ -985,6 +1136,17 @@ static void console_pump(void) {
                 if (c < 0) break;
                 if (note_input(src->local)) continue;
                 reader_feed_key(c);
+            }
+        } else if (src->local && g_active_win_type == 2 /* RIBBON_WIN_CANVAS */) {
+            while (src->has_char()) {
+                int c = src->getc();
+                if (c < 0) break;
+                if (note_input(src->local)) continue;
+                if (c == 0x03) {
+                    if (act) act->interrupt_pending = true;
+                    else g_interrupt_pending = true;
+                }
+                console_canvas_feed_key((char)c);
             }
         } else if (act) {
             /* Room first, as for the ring: a byte taken from the device and

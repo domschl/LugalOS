@@ -290,6 +290,32 @@ static int get_orient_mode(void) {
 }
 #endif
 
+static bool focus_window_by_title(const char *prefix) {
+    if (!prefix || !*prefix) return false;
+    uint8_t rreq[2] = { 'R', 0 }, rreply[SCREEN_REPLY_LEN];
+    if (console_canvas(rreq, 1, rreply) && rreply[0] == 0) {
+        uint8_t count = rreply[1];
+        for (uint8_t i = 0; i < count; i++) {
+            rreq[1] = i;
+            if (console_canvas(rreq, 2, rreply) && rreply[0] == 0) {
+                const char *wtitle = (const char *)rreply + 12;
+                if (strncmp(wtitle, prefix, strlen(prefix)) == 0) {
+                    uint8_t jreq[2] = { 'J', i };
+                    (void)console_canvas(jreq, 2, rreply);
+                    if (rreply[10] != 0) {
+                        console_set_active_win_type(rreply[10]);
+                    } else {
+                        console_set_active_win_type(rreply[1]);
+                    }
+                    vterm_set_active(rreply[1]);
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 static void open_doc_in_reader(const char *doc_path) {
     if (!doc_path || !*doc_path) doc_path = "index.md";
 
@@ -478,7 +504,7 @@ void launcher_draw(const canvas1_t *c, int w, int h) {
             if (doc_i >= s_launcher.doc_count) break;
             ugui_list_row(&surf, &s_launcher.ui_ctx,
                           (ugui_rect_t){ (int16_t)(right_x + 2 * s), (int16_t)(ry + i * item_h), (int16_t)(list_w - 4 * s), (int16_t)item_h },
-                          "\xC2\xB7", s_launcher.docs[doc_i].label, s_launcher.docs[doc_i].badge,
+                          NULL, s_launcher.docs[doc_i].label, s_launcher.docs[doc_i].badge,
                           LAUNCHER_ID_DOC_BASE, (int16_t)doc_i, false);
         }
 
@@ -492,7 +518,6 @@ void launcher_draw(const canvas1_t *c, int w, int h) {
         /* Portrait layout: Vertical stack (Applications -> Quick Settings -> Documents) */
         int inner_w = w - 2 * pad;
         int y = pad;
-
         ugui_section_header(&surf, pad, y, inner_w, "APPLICATIONS");
         y += 24 * s;
 
@@ -567,7 +592,7 @@ void launcher_draw(const canvas1_t *c, int w, int h) {
             if (doc_i >= s_launcher.doc_count) break;
             ugui_list_row(&surf, &s_launcher.ui_ctx,
                           (ugui_rect_t){ (int16_t)(pad + 2 * s), (int16_t)(y + i * item_h), (int16_t)(list_w - 4 * s), (int16_t)item_h },
-                          "\xC2\xB7", s_launcher.docs[doc_i].label, s_launcher.docs[doc_i].badge,
+                          NULL, s_launcher.docs[doc_i].label, s_launcher.docs[doc_i].badge,
                           LAUNCHER_ID_DOC_BASE, (int16_t)doc_i, false);
         }
 
@@ -689,29 +714,33 @@ bool launcher_tap(int client_x, int client_y) {
 
     if (id == LAUNCHER_ID_APP_READER) {
         const char *doc = (s_launcher.doc_count > 0) ? s_launcher.docs[0].path : "index.md";
+        for (int i = 0; i < s_launcher.doc_count; i++) {
+            if (reader_find_by_path(s_launcher.docs[i].path) < 0) {
+                doc = s_launcher.docs[i].path;
+                break;
+            }
+        }
         open_doc_in_reader(doc);
         return true;
     }
     if (id == LAUNCHER_ID_APP_CHESS) {
+        if (focus_window_by_title("Chess")) {
+            return true;
+        }
         strncpy(s_launcher.pending_cmd, "chess touch", sizeof(s_launcher.pending_cmd) - 1);
         s_launcher.pending_cmd[sizeof(s_launcher.pending_cmd) - 1] = '\0';
         return true;
     }
     if (id == LAUNCHER_ID_APP_MOONBASE) {
+        if (focus_window_by_title("Moonbase")) {
+            return true;
+        }
         strncpy(s_launcher.pending_cmd, "moonbase", sizeof(s_launcher.pending_cmd) - 1);
         s_launcher.pending_cmd[sizeof(s_launcher.pending_cmd) - 1] = '\0';
         return true;
     }
     if (id == LAUNCHER_ID_APP_TERMINAL) {
-        uint8_t req[2] = { 'V', 0 }, reply[SCREEN_REPLY_LEN];
-        if (console_canvas(req, 2, reply) && reply[0] == 0) {
-            console_set_active_win_type(RIBBON_WIN_TERM);
-            vterm_set_active(0);
-            if (!usbkbd_is_present()) {
-                uint8_t kreq[2] = { 'k', 1 };
-                (void)console_canvas(kreq, 2, reply);
-            }
-        }
+        console_hotkey(CONSOLE_HOTKEY_NEW_TERM);
         return true;
     }
     if (id == LAUNCHER_ID_VOL_STEP) {
@@ -784,8 +813,6 @@ void launcher_feed_key(int c) {
     } else if (c == 'r' || c == 'R') {
         launcher_scan_docs();
         launcher_update();
-    } else if (c == 'q' || c == 'Q') {
-        console_hotkey(CONSOLE_HOTKEY_CLOSE);
     }
 }
 

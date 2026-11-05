@@ -171,7 +171,7 @@ static bool chess_ensure_init(void) {
         return false;
     }
     g_chess_scratch_pages = ((uint32_t)sizeof(Position) + (uint32_t)PAGE_SIZE - 1) / (uint32_t)PAGE_SIZE;
-    g_chess_scratch = (Position *)palloc_pages(g_chess_scratch_pages);
+    g_chess_scratch = (Position *)palloc_pages_bulk(g_chess_scratch_pages);
     if (g_chess_scratch == NULL) {
         cprintf("chess: out of memory (scratch position)\n");
         g_chess_scratch_pages = 0;
@@ -3668,11 +3668,6 @@ void chess_touch_run(void) {
         ChessAbort a = chess_abort_requested();
         if (a != CHESS_ABORT_NONE) break;
 
-        if (console_has_char()) {
-            char c = console_getc();
-            if (c == 0x03 || c == 'q' || c == 'Q') break;
-        }
-
         if (console_canvas_poll_closed()) break;
 
         int cur_w = 0, cur_h = 0;
@@ -3691,6 +3686,7 @@ void chess_touch_run(void) {
 
     g_touch_active = false;
     chess_session_end();
+    console_set_title("lsh");
     chess_unclaim();
 }
 

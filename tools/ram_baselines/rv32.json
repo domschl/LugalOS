@@ -71,7 +71,7 @@
     "kernel/chan.c": 1348,
     "kernel/chan_selftest.c": 172,
     "kernel/clipboard.c": 20,
-    "kernel/console.c": 709,
+    "kernel/console.c": 1464,
     "kernel/crypto.c": 80,
     "kernel/der.c": 65,
     "kernel/device.c": 140,
@@ -186,12 +186,12 @@
     "radio": 3104,
     "selftest": 2487,
     "sensors": 19483,
-    "shell": 12669,
+    "shell": 13424,
     "storage": 20688,
     "tools": 256,
     "usb": 672,
     "vfs": 4278
   },
-  "ram_code": 1203840,
-  "total": 6246717
+  "ram_code": 1208864,
+  "total": 6252496
 }

@@ -7,17 +7,17 @@
     "user/ceres/src/platform_p4.c": 31896,
     "user/lisp/lisp.c": 1532288,
     "user/moonbase/src/moon_textures.c": 32768,
-    "user/moonbase/src/platform_p4.c": 41116
+    "user/moonbase/src/platform_p4.c": 41148
   },
   "bulk_per_subsystem": {
     "app:ceres": 31896,
-    "app:moonbase": 73884,
+    "app:moonbase": 73916,
     "display": 41880,
     "kernel": 32768,
     "lisp": 1532288,
     "selftest": 64
   },
-  "bulk_total": 1712780,
+  "bulk_total": 1712812,
   "heap_bytes": 360448,
   "heap_pages": 88,
   "per_file": {
@@ -44,7 +44,7 @@
     "drivers/i2c_rtc.c": 18,
     "drivers/idstore_esp32p4.c": 4137,
     "drivers/ina226.c": 52,
-    "drivers/lcdterm.c": 311,
+    "drivers/lcdterm.c": 315,
     "drivers/loopback_net.c": 2060,
     "drivers/mcp9808.c": 76,
     "drivers/mhz19b.c": 80,
@@ -77,7 +77,7 @@
     "kernel/chan.c": 1348,
     "kernel/chan_selftest.c": 172,
     "kernel/clipboard.c": 20,
-    "kernel/console.c": 709,
+    "kernel/console.c": 1464,
     "kernel/device.c": 140,
     "kernel/devirq.c": 134,
     "kernel/discipline.c": 82,
@@ -167,7 +167,7 @@
     "chess": 22932,
     "clock-app": 136,
     "crypto": 38,
-    "display": 3627,
+    "display": 3631,
     "drivers": 1228,
     "fs": 4160,
     "httpd": 70,
@@ -182,11 +182,11 @@
     "radio": 12564,
     "selftest": 3962,
     "sensors": 8688,
-    "shell": 12993,
+    "shell": 13748,
     "storage": 7456,
     "usb": 1212,
     "vfs": 4111
   },
   "ram_code": 1806,
-  "total": 219635
+  "total": 220394
 }

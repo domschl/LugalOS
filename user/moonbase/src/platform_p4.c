@@ -29,6 +29,7 @@
 #include "kernel/random.h"
 #include "kernel/sched.h"
 #include "kernel/time.h"
+#include "kernel/event.h"
 
 #include <stdarg.h>
 #include <string.h>
@@ -131,6 +132,9 @@ static void moon_p4_audio_render(int16_t *stereo_buf, int samples, void *user) {
 }
 
 static bool p4_touch_hook(int x, int y, int kind) {
+    if (s_cid >= 0 && !lcdterm_is_canvas_active((uint8_t)s_cid)) {
+        return false; /* Suppress nothing when game is in the background */
+    }
     moon_event_t ev;
     memset(&ev, 0, sizeof(ev));
     int vx = (s_scale > 1) ? (x / s_scale) : x;
@@ -453,7 +457,43 @@ void moon_platform_present_rows(int y0, int y1) {
     lcdterm_damage();
 }
 
+void moon_platform_focus_prev(void) {
+    console_hotkey(CONSOLE_HOTKEY_FOCUS_LEFT);
+}
+
+void moon_platform_focus_next(void) {
+    console_hotkey(CONSOLE_HOTKEY_FOCUS_RIGHT);
+}
+
 bool moon_platform_poll_event(moon_event_t *ev) {
+    win_event_t wev;
+    if (window_poll_event(&wev)) {
+        if (wev.type == WIN_EV_CLOSE_REQUEST) {
+            memset(ev, 0, sizeof(*ev));
+            ev->type = MOON_EVENT_QUIT;
+            return true;
+        }
+        if (wev.type == WIN_EV_POINTER_DOWN || wev.type == WIN_EV_POINTER_UP) {
+            memset(ev, 0, sizeof(*ev));
+            ev->type = (wev.type == WIN_EV_POINTER_DOWN) ? MOON_EVENT_POINTER_DOWN : MOON_EVENT_POINTER_UP;
+            ev->x = (s_scale > 1) ? (wev.x / s_scale) : wev.x;
+            ev->y = (s_scale > 1) ? (wev.y / s_scale) : wev.y;
+            ev->button = 1;
+            ev->touch = 1;
+            return true;
+        }
+    }
+
+    if (console_canvas_poll_closed()) {
+        memset(ev, 0, sizeof(*ev));
+        ev->type = MOON_EVENT_QUIT;
+        return true;
+    }
+
+    if (s_cid >= 0 && !lcdterm_is_canvas_active((uint8_t)s_cid)) {
+        return false;
+    }
+
     /* 1. Touch events */
     uintptr_t f = spin_lock_irqsave(&s_qlock);
     if (s_qhead != s_qtail) {
@@ -465,8 +505,8 @@ bool moon_platform_poll_event(moon_event_t *ev) {
     spin_unlock_irqrestore(&s_qlock, f);
 
     /* 2. Keyboard events via kernel keyseq decoder (VT escape sequences, arrow keys, etc.) */
-    if (console_has_char()) {
-        key_event_t ke = keyseq_read_console();
+    if (console_canvas_has_key() || (console_active_win_type() == 2 && console_has_char())) {
+        key_event_t ke = console_canvas_has_key() ? keyseq_read_canvas() : keyseq_read_console();
         memset(ev, 0, sizeof(*ev));
         ev->type = MOON_EVENT_KEY_DOWN;
         ev->mods = (ke.mods & KMOD_SHIFT) ? MOON_MOD_SHIFT : 0;

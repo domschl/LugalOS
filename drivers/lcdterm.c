@@ -184,7 +184,7 @@ LCDTERM_UTEXT static void lcdterm_umode_body(uintptr_t arg) {
             uint8_t vid = (n >= 2) ? req[1] : 0;
             const uint8_t *creq = (n >= 2) ? (req + 2) : (req + 1);
             uint32_t clen = (n >= 2) ? (uint32_t)(n - 2) : (uint32_t)(n - 1);
-            screen_canvas_vterm(scr, vid, creq, clen, reply);
+            screen_canvas_vterm(scr, vid, creq, clen, reply, -1);
             lcdterm_usys_serve_reply((const char *)name, reply, (long)sizeof(reply));
             continue;
         }
@@ -380,7 +380,7 @@ static bool lcdterm_canvas(const uint8_t *req, uint32_t n, uint8_t *reply) {
             sent = true;
         }
     }
-    if (!sent) screen_canvas_vterm(g_scr, (uint8_t)my_vid, req, n, reply);
+    if (!sent) screen_canvas_vterm(g_scr, (uint8_t)my_vid, req, n, reply, (int16_t)pid);
     damage(0, g_be->h);
     console_unlock();
     return true;
@@ -822,10 +822,18 @@ int lcdterm_get_canvas565_cid_by_name(const char *name) {
     return -1;
 }
 
+bool lcdterm_is_canvas_active(uint8_t cid) {
+    if (!g_scr || cid >= SCREEN_MAX_CANVASES) return false;
+    if (g_scr->ribbon.count == 0 || g_scr->ribbon.active_idx >= g_scr->ribbon.count) return false;
+    const ribbon_win_t *w = &g_scr->ribbon.wins[g_scr->ribbon.active_idx];
+    return (w->type == RIBBON_WIN_CANVAS && w->vterm_id == cid);
+}
+
 bool lcdterm_set_canvas565_backing(uint8_t cid, uint16_t *buf) {
     if (!g_scr || cid >= SCREEN_MAX_CANVASES) return false;
     if (g_scr->canvases[cid].format != CANVAS_FMT_RGB565) return false;
     g_scr->canvases[cid].buf565 = buf;
+    g_scr->canvases[cid].buf565_owned = false;
     return true;
 }
 
@@ -833,6 +841,7 @@ bool lcdterm_set_canvas565_geometry(uint8_t cid, uint16_t *buf, uint32_t stride,
     if (!g_scr || cid >= SCREEN_MAX_CANVASES) return false;
     if (g_scr->canvases[cid].format != CANVAS_FMT_RGB565) return false;
     g_scr->canvases[cid].buf565 = buf;
+    g_scr->canvases[cid].buf565_owned = false;
     g_scr->canvases[cid].stride565 = stride;
     g_scr->canvases[cid].w565 = w;
     g_scr->canvases[cid].h565 = h;

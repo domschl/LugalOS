@@ -429,8 +429,8 @@ bool ceres_platform_poll_event(ceres_event_t *ev) {
     }
 
     /* 3. Read incoming console keystrokes */
-    if (console_has_char()) {
-        key_event_t ke = keyseq_read_console();
+    if (console_canvas_has_key() || console_has_char()) {
+        key_event_t ke = console_canvas_has_key() ? keyseq_read_canvas() : keyseq_read_console();
         ceres_key_t key = map_console_key(ke.key);
         if (key == CERES_KEY_UNKNOWN) return false;
 
@@ -530,8 +530,13 @@ static int ceres_run_claimed(const char *args) {
     uint32_t last_time = ceres_platform_get_ticks_ms();
 
     while (s_p4_game.running) {
-        if (console_interrupt_requested()) break;
+        if (console_interrupt_requested() || console_canvas_poll_closed()) break;
         if (max_frames > 0 && s_p4_game.frame_count >= (uint32_t)max_frames) break;
+
+        if (s_cid >= 0 && !lcdterm_is_canvas_active((uint8_t)s_cid)) {
+            ceres_platform_delay_ms(50);
+            continue;
+        }
 
         uint32_t now = ceres_platform_get_ticks_ms();
         uint32_t delta = now - last_time;

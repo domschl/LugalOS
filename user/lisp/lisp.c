@@ -12,6 +12,7 @@
 #include "kernel/clipboard.h"
 #include "kernel/screenshot.h"
 #include "drivers/screen.h"
+#include "drivers/usbkbd_task.h"
 #include "kernel/shell.h"
 #include "kernel/time.h"
 #include "kernel/palloc.h"   /* BULK_BSS */
@@ -5192,15 +5193,18 @@ static lisp_val_t *prim_chess_console(lisp_val_t *args, lisp_val_t *env) {
     lisp_park(&park);
     chess_console_run(); /* returns on 'quit' */
     lisp_unpark(&park);
+    console_set_title("lsh");
     return &true_val;
 }
 
 static lisp_val_t *prim_chess_touch(lisp_val_t *args, lisp_val_t *env) {
     (void)args; (void)env;
+    console_set_title("Chess");
     lisp_park_t park;
     lisp_park(&park);
     chess_touch_run();
     lisp_unpark(&park);
+    console_set_title("lsh");
     return &true_val;
 }
 
@@ -5217,6 +5221,11 @@ static lisp_val_t *prim_chess(lisp_val_t *args, lisp_val_t *env) {
         if (s && strcmp(s, "touch") == 0) return prim_chess_touch(NULL, env);
         if (s && strcmp(s, "console") == 0) return prim_chess_console(NULL, env);
     }
+#if CONFIG_ENABLE_TOUCH
+    if (!usbkbd_is_present()) {
+        return prim_chess_touch(NULL, env);
+    }
+#endif
     /* `(chess [cores])`, X8b: how many cores the engine may search on for
      * this session. 1 is the default and the pre-X8b behaviour; the setting
      * is cleared when the session ends, so it never leaks into the next. */
@@ -5233,6 +5242,7 @@ static lisp_val_t *prim_chess(lisp_val_t *args, lisp_val_t *env) {
     chess_console_run(); /* returns on 'quit' */
 #endif
     lisp_unpark(&park);
+    console_set_title("lsh");
     g_search_cores = 1;
     return &true_val;
 }

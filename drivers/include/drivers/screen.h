@@ -58,6 +58,10 @@
 #define SCREEN_MENU_H        (20 * CHROME_SCALE)
 #define SCREEN_TILE_Y        (22 * CHROME_SCALE)
 #define SCREEN_TITLEBAR_H    (17 * CHROME_SCALE)
+#define CHROME_CLOSE_X0(vx0) ((int32_t)(vx0) - 2 * (int32_t)CHROME_SCALE)
+#define CHROME_CLOSE_X1(vx0) ((int32_t)(vx0) + 32 * (int32_t)CHROME_SCALE)
+#define CHROME_CLOSE_Y0      ((int32_t)SCREEN_TILE_Y - 2 * (int32_t)CHROME_SCALE)
+#define CHROME_CLOSE_Y1      ((int32_t)(SCREEN_TILE_Y + SCREEN_TITLEBAR_H) + 4 * (int32_t)CHROME_SCALE)
 #define SCREEN_TEXT_X        (FONT_CELL_W)
 #define SCREEN_TEXT_Y        (40 * CHROME_SCALE)
 #define SCREEN_TEXT_COLS(w)  ((unsigned)(w) / (unsigned)FONT_CELL_W - 2u)
@@ -95,6 +99,7 @@ typedef struct {
     uint8_t   vterm_id;                 /* creator terminal ID */
     bool      in_use;
     bool      locked;                   /* canvas layout locked for this slot */
+    bool      buf565_owned;             /* true if buf565 was allocated by screen.c and should be freed by it */
     uint16_t  drawn_w;                  /* the window width `backing` was drawn at; 0: none */
     char      name[SCREEN_CTITLE_MAX];  /* unique canvas name (e.g. "plot", "chess", "map") */
     char      title[SCREEN_CTITLE_MAX]; /* canvas window title */
@@ -194,7 +199,7 @@ void screen_repaint(screen_t *scr);
 bool screen_set_layout(screen_t *scr, unsigned layout);
 bool screen_set_layout_vterm(screen_t *scr, uint8_t vterm_id, unsigned layout);
 bool screen_set_layout_vterm_named(screen_t *scr, uint8_t vterm_id, unsigned layout, const char *name);
-bool screen_set_layout_vterm_named_fmt(screen_t *scr, uint8_t vterm_id, unsigned layout, const char *name, uint8_t format);
+bool screen_set_layout_vterm_named_fmt(screen_t *scr, uint8_t vterm_id, unsigned layout, const char *name, uint8_t format, int16_t caller_pid);
 
 /* The text window's size, which is what a program may use. */
 void screen_text_size(const screen_t *scr, unsigned *cols, unsigned *rows);
@@ -251,9 +256,9 @@ void screen_text_size(const screen_t *scr, unsigned *cols, unsigned *rows);
  * this layout, or a bad request); [1] the pixel ('g'); [2..3] canvas width;
  * [4..5] canvas height (both 0 in TEXT); [6..7] damage; [8] layout; [9] 1 if
  * the panes are swapped. */
-#define SCREEN_REPLY_LEN 12u
+#define SCREEN_REPLY_LEN 16u
 
 void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, uint8_t *reply);
-void screen_canvas_vterm(screen_t *scr, uint8_t vterm_id, const uint8_t *req, uint32_t n, uint8_t *reply);
+void screen_canvas_vterm(screen_t *scr, uint8_t vterm_id, const uint8_t *req, uint32_t n, uint8_t *reply, int16_t caller_pid);
 
 #endif /* LUGALOS_DRIVERS_SCREEN_H */

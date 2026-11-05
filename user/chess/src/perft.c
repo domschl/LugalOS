@@ -100,7 +100,7 @@ static bool perft_ctx_init(perft_ctx_t *c) {
     }
     uint32_t bytes = (uint32_t)(PERFT_MAX_PLY * sizeof(MoveList));
     c->pages = (bytes + (uint32_t)PAGE_SIZE - 1) / (uint32_t)PAGE_SIZE;
-    c->lists = (MoveList *)palloc_pages(c->pages);
+    c->lists = (MoveList *)palloc_pages_bulk(c->pages);
     if (c->lists == NULL) {
         c->pages = 0;
         return false;
@@ -207,7 +207,7 @@ uint64_t run_perft_cores(Position *root, int depth, int workers, int *used) {
     MoveList root_list;
     generate_moves(root, &root_list);
 
-    perft_worker_t *w = (perft_worker_t *)palloc_pages(PERFT_WORKER_PAGES * (uint32_t)workers);
+    perft_worker_t *w = (perft_worker_t *)palloc_pages_bulk(PERFT_WORKER_PAGES * (uint32_t)workers);
     if (!w) return run_perft(root, depth);
 
     int made = 0;

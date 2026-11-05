@@ -6,6 +6,7 @@
 void shell_init(void);
 void shell_run(void);
 void shell_exec(const char *cmd_line);
+void shell_check_launcher_exec(void);
 /* As shell_exec(), for a command an agent chose (kernel/ea.c): privileged
  * commands -- keys, identity, network configuration, memory writes,
  * firmware -- are refused. */

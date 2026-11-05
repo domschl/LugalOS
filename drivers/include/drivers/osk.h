@@ -31,10 +31,12 @@
 #define OSK_KEY_LEFT        0x107
 #define OSK_KEY_RIGHT       0x108
 #define OSK_KEY_CTRL_C      0x109
+#define OSK_KEY_CMD         0x10A
 
 #define OSK_MOD_SHIFT       (1u << 0)
 #define OSK_MOD_CTRL        (1u << 1)
 #define OSK_MOD_SYM         (1u << 2)
+#define OSK_MOD_CMD         (1u << 3)
 
 /* Get total height of OSK in screen pixels (scale-aware) */
 int osk_get_height(void);

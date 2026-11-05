@@ -126,6 +126,30 @@ key_event_t keyseq_read_console(void) {
     return keyseq_read(&src);
 }
 
+static int canvas_con_getc(void *ctx) {
+    (void)ctx;
+    for (;;) {
+        int c = console_canvas_getc();
+        if (c >= 0) return c;
+        sched_yield();
+    }
+}
+
+static bool canvas_con_more(void *ctx) {
+    (void)ctx;
+    uint64_t until = time_get_us() + 30000u;
+    while (!console_canvas_has_key()) {
+        if (time_get_us() >= until) return false;
+        sched_yield();
+    }
+    return true;
+}
+
+key_event_t keyseq_read_canvas(void) {
+    const keyseq_src_t src = { canvas_con_getc, canvas_con_more, 0 };
+    return keyseq_read(&src);
+}
+
 /* --- keyselftest -------------------------------------------------------- */
 
 typedef struct {

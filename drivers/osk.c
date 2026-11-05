@@ -117,7 +117,7 @@ static const osk_key_t k_row4[] LCDTERM_URODATA = {
     { "Rt",    "Rt",    "Rt",    OSK_KEY_RIGHT,  OSK_KEY_RIGHT,  OSK_KEY_RIGHT,  10 },
     { "Up",    "Up",    "Up",    OSK_KEY_UP,     OSK_KEY_UP,     OSK_KEY_UP,     10 },
     { "Dn",    "Dn",    "Dn",    OSK_KEY_DOWN,   OSK_KEY_DOWN,   OSK_KEY_DOWN,   10 },
-    { "/",     "\\",    "|",     '/',            '\\',           '|',            10 },
+    { "Cmd",   "Cmd",   "Cmd",   OSK_KEY_CMD,    OSK_KEY_CMD,    OSK_KEY_CMD,    10 },
     { "Hide",  "Hide",  "Hide",  OSK_KEY_HIDE,   OSK_KEY_HIDE,   OSK_KEY_HIDE,   12 },
 };
 
@@ -227,6 +227,7 @@ LCDTERM_UTEXT void osk_draw(const canvas1_t *cv, int x0, int y0, int w, int h, u
     bool s_shift = (modifiers & OSK_MOD_SHIFT) != 0;
     bool s_ctrl  = (modifiers & OSK_MOD_CTRL)  != 0;
     bool s_sym   = (modifiers & OSK_MOD_SYM)   != 0;
+    bool s_cmd   = (modifiers & OSK_MOD_CMD)   != 0;
 
     /* Keyboard container background fill (clean white) */
     canvas1_fill(cv, x0, y0, x0 + w - 1, y0 + h - 1, CANVAS1_WHITE);
@@ -246,6 +247,7 @@ LCDTERM_UTEXT void osk_draw(const canvas1_t *cv, int x0, int y0, int w, int h, u
             if (key->code == OSK_KEY_SHIFT && s_shift) is_active = true;
             if (key->code == OSK_KEY_CTRL && s_ctrl)   is_active = true;
             if (key->code == OSK_KEY_SYM && s_sym)     is_active = true;
+            if (key->code == OSK_KEY_CMD && s_cmd)     is_active = true;
 
             int shadow = 2 * sc;
             /* Drop shadow bottom and right */
@@ -315,6 +317,7 @@ LCDTERM_UTEXT uint16_t osk_hit_test(int client_x, int client_y, int w, int h, ui
 
                 if (key->code == OSK_KEY_SHIFT || key->code == OSK_KEY_CTRL ||
                     key->code == OSK_KEY_SYM   || key->code == OSK_KEY_HIDE ||
+                    key->code == OSK_KEY_CMD   ||
                     key->code == OSK_KEY_UP    || key->code == OSK_KEY_DOWN ||
                     key->code == OSK_KEY_LEFT  || key->code == OSK_KEY_RIGHT ||
                     key->code == OSK_KEY_CTRL_C) {

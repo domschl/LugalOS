@@ -167,7 +167,7 @@ static void gesture(int x0, int y0, int x1, int y1, uint32_t ms) {
         /* Vertical swipe: scroll document up/down with momentum/inertia */
         g_t.swipes++;
         console_touch_scroll(dy, ms);
-    } else if (adx < TAP_PX && ady < TAP_PX && ms <= TAP_MS) {
+    } else if (adx < TAP_PX * 2 && ady < TAP_PX * 2 && ms <= TAP_MS) {
         g_t.taps++;
         console_touch_tap((unsigned)x0, (unsigned)y0);
     } else {
@@ -218,7 +218,11 @@ static void touch_task_body(void *arg) {
                     down = false;
                     g_t.log_kind = 3;
                     g_t.log_seq++;
-                    gesture(x0, y0, x, y, (uint32_t)(t_last - t0));
+                    if (s_touch_hook && s_touch_hook(x, y, 3)) {
+                        /* Handled by application hook: suppress ribbon gestures */
+                    } else {
+                        gesture(x0, y0, x, y, (uint32_t)(t_last - t0));
+                    }
                 }
                 continue;
             }

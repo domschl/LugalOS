@@ -132,6 +132,9 @@
 #if CONFIG_ENABLE_MOONBASE
 #include "moonbase.h"
 #endif
+#if CONFIG_ENABLE_CHESS
+#include "chess_ui.h"
+#endif
 #if CONFIG_ENABLE_CERES || CONFIG_ENABLE_SCROLLER
 #include "ceres.h"
 #endif
@@ -1645,6 +1648,37 @@ static void cmd_launcher(const char *arg) {
     }
     cprintf("Usage: launcher [open | close | status]\n");
 }
+
+#if CONFIG_ENABLE_CHESS
+static void cmd_chess(const char *arg) {
+    if (arg) {
+        while (*arg == ' ' || *arg == '\t') arg++;
+    }
+    bool touch = false;
+    if (arg && (strcmp(arg, "touch") == 0 || strcmp(arg, "t") == 0)) {
+        touch = true;
+    } else if (arg && (strcmp(arg, "console") == 0 || strcmp(arg, "c") == 0)) {
+        touch = false;
+    } else {
+#if CONFIG_ENABLE_TOUCH
+        if (!usbkbd_is_present()) {
+            touch = true;
+        }
+#endif
+    }
+    if (touch) {
+        chess_touch_run();
+    } else {
+        console_set_title("Chess");
+#if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735 && CONFIG_ENABLE_TM1638
+        chess_run();
+#else
+        chess_console_run();
+#endif
+        console_set_title("lsh");
+    }
+}
+#endif
 
 static void cmd_spartand(const char *arg) {
     if (!arg || !*arg || strcmp(arg, "status") == 0) {
@@ -6230,6 +6264,16 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         cprintf("uguiselftest: %s\n", ugui_selftest() ? "PASS" : "FAIL");
         return;
 #endif
+#if CONFIG_ENABLE_CHESS
+    } else if (strcmp(cmd_line, "chess") == 0) {
+        cmd_chess(NULL);
+        return;
+    } else if (strncmp(cmd_line, "chess ", 6) == 0) {
+        const char *arg = cmd_line + 6;
+        while (*arg == ' ') arg++;
+        cmd_chess(arg);
+        return;
+#endif
 #if CONFIG_ENABLE_MOONBASE
     } else if (strcmp(cmd_line, "moonbase") == 0 || strncmp(cmd_line, "moonbase ", 9) == 0) {
         moonbase_run(cmd_line[8] ? cmd_line + 9 : "");
@@ -8194,6 +8238,14 @@ static bool     s_prev_kbd_present = false;
 static uint32_t s_kbd_poll_ms      = 0;
 #endif
 
+static void launcher_app_worker(void *arg) {
+    char *cmd = (char *)arg;
+    if (cmd) {
+        parse_and_eval_cmd(cmd);
+        balloc_free(cmd);
+    }
+}
+
 static void shell_idle_poll(void) {
     lisp_canvas_poll();
 
@@ -8214,20 +8266,36 @@ static void shell_idle_poll(void) {
             if (s_prev_kbd_present && !cur_kbd) {
                 /* USB keyboard was disconnected: bring up the Touch Launcher */
                 (void)launcher_open();
+            } else if (!s_prev_kbd_present && cur_kbd) {
+                /* USB keyboard was connected: collapse virtual keyboard on terminal */
+                uint8_t kreq[2] = { 'k', 0 }, kreply[SCREEN_REPLY_LEN];
+                (void)console_canvas(kreq, 2, kreply);
             }
             s_prev_kbd_present = cur_kbd;
         }
     }
 #endif
 
+    shell_check_launcher_exec();
+}
+
+void shell_check_launcher_exec(void) {
     char touch_cmd[64];
     if (launcher_poll_exec(touch_cmd, sizeof(touch_cmd))) {
-        parse_and_eval_cmd(touch_cmd);
-        if (launcher_is_active()) {
-            console_set_active_win_type(RIBBON_WIN_LAUNCHER);
-            launcher_update();
+        size_t len = strlen(touch_cmd) + 1;
+        char *cmd_copy = (char *)balloc_alloc((uint32_t)len);
+        if (cmd_copy) {
+            memcpy(cmd_copy, touch_cmd, len);
+            int pid = task_create_sized("app", launcher_app_worker, cmd_copy, VTERM_SHELL_STACK_PAGES);
+            if (pid < 0) {
+                parse_and_eval_cmd(cmd_copy);
+                balloc_free(cmd_copy);
+            } else {
+                task_set_vterm(pid, 0);
+            }
+        } else {
+            parse_and_eval_cmd(touch_cmd);
         }
-        console_set_title("lsh");
     }
 }
 

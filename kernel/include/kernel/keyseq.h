@@ -61,6 +61,9 @@ key_event_t keyseq_read(const keyseq_src_t *src);
 /* The console as a source: console_getc(), and up to 30 ms for `more`. */
 key_event_t keyseq_read_console(void);
 
+/* The active canvas window as a source: console_canvas_getc(), and up to 30 ms for `more`. */
+key_event_t keyseq_read_canvas(void);
+
 /* `keyselftest`: every form above from byte strings. Prints
  * KEYSEQ_SELFTEST_OK/_FAIL; returns the failures. */
 int keyseq_selftest(void);
