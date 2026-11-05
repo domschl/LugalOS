@@ -760,7 +760,9 @@ bool launcher_tap(int client_x, int client_y) {
         return true;
     }
 #if defined(CONFIG_BOARD_TAB5)
-    if (id == LAUNCHER_ID_ORIENT_SEG) {
+    /* ugui_segmented() gives each segment its own id, base + index. */
+    if (id >= LAUNCHER_ID_ORIENT_SEG && id < LAUNCHER_ID_ORIENT_SEG + 3) {
+        hit_idx = (int16_t)(id - LAUNCHER_ID_ORIENT_SEG);
         if (hit_idx == 0) {
             orient_set_auto(false);
             dsi_lcd_set_orientation(270);
