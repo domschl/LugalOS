@@ -837,12 +837,18 @@ static void sched_check_incoming(int prev, int next) {
         sched_stack_check_sp(next, g_tasks[next].sp, "its last switch");
     }
     /* The kernel's own .text, and nothing else -- see the block that defines
-     * these in each of the four linker scripts. _ram_start/_ram_end bound
-     * where a stack can possibly live, on all four. */
+     * these in each of the linker scripts. A stack lives between _ram_start
+     * and the higher of _ram_end and _heap_end: task stacks come from the
+     * page heap, which on the LCD-7B (esp32p4_memory_rev3.ld, 66.4) runs past
+     * RAM's end over the ROM's download buffers. Bounding by _ram_end alone
+     * halted the 7B as soon as a stack was handed out up there (the second
+     * terminal, then chess from the launcher). */
     extern char _ktext_lo[];
     extern char _ktext_hi[];
     extern char _ram_start[];
     extern char _ram_end[];
+    extern char _heap_end[];
+    uintptr_t stack_hi = (uintptr_t)_heap_end > (uintptr_t)_ram_end ? (uintptr_t)_heap_end : (uintptr_t)_ram_end;
     uintptr_t sp = g_tasks[next].sp;
 
     /* Validate the pointer before following it. A guard that faults while
@@ -851,11 +857,11 @@ static void sched_check_incoming(int prev, int next) {
      * produce is what gets lost. The old code dereferenced any non-zero sp,
      * which is safe only for the failure it was written for -- sp intact, ra
      * zeroed -- and not for the one where sp itself is the garbage. */
-    if (sp < (uintptr_t)_ram_start || sp + sizeof(uintptr_t) > (uintptr_t)_ram_end) {
+    if (sp < (uintptr_t)_ram_start || sp + sizeof(uintptr_t) > stack_hi) {
         printk_critical("\n[Sched BUG] switching %d '%s' -> %d '%s': parked sp=0x%lx"
                         " is not in RAM (0x%lx..0x%lx); not dereferencing it\n",
                prev, g_tasks[prev].name, next, g_tasks[next].name, (unsigned long)sp,
-               (unsigned long)(uintptr_t)_ram_start, (unsigned long)(uintptr_t)_ram_end);
+               (unsigned long)(uintptr_t)_ram_start, (unsigned long)stack_hi);
         sched_dump_table();
         printk_critical("[Sched BUG] halting with the table intact.\n");
         for (;;) { __asm__ __volatile__("wfi"); }

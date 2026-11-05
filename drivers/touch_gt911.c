@@ -32,6 +32,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
 
 #if defined(TOUCH_PRESENT)
 
@@ -334,8 +335,40 @@ int touch_start(void) {
     return pid;
 }
 
+/* `touch tap X Y`, `touch swipe left|right|up|down`: what the gesture code
+ * hands the console for a real tap or swipe, so a test or a person at the
+ * serial console can drive the touch paths without a finger. */
+static bool touch_inject(const char *args) {
+    if (strncmp(args, "tap", 3) == 0) {
+        const char *p = args + 3;
+        unsigned v[2] = { 0, 0 };
+        for (int i = 0; i < 2; i++) {
+            while (*p == ' ') p++;
+            if (*p < '0' || *p > '9') { cprintf("usage: touch tap X Y (screen pixels)\n"); return true; }
+            while (*p >= '0' && *p <= '9') v[i] = v[i] * 10u + (unsigned)(*p++ - '0');
+        }
+        console_touch_tap(v[0], v[1]);
+        cprintf("touch: tap at %u,%u\n", v[0], v[1]);
+        return true;
+    }
+    if (strncmp(args, "swipe", 5) == 0) {
+        const char *p = args + 5;
+        while (*p == ' ') p++;
+        /* The finger moving left brings the window on the right into view. */
+        if (strcmp(p, "left") == 0) console_hotkey(CONSOLE_HOTKEY_FOCUS_RIGHT);
+        else if (strcmp(p, "right") == 0) console_hotkey(CONSOLE_HOTKEY_FOCUS_LEFT);
+        else if (strcmp(p, "up") == 0) console_touch_scroll(-200, 150);
+        else if (strcmp(p, "down") == 0) console_touch_scroll(200, 150);
+        else { cprintf("usage: touch swipe left|right|up|down\n"); return true; }
+        cprintf("touch: swipe %s\n", p);
+        return true;
+    }
+    return false;
+}
+
 void touch_command(const char *args) {
     while (*args == ' ') args++;
+    if (touch_inject(args)) return;
     if (!g_t.found) { cprintf("touch: no touch controller found at boot\n"); return; }
     if (args[0] == 'l') {                               /* `ts log [s]` */
         const char *p = args;

@@ -2682,6 +2682,9 @@ void chess_run(void) {
 #endif /* CONFIG_ENABLE_ST7735 */
 #endif /* CONFIG_BOARD_RP2350 && CONFIG_ENABLE_TM1638 */
 
+/* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
+static bool g_touch_active = false;
+
 #if !(defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735)
 /* --- 37.4: the board on the canvas ------------------------------------------
  *
@@ -2792,8 +2795,6 @@ static void canvas_board_draw(const Position *pos) {
     }
 }
 
-/* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
-static bool g_touch_active = false;
 
 #if !(defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735)
 /* guarded by: the chess session claim (chess_ui.c's chess_claim()). */
@@ -2972,6 +2973,7 @@ void chess_console_run(void) {
     chess_unclaim();
 }
 
+#if !(defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735)
 /* ========================================================================= *
  * Touch-First Chess Mode: Full-Window Interactive Canvas with ugui Chrome   *
  * ========================================================================= */
@@ -3005,7 +3007,7 @@ static int        g_touch_sel_sq = -1;
 static int        g_touch_pending_from = -1;
 static int        g_touch_pending_to = -1;
 static bool       g_touch_pending_promo = false;
-static ugui_ctx_t g_touch_ui_ctx;
+static ugui_ctx_t g_touch_ui_ctx BULK_BSS;   /* 1.5 KB: PSRAM where the board has one */
 static int        g_touch_win_w = 0;
 static int        g_touch_win_h = 0;
 static int        g_touch_board_x = 0;
@@ -3689,5 +3691,12 @@ void chess_touch_run(void) {
     console_set_title("lsh");
     chess_unclaim();
 }
+#else
+void chess_touch_run(void) {
+    cprintf("chess: the touch board needs a panel; this board plays on its ST7735 and keypad\n");
+}
+
+static void chess_touch_search_poll(void) {}
+#endif /* touch mode: panels only */
 
 

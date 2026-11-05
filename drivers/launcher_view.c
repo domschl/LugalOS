@@ -838,6 +838,12 @@ void launcher_report(void) {
             (unsigned)s_launcher.slot_id,
             s_launcher.win_w, s_launcher.win_h,
             s_launcher.doc_count, s_launcher.ui_ctx.count);
+    /* The hit-boxes, window-relative, for `touch tap` in tests. */
+    for (int i = 0; i < s_launcher.ui_ctx.count; i++) {
+        const ugui_hit_t *h = &s_launcher.ui_ctx.hits[i];
+        cprintf("  hit id %u index %d: x %d..%d y %d..%d\n", (unsigned)h->id, (int)h->index,
+                (int)h->rect.x, (int)(h->rect.x + h->rect.w - 1), (int)h->rect.y, (int)(h->rect.y + h->rect.h - 1));
+    }
 }
 
 #endif
