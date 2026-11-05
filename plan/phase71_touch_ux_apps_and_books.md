@@ -386,6 +386,11 @@ Done: the frame record and `uxbench`; glass, screen, layout and strip checks; co
 - Edge swipe out of moonbase and ceres (2.2), with `SUSPEND`/`RESUME` in both games' P4 platform layers.
 - **Acceptance:** host test of the recogniser on recorded traces from both chips (tap, long press, swipes in four directions, drag, wobble, edge swipes); on the 7B a tap reaches the view ≤ 60 ms after lift (was ≥ 250 ms); an edge swipe leaves moonbase and ceres on the Tab5 and the 7B, and a content swipe inside them still pans the game; chess unchanged in behaviour; hardware suites pass.
 
+**71.2 progress (2026-11-05):**
+- **Recogniser** (`drivers/gesture.c`, `tests/host/gesture_host.c`, 48 checks under ASan/UBSan): tap, long press and four swipes from one finger's contacts, thresholds in millimetres from the board's new `CONFIG_PANEL_DPI` (Tab5 294, 7B 170, RP2350-LCD-7 133): a tap moves under 5 mm, a swipe crosses 10 mm, a long press is held 500 ms. The touch driver feeds it and maps its gestures onto today's outputs (tap, ribbon move, scroll); long presses are counted, not yet used.
+- **Lift detection:** the GT911's zero-point report and the ST7123's first empty coordinate report during a contact end it at once (measured on the Tab5: every empty report during a contact came after its last point). Before, a contact ended 80 ms (ST7123) or up to 250 ms (GT911) after its last report; that is now only the fallback for a missed lift. `ts` reports how contacts ended and the longest gap within one. The owner: the 7B's on-screen keyboard is instant, the Tab5's faster with a slight, acceptable delay; taps, swipes and drags work on both.
+- **Injection:** `ts tap X Y`, `ts swipe left|right|up|down` (with the 7B crash fix).
+
 ### 71.3 — `ugui` v2 and touch feedback
 - Items 1-14 of 2.4, with `uguiselftest` cases for each (focus order and arrow navigation, armed/disarm/activate, damage union, clip, virtual list ranges, text field editing, dialog capture).
 - **OSK feedback:** armed key drawn inverted at touch-down; a key preview bubble above the key on HiDPI (2× glyph); repeat on long press for Backspace and arrows; optional click sound (`ui.click_sound`, short tone through `audio_esp32p4`); Shift/Ctrl state visibly latched.

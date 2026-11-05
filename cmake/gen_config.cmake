@@ -264,6 +264,9 @@ set(_optional_keys
     # How its touch layer sits on the panel: its X / Y run against the
     # picture's. Absent: with it.
     CONFIG_TOUCH_MIRROR_X CONFIG_TOUCH_MIRROR_Y
+    # The panel's pixel density, dots per inch, for sizes in millimetres
+    # (drivers/gesture.c's touch thresholds). Absent: 133, the RP2350-LCD-7's.
+    CONFIG_PANEL_DPI
     # Typography: HiDPI display scaling profile (e.g. 16x32 cells for Tab5).
     # Absent: Standard density (8x16 cells).
     CONFIG_FONT_HIDPI CONFIG_FONT_CELL_W CONFIG_FONT_CELL_H

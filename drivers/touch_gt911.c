@@ -16,12 +16,12 @@
  * 100 kHz bus). Both boards already answer at 0x5D after power-up, so the
  * reset/address-select dance with INT is not needed either.
  *
- * Gestures come from the first point only, from press to release:
- *   moved less than TAP_PX in both axes, within TAP_MS     -> a tap
- *   moved at least SWIPE_PX sideways, twice as far as down -> a swipe
- * anything else is nothing. */
+ * Gestures come from the first point only, classified by drivers/gesture.c
+ * in millimetres at the panel's CONFIG_PANEL_DPI: a tap, a long press, or a
+ * swipe in one of four directions; anything else is nothing. */
 
 #include "drivers/touch.h"
+#include "drivers/gesture.h"
 #include "drivers/i2c_bus.h"
 #include "kernel/console.h"
 #include "kernel/printk.h"
@@ -50,13 +50,9 @@
 #define ST7123_REPORT_0   0x0014u
 
 #define POLL_MS   20u
-#if defined(CONFIG_FONT_HIDPI)
-#define TAP_PX    48        /* screen pixels on HiDPI (~300 DPI): finger wobble */
-#else
-#define TAP_PX    24        /* screen pixels on standard DPI (~133-170 DPI) */
+#if !defined(CONFIG_PANEL_DPI)
+#define CONFIG_PANEL_DPI 133
 #endif
-#define TAP_MS    600u
-#define SWIPE_DIV 8         /* a swipe crosses at least 1/8 of the width/height */
 
 typedef enum {
     CHIP_NONE = 0,
@@ -71,7 +67,13 @@ typedef struct {
     const char       *chip_name;
     uint16_t          res_x, res_y;          /* the controller's coordinate space */
     unsigned          scr_w, scr_h;          /* the screen's, when last mapped */
-    uint32_t          polls, reports, presses, taps, swipes, nothings, errors;
+    uint32_t          polls, reports, presses, taps, swipes, longs, nothings, errors;
+    uint32_t          ends_lifted, ends_quiet;   /* how contacts ended: a lift report, or reports stopping */
+    uint32_t          st_empty;                  /* ST7123 reports with coordinates but no valid point */
+    uint32_t          st_empty_down;             /* ... of them while a contact was down */
+    uint32_t          st_empty_mid;              /* ... followed by a point again in the same contact */
+    uint32_t          gap_max_ms;                /* longest gap between two reports of one contact */
+    gesture_state_t   gs;                    /* the first point's contact */
     int               last_x, last_y;        /* mapped, the last point seen */
     volatile uint32_t log_seq;               /* bumped per event, for `ts log` */
     volatile int      log_kind;              /* 1 press, 2 move, 3 release */
@@ -154,38 +156,48 @@ static void map_point(unsigned rx, unsigned ry, int *x, int *y) {
     *y = (int)py;
 }
 
-static void gesture(int x0, int y0, int x1, int y1, uint32_t ms) {
-    int dx = x1 - x0, dy = y1 - y0;
-    int adx = dx < 0 ? -dx : dx, ady = dy < 0 ? -dy : dy;
-    int swipe_px_x = (int)(g_t.scr_w ? g_t.scr_w : 800u) / SWIPE_DIV;
-    int swipe_px_y = (int)(g_t.scr_h ? g_t.scr_h : 480u) / SWIPE_DIV;
-    if (adx >= swipe_px_x && adx >= 2 * ady) {
-        /* The finger drags the ribbon: moving it left brings the window on
-         * the right into view, as Cmd+Right does. */
-        g_t.swipes++;
-        console_hotkey(dx < 0 ? CONSOLE_HOTKEY_FOCUS_RIGHT : CONSOLE_HOTKEY_FOCUS_LEFT);
-    } else if (ady >= swipe_px_y && ady >= 2 * adx) {
-        /* Vertical swipe: scroll document up/down with momentum/inertia */
-        g_t.swipes++;
-        console_touch_scroll(dy, ms);
-    } else if (adx < TAP_PX * 2 && ady < TAP_PX * 2 && ms <= TAP_MS) {
-        g_t.taps++;
-        console_touch_tap((unsigned)x0, (unsigned)y0);
-    } else {
-        g_t.nothings++;
+/* What a finished gesture does: a horizontal swipe moves the ribbon (the
+ * finger dragging it: moving left brings the window on the right into view,
+ * as Cmd+Right does), a vertical one scrolls, a tap taps. A long press is
+ * counted for `ts`; nothing acts on it yet. */
+static void gesture_act(gesture_kind_t kind, const gesture_t *ev) {
+    switch (kind) {
+    case GESTURE_SWIPE_LEFT:  g_t.swipes++; console_hotkey(CONSOLE_HOTKEY_FOCUS_RIGHT); break;
+    case GESTURE_SWIPE_RIGHT: g_t.swipes++; console_hotkey(CONSOLE_HOTKEY_FOCUS_LEFT); break;
+    case GESTURE_SWIPE_UP:
+    case GESTURE_SWIPE_DOWN:  g_t.swipes++; console_touch_scroll(ev->dy, ev->ms); break;
+    case GESTURE_TAP:         g_t.taps++; console_touch_tap((unsigned)ev->x, (unsigned)ev->y); break;
+    case GESTURE_LONG_PRESS:  g_t.longs++; break;
+    default:                  g_t.nothings++; break;
     }
+}
+
+/* The contact ended, last seen at last_ms: the application's hook first,
+ * then the gesture (timed to the last report, not to when the end was
+ * noticed, so a tap's and a swipe's duration do not include the wait). */
+static void contact_end(int x, int y, uint64_t last_ms) {
+    g_t.log_kind = 3;
+    g_t.log_seq++;
+    gesture_t ev;
+    gesture_kind_t kind = gesture_contact(&g_t.gs, false, x, y, (uint32_t)last_ms, &ev);
+    if (s_touch_hook && s_touch_hook(x, y, 3)) return;   /* handled by the application */
+    if (kind != GESTURE_NONE || !g_t.gs.long_sent) gesture_act(kind, &ev);
 }
 
 static void touch_task_body(void *arg) {
     (void)arg;
     bool down = false;
-    int x0 = 0, y0 = 0, x = 0, y = 0;
-    uint64_t t0 = 0, t_last = 0;
+    bool empty_seen = false;      /* an ST7123 empty report since this contact's last point */
+    int x = 0, y = 0;
+    uint64_t t_last = 0;
+    gesture_init(&g_t.gs, CONFIG_PANEL_DPI);
     for (;;) {
         task_sleep_ms(POLL_MS);
         g_t.polls++;
 
         bool got = false;
+        bool lifted = false;      /* the controller said the finger is gone */
+        bool st_empty_now = false;
         unsigned rx = 0, ry = 0;
 
         if (g_t.chip == CHIP_ST7123) {
@@ -201,6 +213,9 @@ static void touch_task_body(void *arg) {
                         rx = ((unsigned)(p[0] & 0x3Fu) << 8) | p[1];
                         ry = ((unsigned)(p[2] & 0x0Fu) << 8) | p[3];
                         got = true;
+                    } else {
+                        g_t.st_empty++;        /* counted to see whether it marks a lift */
+                        st_empty_now = true;
                     }
                 }
                 /* ST7121/ST7123 TDDI requires reading through the end of the coordinate table
@@ -214,62 +229,70 @@ static void touch_task_body(void *arg) {
                 g_t.errors++;
                 continue;
             }
-            if (!(st & 0x80u)) {
-                if (down && time_get_ms() - t_last > 250u) {
-                    down = false;
-                    g_t.log_kind = 3;
-                    g_t.log_seq++;
-                    if (s_touch_hook && s_touch_hook(x, y, 3)) {
-                        /* Handled by application hook: suppress ribbon gestures */
-                    } else {
-                        gesture(x0, y0, x, y, (uint32_t)(t_last - t0));
-                    }
+            if (st & 0x80u) {
+                /* A report: points, or none -- the finger lifted, which ends
+                 * the contact now rather than after a timeout (a tap used to
+                 * land 80-250 ms after the lift). */
+                unsigned n = st & 0x0Fu;
+                uint8_t p[8];
+                got = n > 0 && reg_read(g_t.addr, GT911_POINT1, p, 8);
+                lifted = n == 0;
+                (void)reg_write8(g_t.addr, GT911_STATUS, 0);
+                if (got) {
+                    rx = (unsigned)(p[1] | (p[2] << 8));
+                    ry = (unsigned)(p[3] | (p[4] << 8));
                 }
-                continue;
-            }
-            unsigned n = st & 0x0Fu;
-            uint8_t p[8];
-            got = n > 0 && reg_read(g_t.addr, GT911_POINT1, p, 8);
-            (void)reg_write8(g_t.addr, GT911_STATUS, 0);
-            if (got) {
-                rx = (unsigned)(p[1] | (p[2] << 8));
-                ry = (unsigned)(p[3] | (p[4] << 8));
             }
         }
 
+        /* The ST7123 sends coordinate reports with no valid point all the
+         * time, touched or not; while a contact is down, the first one is
+         * the lift (measured on the Tab5, 2026-11-05: 92 during contacts,
+         * none ever followed by another point of the same contact). */
+        if (st_empty_now && down) { g_t.st_empty_down++; empty_seen = true; lifted = true; }
         if (got) {
-            t_last = time_get_ms();
+            uint64_t now = time_get_ms();
+            if (down) {
+                if (now - t_last > g_t.gap_max_ms) g_t.gap_max_ms = (uint32_t)(now - t_last);
+                if (empty_seen) g_t.st_empty_mid++;
+            }
+            empty_seen = false;
+            t_last = now;
             g_t.reports++;
             map_point(rx, ry, &x, &y);
             g_t.last_x = x;
             g_t.last_y = y;
-            int kind = 2;
+            int kind = down ? 2 : 1;
             if (!down) {
                 down = true;
-                x0 = x; y0 = y;
-                t0 = time_get_ms();
                 g_t.presses++;
-                g_t.log_kind = 1;
-                kind = 1;
-            } else {
-                g_t.log_kind = 2;
-                kind = 2;
             }
+            g_t.log_kind = kind;
             g_t.log_seq++;
+            (void)gesture_contact(&g_t.gs, true, x, y, (uint32_t)t_last, NULL);
             if (s_touch_hook) {
                 (void)s_touch_hook(x, y, kind);
             }
         } else if (down) {
-            if (time_get_ms() - t_last > 80u) {
+            /* No point this poll: ended if the controller said so, or if
+             * reports stopped (a missed lift: 80 ms on the ST7123, which
+             * reports at every 20 ms poll while touched -- 49 ms the longest
+             * gap seen; 250 ms on the GT911). */
+            uint64_t quiet = time_get_ms() - t_last;
+            if (lifted || quiet > (g_t.chip == CHIP_ST7123 ? 80u : 250u)) {
                 down = false;
-                g_t.log_kind = 3;
-                g_t.log_seq++;
-                if (s_touch_hook && s_touch_hook(x, y, 3)) {
-                    /* Handled by application hook: suppress ribbon gestures */
-                } else {
-                    gesture(x0, y0, x, y, (uint32_t)(t_last - t0));
-                }
+                if (lifted) g_t.ends_lifted++; else g_t.ends_quiet++;
+                contact_end(x, y, t_last);
+            } else {
+                gesture_t ev;
+                gesture_kind_t k = gesture_tick(&g_t.gs, (uint32_t)time_get_ms(), &ev);
+                if (k != GESTURE_NONE && !s_touch_hook) gesture_act(k, &ev);
             }
+        }
+        if (down && got) {
+            gesture_t ev;
+            gesture_kind_t k = gesture_tick(&g_t.gs, (uint32_t)time_get_ms(), &ev);
+            if (k != GESTURE_NONE && !s_touch_hook) gesture_act(k, &ev);
         }
     }
 }
@@ -411,10 +434,18 @@ void touch_command(const char *args) {
             "",
 #endif
             POLL_MS);
-    cprintf("touch: %lu polls, %lu reports, %lu presses: %lu taps, %lu swipes, %lu neither; %lu I2C errors\n",
+    cprintf("touch: %lu polls, %lu reports, %lu presses: %lu taps, %lu long presses, %lu swipes, %lu neither; "
+            "%lu I2C errors\n",
             (unsigned long)g_t.polls, (unsigned long)g_t.reports, (unsigned long)g_t.presses,
-            (unsigned long)g_t.taps, (unsigned long)g_t.swipes, (unsigned long)g_t.nothings,
-            (unsigned long)g_t.errors);
+            (unsigned long)g_t.taps, (unsigned long)g_t.longs, (unsigned long)g_t.swipes,
+            (unsigned long)g_t.nothings, (unsigned long)g_t.errors);
+    cprintf("touch: contacts ended by a lift report %lu, by reports stopping %lu; "
+            "ST7123 reports without a valid point %lu (%lu while down, %lu mid-contact); "
+            "longest gap in a contact %lu ms\n",
+            (unsigned long)g_t.ends_lifted, (unsigned long)g_t.ends_quiet, (unsigned long)g_t.st_empty,
+            (unsigned long)g_t.st_empty_down, (unsigned long)g_t.st_empty_mid, (unsigned long)g_t.gap_max_ms);
+    cprintf("touch: %u dpi: a tap moves under %d px, a swipe crosses %d px\n",
+            (unsigned)CONFIG_PANEL_DPI, (int)g_t.gs.tap_px, (int)g_t.gs.swipe_px);
     if (g_t.presses) cprintf("touch: last point %d,%d\n", g_t.last_x, g_t.last_y);
 }
 

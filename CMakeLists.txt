@@ -794,6 +794,8 @@ set(SOURCES
     # a GT911 touch controller, polled; empty unless the board file
     # declares one (CONFIG_TOUCH_GT911).
     drivers/touch_gt911.c
+    # one finger's contacts into gestures, in millimetres (portable).
+    drivers/gesture.c
     # D1: the DCF-77 frame decoder is
     # target-independent -- it consumes timestamped samples, never a register
     # -- so it is built and self-tested on every target, including the QEMU

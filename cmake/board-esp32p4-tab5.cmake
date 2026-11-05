@@ -136,6 +136,7 @@ set(CONFIG_DSI_LCD_BL_ACTIVE_HIGH 1)
 # TP_INT on GPIO23. This physical unit carries the ST7123 at 0x55 [meas].
 set(CONFIG_TOUCH_GT911    1)
 set(CONFIG_TOUCH_ST7123   1)
+set(CONFIG_PANEL_DPI       294)  # 5" 720 x 1280: 1468 px over 5.0 in
 set(CONFIG_TOUCH_INT_GPIO 23)
 
 # --- USB Host: USB Type-A port (J10) on DWC2 OTG 2.0 High-Speed PHY -------

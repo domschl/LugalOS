@@ -93,6 +93,7 @@ set(CONFIG_SPI1_CS_GPIO   15)
 # neither needed: it answers after power-up and is polled). On the version
 # without touch the probe finds nothing and says so once.
 set(CONFIG_TOUCH_GT911 1)
+set(CONFIG_PANEL_DPI 133)   # 7" 800 x 480: 933 px over 7.0 in
 set(CONFIG_I2C_RTC_BASE     0x40098000) # I2C1
 set(CONFIG_I2C_RTC_SDA_GPIO 6)
 set(CONFIG_I2C_RTC_SCL_GPIO 7)
