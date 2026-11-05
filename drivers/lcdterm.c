@@ -764,6 +764,10 @@ void lcdterm_settle(void) {
     if (g_be && g_be->settle) g_be->settle();
 }
 
+long lcdterm_check(unsigned *x0, unsigned *y0, unsigned *x1, unsigned *y1) {
+    return g_be && g_be->check ? g_be->check(x0, y0, x1, y1) : -1;
+}
+
 void lcdterm_damage(void) {
     damage(0, g_be ? g_be->h : 0);
 }

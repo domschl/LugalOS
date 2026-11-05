@@ -319,6 +319,36 @@ The 7B's frames are **5× cheaper** than the Tab5's (25 against 126 ms), which m
 - **71.1e (stretch, decided on 71.1d's numbers):** terminal cell surfaces.
 - **Acceptance:** `uxbench` meets the 2.1 targets on the Tab5 landscape; the 7B is not slower on any row; `lcd verify` and `tests/hw/lcdterm_shots.py` pass; RP2350 pixel-identical; zero `racescan` violations; `lockcheck` shows no new pairs.
 
+**71.1 progress (2026-11-05):**
+
+*Done:*
+- **71.1c (first half):** the 1-bpp conversion skips every unit wholly inside a reader, launcher or canvas surface (both rotated and native paths, GRAY8 included). A surface that moved or went away since a back buffer showed it is repainted there from the 1-bpp frame (`srf_track()`), and a reader there is composited again.
+- **71.1d (first half):** `term_sync_post()` no longer forces a full redraw. Animation steps convert only what changed.
+- **71.1a/b (measured, partly kept):** reader/launcher surfaces get an RGB565 copy on RGB565 frames, composited and rotated by the PPA. It is used only where the copy is current or the window moved (pan), because new content costs more that way (see below).
+- **Correctness check:** `lcd check` and `uxbench` compare the incrementally drawn frame against a forced full redraw of the same state, pixel by pixel. Every scenario matches on the Tab5 and the 7B.
+
+| `uxbench`, median input to glass | Tab5 71.0 → now | 7B 71.0 → now | RP2350 (first record) |
+| :--- | :--- | :--- | :--- |
+| Focus move / pan | 1031 → 577 ms | 265 → 215 ms | 108 ms |
+| Reader line scroll | 856 → 646 ms | 332 → 282 ms | 390 ms |
+| Reader page scroll | 1398 → 1065 ms | 579 → 497 ms | 469 ms |
+| Reader redraw | 157 → 157 ms | 83 → 83 ms | 195 ms |
+| Launcher redraw | 140 → 140 ms | 66 → 50-66 ms | 20 ms |
+
+*Finding: the Tab5 is PSRAM-bandwidth-bound in RGB565, and the PPA does not get around it.*
+
+| Tab5 landscape, full-width reader (~0.8 Mpx) | Cost |
+| :--- | :--- |
+| CPU composite, GRAY8 → RGB565, rotated, per pixel | ~70 ms |
+| GRAY8 → RGB565 copy on the CPU (for the PPA) | ~48 ms |
+| PPA SRM rotate of that copy into the frame (DMA alone) | ~40 ms (~80 MB/s: 1.6 MB read + 1.6 MB written) |
+
+Moonbase's PPA pass (Phase 64) reads only 0.46 MB, a quarter-size source scaled 2×, which is why it was fast. Here source and destination are full-size. The panel's scanout of a 1.84 MB RGB565 frame at 60 Hz already reads ~110 MB/s from the same PSRAM. So every full-window change costs ≥ 40 ms on the Tab5 in RGB565, whichever engine moves the pixels. The 2.1 targets (pan ≤ 150 ms, scroll frames ≤ 16 ms) are not reachable this way for full-width windows.
+
+*Open for decision (owner):* a **GRAY8 frame on the Tab5**, as the 7B has, halves the scanout traffic (to ~55 MB/s) and every composite (1 byte a pixel). The cost: the anti-aliased terminal pass needs a GRAY8 output, and the rotated GRAY8 composite must be a CPU tiled transpose (SRM GRAY8 needs chip rev ≥ 3.0). Games' RGB565 canvases already switch the frame to RGB565 while visible (`fb_start(FB_RGB565)` in the snapshot). This would revise decision 1 for the Tab5's *frame*. Surfaces stay GRAY8, which then suits both boards.
+
+*Still to do in 71.1:* scroll as a source offset (taller surface, render only exposed rows: makes scroll frames composite-only), ugui 1-bpp drawing only on demand, the reader's whole-screen `lcdterm_repaint()` after each update, and the frame decision above.
+
 ### 71.2 — Input pipeline and system events
 - Raw contact reporting from both touch chips; GT911 zero-count release; recogniser with mm thresholds and `LONG_PRESS`, `DRAG_*`, throttled `POINTER_MOVE`.
 - Claims and arbitration (2.2 rules 1-3); edge band and chrome start.

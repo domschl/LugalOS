@@ -36,7 +36,7 @@
     "drivers/i2c_rtc.c": 18,
     "drivers/idstore_rp2350.c": 28,
     "drivers/ina226.c": 52,
-    "drivers/lcd7_rp2350.c": 101,
+    "drivers/lcd7_rp2350.c": 105,
     "drivers/lcdterm.c": 2634,
     "drivers/loopback_net.c": 2060,
     "drivers/mcp9808.c": 76,
@@ -145,7 +145,7 @@
     "chess": 33871,
     "clock-app": 136,
     "crypto": 67,
-    "display": 2872,
+    "display": 2876,
     "drivers": 2664,
     "fs": 64,
     "httpd": 70,
@@ -165,5 +165,5 @@
     "vfs": 4111
   },
   "ram_code": 24484,
-  "total": 198340
+  "total": 198344
 }

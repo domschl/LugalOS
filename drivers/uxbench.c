@@ -126,7 +126,7 @@ typedef enum { UXB_PAN, UXB_SCROLL, UXB_PAGE, UXB_REDRAW, UXB_LAUNCHER } uxb_kin
 
 typedef struct {
     uxb_ribbon_t rb;
-    lcdterm_frame_stat_t *frames;    /* UXB_MAX_FRAMES, one PSRAM page */
+    lcdterm_frame_stat_t *frames;    /* UXB_MAX_FRAMES, in PSRAM pages */
     uint32_t col[UXB_MAX_FRAMES];
 } uxb_t;
 
@@ -193,17 +193,25 @@ static void uxb_run(uxb_t *u, uxb_kind_t kind, const char *name, unsigned n) {
     cprintf("uxbench %-8s: %u actions, input to glass median %lu.%lu ms, p95 %lu.%lu ms\n",
             name, done, (unsigned long)(wmed / 1000u), (unsigned long)(wmed % 1000u / 100u),
             (unsigned long)(wp95 / 1000u), (unsigned long)(wp95 % 1000u / 100u));
+    unsigned cx0 = 0, cy0 = 0, cx1 = 0, cy1 = 0;
+    long diff = lcdterm_check(&cx0, &cy0, &cx1, &cy1);
+    if (diff > 0) {
+        cprintf("                  GLASS CHECK FAILED: %ld pixels differ from a full redraw, frame x %u..%u y %u..%u\n",
+                diff, cx0, cx1, cy0, cy1);
+    } else if (diff == 0) {
+        cprintf("                  glass check: matches a full redraw\n");
+    }
     if (!nf) {
         cprintf("                  (this panel does not time its frames)\n");
         return;
     }
     /* Per frame: the median of each stage on its own. */
-    uint32_t med[7], p95[7];
-    for (unsigned s = 0; s < 7u; s++) {
+    uint32_t med[10], p95[10];
+    for (unsigned s = 0; s < 10u; s++) {
         for (unsigned f = 0; f < nf; f++) {
             const lcdterm_frame_stat_t *fs = &u->frames[f];
             u->col[f] = s == 0 ? fs->total_us : s == 1 ? fs->snap_us : s == 2 ? fs->conv_us :
-                        s == 3 ? fs->reader_us : s == 4 ? fs->canvas_us : s == 5 ? fs->term_us : fs->wb_us;
+                        s == 3 ? fs->reader_us : s == 4 ? fs->canvas_us : s == 5 ? fs->term_us : s == 6 ? fs->wb_us : s == 7 ? fs->mirror_us : s == 8 ? fs->ppa_call_us : fs->ppa_us;
         }
         uxb_mp(u->col, nf, &med[s], &p95[s]);
     }
@@ -214,9 +222,11 @@ static void uxb_run(uxb_t *u, uxb_kind_t kind, const char *name, unsigned n) {
             (unsigned long)(nf * 10u / done / 10u), (unsigned long)(nf * 10u / done % 10u),
             (unsigned long)(frame_sum / done / 1000u), (unsigned long)(app / done / 1000u));
     cprintf("                  frame us median/p95: total %lu/%lu snap %lu/%lu conv %lu/%lu "
-            "reader %lu/%lu canvas %lu/%lu term %lu/%lu wb %lu/%lu\n",
+            "reader %lu/%lu (mirror %lu/%lu ppa %lu/%lu dma %lu/%lu) canvas %lu/%lu term %lu/%lu wb %lu/%lu\n",
             (unsigned long)med[0], (unsigned long)p95[0], (unsigned long)med[1], (unsigned long)p95[1],
             (unsigned long)med[2], (unsigned long)p95[2], (unsigned long)med[3], (unsigned long)p95[3],
+            (unsigned long)med[7], (unsigned long)p95[7], (unsigned long)med[8], (unsigned long)p95[8],
+            (unsigned long)med[9], (unsigned long)p95[9],
             (unsigned long)med[4], (unsigned long)p95[4], (unsigned long)med[5], (unsigned long)p95[5],
             (unsigned long)med[6], (unsigned long)p95[6]);
 }
@@ -229,9 +239,9 @@ void uxbench_cmd(const char *arg) {
     while (arg && *arg == ' ') arg++;
     const char *doc = (arg && *arg) ? arg : "shell.md";
 
-    lcdterm_frame_stat_t *frames = (lcdterm_frame_stat_t *)palloc_pages_bulk(1);
-    if (!frames || PAGE_SIZE < UXB_MAX_FRAMES * sizeof *frames) {
-        if (frames) palloc_free(frames, 1);
+    const uint32_t pages = (UXB_MAX_FRAMES * sizeof(lcdterm_frame_stat_t) + PAGE_SIZE - 1u) / PAGE_SIZE;
+    lcdterm_frame_stat_t *frames = (lcdterm_frame_stat_t *)palloc_pages_bulk(pages);
+    if (!frames) {
         cprintf("uxbench: no memory\n");
         return;
     }
@@ -240,7 +250,7 @@ void uxbench_cmd(const char *arg) {
     uxb_scan(&u.rb);
     if (u.rb.count == 0) {
         cprintf("uxbench: no ribbon on this console\n");
-        palloc_free(frames, 1);
+        palloc_free(frames, pages);
         return;
     }
     bool opened_reader = false, opened_launcher = false;
@@ -286,7 +296,7 @@ void uxbench_cmd(const char *arg) {
         vterm_set_active(0);
     }
     console_sync_readers();
-    palloc_free(frames, 1);
+    palloc_free(frames, pages);
 }
 
 #else

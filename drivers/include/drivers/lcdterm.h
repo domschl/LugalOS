@@ -45,6 +45,9 @@ typedef struct {
     uint32_t snap_us;      /* dirty detection and the snapshot */
     uint32_t conv_us;      /* 1-bpp frame into the back buffer */
     uint32_t reader_us;    /* reader and launcher surfaces composited */
+    uint32_t mirror_us;    /* of which: surfaces converted for the PPA (P4 RGB565 frame) */
+    uint32_t ppa_us;       /* of which: the PPA's own DMA time (the rest of a PPA call is cache upkeep) */
+    uint32_t ppa_call_us;  /* of which: PPA calls, cache upkeep included */
     uint32_t canvas_us;    /* RGB565 canvases composited (PPA or CPU) */
     uint32_t term_us;      /* anti-aliased terminal cells */
     uint32_t wb_us;        /* cache write-back of the written rows */
@@ -83,6 +86,10 @@ typedef struct {
     /* Optional: returns once everything drawn so far is on the glass
      * (converted and, double-buffered, flipped). */
     void      (*settle)(void);
+    /* Optional: what was drawn incrementally against a full redraw of the
+     * same state -- the pixels that differ (0: none), and their bounds in
+     * frame coordinates; -1 when the backend cannot compare. */
+    long      (*check)(unsigned *x0, unsigned *y0, unsigned *x1, unsigned *y1);
 } lcdterm_backend_t;
 
 /* Takes the backend (kept by pointer: it must outlive the terminal), finds
@@ -131,6 +138,7 @@ void lcdterm_sync_post(void);
 void lcdterm_damage(void);
 unsigned lcdterm_frame_stats(lcdterm_frame_stat_t *out, unsigned max, bool reset);
 void lcdterm_settle(void);
+long lcdterm_check(unsigned *x0, unsigned *y0, unsigned *x1, unsigned *y1);
 int lcdterm_get_visible_readers(uint8_t *out_rids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins);
 uint16_t *lcdterm_get_canvas565_backing(uint8_t cid, uint32_t *out_stride, int *out_w, int *out_h);
 uint16_t *lcdterm_get_canvas565_by_name(const char *name, uint32_t *out_stride, int *out_w, int *out_h);
@@ -160,6 +168,9 @@ static inline unsigned lcdterm_frame_stats(lcdterm_frame_stat_t *out, unsigned m
     (void)out; (void)max; (void)reset; return 0;
 }
 static inline void lcdterm_settle(void) { }
+static inline long lcdterm_check(unsigned *x0, unsigned *y0, unsigned *x1, unsigned *y1) {
+    (void)x0; (void)y0; (void)x1; (void)y1; return -1;
+}
 static inline void lcdterm_damage(void) { }
 static inline int lcdterm_get_visible_readers(uint8_t *out_rids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins) {
     (void)out_rids; (void)out_x0; (void)out_y0; (void)out_x1; (void)out_y1; (void)max_wins;
