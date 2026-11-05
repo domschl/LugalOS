@@ -1018,6 +1018,17 @@ static gdma_lli_t g_lli_mem __attribute__((aligned(64)));
 typedef enum { FB_NONE = 0, FB_GRAY8, FB_RGB565 } fb_fmt_t;
 /* guarded by: console_lock (fb_start()'s callers hold it, or are the boot). */
 static fb_fmt_t          g_fb_fmt;
+/* The format the frame returns to once no RGB565 canvas has been visible for
+ * FB_RETURN_MS: the boot's, or what `lcd colours` / `lcd fb` chose. RGB565
+ * on the Tab5 always (its bridge, rev v1.3, scans out no GRAY8). guarded by:
+ * console_lock, as g_fb_fmt; the flush task reads it unlocked only to decide
+ * whether to look again (accepted: a stale read costs one pass). */
+static fb_fmt_t          g_fb_pref;
+#define FB_RETURN_MS 1000u
+/* When an RGB565 canvas was last visible, and the switches it caused (for
+ * `lcd`). guarded by: g_frame_lock */
+static uint64_t          g_canvas565_seen_ms BULK_BSS;
+static uint32_t          g_fb_to565 BULK_BSS, g_fb_back BULK_BSS;
 static uint32_t          g_fb_bytes, g_fb_pages, g_fb_bpp;
 /* interrupt-shared: the counters are written only by the frame end
  * (gdma_isr() or gdma_poll(), under g_scan_lock); g_stop_at_frame_end is set and cleared by
@@ -1762,6 +1773,23 @@ static void srf_track(const srf_snap_t *ss, unsigned b) {
     g_srf.n[b] = ss->ns;
 }
 
+/* The 1-bpp conversion wrote rows y0..y1, bytes [xb0, xb1), into back buffer
+ * b. A unit is 8 pixels, so where a surface's edge is not on a multiple of 8
+ * the edge unit is written over some of the surface's pixels (and a row only
+ * partly inside a surface is written whole): such a reader is composited
+ * again in this pass. Canvases are composited at every pass anyway. */
+static void srf_touch(const srf_snap_t *ss, unsigned b, int y0, int y1, int xb0, int xb1) {
+    for (int q = 0; q < ss->ns; q++) {
+        if (ss->rslot[q] < 0 || y1 < ss->sy0[q] || y0 > ss->sy1[q]) continue;
+        int e0 = ss->sx0[q] / 8, e1 = ss->sx1[q] / 8;          /* bytes it touches */
+        if (xb1 <= e0 || xb0 > e1) continue;
+        bool inside = y0 >= ss->sy0[q] && y1 <= ss->sy1[q];
+        bool edge = (ss->sx0[q] % 8 != 0 && e0 >= xb0 && e0 < xb1) ||
+                    ((ss->sx1[q] + 1) % 8 != 0 && e1 >= xb0 && e1 < xb1);
+        if (!inside || edge) s_reader_drawn_seq[b][ss->rslot[q]] = 0xffffffffu;
+    }
+}
+
 /* Row y's byte ranges [slo, shi) that lie wholly inside a surface. */
 static unsigned srf_row_skips(const srf_snap_t *ss, unsigned y, unsigned *slo, unsigned *shi) {
     unsigned n = 0;
@@ -1868,9 +1896,16 @@ static term_go_t term_snapshot(unsigned y0, unsigned y1) {
      * marks every row and cell dirty, so the drawing repaints it whole. */
     uint8_t cids[4];
     int ccount = lcdterm_get_visible_canvases565(cids, sn->cx0, sn->cy0, sn->cx1, sn->cy1, 4);
+    if (ccount > 0) g_canvas565_seen_ms = time_get_ms();
     if (ccount > 0 && g_fb_fmt != FB_RGB565) {
         if (!g_lut565) g_lut565 = (uint16_t (*)[8])palloc_pages_bulk(1);
-        if (g_lut565 && fb_start(FB_RGB565)) lut_build();
+        if (g_lut565 && fb_start(FB_RGB565)) { lut_build(); g_fb_to565++; }
+    } else if (ccount == 0 && g_fb_pref != FB_NONE && g_fb_fmt != g_fb_pref &&
+               time_get_ms() - g_canvas565_seen_ms >= FB_RETURN_MS) {
+        /* The colour canvas has gone: back to the cheaper frame (the 7B's
+         * GRAY8 is a third of the RGB565 traffic). fb_start() marks it all
+         * dirty, so this pass draws it whole. */
+        if (fb_start(g_fb_pref)) { lut_build(); g_fb_back++; }
     }
     sn->nc = 0;
     for (int i = 0; i < ccount; i++) {
@@ -2089,6 +2124,8 @@ static void term_draw(void) {
             hi = 1279;
             n += nb;
         }
+        for (unsigned k = 0; k < nb; k++)
+            srf_touch(ss, back_idx, (int)bands[k] * 8, (int)bands[k] * 8 + 7, (int)bx_start, (int)bx_end);
         if (n && bx_start < bx_end) {
             if (g_lcd_rot == 270) {
                 unsigned cur_pymin = 1279u - (bx_end * 8u - 1u);
@@ -2103,6 +2140,14 @@ static void term_draw(void) {
             }
         }
     } else {
+        /* Only the dirty columns, as the rotated path: a row's bytes outside
+         * them are what this buffer already shows. */
+        unsigned nx_start = 0, nx_end = stride;
+        if (g_dirty_x0[back_idx] <= g_dirty_x1[back_idx]) {
+            nx_start = (unsigned)g_dirty_x0[back_idx] / 8u;
+            nx_end = ((unsigned)g_dirty_x1[back_idx] / 8u) + 1u;
+            if (nx_end > stride) nx_end = stride;
+        }
         g_dirty_x0[back_idx] = 0xffff;
         g_dirty_x1[back_idx] = 0;
         /* Native orientation (0 deg, or the LCD-7B), or 180 deg: row y to
@@ -2133,7 +2178,7 @@ static void term_draw(void) {
                         if (lo_b < hi_b) { slo[ns] = (unsigned)lo_b; shi[ns] = (unsigned)hi_b; ns++; }
                     }
                     uint16_t *dst = (uint16_t *)fb + (size_t)py * DSI_LCD_H_RES;
-                    for (unsigned b = 0; b < stride; b++) {
+                    for (unsigned b = nx_start; b < nx_end; b++) {
                         unsigned j = 0;
                         while (j < ns && !(b >= slo[j] && b < shi[j])) j++;
                         if (j < ns) { b = shi[j] - 1u; continue; }
@@ -2144,7 +2189,7 @@ static void term_draw(void) {
                     unsigned slo[SKIP_SLOTS], shi[SKIP_SLOTS];
                     unsigned ns = srf_row_skips(ss, y, slo, shi);
                     uint64_t *dst = (uint64_t *)(fb + (size_t)py * DSI_LCD_H_RES);
-                    for (unsigned b = 0; b < stride; b++) {
+                    for (unsigned b = nx_start; b < nx_end; b++) {
                         unsigned j = 0;
                         while (j < ns && !(b >= slo[j] && b < shi[j])) j++;
                         if (j < ns) { b = shi[j] - 1u; continue; }
@@ -2152,6 +2197,7 @@ static void term_draw(void) {
                         else dst[b] = g_lut8[sh[b]];
                     }
                 }
+                srf_touch(ss, back_idx, (int)y, (int)y, (int)nx_start, (int)nx_end);
                 span_rows(&lo, &hi, (int)y, (int)y);
                 n++;
             }
@@ -2918,7 +2964,10 @@ static void term_flush_task(void *arg) {
     (void)arg;
     for (;;) {
         task_sleep_ms(16);
-        if (!g_t_due || lcdterm_is_animating()) continue;
+        /* A frame waiting to return to its own format has nothing new to
+         * draw, so it is looked at until the snapshot switches it. */
+        bool want_fmt = g_fb_pref != FB_NONE && g_fb_fmt != g_fb_pref;
+        if ((!g_t_due && !want_fmt) || lcdterm_is_animating()) continue;
         console_lock();
         g_t_due = false;
         ylock_acquire(&g_frame_lock);
@@ -2962,6 +3011,7 @@ static void term_colours(uint16_t fg, uint16_t bg) {
         if (!g_lut565) { frame_end(); cprintf("lcd: no page for the RGB565 table\n"); return; }
     }
     if (want != g_fb_fmt && !fb_start(want)) { frame_end(); return; }
+    g_fb_pref = want;
     lut_build();
     term_redraw();
     frame_end();
@@ -3038,6 +3088,11 @@ static void term_report(void) {
             g_t_paced ? "frame-paced" : "at every flush", (unsigned long)g_t_paced_passes,
             (unsigned long)g_t_rows, (unsigned long)g_t_rows_last, (unsigned long)g_t_us_last,
             (unsigned long)g_t_us_max);
+    cprintf("     frame format: own %s; %lu switches to RGB565 for a colour canvas, %lu back; "
+            "%d colour canvases visible\n",
+            g_fb_pref == FB_RGB565 ? "RGB565" : g_fb_pref == FB_GRAY8 ? "GRAY8" : "-",
+            (unsigned long)g_fb_to565, (unsigned long)g_fb_back,
+            lcdterm_get_visible_canvases565(NULL, NULL, NULL, NULL, NULL, 4));
     cprintf("     front %u, flip %s, due %s, hold %s, force %s, animating %s, rot %d, %lu flips\n",
             (unsigned)g_front_idx, g_flip_pending ? "pending" : "-", g_t_due ? "yes" : "no",
             g_t_hold ? "yes" : "no", g_t_force ? "yes" : "no", lcdterm_is_animating() ? "yes" : "no",
@@ -3057,6 +3112,7 @@ int dsi_lcd_term_start(void) {
 #else
     if (!fb_start(FB_GRAY8)) return -1;
 #endif
+    g_fb_pref = g_fb_fmt;
     uint32_t pages = (2u * T_BYTES + 4095u) / 4096u;
     uint8_t *m = palloc_pages_bulk(pages);
     if (!m) { printk("[LCD] no PSRAM for the terminal's 1-bpp frame\n"); return -1; }
@@ -3382,6 +3438,7 @@ void dsi_lcd_command(const char *args) {
         frame_begin();                 /* as term_colours(): no conversion mid-switch */
         g_t_hold = (g_t1 != NULL);
         bool started = fb_start(f);
+        if (started) g_fb_pref = g_fb_fmt;
         frame_end();
         if (!started) { cprintf("lcd: frame buffer not started\n"); return; }
         draw(pat_grid);
