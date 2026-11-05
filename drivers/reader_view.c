@@ -115,6 +115,9 @@ typedef struct {
     int                 cp_w;
     uint32_t            cp_size;    /* the file's size at that layout */
     bool                cp_valid;
+    int                 drawn_scroll_y; /* where the surfaces show the document, -1 unknown */
+    bool                strip_failed;   /* the last strip draw could not lay out from checkpoints */
+    int                 strip_diff_y0, strip_diff_y1; /* reader_strip_check()'s differing GRAY8 rows */
     int                 win_w, win_h;
     char                path[128];
     char                title[64];
@@ -143,6 +146,8 @@ typedef struct {
 static reader_state_t s_readers[READER_MAX_INSTANCES] BULK_BSS;
 static uint8_t        s_active_reader_rid = 0;
 static uint32_t       s_reader_seq[READER_MAX_INSTANCES];
+
+static bool reader_scroll_step(uint8_t rid, const canvas1_t *c, int w, int h);
 
 static bool resolve_doc_path(const char *topic, char *out_path, size_t out_sz) {
     if (!topic || !*topic) return false;
@@ -255,6 +260,7 @@ static bool reader_open_internal(uint8_t rid, const char *resource, bool push_hi
     r->total_h = 0;
     r->link_count = 0;
     r->cp_valid = false;
+    r->drawn_scroll_y = -1;
     r->active = true;
 
     if (!r->aa_buf) {
@@ -388,11 +394,15 @@ static uint64_t reader_surface_hash(uint8_t rid) {
             for (int x = 0; x < w; x++) { hsh ^= row[x]; hsh *= 0x100000001b3ull; }
         }
     }
+    /* The 1-bpp backing is screen-sized; only the window's part is shown (the
+     * screen's 'W' copies w x h of it), and a full draw lets a last line run
+     * past the window's bottom into rows a strip draw clips. */
     canvas1_t *c = get_reader_canvas(rid);
-    if (c) {
-        for (unsigned y = 0; y < c->h; y++) {
+    if (c && w > 0 && h > 0) {
+        for (int y = 0; y < h && y < (int)c->h; y++) {
             const uint8_t *row = c->fb + (uint32_t)y * c->stride;
-            for (unsigned b = 0; b < c->w / 8u; b++) { hsh ^= row[b]; hsh *= 0x100000001b3ull; }
+            for (int b = 0; b < w / 8; b++) { hsh ^= row[b]; hsh *= 0x100000001b3ull; }
+            for (int x = (w / 8) * 8; x < w; x++) { hsh ^= (row[x / 8] >> (x % 8)) & 1u; hsh *= 0x100000001b3ull; }
         }
     }
     return hsh;
@@ -408,6 +418,51 @@ int reader_layout_check(uint8_t rid) {
     reader_update_instance(rid);               /* the whole file */
     uint64_t b = reader_surface_hash(rid);
     return !had ? 2 : (a == b ? 1 : 0);
+}
+
+int reader_strip_check(uint8_t rid, int dy) {
+    if (rid >= READER_MAX_INSTANCES || !s_readers[rid].active) return -1;
+    reader_state_t *r = &s_readers[rid];
+    canvas1_t *c = get_reader_canvas(rid);
+    int w = r->win_w, h = r->win_h;
+    if (!c || w <= 0 || h <= 0) return -1;
+    int max_scroll = r->total_h - 120;
+    int start = r->scroll_y;
+    int target = start + dy;
+    if (target < 0) target = 0;
+    if (target > max_scroll) target = max_scroll > 0 ? max_scroll : 0;
+    reader_update_instance(rid);               /* the surfaces at start, whole */
+    r->scroll_y = target;
+    if (!reader_scroll_step(rid, c, w, h)) { reader_update_instance(rid); return 2; }
+    uint64_t a = reader_surface_hash(rid);
+    /* Row hashes of the stepped GRAY8 surface, to say where it differs. */
+    uint32_t pages = ((uint32_t)h * 8u + PAGE_SIZE - 1u) / PAGE_SIZE;
+    uint64_t *rows = r->aa_buf ? (uint64_t *)palloc_pages_bulk(pages) : NULL;
+    if (rows)
+        for (int y = 0; y < h; y++) {
+            uint64_t hh = 0xcbf29ce484222325ull;
+            const uint8_t *p = r->aa_buf + (uint32_t)y * r->aa_stride;
+            for (int x = 0; x < w; x++) { hh ^= p[x]; hh *= 0x100000001b3ull; }
+            rows[y] = hh;
+        }
+    reader_update_instance(rid);               /* the same place, drawn whole */
+    uint64_t b = reader_surface_hash(rid);
+    r->strip_diff_y0 = r->strip_diff_y1 = -1;
+    if (rows) {
+        for (int y = 0; y < h; y++) {
+            uint64_t hh = 0xcbf29ce484222325ull;
+            const uint8_t *p = r->aa_buf + (uint32_t)y * r->aa_stride;
+            for (int x = 0; x < w; x++) { hh ^= p[x]; hh *= 0x100000001b3ull; }
+            if (hh != rows[y]) { if (r->strip_diff_y0 < 0) r->strip_diff_y0 = y; r->strip_diff_y1 = y; }
+        }
+        palloc_free(rows, pages);
+    }
+    return a == b ? 1 : 0;
+}
+
+void reader_strip_diff(uint8_t rid, int *y0, int *y1) {
+    *y0 = rid < READER_MAX_INSTANCES ? s_readers[rid].strip_diff_y0 : -1;
+    *y1 = rid < READER_MAX_INSTANCES ? s_readers[rid].strip_diff_y1 : -1;
 }
 
 void reader_update(void) {
@@ -439,7 +494,7 @@ void reader_scroll_instance(uint8_t rid, int delta_y) {
 
         for (int s = 0; s < steps; s++) {
             s_readers[rid].scroll_y = start_y + (diff * w_table[s]) / 1000;
-            reader_draw(rid, c, w, h);
+            if (!reader_scroll_step(rid, c, w, h)) reader_draw(rid, c, w, h);
             lcdterm_sync_post();
             if (console_has_char() || console_interrupt_requested()) break;
         }
@@ -497,7 +552,7 @@ void reader_touch_fling_instance(uint8_t rid, int dy, uint32_t ms) {
             break;
         }
         s_readers[rid].scroll_y = next_y;
-        reader_draw(rid, c, w, h);
+        if (!reader_scroll_step(rid, c, w, h)) reader_draw(rid, c, w, h);
 #if defined(LCDTERM_PRESENT)
         lcdterm_sync_post();
 #endif
@@ -1298,25 +1353,61 @@ static void draw_reader_action_bar(reader_state_t *r, rdraw_t *rd, int w, int h)
 #endif
 }
 
-void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
-    if (w <= 0 || h <= 0 || rid >= READER_MAX_INSTANCES) return;
+/* The scrollbar along the right edge, over the whole height. */
+static void draw_reader_scrollbar(reader_state_t *r, rdraw_t *rd, int w, int h) {
+    if (r->total_h <= h) return;
+    int sc = (int)CHROME_SCALE;
+    int bar_h = 26 * sc;
+    int sb_w = 4 * sc;
+    ugui_surface_t surf = {
+        .c1 = rd->c,
+        .aa_fb = rd->aa_fb,
+        .aa_stride = rd->aa_stride,
+        .w = w,
+        .h = h,
+        .scale = sc,
+    };
+    ugui_rect_t track = {
+        .x = (int16_t)(w - sb_w - 2 * sc),
+        .y = (int16_t)bar_h,
+        .w = (int16_t)sb_w,
+        .h = (int16_t)(h - bar_h),
+    };
+    ugui_scrollbar(&surf, track, r->scroll_y, r->total_h, h);
+}
+
+/* The reader's view of rows clip_y0..clip_y1-1 of its w x full_h surfaces;
+ * the whole of it, chrome included, when that is all rows. A strip (an
+ * animation step: reader_scroll_step()) is drawn into the surfaces from its
+ * first row as if it were a view that tall, further down the document, and
+ * leaves the hit-boxes, links and chrome to the full draw that follows; it
+ * lays out from checkpoints only, and sets strip_failed when it cannot. */
+static void reader_draw_view(uint8_t rid, const canvas1_t *c, int w, int full_h, int clip_y0, int clip_y1) {
+    if (w <= 0 || full_h <= 0 || rid >= READER_MAX_INSTANCES) return;
     reader_state_t *r = &s_readers[rid];
     int sc = (int)CHROME_SCALE;
     int bar_h = 26 * sc;
+    bool strip = clip_y0 > 0 || clip_y1 < full_h;
+    int h = strip ? clip_y1 - clip_y0 : full_h;
+    if (h <= 0) return;
 
-    ugui_begin(&r->ui_ctx);
+    canvas1_t sub;
+    if (strip && c) canvas1_init(&sub, c->fb + (uint32_t)clip_y0 * c->stride, c->stride, c->w, (unsigned)h);
+    if (!strip) ugui_begin(&r->ui_ctx);
 
     rdraw_t rd = {
-        .c = c,
-        .aa_fb = r->aa_buf,
+        .c = strip && c ? &sub : c,
+        .aa_fb = r->aa_buf ? r->aa_buf + (uint32_t)(strip ? clip_y0 : 0) * r->aa_stride : NULL,
         .aa_stride = r->aa_stride,
         .w = w,
         .h = h,
     };
+    int links_before = r->link_count;
 
     /* Fill background */
     rdraw_fill(&rd, 0, 0, w - 1, h - 1, READER_BG_GRAY8, CANVAS1_WHITE);
 
+    if (strip && (!r->active || !r->path[0])) { r->strip_failed = true; return; }
     if (!r->active || !r->path[0]) {
         rdraw_serif_text(&rd, READER_MARGIN_X, bar_h + 16 * sc, "No document loaded. Use 'reader <file.md>' to open.", 51, false, false);
         draw_reader_action_bar(r, &rd, w, h);
@@ -1331,6 +1422,7 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
     }
 
     int fd = vfs_open(file_to_open, VFS_O_READ);
+    if (fd < 0 && strip) { r->strip_failed = true; return; }
     if (fd < 0) {
         char err[128];
         ksnprintf(err, sizeof(err), "Cannot open document: %s", file_to_open);
@@ -1344,7 +1436,7 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
     if (max_w < 60) max_w = 60;
 
     int doc_y = bar_h + 12 * sc;
-    int scroll_y = r->scroll_y;
+    int scroll_y = r->scroll_y + (strip ? clip_y0 : 0);
     int link_idx = 0;
     r->link_count = 0;
 
@@ -1363,6 +1455,12 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
     uint32_t file_size = vfs_fstat(fd, &st) == 0 ? (uint32_t)st.size : 0xffffffffu;
     bool partial = r->cp_valid && r->cp_w == w && r->cp_count > 0 && !r->toc_mode &&
                    r->cp_size == file_size;     /* rewritten since (editor, a new Spartan page) */
+    if (strip && !partial) {
+        r->strip_failed = true;
+        r->link_count = links_before;
+        vfs_close(fd);
+        return;
+    }
     if (partial) {
         int lo = 0, hi = r->cp_count - 1;
         while (lo < hi) {                     /* the last checkpoint with doc_y <= scroll_y */
@@ -1800,28 +1898,59 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
         return;
     }
 
-    /* Render right scrollbar if document exceeds window height */
-    if (r->total_h > h) {
-        int sb_w = 4 * sc;
-        int sb_x = w - sb_w - 2 * sc;
-        ugui_surface_t surf = {
-            .c1 = rd.c,
-            .aa_fb = rd.aa_fb,
-            .aa_stride = rd.aa_stride,
-            .w = w,
-            .h = h,
-            .scale = sc,
-        };
-        ugui_rect_t track = {
-            .x = (int16_t)sb_x,
-            .y = (int16_t)bar_h,
-            .w = (int16_t)sb_w,
-            .h = (int16_t)(h - bar_h),
-        };
-        ugui_scrollbar(&surf, track, r->scroll_y, r->total_h, h);
+    if (strip) {
+        r->link_count = links_before;          /* those found were in strip coordinates */
+        s_reader_seq[rid]++;
+        return;
     }
+    draw_reader_scrollbar(r, &rd, w, h);
     draw_reader_action_bar(r, &rd, w, h);
+    r->drawn_scroll_y = r->scroll_y;
     s_reader_seq[rid]++;
+}
+
+void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
+    reader_draw_view(rid, c, w, h, 0, h);
+}
+
+/* An animation step from where the surfaces show the document to scroll_y:
+ * the content below the action bar moved in both surfaces, only the rows
+ * that came into view laid out and drawn, and the scrollbar. False when that
+ * cannot be done (no checkpoints, the contents view, a step as tall as the
+ * view): the caller draws it whole. */
+static bool reader_scroll_step(uint8_t rid, const canvas1_t *c, int w, int h) {
+    reader_state_t *r = &s_readers[rid];
+    int bar_h = 26 * (int)CHROME_SCALE;
+    int dy = r->scroll_y - r->drawn_scroll_y;
+    int area = h - bar_h;
+    /* The 1-bpp grey pattern alternates by row (canvas1.c: x + y odd), so a
+     * move by an odd number of rows would put moved content out of phase
+     * with freshly drawn content: an odd step goes one row less (the next
+     * step or the full draw after the animation catches up). */
+    if (r->drawn_scroll_y >= 0 && (dy & 1)) {
+        r->scroll_y -= dy > 0 ? 1 : -1;
+        dy = r->scroll_y - r->drawn_scroll_y;
+    }
+    if (dy == 0) return true;
+    if (r->drawn_scroll_y < 0 || !r->cp_valid || r->cp_w != w || r->toc_mode || !c ||
+        dy >= area || -dy >= area || (r->aa_buf && (w > r->aa_w || h > r->aa_h)))
+        return false;
+    /* Rows y <- y + dy, front to back for dy > 0 and back to front otherwise. */
+    for (int k = 0; k < area - (dy > 0 ? dy : -dy); k++) {
+        int y = dy > 0 ? bar_h + k : h - 1 - k;
+        if (r->aa_buf)
+            memcpy(r->aa_buf + (uint32_t)y * r->aa_stride, r->aa_buf + (uint32_t)(y + dy) * r->aa_stride, (size_t)w);
+        memcpy(c->fb + (uint32_t)y * c->stride, c->fb + (uint32_t)(y + dy) * c->stride, c->stride);
+    }
+    r->strip_failed = false;
+    /* A strip starts on an even row, for the same pattern (bar_h is even). */
+    if (dy > 0) reader_draw_view(rid, c, w, h, (h - dy) & ~1, h);
+    else reader_draw_view(rid, c, w, h, bar_h, bar_h - dy);
+    if (r->strip_failed) return false;
+    rdraw_t rd = { .c = c, .aa_fb = r->aa_buf, .aa_stride = r->aa_stride, .w = w, .h = h };
+    draw_reader_scrollbar(r, &rd, w, h);
+    r->drawn_scroll_y = r->scroll_y;
+    return true;
 }
 
 uint32_t reader_get_seq(uint8_t rid) {

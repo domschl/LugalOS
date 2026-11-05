@@ -1,7 +1,7 @@
 {
   "bulk_per_file": {
     "drivers/launcher_view.c": 5400,
-    "drivers/reader_view.c": 61136,
+    "drivers/reader_view.c": 61200,
     "drivers/uxbench.c": 540,
     "kernel/palloc.c": 8192,
     "kernel/zonetest.c": 64,
@@ -10,13 +10,13 @@
   },
   "bulk_per_subsystem": {
     "chess": 1544,
-    "display": 66536,
+    "display": 66600,
     "drivers": 540,
     "kernel": 8192,
     "lisp": 1523712,
     "selftest": 64
   },
-  "bulk_total": 1600588,
+  "bulk_total": 1600652,
   "heap_bytes": 299008,
   "heap_pages": 73,
   "per_file": {

@@ -174,6 +174,25 @@ static void uxb_layout_check(const uxb_t *u) {
     else if (c == 1) cprintf("                  layout check: checkpoints match a full layout\n");
 }
 
+static void uxb_strip_check(const uxb_t *u) {
+    if (u->rb.reader_rid < 0) return;
+    static const int steps[] = { 32, 7, -32, -5, 101, -101 };
+    int fails = 0, fallbacks = 0;
+    for (unsigned k = 0; k < sizeof steps / sizeof steps[0]; k++) {
+        int c = reader_strip_check((uint8_t)u->rb.reader_rid, steps[k]);
+        if (c == 0) {
+            int y0, y1;
+            reader_strip_diff((uint8_t)u->rb.reader_rid, &y0, &y1);
+            fails++;
+            cprintf("                  STRIP CHECK FAILED: a step of %d px differs from a whole draw (GRAY8 rows %d..%d)\n",
+                    steps[k], y0, y1);
+        }
+        if (c == 2) fallbacks++;
+    }
+    if (!fails) cprintf("                  strip check: steps match whole draws (%d of %u fell back)\n",
+                        fallbacks, (unsigned)(sizeof steps / sizeof steps[0]));
+}
+
 static void uxb_run(uxb_t *u, uxb_kind_t kind, const char *name, unsigned n) {
     uint32_t wall[UXB_MAX_ACTIONS];
     unsigned done = 0;
@@ -298,6 +317,7 @@ void uxbench_cmd(const char *arg) {
         uxb_layout_check(&u);
         uxb_run(&u, UXB_DEEP, "deep", 6);
         uxb_layout_check(&u);
+        uxb_strip_check(&u);
         uxb_run(&u, UXB_REDRAW, "deepdraw", 6);     /* a redraw deep in the document */
         uxb_run(&u, UXB_PAGE, "page", 8);
         uxb_run(&u, UXB_REDRAW, "redraw", 6);

@@ -880,36 +880,28 @@ void screen_set_store(screen_t *scr, void *mem, uint32_t bytes) {
     }
 }
 
-/* FNV-1a over each band of 16 rows of a canvas, its visible width only;
- * returns the bands hashed. */
-#define SCREEN_CHECK_BANDS 80u
-#define SCREEN_CHECK_CHUNKS 64u
-/* The top 32 rows (menu bar and title bars) in columns of 32 pixels. */
-LCDTERM_UTEXT static unsigned canvas_top_chunks(const canvas1_t *cv, uint64_t *out) {
-    unsigned nc = cv->w / 32u;
-    if (nc > SCREEN_CHECK_CHUNKS) nc = SCREEN_CHECK_CHUNKS;
-    for (unsigned c = 0; c < nc; c++) {
-        uint64_t h = 0xcbf29ce484222325ull;
-        for (unsigned y = 0; y < 32u && y < cv->h; y++) {
-            const uint8_t *row = cv->fb + (uint32_t)y * cv->stride + c * 4u;
-            for (unsigned b = 0; b < 4u; b++) { h ^= row[b]; h *= 0x100000001b3ull; }
-        }
-        out[c] = h;
+/* `uxbench`'s screen check: 32-bit FNV-1a over a band of 16 rows of a
+ * canvas (its visible width), and over a column of 32 pixels of its top 32
+ * rows (menu bar and title bars). One at a time: the check runs on the
+ * screen task, whose stack on the RP2350 is 2 KB. */
+#define SCREEN_CHECK_BANDS  80u
+#define SCREEN_CHECK_CHUNKS 40u
+LCDTERM_UTEXT static uint32_t canvas_band_hash(const canvas1_t *cv, unsigned band) {
+    uint32_t h = 2166136261u;
+    for (unsigned y = band * 16u; y < band * 16u + 16u && y < cv->h; y++) {
+        const uint8_t *row = cv->fb + (uint32_t)y * cv->stride;
+        for (unsigned b = 0; b < cv->w / 8u; b++) { h ^= row[b]; h *= 16777619u; }
     }
-    return nc;
+    return h;
 }
-LCDTERM_UTEXT static unsigned canvas_band_hashes(const canvas1_t *cv, uint64_t *out) {
-    unsigned nb = (cv->h + 15u) / 16u;
-    if (nb > SCREEN_CHECK_BANDS) nb = SCREEN_CHECK_BANDS;
-    for (unsigned band = 0; band < nb; band++) {
-        uint64_t h = 0xcbf29ce484222325ull;
-        for (unsigned y = band * 16u; y < band * 16u + 16u && y < cv->h; y++) {
-            const uint8_t *row = cv->fb + (uint32_t)y * cv->stride;
-            for (unsigned b = 0; b < cv->w / 8u; b++) { h ^= row[b]; h *= 0x100000001b3ull; }
-        }
-        out[band] = h;
+
+LCDTERM_UTEXT static uint32_t canvas_chunk_hash(const canvas1_t *cv, unsigned c) {
+    uint32_t h = 2166136261u;
+    for (unsigned y = 0; y < 32u && y < cv->h; y++) {
+        const uint8_t *row = cv->fb + (uint32_t)y * cv->stride + c * 4u;
+        for (unsigned b = 0; b < 4u; b++) { h ^= row[b]; h *= 16777619u; }
     }
-    return nb;
+    return h;
 }
 
 LCDTERM_UTEXT static void blit_canvas_backing(screen_t *scr, uint8_t slot,
@@ -2034,26 +2026,25 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
     } else if (op == 'E') {
         /* `uxbench`'s screen check: the screen as the partial updates left
          * it against draw_all() of the same state. Leaves the full redraw. */
-        uint64_t h0[SCREEN_CHECK_BANDS], c0[SCREEN_CHECK_CHUNKS];
-        unsigned nb = canvas_band_hashes(&scr->cv, h0);
-        unsigned nc = canvas_top_chunks(&scr->cv, c0);
-        uint64_t hb[SCREEN_CHECK_BANDS];
-        (void)canvas_band_hashes(&scr->cv, hb);
-        int moving = -1;
-        for (unsigned b = 0; b < nb && moving < 0; b++) if (hb[b] != h0[b]) moving = (int)b;
-        reply[11] = (uint8_t)(moving < 0 ? 0xff : moving);   /* changed while being looked at */
+        uint32_t h0[SCREEN_CHECK_BANDS], c0[SCREEN_CHECK_CHUNKS];
+        unsigned nb = (scr->cv.h + 15u) / 16u, nc = scr->cv.w / 32u;
+        if (nb > SCREEN_CHECK_BANDS) nb = SCREEN_CHECK_BANDS;
+        if (nc > SCREEN_CHECK_CHUNKS) nc = SCREEN_CHECK_CHUNKS;
+        for (unsigned b = 0; b < nb; b++) h0[b] = canvas_band_hash(&scr->cv, b);
+        for (unsigned c = 0; c < nc; c++) c0[c] = canvas_chunk_hash(&scr->cv, c);
+        int moving = -1;                               /* changed while being looked at */
+        for (unsigned b = 0; b < nb && moving < 0; b++)
+            if (canvas_band_hash(&scr->cv, b) != h0[b]) moving = (int)b;
+        reply[11] = (uint8_t)(moving < 0 ? 0xff : moving);
         draw_all(scr);
-        uint64_t h1[SCREEN_CHECK_BANDS], c1[SCREEN_CHECK_CHUNKS];
-        (void)canvas_band_hashes(&scr->cv, h1);
-        (void)canvas_top_chunks(&scr->cv, c1);
         int cfirst = -1, clast = -1;
         for (unsigned c = 0; c < nc; c++)
-            if (c0[c] != c1[c]) { if (cfirst < 0) cfirst = (int)c; clast = (int)c; }
+            if (canvas_chunk_hash(&scr->cv, c) != c0[c]) { if (cfirst < 0) cfirst = (int)c; clast = (int)c; }
         reply[14] = (uint8_t)(cfirst < 0 ? 0xff : cfirst);   /* top 32 rows, in columns of 32 px */
         reply[15] = (uint8_t)(clast < 0 ? 0xff : clast);
         int first = -1, last = -1;
         for (unsigned b = 0; b < nb; b++)
-            if (h0[b] != h1[b]) { if (first < 0) first = (int)b; last = (int)b; }
+            if (canvas_band_hash(&scr->cv, b) != h0[b]) { if (first < 0) first = (int)b; last = (int)b; }
         reply[1] = first >= 0 ? 1u : 0u;
         reply[12] = (uint8_t)(first < 0 ? 0 : first);   /* in bands of 16 rows; [2..9] are the common reply's */
         reply[13] = (uint8_t)(last < 0 ? 0 : last);

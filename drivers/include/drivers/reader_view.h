@@ -55,4 +55,10 @@ uint32_t reader_get_seq(uint8_t rid);
  * checkpoints to compare, -1 no such reader. Leaves the full layout. */
 int reader_layout_check(uint8_t rid);
 
+/* `uxbench`: one animation step of dy (moved surfaces, only the uncovered
+ * rows drawn) against the same position drawn whole. 1 match, 0 differ, 2
+ * the step fell back to a whole draw, -1 no such reader. */
+int reader_strip_check(uint8_t rid, int dy);
+void reader_strip_diff(uint8_t rid, int *y0, int *y1);   /* its differing GRAY8 rows, -1 none */
+
 #endif /* LUGALOS_DRIVERS_READER_VIEW_H */
