@@ -361,7 +361,21 @@ Moonbase's PPA pass (Phase 64) reads only 0.46 MB, a quarter-size source scaled 
 
 - **Strip scrolling for animation steps:** a scroll step moves the content below the action bar in both surfaces and lays out and draws only the rows that came into view (`reader_scroll_step()`, `reader_draw_view()` into a sub-surface), then the scrollbar. The full draw after the animation is unchanged. Steps keep an even row count and strips start on even rows, because the 1-bpp grey pattern alternates by row. `uxbench`'s strip check compares one step of 32, 7, −32, −5, ±101 px against a whole draw: all match on both P4 boards. Tab5 line scroll 576 → 472 ms, page 996 → 786; 7B 215 → 166, 431 → 331. Against the 71.0 baseline: Tab5 scroll 856 → 472, page 1398 → 786; 7B scroll 332 → 166, page 579 → 331.
 
-*Still to do in 71.1:* scroll as a source offset (taller surface, render only exposed rows: makes scroll frames composite-only), ugui 1-bpp drawing only on demand, the reader's whole-screen `lcdterm_repaint()` after each update, and the frame decision above.
+**71.1 closed 2026-11-05** (owner's decision). Final `uxbench` medians, input to glass:
+
+| | Tab5 71.0 → 71.1 | LCD-7B 71.0 → 71.1 | RP2350-LCD-7 71.0 → 71.1 |
+| :--- | :--- | :--- | :--- |
+| Focus move / pan | 1031 → 577 ms | 265 → 215 ms | 108 → 108 ms |
+| Reader line scroll | 856 → 472 ms | 332 → 166 ms | 390 → 201 ms |
+| Reader page scroll | 1398 → 786 ms | 579 → 331 ms | 469 → 284 ms |
+| Reader redraw | 157 → 157 ms | 83 → 83 ms | 195 → 151 ms |
+| Launcher redraw | 140 → 140 ms | 66 → 50-66 ms | 20 → 29 ms |
+
+Done: the frame record and `uxbench`; glass, screen, layout and strip checks; covered units skipped; no forced animation frames; the PPA for moved surfaces; the frame's own format restored after colour canvases; tile-only reader/launcher updates; layout checkpoints; strip scrolling. Every check passes except the screen check's known writer (open issues).
+
+**Targets revised for the Tab5.** Its rev v1.3 bridge scans out RGB565 only (no GRAY8), and every full-window composite costs ≥ 40 ms of PSRAM bandwidth whichever engine moves it (§2.1's options measured above). The 2.1 targets (pan ≤ 150 ms, scroll frames ≤ 16 ms) are not reachable for full-width windows there. They stay the targets for the 7B. What is left of the gap is the number of frames per action (the owner keeps today's animation steps) and the composite per frame.
+
+**Deferred** (not scheduled; reopen with numbers): scroll as a compositor source offset (taller surface; the composite itself stays bandwidth-bound on the Tab5); `ugui`/reader 1-bpp drawing only on demand on the P4, with `lcd shot` from the frame buffer; terminal cell surfaces (71.1e); the 7B's launcher redraw, now dominated by the launcher's own drawing.
 
 ### 71.2 — Input pipeline and system events
 - Raw contact reporting from both touch chips; GT911 zero-count release; recogniser with mm thresholds and `LONG_PRESS`, `DRAG_*`, throttled `POINTER_MOVE`.
