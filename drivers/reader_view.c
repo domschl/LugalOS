@@ -42,10 +42,16 @@
 #define READER_LINKS_MAX   8
 #define READER_TOC_MAX     8
 #define READER_STACK_MAX   2
+#define READER_CP_MAX      1           /* a help page at most: always the full pass */
 #else
 #define READER_LINKS_MAX   32
 #define READER_TOC_MAX     32
 #define READER_STACK_MAX   8
+#if defined(CONFIG_PSRAM_BYTES)
+#define READER_CP_MAX      512         /* 6 KB a reader, in PSRAM with the rest of it */
+#else
+#define READER_CP_MAX      32          /* no PSRAM: the state is low RAM */
+#endif
 #endif
 
 #if defined(CONFIG_FONT_HIDPI) || (defined(CONFIG_FONT_CELL_H) && (CONFIG_FONT_CELL_H == 32))
@@ -83,9 +89,32 @@ typedef struct {
     int     doc_y;
 } reader_toc_entry_t;
 
+/* A place to resume the layout from: the start of a source line, where the
+ * document's y and everything the parser carries from line to line are
+ * known. Lines are laid out independently given in_code / in_math, and links
+ * are numbered through the document, so these four values are all of it. */
+typedef struct {
+    uint32_t off;               /* byte offset of the line's first byte */
+    int32_t  doc_y;
+    uint16_t link_idx;
+    uint8_t  flags;             /* READER_CP_* */
+} reader_cp_t;
+#define READER_CP_CODE 0x1u
+#define READER_CP_MATH 0x2u
+
 typedef struct {
     bool                active;
     uint8_t             target_cid;
+    /* Checkpoints from the last full layout at width cp_w, every cp_step
+     * px of the document at least; valid until the document or the width
+     * changes. A draw then lays out only from the checkpoint above the
+     * view to its bottom, instead of the whole file. */
+    reader_cp_t         cp[READER_CP_MAX];
+    int                 cp_count;
+    int                 cp_step;
+    int                 cp_w;
+    uint32_t            cp_size;    /* the file's size at that layout */
+    bool                cp_valid;
     int                 win_w, win_h;
     char                path[128];
     char                title[64];
@@ -225,6 +254,7 @@ static bool reader_open_internal(uint8_t rid, const char *resource, bool push_hi
     r->scroll_y = 0;
     r->total_h = 0;
     r->link_count = 0;
+    r->cp_valid = false;
     r->active = true;
 
     if (!r->aa_buf) {
@@ -308,6 +338,7 @@ bool reader_set_target(uint8_t rid, int w, int h) {
     bool changed = false;
     if (w > 0 && s_readers[rid].win_w != w) {
         s_readers[rid].win_w = w;
+        s_readers[rid].cp_valid = false;
         changed = true;
     }
     if (h > 0 && s_readers[rid].win_h != h) {
@@ -343,6 +374,40 @@ void reader_update_instance(uint8_t rid) {
     uint8_t reply[SCREEN_REPLY_LEN];
     (void)console_canvas(req, 2 + tl, reply);
     reader_show(rid);
+}
+
+/* FNV-1a over the reader's surfaces as drawn: its GRAY8 surface where it has
+ * one, and its 1-bpp backing. */
+static uint64_t reader_surface_hash(uint8_t rid) {
+    reader_state_t *r = &s_readers[rid];
+    uint64_t hsh = 0xcbf29ce484222325ull;
+    int w = r->win_w, h = r->win_h;
+    if (r->aa_buf && w > 0 && h > 0 && w <= r->aa_w && h <= r->aa_h) {
+        for (int y = 0; y < h; y++) {
+            const uint8_t *row = r->aa_buf + (uint32_t)y * r->aa_stride;
+            for (int x = 0; x < w; x++) { hsh ^= row[x]; hsh *= 0x100000001b3ull; }
+        }
+    }
+    canvas1_t *c = get_reader_canvas(rid);
+    if (c) {
+        for (unsigned y = 0; y < c->h; y++) {
+            const uint8_t *row = c->fb + (uint32_t)y * c->stride;
+            for (unsigned b = 0; b < c->w / 8u; b++) { hsh ^= row[b]; hsh *= 0x100000001b3ull; }
+        }
+    }
+    return hsh;
+}
+
+int reader_layout_check(uint8_t rid) {
+    if (rid >= READER_MAX_INSTANCES || !s_readers[rid].active) return -1;
+    reader_state_t *r = &s_readers[rid];
+    bool had = r->cp_valid;
+    reader_update_instance(rid);               /* from the checkpoints, if it has them */
+    uint64_t a = reader_surface_hash(rid);
+    r->cp_valid = false;
+    reader_update_instance(rid);               /* the whole file */
+    uint64_t b = reader_surface_hash(rid);
+    return !had ? 2 : (a == b ? 1 : 0);
 }
 
 void reader_update(void) {
@@ -719,7 +784,8 @@ void reader_feed_key(int c) {
             return;
         }
         if (c == 'r' || c == 0x12 /* Ctrl-R */) {
-            /* Reload / Redraw */
+            /* Reload / Redraw: the file may have changed under it */
+            r->cp_valid = false;
             reader_update_instance(rid);
             return;
         }
@@ -1281,7 +1347,6 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
     int scroll_y = r->scroll_y;
     int link_idx = 0;
     r->link_count = 0;
-    r->toc_count = 0;
 
     uint64_t file_offset = 0;
     char read_buf[512];
@@ -1289,6 +1354,37 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
     int line_pos = 0;
     bool in_code = false;
     bool in_math = false;
+
+    /* With checkpoints for this width, from the last one at or above the
+     * view, and only down to its bottom: the contents, the links' numbering
+     * and the total height are the full pass's. Otherwise the whole file, and
+     * checkpoints on the way (the contents view always takes the whole file). */
+    vfs_stat_t st;
+    uint32_t file_size = vfs_fstat(fd, &st) == 0 ? (uint32_t)st.size : 0xffffffffu;
+    bool partial = r->cp_valid && r->cp_w == w && r->cp_count > 0 && !r->toc_mode &&
+                   r->cp_size == file_size;     /* rewritten since (editor, a new Spartan page) */
+    if (partial) {
+        int lo = 0, hi = r->cp_count - 1;
+        while (lo < hi) {                     /* the last checkpoint with doc_y <= scroll_y */
+            int mid = (lo + hi + 1) / 2;
+            if (r->cp[mid].doc_y <= scroll_y) lo = mid; else hi = mid - 1;
+        }
+        const reader_cp_t *cp = &r->cp[lo];
+        file_offset = cp->off;
+        doc_y = cp->doc_y;
+        link_idx = cp->link_idx;
+        in_code = (cp->flags & READER_CP_CODE) != 0;
+        in_math = (cp->flags & READER_CP_MATH) != 0;
+    } else {
+        r->toc_count = 0;
+        r->cp_count = 0;
+        r->cp_step = h > 0 ? h / 2 : 300;
+        r->cp_w = w;
+        r->cp_size = file_size;
+    }
+    int next_cp_y = doc_y;
+    uint64_t line_off = file_offset;          /* where the line in line_buf began */
+    bool past_view = false;
 
     /* Parse all document lines */
     for (;;) {
@@ -1314,6 +1410,25 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
             if (ch == '\n') {
                 line_buf[line_pos] = '\0';
                 line_pos = 0;
+                uint64_t this_off = line_off;
+                line_off = file_offset + (uint64_t)i + 1u;
+
+                if (partial) {
+                    if (doc_y > scroll_y + h) { past_view = true; break; }
+                } else if (doc_y >= next_cp_y) {
+                    if (r->cp_count == READER_CP_MAX) {
+                        /* Full: every other one kept, twice the spacing. */
+                        for (int k = 0; k < READER_CP_MAX / 2; k++) r->cp[k] = r->cp[2 * k];
+                        r->cp_count = READER_CP_MAX / 2;
+                        r->cp_step *= 2;
+                    }
+                    reader_cp_t *cp = &r->cp[r->cp_count++];
+                    cp->off = (uint32_t)this_off;
+                    cp->doc_y = doc_y;
+                    cp->link_idx = (uint16_t)link_idx;
+                    cp->flags = (uint8_t)((in_code ? READER_CP_CODE : 0u) | (in_math ? READER_CP_MATH : 0u));
+                    next_cp_y = doc_y + r->cp_step;
+                }
 
                 md_line_t md;
                 if (!md_parse_line(line_buf, &in_code, &in_math, &md)) continue;
@@ -1634,11 +1749,15 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
                 line_buf[line_pos++] = ch;
             }
         }
+        if (past_view) break;
         file_offset += (uint64_t)n;
     }
 
     vfs_close(fd);
-    r->total_h = doc_y + 32;
+    if (!partial) {
+        r->total_h = doc_y + 32;
+        r->cp_valid = !r->toc_mode;
+    }
 
     /* Render interactive Table of Contents overlay if in TOC mode */
     if (r->toc_mode) {

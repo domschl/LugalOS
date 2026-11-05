@@ -356,6 +356,9 @@ Moonbase's PPA pass (Phase 64) reads only 0.46 MB, a quarter-size source scaled 
 - **Reader/launcher updates repaint their tile only:** canvas request `'W'` copies a reader's or the launcher's 1-bpp backing into its tile, replacing `lcdterm_repaint()` (`draw_all()` of the whole screen) after every reader update. 7B reader redraw 83 → 67 ms. A first version also sent it at every scroll-animation step. That woke the flush task mid-step, so it composited a half-drawn surface, which made the 7B's reader scrolling flicker heavily (owner's report). Removed: the steps stay synchronous.
 - **Screen check:** `uxbench` also compares the 1-bpp screen against a full `draw_all()` (canvas request `'E'`). It found an unlocked writer to the screen's top rows while a reader is focused; see `plan/open_issues.md`.
 
+- **Reader layout checkpoints (71.8's index, first form):** the full layout records, every half screen, the source line's offset, the document y, the link number and the code/math block flags. A later draw at the same width and file size starts at the checkpoint above the view and stops below it. `uxbench` checks it against a full layout at the top and deep in the document (`reader_layout_check()`): they match on both P4 boards. Tab5 line scroll 646 → 576 ms, 7B 282 → 215 ms; page Tab5 1065 → 996, 7B 497 → 431. What remains per animation step is drawing the whole surface (~50 ms on the 7B) and, on the Tab5, compositing it (~70 ms).
+- **LCD-7B crash** (owner's report: a second terminal, then chess from the launcher): the scheduler bounded stacks by RAM's end while the 7B's page heap runs past it. Fixed in `kernel/sched.c`.
+
 *Still to do in 71.1:* scroll as a source offset (taller surface, render only exposed rows: makes scroll frames composite-only), ugui 1-bpp drawing only on demand, the reader's whole-screen `lcdterm_repaint()` after each update, and the frame decision above.
 
 ### 71.2 — Input pipeline and system events

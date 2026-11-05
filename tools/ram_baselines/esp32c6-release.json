@@ -45,7 +45,7 @@
     "drivers/radio/radio_netif.c": 4,
     "drivers/ramdisk.c": 36,
     "drivers/ramscreen.c": 28,
-    "drivers/reader_view.c": 2681,
+    "drivers/reader_view.c": 3673,
     "drivers/sensor_hub.c": 7504,
     "drivers/sgp30.c": 76,
     "drivers/tmp117.c": 76,
@@ -62,7 +62,7 @@
     "kernel/board.c": 13,
     "kernel/chan.c": 1348,
     "kernel/clipboard.c": 20,
-    "kernel/console.c": 703,
+    "kernel/console.c": 1464,
     "kernel/device.c": 140,
     "kernel/devirq.c": 134,
     "kernel/discipline.c": 82,
@@ -120,7 +120,7 @@
     "9p": 28745,
     "agent": 987,
     "crypto": 33,
-    "display": 2713,
+    "display": 3705,
     "drivers": 360,
     "fs": 36,
     "httpd": 70,
@@ -135,11 +135,11 @@
     "radio": 26177,
     "selftest": 828,
     "sensors": 8688,
-    "shell": 6452,
+    "shell": 7213,
     "storage": 13,
     "usb": 6481,
     "vfs": 3599
   },
   "ram_code": 11634,
-  "total": 155275
+  "total": 157028
 }

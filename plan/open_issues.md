@@ -103,7 +103,11 @@ tap ring and the canvas key ring. Only moonbase reads it, and moonbase still
 installs `touch_set_hook()`. Chess reads the tap ring. `FOCUS_*`,
 `CLOSE_REQUEST` and `RESIZE` are declared in kernel/event.h but never pushed,
 and no `POINTER_MOVE` reaches the in-kernel views. Phase 70's checklist marks
-70.6 done; treat it as the header and a first ring, not the routing.
+70.6 done; treat it as the header and a first ring, not the routing. The
+three rings also cost ~760 B of static RAM on every board, the sensor and
+clock nodes without a screen included (kernel/console.c in
+tools/ram_baselines, re-baselined 2026-11-05 with that known): 71.2's
+per-view rings belong with the screen, not in the console.
 
 ## A closed window's owner task is not reclaimed
 

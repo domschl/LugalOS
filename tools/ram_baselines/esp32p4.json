@@ -1,23 +1,25 @@
 {
   "bulk_per_file": {
-    "drivers/launcher_view.c": 4440,
-    "drivers/reader_view.c": 32640,
+    "drivers/launcher_view.c": 5400,
+    "drivers/reader_view.c": 61136,
     "kernel/palloc.c": 32768,
     "kernel/zonetest.c": 64,
     "user/ceres/src/platform_p4.c": 31896,
+    "user/chess/src/chess_ui.c": 1544,
     "user/lisp/lisp.c": 1532288,
     "user/moonbase/src/moon_textures.c": 32768,
-    "user/moonbase/src/platform_p4.c": 41116
+    "user/moonbase/src/platform_p4.c": 41148
   },
   "bulk_per_subsystem": {
     "app:ceres": 31896,
-    "app:moonbase": 73884,
-    "display": 37080,
+    "app:moonbase": 73916,
+    "chess": 1544,
+    "display": 66536,
     "kernel": 32768,
     "lisp": 1532288,
     "selftest": 64
   },
-  "bulk_total": 1707980,
+  "bulk_total": 1739012,
   "heap_bytes": 380928,
   "heap_pages": 93,
   "per_file": {
@@ -73,7 +75,7 @@
     "kernel/chan.c": 1348,
     "kernel/chan_selftest.c": 172,
     "kernel/clipboard.c": 20,
-    "kernel/console.c": 709,
+    "kernel/console.c": 1464,
     "kernel/device.c": 140,
     "kernel/devirq.c": 134,
     "kernel/discipline.c": 82,
@@ -128,7 +130,7 @@
     "user/ceres/src/platform_p4.c": 1382,
     "user/chess/src/bitboard.c": 2176,
     "user/chess/src/chess_platform.c": 8,
-    "user/chess/src/chess_ui.c": 11385,
+    "user/chess/src/chess_ui.c": 10821,
     "user/chess/src/perft.c": 17,
     "user/chess/src/pgn.c": 2580,
     "user/chess/src/position.c": 48,
@@ -160,7 +162,7 @@
     "app:ed": 100,
     "app:moonbase": 4211,
     "audio": 25361,
-    "chess": 21952,
+    "chess": 21388,
     "clock-app": 136,
     "crypto": 38,
     "display": 214,
@@ -178,10 +180,10 @@
     "radio": 12564,
     "selftest": 3962,
     "sensors": 8688,
-    "shell": 12986,
+    "shell": 13741,
     "storage": 7456,
     "vfs": 4111
   },
   "ram_code": 1806,
-  "total": 223754
+  "total": 223945
 }

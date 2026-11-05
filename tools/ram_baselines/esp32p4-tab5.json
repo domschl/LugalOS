@@ -2,11 +2,12 @@
   "bulk_per_file": {
     "drivers/dsi_esp32p4.c": 140596,
     "drivers/launcher_view.c": 5400,
-    "drivers/reader_view.c": 36480,
+    "drivers/reader_view.c": 61136,
     "drivers/uxbench.c": 540,
     "kernel/palloc.c": 32768,
     "kernel/zonetest.c": 64,
     "user/ceres/src/platform_p4.c": 31896,
+    "user/chess/src/chess_ui.c": 1544,
     "user/lisp/lisp.c": 1532288,
     "user/moonbase/src/moon_textures.c": 32768,
     "user/moonbase/src/platform_p4.c": 41148
@@ -14,13 +15,14 @@
   "bulk_per_subsystem": {
     "app:ceres": 31896,
     "app:moonbase": 73916,
-    "display": 182476,
+    "chess": 1544,
+    "display": 207132,
     "drivers": 540,
     "kernel": 32768,
     "lisp": 1532288,
     "selftest": 64
   },
-  "bulk_total": 1853948,
+  "bulk_total": 1880148,
   "heap_bytes": 380928,
   "heap_pages": 93,
   "per_file": {
@@ -136,7 +138,7 @@
     "user/ceres/src/platform_p4.c": 1382,
     "user/chess/src/bitboard.c": 2176,
     "user/chess/src/chess_platform.c": 8,
-    "user/chess/src/chess_ui.c": 12365,
+    "user/chess/src/chess_ui.c": 10821,
     "user/chess/src/perft.c": 17,
     "user/chess/src/pgn.c": 2580,
     "user/chess/src/position.c": 48,
@@ -168,7 +170,7 @@
     "app:ed": 100,
     "app:moonbase": 4211,
     "audio": 25361,
-    "chess": 22932,
+    "chess": 21388,
     "clock-app": 136,
     "crypto": 38,
     "display": 3920,
@@ -192,5 +194,5 @@
     "vfs": 4111
   },
   "ram_code": 1806,
-  "total": 220806
+  "total": 219262
 }

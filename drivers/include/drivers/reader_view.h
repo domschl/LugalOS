@@ -50,4 +50,9 @@ int reader_find_by_path(const char *path);
 uint8_t *reader_get_aa_backing(uint8_t rid, uint32_t *out_stride, int *out_w, int *out_h);
 uint32_t reader_get_seq(uint8_t rid);
 
+/* `uxbench`: the current view drawn from the layout checkpoints against a
+ * layout of the whole file. 1 they match, 0 they differ, 2 there were no
+ * checkpoints to compare, -1 no such reader. Leaves the full layout. */
+int reader_layout_check(uint8_t rid);
+
 #endif /* LUGALOS_DRIVERS_READER_VIEW_H */

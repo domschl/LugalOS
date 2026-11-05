@@ -122,7 +122,7 @@ static void uxb_mp(uint32_t *v, unsigned n, uint32_t *med, uint32_t *p95) {
     *p95 = v[k ? k - 1u : 0u];
 }
 
-typedef enum { UXB_PAN, UXB_SCROLL, UXB_PAGE, UXB_REDRAW, UXB_LAUNCHER } uxb_kind_t;
+typedef enum { UXB_PAN, UXB_SCROLL, UXB_PAGE, UXB_DEEP, UXB_REDRAW, UXB_LAUNCHER } uxb_kind_t;
 
 typedef struct {
     uxb_ribbon_t rb;
@@ -151,6 +151,12 @@ static bool uxb_act(uxb_t *u, uxb_kind_t kind, unsigned i, unsigned n) {
         reader_scroll_instance((uint8_t)u->rb.reader_rid, i < n / 2u ? page : -page);
         return true;
     }
+    case UXB_DEEP: {                         /* pages down only, into the document */
+        int page = u->rb.reader_h - 40;
+        if (page < 40) page = 40;
+        reader_scroll_instance((uint8_t)u->rb.reader_rid, page);
+        return true;
+    }
     case UXB_REDRAW:
         reader_update_instance((uint8_t)u->rb.reader_rid);
         return true;
@@ -159,6 +165,13 @@ static bool uxb_act(uxb_t *u, uxb_kind_t kind, unsigned i, unsigned n) {
         return true;
     }
     return false;
+}
+
+static void uxb_layout_check(const uxb_t *u) {
+    if (u->rb.reader_rid < 0) return;
+    int c = reader_layout_check((uint8_t)u->rb.reader_rid);
+    if (c == 0) cprintf("                  LAYOUT CHECK FAILED: the view from checkpoints differs from a full layout\n");
+    else if (c == 1) cprintf("                  layout check: checkpoints match a full layout\n");
 }
 
 static void uxb_run(uxb_t *u, uxb_kind_t kind, const char *name, unsigned n) {
@@ -282,6 +295,10 @@ void uxbench_cmd(const char *arg) {
     }
     if (u.rb.reader_idx >= 0 && uxb_jump(u.rb.reader_idx)) {
         uxb_run(&u, UXB_SCROLL, "scroll", 12);
+        uxb_layout_check(&u);
+        uxb_run(&u, UXB_DEEP, "deep", 6);
+        uxb_layout_check(&u);
+        uxb_run(&u, UXB_REDRAW, "deepdraw", 6);     /* a redraw deep in the document */
         uxb_run(&u, UXB_PAGE, "page", 8);
         uxb_run(&u, UXB_REDRAW, "redraw", 6);
     } else {
