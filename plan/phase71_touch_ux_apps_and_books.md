@@ -58,7 +58,11 @@ The games were fixed by rendering into an RGB565 canvas and letting the PPA SRM 
 | Reader redraw | `reader_draw()` (`reader_view.c:1230`) | re-reads and re-lays out **the whole file** from the VFS on every draw | same, and it happens per animation step |
 | `ugui`/reader double rendering | every widget draws into the 1-bpp canvas **and** the GRAY8 surface (`ugui.c:51-73`, `165-205`) | 2× draw work | 2× draw work |
 
-Two of these costs hit both boards (reader re-parse, double rendering). The 7B hides them because its composite is a `memcpy`. The fix is architectural, not a micro-optimisation: **window surfaces composited by the PPA, and scroll/pan as composite-only operations**. That is the "fused" approach from the games, generalised. Details in 71.1.
+Two of these costs hit both boards (reader re-parse, double rendering). The 7B hides them because its composite is a `memcpy`.
+
+**Corrected by the 71.0 measurements (§3, 71.0 results):** rotation is *not* the main factor. With the Tab5 in portrait (no rotation) a focus move still takes 0.96 s against 1.03 s in landscape, and the reader composite 56 ms against 70 ms. The Tab5's frame is **RGB565** (needed for its anti-aliased terminal), so a full frame is 1.84 MB of PSRAM writes, about 50 ms at the ~36 MB/s that Phase 64 measured. Every forced frame pays that once for the 1-bpp conversion and again for each reader area on top of it. The 7B's GRAY8 frame is a third of that traffic. The levers are therefore, in order: no forced full frames per animation step, every pixel written once, and bulk copies by DMA (the PPA did moonbase's full 1280×720 2× + rotate in 15.7 ms). The window-surface design below delivers all three.
+
+The fix is architectural, not a micro-optimisation: **window surfaces composited by the PPA, and scroll/pan as composite-only operations**. That is the "fused" approach from the games, generalised. Details in 71.1.
 
 ---
 
@@ -101,16 +105,16 @@ Two of these costs hit both boards (reader re-parse, double rendering). The 7B h
 - **Damage rectangles.** `ugui_end()` returns the union of changed widget rectangles. The view hands it to the compositor, so a stepper tap recomposites 1-2 % of the screen instead of the whole window.
 - **Terminals (stretch, 71.1e).** Rendering terminal cells into an RGB565 surface per terminal turns a ribbon pan containing terminals into composite-only as well. Optional, decided after the 71.1 measurements.
 
-**Budget targets (Tab5 landscape, measured by `lcd uxbench`, 71.0):**
+**Budget targets (Tab5 landscape, measured by `uxbench`; "today" from the 71.0 baseline):**
 
 | Interaction | Today (estimate from code comments) | Target |
 | :--- | :--- | :--- |
-| Ribbon pan, two windows | ~1 s (6 × ~170 ms) | ≤ 150 ms total, ≥ 30 fps during the move |
-| Reader scroll by one line | 3-5 × full redraw + full re-parse | ≤ 16 ms per frame, finger-following |
-| Reader page turn (book mode) | n/a | ≤ 60 ms tap-to-glass |
-| Launcher/settings tap feedback | release + full recomposite | armed state on glass ≤ 50 ms after touch-down |
+| Ribbon focus move / pan | 1031 ms (7 frames of ~126 ms, 6 of them forced) | ≤ 150 ms total, ≥ 30 fps during the move |
+| Reader scroll by one line | 856 ms (4 frames of ~137 ms + 322 ms re-parse/draw) | ≤ 16 ms per frame, finger-following |
+| Reader page turn (book mode) | 1398 ms (page scroll today: 6 frames + 579 ms app) | ≤ 60 ms tap-to-glass |
+| Launcher/settings tap feedback | 140 ms redraw-to-glass (plus touch release latency) | armed state on glass ≤ 50 ms after touch-down |
 
-The 7B must get no slower on any row. The real "today" numbers replace the estimates in 71.0.
+The 7B must get no slower on any row (its baseline is in the 71.0 results: pan 265 ms, line scroll 332 ms, page 579 ms, launcher 66 ms).
 
 ### 2.2 Input pipeline and gesture arbitration
 
@@ -268,11 +272,44 @@ The launcher is the home view, with a tab bar for **Shortcuts | Files** (remembe
 Order is by dependency: measure → compositor → input → toolkit → framework → apps. 71.8/71.9 (reader core, converter) are independent of 71.5-71.7 and can run in parallel with them.
 
 ### 71.0 — Baseline, bench and Phase 70 carry-over
-- `lcd uxbench`: scripted ribbon pan (2 and 3 windows), reader line scroll, reader page down, launcher tap. Reports per-stage timers (snapshot, 1-bpp convert, AA composite, PPA, flush, flip) with median/p95, like moonbase's overlay. Also prints the touch-to-glass latency for synthetic taps.
-- A frame-time overlay toggle for the ribbon (`lcd overlay on`).
-- Record the numbers for the Tab5 (landscape and portrait) and the 7B in this plan (replaces the estimates in 2.1).
+- `uxbench [doc]` (a shell command on every panel board, `drivers/uxbench.c`): focus moves across terminal + reader + launcher, reader line scroll, page scroll and redraw, launcher redraw. Each action is timed from input to glass (`lcdterm_settle()`), and the converted frames' stages come from the backend (`lcdterm_frame_stats()`, P4: snapshot, 1-bpp conversion, reader, canvas, terminal cells, write-back) with median/p95.
+- `lcd stats live on|off|reset` (P4): frames per second and mean/worst frame time once a second. **Deviation:** this replaces the on-glass overlay. An overlay drawn into the frame would dirty the rows it measures.
+- **Deviation:** touch-to-glass latency for synthetic taps moves to 71.2, which adds `touch inject`. 71.0 measures redraw-to-glass, and the release latency is known from the code (§0.3.3).
+- Record the numbers for the Tab5 (landscape and portrait) and the 7B in this plan.
 - Carry-over: `uguiselftest` into `tests/runner.py` (QEMU rv32/rv64); `plan/open_issues.md` entries for the 70.6/70.7/70.8 gaps, each pointing to the 71.x milestone that closes it.
 - **Acceptance:** bench numbers recorded for all three configurations; runner green.
+
+**71.0 results (2026-11-05, build 1337.ee71a10e+, `uxbench` with the default `shell.md`, terminal + reader + launcher):**
+
+| Tab5 (ESP32-P4 v1.3), RGB565 frame, double-buffered | Landscape (270°) | Portrait (0°) |
+| :--- | :--- | :--- |
+| Focus move / pan: input to glass, median (p95) | 1031 ms (1048) | 960 ms (979) |
+| — frames per action; forced | 7.0; 6 | 7.0; 6 |
+| — frame median: total / 1-bpp conv / reader | 126 / 60 / 58 ms | 117 / 53 / 58 ms |
+| Reader line scroll (32 px) | 856 ms (908) | 856 ms (873) |
+| — frames per action; app time per action | 4.0; 322 ms | 4.0; 384 ms |
+| Reader page scroll | 1398 ms (1520) | 1380 ms (1398) |
+| — frames per action; app time per action | 6.0; 579 ms | 6.0; 668 ms |
+| Reader redraw (no scroll) | 157 ms: frame 73 (reader 69), app 84 | 175 ms: frame 60 (reader 56), app 114 |
+| Launcher redraw | 140 ms: frame 72 (reader 69), app 69 | 140 ms: frame 59 (reader 55), app 77 |
+
+Reading the table:
+- Every animation step is a **forced full frame** (`term_sync_post()` sets `g_t_force`): six per pan and three to five per scroll. Each costs ~126 ms, regardless of how little moved.
+- The **1-bpp conversion** (~60 ms) and the **reader/launcher composite** (~57-70 ms) are similar in size and are paid one after the other for the same pixels. Skipping the conversion under surfaces alone would halve a frame.
+- "app" (wall time outside frames) is the reader's whole-file re-parse plus `screen_repaint()` → `draw_all()`. A reader update repaints the entire 1-bpp screen (`lcdterm_repaint()` in `reader_update_instance()`), not just the window. Both are targeted by 71.1 and 71.8.
+- Portrait differs from landscape by only 7-15 %, so the frame format and PSRAM bandwidth (§0.4) dominate, not rotation.
+
+| LCD-7B (ESP32-P4 v3.2), GRAY8 frame, double-buffered, native landscape | |
+| :--- | :--- |
+| Focus move / pan: input to glass, median (p95) | 265 ms (265) |
+| — frames per action; forced | 7.0; 6 |
+| — frame median: total / 1-bpp conv / reader | 25 / 9 / 14 ms |
+| Reader line scroll (32 px) | 332 ms (348): 4 frames, app 231 ms |
+| Reader page scroll | 579 ms (597): 6 frames, app 396 ms |
+| Reader redraw (no scroll) | 83 ms: frame 17 (reader 15), app 66 |
+| Launcher redraw | 66 ms: frame 17 (reader 15), app 42 |
+
+The 7B's frames are **5× cheaper** than the Tab5's (25 against 126 ms), which matches a third of the frame traffic plus no rotation. But its reader scroll and page are still dominated by **app time** (231 and 396 ms per action: the whole-file re-parse per animation step and the full `draw_all()`). So 71.8's layout index and the partial repaint in 71.1 matter on the 7B as much as the compositor work matters on the Tab5.
 
 ### 71.1 — Compositor fast path (Tab5 performance)
 - **71.1a:** an RGB565 reader surface composited by PPA SRM, measured against today's path on one reader window (decision 1 in §4). The `ugui`/font blitters get RGB565 output (gray ink levels through a 256-entry gray→RGB565 table).
@@ -280,7 +317,7 @@ Order is by dependency: measure → compositor → input → toolkit → framewo
 - **71.1c:** the 1-bpp conversion skips all surface rectangles; `ugui` 1-bpp drawing only on demand; `lcd shot` from the frame buffer.
 - **71.1d:** asynchronous animation frames for ribbon pan and reader scroll (no `lcdterm_sync_post()` per step); pan = recomposite at shifted offsets; scroll = `src_y` offset + exposed rows only.
 - **71.1e (stretch, decided on 71.1d's numbers):** terminal cell surfaces.
-- **Acceptance:** `lcd uxbench` meets the 2.1 targets on the Tab5 landscape; the 7B is not slower on any row; `lcd verify` and `tests/hw/lcdterm_shots.py` pass; RP2350 pixel-identical; zero `racescan` violations; `lockcheck` shows no new pairs.
+- **Acceptance:** `uxbench` meets the 2.1 targets on the Tab5 landscape; the 7B is not slower on any row; `lcd verify` and `tests/hw/lcdterm_shots.py` pass; RP2350 pixel-identical; zero `racescan` violations; `lockcheck` shows no new pairs.
 
 ### 71.2 — Input pipeline and system events
 - Raw contact reporting from both touch chips; GT911 zero-count release; recogniser with mm thresholds and `LONG_PRESS`, `DRAG_*`, throttled `POINTER_MOVE`.

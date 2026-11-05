@@ -74,6 +74,7 @@
 #include "drivers/ugui.h"
 #include "drivers/reader_view.h"
 #include "drivers/launcher_view.h"
+#include "drivers/uxbench.h"
 #include "drivers/dcf77_decode.h"
 #include "drivers/pico_clock_ui.h"
 #include "kernel/timezone.h"
@@ -6260,6 +6261,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         cmd_launcher(arg);
         return;
 #if CONFIG_DEV
+    } else if (strcmp(cmd_line, "uxbench") == 0 || strncmp(cmd_line, "uxbench ", 8) == 0) {
+        uxbench_cmd(cmd_line + 7);
+        return;
     } else if (strcmp(cmd_line, "uguiselftest") == 0) {
         cprintf("uguiselftest: %s\n", ugui_selftest() ? "PASS" : "FAIL");
         return;

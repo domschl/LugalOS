@@ -38,6 +38,21 @@
 
 #define LCDTERM_MAX_FB_REGIONS 2u
 
+/* One converted frame, as a converting backend times it (`uxbench`). The
+ * stages are those of the P4's term_draw(); a backend without one leaves it 0. */
+typedef struct {
+    uint32_t total_us;     /* snapshot to flip armed */
+    uint32_t snap_us;      /* dirty detection and the snapshot */
+    uint32_t conv_us;      /* 1-bpp frame into the back buffer */
+    uint32_t reader_us;    /* reader and launcher surfaces composited */
+    uint32_t canvas_us;    /* RGB565 canvases composited (PPA or CPU) */
+    uint32_t term_us;      /* anti-aliased terminal cells */
+    uint32_t wb_us;        /* cache write-back of the written rows */
+    uint16_t units;        /* bands, rows, surfaces and cells written */
+    uint8_t  forced;       /* a full redraw (sync_post, rotation, `lcd repaint`) */
+    uint8_t  sync;         /* converted by sync_post, not the flush task */
+} lcdterm_frame_stat_t;
+
 typedef struct {
     const char *name;               /* the panel, for reports: "RP2350-LCD-7" */
     const char *text_test_title;    /* `lcd test text`'s first line */
@@ -62,6 +77,12 @@ typedef struct {
     /* The panel turns at run time: lcdterm_reinit() with w and h traded.
      * The screen's state is then sized for both orientations. */
     bool        rotates;
+    /* Optional, for `uxbench`: the newest frames' stage timings, oldest
+     * first, at most max of them; reset empties the record afterwards. */
+    unsigned  (*frame_stats)(lcdterm_frame_stat_t *out, unsigned max, bool reset);
+    /* Optional: returns once everything drawn so far is on the glass
+     * (converted and, double-buffered, flipped). */
+    void      (*settle)(void);
 } lcdterm_backend_t;
 
 /* Takes the backend (kept by pointer: it must outlive the terminal), finds
@@ -108,6 +129,8 @@ bool lcdterm_is_double_buffered(void);
 void lcdterm_sync_pre(void);
 void lcdterm_sync_post(void);
 void lcdterm_damage(void);
+unsigned lcdterm_frame_stats(lcdterm_frame_stat_t *out, unsigned max, bool reset);
+void lcdterm_settle(void);
 int lcdterm_get_visible_readers(uint8_t *out_rids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins);
 uint16_t *lcdterm_get_canvas565_backing(uint8_t cid, uint32_t *out_stride, int *out_w, int *out_h);
 uint16_t *lcdterm_get_canvas565_by_name(const char *name, uint32_t *out_stride, int *out_w, int *out_h);
@@ -133,6 +156,10 @@ static inline bool lcdterm_is_animating(void) { return false; }
 static inline bool lcdterm_is_double_buffered(void) { return false; }
 static inline void lcdterm_sync_pre(void) { }
 static inline void lcdterm_sync_post(void) { }
+static inline unsigned lcdterm_frame_stats(lcdterm_frame_stat_t *out, unsigned max, bool reset) {
+    (void)out; (void)max; (void)reset; return 0;
+}
+static inline void lcdterm_settle(void) { }
 static inline void lcdterm_damage(void) { }
 static inline int lcdterm_get_visible_readers(uint8_t *out_rids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins) {
     (void)out_rids; (void)out_x0; (void)out_y0; (void)out_x1; (void)out_y1; (void)max_wins;

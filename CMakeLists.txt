@@ -776,6 +776,8 @@ set(SOURCES
     drivers/reader_view.c
     drivers/launcher_view.c
     drivers/osk.c
+    # `uxbench`: the ribbon's interactions timed from input to glass.
+    drivers/uxbench.c
     drivers/ribbon.c
     # the same screen in RAM, for Lisp's canvas where there is no panel.
     drivers/ramscreen.c

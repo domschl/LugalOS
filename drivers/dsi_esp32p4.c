@@ -1550,6 +1550,22 @@ typedef struct {
     uint64_t t0;
 } term_snap_t;
 static term_snap_t g_snap;   /* guarded by: g_frame_lock */
+
+/* Stage timings of the newest converted frames (`uxbench`, `lcd stats`):
+ * term_snapshot() starts `cur`, term_draw() fills and appends it. In PSRAM:
+ * 4 KB that only a measurement reads. guarded by: g_frame_lock. */
+#define FSTAT_RING 128u
+typedef struct {
+    lcdterm_frame_stat_t ring[FSTAT_RING];
+    lcdterm_frame_stat_t cur;
+    unsigned head, count;        /* next slot; frames held (<= FSTAT_RING) */
+    bool in_sync;                /* term_sync_post()'s conversion is running */
+    uint32_t live_frames;        /* `lcd stats live`: since the last line */
+    uint64_t live_sum_us, live_max_us, live_t0;
+    bool live;
+} fstat_t;
+/* guarded by: g_frame_lock */
+static fstat_t g_fstat BULK_BSS;
 #if defined(CONFIG_FONT_CELL_H) && (CONFIG_FONT_CELL_H == 32)
 static uint16_t    g_snap_cells[TERM_SNAP_CELLS] BULK_BSS;   /* guarded by: g_frame_lock; PSRAM: low SRAM is full */
 #endif
@@ -1582,6 +1598,8 @@ static term_go_t term_snapshot(unsigned y0, unsigned y1) {
     }
     if (y1 > g_tbe.h) y1 = g_tbe.h;
     uint64_t t0 = time_get_us();
+    memset(&g_fstat.cur, 0, sizeof g_fstat.cur);
+    g_fstat.cur.forced = g_t_force ? 1u : 0u;     /* before the full pass clears it */
 
     unsigned stride = g_tbe.stride;
     unsigned total_bytes = stride * g_tbe.h;
@@ -1704,6 +1722,8 @@ static term_go_t term_snapshot(unsigned y0, unsigned y1) {
         sn->nt = tc;
     }
 #endif
+    g_fstat.cur.snap_us = (uint32_t)(time_get_us() - t0);
+    g_fstat.cur.sync = g_fstat.in_sync ? 1u : 0u;
     return go;
 }
 
@@ -1722,6 +1742,7 @@ static void term_draw(void) {
     uint64_t t0 = sn->t0;
 
     /* 2. Convert dirty rows for the back buffer */
+    uint64_t ts = time_get_us(), tn;
     unsigned back_idx = g_double_buffered ? (1u - g_front_idx) : 0u;
     int lo = -1, hi = -1;
     int flush_py0 = -1, flush_py1 = -1;
@@ -1883,6 +1904,8 @@ static void term_draw(void) {
         }
     }
 
+    tn = time_get_us(); g_fstat.cur.conv_us = (uint32_t)(tn - ts); ts = tn;
+
     /* 2b. Composite visible anti-aliased Reader windows onto fb_back() */
     for (int i = 0; i < sn->nr; i++) {
         uint32_t seq = sn->rseq[i];
@@ -1966,6 +1989,7 @@ static void term_draw(void) {
         n++;
     }
     uint32_t cpu_n = n;
+    tn = time_get_us(); g_fstat.cur.reader_us = (uint32_t)(tn - ts); ts = tn;
 
     /* 2c. Composite visible RGB565 color canvases onto fb_back() */
     for (int i = 0; i < sn->nc; i++) {
@@ -2126,6 +2150,8 @@ static void term_draw(void) {
         n++;
         cpu_n++;
     }
+
+    tn = time_get_us(); g_fstat.cur.canvas_us = (uint32_t)(tn - ts); ts = tn;
 
     /* 2d. Composite visible anti-aliased Terminal windows onto fb_back() */
 #if defined(CONFIG_FONT_CELL_H) && (CONFIG_FONT_CELL_H == 32)
@@ -2328,6 +2354,8 @@ static void term_draw(void) {
 }
 #endif
 
+    tn = time_get_us(); g_fstat.cur.term_us = (uint32_t)(tn - ts); ts = tn;
+
     /* 3. Flush written rows and arm VSYNC flip */
     if (cpu_n) {
         if (g_lcd_rot == 90 || g_lcd_rot == 270) {
@@ -2345,11 +2373,35 @@ static void term_draw(void) {
     }
     if (g_double_buffered && (n || rearm)) dsi_lcd_flip(false);
 
-    uint32_t us = (uint32_t)(time_get_us() - t0);
+    tn = time_get_us();
+    g_fstat.cur.wb_us = (uint32_t)(tn - ts);
+    uint32_t us = (uint32_t)(tn - t0);
     g_t_flushes++;
     g_t_rows += n;
     if (n) { g_t_us_last = us; g_t_rows_last = n; }
     if (us > g_t_us_max) g_t_us_max = us;
+    if (n) {
+        g_fstat.cur.total_us = us;
+        g_fstat.cur.units = n > 0xffffu ? 0xffffu : (uint16_t)n;
+        g_fstat.ring[g_fstat.head] = g_fstat.cur;
+        g_fstat.head = (g_fstat.head + 1u) % FSTAT_RING;
+        if (g_fstat.count < FSTAT_RING) g_fstat.count++;
+        g_fstat.live_frames++;
+        g_fstat.live_sum_us += us;
+        if (us > g_fstat.live_max_us) g_fstat.live_max_us = us;
+    }
+}
+
+/* lcdterm_backend_t.frame_stats: the held frames, oldest first. */
+static unsigned term_frame_stats(lcdterm_frame_stat_t *out, unsigned max, bool reset) {
+    ylock_acquire(&g_frame_lock);
+    unsigned n = g_fstat.count < max ? g_fstat.count : max;
+    unsigned first = (g_fstat.head + FSTAT_RING - g_fstat.count) % FSTAT_RING;
+    first = (first + (g_fstat.count - n)) % FSTAT_RING;    /* the newest n */
+    for (unsigned i = 0; out && i < n; i++) out[i] = g_fstat.ring[(first + i) % FSTAT_RING];
+    if (reset) { g_fstat.count = 0; g_fstat.head = 0; }
+    ylock_release(&g_frame_lock);
+    return out ? n : 0u;
 }
 
 /* 47.11: idle blanking -- dark, or back to what `lcd backlight` / `lcd bl`
@@ -2395,7 +2447,9 @@ static void term_sync_post(void) {
 #endif
     frame_begin();
     g_t_force = true;
+    g_fstat.in_sync = true;
     term_convert(0, DSI_LCD_V_RES);
+    g_fstat.in_sync = false;
     g_t_due = false;
     /* the flip term_convert() armed, taken at the frame end */
     if (g_double_buffered) (void)gdma_wait_flip(50000u);
@@ -2434,6 +2488,8 @@ static bool term_capture(const uint8_t **fb, unsigned *w, unsigned *h, unsigned 
     return true;
 }
 
+static void term_settle(void);
+
 static lcdterm_backend_t g_tbe = {
 #if defined(CONFIG_BOARD_TAB5)
     .name            = "M5Tab5",
@@ -2456,6 +2512,8 @@ static lcdterm_backend_t g_tbe = {
     .sync_post       = term_sync_post,
     .capture         = term_capture,
     .is_double_buffered = dsi_lcd_is_double_buffered,
+    .frame_stats     = term_frame_stats,
+    .settle          = term_settle,
 };
 
 /* The whole terminal again, from its 1-bpp frame -- after a test pattern
@@ -2466,6 +2524,50 @@ static void term_redraw(void) {
     g_t_force = true;
     term_convert(0, g_tbe.h);
     frame_end();
+}
+
+/* lcdterm_backend_t.settle: back once what was drawn is on the glass. Both
+ * locks are taken to look: the flush task clears g_t_due under console_lock
+ * and draws under g_frame_lock, so with both held a pass is either still to
+ * come (due) or finished. Without the flush task, converts here. */
+static void term_settle(void) {
+    uint64_t t0 = time_get_us();
+    for (;;) {
+        frame_begin();
+        if (!g_t_paced && g_t1 && !g_t_hold) {
+            term_convert(0, g_tbe.h);
+            if (g_double_buffered) (void)gdma_wait_flip(50000u);
+        }
+        bool idle = !g_t_due && !g_flip_pending;
+        frame_end();
+        if (idle || time_get_us() - t0 > 2000000u) return;
+        task_sleep_ms(1);
+    }
+}
+
+/* `lcd stats live`: one line a second while frames are converted, printed
+ * by the flush task after it has let go of both locks. */
+static void fstat_live_line(void) {
+    if (!g_fstat.live) return;
+    uint64_t now = time_get_us();
+    ylock_acquire(&g_frame_lock);
+    uint32_t frames = 0;
+    uint64_t sum = 0, max = 0, span = now - g_fstat.live_t0;
+    if (span >= 1000000u) {
+        frames = g_fstat.live_frames;
+        sum = g_fstat.live_sum_us;
+        max = g_fstat.live_max_us;
+        g_fstat.live_frames = 0;
+        g_fstat.live_sum_us = 0;
+        g_fstat.live_max_us = 0;
+        g_fstat.live_t0 = now;
+    }
+    ylock_release(&g_frame_lock);
+    if (frames) {
+        cprintf("lcd stats: %lu frames/s, mean %lu us, worst %lu us\n",
+                (unsigned long)((uint64_t)frames * 1000000u / span),
+                (unsigned long)(sum / frames), (unsigned long)max);
+    }
 }
 
 /* Every 16 ms: if anything was drawn since the last pass, convert it. Under
@@ -2484,6 +2586,7 @@ static void term_flush_task(void *arg) {
         if (go == TERM_UNLOCKED) term_draw();   /* the writers no longer wait for this */
         g_t_paced_passes++;
         ylock_release(&g_frame_lock);
+        fstat_live_line();
     }
 }
 
@@ -3048,6 +3151,30 @@ void dsi_lcd_command(const char *args) {
         term_bench();
         return;
     }
+    if (strncmp(args, "stats", 5) == 0) {
+        const char *a = args + 5;
+        while (*a == ' ') a++;
+        if (strcmp(a, "live on") == 0 || strcmp(a, "live off") == 0) {
+            ylock_acquire(&g_frame_lock);
+            g_fstat.live = a[6] == 'n';
+            g_fstat.live_frames = 0;
+            g_fstat.live_sum_us = 0;
+            g_fstat.live_max_us = 0;
+            g_fstat.live_t0 = time_get_us();
+            ylock_release(&g_frame_lock);
+            cprintf("lcd stats: live %s\n", a[6] == 'n' ? "on" : "off");
+        } else if (strcmp(a, "reset") == 0) {
+            (void)term_frame_stats(NULL, 0, true);
+            cprintf("lcd stats: reset\n");
+        } else {
+            ylock_acquire(&g_frame_lock);
+            unsigned cnt = g_fstat.count;
+            ylock_release(&g_frame_lock);
+            cprintf("lcd stats: %u frames held (of %u); `uxbench` summarises them\n",
+                    cnt, (unsigned)FSTAT_RING);
+        }
+        return;
+    }
     if (strcmp(args, "repaint") == 0) {
         lcdterm_repaint();
         term_redraw();
@@ -3230,7 +3357,8 @@ void dsi_lcd_command(const char *args) {
         cprintf("lcd orient: set to %d deg (%s)\n", rot, (rot == 90 || rot == 270) ? "Landscape" : "Portrait");
         return;
     }
-    cprintf("usage: lcd [colours FG BG | repaint | termbench | test text | scroll N | tee uart|off |\n"
+    cprintf("usage: lcd [colours FG BG | repaint | termbench | stats [live on|off|reset] |\n"
+            "            test text | scroll N | tee uart|off |\n"
             "            pattern bars|hbars|ber|off | fb [gray|rgb565] | db [on|off] |\n"
             "            orient [portrait|landscape|0|90|180|270] |\n"
             "            test checker|grid|page|ramp|white|black | fps | bench | verify |\n"

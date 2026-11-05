@@ -756,6 +756,14 @@ void lcdterm_sync_post(void) {
     if (g_be && g_be->sync_post) g_be->sync_post();
 }
 
+unsigned lcdterm_frame_stats(lcdterm_frame_stat_t *out, unsigned max, bool reset) {
+    return g_be && g_be->frame_stats ? g_be->frame_stats(out, max, reset) : 0u;
+}
+
+void lcdterm_settle(void) {
+    if (g_be && g_be->settle) g_be->settle();
+}
+
 void lcdterm_damage(void) {
     damage(0, g_be ? g_be->h : 0);
 }

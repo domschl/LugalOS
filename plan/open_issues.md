@@ -78,6 +78,44 @@ face falls back to NTP/DCF time and lights the PM lamp until the first write
 clears OSF -- verified on hardware the same day. Whether the cell is flat,
 missing or not contacting, only a meter says.
 
+## The window event queue is global, and apps still read the older rings
+
+**Destination: phase 71, milestone 71.2.** Found in the phase 70 review
+(2026-11-05). `window_push_event()`/`window_poll_event()` (kernel/console.c)
+are one SPSC ring for whichever window is active, filled next to the canvas
+tap ring and the canvas key ring. Only moonbase reads it, and moonbase still
+installs `touch_set_hook()`. Chess reads the tap ring. `FOCUS_*`,
+`CLOSE_REQUEST` and `RESIZE` are declared in kernel/event.h but never pushed,
+and no `POINTER_MOVE` reaches the in-kernel views. Phase 70's checklist marks
+70.6 done; treat it as the header and a first ring, not the routing.
+
+## A closed window's owner task is not reclaimed
+
+**Destination: phase 71, milestone 71.4** (the view close protocol).
+`close_window()` (drivers/screen.c) reads `owner_pid` and drops it: no close
+request reaches the owner, and no session claim is released when the owner
+does not answer. A canvas app whose window is closed by its close box keeps
+running until it notices `console_canvas_poll_closed()` itself.
+
+## Touch thresholds are not in millimetres; GT911 taps land 250 ms late
+
+**Destination: phase 71, milestone 71.2.** drivers/touch_gt911.c: `TAP_PX` is
+48 or 24 px by font size, and a swipe must cross 1/8 of the screen (160 px on
+the Tab5 in landscape, 90 px in portrait), so the 7B (170 DPI, scale 1) gets
+the RP2350's targets. A GT911 release is detected 250 ms after its last
+report, so every tap on the 7B is at least that late. Gestures are classified
+only at release, so nothing can show a pressed state.
+
+## The Tab5 ribbon converts a forced full frame per animation step
+
+**Destination: phase 71, milestone 71.1.** Measured by `uxbench` on
+2026-11-05 (plan/phase71's 71.0 results): a focus move is 7 frames, 6 of them
+forced full frames of ~126 ms (`term_sync_post()` sets `g_t_force`). That is
+~1 s per move, 0.86 s per reader line scroll and 1.4 s per page. The 1-bpp
+conversion (~60 ms) and the reader/launcher composite (~57-70 ms) write the
+same pixels one after the other. Portrait is only 7-15 % faster, so the RGB565
+frame's PSRAM traffic dominates, not the rotation.
+
 ---
 
 # B. Unexplained intermittents

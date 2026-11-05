@@ -2,17 +2,19 @@
   "bulk_per_file": {
     "drivers/launcher_view.c": 5400,
     "drivers/reader_view.c": 36480,
+    "drivers/uxbench.c": 540,
     "kernel/palloc.c": 8192,
     "kernel/zonetest.c": 64,
     "user/lisp/lisp.c": 1523712
   },
   "bulk_per_subsystem": {
     "display": 41880,
+    "drivers": 540,
     "kernel": 8192,
     "lisp": 1523712,
     "selftest": 64
   },
-  "bulk_total": 1573848,
+  "bulk_total": 1574388,
   "heap_bytes": 294912,
   "heap_pages": 72,
   "per_file": {
@@ -34,7 +36,7 @@
     "drivers/i2c_rtc.c": 18,
     "drivers/idstore_rp2350.c": 28,
     "drivers/ina226.c": 52,
-    "drivers/lcd7_rp2350.c": 93,
+    "drivers/lcd7_rp2350.c": 101,
     "drivers/lcdterm.c": 2634,
     "drivers/loopback_net.c": 2060,
     "drivers/mcp9808.c": 76,
@@ -143,7 +145,7 @@
     "chess": 33871,
     "clock-app": 136,
     "crypto": 67,
-    "display": 2864,
+    "display": 2872,
     "drivers": 2664,
     "fs": 64,
     "httpd": 70,
@@ -163,5 +165,5 @@
     "vfs": 4111
   },
   "ram_code": 24484,
-  "total": 198332
+  "total": 198340
 }

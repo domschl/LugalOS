@@ -1,8 +1,9 @@
 {
   "bulk_per_file": {
-    "drivers/dsi_esp32p4.c": 131584,
+    "drivers/dsi_esp32p4.c": 135760,
     "drivers/launcher_view.c": 5400,
     "drivers/reader_view.c": 36480,
+    "drivers/uxbench.c": 540,
     "kernel/palloc.c": 32768,
     "kernel/zonetest.c": 64,
     "user/ceres/src/platform_p4.c": 31896,
@@ -13,12 +14,13 @@
   "bulk_per_subsystem": {
     "app:ceres": 31896,
     "app:moonbase": 73916,
-    "display": 173464,
+    "display": 177640,
+    "drivers": 540,
     "kernel": 32768,
     "lisp": 1532288,
     "selftest": 64
   },
-  "bulk_total": 1844396,
+  "bulk_total": 1849112,
   "heap_bytes": 380928,
   "heap_pages": 93,
   "per_file": {
@@ -37,7 +39,7 @@
     "drivers/bme680.c": 124,
     "drivers/bmi270.c": 104,
     "drivers/ccs811.c": 76,
-    "drivers/dsi_esp32p4.c": 3286,
+    "drivers/dsi_esp32p4.c": 3294,
     "drivers/edgecap.c": 20,
     "drivers/flash_esp32p4.c": 13,
     "drivers/flashdisk.c": 4124,
@@ -169,7 +171,7 @@
     "chess": 22932,
     "clock-app": 136,
     "crypto": 38,
-    "display": 3895,
+    "display": 3903,
     "drivers": 1302,
     "fs": 4160,
     "httpd": 70,
@@ -190,5 +192,5 @@
     "vfs": 4111
   },
   "ram_code": 1806,
-  "total": 220781
+  "total": 220789
 }
