@@ -78,6 +78,22 @@ face falls back to NTP/DCF time and lights the PM lamp until the first write
 clears OSF -- verified on hardware the same day. Whether the cell is flat,
 missing or not contacting, only a meter says.
 
+## Something writes the 1-bpp screen's top rows while a reader has focus
+
+**Destination: phase 71, milestone 71.1** (found 2026-11-05 by `uxbench`'s
+new screen check). With a reader window focused, on the LCD-7B and the Tab5
+alike, the screen check (canvas request `'E'`: band hashes of the 1-bpp
+screen, then `draw_all()`, then the hashes again) reports rows 0..15
+differing from a full repaint, and rows 16..31 (the menu bar's rule and the
+title bars' top) **changing between two reads inside the check itself**,
+which holds console_lock. So some context writes the screen's 1-bpp frame
+without console_lock while a reader is focused. Not with the launcher or a
+terminal focused. Until 71.1 the reader's full repaint after every update
+painted over it. The glass check (frame against a full conversion of the
+same 1-bpp state) passes, and the owner sees no fault on the 7B when
+scrolling. **Next step:** find the writer (a write watch on the 1-bpp frame's
+rows 16..31, or `racescan --why` for the reader's draw paths).
+
 ## The window event queue is global, and apps still read the older rings
 
 **Destination: phase 71, milestone 71.2.** Found in the phase 70 review

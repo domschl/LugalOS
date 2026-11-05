@@ -637,12 +637,8 @@ void launcher_update(void) {
 
     launcher_draw(back, s_launcher.win_w, s_launcher.win_h);
 
-    /* Trigger screen refresh */
-    uint8_t sreq[1] = { 'S' }, sreply[SCREEN_REPLY_LEN];
-    (void)console_canvas(sreq, 1, sreply);
-#if defined(LCDTERM_PRESENT)
-    lcdterm_damage();
-#endif
+    uint8_t ureq[2] = { 'W', s_launcher.slot_id }, sreply[SCREEN_REPLY_LEN];
+    (void)console_canvas(ureq, 2, sreply);
 }
 
 bool launcher_open(void) {

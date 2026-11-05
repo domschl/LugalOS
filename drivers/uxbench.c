@@ -193,6 +193,18 @@ static void uxb_run(uxb_t *u, uxb_kind_t kind, const char *name, unsigned n) {
     cprintf("uxbench %-8s: %u actions, input to glass median %lu.%lu ms, p95 %lu.%lu ms\n",
             name, done, (unsigned long)(wmed / 1000u), (unsigned long)(wmed % 1000u / 100u),
             (unsigned long)(wp95 / 1000u), (unsigned long)(wp95 % 1000u / 100u));
+    uint8_t vreq[1] = { 'E' }, vreply[SCREEN_REPLY_LEN];
+    if (console_canvas(vreq, 1, vreply) && vreply[0] == 0) {
+        if (vreply[1]) {
+            cprintf("                  SCREEN CHECK FAILED: the screen differs from a full repaint, rows %u..%u",
+                    (unsigned)vreply[12] * 16u, (unsigned)vreply[13] * 16u + 15u);
+            if (vreply[11] != 0xff) cprintf(", band %u changed during the check itself", (unsigned)vreply[11]);
+            if (vreply[14] != 0xff)
+                cprintf(", top 32 rows x %u..%u", (unsigned)vreply[14] * 32u, (unsigned)vreply[15] * 32u + 31u);
+            cprintf("\n");
+        }
+        else cprintf("                  screen check: matches a full repaint\n");
+    }
     unsigned cx0 = 0, cy0 = 0, cx1 = 0, cy1 = 0;
     long diff = lcdterm_check(&cx0, &cy0, &cx1, &cy1);
     if (diff > 0) {

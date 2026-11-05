@@ -317,6 +317,13 @@ bool reader_set_target(uint8_t rid, int w, int h) {
     return changed;
 }
 
+/* The reader's 1-bpp backing, drawn, into its tile on the screen (the
+ * screen's 'W'): only that tile, not the whole screen repainted. */
+static void reader_show(uint8_t rid) {
+    uint8_t req[2] = { 'W', rid }, reply[SCREEN_REPLY_LEN];
+    (void)console_canvas(req, 2, reply);
+}
+
 void reader_update_instance(uint8_t rid) {
     if (rid >= READER_MAX_INSTANCES || !s_readers[rid].active) return;
     canvas1_t *c = get_reader_canvas(rid);
@@ -335,9 +342,7 @@ void reader_update_instance(uint8_t rid) {
     req[1 + tl] = '\0';
     uint8_t reply[SCREEN_REPLY_LEN];
     (void)console_canvas(req, 2 + tl, reply);
-#if defined(LCDTERM_PRESENT)
-    lcdterm_repaint();
-#endif
+    reader_show(rid);
 }
 
 void reader_update(void) {

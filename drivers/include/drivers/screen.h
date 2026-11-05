@@ -243,6 +243,14 @@ void screen_text_size(const screen_t *scr, unsigned *cols, unsigned *rows);
  *   'Z'                                 38.8: forget every stored canvas -- a
  *                                       program has ended, and the next must
  *                                       not be shown its pixels
+ *   'E'                                 the screen against a full redraw of
+ *                                       its state: [1] 1 if they differed,
+ *                                       [12..13] the first and last band of
+ *                                       16 rows that did (the full redraw is
+ *                                       kept)
+ *   'W' u8 slot                         a reader's or the launcher's backing
+ *                                       changed: copied into its tile only
+ *                                       (refused when no such window)
  *   'D' u8 on                           38.8: 1 -- what follows is a redraw
  *                                       of the program's picture after damage,
  *                                       not a change to it, so the other

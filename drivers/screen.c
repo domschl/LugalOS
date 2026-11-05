@@ -880,6 +880,38 @@ void screen_set_store(screen_t *scr, void *mem, uint32_t bytes) {
     }
 }
 
+/* FNV-1a over each band of 16 rows of a canvas, its visible width only;
+ * returns the bands hashed. */
+#define SCREEN_CHECK_BANDS 80u
+#define SCREEN_CHECK_CHUNKS 64u
+/* The top 32 rows (menu bar and title bars) in columns of 32 pixels. */
+LCDTERM_UTEXT static unsigned canvas_top_chunks(const canvas1_t *cv, uint64_t *out) {
+    unsigned nc = cv->w / 32u;
+    if (nc > SCREEN_CHECK_CHUNKS) nc = SCREEN_CHECK_CHUNKS;
+    for (unsigned c = 0; c < nc; c++) {
+        uint64_t h = 0xcbf29ce484222325ull;
+        for (unsigned y = 0; y < 32u && y < cv->h; y++) {
+            const uint8_t *row = cv->fb + (uint32_t)y * cv->stride + c * 4u;
+            for (unsigned b = 0; b < 4u; b++) { h ^= row[b]; h *= 0x100000001b3ull; }
+        }
+        out[c] = h;
+    }
+    return nc;
+}
+LCDTERM_UTEXT static unsigned canvas_band_hashes(const canvas1_t *cv, uint64_t *out) {
+    unsigned nb = (cv->h + 15u) / 16u;
+    if (nb > SCREEN_CHECK_BANDS) nb = SCREEN_CHECK_BANDS;
+    for (unsigned band = 0; band < nb; band++) {
+        uint64_t h = 0xcbf29ce484222325ull;
+        for (unsigned y = band * 16u; y < band * 16u + 16u && y < cv->h; y++) {
+            const uint8_t *row = cv->fb + (uint32_t)y * cv->stride;
+            for (unsigned b = 0; b < cv->w / 8u; b++) { h ^= row[b]; h *= 0x100000001b3ull; }
+        }
+        out[band] = h;
+    }
+    return nb;
+}
+
 LCDTERM_UTEXT static void blit_canvas_backing(screen_t *scr, uint8_t slot,
                                               int tile_screen_x, int tile_screen_y,
                                               int tile_w, int tile_h) {
@@ -1999,6 +2031,55 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
         uint8_t layout = raw_layout & 0x7fu;
         uint8_t format = (raw_layout & 0x80u) ? CANVAS_FMT_RGB565 : CANVAS_FMT_1BPP;
         status = (n >= 2 && screen_set_layout_vterm_named_fmt(scr, vid, layout, name, format, caller_pid)) ? 0 : 1;
+    } else if (op == 'E') {
+        /* `uxbench`'s screen check: the screen as the partial updates left
+         * it against draw_all() of the same state. Leaves the full redraw. */
+        uint64_t h0[SCREEN_CHECK_BANDS], c0[SCREEN_CHECK_CHUNKS];
+        unsigned nb = canvas_band_hashes(&scr->cv, h0);
+        unsigned nc = canvas_top_chunks(&scr->cv, c0);
+        uint64_t hb[SCREEN_CHECK_BANDS];
+        (void)canvas_band_hashes(&scr->cv, hb);
+        int moving = -1;
+        for (unsigned b = 0; b < nb && moving < 0; b++) if (hb[b] != h0[b]) moving = (int)b;
+        reply[11] = (uint8_t)(moving < 0 ? 0xff : moving);   /* changed while being looked at */
+        draw_all(scr);
+        uint64_t h1[SCREEN_CHECK_BANDS], c1[SCREEN_CHECK_CHUNKS];
+        (void)canvas_band_hashes(&scr->cv, h1);
+        (void)canvas_top_chunks(&scr->cv, c1);
+        int cfirst = -1, clast = -1;
+        for (unsigned c = 0; c < nc; c++)
+            if (c0[c] != c1[c]) { if (cfirst < 0) cfirst = (int)c; clast = (int)c; }
+        reply[14] = (uint8_t)(cfirst < 0 ? 0xff : cfirst);   /* top 32 rows, in columns of 32 px */
+        reply[15] = (uint8_t)(clast < 0 ? 0xff : clast);
+        int first = -1, last = -1;
+        for (unsigned b = 0; b < nb; b++)
+            if (h0[b] != h1[b]) { if (first < 0) first = (int)b; last = (int)b; }
+        reply[1] = first >= 0 ? 1u : 0u;
+        reply[12] = (uint8_t)(first < 0 ? 0 : first);   /* in bands of 16 rows; [2..9] are the common reply's */
+        reply[13] = (uint8_t)(last < 0 ? 0 : last);
+        status = 0;
+    } else if (op == 'W') {
+        /* reader (or launcher) slot req[1]'s backing changed: copied into
+         * its tile alone, not the whole screen redrawn. Nothing while the
+         * ribbon animates (its frames draw everything) or the window is off
+         * screen. */
+        status = 1;
+        uint8_t rid = (n >= 2) ? req[1] : 0xffu;
+        for (uint8_t i = 0; i < scr->ribbon.count && rid < SCREEN_MAX_READERS; i++) {
+            const ribbon_win_t *w = &scr->ribbon.wins[i];
+            if ((w->type != RIBBON_WIN_READER && w->type != RIBBON_WIN_LAUNCHER) || w->vterm_id != rid) continue;
+            status = 0;
+            if (scr->animating || scr->layout == SCREEN_LAYOUT_FULLSCREEN || !scr->readers[rid].in_use) break;
+            int32_t cx0 = w->rx0 - scr->ribbon.x_view;
+            int32_t cx1 = w->rx1 - scr->ribbon.x_view;
+            int tile_y1 = SCREEN_TEXT_Y + (int)FONT_CELL_H * (int)SCREEN_TEXT_ROWS(scr->cv.h) + 1;
+            int cw_w = (int)(w->rx1 - w->rx0 - 1);
+            int cw_h = tile_y1 - (SCREEN_TILE_Y + SCREEN_TITLEBAR_H);
+            if (cx1 >= 0 && cx0 < (int32_t)scr->cv.w && cw_w > 0 && cw_h > 0)
+                blit_canvas_backing(scr, (uint8_t)(SCREEN_MAX_CANVASES + rid), (int)cx0 + 1,
+                                    SCREEN_TILE_Y + SCREEN_TITLEBAR_H, cw_w, cw_h);
+            break;
+        }
     } else if (op == 'T') {
         if (scr->ribbon.count > 0 && scr->ribbon.active_idx < scr->ribbon.count &&
             scr->ribbon.wins[scr->ribbon.active_idx].type == RIBBON_WIN_READER) {
