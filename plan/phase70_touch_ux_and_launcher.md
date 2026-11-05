@@ -1,6 +1,6 @@
 # Phase 70 — Touch UX Mode, HiDPI Window Chrome & Micro-Toolkit (`ugui`)
 
-**Status**: Planned (Written 2026-11-04)  
+**Status: CLOSED 2026-11-05, version 0.20.0.**  
 **Target Hardware**:
 - **Primary**: M5Stack Tab5 (`esp32p4-tab5`, 5" 720×1280 / 1280×720 MIPI-DSI, ~294 DPI, ST7121 TDDI touch, 32 MB PSRAM)
 - **Secondary**: Waveshare ESP32-P4-WIFI6-Touch-LCD-7B (`esp32p4-lcd7b`, 7" 1024×600 MIPI-DSI, ~170 DPI, GT911 touch, 32 MB PSRAM)
@@ -223,6 +223,44 @@ To ensure a unified Classic Macintosh look-and-feel across the Window Manager, t
 
 ---
 
+### Milestone 70.6: Unified Application Window Event Queue (`lugal_event_t`)
+1. **Unified Event Protocol (`kernel/include/kernel/event.h`, `kernel/event.c`)**:
+   - Define a universal, lightweight window event struct `win_event_t`:
+     - `type`: `WIN_EV_NONE`, `WIN_EV_POINTER_DOWN`, `WIN_EV_POINTER_UP`, `WIN_EV_POINTER_MOVE`, `WIN_EV_KEY_DOWN`, `WIN_EV_KEY_UP`, `WIN_EV_FOCUS_GAINED`, `WIN_EV_FOCUS_LOST`, `WIN_EV_CLOSE_REQUEST`, `WIN_EV_RESIZE`.
+     - Fields: `int16_t x, y, dx, dy; uint32_t key; uint8_t mods; uint8_t button; uint16_t w, h;`.
+   - Provide a clean SPSC ring queue per active canvas/window or unified dispatcher:
+     - `bool window_poll_event(win_event_t *ev);`
+     - `void window_push_event(const win_event_t *ev);`
+2. **Elimination of Fragile Global Touch Hooks**:
+   - Refactor `drivers/touch_gt911.c` and games (`user/moonbase/src/platform_p4.c`, `user/ceres/src/platform_p4.c`, `user/chess/src/chess_ui.c`) to receive pointer events via the window event queue instead of global `s_touch_hook` hijacking.
+   - Pointer coordinates are normalized to the application window's local content space, automatically taking into account ribbon viewport position, chrome borders, and HiDPI scale.
+
+---
+
+### Milestone 70.7: Ribbon Window Process Ownership & Zombie Reclamation
+1. **Window Owner Tracking (`drivers/include/drivers/ribbon.h`, `drivers/ribbon.c`)**:
+   - Add `int16_t owner_pid;` to `ribbon_win_t`.
+   - When a canvas window or terminal is created, record the calling task's PID.
+2. **Graceful Teardown & Task Termination**:
+   - When a window is closed (via Macintosh close box `[X]`, `Cmd+W`, or `vterm close`):
+     - First, enqueue a `WIN_EV_CLOSE_REQUEST` and set `g_canvas_closed = true`.
+     - If the owning worker task does not terminate within a graceful timeout (e.g. 200 ms), or on explicit close, clean up resources and release any held session claims (`s_ceres_session`, `s_moon_session`, `s_chess_claim`).
+     - Orphaned background app tasks are prevented from persisting as CPU/audio zombies.
+
+---
+
+### Milestone 70.8: Physical DPI-Calibrated Touch Chrome & Ergonomics
+1. **DPI-Calibrated Touch Target Sizing**:
+   - Establish minimum physical tap target dimensions (~7–9 mm):
+     - HiDPI (Tab5 @ 294 DPI): $\ge 44 \times 44$ px minimum touch bounds.
+     - Medium DPI (LCD-7B @ 170 DPI): $\ge 36 \times 36$ px minimum touch bounds.
+     - Standard (RP2350 @ 133 DPI): $\ge 28 \times 28$ px minimum touch bounds.
+   - Adjust `CHROME_CLOSE_HIT` padding and toolbar button hit-boxes to guarantee forgiving, reliable finger hits.
+2. **Touch Slop & Drag Thresholds**:
+   - Calibrate swipe versus tap disambiguation thresholds in `touch_gt911.c` based on physical pixels per mm so dragging doesn't misfire as taps, and brief taps don't misfire as swipes.
+
+---
+
 ## 4. Extension Phases (Future Roadmap)
 
 Once Phase 70 is live and we have collected hands-on UX experience on the Tab5 and LCD-7B, natural follow-on extensions include:
@@ -237,10 +275,10 @@ Once Phase 70 is live and we have collected hands-on UX experience on the Tab5 a
 
 ## 5. Verification Checklist
 
-- [ ] `ninja -C build/esp32p4-tab5`, `ninja -C build/esp32p4-lcd7b`, and `ninja -C build/rp2350-terminal` build cleanly with zero warnings, zero FPU instructions, and zero `racescan.py` violations.
-- [ ] On `esp32p4-tab5`, window decorations (menu bar, window titlebars, Macintosh close boxes, status icons, minimap) render at $2\times$ HiDPI scale (`CHROME_SCALE = 2`) with anti-aliased typography.
-- [ ] On `rp2350-terminal`, `CHROME_SCALE = 1` preserves 100% pixel-for-pixel compatibility.
-- [ ] Booting `esp32p4-tab5` without a USB keyboard (or unplugging the keyboard) automatically opens and focuses the Touch Launcher on the Ribbon.
-- [ ] From the Launcher, the user can adjust Volume, Brightness, and Orientation, open Markdown/Gemtext documents into the Reader, swipe left/right between the Launcher and open Reader windows, and navigate Reader history/TOC via touch buttons.
-- [ ] Launching `moonbase` from the Launcher enters the game cleanly, and tapping `[EXIT]` in the `moonbase` HUD returns to the Launcher on the Ribbon.
-- [ ] `python3 tests/runner.py`, `python3 tests/hw/test_esp32p4.py --board tab5`, and `python3 tools/gendocs.py --check` pass completely.
+- [X] `ninja -C build/esp32p4-tab5`, `ninja -C build/esp32p4-lcd7b`, and `ninja -C build/rp2350-terminal` build cleanly with zero warnings, zero FPU instructions, and zero `racescan.py` violations.
+- [X] On `esp32p4-tab5`, window decorations (menu bar, window titlebars, Macintosh close boxes, status icons, minimap) render at $2\times$ HiDPI scale (`CHROME_SCALE = 2`) with anti-aliased typography.
+- [X] On `rp2350-terminal`, `CHROME_SCALE = 1` preserves 100% pixel-for-pixel compatibility.
+- [X] Booting `esp32p4-tab5` without a USB keyboard (or unplugging the keyboard) automatically opens and focuses the Touch Launcher on the Ribbon.
+- [X] From the Launcher, the user can adjust Volume, Brightness, and Orientation, open Markdown/Gemtext documents into the Reader, swipe left/right between the Launcher and open Reader windows, and navigate Reader history/TOC via touch buttons.
+- [X] Launching `moonbase` from the Launcher enters the game cleanly, and tapping `[EXIT]` in the `moonbase` HUD returns to the Launcher on the Ribbon.
+- [X] `python3 tests/runner.py`, `python3 tests/hw/test_esp32p4.py --board tab5`, and `python3 tools/gendocs.py --check` pass completely.
