@@ -1034,6 +1034,53 @@ int ugui_vlist_reveal(int scroll_px, int view_h, int row_h, int index) {
 }
 
 
+/* --- Layout -------------------------------------------------------------- */
+
+static int clamp_len(int n, int max) {
+    return n < 0 ? 0 : n > max ? max : n;
+}
+
+ugui_rect_t ugui_cut_top(ugui_rect_t *r, int h) {
+    h = clamp_len(h, r->h);
+    ugui_rect_t c = { r->x, r->y, r->w, (int16_t)h };
+    r->y = (int16_t)(r->y + h);
+    r->h = (int16_t)(r->h - h);
+    return c;
+}
+
+ugui_rect_t ugui_cut_bottom(ugui_rect_t *r, int h) {
+    h = clamp_len(h, r->h);
+    r->h = (int16_t)(r->h - h);
+    return (ugui_rect_t){ r->x, (int16_t)(r->y + r->h), r->w, (int16_t)h };
+}
+
+ugui_rect_t ugui_cut_left(ugui_rect_t *r, int w) {
+    w = clamp_len(w, r->w);
+    ugui_rect_t c = { r->x, r->y, (int16_t)w, r->h };
+    r->x = (int16_t)(r->x + w);
+    r->w = (int16_t)(r->w - w);
+    return c;
+}
+
+ugui_rect_t ugui_cut_right(ugui_rect_t *r, int w) {
+    w = clamp_len(w, r->w);
+    r->w = (int16_t)(r->w - w);
+    return (ugui_rect_t){ (int16_t)(r->x + r->w), r->y, (int16_t)w, r->h };
+}
+
+ugui_rect_t ugui_inset(ugui_rect_t r, int dx, int dy) {
+    int w = r.w - 2 * dx, h = r.h - 2 * dy;
+    return (ugui_rect_t){ (int16_t)(r.x + dx), (int16_t)(r.y + dy), (int16_t)(w > 0 ? w : 0), (int16_t)(h > 0 ? h : 0) };
+}
+
+ugui_rect_t ugui_grid_cell(ugui_rect_t r, int cols, int rows, int gap, int i) {
+    if (cols <= 0 || rows <= 0) return (ugui_rect_t){ r.x, r.y, 0, 0 };
+    int cw = (r.w - (cols - 1) * gap) / cols, ch = (r.h - (rows - 1) * gap) / rows;
+    int c = i % cols, row = i / cols;
+    return (ugui_rect_t){ (int16_t)(r.x + c * (cw + gap)), (int16_t)(r.y + row * (ch + gap)),
+                          (int16_t)(cw > 0 ? cw : 0), (int16_t)(ch > 0 ? ch : 0) };
+}
+
 /* --- Controls ------------------------------------------------------------- */
 
 static void frame(const ugui_surface_t *s, ugui_rect_t r, int t) {
@@ -1587,6 +1634,18 @@ bool ugui_selftest(void) {
     if (tf.len != 7 || tb[7] != '\0') return false;                    /* 8 bytes: 7 and the NUL */
     if (ugui_text_key(&tf, '\r', 0) != UGUI_TEXT_SUBMIT || ugui_text_key(&tf, 0x1b, 0) != UGUI_TEXT_CANCEL ||
         ugui_text_key(&tf, '\t', 0) != UGUI_TEXT_NONE) return false;
+
+    /* Layout cuts: slices off each side, the rest shrinking, never below
+     * zero; a grid's cells. */
+    ugui_rect_t lr = { 10, 10, 100, 50 };
+    ugui_rect_t lt = ugui_cut_top(&lr, 20), lb = ugui_cut_bottom(&lr, 10), ll = ugui_cut_left(&lr, 30), lrr = ugui_cut_right(&lr, 30);
+    if (lt.y != 10 || lt.h != 20 || lb.y != 50 || lb.h != 10 || ll.x != 10 || ll.w != 30 || lrr.x != 80 || lrr.w != 30 ||
+        lr.x != 40 || lr.y != 30 || lr.w != 40 || lr.h != 20) return false;
+    if (ugui_cut_top(&lr, 99).h != 20 || lr.h != 0) return false;
+    ugui_rect_t gc = ugui_grid_cell((ugui_rect_t){ 0, 0, 100, 50 }, 2, 2, 10, 3);
+    if (gc.x != 55 || gc.y != 30 || gc.w != 45 || gc.h != 20) return false;
+    ugui_rect_t in = ugui_inset((ugui_rect_t){ 0, 0, 10, 10 }, 8, 2);
+    if (in.w != 0 || in.h != 6) return false;
 
     /* Path prefixes as the path bar counts its segments. */
     if (ugui_path_prefix("/sd0/docs", 0) != 1 || ugui_path_prefix("/sd0/docs", 1) != 4 ||

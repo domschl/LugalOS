@@ -190,19 +190,42 @@ static const char *find_last_char(const char *s, char ch) {
     return last;
 }
 
-static bool doc_already_listed(const char *basename) {
+/* Whether a and b name the same document: equal up to their extensions,
+ * without case (ADMIN.MD and ADMIN.GMI are one document in two forms). */
+static bool same_stem(const char *a, const char *b) {
+    for (;; a++, b++) {
+        char ca = *a == '.' ? '\0' : (*a >= 'A' && *a <= 'Z') ? (char)(*a + 32) : *a;
+        char cb = *b == '.' ? '\0' : (*b >= 'A' && *b <= 'Z') ? (char)(*b + 32) : *b;
+        if (ca != cb) return false;
+        if (!ca) return true;
+    }
+}
+
+/* The listed document with basename's stem, or -1. */
+static int doc_listed(const char *basename) {
     for (int i = 0; i < s_launcher.doc_count; i++) {
         const char *p = s_launcher.docs[i].path;
         const char *slash = find_last_char(p, '/');
         const char *b = slash ? (slash + 1) : p;
-        if (same_name(b, basename)) return true;
+        if (same_stem(b, basename)) return i;
     }
-    return false;
+    return -1;
 }
 
+/* A document once: a second form of one already listed (the same name with
+ * another extension) only replaces a Gemtext path by the Markdown one, the
+ * reader's richer form. */
 static void add_doc_entry(const char *full_path, const char *name, const char *badge) {
+    int dup = doc_listed(name);
+    if (dup >= 0) {
+        launcher_doc_t *d = &s_launcher.docs[dup];
+        if (str_ends_with(d->path, ".gmi") && str_ends_with(name, ".md")) {
+            strncpy(d->path, full_path, sizeof(d->path) - 1);
+            d->path[sizeof(d->path) - 1] = '\0';
+        }
+        return;
+    }
     if (s_launcher.doc_count >= LAUNCHER_MAX_DOCS) return;
-    if (doc_already_listed(name)) return;
     launcher_doc_t *d = &s_launcher.docs[s_launcher.doc_count++];
     strncpy(d->path, full_path, sizeof(d->path) - 1);
     d->path[sizeof(d->path) - 1] = '\0';
@@ -511,6 +534,62 @@ static void draw_doc_list(const ugui_surface_t *surf, int x, int y, int w, int a
                    s_launcher.scroll_px, total, view.h);
 }
 
+static void draw_status(const ugui_surface_t *surf, ugui_rect_t r) {
+    char batt[16] = "";
+    (void)battery_indicator(batt, sizeof(batt));
+    bool sd_ok = vfs_volume_mounted("sd0");
+    char line[64];
+    if (batt[0]) ksnprintf(line, sizeof(line), "Batt: %s   SD: %s", batt, sd_ok ? "Mounted" : "Absent");
+    else ksnprintf(line, sizeof(line), "SD: %s   Touch UX Ready", sd_ok ? "Mounted" : "Absent");
+    ugui_text_serif(surf, r.x, r.y, line, (uint32_t)strlen(line), false, false, false);
+}
+
+/* The applications and quick settings, cut off the top of *col (which is
+ * left with what remains). One description for both orientations. */
+static void draw_apps_and_settings(const ugui_surface_t *surf, ugui_rect_t *col) {
+    const int s = surf->scale;
+    ugui_ctx_t *ctx = &s_launcher.ui_ctx;
+    ugui_rect_t hdr = ugui_cut_top(col, 24 * s);
+    ugui_section_header(surf, hdr.x, hdr.y, hdr.w, "APPLICATIONS");
+    ugui_rect_t cards = ugui_cut_top(col, 2 * 56 * s + 8 * s);
+    ugui_card(surf, ctx, ugui_grid_cell(cards, 2, 2, 8 * s, 0), k_icon_reader, "Reader", "Docs", LAUNCHER_ID_APP_READER, false);
+    ugui_card(surf, ctx, ugui_grid_cell(cards, 2, 2, 8 * s, 1), k_icon_chess, "Chess", "Game", LAUNCHER_ID_APP_CHESS, false);
+    ugui_card(surf, ctx, ugui_grid_cell(cards, 2, 2, 8 * s, 2), k_icon_moonbase, "Moonbase", "Game", LAUNCHER_ID_APP_MOONBASE, false);
+    ugui_card(surf, ctx, ugui_grid_cell(cards, 2, 2, 8 * s, 3), k_icon_terminal, "Terminal", "Shell", LAUNCHER_ID_APP_TERMINAL, false);
+    (void)ugui_cut_top(col, 14 * s);
+
+    hdr = ugui_cut_top(col, 26 * s);
+    ugui_section_header(surf, hdr.x, hdr.y, hdr.w, "QUICK SETTINGS");
+    char vol_str[16];
+    ksnprintf(vol_str, sizeof(vol_str), "%d%%", get_volume_percent());
+    ugui_disable_next(ctx, volume_limits());
+    ugui_stepper(surf, ctx, ugui_cut_top(col, 30 * s), "Volume", vol_str, LAUNCHER_ID_VOL_STEP, LAUNCHER_ID_VOL_STEP + 1);
+    (void)ugui_cut_top(col, 8 * s);
+    char bl_str[16];
+    ksnprintf(bl_str, sizeof(bl_str), "%u%%", get_backlight_percent());
+    ugui_disable_next(ctx, backlight_limits());
+    ugui_stepper(surf, ctx, ugui_cut_top(col, 30 * s), col->w >= 320 * s ? "Brightness" : "Bright", bl_str,
+                 LAUNCHER_ID_BL_STEP, LAUNCHER_ID_BL_STEP + 1);
+    (void)ugui_cut_top(col, 10 * s);
+#if defined(CONFIG_BOARD_TAB5)
+    static const char *const k_orient_labels[3] = { "Landscape", "Portrait", "Auto" };
+    ugui_segmented(surf, ctx, ugui_cut_top(col, 28 * s), k_orient_labels, 3, get_orient_mode(), LAUNCHER_ID_ORIENT_SEG);
+    (void)ugui_cut_top(col, 10 * s);
+#endif
+}
+
+/* The documents: a header with Refresh, the list under it. */
+static void draw_documents(const ugui_surface_t *surf, ugui_rect_t r) {
+    const int s = surf->scale;
+    ugui_rect_t hdr = ugui_cut_top(&r, 24 * s);
+    ugui_rect_t btn = ugui_cut_right(&hdr, 66 * s);
+    (void)ugui_cut_right(&hdr, 6 * s);
+    ugui_section_header(surf, hdr.x, hdr.y, hdr.w, "DOCUMENTS");
+    ugui_toolbar_button(surf, &s_launcher.ui_ctx, (ugui_rect_t){ btn.x, (int16_t)(btn.y - 2 * s), btn.w, (int16_t)(20 * s) },
+                        "Refresh", LAUNCHER_ID_DOC_REFRESH, false);
+    draw_doc_list(surf, r.x, r.y, r.w, r.h, true);
+}
+
 static const char *const k_gal_tabs[3] = { "Controls", "Text", "Dialogs" };
 static const char *const k_gal_dlg[2] = { "Cancel", "Delete" };
 static const char *const k_gal_sheet[5] = { "Open", "Rename", "Add to Shortcuts", "Delete", "Cancel" };
@@ -681,172 +760,24 @@ void launcher_draw(const canvas1_t *c, int w, int h) {
     }
 
     int pad = 12 * s;
-    int gap = 10 * s;
-    bool landscape = (w >= h);
-
-    if (landscape) {
-        /* Two-column layout: Left = Applications + Quick Settings, Right = Document Library */
-        int left_w = (w * 46) / 100;
-        int right_x = pad + left_w + gap;
-        int right_w = w - right_x - pad;
-
-        /* --- Left Column: Applications --- */
-        int y = pad;
-        ugui_section_header(&surf, pad, y, left_w, "APPLICATIONS");
-        y += 24 * s;
-
-        int card_gap = 8 * s;
-        int card_w = (left_w - card_gap) / 2;
-        int card_h = 56 * s;
-        ugui_card(&surf, &s_launcher.ui_ctx,
-                  (ugui_rect_t){ (int16_t)pad, (int16_t)y, (int16_t)card_w, (int16_t)card_h },
-                  k_icon_reader, "Reader", "Docs", LAUNCHER_ID_APP_READER, false);
-        ugui_card(&surf, &s_launcher.ui_ctx,
-                  (ugui_rect_t){ (int16_t)(pad + card_w + card_gap), (int16_t)y, (int16_t)card_w, (int16_t)card_h },
-                  k_icon_chess, "Chess", "Game", LAUNCHER_ID_APP_CHESS, false);
-        y += card_h + card_gap;
-        ugui_card(&surf, &s_launcher.ui_ctx,
-                  (ugui_rect_t){ (int16_t)pad, (int16_t)y, (int16_t)card_w, (int16_t)card_h },
-                  k_icon_moonbase, "Moonbase", "Game", LAUNCHER_ID_APP_MOONBASE, false);
-        ugui_card(&surf, &s_launcher.ui_ctx,
-                  (ugui_rect_t){ (int16_t)(pad + card_w + card_gap), (int16_t)y, (int16_t)card_w, (int16_t)card_h },
-                  k_icon_terminal, "Terminal", "Shell", LAUNCHER_ID_APP_TERMINAL, false);
-        y += card_h + 14 * s;
-
-        /* --- Left Column: Quick Settings --- */
-        ugui_section_header(&surf, pad, y, left_w, "QUICK SETTINGS");
-        y += 26 * s;
-
-        int row_h = 30 * s;
-        char vol_str[16];
-        ksnprintf(vol_str, sizeof(vol_str), "%d%%", get_volume_percent());
-        ugui_disable_next(&s_launcher.ui_ctx, volume_limits());
-        ugui_stepper(&surf, &s_launcher.ui_ctx,
-                     (ugui_rect_t){ (int16_t)pad, (int16_t)y, (int16_t)left_w, (int16_t)row_h },
-                     "Volume", vol_str, LAUNCHER_ID_VOL_STEP, LAUNCHER_ID_VOL_STEP + 1);
-        y += row_h + 8 * s;
-
-        char bl_str[16];
-        ksnprintf(bl_str, sizeof(bl_str), "%u%%", get_backlight_percent());
-        ugui_disable_next(&s_launcher.ui_ctx, backlight_limits());
-        ugui_stepper(&surf, &s_launcher.ui_ctx,
-                     (ugui_rect_t){ (int16_t)pad, (int16_t)y, (int16_t)left_w, (int16_t)row_h },
-                     "Bright", bl_str, LAUNCHER_ID_BL_STEP, LAUNCHER_ID_BL_STEP + 1);
-        y += row_h + 10 * s;
-
-#if defined(CONFIG_BOARD_TAB5)
-        static const char *const k_orient_labels[3] = { "Landscape", "Portrait", "Auto" };
-        ugui_segmented(&surf, &s_launcher.ui_ctx,
-                       (ugui_rect_t){ (int16_t)pad, (int16_t)y, (int16_t)left_w, (int16_t)(28 * s) },
-                       k_orient_labels, 3, get_orient_mode(), LAUNCHER_ID_ORIENT_SEG);
-        y += 28 * s + 10 * s;
-#endif
-
-        /* Status summary box at bottom-left */
-        int status_y = h - pad - 20 * s;
-        if (status_y > y) {
-            char batt[16] = "";
-            (void)battery_indicator(batt, sizeof(batt));
-            bool sd_ok = vfs_volume_mounted("sd0");
-            char status_line[64];
-            if (batt[0]) {
-                ksnprintf(status_line, sizeof(status_line), "Batt: %s   SD: %s",
-                          batt, sd_ok ? "Mounted" : "Absent");
-            } else {
-                ksnprintf(status_line, sizeof(status_line), "SD: %s   Touch UX Ready",
-                          sd_ok ? "Mounted" : "Absent");
-            }
-            ugui_text_serif(&surf, pad, status_y, status_line, (uint32_t)strlen(status_line),
-                            false, false, false);
-        }
-
-        /* --- Right Column: Document Library --- */
-        int ry = pad;
-        int btn_w = 66 * s;
-        ugui_section_header(&surf, right_x, ry, right_w - btn_w - 6 * s, "DOCUMENTS");
-        ugui_toolbar_button(&surf, &s_launcher.ui_ctx,
-                            (ugui_rect_t){ (int16_t)(right_x + right_w - btn_w), (int16_t)(ry - 2 * s), (int16_t)btn_w, (int16_t)(20 * s) },
-                            "Refresh", LAUNCHER_ID_DOC_REFRESH, false);
-        ry += 24 * s;
-
-        draw_doc_list(&surf, right_x, ry, right_w, h - ry - pad, true);
+    ugui_rect_t area = ugui_inset((ugui_rect_t){ 0, 0, (int16_t)w, (int16_t)h }, pad, pad);
+    if (w >= h) {
+        /* Landscape: apps and settings in a column on the left, the
+         * status at its foot; the documents beside it. */
+        ugui_rect_t col = ugui_cut_left(&area, w * 46 / 100);
+        (void)ugui_cut_left(&area, 10 * s);
+        ugui_rect_t status = ugui_cut_bottom(&col, 20 * s);
+        draw_apps_and_settings(&surf, &col);
+        if (col.h > 0) draw_status(&surf, status);
+        draw_documents(&surf, area);
     } else {
-        /* Portrait layout: Vertical stack (Applications -> Quick Settings -> Documents) */
-        int inner_w = w - 2 * pad;
-        int y = pad;
-        ugui_section_header(&surf, pad, y, inner_w, "APPLICATIONS");
-        y += 24 * s;
-
-        int card_gap = 8 * s;
-        int card_w = (inner_w - card_gap) / 2;
-        int card_h = 56 * s;
-        ugui_card(&surf, &s_launcher.ui_ctx,
-                  (ugui_rect_t){ (int16_t)pad, (int16_t)y, (int16_t)card_w, (int16_t)card_h },
-                  k_icon_reader, "Reader", "Docs", LAUNCHER_ID_APP_READER, false);
-        ugui_card(&surf, &s_launcher.ui_ctx,
-                  (ugui_rect_t){ (int16_t)(pad + card_w + card_gap), (int16_t)y, (int16_t)card_w, (int16_t)card_h },
-                  k_icon_chess, "Chess", "Game", LAUNCHER_ID_APP_CHESS, false);
-        y += card_h + card_gap;
-        ugui_card(&surf, &s_launcher.ui_ctx,
-                  (ugui_rect_t){ (int16_t)pad, (int16_t)y, (int16_t)card_w, (int16_t)card_h },
-                  k_icon_moonbase, "Moonbase", "Game", LAUNCHER_ID_APP_MOONBASE, false);
-        ugui_card(&surf, &s_launcher.ui_ctx,
-                  (ugui_rect_t){ (int16_t)(pad + card_w + card_gap), (int16_t)y, (int16_t)card_w, (int16_t)card_h },
-                  k_icon_terminal, "Terminal", "Shell", LAUNCHER_ID_APP_TERMINAL, false);
-        y += card_h + 12 * s;
-
-        ugui_section_header(&surf, pad, y, inner_w, "QUICK SETTINGS");
-        y += 24 * s;
-
-        int row_h = 28 * s;
-        char vol_str[16];
-        ksnprintf(vol_str, sizeof(vol_str), "%d%%", get_volume_percent());
-        ugui_disable_next(&s_launcher.ui_ctx, volume_limits());
-        ugui_stepper(&surf, &s_launcher.ui_ctx,
-                     (ugui_rect_t){ (int16_t)pad, (int16_t)y, (int16_t)inner_w, (int16_t)row_h },
-                     "Volume", vol_str, LAUNCHER_ID_VOL_STEP, LAUNCHER_ID_VOL_STEP + 1);
-        y += row_h + 6 * s;
-
-        char bl_str[16];
-        ksnprintf(bl_str, sizeof(bl_str), "%u%%", get_backlight_percent());
-        ugui_disable_next(&s_launcher.ui_ctx, backlight_limits());
-        ugui_stepper(&surf, &s_launcher.ui_ctx,
-                     (ugui_rect_t){ (int16_t)pad, (int16_t)y, (int16_t)inner_w, (int16_t)row_h },
-                     "Brightness", bl_str, LAUNCHER_ID_BL_STEP, LAUNCHER_ID_BL_STEP + 1);
-        y += row_h + 8 * s;
-
-#if defined(CONFIG_BOARD_TAB5)
-        static const char *const k_orient_labels[3] = { "Landscape", "Portrait", "Auto" };
-        ugui_segmented(&surf, &s_launcher.ui_ctx,
-                       (ugui_rect_t){ (int16_t)pad, (int16_t)y, (int16_t)inner_w, (int16_t)(26 * s) },
-                       k_orient_labels, 3, get_orient_mode(), LAUNCHER_ID_ORIENT_SEG);
-        y += 26 * s + 12 * s;
-#endif
-
-        int btn_w = 66 * s;
-        ugui_section_header(&surf, pad, y, inner_w - btn_w - 6 * s, "DOCUMENTS");
-        ugui_toolbar_button(&surf, &s_launcher.ui_ctx,
-                            (ugui_rect_t){ (int16_t)(pad + inner_w - btn_w), (int16_t)(y - 2 * s), (int16_t)btn_w, (int16_t)(20 * s) },
-                            "Refresh", LAUNCHER_ID_DOC_REFRESH, false);
-        y += 24 * s;
-
-        int footer_h = 20 * s;
-        draw_doc_list(&surf, pad, y, inner_w, h - y - pad - footer_h, true);
-
-        int status_y = h - pad - 16 * s;
-        char batt[16] = "";
-        (void)battery_indicator(batt, sizeof(batt));
-        bool sd_ok = vfs_volume_mounted("sd0");
-        char status_line[64];
-        if (batt[0]) {
-            ksnprintf(status_line, sizeof(status_line), "Batt: %s   SD: %s",
-                      batt, sd_ok ? "Mounted" : "Absent");
-        } else {
-            ksnprintf(status_line, sizeof(status_line), "SD: %s   Touch UX Ready",
-                      sd_ok ? "Mounted" : "Absent");
-        }
-        ugui_text_serif(&surf, pad, status_y, status_line, (uint32_t)strlen(status_line),
-                        false, false, false);
+        /* Portrait: the same column on top, the documents under it, the
+         * status at the foot. */
+        ugui_rect_t status = ugui_cut_bottom(&area, 16 * s);
+        (void)ugui_cut_bottom(&area, 4 * s);
+        draw_apps_and_settings(&surf, &area);
+        draw_documents(&surf, area);
+        draw_status(&surf, status);
     }
 
     ugui_end(&surf, &s_launcher.ui_ctx);

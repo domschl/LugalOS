@@ -2776,7 +2776,7 @@ static void term_sync_pre(void) { }
  * shadow's compare, surfaces by srf_track() (moved or gone ones repainted),
  * terminal cells by their cache. A forced full redraw is g_t_force's, set
  * where the frame itself changes (fb_start(), `lcd repaint`, boot). */
-static void term_sync_post(void) {
+static void term_sync(bool force) {
 #if defined(CONFIG_ESP32P4_REV) && CONFIG_ESP32P4_REV >= 300
     if (!g_double_buffered && g_scanning) {
         REG(DSI_BRG_INT_CLR_REG) = (1u << DSI_BRG_VSYNC_INT_RAW_S);
@@ -2787,6 +2787,7 @@ static void term_sync_post(void) {
     }
 #endif
     frame_begin();
+    if (force) g_t_force = true;                         /* in this pass: the flush task cannot take it */
     g_fstat.in_sync = true;
     term_convert(0, DSI_LCD_V_RES);
     g_fstat.in_sync = false;
@@ -2794,6 +2795,10 @@ static void term_sync_post(void) {
     /* the flip term_convert() armed, taken at the frame end */
     if (g_double_buffered) (void)gdma_wait_flip(50000u);
     frame_end();
+}
+
+static void term_sync_post(void) {
+    term_sync(false);
 }
 
 static bool term_capture(const uint8_t **fb, unsigned *w, unsigned *h, unsigned *stride, unsigned *format) {
@@ -3175,12 +3180,13 @@ int dsi_lcd_set_orientation(int rot) {
      * on the glass until then. */
     frame_end();
     /* lcdterm_reinit() only marks the screen damaged; without a repaint the
-     * panel stays black until the next console output. Then both frames:
-     * the one not being shown is otherwise left blank until the next change
-     * lands in it, and a second flip before then showed it for up to a
-     * minute (until the menu bar's clock moved). */
+     * panel stays black until the next console output. Then both frames,
+     * each converted whole: the incremental pass converts only what changed
+     * since that buffer was last drawn, which after a rotation left the
+     * other orientation's pixels in rows nothing redraws (the menu bar's,
+     * `lcd check` found them). */
     lcdterm_repaint();
-    for (int i = 0; i < (g_double_buffered ? 2 : 1); i++) term_sync_post();
+    for (int i = 0; i < (g_double_buffered ? 2 : 1); i++) term_sync(true);
     console_sync_readers();
     return 0;
 #else

@@ -218,6 +218,19 @@ int ugui_vlist(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t view, int c
 /* The scroll that shows row index whole, as near the current one as can be. */
 int ugui_vlist_reveal(int scroll_px, int view_h, int row_h, int index);
 
+/* --- Layout ----------------------------------------------------------------
+ * Rectangle cuts: take a slice off one side of *r and return it, *r
+ * shrinking to the rest (never below zero). A layout is a sequence of cuts,
+ * so the same description fits landscape and portrait: cut a column off the
+ * left in one, off the top in the other, and lay it out the same. */
+ugui_rect_t ugui_cut_top(ugui_rect_t *r, int h);
+ugui_rect_t ugui_cut_bottom(ugui_rect_t *r, int h);
+ugui_rect_t ugui_cut_left(ugui_rect_t *r, int w);
+ugui_rect_t ugui_cut_right(ugui_rect_t *r, int w);
+ugui_rect_t ugui_inset(ugui_rect_t r, int dx, int dy);
+/* Cell i (row-major) of a cols x rows grid over r, gap apart. */
+ugui_rect_t ugui_grid_cell(ugui_rect_t r, int cols, int rows, int gap, int i);
+
 /* --- Controls -------------------------------------------------------------
  * Stateless, as the widgets above: the caller keeps the value and changes it
  * when its id is hit (a tap, or Enter on the focus). */
