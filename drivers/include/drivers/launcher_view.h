@@ -30,7 +30,12 @@ bool     launcher_tap(int client_x, int client_y);
 void     launcher_press(int client_x, int client_y);
 void     launcher_release(void);
 void     launcher_scroll(int delta_y);
+/* Keys typed while the launcher has the focus, byte by byte (the console
+ * pump); launcher_feed_end() when a burst ends (a lone Esc). Tab / arrows
+ * move the focus, Enter / Space act as a tap on it would, PgUp / PgDn page
+ * the document list, r rescans it. */
 void     launcher_feed_key(int c);
+void     launcher_feed_end(void);
 bool     launcher_poll_exec(char *out_cmd, size_t max_len);
 uint8_t *launcher_get_aa_backing(uint32_t *out_stride, int *out_w, int *out_h);
 uint32_t launcher_get_seq(void);

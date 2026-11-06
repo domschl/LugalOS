@@ -73,6 +73,7 @@ static key_event_t csi(const keyseq_src_t *src) {
             unsigned mods = (np >= 1 && p[1] >= 1u) ? (p[1] - 1u) & 0xfu : 0u;
             if (b == '~') return ev(tilde_key(p[0]), mods);
             if (b == 'u') return any ? ev(p[0], mods) : ev(KEY_UNKNOWN, 0);
+            if (b == 'Z') return ev('\t', mods | KMOD_SHIFT);    /* Shift-Tab (back-tab) */
             return ev(letter_key(b), mods);
         } else if (b < 0x20 || b > 0x7e) {
             return ev(KEY_UNKNOWN, 0);       /* not a sequence after all */
@@ -99,6 +100,84 @@ key_event_t keyseq_read(const keyseq_src_t *src) {
     }
     if ((unsigned)c >= 0x80u) return ev(utf8_rest(src, (unsigned)c), 0);
     return ev((uint32_t)c, 0);
+}
+
+/* --- Pushed bytes -------------------------------------------------------- */
+
+enum { PS_TEXT = 0, PS_ESC, PS_CSI, PS_SS3, PS_UTF8 };
+
+bool keyseq_push(keyseq_push_t *ps, int byte, key_event_t *out) {
+    unsigned b = (unsigned)byte & 0xffu;
+    switch (ps->state) {
+    case PS_ESC:
+        if (b == '[') { ps->state = PS_CSI; ps->np = 0; ps->any = false; ps->p[0] = ps->p[1] = 0; return false; }
+        if (b == 'O') { ps->state = PS_SS3; return false; }
+        ps->state = PS_TEXT;
+        if (b >= 0x80u) { ps->state = PS_UTF8; ps->mods = KMOD_ALT; goto utf8_lead; }
+        *out = ev(b, KMOD_ALT);
+        return true;
+    case PS_SS3:
+        ps->state = PS_TEXT;
+        *out = ev(letter_key((int)b), 0);
+        return true;
+    case PS_CSI:
+        if (b >= '0' && b <= '9') {
+            if (ps->np < 2 && ps->p[ps->np] < 0x110000u) ps->p[ps->np] = ps->p[ps->np] * 10u + (b - '0');
+            ps->any = true;
+            return false;
+        }
+        if (b == ';') {
+            if (ps->np < 1) ps->np++;
+            else ps->np = 2;                     /* a third parameter: ignored */
+            ps->any = true;
+            return false;
+        }
+        if (b >= 0x40u && b <= 0x7eu) {
+            ps->state = PS_TEXT;
+            unsigned mods = (ps->np >= 1 && ps->p[1] >= 1u) ? (ps->p[1] - 1u) & 0xfu : 0u;
+            if (b == '~') *out = ev(tilde_key(ps->p[0]), mods);
+            else if (b == 'u') *out = ps->any ? ev(ps->p[0], mods) : ev(KEY_UNKNOWN, 0);
+            else if (b == 'Z') *out = ev('\t', mods | KMOD_SHIFT);
+            else *out = ev(letter_key((int)b), mods);
+            return true;
+        }
+        if (b < 0x20u || b > 0x7eu) {
+            ps->state = PS_TEXT;
+            *out = ev(KEY_UNKNOWN, 0);
+            return true;
+        }
+        return false;                            /* intermediates: carry on */
+    case PS_UTF8:
+        if ((b & 0xc0u) != 0x80u) {
+            ps->state = PS_TEXT;
+            *out = ev(0xfffd, 0);
+            return true;
+        }
+        ps->cp = (ps->cp << 6) | (b & 0x3fu);
+        if (--ps->need) return false;
+        ps->state = PS_TEXT;
+        *out = ev(ps->cp, ps->mods);
+        return true;
+    default:
+        break;
+    }
+    if (b == 0x1bu) { ps->state = PS_ESC; return false; }
+    if (b < 0x80u) { *out = ev(b, 0); return true; }
+    ps->state = PS_UTF8;
+    ps->mods = 0;
+utf8_lead:
+    if ((b & 0xe0u) == 0xc0u)      { ps->cp = b & 0x1fu; ps->need = 1; }
+    else if ((b & 0xf0u) == 0xe0u) { ps->cp = b & 0x0fu; ps->need = 2; }
+    else if ((b & 0xf8u) == 0xf0u) { ps->cp = b & 0x07u; ps->need = 3; }
+    else { ps->state = PS_TEXT; *out = ev(0xfffd, 0); return true; }
+    return false;
+}
+
+bool keyseq_push_flush(keyseq_push_t *ps, key_event_t *out) {
+    bool lone_esc = ps->state == PS_ESC;
+    ps->state = PS_TEXT;
+    if (lone_esc) *out = ev(0x1b, 0);
+    return lone_esc;
 }
 
 /* --- The console as a source ------------------------------------------- */
@@ -176,6 +255,27 @@ static bool st_one(const char *s, unsigned n, uint32_t key, unsigned mods) {
 
 #define ONE(s, key, mods) st_one((s), sizeof(s) - 1u, (key), (mods))
 
+/* The same bytes pushed one at a time: exactly one key, at the last byte
+ * (or at the flush, for a lone ESC). */
+static bool push_one(const char *s, unsigned n, uint32_t key, unsigned mods) {
+    keyseq_push_t ps = { 0 };
+    key_event_t e = { 0, 0 };
+    unsigned got = 0;
+    for (unsigned i = 0; i < n; i++) {
+        key_event_t k;
+        if (keyseq_push(&ps, (unsigned char)s[i], &k)) {
+            if (i + 1u != n) return false;
+            e = k;
+            got++;
+        }
+    }
+    key_event_t k;
+    if (keyseq_push_flush(&ps, &k)) { e = k; got++; }
+    return got == 1 && e.key == key && e.mods == mods;
+}
+
+#define PUSH(s, key, mods) push_one((s), sizeof(s) - 1u, (key), (mods))
+
 int keyseq_selftest(void) {
     int fails = 0;
     struct { const char *name; bool ok; } c[] = {
@@ -203,6 +303,12 @@ int keyseq_selftest(void) {
         { "unknown sequences are consumed whole",
                                             ONE("\x1b[?25h", KEY_UNKNOWN, 0) && ONE("\x1b[15~", KEY_UNKNOWN, 0) &&
                                             ONE("\x1b[200;1;2x", KEY_UNKNOWN, 0) },
+        { "Shift-Tab",                      ONE("\x1b[Z", '\t', KMOD_SHIFT) && PUSH("\x1b[Z", '\t', KMOD_SHIFT) },
+        { "pushed bytes: the same keys",    PUSH("a", 'a', 0) && PUSH("\x1b", 0x1b, 0) && PUSH("\xc3\xa4", 0xe4, 0) &&
+                                            PUSH("\x1b[A", KEY_UP, 0) && PUSH("\x1bOC", KEY_RIGHT, 0) &&
+                                            PUSH("\x1b[5~", KEY_PGUP, 0) && PUSH("\x1b[1;2D", KEY_LEFT, KMOD_SHIFT) &&
+                                            PUSH("\x1b[99;9u", 'c', KMOD_SUPER) && PUSH("\x1bw", 'w', KMOD_ALT) &&
+                                            PUSH("\x1b[?25h", KEY_UNKNOWN, 0) },
     };
     cprintf("keyseq selftest:\n");
     for (unsigned i = 0; i < sizeof(c) / sizeof(c[0]); i++) {

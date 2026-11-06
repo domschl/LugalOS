@@ -1153,6 +1153,7 @@ static void console_pump(void) {
                 if (note_input(src->local)) continue;
                 launcher_feed_key(c);
             }
+            launcher_feed_end();
         } else if (src->local && g_active_win_type == 3 /* RIBBON_WIN_READER */ && reader_is_active()) {
             while (src->has_char()) {
                 int c = src->getc();

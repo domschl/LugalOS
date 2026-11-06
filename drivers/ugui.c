@@ -7,6 +7,7 @@
  */
 
 #include "drivers/ugui.h"
+#include "kernel/keyseq.h"
 #include "drivers/font_serif.h"
 #include "drivers/font_noto_serif.h"
 #include "drivers/font_noto_mono.h"
@@ -36,9 +37,11 @@ void ugui_add_hit(ugui_ctx_t *ctx, ugui_rect_t r, uint16_t id, int16_t index) {
 
 bool ugui_arm(ugui_ctx_t *ctx, int x, int y) {
     if (!ctx) return false;
+    bool was_shown = ctx->focus_shown;
+    ctx->focus_shown = false;                            /* touch: no focus ring */
     int16_t index = 0;
     uint16_t id = ugui_hit_test(ctx, x, y, &index);
-    if (id == ctx->armed_id && (id == 0 || index == ctx->armed_index)) return false;
+    if (id == ctx->armed_id && (id == 0 || index == ctx->armed_index)) return was_shown;
     ctx->armed_id = id;
     ctx->armed_index = index;
     return true;
@@ -53,6 +56,125 @@ bool ugui_disarm(ugui_ctx_t *ctx) {
 
 bool ugui_is_armed(const ugui_ctx_t *ctx, uint16_t id, int16_t index) {
     return ctx && id != 0 && ctx->armed_id == id && ctx->armed_index == index;
+}
+
+static int focus_slot(const ugui_ctx_t *ctx) {
+    for (int i = 0; i < ctx->count; i++)
+        if (ctx->hits[i].id == ctx->focus_id && ctx->hits[i].index == ctx->focus_index) return i;
+    return -1;
+}
+
+static void focus_to(ugui_ctx_t *ctx, int slot) {
+    ctx->focus_id = ctx->hits[slot].id;
+    ctx->focus_index = ctx->hits[slot].index;
+}
+
+/* The nearest widget from slot `from` in direction (dx, dy): its centre must
+ * lie that way; the distance along the direction counts once, the distance
+ * across it twice, so a widget straight ahead beats a nearer one aside. */
+static int focus_nearest(const ugui_ctx_t *ctx, int from, int dx, int dy) {
+    const ugui_rect_t *f = &ctx->hits[from].rect;
+    int fx = f->x + f->w / 2, fy = f->y + f->h / 2;
+    int best = -1;
+    long best_d = 0;
+    for (int i = 0; i < ctx->count; i++) {
+        if (i == from) continue;
+        const ugui_rect_t *r = &ctx->hits[i].rect;
+        int along, across;
+        if (dx) {
+            int edge = dx > 0 ? r->x - (f->x + f->w - 1) : f->x - (r->x + r->w - 1);
+            if (edge <= 0) continue;                     /* not that way */
+            along = edge;
+            across = (r->y + r->h / 2) - fy;
+        } else {
+            int edge = dy > 0 ? r->y - (f->y + f->h - 1) : f->y - (r->y + r->h - 1);
+            if (edge <= 0) continue;
+            along = edge;
+            across = (r->x + r->w / 2) - fx;
+        }
+        if (across < 0) across = -across;
+        long d = (long)along + 2L * (long)across;
+        if (best < 0 || d < best_d) { best = i; best_d = d; }
+    }
+    return best;
+}
+
+ugui_nav_t ugui_nav(ugui_ctx_t *ctx, uint32_t key, uint8_t mods, uint16_t *id, int16_t *index) {
+    if (!ctx) return UGUI_NAV_NONE;
+    bool tab = key == '\t';
+    bool arrow = key == KEY_UP || key == KEY_DOWN || key == KEY_LEFT || key == KEY_RIGHT;
+    bool activate = key == '\r' || key == '\n' || key == ' ';
+    if (key == 0x1b) return UGUI_NAV_BACK;
+    if (!tab && !arrow && !activate) return UGUI_NAV_NONE;
+    if (ctx->count == 0) return arrow ? UGUI_NAV_EDGE : UGUI_NAV_NONE;
+    int slot = focus_slot(ctx);
+    if (slot < 0 || !ctx->focus_shown) {                 /* first key: only show where it is */
+        if (slot < 0) focus_to(ctx, 0);
+        ctx->focus_shown = true;
+        return UGUI_NAV_MOVED;
+    }
+    if (activate) {
+        if (id) *id = ctx->hits[slot].id;
+        if (index) *index = ctx->hits[slot].index;
+        return UGUI_NAV_ACTIVATE;
+    }
+    if (tab) {
+        int step = (mods & KMOD_SHIFT) ? -1 : 1;
+        focus_to(ctx, (slot + step + ctx->count) % ctx->count);
+        return UGUI_NAV_MOVED;
+    }
+    int to = focus_nearest(ctx, slot, key == KEY_RIGHT ? 1 : key == KEY_LEFT ? -1 : 0,
+                           key == KEY_DOWN ? 1 : key == KEY_UP ? -1 : 0);
+    if (to < 0) return UGUI_NAV_EDGE;
+    focus_to(ctx, to);
+    return UGUI_NAV_MOVED;
+}
+
+bool ugui_is_focused(const ugui_ctx_t *ctx, uint16_t id, int16_t index) {
+    return ctx && ctx->focus_shown && id != 0 && ctx->focus_id == id && ctx->focus_index == index;
+}
+
+/* Inverts r on both surfaces. */
+static void ugui_invert(const ugui_surface_t *s, int x0, int y0, int x1, int y1) {
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 >= s->w) x1 = s->w - 1;
+    if (y1 >= s->h) y1 = s->h - 1;
+    if (x0 > x1 || y0 > y1) return;
+    if (s->c1) canvas1_invert(s->c1, x0, y0, x1, y1);
+    if (s->aa_fb)
+        for (int y = y0; y <= y1; y++) {
+            uint8_t *p = s->aa_fb + (uint32_t)y * s->aa_stride;
+            for (int x = x0; x <= x1; x++) p[x] = (uint8_t)(255u - p[x]);
+        }
+}
+
+void ugui_end(const ugui_surface_t *s, ugui_ctx_t *ctx) {
+    if (!ctx || ctx->count == 0) return;
+    int slot = focus_slot(ctx);
+    if (slot < 0) {
+        if (ctx->focus_id == 0 && !ctx->focus_shown) return;
+        focus_to(ctx, 0);
+        slot = 0;
+    }
+    if (!s || !ctx->focus_shown) return;
+    /* the dotted ring: dashes of 2 units, `t` thick, 2 units inside */
+    int sc = s->scale > 0 ? s->scale : 1;
+    int t = sc, dash = 2 * sc;
+    const ugui_rect_t *r = &ctx->hits[slot].rect;
+    int x0 = r->x + 2 * sc, y0 = r->y + 2 * sc;
+    int x1 = r->x + r->w - 1 - 2 * sc, y1 = r->y + r->h - 1 - 2 * sc;
+    if (x1 - x0 < 2 * t || y1 - y0 < 2 * t) return;
+    for (int x = x0; x <= x1; x += 2 * dash) {
+        int xe = x + dash - 1 > x1 ? x1 : x + dash - 1;
+        ugui_invert(s, x, y0, xe, y0 + t - 1);
+        ugui_invert(s, x, y1 - t + 1, xe, y1);
+    }
+    for (int y = y0 + t; y <= y1 - t; y += 2 * dash) {
+        int ye = y + dash - 1 > y1 - t ? y1 - t : y + dash - 1;
+        ugui_invert(s, x0, y, x0 + t - 1, ye);
+        ugui_invert(s, x1 - t + 1, y, x1, ye);
+    }
 }
 
 uint16_t ugui_hit_test(const ugui_ctx_t *ctx, int x, int y, int16_t *out_index) {
@@ -646,6 +768,46 @@ bool ugui_selftest(void) {
     ugui_begin(&ctx);
     if (!ugui_is_armed(&ctx, 202, 2)) return false;
     if (!ugui_disarm(&ctx) || ugui_disarm(&ctx) || ugui_is_armed(&ctx, 202, 2)) return false;
+
+    /* Keyboard focus over the same boxes: 101 102 on top, segments 200..202
+     * below. The first key only shows it; Tab / Shift-Tab wrap; an arrow
+     * picks the nearest that way (Down from 102 is the segment under it);
+     * Enter activates; a touch hides the ring; a lost widget gives the
+     * focus to the first. */
+    ugui_begin(&ctx);
+    ugui_add_hit(&ctx, btn1, 101, 0);
+    ugui_add_hit(&ctx, btn2, 102, 0);
+    for (int i = 0; i < 3; i++)
+        ugui_add_hit(&ctx, (ugui_rect_t){ (int16_t)(4 + 40 * i), 32, 40, 20 }, (uint16_t)(200 + i), (int16_t)i);
+    uint16_t fid = 0;
+    int16_t fidx = -1;
+    if (ugui_nav(&ctx, '\t', 0, &fid, &fidx) != UGUI_NAV_MOVED || !ugui_is_focused(&ctx, 101, 0)) return false;
+    if (ugui_nav(&ctx, '\t', 0, &fid, &fidx) != UGUI_NAV_MOVED || !ugui_is_focused(&ctx, 102, 0)) return false;
+    if (ugui_nav(&ctx, '\t', KMOD_SHIFT, &fid, &fidx) != UGUI_NAV_MOVED || !ugui_is_focused(&ctx, 101, 0)) return false;
+    if (ugui_nav(&ctx, '\t', KMOD_SHIFT, &fid, &fidx) != UGUI_NAV_MOVED || !ugui_is_focused(&ctx, 202, 2)) return false;
+    if (ugui_nav(&ctx, KEY_UP, 0, &fid, &fidx) != UGUI_NAV_MOVED || !ugui_is_focused(&ctx, 102, 0)) return false;
+    if (ugui_nav(&ctx, KEY_LEFT, 0, &fid, &fidx) != UGUI_NAV_MOVED || !ugui_is_focused(&ctx, 101, 0)) return false;
+    if (ugui_nav(&ctx, KEY_LEFT, 0, &fid, &fidx) != UGUI_NAV_EDGE) return false;
+    if (ugui_nav(&ctx, KEY_RIGHT, 0, &fid, &fidx) != UGUI_NAV_MOVED || !ugui_is_focused(&ctx, 102, 0)) return false;
+    if (ugui_nav(&ctx, KEY_DOWN, 0, &fid, &fidx) != UGUI_NAV_MOVED || !ugui_is_focused(&ctx, 202, 2)) return false;
+    if (ugui_nav(&ctx, KEY_DOWN, 0, &fid, &fidx) != UGUI_NAV_EDGE) return false;
+    if (ugui_nav(&ctx, '\r', 0, &fid, &fidx) != UGUI_NAV_ACTIVATE || fid != 202 || fidx != 2) return false;
+    if (ugui_nav(&ctx, 0x1b, 0, &fid, &fidx) != UGUI_NAV_BACK || ugui_nav(&ctx, 'x', 0, &fid, &fidx) != UGUI_NAV_NONE) return false;
+    (void)ugui_arm(&ctx, 10, 10);
+    (void)ugui_disarm(&ctx);
+    if (ugui_is_focused(&ctx, 202, 2)) return false;                /* touch: hidden */
+    if (ugui_nav(&ctx, '\r', 0, &fid, &fidx) != UGUI_NAV_MOVED || !ugui_is_focused(&ctx, 202, 2)) return false;
+    ctx.focus_id = 999;
+    ugui_end(NULL, &ctx);
+    if (!ugui_is_focused(&ctx, 101, 0)) return false;
+
+    /* The ring inverts a dotted frame inside the focused widget: a drawn
+     * button's interior pixel at the ring changes, one further in does not. */
+    memset(fb, 0, sizeof(fb));
+    ugui_begin(&ctx);
+    ugui_add_hit(&ctx, btn1, 101, 0);
+    ugui_end(&surf, &ctx);
+    if (canvas1_get(&c1, btn1.x + 2, btn1.y + 2) != 1u || canvas1_get(&c1, btn1.x + 10, btn1.y + 10) != 0u) return false;
 
     return true;
 }

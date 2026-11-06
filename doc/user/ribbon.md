@@ -64,6 +64,8 @@ On touch-enabled terminal boards (such as the M5Stack Tab5 and Waveshare ESP32-P
   * **Apps**: Icon cards to launch **Reader**, **Moonbase Lambda**, and **New Shell**.
   * **Library**: Scrollable list of local documentation and handbooks (`/sd0/help/*.md`, `/sd0/pub/help/*.gmi`, `/sd0/docs/*.md`) that open directly in the Reader window.
   * **Settings**: Touch steppers and toggles for audio **Volume** (`0-100%`), panel **Brightness** (`10-100%`), display **Orientation** (`Landscape` / `Portrait`), and IMU **Auto-Rotate** (`ON` / `OFF`).
+* **Press feedback**: a launcher control, or an on-screen keyboard key, shows inverted while a finger is on it; a character key also shows its label enlarged above it. A swipe or drag that starts on a control lets it go.
+* **Launcher by keyboard**: Tab / Shift-Tab and the arrows move a dotted focus ring between the launcher's controls; Enter or Space acts as a tap on the focused one would; Up / Down walk the document list (scrolling it), PgUp / PgDn page it, `r` rescans it. The ring appears with the first key and hides again at the next touch.
 * **Reader Touch Sub-Header**: Every Reader window renders a fixed top action bar (`[< Back]`, `[Contents]`, `[Rotate]`, `[Top]`) for keyboard-free navigation.
 * **Automatic Keyboard Hot-Plug Detection**: If no USB keyboard is attached ~1.5 seconds after boot (or when a USB keyboard is unplugged), LugalOS automatically opens and focuses the Touch Launcher window. Plugging a keyboard back in leaves open windows undisturbed.
 

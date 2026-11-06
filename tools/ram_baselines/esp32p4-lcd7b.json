@@ -1,14 +1,14 @@
 {
   "bulk_per_file": {
     "drivers/dsi_esp32p4.c": 9012,
-    "drivers/launcher_view.c": 5404,
-    "drivers/reader_view.c": 61216,
+    "drivers/launcher_view.c": 5408,
+    "drivers/reader_view.c": 61232,
     "drivers/uxbench.c": 540,
     "kernel/palloc.c": 32768,
     "kernel/winevent.c": 2576,
     "kernel/zonetest.c": 64,
     "user/ceres/src/platform_p4.c": 31896,
-    "user/chess/src/chess_ui.c": 1548,
+    "user/chess/src/chess_ui.c": 1552,
     "user/lisp/lisp.c": 1532288,
     "user/moonbase/src/moon_textures.c": 32768,
     "user/moonbase/src/platform_p4.c": 41120
@@ -16,14 +16,14 @@
   "bulk_per_subsystem": {
     "app:ceres": 31896,
     "app:moonbase": 73888,
-    "chess": 1548,
-    "display": 75632,
+    "chess": 1552,
+    "display": 75652,
     "drivers": 540,
     "kernel": 35344,
     "lisp": 1532288,
     "selftest": 64
   },
-  "bulk_total": 1751200,
+  "bulk_total": 1751224,
   "heap_bytes": 360448,
   "heap_pages": 88,
   "per_file": {
@@ -50,6 +50,7 @@
     "drivers/i2c_rtc.c": 18,
     "drivers/idstore_esp32p4.c": 4137,
     "drivers/ina226.c": 52,
+    "drivers/launcher_view.c": 20,
     "drivers/lcdterm.c": 315,
     "drivers/loopback_net.c": 2060,
     "drivers/mcp9808.c": 76,
@@ -174,7 +175,7 @@
     "chess": 21392,
     "clock-app": 136,
     "crypto": 38,
-    "display": 3796,
+    "display": 3816,
     "drivers": 1228,
     "fs": 4160,
     "httpd": 70,
@@ -195,5 +196,5 @@
     "vfs": 4111
   },
   "ram_code": 1806,
-  "total": 216283
+  "total": 216303
 }

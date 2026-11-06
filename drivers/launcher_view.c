@@ -8,6 +8,7 @@
  * - Freestanding C, zero heap allocations, zero FPU in M-mode.
  */
 
+#include "kernel/keyseq.h"
 #include "drivers/launcher_view.h"
 #include "kernel/console.h"
 #include "kernel/printk.h"
@@ -30,6 +31,7 @@ void launcher_press(int client_x, int client_y) { (void)client_x; (void)client_y
 void launcher_release(void) {}
 void launcher_scroll(int delta_y) { (void)delta_y; }
 void launcher_feed_key(int c) { (void)c; }
+void launcher_feed_end(void) {}
 bool launcher_poll_exec(char *out_cmd, size_t max_len) { (void)out_cmd; (void)max_len; return false; }
 uint8_t *launcher_get_aa_backing(uint32_t *out_stride, int *out_w, int *out_h) { (void)out_stride; (void)out_w; (void)out_h; return NULL; }
 uint32_t launcher_get_seq(void) { return 0; }
@@ -646,6 +648,7 @@ void launcher_draw(const canvas1_t *c, int w, int h) {
                         false, false, false);
     }
 
+    ugui_end(&surf, &s_launcher.ui_ctx);
     s_launcher.seq++;
 }
 
@@ -739,6 +742,7 @@ void launcher_release(void) {
 }
 
 static bool launcher_tap_act(int client_x, int client_y);
+static bool launcher_activate(uint16_t id, int16_t hit_idx);
 
 /* A tap: the pressed control lets go first, then acts; drawn once, by the
  * action if it redraws, here if it does not (the release that follows finds
@@ -755,6 +759,13 @@ bool launcher_tap(int client_x, int client_y) {
 static bool launcher_tap_act(int client_x, int client_y) {
     int16_t hit_idx = -1;
     uint16_t id = ugui_hit_test(&s_launcher.ui_ctx, client_x, client_y, &hit_idx);
+    return launcher_activate(id, hit_idx);
+}
+
+/* What a tap on widget id (hit_idx: its index) does; the keyboard's Enter
+ * does the same. An app card leaves its command in pending_cmd for the
+ * shell (shell_check_launcher_exec()). */
+static bool launcher_activate(uint16_t id, int16_t hit_idx) {
     if (id == 0) return false;
 
     if (id == LAUNCHER_ID_APP_READER) {
@@ -851,16 +862,70 @@ void launcher_scroll(int delta_y) {
     launcher_update();
 }
 
-void launcher_feed_key(int c) {
-    if (!s_launcher.active) return;
-    if (c == 'j' || c == 'J' || c == ' ') {
-        launcher_scroll(1);
-    } else if (c == 'k' || c == 'K') {
-        launcher_scroll(-1);
-    } else if (c == 'r' || c == 'R') {
+/* The document list under the keyboard: Up / Down from a row moves to the
+ * row before / after it, scrolling it into view, so the focus walks the
+ * whole list rather than jumping out of it at the visible edge. */
+static bool launcher_doc_step(uint32_t key) {
+    ugui_ctx_t *ctx = &s_launcher.ui_ctx;
+    if (!ctx->focus_shown || ctx->focus_id != LAUNCHER_ID_DOC_BASE) return false;
+    int to = ctx->focus_index + (key == KEY_DOWN ? 1 : -1);
+    if (to < 0 || to >= s_launcher.doc_count) return false;
+    ctx->focus_index = (int16_t)to;
+    int vis = s_launcher.visible_docs > 0 ? s_launcher.visible_docs : 1;
+    if (to < s_launcher.scroll_idx) s_launcher.scroll_idx = to;
+    if (to >= s_launcher.scroll_idx + vis) s_launcher.scroll_idx = to - vis + 1;
+    return true;
+}
+
+static void launcher_key(key_event_t k) {
+    if (k.key == KEY_PGDN || k.key == KEY_PGUP) {
+        int vis = s_launcher.visible_docs > 0 ? s_launcher.visible_docs : 1;
+        s_launcher.scroll_idx += k.key == KEY_PGDN ? vis : -vis;
+        if (s_launcher.scroll_idx < 0) s_launcher.scroll_idx = 0;
+        launcher_update();
+        return;
+    }
+    if ((k.key == KEY_UP || k.key == KEY_DOWN) && launcher_doc_step(k.key)) {
+        launcher_update();
+        return;
+    }
+    uint16_t id = 0;
+    int16_t idx = 0;
+    switch (ugui_nav(&s_launcher.ui_ctx, k.key, k.mods, &id, &idx)) {
+    case UGUI_NAV_MOVED:
+        launcher_update();
+        return;
+    case UGUI_NAV_ACTIVATE: {
+        uint32_t seq = s_launcher.seq;
+        (void)launcher_activate(id, idx);
+        if (s_launcher.active && s_launcher.seq == seq) launcher_update();
+        return;
+    }
+    case UGUI_NAV_EDGE:
+        if (k.key == KEY_DOWN || k.key == KEY_UP) launcher_scroll(k.key == KEY_DOWN ? 1 : -1);
+        return;
+    default:
+        break;
+    }
+    if (k.key == 'r' || k.key == 'R') {
         launcher_scan_docs();
         launcher_update();
     }
+}
+
+/* guarded by: g_input_lock (kernel/console.c): the console pump is the only
+ * caller of launcher_feed_key() / launcher_feed_end(). */
+static keyseq_push_t s_key_push;
+
+void launcher_feed_key(int c) {
+    if (!s_launcher.active) return;
+    key_event_t k;
+    if (keyseq_push(&s_key_push, c, &k)) launcher_key(k);
+}
+
+void launcher_feed_end(void) {
+    key_event_t k;
+    if (keyseq_push_flush(&s_key_push, &k) && s_launcher.active) launcher_key(k);
 }
 
 bool launcher_poll_exec(char *out_cmd, size_t max_len) {

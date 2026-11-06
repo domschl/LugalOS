@@ -53,6 +53,9 @@ typedef struct {
     uint16_t    active_id;      /* Highlighted / selected widget ID */
     uint16_t    armed_id;       /* the widget under a finger that is down (0: none); kept across passes */
     int16_t     armed_index;
+    uint16_t    focus_id;       /* the keyboard's widget (0: none yet); kept across passes */
+    int16_t     focus_index;
+    bool        focus_shown;    /* a key moved the focus since the last touch: the ring shows */
 } ugui_ctx_t;
 
 /* Reset hit-box registry before a draw pass */
@@ -71,6 +74,32 @@ uint16_t ugui_hit_test(const ugui_ctx_t *ctx, int x, int y, int16_t *out_index);
 bool ugui_arm(ugui_ctx_t *ctx, int x, int y);
 bool ugui_disarm(ugui_ctx_t *ctx);
 bool ugui_is_armed(const ugui_ctx_t *ctx, uint16_t id, int16_t index);
+
+/* Keyboard focus. Every hit-box is focusable, in the order the pass added
+ * them. ugui_nav() takes a key (kernel/keyseq.h's codes and mods):
+ *   Tab / Shift-Tab   next / previous widget, wrapping
+ *   arrows            the nearest widget in that direction
+ *   Enter, Space      activate the focused widget (*id, *index)
+ *   Esc               back
+ * The first navigation key, Enter included, only shows the focus where it
+ * is (on the first widget if there was none). An arrow with nothing beyond answers
+ * UGUI_NAV_EDGE, for the caller to scroll. A touch (ugui_arm()) hides the
+ * ring until the next key. */
+typedef enum {
+    UGUI_NAV_NONE = 0,          /* not a navigation key */
+    UGUI_NAV_MOVED,             /* the focus moved or showed: draw again */
+    UGUI_NAV_ACTIVATE,          /* *id / *index: act as a tap on it would */
+    UGUI_NAV_BACK,
+    UGUI_NAV_EDGE,              /* an arrow found nothing in its direction */
+} ugui_nav_t;
+
+ugui_nav_t ugui_nav(ugui_ctx_t *ctx, uint32_t key, uint8_t mods, uint16_t *id, int16_t *index);
+bool ugui_is_focused(const ugui_ctx_t *ctx, uint16_t id, int16_t index);
+
+/* After a pass: the focus is kept on a widget that exists (the first one if
+ * its widget is gone) and, when shown, drawn as a dotted ring inside it that
+ * inverts what is under it, so it shows on plain and inverted widgets. */
+void ugui_end(const ugui_surface_t *s, ugui_ctx_t *ctx);
 
 /* Surface drawing primitives */
 void ugui_fill(const ugui_surface_t *s, ugui_rect_t r, uint8_t gray, unsigned pat1);

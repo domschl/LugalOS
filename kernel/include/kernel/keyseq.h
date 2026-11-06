@@ -64,6 +64,20 @@ key_event_t keyseq_read_console(void);
 /* The active canvas window as a source: console_canvas_getc(), and up to 30 ms for `more`. */
 key_event_t keyseq_read_canvas(void);
 
+/* The same keys from bytes pushed one at a time, for an input path that is
+ * fed rather than reads (the launcher). keyseq_push() takes one byte and
+ * says whether it completed a key (*out); keyseq_push_flush(), called when a
+ * burst of input ends, reports a lone ESC still waiting. Zero-initialise. */
+typedef struct {
+    uint8_t  state, need, np, mods;
+    bool     any;
+    uint32_t p[2];
+    uint32_t cp;
+} keyseq_push_t;
+
+bool keyseq_push(keyseq_push_t *ps, int byte, key_event_t *out);
+bool keyseq_push_flush(keyseq_push_t *ps, key_event_t *out);
+
 /* `keyselftest`: every form above from byte strings. Prints
  * KEYSEQ_SELFTEST_OK/_FAIL; returns the failures. */
 int keyseq_selftest(void);
