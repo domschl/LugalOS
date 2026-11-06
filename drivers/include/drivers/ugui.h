@@ -41,10 +41,13 @@ typedef struct {
     int              scale;     /* 1 on 8x16 panels, 2 on 16x32 HiDPI panels */
 } ugui_surface_t;
 
+#define UGUI_HIT_DISABLED 0x01u  /* dimmed: no press feedback, no focus, a tap hits nothing */
+
 typedef struct {
     ugui_rect_t rect;
     uint16_t    id;             /* Application-defined widget ID (non-zero) */
     int16_t     index;          /* Optional list/segment index */
+    uint8_t     flags;          /* UGUI_HIT_* */
 } ugui_hit_t;
 
 typedef struct {
@@ -56,6 +59,7 @@ typedef struct {
     uint16_t    focus_id;       /* the keyboard's widget (0: none yet); kept across passes */
     int16_t     focus_index;
     bool        focus_shown;    /* a key moved the focus since the last touch: the ring shows */
+    uint8_t     next_disabled;  /* ugui_disable_next()'s parts, taken by the next widget */
 } ugui_ctx_t;
 
 /* Reset hit-box registry before a draw pass */
@@ -63,6 +67,14 @@ void ugui_begin(ugui_ctx_t *ctx);
 
 /* Register an explicit hit-box in the current draw pass */
 void ugui_add_hit(ugui_ctx_t *ctx, ugui_rect_t r, uint16_t id, int16_t index);
+
+/* The next widget drawn is dimmed in the given parts -- bit i its i-th part
+ * in drawing order: a button or card has one (pass 1), a stepper two (bit 0
+ * the -, bit 1 the +), a segmented control one per segment. A dimmed part
+ * shows no press feedback, the focus skips it, and a tap on it hits nothing
+ * (it is not passed to whatever lies under it). For a control that cannot
+ * act now: Back with no history, a stepper at its limit. */
+void ugui_disable_next(ugui_ctx_t *ctx, uint8_t parts);
 
 /* Hit-test a client-relative tap (x, y); returns matching id (or 0) and writes *out_index */
 uint16_t ugui_hit_test(const ugui_ctx_t *ctx, int x, int y, int16_t *out_index);

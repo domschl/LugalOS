@@ -242,6 +242,7 @@ static volatile uint32_t g_press_xy;
 static volatile bool     g_press_pending = false, g_release_pending = false;
 static volatile bool     g_press_busy = false;    /* one shell at a time runs run_press() / run_release() */
 static bool              g_osk_pressed = false;   /* guarded by: g_press_busy */
+static int               g_press_win = -1;        /* guarded by: g_press_busy; the canvas window told of a press */
 static volatile int      g_drag_dy = 0;
 static volatile bool     g_drag_end = false;
 static volatile int      g_drag_end_total, g_drag_end_dy;
@@ -341,6 +342,19 @@ static void run_press_once(void) {
     if (!lcdterm_window_at((int)(xy >> 16), (int)(xy & 0xFFFFu), &type, &id, &cx, &cy)) return;
     if (type == 4 /* RIBBON_WIN_LAUNCHER */ && launcher_is_active()) {
         launcher_press(cx, cy);
+    } else if (type == 3 /* RIBBON_WIN_READER */) {
+        reader_press(id, cx, cy);
+    } else if (type == 2 /* RIBBON_WIN_CANVAS */ && (win_t)id == window_focused() &&
+               !(window_claims((win_t)id) & WIN_CLAIM_POINTER)) {
+        win_event_t wev;
+        memset(&wev, 0, sizeof(wev));
+        wev.type = WIN_EV_POINTER_DOWN;
+        wev.button = 1;
+        wev.flags = WIN_EVF_PRESS;
+        wev.x = (int16_t)cx;
+        wev.y = (int16_t)cy;
+        window_post((win_t)id, &wev);
+        g_press_win = id;
     } else if (type == 1 /* RIBBON_WIN_TERM */) {
         /* the on-screen keyboard's key, if the point is on one */
         uint8_t req[5] = { 'y', (uint8_t)(xy >> 16), (uint8_t)(xy >> 24), (uint8_t)xy, (uint8_t)(xy >> 8) };
@@ -353,6 +367,16 @@ static void run_press_once(void) {
 static void run_release_once(void) {
     if (!__atomic_exchange_n(&g_release_pending, false, __ATOMIC_ACQ_REL)) return;
     launcher_release();
+    reader_release();
+    if (g_press_win >= 0) {
+        win_event_t wev;
+        memset(&wev, 0, sizeof(wev));
+        wev.type = WIN_EV_POINTER_UP;
+        wev.button = 1;
+        wev.flags = WIN_EVF_PRESS;
+        window_post((win_t)g_press_win, &wev);
+        g_press_win = -1;
+    }
     if (g_osk_pressed) {
         g_osk_pressed = false;
         uint8_t req[1] = { 'y' }, reply[SCREEN_REPLY_LEN];

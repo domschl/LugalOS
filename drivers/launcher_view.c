@@ -286,6 +286,22 @@ static void set_volume_percent(int pct) {
 #endif
 }
 
+/* The steppers' parts that cannot act (ugui_disable_next(): bit 0 the -,
+ * bit 1 the +): at a limit, or both where the board has no such control. */
+static uint8_t volume_limits(void) {
+#if defined(CONFIG_BOARD_ESP32P4)
+    int v = get_volume_percent();
+    return (uint8_t)((v <= 0 ? 1u : 0u) | (v >= 100 ? 2u : 0u));
+#else
+    return 3u;
+#endif
+}
+
+static uint8_t backlight_limits(void) {
+    unsigned b = get_backlight_percent();
+    return (uint8_t)((b <= 10u ? 1u : 0u) | (b >= 100u ? 2u : 0u));
+}
+
 #if defined(CONFIG_BOARD_TAB5)
 static int get_orient_mode(void) {
     if (orient_is_auto()) return 2;
@@ -466,6 +482,7 @@ void launcher_draw(const canvas1_t *c, int w, int h) {
         int row_h = 30 * s;
         char vol_str[16];
         ksnprintf(vol_str, sizeof(vol_str), "%d%%", get_volume_percent());
+        ugui_disable_next(&s_launcher.ui_ctx, volume_limits());
         ugui_stepper(&surf, &s_launcher.ui_ctx,
                      (ugui_rect_t){ (int16_t)pad, (int16_t)y, (int16_t)left_w, (int16_t)row_h },
                      "Volume", vol_str, LAUNCHER_ID_VOL_STEP, LAUNCHER_ID_VOL_STEP + 1);
@@ -473,6 +490,7 @@ void launcher_draw(const canvas1_t *c, int w, int h) {
 
         char bl_str[16];
         ksnprintf(bl_str, sizeof(bl_str), "%u%%", get_backlight_percent());
+        ugui_disable_next(&s_launcher.ui_ctx, backlight_limits());
         ugui_stepper(&surf, &s_launcher.ui_ctx,
                      (ugui_rect_t){ (int16_t)pad, (int16_t)y, (int16_t)left_w, (int16_t)row_h },
                      "Bright", bl_str, LAUNCHER_ID_BL_STEP, LAUNCHER_ID_BL_STEP + 1);
@@ -574,6 +592,7 @@ void launcher_draw(const canvas1_t *c, int w, int h) {
         int row_h = 28 * s;
         char vol_str[16];
         ksnprintf(vol_str, sizeof(vol_str), "%d%%", get_volume_percent());
+        ugui_disable_next(&s_launcher.ui_ctx, volume_limits());
         ugui_stepper(&surf, &s_launcher.ui_ctx,
                      (ugui_rect_t){ (int16_t)pad, (int16_t)y, (int16_t)inner_w, (int16_t)row_h },
                      "Volume", vol_str, LAUNCHER_ID_VOL_STEP, LAUNCHER_ID_VOL_STEP + 1);
@@ -581,6 +600,7 @@ void launcher_draw(const canvas1_t *c, int w, int h) {
 
         char bl_str[16];
         ksnprintf(bl_str, sizeof(bl_str), "%u%%", get_backlight_percent());
+        ugui_disable_next(&s_launcher.ui_ctx, backlight_limits());
         ugui_stepper(&surf, &s_launcher.ui_ctx,
                      (ugui_rect_t){ (int16_t)pad, (int16_t)y, (int16_t)inner_w, (int16_t)row_h },
                      "Brightness", bl_str, LAUNCHER_ID_BL_STEP, LAUNCHER_ID_BL_STEP + 1);

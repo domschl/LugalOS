@@ -26,13 +26,49 @@ void ugui_begin(ugui_ctx_t *ctx) {
     ctx->count = 0;
 }
 
-void ugui_add_hit(ugui_ctx_t *ctx, ugui_rect_t r, uint16_t id, int16_t index) {
+static void add_hit_flags(ugui_ctx_t *ctx, ugui_rect_t r, uint16_t id, int16_t index, uint8_t flags) {
     if (!ctx || id == 0 || ctx->count >= UGUI_MAX_HITBOXES) return;
     if (r.w <= 0 || r.h <= 0) return;
     ugui_hit_t *h = &ctx->hits[ctx->count++];
     h->rect = r;
     h->id = id;
     h->index = index;
+    h->flags = flags;
+}
+
+void ugui_add_hit(ugui_ctx_t *ctx, ugui_rect_t r, uint16_t id, int16_t index) {
+    add_hit_flags(ctx, r, id, index, 0);
+}
+
+void ugui_disable_next(ugui_ctx_t *ctx, uint8_t parts) {
+    if (ctx) ctx->next_disabled = parts;
+}
+
+/* The next widget's dimmed parts, taken: the following one starts enabled. */
+static uint8_t take_disabled(ugui_ctx_t *ctx) {
+    if (!ctx) return 0;
+    uint8_t m = ctx->next_disabled;
+    ctx->next_disabled = 0;
+    return m;
+}
+
+/* Dims r as drawn: GRAY8 two thirds of the way to the card's white, 1-bpp
+ * the Classic Mac way, every other ink pixel cleared in a checkerboard. */
+static void ugui_dim(const ugui_surface_t *s, ugui_rect_t r) {
+    int x0 = r.x < 0 ? 0 : r.x, y0 = r.y < 0 ? 0 : r.y;
+    int x1 = r.x + r.w - 1, y1 = r.y + r.h - 1;
+    if (x1 >= s->w) x1 = s->w - 1;
+    if (y1 >= s->h) y1 = s->h - 1;
+    if (x0 > x1 || y0 > y1) return;
+    if (s->aa_fb)
+        for (int y = y0; y <= y1; y++) {
+            uint8_t *p = s->aa_fb + (uint32_t)y * s->aa_stride;
+            for (int x = x0; x <= x1; x++) p[x] = (uint8_t)((p[x] + 2u * UGUI_GRAY_CARD) / 3u);
+        }
+    if (s->c1)
+        for (int y = y0; y <= y1; y++)
+            for (int x = x0 + ((x0 + y) & 1); x <= x1; x += 2)
+                if (canvas1_get(s->c1, x, y)) canvas1_fill(s->c1, x, y, x, y, CANVAS1_WHITE);
 }
 
 bool ugui_arm(ugui_ctx_t *ctx, int x, int y) {
@@ -64,6 +100,19 @@ static int focus_slot(const ugui_ctx_t *ctx) {
     return -1;
 }
 
+static bool focusable(const ugui_ctx_t *ctx, int slot) {
+    return !(ctx->hits[slot].flags & UGUI_HIT_DISABLED);
+}
+
+/* The first focusable slot from `from` stepping by step (wrapping), or -1. */
+static int focus_step(const ugui_ctx_t *ctx, int from, int step) {
+    for (int n = 1; n <= ctx->count; n++) {
+        int i = ((from + step * n) % ctx->count + ctx->count) % ctx->count;
+        if (focusable(ctx, i)) return i;
+    }
+    return -1;
+}
+
 static void focus_to(ugui_ctx_t *ctx, int slot) {
     ctx->focus_id = ctx->hits[slot].id;
     ctx->focus_index = ctx->hits[slot].index;
@@ -78,7 +127,7 @@ static int focus_nearest(const ugui_ctx_t *ctx, int from, int dx, int dy) {
     int best = -1;
     long best_d = 0;
     for (int i = 0; i < ctx->count; i++) {
-        if (i == from) continue;
+        if (i == from || !focusable(ctx, i)) continue;
         const ugui_rect_t *r = &ctx->hits[i].rect;
         int along, across;
         if (dx) {
@@ -109,18 +158,23 @@ ugui_nav_t ugui_nav(ugui_ctx_t *ctx, uint32_t key, uint8_t mods, uint16_t *id, i
     if (ctx->count == 0) return arrow ? UGUI_NAV_EDGE : UGUI_NAV_NONE;
     int slot = focus_slot(ctx);
     if (slot < 0 || !ctx->focus_shown) {                 /* first key: only show where it is */
-        if (slot < 0) focus_to(ctx, 0);
+        if (slot < 0 || !focusable(ctx, slot)) {
+            int first = focus_step(ctx, -1, 1);
+            if (first < 0) return arrow ? UGUI_NAV_EDGE : UGUI_NAV_NONE;
+            focus_to(ctx, first);
+        }
         ctx->focus_shown = true;
         return UGUI_NAV_MOVED;
     }
     if (activate) {
+        if (!focusable(ctx, slot)) return UGUI_NAV_NONE;   /* dimmed since: nothing to do */
         if (id) *id = ctx->hits[slot].id;
         if (index) *index = ctx->hits[slot].index;
         return UGUI_NAV_ACTIVATE;
     }
     if (tab) {
-        int step = (mods & KMOD_SHIFT) ? -1 : 1;
-        focus_to(ctx, (slot + step + ctx->count) % ctx->count);
+        int to = focus_step(ctx, slot, (mods & KMOD_SHIFT) ? -1 : 1);
+        if (to >= 0) focus_to(ctx, to);
         return UGUI_NAV_MOVED;
     }
     int to = focus_nearest(ctx, slot, key == KEY_RIGHT ? 1 : key == KEY_LEFT ? -1 : 0,
@@ -154,8 +208,9 @@ void ugui_end(const ugui_surface_t *s, ugui_ctx_t *ctx) {
     int slot = focus_slot(ctx);
     if (slot < 0) {
         if (ctx->focus_id == 0 && !ctx->focus_shown) return;
-        focus_to(ctx, 0);
-        slot = 0;
+        slot = focus_step(ctx, -1, 1);
+        if (slot < 0) return;                            /* every widget dimmed */
+        focus_to(ctx, slot);
     }
     if (!s || !ctx->focus_shown) return;
     /* the dotted ring: dashes of 2 units, `t` thick, 2 units inside */
@@ -184,6 +239,7 @@ uint16_t ugui_hit_test(const ugui_ctx_t *ctx, int x, int y, int16_t *out_index) 
         const ugui_hit_t *h = &ctx->hits[i];
         if (x >= h->rect.x && x < (int)h->rect.x + (int)h->rect.w &&
             y >= h->rect.y && y < (int)h->rect.y + (int)h->rect.h) {
+            if (h->flags & UGUI_HIT_DISABLED) return 0;  /* dimmed: swallowed */
             if (out_index) *out_index = h->index;
             return h->id;
         }
@@ -462,7 +518,8 @@ void ugui_icon16(const ugui_surface_t *s, int x, int y, const uint16_t icon[16],
 
 void ugui_button(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r,
                  const char *label, uint16_t id, bool active) {
-    active = active || ugui_is_armed(ctx, id, 0);
+    uint8_t dis = take_disabled(ctx);
+    active = !dis && (active || ugui_is_armed(ctx, id, 0));
     if (!s || r.w <= 0 || r.h <= 0) return;
     ugui_box_shadow(s, r, active);
     if (label && *label) {
@@ -474,12 +531,14 @@ void ugui_button(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r,
         if (tx < r.x + 2) tx = r.x + 2;
         ugui_text_serif(s, tx, ty, label, len, true, false, active);
     }
-    ugui_add_hit(ctx, r, id, 0);
+    if (dis) ugui_dim(s, (ugui_rect_t){ r.x, r.y, (int16_t)(r.w + 3 * s->scale), (int16_t)(r.h + 3 * s->scale) });
+    add_hit_flags(ctx, r, id, 0, dis ? UGUI_HIT_DISABLED : 0);
 }
 
 void ugui_toolbar_button(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r,
                          const char *label, uint16_t id, bool active) {
-    active = active || ugui_is_armed(ctx, id, 0);
+    uint8_t dis = take_disabled(ctx);
+    active = !dis && (active || ugui_is_armed(ctx, id, 0));
     if (!s || r.w <= 0 || r.h <= 0) return;
     int sc = s->scale > 0 ? s->scale : 1;
 
@@ -496,9 +555,11 @@ void ugui_toolbar_button(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r
     ugui_vline(s, x0, y0, y1, sc, UGUI_GRAY_BORDER, CANVAS1_BLACK);
     ugui_vline(s, x1 - sc + 1, y0, y1, sc, UGUI_GRAY_BORDER, CANVAS1_BLACK);
 
-    /* Subtle 1*sc bottom-right shadow */
-    ugui_hline(s, x0 + sc, x1 + sc, y1 + 1, sc, UGUI_GRAY_SHADOW, CANVAS1_BLACK);
-    ugui_vline(s, x1 + 1, y0 + sc, y1 + sc, sc, UGUI_GRAY_SHADOW, CANVAS1_BLACK);
+    /* Subtle 1*sc bottom-right shadow; a dimmed button is flat */
+    if (!dis) {
+        ugui_hline(s, x0 + sc, x1 + sc, y1 + 1, sc, UGUI_GRAY_SHADOW, CANVAS1_BLACK);
+        ugui_vline(s, x1 + 1, y0 + sc, y1 + sc, sc, UGUI_GRAY_SHADOW, CANVAS1_BLACK);
+    }
 
     if (label && *label) {
         uint32_t len = (uint32_t)strlen(label);
@@ -509,13 +570,15 @@ void ugui_toolbar_button(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r
         if (tx < r.x + 2 * sc) tx = r.x + 2 * sc;
         ugui_text_serif(s, tx, ty, label, len, true, false, active);
     }
-    ugui_add_hit(ctx, r, id, 0);
+    if (dis) ugui_dim(s, r);
+    add_hit_flags(ctx, r, id, 0, dis ? UGUI_HIT_DISABLED : 0);
 }
 
 void ugui_card(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r,
                const uint16_t icon16[16], const char *title, const char *subtitle,
                uint16_t id, bool active) {
-    active = active || ugui_is_armed(ctx, id, 0);
+    uint8_t dis = take_disabled(ctx);
+    active = !dis && (active || ugui_is_armed(ctx, id, 0));
     if (!s || r.w <= 0 || r.h <= 0) return;
     int sc = s->scale > 0 ? s->scale : 1;
 
@@ -549,7 +612,8 @@ void ugui_card(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r,
         ugui_text_serif(s, sx, cur_y, subtitle, slen, false, true, active);
     }
 
-    ugui_add_hit(ctx, r, id, 0);
+    if (dis) ugui_dim(s, (ugui_rect_t){ r.x, r.y, (int16_t)(r.w + 3 * sc), (int16_t)(r.h + 3 * sc) });
+    add_hit_flags(ctx, r, id, 0, dis ? UGUI_HIT_DISABLED : 0);
 }
 
 void ugui_section_header(const ugui_surface_t *s, int x, int y, int w, const char *title) {
@@ -569,7 +633,7 @@ void ugui_section_header(const ugui_surface_t *s, int x, int y, int w, const cha
 void ugui_stepper(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r,
                   const char *label, const char *value_str,
                   uint16_t dec_id, uint16_t inc_id) {
-    if (!s || r.w <= 0 || r.h <= 0) return;
+    if (!s || r.w <= 0 || r.h <= 0) { (void)take_disabled(ctx); return; }
     int sc = s->scale > 0 ? s->scale : 1;
     int lh = ugui_serif_line_h(s);
     int ty = r.y + (r.h - lh) / 2;
@@ -601,6 +665,8 @@ void ugui_stepper(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r,
         .h = r.h,
     };
 
+    uint8_t dis = take_disabled(ctx);
+    ugui_disable_next(ctx, dis & 1u);
     ugui_toolbar_button(s, ctx, dec_r, "-", dec_id, false);
 
     /* Value readout pill */
@@ -614,12 +680,14 @@ void ugui_stepper(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r,
         ugui_text_serif(s, vx, ty, value_str, vlen, false, false, false);
     }
 
+    ugui_disable_next(ctx, (dis >> 1) & 1u);
     ugui_toolbar_button(s, ctx, inc_r, "+", inc_id, false);
 }
 
 void ugui_segmented(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r,
                     const char *const *labels, int count, int selected_idx,
                     uint16_t base_id) {
+    uint8_t dis = take_disabled(ctx);
     if (!s || !labels || count <= 0 || r.w <= 0 || r.h <= 0) return;
     int sc = s->scale > 0 ? s->scale : 1;
     int seg_w = r.w / count;
@@ -631,7 +699,8 @@ void ugui_segmented(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r,
             .w = (int16_t)((i == count - 1) ? (r.w - i * seg_w) : seg_w),
             .h = r.h,
         };
-        bool sel = (i == selected_idx) || ugui_is_armed(ctx, (uint16_t)(base_id + (uint16_t)i), (int16_t)i);
+        bool seg_dis = i < 8 && ((dis >> i) & 1u);
+        bool sel = (i == selected_idx) || (!seg_dis && ugui_is_armed(ctx, (uint16_t)(base_id + (uint16_t)i), (int16_t)i));
         ugui_fill(s, seg, sel ? UGUI_GRAY_INK : UGUI_GRAY_CARD, sel ? CANVAS1_BLACK : CANVAS1_WHITE);
         ugui_hline(s, seg.x, seg.x + seg.w - 1, seg.y, sc, UGUI_GRAY_BORDER, CANVAS1_BLACK);
         ugui_hline(s, seg.x, seg.x + seg.w - 1, seg.y + seg.h - sc, sc, UGUI_GRAY_BORDER, CANVAS1_BLACK);
@@ -648,14 +717,16 @@ void ugui_segmented(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r,
             int ly = seg.y + (seg.h - lh) / 2;
             ugui_text_serif(s, lx, ly, labels[i], llen, true, false, sel);
         }
-        ugui_add_hit(ctx, seg, (uint16_t)(base_id + (uint16_t)i), (int16_t)i);
+        if (seg_dis) ugui_dim(s, seg);
+        add_hit_flags(ctx, seg, (uint16_t)(base_id + (uint16_t)i), (int16_t)i, seg_dis ? UGUI_HIT_DISABLED : 0);
     }
 }
 
 void ugui_list_row(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r,
                    const char *prefix, const char *title, const char *right_meta,
                    uint16_t id, int16_t index, bool selected) {
-    selected = selected || ugui_is_armed(ctx, id, index);
+    uint8_t dis = take_disabled(ctx);
+    selected = !dis && (selected || ugui_is_armed(ctx, id, index));
     if (!s || r.w <= 0 || r.h <= 0) return;
     int sc = s->scale > 0 ? s->scale : 1;
     int lh = ugui_serif_line_h(s);
@@ -692,7 +763,8 @@ void ugui_list_row(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r,
     ugui_hline(s, r.x + 4 * sc, r.x + r.w - 1 - 4 * sc, r.y + r.h - 1, 1,
                UGUI_GRAY_TRACK, CANVAS1_GREY);
 
-    ugui_add_hit(ctx, r, id, index);
+    if (dis) ugui_dim(s, r);
+    add_hit_flags(ctx, r, id, index, dis ? UGUI_HIT_DISABLED : 0);
 }
 
 void ugui_scrollbar(const ugui_surface_t *s, ugui_rect_t track, int scroll_y,
@@ -808,6 +880,33 @@ bool ugui_selftest(void) {
     ugui_add_hit(&ctx, btn1, 101, 0);
     ugui_end(&surf, &ctx);
     if (canvas1_get(&c1, btn1.x + 2, btn1.y + 2) != 1u || canvas1_get(&c1, btn1.x + 10, btn1.y + 10) != 0u) return false;
+
+    /* A dimmed part: its tap hits nothing (not even what lies under it), it
+     * cannot be armed, the focus skips it; the stepper's mask dims one half
+     * only, and the next widget starts enabled again. */
+    ugui_ctx_t dc;
+    memset(&dc, 0, sizeof dc);
+    ugui_begin(&dc);
+    ugui_add_hit(&dc, (ugui_rect_t){ 0, 0, 128, 64 }, 300, 0);   /* underneath */
+    ugui_disable_next(&dc, 1);
+    ugui_toolbar_button(&surf, &dc, btn1, "Back", 101, false);
+    ugui_disable_next(&dc, 2);
+    ugui_stepper(&surf, &dc, (ugui_rect_t){ 0, 32, 128, 20 }, NULL, "1", 110, 111);
+    ugui_toolbar_button(&surf, &dc, btn2, "Open", 102, false);
+    if (ugui_hit_test(&dc, 10, 10, NULL) != 0 || ugui_arm(&dc, 10, 10)) return false;
+    if (ugui_hit_test(&dc, 75, 10, NULL) != 102) return false;
+    if (ugui_hit_test(&dc, 112, 40, NULL) != 0) return false;               /* the + */
+    int16_t di = -1;
+    uint16_t dec = 0;
+    for (int x = 0; x < 128 && !dec; x++) {
+        uint16_t h = ugui_hit_test(&dc, x, 40, &di);
+        if (h == 110) dec = h;
+    }
+    if (dec != 110) return false;                                         /* the - acts */
+    if (ugui_nav(&dc, '\t', 0, &fid, &fidx) != UGUI_NAV_MOVED || !ugui_is_focused(&dc, 300, 0)) return false;
+    if (ugui_nav(&dc, '\t', 0, &fid, &fidx) != UGUI_NAV_MOVED || !ugui_is_focused(&dc, 110, 0)) return false;
+    if (ugui_nav(&dc, '\t', 0, &fid, &fidx) != UGUI_NAV_MOVED || !ugui_is_focused(&dc, 102, 0)) return false;
+    if (ugui_nav(&dc, '\t', 0, &fid, &fidx) != UGUI_NAV_MOVED || !ugui_is_focused(&dc, 300, 0)) return false;
 
     return true;
 }

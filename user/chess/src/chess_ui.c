@@ -3022,12 +3022,22 @@ static void chess_touch_draw(void);
  * board's window: its taps and close request (kernel/event.h). */
 static win_t g_touch_win = -1;
 
+static uint32_t g_touch_draws;     /* single task: chess; chess_touch_draw() passes */
+
 /* The next of the window's events that matters: 1 a tap at (*tx, *ty), 2
- * the window was closed, 0 nothing pending. A tap is its release half. */
+ * the window was closed, 0 nothing pending. A tap is its release half.
+ * Press feedback is handled here: a press arms the control under the
+ * finger, its release lets go, each drawn when that changed. */
 static int chess_touch_next(int *tx, int *ty) {
     win_event_t ev;
     while (window_poll(g_touch_win, &ev)) {
         if (ev.type == WIN_EV_CLOSE_REQUEST) return 2;
+        if (ev.flags & WIN_EVF_PRESS) {
+            bool changed = ev.type == WIN_EV_POINTER_DOWN ? ugui_arm(&g_touch_ui_ctx, ev.x, ev.y)
+                                                          : ugui_disarm(&g_touch_ui_ctx);
+            if (changed) chess_touch_draw();
+            continue;
+        }
         if (ev.type == WIN_EV_POINTER_UP && (ev.flags & WIN_EVF_TAP)) {
             *tx = ev.x;
             *ty = ev.y;
@@ -3095,6 +3105,7 @@ static void chess_touch_draw(void) {
     surf.h = h;
     surf.scale = s;
 
+    g_touch_draws++;
     ugui_begin(&g_touch_ui_ctx);
     ugui_fill(&surf, (ugui_rect_t){ 0, 0, (int16_t)w, (int16_t)h }, UGUI_GRAY_PAPER, CANVAS1_WHITE);
 
@@ -3311,6 +3322,9 @@ static void chess_touch_draw(void) {
     /* Move Navigation Row: [< Back]  Ply N/M  [Fwd >] */
     int btn_w = (ctrl_w - 8 * s) / 3;
     int btn_h = 24 * s;
+    /* Controls that cannot act now are dimmed (ugui_disable_next()); the
+     * toggles say what they will do rather than staying lit. */
+    if (g_chess_pos.history_ply <= 0) ugui_disable_next(&g_touch_ui_ctx, 1);
     ugui_button(&surf, &g_touch_ui_ctx,
                 (ugui_rect_t){ (int16_t)ctrl_x, (int16_t)cur_y, (int16_t)btn_w, (int16_t)btn_h },
                 "< Back", CHESS_TOUCH_ID_BACK, false);
@@ -3322,6 +3336,7 @@ static void chess_touch_draw(void) {
     int str_w = ugui_text_serif_width(&surf, ply_str, (uint32_t)strlen(ply_str));
     ugui_text_serif(&surf, tx + (tw - str_w) / 2, cur_y + 4 * s, ply_str, (uint32_t)strlen(ply_str), true, false, false);
 
+    if (g_chess_pos.history_ply >= g_console_max_history_ply) ugui_disable_next(&g_touch_ui_ctx, 1);
     ugui_button(&surf, &g_touch_ui_ctx,
                 (ugui_rect_t){ (int16_t)(ctrl_x + ctrl_w - btn_w), (int16_t)cur_y, (int16_t)btn_w, (int16_t)btn_h },
                 "Fwd >", CHESS_TOUCH_ID_FWD, false);
@@ -3335,7 +3350,7 @@ static void chess_touch_draw(void) {
                 "Go", CHESS_TOUCH_ID_GO, false);
     ugui_button(&surf, &g_touch_ui_ctx,
                 (ugui_rect_t){ (int16_t)(ctrl_x + act_w + 6 * s), (int16_t)cur_y, (int16_t)act_w, (int16_t)btn_h },
-                g_touch_analysing ? "Stop Anal." : "Analyse", CHESS_TOUCH_ID_ANALYSE, g_touch_analysing);
+                g_touch_analysing ? "Stop Anal." : "Analyse", CHESS_TOUCH_ID_ANALYSE, false);
 
     cur_y += btn_h + 10 * s;
 
@@ -3346,6 +3361,8 @@ static void chess_touch_draw(void) {
     if (l_idx < 0) l_idx = 0;
     if (l_idx > 7) l_idx = 7;
     ksnprintf(lv_val, sizeof(lv_val), "Lv %d (%s)", g_console_search_level, k_level_names[l_idx]);
+    ugui_disable_next(&g_touch_ui_ctx, (uint8_t)((g_console_search_level <= 1 ? 1u : 0u) |
+                                                 (g_console_search_level >= 8 ? 2u : 0u)));
     ugui_stepper(&surf, &g_touch_ui_ctx,
                  (ugui_rect_t){ (int16_t)ctrl_x, (int16_t)cur_y, (int16_t)ctrl_w, (int16_t)btn_h },
                  "Search", lv_val, CHESS_TOUCH_ID_LEVEL_DEC, CHESS_TOUCH_ID_LEVEL_INC);
@@ -3355,7 +3372,7 @@ static void chess_touch_draw(void) {
     /* Options / Extra Controls Row */
     ugui_button(&surf, &g_touch_ui_ctx,
                 (ugui_rect_t){ (int16_t)ctrl_x, (int16_t)cur_y, (int16_t)ctrl_w, (int16_t)btn_h },
-                g_touch_show_options ? "Hide Options" : "Options...", CHESS_TOUCH_ID_OPT_TOGGLE, g_touch_show_options);
+                g_touch_show_options ? "Hide Options" : "Options...", CHESS_TOUCH_ID_OPT_TOGGLE, false);
 
     cur_y += btn_h + 8 * s;
 
@@ -3437,7 +3454,18 @@ static bool chess_touch_apply_move(Move m) {
     return true;
 }
 
+static void chess_touch_handle_tap_act(int tx, int ty);
+
+/* A tap: the pressed control lets go first, then acts; drawn again only if
+ * the action did not draw. */
 static void chess_touch_handle_tap(int tx, int ty) {
+    bool was_armed = ugui_disarm(&g_touch_ui_ctx);
+    uint32_t draws = g_touch_draws;
+    chess_touch_handle_tap_act(tx, ty);
+    if (was_armed && g_touch_draws == draws) chess_touch_draw();
+}
+
+static void chess_touch_handle_tap_act(int tx, int ty) {
     int16_t hit_idx = -1;
     uint16_t id = ugui_hit_test(&g_touch_ui_ctx, tx, ty, &hit_idx);
 

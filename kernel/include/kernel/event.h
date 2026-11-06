@@ -9,7 +9,8 @@
  * background, chess beside it) each get only their own.
  *
  *   - Pointer events in the window's content coordinates: a tap as
- *     POINTER_DOWN + POINTER_UP (flags WIN_EVF_TAP); with WIN_CLAIM_POINTER
+ *     POINTER_DOWN + POINTER_UP (flags WIN_EVF_TAP), framed by a press pair
+ *     (WIN_EVF_PRESS) for feedback while the finger is down; with WIN_CLAIM_POINTER
  *     the raw stream instead -- every contact's DOWN, MOVE (successive moves
  *     merged while unread) and UP, as long as the window had the focus when
  *     the contact began and it did not begin at the screen's edge (that one
@@ -37,7 +38,10 @@ typedef enum {
     WIN_EV_RESIZE,
 } win_event_type_t;
 
-#define WIN_EVF_TAP 0x01u       /* the DOWN / UP pair of a recognised tap */
+#define WIN_EVF_TAP   0x01u     /* the DOWN / UP pair of a recognised tap */
+#define WIN_EVF_PRESS 0x02u     /* press feedback: a finger went down at (x, y) (DOWN) and
+                                 * lifted or moved off (UP); a tap it made follows as its
+                                 * own TAP pair, before this UP. Not for claimed windows. */
 
 typedef struct {
     uint8_t  type;      /* win_event_type_t */

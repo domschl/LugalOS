@@ -35,6 +35,11 @@ void reader_drag(int dy);
 void reader_drag_end(int dy, uint32_t ms);
 bool reader_tap(int client_x, int client_y);
 bool reader_tap_instance(uint8_t rid, int client_x, int client_y);
+/* Press feedback: the action-bar button under a finger that went down in
+ * reader rid shows pressed (only the bar is drawn again) until
+ * reader_release(), which lets go in every reader. */
+void reader_press(uint8_t rid, int client_x, int client_y);
+void reader_release(void);
 void reader_feed_key(int c);
 bool reader_follow_link_num(int num);
 bool reader_follow_link_num_instance(uint8_t rid, int num);

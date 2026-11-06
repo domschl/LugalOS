@@ -674,8 +674,32 @@ enum {
     READER_UI_TOP      = 4,
 };
 
+static bool reader_tap_act(uint8_t rid, int client_x, int client_y);
+
+static void reader_redraw_bar(uint8_t rid);
+
+void reader_press(uint8_t rid, int client_x, int client_y) {
+    if (rid >= READER_MAX_INSTANCES || !s_readers[rid].active) return;
+    if (ugui_arm(&s_readers[rid].ui_ctx, client_x, client_y)) reader_redraw_bar(rid);
+}
+
+void reader_release(void) {
+    for (uint8_t rid = 0; rid < READER_MAX_INSTANCES; rid++)
+        if (s_readers[rid].active && ugui_disarm(&s_readers[rid].ui_ctx)) reader_redraw_bar(rid);
+}
+
+/* A tap: the pressed button lets go first, then acts; the bar is drawn
+ * again only if the action did not draw the reader. */
 bool reader_tap_instance(uint8_t rid, int client_x, int client_y) {
     if (rid >= READER_MAX_INSTANCES || !s_readers[rid].active) return false;
+    bool was_armed = ugui_disarm(&s_readers[rid].ui_ctx);
+    uint32_t seq = s_reader_seq[rid];
+    bool acted = reader_tap_act(rid, client_x, client_y);
+    if (was_armed && s_readers[rid].active && s_reader_seq[rid] == seq) reader_redraw_bar(rid);
+    return acted;
+}
+
+static bool reader_tap_act(uint8_t rid, int client_x, int client_y) {
     reader_state_t *r = &s_readers[rid];
 
     uint16_t hit = ugui_hit_test(&r->ui_ctx, client_x, client_y, NULL);
@@ -1355,7 +1379,11 @@ static void draw_reader_action_bar(reader_state_t *r, rdraw_t *rd, int w, int h)
     int pad_x = 8 * sc;
     int gap = 8 * sc;
 
+    /* Dimmed when they cannot act: Back with no history and no contents
+     * view open, Top at the top. Contents is not a lit toggle (inverted is
+     * the finger's): while the contents view is open it says Close. */
     ugui_rect_t b_back = { .x = (int16_t)pad_x, .y = (int16_t)btn_y, .w = (int16_t)(58 * sc), .h = (int16_t)btn_h };
+    if (!r->toc_mode && r->history_depth <= 0) ugui_disable_next(&r->ui_ctx, 1);
     ugui_toolbar_button(&surf, &r->ui_ctx, b_back, "< Back", READER_UI_BACK, false);
 
     ugui_rect_t b_toc = {
@@ -1364,7 +1392,7 @@ static void draw_reader_action_bar(reader_state_t *r, rdraw_t *rd, int w, int h)
         .w = (int16_t)(72 * sc),
         .h = (int16_t)btn_h,
     };
-    ugui_toolbar_button(&surf, &r->ui_ctx, b_toc, "Contents", READER_UI_CONTENTS, r->toc_mode);
+    ugui_toolbar_button(&surf, &r->ui_ctx, b_toc, r->toc_mode ? "Close" : "Contents", READER_UI_CONTENTS, false);
 
     ugui_rect_t b_top = {
         .x = (int16_t)(w - pad_x - 46 * sc),
@@ -1372,6 +1400,7 @@ static void draw_reader_action_bar(reader_state_t *r, rdraw_t *rd, int w, int h)
         .w = (int16_t)(46 * sc),
         .h = (int16_t)btn_h,
     };
+    if (!r->toc_mode && r->scroll_y <= 0) ugui_disable_next(&r->ui_ctx, 1);
     ugui_toolbar_button(&surf, &r->ui_ctx, b_top, "Top", READER_UI_TOP, false);
 
 #if defined(CONFIG_BOARD_TAB5)
@@ -1385,6 +1414,20 @@ static void draw_reader_action_bar(reader_state_t *r, rdraw_t *rd, int w, int h)
         ugui_toolbar_button(&surf, &r->ui_ctx, b_rot, "Rotate", READER_UI_ROTATE, false);
     }
 #endif
+}
+
+/* The action bar alone, drawn again over the page and shown: its buttons
+ * are the reader's only hit-boxes, so they are registered afresh. */
+static void reader_redraw_bar(uint8_t rid) {
+    reader_state_t *r = &s_readers[rid];
+    canvas1_t *c = get_reader_canvas(rid);
+    if (!c) return;
+    int w = r->win_w > 0 ? r->win_w : (int)c->w;
+    int h = r->win_h > 0 ? r->win_h : (int)c->h;
+    rdraw_t rd = { .c = c, .aa_fb = r->aa_buf, .aa_stride = r->aa_stride, .w = w, .h = h };
+    ugui_begin(&r->ui_ctx);
+    draw_reader_action_bar(r, &rd, w, h);
+    reader_show(rid);
 }
 
 /* The scrollbar along the right edge, over the whole height. */
