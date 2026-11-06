@@ -131,6 +131,7 @@ typedef struct {
     uint8_t   status_flags;             /* Top bar indicators: SD mounted, 9P active, Wi-Fi connected */
     uint8_t   osk_visible;              /* 1 if on-screen keyboard is expanded in active terminal */
     uint8_t   osk_modifiers;            /* Bit 0: shift, Bit 1: ctrl, Bit 2: sym */
+    int16_t   osk_pressed;              /* the key under a finger (osk_key_at()), -1: none */
     uint8_t  *store;                    /* 38.8: SCREEN_STORES slots, or NULL */
     uint32_t  store_slot;               /* bytes per slot */
     uint32_t  draw_gen;                 /* bumped by every drawing request */
@@ -249,6 +250,9 @@ void screen_text_size(const screen_t *scr, unsigned *cols, unsigned *rows);
  *                                       [12..13] the first and last band of
  *                                       16 rows that did (the full redraw is
  *                                       kept)
+ *   'y' x y | (none)                    the on-screen keyboard's key under
+ *                                       screen point x y shows pressed; bare,
+ *                                       none does ([1] 1 if that changed)
  *   'W' u8 slot                         a reader's or the launcher's backing
  *                                       changed: copied into its tile only
  *                                       (refused when no such window)
@@ -268,6 +272,8 @@ void screen_text_size(const screen_t *scr, unsigned *cols, unsigned *rows);
 #define SCREEN_REPLY_LEN 16u
 
 void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, uint8_t *reply);
+/* The on-screen keyboard's rectangle at the focused terminal (touch boards). */
+bool screen_osk_rect(const screen_t *scr, int *x0, int *y0, int *w, int *h);
 void screen_canvas_vterm(screen_t *scr, uint8_t vterm_id, const uint8_t *req, uint32_t n, uint8_t *reply, int16_t caller_pid);
 
 #endif /* LUGALOS_DRIVERS_SCREEN_H */

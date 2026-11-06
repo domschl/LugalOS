@@ -23,6 +23,8 @@
 #include "drivers/touch.h"
 #include "drivers/gesture.h"
 #include "kernel/event.h"
+#include "drivers/lcdterm.h"
+#include "drivers/screen.h"
 #include "drivers/i2c_bus.h"
 #include "kernel/console.h"
 #include "kernel/printk.h"
@@ -432,8 +434,24 @@ static bool touch_inject(const char *args) {
             if (*p < '0' || *p > '9') { cprintf("usage: touch tap X Y (screen pixels)\n"); return true; }
             while (*p >= '0' && *p <= '9') v[i] = v[i] * 10u + (unsigned)(*p++ - '0');
         }
+        /* as a finger does: down (press feedback), the release, the tap;
+         * "hold" keeps the finger down 150 ms, so the input path sees the
+         * press on its own first */
+        console_touch_press(v[0], v[1]);
+        if (strstr(p, "hold")) task_sleep_ms(150);
+        console_touch_release();
         console_touch_tap(v[0], v[1]);
         cprintf("touch: tap at %u,%u\n", v[0], v[1]);
+        return true;
+    }
+    if (strncmp(args, "osk", 3) == 0) {
+        if (strstr(args, "show")) {
+            uint8_t req[2] = { 'k', 1 }, reply[SCREEN_REPLY_LEN];
+            (void)console_canvas(req, 2, reply);
+        }
+        int x0, y0, w, h;
+        if (lcdterm_osk_rect(&x0, &y0, &w, &h)) cprintf("touch: keyboard at x %d..%d y %d..%d\n", x0, x0 + w - 1, y0, y0 + h - 1);
+        else cprintf("touch: no on-screen keyboard shown\n");
         return true;
     }
     if (strncmp(args, "swipe", 5) == 0) {

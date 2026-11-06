@@ -240,6 +240,8 @@ static volatile uint32_t g_scroll_ms = 0;
  * by the input path; their own words, so a pending tap is never replaced. */
 static volatile uint32_t g_press_xy;
 static volatile bool     g_press_pending = false, g_release_pending = false;
+static volatile bool     g_press_busy = false;    /* one shell at a time runs run_press() / run_release() */
+static bool              g_osk_pressed = false;   /* guarded by: g_press_busy */
 static volatile int      g_drag_dy = 0;
 static volatile bool     g_drag_end = false;
 static volatile int      g_drag_end_total, g_drag_end_dy;
@@ -326,22 +328,48 @@ void console_touch_release(void) {
 }
 
 /* Press feedback: before the hotkeys, a press arms the control under the
- * finger in the launcher; after them, a release disarms it -- a tap that
- * came with it has already disarmed (launcher_tap()), so the launcher is
- * drawn once. */
-static void run_press(void) {
-    if (__atomic_exchange_n(&g_press_pending, false, __ATOMIC_ACQ_REL)) {
-        uint32_t xy = g_press_xy;
-        uint8_t type = 0, id = 0;
-        int cx = 0, cy = 0;
-        if (lcdterm_window_at((int)(xy >> 16), (int)(xy & 0xFFFFu), &type, &id, &cx, &cy) &&
-            type == 4 /* RIBBON_WIN_LAUNCHER */ && launcher_is_active())
-            launcher_press(cx, cy);
+ * finger in the launcher or shows the on-screen keyboard's key pressed;
+ * after them, a release lets go -- a tap that came with it has already
+ * disarmed the launcher (launcher_tap()), so it is drawn once. Every shell
+ * waiting for input runs this: one at a time (g_press_busy), the others skip
+ * it, so a press is never shown after its own release. */
+static void run_press_once(void) {
+    if (!__atomic_exchange_n(&g_press_pending, false, __ATOMIC_ACQ_REL)) return;
+    uint32_t xy = g_press_xy;
+    uint8_t type = 0, id = 0;
+    int cx = 0, cy = 0;
+    if (!lcdterm_window_at((int)(xy >> 16), (int)(xy & 0xFFFFu), &type, &id, &cx, &cy)) return;
+    if (type == 4 /* RIBBON_WIN_LAUNCHER */ && launcher_is_active()) {
+        launcher_press(cx, cy);
+    } else if (type == 1 /* RIBBON_WIN_TERM */) {
+        /* the on-screen keyboard's key, if the point is on one */
+        uint8_t req[5] = { 'y', (uint8_t)(xy >> 16), (uint8_t)(xy >> 24), (uint8_t)xy, (uint8_t)(xy >> 8) };
+        uint8_t reply[SCREEN_REPLY_LEN];
+        g_osk_pressed = true;
+        (void)console_canvas(req, 5, reply);
     }
 }
 
+static void run_release_once(void) {
+    if (!__atomic_exchange_n(&g_release_pending, false, __ATOMIC_ACQ_REL)) return;
+    launcher_release();
+    if (g_osk_pressed) {
+        g_osk_pressed = false;
+        uint8_t req[1] = { 'y' }, reply[SCREEN_REPLY_LEN];
+        (void)console_canvas(req, 1, reply);
+    }
+}
+
+static void run_press(void) {
+    if (__atomic_exchange_n(&g_press_busy, true, __ATOMIC_ACQ_REL)) return;
+    run_press_once();
+    __atomic_store_n(&g_press_busy, false, __ATOMIC_RELEASE);
+}
+
 static void run_release(void) {
-    if (__atomic_exchange_n(&g_release_pending, false, __ATOMIC_ACQ_REL)) launcher_release();
+    if (__atomic_exchange_n(&g_press_busy, true, __ATOMIC_ACQ_REL)) return;
+    run_release_once();
+    __atomic_store_n(&g_press_busy, false, __ATOMIC_RELEASE);
 }
 
 void console_touch_drag(int dy) {

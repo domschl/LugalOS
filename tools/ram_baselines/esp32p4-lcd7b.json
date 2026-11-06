@@ -1,14 +1,14 @@
 {
   "bulk_per_file": {
     "drivers/dsi_esp32p4.c": 9012,
-    "drivers/launcher_view.c": 5400,
-    "drivers/reader_view.c": 61200,
+    "drivers/launcher_view.c": 5404,
+    "drivers/reader_view.c": 61216,
     "drivers/uxbench.c": 540,
     "kernel/palloc.c": 32768,
     "kernel/winevent.c": 2576,
     "kernel/zonetest.c": 64,
     "user/ceres/src/platform_p4.c": 31896,
-    "user/chess/src/chess_ui.c": 1544,
+    "user/chess/src/chess_ui.c": 1548,
     "user/lisp/lisp.c": 1532288,
     "user/moonbase/src/moon_textures.c": 32768,
     "user/moonbase/src/platform_p4.c": 41120
@@ -16,14 +16,14 @@
   "bulk_per_subsystem": {
     "app:ceres": 31896,
     "app:moonbase": 73888,
-    "chess": 1544,
-    "display": 75612,
+    "chess": 1548,
+    "display": 75632,
     "drivers": 540,
     "kernel": 35344,
     "lisp": 1532288,
     "selftest": 64
   },
-  "bulk_total": 1751176,
+  "bulk_total": 1751200,
   "heap_bytes": 360448,
   "heap_pages": 88,
   "per_file": {
@@ -67,7 +67,7 @@
     "drivers/sensor_hub.c": 7504,
     "drivers/sgp30.c": 76,
     "drivers/tmp117.c": 76,
-    "drivers/touch_gt911.c": 212,
+    "drivers/touch_gt911.c": 216,
     "drivers/tsl2561.c": 84,
     "drivers/tsl2591.c": 84,
     "drivers/uart_esp32p4.c": 899,
@@ -83,7 +83,7 @@
     "kernel/chan.c": 1348,
     "kernel/chan_selftest.c": 172,
     "kernel/clipboard.c": 20,
-    "kernel/console.c": 764,
+    "kernel/console.c": 772,
     "kernel/device.c": 140,
     "kernel/devirq.c": 134,
     "kernel/discipline.c": 82,
@@ -174,7 +174,7 @@
     "chess": 21392,
     "clock-app": 136,
     "crypto": 38,
-    "display": 3792,
+    "display": 3796,
     "drivers": 1228,
     "fs": 4160,
     "httpd": 70,
@@ -189,11 +189,11 @@
     "radio": 12564,
     "selftest": 3962,
     "sensors": 8688,
-    "shell": 13048,
+    "shell": 13056,
     "storage": 7456,
     "usb": 1212,
     "vfs": 4111
   },
   "ram_code": 1806,
-  "total": 216271
+  "total": 216283
 }

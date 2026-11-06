@@ -146,6 +146,8 @@ int lcdterm_get_canvas565_cid_by_name(const char *name);
 bool lcdterm_is_canvas_active(uint8_t cid);
 /* The focused window's canvas slot, or -1 when it is not a canvas. */
 int  lcdterm_focused_canvas(void);
+/* The on-screen keyboard's rectangle when it is shown (`ts osk`). */
+bool lcdterm_osk_rect(int *x0, int *y0, int *w, int *h);
 /* The window whose content is under screen point (x, y): its type
  * (RIBBON_WIN_*), id and the point in its content; false when none (the
  * chrome, a gap, full-screen). For press feedback: no side effects. */
@@ -197,6 +199,7 @@ static inline int lcdterm_get_canvas565_cid_by_name(const char *name) {
     return -1;
 }
 static inline int  lcdterm_focused_canvas(void) { return -1; }
+static inline bool lcdterm_osk_rect(int *x0, int *y0, int *w, int *h) { (void)x0; (void)y0; (void)w; (void)h; return false; }
 static inline bool lcdterm_window_at(int x, int y, uint8_t *type, uint8_t *id, int *cx, int *cy) {
     (void)x; (void)y; (void)type; (void)id; (void)cx; (void)cy; return false;
 }

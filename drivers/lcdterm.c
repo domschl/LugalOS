@@ -24,6 +24,7 @@
 #include "drivers/font8x16.h"
 #include "drivers/uart.h"
 #include "drivers/screen.h"
+#include "drivers/touch.h"
 #include "drivers/vtterm.h"
 #include "drivers/driver_task.h"
 #include "drivers/lcdterm_attr.h"
@@ -851,6 +852,15 @@ bool lcdterm_window_at(int x, int y, uint8_t *type, uint8_t *id, int *cx, int *c
         return true;
     }
     return false;
+}
+
+bool lcdterm_osk_rect(int *x0, int *y0, int *w, int *h) {
+#if defined(TOUCH_PRESENT)
+    return g_scr && g_scr->osk_visible && screen_osk_rect(g_scr, x0, y0, w, h);
+#else
+    (void)x0; (void)y0; (void)w; (void)h;
+    return false;
+#endif
 }
 
 int lcdterm_focused_canvas(void) {

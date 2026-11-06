@@ -45,7 +45,7 @@ int osk_get_height(void);
 int osk_get_text_rows(int cell_h);
 
 /* Render the OSK into canvas1 within rectangle (x0, y0, w, h) */
-void osk_draw(const canvas1_t *cv, int x0, int y0, int w, int h, uint8_t modifiers);
+void osk_draw(const canvas1_t *cv, int x0, int y0, int w, int h, uint8_t modifiers, int pressed);
 
 /* Render a small Classic Mac keyboard toggle button in terminal corner when OSK is hidden */
 void osk_draw_toggle_button(const canvas1_t *cv, int btn_x, int btn_y, int btn_w, int btn_h);
@@ -53,5 +53,11 @@ void osk_draw_toggle_button(const canvas1_t *cv, int btn_x, int btn_y, int btn_w
 /* Hit test a tap at (client_x, client_y) within OSK rect (w, h).
  * Returns key code (ASCII char or OSK_KEY_*), 0xFFFF for padding, or 0 for miss. */
 uint16_t osk_hit_test(int client_x, int client_y, int w, int h, uint8_t modifiers);
+
+/* The key under (client_x, client_y) of an OSK w x h, as osk_draw()'s
+ * `pressed` (row * 32 + key), or -1 for none. A pressed key draws inverted
+ * and, for a character key below the top row, with a preview of its label
+ * in large type above it, inside the keyboard. */
+int osk_key_at(int client_x, int client_y, int w, int h);
 
 #endif /* LUGALOS_DRIVERS_OSK_H */

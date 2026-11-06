@@ -1187,7 +1187,7 @@ LCDTERM_UTEXT static void draw_all_from(screen_t *scr, bool restore) {
                     if (scr->osk_visible) {
                         int osk_h = osk_get_height();
                         int osk_y0 = tile_y1 - osk_h;
-                        osk_draw(cv, (int)vx0 + 1, osk_y0, win_w, osk_h, scr->osk_modifiers);
+                        osk_draw(cv, (int)vx0 + 1, osk_y0, win_w, osk_h, scr->osk_modifiers, scr->osk_pressed);
                     } else {
                         int sc = (int)CHROME_SCALE;
                         int btn_w = 64 * sc;
@@ -1398,6 +1398,25 @@ LCDTERM_UTEXT static inline void lcdterm_sync_post(void) {
  * console ~520-650 ms (`lockcheck`). Every pixel moves, so the conversion is
  * at the PSRAM's bandwidth; fewer frames or a faster PSRAM path are what
  * would shorten it. */
+#if defined(TOUCH_PRESENT)
+/* Where the on-screen keyboard is: the focused terminal's window, its
+ * bottom osk_get_height() rows. False when that window is not on screen. */
+LCDTERM_UTEXT bool screen_osk_rect(const screen_t *scr, int *x0, int *y0, int *w, int *h) {
+    if (scr->ribbon.active_idx >= scr->ribbon.count) return false;
+    const ribbon_win_t *aw = &scr->ribbon.wins[scr->ribbon.active_idx];
+    if (aw->type != RIBBON_WIN_TERM) return false;
+    int32_t vx0 = aw->rx0 - scr->ribbon.x_view, vx1 = aw->rx1 - scr->ribbon.x_view;
+    int win_w = (int)(vx1 - vx0 - 1);
+    if (win_w <= 0 || vx1 < 0 || vx0 >= (int32_t)scr->cv.w) return false;
+    int tile_y1 = SCREEN_TEXT_Y + (int)FONT_CELL_H * (int)SCREEN_TEXT_ROWS(scr->cv.h) + 1;
+    *h = osk_get_height();
+    *y0 = tile_y1 - *h;
+    *x0 = (int)vx0 + 1;
+    *w = win_w;
+    return true;
+}
+#endif
+
 /* A full-screen canvas (a game) covers the screen only while its window has
  * the focus: when the focus moves to another window (a swipe from the
  * screen's edge, the keyboard, a minimap tap) the ribbon is back, with the
@@ -1495,6 +1514,7 @@ void screen_init_rot(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsig
     scr->status_flags = 0;
     scr->osk_visible = 0;
     scr->osk_modifiers = 0;
+    scr->osk_pressed = -1;
     scr->animating = false;
     scr->store_gen[0] = scr->store_gen[1] = scr->store_gen[2] = scr->store_gen[3] = 0;
     const char *name = "LugalOS";
@@ -2027,6 +2047,15 @@ LCDTERM_UTEXT static bool close_window(screen_t *scr, uint8_t idx, uint8_t *repl
 LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t *req, uint32_t n, uint8_t *reply, int16_t caller_pid) {
     uint8_t status = 0, pixel = 0;
     uint8_t op = n ? req[0] : 0;
+    /* Requests that return early fill only what they answer; the rest says
+     * where the focus is, never what the caller's buffer held before -- a
+     * stale [1] made the input path switch the active terminal. */
+    for (uint32_t i = 0; i < SCREEN_REPLY_LEN; i++) reply[i] = 0;   /* no libc in the U-mode domain */
+    if (scr->ribbon.count > 0 && scr->ribbon.active_idx < scr->ribbon.count) {
+        reply[1] = window_vterm(scr, scr->ribbon.active_idx);
+        reply[10] = scr->ribbon.wins[scr->ribbon.active_idx].type;
+        reply[11] = scr->ribbon.wins[scr->ribbon.active_idx].vterm_id;
+    }
     if (op == 'L') {
         char name_buf[SCREEN_CTITLE_MAX];
         const char *name = NULL;
@@ -2043,6 +2072,27 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
         uint8_t layout = raw_layout & 0x7fu;
         uint8_t format = (raw_layout & 0x80u) ? CANVAS_FMT_RGB565 : CANVAS_FMT_1BPP;
         status = (n >= 2 && screen_set_layout_vterm_named_fmt(scr, vid, layout, name, format, caller_pid)) ? 0 : 1;
+    } else if (op == 'y') {
+        /* Press feedback on the on-screen keyboard: only the keyboard is
+         * drawn again, at the focused terminal's window. */
+        status = 0;
+        reply[1] = 0;
+#if defined(TOUCH_PRESENT)
+        int ox, oy, ow, oh;
+        if (scr->osk_visible && screen_osk_rect(scr, &ox, &oy, &ow, &oh)) {
+            int pressed = -1;
+            if (n >= 5) pressed = osk_key_at(arg16(req, n, 0) - ox, arg16(req, n, 1) - oy, ow, oh);
+            if (pressed != scr->osk_pressed) {
+                scr->osk_pressed = (int16_t)pressed;
+                osk_draw(&scr->cv, ox, oy, ow, oh, scr->osk_modifiers, scr->osk_pressed);
+                reply[1] = 1;
+            }
+        } else {
+            scr->osk_pressed = -1;
+        }
+#endif
+        reply[0] = status;                               /* not the common reply: [1] is ours */
+        return;
     } else if (op == 'E') {
         /* `uxbench`'s screen check: the screen as the partial updates left
          * it against draw_all() of the same state. Leaves the full redraw. */
