@@ -834,6 +834,33 @@ int lcdterm_get_canvas565_cid_by_name(const char *name) {
     return -1;
 }
 
+int lcdterm_focused_canvas(void) {
+    if (!g_scr || g_scr->ribbon.count == 0 || g_scr->ribbon.active_idx >= g_scr->ribbon.count) return -1;
+    const ribbon_win_t *w = &g_scr->ribbon.wins[g_scr->ribbon.active_idx];
+    return (w->type == RIBBON_WIN_CANVAS && w->vterm_id < SCREEN_MAX_CANVASES) ? (int)w->vterm_id : -1;
+}
+
+bool lcdterm_canvas_origin(uint8_t cid, int *x0, int *y0) {
+    if (!g_scr || cid >= SCREEN_MAX_CANVASES) return false;
+    for (uint8_t i = 0; i < g_scr->ribbon.count; i++) {
+        const ribbon_win_t *w = &g_scr->ribbon.wins[i];
+        if (w->type != RIBBON_WIN_CANVAS || w->vterm_id != cid) continue;
+        if (g_scr->layout == SCREEN_LAYOUT_FULLSCREEN) {
+            if (i != g_scr->ribbon.active_idx) return false;
+            *x0 = 0;
+            *y0 = 0;
+            return true;
+        }
+        int cx0 = (int)w->rx0 - (int)g_scr->ribbon.x_view + 1;
+        int cx1 = (int)w->rx1 - (int)g_scr->ribbon.x_view - 1;
+        if (cx1 < 0 || cx0 >= (int)g_scr->cv.w) return false;
+        *x0 = cx0;
+        *y0 = SCREEN_TILE_Y + SCREEN_TITLEBAR_H;
+        return true;
+    }
+    return false;
+}
+
 bool lcdterm_is_canvas_active(uint8_t cid) {
     if (!g_scr || cid >= SCREEN_MAX_CANVASES) return false;
     if (g_scr->ribbon.count == 0 || g_scr->ribbon.active_idx >= g_scr->ribbon.count) return false;

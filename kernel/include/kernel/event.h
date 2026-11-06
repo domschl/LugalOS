@@ -4,52 +4,81 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* Unified Application Window Event Model (Phase 70, Milestone 70.6)
+/* A window's events (kernel/winevent.c): each canvas window of the ribbon
+ * has its own ring, so two programs on two windows (a game paused in the
+ * background, chess beside it) each get only their own.
  *
- * Provides a standardized event delivery channel for interactive windowed
- * applications (Canvases, Games, Readers, Terminal overlays):
- * - Pointer events (tap down, tap up, drag/move) in local window content space.
- * - Keyboard events (ASCII, unicode codepoints, virtual navigation keys).
- * - Window lifecycle notifications (focus gained/lost, close requests, resize).
- * - Freestanding C, zero heap allocations, lockless SPSC queue.
- */
+ *   - Pointer events in the window's content coordinates: a tap as
+ *     POINTER_DOWN + POINTER_UP (flags WIN_EVF_TAP); with WIN_CLAIM_POINTER
+ *     the raw stream instead -- every contact's DOWN, MOVE (successive moves
+ *     merged while unread) and UP, as long as the window had the focus when
+ *     the contact began and it did not begin at the screen's edge (that one
+ *     is the window manager's).
+ *   - WIN_EV_CLOSE_REQUEST when the window's close box or Cmd+W closed it.
+ *
+ * Keys are not here: they reach the focused window as bytes, through
+ * keyseq_read_canvas() (kernel/keyseq.h), which decodes the sequences.
+ *
+ * A window's handle is its canvas slot; window_by_name() finds it. Only on
+ * boards with a panel: elsewhere window_poll() finds nothing. */
+
+typedef int win_t;              /* a window's handle; -1: none */
 
 typedef enum {
     WIN_EV_NONE = 0,
     WIN_EV_POINTER_DOWN,
     WIN_EV_POINTER_UP,
     WIN_EV_POINTER_MOVE,
-    WIN_EV_KEY_DOWN,
+    WIN_EV_KEY_DOWN,            /* reserved: keys come through keyseq (above) */
     WIN_EV_KEY_UP,
-    WIN_EV_FOCUS_GAINED,
+    WIN_EV_FOCUS_GAINED,        /* reserved for the view framework (71.4) */
     WIN_EV_FOCUS_LOST,
     WIN_EV_CLOSE_REQUEST,
     WIN_EV_RESIZE,
 } win_event_type_t;
 
+#define WIN_EVF_TAP 0x01u       /* the DOWN / UP pair of a recognised tap */
+
 typedef struct {
     uint8_t  type;      /* win_event_type_t */
-    uint8_t  button;    /* 1: primary touch / left button, 2: secondary */
-    uint8_t  mods;      /* KMOD_* (kernel/keyseq.h) or OSK_MOD_* (drivers/osk.h) */
-    uint8_t  flags;
-    int16_t  x;         /* local window content x coordinate (pixels) */
-    int16_t  y;         /* local window content y coordinate (pixels) */
-    int16_t  dx;        /* relative motion dx (pixels) */
-    int16_t  dy;        /* relative motion dy (pixels) */
-    uint32_t key;       /* key code or character */
-    uint16_t w;         /* active window width (pixels) */
-    uint16_t h;         /* active window height (pixels) */
+    uint8_t  button;    /* 1: primary touch / left button */
+    uint8_t  mods;
+    uint8_t  flags;     /* WIN_EVF_* */
+    int16_t  x;         /* content coordinates (pixels) */
+    int16_t  y;
+    int16_t  dx;        /* since the previous pointer event of the contact */
+    int16_t  dy;
+    uint32_t key;
+    uint16_t w;
+    uint16_t h;
 } win_event_t;
 
-/* Push an event into the active window's event ring.
- * Returns true if enqueued, false if ring is full. */
-bool window_push_event(const win_event_t *ev);
+#define WIN_CLAIM_POINTER 0x01u /* the raw pointer stream, and no gestures, while focused */
 
-/* Poll the next event for the active window. Pumps input if queue is empty.
- * Returns true if an event was delivered into *ev, false if queue is empty. */
-bool window_poll_event(win_event_t *ev);
+/* The next event for window w, the console's input pumped first (so taps and
+ * close requests are delivered). False when there is none. */
+bool window_poll(win_t w, win_event_t *ev);
 
-/* Clear pending window events. */
-void window_clear_events(void);
+/* Producers (the input path, the touch task): queue ev for w; dropped when
+ * the ring is full, except that a MOVE merges into an unread MOVE. */
+void window_post(win_t w, const win_event_t *ev);
+
+/* Forget w's unread events. */
+void window_clear(win_t w);
+
+/* What w takes over from the window manager (WIN_CLAIM_*); 0 gives it back.
+ * A program sets it once it has its window and clears it when it ends. */
+void    window_claim(win_t w, uint8_t claims);
+uint8_t window_claims(win_t w);
+
+/* The focused window's handle when it is a canvas window, else -1. */
+win_t window_focused(void);
+
+/* The handle of the canvas called name, or -1. */
+win_t window_by_name(const char *name);
+
+/* Where window w's content begins on the screen; false when it is not
+ * visible. Pointer events for it are made relative to this. */
+bool window_origin(win_t w, int *x0, int *y0);
 
 #endif /* LUGALOS_KERNEL_EVENT_H */

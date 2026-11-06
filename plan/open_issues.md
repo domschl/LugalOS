@@ -94,21 +94,6 @@ same 1-bpp state) passes, and the owner sees no fault on the 7B when
 scrolling. **Next step:** find the writer (a write watch on the 1-bpp frame's
 rows 16..31, or `racescan --why` for the reader's draw paths).
 
-## The window event queue is global, and apps still read the older rings
-
-**Destination: phase 71, milestone 71.2.** Found in the phase 70 review
-(2026-11-05). `window_push_event()`/`window_poll_event()` (kernel/console.c)
-are one SPSC ring for whichever window is active, filled next to the canvas
-tap ring and the canvas key ring. Only moonbase reads it, and moonbase still
-installs `touch_set_hook()`. Chess reads the tap ring. `FOCUS_*`,
-`CLOSE_REQUEST` and `RESIZE` are declared in kernel/event.h but never pushed,
-and no `POINTER_MOVE` reaches the in-kernel views. Phase 70's checklist marks
-70.6 done; treat it as the header and a first ring, not the routing. The
-three rings also cost ~760 B of static RAM on every board, the sensor and
-clock nodes without a screen included (kernel/console.c in
-tools/ram_baselines, re-baselined 2026-11-05 with that known): 71.2's
-per-view rings belong with the screen, not in the console.
-
 ## A closed window's owner task is not reclaimed
 
 **Destination: phase 71, milestone 71.4** (the view close protocol).

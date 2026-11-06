@@ -244,84 +244,28 @@ static volatile uint32_t g_drag_end_ms;
 static void console_pump(void);
 static void run_hotkey(void);
 
-#define CANVAS_TAP_RING_SIZE 16
-/* accepted: circular SPSC tap ring for active RIBBON_WIN_CANVAS windows;
- * written by run_hotkey() on the input pump path, consumed by console_canvas_poll_tap(). */
-static volatile uint32_t g_canvas_tap_ring[CANVAS_TAP_RING_SIZE];
-static volatile uint32_t g_canvas_tap_head = 0;
-static volatile uint32_t g_canvas_tap_tail = 0;
-static volatile bool     g_canvas_closed = false;
-
 #define CANVAS_KEY_RING_SIZE 32
-/* accepted: circular SPSC key ring for active RIBBON_WIN_CANVAS windows;
- * written by console_pump() / console_feed_active_bytes(), consumed by console_canvas_getc(). */
+/* accepted: circular SPSC key ring for the focused RIBBON_WIN_CANVAS window;
+ * written by console_pump() / console_feed_active_bytes(), consumed by
+ * console_canvas_getc(). Emptied when the focused canvas changes, so a key
+ * typed for one program never reaches another. */
 static volatile char     g_canvas_key_ring[CANVAS_KEY_RING_SIZE];
 static volatile uint32_t g_canvas_key_head = 0;
 static volatile uint32_t g_canvas_key_tail = 0;
-
-#define WIN_EVENT_RING_SIZE 32
-/* accepted: circular SPSC window event queue for the active window;
- * written by console_pump() / run_hotkey(), consumed by window_poll_event(). */
-static volatile win_event_t g_win_event_ring[WIN_EVENT_RING_SIZE];
-static volatile uint32_t   g_win_event_head = 0;
-static volatile uint32_t   g_win_event_tail = 0;
-
-bool window_push_event(const win_event_t *ev) {
-    if (!ev) return false;
-    uint32_t head = g_win_event_head;
-    uint32_t next = (head + 1u) % WIN_EVENT_RING_SIZE;
-    if (next == g_win_event_tail) return false;
-    g_win_event_ring[head] = *ev;
-    __atomic_store_n(&g_win_event_head, next, __ATOMIC_RELEASE);
-    return true;
-}
-
-bool window_poll_event(win_event_t *out_ev) {
-    console_pump();
-    run_hotkey();
-    uint32_t tail = g_win_event_tail;
-    if (tail == __atomic_load_n(&g_win_event_head, __ATOMIC_ACQUIRE)) {
-        return false;
-    }
-    if (out_ev) {
-        *out_ev = g_win_event_ring[tail];
-    }
-    __atomic_store_n(&g_win_event_tail, (tail + 1u) % WIN_EVENT_RING_SIZE, __ATOMIC_RELEASE);
-    return true;
-}
+static int               g_canvas_key_owner = -1;   /* accepted: written with the ring's head */
 
 static void console_canvas_feed_key(char c) {
+    int owner = window_focused();
+    if (owner != g_canvas_key_owner) {
+        g_canvas_key_owner = owner;
+        __atomic_store_n(&g_canvas_key_tail, __atomic_load_n(&g_canvas_key_head, __ATOMIC_RELAXED), __ATOMIC_RELEASE);
+    }
     uint32_t head = g_canvas_key_head;
     uint32_t next = (head + 1u) % CANVAS_KEY_RING_SIZE;
     if (next != g_canvas_key_tail) {
         g_canvas_key_ring[head] = c;
         __atomic_store_n(&g_canvas_key_head, next, __ATOMIC_RELEASE);
     }
-    win_event_t wev;
-    memset(&wev, 0, sizeof(wev));
-    wev.type = WIN_EV_KEY_DOWN;
-    wev.key = (uint32_t)(uint8_t)c;
-    (void)window_push_event(&wev);
-}
-
-bool console_canvas_poll_tap(int *out_x, int *out_y) {
-    console_pump();
-    run_hotkey();
-    uint32_t tail = g_canvas_tap_tail;
-    if (tail == __atomic_load_n(&g_canvas_tap_head, __ATOMIC_ACQUIRE)) {
-        return false;
-    }
-    uint32_t xy = g_canvas_tap_ring[tail];
-    __atomic_store_n(&g_canvas_tap_tail, (tail + 1u) % CANVAS_TAP_RING_SIZE, __ATOMIC_RELEASE);
-    if (out_x) *out_x = (int)(int16_t)(xy >> 16);
-    if (out_y) *out_y = (int)(int16_t)(xy & 0xFFFFu);
-    return true;
-}
-
-bool console_canvas_poll_closed(void) {
-    console_pump();
-    run_hotkey();
-    return __atomic_exchange_n(&g_canvas_closed, false, __ATOMIC_ACQ_REL);
 }
 
 bool console_canvas_has_key(void) {
@@ -343,14 +287,15 @@ int console_canvas_getc(void) {
 }
 
 void console_canvas_clear_events(void) {
-    __atomic_store_n(&g_canvas_tap_tail, __atomic_load_n(&g_canvas_tap_head, __ATOMIC_RELAXED), __ATOMIC_RELEASE);
     __atomic_store_n(&g_canvas_key_tail, __atomic_load_n(&g_canvas_key_head, __ATOMIC_RELAXED), __ATOMIC_RELEASE);
-    __atomic_store_n(&g_win_event_tail, __atomic_load_n(&g_win_event_head, __ATOMIC_RELAXED), __ATOMIC_RELEASE);
-    g_canvas_closed = false;
 }
 
-void window_clear_events(void) {
-    console_canvas_clear_events();
+/* A canvas window was closed (close box, Cmd+W): its program hears of it. */
+static void post_close(uint8_t cid) {
+    win_event_t wev;
+    memset(&wev, 0, sizeof(wev));
+    wev.type = WIN_EV_CLOSE_REQUEST;
+    window_post((win_t)cid, &wev);
 }
 
 void console_touch_tap(unsigned x, unsigned y) {
@@ -497,13 +442,7 @@ static void run_hotkey(void) {
                 if (closed_type == 1 /* RIBBON_WIN_TERM */ && closed_vid > 0) {
                     vterm_destroy(closed_vid);
                 }
-                if (closed_type == 2 /* RIBBON_WIN_CANVAS */) {
-                    g_canvas_closed = true;
-                    win_event_t wev;
-                    memset(&wev, 0, sizeof(wev));
-                    wev.type = WIN_EV_CLOSE_REQUEST;
-                    (void)window_push_event(&wev);
-                }
+                if (closed_type == 2 /* RIBBON_WIN_CANVAS */) post_close(closed_vid);
                 if (closed_type == 3 /* RIBBON_WIN_READER */) {
                     reader_close_instance(closed_vid);
                 }
@@ -589,13 +528,7 @@ static void run_hotkey(void) {
                     if (closed_type == 1 /* RIBBON_WIN_TERM */ && closed_vid > 0) {
                         vterm_destroy(closed_vid);
                     }
-                    if (closed_type == 2 /* RIBBON_WIN_CANVAS */) {
-                        g_canvas_closed = true;
-                        win_event_t wev;
-                        memset(&wev, 0, sizeof(wev));
-                        wev.type = WIN_EV_CLOSE_REQUEST;
-                        (void)window_push_event(&wev);
-                    }
+                    if (closed_type == 2 /* RIBBON_WIN_CANVAS */) post_close(closed_vid);
                     if (closed_type == 3 /* RIBBON_WIN_READER */) {
                         reader_close_instance(closed_vid);
                     }
@@ -634,26 +567,19 @@ static void run_hotkey(void) {
                     } else if (g_active_win_type == 3 /* RIBBON_WIN_READER */ && reader_is_active()) {
                         (void)reader_tap(cx, cy);
                     } else if (g_active_win_type == 2 /* RIBBON_WIN_CANVAS */) {
-                        uint32_t head = g_canvas_tap_head;
-                        uint32_t next = (head + 1u) % CANVAS_TAP_RING_SIZE;
-                        if (next != g_canvas_tap_tail) {
-                            g_canvas_tap_ring[head] = ((uint32_t)(uint16_t)cx << 16) | (uint16_t)cy;
-                            __atomic_store_n(&g_canvas_tap_head, next, __ATOMIC_RELEASE);
-                        }
-                        win_event_t wev_down;
-                        memset(&wev_down, 0, sizeof(wev_down));
-                        wev_down.type = WIN_EV_POINTER_DOWN;
-                        wev_down.button = 1;
-                        wev_down.x = (int16_t)cx;
-                        wev_down.y = (int16_t)cy;
-                        (void)window_push_event(&wev_down);
-                        win_event_t wev_up;
-                        memset(&wev_up, 0, sizeof(wev_up));
-                        wev_up.type = WIN_EV_POINTER_UP;
-                        wev_up.button = 1;
-                        wev_up.x = (int16_t)cx;
-                        wev_up.y = (int16_t)cy;
-                        (void)window_push_event(&wev_up);
+                        /* A tap on the focused canvas: its program's, as a
+                         * DOWN / UP pair at the content point. */
+                        win_t w = window_focused();
+                        win_event_t wev;
+                        memset(&wev, 0, sizeof(wev));
+                        wev.button = 1;
+                        wev.flags = WIN_EVF_TAP;
+                        wev.x = (int16_t)cx;
+                        wev.y = (int16_t)cy;
+                        wev.type = WIN_EV_POINTER_DOWN;
+                        window_post(w, &wev);
+                        wev.type = WIN_EV_POINTER_UP;
+                        window_post(w, &wev);
                     }
                 }
             }

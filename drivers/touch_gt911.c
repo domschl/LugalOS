@@ -22,6 +22,7 @@
 
 #include "drivers/touch.h"
 #include "drivers/gesture.h"
+#include "kernel/event.h"
 #include "drivers/i2c_bus.h"
 #include "kernel/console.h"
 #include "kernel/printk.h"
@@ -70,6 +71,9 @@ typedef struct {
     uint32_t          polls, reports, presses, taps, swipes, longs, drags, nothings, errors;
     uint32_t          ends_lifted, ends_quiet;   /* how contacts ended: a lift report, or reports stopping */
     bool              edge;                      /* this contact began in the edge band */
+    win_t             owner;                     /* the window it is posted to raw, or -1 (gestures) */
+    int               owner_x0, owner_y0;        /* that window's content origin when it began */
+    int               last_px, last_py;          /* the last point posted to it */
     uint32_t          edge_contacts;
     uint32_t          st_empty;                  /* ST7123 reports with coordinates but no valid point */
     uint32_t          st_empty_down;             /* ... of them while a contact was down */
@@ -84,11 +88,6 @@ typedef struct {
 /* single task: the touch task; touch_start() fills it at boot before creating
  * it, and `ts` only reads. */
 static touch_t g_t;
-static touch_hook_fn s_touch_hook = NULL;
-
-void touch_set_hook(touch_hook_fn hook) {
-    s_touch_hook = hook;
-}
 
 static bool reg_read(uint8_t addr, uint16_t reg, uint8_t *buf, uint32_t n) {
     uint8_t a[2] = { (uint8_t)(reg >> 8), (uint8_t)reg };
@@ -180,25 +179,45 @@ static void gesture_act(gesture_kind_t kind, const gesture_t *ev) {
     }
 }
 
-/* An application's touch hook (a full-screen game) owns the contacts, except
- * one that begins within this many millimetres of the left or right edge of
- * the screen: that one is the window manager's, so a swipe in from the edge
- * leaves the game for the ribbon. */
+/* A window that claimed the pointer (WIN_CLAIM_POINTER: a full-screen game)
+ * gets the contacts that begin while it has the focus, raw, and no gestures
+ * run for them -- except one that begins within this many millimetres of the
+ * left or right edge of the screen: that one is the window manager's, so a
+ * swipe in from the edge leaves the game for the ribbon. */
 #define TOUCH_EDGE_MM 3u
 
-static bool hook_owns(void) {
-    return s_touch_hook && !g_t.edge;
+static bool owned(void) {
+    return g_t.owner >= 0;
 }
 
-/* The contact ended, last seen at last_ms: the application's hook first,
- * then the gesture (timed to the last report, not to when the end was
+/* A point of an owned contact to its window, in content coordinates. */
+static void owner_post(int kind, int x, int y) {
+    win_event_t ev;
+    memset(&ev, 0, sizeof ev);
+    ev.type = kind == 1 ? WIN_EV_POINTER_DOWN : kind == 2 ? WIN_EV_POINTER_MOVE : WIN_EV_POINTER_UP;
+    ev.button = 1;
+    ev.x = (int16_t)(x - g_t.owner_x0);
+    ev.y = (int16_t)(y - g_t.owner_y0);
+    ev.dx = (int16_t)(kind == 1 ? 0 : x - g_t.last_px);
+    ev.dy = (int16_t)(kind == 1 ? 0 : y - g_t.last_py);
+    g_t.last_px = x;
+    g_t.last_py = y;
+    window_post(g_t.owner, &ev);
+}
+
+/* The contact ended, last seen at last_ms: to the window that owns it, or
+ * the gesture (timed to the last report, not to when the end was
  * noticed, so a tap's and a swipe's duration do not include the wait). */
 static void contact_end(int x, int y, uint64_t last_ms) {
     g_t.log_kind = 3;
     g_t.log_seq++;
     gesture_t ev;
     gesture_kind_t kind = gesture_contact(&g_t.gs, false, x, y, (uint32_t)last_ms, &ev);
-    if (hook_owns() && s_touch_hook(x, y, 3)) return;   /* handled by the application */
+    if (owned()) {                                       /* the window's, not the window manager's */
+        owner_post(3, x, y);
+        g_t.owner = -1;
+        return;
+    }
     if (kind != GESTURE_NONE || !g_t.gs.long_sent) gesture_act(kind, &ev);
 }
 
@@ -209,6 +228,7 @@ static void touch_task_body(void *arg) {
     int x = 0, y = 0;
     uint64_t t_last = 0;
     gesture_init(&g_t.gs, CONFIG_PANEL_DPI);
+    g_t.owner = -1;
     for (;;) {
         task_sleep_ms(POLL_MS);
         g_t.polls++;
@@ -287,13 +307,17 @@ static void touch_task_body(void *arg) {
                 int band = gesture_mm_px(TOUCH_EDGE_MM, CONFIG_PANEL_DPI);
                 g_t.edge = g_t.scr_w && (x < band || x >= (int)g_t.scr_w - band);
                 if (g_t.edge) g_t.edge_contacts++;
+                win_t w = g_t.edge ? -1 : window_focused();
+                g_t.owner = -1;
+                if (w >= 0 && (window_claims(w) & WIN_CLAIM_POINTER) && window_origin(w, &g_t.owner_x0, &g_t.owner_y0))
+                    g_t.owner = w;
             }
             g_t.log_kind = kind;
             g_t.log_seq++;
             gesture_t ev;
             gesture_kind_t gk = gesture_contact(&g_t.gs, true, x, y, (uint32_t)t_last, &ev);
-            if (hook_owns()) {
-                (void)s_touch_hook(x, y, kind);
+            if (owned()) {
+                owner_post(kind, x, y);
             } else if (gk == GESTURE_DRAG) {
                 gesture_act(gk, &ev);
             }
@@ -310,13 +334,13 @@ static void touch_task_body(void *arg) {
             } else {
                 gesture_t ev;
                 gesture_kind_t k = gesture_tick(&g_t.gs, (uint32_t)time_get_ms(), &ev);
-                if (k != GESTURE_NONE && !hook_owns()) gesture_act(k, &ev);
+                if (k != GESTURE_NONE && !owned()) gesture_act(k, &ev);
             }
         }
         if (down && got) {
             gesture_t ev;
             gesture_kind_t k = gesture_tick(&g_t.gs, (uint32_t)time_get_ms(), &ev);
-            if (k != GESTURE_NONE && !hook_owns()) gesture_act(k, &ev);
+            if (k != GESTURE_NONE && !owned()) gesture_act(k, &ev);
         }
     }
 }
@@ -482,7 +506,6 @@ uint32_t touch_press_count(void) {
 #else
 
 int touch_start(void) { return -1; }
-void touch_set_hook(touch_hook_fn hook) { (void)hook; }
 void touch_command(const char *args) { (void)args; cprintf("touch: this board has no touch controller\n"); }
 uint32_t touch_press_count(void) { return 0; }
 

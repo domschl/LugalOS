@@ -47,8 +47,8 @@ static session_claim_t s_moon_session;
 
 /* The display geometry and buffers below: single task: the moonbase session
  * holder, which sets them in moon_platform_init() and clears them in
- * moon_platform_shutdown(). The touch hook reads s_scale only: it is set
- * before touch_set_hook() registers the hook and unregistered first. */
+ * moon_platform_shutdown(). Touch reaches the game as its window's events
+ * (kernel/event.h), read by the same task. */
 
 #if defined(CONFIG_BOARD_TAB5)
 static int       s_scale = 2;         /* accepted: see above. 2x HiDPI integer scale for 5" 294 DPI display (640x360 -> 1280x720) */
@@ -71,49 +71,9 @@ static void       *s_tile_cache = NULL;     /* single task: the session holder. 
 static uint32_t   s_tile_cache_pages = 0;   /* single task: the session holder */
 static bool      s_active = false;   /* single task: the moonbase command; between init and shutdown */
 static uint32_t  s_fb_pages = 0;
+static int       s_last_vx, s_last_vy;   /* single task: the session holder; the last touch point, in game pixels */
 static uint32_t  s_render_pages = 0;
 
-/* Touch event queue with move-coalescing */
-#define EVENT_QUEUE_SIZE 64
-/* The touch driver's hook pushes, the game pops: two tasks, on either hart.
- * guarded by: s_qlock, for the ring and both indices -- the move-coalescing
- * push rewrites an entry the game could otherwise be copying out. */
-static spinlock_t   s_qlock = SPINLOCK_INIT;
-static moon_event_t s_queue[EVENT_QUEUE_SIZE];   /* guarded by: s_qlock */
-static int          s_qhead = 0;                 /* guarded by: s_qlock */
-static int          s_qtail = 0;                 /* guarded by: s_qlock */
-/* single task: p4_touch_hook(), in the touch driver's context */
-static int s_last_touch_x = 0;
-static int s_last_touch_y = 0;
-
-static void queue_push(const moon_event_t *ev) {
-    uintptr_t f = spin_lock_irqsave(&s_qlock);
-    /* If the event is POINTER_MOVE, coalesce with previous queued POINTER_MOVE to prevent queue overflow */
-    if (ev->type == MOON_EVENT_POINTER_MOVE && s_qhead != s_qtail) {
-        int prev = (s_qhead - 1 + EVENT_QUEUE_SIZE) % EVENT_QUEUE_SIZE;
-        if (s_queue[prev].type == MOON_EVENT_POINTER_MOVE) {
-            s_queue[prev].x = ev->x;
-            s_queue[prev].y = ev->y;
-            s_queue[prev].dx += ev->dx;
-            s_queue[prev].dy += ev->dy;
-            spin_unlock_irqrestore(&s_qlock, f);
-            return;
-        }
-    }
-
-    int next = (s_qhead + 1) % EVENT_QUEUE_SIZE;
-    if (next != s_qtail) {
-        s_queue[s_qhead] = *ev;
-        s_qhead = next;
-    }
-    spin_unlock_irqrestore(&s_qlock, f);
-}
-
-static void queue_clear(void) {
-    uintptr_t f = spin_lock_irqsave(&s_qlock);
-    s_qhead = s_qtail = 0;
-    spin_unlock_irqrestore(&s_qlock, f);
-}
 
 /* Audio streaming scratch buffer (mono synthesis before stereo fan-out)
  * single task: the one holding s_moon_session (moonbase_run()). */
@@ -131,41 +91,10 @@ static void moon_p4_audio_render(int16_t *stereo_buf, int samples, void *user) {
     }
 }
 
-static bool p4_touch_hook(int x, int y, int kind) {
-    if (s_cid >= 0 && !lcdterm_is_canvas_active((uint8_t)s_cid)) {
-        return false; /* Suppress nothing when game is in the background */
-    }
-    moon_event_t ev;
-    memset(&ev, 0, sizeof(ev));
-    int vx = (s_scale > 1) ? (x / s_scale) : x;
-    int vy = (s_scale > 1) ? (y / s_scale) : y;
-    ev.x = vx;
-    ev.y = vy;
-    ev.dx = vx - s_last_touch_x;
-    ev.dy = vy - s_last_touch_y;
-    s_last_touch_x = vx;
-    s_last_touch_y = vy;
-    ev.button = 1;
-    ev.touch = 1;
-
-    if (kind == 1) {
-        ev.type = MOON_EVENT_POINTER_DOWN;
-        queue_push(&ev);
-    } else if (kind == 2) {
-        ev.type = MOON_EVENT_POINTER_MOVE;
-        queue_push(&ev);
-    } else if (kind == 3) {
-        ev.type = MOON_EVENT_POINTER_UP;
-        queue_push(&ev);
-    }
-    return true; /* Suppress desktop ribbon swipe gesture while game is active */
-}
-
 bool moon_platform_init(int width, int height, const char *title) {
     (void)width;
     (void)height;
     (void)title;
-    queue_clear();
 
 #if defined(CONFIG_BOARD_TAB5)
     s_scale = 2;
@@ -259,8 +188,9 @@ bool moon_platform_init(int width, int height, const char *title) {
     if (s_tile_cache) moon_tile_cache_attach(s_tile_cache);
     else printk("[moonbase] No PSRAM for the tile cache: terrain is sampled per pixel (slow)\n");
 
-    /* Hook touch subsystem */
-    touch_set_hook(p4_touch_hook);
+    /* The raw touch stream of the game's window while it has the focus (no
+     * ribbon gestures over the map; a swipe in from the edge still leaves). */
+    if (s_cid >= 0) window_claim(s_cid, WIN_CLAIM_POINTER);
 
     /* Initialize ambient space synthesizer & start circular audio DMA streaming */
     moon_ambient_init();
@@ -282,8 +212,7 @@ void moon_platform_shutdown(void) {
      * has taken the sound over meanwhile */
     audio_p4_release(moon_p4_audio_render);
 
-    touch_set_hook(NULL);
-    queue_clear();                         /* events queued but never read */
+    if (s_cid >= 0) window_claim(s_cid, 0);  /* the pointer back to the window manager, unread events gone */
     while (console_has_char()) (void)keyseq_read_console();
 
     moon_tile_cache_attach(NULL);
@@ -459,43 +388,36 @@ void moon_platform_present_rows(int y0, int y1) {
 }
 
 bool moon_platform_poll_event(moon_event_t *ev) {
+    /* 1. The window's events: the close box, and the claimed touch stream
+     * in content (= screen) pixels, scaled to the game's virtual ones. */
     win_event_t wev;
-    if (window_poll_event(&wev)) {
+    while (s_cid >= 0 && window_poll(s_cid, &wev)) {
+        memset(ev, 0, sizeof(*ev));
         if (wev.type == WIN_EV_CLOSE_REQUEST) {
-            memset(ev, 0, sizeof(*ev));
             ev->type = MOON_EVENT_QUIT;
             return true;
         }
-        if (wev.type == WIN_EV_POINTER_DOWN || wev.type == WIN_EV_POINTER_UP) {
-            memset(ev, 0, sizeof(*ev));
-            ev->type = (wev.type == WIN_EV_POINTER_DOWN) ? MOON_EVENT_POINTER_DOWN : MOON_EVENT_POINTER_UP;
-            ev->x = (s_scale > 1) ? (wev.x / s_scale) : wev.x;
-            ev->y = (s_scale > 1) ? (wev.y / s_scale) : wev.y;
-            ev->button = 1;
-            ev->touch = 1;
-            return true;
-        }
-    }
-
-    if (console_canvas_poll_closed()) {
-        memset(ev, 0, sizeof(*ev));
-        ev->type = MOON_EVENT_QUIT;
+        if (wev.type != WIN_EV_POINTER_DOWN && wev.type != WIN_EV_POINTER_MOVE && wev.type != WIN_EV_POINTER_UP)
+            continue;
+        ev->type = wev.type == WIN_EV_POINTER_DOWN ? MOON_EVENT_POINTER_DOWN :
+                   wev.type == WIN_EV_POINTER_MOVE ? MOON_EVENT_POINTER_MOVE : MOON_EVENT_POINTER_UP;
+        ev->x = wev.x / s_scale;
+        ev->y = wev.y / s_scale;
+        /* Motion in the game's pixels from the last point, not each event's
+         * own scaled: at 2x a one-pixel move would be lost. */
+        if (wev.type == WIN_EV_POINTER_DOWN) { s_last_vx = ev->x; s_last_vy = ev->y; }
+        ev->dx = ev->x - s_last_vx;
+        ev->dy = ev->y - s_last_vy;
+        s_last_vx = ev->x;
+        s_last_vy = ev->y;
+        ev->button = 1;
+        ev->touch = 1;
         return true;
     }
 
     if (s_cid >= 0 && !lcdterm_is_canvas_active((uint8_t)s_cid)) {
         return false;
     }
-
-    /* 1. Touch events */
-    uintptr_t f = spin_lock_irqsave(&s_qlock);
-    if (s_qhead != s_qtail) {
-        *ev = s_queue[s_qtail];
-        s_qtail = (s_qtail + 1) % EVENT_QUEUE_SIZE;
-        spin_unlock_irqrestore(&s_qlock, f);
-        return true;
-    }
-    spin_unlock_irqrestore(&s_qlock, f);
 
     /* 2. Keyboard events via kernel keyseq decoder (VT escape sequences, arrow keys, etc.) */
     if (console_canvas_has_key() || (console_active_win_type() == 2 && console_has_char())) {

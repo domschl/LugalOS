@@ -397,9 +397,8 @@ char console_getc(void);
  * a push-back that does not fit is dropped. */
 void console_ungetc(char c);
 
-/* Touch tap, keyboard, and close-box event queues for active RIBBON_WIN_CANVAS windows. */
-bool console_canvas_poll_tap(int *out_x, int *out_y);
-bool console_canvas_poll_closed(void);
+/* Keys for the focused RIBBON_WIN_CANVAS window, as bytes (keyseq decodes
+ * them). Its taps and close requests are its window events (kernel/event.h). */
 bool console_canvas_has_key(void);
 int  console_canvas_getc(void);
 void console_canvas_clear_events(void);

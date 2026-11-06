@@ -144,6 +144,10 @@ uint16_t *lcdterm_get_canvas565_backing(uint8_t cid, uint32_t *out_stride, int *
 uint16_t *lcdterm_get_canvas565_by_name(const char *name, uint32_t *out_stride, int *out_w, int *out_h);
 int lcdterm_get_canvas565_cid_by_name(const char *name);
 bool lcdterm_is_canvas_active(uint8_t cid);
+/* The focused window's canvas slot, or -1 when it is not a canvas. */
+int  lcdterm_focused_canvas(void);
+/* Where canvas cid's content begins on the screen; false when not shown. */
+bool lcdterm_canvas_origin(uint8_t cid, int *x0, int *y0);
 bool lcdterm_set_canvas565_backing(uint8_t cid, uint16_t *buf);
 bool lcdterm_set_canvas565_geometry(uint8_t cid, uint16_t *buf, uint32_t stride, uint16_t w, uint16_t h);
 int lcdterm_get_visible_canvases565(uint8_t *out_cids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins);
@@ -188,6 +192,8 @@ static inline int lcdterm_get_canvas565_cid_by_name(const char *name) {
     (void)name;
     return -1;
 }
+static inline int  lcdterm_focused_canvas(void) { return -1; }
+static inline bool lcdterm_canvas_origin(uint8_t cid, int *x0, int *y0) { (void)cid; (void)x0; (void)y0; return false; }
 static inline bool lcdterm_is_canvas_active(uint8_t cid) {
     (void)cid;
     return false;

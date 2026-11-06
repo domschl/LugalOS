@@ -32,6 +32,7 @@
 #include "bitboard.h"
 #include "zobrist.h"
 #include "perft.h"
+#include "kernel/event.h"
 #include "kernel/time.h"
 #include "kernel/printk.h"
 #include "kernel/line_editor.h"
@@ -3017,16 +3018,35 @@ static uint64_t   g_touch_last_tick_ms = 0;
 
 static void chess_touch_draw(void);
 
+/* guarded by: the chess session claim (chess_ui.c's chess_claim()). The
+ * board's window: its taps and close request (kernel/event.h). */
+static win_t g_touch_win = -1;
+
+/* The next of the window's events that matters: 1 a tap at (*tx, *ty), 2
+ * the window was closed, 0 nothing pending. A tap is its release half. */
+static int chess_touch_next(int *tx, int *ty) {
+    win_event_t ev;
+    while (window_poll(g_touch_win, &ev)) {
+        if (ev.type == WIN_EV_CLOSE_REQUEST) return 2;
+        if (ev.type == WIN_EV_POINTER_UP && (ev.flags & WIN_EVF_TAP)) {
+            *tx = ev.x;
+            *ty = ev.y;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static void chess_touch_search_poll(void) {
     if (!g_touch_active) return;
-    (void)console_has_char(); /* pumps hotkeys, tap & close events */
-    if (console_canvas_poll_closed()) {
+    int tx, ty;
+    int got = chess_touch_next(&tx, &ty);
+    if (got == 2) {
         stop_search = true;
         g_touch_active = false;
         return;
     }
-    int tx, ty;
-    if (console_canvas_poll_tap(&tx, &ty)) {
+    if (got == 1) {
         int16_t hit_idx = -1;
         uint16_t id = ugui_hit_test(&g_touch_ui_ctx, tx, ty, &hit_idx);
         if (id == CHESS_TOUCH_ID_STOP || id == CHESS_TOUCH_ID_GO ||
@@ -3657,6 +3677,8 @@ void chess_touch_run(void) {
     (void)console_canvas(req, 2, reply);
 
     console_set_active_win_type(RIBBON_WIN_CANVAS);
+    g_touch_win = window_by_name("chess");
+    window_clear(g_touch_win);
 
     g_touch_active = true;
     g_touch_sel_sq = -1;
@@ -3670,17 +3692,16 @@ void chess_touch_run(void) {
         ChessAbort a = chess_abort_requested();
         if (a != CHESS_ABORT_NONE) break;
 
-        if (console_canvas_poll_closed()) break;
+        int tx, ty;
+        int got = chess_touch_next(&tx, &ty);
+        if (got == 2) break;
 
         int cur_w = 0, cur_h = 0;
         if (cb_canvas(&cur_w, &cur_h) && (cur_w != g_touch_win_w || cur_h != g_touch_win_h)) {
             chess_touch_draw();
         }
 
-        int tx, ty;
-        if (console_canvas_poll_tap(&tx, &ty)) {
-            chess_touch_handle_tap(tx, ty);
-        }
+        if (got == 1) chess_touch_handle_tap(tx, ty);
 
         sched_yield();
         time_delay_us(10000);

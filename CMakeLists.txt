@@ -663,6 +663,8 @@ set(SOURCES
     kernel/klog.c
     kernel/klogd.c
     kernel/console.c
+    # each canvas window's event ring (kernel/event.h).
+    kernel/winevent.c
     kernel/vterm.c
     kernel/device.c
     kernel/board.c

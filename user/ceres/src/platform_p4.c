@@ -13,6 +13,7 @@
 #include "ceres.h"
 
 #include "lugalos_config.h"
+#include "kernel/event.h"
 #include "kernel/lock.h"
 #include "arch/esp32p4_intr.h"
 #include "drivers/audio_esp32p4.h"
@@ -56,6 +57,15 @@ static uint16_t *s_render_fb = NULL;          /* single task: off-screen render 
 static uint16_t *s_canvas_fb_original = NULL; /* single task: original canvas backing */
 static uint16_t *s_render_fb_original = NULL; /* single task: allocated buffer */
 static int       s_cid = -1;                  /* single task: canvas slot id */
+
+/* Whether the game's window was closed (its close box, Cmd+W): its window
+ * events (kernel/event.h); taps it does not use. */
+static bool ceres_window_closed(void) {
+    win_event_t ev;
+    while (s_cid >= 0 && window_poll(s_cid, &ev))
+        if (ev.type == WIN_EV_CLOSE_REQUEST) return true;
+    return false;
+}
 static bool      s_allocated_fb = false;      /* single task: whether s_fb was heap allocated */
 static bool      s_active = false;            /* single task: between init and shutdown */
 static uint32_t  s_fb_pages = 0;              /* single task: page count */
@@ -532,7 +542,7 @@ static int ceres_run_claimed(const char *args) {
     bool paused = false;
 
     while (s_p4_game.running) {
-        if (console_interrupt_requested() || console_canvas_poll_closed()) break;
+        if (console_interrupt_requested() || ceres_window_closed()) break;
         if (max_frames > 0 && s_p4_game.frame_count >= (uint32_t)max_frames) break;
 
         /* In the background: paused until the window has the focus again,
