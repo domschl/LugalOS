@@ -239,13 +239,13 @@ The launcher is the home view, with a tab bar for **Shortcuts | Files** (remembe
 
 **Converter `tools/epub2lmd.py`** (in a `uv` project under `host/booktools/`, typed for `pyrefly`, with tests):
 - Input: a directory tree of `.epub` files. Output: `<out>/BOOKS/`, merged into `build/<preset>/sd_root/` or synced with `p9sync.py` (additive and idempotent, as for the other SD content).
-- Per book a directory `B<hash6>` (8.3-safe, stable across runs: hash of the epub's `dc:identifier`, or of title+author):
-  - `META` — `title=`, `author=`, `lang=`, `chapters=`, `source=` (original file name), `converter=` version.
-  - `CH001.MD` … — one file per spine item, in the reader's restricted Markdown. Chapters below 2 KB are merged with the next.
-  - `INDEX.MD` — the table of contents (from the epub nav/NCX) as links to `CHnnn.MD#anchor`.
+- Per book a directory named for people browsing the card (owner, 2026-11-06; needs 71.6b's long names): `BOOKS/<Author>/<Title>/`, e.g. `BOOKS/Goethe, Johann Wolfgang/Faust I/` -- the first author for several, `Various` for none. Names are made FAT-safe (`\ / : * ? " < > |` replaced, control characters dropped, trailing dots and spaces trimmed), cut to about 64 characters at a word boundary, and a second book that would get the same path gets a short suffix from its id. Inside:
+  - `META` — `id=` (the book's identity: a hash of the epub's `dc:identifier`, or of title+author; stable across runs), `title=`, `author=`, `lang=`, `chapters=`, `source=` (original file name), `converter=` version. A re-conversion finds a book by `id`, not by its path, so the owner may rename or move book directories and the next run updates them in place rather than adding a copy.
+  - `001 <Chapter title>.md` … — one file per spine item, numbered so they sort, titled from the chapter's heading (`001 Chapter 1.md` when it has none), in the reader's restricted Markdown. Chapters below 2 KB are merged with the next.
+  - `INDEX.md` — the table of contents (from the epub nav/NCX) as links to the chapter files' anchors.
   - `COVER.GIC` — cover icon (2.6), or one generated from title/author when the epub has no cover.
-- `BOOKS/CATALOG` — one line per book: id, title, author, chapter count. This is the launcher's data source, so it never has to open 500 directories.
-- **XHTML → Markdown mapping:** `h1-h4` → `#`…, `p` → paragraph, `em/i` → `*`, `strong/b` → `**`, `blockquote` → `>`, `ul/ol/li` → lists, `pre/code` → fences, `a href` → links rewritten to `CHnnn.MD#id`, footnotes (`epub:type="noteref"/"footnote"`) → `[^n]`, simple tables → pipe tables, `img` → `*[Image: alt]*`, `br` → line break. Everything else is reduced to text. CSS is ignored.
+- `BOOKS/CATALOG` — one line per book: id, path, title, author, chapter count. This is the launcher's data source, so it never has to open 500 directories; a book moved by hand is found again by the next conversion or a `books rescan`, which rewrites the catalog from the `META` files.
+- **XHTML → Markdown mapping:** `h1-h4` → `#`…, `p` → paragraph, `em/i` → `*`, `strong/b` → `**`, `blockquote` → `>`, `ul/ol/li` → lists, `pre/code` → fences, `a href` → links rewritten to the chapter files' anchors, footnotes (`epub:type="noteref"/"footnote"`) → `[^n]`, simple tables → pipe tables, `img` → `*[Image: alt]*`, `br` → line break. Everything else is reduced to text. CSS is ignored.
 - **Character folding:** every character outside the target font set is mapped through a fold table (’‘ → ', “” → ", – → -, — → --, … → ..., non-breaking space → space, ligatures → letters). Remaining unknown characters become `?` and are counted in the converter's report. The target set is Latin-1 + the punctuation added in 71.9.
 - DRM-protected epubs (`META-INF/encryption.xml` with content encryption) are skipped with a message. No attempt to decrypt.
 - Report per book: chapters, bytes, folded/unknown characters, dropped elements.
@@ -257,11 +257,11 @@ The launcher is the home view, with a tab bar for **Shortcuts | Files** (remembe
 - **Links/TOC** are collected during the index pass, not per draw (today `link_count`/`toc_count` are rebuilt on every draw).
 - **Limit:** the index is bounded by available PSRAM, not by a fixed constant. A file above that limit opens with a clear message, never a crash.
 
-**Book mode (reader opened on a book directory or a `CHnnn.MD` inside one):**
+**Book mode (reader opened on a book directory or a chapter file inside one):**
 - **Paging:** page = viewport height minus one line of overlap, cut at line boundaries (no line split across pages). Page table derived from the layout index.
 - **Gestures:** tap on the right third / swipe left → next page; tap on the left third / swipe right → previous page; tap in the middle third → toggle the toolbar (Back, Contents, Text size, Rotate, Close). The reader claims `SWIPE_H` in book mode only (2.2), so the ribbon still moves from chrome and edges.
 - **Keys:** Space/PgDn/→ next page, PgUp/← previous page, `t`/`c` contents, `+`/`-` text size, Home/End chapter start/end, `n`/`p` next/previous chapter.
-- **Chapters:** the next page at the end of a chapter opens the next `CHnnn.MD`. The status line shows the chapter title and "page x of y" for the chapter, plus a book-wide percentage estimated from chapter sizes.
+- **Chapters:** the next page at the end of a chapter opens the next chapter file (by its number). The status line shows the chapter title and "page x of y" for the chapter, plus a book-wide percentage estimated from chapter sizes.
 - **Position:** stored per book as `chapter + byte offset` in `/sd0/BOOKS/<id>/POS`, written on page turn (debounced) and on close. Reopening continues there.
 - **Rendering:** page turns are instant by default (one surface redraw + composite). A slide animation is an option in Settings, using composite-only frames (2.1).
 
