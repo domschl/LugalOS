@@ -429,6 +429,12 @@ Done: the frame record and `uxbench`; glass, screen, layout and strip checks; co
 - Fully keyboard-operable through the `ugui` focus.
 - **Acceptance:** each setting by touch and by keys only; persistence; `WIN_EV_SETTINGS` reaches the reader (text size change relayouts it).
 
+### 71.6b — FAT32 long file names (added 2026-11-06, owner; decision before it starts)
+- **Why:** `fs/fat32.c` is 8.3-only. It skips VFAT long-name entries on read, so files named on a PC appear as their aliases (`LUGALO~1.MD`), and it truncates on write, so two long names sharing their first 8 characters land in one file (`tests/hw/lcdterm_shots.py` works around it). The Files face (71.7), the book tree (71.9) and readable document names all want real names.
+- **Scope (proposal):** read and write VFAT long names: UTF-16 entries assembled to UTF-8 paths in the VFS (255 UTF-16 units max); case preserved, matching case-insensitive for ASCII and Latin-1; a name that fits 8.3 is stored as 8.3 only; a long one gets its entry set with checksum and a unique `~N` alias; delete and rename remove/rewrite the whole set. Characters outside Latin-1 are stored exactly and shown as a replacement glyph until fonts cover them (71.9 brings Latin-1).
+- **Decision for the owner:** which targets. Proposal: the SD + PSRAM boards (Tab5, LCD-7B, NANO, RP2350-LCD-7) at least; whether the code stays shared for every FAT target (simplest, one code path) or is compiled out where flash is tight (RP2350 Pico 2 presets, C6) is measured first (`sizereport`, flash delta).
+- **Acceptance:** host harness (`tests/host`, ASan/UBSan) on images made by `mkfs.fat`/`mtools` with long, mixed-case and Latin-1 names: listed, opened and written back exactly; files created here read correctly by `mtools` and `fsck.fat -n` is clean; alias collisions resolved; `p9sync.py` syncs a tree with long names to `/sd0`; the screenshot test drops its 8.3 note.
+
 ### 71.7 — Launcher: Shortcuts and Files
 - Tab bar; Shortcuts face with the persisted list, action sheet, defaults from `/flash0`.
 - Files face: roots, traversal, path bar, virtual list, association icons, metadata names (H1 cache, book catalog), open/open-with/add-to-shortcuts/info/delete-with-confirm.
@@ -470,6 +476,7 @@ Done: the frame record and `uxbench`; glass, screen, layout and strip checks; co
 
 - **Book images and inline figures**: the converter writes epub images as gray image files next to the chapters (4-bpp, sized for the panel, cover-style dithering for 1-bpp). The reader draws them as image blocks through the `.GIC` blit from 71.3/71.4, and the layout index gets an `image` block kind with known height. Phase 71 lays the groundwork: alt text keeps the image's place in the text, the icon format and blit exist, and the converter's report counts the dropped images.
 - Hyphenation; justified text.
+- **On-screen keyboard diacritics** (owner, 2026-11-06): a long press on a character key shows its variants in a strip above it (a → à á â ä å æ …, e → è é ê ë, s → ß, …), the finger slides to one and lifts to type it as UTF-8. Needs 71.9's Latin-1 fonts and UTF-8 decoding in the terminal; the long press on Delete and the arrows stays key repeat (71.3).
 - **Phase 72 candidate: `ugui` for C programs (chibicc).** C programs run in U-mode under memory domains, so this needs its own design: `ugui` as a user-space library compiled into the program (it is freestanding and allocation-free; the question is the font tables' visibility from U-mode), a surface mapped into the program's domain, and an event syscall for the program's window. Same immediate-mode API as 71.4b's Lisp one. Decided later whether and when (owner, 2026-11-06).
 - File copy/move/rename across volumes; search across the catalog.
 - Multi-touch (pinch zoom) — the ST7123 reports up to 10 points, the GT911 5; the recogniser in 71.2 reads only the first point, but its contact model is written so a second point can be added.

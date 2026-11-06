@@ -240,6 +240,7 @@ static volatile uint32_t g_scroll_ms = 0;
  * by the input path; their own words, so a pending tap is never replaced. */
 static volatile uint32_t g_press_xy;
 static volatile bool     g_press_pending = false, g_release_pending = false;
+static volatile unsigned g_repeat_pending = 0;    /* held-key repeats since the input path last looked */
 static volatile bool     g_press_busy = false;    /* one shell at a time runs run_press() / run_release() */
 static bool              g_osk_pressed = false;   /* guarded by: g_press_busy */
 static int               g_press_win = -1;        /* guarded by: g_press_busy; the canvas window told of a press */
@@ -328,6 +329,45 @@ void console_touch_release(void) {
     __atomic_store_n(&g_release_pending, true, __ATOMIC_RELEASE);
 }
 
+void console_touch_repeat(void) {
+    if (note_input(true)) return;
+    __atomic_fetch_add(&g_repeat_pending, 1u, __ATOMIC_ACQ_REL);
+}
+
+static void console_feed_active_bytes(const char *s, uint32_t n);
+
+/* A key of the on-screen keyboard, as the terminal reads it: the arrows as
+ * their sequences, ^C, everything else below 0x100 as its byte. */
+static void osk_feed_key(uint16_t key) {
+    if (key == OSK_KEY_UP) {
+        console_feed_active_bytes("\x1b[A", 3);
+    } else if (key == OSK_KEY_DOWN) {
+        console_feed_active_bytes("\x1b[B", 3);
+    } else if (key == OSK_KEY_LEFT) {
+        console_feed_active_bytes("\x1b[D", 3);
+    } else if (key == OSK_KEY_RIGHT) {
+        console_feed_active_bytes("\x1b[C", 3);
+    } else if (key == OSK_KEY_CTRL_C) {
+        console_feed_active_bytes("\x03", 1);
+    } else if (key > 0 && key < 0x100) {
+        char c = (char)key;
+        console_feed_active_bytes(&c, 1);
+    }
+}
+
+/* A held key's repeats: each one types the pressed key again, if it is one
+ * that repeats (Delete, the arrows). At most a few per turn, so a stalled
+ * input path does not catch up in a burst. */
+static void run_repeat_once(void) {
+    unsigned n = __atomic_exchange_n(&g_repeat_pending, 0u, __ATOMIC_ACQ_REL);
+    if (!n || !g_osk_pressed) return;
+    if (n > 3) n = 3;
+    uint8_t req[2] = { 'y', 'r' }, reply[SCREEN_REPLY_LEN];
+    if (!console_canvas(req, 2, reply) || reply[0] != 0 || reply[8] != 0xBB) return;
+    uint16_t key = (uint16_t)(reply[6] | (reply[7] << 8));
+    while (n--) osk_feed_key(key);
+}
+
 /* Press feedback: before the hotkeys, a press arms the control under the
  * finger in the launcher or shows the on-screen keyboard's key pressed;
  * after them, a release lets go -- a tap that came with it has already
@@ -387,6 +427,7 @@ static void run_release_once(void) {
 static void run_press(void) {
     if (__atomic_exchange_n(&g_press_busy, true, __ATOMIC_ACQ_REL)) return;
     run_press_once();
+    run_repeat_once();
     __atomic_store_n(&g_press_busy, false, __ATOMIC_RELEASE);
 }
 
@@ -592,20 +633,7 @@ static void run_hotkey(void) {
                             continue;
                         }
                     }
-                    if (key == OSK_KEY_UP) {
-                        console_feed_active_bytes("\x1b[A", 3);
-                    } else if (key == OSK_KEY_DOWN) {
-                        console_feed_active_bytes("\x1b[B", 3);
-                    } else if (key == OSK_KEY_LEFT) {
-                        console_feed_active_bytes("\x1b[D", 3);
-                    } else if (key == OSK_KEY_RIGHT) {
-                        console_feed_active_bytes("\x1b[C", 3);
-                    } else if (key == OSK_KEY_CTRL_C) {
-                        console_feed_active_bytes("\x03", 1);
-                    } else if (key > 0 && key < 0x100) {
-                        char c = (char)key;
-                        console_feed_active_bytes(&c, 1);
-                    }
+                    osk_feed_key(key);
                     continue;
                 }
                 if (reply[8] == 0xCC) {

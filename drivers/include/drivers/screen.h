@@ -250,9 +250,11 @@ void screen_text_size(const screen_t *scr, unsigned *cols, unsigned *rows);
  *                                       [12..13] the first and last band of
  *                                       16 rows that did (the full redraw is
  *                                       kept)
- *   'y' x y | (none)                    the on-screen keyboard's key under
+ *   'y' x y | (none) | 'r'              the on-screen keyboard's key under
  *                                       screen point x y shows pressed; bare,
- *                                       none does ([1] 1 if that changed)
+ *                                       none does ([1] 1 if that changed);
+ *                                       'r': the pressed key's repeat code
+ *                                       ([6..7], [8] 0xBB), if it repeats
  *   'W' u8 slot                         a reader's or the launcher's backing
  *                                       changed: copied into its tile only
  *                                       (refused when no such window)

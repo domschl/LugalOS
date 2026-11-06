@@ -2079,7 +2079,15 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
         reply[1] = 0;
 #if defined(TOUCH_PRESENT)
         int ox, oy, ow, oh;
-        if (scr->osk_visible && screen_osk_rect(scr, &ox, &oy, &ow, &oh)) {
+        if (n == 2 && req[1] == 'r') {
+            /* a held key's repeat: its code as a tap's ([8] 0xBB), if it has one */
+            uint16_t key = scr->osk_visible ? osk_repeat_key(scr->osk_pressed) : 0;
+            if (key) {
+                reply[6] = (uint8_t)key;
+                reply[7] = (uint8_t)(key >> 8);
+                reply[8] = 0xBB;
+            }
+        } else if (scr->osk_visible && screen_osk_rect(scr, &ox, &oy, &ow, &oh)) {
             int pressed = -1;
             if (n >= 5) pressed = osk_key_at(arg16(req, n, 0) - ox, arg16(req, n, 1) - oy, ow, oh);
             if (pressed != scr->osk_pressed) {

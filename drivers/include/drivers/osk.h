@@ -60,4 +60,8 @@ uint16_t osk_hit_test(int client_x, int client_y, int w, int h, uint8_t modifier
  * in large type above it, inside the keyboard. */
 int osk_key_at(int client_x, int client_y, int w, int h);
 
+/* The code a held key repeats (osk_key_at()'s `pressed`): Delete and the
+ * arrows; 0 for every other key, whose long press does nothing. */
+uint16_t osk_repeat_key(int pressed);
+
 #endif /* LUGALOS_DRIVERS_OSK_H */

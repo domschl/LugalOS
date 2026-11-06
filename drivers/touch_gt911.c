@@ -77,6 +77,7 @@ typedef struct {
     int               owner_x0, owner_y0;        /* that window's content origin when it began */
     int               last_px, last_py;          /* the last point posted to it */
     bool              pressed;                   /* press feedback shown for this contact */
+    uint64_t          repeat_ms;                 /* a held press's next repeat (0: none) */
     uint32_t          edge_contacts;
     uint32_t          st_empty;                  /* ST7123 reports with coordinates but no valid point */
     uint32_t          st_empty_down;             /* ... of them while a contact was down */
@@ -177,7 +178,10 @@ static void gesture_act(gesture_kind_t kind, const gesture_t *ev) {
         g_t.drags++;
         console_touch_drag_end(g_t.gs.y - g_t.gs.y0, ev->dy, ev->ms);
         break;
-    case GESTURE_LONG_PRESS:  g_t.longs++; break;
+    case GESTURE_LONG_PRESS:
+        g_t.longs++;
+        if (g_t.pressed) g_t.repeat_ms = time_get_ms();        /* held: repeat from now */
+        break;
     default:                  g_t.nothings++; break;
     }
 }
@@ -188,6 +192,8 @@ static void gesture_act(gesture_kind_t kind, const gesture_t *ev) {
  * left or right edge of the screen: that one is the window manager's, so a
  * swipe in from the edge leaves the game for the ribbon. */
 #define TOUCH_EDGE_MM 3u
+
+#define TOUCH_REPEAT_MS 80u     /* a held key's repeat interval, after the long press */
 
 static bool owned(void) {
     return g_t.owner >= 0;
@@ -321,6 +327,7 @@ static void touch_task_body(void *arg) {
                 /* The window manager's contact: the control under it shows
                  * pressed until it lifts or moves off as a swipe or drag. */
                 g_t.pressed = g_t.owner < 0 && !g_t.edge;
+                g_t.repeat_ms = 0;
                 if (g_t.pressed) console_touch_press((unsigned)x, (unsigned)y);
             } else if (g_t.pressed &&
                        (x - g_t.gs.x0 >= g_t.gs.tap_px || g_t.gs.x0 - x >= g_t.gs.tap_px ||
@@ -357,6 +364,15 @@ static void touch_task_body(void *arg) {
             gesture_t ev;
             gesture_kind_t k = gesture_tick(&g_t.gs, (uint32_t)time_get_ms(), &ev);
             if (k != GESTURE_NONE && !owned()) gesture_act(k, &ev);
+        }
+        /* A held press repeats every TOUCH_REPEAT_MS until it lifts or moves
+         * off (both clear pressed). */
+        if (down && g_t.pressed && g_t.repeat_ms) {
+            uint64_t now = time_get_ms();
+            if (now >= g_t.repeat_ms) {
+                console_touch_repeat();
+                g_t.repeat_ms = now + TOUCH_REPEAT_MS;
+            }
         }
     }
 }
@@ -442,6 +458,27 @@ static bool touch_inject(const char *args) {
         console_touch_release();
         console_touch_tap(v[0], v[1]);
         cprintf("touch: tap at %u,%u\n", v[0], v[1]);
+        return true;
+    }
+    if (strncmp(args, "hold", 4) == 0) {
+        /* a finger held at X Y for MS ms: the press, its repeats from the
+         * long press on, the release; no tap, as a long press makes none */
+        const char *p = args + 4;
+        unsigned v[3] = { 0, 0, 0 };
+        for (int i = 0; i < 3; i++) {
+            while (*p == ' ') p++;
+            if (*p < '0' || *p > '9') { cprintf("usage: touch hold X Y MS\n"); return true; }
+            while (*p >= '0' && *p <= '9') v[i] = v[i] * 10u + (unsigned)(*p++ - '0');
+        }
+        console_touch_press(v[0], v[1]);
+        uint64_t t0 = time_get_ms(), next = t0 + GESTURE_LONG_MS;
+        unsigned reps = 0;
+        while (time_get_ms() - t0 < v[2]) {
+            if (time_get_ms() >= next) { console_touch_repeat(); reps++; next += TOUCH_REPEAT_MS; }
+            task_sleep_ms(10);
+        }
+        console_touch_release();
+        cprintf("touch: held at %u,%u for %u ms, %u repeats\n", v[0], v[1], v[2], reps);
         return true;
     }
     if (strncmp(args, "osk", 3) == 0) {

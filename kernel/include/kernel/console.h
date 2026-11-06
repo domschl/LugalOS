@@ -213,6 +213,9 @@ void console_touch_drag_end(int total_dy, int dy, uint32_t ms);
  * feedback). The tap that may follow still comes as console_touch_tap(). */
 void console_touch_press(unsigned x, unsigned y);
 void console_touch_release(void);
+/* A pressed key is held past a long press: another repeat of it, every
+ * 80 ms (the on-screen keyboard's Delete and arrows repeat). */
+void console_touch_repeat(void);
 
 /* Where console input comes
  * from. Each source is polled by the console pump, in registration order,

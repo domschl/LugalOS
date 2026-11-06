@@ -26,6 +26,7 @@ int osk_key_at(int client_x, int client_y, int w, int h) {
     (void)client_x; (void)client_y; (void)w; (void)h;
     return -1;
 }
+uint16_t osk_repeat_key(int pressed) { (void)pressed; return 0; }
 void osk_draw_toggle_button(const canvas1_t *cv, int btn_x, int btn_y, int btn_w, int btn_h) {
     (void)cv; (void)btn_x; (void)btn_y; (void)btn_w; (void)btn_h;
 }
@@ -269,6 +270,14 @@ LCDTERM_UTEXT static void draw_key_preview(const canvas1_t *cv, int x0, int y0, 
         canvas1_vline(cv, bx + bw - 1 - t, by, by + bh - 1, CANVAS1_BLACK);
     }
     draw_label_scaled(cv, bx + (bw - (int)len * 8 * scale) / 2, by + pad, label, scale);
+}
+
+LCDTERM_UTEXT uint16_t osk_repeat_key(int pressed) {
+    int r = pressed >= 0 ? pressed / 32 : -1, k = pressed >= 0 ? pressed % 32 : -1;
+    if (r < 0 || r >= 5 || k >= k_rows[r].count) return 0;
+    uint16_t code = k_rows[r].keys[k].code;
+    return (code == OSK_KEY_BKSP || code == OSK_KEY_LEFT || code == OSK_KEY_RIGHT ||
+            code == OSK_KEY_UP || code == OSK_KEY_DOWN) ? code : 0;
 }
 
 LCDTERM_UTEXT int osk_key_at(int client_x, int client_y, int w, int h) {
