@@ -1128,129 +1128,32 @@ int reader_find_by_path(const char *path) {
     return -1;
 }
 
-typedef struct {
-    const canvas1_t *c;
-    uint8_t         *aa_fb;
-    uint32_t         aa_stride;
-    int              w, h;
-} rdraw_t;
-
-static void rdraw_fill(rdraw_t *rd, int x0, int y0, int x1, int y1, uint8_t gray, unsigned pat1) {
-    if (rd->c) {
-        canvas1_fill(rd->c, x0, y0, x1, y1, pat1);
-    }
-    if (rd->aa_fb) {
-        int cx0 = x0 < 0 ? 0 : x0;
-        int cx1 = x1 >= rd->w ? rd->w - 1 : x1;
-        int cy0 = y0 < 0 ? 0 : y0;
-        int cy1 = y1 >= rd->h ? rd->h - 1 : y1;
-        if (cx0 <= cx1 && cy0 <= cy1) {
-            int len = cx1 - cx0 + 1;
-            for (int y = cy0; y <= cy1; y++) {
-                memset(rd->aa_fb + (uint32_t)y * rd->aa_stride + cx0, gray, (size_t)len);
-            }
-        }
-    }
+/* The reader draws through ugui's surface and primitives (drivers/ugui.h):
+ * the same ink and paper (READER_FG_GRAY8 / READER_BG_GRAY8 are ugui's), the
+ * same fonts at the same scale. These keep the reader's inclusive corners
+ * and its monospace limit. */
+static void rdraw_fill(const ugui_surface_t *rd, int x0, int y0, int x1, int y1, uint8_t gray, unsigned pat1) {
+    if (x1 < x0 || y1 < y0) return;
+    ugui_fill(rd, (ugui_rect_t){ (int16_t)x0, (int16_t)y0, (int16_t)(x1 - x0 + 1), (int16_t)(y1 - y0 + 1) }, gray, pat1);
 }
 
-static void rdraw_hline(rdraw_t *rd, int x0, int x1, int y, uint8_t gray, unsigned pat1) {
-    if (rd->c) {
-        canvas1_hline(rd->c, x0, x1, y, pat1);
-    }
-    if (rd->aa_fb && y >= 0 && y < rd->h) {
-        int cx0 = x0 < 0 ? 0 : x0;
-        int cx1 = x1 >= rd->w ? rd->w - 1 : x1;
-        if (cx0 <= cx1) {
-            memset(rd->aa_fb + (uint32_t)y * rd->aa_stride + cx0, gray, (size_t)(cx1 - cx0 + 1));
-        }
-    }
+static void rdraw_hline(const ugui_surface_t *rd, int x0, int x1, int y, uint8_t gray, unsigned pat1) {
+    ugui_hline(rd, x0, x1, y, 1, gray, pat1);
 }
 
-static int rdraw_serif_text(rdraw_t *rd, int x, int y, const char *s, uint32_t len, bool bold, bool italic) {
-    int drawn_w = 0;
-#if READER_IS_HIDPI
-    if (rd->c) {
-        drawn_w = canvas1_noto_serif_text(rd->c, x, y, s, len, bold, italic);
-    }
-    if (rd->aa_fb) {
-        int aa_w = font_noto_serif_aa_text_gray8(rd->aa_fb, rd->aa_stride, rd->w, rd->h,
-                                                 x, y, s, len,
-                                                 READER_FG_GRAY8, READER_BG_GRAY8, bold, italic);
-        if (!rd->c) drawn_w = aa_w;
-    }
-#else
-    if (rd->c) {
-        drawn_w = canvas1_serif_text(rd->c, x, y, s, len, bold, italic);
-    }
-    if (rd->aa_fb) {
-        int aa_w = font_serif_aa_text_gray8(rd->aa_fb, rd->aa_stride, rd->w, rd->h,
-                                            x, y, s, len,
-                                            READER_FG_GRAY8, READER_BG_GRAY8, bold, italic);
-        if (!rd->c) drawn_w = aa_w;
-    }
-#endif
-    return drawn_w;
+static int rdraw_serif_text(const ugui_surface_t *rd, int x, int y, const char *s, uint32_t len, bool bold, bool italic) {
+    return ugui_text_serif(rd, x, y, s, len, bold, italic, false);
 }
 
-static void rdraw_mono_text(rdraw_t *rd, int x, int y, const char *s, uint32_t len, int max_chars) {
-#if READER_IS_HIDPI
-    if (rd->c) {
-        for (uint32_t i = 0; i < len && s[i] && (int)i < max_chars; i++) {
-            uint8_t code = (uint8_t)s[i];
-            if (code < FONT_NOTO_MONO_FIRST) code = FONT_NOTO_MONO_REPLACEMENT;
-            const uint16_t *glyph = font_noto_mono_get_glyph(code);
-            int cx = x + (int)i * 16;
-            for (int r = 0; r < 32; r++) {
-                int py = y + r;
-                if (py < 0 || py >= (int)rd->c->h) continue;
-                uint16_t bits = glyph[r];
-                for (int b = 0; b < 16; b++) {
-                    int px = cx + b;
-                    if (px >= 0 && px < (int)rd->c->w && ((bits >> b) & 1u)) {
-                        canvas1_fill(rd->c, px, py, px, py, CANVAS1_BLACK);
-                    }
-                }
-            }
-        }
-    }
-    if (rd->aa_fb) {
-        int cx = x;
-        for (uint32_t i = 0; i < len && s[i] && (int)i < max_chars; i++) {
-            font_noto_mono_aa_glyph_gray8(rd->aa_fb, rd->aa_stride, rd->w, rd->h,
-                                          cx, y, (uint8_t)s[i], READER_FG_GRAY8, READER_BG_GRAY8);
-            cx += 16;
-        }
-    }
-#else
-    if (rd->c) {
-        canvas1_text(rd->c, x, y, s, len, max_chars, 0, 16, false);
-    }
-    if (rd->aa_fb) {
-        int cx = x;
-        for (uint32_t i = 0; i < len && s[i] && (int)i < max_chars; i++) {
-            uint8_t code = (uint8_t)s[i];
-            if (code < FONT8X16_FIRST) code = FONT8X16_REPLACEMENT;
-            const uint8_t *glyph = font8x16_glyphs[code - FONT8X16_FIRST];
-            for (int r = 0; r < 16; r++) {
-                int py = y + r;
-                if (py < 0 || py >= rd->h) continue;
-                uint8_t *dst = rd->aa_fb + (uint32_t)py * rd->aa_stride;
-                uint8_t bits = glyph[r];
-                for (int b = 0; b < 8; b++) {
-                    int px = cx + b;
-                    if (px >= 0 && px < rd->w && ((bits >> b) & 1u)) {
-                        dst[px] = READER_FG_GRAY8;
-                    }
-                }
-            }
-            cx += 8;
-        }
-    }
-#endif
+static void rdraw_mono_text(const ugui_surface_t *rd, int x, int y, const char *s, uint32_t len, int max_chars) {
+    uint32_t n = 0;
+    while (n < len && s[n] && (int)n < max_chars) n++;
+    (void)ugui_text_mono(rd, x, y, s, n, false, false);
 }
+
 
 /* Word wrapping and rich proportional / monospace span rendering */
-static int render_wrapped_spans(reader_state_t *r, rdraw_t *rd, int x0, int max_w,
+static int render_wrapped_spans(reader_state_t *r, ugui_surface_t *rd, int x0, int max_w,
                                 const char *text, int line_h, uint16_t extra_style,
                                 int scroll_y, int win_h, int *out_doc_y,
                                 int *inout_link_idx) {
@@ -1297,8 +1200,8 @@ static int render_wrapped_spans(reader_state_t *r, rdraw_t *rd, int x0, int max_
                 int screen_y = cur_y - scroll_y;
                 if (screen_y + line_h >= 0 && screen_y < win_h) {
                     int baseline = screen_y + line_h - 4 * base_scale;
-                    if (rd->c) {
-                        latex_render_canvas1(box, cur_x, baseline, rd->c, 1);
+                    if (rd->c1) {
+                        latex_render_canvas1(box, cur_x, baseline, rd->c1, 1);
                     }
                     if (rd->aa_fb) {
                         latex_render_gray8(box, cur_x, baseline, rd->aa_fb, rd->aa_stride, rd->w, rd->h, READER_FG_GRAY8, READER_BG_GRAY8);
@@ -1389,11 +1292,11 @@ static int render_wrapped_spans(reader_state_t *r, rdraw_t *rd, int x0, int max_
     return cur_y;
 }
 
-static void draw_reader_action_bar(reader_state_t *r, rdraw_t *rd, int w, int h) {
+static void draw_reader_action_bar(reader_state_t *r, ugui_surface_t *rd, int w, int h) {
     int sc = (int)CHROME_SCALE;
     int bar_h = reader_bar_h();
     ugui_surface_t surf = {
-        .c1 = rd->c,
+        .c1 = rd->c1,
         .aa_fb = rd->aa_fb,
         .aa_stride = rd->aa_stride,
         .w = w,
@@ -1458,20 +1361,20 @@ static void reader_redraw_bar(uint8_t rid) {
     if (!c) return;
     int w = r->win_w > 0 ? r->win_w : (int)c->w;
     int h = r->win_h > 0 ? r->win_h : (int)c->h;
-    rdraw_t rd = { .c = c, .aa_fb = r->aa_buf, .aa_stride = r->aa_stride, .w = w, .h = h };
+    ugui_surface_t rd = { .c1 = c, .aa_fb = r->aa_buf, .aa_stride = r->aa_stride, .w = w, .h = h, .scale = (int)CHROME_SCALE };
     ugui_begin(&r->ui_ctx);
     draw_reader_action_bar(r, &rd, w, h);
     reader_show(rid);
 }
 
 /* The scrollbar along the right edge, over the whole height. */
-static void draw_reader_scrollbar(reader_state_t *r, rdraw_t *rd, int w, int h) {
+static void draw_reader_scrollbar(reader_state_t *r, ugui_surface_t *rd, int w, int h) {
     if (r->total_h <= h) return;
     int sc = (int)CHROME_SCALE;
     int bar_h = reader_bar_h();
     int sb_w = 4 * sc;
     ugui_surface_t surf = {
-        .c1 = rd->c,
+        .c1 = rd->c1,
         .aa_fb = rd->aa_fb,
         .aa_stride = rd->aa_stride,
         .w = w,
@@ -1506,8 +1409,9 @@ static void reader_draw_view(uint8_t rid, const canvas1_t *c, int w, int full_h,
     if (strip && c) canvas1_init(&sub, c->fb + (uint32_t)clip_y0 * c->stride, c->stride, c->w, (unsigned)h);
     if (!strip) ugui_begin(&r->ui_ctx);
 
-    rdraw_t rd = {
-        .c = strip && c ? &sub : c,
+    ugui_surface_t rd = {
+        .scale = (int)CHROME_SCALE,
+        .c1 = strip && c ? &sub : c,
         .aa_fb = r->aa_buf ? r->aa_buf + (uint32_t)(strip ? clip_y0 : 0) * r->aa_stride : NULL,
         .aa_stride = r->aa_stride,
         .w = w,
@@ -1853,8 +1757,8 @@ static void reader_draw_view(uint8_t rid, const canvas1_t *c, int w, int full_h,
                             int my = doc_y - scroll_y;
                             if (my + total_h >= 0 && my < h) {
                                 int baseline = my + box->h + 8 * base_scale;
-                                if (rd.c) {
-                                    latex_render_canvas1(box, cx, baseline, rd.c, 1);
+                                if (rd.c1) {
+                                    latex_render_canvas1(box, cx, baseline, rd.c1, 1);
                                 }
                                 if (rd.aa_fb) {
                                     latex_render_gray8(box, cx, baseline, rd.aa_fb, rd.aa_stride, rd.w, rd.h, READER_FG_GRAY8, READER_BG_GRAY8);
@@ -2058,7 +1962,7 @@ static bool reader_scroll_step(uint8_t rid, const canvas1_t *c, int w, int h) {
     if (dy > 0) reader_draw_view(rid, c, w, h, (h - dy) & ~1, h);
     else reader_draw_view(rid, c, w, h, bar_h, bar_h - dy);
     if (r->strip_failed) return false;
-    rdraw_t rd = { .c = c, .aa_fb = r->aa_buf, .aa_stride = r->aa_stride, .w = w, .h = h };
+    ugui_surface_t rd = { .c1 = c, .aa_fb = r->aa_buf, .aa_stride = r->aa_stride, .w = w, .h = h, .scale = (int)CHROME_SCALE };
     draw_reader_scrollbar(r, &rd, w, h);
     r->drawn_scroll_y = r->scroll_y;
     return true;
