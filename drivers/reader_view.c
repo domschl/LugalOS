@@ -10,6 +10,8 @@
 
 #include "kernel/orient.h"
 #include "drivers/reader_view.h"
+#include "drivers/view.h"
+#include "kernel/keyseq.h"
 #include "drivers/ugui.h"
 #include "drivers/font_serif.h"
 #include "drivers/font_noto_serif.h"
@@ -684,6 +686,10 @@ static bool reader_tap_act(uint8_t rid, int client_x, int client_y);
 
 static void reader_redraw_bar(uint8_t rid);
 
+uint8_t reader_active_instance(void) {
+    return s_active_reader_rid;
+}
+
 static uint16_t reader_hit(const reader_state_t *r, int x, int y, int *link);
 
 /* Arms what a tap there would act on (reader_hit()): nothing on a link. */
@@ -830,252 +836,138 @@ bool reader_follow_link_num(int num) {
     return reader_follow_link_num_instance(s_active_reader_rid, num);
 }
 
-void reader_feed_key(int c) {
-    uint8_t rid = s_active_reader_rid;
+/* A key for the active reader (kernel/keyseq.h's codes). Vi- and
+ * Emacs-style: j / k / Ctrl-N / Ctrl-P / arrows a line, Space / Ctrl-V /
+ * PgDn / Right a page down, Alt-V / PgUp a page up, d / u half a page, g /
+ * Home and G / End the ends, b / Backspace / Left back, t the contents, 1-9
+ * a link, r reload, o rotate, ? / h / Ctrl-H help, q / Ctrl-C close. The
+ * system's Cmd shortcuts never come here: the console takes them. */
+static void reader_key(uint8_t rid, uint32_t key, uint8_t mods) {
     if (rid >= READER_MAX_INSTANCES || !s_readers[rid].active) return;
     reader_state_t *r = &s_readers[rid];
-    /* guarded by: g_input_lock (kernel/console.c): the console pump is the
-     * only caller. */
-    static int esc_state = 0;
-    static int esc_arg = 0;
-    static int esc_mod = 0;
-
     int win_h = r->win_h > 0 ? r->win_h : 480;
     int page_dy = win_h - 40;
     if (page_dy < 40) page_dy = 40;
 
-    if (esc_state == 0) {
-        if (c == 0x1b) {
-            esc_state = 1;
-            return;
-        }
-        if (c == 0x08 || c == '?' || c == 'h') {
-            /* Emacs Ctrl-H or '?' / 'h' -> open Reader Help */
-            reader_open_instance(rid, "/sd0/help/reader.md");
+    if (mods & KMOD_ALT) {
+        if (key == 'v' || key == 'V') reader_scroll_instance(rid, -page_dy);   /* Emacs page up */
+        return;
+    }
+    switch (key) {
+    case 0x08: case '?': case 'h':
+        reader_open_instance(rid, "/sd0/help/reader.md");
+        reader_update_instance(rid);
+        return;
+    case 'q': case 0x03: {
+        if (r->toc_mode) {
+            r->toc_mode = false;
             reader_update_instance(rid);
             return;
         }
-        if (c == 'q' || c == 0x03) {
-            if (r->toc_mode) {
-                r->toc_mode = false;
-                reader_update_instance(rid);
-                return;
-            }
 #if defined(CONFIG_BOARD_TAB5)
-            int rot = dsi_lcd_get_orientation();
-            if (rot == 0 || rot == 180) {
-                reader_close_instance(rid);
-                orient_manual();
-                dsi_lcd_set_orientation(270);
-                console_set_active_win_type(1 /* RIBBON_WIN_TERM */);
-                return;
-            }
-#endif
-            /* Close reader window */
-            uint8_t req[1] = { 'C' }, reply[SCREEN_REPLY_LEN];
-            if (console_canvas(req, 1, reply) && reply[0] == 0) {
-                uint8_t closed_type = reply[10];
-                uint8_t closed_vid = reply[11];
-                if (closed_type == 3) {
-                    reader_close_instance(closed_vid);
-                }
-                vterm_set_active(reply[1]);
-            }
+        int rot = dsi_lcd_get_orientation();
+        if (rot == 0 || rot == 180) {
+            reader_close_instance(rid);
+            orient_manual();
+            dsi_lcd_set_orientation(270);
             console_set_active_win_type(1 /* RIBBON_WIN_TERM */);
             return;
         }
-        if (c == 'b' || c == 0x7f) {
-            /* Back in history */
-            reader_back_instance(rid);
-            return;
+#endif
+        uint8_t req[1] = { 'C' }, reply[SCREEN_REPLY_LEN];
+        if (console_canvas(req, 1, reply) && reply[0] == 0) {
+            if (reply[10] == 3) reader_close_instance(reply[11]);
+            vterm_set_active(reply[1]);
         }
-        if (c == ' ' || c == 0x16 /* Ctrl-V */) {
-            /* Page down */
-            reader_scroll_instance(rid, page_dy);
-            return;
-        }
-        if (c == 'j' || c == 0x0e /* Ctrl-N */ || c == '\r' || c == '\n') {
-            /* Line down */
-            reader_scroll_instance(rid, 32);
-            return;
-        }
-        if (c == 'k' || c == 0x10 /* Ctrl-P */) {
-            /* Line up */
-            reader_scroll_instance(rid, -32);
-            return;
-        }
-        if (c == 'd' || c == 0x04 /* Ctrl-D */) {
-            /* Half page down */
-            reader_scroll_instance(rid, page_dy / 2);
-            return;
-        }
-        if (c == 'u' || c == 0x15 /* Ctrl-U */) {
-            /* Half page up */
-            reader_scroll_instance(rid, -page_dy / 2);
-            return;
-        }
-        if (c == 'g') {
-            /* Top of document */
-            r->scroll_y = 0;
-            reader_update_instance(rid);
-            return;
-        }
-        if (c == 'G') {
-            /* Bottom of document */
-            int max_scroll = r->total_h - 120;
-            r->scroll_y = max_scroll > 0 ? max_scroll : 0;
-            reader_update_instance(rid);
-            return;
-        }
-        if (c == 'r' || c == 0x12 /* Ctrl-R */) {
-            /* Reload / Redraw: the file may have changed under it */
-            r->cp_valid = false;
-            reader_update_instance(rid);
-            return;
-        }
-        if (c == 'o' || c == 'O') {
-            /* Toggle display orientation between Portrait (0) and Landscape (270) */
-            console_hotkey(CONSOLE_HOTKEY_ORIENT);
-            return;
-        }
-        if (c == 't' || c == 'T') {
-            /* Toggle Table of Contents outline view */
-            r->toc_mode = !r->toc_mode;
-            reader_update_instance(rid);
-            return;
-        }
-        if (c >= '1' && c <= '9') {
-            /* Follow visible link */
-            reader_follow_link_num_instance(rid, c - '0');
-            return;
-        }
+        console_set_active_win_type(1 /* RIBBON_WIN_TERM */);
         return;
-    } else if (esc_state == 1) {
-        if (c == '[') {
-            esc_state = 2;
-            esc_arg = 0;
-            esc_mod = 0;
-            return;
-        }
-        if (c == 'v' || c == 'V') {
-            /* Alt-V: Page up (Emacs) */
-            reader_scroll_instance(rid, -page_dy);
-            esc_state = 0;
-            return;
-        }
-        esc_state = 0;
+    }
+    case 'b': case 0x7f: case KEY_LEFT:
+        reader_back_instance(rid);
         return;
-    } else if (esc_state == 2) {
-        if (c == 'A') {
-            /* Up Arrow */
-            reader_scroll_instance(rid, -32);
-            esc_state = 0;
-            return;
-        }
-        if (c == 'B') {
-            /* Down Arrow */
-            reader_scroll_instance(rid, 32);
-            esc_state = 0;
-            return;
-        }
-        if (c == 'C') {
-            /* Right Arrow */
-            reader_scroll_instance(rid, page_dy);
-            esc_state = 0;
-            return;
-        }
-        if (c == 'D') {
-            /* Left Arrow */
-            reader_back_instance(rid);
-            esc_state = 0;
-            return;
-        }
-        if (c >= '0' && c <= '9') {
-            esc_arg = esc_arg * 10 + (c - '0');
-            esc_state = 3;
-            return;
-        }
-        esc_state = 0;
+    case ' ': case 0x16: case KEY_PGDN: case KEY_RIGHT:
+        reader_scroll_instance(rid, page_dy);
         return;
-    } else if (esc_state == 3) {
-        if (c == ';') {
-            esc_state = 4;
-            esc_mod = 0;
-            return;
-        }
-        if (c == '~') {
-            if (esc_arg == 5) {
-                /* Page Up */
-                reader_scroll_instance(rid, -page_dy);
-            } else if (esc_arg == 6) {
-                /* Page Down */
-                reader_scroll_instance(rid, page_dy);
-            } else if (esc_arg == 1 || esc_arg == 7) {
-                /* Home */
-                r->scroll_y = 0;
-                reader_update_instance(rid);
-            } else if (esc_arg == 4 || esc_arg == 8) {
-                /* End */
-                int max_scroll = r->total_h - 120;
-                r->scroll_y = max_scroll > 0 ? max_scroll : 0;
-                reader_update_instance(rid);
-            }
-            esc_state = 0;
-            return;
-        }
-        if (c >= '0' && c <= '9') {
-            esc_arg = esc_arg * 10 + (c - '0');
-            return;
-        }
-        esc_state = 0;
+    case KEY_PGUP:
+        reader_scroll_instance(rid, -page_dy);
         return;
-    } else if (esc_state == 4) {
-        if (c >= '0' && c <= '9') {
-            esc_mod = esc_mod * 10 + (c - '0');
-            return;
-        }
-        if (c == 'u') {
-            if (esc_mod == 9) {
-                /* Super (Cmd) modifier */
-                if (esc_arg >= '1' && esc_arg <= '9') {
-                    console_hotkey(CONSOLE_HOTKEY_JUMP((unsigned)(esc_arg - '0')));
-                } else if (esc_arg == 'w' || esc_arg == 'W') {
-                    console_hotkey(CONSOLE_HOTKEY_CLOSE);
-                } else if (esc_arg == '\\') {
-                    console_hotkey(CONSOLE_HOTKEY_TOGGLE_MAX);
-                } else if (esc_arg == '[') {
-                    console_hotkey(CONSOLE_HOTKEY_LEFT);
-                } else if (esc_arg == ']') {
-                    console_hotkey(CONSOLE_HOTKEY_RIGHT);
-                }
-            } else if (esc_mod == 10 && esc_arg == '3') {
-                console_hotkey(CONSOLE_HOTKEY_SCREENSHOT);
-            }
-            esc_state = 0;
-            return;
-        }
-        if (c == 'C') {
-            if (esc_mod == 9) {
-                console_hotkey(CONSOLE_HOTKEY_FOCUS_RIGHT);
-            } else {
-                reader_scroll_instance(rid, page_dy);
-            }
-            esc_state = 0;
-            return;
-        }
-        if (c == 'D') {
-            if (esc_mod == 9) {
-                console_hotkey(CONSOLE_HOTKEY_FOCUS_LEFT);
-            } else {
-                reader_back_instance(rid);
-            }
-            esc_state = 0;
-            return;
-        }
-        esc_state = 0;
+    case 'j': case 0x0e: case '\r': case '\n': case KEY_DOWN:
+        reader_scroll_instance(rid, 32);
+        return;
+    case 'k': case 0x10: case KEY_UP:
+        reader_scroll_instance(rid, -32);
+        return;
+    case 'd': case 0x04:
+        reader_scroll_instance(rid, page_dy / 2);
+        return;
+    case 'u': case 0x15:
+        reader_scroll_instance(rid, -page_dy / 2);
+        return;
+    case 'g': case KEY_HOME:
+        r->scroll_y = 0;
+        reader_update_instance(rid);
+        return;
+    case 'G': case KEY_END: {
+        int max_scroll = r->total_h - 120;
+        r->scroll_y = max_scroll > 0 ? max_scroll : 0;
+        reader_update_instance(rid);
+        return;
+    }
+    case 'r': case 0x12:
+        r->cp_valid = false;                             /* the file may have changed under it */
+        reader_update_instance(rid);
+        return;
+    case 'o': case 'O':
+        console_hotkey(CONSOLE_HOTKEY_ORIENT);
+        return;
+    case 't': case 'T':
+        r->toc_mode = !r->toc_mode;
+        reader_update_instance(rid);
+        return;
+    default:
+        if (key >= '1' && key <= '9') reader_follow_link_num_instance(rid, (int)(key - '0'));
         return;
     }
 }
+
+static bool reader_active_any(void) {
+    return reader_is_active();
+}
+
+/* The reader as a view (drivers/view.h): each event onto what it did before. */
+static void reader_view_event(uint8_t rid, const win_event_t *ev) {
+    switch (ev->type) {
+    case WIN_EV_POINTER_DOWN:
+        if (ev->flags & WIN_EVF_PRESS) reader_press(rid, ev->x, ev->y);
+        return;
+    case WIN_EV_POINTER_UP:
+        if (ev->flags & WIN_EVF_TAP) (void)reader_tap_instance(rid, ev->x, ev->y);
+        else if (ev->flags & WIN_EVF_PRESS) reader_release();
+        return;
+    case WIN_EV_DRAG:
+        reader_drag(ev->dy);
+        return;
+    case WIN_EV_DRAG_END:
+        reader_drag_end(ev->dy, ev->key);
+        return;
+    case WIN_EV_SCROLL:
+        if (ev->key > 0 && ev->dy != 0) reader_touch_fling(ev->dy, ev->key);
+        else reader_scroll(ev->dy > 0 ? -160 : 160);
+        return;
+    case WIN_EV_KEY_DOWN:
+        reader_key(rid, ev->key, ev->mods);
+        return;
+    default:
+        return;
+    }
+}
+
+const view_ops_t g_reader_view = {
+    .name = "reader",
+    .active = reader_active_any,
+    .event = reader_view_event,
+    .captures = NULL,
+};
 
 const char *reader_get_title_instance(uint8_t rid) {
     if (rid >= READER_MAX_INSTANCES) return "Reader";

@@ -9,6 +9,7 @@
  */
 
 #include "kernel/keyseq.h"
+#include "drivers/view.h"
 #include "kernel/apps.h"
 #include "kernel/settings.h"
 #include "drivers/icons.h"
@@ -33,13 +34,13 @@ bool launcher_tap(int client_x, int client_y) { (void)client_x; (void)client_y; 
 void launcher_press(int client_x, int client_y) { (void)client_x; (void)client_y; }
 void launcher_release(void) {}
 void launcher_scroll(int delta_y) { (void)delta_y; }
-void launcher_feed_key(int c) { (void)c; }
 void launcher_gallery(bool on) { (void)on; }
 bool launcher_drag_target(int client_x, int client_y) { (void)client_x; (void)client_y; return false; }
 void launcher_pointer_move(int client_x, int client_y) { (void)client_x; (void)client_y; }
 void launcher_drag(int dy) { (void)dy; }
 void launcher_drag_end(int dy, uint32_t ms) { (void)dy; (void)ms; }
-void launcher_feed_end(void) {}
+static void launcher_view_none(uint8_t inst, const win_event_t *ev) { (void)inst; (void)ev; }
+const view_ops_t g_launcher_view = { .name = "launcher", .active = launcher_is_active, .event = launcher_view_none, .captures = NULL };
 bool launcher_poll_exec(char *out_cmd, size_t max_len) { (void)out_cmd; (void)max_len; return false; }
 uint8_t *launcher_get_aa_backing(uint32_t *out_stride, int *out_w, int *out_h) { (void)out_stride; (void)out_w; (void)out_h; return NULL; }
 uint32_t launcher_get_seq(void) { return 0; }
@@ -1090,20 +1091,51 @@ static void launcher_key(key_event_t k) {
     }
 }
 
-/* guarded by: g_input_lock (kernel/console.c): the console pump is the only
- * caller of launcher_feed_key() / launcher_feed_end(). */
-static keyseq_push_t s_key_push;
+static bool launcher_view_captures(uint8_t inst, int x, int y) {
+    (void)inst;
+    return launcher_drag_target(x, y);
+}
 
-void launcher_feed_key(int c) {
+/* The launcher as a view (drivers/view.h): each event onto what it did. */
+static void launcher_view_event(uint8_t inst, const win_event_t *ev) {
+    (void)inst;
     if (!s_launcher.active) return;
-    key_event_t k;
-    if (keyseq_push(&s_key_push, c, &k)) launcher_key(k);
+    switch (ev->type) {
+    case WIN_EV_POINTER_DOWN:
+        if (ev->flags & WIN_EVF_PRESS) launcher_press(ev->x, ev->y);
+        return;
+    case WIN_EV_POINTER_UP:
+        if (ev->flags & WIN_EVF_TAP) (void)launcher_tap(ev->x, ev->y);
+        else if (ev->flags & WIN_EVF_PRESS) launcher_release();
+        return;
+    case WIN_EV_POINTER_MOVE:
+        launcher_pointer_move(ev->x, ev->y);
+        return;
+    case WIN_EV_DRAG:
+        launcher_drag(ev->dy);
+        return;
+    case WIN_EV_DRAG_END:
+        launcher_drag_end(ev->dy, ev->key);
+        return;
+    case WIN_EV_SCROLL:
+        launcher_scroll(ev->dy > 0 ? -1 : 1);
+        return;
+    case WIN_EV_KEY_DOWN: {
+        key_event_t k = { ev->key, ev->mods };
+        launcher_key(k);
+        return;
+    }
+    default:
+        return;
+    }
 }
 
-void launcher_feed_end(void) {
-    key_event_t k;
-    if (keyseq_push_flush(&s_key_push, &k) && s_launcher.active) launcher_key(k);
-}
+const view_ops_t g_launcher_view = {
+    .name = "launcher",
+    .active = launcher_is_active,
+    .event = launcher_view_event,
+    .captures = launcher_view_captures,
+};
 
 bool launcher_poll_exec(char *out_cmd, size_t max_len) {
     if (!s_launcher.pending_cmd[0] || !out_cmd || max_len == 0) return false;

@@ -50,7 +50,6 @@
     "drivers/i2c_rtc.c": 18,
     "drivers/idstore_esp32p4.c": 4137,
     "drivers/ina226.c": 52,
-    "drivers/launcher_view.c": 20,
     "drivers/lcdterm.c": 315,
     "drivers/loopback_net.c": 2060,
     "drivers/mcp9808.c": 76,
@@ -62,7 +61,7 @@
     "drivers/psram_esp32p4.c": 33,
     "drivers/ramdisk.c": 36,
     "drivers/ramscreen.c": 28,
-    "drivers/reader_view.c": 29,
+    "drivers/reader_view.c": 17,
     "drivers/sdio_esp32p4.c": 12564,
     "drivers/sdmmc_esp32p4.c": 7410,
     "drivers/sensor_hub.c": 7504,
@@ -84,7 +83,7 @@
     "kernel/chan.c": 1348,
     "kernel/chan_selftest.c": 172,
     "kernel/clipboard.c": 20,
-    "kernel/console.c": 781,
+    "kernel/console.c": 806,
     "kernel/device.c": 140,
     "kernel/devirq.c": 134,
     "kernel/discipline.c": 82,
@@ -176,7 +175,7 @@
     "chess": 21396,
     "clock-app": 136,
     "crypto": 38,
-    "display": 3832,
+    "display": 3800,
     "drivers": 1228,
     "fs": 4160,
     "httpd": 70,
@@ -191,11 +190,11 @@
     "radio": 12564,
     "selftest": 3962,
     "sensors": 8688,
-    "shell": 13065,
+    "shell": 13090,
     "storage": 7456,
     "usb": 1212,
     "vfs": 4111
   },
   "ram_code": 1806,
-  "total": 216359
+  "total": 216352
 }

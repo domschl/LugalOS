@@ -1,6 +1,8 @@
 #include "kernel/orient.h"
 #include "kernel/time.h"
 #include "kernel/console.h"
+#include "drivers/view.h"
+#include "kernel/keyseq.h"
 #include "kernel/screenshot.h"
 #include "drivers/screen.h"
 #include "kernel/klog.h"
@@ -246,6 +248,8 @@ static volatile bool     g_move_pending = false;
 static volatile bool     g_press_busy = false;    /* one shell at a time runs run_press() / run_release() */
 static bool              g_osk_pressed = false;   /* guarded by: g_press_busy */
 static int               g_press_win = -1;        /* guarded by: g_press_busy; the canvas window told of a press */
+static const view_ops_t *g_press_view;            /* guarded by: g_press_busy; the view told of a press */
+static uint8_t           g_press_inst;            /* guarded by: g_press_busy */
 static volatile int      g_drag_dy = 0;
 static volatile bool     g_drag_end = false;
 static volatile int      g_drag_end_dy;
@@ -331,11 +335,67 @@ void console_touch_release(void) {
     __atomic_store_n(&g_release_pending, true, __ATOMIC_RELEASE);
 }
 
-bool console_touch_captures(unsigned x, unsigned y) {
+/* The view under screen point (x, y) (drivers/view.h): its ops, its
+ * instance and the point in its content; NULL when the point is not on an
+ * open view. */
+static const view_ops_t *view_at(unsigned x, unsigned y, uint8_t *inst, int *cx, int *cy) {
     uint8_t type = 0, id = 0;
+    if (!lcdterm_window_at((int)x, (int)y, &type, &id, cx, cy)) return NULL;
+    const view_ops_t *v = view_for_window(type);
+    if (!v || !v->active()) return NULL;
+    *inst = id;
+    return v;
+}
+
+/* The focused window's view, and its instance; NULL when it is not one. */
+static const view_ops_t *focused_view(uint8_t *inst) {
+    const view_ops_t *v = view_for_window(g_active_win_type);
+    if (!v || !v->active()) return NULL;
+    *inst = g_active_win_type == 3 /* RIBBON_WIN_READER */ ? reader_active_instance() : 0;
+    return v;
+}
+
+static void view_send(const view_ops_t *v, uint8_t inst, uint8_t type, uint8_t flags, int x, int y, int dy, uint32_t key, uint8_t mods) {
+    win_event_t ev;
+    memset(&ev, 0, sizeof ev);
+    ev.type = type;
+    ev.button = 1;
+    ev.flags = flags;
+    ev.x = (int16_t)x;
+    ev.y = (int16_t)y;
+    ev.dy = (int16_t)dy;
+    ev.key = key;
+    ev.mods = mods;
+    v->event(inst, &ev);
+}
+
+/* guarded by: g_input_lock -- the console pump decodes the focused view's
+ * keys with it. */
+static keyseq_push_t g_view_keys;
+
+/* The system's Cmd shortcuts, whatever has the focus: Cmd-1..9 a window,
+ * Cmd-W close, Cmd-\\ maximise, Cmd-[ / ] move the window, Cmd-Left / Right
+ * the focus, Cmd-Shift-3 a screenshot. True when k was one. */
+static bool system_shortcut(key_event_t k) {
+    if (!(k.mods & KMOD_SUPER)) return false;
+    if ((k.mods & KMOD_SHIFT) && k.key == '3') { console_hotkey(CONSOLE_HOTKEY_SCREENSHOT); return true; }
+    if (k.key >= '1' && k.key <= '9') { console_hotkey(CONSOLE_HOTKEY_JUMP((unsigned)(k.key - '0'))); return true; }
+    switch (k.key) {
+    case 'w': case 'W': console_hotkey(CONSOLE_HOTKEY_CLOSE); return true;
+    case '\\':         console_hotkey(CONSOLE_HOTKEY_TOGGLE_MAX); return true;
+    case '[':           console_hotkey(CONSOLE_HOTKEY_LEFT); return true;
+    case ']':           console_hotkey(CONSOLE_HOTKEY_RIGHT); return true;
+    case KEY_LEFT:      console_hotkey(CONSOLE_HOTKEY_FOCUS_LEFT); return true;
+    case KEY_RIGHT:     console_hotkey(CONSOLE_HOTKEY_FOCUS_RIGHT); return true;
+    default:            return false;
+    }
+}
+
+bool console_touch_captures(unsigned x, unsigned y) {
+    uint8_t inst = 0;
     int cx = 0, cy = 0;
-    return lcdterm_window_at((int)x, (int)y, &type, &id, &cx, &cy) &&
-           type == 4 /* RIBBON_WIN_LAUNCHER */ && launcher_is_active() && launcher_drag_target(cx, cy);
+    const view_ops_t *v = view_at(x, y, &inst, &cx, &cy);
+    return v && v->captures && v->captures(inst, cx, cy);
 }
 
 void console_touch_move(unsigned x, unsigned y) {
@@ -343,17 +403,15 @@ void console_touch_move(unsigned x, unsigned y) {
     __atomic_store_n(&g_move_pending, true, __ATOMIC_RELEASE);
 }
 
-/* A captured finger's latest point, to the launcher (the only window that
- * captures today). Moves in between are dropped: the control follows the
- * finger at the pace it can draw. */
+/* A captured finger's latest point, to the view it is on. Moves in between
+ * are dropped: the control follows the finger at the pace it can draw. */
 static void run_move_once(void) {
     if (!__atomic_exchange_n(&g_move_pending, false, __ATOMIC_ACQ_REL)) return;
     uint32_t xy = g_move_xy;
-    uint8_t type = 0, id = 0;
+    uint8_t inst = 0;
     int cx = 0, cy = 0;
-    if (lcdterm_window_at((int)(xy >> 16), (int)(xy & 0xFFFFu), &type, &id, &cx, &cy) &&
-        type == 4 /* RIBBON_WIN_LAUNCHER */ && launcher_is_active())
-        launcher_pointer_move(cx, cy);
+    const view_ops_t *v = view_at(xy >> 16, xy & 0xFFFFu, &inst, &cx, &cy);
+    if (v) view_send(v, inst, WIN_EV_POINTER_MOVE, 0, cx, cy, 0, 0, 0);
 }
 
 void console_touch_repeat(void) {
@@ -407,10 +465,11 @@ static void run_press_once(void) {
     uint8_t type = 0, id = 0;
     int cx = 0, cy = 0;
     if (!lcdterm_window_at((int)(xy >> 16), (int)(xy & 0xFFFFu), &type, &id, &cx, &cy)) return;
-    if (type == 4 /* RIBBON_WIN_LAUNCHER */ && launcher_is_active()) {
-        launcher_press(cx, cy);
-    } else if (type == 3 /* RIBBON_WIN_READER */) {
-        reader_press(id, cx, cy);
+    const view_ops_t *v = view_for_window(type);
+    if (v && v->active()) {
+        view_send(v, id, WIN_EV_POINTER_DOWN, WIN_EVF_PRESS, cx, cy, 0, 0, 0);
+        g_press_view = v;
+        g_press_inst = id;
     } else if (type == 2 /* RIBBON_WIN_CANVAS */ && (win_t)id == window_focused() &&
                !(window_claims((win_t)id) & WIN_CLAIM_POINTER)) {
         win_event_t wev;
@@ -433,8 +492,10 @@ static void run_press_once(void) {
 
 static void run_release_once(void) {
     if (!__atomic_exchange_n(&g_release_pending, false, __ATOMIC_ACQ_REL)) return;
-    launcher_release();
-    reader_release();
+    if (g_press_view) {
+        if (g_press_view->active()) view_send(g_press_view, g_press_inst, WIN_EV_POINTER_UP, WIN_EVF_PRESS, 0, 0, 0, 0, 0);
+        g_press_view = NULL;
+    }
     if (g_press_win >= 0) {
         win_event_t wev;
         memset(&wev, 0, sizeof(wev));
@@ -703,11 +764,11 @@ static void run_hotkey(void) {
                 int cx = (int)(reply[2] | (reply[3] << 8));
                 int cy = (int)(reply[4] | (reply[5] << 8));
                 if (cx != 0 || cy != 0) {
-                    if (g_active_win_type == 4 /* RIBBON_WIN_LAUNCHER */ && launcher_is_active()) {
-                        (void)launcher_tap(cx, cy);
-                        shell_check_launcher_exec();
-                    } else if (g_active_win_type == 3 /* RIBBON_WIN_READER */ && reader_is_active()) {
-                        (void)reader_tap(cx, cy);
+                    uint8_t vinst = 0;
+                    const view_ops_t *v = focused_view(&vinst);
+                    if (v) {
+                        view_send(v, vinst, WIN_EV_POINTER_UP, WIN_EVF_TAP, cx, cy, 0, 0, 0);
+                        shell_check_launcher_exec();             /* an application it started */
                     } else if (g_active_win_type == 2 /* RIBBON_WIN_CANVAS */) {
                         /* A tap on the focused canvas: its program's, as a
                          * DOWN / UP pair at the content point. */
@@ -732,31 +793,23 @@ static void run_hotkey(void) {
              * came: a drag that ended is never left without its motion. */
             int dy = __atomic_exchange_n(&g_drag_dy, 0, __ATOMIC_ACQ_REL);
             bool end = __atomic_exchange_n(&g_drag_end, false, __ATOMIC_ACQ_REL);
-            if (g_active_win_type == 3 /* RIBBON_WIN_READER */ && reader_is_active()) {
-                if (dy) reader_drag(dy);
-                if (end) reader_drag_end(g_drag_end_dy, g_drag_end_ms);
-            } else if (g_active_win_type == 4 /* RIBBON_WIN_LAUNCHER */ && launcher_is_active()) {
-                if (dy) launcher_drag(dy);
-                if (end) launcher_drag_end(g_drag_end_dy, g_drag_end_ms);
+            uint8_t vinst = 0;
+            const view_ops_t *v = focused_view(&vinst);
+            if (v) {
+                if (dy) view_send(v, vinst, WIN_EV_DRAG, 0, 0, 0, dy, 0, 0);
+                if (end) view_send(v, vinst, WIN_EV_DRAG_END, 0, 0, 0, g_drag_end_dy, g_drag_end_ms, 0);
             }
             continue;
         }
         if (hk == CONSOLE_HOTKEY_SCROLL_UP || hk == CONSOLE_HOTKEY_SCROLL_DOWN) {
-            if (g_active_win_type == 4 /* RIBBON_WIN_LAUNCHER */ && launcher_is_active()) {
-                g_scroll_dy = 0;
-                g_scroll_ms = 0;
-                launcher_scroll(hk == CONSOLE_HOTKEY_SCROLL_UP ? -1 : 1);
-            } else if (reader_is_active()) {
-                int dy = g_scroll_dy;
-                uint32_t ms = g_scroll_ms;
-                g_scroll_dy = 0;
-                g_scroll_ms = 0;
-                if (ms > 0 && dy != 0) {
-                    reader_touch_fling(dy, ms);
-                } else {
-                    reader_scroll(hk == CONSOLE_HOTKEY_SCROLL_UP ? -160 : 160);
-                }
-            }
+            int dy = g_scroll_dy;
+            uint32_t ms = g_scroll_ms;
+            g_scroll_dy = 0;
+            g_scroll_ms = 0;
+            if (dy == 0) dy = hk == CONSOLE_HOTKEY_SCROLL_UP ? 1 : -1;      /* a step: its direction */
+            uint8_t vinst = 0;
+            const view_ops_t *v = focused_view(&vinst);
+            if (v) view_send(v, vinst, WIN_EV_SCROLL, 0, 0, 0, dy, ms, 0);
             continue;
         }
         if (hk == CONSOLE_HOTKEY_TOGGLE_MAX) {
@@ -1227,21 +1280,21 @@ static void console_pump(void) {
     blank_check();
     for (unsigned i = 0; i < g_ninputs; i++) {
         const console_input_t *src = g_inputs[i];
-        if (src->local && g_active_win_type == 4 /* RIBBON_WIN_LAUNCHER */ && launcher_is_active()) {
+        uint8_t vinst = 0;
+        const view_ops_t *view = src->local ? focused_view(&vinst) : NULL;
+        if (view) {
+            /* A view's keys, decoded here (kernel/keyseq.h), the system's
+             * Cmd shortcuts taken out first. */
+            key_event_t k;
             while (src->has_char()) {
                 int c = src->getc();
                 if (c < 0) break;
                 if (note_input(src->local)) continue;
-                launcher_feed_key(c);
+                if (keyseq_push(&g_view_keys, c, &k) && !system_shortcut(k))
+                    view_send(view, vinst, WIN_EV_KEY_DOWN, 0, 0, 0, 0, k.key, k.mods);
             }
-            launcher_feed_end();
-        } else if (src->local && g_active_win_type == 3 /* RIBBON_WIN_READER */ && reader_is_active()) {
-            while (src->has_char()) {
-                int c = src->getc();
-                if (c < 0) break;
-                if (note_input(src->local)) continue;
-                reader_feed_key(c);
-            }
+            if (keyseq_push_flush(&g_view_keys, &k) && !system_shortcut(k))
+                view_send(view, vinst, WIN_EV_KEY_DOWN, 0, 0, 0, 0, k.key, k.mods);
         } else if (src->local && g_active_win_type == 2 /* RIBBON_WIN_CANVAS */) {
             while (src->has_char()) {
                 int c = src->getc();

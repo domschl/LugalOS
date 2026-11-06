@@ -31,7 +31,7 @@
     "drivers/i2c_rtc.c": 30,
     "drivers/icons_data.c": 43728,
     "drivers/ina226.c": 200,
-    "drivers/launcher_view.c": 22306,
+    "drivers/launcher_view.c": 22302,
     "drivers/loopback_net.c": 2060,
     "drivers/mcp9808.c": 164,
     "drivers/mhz19b.c": 132,
@@ -40,7 +40,7 @@
     "drivers/radio/osi_impl.c": 3104,
     "drivers/ramdisk.c": 36,
     "drivers/ramscreen.c": 56,
-    "drivers/reader_view.c": 39405,
+    "drivers/reader_view.c": 39409,
     "drivers/ribbon.c": 4,
     "drivers/screen.c": 64,
     "drivers/sensor.c": 912,
@@ -74,7 +74,7 @@
     "kernel/chan.c": 1348,
     "kernel/chan_selftest.c": 172,
     "kernel/clipboard.c": 20,
-    "kernel/console.c": 781,
+    "kernel/console.c": 805,
     "kernel/crypto.c": 80,
     "kernel/der.c": 65,
     "kernel/device.c": 140,
@@ -190,12 +190,12 @@
     "radio": 3104,
     "selftest": 2487,
     "sensors": 19483,
-    "shell": 12741,
+    "shell": 12765,
     "storage": 20688,
     "tools": 256,
     "usb": 672,
     "vfs": 4278
   },
-  "ram_code": 1273660,
-  "total": 6380722
+  "ram_code": 1274040,
+  "total": 6381126
 }

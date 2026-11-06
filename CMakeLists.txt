@@ -668,6 +668,7 @@ set(SOURCES
     kernel/apps.c
     kernel/settings.c
     drivers/icons.c
+    drivers/view.c
     drivers/icons_data.c
     kernel/vterm.c
     kernel/device.c

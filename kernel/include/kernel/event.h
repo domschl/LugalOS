@@ -30,12 +30,16 @@ typedef enum {
     WIN_EV_POINTER_DOWN,
     WIN_EV_POINTER_UP,
     WIN_EV_POINTER_MOVE,
-    WIN_EV_KEY_DOWN,            /* reserved: keys come through keyseq (above) */
+    WIN_EV_KEY_DOWN,            /* a view's key: key / mods as kernel/keyseq.h decodes them
+                                 * (canvas programs read theirs through keyseq instead) */
     WIN_EV_KEY_UP,
     WIN_EV_FOCUS_GAINED,        /* reserved for the view framework (71.4) */
     WIN_EV_FOCUS_LOST,
     WIN_EV_CLOSE_REQUEST,
     WIN_EV_RESIZE,
+    WIN_EV_DRAG,                /* a view's: a finger dragging, dy px since the last (down +) */
+    WIN_EV_DRAG_END,            /* it lifted: dy over its last `key` ms (a fling when moving) */
+    WIN_EV_SCROLL,              /* a vertical swipe: dy, over `key` ms (0: a step) */
 } win_event_type_t;
 
 #define WIN_EVF_TAP   0x01u     /* the DOWN / UP pair of a recognised tap */
