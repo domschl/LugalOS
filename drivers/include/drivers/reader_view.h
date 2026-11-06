@@ -37,6 +37,11 @@ bool reader_tap(int client_x, int client_y);
 bool reader_tap_instance(uint8_t rid, int client_x, int client_y);
 /* The reader the keys and gestures go to (the focused one). */
 uint8_t reader_active_instance(void);
+/* path in a reader window of its own -- or, when there is no room for one
+ * (reader slots or ribbon full), in the focused or first open reader, which
+ * is focused (*reused set; Back returns). The reader's id, or -1 when no
+ * reader can show it. */
+int reader_open_window(const char *path, bool *reused);
 /* Press feedback: the action-bar button under a finger that went down in
  * reader rid shows pressed (only the bar is drawn again) until
  * reader_release(), which lets go in every reader. */

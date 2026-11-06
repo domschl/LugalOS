@@ -23,13 +23,24 @@
 
 typedef struct {
     const char *name;
-    bool (*active)(void);                                    /* open on the ribbon */
+    bool (*active)(uint8_t inst);                            /* that instance open */
     void (*event)(uint8_t inst, const win_event_t *ev);
     bool (*captures)(uint8_t inst, int x, int y);             /* NULL: never */
+    /* Its window's content is w x h now (a layout change): draws again if
+     * that changed. */
+    void (*resize)(uint8_t inst, int w, int h);
+    /* Its window was closed (close box, Cmd-W, `q`): let go of the instance. */
+    void (*close)(uint8_t inst);
+    /* For the P4's compositor: the GRAY8 surface it draws (NULL: none) and
+     * the number that moves at each drawing. */
+    uint8_t *(*surface)(uint8_t inst, uint32_t *stride, int *w, int *h);
+    uint32_t (*seq)(uint8_t inst);
 } view_ops_t;
 
-/* The view behind a ribbon window type (RIBBON_WIN_READER, ..._LAUNCHER), or
- * NULL for terminals and canvases. */
+/* The view behind a ribbon window type -- every type from RIBBON_WIN_READER
+ * up is one (ribbon_is_view()) -- or NULL for terminals and canvases. A new
+ * view is a type number, its ops here, and its own file: the screen and the
+ * compositor handle its window as any view's. */
 const view_ops_t *view_for_window(uint8_t type);
 
 #endif /* LUGALOS_DRIVERS_VIEW_H */

@@ -748,7 +748,7 @@ LCDTERM_UTEXT static void draw_text_title(screen_t *scr) {
             int32_t x1 = scr->ribbon.wins[idx].rx1 - scr->ribbon.x_view;
             if (x1 >= 0 && x0 < (int32_t)scr->cv.w) {
                 bool can_close = !(scr->ribbon.wins[idx].type == RIBBON_WIN_TERM && scr->ribbon.wins[idx].vterm_id == 0) &&
-                                 (scr->ribbon.wins[idx].type != RIBBON_WIN_LAUNCHER);
+                                 !(scr->ribbon.wins[idx].flags & RIBBON_FLAG_NO_CLOSE);
                 draw_titlebar(&scr->cv, (int)x0, SCREEN_TILE_Y, (int)x1, avt->title, idx == (int)act, can_close);
             }
         } else if (scr->ribbon.count == 0) {
@@ -1080,7 +1080,7 @@ LCDTERM_UTEXT static void draw_all_from(screen_t *scr, bool restore) {
                 if (x1 + 1 >= 0 && x0 < (int32_t)cv->w) {
                     const char *title = w->title;
                     bool can_close = !(w->type == RIBBON_WIN_TERM && w->vterm_id == 0) &&
-                                     (w->type != RIBBON_WIN_LAUNCHER);
+                                     !(w->flags & RIBBON_FLAG_NO_CLOSE);
                     if (w->type == RIBBON_WIN_CANVAS) {
                         uint8_t cid = w->vterm_id;
                         if (cid < SCREEN_MAX_CANVASES && scr->canvases[cid].name[0]) {
@@ -1093,7 +1093,7 @@ LCDTERM_UTEXT static void draw_all_from(screen_t *scr, bool restore) {
                         if (t >= 0 && scr->terms[t].vt.title[0]) {
                             title = scr->terms[t].vt.title;
                         }
-                    } else if (w->type == RIBBON_WIN_READER || w->type == RIBBON_WIN_LAUNCHER) {
+                    } else if (ribbon_is_view(w->type)) {
                         uint8_t rid = w->vterm_id;
                         if (rid < SCREEN_MAX_READERS && scr->readers[rid].title[0]) {
                             title = scr->readers[rid].title;
@@ -1134,7 +1134,7 @@ LCDTERM_UTEXT static void draw_all_from(screen_t *scr, bool restore) {
                                 }
                                 scr->damage++;
                             }
-                        } else if (w->type == RIBBON_WIN_READER || w->type == RIBBON_WIN_LAUNCHER) {
+                        } else if (ribbon_is_view(w->type)) {
                             uint8_t rid = w->vterm_id;
                             bool backed = rid < SCREEN_MAX_READERS && scr->readers[rid].in_use && scr->store;
                             if (backed) {
@@ -2016,7 +2016,7 @@ LCDTERM_UTEXT static bool close_window(screen_t *scr, uint8_t idx, uint8_t *repl
         screen_free_term(scr, closed_id);
     } else if (closed_type == RIBBON_WIN_CANVAS) {
         screen_free_canvas(scr, closed_id);
-    } else if (closed_type == RIBBON_WIN_READER || closed_type == RIBBON_WIN_LAUNCHER) {
+    } else if (ribbon_is_view(closed_type)) {
         screen_free_reader(scr, closed_id);
     }
     if (ribbon_find_canvas(&scr->ribbon) < 0) scr->layout = SCREEN_LAYOUT_TEXT;
@@ -2042,6 +2042,52 @@ LCDTERM_UTEXT static bool close_window(screen_t *scr, uint8_t idx, uint8_t *repl
     reply[14] = (uint8_t)(closed_pid & 0xff);
     reply[15] = (uint8_t)((closed_pid >> 8) & 0xff);
     return true;
+}
+
+/* Opens a full-width window for view `type` beside the focused one, or with
+ * SCREEN_VIEW_SINGLETON focuses the one it has; its backing is a reader
+ * slot. Replies [0] status, [1] the slot, [2..5] the content's w and h,
+ * [10] the type, [11] the slot. */
+LCDTERM_UTEXT static void open_view_window(screen_t *scr, uint8_t type, uint8_t vflags, const char *title,
+                                           uint8_t *reply) {
+    int idx = -1;
+    if (vflags & SCREEN_VIEW_SINGLETON)
+        for (uint8_t i = 0; i < scr->ribbon.count && idx < 0; i++)
+            if (scr->ribbon.wins[i].type == type) idx = i;
+    if (idx >= 0) {
+        int32_t start_xv = scr->ribbon.x_view;
+        (void)ribbon_focus(&scr->ribbon, (uint8_t)idx);
+        screen_animate_ribbon(scr, 255, 0, 0, 255, 0, 0, start_xv);
+    } else {
+        int rid = screen_alloc_reader(scr, title);
+        if (rid < 0) { reply[0] = 1; return; }
+        for (unsigned k = 0; k < sizeof(scr->readers[rid].title); k++) {
+            scr->readers[rid].title[k] = title[k];
+            if (!title[k]) break;
+        }
+        uint8_t insert_idx = (scr->ribbon.active_idx < scr->ribbon.count) ? (uint8_t)(scr->ribbon.active_idx + 1u) : scr->ribbon.count;
+        idx = ribbon_insert(&scr->ribbon, insert_idx, type, (uint8_t)rid, (uint8_t)RIBBON_COLS_FULL(scr->cv.w), title);
+        if (idx < 0) {
+            screen_free_reader(scr, (uint8_t)rid);
+            reply[0] = 1;
+            return;
+        }
+        scr->ribbon.wins[idx].owner_pid = -1;
+        if (vflags & SCREEN_VIEW_NO_CLOSE) scr->ribbon.wins[idx].flags |= RIBBON_FLAG_NO_CLOSE;
+        ribbon_focus(&scr->ribbon, (uint8_t)idx);
+        scr->ribbon.x_view = scr->ribbon.x_target;
+        (void)place(scr, scr->layout);
+        draw_all_from(scr, true);
+    }
+    const ribbon_win_t *w = &scr->ribbon.wins[idx];
+    int cw = (int)(w->rx1 - w->rx0 - 1);
+    int ch = (int)(SCREEN_TEXT_Y + (int)FONT_CELL_H * (int)SCREEN_TEXT_ROWS(scr->cv.h) + 1 - (SCREEN_TILE_Y + SCREEN_TITLEBAR_H));
+    reply[0] = 0;
+    reply[1] = w->vterm_id;
+    reply[2] = (uint8_t)(cw & 0xff); reply[3] = (uint8_t)((cw >> 8) & 0xff);
+    reply[4] = (uint8_t)(ch & 0xff); reply[5] = (uint8_t)((ch >> 8) & 0xff);
+    reply[10] = type;
+    reply[11] = w->vterm_id;
 }
 
 LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t *req, uint32_t n, uint8_t *reply, int16_t caller_pid) {
@@ -2136,7 +2182,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
         uint8_t rid = (n >= 2) ? req[1] : 0xffu;
         for (uint8_t i = 0; i < scr->ribbon.count && rid < SCREEN_MAX_READERS; i++) {
             const ribbon_win_t *w = &scr->ribbon.wins[i];
-            if ((w->type != RIBBON_WIN_READER && w->type != RIBBON_WIN_LAUNCHER) || w->vterm_id != rid) continue;
+            if (!ribbon_is_view(w->type) || w->vterm_id != rid) continue;
             status = 0;
             if (scr->animating || scr->layout == SCREEN_LAYOUT_FULLSCREEN || !scr->readers[rid].in_use) break;
             int32_t cx0 = w->rx0 - scr->ribbon.x_view;
@@ -2391,7 +2437,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
         if (idx >= 0 && py >= CHROME_CLOSE_Y0 && py < CHROME_CLOSE_Y1) {
             int32_t vx0 = scr->ribbon.wins[idx].rx0 - scr->ribbon.x_view;
             if (px >= CHROME_CLOSE_X0(vx0) && px <= CHROME_CLOSE_X1(vx0)) {
-                if (scr->ribbon.wins[idx].type != RIBBON_WIN_LAUNCHER) {
+                if (!(scr->ribbon.wins[idx].flags & RIBBON_FLAG_NO_CLOSE)) {
                     if (close_window(scr, (uint8_t)idx, reply)) {
                         reply[0] = 0;
                         reply[1] = window_vterm(scr, scr->ribbon.active_idx);
@@ -2403,7 +2449,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
         }
         if (idx >= 0 && idx == (int)scr->ribbon.active_idx) {
             const ribbon_win_t *w = &scr->ribbon.wins[idx];
-            if (w->type == RIBBON_WIN_READER || w->type == RIBBON_WIN_LAUNCHER || w->type == RIBBON_WIN_CANVAS) {
+            if (ribbon_is_view(w->type) || w->type == RIBBON_WIN_CANVAS) {
                 int cx = px - (w->rx0 - scr->ribbon.x_view);
                 int cy = py - (SCREEN_TILE_Y + SCREEN_TITLEBAR_H);
                 reply[0] = 0;
@@ -2512,57 +2558,25 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
         } else {
             status = 1;
         }
-    } else if (op == 'U') {
-        /* Open or focus the Touch Launcher window (RIBBON_WIN_LAUNCHER) */
-        int l_idx = ribbon_find_launcher(&scr->ribbon);
-        if (l_idx >= 0) {
-            int32_t start_xv = scr->ribbon.x_view;
-            (void)ribbon_focus(&scr->ribbon, (uint8_t)l_idx);
-            screen_animate_ribbon(scr, 255, 0, 0, 255, 0, 0, start_xv);
-            const ribbon_win_t *lw = &scr->ribbon.wins[l_idx];
-            int l_w = (int)(lw->rx1 - lw->rx0 - 1);
-            int l_h = (int)(SCREEN_TEXT_Y + (int)FONT_CELL_H * (int)SCREEN_TEXT_ROWS(scr->cv.h) + 1 - (SCREEN_TILE_Y + SCREEN_TITLEBAR_H));
-            reply[0] = 0;
-            reply[1] = lw->vterm_id;
-            reply[2] = (uint8_t)(l_w & 0xff); reply[3] = (uint8_t)((l_w >> 8) & 0xff);
-            reply[4] = (uint8_t)(l_h & 0xff); reply[5] = (uint8_t)((l_h >> 8) & 0xff);
-            reply[10] = RIBBON_WIN_LAUNCHER;
-            reply[11] = lw->vterm_id;
-            return;
-        }
-        char l_title[9];
-        l_title[0] = 'L'; l_title[1] = 'a'; l_title[2] = 'u'; l_title[3] = 'n';
-        l_title[4] = 'c'; l_title[5] = 'h'; l_title[6] = 'e'; l_title[7] = 'r';
-        l_title[8] = '\0';
-        int rid = screen_alloc_reader(scr, l_title);
-        if (rid < 0) {
-            status = 1;
+    } else if (op == 'U' || op == 'v') {
+        /* A view's window: 'U' the launcher's; 'v' type flags [title] any
+         * view's (screen.h). */
+        if (op == 'U') {
+            char l_title[9];
+            l_title[0] = 'L'; l_title[1] = 'a'; l_title[2] = 'u'; l_title[3] = 'n';
+            l_title[4] = 'c'; l_title[5] = 'h'; l_title[6] = 'e'; l_title[7] = 'r';
+            l_title[8] = '\0';
+            open_view_window(scr, RIBBON_WIN_LAUNCHER, SCREEN_VIEW_SINGLETON | SCREEN_VIEW_NO_CLOSE, l_title, reply);
         } else {
-            for (unsigned k = 0; k < sizeof(l_title); k++) scr->readers[rid].title[k] = l_title[k];
-            uint8_t l_cols = (uint8_t)RIBBON_COLS_FULL(scr->cv.w);
-            uint8_t insert_idx = (scr->ribbon.active_idx < scr->ribbon.count) ? (uint8_t)(scr->ribbon.active_idx + 1u) : scr->ribbon.count;
-            int idx = ribbon_insert(&scr->ribbon, insert_idx, RIBBON_WIN_LAUNCHER, (uint8_t)rid, l_cols, l_title);
-            if (idx >= 0) {
-                scr->ribbon.wins[idx].owner_pid = -1;
-                ribbon_focus(&scr->ribbon, (uint8_t)idx);
-                scr->ribbon.x_view = scr->ribbon.x_target;
-                (void)place(scr, scr->layout);
-                draw_all_from(scr, true);
-                const ribbon_win_t *lw = &scr->ribbon.wins[idx];
-                int l_w = (int)(lw->rx1 - lw->rx0 - 1);
-                int l_h = (int)(SCREEN_TEXT_Y + (int)FONT_CELL_H * (int)SCREEN_TEXT_ROWS(scr->cv.h) + 1 - (SCREEN_TILE_Y + SCREEN_TITLEBAR_H));
-                reply[0] = 0;
-                reply[1] = (uint8_t)rid;
-                reply[2] = (uint8_t)(l_w & 0xff); reply[3] = (uint8_t)((l_w >> 8) & 0xff);
-                reply[4] = (uint8_t)(l_h & 0xff); reply[5] = (uint8_t)((l_h >> 8) & 0xff);
-                reply[10] = RIBBON_WIN_LAUNCHER;
-                reply[11] = (uint8_t)rid;
-                return;
-            } else {
-                screen_free_reader(scr, (uint8_t)rid);
-                status = 1;
-            }
+            char title[RIBBON_TITLE_MAX];
+            uint32_t tl = 0;
+            while (3u + tl < n && tl + 1u < sizeof(title) && req[3u + tl]) { title[tl] = (char)req[3u + tl]; tl++; }
+            title[tl] = '\0';
+            uint8_t type = n >= 2 ? req[1] : 0;
+            if (!ribbon_is_view(type)) { reply[0] = 1; return; }
+            open_view_window(scr, type, n >= 3 ? req[2] : 0, title, reply);
         }
+        return;
     } else if (op == 'O') {
         /* Open or focus reader window:
          * req[1] = desired cols (0 = default)
@@ -2997,7 +3011,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
     int sw = 0, sh = 0;
     if (scr->ribbon.count > 0 && scr->ribbon.active_idx < scr->ribbon.count) {
         const ribbon_win_t *aw = &scr->ribbon.wins[scr->ribbon.active_idx];
-        if (aw->type == RIBBON_WIN_READER || aw->type == RIBBON_WIN_LAUNCHER) {
+        if (ribbon_is_view(aw->type)) {
             sw = (int)(aw->rx1 - aw->rx0 - 1);
             sh = (int)(SCREEN_TEXT_Y + (int)FONT_CELL_H * (int)SCREEN_TEXT_ROWS(scr->cv.h) + 1 - (SCREEN_TILE_Y + SCREEN_TITLEBAR_H));
             if (sw < 0) sw = 0;

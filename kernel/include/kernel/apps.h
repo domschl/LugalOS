@@ -21,6 +21,7 @@
 #define APP_KBD        0x02u    /* usable by keyboard alone */
 #define APP_FULLSCREEN 0x04u    /* takes the whole screen (the games) */
 #define APP_SINGLETON  0x08u    /* one at a time: opening it again goes to the running one */
+#define APP_WINDOW     0x10u    /* opens a window of its own (a canvas): needs room on the ribbon */
 
 typedef struct {
     const char *id;             /* "chess", "editor", "moonbase", "reader", "term" */

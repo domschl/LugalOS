@@ -75,8 +75,9 @@ typedef enum {
 } ribbon_win_type_t;
 
 enum {
-    RIBBON_FLAG_LOCKED = (1u << 0),
-    RIBBON_FLAG_DIRTY  = (1u << 1),
+    RIBBON_FLAG_LOCKED   = (1u << 0),
+    RIBBON_FLAG_DIRTY    = (1u << 1),
+    RIBBON_FLAG_NO_CLOSE = (1u << 2),   /* no close box (the launcher: always there) */
 };
 
 typedef struct {
@@ -100,6 +101,12 @@ typedef struct {
     uint16_t     screen_w;      /* screen width in pixels (e.g. 800) */
     uint16_t     screen_h;      /* screen height in pixels (e.g. 480) */
 } ribbon_t;
+
+/* Window types from RIBBON_WIN_READER up are views (drivers/view.h): the
+ * kernel's own windows, drawn into a backing slot, each type a kind of view. */
+static inline int ribbon_is_view(uint8_t type) {
+    return type >= RIBBON_WIN_READER;
+}
 
 /* Initialize ribbon structure */
 void ribbon_init(ribbon_t *r, uint16_t screen_w, uint16_t screen_h);

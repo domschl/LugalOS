@@ -139,6 +139,11 @@ void lcdterm_damage(void);
 unsigned lcdterm_frame_stats(lcdterm_frame_stat_t *out, unsigned max, bool reset);
 void lcdterm_settle(void);
 long lcdterm_check(unsigned *x0, unsigned *y0, unsigned *x1, unsigned *y1);
+/* The visible views' windows (ribbon_is_view()): each one's tag -- its type
+ * and instance, LCDTERM_VIEW_TAG() -- and its content rectangle. */
+#define LCDTERM_VIEW_TAG(type, inst) ((uint8_t)(((unsigned)(type) << 4) | ((unsigned)(inst) & 0x0Fu)))
+#define LCDTERM_VIEW_TYPE(tag)       ((uint8_t)((tag) >> 4))
+#define LCDTERM_VIEW_INST(tag)       ((uint8_t)((tag) & 0x0Fu))
 int lcdterm_get_visible_readers(uint8_t *out_rids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins);
 uint16_t *lcdterm_get_canvas565_backing(uint8_t cid, uint32_t *out_stride, int *out_w, int *out_h);
 uint16_t *lcdterm_get_canvas565_by_name(const char *name, uint32_t *out_stride, int *out_w, int *out_h);
@@ -146,6 +151,12 @@ int lcdterm_get_canvas565_cid_by_name(const char *name);
 bool lcdterm_is_canvas_active(uint8_t cid);
 /* The focused window's canvas slot, or -1 when it is not a canvas. */
 int  lcdterm_focused_canvas(void);
+/* The focused window's type and id (a terminal's vterm, a canvas's slot, a
+ * view's instance); false when the ribbon has none. */
+bool lcdterm_focused_window(uint8_t *type, uint8_t *id);
+/* Room on the ribbon: windows it can still take, canvas slots free. False
+ * without a screen. */
+bool lcdterm_room(int *windows, int *canvases);
 /* The on-screen keyboard's rectangle when it is shown (`ts osk`). */
 bool lcdterm_osk_rect(int *x0, int *y0, int *w, int *h);
 /* The window whose content is under screen point (x, y): its type
@@ -199,6 +210,8 @@ static inline int lcdterm_get_canvas565_cid_by_name(const char *name) {
     return -1;
 }
 static inline int  lcdterm_focused_canvas(void) { return -1; }
+static inline bool lcdterm_focused_window(uint8_t *type, uint8_t *id) { (void)type; (void)id; return false; }
+static inline bool lcdterm_room(int *windows, int *canvases) { (void)windows; (void)canvases; return false; }
 static inline bool lcdterm_osk_rect(int *x0, int *y0, int *w, int *h) { (void)x0; (void)y0; (void)w; (void)h; return false; }
 static inline bool lcdterm_window_at(int x, int y, uint8_t *type, uint8_t *id, int *cx, int *cy) {
     (void)x; (void)y; (void)type; (void)id; (void)cx; (void)cy; return false;

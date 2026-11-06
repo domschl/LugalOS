@@ -784,11 +784,11 @@ int lcdterm_get_visible_readers(uint8_t *out_rids, int *out_x0, int *out_y0, int
 
     for (uint8_t i = 0; i < g_scr->ribbon.count && count < max_wins; i++) {
         const ribbon_win_t *w = &g_scr->ribbon.wins[i];
-        if (w->type == RIBBON_WIN_READER || w->type == RIBBON_WIN_LAUNCHER) {
+        if (ribbon_is_view(w->type)) {
             int cx0 = (int)w->rx0 - (int)g_scr->ribbon.x_view + 1;
             int cx1 = (int)w->rx1 - (int)g_scr->ribbon.x_view - 1;
             if (cx1 >= 0 && cx0 < sw) {
-                uint8_t tag = (w->type == RIBBON_WIN_LAUNCHER) ? (uint8_t)(0x80u | w->vterm_id) : w->vterm_id;
+                uint8_t tag = LCDTERM_VIEW_TAG(w->type, w->vterm_id);
                 if (out_rids) out_rids[count] = tag;
                 if (out_x0) out_x0[count] = cx0;
                 if (out_y0) out_y0[count] = tile_y0;
@@ -861,6 +861,25 @@ bool lcdterm_osk_rect(int *x0, int *y0, int *w, int *h) {
     (void)x0; (void)y0; (void)w; (void)h;
     return false;
 #endif
+}
+
+bool lcdterm_room(int *windows, int *canvases) {
+    if (!g_scr) return false;
+    if (windows) *windows = (int)RIBBON_MAX_WINDOWS - (int)g_scr->ribbon.count;
+    if (canvases) {
+        *canvases = 0;
+        for (unsigned i = 0; i < SCREEN_MAX_CANVASES; i++)
+            if (!g_scr->canvases[i].in_use) (*canvases)++;
+    }
+    return true;
+}
+
+bool lcdterm_focused_window(uint8_t *type, uint8_t *id) {
+    if (!g_scr || g_scr->ribbon.count == 0 || g_scr->ribbon.active_idx >= g_scr->ribbon.count) return false;
+    const ribbon_win_t *w = &g_scr->ribbon.wins[g_scr->ribbon.active_idx];
+    *type = w->type;
+    *id = w->vterm_id;
+    return true;
 }
 
 int lcdterm_focused_canvas(void) {

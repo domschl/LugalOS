@@ -410,11 +410,13 @@ values, SPI clock both ways.
 worth doing if it ever causes an operational problem; full account in
 `plan/phase19_ip_stack_and_ethernet.md` under R4.
 
-## TCP recovery test: a duplicated request got no reply (QEMU, once)
+## TCP recovery test: a duplicated request got no reply (QEMU, intermittent)
 
 **Seen** 2026-11-05, one full `tests/runner.py` run in three that day:
 "TCP Recovery Paths: Loss, Duplication, Window Squeeze, Reset (R3)" failed
-with "a duplicated request produced 0 replies, expected 1". It passed in the
+with "a duplicated request produced 0 replies, expected 1". Seen again 2026-11-06 in two of
+about a dozen runs (the 71.4 view commits, which change no network code),
+with the same message; each time the next run passed. It passed in the
 runs before and after on the same QEMU code: that day's changes were P4
 display code, which the QEMU targets build only as stubs. **What would settle
 it:** a second occurrence with the guest's `/proc/kmsg` tail and the host

@@ -1539,6 +1539,12 @@ static void cmd_md_locked(const char *arg) {
     cmd_md_or_gem_locked(arg, "md");
 }
 
+/* Whether there is a graphical ribbon (a panel, or the RAM screen). */
+static bool has_ribbon(void) {
+    uint8_t req[1] = { 'R' }, reply[SCREEN_REPLY_LEN];
+    return console_canvas(req, 1, reply) && reply[0] == 0;
+}
+
 static void cmd_reader(const char *arg) {
     if (arg && strcmp(arg, "list") == 0) {
         cprintf("Active Reader Windows:\n");
@@ -1580,31 +1586,16 @@ static void cmd_reader(const char *arg) {
         }
     }
 
-    /* Allocate and open reader window in ribbon */
-    uint8_t req[128];
-    req[0] = 'O';
-    req[1] = 0; /* default cols */
-    uint32_t arg_len = (uint32_t)strlen(arg);
-    if (arg_len > sizeof(req) - 3) arg_len = sizeof(req) - 3;
-    memcpy(req + 2, arg, arg_len);
-    req[2 + arg_len] = '\0';
-    uint8_t reply[SCREEN_REPLY_LEN];
-    if (console_canvas(req, 3 + arg_len, reply) && reply[0] == 0) {
-        uint8_t rid = reply[1];
-        int w = (int)(reply[2] | (reply[3] << 8));
-        int h = (int)(reply[4] | (reply[5] << 8));
-        if (reader_open_instance(rid, arg) >= 0) {
-            reader_set_target(rid, w, h);
-            reader_update_instance(rid);
-            reader_set_active_instance(rid);
-            console_set_active_win_type(3 /* RIBBON_WIN_READER */);
-            cprintf("reader: opened '%s' in ribbon [%d]\n", arg, rid);
-        } else {
-            cprintf("reader: cannot open '%s'\n", arg);
-        }
+    /* A reader window for it, or the reader that has room (reader_open_window()). */
+    bool reused = false;
+    int rid = reader_open_window(arg, &reused);
+    if (rid >= 0) {
+        cprintf("reader: opened '%s' in ribbon [%d]%s\n", arg, rid,
+                reused ? " (no room for another reader: shown in this one, Back returns)" : "");
+    } else if (has_ribbon()) {
+        cprintf("reader: cannot open '%s' (no such document, or no room for a window: close one first)\n", arg);
     } else {
-        /* Fallback to terminal viewer if graphical ribbon is absent */
-        cmd_gem(arg);
+        cmd_gem(arg);                                    /* no graphical ribbon: the terminal viewer */
     }
 }
 

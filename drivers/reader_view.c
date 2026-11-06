@@ -286,6 +286,58 @@ void reader_init(void) {
     s_active_reader_rid = 0;
 }
 
+/* Focuses reader rid's window on the ribbon. */
+static bool reader_focus_window(uint8_t rid) {
+    uint8_t rreq[2] = { 'R', 0 }, rreply[SCREEN_REPLY_LEN];
+    if (!console_canvas(rreq, 1, rreply) || rreply[0] != 0) return false;
+    uint8_t count = rreply[1];
+    for (uint8_t w = 0; w < count; w++) {
+        rreq[1] = w;
+        if (!console_canvas(rreq, 2, rreply) || rreply[0] != 0) continue;
+        if (rreply[1] != 3 /* RIBBON_WIN_READER */ || rreply[2] != rid) continue;
+        uint8_t jreq[2] = { 'J', w };
+        (void)console_canvas(jreq, 2, rreply);
+        reader_set_active_instance(rid);
+        console_set_active_win_type(3 /* RIBBON_WIN_READER */);
+        return true;
+    }
+    return false;
+}
+
+int reader_open_window(const char *path, bool *reused) {
+    if (reused) *reused = false;
+    if (!path || !*path) return -1;
+    uint8_t req[128];
+    req[0] = 'O';
+    req[1] = 0;                                          /* the default width */
+    uint32_t len = (uint32_t)strlen(path);
+    if (len > sizeof(req) - 3) len = sizeof(req) - 3;
+    memcpy(req + 2, path, len);
+    req[2 + len] = '\0';
+    uint8_t reply[SCREEN_REPLY_LEN];
+    if (console_canvas(req, 3 + len, reply) && reply[0] == 0) {
+        uint8_t rid = reply[1];
+        int w = (int)(reply[2] | (reply[3] << 8));
+        int h = (int)(reply[4] | (reply[5] << 8));
+        if (reader_open_instance(rid, path) < 0) return -1;
+        reader_set_target(rid, w, h);
+        reader_update_instance(rid);
+        reader_set_active_instance(rid);
+        console_set_active_win_type(3 /* RIBBON_WIN_READER */);
+        return rid;
+    }
+    /* No room for another: the focused reader, or the first open one,
+     * shows it instead (Back returns). */
+    int rid = reader_instance_is_active(s_active_reader_rid) ? (int)s_active_reader_rid : -1;
+    for (uint8_t i = 0; rid < 0 && i < READER_MAX_INSTANCES; i++)
+        if (s_readers[i].active && s_readers[i].win_w > 0) rid = i;
+    if (rid < 0 || !reader_focus_window((uint8_t)rid)) return -1;
+    if (reader_open_instance((uint8_t)rid, path) < 0) return -1;
+    reader_update_instance((uint8_t)rid);
+    if (reused) *reused = true;
+    return rid;
+}
+
 int reader_open_instance(uint8_t rid, const char *resource) {
     if (rid >= READER_MAX_INSTANCES) return -1;
     if (reader_open_internal(rid, resource, true)) {
@@ -874,12 +926,7 @@ static void reader_key(uint8_t rid, uint32_t key, uint8_t mods) {
             return;
         }
 #endif
-        uint8_t req[1] = { 'C' }, reply[SCREEN_REPLY_LEN];
-        if (console_canvas(req, 1, reply) && reply[0] == 0) {
-            if (reply[10] == 3) reader_close_instance(reply[11]);
-            vterm_set_active(reply[1]);
-        }
-        console_set_active_win_type(1 /* RIBBON_WIN_TERM */);
+        console_hotkey(CONSOLE_HOTKEY_CLOSE);           /* as Cmd-W: the focus moves on properly */
         return;
     }
     case 'b': case 0x7f: case KEY_LEFT:
@@ -930,9 +977,6 @@ static void reader_key(uint8_t rid, uint32_t key, uint8_t mods) {
     }
 }
 
-static bool reader_active_any(void) {
-    return reader_is_active();
-}
 
 /* The reader as a view (drivers/view.h): each event onto what it did before. */
 static void reader_view_event(uint8_t rid, const win_event_t *ev) {
@@ -962,11 +1006,19 @@ static void reader_view_event(uint8_t rid, const win_event_t *ev) {
     }
 }
 
+static void reader_view_resize(uint8_t rid, int w, int h) {
+    if (reader_set_target(rid, w, h)) reader_update_instance(rid);
+}
+
 const view_ops_t g_reader_view = {
     .name = "reader",
-    .active = reader_active_any,
+    .active = reader_instance_is_active,
     .event = reader_view_event,
     .captures = NULL,
+    .resize = reader_view_resize,
+    .close = reader_close_instance,
+    .surface = reader_get_aa_backing,
+    .seq = reader_get_seq,
 };
 
 const char *reader_get_title_instance(uint8_t rid) {

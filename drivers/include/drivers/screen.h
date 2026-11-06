@@ -250,6 +250,12 @@ void screen_text_size(const screen_t *scr, unsigned *cols, unsigned *rows);
  *                                       [12..13] the first and last band of
  *                                       16 rows that did (the full redraw is
  *                                       kept)
+ *   'v' type flags [title]              a window for view `type` (ribbon_is_view())
+ *                                       beside the focused one, full width,
+ *                                       backed by a reader slot; flags
+ *                                       SCREEN_VIEW_*. [1] the slot, [2..5]
+ *                                       the content's size; 'U' is the
+ *                                       launcher's (singleton, no close box)
  *   'y' x y | (none) | 'r'              the on-screen keyboard's key under
  *                                       screen point x y shows pressed; bare,
  *                                       none does ([1] 1 if that changed);
@@ -271,7 +277,10 @@ void screen_text_size(const screen_t *scr, unsigned *cols, unsigned *rows);
  * this layout, or a bad request); [1] the pixel ('g'); [2..3] canvas width;
  * [4..5] canvas height (both 0 in TEXT); [6..7] damage; [8] layout; [9] 1 if
  * the panes are swapped. */
-#define SCREEN_REPLY_LEN 16u
+#define SCREEN_REPLY_LEN 32u     /* 'R' with an index puts the window's title at [12..31] */
+
+#define SCREEN_VIEW_SINGLETON 0x01u     /* 'v': focus the type's window if it has one */
+#define SCREEN_VIEW_NO_CLOSE  0x02u     /* 'v': no close box */
 
 void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, uint8_t *reply);
 /* The on-screen keyboard's rectangle at the focused terminal (touch boards). */

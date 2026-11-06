@@ -10,14 +10,14 @@
  * leaves out are left out with them. */
 static const app_desc_t k_apps[] = {
 #if CONFIG_ENABLE_CERES || CONFIG_ENABLE_SCROLLER
-    { "ceres",    "Ceres",    "ceres",       "ceres",    "ceres",    APP_KBD | APP_FULLSCREEN | APP_SINGLETON },
+    { "ceres",    "Ceres",    "ceres",       "ceres",    "ceres",    APP_KBD | APP_FULLSCREEN | APP_SINGLETON | APP_WINDOW },
 #endif
 #if CONFIG_ENABLE_CHESS
-    { "chess",    "Chess",    "chess touch", "chess",    "Chess",    APP_TOUCH | APP_KBD | APP_SINGLETON },
+    { "chess",    "Chess",    "chess touch", "chess",    "Chess",    APP_TOUCH | APP_KBD | APP_SINGLETON | APP_WINDOW },
 #endif
     { "editor",   "Editor",   "e %s",        "editor",   NULL,       APP_KBD },
 #if CONFIG_ENABLE_MOONBASE
-    { "moonbase", "Moonbase", "moonbase",    "moonbase", "moonbase", APP_TOUCH | APP_KBD | APP_FULLSCREEN | APP_SINGLETON },
+    { "moonbase", "Moonbase", "moonbase",    "moonbase", "moonbase", APP_TOUCH | APP_KBD | APP_FULLSCREEN | APP_SINGLETON | APP_WINDOW },
 #endif
     { "reader",   "Reader",   "reader %s",   "reader",   NULL,       APP_TOUCH | APP_KBD },
     { "term",     "Terminal", "vterm new",   "terminal", NULL,       APP_KBD },

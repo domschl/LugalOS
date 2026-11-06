@@ -15,6 +15,7 @@
 #include "drivers/icons.h"
 #include "drivers/launcher_view.h"
 #include "kernel/console.h"
+#include "kernel/lock.h"
 #include "kernel/printk.h"
 #include "lugalos_config.h"
 
@@ -35,12 +36,20 @@ void launcher_press(int client_x, int client_y) { (void)client_x; (void)client_y
 void launcher_release(void) {}
 void launcher_scroll(int delta_y) { (void)delta_y; }
 void launcher_gallery(bool on) { (void)on; }
+void launcher_alert(const char *title, const char *msg) { (void)title; (void)msg; }
 bool launcher_drag_target(int client_x, int client_y) { (void)client_x; (void)client_y; return false; }
 void launcher_pointer_move(int client_x, int client_y) { (void)client_x; (void)client_y; }
 void launcher_drag(int dy) { (void)dy; }
 void launcher_drag_end(int dy, uint32_t ms) { (void)dy; (void)ms; }
 static void launcher_view_none(uint8_t inst, const win_event_t *ev) { (void)inst; (void)ev; }
-const view_ops_t g_launcher_view = { .name = "launcher", .active = launcher_is_active, .event = launcher_view_none, .captures = NULL };
+static void launcher_view_noop(uint8_t inst) { (void)inst; }
+static void launcher_view_noresize(uint8_t inst, int w, int h) { (void)inst; (void)w; (void)h; }
+static uint8_t *launcher_view_nosurface(uint8_t inst, uint32_t *s, int *w, int *h) { (void)inst; (void)s; (void)w; (void)h; return NULL; }
+static uint32_t launcher_view_noseq(uint8_t inst) { (void)inst; return 0; }
+static bool launcher_view_active(uint8_t inst) { (void)inst; return false; }
+const view_ops_t g_launcher_view = { .name = "launcher", .active = launcher_view_active, .event = launcher_view_none,
+                                     .captures = NULL, .resize = launcher_view_noresize, .close = launcher_view_noop,
+                                     .surface = launcher_view_nosurface, .seq = launcher_view_noseq };
 bool launcher_poll_exec(char *out_cmd, size_t max_len) { (void)out_cmd; (void)max_len; return false; }
 uint8_t *launcher_get_aa_backing(uint32_t *out_stride, int *out_w, int *out_h) { (void)out_stride; (void)out_w; (void)out_h; return NULL; }
 uint32_t launcher_get_seq(void) { return 0; }
@@ -59,6 +68,7 @@ void launcher_report(void) { cprintf("launcher: not present on headless board\n"
 #include "kernel/vterm.h"
 #include "fs/vfs.h"
 #include "kernel/console.h"
+#include "kernel/lock.h"
 #include "kernel/orient.h"
 #include "kernel/palloc.h"
 #include <string.h>
@@ -99,6 +109,7 @@ void launcher_report(void) { cprintf("launcher: not present on headless board\n"
 #define GAL_ID_SHOW_SHT  517
 #define GAL_ID_DLG       520     /* + button */
 #define GAL_ID_SHEET     530     /* + item */
+#define LAUNCHER_ID_ALERT_OK 540
 
 typedef struct {
     char path[96];
@@ -108,6 +119,8 @@ typedef struct {
 
 typedef struct {
     bool           active;
+    char           alert_title[48];          /* a dialog over the launcher ("" none) */
+    char           alert_msg[128];
     struct {                                   /* the control gallery's state */
         bool        on, toggle, check, dialog, sheet;
         int         tab, slider;
@@ -139,6 +152,13 @@ typedef struct {
  * the display compositor reads under it. accepted: interactive taps and redraws
  * update the live surface from the input path. */
 static launcher_state_t s_launcher BULK_BSS;
+
+/* One draw at a time: every shell waiting for input runs the input path, so
+ * a tap's redraw and a press's could overlap -- into the same back buffer,
+ * then two swaps. Taken before console_lock; by launcher_close() too, so the
+ * buffers are not freed under a draw. (71.4's display service task makes
+ * views single-context; this serves until then.) */
+static ylock_t s_launcher_draw_lock;
 
 /* ASCII case folded: the FAT volumes answer 8.3 names in capitals. */
 static bool same_name(const char *a, const char *b) {
@@ -413,26 +433,10 @@ static void open_doc_in_reader(const char *doc_path) {
         }
     }
 
-    /* Open a new Reader window in the ribbon */
-    uint8_t req[128];
-    req[0] = 'O';
-    req[1] = 0;
-    uint32_t len = (uint32_t)strlen(doc_path);
-    if (len > sizeof(req) - 3) len = sizeof(req) - 3;
-    memcpy(req + 2, doc_path, len);
-    req[2 + len] = '\0';
-    uint8_t reply[SCREEN_REPLY_LEN];
-    if (console_canvas(req, 3 + len, reply) && reply[0] == 0) {
-        uint8_t rid = reply[1];
-        int w = (int)(reply[2] | (reply[3] << 8));
-        int h = (int)(reply[4] | (reply[5] << 8));
-        if (reader_open_instance(rid, doc_path) >= 0) {
-            reader_set_target(rid, w, h);
-            reader_update_instance(rid);
-            reader_set_active_instance(rid);
-            console_set_active_win_type(RIBBON_WIN_READER);
-        }
-    }
+    /* A window of its own, or a reader with room; else say why. */
+    if (reader_open_window(doc_path, NULL) < 0)
+        launcher_alert("The document did not open.",
+                       "It may be missing, or there is no room for another window:\nclose one first (its close box, or Cmd-W).");
 }
 
 void launcher_init(void) {
@@ -501,6 +505,24 @@ static void draw_status(const ugui_surface_t *surf, ugui_rect_t r) {
     if (batt[0]) ksnprintf(line, sizeof(line), "Batt: %s   SD: %s", batt, sd_ok ? "Mounted" : "Absent");
     else ksnprintf(line, sizeof(line), "SD: %s   Touch UX Ready", sd_ok ? "Mounted" : "Absent");
     ugui_text_serif(surf, r.x, r.y, line, (uint32_t)strlen(line), false, false, false);
+}
+
+static const char *const k_alert_ok[1] = { "OK" };
+
+/* The launcher's alert, if one is up: modal over the rest. */
+static void launcher_draw_alert(const ugui_surface_t *surf) {
+    if (s_launcher.alert_title[0])
+        (void)ugui_dialog(surf, &s_launcher.ui_ctx, s_launcher.alert_title, s_launcher.alert_msg,
+                          k_alert_ok, 1, LAUNCHER_ID_ALERT_OK);
+}
+
+void launcher_alert(const char *title, const char *msg) {
+    if (!s_launcher.active) return;
+    strncpy(s_launcher.alert_title, title ? title : "", sizeof s_launcher.alert_title - 1);
+    s_launcher.alert_title[sizeof s_launcher.alert_title - 1] = '\0';
+    strncpy(s_launcher.alert_msg, msg ? msg : "", sizeof s_launcher.alert_msg - 1);
+    s_launcher.alert_msg[sizeof s_launcher.alert_msg - 1] = '\0';
+    launcher_update();
 }
 
 /* An application's card: its registered title and icon (32 units). */
@@ -737,6 +759,7 @@ void launcher_draw(const canvas1_t *c, int w, int h) {
     ugui_fill(&surf, (ugui_rect_t){ 0, 0, (int16_t)w, (int16_t)h }, UGUI_GRAY_PAPER, CANVAS1_WHITE);
     if (s_launcher.gal.on) {
         launcher_draw_gallery(&surf, w, h);
+        launcher_draw_alert(&surf);
         ugui_end(&surf, &s_launcher.ui_ctx);
         s_launcher.seq++;
         return;
@@ -763,6 +786,7 @@ void launcher_draw(const canvas1_t *c, int w, int h) {
         draw_status(&surf, status);
     }
 
+    launcher_draw_alert(&surf);
     ugui_end(&surf, &s_launcher.ui_ctx);
     s_launcher.seq++;
 }
@@ -780,11 +804,19 @@ static canvas1_t *launcher_backing(void) {
  * of the launcher stays as it is on the surface the panel composites from,
  * so it does not flicker; its rows' hit-boxes (the pass's last) are
  * replaced. With the focus ring showing, the whole launcher instead. */
+static void launcher_update_list_locked(void);
+
 static void launcher_update_list(void) {
+    ylock_acquire(&s_launcher_draw_lock);
+    launcher_update_list_locked();
+    ylock_release(&s_launcher_draw_lock);
+}
+
+static void launcher_update_list_locked(void) {
     if (!s_launcher.active || s_launcher.win_w <= 0 || s_launcher.win_h <= 0) return;
     ugui_ctx_t *ctx = &s_launcher.ui_ctx;
     canvas1_t *back = launcher_backing();
-    if (ctx->focus_shown || s_launcher.list_avail <= 0 || (!back && !s_launcher.aa_buf)) {
+    if (ctx->focus_shown || s_launcher.alert_title[0] || s_launcher.list_avail <= 0 || (!back && !s_launcher.aa_buf)) {
         launcher_update();
         return;
     }
@@ -809,7 +841,15 @@ static void launcher_update_list(void) {
  * under it), and only then is seq moved, so no snapshot pairs the new seq
  * with the old picture. Before drawing, a conversion still reading the
  * back buffer (the front of the last swap) is waited for: the frame lock. */
+static void launcher_update_locked(void);
+
 void launcher_update(void) {
+    ylock_acquire(&s_launcher_draw_lock);
+    launcher_update_locked();
+    ylock_release(&s_launcher_draw_lock);
+}
+
+static void launcher_update_locked(void) {
     if (!s_launcher.active) return;
     if (s_launcher.win_w <= 0 || s_launcher.win_h <= 0) return;
 
@@ -885,6 +925,7 @@ bool launcher_open(void) {
 }
 
 void launcher_close(void) {
+    ylock_acquire(&s_launcher_draw_lock);
     console_lock();
     s_launcher.active = false;
     console_frame_lock();                                /* no conversion reads them past here */
@@ -898,6 +939,7 @@ void launcher_close(void) {
 
     if (buf) palloc_free(buf, pages);
     if (buf2) palloc_free(buf2, pages);
+    ylock_release(&s_launcher_draw_lock);
 }
 
 void launcher_press(int client_x, int client_y) {
@@ -921,6 +963,12 @@ static bool launch_app(const char *id, const char *path) {
     if ((a->caps & APP_SINGLETON) && a->window &&
         (focus_canvas_by_name(a->window) || focus_window_by_title(a->window)))
         return true;                                     /* running: back to it */
+    int windows = 1, canvases = 1;
+    if ((a->caps & APP_WINDOW) && lcdterm_room(&windows, &canvases) && (windows < 1 || canvases < 1)) {
+        launcher_alert("No room for another window.",
+                       "Close a window first: its close box, or Cmd-W.");
+        return false;
+    }
     return app_command(a, path, s_launcher.pending_cmd, sizeof(s_launcher.pending_cmd));
 }
 static bool launcher_activate(uint16_t id, int16_t hit_idx);
@@ -940,6 +988,10 @@ bool launcher_tap(int client_x, int client_y) {
 static bool launcher_tap_act(int client_x, int client_y) {
     int16_t hit_idx = -1;
     uint16_t id = ugui_hit_test(&s_launcher.ui_ctx, client_x, client_y, &hit_idx);
+    if (s_launcher.alert_title[0]) {                     /* modal: OK only */
+        if (id == LAUNCHER_ID_ALERT_OK) { s_launcher.alert_title[0] = '\0'; launcher_update(); }
+        return id != 0;
+    }
     if (s_launcher.gal.on) return id && launcher_gallery_act(id, hit_idx, client_x);
     return launcher_activate(id, hit_idx);
 }
@@ -964,6 +1016,11 @@ static bool launcher_activate(uint16_t id, int16_t hit_idx) {
     if (id == LAUNCHER_ID_APP_CHESS) return launch_app("chess", NULL);
     if (id == LAUNCHER_ID_APP_MOONBASE) return launch_app("moonbase", NULL);
     if (id == LAUNCHER_ID_APP_TERMINAL) {
+        int windows = 1;
+        if (lcdterm_room(&windows, NULL) && windows < 1) {
+            launcher_alert("No room for another window.", "Close a window first: its close box, or Cmd-W.");
+            return false;
+        }
         console_hotkey(CONSOLE_HOTKEY_NEW_TERM);         /* beside the launcher, focused */
         return true;
     }
@@ -1055,6 +1112,11 @@ static bool launcher_doc_step(uint32_t key) {
 }
 
 static void launcher_key(key_event_t k) {
+    if (s_launcher.alert_title[0] && (k.key == 0x1b || k.key == '\r' || k.key == '\n')) {
+        s_launcher.alert_title[0] = '\0';                /* Esc / Enter: the alert's OK */
+        launcher_update();
+        return;
+    }
     if (s_launcher.gal.on && launcher_gallery_key(k)) return;
     if (k.key == KEY_PGDN || k.key == KEY_PGUP) {
         s_launcher.scroll_px += k.key == KEY_PGDN ? s_launcher.view_h : -s_launcher.view_h;
@@ -1089,6 +1151,11 @@ static void launcher_key(key_event_t k) {
         launcher_scan_docs();
         launcher_update();
     }
+}
+
+static bool launcher_view_active(uint8_t inst) {
+    (void)inst;
+    return launcher_is_active();
 }
 
 static bool launcher_view_captures(uint8_t inst, int x, int y) {
@@ -1130,11 +1197,34 @@ static void launcher_view_event(uint8_t inst, const win_event_t *ev) {
     }
 }
 
+static void launcher_view_resize(uint8_t inst, int w, int h) {
+    if (launcher_set_target(inst, w, h)) launcher_update();
+}
+
+static void launcher_view_close(uint8_t inst) {
+    (void)inst;
+    launcher_close();
+}
+
+static uint8_t *launcher_view_surface(uint8_t inst, uint32_t *stride, int *w, int *h) {
+    (void)inst;
+    return launcher_get_aa_backing(stride, w, h);
+}
+
+static uint32_t launcher_view_seq(uint8_t inst) {
+    (void)inst;
+    return launcher_get_seq();
+}
+
 const view_ops_t g_launcher_view = {
     .name = "launcher",
-    .active = launcher_is_active,
+    .active = launcher_view_active,
     .event = launcher_view_event,
     .captures = launcher_view_captures,
+    .resize = launcher_view_resize,
+    .close = launcher_view_close,
+    .surface = launcher_view_surface,
+    .seq = launcher_view_seq,
 };
 
 bool launcher_poll_exec(char *out_cmd, size_t max_len) {

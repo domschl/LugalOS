@@ -342,16 +342,18 @@ static const view_ops_t *view_at(unsigned x, unsigned y, uint8_t *inst, int *cx,
     uint8_t type = 0, id = 0;
     if (!lcdterm_window_at((int)x, (int)y, &type, &id, cx, cy)) return NULL;
     const view_ops_t *v = view_for_window(type);
-    if (!v || !v->active()) return NULL;
+    if (!v || !v->active(id)) return NULL;
     *inst = id;
     return v;
 }
 
 /* The focused window's view, and its instance; NULL when it is not one. */
 static const view_ops_t *focused_view(uint8_t *inst) {
-    const view_ops_t *v = view_for_window(g_active_win_type);
-    if (!v || !v->active()) return NULL;
-    *inst = g_active_win_type == 3 /* RIBBON_WIN_READER */ ? reader_active_instance() : 0;
+    uint8_t type = 0, id = 0;
+    if (!lcdterm_focused_window(&type, &id)) return NULL;
+    const view_ops_t *v = view_for_window(type);
+    if (!v || !v->active(id)) return NULL;
+    *inst = id;
     return v;
 }
 
@@ -466,7 +468,7 @@ static void run_press_once(void) {
     int cx = 0, cy = 0;
     if (!lcdterm_window_at((int)(xy >> 16), (int)(xy & 0xFFFFu), &type, &id, &cx, &cy)) return;
     const view_ops_t *v = view_for_window(type);
-    if (v && v->active()) {
+    if (v && v->active(id)) {
         view_send(v, id, WIN_EV_POINTER_DOWN, WIN_EVF_PRESS, cx, cy, 0, 0, 0);
         g_press_view = v;
         g_press_inst = id;
@@ -493,7 +495,7 @@ static void run_press_once(void) {
 static void run_release_once(void) {
     if (!__atomic_exchange_n(&g_release_pending, false, __ATOMIC_ACQ_REL)) return;
     if (g_press_view) {
-        if (g_press_view->active()) view_send(g_press_view, g_press_inst, WIN_EV_POINTER_UP, WIN_EVF_PRESS, 0, 0, 0, 0, 0);
+        if (g_press_view->active(g_press_inst)) view_send(g_press_view, g_press_inst, WIN_EV_POINTER_UP, WIN_EVF_PRESS, 0, 0, 0, 0, 0);
         g_press_view = NULL;
     }
     if (g_press_win >= 0) {
@@ -556,28 +558,13 @@ void console_sync_readers(void) {
         req[0] = 'R';
         req[1] = i;
         if (console_canvas(req, 2, reply) && reply[0] == 0) {
-            if (reply[1] == 3 /* RIBBON_WIN_READER */) {
-                uint8_t rid = reply[2];
+            const view_ops_t *v = view_for_window(reply[1]);
+            if (v) {                                     /* a view: its content's size now */
                 int rx0 = (int)(reply[4] | (reply[5] << 8));
                 int rx1 = (int)(reply[6] | (reply[7] << 8));
-                int rw = rx1 - rx0 - 1;
-                int rh = (int)(reply[10] | (reply[11] << 8));
-                if (rw > 0) {
-                    if (reader_set_target(rid, rw, rh)) {
-                        reader_update_instance(rid);
-                    }
-                }
-            } else if (reply[1] == 4 /* RIBBON_WIN_LAUNCHER */) {
-                uint8_t lid = reply[2];
-                int rx0 = (int)(reply[4] | (reply[5] << 8));
-                int rx1 = (int)(reply[6] | (reply[7] << 8));
-                int lw = rx1 - rx0 - 1;
-                int lh = (int)(reply[10] | (reply[11] << 8));
-                if (lw > 0) {
-                    if (launcher_set_target(lid, lw, lh)) {
-                        launcher_update();
-                    }
-                }
+                int vw = rx1 - rx0 - 1;
+                int vh = (int)(reply[10] | (reply[11] << 8));
+                if (vw > 0) v->resize(reply[2], vw, vh);
             }
         }
     }
@@ -659,12 +646,8 @@ static void run_hotkey(void) {
                     vterm_destroy(closed_vid);
                 }
                 if (closed_type == 2 /* RIBBON_WIN_CANVAS */) post_close(closed_vid);
-                if (closed_type == 3 /* RIBBON_WIN_READER */) {
-                    reader_close_instance(closed_vid);
-                }
-                if (closed_type == 4 /* RIBBON_WIN_LAUNCHER */) {
-                    launcher_close();
-                }
+                const view_ops_t *cv = view_for_window(closed_type);
+                if (cv) cv->close(closed_vid);
                 if (reply[12] != 0) {
                     g_active_win_type = reply[12];
                     if (reply[12] == 3 /* RIBBON_WIN_READER */) {
@@ -732,12 +715,8 @@ static void run_hotkey(void) {
                         vterm_destroy(closed_vid);
                     }
                     if (closed_type == 2 /* RIBBON_WIN_CANVAS */) post_close(closed_vid);
-                    if (closed_type == 3 /* RIBBON_WIN_READER */) {
-                        reader_close_instance(closed_vid);
-                    }
-                    if (closed_type == 4 /* RIBBON_WIN_LAUNCHER */) {
-                        launcher_close();
-                    }
+                    const view_ops_t *cv = view_for_window(closed_type);
+                    if (cv) cv->close(closed_vid);
                     if (reply[12] != 0) {
                         g_active_win_type = reply[12];
                         if (reply[12] == 3 /* RIBBON_WIN_READER */) {

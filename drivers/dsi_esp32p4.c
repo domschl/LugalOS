@@ -47,6 +47,7 @@
 #include "drivers/ribbon.h"
 #include "drivers/i2c_bus.h"
 #include "drivers/lcdterm.h"
+#include "drivers/view.h"
 #include "drivers/screen.h"
 #include "drivers/reader_view.h"
 #include "drivers/launcher_view.h"
@@ -1925,12 +1926,12 @@ static term_go_t term_snapshot(unsigned y0, unsigned y1) {
     for (int i = 0; i < sn->nr; i++) {
         sn->rstride[i] = 0; sn->rw[i] = 0; sn->rh[i] = 0;
         sn->rtag[i] = rids[i];
-        if (rids[i] & 0x80u) {
-            sn->rseq[i] = launcher_get_seq();
-            sn->rbuf[i] = launcher_get_aa_backing(&sn->rstride[i], &sn->rw[i], &sn->rh[i]);
-        } else {
-            sn->rseq[i] = reader_get_seq(rids[i]);
-            sn->rbuf[i] = reader_get_aa_backing(rids[i], &sn->rstride[i], &sn->rw[i], &sn->rh[i]);
+        sn->rbuf[i] = NULL;
+        sn->rseq[i] = 0;
+        const view_ops_t *v = view_for_window(LCDTERM_VIEW_TYPE(rids[i]));
+        if (v) {
+            sn->rseq[i] = v->seq(LCDTERM_VIEW_INST(rids[i]));
+            sn->rbuf[i] = v->surface(LCDTERM_VIEW_INST(rids[i]), &sn->rstride[i], &sn->rw[i], &sn->rh[i]);
         }
     }
 

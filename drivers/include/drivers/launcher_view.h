@@ -37,6 +37,9 @@ void     launcher_drag_end(int dy, uint32_t ms);
 /* The control gallery in place of the launcher's content (`launcher
  * gallery`; its Done button ends it): every ugui control, by touch and keys. */
 void     launcher_gallery(bool on);
+/* A dialog over the launcher (title, message lines split at '\n', OK) --
+ * for what it could not do. */
+void     launcher_alert(const char *title, const char *msg);
 /* Whether a finger down at the point is on a control that follows it (a
  * slider), and that finger's moves while it is captured. */
 bool     launcher_drag_target(int client_x, int client_y);
