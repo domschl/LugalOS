@@ -1,5 +1,6 @@
 #include "kernel/shell.h"
 #include "kernel/apps.h"
+#include "kernel/settings.h"
 #include "drivers/icons.h"
 #include "kernel/stress.h"
 #include "kernel/llp_node.h"
@@ -1770,6 +1771,61 @@ static void cmd_open(const char *path) {
         return;
     }
     parse_and_eval_cmd(cmd);
+}
+
+/* `settings`, `settings get|set|reset KEY [VALUE]`, `settings check`: the
+ * settings store (kernel/settings.h). */
+static void cmd_settings(const char *arg) {
+    while (arg && *arg == ' ') arg++;
+    char v[16];
+    if (!arg || !*arg) {
+        for (unsigned i = 0; settings_at(i); i++) {
+            const setting_def_t *d = settings_at(i);
+            char dv[16];
+            settings_format(d, settings_get(d->key), v, sizeof v);
+            settings_format(d, d->def, dv, sizeof dv);
+            cprintf("  %-20s %-10s (default %s", d->key, v, dv);
+            if (d->kind == SETTING_INT) cprintf(", %d..%d", d->min, d->max);
+            if (d->kind == SETTING_ENUM)
+                for (int k = 0; k <= d->max; k++) cprintf("%s%s", k ? "|" : "; ", d->names[k]);
+            cprintf(")\n");
+        }
+        return;
+    }
+    if (strcmp(arg, "check") == 0) {
+        int bad = settings_check();
+        cprintf("settings check: %s (%d fault%s)\n", bad ? "FAIL" : "PASS", bad, bad == 1 ? "" : "s");
+        return;
+    }
+    char key[32];
+    const char *p = arg;
+    bool get = strncmp(p, "get ", 4) == 0, set = strncmp(p, "set ", 4) == 0, reset = strncmp(p, "reset ", 6) == 0;
+    if (!get && !set && !reset) {
+        cprintf("usage: settings [get KEY | set KEY VALUE | reset KEY | check]\n");
+        return;
+    }
+    p += reset ? 6 : 4;
+    while (*p == ' ') p++;
+    unsigned n = 0;
+    while (p[n] && p[n] != ' ' && n + 1 < sizeof key) { key[n] = p[n]; n++; }
+    key[n] = '\0';
+    const char *val = p + n;
+    while (*val == ' ') val++;
+    const setting_def_t *d = settings_find(key);
+    if (!d) {
+        cprintf("settings: no setting %s\n", key);
+        return;
+    }
+    if (set && !settings_set_text(key, val)) {
+        cprintf("settings: %s takes ", key);
+        if (d->kind == SETTING_INT) cprintf("%d..%d\n", d->min, d->max);
+        else if (d->kind == SETTING_BOOL) cprintf("on or off\n");
+        else for (int k = 0; k <= d->max; k++) cprintf("%s%s", d->names[k], k == d->max ? "\n" : ", ");
+        return;
+    }
+    if (reset) (void)settings_set(key, d->def);
+    settings_format(d, settings_get(key), v, sizeof v);
+    cprintf("%s=%s\n", key, v);
 }
 
 /* `icons`, `icons check`: the built-in icons (drivers/icons.h). */
@@ -6347,6 +6403,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "apps") == 0 || strncmp(cmd_line, "apps ", 5) == 0) {
         cmd_apps(cmd_line + 4);
         return;
+    } else if (strcmp(cmd_line, "settings") == 0 || strncmp(cmd_line, "settings ", 9) == 0) {
+        cmd_settings(cmd_line + 8);
+        return;
     } else if (strcmp(cmd_line, "icons") == 0 || strncmp(cmd_line, "icons ", 6) == 0) {
         cmd_icons(cmd_line + 5);
         return;
@@ -8379,6 +8438,7 @@ static void shell_idle_poll(void) {
 #endif
 
     shell_check_launcher_exec();
+    settings_poll();
 }
 
 void shell_check_launcher_exec(void) {
@@ -8405,6 +8465,7 @@ void shell_run(void) {
     char buf[512];
     line_editor_init();
     line_editor_load_history(10);
+    settings_load();
     launcher_init();
 
     /* Hand the console to the log consumer and drain all boot logs before the shell banner */

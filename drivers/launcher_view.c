@@ -10,6 +10,7 @@
 
 #include "kernel/keyseq.h"
 #include "kernel/apps.h"
+#include "kernel/settings.h"
 #include "drivers/icons.h"
 #include "drivers/launcher_view.h"
 #include "kernel/console.h"
@@ -294,38 +295,22 @@ static void launcher_scan_docs(void) {
     scan_dir_docs("/flash0/help", "Flash");
 }
 
+/* The quick settings are the settings store's (kernel/settings.h): applied
+ * there, kept across reboots. */
 static unsigned get_backlight_percent(void) {
-#if defined(CONFIG_BOARD_ESP32P4) && (defined(CONFIG_DSI_LCD_RST_GPIO) || defined(CONFIG_BOARD_TAB5))
-    return dsi_lcd_get_backlight();
-#else
-    return 100u;
-#endif
+    return (unsigned)settings_get("display.brightness");
 }
 
 static void set_backlight_percent(int pct) {
-    if (pct < 10) pct = 10;
-    if (pct > 100) pct = 100;
-#if defined(CONFIG_BOARD_ESP32P4) && (defined(CONFIG_DSI_LCD_RST_GPIO) || defined(CONFIG_BOARD_TAB5))
-    dsi_lcd_set_backlight((unsigned)pct);
-#elif defined(CONFIG_BOARD_RP2350) && defined(CONFIG_LCD_PCLK_GPIO)
-    lcd7_set_backlight((unsigned)pct);
-#endif
+    (void)settings_set("display.brightness", pct);
 }
 
 static int get_volume_percent(void) {
-#if defined(CONFIG_BOARD_ESP32P4)
-    return audio_p4_get_volume();
-#else
-    return 70;
-#endif
+    return settings_get("audio.volume");
 }
 
 static void set_volume_percent(int pct) {
-    if (pct < 0) pct = 0;
-    if (pct > 100) pct = 100;
-#if defined(CONFIG_BOARD_ESP32P4)
-    audio_p4_set_volume(pct);
-#endif
+    (void)settings_set("audio.volume", pct);
 }
 
 /* The steppers' parts that cannot act (ugui_disable_next(): bit 0 the -,
@@ -1004,24 +989,10 @@ static bool launcher_activate(uint16_t id, int16_t hit_idx) {
 #if defined(CONFIG_BOARD_TAB5)
     /* ugui_segmented() gives each segment its own id, base + index. */
     if (id >= LAUNCHER_ID_ORIENT_SEG && id < LAUNCHER_ID_ORIENT_SEG + 3) {
-        hit_idx = (int16_t)(id - LAUNCHER_ID_ORIENT_SEG);
-        if (hit_idx == 0) {
-            orient_set_auto(false);
-            dsi_lcd_set_orientation(270);
-            console_sync_readers();
-            return true;
-        }
-        if (hit_idx == 1) {
-            orient_set_auto(false);
-            dsi_lcd_set_orientation(0);
-            console_sync_readers();
-            return true;
-        }
-        if (hit_idx == 2) {
-            orient_set_auto(true);
-            launcher_update();
-            return true;
-        }
+        hit_idx = (int16_t)(id - LAUNCHER_ID_ORIENT_SEG);   /* landscape, portrait, auto: display.orient's */
+        (void)settings_set("display.orient", hit_idx);
+        if (hit_idx == 2) launcher_update();             /* a rotation redraws it anyway */
+        return true;
     }
 #endif
     if (id == LAUNCHER_ID_DOC_REFRESH) {

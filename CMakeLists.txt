@@ -666,6 +666,7 @@ set(SOURCES
     # each canvas window's event ring (kernel/event.h).
     kernel/winevent.c
     kernel/apps.c
+    kernel/settings.c
     drivers/icons.c
     drivers/icons_data.c
     kernel/vterm.c

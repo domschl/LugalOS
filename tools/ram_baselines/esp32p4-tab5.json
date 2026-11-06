@@ -107,6 +107,7 @@
     "kernel/privilege.c": 8,
     "kernel/random.c": 9,
     "kernel/sched.c": 2501,
+    "kernel/settings.c": 27,
     "kernel/shell.c": 2998,
     "kernel/smp.c": 80,
     "kernel/status_led.c": 8,
@@ -181,7 +182,7 @@
     "fs": 4160,
     "httpd": 70,
     "identity": 4237,
-    "kernel": 14295,
+    "kernel": 14322,
     "lisp": 1115,
     "llp": 3579,
     "log": 8322,
@@ -197,5 +198,5 @@
     "vfs": 4111
   },
   "ram_code": 1806,
-  "total": 216719
+  "total": 216746
 }
