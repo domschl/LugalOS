@@ -409,6 +409,12 @@ Done: the frame record and `uxbench`; glass, screen, layout and strip checks; co
 - Settings store with persistence; existing launcher settings wired to it; `settings` shell command (`settings get|set|list`).
 - **Acceptance:** adding a test view needs no change in `screen.c` or `dsi_esp32p4.c`; settings survive a reboot; closing a window whose owner task hangs releases its session claim within 200 ms; docs updated (`doc/user/shell.md` for `open`, `apps`, `settings`).
 
+### 71.4b — `ugui` for Lisp programs (added 2026-11-06, owner)
+- Lisp primitives over the 71.3 widgets, in the immediate-mode model the toolkit already uses: the program owns its loop, `(ui-begin)`, one call per widget (drawn into the program's own surface, its hit-box registered: `(ui-button id "OK" x y w h)`, cards, lists, steppers, text fields...), `(ui-end)` presents; `(ui-event)` takes the next event from the window's own ring (71.2's routing), `(ui-hit ev)` names the widget it hit. No callbacks from system tasks into the program.
+- The surface: a canvas window (GRAY8 or RGB565, as the board's surfaces are), so a Lisp UI app is a ribbon window like any other and gets focus, keyboard parity (71.3's focus) and the full-screen convention if it asks for full screen.
+- Primitives in the builtins table (`.rodata`, sorted), documented in `doc/dev/on_device/lisp_scripting.md`; a sample app ("hello ugui": a few controls and a list) in `tools/sd_root/demos/`.
+- **Acceptance:** the sample runs by touch and by keys only on the Tab5, the 7B and the RP2350-LCD-7; QEMU's RAM screen runs it in the test suite with injected events.
+
 ### 71.5 — Portrait major-axis ribbon
 - `ribbon_t.axis`, renamed major-axis fields, row-based sizes; one-up and top/bottom pair in portrait; rotation preserves order and focus.
 - Gesture arbitration along Y; `Cmd+Up/Down`; minimap variant chosen on the device.
@@ -460,6 +466,7 @@ Done: the frame record and `uxbench`; glass, screen, layout and strip checks; co
 
 - **Book images and inline figures**: the converter writes epub images as gray image files next to the chapters (4-bpp, sized for the panel, cover-style dithering for 1-bpp). The reader draws them as image blocks through the `.GIC` blit from 71.3/71.4, and the layout index gets an `image` block kind with known height. Phase 71 lays the groundwork: alt text keeps the image's place in the text, the icon format and blit exist, and the converter's report counts the dropped images.
 - Hyphenation; justified text.
+- **Phase 72 candidate: `ugui` for C programs (chibicc).** C programs run in U-mode under memory domains, so this needs its own design: `ugui` as a user-space library compiled into the program (it is freestanding and allocation-free; the question is the font tables' visibility from U-mode), a surface mapped into the program's domain, and an event syscall for the program's window. Same immediate-mode API as 71.4b's Lisp one. Decided later whether and when (owner, 2026-11-06).
 - File copy/move/rename across volumes; search across the catalog.
 - Multi-touch (pinch zoom) — the ST7123 reports up to 10 points, the GT911 5; the recogniser in 71.2 reads only the first point, but its contact model is written so a second point can be added.
 - Colour UI accents on RGB565 surfaces.
