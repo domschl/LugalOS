@@ -528,15 +528,23 @@ static int ceres_run_claimed(const char *args) {
     }
 
     uint32_t last_time = ceres_platform_get_ticks_ms();
+    bool paused = false;
 
     while (s_p4_game.running) {
         if (console_interrupt_requested() || console_canvas_poll_closed()) break;
         if (max_frames > 0 && s_p4_game.frame_count >= (uint32_t)max_frames) break;
 
+        /* In the background: paused until the window has the focus again,
+         * then on from where it was (no jump by the time away). The sound
+         * stream stops with it, as moonbase's: an unrefilled DMA ring
+         * replays its last second. */
         if (s_cid >= 0 && !lcdterm_is_canvas_active((uint8_t)s_cid)) {
+            if (!paused) { audio_p4_stop(); paused = true; }
             ceres_platform_delay_ms(50);
+            last_time = ceres_platform_get_ticks_ms();
             continue;
         }
+        if (paused) { audio_p4_start(ceres_p4_audio_render, NULL); paused = false; }
 
         uint32_t now = ceres_platform_get_ticks_ms();
         uint32_t delta = now - last_time;

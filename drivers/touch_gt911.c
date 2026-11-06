@@ -69,6 +69,8 @@ typedef struct {
     unsigned          scr_w, scr_h;          /* the screen's, when last mapped */
     uint32_t          polls, reports, presses, taps, swipes, longs, drags, nothings, errors;
     uint32_t          ends_lifted, ends_quiet;   /* how contacts ended: a lift report, or reports stopping */
+    bool              edge;                      /* this contact began in the edge band */
+    uint32_t          edge_contacts;
     uint32_t          st_empty;                  /* ST7123 reports with coordinates but no valid point */
     uint32_t          st_empty_down;             /* ... of them while a contact was down */
     uint32_t          st_empty_mid;              /* ... followed by a point again in the same contact */
@@ -178,6 +180,16 @@ static void gesture_act(gesture_kind_t kind, const gesture_t *ev) {
     }
 }
 
+/* An application's touch hook (a full-screen game) owns the contacts, except
+ * one that begins within this many millimetres of the left or right edge of
+ * the screen: that one is the window manager's, so a swipe in from the edge
+ * leaves the game for the ribbon. */
+#define TOUCH_EDGE_MM 3u
+
+static bool hook_owns(void) {
+    return s_touch_hook && !g_t.edge;
+}
+
 /* The contact ended, last seen at last_ms: the application's hook first,
  * then the gesture (timed to the last report, not to when the end was
  * noticed, so a tap's and a swipe's duration do not include the wait). */
@@ -186,7 +198,7 @@ static void contact_end(int x, int y, uint64_t last_ms) {
     g_t.log_seq++;
     gesture_t ev;
     gesture_kind_t kind = gesture_contact(&g_t.gs, false, x, y, (uint32_t)last_ms, &ev);
-    if (s_touch_hook && s_touch_hook(x, y, 3)) return;   /* handled by the application */
+    if (hook_owns() && s_touch_hook(x, y, 3)) return;   /* handled by the application */
     if (kind != GESTURE_NONE || !g_t.gs.long_sent) gesture_act(kind, &ev);
 }
 
@@ -272,12 +284,15 @@ static void touch_task_body(void *arg) {
             if (!down) {
                 down = true;
                 g_t.presses++;
+                int band = gesture_mm_px(TOUCH_EDGE_MM, CONFIG_PANEL_DPI);
+                g_t.edge = g_t.scr_w && (x < band || x >= (int)g_t.scr_w - band);
+                if (g_t.edge) g_t.edge_contacts++;
             }
             g_t.log_kind = kind;
             g_t.log_seq++;
             gesture_t ev;
             gesture_kind_t gk = gesture_contact(&g_t.gs, true, x, y, (uint32_t)t_last, &ev);
-            if (s_touch_hook) {
+            if (hook_owns()) {
                 (void)s_touch_hook(x, y, kind);
             } else if (gk == GESTURE_DRAG) {
                 gesture_act(gk, &ev);
@@ -295,13 +310,13 @@ static void touch_task_body(void *arg) {
             } else {
                 gesture_t ev;
                 gesture_kind_t k = gesture_tick(&g_t.gs, (uint32_t)time_get_ms(), &ev);
-                if (k != GESTURE_NONE && !s_touch_hook) gesture_act(k, &ev);
+                if (k != GESTURE_NONE && !hook_owns()) gesture_act(k, &ev);
             }
         }
         if (down && got) {
             gesture_t ev;
             gesture_kind_t k = gesture_tick(&g_t.gs, (uint32_t)time_get_ms(), &ev);
-            if (k != GESTURE_NONE && !s_touch_hook) gesture_act(k, &ev);
+            if (k != GESTURE_NONE && !hook_owns()) gesture_act(k, &ev);
         }
     }
 }
@@ -453,6 +468,8 @@ void touch_command(const char *args) {
             "longest gap in a contact %lu ms\n",
             (unsigned long)g_t.ends_lifted, (unsigned long)g_t.ends_quiet, (unsigned long)g_t.st_empty,
             (unsigned long)g_t.st_empty_down, (unsigned long)g_t.st_empty_mid, (unsigned long)g_t.gap_max_ms);
+    cprintf("touch: %lu contacts began in the edge band (%d px, the window manager's)\n",
+            (unsigned long)g_t.edge_contacts, gesture_mm_px(TOUCH_EDGE_MM, CONFIG_PANEL_DPI));
     cprintf("touch: %u dpi: a tap moves under %d px, a swipe crosses %d px\n",
             (unsigned)CONFIG_PANEL_DPI, (int)g_t.gs.tap_px, (int)g_t.gs.swipe_px);
     if (g_t.presses) cprintf("touch: last point %d,%d\n", g_t.last_x, g_t.last_y);

@@ -100,6 +100,7 @@ typedef struct {
     bool      in_use;
     bool      locked;                   /* canvas layout locked for this slot */
     bool      buf565_owned;             /* true if buf565 was allocated by screen.c and should be freed by it */
+    bool      fullscreen;               /* asked for SCREEN_LAYOUT_FULLSCREEN: the layout while it has the focus */
     uint16_t  drawn_w;                  /* the window width `backing` was drawn at; 0: none */
     char      name[SCREEN_CTITLE_MAX];  /* unique canvas name (e.g. "plot", "chess", "map") */
     char      title[SCREEN_CTITLE_MAX]; /* canvas window title */

@@ -335,6 +335,7 @@ __attribute__((unused)) LCDTERM_UTEXT static int screen_alloc_canvas(screen_t *s
 
 LCDTERM_UTEXT static void screen_free_canvas(screen_t *scr, uint8_t cid) {
     if (cid < SCREEN_MAX_CANVASES) {
+        scr->canvases[cid].fullscreen = false;
 #if CANVAS_SUPPORT_RGB565
         if (scr->canvases[cid].buf565) {
             if (scr->canvases[cid].buf565_owned) {
@@ -1397,10 +1398,25 @@ LCDTERM_UTEXT static inline void lcdterm_sync_post(void) {
  * console ~520-650 ms (`lockcheck`). Every pixel moves, so the conversion is
  * at the PSRAM's bandwidth; fewer frames or a faster PSRAM path are what
  * would shorten it. */
+/* A full-screen canvas (a game) covers the screen only while its window has
+ * the focus: when the focus moves to another window (a swipe from the
+ * screen's edge, the keyboard, a minimap tap) the ribbon is back, with the
+ * game's window in it, and when it moves back the game covers it again. The
+ * game sees it through lcdterm_is_canvas_active() and pauses meanwhile. */
+LCDTERM_UTEXT static void fullscreen_follow_focus(screen_t *scr) {
+    if (scr->ribbon.count == 0 || scr->ribbon.active_idx >= scr->ribbon.count) return;
+    const ribbon_win_t *w = &scr->ribbon.wins[scr->ribbon.active_idx];
+    bool fs = w->type == RIBBON_WIN_CANVAS && w->vterm_id < SCREEN_MAX_CANVASES &&
+              scr->canvases[w->vterm_id].in_use && scr->canvases[w->vterm_id].fullscreen;
+    if (scr->layout == SCREEN_LAYOUT_FULLSCREEN && !fs) scr->layout = SCREEN_LAYOUT_CANVAS;
+    else if (scr->layout != SCREEN_LAYOUT_FULLSCREEN && fs) scr->layout = SCREEN_LAYOUT_FULLSCREEN;
+}
+
 LCDTERM_UTEXT static void screen_animate_ribbon(screen_t *scr,
                                                 uint8_t win_a, int32_t a_start_rx0, int32_t a_start_rx1,
                                                 uint8_t win_b, int32_t b_start_rx0, int32_t b_start_rx1,
                                                 int32_t start_xv) {
+    fullscreen_follow_focus(scr);
     int32_t target_xv = scr->ribbon.x_target;
     int32_t a_target_rx0 = (win_a < scr->ribbon.count) ? scr->ribbon.wins[win_a].rx0 : 0;
     int32_t a_target_rx1 = (win_a < scr->ribbon.count) ? scr->ribbon.wins[win_a].rx1 : 0;
@@ -1815,6 +1831,10 @@ LCDTERM_UTEXT bool screen_set_layout_vterm_named_fmt(screen_t *scr, uint8_t vid,
             return false;
         }
     }
+
+    /* Which canvas covers the screen while it has the focus (the games). */
+    int fcid = (name && *name) ? screen_find_canvas_by_name(scr, name) : screen_find_canvas_by_vterm(scr, vid);
+    if (fcid >= 0) scr->canvases[fcid].fullscreen = layout == SCREEN_LAYOUT_FULLSCREEN;
 
     scr->layout = (uint8_t)layout;
     scr->redrawing = 0;
