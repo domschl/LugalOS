@@ -3104,6 +3104,7 @@ static void chess_touch_draw(void) {
     surf.w = w;
     surf.h = h;
     surf.scale = s;
+    surf.clipped = false;
 
     g_touch_draws++;
     ugui_begin(&g_touch_ui_ctx);

@@ -28,6 +28,104 @@ void ugui_begin(ugui_ctx_t *ctx) {
     ctx->cur_bound = 0;
 }
 
+/* --- Clipping ------------------------------------------------------------
+ *
+ * A clipped surface is drawn through a view of its clip rectangle: a 1-bpp
+ * window on it (canvas1_window()), the GRAY8 buffer from its corner, the
+ * coordinates moved by its origin. The primitives below then clip to the
+ * view's bounds as they clip to a surface's. */
+
+typedef struct {
+    ugui_surface_t s;
+    canvas1_t      win;
+    int            dx, dy;
+} ugui_view_t;
+
+ugui_surface_t ugui_clip(const ugui_surface_t *s, ugui_rect_t r) {
+    ugui_surface_t c = *s;
+    int x0 = r.x, y0 = r.y, x1 = r.x + r.w, y1 = r.y + r.h;
+    int bx0 = s->clipped ? s->clip.x : 0, by0 = s->clipped ? s->clip.y : 0;
+    int bx1 = s->clipped ? s->clip.x + s->clip.w : s->w, by1 = s->clipped ? s->clip.y + s->clip.h : s->h;
+    if (x0 < bx0) x0 = bx0;
+    if (y0 < by0) y0 = by0;
+    if (x1 > bx1) x1 = bx1;
+    if (y1 > by1) y1 = by1;
+    c.clipped = true;
+    c.clip = (ugui_rect_t){ (int16_t)x0, (int16_t)y0, (int16_t)(x1 > x0 ? x1 - x0 : 0), (int16_t)(y1 > y0 ? y1 - y0 : 0) };
+    return c;
+}
+
+/* The surface to draw on for s: s itself unclipped, else the view (NULL for
+ * an empty clip: nothing to draw). */
+static const ugui_surface_t *view(const ugui_surface_t *s, ugui_view_t *v) {
+    v->dx = v->dy = 0;
+    if (!s->clipped) return s;
+    if (s->clip.w <= 0 || s->clip.h <= 0) return NULL;
+    v->s = *s;
+    v->s.clipped = false;
+    v->dx = s->clip.x;
+    v->dy = s->clip.y;
+    if (s->c1) {
+        canvas1_window(&v->win, s->c1, s->clip.x, s->clip.y, (unsigned)s->clip.w, (unsigned)s->clip.h);
+        v->s.c1 = &v->win;
+    }
+    if (s->aa_fb) v->s.aa_fb = s->aa_fb + (uint32_t)s->clip.y * s->aa_stride + (uint32_t)s->clip.x;
+    v->s.w = s->clip.w;
+    v->s.h = s->clip.h;
+    return &v->s;
+}
+
+static void raw_fill(const ugui_surface_t *s, ugui_rect_t r, uint8_t gray, unsigned pat1);
+static int raw_text_serif(const ugui_surface_t *s, int x, int y, const char *str, uint32_t len,
+                          bool bold, bool italic, bool inverted);
+static int raw_text_mono(const ugui_surface_t *s, int x, int y, const char *str, uint32_t len,
+                         bool bold, bool inverted);
+static void raw_invert(const ugui_surface_t *s, int x0, int y0, int x1, int y1);
+static void raw_dim(const ugui_surface_t *s, ugui_rect_t r);
+
+void ugui_fill(const ugui_surface_t *s, ugui_rect_t r, uint8_t gray, unsigned pat1) {
+    if (!s) return;
+    ugui_view_t v;
+    const ugui_surface_t *t = view(s, &v);
+    if (!t) return;
+    r.x = (int16_t)(r.x - v.dx);
+    r.y = (int16_t)(r.y - v.dy);
+    raw_fill(t, r, gray, pat1);
+}
+
+int ugui_text_serif(const ugui_surface_t *s, int x, int y, const char *str, uint32_t len,
+                    bool bold, bool italic, bool inverted) {
+    if (!s) return 0;
+    ugui_view_t v;
+    const ugui_surface_t *t = view(s, &v);
+    if (!t) return ugui_text_serif_width(s, str, len);
+    return raw_text_serif(t, x - v.dx, y - v.dy, str, len, bold, italic, inverted);
+}
+
+int ugui_text_mono(const ugui_surface_t *s, int x, int y, const char *str, uint32_t len,
+                   bool bold, bool inverted) {
+    if (!s) return 0;
+    ugui_view_t v;
+    const ugui_surface_t *t = view(s, &v);
+    if (!t) return (int)len * ugui_mono_cell_w(s);
+    return raw_text_mono(t, x - v.dx, y - v.dy, str, len, bold, inverted);
+}
+
+static void ugui_invert(const ugui_surface_t *s, int x0, int y0, int x1, int y1) {
+    ugui_view_t v;
+    const ugui_surface_t *t = view(s, &v);
+    if (t) raw_invert(t, x0 - v.dx, y0 - v.dy, x1 - v.dx, y1 - v.dy);
+}
+
+static void ugui_dim(const ugui_surface_t *s, ugui_rect_t r) {
+    ugui_view_t v;
+    const ugui_surface_t *t = view(s, &v);
+    if (!t) return;
+    r.x = (int16_t)(r.x - v.dx);
+    r.y = (int16_t)(r.y - v.dy);
+    raw_dim(t, r);
+}
+
 int ugui_target_px(void) {
 #if defined(CONFIG_PANEL_DPI)
     return (int)((UGUI_TARGET_MM * (unsigned)CONFIG_PANEL_DPI * 10u + 127u) / 254u);
@@ -98,6 +196,28 @@ void ugui_add_hit(ugui_ctx_t *ctx, ugui_rect_t r, uint16_t id, int16_t index) {
     add_hit_flags(ctx, r, id, index, 0);
 }
 
+/* A widget's hit-box on surface s: cut to s's clip (gone when nothing of it
+ * shows), and its touch area kept inside the clip unless bounds are set. */
+static void add_hit_s(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r, uint16_t id,
+                      int16_t index, uint8_t flags) {
+    if (!ctx) return;
+    if (!s || !s->clipped) { add_hit_flags(ctx, r, id, index, flags); return; }
+    int x0 = r.x > s->clip.x ? r.x : s->clip.x, y0 = r.y > s->clip.y ? r.y : s->clip.y;
+    int x1 = r.x + r.w < s->clip.x + s->clip.w ? r.x + r.w : s->clip.x + s->clip.w;
+    int y1 = r.y + r.h < s->clip.y + s->clip.h ? r.y + r.h : s->clip.y + s->clip.h;
+    if (x1 <= x0 || y1 <= y0) return;
+    uint8_t keep = ctx->cur_bound;
+    if (!keep) {
+        const ugui_rect_t *last = ctx->nbounds ? &ctx->bounds[ctx->nbounds - 1] : NULL;
+        if (last && last->x == s->clip.x && last->y == s->clip.y && last->w == s->clip.w && last->h == s->clip.h)
+            ctx->cur_bound = ctx->nbounds;
+        else
+            ugui_slop_bounds(ctx, s->clip);
+    }
+    add_hit_flags(ctx, (ugui_rect_t){ (int16_t)x0, (int16_t)y0, (int16_t)(x1 - x0), (int16_t)(y1 - y0) }, id, index, flags);
+    ctx->cur_bound = keep;
+}
+
 void ugui_disable_next(ugui_ctx_t *ctx, uint8_t parts) {
     if (ctx) ctx->next_disabled = parts;
 }
@@ -112,7 +232,7 @@ static uint8_t take_disabled(ugui_ctx_t *ctx) {
 
 /* Dims r as drawn: GRAY8 two thirds of the way to the card's white, 1-bpp
  * the Classic Mac way, every other ink pixel cleared in a checkerboard. */
-static void ugui_dim(const ugui_surface_t *s, ugui_rect_t r) {
+static void raw_dim(const ugui_surface_t *s, ugui_rect_t r) {
     int x0 = r.x < 0 ? 0 : r.x, y0 = r.y < 0 ? 0 : r.y;
     int x1 = r.x + r.w - 1, y1 = r.y + r.h - 1;
     if (x1 >= s->w) x1 = s->w - 1;
@@ -247,7 +367,7 @@ bool ugui_is_focused(const ugui_ctx_t *ctx, uint16_t id, int16_t index) {
 }
 
 /* Inverts r on both surfaces. */
-static void ugui_invert(const ugui_surface_t *s, int x0, int y0, int x1, int y1) {
+static void raw_invert(const ugui_surface_t *s, int x0, int y0, int x1, int y1) {
     if (x0 < 0) x0 = 0;
     if (y0 < 0) y0 = 0;
     if (x1 >= s->w) x1 = s->w - 1;
@@ -325,7 +445,7 @@ uint16_t ugui_hit_test(const ugui_ctx_t *ctx, int x, int y, int16_t *out_index) 
     return h->id;
 }
 
-void ugui_fill(const ugui_surface_t *s, ugui_rect_t r, uint8_t gray, unsigned pat1) {
+static void raw_fill(const ugui_surface_t *s, ugui_rect_t r, uint8_t gray, unsigned pat1) {
     if (!s || r.w <= 0 || r.h <= 0) return;
     int x0 = r.x;
     int y0 = r.y;
@@ -439,8 +559,8 @@ int ugui_text_serif_width(const ugui_surface_t *s, const char *str, uint32_t len
     return (int)font_serif_text_width(str, len);
 }
 
-int ugui_text_serif(const ugui_surface_t *s, int x, int y, const char *str, uint32_t len,
-                    bool bold, bool italic, bool inverted) {
+static int raw_text_serif(const ugui_surface_t *s, int x, int y, const char *str, uint32_t len,
+                          bool bold, bool italic, bool inverted) {
     if (!s || !str || len == 0) return 0;
     int sc = s->scale > 0 ? s->scale : 1;
     uint8_t fg = inverted ? UGUI_GRAY_CARD : UGUI_GRAY_INK;
@@ -484,8 +604,8 @@ int ugui_text_serif(const ugui_surface_t *s, int x, int y, const char *str, uint
     return w;
 }
 
-int ugui_text_mono(const ugui_surface_t *s, int x, int y, const char *str, uint32_t len,
-                   bool bold, bool inverted) {
+static int raw_text_mono(const ugui_surface_t *s, int x, int y, const char *str, uint32_t len,
+                         bool bold, bool inverted) {
     if (!s || !str || len == 0) return 0;
     int sc = s->scale > 0 ? s->scale : 1;
     uint8_t fg = inverted ? UGUI_GRAY_CARD : UGUI_GRAY_INK;
@@ -610,7 +730,7 @@ void ugui_button(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r,
         ugui_text_serif(s, tx, ty, label, len, true, false, active);
     }
     if (dis) ugui_dim(s, (ugui_rect_t){ r.x, r.y, (int16_t)(r.w + 3 * s->scale), (int16_t)(r.h + 3 * s->scale) });
-    add_hit_flags(ctx, r, id, 0, dis ? UGUI_HIT_DISABLED : 0);
+    add_hit_s(s, ctx, r, id, 0, dis ? UGUI_HIT_DISABLED : 0);
 }
 
 void ugui_toolbar_button(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r,
@@ -649,7 +769,7 @@ void ugui_toolbar_button(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r
         ugui_text_serif(s, tx, ty, label, len, true, false, active);
     }
     if (dis) ugui_dim(s, r);
-    add_hit_flags(ctx, r, id, 0, dis ? UGUI_HIT_DISABLED : 0);
+    add_hit_s(s, ctx, r, id, 0, dis ? UGUI_HIT_DISABLED : 0);
 }
 
 void ugui_card(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r,
@@ -691,7 +811,7 @@ void ugui_card(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r,
     }
 
     if (dis) ugui_dim(s, (ugui_rect_t){ r.x, r.y, (int16_t)(r.w + 3 * sc), (int16_t)(r.h + 3 * sc) });
-    add_hit_flags(ctx, r, id, 0, dis ? UGUI_HIT_DISABLED : 0);
+    add_hit_s(s, ctx, r, id, 0, dis ? UGUI_HIT_DISABLED : 0);
 }
 
 void ugui_section_header(const ugui_surface_t *s, int x, int y, int w, const char *title) {
@@ -796,7 +916,7 @@ void ugui_segmented(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r,
             ugui_text_serif(s, lx, ly, labels[i], llen, true, false, sel);
         }
         if (seg_dis) ugui_dim(s, seg);
-        add_hit_flags(ctx, seg, (uint16_t)(base_id + (uint16_t)i), (int16_t)i, seg_dis ? UGUI_HIT_DISABLED : 0);
+        add_hit_s(s, ctx, seg, (uint16_t)(base_id + (uint16_t)i), (int16_t)i, seg_dis ? UGUI_HIT_DISABLED : 0);
     }
 }
 
@@ -842,7 +962,7 @@ void ugui_list_row(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r,
                UGUI_GRAY_TRACK, CANVAS1_GREY);
 
     if (dis) ugui_dim(s, r);
-    add_hit_flags(ctx, r, id, index, dis ? UGUI_HIT_DISABLED : 0);
+    add_hit_s(s, ctx, r, id, index, dis ? UGUI_HIT_DISABLED : 0);
 }
 
 void ugui_scrollbar(const ugui_surface_t *s, ugui_rect_t track, int scroll_y,
@@ -868,6 +988,36 @@ void ugui_scrollbar(const ugui_surface_t *s, ugui_rect_t track, int scroll_y,
         .h = (int16_t)thumb_h,
     };
     ugui_fill(s, thumb, UGUI_GRAY_SHADOW, CANVAS1_BLACK);
+}
+
+int ugui_vlist(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t view, int count, int row_h,
+               int *scroll_px, ugui_row_fn row, void *user) {
+    if (!s || !scroll_px || !row || row_h <= 0 || view.w <= 0 || view.h <= 0) return 0;
+    int max = count * row_h - view.h;
+    if (max < 0) max = 0;
+    if (*scroll_px > max) *scroll_px = max;
+    if (*scroll_px < 0) *scroll_px = 0;
+    ugui_surface_t vs = ugui_clip(s, view);
+    int drawn = 0;
+    for (int i = *scroll_px / row_h; i < count; i++) {
+        int y = view.y + i * row_h - *scroll_px;
+        if (y >= view.y + view.h) break;
+        row(&vs, ctx, (ugui_rect_t){ view.x, (int16_t)y, view.w, (int16_t)row_h }, i, user);
+        drawn++;
+    }
+    return drawn;
+}
+
+int ugui_vlist_reveal(int scroll_px, int view_h, int row_h, int index) {
+    int top = index * row_h, bottom = top + row_h;
+    if (top < scroll_px) return top;
+    if (bottom > scroll_px + view_h) return bottom - view_h;
+    return scroll_px;
+}
+
+static void selftest_row(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t row, int index, void *user) {
+    (void)user;
+    ugui_list_row(s, ctx, row, NULL, "r", NULL, 50, (int16_t)index, false);
 }
 
 bool ugui_selftest(void) {
@@ -1006,6 +1156,35 @@ bool ugui_selftest(void) {
     if (ugui_hit_test(&tc, 4, 46, NULL) != 3 || ugui_hit_test(&tc, 14, 38, NULL) != 0) return false;
     ugui_set_min_target(&tc, 0);
     if (ugui_hit_test(&tc, 51, 25, NULL) != 0) return false;                  /* as drawn only */
+
+    /* Clipping: a fill through a clip lands only inside it; clips nest as
+     * an intersection; a widget's hit-box is cut to the clip. */
+    memset(fb, 0, sizeof(fb));
+    ugui_surface_t cs = ugui_clip(&surf, (ugui_rect_t){ 10, 10, 20, 20 });
+    ugui_fill(&cs, (ugui_rect_t){ 0, 0, 128, 64 }, UGUI_GRAY_INK, CANVAS1_BLACK);
+    if (canvas1_get(&c1, 5, 5) != 0u || canvas1_get(&c1, 15, 15) != 1u || canvas1_get(&c1, 30, 30) != 0u ||
+        canvas1_get(&c1, 29, 29) != 1u) return false;
+    ugui_surface_t cs2 = ugui_clip(&cs, (ugui_rect_t){ 20, 0, 100, 100 });
+    if (cs2.clip.x != 20 || cs2.clip.y != 10 || cs2.clip.w != 10 || cs2.clip.h != 20) return false;
+    ugui_ctx_t hc;
+    memset(&hc, 0, sizeof hc);
+    ugui_begin(&hc);
+    ugui_toolbar_button(&cs, &hc, (ugui_rect_t){ 0, 12, 40, 10 }, "x", 7, false);
+    if (ugui_hit_test(&hc, 5, 15, NULL) != 0 || ugui_hit_test(&hc, 12, 15, NULL) != 7) return false;
+    ugui_toolbar_button(&cs, &hc, (ugui_rect_t){ 60, 12, 20, 10 }, "y", 8, false);   /* wholly outside */
+    if (hc.count != 1) return false;
+
+    /* The virtual list: ten 10 px rows, a 25 px view scrolled by 15 draws
+     * rows 1..3 (row 1 cut at the top); the scroll is clamped; reveal. */
+    int sp = 15;
+    ugui_begin(&hc);
+    if (ugui_vlist(&surf, &hc, (ugui_rect_t){ 0, 30, 100, 25 }, 10, 10, &sp, selftest_row, NULL) != 3) return false;
+    if (hc.count != 3 || hc.hits[0].index != 1 || hc.hits[0].rect.y != 30 || hc.hits[0].rect.h != 5) return false;
+    sp = 1000;
+    (void)ugui_vlist(&surf, &hc, (ugui_rect_t){ 0, 30, 100, 25 }, 10, 10, &sp, selftest_row, NULL);
+    if (sp != 75) return false;
+    if (ugui_vlist_reveal(0, 25, 10, 9) != 75 || ugui_vlist_reveal(75, 25, 10, 0) != 0 ||
+        ugui_vlist_reveal(10, 25, 10, 2) != 10) return false;
 
     return true;
 }

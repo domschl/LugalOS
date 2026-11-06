@@ -1,6 +1,6 @@
 {
   "bulk_per_file": {
-    "drivers/launcher_view.c": 5700,
+    "drivers/launcher_view.c": 21944,
     "drivers/reader_view.c": 62400,
     "drivers/uxbench.c": 540,
     "kernel/palloc.c": 8192,
@@ -11,13 +11,13 @@
   },
   "bulk_per_subsystem": {
     "chess": 1844,
-    "display": 68100,
+    "display": 84344,
     "drivers": 540,
     "kernel": 10768,
     "lisp": 1523712,
     "selftest": 64
   },
-  "bulk_total": 1605028,
+  "bulk_total": 1621272,
   "heap_bytes": 299008,
   "heap_pages": 73,
   "per_file": {
@@ -74,7 +74,7 @@
     "kernel/chan.c": 1348,
     "kernel/chan_selftest.c": 172,
     "kernel/clipboard.c": 20,
-    "kernel/console.c": 780,
+    "kernel/console.c": 776,
     "kernel/device.c": 140,
     "kernel/devirq.c": 134,
     "kernel/discipline.c": 82,
@@ -164,11 +164,11 @@
     "ota": 126,
     "selftest": 1654,
     "sensors": 8689,
-    "shell": 12552,
+    "shell": 12548,
     "storage": 3152,
     "usb": 20928,
     "vfs": 4111
   },
   "ram_code": 24484,
-  "total": 196304
+  "total": 196300
 }

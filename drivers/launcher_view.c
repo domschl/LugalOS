@@ -31,6 +31,8 @@ void launcher_press(int client_x, int client_y) { (void)client_x; (void)client_y
 void launcher_release(void) {}
 void launcher_scroll(int delta_y) { (void)delta_y; }
 void launcher_feed_key(int c) { (void)c; }
+void launcher_drag(int dy) { (void)dy; }
+void launcher_drag_end(int dy, uint32_t ms) { (void)dy; (void)ms; }
 void launcher_feed_end(void) {}
 bool launcher_poll_exec(char *out_cmd, size_t max_len) { (void)out_cmd; (void)max_len; return false; }
 uint8_t *launcher_get_aa_backing(uint32_t *out_stride, int *out_w, int *out_h) { (void)out_stride; (void)out_w; (void)out_h; return NULL; }
@@ -66,7 +68,7 @@ void launcher_report(void) { cprintf("launcher: not present on headless board\n"
 #include "drivers/lcd7.h"
 #endif
 
-#define LAUNCHER_MAX_DOCS       24
+#define LAUNCHER_MAX_DOCS       128     /* in BULK_BSS: ~20 KB, PSRAM on the panel boards */
 
 #define LAUNCHER_ID_APP_READER   1
 #define LAUNCHER_ID_APP_CHESS    2
@@ -118,8 +120,9 @@ typedef struct {
     uint8_t        slot_id;
     int            win_w;
     int            win_h;
-    int            scroll_idx;
-    int            visible_docs;
+    int            scroll_px;      /* the document list's scroll, pixels */
+    int            item_h, view_h; /* its row and viewport heights, as last drawn */
+    int            list_x, list_y, list_w, list_avail;   /* draw_doc_list()'s place, as last drawn */
     int            doc_count;
     launcher_doc_t docs[LAUNCHER_MAX_DOCS];
     ugui_ctx_t     ui_ctx;
@@ -137,11 +140,21 @@ typedef struct {
  * update the live surface from the input path. */
 static launcher_state_t s_launcher BULK_BSS;
 
+/* ASCII case folded: the FAT volumes answer 8.3 names in capitals. */
+static bool same_name(const char *a, const char *b) {
+    for (;; a++, b++) {
+        char ca = (*a >= 'A' && *a <= 'Z') ? (char)(*a + 32) : *a;
+        char cb = (*b >= 'A' && *b <= 'Z') ? (char)(*b + 32) : *b;
+        if (ca != cb) return false;
+        if (!ca) return true;
+    }
+}
+
 static bool str_ends_with(const char *s, const char *suffix) {
     size_t sl = strlen(s);
     size_t xl = strlen(suffix);
     if (sl < xl) return false;
-    return strcmp(s + sl - xl, suffix) == 0;
+    return same_name(s + sl - xl, suffix);
 }
 
 static const char *find_last_char(const char *s, char ch) {
@@ -157,7 +170,7 @@ static bool doc_already_listed(const char *basename) {
         const char *p = s_launcher.docs[i].path;
         const char *slash = find_last_char(p, '/');
         const char *b = slash ? (slash + 1) : p;
-        if (strcmp(b, basename) == 0) return true;
+        if (same_name(b, basename)) return true;
     }
     return false;
 }
@@ -178,6 +191,13 @@ static void add_doc_entry(const char *full_path, const char *name, const char *b
             break;
         }
     }
+    /* An 8.3 name comes in capitals: shown as "Shell", not "SHELL". */
+    bool lower = false;
+    for (int i = 0; d->label[i]; i++)
+        if (d->label[i] >= 'a' && d->label[i] <= 'z') lower = true;
+    if (!lower)
+        for (int i = 1; d->label[i]; i++)
+            if (d->label[i] >= 'A' && d->label[i] <= 'Z') d->label[i] = (char)(d->label[i] + 32);
     if (d->label[0] >= 'a' && d->label[0] <= 'z') {
         d->label[0] = (char)(d->label[0] - ('a' - 'A'));
     }
@@ -194,7 +214,7 @@ static void scan_dir_docs(const char *dir_path, const char *badge) {
     if (fd < 0) return;
     char name[64];
     vfs_stat_t st;
-    for (uint32_t idx = 0; idx < 64 && s_launcher.doc_count < LAUNCHER_MAX_DOCS; idx++) {
+    for (uint32_t idx = 0; idx < 256 && s_launcher.doc_count < LAUNCHER_MAX_DOCS; idx++) {
         if (vfs_readdir(fd, idx, name, sizeof(name), &st) < 0) break;
         if (st.is_dir) continue;
         if (str_ends_with(name, ".md") || str_ends_with(name, ".gmi")) {
@@ -247,6 +267,7 @@ static void launcher_scan_docs(void) {
         }
     }
 
+    scan_dir_docs("/sd0/docs", "Docs");                  /* the user's own, before the bundled */
     scan_dir_docs("/sd0/pub", "Pub");
     scan_dir_docs("/sd0/help", "Help");
     scan_dir_docs("/flash0/help", "Flash");
@@ -427,6 +448,44 @@ bool launcher_set_target(uint8_t slot_id, int w, int h) {
     return changed;
 }
 
+static void doc_row(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t row, int i, void *user) {
+    (void)user;
+    int sc = s->scale;
+    ugui_list_row(s, ctx, (ugui_rect_t){ (int16_t)(row.x + 2 * sc), row.y, (int16_t)(row.w - 4 * sc), row.h },
+                  NULL, s_launcher.docs[i].label, s_launcher.docs[i].badge, LAUNCHER_ID_DOC_BASE, (int16_t)i, false);
+}
+
+/* The document list in x, y, w x avail_h: a framed virtual list of whole
+ * rows' height, scrolled by pixels (s_launcher.scroll_px), and its
+ * scrollbar. `frame` false: a scroll step -- the rows are drawn over what
+ * shows (each fills its own background, so no frame shows them cleared),
+ * only the space below the last one cleared. */
+static void draw_doc_list(const ugui_surface_t *surf, int x, int y, int w, int avail_h, bool frame) {
+    const int s = surf->scale;
+    s_launcher.list_x = x;
+    s_launcher.list_y = y;
+    s_launcher.list_w = w;
+    s_launcher.list_avail = avail_h;
+    int item_h = 30 * s, sb_w = 10 * s;
+    int list_w = w - sb_w - 4 * s;
+    int vis_rows = avail_h / item_h;
+    if (vis_rows < 1) vis_rows = 1;
+    int view_h = vis_rows * item_h;
+    s_launcher.item_h = item_h;
+    s_launcher.view_h = view_h - 2 * s;
+    if (frame) ugui_box_shadow(surf, (ugui_rect_t){ (int16_t)x, (int16_t)y, (int16_t)list_w, (int16_t)view_h }, false);
+    ugui_rect_t view = { (int16_t)(x + s), (int16_t)(y + s), (int16_t)(list_w - 2 * s), (int16_t)(view_h - 2 * s) };
+    ugui_vlist(surf, &s_launcher.ui_ctx, view, s_launcher.doc_count, item_h, &s_launcher.scroll_px, doc_row, NULL);
+    int rows_end = view.y + s_launcher.doc_count * item_h - s_launcher.scroll_px;
+    if (!frame && rows_end < view.y + view.h)
+        ugui_fill(surf, (ugui_rect_t){ view.x, (int16_t)rows_end, view.w, (int16_t)(view.y + view.h - rows_end) },
+                  UGUI_GRAY_CARD, CANVAS1_WHITE);
+    int total = s_launcher.doc_count * item_h;
+    if (total < view.h) total = view.h;
+    ugui_scrollbar(surf, (ugui_rect_t){ (int16_t)(x + list_w + 4 * s), (int16_t)y, (int16_t)sb_w, (int16_t)view_h },
+                   s_launcher.scroll_px, total, view.h);
+}
+
 void launcher_draw(const canvas1_t *c, int w, int h) {
     if ((!c && !s_launcher.aa_buf) || w <= 0 || h <= 0) return;
 
@@ -438,6 +497,7 @@ void launcher_draw(const canvas1_t *c, int w, int h) {
     surf.w = w;
     surf.h = h;
     surf.scale = s;
+    surf.clipped = false;
 
     ugui_begin(&s_launcher.ui_ctx);
     ugui_set_min_target(&s_launcher.ui_ctx, ugui_target_px());   /* touch areas: at least 7 mm */
@@ -532,36 +592,7 @@ void launcher_draw(const canvas1_t *c, int w, int h) {
                             "Refresh", LAUNCHER_ID_DOC_REFRESH, false);
         ry += 24 * s;
 
-        int list_h = h - ry - pad;
-        int item_h = 30 * s;
-        int sb_w = 10 * s;
-        int list_w = right_w - sb_w - 4 * s;
-        int vis_rows = list_h / item_h;
-        if (vis_rows < 1) vis_rows = 1;
-        s_launcher.visible_docs = vis_rows;
-
-        if (s_launcher.scroll_idx > s_launcher.doc_count - vis_rows) {
-            s_launcher.scroll_idx = s_launcher.doc_count - vis_rows;
-        }
-        if (s_launcher.scroll_idx < 0) s_launcher.scroll_idx = 0;
-
-        /* List frame */
-        ugui_box_shadow(&surf, (ugui_rect_t){ (int16_t)right_x, (int16_t)ry, (int16_t)list_w, (int16_t)(vis_rows * item_h) }, false);
-        for (int i = 0; i < vis_rows; i++) {
-            int doc_i = s_launcher.scroll_idx + i;
-            if (doc_i >= s_launcher.doc_count) break;
-            ugui_list_row(&surf, &s_launcher.ui_ctx,
-                          (ugui_rect_t){ (int16_t)(right_x + 2 * s), (int16_t)(ry + i * item_h), (int16_t)(list_w - 4 * s), (int16_t)item_h },
-                          NULL, s_launcher.docs[doc_i].label, s_launcher.docs[doc_i].badge,
-                          LAUNCHER_ID_DOC_BASE, (int16_t)doc_i, false);
-        }
-
-        int total_list_h = s_launcher.doc_count * item_h;
-        int view_list_h = vis_rows * item_h;
-        if (total_list_h < view_list_h) total_list_h = view_list_h;
-        ugui_scrollbar(&surf,
-                       (ugui_rect_t){ (int16_t)(right_x + list_w + 4 * s), (int16_t)ry, (int16_t)sb_w, (int16_t)view_list_h },
-                       s_launcher.scroll_idx * item_h, total_list_h, view_list_h);
+        draw_doc_list(&surf, right_x, ry, right_w, h - ry - pad, true);
     } else {
         /* Portrait layout: Vertical stack (Applications -> Quick Settings -> Documents) */
         int inner_w = w - 2 * pad;
@@ -623,35 +654,7 @@ void launcher_draw(const canvas1_t *c, int w, int h) {
         y += 24 * s;
 
         int footer_h = 20 * s;
-        int list_h = h - y - pad - footer_h;
-        int item_h = 30 * s;
-        int sb_w = 10 * s;
-        int list_w = inner_w - sb_w - 4 * s;
-        int vis_rows = list_h / item_h;
-        if (vis_rows < 1) vis_rows = 1;
-        s_launcher.visible_docs = vis_rows;
-
-        if (s_launcher.scroll_idx > s_launcher.doc_count - vis_rows) {
-            s_launcher.scroll_idx = s_launcher.doc_count - vis_rows;
-        }
-        if (s_launcher.scroll_idx < 0) s_launcher.scroll_idx = 0;
-
-        ugui_box_shadow(&surf, (ugui_rect_t){ (int16_t)pad, (int16_t)y, (int16_t)list_w, (int16_t)(vis_rows * item_h) }, false);
-        for (int i = 0; i < vis_rows; i++) {
-            int doc_i = s_launcher.scroll_idx + i;
-            if (doc_i >= s_launcher.doc_count) break;
-            ugui_list_row(&surf, &s_launcher.ui_ctx,
-                          (ugui_rect_t){ (int16_t)(pad + 2 * s), (int16_t)(y + i * item_h), (int16_t)(list_w - 4 * s), (int16_t)item_h },
-                          NULL, s_launcher.docs[doc_i].label, s_launcher.docs[doc_i].badge,
-                          LAUNCHER_ID_DOC_BASE, (int16_t)doc_i, false);
-        }
-
-        int total_list_h = s_launcher.doc_count * item_h;
-        int view_list_h = vis_rows * item_h;
-        if (total_list_h < view_list_h) total_list_h = view_list_h;
-        ugui_scrollbar(&surf,
-                       (ugui_rect_t){ (int16_t)(pad + list_w + 4 * s), (int16_t)y, (int16_t)sb_w, (int16_t)view_list_h },
-                       s_launcher.scroll_idx * item_h, total_list_h, view_list_h);
+        draw_doc_list(&surf, pad, y, inner_w, h - y - pad - footer_h, true);
 
         int status_y = h - pad - 16 * s;
         char batt[16] = "";
@@ -673,19 +676,46 @@ void launcher_draw(const canvas1_t *c, int w, int h) {
     s_launcher.seq++;
 }
 
-void launcher_update(void) {
-    if (!s_launcher.active) return;
-    if (s_launcher.win_w <= 0 || s_launcher.win_h <= 0) return;
-
+static canvas1_t *launcher_backing(void) {
 #if defined(LCDTERM_PRESENT)
     canvas1_t *back = lcdterm_get_reader_backing(s_launcher.slot_id);
 #else
     canvas1_t *back = NULL;
 #endif
-    if (!back) {
-        back = ramscreen_get_reader_backing(s_launcher.slot_id);
-    }
+    return back ? back : ramscreen_get_reader_backing(s_launcher.slot_id);
+}
 
+/* A scroll step: only the document list drawn again, and shown. The rest
+ * of the launcher stays as it is on the surface the panel composites from,
+ * so it does not flicker; its rows' hit-boxes (the pass's last) are
+ * replaced. With the focus ring showing, the whole launcher instead. */
+static void launcher_update_list(void) {
+    if (!s_launcher.active || s_launcher.win_w <= 0 || s_launcher.win_h <= 0) return;
+    ugui_ctx_t *ctx = &s_launcher.ui_ctx;
+    canvas1_t *back = launcher_backing();
+    if (ctx->focus_shown || s_launcher.list_avail <= 0 || (!back && !s_launcher.aa_buf)) {
+        launcher_update();
+        return;
+    }
+    ugui_surface_t surf = {
+        .c1 = back, .aa_fb = s_launcher.aa_buf, .aa_stride = s_launcher.aa_stride,
+        .w = s_launcher.win_w, .h = s_launcher.win_h, .scale = CHROME_SCALE,
+    };
+    int keep = 0;
+    for (int i = 0; i < ctx->count; i++)
+        if (ctx->hits[i].id != LAUNCHER_ID_DOC_BASE) ctx->hits[keep++] = ctx->hits[i];
+    ctx->count = keep;
+    draw_doc_list(&surf, s_launcher.list_x, s_launcher.list_y, s_launcher.list_w, s_launcher.list_avail, false);
+    s_launcher.seq++;
+    uint8_t ureq[2] = { 'W', s_launcher.slot_id }, sreply[SCREEN_REPLY_LEN];
+    (void)console_canvas(ureq, 2, sreply);
+}
+
+void launcher_update(void) {
+    if (!s_launcher.active) return;
+    if (s_launcher.win_w <= 0 || s_launcher.win_h <= 0) return;
+
+    canvas1_t *back = launcher_backing();
     launcher_draw(back, s_launcher.win_w, s_launcher.win_h);
 
     uint8_t ureq[2] = { 'W', s_launcher.slot_id }, sreply[SCREEN_REPLY_LEN];
@@ -877,10 +907,31 @@ static bool launcher_activate(uint16_t id, int16_t hit_idx) {
 
 void launcher_scroll(int delta_y) {
     if (!s_launcher.active) return;
-    int step = (delta_y > 0) ? 2 : -2;
-    s_launcher.scroll_idx += step;
-    if (s_launcher.scroll_idx < 0) s_launcher.scroll_idx = 0;
+    s_launcher.scroll_px += (delta_y > 0 ? 2 : -2) * (s_launcher.item_h > 0 ? s_launcher.item_h : 30);
+    if (s_launcher.scroll_px < 0) s_launcher.scroll_px = 0;
     launcher_update();
+}
+
+/* A finger dragging dy px (down positive): the document list follows it. */
+void launcher_drag(int dy) {
+    if (!s_launcher.active || dy == 0) return;
+    s_launcher.scroll_px -= dy;
+    if (s_launcher.scroll_px < 0) s_launcher.scroll_px = 0;
+    launcher_update_list();
+}
+
+/* The drag's end: a finger still moving (dy over its last ms) glides on,
+ * its speed halving at each of up to four steps -- in whole pixels, drawn
+ * as it goes. */
+void launcher_drag_end(int dy, uint32_t ms) {
+    if (!s_launcher.active || ms == 0 || dy == 0) return;
+    int step = (int)((long)dy * 48 / (long)ms);          /* px per ~48 ms */
+    for (int i = 0; i < 4 && (step > 1 || step < -1); i++) {
+        int before = s_launcher.scroll_px;
+        launcher_drag(step);
+        if (s_launcher.scroll_px == before) break;       /* at an end */
+        step /= 2;
+    }
 }
 
 /* The document list under the keyboard: Up / Down from a row moves to the
@@ -892,17 +943,14 @@ static bool launcher_doc_step(uint32_t key) {
     int to = ctx->focus_index + (key == KEY_DOWN ? 1 : -1);
     if (to < 0 || to >= s_launcher.doc_count) return false;
     ctx->focus_index = (int16_t)to;
-    int vis = s_launcher.visible_docs > 0 ? s_launcher.visible_docs : 1;
-    if (to < s_launcher.scroll_idx) s_launcher.scroll_idx = to;
-    if (to >= s_launcher.scroll_idx + vis) s_launcher.scroll_idx = to - vis + 1;
+    s_launcher.scroll_px = ugui_vlist_reveal(s_launcher.scroll_px, s_launcher.view_h, s_launcher.item_h, to);
     return true;
 }
 
 static void launcher_key(key_event_t k) {
     if (k.key == KEY_PGDN || k.key == KEY_PGUP) {
-        int vis = s_launcher.visible_docs > 0 ? s_launcher.visible_docs : 1;
-        s_launcher.scroll_idx += k.key == KEY_PGDN ? vis : -vis;
-        if (s_launcher.scroll_idx < 0) s_launcher.scroll_idx = 0;
+        s_launcher.scroll_px += k.key == KEY_PGDN ? s_launcher.view_h : -s_launcher.view_h;
+        if (s_launcher.scroll_px < 0) s_launcher.scroll_px = 0;
         launcher_update();
         return;
     }

@@ -246,7 +246,7 @@ static bool              g_osk_pressed = false;   /* guarded by: g_press_busy */
 static int               g_press_win = -1;        /* guarded by: g_press_busy; the canvas window told of a press */
 static volatile int      g_drag_dy = 0;
 static volatile bool     g_drag_end = false;
-static volatile int      g_drag_end_total, g_drag_end_dy;
+static volatile int      g_drag_end_dy;
 static volatile uint32_t g_drag_end_ms;
 
 static void console_pump(void);
@@ -444,7 +444,7 @@ void console_touch_drag(int dy) {
 }
 
 void console_touch_drag_end(int total_dy, int dy, uint32_t ms) {
-    g_drag_end_total = total_dy;
+    (void)total_dy;                                      /* the drags before it moved by it already */
     g_drag_end_dy = dy;
     g_drag_end_ms = ms;
     __atomic_store_n(&g_drag_end, true, __ATOMIC_RELEASE);
@@ -707,8 +707,9 @@ static void run_hotkey(void) {
             if (g_active_win_type == 3 /* RIBBON_WIN_READER */ && reader_is_active()) {
                 if (dy) reader_drag(dy);
                 if (end) reader_drag_end(g_drag_end_dy, g_drag_end_ms);
-            } else if (end && g_active_win_type == 4 /* RIBBON_WIN_LAUNCHER */ && launcher_is_active()) {
-                if (g_drag_end_total) launcher_scroll(g_drag_end_total > 0 ? -1 : 1);
+            } else if (g_active_win_type == 4 /* RIBBON_WIN_LAUNCHER */ && launcher_is_active()) {
+                if (dy) launcher_drag(dy);
+                if (end) launcher_drag_end(g_drag_end_dy, g_drag_end_ms);
             }
             continue;
         }

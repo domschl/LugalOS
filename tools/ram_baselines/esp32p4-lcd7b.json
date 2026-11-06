@@ -1,7 +1,7 @@
 {
   "bulk_per_file": {
     "drivers/dsi_esp32p4.c": 9012,
-    "drivers/launcher_view.c": 5700,
+    "drivers/launcher_view.c": 21944,
     "drivers/reader_view.c": 62400,
     "drivers/uxbench.c": 540,
     "kernel/palloc.c": 32768,
@@ -17,13 +17,13 @@
     "app:ceres": 31896,
     "app:moonbase": 73888,
     "chess": 1844,
-    "display": 77112,
+    "display": 93356,
     "drivers": 540,
     "kernel": 35344,
     "lisp": 1532288,
     "selftest": 64
   },
-  "bulk_total": 1752976,
+  "bulk_total": 1769220,
   "heap_bytes": 360448,
   "heap_pages": 88,
   "per_file": {
@@ -84,7 +84,7 @@
     "kernel/chan.c": 1348,
     "kernel/chan_selftest.c": 172,
     "kernel/clipboard.c": 20,
-    "kernel/console.c": 780,
+    "kernel/console.c": 776,
     "kernel/device.c": 140,
     "kernel/devirq.c": 134,
     "kernel/discipline.c": 82,
@@ -190,11 +190,11 @@
     "radio": 12564,
     "selftest": 3962,
     "sensors": 8688,
-    "shell": 13064,
+    "shell": 13060,
     "storage": 7456,
     "usb": 1212,
     "vfs": 4111
   },
   "ram_code": 1806,
-  "total": 216331
+  "total": 216327
 }

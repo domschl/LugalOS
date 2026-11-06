@@ -39,7 +39,16 @@ typedef struct {
     uint32_t         aa_stride;
     int              w, h;
     int              scale;     /* 1 on 8x16 panels, 2 on 16x32 HiDPI panels */
+    bool             clipped;   /* drawing and hit-boxes stay inside clip (ugui_clip()) */
+    ugui_rect_t      clip;
 } ugui_surface_t;
+
+/* The surface s, clipped to r as well (r in s's coordinates): what is drawn
+ * through it lands only inside r and inside any clip s already has, and the
+ * hit-boxes its widgets register are cut to it, their touch areas kept in it.
+ * A copy, so clips nest by scope: draw a scroll container's children through
+ * ugui_clip(s, viewport) and the rest through s. Coordinates do not move. */
+ugui_surface_t ugui_clip(const ugui_surface_t *s, ugui_rect_t r);
 
 #define UGUI_HIT_DISABLED 0x01u  /* dimmed: no press feedback, no focus, a tap hits nothing */
 
@@ -190,6 +199,18 @@ void ugui_scrollbar(const ugui_surface_t *s, ugui_rect_t track, int scroll_y,
                     int total_h, int view_h);
 
 /* Built-in unit self-test */
+/* A virtual list: count rows of row_h px scrolled by *scroll_px inside
+ * view. Only the rows that show are drawn, each by row() through a surface
+ * clipped to view (so a row cut at the edge is cut, its hit-box with it).
+ * *scroll_px is clamped to the list (0 .. count * row_h - view.h). Returns
+ * how many rows were drawn. */
+typedef void (*ugui_row_fn)(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t row, int index, void *user);
+int ugui_vlist(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t view, int count, int row_h,
+               int *scroll_px, ugui_row_fn row, void *user);
+
+/* The scroll that shows row index whole, as near the current one as can be. */
+int ugui_vlist_reveal(int scroll_px, int view_h, int row_h, int index);
+
 bool ugui_selftest(void);
 
 #endif /* LUGALOS_DRIVERS_UGUI_H */

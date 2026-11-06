@@ -34,6 +34,10 @@ void     launcher_scroll(int delta_y);
  * pump); launcher_feed_end() when a burst ends (a lone Esc). Tab / arrows
  * move the focus, Enter / Space act as a tap on it would, PgUp / PgDn page
  * the document list, r rescans it. */
+/* A finger dragging over the launcher: the document list follows it, and
+ * glides on when it lifts still moving (dy over its last ms). */
+void     launcher_drag(int dy);
+void     launcher_drag_end(int dy, uint32_t ms);
 void     launcher_feed_key(int c);
 void     launcher_feed_end(void);
 bool     launcher_poll_exec(char *out_cmd, size_t max_len);
