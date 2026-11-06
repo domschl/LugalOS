@@ -218,6 +218,24 @@ int ugui_vlist(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t view, int c
 /* The scroll that shows row index whole, as near the current one as can be. */
 int ugui_vlist_reveal(int scroll_px, int view_h, int row_h, int index);
 
+/* --- Images ----------------------------------------------------------------
+ * 4-bit gray, two pixels a byte (the left one in the high nibble), rows
+ * padded to a byte: 0 ink .. 14 white, 15 transparent (drivers/icons.h). */
+typedef struct {
+    uint16_t       w, h;
+    const uint8_t *px;
+} ugui_image_t;
+
+/* img at (x, y), each pixel scale x scale: on GRAY8 its gray between ink and
+ * white, on 1-bpp an ordered dither of it; transparent pixels left as they
+ * are. `inverted`: drawn as on an armed widget. */
+void ugui_image4(const ugui_surface_t *s, int x, int y, const ugui_image_t *img, int scale, bool inverted);
+
+/* A card with an image left of its title and subtitle (the launcher's
+ * applications), as ugui_card() otherwise. */
+void ugui_card_img(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r, const ugui_image_t *img,
+                   int img_scale, const char *title, const char *subtitle, uint16_t id, bool active);
+
 /* --- Layout ----------------------------------------------------------------
  * Rectangle cuts: take a slice off one side of *r and return it, *r
  * shrinking to the rest (never below zero). A layout is a sequence of cuts,

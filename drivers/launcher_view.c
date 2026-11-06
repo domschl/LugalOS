@@ -10,6 +10,7 @@
 
 #include "kernel/keyseq.h"
 #include "kernel/apps.h"
+#include "drivers/icons.h"
 #include "drivers/launcher_view.h"
 #include "kernel/console.h"
 #include "kernel/printk.h"
@@ -96,35 +97,6 @@ void launcher_report(void) { cprintf("launcher: not present on headless board\n"
 #define GAL_ID_SHOW_SHT  517
 #define GAL_ID_DLG       520     /* + button */
 #define GAL_ID_SHEET     530     /* + item */
-
-/* Crisp 16x16 1-bpp Classic Mac application icons in .rodata */
-static const uint16_t k_icon_reader[16] = {
-    0x0000, 0x7FE0, 0x4030, 0x5FF8,
-    0x4008, 0x57E8, 0x4008, 0x57E8,
-    0x4008, 0x57C8, 0x4008, 0x57E8,
-    0x4008, 0x4008, 0x7FF8, 0x0000
-};
-
-static const uint16_t k_icon_chess[16] = {
-    0x0000, 0x03C0, 0x0FE0, 0x1FE0,
-    0x3DE0, 0x3BE0, 0x3C00, 0x3F00,
-    0x3FC0, 0x1FF0, 0x0FF8, 0x0FF8,
-    0x1FFC, 0x3FFE, 0x3FFE, 0x0000
-};
-
-static const uint16_t k_icon_moonbase[16] = {
-    0x0180, 0x03C0, 0x07E0, 0x07E0,
-    0x0DB0, 0x0FF0, 0x1FF8, 0x1BD8,
-    0x3FFC, 0x3C3C, 0x67E6, 0x4242,
-    0x05A0, 0x0990, 0x1008, 0x0000
-};
-
-static const uint16_t k_icon_terminal[16] = {
-    0xFFFF, 0x8001, 0xFFFF, 0x8001,
-    0x9001, 0x8801, 0x8401, 0x8801,
-    0x9001, 0x8079, 0x8001, 0x8001,
-    0x8001, 0x8001, 0xFFFF, 0x0000
-};
 
 typedef struct {
     char path[96];
@@ -545,6 +517,14 @@ static void draw_status(const ugui_surface_t *surf, ugui_rect_t r) {
     ugui_text_serif(surf, r.x, r.y, line, (uint32_t)strlen(line), false, false, false);
 }
 
+/* An application's card: its registered title and icon (32 units). */
+static void app_card(const ugui_surface_t *surf, ugui_rect_t r, const char *app_id, const char *subtitle, uint16_t id) {
+    const app_desc_t *a = app_find(app_id);
+    int scale = 1;
+    ugui_image_t img = icon_image(icon_or(a ? a->icon : NULL, "app"), 32 * surf->scale, &scale);
+    ugui_card_img(surf, &s_launcher.ui_ctx, r, &img, scale, a ? a->title : app_id, subtitle, id, false);
+}
+
 /* The applications and quick settings, cut off the top of *col (which is
  * left with what remains). One description for both orientations. */
 static void draw_apps_and_settings(const ugui_surface_t *surf, ugui_rect_t *col) {
@@ -553,10 +533,10 @@ static void draw_apps_and_settings(const ugui_surface_t *surf, ugui_rect_t *col)
     ugui_rect_t hdr = ugui_cut_top(col, 24 * s);
     ugui_section_header(surf, hdr.x, hdr.y, hdr.w, "APPLICATIONS");
     ugui_rect_t cards = ugui_cut_top(col, 2 * 56 * s + 8 * s);
-    ugui_card(surf, ctx, ugui_grid_cell(cards, 2, 2, 8 * s, 0), k_icon_reader, "Reader", "Docs", LAUNCHER_ID_APP_READER, false);
-    ugui_card(surf, ctx, ugui_grid_cell(cards, 2, 2, 8 * s, 1), k_icon_chess, "Chess", "Game", LAUNCHER_ID_APP_CHESS, false);
-    ugui_card(surf, ctx, ugui_grid_cell(cards, 2, 2, 8 * s, 2), k_icon_moonbase, "Moonbase", "Game", LAUNCHER_ID_APP_MOONBASE, false);
-    ugui_card(surf, ctx, ugui_grid_cell(cards, 2, 2, 8 * s, 3), k_icon_terminal, "Terminal", "Shell", LAUNCHER_ID_APP_TERMINAL, false);
+    app_card(surf, ugui_grid_cell(cards, 2, 2, 8 * s, 0), "reader", "Docs", LAUNCHER_ID_APP_READER);
+    app_card(surf, ugui_grid_cell(cards, 2, 2, 8 * s, 1), "chess", "Game", LAUNCHER_ID_APP_CHESS);
+    app_card(surf, ugui_grid_cell(cards, 2, 2, 8 * s, 2), "moonbase", "Game", LAUNCHER_ID_APP_MOONBASE);
+    app_card(surf, ugui_grid_cell(cards, 2, 2, 8 * s, 3), "term", "Shell", LAUNCHER_ID_APP_TERMINAL);
     (void)ugui_cut_top(col, 14 * s);
 
     hdr = ugui_cut_top(col, 26 * s);
@@ -591,7 +571,7 @@ static void draw_documents(const ugui_surface_t *surf, ugui_rect_t r) {
     draw_doc_list(surf, r.x, r.y, r.w, r.h, true);
 }
 
-static const char *const k_gal_tabs[3] = { "Controls", "Text", "Dialogs" };
+static const char *const k_gal_tabs[4] = { "Controls", "Text", "Dialogs", "Icons" };
 static const char *const k_gal_dlg[2] = { "Cancel", "Delete" };
 static const char *const k_gal_sheet[5] = { "Open", "Rename", "Add to Shortcuts", "Delete", "Cancel" };
 static const char k_gal_path[] = "/sd0/docs/books/german/goethe";
@@ -605,7 +585,7 @@ static void launcher_draw_gallery(const ugui_surface_t *surf, int w, int h) {
     ugui_ctx_t *ctx = &s_launcher.ui_ctx;
     int pad = 12 * s, col = w - 2 * pad > 440 * s ? 440 * s : w - 2 * pad, row = 32 * s, y = pad;
     ugui_tab_bar(surf, ctx, (ugui_rect_t){ (int16_t)pad, (int16_t)y, (int16_t)(w - 2 * pad - 90 * s), (int16_t)(26 * s) },
-                 k_gal_tabs, 3, s_launcher.gal.tab, GAL_ID_TAB);
+                 k_gal_tabs, 4, s_launcher.gal.tab, GAL_ID_TAB);
     ugui_toolbar_button(surf, ctx, (ugui_rect_t){ (int16_t)(w - pad - 80 * s), (int16_t)(y + 2 * s), (int16_t)(80 * s), (int16_t)(22 * s) },
                         "Done", GAL_ID_DONE, false);
     y += 40 * s;
@@ -638,6 +618,22 @@ static void launcher_draw_gallery(const ugui_surface_t *surf, int w, int h) {
         y += ugui_serif_line_h(surf);
         gal_line(surf, pad, y, "Shift+arrows select, Enter submits, Esc cancels.", true);
         y += ugui_serif_line_h(surf) + 8 * s;
+    } else if (s_launcher.gal.tab == 3) {
+        /* The built-in icons at the size the cards draw them, named. */
+        int cell_w = 96 * s, cell_h = 32 * s + ugui_serif_line_h(surf) + 14 * s;
+        int cols = (w - 2 * pad) / cell_w;
+        if (cols < 1) cols = 1;
+        for (unsigned i = 0; icon_at(i); i++) {
+            const icon_t *ic = icon_at(i);
+            int cx = pad + (int)(i % (unsigned)cols) * cell_w, cy = y + (int)(i / (unsigned)cols) * cell_h;
+            int scale = 1;
+            ugui_image_t img = icon_image(ic, 32 * s, &scale);
+            ugui_image4(surf, cx + (cell_w - 32 * s) / 2, cy, &img, scale, false);
+            int tw = ugui_text_serif_width(surf, ic->name, (uint32_t)strlen(ic->name));
+            ugui_text_serif(surf, cx + (cell_w - tw) / 2, cy + 32 * s + 4 * s, ic->name, (uint32_t)strlen(ic->name),
+                            false, true, false);
+        }
+        return;
     } else {
         ugui_button(surf, ctx, (ugui_rect_t){ (int16_t)pad, (int16_t)y, (int16_t)(180 * s), (int16_t)(28 * s) },
                     "Show Dialog", GAL_ID_SHOW_DLG, false);
@@ -657,7 +653,7 @@ static void launcher_draw_gallery(const ugui_surface_t *surf, int w, int h) {
 /* A gallery control acted on (a tap at x, or Enter: x < 0). */
 static bool launcher_gallery_act(uint16_t id, int16_t idx, int x) {
     char *res = s_launcher.gal.result;
-    if (id >= GAL_ID_TAB && id < GAL_ID_TAB + 3) { s_launcher.gal.tab = id - GAL_ID_TAB; res[0] = '\0'; }
+    if (id >= GAL_ID_TAB && id < GAL_ID_TAB + 4) { s_launcher.gal.tab = id - GAL_ID_TAB; res[0] = '\0'; }
     else if (id == GAL_ID_DONE) { s_launcher.gal.on = false; s_launcher.gal.dialog = s_launcher.gal.sheet = false; }
     else if (id == GAL_ID_TOGGLE) s_launcher.gal.toggle = !s_launcher.gal.toggle;
     else if (id == GAL_ID_CHECK) s_launcher.gal.check = !s_launcher.gal.check;

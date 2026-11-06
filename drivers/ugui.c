@@ -1034,6 +1034,71 @@ int ugui_vlist_reveal(int scroll_px, int view_h, int row_h, int index) {
 }
 
 
+/* --- Images -------------------------------------------------------------- */
+
+/* The 4 x 4 ordered-dither thresholds for 1-bpp: a pixel of level v (0..14)
+ * is white where v * 17 / 14 exceeds its cell's. */
+static const uint8_t k_bayer4[4][4] = {
+    { 0, 8, 2, 10 }, { 12, 4, 14, 6 }, { 3, 11, 1, 9 }, { 15, 7, 13, 5 },
+};
+
+static void raw_image4(const ugui_surface_t *s, int x, int y, const ugui_image_t *img, int scale, bool inverted) {
+    uint32_t row_bytes = ((uint32_t)img->w + 1u) / 2u;
+    for (int iy = 0; iy < img->h; iy++) {
+        const uint8_t *row = img->px + (uint32_t)iy * row_bytes;
+        for (int ix = 0; ix < img->w; ix++) {
+            uint8_t v = (uint8_t)((ix & 1) ? (row[ix >> 1] & 0x0Fu) : (row[ix >> 1] >> 4));
+            if (v == 15u) continue;                      /* transparent */
+            if (inverted) v = (uint8_t)(14u - v);
+            int x0 = x + ix * scale, y0 = y + iy * scale;
+            if (x0 >= s->w || y0 >= s->h || x0 + scale <= 0 || y0 + scale <= 0) continue;
+            if (s->aa_fb) {
+                uint8_t g = (uint8_t)(UGUI_GRAY_INK + (UGUI_GRAY_CARD - UGUI_GRAY_INK) * v / 14u);
+                for (int py = y0 < 0 ? 0 : y0; py < y0 + scale && py < s->h; py++) {
+                    uint8_t *p = s->aa_fb + (uint32_t)py * s->aa_stride;
+                    for (int px = x0 < 0 ? 0 : x0; px < x0 + scale && px < s->w; px++) p[px] = g;
+                }
+            }
+            if (s->c1)
+                for (int py = y0; py < y0 + scale; py++)
+                    for (int px = x0; px < x0 + scale; px++) {
+                        bool white = (unsigned)v * 17u / 14u > k_bayer4[py & 3][px & 3];
+                        canvas1_fill(s->c1, px, py, px, py, white ? CANVAS1_WHITE : CANVAS1_BLACK);
+                    }
+        }
+    }
+}
+
+void ugui_image4(const ugui_surface_t *s, int x, int y, const ugui_image_t *img, int scale, bool inverted) {
+    if (!s || !img || !img->px || img->w == 0 || img->h == 0) return;
+    if (scale < 1) scale = 1;
+    ugui_view_t v;
+    const ugui_surface_t *t = view(s, &v);
+    if (t) raw_image4(t, x - v.dx, y - v.dy, img, scale, inverted);
+}
+
+void ugui_card_img(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r, const ugui_image_t *img,
+                   int img_scale, const char *title, const char *subtitle, uint16_t id, bool active) {
+    uint8_t dis = take_disabled(ctx);
+    active = !dis && (active || ugui_is_armed(ctx, id, 0));
+    if (!s || r.w <= 0 || r.h <= 0) return;
+    int sc = s->scale > 0 ? s->scale : 1;
+    ugui_box_shadow(s, r, active);
+    int pad = 8 * sc, x = r.x + pad;
+    if (img && img->px) {
+        int iw = img->w * (img_scale > 0 ? img_scale : 1), ih = img->h * (img_scale > 0 ? img_scale : 1);
+        ugui_image4(s, x, r.y + (r.h - ih) / 2, img, img_scale, active);
+        x += iw + pad;
+    }
+    int lh = ugui_serif_line_h(s);
+    bool two = subtitle && *subtitle && 2 * lh <= r.h - 2 * sc;
+    int ty = r.y + (r.h - (two ? 2 * lh : lh)) / 2;
+    if (title && *title) ugui_text_serif(s, x, ty, title, (uint32_t)strlen(title), true, false, active);
+    if (two) ugui_text_serif(s, x, ty + lh, subtitle, (uint32_t)strlen(subtitle), false, true, active);
+    if (dis) ugui_dim(s, (ugui_rect_t){ r.x, r.y, (int16_t)(r.w + 3 * sc), (int16_t)(r.h + 3 * sc) });
+    add_hit_s(s, ctx, r, id, 0, dis ? UGUI_HIT_DISABLED : 0);
+}
+
 /* --- Layout -------------------------------------------------------------- */
 
 static int clamp_len(int n, int max) {

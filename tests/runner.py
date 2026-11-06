@@ -880,6 +880,11 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             ok = False
         results.append(("Application Registry Sorted And Consistent (71.4 apps check)",
                         ok, log if not ok else ""))
+        ok, log = session.send_and_expect("icons check", r"icons check: (PASS|FAIL)[^\n]*\n", timeout=10.0)
+        if ok and "icons check: FAIL" in log:
+            ok = False
+        results.append(("Built-in Icons Sorted And Complete (71.4 icons check)",
+                        ok, log if not ok else ""))
 
         # B6: a separately linked ELF, loaded from the filesystem into pages
         # the allocator handed out, running in U-mode under a memory domain.

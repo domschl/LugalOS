@@ -31,8 +31,9 @@
     "drivers/hdc1080.c": 188,
     "drivers/i2c_bus.c": 266,
     "drivers/i2c_rtc.c": 30,
+    "drivers/icons_data.c": 43932,
     "drivers/ina226.c": 232,
-    "drivers/launcher_view.c": 22594,
+    "drivers/launcher_view.c": 22474,
     "drivers/loopback_net.c": 2060,
     "drivers/mcp9808.c": 228,
     "drivers/mhz19b.c": 172,
@@ -52,6 +53,7 @@
     "drivers/tsl2591.c": 140,
     "drivers/uart_16550.c": 935,
     "drivers/uart_net.c": 14836,
+    "drivers/ugui.c": 16,
     "drivers/usb_crc.c": 16,
     "drivers/usbkbd.c": 656,
     "drivers/virtio_blk.c": 12473,
@@ -175,8 +177,8 @@
     "chess": 46902,
     "clock-app": 616,
     "crypto": 1054,
-    "display": 84431,
-    "drivers": 42566,
+    "display": 84327,
+    "drivers": 86498,
     "fs": 823,
     "httpd": 184,
     "identity": 669,
@@ -194,6 +196,6 @@
     "usb": 672,
     "vfs": 4766
   },
-  "ram_code": 1227284,
-  "total": 7671353
+  "ram_code": 1231194,
+  "total": 7719091
 }

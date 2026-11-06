@@ -1,5 +1,6 @@
 #include "kernel/shell.h"
 #include "kernel/apps.h"
+#include "drivers/icons.h"
 #include "kernel/stress.h"
 #include "kernel/llp_node.h"
 #if defined(CONFIG_BOARD_ESP32P4)
@@ -1769,6 +1770,23 @@ static void cmd_open(const char *path) {
         return;
     }
     parse_and_eval_cmd(cmd);
+}
+
+/* `icons`, `icons check`: the built-in icons (drivers/icons.h). */
+static void cmd_icons(const char *arg) {
+    while (arg && *arg == ' ') arg++;
+    if (arg && strcmp(arg, "check") == 0) {
+        int bad = icons_check();
+        cprintf("icons check: %s (%d fault%s)\n", bad ? "FAIL" : "PASS", bad, bad == 1 ? "" : "s");
+        return;
+    }
+    if (arg && *arg) {
+        cprintf("usage: icons [check]\n");
+        return;
+    }
+    unsigned n = 0;
+    for (; icon_at(n); n++) cprintf("%s%s", n ? " " : "  ", icon_at(n)->name);
+    cprintf("\n%u built-in icons, 32 x 32 and 64 x 64 (`launcher gallery`, Icons, shows them)\n", n);
 }
 
 /* `apps`, `apps info <id>`, `apps check`: the application registry. */
@@ -6328,6 +6346,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "apps") == 0 || strncmp(cmd_line, "apps ", 5) == 0) {
         cmd_apps(cmd_line + 4);
+        return;
+    } else if (strcmp(cmd_line, "icons") == 0 || strncmp(cmd_line, "icons ", 6) == 0) {
+        cmd_icons(cmd_line + 5);
         return;
     } else if (strcmp(cmd_line, "launcher") == 0) {
         cmd_launcher(NULL);
