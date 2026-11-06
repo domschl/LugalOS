@@ -216,6 +216,12 @@ void console_touch_release(void);
 /* A pressed key is held past a long press: another repeat of it, every
  * 80 ms (the on-screen keyboard's Delete and arrows repeat). */
 void console_touch_repeat(void);
+/* Whether a finger going down at screen (x, y) lands on a control that
+ * follows it (a slider in the launcher): the touch driver then captures the
+ * contact -- no gestures -- and reports its points with console_touch_move()
+ * until it lifts (a last move, then the release). */
+bool console_touch_captures(unsigned x, unsigned y);
+void console_touch_move(unsigned x, unsigned y);
 
 /* Where console input comes
  * from. Each source is polled by the console pump, in registration order,

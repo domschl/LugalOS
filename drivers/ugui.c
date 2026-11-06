@@ -26,6 +26,13 @@ void ugui_begin(ugui_ctx_t *ctx) {
     ctx->count = 0;
     ctx->nbounds = 0;
     ctx->cur_bound = 0;
+    ctx->modal = false;
+    ctx->modal_from = 0;
+}
+
+/* The first hit that counts: a modal's own from where it began. */
+static int live_from(const ugui_ctx_t *ctx) {
+    return ctx->modal ? ctx->modal_from : 0;
 }
 
 /* --- Clipping ------------------------------------------------------------
@@ -279,7 +286,7 @@ static int focus_slot(const ugui_ctx_t *ctx) {
 }
 
 static bool focusable(const ugui_ctx_t *ctx, int slot) {
-    return !(ctx->hits[slot].flags & UGUI_HIT_DISABLED);
+    return slot >= live_from(ctx) && !(ctx->hits[slot].flags & UGUI_HIT_DISABLED);
 }
 
 /* The first focusable slot from `from` stepping by step (wrapping), or -1. */
@@ -335,6 +342,7 @@ ugui_nav_t ugui_nav(ugui_ctx_t *ctx, uint32_t key, uint8_t mods, uint16_t *id, i
     if (!tab && !arrow && !activate) return UGUI_NAV_NONE;
     if (ctx->count == 0) return arrow ? UGUI_NAV_EDGE : UGUI_NAV_NONE;
     int slot = focus_slot(ctx);
+    if (slot >= 0 && slot < live_from(ctx)) slot = -1;   /* behind a modal */
     if (slot < 0 || !ctx->focus_shown) {                 /* first key: only show where it is */
         if (slot < 0 || !focusable(ctx, slot)) {
             int first = focus_step(ctx, -1, 1);
@@ -384,8 +392,9 @@ static void raw_invert(const ugui_surface_t *s, int x0, int y0, int x1, int y1) 
 void ugui_end(const ugui_surface_t *s, ugui_ctx_t *ctx) {
     if (!ctx || ctx->count == 0) return;
     int slot = focus_slot(ctx);
+    if (slot >= 0 && slot < live_from(ctx)) slot = -1;   /* behind a modal: into it */
     if (slot < 0) {
-        if (ctx->focus_id == 0 && !ctx->focus_shown) return;
+        if (ctx->focus_id == 0 && !ctx->focus_shown && !ctx->modal) return;
         slot = focus_step(ctx, -1, 1);
         if (slot < 0) return;                            /* every widget dimmed */
         focus_to(ctx, slot);
@@ -410,9 +419,18 @@ void ugui_end(const ugui_surface_t *s, ugui_ctx_t *ctx) {
     }
 }
 
+bool ugui_drag_at(const ugui_ctx_t *ctx, int x, int y) {
+    int16_t idx = 0;
+    uint16_t id = ugui_hit_test(ctx, x, y, &idx);
+    if (!id) return false;
+    for (int i = live_from(ctx); i < ctx->count; i++)
+        if (ctx->hits[i].id == id && ctx->hits[i].index == idx) return (ctx->hits[i].flags & UGUI_HIT_DRAG) != 0;
+    return false;
+}
+
 uint16_t ugui_hit_test_drawn(const ugui_ctx_t *ctx, int x, int y, int16_t *out_index) {
     if (!ctx) return 0;
-    for (int i = ctx->count - 1; i >= 0; i--) {
+    for (int i = ctx->count - 1; i >= live_from(ctx); i--) {
         const ugui_hit_t *h = &ctx->hits[i];
         if (!in_rect(&h->rect, x, y)) continue;
         if (h->flags & UGUI_HIT_DISABLED) return 0;
@@ -427,11 +445,11 @@ uint16_t ugui_hit_test(const ugui_ctx_t *ctx, int x, int y, int16_t *out_index) 
     /* As drawn first, in reverse order so later (topmost) widgets take
      * precedence; then the grown touch areas, the nearest drawn widget's. */
     int best = -1;
-    for (int i = ctx->count - 1; i >= 0 && best < 0; i--)
+    for (int i = ctx->count - 1; i >= live_from(ctx) && best < 0; i--)
         if (in_rect(&ctx->hits[i].rect, x, y)) best = i;
     if (best < 0 && ctx->min_target > 0) {
         long best_d = 0;
-        for (int i = ctx->count - 1; i >= 0; i--) {
+        for (int i = ctx->count - 1; i >= live_from(ctx); i--) {
             ugui_rect_t t = ugui_touch_rect(ctx, i);
             if (!in_rect(&t, x, y)) continue;
             long d = rect_dist2(&ctx->hits[i].rect, x, y);
@@ -1015,6 +1033,372 @@ int ugui_vlist_reveal(int scroll_px, int view_h, int row_h, int index) {
     return scroll_px;
 }
 
+
+/* --- Controls ------------------------------------------------------------- */
+
+static void frame(const ugui_surface_t *s, ugui_rect_t r, int t) {
+    ugui_hline(s, r.x, r.x + r.w - 1, r.y, t, UGUI_GRAY_BORDER, CANVAS1_BLACK);
+    ugui_hline(s, r.x, r.x + r.w - 1, r.y + r.h - t, t, UGUI_GRAY_BORDER, CANVAS1_BLACK);
+    ugui_vline(s, r.x, r.y, r.y + r.h - 1, t, UGUI_GRAY_BORDER, CANVAS1_BLACK);
+    ugui_vline(s, r.x + r.w - t, r.y, r.y + r.h - 1, t, UGUI_GRAY_BORDER, CANVAS1_BLACK);
+}
+
+/* A control's label at x, centred in r's height; returns its width. */
+static int row_label(const ugui_surface_t *s, int x, ugui_rect_t r, const char *label, bool inverted) {
+    if (!label || !*label) return 0;
+    return ugui_text_serif(s, x, r.y + (r.h - ugui_serif_line_h(s)) / 2, label, (uint32_t)strlen(label),
+                           false, false, inverted);
+}
+
+void ugui_toggle(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r, const char *label, bool on, uint16_t id) {
+    uint8_t dis = take_disabled(ctx);
+    if (!s || r.w <= 0 || r.h <= 0) return;
+    int sc = s->scale > 0 ? s->scale : 1;
+    bool armed = !dis && ugui_is_armed(ctx, id, 0);
+    if (armed) ugui_fill(s, r, UGUI_GRAY_TRACK, CANVAS1_GREY);
+    row_label(s, r.x + 4 * sc, r, label, false);
+    int sw = 36 * sc, sh = 18 * sc;
+    ugui_rect_t pill = { (int16_t)(r.x + r.w - sw - 4 * sc), (int16_t)(r.y + (r.h - sh) / 2), (int16_t)sw, (int16_t)sh };
+    ugui_fill(s, pill, on ? UGUI_GRAY_INK : UGUI_GRAY_CARD, on ? CANVAS1_BLACK : CANVAS1_WHITE);
+    frame(s, pill, sc);
+    int kw = sh - 4 * sc;
+    ugui_rect_t knob = { (int16_t)(on ? pill.x + sw - kw - 2 * sc : pill.x + 2 * sc), (int16_t)(pill.y + 2 * sc),
+                         (int16_t)kw, (int16_t)kw };
+    ugui_fill(s, knob, UGUI_GRAY_CARD, CANVAS1_WHITE);
+    frame(s, knob, sc);
+    if (dis) ugui_dim(s, r);
+    add_hit_s(s, ctx, r, id, 0, dis ? UGUI_HIT_DISABLED : 0);
+}
+
+void ugui_checkbox(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r, const char *label, bool checked, uint16_t id) {
+    uint8_t dis = take_disabled(ctx);
+    if (!s || r.w <= 0 || r.h <= 0) return;
+    int sc = s->scale > 0 ? s->scale : 1;
+    bool armed = !dis && ugui_is_armed(ctx, id, 0);
+    int bs = 14 * sc;
+    ugui_rect_t box = { (int16_t)(r.x + 4 * sc), (int16_t)(r.y + (r.h - bs) / 2), (int16_t)bs, (int16_t)bs };
+    ugui_fill(s, box, armed ? UGUI_GRAY_INK : UGUI_GRAY_CARD, armed ? CANVAS1_BLACK : CANVAS1_WHITE);
+    frame(s, box, sc);
+    if (checked)                                         /* the Classic Mac cross */
+        for (int i = 2 * sc; i < bs - 2 * sc; i += sc) {
+            uint8_t g = armed ? UGUI_GRAY_CARD : UGUI_GRAY_INK;
+            unsigned p = armed ? CANVAS1_WHITE : CANVAS1_BLACK;
+            ugui_fill(s, (ugui_rect_t){ (int16_t)(box.x + i), (int16_t)(box.y + i), (int16_t)sc, (int16_t)sc }, g, p);
+            ugui_fill(s, (ugui_rect_t){ (int16_t)(box.x + bs - sc - i), (int16_t)(box.y + i), (int16_t)sc, (int16_t)sc }, g, p);
+        }
+    row_label(s, box.x + bs + 6 * sc, r, label, false);
+    if (dis) ugui_dim(s, r);
+    add_hit_s(s, ctx, r, id, 0, dis ? UGUI_HIT_DISABLED : 0);
+}
+
+/* The slider's track: inset by half a thumb at each end. */
+static void slider_track(const ugui_surface_t *s, ugui_rect_t r, int *x0, int *x1) {
+    int sc = s->scale > 0 ? s->scale : 1;
+    *x0 = r.x + 6 * sc;
+    *x1 = r.x + r.w - 1 - 6 * sc;
+    if (*x1 <= *x0) *x1 = *x0 + 1;
+}
+
+int ugui_slider_value(const ugui_surface_t *s, ugui_rect_t r, int x, int min, int max) {
+    if (!s || max <= min) return min;
+    int x0, x1;
+    slider_track(s, r, &x0, &x1);
+    if (x <= x0) return min;
+    if (x >= x1) return max;
+    return min + (int)(((long)(x - x0) * (max - min) + (x1 - x0) / 2) / (x1 - x0));
+}
+
+void ugui_slider(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r, int value, int min, int max, uint16_t id) {
+    uint8_t dis = take_disabled(ctx);
+    if (!s || r.w <= 0 || r.h <= 0) return;
+    int sc = s->scale > 0 ? s->scale : 1;
+    if (max <= min) max = min + 1;
+    if (value < min) value = min;
+    if (value > max) value = max;
+    int x0, x1;
+    slider_track(s, r, &x0, &x1);
+    int cy = r.y + r.h / 2;
+    ugui_fill(s, (ugui_rect_t){ (int16_t)x0, (int16_t)(cy - 2 * sc), (int16_t)(x1 - x0 + 1), (int16_t)(4 * sc) },
+              UGUI_GRAY_TRACK, CANVAS1_GREY);
+    int tx = x0 + (int)((long)(value - min) * (x1 - x0) / (max - min));
+    ugui_fill(s, (ugui_rect_t){ (int16_t)x0, (int16_t)(cy - 2 * sc), (int16_t)(tx - x0 + 1), (int16_t)(4 * sc) },
+              UGUI_GRAY_INK, CANVAS1_BLACK);
+    bool armed = !dis && ugui_is_armed(ctx, id, 0);
+    ugui_rect_t thumb = { (int16_t)(tx - 5 * sc), (int16_t)(cy - 9 * sc), (int16_t)(10 * sc), (int16_t)(18 * sc) };
+    ugui_fill(s, thumb, armed ? UGUI_GRAY_INK : UGUI_GRAY_CARD, armed ? CANVAS1_BLACK : CANVAS1_WHITE);
+    frame(s, thumb, sc);
+    if (dis) ugui_dim(s, r);
+    add_hit_s(s, ctx, r, id, 0, dis ? UGUI_HIT_DISABLED : UGUI_HIT_DRAG);
+}
+
+void ugui_progress(const ugui_surface_t *s, ugui_rect_t r, int permille) {
+    if (!s || r.w <= 0 || r.h <= 0) return;
+    int sc = s->scale > 0 ? s->scale : 1;
+    if (permille < 0) permille = 0;
+    if (permille > 1000) permille = 1000;
+    ugui_fill(s, r, UGUI_GRAY_CARD, CANVAS1_WHITE);
+    int inner = r.w - 4 * sc;
+    int fw = (int)((long)inner * permille / 1000);
+    if (fw > 0)
+        ugui_fill(s, (ugui_rect_t){ (int16_t)(r.x + 2 * sc), (int16_t)(r.y + 2 * sc), (int16_t)fw, (int16_t)(r.h - 4 * sc) },
+                  UGUI_GRAY_INK, CANVAS1_BLACK);
+    frame(s, r, sc);
+}
+
+void ugui_tab_bar(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r, const char *const *labels,
+                  int count, int selected, uint16_t base_id) {
+    uint8_t dis = take_disabled(ctx);
+    if (!s || !labels || count <= 0 || r.w <= 0 || r.h <= 0) return;
+    int sc = s->scale > 0 ? s->scale : 1;
+    int tw = r.w / count;
+    ugui_hline(s, r.x, r.x + r.w - 1, r.y + r.h - sc, sc, UGUI_GRAY_BORDER, CANVAS1_BLACK);
+    for (int i = 0; i < count; i++) {
+        uint16_t id = (uint16_t)(base_id + (uint16_t)i);
+        bool sel = i == selected, tdis = i < 8 && ((dis >> i) & 1u);
+        bool armed = !tdis && ugui_is_armed(ctx, id, (int16_t)i);
+        ugui_rect_t t = { (int16_t)(r.x + i * tw + sc), (int16_t)(r.y + (sel ? 0 : 3 * sc)),
+                          (int16_t)((i == count - 1 ? r.w - i * tw : tw) - 2 * sc), (int16_t)(r.h - (sel ? 0 : 3 * sc)) };
+        ugui_fill(s, t, armed ? UGUI_GRAY_INK : sel ? UGUI_GRAY_CARD : UGUI_GRAY_TOOLBAR,
+                  armed ? CANVAS1_BLACK : CANVAS1_WHITE);
+        ugui_hline(s, t.x, t.x + t.w - 1, t.y, sc, UGUI_GRAY_BORDER, CANVAS1_BLACK);
+        ugui_vline(s, t.x, t.y, t.y + t.h - 1, sc, UGUI_GRAY_BORDER, CANVAS1_BLACK);
+        ugui_vline(s, t.x + t.w - sc, t.y, t.y + t.h - 1, sc, UGUI_GRAY_BORDER, CANVAS1_BLACK);
+        if (sel)                                         /* open toward the content */
+            ugui_hline(s, t.x + sc, t.x + t.w - 1 - sc, r.y + r.h - sc, sc, UGUI_GRAY_CARD, CANVAS1_WHITE);
+        if (labels[i]) {
+            uint32_t n = (uint32_t)strlen(labels[i]);
+            int lw = ugui_text_serif_width(s, labels[i], n);
+            ugui_text_serif(s, t.x + (t.w - lw) / 2, t.y + (t.h - ugui_serif_line_h(s)) / 2, labels[i], n,
+                            sel, false, armed);
+        }
+        if (tdis) ugui_dim(s, t);
+        add_hit_s(s, ctx, t, id, (int16_t)i, tdis ? UGUI_HIT_DISABLED : 0);
+    }
+}
+
+int ugui_path_prefix(const char *path, int n) {
+    if (!path || path[0] != '/') return 0;
+    if (n <= 0) return 1;
+    int i = 1, seg = 0;
+    while (path[i]) {
+        while (path[i] && path[i] != '/') i++;
+        if (++seg == n) return i;
+        if (path[i]) i++;
+    }
+    return i;
+}
+
+void ugui_path_bar(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r, const char *path, uint16_t id) {
+    (void)take_disabled(ctx);
+    if (!s || !path || r.w <= 0 || r.h <= 0) return;
+    int sc = s->scale > 0 ? s->scale : 1;
+    /* The segments: "/" then each name. */
+    const char *seg[16];
+    int len[16], n = 0;
+    seg[n] = "/"; len[n++] = 1;
+    for (const char *p = path; *p && n < 16;) {
+        while (*p == '/') p++;
+        if (!*p) break;
+        const char *q = p;
+        while (*q && *q != '/') q++;
+        seg[n] = p; len[n++] = (int)(q - p);
+        p = q;
+    }
+    int pad = 6 * sc, sep_w = ugui_text_serif_width(s, ">", 1) + 2 * pad;
+    int w[16], total = 0;
+    for (int i = 0; i < n; i++) { w[i] = ugui_text_serif_width(s, seg[i], (uint32_t)len[i]) + 2 * pad; total += w[i] + (i ? sep_w : 0); }
+    int ell_w = ugui_text_serif_width(s, "...", 3) + 2 * pad;
+    int first = 0;
+    while (total > r.w && first < n - 1) { total -= w[first] + sep_w; first++; if (first == 1) total += ell_w + sep_w; }
+    ugui_fill(s, r, UGUI_GRAY_TOOLBAR, CANVAS1_WHITE);
+    int x = r.x, ty = r.y + (r.h - ugui_serif_line_h(s)) / 2;
+    if (first > 0) {
+        ugui_text_serif(s, x + pad, ty, "...", 3, false, true, false);
+        x += ell_w;
+        ugui_text_serif(s, x + pad, ty, ">", 1, false, false, false);
+        x += sep_w;
+    }
+    for (int i = first; i < n; i++) {
+        if (i > first) { ugui_text_serif(s, x + pad, ty, ">", 1, false, false, false); x += sep_w; }
+        ugui_rect_t sr = { (int16_t)x, r.y, (int16_t)w[i], r.h };
+        bool armed = ugui_is_armed(ctx, id, (int16_t)i), last = i == n - 1;
+        if (armed) ugui_fill(s, sr, UGUI_GRAY_INK, CANVAS1_BLACK);
+        ugui_text_serif(s, x + pad, ty, seg[i], (uint32_t)len[i], last, false, armed);
+        add_hit_s(s, ctx, sr, id, (int16_t)i, 0);
+        x += w[i];
+    }
+}
+
+void ugui_text_init(ugui_text_t *t, char *buf, uint16_t cap) {
+    t->buf = buf;
+    t->cap = cap;
+    t->len = (uint16_t)strlen(buf);
+    t->caret = t->anchor = t->len;
+}
+
+static void text_cut(ugui_text_t *t) {
+    int a = t->anchor < t->caret ? t->anchor : t->caret, b = t->anchor < t->caret ? t->caret : t->anchor;
+    if (a == b) return;
+    memmove(t->buf + a, t->buf + b, (size_t)(t->len - b + 1));
+    t->len = (uint16_t)(t->len - (b - a));
+    t->caret = t->anchor = (uint16_t)a;
+}
+
+ugui_text_ev_t ugui_text_key(ugui_text_t *t, uint32_t key, uint8_t mods) {
+    if (!t || !t->buf) return UGUI_TEXT_NONE;
+    bool sel = (mods & KMOD_SHIFT) != 0;
+    bool has_sel = t->anchor != t->caret;
+    if (key == '\r' || key == '\n') return UGUI_TEXT_SUBMIT;
+    if (key == 0x1b) return UGUI_TEXT_CANCEL;
+    if (key == KEY_LEFT || key == KEY_RIGHT || key == KEY_HOME || key == KEY_END) {
+        int c = t->caret;
+        if (!sel && has_sel && (key == KEY_LEFT || key == KEY_RIGHT)) {
+            int a = t->anchor < t->caret ? t->anchor : t->caret, b = t->anchor < t->caret ? t->caret : t->anchor;
+            c = key == KEY_LEFT ? a : b;                 /* to that end of the selection */
+        } else if (key == KEY_LEFT) { if (c > 0) c--; }
+        else if (key == KEY_RIGHT) { if (c < t->len) c++; }
+        else c = key == KEY_HOME ? 0 : t->len;
+        t->caret = (uint16_t)c;
+        if (!sel) t->anchor = t->caret;
+        return UGUI_TEXT_MOVED;
+    }
+    if (key == 0x7f || key == 0x08 || key == KEY_DELETE) {
+        if (has_sel) { text_cut(t); return UGUI_TEXT_CHANGED; }
+        if (key == KEY_DELETE) { if (t->caret >= t->len) return UGUI_TEXT_MOVED; t->anchor = (uint16_t)(t->caret + 1); }
+        else { if (t->caret == 0) return UGUI_TEXT_MOVED; t->anchor = (uint16_t)(t->caret - 1); }
+        text_cut(t);
+        return UGUI_TEXT_CHANGED;
+    }
+    if (key >= 0x20 && key < 0x7f) {                     /* ASCII until the fonts go further (71.9) */
+        text_cut(t);
+        if (t->len + 1u >= t->cap) return UGUI_TEXT_MOVED;
+        memmove(t->buf + t->caret + 1, t->buf + t->caret, (size_t)(t->len - t->caret + 1));
+        t->buf[t->caret] = (char)key;
+        t->len++;
+        t->caret = t->anchor = (uint16_t)(t->caret + 1);
+        return UGUI_TEXT_CHANGED;
+    }
+    return UGUI_TEXT_NONE;
+}
+
+void ugui_textfield(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r, const ugui_text_t *t, uint16_t id) {
+    uint8_t dis = take_disabled(ctx);
+    if (!s || !t || r.w <= 0 || r.h <= 0) return;
+    int sc = s->scale > 0 ? s->scale : 1;
+    ugui_fill(s, r, UGUI_GRAY_CARD, CANVAS1_WHITE);
+    frame(s, r, sc);
+    ugui_rect_t in = { (int16_t)(r.x + 4 * sc), (int16_t)(r.y + 2 * sc), (int16_t)(r.w - 8 * sc), (int16_t)(r.h - 4 * sc) };
+    bool focused = ctx && ctx->focus_id == id;
+    /* Scrolled so the caret shows. */
+    int caret_x = ugui_text_serif_width(s, t->buf, t->caret);
+    int off = caret_x > in.w - 2 * sc ? caret_x - (in.w - 2 * sc) : 0;
+    ugui_surface_t cs = ugui_clip(s, in);
+    int ty = r.y + (r.h - ugui_serif_line_h(s)) / 2, tx = in.x - off;
+    ugui_text_serif(&cs, tx, ty, t->buf, t->len, false, false, false);
+    if (focused) {
+        int a = t->anchor < t->caret ? t->anchor : t->caret, b = t->anchor < t->caret ? t->caret : t->anchor;
+        if (a != b) {
+            int xa = tx + ugui_text_serif_width(s, t->buf, (uint32_t)a), xb = tx + ugui_text_serif_width(s, t->buf, (uint32_t)b);
+            ugui_invert(&cs, xa, in.y, xb - 1, in.y + in.h - 1);
+        } else {
+            ugui_fill(&cs, (ugui_rect_t){ (int16_t)(tx + caret_x), in.y, (int16_t)sc, in.h }, UGUI_GRAY_INK, CANVAS1_BLACK);
+        }
+    }
+    if (dis) ugui_dim(s, r);
+    add_hit_s(s, ctx, r, id, 0, dis ? UGUI_HIT_DISABLED : 0);
+}
+
+void ugui_set_focus(ugui_ctx_t *ctx, uint16_t id, int16_t index) {
+    if (!ctx) return;
+    ctx->focus_id = id;
+    ctx->focus_index = index;
+}
+
+void ugui_modal_begin(const ugui_surface_t *s, ugui_ctx_t *ctx) {
+    if (s) ugui_dim(s, (ugui_rect_t){ 0, 0, (int16_t)s->w, (int16_t)s->h });
+    if (!ctx) return;
+    ctx->modal = true;
+    ctx->modal_from = (int16_t)ctx->count;
+}
+
+/* The buttons along a modal's bottom edge, from the right; the last label
+ * is the default, framed bold. */
+static void modal_buttons(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t box, const char *const *labels,
+                          int count, uint16_t base_id) {
+    int sc = s->scale > 0 ? s->scale : 1;
+    int bh = 22 * sc, pad = 10 * sc, x = box.x + box.w - pad;
+    for (int i = count - 1; i >= 0; i--) {
+        int bw = ugui_text_serif_width(s, labels[i], (uint32_t)strlen(labels[i])) + 24 * sc;
+        if (bw < 64 * sc) bw = 64 * sc;
+        x -= bw;
+        ugui_rect_t b = { (int16_t)x, (int16_t)(box.y + box.h - pad - bh), (int16_t)bw, (int16_t)bh };
+        ugui_button(s, ctx, b, labels[i], (uint16_t)(base_id + (uint16_t)i), false);
+        if (i == count - 1)                              /* the default: a second frame around it */
+            frame(s, (ugui_rect_t){ (int16_t)(b.x - 3 * sc), (int16_t)(b.y - 3 * sc), (int16_t)(b.w + 6 * sc), (int16_t)(b.h + 6 * sc) }, 2 * sc);
+        x -= 12 * sc;
+    }
+}
+
+ugui_rect_t ugui_dialog(const ugui_surface_t *s, ugui_ctx_t *ctx, const char *title, const char *message,
+                        const char *const *buttons, int count, uint16_t base_id) {
+    ugui_rect_t none = { 0, 0, 0, 0 };
+    if (!s) return none;
+    int sc = s->scale > 0 ? s->scale : 1;
+    int lh = ugui_serif_line_h(s), lines = 0, widest = title ? ugui_text_serif_width(s, title, (uint32_t)strlen(title)) : 0;
+    for (const char *p = message; p && *p;) {
+        const char *q = p;
+        while (*q && *q != '\n') q++;
+        int lw = ugui_text_serif_width(s, p, (uint32_t)(q - p));
+        if (lw > widest) widest = lw;
+        lines++;
+        p = *q ? q + 1 : q;
+    }
+    int w = widest + 40 * sc, min_w = 260 * sc;
+    if (w < min_w) w = min_w;
+    if (w > s->w - 20 * sc) w = s->w - 20 * sc;
+    int h = 16 * sc + (title ? lh + 8 * sc : 0) + lines * lh + 16 * sc + 22 * sc + 14 * sc;
+    ugui_rect_t box = { (int16_t)((s->w - w) / 2), (int16_t)((s->h - h) / 2), (int16_t)w, (int16_t)h };
+    ugui_modal_begin(s, ctx);
+    ugui_box_shadow(s, box, false);
+    frame(s, (ugui_rect_t){ (int16_t)(box.x + 3 * sc), (int16_t)(box.y + 3 * sc), (int16_t)(box.w - 6 * sc), (int16_t)(box.h - 6 * sc) }, sc);
+    int y = box.y + 16 * sc;
+    if (title) { ugui_text_serif(s, box.x + 20 * sc, y, title, (uint32_t)strlen(title), true, false, false); y += lh + 8 * sc; }
+    for (const char *p = message; p && *p;) {
+        const char *q = p;
+        while (*q && *q != '\n') q++;
+        ugui_text_serif(s, box.x + 20 * sc, y, p, (uint32_t)(q - p), false, false, false);
+        y += lh;
+        p = *q ? q + 1 : q;
+    }
+    if (buttons && count > 0) modal_buttons(s, ctx, box, buttons, count, base_id);
+    return box;
+}
+
+ugui_rect_t ugui_action_sheet(const ugui_surface_t *s, ugui_ctx_t *ctx, const char *title,
+                              const char *const *items, int count, uint16_t base_id) {
+    ugui_rect_t none = { 0, 0, 0, 0 };
+    if (!s || !items || count <= 0) return none;
+    int sc = s->scale > 0 ? s->scale : 1;
+    int lh = ugui_serif_line_h(s), ih = 28 * sc, gap = 6 * sc, pad = 10 * sc;
+    int w = s->w > 420 * sc ? 400 * sc : s->w - 20 * sc;
+    int h = pad + (title ? lh + gap : 0) + count * (ih + gap) + pad - gap;
+    ugui_rect_t box = { (int16_t)((s->w - w) / 2), (int16_t)(s->h - h - 10 * sc), (int16_t)w, (int16_t)h };
+    ugui_modal_begin(s, ctx);
+    ugui_box_shadow(s, box, false);
+    int y = box.y + pad;
+    if (title) {
+        int tw = ugui_text_serif_width(s, title, (uint32_t)strlen(title));
+        ugui_text_serif(s, box.x + (box.w - tw) / 2, y, title, (uint32_t)strlen(title), false, true, false);
+        y += lh + gap;
+    }
+    for (int i = 0; i < count; i++) {
+        ugui_button(s, ctx, (ugui_rect_t){ (int16_t)(box.x + pad), (int16_t)y, (int16_t)(box.w - 2 * pad), (int16_t)ih },
+                    items[i], (uint16_t)(base_id + (uint16_t)i), false);
+        y += ih + gap;
+    }
+    return box;
+}
+
 static void selftest_row(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t row, int index, void *user) {
     (void)user;
     ugui_list_row(s, ctx, row, NULL, "r", NULL, 50, (int16_t)index, false);
@@ -1185,6 +1569,40 @@ bool ugui_selftest(void) {
     if (sp != 75) return false;
     if (ugui_vlist_reveal(0, 25, 10, 9) != 75 || ugui_vlist_reveal(75, 25, 10, 0) != 0 ||
         ugui_vlist_reveal(10, 25, 10, 2) != 10) return false;
+
+    /* Text field editing: insert, caret moves, Shift-selection replaced by
+     * typing, Backspace / Delete, the buffer's bound, submit / cancel. */
+    char tb[8] = "ab";
+    ugui_text_t tf;
+    ugui_text_init(&tf, tb, sizeof tb);
+    if (ugui_text_key(&tf, 'c', 0) != UGUI_TEXT_CHANGED || strcmp(tb, "abc") != 0 || tf.caret != 3) return false;
+    (void)ugui_text_key(&tf, KEY_HOME, 0);
+    (void)ugui_text_key(&tf, KEY_RIGHT, KMOD_SHIFT);
+    (void)ugui_text_key(&tf, KEY_RIGHT, KMOD_SHIFT);                 /* "ab" selected */
+    if (ugui_text_key(&tf, 'X', 0) != UGUI_TEXT_CHANGED || strcmp(tb, "Xc") != 0 || tf.caret != 1) return false;
+    (void)ugui_text_key(&tf, 0x7f, 0);
+    (void)ugui_text_key(&tf, KEY_DELETE, 0);
+    if (tf.len != 0 || tb[0] != '\0') return false;
+    for (int i = 0; i < 10; i++) (void)ugui_text_key(&tf, 'z', 0);
+    if (tf.len != 7 || tb[7] != '\0') return false;                    /* 8 bytes: 7 and the NUL */
+    if (ugui_text_key(&tf, '\r', 0) != UGUI_TEXT_SUBMIT || ugui_text_key(&tf, 0x1b, 0) != UGUI_TEXT_CANCEL ||
+        ugui_text_key(&tf, '\t', 0) != UGUI_TEXT_NONE) return false;
+
+    /* Path prefixes as the path bar counts its segments. */
+    if (ugui_path_prefix("/sd0/docs", 0) != 1 || ugui_path_prefix("/sd0/docs", 1) != 4 ||
+        ugui_path_prefix("/sd0/docs", 2) != 9) return false;
+
+    /* A modal: only what follows ugui_modal_begin() is hit or focused; a tap
+     * on what is under it hits nothing. */
+    ugui_begin(&hc);
+    hc.focus_id = 0;
+    hc.focus_shown = false;
+    ugui_add_hit(&hc, (ugui_rect_t){ 0, 0, 128, 64 }, 60, 0);
+    ugui_modal_begin(NULL, &hc);
+    ugui_add_hit(&hc, (ugui_rect_t){ 40, 20, 20, 10 }, 61, 0);
+    if (ugui_hit_test(&hc, 5, 5, NULL) != 0 || ugui_hit_test(&hc, 45, 25, NULL) != 61) return false;
+    if (ugui_nav(&hc, '\t', 0, &fid, &fidx) != UGUI_NAV_MOVED || !ugui_is_focused(&hc, 61, 0)) return false;
+    if (ugui_nav(&hc, '\t', 0, &fid, &fidx) != UGUI_NAV_MOVED || !ugui_is_focused(&hc, 61, 0)) return false;
 
     return true;
 }

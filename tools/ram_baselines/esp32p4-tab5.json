@@ -1,14 +1,14 @@
 {
   "bulk_per_file": {
     "drivers/dsi_esp32p4.c": 140596,
-    "drivers/launcher_view.c": 21944,
-    "drivers/reader_view.c": 62400,
+    "drivers/launcher_view.c": 22116,
+    "drivers/reader_view.c": 62416,
     "drivers/uxbench.c": 540,
     "kernel/palloc.c": 32768,
     "kernel/winevent.c": 2576,
     "kernel/zonetest.c": 64,
     "user/ceres/src/platform_p4.c": 31896,
-    "user/chess/src/chess_ui.c": 1844,
+    "user/chess/src/chess_ui.c": 1848,
     "user/lisp/lisp.c": 1532288,
     "user/moonbase/src/moon_textures.c": 32768,
     "user/moonbase/src/platform_p4.c": 41120
@@ -16,14 +16,14 @@
   "bulk_per_subsystem": {
     "app:ceres": 31896,
     "app:moonbase": 73888,
-    "chess": 1844,
-    "display": 224940,
+    "chess": 1848,
+    "display": 225128,
     "drivers": 540,
     "kernel": 35344,
     "lisp": 1532288,
     "selftest": 64
   },
-  "bulk_total": 1900804,
+  "bulk_total": 1900996,
   "heap_bytes": 380928,
   "heap_pages": 93,
   "per_file": {
@@ -85,7 +85,7 @@
     "kernel/chan.c": 1348,
     "kernel/chan_selftest.c": 172,
     "kernel/clipboard.c": 20,
-    "kernel/console.c": 776,
+    "kernel/console.c": 781,
     "kernel/device.c": 140,
     "kernel/devirq.c": 134,
     "kernel/discipline.c": 82,
@@ -191,11 +191,11 @@
     "radio": 12564,
     "selftest": 3963,
     "sensors": 8736,
-    "shell": 13060,
+    "shell": 13065,
     "storage": 7456,
     "usb": 1212,
     "vfs": 4111
   },
   "ram_code": 1806,
-  "total": 216714
+  "total": 216719
 }

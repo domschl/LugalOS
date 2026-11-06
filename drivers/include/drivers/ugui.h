@@ -51,6 +51,7 @@ typedef struct {
 ugui_surface_t ugui_clip(const ugui_surface_t *s, ugui_rect_t r);
 
 #define UGUI_HIT_DISABLED 0x01u  /* dimmed: no press feedback, no focus, a tap hits nothing */
+#define UGUI_HIT_DRAG     0x02u  /* follows a finger (a slider): its contact is not a gesture */
 
 typedef struct {
     ugui_rect_t rect;
@@ -76,6 +77,8 @@ typedef struct {
     int16_t     min_target;     /* touch areas grow to this many px (0: as drawn); kept across passes */
     uint8_t     nbounds, cur_bound;
     ugui_rect_t bounds[UGUI_MAX_BOUNDS];
+    bool        modal;          /* ugui_modal_begin() this pass: only hits from modal_from count */
+    int16_t     modal_from;
 } ugui_ctx_t;
 
 /* Reset hit-box registry before a draw pass */
@@ -107,6 +110,10 @@ void ugui_slop_bounds_end(ugui_ctx_t *ctx);
  * caller with targets of its own (the reader's links) that must win over a
  * widget's grown area but not over the widget itself. */
 uint16_t ugui_hit_test_drawn(const ugui_ctx_t *ctx, int x, int y, int16_t *out_index);
+
+/* Whether a finger down at (x, y) is on a widget that follows it
+ * (UGUI_HIT_DRAG): the caller then sends it the moves, not gestures. */
+bool ugui_drag_at(const ugui_ctx_t *ctx, int x, int y);
 
 /* Hit i's touch area (its rectangle grown and bounded). */
 ugui_rect_t ugui_touch_rect(const ugui_ctx_t *ctx, int i);
@@ -210,6 +217,67 @@ int ugui_vlist(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t view, int c
 
 /* The scroll that shows row index whole, as near the current one as can be. */
 int ugui_vlist_reveal(int scroll_px, int view_h, int row_h, int index);
+
+/* --- Controls -------------------------------------------------------------
+ * Stateless, as the widgets above: the caller keeps the value and changes it
+ * when its id is hit (a tap, or Enter on the focus). */
+
+/* A row: label on the left, an on/off switch on the right. */
+void ugui_toggle(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r, const char *label, bool on, uint16_t id);
+/* A box with a cross when checked, the label after it. */
+void ugui_checkbox(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r, const char *label, bool checked, uint16_t id);
+/* A track with a thumb at value (min..max); ugui_slider_value() is the value
+ * a tap at x sets. Left / Right on its focus are the caller's steps. */
+void ugui_slider(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r, int value, int min, int max, uint16_t id);
+int  ugui_slider_value(const ugui_surface_t *s, ugui_rect_t r, int x, int min, int max);
+/* A bar filled permille / 1000 of the way. No hit-box. */
+void ugui_progress(const ugui_surface_t *s, ugui_rect_t r, int permille);
+/* Tabs of equal width; the selected one open toward the content under it.
+ * Tab i is id base_id + i, index i. */
+void ugui_tab_bar(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r, const char *const *labels,
+                  int count, int selected, uint16_t base_id);
+/* A path as tappable segments ("/" the root, then each directory): segment
+ * i (0 the root) is id `id`, index i -- the path up to and including it.
+ * Leading segments that do not fit give way to an ellipsis. */
+void ugui_path_bar(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r, const char *path, uint16_t id);
+/* The length of path's first n segments as ugui_path_bar() counts them
+ * ("/sd0/docs", 2 -> 4: "/sd0"; 0 -> 1: "/"). */
+int  ugui_path_prefix(const char *path, int n);
+
+/* A single-line text field over the caller's buffer. The caret and the
+ * selection (anchor..caret) show while the field has the focus. */
+typedef struct {
+    char    *buf;               /* NUL-terminated, cap bytes with the NUL */
+    uint16_t cap, len;
+    uint16_t caret, anchor;     /* anchor == caret: no selection */
+} ugui_text_t;
+
+typedef enum { UGUI_TEXT_NONE = 0, UGUI_TEXT_CHANGED, UGUI_TEXT_MOVED, UGUI_TEXT_SUBMIT, UGUI_TEXT_CANCEL } ugui_text_ev_t;
+
+void ugui_text_init(ugui_text_t *t, char *buf, uint16_t cap);
+/* A key for the field (kernel/keyseq.h's codes): text inserted over the
+ * selection, Backspace / Delete, Left / Right / Home / End (with Shift:
+ * selecting), Enter submits, Esc cancels. NONE: not a key it takes. */
+ugui_text_ev_t ugui_text_key(ugui_text_t *t, uint32_t key, uint8_t mods);
+void ugui_textfield(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r, const ugui_text_t *t, uint16_t id);
+
+/* Moves the focus to (id, index), shown or not as it was: a tap on a text
+ * field gives it the caret. */
+void ugui_set_focus(ugui_ctx_t *ctx, uint16_t id, int16_t index);
+
+/* Modal: the widgets after ugui_modal_begin() are the only ones touched or
+ * focused this pass; a tap anywhere else hits nothing. ugui_dialog() and
+ * ugui_action_sheet() begin it themselves, over the rest dimmed. */
+void ugui_modal_begin(const ugui_surface_t *s, ugui_ctx_t *ctx);
+/* A dialog in the middle of s: title, message (lines split at '\n'), and
+ * buttons from the right, the last label the default (framed bold); button
+ * i is id base_id + i. Returns its rectangle. */
+ugui_rect_t ugui_dialog(const ugui_surface_t *s, ugui_ctx_t *ctx, const char *title, const char *message,
+                        const char *const *buttons, int count, uint16_t base_id);
+/* An action sheet: the choices stacked full width at the bottom of s, item
+ * i id base_id + i. Returns its rectangle. */
+ugui_rect_t ugui_action_sheet(const ugui_surface_t *s, ugui_ctx_t *ctx, const char *title,
+                              const char *const *items, int count, uint16_t base_id);
 
 bool ugui_selftest(void);
 

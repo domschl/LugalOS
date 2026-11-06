@@ -38,6 +38,13 @@ void     launcher_scroll(int delta_y);
  * glides on when it lifts still moving (dy over its last ms). */
 void     launcher_drag(int dy);
 void     launcher_drag_end(int dy, uint32_t ms);
+/* The control gallery in place of the launcher's content (`launcher
+ * gallery`; its Done button ends it): every ugui control, by touch and keys. */
+void     launcher_gallery(bool on);
+/* Whether a finger down at the point is on a control that follows it (a
+ * slider), and that finger's moves while it is captured. */
+bool     launcher_drag_target(int client_x, int client_y);
+void     launcher_pointer_move(int client_x, int client_y);
 void     launcher_feed_key(int c);
 void     launcher_feed_end(void);
 bool     launcher_poll_exec(char *out_cmd, size_t max_len);

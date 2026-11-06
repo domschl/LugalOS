@@ -1613,6 +1613,15 @@ static void cmd_launcher(const char *arg) {
         launcher_report();
         return;
     }
+    if (arg && strcmp(arg, "gallery") == 0) {
+        if (!launcher_is_active() && !launcher_open()) {
+            cprintf("launcher: cannot open (no graphical ribbon)\n");
+            return;
+        }
+        launcher_gallery(true);
+        cprintf("launcher: control gallery (Done returns)\n");
+        return;
+    }
     if (arg && strcmp(arg, "close") == 0) {
         uint8_t rreq[2] = { 'R', 0 }, rreply[SCREEN_REPLY_LEN];
         if (console_canvas(rreq, 1, rreply) && rreply[0] == 0) {
@@ -1647,7 +1656,7 @@ static void cmd_launcher(const char *arg) {
         }
         return;
     }
-    cprintf("Usage: launcher [open | close | status]\n");
+    cprintf("Usage: launcher [open | close | status | gallery]\n");
 }
 
 #if CONFIG_ENABLE_CHESS

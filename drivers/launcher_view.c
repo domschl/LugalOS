@@ -31,6 +31,9 @@ void launcher_press(int client_x, int client_y) { (void)client_x; (void)client_y
 void launcher_release(void) {}
 void launcher_scroll(int delta_y) { (void)delta_y; }
 void launcher_feed_key(int c) { (void)c; }
+void launcher_gallery(bool on) { (void)on; }
+bool launcher_drag_target(int client_x, int client_y) { (void)client_x; (void)client_y; return false; }
+void launcher_pointer_move(int client_x, int client_y) { (void)client_x; (void)client_y; }
 void launcher_drag(int dy) { (void)dy; }
 void launcher_drag_end(int dy, uint32_t ms) { (void)dy; (void)ms; }
 void launcher_feed_end(void) {}
@@ -79,6 +82,19 @@ void launcher_report(void) { cprintf("launcher: not present on headless board\n"
 #define LAUNCHER_ID_ORIENT_SEG   30
 #define LAUNCHER_ID_DOC_REFRESH  40
 #define LAUNCHER_ID_DOC_BASE     100
+/* The control gallery (`launcher gallery`): every ugui control, to try by
+ * touch and keys before an app uses it. */
+#define GAL_ID_TAB       500     /* + tab */
+#define GAL_ID_DONE      510
+#define GAL_ID_TOGGLE    511
+#define GAL_ID_CHECK     512
+#define GAL_ID_SLIDER    513
+#define GAL_ID_PATH      514
+#define GAL_ID_TEXT      515
+#define GAL_ID_SHOW_DLG  516
+#define GAL_ID_SHOW_SHT  517
+#define GAL_ID_DLG       520     /* + button */
+#define GAL_ID_SHEET     530     /* + item */
 
 /* Crisp 16x16 1-bpp Classic Mac application icons in .rodata */
 static const uint16_t k_icon_reader[16] = {
@@ -117,6 +133,13 @@ typedef struct {
 
 typedef struct {
     bool           active;
+    struct {                                   /* the control gallery's state */
+        bool        on, toggle, check, dialog, sheet;
+        int         tab, slider;
+        char        text[64];
+        ugui_text_t field;
+        char        result[64];
+    } gal;
     uint8_t        slot_id;
     int            win_w;
     int            win_h;
@@ -126,7 +149,9 @@ typedef struct {
     int            doc_count;
     launcher_doc_t docs[LAUNCHER_MAX_DOCS];
     ugui_ctx_t     ui_ctx;
-    uint8_t       *aa_buf;
+    uint8_t       *aa_buf;         /* GRAY8: what the panel composites (the front) */
+    uint8_t       *aa_back;        /* the one a full draw goes into, then swapped in; NULL: draw in place */
+    uint8_t       *aa_target;      /* the one launcher_draw() is drawing into */
     uint32_t       aa_stride;
     int            aa_w;
     int            aa_h;
@@ -486,13 +511,159 @@ static void draw_doc_list(const ugui_surface_t *surf, int x, int y, int w, int a
                    s_launcher.scroll_px, total, view.h);
 }
 
+static const char *const k_gal_tabs[3] = { "Controls", "Text", "Dialogs" };
+static const char *const k_gal_dlg[2] = { "Cancel", "Delete" };
+static const char *const k_gal_sheet[5] = { "Open", "Rename", "Add to Shortcuts", "Delete", "Cancel" };
+static const char k_gal_path[] = "/sd0/docs/books/german/goethe";
+
+static void gal_line(const ugui_surface_t *surf, int x, int y, const char *text, bool muted) {
+    ugui_text_serif(surf, x, y, text, (uint32_t)strlen(text), false, muted, false);
+}
+
+static void launcher_draw_gallery(const ugui_surface_t *surf, int w, int h) {
+    const int s = surf->scale;
+    ugui_ctx_t *ctx = &s_launcher.ui_ctx;
+    int pad = 12 * s, col = w - 2 * pad > 440 * s ? 440 * s : w - 2 * pad, row = 32 * s, y = pad;
+    ugui_tab_bar(surf, ctx, (ugui_rect_t){ (int16_t)pad, (int16_t)y, (int16_t)(w - 2 * pad - 90 * s), (int16_t)(26 * s) },
+                 k_gal_tabs, 3, s_launcher.gal.tab, GAL_ID_TAB);
+    ugui_toolbar_button(surf, ctx, (ugui_rect_t){ (int16_t)(w - pad - 80 * s), (int16_t)(y + 2 * s), (int16_t)(80 * s), (int16_t)(22 * s) },
+                        "Done", GAL_ID_DONE, false);
+    y += 40 * s;
+    if (s_launcher.gal.tab == 0) {
+        ugui_toggle(surf, ctx, (ugui_rect_t){ (int16_t)pad, (int16_t)y, (int16_t)col, (int16_t)row },
+                    "Wi-Fi", s_launcher.gal.toggle, GAL_ID_TOGGLE);
+        y += row + 6 * s;
+        ugui_checkbox(surf, ctx, (ugui_rect_t){ (int16_t)pad, (int16_t)y, (int16_t)col, (int16_t)row },
+                      "Show hidden files", s_launcher.gal.check, GAL_ID_CHECK);
+        y += row + 6 * s;
+        ugui_slider(surf, ctx, (ugui_rect_t){ (int16_t)pad, (int16_t)y, (int16_t)(col - 70 * s), (int16_t)row },
+                    s_launcher.gal.slider, 0, 100, GAL_ID_SLIDER);
+        char v[16];
+        ksnprintf(v, sizeof v, "%d", s_launcher.gal.slider);
+        gal_line(surf, pad + col - 60 * s, y + (row - ugui_serif_line_h(surf)) / 2, v, false);
+        y += row + 6 * s;
+        ugui_progress(surf, (ugui_rect_t){ (int16_t)pad, (int16_t)y, (int16_t)(col - 70 * s), (int16_t)(14 * s) },
+                      s_launcher.gal.slider * 10);
+        y += 28 * s;
+        ugui_path_bar(surf, ctx, (ugui_rect_t){ (int16_t)pad, (int16_t)y, (int16_t)(w - 2 * pad), (int16_t)(26 * s) },
+                      k_gal_path, GAL_ID_PATH);
+        y += 34 * s;
+    } else if (s_launcher.gal.tab == 1) {
+        gal_line(surf, pad, y, "Name:", false);
+        y += ugui_serif_line_h(surf) + 4 * s;
+        ugui_textfield(surf, ctx, (ugui_rect_t){ (int16_t)pad, (int16_t)y, (int16_t)col, (int16_t)(28 * s) },
+                       &s_launcher.gal.field, GAL_ID_TEXT);
+        y += 36 * s;
+        gal_line(surf, pad, y, "Tap the field (or Tab to it) and type on a USB keyboard;", true);
+        y += ugui_serif_line_h(surf);
+        gal_line(surf, pad, y, "Shift+arrows select, Enter submits, Esc cancels.", true);
+        y += ugui_serif_line_h(surf) + 8 * s;
+    } else {
+        ugui_button(surf, ctx, (ugui_rect_t){ (int16_t)pad, (int16_t)y, (int16_t)(180 * s), (int16_t)(28 * s) },
+                    "Show Dialog", GAL_ID_SHOW_DLG, false);
+        ugui_button(surf, ctx, (ugui_rect_t){ (int16_t)(pad + 196 * s), (int16_t)y, (int16_t)(180 * s), (int16_t)(28 * s) },
+                    "Show Action Sheet", GAL_ID_SHOW_SHT, false);
+        y += 44 * s;
+    }
+    if (s_launcher.gal.result[0]) gal_line(surf, pad, y, s_launcher.gal.result, false);
+    (void)h;
+    if (s_launcher.gal.dialog)
+        (void)ugui_dialog(surf, ctx, "Delete \"notes.md\"?", "The file will be removed from /sd0/docs.\nThis cannot be undone.",
+                          k_gal_dlg, 2, GAL_ID_DLG);
+    else if (s_launcher.gal.sheet)
+        (void)ugui_action_sheet(surf, ctx, "notes.md", k_gal_sheet, 5, GAL_ID_SHEET);
+}
+
+/* A gallery control acted on (a tap at x, or Enter: x < 0). */
+static bool launcher_gallery_act(uint16_t id, int16_t idx, int x) {
+    char *res = s_launcher.gal.result;
+    if (id >= GAL_ID_TAB && id < GAL_ID_TAB + 3) { s_launcher.gal.tab = id - GAL_ID_TAB; res[0] = '\0'; }
+    else if (id == GAL_ID_DONE) { s_launcher.gal.on = false; s_launcher.gal.dialog = s_launcher.gal.sheet = false; }
+    else if (id == GAL_ID_TOGGLE) s_launcher.gal.toggle = !s_launcher.gal.toggle;
+    else if (id == GAL_ID_CHECK) s_launcher.gal.check = !s_launcher.gal.check;
+    else if (id == GAL_ID_SLIDER) {
+        if (x < 0) return false;
+        for (int i = 0; i < s_launcher.ui_ctx.count; i++)
+            if (s_launcher.ui_ctx.hits[i].id == GAL_ID_SLIDER) {
+                ugui_surface_t ss = { .scale = CHROME_SCALE };
+                s_launcher.gal.slider = ugui_slider_value(&ss, s_launcher.ui_ctx.hits[i].rect, x, 0, 100);
+            }
+    }
+    else if (id == GAL_ID_PATH) {
+        char pre[sizeof k_gal_path];
+        int n = ugui_path_prefix(k_gal_path, idx);
+        memcpy(pre, k_gal_path, (size_t)n);
+        pre[n] = '\0';
+        ksnprintf(res, 64, "Path: %s", pre);
+    }
+    else if (id == GAL_ID_TEXT) ugui_set_focus(&s_launcher.ui_ctx, GAL_ID_TEXT, 0);
+    else if (id == GAL_ID_SHOW_DLG) s_launcher.gal.dialog = true;
+    else if (id == GAL_ID_SHOW_SHT) s_launcher.gal.sheet = true;
+    else if (id >= GAL_ID_DLG && id < GAL_ID_DLG + 2) { s_launcher.gal.dialog = false; ksnprintf(res, 64, "Dialog: %s", k_gal_dlg[id - GAL_ID_DLG]); }
+    else if (id >= GAL_ID_SHEET && id < GAL_ID_SHEET + 5) { s_launcher.gal.sheet = false; ksnprintf(res, 64, "Action sheet: %s", k_gal_sheet[id - GAL_ID_SHEET]); }
+    else return false;
+    launcher_update();
+    return true;
+}
+
+/* A key on the gallery, before the focus moves: the text field's while it
+ * has the focus, the slider's Left / Right, Esc closing a modal. */
+static bool launcher_gallery_key(key_event_t k) {
+    ugui_ctx_t *ctx = &s_launcher.ui_ctx;
+    if (k.key == 0x1b && (s_launcher.gal.dialog || s_launcher.gal.sheet)) {
+        s_launcher.gal.dialog = s_launcher.gal.sheet = false;
+        ksnprintf(s_launcher.gal.result, 64, "Cancelled");
+        launcher_update();
+        return true;
+    }
+    if (s_launcher.gal.tab == 1 && ctx->focus_id == GAL_ID_TEXT && !s_launcher.gal.dialog && !s_launcher.gal.sheet) {
+        ugui_text_ev_t e = ugui_text_key(&s_launcher.gal.field, k.key, k.mods);
+        if (e == UGUI_TEXT_SUBMIT) ksnprintf(s_launcher.gal.result, 64, "Submitted: %s", s_launcher.gal.text);
+        if (e == UGUI_TEXT_CANCEL) { ctx->focus_id = 0; ctx->focus_shown = false; }
+        if (e != UGUI_TEXT_NONE) { launcher_update(); return true; }
+    }
+    if (s_launcher.gal.tab == 0 && ctx->focus_shown && ctx->focus_id == GAL_ID_SLIDER &&
+        (k.key == KEY_LEFT || k.key == KEY_RIGHT)) {
+        s_launcher.gal.slider += k.key == KEY_RIGHT ? 5 : -5;
+        if (s_launcher.gal.slider < 0) s_launcher.gal.slider = 0;
+        if (s_launcher.gal.slider > 100) s_launcher.gal.slider = 100;
+        launcher_update();
+        return true;
+    }
+    return false;
+}
+
+/* accepted: read by the touch task (console_touch_captures()) while the
+ * input path may be redrawing: the hit-boxes are a bounded array, and a
+ * stale answer costs one contact taken as a gesture or a drag. */
+bool launcher_drag_target(int client_x, int client_y) {
+    return s_launcher.active && ugui_drag_at(&s_launcher.ui_ctx, client_x, client_y);
+}
+
+/* A captured finger at (client_x, client_y): the armed slider follows it. */
+void launcher_pointer_move(int client_x, int client_y) {
+    (void)client_y;
+    if (!s_launcher.active || !s_launcher.gal.on || s_launcher.ui_ctx.armed_id != GAL_ID_SLIDER) return;
+    (void)launcher_gallery_act(GAL_ID_SLIDER, 0, client_x);   /* sets it from x, draws */
+}
+
+void launcher_gallery(bool on) {
+    if (on && !s_launcher.gal.field.buf) {
+        strncpy(s_launcher.gal.text, "notes.md", sizeof s_launcher.gal.text);
+        ugui_text_init(&s_launcher.gal.field, s_launcher.gal.text, (uint16_t)sizeof s_launcher.gal.text);
+        s_launcher.gal.slider = 40;
+    }
+    s_launcher.gal.on = on;
+    launcher_update();
+}
+
 void launcher_draw(const canvas1_t *c, int w, int h) {
     if ((!c && !s_launcher.aa_buf) || w <= 0 || h <= 0) return;
 
     const int s = CHROME_SCALE;
     ugui_surface_t surf;
     surf.c1 = c;
-    surf.aa_fb = s_launcher.aa_buf;
+    surf.aa_fb = s_launcher.aa_target ? s_launcher.aa_target : s_launcher.aa_buf;
     surf.aa_stride = s_launcher.aa_stride;
     surf.w = w;
     surf.h = h;
@@ -502,6 +673,12 @@ void launcher_draw(const canvas1_t *c, int w, int h) {
     ugui_begin(&s_launcher.ui_ctx);
     ugui_set_min_target(&s_launcher.ui_ctx, ugui_target_px());   /* touch areas: at least 7 mm */
     ugui_fill(&surf, (ugui_rect_t){ 0, 0, (int16_t)w, (int16_t)h }, UGUI_GRAY_PAPER, CANVAS1_WHITE);
+    if (s_launcher.gal.on) {
+        launcher_draw_gallery(&surf, w, h);
+        ugui_end(&surf, &s_launcher.ui_ctx);
+        s_launcher.seq++;
+        return;
+    }
 
     int pad = 12 * s;
     int gap = 10 * s;
@@ -711,12 +888,35 @@ static void launcher_update_list(void) {
     (void)console_canvas(ureq, 2, sreply);
 }
 
+/* A full draw. On the P4 the panel composites from the launcher's GRAY8
+ * surface while it is drawn, so a draw in place showed it half-cleared (the
+ * gallery's tab bar flickered at every tap): it goes into the back buffer,
+ * swapped in whole under console_lock (term_snapshot() reads the pointer
+ * under it), and only then is seq moved, so no snapshot pairs the new seq
+ * with the old picture. Before drawing, a conversion still reading the
+ * back buffer (the front of the last swap) is waited for: the frame lock. */
 void launcher_update(void) {
     if (!s_launcher.active) return;
     if (s_launcher.win_w <= 0 || s_launcher.win_h <= 0) return;
 
     canvas1_t *back = launcher_backing();
+    if (s_launcher.aa_back) {
+        console_lock();
+        console_frame_lock();
+        console_frame_unlock();
+        console_unlock();
+        s_launcher.aa_target = s_launcher.aa_back;
+    }
     launcher_draw(back, s_launcher.win_w, s_launcher.win_h);
+    if (s_launcher.aa_target) {
+        console_lock();
+        uint8_t *front = s_launcher.aa_buf;
+        s_launcher.aa_buf = s_launcher.aa_target;
+        s_launcher.aa_back = front;
+        s_launcher.aa_target = NULL;
+        s_launcher.seq++;
+        console_unlock();
+    }
 
     uint8_t ureq[2] = { 'W', s_launcher.slot_id }, sreply[SCREEN_REPLY_LEN];
     (void)console_canvas(ureq, 2, sreply);
@@ -731,10 +931,12 @@ bool launcher_open(void) {
         uint32_t bytes = (uint32_t)(max_w * max_h);
         uint32_t pages = (bytes + 4095u) / 4096u;
         uint8_t *buf = (uint8_t *)palloc_pages_bulk(pages);
+        uint8_t *buf2 = buf ? (uint8_t *)palloc_pages_bulk(pages) : NULL;   /* the back: optional */
         if (buf) {
             memset(buf, UGUI_GRAY_PAPER, bytes);
             console_lock();
             s_launcher.aa_buf = buf;
+            s_launcher.aa_back = buf2;
             s_launcher.aa_stride = (uint32_t)max_w;
             s_launcher.aa_w = max_w;
             s_launcher.aa_h = max_h;
@@ -771,15 +973,17 @@ bool launcher_open(void) {
 void launcher_close(void) {
     console_lock();
     s_launcher.active = false;
-    uint8_t *buf = s_launcher.aa_buf;
+    console_frame_lock();                                /* no conversion reads them past here */
+    uint8_t *buf = s_launcher.aa_buf, *buf2 = s_launcher.aa_back;
     uint32_t pages = s_launcher.aa_pages;
     s_launcher.aa_buf = NULL;
+    s_launcher.aa_back = NULL;
     s_launcher.aa_pages = 0;
+    console_frame_unlock();
     console_unlock();
 
-    if (buf) {
-        palloc_free(buf, pages);
-    }
+    if (buf) palloc_free(buf, pages);
+    if (buf2) palloc_free(buf2, pages);
 }
 
 void launcher_press(int client_x, int client_y) {
@@ -810,6 +1014,7 @@ bool launcher_tap(int client_x, int client_y) {
 static bool launcher_tap_act(int client_x, int client_y) {
     int16_t hit_idx = -1;
     uint16_t id = ugui_hit_test(&s_launcher.ui_ctx, client_x, client_y, &hit_idx);
+    if (s_launcher.gal.on) return id && launcher_gallery_act(id, hit_idx, client_x);
     return launcher_activate(id, hit_idx);
 }
 
@@ -906,7 +1111,7 @@ static bool launcher_activate(uint16_t id, int16_t hit_idx) {
 }
 
 void launcher_scroll(int delta_y) {
-    if (!s_launcher.active) return;
+    if (!s_launcher.active || s_launcher.gal.on) return;
     s_launcher.scroll_px += (delta_y > 0 ? 2 : -2) * (s_launcher.item_h > 0 ? s_launcher.item_h : 30);
     if (s_launcher.scroll_px < 0) s_launcher.scroll_px = 0;
     launcher_update();
@@ -914,7 +1119,7 @@ void launcher_scroll(int delta_y) {
 
 /* A finger dragging dy px (down positive): the document list follows it. */
 void launcher_drag(int dy) {
-    if (!s_launcher.active || dy == 0) return;
+    if (!s_launcher.active || dy == 0 || s_launcher.gal.on) return;
     s_launcher.scroll_px -= dy;
     if (s_launcher.scroll_px < 0) s_launcher.scroll_px = 0;
     launcher_update_list();
@@ -948,6 +1153,7 @@ static bool launcher_doc_step(uint32_t key) {
 }
 
 static void launcher_key(key_event_t k) {
+    if (s_launcher.gal.on && launcher_gallery_key(k)) return;
     if (k.key == KEY_PGDN || k.key == KEY_PGUP) {
         s_launcher.scroll_px += k.key == KEY_PGDN ? s_launcher.view_h : -s_launcher.view_h;
         if (s_launcher.scroll_px < 0) s_launcher.scroll_px = 0;
@@ -966,7 +1172,8 @@ static void launcher_key(key_event_t k) {
         return;
     case UGUI_NAV_ACTIVATE: {
         uint32_t seq = s_launcher.seq;
-        (void)launcher_activate(id, idx);
+        if (s_launcher.gal.on) (void)launcher_gallery_act(id, idx, -1);
+        else (void)launcher_activate(id, idx);
         if (s_launcher.active && s_launcher.seq == seq) launcher_update();
         return;
     }

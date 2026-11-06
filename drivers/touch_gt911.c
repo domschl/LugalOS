@@ -78,6 +78,7 @@ typedef struct {
     int               last_px, last_py;          /* the last point posted to it */
     bool              pressed;                   /* press feedback shown for this contact */
     uint64_t          repeat_ms;                 /* a held press's next repeat (0: none) */
+    bool              capture;                   /* a control follows this contact: no gestures */
     uint32_t          edge_contacts;
     uint32_t          st_empty;                  /* ST7123 reports with coordinates but no valid point */
     uint32_t          st_empty_down;             /* ... of them while a contact was down */
@@ -221,6 +222,14 @@ static void contact_end(int x, int y, uint64_t last_ms) {
     g_t.log_kind = 3;
     g_t.log_seq++;
     gesture_t ev;
+    if (g_t.capture) {                                   /* the control had it: its last point, no gesture */
+        g_t.capture = false;
+        console_touch_move((unsigned)x, (unsigned)y);
+        g_t.pressed = false;
+        console_touch_release();
+        (void)gesture_contact(&g_t.gs, false, x, y, (uint32_t)last_ms, &ev);
+        return;
+    }
     if (g_t.pressed) {                                   /* before the tap, which acts on it */
         g_t.pressed = false;
         console_touch_release();
@@ -328,7 +337,10 @@ static void touch_task_body(void *arg) {
                  * pressed until it lifts or moves off as a swipe or drag. */
                 g_t.pressed = g_t.owner < 0 && !g_t.edge;
                 g_t.repeat_ms = 0;
+                g_t.capture = g_t.pressed && console_touch_captures((unsigned)x, (unsigned)y);
                 if (g_t.pressed) console_touch_press((unsigned)x, (unsigned)y);
+            } else if (g_t.capture) {
+                console_touch_move((unsigned)x, (unsigned)y);
             } else if (g_t.pressed &&
                        (x - g_t.gs.x0 >= g_t.gs.tap_px || g_t.gs.x0 - x >= g_t.gs.tap_px ||
                         y - g_t.gs.y0 >= g_t.gs.tap_px || g_t.gs.y0 - y >= g_t.gs.tap_px)) {
@@ -341,7 +353,7 @@ static void touch_task_body(void *arg) {
             gesture_kind_t gk = gesture_contact(&g_t.gs, true, x, y, (uint32_t)t_last, &ev);
             if (owned()) {
                 owner_post(kind, x, y);
-            } else if (gk == GESTURE_DRAG) {
+            } else if (gk == GESTURE_DRAG && !g_t.capture) {
                 gesture_act(gk, &ev);
             }
         } else if (down) {
@@ -357,13 +369,13 @@ static void touch_task_body(void *arg) {
             } else {
                 gesture_t ev;
                 gesture_kind_t k = gesture_tick(&g_t.gs, (uint32_t)time_get_ms(), &ev);
-                if (k != GESTURE_NONE && !owned()) gesture_act(k, &ev);
+                if (k != GESTURE_NONE && !owned() && !g_t.capture) gesture_act(k, &ev);
             }
         }
         if (down && got) {
             gesture_t ev;
             gesture_kind_t k = gesture_tick(&g_t.gs, (uint32_t)time_get_ms(), &ev);
-            if (k != GESTURE_NONE && !owned()) gesture_act(k, &ev);
+            if (k != GESTURE_NONE && !owned() && !g_t.capture) gesture_act(k, &ev);
         }
         /* A held press repeats every TOUCH_REPEAT_MS until it lifts or moves
          * off (both clear pressed). */

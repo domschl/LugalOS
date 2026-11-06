@@ -411,6 +411,8 @@ Done: the frame record and `uxbench`; glass, screen, layout and strip checks; co
 - App registry and associations in `.rodata`; `open <path>` shell command; `apps` shell command (list, `apps info <id>`).
 - `.GIC` format, `tools/gen_icons.py`, first icon set (reader, chess, moonbase, ceres, terminal, files, settings, book, folder, Markdown, Gemtext, Lisp, C source, text, generic).
 - Settings store with persistence; existing launcher settings wired to it; `settings` shell command (`settings get|set|list`).
+- **On-screen keyboard for every text field** (owner, 2026-11-06): the OSK becomes a system service, not a terminal's: a focused ugui text field (in a view, the launcher, later a Lisp program) opens it in TOUCH mode and receives its keys; it closes when the field loses the focus. Today it draws only inside the focused terminal's window (`screen.c`), so the gallery's text field takes a USB keyboard only.
+- **System clipboard** (owner, 2026-11-06): one text clipboard in the kernel (`clip get|set|clear`, a size cap, PSRAM where there is some); ugui's text field gets Cmd+C / Cmd+X / Cmd+V and a long-press menu (Cut, Copy, Paste) through the action sheet. The editor `e` keeps its Emacs bindings and uses the same clipboard for its kill/yank; whether it also takes the Cmd bindings, or switches to them by default, is decided with the owner when this lands.
 - **Acceptance:** adding a test view needs no change in `screen.c` or `dsi_esp32p4.c`; settings survive a reboot; closing a window whose owner task hangs releases its session claim within 200 ms; docs updated (`doc/user/shell.md` for `open`, `apps`, `settings`).
 
 ### 71.4b — `ugui` for Lisp programs (added 2026-11-06, owner)

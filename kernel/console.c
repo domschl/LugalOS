@@ -241,6 +241,8 @@ static volatile uint32_t g_scroll_ms = 0;
 static volatile uint32_t g_press_xy;
 static volatile bool     g_press_pending = false, g_release_pending = false;
 static volatile unsigned g_repeat_pending = 0;    /* held-key repeats since the input path last looked */
+static volatile uint32_t g_move_xy;               /* a captured finger's latest point; replaced, not queued */
+static volatile bool     g_move_pending = false;
 static volatile bool     g_press_busy = false;    /* one shell at a time runs run_press() / run_release() */
 static bool              g_osk_pressed = false;   /* guarded by: g_press_busy */
 static int               g_press_win = -1;        /* guarded by: g_press_busy; the canvas window told of a press */
@@ -327,6 +329,31 @@ void console_touch_press(unsigned x, unsigned y) {
 
 void console_touch_release(void) {
     __atomic_store_n(&g_release_pending, true, __ATOMIC_RELEASE);
+}
+
+bool console_touch_captures(unsigned x, unsigned y) {
+    uint8_t type = 0, id = 0;
+    int cx = 0, cy = 0;
+    return lcdterm_window_at((int)x, (int)y, &type, &id, &cx, &cy) &&
+           type == 4 /* RIBBON_WIN_LAUNCHER */ && launcher_is_active() && launcher_drag_target(cx, cy);
+}
+
+void console_touch_move(unsigned x, unsigned y) {
+    g_move_xy = (x << 16) | (y & 0xFFFFu);
+    __atomic_store_n(&g_move_pending, true, __ATOMIC_RELEASE);
+}
+
+/* A captured finger's latest point, to the launcher (the only window that
+ * captures today). Moves in between are dropped: the control follows the
+ * finger at the pace it can draw. */
+static void run_move_once(void) {
+    if (!__atomic_exchange_n(&g_move_pending, false, __ATOMIC_ACQ_REL)) return;
+    uint32_t xy = g_move_xy;
+    uint8_t type = 0, id = 0;
+    int cx = 0, cy = 0;
+    if (lcdterm_window_at((int)(xy >> 16), (int)(xy & 0xFFFFu), &type, &id, &cx, &cy) &&
+        type == 4 /* RIBBON_WIN_LAUNCHER */ && launcher_is_active())
+        launcher_pointer_move(cx, cy);
 }
 
 void console_touch_repeat(void) {
@@ -427,6 +454,7 @@ static void run_release_once(void) {
 static void run_press(void) {
     if (__atomic_exchange_n(&g_press_busy, true, __ATOMIC_ACQ_REL)) return;
     run_press_once();
+    run_move_once();
     run_repeat_once();
     __atomic_store_n(&g_press_busy, false, __ATOMIC_RELEASE);
 }
