@@ -873,6 +873,14 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Touch Toolkit Hit-Boxes And Drawing (71.0 uguiselftest)",
                         ok, log if not ok else ""))
 
+        # 71.4: the application registry and the associations are searched
+        # by binary search, so an entry out of order is silently not found.
+        ok, log = session.send_and_expect("apps check", r"apps check: (PASS|FAIL)[^\n]*\n", timeout=10.0)
+        if ok and "apps check: FAIL" in log:
+            ok = False
+        results.append(("Application Registry Sorted And Consistent (71.4 apps check)",
+                        ok, log if not ok else ""))
+
         # B6: a separately linked ELF, loaded from the filesystem into pages
         # the allocator handed out, running in U-mode under a memory domain.
         #

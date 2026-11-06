@@ -9,6 +9,7 @@
  */
 
 #include "kernel/keyseq.h"
+#include "kernel/apps.h"
 #include "drivers/launcher_view.h"
 #include "kernel/console.h"
 #include "kernel/printk.h"
@@ -928,6 +929,18 @@ void launcher_release(void) {
 }
 
 static bool launcher_tap_act(int client_x, int client_y);
+
+/* Application `id` (kernel/apps.h) on path (NULL: none): a single-instance
+ * one that is running is focused instead; otherwise its command line is
+ * left for the shell (shell_check_launcher_exec()). */
+static bool launch_app(const char *id, const char *path) {
+    const app_desc_t *a = app_find(id);
+    if (!a) return false;
+    if ((a->caps & APP_SINGLETON) && a->window &&
+        (focus_canvas_by_name(a->window) || focus_window_by_title(a->window)))
+        return true;                                     /* running: back to it */
+    return app_command(a, path, s_launcher.pending_cmd, sizeof(s_launcher.pending_cmd));
+}
 static bool launcher_activate(uint16_t id, int16_t hit_idx);
 
 /* A tap: the pressed control lets go first, then acts; drawn once, by the
@@ -966,24 +979,10 @@ static bool launcher_activate(uint16_t id, int16_t hit_idx) {
         open_doc_in_reader(doc);
         return true;
     }
-    if (id == LAUNCHER_ID_APP_CHESS) {
-        if (focus_window_by_title("Chess")) {
-            return true;
-        }
-        strncpy(s_launcher.pending_cmd, "chess touch", sizeof(s_launcher.pending_cmd) - 1);
-        s_launcher.pending_cmd[sizeof(s_launcher.pending_cmd) - 1] = '\0';
-        return true;
-    }
-    if (id == LAUNCHER_ID_APP_MOONBASE) {
-        if (focus_canvas_by_name("moonbase")) {     /* running: back to it */
-            return true;
-        }
-        strncpy(s_launcher.pending_cmd, "moonbase", sizeof(s_launcher.pending_cmd) - 1);
-        s_launcher.pending_cmd[sizeof(s_launcher.pending_cmd) - 1] = '\0';
-        return true;
-    }
+    if (id == LAUNCHER_ID_APP_CHESS) return launch_app("chess", NULL);
+    if (id == LAUNCHER_ID_APP_MOONBASE) return launch_app("moonbase", NULL);
     if (id == LAUNCHER_ID_APP_TERMINAL) {
-        console_hotkey(CONSOLE_HOTKEY_NEW_TERM);
+        console_hotkey(CONSOLE_HOTKEY_NEW_TERM);         /* beside the launcher, focused */
         return true;
     }
     if (id == LAUNCHER_ID_VOL_STEP) {
@@ -1035,8 +1034,12 @@ static bool launcher_activate(uint16_t id, int16_t hit_idx) {
         return true;
     }
     if (id == LAUNCHER_ID_DOC_BASE && hit_idx >= 0 && hit_idx < s_launcher.doc_count) {
-        open_doc_in_reader(s_launcher.docs[hit_idx].path);
-        return true;
+        const app_desc_t *a = app_for_path(s_launcher.docs[hit_idx].path);
+        if (a && strcmp(a->id, "reader") == 0) {
+            open_doc_in_reader(s_launcher.docs[hit_idx].path);   /* the reader in the ribbon, directly */
+            return true;
+        }
+        return a && launch_app(a->id, s_launcher.docs[hit_idx].path);
     }
     return false;
 }

@@ -1,4 +1,5 @@
 #include "kernel/shell.h"
+#include "kernel/apps.h"
 #include "kernel/stress.h"
 #include "kernel/llp_node.h"
 #if defined(CONFIG_BOARD_ESP32P4)
@@ -1743,6 +1744,67 @@ static pipe_in_t *pipe_in(void) {
 #define g_pipe_in_len (pipe_in()->len)
 
 static void parse_and_eval_cmd(const char *cmd_line);
+
+/* `open <path>`: the file opened by the application its extension names
+ * (kernel/apps.h), as that application's own command would. */
+static void cmd_open(const char *path) {
+    while (path && *path == ' ') path++;
+    if (!path || !*path) {
+        cprintf("usage: open <path>\n");
+        return;
+    }
+    const app_desc_t *a = app_for_path(path);
+    if (!a) {
+        cprintf("open: nothing opens %s\n", path);
+        return;
+    }
+    vfs_stat_t st;
+    if (vfs_stat(path, &st) < 0 || st.is_dir) {
+        cprintf("open: no such file: %s\n", path);
+        return;
+    }
+    char cmd[160];
+    if (!app_command(a, path, cmd, sizeof cmd)) {
+        cprintf("open: path too long\n");
+        return;
+    }
+    parse_and_eval_cmd(cmd);
+}
+
+/* `apps`, `apps info <id>`, `apps check`: the application registry. */
+static void cmd_apps(const char *arg) {
+    while (arg && *arg == ' ') arg++;
+    if (arg && strcmp(arg, "check") == 0) {
+        int bad = apps_check();
+        cprintf("apps check: %s (%d fault%s)\n", bad ? "FAIL" : "PASS", bad, bad == 1 ? "" : "s");
+        return;
+    }
+    if (arg && strncmp(arg, "info ", 5) == 0) {
+        const app_desc_t *a = app_find(arg + 5);
+        if (!a) {
+            cprintf("apps: no application %s\n", arg + 5);
+            return;
+        }
+        cprintf("%s: %s\n  runs:    %s\n  icon:    %s\n", a->id, a->title, a->exec, a->icon ? a->icon : "(generic)");
+        cprintf("  can:     %s%s%s%s\n", (a->caps & APP_TOUCH) ? "touch " : "", (a->caps & APP_KBD) ? "keyboard " : "",
+                (a->caps & APP_FULLSCREEN) ? "full-screen " : "", (a->caps & APP_SINGLETON) ? "single-instance" : "");
+        cprintf("  opens:  ");
+        const char *ext;
+        int n = 0;
+        for (unsigned i = 0; app_assoc_at(i, &ext); i++)
+            if (app_assoc_at(i, &ext) == a) { cprintf(" %s", ext); n++; }
+        cprintf("%s\n", n ? "" : " (no file types)");
+        return;
+    }
+    if (arg && *arg) {
+        cprintf("usage: apps [info <id> | check]\n");
+        return;
+    }
+    for (unsigned i = 0; app_at(i); i++) {
+        const app_desc_t *a = app_at(i);
+        cprintf("  %-9s %-9s %s\n", a->id, a->title, a->exec);
+    }
+}
 
 static void pager_view_buf(const char *buf, size_t len) {
     if (!buf || len == 0) return;
@@ -6260,6 +6322,12 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         const char *arg = cmd_line + 7;
         while (*arg == ' ') arg++;
         cmd_reader(arg);
+        return;
+    } else if (strcmp(cmd_line, "open") == 0 || strncmp(cmd_line, "open ", 5) == 0) {
+        cmd_open(cmd_line + 4);
+        return;
+    } else if (strcmp(cmd_line, "apps") == 0 || strncmp(cmd_line, "apps ", 5) == 0) {
+        cmd_apps(cmd_line + 4);
         return;
     } else if (strcmp(cmd_line, "launcher") == 0) {
         cmd_launcher(NULL);
