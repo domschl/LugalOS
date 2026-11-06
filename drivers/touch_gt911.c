@@ -67,7 +67,7 @@ typedef struct {
     const char       *chip_name;
     uint16_t          res_x, res_y;          /* the controller's coordinate space */
     unsigned          scr_w, scr_h;          /* the screen's, when last mapped */
-    uint32_t          polls, reports, presses, taps, swipes, longs, nothings, errors;
+    uint32_t          polls, reports, presses, taps, swipes, longs, drags, nothings, errors;
     uint32_t          ends_lifted, ends_quiet;   /* how contacts ended: a lift report, or reports stopping */
     uint32_t          st_empty;                  /* ST7123 reports with coordinates but no valid point */
     uint32_t          st_empty_down;             /* ... of them while a contact was down */
@@ -156,10 +156,11 @@ static void map_point(unsigned rx, unsigned ry, int *x, int *y) {
     *y = (int)py;
 }
 
-/* What a finished gesture does: a horizontal swipe moves the ribbon (the
- * finger dragging it: moving left brings the window on the right into view,
- * as Cmd+Right does), a vertical one scrolls, a tap taps. A long press is
- * counted for `ts`; nothing acts on it yet. */
+/* What a gesture does: a horizontal swipe moves the ribbon (the finger
+ * dragging it: moving left brings the window on the right into view, as
+ * Cmd+Right does), a vertical drag scrolls with the finger and may end in a
+ * fling, a tap taps. A long press is counted for `ts`; nothing acts on it
+ * yet. */
 static void gesture_act(gesture_kind_t kind, const gesture_t *ev) {
     switch (kind) {
     case GESTURE_SWIPE_LEFT:  g_t.swipes++; console_hotkey(CONSOLE_HOTKEY_FOCUS_RIGHT); break;
@@ -167,6 +168,11 @@ static void gesture_act(gesture_kind_t kind, const gesture_t *ev) {
     case GESTURE_SWIPE_UP:
     case GESTURE_SWIPE_DOWN:  g_t.swipes++; console_touch_scroll(ev->dy, ev->ms); break;
     case GESTURE_TAP:         g_t.taps++; console_touch_tap((unsigned)ev->x, (unsigned)ev->y); break;
+    case GESTURE_DRAG:        console_touch_drag(ev->dy); break;
+    case GESTURE_DRAG_END:
+        g_t.drags++;
+        console_touch_drag_end(g_t.gs.y - g_t.gs.y0, ev->dy, ev->ms);
+        break;
     case GESTURE_LONG_PRESS:  g_t.longs++; break;
     default:                  g_t.nothings++; break;
     }
@@ -269,9 +275,12 @@ static void touch_task_body(void *arg) {
             }
             g_t.log_kind = kind;
             g_t.log_seq++;
-            (void)gesture_contact(&g_t.gs, true, x, y, (uint32_t)t_last, NULL);
+            gesture_t ev;
+            gesture_kind_t gk = gesture_contact(&g_t.gs, true, x, y, (uint32_t)t_last, &ev);
             if (s_touch_hook) {
                 (void)s_touch_hook(x, y, kind);
+            } else if (gk == GESTURE_DRAG) {
+                gesture_act(gk, &ev);
             }
         } else if (down) {
             /* No point this poll: ended if the controller said so, or if
@@ -434,11 +443,11 @@ void touch_command(const char *args) {
             "",
 #endif
             POLL_MS);
-    cprintf("touch: %lu polls, %lu reports, %lu presses: %lu taps, %lu long presses, %lu swipes, %lu neither; "
-            "%lu I2C errors\n",
+    cprintf("touch: %lu polls, %lu reports, %lu presses: %lu taps, %lu long presses, %lu swipes, %lu drags, "
+            "%lu neither; %lu I2C errors\n",
             (unsigned long)g_t.polls, (unsigned long)g_t.reports, (unsigned long)g_t.presses,
             (unsigned long)g_t.taps, (unsigned long)g_t.longs, (unsigned long)g_t.swipes,
-            (unsigned long)g_t.nothings, (unsigned long)g_t.errors);
+            (unsigned long)g_t.drags, (unsigned long)g_t.nothings, (unsigned long)g_t.errors);
     cprintf("touch: contacts ended by a lift report %lu, by reports stopping %lu; "
             "ST7123 reports without a valid point %lu (%lu while down, %lu mid-contact); "
             "longest gap in a contact %lu ms\n",

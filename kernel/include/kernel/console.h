@@ -190,6 +190,8 @@ bool console_pixels_format(const uint8_t **fb, unsigned *w, unsigned *h, unsigne
 #define CONSOLE_HOTKEY_SCROLL_UP    21u /* Vertical swipe / scroll up */
 #define CONSOLE_HOTKEY_SCROLL_DOWN  22u /* Vertical swipe / scroll down */
 #define CONSOLE_HOTKEY_ORIENT       23u /* Super+O : toggle display orientation (landscape/portrait) */
+#define CONSOLE_HOTKEY_DRAG         24u /* a vertical touch drag moved: console_touch_drag() */
+#define CONSOLE_HOTKEY_DRAG_END     25u /* ... and ended: console_touch_drag_end() */
 void console_hotkey(unsigned code);
 
 /* 47.12: a tap on the panel at (x, y), screen pixels: focuses the window
@@ -199,6 +201,13 @@ void console_hotkey(unsigned code);
 void console_touch_tap(unsigned x, unsigned y);
 /* 55.5: a vertical swipe / touch flick on the panel with delta y and duration ms */
 void console_touch_scroll(int dy, uint32_t ms);
+/* A vertical drag on the panel moved dy pixels (down positive) since the last
+ * call. Summed until the input path handles it, so a slow frame catches up in
+ * one step: the focused reader follows the finger. */
+void console_touch_drag(int dy);
+/* That drag ended: total_dy the whole stroke, and the finger's motion over
+ * its last ms milliseconds (dy 0: it had stopped), for a fling. */
+void console_touch_drag_end(int total_dy, int dy, uint32_t ms);
 
 /* Where console input comes
  * from. Each source is polled by the console pump, in registration order,

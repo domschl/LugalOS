@@ -573,6 +573,40 @@ void reader_touch_fling(int dy, uint32_t ms) {
     reader_touch_fling_instance(s_active_reader_rid, dy, ms);
 }
 
+void reader_drag(int dy) {
+    uint8_t rid = s_active_reader_rid;
+    if (rid >= READER_MAX_INSTANCES || !s_readers[rid].active || dy == 0) return;
+    reader_state_t *r = &s_readers[rid];
+    canvas1_t *c = get_reader_canvas(rid);
+    int w = r->win_w > 0 ? r->win_w : (c ? (int)c->w : 0);
+    int h = r->win_h > 0 ? r->win_h : (c ? (int)c->h : 0);
+    if (!c || w <= 0 || h <= 0) return;
+    int max_scroll = r->total_h - 120;
+    if (max_scroll < 0) max_scroll = 0;
+    int target = r->scroll_y - dy;            /* the finger down pulls the document down */
+    if (target < 0) target = 0;
+    if (target > max_scroll) target = max_scroll;
+    if (target == r->scroll_y) return;
+    r->scroll_y = target;
+    if (!reader_scroll_step(rid, c, w, h)) reader_draw(rid, c, w, h);
+#if defined(LCDTERM_PRESENT)
+    lcdterm_sync_post();
+#endif
+}
+
+void reader_drag_end(int dy, uint32_t ms) {
+    uint8_t rid = s_active_reader_rid;
+    if (rid >= READER_MAX_INSTANCES || !s_readers[rid].active) return;
+    /* Still moving at least 3 mm over the last ~100 ms: a fling from there. */
+#if defined(CONFIG_PANEL_DPI)
+    int fling_px = (int)((3u * CONFIG_PANEL_DPI * 10u + 127u) / 254u);
+#else
+    int fling_px = 16;
+#endif
+    if (ms > 0 && (dy >= fling_px || dy <= -fling_px)) reader_touch_fling_instance(rid, dy, ms);
+    else reader_update_instance(rid);
+}
+
 static bool reader_jump_anchor(uint8_t rid, const char *anchor) {
     if (rid >= READER_MAX_INSTANCES || !anchor || anchor[0] != '#') return false;
     reader_state_t *r = &s_readers[rid];

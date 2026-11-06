@@ -35,25 +35,65 @@ gesture_kind_t gesture_contact(gesture_state_t *g, bool down, int x, int y, uint
         if (!g->down) {
             g->down = true;
             g->long_sent = false;
+            g->dragging = false;
             g->x0 = (int16_t)x;
             g->y0 = (int16_t)y;
             g->t0 = now_ms;
+            g->hist_n = 0;
+            g->hist_head = 0;
         }
         g->x = (int16_t)x;
         g->y = (int16_t)y;
-        return GESTURE_NONE;
+        g->t = now_ms;
+        g->hist_y[g->hist_head] = (int16_t)y;
+        g->hist_t[g->hist_head] = now_ms;
+        g->hist_head = (uint8_t)((g->hist_head + 1u) % GESTURE_HIST);
+        if (g->hist_n < GESTURE_HIST) g->hist_n++;
+        int adx = iabs(x - g->x0), ady = iabs(y - g->y0);
+        if (!g->dragging && !g->long_sent && ady >= g->tap_px && ady > adx) {
+            g->dragging = true;           /* vertical, past the tap distance */
+            g->drag_y = g->y0;
+        }
+        if (!g->dragging || g->y == g->drag_y) return GESTURE_NONE;
+        if (out) {
+            out->kind = GESTURE_DRAG;
+            out->x = g->x0;
+            out->y = g->y0;
+            out->dy = (int16_t)(g->y - g->drag_y);
+            out->ms = now_ms - g->t0;
+        }
+        g->drag_y = g->y;
+        return GESTURE_DRAG;
     }
     if (!g->down) return GESTURE_NONE;
     g->down = false;
     if (g->long_sent) return GESTURE_NONE;
+    if (g->dragging) {
+        /* The release speed: from the newest report at least
+         * GESTURE_FLING_MS before the last one (or the oldest kept). */
+        int16_t ry = g->y;
+        uint32_t rt = g->t;
+        for (unsigned k = 1; k <= g->hist_n; k++) {
+            unsigned i = (g->hist_head + GESTURE_HIST - k) % GESTURE_HIST;
+            ry = g->hist_y[i];
+            rt = g->hist_t[i];
+            if (g->t - rt >= GESTURE_FLING_MS) break;
+        }
+        if (out) {
+            out->kind = GESTURE_DRAG_END;
+            out->x = g->x0;
+            out->y = g->y0;
+            out->dy = (int16_t)(g->y - ry);
+            out->ms = g->t - rt;
+        }
+        return GESTURE_DRAG_END;
+    }
 
     int dx = g->x - g->x0, dy = g->y - g->y0;
     int adx = iabs(dx), ady = iabs(dy);
     uint32_t ms = now_ms - g->t0;
     if (adx >= g->swipe_px && adx >= 2 * ady)
         return emit(dx < 0 ? GESTURE_SWIPE_LEFT : GESTURE_SWIPE_RIGHT, g, now_ms, out);
-    if (ady >= g->swipe_px && ady >= 2 * adx)
-        return emit(dy < 0 ? GESTURE_SWIPE_UP : GESTURE_SWIPE_DOWN, g, now_ms, out);
     if (adx < g->tap_px && ady < g->tap_px && ms <= GESTURE_TAP_MAX_MS)
         return emit(GESTURE_TAP, g, now_ms, out);
     return GESTURE_NONE;

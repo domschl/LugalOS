@@ -67,7 +67,7 @@
     "drivers/sensor_hub.c": 7504,
     "drivers/sgp30.c": 76,
     "drivers/tmp117.c": 76,
-    "drivers/touch_gt911.c": 124,
+    "drivers/touch_gt911.c": 188,
     "drivers/tsl2561.c": 84,
     "drivers/tsl2591.c": 84,
     "drivers/uart_esp32p4.c": 912,
@@ -83,7 +83,7 @@
     "kernel/chan.c": 1348,
     "kernel/chan_selftest.c": 172,
     "kernel/clipboard.c": 20,
-    "kernel/console.c": 1464,
+    "kernel/console.c": 1481,
     "kernel/device.c": 140,
     "kernel/devirq.c": 134,
     "kernel/discipline.c": 82,
@@ -173,7 +173,7 @@
     "chess": 21388,
     "clock-app": 136,
     "crypto": 38,
-    "display": 3968,
+    "display": 4032,
     "drivers": 1302,
     "fs": 4160,
     "httpd": 70,
@@ -188,11 +188,11 @@
     "radio": 12564,
     "selftest": 3963,
     "sensors": 8736,
-    "shell": 13748,
+    "shell": 13765,
     "storage": 7456,
     "usb": 1212,
     "vfs": 4111
   },
   "ram_code": 1806,
-  "total": 219310
+  "total": 219391
 }

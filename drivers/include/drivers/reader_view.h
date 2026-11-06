@@ -27,6 +27,12 @@ void reader_scroll(int delta_y);
 void reader_scroll_instance(uint8_t rid, int delta_y);
 void reader_touch_fling(int dy, uint32_t ms);
 void reader_touch_fling_instance(uint8_t rid, int dy, uint32_t ms);
+/* The active reader follows a finger: dy pixels of drag (down positive)
+ * scroll the document with it, one animation step; the drag's end is a fling
+ * when the finger was still moving (dy over its last ms), and the whole view
+ * drawn again either way. */
+void reader_drag(int dy);
+void reader_drag_end(int dy, uint32_t ms);
 bool reader_tap(int client_x, int client_y);
 bool reader_tap_instance(uint8_t rid, int client_x, int client_y);
 void reader_feed_key(int c);

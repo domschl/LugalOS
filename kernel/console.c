@@ -233,6 +233,13 @@ void console_blank_counts(uint32_t *blankings, uint32_t *wakes, uint32_t *swallo
 static volatile uint32_t g_tap_xy;     /* x << 16 | y */
 static volatile int      g_scroll_dy = 0;
 static volatile uint32_t g_scroll_ms = 0;
+/* accepted: a drag's motion, summed by the touch task (console_touch_drag())
+ * and taken whole by the input path (run_hotkey()); the end's payload is
+ * written before g_drag_end is set, and read after it is taken. */
+static volatile int      g_drag_dy = 0;
+static volatile bool     g_drag_end = false;
+static volatile int      g_drag_end_total, g_drag_end_dy;
+static volatile uint32_t g_drag_end_ms;
 
 static void console_pump(void);
 static void run_hotkey(void);
@@ -357,6 +364,20 @@ void console_touch_scroll(int dy, uint32_t ms) {
     g_scroll_dy = dy;
     g_scroll_ms = ms;
     g_hotkey = dy < 0 ? CONSOLE_HOTKEY_SCROLL_DOWN : CONSOLE_HOTKEY_SCROLL_UP;
+}
+
+void console_touch_drag(int dy) {
+    if (note_input(true)) return;
+    __atomic_fetch_add(&g_drag_dy, dy, __ATOMIC_ACQ_REL);
+    g_hotkey = CONSOLE_HOTKEY_DRAG;
+}
+
+void console_touch_drag_end(int total_dy, int dy, uint32_t ms) {
+    g_drag_end_total = total_dy;
+    g_drag_end_dy = dy;
+    g_drag_end_ms = ms;
+    __atomic_store_n(&g_drag_end, true, __ATOMIC_RELEASE);
+    g_hotkey = CONSOLE_HOTKEY_DRAG_END;
 }
 
 void console_hotkey(unsigned code) {
@@ -635,6 +656,19 @@ static void run_hotkey(void) {
                         (void)window_push_event(&wev_up);
                     }
                 }
+            }
+            continue;
+        }
+        if (hk == CONSOLE_HOTKEY_DRAG || hk == CONSOLE_HOTKEY_DRAG_END) {
+            /* Whatever has moved since the last pass, then the end if it
+             * came: a drag that ended is never left without its motion. */
+            int dy = __atomic_exchange_n(&g_drag_dy, 0, __ATOMIC_ACQ_REL);
+            bool end = __atomic_exchange_n(&g_drag_end, false, __ATOMIC_ACQ_REL);
+            if (g_active_win_type == 3 /* RIBBON_WIN_READER */ && reader_is_active()) {
+                if (dy) reader_drag(dy);
+                if (end) reader_drag_end(g_drag_end_dy, g_drag_end_ms);
+            } else if (end && g_active_win_type == 4 /* RIBBON_WIN_LAUNCHER */ && launcher_is_active()) {
+                if (g_drag_end_total) launcher_scroll(g_drag_end_total > 0 ? -1 : 1);
             }
             continue;
         }

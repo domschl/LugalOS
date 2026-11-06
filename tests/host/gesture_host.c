@@ -11,18 +11,29 @@ static int g_fail = 0, g_run = 0;
 
 #define CHECK(cond, ...) do { g_run++; if (!(cond)) { g_fail++; printf("  FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
 
+/* What the reports of the last stroke() said while it was down. */
+static int g_drag_sum, g_drags;
+
 /* A straight stroke from (x0,y0) to (x1,y1) over `steps` polls 20 ms apart,
- * then the release one poll later; ticks between reports. Returns the
- * release's gesture, and in *long_seen whether a tick reported a long press. */
-static gesture_kind_t stroke(unsigned dpi, int x0, int y0, int x1, int y1, int steps, gesture_t *out, bool *long_seen) {
+ * held still at the end for `hold` more polls, then the release one poll
+ * later; ticks between reports. Returns the release's gesture, and in
+ * *long_seen whether a tick reported a long press. */
+static gesture_kind_t stroke_hold(unsigned dpi, int x0, int y0, int x1, int y1, int steps, int hold,
+                                  gesture_t *out, bool *long_seen) {
     gesture_state_t g;
     gesture_init(&g, dpi);
     uint32_t t = 1000;
     *long_seen = false;
-    for (int i = 0; i <= steps; i++) {
-        int x = x0 + (x1 - x0) * i / (steps ? steps : 1);
-        int y = y0 + (y1 - y0) * i / (steps ? steps : 1);
-        (void)gesture_contact(&g, true, x, y, t, NULL);
+    g_drag_sum = g_drags = 0;
+    for (int i = 0; i <= steps + hold; i++) {
+        int k = i < steps ? i : steps;
+        int x = x0 + (x1 - x0) * k / (steps ? steps : 1);
+        int y = y0 + (y1 - y0) * k / (steps ? steps : 1);
+        gesture_t d;
+        if (gesture_contact(&g, true, x, y, t, &d) == GESTURE_DRAG) {
+            g_drag_sum += d.dy;
+            g_drags++;
+        }
         gesture_t lp;
         if (gesture_tick(&g, t + 10, &lp) == GESTURE_LONG_PRESS) {
             *long_seen = true;
@@ -31,6 +42,10 @@ static gesture_kind_t stroke(unsigned dpi, int x0, int y0, int x1, int y1, int s
         t += 20;
     }
     return gesture_contact(&g, false, 0, 0, t, out);
+}
+
+static gesture_kind_t stroke(unsigned dpi, int x0, int y0, int x1, int y1, int steps, gesture_t *out, bool *long_seen) {
+    return stroke_hold(dpi, x0, y0, x1, y1, steps, 0, out, long_seen);
 }
 
 static void test_mm(void) {
@@ -60,8 +75,20 @@ static void test_board(unsigned dpi) {
     /* The four swipes, just over the distance, and their reported motion. */
     CHECK(stroke(dpi, 500, 300, 500 - sw, 300, 5, &ev, &lp) == GESTURE_SWIPE_LEFT && ev.dx == -sw, "swipe left at %u dpi", dpi);
     CHECK(stroke(dpi, 500, 300, 500 + sw, 300 + sw / 3, 5, &ev, &lp) == GESTURE_SWIPE_RIGHT, "swipe right, a little downhill");
-    CHECK(stroke(dpi, 500, 300, 500, 300 - sw, 5, &ev, &lp) == GESTURE_SWIPE_UP && ev.dy == -sw, "swipe up at %u dpi", dpi);
-    CHECK(stroke(dpi, 500, 300, 500 + sw / 3, 300 + sw, 5, &ev, &lp) == GESTURE_SWIPE_DOWN && ev.ms == 6 * 20, "swipe down, 120 ms");
+    /* Vertical strokes are drags: their movement reported while down, adding
+     * up to the stroke; the release reports the speed over its last 100 ms. */
+    CHECK(stroke(dpi, 500, 300, 500, 300 - sw, 5, &ev, &lp) == GESTURE_DRAG_END && g_drag_sum == -sw,
+          "drag up at %u dpi: sum %d, want %d", dpi, g_drag_sum, -sw);
+    CHECK(ev.ms >= 100 && ev.dy < 0, "drag up released moving: dy %d over %u ms", ev.dy, (unsigned)ev.ms);
+    CHECK(stroke(dpi, 500, 300, 500 + sw / 3, 300 + sw, 5, &ev, &lp) == GESTURE_DRAG_END && g_drag_sum == sw,
+          "drag down, a little sideways: sum %d", g_drag_sum);
+    CHECK(g_drags >= 2, "a drag reports as it goes: %d reports", g_drags);
+    /* Dragged, then held still before the release: no speed, no fling. */
+    CHECK(stroke_hold(dpi, 500, 300, 500, 300 + 3 * sw, 10, 8, &ev, &lp) == GESTURE_DRAG_END && ev.dy == 0,
+          "drag that stopped: release dy %d", ev.dy);
+    CHECK(!lp, "a drag held still is not a long press");
+    /* A vertical wobble under the tap distance is still a tap, not a drag. */
+    CHECK(stroke(dpi, 300, 200, 300, 200 + tap - 1, 3, &ev, &lp) == GESTURE_TAP && g_drags == 0, "vertical wobble is a tap");
 
     /* Diagonal (neither axis twice the other) and short of a swipe: nothing. */
     CHECK(stroke(dpi, 500, 300, 500 + sw, 300 + sw, 5, &ev, &lp) == GESTURE_NONE, "diagonal is nothing");
