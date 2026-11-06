@@ -148,7 +148,7 @@ static bool undo_available(const moon_game_t *game) {
 
 static int ui_region(const moon_game_t *game, int px, int py) {
     const moon_ui_layout_t *ui = &game->ui;
-    if (moon_ui_hit(&ui->prev_btn, px, py) || moon_ui_hit(&ui->next_btn, px, py) || moon_ui_hit(&ui->exit_btn, px, py)) return UI_HUD;
+    if (moon_ui_hit(&ui->hud_menu_btn, px, py)) return UI_HUD;
     if (game->menu_page != MOON_MENU_CLOSED) return UI_MENU;
     if (undo_available(game) && moon_ui_hit(&ui->undo_btn, px, py)) return UI_UNDO;
     if (moon_ui_hit(&ui->ribbon_bar, px, py)) return UI_RIBBON;
@@ -617,6 +617,7 @@ static const moon_ui_rect_t *menu_item_rect(const moon_game_t *game, int i) {
 }
 
 static void menu_open(moon_game_t *game) {
+    game->menu_back = game->menu_page == MOON_MENU_MAIN ? MOON_MENU_CLOSED : game->menu_page;
     game->menu_page = MOON_MENU_MAIN;
     game->menu_sel = 0;
     game->pointer_down = false;
@@ -631,7 +632,7 @@ static void open_new_game(moon_game_t *game, int from_page) {
 static void menu_activate(moon_game_t *game, int item) {
     switch (game->menu_page) {
     case MOON_MENU_MAIN:
-        if (item == 0) game->menu_page = MOON_MENU_CLOSED;
+        if (item == 0) game->menu_page = game->menu_back;    /* Resume: where it was opened */
         else if (item == 1) toggle_texture(game);
         else if (item == 2) { open_new_game(game, MOON_MENU_MAIN); }
         else if (item == 3) { game->menu_page = MOON_MENU_CONFIRM_QUIT; game->menu_sel = 1; }
@@ -706,7 +707,7 @@ static bool cancel_action(moon_game_t *game) {
         return true;
     }
     if (game->menu_page == MOON_MENU_MAIN) {
-        game->menu_page = MOON_MENU_CLOSED;
+        game->menu_page = game->menu_back;
         return true;
     }
     if (brush_slot(game) >= 0) {
@@ -721,6 +722,13 @@ static bool cancel_action(moon_game_t *game) {
 }
 
 /* ESC / Q: cancel, and with nothing to cancel open the menu (never quits directly) */
+/* Pages the menu button opens the menu over (the rest are the menu's own). */
+static bool hud_button_opens(const moon_game_t *game) {
+    return game->menu_page == MOON_MENU_CLOSED || game->menu_page == MOON_MENU_TITLE ||
+           game->menu_page == MOON_MENU_GAME_OVER || game->menu_page == MOON_MENU_VICTORY ||
+           game->menu_page == MOON_MENU_VICTORY_ACT2;
+}
+
 static void escape_action(moon_game_t *game) {
     if (!cancel_action(game)) menu_open(game);
 }
@@ -1100,22 +1108,12 @@ static void handle_event_inner(moon_game_t *game, const moon_event_t *ev) {
                     case UI_MINIMAP:   click_minimap(game, ev->x, ev->y); break;
                     case UI_INSPECTOR: click_inspector(game, ev->x, ev->y); break;
                     case UI_HUD:
-                        if (moon_ui_hit(&game->ui.prev_btn, ev->x, ev->y)) {
-                            moon_platform_focus_prev();
-                        } else if (moon_ui_hit(&game->ui.next_btn, ev->x, ev->y)) {
-                            moon_platform_focus_next();
-                        } else if (moon_ui_hit(&game->ui.exit_btn, ev->x, ev->y)) {
-                            if (game->menu_page == MOON_MENU_TITLE ||
-                                game->menu_page == MOON_MENU_CONFIRM_QUIT ||
-                                game->menu_page == MOON_MENU_GAME_OVER ||
-                                game->menu_page == MOON_MENU_VICTORY ||
-                                game->menu_page == MOON_MENU_VICTORY_ACT2) {
-                                game->running = false;
-                            } else {
-                                game->menu_page = MOON_MENU_CONFIRM_QUIT;
-                                game->menu_sel = 0;
-                            }
-                        }
+                        /* The menu button opens the menu, over play, the
+                         * title or an ending (Resume goes back there); in
+                         * the menu it goes back as ESC does. */
+                        if (!moon_ui_hit(&game->ui.hud_menu_btn, ev->x, ev->y)) break;   /* the rest of the bar */
+                        if (hud_button_opens(game)) menu_open(game);
+                        else (void)cancel_action(game);
                         break;
                     default:           click_map(game); break;
                     }
@@ -1912,6 +1910,12 @@ static void draw_button(const moon_surface_t *surf, const moon_ui_rect_t *r, con
     moon_blit_text(surf, tx, r->y + (r->h - MOON_FONT_H) / 2, label, text, 0, true);
 }
 
+/* The menu button at the top right: the same on every page. */
+static void draw_hud_menu_button(const moon_game_t *game, const moon_surface_t *surf) {
+    (void)game;
+    draw_button(surf, &game->ui.hud_menu_btn, "MENU", RGB565(20, 24, 30), RGB565(60, 65, 75), COLOR_LUNAR_WHITE);
+}
+
 static void render_build_ribbon(const moon_game_t *game, const moon_surface_t *surf) {
     const moon_ui_layout_t *ui = &game->ui;
     const bool narrow = ui->narrow;
@@ -2137,7 +2141,7 @@ static void render_menu(const moon_game_t *game, const moon_surface_t *surf) {
         items[0] = "ESC:RESUME";
         items[1] = game->grid.textured_terrain ? "T:TERRAIN TEXTURED" : "T:TERRAIN FAST";
         items[2] = "R:NEW GAME";
-        items[3] = "Q:QUIT";
+        items[3] = "Q:EXIT";
         break;
     case MOON_MENU_NEW_GAME: {
         static const char *const labels[MOON_DIFFICULTY_COUNT] = {
@@ -2195,7 +2199,7 @@ static void render_menu(const moon_game_t *game, const moon_surface_t *surf) {
         items[2] = "Q:QUIT";
         break;
     default:
-        moon_blit_text(surf, tx, ty, "QUIT GAME?", COLOR_GOLD_FOIL, 0, true);
+        moon_blit_text(surf, tx, ty, "EXIT GAME?", COLOR_GOLD_FOIL, 0, true);
         items[0] = "Y:YES, QUIT";
         items[1] = "N:NO";
         break;
@@ -2206,9 +2210,7 @@ static void render_menu(const moon_game_t *game, const moon_surface_t *surf) {
                     sel ? RGB565(30, 45, 60) : RGB565(20, 24, 30),
                     sel ? COLOR_LASER_CYAN : RGB565(60, 65, 75), COLOR_LUNAR_WHITE);
     }
-    draw_button(surf, &ui->prev_btn, "<-", RGB565(20, 24, 30), RGB565(60, 65, 75), COLOR_LUNAR_WHITE);
-    draw_button(surf, &ui->next_btn, "->", RGB565(20, 24, 30), RGB565(60, 65, 75), COLOR_LUNAR_WHITE);
-    draw_button(surf, &ui->exit_btn, "EXIT", RGB565(45, 18, 18), COLOR_ALERT_RED, COLOR_LUNAR_WHITE);
+    draw_hud_menu_button(game, surf);
 }
 
 /* Outline and surveyor brackets around the selected tile, or around the whole
@@ -2349,9 +2351,7 @@ static void render_hud_bar(const moon_game_t *game, const moon_surface_t *surf) 
     }
 
     render_clock(game, surf);
-    draw_button(surf, &game->ui.prev_btn, "<-", RGB565(20, 24, 30), RGB565(60, 65, 75), COLOR_LUNAR_WHITE);
-    draw_button(surf, &game->ui.next_btn, "->", RGB565(20, 24, 30), RGB565(60, 65, 75), COLOR_LUNAR_WHITE);
-    draw_button(surf, &game->ui.exit_btn, "EXIT", RGB565(45, 18, 18), COLOR_ALERT_RED, COLOR_LUNAR_WHITE);
+    draw_hud_menu_button(game, surf);
 }
 
 /* True when every pixel of the view is inside the map's tiles: then drawing them all makes

@@ -6903,6 +6903,27 @@ def test_host_sanitizer_harnesses() -> tuple[bool, str]:
     return True, "; ".join(ln for ln in out.splitlines() if "no fault" in ln)
 
 
+def test_moonbase_logic() -> tuple[bool, str]:
+    """Moonbase's own suite (user/moonbase `make test`): the fixed-point
+    blitter, the game logic and its input routing, and the balance check,
+    built for the host under ASan/UBSan. It was not run here, and phase 70's
+    HUD buttons broke its link unnoticed for a phase. Skipped -- reported as
+    passing with the reason -- where there is no host compiler."""
+    import shutil
+    if not shutil.which("make") or not shutil.which("cc"):
+        return True, "skipped: no host cc/make"
+    moon_dir = Path(__file__).resolve().parent.parent / "user" / "moonbase"
+    try:
+        r = subprocess.run(["make", "-s", "-C", str(moon_dir), "test"],
+                           capture_output=True, text=True, timeout=600)
+    except subprocess.TimeoutExpired:
+        return False, "user/moonbase make test did not finish in 600 s"
+    out = (r.stdout + r.stderr).strip()
+    if r.returncode != 0:
+        return False, out[-3000:]
+    return True, "; ".join(ln for ln in out.splitlines() if "passed cleanly" in ln)
+
+
 RACESCAN_BUILDS = ["rv32", "rv64-smp", "esp32p4-tab5", "rp2350-terminal", "esp32c6"]
 
 
@@ -10821,6 +10842,15 @@ def main() -> int:
     ok, info = test_host_sanitizer_harnesses()
     total_tests += 1
     name = "Host Harnesses: FAT32, cc, 9P, IP And The Radio Shim Under ASan/UBSan (tests/host)"
+    if ok:
+        passed_tests += 1
+        print(f"  [PASS] {name}")
+    else:
+        print(f"  [FAIL] {name}\n    Log Output:\n{info}")
+
+    ok, info = test_moonbase_logic()
+    total_tests += 1
+    name = "Moonbase Game Logic, Input Routing And Balance Under ASan/UBSan (user/moonbase)"
     if ok:
         passed_tests += 1
         print(f"  [PASS] {name}")

@@ -134,6 +134,7 @@ typedef struct {
     /* Modal menu: 0 closed, then the pages below */
     uint8_t  menu_page;
     uint8_t  menu_return;     /* Page the new-game page goes back to */
+    uint8_t  menu_back;       /* Page the main menu goes back to: closed, or the title or an ending */
     int      menu_sel;        /* Highlighted item (keyboard) */
 
     /* Input device in use */

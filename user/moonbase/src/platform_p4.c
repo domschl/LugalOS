@@ -278,8 +278,9 @@ void moon_platform_shutdown(void) {
     if (!s_active) return;
     s_active = false;
 
-    /* Stop audio DMA stream and mute power amplifier */
-    audio_p4_stop();
+    /* Stop the audio stream and mute the amplifier, unless another game
+     * has taken the sound over meanwhile */
+    audio_p4_release(moon_p4_audio_render);
 
     touch_set_hook(NULL);
     queue_clear();                         /* events queued but never read */
@@ -455,14 +456,6 @@ void moon_platform_present_rows(int y0, int y1) {
         }
     }
     lcdterm_damage();
-}
-
-void moon_platform_focus_prev(void) {
-    console_hotkey(CONSOLE_HOTKEY_FOCUS_LEFT);
-}
-
-void moon_platform_focus_next(void) {
-    console_hotkey(CONSOLE_HOTKEY_FOCUS_RIGHT);
 }
 
 bool moon_platform_poll_event(moon_event_t *ev) {
@@ -691,7 +684,7 @@ static int moonbase_run_claimed(const char *args) {
          * stream stops with it: unrefilled, its DMA ring replays the last
          * second, and refilled again out of step it doubles voices. */
         if (s_cid >= 0 && !lcdterm_is_canvas_active((uint8_t)s_cid)) {
-            if (!paused) { audio_p4_stop(); paused = true; }
+            if (!paused) { audio_p4_release(moon_p4_audio_render); paused = true; }
             moon_platform_delay_ms(50);
             last_time = moon_platform_get_ticks_ms();
             continue;

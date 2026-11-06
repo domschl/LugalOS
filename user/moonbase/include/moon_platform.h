@@ -83,8 +83,6 @@ bool     moon_platform_init(int width, int height, const char *title);
 void     moon_platform_shutdown(void);
 int      moon_platform_get_width(void);
 int      moon_platform_get_height(void);
-void     moon_platform_focus_prev(void);
-void     moon_platform_focus_next(void);
 
 /* Timing & Delays */
 uint32_t moon_platform_get_ticks_ms(void);

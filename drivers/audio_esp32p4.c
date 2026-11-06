@@ -19,6 +19,7 @@
 #include "kernel/printk.h"
 #include "kernel/sysreg.h"
 #include "kernel/time.h"
+#include "kernel/lock.h"
 #include "drivers/gpio.h"
 #include "drivers/i2c_bus.h"
 #include "drivers/i2c_reg.h"
@@ -102,14 +103,18 @@ static _Alignas(64) dma_desc_t s_dma_desc[AUDIO_P4_NUM_DESC];
 /* single task: shell */
 static _Alignas(64) int16_t s_audio_buf[AUDIO_P4_NUM_DESC][AUDIO_P4_CHUNK_SAMPLES * 2];
 
-/* Streaming state */
-/* single task: shell */
+/* Streaming state: one stream, and since two games can run (one paused in
+ * the background) it has an owner, its render function; a start by another
+ * owner takes it over, a release by a former one is a no-op.
+ * guarded by: s_audio_lock (start, release, stop and pump all take it). */
+static ylock_t s_audio_lock;
+/* guarded by: s_audio_lock */
 static bool s_streaming = false;
-/* single task: shell */
+/* guarded by: s_audio_lock */
 static int s_active_desc = 0;
-/* single task: shell */
+/* guarded by: s_audio_lock */
 static audio_p4_render_fn s_stream_render_fn = NULL;
-/* single task: shell */
+/* guarded by: s_audio_lock */
 static void *s_stream_render_user = NULL;
 #if defined(CONFIG_BOARD_TAB5)
 /* single task: shell */
@@ -501,8 +506,16 @@ bool audio_p4_is_playing(void) {
 }
 
 /* Continuous circular streaming API (used by games) */
-bool audio_p4_start(audio_p4_render_fn render_fn, void *user) {
-    if (s_streaming) return true;
+static void audio_p4_stop_locked(void);
+
+static bool audio_p4_start_locked(audio_p4_render_fn render_fn, void *user) {
+    if (s_streaming) {
+        /* Running for another owner (a game left paused in the background
+         * by the focus moving to this one): its sound becomes this one's. */
+        s_stream_render_fn = render_fn;
+        s_stream_render_user = user;
+        return true;
+    }
 
     p4_i2s_dma_init();
 
@@ -553,7 +566,20 @@ bool audio_p4_start(audio_p4_render_fn render_fn, void *user) {
     return true;
 }
 
-void audio_p4_pump(void) {
+bool audio_p4_start(audio_p4_render_fn render_fn, void *user) {
+    ylock_acquire(&s_audio_lock);
+    bool ok = audio_p4_start_locked(render_fn, user);
+    ylock_release(&s_audio_lock);
+    return ok;
+}
+
+void audio_p4_release(audio_p4_render_fn render_fn) {
+    ylock_acquire(&s_audio_lock);
+    if (s_streaming && s_stream_render_fn == render_fn) audio_p4_stop_locked();
+    ylock_release(&s_audio_lock);
+}
+
+static void audio_p4_pump_locked(void) {
     if (!s_streaming) return;
 
     bool refilled = false;
@@ -585,7 +611,19 @@ void audio_p4_pump(void) {
     }
 }
 
+void audio_p4_pump(void) {
+    ylock_acquire(&s_audio_lock);
+    audio_p4_pump_locked();
+    ylock_release(&s_audio_lock);
+}
+
 void audio_p4_stop(void) {
+    ylock_acquire(&s_audio_lock);
+    audio_p4_stop_locked();
+    ylock_release(&s_audio_lock);
+}
+
+static void audio_p4_stop_locked(void) {
     if (!s_streaming) return;
     s_streaming = false;
 

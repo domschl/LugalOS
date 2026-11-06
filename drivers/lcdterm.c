@@ -877,6 +877,9 @@ int lcdterm_get_visible_canvases565(uint8_t *out_cids, int *out_x0, int *out_y0,
                 int cx0 = (int)w->rx0 - (int)g_scr->ribbon.x_view + 1;
                 int cx1 = (int)w->rx1 - (int)g_scr->ribbon.x_view - 1;
                 if (g_scr->layout == SCREEN_LAYOUT_FULLSCREEN) {
+                    /* Full-screen is the focused window's: another game's
+                     * canvas, paused in the background, is not on screen. */
+                    if (i != g_scr->ribbon.active_idx) continue;
                     if (out_cids) out_cids[count] = cid;
                     if (out_x0) out_x0[count] = 0;
                     if (out_y0) out_y0[count] = 0;

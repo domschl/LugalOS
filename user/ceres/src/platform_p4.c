@@ -302,8 +302,9 @@ void ceres_platform_shutdown(void) {
     if (!s_active) return;
     s_active = false;
 
-    /* Stop audio DMA stream and mute power amplifier */
-    audio_p4_stop();
+    /* Stop the audio stream and mute the amplifier, unless another game
+     * has taken the sound over meanwhile */
+    audio_p4_release(ceres_p4_audio_render);
 
     p4_input_reset();
     while (console_has_char()) (void)keyseq_read_console();
@@ -539,7 +540,7 @@ static int ceres_run_claimed(const char *args) {
          * stream stops with it, as moonbase's: an unrefilled DMA ring
          * replays its last second. */
         if (s_cid >= 0 && !lcdterm_is_canvas_active((uint8_t)s_cid)) {
-            if (!paused) { audio_p4_stop(); paused = true; }
+            if (!paused) { audio_p4_release(ceres_p4_audio_render); paused = true; }
             ceres_platform_delay_ms(50);
             last_time = ceres_platform_get_ticks_ms();
             continue;

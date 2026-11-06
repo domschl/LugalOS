@@ -2552,12 +2552,37 @@ static void test_west_coast_wavefolding(void) {
     printf("[test] West Coast Buchla Wavefolder: PASS\n");
 }
 
+/* The menu button at the top right (the full-screen game convention):
+ * opens the menu and closes it again, over play and over the title page,
+ * where Resume goes back to the title. A press elsewhere on the HUD bar
+ * does nothing. */
+static void test_hud_menu_button(void) {
+    fresh();
+    g.menu_page = MOON_MENU_CLOSED;
+    click(500, 10);
+    assert(g.menu_page == MOON_MENU_CLOSED && g.running);
+    click_rect(&g.ui.hud_menu_btn);
+    assert(g.menu_page == MOON_MENU_MAIN && g.running);
+    click_rect(&g.ui.hud_menu_btn);
+    assert(g.menu_page == MOON_MENU_CLOSED && g.running);
+    g.menu_page = MOON_MENU_TITLE;
+    click_rect(&g.ui.hud_menu_btn);
+    assert(g.menu_page == MOON_MENU_MAIN && g.running);
+    click_rect(&g.ui.hud_menu_btn);
+    assert(g.menu_page == MOON_MENU_TITLE && g.running);
+    click_rect(&g.ui.hud_menu_btn);
+    key(MOON_KEY_ESCAPE);                                     /* ESC: Resume */
+    assert(g.menu_page == MOON_MENU_TITLE && g.running);
+    printf("[test] HUD menu button: PASS\n");
+}
+
 int main(void) {
     test_picking();
     test_power_solver();
     test_life_support_rules();
     test_camera_and_ticks();
     test_pointer_routing();
+    test_hud_menu_button();
     test_regolith_guard();
     test_tint_fold();
     test_view_coverage();

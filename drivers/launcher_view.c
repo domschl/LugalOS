@@ -316,6 +316,31 @@ static bool focus_window_by_title(const char *prefix) {
     return false;
 }
 
+/* The window of the canvas called `name` (a game's), focused: its title is
+ * the generic one, so it is found by the canvas. False when it is not open. */
+static bool focus_canvas_by_name(const char *name) {
+#if defined(LCDTERM_PRESENT)
+    int cid = lcdterm_get_canvas_cid_by_name(name);
+    if (cid < 0) return false;
+    uint8_t rreq[2] = { 'R', 0 }, rreply[SCREEN_REPLY_LEN];
+    if (!console_canvas(rreq, 1, rreply) || rreply[0] != 0) return false;
+    uint8_t count = rreply[1];
+    for (uint8_t i = 0; i < count; i++) {
+        rreq[1] = i;
+        if (!console_canvas(rreq, 2, rreply) || rreply[0] != 0) continue;
+        if (rreply[1] != RIBBON_WIN_CANVAS || rreply[2] != (uint8_t)cid) continue;
+        uint8_t jreq[2] = { 'J', i };
+        (void)console_canvas(jreq, 2, rreply);
+        if (rreply[10] != 0) console_set_active_win_type(rreply[10]);
+        vterm_set_active(rreply[1]);
+        return true;
+    }
+#else
+    (void)name;
+#endif
+    return false;
+}
+
 static void open_doc_in_reader(const char *doc_path) {
     if (!doc_path || !*doc_path) doc_path = "index.md";
 
@@ -728,7 +753,7 @@ bool launcher_tap(int client_x, int client_y) {
         return true;
     }
     if (id == LAUNCHER_ID_APP_MOONBASE) {
-        if (focus_window_by_title("Moonbase")) {
+        if (focus_canvas_by_name("moonbase")) {     /* running: back to it */
             return true;
         }
         strncpy(s_launcher.pending_cmd, "moonbase", sizeof(s_launcher.pending_cmd) - 1);

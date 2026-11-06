@@ -51,10 +51,15 @@ int  audio_p4_get_volume(void);
 /* Continuous circular streaming API (for games, music, and interactive audio):
  * audio_p4_start() powers on amplifier and starts DMA circular loop.
  * audio_p4_pump() checks if in-flight descriptor is ready; refills non-blockingly.
- * audio_p4_stop() gracefully drains descriptors, mutes amplifier, and stops DMA. */
+ * audio_p4_stop() gracefully drains descriptors, mutes amplifier, and stops DMA.
+ * One stream with one owner (its render function): a start by another owner
+ * switches the stream to it. */
 bool audio_p4_start(audio_p4_render_fn render_fn, void *user);
 void audio_p4_pump(void);
 void audio_p4_stop(void);
+/* Stops the stream only if render_fn still owns it: a game pausing or
+ * ending does not silence the one that took the sound over. */
+void audio_p4_release(audio_p4_render_fn render_fn);
 bool audio_p4_is_playing(void);
 
 /* One-shot blocking stream playback (used by audiotest) */

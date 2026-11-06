@@ -309,8 +309,4 @@ void moon_platform_log(const char *fmt, ...) {
     fflush(stdout);
 }
 
-void moon_platform_focus_prev(void) {
-}
 
-void moon_platform_focus_next(void) {
-}
