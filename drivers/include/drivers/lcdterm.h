@@ -146,6 +146,10 @@ int lcdterm_get_canvas565_cid_by_name(const char *name);
 bool lcdterm_is_canvas_active(uint8_t cid);
 /* The focused window's canvas slot, or -1 when it is not a canvas. */
 int  lcdterm_focused_canvas(void);
+/* The window whose content is under screen point (x, y): its type
+ * (RIBBON_WIN_*), id and the point in its content; false when none (the
+ * chrome, a gap, full-screen). For press feedback: no side effects. */
+bool lcdterm_window_at(int x, int y, uint8_t *type, uint8_t *id, int *cx, int *cy);
 /* Where canvas cid's content begins on the screen; false when not shown. */
 bool lcdterm_canvas_origin(uint8_t cid, int *x0, int *y0);
 bool lcdterm_set_canvas565_backing(uint8_t cid, uint16_t *buf);
@@ -193,6 +197,9 @@ static inline int lcdterm_get_canvas565_cid_by_name(const char *name) {
     return -1;
 }
 static inline int  lcdterm_focused_canvas(void) { return -1; }
+static inline bool lcdterm_window_at(int x, int y, uint8_t *type, uint8_t *id, int *cx, int *cy) {
+    (void)x; (void)y; (void)type; (void)id; (void)cx; (void)cy; return false;
+}
 static inline bool lcdterm_canvas_origin(uint8_t cid, int *x0, int *y0) { (void)cid; (void)x0; (void)y0; return false; }
 static inline bool lcdterm_is_canvas_active(uint8_t cid) {
     (void)cid;

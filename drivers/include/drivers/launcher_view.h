@@ -25,6 +25,10 @@ bool     launcher_set_target(uint8_t slot_id, int w, int h);
 void     launcher_update(void);
 void     launcher_draw(const canvas1_t *c, int w, int h);
 bool     launcher_tap(int client_x, int client_y);
+/* Press feedback: the control under a finger that went down shows pressed
+ * until launcher_release(). */
+void     launcher_press(int client_x, int client_y);
+void     launcher_release(void);
 void     launcher_scroll(int delta_y);
 void     launcher_feed_key(int c);
 bool     launcher_poll_exec(char *out_cmd, size_t max_len);

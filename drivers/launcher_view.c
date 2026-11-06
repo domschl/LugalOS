@@ -26,6 +26,8 @@ bool launcher_set_target(uint8_t slot_id, int w, int h) { (void)slot_id; (void)w
 void launcher_draw(const canvas1_t *c, int w, int h) { (void)c; (void)w; (void)h; }
 void launcher_update(void) {}
 bool launcher_tap(int client_x, int client_y) { (void)client_x; (void)client_y; return false; }
+void launcher_press(int client_x, int client_y) { (void)client_x; (void)client_y; }
+void launcher_release(void) {}
 void launcher_scroll(int delta_y) { (void)delta_y; }
 void launcher_feed_key(int c) { (void)c; }
 bool launcher_poll_exec(char *out_cmd, size_t max_len) { (void)out_cmd; (void)max_len; return false; }
@@ -726,9 +728,31 @@ void launcher_close(void) {
     }
 }
 
+void launcher_press(int client_x, int client_y) {
+    if (!s_launcher.active) return;
+    if (ugui_arm(&s_launcher.ui_ctx, client_x, client_y)) launcher_update();
+}
+
+void launcher_release(void) {
+    if (!s_launcher.active) return;
+    if (ugui_disarm(&s_launcher.ui_ctx)) launcher_update();
+}
+
+static bool launcher_tap_act(int client_x, int client_y);
+
+/* A tap: the pressed control lets go first, then acts; drawn once, by the
+ * action if it redraws, here if it does not (the release that follows finds
+ * nothing armed). */
 bool launcher_tap(int client_x, int client_y) {
     if (!s_launcher.active) return false;
+    bool was_armed = ugui_disarm(&s_launcher.ui_ctx);
+    uint32_t seq = s_launcher.seq;
+    bool acted = launcher_tap_act(client_x, client_y);
+    if (was_armed && s_launcher.active && s_launcher.seq == seq) launcher_update();
+    return acted;
+}
 
+static bool launcher_tap_act(int client_x, int client_y) {
     int16_t hit_idx = -1;
     uint16_t id = ugui_hit_test(&s_launcher.ui_ctx, client_x, client_y, &hit_idx);
     if (id == 0) return false;

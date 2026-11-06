@@ -34,6 +34,27 @@ void ugui_add_hit(ugui_ctx_t *ctx, ugui_rect_t r, uint16_t id, int16_t index) {
     h->index = index;
 }
 
+bool ugui_arm(ugui_ctx_t *ctx, int x, int y) {
+    if (!ctx) return false;
+    int16_t index = 0;
+    uint16_t id = ugui_hit_test(ctx, x, y, &index);
+    if (id == ctx->armed_id && (id == 0 || index == ctx->armed_index)) return false;
+    ctx->armed_id = id;
+    ctx->armed_index = index;
+    return true;
+}
+
+bool ugui_disarm(ugui_ctx_t *ctx) {
+    if (!ctx || ctx->armed_id == 0) return false;
+    ctx->armed_id = 0;
+    ctx->armed_index = 0;
+    return true;
+}
+
+bool ugui_is_armed(const ugui_ctx_t *ctx, uint16_t id, int16_t index) {
+    return ctx && id != 0 && ctx->armed_id == id && ctx->armed_index == index;
+}
+
 uint16_t ugui_hit_test(const ugui_ctx_t *ctx, int x, int y, int16_t *out_index) {
     if (!ctx) return 0;
     /* Search in reverse order so later (topmost) widgets take precedence */
@@ -319,6 +340,7 @@ void ugui_icon16(const ugui_surface_t *s, int x, int y, const uint16_t icon[16],
 
 void ugui_button(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r,
                  const char *label, uint16_t id, bool active) {
+    active = active || ugui_is_armed(ctx, id, 0);
     if (!s || r.w <= 0 || r.h <= 0) return;
     ugui_box_shadow(s, r, active);
     if (label && *label) {
@@ -335,6 +357,7 @@ void ugui_button(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r,
 
 void ugui_toolbar_button(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r,
                          const char *label, uint16_t id, bool active) {
+    active = active || ugui_is_armed(ctx, id, 0);
     if (!s || r.w <= 0 || r.h <= 0) return;
     int sc = s->scale > 0 ? s->scale : 1;
 
@@ -370,6 +393,7 @@ void ugui_toolbar_button(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r
 void ugui_card(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r,
                const uint16_t icon16[16], const char *title, const char *subtitle,
                uint16_t id, bool active) {
+    active = active || ugui_is_armed(ctx, id, 0);
     if (!s || r.w <= 0 || r.h <= 0) return;
     int sc = s->scale > 0 ? s->scale : 1;
 
@@ -485,7 +509,7 @@ void ugui_segmented(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r,
             .w = (int16_t)((i == count - 1) ? (r.w - i * seg_w) : seg_w),
             .h = r.h,
         };
-        bool sel = (i == selected_idx);
+        bool sel = (i == selected_idx) || ugui_is_armed(ctx, (uint16_t)(base_id + (uint16_t)i), (int16_t)i);
         ugui_fill(s, seg, sel ? UGUI_GRAY_INK : UGUI_GRAY_CARD, sel ? CANVAS1_BLACK : CANVAS1_WHITE);
         ugui_hline(s, seg.x, seg.x + seg.w - 1, seg.y, sc, UGUI_GRAY_BORDER, CANVAS1_BLACK);
         ugui_hline(s, seg.x, seg.x + seg.w - 1, seg.y + seg.h - sc, sc, UGUI_GRAY_BORDER, CANVAS1_BLACK);
@@ -509,6 +533,7 @@ void ugui_segmented(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r,
 void ugui_list_row(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r,
                    const char *prefix, const char *title, const char *right_meta,
                    uint16_t id, int16_t index, bool selected) {
+    selected = selected || ugui_is_armed(ctx, id, index);
     if (!s || r.w <= 0 || r.h <= 0) return;
     int sc = s->scale > 0 ? s->scale : 1;
     int lh = ugui_serif_line_h(s);
@@ -589,6 +614,7 @@ bool ugui_selftest(void) {
     };
 
     ugui_ctx_t ctx;
+    memset(&ctx, 0, sizeof ctx);
     ugui_begin(&ctx);
 
     ugui_rect_t btn1 = { .x = 4, .y = 4, .w = 50, .h = 20 };
@@ -611,6 +637,15 @@ bool ugui_selftest(void) {
 
     /* Verify border pixels were drawn onto the 1-bpp canvas */
     if (canvas1_get(&c1, 4, 4) != 1u) return false;
+
+    /* Press feedback: arming the widget under a point, once; a second
+     * segment re-arms; disarming clears it; the arming survives a pass. */
+    if (!ugui_arm(&ctx, 10, 10) || !ugui_is_armed(&ctx, 101, 0)) return false;
+    if (ugui_arm(&ctx, 12, 12)) return false;                     /* same widget: no change */
+    if (!ugui_arm(&ctx, 110, 40) || !ugui_is_armed(&ctx, 202, 2) || ugui_is_armed(&ctx, 101, 0)) return false;
+    ugui_begin(&ctx);
+    if (!ugui_is_armed(&ctx, 202, 2)) return false;
+    if (!ugui_disarm(&ctx) || ugui_disarm(&ctx) || ugui_is_armed(&ctx, 202, 2)) return false;
 
     return true;
 }

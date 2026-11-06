@@ -74,6 +74,7 @@ typedef struct {
     win_t             owner;                     /* the window it is posted to raw, or -1 (gestures) */
     int               owner_x0, owner_y0;        /* that window's content origin when it began */
     int               last_px, last_py;          /* the last point posted to it */
+    bool              pressed;                   /* press feedback shown for this contact */
     uint32_t          edge_contacts;
     uint32_t          st_empty;                  /* ST7123 reports with coordinates but no valid point */
     uint32_t          st_empty_down;             /* ... of them while a contact was down */
@@ -212,6 +213,10 @@ static void contact_end(int x, int y, uint64_t last_ms) {
     g_t.log_kind = 3;
     g_t.log_seq++;
     gesture_t ev;
+    if (g_t.pressed) {                                   /* before the tap, which acts on it */
+        g_t.pressed = false;
+        console_touch_release();
+    }
     gesture_kind_t kind = gesture_contact(&g_t.gs, false, x, y, (uint32_t)last_ms, &ev);
     if (owned()) {                                       /* the window's, not the window manager's */
         owner_post(3, x, y);
@@ -311,6 +316,15 @@ static void touch_task_body(void *arg) {
                 g_t.owner = -1;
                 if (w >= 0 && (window_claims(w) & WIN_CLAIM_POINTER) && window_origin(w, &g_t.owner_x0, &g_t.owner_y0))
                     g_t.owner = w;
+                /* The window manager's contact: the control under it shows
+                 * pressed until it lifts or moves off as a swipe or drag. */
+                g_t.pressed = g_t.owner < 0 && !g_t.edge;
+                if (g_t.pressed) console_touch_press((unsigned)x, (unsigned)y);
+            } else if (g_t.pressed &&
+                       (x - g_t.gs.x0 >= g_t.gs.tap_px || g_t.gs.x0 - x >= g_t.gs.tap_px ||
+                        y - g_t.gs.y0 >= g_t.gs.tap_px || g_t.gs.y0 - y >= g_t.gs.tap_px)) {
+                g_t.pressed = false;                     /* no longer a tap */
+                console_touch_release();
             }
             g_t.log_kind = kind;
             g_t.log_seq++;

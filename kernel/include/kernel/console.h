@@ -208,6 +208,11 @@ void console_touch_drag(int dy);
 /* That drag ended: total_dy the whole stroke, and the finger's motion over
  * its last ms milliseconds (dy 0: it had stopped), for a fling. */
 void console_touch_drag_end(int total_dy, int dy, uint32_t ms);
+/* A finger went down at screen point (x, y) / lifted or moved off as a
+ * swipe or drag: the control under it shows pressed meanwhile (press
+ * feedback). The tap that may follow still comes as console_touch_tap(). */
+void console_touch_press(unsigned x, unsigned y);
+void console_touch_release(void);
 
 /* Where console input comes
  * from. Each source is polled by the console pump, in registration order,

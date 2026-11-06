@@ -51,6 +51,8 @@ typedef struct {
     ugui_hit_t  hits[UGUI_MAX_HITBOXES];
     int         count;
     uint16_t    active_id;      /* Highlighted / selected widget ID */
+    uint16_t    armed_id;       /* the widget under a finger that is down (0: none); kept across passes */
+    int16_t     armed_index;
 } ugui_ctx_t;
 
 /* Reset hit-box registry before a draw pass */
@@ -61,6 +63,14 @@ void ugui_add_hit(ugui_ctx_t *ctx, ugui_rect_t r, uint16_t id, int16_t index);
 
 /* Hit-test a client-relative tap (x, y); returns matching id (or 0) and writes *out_index */
 uint16_t ugui_hit_test(const ugui_ctx_t *ctx, int x, int y, int16_t *out_index);
+
+/* Press feedback: a finger down at (x, y) arms the widget under it, which
+ * draws inverted until the finger lifts or moves away (ugui_disarm()). Both
+ * return whether that changed what the next pass draws. The tap itself still
+ * acts as before (ugui_hit_test() at the release). */
+bool ugui_arm(ugui_ctx_t *ctx, int x, int y);
+bool ugui_disarm(ugui_ctx_t *ctx);
+bool ugui_is_armed(const ugui_ctx_t *ctx, uint16_t id, int16_t index);
 
 /* Surface drawing primitives */
 void ugui_fill(const ugui_surface_t *s, ugui_rect_t r, uint8_t gray, unsigned pat1);

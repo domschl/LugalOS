@@ -236,6 +236,10 @@ static volatile uint32_t g_scroll_ms = 0;
 /* accepted: a drag's motion, summed by the touch task (console_touch_drag())
  * and taken whole by the input path (run_hotkey()); the end's payload is
  * written before g_drag_end is set, and read after it is taken. */
+/* accepted: press feedback's point and flags, set by the touch task, taken
+ * by the input path; their own words, so a pending tap is never replaced. */
+static volatile uint32_t g_press_xy;
+static volatile bool     g_press_pending = false, g_release_pending = false;
 static volatile int      g_drag_dy = 0;
 static volatile bool     g_drag_end = false;
 static volatile int      g_drag_end_total, g_drag_end_dy;
@@ -311,6 +315,35 @@ void console_touch_scroll(int dy, uint32_t ms) {
     g_hotkey = dy < 0 ? CONSOLE_HOTKEY_SCROLL_DOWN : CONSOLE_HOTKEY_SCROLL_UP;
 }
 
+void console_touch_press(unsigned x, unsigned y) {
+    g_press_xy = ((uint32_t)x << 16) | (y & 0xFFFFu);
+    __atomic_store_n(&g_release_pending, false, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_press_pending, true, __ATOMIC_RELEASE);
+}
+
+void console_touch_release(void) {
+    __atomic_store_n(&g_release_pending, true, __ATOMIC_RELEASE);
+}
+
+/* Press feedback: before the hotkeys, a press arms the control under the
+ * finger in the launcher; after them, a release disarms it -- a tap that
+ * came with it has already disarmed (launcher_tap()), so the launcher is
+ * drawn once. */
+static void run_press(void) {
+    if (__atomic_exchange_n(&g_press_pending, false, __ATOMIC_ACQ_REL)) {
+        uint32_t xy = g_press_xy;
+        uint8_t type = 0, id = 0;
+        int cx = 0, cy = 0;
+        if (lcdterm_window_at((int)(xy >> 16), (int)(xy & 0xFFFFu), &type, &id, &cx, &cy) &&
+            type == 4 /* RIBBON_WIN_LAUNCHER */ && launcher_is_active())
+            launcher_press(cx, cy);
+    }
+}
+
+static void run_release(void) {
+    if (__atomic_exchange_n(&g_release_pending, false, __ATOMIC_ACQ_REL)) launcher_release();
+}
+
 void console_touch_drag(int dy) {
     if (note_input(true)) return;
     __atomic_fetch_add(&g_drag_dy, dy, __ATOMIC_ACQ_REL);
@@ -373,6 +406,7 @@ static void console_feed_active_bytes(const char *s, uint32_t n);
 /* From an input wait only: a hotkey draws (a layout change) or writes 48 KB
  * to the SD card (a screenshot), neither of which belongs inside a print. */
 static void run_hotkey(void) {
+    run_press();
     for (int iter = 0; iter < 4; iter++) {
         unsigned hk = __atomic_exchange_n(&g_hotkey, 0u, __ATOMIC_ACQ_REL);
         if (!hk) break;
@@ -639,6 +673,7 @@ static void run_hotkey(void) {
         (void)console_canvas(req, 2, reply);
         console_sync_readers();
     }
+    run_release();
 }
 
 void console_bind(console_putc_fn putc) {
