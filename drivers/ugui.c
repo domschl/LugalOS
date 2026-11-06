@@ -24,6 +24,63 @@
 void ugui_begin(ugui_ctx_t *ctx) {
     if (!ctx) return;
     ctx->count = 0;
+    ctx->nbounds = 0;
+    ctx->cur_bound = 0;
+}
+
+int ugui_target_px(void) {
+#if defined(CONFIG_PANEL_DPI)
+    return (int)((UGUI_TARGET_MM * (unsigned)CONFIG_PANEL_DPI * 10u + 127u) / 254u);
+#else
+    return 0;
+#endif
+}
+
+void ugui_set_min_target(ugui_ctx_t *ctx, int min_px) {
+    if (ctx) ctx->min_target = (int16_t)(min_px > 0 ? min_px : 0);
+}
+
+void ugui_slop_bounds(ugui_ctx_t *ctx, ugui_rect_t r) {
+    if (!ctx || ctx->nbounds >= UGUI_MAX_BOUNDS) return;
+    ctx->bounds[ctx->nbounds++] = r;
+    ctx->cur_bound = ctx->nbounds;
+}
+
+void ugui_slop_bounds_end(ugui_ctx_t *ctx) {
+    if (ctx) ctx->cur_bound = 0;
+}
+
+static void grow_axis(int16_t *pos, int16_t *len, int min, int lo, int hi) {
+    if (*len < min) {
+        int p = *pos - (min - *len) / 2;
+        *pos = (int16_t)p;
+        *len = (int16_t)min;
+    }
+    if (hi > lo) {                                       /* bounded: clip */
+        int a = *pos < lo ? lo : *pos, b = *pos + *len > hi ? hi : *pos + *len;
+        *pos = (int16_t)a;
+        *len = (int16_t)(b > a ? b - a : 0);
+    }
+}
+
+ugui_rect_t ugui_touch_rect(const ugui_ctx_t *ctx, int i) {
+    ugui_rect_t r = ctx->hits[i].rect;
+    if (ctx->min_target <= 0) return r;
+    const ugui_rect_t *b = ctx->hits[i].bound ? &ctx->bounds[ctx->hits[i].bound - 1] : NULL;
+    grow_axis(&r.x, &r.w, ctx->min_target, b ? b->x : 0, b ? b->x + b->w : 0);
+    grow_axis(&r.y, &r.h, ctx->min_target, b ? b->y : 0, b ? b->y + b->h : 0);
+    return r;
+}
+
+static bool in_rect(const ugui_rect_t *r, int x, int y) {
+    return x >= r->x && x < (int)r->x + (int)r->w && y >= r->y && y < (int)r->y + (int)r->h;
+}
+
+/* Squared distance from (x, y) to r (0 inside). */
+static long rect_dist2(const ugui_rect_t *r, int x, int y) {
+    long dx = x < r->x ? r->x - x : x >= r->x + r->w ? x - (r->x + r->w - 1) : 0;
+    long dy = y < r->y ? r->y - y : y >= r->y + r->h ? y - (r->y + r->h - 1) : 0;
+    return dx * dx + dy * dy;
 }
 
 static void add_hit_flags(ugui_ctx_t *ctx, ugui_rect_t r, uint16_t id, int16_t index, uint8_t flags) {
@@ -34,6 +91,7 @@ static void add_hit_flags(ugui_ctx_t *ctx, ugui_rect_t r, uint16_t id, int16_t i
     h->id = id;
     h->index = index;
     h->flags = flags;
+    h->bound = ctx->cur_bound;
 }
 
 void ugui_add_hit(ugui_ctx_t *ctx, ugui_rect_t r, uint16_t id, int16_t index) {
@@ -232,19 +290,39 @@ void ugui_end(const ugui_surface_t *s, ugui_ctx_t *ctx) {
     }
 }
 
-uint16_t ugui_hit_test(const ugui_ctx_t *ctx, int x, int y, int16_t *out_index) {
+uint16_t ugui_hit_test_drawn(const ugui_ctx_t *ctx, int x, int y, int16_t *out_index) {
     if (!ctx) return 0;
-    /* Search in reverse order so later (topmost) widgets take precedence */
     for (int i = ctx->count - 1; i >= 0; i--) {
         const ugui_hit_t *h = &ctx->hits[i];
-        if (x >= h->rect.x && x < (int)h->rect.x + (int)h->rect.w &&
-            y >= h->rect.y && y < (int)h->rect.y + (int)h->rect.h) {
-            if (h->flags & UGUI_HIT_DISABLED) return 0;  /* dimmed: swallowed */
-            if (out_index) *out_index = h->index;
-            return h->id;
-        }
+        if (!in_rect(&h->rect, x, y)) continue;
+        if (h->flags & UGUI_HIT_DISABLED) return 0;
+        if (out_index) *out_index = h->index;
+        return h->id;
     }
     return 0;
+}
+
+uint16_t ugui_hit_test(const ugui_ctx_t *ctx, int x, int y, int16_t *out_index) {
+    if (!ctx) return 0;
+    /* As drawn first, in reverse order so later (topmost) widgets take
+     * precedence; then the grown touch areas, the nearest drawn widget's. */
+    int best = -1;
+    for (int i = ctx->count - 1; i >= 0 && best < 0; i--)
+        if (in_rect(&ctx->hits[i].rect, x, y)) best = i;
+    if (best < 0 && ctx->min_target > 0) {
+        long best_d = 0;
+        for (int i = ctx->count - 1; i >= 0; i--) {
+            ugui_rect_t t = ugui_touch_rect(ctx, i);
+            if (!in_rect(&t, x, y)) continue;
+            long d = rect_dist2(&ctx->hits[i].rect, x, y);
+            if (best < 0 || d < best_d) { best = i; best_d = d; }
+        }
+    }
+    if (best < 0) return 0;
+    const ugui_hit_t *h = &ctx->hits[best];
+    if (h->flags & UGUI_HIT_DISABLED) return 0;          /* dimmed: swallowed */
+    if (out_index) *out_index = h->index;
+    return h->id;
 }
 
 void ugui_fill(const ugui_surface_t *s, ugui_rect_t r, uint8_t gray, unsigned pat1) {
@@ -907,6 +985,27 @@ bool ugui_selftest(void) {
     if (ugui_nav(&dc, '\t', 0, &fid, &fidx) != UGUI_NAV_MOVED || !ugui_is_focused(&dc, 110, 0)) return false;
     if (ugui_nav(&dc, '\t', 0, &fid, &fidx) != UGUI_NAV_MOVED || !ugui_is_focused(&dc, 102, 0)) return false;
     if (ugui_nav(&dc, '\t', 0, &fid, &fidx) != UGUI_NAV_MOVED || !ugui_is_focused(&dc, 300, 0)) return false;
+
+    /* Touch targets: two 10x10 boxes 4 px apart grow to 30x30; a point
+     * between them goes to the nearer; a point on one as drawn is that one;
+     * bounds clip the growth (a point outside them hits nothing). */
+    ugui_ctx_t tc;
+    memset(&tc, 0, sizeof tc);
+    ugui_begin(&tc);
+    ugui_set_min_target(&tc, 30);
+    ugui_add_hit(&tc, (ugui_rect_t){ 40, 20, 10, 10 }, 1, 0);
+    ugui_add_hit(&tc, (ugui_rect_t){ 54, 20, 10, 10 }, 2, 0);
+    ugui_slop_bounds(&tc, (ugui_rect_t){ 0, 40, 128, 12 });
+    ugui_add_hit(&tc, (ugui_rect_t){ 10, 42, 8, 8 }, 3, 0);
+    ugui_slop_bounds_end(&tc);
+    ugui_rect_t g = ugui_touch_rect(&tc, 0);
+    if (g.w != 30 || g.h != 30 || g.x != 30 || g.y != 10) return false;
+    if (ugui_hit_test(&tc, 51, 25, NULL) != 1 || ugui_hit_test(&tc, 53, 25, NULL) != 2) return false;
+    if (ugui_hit_test(&tc, 45, 12, NULL) != 1 || ugui_hit_test(&tc, 56, 25, NULL) != 2) return false;
+    if (ugui_hit_test(&tc, 45, 5, NULL) != 0) return false;                  /* beyond the target */
+    if (ugui_hit_test(&tc, 4, 46, NULL) != 3 || ugui_hit_test(&tc, 14, 38, NULL) != 0) return false;
+    ugui_set_min_target(&tc, 0);
+    if (ugui_hit_test(&tc, 51, 25, NULL) != 0) return false;                  /* as drawn only */
 
     return true;
 }

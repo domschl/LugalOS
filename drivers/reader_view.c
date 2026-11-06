@@ -667,6 +667,12 @@ bool reader_back(void) {
     return reader_back_instance(s_active_reader_rid);
 }
 
+/* The action bar's height. Its buttons are touched over more than they
+ * show (ugui_set_min_target()), not drawn bigger. */
+static int reader_bar_h(void) {
+    return 26 * (int)CHROME_SCALE;
+}
+
 enum {
     READER_UI_BACK     = 1,
     READER_UI_CONTENTS = 2,
@@ -678,9 +684,16 @@ static bool reader_tap_act(uint8_t rid, int client_x, int client_y);
 
 static void reader_redraw_bar(uint8_t rid);
 
+static uint16_t reader_hit(const reader_state_t *r, int x, int y, int *link);
+
+/* Arms what a tap there would act on (reader_hit()): nothing on a link. */
 void reader_press(uint8_t rid, int client_x, int client_y) {
     if (rid >= READER_MAX_INSTANCES || !s_readers[rid].active) return;
-    if (ugui_arm(&s_readers[rid].ui_ctx, client_x, client_y)) reader_redraw_bar(rid);
+    reader_state_t *r = &s_readers[rid];
+    int link;
+    bool changed = reader_hit(r, client_x, client_y, &link) ? ugui_arm(&r->ui_ctx, client_x, client_y)
+                                                            : ugui_disarm(&r->ui_ctx);
+    if (changed) reader_redraw_bar(rid);
 }
 
 void reader_release(void) {
@@ -699,10 +712,33 @@ bool reader_tap_instance(uint8_t rid, int client_x, int client_y) {
     return acted;
 }
 
+/* The link under (x, y) -- its words, 4 units taller -- or -1. Below the
+ * action bar only. */
+static int reader_link_at(const reader_state_t *r, int x, int y) {
+    if (y < reader_bar_h()) return -1;
+    int pad_y = 4 * (int)CHROME_SCALE;
+    for (int i = 0; i < r->link_count; i++)
+        if (x >= r->links[i].x0 && x <= r->links[i].x1 &&
+            y >= r->links[i].y0 - pad_y && y <= r->links[i].y1 + pad_y) return i;
+    return -1;
+}
+
+/* What is under a finger at (x, y), in this order: a button as drawn, a
+ * link as drawn, a button's grown touch area. So a button is easy to hit
+ * where nothing else is, and a link just under the bar stays the link's. */
+static uint16_t reader_hit(const reader_state_t *r, int x, int y, int *link) {
+    uint16_t hit = ugui_hit_test_drawn(&r->ui_ctx, x, y, NULL);
+    *link = -1;
+    if (hit) return hit;
+    *link = reader_link_at(r, x, y);
+    return *link >= 0 ? 0 : ugui_hit_test(&r->ui_ctx, x, y, NULL);
+}
+
 static bool reader_tap_act(uint8_t rid, int client_x, int client_y) {
     reader_state_t *r = &s_readers[rid];
 
-    uint16_t hit = ugui_hit_test(&r->ui_ctx, client_x, client_y, NULL);
+    int link = -1;
+    uint16_t hit = reader_hit(r, client_x, client_y, &link);
     if (hit == READER_UI_BACK) {
         (void)reader_back_instance(rid);
         return true;
@@ -723,15 +759,10 @@ static bool reader_tap_act(uint8_t rid, int client_x, int client_y) {
         return true;
     }
 
-    int bar_h = 26 * (int)CHROME_SCALE;
-    if (client_y < bar_h) {
-        return false;
-    }
-
-    int pad_y = 4 * (int)CHROME_SCALE;
-    for (int i = 0; i < r->link_count; i++) {
-        if (client_x >= r->links[i].x0 && client_x <= r->links[i].x1 &&
-            client_y >= r->links[i].y0 - pad_y && client_y <= r->links[i].y1 + pad_y) {
+    if (link < 0) return false;
+    {
+        int i = link;
+        {
             char target[128];
             strncpy(target, r->links[i].url, sizeof(target) - 1);
             target[sizeof(target) - 1] = '\0';
@@ -1360,7 +1391,7 @@ static int render_wrapped_spans(reader_state_t *r, rdraw_t *rd, int x0, int max_
 
 static void draw_reader_action_bar(reader_state_t *r, rdraw_t *rd, int w, int h) {
     int sc = (int)CHROME_SCALE;
-    int bar_h = 26 * sc;
+    int bar_h = reader_bar_h();
     ugui_surface_t surf = {
         .c1 = rd->c,
         .aa_fb = rd->aa_fb,
@@ -1378,6 +1409,9 @@ static void draw_reader_action_bar(reader_state_t *r, rdraw_t *rd, int w, int h)
     int btn_y = (bar_h - btn_h - sc) / 2;
     int pad_x = 8 * sc;
     int gap = 8 * sc;
+    /* The buttons' touch areas grow to a target, past the bar into the
+     * page: a link drawn there still wins (reader_tap_act()). */
+    ugui_set_min_target(&r->ui_ctx, ugui_target_px());
 
     /* Dimmed when they cannot act: Back with no history and no contents
      * view open, Top at the top. Contents is not a lit toggle (inverted is
@@ -1434,7 +1468,7 @@ static void reader_redraw_bar(uint8_t rid) {
 static void draw_reader_scrollbar(reader_state_t *r, rdraw_t *rd, int w, int h) {
     if (r->total_h <= h) return;
     int sc = (int)CHROME_SCALE;
-    int bar_h = 26 * sc;
+    int bar_h = reader_bar_h();
     int sb_w = 4 * sc;
     ugui_surface_t surf = {
         .c1 = rd->c,
@@ -1463,7 +1497,7 @@ static void reader_draw_view(uint8_t rid, const canvas1_t *c, int w, int full_h,
     if (w <= 0 || full_h <= 0 || rid >= READER_MAX_INSTANCES) return;
     reader_state_t *r = &s_readers[rid];
     int sc = (int)CHROME_SCALE;
-    int bar_h = 26 * sc;
+    int bar_h = reader_bar_h();
     bool strip = clip_y0 > 0 || clip_y1 < full_h;
     int h = strip ? clip_y1 - clip_y0 : full_h;
     if (h <= 0) return;
@@ -1997,7 +2031,7 @@ void reader_draw(uint8_t rid, const canvas1_t *c, int w, int h) {
  * view): the caller draws it whole. */
 static bool reader_scroll_step(uint8_t rid, const canvas1_t *c, int w, int h) {
     reader_state_t *r = &s_readers[rid];
-    int bar_h = 26 * (int)CHROME_SCALE;
+    int bar_h = reader_bar_h();
     int dy = r->scroll_y - r->drawn_scroll_y;
     int area = h - bar_h;
     /* The 1-bpp grey pattern alternates by row (canvas1.c: x + y odd), so a

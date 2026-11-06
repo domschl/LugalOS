@@ -1,23 +1,23 @@
 {
   "bulk_per_file": {
-    "drivers/launcher_view.c": 5664,
-    "drivers/reader_view.c": 62256,
+    "drivers/launcher_view.c": 5700,
+    "drivers/reader_view.c": 62400,
     "drivers/uxbench.c": 540,
     "kernel/palloc.c": 8192,
     "kernel/winevent.c": 2576,
     "kernel/zonetest.c": 64,
-    "user/chess/src/chess_ui.c": 1808,
+    "user/chess/src/chess_ui.c": 1844,
     "user/lisp/lisp.c": 1523712
   },
   "bulk_per_subsystem": {
-    "chess": 1808,
-    "display": 67920,
+    "chess": 1844,
+    "display": 68100,
     "drivers": 540,
     "kernel": 10768,
     "lisp": 1523712,
     "selftest": 64
   },
-  "bulk_total": 1604812,
+  "bulk_total": 1605028,
   "heap_bytes": 299008,
   "heap_pages": 73,
   "per_file": {

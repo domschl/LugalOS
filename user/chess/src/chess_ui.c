@@ -3266,6 +3266,12 @@ static void chess_touch_draw(void) {
     int ctrl_w = landscape ? (w - ctrl_x - pad) : (w - 2 * pad);
     if (ctrl_w < 120 * s) ctrl_w = 120 * s;
 
+    /* The controls' touch areas grow to a target, but stay off the board
+     * (its squares are not hit-boxes, and a tap there is a move). */
+    ugui_set_min_target(&g_touch_ui_ctx, ugui_target_px());
+    ugui_slop_bounds(&g_touch_ui_ctx, (ugui_rect_t){ (int16_t)(ctrl_x - 6 * s), (int16_t)(ctrl_y - 6 * s),
+                                                     (int16_t)(w - (ctrl_x - 6 * s)), (int16_t)(h - (ctrl_y - 6 * s)) });
+
     /* Status & Eval Card */
     int card_h = 56 * s;
     ugui_box_shadow(&surf, (ugui_rect_t){ (int16_t)ctrl_x, (int16_t)ctrl_y, (int16_t)ctrl_w, (int16_t)card_h }, false);

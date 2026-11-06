@@ -48,7 +48,11 @@ typedef struct {
     uint16_t    id;             /* Application-defined widget ID (non-zero) */
     int16_t     index;          /* Optional list/segment index */
     uint8_t     flags;          /* UGUI_HIT_* */
+    uint8_t     bound;          /* its touch area's bounds: ctx->bounds[bound - 1]; 0 none */
 } ugui_hit_t;
+
+#define UGUI_MAX_BOUNDS   4
+#define UGUI_TARGET_MM    7     /* the smallest touch target, as phones' guidelines have it */
 
 typedef struct {
     ugui_hit_t  hits[UGUI_MAX_HITBOXES];
@@ -60,6 +64,9 @@ typedef struct {
     int16_t     focus_index;
     bool        focus_shown;    /* a key moved the focus since the last touch: the ring shows */
     uint8_t     next_disabled;  /* ugui_disable_next()'s parts, taken by the next widget */
+    int16_t     min_target;     /* touch areas grow to this many px (0: as drawn); kept across passes */
+    uint8_t     nbounds, cur_bound;
+    ugui_rect_t bounds[UGUI_MAX_BOUNDS];
 } ugui_ctx_t;
 
 /* Reset hit-box registry before a draw pass */
@@ -75,6 +82,25 @@ void ugui_add_hit(ugui_ctx_t *ctx, ugui_rect_t r, uint16_t id, int16_t index);
  * (it is not passed to whatever lies under it). For a control that cannot
  * act now: Back with no history, a stepper at its limit. */
 void ugui_disable_next(ugui_ctx_t *ctx, uint8_t parts);
+
+/* Touch targets. A widget drawn smaller than min_px (ugui_target_px():
+ * UGUI_TARGET_MM at the panel's DPI) is still touched over an area that
+ * big, centred on it -- drawn sizes stay as they are. Where grown areas
+ * overlap, the widget drawn nearest the finger has it; a finger on a widget
+ * as drawn always gets that one. ugui_slop_bounds() keeps the areas of the
+ * widgets that follow inside r (a toolbar: not over the text under it),
+ * until ugui_slop_bounds_end() or the next pass. */
+int  ugui_target_px(void);
+void ugui_set_min_target(ugui_ctx_t *ctx, int min_px);
+void ugui_slop_bounds(ugui_ctx_t *ctx, ugui_rect_t r);
+void ugui_slop_bounds_end(ugui_ctx_t *ctx);
+/* The widget under (x, y) as drawn only, ignoring the grown areas: for a
+ * caller with targets of its own (the reader's links) that must win over a
+ * widget's grown area but not over the widget itself. */
+uint16_t ugui_hit_test_drawn(const ugui_ctx_t *ctx, int x, int y, int16_t *out_index);
+
+/* Hit i's touch area (its rectangle grown and bounded). */
+ugui_rect_t ugui_touch_rect(const ugui_ctx_t *ctx, int i);
 
 /* Hit-test a client-relative tap (x, y); returns matching id (or 0) and writes *out_index */
 uint16_t ugui_hit_test(const ugui_ctx_t *ctx, int x, int y, int16_t *out_index);

@@ -280,15 +280,25 @@ LCDTERM_UTEXT uint16_t osk_repeat_key(int pressed) {
             code == OSK_KEY_UP || code == OSK_KEY_DOWN) ? code : 0;
 }
 
+/* The key nearest (x, y) within the keyboard: the one under it, or for a
+ * point in a gap between keys or the keyboard's margin the closest one --
+ * the keys tile the keyboard, so there is no dead space to miss into.
+ * row * 32 + key, or -1 outside the keyboard. */
 LCDTERM_UTEXT int osk_key_at(int client_x, int client_y, int w, int h) {
     if (client_x < 0 || client_y < 0 || client_x >= w || client_y >= h) return -1;
+    int best = -1;
+    long best_d = 0;
     for (int r = 0; r < 5; r++)
         for (int k = 0; k < k_rows[r].count; k++) {
             int kx, ky, kw, kh;
             get_key_rect(0, 0, w, r, k, &kx, &ky, &kw, &kh);
-            if (client_x >= kx && client_x < kx + kw && client_y >= ky && client_y < ky + kh) return r * 32 + k;
+            long dx = client_x < kx ? kx - client_x : client_x >= kx + kw ? client_x - (kx + kw - 1) : 0;
+            long dy = client_y < ky ? ky - client_y : client_y >= ky + kh ? client_y - (ky + kh - 1) : 0;
+            long d = dx * dx + dy * dy;
+            if (best < 0 || d < best_d) { best = r * 32 + k; best_d = d; }
+            if (d == 0) return best;
         }
-    return -1;
+    return best;
 }
 
 LCDTERM_UTEXT void osk_draw(const canvas1_t *cv, int x0, int y0, int w, int h, uint8_t modifiers, int pressed) {
@@ -390,39 +400,30 @@ LCDTERM_UTEXT uint16_t osk_hit_test(int client_x, int client_y, int w, int h, ui
     bool s_ctrl  = (modifiers & OSK_MOD_CTRL)  != 0;
     bool s_sym   = (modifiers & OSK_MOD_SYM)   != 0;
 
-    /* Hit test across rows and keys */
-    for (int r = 0; r < 5; r++) {
-        const osk_row_t *row = &k_rows[r];
-        for (int k = 0; k < row->count; k++) {
-            int kx, ky, kw, kh;
-            get_key_rect(0, 0, w, r, k, &kx, &ky, &kw, &kh);
-            if (client_x >= kx && client_x < kx + kw &&
-                client_y >= ky && client_y < ky + kh) {
-                const osk_key_t *key = &row->keys[k];
+    /* The key under the tap, or the nearest one (osk_key_at()) */
+    int pressed = osk_key_at(client_x, client_y, w, h);
+    if (pressed < 0) return 0xFFFF;
+    const osk_key_t *key = &k_rows[pressed / 32].keys[pressed % 32];
 
-                if (key->code == OSK_KEY_SHIFT || key->code == OSK_KEY_CTRL ||
-                    key->code == OSK_KEY_SYM   || key->code == OSK_KEY_HIDE ||
-                    key->code == OSK_KEY_CMD   ||
-                    key->code == OSK_KEY_UP    || key->code == OSK_KEY_DOWN ||
-                    key->code == OSK_KEY_LEFT  || key->code == OSK_KEY_RIGHT ||
-                    key->code == OSK_KEY_CTRL_C) {
-                    return key->code;
-                }
-
-                /* Resolve character code based on modifiers */
-                uint16_t code = key->code;
-                if (s_sym) code = key->sym_code;
-                else if (s_shift) code = key->shift_code;
-
-                if (s_ctrl) {
-                    if (code >= 'a' && code <= 'z') code = (uint16_t)(code - 'a' + 1);
-                    else if (code >= 'A' && code <= 'Z') code = (uint16_t)(code - 'A' + 1);
-                }
-                return code;
-            }
-        }
+    if (key->code == OSK_KEY_SHIFT || key->code == OSK_KEY_CTRL ||
+        key->code == OSK_KEY_SYM   || key->code == OSK_KEY_HIDE ||
+        key->code == OSK_KEY_CMD   ||
+        key->code == OSK_KEY_UP    || key->code == OSK_KEY_DOWN ||
+        key->code == OSK_KEY_LEFT  || key->code == OSK_KEY_RIGHT ||
+        key->code == OSK_KEY_CTRL_C) {
+        return key->code;
     }
-    return 0xFFFF; /* Tap was on keyboard container padding */
+
+    /* Resolve character code based on modifiers */
+    uint16_t code = key->code;
+    if (s_sym) code = key->sym_code;
+    else if (s_shift) code = key->shift_code;
+
+    if (s_ctrl) {
+        if (code >= 'a' && code <= 'z') code = (uint16_t)(code - 'a' + 1);
+        else if (code >= 'A' && code <= 'Z') code = (uint16_t)(code - 'A' + 1);
+    }
+    return code;
 }
 
 #endif /* TOUCH_PRESENT */

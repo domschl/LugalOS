@@ -30,7 +30,7 @@
     "drivers/i2c_bus.c": 226,
     "drivers/i2c_rtc.c": 30,
     "drivers/ina226.c": 200,
-    "drivers/launcher_view.c": 5908,
+    "drivers/launcher_view.c": 5944,
     "drivers/loopback_net.c": 2060,
     "drivers/mcp9808.c": 164,
     "drivers/mhz19b.c": 132,
@@ -39,7 +39,7 @@
     "drivers/radio/osi_impl.c": 3104,
     "drivers/ramdisk.c": 36,
     "drivers/ramscreen.c": 56,
-    "drivers/reader_view.c": 39245,
+    "drivers/reader_view.c": 39389,
     "drivers/ribbon.c": 4,
     "drivers/screen.c": 64,
     "drivers/sensor.c": 912,
@@ -140,7 +140,7 @@
     "user/chess/src/bitboard.c": 2208,
     "user/chess/src/chess_pieces_data.h": 9216,
     "user/chess/src/chess_platform.c": 8,
-    "user/chess/src/chess_ui.c": 12706,
+    "user/chess/src/chess_ui.c": 12742,
     "user/chess/src/evaluation.c": 3072,
     "user/chess/src/perft.c": 2801,
     "user/chess/src/pgn.c": 2642,
@@ -169,10 +169,10 @@
     "app:ed": 103,
     "app:zmachine": 78,
     "build": 1057918,
-    "chess": 46310,
+    "chess": 46346,
     "clock-app": 484,
     "crypto": 1042,
-    "display": 67341,
+    "display": 67521,
     "drivers": 42422,
     "fs": 427,
     "httpd": 172,
@@ -192,6 +192,6 @@
     "usb": 672,
     "vfs": 4278
   },
-  "ram_code": 1230918,
-  "total": 6277158
+  "ram_code": 1233624,
+  "total": 6280080
 }

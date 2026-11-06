@@ -440,6 +440,7 @@ void launcher_draw(const canvas1_t *c, int w, int h) {
     surf.scale = s;
 
     ugui_begin(&s_launcher.ui_ctx);
+    ugui_set_min_target(&s_launcher.ui_ctx, ugui_target_px());   /* touch areas: at least 7 mm */
     ugui_fill(&surf, (ugui_rect_t){ 0, 0, (int16_t)w, (int16_t)h }, UGUI_GRAY_PAPER, CANVAS1_WHITE);
 
     int pad = 12 * s;
@@ -977,8 +978,10 @@ void launcher_report(void) {
     /* The hit-boxes, window-relative, for `touch tap` in tests. */
     for (int i = 0; i < s_launcher.ui_ctx.count; i++) {
         const ugui_hit_t *h = &s_launcher.ui_ctx.hits[i];
-        cprintf("  hit id %u index %d: x %d..%d y %d..%d\n", (unsigned)h->id, (int)h->index,
-                (int)h->rect.x, (int)(h->rect.x + h->rect.w - 1), (int)h->rect.y, (int)(h->rect.y + h->rect.h - 1));
+        ugui_rect_t t = ugui_touch_rect(&s_launcher.ui_ctx, i);
+        cprintf("  hit id %u index %d: x %d..%d y %d..%d, touched over %dx%d px%s\n", (unsigned)h->id, (int)h->index,
+                (int)h->rect.x, (int)(h->rect.x + h->rect.w - 1), (int)h->rect.y, (int)(h->rect.y + h->rect.h - 1),
+                (int)t.w, (int)t.h, (h->flags & UGUI_HIT_DISABLED) ? " (dimmed)" : "");
     }
 }
 
