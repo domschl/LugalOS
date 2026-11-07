@@ -291,6 +291,7 @@ DOC_MAPPINGS: dict[str, str] = {
     "doc/admin/boards/esp32p4_lcd7b.md": "tools/sd_root/help/esp32p4_lcd7b.gmi",
     "doc/admin/boards/esp32p4_tab5.md": "tools/sd_root/help/esp32p4_tab5.gmi",
     "doc/admin/boards/rp2350.md": "tools/sd_root/help/rp2350.gmi",
+    "doc/admin/boards/visionfive2.md": "tools/sd_root/help/visionfive2.gmi",
 
     # On-Device System Programming Chapters
     "doc/dev/on_device/c_programming.md": "tools/sd_root/help/c_programming.gmi",

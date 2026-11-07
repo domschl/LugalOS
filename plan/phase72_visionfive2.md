@@ -355,9 +355,9 @@ To keep Phase 72 focused and fast to verify, the remaining peripheral subsystems
 
 ## 3. Summary Checklist
 
-- [ ] **72.1**: `visionfive2` CMake preset (`-march=rv64imac_zba_zbb_zicsr_zifencei -mabi=lp64`), `linker/visionfive2.ld` (`0x40200000`), RISC-V `Image` header, `CONFIG_SBI=1` S-mode entry (`entry.S`, `sbi.c`), and `tools/vf2run.py` booting first banner + `SRST` reboot on VisionFive 2.
-- [ ] **72.2**: DesignWare 32-bit `uart0@10000000` (`reg-shift=2`, `USR` busy clear, IRQ 32), JH7110 PLIC (`context = 2 * hartid`, 136 IRQs), 4 MHz `rdtime` + `sbi_set_timer()` preemption tick, interactive `lugalos>` shell on VisionFive 2.
-- [ ] **72.3**: 8 GiB Sv39 VMM mapping (`R|W` non-executable MMIO, OpenSBI `0x40000000..0x401FFFFF` guard, cached + uncached DRAM alias), 256 MiB `palloc` pool, U-mode fault containment (`faulttest`), 64-bit Lisp & CAS verification.
-- [ ] **72.4**: 4-core U74-MC SMP (`MAX_HARTS=5`, `g_boot_hart`, `sbi_hart_start` for harts `1..4`, Hart 0 S7 parked, `sbi_send_ipi` reschedule IPIs), passing `smptest`, `preempttest`, and `lockcheck`.
-- [ ] **72.5**: Synopsys DesignWare SDIO driver (`drivers/sdmmc_jh7110.c` at `0x16020000`), mounting the 64 GB microSDXC card at `/sd0` (`FAT32`) and syncing `sd_root`.
-- [ ] **72.6**: Automated HIL test suite (`tests/hw/test_visionfive2.py`), `doc/admin/boards/visionfive2.md`, `racescan.py --check`, `gendocs.py --check`, and full `tests/runner.py` regression pass.
+- [x] **72.1**: `visionfive2` CMake preset (`-march=rv64imac_zba_zbb_zicsr_zifencei -mabi=lp64`), `linker/visionfive2.ld` (`0x40200000`), RISC-V `Image` header, `CONFIG_SBI=1` S-mode entry (`entry.S`, `sbi.c`), and `tools/vf2run.py` booting first banner + `SRST` reboot on VisionFive 2.
+- [x] **72.2**: DesignWare 32-bit `uart0@10000000` (`reg-shift=2`, `USR` busy clear, IRQ 32), JH7110 PLIC (`context = 2 * hartid`, 136 IRQs), 4 MHz `rdtime` + `sbi_set_timer()` preemption tick, interactive `lugalos>` shell on VisionFive 2.
+- [x] **72.3**: 8 GiB Sv39 VMM mapping (`R|W` non-executable MMIO, OpenSBI `0x40000000..0x401FFFFF` guard, cached + uncached DRAM alias), 256 MiB `palloc` pool, U-mode fault containment (`faulttest`), 64-bit Lisp & CAS verification.
+- [x] **72.4**: 4-core U74-MC SMP (`MAX_HARTS=5`, `g_boot_hart`, `sbi_hart_start` for harts `1..4`, Hart 0 S7 parked, `sbi_send_ipi` reschedule IPIs), passing `smptest`, `preempttest`, and `lockcheck`.
+- [x] **72.5**: Synopsys DesignWare SDIO driver (`drivers/sdmmc_jh7110.c` at `0x16020000`), mounting the 64 GB microSDXC card at `/sd0` (`FAT32`) and syncing `sd_root`.
+- [x] **72.6**: Automated HIL test suite (`tests/hw/test_visionfive2.py`), `doc/admin/boards/visionfive2.md`, `racescan.py --check`, `gendocs.py --check`, and full `tests/runner.py` regression pass.

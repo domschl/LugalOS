@@ -63,6 +63,7 @@ For deep board-specific specifications, peripheral registers, and hardware errat
 | **M5Stack Tab5** | `esp32p4-tab5` | USB-JTAG / UART0 (921600) | Rev v1.3. Dual expanders, ST7121 TDDI, IMU, battery fuel gauge. | [Tab5 Guide](doc/admin/boards/esp32p4_tab5.md) |
 | **ESP32-P4-NANO** | `esp32p4` | CP2102 UART0 (921600) | Rev v1.3. CH34x port controls RTS/DTR. RMII Ethernet. | [P4 Consoles](doc/admin/consoles.md) |
 | **ESP32-C6-Zero / MINI** | `esp32c6`, `esp32c6-mini` | USB-Serial/JTAG (115200) | Dual-image XIP. DTR low resets chip. Mirrored to UART0. | [ESP32-C6 Guide](doc/admin/boards/esp32c6.md) |
+| **StarFive VisionFive 2** | `visionfive2` | UART0 (115200) | JH7110 4×U74 RV64GC (Harts 1..4) + S7 Hart 0. Never touch QSPI flash; boot via `tools/vf2run.py`. | [VisionFive 2 Guide](doc/admin/boards/visionfive2.md) |
 
 When multiple P4 or C6 boards are connected, specify `--board <name>` using port mappings configured in `~/.config/lugalos/p4-ports.env` and `c6-ports.env`.
 
@@ -84,6 +85,7 @@ LugalOS supports distinct hardware presets. If a task requires testing against a
 | `rp2350-wifi` | RP2350 CYW43439 | Raspberry Pi Pico 2 W with CYW43439 Wi-Fi |
 | `esp32c6` | ESP32-C6 RV32 | Waveshare ESP32-C6-Zero (RV32IMAC @ 160 MHz, 512 KB SRAM, 8 MB flash, USB-Serial/JTAG) |
 | `esp32c6-release` | ESP32-C6 RV32 | The C6-Zero as a deployed node: release image (no self-tests), `i2c` folded; `esp32c6` is its dev twin |
+| `visionfive2` | StarFive JH7110 RV64GC | StarFive VisionFive 2 v1.3B (4× SiFive U74 RV64GC @ 1.5 GHz on Harts 1..4, Sv39 MMU, S-mode under OpenSBI, 8 GiB LPDDR4, DW-MSHC SDIO1) |
 | `rv32` | RISC-V 32-bit NOMMU | QEMU virt machine (32-bit microkernel test target) |
 | `rv32-fold` | RISC-V 32-bit NOMMU | `rv32` with `uart`, `blk` and `i2c` folded into their callers: the folded twin the runner tests |
 | `rv64` | RISC-V 64-bit Sv39 MMU | QEMU virt machine (64-bit virtual memory target) |
@@ -107,9 +109,13 @@ ninja -C build/<preset>
 * **ESP32-C6 Boards (Zero, MINI):**
   * Permanent flash: `tools/c6flash.py build/esp32c6`
   * Fast dev loop (development boards only: overwrites slot A, see the C6 guide): `tools/c6run.py --kernel build/esp32c6 --clobber-slot-a --cmd "preempttest" --cmd-wait 8`
+* **StarFive VisionFive 2 (`visionfive2`):**
+  * Upload to DRAM (1.5 Mbps YMODEM + gzip) & save `/sd0/lugalos.bin`: `./tools/vf2run.py --kernel build/visionfive2 --save-sd --cmd "uname; df" --reboot`
+  * Instant SD boot (<100 ms via U-Boot `fatload`): `./tools/vf2run.py --method sd --cmd "smptest; sdinfo" --reboot`
 * **MicroSD 9P Storage Sync (`tools/p9sync.py`):**
   * RP2350: `uv run --project host/p9lib python3 tools/p9sync.py --serial /dev/serial/by-id/...-if02 --src build/rp2350-terminal/sd_root --dst /sd0`
   * ESP32-P4: `tools/p9sync.py --p4 <board> --src build/<preset>/sd_root`
+  * VisionFive 2: `tools/p9sync.py --vf2 --src build/visionfive2/sd_root`
   * Policy: Additive and idempotent; strictly preserves user files (`/sd0/CHESS/`, history logs).
 
 See [Firmware Flashing Guide](doc/admin/flashing.md) and [Plan 9 Networking](doc/admin/networking.md) for full options.
@@ -132,6 +138,7 @@ See [Firmware Flashing Guide](doc/admin/flashing.md) and [Plan 9 Networking](doc
   * `python3 tests/hw/test_rp2350.py`: RP2350 peripherals, memory pools, console.
   * `python3 tests/hw/test_esp32p4.py --board <board>`: ESP32-P4 CLIC, PMP, I2C, PSRAM, SDMMC.
   * `python3 tests/hw/test_esp32c6.py --port <port>`: ESP32-C6 Wi-Fi and LLP radio.
+  * `python3 tests/hw/test_visionfive2.py`: StarFive VisionFive 2 64-bit S-mode SBI boot, 4-core U74 SMP, Sv39 MMU, DW-MSHC SDIO1 (`/sd0`), CAS, and PMIC cold reboot.
   * `python3 tests/hw/test_wifi.py`: CYW43439 Wi-Fi and network stack.
   * `python3 tests/hw/lcdterm_shots.py`: Visual PBM screenshot regression suite. See [Testing Guide](doc/dev/testing.md#visual-regression-testing-lcdterm_shotspy) for scenario options and hotkeys.
 

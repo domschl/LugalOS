@@ -26,6 +26,10 @@ This directory contains in-depth hardware reference documents, peripheral regist
    * Raspberry Pi Pico 2 and Waveshare RP2350-LCD-7.
    * Dual CDC-ACM USB serial architecture (console + 9P), 1200-baud touch reset, and `picotool` flashing.
 
+5. **[StarFive VisionFive 2 Guide](visionfive2.md)** (`visionfive2`)
+   * StarFive JH7110 64-bit quad-core U74 RV64GC SBC (Harts 1..4 + S7 monitor Hart 0, 8 GiB LPDDR4).
+   * S-mode SBI boot via U-Boot (`booti`), Sv39 MMU, asymmetric PLIC contexts, 4-core SMP, DesignWare `sdio1` microSD (`/sd0`), and `tools/vf2run.py`.
+
 ---
 
 ## General Rules for Hardware Access
