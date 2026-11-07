@@ -39,7 +39,7 @@ LOAD_ADDR = 0x40200000
 DEFAULT_BAUD = 115200
 
 
-def find_port(explicit: str | None) -> str:
+def find_port(explicit: str | None = None) -> str:
     p = explicit or os.environ.get("LUGALOS_VF2_PORT")
     if p:
         return p
@@ -49,6 +49,10 @@ def find_port(explicit: str | None) -> str:
     if os.path.exists("/dev/ttyUSB0"):
         return "/dev/ttyUSB0"
     sys.exit(f"no VisionFive 2 UART found (checked {BYID_GLOB} and /dev/ttyUSB0)")
+
+
+def find_default_port() -> str:
+    return find_port(None)
 
 
 def resolve_kernel_bin(path: str) -> str:
@@ -399,9 +403,14 @@ def main() -> int:
     ap.add_argument("--kernel", help="Path to lugalos.bin, lugalos.elf, or build directory")
     ap.add_argument(
         "--method",
-        choices=["ymodem", "tftp"],
+        choices=["ymodem", "tftp", "sd"],
         default="ymodem",
-        help="RAM upload transport (default: ymodem @ 1.5 Mbps + gzip)",
+        help="RAM upload transport (default: ymodem @ 1.5 Mbps + gzip; 'sd' loads /sd0/lugalos.bin via U-Boot fatload)",
+    )
+    ap.add_argument(
+        "--save-sd",
+        action="store_true",
+        help="Persist the loaded kernel image to /sd0/lugalos.bin via U-Boot fatwrite",
     )
     ap.add_argument("--host-ip", help="Override host LAN IP for TFTP")
     ap.add_argument("--listen", action="store_true", help="Listen to serial console")
@@ -411,7 +420,11 @@ def main() -> int:
         default=10.0,
         help="Seconds to listen when --listen is used (default: 10)",
     )
-    ap.add_argument("--cmd", help="Shell command(s) to run once LugalOS reaches `/> `")
+    ap.add_argument(
+        "--cmd",
+        action="append",
+        help="Shell command(s) to run once LugalOS reaches `lsh> ` (repeatable or ';'-separated)",
+    )
     ap.add_argument(
         "--cmd-wait",
         type=float,
@@ -432,21 +445,47 @@ def main() -> int:
             read_until_any(ser, [], args.listen_secs, echo=True)
             return 0
 
-        if args.kernel:
-            bin_path = resolve_kernel_bin(args.kernel)
-            with open(bin_path, "rb") as f:
-                file_bytes = f.read()
+        if args.kernel or args.method == "sd":
+            file_bytes = b""
+            if args.method != "sd":
+                if not args.kernel:
+                    sys.exit("[vf2run] --kernel is required unless --method sd is used")
+                bin_path = resolve_kernel_bin(args.kernel)
+                with open(bin_path, "rb") as f:
+                    file_bytes = f.read()
 
             ensure_uboot_prompt(ser)
-            host_ip = args.host_ip or detect_host_ip()
 
             loaded = False
-            if args.method == "tftp":
+            if args.method == "sd":
+                print("[vf2run] Loading lugalos.bin from microSD (mmc 1:1) to 0x40200000...")
+                out = uboot_cmd(
+                    ser,
+                    f"fatload mmc 1:1 0x{LOAD_ADDR:08x} lugalos.bin",
+                    timeout_s=10.0,
+                    echo=True,
+                )
+                if "bytes read" not in out:
+                    sys.exit("[vf2run] Failed to fatload lugalos.bin from mmc 1:1")
+                loaded = True
+            elif args.method == "tftp":
+                host_ip = args.host_ip or detect_host_ip()
                 loaded = load_via_tftp(ser, file_bytes, host_ip, LOAD_ADDR)
                 if not loaded:
                     print("[vf2run] TFTP did not complete; falling back to YMODEM...")
             if not loaded:
                 load_via_ymodem(ser, file_bytes, LOAD_ADDR)
+
+            if args.save_sd and file_bytes:
+                print(
+                    f"[vf2run] Saving {len(file_bytes)} bytes to /sd0/lugalos.bin via U-Boot fatwrite..."
+                )
+                uboot_cmd(
+                    ser,
+                    f"fatwrite mmc 1:1 0x{LOAD_ADDR:08x} lugalos.bin {len(file_bytes):x}",
+                    timeout_s=20.0,
+                    echo=True,
+                )
 
             print("[vf2run] Booting LugalOS via 'booti 0x40200000 - ${fdtcontroladdr}'...")
             write_paced(ser, f"booti 0x{LOAD_ADDR:08x} - ${{fdtcontroladdr}}\r")
@@ -456,7 +495,8 @@ def main() -> int:
                 sys.exit("\n[vf2run] Timed out waiting for LugalOS `lsh> ` shell prompt.")
 
         if args.cmd:
-            for single_cmd in [c.strip() for c in args.cmd.split(";") if c.strip()]:
+            all_cmds = [c.strip() for group in args.cmd for c in group.split(";") if c.strip()]
+            for single_cmd in all_cmds:
                 write_paced(ser, single_cmd + "\r")
                 read_until_any(ser, ["lsh> ", "/> "], timeout_s=args.cmd_wait, echo=True)
 

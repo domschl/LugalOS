@@ -55,9 +55,30 @@ def p4_shell(port: str, line: str) -> None:
     time.sleep(0.3)
 
 
+def vf2_shell(port: str, baud: int, line: str) -> None:
+    """One console line on a VisionFive 2 board, through vf2run's open."""
+    import vf2run
+    ser = vf2run.open_serial(port, baud)
+    try:
+        ser.timeout = 0.5
+        ser.write(line.encode() + b"\r")
+        ser.flush()
+        end = time.time() + 5.0
+        out = b""
+        while time.time() < end:
+            out += ser.read(4096)
+            tail = out.split(line.encode(), 1)[-1]
+            if b"lsh>" in tail or b"lisp>" in tail:
+                break
+    finally:
+        ser.close()
+    time.sleep(0.3)
+
+
 def find_default_src() -> Path | None:
     """Find the most likely staged sd_root directory."""
     candidates = [
+        REPO_ROOT / "build" / "visionfive2" / "sd_root",
         REPO_ROOT / "build" / "esp32p4-tab5" / "sd_root",
         REPO_ROOT / "build" / "esp32p4-lcd7b" / "sd_root",
         REPO_ROOT / "build" / "rp2350-terminal" / "sd_root",
@@ -180,6 +201,11 @@ def main() -> int:
         help="an ESP32-P4 board (nano|lcd7b|tab5): 9P on its console wire via p9share",
     )
     parser.add_argument(
+        "--vf2",
+        action="store_true",
+        help="StarFive VisionFive 2: 9P on its UART0 console wire via p9share",
+    )
+    parser.add_argument(
         "--src",
         type=Path,
         default=find_default_src(),
@@ -215,7 +241,7 @@ def main() -> int:
 
     args = parser.parse_args()
 
-    if args.serial is None and not args.p4 and not args.tcp:
+    if args.serial is None and not args.p4 and not args.vf2 and not args.tcp:
         found = sorted(glob.glob("/dev/serial/by-id/*LugalOS*-if02"))
         if len(found) > 1:
             sys.exit("Error: several LugalOS boards are attached; say which with --serial:\n  " + "\n  ".join(found))
@@ -226,6 +252,11 @@ def main() -> int:
         sys.path.insert(0, str(REPO_ROOT / "tools"))
         import p4run
         args.serial, _ = p4run.board_ports(args.p4)
+    if args.vf2 and not args.tcp:
+        sys.path.insert(0, str(REPO_ROOT / "tools"))
+        import vf2run
+        if not args.serial:
+            args.serial = vf2run.find_default_port()
     if not args.serial and not args.tcp:
         sys.exit("Error: no 9P serial port specified or auto-detected.")
     if not args.src or not args.src.is_dir():
@@ -233,6 +264,8 @@ def main() -> int:
 
     if args.p4 and not args.tcp:
         p4_shell(args.serial, "p9share")
+    elif args.vf2 and not args.tcp:
+        vf2_shell(args.serial, args.baud, "p9share")
     print(f"Connecting to 9P server on {args.tcp or args.serial}...")
     key = bytes.fromhex(args.key) if args.tcp else None
     if args.tcp:
@@ -240,6 +273,9 @@ def main() -> int:
     elif args.p4:
         client = p9lib.connect_open_serial(p4run.open_console(args.serial), framing="slip",
                                            timeout=20.0, closer=p4run.close_console)
+    elif args.vf2:
+        client = p9lib.connect_open_serial(vf2run.open_serial(args.serial, args.baud),
+                                           framing="slip", timeout=20.0)
     else:
         client = p9lib.connect_serial(args.serial, baudrate=args.baud)
     try:
@@ -266,6 +302,9 @@ def main() -> int:
         if args.p4 and not args.tcp:
             time.sleep(0.3)
             p4_shell(args.serial, "p9share off")
+        elif args.vf2 and not args.tcp:
+            time.sleep(0.3)
+            vf2_shell(args.serial, args.baud, "p9share off")
 
     return 0
 

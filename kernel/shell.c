@@ -104,7 +104,9 @@
 #elif defined(CONFIG_BOARD_ESP32P4)
 #include "drivers/sdmmc.h"
 #include "arch/esp32p4_intr.h"   /* P4_MINTSTATUS_CSR (47.1) */
-#elif !defined(CONFIG_BOARD_VISIONFIVE2)
+#elif defined(CONFIG_BOARD_VISIONFIVE2)
+#include "drivers/sdmmc.h"
+#else
 #include "drivers/virtio_blk.h"
 #endif
 #if defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_ST7735
@@ -7189,6 +7191,8 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         cmd_sdio(cmd_line + 4);
         return;
 #endif
+#endif
+#if defined(CONFIG_BOARD_ESP32P4) || defined(CONFIG_BOARD_VISIONFIVE2)
     } else if (strcmp(cmd_line, "sdinfo") == 0) {
         /* `emac scan`'s shape and its
          * reason: a table a human asked for, re-read from the card and the
@@ -7205,6 +7209,8 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         sdmmc_bench_report((uint32_t)shell_trailing_uint(&cmd_line[7]));
         return;
 #endif
+#endif
+#if defined(CONFIG_BOARD_ESP32P4)
     } else if (strcmp(cmd_line, "clicdump") == 0) {
         cmd_clicdump();
         return;
@@ -8282,7 +8288,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
          * drivers/spisd_rp2350.c, drivers/virtio_blk.c, or (since 35.3)
          * drivers/sdmmc_esp32p4.c, which is why this used to be absent on
          * the P4 and no longer is. */
-#if defined(CONFIG_BOARD_ESP32C6) || defined(CONFIG_BOARD_VISIONFIVE2)
+#if defined(CONFIG_BOARD_ESP32C6)
         printk("[BlkStats] no block device on this board\n");   /* nothing defines blk_task_call_count() here */
 #else
         printk("[BlkStats] calls=%u\n", blk_task_call_count());

@@ -438,7 +438,7 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
     set(FLASH_FS_OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/flashfs.bin)
     set(FLASH_FS_SOURCE "")
     set(FLASH_FS_COMMENT "Generating flashfs.bin (its own flash segment, not linked in)")
-elseif(LUGALOS_TARGET STREQUAL "ESP32P4" OR LUGALOS_TARGET STREQUAL "ESP32C6" OR LUGALOS_TARGET STREQUAL "VISIONFIVE2")
+elseif(LUGALOS_TARGET STREQUAL "ESP32P4" OR LUGALOS_TARGET STREQUAL "ESP32C6")
     # E2,  (and 45.4 for the C6): built as a raw image, and linked
     # into nothing, because there is nowhere to put it yet.
     #
@@ -1318,7 +1318,7 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
     # that has one (drivers/sdio_slave_esp32c6.c, empty without CONFIG_SDIO_SLAVE).
     list(APPEND SOURCES kernel/llp_node.c drivers/sdio_slave_esp32c6.c)
 elseif(LUGALOS_TARGET STREQUAL "VISIONFIVE2")
-    list(APPEND SOURCES drivers/uart_16550.c arch/riscv/common/sbi.c)
+    list(APPEND SOURCES drivers/uart_16550.c arch/riscv/common/sbi.c drivers/sdmmc_jh7110.c)
 else()
     # QEMU targets: VirtIO block device + 16550 UART + VirtIO console (9P link, A3)
     list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c drivers/virtio_console.c)

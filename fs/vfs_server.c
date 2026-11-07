@@ -83,7 +83,7 @@ static fat32_fs_t g_fat32_flash;
  * a card to read: on a card every FAT lookup is a sector transfer, while
  * /ram0 and /flash0 are memcpy and would gain nothing for the 512 bytes. */
 #if (defined(CONFIG_BOARD_RP2350) && CONFIG_ENABLE_SPISD) || \
-    (defined(CONFIG_BOARD_ESP32P4) && CONFIG_ENABLE_SDMMC) || \
+    ((defined(CONFIG_BOARD_ESP32P4) || defined(CONFIG_BOARD_VISIONFIVE2)) && CONFIG_ENABLE_SDMMC) || \
     (!defined(CONFIG_BOARD_RP2350) && !defined(CONFIG_BOARD_ESP32P4) && !defined(CONFIG_BOARD_ESP32C6) && !defined(CONFIG_BOARD_VISIONFIVE2))
 #define VFS_SD_FAT_CACHE 1
 static uint32_t g_sd_fat_cache[128];
@@ -469,7 +469,7 @@ void vfs_server_init(void) {
 #elif defined(CONFIG_BOARD_ESP32C6)
     /* no block device on this board (no card slot;
      * /flash0 arrives with 45.4.3), so /sd0 stays unmounted and `df` says so. */
-#elif defined(CONFIG_BOARD_ESP32P4)
+#elif defined(CONFIG_BOARD_ESP32P4) || defined(CONFIG_BOARD_VISIONFIVE2)
     /* the microSD card in the NANO's
      * own slot, on the SD/MMC host controller rather than on a SPI bus.
      * Where E2 had nothing to mount here, an empty slot now reports itself
@@ -482,9 +482,6 @@ void vfs_server_init(void) {
             printk("[VFS Server] Mounted FAT32 Filesystem on /sd0/ (Device: SD/MMC MicroSD Card Reader)\n");
         }
     }
-#elif defined(CONFIG_BOARD_VISIONFIVE2)
-    /* /sd0 arrives with the DesignWare Mobile Storage Host driver; /flash0 and
-     * /ram0 are mounted below. */
 #else
     /* VirtIO block device is available on QEMU targets */
     block_dev_t *sd_dev = virtio_blk_get_device();
@@ -3164,10 +3161,8 @@ static int vfs_format_volume(mount_entry_t *m, const char *path, const char *lab
         block_dev_t *dev = spisd_get_device();
 #elif defined(CONFIG_BOARD_ESP32C6)
         block_dev_t *dev = NULL;   /* no block device (45.4) */
-#elif defined(CONFIG_BOARD_ESP32P4)
+#elif defined(CONFIG_BOARD_ESP32P4) || defined(CONFIG_BOARD_VISIONFIVE2)
         block_dev_t *dev = sdmmc_get_device();   /* 35.2 */
-#elif defined(CONFIG_BOARD_VISIONFIVE2)
-        block_dev_t *dev = NULL;
 #else
         block_dev_t *dev = virtio_blk_get_device();
 #endif

@@ -19,3 +19,10 @@ set(CONFIG_UART0_IRQ         32)
 set(CONFIG_TIMEBASE_HZ       4000000)
 set(CONFIG_PLIC_BASE         0x0C000000)
 set(CONFIG_CLINT_BASE        0x02000000)
+
+# Synopsys DesignWare Mobile Storage Host Controller (sdio1@16020000),
+# wired to the microSD slot (4-bit, 50 MHz High Speed, 32-word FIFO).
+set(LUGALOS_ENABLE_SDMMC     ON)
+set(CONFIG_SDMMC_BASE        0x16020000)
+set(CONFIG_SDMMC_BUS_WIDTH   4)
+set(CONFIG_SDMMC_FREQ_KHZ    50000)

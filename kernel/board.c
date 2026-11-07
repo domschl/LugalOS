@@ -30,6 +30,7 @@
 
 #if defined(CONFIG_BOARD_VISIONFIVE2)
 #include "arch/sbi.h"
+#include "drivers/sdmmc.h"
 #elif !defined(CONFIG_BOARD_RP2350) && !defined(CONFIG_BOARD_ESP32P4) && !defined(CONFIG_BOARD_ESP32C6)
 #include "drivers/virtio_console.h"
 #include "drivers/virtio_blk.h"
@@ -197,8 +198,7 @@ static void *get_emac(void)   { return emac_get_netif(); }
  * The driver initialises the card on first ask. */
 static void *get_sdmmc(void)  { return sdmmc_get_device(); }
 #elif defined(CONFIG_BOARD_VISIONFIVE2)
-/* StarFive VisionFive 2 (JH7110): console is DW-APB-UART0 above; storage and
- * network drivers register in their own milestones. */
+static void *get_sdmmc(void)  { return sdmmc_get_device(); }
 #else
 static int   probe_virtio_console(void) { return virtio_console_init(); }
 static void *get_virtio_console(void)   { return virtio_console_get_link(); }
@@ -349,7 +349,9 @@ static const dev_driver_t dev_llp = {
     .name = "llp", .kind = DEV_KIND_P9LINK, .get = get_llp,
 };
 #elif defined(CONFIG_BOARD_VISIONFIVE2)
-/* StarFive VisionFive 2 (JH7110): unconditional entries above cover UART0. */
+static const dev_driver_t dev_sdmmc = {
+    .name = "sdblk", .kind = DEV_KIND_BLOCK, .get = get_sdmmc,
+};
 #else
 static const dev_driver_t dev_vconsole = {
     .name = "vconsole", .kind = DEV_KIND_P9LINK, .flags = DEV_F_BACKGROUND_9P, .wire = DEV_WIRE_VIRTIO,
@@ -433,7 +435,7 @@ void board_register_devices(void) {
     dev_register(&dev_sdmmc);
     dev_register(&dev_llp);
 #elif defined(CONFIG_BOARD_VISIONFIVE2)
-    /* Unconditional entries above cover UART0 and its 9P links. */
+    dev_register(&dev_sdmmc);
 #else
     dev_register(&dev_vconsole);
     dev_register(&dev_llp);

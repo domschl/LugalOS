@@ -67,7 +67,7 @@
 #include "drivers/virtio_console.h"
 #include "drivers/virtio_blk.h"
 #elif defined(CONFIG_BOARD_VISIONFIVE2)
-/* StarFive VisionFive 2 (JH7110): no QEMU virtio devices. */
+#include "drivers/sdmmc.h"
 #elif defined(CONFIG_BOARD_ESP32C6)
 /* ESP32-C6: no virtio, no RP2350 drivers, and no block
  * device at all yet -- the C6 has no card slot, and /flash0 waits for 45.4.3. */
@@ -569,7 +569,7 @@ void kernel_main(void) {
     spisd_task_start();
 #elif defined(CONFIG_BOARD_ESP32C6)
     /* No block device on this board yet (45.4); nothing to start. */
-#elif defined(CONFIG_BOARD_ESP32P4)
+#elif defined(CONFIG_BOARD_ESP32P4) || defined(CONFIG_BOARD_VISIONFIVE2)
     /* The microSD card on the SD/MMC
      * host. Same endpoint name and same batching as the two above, and the
      * same ordering rule: vfs_server_init() has already mounted the volume
@@ -577,8 +577,6 @@ void kernel_main(void) {
      * reads that happen after it. Returns -1 and stays on that path when the
      * slot is empty, which is not an error. */
     sdmmc_task_start();
-#elif defined(CONFIG_BOARD_VISIONFIVE2)
-    /* No block device task yet. */
 #else
     virtio_blk_task_start();
 #endif
