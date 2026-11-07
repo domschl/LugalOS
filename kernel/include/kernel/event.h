@@ -36,20 +36,35 @@ typedef enum {
     WIN_EV_FOCUS_GAINED,        /* the window has the keyboard focus now */
     WIN_EV_FOCUS_LOST,
     WIN_EV_CLOSE_REQUEST,
-    WIN_EV_RESIZE,
+    WIN_EV_RESIZE,              /* the window's content is w x h now (a rotation, a new width) */
     WIN_EV_DRAG,                /* a view's: a finger dragging, dy px since the last (down +) */
     WIN_EV_DRAG_END,            /* it lifted: dy over its last `key` ms (a fling when moving) */
     WIN_EV_SCROLL,              /* a vertical swipe: dy, over `key` ms (0: a step) */
     WIN_EV_SUSPEND,             /* off the screen (scrolled away, the panel blanked) */
     WIN_EV_RESUME,              /* on the screen again */
+    /* The system's state, told to every canvas window and view when it
+     * changes (kernel/console.c): */
+    WIN_EV_INPUT_MODE,          /* key 1: a keyboard is attached; 0: touch only (it went) */
+    WIN_EV_ORIENT,              /* the display turned: key its rotation in degrees (0, 90, 180,
+                                 * 270); each window's RESIZE follows */
+    WIN_EV_POWER,               /* the battery: key its charge in % (0xFF unknown), mods
+                                 * WIN_POWER_*; at each 10 % step and each change of those */
+    WIN_EV_TILT,                /* with WIN_CLAIM_TILT, at most 10 Hz while the window has the
+                                 * focus: gravity in the screen's frame, mg -- x toward its
+                                 * right, y toward its bottom, dy toward its back */
 } win_event_type_t;
+
+#define WIN_POWER_CHARGING 0x01u
+#define WIN_POWER_LOW      0x02u     /* below the warning level: save, and expect the cut-off */
 
 /* The window's state, not something that happened in it: never dropped from
  * a full ring (the oldest event goes instead). A full-screen game pauses
  * from FOCUS_LOST or SUSPEND until FOCUS_GAINED and RESUME. */
 static inline bool win_event_is_state(uint8_t type) {
     return type == WIN_EV_FOCUS_GAINED || type == WIN_EV_FOCUS_LOST ||
-           type == WIN_EV_SUSPEND || type == WIN_EV_RESUME || type == WIN_EV_CLOSE_REQUEST;
+           type == WIN_EV_SUSPEND || type == WIN_EV_RESUME || type == WIN_EV_CLOSE_REQUEST ||
+           type == WIN_EV_RESIZE || type == WIN_EV_INPUT_MODE || type == WIN_EV_ORIENT ||
+           type == WIN_EV_POWER;
 }
 
 #define WIN_EVF_TAP   0x01u     /* the DOWN / UP pair of a recognised tap */
@@ -72,13 +87,15 @@ typedef struct {
 } win_event_t;
 
 #define WIN_CLAIM_POINTER 0x01u /* the raw pointer stream, and no gestures, while focused */
+#define WIN_CLAIM_TILT    0x02u /* WIN_EV_TILT while focused (boards with an IMU) */
 
 /* The next event for window w, the console's input pumped first (so taps and
  * close requests are delivered). False when there is none. */
 bool window_poll(win_t w, win_event_t *ev);
 
 /* Producers (the input path, the touch task): queue ev for w; dropped when
- * the ring is full, except that a MOVE merges into an unread MOVE. */
+ * the ring is full, except that a MOVE merges into an unread MOVE and a TILT
+ * replaces an unread TILT. */
 void window_post(win_t w, const win_event_t *ev);
 
 /* Forget w's unread events. */
@@ -91,7 +108,8 @@ uint8_t window_claims(win_t w);
 
 /* Whether a program has polled w: then closing its window asks it first
  * (WIN_EV_CLOSE_REQUEST, the console's close protocol); a window nobody
- * reads closes at once. window_forget(): its window is gone. */
+ * reads closes at once. window_forget(): its window is gone -- its unread
+ * events too, so the slot's next window starts empty. */
 bool window_listened(win_t w);
 /* Whether w's program has read the last close request posted to it: it is
  * answering, only slowly (a game shutting its sound down). */

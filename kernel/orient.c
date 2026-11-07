@@ -1,6 +1,7 @@
 #include "kernel/orient.h"
 #include "drivers/bmi270.h"
 #include "kernel/console.h"
+#include "kernel/event.h"
 #include "kernel/identity.h"
 #include "kernel/printk.h"
 #include "kernel/sched.h"
@@ -133,20 +134,52 @@ static void display_set(int rot) {
 #endif
 }
 
+/* An IMU axis's reading for k_rot's index i: +x, -x, +y, -y. */
+static int32_t axis_mg(int i, int32_t ax, int32_t ay) {
+    return i == 0 ? ax : i == 1 ? -ax : i == 2 ? ay : -ay;
+}
+
+/* The focused window's TILT (kernel/event.h), if it claimed it: gravity in
+ * the screen's frame. Down on the screen is the axis whose rotation is the
+ * one shown (k_rot); right, the one a quarter turn on. True if it was
+ * wanted: the IMU is read for it even with the auto-rotation off. */
+static bool tilt_post(const bmi270_reading_t *r, int shown, bool read) {
+    win_t w = window_focused();
+    if (w < 0 || !(window_claims(w) & WIN_CLAIM_TILT)) return false;
+    if (!read) return true;
+    int down = -1, right = -1;
+    for (int i = 0; i < 4; i++) {
+        if (k_rot[i] == shown) down = i;
+        if (k_rot[i] == (shown + 90) % 360) right = i;
+    }
+    if (down < 0 || right < 0) return true;
+    win_event_t ev;
+    memset(&ev, 0, sizeof ev);
+    ev.type = WIN_EV_TILT;
+    ev.x = (int16_t)axis_mg(right, r->ax, r->ay);
+    ev.y = (int16_t)axis_mg(down, r->ax, r->ay);
+    ev.dy = (int16_t)r->az;
+    window_post(w, &ev);
+    return true;
+}
+
 static void orient_task(void *arg) {
     (void)arg;
     orient_state_t st;
     orient_state_init(&st, display_rot());
     for (;;) {
-        if (g_mode != ORIENT_AUTO) {
+        bool tilt = tilt_post(NULL, 0, false);
+        if (g_mode != ORIENT_AUTO && !tilt) {
             task_sleep_ms(500);
             orient_state_init(&st, display_rot());
             continue;
         }
-        task_sleep_ms(100);
+        task_sleep_ms(100);                              /* 10 Hz: the rotation's and TILT's */
         bmi270_reading_t r;
         if (!bmi270_read(&r)) continue;
         st.shown = display_rot();
+        (void)tilt_post(&r, st.shown, true);
+        if (g_mode != ORIENT_AUTO) continue;
         int rot = orient_step(&st, r.ax, r.ay, r.az, r.gx, r.gy, r.gz, time_get_ms());
         if (rot >= 0 && g_mode == ORIENT_AUTO) display_set(rot);
     }

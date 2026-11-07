@@ -1655,6 +1655,89 @@ static void launcher_cmd_run(void *arg) {
 }
 
 #if CONFIG_DEV
+/* `eventtest start [tilt]`, `eventtest`, `eventtest stop`: a program with a
+ * canvas window ("eventtest", beside the terminal) that reads its events in
+ * a task of its own and counts them by type, keeping the last of each
+ * system event -- to see what reaches a window. It closes its window when
+ * asked (WIN_EV_CLOSE_REQUEST), as a program should. */
+typedef struct {
+    volatile bool running, stop;
+    bool          tilt;
+    win_t         w;
+    uint32_t      count[WIN_EV_TILT + 1];
+    win_event_t   last[WIN_EV_TILT + 1];
+} eventtest_t;
+/* accepted: the test's task writes, `eventtest` reads a snapshot. From the
+ * heap at the first start: half a KB no board should keep for a test. */
+static eventtest_t *s_evtp;
+#define s_evt (*s_evtp)
+
+static void eventtest_task(void *arg) {
+    (void)arg;
+    static const char name[] = "eventtest";
+    uint8_t req[2 + sizeof name], reply[SCREEN_REPLY_LEN];
+    req[0] = 'L';
+    req[1] = SCREEN_LAYOUT_SPLIT_HALF;
+    memcpy(req + 2, name, sizeof name);
+    if (console_canvas(req, sizeof req, reply) && reply[0] == 0) {
+        s_evt.w = window_by_name(name);
+        if (s_evt.tilt && s_evt.w >= 0) window_claim(s_evt.w, WIN_CLAIM_TILT);
+        while (!s_evt.stop && s_evt.w >= 0) {
+            win_event_t ev;
+            while (window_poll(s_evt.w, &ev)) {
+                if (ev.type <= WIN_EV_TILT) { s_evt.count[ev.type]++; s_evt.last[ev.type] = ev; }
+                if (ev.type == WIN_EV_CLOSE_REQUEST) s_evt.stop = true;
+            }
+            task_sleep_ms(20);
+        }
+        if (s_evt.w >= 0) window_claim(s_evt.w, 0);
+        req[1] = SCREEN_LAYOUT_TEXT;
+        (void)console_canvas(req, sizeof req, reply);
+    }
+    s_evt.running = false;
+}
+
+static void cmd_eventtest(const char *arg) {
+    static const char *const names[WIN_EV_TILT + 1] = {
+        "none", "down", "up", "move", "key down", "key up", "focus gained", "focus lost", "close request",
+        "resize", "drag", "drag end", "scroll", "suspend", "resume", "input mode", "orient", "power", "tilt",
+    };
+    if (!s_evtp) {
+        if (strncmp(arg, "start", 5) != 0) { cprintf("eventtest: not started\n"); return; }
+        s_evtp = (eventtest_t *)balloc_alloc((uint32_t)sizeof *s_evtp);
+        if (!s_evtp) { cprintf("eventtest: no memory\n"); return; }
+        memset(s_evtp, 0, sizeof *s_evtp);
+    }
+    if (strncmp(arg, "start", 5) == 0) {
+        if (s_evt.running) { cprintf("eventtest: running already\n"); return; }
+        memset(&s_evt, 0, sizeof s_evt);
+        s_evt.w = -1;
+        s_evt.tilt = strstr(arg, "tilt") != NULL;
+        s_evt.running = true;
+        if (task_create("eventtest", eventtest_task, NULL) < 0) { s_evt.running = false; cprintf("eventtest: no task\n"); }
+        else cprintf("eventtest: started%s\n", s_evt.tilt ? " (tilt claimed)" : "");
+        return;
+    }
+    if (strcmp(arg, "stop") == 0) {
+        s_evt.stop = true;
+        for (int i = 0; i < 100 && s_evt.running; i++) task_sleep_ms(20);
+        cprintf("eventtest: %s\n", s_evt.running ? "still running" : "stopped");
+        return;
+    }
+    cprintf("eventtest: %s, window %d\n", s_evt.running ? "running" : "not running", s_evt.w);
+    for (int t = 1; t <= WIN_EV_TILT; t++) {
+        if (!s_evt.count[t]) continue;
+        const win_event_t *e = &s_evt.last[t];
+        cprintf("  %-13s %lu", names[t], (unsigned long)s_evt.count[t]);
+        if (t == WIN_EV_INPUT_MODE || t == WIN_EV_ORIENT) cprintf("  last %lu", (unsigned long)e->key);
+        if (t == WIN_EV_POWER) cprintf("  last %lu %%, flags 0x%x", (unsigned long)e->key, (unsigned)e->mods);
+        if (t == WIN_EV_RESIZE) cprintf("  last %u x %u", (unsigned)e->w, (unsigned)e->h);
+        if (t == WIN_EV_TILT) cprintf("  last x %d y %d z %d mg", (int)e->x, (int)e->y, (int)e->dy);
+        cprintf("\n");
+    }
+}
+#undef s_evt
+
 /* `closetest`: a program that reads its window and then stops answering, for
  * the close protocol (drivers/winclose.h): a canvas window "closetest",
  * polled once, focused and closed with Cmd-W; then 600 ms of input pumped
@@ -1696,6 +1779,38 @@ static void cmd_closetest(bool done) {
     }
     cprintf("closetest: asked to close; window %s\n",
             console_window_present(RIBBON_WIN_CANVAS, (uint8_t)w) ? "still there" : "gone");
+}
+#endif
+
+#if CONFIG_DEV
+static void launcher_app_worker(void *arg);
+
+/* `closetest game`: a program that answers, slowly -- ceres, started in a
+ * task of its own as the launcher starts it, closed with the keyboard's
+ * Cmd-W (the console's close hotkey) once its window is up; how long it took
+ * to close its window. Expected: closed, and no not-responding alert. */
+static void cmd_closetest_game(void) {
+    static const char line[] = "ceres --frames=6000";
+    char *cmd = (char *)balloc_alloc(sizeof line);
+    if (!cmd) { cprintf("closetest game: no memory\n"); return; }
+    memcpy(cmd, line, sizeof line);
+    int pid = task_create_sized("app", launcher_app_worker, cmd, VTERM_SHELL_STACK_PAGES);
+    if (pid < 0) { balloc_free(cmd); cprintf("closetest game: no task\n"); return; }
+    task_set_vterm(pid, 0);
+    win_t w = -1;
+    for (int i = 0; i < 250 && w < 0; i++) { task_sleep_ms(20); w = window_by_name("ceres"); }
+    if (w < 0) { cprintf("closetest game: ceres opened no window\n"); return; }
+    task_sleep_ms(1500);                                 /* running, its sound on */
+    uint64_t t0 = time_get_ms();
+    console_hotkey(CONSOLE_HOTKEY_CLOSE);
+    bool there = true;
+    while (there && time_get_ms() - t0 < 6000u) {
+        (void)console_has_char();
+        task_sleep_ms(10);
+        there = console_window_present(RIBBON_WIN_CANVAS, (uint8_t)w);
+    }
+    if (there) cprintf("closetest game: ceres still has its window after 6 s\n");
+    else cprintf("closetest game: ceres closed its window in %lu ms\n", (unsigned long)(time_get_ms() - t0));
 }
 #endif
 
@@ -6497,6 +6612,12 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "uxbench") == 0 || strncmp(cmd_line, "uxbench ", 8) == 0) {
         uxbench_cmd(cmd_line + 7);
         return;
+    } else if (strcmp(cmd_line, "eventtest") == 0 || strncmp(cmd_line, "eventtest ", 10) == 0) {
+        cmd_eventtest(cmd_line[9] ? cmd_line + 10 : "");
+        return;
+    } else if (strcmp(cmd_line, "closetest game") == 0) {
+        cmd_closetest_game();
+        return;
     } else if (strcmp(cmd_line, "closetest") == 0 || strcmp(cmd_line, "closetest done") == 0) {
         cmd_closetest(cmd_line[9] != '\0');
         return;
@@ -8474,8 +8595,6 @@ static void parse_and_eval_cmd(const char *cmd_line) {
 static bool     s_serial_cmd_seen  = false;
 #if defined(LCDTERM_PRESENT) && defined(TOUCH_PRESENT)
 static bool     s_boot_kbd_checked = false;
-static bool     s_prev_kbd_present = false;
-static uint32_t s_kbd_poll_ms      = 0;
 #endif
 
 static void launcher_app_worker(void *arg) {
@@ -8494,29 +8613,13 @@ static void shell_idle_poll(void) {
     lisp_canvas_poll();
 
 #if defined(LCDTERM_PRESENT) && defined(TOUCH_PRESENT)
-    uint32_t now_ms = (uint32_t)time_get_ms();
-    if (now_ms - s_kbd_poll_ms >= 200u) {
-        s_kbd_poll_ms = now_ms;
-        bool cur_kbd = usbkbd_is_present();
-        if (!s_boot_kbd_checked) {
-            if (now_ms >= 1500u) {
-                s_boot_kbd_checked = true;
-                s_prev_kbd_present = cur_kbd;
-                if (!cur_kbd && !s_serial_cmd_seen && !launcher_is_active()) {
-                    view_post_call(launcher_open_cb, NULL);
-                }
-            }
-        } else {
-            if (s_prev_kbd_present && !cur_kbd) {
-                /* USB keyboard was disconnected: bring up the Touch Launcher */
-                view_post_call(launcher_open_cb, NULL);
-            } else if (!s_prev_kbd_present && cur_kbd) {
-                /* USB keyboard was connected: collapse virtual keyboard on terminal */
-                uint8_t kreq[2] = { 'k', 0 }, kreply[SCREEN_REPLY_LEN];
-                (void)console_canvas(kreq, 2, kreply);
-            }
-            s_prev_kbd_present = cur_kbd;
-        }
+    /* At boot, no keyboard and nothing typed on the serial line: the
+     * launcher, for touch. Keyboards coming and going later are the
+     * console's (WIN_EV_INPUT_MODE). */
+    if (!s_boot_kbd_checked && time_get_ms() >= 1500u) {
+        s_boot_kbd_checked = true;
+        if (!usbkbd_is_present() && !s_serial_cmd_seen && !launcher_is_active())
+            view_post_call(launcher_open_cb, NULL);
     }
 #endif
 

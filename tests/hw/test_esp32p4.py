@@ -2118,25 +2118,55 @@ def _alerts_shown(b: Board) -> int:
 def test_close_game(b: Board) -> tuple[str, bool, str]:
     """71.4: Cmd-W on a game asks it, and a game that reads the request but
     takes longer than 200 ms to shut down (its sound, its buffers) closes
-    without the not-responding alert."""
+    without the not-responding alert. `closetest game` runs ceres in a task
+    of its own and sends the keyboard's Cmd-W: the serial line's keys would
+    go to the game, which reads the console."""
     name = "close protocol: Cmd-W closes ceres without an alert (71.4)"
     n0, _ = _ribbon(b)
     if n0 < 0:
         return name, True, "SKIPPED (no ribbon on this board)"
     before = _alerts_shown(b)
-    b.console_session.ser.write(b"ceres --frames=3000\r")
-    b.console_session.ser.flush()
-    time.sleep(4.0)
-    rl = b.console_session.cmd("", deadline=2.0)
-    _raw(b, b"\x1b[119;9u", 3.0)                     # Cmd+W, to the game's focused window
-    b.console_session.drain(quiet=0.5, deadline=10.0)
+    out = b.console_session.cmd("closetest game", deadline=20.0)
     after = _alerts_shown(b)
-    rl = b.console_session.cmd("ribbon list", deadline=5.0)
-    if "Canvas" in rl:
-        return name, False, f"ceres's window is still there:\n{rl.strip()[-300:]}"
+    m = re.search(r"closed its window in (\d+) ms", out)
+    if not m:
+        return name, False, f"closetest game: {out.strip()[-300:]}"
     if before < 0 or after != before:
         return name, False, f"not-responding alerts {before} -> {after}"
-    return name, True, "ceres closed by Cmd-W, no alert"
+    return name, True, f"ceres closed its window {m.group(1)} ms after Cmd-W, no alert"
+
+
+def test_system_events(b: Board) -> tuple[str, bool, str]:
+    """71.4: the system's events reach a program's window (`eventtest`): the
+    keyboard's state when it opens, the focus, and on the Tab5 a rotation
+    (ORIENT, then RESIZE) and the battery."""
+    name = "system events: input mode, focus, rotation and power reach a window (71.4)"
+    n0, _ = _ribbon(b)
+    if n0 < 0:
+        return name, True, "SKIPPED (no ribbon on this board)"
+    out = b.console_session.cmd("eventtest start", deadline=5.0)
+    if "started" not in out:
+        return name, False, f"eventtest start: {out.strip()[-200:]}"
+    time.sleep(0.5)
+    rl = b.console_session.cmd("ribbon list", deadline=5.0)
+    m = re.search(r"\[(\d+)\] Canvas", rl)
+    if m:
+        b.console_session.cmd(f"ribbon focus {m.group(1)}", deadline=5.0)
+    tab5 = is_tab5(b)
+    if tab5:
+        b.console_session.cmd("lcd orient 0", deadline=10.0)
+        b.console_session.cmd("lcd orient 270", deadline=10.0)
+    time.sleep(0.5)
+    ev = b.console_session.cmd("eventtest", deadline=5.0)
+    b.console_session.cmd("eventtest stop", deadline=5.0)
+    want = ["input mode", "focus gained"] + (["orient", "resize", "power"] if tab5 else [])
+    missing = [w for w in want if not re.search(rf"^\s+{w}\s+\d+", ev, re.M)]
+    if missing:
+        return name, False, f"missing {missing}:\n{ev.strip()[-500:]}"
+    o = re.search(r"orient\s+(\d+)", ev)
+    if tab5 and (not o or int(o.group(1)) < 3):
+        return name, False, f"expected the state at opening and two rotations:\n{ev.strip()[-500:]}"
+    return name, True, ", ".join(want) + " delivered"
 
 
 TESTS = [
@@ -2188,7 +2218,8 @@ TESTS = [
     test_reader_anti_aliased_typography,
     test_touch_launcher,
     dev_only(test_close_protocol),
-    test_close_game,
+    dev_only(test_close_game),
+    dev_only(test_system_events),
     test_screenshot_color_mode,
     test_color_canvas_rgb565,
     test_ribbon_slide_and_reader_smooth_scroll,

@@ -36,6 +36,14 @@ void window_post(win_t w, const win_event_t *ev) {
     uintptr_t f = spin_lock_irqsave(&g_win_lock);
     win_ring_t *r = &g_win[w];
     if (ev->type == WIN_EV_CLOSE_REQUEST) r->close_read = false;
+    if (ev->type == WIN_EV_TILT && r->head != r->tail) {
+        win_event_t *last = &r->ev[(r->head + WIN_RING - 1u) % WIN_RING];
+        if (last->type == WIN_EV_TILT) {                  /* unread: the newest only */
+            *last = *ev;
+            spin_unlock_irqrestore(&g_win_lock, f);
+            return;
+        }
+    }
     if (ev->type == WIN_EV_POINTER_MOVE && r->head != r->tail) {
         win_event_t *last = &r->ev[(r->head + WIN_RING - 1u) % WIN_RING];
         if (last->type == WIN_EV_POINTER_MOVE) {          /* unread: one move to here */
@@ -84,7 +92,6 @@ void window_claim(win_t w, uint8_t claims) {
     if (!valid(w)) return;
     uintptr_t f = spin_lock_irqsave(&g_win_lock);
     g_win[w].claims = claims;
-    g_win[w].tail = g_win[w].head;                        /* a new owner starts empty */
     spin_unlock_irqrestore(&g_win_lock, f);
 }
 
@@ -108,6 +115,8 @@ void window_forget(win_t w) {
     if (!valid(w)) return;
     uintptr_t f = spin_lock_irqsave(&g_win_lock);
     g_win[w].listened = false;
+    g_win[w].close_read = false;
+    g_win[w].tail = g_win[w].head;                        /* the slot's next window starts empty */
     spin_unlock_irqrestore(&g_win_lock, f);
 }
 

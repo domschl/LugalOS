@@ -228,7 +228,7 @@ void moon_platform_shutdown(void) {
      * has taken the sound over meanwhile */
     audio_p4_release(moon_p4_audio_render);
 
-    if (s_cid >= 0) window_claim(s_cid, 0);  /* the pointer back to the window manager, unread events gone */
+    if (s_cid >= 0) window_claim(s_cid, 0);  /* the pointer back to the window manager */
     while (console_has_char()) (void)keyseq_read_console();
 
     moon_tile_cache_attach(NULL);

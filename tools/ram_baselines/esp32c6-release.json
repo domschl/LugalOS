@@ -62,7 +62,7 @@
     "kernel/board.c": 13,
     "kernel/chan.c": 1348,
     "kernel/clipboard.c": 20,
-    "kernel/console.c": 962,
+    "kernel/console.c": 975,
     "kernel/device.c": 140,
     "kernel/devirq.c": 134,
     "kernel/discipline.c": 82,
@@ -136,11 +136,11 @@
     "radio": 26177,
     "selftest": 828,
     "sensors": 8688,
-    "shell": 6711,
+    "shell": 6724,
     "storage": 13,
     "usb": 6481,
     "vfs": 3599
   },
   "ram_code": 11634,
-  "total": 156861
+  "total": 156874
 }

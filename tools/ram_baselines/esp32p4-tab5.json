@@ -89,7 +89,7 @@
     "kernel/chan.c": 1348,
     "kernel/chan_selftest.c": 172,
     "kernel/clipboard.c": 20,
-    "kernel/console.c": 983,
+    "kernel/console.c": 1000,
     "kernel/device.c": 140,
     "kernel/devirq.c": 134,
     "kernel/discipline.c": 82,
@@ -112,7 +112,7 @@
     "kernel/random.c": 9,
     "kernel/sched.c": 2501,
     "kernel/settings.c": 27,
-    "kernel/shell.c": 2998,
+    "kernel/shell.c": 2997,
     "kernel/smp.c": 80,
     "kernel/status_led.c": 8,
     "kernel/stress.c": 3058,
@@ -196,11 +196,11 @@
     "radio": 12564,
     "selftest": 3963,
     "sensors": 8736,
-    "shell": 13267,
+    "shell": 13283,
     "storage": 7456,
     "usb": 1212,
     "vfs": 4111
   },
   "ram_code": 1806,
-  "total": 216972
+  "total": 216988
 }

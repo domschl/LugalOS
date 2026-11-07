@@ -302,6 +302,7 @@ static void power_task(void *arg) {
         power_now(&p);
         if (!p.have) continue;
         uint64_t now = time_get_ms();
+        console_power_state(p.have_soc ? (int)((p.soc_pm + 5) / 10) : -1, p.ma > 20, g.warned);
 
         if (g.limit && g.mode != CHARGE_OFF && p.have_soc) {
             if (!g.held && p.soc_pm >= (int32_t)g.limit * 10) {

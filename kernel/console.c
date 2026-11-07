@@ -217,6 +217,15 @@ static uint8_t ws_told_flags(uint8_t type, uint8_t id) {
     return 0;                                            /* new: neither focused nor shown yet */
 }
 
+static bool ws_was_told(uint8_t type, uint8_t id) {
+    for (unsigned i = 0; i < g_ws_told_n; i++)
+        if (g_ws_told[i].type == type && g_ws_told[i].id == id) return true;
+    return false;
+}
+
+/* Not an event type: a new window, told the system's state (sys_hello()). */
+#define WS_HELLO 0xFFu
+
 /* Under console_lock: what changed since the last telling, queued -- the
  * losses first, then the gains. A blanked screen shows nothing. */
 static void ws_compare(void) {
@@ -226,6 +235,8 @@ static void ws_compare(void) {
         eff[i] = g_ws_now[i];
         if (g_blanked) eff[i].flags &= (uint8_t)~CONSOLE_WIN_VISIBLE;
     }
+    for (unsigned i = 0; i < n; i++)
+        if (!ws_was_told(eff[i].type, eff[i].id)) ws_queue(eff[i].type, eff[i].id, WS_HELLO);
     for (int gains = 0; gains < 2; gains++) {
         for (unsigned i = 0; i < n; i++) {
             uint8_t was = ws_told_flags(eff[i].type, eff[i].id), is = eff[i].flags;
@@ -269,6 +280,18 @@ uint8_t console_window_told(uint8_t type, uint8_t id) {
     return f;
 }
 
+/* ev to window (type, id): a canvas's ring, or a view through the views task. */
+static void ws_send(uint8_t type, uint8_t id, const win_event_t *ev) {
+    if (type == 2 /* RIBBON_WIN_CANVAS */) {
+        window_post((win_t)id, ev);
+    } else {
+        const view_ops_t *v = view_for_window(type);
+        if (v) view_post_nowait(v, id, ev);
+    }
+}
+
+static void sys_hello(uint8_t type, uint8_t id);
+
 static void ws_deliver(void) {
     if (__atomic_load_n(&g_ws_head, __ATOMIC_ACQUIRE) == __atomic_load_n(&g_ws_tail, __ATOMIC_ACQUIRE)) return;
     ylock_acquire(&g_ws_deliver_lock);
@@ -284,15 +307,14 @@ static void ws_deliver(void) {
         }
         spin_unlock_irqrestore(&g_ws_q_lock, f);
         if (!got) break;
+        if (evt == WS_HELLO) {
+            sys_hello(type, id);
+            continue;
+        }
         win_event_t ev;
         memset(&ev, 0, sizeof ev);
         ev.type = evt;
-        if (type == 2 /* RIBBON_WIN_CANVAS */) {
-            window_post((win_t)id, &ev);
-        } else {
-            const view_ops_t *v = view_for_window(type);
-            if (v) view_post_nowait(v, id, &ev);
-        }
+        ws_send(type, id, &ev);
     }
     ylock_release(&g_ws_deliver_lock);
 }
@@ -769,6 +791,129 @@ static void close_asked(const uint8_t *reply) {
 }
 
 static void launcher_open_cb(void *arg) { (void)arg; (void)launcher_open(); }
+
+/* --- The system's events (kernel/event.h): the keyboard, the rotation, the
+ * power. Watched from the input path, every pass (two loads and a word the
+ * power task stores), and each change told to every canvas window and view
+ * on the ribbon. */
+static volatile uint32_t g_sys_power;       /* accepted: one word, stored by the power task */
+static volatile bool     g_sys_busy;        /* one input path at a time looks */
+static int               g_sys_kbd = -1;    /* guarded by: g_sys_busy; -1 not looked yet */
+static uint32_t          g_sys_power_told;  /* guarded by: g_sys_busy */
+
+void console_power_state(int pct, bool charging, bool low) {
+    uint32_t v = 0x80000000u | (uint32_t)(pct >= 0 && pct <= 100 ? pct : 0xFF) |
+                 (charging ? (uint32_t)WIN_POWER_CHARGING << 8 : 0u) | (low ? (uint32_t)WIN_POWER_LOW << 8 : 0u);
+    __atomic_store_n(&g_sys_power, v, __ATOMIC_RELEASE);
+}
+
+/* ev to every canvas window and view on the ribbon, as the screen last
+ * reported them. */
+static void sys_tell(const win_event_t *ev) {
+    console_win_state_t w[WS_MAX];
+    console_lock();
+    unsigned n = g_ws_now_n;
+    for (unsigned i = 0; i < n; i++) w[i] = g_ws_now[i];
+    console_unlock();
+    for (unsigned i = 0; i < n; i++) ws_send(w[i].type, w[i].id, ev);
+}
+
+/* A panel that turns (the P4's DSI panels): its rotation watched too. */
+#if defined(CONFIG_BOARD_ESP32P4) && defined(LCDTERM_PRESENT)
+#define SYS_ROTATES 1
+static int g_sys_rot = -1;                  /* guarded by: g_sys_busy */
+
+/* After a rotation: each canvas window's new content size (the views get
+ * theirs from console_sync_readers()). */
+static void sys_resize_canvases(void) {
+    uint8_t req[2] = { 'R', 0 }, reply[SCREEN_REPLY_LEN];
+    if (!console_canvas(req, 1, reply) || reply[0] != 0) return;
+    uint8_t count = reply[1];
+    for (uint8_t i = 0; i < count; i++) {
+        req[1] = i;
+        if (!console_canvas(req, 2, reply) || reply[0] != 0 || reply[1] != 2 /* RIBBON_WIN_CANVAS */) continue;
+        int rx0 = (int)(reply[4] | (reply[5] << 8)), rx1 = (int)(reply[6] | (reply[7] << 8));
+        win_event_t ev;
+        memset(&ev, 0, sizeof ev);
+        ev.type = WIN_EV_RESIZE;
+        ev.w = (uint16_t)(rx1 - rx0 - 1);
+        ev.h = (uint16_t)(reply[10] | (reply[11] << 8));
+        window_post((win_t)reply[2], &ev);
+    }
+}
+#endif
+
+static void sys_check(void) {
+    if (__atomic_exchange_n(&g_sys_busy, true, __ATOMIC_ACQ_REL)) return;
+    win_event_t ev;
+    memset(&ev, 0, sizeof ev);
+
+    /* The keyboard: attached, the on-screen keyboard folds away; gone, the
+     * launcher comes up (touch is all there is). The first look is the state
+     * at boot: no event, and the boot shell's own check opens the launcher. */
+    int kbd = usbkbd_is_present() ? 1 : 0;
+    if (g_sys_kbd >= 0 && kbd != g_sys_kbd) {
+        ev.type = WIN_EV_INPUT_MODE;
+        ev.key = (uint32_t)kbd;
+        sys_tell(&ev);
+        if (kbd) {
+            uint8_t kreq[2] = { 'k', 0 }, kreply[SCREEN_REPLY_LEN];
+            (void)console_canvas(kreq, 2, kreply);
+        } else {
+            view_post_call(launcher_open_cb, NULL);
+        }
+    }
+    g_sys_kbd = kbd;
+
+#if defined(SYS_ROTATES)
+    int rot = dsi_lcd_get_orientation();
+    if (g_sys_rot >= 0 && rot != g_sys_rot) {
+        ev.type = WIN_EV_ORIENT;
+        ev.key = (uint32_t)rot;
+        sys_tell(&ev);
+        sys_resize_canvases();
+        console_sync_readers();
+    }
+    g_sys_rot = rot;
+#endif
+
+    /* The power: at each 10 % step of the charge and each change of
+     * charging or low, not at every percent. */
+    uint32_t pw = __atomic_load_n(&g_sys_power, __ATOMIC_ACQUIRE);
+    uint32_t told = g_sys_power_told;
+    if (pw && pw != told &&
+        (!told || (pw & 0xFFu) / 10u != (told & 0xFFu) / 10u || ((pw ^ told) & 0xFF00u))) {
+        g_sys_power_told = pw;
+        ev.type = WIN_EV_POWER;
+        ev.key = pw & 0xFFu;
+        ev.mods = (uint8_t)(pw >> 8);
+        sys_tell(&ev);
+    }
+    __atomic_store_n(&g_sys_busy, false, __ATOMIC_RELEASE);
+}
+
+/* A new window: the system's state as last told, so a program knows it from
+ * the start -- the keyboard, the rotation, the power, where known. */
+static void sys_hello(uint8_t type, uint8_t id) {
+    win_event_t ev;
+    memset(&ev, 0, sizeof ev);
+    ev.type = WIN_EV_INPUT_MODE;
+    ev.key = usbkbd_is_present() ? 1u : 0u;
+    ws_send(type, id, &ev);
+#if defined(SYS_ROTATES)
+    ev.type = WIN_EV_ORIENT;
+    ev.key = (uint32_t)dsi_lcd_get_orientation();
+    ws_send(type, id, &ev);
+#endif
+    uint32_t pw = __atomic_load_n(&g_sys_power, __ATOMIC_ACQUIRE);
+    if (pw) {
+        ev.type = WIN_EV_POWER;
+        ev.key = pw & 0xFFu;
+        ev.mods = (uint8_t)(pw >> 8);
+        ws_send(type, id, &ev);
+    }
+}
+
 #if defined(CONFIG_BOARD_TAB5)
 static void reader_update_cb(void *arg) { (void)arg; reader_update(); }
 #endif
@@ -777,6 +922,7 @@ static void reader_update_cb(void *arg) { (void)arg; reader_update(); }
  * to the SD card (a screenshot), neither of which belongs inside a print. */
 static void run_hotkey(void) {
     ws_blank_check();
+    sys_check();
     run_press();
     for (int iter = 0; iter < 4; iter++) {
         unsigned hk = __atomic_exchange_n(&g_hotkey, 0u, __ATOMIC_ACQ_REL);
