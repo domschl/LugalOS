@@ -45,6 +45,8 @@ void window_post(win_t w, const win_event_t *ev) {
         }
     }
     uint8_t next = (uint8_t)((r->head + 1u) % WIN_RING);
+    if (next == r->tail && win_event_is_state(ev->type))
+        r->tail = (uint8_t)((r->tail + 1u) % WIN_RING);   /* the oldest goes, not the state */
     if (next != r->tail) {
         r->ev[r->head] = *ev;
         r->head = next;

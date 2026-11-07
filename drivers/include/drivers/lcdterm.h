@@ -148,7 +148,6 @@ int lcdterm_get_visible_readers(uint8_t *out_rids, int *out_x0, int *out_y0, int
 uint16_t *lcdterm_get_canvas565_backing(uint8_t cid, uint32_t *out_stride, int *out_w, int *out_h);
 uint16_t *lcdterm_get_canvas565_by_name(const char *name, uint32_t *out_stride, int *out_w, int *out_h);
 int lcdterm_get_canvas565_cid_by_name(const char *name);
-bool lcdterm_is_canvas_active(uint8_t cid);
 /* The focused window's canvas slot, or -1 when it is not a canvas. */
 int  lcdterm_focused_canvas(void);
 /* The focused window's type and id (a terminal's vterm, a canvas's slot, a
@@ -217,10 +216,6 @@ static inline bool lcdterm_window_at(int x, int y, uint8_t *type, uint8_t *id, i
     (void)x; (void)y; (void)type; (void)id; (void)cx; (void)cy; return false;
 }
 static inline bool lcdterm_canvas_origin(uint8_t cid, int *x0, int *y0) { (void)cid; (void)x0; (void)y0; return false; }
-static inline bool lcdterm_is_canvas_active(uint8_t cid) {
-    (void)cid;
-    return false;
-}
 static inline bool lcdterm_set_canvas565_backing(uint8_t cid, uint16_t *buf) {
     (void)cid; (void)buf;
     return false;

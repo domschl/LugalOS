@@ -66,6 +66,21 @@ static uint16_t *s_render_fb = NULL;          /* single task: the session holder
 static uint16_t *s_canvas_fb_original = NULL; /* single task: the session holder.  Original canvas slot backing buffer */
 static uint16_t *s_render_fb_original = NULL; /* single task: the session holder.  Original palloc buffer for safe freeing */
 static int       s_cid = -1;   /* single task: the session holder */
+/* The window's focus and whether it shows (kernel/event.h): the game runs
+ * while it has both. It opens its window full-screen, focused. */
+static bool      s_focused = true;   /* single task: the session holder */
+static bool      s_shown = true;     /* single task: the session holder */
+
+/* A focus or visibility event noted; false for any other. */
+static bool moon_note_state(const win_event_t *wev) {
+    switch (wev->type) {
+    case WIN_EV_FOCUS_GAINED: s_focused = true; return true;
+    case WIN_EV_FOCUS_LOST:   s_focused = false; return true;
+    case WIN_EV_RESUME:       s_shown = true; return true;
+    case WIN_EV_SUSPEND:      s_shown = false; return true;
+    default:                  return false;
+    }
+}
 static bool      s_allocated_fb = false;   /* single task: the session holder */
 static void       *s_tile_cache = NULL;     /* single task: the session holder.  baked terrain tops (moon_tile_cache_attach) */
 static uint32_t   s_tile_cache_pages = 0;   /* single task: the session holder */
@@ -190,6 +205,7 @@ bool moon_platform_init(int width, int height, const char *title) {
 
     /* The raw touch stream of the game's window while it has the focus (no
      * ribbon gestures over the map; a swipe in from the edge still leaves). */
+    s_focused = s_shown = true;
     if (s_cid >= 0) window_claim(s_cid, WIN_CLAIM_POINTER);
 
     /* Initialize ambient space synthesizer & start circular audio DMA streaming */
@@ -392,6 +408,7 @@ bool moon_platform_poll_event(moon_event_t *ev) {
      * in content (= screen) pixels, scaled to the game's virtual ones. */
     win_event_t wev;
     while (s_cid >= 0 && window_poll(s_cid, &wev)) {
+        if (moon_note_state(&wev)) continue;
         memset(ev, 0, sizeof(*ev));
         if (wev.type == WIN_EV_CLOSE_REQUEST) {
             ev->type = MOON_EVENT_QUIT;
@@ -415,7 +432,7 @@ bool moon_platform_poll_event(moon_event_t *ev) {
         return true;
     }
 
-    if (s_cid >= 0 && !lcdterm_is_canvas_active((uint8_t)s_cid)) {
+    if (s_cid >= 0 && !(s_focused && s_shown)) {
         return false;
     }
 
@@ -602,10 +619,18 @@ static int moonbase_run_claimed(const char *args) {
 
         /* In the background (an edge swipe or the keyboard moved the focus
          * to another window): paused, nothing simulated or drawn, until the
-         * window has the focus again; then on from where it was. The sound
+         * window has the focus again (its window's events); then on from
+         * where it was. The sound
          * stream stops with it: unrefilled, its DMA ring replays the last
          * second, and refilled again out of step it doubles voices. */
-        if (s_cid >= 0 && !lcdterm_is_canvas_active((uint8_t)s_cid)) {
+        if (s_cid >= 0 && !(s_focused && s_shown)) {
+            /* Its window's events meanwhile: the focus back, or a close. */
+            win_event_t wev;
+            bool closed = false;
+            while (window_poll(s_cid, &wev))
+                if (!moon_note_state(&wev) && wev.type == WIN_EV_CLOSE_REQUEST) closed = true;
+            if (closed) break;
+            if (s_focused && s_shown) continue;
             if (!paused) { audio_p4_release(moon_p4_audio_render); paused = true; }
             moon_platform_delay_ms(50);
             last_time = moon_platform_get_ticks_ms();

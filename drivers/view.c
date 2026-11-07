@@ -78,16 +78,20 @@ static bool view_pop(view_msg_t *m) {
     return got;
 }
 
+static bool view_try_push(const view_msg_t *m) {
+    uintptr_t f = spin_lock_irqsave(&s_view_lock);
+    bool room = s_view_head - s_view_tail < VIEW_QUEUE_LEN;
+    if (room) {
+        s_view_q[s_view_head % VIEW_QUEUE_LEN] = *m;
+        s_view_head++;
+    }
+    spin_unlock_irqrestore(&s_view_lock, f);
+    return room;
+}
+
 static void view_push(const view_msg_t *m) {
     for (;;) {
-        uintptr_t f = spin_lock_irqsave(&s_view_lock);
-        bool room = s_view_head - s_view_tail < VIEW_QUEUE_LEN;
-        if (room) {
-            s_view_q[s_view_head % VIEW_QUEUE_LEN] = *m;
-            s_view_head++;
-        }
-        spin_unlock_irqrestore(&s_view_lock, f);
-        if (room) {
+        if (view_try_push(m)) {
             (void)task_unblock(s_view_pid);
             return;
         }
@@ -150,6 +154,10 @@ static void view_enqueue(view_msg_t *m, bool wait) {
     task_wait_done();
 }
 
+static void view_enqueue_nowait(const view_msg_t *m) {
+    if (s_view_pid >= 0 && view_try_push(m)) (void)task_unblock(s_view_pid);
+}
+
 #else /* no panel: inline */
 
 void view_start(void) {}
@@ -161,6 +169,8 @@ static void view_enqueue(view_msg_t *m, bool wait) {
     view_run(m);
 }
 
+static void view_enqueue_nowait(const view_msg_t *m) { (void)m; }
+
 #endif
 
 void view_post(const view_ops_t *v, uint8_t inst, const win_event_t *ev) {
@@ -170,6 +180,15 @@ void view_post(const view_ops_t *v, uint8_t inst, const win_event_t *ev) {
     m.inst = inst;
     m.ev = *ev;
     view_enqueue(&m, false);
+}
+
+void view_post_nowait(const view_ops_t *v, uint8_t inst, const win_event_t *ev) {
+    view_msg_t m;
+    memset(&m, 0, sizeof m);
+    m.ops = v;
+    m.inst = inst;
+    m.ev = *ev;
+    view_enqueue_nowait(&m);
 }
 
 void view_post_call(void (*fn)(void *), void *arg) {

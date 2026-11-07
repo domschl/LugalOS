@@ -64,6 +64,7 @@ static bool rs_canvas_locked(const uint8_t *req, uint32_t n, uint8_t *reply) {
         g_rs_built_h = g_rs_h;
     }
     screen_canvas(g_rs, req, n, reply);
+    screen_report_windows(g_rs);
     return true;
 }
 

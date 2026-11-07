@@ -58,12 +58,26 @@ static uint16_t *s_canvas_fb_original = NULL; /* single task: original canvas ba
 static uint16_t *s_render_fb_original = NULL; /* single task: allocated buffer */
 static int       s_cid = -1;                  /* single task: canvas slot id */
 
+/* The window's focus and whether it shows (kernel/event.h): the game runs
+ * while it has both. It opens its window full-screen, focused. */
+static bool s_focused = true;                 /* single task: the session holder */
+static bool s_shown = true;                   /* single task: the session holder */
+
 /* Whether the game's window was closed (its close box, Cmd+W): its window
- * events (kernel/event.h); taps it does not use. */
+ * events (kernel/event.h), the focus and visibility noted; taps it does not
+ * use. */
 static bool ceres_window_closed(void) {
     win_event_t ev;
-    while (s_cid >= 0 && window_poll(s_cid, &ev))
-        if (ev.type == WIN_EV_CLOSE_REQUEST) return true;
+    while (s_cid >= 0 && window_poll(s_cid, &ev)) {
+        switch (ev.type) {
+        case WIN_EV_CLOSE_REQUEST: return true;
+        case WIN_EV_FOCUS_GAINED:  s_focused = true; break;
+        case WIN_EV_FOCUS_LOST:    s_focused = false; break;
+        case WIN_EV_RESUME:        s_shown = true; break;
+        case WIN_EV_SUSPEND:       s_shown = false; break;
+        default:                   break;
+        }
+    }
     return false;
 }
 static bool      s_allocated_fb = false;      /* single task: whether s_fb was heap allocated */
@@ -229,6 +243,7 @@ bool ceres_platform_init(int width, int height, const char *title) {
     s_virtual_h = s_height / s_scale;
 
     p4_input_reset();
+    s_focused = s_shown = true;
 
     /* 1. Open or focus RGB565 true full-screen canvas "ceres" (no chrome/decorations) */
     uint8_t req[SCREEN_CTITLE_MAX + 3];
@@ -549,7 +564,7 @@ static int ceres_run_claimed(const char *args) {
          * then on from where it was (no jump by the time away). The sound
          * stream stops with it, as moonbase's: an unrefilled DMA ring
          * replays its last second. */
-        if (s_cid >= 0 && !lcdterm_is_canvas_active((uint8_t)s_cid)) {
+        if (s_cid >= 0 && !(s_focused && s_shown)) {
             if (!paused) { audio_p4_release(ceres_p4_audio_render); paused = true; }
             ceres_platform_delay_ms(50);
             last_time = ceres_platform_get_ticks_ms();

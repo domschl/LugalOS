@@ -126,6 +126,23 @@ typedef struct {
 
 void console_set_screen(const console_screen_t *screen);
 
+/* Focus and visibility, for the system's events (kernel/event.h): each
+ * ribbon window's identity -- its ribbon type and id (a canvas's slot, a
+ * view's instance, a terminal's vterm) -- and whether it has the focus and
+ * shows on the screen. */
+typedef struct {
+    uint8_t type, id, flags;
+} console_win_state_t;
+#define CONSOLE_WIN_FOCUSED 0x01u
+#define CONSOLE_WIN_VISIBLE 0x02u
+/* The screen, under console_lock after a request: its windows as they are
+ * now. The console compares them with the last ones and tells each window
+ * what changed -- FOCUS_LOST / FOCUS_GAINED, SUSPEND / RESUME (off the
+ * screen, or the screen blanked, and back) -- once the request is done. */
+void console_windows_now(const console_win_state_t *w, unsigned n);
+/* What window (type, id) was last told: CONSOLE_WIN_* flags (`ribbon list`). */
+uint8_t console_window_told(uint8_t type, uint8_t id);
+
 /* Terminal dimensions: how many columns and
  * rows a program may use. False when the console cannot say (a serial line:
  * the far end's size is not known here), and the caller keeps its default. */

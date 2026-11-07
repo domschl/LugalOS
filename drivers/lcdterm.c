@@ -383,6 +383,7 @@ static bool lcdterm_canvas(const uint8_t *req, uint32_t n, uint8_t *reply) {
     }
     if (!sent) screen_canvas_vterm(g_scr, (uint8_t)my_vid, req, n, reply, (int16_t)pid);
     damage(0, g_be->h);
+    screen_report_windows(g_scr);
     console_unlock();
     return true;
 }
@@ -907,13 +908,6 @@ bool lcdterm_canvas_origin(uint8_t cid, int *x0, int *y0) {
         return true;
     }
     return false;
-}
-
-bool lcdterm_is_canvas_active(uint8_t cid) {
-    if (!g_scr || cid >= SCREEN_MAX_CANVASES) return false;
-    if (g_scr->ribbon.count == 0 || g_scr->ribbon.active_idx >= g_scr->ribbon.count) return false;
-    const ribbon_win_t *w = &g_scr->ribbon.wins[g_scr->ribbon.active_idx];
-    return (w->type == RIBBON_WIN_CANVAS && w->vterm_id == cid);
 }
 
 bool lcdterm_set_canvas565_backing(uint8_t cid, uint16_t *buf) {

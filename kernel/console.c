@@ -141,8 +141,12 @@ void console_set_title(const char *title) {
     if (g_screen && g_screen->set_title) g_screen->set_title(title);
 }
 
+static void ws_deliver(void);
+
 bool console_canvas(const uint8_t *req, uint32_t n, uint8_t *reply) {
-    return g_screen && g_screen->canvas && g_screen->canvas(req, n, reply);
+    bool ok = g_screen && g_screen->canvas && g_screen->canvas(req, n, reply);
+    ws_deliver();                                        /* what the request changed, told */
+    return ok;
 }
 
 bool console_pixels(const uint8_t **fb, unsigned *w, unsigned *h, unsigned *stride) {
@@ -178,6 +182,116 @@ uint8_t console_active_win_type(void) {
  * first. */
 static volatile unsigned g_hotkey;
 
+/* Focus and visibility (console_windows_now()). The screen reports its
+ * windows under console_lock after each request; the changes are queued in
+ * order and delivered after the request, one deliverer at a time, so a
+ * window never hears LOST and GAINED the wrong way round. */
+#define WS_MAX   RIBBON_MAX_WINDOWS
+#define WS_QUEUE 32u
+static console_win_state_t g_ws_now[WS_MAX];     /* guarded by: g_console_lock; as reported */
+static unsigned            g_ws_now_n;           /* guarded by: g_console_lock */
+static console_win_state_t g_ws_told[WS_MAX];    /* guarded by: g_console_lock; as last told */
+static unsigned            g_ws_told_n;          /* guarded by: g_console_lock */
+static struct { uint8_t type, id, ev; } g_ws_q[WS_QUEUE];   /* guarded by: g_ws_q_lock */
+static uint32_t            g_ws_head, g_ws_tail;  /* guarded by: g_ws_q_lock */
+static spinlock_t          g_ws_q_lock = SPINLOCK_INIT;
+static ylock_t             g_ws_deliver_lock;     /* one deliverer: the queue's order kept */
+static volatile bool       g_ws_blank_changed;    /* accepted: set by the blanking, taken by the input path */
+/* accepted: as the blanking's other state below (one store, from several tasks) */
+static volatile bool       g_blanked;
+
+static void ws_queue(uint8_t type, uint8_t id, uint8_t ev) {
+    uintptr_t f = spin_lock_irqsave(&g_ws_q_lock);
+    if (g_ws_head - g_ws_tail >= WS_QUEUE) g_ws_tail++;      /* full: the oldest goes */
+    uint32_t k = g_ws_head++ % WS_QUEUE;
+    g_ws_q[k].type = type;
+    g_ws_q[k].id = id;
+    g_ws_q[k].ev = ev;
+    spin_unlock_irqrestore(&g_ws_q_lock, f);
+}
+
+static uint8_t ws_told_flags(uint8_t type, uint8_t id) {
+    for (unsigned i = 0; i < g_ws_told_n; i++)
+        if (g_ws_told[i].type == type && g_ws_told[i].id == id) return g_ws_told[i].flags;
+    return 0;                                            /* new: neither focused nor shown yet */
+}
+
+/* Under console_lock: what changed since the last telling, queued -- the
+ * losses first, then the gains. A blanked screen shows nothing. */
+static void ws_compare(void) {
+    console_win_state_t eff[WS_MAX];
+    unsigned n = g_ws_now_n;
+    for (unsigned i = 0; i < n; i++) {
+        eff[i] = g_ws_now[i];
+        if (g_blanked) eff[i].flags &= (uint8_t)~CONSOLE_WIN_VISIBLE;
+    }
+    for (int gains = 0; gains < 2; gains++) {
+        for (unsigned i = 0; i < n; i++) {
+            uint8_t was = ws_told_flags(eff[i].type, eff[i].id), is = eff[i].flags;
+            uint8_t lost = (uint8_t)(was & ~is), got = (uint8_t)(is & ~was);
+            uint8_t m = gains ? got : lost;
+            if (m & CONSOLE_WIN_FOCUSED)
+                ws_queue(eff[i].type, eff[i].id, gains ? WIN_EV_FOCUS_GAINED : WIN_EV_FOCUS_LOST);
+            if (m & CONSOLE_WIN_VISIBLE)
+                ws_queue(eff[i].type, eff[i].id, gains ? WIN_EV_RESUME : WIN_EV_SUSPEND);
+        }
+    }
+    for (unsigned i = 0; i < n; i++) g_ws_told[i] = eff[i];
+    g_ws_told_n = n;
+}
+
+void console_windows_now(const console_win_state_t *w, unsigned n) {
+    if (n > WS_MAX) n = WS_MAX;
+    for (unsigned i = 0; i < n; i++) g_ws_now[i] = w[i];
+    g_ws_now_n = n;
+    ws_compare();
+}
+
+uint8_t console_window_told(uint8_t type, uint8_t id) {
+    console_lock();
+    uint8_t f = ws_told_flags(type, id);
+    console_unlock();
+    return f;
+}
+
+static void ws_deliver(void) {
+    if (__atomic_load_n(&g_ws_head, __ATOMIC_ACQUIRE) == __atomic_load_n(&g_ws_tail, __ATOMIC_ACQUIRE)) return;
+    ylock_acquire(&g_ws_deliver_lock);
+    for (;;) {
+        uintptr_t f = spin_lock_irqsave(&g_ws_q_lock);
+        bool got = g_ws_tail != g_ws_head;
+        uint8_t type = 0, id = 0, evt = 0;
+        if (got) {
+            uint32_t k = g_ws_tail++ % WS_QUEUE;
+            type = g_ws_q[k].type;
+            id = g_ws_q[k].id;
+            evt = g_ws_q[k].ev;
+        }
+        spin_unlock_irqrestore(&g_ws_q_lock, f);
+        if (!got) break;
+        win_event_t ev;
+        memset(&ev, 0, sizeof ev);
+        ev.type = evt;
+        if (type == 2 /* RIBBON_WIN_CANVAS */) {
+            window_post((win_t)id, &ev);
+        } else {
+            const view_ops_t *v = view_for_window(type);
+            if (v) view_post_nowait(v, id, &ev);
+        }
+    }
+    ylock_release(&g_ws_deliver_lock);
+}
+
+/* The blanking changed: every window's visibility with it. From the input
+ * path, not from where it happened (the touch task wakes the panel). */
+static void ws_blank_check(void) {
+    if (!__atomic_exchange_n(&g_ws_blank_changed, false, __ATOMIC_ACQ_REL)) return;
+    console_lock();
+    ws_compare();
+    console_unlock();
+    ws_deliver();
+}
+
 /* --- 47.11: idle blanking ------------------------------------------------
  *
  * Input is the only activity that counts: a program printing to a blanked
@@ -189,11 +303,11 @@ static volatile unsigned g_hotkey;
  * both harmless. */
 static volatile uint32_t g_blank_after_s;       /* 0: never */
 static volatile uint64_t g_last_input_ms;
-static volatile bool     g_blanked;
 static uint32_t          g_blankings, g_wakes, g_wakes_swallowed;
 
 static void blank_hook(bool off) {
     if (g_screen && g_screen->blank) g_screen->blank(off);
+    __atomic_store_n(&g_ws_blank_changed, true, __ATOMIC_RELEASE);
 }
 
 /* An input arrived. True if it only woke the panel and should be dropped. */
@@ -598,6 +712,7 @@ static void reader_update_cb(void *arg) { (void)arg; reader_update(); }
 /* From an input wait only: a hotkey draws (a layout change) or writes 48 KB
  * to the SD card (a screenshot), neither of which belongs inside a print. */
 static void run_hotkey(void) {
+    ws_blank_check();
     run_press();
     for (int iter = 0; iter < 4; iter++) {
         unsigned hk = __atomic_exchange_n(&g_hotkey, 0u, __ATOMIC_ACQ_REL);

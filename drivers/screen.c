@@ -18,6 +18,7 @@
 #include "drivers/lcdterm_attr.h"
 #include "drivers/touch.h"
 #include "drivers/osk.h"
+#include "kernel/console.h"
 
 #if defined(CONFIG_BOARD_RP2350)
 #define CANVAS_SUPPORT_RGB565 0
@@ -1421,7 +1422,7 @@ LCDTERM_UTEXT bool screen_osk_rect(const screen_t *scr, int *x0, int *y0, int *w
  * the focus: when the focus moves to another window (a swipe from the
  * screen's edge, the keyboard, a minimap tap) the ribbon is back, with the
  * game's window in it, and when it moves back the game covers it again. The
- * game sees it through lcdterm_is_canvas_active() and pauses meanwhile. */
+ * game hears it from its window's FOCUS_LOST and pauses meanwhile. */
 LCDTERM_UTEXT static void fullscreen_follow_focus(screen_t *scr) {
     if (scr->ribbon.count == 0 || scr->ribbon.active_idx >= scr->ribbon.count) return;
     const ribbon_win_t *w = &scr->ribbon.wins[scr->ribbon.active_idx];
@@ -3036,6 +3037,23 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
             reply[11] = 0;
         }
     }
+}
+
+void screen_report_windows(const screen_t *scr) {
+    console_win_state_t w[RIBBON_MAX_WINDOWS];
+    unsigned n = 0;
+    int32_t xv = scr->ribbon.x_view, sw = (int32_t)scr->cv.w;
+    for (uint8_t i = 0; i < scr->ribbon.count && n < RIBBON_MAX_WINDOWS; i++) {
+        const ribbon_win_t *rw = &scr->ribbon.wins[i];
+        bool focused = i == scr->ribbon.active_idx;
+        bool shown = scr->layout == SCREEN_LAYOUT_FULLSCREEN ? focused
+                                                             : rw->rx1 - xv >= 0 && rw->rx0 - xv < sw;
+        w[n].type = rw->type;
+        w[n].id = rw->vterm_id;
+        w[n].flags = (uint8_t)((focused ? CONSOLE_WIN_FOCUSED : 0u) | (shown ? CONSOLE_WIN_VISIBLE : 0u));
+        n++;
+    }
+    console_windows_now(w, n);
 }
 
 LCDTERM_UTEXT void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, uint8_t *reply) {

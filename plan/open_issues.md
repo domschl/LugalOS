@@ -151,6 +151,20 @@ here took 66 minutes).
 trace of the rv32 target (or a `mscratch`-independent guard in the vector that halts on an sp below the
 kernel stacks) during a full rv32 attempt that reproduces it.
 
+## rv64-smp switched into a task whose parked sp was 0, during `exec uisolate.elf` (once)
+
+**Seen:** 2026-11-07, `tests/runner.py` (747/763, during 71.4's focus/suspend events): the SMP target's
+first isolation check (`exec /flash0/system/bin/uisolate.elf`, X2) printed
+`[Sched BUG] switching 1 'idle' -> 5 'p9srv': parked sp=0` and halted; every later SMP check failed with
+`[Stuck Guest]`. The report: both harts in S-mode on `trap_vector_entry`, `scause=2`, hart 1 with
+`sp=0x0`. The same sequence (boot, `smptest`, `lockselftest`, `uisolate.elf`, `smpload start`,
+`uisolate.elf` again) then passed 21 times in a row on the same build.
+**Reading:** the same test as the rv32 trap-vector crash above, and again a stack pointer that should
+not be there; both may be one fault in the U-mode kill path. `sched_check_incoming()` caught this one
+before the switch, so the table was intact when it halted.
+**What would settle it:** the `[Sched Table]` dump of the next occurrence (the runner's log keeps it),
+and whether p9srv's slot had just been reused by a task that ended -- `uprog` is killed in this test.
+
 ## The runner sat 22 minutes on its first rv64 guest (once)
 
 **Seen:** 2026-10-29, `tests/runner.py` after 52.11b: the host checks passed, `[Target: RV64 Sv39 MMU Virtual

@@ -6088,6 +6088,7 @@ static void cmd_ribbon(const char *cmd_line) {
             req[1] = i;
             if (!console_canvas(req, 2, reply) || reply[0] != 0) break;
             uint8_t type = reply[1], id = reply[2], cols = reply[3];
+            uint8_t told = console_window_told(type, id);
             int32_t rx0 = (int32_t)(reply[4] | (reply[5] << 8));
             int32_t rx1 = (int32_t)(reply[6] | (reply[7] << 8));
             if (type == RIBBON_WIN_CANVAS)
@@ -6104,6 +6105,8 @@ static void cmd_ribbon(const char *cmd_line) {
             else
                 cprintf("  [%d] Term     (vterm %d, %d cols, rx %ld..%ld)%s\n",
                         i, id, cols, (long)rx0, (long)rx1, (i == active) ? " *" : "");
+            cprintf("      told: %s, %s\n", (told & CONSOLE_WIN_FOCUSED) ? "focused" : "not focused",
+                    (told & CONSOLE_WIN_VISIBLE) ? "shown" : "not shown");
         }
         return;
     }

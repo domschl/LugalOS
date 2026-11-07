@@ -57,6 +57,11 @@ void view_start(void);
  * event(), if the instance is still open by then. Waits for room when the
  * queue is full; from the views task itself, runs at once. */
 void view_post(const view_ops_t *v, uint8_t inst, const win_event_t *ev);
+/* As view_post(), for the system's events about a view (focus, suspend):
+ * always queued, even from the views task, and never waited for -- dropped
+ * when the queue is full or there is no task. They come from inside screen
+ * requests, which the views task makes too. */
+void view_post_nowait(const view_ops_t *v, uint8_t inst, const win_event_t *ev);
 /* fn(arg) on the views task, not waited for: arg must outlive it. */
 void view_post_call(void (*fn)(void *), void *arg);
 /* fn(arg) on the views task, after everything posted before it; returns when

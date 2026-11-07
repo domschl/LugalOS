@@ -79,7 +79,7 @@
     "kernel/chan.c": 1348,
     "kernel/chan_selftest.c": 172,
     "kernel/clipboard.c": 20,
-    "kernel/console.c": 785,
+    "kernel/console.c": 962,
     "kernel/device.c": 140,
     "kernel/devirq.c": 134,
     "kernel/discipline.c": 82,
@@ -132,7 +132,7 @@
     "user/ceres/src/ceres_cyber.c": 101,
     "user/ceres/src/ceres_sound.c": 133,
     "user/ceres/src/ceres_sprites.c": 224,
-    "user/ceres/src/platform_p4.c": 1382,
+    "user/ceres/src/platform_p4.c": 1384,
     "user/chess/src/bitboard.c": 2176,
     "user/chess/src/chess_platform.c": 8,
     "user/chess/src/chess_ui.c": 10829,
@@ -156,16 +156,16 @@
     "user/moonbase/src/moon_game.c": 72,
     "user/moonbase/src/moon_structures.c": 14,
     "user/moonbase/src/moon_textures.c": 1,
-    "user/moonbase/src/platform_p4.c": 1362
+    "user/moonbase/src/platform_p4.c": 1364
   },
   "per_subsystem": {
     "(no line info: .data)": 15,
     "9p": 63965,
     "agent": 987,
     "app:cc": 462,
-    "app:ceres": 2057,
+    "app:ceres": 2059,
     "app:ed": 100,
-    "app:moonbase": 2151,
+    "app:moonbase": 2153,
     "audio": 25373,
     "chess": 21396,
     "clock-app": 136,
@@ -185,10 +185,10 @@
     "radio": 12564,
     "selftest": 3962,
     "sensors": 8688,
-    "shell": 13062,
+    "shell": 13239,
     "storage": 7456,
     "vfs": 4111
   },
   "ram_code": 1806,
-  "total": 221261
+  "total": 221442
 }

@@ -285,6 +285,10 @@ void screen_text_size(const screen_t *scr, unsigned *cols, unsigned *rows);
 void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, uint8_t *reply);
 /* The on-screen keyboard's rectangle at the focused terminal (touch boards). */
 bool screen_osk_rect(const screen_t *scr, int *x0, int *y0, int *w, int *h);
+/* Each ribbon window's identity, focus and visibility now, to the console
+ * (console_windows_now()). Kernel code, called under console_lock after a
+ * request: in a full-screen layout only the focused window shows. */
+void screen_report_windows(const screen_t *scr);
 void screen_canvas_vterm(screen_t *scr, uint8_t vterm_id, const uint8_t *req, uint32_t n, uint8_t *reply, int16_t caller_pid);
 
 #endif /* LUGALOS_DRIVERS_SCREEN_H */
