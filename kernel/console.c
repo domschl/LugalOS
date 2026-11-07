@@ -368,7 +368,7 @@ static void view_send(const view_ops_t *v, uint8_t inst, uint8_t type, uint8_t f
     ev.dy = (int16_t)dy;
     ev.key = key;
     ev.mods = mods;
-    v->event(inst, &ev);
+    view_post(v, inst, &ev);                             /* the views task draws it */
 }
 
 /* guarded by: g_input_lock -- the console pump decodes the focused view's
@@ -564,13 +564,36 @@ void console_sync_readers(void) {
                 int rx1 = (int)(reply[6] | (reply[7] << 8));
                 int vw = rx1 - rx0 - 1;
                 int vh = (int)(reply[10] | (reply[11] << 8));
-                if (vw > 0) v->resize(reply[2], vw, vh);
+                if (vw > 0) {
+                    win_event_t ev;
+                    memset(&ev, 0, sizeof ev);
+                    ev.type = WIN_EV_RESIZE;
+                    ev.w = (uint16_t)vw;
+                    ev.h = (uint16_t)vh;
+                    view_post(v, reply[2], &ev);
+                }
             }
         }
     }
 }
 
 static void console_feed_active_bytes(const char *s, uint32_t n);
+
+/* A view's window was closed: the view lets go of it, after whatever was
+ * posted to it before. */
+static void view_closed(uint8_t type, uint8_t inst) {
+    const view_ops_t *v = view_for_window(type);
+    if (!v) return;
+    win_event_t ev;
+    memset(&ev, 0, sizeof ev);
+    ev.type = WIN_EV_CLOSE_REQUEST;
+    view_post(v, inst, &ev);
+}
+
+static void launcher_open_cb(void *arg) { (void)arg; (void)launcher_open(); }
+#if defined(CONFIG_BOARD_TAB5)
+static void reader_update_cb(void *arg) { (void)arg; reader_update(); }
+#endif
 
 /* From an input wait only: a hotkey draws (a layout change) or writes 48 KB
  * to the SD card (a screenshot), neither of which belongs inside a print. */
@@ -646,15 +669,14 @@ static void run_hotkey(void) {
                     vterm_destroy(closed_vid);
                 }
                 if (closed_type == 2 /* RIBBON_WIN_CANVAS */) post_close(closed_vid);
-                const view_ops_t *cv = view_for_window(closed_type);
-                if (cv) cv->close(closed_vid);
+                view_closed(closed_type, closed_vid);
                 if (reply[12] != 0) {
                     g_active_win_type = reply[12];
                     if (reply[12] == 3 /* RIBBON_WIN_READER */) {
                         reader_set_active_instance(reply[13]);
                     }
                 } else {
-                    g_active_win_type = launcher_is_active() ? 4 : 1;
+                    g_active_win_type = closed_type != 4 /* RIBBON_WIN_LAUNCHER */ && launcher_is_active() ? 4 : 1;
                 }
                 vterm_set_active(reply[1]);
                 console_sync_readers();
@@ -715,22 +737,21 @@ static void run_hotkey(void) {
                         vterm_destroy(closed_vid);
                     }
                     if (closed_type == 2 /* RIBBON_WIN_CANVAS */) post_close(closed_vid);
-                    const view_ops_t *cv = view_for_window(closed_type);
-                    if (cv) cv->close(closed_vid);
+                    view_closed(closed_type, closed_vid);
                     if (reply[12] != 0) {
                         g_active_win_type = reply[12];
                         if (reply[12] == 3 /* RIBBON_WIN_READER */) {
                             reader_set_active_instance(reply[13]);
                         }
                     } else {
-                        g_active_win_type = launcher_is_active() ? 4 : 1;
+                        g_active_win_type = closed_type != 4 /* RIBBON_WIN_LAUNCHER */ && launcher_is_active() ? 4 : 1;
                     }
                     vterm_set_active(reply[1]);
                     console_sync_readers();
                     continue;
                 }
                 if (reply[8] == 0xAA) {
-                    (void)launcher_open();
+                    view_post_call(launcher_open_cb, NULL);
                     continue;
                 }
                 if (reply[10] != 0) g_active_win_type = reply[10];
@@ -747,7 +768,6 @@ static void run_hotkey(void) {
                     const view_ops_t *v = focused_view(&vinst);
                     if (v) {
                         view_send(v, vinst, WIN_EV_POINTER_UP, WIN_EVF_TAP, cx, cy, 0, 0, 0);
-                        shell_check_launcher_exec();             /* an application it started */
                     } else if (g_active_win_type == 2 /* RIBBON_WIN_CANVAS */) {
                         /* A tap on the focused canvas: its program's, as a
                          * DOWN / UP pair at the content point. */
@@ -804,9 +824,7 @@ static void run_hotkey(void) {
             orient_manual();
             dsi_lcd_set_orientation(next);
             console_sync_readers();
-            if (reader_is_active()) {
-                reader_update();
-            }
+            if (reader_is_active()) view_post_call(reader_update_cb, NULL);
 #endif
             continue;
         }

@@ -3,6 +3,7 @@
     "drivers/launcher_view.c": 22292,
     "drivers/reader_view.c": 62416,
     "drivers/uxbench.c": 540,
+    "drivers/view.c": 704,
     "kernel/palloc.c": 8192,
     "kernel/winevent.c": 2576,
     "kernel/zonetest.c": 64,
@@ -12,12 +13,12 @@
   "bulk_per_subsystem": {
     "chess": 1848,
     "display": 84708,
-    "drivers": 540,
+    "drivers": 1244,
     "kernel": 10768,
     "lisp": 1523712,
     "selftest": 64
   },
-  "bulk_total": 1621640,
+  "bulk_total": 1622344,
   "heap_bytes": 299008,
   "heap_pages": 73,
   "per_file": {
@@ -39,7 +40,7 @@
     "drivers/i2c_rtc.c": 18,
     "drivers/idstore_rp2350.c": 28,
     "drivers/ina226.c": 52,
-    "drivers/launcher_view.c": 12,
+    "drivers/launcher_view.c": 4,
     "drivers/lcd7_rp2350.c": 105,
     "drivers/lcdterm.c": 2650,
     "drivers/loopback_net.c": 2060,
@@ -65,6 +66,7 @@
     "drivers/usb_cdc.c": 16700,
     "drivers/usbkbd_host.c": 104,
     "drivers/usbkbd_rp2350.c": 3076,
+    "drivers/view.c": 16,
     "fs/9p.c": 7941,
     "fs/p9_chan.c": 6196,
     "fs/p9_link.c": 12548,
@@ -151,8 +153,8 @@
     "chess": 32335,
     "clock-app": 136,
     "crypto": 67,
-    "display": 3048,
-    "drivers": 2664,
+    "display": 3040,
+    "drivers": 2680,
     "fs": 64,
     "httpd": 70,
     "identity": 128,
@@ -171,5 +173,5 @@
     "vfs": 4111
   },
   "ram_code": 24484,
-  "total": 196353
+  "total": 196361
 }

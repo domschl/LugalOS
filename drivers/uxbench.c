@@ -8,7 +8,8 @@
  * P4), the converted frames' stages. "app" is the wall time not spent in
  * frames: the 1-bpp screen drawing, the reader's layout, the waits.
  *
- * Runs in the calling shell task. Opens a reader and the launcher when they
+ * Runs in the calling shell task; its reader and launcher calls on the views
+ * task, as the input path's. Opens a reader and the launcher when they
  * are not open, and closes what it opened; the focus ends on terminal 0. */
 
 #include "drivers/lcdterm.h"
@@ -16,6 +17,7 @@
 #include "drivers/reader_view.h"
 #include "drivers/ribbon.h"
 #include "drivers/screen.h"
+#include "drivers/view.h"
 #include "kernel/console.h"
 #include "kernel/palloc.h"
 #include "kernel/time.h"
@@ -76,7 +78,7 @@ static bool uxb_jump(int idx) {
     return true;
 }
 
-static bool uxb_open_reader(const char *doc) {
+static bool uxb_open_reader_here(const char *doc) {
     uint8_t req[128];
     uint32_t len = (uint32_t)strlen(doc);
     if (len > sizeof req - 3) len = sizeof req - 3;
@@ -95,6 +97,37 @@ static bool uxb_open_reader(const char *doc) {
     reader_set_active_instance(rid);
     console_set_active_win_type(RIBBON_WIN_READER);
     return true;
+}
+
+/* The bench's calls into the views, made on the views task as the input
+ * path's are (drivers/view.h), and waited for. */
+typedef struct {
+    char        op;
+    int         rid, dy;
+    const char *doc;
+    int         result;
+} uxb_vcall_t;
+
+static void uxb_view_op(void *arg) {
+    uxb_vcall_t *c = (uxb_vcall_t *)arg;
+    switch (c->op) {
+    case 's': reader_scroll_instance((uint8_t)c->rid, c->dy); break;
+    case 'u': reader_update_instance((uint8_t)c->rid); break;
+    case 'x': reader_close_instance((uint8_t)c->rid); break;
+    case 'k': c->result = reader_layout_check((uint8_t)c->rid); break;
+    case 't': c->result = reader_strip_check((uint8_t)c->rid, c->dy); break;
+    case 'O': c->result = uxb_open_reader_here(c->doc); break;
+    case 'l': launcher_update(); break;
+    case 'L': c->result = launcher_open(); break;
+    case 'C': launcher_close(); break;
+    default: break;
+    }
+}
+
+static int uxb_view(char op, int rid, int dy, const char *doc) {
+    uxb_vcall_t c = { op, rid, dy, doc, 0 };
+    view_call(uxb_view_op, &c);
+    return c.result;
 }
 
 static void uxb_close_window(int idx) {
@@ -143,25 +176,25 @@ static bool uxb_act(uxb_t *u, uxb_kind_t kind, unsigned i, unsigned n) {
         return true;
     }
     case UXB_SCROLL:
-        reader_scroll_instance((uint8_t)u->rb.reader_rid, i < n / 2u ? 32 : -32);
+        (void)uxb_view('s', u->rb.reader_rid, i < n / 2u ? 32 : -32, NULL);
         return true;
     case UXB_PAGE: {
         int page = u->rb.reader_h - 40;
         if (page < 40) page = 40;
-        reader_scroll_instance((uint8_t)u->rb.reader_rid, i < n / 2u ? page : -page);
+        (void)uxb_view('s', u->rb.reader_rid, i < n / 2u ? page : -page, NULL);
         return true;
     }
     case UXB_DEEP: {                         /* pages down only, into the document */
         int page = u->rb.reader_h - 40;
         if (page < 40) page = 40;
-        reader_scroll_instance((uint8_t)u->rb.reader_rid, page);
+        (void)uxb_view('s', u->rb.reader_rid, page, NULL);
         return true;
     }
     case UXB_REDRAW:
-        reader_update_instance((uint8_t)u->rb.reader_rid);
+        (void)uxb_view('u', u->rb.reader_rid, 0, NULL);
         return true;
     case UXB_LAUNCHER:
-        launcher_update();
+        (void)uxb_view('l', 0, 0, NULL);
         return true;
     }
     return false;
@@ -169,7 +202,7 @@ static bool uxb_act(uxb_t *u, uxb_kind_t kind, unsigned i, unsigned n) {
 
 static void uxb_layout_check(const uxb_t *u) {
     if (u->rb.reader_rid < 0) return;
-    int c = reader_layout_check((uint8_t)u->rb.reader_rid);
+    int c = uxb_view('k', u->rb.reader_rid, 0, NULL);
     if (c == 0) cprintf("                  LAYOUT CHECK FAILED: the view from checkpoints differs from a full layout\n");
     else if (c == 1) cprintf("                  layout check: checkpoints match a full layout\n");
 }
@@ -179,7 +212,7 @@ static void uxb_strip_check(const uxb_t *u) {
     static const int steps[] = { 32, 7, -32, -5, 101, -101 };
     int fails = 0, fallbacks = 0;
     for (unsigned k = 0; k < sizeof steps / sizeof steps[0]; k++) {
-        int c = reader_strip_check((uint8_t)u->rb.reader_rid, steps[k]);
+        int c = uxb_view('t', u->rb.reader_rid, steps[k], NULL);
         if (c == 0) {
             int y0, y1;
             reader_strip_diff((uint8_t)u->rb.reader_rid, &y0, &y1);
@@ -298,8 +331,8 @@ void uxbench_cmd(const char *arg) {
         return;
     }
     bool opened_reader = false, opened_launcher = false;
-    if (u.rb.reader_idx < 0) opened_reader = uxb_open_reader(doc);
-    if (u.rb.launcher_idx < 0) opened_launcher = launcher_open();
+    if (u.rb.reader_idx < 0) opened_reader = uxb_view('O', 0, 0, doc) != 0;
+    if (u.rb.launcher_idx < 0) opened_launcher = uxb_view('L', 0, 0, NULL) != 0;
     uxb_scan(&u.rb);
 
 #if defined(CONFIG_BOARD_ESP32P4)
@@ -332,12 +365,12 @@ void uxbench_cmd(const char *arg) {
         uxb_scan(&u.rb);
         int rid = u.rb.reader_rid;
         uxb_close_window(u.rb.reader_idx);
-        if (rid >= 0) reader_close_instance((uint8_t)rid);
+        if (rid >= 0) (void)uxb_view('x', rid, 0, NULL);
     }
     if (opened_launcher) {
         uxb_scan(&u.rb);
         uxb_close_window(u.rb.launcher_idx);
-        launcher_close();
+        (void)uxb_view('C', 0, 0, NULL);
     }
     uxb_scan(&u.rb);
     if (uxb_jump(u.rb.term0_idx)) {

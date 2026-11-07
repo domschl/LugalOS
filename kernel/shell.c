@@ -77,6 +77,7 @@
 #include "drivers/ugui.h"
 #include "drivers/reader_view.h"
 #include "drivers/launcher_view.h"
+#include "drivers/view.h"
 #include "drivers/uxbench.h"
 #include "drivers/dcf77_decode.h"
 #include "drivers/pico_clock_ui.h"
@@ -1545,8 +1546,43 @@ static bool has_ribbon(void) {
     return console_canvas(req, 1, reply) && reply[0] == 0;
 }
 
+/* `reader <doc>` on the views task: the window already showing it focused
+ * (focused true), or a window opened for it (reader_open_window()). */
+typedef struct {
+    const char *path;
+    int         rid;
+    bool        focused, reused;
+} reader_cmd_t;
+
+static void reader_cmd_open(void *arg) {
+    reader_cmd_t *rc = (reader_cmd_t *)arg;
+    int existing_rid = reader_find_by_path(rc->path);
+    if (existing_rid >= 0) {
+        uint8_t rreq[2] = { 'R', 0 }, rreply[SCREEN_REPLY_LEN];
+        if (console_canvas(rreq, 1, rreply) && rreply[0] == 0) {
+            uint8_t wcount = rreply[1];
+            for (uint8_t w = 0; w < wcount; w++) {
+                rreq[1] = w;
+                if (console_canvas(rreq, 2, rreply) && rreply[0] == 0) {
+                    if (rreply[1] == 3 /* RIBBON_WIN_READER */ && rreply[2] == (uint8_t)existing_rid) {
+                        uint8_t jreq[2] = { 'J', w };
+                        (void)console_canvas(jreq, 2, rreply);
+                        reader_set_active_instance((uint8_t)existing_rid);
+                        console_set_active_win_type(3 /* RIBBON_WIN_READER */);
+                        rc->rid = existing_rid;
+                        rc->focused = true;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+    rc->rid = reader_open_window(rc->path, &rc->reused);
+}
+
 static void cmd_reader(const char *arg) {
     if (arg && strcmp(arg, "list") == 0) {
+        view_sync();                                     /* what was posted to the readers, done */
         cprintf("Active Reader Windows:\n");
         int count = 0;
         for (int i = 0; i < READER_MAX_INSTANCES; i++) {
@@ -1563,35 +1599,13 @@ static void cmd_reader(const char *arg) {
         arg = "shell.gmi";
     }
 
-    /* Check if already open with this document */
-    int existing_rid = reader_find_by_path(arg);
-    if (existing_rid >= 0) {
-        /* Focus existing reader window */
-        uint8_t rreq[2] = { 'R', 0 }, rreply[SCREEN_REPLY_LEN];
-        if (console_canvas(rreq, 1, rreply) && rreply[0] == 0) {
-            uint8_t wcount = rreply[1];
-            for (uint8_t w = 0; w < wcount; w++) {
-                rreq[1] = w;
-                if (console_canvas(rreq, 2, rreply) && rreply[0] == 0) {
-                    if (rreply[1] == 3 /* RIBBON_WIN_READER */ && rreply[2] == (uint8_t)existing_rid) {
-                        uint8_t jreq[2] = { 'J', w };
-                        (void)console_canvas(jreq, 2, rreply);
-                        reader_set_active_instance((uint8_t)existing_rid);
-                        console_set_active_win_type(3 /* RIBBON_WIN_READER */);
-                        cprintf("reader: focused existing window [%d] '%s'\n", existing_rid, arg);
-                        return;
-                    }
-                }
-            }
-        }
-    }
-
-    /* A reader window for it, or the reader that has room (reader_open_window()). */
-    bool reused = false;
-    int rid = reader_open_window(arg, &reused);
-    if (rid >= 0) {
-        cprintf("reader: opened '%s' in ribbon [%d]%s\n", arg, rid,
-                reused ? " (no room for another reader: shown in this one, Back returns)" : "");
+    reader_cmd_t rc = { .path = arg, .rid = -1 };
+    view_call(reader_cmd_open, &rc);
+    if (rc.focused) {
+        cprintf("reader: focused existing window [%d] '%s'\n", rc.rid, arg);
+    } else if (rc.rid >= 0) {
+        cprintf("reader: opened '%s' in ribbon [%d]%s\n", arg, rc.rid,
+                rc.reused ? " (no room for another reader: shown in this one, Back returns)" : "");
     } else if (has_ribbon()) {
         cprintf("reader: cannot open '%s' (no such document, or no room for a window: close one first)\n", arg);
     } else {
@@ -1599,51 +1613,73 @@ static void cmd_reader(const char *arg) {
     }
 }
 
+/* `launcher open | close | gallery` on the views task: what it did in ok. */
+typedef struct {
+    char op;                                             /* 'o'pen, 'c'lose, 'g'allery */
+    bool ok;
+} launcher_cmd_t;
+
+static void launcher_cmd_run(void *arg) {
+    launcher_cmd_t *lc = (launcher_cmd_t *)arg;
+    if (lc->op == 'o') {
+        lc->ok = launcher_open();
+        return;
+    }
+    if (lc->op == 'g') {
+        lc->ok = launcher_is_active() || launcher_open();
+        if (lc->ok) launcher_gallery(true);
+        return;
+    }
+    /* close: its window first, so the focus moves on */
+    lc->ok = true;
+    uint8_t rreq[2] = { 'R', 0 }, rreply[SCREEN_REPLY_LEN];
+    if (console_canvas(rreq, 1, rreply) && rreply[0] == 0) {
+        uint8_t wcount = rreply[1];
+        for (uint8_t w = 0; w < wcount; w++) {
+            rreq[1] = w;
+            if (console_canvas(rreq, 2, rreply) && rreply[0] == 0 && rreply[1] == RIBBON_WIN_LAUNCHER) {
+                uint8_t jreq[2] = { 'J', w };
+                (void)console_canvas(jreq, 2, rreply);
+                uint8_t creq[1] = { 'C' };
+                (void)console_canvas(creq, 1, rreply);
+                launcher_close();
+                console_set_active_win_type(RIBBON_WIN_TERM);
+                vterm_set_active(rreply[1]);
+                console_sync_readers();
+                return;
+            }
+        }
+    }
+    launcher_close();
+}
+
 static void cmd_launcher(const char *arg) {
     if (arg) {
         while (*arg == ' ' || *arg == '\t') arg++;
     }
     if (arg && strcmp(arg, "status") == 0) {
+        view_sync();                                     /* what was posted to it, done */
         launcher_report();
         return;
     }
+    launcher_cmd_t lc = { 0 };
     if (arg && strcmp(arg, "gallery") == 0) {
-        if (!launcher_is_active() && !launcher_open()) {
-            cprintf("launcher: cannot open (no graphical ribbon)\n");
-            return;
-        }
-        launcher_gallery(true);
-        cprintf("launcher: control gallery (Done returns)\n");
+        lc.op = 'g';
+        view_call(launcher_cmd_run, &lc);
+        if (lc.ok) cprintf("launcher: control gallery (Done returns)\n");
+        else cprintf("launcher: cannot open (no graphical ribbon)\n");
         return;
     }
     if (arg && strcmp(arg, "close") == 0) {
-        uint8_t rreq[2] = { 'R', 0 }, rreply[SCREEN_REPLY_LEN];
-        if (console_canvas(rreq, 1, rreply) && rreply[0] == 0) {
-            uint8_t wcount = rreply[1];
-            for (uint8_t w = 0; w < wcount; w++) {
-                rreq[1] = w;
-                if (console_canvas(rreq, 2, rreply) && rreply[0] == 0) {
-                    if (rreply[1] == RIBBON_WIN_LAUNCHER) {
-                        uint8_t jreq[2] = { 'J', w };
-                        (void)console_canvas(jreq, 2, rreply);
-                        uint8_t creq[1] = { 'C' };
-                        (void)console_canvas(creq, 1, rreply);
-                        launcher_close();
-                        console_set_active_win_type(RIBBON_WIN_TERM);
-                        vterm_set_active(rreply[1]);
-                        console_sync_readers();
-                        cprintf("launcher: closed\n");
-                        return;
-                    }
-                }
-            }
-        }
-        launcher_close();
+        lc.op = 'c';
+        view_call(launcher_cmd_run, &lc);
         cprintf("launcher: closed\n");
         return;
     }
     if (!arg || !*arg || strcmp(arg, "open") == 0) {
-        if (launcher_open()) {
+        lc.op = 'o';
+        view_call(launcher_cmd_run, &lc);
+        if (lc.ok) {
             cprintf("launcher: opened in ribbon [slot %u]\n", (unsigned)launcher_get_slot_id());
         } else {
             cprintf("launcher: cannot open (no graphical ribbon)\n");
@@ -8398,6 +8434,10 @@ static void launcher_app_worker(void *arg) {
     }
 }
 
+#if defined(LCDTERM_PRESENT) && defined(TOUCH_PRESENT)
+static void launcher_open_cb(void *arg) { (void)arg; (void)launcher_open(); }
+#endif
+
 static void shell_idle_poll(void) {
     lisp_canvas_poll();
 
@@ -8411,13 +8451,13 @@ static void shell_idle_poll(void) {
                 s_boot_kbd_checked = true;
                 s_prev_kbd_present = cur_kbd;
                 if (!cur_kbd && !s_serial_cmd_seen && !launcher_is_active()) {
-                    (void)launcher_open();
+                    view_post_call(launcher_open_cb, NULL);
                 }
             }
         } else {
             if (s_prev_kbd_present && !cur_kbd) {
                 /* USB keyboard was disconnected: bring up the Touch Launcher */
-                (void)launcher_open();
+                view_post_call(launcher_open_cb, NULL);
             } else if (!s_prev_kbd_present && cur_kbd) {
                 /* USB keyboard was connected: collapse virtual keyboard on terminal */
                 uint8_t kreq[2] = { 'k', 0 }, kreply[SCREEN_REPLY_LEN];
@@ -8458,6 +8498,7 @@ void shell_run(void) {
     line_editor_load_history(10);
     settings_load();
     launcher_init();
+    view_start();
 
     /* Hand the console to the log consumer and drain all boot logs before the shell banner */
     klogd_start();

@@ -43,4 +43,33 @@ typedef struct {
  * compositor handle its window as any view's. */
 const view_ops_t *view_for_window(uint8_t type);
 
+/* The views task: every view's state is its own, and every view draws in it
+ * -- events, resizes, closes, and the shell's commands on views alike, in the
+ * order they were posted. Nobody else calls into a view's state, so a view
+ * needs no lock of its own against a second drawer.
+ *
+ * Boards without a panel have no task: the calls below run inline there.
+ * Before view_start(), too. */
+void view_start(void);
+
+/* Queued for the views task, not waited for. ev's RESIZE (w, h) and
+ * CLOSE_REQUEST go to the view's resize() and close(); any other type to its
+ * event(), if the instance is still open by then. Waits for room when the
+ * queue is full; from the views task itself, runs at once. */
+void view_post(const view_ops_t *v, uint8_t inst, const win_event_t *ev);
+/* fn(arg) on the views task, not waited for: arg must outlive it. */
+void view_post_call(void (*fn)(void *), void *arg);
+/* fn(arg) on the views task, after everything posted before it; returns when
+ * it has run. The caller holds no lock the views task takes (console_lock,
+ * the frame lock). fn prints to the views task's console, not the caller's:
+ * print in the caller, from what fn left in arg. */
+void view_call(void (*fn)(void *), void *arg);
+/* Waits until everything posted so far has run. */
+void view_sync(void);
+/* True on the views task (or where there is none: the caller is it). */
+bool view_in_task(void);
+/* Something waits in the queue: a view's animation (a fling, an eased
+ * scroll) stops for it. */
+bool view_pending(void);
+
 #endif /* LUGALOS_DRIVERS_VIEW_H */

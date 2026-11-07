@@ -139,10 +139,10 @@ typedef struct {
     uint32_t            aa_pages;
 } reader_state_t;
 
-/* guarded by: console_lock for opening and closing an instance (the surface
- * and the active flag), which the compositor reads under it. accepted: the
- * scroll position and the drawing into a live surface happen from the input
- * path without it; the compositor can show a frame mid-draw. */
+/* single task: views (drivers/view.h) -- every change and every draw. Also
+ * under console_lock: opening and closing an instance (the surface and the
+ * active flag), which the compositor reads under it. accepted: the compositor
+ * can show a frame mid-draw (the reader draws into its live surface). */
 /* BULK_BSS: link tables, history and contents, touched at the speed of a person -- PSRAM where there
  * is one, which returns about 30 KB of low RAM on the P4 boards. */
 static reader_state_t s_readers[READER_MAX_INSTANCES] BULK_BSS;
@@ -550,7 +550,7 @@ void reader_scroll_instance(uint8_t rid, int delta_y) {
             s_readers[rid].scroll_y = start_y + (diff * w_table[s]) / 1000;
             if (!reader_scroll_step(rid, c, w, h)) reader_draw(rid, c, w, h);
             lcdterm_sync_post();
-            if (console_has_char() || console_interrupt_requested()) break;
+            if (view_pending()) break;                   /* a key or a touch for a view: it goes first */
         }
     }
 #endif
@@ -615,9 +615,8 @@ void reader_touch_fling_instance(uint8_t rid, int dy, uint32_t ms) {
         int abs_v = v < 0 ? -v : v;
         if (abs_v <= 1) break;
 
-        /* Break immediately if user touches screen or presses a key */
-        if (console_has_char() || console_interrupt_requested() ||
-            touch_press_count() != start_presses) break;
+        /* Stopped by a finger on the screen, or anything else for a view */
+        if (view_pending() || touch_press_count() != start_presses) break;
     }
 
     reader_update_instance(rid);

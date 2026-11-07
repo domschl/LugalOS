@@ -145,20 +145,16 @@ typedef struct {
     int            aa_h;
     uint32_t       aa_pages;
     uint32_t       seq;
-    char           pending_cmd[64];
 } launcher_state_t;
 
-/* guarded by: console_lock for opening, closing, and surface allocation, which
- * the display compositor reads under it. accepted: interactive taps and redraws
- * update the live surface from the input path. */
+/* single task: views (drivers/view.h) -- every change and every draw. Also
+ * under console_lock: opening, closing and the surfaces' pointers, which the
+ * compositor reads under it. */
 static launcher_state_t s_launcher BULK_BSS;
 
-/* One draw at a time: every shell waiting for input runs the input path, so
- * a tap's redraw and a press's could overlap -- into the same back buffer,
- * then two swaps. Taken before console_lock; by launcher_close() too, so the
- * buffers are not freed under a draw. (71.4's display service task makes
- * views single-context; this serves until then.) */
-static ylock_t s_launcher_draw_lock;
+/* An application card's command line, for the shell (launcher_poll_exec()). */
+static char       s_pending_cmd[64] BULK_BSS;           /* guarded by: s_pending_lock */
+static spinlock_t s_pending_lock = SPINLOCK_INIT;
 
 /* ASCII case folded: the FAT volumes answer 8.3 names in capitals. */
 static bool same_name(const char *a, const char *b) {
@@ -718,7 +714,7 @@ static bool launcher_gallery_key(key_event_t k) {
 }
 
 /* accepted: read by the touch task (console_touch_captures()) while the
- * input path may be redrawing: the hit-boxes are a bounded array, and a
+ * views task may be redrawing: the hit-boxes are a bounded array, and a
  * stale answer costs one contact taken as a gesture or a drag. */
 bool launcher_drag_target(int client_x, int client_y) {
     return s_launcher.active && ugui_drag_at(&s_launcher.ui_ctx, client_x, client_y);
@@ -804,15 +800,7 @@ static canvas1_t *launcher_backing(void) {
  * of the launcher stays as it is on the surface the panel composites from,
  * so it does not flicker; its rows' hit-boxes (the pass's last) are
  * replaced. With the focus ring showing, the whole launcher instead. */
-static void launcher_update_list_locked(void);
-
 static void launcher_update_list(void) {
-    ylock_acquire(&s_launcher_draw_lock);
-    launcher_update_list_locked();
-    ylock_release(&s_launcher_draw_lock);
-}
-
-static void launcher_update_list_locked(void) {
     if (!s_launcher.active || s_launcher.win_w <= 0 || s_launcher.win_h <= 0) return;
     ugui_ctx_t *ctx = &s_launcher.ui_ctx;
     canvas1_t *back = launcher_backing();
@@ -841,15 +829,7 @@ static void launcher_update_list_locked(void) {
  * under it), and only then is seq moved, so no snapshot pairs the new seq
  * with the old picture. Before drawing, a conversion still reading the
  * back buffer (the front of the last swap) is waited for: the frame lock. */
-static void launcher_update_locked(void);
-
 void launcher_update(void) {
-    ylock_acquire(&s_launcher_draw_lock);
-    launcher_update_locked();
-    ylock_release(&s_launcher_draw_lock);
-}
-
-static void launcher_update_locked(void) {
     if (!s_launcher.active) return;
     if (s_launcher.win_w <= 0 || s_launcher.win_h <= 0) return;
 
@@ -925,7 +905,6 @@ bool launcher_open(void) {
 }
 
 void launcher_close(void) {
-    ylock_acquire(&s_launcher_draw_lock);
     console_lock();
     s_launcher.active = false;
     console_frame_lock();                                /* no conversion reads them past here */
@@ -939,7 +918,6 @@ void launcher_close(void) {
 
     if (buf) palloc_free(buf, pages);
     if (buf2) palloc_free(buf2, pages);
-    ylock_release(&s_launcher_draw_lock);
 }
 
 void launcher_press(int client_x, int client_y) {
@@ -969,7 +947,12 @@ static bool launch_app(const char *id, const char *path) {
                        "Close a window first: its close box, or Cmd-W.");
         return false;
     }
-    return app_command(a, path, s_launcher.pending_cmd, sizeof(s_launcher.pending_cmd));
+    char cmd[sizeof s_pending_cmd];
+    if (!app_command(a, path, cmd, sizeof cmd)) return false;
+    uintptr_t f = spin_lock_irqsave(&s_pending_lock);
+    memcpy(s_pending_cmd, cmd, sizeof cmd);
+    spin_unlock_irqrestore(&s_pending_lock, f);
+    return true;
 }
 static bool launcher_activate(uint16_t id, int16_t hit_idx);
 
@@ -1228,11 +1211,16 @@ const view_ops_t g_launcher_view = {
 };
 
 bool launcher_poll_exec(char *out_cmd, size_t max_len) {
-    if (!s_launcher.pending_cmd[0] || !out_cmd || max_len == 0) return false;
-    strncpy(out_cmd, s_launcher.pending_cmd, max_len - 1);
-    out_cmd[max_len - 1] = '\0';
-    s_launcher.pending_cmd[0] = '\0';
-    return true;
+    if (!out_cmd || max_len == 0) return false;
+    uintptr_t f = spin_lock_irqsave(&s_pending_lock);
+    bool got = s_pending_cmd[0] != '\0';
+    if (got) {
+        strncpy(out_cmd, s_pending_cmd, max_len - 1);
+        out_cmd[max_len - 1] = '\0';
+        s_pending_cmd[0] = '\0';
+    }
+    spin_unlock_irqrestore(&s_pending_lock, f);
+    return got;
 }
 
 uint8_t *launcher_get_aa_backing(uint32_t *out_stride, int *out_w, int *out_h) {
