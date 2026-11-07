@@ -72,7 +72,41 @@ The microSD slot is wired to `sdio1@16020000` (Synopsys DesignWare Mobile Storag
 
 ---
 
-## 5. Build, Boot, Storage Sync & HIL Testing Workflows
+## 5. Gigabit Ethernet (`gmac1@16040000`) & Native IP Services
+
+The VisionFive 2 features dual Gigabit Ethernet ports. LugalOS natively drives the primary LAN port (`gmac1@16040000`, Synopsys DesignWare EQOS v5.20 MAC with Motorcomm YT8531C RGMII-ID PHY at PHY address 1):
+
+* **DMA Descriptors & SiFive L2 Cache Flushing:**
+  * Uses 64-byte aligned descriptor rings (16 TX, 16 RX) in `.bss`.
+  * Because the JH7110 EQOS DMA bus master does not participate in hardware cache coherency with the U74 L1/L2 caches, descriptors and packet buffers are flushed to DDR before kicking DMA doorbells (`DMA_CH0_TXDESC_TAIL_POINTER` / `DMA_CH0_RXDESC_TAIL_POINTER`), and invalidated before CPU reads, via the SiFive L2 Cache Controller `Flush64` register (`0x02010200`, `writeq(addr, 0x02010200)`).
+* **Network Services & Daemons:**
+  * `eth0`: Native network interface, auto-negotiates 1000BASE-T full-duplex.
+  * **DHCP Client:** Automatically acquires IPv4 configuration at boot (`dhcp_start()`).
+  * **Admin Web Server (`httpd`):** Serves the LugalOS admin web app and WebSocket 9P client on port 80 (`http://BOARD_IP/`).
+  * **Spartan Server (`spartand`):** Serves Gemtext capsules from `/sd0/pub/` on port 300.
+  * **Plan 9 File Server (`tcp_p9`):** Listens on port 564, allowing high-speed file synchronization and live filesystem mounts.
+
+---
+
+## 6. Unattended Headless SD Auto-Boot (`vf2_uEnv.txt`)
+
+To boot LugalOS automatically on power-on without a UART cable and without touching the onboard QSPI flash:
+
+1. Factory QSPI U-Boot evaluates `load_vf2_env` (`fatload mmc 1:3 ${scriptaddr} vf2_uEnv.txt`) on MMC device 1, partition 3.
+2. LugalOS tools configure an MBR partition 3 alias pointing to the FAT32 partition (`mmc dev 1; mmc read 0x44000000 0 1; cp.b 0x440001be 0x440001de 0x10; mmc write 0x44000000 0 1`).
+3. `/sd0/vf2_uEnv.txt` defines:
+   ```text
+   boot2=echo Booting LugalOS from SD...; fatload mmc 1:3 0x40200000 lugalos.bin; booti 0x40200000 - ${fdtcontroladdr}
+   ```
+4. On power-on, after the 2-second countdown, U-Boot loads `vf2_uEnv.txt` from partition 3, runs `boot2`, and loads `/sd0/lugalos.bin` directly into DRAM, booting LugalOS to the `lsh>` shell and starting network services in under 4 seconds.
+5. To enable autoboot with a single command:
+   ```bash
+   ./tools/vf2run.py --enable-autoboot --save-sd --kernel build/visionfive2/lugalos.bin
+   ```
+
+---
+
+## 7. Build, Boot, Storage Sync & HIL Testing Workflows
 
 ### Building the Kernel
 ```bash
@@ -87,11 +121,18 @@ ninja -C build/visionfive2
 
 # Instant boot (<100 ms) from /sd0/lugalos.bin on the microSD card
 ./tools/vf2run.py --method sd --cmd "sdinfo; sdbench 256; smptest" --reboot
+
+# Configure unattended SD auto-boot and persist kernel
+./tools/vf2run.py --enable-autoboot --save-sd --kernel build/visionfive2/lugalos.bin
 ```
 
 ### Synchronizing Files over 9P (`tools/p9sync.py`)
 While LugalOS is running at the `lsh>` prompt:
 ```bash
+# Gigabit Ethernet TCP 9P sync (~1 second for entire SD image)
+python3 tools/p9sync.py --tcp BOARD_IP --key KEY_HEX --src build/visionfive2/sd_root --dst /sd0
+
+# Fallback UART SLIP sync
 uv run --project host/p9lib python3 tools/p9sync.py \
     --vf2 \
     --src build/visionfive2/sd_root \

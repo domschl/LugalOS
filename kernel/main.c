@@ -672,6 +672,9 @@ void kernel_main(void) {
     if (netif_default()) {
         net_stack_attach(netif_default());
         net_task_start();
+#if defined(CONFIG_BOARD_VISIONFIVE2)
+        dhcp_start();
+#endif
     }
 
     /* A stored broker is

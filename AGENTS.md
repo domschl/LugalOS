@@ -112,10 +112,11 @@ ninja -C build/<preset>
 * **StarFive VisionFive 2 (`visionfive2`):**
   * Upload to DRAM (1.5 Mbps YMODEM + gzip) & save `/sd0/lugalos.bin`: `./tools/vf2run.py --kernel build/visionfive2 --save-sd --cmd "uname; df" --reboot`
   * Instant SD boot (<100 ms via U-Boot `fatload`): `./tools/vf2run.py --method sd --cmd "smptest; sdinfo" --reboot`
+  * Configure unattended SD auto-boot and persist kernel: `./tools/vf2run.py --enable-autoboot --save-sd --kernel build/visionfive2/lugalos.bin`
 * **MicroSD 9P Storage Sync (`tools/p9sync.py`):**
   * RP2350: `uv run --project host/p9lib python3 tools/p9sync.py --serial /dev/serial/by-id/...-if02 --src build/rp2350-terminal/sd_root --dst /sd0`
   * ESP32-P4: `tools/p9sync.py --p4 <board> --src build/<preset>/sd_root`
-  * VisionFive 2: `tools/p9sync.py --vf2 --src build/visionfive2/sd_root`
+  * VisionFive 2: `tools/p9sync.py --tcp <board-ip> --key <key>` (Gigabit Ethernet) or `tools/p9sync.py --vf2` (UART SLIP)
   * Policy: Additive and idempotent; strictly preserves user files (`/sd0/CHESS/`, history logs).
 
 See [Firmware Flashing Guide](doc/admin/flashing.md) and [Plan 9 Networking](doc/admin/networking.md) for full options.
@@ -138,7 +139,7 @@ See [Firmware Flashing Guide](doc/admin/flashing.md) and [Plan 9 Networking](doc
   * `python3 tests/hw/test_rp2350.py`: RP2350 peripherals, memory pools, console.
   * `python3 tests/hw/test_esp32p4.py --board <board>`: ESP32-P4 CLIC, PMP, I2C, PSRAM, SDMMC.
   * `python3 tests/hw/test_esp32c6.py --port <port>`: ESP32-C6 Wi-Fi and LLP radio.
-  * `python3 tests/hw/test_visionfive2.py`: StarFive VisionFive 2 64-bit S-mode SBI boot, 4-core U74 SMP, Sv39 MMU, DW-MSHC SDIO1 (`/sd0`), CAS, and PMIC cold reboot.
+  * `python3 tests/hw/test_visionfive2.py`: StarFive VisionFive 2 64-bit S-mode SBI boot, 4-core U74 SMP, Sv39 MMU, DW-MSHC SDIO1 (`/sd0`), CAS, Gigabit Ethernet (EQOS v5.20 / Motorcomm YT8531C loopback), DHCP, HTTP, TCP 9P, and PMIC cold reboot.
   * `python3 tests/hw/test_wifi.py`: CYW43439 Wi-Fi and network stack.
   * `python3 tests/hw/lcdterm_shots.py`: Visual PBM screenshot regression suite. See [Testing Guide](doc/dev/testing.md#visual-regression-testing-lcdterm_shotspy) for scenario options and hotkeys.
 

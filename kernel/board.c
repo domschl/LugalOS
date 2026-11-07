@@ -31,6 +31,7 @@
 #if defined(CONFIG_BOARD_VISIONFIVE2)
 #include "arch/sbi.h"
 #include "drivers/sdmmc.h"
+#include "drivers/emac_jh7110.h"
 #elif !defined(CONFIG_BOARD_RP2350) && !defined(CONFIG_BOARD_ESP32P4) && !defined(CONFIG_BOARD_ESP32C6)
 #include "drivers/virtio_console.h"
 #include "drivers/virtio_blk.h"
@@ -198,6 +199,8 @@ static void *get_emac(void)   { return emac_get_netif(); }
  * The driver initialises the card on first ask. */
 static void *get_sdmmc(void)  { return sdmmc_get_device(); }
 #elif defined(CONFIG_BOARD_VISIONFIVE2)
+static int   probe_emac(void) { return emac_netif_init(); }
+static void *get_emac(void)   { return emac_get_netif(); }
 static void *get_sdmmc(void)  { return sdmmc_get_device(); }
 #else
 static int   probe_virtio_console(void) { return virtio_console_init(); }
@@ -349,6 +352,10 @@ static const dev_driver_t dev_llp = {
     .name = "llp", .kind = DEV_KIND_P9LINK, .get = get_llp,
 };
 #elif defined(CONFIG_BOARD_VISIONFIVE2)
+static const dev_driver_t dev_emac = {
+    .name = "eth0", .kind = DEV_KIND_NETIF,
+    .probe = probe_emac, .get = get_emac,
+};
 static const dev_driver_t dev_sdmmc = {
     .name = "sdblk", .kind = DEV_KIND_BLOCK, .get = get_sdmmc,
 };
@@ -435,6 +442,7 @@ void board_register_devices(void) {
     dev_register(&dev_sdmmc);
     dev_register(&dev_llp);
 #elif defined(CONFIG_BOARD_VISIONFIVE2)
+    dev_register(&dev_emac);
     dev_register(&dev_sdmmc);
 #else
     dev_register(&dev_vconsole);

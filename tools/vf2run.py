@@ -362,7 +362,44 @@ def load_via_ymodem(ser: serial.Serial, file_bytes: bytes, addr: int = LOAD_ADDR
     ser.write(b"\x1b\r")
     ser.flush()
     read_until_any(ser, ["StarFive #"], 5.0, echo=True)
+    print(f"[vf2run] Unzipping to 0x{addr:08x}...")
     uboot_cmd(ser, f"unzip 0x{scratch_addr:08x} 0x{addr:08x}", timeout_s=10.0, echo=True)
+
+
+def setup_autoboot(ser: serial.Serial) -> None:
+    """Configure MicroSD MBR partition 3 alias and vf2_uEnv.txt so U-Boot auto-boots LugalOS."""
+    print("[vf2run] Configuring MicroSD MBR partition 3 alias...")
+    uboot_cmd(ser, "mmc dev 1", echo=True)
+    uboot_cmd(ser, "mmc read 0x44000000 0 1", echo=True)
+    uboot_cmd(ser, "cp.b 0x440001be 0x440001de 0x10", echo=True)
+    uboot_cmd(ser, "mmc write 0x44000000 0 1", echo=True)
+    out = uboot_cmd(ser, "mmc part", echo=True)
+    if "3\t" not in out and "  3 " not in out:
+        sys.exit("[vf2run] Failed to set up partition 3 alias in MBR")
+
+    print("[vf2run] Writing vf2_uEnv.txt to /sd0 via U-Boot fatwrite...")
+    uenv_path = os.path.join(os.path.dirname(__file__), "sd_root", "vf2_uEnv.txt")
+    if os.path.exists(uenv_path):
+        with open(uenv_path, "rb") as f:
+            env_bytes = f.read()
+    else:
+        env_bytes = (
+            b"boot2=echo Booting LugalOS from SD...; "
+            b"fatload mmc 1:3 0x40200000 lugalos.bin; "
+            b"booti 0x40200000 - ${fdtcontroladdr}\n"
+        )
+    scratch = 0x44000000
+    for i in range(0, len(env_bytes), 4):
+        chunk = env_bytes[i : i + 4].ljust(4, b"\x00")
+        val = struct.unpack("<I", chunk)[0]
+        uboot_cmd(ser, f"mw.l 0x{scratch + i:08x} 0x{val:08x} 1", echo=False)
+
+    uboot_cmd(
+        ser,
+        f"fatwrite mmc 1:1 0x{scratch:08x} vf2_uEnv.txt {len(env_bytes):x}",
+        echo=True,
+    )
+    print("[vf2run] Unattended SD auto-boot configured successfully.")
 
 
 def load_via_tftp(
@@ -412,6 +449,11 @@ def main() -> int:
         action="store_true",
         help="Persist the loaded kernel image to /sd0/lugalos.bin via U-Boot fatwrite",
     )
+    ap.add_argument(
+        "--enable-autoboot",
+        action="store_true",
+        help="Configure MicroSD MBR partition 3 alias and vf2_uEnv.txt so U-Boot auto-boots LugalOS unattended",
+    )
     ap.add_argument("--host-ip", help="Override host LAN IP for TFTP")
     ap.add_argument("--listen", action="store_true", help="Listen to serial console")
     ap.add_argument(
@@ -445,6 +487,15 @@ def main() -> int:
             read_until_any(ser, [], args.listen_secs, echo=True)
             return 0
 
+        if args.enable_autoboot and not args.kernel and args.method != "sd":
+            ensure_uboot_prompt(ser)
+            setup_autoboot(ser)
+            if args.reboot:
+                print("\n[vf2run] Rebooting to test unattended SD auto-boot...")
+                write_paced(ser, "reboot\r")
+                read_until_any(ser, ["lsh> ", "/> "], timeout_s=30.0, echo=True)
+            return 0
+
         if args.kernel or args.method == "sd":
             file_bytes = b""
             if args.method != "sd":
@@ -455,6 +506,9 @@ def main() -> int:
                     file_bytes = f.read()
 
             ensure_uboot_prompt(ser)
+
+            if args.enable_autoboot:
+                setup_autoboot(ser)
 
             loaded = False
             if args.method == "sd":

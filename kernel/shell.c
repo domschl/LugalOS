@@ -154,6 +154,8 @@
 #include "drivers/emac_esp32p4.h"
 #include "arch/clk_esp32p4.h"
 #include "arch/smp_esp32p4.h"
+#elif defined(CONFIG_BOARD_VISIONFIVE2)
+#include "drivers/emac_jh7110.h"
 #endif
 #include "arch/umode.h"
 #include "arch/trap.h"
@@ -7148,7 +7150,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
                 (unsigned long)nb, (unsigned long)nw, (unsigned long)ns);
         return;
 #endif
-#if defined(CONFIG_BOARD_ESP32P4)
+#if defined(CONFIG_BOARD_ESP32P4) || defined(CONFIG_BOARD_VISIONFIVE2)
     } else if (strcmp(cmd_line, "emac linktest") == 0) {
         /* Z3: proves link-down is noticed, not just link-up. */
         emac_link_updown_test();
@@ -7807,6 +7809,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
 #endif
     } else if (strcmp(cmd_line, "net") == 0) {
         cmd_net_status();
+        return;
+    } else if (strcmp(cmd_line, "dhcp") == 0) {
+        dhcp_start();
         return;
     } else if (strcmp(cmd_line, "sensor") == 0) {
         cmd_sensor("");

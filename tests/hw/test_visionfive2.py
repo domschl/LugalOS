@@ -32,8 +32,11 @@ import glob
 import importlib.util
 import os
 import re
+import socket
+import subprocess
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 import serial
@@ -221,6 +224,77 @@ def test_sdmmc_and_cas(ser: serial.Serial) -> tuple[str, bool, str]:
     return (name, True, f"4-bit 49.5 MHz, {kbps} KB/s, /sd0 R/W + CAS derivative ok")
 
 
+def test_emac_loopback(ser: serial.Serial) -> tuple[str, bool, str]:
+    name = "emac: Synopsys DesignWare EQOS v5.20 DMA descriptor rings & loopback"
+    out_lb = run_cmd(ser, "emac loopback", timeout_s=15.0)
+
+    checks = [
+        ("emac loopback 7 passed", "7 passed, 0 failed" in out_lb),
+    ]
+    failed = [label for label, ok in checks if not ok]
+    if failed:
+        return (name, False, f"failed: {', '.join(failed)}")
+    return (name, True, "MAC loopback 7/7 sizes passed, 0 errors")
+
+
+def test_network_and_dhcp(ser: serial.Serial) -> tuple[str, bool, str]:
+    name = "net: Gigabit Ethernet eth0, DHCP lease, and gateway ping"
+    # Wait up to 10s for DHCP lease if still resolving
+    ip = ""
+    for _ in range(10):
+        out_net = run_cmd(ser, "net", timeout_s=5.0)
+        m = re.search(r"addr\s+([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)", out_net) or re.search(r"IP:\s*([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)", out_net)
+        if m and m.group(1) != "0.0.0.0":
+            ip = m.group(1)
+            break
+        time.sleep(1.0)
+
+    if not ip:
+        return (name, False, f"eth0 has no IPv4 lease:\n{out_net}")
+
+    out_ping = run_cmd(ser, "ping 192.168.178.1", timeout_s=10.0)
+    if "0 received" in out_ping:
+        return (name, False, f"ping gateway timed out:\n{out_ping}")
+
+    return (name, True, f"IP {ip}, gateway ping ok")
+
+
+def test_host_services(ser: serial.Serial) -> tuple[str, bool, str]:
+    name = "tcp: Host ping, HTTP admin dashboard (port 80), and TCP 9P (port 564)"
+    out_net = run_cmd(ser, "net", timeout_s=5.0)
+    m = re.search(r"addr\s+([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)", out_net) or re.search(r"IP:\s*([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)", out_net)
+    if not m or m.group(1) == "0.0.0.0":
+        return (name, False, "no board IP")
+    ip = m.group(1)
+
+    # 1. Host ICMP ping
+    res = subprocess.run(["ping", "-c", "3", "-W", "1", ip], capture_output=True, text=True)
+    if res.returncode != 0:
+        return (name, False, f"Host ping to {ip} failed:\n{res.stdout}\n{res.stderr}")
+
+    # 2. Host HTTP GET /board
+    run_cmd(ser, "httpd start", timeout_s=5.0)
+    try:
+        req = urllib.request.urlopen(f"http://{ip}/board", timeout=3.0)
+        data = req.read().decode("utf-8")
+        if "visionfive2" not in data.lower():
+            return (name, False, f"Unexpected HTTP /board payload: {data[:100]}")
+    except Exception as e:
+        return (name, False, f"HTTP GET /board failed: {e}")
+
+    # 3. Host TCP port 564 (Plan 9) connect
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(2.0)
+    try:
+        s.connect((ip, 564))
+    except Exception as e:
+        return (name, False, f"TCP 9P port 564 connect failed: {e}")
+    finally:
+        s.close()
+
+    return (name, True, f"Host ping ok, HTTP /board ok, TCP 9P port 564 open on {ip}")
+
+
 def test_stress(ser: serial.Serial) -> tuple[str, bool, str]:
     name = "stress: 4-core concurrent fmt/ram/sd/p9/chan/log/shell stress"
     out = run_cmd(ser, "stress 3", timeout_s=25.0)
@@ -272,6 +346,9 @@ def main() -> int:
         results.append(test_mmu_and_umode_isolation(ser))
         results.append(test_smp_and_locks(ser))
         results.append(test_sdmmc_and_cas(ser))
+        results.append(test_emac_loopback(ser))
+        results.append(test_network_and_dhcp(ser))
+        results.append(test_host_services(ser))
         results.append(test_stress(ser))
         results.append(test_pmic_cold_reboot(ser))
     finally:

@@ -1,0 +1,1 @@
+boot2=echo Booting LugalOS from SD...; fatload mmc 1:3 0x40200000 lugalos.bin; booti 0x40200000 - ${fdtcontroladdr}
