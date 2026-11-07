@@ -669,6 +669,8 @@ set(SOURCES
     kernel/settings.c
     drivers/icons.c
     drivers/view.c
+    # the close protocol for canvas windows: ask, then the alert.
+    drivers/winclose.c
     drivers/icons_data.c
     kernel/vterm.c
     kernel/device.c

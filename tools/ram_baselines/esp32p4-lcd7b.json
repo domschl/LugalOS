@@ -1,12 +1,13 @@
 {
   "bulk_per_file": {
     "drivers/dsi_esp32p4.c": 9012,
-    "drivers/launcher_view.c": 22292,
+    "drivers/launcher_view.c": 22388,
     "drivers/reader_view.c": 62416,
     "drivers/uxbench.c": 540,
     "drivers/view.c": 704,
+    "drivers/winclose.c": 288,
     "kernel/palloc.c": 32768,
-    "kernel/winevent.c": 2576,
+    "kernel/winevent.c": 2592,
     "kernel/zonetest.c": 64,
     "user/ceres/src/platform_p4.c": 31896,
     "user/chess/src/chess_ui.c": 1848,
@@ -18,13 +19,13 @@
     "app:ceres": 31896,
     "app:moonbase": 73888,
     "chess": 1848,
-    "display": 93720,
-    "drivers": 1244,
-    "kernel": 35344,
+    "display": 93816,
+    "drivers": 1532,
+    "kernel": 35360,
     "lisp": 1532288,
     "selftest": 64
   },
-  "bulk_total": 1770292,
+  "bulk_total": 1770692,
   "heap_bytes": 360448,
   "heap_pages": 88,
   "per_file": {
@@ -76,7 +77,8 @@
     "drivers/uart_net.c": 14740,
     "drivers/usbhost_esp32p4.c": 1108,
     "drivers/usbkbd_host.c": 104,
-    "drivers/view.c": 16,
+    "drivers/view.c": 28,
+    "drivers/winclose.c": 4,
     "fs/9p.c": 9989,
     "fs/p9_chan.c": 12340,
     "fs/p9_link.c": 24836,
@@ -179,7 +181,7 @@
     "clock-app": 136,
     "crypto": 38,
     "display": 3820,
-    "drivers": 1244,
+    "drivers": 1260,
     "fs": 4160,
     "httpd": 70,
     "identity": 4237,
@@ -199,5 +201,5 @@
     "vfs": 4111
   },
   "ram_code": 1806,
-  "total": 216569
+  "total": 216585
 }

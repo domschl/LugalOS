@@ -17,6 +17,8 @@ typedef struct {
     win_event_t ev[WIN_RING];
     uint8_t     head, tail;     /* next to write; next to read */
     uint8_t     claims;         /* WIN_CLAIM_* */
+    bool        listened;       /* a program has polled it: it is asked to close */
+    bool        close_read;     /* it has read the last close request */
 } win_ring_t;
 
 /* The touch task and the input path post, the window's program polls, on
@@ -33,6 +35,7 @@ void window_post(win_t w, const win_event_t *ev) {
     if (!valid(w) || !ev) return;
     uintptr_t f = spin_lock_irqsave(&g_win_lock);
     win_ring_t *r = &g_win[w];
+    if (ev->type == WIN_EV_CLOSE_REQUEST) r->close_read = false;
     if (ev->type == WIN_EV_POINTER_MOVE && r->head != r->tail) {
         win_event_t *last = &r->ev[(r->head + WIN_RING - 1u) % WIN_RING];
         if (last->type == WIN_EV_POINTER_MOVE) {          /* unread: one move to here */
@@ -59,8 +62,10 @@ bool window_poll(win_t w, win_event_t *ev) {
     (void)console_has_char();                             /* pumps taps and close requests */
     uintptr_t f = spin_lock_irqsave(&g_win_lock);
     win_ring_t *r = &g_win[w];
+    r->listened = true;
     bool got = r->head != r->tail;
     if (got) {
+        if (r->ev[r->tail].type == WIN_EV_CLOSE_REQUEST) r->close_read = true;
         if (ev) *ev = r->ev[r->tail];
         r->tail = (uint8_t)((r->tail + 1u) % WIN_RING);
     }
@@ -80,6 +85,29 @@ void window_claim(win_t w, uint8_t claims) {
     uintptr_t f = spin_lock_irqsave(&g_win_lock);
     g_win[w].claims = claims;
     g_win[w].tail = g_win[w].head;                        /* a new owner starts empty */
+    spin_unlock_irqrestore(&g_win_lock, f);
+}
+
+bool window_listened(win_t w) {
+    if (!valid(w)) return false;
+    uintptr_t f = spin_lock_irqsave(&g_win_lock);
+    bool l = g_win[w].listened;
+    spin_unlock_irqrestore(&g_win_lock, f);
+    return l;
+}
+
+bool window_close_read(win_t w) {
+    if (!valid(w)) return false;
+    uintptr_t f = spin_lock_irqsave(&g_win_lock);
+    bool c = g_win[w].close_read;
+    spin_unlock_irqrestore(&g_win_lock, f);
+    return c;
+}
+
+void window_forget(win_t w) {
+    if (!valid(w)) return;
+    uintptr_t f = spin_lock_irqsave(&g_win_lock);
+    g_win[w].listened = false;
     spin_unlock_irqrestore(&g_win_lock, f);
 }
 
@@ -110,6 +138,9 @@ bool window_poll(win_t w, win_event_t *ev) { (void)w; (void)ev; return false; }
 void window_clear(win_t w) { (void)w; }
 void window_claim(win_t w, uint8_t claims) { (void)w; (void)claims; }
 uint8_t window_claims(win_t w) { (void)w; return 0; }
+bool window_listened(win_t w) { (void)w; return false; }
+bool window_close_read(win_t w) { (void)w; return false; }
+void window_forget(win_t w) { (void)w; }
 win_t window_focused(void) { return -1; }
 win_t window_by_name(const char *name) { (void)name; return -1; }
 bool window_origin(win_t w, int *x0, int *y0) { (void)w; (void)x0; (void)y0; return false; }

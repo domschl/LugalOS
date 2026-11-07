@@ -140,6 +140,13 @@ typedef struct {
  * what changed -- FOCUS_LOST / FOCUS_GAINED, SUSPEND / RESUME (off the
  * screen, or the screen blanked, and back) -- once the request is done. */
 void console_windows_now(const console_win_state_t *w, unsigned n);
+/* Canvas cid's window closed without asking its program (the close
+ * protocol's last step, drivers/winclose.c): free_it, the canvas freed too
+ * (its program has ended); otherwise only the window goes, the canvas kept
+ * for a program that may still draw into it. False: no such window. */
+bool console_close_canvas(uint8_t cid, bool free_it);
+/* Whether window (type, id) is on the ribbon, as the screen last reported. */
+bool console_window_present(uint8_t type, uint8_t id);
 /* What window (type, id) was last told: CONSOLE_WIN_* flags (`ribbon list`). */
 uint8_t console_window_told(uint8_t type, uint8_t id);
 

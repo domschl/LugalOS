@@ -910,6 +910,17 @@ bool lcdterm_canvas_origin(uint8_t cid, int *x0, int *y0) {
     return false;
 }
 
+/* accepted: read without the screen's task, as the other lookups here; a
+ * name being changed reads as either. */
+bool lcdterm_canvas_name(uint8_t cid, char *out, unsigned cap) {
+    if (!g_scr || cid >= SCREEN_MAX_CANVASES || !g_scr->canvases[cid].in_use || !out || cap == 0) return false;
+    unsigned i = 0;
+    for (; i + 1 < cap && i < sizeof g_scr->canvases[cid].name && g_scr->canvases[cid].name[i]; i++)
+        out[i] = g_scr->canvases[cid].name[i];
+    out[i] = '\0';
+    return true;
+}
+
 bool lcdterm_set_canvas565_backing(uint8_t cid, uint16_t *buf) {
     if (!g_scr || cid >= SCREEN_MAX_CANVASES) return false;
     if (g_scr->canvases[cid].format != CANVAS_FMT_RGB565) return false;
@@ -1038,6 +1049,7 @@ void lcdterm_scroll_test(unsigned n) { (void)n; }
 void lcdterm_report(void) { }
 canvas1_t *lcdterm_get_canvas_backing(uint8_t cid) { (void)cid; return NULL; }
 int lcdterm_get_canvas_cid_by_name(const char *name) { (void)name; return -1; }
+bool lcdterm_canvas_name(uint8_t cid, char *out, unsigned cap) { (void)cid; (void)out; (void)cap; return false; }
 canvas1_t *lcdterm_get_reader_backing(uint8_t rid) { (void)rid; return NULL; }
 
 #endif /* LCDTERM_PRESENT */

@@ -1453,9 +1453,18 @@ static void modal_buttons(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t 
 
 ugui_rect_t ugui_dialog(const ugui_surface_t *s, ugui_ctx_t *ctx, const char *title, const char *message,
                         const char *const *buttons, int count, uint16_t base_id) {
+    return ugui_alert(s, ctx, NULL, 1, title, message, buttons, count, base_id);
+}
+
+ugui_rect_t ugui_alert(const ugui_surface_t *s, ugui_ctx_t *ctx, const ugui_image_t *icon, int icon_scale,
+                       const char *title, const char *message, const char *const *buttons, int count,
+                       uint16_t base_id) {
     ugui_rect_t none = { 0, 0, 0, 0 };
     if (!s) return none;
     int sc = s->scale > 0 ? s->scale : 1;
+    if (icon_scale < 1) icon_scale = 1;
+    int iw = icon && icon->px ? icon->w * icon_scale : 0, ih = icon && icon->px ? icon->h * icon_scale : 0;
+    int tx = 20 * sc + (iw ? iw + 16 * sc : 0);         /* the text's left, from the box's */
     int lh = ugui_serif_line_h(s), lines = 0, widest = title ? ugui_text_serif_width(s, title, (uint32_t)strlen(title)) : 0;
     for (const char *p = message; p && *p;) {
         const char *q = p;
@@ -1465,20 +1474,23 @@ ugui_rect_t ugui_dialog(const ugui_surface_t *s, ugui_ctx_t *ctx, const char *ti
         lines++;
         p = *q ? q + 1 : q;
     }
-    int w = widest + 40 * sc, min_w = 260 * sc;
+    int w = widest + tx + 20 * sc, min_w = 260 * sc;
     if (w < min_w) w = min_w;
     if (w > s->w - 20 * sc) w = s->w - 20 * sc;
-    int h = 16 * sc + (title ? lh + 8 * sc : 0) + lines * lh + 16 * sc + 22 * sc + 14 * sc;
+    int text_h = (title ? lh + 8 * sc : 0) + lines * lh;
+    if (text_h < ih) text_h = ih;
+    int h = 16 * sc + text_h + 16 * sc + 22 * sc + 14 * sc;
     ugui_rect_t box = { (int16_t)((s->w - w) / 2), (int16_t)((s->h - h) / 2), (int16_t)w, (int16_t)h };
     ugui_modal_begin(s, ctx);
     ugui_box_shadow(s, box, false);
     frame(s, (ugui_rect_t){ (int16_t)(box.x + 3 * sc), (int16_t)(box.y + 3 * sc), (int16_t)(box.w - 6 * sc), (int16_t)(box.h - 6 * sc) }, sc);
     int y = box.y + 16 * sc;
-    if (title) { ugui_text_serif(s, box.x + 20 * sc, y, title, (uint32_t)strlen(title), true, false, false); y += lh + 8 * sc; }
+    if (iw) ugui_image4(s, box.x + 20 * sc, y, icon, icon_scale, false);
+    if (title) { ugui_text_serif(s, box.x + tx, y, title, (uint32_t)strlen(title), true, false, false); y += lh + 8 * sc; }
     for (const char *p = message; p && *p;) {
         const char *q = p;
         while (*q && *q != '\n') q++;
-        ugui_text_serif(s, box.x + 20 * sc, y, p, (uint32_t)(q - p), false, false, false);
+        ugui_text_serif(s, box.x + tx, y, p, (uint32_t)(q - p), false, false, false);
         y += lh;
         p = *q ? q + 1 : q;
     }

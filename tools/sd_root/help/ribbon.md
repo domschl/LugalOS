@@ -38,6 +38,10 @@ Every non-root window on the ribbon (terminals, canvases, and readers) features 
 * **Tap / Click Close Box**: Immediately closes the window, reclaims its backing store and layout slot, and smoothly reflows the ribbon.
 * **Toggle Maximize (`Super+\` / `Cmd+\`)**: Toggles the active window between full-screen ribbon width and half-screen width.
 * **Close Window (`Super+W` / `Cmd+W`)**: Closes the active non-root window from keyboard.
+* **A program's window** (a game, chess): the close box and `Cmd+W` ask the program to close it, and it closes it itself -- ending, or saving first. A program that has not read the request after 200 ms -- or read it and still has its window 5 seconds later -- gets an alert over the launcher, with a bomb: "*Ceres* is not responding." A game shutting its sound down takes longer than 200 ms; having read the request, it is answering.
+  * **Wait** (the default; `Enter` or `Esc`): the window stays, and the alert comes back after 5 seconds if the program still has not answered. It goes away by itself as soon as the program closes its window.
+  * **Close Window**: the window goes at once. The program keeps running -- a program stuck in the kernel cannot be stopped from outside safely -- and keeps drawing into a canvas no one sees, freed when the program lets go of it or ends. Meanwhile the program cannot be started again: it says it is in use.
+  * A window no program reads (a canvas opened with `canvas open`, or one whose program has ended) closes at once, as before.
 
 ### Keyboard Shortcuts
 | Hotkey | Serial ANSI Sequence | Function |

@@ -40,6 +40,16 @@ void     launcher_gallery(bool on);
 /* A dialog over the launcher (title, message lines split at '\n', OK) --
  * for what it could not do. */
 void     launcher_alert(const char *title, const char *msg);
+/* An alert over the launcher (opened and focused for it): an icon by name
+ * (drivers/icons.h, NULL none), its title and message, and buttons from
+ * the right, the last the default (Enter), `cancel` Esc's; done(choice,
+ * arg) once it is answered. One at a time: a new one replaces it. The
+ * buttons must outlive it. On the views task. */
+typedef void (*launcher_ask_fn)(int choice, void *arg);
+void     launcher_ask(const char *icon, const char *title, const char *msg, const char *const *buttons, int count,
+                      int cancel, launcher_ask_fn done, void *arg);
+/* That alert taken away unanswered (what it asked about settled itself). */
+void     launcher_ask_dismiss(launcher_ask_fn done, void *arg);
 /* Whether a finger down at the point is on a control that follows it (a
  * slider), and that finger's moves while it is captured. */
 bool     launcher_drag_target(int client_x, int client_y);

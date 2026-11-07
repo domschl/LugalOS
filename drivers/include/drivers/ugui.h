@@ -305,6 +305,11 @@ void ugui_modal_begin(const ugui_surface_t *s, ugui_ctx_t *ctx);
  * i is id base_id + i. Returns its rectangle. */
 ugui_rect_t ugui_dialog(const ugui_surface_t *s, ugui_ctx_t *ctx, const char *title, const char *message,
                         const char *const *buttons, int count, uint16_t base_id);
+/* As ugui_dialog(), with an alert's icon left of the text (NULL: none),
+ * each of its pixels icon_scale x icon_scale. */
+ugui_rect_t ugui_alert(const ugui_surface_t *s, ugui_ctx_t *ctx, const ugui_image_t *icon, int icon_scale,
+                       const char *title, const char *message, const char *const *buttons, int count,
+                       uint16_t base_id);
 /* An action sheet: the choices stacked full width at the bottom of s, item
  * i id base_id + i. Returns its rectangle. */
 ugui_rect_t ugui_action_sheet(const ugui_surface_t *s, ugui_ctx_t *ctx, const char *title,

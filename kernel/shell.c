@@ -78,6 +78,7 @@
 #include "drivers/reader_view.h"
 #include "drivers/launcher_view.h"
 #include "drivers/view.h"
+#include "kernel/event.h"
 #include "drivers/uxbench.h"
 #include "drivers/dcf77_decode.h"
 #include "drivers/pico_clock_ui.h"
@@ -1652,6 +1653,51 @@ static void launcher_cmd_run(void *arg) {
     }
     launcher_close();
 }
+
+#if CONFIG_DEV
+/* `closetest`: a program that reads its window and then stops answering, for
+ * the close protocol (drivers/winclose.h): a canvas window "closetest",
+ * polled once, focused and closed with Cmd-W; then 600 ms of input pumped
+ * but the window never read. The not-responding alert is up by then.
+ * `closetest done`: the program lets go of its canvas. */
+static void cmd_closetest(bool done) {
+    static const char name[] = "closetest";
+    uint8_t req[2 + sizeof name], reply[SCREEN_REPLY_LEN];
+    req[0] = 'L';
+    req[1] = done ? SCREEN_LAYOUT_TEXT : SCREEN_LAYOUT_SPLIT_HALF;
+    memcpy(req + 2, name, sizeof name);
+    if (!console_canvas(req, sizeof req, reply) || reply[0] != 0) {
+        cprintf("closetest: no canvas here\n");
+        return;
+    }
+    if (done) {
+        cprintf("closetest: canvas let go\n");
+        return;
+    }
+    win_t w = window_by_name(name);
+    win_event_t ev;
+    while (w >= 0 && window_poll(w, &ev)) {}               /* read once: it listens */
+    uint8_t rreq[2] = { 'R', 0 };
+    if (console_canvas(rreq, 1, reply) && reply[0] == 0) {
+        uint8_t count = reply[1];
+        for (uint8_t i = 0; i < count; i++) {
+            rreq[1] = i;
+            if (console_canvas(rreq, 2, reply) && reply[0] == 0 && reply[1] == RIBBON_WIN_CANVAS && reply[2] == (uint8_t)w) {
+                uint8_t jreq[2] = { 'J', i };
+                (void)console_canvas(jreq, 2, reply);
+            }
+        }
+    }
+    console_hotkey(CONSOLE_HOTKEY_CLOSE);
+    uint64_t end = time_get_ms() + 600u;
+    while (time_get_ms() < end) {
+        (void)console_has_char();                        /* the input path runs; the window is not read */
+        task_sleep_ms(10);
+    }
+    cprintf("closetest: asked to close; window %s\n",
+            console_window_present(RIBBON_WIN_CANVAS, (uint8_t)w) ? "still there" : "gone");
+}
+#endif
 
 static void cmd_launcher(const char *arg) {
     if (arg) {
@@ -6450,6 +6496,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
 #if CONFIG_DEV
     } else if (strcmp(cmd_line, "uxbench") == 0 || strncmp(cmd_line, "uxbench ", 8) == 0) {
         uxbench_cmd(cmd_line + 7);
+        return;
+    } else if (strcmp(cmd_line, "closetest") == 0 || strcmp(cmd_line, "closetest done") == 0) {
+        cmd_closetest(cmd_line[9] != '\0');
         return;
     } else if (strcmp(cmd_line, "uguiselftest") == 0) {
         cprintf("uguiselftest: %s\n", ugui_selftest() ? "PASS" : "FAIL");

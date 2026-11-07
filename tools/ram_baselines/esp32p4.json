@@ -1,6 +1,6 @@
 {
   "bulk_per_file": {
-    "drivers/launcher_view.c": 22292,
+    "drivers/launcher_view.c": 22388,
     "drivers/reader_view.c": 62416,
     "drivers/view.c": 704,
     "kernel/palloc.c": 32768,
@@ -15,13 +15,13 @@
     "app:ceres": 31896,
     "app:moonbase": 73888,
     "chess": 1848,
-    "display": 84708,
+    "display": 84804,
     "drivers": 704,
     "kernel": 32768,
     "lisp": 1532288,
     "selftest": 64
   },
-  "bulk_total": 1758164,
+  "bulk_total": 1758260,
   "heap_bytes": 380928,
   "heap_pages": 93,
   "per_file": {
@@ -69,7 +69,7 @@
     "drivers/tsl2591.c": 84,
     "drivers/uart_esp32p4.c": 899,
     "drivers/uart_net.c": 14740,
-    "drivers/view.c": 16,
+    "drivers/view.c": 28,
     "fs/9p.c": 9989,
     "fs/p9_chan.c": 12340,
     "fs/p9_link.c": 24836,
@@ -171,7 +171,7 @@
     "clock-app": 136,
     "crypto": 38,
     "display": 206,
-    "drivers": 1244,
+    "drivers": 1256,
     "fs": 4160,
     "httpd": 70,
     "identity": 4237,
@@ -190,5 +190,5 @@
     "vfs": 4111
   },
   "ram_code": 1806,
-  "total": 221442
+  "total": 221454
 }

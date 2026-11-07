@@ -265,6 +265,7 @@ LCDTERM_UTEXT static int screen_alloc_canvas_named_fmt(screen_t *scr, const char
     for (uint32_t i = 0; i < SCREEN_MAX_CANVASES; i++) {
         if (!scr->canvases[i].in_use) {
             scr->canvases[i].in_use = true;
+            scr->canvases[i].detached = false;
             scr->canvases[i].locked = false;
             scr->canvases[i].drawn_w = 0;
             scr->canvases[i].vterm_id = vterm_id;
@@ -337,6 +338,7 @@ __attribute__((unused)) LCDTERM_UTEXT static int screen_alloc_canvas(screen_t *s
 LCDTERM_UTEXT static void screen_free_canvas(screen_t *scr, uint8_t cid) {
     if (cid < SCREEN_MAX_CANVASES) {
         scr->canvases[cid].fullscreen = false;
+        scr->canvases[cid].detached = false;
 #if CANVAS_SUPPORT_RGB565
         if (scr->canvases[cid].buf565) {
             if (scr->canvases[cid].buf565_owned) {
@@ -1708,7 +1710,9 @@ LCDTERM_UTEXT bool screen_set_layout_vterm_named_fmt(screen_t *scr, uint8_t vid,
             }
         }
 
-        if (cid >= 0) {
+        if (cid >= 0 && scr->canvases[cid].detached) {
+            screen_free_canvas(scr, (uint8_t)cid);           /* its window was closed already */
+        } else if (cid >= 0) {
             int c_idx = ribbon_find_canvas_slot(&scr->ribbon, (uint8_t)cid);
             if (c_idx >= 0) {
                 ribbon_remove(&scr->ribbon, (uint8_t)c_idx);
@@ -2000,12 +2004,26 @@ LCDTERM_UTEXT static uint8_t window_vterm(const screen_t *scr, uint8_t idx) {
  * behind, it stayed in the ribbon with no terminal to draw on it or close it,
  * and the next terminal given that vterm number inherited it, picture and all
  * (47.8). */
-LCDTERM_UTEXT static bool close_window(screen_t *scr, uint8_t idx, uint8_t *reply) {
+/* Closes window idx. A canvas window is not closed unless `force`: its
+ * program is asked first (the console's close protocol, kernel/console.c),
+ * and the reply says so -- [8] 0xCE, [10] the type, [11] the slot, [14..15]
+ * the owner's pid. Forced, `keep` leaves the canvas to its program (still
+ * drawing into it) and only takes its window away. */
+LCDTERM_UTEXT static bool close_window_ex(screen_t *scr, uint8_t idx, uint8_t *reply, bool force, bool keep) {
     if (idx >= scr->ribbon.count || scr->ribbon.count <= 1) return false;
     uint8_t closed_type = scr->ribbon.wins[idx].type;
     uint8_t closed_id = scr->ribbon.wins[idx].vterm_id;
     int16_t closed_pid = scr->ribbon.wins[idx].owner_pid;
     if (closed_type == RIBBON_WIN_TERM && closed_id == 0) return false;
+    if (closed_type == RIBBON_WIN_CANVAS && !force) {
+        reply[1] = window_vterm(scr, scr->ribbon.active_idx);
+        reply[8] = 0xCE;
+        reply[10] = closed_type;
+        reply[11] = closed_id;
+        reply[14] = (uint8_t)(closed_pid & 0xff);
+        reply[15] = (uint8_t)((closed_pid >> 8) & 0xff);
+        return true;
+    }
     if (!ribbon_remove(&scr->ribbon, idx)) return false;
     if (closed_type == RIBBON_WIN_TERM) {
         int cid = screen_find_canvas_by_vterm(scr, closed_id);
@@ -2016,7 +2034,8 @@ LCDTERM_UTEXT static bool close_window(screen_t *scr, uint8_t idx, uint8_t *repl
         }
         screen_free_term(scr, closed_id);
     } else if (closed_type == RIBBON_WIN_CANVAS) {
-        screen_free_canvas(scr, closed_id);
+        if (keep && closed_id < SCREEN_MAX_CANVASES) scr->canvases[closed_id].detached = true;
+        else screen_free_canvas(scr, closed_id);
     } else if (ribbon_is_view(closed_type)) {
         screen_free_reader(scr, closed_id);
     }
@@ -2043,6 +2062,10 @@ LCDTERM_UTEXT static bool close_window(screen_t *scr, uint8_t idx, uint8_t *repl
     reply[14] = (uint8_t)(closed_pid & 0xff);
     reply[15] = (uint8_t)((closed_pid >> 8) & 0xff);
     return true;
+}
+
+LCDTERM_UTEXT static bool close_window(screen_t *scr, uint8_t idx, uint8_t *reply) {
+    return close_window_ex(scr, idx, reply, false, false);
 }
 
 /* Opens a full-width window for view `type` beside the focused one, or with
@@ -2442,7 +2465,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
                     if (close_window(scr, (uint8_t)idx, reply)) {
                         reply[0] = 0;
                         reply[1] = window_vterm(scr, scr->ribbon.active_idx);
-                        reply[8] = 0xCC; /* Window closed flag */
+                        if (reply[8] != 0xCE) reply[8] = 0xCC; /* closed (0xCE: its program asked) */
                         return;
                     }
                 }
@@ -2757,7 +2780,23 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
         /* close terminal `vid`'s window -- its vterm is gone
          * (vterm_destroy()), however it went: `exit`, `vterm close`. */
         int idx = (n >= 2) ? ribbon_find_vterm(&scr->ribbon, req[1]) : -1;
-        status = (idx >= 0 && close_window(scr, (uint8_t)idx, reply)) ? 0 : 1;
+        status = (idx >= 0 && close_window_ex(scr, (uint8_t)idx, reply, true, false)) ? 0 : 1;
+    } else if (op == 'q') {
+        /* 'q' slot free: canvas `slot`'s window closed without asking -- its
+         * program did not answer (free 0: the canvas kept for it, detached),
+         * did not listen, or ended (free 1: the canvas freed, detached or not). */
+        uint8_t cid = n >= 2 ? req[1] : 0xFF;
+        bool free_it = n >= 3 && req[2];
+        int idx = cid < SCREEN_MAX_CANVASES ? ribbon_find_canvas_slot(&scr->ribbon, cid) : -1;
+        if (idx >= 0) {
+            status = close_window_ex(scr, (uint8_t)idx, reply, true, !free_it) ? 0 : 1;
+            if (status == 0) reply[8] = 0xCC;            /* a window closed: [10..15] say which */
+        } else if (free_it && cid < SCREEN_MAX_CANVASES && scr->canvases[cid].in_use && scr->canvases[cid].detached) {
+            screen_free_canvas(scr, cid);
+            status = 0;
+        } else {
+            status = 1;
+        }
     } else if (op == 'K') {
         int cid = screen_find_canvas_by_vterm(scr, vid);
         if (cid >= 0) {
@@ -3026,9 +3065,12 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
     reply[2] = (uint8_t)sw; reply[3] = (uint8_t)(sw >> 8);
     reply[4] = (uint8_t)sh; reply[5] = (uint8_t)(sh >> 8);
     reply[6] = (uint8_t)scr->damage; reply[7] = (uint8_t)(scr->damage >> 8);
-    reply[8] = scr->layout;
+    /* A close's answer keeps its marker in [8] (0xCC closed, 0xCE its program
+     * asked) and which window in [10..11]. */
+    bool closing = (op == 'C' || op == 'q') && (reply[8] == 0xCC || reply[8] == 0xCE);
+    if (!closing) reply[8] = scr->layout;
     reply[9] = scr->swapped;
-    if (op != 'C') {
+    if (op != 'C' && !closing) {
         if (scr->ribbon.count > 0 && scr->ribbon.active_idx < scr->ribbon.count) {
             reply[10] = scr->ribbon.wins[scr->ribbon.active_idx].type;
             reply[11] = scr->ribbon.wins[scr->ribbon.active_idx].vterm_id;

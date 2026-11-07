@@ -89,6 +89,15 @@ void window_clear(win_t w);
 void    window_claim(win_t w, uint8_t claims);
 uint8_t window_claims(win_t w);
 
+/* Whether a program has polled w: then closing its window asks it first
+ * (WIN_EV_CLOSE_REQUEST, the console's close protocol); a window nobody
+ * reads closes at once. window_forget(): its window is gone. */
+bool window_listened(win_t w);
+/* Whether w's program has read the last close request posted to it: it is
+ * answering, only slowly (a game shutting its sound down). */
+bool window_close_read(win_t w);
+void window_forget(win_t w);
+
 /* The focused window's handle when it is a canvas window, else -1. */
 win_t window_focused(void);
 

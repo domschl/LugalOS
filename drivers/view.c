@@ -6,6 +6,7 @@
 #include "kernel/lock.h"
 #include "kernel/palloc.h"
 #include "kernel/sched.h"
+#include "kernel/time.h"
 #include "kernel/vterm.h"
 
 #include <string.h>
@@ -99,13 +100,28 @@ static void view_push(const view_msg_t *m) {
     }
 }
 
+#define VIEW_TICK_MS 50u
+
+static bool   (*s_view_tick)(void);   /* single task: views */
+static uint64_t s_view_tick_due;      /* single task: views */
+
+void view_set_tick(bool (*fn)(void)) {
+    s_view_tick = fn;
+    s_view_tick_due = time_get_ms() + VIEW_TICK_MS;
+}
+
 static void view_task_body(void *arg) {
     (void)arg;
     for (;;) {
+        if (s_view_tick && time_get_ms() >= s_view_tick_due) {
+            s_view_tick_due = time_get_ms() + VIEW_TICK_MS;
+            if (!s_view_tick()) s_view_tick = NULL;
+        }
         view_msg_t m;
         task_prepare_block();
         if (!view_pop(&m)) {
-            task_block();
+            if (s_view_tick) task_block_until_ms(s_view_tick_due);
+            else task_block();
             continue;
         }
         task_wait_done();
@@ -160,6 +176,7 @@ static void view_enqueue_nowait(const view_msg_t *m) {
 
 #else /* no panel: inline */
 
+void view_set_tick(bool (*fn)(void)) { (void)fn; }
 void view_start(void) {}
 bool view_in_task(void) { return true; }
 bool view_pending(void) { return false; }

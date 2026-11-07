@@ -269,6 +269,21 @@ def settings(c: Canvas) -> None:
         c.rect(x - 2, knob + 3, x + 3, knob + 4, MID)
 
 
+def bomb(c: Canvas) -> None:
+    """The alert for a program that stopped answering: a round bomb, its fuse lit."""
+    c.poly([(38, 22), (46, 14), (52, 20), (44, 28)], fill=MID)   # the neck, its cap
+    c.ellipse(28, 40, 20, 20, fill=INK, outline=None)            # the body
+    c.ellipse(20, 32, 6, 5, fill=DARK, outline=None)              # its shine
+    c.ellipse(18, 30, 3, 2, fill=LIGHT, outline=None)
+    c.line(49, 16, 50, 12)                                        # the fuse
+    c.line(50, 12, 53, 9)
+    for x0, y0, x1, y1 in ((56, 0, 56, 3), (56, 11, 56, 14), (49, 6, 51, 6),
+                           (61, 6, 63, 6), (51, 1, 52, 2), (60, 10, 61, 11),
+                           (60, 1, 61, 2), (51, 10, 52, 11)):        # the spark
+        c.line(x0, y0, x1, y1)
+    c.rect(55, 6, 56, 7, INK)
+
+
 def app(c: Canvas) -> None:
     c.poly([(32, 2), (62, 32), (32, 62), (2, 32)], fill=LIGHT)
     c.poly([(32, 16), (48, 32), (32, 48), (16, 32)], fill=WHITE)
@@ -276,7 +291,7 @@ def app(c: Canvas) -> None:
 
 
 ICONS: dict[str, Callable[[Canvas], None]] = {
-    "app": app, "book": book, "ceres": ceres, "chess": chess, "doc": doc, "doc-c": doc_c,
+    "app": app, "bomb": bomb, "book": book, "ceres": ceres, "chess": chess, "doc": doc, "doc-c": doc_c,
     "doc-gmi": doc_gmi, "doc-lisp": doc_lisp, "doc-md": doc_md, "doc-txt": doc_txt, "editor": editor,
     "files": files, "folder": folder, "moonbase": moonbase, "reader": reader, "settings": settings,
     "terminal": terminal,

@@ -2051,6 +2051,94 @@ def test_touch_launcher(b: Board) -> tuple[str, bool, str]:
     return name, True, "uguiselftest PASS, Launcher opened in ribbon and closed cleanly"
 
 
+def _alert_button(b: Board, status: str, hit_id: int) -> tuple[int, int] | None:
+    """Screen point of the launcher alert's button hit_id: its box from
+    `launcher status` (window-relative), the launcher window's place from
+    `ribbon list`, and the chrome above the content (doubled on the Tab5)."""
+    m = re.search(rf"hit id {hit_id} index 0: x (\d+)\.\.(\d+) y (\d+)\.\.(\d+)", status)
+    rl = b.console_session.cmd("ribbon list", deadline=5.0)
+    v = re.search(r"x_view (\d+)", rl)
+    w = re.search(r"Launcher \(slot \d+, \d+ cols, rx (\d+)\.\.", rl)
+    if not (m and v and w):
+        return None
+    scale = 2 if is_tab5(b) else 1
+    x = int(w.group(1)) - int(v.group(1)) + 1 + (int(m.group(1)) + int(m.group(2))) // 2
+    y = (22 + 17) * scale + (int(m.group(3)) + int(m.group(4))) // 2
+    return x, y
+
+
+def test_close_protocol(b: Board) -> tuple[str, bool, str]:
+    """71.4: a program window's close is asked first (drivers/winclose.h). A
+    program that reads its window and stops answering (`closetest`) gets the
+    not-responding alert within 600 ms; Close Window takes the window away,
+    the canvas kept until the program lets go; a program answering late
+    takes the alert with it."""
+    name = "close protocol: not-responding alert, Close Window, a late answer (71.4)"
+    n0, _ = _ribbon(b)
+    if n0 < 0:
+        return name, True, "SKIPPED (no ribbon on this board)"
+    b.console_session.cmd("launcher open", deadline=5.0)
+    b.console_session.cmd("ribbon focus 0", deadline=5.0)
+    out = b.console_session.cmd("closetest", deadline=10.0)
+    if "still there" not in out:
+        b.console_session.cmd("closetest done", deadline=5.0)
+        return name, False, f"closetest: {out.strip()[-200:]}"
+    st = b.console_session.cmd("launcher status", deadline=5.0)
+    if "alert: Closetest is not responding." not in st:
+        b.console_session.cmd("closetest done", deadline=5.0)
+        return name, False, f"no alert after 600 ms:\n{st.strip()[-400:]}"
+    pt = _alert_button(b, st, 540)                   # Close Window
+    if not pt:
+        b.console_session.cmd("closetest done", deadline=5.0)
+        return name, False, "Close Window not found in launcher status"
+    b.console_session.cmd(f"ts tap {pt[0]} {pt[1]}", deadline=5.0)
+    time.sleep(0.5)
+    rl = b.console_session.cmd("ribbon list", deadline=5.0)
+    st = b.console_session.cmd("launcher status", deadline=5.0)
+    gone = "Canvas" not in rl and "alert:" not in st
+    b.console_session.cmd("closetest done", deadline=5.0)
+    if not gone:
+        return name, False, f"Close Window at {pt} left the window or the alert:\n{rl.strip()[-300:]}"
+    b.console_session.cmd("ribbon focus 0", deadline=5.0)
+    out = b.console_session.cmd("closetest", deadline=10.0)
+    b.console_session.cmd("closetest done", deadline=5.0)
+    time.sleep(0.3)
+    st = b.console_session.cmd("launcher status", deadline=5.0)
+    rl = b.console_session.cmd("ribbon list", deadline=5.0)
+    if "alert:" in st or "Canvas" in rl:
+        return name, False, f"the late answer left the alert or the window:\n{st.strip()[-300:]}"
+    return name, True, "alert within 600 ms; Close Window by touch; a late answer takes the alert away"
+
+
+def _alerts_shown(b: Board) -> int:
+    m = re.search(r"(\d+) not-responding alerts? since boot", b.console_session.cmd("launcher status", deadline=5.0))
+    return int(m.group(1)) if m else -1
+
+
+def test_close_game(b: Board) -> tuple[str, bool, str]:
+    """71.4: Cmd-W on a game asks it, and a game that reads the request but
+    takes longer than 200 ms to shut down (its sound, its buffers) closes
+    without the not-responding alert."""
+    name = "close protocol: Cmd-W closes ceres without an alert (71.4)"
+    n0, _ = _ribbon(b)
+    if n0 < 0:
+        return name, True, "SKIPPED (no ribbon on this board)"
+    before = _alerts_shown(b)
+    b.console_session.ser.write(b"ceres --frames=3000\r")
+    b.console_session.ser.flush()
+    time.sleep(4.0)
+    rl = b.console_session.cmd("", deadline=2.0)
+    _raw(b, b"\x1b[119;9u", 3.0)                     # Cmd+W, to the game's focused window
+    b.console_session.drain(quiet=0.5, deadline=10.0)
+    after = _alerts_shown(b)
+    rl = b.console_session.cmd("ribbon list", deadline=5.0)
+    if "Canvas" in rl:
+        return name, False, f"ceres's window is still there:\n{rl.strip()[-300:]}"
+    if before < 0 or after != before:
+        return name, False, f"not-responding alerts {before} -> {after}"
+    return name, True, "ceres closed by Cmd-W, no alert"
+
+
 TESTS = [
     test_boots,
     test_proc_readable,
@@ -2099,6 +2187,8 @@ TESTS = [
     test_gemtext_reader_window,
     test_reader_anti_aliased_typography,
     test_touch_launcher,
+    dev_only(test_close_protocol),
+    test_close_game,
     test_screenshot_color_mode,
     test_color_canvas_rgb565,
     test_ribbon_slide_and_reader_smooth_scroll,
@@ -2257,6 +2347,7 @@ def main() -> int:
     ap.add_argument("--no-load", action="store_true",
                     help="test whatever is already running")
     ap.add_argument("--listen-secs", type=float, default=8.0)
+    ap.add_argument("--only", help="run only the tests whose function name contains this (e.g. close_protocol)")
     args = ap.parse_args()
     if args.build:
         BUILD_DIR = args.build.resolve()
@@ -2313,6 +2404,8 @@ def main() -> int:
     total = passed = 0
     try:
         for t in TESTS:
+            if args.only and args.only not in t.__name__:
+                continue
             try:
                 name, ok, log = t(b)
             except Exception as e:   # a test that throws is a failed test, not a dead suite

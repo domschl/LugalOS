@@ -101,6 +101,8 @@ typedef struct {
     bool      locked;                   /* canvas layout locked for this slot */
     bool      buf565_owned;             /* true if buf565 was allocated by screen.c and should be freed by it */
     bool      fullscreen;               /* asked for SCREEN_LAYOUT_FULLSCREEN: the layout while it has the focus */
+    bool      detached;                 /* its window closed while its program still ran ('q' 0): freed when
+                                         * the program lets go of it ('L' text) or ends ('q' 1) */
     uint16_t  drawn_w;                  /* the window width `backing` was drawn at; 0: none */
     char      name[SCREEN_CTITLE_MAX];  /* unique canvas name (e.g. "plot", "chess", "map") */
     char      title[SCREEN_CTITLE_MAX]; /* canvas window title */
@@ -283,6 +285,10 @@ void screen_text_size(const screen_t *scr, unsigned *cols, unsigned *rows);
 #define SCREEN_VIEW_NO_CLOSE  0x02u     /* 'v': no close box */
 
 void screen_canvas(screen_t *scr, const uint8_t *req, uint32_t n, uint8_t *reply);
+/* Each ribbon window's identity, focus and visibility now, to the console
+ * (console_windows_now()). Kernel code, called under console_lock after a
+ * request: in a full-screen layout only the focused window shows. */
+void screen_report_windows(const screen_t *scr);
 /* The on-screen keyboard's rectangle at the focused terminal (touch boards). */
 bool screen_osk_rect(const screen_t *scr, int *x0, int *y0, int *w, int *h);
 /* Each ribbon window's identity, focus and visibility now, to the console

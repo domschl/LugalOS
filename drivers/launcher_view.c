@@ -14,6 +14,7 @@
 #include "kernel/settings.h"
 #include "drivers/icons.h"
 #include "drivers/launcher_view.h"
+#include "drivers/winclose.h"
 #include "kernel/console.h"
 #include "kernel/lock.h"
 #include "kernel/printk.h"
@@ -37,6 +38,11 @@ void launcher_release(void) {}
 void launcher_scroll(int delta_y) { (void)delta_y; }
 void launcher_gallery(bool on) { (void)on; }
 void launcher_alert(const char *title, const char *msg) { (void)title; (void)msg; }
+void launcher_ask(const char *icon, const char *title, const char *msg, const char *const *buttons, int count,
+                  int cancel, launcher_ask_fn done, void *arg) {
+    (void)icon; (void)title; (void)msg; (void)buttons; (void)count; (void)cancel; (void)done; (void)arg;
+}
+void launcher_ask_dismiss(launcher_ask_fn done, void *arg) { (void)done; (void)arg; }
 bool launcher_drag_target(int client_x, int client_y) { (void)client_x; (void)client_y; return false; }
 void launcher_pointer_move(int client_x, int client_y) { (void)client_x; (void)client_y; }
 void launcher_drag(int dy) { (void)dy; }
@@ -109,7 +115,8 @@ void launcher_report(void) { cprintf("launcher: not present on headless board\n"
 #define GAL_ID_SHOW_SHT  517
 #define GAL_ID_DLG       520     /* + button */
 #define GAL_ID_SHEET     530     /* + item */
-#define LAUNCHER_ID_ALERT_OK 540
+#define LAUNCHER_ID_ALERT_OK 540     /* + button */
+#define LAUNCHER_ALERT_MAX   4
 
 typedef struct {
     char path[96];
@@ -120,7 +127,12 @@ typedef struct {
 typedef struct {
     bool           active;
     char           alert_title[48];          /* a dialog over the launcher ("" none) */
-    char           alert_msg[128];
+    char           alert_msg[200];
+    const char    *alert_icon;               /* its icon's name, NULL: none */
+    const char *const *alert_buttons;        /* from the right, the last the default */
+    int            alert_count, alert_cancel; /* Esc's choice */
+    launcher_ask_fn alert_done;              /* told the choice, NULL: none */
+    void          *alert_arg;
     struct {                                   /* the control gallery's state */
         bool        on, toggle, check, dialog, sheet;
         int         tab, slider;
@@ -505,20 +517,60 @@ static void draw_status(const ugui_surface_t *surf, ugui_rect_t r) {
 
 static const char *const k_alert_ok[1] = { "OK" };
 
-/* The launcher's alert, if one is up: modal over the rest. */
+/* The launcher's alert, if one is up: modal over the rest, its icon (an
+ * alert's 32 units) left of the text. */
 static void launcher_draw_alert(const ugui_surface_t *surf) {
-    if (s_launcher.alert_title[0])
-        (void)ugui_dialog(surf, &s_launcher.ui_ctx, s_launcher.alert_title, s_launcher.alert_msg,
-                          k_alert_ok, 1, LAUNCHER_ID_ALERT_OK);
+    if (!s_launcher.alert_title[0]) return;
+    int sc = 1;
+    ugui_image_t img = icon_image(s_launcher.alert_icon ? icon_find(s_launcher.alert_icon) : NULL,
+                                  32 * CHROME_SCALE, &sc);
+    (void)ugui_alert(surf, &s_launcher.ui_ctx, img.px ? &img : NULL, sc, s_launcher.alert_title,
+                     s_launcher.alert_msg, s_launcher.alert_buttons, s_launcher.alert_count, LAUNCHER_ID_ALERT_OK);
 }
 
-void launcher_alert(const char *title, const char *msg) {
-    if (!s_launcher.active) return;
+void launcher_ask(const char *icon, const char *title, const char *msg, const char *const *buttons, int count,
+                  int cancel, launcher_ask_fn done, void *arg) {
+    if (s_launcher.active) {                             /* brought to the front, not scanned again */
+        uint8_t req[2] = { 'U', 0 }, reply[SCREEN_REPLY_LEN];
+        (void)console_canvas(req, 2, reply);
+        console_set_active_win_type(RIBBON_WIN_LAUNCHER);
+    } else if (!launcher_open()) {
+        return;
+    }
     strncpy(s_launcher.alert_title, title ? title : "", sizeof s_launcher.alert_title - 1);
     s_launcher.alert_title[sizeof s_launcher.alert_title - 1] = '\0';
     strncpy(s_launcher.alert_msg, msg ? msg : "", sizeof s_launcher.alert_msg - 1);
     s_launcher.alert_msg[sizeof s_launcher.alert_msg - 1] = '\0';
+    s_launcher.alert_icon = icon;
+    s_launcher.alert_buttons = buttons;
+    s_launcher.alert_count = count > 0 && count <= LAUNCHER_ALERT_MAX ? count : 1;
+    s_launcher.alert_cancel = cancel;
+    s_launcher.alert_done = done;
+    s_launcher.alert_arg = arg;
+    if (!buttons) s_launcher.alert_buttons = k_alert_ok;
     launcher_update();
+}
+
+void launcher_alert(const char *title, const char *msg) {
+    if (!s_launcher.active) return;
+    launcher_ask(NULL, title, msg, k_alert_ok, 1, 0, NULL, NULL);
+}
+
+void launcher_ask_dismiss(launcher_ask_fn done, void *arg) {
+    if (!s_launcher.alert_title[0] || s_launcher.alert_done != done || s_launcher.alert_arg != arg) return;
+    s_launcher.alert_title[0] = '\0';
+    s_launcher.alert_done = NULL;
+    launcher_update();
+}
+
+/* The alert answered with button `choice`: gone, then its asker told. */
+static void launcher_alert_answer(int choice) {
+    launcher_ask_fn done = s_launcher.alert_done;
+    void *arg = s_launcher.alert_arg;
+    s_launcher.alert_title[0] = '\0';
+    s_launcher.alert_done = NULL;
+    launcher_update();
+    if (done) done(choice, arg);
 }
 
 /* An application's card: its registered title and icon (32 units). */
@@ -971,8 +1023,9 @@ bool launcher_tap(int client_x, int client_y) {
 static bool launcher_tap_act(int client_x, int client_y) {
     int16_t hit_idx = -1;
     uint16_t id = ugui_hit_test(&s_launcher.ui_ctx, client_x, client_y, &hit_idx);
-    if (s_launcher.alert_title[0]) {                     /* modal: OK only */
-        if (id == LAUNCHER_ID_ALERT_OK) { s_launcher.alert_title[0] = '\0'; launcher_update(); }
+    if (s_launcher.alert_title[0]) {                     /* modal: its buttons only */
+        if (id >= LAUNCHER_ID_ALERT_OK && id < LAUNCHER_ID_ALERT_OK + s_launcher.alert_count)
+            launcher_alert_answer(id - LAUNCHER_ID_ALERT_OK);
         return id != 0;
     }
     if (s_launcher.gal.on) return id && launcher_gallery_act(id, hit_idx, client_x);
@@ -1095,9 +1148,17 @@ static bool launcher_doc_step(uint32_t key) {
 }
 
 static void launcher_key(key_event_t k) {
-    if (s_launcher.alert_title[0] && (k.key == 0x1b || k.key == '\r' || k.key == '\n')) {
-        s_launcher.alert_title[0] = '\0';                /* Esc / Enter: the alert's OK */
-        launcher_update();
+    if (s_launcher.alert_title[0]) {                     /* Esc: its cancel; Enter: the focused button, or the default */
+        if (k.key == 0x1b) { launcher_alert_answer(s_launcher.alert_cancel); return; }
+        uint16_t id = 0;
+        int16_t idx = 0;
+        ugui_nav_t nav = ugui_nav(&s_launcher.ui_ctx, k.key, k.mods, &id, &idx);
+        if (nav == UGUI_NAV_ACTIVATE && id >= LAUNCHER_ID_ALERT_OK && id < LAUNCHER_ID_ALERT_OK + s_launcher.alert_count)
+            launcher_alert_answer(id - LAUNCHER_ID_ALERT_OK);
+        else if ((k.key == '\r' || k.key == '\n') && nav != UGUI_NAV_ACTIVATE)
+            launcher_alert_answer(s_launcher.alert_count - 1);
+        else if (nav == UGUI_NAV_MOVED)
+            launcher_update();
         return;
     }
     if (s_launcher.gal.on && launcher_gallery_key(k)) return;
@@ -1241,6 +1302,8 @@ void launcher_report(void) {
             (unsigned)s_launcher.slot_id,
             s_launcher.win_w, s_launcher.win_h,
             s_launcher.doc_count, s_launcher.ui_ctx.count);
+    if (s_launcher.alert_title[0]) cprintf("  alert: %s\n", s_launcher.alert_title);
+    winclose_report();
     /* The hit-boxes, window-relative, for `touch tap` in tests. */
     for (int i = 0; i < s_launcher.ui_ctx.count; i++) {
         const ugui_hit_t *h = &s_launcher.ui_ctx.hits[i];

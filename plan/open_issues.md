@@ -94,14 +94,6 @@ same 1-bpp state) passes, and the owner sees no fault on the 7B when
 scrolling. **Next step:** find the writer (a write watch on the 1-bpp frame's
 rows 16..31, or `racescan --why` for the reader's draw paths).
 
-## A closed window's owner task is not reclaimed
-
-**Destination: phase 71, milestone 71.4** (the view close protocol).
-`close_window()` (drivers/screen.c) reads `owner_pid` and drops it: no close
-request reaches the owner, and no session claim is released when the owner
-does not answer. A canvas app whose window is closed by its close box keeps
-running until it notices `console_canvas_poll_closed()` itself.
-
 ## Touch thresholds are not in millimetres; GT911 taps land 250 ms late
 
 **Destination: phase 71, milestone 71.2.** drivers/touch_gt911.c: `TAP_PX` is

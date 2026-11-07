@@ -23,6 +23,7 @@
 #include "drivers/dsi_esp32p4.h"
 #include "kernel/event.h"
 #include "kernel/shell.h"
+#include "drivers/winclose.h"
 #include <string.h>
 
 /* See kernel/include/kernel/console.h. The formatting engine lives in
@@ -236,6 +237,12 @@ static void ws_compare(void) {
                 ws_queue(eff[i].type, eff[i].id, gains ? WIN_EV_RESUME : WIN_EV_SUSPEND);
         }
     }
+    for (unsigned t = 0; t < g_ws_told_n; t++) {        /* canvas windows gone: nobody reads them now */
+        if (g_ws_told[t].type != 2 /* RIBBON_WIN_CANVAS */) continue;
+        bool still = false;
+        for (unsigned i = 0; i < n && !still; i++) still = eff[i].type == 2 && eff[i].id == g_ws_told[t].id;
+        if (!still) window_forget((win_t)g_ws_told[t].id);
+    }
     for (unsigned i = 0; i < n; i++) g_ws_told[i] = eff[i];
     g_ws_told_n = n;
 }
@@ -245,6 +252,14 @@ void console_windows_now(const console_win_state_t *w, unsigned n) {
     for (unsigned i = 0; i < n; i++) g_ws_now[i] = w[i];
     g_ws_now_n = n;
     ws_compare();
+}
+
+bool console_window_present(uint8_t type, uint8_t id) {
+    console_lock();
+    bool found = false;
+    for (unsigned i = 0; i < g_ws_now_n && !found; i++) found = g_ws_now[i].type == type && g_ws_now[i].id == id;
+    console_unlock();
+    return found;
 }
 
 uint8_t console_window_told(uint8_t type, uint8_t id) {
@@ -704,6 +719,55 @@ static void view_closed(uint8_t type, uint8_t inst) {
     view_post(v, inst, &ev);
 }
 
+/* A window was closed (the reply of 'C', 'q' or a close-box tap): its
+ * owner told, the focus follows the screen's. */
+static void window_closed(const uint8_t *reply) {
+    uint8_t closed_type = reply[10];
+    uint8_t closed_vid = reply[11];
+    if (closed_type == 1 /* RIBBON_WIN_TERM */ && closed_vid > 0) vterm_destroy(closed_vid);
+    if (closed_type == 2 /* RIBBON_WIN_CANVAS */) post_close(closed_vid);
+    view_closed(closed_type, closed_vid);
+    if (reply[12] != 0) {
+        g_active_win_type = reply[12];
+        if (reply[12] == 3 /* RIBBON_WIN_READER */) reader_set_active_instance(reply[13]);
+    } else {
+        g_active_win_type = closed_type != 4 /* RIBBON_WIN_LAUNCHER */ && launcher_is_active() ? 4 : 1;
+    }
+    vterm_set_active(reply[1]);
+    console_sync_readers();
+}
+
+bool console_close_canvas(uint8_t cid, bool free_it) {
+    uint8_t req[3] = { 'q', cid, (uint8_t)(free_it ? 1 : 0) }, reply[SCREEN_REPLY_LEN];
+    if (!console_canvas(req, 3, reply) || reply[0] != 0) return false;
+    if (reply[8] == 0xCC) {                              /* a window went, not only a detached canvas */
+        if (free_it) window_closed(reply);
+        else {                                           /* asked already: no second request */
+            uint8_t r2[SCREEN_REPLY_LEN];
+            for (unsigned i = 0; i < SCREEN_REPLY_LEN; i++) r2[i] = reply[i];
+            r2[10] = 0;                                  /* no owner to tell again */
+            window_closed(r2);
+        }
+    }
+    return true;
+}
+
+/* Closing canvas window reply[11] was asked for (0xCE): a program that reads
+ * its window is told and given time to answer (drivers/winclose.c); one that
+ * does not, or whose task has ended, has its window closed at once. */
+static void close_asked(const uint8_t *reply) {
+    uint8_t cid = reply[11];
+    int pid = (int16_t)(reply[14] | (reply[15] << 8));
+    int st = pid >= 0 ? sched_task_state(pid) : TASK_UNUSED;
+    bool alive = st != TASK_UNUSED && st != TASK_DEAD;
+    if (alive && window_listened((win_t)cid)) {
+        post_close(cid);
+        winclose_watch(cid, pid);
+        return;
+    }
+    (void)console_close_canvas(cid, true);
+}
+
 static void launcher_open_cb(void *arg) { (void)arg; (void)launcher_open(); }
 #if defined(CONFIG_BOARD_TAB5)
 static void reader_update_cb(void *arg) { (void)arg; reader_update(); }
@@ -778,23 +842,8 @@ static void run_hotkey(void) {
         if (hk == CONSOLE_HOTKEY_CLOSE) {
             uint8_t req[1] = { 'C' }, reply[SCREEN_REPLY_LEN];
             if (console_canvas(req, 1, reply) && reply[0] == 0) {
-                uint8_t closed_type = reply[10];
-                uint8_t closed_vid = reply[11];
-                if (closed_type == 1 /* RIBBON_WIN_TERM */ && closed_vid > 0) {
-                    vterm_destroy(closed_vid);
-                }
-                if (closed_type == 2 /* RIBBON_WIN_CANVAS */) post_close(closed_vid);
-                view_closed(closed_type, closed_vid);
-                if (reply[12] != 0) {
-                    g_active_win_type = reply[12];
-                    if (reply[12] == 3 /* RIBBON_WIN_READER */) {
-                        reader_set_active_instance(reply[13]);
-                    }
-                } else {
-                    g_active_win_type = closed_type != 4 /* RIBBON_WIN_LAUNCHER */ && launcher_is_active() ? 4 : 1;
-                }
-                vterm_set_active(reply[1]);
-                console_sync_readers();
+                if (reply[8] == 0xCE) close_asked(reply);
+                else window_closed(reply);
             }
             continue;
         }
@@ -846,23 +895,11 @@ static void run_hotkey(void) {
                     continue;
                 }
                 if (reply[8] == 0xCC) {
-                    uint8_t closed_type = reply[10];
-                    uint8_t closed_vid = reply[11];
-                    if (closed_type == 1 /* RIBBON_WIN_TERM */ && closed_vid > 0) {
-                        vterm_destroy(closed_vid);
-                    }
-                    if (closed_type == 2 /* RIBBON_WIN_CANVAS */) post_close(closed_vid);
-                    view_closed(closed_type, closed_vid);
-                    if (reply[12] != 0) {
-                        g_active_win_type = reply[12];
-                        if (reply[12] == 3 /* RIBBON_WIN_READER */) {
-                            reader_set_active_instance(reply[13]);
-                        }
-                    } else {
-                        g_active_win_type = closed_type != 4 /* RIBBON_WIN_LAUNCHER */ && launcher_is_active() ? 4 : 1;
-                    }
-                    vterm_set_active(reply[1]);
-                    console_sync_readers();
+                    window_closed(reply);
+                    continue;
+                }
+                if (reply[8] == 0xCE) {
+                    close_asked(reply);
                     continue;
                 }
                 if (reply[8] == 0xAA) {

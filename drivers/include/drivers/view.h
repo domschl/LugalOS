@@ -73,6 +73,10 @@ void view_call(void (*fn)(void *), void *arg);
 void view_sync(void);
 /* True on the views task (or where there is none: the caller is it). */
 bool view_in_task(void);
+/* On the views task: fn() about every 50 ms, between messages, for as long
+ * as it returns true (a watch with a deadline, drivers/winclose.c). One at a
+ * time; NULL stops it. */
+void view_set_tick(bool (*fn)(void));
 /* Something waits in the queue: a view's animation (a fling, an eased
  * scroll) stops for it. */
 bool view_pending(void);
