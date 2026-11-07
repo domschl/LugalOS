@@ -1,3 +1,4 @@
+#include "lugalos_config.h"
 #include "arch/atomic.h"
 #include "drivers/uart.h"
 #include "drivers/uart_proto.h"
@@ -20,8 +21,31 @@ static volatile uint8_t *uart_base = (volatile uint8_t *)0x10000000; // QEMU vir
 #define UART_RBR 0 // Receive Buffer Register
 #define UART_THR 0 // Transmit Holding Register
 #define UART_IER 1 // Interrupt Enable Register
+#define UART_IIR 2 // Interrupt Identity Register
 #define UART_LSR 5 // Line Status Register
+#define UART_USR 0x1F // DesignWare UART Status Register (clears IIR_BUSY)
+#define UART_IIR_BUSY 0x07
 #define UART_LSR_DR   0x01 // Data Ready
+
+#ifndef CONFIG_UART_REG_SHIFT
+#define CONFIG_UART_REG_SHIFT 0
+#endif
+
+static inline uint8_t uart_reg_read(uint32_t reg) {
+#if CONFIG_UART_REG_SHIFT == 2
+    return (uint8_t)(*(volatile uint32_t *)(uart_base + (reg << 2)));
+#else
+    return uart_base[reg << CONFIG_UART_REG_SHIFT];
+#endif
+}
+
+static inline void uart_reg_write(uint32_t reg, uint8_t val) {
+#if CONFIG_UART_REG_SHIFT == 2
+    *(volatile uint32_t *)(uart_base + (reg << 2)) = (uint32_t)val;
+#else
+    uart_base[reg << CONFIG_UART_REG_SHIFT] = val;
+#endif
+}
 /* Overrun Error: a character arrived before the previous one was read, and
  * the previous one is gone. The 16550 latches this in LSR and clears it on
  * read, so it is free to notice and invisible if nobody looks -- and nobody
@@ -60,9 +84,13 @@ static void note_rx_overrun(void) {
 #define UART_IER_ERBFI 0x01 // Enable Received Data Available interrupt
 #define UART_IER_ETBEI 0x02 // Enable Transmitter Holding Register Empty interrupt
 
-/* QEMU virt's ns16550, IRQ 10 -- verified against qemu/include/hw/riscv/virt.h
- * rather than assumed. */
+/* QEMU virt's ns16550 is IRQ 10; boards with their own PLIC routing set
+ * CONFIG_UART0_IRQ in their board file (32 on JH7110). */
+#if defined(CONFIG_UART0_IRQ)
+#define UART0_IRQ ((uint32_t)CONFIG_UART0_IRQ)
+#else
 #define UART0_IRQ 10u
+#endif
 
 /* the ISR-driven wake this file lacked entirely before --
  * both directions. See kernel/printk.c for why TX blocking is safe now.
@@ -111,7 +139,7 @@ static spinlock_t g_ier_lock;
 static void ier_arm(volatile int *slot, int me, uint8_t bit) {
     uintptr_t f = spin_lock_irqsave(&g_ier_lock);
     *slot = me;
-    uart_base[UART_IER] |= bit;
+    uart_reg_write(UART_IER, (uint8_t)(uart_reg_read(UART_IER) | bit));
     spin_unlock_irqrestore(&g_ier_lock, f);
 }
 
@@ -120,7 +148,7 @@ static void ier_disarm(volatile int *slot, int me, uint8_t bit) {
     uintptr_t f = spin_lock_irqsave(&g_ier_lock);
     if (*slot == me) {
         *slot = -1;
-        uart_base[UART_IER] &= (uint8_t)~bit;
+        uart_reg_write(UART_IER, (uint8_t)(uart_reg_read(UART_IER) & (uint8_t)~bit));
     }
     spin_unlock_irqrestore(&g_ier_lock, f);
 }
@@ -130,16 +158,23 @@ static void uart_isr(void *ctx) {
     g_uart_irq_count++;
     int rx = -1, tx = -1;
     uintptr_t f = spin_lock_irqsave(&g_ier_lock);
-    uint8_t lsr = uart_base[UART_LSR];
+#if CONFIG_UART_REG_SHIFT == 2
+    /* DesignWare DW_apb_uart latches IIR_BUSY (0x07) if LCR is touched while
+     * the serial engine is active; reading USR clears it. */
+    if ((uart_reg_read(UART_IIR) & 0x0Fu) == UART_IIR_BUSY) {
+        (void)uart_reg_read(UART_USR);
+    }
+#endif
+    uint8_t lsr = uart_reg_read(UART_LSR);
     if (lsr & UART_LSR_THRE) g_uart_irq_tx_seen++;
     if ((lsr & UART_LSR_DR) && g_rx_waiter >= 0) {
-        uart_base[UART_IER] &= (uint8_t)~UART_IER_ERBFI;
+        uart_reg_write(UART_IER, (uint8_t)(uart_reg_read(UART_IER) & (uint8_t)~UART_IER_ERBFI));
         g_uart_irq_rx_wakes++;
         rx = g_rx_waiter;
         g_rx_waiter = -1;
     }
     if ((lsr & UART_LSR_THRE) && g_tx_waiter >= 0) {
-        uart_base[UART_IER] &= (uint8_t)~UART_IER_ETBEI;
+        uart_reg_write(UART_IER, (uint8_t)(uart_reg_read(UART_IER) & (uint8_t)~UART_IER_ETBEI));
         g_uart_irq_tx_wakes++;
         tx = g_tx_waiter;
         g_tx_waiter = -1;
@@ -157,13 +192,13 @@ static void uart_isr(void *ctx) {
 // is itself responsible for providing.
 static bool hw_uart_has_char(void) {
     if (!uart_base) return false;
-    uint8_t lsr = uart_base[UART_LSR];
+    uint8_t lsr = uart_reg_read(UART_LSR);
     if (lsr & UART_LSR_OE) note_rx_overrun();
     return (lsr & UART_LSR_DR) != 0;
 }
 
 static uint8_t hw_uart_getc(void) {
-    return uart_base[UART_RBR];
+    return uart_reg_read(UART_RBR);
 }
 
 /* The actual hardware wait/transfer,  * pulled out of uart_putc()/uart_getc() so both the uart task's own service
@@ -173,8 +208,8 @@ static uint8_t hw_uart_getc(void) {
  * task, exclusively, once it is up. */
 static void uart_hw_putc_blocking(char c) {
     if (!uart_base) return;
-    if ((uart_base[UART_LSR] & UART_LSR_THRE) != 0) {
-        uart_base[UART_THR] = (uint8_t)c;
+    if ((uart_reg_read(UART_LSR) & UART_LSR_THRE) != 0) {
+        uart_reg_write(UART_THR, (uint8_t)c);
         return;
     }
     /* Same continuous-irq_save() requirement as uart_hw_getc_blocking()
@@ -184,7 +219,7 @@ static void uart_hw_putc_blocking(char c) {
      * the ISR has already disabled ETBEI having "served" a wakeup nobody
      * was asleep for -- a silent, permanent lost wakeup. */
     uintptr_t flags = irq_save();
-    if ((uart_base[UART_LSR] & UART_LSR_THRE) == 0) {
+    if ((uart_reg_read(UART_LSR) & UART_LSR_THRE) == 0) {
         /* sched_has_task(): a hart with no task cannot be the waiter --
          * task_block() would have nothing to block, and the slot would
          * hold -1, which reads as "free". It polls instead, which is
@@ -199,18 +234,18 @@ static void uart_hw_putc_blocking(char c) {
                 g_uart_irq_tx_arms++;
                 ier_arm(&g_tx_waiter, me, UART_IER_ETBEI);
                 task_block();
-            } while ((uart_base[UART_LSR] & UART_LSR_THRE) == 0);
+            } while ((uart_reg_read(UART_LSR) & UART_LSR_THRE) == 0);
             task_wait_done();
             ier_disarm(&g_tx_waiter, me, UART_IER_ETBEI);   /* woken by something else */
             arch_lock_release(&g_tx_claim);
         } else {
             irq_restore(flags);
-            while ((uart_base[UART_LSR] & UART_LSR_THRE) == 0) sched_yield();
+            while ((uart_reg_read(UART_LSR) & UART_LSR_THRE) == 0) sched_yield();
             flags = irq_save();
         }
     }
     irq_restore(flags);
-    uart_base[UART_THR] = (uint8_t)c;
+    uart_reg_write(UART_THR, (uint8_t)c);
 }
 
 static uint8_t uart_hw_getc_blocking(void) {
@@ -400,6 +435,8 @@ void uart_init(uintptr_t base_addr) {
     if (base_addr != 0) {
         uart_base = (volatile uint8_t *)base_addr;
     }
+    /* Start with all UART interrupt sources masked until a waiter arms one. */
+    uart_reg_write(UART_IER, 0);
     uart_demux_init(hw_uart_has_char, hw_uart_getc);
     /* Handler before enable (arch/trap.h): so that if the IRQ somehow fires
      * before this returns, there is a handler to find it rather than an
@@ -622,8 +659,8 @@ void uart_puts(const char *s) {
 void uart_critical_putc(char c) {
     if (!uart_base) return;
     for (unsigned i = 0; i < 200000u; i++) {
-        if (uart_base[UART_LSR] & UART_LSR_THRE) {
-            uart_base[UART_THR] = (uint8_t)c;
+        if (uart_reg_read(UART_LSR) & UART_LSR_THRE) {
+            uart_reg_write(UART_THR, (uint8_t)c);
             return;
         }
     }

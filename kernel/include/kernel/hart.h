@@ -52,7 +52,13 @@
  * trap-path restructure before anything can actually contend.
  */
 
+#if defined(CONFIG_BOARD_VISIONFIVE2)
+/* JH7110 has 5 harts: hart 0 is the SiFive S7 M-mode monitor core (kept
+ * stopped by OpenSBI), and harts 1..4 are the four SiFive U74 S-mode cores. */
+#define MAX_HARTS 5
+#else
 #define MAX_HARTS 2
+#endif
 
 /* The value the primary hart writes to g_smp_release once the kernel is far
  * enough along for a secondary to run C code .
@@ -150,6 +156,8 @@ typedef struct hart {
 } hart_t;
 
 extern hart_t g_harts[MAX_HARTS];
+extern unsigned g_boot_hart;
+extern uintptr_t g_dtb_pa;
 
 /* Set to SMP_RELEASE_MAGIC by the primary hart once secondaries may run.
  * Read by arch/riscv/common/entry.S's .Lsecondary_wait loop. */

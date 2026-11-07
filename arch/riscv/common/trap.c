@@ -1,3 +1,4 @@
+#include "lugalos_config.h"
 #include "arch/trap.h"
 #include "arch/csr.h"
 #include "kernel/printk.h"
@@ -721,7 +722,12 @@ static void p4_clic_init(void) {
  * queue, and writing hart 0's threshold from hart 1 reconfigures a context
  * that is not its own. */
 static inline uint32_t plic_context(void) {
-#if defined(CONFIG_MODE_S)
+#if defined(CONFIG_BOARD_VISIONFIVE2)
+    /* JH7110's hart 0 is an M-mode-only S7 monitor core (1 PLIC context: 0);
+     * harts 1..4 are U74 cores with M-mode context 2*h - 1 and S-mode context
+     * 2*h (contexts 2, 4, 6, 8). */
+    return 2u * hart_id();
+#elif defined(CONFIG_MODE_S)
     return 2u * hart_id() + 1u;
 #else
     return 2u * hart_id();
@@ -1715,6 +1721,12 @@ void trap_handler(trap_frame_t *frame) {
         }
         { extern void sched_dump_table(void); sched_dump_table(); }
         printk_critical("[Fatal] System halted due to unhandled exception.\n");
+#if defined(CONFIG_BOARD_VISIONFIVE2)
+        {
+            extern bool board_reset(void);
+            (void)board_reset();
+        }
+#endif
         while (1) {
             __asm__ __volatile__("wfi");
         }

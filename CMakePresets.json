@@ -41,6 +41,18 @@
       }
     },
     {
+      "name": "visionfive2",
+      "displayName": "StarFive VisionFive 2 v1.3B (JH7110 RV64GC)",
+      "description": "StarFive VisionFive 2 v1.3B (JH7110 quad U74-MC RV64GC, Sv39 MMU, S-mode under OpenSBI).",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/visionfive2",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-visionfive2.cmake",
+        "LUGALOS_BOARD_FILE": "${sourceDir}/cmake/board-visionfive2.cmake",
+        "LUGALOS_PROFILE": "qemu"
+      }
+    },
+    {
       "name": "rp2350-chess",
       "displayName": "RP2350 (Pico 2) \u2014 chess-computer persona",
       "description": "Raspberry Pi Pico 2, default board persona: SD card via SPI1, ST7735 TFT + TM1638 keypad + chess engine all built in.",
@@ -279,6 +291,10 @@
     {
       "name": "esp32c6-mini",
       "configurePreset": "esp32c6-mini"
+    },
+    {
+      "name": "visionfive2",
+      "configurePreset": "visionfive2"
     }
   ]
 }

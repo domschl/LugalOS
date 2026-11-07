@@ -91,6 +91,8 @@ set(_optional_keys
     # from CONFIG_XTAL_HZ below, which is the crystal rather than the clock
     # this kernel chooses to drive the UART from.
     CONFIG_UART0_SCLK_HZ CONFIG_UART0_BAUD
+    CONFIG_UART_REG_SHIFT CONFIG_UART0_IRQ
+    CONFIG_TIMEBASE_HZ CONFIG_PLIC_BASE CONFIG_CLINT_BASE
     CONFIG_XTAL_HZ CONFIG_CPU_FREQ_MHZ
     # the ESP32-P4's silicon
     # revision as major*100+minor (103 = v1.3, 302 = v3.2). A board fact

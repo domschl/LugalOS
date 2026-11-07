@@ -1,3 +1,4 @@
+#include "lugalos_config.h"
 #include "kernel/ticker.h"
 #include "kernel/hart.h"
 #include "kernel/printk.h"
@@ -450,10 +451,18 @@ static bool arch_ticker_init(void) {
     return true;
 }
 
-/* --- QEMU RV64: Sstc stimecmp, S-mode -------------------------------- */
+/* --- S-mode: OpenSBI TIME extension or Sstc stimecmp ----------------- */
 #else
 
+#if defined(CONFIG_SBI)
+#include "arch/sbi.h"
+#endif
+
+#if defined(CONFIG_TIMEBASE_HZ)
+#define TICK_HZ ((uint64_t)CONFIG_TIMEBASE_HZ)
+#else
 #define TICK_HZ 10000000UL    /* same virt machine clock, read via rdtime */
+#endif
 
 static uint64_t now(void) {
     uint64_t t;
@@ -462,12 +471,21 @@ static uint64_t now(void) {
 }
 
 static void set_deadline(uint64_t t) {
+#if defined(CONFIG_SBI)
+    sbi_set_timer(t);
+#else
     /* stimecmp is CSR 0x14d. Named numerically because the assembler in use
      * does not know the Sstc mnemonic. */
     __asm__ __volatile__("csrw 0x14d, %0" :: "r"(t));
+#endif
 }
 
 static bool arch_ticker_init(void) {
+#if defined(CONFIG_SBI)
+    set_deadline(now() + g_interval);
+    set_csr(sie, 1UL << 5);   /* STIE */
+    return true;
+#else
     /* Sstc is only usable if M-mode set menvcfg.STCE before dropping to
      * S-mode -- entry.S does. Probe by writing a deadline and reading it
      * back: on a core without Sstc the CSR access traps, which
@@ -480,6 +498,7 @@ static bool arch_ticker_init(void) {
     }
     set_csr(sie, 1UL << 5);   /* STIE */
     return true;
+#endif
 }
 
 #endif

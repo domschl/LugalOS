@@ -145,15 +145,16 @@ void sched_init(void) {
     g_tasks[0].name = "kernel";
     g_tasks[0].stack_base = NULL;
     /* Pinned to the primary: this task runs on the linker's boot stack, so
-     * another hart resuming it would execute on hart 0's stack (X1). */
-    g_tasks[0].hart_affinity = 0;
+     * another hart resuming it would execute on the primary's stack (X1). */
+    g_boot_hart = hart_id();
+    g_tasks[0].hart_affinity = (int)g_boot_hart;
     g_tasks[0].priority = TASK_PRIO_NORMAL;
     /* Only the primary has a task here. Every other hart owns none until its
      * own sched_secondary_init() -- and says so, rather than defaulting to 0
      * and impersonating the boot task on a hart that is not running it. See
      * sched_current_pid()'s comment in sched.h for what that cost. */
-    g_current[0] = 0;
-    for (int h = 1; h < MAX_HARTS; h++) g_current[h] = TASK_NO_PID;
+    for (int h = 0; h < MAX_HARTS; h++) g_current[h] = TASK_NO_PID;
+    g_current[g_boot_hart] = 0;
     spinlock_init(&g_sched_lock);
     g_active = true;
 
@@ -275,13 +276,13 @@ int task_affinity(int pid) {
 
 int task_create_driver(const char *name, void (*entry)(void *), void *arg,
                        uint32_t stack_pages) {
-    /* Hart 0, not "the creating hart": drivers are brought up from
+    /* Primary boot hart, not "the creating hart": drivers are brought up from
      * kernel_main() on the primary, and that is also where their interrupts
      * were enabled (arch_irq_enable() writes the calling hart's PLIC
      * context). Pinning to whoever happened to create the task would be the
      * same answer today and a different one the moment anything is started
      * from elsewhere. */
-    return task_create_full(name, entry, arg, stack_pages, 0);
+    return task_create_full(name, entry, arg, stack_pages, (int)g_boot_hart);
 }
 
 int task_set_affinity(int pid, int hart) {
@@ -728,7 +729,7 @@ bool sched_current_stack(uintptr_t *lo, uintptr_t *hi) {
         *hi = *lo + (uintptr_t)g_tasks[pid].stack_pages * PAGE_SIZE;
         return true;
     }
-    if (hart_id() != 0) return false;
+    if (hart_id() != g_boot_hart) return false;
     *lo = (uintptr_t)_stack_bottom;
     *hi = (uintptr_t)_stack_top;
     return true;

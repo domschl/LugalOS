@@ -197,15 +197,16 @@ static inline uint64_t read_hardware_counter_us(void) {
 #elif !defined(CONFIG_MODE_S)
     return CLINT_MTIME / 10; /* 10 MHz ticks -> microseconds */
 #else
-    /* QEMU RV64 (S-mode) and K210 (S-mode, no board file yet -- same bucket
-     * ticker.c already puts it in): the Sstc `rdtime` pseudo-instruction
-     * reads the `time` CSR directly, which is what S-mode gets instead of
-     * the CLINT's raw MMIO (M-mode-only on most cores). Same 10 MHz virt
-     * rate on QEMU as the CLINT branch above -- ticker.c's own comment notes
-     * this is "the same virt machine clock, read via rdtime". */
+    /* S-mode targets (QEMU RV64 and VisionFive 2): the `rdtime`
+     * pseudo-instruction reads the `time` CSR directly (10 MHz on QEMU virt,
+     * CONFIG_TIMEBASE_HZ = 4 MHz on JH7110). */
     uint64_t t;
     __asm__ __volatile__("rdtime %0" : "=r"(t));
+#if defined(CONFIG_TIMEBASE_HZ)
+    return t / ((uint64_t)CONFIG_TIMEBASE_HZ / 1000000ULL);
+#else
     return t / 10;
+#endif
 #endif
 }
 

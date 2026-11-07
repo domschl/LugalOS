@@ -17,6 +17,46 @@
 #endif
 
 _start:
+#if defined(CONFIG_SBI)
+    /* 64-byte RISC-V Linux Image header (Documentation/riscv/boot-image-header.rst)
+     * validated by U-Boot's `booti 0x40200000 - ${fdtcontroladdr}`. */
+    .option push
+    .option norvc
+    j _sbi_start                        /* 0x00: code0 (4 bytes) */
+    .word 0                             /* 0x04: code1 */
+    .dword 0x200000                     /* 0x08: text_offset (2 MB from 0x40000000) */
+    .dword _bss_end - _start            /* 0x10: image_size */
+    .dword 0                            /* 0x18: flags (little-endian) */
+    .word 2                             /* 0x20: version (0.2) */
+    .word 0                             /* 0x24: res1 */
+    .dword 0                            /* 0x28: res2 */
+    .ascii "RISCV\0\0\0"                /* 0x30: magic */
+    .ascii "RSC\x05"                    /* 0x38: magic2 */
+    .word 0                             /* 0x3c: res3 */
+    .option pop
+
+_sbi_start:
+    /* U-Boot's booti enters in S-mode on all active U74 harts (1..4) via
+     * smp_call_function() with a0 = hartid, a1 = DTB physical address.
+     * Designate hart 1 as the primary boot hart; park harts 2..4 immediately
+     * so they do not share _stack_top or race the .bss clear. */
+    csrw sie, zero
+    csrci sstatus, 2                    /* clear sstatus.SIE */
+    li t0, 0x6000
+    csrc sstatus, t0                    /* clear sstatus.FS (FPU disabled in kernel) */
+    fence.i
+    mv tp, a0                           /* park raw hartid in tp across .bss clear */
+    mv s2, a1                           /* preserve DTB physical address across .bss clear */
+    la t0, trap_vector_entry
+    csrw stvec, t0
+    li t0, 1
+#if CONFIG_ENABLE_SMP
+    bne tp, t0, .Lsbi_secondary
+#else
+    bne tp, t0, .Lsecondary_hart_loop
+#endif
+    la sp, _stack_top
+#else
     /* Only hart 0 executes kernel_main; secondaries park below (or, with
      * CONFIG_ENABLE_SMP on QEMU, fall through to the secondary path).
      *
@@ -224,8 +264,9 @@ s_mode_start:
     la t0, trap_vector_entry
     csrw stvec, t0
 #endif
+#endif /* CONFIG_SBI */
 
-#if CONFIG_ENABLE_SMP && !defined(CONFIG_BOARD_RP2350)
+#if CONFIG_ENABLE_SMP && !defined(CONFIG_BOARD_RP2350) && !defined(CONFIG_SBI)
     /* Everything above is per-hart CSR state and every hart must do it for
      * itself. Everything below -- the .data copy, the .bss clear, the stack
      * paint -- is one-time image setup that exactly one hart may do. */
@@ -257,6 +298,13 @@ s_mode_start:
     j 1b
 
 2:
+#if defined(CONFIG_SBI)
+    /* Record the boot hart id and DTB physical address after .bss is zeroed. */
+    la t0, g_boot_hart
+    sw tp, 0(t0)
+    la t0, g_dtb_pa
+    sd s2, 0(t0)
+#endif
     /* Paint the unused boot stack so its high-water mark can be recovered
      * later (kernel/meminfo.c, /proc/meminfo). [_stack_bottom, sp) is exactly
      * the part nothing has touched: sp is still _stack_top for the primary

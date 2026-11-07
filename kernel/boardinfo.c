@@ -26,6 +26,8 @@ static void chip_string(char *out, uint32_t cap) {
     ksnprintf(out, cap, "ESP32-C6");
 #elif defined(CONFIG_BOARD_RP2350)
     ksnprintf(out, cap, "RP2350");
+#elif defined(CONFIG_BOARD_VISIONFIVE2)
+    ksnprintf(out, cap, "StarFive JH7110");
 #elif defined(CONFIG_TARGET_RV32)
     ksnprintf(out, cap, "QEMU rv32");
 #else

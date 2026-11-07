@@ -37,7 +37,7 @@ set(COMMON_CFLAGS "-Wall -Wextra -pedantic -ffreestanding -nostdlib -fno-builtin
 set(COMMON_ASFLAGS "-ffreestanding -nostdlib -mcmodel=medany -ggdb")
 
 set(KOBJ_SOURCES "")
-if(LUGALOS_TARGET STREQUAL "RV32_NOMMU" OR LUGALOS_TARGET STREQUAL "RV64_MMU" OR LUGALOS_TARGET STREQUAL "ESP32C6")
+if(LUGALOS_TARGET STREQUAL "RV32_NOMMU" OR LUGALOS_TARGET STREQUAL "RV64_MMU" OR LUGALOS_TARGET STREQUAL "VISIONFIVE2" OR LUGALOS_TARGET STREQUAL "ESP32C6")
     set(KOBJ_SOURCES kernel/kobj.c kernel/kobj_sched.c kernel/kobj_sys.c kernel/kobj_selftest.c kernel/kobj_utest.c
         kernel/uheap.c drivers/radio/osi_impl.c drivers/radio/uprintf.c drivers/radio/nvs_ram.c
         kernel/radio_osi_test.c)
@@ -53,6 +53,11 @@ elseif(LUGALOS_TARGET STREQUAL "RV64_MMU")
     set(ARCH_MABI "lp64d")
     set(LINKER_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/linker/qemu-rv64.ld")
     add_compile_definitions(CONFIG_TARGET_RV64=1 CONFIG_MMU=1 CONFIG_MODE_S=1)
+elseif(LUGALOS_TARGET STREQUAL "VISIONFIVE2")
+    set(ARCH_MARCH "rv64imac_zba_zbb_zicsr_zifencei")
+    set(ARCH_MABI "lp64")
+    set(LINKER_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/linker/visionfive2.ld")
+    add_compile_definitions(CONFIG_TARGET_RV64=1 CONFIG_MMU=1 CONFIG_MODE_S=1 CONFIG_SBI=1 CONFIG_BOARD_VISIONFIVE2=1)
 elseif(LUGALOS_TARGET STREQUAL "RP2350")
     set(ARCH_MARCH "rv32imac_zicsr_zbs")
     set(ARCH_MABI "ilp32")
@@ -190,7 +195,7 @@ include_directories(
 )
 
 # UBSan only makes sense on QEMU targets (bare metal has no abort/printf runtime)
-if(LUGALOS_TARGET STREQUAL "RP2350" OR LUGALOS_TARGET STREQUAL "ESP32P4" OR LUGALOS_TARGET STREQUAL "ESP32C6" OR LUGALOS_TARGET STREQUAL "K210")
+if(LUGALOS_TARGET STREQUAL "RP2350" OR LUGALOS_TARGET STREQUAL "ESP32P4" OR LUGALOS_TARGET STREQUAL "ESP32C6" OR LUGALOS_TARGET STREQUAL "VISIONFIVE2" OR LUGALOS_TARGET STREQUAL "K210")
     option(ENABLE_SANITIZERS "Enable UBSan runtime sanitizers for bug catching" OFF)
 else()
     option(ENABLE_SANITIZERS "Enable UBSan runtime sanitizers for bug catching" ON)
@@ -222,6 +227,8 @@ if(NOT DEFINED LUGALOS_BOARD_FILE)
         set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-rv32-nommu.cmake")
     elseif(LUGALOS_TARGET STREQUAL "RV64_MMU")
         set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-rv64-mmu.cmake")
+    elseif(LUGALOS_TARGET STREQUAL "VISIONFIVE2")
+        set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-visionfive2.cmake")
     elseif(LUGALOS_TARGET STREQUAL "RP2350")
         set(LUGALOS_BOARD_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/board-rp2350.cmake")
     elseif(LUGALOS_TARGET STREQUAL "ESP32P4")
@@ -234,7 +241,7 @@ endif()
 # The profile: what the node is for (cmake/lugalos_layers.cmake). A preset
 # names one; without one, the target's usual persona.
 if(NOT DEFINED LUGALOS_PROFILE)
-    if(LUGALOS_TARGET STREQUAL "RV32_NOMMU" OR LUGALOS_TARGET STREQUAL "RV64_MMU")
+    if(LUGALOS_TARGET STREQUAL "RV32_NOMMU" OR LUGALOS_TARGET STREQUAL "RV64_MMU" OR LUGALOS_TARGET STREQUAL "VISIONFIVE2")
         set(LUGALOS_PROFILE qemu)
     elseif(LUGALOS_TARGET STREQUAL "RP2350")
         set(LUGALOS_PROFILE chess)
@@ -431,7 +438,7 @@ if(LUGALOS_TARGET STREQUAL "RP2350")
     set(FLASH_FS_OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/flashfs.bin)
     set(FLASH_FS_SOURCE "")
     set(FLASH_FS_COMMENT "Generating flashfs.bin (its own flash segment, not linked in)")
-elseif(LUGALOS_TARGET STREQUAL "ESP32P4" OR LUGALOS_TARGET STREQUAL "ESP32C6")
+elseif(LUGALOS_TARGET STREQUAL "ESP32P4" OR LUGALOS_TARGET STREQUAL "ESP32C6" OR LUGALOS_TARGET STREQUAL "VISIONFIVE2")
     # E2,  (and 45.4 for the C6): built as a raw image, and linked
     # into nothing, because there is nowhere to put it yet.
     #
@@ -1310,6 +1317,8 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
     # console (drivers/usbjtag_esp32c6.c), or over SDIO to a P4 on a module
     # that has one (drivers/sdio_slave_esp32c6.c, empty without CONFIG_SDIO_SLAVE).
     list(APPEND SOURCES kernel/llp_node.c drivers/sdio_slave_esp32c6.c)
+elseif(LUGALOS_TARGET STREQUAL "VISIONFIVE2")
+    list(APPEND SOURCES drivers/uart_16550.c arch/riscv/common/sbi.c)
 else()
     # QEMU targets: VirtIO block device + 16550 UART + VirtIO console (9P link, A3)
     list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c drivers/virtio_console.c)
@@ -1664,7 +1673,7 @@ endif()
 #
 # A command list rather than an if(): POST_BUILD cannot carry one, the same
 # constraint SD_STAGE_COMMANDS above works around.
-if(LUGALOS_TARGET STREQUAL "ESP32P4" OR LUGALOS_TARGET STREQUAL "ESP32C6")
+if(LUGALOS_TARGET STREQUAL "ESP32P4" OR LUGALOS_TARGET STREQUAL "ESP32C6" OR LUGALOS_TARGET STREQUAL "VISIONFIVE2")
     set(UF2_COMMANDS COMMAND ${CMAKE_COMMAND} -E true)
 else()
     set(UF2_COMMANDS COMMAND ${UF2CONV_PY} --family rp2350_riscv --base ${LUGALOS_FLASH_BASE} lugalos.bin -o lugalos.uf2)

@@ -28,7 +28,9 @@
 #include "drivers/sdmmc.h"
 #endif
 
-#if !defined(CONFIG_BOARD_RP2350) && !defined(CONFIG_BOARD_ESP32P4) && !defined(CONFIG_BOARD_ESP32C6)
+#if defined(CONFIG_BOARD_VISIONFIVE2)
+#include "arch/sbi.h"
+#elif !defined(CONFIG_BOARD_RP2350) && !defined(CONFIG_BOARD_ESP32P4) && !defined(CONFIG_BOARD_ESP32C6)
 #include "drivers/virtio_console.h"
 #include "drivers/virtio_blk.h"
 #include "drivers/virtio_net.h"
@@ -194,6 +196,9 @@ static void *get_emac(void)   { return emac_get_netif(); }
 /* The microSD card in the NANO's slot, and this board's block device.
  * The driver initialises the card on first ask. */
 static void *get_sdmmc(void)  { return sdmmc_get_device(); }
+#elif defined(CONFIG_BOARD_VISIONFIVE2)
+/* StarFive VisionFive 2 (JH7110): console is DW-APB-UART0 above; storage and
+ * network drivers register in their own milestones. */
 #else
 static int   probe_virtio_console(void) { return virtio_console_init(); }
 static void *get_virtio_console(void)   { return virtio_console_get_link(); }
@@ -343,6 +348,8 @@ static void *get_llp(void) { return llp_node_p9_link(); }
 static const dev_driver_t dev_llp = {
     .name = "llp", .kind = DEV_KIND_P9LINK, .get = get_llp,
 };
+#elif defined(CONFIG_BOARD_VISIONFIVE2)
+/* StarFive VisionFive 2 (JH7110): unconditional entries above cover UART0. */
 #else
 static const dev_driver_t dev_vconsole = {
     .name = "vconsole", .kind = DEV_KIND_P9LINK, .flags = DEV_F_BACKGROUND_9P, .wire = DEV_WIRE_VIRTIO,
@@ -425,6 +432,8 @@ void board_register_devices(void) {
     dev_register(&dev_emac);
     dev_register(&dev_sdmmc);
     dev_register(&dev_llp);
+#elif defined(CONFIG_BOARD_VISIONFIVE2)
+    /* Unconditional entries above cover UART0 and its 9P links. */
 #else
     dev_register(&dev_vconsole);
     dev_register(&dev_llp);
@@ -474,6 +483,42 @@ bool board_reset_download(void) { return false; }
 #define P4_ROM_SOFTWARE_RESET 0x4fc00094u
 #endif
 
+#if defined(CONFIG_BOARD_VISIONFIVE2)
+/* U-Boot's booti (`dm_remove_devices_flags(DM_REMOVE_ACTIVE_ALL)`) calls
+ * `designware_i2c_remove()` on `i2c5` (0x12050000), which gates off
+ * `JH7110_I2C5_CLK_APB` (SYSCRG + 0x23c) and asserts `RSTN_U5_DW_I2C_APB`
+ * (bit 17 of SYSCRG_RESET_ASSERT2 at SYSCRG + 0x300), wiping the I2C5
+ * controller's registers. OpenSBI's `pm_system_reset()` only re-enables the
+ * APB clock before talking to the AXP15060 PMIC (0x36 on I2C5), so we must
+ * deassert I2C5's reset and restore its 100 kHz master configuration (49.5 MHz
+ * apb12 clock) before invoking `sbi_system_reset()`. */
+static void vf2_pmic_i2c5_reinit(void) {
+    volatile uint32_t *syscrg_i2c5_clk = (volatile uint32_t *)0x1302023cUL;
+    volatile uint32_t *syscrg_rst_assert2 = (volatile uint32_t *)0x13020300UL;
+    volatile uint32_t *syscrg_rst_status2 = (volatile uint32_t *)0x13020310UL;
+    const uint32_t rst_mask = (1u << 17); /* RSTN_U5_DW_I2C_APB = 81 */
+
+    *syscrg_i2c5_clk |= (1u << 31);
+    *syscrg_rst_assert2 &= ~rst_mask;
+    for (uint32_t i = 0; i < 10000; i++) {
+        if ((*syscrg_rst_status2 & rst_mask) != 0) break;
+    }
+
+    uintptr_t i2c5 = 0x12050000UL;
+    *(volatile uint32_t *)(i2c5 + 0x6c) = 0;    /* DW_IC_ENABLE = 0 */
+    *(volatile uint32_t *)(i2c5 + 0x14) = 219;  /* DW_IC_SS_SCL_HCNT (100 kHz @ 49.5 MHz) */
+    *(volatile uint32_t *)(i2c5 + 0x18) = 219;  /* DW_IC_SS_SCL_LCNT */
+    *(volatile uint32_t *)(i2c5 + 0x1c) = 60;   /* DW_IC_FS_SCL_HCNT */
+    *(volatile uint32_t *)(i2c5 + 0x20) = 130;  /* DW_IC_FS_SCL_LCNT */
+    *(volatile uint32_t *)(i2c5 + 0x7c) = 15;   /* DW_IC_SDA_HOLD (300 ns @ 49.5 MHz) */
+    *(volatile uint32_t *)(i2c5 + 0x38) = 0;    /* DW_IC_RX_TL */
+    *(volatile uint32_t *)(i2c5 + 0x3c) = 0;    /* DW_IC_TX_TL */
+    *(volatile uint32_t *)(i2c5 + 0x30) = 0;    /* DW_IC_INTR_MASK */
+    *(volatile uint32_t *)(i2c5 + 0x00) = 0x63; /* DW_IC_CON: master, 7-bit, SS, restart, slave_dis */
+    *(volatile uint32_t *)(i2c5 + 0x6c) = 1;    /* DW_IC_ENABLE = 1 */
+}
+#endif
+
 bool board_reset(void) {
 #if defined(CONFIG_BOARD_RP2350)
     return rp2350_reboot();
@@ -483,6 +528,11 @@ bool board_reset(void) {
 #elif defined(CONFIG_BOARD_ESP32P4)
     uart_flush_critical();
     ((void (*)(void))P4_ROM_SOFTWARE_RESET)();
+    return false;                      /* not reached */
+#elif defined(CONFIG_BOARD_VISIONFIVE2)
+    uart_flush_critical();
+    vf2_pmic_i2c5_reinit();
+    sbi_system_reset(SBI_SRST_RESET_TYPE_COLD_REBOOT, SBI_SRST_RESET_REASON_NONE);
     return false;                      /* not reached */
 #else
     return false;
@@ -504,7 +554,7 @@ static void reset_task(void *arg) {
 }
 
 bool board_reset_later(bool download, uint32_t ms) {
-#if defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32C6) || defined(CONFIG_BOARD_ESP32P4)
+#if defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32C6) || defined(CONFIG_BOARD_ESP32P4) || defined(CONFIG_BOARD_VISIONFIVE2)
 #if !defined(CONFIG_BOARD_ESP32C6)
     if (download) return false;
 #endif

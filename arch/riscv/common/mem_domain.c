@@ -1,3 +1,4 @@
+#include "lugalos_config.h"
 #include "kernel/mem_domain.h"
 #include "kernel/hart.h"
 #include "kernel/printk.h"
@@ -543,10 +544,14 @@ uint32_t pmp_proc_render(char *buf, uint32_t cap) {
 #define MB2 (2UL * 1024 * 1024)
 #define GB1 (1024UL * 1024 * 1024)
 
-/* QEMU virt: MMIO below 1 GB, RAM at 0x80000000. Mapped separately because
- * only the RAM gigabyte ever contains user regions, and it is the only one
- * that needs splitting to finer granularity. */
+/* MMIO below 1 GB, RAM at 0x80000000 on QEMU virt or 0x40000000 on JH7110.
+ * Mapped separately because only the RAM gigabyte ever contains user regions,
+ * and it is the only one that needs splitting to finer granularity. */
+#if defined(CONFIG_BOARD_VISIONFIVE2)
+#define RAM_BASE 0x40000000UL
+#else
 #define RAM_BASE 0x80000000UL
+#endif
 
 static const mem_region_t *region_at(const mem_domain_t *d, uintptr_t addr) {
     for (int i = 0; i < d->count; i++) {
@@ -604,9 +609,10 @@ static uintptr_t *build_space(const mem_domain_t *d) {
     memset(root, 0, PAGE_SIZE);
 
     const uintptr_t kflags = PTE_R | PTE_W | PTE_X | PTE_G;
+    const uintptr_t mmio_flags = PTE_R | PTE_W | PTE_G;
 
     /* MMIO gigabyte, as a single superpage. */
-    if (vmm_map_range(root, 0, 0, GB1, kflags) != 0) return NULL;
+    if (vmm_map_range(root, 0, 0, GB1, mmio_flags) != 0) return NULL;
 
     for (uintptr_t blk = RAM_BASE; blk < RAM_BASE + GB1; blk += MB2) {
         const mem_region_t *whole = NULL;

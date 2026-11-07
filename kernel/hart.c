@@ -6,6 +6,10 @@
  * Not static: arch/riscv/common/entry.S and arch/riscv/rp2350/boot_header.S
  * both take its address by name. */
 hart_t g_harts[MAX_HARTS];
+/* single task: the boot hart at entry; read-only after. */
+unsigned g_boot_hart;
+/* single task: the boot hart at entry; read-only after. */
+uintptr_t g_dtb_pa;
 
 /* The offsets in kernel/hart.h are what the trap vector actually indexes
  * with. Nothing else checks that they still describe this struct, and a

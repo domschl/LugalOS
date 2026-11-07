@@ -48,7 +48,7 @@ static const uint32_t g_flash_fs_size = (uint32_t)LUGALOS_FLASHFS_SIZE;
  * surviving a power cycle, and until now flashdisk_write_blocks() printed
  * "read-only" on every target including RP2350. */
 static const uint32_t g_flash_fs_size = (uint32_t)LUGALOS_P4_FLASHFS_SIZE;
-#elif defined(CONFIG_BOARD_ESP32C6)
+#elif defined(CONFIG_BOARD_ESP32C6) || defined(CONFIG_BOARD_VISIONFIVE2)
 /* the RAM-resident first form has no /flash0 --
  * the image is delivered by load-ram and the filesystem has nowhere to live
  * until 45.4.3 boots from flash and lays out a map. The size is zero, so

@@ -1,3 +1,4 @@
+#include "lugalos_config.h"
 #include "arch/vmm.h"
 #include "kernel/palloc.h"
 #include "arch/csr.h"
@@ -161,6 +162,21 @@ void vmm_init(void) {
     }
     memset(kernel_page_table, 0, PAGE_SIZE);
 
+#if defined(CONFIG_BOARD_VISIONFIVE2)
+    /* JH7110 U74 memory map:
+     *   0x00_0000_0000 .. 0x00_3FFF_FFFF (1 GB): MMIO on System Port (RW, no X)
+     *   0x00_4000_0000 .. 0x02_3FFF_FFFF (8 GB): cached LPDDR4 on Memory Port (RWX)
+     *   0x04_4000_0000 .. 0x06_3FFF_FFFF (8 GB): uncached System Port DRAM alias (RW) */
+    if (vmm_map_range(kernel_page_table, 0x00000000UL, 0x00000000UL,
+                      1UL * 1024 * 1024 * 1024, PTE_R | PTE_W | PTE_G) != 0 ||
+        vmm_map_range(kernel_page_table, 0x40000000UL, 0x40000000UL,
+                      8UL * 1024 * 1024 * 1024, PTE_R | PTE_W | PTE_X | PTE_G) != 0 ||
+        vmm_map_range(kernel_page_table, 0x440000000UL, 0x440000000UL,
+                      8UL * 1024 * 1024 * 1024, PTE_R | PTE_W | PTE_G) != 0) {
+        printk("[VMM] Kernel identity map failed; paging stays off\n");
+        return;
+    }
+#else
     /* Identity-map the low 4 GB as four 1 GB superpages: RWX, global, no U.
      *
      * Identity rather than a relocated kernel window, deliberately. Every
@@ -179,6 +195,7 @@ void vmm_init(void) {
         printk("[VMM] Kernel identity map failed; paging stays off\n");
         return;
     }
+#endif
 
     /* SUM lets S-mode read and write pages marked U. copy_from_user() and
      * copy_to_user() do exactly that, so without this every syscall taking a

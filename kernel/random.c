@@ -387,6 +387,12 @@ const char *random_source(void) {
                            : "RNG without its noise source (NOT random)";
 }
 
+#elif defined(CONFIG_BOARD_VISIONFIVE2)
+
+bool random_is_hardware(void) { return false; }
+const char *random_source(void) { return "timer+counter (NOT random)"; }
+void random_init(void) {}
+
 #else  /* the QEMU targets: QEMU's virtio-rng when the machine has one, else nothing, and it must show */
 
 #include "drivers/virtio_rng.h"
@@ -465,6 +471,8 @@ void random_bytes(void *out, uint32_t len) {
         for (unsigned i = 0; i < 16; i++) pool[i] = rng_word();
         sha256_update(&ctx, pool, sizeof(pool));
         memset(pool, 0, sizeof(pool));
+#elif defined(CONFIG_BOARD_VISIONFIVE2)
+        /* Timer and counter already hashed above. */
 #else
         if (virtio_rng_present() && !g_vrng_failed) {
             uint8_t pool[64];
