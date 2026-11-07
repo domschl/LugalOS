@@ -344,6 +344,23 @@ s_mode_start:
     wfi
     j 3b
 
+#if CONFIG_ENABLE_SMP && defined(CONFIG_SBI)
+.Lsbi_secondary:
+    /* Only U74 application harts 2..4 may join the scheduler; hart 0 is the
+     * M-mode S7 monitor core and must never enter S-mode kernel code.
+     * Give each secondary hart (tp = 2..4) its own 16 KB slice of the 64 KB
+     * .stack_secondary region: sp = _stack_secondary_bottom + (tp - 1) * 16384. */
+    li t0, 2
+    bltu tp, t0, .Lsecondary_hart_loop
+    li t0, MAX_HARTS
+    bgeu tp, t0, .Lsecondary_hart_loop
+    la sp, _stack_secondary_bottom
+    addi t0, tp, -1
+    slli t0, t0, 14
+    add sp, sp, t0
+    j .Lsecondary_wait
+#endif
+
 #if CONFIG_ENABLE_SMP && !defined(CONFIG_BOARD_RP2350)
 /* --- Secondary hart entry ---
  *

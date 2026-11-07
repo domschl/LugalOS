@@ -49,6 +49,7 @@
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/toolchain-visionfive2.cmake",
         "LUGALOS_BOARD_FILE": "${sourceDir}/cmake/board-visionfive2.cmake",
+        "LUGALOS_ENABLE_SMP": "ON",
         "LUGALOS_PROFILE": "qemu"
       }
     },

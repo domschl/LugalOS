@@ -174,6 +174,9 @@ void secondary_main(void);
 /* How many harts have entered the scheduler, primary included. */
 unsigned smp_harts_online(void);
 
+/* Whether a specific hart ID is currently online in the scheduler. */
+bool smp_hart_is_online(unsigned hart);
+
 /* X1's concurrency check: workers incrementing a shared counter through a
  * lock, asserting no lost updates AND that the work ran on more than one
  * hart. Prints SMP_SELFTEST_OK/_FAIL; returns the failure count. */

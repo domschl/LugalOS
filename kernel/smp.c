@@ -15,6 +15,9 @@
 #if defined(CONFIG_BOARD_ESP32P4)
 #include "arch/smp_esp32p4.h"
 #endif
+#if defined(CONFIG_BOARD_VISIONFIVE2)
+#include "arch/sbi.h"
+#endif
 #include <stddef.h>
 #include <stdbool.h>
 
@@ -38,12 +41,23 @@ volatile int g_secondary_pid = -1;
 
 static spinlock_t g_smp_lock;
 static unsigned   g_online = 1;   /* the primary is online by definition */
+/* guarded by: g_smp_lock */
+static uint32_t   g_online_mask;
 
 unsigned smp_harts_online(void) {
     uintptr_t f = spin_lock_irqsave(&g_smp_lock);
     unsigned n = g_online;
     spin_unlock_irqrestore(&g_smp_lock, f);
     return n;
+}
+
+bool smp_hart_is_online(unsigned hart) {
+    if (hart >= MAX_HARTS) return false;
+    if (hart == g_boot_hart) return true;
+    uintptr_t f = spin_lock_irqsave(&g_smp_lock);
+    bool on = (g_online_mask & (1u << hart)) != 0;
+    spin_unlock_irqrestore(&g_smp_lock, f);
+    return on;
 }
 
 /* Bring-up progress, recorded where it survives the core dying (X7).
@@ -787,6 +801,23 @@ void smp_release_secondaries(void) {
      * happen automatically. Making it a boot step is a later decision, once
      * the handshake has a track record. */
     printk("[SMP] core 1 is parked in the bootrom; `smpstart` launches it\n");
+#elif defined(CONFIG_BOARD_VISIONFIVE2)
+    /* U-Boot's booti already sends active U74 harts (2..4) into _start via
+     * smp_call_function(), where they spin at .Lsecondary_wait until
+     * g_smp_release == SMP_RELEASE_MAGIC. If any U74 hart was left in
+     * SBI_HSM_STATE_STOPPED, start it explicitly via OpenSBI HSM. */
+    extern void _start(void);
+    for (unsigned h = 2; h < MAX_HARTS; h++) {
+        if (sbi_hart_get_status(h) == SBI_HSM_STATE_STOPPED) {
+            (void)sbi_hart_start(h, (unsigned long)_start, (unsigned long)g_dtb_pa);
+        }
+    }
+    uint64_t deadline = time_get_us() + 50000;
+    while (smp_harts_online() < 4 && time_get_us() < deadline) {
+        __asm__ __volatile__("nop");
+    }
+    printk("[SMP] VisionFive 2 U74 cluster: %u of 4 application harts online (harts 1..4)\n",
+           smp_harts_online());
 #else
     printk("[SMP] Secondary harts released (max %d)\n", MAX_HARTS);
 #endif
@@ -854,6 +885,7 @@ void secondary_main(void) {
     {
         uintptr_t f = spin_lock_irqsave(&g_smp_lock);
         g_online++;
+        g_online_mask |= (1u << hart_id());
         spin_unlock_irqrestore(&g_smp_lock, f);
     }
     /* Core 0 reports this, not core 1.
@@ -971,7 +1003,11 @@ void smp_load_note_fault(void) { }
 
 #else
 
+#if MAX_HARTS > 2
+#define SMPTEST_WORKERS 8
+#else
 #define SMPTEST_WORKERS 4
+#endif
 #define SMPTEST_ITERS   20000
 
 /* accepted: a selftest's counters; g_smptest_unlocked races on purpose (it
@@ -1164,7 +1200,7 @@ static int smpload_start(void) {
      * shell it was typed into. */
     for (int guard = 0; guard < 200000; guard++) {
         uintptr_t f = spin_lock_irqsave(&g_load_lock);
-        uint32_t p0 = g_load_prog[0];
+        uint32_t p0 = g_load_prog[g_boot_hart];
         spin_unlock_irqrestore(&g_load_lock, f);
         if (p0 > 0) break;
         sched_yield();

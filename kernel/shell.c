@@ -5065,7 +5065,7 @@ static void run_user_task(const char *name, void (*body)(void *), int hart) {
      * and the caller waited out its yield cap and gave up -- correctly
      * reporting INCONCLUSIVE, but having leaked a task slot and a scratch
      * page to say it. Refusing costs nothing and says something truer. */
-    if (hart >= 0 && hart >= (int)smp_harts_online()) {
+    if (hart >= 0 && !smp_hart_is_online((unsigned)hart)) {
         printk("[UserTest] hart %d is not online (%u hart(s) running); "
                "not pinning '%s' there\n", hart, smp_harts_online(), name);
         return;
