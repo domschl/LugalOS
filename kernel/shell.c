@@ -157,6 +157,7 @@
 #elif defined(CONFIG_BOARD_VISIONFIVE2)
 #include "drivers/emac_jh7110.h"
 #include "drivers/pcie_jh7110.h"
+#include "drivers/nvme.h"
 #endif
 #include "arch/umode.h"
 #include "arch/trap.h"
@@ -7226,6 +7227,13 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "pcie") == 0 || strcmp(cmd_line, "pcie link") == 0) {
         pcie_cmd_summary();
+        return;
+    } else if (strncmp(cmd_line, "nvme bench", 10) == 0) {
+        uint32_t mb = (uint32_t)shell_trailing_uint(&cmd_line[10]);
+        nvme_cmd_bench(mb);
+        return;
+    } else if (strcmp(cmd_line, "nvme info") == 0 || strcmp(cmd_line, "nvme") == 0) {
+        nvme_cmd_info();
         return;
 #endif
 #if defined(CONFIG_BOARD_ESP32P4)

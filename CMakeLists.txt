@@ -1318,7 +1318,7 @@ elseif(LUGALOS_TARGET STREQUAL "ESP32C6")
     # that has one (drivers/sdio_slave_esp32c6.c, empty without CONFIG_SDIO_SLAVE).
     list(APPEND SOURCES kernel/llp_node.c drivers/sdio_slave_esp32c6.c)
 elseif(LUGALOS_TARGET STREQUAL "VISIONFIVE2")
-    list(APPEND SOURCES drivers/uart_16550.c arch/riscv/common/sbi.c drivers/sdmmc_jh7110.c drivers/emac_jh7110.c drivers/pcie_jh7110.c)
+    list(APPEND SOURCES drivers/uart_16550.c arch/riscv/common/sbi.c drivers/sdmmc_jh7110.c drivers/emac_jh7110.c drivers/pcie_jh7110.c drivers/nvme.c)
 else()
     # QEMU targets: VirtIO block device + 16550 UART + VirtIO console (9P link, A3)
     list(APPEND SOURCES drivers/uart_16550.c drivers/virtio_blk.c drivers/virtio_console.c)
