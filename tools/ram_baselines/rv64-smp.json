@@ -5,7 +5,7 @@
   "heap_bytes": 123981824,
   "heap_pages": 30269,
   "per_file": {
-    "(no line info: .rodata)": 13517,
+    "(no line info: .rodata)": 13536,
     "(no line info: .sdata)": 9,
     "arch/riscv/common/elf.c": 1852,
     "arch/riscv/common/mem_domain.c": 8,
@@ -77,7 +77,7 @@
     "kernel/chan.c": 1796,
     "kernel/chan_selftest.c": 176,
     "kernel/clipboard.c": 24,
-    "kernel/console.c": 1071,
+    "kernel/console.c": 1075,
     "kernel/crypto.c": 80,
     "kernel/der.c": 65,
     "kernel/device.c": 272,
@@ -86,7 +86,7 @@
     "kernel/ea.c": 3240,
     "kernel/editor.c": 131,
     "kernel/fmtselftest.c": 8,
-    "kernel/hart.c": 64,
+    "kernel/hart.c": 76,
     "kernel/identity.c": 72,
     "kernel/idstore.c": 136,
     "kernel/imath.c": 280,
@@ -112,7 +112,7 @@
     "kernel/setup.c": 453,
     "kernel/sha256.c": 273,
     "kernel/shell.c": 3284,
-    "kernel/smp.c": 72,
+    "kernel/smp.c": 76,
     "kernel/status_led.c": 8,
     "kernel/stress.c": 914,
     "kernel/svchost.c": 57,
@@ -168,7 +168,7 @@
     "user/zmachine/ztext.c": 27
   },
   "per_subsystem": {
-    "(no line info: .rodata)": 13517,
+    "(no line info: .rodata)": 13536,
     "(no line info: .sdata)": 9,
     "9p": 64680,
     "agent": 3501,
@@ -184,7 +184,7 @@
     "fs": 823,
     "httpd": 184,
     "identity": 669,
-    "kernel": 72077,
+    "kernel": 72093,
     "lisp": 4920840,
     "llp": 4324,
     "log": 8370,
@@ -193,11 +193,11 @@
     "radio": 3464,
     "selftest": 10607,
     "sensors": 20839,
-    "shell": 13967,
+    "shell": 13971,
     "storage": 20768,
     "usb": 672,
     "vfs": 4766
   },
-  "ram_code": 1252808,
-  "total": 7745829
+  "ram_code": 1253410,
+  "total": 7746470
 }

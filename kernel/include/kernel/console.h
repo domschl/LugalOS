@@ -145,6 +145,11 @@ void console_windows_now(const console_win_state_t *w, unsigned n);
  * (its program has ended); otherwise only the window goes, the canvas kept
  * for a program that may still draw into it. False: no such window. */
 bool console_close_canvas(uint8_t cid, bool free_it);
+/* An input device came or went (WIN_INPUT_KEYBOARD, WIN_INPUT_POINTER), for
+ * drivers outside the usbkbd stack -- a USB HID driver, a mouse. From any
+ * kernel task; the input path tells the windows (WIN_EV_INPUT_MODE). Each
+ * device kind is one bit: the last report wins. */
+void console_input_present(uint32_t device, bool present);
 /* The battery, from the power task: its charge in % (-1 unknown), whether
  * it charges, whether it is below the warning level. The input path tells
  * the windows (WIN_EV_POWER) at each 10 % step and each change. */

@@ -52,13 +52,13 @@
     "kernel/chan.c": 1348,
     "kernel/chan_selftest.c": 172,
     "kernel/clipboard.c": 20,
-    "kernel/console.c": 975,
+    "kernel/console.c": 979,
     "kernel/device.c": 140,
     "kernel/devirq.c": 134,
     "kernel/discipline.c": 82,
     "kernel/ea.c": 726,
     "kernel/fmtselftest.c": 8,
-    "kernel/hart.c": 32,
+    "kernel/hart.c": 40,
     "kernel/identity.c": 60,
     "kernel/idstore.c": 32,
     "kernel/klog.c": 8318,
@@ -120,7 +120,7 @@
     "fs": 64,
     "httpd": 53,
     "identity": 128,
-    "kernel": 12937,
+    "kernel": 12945,
     "lisp": 48395,
     "log": 8322,
     "mqtt": 4220,
@@ -128,11 +128,11 @@
     "ota": 126,
     "selftest": 1653,
     "sensors": 8689,
-    "shell": 12744,
+    "shell": 12748,
     "storage": 3133,
     "usb": 16700,
     "vfs": 4111
   },
   "ram_code": 358,
-  "total": 175018
+  "total": 175030
 }

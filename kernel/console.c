@@ -19,6 +19,7 @@
 #include "drivers/reader_view.h"
 #include "drivers/launcher_view.h"
 #include "drivers/osk.h"
+#include "drivers/touch.h"
 #include "drivers/usbkbd_task.h"
 #include "drivers/dsi_esp32p4.h"
 #include "kernel/event.h"
@@ -797,8 +798,25 @@ static void launcher_open_cb(void *arg) { (void)arg; (void)launcher_open(); }
  * power task stores), and each change told to every canvas window and view
  * on the ribbon. */
 static volatile uint32_t g_sys_power;       /* accepted: one word, stored by the power task */
+static volatile uint32_t g_sys_devices;     /* accepted: WIN_INPUT_* bits, set and cleared atomically */
 static volatile bool     g_sys_busy;        /* one input path at a time looks */
-static int               g_sys_kbd = -1;    /* guarded by: g_sys_busy; -1 not looked yet */
+static int               g_sys_input = -1;  /* guarded by: g_sys_busy; -1 not looked yet */
+
+void console_input_present(uint32_t device, bool present) {
+    device &= WIN_INPUT_KEYBOARD | WIN_INPUT_POINTER;
+    if (present) __atomic_fetch_or(&g_sys_devices, device, __ATOMIC_ACQ_REL);
+    else __atomic_fetch_and(&g_sys_devices, ~device, __ATOMIC_ACQ_REL);
+}
+
+/* What is attached now: WIN_INPUT_*. */
+static uint32_t sys_input_mode(void) {
+    uint32_t m = __atomic_load_n(&g_sys_devices, __ATOMIC_ACQUIRE);
+    if (usbkbd_is_present()) m |= WIN_INPUT_KEYBOARD;
+#if defined(TOUCH_PRESENT)
+    m |= WIN_INPUT_TOUCH;
+#endif
+    return m;
+}
 static uint32_t          g_sys_power_told;  /* guarded by: g_sys_busy */
 
 void console_power_state(int pct, bool charging, bool low) {
@@ -848,22 +866,24 @@ static void sys_check(void) {
     win_event_t ev;
     memset(&ev, 0, sizeof ev);
 
-    /* The keyboard: attached, the on-screen keyboard folds away; gone, the
-     * launcher comes up (touch is all there is). The first look is the state
-     * at boot: no event, and the boot shell's own check opens the launcher. */
-    int kbd = usbkbd_is_present() ? 1 : 0;
-    if (g_sys_kbd >= 0 && kbd != g_sys_kbd) {
+    /* The input devices. A keyboard attached: the on-screen keyboard folds
+     * away; gone where there is touch, the launcher comes up (touch is all
+     * there is). The first look is the state at boot: no event, and the boot
+     * shell's own check opens the launcher. */
+    int mode = (int)sys_input_mode();
+    if (g_sys_input >= 0 && mode != g_sys_input) {
         ev.type = WIN_EV_INPUT_MODE;
-        ev.key = (uint32_t)kbd;
+        ev.key = (uint32_t)mode;
         sys_tell(&ev);
-        if (kbd) {
+        uint32_t came = (uint32_t)(mode & ~g_sys_input), went = (uint32_t)(g_sys_input & ~mode);
+        if (came & WIN_INPUT_KEYBOARD) {
             uint8_t kreq[2] = { 'k', 0 }, kreply[SCREEN_REPLY_LEN];
             (void)console_canvas(kreq, 2, kreply);
-        } else {
+        } else if ((went & WIN_INPUT_KEYBOARD) && (mode & WIN_INPUT_TOUCH)) {
             view_post_call(launcher_open_cb, NULL);
         }
     }
-    g_sys_kbd = kbd;
+    g_sys_input = mode;
 
 #if defined(SYS_ROTATES)
     int rot = dsi_lcd_get_orientation();
@@ -898,7 +918,7 @@ static void sys_hello(uint8_t type, uint8_t id) {
     win_event_t ev;
     memset(&ev, 0, sizeof ev);
     ev.type = WIN_EV_INPUT_MODE;
-    ev.key = usbkbd_is_present() ? 1u : 0u;
+    ev.key = sys_input_mode();
     ws_send(type, id, &ev);
 #if defined(SYS_ROTATES)
     ev.type = WIN_EV_ORIENT;

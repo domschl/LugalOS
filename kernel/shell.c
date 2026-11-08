@@ -1733,7 +1733,10 @@ static void cmd_eventtest(const char *arg) {
         if (!s_evt.count[t]) continue;
         const win_event_t *e = &s_evt.last[t];
         cprintf("  %-13s %lu", names[t], (unsigned long)s_evt.count[t]);
-        if (t == WIN_EV_INPUT_MODE || t == WIN_EV_ORIENT) cprintf("  last %lu", (unsigned long)e->key);
+        if (t == WIN_EV_INPUT_MODE)
+            cprintf("  last%s%s%s", (e->key & WIN_INPUT_KEYBOARD) ? " keyboard" : "",
+                    (e->key & WIN_INPUT_POINTER) ? " pointer" : "", (e->key & WIN_INPUT_TOUCH) ? " touch" : "");
+        if (t == WIN_EV_ORIENT) cprintf("  last %lu", (unsigned long)e->key);
         if (t == WIN_EV_POWER) cprintf("  last %lu %%, flags 0x%x", (unsigned long)e->key, (unsigned)e->mods);
         if (t == WIN_EV_RESIZE) cprintf("  last %u x %u", (unsigned)e->w, (unsigned)e->h);
         if (t == WIN_EV_TILT) cprintf("  last x %d y %d z %d mg", (int)e->x, (int)e->y, (int)e->dy);

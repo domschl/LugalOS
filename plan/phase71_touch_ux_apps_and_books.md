@@ -48,18 +48,6 @@ Phase 70 delivered a usable first touch persona: HiDPI chrome (`CHROME_SCALE`), 
 
 ### 0.4 Why the Tab5 UX is slower than the 7B (root cause)
 
-### 0.5 Cross-Phase Architectural Dependencies (Phases 71, 74, 75)
-
-- **Input Pipeline (Phase 74 USB Mouse & Keyboard)**:
-  - Phase 74 Milestone 74.5 introduces physical USB mice and keyboards via the VIA VL805 on the StarFive VisionFive 2.
-  - The `ugui` widget hit-testing and event routing (71.1, 71.2, 71.3) must not be touch-exclusive: pointer events (`EV_POINTER_DOWN`/`UP` from mouse left-click) must trigger widget actions identically to touch taps, support mouse hover states, and route mouse wheel events (`EV_SCROLL_V`) to reader scrolling and ribbon panning.
-- **Output Pipeline (Phase 75 HDMI Workstation Display)**:
-  - Phase 75 brings 1080p60/720p60 HDMI display output to the VisionFive 2.
-  - The Ribbon window manager and Phase 71 apps (Book Reader, Settings app, Files face) will be composited side-by-side on large desktop monitors alongside terminal panes, navigated seamlessly via Phase 74 USB mouse and keyboard.
-- **Storage & Long File Names (Phase 74 NVMe SSD)**:
-  - Phase 74 Milestone 74.2/74.3 mounts a high-speed 256 GB M.2 NVMe SSD at `/nvme0/`.
-  - When Milestone 71.6b lands, `/nvme0/` automatically inherits VFAT long filename read/write support alongside `/sd0/`, enabling massive book collections (`/nvme0/BOOKS/`) with human-readable directory and file paths.
-
 The games were fixed by rendering into an RGB565 canvas and letting the PPA SRM do the 2× scale and the 90° rotation in one DMA pass, with zero-copy buffer swaps and cache-residency tracking (Phase 64 §5.9: `present` went from 75.8 ms to 0.79 ms). The general UX does not take that path anywhere:
 
 | Cost | Where | 7B (native landscape) | Tab5 (landscape = 270° rotation) |
@@ -75,6 +63,25 @@ Two of these costs hit both boards (reader re-parse, double rendering). The 7B h
 **Corrected by the 71.0 measurements (§3, 71.0 results):** rotation is *not* the main factor. With the Tab5 in portrait (no rotation) a focus move still takes 0.96 s against 1.03 s in landscape, and the reader composite 56 ms against 70 ms. The Tab5's frame is **RGB565** (needed for its anti-aliased terminal), so a full frame is 1.84 MB of PSRAM writes, about 50 ms at the ~36 MB/s that Phase 64 measured. Every forced frame pays that once for the 1-bpp conversion and again for each reader area on top of it. The 7B's GRAY8 frame is a third of that traffic. The levers are therefore, in order: no forced full frames per animation step, every pixel written once, and bulk copies by DMA (the PPA did moonbase's full 1280×720 2× + rotate in 15.7 ms). The window-surface design below delivers all three.
 
 The fix is architectural, not a micro-optimisation: **window surfaces composited by the PPA, and scroll/pan as composite-only operations**. That is the "fused" approach from the games, generalised. Details in 71.1.
+
+### 0.5 Cross-phase dependencies: the VisionFive 2 workstation (phases 74, 75)
+
+Phases 72-75 port LugalOS to the StarFive VisionFive 2 (`visionfive2`, RV64, S-mode). Two of their stages build on phase 71, and are developed in parallel with it (revised 2026-11-08 against what 71.4 actually built):
+
+- **Phase 74.5** brings a USB keyboard and a **USB mouse** over the VL805 xHCI controller (`drivers/usb_hid.c`), and 74.2/74.3 a 256 GB NVMe SSD at `/nvme0` (FAT32 through `block_dev_t`, `fs/fat32.c` untouched by phase 74).
+- **Phase 75** brings 1080p/720p HDMI (DC8200), a software arrow cursor (75.3, `kernel/cursor.c`) and the ribbon as a desktop on it (75.4).
+
+So the mouse becomes a **third input mode** next to touch and keyboard, the screen gets a resolution and a DPI that are only known at run time (EDID), and FAT32 long names (71.6b) are needed on a second, much larger volume. What phase 71 provides, and what it expects in return:
+
+| Area | Phase 71 provides (the contract) | Phases 74/75 provide |
+| :--- | :--- | :--- |
+| **Input devices** | `WIN_EV_INPUT_MODE` with a **bitmask** of what is attached (`WIN_INPUT_KEYBOARD`, `WIN_INPUT_POINTER`, `WIN_INPUT_TOUCH`), told to every window and view on each change and to each new window (71.4, done). Drivers outside the `usbkbd` stack report their devices with `console_input_present()` (71.4, done). | 74.5 calls `console_input_present(WIN_INPUT_KEYBOARD / WIN_INPUT_POINTER, …)` on attach and detach, and feeds keys through the existing console input path. |
+| **Pointer events** | **71.4p:** `console_pointer(x, y, buttons)` and `console_wheel(dx, dy)` in screen pixels, absolute; the console turns them into the existing `win_event_t`s (no new `EV_*` names): hover (`POINTER_MOVE` with `button` 0, to the window under the pointer), left press/release/click (`POINTER_DOWN`/`UP` with `WIN_EVF_PRESS`, `WIN_EVF_TAP`: the same as a finger), drag with the button held, **right click = the context menu** (`button` 2, the same action as a touch long press: the action sheet), vertical wheel = `WIN_EV_SCROLL` to the window **under the pointer**, horizontal wheel = ribbon pan. Focus follows a click. Chrome (close box, minimap, menu bar) clicks act as taps. `ms move/click/wheel` shell injection, as `ts` does for touch, so QEMU and the P4 panels test it without a mouse. | 75.3 keeps the cursor position (acceleration, clamping) and draws the cursor; it calls `console_pointer()` / `console_wheel()` with absolute positions and does no routing of its own. |
+| **Widgets** | 71.4p: `ugui` hover state (the widget under the pointer drawn highlighted), exact hit areas with a mouse (the 7 mm touch growth is for fingers), the focus ring rules unchanged (shown once a key is used). | -- |
+| **Display backend** | The ribbon, views, window rings, the close protocol and the system events are compiled where `LCDTERM_PRESENT` is defined (drivers/lcdterm.h). Millimetre metrics (`ugui_metrics_t`, the gesture thresholds) take the DPI from the display backend at run time, with `CONFIG_PANEL_DPI` as the board default (71.4). | 75.2/75.4 implement an `lcdterm` backend for the DC8200 frame (as `dsi_esp32p4.c` is one) and add the VisionFive 2 to `LCDTERM_PRESENT`; the backend reports the DPI from the EDID's physical size. |
+| **Long file names** | 71.6b in `fs/fat32.c`, for every FAT volume: `/sd0` and `/nvme0` alike, including the 64-bit build. | 74 mounts `/nvme0` with `fat32_init()` and does not change `fs/fat32.c`; it inherits long names when 71.6b lands. |
+
+Limits phase 75 should know: the ribbon holds `RIBBON_MAX_WINDOWS` = 8 windows; a window's width in columns is a `uint8_t` (a 1920-pixel screen at 8-pixel cells is 240 columns: it fits; 2560 does not); screen replies carry coordinates as 16 bits.
 
 ---
 
@@ -133,6 +140,7 @@ The 7B must get no slower on any row (its baseline is in the 71.0 results: pan 2
 ```
 touch driver ──raw down/move/up──▶ gesture recogniser ──▶ router ──▶ per-view event ring
 USB kbd / UART ──key bytes──▶ keyseq ─────────────────────────┘          │
+mouse (75.3) ──console_pointer()/wheel──▶ router (71.4p) ──────┤          │
 orient / battery / usbkbd ──system events──────────────────────┘          ▼
                                                                     view->event()
 ```
@@ -147,7 +155,7 @@ orient / battery / usbkbd ──system events───────────�
 - **Routing.** Pointer events go to the view under the contact at `POINTER_DOWN` and stay with it until `UP` (capture). Key events go to the focused view. System events go to all views.
 - **Per-view rings** replace the global ring and the canvas tap/key rings. Canvas/user-task apps (chess, moonbase, ceres) read their window's ring through `window_poll_event()`, which gets an explicit window handle. `touch_set_hook()` is deleted once moonbase and ceres are ported.
 - **System events** (new `win_event_type_t` values):
-  - `WIN_EV_INPUT_MODE`: keyboard attached/detached, carries the new mode (`KBD`, `TOUCH`, `BOTH`). Produced from `usbkbd` attach/detach, no longer polled in the shell.
+  - `WIN_EV_INPUT_MODE`: what is attached, as a bitmask (`WIN_INPUT_KEYBOARD`, `WIN_INPUT_POINTER`, `WIN_INPUT_TOUCH`; revised 2026-11-08 for the VisionFive 2's mouse, §0.5). From `usbkbd` and from drivers that report devices with `console_input_present()`, no longer polled in the shell.
   - `WIN_EV_ORIENT`: orientation changed (after the change). Followed by `RESIZE` with the new size.
   - `WIN_EV_TILT`: opt-in per view (`CLAIM_TILT`), at most 10 Hz, pitch/roll in milli-g from the BMI270. For a future level/game. Never delivered by default.
   - `WIN_EV_POWER`: battery level band changed (100/50/20/10 %), charger attached/detached.
@@ -420,8 +428,8 @@ Done: the frame record and `uxbench`; glass, screen, layout and strip checks; co
 **71.3 closed 2026-11-06** (owner's decision). Done: press feedback in the launcher, reader action bar, chess and the OSK (with key preview); keyboard focus and navigation (Tab, arrows, Enter, Esc) with the launcher fully keyboard-operable; dimmed controls that cannot act; touch areas grown to 7 mm past what is drawn, what is drawn under the finger winning (the reader bar keeps its height; 47 px on the 7B, 81 px on the Tab5); no dead zones on the OSK; key repeat for Delete and the arrows; clipping and a virtual list (the launcher's document list scrolls by pixels, follows the finger, glides); toggle, checkbox, slider (draggable: a finger on it is captured), progress, tab bar, path bar, text field, dialog and action sheet, all in `launcher gallery`; rect-cut layout helpers (one launcher layout for both orientations); the reader drawing through ugui's surface and primitives (pixel-identical). Fixed on the way: typing into the wrong terminal (stale reply bytes), launcher flicker (double-buffered GRAY8 surface, list-only scroll redraws), the document list missing `/sd0/docs` and every scanned file (8.3 capitals), Tab5 rotation leaving the other orientation's pixels in one frame buffer. **Moved to 71.4:** the gray image blit and the icon grid (they draw the `.GIC` icons 71.4 introduces), damage tracking (the double buffer and partial redraws made it an optimisation), mm-based text sizes and spacing beyond the touch targets, and the OSK click sound (it needs the settings store). Test suite 754/754.
 
 ### 71.4 — View framework, app registry, icons, settings store
-- From 71.3: the gray image blit (`.GIC`, 4-bpp, integer scale; 1-bpp dithered for the RP2350) and the icon grid (icon over label, selection, focus, long press) for the Shortcuts face; damage tracking in ugui (the union of changed widgets per pass) where a view needs it; `ugui_metrics_t` text sizes and spacing in millimetres; the OSK click sound (`ui.click_sound`).
-- System events (from 71.2): `WIN_EV_INPUT_MODE` from `usbkbd` attach/detach (replacing the shell's 200 ms poll), `ORIENT` followed by `RESIZE`, `POWER` (battery bands, charger), `SUSPEND`/`RESUME` for views and canvas programs off screen (the games' `lcdterm_is_canvas_active()` polling moves onto it), opt-in `TILT` at most 10 Hz; delivered to every view and window ring.
+- From 71.3: the gray image blit (`.GIC`, 4-bpp, integer scale; 1-bpp dithered for the RP2350) and the icon grid (icon over label, selection, focus, long press) for the Shortcuts face; damage tracking in ugui (the union of changed widgets per pass) where a view needs it; `ugui_metrics_t` text sizes and spacing in millimetres, the DPI from the display backend at run time (`CONFIG_PANEL_DPI` its default; an HDMI monitor's comes from its EDID, §0.5); the OSK click sound (`ui.click_sound`).
+- System events (from 71.2): `WIN_EV_INPUT_MODE` (a bitmask of keyboard, pointer, touch; `console_input_present()` for drivers outside `usbkbd`, §0.5) from attach/detach (replacing the shell's 200 ms poll), `ORIENT` followed by `RESIZE`, `POWER` (battery bands, charger), `SUSPEND`/`RESUME` for views and canvas programs off screen (the games' `lcdterm_is_canvas_active()` polling moves onto it), opt-in `TILT` at most 10 Hz; delivered to every view and window ring.
 - `view_ops_t`, `RIBBON_WIN_VIEW`; reader and launcher ported; `0x80` tagging removed; close protocol with owner acknowledgement and claim release.
 - App registry and associations in `.rodata`; `open <path>` shell command; `apps` shell command (list, `apps info <id>`).
 - `.GIC` format, `tools/gen_icons.py`, first icon set (reader, chess, moonbase, ceres, terminal, files, settings, book, folder, Markdown, Gemtext, Lisp, C source, text, generic).
@@ -436,22 +444,33 @@ Done: the frame record and `uxbench`; glass, screen, layout and strip checks; co
 - Primitives in the builtins table (`.rodata`, sorted), documented in `doc/dev/on_device/lisp_scripting.md`; a sample app ("hello ugui": a few controls and a list) in `tools/sd_root/demos/`.
 - **Acceptance:** the sample runs by touch and by keys only on the Tab5, the 7B and the RP2350-LCD-7; QEMU's RAM screen runs it in the test suite with injected events.
 
+### 71.4p — Pointer input: the mouse as an input mode (added 2026-11-08, for phases 74/75)
+- **Why:** the VisionFive 2 workstation (phases 74.5, 75.3, 75.4) has a USB mouse and no touch. Its cursor and acceleration are phase 75's; what a pointer event *means* to windows and widgets is the console's and `ugui`'s, and is defined here so phase 75 only feeds positions (§0.5).
+- `console_pointer(x, y, buttons)` and `console_wheel(dx, dy)`: absolute screen pixels and a button mask (`WIN_BUTTON_LEFT`, `_RIGHT`, `_MIDDLE`). The console tracks the window under the pointer and turns changes into today's events: hover moves (`POINTER_MOVE`, `button` 0; merged while unread) to the window under the pointer -- views always, canvas windows with `WIN_CLAIM_POINTER`; left press and release as a finger's (`WIN_EVF_PRESS`, then `WIN_EVF_TAP` when it is released over the same window); a drag with the button held (`WIN_EV_DRAG`/`DRAG_END` for views, the raw stream for claimed canvases, captured controls such as the slider follow it); right click as the context menu, the same action a touch long press gets (the action sheet); the vertical wheel as `WIN_EV_SCROLL` (in lines, `key` 0) to the window under the pointer, not the focused one; the horizontal wheel (or Shift + wheel) pans the ribbon. A click focuses its window. Clicks on the chrome (close box, minimap, menu bar) do what taps do.
+- `ugui`: a hover id in `ugui_ctx_t`, the hovered widget drawn highlighted (a Classic Mac outline, not the armed inversion); with a pointer the hit areas are what is drawn (the 7 mm growth is for fingers); the long-press menus also open on a right click.
+- Views: the launcher and the reader take hover and right clicks; the reader's wheel scrolls by lines. Games keep their claims: moonbase gets the raw pointer stream with hover.
+- Input mode: the launcher no longer opens on a keyboard detach where there is no touch (the workstation would only lose its keyboard); the OSK opens only where there is touch.
+- `ms move X Y`, `ms click X Y [right]`, `ms drag X0 Y0 X1 Y1`, `ms wheel DY [DX]`: injection through the same entry points, as `ts` does for touch, so the suite tests it on QEMU's RAM screen and the P4 panels without a mouse.
+- **Acceptance:** in QEMU, injected hover highlights a launcher card, a click opens it, a right click opens a document's action sheet, the wheel scrolls the reader under the pointer while a terminal has the focus, and the horizontal wheel pans the ribbon; `uguiselftest` covers hover; on the 7B the same by `ms` with the touch screen still working; phase 75.3 reuses the entry points unchanged.
+
 ### 71.5 — Portrait major-axis ribbon
 - `ribbon_t.axis`, renamed major-axis fields, row-based sizes; one-up and top/bottom pair in portrait; rotation preserves order and focus.
 - Gesture arbitration along Y; `Cmd+Up/Down`; minimap variant chosen on the device.
 - **Acceptance:** `tests/test_ribbon.py` covers both axes (layout, viewport, insert/remove, rotation round trip); on the Tab5 portrait a terminal + reader pair is usable by touch and keys; landscape behaviour unchanged.
 
 ### 71.6 — Settings app
-- Own view: Display (brightness, orientation, text size), Sound (volume, click sound, test beep), Input (OSK preview, keyboard status), Power (battery, charger, INA226 readings), Network (Wi-Fi state, IP), Storage (mounted volumes, free space), About (version, board, chip revision).
+- Own view: Display (brightness, orientation, text size), Sound (volume, click sound, test beep), Input (OSK preview, keyboard and pointer status, pointer speed `input.pointer_speed` -- phase 75's `cursor speed` sets the same setting), Power (battery, charger, INA226 readings), Network (Wi-Fi state, IP), Storage (mounted volumes, free space), About (version, board, chip revision).
 - Fully keyboard-operable through the `ugui` focus.
 - **Acceptance:** each setting by touch and by keys only; persistence; `WIN_EV_SETTINGS` reaches the reader (text size change relayouts it).
 
 ### 71.6b — FAT32 long file names (added 2026-11-06, owner; decision before it starts)
 - **Why:** `fs/fat32.c` is 8.3-only. It skips VFAT long-name entries on read, so files named on a PC appear as their aliases (`LUGALO~1.MD`), and it truncates on write, so two long names sharing their first 8 characters land in one file (`tests/hw/lcdterm_shots.py` works around it). The Files face (71.7), the book tree (71.9) and readable document names all want real names.
 - **Scope (proposal):** read and write VFAT long names: UTF-16 entries assembled to UTF-8 paths in the VFS (255 UTF-16 units max); case preserved, matching case-insensitive for ASCII and Latin-1; a name that fits 8.3 is stored as 8.3 only; a long one gets its entry set with checksum and a unique `~N` alias; delete and rename remove/rewrite the whole set. Characters outside Latin-1 are stored exactly and shown as a replacement glyph until fonts cover them (71.9 brings Latin-1).
-- **Decision for the owner:** which targets. Proposal: the SD + PSRAM boards (Tab5, LCD-7B, NANO, RP2350-LCD-7) at least; whether the code stays shared for every FAT target (simplest, one code path) or is compiled out where flash is tight (RP2350 Pico 2 presets, C6) is measured first (`sizereport`, flash delta).
-- **Cross-Phase Synchronization (Phase 74 NVMe SSD):** In parallel with 71.6b, Phase 74 (Milestone 74.2/74.3) introduces the high-speed 256 GB M.2 NVMe SSD mounted at `/nvme0/` using FAT32. To prevent conflicts in `fs/fat32.c`, Phase 74 interfaces with FAT32 strictly through `block_dev_t` and `vfs_server.c`, without touching `fs/fat32.c` internal parsing. Once 71.6b lands, `/nvme0/` automatically inherits full VFAT long filename read/write support, allowing large book libraries (`/nvme0/BOOKS/`) and long document paths without alias truncation.
-- **Acceptance:** host harness (`tests/host`, ASan/UBSan) on images made by `mkfs.fat`/`mtools` with long, mixed-case and Latin-1 names: listed, opened and written back exactly; files created here read correctly by `mtools` and `fsck.fat -n` is clean; alias collisions resolved; `p9sync.py` syncs a tree with long names to `/sd0` and `/nvme0`; the screenshot test drops its 8.3 note.
+- **Decision for the owner:** which targets. Proposal: the SD + PSRAM boards (Tab5, LCD-7B, NANO, RP2350-LCD-7) and the VisionFive 2 (`/sd0` and `/nvme0`, phase 74) at least; whether the code stays shared for every FAT target (simplest, one code path) or is compiled out where flash is tight (RP2350 Pico 2 presets, C6) is measured first (`sizereport`, flash delta).
+- **Large volumes (for `/nvme0`, 256 GB):** a FAT32 volume of that size has about 8 million clusters at 32 KB (a 32 MB FAT). Allocation starts from the FSInfo next-free hint and keeps the free count there, rather than scanning the FAT; directory walks of book trees with hundreds of entries per directory stay linear in the directory, not in the volume. Checked on the 64-bit build too (the host harness builds for both widths).
+- **Sequencing:** independent of 71.5 and 71.6, so it can be pulled forward after 71.4 if phase 74.3 or 75.4 want long names earlier; 71.7 (Files) and 71.9 (the book tree) need it.
+- **Cross-phase (phase 74, §0.5):** phase 74 mounts `/nvme0` through `block_dev_t` and `fat32_init()` and leaves `fs/fat32.c` to 71.6b, so the two do not conflict; `/nvme0` gets long names when 71.6b lands.
+- **Acceptance:** host harness (`tests/host`, ASan/UBSan) on images made by `mkfs.fat`/`mtools` with long, mixed-case and Latin-1 names: listed, opened and written back exactly; files created here read correctly by `mtools` and `fsck.fat -n` is clean; alias collisions resolved; `p9sync.py` syncs a tree with long names to `/sd0`, and to `/nvme0` on the VisionFive 2 once phase 74.3 has it; creating, listing and deleting in a directory of 1000 long names stays fast on a 256 GB image (sparse, in the host harness); the screenshot test drops its 8.3 note.
 
 ### 71.7 — Launcher: Shortcuts and Files
 - Tab bar; Shortcuts face with the persisted list, action sheet, defaults from `/flash0`.

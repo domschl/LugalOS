@@ -44,7 +44,8 @@ typedef enum {
     WIN_EV_RESUME,              /* on the screen again */
     /* The system's state, told to every canvas window and view when it
      * changes (kernel/console.c): */
-    WIN_EV_INPUT_MODE,          /* key 1: a keyboard is attached; 0: touch only (it went) */
+    WIN_EV_INPUT_MODE,          /* key: what is attached, WIN_INPUT_* (a keyboard came or went,
+                                 * a mouse; the touch screen is always there where there is one) */
     WIN_EV_ORIENT,              /* the display turned: key its rotation in degrees (0, 90, 180,
                                  * 270); each window's RESIZE follows */
     WIN_EV_POWER,               /* the battery: key its charge in % (0xFF unknown), mods
@@ -53,6 +54,10 @@ typedef enum {
                                  * focus: gravity in the screen's frame, mg -- x toward its
                                  * right, y toward its bottom, dy toward its back */
 } win_event_type_t;
+
+#define WIN_INPUT_KEYBOARD 0x01u
+#define WIN_INPUT_POINTER  0x02u     /* a mouse */
+#define WIN_INPUT_TOUCH    0x04u
 
 #define WIN_POWER_CHARGING 0x01u
 #define WIN_POWER_LOW      0x02u     /* below the warning level: save, and expect the cut-off */
