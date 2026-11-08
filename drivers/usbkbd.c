@@ -33,11 +33,25 @@ KBD_UTEXT bool usb_parse_config(const uint8_t *cfg, uint32_t len, usb_cfg_info_t
                 out->kbd_mps = cfg[at + 4];
                 out->kbd_interval = cfg[at + 6];
             }
+            if (int_in && alt == 0 && cls == 3 && sub == 1 && proto == 2 && !out->mouse_found) {
+                out->mouse_found = 1;
+                out->mouse_iface = (uint8_t)iface;
+                out->mouse_ep = (uint8_t)(ea & 0x0fu);
+                out->mouse_mps = cfg[at + 4];
+                out->mouse_interval = cfg[at + 6];
+            }
             if (int_in && cls == 9 && !out->hub_ep) out->hub_ep = (uint8_t)(ea & 0x0fu);
         }
         at += bl;
     }
     return true;
+}
+
+KBD_UTEXT uint32_t usbmouse_event(const uint8_t *r, uint32_t n) {
+    if (n < 3) return 0;
+    uint32_t e = (uint32_t)(r[0] & 0x07u) | ((uint32_t)r[1] << 8) | ((uint32_t)r[2] << 16);
+    if (n >= 4) e |= (uint32_t)r[3] << 24;
+    return e;
 }
 
 KBD_UTEXT static bool has_key(const uint8_t r[8], uint8_t k) {
@@ -435,6 +449,41 @@ int usbkbd_selftest(void) {
     static const uint8_t bad_cfg[12] = { 0x09, 0x02, 0x0C, 0x00, 0x01, 0x01, 0x00, 0xA0, 0x32, 0x00, 0x04, 0x00 };
     ok = usb_parse_config(bad_cfg, sizeof(bad_cfg), &ci);
     CHECK("a zero bLength ends the walk instead of looping", ok && !ci.kbd_found);
+    /* A boot mouse (HID 1.11 Appendix E's shape: protocol 2, 4-byte reports
+     * with the wheel), and a wireless receiver with a keyboard on interface
+     * 0 and a mouse on 1. */
+    static const uint8_t mouse_cfg[34] = {
+        0x09, 0x02, 0x22, 0x00, 0x01, 0x01, 0x00, 0xA0, 0x32,
+        0x09, 0x04, 0x00, 0x00, 0x01, 0x03, 0x01, 0x02, 0x00,
+        0x09, 0x21, 0x11, 0x01, 0x00, 0x01, 0x22, 0x34, 0x00,
+        0x07, 0x05, 0x81, 0x03, 0x04, 0x00, 0x0A,
+    };
+    ok = usb_parse_config(mouse_cfg, sizeof(mouse_cfg), &ci);
+    CHECK("boot mouse: iface 0, ep 1, 4 bytes, 10 ms, no keyboard",
+          ok && ci.mouse_found && ci.mouse_iface == 0 && ci.mouse_ep == 1 && ci.mouse_mps == 4 &&
+          ci.mouse_interval == 10 && !ci.kbd_found);
+    static const uint8_t combo_cfg[59] = {
+        0x09, 0x02, 0x3B, 0x00, 0x02, 0x01, 0x00, 0xA0, 0x32,
+        0x09, 0x04, 0x00, 0x00, 0x01, 0x03, 0x01, 0x01, 0x00,
+        0x09, 0x21, 0x11, 0x01, 0x00, 0x01, 0x22, 0x3F, 0x00,
+        0x07, 0x05, 0x81, 0x03, 0x08, 0x00, 0x08,
+        0x09, 0x04, 0x01, 0x00, 0x01, 0x03, 0x01, 0x02, 0x00,
+        0x09, 0x21, 0x11, 0x01, 0x00, 0x01, 0x22, 0x34, 0x00,
+        0x07, 0x05, 0x82, 0x03, 0x05, 0x00, 0x02,
+    };
+    ok = usb_parse_config(combo_cfg, sizeof(combo_cfg), &ci);
+    CHECK("receiver: keyboard iface 0 ep 1, mouse iface 1 ep 2 every 2 ms",
+          ok && ci.kbd_found && ci.kbd_iface == 0 && ci.kbd_ep == 1 &&
+          ci.mouse_found && ci.mouse_iface == 1 && ci.mouse_ep == 2 && ci.mouse_interval == 2);
+    static const uint8_t mr3[3] = { 0x01, 0x05, 0xFD };              /* left, 5 right, 3 up */
+    static const uint8_t mr4[4] = { 0x06, 0x80, 0x7F, 0xFF };        /* right + middle, extremes, wheel down */
+    uint32_t me = usbmouse_event(mr3, 3);
+    CHECK("mouse report: left held, dx 5, dy -3, no wheel",
+          USBMOUSE_BUTTONS(me) == 1 && USBMOUSE_DX(me) == 5 && USBMOUSE_DY(me) == -3 && USBMOUSE_WHEEL(me) == 0);
+    me = usbmouse_event(mr4, 4);
+    CHECK("mouse report: right + middle, dx -128, dy 127, wheel -1",
+          USBMOUSE_BUTTONS(me) == 6 && USBMOUSE_DX(me) == -128 && USBMOUSE_DY(me) == 127 && USBMOUSE_WHEEL(me) == -1);
+    CHECK("a short report is nothing", usbmouse_event(mr4, 2) == 0);
 
     uint32_t ev[16];
     static const uint8_t r0[8]   = { 0 };

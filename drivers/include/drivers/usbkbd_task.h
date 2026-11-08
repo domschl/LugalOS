@@ -28,6 +28,7 @@
 #define USBKBD_MAX_DEV   4
 #define USBKBD_MAX_PORTS 8
 #define USBKBD_EV_RING   64u     /* a power of two */
+#define USBKBD_MEV_RING  16u     /* the mouse's: a power of two; the kernel reads it at every pump */
 
 enum {
     USBKBD_PH_WAIT = 0, USBKBD_PH_ROOTRESET, USBKBD_PH_DESC8, USBKBD_PH_ADDRESS,
@@ -46,8 +47,11 @@ typedef struct {
     uint8_t  is_kbd, kbd_iface, kbd_ep, kbd_mps;
     uint8_t  kbd_interval, toggle;
     uint8_t  high_speed;     /* 47.9: a high-speed device (a USB 2.0 hub) */
-    uint8_t  _pad;
+    uint8_t  is_mouse;       /* a boot mouse interface (beside a keyboard's, on a combo receiver) */
     uint32_t last_poll;      /* ms */
+    uint8_t  mouse_iface, mouse_ep, mouse_mps, mouse_interval;
+    uint8_t  mouse_toggle, _pad3[3];
+    uint32_t mouse_last_poll;
 } usbkbd_dev_t;
 
 typedef struct {
@@ -71,6 +75,9 @@ typedef struct {
     uint8_t           desc18[20];    /* 47.9: the last device descriptor read (18 bytes) */
     volatile uint32_t ev_head;       /* written by the task */
     uint32_t          ev[USBKBD_EV_RING];
+    volatile uint32_t mev_head;      /* the mouse's reports (usbmouse_event()), written by the task */
+    uint32_t          mev[USBKBD_MEV_RING];
+    volatile uint32_t mouse_reports;
     uint8_t           buf[256];      /* descriptor scratch */
 } usbkbd_state_t;
 
@@ -79,6 +86,7 @@ typedef struct {
 int usbkbd_start(void);
 const usbkbd_state_t *usbkbd_state(void);
 bool usbkbd_is_present(void);
+bool usbkbd_mouse_present(void);
 
 /* `kbd`: what was found, where enumeration stands. `kbdlog [s]`: events. */
 void usbkbd_report(void);

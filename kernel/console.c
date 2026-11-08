@@ -408,6 +408,8 @@ static volatile int      g_drag_end_dy;
 static volatile uint32_t g_drag_end_ms;
 
 static void console_pump(void);
+/* The on-screen keyboard is for a touch screen without a keyboard. */
+static bool osk_wanted(void) { return touch_found() && !usbkbd_is_present(); }
 static void run_hotkey(void);
 static void run_pointer_once(void);
 
@@ -1053,9 +1055,8 @@ void console_input_present(uint32_t device, bool present) {
 static uint32_t sys_input_mode(void) {
     uint32_t m = __atomic_load_n(&g_sys_devices, __ATOMIC_ACQUIRE);
     if (usbkbd_is_present()) m |= WIN_INPUT_KEYBOARD;
-#if defined(TOUCH_PRESENT)
-    m |= WIN_INPUT_TOUCH;
-#endif
+    if (usbkbd_mouse_present()) m |= WIN_INPUT_POINTER;
+    if (touch_found()) m |= WIN_INPUT_TOUCH;
     return m;
 }
 static uint32_t          g_sys_power_told;  /* guarded by: g_sys_busy */
@@ -1122,6 +1123,8 @@ static void sys_check(void) {
             (void)console_canvas(kreq, 2, kreply);
         } else if ((went & WIN_INPUT_KEYBOARD) && (mode & WIN_INPUT_TOUCH)) {
             view_post_call(launcher_open_cb, NULL);
+        } else if ((came & WIN_INPUT_POINTER) && !(mode & (WIN_INPUT_KEYBOARD | WIN_INPUT_TOUCH))) {
+            view_post_call(launcher_open_cb, NULL);    /* a mouse alone: the launcher is the way in */
         }
     }
     g_sys_input = mode;
@@ -1202,7 +1205,7 @@ static void run_hotkey(void) {
                 (void)console_canvas(req, 3, reply);
                 g_active_win_type = 1;
                 vterm_set_active(vid);
-                if (!usbkbd_is_present()) {
+                if (osk_wanted()) {
                     uint8_t kreq[2] = { 'k', 1 };
                     (void)console_canvas(kreq, 2, reply);
                 }
@@ -1216,7 +1219,7 @@ static void run_hotkey(void) {
                 if (reply[10] != 0) g_active_win_type = reply[10];
                 if (reply[10] == 3 /* RIBBON_WIN_READER */) reader_set_active_instance(reply[11]);
                 vterm_set_active(reply[1]);
-                if (g_active_win_type == 1 /* RIBBON_WIN_TERM */ && !usbkbd_is_present()) {
+                if (g_active_win_type == 1 /* RIBBON_WIN_TERM */ && osk_wanted()) {
                     uint8_t kreq[2] = { 'k', 1 };
                     (void)console_canvas(kreq, 2, reply);
                 }
@@ -1229,7 +1232,7 @@ static void run_hotkey(void) {
                 if (reply[10] != 0) g_active_win_type = reply[10];
                 if (reply[10] == 3 /* RIBBON_WIN_READER */) reader_set_active_instance(reply[11]);
                 vterm_set_active(reply[1]);
-                if (g_active_win_type == 1 /* RIBBON_WIN_TERM */ && !usbkbd_is_present()) {
+                if (g_active_win_type == 1 /* RIBBON_WIN_TERM */ && osk_wanted()) {
                     uint8_t kreq[2] = { 'k', 1 };
                     (void)console_canvas(kreq, 2, reply);
                 }
@@ -1261,7 +1264,7 @@ static void run_hotkey(void) {
                 if (reply[10] != 0) g_active_win_type = reply[10];
                 if (reply[10] == 3 /* RIBBON_WIN_READER */) reader_set_active_instance(reply[11]);
                 vterm_set_active(reply[1]);
-                if (g_active_win_type == 1 /* RIBBON_WIN_TERM */ && !usbkbd_is_present()) {
+                if (g_active_win_type == 1 /* RIBBON_WIN_TERM */ && osk_wanted()) {
                     uint8_t kreq[2] = { 'k', 1 };
                     (void)console_canvas(kreq, 2, reply);
                 }
@@ -1316,7 +1319,7 @@ static void run_hotkey(void) {
                 if (reply[10] != 0) g_active_win_type = reply[10];
                 if (reply[10] == 3 /* RIBBON_WIN_READER */) reader_set_active_instance(reply[11]);
                 vterm_set_active(reply[1]);
-                if (g_active_win_type == 1 /* RIBBON_WIN_TERM */ && !usbkbd_is_present()) {
+                if (g_active_win_type == 1 /* RIBBON_WIN_TERM */ && osk_wanted()) {
                     uint8_t kreq[2] = { 'k', 1 };
                     (void)console_canvas(kreq, 2, reply);
                 }

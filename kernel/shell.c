@@ -8789,7 +8789,7 @@ static void shell_idle_poll(void) {
      * console's (WIN_EV_INPUT_MODE). */
     if (!s_boot_kbd_checked && time_get_ms() >= 1500u) {
         s_boot_kbd_checked = true;
-        if (!usbkbd_is_present() && !s_serial_cmd_seen && !launcher_is_active())
+        if (touch_found() && !usbkbd_is_present() && !s_serial_cmd_seen && !launcher_is_active())
             view_post_call(launcher_open_cb, NULL);
     }
 #endif

@@ -7,6 +7,7 @@
  */
 
 #include "drivers/ugui.h"
+#include "drivers/touch.h"
 #include "kernel/keyseq.h"
 #include "drivers/font_serif.h"
 #include "drivers/font_noto_serif.h"
@@ -135,6 +136,7 @@ static void ugui_dim(const ugui_surface_t *s, ugui_rect_t r) {
 
 int ugui_target_px(void) {
 #if defined(CONFIG_PANEL_DPI)
+    if (!touch_found()) return 0;                        /* no finger: what is drawn is the target */
     return (int)((UGUI_TARGET_MM * (unsigned)CONFIG_PANEL_DPI * 10u + 127u) / 254u);
 #else
     return 0;

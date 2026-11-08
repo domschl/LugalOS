@@ -30,6 +30,13 @@ int touch_start(void);
  * every press, move and release with its mapped point, for s seconds (20). */
 void touch_command(const char *args);
 
+/* Whether touch_start() found a controller: a board's build may include
+ * the driver for a version of it without a panel (the RP2350-LCD-7), so
+ * what needs touch (the on-screen keyboard, grown touch areas, the input
+ * mode's WIN_INPUT_TOUCH) asks this, not TOUCH_PRESENT. False before the
+ * probe ran. */
+bool touch_found(void);
+
 /* Returns total number of touch press events detected since boot */
 uint32_t touch_press_count(void);
 

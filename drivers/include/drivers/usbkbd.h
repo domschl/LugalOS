@@ -22,6 +22,11 @@ typedef struct {
     uint8_t kbd_interval;   /* bInterval: ms at full speed */
     uint8_t is_hub;         /* an interface of class 9 */
     uint8_t hub_ep;         /* the hub's status-change interrupt IN endpoint */
+    uint8_t mouse_found;    /* an interface of class 3/1/2 (HID boot mouse) */
+    uint8_t mouse_iface;
+    uint8_t mouse_ep;
+    uint8_t mouse_mps;
+    uint8_t mouse_interval;
 } usb_cfg_info_t;
 
 /* Walks `len` bytes of configuration descriptor. False if it is malformed
@@ -40,6 +45,16 @@ bool usb_parse_config(const uint8_t *cfg, uint32_t len, usb_cfg_info_t *out);
  * many were written (at most `max`), or -1 for a phantom/rollover report
  * (keys all 0x01), which the caller must ignore -- keeping `prev` as it was. */
 int usbkbd_diff(const uint8_t prev[8], const uint8_t cur[8], uint32_t *ev, uint32_t max);
+
+/* A boot mouse report -- buttons (bit 0 left, 1 right, 2 middle), dx, dy
+ * (signed, screen down positive), and the wheel (signed, up positive) when
+ * the report has a fourth byte -- as one event word. Fewer than 3 bytes:
+ * 0 (nothing moved, nothing held). */
+uint32_t usbmouse_event(const uint8_t *r, uint32_t n);
+#define USBMOUSE_BUTTONS(e) ((uint8_t)((e) & 0x07u))
+#define USBMOUSE_DX(e)      ((int)(int8_t)(uint8_t)((e) >> 8))
+#define USBMOUSE_DY(e)      ((int)(int8_t)(uint8_t)((e) >> 16))
+#define USBMOUSE_WHEEL(e)   ((int)(int8_t)(uint8_t)((e) >> 24))
 
 /* --- Key events to terminal bytes (36.9): kernel side, not U-mode ------------
  *

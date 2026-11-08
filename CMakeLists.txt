@@ -759,6 +759,8 @@ set(SOURCES
     kernel/clipboard.c
     # the screen to a PBM file.
     kernel/screenshot.c
+    # a relative pointer (a USB mouse) made absolute for the console.
+    kernel/pointer.c
     kernel/power.c
     kernel/ubsan.c
 

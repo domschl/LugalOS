@@ -61,7 +61,7 @@
     "drivers/uart_net.c": 14836,
     "drivers/ugui.c": 16,
     "drivers/usb_crc.c": 16,
-    "drivers/usbkbd.c": 656,
+    "drivers/usbkbd.c": 749,
     "drivers/uxbench.c": 568,
     "drivers/view.c": 1056,
     "drivers/vtterm.c": 16,
@@ -112,7 +112,7 @@
     "kernel/radio_osi_test.c": 396,
     "kernel/random.c": 4,
     "kernel/sched.c": 3453,
-    "kernel/settings.c": 315,
+    "kernel/settings.c": 349,
     "kernel/sha256.c": 273,
     "kernel/shell.c": 3341,
     "kernel/smp.c": 100,
@@ -188,7 +188,7 @@
     "fs": 823,
     "httpd": 184,
     "identity": 200,
-    "kernel": 238749,
+    "kernel": 238783,
     "lisp": 4920840,
     "log": 8373,
     "mqtt": 4646,
@@ -198,9 +198,9 @@
     "sensors": 20839,
     "shell": 14116,
     "storage": 6873,
-    "usb": 672,
+    "usb": 765,
     "vfs": 5639
   },
-  "ram_code": 680698,
-  "total": 7523466
+  "ram_code": 682044,
+  "total": 7524939
 }

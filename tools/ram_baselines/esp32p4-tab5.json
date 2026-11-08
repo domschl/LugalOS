@@ -77,7 +77,7 @@
     "drivers/uart_esp32p4.c": 912,
     "drivers/uart_net.c": 14740,
     "drivers/usbhost_esp32p4.c": 1108,
-    "drivers/usbkbd_host.c": 104,
+    "drivers/usbkbd_host.c": 108,
     "drivers/view.c": 28,
     "drivers/winclose.c": 4,
     "fs/9p.c": 9989,
@@ -107,11 +107,12 @@
     "kernel/ota.c": 112,
     "kernel/palloc.c": 1624,
     "kernel/path.c": 68,
+    "kernel/pointer.c": 17,
     "kernel/power.c": 176,
     "kernel/privilege.c": 8,
     "kernel/random.c": 9,
     "kernel/sched.c": 2501,
-    "kernel/settings.c": 27,
+    "kernel/settings.c": 29,
     "kernel/shell.c": 3006,
     "kernel/smp.c": 84,
     "kernel/status_led.c": 8,
@@ -186,7 +187,7 @@
     "fs": 4160,
     "httpd": 70,
     "identity": 4237,
-    "kernel": 14334,
+    "kernel": 14353,
     "lisp": 1115,
     "llp": 3579,
     "log": 8322,
@@ -198,9 +199,9 @@
     "sensors": 8736,
     "shell": 13359,
     "storage": 7456,
-    "usb": 1212,
+    "usb": 1216,
     "vfs": 4111
   },
   "ram_code": 1806,
-  "total": 217076
+  "total": 217099
 }

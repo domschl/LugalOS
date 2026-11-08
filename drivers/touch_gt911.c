@@ -585,10 +585,15 @@ uint32_t touch_press_count(void) {
     return g_t.presses;
 }
 
+bool touch_found(void) {
+    return g_t.found;
+}
+
 #else
 
 int touch_start(void) { return -1; }
 void touch_command(const char *args) { (void)args; cprintf("touch: this board has no touch controller\n"); }
 uint32_t touch_press_count(void) { return 0; }
+bool touch_found(void) { return false; }
 
 #endif

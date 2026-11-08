@@ -65,7 +65,7 @@
     "drivers/uart_net.c": 10644,
     "drivers/uart_rp2350.c": 1381,
     "drivers/usb_cdc.c": 16700,
-    "drivers/usbkbd_host.c": 104,
+    "drivers/usbkbd_host.c": 108,
     "drivers/usbkbd_rp2350.c": 3076,
     "drivers/view.c": 28,
     "drivers/winclose.c": 4,
@@ -96,11 +96,12 @@
     "kernel/ota.c": 112,
     "kernel/palloc.c": 856,
     "kernel/path.c": 68,
+    "kernel/pointer.c": 17,
     "kernel/power.c": 176,
     "kernel/privilege.c": 8,
     "kernel/random.c": 38,
     "kernel/sched.c": 2501,
-    "kernel/settings.c": 27,
+    "kernel/settings.c": 29,
     "kernel/shell.c": 2494,
     "kernel/smp.c": 9,
     "kernel/status_led.c": 8,
@@ -160,7 +161,7 @@
     "fs": 64,
     "httpd": 70,
     "identity": 128,
-    "kernel": 13246,
+    "kernel": 13265,
     "lisp": 9691,
     "llp": 4091,
     "log": 8322,
@@ -171,9 +172,9 @@
     "sensors": 8689,
     "shell": 12843,
     "storage": 3152,
-    "usb": 20928,
+    "usb": 20932,
     "vfs": 4111
   },
   "ram_code": 24484,
-  "total": 196650
+  "total": 196673
 }

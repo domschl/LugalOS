@@ -27,6 +27,7 @@
 #include "drivers/usbkbd.h"
 #include "drivers/usbkbd_task.h"
 #include "kernel/console.h"
+#include "kernel/pointer.h"
 #include "kernel/printk.h"
 #include "kernel/sched.h"
 #include "kernel/time.h"
@@ -177,6 +178,19 @@ KBD_UTEXT static uint32_t enumerate(usbkbd_state_t *k, usbkbd_dev_t *d, uint32_t
         (void)control(k, addr, mps0, su, k->buf, 0, 0);
         for (int i = 0; i < 8; i++) k->report[i] = 0;
     }
+    if (ci.mouse_found) {
+        d->is_mouse = 1;
+        d->mouse_iface = ci.mouse_iface;
+        d->mouse_ep = ci.mouse_ep;
+        d->mouse_mps = ci.mouse_mps;
+        d->mouse_interval = ci.mouse_interval ? ci.mouse_interval : 10;
+        d->mouse_toggle = 0;
+        k->phase = USBKBD_PH_PROTOCOL;
+        setup(su, 0x21, 0x0B, 0, ci.mouse_iface, 0);  /* SET_PROTOCOL(boot): buttons, dx, dy (, wheel) */
+        (void)control(k, addr, mps0, su, k->buf, 0, 0);
+        setup(su, 0x21, 0x0A, 0, ci.mouse_iface, 0);  /* SET_IDLE(0): report on change */
+        (void)control(k, addr, mps0, su, k->buf, 0, 0);
+    }
     k->enumerations++;
     return PIOUSB_OK;
 }
@@ -304,6 +318,25 @@ KBD_UTEXT static void kbd_poll(usbkbd_state_t *k, usbkbd_dev_t *d) {
     for (int i = 0; i < 8; i++) k->report[i] = r[i];
 }
 
+/* A boot mouse's report, into the mouse ring. Up to 8 bytes: a boot report
+ * is 3 or 4, some mice send more (ignored). */
+KBD_UTEXT static void mouse_poll(usbkbd_state_t *k, usbkbd_dev_t *d) {
+    uint8_t r[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+    uint32_t n = 0;
+    k->phase = USBKBD_PH_RUNNING;
+    talk_to(k, !d->full_speed, d->high_speed, d->hub_port);
+    uint32_t st = usbkbd_port_xfer(k, PIOUSB_OP_IN, d->addr, d->mouse_ep, d->mouse_toggle, 0, 0, r, 8, &n);
+    talk_to(k, 0, 0, 0);
+    if (st == PIOUSB_NAK || st == PIOUSB_TOGGLE) return;
+    if (st != PIOUSB_OK) { note_error(k, USBKBD_PH_RUNNING, st, d->addr); return; }
+    d->mouse_toggle ^= 1u;
+    if (n < 3) return;
+    k->mouse_reports = k->mouse_reports + 1u;
+    k->mev[k->mev_head & (USBKBD_MEV_RING - 1u)] = usbmouse_event(r, n);
+    HOST_FENCE();
+    k->mev_head = k->mev_head + 1u;
+}
+
 KBD_UTEXT void usbkbd_host_forget(usbkbd_state_t *k) {
     for (uint32_t i = 0; i < USBKBD_MAX_DEV; i++) dev_clear(&k->dev[i]);
     for (uint32_t p = 0; p < USBKBD_MAX_PORTS; p++) k->port_status[p] = 0;
@@ -345,6 +378,10 @@ KBD_UTEXT bool usbkbd_host_session(usbkbd_state_t *k) {
                 d->last_poll = now;
                 kbd_poll(k, d);
             }
+            if (d->addr && d->is_mouse && now - d->mouse_last_poll >= d->mouse_interval) {
+                d->mouse_last_poll = now;
+                mouse_poll(k, d);
+            }
         }
         usbkbd_port_sleep(1);
     }
@@ -367,6 +404,7 @@ static usbkbd_xlate_t g_xl;
 static uint32_t       g_ev_tail;
 static uint8_t        g_kq[KQ_SIZE];
 static uint32_t       g_kq_head, g_kq_tail;
+static uint32_t       g_mev_tail;     /* the mouse ring's reader: the pump, as the keyboard's */
 
 static bool kbd_present(void) {
     for (uint32_t i = 0; i < USBKBD_MAX_DEV; i++)
@@ -382,7 +420,22 @@ static void kq_put(const uint8_t *b, uint32_t n) {
     }
 }
 
+/* The mouse's reports since the last pump, to the pointer; a mouse that went
+ * away lets its buttons go. */
+static void mouse_fill(void) {
+    uint32_t head = g_k->mev_head;
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    if (head - g_mev_tail > USBKBD_MEV_RING) g_mev_tail = head - USBKBD_MEV_RING;   /* lapped */
+    while (g_mev_tail != head) {
+        uint32_t e = g_k->mev[g_mev_tail % USBKBD_MEV_RING];
+        g_mev_tail++;
+        pointer_relative(USBMOUSE_DX(e), USBMOUSE_DY(e), USBMOUSE_BUTTONS(e), USBMOUSE_WHEEL(e));
+    }
+    if (!usbkbd_mouse_present()) pointer_release();
+}
+
 static void kbd_fill(void) {
+    mouse_fill();
     uint32_t now = (uint32_t)time_get_ms();
     uint32_t head = g_k->ev_head;
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
@@ -433,6 +486,7 @@ static const console_input_t g_in_kbd = { "kbd", kbd_has_char, kbd_getc, kbd_pee
 void usbkbd_host_attach(usbkbd_state_t *k) {
     g_k = k;
     g_ev_tail = k->ev_head;
+    g_mev_tail = k->mev_head;
     if (console_input_register(&g_in_kbd) != 0)
         printk("[KBD] the console has no room for a third input source\n");
 }
@@ -444,6 +498,14 @@ const usbkbd_state_t *usbkbd_state(void) { return g_k; }
 const usbkbd_state_t *usbkbd_state(void) { return 0; }
 
 #endif
+
+bool usbkbd_mouse_present(void) {
+    const usbkbd_state_t *k = usbkbd_state();
+    if (!k) return false;
+    for (uint32_t i = 0; i < USBKBD_MAX_DEV; i++)
+        if (k->dev[i].addr && k->dev[i].is_mouse) return true;
+    return false;
+}
 
 bool usbkbd_is_present(void) {
     const usbkbd_state_t *k = usbkbd_state();
@@ -483,6 +545,7 @@ void usbkbd_report(void) {
         cprintf(" %04x:%04x class %02x, %s speed%s%s", d->vid, d->pid, d->dev_class,
                 d->high_speed ? "high" : d->full_speed ? "full" : "low", d->is_hub ? " (hub)" : "", d->is_kbd ? " BOOT KEYBOARD" : "");
         if (d->is_kbd) cprintf(" iface %u ep %u, %u bytes every %u ms", d->kbd_iface, d->kbd_ep, d->kbd_mps, d->kbd_interval);
+        if (d->is_mouse) cprintf(" BOOT MOUSE iface %u ep %u, %u bytes every %u ms", d->mouse_iface, d->mouse_ep, d->mouse_mps, d->mouse_interval);
         cprintf("\n");
     }
     if (k->hub_ports) {
@@ -494,6 +557,8 @@ void usbkbd_report(void) {
             (unsigned long)k->polls, (unsigned long)k->reports, (unsigned long)k->naks,
             (unsigned long)k->rollovers, (unsigned long)k->ev_head, (unsigned long)k->xfers,
             (unsigned long)k->retries);
+    if (usbkbd_mouse_present())
+        cprintf("kbd: mouse: %lu reports\n", (unsigned long)k->mouse_reports);
 }
 
 /* `kbd desc`: the task's descriptor scratch, which holds the last

@@ -53,7 +53,7 @@
     "drivers/uart_net.c": 14740,
     "drivers/ugui.c": 16,
     "drivers/usb_crc.c": 16,
-    "drivers/usbkbd.c": 656,
+    "drivers/usbkbd.c": 756,
     "drivers/view.c": 732,
     "drivers/virtio_blk.c": 12417,
     "drivers/virtio_blk_id.c": 8271,
@@ -106,7 +106,7 @@
     "kernel/radio_osi_test.c": 232,
     "kernel/random.c": 5,
     "kernel/sched.c": 2501,
-    "kernel/settings.c": 199,
+    "kernel/settings.c": 221,
     "kernel/sha256.c": 273,
     "kernel/shell.c": 2709,
     "kernel/smp.c": 8,
@@ -182,7 +182,7 @@
     "fs": 427,
     "httpd": 172,
     "identity": 140,
-    "kernel": 44628,
+    "kernel": 44650,
     "lisp": 3602752,
     "llp": 4144,
     "log": 8322,
@@ -194,9 +194,9 @@
     "shell": 13152,
     "storage": 20688,
     "tools": 256,
-    "usb": 672,
+    "usb": 772,
     "vfs": 4278
   },
-  "ram_code": 1296294,
-  "total": 6407590
+  "ram_code": 1297980,
+  "total": 6409398
 }
