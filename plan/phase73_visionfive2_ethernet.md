@@ -155,3 +155,14 @@ flowchart LR
      - Test 9: Live Gigabit Ethernet DHCP lease acquisition, host-to-board ICMP ping, HTTP `/status.json` fetch, and TCP 9P round-trip read/write test on port 564.
      - Test 10: Unattended cold reboot (`reboot` command without stopping at U-Boot) verifying that U-Boot auto-boots `/sd0/lugalos.bin` via `vf2_uEnv.txt` in < 4 seconds from PMIC cold reset to `lugalos>` prompt and LAN ping response!
    - Update [`doc/admin/boards/visionfive2.md`](file:///home/dsc/Source/gith/domschl/lugalos/doc/admin/boards/visionfive2.md), [`doc/user/shell.md`](file:///home/dsc/Source/gith/domschl/lugalos/doc/user/shell.md), and [`AGENTS.md`](file:///home/dsc/Source/gith/domschl/lugalos/AGENTS.md), regenerate on-device help (`python3 tools/gendocs.py --all`), and verify `python3 tools/racescan.py --build build/visionfive2 --check` and `python3 tests/runner.py`.
+
+---
+
+## 2. Follow-Up Roadmap & Cross-Phase Dependencies
+
+- **[Phase 74 (Stage 3) — Dual PCIe 2.0, M.2 NVMe SSD & VIA VL805 USB 3.0 Host](file:///home/dsc/Source/gith/domschl/lugalos/plan/phase74_visionfive2_nvme_usb.md)**:
+  - Extends TCP 9P synchronization: `tools/p9sync.py` can sync directly to the high-speed NVMe volume at `/nvme0/` in addition to `/sd0/`.
+  - Synchronizes with [Phase 71 Milestone 71.6b](file:///home/dsc/Source/gith/domschl/lugalos/plan/phase71_touch_ux_apps_and_books.md#716b--fat32-long-file-names-added-2026-11-06-owner-decision-before-it-starts) for VFAT long filenames.
+- **[Phase 75 (Stage 4) — HDMI 2.0 Display, DC8200 & Ribbon Workstation](file:///home/dsc/Source/gith/domschl/lugalos/plan/phase75_visionfive2_hdmi_ribbon.md)**:
+  - Consumes network status and IP address established in Phase 73 for display on the HDMI workstation status bar and Phase 71 Settings app.
+  - Marries Phase 74 USB mouse and keyboard input with 1080p60 graphical desktop.

@@ -48,6 +48,18 @@ Phase 70 delivered a usable first touch persona: HiDPI chrome (`CHROME_SCALE`), 
 
 ### 0.4 Why the Tab5 UX is slower than the 7B (root cause)
 
+### 0.5 Cross-Phase Architectural Dependencies (Phases 71, 74, 75)
+
+- **Input Pipeline (Phase 74 USB Mouse & Keyboard)**:
+  - Phase 74 Milestone 74.5 introduces physical USB mice and keyboards via the VIA VL805 on the StarFive VisionFive 2.
+  - The `ugui` widget hit-testing and event routing (71.1, 71.2, 71.3) must not be touch-exclusive: pointer events (`EV_POINTER_DOWN`/`UP` from mouse left-click) must trigger widget actions identically to touch taps, support mouse hover states, and route mouse wheel events (`EV_SCROLL_V`) to reader scrolling and ribbon panning.
+- **Output Pipeline (Phase 75 HDMI Workstation Display)**:
+  - Phase 75 brings 1080p60/720p60 HDMI display output to the VisionFive 2.
+  - The Ribbon window manager and Phase 71 apps (Book Reader, Settings app, Files face) will be composited side-by-side on large desktop monitors alongside terminal panes, navigated seamlessly via Phase 74 USB mouse and keyboard.
+- **Storage & Long File Names (Phase 74 NVMe SSD)**:
+  - Phase 74 Milestone 74.2/74.3 mounts a high-speed 256 GB M.2 NVMe SSD at `/nvme0/`.
+  - When Milestone 71.6b lands, `/nvme0/` automatically inherits VFAT long filename read/write support alongside `/sd0/`, enabling massive book collections (`/nvme0/BOOKS/`) with human-readable directory and file paths.
+
 The games were fixed by rendering into an RGB565 canvas and letting the PPA SRM do the 2× scale and the 90° rotation in one DMA pass, with zero-copy buffer swaps and cache-residency tracking (Phase 64 §5.9: `present` went from 75.8 ms to 0.79 ms). The general UX does not take that path anywhere:
 
 | Cost | Where | 7B (native landscape) | Tab5 (landscape = 270° rotation) |
@@ -438,7 +450,8 @@ Done: the frame record and `uxbench`; glass, screen, layout and strip checks; co
 - **Why:** `fs/fat32.c` is 8.3-only. It skips VFAT long-name entries on read, so files named on a PC appear as their aliases (`LUGALO~1.MD`), and it truncates on write, so two long names sharing their first 8 characters land in one file (`tests/hw/lcdterm_shots.py` works around it). The Files face (71.7), the book tree (71.9) and readable document names all want real names.
 - **Scope (proposal):** read and write VFAT long names: UTF-16 entries assembled to UTF-8 paths in the VFS (255 UTF-16 units max); case preserved, matching case-insensitive for ASCII and Latin-1; a name that fits 8.3 is stored as 8.3 only; a long one gets its entry set with checksum and a unique `~N` alias; delete and rename remove/rewrite the whole set. Characters outside Latin-1 are stored exactly and shown as a replacement glyph until fonts cover them (71.9 brings Latin-1).
 - **Decision for the owner:** which targets. Proposal: the SD + PSRAM boards (Tab5, LCD-7B, NANO, RP2350-LCD-7) at least; whether the code stays shared for every FAT target (simplest, one code path) or is compiled out where flash is tight (RP2350 Pico 2 presets, C6) is measured first (`sizereport`, flash delta).
-- **Acceptance:** host harness (`tests/host`, ASan/UBSan) on images made by `mkfs.fat`/`mtools` with long, mixed-case and Latin-1 names: listed, opened and written back exactly; files created here read correctly by `mtools` and `fsck.fat -n` is clean; alias collisions resolved; `p9sync.py` syncs a tree with long names to `/sd0`; the screenshot test drops its 8.3 note.
+- **Cross-Phase Synchronization (Phase 74 NVMe SSD):** In parallel with 71.6b, Phase 74 (Milestone 74.2/74.3) introduces the high-speed 256 GB M.2 NVMe SSD mounted at `/nvme0/` using FAT32. To prevent conflicts in `fs/fat32.c`, Phase 74 interfaces with FAT32 strictly through `block_dev_t` and `vfs_server.c`, without touching `fs/fat32.c` internal parsing. Once 71.6b lands, `/nvme0/` automatically inherits full VFAT long filename read/write support, allowing large book libraries (`/nvme0/BOOKS/`) and long document paths without alias truncation.
+- **Acceptance:** host harness (`tests/host`, ASan/UBSan) on images made by `mkfs.fat`/`mtools` with long, mixed-case and Latin-1 names: listed, opened and written back exactly; files created here read correctly by `mtools` and `fsck.fat -n` is clean; alias collisions resolved; `p9sync.py` syncs a tree with long names to `/sd0` and `/nvme0`; the screenshot test drops its 8.3 note.
 
 ### 71.7 — Launcher: Shortcuts and Files
 - Tab bar; Shortcuts face with the persisted list, action sheet, defaults from `/flash0`.

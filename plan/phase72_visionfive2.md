@@ -338,18 +338,20 @@ Each milestone ends with an observable, automated test on the physical VisionFiv
 
 ## 2. Subsequent Phases Roadmap (Stages 2–4)
 
-To keep Phase 72 focused and fast to verify, the remaining peripheral subsystems on the VisionFive 2 will follow immediately in dedicated phases once Milestone 72.6 is complete:
+To keep Phase 72 focused and fast to verify, the remaining peripheral subsystems on the VisionFive 2 follow in dedicated, synchronized phases:
 
-- **Phase 73 (Stage 2) — Gigabit Ethernet (`gmac1@16040000` + Motorcomm YT8531C) & Native 9P**:
-  - Port LugalOS's Synopsys DesignWare EQOS MAC driver (`drivers/emac_jh7110.c`, referencing `drivers/emac_esp32p4.c` and `u-boot/drivers/net/dwc_eth_qos.c`) + Motorcomm YT8531C RGMII PHY initialization (`jh7110-starfive-visionfive-2-v1.3b.dts` RGMII delay props).
-  - Enable native LugalOS DHCP, ICMP, UDP/TCP, NTP client/server, remote shell, and high-speed TCP 9P file synchronization (`tools/p9sync.py` over Gigabit Ethernet at `192.168.178.25`).
-- **Phase 74 (Stage 3) — PLDA PCIe Gen2 Root Complex (`pcie0`/`pcie1`), 256 GB M.2 NVMe (`/nvme0`) & VL805 xHCI USB 3.0 Host**:
-  - Bring up the PLDA XpressRICH3 PCIe Gen2 controllers (`pcie0@2B000000` and `pcie1@2C000000`, `STG_CRG` clocks/resets, `GPIO26`/`GPIO28` `PERST#`, 64-bit BAR window `0x9_80000000..0x9_FFFFFFFF`).
-  - Write a compact NVMe admin/I/O queue block driver (`drivers/nvme.c`) mounting the 256 GB M.2 SSD at `/nvme0`.
-  - Bring up xHCI USB 3.0 host support on the PCIe0 VIA VL805 controller for USB keyboards and mice.
-- **Phase 75 (Stage 4) — VeriSilicon DC8200 + Innosilicon HDMI 2.0 Display & 64-Bit Ribbon Workstation**:
-  - Bring up `DOM_VOUT_CRG` (`0x295C0000`, `JH7110_TRM` §5.6.1), Innosilicon HDMI TX (`0x29590000`), and VeriSilicon DC8200 display controller (`0x29400000`) scanning out a 1080p RGB565/XRGB8888 framebuffer from DRAM.
-  - Enable the LugalOS Ribbon window manager, anti-aliased fonts, Book Reader, CAS, Lisp, Chess, Moonbase, and Ceres on the HDMI monitor.
+- **[Phase 73 (Stage 2) — Gigabit Ethernet (`gmac1@16040000` + Motorcomm YT8531C) & Native 9P](file:///home/dsc/Source/gith/domschl/lugalos/plan/phase73_visionfive2_ethernet.md)** (**COMPLETE**):
+  - Synopsys DesignWare EQOS MAC driver (`drivers/emac_jh7110.c`) + Motorcomm YT8531C RGMII PHY initialization.
+  - Native LugalOS DHCP, ICMP, UDP/TCP, NTP, HTTP admin server, and high-speed TCP 9P file synchronization (`tools/p9sync.py` over Gigabit Ethernet at `192.168.178.25`).
+  - Headless SD auto-boot via `vf2_uEnv.txt` on `/sd0`.
+- **[Phase 74 (Stage 3) — PLDA PCIe Gen2 Root Complex (`pcie0`/`pcie1`), 256 GB M.2 NVMe (`/nvme0`) & VL805 xHCI USB 3.0 Host](file:///home/dsc/Source/gith/domschl/lugalos/plan/phase74_visionfive2_nvme_usb.md)** (**ACTIVE**):
+  - Bring up dual PLDA XpressRICH3 PCIe Gen2 controllers (`pcie0@2B000000` and `pcie1@2C000000`, `STG_CRG` clocks/resets, `GPIO26`/`GPIO28` `PERST#`, `GPIO32`/`GPIO21` `PWREN`, ATR translation tables).
+  - High-performance bare-metal NVMe admin/I/O queue block driver (`drivers/nvme.c`) mounting the 256 GB M.2 SSD at `/nvme0` (synchronizing with Phase 71 Milestone 71.6b for VFAT long filenames).
+  - xHCI USB 3.0 host support on the PCIe0 VIA VL805 controller (`drivers/xhci_jh7110.c`) and USB HID keyboard and mouse driver (`drivers/usb_hid.c`).
+- **[Phase 75 (Stage 4) — VeriSilicon DC8200 + Innosilicon HDMI 2.0 Display & 64-Bit Ribbon Workstation](file:///home/dsc/Source/gith/domschl/lugalos/plan/phase75_visionfive2_hdmi_ribbon.md)** (**PLANNED**):
+  - Bring up `DOM_VOUT_CRG` (`0x295C0000`), Innosilicon HDMI TX (`0x29590000`) with DDC EDID reader (`0x50`), and VeriSilicon DC8200 display controller (`0x29400000`) scanning out 1080p60/720p60 RGB565 framebuffers from DRAM.
+  - Software mouse cursor engine translating Phase 74 USB mouse events into on-screen pointer motion and widget clicks (marrying with Phase 71 `ugui` widgets).
+  - Enable the LugalOS Ribbon workstation desktop (interactive terminal, Book Reader, Settings, CAS plotting, Chess) on physical HDMI monitors without serial/UART.
 
 ---
 
