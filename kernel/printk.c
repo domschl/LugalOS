@@ -170,7 +170,7 @@ static char fmt_scan(const char **pp) {
     }
     while (*p >= '0' && *p <= '9') p++;
     if (*p == '.') { p++; while (*p >= '0' && *p <= '9') p++; }
-    if (*p == 'l') p++;
+    while (*p == 'l') p++;
     *pp = p;
     return *p;
 }
@@ -336,8 +336,8 @@ static int vprintk_src(putc_fn pc, puts_fn ps, void *ctx,
          * 32-bit value sign-extended in a 64-bit register, so an unsigned
          * 0x80000000 used to print as ffffffff80000000 with %x and as
          * 18446744071562067968 with %u; callers hand-rolled hex to avoid it. */
-        bool is_long = (*p == 'l');
-        if (is_long) p++;
+        bool is_long = false;
+        while (*p == 'l') { is_long = true; p++; }
 
         switch (*p) {
             case 'c': {

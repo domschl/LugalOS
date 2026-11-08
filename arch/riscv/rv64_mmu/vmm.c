@@ -166,13 +166,16 @@ void vmm_init(void) {
     /* JH7110 U74 memory map:
      *   0x00_0000_0000 .. 0x00_3FFF_FFFF (1 GB): MMIO on System Port (RW, no X)
      *   0x00_4000_0000 .. 0x02_3FFF_FFFF (8 GB): cached LPDDR4 on Memory Port (RWX)
-     *   0x04_4000_0000 .. 0x06_3FFF_FFFF (8 GB): uncached System Port DRAM alias (RW) */
+     *   0x04_4000_0000 .. 0x06_3FFF_FFFF (8 GB): uncached System Port DRAM alias (RW)
+     *   0x09_0000_0000 .. 0x09_FFFF_FFFF (4 GB): PCIe0/PCIe1 ECAM & 64-bit Memory (RW) */
     if (vmm_map_range(kernel_page_table, 0x00000000UL, 0x00000000UL,
                       1UL * 1024 * 1024 * 1024, PTE_R | PTE_W | PTE_G) != 0 ||
         vmm_map_range(kernel_page_table, 0x40000000UL, 0x40000000UL,
                       8UL * 1024 * 1024 * 1024, PTE_R | PTE_W | PTE_X | PTE_G) != 0 ||
         vmm_map_range(kernel_page_table, 0x440000000UL, 0x440000000UL,
-                      8UL * 1024 * 1024 * 1024, PTE_R | PTE_W | PTE_G) != 0) {
+                      8UL * 1024 * 1024 * 1024, PTE_R | PTE_W | PTE_G) != 0 ||
+        vmm_map_range(kernel_page_table, 0x900000000UL, 0x900000000UL,
+                      4UL * 1024 * 1024 * 1024, PTE_R | PTE_W | PTE_G) != 0) {
         printk("[VMM] Kernel identity map failed; paging stays off\n");
         return;
     }

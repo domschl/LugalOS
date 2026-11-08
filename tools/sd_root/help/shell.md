@@ -150,6 +150,9 @@ LugalOS features a ring buffer kernel logging subsystem ([logging](logging.md)):
 ### Storage, Time & Network
 * `sdinfo`: The SD card and its controller, re-read on every run (an empty slot is probed again, so a card inserted since boot is found): card identity, bus width and clock, host status, counters for data-path anomalies, and block 0 with its boot signature (separates a blank card from a broken data path).
 * `sdbench [kb]`: Sequential SD read throughput; `sdbench w` measures writes. `fsbench <dir>` is the filesystem write/read/verify benchmark; `edbench [kb] [dir]` times the editor's buffer operations.
+* `pcie` / `pcie link`: Summary of StarFive JH7110 PCIe root complexes (link status, speed, width, memory windows, and device count).
+* `pcie scan`: Scans and enumerates PCIe devices and functions on Bus 0 and Bus 1, listing Vendor/Device IDs, classes, descriptions, and assigned 32-bit/64-bit BARs.
+* `pcie info <port>`: Detailed port diagnostics for root complex 0 or 1 (MMIO register base, ECAM configuration base, allocated 32-bit memory window, link speed and lane count).
 * `tz [POSIX-TZ]`: Shows the time zone and whether summer time is in force; with a rule (`tz CET-1CEST,M3.5.0,M10.5.0/3`, `tz UTC0`) sets it.
 * `ntp [server-ip]`: Sets the clock over NTP; without an argument it asks the gateway.
 * `net`: Network interface status, IP address, netmask, gateway, DNS servers, and RX/TX packet counts.

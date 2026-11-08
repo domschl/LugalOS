@@ -156,6 +156,7 @@
 #include "arch/smp_esp32p4.h"
 #elif defined(CONFIG_BOARD_VISIONFIVE2)
 #include "drivers/emac_jh7110.h"
+#include "drivers/pcie_jh7110.h"
 #endif
 #include "arch/umode.h"
 #include "arch/trap.h"
@@ -7214,6 +7215,18 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         sdmmc_bench_report((uint32_t)shell_trailing_uint(&cmd_line[7]));
         return;
 #endif
+#endif
+#if defined(CONFIG_BOARD_VISIONFIVE2)
+    } else if (strcmp(cmd_line, "pcie scan") == 0) {
+        pcie_cmd_scan();
+        return;
+    } else if (strncmp(cmd_line, "pcie info", 9) == 0) {
+        int port = (int)shell_trailing_uint(&cmd_line[9]);
+        pcie_cmd_info(port);
+        return;
+    } else if (strcmp(cmd_line, "pcie") == 0 || strcmp(cmd_line, "pcie link") == 0) {
+        pcie_cmd_summary();
+        return;
 #endif
 #if defined(CONFIG_BOARD_ESP32P4)
     } else if (strcmp(cmd_line, "clicdump") == 0) {
