@@ -414,6 +414,11 @@ bool moon_platform_poll_event(moon_event_t *ev) {
             ev->type = MOON_EVENT_QUIT;
             return true;
         }
+        if (wev.type == WIN_EV_SCROLL && (wev.flags & WIN_EVF_WHEEL)) {
+            ev->type = MOON_EVENT_SCROLL;                /* a mouse wheel, as SDL's: notches */
+            ev->wheel_y = wev.dy;
+            return true;
+        }
         if (wev.type != WIN_EV_POINTER_DOWN && wev.type != WIN_EV_POINTER_MOVE && wev.type != WIN_EV_POINTER_UP)
             continue;
         ev->type = wev.type == WIN_EV_POINTER_DOWN ? MOON_EVENT_POINTER_DOWN :
@@ -427,8 +432,9 @@ bool moon_platform_poll_event(moon_event_t *ev) {
         ev->dy = ev->y - s_last_vy;
         s_last_vx = ev->x;
         s_last_vy = ev->y;
-        ev->button = 1;
-        ev->touch = 1;
+        /* SDL's numbers, which the game was written for: 1 left, 2 middle, 3 right */
+        ev->button = wev.button == 2 ? 3 : wev.button == 3 ? 2 : wev.button;
+        ev->touch = (wev.flags & WIN_EVF_MOUSE) ? 0 : 1;
         return true;
     }
 

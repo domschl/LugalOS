@@ -409,6 +409,7 @@ static volatile uint32_t g_drag_end_ms;
 
 static void console_pump(void);
 static void run_hotkey(void);
+static void run_pointer_once(void);
 
 #define CANVAS_KEY_RING_SIZE 32
 /* accepted: circular SPSC key ring for the focused RIBBON_WIN_CANVAS window;
@@ -671,6 +672,7 @@ static void run_press(void) {
     run_press_once();
     run_move_once();
     run_repeat_once();
+    run_pointer_once();
     __atomic_store_n(&g_press_busy, false, __ATOMIC_RELEASE);
 }
 
@@ -694,75 +696,242 @@ void console_touch_drag_end(int total_dy, int dy, uint32_t ms) {
     g_hotkey = CONSOLE_HOTKEY_DRAG_END;
 }
 
-/* single task: pointer tracking; guarded by: atomic updates */
-static volatile int     g_pointer_last_x = -1;
-static volatile int     g_pointer_last_y = -1;
-static volatile uint8_t g_pointer_last_buttons = 0;
-static volatile int     g_pointer_press_x = -1;
-static volatile int     g_pointer_press_y = -1;
-static volatile bool    g_pointer_dragging = false;
+/* The mouse (console_pointer()). Its driver's task keeps the button state
+ * and decides what a change is; what needs the windows (hover, the context
+ * click, the wheel) waits for the input path in these words, as a touch's
+ * press does: the latest point replaces an unread one, wheel notches add up.
+ * accepted: one producer (the mouse's task) and the input path, which takes
+ * each word with an atomic exchange; a point read between two stores of a
+ * new one is a pointer position a few pixels off, once. */
+static volatile uint32_t g_hover_xy;
+static volatile bool     g_hover_pending = false;
+static volatile uint32_t g_context_xy;
+static volatile bool     g_context_pending = false;
+static volatile uint32_t g_wheel_xy;
+static volatile int      g_wheel_dy = 0;
 
-#define POINTER_DRAG_THRESHOLD 6
+#define POINTER_DRAG_PX 6   /* moved this far with the left button held: a drag, not a click */
+
+/* single task: the mouse's driver task (console_pointer() / console_wheel()). */
+static struct {
+    int     x, y;           /* the last point */
+    uint8_t buttons;        /* WIN_BUTTON_* held */
+    int     x0, y0;         /* where the left button went down */
+    bool    dragging;       /* it moved past POINTER_DRAG_PX: a drag (no click at the release) */
+    bool    captured;       /* it went down on a control that follows it (a slider) */
+    win_t   raw;            /* the window claiming the pointer that has this press, -1: none */
+    int     ox, oy;         /* raw's content origin */
+    bool    waking;         /* a press that only woke the panel: nothing until every button is up */
+} g_ptr = { .raw = -1 };
+
+static uint32_t pack_xy(int x, int y) { return ((uint32_t)x << 16) | ((uint32_t)y & 0xFFFFu); }
+
+/* The raw stream to a window that claimed the pointer: content coordinates,
+ * the motion since the last event. */
+static void pointer_raw(uint8_t type, uint8_t button, int x, int y, int px, int py) {
+    win_event_t ev;
+    memset(&ev, 0, sizeof ev);
+    ev.type = type;
+    ev.button = button;
+    ev.flags = WIN_EVF_MOUSE;
+    ev.x = (int16_t)(x - g_ptr.ox);
+    ev.y = (int16_t)(y - g_ptr.oy);
+    ev.dx = (int16_t)(x - px);
+    ev.dy = (int16_t)(y - py);
+    window_post(g_ptr.raw, &ev);
+}
+
+/* The focused window, if it claims the pointer: the raw stream is its. */
+static bool pointer_claimed(void) {
+    win_t w = window_focused();
+    if (w < 0 || !(window_claims(w) & WIN_CLAIM_POINTER) || !window_origin(w, &g_ptr.ox, &g_ptr.oy)) return false;
+    g_ptr.raw = w;
+    return true;
+}
+
+static uint8_t button_number(uint8_t mask) {
+    return mask == WIN_BUTTON_LEFT ? 1u : mask == WIN_BUTTON_RIGHT ? 2u : 3u;
+}
 
 void console_pointer(int x, int y, uint8_t buttons) {
     if (x < 0) x = 0;
     if (y < 0) y = 0;
-
-    int prev_x = g_pointer_last_x;
-    int prev_y = g_pointer_last_y;
-    uint8_t prev_btn = g_pointer_last_buttons;
-
-    g_pointer_last_x = x;
-    g_pointer_last_y = y;
-    g_pointer_last_buttons = buttons;
-
-    if (note_input(true)) return;
-
-    bool left_down = (buttons & 1u) != 0;
-    bool prev_left_down = (prev_btn & 1u) != 0;
-
-    if (left_down && !prev_left_down) {
-        g_pointer_press_x = x;
-        g_pointer_press_y = y;
-        g_pointer_dragging = false;
-        console_touch_press((unsigned)x, (unsigned)y);
-    } else if (!left_down && prev_left_down) {
-        console_touch_release();
-        if (!g_pointer_dragging || g_active_win_type == 2 /* RIBBON_WIN_CANVAS */) {
-            int tap_x = (g_pointer_press_x >= 0) ? g_pointer_press_x : x;
-            int tap_y = (g_pointer_press_y >= 0) ? g_pointer_press_y : y;
-            console_touch_tap((unsigned)tap_x, (unsigned)tap_y);
-        } else {
-            console_touch_drag_end(y - g_pointer_press_y, y - prev_y, 50);
-        }
-        g_pointer_dragging = false;
-    } else if (left_down && prev_left_down && (x != prev_x || y != prev_y)) {
-        int dx = x - g_pointer_press_x;
-        if (dx < 0) dx = -dx;
-        int dy = y - g_pointer_press_y;
-        if (dy < 0) dy = -dy;
-        if (g_active_win_type != 2 && (g_pointer_dragging || dx > POINTER_DRAG_THRESHOLD || dy > POINTER_DRAG_THRESHOLD)) {
-            g_pointer_dragging = true;
-            console_touch_drag(y - prev_y);
-        }
-    } else if (!buttons && (x != prev_x || y != prev_y)) {
-        console_touch_move((unsigned)x, (unsigned)y);
+    if (x > 0x7FFF) x = 0x7FFF;
+    if (y > 0x7FFF) y = 0x7FFF;
+    int px = g_ptr.x, py = g_ptr.y;
+    uint8_t was = g_ptr.buttons, went_down = (uint8_t)(buttons & ~was), went_up = (uint8_t)(was & ~buttons);
+    g_ptr.x = x;
+    g_ptr.y = y;
+    g_ptr.buttons = buttons;
+    bool moved = x != px || y != py;
+    if (!went_down && !went_up && !moved) return;
+    if (g_ptr.waking) {
+        if (!buttons) g_ptr.waking = false;
+        return;
+    }
+    if (note_input(true)) {                              /* it only woke the panel */
+        g_ptr.waking = buttons != 0 && g_ptr.raw < 0;
+        return;
     }
 
-    bool right_down = (buttons & 2u) != 0;
-    bool prev_right_down = (prev_btn & 2u) != 0;
-    if (right_down && !prev_right_down) {
-        console_hotkey(CONSOLE_HOTKEY_NEW_TERM);
+    /* A press of a window that claims the pointer: the raw stream, every
+     * button, until the last one is let go. */
+    if (g_ptr.raw < 0 && went_down && !was && pointer_claimed()) {
+        for (uint8_t m = WIN_BUTTON_LEFT; m <= WIN_BUTTON_MIDDLE; m <<= 1)
+            if (went_down & m) pointer_raw(WIN_EV_POINTER_DOWN, button_number(m), x, y, x, y);
+        return;
+    }
+    if (g_ptr.raw >= 0) {
+        if (moved) pointer_raw(WIN_EV_POINTER_MOVE, buttons ? button_number((uint8_t)(buttons & -buttons)) : 0, x, y, px, py);
+        for (uint8_t m = WIN_BUTTON_LEFT; m <= WIN_BUTTON_MIDDLE; m <<= 1) {
+            if (went_down & m) pointer_raw(WIN_EV_POINTER_DOWN, button_number(m), x, y, px, py);
+            if (went_up & m) pointer_raw(WIN_EV_POINTER_UP, button_number(m), x, y, px, py);
+        }
+        if (!buttons) g_ptr.raw = -1;
+        return;
+    }
+
+    /* The left button: a finger. */
+    if (went_down & WIN_BUTTON_LEFT) {
+        g_ptr.x0 = x;
+        g_ptr.y0 = y;
+        g_ptr.dragging = false;
+        g_ptr.captured = console_touch_captures((unsigned)x, (unsigned)y);
+        console_touch_press((unsigned)x, (unsigned)y);
+    } else if ((buttons & WIN_BUTTON_LEFT) && moved) {
+        if (g_ptr.captured) {
+            console_touch_move((unsigned)x, (unsigned)y);
+        } else {
+            int ax = x - g_ptr.x0, ay = y - g_ptr.y0;
+            if (!g_ptr.dragging && (ax > POINTER_DRAG_PX || -ax > POINTER_DRAG_PX ||
+                                    ay > POINTER_DRAG_PX || -ay > POINTER_DRAG_PX)) {
+                g_ptr.dragging = true;
+                console_touch_release();                 /* no longer a click */
+            }
+            if (g_ptr.dragging && y != py) console_touch_drag(y - py);
+        }
+    }
+    if (went_up & WIN_BUTTON_LEFT) {
+        if (g_ptr.captured) {
+            g_ptr.captured = false;
+            console_touch_move((unsigned)x, (unsigned)y);
+            console_touch_release();
+        } else if (g_ptr.dragging) {
+            console_touch_drag_end(y - g_ptr.y0, 0, 0);  /* a mouse does not fling */
+        } else {
+            console_touch_release();
+            console_touch_tap((unsigned)g_ptr.x0, (unsigned)g_ptr.y0);
+        }
+        g_ptr.dragging = false;
+    }
+
+    /* The right button: the context menu, where it was let go. */
+    if (went_up & WIN_BUTTON_RIGHT) {
+        g_context_xy = pack_xy(x, y);
+        __atomic_store_n(&g_context_pending, true, __ATOMIC_RELEASE);
+    }
+
+    /* Hover: no button held. */
+    if (!buttons && moved) {
+        g_hover_xy = pack_xy(x, y);
+        __atomic_store_n(&g_hover_pending, true, __ATOMIC_RELEASE);
     }
 }
 
 void console_wheel(int dx, int dy) {
+    if (!dx && !dy) return;
     if (note_input(true)) return;
-    if (dy != 0) {
-        console_touch_scroll(dy < 0 ? -1 : 1, 100);
+    if (dy) {
+        win_t w = window_focused();
+        if (g_ptr.raw < 0 && w >= 0 && (window_claims(w) & WIN_CLAIM_POINTER) && window_origin(w, &g_ptr.ox, &g_ptr.oy)) {
+            win_event_t ev;                              /* a game's own, at the pointer */
+            memset(&ev, 0, sizeof ev);
+            ev.type = WIN_EV_SCROLL;
+            ev.flags = WIN_EVF_WHEEL | WIN_EVF_MOUSE;
+            ev.x = (int16_t)(g_ptr.x - g_ptr.ox);
+            ev.y = (int16_t)(g_ptr.y - g_ptr.oy);
+            ev.dy = (int16_t)dy;
+            window_post(w, &ev);
+        } else {
+            g_wheel_xy = pack_xy(g_ptr.x, g_ptr.y);
+            __atomic_fetch_add(&g_wheel_dy, dy, __ATOMIC_ACQ_REL);
+        }
     }
-    if (dx != 0) {
-        console_hotkey(dx < 0 ? CONSOLE_HOTKEY_LEFT : CONSOLE_HOTKEY_RIGHT);
+    if (dx) console_hotkey(dx > 0 ? CONSOLE_HOTKEY_FOCUS_RIGHT : CONSOLE_HOTKEY_FOCUS_LEFT);
+}
+
+void console_touch_context(unsigned x, unsigned y) {
+    if (note_input(true)) return;
+    g_context_xy = pack_xy((int)x, (int)y);
+    __atomic_store_n(&g_context_pending, true, __ATOMIC_RELEASE);
+}
+
+/* The mouse's words, in the input path: hover to the view under the pointer
+ * or a canvas window that claims the pointer; the context click as a button
+ * 2 tap to the view under it; the wheel to the view under the pointer. */
+static const view_ops_t *g_hover_view;    /* guarded by: g_press_busy; the view last hovered */
+static uint8_t           g_hover_inst;    /* guarded by: g_press_busy */
+
+static void run_pointer_once(void) {
+    uint8_t inst = 0;
+    int cx = 0, cy = 0;
+    if (__atomic_exchange_n(&g_hover_pending, false, __ATOMIC_ACQ_REL)) {
+        uint32_t xy = g_hover_xy;
+        uint8_t type = 0, id = 0;
+        const view_ops_t *v = NULL;
+        win_event_t ev;
+        memset(&ev, 0, sizeof ev);
+        ev.type = WIN_EV_POINTER_MOVE;
+        if (lcdterm_window_at((int)(xy >> 16), (int)(xy & 0xFFFFu), &type, &id, &cx, &cy)) {
+            v = view_for_window(type);
+            if (v && !v->active(id)) v = NULL;
+            ev.x = (int16_t)cx;
+            ev.y = (int16_t)cy;
+            if (!v && type == 2 /* RIBBON_WIN_CANVAS */ && (window_claims((win_t)id) & WIN_CLAIM_POINTER)) {
+                win_event_t raw = ev;
+                raw.flags = WIN_EVF_MOUSE;
+                window_post((win_t)id, &raw);
+            }
+        }
+        if (g_hover_view && (g_hover_view != v || g_hover_inst != id)) {
+            win_event_t gone = ev;                       /* the pointer left it: nothing hovered */
+            gone.x = gone.y = -1;
+            if (g_hover_view->active(g_hover_inst)) view_post(g_hover_view, g_hover_inst, &gone);
+        }
+        g_hover_view = v;
+        g_hover_inst = id;
+        if (v) view_post(v, id, &ev);
+    }
+    if (__atomic_exchange_n(&g_context_pending, false, __ATOMIC_ACQ_REL)) {
+        uint32_t xy = g_context_xy;
+        const view_ops_t *v = view_at(xy >> 16, xy & 0xFFFFu, &inst, &cx, &cy);
+        if (v) {
+            win_event_t ev;
+            memset(&ev, 0, sizeof ev);
+            ev.button = 2;
+            ev.flags = WIN_EVF_TAP;
+            ev.x = (int16_t)cx;
+            ev.y = (int16_t)cy;
+            ev.type = WIN_EV_POINTER_DOWN;
+            view_post(v, inst, &ev);
+            ev.type = WIN_EV_POINTER_UP;
+            view_post(v, inst, &ev);
+        }
+    }
+    int dy = __atomic_exchange_n(&g_wheel_dy, 0, __ATOMIC_ACQ_REL);
+    if (dy) {
+        uint32_t xy = g_wheel_xy;
+        const view_ops_t *v = view_at(xy >> 16, xy & 0xFFFFu, &inst, &cx, &cy);
+        if (v) {
+            win_event_t ev;
+            memset(&ev, 0, sizeof ev);
+            ev.type = WIN_EV_SCROLL;
+            ev.flags = WIN_EVF_WHEEL;
+            ev.x = (int16_t)cx;
+            ev.y = (int16_t)cy;
+            ev.dy = (int16_t)dy;
+            view_post(v, inst, &ev);
+        }
     }
 }
 

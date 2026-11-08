@@ -1598,7 +1598,8 @@ static void cmd_reader(const char *arg) {
         int count = 0;
         for (int i = 0; i < READER_MAX_INSTANCES; i++) {
             if (reader_instance_is_active(i)) {
-                cprintf("  [%d] '%s' (%s)\n", i, reader_get_title_instance(i), reader_get_path_instance(i));
+                cprintf("  [%d] '%s' (%s), scrolled %d px\n", i, reader_get_title_instance(i), reader_get_path_instance(i),
+                        reader_get_scroll_instance((uint8_t)i));
                 count++;
             }
         }
@@ -6287,6 +6288,82 @@ static void cmd_ribbon(const char *cmd_line) {
     cprintf("Usage: ribbon [list | focus <idx> | left | right | move left | move right | selftest]\n");
 }
 
+#if defined(LCDTERM_PRESENT) || CONFIG_DEV
+/* `ms`: a mouse's reports, injected through console_pointer() and
+ * console_wheel() as a driver makes them -- so pointer input is tested on
+ * every panel without a mouse. On the VisionFive 2 through its cursor, which
+ * draws itself and calls the same. */
+/* accepted: the injected pointer's last point and buttons; two shells
+ * injecting at once interleave their points, as two mice would. */
+static int     s_ms_x, s_ms_y;
+static uint8_t s_ms_buttons;
+
+static void ms_report(int x, int y, uint8_t buttons) {
+    s_ms_x = x;
+    s_ms_y = y;
+    s_ms_buttons = buttons;
+#if defined(CONFIG_BOARD_VISIONFIVE2)
+    cursor_update(x, y, buttons, cursor_get_state()->wheel);
+#else
+    console_pointer(x, y, buttons);
+#endif
+    task_sleep_ms(20);                                   /* a report interval: the input path takes each */
+}
+
+/* The next integer of *p (an optional '-'); false when there is none. */
+static bool ms_int(const char **p, int *out) {
+    const char *q = *p;
+    while (*q == ' ') q++;
+    int sign = 1, v = 0;
+    if (*q == '-') { sign = -1; q++; }
+    if (*q < '0' || *q > '9') return false;
+    while (*q >= '0' && *q <= '9') v = v * 10 + (*q++ - '0');
+    *out = sign * v;
+    *p = q;
+    return true;
+}
+
+static void cmd_ms(const char *args) {
+    while (*args == ' ') args++;
+    int x0, y0, x1, y1;
+    const char *p;
+    if (*args == '\0') {
+        cprintf("ms: pointer at %d, %d, buttons 0x%x\n", s_ms_x, s_ms_y, (unsigned)s_ms_buttons);
+    } else if (strncmp(args, "move", 4) == 0 && (p = args + 4, ms_int(&p, &x0) && ms_int(&p, &y0))) {
+        ms_report(x0, y0, s_ms_buttons);
+        cprintf("ms: moved to %d, %d\n", x0, y0);
+    } else if (strncmp(args, "click", 5) == 0) {
+        p = args + 5;
+        x0 = s_ms_x;
+        y0 = s_ms_y;
+        if (ms_int(&p, &x0) && !ms_int(&p, &y0)) { cprintf("ms click: X and Y\n"); return; }
+        while (*p == ' ') p++;
+        uint8_t b = strcmp(p, "right") == 0 ? WIN_BUTTON_RIGHT : strcmp(p, "middle") == 0 ? WIN_BUTTON_MIDDLE : WIN_BUTTON_LEFT;
+        ms_report(x0, y0, 0);
+        ms_report(x0, y0, b);
+        task_sleep_ms(30);
+        ms_report(x0, y0, 0);
+        cprintf("ms: %s click at %d, %d\n", b == WIN_BUTTON_RIGHT ? "right" : b == WIN_BUTTON_MIDDLE ? "middle" : "left", x0, y0);
+    } else if (strncmp(args, "drag", 4) == 0 &&
+               (p = args + 4, ms_int(&p, &x0) && ms_int(&p, &y0) && ms_int(&p, &x1) && ms_int(&p, &y1))) {
+        ms_report(x0, y0, 0);
+        ms_report(x0, y0, WIN_BUTTON_LEFT);
+        int dx = x1 - x0, dy = y1 - y0, ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy;
+        int steps = (ax > ay ? ax : ay) / 8 + 1;         /* 8 px a report */
+        for (int i = 1; i <= steps; i++) ms_report(x0 + dx * i / steps, y0 + dy * i / steps, WIN_BUTTON_LEFT);
+        ms_report(x1, y1, 0);
+        cprintf("ms: dragged %d, %d to %d, %d\n", x0, y0, x1, y1);
+    } else if (strncmp(args, "wheel", 5) == 0 && (p = args + 5, ms_int(&p, &y0))) {
+        x0 = 0;
+        (void)ms_int(&p, &x0);
+        console_wheel(x0, y0);
+        cprintf("ms: wheel %d, %d\n", x0, y0);
+    } else {
+        cprintf("Usage: ms [move X Y | click [X Y] [right|middle] | drag X0 Y0 X1 Y1 | wheel DY [DX]]\n");
+    }
+}
+#endif
+
 static void cmd_canvas(const char *cmd_line) {
     const char *args = cmd_line + 6;
     while (*args == ' ' || *args == '\t') args++;
@@ -6930,6 +7007,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         usbhost_command(cmd_line + 3);
         return;
 #endif
+#if defined(LCDTERM_PRESENT) || CONFIG_DEV
+    } else if (strcmp(cmd_line, "ms") == 0 || strncmp(cmd_line, "ms ", 3) == 0) {
+        cmd_ms(cmd_line + 2);
+        return;
+#endif
 #if defined(TOUCH_PRESENT)
     } else if (strcmp(cmd_line, "ts") == 0 || strncmp(cmd_line, "ts ", 3) == 0) {
         touch_command(cmd_line + 2);
@@ -7288,38 +7370,6 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "cursor hide") == 0) {
         cursor_set_visible(false);
         return;
-    } else if (strncmp(cmd_line, "ms ", 3) == 0) {
-        /* ms move <x> <y> | ms click [left|right|middle] | ms wheel <dy> */
-        const char *sub = cmd_line + 3;
-        if (strncmp(sub, "move ", 5) == 0) {
-            int mx = 0, my = 0;
-            const char *p = sub + 5;
-            while (*p >= '0' && *p <= '9') { mx = mx * 10 + (*p - '0'); p++; }
-            while (*p == ' ') p++;
-            while (*p >= '0' && *p <= '9') { my = my * 10 + (*p - '0'); p++; }
-            cursor_update(mx, my, cursor_get_state()->buttons, cursor_get_state()->wheel);
-            cprintf("ms: pointer moved to %d, %d\n", mx, my);
-            return;
-        } else if (strncmp(sub, "click", 5) == 0) {
-            uint8_t btn = 1; /* left default */
-            if (strstr(sub, "right")) btn = 2;
-            else if (strstr(sub, "middle")) btn = 4;
-            const cursor_state_t *st = cursor_get_state();
-            cursor_update(st->x, st->y, btn, st->wheel);
-            time_delay_us(50000); /* 50 ms hold */
-            cursor_update(st->x, st->y, 0, st->wheel);
-            cprintf("ms: clicked button 0x%02x at %d, %d\n", btn, st->x, st->y);
-            return;
-        } else if (strncmp(sub, "wheel ", 6) == 0) {
-            int dy = 0, sign = 1;
-            const char *p = sub + 6;
-            if (*p == '-') { sign = -1; p++; }
-            while (*p >= '0' && *p <= '9') { dy = dy * 10 + (*p - '0'); p++; }
-            dy *= sign;
-            console_wheel(0, dy);
-            cprintf("ms: wheel delta %d\n", dy);
-            return;
-        }
 #endif
 #if defined(CONFIG_BOARD_ESP32P4)
     } else if (strcmp(cmd_line, "clicdump") == 0) {

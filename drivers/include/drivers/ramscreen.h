@@ -19,5 +19,9 @@ void ramscreen_size(unsigned *w, unsigned *h);
 canvas1_t *ramscreen_get_canvas_backing(uint8_t cid);
 int        ramscreen_get_canvas_cid_by_name(const char *name);
 canvas1_t *ramscreen_get_reader_backing(uint8_t rid);
+/* The RAM screen's windows, as lcdterm_window_at() / _focused_window() are
+ * the panel's: so pointer routing runs on QEMU. */
+bool       ramscreen_window_at(int x, int y, uint8_t *type, uint8_t *id, int *cx, int *cy);
+bool       ramscreen_focused_window(uint8_t *type, uint8_t *id);
 
 #endif /* LUGALOS_DRIVERS_RAMSCREEN_H */

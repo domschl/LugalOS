@@ -183,6 +183,7 @@ typedef struct {
 
 int lcdterm_get_visible_terms(lcdterm_visible_term_t *out_terms, int max_terms);
 #else
+#include "drivers/ramscreen.h"
 static inline bool lcdterm_is_animating(void) { return false; }
 static inline bool lcdterm_is_double_buffered(void) { return false; }
 static inline void lcdterm_sync_pre(void) { }
@@ -212,11 +213,12 @@ static inline int lcdterm_get_canvas565_cid_by_name(const char *name) {
     return -1;
 }
 static inline int  lcdterm_focused_canvas(void) { return -1; }
-static inline bool lcdterm_focused_window(uint8_t *type, uint8_t *id) { (void)type; (void)id; return false; }
+static inline bool lcdterm_focused_window(uint8_t *type, uint8_t *id) { return ramscreen_focused_window(type, id); }
 static inline bool lcdterm_room(int *windows, int *canvases) { (void)windows; (void)canvases; return false; }
 static inline bool lcdterm_osk_rect(int *x0, int *y0, int *w, int *h) { (void)x0; (void)y0; (void)w; (void)h; return false; }
+/* No panel: the RAM screen's windows (drivers/ramscreen.h). */
 static inline bool lcdterm_window_at(int x, int y, uint8_t *type, uint8_t *id, int *cx, int *cy) {
-    (void)x; (void)y; (void)type; (void)id; (void)cx; (void)cy; return false;
+    return ramscreen_window_at(x, y, type, id, cx, cy);
 }
 static inline bool lcdterm_canvas_origin(uint8_t cid, int *x0, int *y0) { (void)cid; (void)x0; (void)y0; return false; }
 static inline bool lcdterm_set_canvas565_backing(uint8_t cid, uint16_t *buf) {

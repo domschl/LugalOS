@@ -389,8 +389,40 @@ static void raw_invert(const ugui_surface_t *s, int x0, int y0, int x1, int y1) 
         }
 }
 
+bool ugui_hover(ugui_ctx_t *ctx, int x, int y) {
+    if (!ctx) return false;
+    int16_t index = 0;
+    uint16_t id = (x < 0 || y < 0) ? 0 : ugui_hit_test_drawn(ctx, x, y, &index);
+    if (!id) index = 0;
+    if (id == ctx->hover_id && index == ctx->hover_index) return false;
+    ctx->hover_id = id;
+    ctx->hover_index = index;
+    return true;
+}
+
+/* The hovered widget's outline: one unit, one unit inside its rectangle --
+ * the Classic Mac way, distinct from the armed inversion and the dotted
+ * focus ring two units in. None while it is armed (the press shows). */
+void ugui_draw_hover(const ugui_surface_t *s, const ugui_ctx_t *ctx) {
+    if (!s || !ctx || !ctx->hover_id || ugui_is_armed(ctx, ctx->hover_id, ctx->hover_index)) return;
+    for (int i = live_from(ctx); i < ctx->count; i++) {
+        const ugui_hit_t *h = &ctx->hits[i];
+        if (h->id != ctx->hover_id || h->index != ctx->hover_index || (h->flags & UGUI_HIT_DISABLED)) continue;
+        int t = s->scale > 0 ? s->scale : 1;
+        int x0 = h->rect.x + t, y0 = h->rect.y + t;
+        int x1 = h->rect.x + h->rect.w - 1 - t, y1 = h->rect.y + h->rect.h - 1 - t;
+        if (x1 - x0 < 2 * t || y1 - y0 < 2 * t) return;
+        ugui_invert(s, x0, y0, x1, y0 + t - 1);
+        ugui_invert(s, x0, y1 - t + 1, x1, y1);
+        ugui_invert(s, x0, y0 + t, x0 + t - 1, y1 - t);
+        ugui_invert(s, x1 - t + 1, y0 + t, x1, y1 - t);
+        return;
+    }
+}
+
 void ugui_end(const ugui_surface_t *s, ugui_ctx_t *ctx) {
     if (!ctx || ctx->count == 0) return;
+    ugui_draw_hover(s, ctx);
     int slot = focus_slot(ctx);
     if (slot >= 0 && slot < live_from(ctx)) slot = -1;   /* behind a modal: into it */
     if (slot < 0) {
@@ -1576,6 +1608,32 @@ bool ugui_selftest(void) {
     ugui_begin(&ctx);
     if (!ugui_is_armed(&ctx, 202, 2)) return false;
     if (!ugui_disarm(&ctx) || ugui_disarm(&ctx) || ugui_is_armed(&ctx, 202, 2)) return false;
+
+    /* Hover (a mouse): the widget under the point as drawn, once; a grown
+     * touch area does not count; (-1, -1) clears it; ugui_end() outlines it
+     * one unit inside, not while it is armed. */
+    {
+        ugui_ctx_t hc;
+        memset(&hc, 0, sizeof hc);
+        ugui_begin(&hc);
+        ugui_set_min_target(&hc, 40);
+        ugui_rect_t hb = { .x = 20, .y = 20, .w = 30, .h = 16 };
+        ugui_add_hit(&hc, hb, 77, 0);
+        if (!ugui_hover(&hc, 25, 25) || hc.hover_id != 77) return false;
+        if (ugui_hover(&hc, 30, 30)) return false;                  /* same widget: no change */
+        if (ugui_hit_test(&hc, 18, 25, NULL) != 77) return false;  /* a finger: the grown area */
+        if (!ugui_hover(&hc, 18, 25) || hc.hover_id != 0) return false;   /* the pointer: as drawn */
+        if (!ugui_hover(&hc, 25, 25) || !ugui_hover(&hc, -1, -1) || hc.hover_id != 0) return false;
+        memset(fb, 0, sizeof(fb));
+        (void)ugui_hover(&hc, 25, 25);
+        ugui_end(&surf, &hc);
+        if (canvas1_get(&c1, 21, 21) != 1u || canvas1_get(&c1, 48, 34) != 1u) return false;   /* the outline */
+        if (canvas1_get(&c1, 20, 20) != 0u || canvas1_get(&c1, 30, 28) != 0u) return false;   /* not the edge, not inside */
+        memset(fb, 0, sizeof(fb));
+        (void)ugui_arm(&hc, 25, 25);
+        ugui_end(&surf, &hc);
+        if (canvas1_get(&c1, 21, 21) != 0u) return false;          /* armed: the press shows, not the hover */
+    }
 
     /* Keyboard focus over the same boxes: 101 102 on top, segments 200..202
      * below. The first key only shows it; Tab / Shift-Tab wrap; an arrow

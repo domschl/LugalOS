@@ -116,6 +116,7 @@ void launcher_report(void) { cprintf("launcher: not present on headless board\n"
 #define GAL_ID_DLG       520     /* + button */
 #define GAL_ID_SHEET     530     /* + item */
 #define LAUNCHER_ID_ALERT_OK 540     /* + button */
+#define LAUNCHER_ID_SHEET    550     /* + item: a document's action sheet */
 #define LAUNCHER_ALERT_MAX   4
 
 typedef struct {
@@ -148,6 +149,8 @@ typedef struct {
     int            list_x, list_y, list_w, list_avail;   /* draw_doc_list()'s place, as last drawn */
     int            doc_count;
     launcher_doc_t docs[LAUNCHER_MAX_DOCS];
+    int            sheet_doc;      /* a document's action sheet is up: its index + 1 (0: none) */
+    const char    *sheet_items[3]; /* Open, Open in <the other app>, Cancel */
     ugui_ctx_t     ui_ctx;
     uint8_t       *aa_buf;         /* GRAY8: what the panel composites (the front) */
     uint8_t       *aa_back;        /* the one a full draw goes into, then swapped in; NULL: draw in place */
@@ -834,6 +837,9 @@ void launcher_draw(const canvas1_t *c, int w, int h) {
         draw_status(&surf, status);
     }
 
+    if (s_launcher.sheet_doc > 0 && s_launcher.sheet_doc <= s_launcher.doc_count)
+        (void)ugui_action_sheet(&surf, &s_launcher.ui_ctx, s_launcher.docs[s_launcher.sheet_doc - 1].label,
+                                s_launcher.sheet_items, 3, LAUNCHER_ID_SHEET);
     launcher_draw_alert(&surf);
     ugui_end(&surf, &s_launcher.ui_ctx);
     s_launcher.seq++;
@@ -959,6 +965,8 @@ bool launcher_open(void) {
 void launcher_close(void) {
     console_lock();
     s_launcher.active = false;
+    s_launcher.sheet_doc = 0;
+    s_launcher.ui_ctx.hover_id = 0;
     console_frame_lock();                                /* no conversion reads them past here */
     uint8_t *buf = s_launcher.aa_buf, *buf2 = s_launcher.aa_back;
     uint32_t pages = s_launcher.aa_pages;
@@ -1007,6 +1015,7 @@ static bool launch_app(const char *id, const char *path) {
     return true;
 }
 static bool launcher_activate(uint16_t id, int16_t hit_idx);
+static void launcher_sheet_answer(int choice);
 
 /* A tap: the pressed control lets go first, then acts; drawn once, by the
  * action if it redraws, here if it does not (the release that follows finds
@@ -1029,7 +1038,48 @@ static bool launcher_tap_act(int client_x, int client_y) {
         return id != 0;
     }
     if (s_launcher.gal.on) return id && launcher_gallery_act(id, hit_idx, client_x);
+    if (s_launcher.sheet_doc > 0) {                      /* modal: a choice, or away */
+        launcher_sheet_answer(id >= LAUNCHER_ID_SHEET && id < LAUNCHER_ID_SHEET + 3 ? id - LAUNCHER_ID_SHEET : 2);
+        return true;
+    }
     return launcher_activate(id, hit_idx);
+}
+
+/* A document's other application: the editor for what the reader shows,
+ * the reader for the rest. */
+static const char *other_app(const char *path) {
+    const app_desc_t *a = app_for_path(path);
+    return a && strcmp(a->id, "reader") == 0 ? "editor" : "reader";
+}
+
+/* The context menu (a right click, a long press) at (x, y): a document's
+ * action sheet; nothing elsewhere yet. */
+static void launcher_context(int client_x, int client_y) {
+    if (!s_launcher.active || s_launcher.gal.on || s_launcher.alert_title[0] || s_launcher.sheet_doc > 0) return;
+    int16_t hit_idx = -1;
+    uint16_t id = ugui_hit_test(&s_launcher.ui_ctx, client_x, client_y, &hit_idx);
+    if (id != LAUNCHER_ID_DOC_BASE || hit_idx < 0 || hit_idx >= s_launcher.doc_count) return;
+    s_launcher.sheet_items[0] = "Open";
+    s_launcher.sheet_items[1] = strcmp(other_app(s_launcher.docs[hit_idx].path), "editor") == 0 ? "Open in Editor" : "Open in Reader";
+    s_launcher.sheet_items[2] = "Cancel";
+    s_launcher.sheet_doc = hit_idx + 1;
+    (void)ugui_disarm(&s_launcher.ui_ctx);
+    launcher_update();
+}
+
+/* The sheet's item `choice`: gone, then done. */
+static void launcher_sheet_answer(int choice) {
+    int i = s_launcher.sheet_doc - 1;
+    s_launcher.sheet_doc = 0;
+    launcher_update();
+    if (i < 0 || i >= s_launcher.doc_count) return;
+    const char *path = s_launcher.docs[i].path;
+    if (choice == 0) {
+        (void)launcher_activate(LAUNCHER_ID_DOC_BASE, (int16_t)i);
+    } else if (choice == 1) {
+        if (strcmp(other_app(path), "reader") == 0) open_doc_in_reader(path);
+        else (void)launch_app("editor", path);
+    }
 }
 
 /* What a tap on widget id (hit_idx: its index) does; the keyboard's Enter
@@ -1161,6 +1211,17 @@ static void launcher_key(key_event_t k) {
             launcher_update();
         return;
     }
+    if (s_launcher.sheet_doc > 0) {                      /* Esc: Cancel; Enter: the focused item */
+        if (k.key == 0x1b) { launcher_sheet_answer(2); return; }
+        uint16_t id = 0;
+        int16_t idx = 0;
+        ugui_nav_t nav = ugui_nav(&s_launcher.ui_ctx, k.key, k.mods, &id, &idx);
+        if (nav == UGUI_NAV_ACTIVATE && id >= LAUNCHER_ID_SHEET && id < LAUNCHER_ID_SHEET + 3)
+            launcher_sheet_answer(id - LAUNCHER_ID_SHEET);
+        else if (nav == UGUI_NAV_MOVED)
+            launcher_update();
+        return;
+    }
     if (s_launcher.gal.on && launcher_gallery_key(k)) return;
     if (k.key == KEY_PGDN || k.key == KEY_PGUP) {
         s_launcher.scroll_px += k.key == KEY_PGDN ? s_launcher.view_h : -s_launcher.view_h;
@@ -1213,14 +1274,16 @@ static void launcher_view_event(uint8_t inst, const win_event_t *ev) {
     if (!s_launcher.active) return;
     switch (ev->type) {
     case WIN_EV_POINTER_DOWN:
-        if (ev->flags & WIN_EVF_PRESS) launcher_press(ev->x, ev->y);
+        if (ev->button == 1 && (ev->flags & WIN_EVF_PRESS)) launcher_press(ev->x, ev->y);
         return;
     case WIN_EV_POINTER_UP:
-        if (ev->flags & WIN_EVF_TAP) (void)launcher_tap(ev->x, ev->y);
+        if (ev->button == 2) { if (ev->flags & WIN_EVF_TAP) launcher_context(ev->x, ev->y); }
+        else if (ev->flags & WIN_EVF_TAP) (void)launcher_tap(ev->x, ev->y);
         else if (ev->flags & WIN_EVF_PRESS) launcher_release();
         return;
     case WIN_EV_POINTER_MOVE:
-        launcher_pointer_move(ev->x, ev->y);
+        if (ev->button == 0) { if (ugui_hover(&s_launcher.ui_ctx, ev->x, ev->y)) launcher_update(); }
+        else launcher_pointer_move(ev->x, ev->y);
         return;
     case WIN_EV_DRAG:
         launcher_drag(ev->dy);
@@ -1229,7 +1292,10 @@ static void launcher_view_event(uint8_t inst, const win_event_t *ev) {
         launcher_drag_end(ev->dy, ev->key);
         return;
     case WIN_EV_SCROLL:
-        launcher_scroll(ev->dy > 0 ? -1 : 1);
+        if (ev->flags & WIN_EVF_WHEEL)                   /* a step a notch, a few at the most */
+            for (int n = ev->dy < 0 ? -ev->dy : ev->dy, i = 0; i < n && i < 4; i++) launcher_scroll(ev->dy > 0 ? -1 : 1);
+        else
+            launcher_scroll(ev->dy > 0 ? -1 : 1);
         return;
     case WIN_EV_KEY_DOWN: {
         key_event_t k = { ev->key, ev->mods };
@@ -1303,6 +1369,10 @@ void launcher_report(void) {
             s_launcher.win_w, s_launcher.win_h,
             s_launcher.doc_count, s_launcher.ui_ctx.count);
     if (s_launcher.alert_title[0]) cprintf("  alert: %s\n", s_launcher.alert_title);
+    if (s_launcher.sheet_doc > 0 && s_launcher.sheet_doc <= s_launcher.doc_count)
+        cprintf("  sheet: %s\n", s_launcher.docs[s_launcher.sheet_doc - 1].label);
+    if (s_launcher.ui_ctx.hover_id)
+        cprintf("  hover: id %u index %d\n", (unsigned)s_launcher.ui_ctx.hover_id, (int)s_launcher.ui_ctx.hover_index);
     winclose_report();
     /* The hit-boxes, window-relative, for `touch tap` in tests. */
     for (int i = 0; i < s_launcher.ui_ctx.count; i++) {

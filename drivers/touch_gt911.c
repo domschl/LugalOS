@@ -165,8 +165,8 @@ static void map_point(unsigned rx, unsigned ry, int *x, int *y) {
 /* What a gesture does: a horizontal swipe moves the ribbon (the finger
  * dragging it: moving left brings the window on the right into view, as
  * Cmd+Right does), a vertical drag scrolls with the finger and may end in a
- * fling, a tap taps. A long press is counted for `ts`; nothing acts on it
- * yet. */
+ * fling, a tap taps, a long press opens the context menu (a mouse's right
+ * click) and starts a held key's repeat. */
 static void gesture_act(gesture_kind_t kind, const gesture_t *ev) {
     switch (kind) {
     case GESTURE_SWIPE_LEFT:  g_t.swipes++; console_hotkey(CONSOLE_HOTKEY_FOCUS_RIGHT); break;
@@ -182,6 +182,7 @@ static void gesture_act(gesture_kind_t kind, const gesture_t *ev) {
     case GESTURE_LONG_PRESS:
         g_t.longs++;
         if (g_t.pressed) g_t.repeat_ms = time_get_ms();        /* held: repeat from now */
+        console_touch_context((unsigned)ev->x, (unsigned)ev->y);
         break;
     default:                  g_t.nothings++; break;
     }

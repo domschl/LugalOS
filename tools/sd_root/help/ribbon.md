@@ -60,6 +60,14 @@ Every non-root window on the ribbon (terminals, canvases, and readers) features 
 * **Tap Close Box**: Tapping the close box (`[X]`) in the top-left title bar closes the window.
 * **Tap Minimap**: Tapping a window block in the top minimap immediately scrolls the ribbon to that window.
 * **Swipe Left / Right**: Swiping sideways with a finger smoothly scrolls the ribbon.
+* **Long Press**: Holding a finger still for half a second opens the context menu of what is under it: on a document in the launcher, its action sheet (Open, Open in Editor or Open in Reader, Cancel).
+
+### Mouse (USB mouse on the VisionFive 2; `ms` on every screen)
+* **Hover**: The control under the pointer is outlined; nothing needs to be pressed.
+* **Left Click**: The same as a tap: it focuses the window, presses buttons, and works the close box, the minimap and the menu bar. Dragging with the left button held scrolls a list or a document; sliders follow it.
+* **Right Click**: The context menu, as a long press.
+* **Wheel**: Scrolls the window under the pointer, even when another window has the focus (the reader by three lines a notch). A sideways wheel moves along the ribbon a window at a time.
+* **Games**: A game that takes the pointer (moonbase) gets the mouse's moves, buttons and wheel itself while it has the focus.
 
 ### Touch UX Mode & Launcher (`RIBBON_WIN_LAUNCHER`)
 On touch-enabled terminal boards (such as the M5Stack Tab5 and Waveshare ESP32-P4-LCD-7B), LugalOS supports a **Touch UX Mode** powered by the classic Macintosh micro-toolkit (`ugui`):

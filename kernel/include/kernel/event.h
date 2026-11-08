@@ -76,10 +76,14 @@ static inline bool win_event_is_state(uint8_t type) {
 #define WIN_EVF_PRESS 0x02u     /* press feedback: a finger went down at (x, y) (DOWN) and
                                  * lifted or moved off (UP); a tap it made follows as its
                                  * own TAP pair, before this UP. Not for claimed windows. */
+#define WIN_EVF_WHEEL 0x04u     /* a SCROLL from a mouse wheel: dy in notches (> 0 up), not pixels */
+#define WIN_EVF_MOUSE 0x08u     /* a claimed window's raw pointer event from a mouse, not a finger */
 
 typedef struct {
     uint8_t  type;      /* win_event_type_t */
-    uint8_t  button;    /* 1: primary touch / left button */
+    uint8_t  button;    /* 1: primary touch / left button, 2: right (the context menu: a
+                         * mouse's right click, a finger's long press), 3: middle;
+                         * 0: none held (a mouse's hover) */
     uint8_t  mods;
     uint8_t  flags;     /* WIN_EVF_* */
     int16_t  x;         /* content coordinates (pixels) */
@@ -90,6 +94,11 @@ typedef struct {
     uint16_t w;
     uint16_t h;
 } win_event_t;
+
+/* The buttons a pointer driver reports (console_pointer()), as a mask. */
+#define WIN_BUTTON_LEFT   0x01u
+#define WIN_BUTTON_RIGHT  0x02u
+#define WIN_BUTTON_MIDDLE 0x04u
 
 #define WIN_CLAIM_POINTER 0x01u /* the raw pointer stream, and no gestures, while focused */
 #define WIN_CLAIM_TILT    0x02u /* WIN_EV_TILT while focused (boards with an IMU) */

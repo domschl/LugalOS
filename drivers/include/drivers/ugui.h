@@ -70,6 +70,8 @@ typedef struct {
     uint16_t    active_id;      /* Highlighted / selected widget ID */
     uint16_t    armed_id;       /* the widget under a finger that is down (0: none); kept across passes */
     int16_t     armed_index;
+    uint16_t    hover_id;       /* the widget under a mouse pointer, no button held (0: none); kept */
+    int16_t     hover_index;
     uint16_t    focus_id;       /* the keyboard's widget (0: none yet); kept across passes */
     int16_t     focus_index;
     bool        focus_shown;    /* a key moved the focus since the last touch: the ring shows */
@@ -110,6 +112,15 @@ void ugui_slop_bounds_end(ugui_ctx_t *ctx);
  * caller with targets of its own (the reader's links) that must win over a
  * widget's grown area but not over the widget itself. */
 uint16_t ugui_hit_test_drawn(const ugui_ctx_t *ctx, int x, int y, int16_t *out_index);
+
+/* A mouse pointer at (x, y) with no button held: the widget under it as
+ * drawn (a pointer is exact; the grown areas are for fingers) is hovered,
+ * and ugui_end() outlines it. (-1, -1): the pointer left. True when the
+ * hovered widget changed (the caller draws again). */
+bool ugui_hover(ugui_ctx_t *ctx, int x, int y);
+/* The hovered widget's outline on s; ugui_end() draws it, a pass that does
+ * not end there (a toolbar drawn alone) calls this after its widgets. */
+void ugui_draw_hover(const ugui_surface_t *s, const ugui_ctx_t *ctx);
 
 /* Whether a finger down at (x, y) is on a widget that follows it
  * (UGUI_HIT_DRAG): the caller then sends it the moves, not gestures. */

@@ -1414,6 +1414,33 @@ LCDTERM_UTEXT static inline void lcdterm_sync_post(void) {
  * console ~520-650 ms (`lockcheck`). Every pixel moves, so the conversion is
  * at the PSRAM's bandwidth; fewer frames or a faster PSRAM path are what
  * would shorten it. */
+LCDTERM_UTEXT bool screen_window_at(const screen_t *scr, int x, int y, uint8_t *type, uint8_t *id, int *cx, int *cy) {
+    if (scr->layout == SCREEN_LAYOUT_FULLSCREEN) return false;
+    int tile_y0 = SCREEN_TILE_Y + SCREEN_TITLEBAR_H;
+    int tile_y1 = SCREEN_TEXT_Y + (int)FONT_CELL_H * (int)SCREEN_TEXT_ROWS(scr->cv.h) - 1;
+    if (y < tile_y0 || y > tile_y1) return false;
+    for (uint8_t i = 0; i < scr->ribbon.count; i++) {
+        const ribbon_win_t *w = &scr->ribbon.wins[i];
+        int x0 = (int)w->rx0 - (int)scr->ribbon.x_view + 1;
+        int x1 = (int)w->rx1 - (int)scr->ribbon.x_view - 1;
+        if (x < x0 || x > x1) continue;
+        *type = w->type;
+        *id = w->vterm_id;
+        *cx = x - x0;
+        *cy = y - tile_y0;
+        return true;
+    }
+    return false;
+}
+
+LCDTERM_UTEXT bool screen_focused_window(const screen_t *scr, uint8_t *type, uint8_t *id) {
+    if (scr->ribbon.count == 0 || scr->ribbon.active_idx >= scr->ribbon.count) return false;
+    const ribbon_win_t *w = &scr->ribbon.wins[scr->ribbon.active_idx];
+    *type = w->type;
+    *id = w->vterm_id;
+    return true;
+}
+
 #if defined(TOUCH_PRESENT)
 /* Where the on-screen keyboard is: the focused terminal's window, its
  * bottom osk_get_height() rows. False when that window is not on screen. */

@@ -127,6 +127,14 @@ int ramscreen_get_canvas_cid_by_name(const char *name) {
     return -1;
 }
 
+bool ramscreen_window_at(int x, int y, uint8_t *type, uint8_t *id, int *cx, int *cy) {
+    return g_rs && screen_window_at(g_rs, x, y, type, id, cx, cy);
+}
+
+bool ramscreen_focused_window(uint8_t *type, uint8_t *id) {
+    return g_rs && screen_focused_window(g_rs, type, id);
+}
+
 canvas1_t *ramscreen_get_reader_backing(uint8_t rid) {
     if (!g_rs || rid >= SCREEN_MAX_READERS || !g_rs->readers[rid].in_use) return NULL;
     return &g_rs->readers[rid].backing;

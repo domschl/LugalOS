@@ -837,22 +837,7 @@ int lcdterm_get_canvas565_cid_by_name(const char *name) {
 }
 
 bool lcdterm_window_at(int x, int y, uint8_t *type, uint8_t *id, int *cx, int *cy) {
-    if (!g_scr || g_scr->layout == SCREEN_LAYOUT_FULLSCREEN) return false;
-    int tile_y0 = SCREEN_TILE_Y + SCREEN_TITLEBAR_H;
-    int tile_y1 = SCREEN_TEXT_Y + (int)FONT_CELL_H * (int)SCREEN_TEXT_ROWS(g_scr->cv.h) - 1;
-    if (y < tile_y0 || y > tile_y1) return false;
-    for (uint8_t i = 0; i < g_scr->ribbon.count; i++) {
-        const ribbon_win_t *w = &g_scr->ribbon.wins[i];
-        int x0 = (int)w->rx0 - (int)g_scr->ribbon.x_view + 1;
-        int x1 = (int)w->rx1 - (int)g_scr->ribbon.x_view - 1;
-        if (x < x0 || x > x1) continue;
-        *type = w->type;
-        *id = w->vterm_id;
-        *cx = x - x0;
-        *cy = y - tile_y0;
-        return true;
-    }
-    return false;
+    return g_scr && screen_window_at(g_scr, x, y, type, id, cx, cy);
 }
 
 bool lcdterm_osk_rect(int *x0, int *y0, int *w, int *h) {
@@ -876,11 +861,7 @@ bool lcdterm_room(int *windows, int *canvases) {
 }
 
 bool lcdterm_focused_window(uint8_t *type, uint8_t *id) {
-    if (!g_scr || g_scr->ribbon.count == 0 || g_scr->ribbon.active_idx >= g_scr->ribbon.count) return false;
-    const ribbon_win_t *w = &g_scr->ribbon.wins[g_scr->ribbon.active_idx];
-    *type = w->type;
-    *id = w->vterm_id;
-    return true;
+    return g_scr && screen_focused_window(g_scr, type, id);
 }
 
 int lcdterm_focused_canvas(void) {

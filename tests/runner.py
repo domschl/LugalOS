@@ -3663,6 +3663,36 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
                 break
         results.append(("Two Canvases In One Terminal Keep Their Own Titles And Pixels", mix_ok, mix_log))
 
+        # 71.4p: a mouse, injected with `ms` on the 800 x 480 RAM screen (a
+        # window's content at x 5, y 39 of its screen place; close boxes at
+        # 8..18 px in, 25..35 px down). Hover outlines a launcher document,
+        # a right click opens its action sheet and a click beside it closes
+        # it, a click opens a document, a click on the close box closes the
+        # reader; the wheel scrolls the reader under the pointer while the
+        # terminal has the focus (two notches: six lines of 18 px), the
+        # sideways wheel moves the focus along the ribbon.
+        steps = [("launcher", r"launcher: opened"),
+                 ("ms move 505 149", r"ms: moved"), ("launcher status", r"hover: id 100 index 2"),
+                 ("ms click 505 149 right", r"ms: right click"), ("launcher status", r"sheet: "),
+                 ("ms click 505 149", r"ms: left click"), ("launcher status", r"launcher: open"),
+                 ("ms click 505 79", r"ms: left click"), ("ribbon", r"\[2\] Reader[^\n]*\*"),
+                 ("ms click 13 30", r"ms: left click"), ("ribbon", r"\[1\] Launcher[^\n]*\*"),
+                 ("launcher close", r"launcher: closed"),
+                 ("reader /sd0/help/shell.md", r"reader: opened"), ("ribbon focus 0", r"lsh> "),
+                 ("ms move 600 200", r"ms: moved"), ("ms wheel -2", r"ms: wheel"),
+                 ("reader list", r"shell\.md[^\n]*scrolled 108 px"),
+                 ("ms wheel 0 1", r"ms: wheel"), ("ribbon", r"\[1\] Reader[^\n]*\*"),
+                 ("ms click 417 30", r"ms: left click"), ("ribbon", r"Ribbon Status: 1 windows")]
+        mouse_ok, mouse_log = True, ""
+        for i, (cmd, pat) in enumerate(steps):
+            ok, log = session.send_and_expect(cmd, pat, timeout=10.0)
+            if ok and i == 6 and "sheet:" in log:
+                ok = False                                   # the click beside it left the sheet up
+            if not ok:
+                mouse_ok, mouse_log = False, f"{cmd!r} did not give {pat!r}:\n{log}"
+                break
+        results.append(("Mouse: Hover, Click, Context Menu, Wheel Under The Pointer (71.4p ms)", mouse_ok, mouse_log))
+
 
         # 37.5b: the editor. Its own selftest (wrapping, movement over wrapped
         # rows and UTF-8, undo, search, the safe save), then the real thing

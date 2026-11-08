@@ -150,9 +150,23 @@ bool console_close_canvas(uint8_t cid, bool free_it);
  * kernel task; the input path tells the windows (WIN_EV_INPUT_MODE). Each
  * device kind is one bit: the last report wins. */
 void console_input_present(uint32_t device, bool present);
-/* Pointer and wheel events (Phase 71 / 75 contract): screen coordinates and buttons */
+/* A mouse, from its driver's task (one at a time; `ms` injects through the
+ * same calls): where the pointer is, in screen pixels, and the buttons held
+ * (WIN_BUTTON_*), whenever either changes. The driver keeps and draws the
+ * cursor; the console decides what it means. Hover goes to the window under
+ * the pointer (POINTER_MOVE, button 0); the left button acts as a finger
+ * (press feedback, a tap when released without moving, a vertical drag);
+ * the right button is the context menu (a button 2 tap, as a long press);
+ * a window claiming the pointer gets the raw stream while it has the
+ * focus. */
 void console_pointer(int x, int y, uint8_t buttons);
+/* The wheel turned: dy notches up (> 0) or down, dx right (> 0) or left.
+ * Vertical scrolls the window under the pointer (WIN_EV_SCROLL, dy in
+ * notches, key 0); horizontal pans the ribbon a window at a time. */
 void console_wheel(int dx, int dy);
+/* A finger held still past the long press at (x, y): the context menu, as
+ * a right click (from the touch task). */
+void console_touch_context(unsigned x, unsigned y);
 /* The battery, from the power task: its charge in % (-1 unknown), whether
  * it charges, whether it is below the warning level. The input path tells
  * the windows (WIN_EV_POWER) at each 10 % step and each change. */

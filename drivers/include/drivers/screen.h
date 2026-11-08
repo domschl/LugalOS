@@ -299,6 +299,13 @@ bool screen_osk_rect(const screen_t *scr, int *x0, int *y0, int *w, int *h);
  * (console_windows_now()). Kernel code, called under console_lock after a
  * request: in a full-screen layout only the focused window shows. */
 void screen_report_windows(const screen_t *scr);
+/* The window under screen point (x, y): its ribbon type, its id and the
+ * point in its content; false off every window (the menu bar, the chrome)
+ * and in full screen. The caller holds console_lock or accepts a layout
+ * that changes under it (a pointer event one window off, once). */
+bool screen_window_at(const screen_t *scr, int x, int y, uint8_t *type, uint8_t *id, int *cx, int *cy);
+/* The focused window's ribbon type and id; false when there is none. */
+bool screen_focused_window(const screen_t *scr, uint8_t *type, uint8_t *id);
 void screen_canvas_vterm(screen_t *scr, uint8_t vterm_id, const uint8_t *req, uint32_t n, uint8_t *reply, int16_t caller_pid);
 
 #endif /* LUGALOS_DRIVERS_SCREEN_H */

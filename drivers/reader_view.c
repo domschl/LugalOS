@@ -981,11 +981,17 @@ static void reader_key(uint8_t rid, uint32_t key, uint8_t mods) {
 static void reader_view_event(uint8_t rid, const win_event_t *ev) {
     switch (ev->type) {
     case WIN_EV_POINTER_DOWN:
-        if (ev->flags & WIN_EVF_PRESS) reader_press(rid, ev->x, ev->y);
+        if (ev->button == 1 && (ev->flags & WIN_EVF_PRESS)) reader_press(rid, ev->x, ev->y);
         return;
     case WIN_EV_POINTER_UP:
+        if (ev->button == 2) return;                     /* no context menu in the reader yet */
         if (ev->flags & WIN_EVF_TAP) (void)reader_tap_instance(rid, ev->x, ev->y);
         else if (ev->flags & WIN_EVF_PRESS) reader_release();
+        return;
+    case WIN_EV_POINTER_MOVE:
+        if (ev->button == 0 && rid < READER_MAX_INSTANCES && s_readers[rid].active &&
+            ugui_hover(&s_readers[rid].ui_ctx, ev->x, ev->y))
+            reader_redraw_bar(rid);
         return;
     case WIN_EV_DRAG:
         reader_drag(ev->dy);
@@ -994,7 +1000,8 @@ static void reader_view_event(uint8_t rid, const win_event_t *ev) {
         reader_drag_end(ev->dy, ev->key);
         return;
     case WIN_EV_SCROLL:
-        if (ev->key > 0 && ev->dy != 0) reader_touch_fling(ev->dy, ev->key);
+        if (ev->flags & WIN_EVF_WHEEL) reader_scroll_instance(rid, -(int)ev->dy * 3 * READER_LINE_H);   /* three lines a notch */
+        else if (ev->key > 0 && ev->dy != 0) reader_touch_fling(ev->dy, ev->key);
         else reader_scroll(ev->dy > 0 ? -160 : 160);
         return;
     case WIN_EV_KEY_DOWN:
@@ -1032,6 +1039,10 @@ const char *reader_get_title(void) {
 const char *reader_get_path_instance(uint8_t rid) {
     if (rid >= READER_MAX_INSTANCES) return "";
     return s_readers[rid].path;
+}
+
+int reader_get_scroll_instance(uint8_t rid) {
+    return rid < READER_MAX_INSTANCES ? s_readers[rid].scroll_y : 0;
 }
 
 const char *reader_get_path(void) {
@@ -1294,6 +1305,7 @@ static void draw_reader_action_bar(reader_state_t *r, ugui_surface_t *rd, int w,
         ugui_toolbar_button(&surf, &r->ui_ctx, b_rot, "Rotate", READER_UI_ROTATE, false);
     }
 #endif
+    ugui_draw_hover(&surf, &r->ui_ctx);
 }
 
 /* The action bar alone, drawn again over the page and shown: its buttons
