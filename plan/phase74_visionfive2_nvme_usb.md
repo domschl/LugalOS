@@ -1,6 +1,6 @@
 # Phase 74 — StarFive VisionFive 2 Dual PCIe 2.0, M.2 NVMe SSD Storage & VIA VL805 xHCI USB 3.0 Host
 
-**Status**: READY TO IMPLEMENT  
+**Status**: COMPLETE  
 **Target Hardware**:
 - **Primary**: **StarFive VisionFive 2 v1.3B** (`visionfive2` preset, StarFive **JH7110** rev B, 4× SiFive U74-MC RV64GC SMP @ 1.5 GHz, 8 GiB LPDDR4, 64 GB MicroSD at `/sd0`, Gigabit Ethernet at `192.168.178.25`):
   - **PCIe0 (`0x2B000000`, 1-lane Gen2)**: Onboard **VIA Labs VL805-Q6** (`1106:3483`) xHCI USB 3.0 Host Controller (`U16`) driving 4 USB Type-A ports (`J11`, `J12`), physically connected to a **USB keyboard** and **USB mouse**.
@@ -435,9 +435,9 @@ flowchart TD
 
 ## 2. Summary Checklist
 
-- [ ] **74.1**: Dual PLDA PCIe Root Complex driver (`drivers/pcie_jh7110.c`), STG CRG clocks/resets, ATR tables, Sv39 4 GiB ECAM mapping in `vmm.c`, `pcie scan`, `pcie info`, and `pcie link` commands detecting VL805 and M.2 NVMe SSD.
-- [ ] **74.2**: 256 GB M.2 NVMe SSD storage driver (`drivers/nvme.c`), Admin SQ/CQ, `Identify Controller/Namespace`, I/O SQ/CQ, PRP block read/write, and `block_dev_t` device registration (`dev_nvme`).
-- [ ] **74.3**: M.2 NVMe filesystem integration (`/nvme0/` FAT32 mount in `fs/vfs_server.c`), `nvme info`, `nvme bench`, file operations, and symbolic CAS mathematics execution from `/nvme0/cas/`.
-- [ ] **74.4**: VIA VL805 xHCI USB 3.0 host driver (`drivers/xhci_jh7110.c`), Command/Event Rings, DCBAA, Root Hub 4-port polling, USB device slot addressing, descriptor parsing, and `usb` shell commands.
-- [ ] **74.5**: USB HID boot keyboard and mouse drivers (`drivers/usb_hid.c`), Interrupt IN transfer rings, integration with `usbkbd` translation pipeline and `console_input()` for physical keyboard shell typing, mouse pointer coordinates, and `mouse` diagnostic command.
-- [ ] **74.6**: Comprehensive HIL test suite (`tests/hw/test_visionfive2.py` Tests 11..15), `doc/admin/boards/visionfive2.md`, `doc/user/shell.md`, `AGENTS.md`, `python3 tools/gendocs.py --all` and `--check`, `racescan.py --check`, and full `tests/runner.py` regression pass.
+- [x] **74.1**: Dual PLDA PCIe Root Complex driver (`drivers/pcie_jh7110.c`), STG CRG clocks/resets, ATR tables, Sv39 4 GiB ECAM mapping in `vmm.c`, `pcie scan`, `pcie info`, and `pcie link` commands detecting VL805 and M.2 NVMe SSD.
+- [x] **74.2**: 256 GB M.2 NVMe SSD storage driver (`drivers/nvme.c`), Admin SQ/CQ, `Identify Controller/Namespace`, I/O SQ/CQ, PRP block read/write, and `block_dev_t` device registration (`dev_nvme`).
+- [x] **74.3**: M.2 NVMe filesystem integration (`/nvme0/` FAT32 mount in `fs/vfs_server.c`), `nvme info`, `nvme bench`, file operations, and symbolic CAS mathematics execution from `/nvme0/cas/`.
+- [x] **74.4**: VIA VL805 xHCI USB 3.0 host driver (`drivers/xhci_jh7110.c`), Command/Event Rings, DCBAA, Root Hub 4-port polling, USB device slot addressing, descriptor parsing, and `usb` shell commands.
+- [x] **74.5**: USB HID boot keyboard and mouse drivers (`drivers/usb_hid.c`), Interrupt IN transfer rings, integration with `usbkbd` translation pipeline and `console_input()` for physical keyboard shell typing, mouse pointer coordinates, and `mouse` diagnostic command.
+- [x] **74.6**: Comprehensive HIL test suite (`tests/hw/test_visionfive2.py` Tests 11..15), `doc/admin/boards/visionfive2.md`, `doc/user/shell.md`, `AGENTS.md`, `python3 tools/gendocs.py --all` and `--check`, `racescan.py --check`, and full `tests/runner.py` regression pass.

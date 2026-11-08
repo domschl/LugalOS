@@ -23,6 +23,7 @@ To execute a program:
 LugalOS supports multiple mounted FAT32 volumes:
 * /flash0/: Embedded Flash ROM/XIP filesystem (read-only or flash-backed).
 * /sd0/: Physical MicroSD card (read/write).
+* /nvme0/: M.2 NVMe SSD storage (read/write, StarFive VisionFive 2).
 * /ram0/: In-memory RAM disk (read/write, volatile).
 * /proc/: Synthetic process and system information filesystem.
 * /dev/: Hardware device interfaces (/dev/uart, /dev/rtc, /dev/sensors).
@@ -143,6 +144,12 @@ LugalOS features a ring buffer kernel logging subsystem (logging):
 * pcie / pcie link: Summary of StarFive JH7110 PCIe root complexes (link status, speed, width, memory windows, and device count).
 * pcie scan: Scans and enumerates PCIe devices and functions on Bus 0 and Bus 1, listing Vendor/Device IDs, classes, descriptions, and assigned 32-bit/64-bit BARs.
 * pcie info : Detailed port diagnostics for root complex 0 or 1 (MMIO register base, ECAM configuration base, allocated 32-bit memory window, link speed and lane count).
+* nvme info: M.2 NVMe SSD controller status (model name, serial number, firmware revision, total capacity, queue depths, BAR0 address, and PCIe Gen2 link status).
+* nvme bench [read|write|all] [size_mb]: Measures raw sequential read/write throughput and IOPS across the NVMe SSD storage controller.
+* usb: Summary of xHCI 1.0 USB host controller state, version, and enabled device slots.
+* usb ports: Operational status, power state, and negotiated speeds for Root Hub ports.
+* usb tree: Hierarchical topology of all connected USB root hubs, downstream hubs, and active device functions (VID:PID, device class, driver).
+* mouse [test]: Reports USB HID mouse state, device slot, cursor coordinates, button flags, and scroll wheel; mouse test runs interactive live coordinate tracking until keypress.
 * tz [POSIX-TZ]: Shows the time zone and whether summer time is in force; with a rule (tz CET-1CEST,M3.5.0,M10.5.0/3, tz UTC0) sets it.
 * ntp [server-ip]: Sets the clock over NTP; without an argument it asks the gateway.
 * net: Network interface status, IP address, netmask, gateway, DNS servers, and RX/TX packet counts.

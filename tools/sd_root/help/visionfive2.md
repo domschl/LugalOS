@@ -88,7 +88,36 @@ The VisionFive 2 features dual Gigabit Ethernet ports. LugalOS natively drives t
 
 ---
 
-## 6. Unattended Headless SD Auto-Boot (`vf2_uEnv.txt`)
+## 6. Dual PLDA PCIe 2.0 Root Complexes & M.2 NVMe SSD Storage (`/nvme0/`)
+
+The StarFive JH7110 features two independent PLDA XpressRICH3 PCIe 2.0 Root Complex controllers (`pcie0` and `pcie1`), both operating with Gen2 x1 links (5.0 GT/s):
+* **PCIe Port 0 (`0x2B000000`, PLIC IRQ 56):** Drives the onboard VIA Labs VL805 xHCI controller (`1106:3483`). Reset controlled via GPIO 26 (`PERST#`).
+* **PCIe Port 1 (`0x2C000000`, PLIC IRQ 57):** Connects to the M.2 M-Key socket (`U23`), powered by `U24` (`SCT2250FPA` buck converter) via GPIO 21 (`PWREN`) and reset via GPIO 28 (`PERST#`).
+
+### Address Translation (ATR) & Sv39 High ECAM Mapping
+* **ATR Table 0:** Maps 256 MiB ECAM configuration space (`0x9_40000000` for `pcie0`, `0x9_C0000000` for `pcie1`).
+* **ATR Table 1:** Maps 128 MiB 32-bit Memory window (`0x30000000..0x37FFFFFF` for `pcie0`, `0x38000000..0x3FFFFFFF` for `pcie1`).
+* **Sv39 Superpages:** Physical address range `0x9_00000000..0x9_FFFFFFFF` (4 GiB) is mapped as four 1 GB superpages in the root L2 page table (`PTE_R | PTE_W | PTE_G`), giving S-mode and kernel drivers zero-overhead access to PCIe ECAM and 64-bit BARs.
+
+### NVMe Block Driver & FAT32 Mounting
+* **Admin & I/O Queues:** Configured with 16-entry Admin SQ/CQ and 64-entry I/O SQ/CQ in contiguous physical memory, flushed via the SiFive L2 Cache Controller.
+* **VFS Mount:** MBR partition 1 is automatically parsed and mounted on `/nvme0/` at boot, providing high-speed storage up to multi-terabyte NVMe SSDs.
+* **Diagnostics:** Run `pcie scan`, `pcie info <port>`, `nvme info`, `nvme bench`, or `df` from `lsh`.
+
+---
+
+## 7. VIA VL805 USB 3.0 xHCI Controller & USB HID Keyboard / Mouse
+
+The VisionFive 2 includes an onboard VIA Labs VL805-Q6 USB 3.0 Host Controller driving four physical USB Type-A connectors (dual-stacked `J11` and `J12`):
+* **Topology:** xHCI Root Port 1 connects at High-Speed (480M) to the onboard VIA Labs VL817 4-port USB 2.0 Hub (`2109:3431`). The 4 downstream hub ports connect to the physical Type-A ports.
+* **Over-Current Recovery:** Implements staggered port power sequencing with automatic inrush `C_PORT_OVER_CURRENT` unlatching and power re-assertion.
+* **USB HID Boot Keyboard:** Configured in Boot Protocol with typematic auto-repeat (500 ms delay, 33 ms repeat) and VT100 escape sequence translation, integrated directly into the LugalOS console input system (`console_input_present(WIN_INPUT_KEYBOARD, true)`).
+* **USB HID Boot Mouse:** Reports relative X/Y coordinate tracking, left/right/middle button states, and scroll wheel deltas (`console_input_present(WIN_INPUT_POINTER, true)`).
+* **Diagnostics:** Run `usb`, `usb ports`, `usb tree`, `kbd`, or `mouse [test]` from `lsh`.
+
+---
+
+## 8. Unattended Headless SD Auto-Boot (`vf2_uEnv.txt`)
 
 To boot LugalOS automatically on power-on without a UART cable and without touching the onboard QSPI flash:
 
@@ -106,7 +135,7 @@ To boot LugalOS automatically on power-on without a UART cable and without touch
 
 ---
 
-## 7. Build, Boot, Storage Sync & HIL Testing Workflows
+## 9. Build, Boot, Storage Sync & HIL Testing Workflows
 
 ### Building the Kernel
 ```bash

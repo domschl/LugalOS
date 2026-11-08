@@ -295,6 +295,86 @@ def test_host_services(ser: serial.Serial) -> tuple[str, bool, str]:
     return (name, True, f"Host ping ok, HTTP /board ok, TCP 9P port 564 open on {ip}")
 
 
+def test_pcie_enumeration(ser: serial.Serial) -> tuple[str, bool, str]:
+    name = "pcie: Dual PLDA Gen2 Root Complexes (VL805 USB host + M.2 NVMe SSD)"
+    out = run_cmd(ser, "pcie scan", timeout_s=10.0)
+    checks = [
+        ("PCIe0 VL805 1106:3483", "1106:3483" in out and "USB Controller" in out),
+        ("PCIe1 NVMe Controller", "0108" in out and "NVMe" in out),
+    ]
+    failed = [label for label, ok in checks if not ok]
+    if failed:
+        return (name, False, f"failed: {', '.join(failed)}\nOutput:\n{out[-400:]}")
+    return (name, True, "PCIe0 (VL805 1106:3483) and PCIe1 (NVMe 0108) Gen2 links verified")
+
+
+def test_nvme_storage(ser: serial.Serial) -> tuple[str, bool, str]:
+    name = "nvme: Controller ID, Admin/IO queues, and /nvme0/ FAT32 mount"
+    out_info = run_cmd(ser, "nvme info", timeout_s=10.0)
+    out_df = run_cmd(ser, "df", timeout_s=10.0)
+    checks = [
+        ("M.2 NVMe SSD detected", "M.2 NVMe SSD" in out_info and "PCIe Link:          Gen2 x1" in out_info),
+        ("Sector 0 Read OK", "Sector 0 Read:      OK" in out_info),
+        ("/nvme0/ mounted in df", "/nvme0/" in out_df),
+    ]
+    failed = [label for label, ok in checks if not ok]
+    if failed:
+        return (name, False, f"failed: {', '.join(failed)}")
+    return (name, True, "NVMe SSD identified, Sector 0 verified, /nvme0/ mounted")
+
+
+def test_nvme_filesystem_and_cas(ser: serial.Serial) -> tuple[str, bool, str]:
+    name = "nvme-fs: /nvme0 R/W file round-trip and Lisp evaluation from SSD"
+    out_rw = run_cmd(
+        ser,
+        '(begin (write-file "/nvme0/hil_test.txt" "nvme-storage-ok") '
+        '(let ((r (read-file "/nvme0/hil_test.txt"))) (rm "/nvme0/hil_test.txt") r))',
+        timeout_s=10.0,
+    )
+    out_cas = run_cmd(
+        ser,
+        '(begin (write-file "/nvme0/cas_cube.lisp" "(define (hil-cube x) (* x x x))") '
+        '(load "/nvme0/cas_cube.lisp") (rm "/nvme0/cas_cube.lisp") (hil-cube 6))',
+        timeout_s=10.0,
+    )
+    checks = [
+        ("NVMe R/W round-trip", "nvme-storage-ok" in out_rw),
+        ("NVMe Lisp code load/exec", "216" in out_cas),
+    ]
+    failed = [label for label, ok in checks if not ok]
+    if failed:
+        return (name, False, f"failed: {', '.join(failed)}")
+    return (name, True, "NVMe R/W verified, Lisp script loaded and evaluated from /nvme0/")
+
+
+def test_usb_hub_and_tree(ser: serial.Serial) -> tuple[str, bool, str]:
+    name = "usb: VIA VL805 xHCI 1.0 host, onboard VL817 Hub, and device topology"
+    out_ports = run_cmd(ser, "usb ports", timeout_s=10.0)
+    out_tree = run_cmd(ser, "usb tree", timeout_s=10.0)
+    checks = [
+        ("Root Port 1 Hub connected", "USB 2.0 Hub (Onboard)" in out_ports),
+        ("Onboard VL817 Hub 2109:3431", "2109:3431" in out_tree),
+    ]
+    failed = [label for label, ok in checks if not ok]
+    if failed:
+        return (name, False, f"failed: {', '.join(failed)}")
+    return (name, True, "xHCI host active, onboard VL817 hub enumerated, device tree verified")
+
+
+def test_usb_hid_keyboard_mouse(ser: serial.Serial) -> tuple[str, bool, str]:
+    name = "hid: USB Boot Keyboard & Mouse drivers and console input integration"
+    out_kbd = run_cmd(ser, "kbd", timeout_s=10.0)
+    out_mouse = run_cmd(ser, "mouse", timeout_s=10.0)
+    checks = [
+        ("USB Keyboard ONLINE", "State:       ONLINE" in out_kbd and "Boot Protocol" in out_kbd),
+        ("USB Mouse ONLINE", "State:       ONLINE" in out_mouse and "Coordinates:" in out_mouse),
+    ]
+    failed = [label for label, ok in checks if not ok]
+    if failed:
+        return (name, False, f"failed: {', '.join(failed)}")
+    return (name, True, "USB Keyboard & Mouse both ONLINE in Boot Protocol with input event delivery")
+
+
 def test_stress(ser: serial.Serial) -> tuple[str, bool, str]:
     name = "stress: 4-core concurrent fmt/ram/sd/p9/chan/log/shell stress"
     out = run_cmd(ser, "stress 3", timeout_s=25.0)
@@ -349,6 +429,11 @@ def main() -> int:
         results.append(test_emac_loopback(ser))
         results.append(test_network_and_dhcp(ser))
         results.append(test_host_services(ser))
+        results.append(test_pcie_enumeration(ser))
+        results.append(test_nvme_storage(ser))
+        results.append(test_nvme_filesystem_and_cas(ser))
+        results.append(test_usb_hub_and_tree(ser))
+        results.append(test_usb_hid_keyboard_mouse(ser))
         results.append(test_stress(ser))
         results.append(test_pmic_cold_reboot(ser))
     finally:

@@ -120,7 +120,8 @@ static int jh7110_pcie_bringup_port(int port) {
 
     /* 1. Power on device & assert reset */
     if (port == 0) {
-        jh7110_gpio_set_output(JH7110_PCIE0_GPIO_PWREN, 1); /* VL805 power */
+        jh7110_gpio_set_output(JH7110_PCIE0_GPIO_PWREN, 1); /* VL805 3.3V power */
+        jh7110_gpio_set_output(JH7110_PCIE0_GPIO_VBUS, 1);  /* USB Type-A 5V VBUS power */
         jh7110_gpio_set_output(JH7110_PCIE0_GPIO_PERST, 0); /* PERST# assert */
     } else {
         jh7110_gpio_set_output(JH7110_PCIE1_GPIO_PWREN, 1); /* M.2 U24 3.3V power */

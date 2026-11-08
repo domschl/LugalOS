@@ -29,6 +29,7 @@
 #define JH7110_PCIE1_MEM64_SIZE 0x40000000ULL
 
 /* GPIO Pin Assignments */
+#define JH7110_PCIE0_GPIO_VBUS  25  /* active high USB Type-A VBUS power */
 #define JH7110_PCIE0_GPIO_PERST 26  /* active low reset */
 #define JH7110_PCIE0_GPIO_PRSN  27  /* presence / clkreq */
 #define JH7110_PCIE0_GPIO_PWREN 32  /* active high power */

@@ -123,7 +123,10 @@ static int nvme_io_submit_sync(nvme_sqe_t *sqe, nvme_cqe_t *cqe_out) {
                         (uintptr_t)(&g_io_sq[sq_idx] + 1));
 
     g_io_sq_tail = (sq_idx + 1u) % NVME_IO_Q_SIZE;
-    REG32(g_nvme_bar0 + nvme_sq_doorbell_offset(1)) = g_io_sq_tail;
+    uint32_t dblr = nvme_sq_doorbell_offset(1);
+    nvme_mb();
+    REG32(g_nvme_bar0 + dblr) = g_io_sq_tail;
+    nvme_mb();
 
     uint64_t timeout_us = time_get_us() + 5000000ULL;
     volatile nvme_cqe_t *cqe = &g_io_cq[g_io_cq_head];
@@ -364,8 +367,25 @@ bool nvme_is_present(void) {
 static int nvme_read_blocks_impl(uint32_t lba, uint32_t count, void *buf) {
     if (!g_nvme_present || count == 0) return -1;
 
-    uint32_t bytes = count * g_sector_size;
     uintptr_t p = (uintptr_t)buf;
+    if ((p & 4095UL) != 0) {
+        /* Bounce unaligned / stack buffers through 4KB-aligned g_admin_buf */
+        uint8_t *dst = (uint8_t *)buf;
+        uint32_t sectors_per_bounce = 4096u / g_sector_size;
+        while (count > 0) {
+            uint32_t batch = (count < sectors_per_bounce) ? count : sectors_per_bounce;
+            if (nvme_read_blocks_impl(lba, batch, g_admin_buf) != 0) {
+                return -1;
+            }
+            memcpy(dst, g_admin_buf, batch * g_sector_size);
+            dst += batch * g_sector_size;
+            lba += batch;
+            count -= batch;
+        }
+        return 0;
+    }
+
+    uint32_t bytes = count * g_sector_size;
     uintptr_t off = p & 4095UL;
     uint32_t first_page_bytes = 4096u - (uint32_t)off;
 
@@ -412,8 +432,25 @@ static int nvme_read_blocks_impl(uint32_t lba, uint32_t count, void *buf) {
 static int nvme_write_blocks_impl(uint32_t lba, uint32_t count, const void *buf) {
     if (!g_nvme_present || count == 0) return -1;
 
-    uint32_t bytes = count * g_sector_size;
     uintptr_t p = (uintptr_t)buf;
+    if ((p & 4095UL) != 0) {
+        /* Bounce unaligned / stack buffers through 4KB-aligned g_admin_buf */
+        const uint8_t *src = (const uint8_t *)buf;
+        uint32_t sectors_per_bounce = 4096u / g_sector_size;
+        while (count > 0) {
+            uint32_t batch = (count < sectors_per_bounce) ? count : sectors_per_bounce;
+            memcpy(g_admin_buf, src, batch * g_sector_size);
+            if (nvme_write_blocks_impl(lba, batch, g_admin_buf) != 0) {
+                return -1;
+            }
+            src += batch * g_sector_size;
+            lba += batch;
+            count -= batch;
+        }
+        return 0;
+    }
+
+    uint32_t bytes = count * g_sector_size;
     uintptr_t off = p & 4095UL;
     uint32_t first_page_bytes = 4096u - (uint32_t)off;
 

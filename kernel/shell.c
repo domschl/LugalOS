@@ -158,6 +158,7 @@
 #include "drivers/emac_jh7110.h"
 #include "drivers/pcie_jh7110.h"
 #include "drivers/nvme.h"
+#include "drivers/xhci.h"
 #endif
 #include "arch/umode.h"
 #include "arch/trap.h"
@@ -7234,6 +7235,22 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "nvme info") == 0 || strcmp(cmd_line, "nvme") == 0) {
         nvme_cmd_info();
+        return;
+    } else if (strcmp(cmd_line, "usb ports") == 0) {
+        xhci_cmd_ports();
+        return;
+    } else if (strcmp(cmd_line, "usb tree") == 0) {
+        xhci_cmd_tree();
+        return;
+    } else if (strcmp(cmd_line, "usb") == 0) {
+        xhci_cmd_summary();
+        return;
+    } else if (strcmp(cmd_line, "kbd") == 0) {
+        xhci_cmd_kbd();
+        return;
+    } else if (strcmp(cmd_line, "mouse") == 0 || strncmp(cmd_line, "mouse ", 6) == 0) {
+        const char *arg = (cmd_line[5] == ' ') ? cmd_line + 6 : NULL;
+        xhci_cmd_mouse(arg);
         return;
 #endif
 #if defined(CONFIG_BOARD_ESP32P4)

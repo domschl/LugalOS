@@ -85,7 +85,7 @@ LugalOS supports distinct hardware presets. If a task requires testing against a
 | `rp2350-wifi` | RP2350 CYW43439 | Raspberry Pi Pico 2 W with CYW43439 Wi-Fi |
 | `esp32c6` | ESP32-C6 RV32 | Waveshare ESP32-C6-Zero (RV32IMAC @ 160 MHz, 512 KB SRAM, 8 MB flash, USB-Serial/JTAG) |
 | `esp32c6-release` | ESP32-C6 RV32 | The C6-Zero as a deployed node: release image (no self-tests), `i2c` folded; `esp32c6` is its dev twin |
-| `visionfive2` | StarFive JH7110 RV64GC | StarFive VisionFive 2 v1.3B (4× SiFive U74 RV64GC @ 1.5 GHz on Harts 1..4, Sv39 MMU, S-mode under OpenSBI, 8 GiB LPDDR4, DW-MSHC SDIO1) |
+| `visionfive2` | StarFive JH7110 RV64GC | StarFive VisionFive 2 v1.3B (4× SiFive U74 RV64GC @ 1.5 GHz on Harts 1..4, Sv39 MMU, S-mode under OpenSBI, 8 GiB LPDDR4, DW-MSHC SDIO1, dual PLDA PCIe 2.0, M.2 NVMe SSD /nvme0, VIA VL805 USB 3.0 xHCI keyboard/mouse) |
 | `rv32` | RISC-V 32-bit NOMMU | QEMU virt machine (32-bit microkernel test target) |
 | `rv32-fold` | RISC-V 32-bit NOMMU | `rv32` with `uart`, `blk` and `i2c` folded into their callers: the folded twin the runner tests |
 | `rv64` | RISC-V 64-bit Sv39 MMU | QEMU virt machine (64-bit virtual memory target) |
@@ -139,7 +139,7 @@ See [Firmware Flashing Guide](doc/admin/flashing.md) and [Plan 9 Networking](doc
   * `python3 tests/hw/test_rp2350.py`: RP2350 peripherals, memory pools, console.
   * `python3 tests/hw/test_esp32p4.py --board <board>`: ESP32-P4 CLIC, PMP, I2C, PSRAM, SDMMC.
   * `python3 tests/hw/test_esp32c6.py --port <port>`: ESP32-C6 Wi-Fi and LLP radio.
-  * `python3 tests/hw/test_visionfive2.py`: StarFive VisionFive 2 64-bit S-mode SBI boot, 4-core U74 SMP, Sv39 MMU, DW-MSHC SDIO1 (`/sd0`), CAS, Gigabit Ethernet (EQOS v5.20 / Motorcomm YT8531C loopback), DHCP, HTTP, TCP 9P, and PMIC cold reboot.
+  * `python3 tests/hw/test_visionfive2.py`: StarFive VisionFive 2 64-bit S-mode SBI boot, 4-core U74 SMP, Sv39 MMU, DW-MSHC SDIO1 (`/sd0`), CAS, Gigabit Ethernet (EQOS v5.20 / Motorcomm YT8531C loopback), dual PLDA PCIe 2.0, M.2 NVMe SSD (`/nvme0`), VIA VL805 xHCI USB 3.0 host, USB HID keyboard & mouse, DHCP, HTTP, TCP 9P, and PMIC cold reboot.
   * `python3 tests/hw/test_wifi.py`: CYW43439 Wi-Fi and network stack.
   * `python3 tests/hw/lcdterm_shots.py`: Visual PBM screenshot regression suite. See [Testing Guide](doc/dev/testing.md#visual-regression-testing-lcdterm_shotspy) for scenario options and hotkeys.
 
