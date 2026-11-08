@@ -190,6 +190,15 @@ LCDTERM_UTEXT void vtterm_resize(vtterm_t *vt, const fbtext_t *text) {
     /* A region that was the whole screen stays the whole screen: kept at the
      * old bottom, a taller window scrolled at that row and never wrote below. */
     bool full_region = vt->top == 0 && vt->bot + 1u == vt->text.rows;
+    /* Fewer rows (the on-screen keyboard opened under it): the cursor's line
+     * stays the last one shown -- what is above it scrolls up, as a terminal
+     * window made shorter does -- rather than the lines from the cursor down
+     * going under the keyboard and the cursor landing on an older line. */
+    if (vt->row >= rows && rows > 0) {
+        unsigned n = vt->row + 1u - rows;
+        region_scroll(vt, 0, vt->text.rows - 1u, n, true);
+        vt->row = (uint16_t)(vt->row - n);
+    }
     vt->text.fb = text->fb;
     vt->text.stride = text->stride;
     vt->text.cols = (uint16_t)nc;
@@ -647,6 +656,20 @@ int vtterm_selftest(void) {
         FEED(&vt, "1\r\n2\r\n3\r\n4\r\n5");
         st_check(&cx, "resize: a whole-screen region follows the screen; never taller than the shadow",
                  shrunk && regrown && clamped && row_is(&vt, 0, "2") && row_is(&vt, 3, "5") && vt.row == 3);
+    }
+
+    /* The on-screen keyboard takes rows from under the cursor: the lines
+     * above it scroll up, the cursor's line is the last one shown, and
+     * typing goes on there. */
+    {
+        st_fresh(&cx, &vt);
+        FEED(&vt, "a\r\nb\r\nc\r\nd");
+        fbtext_t t;
+        fbtext_init(&t, cx.buf, ST_COLS, ST_COLS, 2);
+        vtterm_resize(&vt, &t);
+        FEED(&vt, "!");
+        st_check(&cx, "resize: fewer rows keep the cursor's line in view (the on-screen keyboard)",
+                 vt.row == 1 && vt.col == 2 && row_is(&vt, 0, "c") && row_is(&vt, 1, "d!"));
     }
 
     st_fresh(&cx, &vt); FEED(&vt, "abcdef\033[3D\033[K");
