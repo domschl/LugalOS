@@ -14,7 +14,7 @@ KBD_UTEXT bool usb_parse_config(const uint8_t *cfg, uint32_t len, usb_cfg_info_t
     for (uint32_t i = 0; i < sizeof(*out); i++) o[i] = 0;
     if (len < 9 || cfg[1] != 2) return false;
     out->cfg_value = cfg[5];
-    uint32_t cls = 0, sub = 0, proto = 0, alt = 0, iface = 0;
+    uint32_t cls = 0, sub = 0, proto = 0, alt = 0, iface = 0, hid_len = 0;
     uint32_t at = 0;
     while (at + 2 <= len) {
         uint32_t bl = cfg[at], type = cfg[at + 1];
@@ -22,7 +22,10 @@ KBD_UTEXT bool usb_parse_config(const uint8_t *cfg, uint32_t len, usb_cfg_info_t
         if (type == 4 && bl >= 9) {                         /* interface */
             iface = cfg[at + 2]; alt = cfg[at + 3];
             cls = cfg[at + 5]; sub = cfg[at + 6]; proto = cfg[at + 7];
+            hid_len = 0;
             if (cls == 9) out->is_hub = 1;
+        } else if (type == 0x21 && bl >= 9) {               /* HID: its report descriptor's length */
+            hid_len = (uint32_t)(cfg[at + 7] | (cfg[at + 8] << 8));
         } else if (type == 5 && bl >= 7) {                  /* endpoint */
             uint32_t ea = cfg[at + 2], attr = cfg[at + 3] & 3u;
             bool int_in = (ea & 0x80u) && attr == 3u;
@@ -39,6 +42,7 @@ KBD_UTEXT bool usb_parse_config(const uint8_t *cfg, uint32_t len, usb_cfg_info_t
                 out->mouse_ep = (uint8_t)(ea & 0x0fu);
                 out->mouse_mps = cfg[at + 4];
                 out->mouse_interval = cfg[at + 6];
+                out->mouse_rdesc_len = (uint16_t)hid_len;
             }
             if (int_in && cls == 9 && !out->hub_ep) out->hub_ep = (uint8_t)(ea & 0x0fu);
         }
@@ -47,11 +51,112 @@ KBD_UTEXT bool usb_parse_config(const uint8_t *cfg, uint32_t len, usb_cfg_info_t
     return true;
 }
 
-KBD_UTEXT uint32_t usbmouse_event(const uint8_t *r, uint32_t n) {
-    if (n < 3) return 0;
-    uint32_t e = (uint32_t)(r[0] & 0x07u) | ((uint32_t)r[1] << 8) | ((uint32_t)r[2] << 16);
-    if (n >= 4) e |= (uint32_t)r[3] << 24;
-    return e;
+KBD_UTEXT void usbmouse_boot_layout(usbmouse_layout_t *l) {
+    l->valid = 1;
+    l->report_id = 0;
+    l->buttons = 3;
+    l->btn_bit = 0;
+    l->x_bit = 8;  l->x_size = 8;
+    l->y_bit = 16; l->y_size = 8;
+    l->wheel_bit = 24; l->wheel_size = 8;
+}
+
+#define RD_IDS     16u    /* report IDs whose bit offsets are kept apart; others share the last */
+#define RD_USAGES  8u
+
+KBD_UTEXT bool usbmouse_parse_report_desc(const uint8_t *d, uint32_t len, usbmouse_layout_t *l) {
+    uint8_t *o = (uint8_t *)l;
+    for (uint32_t i = 0; i < sizeof(*l); i++) o[i] = 0;
+    uint32_t page = 0, rsize = 0, rcount = 0, rid = 0;
+    uint32_t usages[RD_USAGES], nu = 0, umin = 0;
+    bool range = false;
+    uint32_t off[RD_IDS];
+    for (uint32_t i = 0; i < RD_IDS; i++) off[i] = 0;
+    uint32_t xy_id = 0xFFFFFFFFu, btn_id = 0xFFFFFFFFu;
+    uint32_t i = 0;
+    while (i < len) {
+        uint32_t b = d[i];
+        if (b == 0xFEu) {                                   /* a long item: skipped */
+            if (i + 2u >= len) break;
+            i += 3u + d[i + 1];
+            continue;
+        }
+        uint32_t sz = b & 3u;
+        if (sz == 3u) sz = 4u;
+        if (i + 1u + sz > len) break;
+        uint32_t v = 0;
+        for (uint32_t k = 0; k < sz; k++) v |= (uint32_t)d[i + 1u + k] << (8u * k);
+        uint32_t type = (b >> 2) & 3u, tag = b >> 4;
+        i += 1u + sz;
+        if (type == 1u) {                                   /* global */
+            if (tag == 0u) page = v;
+            else if (tag == 7u) rsize = v;
+            else if (tag == 9u) rcount = v;
+            else if (tag == 8u) rid = v & 0xFFu;
+        } else if (type == 2u) {                            /* local */
+            if (tag == 0u) { if (nu < RD_USAGES) usages[nu++] = v & 0xFFFFu; }
+            else if (tag == 1u) { umin = v; range = true; }
+        } else if (type == 0u) {                            /* main */
+            if (tag == 8u) {                                /* Input */
+                uint32_t slot = rid < RD_IDS ? rid : RD_IDS - 1u;
+                uint32_t base = off[slot];
+                bool constant = (v & 1u) != 0;
+                for (uint32_t f = 0; f < rcount && !constant; f++) {
+                    uint32_t u = f < nu ? usages[f] : range ? umin + f : nu ? usages[nu - 1u] : 0;
+                    uint32_t bit = base + f * rsize;
+                    if (bit > 0xFFFFu || rsize > 16u) continue;
+                    if (page == 9u && rsize == 1u) {
+                        if (btn_id == 0xFFFFFFFFu) { btn_id = rid; l->btn_bit = (uint16_t)bit; }
+                        if (btn_id == rid && bit == (uint32_t)l->btn_bit + l->buttons && l->buttons < 8u) l->buttons++;
+                    } else if (page == 1u && (xy_id == 0xFFFFFFFFu || xy_id == rid)) {
+                        if (u == 0x30u && !l->x_size) { l->x_bit = (uint16_t)bit; l->x_size = (uint8_t)rsize; xy_id = rid; }
+                        else if (u == 0x31u && !l->y_size) { l->y_bit = (uint16_t)bit; l->y_size = (uint8_t)rsize; xy_id = rid; }
+                        else if (u == 0x38u && !l->wheel_size) { l->wheel_bit = (uint16_t)bit; l->wheel_size = (uint8_t)rsize; }
+                    }
+                }
+                off[slot] = base + rcount * rsize;
+            }
+            nu = 0;                                         /* every main item ends the locals */
+            range = false;
+            umin = 0;
+        }
+    }
+    if (xy_id == 0xFFFFFFFFu || btn_id != xy_id) l->buttons = 0;
+    l->report_id = (uint8_t)(xy_id == 0xFFFFFFFFu ? 0u : xy_id);
+    l->valid = (uint8_t)(l->x_size && l->y_size && l->buttons);
+    return l->valid != 0;
+}
+
+/* size bits from bit on, little-endian as HID packs them; sign-extended. */
+KBD_UTEXT static int32_t rd_field(const uint8_t *r, uint32_t n, uint32_t bit, uint32_t size, bool sign) {
+    uint32_t v = 0;
+    for (uint32_t k = 0; k < size; k++) {
+        uint32_t at = bit + k;
+        if (at / 8u >= n) return 0;
+        v |= (uint32_t)((r[at / 8u] >> (at % 8u)) & 1u) << k;
+    }
+    if (sign && size > 0u && size < 32u && ((v >> (size - 1u)) & 1u)) v |= ~0u << size;
+    return (int32_t)v;
+}
+
+KBD_UTEXT bool usbmouse_decode(const usbmouse_layout_t *l, const uint8_t *r, uint32_t n, usbmouse_ev_t *ev) {
+    if (!l->valid) return false;
+    if (l->report_id) {
+        if (n < 1u || r[0] != l->report_id) return false;
+        r++;
+        n--;
+    }
+    if (n * 8u < (uint32_t)l->y_bit + l->y_size || n * 8u < (uint32_t)l->x_bit + l->x_size) return false;
+    int32_t dx = rd_field(r, n, l->x_bit, l->x_size, true);
+    int32_t dy = rd_field(r, n, l->y_bit, l->y_size, true);
+    int32_t w = 0;
+    if (l->wheel_size && n * 8u >= (uint32_t)l->wheel_bit + l->wheel_size)
+        w = rd_field(r, n, l->wheel_bit, l->wheel_size, true);
+    ev->dx = (int16_t)(dx < -32768 ? -32768 : dx > 32767 ? 32767 : dx);
+    ev->dy = (int16_t)(dy < -32768 ? -32768 : dy > 32767 ? 32767 : dy);
+    ev->wheel = (int8_t)(w < -127 ? -127 : w > 127 ? 127 : w);
+    ev->buttons = (uint8_t)(rd_field(r, n, l->btn_bit, l->buttons < 3u ? l->buttons : 3u, false) & 7);
+    return true;
 }
 
 KBD_UTEXT static bool has_key(const uint8_t r[8], uint8_t k) {
@@ -475,15 +580,47 @@ int usbkbd_selftest(void) {
     CHECK("receiver: keyboard iface 0 ep 1, mouse iface 1 ep 2 every 2 ms",
           ok && ci.kbd_found && ci.kbd_iface == 0 && ci.kbd_ep == 1 &&
           ci.mouse_found && ci.mouse_iface == 1 && ci.mouse_ep == 2 && ci.mouse_interval == 2);
+    usbmouse_layout_t ml;
+    usbmouse_ev_t mev;
+    usbmouse_boot_layout(&ml);
     static const uint8_t mr3[3] = { 0x01, 0x05, 0xFD };              /* left, 5 right, 3 up */
     static const uint8_t mr4[4] = { 0x06, 0x80, 0x7F, 0xFF };        /* right + middle, extremes, wheel down */
-    uint32_t me = usbmouse_event(mr3, 3);
-    CHECK("mouse report: left held, dx 5, dy -3, no wheel",
-          USBMOUSE_BUTTONS(me) == 1 && USBMOUSE_DX(me) == 5 && USBMOUSE_DY(me) == -3 && USBMOUSE_WHEEL(me) == 0);
-    me = usbmouse_event(mr4, 4);
-    CHECK("mouse report: right + middle, dx -128, dy 127, wheel -1",
-          USBMOUSE_BUTTONS(me) == 6 && USBMOUSE_DX(me) == -128 && USBMOUSE_DY(me) == 127 && USBMOUSE_WHEEL(me) == -1);
-    CHECK("a short report is nothing", usbmouse_event(mr4, 2) == 0);
+    CHECK("boot report: left held, dx 5, dy -3, no wheel",
+          usbmouse_decode(&ml, mr3, 3, &mev) && mev.buttons == 1 && mev.dx == 5 && mev.dy == -3 && mev.wheel == 0);
+    CHECK("boot report: right + middle, dx -128, dy 127, wheel -1",
+          usbmouse_decode(&ml, mr4, 4, &mev) && mev.buttons == 6 && mev.dx == -128 && mev.dy == 127 && mev.wheel == -1);
+    CHECK("a short report is nothing", !usbmouse_decode(&ml, mr4, 2, &mev));
+    /* A wheel mouse's report descriptor (the HID spec's mouse, with a
+     * wheel): 3 buttons and 5 bits of padding, then X, Y and the wheel. */
+    static const uint8_t rd_wheel[52] = {
+        0x05, 0x01, 0x09, 0x02, 0xA1, 0x01, 0x09, 0x01, 0xA1, 0x00, 0x05, 0x09, 0x19, 0x01, 0x29, 0x03,
+        0x15, 0x00, 0x25, 0x01, 0x95, 0x03, 0x75, 0x01, 0x81, 0x02, 0x95, 0x01, 0x75, 0x05, 0x81, 0x03,
+        0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x09, 0x38, 0x15, 0x81, 0x25, 0x7F, 0x75, 0x08, 0x95, 0x03,
+        0x81, 0x06, 0xC0, 0xC0,
+    };
+    CHECK("report descriptor: 3 buttons, X 8 at 8, Y 8 at 16, wheel 8 at 24, no ID",
+          usbmouse_parse_report_desc(rd_wheel, sizeof rd_wheel, &ml) && ml.report_id == 0 && ml.buttons == 3 &&
+          ml.btn_bit == 0 && ml.x_bit == 8 && ml.x_size == 8 && ml.y_bit == 16 && ml.wheel_bit == 24 && ml.wheel_size == 8);
+    static const uint8_t rr_wheel[4] = { 0x02, 0x00, 0x00, 0x01 };    /* right held, wheel up */
+    CHECK("its report: right held, the wheel one up",
+          usbmouse_decode(&ml, rr_wheel, 4, &mev) && mev.buttons == 2 && mev.wheel == 1 && mev.dx == 0);
+    /* A receiver's mouse: report ID 2, 16 buttons, 12-bit X and Y, the wheel. */
+    static const uint8_t rd_id[60] = {
+        0x05, 0x01, 0x09, 0x02, 0xA1, 0x01, 0x85, 0x02, 0x09, 0x01, 0xA1, 0x00, 0x05, 0x09, 0x19, 0x01,
+        0x29, 0x10, 0x15, 0x00, 0x25, 0x01, 0x95, 0x10, 0x75, 0x01, 0x81, 0x02, 0x05, 0x01, 0x16, 0x01,
+        0xF8, 0x26, 0xFF, 0x07, 0x75, 0x0C, 0x95, 0x02, 0x09, 0x30, 0x09, 0x31, 0x81, 0x06, 0x15, 0x81,
+        0x25, 0x7F, 0x75, 0x08, 0x95, 0x01, 0x09, 0x38, 0x81, 0x06, 0xC0, 0xC0,
+    };
+    CHECK("report descriptor: ID 2, buttons, X 12 at 16, Y 12 at 28, wheel 8 at 40",
+          usbmouse_parse_report_desc(rd_id, sizeof rd_id, &ml) && ml.report_id == 2 && ml.buttons == 8 &&
+          ml.x_bit == 16 && ml.x_size == 12 && ml.y_bit == 28 && ml.y_size == 12 && ml.wheel_bit == 40);
+    static const uint8_t rr_id[7] = { 0x02, 0x01, 0x00, 0x05, 0xD0, 0xFF, 0x01 };
+    static const uint8_t rr_other[7] = { 0x01, 0x01, 0x00, 0x05, 0xD0, 0xFF, 0x01 };
+    CHECK("its report: left, dx 5, dy -3 (12-bit), wheel up; another ID is not the mouse's",
+          usbmouse_decode(&ml, rr_id, 7, &mev) && mev.buttons == 1 && mev.dx == 5 && mev.dy == -3 && mev.wheel == 1 &&
+          !usbmouse_decode(&ml, rr_other, 7, &mev));
+    CHECK("a keyboard's report descriptor has no mouse in it",
+          !usbmouse_parse_report_desc(rd_wheel, 10, &ml));
 
     uint32_t ev[16];
     static const uint8_t r0[8]   = { 0 };

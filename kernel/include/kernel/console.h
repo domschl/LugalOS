@@ -164,6 +164,11 @@ void console_pointer(int x, int y, uint8_t buttons);
  * Vertical scrolls the window under the pointer (WIN_EV_SCROLL, dy in
  * notches, key 0); horizontal pans the ribbon a window at a time. */
 void console_wheel(int dx, int dy);
+/* Where the cursor is (screen pixels) and whether it shows: from the first
+ * pointer event until console_pointer_hide() -- a finger touching, the
+ * mouse unplugged. For a panel that draws the cursor itself. */
+bool console_pointer_shown(int *x, int *y);
+void console_pointer_hide(void);
 /* A finger held still past the long press at (x, y): the context menu, as
  * a right click (from the touch task). */
 void console_touch_context(unsigned x, unsigned y);

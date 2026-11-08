@@ -836,6 +836,10 @@ int lcdterm_get_canvas565_cid_by_name(const char *name) {
     return -1;
 }
 
+void lcdterm_pointer_changed(void) {
+    if (g_be && g_be->pointer) g_be->pointer();
+}
+
 bool lcdterm_window_at(int x, int y, uint8_t *type, uint8_t *id, int *cx, int *cy) {
     return g_scr && screen_window_at(g_scr, x, y, type, id, cx, cy);
 }

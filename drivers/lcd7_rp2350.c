@@ -79,6 +79,7 @@
 #include "arch/umode.h"
 #include "arch/rp2350_clocks.h"
 #include "kernel/console.h"
+#include "kernel/cursor_shape.h"
 #include "kernel/palloc.h"
 #include "kernel/printk.h"
 #include "kernel/time.h"
@@ -337,7 +338,21 @@ _Static_assert(LCD_H_ACTIVE % 32u == 0, "lcd7: a line must be whole words");
 static uint16_t *g_table;         /* one heap page, never freed while the panel runs */
 /* single task: the boot, before any reader runs; constant after. */
 static uint32_t *g_fb;            /* FB_PAGES heap pages, likewise */
-static uint32_t  g_fb_start;      /* what RL_CH writes back into FB_CH each frame */
+static uint32_t  g_fb_start;      /* where the scan begins: the frame's first word, or its last turned */
+
+/* The frame is read in SEG_N strips of SEG_LINES rows: RL_CH walks g_seg (a
+ * read ring of SEG_N words) and writes each strip's address into FB_CH's
+ * AL3_READ_ADDR_TRIG; every strip is SEG_WORDS long, so FB_CH's count
+ * reloads by itself. Where the mouse cursor is, two strips come from a copy
+ * of them with the cursor drawn in (g_cur_buf), so the frame -- which the
+ * terminal draws into and reads back -- never holds the cursor. Turned by
+ * 180 degrees the strips are read last first, from their last word.
+ * single task: the boot, then the lcdcursor task; the DMA reads it. */
+#define SEG_LINES            15u
+#define SEG_N                (LCD_V_ACTIVE / SEG_LINES)
+#define SEG_WORDS            (SEG_LINES * FB_WORDS_PER_LINE)
+_Static_assert(SEG_N == 32u && SEG_N * SEG_LINES == LCD_V_ACTIVE, "lcd7: the strip ring must be 32 words");
+static uint32_t  g_seg[SEG_N] __attribute__((aligned(SEG_N * 4u)));
 /* single task: the boot, before any reader runs; constant after. */
 static bool      g_running;
 static uint16_t  g_fg, g_bg;
@@ -348,6 +363,84 @@ static unsigned  g_brightness;
  * SM reads the frame itself, every frame. */
 /* 47.11: idle blanking -- dark without forgetting the level `lcd backlight`
  * set, and back to it. */
+/* Strip s (in frame order) to be read from `from` (SEG_WORDS words). */
+static uint32_t seg_addr(const uint32_t *from) {
+    return FB_DMA_REV ? (uint32_t)(uintptr_t)&from[SEG_WORDS - 1u] : (uint32_t)(uintptr_t)from;
+}
+static void seg_point(unsigned s, const uint32_t *from) {
+    g_seg[FB_DMA_REV ? SEG_N - 1u - s : s] = seg_addr(from);
+}
+
+/* The mouse cursor's two strips. single task: lcdcursor. */
+static uint32_t *g_cur_buf;       /* one page, from the first cursor on; 2 strips */
+static int       g_cur_seg = -1;  /* the first strip it stands in for, -1: none */
+static volatile int g_cur_pid = -1;   /* accepted: set once, by whoever shows the first cursor */
+static volatile bool g_cur_starting;  /* accepted: an atomic exchange picks the one that starts it */
+
+/* Strips k and k + 1 into g_cur_buf, row by row, each with the cursor's row
+ * drawn in (ink the foreground, fill the background), so the scan never
+ * meets a row without it for more than the copy of that row. */
+static void cursor_paint(unsigned k, int x, int y) {
+    for (unsigned l = 0; l < 2u * SEG_LINES; l++) {
+        unsigned row = k * SEG_LINES + l;
+        uint32_t *dst = &g_cur_buf[l * FB_WORDS_PER_LINE];
+        const uint32_t *src = &g_fb[row * FB_WORDS_PER_LINE];
+        for (unsigned i = 0; i < FB_WORDS_PER_LINE; i++) dst[i] = src[i];
+        int r = (int)row - y;
+        if (r < 0 || r >= CURSOR_SHAPE_PX) continue;
+        uint16_t ink = k_cursor_ink[r], fill = k_cursor_fill[r];
+        for (int c = 0; c < CURSOR_SHAPE_PX && x + c < (int)LCD_H_ACTIVE; c++) {
+            uint16_t bit = (uint16_t)(0x8000u >> c);
+            unsigned px = (unsigned)(x + c);
+            if (ink & bit) dst[px / 32u] |= 1u << (px % 32u);
+            else if (fill & bit) dst[px / 32u] &= ~(1u << (px % 32u));
+        }
+    }
+}
+
+/* Draws the cursor where the console says, 50 times a second while it shows
+ * (what the terminal draws under it comes through), and puts the frame's
+ * strips back once it goes. */
+static void cursor_task(void *arg) {
+    (void)arg;
+    for (;;) {
+        int x = 0, y = 0;
+        bool on = console_pointer_shown(&x, &y) && x < (int)LCD_H_ACTIVE && y < (int)LCD_V_ACTIVE;
+        if (on && !g_cur_buf) g_cur_buf = (uint32_t *)palloc_pages(1);
+        if (on && g_cur_buf) {
+            unsigned k = (unsigned)y / SEG_LINES;
+            if (k > SEG_N - 2u) k = SEG_N - 2u;
+            cursor_paint(k, x, y);
+            if ((int)k != g_cur_seg) {
+                seg_point(k, &g_cur_buf[0]);
+                seg_point(k + 1u, &g_cur_buf[SEG_WORDS]);
+                for (int s = g_cur_seg; g_cur_seg >= 0 && s <= g_cur_seg + 1; s++)
+                    if (s != (int)k && s != (int)k + 1) seg_point((unsigned)s, &g_fb[(unsigned)s * SEG_WORDS]);
+                g_cur_seg = (int)k;
+            }
+            task_sleep_ms(20);
+            continue;
+        }
+        if (g_cur_seg >= 0) {
+            seg_point((unsigned)g_cur_seg, &g_fb[(unsigned)g_cur_seg * SEG_WORDS]);
+            seg_point((unsigned)g_cur_seg + 1u, &g_fb[((unsigned)g_cur_seg + 1u) * SEG_WORDS]);
+            g_cur_seg = -1;
+        }
+        task_prepare_block();
+        if (!console_pointer_shown(&x, &y)) task_block();
+        task_wait_done();
+    }
+}
+
+/* lcdterm_backend_t.pointer: the cursor task, started with the first cursor. */
+static void lcd7_pointer(void) {
+    if (!g_running) return;
+    int pid = g_cur_pid;
+    if (pid >= 0) { (void)task_unblock(pid); return; }
+    if (__atomic_exchange_n(&g_cur_starting, true, __ATOMIC_ACQ_REL)) return;
+    g_cur_pid = task_create_sized("lcdcursor", cursor_task, NULL, 1);
+}
+
 static void lcd7_blank(bool off) {
     unsigned keep = g_brightness;
     lcd7_set_backlight(off ? 0u : keep);
@@ -360,10 +453,15 @@ static void lcd7_blank(bool off) {
  * completely eliminating screen tearing during ribbon movement and animations. */
 static void lcd7_wait_vsync(void) {
     if (!g_running) return;
-    REG(DMA_BASE + 0x400) = (1u << FB_CH);
+    /* The frame is read strip by strip (g_seg): it has ended when the reload
+     * channel has just fetched the first strip's address again. */
+    uint32_t first = (uint32_t)(uintptr_t)&g_seg[1];
     uint64_t t0 = time_get_us();
-    while ((REG(DMA_BASE + 0x400) & (1u << FB_CH)) == 0) {
-        if (time_get_us() - t0 > 25000u) break;
+    while (REG(DMA_CH_REG(RL_CH, 0x0)) == first) {           /* inside the first strip: the next start */
+        if (time_get_us() - t0 > 25000u) return;
+    }
+    while (REG(DMA_CH_REG(RL_CH, 0x0)) != first) {
+        if (time_get_us() - t0 > 25000u) return;
     }
 }
 
@@ -378,6 +476,7 @@ static lcdterm_backend_t g_backend = {
     .blank           = lcd7_blank,
     .sync_pre        = lcd7_wait_vsync,
     .sync_post       = NULL,
+    .pointer         = lcd7_pointer,
 };
 
 static void unreset(uint32_t mask) {
@@ -604,15 +703,19 @@ int lcd7_init(void) {
     /* DMA 2 (reload): one word, the frame start, into FB_CH's
      * AL3_READ_ADDR_TRIG. Configured through AL1_CTRL (0x10), which does not
      * trigger: FB_CH's chain does that. */
-    REG(DMA_CH_REG(RL_CH, 0x0)) = (uint32_t)(uintptr_t)&g_fb_start;
+    for (unsigned k = 0; k < SEG_N; k++) seg_point(k, &g_fb[k * SEG_WORDS]);
+    g_fb_start = g_seg[0];
+    REG(DMA_CH_REG(RL_CH, 0x0)) = (uint32_t)(uintptr_t)&g_seg[1];   /* strip 0 is FB_CH's first */
     REG(DMA_CH_REG(RL_CH, 0x4)) = DMA_CH_REG(FB_CH, 0x3c);
     REG(DMA_CH_REG(RL_CH, 0x8)) = 1u;
-    REG(DMA_CH_REG(RL_CH, 0x10)) = 1u | (2u << 2) | (RL_CH << 13) | (TREQ_UNPACED << 17);
+    REG(DMA_CH_REG(RL_CH, 0x10)) = 1u | (2u << 2) | (1u << 4)       /* INCR_READ */
+                                 | (7u << 8)                        /* read ring: 128 bytes, g_seg */
+                                 | (RL_CH << 13) | (TREQ_UNPACED << 17);
 
-    /* DMA 1 (frame): the framebuffer into SM1, then chain to the reload. */
+    /* DMA 1 (frame): a strip into SM1, then chain to the reload. */
     REG(DMA_CH_REG(FB_CH, 0x0)) = g_fb_start;
     REG(DMA_CH_REG(FB_CH, 0x4)) = PIO_TXF1;
-    REG(DMA_CH_REG(FB_CH, 0x8)) = FB_WORDS;
+    REG(DMA_CH_REG(FB_CH, 0x8)) = SEG_WORDS;
     REG(DMA_CH_REG(FB_CH, 0xc)) = 1u | (2u << 2) | (1u << 4) | FB_DMA_REV | (RL_CH << 13) | (DREQ_PIO2_TX1 << 17);
 
     REG(PIO_FDEBUG) = FDEBUG_TXSTALL_SM0 | FDEBUG_TXSTALL_SM1;   /* clear, then start */

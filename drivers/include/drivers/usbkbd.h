@@ -27,6 +27,7 @@ typedef struct {
     uint8_t mouse_ep;
     uint8_t mouse_mps;
     uint8_t mouse_interval;
+    uint16_t mouse_rdesc_len; /* its HID descriptor's report descriptor length (0: none seen) */
 } usb_cfg_info_t;
 
 /* Walks `len` bytes of configuration descriptor. False if it is malformed
@@ -46,15 +47,34 @@ bool usb_parse_config(const uint8_t *cfg, uint32_t len, usb_cfg_info_t *out);
  * (keys all 0x01), which the caller must ignore -- keeping `prev` as it was. */
 int usbkbd_diff(const uint8_t prev[8], const uint8_t cur[8], uint32_t *ev, uint32_t max);
 
-/* A boot mouse report -- buttons (bit 0 left, 1 right, 2 middle), dx, dy
- * (signed, screen down positive), and the wheel (signed, up positive) when
- * the report has a fourth byte -- as one event word. Fewer than 3 bytes:
- * 0 (nothing moved, nothing held). */
-uint32_t usbmouse_event(const uint8_t *r, uint32_t n);
-#define USBMOUSE_BUTTONS(e) ((uint8_t)((e) & 0x07u))
-#define USBMOUSE_DX(e)      ((int)(int8_t)(uint8_t)((e) >> 8))
-#define USBMOUSE_DY(e)      ((int)(int8_t)(uint8_t)((e) >> 16))
-#define USBMOUSE_WHEEL(e)   ((int)(int8_t)(uint8_t)((e) >> 24))
+/* Where a mouse's report keeps its fields: bit offsets after the report ID
+ * byte (when it has one) and sizes in bits; a size 0 field is absent. */
+typedef struct {
+    uint8_t  valid;           /* buttons, X and Y found */
+    uint8_t  report_id;       /* 0: the reports carry no ID */
+    uint8_t  buttons;         /* how many button bits (1 left, 2 right, 3 middle, ...) */
+    uint8_t  x_size, y_size, wheel_size;
+    uint16_t btn_bit, x_bit, y_bit, wheel_bit;
+} usbmouse_layout_t;
+
+/* One report decoded: the motion (screen down positive), the wheel (up
+ * positive), the buttons (bit 0 left, 1 right, 2 middle). */
+typedef struct {
+    int16_t dx, dy;
+    int8_t  wheel;
+    uint8_t buttons;
+} usbmouse_ev_t;
+
+/* The boot protocol's layout: buttons, dx, dy, and the wheel in a fourth
+ * byte, which a boot report may leave out. */
+void usbmouse_boot_layout(usbmouse_layout_t *l);
+/* A HID report descriptor's mouse fields: the first report with X and Y
+ * (generic desktop 0x30 / 0x31), its buttons (page 9) and wheel (0x38).
+ * False (l->valid 0) when it has no pointer the layout can say. */
+bool usbmouse_parse_report_desc(const uint8_t *d, uint32_t len, usbmouse_layout_t *l);
+/* Report r (n bytes) by layout l; false for a report that is not the
+ * mouse's (another ID, too short). */
+bool usbmouse_decode(const usbmouse_layout_t *l, const uint8_t *r, uint32_t n, usbmouse_ev_t *ev);
 
 /* --- Key events to terminal bytes (36.9): kernel side, not U-mode ------------
  *

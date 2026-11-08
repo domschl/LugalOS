@@ -205,6 +205,10 @@ void ugui_add_hit(ugui_ctx_t *ctx, ugui_rect_t r, uint16_t id, int16_t index) {
     add_hit_flags(ctx, r, id, index, 0);
 }
 
+void ugui_add_drag_hit(ugui_ctx_t *ctx, ugui_rect_t r, uint16_t id) {
+    add_hit_flags(ctx, r, id, 0, UGUI_HIT_DRAG);
+}
+
 /* A widget's hit-box on surface s: cut to s's clip (gone when nothing of it
  * shows), and its touch area kept inside the clip unless bounds are set. */
 static void add_hit_s(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r, uint16_t id,

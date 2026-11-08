@@ -728,6 +728,26 @@ static struct {
 
 static uint32_t pack_xy(int x, int y) { return ((uint32_t)x << 16) | ((uint32_t)y & 0xFFFFu); }
 
+/* The cursor as the panel draws it: where, and whether it shows (after a
+ * pointer event, until a finger touches or the mouse goes). accepted: the
+ * point in one word, read by the panel's compositor at each pass; a stale
+ * one is drawn a pass late. */
+static volatile uint32_t g_cursor_xy;
+static volatile bool     g_cursor_shown;
+
+bool console_pointer_shown(int *x, int *y) {
+    uint32_t xy = g_cursor_xy;
+    *x = (int)(xy >> 16);
+    *y = (int)(xy & 0xFFFFu);
+    return g_cursor_shown;
+}
+
+void console_pointer_hide(void) {
+    if (!g_cursor_shown) return;
+    g_cursor_shown = false;
+    lcdterm_pointer_changed();
+}
+
 /* The raw stream to a window that claimed the pointer: content coordinates,
  * the motion since the last event. */
 static void pointer_raw(uint8_t type, uint8_t button, int x, int y, int px, int py) {
@@ -767,6 +787,11 @@ void console_pointer(int x, int y, uint8_t buttons) {
     g_ptr.buttons = buttons;
     bool moved = x != px || y != py;
     if (!went_down && !went_up && !moved) return;
+    if (moved || !g_cursor_shown) {
+        g_cursor_xy = pack_xy(x, y);
+        g_cursor_shown = true;
+        lcdterm_pointer_changed();
+    }
     if (g_ptr.waking) {
         if (!buttons) g_ptr.waking = false;
         return;

@@ -327,6 +327,7 @@ static void touch_task_body(void *arg) {
             if (!down) {
                 down = true;
                 g_t.presses++;
+                console_pointer_hide();                  /* a finger: the mouse's cursor goes until it moves */
                 int band = gesture_mm_px(TOUCH_EDGE_MM, CONFIG_PANEL_DPI);
                 g_t.edge = g_t.scr_w && (x < band || x >= (int)g_t.scr_w - band);
                 if (g_t.edge) g_t.edge_contacts++;

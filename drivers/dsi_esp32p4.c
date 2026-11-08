@@ -56,6 +56,7 @@
 #include "arch/esp32p4_intr.h"
 #include "arch/trap.h"
 #include "kernel/console.h"
+#include "kernel/cursor_shape.h"
 #include "kernel/devirq.h"
 #include "kernel/irq.h"
 #include "kernel/lock.h"
@@ -2004,6 +2005,87 @@ static term_go_t term_snapshot(unsigned y0, unsigned y1) {
  * writer changes. Prints nothing: before klogd a printk() drains inline and
  * takes console_lock, the wrong way round under g_frame_lock (`lockcheck`
  * reported exactly that for a debugging print here). */
+/* The mouse cursor (console_pointer_shown()): drawn last in every pass, over
+ * everything in the back buffer. Where it was drawn in each buffer is drawn
+ * again from its sources once it moves or goes -- the rows dirty, a surface
+ * under it composited again, the text cells under it forgotten -- so it
+ * needs no saved pixels. guarded by: g_frame_lock */
+static int16_t g_cur_x[2], g_cur_y[2];
+static bool    g_cur_on[2];
+
+static int cursor_px(void) { return CURSOR_SHAPE_PX * (int)CHROME_SCALE; }
+
+/* lcdterm_backend_t.pointer: the next paced pass draws it. */
+static void term_pointer(void) {
+    if (g_t_paced) g_t_due = true;
+}
+
+/* Back buffer b's pixels under a cursor drawn at (x, y), from their sources
+ * at this pass. */
+static void cursor_forget(const term_snap_t *sn, const srf_snap_t *ss, unsigned b, int x, int y) {
+    int x1 = x + cursor_px() - 1, y1 = y + cursor_px() - 1;
+    if (x1 >= (int)g_tbe.w) x1 = (int)g_tbe.w - 1;
+    if (y1 >= (int)g_tbe.h) y1 = (int)g_tbe.h - 1;
+    if (x > x1 || y > y1) return;
+    dirty_rect(b, x, y, x1, y1);
+    for (int q = 0; q < ss->ns; q++)
+        if (ss->rslot[q] >= 0 && !(x1 < ss->sx0[q] || x > ss->sx1[q] || y1 < ss->sy0[q] || y > ss->sy1[q]))
+            s_reader_drawn_seq[b][ss->rslot[q]] = 0xffffffffu;
+#if defined(CONFIG_FONT_CELL_H) && (CONFIG_FONT_CELL_H == 32)
+    for (int ti = 0; ti < sn->nt && ti < (int)TERM_CELL_SLOTS; ti++) {
+        const lcdterm_visible_term_t *vt = &sn->terms[ti];
+        uint16_t *drawn = g_t_cell_drawn[b][ti];
+        for (int row = 0; row < (int)vt->rows; row++) {
+            int cy0 = vt->y0 + row * 32;
+            if (cy0 > y1 || cy0 + 31 < y) continue;
+            for (int col = 0; col < (int)vt->cols; col++) {
+                int cx0 = vt->x0 + col * 16;
+                unsigned idx = (unsigned)row * vt->cols + (unsigned)col;
+                if (cx0 > x1 || cx0 + 15 < x || idx >= MAX_TERM_CELLS) continue;
+                drawn[idx] = 0xffffu;
+            }
+        }
+    }
+#else
+    (void)sn;
+#endif
+}
+
+/* The arrow at logical (x, y) into fb, in its format and the panel's
+ * rotation; the rows written added to what the pass writes back. */
+static void cursor_draw(uint8_t *fb, fb_fmt_t fmt, int x, int y, int *lo, int *hi, int *fpy0, int *fpy1) {
+    int sc = (int)CHROME_SCALE, sz = cursor_px();
+    for (int r = 0; r < sz && y + r < (int)g_tbe.h; r++) {
+        uint16_t ink = k_cursor_ink[r / sc], fill = k_cursor_fill[r / sc];
+        int ly = y + r;
+        for (int c = 0; c < sz && x + c < (int)g_tbe.w; c++) {
+            uint16_t bit = (uint16_t)(0x8000u >> (c / sc));
+            if (!((ink | fill) & bit)) continue;
+            int lx = x + c;
+            unsigned px, py;
+            if (g_lcd_rot == 270)      { py = DSI_LCD_V_RES - 1u - (unsigned)lx; px = (unsigned)ly; }
+            else if (g_lcd_rot == 90)  { py = (unsigned)lx; px = DSI_LCD_H_RES - 1u - (unsigned)ly; }
+            else if (g_lcd_rot == 180) { py = DSI_LCD_V_RES - 1u - (unsigned)ly; px = DSI_LCD_H_RES - 1u - (unsigned)lx; }
+            else                       { py = (unsigned)ly; px = (unsigned)lx; }
+            if (px >= DSI_LCD_H_RES || py >= DSI_LCD_V_RES) continue;
+            bool black = (ink & bit) != 0;
+            if (fmt == FB_RGB565) ((uint16_t *)fb)[(size_t)py * DSI_LCD_H_RES + px] = black ? 0x0000u : 0xFFFFu;
+            else                  fb[(size_t)py * DSI_LCD_H_RES + px] = black ? 0x00u : 0xFFu;
+        }
+    }
+    int x1 = x + sz - 1, y1 = y + sz - 1;
+    if (x1 >= (int)g_tbe.w) x1 = (int)g_tbe.w - 1;
+    if (y1 >= (int)g_tbe.h) y1 = (int)g_tbe.h - 1;
+    if (g_lcd_rot == 90 || g_lcd_rot == 270) {
+        int a = g_lcd_rot == 90 ? x : (int)DSI_LCD_V_RES - 1 - x1;
+        int z = g_lcd_rot == 90 ? x1 : (int)DSI_LCD_V_RES - 1 - x;
+        if (*fpy0 < 0 || a < *fpy0) *fpy0 = a;
+        if (z > *fpy1) *fpy1 = z;
+    } else {
+        span_rows(lo, hi, y, y1);
+    }
+}
+
 static void term_draw(void) {
     const term_snap_t *sn = &g_snap;
     const srf_snap_t *ss = &g_ssrf;
@@ -2017,6 +2099,10 @@ static void term_draw(void) {
     uint64_t ts = time_get_us(), tn;
     unsigned back_idx = g_double_buffered ? (1u - g_front_idx) : 0u;
     srf_track(ss, back_idx);
+    int cur_x = 0, cur_y = 0;
+    bool cur_on = console_pointer_shown(&cur_x, &cur_y) && cur_x < (int)g_tbe.w && cur_y < (int)g_tbe.h;
+    if (g_cur_on[back_idx] && (!cur_on || cur_x != g_cur_x[back_idx] || cur_y != g_cur_y[back_idx]))
+        cursor_forget(sn, ss, back_idx, g_cur_x[back_idx], g_cur_y[back_idx]);
     int lo = -1, hi = -1;
     int flush_py0 = -1, flush_py1 = -1;
     uint32_t n = 0;
@@ -2694,6 +2780,19 @@ static void term_draw(void) {
 }
 #endif
 
+    /* The mouse cursor, over everything; a pass that moved it also wrote
+     * back where it was (cursor_forget(): those rows were drawn again). */
+    if (cur_on) {
+        cursor_draw(fb, fmt, cur_x, cur_y, &lo, &hi, &flush_py0, &flush_py1);
+        n++;
+        cpu_n++;
+    } else if (g_cur_on[back_idx]) {
+        n++;                                             /* the frame without it: flipped */
+    }
+    g_cur_on[back_idx] = cur_on;
+    g_cur_x[back_idx] = (int16_t)cur_x;
+    g_cur_y[back_idx] = (int16_t)cur_y;
+
     tn = time_get_us(); g_fstat.cur.term_us = (uint32_t)(tn - ts); ts = tn;
 
     /* 3. Flush written rows and arm VSYNC flip */
@@ -2862,6 +2961,7 @@ static lcdterm_backend_t g_tbe = {
     .frame_stats     = term_frame_stats,
     .settle          = term_settle,
     .check           = term_check,
+    .pointer         = term_pointer,
 };
 
 /* The whole terminal again, from its 1-bpp frame -- after a test pattern

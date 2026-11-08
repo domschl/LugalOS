@@ -101,6 +101,7 @@ void launcher_report(void) { cprintf("launcher: not present on headless board\n"
 #define LAUNCHER_ID_BL_STEP      20
 #define LAUNCHER_ID_ORIENT_SEG   30
 #define LAUNCHER_ID_DOC_REFRESH  40
+#define LAUNCHER_ID_SCROLLBAR    41     /* the document list's: press or drag to scroll there */
 #define LAUNCHER_ID_DOC_BASE     100
 /* The control gallery (`launcher gallery`): every ugui control, to try by
  * touch and keys before an app uses it. */
@@ -146,6 +147,7 @@ typedef struct {
     int            win_h;
     int            scroll_px;      /* the document list's scroll, pixels */
     int            item_h, view_h; /* its row and viewport heights, as last drawn */
+    int            sb_y, sb_h;     /* its scrollbar's track, as last drawn (sb_h 0: none) */
     int            list_x, list_y, list_w, list_avail;   /* draw_doc_list()'s place, as last drawn */
     int            doc_count;
     launcher_doc_t docs[LAUNCHER_MAX_DOCS];
@@ -504,8 +506,31 @@ static void draw_doc_list(const ugui_surface_t *surf, int x, int y, int w, int a
                   UGUI_GRAY_CARD, CANVAS1_WHITE);
     int total = s_launcher.doc_count * item_h;
     if (total < view.h) total = view.h;
-    ugui_scrollbar(surf, (ugui_rect_t){ (int16_t)(x + list_w + 4 * s), (int16_t)y, (int16_t)sb_w, (int16_t)view_h },
-                   s_launcher.scroll_px, total, view.h);
+    ugui_rect_t track = { (int16_t)(x + list_w + 4 * s), (int16_t)y, (int16_t)sb_w, (int16_t)view_h };
+    ugui_scrollbar(surf, track, s_launcher.scroll_px, total, view.h);
+    s_launcher.sb_y = y;
+    s_launcher.sb_h = total > view.h ? view_h : 0;
+    if (s_launcher.sb_h) ugui_add_drag_hit(&s_launcher.ui_ctx, track, LAUNCHER_ID_SCROLLBAR);
+}
+
+static void launcher_update_list(void);
+
+/* The scrollbar pressed or dragged at y: the thumb's middle there. */
+static void launcher_scrollbar_to(int y) {
+    if (s_launcher.sb_h <= 0 || s_launcher.item_h <= 0) return;
+    int total = s_launcher.doc_count * s_launcher.item_h, view = s_launcher.view_h;
+    int range = total - view;
+    if (range <= 0) return;
+    int thumb = s_launcher.sb_h * view / total, min_thumb = 16 * (int)CHROME_SCALE;
+    if (thumb < min_thumb) thumb = min_thumb;
+    if (thumb > s_launcher.sb_h) thumb = s_launcher.sb_h;
+    int travel = s_launcher.sb_h - thumb;
+    int pos = travel > 0 ? (y - s_launcher.sb_y - thumb / 2) * range / travel : 0;
+    if (pos < 0) pos = 0;
+    if (pos > range) pos = range;
+    if (pos == s_launcher.scroll_px) return;
+    s_launcher.scroll_px = pos;
+    launcher_update_list();
 }
 
 static void draw_status(const ugui_surface_t *surf, ugui_rect_t r) {
@@ -777,7 +802,10 @@ bool launcher_drag_target(int client_x, int client_y) {
 
 /* A captured finger at (client_x, client_y): the armed slider follows it. */
 void launcher_pointer_move(int client_x, int client_y) {
-    (void)client_y;
+    if (s_launcher.active && s_launcher.ui_ctx.armed_id == LAUNCHER_ID_SCROLLBAR) {
+        launcher_scrollbar_to(client_y);
+        return;
+    }
     if (!s_launcher.active || !s_launcher.gal.on || s_launcher.ui_ctx.armed_id != GAL_ID_SLIDER) return;
     (void)launcher_gallery_act(GAL_ID_SLIDER, 0, client_x);   /* sets it from x, draws */
 }
@@ -872,7 +900,7 @@ static void launcher_update_list(void) {
     };
     int keep = 0;
     for (int i = 0; i < ctx->count; i++)
-        if (ctx->hits[i].id != LAUNCHER_ID_DOC_BASE) ctx->hits[keep++] = ctx->hits[i];
+        if (ctx->hits[i].id != LAUNCHER_ID_DOC_BASE && ctx->hits[i].id != LAUNCHER_ID_SCROLLBAR) ctx->hits[keep++] = ctx->hits[i];
     ctx->count = keep;
     draw_doc_list(&surf, s_launcher.list_x, s_launcher.list_y, s_launcher.list_w, s_launcher.list_avail, false);
     s_launcher.seq++;
@@ -983,6 +1011,7 @@ void launcher_close(void) {
 void launcher_press(int client_x, int client_y) {
     if (!s_launcher.active) return;
     if (ugui_arm(&s_launcher.ui_ctx, client_x, client_y)) launcher_update();
+    if (s_launcher.ui_ctx.armed_id == LAUNCHER_ID_SCROLLBAR) launcher_scrollbar_to(client_y);
 }
 
 void launcher_release(void) {
@@ -1139,6 +1168,7 @@ static bool launcher_activate(uint16_t id, int16_t hit_idx) {
         return true;
     }
 #endif
+    if (id == LAUNCHER_ID_SCROLLBAR) return true;     /* launcher_press() moved it already */
     if (id == LAUNCHER_ID_DOC_REFRESH) {
         launcher_scan_docs();
         launcher_update();

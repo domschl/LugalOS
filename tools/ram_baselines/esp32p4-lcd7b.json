@@ -1,7 +1,7 @@
 {
   "bulk_per_file": {
     "drivers/dsi_esp32p4.c": 9012,
-    "drivers/launcher_view.c": 22408,
+    "drivers/launcher_view.c": 22416,
     "drivers/reader_view.c": 62432,
     "drivers/uxbench.c": 540,
     "drivers/view.c": 704,
@@ -19,13 +19,13 @@
     "app:ceres": 31896,
     "app:moonbase": 73888,
     "chess": 1852,
-    "display": 93852,
+    "display": 93860,
     "drivers": 1532,
     "kernel": 35360,
     "lisp": 1532288,
     "selftest": 64
   },
-  "bulk_total": 1770732,
+  "bulk_total": 1770740,
   "heap_bytes": 360448,
   "heap_pages": 88,
   "per_file": {
@@ -43,7 +43,7 @@
     "drivers/bme680.c": 124,
     "drivers/bmi270.c": 104,
     "drivers/ccs811.c": 76,
-    "drivers/dsi_esp32p4.c": 3051,
+    "drivers/dsi_esp32p4.c": 3065,
     "drivers/edgecap.c": 20,
     "drivers/flash_esp32p4.c": 13,
     "drivers/flashdisk.c": 4124,
@@ -76,7 +76,7 @@
     "drivers/uart_esp32p4.c": 899,
     "drivers/uart_net.c": 14740,
     "drivers/usbhost_esp32p4.c": 1108,
-    "drivers/usbkbd_host.c": 108,
+    "drivers/usbkbd_host.c": 109,
     "drivers/view.c": 28,
     "drivers/winclose.c": 4,
     "fs/9p.c": 9989,
@@ -88,7 +88,7 @@
     "kernel/chan.c": 1348,
     "kernel/chan_selftest.c": 172,
     "kernel/clipboard.c": 20,
-    "kernel/console.c": 1067,
+    "kernel/console.c": 1072,
     "kernel/device.c": 140,
     "kernel/devirq.c": 134,
     "kernel/discipline.c": 82,
@@ -181,7 +181,7 @@
     "chess": 21396,
     "clock-app": 136,
     "crypto": 38,
-    "display": 3820,
+    "display": 3834,
     "drivers": 1260,
     "fs": 4160,
     "httpd": 70,
@@ -196,11 +196,11 @@
     "radio": 12564,
     "selftest": 3962,
     "sensors": 8688,
-    "shell": 13359,
+    "shell": 13364,
     "storage": 7456,
-    "usb": 1216,
+    "usb": 1217,
     "vfs": 4111
   },
   "ram_code": 1806,
-  "total": 216712
+  "total": 216732
 }

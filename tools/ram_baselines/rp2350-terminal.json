@@ -1,6 +1,6 @@
 {
   "bulk_per_file": {
-    "drivers/launcher_view.c": 22408,
+    "drivers/launcher_view.c": 22416,
     "drivers/reader_view.c": 62432,
     "drivers/uxbench.c": 540,
     "drivers/view.c": 704,
@@ -13,13 +13,13 @@
   },
   "bulk_per_subsystem": {
     "chess": 1852,
-    "display": 84840,
+    "display": 84848,
     "drivers": 1532,
     "kernel": 10784,
     "lisp": 1523712,
     "selftest": 64
   },
-  "bulk_total": 1622784,
+  "bulk_total": 1622792,
   "heap_bytes": 299008,
   "heap_pages": 73,
   "per_file": {
@@ -42,7 +42,7 @@
     "drivers/idstore_rp2350.c": 28,
     "drivers/ina226.c": 52,
     "drivers/launcher_view.c": 4,
-    "drivers/lcd7_rp2350.c": 105,
+    "drivers/lcd7_rp2350.c": 109,
     "drivers/lcdterm.c": 2650,
     "drivers/loopback_net.c": 2060,
     "drivers/mcp9808.c": 76,
@@ -65,7 +65,7 @@
     "drivers/uart_net.c": 10644,
     "drivers/uart_rp2350.c": 1381,
     "drivers/usb_cdc.c": 16700,
-    "drivers/usbkbd_host.c": 108,
+    "drivers/usbkbd_host.c": 109,
     "drivers/usbkbd_rp2350.c": 3076,
     "drivers/view.c": 28,
     "drivers/winclose.c": 4,
@@ -78,7 +78,7 @@
     "kernel/chan.c": 1348,
     "kernel/chan_selftest.c": 172,
     "kernel/clipboard.c": 20,
-    "kernel/console.c": 1063,
+    "kernel/console.c": 1068,
     "kernel/device.c": 140,
     "kernel/devirq.c": 134,
     "kernel/discipline.c": 82,
@@ -156,7 +156,7 @@
     "chess": 32335,
     "clock-app": 136,
     "crypto": 67,
-    "display": 3040,
+    "display": 3044,
     "drivers": 2696,
     "fs": 64,
     "httpd": 70,
@@ -170,11 +170,11 @@
     "ota": 126,
     "selftest": 1654,
     "sensors": 8689,
-    "shell": 12843,
+    "shell": 12848,
     "storage": 3152,
-    "usb": 20932,
+    "usb": 20933,
     "vfs": 4111
   },
   "ram_code": 24484,
-  "total": 196673
+  "total": 196683
 }

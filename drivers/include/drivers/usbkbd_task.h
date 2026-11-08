@@ -19,6 +19,7 @@
  * the LCD-7B's is the OTG HS core (drivers/usbhost_esp32p4.c, kernel). */
 
 #include "lugalos_config.h"
+#include "drivers/usbkbd.h"
 
 #if (defined(CONFIG_BOARD_RP2350) && defined(CONFIG_PIOUSB_DP_GPIO)) || \
     (defined(CONFIG_BOARD_ESP32P4) && defined(CONFIG_USBHOST_DWC2))
@@ -50,8 +51,9 @@ typedef struct {
     uint8_t  is_mouse;       /* a boot mouse interface (beside a keyboard's, on a combo receiver) */
     uint32_t last_poll;      /* ms */
     uint8_t  mouse_iface, mouse_ep, mouse_mps, mouse_interval;
-    uint8_t  mouse_toggle, _pad3[3];
+    uint8_t  mouse_toggle, mouse_report_proto, _pad3[2];
     uint32_t mouse_last_poll;
+    usbmouse_layout_t mouse_layout; /* from its report descriptor, or the boot protocol's */
 } usbkbd_dev_t;
 
 typedef struct {
@@ -75,10 +77,11 @@ typedef struct {
     uint8_t           desc18[20];    /* 47.9: the last device descriptor read (18 bytes) */
     volatile uint32_t ev_head;       /* written by the task */
     uint32_t          ev[USBKBD_EV_RING];
-    volatile uint32_t mev_head;      /* the mouse's reports (usbmouse_event()), written by the task */
-    uint32_t          mev[USBKBD_MEV_RING];
+    volatile uint32_t mev_head;      /* the mouse's reports, decoded (usbmouse_decode()), written by the task */
+    usbmouse_ev_t     mev[USBKBD_MEV_RING];
     volatile uint32_t mouse_reports;
     uint8_t           buf[256];      /* descriptor scratch */
+    uint16_t          buf_len;       /* how much of it the last descriptor read filled */
 } usbkbd_state_t;
 
 /* After sched_init(), with the USB engine running: start the task. It takes

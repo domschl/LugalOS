@@ -153,6 +153,7 @@ KBD_UTEXT static uint32_t enumerate(usbkbd_state_t *k, usbkbd_dev_t *d, uint32_t
     setup(su, 0x80, 6, 0x0200, 0, (uint16_t)total);
     st = control(k, addr, mps0, su, k->buf, total, &got);
     if (st != PIOUSB_OK) { note_error(k, k->phase, st, addr); return st; }
+    k->buf_len = (uint16_t)got;
     usb_cfg_info_t ci;
     usb_parse_config(k->buf, got, &ci);
     d->cfg_value = ci.cfg_value;
@@ -186,8 +187,26 @@ KBD_UTEXT static uint32_t enumerate(usbkbd_state_t *k, usbkbd_dev_t *d, uint32_t
         d->mouse_interval = ci.mouse_interval ? ci.mouse_interval : 10;
         d->mouse_toggle = 0;
         k->phase = USBKBD_PH_PROTOCOL;
-        setup(su, 0x21, 0x0B, 0, ci.mouse_iface, 0);  /* SET_PROTOCOL(boot): buttons, dx, dy (, wheel) */
-        (void)control(k, addr, mps0, su, k->buf, 0, 0);
+        /* Its own reports, as its report descriptor lays them out: the boot
+         * protocol need not carry the wheel, and many mice leave it out. A
+         * descriptor that does not say where X and Y are: the boot protocol. */
+        bool parsed = false;
+        uint32_t rlen = ci.mouse_rdesc_len;
+        if (rlen) {
+            if (rlen > sizeof(k->buf)) rlen = sizeof(k->buf);
+            setup(su, 0x81, 6, 0x2200, ci.mouse_iface, (uint16_t)rlen);   /* GET_DESCRIPTOR(report) */
+            st = control(k, addr, mps0, su, k->buf, rlen, &got);
+            if (st == PIOUSB_OK && got > 0) {
+                k->buf_len = (uint16_t)got;
+                parsed = usbmouse_parse_report_desc(k->buf, got, &d->mouse_layout);
+            }
+        }
+        d->mouse_report_proto = (uint8_t)parsed;
+        if (!parsed) {
+            usbmouse_boot_layout(&d->mouse_layout);
+            setup(su, 0x21, 0x0B, 0, ci.mouse_iface, 0);  /* SET_PROTOCOL(boot): buttons, dx, dy (, wheel) */
+            (void)control(k, addr, mps0, su, k->buf, 0, 0);
+        }
         setup(su, 0x21, 0x0A, 0, ci.mouse_iface, 0);  /* SET_IDLE(0): report on change */
         (void)control(k, addr, mps0, su, k->buf, 0, 0);
     }
@@ -318,21 +337,26 @@ KBD_UTEXT static void kbd_poll(usbkbd_state_t *k, usbkbd_dev_t *d) {
     for (int i = 0; i < 8; i++) k->report[i] = r[i];
 }
 
-/* A boot mouse's report, into the mouse ring. Up to 8 bytes: a boot report
- * is 3 or 4, some mice send more (ignored). */
+/* A mouse's report, decoded into the mouse ring: up to 16 bytes (a boot
+ * report is 3 or 4, a report-protocol one with an ID and 16-bit axes 8). */
 KBD_UTEXT static void mouse_poll(usbkbd_state_t *k, usbkbd_dev_t *d) {
-    uint8_t r[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+    uint8_t r[16];
     uint32_t n = 0;
     k->phase = USBKBD_PH_RUNNING;
     talk_to(k, !d->full_speed, d->high_speed, d->hub_port);
-    uint32_t st = usbkbd_port_xfer(k, PIOUSB_OP_IN, d->addr, d->mouse_ep, d->mouse_toggle, 0, 0, r, 8, &n);
+    uint32_t st = usbkbd_port_xfer(k, PIOUSB_OP_IN, d->addr, d->mouse_ep, d->mouse_toggle, 0, 0, r, sizeof r, &n);
     talk_to(k, 0, 0, 0);
     if (st == PIOUSB_NAK || st == PIOUSB_TOGGLE) return;
     if (st != PIOUSB_OK) { note_error(k, USBKBD_PH_RUNNING, st, d->addr); return; }
     d->mouse_toggle ^= 1u;
-    if (n < 3) return;
+    usbmouse_ev_t ev;
+    if (!usbmouse_decode(&d->mouse_layout, r, n, &ev)) return;
     k->mouse_reports = k->mouse_reports + 1u;
-    k->mev[k->mev_head & (USBKBD_MEV_RING - 1u)] = usbmouse_event(r, n);
+    usbmouse_ev_t *slot = &k->mev[k->mev_head & (USBKBD_MEV_RING - 1u)];
+    slot->dx = ev.dx;                                    /* by field: a struct copy is a memcpy, outside .kbdtext */
+    slot->dy = ev.dy;
+    slot->wheel = ev.wheel;
+    slot->buttons = ev.buttons;
     HOST_FENCE();
     k->mev_head = k->mev_head + 1u;
 }
@@ -405,6 +429,7 @@ static uint32_t       g_ev_tail;
 static uint8_t        g_kq[KQ_SIZE];
 static uint32_t       g_kq_head, g_kq_tail;
 static uint32_t       g_mev_tail;     /* the mouse ring's reader: the pump, as the keyboard's */
+static bool           g_mouse_was;    /* a mouse was there at the last pump */
 
 static bool kbd_present(void) {
     for (uint32_t i = 0; i < USBKBD_MAX_DEV; i++)
@@ -427,11 +452,14 @@ static void mouse_fill(void) {
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
     if (head - g_mev_tail > USBKBD_MEV_RING) g_mev_tail = head - USBKBD_MEV_RING;   /* lapped */
     while (g_mev_tail != head) {
-        uint32_t e = g_k->mev[g_mev_tail % USBKBD_MEV_RING];
+        usbmouse_ev_t e = g_k->mev[g_mev_tail % USBKBD_MEV_RING];
         g_mev_tail++;
-        pointer_relative(USBMOUSE_DX(e), USBMOUSE_DY(e), USBMOUSE_BUTTONS(e), USBMOUSE_WHEEL(e));
+        pointer_relative(e.dx, e.dy, e.buttons, e.wheel);
     }
-    if (!usbkbd_mouse_present()) pointer_release();
+    bool present = usbkbd_mouse_present();
+    if (!present) pointer_release();
+    if (g_mouse_was && !present) console_pointer_hide();
+    g_mouse_was = present;
 }
 
 static void kbd_fill(void) {
@@ -545,7 +573,13 @@ void usbkbd_report(void) {
         cprintf(" %04x:%04x class %02x, %s speed%s%s", d->vid, d->pid, d->dev_class,
                 d->high_speed ? "high" : d->full_speed ? "full" : "low", d->is_hub ? " (hub)" : "", d->is_kbd ? " BOOT KEYBOARD" : "");
         if (d->is_kbd) cprintf(" iface %u ep %u, %u bytes every %u ms", d->kbd_iface, d->kbd_ep, d->kbd_mps, d->kbd_interval);
-        if (d->is_mouse) cprintf(" BOOT MOUSE iface %u ep %u, %u bytes every %u ms", d->mouse_iface, d->mouse_ep, d->mouse_mps, d->mouse_interval);
+        if (d->is_mouse) {
+            const usbmouse_layout_t *ml = &d->mouse_layout;
+            cprintf(" BOOT MOUSE iface %u ep %u, %u bytes every %u ms, %s", d->mouse_iface, d->mouse_ep, d->mouse_mps,
+                    d->mouse_interval, d->mouse_report_proto ? "report protocol" : "boot protocol");
+            if (ml->report_id) cprintf(" id %u", ml->report_id);
+            cprintf(": %u buttons, x %u bits, y %u bits, wheel %u bits", ml->buttons, ml->x_size, ml->y_size, ml->wheel_size);
+        }
         cprintf("\n");
     }
     if (k->hub_ports) {
@@ -562,13 +596,13 @@ void usbkbd_report(void) {
 }
 
 /* `kbd desc`: the task's descriptor scratch, which holds the last
- * configuration descriptor it read -- the one to look at when a device is
- * found but not recognised. */
+ * descriptor it read (a configuration's, or a mouse's report descriptor) --
+ * the one to look at when a device is found but not recognised. */
 void usbkbd_dump_desc(void) {
     const usbkbd_state_t *k = usbkbd_state();
     if (!k) return;
-    uint32_t total = (uint32_t)(k->buf[2] | (k->buf[3] << 8));
-    if (k->buf[1] != 2 || total > sizeof(k->buf)) total = 64;
+    uint32_t total = k->buf_len;
+    if (total == 0 || total > sizeof(k->buf)) total = 64;
     cprintf("kbd: last descriptor read (%lu bytes):", (unsigned long)total);
     for (uint32_t i = 0; i < total; i++) cprintf("%s%02x", (i % 16) ? " " : "\n  ", k->buf[i]);
     cprintf("\n");
