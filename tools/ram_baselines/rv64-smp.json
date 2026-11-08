@@ -108,7 +108,7 @@
     "kernel/radio_osi_test.c": 396,
     "kernel/random.c": 5,
     "kernel/sched.c": 3405,
-    "kernel/settings.c": 349,
+    "kernel/settings.c": 383,
     "kernel/setup.c": 453,
     "kernel/sha256.c": 273,
     "kernel/shell.c": 3293,
@@ -184,7 +184,7 @@
     "fs": 823,
     "httpd": 184,
     "identity": 669,
-    "kernel": 72127,
+    "kernel": 72161,
     "lisp": 4920840,
     "llp": 4324,
     "log": 8370,
@@ -198,6 +198,6 @@
     "usb": 902,
     "vfs": 4766
   },
-  "ram_code": 1268564,
-  "total": 7762066
+  "ram_code": 1269208,
+  "total": 7762744
 }

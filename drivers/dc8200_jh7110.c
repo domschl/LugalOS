@@ -3,6 +3,7 @@
 #include "drivers/xhci.h"
 #include "arch/jh7110_cache.h"
 #include "kernel/cursor.h"
+#include "kernel/pointer.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
 #include "kernel/palloc.h"
@@ -105,6 +106,14 @@ static uint16_t g_lut565[256][8];
 static lcdterm_backend_t g_backend;
 static bool g_term_task_running = false;
 static bool g_term_dirty = false;
+/* accepted: set by the console's pointer hook (any task), taken by the
+ * pacer; a move seen a frame late is drawn a frame late. */
+static volatile bool g_cursor_moved;
+
+/* lcdterm_backend_t.pointer: the pacer draws the cursor at its next frame. */
+static void dc8200_pointer(void) {
+    g_cursor_moved = true;
+}
 static bool g_force[2] = { true, true };
 
 static inline void dc_write(uint32_t offset, uint32_t val) {
@@ -513,6 +522,7 @@ int jh7110_dc8200_term_start(void) {
     g_backend.stride = g_state.width / 8u;
     g_backend.flush = jh7110_dc8200_flush;
     g_backend.sync_post = jh7110_dc8200_sync_post;
+    g_backend.pointer = dc8200_pointer;
     g_backend.capture = jh7110_dc8200_capture;
     g_backend.is_double_buffered = jh7110_dc8200_is_double_buffered;
 
@@ -536,9 +546,7 @@ int jh7110_dc8200_term_start(void) {
 
 static void dc8200_pacer_task(void *arg) {
     (void)arg;
-    int prev_mx = -1, prev_my = -1;
-    uint8_t prev_mbtn = 0;
-    int prev_mwheel = 0;
+    bool mouse_was = false;
 
     while (1) {
         /* 60 Hz frame pacer: ~16.6 ms */
@@ -547,22 +555,18 @@ static void dc8200_pacer_task(void *arg) {
         /* Poll USB host controller and mouse */
         xhci_poll();
 
-        bool mouse_changed = false;
-        if (xhci_is_mouse_present()) {
-            int mx = 0, my = 0, mwheel = 0;
-            uint8_t mbtn = 0;
-            xhci_get_mouse(&mx, &my, &mbtn, &mwheel);
-
-            if (mx != prev_mx || my != prev_my || mbtn != prev_mbtn || mwheel != prev_mwheel) {
-                prev_mx = mx;
-                prev_my = my;
-                prev_mbtn = mbtn;
-                prev_mwheel = mwheel;
-                mouse_changed = true;
-
-                cursor_update(mx, my, mbtn, mwheel);
-            }
+        /* The mouse's motion to the console's pointer (kernel/pointer.c:
+         * speed, the screen's bounds); this task is its one caller here. */
+        bool mouse_now = xhci_is_mouse_present();
+        int mdx = 0, mdy = 0, mwheel = 0;
+        uint8_t mbtn = 0;
+        if (mouse_now && xhci_take_mouse(&mdx, &mdy, &mbtn, &mwheel)) pointer_relative(mdx, mdy, mbtn, mwheel);
+        if (mouse_was && !mouse_now) {
+            pointer_release();
+            console_pointer_hide();
         }
+        mouse_was = mouse_now;
+        bool mouse_changed = __atomic_exchange_n(&g_cursor_moved, false, __ATOMIC_ACQ_REL);
 
         /* Redraw terminal dirty regions and synchronize back buffer */
         lcdterm_screen_flush();

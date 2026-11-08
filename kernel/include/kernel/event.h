@@ -76,7 +76,8 @@ static inline bool win_event_is_state(uint8_t type) {
 #define WIN_EVF_PRESS 0x02u     /* press feedback: a finger went down at (x, y) (DOWN) and
                                  * lifted or moved off (UP); a tap it made follows as its
                                  * own TAP pair, before this UP. Not for claimed windows. */
-#define WIN_EVF_WHEEL 0x04u     /* a SCROLL from a mouse wheel: dy in notches (> 0 up), not pixels */
+#define WIN_EVF_WHEEL 0x04u     /* a SCROLL from a mouse wheel: dy in notches, not pixels; > 0 shows
+                                 * what is above (natural scrolling already applied) */
 #define WIN_EVF_MOUSE 0x08u     /* a claimed window's raw pointer event from a mouse, not a finger */
 
 typedef struct {

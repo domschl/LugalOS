@@ -20,6 +20,7 @@
 #include "drivers/launcher_view.h"
 #include "drivers/osk.h"
 #include "drivers/touch.h"
+#include "kernel/settings.h"
 #include "drivers/usbkbd_task.h"
 #include "drivers/dsi_esp32p4.h"
 #include "kernel/event.h"
@@ -742,6 +743,12 @@ bool console_pointer_shown(int *x, int *y) {
     return g_cursor_shown;
 }
 
+void console_pointer_show(void) {
+    if (g_cursor_shown) return;
+    g_cursor_shown = true;
+    lcdterm_pointer_changed();
+}
+
 void console_pointer_hide(void) {
     if (!g_cursor_shown) return;
     g_cursor_shown = false;
@@ -868,6 +875,13 @@ void console_pointer(int x, int y, uint8_t buttons) {
 void console_wheel(int dx, int dy) {
     if (!dx && !dy) return;
     if (note_input(true)) return;
+    /* Natural scrolling (the Macintosh's, input.natural_scroll, on by
+     * default): the content follows the wheel as it would a finger on it --
+     * rolled away from you, the page moves up and shows what is below. */
+    if (settings_get("input.natural_scroll") == 1) {
+        dx = -dx;
+        dy = -dy;
+    }
     if (dy) {
         win_t w = window_focused();
         if (g_ptr.raw < 0 && w >= 0 && (window_claims(w) & WIN_CLAIM_POINTER) && window_origin(w, &g_ptr.ox, &g_ptr.oy)) {
@@ -1084,6 +1098,8 @@ static uint32_t sys_input_mode(void) {
     if (touch_found()) m |= WIN_INPUT_TOUCH;
     return m;
 }
+
+uint32_t console_input_mode(void) { return sys_input_mode(); }
 static uint32_t          g_sys_power_told;  /* guarded by: g_sys_busy */
 
 void console_power_state(int pct, bool charging, bool low) {

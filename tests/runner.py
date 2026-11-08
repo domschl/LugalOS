@@ -3669,8 +3669,9 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         # a right click opens its action sheet and a click beside it closes
         # it, a click opens a document, a click on the close box closes the
         # reader; the wheel scrolls the reader under the pointer while the
-        # terminal has the focus (two notches: six lines of 18 px), the
-        # sideways wheel moves the focus along the ribbon.
+        # terminal has the focus (two notches away, natural scrolling: down
+        # six lines of 18 px), the sideways wheel moves the focus along the
+        # ribbon (tilted left, natural: the window on the right).
         steps = [("launcher", r"launcher: opened"),
                  ("ms move 505 149", r"ms: moved"), ("launcher status", r"hover: id 100 index 2"),
                  ("ms click 505 149 right", r"ms: right click"), ("launcher status", r"sheet: "),
@@ -3679,9 +3680,9 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
                  ("ms click 13 30", r"ms: left click"), ("ribbon", r"\[1\] Launcher[^\n]*\*"),
                  ("launcher close", r"launcher: closed"),
                  ("reader /sd0/help/shell.md", r"reader: opened"), ("ribbon focus 0", r"lsh> "),
-                 ("ms move 600 200", r"ms: moved"), ("ms wheel -2", r"ms: wheel"),
+                 ("ms move 600 200", r"ms: moved"), ("ms wheel 2", r"ms: wheel"),
                  ("reader list", r"shell\.md[^\n]*scrolled 108 px"),
-                 ("ms wheel 0 1", r"ms: wheel"), ("ribbon", r"\[1\] Reader[^\n]*\*"),
+                 ("ms wheel 0 -1", r"ms: wheel"), ("ribbon", r"\[1\] Reader[^\n]*\*"),
                  ("ms click 417 30", r"ms: left click"), ("ribbon", r"Ribbon Status: 1 windows")]
         mouse_ok, mouse_log = True, ""
         for i, (cmd, pat) in enumerate(steps):

@@ -36,6 +36,7 @@ static const setting_def_t k_settings[] = {
     { "audio.volume",       SETTING_INT,  VOLUME_DEFAULT, 0, 100, NULL },
     { "display.brightness", SETTING_INT,  100, 10, 100, NULL },
     { "display.orient",     SETTING_ENUM, 0,   0,  2,   k_orient },
+    { "input.natural_scroll", SETTING_BOOL, 1, 0, 1, NULL },
     { "input.pointer_speed", SETTING_INT, 100, 25, 400, NULL },
     { "launcher.face",      SETTING_ENUM, 0,   0,  1,   k_face },
     { "ui.click_sound",     SETTING_BOOL, 0,   0,  1,   NULL },

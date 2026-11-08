@@ -150,6 +150,8 @@ bool console_close_canvas(uint8_t cid, bool free_it);
  * kernel task; the input path tells the windows (WIN_EV_INPUT_MODE). Each
  * device kind is one bit: the last report wins. */
 void console_input_present(uint32_t device, bool present);
+/* What is attached now: WIN_INPUT_* (as WIN_EV_INPUT_MODE tells it). */
+uint32_t console_input_mode(void);
 /* A mouse, from its driver's task (one at a time; `ms` injects through the
  * same calls): where the pointer is, in screen pixels, and the buttons held
  * (WIN_BUTTON_*), whenever either changes. The driver keeps and draws the
@@ -160,15 +162,19 @@ void console_input_present(uint32_t device, bool present);
  * a window claiming the pointer gets the raw stream while it has the
  * focus. */
 void console_pointer(int x, int y, uint8_t buttons);
-/* The wheel turned: dy notches up (> 0) or down, dx right (> 0) or left.
- * Vertical scrolls the window under the pointer (WIN_EV_SCROLL, dy in
- * notches, key 0); horizontal pans the ribbon a window at a time. */
+/* The wheel turned: dy notches up (> 0, away from the user) or down, dx
+ * right (> 0) or left, as the mouse reports them. Vertical scrolls the
+ * window under the pointer (WIN_EV_SCROLL, dy in notches, key 0);
+ * horizontal pans the ribbon a window at a time. With input.natural_scroll
+ * (the default) both are turned round first, so the content moves the way
+ * the wheel does. */
 void console_wheel(int dx, int dy);
 /* Where the cursor is (screen pixels) and whether it shows: from the first
  * pointer event until console_pointer_hide() -- a finger touching, the
  * mouse unplugged. For a panel that draws the cursor itself. */
 bool console_pointer_shown(int *x, int *y);
 void console_pointer_hide(void);
+void console_pointer_show(void);    /* `cursor show`: where it last was */
 /* A finger held still past the long press at (x, y): the context menu, as
  * a right click (from the touch task). */
 void console_touch_context(unsigned x, unsigned y);

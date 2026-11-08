@@ -192,6 +192,10 @@ void xhci_poll(void);
 bool xhci_is_kbd_present(void);
 bool xhci_is_mouse_present(void);
 void xhci_get_mouse(int *x, int *y, uint8_t *buttons, int *wheel);
+/* The mouse's motion and wheel since the last call, and its buttons now;
+ * true when anything changed. For kernel/pointer.c, which makes it the
+ * console's pointer. */
+bool xhci_take_mouse(int *dx, int *dy, uint8_t *buttons, int *wheel);
 
 /* Shell diagnostics */
 void xhci_cmd_summary(void);

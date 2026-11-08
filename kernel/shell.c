@@ -161,7 +161,6 @@
 #include "drivers/xhci.h"
 #include "drivers/hdmi_jh7110.h"
 #include "drivers/dc8200_jh7110.h"
-#include "kernel/cursor.h"
 #endif
 #include "arch/umode.h"
 #include "arch/trap.h"
@@ -6302,11 +6301,7 @@ static void ms_report(int x, int y, uint8_t buttons) {
     s_ms_x = x;
     s_ms_y = y;
     s_ms_buttons = buttons;
-#if defined(CONFIG_BOARD_VISIONFIVE2)
-    cursor_update(x, y, buttons, cursor_get_state()->wheel);
-#else
     console_pointer(x, y, buttons);
-#endif
     task_sleep_ms(20);                                   /* a report interval: the input path takes each */
 }
 
@@ -6361,6 +6356,36 @@ static void cmd_ms(const char *args) {
     } else {
         cprintf("Usage: ms [move X Y | click [X Y] [right|middle] | drag X0 Y0 X1 Y1 | wheel DY [DX]]\n");
     }
+}
+#endif
+
+#if defined(LCDTERM_PRESENT) || CONFIG_DEV
+/* `cursor [show | hide | speed PCT]`: the mouse cursor every screen draws --
+ * where it is and whether it shows; shown or hidden now (a mouse's motion
+ * or a finger change that again); the pointer speed (input.pointer_speed). */
+static void cmd_cursor(const char *args) {
+    while (*args == ' ') args++;
+    int x = 0, y = 0;
+    if (strcmp(args, "show") == 0) {
+        console_pointer_show();
+    } else if (strcmp(args, "hide") == 0) {
+        console_pointer_hide();
+    } else if (strncmp(args, "speed", 5) == 0) {
+        const char *p = args + 5;
+        int pct = 0;
+        if (!ms_int(&p, &pct) || !settings_set("input.pointer_speed", pct)) {
+            const setting_def_t *d = settings_find("input.pointer_speed");
+            cprintf("cursor speed: a percentage, %d..%d\n", d ? d->min : 25, d ? d->max : 400);
+            return;
+        }
+    } else if (*args && strcmp(args, "status") != 0) {
+        cprintf("Usage: cursor [show | hide | speed PCT]\n");
+        return;
+    }
+    bool shown = console_pointer_shown(&x, &y);
+    cprintf("cursor: at %d, %d, %s; speed %d%%; %s\n", x, y, shown ? "shown" : "hidden",
+            settings_get("input.pointer_speed"),
+            (console_input_mode() & WIN_INPUT_POINTER) ? "a mouse attached" : "no mouse");
 }
 #endif
 
@@ -7011,6 +7036,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
     } else if (strcmp(cmd_line, "ms") == 0 || strncmp(cmd_line, "ms ", 3) == 0) {
         cmd_ms(cmd_line + 2);
         return;
+    } else if (strcmp(cmd_line, "cursor") == 0 || strncmp(cmd_line, "cursor ", 7) == 0) {
+        cmd_cursor(cmd_line + 6);
+        return;
 #endif
 #if defined(TOUCH_PRESENT)
     } else if (strcmp(cmd_line, "ts") == 0 || strncmp(cmd_line, "ts ", 3) == 0) {
@@ -7353,22 +7381,6 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "display") == 0 || strcmp(cmd_line, "display status") == 0 || strcmp(cmd_line, "display info") == 0 || strcmp(cmd_line, "lcd") == 0) {
         jh7110_dc8200_cmd_status();
-        return;
-    } else if (strcmp(cmd_line, "cursor") == 0 || strcmp(cmd_line, "cursor status") == 0 || strcmp(cmd_line, "cursor info") == 0) {
-        cursor_cmd_status();
-        return;
-    } else if (strncmp(cmd_line, "cursor speed ", 13) == 0) {
-        int spd = 0;
-        const char *p = cmd_line + 13;
-        while (*p >= '0' && *p <= '9') { spd = spd * 10 + (*p - '0'); p++; }
-        if (spd > 0) cursor_set_speed(spd);
-        cprintf("Cursor speed set to %d%%\n", cursor_get_state()->speed_factor);
-        return;
-    } else if (strcmp(cmd_line, "cursor show") == 0) {
-        cursor_set_visible(true);
-        return;
-    } else if (strcmp(cmd_line, "cursor hide") == 0) {
-        cursor_set_visible(false);
         return;
 #endif
 #if defined(CONFIG_BOARD_ESP32P4)

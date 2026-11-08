@@ -66,7 +66,7 @@ Every non-root window on the ribbon (terminals, canvases, and readers) features 
 * **Hover**: The control under the pointer is outlined; nothing needs to be pressed.
 * **Left Click**: The same as a tap: it focuses the window, presses buttons, and works the close box, the minimap and the menu bar. Dragging with the left button held scrolls a list or a document; sliders follow it.
 * **Right Click**: The context menu, as a long press.
-* **Wheel**: Scrolls the window under the pointer, even when another window has the focus (the reader by three lines a notch). A sideways wheel moves along the ribbon a window at a time.
+* **Wheel**: Scrolls the window under the pointer, even when another window has the focus (the reader by three lines a notch). A sideways wheel moves along the ribbon a window at a time. Scrolling is natural by default, as on a Macintosh: the content moves the way the wheel turns; `settings set input.natural_scroll off` turns it round.
 * **Games**: A game that takes the pointer (moonbase) gets the mouse's moves, buttons and wheel itself while it has the focus.
 
 ### Touch UX Mode & Launcher (`RIBBON_WIN_LAUNCHER`)

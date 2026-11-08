@@ -42,7 +42,7 @@
     "drivers/idstore_rp2350.c": 28,
     "drivers/ina226.c": 52,
     "drivers/launcher_view.c": 4,
-    "drivers/lcd7_rp2350.c": 109,
+    "drivers/lcd7_rp2350.c": 250,
     "drivers/lcdterm.c": 2650,
     "drivers/loopback_net.c": 2060,
     "drivers/mcp9808.c": 76,
@@ -101,7 +101,7 @@
     "kernel/privilege.c": 8,
     "kernel/random.c": 38,
     "kernel/sched.c": 2501,
-    "kernel/settings.c": 29,
+    "kernel/settings.c": 31,
     "kernel/shell.c": 2494,
     "kernel/smp.c": 9,
     "kernel/status_led.c": 8,
@@ -156,12 +156,12 @@
     "chess": 32335,
     "clock-app": 136,
     "crypto": 67,
-    "display": 3044,
+    "display": 3185,
     "drivers": 2696,
     "fs": 64,
     "httpd": 70,
     "identity": 128,
-    "kernel": 13265,
+    "kernel": 13267,
     "lisp": 9691,
     "llp": 4091,
     "log": 8322,
@@ -176,5 +176,5 @@
     "vfs": 4111
   },
   "ram_code": 24484,
-  "total": 196683
+  "total": 196826
 }

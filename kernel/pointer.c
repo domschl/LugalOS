@@ -4,8 +4,8 @@
 #include "kernel/console.h"
 #include "kernel/settings.h"
 
-/* single task: the console's input pump, under its g_input_lock -- the one
- * reader of the mouse's ring. */
+/* single task: the one reader of the board's mouse -- the console's input
+ * pump (under its g_input_lock), or the VisionFive 2's display pacer. */
 static int     g_px = -1, g_py = -1;   /* -1: not placed yet (the screen's middle at the first motion) */
 static int     g_rx, g_ry;             /* the speed scaling's remainders, in 1/100 px */
 static uint8_t g_buttons;

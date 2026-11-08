@@ -110,6 +110,9 @@ static uint8_t           g_mouse_buttons = 0;
 static int               g_mouse_wheel = 0;
 /* guarded by: g_xhci_lock */
 static uint32_t          g_mouse_last_ms = 0;
+/* The motion since xhci_take_mouse() last took it. guarded by: g_xhci_lock */
+static int               g_mouse_pdx, g_mouse_pdy, g_mouse_pwheel;
+static bool              g_mouse_pchanged;      /* guarded by: g_xhci_lock */
 /* guarded by: g_xhci_lock */
 static bool              g_mouse_online = false;
 
@@ -233,6 +236,10 @@ static void xhci_process_transfer_event(uint8_t slot_id, uint8_t dci, uint8_t cc
         int8_t dy = (int8_t)g_mouse_report_buf[2];
         int8_t wheel = (dev->ep_in_mps >= 4) ? (int8_t)g_mouse_report_buf[3] : 0;
 
+        g_mouse_pdx += dx;
+        g_mouse_pdy += dy;
+        g_mouse_pwheel += wheel;
+        if (dx || dy || wheel || buttons != g_mouse_buttons) g_mouse_pchanged = true;
         g_mouse_x += dx;
         g_mouse_y += dy;
         if (g_mouse_x < 0) g_mouse_x = 0;
@@ -1204,6 +1211,19 @@ void xhci_get_mouse(int *x, int *y, uint8_t *buttons, int *wheel) {
     if (buttons) *buttons = g_mouse_buttons;
     if (wheel) *wheel = g_mouse_wheel;
     ylock_release(&g_xhci_lock);
+}
+
+bool xhci_take_mouse(int *dx, int *dy, uint8_t *buttons, int *wheel) {
+    ylock_acquire(&g_xhci_lock);
+    bool changed = g_mouse_pchanged;
+    *dx = g_mouse_pdx;
+    *dy = g_mouse_pdy;
+    *wheel = g_mouse_pwheel;
+    *buttons = g_mouse_buttons;
+    g_mouse_pdx = g_mouse_pdy = g_mouse_pwheel = 0;
+    g_mouse_pchanged = false;
+    ylock_release(&g_xhci_lock);
+    return changed;
 }
 
 void xhci_poll(void) {
