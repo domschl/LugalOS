@@ -694,6 +694,78 @@ void console_touch_drag_end(int total_dy, int dy, uint32_t ms) {
     g_hotkey = CONSOLE_HOTKEY_DRAG_END;
 }
 
+/* single task: pointer tracking; guarded by: atomic updates */
+static volatile int     g_pointer_last_x = -1;
+static volatile int     g_pointer_last_y = -1;
+static volatile uint8_t g_pointer_last_buttons = 0;
+static volatile int     g_pointer_press_x = -1;
+static volatile int     g_pointer_press_y = -1;
+static volatile bool    g_pointer_dragging = false;
+
+#define POINTER_DRAG_THRESHOLD 6
+
+void console_pointer(int x, int y, uint8_t buttons) {
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+
+    int prev_x = g_pointer_last_x;
+    int prev_y = g_pointer_last_y;
+    uint8_t prev_btn = g_pointer_last_buttons;
+
+    g_pointer_last_x = x;
+    g_pointer_last_y = y;
+    g_pointer_last_buttons = buttons;
+
+    if (note_input(true)) return;
+
+    bool left_down = (buttons & 1u) != 0;
+    bool prev_left_down = (prev_btn & 1u) != 0;
+
+    if (left_down && !prev_left_down) {
+        g_pointer_press_x = x;
+        g_pointer_press_y = y;
+        g_pointer_dragging = false;
+        console_touch_press((unsigned)x, (unsigned)y);
+    } else if (!left_down && prev_left_down) {
+        console_touch_release();
+        if (!g_pointer_dragging || g_active_win_type == 2 /* RIBBON_WIN_CANVAS */) {
+            int tap_x = (g_pointer_press_x >= 0) ? g_pointer_press_x : x;
+            int tap_y = (g_pointer_press_y >= 0) ? g_pointer_press_y : y;
+            console_touch_tap((unsigned)tap_x, (unsigned)tap_y);
+        } else {
+            console_touch_drag_end(y - g_pointer_press_y, y - prev_y, 50);
+        }
+        g_pointer_dragging = false;
+    } else if (left_down && prev_left_down && (x != prev_x || y != prev_y)) {
+        int dx = x - g_pointer_press_x;
+        if (dx < 0) dx = -dx;
+        int dy = y - g_pointer_press_y;
+        if (dy < 0) dy = -dy;
+        if (g_active_win_type != 2 && (g_pointer_dragging || dx > POINTER_DRAG_THRESHOLD || dy > POINTER_DRAG_THRESHOLD)) {
+            g_pointer_dragging = true;
+            console_touch_drag(y - prev_y);
+        }
+    } else if (!buttons && (x != prev_x || y != prev_y)) {
+        console_touch_move((unsigned)x, (unsigned)y);
+    }
+
+    bool right_down = (buttons & 2u) != 0;
+    bool prev_right_down = (prev_btn & 2u) != 0;
+    if (right_down && !prev_right_down) {
+        console_hotkey(CONSOLE_HOTKEY_NEW_TERM);
+    }
+}
+
+void console_wheel(int dx, int dy) {
+    if (note_input(true)) return;
+    if (dy != 0) {
+        console_touch_scroll(dy < 0 ? -1 : 1, 100);
+    }
+    if (dx != 0) {
+        console_hotkey(dx < 0 ? CONSOLE_HOTKEY_LEFT : CONSOLE_HOTKEY_RIGHT);
+    }
+}
+
 void console_hotkey(unsigned code) {
     /* Only the panel's keyboard makes hotkeys; one that wakes it does
      * nothing else. */
@@ -1079,28 +1151,26 @@ static void run_hotkey(void) {
                     uint8_t kreq[2] = { 'k', 1 };
                     (void)console_canvas(kreq, 2, reply);
                 }
-                int cx = (int)(reply[2] | (reply[3] << 8));
-                int cy = (int)(reply[4] | (reply[5] << 8));
-                if (cx != 0 || cy != 0) {
-                    uint8_t vinst = 0;
-                    const view_ops_t *v = focused_view(&vinst);
-                    if (v) {
-                        view_send(v, vinst, WIN_EV_POINTER_UP, WIN_EVF_TAP, cx, cy, 0, 0, 0);
-                    } else if (g_active_win_type == 2 /* RIBBON_WIN_CANVAS */) {
-                        /* A tap on the focused canvas: its program's, as a
-                         * DOWN / UP pair at the content point. */
-                        win_t w = window_focused();
-                        win_event_t wev;
-                        memset(&wev, 0, sizeof(wev));
-                        wev.button = 1;
-                        wev.flags = WIN_EVF_TAP;
-                        wev.x = (int16_t)cx;
-                        wev.y = (int16_t)cy;
-                        wev.type = WIN_EV_POINTER_DOWN;
-                        window_post(w, &wev);
-                        wev.type = WIN_EV_POINTER_UP;
-                        window_post(w, &wev);
-                    }
+                int cx = (int)(int16_t)(uint16_t)(reply[2] | (reply[3] << 8));
+                int cy = (int)(int16_t)(uint16_t)(reply[4] | (reply[5] << 8));
+                uint8_t vinst = 0;
+                const view_ops_t *v = focused_view(&vinst);
+                if (v) {
+                    view_send(v, vinst, WIN_EV_POINTER_UP, WIN_EVF_TAP, cx, cy, 0, 0, 0);
+                } else if (g_active_win_type == 2 /* RIBBON_WIN_CANVAS */) {
+                    /* A tap on the focused canvas: its program's, as a
+                     * DOWN / UP pair at the content point. */
+                    win_t w = window_focused();
+                    win_event_t wev;
+                    memset(&wev, 0, sizeof(wev));
+                    wev.button = 1;
+                    wev.flags = WIN_EVF_TAP;
+                    wev.x = (int16_t)cx;
+                    wev.y = (int16_t)cy;
+                    wev.type = WIN_EV_POINTER_DOWN;
+                    window_post(w, &wev);
+                    wev.type = WIN_EV_POINTER_UP;
+                    window_post(w, &wev);
                 }
             }
             continue;

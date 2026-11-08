@@ -117,7 +117,27 @@ The VisionFive 2 includes an onboard VIA Labs VL805-Q6 USB 3.0 Host Controller d
 
 ---
 
-## 8. Unattended Headless SD Auto-Boot (`vf2_uEnv.txt`)
+## 8. HDMI 2.0 Display, VeriSilicon DC8200 & Ribbon Workstation
+
+The VisionFive 2 includes a full-size HDMI 2.0 port driven by the VeriSilicon DC8200 display controller and an Innosilicon HDMI TX PHY, providing an interactive workstation desktop at 1080p60 (1920x1080 @ 60 Hz RGB565) or 720p60:
+
+* **Hardware Architecture:**
+  * **Innosilicon HDMI PHY (`0x29590000`):** Configured via PLL post-dividers (`0x0C=0x12`, `0x10=0x01`, `0x14=0x25`) and pre-emphasis driver registers (`0x28=0x27`, `0x2C=0x22`, `0x30=0x24`) for clean 1.485 Gbps TMDS high-speed transmission.
+  * **DDC EDID (`i2c@13010000` / `0x50`):** Reads monitor capabilities and automatically selects native 1080p60 or 720p60 timing.
+  * **VeriSilicon DC8200 (`0x29400000`):** Configured with Primary Layer 0 scanout in DRAM, horizontal/vertical polyphase scaling filters, RGB-to-RGB matrix, and DP/DPI 24-bit bridge routing.
+* **Tear-Free Double Buffering & Dual-Shadow Tracking:**
+  * Uses double-buffered scanout memory with hardware shadow registers (`DC_FRAMEBUFFER_CONFIG_EX` bit 12) automatically latching `DC_FRAMEBUFFER_ADDRESS` on VBLANK in hardware.
+  * Dual 1-bpp shadow tracking (`g_t1_shadow[0]` and `g_t1_shadow[1]`) ensures dirty terminal rows are converted exclusively to the back buffer, completely eliminating scanout underrun bursts.
+  * 60 FPS frame pacer task (`lcdflush`) synchronizes USB mouse polling, terminal flush batches, and software cursor blits.
+* **Interactive Desktop & Window Controls:**
+  * **Cursor Engine:** Thread-safe software arrow sprite rendered directly onto the back buffer before presentation with background save and restore.
+  * **Click Hysteresis:** Sub-pixel movement damping distinguishes stationary clicks/taps from window drags, allowing reliable chess piece movement and Macintosh close box window dismissal.
+  * **Ribbon Tiling WM:** Full integration with LugalOS Ribbon window manager, supporting terminal splits, on-screen console logging, and graphical canvases (`chess touch`).
+* **Diagnostics:** Run `display`, `display test`, or `cursor` from `lsh`.
+
+---
+
+## 9. Unattended Headless SD Auto-Boot (`vf2_uEnv.txt`)
 
 To boot LugalOS automatically on power-on without a UART cable and without touching the onboard QSPI flash:
 
@@ -135,7 +155,7 @@ To boot LugalOS automatically on power-on without a UART cable and without touch
 
 ---
 
-## 9. Build, Boot, Storage Sync & HIL Testing Workflows
+## 10. Build, Boot, Storage Sync & HIL Testing Workflows
 
 ### Building the Kernel
 ```bash

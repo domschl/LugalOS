@@ -25,6 +25,17 @@ On ESP32-P4 boards (which have a single console port), p9sync.py uses p9share to
 python3 tools/p9sync.py --p4 lcd7b --src build/esp32p4-lcd7b/sd_root
 ```
 
+### Synchronizing StarFive VisionFive 2
+On the VisionFive 2, synchronization runs over high-speed Gigabit Ethernet TCP 9P (~1 second for the full filesystem) or fallback UART SLIP:
+
+```bash
+# Gigabit Ethernet TCP 9P (port 564)
+python3 tools/p9sync.py --tcp BOARD_IP --key KEY_HEX --src build/visionfive2/sd_root --dst /sd0
+
+# Fallback UART SLIP
+uv run --project host/p9lib python3 tools/p9sync.py --vf2 --src build/visionfive2/sd_root --dst /sd0
+```
+
 ### Preservation Policy
 tools/p9sync.py is strictly additive and idempotent:
 * Creates missing directories on the board (e.g. /sd0/cas/, /sd0/help/).

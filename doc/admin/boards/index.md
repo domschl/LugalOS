@@ -29,6 +29,8 @@ This directory contains in-depth hardware reference documents, peripheral regist
 5. **[StarFive VisionFive 2 Guide](visionfive2.md)** (`visionfive2`)
    * StarFive JH7110 64-bit quad-core U74 RV64GC SBC (Harts 1..4 + S7 monitor Hart 0, 8 GiB LPDDR4).
    * S-mode SBI boot via U-Boot (`booti`), Sv39 MMU, asymmetric PLIC contexts, 4-core SMP, DesignWare `sdio1` microSD (`/sd0`), and `tools/vf2run.py`.
+   * Gigabit Ethernet (EQOS v5.20 / YT8531C), dual PLDA PCIe 2.0 (M.2 NVMe SSD at `/nvme0/` and VIA VL805 USB 3.0 host with HID keyboard/mouse).
+   * Innosilicon HDMI 2.0 TX PHY and VeriSilicon DC8200 display controller driving the 1080p60 interactive Ribbon desktop.
 
 ---
 

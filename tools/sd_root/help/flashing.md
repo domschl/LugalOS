@@ -103,4 +103,34 @@ After that, new builds go over 9P with `tools/lota.py push`, without the header.
 
 ---
 
+## 4. Loading & Running StarFive VisionFive 2 (`visionfive2`)
+
+> [!CAUTION]
+> **Never modify or erase the onboard 16 MiB QSPI NOR flash (`gd25lq128`).**
+> The factory QSPI flash contains the vendor `U-Boot SPL`, `OpenSBI v1.2`, and `U-Boot 2021.10`. LugalOS executes entirely in DRAM and loads via U-Boot; it never touches QSPI flash under any circumstances.
+
+The VisionFive 2 kernel (`build/visionfive2/lugalos.bin`) is loaded into DRAM at `0x40200000` via `tools/vf2run.py` or stored on the FAT32 microSD card.
+
+### Method A: Fast Development Boot via `tools/vf2run.py`
+Upload the raw binary directly over UART0 via 1.5 Mbps YMODEM and immediately save it to `/sd0/lugalos.bin`:
+```bash
+ninja -C build/visionfive2
+./tools/vf2run.py --kernel build/visionfive2 --save-sd --cmd "uname; df" --reboot
+```
+
+### Method B: Instant MicroSD Boot
+Once `/sd0/lugalos.bin` is saved on the microSD card, boots take <100 ms via U-Boot's `fatload`:
+```bash
+./tools/vf2run.py --method sd --cmd "smptest; sdinfo" --reboot
+```
+
+### Method C: Unattended Headless SD Auto-Boot
+To boot LugalOS automatically on power-on without a UART cable attached:
+```bash
+./tools/vf2run.py --enable-autoboot --save-sd --kernel build/visionfive2/lugalos.bin
+```
+This configures `/sd0/vf2_uEnv.txt` on microSD partition 3, causing factory U-Boot to load `/sd0/lugalos.bin` into DRAM and boot via `booti` automatically after the 2-second timeout. See the [VisionFive 2 Guide](visionfive2.md) for full hardware details.
+
+---
+
 **Navigation:** [<- Presets Matrix](presets.md) | [Administrator Manual](admin.md) | [Consoles Guide ->](consoles.md) | [Documentation Index](index.md)

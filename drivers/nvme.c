@@ -195,8 +195,11 @@ int nvme_init(void) {
     /* 2. Read Controller Capabilities (CAP) */
     uint32_t cap_lo = REG32(g_nvme_bar0 + NVME_REG_CAP_LO);
     uint32_t cap_hi = REG32(g_nvme_bar0 + NVME_REG_CAP_HI);
+    uint32_t vs     = REG32(g_nvme_bar0 + NVME_REG_VS);
+    printk("[NVMe] Probing BAR0=0x%lx: CAP_LO=0x%08x CAP_HI=0x%08x VS=0x%08x\n",
+           (unsigned long)g_nvme_bar0, cap_lo, cap_hi, vs);
     uint32_t to_ms  = ((cap_lo >> 24) & 0xFFu) * 500u;
-    if (to_ms == 0) to_ms = 5000u;
+    if (to_ms < 5000u) to_ms = 5000u;
     g_dstrd = cap_hi & 0x0Fu;
 
     /* 3. Disable controller if already enabled */
@@ -248,7 +251,10 @@ int nvme_init(void) {
             return -1;
         }
         if (time_get_us() - t_rdy > (uint64_t)to_ms * 1000u) {
-            printk("[NVMe] Timeout waiting for CSTS.RDY\n");
+            uint32_t cur_csts = REG32(g_nvme_bar0 + NVME_REG_CSTS);
+            uint32_t cur_cc = REG32(g_nvme_bar0 + NVME_REG_CC);
+            printk("[NVMe] Timeout waiting for CSTS.RDY (CC=0x%08x, CSTS=0x%08x, BAR0=0x%lx)\n",
+                   cur_cc, cur_csts, (unsigned long)g_nvme_bar0);
             ylock_release(&g_nvme_lock);
             return -1;
         }

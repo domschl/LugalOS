@@ -35,6 +35,7 @@
 /* PCI Standard Registers */
 #define PCI_REG_VID_DID     0x00u
 #define PCI_REG_COMMAND     0x04u
+#define PCI_REG_STATUS      0x06u
 #define PCI_REG_REV_CLASS   0x08u
 #define PCI_REG_HDR_TYPE    0x0Eu
 #define PCI_REG_BAR0        0x10u
@@ -192,8 +193,8 @@ static int jh7110_pcie_bringup_port(int port) {
     /* 7. Poll link training status (bit 5: PLDA_DATA_LINK_ACTIVE) */
     uint64_t t_link = time_get_us();
     while ((REG32(STG_SYSCON_BASE + lnksta_off) & 0x20u) == 0) {
-        if (time_get_us() - t_link > 200000u) {
-            printk("[PCIe%d] Link down (timeout 200 ms, lnksta=0x%x)\n",
+        if (time_get_us() - t_link > 1000000u) {
+            printk("[PCIe%d] Link down (timeout 1000 ms, lnksta=0x%x)\n",
                    port, REG32(STG_SYSCON_BASE + lnksta_off));
             p->link_up = false;
             return -1;
@@ -292,7 +293,7 @@ int jh7110_pcie_scan(int port) {
         for (int dev = 0; dev <= 0; dev++) {
             for (int fn = 0; fn < 8; fn++) {
                 if (bus == 1 && fn == 0) {
-                    time_delay_us(20000); /* 20 ms delay before querying downstream endpoint */
+                    time_delay_us(100000); /* 100 ms delay following reset before querying downstream endpoint */
                 }
                 uint32_t id = jh7110_pcie_cfg_read(port, bus, dev, fn, PCI_REG_VID_DID, 4);
                 if (id == 0xFFFFFFFFu || id == 0x00000000u) {
@@ -319,8 +320,17 @@ int jh7110_pcie_scan(int port) {
                 uint8_t hdr = (uint8_t)jh7110_pcie_cfg_read(port, bus, dev, fn, PCI_REG_HDR_TYPE, 1);
                 d->is_bridge = ((hdr & 0x7Fu) == 0x01u);
 
-                /* Size and assign BARs for endpoints */
-                if (!d->is_bridge) {
+                if (d->is_bridge) {
+                    /* Type 1 Root Port Bridge: configure Memory Base/Limit window (0x20)
+                     * and enable Bus Master and Memory Space in Command register */
+                    uint32_t mem_base = (p->mem32_base >> 16) & 0xFFF0u;
+                    uint32_t mem_limit = ((p->mem32_base + (128u * 1024u * 1024u) - 1u) >> 16) & 0xFFF0u;
+                    jh7110_pcie_cfg_write(port, bus, dev, fn, 0x20, mem_base | (mem_limit << 16), 4);
+
+                    uint32_t cmd = jh7110_pcie_cfg_read(port, bus, dev, fn, PCI_REG_COMMAND, 2);
+                    cmd |= (PCI_CMD_MEM | PCI_CMD_BUS_MASTER);
+                    jh7110_pcie_cfg_write(port, bus, dev, fn, PCI_REG_COMMAND, cmd, 2);
+                } else {
                     for (int b = 0; b < PCI_MAX_BARS; b++) {
                         uint32_t bar_off = PCI_REG_BAR0 + b * 4;
                         uint32_t orig = jh7110_pcie_cfg_read(port, bus, dev, fn, bar_off, 4);
@@ -356,6 +366,29 @@ int jh7110_pcie_scan(int port) {
                     uint32_t cmd = jh7110_pcie_cfg_read(port, bus, dev, fn, PCI_REG_COMMAND, 2);
                     cmd |= (PCI_CMD_MEM | PCI_CMD_BUS_MASTER);
                     jh7110_pcie_cfg_write(port, bus, dev, fn, PCI_REG_COMMAND, cmd, 2);
+
+                    if (d->base_class == 0x01 && d->sub_class == 0x08) {
+                        uint32_t rb_bar0 = jh7110_pcie_cfg_read(port, bus, dev, fn, PCI_REG_BAR0, 4);
+                        uint32_t rb_bar1 = jh7110_pcie_cfg_read(port, bus, dev, fn, PCI_REG_BAR0 + 4, 4);
+                        uint32_t rb_cmd  = jh7110_pcie_cfg_read(port, bus, dev, fn, PCI_REG_COMMAND, 2);
+                        uint32_t rb_stat = jh7110_pcie_cfg_read(port, bus, dev, fn, PCI_REG_STATUS, 2);
+                        printk("[PCIe%d] NVMe CFG: BAR0=0x%08x BAR1=0x%08x CMD=0x%04x STAT=0x%04x (size=%lu KB)\n",
+                               port, rb_bar0, rb_bar1, rb_cmd, rb_stat, (unsigned long)(d->bars[0].size / 1024));
+
+                        /* Also dump Bridge window on Bus 0 */
+                        uint32_t br_bus = jh7110_pcie_cfg_read(port, 0, 0, 0, 0x18, 4);
+                        uint32_t br_mem = jh7110_pcie_cfg_read(port, 0, 0, 0, 0x20, 4);
+                        uint32_t br_pref = jh7110_pcie_cfg_read(port, 0, 0, 0, 0x24, 4);
+                        uint32_t br_cmd = jh7110_pcie_cfg_read(port, 0, 0, 0, PCI_REG_COMMAND, 2);
+                        printk("[PCIe%d] Bridge CFG: Bus=0x%08x Mem=0x%08x Pref=0x%08x CMD=0x%04x\n",
+                               port, br_bus, br_mem, br_pref, br_cmd);
+
+                        /* Dump ATR Table 1 */
+                        uintptr_t atr_base = p->reg_base + XR3PCI_ATR_BASE + 1 * XR3PCI_ATR_STRIDE;
+                        printk("[PCIe%d] ATR1: src_lo=0x%08x src_hi=0x%08x trsl_lo=0x%08x param=0x%08x\n",
+                               port, REG32(atr_base + XR3PCI_ATR_SRC_LO), REG32(atr_base + XR3PCI_ATR_SRC_HI),
+                               REG32(atr_base + XR3PCI_ATR_TRSL_LO), REG32(atr_base + XR3PCI_ATR_PARAM));
+                    }
                 }
 
                 /* Check if single-function */

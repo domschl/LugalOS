@@ -278,8 +278,8 @@ static bool lcdterm_send(uint8_t op, const char *p, uint32_t len) {
 }
 
 /* guarded by: console_lock, as g_batch. */
-static uint8_t g_batch_vid;
-static bool    s_pending_char_damage = false;
+static uint8_t          g_batch_vid;
+static volatile bool    s_pending_char_damage = false;
 
 /* Called with the batch full, from console_flush(), and before input waits.
  * Takes console_lock itself (re-entrant) because writers append under it. */

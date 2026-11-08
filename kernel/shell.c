@@ -159,6 +159,9 @@
 #include "drivers/pcie_jh7110.h"
 #include "drivers/nvme.h"
 #include "drivers/xhci.h"
+#include "drivers/hdmi_jh7110.h"
+#include "drivers/dc8200_jh7110.h"
+#include "kernel/cursor.h"
 #endif
 #include "arch/umode.h"
 #include "arch/trap.h"
@@ -7252,6 +7255,70 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         const char *arg = (cmd_line[5] == ' ') ? cmd_line + 6 : NULL;
         xhci_cmd_mouse(arg);
         return;
+    } else if (strcmp(cmd_line, "hdmi edid") == 0) {
+        jh7110_hdmi_cmd_edid();
+        return;
+    } else if (strcmp(cmd_line, "hdmi") == 0 || strcmp(cmd_line, "hdmi status") == 0 || strcmp(cmd_line, "hdmi info") == 0) {
+        jh7110_hdmi_cmd_status();
+        return;
+    } else if (strcmp(cmd_line, "display test") == 0) {
+        jh7110_dc8200_cmd_test();
+        return;
+    } else if (strcmp(cmd_line, "display repaint") == 0 || strcmp(cmd_line, "lcd repaint") == 0) {
+        jh7110_dc8200_repaint();
+        cprintf("display: screen repainted\n");
+        return;
+    } else if (strcmp(cmd_line, "display") == 0 || strcmp(cmd_line, "display status") == 0 || strcmp(cmd_line, "display info") == 0 || strcmp(cmd_line, "lcd") == 0) {
+        jh7110_dc8200_cmd_status();
+        return;
+    } else if (strcmp(cmd_line, "cursor") == 0 || strcmp(cmd_line, "cursor status") == 0 || strcmp(cmd_line, "cursor info") == 0) {
+        cursor_cmd_status();
+        return;
+    } else if (strncmp(cmd_line, "cursor speed ", 13) == 0) {
+        int spd = 0;
+        const char *p = cmd_line + 13;
+        while (*p >= '0' && *p <= '9') { spd = spd * 10 + (*p - '0'); p++; }
+        if (spd > 0) cursor_set_speed(spd);
+        cprintf("Cursor speed set to %d%%\n", cursor_get_state()->speed_factor);
+        return;
+    } else if (strcmp(cmd_line, "cursor show") == 0) {
+        cursor_set_visible(true);
+        return;
+    } else if (strcmp(cmd_line, "cursor hide") == 0) {
+        cursor_set_visible(false);
+        return;
+    } else if (strncmp(cmd_line, "ms ", 3) == 0) {
+        /* ms move <x> <y> | ms click [left|right|middle] | ms wheel <dy> */
+        const char *sub = cmd_line + 3;
+        if (strncmp(sub, "move ", 5) == 0) {
+            int mx = 0, my = 0;
+            const char *p = sub + 5;
+            while (*p >= '0' && *p <= '9') { mx = mx * 10 + (*p - '0'); p++; }
+            while (*p == ' ') p++;
+            while (*p >= '0' && *p <= '9') { my = my * 10 + (*p - '0'); p++; }
+            cursor_update(mx, my, cursor_get_state()->buttons, cursor_get_state()->wheel);
+            cprintf("ms: pointer moved to %d, %d\n", mx, my);
+            return;
+        } else if (strncmp(sub, "click", 5) == 0) {
+            uint8_t btn = 1; /* left default */
+            if (strstr(sub, "right")) btn = 2;
+            else if (strstr(sub, "middle")) btn = 4;
+            const cursor_state_t *st = cursor_get_state();
+            cursor_update(st->x, st->y, btn, st->wheel);
+            time_delay_us(50000); /* 50 ms hold */
+            cursor_update(st->x, st->y, 0, st->wheel);
+            cprintf("ms: clicked button 0x%02x at %d, %d\n", btn, st->x, st->y);
+            return;
+        } else if (strncmp(sub, "wheel ", 6) == 0) {
+            int dy = 0, sign = 1;
+            const char *p = sub + 6;
+            if (*p == '-') { sign = -1; p++; }
+            while (*p >= '0' && *p <= '9') { dy = dy * 10 + (*p - '0'); p++; }
+            dy *= sign;
+            console_wheel(0, dy);
+            cprintf("ms: wheel delta %d\n", dy);
+            return;
+        }
 #endif
 #if defined(CONFIG_BOARD_ESP32P4)
     } else if (strcmp(cmd_line, "clicdump") == 0) {

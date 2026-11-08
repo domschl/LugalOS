@@ -178,6 +178,7 @@ typedef struct {
     /* Endpoint info for HID */
     bool     has_hid_keyboard;
     bool     has_hid_mouse;
+    uint8_t  iface_num;
     uint8_t  ep_in_addr;
     uint8_t  ep_in_ctx_idx;
     uint16_t ep_in_mps;

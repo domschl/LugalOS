@@ -614,6 +614,12 @@ static uintptr_t *build_space(const mem_domain_t *d) {
     /* MMIO gigabyte, as a single superpage. */
     if (vmm_map_range(root, 0, 0, GB1, mmio_flags) != 0) return NULL;
 
+#if defined(CONFIG_BOARD_VISIONFIVE2)
+    /* JH7110 uncached DRAM alias (framebuffer) & PCIe address spaces */
+    if (vmm_map_range(root, 0x440000000UL, 0x440000000UL, 8UL * 1024 * 1024 * 1024, mmio_flags) != 0) return NULL;
+    if (vmm_map_range(root, 0x900000000UL, 0x900000000UL, 4UL * 1024 * 1024 * 1024, mmio_flags) != 0) return NULL;
+#endif
+
     for (uintptr_t blk = RAM_BASE; blk < RAM_BASE + GB1; blk += MB2) {
         const mem_region_t *whole = NULL;
         switch (classify_block(d, blk, MB2, &whole)) {

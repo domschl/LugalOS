@@ -150,6 +150,9 @@ bool console_close_canvas(uint8_t cid, bool free_it);
  * kernel task; the input path tells the windows (WIN_EV_INPUT_MODE). Each
  * device kind is one bit: the last report wins. */
 void console_input_present(uint32_t device, bool present);
+/* Pointer and wheel events (Phase 71 / 75 contract): screen coordinates and buttons */
+void console_pointer(int x, int y, uint8_t buttons);
+void console_wheel(int dx, int dy);
 /* The battery, from the power task: its charge in % (-1 unknown), whether
  * it charges, whether it is below the warning level. The input path tells
  * the windows (WIN_EV_POWER) at each 10 % step and each change. */

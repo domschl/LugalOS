@@ -23,7 +23,8 @@
 #include "lugalos_config.h"
 
 #if (defined(CONFIG_BOARD_RP2350) && defined(CONFIG_LCD_PCLK_GPIO)) || \
-    (defined(CONFIG_BOARD_ESP32P4) && (defined(CONFIG_DSI_LCD_RST_GPIO) || defined(CONFIG_BOARD_TAB5)))
+    (defined(CONFIG_BOARD_ESP32P4) && (defined(CONFIG_DSI_LCD_RST_GPIO) || defined(CONFIG_BOARD_TAB5))) || \
+    defined(CONFIG_BOARD_VISIONFIVE2)
 #define LCDTERM_PRESENT 1
 #endif
 

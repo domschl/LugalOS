@@ -16,6 +16,7 @@
 #include "drivers/usbkbd.h"
 #include "kernel/printk.h"
 #include "kernel/console.h"
+#include "kernel/cursor.h"
 #include "kernel/event.h"
 #include "kernel/time.h"
 #include "kernel/lock.h"
@@ -26,22 +27,10 @@
 #define REG32(addr) (*(volatile uint32_t *)(uintptr_t)(addr))
 #define REG64(addr) (*(volatile uint64_t *)(uintptr_t)(addr))
 
-/* SiFive L2 Cache Controller Flush64 register (JH7110 non-coherent DMA) */
-#define SIFIVE_L2_BASE      0x02010000UL
-#define SIFIVE_L2_FLUSH64   0x200UL
-
-static inline void xhci_mb(void) {
-    __asm__ volatile("fence iorw, iorw" ::: "memory");
-}
+#include "arch/jh7110_cache.h"
 
 static inline void xhci_flush_l2_range(uintptr_t pa_start, uintptr_t pa_end) {
-    volatile uint64_t *flush64 = (volatile uint64_t *)(SIFIVE_L2_BASE + SIFIVE_L2_FLUSH64);
-    xhci_mb();
-    uintptr_t start = pa_start & ~(64UL - 1UL);
-    for (uintptr_t line = start; line < pa_end; line += 64UL) {
-        *flush64 = line;
-        xhci_mb();
-    }
+    jh7110_flush_l2_range(pa_start, pa_end);
 }
 
 #define XHCI_MAX_SLOTS      8u
@@ -227,6 +216,9 @@ static void xhci_process_transfer_event(uint8_t slot_id, uint8_t dci, uint8_t cc
 
         qidx++;
         if (qidx == XHCI_EP_RING_SIZE - 1u) {
+            g_kbd_ep_ring[qidx].control = (XHCI_TRB_LINK << 10) | (1u << 1) | cycle;
+            xhci_flush_l2_range((uintptr_t)&g_kbd_ep_ring[qidx],
+                                (uintptr_t)(&g_kbd_ep_ring[qidx] + 1));
             qidx = 0;
             g_kbd_cycle ^= 1u;
         }
@@ -266,6 +258,9 @@ static void xhci_process_transfer_event(uint8_t slot_id, uint8_t dci, uint8_t cc
 
         qidx++;
         if (qidx == XHCI_EP_RING_SIZE - 1u) {
+            g_mouse_ep_ring[qidx].control = (XHCI_TRB_LINK << 10) | (1u << 1) | cycle;
+            xhci_flush_l2_range((uintptr_t)&g_mouse_ep_ring[qidx],
+                                (uintptr_t)(&g_mouse_ep_ring[qidx] + 1));
             qidx = 0;
             g_mouse_cycle ^= 1u;
         }
@@ -517,8 +512,8 @@ static int xhci_configure_hid_endpoint(uint8_t slot_id) {
     }
 
     /* 3. Send HID Class Requests on EP0: Set Protocol (0 = Boot), Set Idle (0 = Indefinite) */
-    (void)xhci_control_transfer(slot_id, 0x21, 0x0B, 0, 0, 0, NULL, false);
-    (void)xhci_control_transfer(slot_id, 0x21, 0x0A, 0, 0, 0, NULL, false);
+    (void)xhci_control_transfer(slot_id, 0x21, 0x0B, 0, dev->iface_num, 0, NULL, false);
+    (void)xhci_control_transfer(slot_id, 0x21, 0x0A, 0, dev->iface_num, 0, NULL, false);
 
     /* 4. Queue First Normal TRB and Ring Doorbell */
     if (dev->has_hid_keyboard) {
@@ -864,6 +859,9 @@ static int xhci_setup_device(uint8_t slot_id, uint8_t root_port, uint8_t parent_
         uint16_t total_len = cfg->wTotalLength;
         if (total_len > sizeof(cfg_buf)) total_len = sizeof(cfg_buf);
 
+        bool cur_is_kbd = false;
+        bool cur_is_mouse = false;
+        uint8_t cur_iface_num = 0;
         uint32_t off = sizeof(usb_config_desc_t);
         while (off + 2 <= total_len) {
             uint8_t len = cfg_buf[off];
@@ -872,22 +870,38 @@ static int xhci_setup_device(uint8_t slot_id, uint8_t root_port, uint8_t parent_
 
             if (type == 0x04) { /* Interface Descriptor */
                 usb_interface_desc_t *iface = (usb_interface_desc_t *)&cfg_buf[off];
+                cur_is_kbd = false;
+                cur_is_mouse = false;
+                cur_iface_num = iface->bInterfaceNumber;
                 if (iface->bInterfaceClass == 0x03) { /* HID */
-                    if (iface->bInterfaceProtocol == 0x01) {
-                        dev->has_hid_keyboard = true;
+                    if (iface->bInterfaceProtocol == 0x01 ||
+                        (iface->bInterfaceSubClass == 0x01 && iface->bInterfaceProtocol == 0x00)) {
+                        cur_is_kbd = true;
                     } else if (iface->bInterfaceProtocol == 0x02) {
-                        dev->has_hid_mouse = true;
+                        cur_is_mouse = true;
                     }
                 }
             } else if (type == 0x05) { /* Endpoint Descriptor */
                 usb_endpoint_desc_t *ep = (usb_endpoint_desc_t *)&cfg_buf[off];
                 if ((ep->bEndpointAddress & 0x80u) && (ep->bmAttributes & 0x03u) == 0x03u) {
                     /* Interrupt IN endpoint */
-                    dev->ep_in_addr = ep->bEndpointAddress;
-                    dev->ep_in_mps = ep->wMaxPacketSize;
-                    dev->ep_in_interval = ep->bInterval;
-                    uint8_t ep_num = ep->bEndpointAddress & 0x0Fu;
-                    dev->ep_in_ctx_idx = (ep_num * 2u) + 1u;
+                    if (cur_is_kbd && !dev->has_hid_keyboard) {
+                        dev->has_hid_keyboard = true;
+                        dev->iface_num = cur_iface_num;
+                        dev->ep_in_addr = ep->bEndpointAddress;
+                        dev->ep_in_mps = ep->wMaxPacketSize;
+                        dev->ep_in_interval = ep->bInterval;
+                        uint8_t ep_num = ep->bEndpointAddress & 0x0Fu;
+                        dev->ep_in_ctx_idx = (ep_num * 2u) + 1u;
+                    } else if (cur_is_mouse && !dev->has_hid_mouse) {
+                        dev->has_hid_mouse = true;
+                        dev->iface_num = cur_iface_num;
+                        dev->ep_in_addr = ep->bEndpointAddress;
+                        dev->ep_in_mps = ep->wMaxPacketSize;
+                        dev->ep_in_interval = ep->bInterval;
+                        uint8_t ep_num = ep->bEndpointAddress & 0x0Fu;
+                        dev->ep_in_ctx_idx = (ep_num * 2u) + 1u;
+                    }
                 }
             }
             off += len;
@@ -1018,7 +1032,7 @@ static const console_input_t g_in_xhci_kbd = {
     xhci_kbd_getc,
     xhci_kbd_peek_interrupt,
     NULL,
-    false
+    true
 };
 
 int xhci_init(void) {

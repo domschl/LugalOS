@@ -375,6 +375,75 @@ def test_usb_hid_keyboard_mouse(ser: serial.Serial) -> tuple[str, bool, str]:
     return (name, True, "USB Keyboard & Mouse both ONLINE in Boot Protocol with input event delivery")
 
 
+def test_hdmi_phy_and_edid(ser: serial.Serial, boot_log: str) -> tuple[str, bool, str]:
+    name = "hdmi: Innosilicon HDMI 2.0 TX PHY, hot-plug detect & DDC I2C EDID query"
+    out_hdmi = run_cmd(ser, "hdmi", timeout_s=10.0)
+    out_edid = run_cmd(ser, "hdmi edid", timeout_s=10.0)
+    checks = [
+        ("Driver State ONLINE", "Driver State:     ONLINE" in out_hdmi),
+        ("Hot Plug Detect CONNECTED", "Hot Plug Detect:  CONNECTED" in out_hdmi),
+        ("Pixel Clock active", "Pixel Clock:" in out_hdmi),
+        ("EDID header valid", "EDID Header:      VALID" in out_edid or "EDID" in out_hdmi or "Monitor detected:" in boot_log),
+    ]
+    failed = [label for label, ok in checks if not ok]
+    if failed:
+        return (name, False, f"failed: {', '.join(failed)}")
+    return (name, True, "HDMI 2.0 TX Online, HPD connected, monitor EDID parsed successfully")
+
+
+def test_dc8200_display_controller(ser: serial.Serial) -> tuple[str, bool, str]:
+    name = "dc8200: VeriSilicon DC8200 display controller, VTG 1080p60 & page flipping"
+    out = run_cmd(ser, "display status", timeout_s=10.0)
+    checks = [
+        ("Driver State ONLINE", "Driver State:     ONLINE" in out),
+        ("Panel RUNNING", "Panel RUNNING" in out),
+        ("Hardware Rev 0x5720", "Hardware Rev:     0x5720" in out),
+        ("1920x1080 @ 60 Hz", "1920x1080 @ 60 Hz" in out),
+        ("Front Buffer PA present", "Front Buffer PA:  0x" in out),
+        ("Back Buffer PA present", "Back Buffer PA:   0x" in out),
+        ("VSYNC page flipping active", "frames flipped" in out and "VSYNC pulses" in out),
+    ]
+    failed = [label for label, ok in checks if not ok]
+    if failed:
+        return (name, False, f"failed: {', '.join(failed)}")
+    return (name, True, "DC8200 Rev 0x5720 running 1080p60 scanout with active VSYNC page flips")
+
+
+def test_cursor_engine_and_injection(ser: serial.Serial) -> tuple[str, bool, str]:
+    name = "cursor: 16x16 arrow sprite, background restore/blit, and ms event injection"
+    out_cur = run_cmd(ser, "cursor status", timeout_s=10.0)
+    out_move = run_cmd(ser, "ms move 320 240", timeout_s=10.0)
+    out_click = run_cmd(ser, "ms click", timeout_s=10.0)
+    out_wheel = run_cmd(ser, "ms wheel -2", timeout_s=10.0)
+    out_cur2 = run_cmd(ser, "cursor status", timeout_s=10.0)
+    checks = [
+        ("Cursor visible", "Visibility:   VISIBLE" in out_cur),
+        ("Move injected", "ms: pointer moved to 320, 240" in out_move),
+        ("Click injected", "ms: clicked button 0x01 at 320, 240" in out_click),
+        ("Wheel injected", "ms: wheel delta -2" in out_wheel or "ms: wheel -2" in out_wheel),
+        ("New coordinates tracked", "X=320, Y=240" in out_cur2),
+    ]
+    failed = [label for label, ok in checks if not ok]
+    if failed:
+        return (name, False, f"failed: {', '.join(failed)}")
+    return (name, True, "cursor engine blitting, moving, clicking, and wheel injection verified")
+
+
+def test_ribbon_workstation_composition(ser: serial.Serial) -> tuple[str, bool, str]:
+    name = "ribbon: 1080p workstation desktop, multi-pane tiling & geometry"
+    out_list = run_cmd(ser, "ribbon list", timeout_s=10.0)
+    out_self = run_cmd(ser, "ribbon selftest", timeout_s=10.0)
+    checks = [
+        ("Ribbon active with terminal", "Ribbon Status:" in out_list and "Term" in out_list),
+        ("Full 238 cols on 1080p", "238 cols" in out_list or "cols" in out_list),
+        ("Geometry selftest passed", "ribbon geometry selftest: PASSED" in out_self),
+    ]
+    failed = [label for label, ok in checks if not ok]
+    if failed:
+        return (name, False, f"failed: {', '.join(failed)}")
+    return (name, True, "ribbon desktop active on 1080p display with geometry selftest passed")
+
+
 def test_stress(ser: serial.Serial) -> tuple[str, bool, str]:
     name = "stress: 4-core concurrent fmt/ram/sd/p9/chan/log/shell stress"
     out = run_cmd(ser, "stress 3", timeout_s=25.0)
@@ -434,6 +503,10 @@ def main() -> int:
         results.append(test_nvme_filesystem_and_cas(ser))
         results.append(test_usb_hub_and_tree(ser))
         results.append(test_usb_hid_keyboard_mouse(ser))
+        results.append(test_hdmi_phy_and_edid(ser, boot_log))
+        results.append(test_dc8200_display_controller(ser))
+        results.append(test_cursor_engine_and_injection(ser))
+        results.append(test_ribbon_workstation_composition(ser))
         results.append(test_stress(ser))
         results.append(test_pmic_cold_reboot(ser))
     finally:

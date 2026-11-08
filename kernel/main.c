@@ -84,6 +84,10 @@
 
 #include "drivers/lcdterm.h"       /* 47.6: the panel terminal, wherever there is a panel */
 #include "drivers/dsi_esp32p4.h"   /* 47.7: the LCD-7B's (empty elsewhere) */
+#include "kernel/cursor.h"
+#if defined(CONFIG_BOARD_VISIONFIVE2)
+#include "drivers/dc8200_jh7110.h"
+#endif
 
 #if defined(CONFIG_BOARD_ESP32P4)
 #include "arch/esp32p4_intr.h"   /* esp32p4_l2_cache_shrink() */
@@ -429,6 +433,7 @@ void kernel_main(void) {
      * binding as "(none)", which would be a lie the moment anyone asked
      * which device owns the terminal. */
     console_bind_device("uart");
+    cursor_init();
 
 #if !defined(CONFIG_LCD_PCLK_GPIO)
     /* 37.3b: no panel, so Lisp's canvas draws into a screen in RAM, which
@@ -444,6 +449,14 @@ void kernel_main(void) {
      * UART0. If the glass does not come up the board keeps its RAM screen
      * and the serial console, as before 47.7. */
     if (dsi_lcd_term_start() == 0) {
+        klog_sink_register("lcd", klog_lcd_sink);
+        console_bind_device("lcd");
+        console_set_screen(lcdterm_console_screen());
+    }
+#endif
+#if defined(CONFIG_BOARD_VISIONFIVE2)
+    /* StarFive JH7110 DC8200 display controller on HDMI */
+    if (jh7110_dc8200_term_start() == 0) {
         klog_sink_register("lcd", klog_lcd_sink);
         console_bind_device("lcd");
         console_set_screen(lcdterm_console_screen());
@@ -533,6 +546,9 @@ void kernel_main(void) {
      * all driver boot messages are frame-paced at 60 Hz rather than synchronously
      * converting at every line. */
     (void)dsi_lcd_term_task_start();
+#endif
+#if defined(CONFIG_BOARD_VISIONFIVE2)
+    (void)jh7110_dc8200_term_task_start();
 #endif
 
     /* The uart driver as a task,

@@ -123,6 +123,7 @@ static void redraw_line_sel(const char *prompt, const char *buf, int len, int po
     }
     console_puts("\033[?25h"); // Show cursor at final target position
     console_unlock();
+    console_flush();
 }
 
 static void redraw_line(const char *prompt, const char *buf, int len, int pos) {
@@ -676,6 +677,7 @@ static int line_key(line_state_t *st, key_event_t k, const char *prompt,
                     console_lock();
                     for (int i = 0; i < n; i++) console_putc(enc[i]);
                     console_unlock();
+                    console_flush();
                 }
                 return LINE_INCOMPLETE;
             }

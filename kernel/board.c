@@ -35,6 +35,7 @@
 #include "drivers/pcie_jh7110.h"
 #include "drivers/nvme.h"
 #include "drivers/xhci.h"
+#include "drivers/hdmi_jh7110.h"
 #elif !defined(CONFIG_BOARD_RP2350) && !defined(CONFIG_BOARD_ESP32P4) && !defined(CONFIG_BOARD_ESP32C6)
 #include "drivers/virtio_console.h"
 #include "drivers/virtio_blk.h"
@@ -453,6 +454,7 @@ void board_register_devices(void) {
     dev_register(&dev_sdmmc);
     (void)jh7110_pcie_init();
     (void)xhci_init();
+    (void)jh7110_hdmi_init();
     if (nvme_init() == 0) {
         dev_register(&dev_nvme);
     }

@@ -160,6 +160,15 @@ LugalOS features a ring buffer kernel logging subsystem ([logging](../dev/kernel
 * `usb ports`: Operational status, power state, and negotiated speeds for Root Hub ports.
 * `usb tree`: Hierarchical topology of all connected USB root hubs, downstream hubs, and active device functions (VID:PID, device class, driver).
 * `mouse [test]`: Reports USB HID mouse state, device slot, cursor coordinates, button flags, and scroll wheel; `mouse test` runs interactive live coordinate tracking until keypress.
+* `hdmi` / `hdmi info` / `hdmi status`: Innosilicon HDMI 2.0 TX PHY status, TMDS PLL lock state, and active resolution (StarFive VisionFive 2).
+* `hdmi edid`: Reads and parses connected HDMI monitor EDID block over DDC I2C.
+* `display` / `display info` / `display status` / `lcd`: VeriSilicon DC8200 display controller status (scanout dimensions, RGB565 stride, front/back framebuffer physical and virtual addresses, scanline, frames flipped, and VSYNC counter).
+* `display test`: Renders standard 8-color SMPTE test bars to the HDMI display for 3 seconds, then restores the active terminal.
+* `display repaint` / `lcd repaint`: Forces a complete re-conversion of terminal lines to both front and back scanout framebuffers.
+* `cursor` / `cursor info` / `cursor status`: Software cursor engine status (coordinates, visibility, buttons, speed factor, restore callback).
+* `cursor show` / `cursor hide`: Shows or hides the mouse pointer sprite.
+* `cursor speed [pct]`: Adjusts mouse pointer motion speed multiplier percentage.
+* `ms move X Y` / `ms click [left|right|middle]` / `ms wheel DY`: Injects pointer motion, button clicks, or scroll wheel deltas directly into the console event system.
 * `tz [POSIX-TZ]`: Shows the time zone and whether summer time is in force; with a rule (`tz CET-1CEST,M3.5.0,M10.5.0/3`, `tz UTC0`) sets it.
 * `ntp [server-ip]`: Sets the clock over NTP; without an argument it asks the gateway.
 * `net`: Network interface status, IP address, netmask, gateway, DNS servers, and RX/TX packet counts.

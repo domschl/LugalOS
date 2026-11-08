@@ -16,6 +16,7 @@ LugalOS supports a range of distinct hardware presets across RISC-V microcontrol
 | **`esp32p4-lcd7b`** | RV32 Dual-Core | ESP32-P4-WIFI6-LCD-7B (rev v3.2) | 400 MHz | 768 KB L2MEM + 32 MB PSRAM | 7" 1024x600 MIPI-DSI, GT911 Touch | SDMMC, USB Host, Wi-Fi 6 | High-Perf Ribbon Workstation |
 | **`esp32p4-tab5`** | RV32 Dual-Core | M5Stack Tab5 (rev v1.3) | 360-400 MHz | 768 KB L2MEM + 32 MB PSRAM | 5" 720x1280 MIPI-DSI, ST7121 Touch | SDMMC, USB Host, Dual Expander | 5" Portable Tablet / Reader |
 | **`esp32p4`** | RV32 Dual-Core | ESP32-P4-NANO (rev v1.3) | 360-400 MHz | 768 KB L2MEM + 32 MB PSRAM | Serial Console (921600 baud) | RMII Ethernet, SDMMC | Microkernel Compute Node |
+| **`visionfive2`** | RV64GC Quad-Core | StarFive VisionFive 2 v1.3B | 1.5 GHz (4x U74) | 8 GiB LPDDR4 (2 MB L2) | HDMI 1080p60 / 720p60 Ribbon | MicroSD, NVMe SSD, GbE, USB 3.0 | 64-Bit Desktop Workstation |
 | **`esp32c6`** | RV32IMAC | Waveshare ESP32-C6-Zero | 160 MHz | 512 KB SRAM, 8 MB Flash | Serial / JTAG Console | 802.11ax Wi-Fi, Flashfs | Low-Power Wireless Node |
 | **`esp32c6-release`** | RV32IMAC | Waveshare ESP32-C6-Zero | 160 MHz | 512 KB SRAM, 8 MB Flash | Serial / JTAG Console | 802.11ax Wi-Fi, Flashfs | The same node deployed: release image, `i2c` folded |
 | **`rp2350-chess`** | RV32 Hazard3 | Raspberry Pi Pico 2 | 150 MHz | 520 KB SRAM | 1.8" ST7735 TFT, TM1638 Keypad | SD/SPI card | Dedicated Chess Computer |
@@ -40,7 +41,7 @@ A key in the wrong layer stops the configure. A command-line `-DLUGALOS_ENABLE_.
 
 | Profile | Presets | Carries |
 | :--- | :--- | :--- |
-| `workstation` | `esp32p4`, `esp32p4-lcd7b`, `esp32p4-tab5`, `rp2350-terminal` | Everything: CAS, chess (512 KB table), games, `cc`, `ed`, HTTPS admin, 65536 Lisp nodes in PSRAM |
+| `workstation` | `esp32p4`, `esp32p4-lcd7b`, `esp32p4-tab5`, `rp2350-terminal`, `visionfive2` | Everything: CAS, chess (512 KB table), games, `cc`, `ed`, HTTPS admin, 65536 Lisp nodes in PSRAM |
 | `sensor` | `esp32c6`, `rp2350-wifi`, `rp2350-sensor` | Sensors, MQTT, 9P, the admin page once claimed; no compiler, editor or games. Sized for a node without a screen: a 4 KB log ring, two lines of shell history, four terminals, no RAM disk (`init.lisp` reads the profile from `/proc/config`) |
 | `radio` | `esp32c6-mini` | The Wi-Fi modem beside a P4 (LLP over SDIO), sized as `sensor` |
 | `chess` | `rp2350-chess`, `rp2350-smp` | The ST7735/TM1638 chess computer |
