@@ -7633,10 +7633,11 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         tz_selftest();
         return;
 #endif
-    } else if (strncmp(cmd_line, "mkfs.vfat ", 10) == 0) {
-        /* `mkfs.vfat VOL [LABEL]`: `format` under the name people look for. */
+    } else if (strncmp(cmd_line, "mkfs.vfat ", 10) == 0 || strncmp(cmd_line, "format ", 7) == 0) {
+        /* `mkfs.vfat VOL [LABEL]` or `format VOL [LABEL]`: explicit volume format. */
         char vol[32] = {0}, label[16] = {0};
-        const char *a = cmd_line + 10;
+        const char *cmd_name = (cmd_line[0] == 'm') ? "mkfs.vfat" : "format";
+        const char *a = cmd_line + ((cmd_line[0] == 'm') ? 10 : 7);
         while (*a == ' ') a++;
         unsigned i = 0;
         while (*a && *a != ' ' && i < sizeof vol - 1) vol[i++] = *a++;
@@ -7644,7 +7645,7 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         i = 0;
         while (*a && *a != ' ' && i < sizeof label - 1) label[i++] = *a++;
         int rc = vfs_format_label(vol, label[0] ? label : NULL);
-        cprintf("mkfs.vfat %s: %s\n", vol, rc == 0 ? "done" : "failed");
+        cprintf("%s %s: %s\n", cmd_name, vol, rc == 0 ? "done" : "failed");
         return;
     } else if (strcmp(cmd_line, "fsck") == 0 || strncmp(cmd_line, "fsck ", 5) == 0) {
         const char *a = cmd_line + 4;

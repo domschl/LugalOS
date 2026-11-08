@@ -72,12 +72,19 @@
 #include "drivers/gps_pps.h"
 #endif
 
+#if defined(CONFIG_BOARD_VISIONFIVE2)
+#include "drivers/nvme.h"
+#endif
+
 /* guarded by: each volume's own fs->lock (fs/fat32.c) for every operation;
  * re-initialised only by `format` and a new RAM disk, which first withdraw
  * the volume from lookups and refuse one with users (mount_quiesce()). */
 static fat32_fs_t g_fat32_sd;
 static fat32_fs_t g_fat32_ram;
 static fat32_fs_t g_fat32_flash;
+#if defined(CONFIG_BOARD_VISIONFIVE2)
+static fat32_fs_t g_fat32_nvme;
+#endif
 
 /* 38.0: /sd0's FAT-sector cache (fat32_set_fat_cache()). Only where there is
  * a card to read: on a card every FAT lookup is a sector transfer, while
@@ -88,9 +95,18 @@ static fat32_fs_t g_fat32_flash;
 #define VFS_SD_FAT_CACHE 1
 static uint32_t g_sd_fat_cache[128];
 #endif
+#if defined(CONFIG_BOARD_VISIONFIVE2)
+#define VFS_NVME_FAT_CACHE 1
+/* guarded by: g_fat32_nvme.lock */
+static uint32_t g_nvme_fat_cache[128];
+#endif
 /* guarded by: mount_quiesce() for `format` and a new RAM disk; set at boot otherwise. */
 static bool g_sd_mounted = false;
 static bool g_ram_mounted = false;
+#if defined(CONFIG_BOARD_VISIONFIVE2)
+/* guarded by: mount_quiesce() for `format`; set at boot otherwise. */
+static bool g_nvme_mounted = false;
+#endif
 /* single task: the boot, before any reader runs; constant after. */
 static bool g_flash_mounted = false;
 
@@ -157,7 +173,7 @@ typedef struct {
     bool ready;
 } mount_entry_t;
 
-#define MAX_MOUNTS 10
+#define MAX_MOUNTS 12
 /* guarded by: g_mount_lock for every change of an entry's state (taking,
  * readying, users, dying, clearing) and for lookups; a found entry stays
  * valid while its caller holds a reference (mount_get/mount_put). The
@@ -363,6 +379,12 @@ static void mount_table_init(void) {
     e->kind = MOUNT_FAT32; e->fs = &g_fat32_ram; e->mounted_ptr = &g_ram_mounted;
     strncpy(e->label, "FAT32 In-Memory RAMDisk", sizeof(e->label) - 1);
 
+#if defined(CONFIG_BOARD_VISIONFIVE2)
+    e = mount_alloc("nvme0", true);
+    e->kind = MOUNT_FAT32; e->fs = &g_fat32_nvme; e->mounted_ptr = &g_nvme_mounted;
+    strncpy(e->label, "FAT32 M.2 NVMe SSD", sizeof(e->label) - 1);
+#endif
+
     e = mount_alloc("proc", true);
     e->kind = MOUNT_PROC;
     strncpy(e->label, "Synthetic Metrics System", sizeof(e->label) - 1);
@@ -482,6 +504,19 @@ void vfs_server_init(void) {
             printk("[VFS Server] Mounted FAT32 Filesystem on /sd0/ (Device: SD/MMC MicroSD Card Reader)\n");
         }
     }
+#if defined(CONFIG_BOARD_VISIONFIVE2)
+    g_nvme_mounted = false;
+#ifdef VFS_NVME_FAT_CACHE
+    fat32_set_fat_cache(&g_fat32_nvme, g_nvme_fat_cache);
+#endif
+    block_dev_t *nvme_dev = nvme_get_device();
+    if (nvme_dev) {
+        if (fat32_init(&g_fat32_nvme, nvme_dev) == 0) {
+            g_nvme_mounted = true;
+            printk("[VFS Server] Mounted FAT32 Filesystem on /nvme0/ (Device: M.2 NVMe PCIe SSD)\n");
+        }
+    }
+#endif
 #else
     /* VirtIO block device is available on QEMU targets */
     block_dev_t *sd_dev = virtio_blk_get_device();
@@ -821,6 +856,16 @@ static int vfs_generate_proc_content_raw(const char *rel, char *buf, uint32_t ca
             used += (uint32_t)ksnprintf(buf + used, cap - used,
                 "/sd0/            %9u  %9u  %9u     %3u%% /sd0/\n", total_b, used_b, free_b, pct);
         }
+#if defined(CONFIG_BOARD_VISIONFIVE2)
+        if (g_nvme_mounted) {
+            uint32_t total_b = 0, free_b = 0;
+            fat32_statfs(&g_fat32_nvme, &total_b, &free_b);
+            uint32_t used_b = total_b >= free_b ? total_b - free_b : 0;
+            uint32_t pct = total_b ? (uint32_t)((uint64_t)used_b * 100u / total_b) : 0;
+            used += (uint32_t)ksnprintf(buf + used, cap - used,
+                "/nvme0/          %9u  %9u  %9u     %3u%% /nvme0/\n", total_b, used_b, free_b, pct);
+        }
+#endif
         return (int)used;
     } else if (strcmp(rel, "pages") == 0) {
         /* Every allocated page run and who asked for it (66.1): zone,
@@ -3079,6 +3124,9 @@ void vfs_fat_recount(void) {
     struct { const char *name; fat32_fs_t *fs; bool mounted; } v[] = {
         { "/sd0/",  &g_fat32_sd,  g_sd_mounted },
         { "/ram0/", &g_fat32_ram, g_ram_mounted },
+#if defined(CONFIG_BOARD_VISIONFIVE2)
+        { "/nvme0/", &g_fat32_nvme, g_nvme_mounted },
+#endif
     };
     for (unsigned i = 0; i < sizeof v / sizeof v[0]; i++) {
         if (!v[i].mounted) continue;
@@ -3108,8 +3156,17 @@ void vfs_fsck(const char *path) {
     } else if (strncmp(path, "/ram0", 5) == 0) {
         name = "/ram0/";
         if (g_ram_mounted) fs = &g_fat32_ram;
+#if defined(CONFIG_BOARD_VISIONFIVE2)
+    } else if (strncmp(path, "/nvme0", 6) == 0) {
+        name = "/nvme0/";
+        if (g_nvme_mounted) fs = &g_fat32_nvme;
+#endif
     } else {
+#if defined(CONFIG_BOARD_VISIONFIVE2)
+        cprintf("usage: fsck [/sd0|/ram0|/nvme0]\n");
+#else
         cprintf("usage: fsck [/sd0|/ram0]\n");
+#endif
         return;
     }
     if (!fs) { cprintf("fsck: %s is not mounted\n", name); return; }
@@ -3183,6 +3240,20 @@ static int vfs_format_volume(mount_entry_t *m, const char *path, const char *lab
         if (!dev || fat32_format(dev) != 0) return -1;
         g_ram_mounted = (fat32_init(&g_fat32_ram, dev) == 0);
         return g_ram_mounted ? 0 : -1;
+#if defined(CONFIG_BOARD_VISIONFIVE2)
+    } else if (m && strcmp(m->name, "nvme0") == 0) {
+        block_dev_t *dev = nvme_get_device();
+        uint32_t vol_id = 0;
+        random_bytes(&vol_id, sizeof vol_id);
+        if (!dev) return -1;
+        if (fat32_mkfs(dev, label, vol_id, format_progress) == 0) {
+            cprintf("\n");
+        } else if (dev->num_blocks >= 131072u || fat32_format(dev) != 0) {
+            return -1;
+        }
+        g_nvme_mounted = (fat32_init(&g_fat32_nvme, dev) == 0);
+        return g_nvme_mounted ? 0 : -1;
+#endif
     } else if (m && strcmp(m->name, "flash0") == 0 && m->read_only) {
         printk("[VFS Error] '/flash0/' (Embedded Flash ROMDisk) cannot be formatted (read-only)\n");
         return -1;
