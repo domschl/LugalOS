@@ -96,7 +96,10 @@ typedef struct {
     uint32_t  stride565;                /* stride in uint16_t pixels (width) */
     uint16_t  w565, h565;               /* dimensions of RGB565 buffer */
     uint8_t   format;                   /* CANVAS_FMT_1BPP or CANVAS_FMT_RGB565 */
-    uint8_t   vterm_id;                 /* creator terminal ID */
+    uint8_t   vterm_id;                 /* the terminal drawing on it: its creator, or the last to
+                                         * select it by name ('L') */
+    uint32_t  used_seq;                 /* when its terminal last selected it ('L'): of a terminal's
+                                         * canvases, the latest is the one its requests mean */
     bool      in_use;
     bool      locked;                   /* canvas layout locked for this slot */
     bool      buf565_owned;             /* true if buf565 was allocated by screen.c and should be freed by it */
@@ -146,6 +149,7 @@ typedef struct {
     char      ctitle[SCREEN_CTITLE_MAX];/* the canvas tile's title */
     ribbon_t  ribbon;                   /* 1D horizontal window ribbon */
     screen_canvas_slot_t canvases[SCREEN_MAX_CANVASES]; /* concurrent canvas backing stores */
+    uint32_t  canvas_seq;               /* the last used_seq given out */
     screen_reader_slot_t readers[SCREEN_MAX_READERS];   /* concurrent reader backing stores */
     vtterm_t  vt;                       /* legacy reference to active terminal */
     struct {

@@ -3644,6 +3644,25 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
                 break
         results.append(("The Narrow Split, And A Screenshot To The SD Card (37.5a)", shot_ok, shot_log))
 
+        # Two canvases from one terminal (a Lisp plot, then chess's board):
+        # each request goes to the canvas the terminal selected last, so
+        # neither window takes the other's title or pixels.
+        steps = [("(canvas-window 'split \"plot\")", r"=> #t"), ('(canvas-title "Rule 30")', r"=> #t"),
+                 ("(canvas-fill 0)", r"=> #t"),
+                 ("(canvas-window 'split \"chess\")", r"=> #t"), ('(canvas-title "Board")', r"=> #t"),
+                 ("(canvas-fill 1)", r"=> #t"),
+                 ("(canvas-window 'split \"plot\")", r"=> #t"), ("(canvas-get 5 5)", r"=> 0"),
+                 ("(canvas-window 'split \"chess\")", r"=> #t"), ("(canvas-get 5 5)", r"=> 1"),
+                 ("canvas list", r'Canvas slot \d "Board"[^\n]*\n\s*\[\d\] Canvas slot \d "Rule 30"'),
+                 ("(canvas-window 'text \"chess\")", r"=> #t"), ("(canvas-window 'text \"plot\")", r"=> #t")]
+        mix_ok, mix_log = True, ""
+        for cmd, pat in steps:
+            ok, log = session.send_and_expect(cmd, pat, timeout=10.0)
+            if not ok:
+                mix_ok, mix_log = False, f"{cmd!r} did not give {pat!r}:\n{log}"
+                break
+        results.append(("Two Canvases In One Terminal Keep Their Own Titles And Pixels", mix_ok, mix_log))
+
 
         # 37.5b: the editor. Its own selftest (wrapping, movement over wrapped
         # rows and UTF-8, undo, search, the safe save), then the real thing

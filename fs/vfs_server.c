@@ -173,7 +173,11 @@ typedef struct {
     bool ready;
 } mount_entry_t;
 
-#define MAX_MOUNTS 12
+#if defined(CONFIG_BOARD_VISIONFIVE2)
+#define MAX_MOUNTS 12                   /* and /nvme0 */
+#else
+#define MAX_MOUNTS 10
+#endif
 /* guarded by: g_mount_lock for every change of an entry's state (taking,
  * readying, users, dying, clearing) and for lookups; a found entry stays
  * valid while its caller holds a reference (mount_get/mount_put). The

@@ -225,13 +225,25 @@ LCDTERM_UTEXT static int screen_find_canvas_by_name(const screen_t *scr, const c
     return -1;
 }
 
+/* The canvas terminal `vterm_id`'s requests mean: of the ones it draws on
+ * (a Lisp plot and chess's board can share a terminal), the one it selected
+ * last; -1 for none. */
 LCDTERM_UTEXT static int screen_find_canvas_by_vterm(const screen_t *scr, uint8_t vterm_id) {
+    int best = -1;
     for (uint32_t i = 0; i < SCREEN_MAX_CANVASES; i++) {
-        if (scr->canvases[i].in_use && scr->canvases[i].vterm_id == vterm_id) {
-            return (int)i;
+        if (scr->canvases[i].in_use && scr->canvases[i].vterm_id == vterm_id &&
+            (best < 0 || scr->canvases[i].used_seq > scr->canvases[best].used_seq)) {
+            best = (int)i;
         }
     }
-    return -1;
+    return best;
+}
+
+/* Canvas `cid` is terminal `vid`'s current one from now on. */
+LCDTERM_UTEXT static void screen_canvas_select(screen_t *scr, int cid, uint8_t vid) {
+    if (cid < 0 || cid >= (int)SCREEN_MAX_CANVASES || !scr->canvases[cid].in_use) return;
+    scr->canvases[cid].vterm_id = vid;
+    scr->canvases[cid].used_seq = ++scr->canvas_seq;
 }
 
 LCDTERM_UTEXT static int screen_alloc_canvas_named_fmt(screen_t *scr, const char *name, uint8_t vterm_id, uint8_t format) {
@@ -268,6 +280,7 @@ LCDTERM_UTEXT static int screen_alloc_canvas_named_fmt(screen_t *scr, const char
             scr->canvases[i].detached = false;
             scr->canvases[i].locked = false;
             scr->canvases[i].drawn_w = 0;
+            scr->canvases[i].used_seq = 0;
             scr->canvases[i].vterm_id = vterm_id;
             scr->canvases[i].format = format;
             scr->canvases[i].buf565 = NULL;
@@ -1857,8 +1870,9 @@ LCDTERM_UTEXT bool screen_set_layout_vterm_named_fmt(screen_t *scr, uint8_t vid,
         }
     }
 
+    screen_canvas_select(scr, cid, vid);
     /* Which canvas covers the screen while it has the focus (the games). */
-    int fcid = (name && *name) ? screen_find_canvas_by_name(scr, name) : screen_find_canvas_by_vterm(scr, vid);
+    int fcid = cid;
     if (fcid >= 0) scr->canvases[fcid].fullscreen = layout == SCREEN_LAYOUT_FULLSCREEN;
 
     scr->layout = (uint8_t)layout;

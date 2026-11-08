@@ -6309,8 +6309,9 @@ static void cmd_canvas(const char *cmd_line) {
                 if (rreply[1] == 2 /* RIBBON_WIN_CANVAS */) {
                     uint8_t cid = rreply[2], cols = rreply[3];
                     uint8_t fmt = rreply[9];
-                    cprintf("  [%d] Canvas slot %d (%d cols, %s)%s\n",
-                            i, cid, cols,
+                    rreply[SCREEN_REPLY_LEN - 1] = 0;
+                    cprintf("  [%d] Canvas slot %d \"%s\" (%d cols, %s)%s\n",
+                            i, cid, (const char *)rreply + 12, cols,
                             (fmt == 1 /* CANVAS_FMT_RGB565 */) ? "RGB565 color" : "1-bpp mono",
                             (i == active) ? " (focused)" : "");
                     c_found++;

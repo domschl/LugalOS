@@ -84,7 +84,9 @@
 
 #include "drivers/lcdterm.h"       /* 47.6: the panel terminal, wherever there is a panel */
 #include "drivers/dsi_esp32p4.h"   /* 47.7: the LCD-7B's (empty elsewhere) */
+#if defined(CONFIG_BOARD_VISIONFIVE2)
 #include "kernel/cursor.h"
+#endif
 #if defined(CONFIG_BOARD_VISIONFIVE2)
 #include "drivers/dc8200_jh7110.h"
 #endif
@@ -433,7 +435,9 @@ void kernel_main(void) {
      * binding as "(none)", which would be a lie the moment anyone asked
      * which device owns the terminal. */
     console_bind_device("uart");
-    cursor_init();
+#if defined(CONFIG_BOARD_VISIONFIVE2)
+    cursor_init();                      /* the mouse cursor the HDMI desktop draws */
+#endif
 
 #if !defined(CONFIG_LCD_PCLK_GPIO)
     /* 37.3b: no panel, so Lisp's canvas draws into a screen in RAM, which
