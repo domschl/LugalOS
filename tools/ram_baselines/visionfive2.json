@@ -6,7 +6,7 @@
   "heap_pages": 30834,
   "per_file": {
     "(no line info: .data)": 9,
-    "(no line info: .rodata)": 14881,
+    "(no line info: .rodata)": 14843,
     "arch/riscv/common/elf.c": 1852,
     "arch/riscv/common/mem_domain.c": 20,
     "arch/riscv/common/trap.c": 15,
@@ -177,7 +177,7 @@
   },
   "per_subsystem": {
     "(no line info: .data)": 9,
-    "(no line info: .rodata)": 14881,
+    "(no line info: .rodata)": 14843,
     "9p": 65752,
     "agent": 3501,
     "app:cc": 598,
@@ -205,6 +205,6 @@
     "usb": 902,
     "vfs": 5255
   },
-  "ram_code": 703840,
-  "total": 7567719
+  "ram_code": 703718,
+  "total": 7567559
 }

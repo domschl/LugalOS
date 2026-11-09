@@ -217,6 +217,13 @@ bool console_close_view(uint8_t type, uint8_t inst);
  * would send it -- `key` in the shell, for boards and QEMU without one.
  * False when no view has the focus. */
 bool console_view_key(uint32_t key, uint8_t mods);
+/* One turn of an input wait, for a program that waits for something other
+ * than a character (a Lisp `ui-` window's events): the screen flushed, the
+ * input devices drained, and the pointer's and the touch screen's taps,
+ * presses and hover handed to the windows under them. Those wait for an
+ * input wait to be delivered -- without one, a program's window hears
+ * nothing. */
+void console_poll(void);
 void console_set_active_win_type(uint8_t type);
 uint8_t console_active_win_type(void);
 void console_sync_readers(void);

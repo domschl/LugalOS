@@ -2006,6 +2006,12 @@ static void console_pump(void) {
     ylock_release(&g_input_lock);
 }
 
+void console_poll(void) {
+    screen_flush();
+    console_pump();
+    run_hotkey();
+}
+
 bool console_has_char(void) {
     /* A reader is about to look for input: whatever was echoed must be on
      * the screen first (uart_getc() flushes its own batch the same way). */

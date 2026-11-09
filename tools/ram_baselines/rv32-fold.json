@@ -5,7 +5,7 @@
   "heap_bytes": 125526016,
   "heap_pages": 30646,
   "per_file": {
-    "(no line info: .rodata)": 9218,
+    "(no line info: .rodata)": 9180,
     "(no line info: .sdata)": 9,
     "/build/riscv64-elf-gcc/src/gcc-16.2.0/libgcc/libgcc2.c": 256,
     "arch/riscv/common/elf.c": 1484,
@@ -168,7 +168,7 @@
     "user/zmachine/ztext.c": 27
   },
   "per_subsystem": {
-    "(no line info: .rodata)": 9218,
+    "(no line info: .rodata)": 9180,
     "(no line info: .sdata)": 9,
     "/build/riscv64-elf-gcc/src/gcc-16.2.0/libgcc/libgcc2.c": 256,
     "9p": 64084,
@@ -199,6 +199,6 @@
     "usb": 902,
     "vfs": 3894
   },
-  "ram_code": 1331378,
-  "total": 6461314
+  "ram_code": 1331262,
+  "total": 6461160
 }

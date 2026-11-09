@@ -5,7 +5,7 @@
   "heap_bytes": 123940864,
   "heap_pages": 30259,
   "per_file": {
-    "(no line info: .rodata)": 14467,
+    "(no line info: .rodata)": 14429,
     "(no line info: .sdata)": 9,
     "arch/riscv/common/elf.c": 1852,
     "arch/riscv/common/mem_domain.c": 8,
@@ -170,7 +170,7 @@
     "user/zmachine/ztext.c": 27
   },
   "per_subsystem": {
-    "(no line info: .rodata)": 14467,
+    "(no line info: .rodata)": 14429,
     "(no line info: .sdata)": 9,
     "9p": 65704,
     "agent": 3501,
@@ -200,6 +200,6 @@
     "usb": 902,
     "vfs": 4382
   },
-  "ram_code": 1299562,
-  "total": 7813651
+  "ram_code": 1299420,
+  "total": 7813471
 }

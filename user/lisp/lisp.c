@@ -5897,6 +5897,9 @@ static lisp_val_t *prim_ui_event(lisp_val_t *args, lisp_val_t *env) {
     uint64_t deadline = time_get_ms() + (uint64_t)(ms > 0 ? ms : 0);
     lispui_ev_t ev;
     for (;;) {
+        /* An input wait: the taps, presses and hover the console holds for
+         * one go to the window now (console_poll()). */
+        console_poll();
         if (lispui_next_event(&ev)) break;
         if (ms == 0 || !lispui_is_open() || lisp_interrupted || lisp_poll_interrupt()) return &nil_val;
         if (ms > 0 && time_get_ms() >= deadline) return &nil_val;

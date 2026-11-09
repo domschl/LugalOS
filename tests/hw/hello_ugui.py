@@ -3,9 +3,10 @@
 The sample is copied to /sd0/demos over 9P, opened, and driven through the
 board's own input paths at the places its window reports (`ui`): the mouse
 (`ms`), a finger where the board has touch (`ts tap`), and keys for the
-focused view (`key`). Between inputs the program handles what came
-((hu-pump)), and its state ((hu-state)) must be what the inputs mean. A
-`q` ends it, and its window must be gone.
+focused view (`key`). Each input goes on one line with the program's own
+event loop ((hu-loop ms), ended when it is idle), so the program hears it
+while it waits, as it hears a person; its state ((hu-state)) must then be
+what the inputs mean. A `q` ends it, and its window must be gone.
 
 A suite passes `with_9p(fn)` (fn(session) with a p9lib.Session attached at
 "/") and `console(line)` (one shell line's output), as for longnames.py.
@@ -62,8 +63,7 @@ def check(with_9p: Callable[[Callable[[Any], T]], T], console: Callable[[str], s
         steps += [f"ts tap {_at(hits['1.0'])}"]
     steps += ['key "Ada" enter']
     for s in steps:
-        console(s)
-    console("(hu-pump)")
+        console(f"{s}; (hu-loop 300)")
     state = console("(hu-state)")
     want = [r"greeting=Hello, Ada!"]
     if ms_ok:
@@ -74,13 +74,11 @@ def check(with_9p: Callable[[Callable[[Any], T]], T], console: Callable[[str], s
     if missing:
         return False, f"state {missing} not reached:\n{state[-300:]}"
 
-    console("key tab tab tab enter")
-    console("(hu-pump)")
+    console("key tab tab tab enter; (hu-loop 300)")
     state2 = console("(hu-state)")
     if "picked=Apple" not in state2:
         return False, f"keys alone did not pick the first row:\n{state2[-300:]}"
-    console("key q")
-    out = console("(hu-pump)")
+    out = console("key q; (hu-loop 300)")
     if "=> #f" not in out or "closed" not in console("ui"):
         return False, f"`q` did not end it:\n{out[-300:]}"
     how = ", ".join(x for x, on in (("mouse", ms_ok), ("touch", touch), ("keys", True)) if on)

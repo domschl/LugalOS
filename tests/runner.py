@@ -3736,9 +3736,12 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
 
         # 76.2: a Lisp program's own window (`ui-`), the sample app driven
         # through the real input paths: the mouse (`ms`) at the places the
-        # window reports (`ui`), and keys (`key`) for the focused view. The
-        # program hears them between two of its calls ((hu-pump)), which is
-        # how the suite gets a word in while it runs.
+        # window reports (`ui`), and keys (`key`) for the focused view. Each
+        # input goes on one line with the program's own event loop
+        # ((hu-loop ms), ended when it is idle), so it reaches the program
+        # while it waits, as a person's does: the console hands taps and
+        # presses to a window only from an input wait, and a first version's
+        # wait had none -- every control did nothing on the panels.
         def ui_hits(text: str) -> dict[str, tuple[int, int, int, int]]:
             return {m.group(1): (int(m.group(2)), int(m.group(3)), int(m.group(4)), int(m.group(5)))
                     for m in re.finditer(r"hit (\d+\.\d+) at (-?\d+) (-?\d+) size (\d+) (\d+)", text)}
@@ -3746,6 +3749,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         def centre(h: tuple[int, int, int, int], fx: float = 0.5) -> str:
             return f"{h[0] + int(h[2] * fx)} {h[1] + h[3] // 2}"
 
+        loop = "; (hu-loop 300)"
         ui_ok, ui_log = True, ""
         ok, log = session.send_and_expect('(load "/sd0/demos/hello_ugui.lisp")', r"=> #t", timeout=8.0)
         ok2, log2 = session.send_and_expect("(hu-start)", r"=> #t", timeout=8.0)
@@ -3755,23 +3759,19 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         if not (ok and ok2 and ok3) or any(k not in hits for k in need):
             ui_ok, ui_log = False, f"the sample did not open, or its widgets are missing:\n{log}{log2}{report}"
         else:
-            steps = [(f"ms click {centre(hits['1.0'])}", r"ms: left click"),     # Count, twice
-                     (f"ms click {centre(hits['1.0'])}", r"ms: left click"),
-                     (f"ms click {centre(hits['4.0'], 0.75)}", r"ms: left click"),  # the slider, three quarters
-                     (f"ms click {centre(hits['5.0'])}", r"ms: left click"),     # Size -
-                     (f"ms click {centre(hits['8.2'])}", r"ms: left click"),     # Cherry
-                     (f"ms click {centre(hits['7.0'])}", r"ms: left click"),     # the name field
-                     ('key "Ada" enter', r"key: 4 sent"),
-                     ("(hu-pump)", r"=> #t"),
+            steps = [(f"ms click {centre(hits['1.0'])}{loop}", r"=> #t"),     # Count, twice
+                     (f"ms click {centre(hits['1.0'])}{loop}", r"=> #t"),
+                     (f"ms click {centre(hits['4.0'], 0.75)}{loop}", r"=> #t"),  # the slider, three quarters
+                     (f"ms click {centre(hits['5.0'])}{loop}", r"=> #t"),     # Size -
+                     (f"ms click {centre(hits['8.2'])}{loop}", r"=> #t"),     # Cherry
+                     (f"ms click {centre(hits['7.0'])}{loop}", r"=> #t"),     # the name field
+                     (f'key "Ada" enter{loop}', r"=> #t"),
                      ("(hu-state)", r'"count=2 show=yes fast=no level=7\d size=2 picked=Cherry greeting=Hello, Ada!"'),
-                     ("key tab tab tab enter", r"key: 4 sent"),                  # by keys: on to the list, its first row
-                     ("(hu-pump)", r"=> #t"),
+                     (f"key tab tab tab enter{loop}", r"=> #t"),              # by keys: on to the list, its first row
                      ("(hu-state)", r"picked=Apple"),
-                     (f"ms click {centre(hits['2.0'])}", r"ms: left click"),     # the list hidden
-                     ("(hu-pump)", r"=> #t"),
+                     (f"ms click {centre(hits['2.0'])}{loop}", r"=> #t"),     # the list hidden
                      ("ui", r"ui: open[^\n]*\n"),
-                     ("key q", r"key: 1 sent"),
-                     ("(hu-pump)", r"=> #f"),
+                     (f"key q{loop}", r"=> #f"),
                      ("ui", r"ui: closed"),
                      ("ribbon", r"Ribbon Status: 1 windows")]
             for cmd, pat in steps:

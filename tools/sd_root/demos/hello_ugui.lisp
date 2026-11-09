@@ -16,9 +16,9 @@
 ; in the text field and scrolling the list happen in the window without the
 ; program; it hears only what it has to act on.
 ;
-; (hu-start) and (hu-pump) are the same program in two halves -- open and
-; draw, then handle whatever has happened so far -- for the test suite,
-; which injects input between them.
+; (hu-start) and (hu-loop ms) are the same program in two halves -- open and
+; draw, then the event loop, ended once ms pass with no event -- for the test
+; suite, which sends each input on the line that runs the loop.
 
 (define hu-count 0)
 (define hu-show #t)
@@ -109,11 +109,13 @@
       (begin (hu-draw) #t)
       (begin (display "hello-ugui: no window on this board") (newline) #f)))
 
-; Everything that has happened so far; #f once the program has ended.
-(define (hu-pump)
-  (let loop ((ev (ui-event 0)))
+; The loop of (hello-ugui), ended once ms pass without an event: the test
+; suite sends its input on the same line, before the program waits, so the
+; input reaches it inside the wait as a person's does.
+(define (hu-loop ms)
+  (let loop ((ev (ui-event ms)))
     (cond ((null? ev) #t)
-          ((hu-handle ev) (loop (ui-event 0)))
+          ((hu-handle ev) (loop (ui-event ms)))
           (else (ui-close) #f))))
 
 ; What the program holds, for the tests.
