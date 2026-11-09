@@ -89,6 +89,52 @@ Readings come from the sensor hub's cache, so no call waits on the I2C bus. Valu
 * `(chess [threads])`: Launch the interactive chess engine in split-terminal keyboard mode (optional multicore Lazy SMP search).
 * `(chess-touch)`: Launch the touch-first graphical chess game with interactive piece movement and Classic Mac toolbar controls.
 
+### Windows of Their Own: `ui-` (ugui for Lisp)
+On every board with a panel or an HDMI screen (and QEMU's RAM screen), a Lisp program can open a ribbon window and fill it with the system's own controls, the ones the launcher and the reader use. It works by touch, by mouse and by keys alone; see `/sd0/demos/hello_ugui.lisp` (`(load "/sd0/demos/hello_ugui.lisp")`, then `(hello-ugui)`).
+
+The model is *immediate*: the program describes its whole picture in one pass and keeps its own state; nothing calls back into it.
+
+```lisp
+(ui-open "Counter")
+(define n 0)
+(define (draw)
+  (ui-begin)
+  (ui-label 16 12 (string-append "Count: " (number->string n)) #t)
+  (ui-button 1 "Add one" 16 40 120 28)
+  (ui-end))
+(draw)
+(let loop ((ev (ui-event)))
+  (cond ((null? ev) (ui-close))                       ; Ctrl-C
+        ((eq? (car ev) 'close) #t)                    ; the close box
+        ((eq? (ui-hit ev) 1) (set! n (+ n 1)) (draw) (loop (ui-event)))
+        (else (loop (ui-event)))))
+```
+
+Positions and sizes are in **points**: one pixel on most panels, two on the Tab5's HiDPI one, so a layout fits every board. `(ui-size)` is the window's content in points.
+
+* `(ui-open title)`, `(ui-close)`, `(ui-size)` -> `(w h)` or `#f`. One window per board; opening it again focuses it and starts a new picture.
+* `(ui-begin)` ... `(ui-end)`: the picture, one call per widget, drawn in that order. `(ui-end)` is `#f` when no window is open or the picture did not fit (about 6 KB of widgets).
+* Widgets (an `id` is a number above 0, which events name):
+  * `(ui-label x y text [bold] [muted])`, `(ui-section title x y w)`, `(ui-fill x y w h [gray])` (0 ink .. 255 white)
+  * `(ui-button id label x y w h [active])`, `(ui-card id title subtitle x y w h [active])`
+  * `(ui-checkbox id label checked x y w h)`, `(ui-toggle id label on x y w h)`
+  * `(ui-slider id value min max x y w h)`, `(ui-progress permille x y w h)`
+  * `(ui-stepper dec-id inc-id label value x y w h)`: `-` and `+` are two ids
+  * `(ui-segmented base-id labels selected x y w h)`, `(ui-tabs base-id labels selected x y w h)`: part i is `base-id + i`
+  * `(ui-list id items selected x y w h)`: a scrolling list; a pick names its row as the event's index
+  * `(ui-textfield id x y w h)`: a one-line field whose text the window keeps -- `(ui-text id)`, `(ui-text-set! id text)`. It takes the keyboard when it has the focus (the on-screen keyboard on a touch panel without one); Cmd+C/X/V and a long press work as everywhere.
+  * `(ui-dialog base-id title message buttons)`: modal, over the rest; button i is `base-id + i`
+  * `(ui-disable [parts])`: the next widget is dimmed (bit i its i-th part: a stepper's `-` is 1, its `+` 2)
+* `(ui-event [ms])` -> an event, or `'()` when none came within `ms` (absent: wait for one; `0`: just look), on Ctrl-C, or once the window is closed and nothing is left to read. An event is a list `(type id index value x y)`:
+  * `press`: a widget tapped, clicked, or activated with Enter or Space (`index`: a list's row, a segment)
+  * `change`: a slider moved (`value`), a text field edited; `submit` / `cancel`: Enter / Esc in a text field
+  * `context`: a long press or a right click (`x y` in points); `tap`: a tap on no widget
+  * `key`: a key no widget took (`value` the key: 113 is `q`; `index` the modifiers)
+  * `resize`: the window changed size -- draw again; `close`: it was closed
+* `(ui-hit ev)` -> the widget's id for `press`, `change`, `submit`, `cancel` and `context`; `#f` otherwise.
+
+Pressing, hovering, the keyboard's focus (Tab, Shift+Tab, arrows), a text field's editing and a list's scrolling happen in the window without the program. The shell's `ui` command shows the window and where each widget is; `key` and `ms` drive it from the serial console.
+
 ### Privileged Primitives
 `poke`, `net-config`, `net-identity` (with a name: renaming), `identity-name`, `identity-provision`, `identity-key`, `peers-add`, `peers-remove` and `wlan-set` change keys, identity, network configuration or memory. They work from the console and from scripts. Evaluated for an `ea` tool call they refuse and return `#f`, and file writes under any `system/etc/` directory fail there too (`kernel/include/kernel/privilege.h`).
 

@@ -800,6 +800,8 @@ set(SOURCES
     drivers/uxbench.c
     # `viewtest`: a view of its own type, for the view framework's tests.
     drivers/viewtest.c
+    # `ui-` windows for Lisp programs (76.2): a view whose picture Lisp describes.
+    drivers/lispui_view.c
     drivers/ribbon.c
     # the same screen in RAM, for Lisp's canvas where there is no panel.
     drivers/ramscreen.c

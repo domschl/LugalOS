@@ -209,6 +209,14 @@ void console_set_title(const char *title);
  * `reply` holds SCREEN_REPLY_LEN bytes. False when there is no canvas at
  * all; the reply's own status says whether this request was refused. */
 bool console_canvas(const uint8_t *req, uint32_t n, uint8_t *reply);
+/* View `type`'s window on slot `inst` closed by its own program; its view
+ * is told (WIN_EV_CLOSE_REQUEST) as for a close box. False when there is no
+ * such window, or it is the last one. */
+bool console_close_view(uint8_t type, uint8_t inst);
+/* A key (kernel/keyseq.h's codes) for the focused view, as a local keyboard
+ * would send it -- `key` in the shell, for boards and QEMU without one.
+ * False when no view has the focus. */
+bool console_view_key(uint32_t key, uint8_t mods);
 void console_set_active_win_type(uint8_t type);
 uint8_t console_active_win_type(void);
 void console_sync_readers(void);

@@ -46,6 +46,7 @@ DEFAULT_BUILD = REPO_ROOT / "build" / "visionfive2"
 sys.path.insert(0, str(REPO_ROOT / "host" / "p9lib" / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import longnames  # noqa: E402
+import hello_ugui  # noqa: E402
 import p9lib  # noqa: E402
 
 
@@ -351,13 +352,9 @@ def test_nvme_filesystem_and_cas(ser: serial.Serial) -> tuple[str, bool, str]:
     return (name, True, "NVMe R/W verified, Lisp script loaded and evaluated from /nvme0/")
 
 
-def test_long_names(ser: serial.Serial, root: str) -> tuple[str, bool, str]:
-    """76.1: long file names on `root`, over 9P (UART0 with p9share, the way
-    `p9sync.py --vf2` goes) and on the console (`ls`, `mv`, `fsck`)."""
-    name = f"Long file names on {root}: 9P, ls, mv, fsck (76.1)"
-    if f"{root}/" not in run_cmd(ser, "df", timeout_s=20.0):
-        return (name, True, f"SKIPPED: {root} is not mounted")
-
+def _io(ser: serial.Serial):
+    """(with_9p, console) for longnames.py and hello_ugui.py: 9P on UART0
+    with p9share (the way `p9sync.py --vf2` goes), so only inside with_9p."""
     def console(line: str) -> str:
         return run_cmd(ser, line, timeout_s=120.0)
 
@@ -382,8 +379,29 @@ def test_long_names(ser: serial.Serial, root: str) -> tuple[str, bool, str]:
             time.sleep(0.3)
             run_cmd(ser, "p9share off", timeout_s=15.0)
 
+    return with_9p, console
+
+
+def test_long_names(ser: serial.Serial, root: str) -> tuple[str, bool, str]:
+    """76.1: long file names on `root`, over 9P (UART0 with p9share, the way
+    `p9sync.py --vf2` goes) and on the console (`ls`, `mv`, `fsck`)."""
+    name = f"Long file names on {root}: 9P, ls, mv, fsck (76.1)"
+    if f"{root}/" not in run_cmd(ser, "df", timeout_s=20.0):
+        return (name, True, f"SKIPPED: {root} is not mounted")
     try:
-        ok, detail = longnames.check(with_9p, console, root)
+        ok, detail = longnames.check(*_io(ser), root)
+        return (name, ok, detail)
+    except Exception as e:
+        return (name, False, f"{type(e).__name__}: {e}")
+
+
+def test_hello_ugui(ser: serial.Serial) -> tuple[str, bool, str]:
+    """76.2: the `ui-` sample in a window of its own on the HDMI desktop,
+    driven by the mouse (through the cursor) and keys at the places it
+    reports. See hello_ugui.py."""
+    name = "A Lisp program's own window: mouse, keys (76.2 hello_ugui)"
+    try:
+        ok, detail = hello_ugui.check(*_io(ser))
         return (name, ok, detail)
     except Exception as e:
         return (name, False, f"{type(e).__name__}: {e}")
@@ -552,6 +570,7 @@ def main() -> int:
             ("test_hdmi_phy_and_edid", lambda: test_hdmi_phy_and_edid(ser, boot_log)),
             ("test_dc8200_display_controller", lambda: test_dc8200_display_controller(ser)),
             ("test_cursor_engine_and_injection", lambda: test_cursor_engine_and_injection(ser)),
+            ("test_hello_ugui", lambda: test_hello_ugui(ser)),
             ("test_ribbon_workstation_composition", lambda: test_ribbon_workstation_composition(ser)),
             ("test_stress", lambda: test_stress(ser)),
             ("test_pmic_cold_reboot", lambda: test_pmic_cold_reboot(ser)),

@@ -40,6 +40,7 @@
 #include "drivers/sensor_hub.h"
 #include <limits.h>
 #include "kernel/identity.h"
+#include "drivers/lispui.h"
 #include "kernel/boardinfo.h"
 #include "kernel/sha256.h"
 #include "kernel/klog.h"
@@ -5654,6 +5655,290 @@ static lisp_val_t *prim_cp(lisp_val_t *args, lisp_val_t *env) {
     const char *dst = get_str_val(a2);
     return (vfs_cp(src, dst) == 0) ? &true_val : &false_val;
 }
+
+#if defined(LISPUI_PRESENT)
+/* --- `ui-`: ugui for Lisp programs (76.2, drivers/lispui.h) -----------------
+ * A program opens a window, describes its picture between (ui-begin) and
+ * (ui-end) -- one call per widget, positions and sizes in points -- and reads
+ * what happened with (ui-event). The window keeps the last picture: presses,
+ * hover, the keyboard's focus, text fields and list scrolling need nothing
+ * from the program. Events are lists (type id index value x y). */
+
+static bool ui_flag(lisp_val_t *args, int n) {
+    lisp_val_t *v = lisp_list_ref(args, n);
+    return v && lisp_truthy(v);
+}
+
+/* `count` numbers from args[from..], 0 for each that is missing. */
+static void ui_nums(lisp_val_t *args, int from, int count, int32_t *out) {
+    for (int i = 0; i < count; i++) out[i] = (int32_t)arg_int(args, from + i, 0);
+}
+
+/* The strings of a Lisp list, at most LISPUI_MAX_STRS. */
+static int ui_strs(lisp_val_t *list, const char **out) {
+    int n = 0;
+    for (lisp_val_t *c = list; c && c->type == LISP_PAIR && n < LISPUI_MAX_STRS; c = c->u.pair.cdr)
+        out[n++] = get_str_val(c->u.pair.car);
+    return n;
+}
+
+static lisp_val_t *ui_result(bool ok) { return ok ? &true_val : &false_val; }
+
+/* (ui-open title) */
+static lisp_val_t *prim_ui_open(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    return ui_result(lispui_open(get_str_val(lisp_list_ref(args, 0))));
+}
+
+/* (ui-close) */
+static lisp_val_t *prim_ui_close(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    lispui_close();
+    return &true_val;
+}
+
+/* (ui-size) -> (w h) in points, #f when no window is open */
+static lisp_val_t *prim_ui_size(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    int w = 0, h = 0;
+    if (!lispui_size(&w, &h)) return &false_val;
+    return make_pair(make_int(w), make_pair(make_int(h), &nil_val));
+}
+
+/* (ui-begin) */
+static lisp_val_t *prim_ui_begin(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    lispui_begin();
+    return &true_val;
+}
+
+/* (ui-end) -> #t, #f when no window is open or the picture did not fit */
+static lisp_val_t *prim_ui_end(lisp_val_t *args, lisp_val_t *env) {
+    (void)args; (void)env;
+    return ui_result(lispui_end());
+}
+
+/* (ui-fill x y w h [gray]) -- gray 0 (ink) .. 255 (white), white by default */
+static lisp_val_t *prim_ui_fill(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    int32_t n[5];
+    ui_nums(args, 0, 4, n);
+    n[4] = (int32_t)arg_int(args, 4, 255);
+    return ui_result(lispui_add(LISPUI_OP_FILL, n, 5, NULL, 0));
+}
+
+/* (ui-label x y text [bold] [muted]) */
+static lisp_val_t *prim_ui_label(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    int32_t n[4];
+    ui_nums(args, 0, 2, n);
+    n[2] = ui_flag(args, 3);
+    n[3] = ui_flag(args, 4);
+    const char *s[1] = { get_str_val(lisp_list_ref(args, 2)) };
+    return ui_result(lispui_add(LISPUI_OP_LABEL, n, 4, s, 1));
+}
+
+/* (ui-button id label x y w h [active]) */
+static lisp_val_t *prim_ui_button(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    int32_t n[6];
+    n[0] = (int32_t)arg_int(args, 0, 0);
+    ui_nums(args, 2, 4, n + 1);
+    n[5] = ui_flag(args, 6);
+    const char *s[1] = { get_str_val(lisp_list_ref(args, 1)) };
+    return ui_result(lispui_add(LISPUI_OP_BUTTON, n, 6, s, 1));
+}
+
+/* (ui-card id title subtitle x y w h [active]) */
+static lisp_val_t *prim_ui_card(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    int32_t n[6];
+    n[0] = (int32_t)arg_int(args, 0, 0);
+    ui_nums(args, 3, 4, n + 1);
+    n[5] = ui_flag(args, 7);
+    const char *s[2] = { get_str_val(lisp_list_ref(args, 1)), get_str_val(lisp_list_ref(args, 2)) };
+    return ui_result(lispui_add(LISPUI_OP_CARD, n, 6, s, 2));
+}
+
+/* (ui-checkbox id label checked x y w h), (ui-toggle id label on x y w h) */
+static lisp_val_t *ui_check_like(lispui_op_t op, lisp_val_t *args) {
+    int32_t n[6];
+    n[0] = (int32_t)arg_int(args, 0, 0);
+    ui_nums(args, 3, 4, n + 1);
+    n[5] = ui_flag(args, 2);
+    const char *s[1] = { get_str_val(lisp_list_ref(args, 1)) };
+    return ui_result(lispui_add(op, n, 6, s, 1));
+}
+
+static lisp_val_t *prim_ui_checkbox(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    return ui_check_like(LISPUI_OP_CHECKBOX, args);
+}
+
+static lisp_val_t *prim_ui_toggle(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    return ui_check_like(LISPUI_OP_TOGGLE, args);
+}
+
+/* (ui-slider id value min max x y w h) */
+static lisp_val_t *prim_ui_slider(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    int32_t n[8];
+    n[0] = (int32_t)arg_int(args, 0, 0);
+    ui_nums(args, 4, 4, n + 1);
+    n[5] = (int32_t)arg_int(args, 1, 0);
+    n[6] = (int32_t)arg_int(args, 2, 0);
+    n[7] = (int32_t)arg_int(args, 3, 100);
+    return ui_result(lispui_add(LISPUI_OP_SLIDER, n, 8, NULL, 0));
+}
+
+/* (ui-progress permille x y w h) */
+static lisp_val_t *prim_ui_progress(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    int32_t n[5];
+    ui_nums(args, 1, 4, n);
+    n[4] = (int32_t)arg_int(args, 0, 0);
+    return ui_result(lispui_add(LISPUI_OP_PROGRESS, n, 5, NULL, 0));
+}
+
+/* (ui-stepper dec-id inc-id label value x y w h) -- value a string or a number */
+static lisp_val_t *prim_ui_stepper(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    int32_t n[6];
+    n[0] = (int32_t)arg_int(args, 0, 0);
+    n[1] = (int32_t)arg_int(args, 1, 0);
+    ui_nums(args, 4, 4, n + 2);
+    char num[24];
+    lisp_val_t *v = lisp_list_ref(args, 3);
+    const char *value = get_str_val(v);
+    if (v && v->type == LISP_INT) {
+        ksnprintf(num, sizeof num, "%ld", (long)v->u.i);
+        value = num;
+    }
+    const char *s[2] = { get_str_val(lisp_list_ref(args, 2)), value };
+    return ui_result(lispui_add(LISPUI_OP_STEPPER, n, 6, s, 2));
+}
+
+/* (ui-segmented base-id labels selected x y w h), (ui-tabs ...) the same,
+ * (ui-list id items selected x y w h): labels and items, lists of strings. */
+static lisp_val_t *ui_choice(lispui_op_t op, lisp_val_t *args) {
+    int32_t n[6];
+    n[0] = (int32_t)arg_int(args, 0, 0);
+    ui_nums(args, 3, 4, n + 1);
+    n[5] = (int32_t)arg_int(args, 2, -1);
+    const char *s[LISPUI_MAX_STRS];
+    int ns = ui_strs(lisp_list_ref(args, 1), s);
+    return ui_result(lispui_add(op, n, 6, s, ns));
+}
+
+static lisp_val_t *prim_ui_segmented(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    return ui_choice(LISPUI_OP_SEGMENTED, args);
+}
+
+static lisp_val_t *prim_ui_tabs(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    return ui_choice(LISPUI_OP_TABS, args);
+}
+
+static lisp_val_t *prim_ui_list(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    return ui_choice(LISPUI_OP_LIST, args);
+}
+
+/* (ui-textfield id x y w h) -- its text is the window's: (ui-text id) */
+static lisp_val_t *prim_ui_textfield(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    int32_t n[5];
+    ui_nums(args, 0, 5, n);
+    return ui_result(lispui_add(LISPUI_OP_TEXTFIELD, n, 5, NULL, 0));
+}
+
+/* (ui-section title x y w) */
+static lisp_val_t *prim_ui_section(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    int32_t n[3];
+    ui_nums(args, 1, 3, n);
+    const char *s[1] = { get_str_val(lisp_list_ref(args, 0)) };
+    return ui_result(lispui_add(LISPUI_OP_SECTION, n, 3, s, 1));
+}
+
+/* (ui-disable [parts]) -- the next widget dimmed: bit i its i-th part (1: all of a button) */
+static lisp_val_t *prim_ui_disable(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    int32_t n[1] = { (int32_t)arg_int(args, 0, 1) };
+    return ui_result(lispui_add(LISPUI_OP_DISABLE, n, 1, NULL, 0));
+}
+
+/* (ui-dialog base-id title message buttons) -- modal; button i is base-id + i */
+static lisp_val_t *prim_ui_dialog(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    int32_t n[1] = { (int32_t)arg_int(args, 0, 0) };
+    const char *s[LISPUI_MAX_STRS];
+    s[0] = get_str_val(lisp_list_ref(args, 1));
+    s[1] = get_str_val(lisp_list_ref(args, 2));
+    int ns = 2;
+    for (lisp_val_t *c = lisp_list_ref(args, 3); c && c->type == LISP_PAIR && ns < LISPUI_MAX_STRS; c = c->u.pair.cdr)
+        s[ns++] = get_str_val(c->u.pair.car);
+    return ui_result(lispui_add(LISPUI_OP_DIALOG, n, 1, s, ns));
+}
+
+static const char *const k_ui_ev_names[] = {
+    "none", "press", "change", "submit", "cancel", "context", "tap", "key", "resize", "close",
+};
+
+/* (ui-event [ms]) -> (type id index value x y), or '() when nothing came
+ * within ms (absent: wait until something does; 0: just look). Ctrl-C ends
+ * the wait; so does a closed window with nothing left to read. */
+static lisp_val_t *prim_ui_event(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a0 = lisp_list_ref(args, 0);
+    long ms = (a0 && a0->type == LISP_INT) ? a0->u.i : -1;
+    uint64_t deadline = time_get_ms() + (uint64_t)(ms > 0 ? ms : 0);
+    lispui_ev_t ev;
+    for (;;) {
+        if (lispui_next_event(&ev)) break;
+        if (ms == 0 || !lispui_is_open() || lisp_interrupted || lisp_poll_interrupt()) return &nil_val;
+        if (ms > 0 && time_get_ms() >= deadline) return &nil_val;
+        task_sleep_ms(10);
+    }
+    const char *name = ev.type < sizeof k_ui_ev_names / sizeof k_ui_ev_names[0] ? k_ui_ev_names[ev.type] : "none";
+    lisp_val_t *tail = make_pair(make_int(ev.x), make_pair(make_int(ev.y), &nil_val));
+    tail = make_pair(make_int(ev.value), tail);
+    tail = make_pair(make_int(ev.index), tail);
+    tail = make_pair(make_int(ev.id), tail);
+    return make_pair(make_sym(name), tail);
+}
+
+/* (ui-hit ev) -> the widget's id for a press, change, submit, cancel or
+ * context event; #f otherwise */
+static lisp_val_t *prim_ui_hit(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *ev = lisp_list_ref(args, 0);
+    if (!ev || ev->type != LISP_PAIR) return &false_val;
+    const char *type = get_str_val(ev->u.pair.car);
+    lisp_val_t *id = lisp_list_ref(ev, 1);
+    if (!id || id->type != LISP_INT || id->u.i == 0) return &false_val;
+    if (streq(type, "press") || streq(type, "change") || streq(type, "submit") || streq(type, "cancel") ||
+        streq(type, "context"))
+        return id;
+    return &false_val;
+}
+
+/* (ui-text id) -> the text field's text */
+static lisp_val_t *prim_ui_text(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    char buf[LISPUI_TEXT_MAX];
+    lispui_text_get((uint16_t)arg_int(args, 0, 0), buf, sizeof buf);
+    return make_str(buf);
+}
+
+/* (ui-text-set! id text) */
+static lisp_val_t *prim_ui_text_set(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    return ui_result(lispui_text_set((uint16_t)arg_int(args, 0, 0), get_str_val(lisp_list_ref(args, 1))));
+}
+#endif
 
 /* (mv from to): rename or move within one volume. */
 static lisp_val_t *prim_mv(lisp_val_t *args, lisp_val_t *env) {

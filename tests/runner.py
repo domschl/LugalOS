@@ -3734,6 +3734,53 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
                 break
         results.append(("A New View Needs Nothing In The Screen Or Compositor (71.4 viewtest)", vt_ok, vt_log))
 
+        # 76.2: a Lisp program's own window (`ui-`), the sample app driven
+        # through the real input paths: the mouse (`ms`) at the places the
+        # window reports (`ui`), and keys (`key`) for the focused view. The
+        # program hears them between two of its calls ((hu-pump)), which is
+        # how the suite gets a word in while it runs.
+        def ui_hits(text: str) -> dict[str, tuple[int, int, int, int]]:
+            return {m.group(1): (int(m.group(2)), int(m.group(3)), int(m.group(4)), int(m.group(5)))
+                    for m in re.finditer(r"hit (\d+\.\d+) at (-?\d+) (-?\d+) size (\d+) (\d+)", text)}
+
+        def centre(h: tuple[int, int, int, int], fx: float = 0.5) -> str:
+            return f"{h[0] + int(h[2] * fx)} {h[1] + h[3] // 2}"
+
+        ui_ok, ui_log = True, ""
+        ok, log = session.send_and_expect('(load "/sd0/demos/hello_ugui.lisp")', r"=> #t", timeout=8.0)
+        ok2, log2 = session.send_and_expect("(hu-start)", r"=> #t", timeout=8.0)
+        ok3, report = session.send_and_expect("ui", r"ui: open[^\n]*\n(  [^\n]*\n)+", timeout=8.0)
+        hits = ui_hits(report)
+        need = ["1.0", "2.0", "4.0", "5.0", "7.0", "8.2", "9.0"]
+        if not (ok and ok2 and ok3) or any(k not in hits for k in need):
+            ui_ok, ui_log = False, f"the sample did not open, or its widgets are missing:\n{log}{log2}{report}"
+        else:
+            steps = [(f"ms click {centre(hits['1.0'])}", r"ms: left click"),     # Count, twice
+                     (f"ms click {centre(hits['1.0'])}", r"ms: left click"),
+                     (f"ms click {centre(hits['4.0'], 0.75)}", r"ms: left click"),  # the slider, three quarters
+                     (f"ms click {centre(hits['5.0'])}", r"ms: left click"),     # Size -
+                     (f"ms click {centre(hits['8.2'])}", r"ms: left click"),     # Cherry
+                     (f"ms click {centre(hits['7.0'])}", r"ms: left click"),     # the name field
+                     ('key "Ada" enter', r"key: 4 sent"),
+                     ("(hu-pump)", r"=> #t"),
+                     ("(hu-state)", r'"count=2 show=yes fast=no level=7\d size=2 picked=Cherry greeting=Hello, Ada!"'),
+                     ("key tab tab tab enter", r"key: 4 sent"),                  # by keys: on to the list, its first row
+                     ("(hu-pump)", r"=> #t"),
+                     ("(hu-state)", r"picked=Apple"),
+                     (f"ms click {centre(hits['2.0'])}", r"ms: left click"),     # the list hidden
+                     ("(hu-pump)", r"=> #t"),
+                     ("ui", r"ui: open[^\n]*\n"),
+                     ("key q", r"key: 1 sent"),
+                     ("(hu-pump)", r"=> #f"),
+                     ("ui", r"ui: closed"),
+                     ("ribbon", r"Ribbon Status: 1 windows")]
+            for cmd, pat in steps:
+                ok, log = session.send_and_expect(cmd, pat, timeout=10.0)
+                if not ok or (cmd == "ui" and "hit 8." in log and "closed" not in log):
+                    ui_ok, ui_log = False, f"{cmd!r} did not give {pat!r} (or the hidden list is still there):\n{log}"
+                    break
+        results.append(("A Lisp Program's Own Window: Mouse, Keys, Text, List (76.2 ui-, hello_ugui)", ui_ok, ui_log))
+
 
         # 37.5b: the editor. Its own selftest (wrapping, movement over wrapped
         # rows and UTF-8, undo, search, the safe save), then the real thing

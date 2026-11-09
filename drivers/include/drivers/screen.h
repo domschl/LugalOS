@@ -268,6 +268,9 @@ void screen_text_size(const screen_t *scr, unsigned *cols, unsigned *rows);
  *                                       none does ([1] 1 if that changed);
  *                                       'r': the pressed key's repeat code
  *                                       ([6..7], [8] 0xBB), if it repeats
+ *   'u' u8 type u8 slot                 view `type`'s window on reader slot
+ *                                       `slot` closed by its program; the
+ *                                       reply as 'C''s
  *   'W' u8 slot                         a reader's or the launcher's backing
  *                                       changed: copied into its tile only
  *                                       (refused when no such window)

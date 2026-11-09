@@ -528,6 +528,14 @@ static void view_send(const view_ops_t *v, uint8_t inst, uint8_t type, uint8_t f
     view_post(v, inst, &ev);                             /* the views task draws it */
 }
 
+bool console_view_key(uint32_t key, uint8_t mods) {
+    uint8_t inst = 0;
+    const view_ops_t *v = focused_view(&inst);
+    if (!v) return false;
+    view_send(v, inst, WIN_EV_KEY_DOWN, 0, 0, 0, 0, key, mods);
+    return true;
+}
+
 /* guarded by: g_input_lock -- the console pump decodes the focused view's
  * keys with it. */
 static keyseq_push_t g_view_keys;
@@ -1086,6 +1094,13 @@ static void window_closed(const uint8_t *reply) {
     }
     vterm_set_active(reply[1]);
     console_sync_readers();
+}
+
+bool console_close_view(uint8_t type, uint8_t inst) {
+    uint8_t req[3] = { 'u', type, inst }, reply[SCREEN_REPLY_LEN];
+    if (!console_canvas(req, 3, reply) || reply[0] != 0) return false;
+    window_closed(reply);
+    return true;
 }
 
 bool console_close_canvas(uint8_t cid, bool free_it) {

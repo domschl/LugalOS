@@ -1,6 +1,7 @@
 {
   "bulk_per_file": {
     "drivers/launcher_view.c": 22424,
+    "drivers/lispui_view.c": 15856,
     "drivers/reader_view.c": 62432,
     "drivers/view.c": 704,
     "drivers/viewtest.c": 1892,
@@ -17,12 +18,12 @@
     "app:moonbase": 73888,
     "chess": 1852,
     "display": 84856,
-    "drivers": 2596,
+    "drivers": 18452,
     "kernel": 32768,
     "lisp": 1532288,
     "selftest": 64
   },
-  "bulk_total": 1760208,
+  "bulk_total": 1776064,
   "heap_bytes": 380928,
   "heap_pages": 93,
   "per_file": {

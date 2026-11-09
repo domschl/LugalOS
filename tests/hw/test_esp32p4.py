@@ -65,6 +65,7 @@ from p9lib import connect_tcp  # noqa: E402
 sys.path.insert(0, str(REPO_ROOT / "tests"))
 from mqttbroker import MqttBroker  # noqa: E402
 import longnames  # noqa: E402
+import hello_ugui  # noqa: E402
 
 # The port the test broker listens on: the board connects to this host, so it is the one
 # inbound port a test machine needs open (doc/dev/testing.md).
@@ -1401,13 +1402,9 @@ def test_sd0_mounted(b: Board) -> tuple[str, bool, str]:
     return name, True, line[0].strip()
 
 
-def test_long_names(b: Board) -> tuple[str, bool, str]:
-    """76.1: long file names on /sd0, over 9P (the shared wire p9sync.py
-    uses) and on the console (`ls`, `mv`, `fsck`). See longnames.py."""
-    name = "Long file names on /sd0: 9P, ls, mv, fsck (76.1)"
-    if _sd_absent(b):
-        return name, True, "SKIPPED (no SD card in the slot)"
-
+def _io(b: Board):
+    """(with_9p, console) for longnames.py and hello_ugui.py: 9P on the
+    console's own wire (p9share), so only inside with_9p."""
     def console(line: str) -> str:
         return b.console_session.cmd(line, deadline=60.0)
 
@@ -1434,8 +1431,30 @@ def test_long_names(b: Board) -> tuple[str, bool, str]:
             b.console_session = Console(b.console)
             b.console_session.cmd("p9share off", deadline=10.0)
 
+    return with_9p, console
+
+
+def test_long_names(b: Board) -> tuple[str, bool, str]:
+    """76.1: long file names on /sd0, over 9P (the shared wire p9sync.py
+    uses) and on the console (`ls`, `mv`, `fsck`). See longnames.py."""
+    name = "Long file names on /sd0: 9P, ls, mv, fsck (76.1)"
+    if _sd_absent(b):
+        return name, True, "SKIPPED (no SD card in the slot)"
     try:
-        ok, detail = longnames.check(with_9p, console)
+        ok, detail = longnames.check(*_io(b))
+        return name, ok, detail
+    except Exception as e:
+        return name, False, f"{type(e).__name__}: {e}"
+
+
+def test_hello_ugui(b: Board) -> tuple[str, bool, str]:
+    """76.2: the `ui-` sample in a window of its own, driven by the mouse,
+    a finger and keys at the places it reports. See hello_ugui.py."""
+    name = "A Lisp program's own window: mouse, touch, keys (76.2 hello_ugui)"
+    if _sd_absent(b):
+        return name, True, "SKIPPED (no SD card in the slot)"
+    try:
+        ok, detail = hello_ugui.check(*_io(b))
         return name, ok, detail
     except Exception as e:
         return name, False, f"{type(e).__name__}: {e}"
@@ -2328,6 +2347,7 @@ TESTS = [
     test_sd_bus_is_four_bit,
     test_sd0_mounted,
     test_long_names,
+    test_hello_ugui,
     test_sd_goes_through_the_task,
     test_sd_write_survives_reboot,
     test_psram_up,

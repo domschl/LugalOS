@@ -33,6 +33,7 @@ import serial
 
 import rp2350
 import longnames
+import hello_ugui
 import p9lib  # via rp2350.py's sys.path insert
 
 REPO_ROOT = rp2350.REPO_ROOT
@@ -199,13 +200,9 @@ def test_user_elf(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         return (name, False, str(e))
 
 
-def test_long_names(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
-    """76.1: long file names on /sd0, over 9P (ACM1, the path p9sync.py
-    takes) and on the console (`ls`, `mv`, `fsck`). See longnames.py."""
-    name = "Long file names on /sd0: 9P, ls, mv, fsck (76.1)"
-    if not rp2350.sd_mounted(ports.console):
-        return (name, True, "SKIPPED: /sd0 is not mounted")
-
+def _io(ports: rp2350.Rp2350Ports):
+    """(with_9p, console) for longnames.py and hello_ugui.py: 9P on ACM1,
+    one shell line on ACM0 read until its prompt comes back."""
     def console(line: str) -> str:
         with serial.Serial(ports.console, 115200, timeout=2) as ser:
             ser.dtr = True
@@ -234,8 +231,33 @@ def test_long_names(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
             with p9lib.Session(client, aname="/") as sess:
                 return fn(sess)
 
+    return with_9p, console
+
+
+def test_long_names(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """76.1: long file names on /sd0, over 9P (ACM1, the path p9sync.py
+    takes) and on the console (`ls`, `mv`, `fsck`). See longnames.py."""
+    name = "Long file names on /sd0: 9P, ls, mv, fsck (76.1)"
+    if not rp2350.sd_mounted(ports.console):
+        return (name, True, "SKIPPED: /sd0 is not mounted")
     try:
-        ok, detail = longnames.check(with_9p, console)
+        ok, detail = longnames.check(*_io(ports))
+        return (name, ok, detail)
+    except Exception as e:
+        return (name, False, f"{type(e).__name__}: {e}")
+
+
+def test_hello_ugui(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """76.2: the `ui-` sample in a window of its own, driven by the mouse,
+    a finger and keys at the places it reports. See hello_ugui.py."""
+    name = "A Lisp program's own window: mouse, touch, keys (76.2 hello_ugui)"
+    if not rp2350.sd_mounted(ports.console):
+        return (name, True, "SKIPPED: /sd0 is not mounted")
+    with_9p, console = _io(ports)
+    if "no views" in console("ui"):
+        return (name, True, "SKIPPED: no screen on this persona")
+    try:
+        ok, detail = hello_ugui.check(with_9p, console)
         return (name, ok, detail)
     except Exception as e:
         return (name, False, f"{type(e).__name__}: {e}")
@@ -2429,7 +2451,7 @@ def main() -> int:
     # umode_isolation/test_user_elf/test_process_abi each load their own
     # program before that point too); a heap-budget re-analysis is tracked as
     # M5 follow-up work rather than fixed here.
-    tests = [test_firmware_freshness, test_pmp_probe, test_flash_path_restores_qspi, test_psram, dev_only(test_bulk_zone), dev_only(test_ram0_in_psram), dev_only(test_editor_in_psram), test_canvas_store, test_lcd_terminal_status, test_chess_hot_path, dev_only(test_priostress), test_uart_task, test_blk_task, test_long_names, test_i2c_task, test_st7735_task, test_tm1638_task, test_heap_on_demand, dev_only(test_umode_isolation), test_user_elf, test_usb_cdc_net_link, test_usb_cdc_net_resync, test_uart_demux_shared_wire, test_i2c_repeated_start]
+    tests = [test_firmware_freshness, test_pmp_probe, test_flash_path_restores_qspi, test_psram, dev_only(test_bulk_zone), dev_only(test_ram0_in_psram), dev_only(test_editor_in_psram), test_canvas_store, test_lcd_terminal_status, test_chess_hot_path, dev_only(test_priostress), test_uart_task, test_blk_task, test_long_names, test_hello_ugui, test_i2c_task, test_st7735_task, test_tm1638_task, test_heap_on_demand, dev_only(test_umode_isolation), test_user_elf, test_usb_cdc_net_link, test_usb_cdc_net_resync, test_uart_demux_shared_wire, test_i2c_repeated_start]
     if not args.skip_qemu_bridge:
         tests.append(test_qemu_bridge)
     tests.append(test_process_abi)

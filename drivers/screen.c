@@ -2836,6 +2836,14 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
     } else if (op == 'C') {
         /* Close active window (Cmd+W) */
         status = close_window(scr, scr->ribbon.active_idx, reply) ? 0 : 1;
+    } else if (op == 'u') {
+        /* 'u' type slot: view `type`'s window on reader slot `slot`, closed
+         * by its own program (a Lisp program's `ui-close`). */
+        int idx = -1;
+        for (uint8_t i = 0; n >= 3 && i < scr->ribbon.count && idx < 0; i++)
+            if (scr->ribbon.wins[i].type == req[1] && scr->ribbon.wins[i].vterm_id == req[2]) idx = i;
+        status = (idx >= 0 && ribbon_is_view(req[1]) && close_window_ex(scr, (uint8_t)idx, reply, true, false)) ? 0 : 1;
+        if (status == 0) reply[8] = 0xCC;
     } else if (op == 'Q') {
         /* close terminal `vid`'s window -- its vterm is gone
          * (vterm_destroy()), however it went: `exit`, `vterm close`. */
@@ -3127,7 +3135,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
     reply[6] = (uint8_t)scr->damage; reply[7] = (uint8_t)(scr->damage >> 8);
     /* A close's answer keeps its marker in [8] (0xCC closed, 0xCE its program
      * asked) and which window in [10..11]. */
-    bool closing = (op == 'C' || op == 'q') && (reply[8] == 0xCC || reply[8] == 0xCE);
+    bool closing = (op == 'C' || op == 'q' || op == 'u') && (reply[8] == 0xCC || reply[8] == 0xCE);
     if (!closing) reply[8] = scr->layout;
     reply[9] = scr->swapped;
     if (op != 'C' && !closing) {

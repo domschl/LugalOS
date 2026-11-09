@@ -14,6 +14,10 @@
 
 extern const view_ops_t g_reader_view;
 extern const view_ops_t g_launcher_view;
+#include "drivers/lispui.h"
+#if defined(LISPUI_PRESENT)
+extern const view_ops_t g_lispui_view;
+#endif
 #if CONFIG_DEV && !(defined(CONFIG_BOARD_ESP32C6) || (defined(CONFIG_BOARD_RP2350) && !defined(CONFIG_LCD_PCLK_GPIO)))
 #include "drivers/viewtest.h"
 #define VIEWTEST 1
@@ -25,6 +29,9 @@ const view_ops_t *view_for_window(uint8_t type) {
     case RIBBON_WIN_LAUNCHER: return &g_launcher_view;
 #if defined(VIEWTEST)
     case RIBBON_WIN_VIEWTEST: return &g_viewtest_view;
+#endif
+#if defined(LISPUI_PRESENT)
+    case RIBBON_WIN_LISPUI:   return &g_lispui_view;
 #endif
     default:                  return 0;
     }

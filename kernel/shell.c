@@ -81,6 +81,7 @@
 #include "kernel/event.h"
 #include "drivers/uxbench.h"
 #include "drivers/viewtest.h"
+#include "drivers/lispui.h"
 #include "drivers/dcf77_decode.h"
 #include "drivers/pico_clock_ui.h"
 #include "kernel/timezone.h"
@@ -6357,6 +6358,60 @@ static void cmd_ms(const char *args) {
 }
 #endif
 
+#if defined(LISPUI_PRESENT)
+/* `key NAME|TEXT ...`: keys for the focused view, as a local keyboard sends
+ * them -- for QEMU and boards with none. A name (tab, enter, esc, space, bs,
+ * del, left, right, up, down, home, end, pgup, pgdn), with any of the
+ * prefixes shift- ctrl- alt- cmd-; anything else is typed character by
+ * character ("a b" with its space). */
+static void cmd_key(const char *args) {
+    static const struct { const char *name; uint32_t key; } k_names[] = {
+        { "tab", '\t' }, { "enter", '\r' }, { "esc", 0x1b }, { "space", ' ' }, { "bs", 0x7f },
+        { "del", KEY_DELETE }, { "left", KEY_LEFT }, { "right", KEY_RIGHT }, { "up", KEY_UP },
+        { "down", KEY_DOWN }, { "home", KEY_HOME }, { "end", KEY_END }, { "pgup", KEY_PGUP }, { "pgdn", KEY_PGDN },
+    };
+    unsigned sent = 0;
+    const char *p = args;
+    for (;;) {
+        while (*p == ' ') p++;
+        if (!*p) break;
+        char tok[64];
+        unsigned n = 0;
+        if (*p == '"') {
+            p++;
+            while (*p && *p != '"' && n + 1 < sizeof tok) tok[n++] = *p++;
+            if (*p == '"') p++;
+            tok[n] = '\0';
+            for (unsigned i = 0; i < n; i++) sent += console_view_key((uint8_t)tok[i], 0) ? 1u : 0u;
+            continue;
+        }
+        while (*p && *p != ' ' && n + 1 < sizeof tok) tok[n++] = *p++;
+        tok[n] = '\0';
+        const char *name = tok;
+        uint8_t mods = 0;
+        for (bool more = true; more;) {
+            more = false;
+            if (strncmp(name, "shift-", 6) == 0) { mods |= KMOD_SHIFT; name += 6; more = true; }
+            else if (strncmp(name, "ctrl-", 5) == 0) { mods |= KMOD_CTRL; name += 5; more = true; }
+            else if (strncmp(name, "alt-", 4) == 0) { mods |= KMOD_ALT; name += 4; more = true; }
+            else if (strncmp(name, "cmd-", 4) == 0) { mods |= KMOD_SUPER; name += 4; more = true; }
+        }
+        uint32_t key = 0;
+        for (unsigned i = 0; i < sizeof k_names / sizeof k_names[0]; i++)
+            if (strcmp(name, k_names[i].name) == 0) key = k_names[i].key;
+        if (key) {
+            sent += console_view_key(key, mods) ? 1u : 0u;
+        } else if (name[0] && !name[1]) {
+            sent += console_view_key((uint8_t)name[0], mods) ? 1u : 0u;
+        } else {
+            for (const char *c = name; *c; c++) sent += console_view_key((uint8_t)*c, mods) ? 1u : 0u;
+        }
+    }
+    if (sent == 0) cprintf("key: no view has the focus (or nothing to send)\n");
+    else cprintf("key: %u sent\n", sent);
+}
+#endif
+
 #if defined(LCDTERM_PRESENT) || CONFIG_DEV
 /* `cursor [show | hide | speed PCT]`: the mouse cursor every screen draws --
  * where it is and whether it shows; shown or hidden now (a mouse's motion
@@ -7039,6 +7094,14 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         return;
     } else if (strcmp(cmd_line, "cursor") == 0 || strncmp(cmd_line, "cursor ", 7) == 0) {
         cmd_cursor(cmd_line + 6);
+        return;
+#endif
+#if defined(LISPUI_PRESENT)
+    } else if (strcmp(cmd_line, "key") == 0 || strncmp(cmd_line, "key ", 4) == 0) {
+        cmd_key(cmd_line + 3);
+        return;
+    } else if (strcmp(cmd_line, "ui") == 0) {
+        lispui_report();
         return;
 #endif
 #if defined(TOUCH_PRESENT)
