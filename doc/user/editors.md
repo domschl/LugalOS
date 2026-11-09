@@ -47,6 +47,26 @@ The editor dynamically allocates its text buffer from the physical page heap on 
 | `Enter` | Insert newline |
 | `Tab` | Insert spaces / tab indentation |
 
+`Ctrl+K` / `Ctrl+Y` and the Cmd keys below use the one system clipboard, shared with the line editor, Lisp, text fields and `/dev/clipboard`.
+
+#### The System's Cmd Keys
+`e` takes the shortcuts every LugalOS text field takes, beside its Emacs keys (`Cmd` is the keyboard's Super / Windows key, or the on-screen keyboard's Cmd):
+
+| Keybinding | Function |
+| :--- | :--- |
+| `Cmd+A` | Select all |
+| `Cmd+C` | Copy the selection |
+| `Cmd+X` | Cut the selection |
+| `Cmd+V` | Paste |
+| `Cmd+Z` | Undo |
+| `Cmd+F` / `Cmd+G` / `Shift+Cmd+G` | Find; find next; find previous |
+| `Cmd+R` or `Alt+Cmd+F` | Replace |
+| `Cmd+S` / `Shift+Cmd+S` | Save; save as |
+| `Cmd+O` | Open a file |
+| `Cmd+L` | Go to line |
+| `Cmd+E` | Evaluate (Lisp) |
+| `Cmd+Q` | Quit (asks if there are unsaved changes) |
+
 #### File Operations & Exit
 | Keybinding | Function |
 | :--- | :--- |

@@ -1645,7 +1645,6 @@ int editor_selftest(void) {
     st_check(&fails, "save: a failed write says so and keeps the buffer modified",
              fail && e->modified && e->len == 13 && strncmp(e->msg, "WRITE FAILED", 12) == 0);
 
-    ed_free(e);
     /* 38.7: the kept line counts against a count from scratch, asked about
      * in an order that walks the remembered spot forward, back, and through
      * changes before it, after it and across it. */
@@ -1664,6 +1663,36 @@ int editor_selftest(void) {
         if (k == 2) (void)ed_raw(e, 4, 8, "z", 1);            /* across it */
     }
     st_check(&fails, "line counts: kept through changes before, after and across the remembered spot", lc);
+
+    /* The system's Cmd keys beside the Emacs ones: Cmd+A selects all, Cmd+C
+     * copies, Cmd+X cuts, Cmd+V pastes, on the system clipboard -- put back
+     * after when it held little. Ctrl+Y still yanks from the same one. */
+    {
+        char saved[128];
+        uint32_t sn = 0;
+        const char *sd = clipboard_data(&sn);
+        bool keep = sd && sn <= sizeof saved;
+        if (keep) memcpy(saved, sd, sn);
+        st_set(e, "two\nlines", false, 40);
+        (void)ed_key_cmd(e, (key_event_t){ 'a', KMOD_SUPER });
+        bool all = e->mark == 0 && e->pos == e->len;
+        (void)ed_key_cmd(e, (key_event_t){ 'c', KMOD_SUPER });
+        uint32_t cn = 0;
+        const char *cd = clipboard_data(&cn);
+        bool copied = cd && cn == 9 && memcmp(cd, "two\nlines", 9) == 0 && e->len == 9;
+        (void)ed_key_cmd(e, (key_event_t){ 'a', KMOD_SUPER });
+        (void)ed_key_cmd(e, (key_event_t){ 'x', KMOD_SUPER });
+        bool cut = e->len == 0;
+        (void)ed_key_cmd(e, (key_event_t){ 'v', KMOD_SUPER });
+        (void)ed_key_cmd(e, (key_event_t){ 'V', KMOD_SUPER });
+        bool pasted = e->len == 18 && memcmp(e->buf, "two\nlinestwo\nlines", 18) == 0;
+        (void)ed_key_cmd(e, (key_event_t){ 0x19u, 0 });             /* Ctrl+Y */
+        bool yanked = e->len == 27;
+        if (keep) (void)clipboard_set(saved, sn);
+        st_check(&fails, "Cmd+A / C / X / V on the system clipboard, beside Ctrl+Y", all && copied && cut && pasted && yanked);
+    }
+
+    ed_free(e);
 
     cprintf(fails ? "EDITOR_SELFTEST_FAIL\n" : "EDITOR_SELFTEST_OK\n");
     return fails;
