@@ -21,6 +21,7 @@ doc/dev/
 |   |-- concurrency.md     # Ownership comments, racescan, locks and lock order, waits, stress
 |   |-- logging.md         # Tokenized kernel logging macro system, klogd, rodata dictionary
 |   |-- drivers.md         # Driver tasks, U-mode domains (RP2350), folding, IRQs
+|   |-- ui_framework.md    # Views, window events, input routing, ugui, apps/icons/settings
 |   \-- porting.md         # Board bringup: linker scripts, clock trees, XIP flash
 |-- protocols/          # Part D: Interconnect & Wire Protocols
 |   \-- llp.md             # LugalOS Link Protocol (LLP): framing, flow control, 9P/Ethernet mux
@@ -46,6 +47,7 @@ doc/dev/
 * **[Concurrency: Shared State, Locks and Waits](concurrency.md)**: The ownership comment on every shared static and `racescan.py`, spinlocks vs ylocks and the learned lock order, `chan_call_wait()` and timed polls, and the stress harness.
 * **[Tokenized Kernel Logging Macro System](logging.md)**: Zero-overhead logging capturing format-string addresses in `.rodata` and vararg binary blobs in the ring buffer, expanded on drain by `klogd`.
 * **[Driver Framework & Fault Isolation](drivers.md)**: The four parts of a driver, where drivers run per board (U-mode domains on the RP2350, kernel-mode tasks elsewhere), folding a driver into its callers per preset, interrupts, and calling a driver.
+* **[UI Framework: Views, Window Events, Input and `ugui`](ui_framework.md)**: How a view is written (its ops, its window, the views task), what every window is told (`win_event_t`, claims, system events), where touch, mouse and keys go, the on-screen keyboard as a service, and the `ugui` toolkit, the app registry, icons and settings.
 * **[Board Porting Guide](porting.md)**: Step-by-step instructions for porting LugalOS to new RISC-V microcontrollers, clock trees, and XIP memory layouts.
 
 ---

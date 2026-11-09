@@ -798,6 +798,8 @@ set(SOURCES
     drivers/osk.c
     # `uxbench`: the ribbon's interactions timed from input to glass.
     drivers/uxbench.c
+    # `viewtest`: a view of its own type, for the view framework's tests.
+    drivers/viewtest.c
     drivers/ribbon.c
     # the same screen in RAM, for Lisp's canvas where there is no panel.
     drivers/ramscreen.c

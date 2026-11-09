@@ -91,7 +91,7 @@ static bool              g_kbd_online = false;
 /* guarded by: g_xhci_lock */
 static xhci_trb_t        g_mouse_ep_ring[XHCI_EP_RING_SIZE] __attribute__((aligned(64)));
 /* guarded by: g_xhci_lock */
-static uint8_t           g_mouse_report_buf[16] __attribute__((aligned(64)));
+static uint8_t           g_mouse_report_buf[64] __attribute__((aligned(64)));
 /* guarded by: g_xhci_lock */
 static uint8_t           g_mouse_cycle = 1;
 /* guarded by: g_xhci_lock */
@@ -115,6 +115,17 @@ static int               g_mouse_pdx, g_mouse_pdy, g_mouse_pwheel;
 static bool              g_mouse_pchanged;      /* guarded by: g_xhci_lock */
 /* guarded by: g_xhci_lock */
 static bool              g_mouse_online = false;
+/* Where the mouse's reports keep buttons, X, Y and the wheel: from its HID
+ * report descriptor, or the boot protocol's. guarded by: g_xhci_lock */
+static usbmouse_layout_t g_mouse_layout;
+/* A report descriptor read at setup. guarded by: g_xhci_lock */
+static uint8_t           g_rdesc_buf[256] __attribute__((aligned(64)));
+
+/* The bytes one mouse transfer asks for: its packet, at most the buffer. */
+static uint32_t mouse_xfer_len(const xhci_device_t *dev) {
+    uint32_t n = dev->ep_in_mps ? dev->ep_in_mps : 4u;
+    return n > sizeof(g_mouse_report_buf) ? (uint32_t)sizeof(g_mouse_report_buf) : n;
+}
 
 /* Device and Input Contexts (2048 bytes per slot, enough for 64-byte context size) */
 /* guarded by: g_xhci_lock */
@@ -174,7 +185,7 @@ static inline void ring_doorbell(uint32_t target, uint32_t slot) {
     REG32(g_xhci_db_base + slot * 4u) = target;
 }
 
-static void xhci_process_transfer_event(uint8_t slot_id, uint8_t dci, uint8_t cc) {
+static void xhci_process_transfer_event(uint8_t slot_id, uint8_t dci, uint8_t cc, uint32_t residual) {
     (void)cc;
     if (slot_id == 0 || slot_id > XHCI_MAX_SLOTS) return;
     xhci_device_t *dev = &g_devices[slot_id];
@@ -230,11 +241,14 @@ static void xhci_process_transfer_event(uint8_t slot_id, uint8_t dci, uint8_t cc
         ring_doorbell(dci, slot_id);
     } else if (slot_id == g_mouse_slot && dci == g_mouse_dci && g_mouse_online) {
         xhci_flush_l2_range((uintptr_t)g_mouse_report_buf,
-                            (uintptr_t)g_mouse_report_buf + 16);
-        uint8_t buttons = g_mouse_report_buf[0];
-        int8_t dx = (int8_t)g_mouse_report_buf[1];
-        int8_t dy = (int8_t)g_mouse_report_buf[2];
-        int8_t wheel = (dev->ep_in_mps >= 4) ? (int8_t)g_mouse_report_buf[3] : 0;
+                            (uintptr_t)g_mouse_report_buf + sizeof(g_mouse_report_buf));
+        uint32_t asked = mouse_xfer_len(dev);
+        uint32_t got = residual < asked ? asked - residual : 0;
+        usbmouse_ev_t mev;
+        if (!usbmouse_decode(&g_mouse_layout, g_mouse_report_buf, got, &mev))
+            mev = (usbmouse_ev_t){ 0, 0, 0, g_mouse_buttons };   /* another report ID's, or short */
+        uint8_t buttons = mev.buttons;
+        int dx = mev.dx, dy = mev.dy, wheel = mev.wheel;
 
         g_mouse_pdx += dx;
         g_mouse_pdy += dy;
@@ -253,12 +267,12 @@ static void xhci_process_transfer_event(uint8_t slot_id, uint8_t dci, uint8_t cc
         /* Re-queue next Normal TRB on Mouse ring */
         uint8_t qidx = g_mouse_enqueue;
         uint8_t cycle = g_mouse_cycle;
-        memset(g_mouse_report_buf, 0, 16);
+        memset(g_mouse_report_buf, 0, sizeof(g_mouse_report_buf));
         xhci_flush_l2_range((uintptr_t)g_mouse_report_buf,
-                            (uintptr_t)g_mouse_report_buf + 16);
+                            (uintptr_t)g_mouse_report_buf + sizeof(g_mouse_report_buf));
 
         g_mouse_ep_ring[qidx].parameter = (uintptr_t)g_mouse_report_buf;
-        g_mouse_ep_ring[qidx].status = dev->ep_in_mps ? dev->ep_in_mps : 4;
+        g_mouse_ep_ring[qidx].status = mouse_xfer_len(dev);
         g_mouse_ep_ring[qidx].control = (XHCI_TRB_NORMAL << 10) | (1u << 5) | cycle;
         xhci_flush_l2_range((uintptr_t)&g_mouse_ep_ring[qidx],
                             (uintptr_t)(&g_mouse_ep_ring[qidx] + 1));
@@ -289,6 +303,7 @@ static int xhci_wait_event(uint8_t trb_type, xhci_trb_t *out_trb, uint32_t timeo
             uint8_t slot = (trb->control >> 24) & 0xFFu;
             uint8_t dci  = (trb->control >> 16) & 0x1Fu;
             uint8_t cc   = (trb->status >> 24) & 0xFFu;
+            uint32_t residual = trb->status & 0xFFFFFFu;   /* a transfer event's bytes not moved */
 
             /* Advance dequeue pointer */
             g_event_dequeue++;
@@ -304,7 +319,7 @@ static int xhci_wait_event(uint8_t trb_type, xhci_trb_t *out_trb, uint32_t timeo
 
             /* If it's a Transfer Event on an Interrupt Endpoint (DCI > 1), handle it */
             if (type == XHCI_TRB_TRANSFER_EVENT && dci > 1) {
-                xhci_process_transfer_event(slot, dci, cc);
+                xhci_process_transfer_event(slot, dci, cc, residual);
                 if (trb_type == XHCI_TRB_TRANSFER_EVENT && out_trb) {
                     /* Control transfer caller only wants DCI 1 */
                     continue;
@@ -518,9 +533,27 @@ static int xhci_configure_hid_endpoint(uint8_t slot_id) {
         return -1;
     }
 
-    /* 3. Send HID Class Requests on EP0: Set Protocol (0 = Boot), Set Idle (0 = Indefinite) */
-    (void)xhci_control_transfer(slot_id, 0x21, 0x0B, 0, dev->iface_num, 0, NULL, false);
+    /* 3. HID class requests on EP0. A keyboard: the boot protocol. A mouse:
+     * its own reports, as its report descriptor lays them out (the boot
+     * protocol need not carry the wheel, and many mice leave it out); the
+     * boot protocol only for a descriptor that does not say where X and Y
+     * are. Then Set Idle (0: report on change). */
+    bool report_proto = false;
+    if (dev->has_hid_mouse && !dev->has_hid_keyboard && dev->mouse_rdesc_len) {
+        uint16_t rlen = dev->mouse_rdesc_len;
+        if (rlen > sizeof(g_rdesc_buf)) rlen = (uint16_t)sizeof(g_rdesc_buf);
+        memset(g_rdesc_buf, 0, sizeof(g_rdesc_buf));
+        if (xhci_control_transfer(slot_id, 0x81, 0x06, 0x2200, dev->iface_num, rlen, g_rdesc_buf, true) == 0)
+            report_proto = usbmouse_parse_report_desc(g_rdesc_buf, rlen, &g_mouse_layout);
+    }
+    if (dev->has_hid_mouse && !dev->has_hid_keyboard && !report_proto) usbmouse_boot_layout(&g_mouse_layout);
+    if (!report_proto)
+        (void)xhci_control_transfer(slot_id, 0x21, 0x0B, 0, dev->iface_num, 0, NULL, false);
     (void)xhci_control_transfer(slot_id, 0x21, 0x0A, 0, dev->iface_num, 0, NULL, false);
+    if (dev->has_hid_mouse && !dev->has_hid_keyboard)
+        printk("[xHCI] Slot %u: mouse reports by %s (wheel %s)\n", slot_id,
+               report_proto ? "its report descriptor" : "the boot protocol",
+               g_mouse_layout.wheel_size ? "yes" : "no");
 
     /* 4. Queue First Normal TRB and Ring Doorbell */
     if (dev->has_hid_keyboard) {
@@ -563,12 +596,12 @@ static int xhci_configure_hid_endpoint(uint8_t slot_id) {
 
         uint8_t qidx = g_mouse_enqueue;
         uint8_t cycle = g_mouse_cycle;
-        memset(g_mouse_report_buf, 0, 16);
+        memset(g_mouse_report_buf, 0, sizeof(g_mouse_report_buf));
         xhci_flush_l2_range((uintptr_t)g_mouse_report_buf,
-                            (uintptr_t)g_mouse_report_buf + 16);
+                            (uintptr_t)g_mouse_report_buf + sizeof(g_mouse_report_buf));
 
         g_mouse_ep_ring[qidx].parameter = (uintptr_t)g_mouse_report_buf;
-        g_mouse_ep_ring[qidx].status = mps;
+        g_mouse_ep_ring[qidx].status = mouse_xfer_len(dev);
         g_mouse_ep_ring[qidx].control = (XHCI_TRB_NORMAL << 10) | (1u << 5) | cycle;
         xhci_flush_l2_range((uintptr_t)&g_mouse_ep_ring[qidx],
                             (uintptr_t)(&g_mouse_ep_ring[qidx] + 1));
@@ -857,6 +890,7 @@ static int xhci_setup_device(uint8_t slot_id, uint8_t root_port, uint8_t parent_
     dev->class_code = desc.bDeviceClass;
     dev->subclass_code = desc.bDeviceSubClass;
     dev->protocol = desc.bDeviceProtocol;
+    dev->mouse_rdesc_len = 0;
 
     /* 6. Fetch Configuration Descriptor Tree to inspect interfaces */
     uint8_t cfg_buf[256];
@@ -888,6 +922,9 @@ static int xhci_setup_device(uint8_t slot_id, uint8_t root_port, uint8_t parent_
                         cur_is_mouse = true;
                     }
                 }
+            } else if (type == 0x21 && cur_is_mouse && len >= 9 && cfg_buf[off + 6] == 0x22) {
+                /* HID descriptor: the report descriptor's length */
+                dev->mouse_rdesc_len = (uint16_t)(cfg_buf[off + 7] | (cfg_buf[off + 8] << 8));
             } else if (type == 0x05) { /* Endpoint Descriptor */
                 usb_endpoint_desc_t *ep = (usb_endpoint_desc_t *)&cfg_buf[off];
                 if ((ep->bEndpointAddress & 0x80u) && (ep->bmAttributes & 0x03u) == 0x03u) {

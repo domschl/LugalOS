@@ -80,6 +80,7 @@
 #include "drivers/view.h"
 #include "kernel/event.h"
 #include "drivers/uxbench.h"
+#include "drivers/viewtest.h"
 #include "drivers/dcf77_decode.h"
 #include "drivers/pico_clock_ui.h"
 #include "kernel/timezone.h"
@@ -6276,7 +6277,11 @@ static void cmd_ribbon(const char *cmd_line) {
             else if (type == RIBBON_WIN_LAUNCHER)
                 cprintf("  [%d] Launcher (slot %d, %d cols, rx %ld..%ld)%s\n",
                         i, id, cols, (long)rx0, (long)rx1, (i == active) ? " *" : "");
-            else
+            else if (ribbon_is_view(type)) {
+                const view_ops_t *v = view_for_window(type);
+                cprintf("  [%d] View     (%s, slot %d, %d cols, rx %ld..%ld)%s\n",
+                        i, v ? v->name : "unknown", id, cols, (long)rx0, (long)rx1, (i == active) ? " *" : "");
+            } else
                 cprintf("  [%d] Term     (vterm %d, %d cols, rx %ld..%ld)%s\n",
                         i, id, cols, (long)rx0, (long)rx1, (i == active) ? " *" : "");
             cprintf("      told: %s, %s\n", (told & CONSOLE_WIN_FOCUSED) ? "focused" : "not focused",
@@ -6727,6 +6732,9 @@ static void parse_and_eval_cmd(const char *cmd_line) {
 #if CONFIG_DEV
     } else if (strcmp(cmd_line, "uxbench") == 0 || strncmp(cmd_line, "uxbench ", 8) == 0) {
         uxbench_cmd(cmd_line + 7);
+        return;
+    } else if (strcmp(cmd_line, "viewtest") == 0 || strncmp(cmd_line, "viewtest ", 9) == 0) {
+        viewtest_cmd(cmd_line + 8);
         return;
     } else if (strcmp(cmd_line, "eventtest") == 0 || strncmp(cmd_line, "eventtest ", 10) == 0) {
         cmd_eventtest(cmd_line[9] ? cmd_line + 10 : "");

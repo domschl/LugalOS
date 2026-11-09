@@ -2,10 +2,10 @@
   "bulk_per_file": {},
   "bulk_per_subsystem": {},
   "bulk_total": 0,
-  "heap_bytes": 123973632,
-  "heap_pages": 30267,
+  "heap_bytes": 123969536,
+  "heap_pages": 30266,
   "per_file": {
-    "(no line info: .rodata)": 13429,
+    "(no line info: .rodata)": 13453,
     "(no line info: .sdata)": 9,
     "arch/riscv/common/elf.c": 1852,
     "arch/riscv/common/mem_domain.c": 8,
@@ -57,6 +57,7 @@
     "drivers/usb_crc.c": 16,
     "drivers/usbkbd.c": 886,
     "drivers/view.c": 1056,
+    "drivers/viewtest.c": 1956,
     "drivers/virtio_blk.c": 12473,
     "drivers/virtio_blk_id.c": 8295,
     "drivers/virtio_console.c": 28792,
@@ -168,7 +169,7 @@
     "user/zmachine/ztext.c": 27
   },
   "per_subsystem": {
-    "(no line info: .rodata)": 13429,
+    "(no line info: .rodata)": 13453,
     "(no line info: .sdata)": 9,
     "9p": 64680,
     "agent": 3501,
@@ -180,7 +181,7 @@
     "clock-app": 616,
     "crypto": 1054,
     "display": 84855,
-    "drivers": 90138,
+    "drivers": 92094,
     "fs": 823,
     "httpd": 184,
     "identity": 669,
@@ -198,6 +199,6 @@
     "usb": 902,
     "vfs": 4766
   },
-  "ram_code": 1270480,
-  "total": 7763905
+  "ram_code": 1271962,
+  "total": 7767367
 }

@@ -72,6 +72,7 @@ typedef enum {
     RIBBON_WIN_CANVAS   = 2,
     RIBBON_WIN_READER   = 3,
     RIBBON_WIN_LAUNCHER = 4,
+    RIBBON_WIN_VIEWTEST = 5,   /* `viewtest` (dev builds, drivers/viewtest.c) */
 } ribbon_win_type_t;
 
 enum {

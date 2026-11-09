@@ -2,11 +2,11 @@
   "bulk_per_file": {},
   "bulk_per_subsystem": {},
   "bulk_total": 0,
-  "heap_bytes": 126332928,
-  "heap_pages": 30843,
+  "heap_bytes": 126328832,
+  "heap_pages": 30842,
   "per_file": {
     "(no line info: .data)": 9,
-    "(no line info: .rodata)": 13950,
+    "(no line info: .rodata)": 13974,
     "arch/riscv/common/elf.c": 1852,
     "arch/riscv/common/mem_domain.c": 20,
     "arch/riscv/common/trap.c": 15,
@@ -64,9 +64,10 @@
     "drivers/usbkbd.c": 886,
     "drivers/uxbench.c": 568,
     "drivers/view.c": 1056,
+    "drivers/viewtest.c": 1956,
     "drivers/vtterm.c": 16,
     "drivers/winclose.c": 308,
-    "drivers/xhci_jh7110.c": 161386,
+    "drivers/xhci_jh7110.c": 161722,
     "fs/9p.c": 10454,
     "fs/fat32.c": 11,
     "fs/latex_math.c": 704,
@@ -175,7 +176,7 @@
   },
   "per_subsystem": {
     "(no line info: .data)": 9,
-    "(no line info: .rodata)": 13950,
+    "(no line info: .rodata)": 13974,
     "9p": 64728,
     "agent": 3501,
     "app:cc": 598,
@@ -186,7 +187,7 @@
     "clock-app": 608,
     "crypto": 1053,
     "display": 85282,
-    "drivers": 330085,
+    "drivers": 332377,
     "fs": 823,
     "httpd": 184,
     "identity": 200,
@@ -203,6 +204,6 @@
     "usb": 902,
     "vfs": 5639
   },
-  "ram_code": 687690,
-  "total": 7530744
+  "ram_code": 689258,
+  "total": 7534628
 }

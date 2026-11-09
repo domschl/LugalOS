@@ -183,6 +183,7 @@ typedef struct {
     uint8_t  ep_in_ctx_idx;
     uint16_t ep_in_mps;
     uint8_t  ep_in_interval;
+    uint16_t mouse_rdesc_len;   /* its HID report descriptor's length (0: none given) */
 } xhci_device_t;
 
 /* Driver public API */

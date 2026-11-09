@@ -3715,6 +3715,25 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
                 break
         results.append(("Text Field: Select All, Cut, Paste Through The Edit Menu (71.6 clipboard)", clip_ok, clip_log))
 
+        # A view of its own type (`viewtest`, drivers/viewtest.c), which has
+        # nothing of its own in the screen or the compositor: its window
+        # opens focused and is listed by its ops' name, a click on its
+        # button (content 16, 16) and one beside it arrive as taps, and its
+        # close box closes it and lets its ops know.
+        steps = [("viewtest open", r"viewtest: open"),
+                 ("ribbon", r"\[1\] View     \(viewtest[^\n]*\*"),
+                 ("ms click 55 69", r"ms: left click"), ("ms click 300 300", r"ms: left click"),
+                 ("viewtest", r"viewtest: open[^\n]*taps 2 \(on the button 1\)"),
+                 ("ms click 13 30", r"ms: left click"), ("viewtest", r"viewtest: closed"),
+                 ("ribbon", r"Ribbon Status: 1 windows")]
+        vt_ok, vt_log = True, ""
+        for cmd, pat in steps:
+            ok, log = session.send_and_expect(cmd, pat, timeout=10.0)
+            if not ok:
+                vt_ok, vt_log = False, f"{cmd!r} did not give {pat!r}:\n{log}"
+                break
+        results.append(("A New View Needs Nothing In The Screen Or Compositor (71.4 viewtest)", vt_ok, vt_log))
+
 
         # 37.5b: the editor. Its own selftest (wrapping, movement over wrapped
         # rows and UTF-8, undo, search, the safe save), then the real thing

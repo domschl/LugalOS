@@ -4,6 +4,7 @@
     "drivers/reader_view.c": 62432,
     "drivers/uxbench.c": 540,
     "drivers/view.c": 704,
+    "drivers/viewtest.c": 1892,
     "drivers/winclose.c": 288,
     "kernel/palloc.c": 8192,
     "kernel/winevent.c": 2592,
@@ -14,12 +15,12 @@
   "bulk_per_subsystem": {
     "chess": 1852,
     "display": 84856,
-    "drivers": 1532,
+    "drivers": 3424,
     "kernel": 10784,
     "lisp": 1523712,
     "selftest": 64
   },
-  "bulk_total": 1622800,
+  "bulk_total": 1624692,
   "heap_bytes": 299008,
   "heap_pages": 73,
   "per_file": {
