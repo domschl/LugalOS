@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include "fs/fs_limits.h"
 
 #define P9_NOFID   ((uint32_t)~0U)
 #define P9_NOTAG   ((uint16_t)~0U)
@@ -65,7 +66,13 @@ typedef enum {
  * or a couple of path components at once. */
 #define P9_MAX_FIDS       8
 #define P9_MAX_WALK_ELEM  16
-#define P9_MAX_NAME_LEN   32
+#define P9_MAX_NAME_LEN   32   /* uname, aname: identities and tree names, not file names */
+
+/* Every file name one message carries -- a walk's elements, or Tcreate's new
+ * name -- NUL-terminated, in one pool. A walk whose elements need more could
+ * only lead to a path longer than VFS_PATH_MAX, which nothing here can hold;
+ * a message that does not fit is refused, never cut short. */
+#define P9_NAME_POOL      (VFS_PATH_MAX + P9_MAX_WALK_ELEM)
 
 /* 9P open/create mode bits (the low 2 bits select the access mode; the rest
  * are independent flags), per the 9P2000 spec. */
@@ -128,13 +135,22 @@ typedef struct {
     char        uname[P9_MAX_NAME_LEN];
     char        aname[P9_MAX_NAME_LEN];
     const char *ename;   // Error string for Rerror (server constructs from string literals only)
-    char        name[P9_MAX_NAME_LEN];              // Tcreate's new file/dir name
+    uint16_t    name;                       // Tcreate's new file/dir name: offset into names[]
     uint16_t    nwname;
-    char        wname[P9_MAX_WALK_ELEM][P9_MAX_NAME_LEN];
+    uint16_t    wname[P9_MAX_WALK_ELEM];    // Twalk's elements: offsets into names[]
+    uint16_t    names_used;
+    char        names[P9_NAME_POOL];        // offsets, not pointers, so a copied message stays whole
     uint16_t    nwqid;
     p9_qid_t    wqid[P9_MAX_WALK_ELEM];
     const uint8_t *data;  // Read/write/stat payload (points into the caller's buffer)
 } p9_msg_t;
+
+/* A message's names: Tcreate's, and walk element `i`. */
+static inline const char *p9_cname(const p9_msg_t *m) { return m->names + m->name; }
+static inline const char *p9_wname(const p9_msg_t *m, unsigned i) { return m->names + m->wname[i]; }
+/* Puts `len` bytes of `s` into the message's pool; *off gets where. False
+ * when they do not fit (the message cannot carry that name). */
+bool p9_msg_put_name(p9_msg_t *m, const char *s, size_t len, uint16_t *off);
 
 void p9_init(void);
 

@@ -393,9 +393,7 @@ def main() -> int:
                 listing = out
             log.append(f"--- $ {line}\n{out}")
             if shot:
-                # 8.3 names: fs/fat32.c keeps short names only, so long ones
-                # sharing a prefix land in one file (they did, once).
-                path = f"/sd0/LS{len(shots)}.PBM"
+                path = f"/sd0/lcdterm-shot-{len(shots)}.pbm"
                 out = run_line(ser, f"screenshot {path}", 3.0)
                 log.append(f"--- $ screenshot {path}\n{out}")
                 shots.append(shot)
@@ -413,7 +411,7 @@ def main() -> int:
         board.close(ser)
     (args.out / "console.log").write_text("".join(log))
 
-    datas = board.fetch([f"/sd0/LS{i}.PBM" for i in range(len(shots))])
+    datas = board.fetch([f"/sd0/lcdterm-shot-{i}.pbm" for i in range(len(shots))])
     for shot, data in zip(shots, datas):
         (args.out / f"{shot}.pbm").write_bytes(data)
         print(f"  {shot}.pbm  {len(data)} bytes")

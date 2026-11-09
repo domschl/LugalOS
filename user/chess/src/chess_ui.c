@@ -1212,7 +1212,7 @@ static void console_list_games(void) {
         int fd = vfs_open(dirs[d], VFS_O_READ);
         if (fd < 0) continue;
         cprintf("%s:\n", dirs[d]);
-        char name[64];
+        char name[VFS_NAME_MAX];
         vfs_stat_t st;
         int shown = 0;
         for (uint32_t i = 0; vfs_readdir(fd, i, name, sizeof(name), &st) == 0; i++) {

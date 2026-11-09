@@ -203,10 +203,11 @@ typedef struct {
     bool is_dir;
     fat32_fs_t *fs;              /* valid for MOUNT_FAT32 */
     fat32_dir_entry_t entry;     /* valid for MOUNT_FAT32, non-dir */
-    fat32_cursor_t cursor;       /* MOUNT_FAT32: where in the chain this handle last was (38.0) */
+    fat32_cursor_t cursor;       /* MOUNT_FAT32: where in the chain (a directory: in its listing) this handle last was */
+    fat32_loc_t loc;             /* MOUNT_FAT32, non-dir: its entry's place, which writes go through */
     bool wrote;                  /* MOUNT_FAT32: sync FSInfo on close */
     uint32_t dir_cluster;        /* valid for MOUNT_FAT32, is_dir */
-    char rel_path[128];          /* path within volume (FAT32) or device name (DEV) */
+    char rel_path[64];           /* PROC: the file's name; DEV: the device's (a FAT32 handle needs no path) */
     /* Generated /proc file content (PROC, non-dir): one page, taken at open
      * (from the bulk zone where there is one) and given back at close. It
      * used to be 896 bytes inside every handle, which cut /proc/ps off at
@@ -2460,25 +2461,27 @@ static int vfs_open_into_on(mount_entry_t *m, const char *rel, bool is_root, vfs
         if (m->read_only && (flags & (VFS_O_WRITE | VFS_O_CREATE | VFS_O_TRUNC))) return -1;
 
         fat32_dir_entry_t entry;
-        if (fat32_find_file(m->fs, rel, &entry) < 0) {
+        fat32_loc_t loc;
+        if (fat32_lookup(m->fs, rel, &entry, &loc) < 0) {
             if (!(flags & VFS_O_CREATE)) return -1;
             if (fat32_write_file(m->fs, rel, NULL, 0) != 0) return -1;
-            if (fat32_find_file(m->fs, rel, &entry) < 0) return -1;
+            if (fat32_lookup(m->fs, rel, &entry, &loc) < 0) return -1;
         } else if ((flags & VFS_O_TRUNC) && !(entry.attr & FAT32_ATTR_DIRECTORY)) {
             if (fat32_truncate(m->fs, rel) != 0) return -1;
-            if (fat32_find_file(m->fs, rel, &entry) < 0) return -1;
+            if (fat32_lookup(m->fs, rel, &entry, &loc) < 0) return -1;
         }
 
         h->fs = m->fs;
         h->entry = entry;
+        h->loc = loc;
         h->is_dir = (entry.attr & FAT32_ATTR_DIRECTORY) != 0;
         if (h->is_dir) {
             h->dir_cluster = ((uint32_t)entry.fst_clus_hi << 16) | entry.fst_clus_lo;
+            if (h->dir_cluster == 0) h->dir_cluster = m->fs->root_dir_cluster;
         }
-        strncpy(h->rel_path, rel, sizeof(h->rel_path) - 1);
-        h->rel_path[sizeof(h->rel_path) - 1] = '\0';
         h->kind = MOUNT_FAT32;
     } else if (m->kind == MOUNT_PROC) {
+        if (strlen(rel) >= sizeof(h->rel_path)) return -1;   /* cut short, it would name another file */
         strncpy(h->rel_path, rel, sizeof(h->rel_path) - 1);
         h->rel_path[sizeof(h->rel_path) - 1] = '\0';
         size_t rlen = strlen(h->rel_path);
@@ -2522,7 +2525,7 @@ static int vfs_open_into_on(mount_entry_t *m, const char *rel, bool is_root, vfs
             for (int i = 0; i < DEV_COUNT; i++) {
                 if (strcmp(rel, g_dev_names[i]) == 0) { known = true; break; }
             }
-            if (!known) return -1;
+            if (!known || strlen(rel) >= sizeof(h->rel_path)) return -1;
             strncpy(h->rel_path, rel, sizeof(h->rel_path) - 1);
             h->rel_path[sizeof(h->rel_path) - 1] = '\0';
         }
@@ -2749,8 +2752,7 @@ int vfs_pwrite(int fd, const void *buf, uint32_t count, uint64_t offset) {
 
     switch (h->kind) {
         case MOUNT_FAT32: {
-            int n = fat32_write_at(h->fs, h->rel_path, buf, count, offset, &h->cursor);
-            if (n > 0) fat32_find_file(h->fs, h->rel_path, &h->entry); // refresh cached size
+            int n = fat32_write_at_loc(h->fs, &h->loc, &h->entry, buf, count, offset, &h->cursor);
             h->wrote = true;
             return n;
         }
@@ -2839,7 +2841,7 @@ int vfs_readdir(int fd, uint32_t index, char *name_out, uint32_t name_max, vfs_s
         }
         case MOUNT_FAT32: {
             fat32_dir_entry_t entry;
-            if (fat32_readdir(h->fs, h->dir_cluster, index, name_out, name_max, &entry) != 0) return -1;
+            if (fat32_readdir(h->fs, h->dir_cluster, index, &h->cursor, name_out, name_max, &entry) != 0) return -1;
             if (stat_out) {
                 stat_out->size = entry.file_size;
                 stat_out->is_dir = (entry.attr & FAT32_ATTR_DIRECTORY) ? 1 : 0;
@@ -3321,6 +3323,23 @@ int vfs_mkdir(const char *path) {
     mount_entry_t *m = mount_get(path, &rel, &is_root);
     int r = vfs_mkdir_on(m, rel, is_root, path);
     mount_put(m);
+    return r;
+}
+
+/* Both paths on one FAT volume: a rename never copies. */
+int vfs_rename(const char *from, const char *to) {
+    if (!from || !to || privileged_path_refused(from) || privileged_path_refused(to)) return -1;
+    bool root_a, root_b;
+    const char *rel_a = NULL, *rel_b = NULL;
+    mount_entry_t *a = mount_get(from, &rel_a, &root_a);
+    mount_entry_t *b = mount_get(to, &rel_b, &root_b);
+    int r = -1;
+    if (a && a == b && a->kind == MOUNT_FAT32 && !a->read_only && mount_is_active(a) &&
+        rel_a && rel_a[0] && rel_b && rel_b[0]) {
+        r = fat32_rename(a->fs, rel_a, rel_b);
+    }
+    mount_put(b);
+    mount_put(a);
     return r;
 }
 

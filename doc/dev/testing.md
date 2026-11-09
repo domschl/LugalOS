@@ -181,7 +181,7 @@ python3 tests/hw/lcdterm_shots.py --scenario views --board tab5
 On the Tab5 and the LCD-7B the shots come back over the console's own wire at 921,600 baud; a full RGB565 frame takes a while, so a scenario with several shots runs for some minutes.
 
 #### Notes on Visual Scenarios & Escapes:
-* **MicroSD 8.3 Names:** `/sd0` uses strict 8.3 FAT filenames; long names sharing a prefix will collide.
+* **Screenshots on the card:** each shot is written as `/sd0/lcdterm-shot-<n>.pbm` and fetched from there.
 * **Prerequisites for LCD-7B:** The ribbon scenario requires `/sd0/demos` and `/sd0/cas` (sync them with `python3 tools/p9sync.py --p4 lcd7b --src build/esp32p4-lcd7b/sd_root`).
 * **Console Hotkey Emulation:** From a serial connection, the GUI Cmd hotkeys map to:
   * `ESC [ 1 ; 9 C` / `ESC [ 1 ; 9 D`: Cmd+Right / Cmd+Left (`;13` adds Ctrl).

@@ -5655,6 +5655,18 @@ static lisp_val_t *prim_cp(lisp_val_t *args, lisp_val_t *env) {
     return (vfs_cp(src, dst) == 0) ? &true_val : &false_val;
 }
 
+/* (mv from to): rename or move within one volume. */
+static lisp_val_t *prim_mv(lisp_val_t *args, lisp_val_t *env) {
+    (void)env;
+    lisp_val_t *a1 = lisp_list_ref(args, 0);
+    lisp_val_t *a2 = lisp_list_ref(args, 1);
+    if (!a1 || !a2) return &false_val;
+    const char *from = get_str_val(a1);
+    const char *to = get_str_val(a2);
+    if (!from || !to) return &false_val;
+    return (vfs_rename(from, to) == 0) ? &true_val : &false_val;
+}
+
 static lisp_val_t *prim_rm(lisp_val_t *args, lisp_val_t *env) {
     (void)env;
     if (!args || args->type != LISP_PAIR) return &false_val;

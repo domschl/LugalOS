@@ -491,26 +491,19 @@ static int p9_link_roundtrip(p9_link_t *link, const p9_msg_t *req, p9_msg_t *res
     }
 }
 
-/* Splits `path` into wname[] components in `out` (each NUL-terminated),
- * skipping empty ones. Returns the count, or -1 when the path cannot be
- * walked as written: more than P9_MAX_WALK_ELEM components, or a component
- * of P9_MAX_NAME_LEN bytes or more.
- *
- * It used to truncate instead, in three ways at once: the path to 127 bytes,
- * the walk to 16 components, and each name with strncpy() into an
- * uninitialised array -- which left a 31-byte name without its terminator,
- * so serialising it ran on into the next name. Each produced a walk to some
- * other path than the one asked for. */
-static int p9_split_path(const char *path, char out[P9_MAX_WALK_ELEM][P9_MAX_NAME_LEN]) {
+/* Splits `path` into a Twalk's elements in `m`'s name pool, skipping empty
+ * components. Returns the count, or -1 when the path cannot be walked as
+ * written: more than P9_MAX_WALK_ELEM components, or names that do not fit
+ * the pool. A path is never walked cut short -- that would reach some other
+ * file. */
+static int p9_split_path(const char *path, p9_msg_t *m) {
     int n = 0;
     while (*path) {
         while (*path == '/') path++;
         if (!*path) break;
         size_t len = 0;
         while (path[len] && path[len] != '/') len++;
-        if (n >= P9_MAX_WALK_ELEM || len >= P9_MAX_NAME_LEN) return -1;
-        memcpy(out[n], path, len);
-        out[n][len] = '\0';
+        if (n >= P9_MAX_WALK_ELEM || !p9_msg_put_name(m, path, len, &m->wname[n])) return -1;
         n++;
         path += len;
     }
@@ -570,7 +563,7 @@ static int p9_link_cat_locked(p9_link_t *link, const char *path, char *out_buf, 
     req.tag = 3;
     req.fid = 1;
     req.newfid = 2;
-    int split = p9_split_path(path, req.wname);
+    int split = p9_split_path(path, &req);
     if (split < 0) { scratch_release(&sc); return -1; }
     uint16_t n = (uint16_t)split;
     req.nwname = n;
@@ -836,21 +829,19 @@ static int remote_open_locked(p9_remote_mount_t *mount, const char *path, uint8_
     if (!mount || !mount->in_use || !path || !out_fid) return -1;
     while (*path == '/') path++;
 
-    char wnames[P9_MAX_WALK_ELEM][P9_MAX_NAME_LEN];
-    int split = p9_split_path(path, wnames);
+    p9_msg_t twalk, resp;
+    memset(&twalk, 0, sizeof(twalk));
+    memset(&resp, 0, sizeof(resp));   /* read below even when the exchange failed */
+    int split = p9_split_path(path, &twalk);
     if (split < 0) return -1;
     uint16_t n = (uint16_t)split;
 
     uint32_t fid = mount->next_fid++;
-    p9_msg_t twalk, resp;
-    memset(&twalk, 0, sizeof(twalk));
-    memset(&resp, 0, sizeof(resp));   /* read below even when the exchange failed */
     twalk.type = P9_TWALK;
     twalk.tag = p9_remote_next_tag(mount);
     twalk.fid = mount->root_fid;
     twalk.newfid = fid;
     twalk.nwname = n;
-    memcpy(twalk.wname, wnames, (size_t)n * sizeof(wnames[0]));
     if (p9_remote_xchg(mount, &twalk, &resp) < 0) return -1;
 
     bool is_dir = true;
@@ -877,7 +868,8 @@ static int remote_open_locked(p9_remote_mount_t *mount, const char *path, uint8_
         tcreate.type = P9_TCREATE;
         tcreate.tag = p9_remote_next_tag(mount);
         tcreate.fid = fid;
-        strncpy(tcreate.name, wnames[n - 1], sizeof(tcreate.name) - 1);
+        const char *last = p9_wname(&twalk, n - 1u);
+        (void)p9_msg_put_name(&tcreate, last, strlen(last), &tcreate.name);   /* it fit twalk's pool */
         tcreate.perm = 0644;
         tcreate.mode = p9_mode;
         if (p9_remote_xchg(mount, &tcreate, &resp) < 0 || resp.type != P9_RCREATE) {
@@ -974,7 +966,9 @@ static int p9_unpack_stat_entry(const uint8_t *src, uint32_t src_len, char *name
     off += 2;
     if (off + namelen > total) return -1;
     if (name_out && name_max > 0) {
-        uint32_t copy = namelen < name_max - 1 ? namelen : name_max - 1;
+        /* A name that does not fit comes back empty, not cut short: a
+         * shortened name would open some other file. */
+        uint32_t copy = namelen < name_max ? namelen : 0;
         memcpy(name_out, src + off, copy);
         name_out[copy] = '\0';
     }
@@ -1020,11 +1014,12 @@ static int remote_readdir_locked(p9_remote_mount_t *mount, uint32_t fid, uint32_
 
         uint32_t p = 0;
         while (p < resp.count) {
-            char name[P9_MAX_NAME_LEN];
+            char name[VFS_NAME_MAX];
             uint64_t size;
             bool is_dir;
             int consumed = p9_unpack_stat_entry(resp.data + p, resp.count - p, name, sizeof(name), &size, &is_dir);
             if (consumed < 0) break; // incomplete entry at the tail of this chunk; next Tread continues past it
+            if (name[0] == '\0') { p += (uint32_t)consumed; continue; }   /* too long to name here */
 
             if (found_index == index) {
                 if (name_out && name_max > 0) {
@@ -1074,21 +1069,19 @@ static int remote_remove_locked(p9_remote_mount_t *mount, const char *path) {
     if (!mount || !mount->in_use || !path) return -1;
     while (*path == '/') path++;
 
-    char wnames[P9_MAX_WALK_ELEM][P9_MAX_NAME_LEN];
-    int split = p9_split_path(path, wnames);
+    p9_msg_t twalk, resp;
+    memset(&twalk, 0, sizeof(twalk));
+    memset(&resp, 0, sizeof(resp));   /* read below even when the exchange failed */
+    int split = p9_split_path(path, &twalk);
     if (split <= 0) return -1; // a path too long to walk, or the mount root
     uint16_t n = (uint16_t)split;
 
     uint32_t fid = mount->next_fid++;
-    p9_msg_t twalk, resp;
-    memset(&twalk, 0, sizeof(twalk));
-    memset(&resp, 0, sizeof(resp));   /* read below even when the exchange failed */
     twalk.type = P9_TWALK;
     twalk.tag = p9_remote_next_tag(mount);
     twalk.fid = mount->root_fid;
     twalk.newfid = fid;
     twalk.nwname = n;
-    memcpy(twalk.wname, wnames, (size_t)n * sizeof(wnames[0]));
     if (p9_remote_xchg(mount, &twalk, &resp) < 0 || resp.type != P9_RWALK || resp.nwqid != n) {
         if (resp.type == P9_RWALK) p9_remote_close(mount, fid);
         return -1;
@@ -1107,21 +1100,19 @@ static int remote_mkdir_locked(p9_remote_mount_t *mount, const char *path) {
     if (!mount || !mount->in_use || !path) return -1;
     while (*path == '/') path++;
 
-    char wnames[P9_MAX_WALK_ELEM][P9_MAX_NAME_LEN];
-    int split = p9_split_path(path, wnames);
+    p9_msg_t twalk, resp;
+    memset(&twalk, 0, sizeof(twalk));
+    memset(&resp, 0, sizeof(resp));   /* read below even when the exchange failed */
+    int split = p9_split_path(path, &twalk);
     if (split <= 0) return -1;
     uint16_t n = (uint16_t)split;
 
     uint32_t fid = mount->next_fid++;
-    p9_msg_t twalk, resp;
-    memset(&twalk, 0, sizeof(twalk));
-    memset(&resp, 0, sizeof(resp));   /* read below even when the exchange failed */
     twalk.type = P9_TWALK;
     twalk.tag = p9_remote_next_tag(mount);
     twalk.fid = mount->root_fid;
     twalk.newfid = fid;
     twalk.nwname = (uint16_t)(n - 1); // walk to the parent only
-    memcpy(twalk.wname, wnames, (size_t)n * sizeof(wnames[0]));
     if (p9_remote_xchg(mount, &twalk, &resp) < 0 || resp.type != P9_RWALK || resp.nwqid != n - 1) {
         if (resp.type == P9_RWALK) p9_remote_close(mount, fid);
         return -1;
@@ -1132,7 +1123,8 @@ static int remote_mkdir_locked(p9_remote_mount_t *mount, const char *path) {
     tcreate.type = P9_TCREATE;
     tcreate.tag = p9_remote_next_tag(mount);
     tcreate.fid = fid;
-    strncpy(tcreate.name, wnames[n - 1], sizeof(tcreate.name) - 1);
+    const char *last = p9_wname(&twalk, n - 1u);
+    (void)p9_msg_put_name(&tcreate, last, strlen(last), &tcreate.name);   /* it fit twalk's pool */
     tcreate.perm = P9_DMDIR | 0755;
     tcreate.mode = P9_OREAD;
     if (p9_remote_xchg(mount, &tcreate, &resp) < 0 || resp.type != P9_RCREATE) return -1;

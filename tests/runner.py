@@ -3888,10 +3888,9 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
                 break
         results.append(("Editor: Replace, Undo, Cut And Paste Across Lines (37.5b)", r_ok, r_log))
 
-        # Found on the panel: saving lorenz.lisp deleted it -- the safety copy
-        # lorenz.lis~ is LORENZ.LIS on the card, the file's own 8.3 name. A
-        # four-letter extension on /sd0, saved, survives; the kernel log's
-        # sinks, quiet while `e` runs, are attached again afterwards.
+        # A save's safety copy must never be the file itself: a four-letter
+        # extension on /sd0, saved, survives, and the copy is gone; the kernel
+        # log's sinks, quiet while `e` runs, are attached again afterwards.
         steps = [("e /sd0/keep.lisp\n(+ 20 22)\x18\x13", r"Saved", False),
                  ("\x18\x03y", r"lsh>", None),
                  ("cat /sd0/keep.lisp", r"\(\+ 20 22\)", None),
@@ -3904,6 +3903,22 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
                 k_ok, k_log = False, f"{cmd!r} did not give {pat!r} (or left its copy):\n{log}"
                 break
         results.append(("Editor: Saving A .lisp File Keeps It; The Log Is Back After `e` (37.5b)", k_ok, k_log))
+
+        # Long names from the shell (76.1): a quoted argument is one argument,
+        # spaces and all; `mv` renames to a long name and `ls` shows it.
+        steps = [('(write-file "/ram0/a spaced name.txt" "spaced-ok")', r"lsh>"),
+                 ('cat "/ram0/a spaced name.txt"', r"spaced-ok"),
+                 ('mv "/ram0/a spaced name.txt" "/ram0/A Much Longer Name.md"', r"lsh>"),
+                 ("ls /ram0", r"A Much Longer Name\.md"),
+                 ('cat "/ram0/a much longer NAME.MD"', r"spaced-ok"),
+                 ('rm "/ram0/A Much Longer Name.md"', r"lsh>")]
+        q_ok, q_log = True, ""
+        for cmd, pat in steps:
+            ok, log = session.send_and_expect(cmd, pat, timeout=8.0)
+            if not ok:
+                q_ok, q_log = False, f"{cmd!r} did not give {pat!r}:\n{log}"
+                break
+        results.append(("Shell: Quoted Names With Spaces, mv To A Long Name, ls Shows It (76.1)", q_ok, q_log))
 
         # Scrolling, not repainting: Enter on the last row of a 23-row view
         # moves the rows up with one delete-line in the scroll region.
@@ -4218,9 +4233,9 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         _, ls_deep = session.send_and_expect("ls /ram0/system/bin/", r"lsh>", timeout=5.0)
         _, cat_file = session.send_and_expect("cat /flash0/system/etc/init.lisp/", r"lsh>", timeout=5.0)
         slash_fail = []
-        if "not found" in ls_slash or not re.search(r"BIN\s.*<DIR>", ls_slash):
+        if "not found" in ls_slash or not re.search(r"<DIR>\s+bin\b", ls_slash):
             slash_fail.append(f"ls /flash0/system/ did not list:\n{ls_slash[-400:]}")
-        if "UHELLO" not in ls_deep:
+        if "uhello.elf" not in ls_deep:
             slash_fail.append(f"ls /ram0/system/bin/ did not list:\n{ls_deep[-400:]}")
         if "cannot read" not in cat_file:
             slash_fail.append(f"cat of a file with a trailing slash succeeded:\n{cat_file[-400:]}")
@@ -7098,7 +7113,7 @@ def test_fold_twin_shape(elf: Path, img: Path) -> tuple[str, bool, str]:
         tasks = [n for n in ("uart", "blk", "i2c") if re.search(r"^\s*\d+\s+\w+\s+%s\b" % n, ps, re.M)]
         if tasks:
             return (name, False, f"still a task: {tasks}\n{ps[-800:]}")
-        ok_blk, _ = session.send_and_expect("ls /sd0", r"PRIME\s+C", timeout=6.0)
+        ok_blk, _ = session.send_and_expect("ls /sd0", r"prime\.c", timeout=6.0)
         ok_i2c, _ = session.send_and_expect("i2c", r"Found \d+ I2C device", timeout=6.0)
         if not (ok_blk and ok_i2c):
             return (name, False, f"blk answered: {ok_blk}, i2c answered: {ok_i2c}")
@@ -9690,22 +9705,18 @@ def test_9p_crud_via_p9lib(elf_path: Path, img_path: Path, arch_name: str) -> tu
 
                 # Tstat's name comes back as the requested path's own last
                 # component (fs/9p.c's p9_handle_tstat resolves it from the
-                # fid's tracked path, not a FAT32 8.3 round-trip), unlike a
-                # directory *listing*, which reflects the on-disk 8.3 name
-                # via fat83_to_display_name() -- see the mkdir check below.
+                # fid's tracked path); a directory listing gives the on-disk
+                # long name -- see the listing check below.
                 st = sess.stat("/sd0/host_test.txt")
                 if st.is_dir or st.length != len(b"short\n") or st.name != "host_test.txt":
                     return (name, False,
                              f"stat mismatch: name={st.name!r} length={st.length} is_dir={st.is_dir}")
 
-                # filename_to_83()'s bug dropped the extension of any 9+
-                # char base name, so the on-disk 8.3 name (as reported by a
-                # directory listing) would show up as bare "HOST_TES" here
-                # instead of "HOST_TES.TXT".
+                # Listed under its long name, exactly as written (76.1).
                 entries = sess.listdir("/sd0")
                 by_name = {e.name: e for e in entries}
-                if "HOST_TES.TXT" not in by_name:
-                    return (name, False, f"expected on-disk name HOST_TES.TXT, got: {sorted(by_name)}")
+                if "host_test.txt" not in by_name:
+                    return (name, False, f"expected on-disk name host_test.txt, got: {sorted(by_name)}")
 
                 # A long base name (>8 chars) sharing host_test.txt's first 8
                 # characters -- the collision filename_to_83()'s bug caused.
@@ -9734,7 +9745,7 @@ def test_9p_crud_via_p9lib(elf_path: Path, img_path: Path, arch_name: str) -> tu
                 if "." in sub or ".." in sub:
                     return (name, False,
                              f"subdirectory listing leaks FAT32's own dot entries: {sub}")
-                if "NESTED.TXT" not in sub:
+                if "nested.txt" not in sub:
                     return (name, False, f"subdirectory listing lost its real entry: {sub}")
 
                 sess.remove("/sd0/host_test_dir/nested.txt")
@@ -10481,7 +10492,7 @@ def test_9p_remote_mount(rv64_elf: Path, rv32_elf: Path,
         if not ok:
             return (name, False, f"Node A failed to mount Node B's namespace:\n{log}")
 
-        ok, log = session_a.send_and_expect("ls /netb/ram0/shared", r"GREETING\.TXT", timeout=4.0)
+        ok, log = session_a.send_and_expect("ls /netb/ram0/shared", r"greeting\.txt", timeout=4.0)
         if not ok:
             return (name, False, f"ls through the remote mount didn't see Node B's real directory:\n{log}")
 

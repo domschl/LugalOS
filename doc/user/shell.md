@@ -45,6 +45,7 @@ LugalOS supports multiple mounted FAT32 volumes:
 | `mkdir <path>` | Create a new directory | `mkdir /sd0/myproject` |
 | `rmdir <path>` | Remove an empty directory | `rmdir /sd0/myproject` |
 | `cp <src> <dst>` | Copy a file | `cp /flash0/init.lisp /sd0/init.lisp` |
+| `mv <src> <dst>` | Rename or move a file or directory within one volume; fails if `<dst>` exists (a change of case alone is a rename). Quote names with spaces. | `mv "/sd0/old notes.md" /sd0/notes/Notes.md` |
 | `rm <file>` | Delete a file | `rm /sd0/test.txt` |
 | `df [-r]` | Show filesystem disk usage (`-r` recounts FAT) | `df` |
 | `fsck [/sd0\|/ram0]` | Read-only FAT32 check: every directory and cluster chain walked; reports cross-linked clusters, chains running into free entries, files whose size does not match their chain, and lost clusters (in use, reached from nowhere). Changes nothing. | `fsck` |

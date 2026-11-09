@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "fs/p9_link.h"
+#include "fs/fs_limits.h"
 
 #define VFS_PID 3
 
@@ -62,6 +63,7 @@ int vfs_mount_local(const char *name);
 
 #define VFS_MAX_HANDLES 8
 
+
 /* The handle table's use since boot: the most open at once, the opens that
  * found it full and waited (up to 500 ms) for a close, and those that gave up. */
 typedef struct {
@@ -94,6 +96,9 @@ int vfs_append(const char *path, const void *buf, uint32_t len);
 int vfs_remove(const char *path);
 int vfs_mkdir(const char *path);
 int vfs_rmdir(const char *path);
+/* Renames or moves a file or a directory; both paths on the same FAT volume.
+ * Fails when `to` exists (unless it is `from` in another case). */
+int vfs_rename(const char *from, const char *to);
 int vfs_cp(const char *src_path, const char *dst_path);
 int vfs_format(const char *path);
 /* /sd0 gets a card layout (fat32_mkfs()) labelled `label` (NULL: "LUGALOS"). */

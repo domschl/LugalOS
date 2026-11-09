@@ -6,6 +6,7 @@ License: MIT License
 """
 
 import os
+import string
 import struct
 import sys
 
@@ -22,11 +23,104 @@ DATA_START_SECTOR: int = RESERVED_SECTORS + 2 * FAT_SIZE_SECTORS  # Sector 64
 SD_IMAGE_SECTORS: int = 4096
 
 
-def filename_to_83(name: str) -> bytes:
-    parts = name.split(".")
-    base = parts[0][:8].upper().ljust(8)
-    ext = parts[1][:3].upper().ljust(3) if len(parts) > 1 else "   "
-    return (base + ext).encode("ascii")
+_83_CHARS: frozenset[str] = frozenset(string.ascii_letters + string.digits + "!#$%&'()-@^_`{}~")
+_LFN_OFFSETS: tuple[int, ...] = (1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30)
+_FORBIDDEN: frozenset[str] = frozenset('"*/:<>?\\|')
+
+
+def fits_83(name: str) -> tuple[bytes, int] | None:
+    """`name` as an 8.3 entry name and its NT case flags, when it is one
+    exactly (each part in one case), as fs/fat32.c stores it; else None."""
+    if not name or len(name) > 12 or name[0] == "." or name.count(".") > 1:
+        return None
+    base, dot, ext = name.partition(".")
+    if not 1 <= len(base) <= 8 or len(ext) > 3 or (dot and not ext):
+        return None
+    if any(c not in _83_CHARS for c in base + ext):
+        return None
+    flags = 0
+    for part, flag in ((base, 0x08), (ext, 0x10)):
+        lower = any(c.islower() for c in part)
+        if lower and any(c.isupper() for c in part):
+            return None
+        if lower:
+            flags |= flag
+    return (base.upper().ljust(8) + ext.upper().ljust(3)).encode("ascii"), flags
+
+
+def short_alias(name: str, taken: set[bytes]) -> bytes:
+    """A "~N" alias not in `taken`: upper case, spaces and leading dots
+    dropped, the extension after the last dot, '_' for what 8.3 cannot hold."""
+    s = name.lstrip(". ")
+    base_part, _, ext_part = s.rpartition(".") if "." in s else (s, "", "")
+
+    def conv(t: str) -> str:
+        return "".join(c.upper() if c in _83_CHARS else "_" for c in t if c not in " .")
+
+    base = conv(base_part)[:8] or "_"
+    ext = conv(ext_part)[:3]
+    n = 1
+    while True:
+        tail = f"~{n}"
+        raw = ((base[: 8 - len(tail)] + tail).ljust(8) + ext.ljust(3)).encode("ascii")
+        if raw not in taken:
+            return raw
+        n += 1
+
+
+def lfn_checksum(short: bytes) -> int:
+    s = 0
+    for b in short:
+        s = (((s & 1) << 7) + (s >> 1) + b) & 0xFF
+    return s
+
+
+def lfn_slots(name: str, short: bytes) -> list[bytes]:
+    """The long-name slots for `name`, in disk order (last part first)."""
+    data = name.encode("utf-16-le")
+    units = [data[i : i + 2] for i in range(0, len(data), 2)]
+    if len(units) > 255:
+        raise ValueError(f"'{name}' is longer than 255 UTF-16 units")
+    n = (len(units) + 12) // 13
+    if len(units) % 13:
+        units.append(b"\x00\x00")
+    units += [b"\xff\xff"] * (n * 13 - len(units))
+    csum = lfn_checksum(short)
+    out: list[bytes] = []
+    for k in range(n, 0, -1):
+        e = bytearray(32)
+        e[0] = k | (0x40 if k == n else 0)
+        e[11] = 0x0F
+        e[13] = csum
+        for i, off in enumerate(_LFN_OFFSETS):
+            e[off : off + 2] = units[(k - 1) * 13 + i]
+        out.append(bytes(e))
+    return out
+
+
+def dir_entry(short: bytes, attr: int, nt: int, cluster: int, size: int) -> bytes:
+    e = bytearray(32)
+    e[0:11] = short
+    e[11] = attr
+    e[12] = nt
+    struct.pack_into("<H", e, 20, (cluster >> 16) & 0xFFFF)
+    struct.pack_into("<H", e, 26, cluster & 0xFFFF)
+    struct.pack_into("<I", e, 28, size)
+    return bytes(e)
+
+
+def entry_set(name: str, attr: int, cluster: int, size: int, taken: set[bytes]) -> bytes:
+    """`name`'s slots: an 8.3 entry alone when the name is one, else a
+    long-name set and a unique alias. Adds the 8.3 name to `taken`."""
+    if any(c in _FORBIDDEN or ord(c) < 0x20 for c in name) or name in (".", "..") or name[-1] in ". ":
+        raise ValueError(f"'{name}' cannot be a FAT file name")
+    fit = fits_83(name)
+    if fit and fit[0] not in taken:
+        taken.add(fit[0])
+        return dir_entry(fit[0], attr, fit[1], cluster, size)
+    short = short_alias(name, taken)
+    taken.add(short)
+    return b"".join(lfn_slots(name, short)) + dir_entry(short, attr, 0, cluster, size)
 
 
 def build_fat32_image(output_path: str, src_dir: str | None = None, num_sectors: int = NUM_SECTORS) -> None:
@@ -83,113 +177,64 @@ def build_fat32_image(output_path: str, src_dir: str | None = None, num_sectors:
     set_fat_entry(2, 0x0FFFFFFF)  # Root cluster EOF
 
     current_free_cluster: int = 3
+    capacity: int = num_sectors - data_start
 
-    def populate_dir(dir_path: str, parent_cluster: int) -> None:
+    def alloc(count: int) -> list[int]:
+        """`count` clusters in a row, chained, the last one ending the chain."""
         nonlocal current_free_cluster
-        if not os.path.isdir(dir_path):
-            return
+        first = current_free_cluster
+        current_free_cluster += count
+        if current_free_cluster - 2 > capacity:
+            raise ValueError(f"the content needs more than the {num_sectors}-sector image's "
+                             f"{capacity} sectors of data")
+        clusters = list(range(first, first + count))
+        for i, c in enumerate(clusters):
+            set_fat_entry(c, clusters[i + 1] if i + 1 < len(clusters) else 0x0FFFFFFF)
+        return clusters
 
-        entries: list[str] = sorted(os.listdir(dir_path))
-        curr_cluster: int = parent_cluster
-        dir_lba: int = data_start + (curr_cluster - 2)
-        dir_offset_base: int = dir_lba * SECTOR_SIZE
+    def write_clusters(clusters: list[int], data: bytes) -> None:
+        for i, c in enumerate(clusters):
+            chunk = data[i * SECTOR_SIZE : (i + 1) * SECTOR_SIZE]
+            off = (data_start + c - 2) * SECTOR_SIZE
+            img[off : off + len(chunk)] = chunk
 
-        # Determine starting entry index (if parent_cluster != 2, index starts after '.' and '..')
-        entry_idx: int = 0
-        if curr_cluster != 2:
-            # Check existing entries
-            for i in range(16):
-                if img[dir_offset_base + i * 32] == 0:
-                    entry_idx = i
-                    break
-
-        for name in entries:
-            full_path: str = os.path.join(dir_path, name)
-            if entry_idx >= 16:
-                next_cluster: int = current_free_cluster
-                current_free_cluster += 1
-                set_fat_entry(curr_cluster, next_cluster)
-                set_fat_entry(next_cluster, 0x0FFFFFFF)
-                curr_cluster = next_cluster
-                dir_lba = data_start + (curr_cluster - 2)
-                dir_offset_base = dir_lba * SECTOR_SIZE
-                entry_idx = 0
-
-            entry_offset: int = dir_offset_base + entry_idx * 32
-            name83: bytes = filename_to_83(name)
-
+    def populate_dir(dir_path: str, first: int, parent: int) -> None:
+        """Writes the directory at cluster `first` (already allocated, one
+        cluster) and everything below it."""
+        taken: set[bytes] = set()
+        slots = bytearray()
+        if first != 2:
+            slots += dir_entry(b".          ", 0x10, 0, first, 0)
+            slots += dir_entry(b"..         ", 0x10, 0, parent if parent != 2 else 0, 0)
+        subdirs: list[tuple[str, int]] = []
+        for name in sorted(os.listdir(dir_path)):
+            full_path = os.path.join(dir_path, name)
             if os.path.isdir(full_path):
-                sub_cluster: int = current_free_cluster
-                current_free_cluster += 1
-                set_fat_entry(sub_cluster, 0x0FFFFFFF)
-
-                # Write directory entry in parent
-                img[entry_offset : entry_offset + 11] = name83
-                img[entry_offset + 11] = 0x10  # ATTR_DIRECTORY
-                struct.pack_into("<H", img, entry_offset + 20, (sub_cluster >> 16) & 0xFFFF)
-                struct.pack_into("<H", img, entry_offset + 26, sub_cluster & 0xFFFF)
-                struct.pack_into("<I", img, entry_offset + 28, 0)
-
-                # Initialize sub_cluster with '.' and '..'
-                sub_lba: int = data_start + (sub_cluster - 2)
-                sub_base: int = sub_lba * SECTOR_SIZE
-
-                # Entry 0: '.'
-                img[sub_base : sub_base + 11] = b".          "
-                img[sub_base + 11] = 0x10
-                struct.pack_into("<H", img, sub_base + 20, (sub_cluster >> 16) & 0xFFFF)
-                struct.pack_into("<H", img, sub_base + 26, sub_cluster & 0xFFFF)
-
-                # Entry 1: '..'
-                up_clus: int = parent_cluster if parent_cluster != 2 else 0
-                img[sub_base + 32 : sub_base + 43] = b"..         "
-                img[sub_base + 43] = 0x10
-                struct.pack_into("<H", img, sub_base + 52, (up_clus >> 16) & 0xFFFF)
-                struct.pack_into("<H", img, sub_base + 58, up_clus & 0xFFFF)
-
-                entry_idx += 1
-                print(f"[SD Image] Added Directory '{name}' (Cluster {sub_cluster})")
-
-                # Recurse into subdirectory
-                populate_dir(full_path, sub_cluster)
-
+                sub = alloc(1)[0]
+                subdirs.append((full_path, sub))
+                slots += entry_set(name, 0x10, sub, 0, taken)
+                print(f"[SD Image] Added Directory '{name}' (Cluster {sub})")
             elif os.path.isfile(full_path):
                 with open(full_path, "rb") as f:
-                    content: bytes = f.read()
-
-                file_size: int = len(content)
-                clusters_needed: int = (file_size + SECTOR_SIZE - 1) // SECTOR_SIZE
-                if clusters_needed == 0:
-                    clusters_needed = 1
-
-                start_cluster: int = current_free_cluster
-
-                # Write file content to clusters & update FAT chain
-                for c in range(clusters_needed):
-                    cur_cluster: int = start_cluster + c
-                    data_lba: int = data_start + (cur_cluster - 2)
-                    chunk_start: int = c * SECTOR_SIZE
-                    chunk_end: int = min(file_size, chunk_start + SECTOR_SIZE)
-                    chunk_data: bytes = content[chunk_start:chunk_end]
-
-                    img[data_lba * SECTOR_SIZE : data_lba * SECTOR_SIZE + len(chunk_data)] = chunk_data
-
-                    next_val: int = (cur_cluster + 1) if (c + 1 < clusters_needed) else 0x0FFFFFFF
-                    set_fat_entry(cur_cluster, next_val)
-
-                # Write Directory Entry
-                img[entry_offset : entry_offset + 11] = name83
-                img[entry_offset + 11] = 0x20  # ATTR_ARCHIVE
-                struct.pack_into("<H", img, entry_offset + 20, (start_cluster >> 16) & 0xFFFF)
-                struct.pack_into("<H", img, entry_offset + 26, start_cluster & 0xFFFF)
-                struct.pack_into("<I", img, entry_offset + 28, file_size)
-
-                entry_idx += 1
-                current_free_cluster += clusters_needed
-                print(f"[SD Image] Added File '{name}' (8.3: {name83.decode('ascii')}, {file_size} bytes, Cluster {start_cluster})")
+                    content = f.read()
+                # An empty file has no cluster (first cluster 0), as the FAT
+                # spec and fsck.fat have it.
+                clusters = alloc(-(-len(content) // SECTOR_SIZE)) if content else []
+                write_clusters(clusters, content)
+                start = clusters[0] if clusters else 0
+                slots += entry_set(name, 0x20, start, len(content), taken)
+                print(f"[SD Image] Added File '{name}' ({len(content)} bytes, Cluster {start})")
+        # The directory's own clusters: its first, then as many more as its slots need.
+        need = max(1, -(-len(slots) // SECTOR_SIZE))
+        chain = [first] + (alloc(need - 1) if need > 1 else [])
+        if need > 1:
+            set_fat_entry(first, chain[1])
+        write_clusters(chain, bytes(slots))
+        for full_path, sub in subdirs:
+            populate_dir(full_path, sub, first)
 
     if src_dir and os.path.isdir(src_dir):
-        populate_dir(src_dir, 2)
+        populate_dir(src_dir, 2, 2)
 
     if current_free_cluster - 2 > num_sectors - data_start:
         raise ValueError(f"the content needs {current_free_cluster - 2} sectors of data and the "
@@ -197,6 +242,8 @@ def build_fat32_image(output_path: str, src_dir: str | None = None, num_sectors:
     # Update FSInfo free cluster count & next free cluster pointer
     struct.pack_into("<I", img, 512 + 488, (num_sectors - data_start) - (current_free_cluster - 2))
     struct.pack_into("<I", img, 512 + 492, current_free_cluster)
+    # The backup boot sector and FSInfo the boot sector points at (6 and 7).
+    img[6 * SECTOR_SIZE : 8 * SECTOR_SIZE] = img[0 : 2 * SECTOR_SIZE]
 
     with open(output_path, "wb") as f:
         f.write(img)

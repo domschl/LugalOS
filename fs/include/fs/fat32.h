@@ -26,6 +26,13 @@
 
 #define FAT32_EOF 0x0FFFFFF8
 
+/* Long file names (VFAT): up to 255 UTF-16 units on disk. In the API a name
+ * is UTF-8; FAT32_NAME_MAX bytes (with the NUL) is what a caller's buffer for
+ * one name needs. fat32_readdir() gives a name that does not fit a smaller
+ * buffer as its 8.3 alias, which opens the same file. */
+#define FAT32_LFN_MAX  255
+#define FAT32_NAME_MAX 256
+
 #pragma pack(push, 1)
 typedef struct {
     uint8_t  jmp_boot[3];
@@ -115,11 +122,20 @@ typedef struct {
  * volume (truncate, rm) bumps fs->gen, and every cursor falls back to a
  * walk from the start once rather than following a freed cluster. */
 typedef struct {
-    uint32_t first;            /* the file's first cluster; 0 = unset */
+    uint32_t first;            /* the file's first cluster (a directory's, for fat32_readdir); 0 = unset */
     uint32_t gen;
-    uint32_t index;            /* cluster number within the file, from 0 */
+    uint32_t index;            /* cluster number within the file, from 0; fat32_readdir: the next entry's index */
     uint32_t cluster;
+    uint32_t slot;             /* fat32_readdir only: the next slot within `cluster` */
 } fat32_cursor_t;
+
+/* Where an entry's 8.3 slot is: a directory cluster and the slot's index in
+ * it. An open file is written through this rather than its path, so a path
+ * of any length works and a write does not search the directory again. */
+typedef struct {
+    uint32_t clus;             /* 0: the root directory itself, which has no slot */
+    uint32_t idx;
+} fat32_loc_t;
 
 int fat32_init(fat32_fs_t *fs, block_dev_t *dev);
 
@@ -183,13 +199,22 @@ int fat32_format_quiet(block_dev_t *dev, bool quiet);
  * (under ~36 MB) or a write error. Calls `progress` (may be NULL) with the
  * percentage while it clears the FATs. */
 int fat32_mkfs(block_dev_t *dev, const char *label, uint32_t vol_id, void (*progress)(uint32_t pct));
+/* Finds `path`. A component matches an entry's long name or its 8.3 name,
+ * ignoring the case of ASCII and Latin-1 letters. */
 int fat32_find_file(fat32_fs_t *fs, const char *path, fat32_dir_entry_t *out_entry);
+/* Same, and *loc (may be NULL) gets where the entry is, for fat32_write_at_loc(). */
+int fat32_lookup(fat32_fs_t *fs, const char *path, fat32_dir_entry_t *out_entry, fat32_loc_t *loc);
 int fat32_read_file(fat32_fs_t *fs, fat32_dir_entry_t *entry, void *buf, uint32_t max_size);
 int fat32_write_file(fat32_fs_t *fs, const char *path, const void *buf, uint32_t size);
 int fat32_append_file(fat32_fs_t *fs, const char *path, const void *buf, uint32_t len);
 int fat32_mkdir(fat32_fs_t *fs, const char *path);
 int fat32_rmdir(fat32_fs_t *fs, const char *path);
 int fat32_remove_file(fat32_fs_t *fs, const char *path);
+/* Renames or moves a file or a directory within the volume. Fails when `to`
+ * exists (another entry than `from`: a change of case alone is allowed), and
+ * when a directory would move into itself. A handle open on the file before
+ * cannot write any more: its entry moved. */
+int fat32_rename(fat32_fs_t *fs, const char *from, const char *to);
 void fat32_list_dir(fat32_fs_t *fs, const char *path);
 /* Size and free space in 512-byte blocks (32 bits cover 2 TB; bytes would
  * not cover 4 GiB). The free count comes from FSInfo or the allocator's own
@@ -206,6 +231,11 @@ int fat32_read_at(fat32_fs_t *fs, fat32_dir_entry_t *entry, void *buf, uint32_t 
                   fat32_cursor_t *cur);
 int fat32_write_at(fat32_fs_t *fs, const char *path, const void *buf, uint32_t count, uint64_t offset,
                    fat32_cursor_t *cur);
+/* The same through the entry's place from fat32_lookup(). *entry is the
+ * caller's copy; the slot must still hold an entry of that 8.3 name (else
+ * -1: the file was removed or renamed), and *entry is refreshed from it. */
+int fat32_write_at_loc(fat32_fs_t *fs, const fat32_loc_t *loc, fat32_dir_entry_t *entry,
+                       const void *buf, uint32_t count, uint64_t offset, fat32_cursor_t *cur);
 
 /* Frees an existing file's cluster chain and resets it to empty (size 0,
  * no first cluster) without deleting its directory entry -- the FAT32-level
@@ -213,12 +243,14 @@ int fat32_write_at(fat32_fs_t *fs, const char *path, const void *buf, uint32_t c
 int fat32_truncate(fat32_fs_t *fs, const char *path);
 
 /* Returns the `index`-th directory entry (0-based, in on-disk order,
- * including "." and ".." -- matching fat32_list_dir()'s existing behavior)
- * of the directory at `dir_cluster`. `name_out` receives a normalized
- * "NAME.EXT" (or "NAME") display string, not the raw space-padded 8.3
- * bytes. Returns -1 once `index` is past the last entry. */
-int fat32_readdir(fat32_fs_t *fs, uint32_t dir_cluster, uint32_t index,
-                   char *name_out, uint32_t name_max, fat32_dir_entry_t *out_entry);
+ * including "." and ".." -- matching fat32_list_dir()) of the directory at
+ * `dir_cluster`. `name_out` receives its long name, or its 8.3 name ("README.TXT",
+ * "readme.txt" by its case flags) when it has none or the long name does not
+ * fit `name_max`. `cur` (may be NULL) continues from the entry it last
+ * returned, so reading index 0, 1, 2, ... is one pass over the directory.
+ * Returns -1 once `index` is past the last entry. */
+int fat32_readdir(fat32_fs_t *fs, uint32_t dir_cluster, uint32_t index, fat32_cursor_t *cur,
+                  char *name_out, uint32_t name_max, fat32_dir_entry_t *out_entry);
 
 
 #endif /* LUGALOS_FS_FAT32_H */

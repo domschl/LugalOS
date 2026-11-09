@@ -39,6 +39,26 @@ def section_range(elf, objdump, name):
     return None
 
 
+def _builds_address(prev: list[str], text: str) -> bool:
+    """Whether objdump's "# addr" comment on `text` is an address the code
+    builds. objdump tracks register values along the listing, not along the
+    control flow, so `addi s4,s4,1` (a loop counter) can inherit an address
+    s4 held on another path. An `addi rd,rd,imm` counts when the last of the
+    few instructions before it that wrote rd is a `lui`/`auipc` (the pair it
+    completes); anything else with a comment counts as before."""
+    m = re.match(r"\s*addi\s+(\w+),(\w+),", text)
+    if not m or m.group(1) != m.group(2):
+        return True
+    rd = m.group(1)
+    for p in reversed(prev[-4:]):
+        w = re.match(r"\s*([\w.]+)\s+(\w+)\b", p)
+        if not w or re.fullmatch(r"s[bhwd]|c\.s[wd]|b\w*|c\.b\w*|j\w*|c\.j\w*", w.group(1)):
+            continue   # a store, branch or jump names a register it does not write
+        if w.group(2) == rd:
+            return w.group(1) in ("lui", "auipc")
+    return False
+
+
 def main():
     elf, objdump, pairs = sys.argv[1], sys.argv[2], sys.argv[3:]
     dis = subprocess.run([objdump, "-d", "--no-show-raw-insn", elf],
@@ -67,19 +87,22 @@ def main():
             addr, body = funcs[name]
             if not (lo <= addr < hi):
                 errors.append(f"{name} is at 0x{addr:08x}, outside {sect}")
+            prev: list[str] = []
             for line in body:
                 text = "\t".join(line.split("\t")[1:]) or line
+                built_here = _builds_address(prev, text)
+                prev.append(text)
                 call = re.search(r"\b(jal|j|call|tail|jalr)\b", text)
                 tgt = re.search(r"\b([0-9a-f]{8}) <([^>+]+)(\+0x[0-9a-f]+)?>", text)
                 if call and call.group(1) == "jalr" and not tgt:
                     errors.append(f"{name}: indirect call, target unverifiable: {text.strip()}")
-                if tgt:
+                if tgt and (call or built_here):
                     a = int(tgt.group(1), 16)
                     if not (lo <= a < hi) and (call or is_memory(a)):
                         errors.append(f"{name}: reaches 0x{a:08x} <{tgt.group(2)}> outside {sect}: {text.strip()}")
                     elif call and tgt.group(3) is None and tgt.group(2) in funcs:
                         todo.append(tgt.group(2))
-                for a in re.findall(r"# ([0-9a-f]{8})\b", text):
+                for a in (re.findall(r"# ([0-9a-f]{8})\b", text) if built_here else []):
                     if not (lo <= int(a, 16) < hi) and is_memory(int(a, 16)):
                         errors.append(f"{name}: computes 0x{a}, outside {sect}: {text.strip()}")
         if errors:

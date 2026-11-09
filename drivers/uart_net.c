@@ -358,7 +358,7 @@ static int rpc_unlocked(const char *write_payload, char *read_out_buf, uint32_t 
         // 3b. Tcreate fid=2: creates (or truncates) the scratch file; fid=2
         // now refers to it, already open for write.
         p9_msg_t tc = { .type = P9_TCREATE, .tag = 4, .fid = 2, .perm = 0644, .mode = P9_OWRITE | P9_OTRUNC };
-        strncpy(tc.name, SCRATCH_NAME, sizeof(tc.name) - 1);
+        (void)p9_msg_put_name(&tc, SCRATCH_NAME, strlen(SCRATCH_NAME), &tc.name);
         tx_len = p9_serialize(&tc, tx_buf, sizeof(tx_buf));
         rx_len = uart_net_send_9p(tx_buf, (uint32_t)tx_len, rx_buf, sizeof(rx_buf));
         if (rx_len < 7) return -1;
@@ -378,7 +378,7 @@ static int rpc_unlocked(const char *write_payload, char *read_out_buf, uint32_t 
 
     // 4a. Twalk fid=1 -> newfid=3, into the scratch file.
     p9_msg_t tw1 = { .type = P9_TWALK, .tag = 7, .fid = 1, .newfid = 3, .nwname = 1 };
-    strncpy(tw1.wname[0], SCRATCH_NAME, sizeof(tw1.wname[0]) - 1);
+    (void)p9_msg_put_name(&tw1, SCRATCH_NAME, strlen(SCRATCH_NAME), &tw1.wname[0]);
     tx_len = p9_serialize(&tw1, tx_buf, sizeof(tx_buf));
     rx_len = uart_net_send_9p(tx_buf, (uint32_t)tx_len, rx_buf, sizeof(rx_buf));
     if (rx_len < 7) return -1;

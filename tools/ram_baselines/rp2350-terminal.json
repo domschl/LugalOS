@@ -73,7 +73,7 @@
     "fs/9p.c": 7941,
     "fs/p9_chan.c": 6196,
     "fs/p9_link.c": 12548,
-    "fs/vfs_server.c": 4111,
+    "fs/vfs_server.c": 3727,
     "kernel/balloc.c": 2055,
     "kernel/board.c": 21,
     "kernel/chan.c": 1348,
@@ -174,8 +174,8 @@
     "shell": 12852,
     "storage": 3152,
     "usb": 20933,
-    "vfs": 4111
+    "vfs": 3727
   },
   "ram_code": 24484,
-  "total": 196834
+  "total": 196450
 }

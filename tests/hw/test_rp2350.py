@@ -32,6 +32,7 @@ from pathlib import Path
 import serial
 
 import rp2350
+import longnames
 import p9lib  # via rp2350.py's sys.path insert
 
 REPO_ROOT = rp2350.REPO_ROOT
@@ -196,6 +197,48 @@ def test_user_elf(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
         return (name, True, "; ".join(label for label, _ in checks))
     except Exception as e:
         return (name, False, str(e))
+
+
+def test_long_names(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
+    """76.1: long file names on /sd0, over 9P (ACM1, the path p9sync.py
+    takes) and on the console (`ls`, `mv`, `fsck`). See longnames.py."""
+    name = "Long file names on /sd0: 9P, ls, mv, fsck (76.1)"
+    if not rp2350.sd_mounted(ports.console):
+        return (name, True, "SKIPPED: /sd0 is not mounted")
+
+    def console(line: str) -> str:
+        with serial.Serial(ports.console, 115200, timeout=2) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+            ser.write(line.encode() + b"\n")
+            ser.flush()
+            # Until the prompt comes back: fsck is silent while it walks the card.
+            out = b""
+            end = time.time() + 120.0
+            while time.time() < end:
+                out += ser.read(4096)
+                if b"lsh>" in out.split(line.encode(), 1)[-1]:
+                    break
+            return out.decode("utf-8", "replace")
+
+    def with_9p(fn):
+        with serial.Serial(ports.net, 115200, timeout=5) as ser:
+            ser.dtr = True
+            time.sleep(0.3)
+            ser.reset_input_buffer()
+            adapter = rp2350.SerialSocketAdapter(ser)
+            client = p9lib.P9Client(adapter, framing="raw")
+            if not rp2350.warm_up_9p(client, adapter):
+                raise RuntimeError("no response from ACM1")
+            with p9lib.Session(client, aname="/") as sess:
+                return fn(sess)
+
+    try:
+        ok, detail = longnames.check(with_9p, console)
+        return (name, ok, detail)
+    except Exception as e:
+        return (name, False, f"{type(e).__name__}: {e}")
 
 
 def test_usb_cdc_net_link(ports: rp2350.Rp2350Ports) -> tuple[str, bool, str]:
@@ -2386,7 +2429,7 @@ def main() -> int:
     # umode_isolation/test_user_elf/test_process_abi each load their own
     # program before that point too); a heap-budget re-analysis is tracked as
     # M5 follow-up work rather than fixed here.
-    tests = [test_firmware_freshness, test_pmp_probe, test_flash_path_restores_qspi, test_psram, dev_only(test_bulk_zone), dev_only(test_ram0_in_psram), dev_only(test_editor_in_psram), test_canvas_store, test_lcd_terminal_status, test_chess_hot_path, dev_only(test_priostress), test_uart_task, test_blk_task, test_i2c_task, test_st7735_task, test_tm1638_task, test_heap_on_demand, dev_only(test_umode_isolation), test_user_elf, test_usb_cdc_net_link, test_usb_cdc_net_resync, test_uart_demux_shared_wire, test_i2c_repeated_start]
+    tests = [test_firmware_freshness, test_pmp_probe, test_flash_path_restores_qspi, test_psram, dev_only(test_bulk_zone), dev_only(test_ram0_in_psram), dev_only(test_editor_in_psram), test_canvas_store, test_lcd_terminal_status, test_chess_hot_path, dev_only(test_priostress), test_uart_task, test_blk_task, test_long_names, test_i2c_task, test_st7735_task, test_tm1638_task, test_heap_on_demand, dev_only(test_umode_isolation), test_user_elf, test_usb_cdc_net_link, test_usb_cdc_net_resync, test_uart_demux_shared_wire, test_i2c_repeated_start]
     if not args.skip_qemu_bridge:
         tests.append(test_qemu_bridge)
     tests.append(test_process_abi)

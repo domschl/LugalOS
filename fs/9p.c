@@ -120,6 +120,28 @@ static bool rcur_str(rcur_t *c, char *dst, uint32_t dst_size) {
     return true;
 }
 
+bool p9_msg_put_name(p9_msg_t *m, const char *s, size_t len, uint16_t *off) {
+    if (!m || !s || !off || len >= VFS_NAME_MAX || (size_t)m->names_used + len + 1u > sizeof(m->names)) return false;
+    memcpy(m->names + m->names_used, s, len);
+    m->names[m->names_used + len] = '\0';
+    *off = m->names_used;
+    m->names_used = (uint16_t)(m->names_used + len + 1u);
+    return true;
+}
+
+/* A file name from the wire into the message's pool. Refused, rather than
+ * cut short, when it does not fit; refused when it holds a NUL or a '/' (one
+ * name is one path component). */
+static bool rcur_name(rcur_t *c, p9_msg_t *m, uint16_t *off) {
+    uint16_t len;
+    if (!rcur_u16(c, &len)) return false;
+    if (c->overflow || c->p + len > c->end) { c->overflow = true; return false; }
+    bool ok = !memchr(c->p, '\0', len) && !memchr(c->p, '/', len) &&
+              p9_msg_put_name(m, (const char *)c->p, len, off);
+    c->p += len;
+    return ok;
+}
+
 static bool rcur_qid(rcur_t *c, p9_qid_t *q) {
     uint8_t type;
     uint32_t vers;
@@ -158,26 +180,27 @@ static char *p9_find_last_slash(const char *s) {
 /* Joins `base` (an absolute VFS path) with a single walk/create component,
  * handling ".." (parent directory, clamped at "/") the way 9P's Twalk
  * expects. `out` and `base` may alias. */
-static void p9_path_join(char *out, uint32_t out_size, const char *base, const char *comp) {
+/* `base` and one component (".." goes up) into `out`, which must not be
+ * `base`. False when the result does not fit: callers treat that as "no such
+ * file", since a path cut short names some other file. */
+static bool p9_path_join(char *out, uint32_t out_size, const char *base, const char *comp) {
+    size_t bl = strlen(base);
     if (strcmp(comp, "..") == 0) {
-        char tmp[128];
-        strncpy(tmp, base, sizeof(tmp) - 1);
-        tmp[sizeof(tmp) - 1] = '\0';
-        char *slash = p9_find_last_slash(tmp);
-        if (slash && slash != tmp) *slash = '\0';
-        else { tmp[0] = '/'; tmp[1] = '\0'; }
-        strncpy(out, tmp, out_size - 1);
-        out[out_size - 1] = '\0';
-        return;
+        if (bl >= out_size) return false;
+        memcpy(out, base, bl + 1);
+        char *slash = p9_find_last_slash(out);
+        if (slash && slash != out) *slash = '\0';
+        else { out[0] = '/'; out[1] = '\0'; }
+        return true;
     }
-    if (strcmp(base, "/") == 0) {
-        ksnprintf(out, out_size, "/%s", comp);
-    } else {
-        char tmp[128];
-        strncpy(tmp, base, sizeof(tmp) - 1);
-        tmp[sizeof(tmp) - 1] = '\0';
-        ksnprintf(out, out_size, "%s/%s", tmp, comp);
-    }
+    size_t cl = strlen(comp);
+    bool root = strcmp(base, "/") == 0;
+    size_t head = root ? 0 : bl;
+    if (head + 1 + cl >= out_size) return false;
+    memcpy(out, base, head);
+    out[head] = '/';
+    memcpy(out + head + 1, comp, cl + 1);
+    return true;
 }
 
 /* Stable-ish 64-bit id for a resolved absolute path, used as qid.path.
@@ -231,7 +254,7 @@ typedef struct {
     uint32_t seq;               // g_fid_seq when allocated: older than a close, or newer
     bool in_use;
     uint32_t fid_value;
-    char path[128];             // resolved absolute VFS path
+    char path[VFS_PATH_MAX];    // resolved absolute VFS path
     bool is_dir;
     bool is_open;
     int vfs_fd;                 // valid iff is_open && !is_dir
@@ -1223,7 +1246,7 @@ static void p9_handle_tattach(const p9_msg_t *req, p9_msg_t *resp) {
     p9_fid_entry_t *e = p9_fid_alloc(req->fid);
     if (!e) { resp->type = P9_RERROR; resp->ename = "attach: fid table full or fid in use"; return; }
 
-    char path[128];
+    char path[VFS_PATH_MAX];
     if (req->aname[0] == '\0' || strcmp(req->aname, "/") == 0) {
         strncpy(path, "/", sizeof(path) - 1);
     } else if (req->aname[0] == '/') {
@@ -1283,7 +1306,7 @@ static void p9_handle_twalk(const p9_msg_t *req, p9_msg_t *resp) {
         return;
     }
 
-    char cur[128];
+    char cur[VFS_PATH_MAX];
     strncpy(cur, src->path, sizeof(cur) - 1);
     cur[sizeof(cur) - 1] = '\0';
 
@@ -1292,8 +1315,11 @@ static void p9_handle_twalk(const p9_msg_t *req, p9_msg_t *resp) {
     bool final_is_dir = src->is_dir;
 
     for (uint16_t i = 0; i < req->nwname; i++) {
-        char next[128];
-        p9_path_join(next, sizeof(next), cur, req->wname[i]);
+        char next[VFS_PATH_MAX];
+        if (!p9_path_join(next, sizeof(next), cur, p9_wname(req, i))) {
+            if (i == 0) { resp->type = P9_RERROR; resp->ename = "walk: path too long"; return; }
+            break;
+        }
         /* The key store is not walkable, by anyone, over any transport --
          * refused exactly like a path that is not there, so that a client
          * cannot even learn whether keys are kept here. See
@@ -1394,8 +1420,10 @@ static void p9_handle_tcreate(const p9_msg_t *req, p9_msg_t *resp) {
         resp->type = P9_RERROR; resp->ename = read_only_ename("create"); return;
     }
 
-    char newpath[128];
-    p9_path_join(newpath, sizeof(newpath), e->path, req->name);
+    char newpath[VFS_PATH_MAX];
+    if (!p9_path_join(newpath, sizeof(newpath), e->path, p9_cname(req))) {
+        resp->type = P9_RERROR; resp->ename = "create: path too long"; return;
+    }
     bool want_dir = (req->perm & P9_DMDIR) != 0;
 
     int fd = -1;
@@ -1436,7 +1464,7 @@ static int p9_read_dir_stream(p9_fid_entry_t *e, uint64_t offset, uint32_t cap, 
 
     uint32_t used = 0;
     for (;;) {
-        char name[P9_MAX_NAME_LEN];
+        char name[VFS_NAME_MAX];
         vfs_stat_t st;
         if (vfs_readdir(dfd, e->dir_read_index, name, sizeof(name), &st) != 0) break;
 
@@ -1459,11 +1487,19 @@ static int p9_read_dir_stream(p9_fid_entry_t *e, uint64_t offset, uint32_t cap, 
             continue;
         }
 
-        char childpath[128];
-        p9_path_join(childpath, sizeof(childpath), e->path, name);
+        /* A child whose path does not fit cannot be walked to; it is listed
+         * under its 8.3 alias then, which is shorter and opens it. */
+        char childpath[VFS_PATH_MAX];
+        if (!p9_path_join(childpath, sizeof(childpath), e->path, name)) {
+            if (vfs_readdir(dfd, e->dir_read_index, name, 13, &st) != 0 ||
+                !p9_path_join(childpath, sizeof(childpath), e->path, name)) {
+                e->dir_read_index++;
+                continue;
+            }
+        }
         p9_qid_t q = { .type = st.is_dir ? P9_QTDIR : P9_QTFILE, .vers = 0, .path = p9_path_hash(childpath) };
 
-        uint8_t entrybuf[96];
+        uint8_t entrybuf[64 + VFS_NAME_MAX];
         int elen = p9_pack_stat(entrybuf, sizeof(entrybuf), name, st.size, st.is_dir != 0, q);
         if (elen < 0) break;
         if (used + (uint32_t)elen > cap) break; // doesn't fit in this reply; client will Tread again
@@ -1677,7 +1713,7 @@ int p9_serialize(const p9_msg_t *msg, uint8_t *buf, uint32_t buf_size) {
             wcur_u32(&c, msg->newfid);
             uint16_t n = msg->nwname > P9_MAX_WALK_ELEM ? P9_MAX_WALK_ELEM : msg->nwname;
             wcur_u16(&c, n);
-            for (uint16_t i = 0; i < n; i++) wcur_str(&c, msg->wname[i]);
+            for (uint16_t i = 0; i < n; i++) wcur_str(&c, p9_wname(msg, i));
             break;
         }
         case P9_RWALK: {
@@ -1702,7 +1738,7 @@ int p9_serialize(const p9_msg_t *msg, uint8_t *buf, uint32_t buf_size) {
             break;
         case P9_TCREATE:
             wcur_u32(&c, msg->fid);
-            wcur_str(&c, msg->name);
+            wcur_str(&c, p9_cname(msg));
             wcur_u32(&c, msg->perm);
             wcur_u8(&c, msg->mode);
             break;
@@ -1815,7 +1851,7 @@ int p9_deserialize(const uint8_t *buf, uint32_t len, p9_msg_t *msg) {
             if (ok && n > P9_MAX_WALK_ELEM) ok = false; // reject rather than silently truncate
             if (ok) {
                 msg->nwname = n;
-                for (uint16_t i = 0; ok && i < n; i++) ok = rcur_str(&c, msg->wname[i], P9_MAX_NAME_LEN);
+                for (uint16_t i = 0; ok && i < n; i++) ok = rcur_name(&c, msg, &msg->wname[i]);
             }
             break;
         }
@@ -1842,7 +1878,7 @@ int p9_deserialize(const uint8_t *buf, uint32_t len, p9_msg_t *msg) {
         }
         case P9_TCREATE:
             ok = rcur_u32(&c, &msg->fid);
-            if (ok) ok = rcur_str(&c, msg->name, sizeof(msg->name));
+            if (ok) ok = rcur_name(&c, msg, &msg->name);
             if (ok) ok = rcur_u32(&c, &msg->perm);
             if (ok) ok = rcur_u8(&c, &msg->mode);
             break;

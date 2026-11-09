@@ -42,6 +42,16 @@ lsh> format /sd0
 > [!CAUTION]
 > `format` completely erases existing partition contents.
 
+### File Names
+FAT volumes (`/sd0`, `/flash0`, `/ram0`, `/nvme0`) keep **long file names** (VFAT), as a PC writes them:
+* Up to 255 characters, UTF-8 in LugalOS, stored as UTF-16. Case is kept; matching ignores the case of ASCII and Latin-1 letters (`Notes.md` and `NOTES.MD` are one file).
+* A name that is an 8.3 name in one case (`readme.txt`, `README.TXT`) is stored as an 8.3 entry only. Any other name gets a long-name entry and a unique short alias (`LUGALO~1.MD`), which opens the same file.
+* Not allowed in names: `" * / : < > ? \ |`, control characters, and a trailing dot or space.
+* A path of 128 bytes at most on the boards without PSRAM (Pico 2, RP2350 presets but the LCD-7, C6), 256 on the others. Over 9P (`p9sync.py`) the same limits hold.
+* Characters outside Latin-1 are stored exactly; the console's fonts may show them as a replacement glyph.
+
+Cards written by LugalOS before long names hold every name cut to 8.3 in capitals (`INIT.LIS` for `init.lisp`), and those are not found under their long names. Rebuild such a card: `format /sd0` (or on a PC), then `p9sync.py` its content back.
+
 ### Recounting Free Clusters (`df -r`)
 If an unexpected reset leaves FAT32 `FSInfo` out of sync:
 ```text

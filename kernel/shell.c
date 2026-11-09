@@ -2633,40 +2633,33 @@ static bool wildcard_match(const char *pat, const char *str) {
 
 #define MAX_FIND_DEPTH 16
 
-static void find_recurse(const char *dir_path, const char *pattern, int depth) {
+/* `path` holds the directory (`len` bytes, room for `cap`). Each name is read
+ * straight onto its end, so the recursion carries one path rather than a path
+ * and a name per level -- with long names that would be half a kilobyte of
+ * stack a level. A name that does not fit what is left comes as its 8.3
+ * alias, which still opens it. */
+static void find_recurse(char *path, size_t len, size_t cap, const char *pattern, int depth) {
     if (depth > MAX_FIND_DEPTH) return;
-    int fd = vfs_open(dir_path, VFS_O_READ);
+    int fd = vfs_open(path, VFS_O_READ);
     if (fd < 0) {
         if (depth == 0) {
-            cprintf("find: cannot open '%s'\n", dir_path);
+            cprintf("find: cannot open '%s'\n", path);
             g_shell_last_status = 1;
         }
         return;
     }
-
-    char name[64];
+    size_t base = len;
+    if (len == 0 || path[len - 1] != '/') path[base++] = '/';
     vfs_stat_t st;
-    for (uint32_t i = 0; vfs_readdir(fd, i, name, sizeof(name), &st) == 0; i++) {
+    for (uint32_t i = 0; base + 1 < cap && vfs_readdir(fd, i, path + base, (uint32_t)(cap - base), &st) == 0; i++) {
+        const char *name = path + base;
         if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
-
-        char full_path[192];
-        size_t dlen = strlen(dir_path);
-        if (dlen == 1 && dir_path[0] == '/') {
-            ksnprintf(full_path, sizeof(full_path), "/%s", name);
-        } else if (dlen > 0 && dir_path[dlen - 1] == '/') {
-            ksnprintf(full_path, sizeof(full_path), "%s%s", dir_path, name);
-        } else {
-            ksnprintf(full_path, sizeof(full_path), "%s/%s", dir_path, name);
+        if (!pattern || wildcard_match(pattern, name) || wildcard_match(pattern, path)) {
+            cprintf("%s\n", path);
         }
-
-        if (!pattern || wildcard_match(pattern, name) || wildcard_match(pattern, full_path)) {
-            cprintf("%s\n", full_path);
-        }
-
-        if (st.is_dir) {
-            find_recurse(full_path, pattern, depth + 1);
-        }
+        if (st.is_dir) find_recurse(path, strlen(path), cap, pattern, depth + 1);
     }
+    path[len] = '\0';
     vfs_close(fd);
 }
 
@@ -2710,10 +2703,10 @@ static void cmd_find(const char *arg_str) {
         }
     }
 
-    const char *start_path = path_buf[0] ? path_buf : "/";
     const char *pattern = pat_buf[0] ? pat_buf : NULL;
-
-    find_recurse(start_path, pattern, 0);
+    char path[VFS_PATH_MAX + 2];
+    ksnprintf(path, sizeof(path) - 1, "%s", path_buf[0] ? path_buf : "/");
+    find_recurse(path, strlen(path), sizeof(path), pattern, 0);
     g_shell_last_status = 0;
 }
 
@@ -8739,22 +8732,21 @@ static void parse_and_eval_cmd(const char *cmd_line) {
             while (*p == ' ' || *p == '\t') p++;
             if (*p == '\0') break;
 
+            /* "a b" is one argument: a name with spaces (`ls "/sd0/My Notes"`). */
             sb_putc(&sb, ' ');
             bool quoted = (*p == '"');
-            if (!quoted) sb_putc(&sb, '"');
-
+            if (quoted) p++;
+            sb_putc(&sb, '"');
             while (*p) {
                 if (quoted && *p == '"') {
-                    sb_putc(&sb, *p++);
+                    p++;
                     break;
                 } else if (!quoted && (*p == ' ' || *p == '\t')) {
                     break;
-                } else {
-                    sb_putc(&sb, *p);
-                    p++;
                 }
+                sb_putc(&sb, *p++);
             }
-            if (!quoted) sb_putc(&sb, '"');
+            sb_putc(&sb, '"');
         }
     }
 

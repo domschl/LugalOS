@@ -40,6 +40,37 @@ history.
 
 # A. Actionable
 
+## The RP2350's SPI SD driver takes every card for 1 GiB (found 2026-11-09)
+
+**Destination: phase 40 backlog, or the next RP2350 storage work.** `drivers/spisd_rp2350.c:951`
+sets `num_blocks = 2097152` and never reads the card's CSD. `format /sd0` on the chess board's
+8 GB card therefore made a 1 GiB volume, and on a larger card formatted on a PC every cluster
+past the first GiB is refused (`lba + count > dev->num_blocks`): files there read as errors.
+**Fix shape:** CMD9 at init, C_SIZE from CSD v2 (SDHC/SDXC: `(C_SIZE + 1) * 1024` blocks), v1 for
+SDSC; `format` then sizes the card right.
+
+## A kernel log line during a shared-wire 9P session breaks its framing (found 2026-11-09)
+
+**Destination: the next 9P/console work.** With `p9share`, 9P and the console share one UART.
+A `printk` from a 9P request's own work (76.1 found it with `mkdir`'s "Subdirectory created",
+since removed) is written by klogd between a reply's bytes: the host sees a SLIP frame with log
+text inside it, and p9lib reports "connection closed while reading a SLIP frame". Seen on the
+VisionFive 2 (its log goes to UART0); the RP2350's 9P has its own CDC port and is immune. **This
+is likely the cause of the LCD-7B entry below** ("9P over its console stops answering").
+**Fix shape:** while a shared-wire peer is attached, hold kernel log output back (klogd keeps it)
+or send it as SLIP-framed console text between frames, never inside one.
+
+## The VisionFive 2 sees an older /sd0 right after U-Boot `fatwrite` (found 2026-11-09)
+
+**Destination: the VisionFive 2 SDMMC driver.** Booted by `test_visionfive2.py` (YMODEM, then
+U-Boot `fatwrite` of `/sd0/lugalos.bin`), LugalOS's `ls /sd0` does not list `lugalos.bin` and
+`fsck /sd0` reports ~190 lost clusters (the file's 6 MB); the count varied run to run (105, 188,
+190, 192, 0). Booted with `vf2run.py --method sd` from the same card, the file is found and
+`fsck` is clean, so the card is consistent. **Suspect:** a read of a sector U-Boot just wrote
+served from a stale cache line or buffer (DMA without invalidation), or U-Boot's own write-back
+order. **To settle:** after a `fatwrite` boot, read the root directory's sectors twice with an
+explicit invalidate between, and compare.
+
 ## Two bus locks became ylocks -- the gateway half not yet run
 
 **Destination: the owner's bench, the ENC28J60 gateway** (phase 40's item

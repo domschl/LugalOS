@@ -202,27 +202,27 @@ static void build_session(void) {
     MSG(P9_TATTACH); m.fid = 1; m.afid = P9_NOFID; snprintf(m.uname, sizeof(m.uname), "peer"); add(&m);
     MSG(P9_TATTACH); m.fid = 1; m.afid = 9; snprintf(m.uname, sizeof(m.uname), "peer"); snprintf(m.aname, sizeof(m.aname), "/sd0"); add(&m);
     MSG(P9_TWALK); m.fid = 1; m.newfid = 2; m.nwname = 2;
-    snprintf(m.wname[0], P9_MAX_NAME_LEN, "sd0"); snprintf(m.wname[1], P9_MAX_NAME_LEN, "a.txt"); add(&m);
+    (void)p9_msg_put_name(&m, "sd0", strlen("sd0"), &m.wname[0]); (void)p9_msg_put_name(&m, "a.txt", strlen("a.txt"), &m.wname[1]); add(&m);
     MSG(P9_TOPEN); m.fid = 2; m.mode = P9_OREAD; add(&m);
     MSG(P9_TREAD); m.fid = 2; m.offset = 0; m.count = 200; add(&m);
     MSG(P9_TREAD); m.fid = 2; m.offset = 250; m.count = 4000; add(&m);
     MSG(P9_TSTAT); m.fid = 2; add(&m);
     MSG(P9_TCLUNK); m.fid = 2; add(&m);
-    MSG(P9_TWALK); m.fid = 1; m.newfid = 3; m.nwname = 1; snprintf(m.wname[0], P9_MAX_NAME_LEN, "sd0"); add(&m);
+    MSG(P9_TWALK); m.fid = 1; m.newfid = 3; m.nwname = 1; (void)p9_msg_put_name(&m, "sd0", strlen("sd0"), &m.wname[0]); add(&m);
     MSG(P9_TOPEN); m.fid = 3; m.mode = P9_OREAD; add(&m);
     MSG(P9_TREAD); m.fid = 3; m.offset = 0; m.count = 1000; add(&m);      /* a directory read */
     MSG(P9_TCLUNK); m.fid = 3; add(&m);
-    MSG(P9_TWALK); m.fid = 1; m.newfid = 3; m.nwname = 1; snprintf(m.wname[0], P9_MAX_NAME_LEN, "sd0"); add(&m);
-    MSG(P9_TCREATE); m.fid = 3; snprintf(m.name, sizeof(m.name), "new.txt"); m.perm = 0644; m.mode = P9_OWRITE; add(&m);
+    MSG(P9_TWALK); m.fid = 1; m.newfid = 3; m.nwname = 1; (void)p9_msg_put_name(&m, "sd0", strlen("sd0"), &m.wname[0]); add(&m);
+    MSG(P9_TCREATE); m.fid = 3; (void)p9_msg_put_name(&m, "new.txt", 7, &m.name); m.perm = 0644; m.mode = P9_OWRITE; add(&m);
     static uint8_t payload[512];
     for (unsigned i = 0; i < sizeof(payload); i++) payload[i] = (uint8_t)i;
     MSG(P9_TWRITE); m.fid = 3; m.offset = 0; m.count = sizeof(payload); m.data = payload; add(&m);
     MSG(P9_TWRITE); m.fid = 3; m.offset = 0x7FFFFFFFFFull; m.count = 10; m.data = payload; add(&m);
     MSG(P9_TCLUNK); m.fid = 3; add(&m);
     MSG(P9_TWALK); m.fid = 1; m.newfid = 4; m.nwname = 3;
-    snprintf(m.wname[0], P9_MAX_NAME_LEN, "sd0"); snprintf(m.wname[1], P9_MAX_NAME_LEN, ".."); snprintf(m.wname[2], P9_MAX_NAME_LEN, ".."); add(&m);
+    (void)p9_msg_put_name(&m, "sd0", strlen("sd0"), &m.wname[0]); (void)p9_msg_put_name(&m, "..", strlen(".."), &m.wname[1]); (void)p9_msg_put_name(&m, "..", strlen(".."), &m.wname[2]); add(&m);
     MSG(P9_TWALK); m.fid = 1; m.newfid = 5; m.nwname = P9_MAX_WALK_ELEM;
-    for (int i = 0; i < P9_MAX_WALK_ELEM; i++) snprintf(m.wname[i], P9_MAX_NAME_LEN, "sub");
+    for (int i = 0; i < P9_MAX_WALK_ELEM; i++) (void)p9_msg_put_name(&m, "sub", strlen("sub"), &m.wname[i]);
     add(&m);
     MSG(P9_TREMOVE); m.fid = 4; add(&m);
     MSG(P9_TFLUSH); m.oldtag = 3; add(&m);
@@ -333,6 +333,50 @@ static void on_alarm(int sig) {
     _exit(3);
 }
 
+/* Long names through the codec: whole, or refused -- never cut short. */
+static int long_name_checks(void) {
+    static uint8_t buf[P9_MAX_MSIZE];
+    p9_msg_t m, back;
+    char a[201], b[41];
+    memset(a, 'a', 200); a[200] = '\0';
+    memset(b, 'b', 40); b[40] = '\0';
+    memset(&m, 0, sizeof m);
+    m.type = P9_TWALK; m.tag = 7; m.fid = 1; m.newfid = 2; m.nwname = 2;
+    if (!p9_msg_put_name(&m, a, 200, &m.wname[0]) || !p9_msg_put_name(&m, b, 40, &m.wname[1])) {
+        fprintf(stderr, "FAIL: a 200- and a 40-byte name do not fit one message\n"); return 1;
+    }
+    int n = p9_serialize(&m, buf, sizeof buf);
+    if (n <= 0 || p9_deserialize(buf, (uint32_t)n, &back) != 0 || back.nwname != 2 ||
+        strcmp(p9_wname(&back, 0), a) != 0 || strcmp(p9_wname(&back, 1), b) != 0) {
+        fprintf(stderr, "FAIL: long walk names do not round-trip\n"); return 1;
+    }
+    /* Twalk with names past the pool, hand-built: refused as a frame. */
+    uint32_t len = 0;
+    uint8_t *w = buf;
+    w[4] = P9_TWALK; w[5] = 1; w[6] = 0; len = 7;
+    memset(w + len, 0, 8); w[len] = 1; w[len + 4] = 2; len += 8;
+    w[len++] = 3; w[len++] = 0;                        /* nwname = 3 */
+    for (int k = 0; k < 3; k++) {
+        uint16_t l = 200;
+        w[len++] = (uint8_t)l; w[len++] = (uint8_t)(l >> 8);
+        memset(w + len, 'c', l); len += l;
+    }
+    w[0] = (uint8_t)len; w[1] = (uint8_t)(len >> 8); w[2] = 0; w[3] = 0;
+    if (p9_deserialize(buf, len, &back) == 0) {
+        fprintf(stderr, "FAIL: a walk of 600 name bytes parsed (the pool is %u)\n", (unsigned)P9_NAME_POOL); return 1;
+    }
+    /* A name with a '/' is not one name. */
+    memset(&m, 0, sizeof m);
+    m.type = P9_TWALK; m.tag = 8; m.fid = 1; m.newfid = 2; m.nwname = 1;
+    (void)p9_msg_put_name(&m, "x/../y", 6, &m.wname[0]);
+    n = p9_serialize(&m, buf, sizeof buf);
+    if (p9_deserialize(buf, (uint32_t)n, &back) == 0) {
+        fprintf(stderr, "FAIL: a walk element holding '/' parsed\n"); return 1;
+    }
+    printf("p9_host: long names round-trip, an over-long walk and a '/' in a name are refused\n");
+    return 0;
+}
+
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
     int iterations = argc > 1 ? atoi(argv[1]) : 2000;
@@ -360,6 +404,7 @@ int main(int argc, char **argv) {
     ns_reset();
     run_frames((const uint8_t (*)[P9_MAX_MSIZE])g_frames, g_flen, g_nframes, P9_AUTH_REQUIRED);
     claim_door_checks();
+    if (long_name_checks() != 0) return 1;
     printf("p9_host: %d-frame session round-trips and runs under both policies\n", g_nframes);
 
     static uint8_t mut[64][P9_MAX_MSIZE];

@@ -92,6 +92,7 @@ void launcher_report(void) { cprintf("launcher: not present on headless board\n"
 #endif
 
 #define LAUNCHER_MAX_DOCS       128     /* in BULK_BSS: ~20 KB, PSRAM on the panel boards */
+#define LAUNCHER_PATH_MAX       96      /* the help folders' paths; a longer one is left out */
 
 #define LAUNCHER_ID_APP_READER   1
 #define LAUNCHER_ID_APP_CHESS    2
@@ -123,7 +124,7 @@ void launcher_report(void) { cprintf("launcher: not present on headless board\n"
 #define LAUNCHER_ALERT_MAX   4
 
 typedef struct {
-    char path[96];
+    char path[LAUNCHER_PATH_MAX];
     char label[48];
     char badge[12];
 } launcher_doc_t;
@@ -176,7 +177,7 @@ static launcher_state_t s_launcher BULK_BSS;
 static char       s_pending_cmd[64] BULK_BSS;           /* guarded by: s_pending_lock */
 static spinlock_t s_pending_lock = SPINLOCK_INIT;
 
-/* ASCII case folded: the FAT volumes answer 8.3 names in capitals. */
+/* ASCII case folded: FAT names match in any case, and 8.3 names may come in capitals. */
 static bool same_name(const char *a, const char *b) {
     for (;; a++, b++) {
         char ca = (*a >= 'A' && *a <= 'Z') ? (char)(*a + 32) : *a;
@@ -271,13 +272,15 @@ static void add_doc_entry(const char *full_path, const char *name, const char *b
 static void scan_dir_docs(const char *dir_path, const char *badge) {
     int fd = vfs_open(dir_path, VFS_O_READ);
     if (fd < 0) return;
-    char name[64];
+    char name[VFS_NAME_MAX];
     vfs_stat_t st;
     for (uint32_t idx = 0; idx < 256 && s_launcher.doc_count < LAUNCHER_MAX_DOCS; idx++) {
         if (vfs_readdir(fd, idx, name, sizeof(name), &st) < 0) break;
         if (st.is_dir) continue;
         if (str_ends_with(name, ".md") || str_ends_with(name, ".gmi")) {
-            char full[96];
+            char full[LAUNCHER_PATH_MAX];
+            /* A path cut short would open nothing, or another file: left out. */
+            if (strlen(dir_path) + 1u + strlen(name) >= sizeof(full)) continue;
             ksnprintf(full, sizeof(full), "%s/%s", dir_path, name);
             add_doc_entry(full, name, badge);
         }

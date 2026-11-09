@@ -43,6 +43,10 @@ import serial
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_BUILD = REPO_ROOT / "build" / "visionfive2"
+sys.path.insert(0, str(REPO_ROOT / "host" / "p9lib" / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import longnames  # noqa: E402
+import p9lib  # noqa: E402
 
 
 def _load_vf2run():
@@ -347,6 +351,44 @@ def test_nvme_filesystem_and_cas(ser: serial.Serial) -> tuple[str, bool, str]:
     return (name, True, "NVMe R/W verified, Lisp script loaded and evaluated from /nvme0/")
 
 
+def test_long_names(ser: serial.Serial, root: str) -> tuple[str, bool, str]:
+    """76.1: long file names on `root`, over 9P (UART0 with p9share, the way
+    `p9sync.py --vf2` goes) and on the console (`ls`, `mv`, `fsck`)."""
+    name = f"Long file names on {root}: 9P, ls, mv, fsck (76.1)"
+    if f"{root}/" not in run_cmd(ser, "df", timeout_s=20.0):
+        return (name, True, f"SKIPPED: {root} is not mounted")
+
+    def console(line: str) -> str:
+        return run_cmd(ser, line, timeout_s=120.0)
+
+    def with_9p(fn):
+        run_cmd(ser, "p9share", timeout_s=15.0)
+        saved = ser.timeout
+        client = None
+        try:
+            client = p9lib.connect_open_serial(ser, framing="slip", timeout=20.0, closer=lambda _s: None)
+            with p9lib.Session(client, aname="/") as sess:
+                return fn(sess)
+        except Exception as e:
+            seen = bytes(getattr(client, "console_text", b"") or b"")[-300:]
+            raise RuntimeError(f"{e}; console bytes on the wire: {seen!r}") from e
+        finally:
+            if client is not None:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+            ser.timeout = saved
+            time.sleep(0.3)
+            run_cmd(ser, "p9share off", timeout_s=15.0)
+
+    try:
+        ok, detail = longnames.check(with_9p, console, root)
+        return (name, ok, detail)
+    except Exception as e:
+        return (name, False, f"{type(e).__name__}: {e}")
+
+
 def test_usb_hub_and_tree(ser: serial.Serial) -> tuple[str, bool, str]:
     name = "usb: VIA VL805 xHCI 1.0 host, onboard VL817 Hub, and device topology"
     out_ports = run_cmd(ser, "usb ports", timeout_s=10.0)
@@ -473,6 +515,7 @@ def main() -> int:
         help="Boot method (default: auto -- uses /sd0/lugalos.bin if size matches, else 1.5 Mbps YMODEM + fatwrite)",
     )
     ap.add_argument("--verbose", "-v", action="store_true", help="Echo console traffic during tests")
+    ap.add_argument("--only", help="run only the tests whose function name contains this (e.g. long_names)")
     args = ap.parse_args()
 
     port = detect_vf2_port(args.port)
@@ -490,25 +533,33 @@ def main() -> int:
     results: list[tuple[str, bool, str]] = []
     try:
         boot_log = boot_board(ser, args.build, args.method, echo=args.verbose)
-        results.append(test_boot_and_smp_topology(ser, boot_log))
-        results.append(test_timebase_accuracy(ser))
-        results.append(test_mmu_and_umode_isolation(ser))
-        results.append(test_smp_and_locks(ser))
-        results.append(test_sdmmc_and_cas(ser))
-        results.append(test_emac_loopback(ser))
-        results.append(test_network_and_dhcp(ser))
-        results.append(test_host_services(ser))
-        results.append(test_pcie_enumeration(ser))
-        results.append(test_nvme_storage(ser))
-        results.append(test_nvme_filesystem_and_cas(ser))
-        results.append(test_usb_hub_and_tree(ser))
-        results.append(test_usb_hid_keyboard_mouse(ser))
-        results.append(test_hdmi_phy_and_edid(ser, boot_log))
-        results.append(test_dc8200_display_controller(ser))
-        results.append(test_cursor_engine_and_injection(ser))
-        results.append(test_ribbon_workstation_composition(ser))
-        results.append(test_stress(ser))
-        results.append(test_pmic_cold_reboot(ser))
+        tests = [
+            ("test_boot_and_smp_topology", lambda: test_boot_and_smp_topology(ser, boot_log)),
+            ("test_timebase_accuracy", lambda: test_timebase_accuracy(ser)),
+            ("test_mmu_and_umode_isolation", lambda: test_mmu_and_umode_isolation(ser)),
+            ("test_smp_and_locks", lambda: test_smp_and_locks(ser)),
+            ("test_sdmmc_and_cas", lambda: test_sdmmc_and_cas(ser)),
+            ("test_long_names", lambda: test_long_names(ser, "/sd0")),
+            ("test_emac_loopback", lambda: test_emac_loopback(ser)),
+            ("test_network_and_dhcp", lambda: test_network_and_dhcp(ser)),
+            ("test_host_services", lambda: test_host_services(ser)),
+            ("test_pcie_enumeration", lambda: test_pcie_enumeration(ser)),
+            ("test_nvme_storage", lambda: test_nvme_storage(ser)),
+            ("test_nvme_filesystem_and_cas", lambda: test_nvme_filesystem_and_cas(ser)),
+            ("test_long_names", lambda: test_long_names(ser, "/nvme0")),
+            ("test_usb_hub_and_tree", lambda: test_usb_hub_and_tree(ser)),
+            ("test_usb_hid_keyboard_mouse", lambda: test_usb_hid_keyboard_mouse(ser)),
+            ("test_hdmi_phy_and_edid", lambda: test_hdmi_phy_and_edid(ser, boot_log)),
+            ("test_dc8200_display_controller", lambda: test_dc8200_display_controller(ser)),
+            ("test_cursor_engine_and_injection", lambda: test_cursor_engine_and_injection(ser)),
+            ("test_ribbon_workstation_composition", lambda: test_ribbon_workstation_composition(ser)),
+            ("test_stress", lambda: test_stress(ser)),
+            ("test_pmic_cold_reboot", lambda: test_pmic_cold_reboot(ser)),
+        ]
+        for fn_name, run in tests:
+            if args.only and args.only not in fn_name:
+                continue
+            results.append(run())
     finally:
         ser.close()
 

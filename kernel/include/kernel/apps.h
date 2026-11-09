@@ -36,7 +36,7 @@ typedef struct {
 const app_desc_t *app_find(const char *id);
 
 /* The application that opens path, by its extension (case does not matter:
- * FAT volumes answer 8.3 names in capitals), or NULL. */
+ * FAT names match in any case, and 8.3 names may come in capitals), or NULL. */
 const app_desc_t *app_for_path(const char *path);
 
 /* a's command line for path (NULL: none) into out; false if it does not fit. */

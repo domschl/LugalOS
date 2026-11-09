@@ -443,11 +443,9 @@ static void ed_title(ed_t *e) {
 
 /* The safe save's copy of `path`: the extension's FIRST character becomes
  * '~' (notes.txt -> notes.~xt, lorenz.lisp -> lorenz.~isp; none: notes ->
- * notes.~). The card's FAT32 keeps 8.3 names -- an extension cut to three
- * letters -- so anything changed past the third letter names the file
- * itself: `path~` did for every name, and the extension's last letter did
- * for four-letter ones (lorenz.lis~ is LORENZ.LIS, which is lorenz.lisp;
- * removing "the copy" deleted the file, found on the panel, 37.5b). */
+ * notes.~). It differs from the file within the first eight and three
+ * characters, so even an 8.3-only FAT driver -- another device's -- keeps
+ * the copy and the file apart; removing the copy can never remove the file. */
 static void copy_name(const char *path, char *o, uint32_t cap) {
     ksnprintf(o, cap, "%s", path);
     uint32_t n = (uint32_t)strlen(o);

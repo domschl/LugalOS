@@ -1,9 +1,10 @@
 # Phase 76 — Touch UX Foundation III: Long File Names, `ugui` for Lisp, the Portrait Ribbon
 
-**Status: PLANNED (split from phase 71 on 2026-11-09; its milestones were 71.6b, 71.4b and 71.5 there).**
+**Status: IN PROGRESS (split from phase 71 on 2026-11-09; its milestones were 71.6b, 71.4b and 71.5 there). 76.1 started 2026-11-09.**
 **Target Hardware**:
 - **Primary**: M5Stack Tab5 (`esp32p4-tab5`, portrait and landscape), Waveshare ESP32-P4-WIFI6-Touch-LCD-7B (`esp32p4-lcd7b`)
 - **Also**: Waveshare RP2350-LCD-7 (`rp2350-terminal`: long names and Lisp `ugui`, no portrait), StarFive VisionFive 2 (`visionfive2`: long names on `/sd0` and `/nvme0`)
+- **Long names without PSRAM**: Pico 2 chess (`rp2350-chess`: SD card for its saved games, no PSRAM -- owner, 2026-11-09)
 - **Regression**: every FAT target builds; RP2350 SRAM does not grow.
 
 **Follows**: Phase 71 (compositor, input pipeline, `ugui` v2, view framework, system events, registry, icons, settings store, text input, mouse).
@@ -48,9 +49,18 @@ Sizing (`Cmd+[`, `Cmd+]`, `Cmd+\`) and order (`Ctrl+Cmd+Arrows`) are keyboard-on
 - **Scope:** read and write VFAT long names: UTF-16 entries assembled to UTF-8 paths in the VFS (255 UTF-16 units max); case preserved, matching case-insensitive for ASCII and Latin-1; a name that fits 8.3 is stored as 8.3 only; a long one gets its entry set with checksum and a unique `~N` alias; delete and rename remove or rewrite the whole set. Characters outside Latin-1 are stored exactly and shown as a replacement glyph until fonts cover them (78.2 brings Latin-1).
 - **Large volumes (`/nvme0`, 256 GB):** about 8 million clusters at 32 KB (a 32 MB FAT). Allocation starts from the FSInfo next-free hint and keeps the free count there, rather than scanning the FAT; directory walks stay linear in the directory, not in the volume. Checked on the 64-bit build too (the host harness builds for both widths).
 - **Cross-phase:** phase 74 mounts `/nvme0` through `block_dev_t` and `fat32_init()` and leaves `fs/fat32.c` to this milestone; `/nvme0` gets long names when it lands.
-- **Decision for the owner, before it starts:** which targets. Proposal: the SD + PSRAM boards (Tab5, LCD-7B, NANO, RP2350-LCD-7) and the VisionFive 2 at least; whether the code stays shared for every FAT target (one code path) or is compiled out where flash is tight (Pico 2 presets, C6) is measured first (`sizereport`, flash delta).
+- **Decisions (owner, 2026-11-09):**
+  - **Targets:** every FAT target, one code path, measured first. Measured: +4.5 KB flash on the Pico 2 chess preset and on the C6; static RAM 274-384 bytes *smaller* on every RP2350 preset (a FAT handle no longer keeps its path). No compile-out switch.
+  - **Old cards: no fallback.** A card written before long names holds every name cut to 8.3 in capitals (`INIT.LIS`); it is erased and rebuilt on update (`format`, then `p9sync.py`), never matched by its truncated names -- that is the ambiguity that lost `lorenz.lisp`.
+  - **Rename is in:** `fat32_rename()`, `vfs_rename()`, `mv` in the shell and Lisp.
+- **Beyond the FAT driver** (every layer that held a name or a path cut them short): 9P names (32 bytes, cut short on receipt) to a per-message name pool, refused rather than cut when too long; 9P fid paths and `p9_path_join()` refuse what does not fit; paths `VFS_PATH_MAX` (256 with PSRAM or 64-bit, 128 otherwise, `fs/include/fs/fs_limits.h`) and names `VFS_NAME_MAX` (256); an open file is written through its entry's place (`fat32_write_at_loc()`), not its path; `readdir` continues from a cursor (one pass per listing); the image builders (`tools/create_sd_image.py`, `/flash0`) write long names.
 - **Acceptance:** host harness (`tests/host`, ASan/UBSan) on images made by `mkfs.fat`/`mtools` with long, mixed-case and Latin-1 names: listed, opened and written back exactly; files created here read correctly by `mtools` and `fsck.fat -n` is clean; alias collisions resolved; `p9sync.py` syncs a tree with long names to `/sd0`, and to `/nvme0` on the VisionFive 2; creating, listing and deleting in a directory of 1000 long names stays fast on a 256 GB image (sparse, in the host harness); the screenshot test drops its 8.3 note.
-- **Status:** planned.
+- **Status:** done 2026-11-09.
+  - Host (`tests/host/fat32_host.c`): long names, aliases (six "chapter ..." names share a prefix: `CHAPTE~1`..`~4`, then hashed), case, Latin-1, a character outside the BMP, 255 units, refused names, rename and move (`..` of a moved directory), a stale write place refused; `fsck.fat -n -l` lists every name as written; interchange both ways with `mkfs.fat` + `mtools`; 1000 long names on a sparse 256 GB volume: create 0.5-0.8 s (one directory pass each), list one pass (a cursor), lookup+remove 0.1 s; 2000 corrupt images. `tests/host/p9_host.c`: long names round-trip, a walk past the pool and a '/' in a name refused.
+  - QEMU (`tests/runner.py`, 776 tests): listings show long names; the shell quotes (`cat "/ram0/a spaced name.txt"`, `mv` to a long name) -- quoting a shell argument had never worked (the opening quote ended it) and is fixed.
+  - Hardware (`tests/hw/longnames.py` in the RP2350, P4 and VisionFive 2 suites: 9P write/list/read in another case, `ls`, `mv`, `fsck` no worse than before): **Pico 2 chess** (no PSRAM; card formatted and synced with `p9sync.py`), **RP2350-LCD-7**, **Tab5**, **LCD-7B**, **VisionFive 2** `/sd0` and `/nvme0`. On the VisionFive 2 `/sd0` passes when not booted by a U-Boot `fatwrite` just before (open issue).
+  - Found on the way, in `plan/open_issues.md`: the RP2350 SPI SD driver's fixed 1 GiB capacity; a kernel log line inside a shared-wire 9P session breaks its framing (likely the LCD-7B "9P stops answering" entry); the VisionFive 2's view of `/sd0` right after U-Boot `fatwrite`.
+  - Cards written before 76.1 are rebuilt, not read through their truncated names (owner); the chess card was. The terminal, Tab5, LCD-7B and VisionFive 2 cards keep their old 8.3 entries until they are.
 
 ### 76.2 — `ugui` for Lisp programs
 - Lisp primitives over the phase 71 widgets, in the immediate-mode model the toolkit already uses: the program owns its loop, `(ui-begin)`, one call per widget (drawn into the program's own surface, its hit-box registered: `(ui-button id "OK" x y w h)`, cards, lists, steppers, text fields...), `(ui-end)` presents; `(ui-event)` takes the next event from the window's own ring, `(ui-hit ev)` names the widget it hit. No callbacks from system tasks into the program.

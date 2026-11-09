@@ -84,6 +84,7 @@ Readings come from the sensor hub's cache, so no call waits on the I2C bus. Valu
 * `(load <path>)`: Load and evaluate Lisp source file.
 * `(read-file <path>)`: Read file content directly into a Lisp string.
 * `(write-file <path> <string>)`: Write string content to disk.
+* `(cp <src> <dst>)`, `(mv <src> <dst>)`, `(rm <path>)`, `(mkdir <path>)`, `(rmdir <path>)`: Copy, rename or move (within one volume; `#f` if `<dst>` exists), remove; `#t` or `#f`.
 * `(spawn <elf-path>)`: Launch an isolated U-mode program in the background.
 * `(chess [threads])`: Launch the interactive chess engine in split-terminal keyboard mode (optional multicore Lazy SMP search).
 * `(chess-touch)`: Launch the touch-first graphical chess game with interactive piece movement and Classic Mac toolbar controls.

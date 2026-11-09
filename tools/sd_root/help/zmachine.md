@@ -135,7 +135,7 @@ LugalOS ships with open-source MIT-licensed story files staged under `/sd0/games
 ### Adding Custom Story Files
 To add additional interactive fiction games:
 1. Ensure the story file is in **Version 3** format (`.z3` or `.zip`).
-2. Rename the file using standard 8.3 FAT short filenames (e.g. `ENCHANTE.Z3`, `PLANETFA.Z3`, `HITCHHIK.Z3`).
+2. Keep its name (long names work: `Planetfall.z3`), or quote it if it has spaces.
 3. Copy the file into `/sd0/games/` using the 9P synchronization tool (`tools/p9sync.py`) or by mounting the MicroSD card on a host workstation.
 4. Launch the game using `zmachine <filename>`.
 

@@ -216,6 +216,14 @@ char *strncpy(char *dst, const char *src, size_t n) {
     return dst;
 }
 
+void *memchr(const void *s, int c, size_t n) {
+    const unsigned char *p = (const unsigned char *)s;
+    for (size_t i = 0; i < n; i++) {
+        if (p[i] == (unsigned char)c) return (void *)(p + i);
+    }
+    return NULL;
+}
+
 char *strchr(const char *s, int c) {
     if (!s) return NULL;
     while (*s != '\0') {

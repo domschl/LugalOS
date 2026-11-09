@@ -34,8 +34,8 @@
  * Ctrl-X Ctrl-C (Super+Q) leaves.
  *
  * **Saving is safe:** the text goes to a copy first -- the file's name with
- * the extension's first letter made '~' (notes.~xt), an 8.3 name of its own
- * on the card -- and then to the file, and the copy is removed only once
+ * the extension's first letter made '~' (notes.~xt), a name of its own --
+ * and then to the file, and the copy is removed only once
  * both writes succeeded, so a complete text -- old or new -- is on the card
  * at every moment. A failed save says
  * so and keeps the buffer, and its modified mark, in memory.

@@ -356,7 +356,7 @@ class P9FS(Operations):
             "f_bavail": 1 << 19,
             "f_files": 1 << 16,
             "f_ffree": 1 << 15,
-            "f_namemax": 32,  # P9_MAX_NAME_LEN - 1
+            "f_namemax": 255,  # VFS_NAME_MAX - 1 (bytes)
         }
 
     # --- files ---

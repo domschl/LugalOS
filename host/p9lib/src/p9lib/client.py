@@ -58,12 +58,14 @@ ORCLOSE = 0x40
 DMDIR = 0x80000000
 
 # fs/include/fs/9p.h's own per-connection limits -- not protocol limits, but
-# real ones: exceeding P9_MAX_WALK_ELEM/P9_MAX_NAME_LEN server-side fails the
-# request, and P9_MAX_FIDS (8) is small enough that a client juggling many
-# fids at once will run the connection out, not just its own bookkeeping.
+# real ones: exceeding P9_MAX_WALK_ELEM server-side fails the request, a file
+# name of VFS_NAME_MAX bytes or more (UTF-8) is refused, and P9_MAX_FIDS (8)
+# is small enough that a client juggling many fids at once will run the
+# connection out, not just its own bookkeeping. A path is further limited by
+# the board: 128 bytes without PSRAM, 256 with (fs/include/fs/fs_limits.h).
 MAX_FIDS = 8
 MAX_WALK_ELEM = 16
-MAX_NAME_LEN = 32
+MAX_NAME_LEN = 256
 
 SLIP_END, SLIP_ESC, SLIP_ESC_END, SLIP_ESC_ESC = 0xC0, 0xDB, 0xDC, 0xDD
 
@@ -467,8 +469,8 @@ class P9Client:
         newly created entry (not a separate new fid), matching fs/9p.c's
         p9_handle_tcreate() exactly. Ready to write() immediately afterward
         if `perm` doesn't have DMDIR set."""
-        if len(name) > MAX_NAME_LEN - 1:
-            raise P9Error(f"name {name!r} exceeds server's MAX_NAME_LEN={MAX_NAME_LEN}")
+        if len(name.encode("utf-8")) > MAX_NAME_LEN - 1:
+            raise P9Error(f"name {name!r} exceeds server's MAX_NAME_LEN={MAX_NAME_LEN} bytes")
         body = struct.pack("<I", fid) + _pack_str(name) + struct.pack("<IB", perm, mode)
         rtype, resp = self._roundtrip(TCREATE, body)
         if rtype != RCREATE:
