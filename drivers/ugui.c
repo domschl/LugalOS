@@ -317,32 +317,55 @@ static void focus_to(ugui_ctx_t *ctx, int slot) {
     ctx->focus_index = ctx->hits[slot].index;
 }
 
-/* The nearest widget from slot `from` in direction (dx, dy): its centre must
- * lie that way; the distance along the direction counts once, the distance
- * across it twice, so a widget straight ahead beats a nearer one aside. */
+/* A widget's distances from the focus `f` in direction (dx, dy): to its near
+ * edge (`along`, <= 0: not that way), to its far edge (`far`), between the
+ * centres across the direction (`across`), and whether it overlaps f across
+ * it (`beam`: straight ahead). */
+typedef struct {
+    int  along, far, across;
+    bool beam;
+} nav_dist_t;
+
+static nav_dist_t nav_dist(const ugui_rect_t *f, const ugui_rect_t *r, int dx, int dy) {
+    nav_dist_t d;
+    if (dx) {
+        d.along = dx > 0 ? r->x - (f->x + f->w - 1) : f->x - (r->x + r->w - 1);
+        d.far = dx > 0 ? (r->x + r->w - 1) - (f->x + f->w - 1) : f->x - r->x;
+        d.across = (r->y + r->h / 2) - (f->y + f->h / 2);
+        d.beam = r->y < f->y + f->h && r->y + r->h > f->y;
+    } else {
+        d.along = dy > 0 ? r->y - (f->y + f->h - 1) : f->y - (r->y + r->h - 1);
+        d.far = dy > 0 ? (r->y + r->h - 1) - (f->y + f->h - 1) : f->y - r->y;
+        d.across = (r->x + r->w / 2) - (f->x + f->w / 2);
+        d.beam = r->x < f->x + f->w && r->x + r->w > f->x;
+    }
+    if (d.across < 0) d.across = -d.across;
+    return d;
+}
+
+/* Whether a beats b as the next focus that way (Android's focus search): a
+ * widget straight ahead wins over one aside if it starts before the other
+ * one ends -- so a column is kept, and a widget in the next row is not lost
+ * to one further on that happens to be in line; otherwise the nearer by
+ * 13 x along^2 + across^2, the next row first, then the nearest in it. */
+static bool nav_beats(const nav_dist_t *a, const nav_dist_t *b) {
+    if (a->beam && !b->beam && a->along < b->far) return true;
+    if (b->beam && !a->beam && b->along < a->far) return false;
+    long da = 13L * a->along * a->along + (long)a->across * a->across;
+    long db = 13L * b->along * b->along + (long)b->across * b->across;
+    return da < db;
+}
+
+/* The next focusable widget from slot `from` in direction (dx, dy), or -1. */
 static int focus_nearest(const ugui_ctx_t *ctx, int from, int dx, int dy) {
     const ugui_rect_t *f = &ctx->hits[from].rect;
-    int fx = f->x + f->w / 2, fy = f->y + f->h / 2;
     int best = -1;
-    long best_d = 0;
+    nav_dist_t best_d = { 0, 0, 0, false };
     for (int i = 0; i < ctx->count; i++) {
         if (i == from || !focusable(ctx, i)) continue;
-        const ugui_rect_t *r = &ctx->hits[i].rect;
-        int along, across;
-        if (dx) {
-            int edge = dx > 0 ? r->x - (f->x + f->w - 1) : f->x - (r->x + r->w - 1);
-            if (edge <= 0) continue;                     /* not that way */
-            along = edge;
-            across = (r->y + r->h / 2) - fy;
-        } else {
-            int edge = dy > 0 ? r->y - (f->y + f->h - 1) : f->y - (r->y + r->h - 1);
-            if (edge <= 0) continue;
-            along = edge;
-            across = (r->x + r->w / 2) - fx;
-        }
-        if (across < 0) across = -across;
-        long d = (long)along + 2L * (long)across;
-        if (best < 0 || d < best_d) { best = i; best_d = d; }
+        nav_dist_t d = nav_dist(f, &ctx->hits[i].rect, dx, dy);
+        if (d.along <= 0) continue;                      /* not that way */
+        if (best < 0 || nav_beats(&d, &best_d)) { best = i; best_d = d; }
     }
     return best;
 }
@@ -1754,6 +1777,35 @@ bool ugui_selftest(void) {
     ctx.focus_id = 999;
     ugui_end(NULL, &ctx);
     if (!ugui_is_focused(&ctx, 101, 0)) return false;
+
+    /* Arrows over hello_ugui's column: a slider, under it a stepper whose -
+     * is dimmed, under that a text field in line with the slider. Down from
+     * the slider is the stepper's + (the next row), not the field beyond it;
+     * Up from the field is the + again. And two columns, as the launcher's:
+     * Down from a card is the card under it, not the list row beside it that
+     * starts a little higher. */
+    ugui_begin(&ctx);
+    ugui_add_hit(&ctx, (ugui_rect_t){ 16, 140, 230, 24 }, 4, 0);      /* slider */
+    ugui_add_hit(&ctx, (ugui_rect_t){ 168, 186, 32, 28 }, 5, 0);      /* -, dimmed */
+    ctx.hits[ctx.count - 1].flags |= UGUI_HIT_DISABLED;
+    ugui_add_hit(&ctx, (ugui_rect_t){ 264, 186, 32, 28 }, 6, 0);      /* + */
+    ugui_add_hit(&ctx, (ugui_rect_t){ 70, 220, 226, 26 }, 7, 0);      /* the field */
+    ugui_set_focus(&ctx, 4, 0);
+    ctx.focus_shown = true;
+    if (ugui_nav(&ctx, KEY_DOWN, 0, &fid, &fidx) != UGUI_NAV_MOVED || !ugui_is_focused(&ctx, 6, 0)) return false;
+    if (ugui_nav(&ctx, KEY_DOWN, 0, &fid, &fidx) != UGUI_NAV_MOVED || !ugui_is_focused(&ctx, 7, 0)) return false;
+    if (ugui_nav(&ctx, KEY_UP, 0, &fid, &fidx) != UGUI_NAV_MOVED || !ugui_is_focused(&ctx, 6, 0)) return false;
+    if (ugui_nav(&ctx, KEY_UP, 0, &fid, &fidx) != UGUI_NAV_MOVED || !ugui_is_focused(&ctx, 4, 0)) return false;
+    ugui_begin(&ctx);
+    ugui_add_hit(&ctx, (ugui_rect_t){ 10, 100, 200, 60 }, 1, 0);      /* a card */
+    ugui_add_hit(&ctx, (ugui_rect_t){ 10, 170, 200, 60 }, 2, 0);      /* the card under it */
+    for (int i = 0; i < 6; i++)                                       /* a list beside them */
+        ugui_add_hit(&ctx, (ugui_rect_t){ 240, (int16_t)(108 + 28 * i), 300, 28 }, 3, (int16_t)i);
+    ugui_set_focus(&ctx, 1, 0);
+    ctx.focus_shown = true;
+    if (ugui_nav(&ctx, KEY_DOWN, 0, &fid, &fidx) != UGUI_NAV_MOVED || !ugui_is_focused(&ctx, 2, 0)) return false;
+    if (ugui_nav(&ctx, KEY_RIGHT, 0, &fid, &fidx) != UGUI_NAV_MOVED || ctx.focus_id != 3) return false;
+    if (ugui_nav(&ctx, KEY_DOWN, 0, &fid, &fidx) != UGUI_NAV_MOVED || ctx.focus_id != 3) return false;
 
     /* The ring inverts a dotted frame inside the focused widget: a drawn
      * button's interior pixel at the ring changes, one further in does not. */
