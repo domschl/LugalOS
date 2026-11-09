@@ -651,11 +651,8 @@ void reader_drag_end(int dy, uint32_t ms) {
     uint8_t rid = s_active_reader_rid;
     if (rid >= READER_MAX_INSTANCES || !s_readers[rid].active) return;
     /* Still moving at least 3 mm over the last ~100 ms: a fling from there. */
-#if defined(CONFIG_PANEL_DPI)
-    int fling_px = (int)((3u * CONFIG_PANEL_DPI * 10u + 127u) / 254u);
-#else
-    int fling_px = 16;
-#endif
+    int fling_px = ugui_mm_px(30);
+    if (fling_px <= 0) fling_px = 16;
     if (ms > 0 && (dy >= fling_px || dy <= -fling_px)) reader_touch_fling_instance(rid, dy, ms);
     else reader_update_instance(rid);
 }

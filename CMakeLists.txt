@@ -761,6 +761,8 @@ set(SOURCES
     kernel/screenshot.c
     # a relative pointer (a USB mouse) made absolute for the console.
     kernel/pointer.c
+    # UI sounds (the on-screen keyboard's click).
+    drivers/ui_sound.c
     kernel/power.c
     kernel/ubsan.c
 

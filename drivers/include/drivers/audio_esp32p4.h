@@ -55,6 +55,15 @@ int  audio_p4_get_volume(void);
  * One stream with one owner (its render function): a start by another owner
  * switches the stream to it. */
 bool audio_p4_start(audio_p4_render_fn render_fn, void *user);
+/* The same with a short ring (AUDIO_P4_LOWLAT_DESC buffers of
+ * AUDIO_P4_LOWLAT_SAMPLES, ~24 ms ahead) for UI sounds that must be heard
+ * when they happen; its owner pumps it every few ms. A start of the other
+ * kind restarts the stream. */
+#define AUDIO_P4_LOWLAT_DESC     3
+#define AUDIO_P4_LOWLAT_SAMPLES  128
+bool audio_p4_start_lowlat(audio_p4_render_fn render_fn, void *user);
+/* Whether render_fn owns the stream now. */
+bool audio_p4_is_owner(audio_p4_render_fn render_fn);
 void audio_p4_pump(void);
 void audio_p4_stop(void);
 /* Stops the stream only if render_fn still owns it: a game pausing or

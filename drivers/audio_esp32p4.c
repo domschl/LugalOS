@@ -108,6 +108,11 @@ static _Alignas(64) int16_t s_audio_buf[AUDIO_P4_NUM_DESC][AUDIO_P4_CHUNK_SAMPLE
  * owner takes it over, a release by a former one is a no-op.
  * guarded by: s_audio_lock (start, release, stop and pump all take it). */
 static ylock_t s_audio_lock;
+/* The stream's ring, set at its start: its buffers and their samples. A
+ * game's is all of it (AUDIO_P4_NUM_DESC x AUDIO_P4_CHUNK_SAMPLES, ~380 ms,
+ * which rides out its pumping); a UI sound's is short, so a click is heard
+ * when it is made (AUDIO_P4_LOWLAT_*, ~24 ms). guarded by: s_audio_lock */
+static int s_ring_n = AUDIO_P4_NUM_DESC, s_chunk = AUDIO_P4_CHUNK_SAMPLES;
 /* guarded by: s_audio_lock */
 static bool s_streaming = false;
 /* guarded by: s_audio_lock */
@@ -508,7 +513,8 @@ bool audio_p4_is_playing(void) {
 /* Continuous circular streaming API (used by games) */
 static void audio_p4_stop_locked(void);
 
-static bool audio_p4_start_locked(audio_p4_render_fn render_fn, void *user) {
+static bool audio_p4_start_locked(audio_p4_render_fn render_fn, void *user, int ring_n, int chunk) {
+    if (s_streaming && (ring_n != s_ring_n || chunk != s_chunk)) audio_p4_stop_locked();   /* the other kind of ring */
     if (s_streaming) {
         /* Running for another owner (a game left paused in the background
          * by the focus moving to this one): its sound becomes this one's. */
@@ -543,17 +549,20 @@ static bool audio_p4_start_locked(audio_p4_render_fn render_fn, void *user) {
     s_stream_render_fn   = render_fn;
     s_stream_render_user = user;
     s_active_desc        = 0;
+    s_ring_n             = ring_n;
+    s_chunk              = chunk;
+    uint32_t chunk_bytes = (uint32_t)chunk * 2u * sizeof(int16_t);
 
     /* Initialize circular descriptors */
-    for (int i = 0; i < AUDIO_P4_NUM_DESC; i++) {
+    for (int i = 0; i < s_ring_n; i++) {
         s_dma_desc[i].buffer = (uint32_t)(uintptr_t)s_audio_buf[i];
-        s_dma_desc[i].next   = (uint32_t)(uintptr_t)&s_dma_desc[(i + 1) % AUDIO_P4_NUM_DESC];
+        s_dma_desc[i].next   = (uint32_t)(uintptr_t)&s_dma_desc[(i + 1) % s_ring_n];
         if (s_stream_render_fn) {
-            s_stream_render_fn(s_audio_buf[i], AUDIO_P4_CHUNK_SAMPLES, s_stream_render_user);
+            s_stream_render_fn(s_audio_buf[i], s_chunk, s_stream_render_user);
         } else {
             memset(s_audio_buf[i], 0, sizeof(s_audio_buf[i]));
         }
-        s_dma_desc[i].dw0 = DMA_DESC_DW0(AUDIO_P4_CHUNK_BYTES, AUDIO_P4_CHUNK_BYTES, 0, 1);
+        s_dma_desc[i].dw0 = DMA_DESC_DW0(chunk_bytes, chunk_bytes, 0, 1);
         esp32p4_dcache_writeback((uintptr_t)s_audio_buf[i], sizeof(s_audio_buf[i]));
         esp32p4_dcache_writeback((uintptr_t)&s_dma_desc[i], sizeof(s_dma_desc[i]));
     }
@@ -568,9 +577,23 @@ static bool audio_p4_start_locked(audio_p4_render_fn render_fn, void *user) {
 
 bool audio_p4_start(audio_p4_render_fn render_fn, void *user) {
     ylock_acquire(&s_audio_lock);
-    bool ok = audio_p4_start_locked(render_fn, user);
+    bool ok = audio_p4_start_locked(render_fn, user, AUDIO_P4_NUM_DESC, AUDIO_P4_CHUNK_SAMPLES);
     ylock_release(&s_audio_lock);
     return ok;
+}
+
+bool audio_p4_start_lowlat(audio_p4_render_fn render_fn, void *user) {
+    ylock_acquire(&s_audio_lock);
+    bool ok = audio_p4_start_locked(render_fn, user, AUDIO_P4_LOWLAT_DESC, AUDIO_P4_LOWLAT_SAMPLES);
+    ylock_release(&s_audio_lock);
+    return ok;
+}
+
+bool audio_p4_is_owner(audio_p4_render_fn render_fn) {
+    ylock_acquire(&s_audio_lock);
+    bool mine = s_streaming && s_stream_render_fn == render_fn;
+    ylock_release(&s_audio_lock);
+    return mine;
 }
 
 void audio_p4_release(audio_p4_render_fn render_fn) {
@@ -591,15 +614,16 @@ static void audio_p4_pump_locked(void) {
         }
 
         /* In-flight buffer finished playing; refill it without blocking */
+        uint32_t chunk_bytes = (uint32_t)s_chunk * 2u * sizeof(int16_t);
         if (s_stream_render_fn) {
-            s_stream_render_fn(s_audio_buf[s_active_desc], AUDIO_P4_CHUNK_SAMPLES, s_stream_render_user);
+            s_stream_render_fn(s_audio_buf[s_active_desc], s_chunk, s_stream_render_user);
         } else {
             memset(s_audio_buf[s_active_desc], 0, sizeof(s_audio_buf[s_active_desc]));
         }
-        s_dma_desc[s_active_desc].dw0 = DMA_DESC_DW0(AUDIO_P4_CHUNK_BYTES, AUDIO_P4_CHUNK_BYTES, 0, 1);
+        s_dma_desc[s_active_desc].dw0 = DMA_DESC_DW0(chunk_bytes, chunk_bytes, 0, 1);
         esp32p4_dcache_writeback((uintptr_t)s_audio_buf[s_active_desc], sizeof(s_audio_buf[s_active_desc]));
         esp32p4_dcache_writeback((uintptr_t)&s_dma_desc[s_active_desc], sizeof(s_dma_desc[s_active_desc]));
-        s_active_desc = (s_active_desc + 1) % AUDIO_P4_NUM_DESC;
+        s_active_desc = (s_active_desc + 1) % s_ring_n;
         refilled = true;
     }
 
@@ -628,14 +652,14 @@ static void audio_p4_stop_locked(void) {
     s_streaming = false;
 
     /* Wait for in-flight descriptors to finish */
-    for (int k = 0; k < AUDIO_P4_NUM_DESC; k++) {
+    for (int k = 0; k < s_ring_n; k++) {
         uint64_t t0 = time_get_us();
         while (1) {
             esp32p4_dcache_invalidate((uintptr_t)&s_dma_desc[s_active_desc], sizeof(dma_desc_t));
             if ((s_dma_desc[s_active_desc].dw0 & (1u << 31)) == 0) break;
             if (time_get_us() - t0 > 100000u) break;
         }
-        s_active_desc = (s_active_desc + 1) % AUDIO_P4_NUM_DESC;
+        s_active_desc = (s_active_desc + 1) % s_ring_n;
     }
 
     time_delay_us(10000);              /* 10ms ramp settle before muting */

@@ -134,7 +134,8 @@ typedef struct {
     uint8_t   store_ok;                 /* 38.8: bit L-1 -- layout L's store holds its canvas */
     uint8_t   redrawing;                /* 38.8: between 'D' 1 and 'D' 0 */
     uint8_t   status_flags;             /* Top bar indicators: SD mounted, 9P active, Wi-Fi connected */
-    uint8_t   osk_visible;              /* 1 if on-screen keyboard is expanded in active terminal */
+    uint8_t   osk_visible;              /* 1 if the on-screen keyboard is out (screen_osk_in() says where) */
+    uint8_t   osk_view_type, osk_view_id; /* the view it is out for (its text field's), type 0: a terminal */
     uint8_t   osk_modifiers;            /* Bit 0: shift, Bit 1: ctrl, Bit 2: sym */
     int16_t   osk_pressed;              /* the key under a finger (osk_key_at()), -1: none */
     uint8_t  *store;                    /* 38.8: SCREEN_STORES slots, or NULL */
@@ -304,6 +305,10 @@ void screen_report_windows(const screen_t *scr);
  * and in full screen. The caller holds console_lock or accepts a layout
  * that changes under it (a pointer event one window off, once). */
 bool screen_window_at(const screen_t *scr, int x, int y, uint8_t *type, uint8_t *id, int *cx, int *cy);
+/* How many pixel rows at the bottom of window idx's content the on-screen
+ * keyboard takes: its height while it is out there (the focused terminal's,
+ * or the focused view's that asked for it, 'k'), else 0. */
+int  screen_osk_rows(const screen_t *scr, unsigned idx);
 /* The focused window's ribbon type and id; false when there is none. */
 bool screen_focused_window(const screen_t *scr, uint8_t *type, uint8_t *id);
 void screen_canvas_vterm(screen_t *scr, uint8_t vterm_id, const uint8_t *req, uint32_t n, uint8_t *reply, int16_t caller_pid);

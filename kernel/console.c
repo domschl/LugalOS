@@ -20,6 +20,7 @@
 #include "drivers/launcher_view.h"
 #include "drivers/osk.h"
 #include "drivers/touch.h"
+#include "drivers/ui_sound.h"
 #include "kernel/settings.h"
 #include "drivers/usbkbd_task.h"
 #include "drivers/dsi_esp32p4.h"
@@ -581,6 +582,41 @@ static void console_feed_active_bytes(const char *s, uint32_t n);
 
 /* A key of the on-screen keyboard, as the terminal reads it: the arrows as
  * their sequences, ^C, everything else below 0x100 as its byte. */
+/* The on-screen keyboard for a view's text field (console_osk_for_view()):
+ * the latest request, carried out by the input path -- the 'k' request and
+ * the views' new sizes, which a view's own task cannot wait for.
+ * accepted: one word, the views task writes it, the input path takes it
+ * with an atomic exchange; a newer request replaces an untaken one. */
+#define OSK_REQ_PENDING 0x80000000u
+#define OSK_REQ_WANT    0x00010000u
+static volatile uint32_t g_osk_req;
+
+void console_osk_for_view(uint8_t type, uint8_t id, bool want) {
+    __atomic_store_n(&g_osk_req, OSK_REQ_PENDING | (want ? OSK_REQ_WANT : 0u) | ((uint32_t)type << 8) | id,
+                     __ATOMIC_RELEASE);
+}
+
+static void run_osk_req(void) {
+    uint32_t r = __atomic_exchange_n(&g_osk_req, 0u, __ATOMIC_ACQ_REL);
+    if (!(r & OSK_REQ_PENDING)) return;
+    bool want = (r & OSK_REQ_WANT) != 0;
+    if (want && !osk_wanted()) return;                   /* a keyboard, or no touch: the field takes its keys */
+    uint8_t req[5] = { 'k', (uint8_t)(want ? 1 : 0), 0, (uint8_t)(r >> 8), (uint8_t)r }, reply[SCREEN_REPLY_LEN];
+    (void)console_canvas(req, 5, reply);
+    console_sync_readers();                              /* the view's height: above the keyboard, or all of it again */
+}
+
+/* An on-screen key as a view's key event (kernel/keyseq.h's codes): the
+ * arrows as KEY_*, Cmd and Ctrl as their modifiers; Ctrl-C as ^C. */
+static void osk_view_key(const view_ops_t *v, uint8_t inst, uint16_t key, uint8_t osk_mods) {
+    uint32_t k = key == OSK_KEY_UP ? KEY_UP : key == OSK_KEY_DOWN ? KEY_DOWN
+               : key == OSK_KEY_LEFT ? KEY_LEFT : key == OSK_KEY_RIGHT ? KEY_RIGHT
+               : key == OSK_KEY_CTRL_C ? 0x03u : key < 0x100 ? key : 0u;
+    if (!k) return;
+    uint8_t mods = (uint8_t)(((osk_mods & OSK_MOD_CMD) ? KMOD_SUPER : 0u) | ((osk_mods & OSK_MOD_CTRL) ? KMOD_CTRL : 0u));
+    view_send(v, inst, WIN_EV_KEY_DOWN, 0, 0, 0, 0, k, mods);
+}
+
 static void osk_feed_key(uint16_t key) {
     if (key == OSK_KEY_UP) {
         console_feed_active_bytes("\x1b[A", 3);
@@ -620,6 +656,16 @@ static void run_repeat_once(void) {
 static void run_press_once(void) {
     if (!__atomic_exchange_n(&g_press_pending, false, __ATOMIC_ACQ_REL)) return;
     uint32_t xy = g_press_xy;
+    int ox = 0, oy = 0, ow = 0, oh = 0;
+    int px = (int)(xy >> 16), py = (int)(xy & 0xFFFFu);
+    if (lcdterm_osk_rect(&ox, &oy, &ow, &oh) && px >= ox && px < ox + ow && py >= oy && py < oy + oh) {
+        /* the on-screen keyboard's key, a terminal's or a view's text field's */
+        uint8_t req[5] = { 'y', (uint8_t)(xy >> 16), (uint8_t)(xy >> 24), (uint8_t)xy, (uint8_t)(xy >> 8) };
+        uint8_t reply[SCREEN_REPLY_LEN];
+        g_osk_pressed = true;
+        (void)console_canvas(req, 5, reply);
+        return;
+    }
     uint8_t type = 0, id = 0;
     int cx = 0, cy = 0;
     if (!lcdterm_window_at((int)(xy >> 16), (int)(xy & 0xFFFFu), &type, &id, &cx, &cy)) return;
@@ -1162,6 +1208,7 @@ static void sys_check(void) {
         if (came & WIN_INPUT_KEYBOARD) {
             uint8_t kreq[2] = { 'k', 0 }, kreply[SCREEN_REPLY_LEN];
             (void)console_canvas(kreq, 2, kreply);
+            console_sync_readers();                      /* a view it was out for: its height back */
         } else if ((went & WIN_INPUT_KEYBOARD) && (mode & WIN_INPUT_TOUCH)) {
             view_post_call(launcher_open_cb, NULL);
         } else if ((came & WIN_INPUT_POINTER) && !(mode & (WIN_INPUT_KEYBOARD | WIN_INPUT_TOUCH))) {
@@ -1228,6 +1275,7 @@ static void reader_update_cb(void *arg) { (void)arg; reader_update(); }
 static void run_hotkey(void) {
     ws_blank_check();
     sys_check();
+    run_osk_req();
     run_press();
     for (int iter = 0; iter < 4; iter++) {
         unsigned hk = __atomic_exchange_n(&g_hotkey, 0u, __ATOMIC_ACQ_REL);
@@ -1327,6 +1375,7 @@ static void run_hotkey(void) {
                 if (reply[8] == 0xBB) {
                     uint16_t key = (uint16_t)(reply[6] | (reply[7] << 8));
                     uint8_t mods = reply[9];
+                    ui_click();                          /* ui.click_sound */
                     if (mods & OSK_MOD_CMD) {
                         if (key == OSK_KEY_ENTER || key == '\r' || key == '\n') {
                             console_hotkey(CONSOLE_HOTKEY_NEW_TERM);
@@ -1342,7 +1391,14 @@ static void run_hotkey(void) {
                             continue;
                         }
                     }
-                    osk_feed_key(key);
+                    uint8_t okinst = 0;
+                    const view_ops_t *okv = focused_view(&okinst);
+                    if (okv) osk_view_key(okv, okinst, key, mods);   /* a view's text field */
+                    else osk_feed_key(key);
+                    continue;
+                }
+                if (reply[8] == 0xB0) {                  /* the keyboard was hidden: a view's height back */
+                    console_sync_readers();
                     continue;
                 }
                 if (reply[8] == 0xCC) {

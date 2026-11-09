@@ -8,7 +8,9 @@
 
 #include "drivers/ugui.h"
 #include "drivers/touch.h"
+#include "drivers/lcdterm.h"
 #include "kernel/keyseq.h"
+#include "kernel/clipboard.h"
 #include "drivers/font_serif.h"
 #include "drivers/font_noto_serif.h"
 #include "drivers/font_noto_mono.h"
@@ -134,13 +136,19 @@ static void ugui_dim(const ugui_surface_t *s, ugui_rect_t r) {
     raw_dim(t, r);
 }
 
+int ugui_dpi(void) {
+    return (int)lcdterm_dpi();
+}
+
+int ugui_mm_px(int tenths_mm) {
+    int dpi = ugui_dpi();
+    if (dpi <= 0 || tenths_mm <= 0) return 0;
+    return (tenths_mm * dpi + 127) / 254;
+}
+
 int ugui_target_px(void) {
-#if defined(CONFIG_PANEL_DPI)
     if (!touch_found()) return 0;                        /* no finger: what is drawn is the target */
-    return (int)((UGUI_TARGET_MM * (unsigned)CONFIG_PANEL_DPI * 10u + 127u) / 254u);
-#else
-    return 0;
-#endif
+    return ugui_mm_px(UGUI_TARGET_MM * 10);
 }
 
 void ugui_set_min_target(ugui_ctx_t *ctx, int min_px) {
@@ -1137,6 +1145,38 @@ void ugui_card_img(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r, cons
     add_hit_s(s, ctx, r, id, 0, dis ? UGUI_HIT_DISABLED : 0);
 }
 
+static void frame(const ugui_surface_t *s, ugui_rect_t r, int t);
+
+int ugui_icon_grid(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r, const ugui_grid_item_t *items, int n,
+                   int cell_w, int cell_h, int selected, uint16_t id) {
+    if (!s || !items || n <= 0 || cell_w <= 0 || cell_h <= 0 || r.w < cell_w || r.h < cell_h) return 0;
+    int sc = s->scale > 0 ? s->scale : 1;
+    int cols = r.w / cell_w, rows = r.h / cell_h;
+    int lh = ugui_serif_line_h(s), shown = 0;
+    for (int i = 0; i < n && i < cols * rows; i++, shown++) {
+        ugui_rect_t cell = { (int16_t)(r.x + (i % cols) * cell_w), (int16_t)(r.y + (i / cols) * cell_h),
+                             (int16_t)cell_w, (int16_t)cell_h };
+        ugui_rect_t in = ugui_inset(cell, 2 * sc, 2 * sc);
+        bool pressed = ugui_is_armed(ctx, id, (int16_t)i);
+        if (pressed) ugui_fill(s, in, UGUI_GRAY_INK, CANVAS1_BLACK);
+        else if (i == selected) frame(s, in, sc);
+        const ugui_grid_item_t *it = &items[i];
+        int isc = it->scale > 0 ? it->scale : 1;
+        int iw = it->img.w * isc, ih = it->img.h * isc;
+        int top = in.y + (in.h - ih - lh - 2 * sc) / 2;
+        if (top < in.y) top = in.y;
+        if (it->img.px) ugui_image4(s, in.x + (in.w - iw) / 2, top, &it->img, isc, pressed);
+        if (it->label && *it->label) {
+            uint32_t len = (uint32_t)strlen(it->label);
+            while (len > 1 && ugui_text_serif_width(s, it->label, len) > in.w - 2 * sc) len--;
+            int tw = ugui_text_serif_width(s, it->label, len);
+            ugui_text_serif(s, in.x + (in.w - tw) / 2, top + ih + 2 * sc, it->label, len, false, true, pressed);
+        }
+        add_hit_s(s, ctx, cell, id, (int16_t)i, 0);
+    }
+    return shown;
+}
+
 /* --- Layout -------------------------------------------------------------- */
 
 static int clamp_len(int n, int max) {
@@ -1394,8 +1434,50 @@ static void text_cut(ugui_text_t *t) {
     t->caret = t->anchor = (uint16_t)a;
 }
 
+/* Text at the caret (over the selection, which the caller has cut): the
+ * printable ASCII of s up to its first line break, as much as fits. */
+static void text_insert(ugui_text_t *t, const char *s, uint32_t n) {
+    for (uint32_t i = 0; i < n && s[i] != '\n' && s[i] != '\r'; i++) {
+        char c = s[i] == '\t' ? ' ' : s[i];
+        if ((unsigned char)c < 0x20 || (unsigned char)c >= 0x7f) continue;
+        if (t->len + 1u >= t->cap) break;
+        memmove(t->buf + t->caret + 1, t->buf + t->caret, (size_t)(t->len - t->caret + 1));
+        t->buf[t->caret] = c;
+        t->len++;
+        t->caret = t->anchor = (uint16_t)(t->caret + 1);
+    }
+}
+
+/* Cmd+C / X / V / A: the system clipboard (kernel/clipboard.h), as the line
+ * editor and `e` share it. NONE for any other Cmd key: the caller's. */
+static ugui_text_ev_t text_clip(ugui_text_t *t, uint32_t key) {
+    uint32_t k = key >= 'A' && key <= 'Z' ? key + 32u : key;
+    int a = t->anchor < t->caret ? t->anchor : t->caret, b = t->anchor < t->caret ? t->caret : t->anchor;
+    if (k == 'a') {
+        t->anchor = 0;
+        t->caret = t->len;
+        return UGUI_TEXT_MOVED;
+    }
+    if (k == 'c' || k == 'x') {
+        if (a == b) return UGUI_TEXT_MOVED;
+        (void)clipboard_set(t->buf + a, (uint32_t)(b - a));
+        if (k == 'c') return UGUI_TEXT_MOVED;
+        text_cut(t);
+        return UGUI_TEXT_CHANGED;
+    }
+    if (k == 'v') {
+        uint32_t n = 0;
+        const char *d = clipboard_data(&n);
+        text_cut(t);
+        if (d && n) text_insert(t, d, n);
+        return UGUI_TEXT_CHANGED;
+    }
+    return UGUI_TEXT_NONE;
+}
+
 ugui_text_ev_t ugui_text_key(ugui_text_t *t, uint32_t key, uint8_t mods) {
     if (!t || !t->buf) return UGUI_TEXT_NONE;
+    if (mods & KMOD_SUPER) return text_clip(t, key);
     bool sel = (mods & KMOD_SHIFT) != 0;
     bool has_sel = t->anchor != t->caret;
     if (key == '\r' || key == '\n') return UGUI_TEXT_SUBMIT;
@@ -1775,6 +1857,34 @@ bool ugui_selftest(void) {
     if (tf.len != 7 || tb[7] != '\0') return false;                    /* 8 bytes: 7 and the NUL */
     if (ugui_text_key(&tf, '\r', 0) != UGUI_TEXT_SUBMIT || ugui_text_key(&tf, 0x1b, 0) != UGUI_TEXT_CANCEL ||
         ugui_text_key(&tf, '\t', 0) != UGUI_TEXT_NONE) return false;
+
+    /* The clipboard: Cmd+A selects all, Cmd+C copies, Cmd+X cuts, Cmd+V
+     * pastes (one line of it, over the selection); another Cmd key is not
+     * the field's. The system clipboard is used, and put back after when it
+     * held little. */
+    {
+        char saved[128];
+        uint32_t sn = 0;
+        const char *sd = clipboard_data(&sn);
+        bool keep = sd && sn <= sizeof saved;
+        if (keep) memcpy(saved, sd, sn);
+        char cb[16] = "hello";
+        ugui_text_t ct;
+        ugui_text_init(&ct, cb, sizeof cb);
+        bool ok = ugui_text_key(&ct, 'a', KMOD_SUPER) == UGUI_TEXT_MOVED && ct.anchor == 0 && ct.caret == 5;
+        ok = ok && ugui_text_key(&ct, 'c', KMOD_SUPER) == UGUI_TEXT_MOVED && strcmp(cb, "hello") == 0;
+        uint32_t cn = 0;
+        const char *cd = clipboard_data(&cn);
+        ok = ok && cd && cn == 5 && memcmp(cd, "hello", 5) == 0;
+        ok = ok && ugui_text_key(&ct, 'x', KMOD_SUPER) == UGUI_TEXT_CHANGED && ct.len == 0;
+        ok = ok && ugui_text_key(&ct, 'v', KMOD_SUPER) == UGUI_TEXT_CHANGED &&
+             ugui_text_key(&ct, 'V', KMOD_SUPER) == UGUI_TEXT_CHANGED && strcmp(cb, "hellohello") == 0 && ct.caret == 10;
+        (void)clipboard_set("x\ny", 3);                                   /* one line of it */
+        ok = ok && ugui_text_key(&ct, 'v', KMOD_SUPER) == UGUI_TEXT_CHANGED && strcmp(cb, "hellohellox") == 0;
+        ok = ok && ugui_text_key(&ct, 'q', KMOD_SUPER) == UGUI_TEXT_NONE && strcmp(cb, "hellohellox") == 0;
+        if (keep) (void)clipboard_set(saved, sn);
+        if (!ok) return false;
+    }
 
     /* Layout cuts: slices off each side, the rest shrinking, never below
      * zero; a grid's cells. */

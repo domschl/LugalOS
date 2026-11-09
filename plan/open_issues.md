@@ -424,7 +424,10 @@ with "a duplicated request produced 0 replies, expected 1". Seen again 2026-11-0
 about a dozen runs (the 71.4 view commits, which change no network code),
 with the same message; each time the next run passed. It passed in the
 runs before and after on the same QEMU code: that day's changes were P4
-display code, which the QEMU targets build only as stubs. **What would settle
+display code, which the QEMU targets build only as stubs. Seen 2026-11-09 in
+two full runs in a row, once on rv32 and once on rv64 (the 71.4 text field, click and
+icon grid work, no network code); the test alone passed 16 times in 16, half of them
+with all 12 host cores busy, so host load alone does not bring it out. **What would settle
 it:** a second occurrence with the guest's `/proc/kmsg` tail and the host
 capture of the duplicated segment, to tell a dropped reply from a segment the
 stack dropped as already seen.

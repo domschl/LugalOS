@@ -175,6 +175,11 @@ void console_wheel(int dx, int dy);
 bool console_pointer_shown(int *x, int *y);
 void console_pointer_hide(void);
 void console_pointer_show(void);    /* `cursor show`: where it last was */
+/* A view's text field got the focus (want) or lost it: the on-screen
+ * keyboard out in the view's window (type, instance), below its content,
+ * its keys the view's -- where there is touch and no keyboard. From the
+ * views task; the input path carries it out. */
+void console_osk_for_view(uint8_t type, uint8_t id, bool want);
 /* A finger held still past the long press at (x, y): the context menu, as
  * a right click (from the touch task). */
 void console_touch_context(unsigned x, unsigned y);

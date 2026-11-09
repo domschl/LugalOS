@@ -1,6 +1,7 @@
 #include "drivers/dc8200_jh7110.h"
 #include "drivers/include/drivers/lcdterm.h"
 #include "drivers/xhci.h"
+#include "drivers/hdmi_jh7110.h"
 #include "arch/jh7110_cache.h"
 #include "kernel/cursor.h"
 #include "kernel/pointer.h"
@@ -523,6 +524,7 @@ int jh7110_dc8200_term_start(void) {
     g_backend.flush = jh7110_dc8200_flush;
     g_backend.sync_post = jh7110_dc8200_sync_post;
     g_backend.pointer = dc8200_pointer;
+    g_backend.dpi = mon && mon->dpi ? mon->dpi : 96u;   /* the monitor's EDID size; 96 without one */
     g_backend.capture = jh7110_dc8200_capture;
     g_backend.is_double_buffered = jh7110_dc8200_is_double_buffered;
 

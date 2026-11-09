@@ -108,6 +108,11 @@ void ugui_disable_next(ugui_ctx_t *ctx, uint8_t parts);
  * widgets that follow inside r (a toolbar: not over the text under it),
  * until ugui_slop_bounds_end() or the next pass. */
 int  ugui_target_px(void);
+/* The screen's pixels per inch at run time (a panel's, an HDMI monitor's
+ * from its EDID; 0 for a screen in RAM), and tenths of a millimetre on it
+ * in pixels (0 without a DPI): for sizes a finger or an eye judges. */
+int  ugui_dpi(void);
+int  ugui_mm_px(int tenths_mm);
 void ugui_set_min_target(ugui_ctx_t *ctx, int min_px);
 void ugui_slop_bounds(ugui_ctx_t *ctx, ugui_rect_t r);
 void ugui_slop_bounds_end(ugui_ctx_t *ctx);
@@ -245,6 +250,22 @@ typedef struct {
  * are. `inverted`: drawn as on an armed widget. */
 void ugui_image4(const ugui_surface_t *s, int x, int y, const ugui_image_t *img, int scale, bool inverted);
 
+/* One entry of an icon grid: its icon (drawn scale x) and its label. */
+typedef struct {
+    ugui_image_t img;
+    int          scale;
+    const char  *label;
+} ugui_grid_item_t;
+
+/* An icon grid in r: cells of cell_w x cell_h, left to right and down, each
+ * its icon over its label (centred, cut to fit). Item i is hit id `id`,
+ * index i -- so a press shows it inverted, hover outlines it, and the
+ * keyboard's focus moves among the cells (arrows to the nearest that way);
+ * a long press or a right click comes as the caller's context event on it.
+ * `selected` (-1: none) is drawn framed. Returns how many items fit. */
+int ugui_icon_grid(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r, const ugui_grid_item_t *items, int n,
+                   int cell_w, int cell_h, int selected, uint16_t id);
+
 /* A card with an image left of its title and subtitle (the launcher's
  * applications), as ugui_card() otherwise. */
 void ugui_card_img(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r, const ugui_image_t *img,
@@ -302,7 +323,9 @@ typedef enum { UGUI_TEXT_NONE = 0, UGUI_TEXT_CHANGED, UGUI_TEXT_MOVED, UGUI_TEXT
 void ugui_text_init(ugui_text_t *t, char *buf, uint16_t cap);
 /* A key for the field (kernel/keyseq.h's codes): text inserted over the
  * selection, Backspace / Delete, Left / Right / Home / End (with Shift:
- * selecting), Enter submits, Esc cancels. NONE: not a key it takes. */
+ * selecting), Enter submits, Esc cancels; Cmd+C / X / V copy, cut and paste
+ * through the system clipboard (one line of it), Cmd+A selects all. NONE:
+ * not a key it takes. */
 ugui_text_ev_t ugui_text_key(ugui_text_t *t, uint32_t key, uint8_t mods);
 void ugui_textfield(const ugui_surface_t *s, ugui_ctx_t *ctx, ugui_rect_t r, const ugui_text_t *t, uint16_t id);
 

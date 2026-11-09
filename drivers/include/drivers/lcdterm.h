@@ -91,6 +91,9 @@ typedef struct {
      * same state -- the pixels that differ (0: none), and their bounds in
      * frame coordinates; -1 when the backend cannot compare. */
     long      (*check)(unsigned *x0, unsigned *y0, unsigned *x1, unsigned *y1);
+    /* The glass's pixels per inch, for sizes in millimetres (ugui_mm_px()):
+     * an HDMI monitor's from its EDID; 0: the board's CONFIG_PANEL_DPI. */
+    unsigned    dpi;
     /* Optional: the mouse pointer moved, or was shown or hidden
      * (console_pointer_shown()): the backend draws its cursor over the
      * frame at its next pass. */
@@ -168,6 +171,8 @@ bool lcdterm_osk_rect(int *x0, int *y0, int *w, int *h);
 /* The window whose content is under screen point (x, y): its type
  * (RIBBON_WIN_*), id and the point in its content; false when none (the
  * chrome, a gap, full-screen). For press feedback: no side effects. */
+/* The screen's pixels per inch (lcdterm_backend_t.dpi, else CONFIG_PANEL_DPI); 0 without one. */
+unsigned lcdterm_dpi(void);
 /* The mouse pointer changed (kernel/console.c): the panel draws its cursor anew. */
 void lcdterm_pointer_changed(void);
 bool lcdterm_window_at(int x, int y, uint8_t *type, uint8_t *id, int *cx, int *cy);
@@ -223,6 +228,7 @@ static inline bool lcdterm_focused_window(uint8_t *type, uint8_t *id) { return r
 static inline bool lcdterm_room(int *windows, int *canvases) { (void)windows; (void)canvases; return false; }
 static inline bool lcdterm_osk_rect(int *x0, int *y0, int *w, int *h) { (void)x0; (void)y0; (void)w; (void)h; return false; }
 static inline void lcdterm_pointer_changed(void) { }
+static inline unsigned lcdterm_dpi(void) { return 0; }
 /* No panel: the RAM screen's windows (drivers/ramscreen.h). */
 static inline bool lcdterm_window_at(int x, int y, uint8_t *type, uint8_t *id, int *cx, int *cy) {
     return ramscreen_window_at(x, y, type, id, cx, cy);

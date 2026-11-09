@@ -794,7 +794,7 @@ int lcdterm_get_visible_readers(uint8_t *out_rids, int *out_x0, int *out_y0, int
                 if (out_x0) out_x0[count] = cx0;
                 if (out_y0) out_y0[count] = tile_y0;
                 if (out_x1) out_x1[count] = cx1;
-                if (out_y1) out_y1[count] = tile_y1;
+                if (out_y1) out_y1[count] = tile_y1 - screen_osk_rows(g_scr, i);   /* above the keyboard */
                 count++;
             }
         }
@@ -834,6 +834,15 @@ int lcdterm_get_canvas565_cid_by_name(const char *name) {
         }
     }
     return -1;
+}
+
+unsigned lcdterm_dpi(void) {
+    if (g_be && g_be->dpi) return g_be->dpi;
+#if defined(CONFIG_PANEL_DPI)
+    return CONFIG_PANEL_DPI;
+#else
+    return g_be ? 96u : 0u;
+#endif
 }
 
 void lcdterm_pointer_changed(void) {

@@ -116,6 +116,8 @@ void launcher_report(void) { cprintf("launcher: not present on headless board\n"
 #define GAL_ID_SHOW_SHT  517
 #define GAL_ID_DLG       520     /* + button */
 #define GAL_ID_SHEET     530     /* + item */
+#define GAL_ID_EDIT      560     /* + item: the text field's edit menu */
+#define GAL_ID_ICONS     570     /* the icon grid (index: the icon) */
 #define LAUNCHER_ID_ALERT_OK 540     /* + button */
 #define LAUNCHER_ID_SHEET    550     /* + item: a document's action sheet */
 #define LAUNCHER_ALERT_MAX   4
@@ -136,8 +138,8 @@ typedef struct {
     launcher_ask_fn alert_done;              /* told the choice, NULL: none */
     void          *alert_arg;
     struct {                                   /* the control gallery's state */
-        bool        on, toggle, check, dialog, sheet;
-        int         tab, slider;
+        bool        on, toggle, check, dialog, sheet, edit;
+        int         tab, slider, icon_sel;
         char        text[64];
         ugui_text_t field;
         char        result[64];
@@ -152,6 +154,7 @@ typedef struct {
     int            doc_count;
     launcher_doc_t docs[LAUNCHER_MAX_DOCS];
     int            sheet_doc;      /* a document's action sheet is up: its index + 1 (0: none) */
+    bool           osk_want;       /* a text field has the focus: the on-screen keyboard asked for */
     const char    *sheet_items[3]; /* Open, Open in <the other app>, Cancel */
     ugui_ctx_t     ui_ctx;
     uint8_t       *aa_buf;         /* GRAY8: what the panel composites (the front) */
@@ -658,6 +661,7 @@ static void draw_documents(const ugui_surface_t *surf, ugui_rect_t r) {
 static const char *const k_gal_tabs[4] = { "Controls", "Text", "Dialogs", "Icons" };
 static const char *const k_gal_dlg[2] = { "Cancel", "Delete" };
 static const char *const k_gal_sheet[5] = { "Open", "Rename", "Add to Shortcuts", "Delete", "Cancel" };
+static const char *const k_gal_edit[5] = { "Cut", "Copy", "Paste", "Select All", "Cancel" };
 static const char k_gal_path[] = "/sd0/docs/books/german/goethe";
 
 static void gal_line(const ugui_surface_t *surf, int x, int y, const char *text, bool muted) {
@@ -698,25 +702,28 @@ static void launcher_draw_gallery(const ugui_surface_t *surf, int w, int h) {
         ugui_textfield(surf, ctx, (ugui_rect_t){ (int16_t)pad, (int16_t)y, (int16_t)col, (int16_t)(28 * s) },
                        &s_launcher.gal.field, GAL_ID_TEXT);
         y += 36 * s;
-        gal_line(surf, pad, y, "Tap the field (or Tab to it) and type on a USB keyboard;", true);
+        gal_line(surf, pad, y, "Tap the field (or Tab to it) and type: the on-screen or a USB keyboard;", true);
         y += ugui_serif_line_h(surf);
-        gal_line(surf, pad, y, "Shift+arrows select, Enter submits, Esc cancels.", true);
+        gal_line(surf, pad, y, "Shift+arrows select, Cmd+C/X/V copy, cut, paste; Enter submits, Esc cancels.", true);
+        y += ugui_serif_line_h(surf);
+        gal_line(surf, pad, y, "A long press or a right click: Cut, Copy, Paste, Select All.", true);
         y += ugui_serif_line_h(surf) + 8 * s;
     } else if (s_launcher.gal.tab == 3) {
-        /* The built-in icons at the size the cards draw them, named. */
-        int cell_w = 96 * s, cell_h = 32 * s + ugui_serif_line_h(surf) + 14 * s;
-        int cols = (w - 2 * pad) / cell_w;
-        if (cols < 1) cols = 1;
-        for (unsigned i = 0; icon_at(i); i++) {
+        /* The built-in icons as an icon grid (the Shortcuts face's): a tap
+         * selects one, a long press or a right click names it. */
+        ugui_grid_item_t items[48];
+        int n = 0;
+        for (unsigned i = 0; icon_at(i) && n < 48; i++, n++) {
             const icon_t *ic = icon_at(i);
-            int cx = pad + (int)(i % (unsigned)cols) * cell_w, cy = y + (int)(i / (unsigned)cols) * cell_h;
-            int scale = 1;
-            ugui_image_t img = icon_image(ic, 32 * s, &scale);
-            ugui_image4(surf, cx + (cell_w - 32 * s) / 2, cy, &img, scale, false);
-            int tw = ugui_text_serif_width(surf, ic->name, (uint32_t)strlen(ic->name));
-            ugui_text_serif(surf, cx + (cell_w - tw) / 2, cy + 32 * s + 4 * s, ic->name, (uint32_t)strlen(ic->name),
-                            false, true, false);
+            items[n].scale = 1;
+            items[n].img = icon_image(ic, 32 * s, &items[n].scale);
+            items[n].label = ic->name;
         }
+        int cell_w = 96 * s, cell_h = 32 * s + ugui_serif_line_h(surf) + 14 * s;
+        int lh = ugui_serif_line_h(surf) + 4 * s;
+        ugui_rect_t grid = { (int16_t)pad, (int16_t)y, (int16_t)(w - 2 * pad), (int16_t)(h - y - lh - pad) };
+        (void)ugui_icon_grid(surf, ctx, grid, items, n, cell_w, cell_h, s_launcher.gal.icon_sel, GAL_ID_ICONS);
+        if (s_launcher.gal.result[0]) gal_line(surf, pad, h - pad - lh, s_launcher.gal.result, false);
         return;
     } else {
         ugui_button(surf, ctx, (ugui_rect_t){ (int16_t)pad, (int16_t)y, (int16_t)(180 * s), (int16_t)(28 * s) },
@@ -732,13 +739,21 @@ static void launcher_draw_gallery(const ugui_surface_t *surf, int w, int h) {
                           k_gal_dlg, 2, GAL_ID_DLG);
     else if (s_launcher.gal.sheet)
         (void)ugui_action_sheet(surf, ctx, "notes.md", k_gal_sheet, 5, GAL_ID_SHEET);
+    else if (s_launcher.gal.edit)
+        (void)ugui_action_sheet(surf, ctx, "Edit", k_gal_edit, 5, GAL_ID_EDIT);
 }
 
 /* A gallery control acted on (a tap at x, or Enter: x < 0). */
 static bool launcher_gallery_act(uint16_t id, int16_t idx, int x) {
     char *res = s_launcher.gal.result;
     if (id >= GAL_ID_TAB && id < GAL_ID_TAB + 4) { s_launcher.gal.tab = id - GAL_ID_TAB; res[0] = '\0'; }
-    else if (id == GAL_ID_DONE) { s_launcher.gal.on = false; s_launcher.gal.dialog = s_launcher.gal.sheet = false; }
+    else if (id == GAL_ID_DONE) { s_launcher.gal.on = false; s_launcher.gal.dialog = s_launcher.gal.sheet = s_launcher.gal.edit = false; }
+    else if (id >= GAL_ID_EDIT && id < GAL_ID_EDIT + 5) {
+        static const char k_edit_keys[4] = { 'x', 'c', 'v', 'a' };     /* Cut, Copy, Paste, Select All */
+        s_launcher.gal.edit = false;
+        if (id < GAL_ID_EDIT + 4) (void)ugui_text_key(&s_launcher.gal.field, (uint32_t)k_edit_keys[id - GAL_ID_EDIT], KMOD_SUPER);
+        ugui_set_focus(&s_launcher.ui_ctx, GAL_ID_TEXT, 0);
+    }
     else if (id == GAL_ID_TOGGLE) s_launcher.gal.toggle = !s_launcher.gal.toggle;
     else if (id == GAL_ID_CHECK) s_launcher.gal.check = !s_launcher.gal.check;
     else if (id == GAL_ID_SLIDER) {
@@ -757,6 +772,10 @@ static bool launcher_gallery_act(uint16_t id, int16_t idx, int x) {
         ksnprintf(res, 64, "Path: %s", pre);
     }
     else if (id == GAL_ID_TEXT) ugui_set_focus(&s_launcher.ui_ctx, GAL_ID_TEXT, 0);
+    else if (id == GAL_ID_ICONS && icon_at((unsigned)idx)) {
+        s_launcher.gal.icon_sel = idx;
+        ksnprintf(res, 64, "Icon: %s", icon_at((unsigned)idx)->name);
+    }
     else if (id == GAL_ID_SHOW_DLG) s_launcher.gal.dialog = true;
     else if (id == GAL_ID_SHOW_SHT) s_launcher.gal.sheet = true;
     else if (id >= GAL_ID_DLG && id < GAL_ID_DLG + 2) { s_launcher.gal.dialog = false; ksnprintf(res, 64, "Dialog: %s", k_gal_dlg[id - GAL_ID_DLG]); }
@@ -770,13 +789,14 @@ static bool launcher_gallery_act(uint16_t id, int16_t idx, int x) {
  * has the focus, the slider's Left / Right, Esc closing a modal. */
 static bool launcher_gallery_key(key_event_t k) {
     ugui_ctx_t *ctx = &s_launcher.ui_ctx;
-    if (k.key == 0x1b && (s_launcher.gal.dialog || s_launcher.gal.sheet)) {
-        s_launcher.gal.dialog = s_launcher.gal.sheet = false;
+    if (k.key == 0x1b && (s_launcher.gal.dialog || s_launcher.gal.sheet || s_launcher.gal.edit)) {
+        s_launcher.gal.dialog = s_launcher.gal.sheet = s_launcher.gal.edit = false;
         ksnprintf(s_launcher.gal.result, 64, "Cancelled");
         launcher_update();
         return true;
     }
-    if (s_launcher.gal.tab == 1 && ctx->focus_id == GAL_ID_TEXT && !s_launcher.gal.dialog && !s_launcher.gal.sheet) {
+    if (s_launcher.gal.tab == 1 && ctx->focus_id == GAL_ID_TEXT && !s_launcher.gal.dialog && !s_launcher.gal.sheet &&
+        !s_launcher.gal.edit) {
         ugui_text_ev_t e = ugui_text_key(&s_launcher.gal.field, k.key, k.mods);
         if (e == UGUI_TEXT_SUBMIT) ksnprintf(s_launcher.gal.result, 64, "Submitted: %s", s_launcher.gal.text);
         if (e == UGUI_TEXT_CANCEL) { ctx->focus_id = 0; ctx->focus_shown = false; }
@@ -815,6 +835,7 @@ void launcher_gallery(bool on) {
         strncpy(s_launcher.gal.text, "notes.md", sizeof s_launcher.gal.text);
         ugui_text_init(&s_launcher.gal.field, s_launcher.gal.text, (uint16_t)sizeof s_launcher.gal.text);
         s_launcher.gal.slider = 40;
+        s_launcher.gal.icon_sel = -1;
     }
     s_launcher.gal.on = on;
     launcher_update();
@@ -940,6 +961,15 @@ void launcher_update(void) {
 
     uint8_t ureq[2] = { 'W', s_launcher.slot_id }, sreply[SCREEN_REPLY_LEN];
     (void)console_canvas(ureq, 2, sreply);
+
+    /* A text field with the focus and nothing over it: the on-screen
+     * keyboard under it (where there is touch and no keyboard). */
+    bool want = s_launcher.gal.on && s_launcher.gal.tab == 1 && s_launcher.ui_ctx.focus_id == GAL_ID_TEXT &&
+                !s_launcher.gal.dialog && !s_launcher.gal.sheet && !s_launcher.gal.edit && !s_launcher.alert_title[0];
+    if (want != s_launcher.osk_want) {
+        s_launcher.osk_want = want;
+        console_osk_for_view(RIBBON_WIN_LAUNCHER, s_launcher.slot_id, want);
+    }
 }
 
 bool launcher_open(void) {
@@ -995,6 +1025,10 @@ void launcher_close(void) {
     s_launcher.active = false;
     s_launcher.sheet_doc = 0;
     s_launcher.ui_ctx.hover_id = 0;
+    if (s_launcher.osk_want) {
+        s_launcher.osk_want = false;
+        console_osk_for_view(RIBBON_WIN_LAUNCHER, s_launcher.slot_id, false);
+    }
     console_frame_lock();                                /* no conversion reads them past here */
     uint8_t *buf = s_launcher.aa_buf, *buf2 = s_launcher.aa_back;
     uint32_t pages = s_launcher.aa_pages;
@@ -1084,9 +1118,23 @@ static const char *other_app(const char *path) {
 /* The context menu (a right click, a long press) at (x, y): a document's
  * action sheet; nothing elsewhere yet. */
 static void launcher_context(int client_x, int client_y) {
-    if (!s_launcher.active || s_launcher.gal.on || s_launcher.alert_title[0] || s_launcher.sheet_doc > 0) return;
+    if (!s_launcher.active || s_launcher.alert_title[0] || s_launcher.sheet_doc > 0) return;
     int16_t hit_idx = -1;
     uint16_t id = ugui_hit_test(&s_launcher.ui_ctx, client_x, client_y, &hit_idx);
+    if (s_launcher.gal.on) {                             /* the text field's edit menu; an icon's name */
+        if (id == GAL_ID_ICONS && icon_at((unsigned)hit_idx)) {
+            ksnprintf(s_launcher.gal.result, 64, "Long press: %s", icon_at((unsigned)hit_idx)->name);
+            (void)ugui_disarm(&s_launcher.ui_ctx);
+            launcher_update();
+            return;
+        }
+        if (id != GAL_ID_TEXT || s_launcher.gal.dialog || s_launcher.gal.sheet || s_launcher.gal.edit) return;
+        ugui_set_focus(&s_launcher.ui_ctx, GAL_ID_TEXT, 0);
+        s_launcher.gal.edit = true;
+        (void)ugui_disarm(&s_launcher.ui_ctx);
+        launcher_update();
+        return;
+    }
     if (id != LAUNCHER_ID_DOC_BASE || hit_idx < 0 || hit_idx >= s_launcher.doc_count) return;
     s_launcher.sheet_items[0] = "Open";
     s_launcher.sheet_items[1] = strcmp(other_app(s_launcher.docs[hit_idx].path), "editor") == 0 ? "Open in Editor" : "Open in Reader";
@@ -1403,6 +1451,10 @@ void launcher_report(void) {
         cprintf("  sheet: %s\n", s_launcher.docs[s_launcher.sheet_doc - 1].label);
     if (s_launcher.ui_ctx.hover_id)
         cprintf("  hover: id %u index %d\n", (unsigned)s_launcher.ui_ctx.hover_id, (int)s_launcher.ui_ctx.hover_index);
+    if (s_launcher.gal.on && s_launcher.gal.field.buf)
+        cprintf("  gallery field: \"%s\" caret %u anchor %u%s%s\n", s_launcher.gal.text, (unsigned)s_launcher.gal.field.caret,
+                (unsigned)s_launcher.gal.field.anchor, s_launcher.ui_ctx.focus_id == GAL_ID_TEXT ? ", focused" : "",
+                s_launcher.gal.edit ? ", edit menu up" : "");
     winclose_report();
     /* The hit-boxes, window-relative, for `touch tap` in tests. */
     for (int i = 0; i < s_launcher.ui_ctx.count; i++) {

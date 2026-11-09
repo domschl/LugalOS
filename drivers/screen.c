@@ -1153,8 +1153,9 @@ LCDTERM_UTEXT static void draw_all_from(screen_t *scr, bool restore) {
                         } else if (ribbon_is_view(w->type)) {
                             uint8_t rid = w->vterm_id;
                             bool backed = rid < SCREEN_MAX_READERS && scr->readers[rid].in_use && scr->store;
-                            if (backed) {
-                                blit_canvas_backing(scr, SCREEN_MAX_CANVASES + rid, (int)cx0 + 1, SCREEN_TILE_Y + SCREEN_TITLEBAR_H, cw_w, cw_h);
+                            int vh = cw_h - screen_osk_rows(scr, i);   /* above the keyboard, if it is out here */
+                            if (backed && vh > 0) {
+                                blit_canvas_backing(scr, SCREEN_MAX_CANVASES + rid, (int)cx0 + 1, SCREEN_TILE_Y + SCREEN_TITLEBAR_H, cw_w, vh);
                             } else {
                                 canvas1_fill(cv, (int)cx0 + 1, SCREEN_TILE_Y + SCREEN_TITLEBAR_H, (int)cx1 - 1, tile_y1 - 1, CANVAS1_WHITE);
                             }
@@ -1193,18 +1194,19 @@ LCDTERM_UTEXT static void draw_all_from(screen_t *scr, bool restore) {
 #if defined(TOUCH_PRESENT)
         if (scr->ribbon.active_idx < scr->ribbon.count) {
             const ribbon_win_t *act_w = &scr->ribbon.wins[scr->ribbon.active_idx];
-            if (act_w->type == RIBBON_WIN_TERM) {
+            bool here = screen_osk_rows(scr, scr->ribbon.active_idx) > 0;
+            if (act_w->type == RIBBON_WIN_TERM || here) {
                 int32_t xv = scr->ribbon.x_view;
                 int tile_y1 = SCREEN_TEXT_Y + (int)FONT_CELL_H * (int)SCREEN_TEXT_ROWS(cv->h) + 1;
                 int32_t vx0 = act_w->rx0 - xv;
                 int32_t vx1 = act_w->rx1 - xv;
                 int win_w = (int)(vx1 - vx0 - 1);
                 if (win_w > 0 && vx1 >= 0 && vx0 < (int32_t)cv->w) {
-                    if (scr->osk_visible) {
+                    if (here) {
                         int osk_h = osk_get_height();
                         int osk_y0 = tile_y1 - osk_h;
                         osk_draw(cv, (int)vx0 + 1, osk_y0, win_w, osk_h, scr->osk_modifiers, scr->osk_pressed);
-                    } else {
+                    } else if (act_w->type == RIBBON_WIN_TERM) {
                         int sc = (int)CHROME_SCALE;
                         int btn_w = 64 * sc;
                         int btn_h = 22 * sc;
@@ -1293,7 +1295,7 @@ LCDTERM_UTEXT static bool place(screen_t *scr, unsigned layout) {
 
         unsigned term_rows = rows;
 #if defined(TOUCH_PRESENT)
-        if (i == scr->ribbon.active_idx && scr->osk_visible) {
+        if (screen_osk_rows(scr, i) > 0) {
             int osk_rows = osk_get_text_rows((int)FONT_CELL_H);
             if ((int)term_rows > osk_rows + 2) {
                 term_rows -= (unsigned)osk_rows;
@@ -1414,6 +1416,14 @@ LCDTERM_UTEXT static inline void lcdterm_sync_post(void) {
  * console ~520-650 ms (`lockcheck`). Every pixel moves, so the conversion is
  * at the PSRAM's bandwidth; fewer frames or a faster PSRAM path are what
  * would shorten it. */
+LCDTERM_UTEXT int screen_osk_rows(const screen_t *scr, unsigned idx) {
+    if (!scr->osk_visible || idx != scr->ribbon.active_idx || idx >= scr->ribbon.count) return 0;
+    const ribbon_win_t *w = &scr->ribbon.wins[idx];
+    bool mine = w->type == RIBBON_WIN_TERM ? scr->osk_view_type == 0
+              : ribbon_is_view(w->type) && w->type == scr->osk_view_type && w->vterm_id == scr->osk_view_id;
+    return mine ? osk_get_height() : 0;
+}
+
 LCDTERM_UTEXT bool screen_window_at(const screen_t *scr, int x, int y, uint8_t *type, uint8_t *id, int *cx, int *cy) {
     if (scr->layout == SCREEN_LAYOUT_FULLSCREEN) return false;
     int tile_y0 = SCREEN_TILE_Y + SCREEN_TITLEBAR_H;
@@ -1424,6 +1434,7 @@ LCDTERM_UTEXT bool screen_window_at(const screen_t *scr, int x, int y, uint8_t *
         int x0 = (int)w->rx0 - (int)scr->ribbon.x_view + 1;
         int x1 = (int)w->rx1 - (int)scr->ribbon.x_view - 1;
         if (x < x0 || x > x1) continue;
+        if (ribbon_is_view(w->type) && y > tile_y1 - screen_osk_rows(scr, i)) return false;   /* the keyboard's */
         *type = w->type;
         *id = w->vterm_id;
         *cx = x - x0;
@@ -1447,7 +1458,7 @@ LCDTERM_UTEXT bool screen_focused_window(const screen_t *scr, uint8_t *type, uin
 LCDTERM_UTEXT bool screen_osk_rect(const screen_t *scr, int *x0, int *y0, int *w, int *h) {
     if (scr->ribbon.active_idx >= scr->ribbon.count) return false;
     const ribbon_win_t *aw = &scr->ribbon.wins[scr->ribbon.active_idx];
-    if (aw->type != RIBBON_WIN_TERM) return false;
+    if (aw->type == RIBBON_WIN_TERM ? scr->osk_view_type != 0 : !screen_osk_rows(scr, scr->ribbon.active_idx)) return false;
     int32_t vx0 = aw->rx0 - scr->ribbon.x_view, vx1 = aw->rx1 - scr->ribbon.x_view;
     int win_w = (int)(vx1 - vx0 - 1);
     if (win_w <= 0 || vx1 < 0 || vx0 >= (int32_t)scr->cv.w) return false;
@@ -2155,6 +2166,52 @@ LCDTERM_UTEXT static void open_view_window(screen_t *scr, uint8_t type, uint8_t 
     reply[11] = w->vterm_id;
 }
 
+#if defined(TOUCH_PRESENT)
+/* A tap at (px, py) on the on-screen keyboard out in window idx (a
+ * terminal's, or a view's text field's): the modifiers toggled, the keyboard
+ * hidden, or a key, as a reply of 0xBB with its code in [6..7] and the
+ * modifiers it fired with in [9]. False when the point is not on it. */
+LCDTERM_UTEXT static bool osk_tap(screen_t *scr, uint8_t idx, int px, int py, uint8_t *reply) {
+    const ribbon_win_t *w = &scr->ribbon.wins[idx];
+    int vx0 = (int)(w->rx0 - scr->ribbon.x_view);
+    int vx1 = (int)(w->rx1 - scr->ribbon.x_view);
+    int win_w = vx1 - vx0 - 1;
+    int tile_y1 = SCREEN_TEXT_Y + (int)FONT_CELL_H * (int)SCREEN_TEXT_ROWS(scr->cv.h) + 1;
+    int osk_h = osk_get_height();
+    int osk_y0 = tile_y1 - osk_h;
+    if (py < osk_y0 || py >= tile_y1 || px < vx0 || px >= vx1) return false;
+    uint16_t key = osk_hit_test(px - (vx0 + 1), py - osk_y0, win_w, osk_h, scr->osk_modifiers);
+    reply[0] = 0;
+    uint8_t toggle = key == OSK_KEY_SHIFT ? OSK_MOD_SHIFT : key == OSK_KEY_CTRL ? OSK_MOD_CTRL
+                   : key == OSK_KEY_SYM ? OSK_MOD_SYM : key == OSK_KEY_CMD ? OSK_MOD_CMD : 0;
+    if (toggle) {
+        scr->osk_modifiers ^= toggle;
+        draw_all_from(scr, false);
+        return true;
+    }
+    if (key == OSK_KEY_HIDE) {
+        scr->osk_visible = 0;
+        place(scr, scr->layout);
+        draw_all_from(scr, false);
+        reply[8] = 0xB0;                                 /* hidden: the views' sizes change */
+        return true;
+    }
+    if (key != 0 && key != 0xFFFF) {
+        uint8_t fired_mods = scr->osk_modifiers;
+        scr->osk_modifiers &= ~(OSK_MOD_SHIFT | OSK_MOD_CTRL | OSK_MOD_CMD);
+        draw_all_from(scr, false);
+        reply[1] = window_vterm(scr, idx);
+        reply[6] = (uint8_t)(key & 0xff);
+        reply[7] = (uint8_t)((key >> 8) & 0xff);
+        reply[8] = 0xBB;
+        reply[9] = fired_mods;
+        reply[10] = w->type;
+        reply[11] = w->vterm_id;
+    }
+    return true;
+}
+#endif
+
 LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t *req, uint32_t n, uint8_t *reply, int16_t caller_pid) {
     uint8_t status = 0, pixel = 0;
     uint8_t op = n ? req[0] : 0;
@@ -2254,7 +2311,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
             int32_t cx1 = w->rx1 - scr->ribbon.x_view;
             int tile_y1 = SCREEN_TEXT_Y + (int)FONT_CELL_H * (int)SCREEN_TEXT_ROWS(scr->cv.h) + 1;
             int cw_w = (int)(w->rx1 - w->rx0 - 1);
-            int cw_h = tile_y1 - (SCREEN_TILE_Y + SCREEN_TITLEBAR_H);
+            int cw_h = tile_y1 - (SCREEN_TILE_Y + SCREEN_TITLEBAR_H) - screen_osk_rows(scr, i);
             if (cx1 >= 0 && cx0 < (int32_t)scr->cv.w && cw_w > 0 && cw_h > 0)
                 blit_canvas_backing(scr, (uint8_t)(SCREEN_MAX_CANVASES + rid), (int)cx0 + 1,
                                     SCREEN_TILE_Y + SCREEN_TITLEBAR_H, cw_w, cw_h);
@@ -2514,6 +2571,10 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
         }
         if (idx >= 0 && idx == (int)scr->ribbon.active_idx) {
             const ribbon_win_t *w = &scr->ribbon.wins[idx];
+#if defined(TOUCH_PRESENT)
+            if (ribbon_is_view(w->type) && screen_osk_rows(scr, (unsigned)idx) > 0 && osk_tap(scr, (uint8_t)idx, px, py, reply))
+                return;
+#endif
             if (ribbon_is_view(w->type) || w->type == RIBBON_WIN_CANVAS) {
                 int cx = px - (w->rx0 - scr->ribbon.x_view);
                 int cy = py - (SCREEN_TILE_Y + SCREEN_TITLEBAR_H);
@@ -2531,65 +2592,11 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
             if (w->type == RIBBON_WIN_TERM) {
                 int vx0 = (int)(w->rx0 - scr->ribbon.x_view);
                 int vx1 = (int)(w->rx1 - scr->ribbon.x_view);
-                int win_w = vx1 - vx0 - 1;
                 int tile_y1 = SCREEN_TEXT_Y + (int)FONT_CELL_H * (int)SCREEN_TEXT_ROWS(scr->cv.h) + 1;
                 bool kbd_attached = (n >= 6 && req[5] != 0);
 
-                if (scr->osk_visible) {
-                    int osk_h = osk_get_height();
-                    int osk_y0 = tile_y1 - osk_h;
-                    if (py >= osk_y0 && py < tile_y1 && px >= vx0 && px < vx1) {
-                        int cx = px - (vx0 + 1);
-                        int cy = py - osk_y0;
-                        uint16_t key = osk_hit_test(cx, cy, win_w, osk_h, scr->osk_modifiers);
-                        if (key == OSK_KEY_SHIFT) {
-                            scr->osk_modifiers ^= OSK_MOD_SHIFT;
-                            draw_all_from(scr, false);
-                            reply[0] = 0;
-                            return;
-                        }
-                        if (key == OSK_KEY_CTRL) {
-                            scr->osk_modifiers ^= OSK_MOD_CTRL;
-                            draw_all_from(scr, false);
-                            reply[0] = 0;
-                            return;
-                        }
-                        if (key == OSK_KEY_SYM) {
-                            scr->osk_modifiers ^= OSK_MOD_SYM;
-                            draw_all_from(scr, false);
-                            reply[0] = 0;
-                            return;
-                        }
-                        if (key == OSK_KEY_CMD) {
-                            scr->osk_modifiers ^= OSK_MOD_CMD;
-                            draw_all_from(scr, false);
-                            reply[0] = 0;
-                            return;
-                        }
-                        if (key == OSK_KEY_HIDE) {
-                            scr->osk_visible = 0;
-                            place(scr, scr->layout);
-                            draw_all_from(scr, false);
-                            reply[0] = 0;
-                            return;
-                        }
-                        if (key != 0 && key != 0xFFFF) {
-                            uint8_t fired_mods = scr->osk_modifiers;
-                            scr->osk_modifiers &= ~(OSK_MOD_SHIFT | OSK_MOD_CTRL | OSK_MOD_CMD);
-                            draw_all_from(scr, false);
-                            reply[0] = 0;
-                            reply[1] = window_vterm(scr, (uint8_t)idx);
-                            reply[6] = (uint8_t)(key & 0xff);
-                            reply[7] = (uint8_t)((key >> 8) & 0xff);
-                            reply[8] = 0xBB;
-                            reply[9] = fired_mods;
-                            reply[10] = w->type;
-                            reply[11] = w->vterm_id;
-                            return;
-                        }
-                        reply[0] = 0;
-                        return;
-                    }
+                if (screen_osk_rows(scr, (unsigned)idx) > 0) {
+                    if (osk_tap(scr, (uint8_t)idx, px, py, reply)) return;
                 } else if (!kbd_attached) {
                     int sc = (int)CHROME_SCALE;
                     int btn_w = 64 * sc;
@@ -2600,6 +2607,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
                         (py >= tile_y1 - 60 * sc && py < tile_y1) ||
                         (px >= vx0 && px < vx1 && py >= SCREEN_TILE_Y + SCREEN_TITLEBAR_H && py < tile_y1)) {
                         scr->osk_visible = 1;
+                        scr->osk_view_type = 0;                  /* the terminal's */
                         place(scr, scr->layout);
                         draw_all_from(scr, false);
                         reply[0] = 0;
@@ -2749,12 +2757,22 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
     } else if (op == 'k') {
         /* On-Screen Keyboard visibility & modifier control:
          * req[1]: 0 = hide, 1 = show, 2 = toggle
-         * req[2]: modifier flags (bit 0 = shift, bit 1 = ctrl, bit 2 = sym) */
+         * req[2]: modifier flags (bit 0 = shift, bit 1 = ctrl, bit 2 = sym)
+         * req[3], req[4]: a view's type and instance -- out for its text
+         * field (shown in its window while it has the focus); hidden only
+         * if it is that view's. Without them: shown for the focused
+         * terminal, hidden whoever has it (a keyboard came). */
         if (n >= 2) {
+            bool for_view = n >= 5 && req[3] != 0;
+            bool owner = !for_view || (scr->osk_view_type == req[3] && scr->osk_view_id == req[4]);
             if (req[1] == 2) {
                 scr->osk_visible = (uint8_t)!scr->osk_visible;
-            } else {
+            } else if (req[1] || owner) {
                 scr->osk_visible = req[1] ? 1u : 0u;
+            }
+            if (req[1]) {
+                scr->osk_view_type = for_view ? req[3] : 0;
+                scr->osk_view_id = for_view ? req[4] : 0;
             }
             if (n >= 3) {
                 scr->osk_modifiers = req[2];
@@ -2796,6 +2814,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
             }
             reply[9] = fmt;
             int r_h = (int)(SCREEN_TEXT_Y + (int)FONT_CELL_H * (int)SCREEN_TEXT_ROWS(scr->cv.h) + 1 - (SCREEN_TILE_Y + SCREEN_TITLEBAR_H));
+            if (ribbon_is_view(w->type)) r_h -= screen_osk_rows(scr, i);   /* the keyboard has the rest */
             reply[10] = (uint8_t)(r_h & 0xff);
             reply[11] = (uint8_t)((r_h >> 8) & 0xff);
             uint32_t tl = 0;

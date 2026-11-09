@@ -3694,6 +3694,27 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
                 break
         results.append(("Mouse: Hover, Click, Context Menu, Wheel Under The Pointer (71.4p ms)", mouse_ok, mouse_log))
 
+        # 71.4: the text field's clipboard. The gallery's text tab (its tab
+        # at 265, 65, the field at 205, 124); a right click opens the edit
+        # menu (Select All at y 404, Cut at 302, Paste at 370): all, cut,
+        # pasted twice.
+        steps = [("launcher gallery", r"launcher: control gallery"), ("ms click 265 65", r"ms: left click"),
+                 ("ms click 205 124 right", r"ms: right click"), ("launcher status", r"edit menu up"),
+                 ("ms click 405 404", r"ms: left click"),
+                 ("ms click 205 124 right", r"ms: right click"), ("ms click 405 302", r"ms: left click"),
+                 ("launcher status", r'gallery field: "" caret 0'),
+                 ("ms click 205 124 right", r"ms: right click"), ("ms click 405 370", r"ms: left click"),
+                 ("ms click 205 124 right", r"ms: right click"), ("ms click 405 370", r"ms: left click"),
+                 ("launcher status", r'gallery field: "notes\.mdnotes\.md" caret 16'),
+                 ("launcher close", r"launcher: closed")]
+        clip_ok, clip_log = True, ""
+        for cmd, pat in steps:
+            ok, log = session.send_and_expect(cmd, pat, timeout=10.0)
+            if not ok:
+                clip_ok, clip_log = False, f"{cmd!r} did not give {pat!r}:\n{log}"
+                break
+        results.append(("Text Field: Select All, Cut, Paste Through The Edit Menu (71.4 clipboard)", clip_ok, clip_log))
+
 
         # 37.5b: the editor. Its own selftest (wrapping, movement over wrapped
         # rows and UTF-8, undo, search, the safe save), then the real thing
