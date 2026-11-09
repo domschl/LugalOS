@@ -261,7 +261,7 @@ Order is by dependency: measure → compositor → input → toolkit → framewo
 | 71.4's text fields, mm metrics, click sound | 71.6 | 71.6b FAT32 long names | 76.1 |
 | 71.4p pointer input | 71.7 | 71.7 Shortcuts and Files | 77.2 |
 | 71.4m USB mouse | 71.8 | 71.8-71.10 reader core, epub, book mode | 78.1-78.3 |
-| 71.11, this phase's part | 71.9 | 71.4's damage tracking | 76.4 (optional) |
+| 71.11, this phase's part | 71.9 | 71.4's damage tracking | 76.5 (optional) |
 
 The plan before the split is `plan/phase71_touch_ux_apps_and_books.md` at commit d03fb415.
 
@@ -370,7 +370,7 @@ Moonbase's PPA pass (Phase 64) reads only 0.46 MB, a quarter-size source scaled 
 - Items of §2.4: focus, armed state, clipping, virtual list, controls, dialogs, layout helpers, metrics for touch targets, one blitter set.
 - On-screen keyboard feedback: armed key at touch-down, key preview, key repeat, latched modifiers.
 - **Acceptance:** `uguiselftest` green in QEMU; on the Tab5 and 7B every launcher/reader/chess control shows armed state at touch-down; the OSK shows key preview; the 7B touch targets measure ≥ 7 mm.
-- **Status: done 2026-11-06** (owner's decision). The image blit and icon grid moved to 71.5, the text sizes in millimetres and the click sound to 71.6, damage tracking to 76.4.
+- **Status: done 2026-11-06** (owner's decision). The image blit and icon grid moved to 71.5, the text sizes in millimetres and the click sound to 71.6, damage tracking to 76.5.
 
 **Result:** press feedback in the launcher, reader action bar, chess and the OSK (with key preview); keyboard focus and navigation (Tab, arrows, Enter, Esc), the launcher fully keyboard-operable; dimmed controls that cannot act; touch areas grown to 7 mm past what is drawn, what is drawn under the finger winning; no dead zones on the OSK; key repeat for Delete and the arrows; clipping and a virtual list (the launcher's document list scrolls by pixels, follows the finger, glides); toggle, checkbox, slider, progress, tab bar, path bar, text field, dialog and action sheet, all in `launcher gallery`; rect-cut layout helpers (one launcher layout for both orientations); the reader drawing through ugui's surface and primitives (pixel-identical). Fixed on the way: typing into the wrong terminal (stale reply bytes), launcher flicker (double-buffered GRAY8 surface), the document list missing `/sd0/docs`, Tab5 rotation leaving the other orientation's pixels in one frame buffer.
 

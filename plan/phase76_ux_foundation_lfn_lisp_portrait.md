@@ -14,8 +14,9 @@
 | 71.6b FAT32 long file names | 76.1 |
 | 71.4b `ugui` for Lisp programs | 76.2 |
 | 71.5 Portrait major-axis ribbon | 76.3 |
-| 71.4's damage tracking (optional) | 76.4 |
-| 71.11, for this phase's items | 76.5 |
+| — (new, 2026-11-09) window controls by touch and mouse | 76.4 |
+| 71.4's damage tracking (optional) | 76.5 |
+| 71.11, for this phase's items | 76.6 |
 
 ---
 
@@ -28,6 +29,15 @@
 - **Navigation:** swipe on chrome or the edge band along Y (rule 1 of phase 71 §2.2). `Cmd+Up/Down` in portrait, and `Cmd+Left/Right` keep working in both orientations as "previous/next window" (so muscle memory carries over). The minimap moves to a vertical strip at the right edge of the menu bar area, or stays horizontal as window order. Decided with a mock-up on the device.
 - **Rotation keeps the window order and focus.** Landscape pairs become portrait stacks. A one-up portrait window stays one-up.
 - The 7B and RP2350 never use `AXIS_Y`. On RP2350 the field is constant and folds away.
+
+### 1.2 Window size and order by touch and mouse
+
+Sizing (`Cmd+[`, `Cmd+]`, `Cmd+\`) and order (`Ctrl+Cmd+Arrows`) are keyboard-only today. Everything below sits on the title bar, which is chrome: by phase 71 §2.2 rule 1 its gestures always go to the window manager, so no view claim is affected. It stays in the Classic Mac look, so it is not the deferred touch-first chrome (§3).
+
+- **Zoom box** at the right end of the title bar, opposite the close box: a tap or click is `Cmd+\` (`ribbon_toggle_maximize()`). In portrait it switches between one-up and the top/bottom pair.
+- **Title-bar menu:** a long press or right click on a title bar opens a menu: **Width** 2/5 · 1/2 · 2/3 · Full (the current one ticked; in portrait: One-up · Pair), **Move Left / Move Right** (portrait: Up / Down), **Close**. Each item shows its shortcut, Mac-style, so the menu teaches the keyboard. Items that cannot apply (Move Left on the first window) are dimmed. The menu uses the action-sheet code the launcher already has.
+- **Grow box (optional part):** a grip at the far end of the title bar along the major axis. Dragging it draws a gray outline that snaps to the width steps; the width is applied on release (`ribbon_layout()` once). Only the outline and chrome are redrawn during the drag, no view. Its hit area is enlarged beyond what is drawn; on the 7B (`CHROME_SCALE = 1`, title bar about 3 mm) it is measured on the device first, and dropped there if it cannot be hit reliably next to the zoom box.
+- **Not in this phase:** reordering by dragging a title bar or minimap blocks. The menu covers order; drag reorder is reconsidered after 76.4 is in use.
 
 ---
 
@@ -55,16 +65,22 @@
 - **Acceptance:** `tests/test_ribbon.py` covers both axes (layout, viewport, insert/remove, rotation round trip); on the Tab5 portrait a terminal + reader pair is usable by touch and keys; landscape behaviour unchanged.
 - **Status:** planned.
 
-### 76.4 — Damage tracking in `ugui` (optional)
+### 76.4 — Window size and order by touch and mouse
+- **Why:** the ribbon's width steps, maximise and window order are keyboard-only, which leaves the Tab5 and the 7B without a keyboard unable to change them (owner, 2026-11-09).
+- **Scope:** zoom box, title-bar menu (width, move, close) by long press and right click, and the optional grow box, on both ribbon axes (§1.2). Built on 76.3's major-axis fields, so it is written once for landscape and portrait. Shared by every panel with chrome: Tab5, 7B, RP2350-LCD-7 (mouse; touch where present), VisionFive 2 (mouse).
+- **Acceptance:** `tests/test_ribbon.py`: the menu's width and move actions give the same layout as their shortcuts on both axes. Runner test on QEMU's RAM screen with `ms click` / `ms click right` / `ms drag` and `ts tap` / `ts` long press: zoom box, every menu item, grow-box snapping to each step, dimmed items. On the Tab5 (both orientations) and the 7B: every action by finger and by mouse; a horizontal swipe on a title bar away from the grow box still pans the ribbon. RP2350 SRAM does not grow.
+- **Status:** planned.
+
+### 76.5 — Damage tracking in `ugui` (optional)
 - `ugui_end()` returns the union of rectangles whose state changed since the previous pass (widget id + state hash per hit-box); the view hands it to the compositor, so a stepper tap recomposites a few percent of the screen instead of the whole window.
 - Taken up only when a view needs it: phase 71's double-buffered surfaces and partial redraws made it an optimisation. Measure first with `uxbench` (launcher redraw on the 7B, now dominated by the launcher's own drawing).
 - **Acceptance:** a measured gain on a named interaction; `uguiselftest` checks the damage union; glass check (`lcd check`) clean.
 - **Status:** optional, not scheduled.
 
-### 76.5 — Verification and documentation
-- `tests/hw/lcdterm_shots.py`: a portrait pair scenario; a long-name directory listing.
+### 76.6 — Verification and documentation
+- `tests/hw/lcdterm_shots.py`: a portrait pair scenario; a long-name directory listing; the title-bar menu open, and the grow-box outline mid-drag.
 - `tests/hw/test_esp32p4.py`: a gesture-claim check for portrait.
-- Docs: `doc/user/ribbon.md` (portrait), `doc/dev/on_device/lisp_scripting.md` (the `ui-` primitives), `doc/admin` storage notes for long names; `python3 tools/gendocs.py --all` and `--check`.
+- Docs: `doc/user/ribbon.md` (portrait; zoom box, title-bar menu, grow box), `doc/dev/on_device/lisp_scripting.md` (the `ui-` primitives), `doc/admin` storage notes for long names; `python3 tools/gendocs.py --all` and `--check`.
 - RAM baselines re-recorded; `sizereport` for RP2350 shows no SRAM growth.
 - **Status:** planned.
 
