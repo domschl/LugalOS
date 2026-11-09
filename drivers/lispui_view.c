@@ -715,12 +715,19 @@ static void lu_report_now(lu_call_t *c) {
     int x0 = 0, y0 = SCREEN_TILE_Y + SCREEN_TITLEBAR_H;
     uint8_t rq[2] = { 'R', 0 }, rp[SCREEN_REPLY_LEN];
     if (console_canvas(rq, 1, rp) && rp[0] == 0) {
-        int count = rp[1], x_view = (int)(int16_t)(rp[3] | (rp[4] << 8));
+        int count = rp[1], m_view = (int)(int16_t)(rp[3] | (rp[4] << 8));
+        bool down = rp[7] == RIBBON_AXIS_Y;
         for (int i = 0; i < count; i++) {
             rq[1] = (uint8_t)i;
             uint8_t wr[SCREEN_REPLY_LEN];
             if (console_canvas(rq, 2, wr) && wr[0] == 0 && wr[1] == RIBBON_WIN_LISPUI && wr[2] == s_lu.slot) {
-                x0 = (int)(wr[4] | (wr[5] << 8)) - x_view + 1;
+                int m0 = (int)(wr[4] | (wr[5] << 8)) - m_view;
+                if (down) {                              /* the window spans the width, from m0 down */
+                    x0 = RIBBON_BORDER_PAD + 1;
+                    y0 = m0 + SCREEN_TITLEBAR_H;
+                } else {
+                    x0 = m0 + 1;
+                }
                 break;
             }
         }

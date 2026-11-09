@@ -214,8 +214,9 @@ bool console_canvas(const uint8_t *req, uint32_t n, uint8_t *reply);
  * such window, or it is the last one. */
 bool console_close_view(uint8_t type, uint8_t inst);
 /* A key (kernel/keyseq.h's codes) for the focused view, as a local keyboard
- * would send it -- `key` in the shell, for boards and QEMU without one.
- * False when no view has the focus. */
+ * would send it -- `key` in the shell, for boards and QEMU without one: the
+ * system's Cmd shortcuts first, whatever has the focus. False when it was
+ * none and no view has the focus. */
 bool console_view_key(uint32_t key, uint8_t mods);
 /* One turn of an input wait, for a program that waits for something other
  * than a character (a Lisp `ui-` window's events): the screen flushed, the
@@ -274,6 +275,10 @@ bool console_pixels_format(const uint8_t **fb, unsigned *w, unsigned *h, unsigne
 #define CONSOLE_HOTKEY_DRAG         24u /* a vertical touch drag moved: console_touch_drag() */
 #define CONSOLE_HOTKEY_DRAG_END     25u /* ... and ended: console_touch_drag_end() */
 void console_hotkey(unsigned code);
+/* 76.3: whether the screen's ribbon runs down it now (portrait): then
+ * Cmd+Up / Down are the previous and next window, as Cmd+Left / Right are
+ * always, and with Ctrl they move it. */
+bool console_ribbon_down(void);
 
 /* 47.12: a tap on the panel at (x, y), screen pixels: focuses the window
  * under it, or on the menu bar the one its minimap block stands for. Runs

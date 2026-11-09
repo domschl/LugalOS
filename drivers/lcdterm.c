@@ -777,18 +777,15 @@ void lcdterm_damage(void) {
 int lcdterm_get_visible_readers(uint8_t *out_rids, int *out_x0, int *out_y0, int *out_x1, int *out_y1, int max_wins) {
     if (!g_scr || max_wins <= 0) return 0;
     int count = 0;
-    int sw = (int)g_scr->cv.w;
-    int sh = (int)g_scr->cv.h;
-    int text_rows = (int)SCREEN_TEXT_ROWS(sh);
-    int tile_y0 = SCREEN_TILE_Y + SCREEN_TITLEBAR_H;
-    int tile_y1 = SCREEN_TEXT_Y + (int)FONT_CELL_H * text_rows - 1;
 
+    /* A window's content to its last text row (its frame's foot excluded). */
     for (uint8_t i = 0; i < g_scr->ribbon.count && count < max_wins; i++) {
         const ribbon_win_t *w = &g_scr->ribbon.wins[i];
         if (ribbon_is_view(w->type)) {
-            int cx0 = (int)w->rx0 - (int)g_scr->ribbon.x_view + 1;
-            int cx1 = (int)w->rx1 - (int)g_scr->ribbon.x_view - 1;
-            if (cx1 >= 0 && cx0 < sw) {
+            int cx0, tile_y0, cw, ch;
+            screen_win_content(g_scr, i, &cx0, &tile_y0, &cw, &ch);
+            int cx1 = cx0 + cw - 1, tile_y1 = tile_y0 + ch - 2;
+            if (screen_win_shown(g_scr, i) && cx1 >= 0) {
                 uint8_t tag = LCDTERM_VIEW_TAG(w->type, w->vterm_id);
                 if (out_rids) out_rids[count] = tag;
                 if (out_x0) out_x0[count] = cx0;
@@ -849,6 +846,14 @@ void lcdterm_pointer_changed(void) {
     if (g_be && g_be->pointer) g_be->pointer();
 }
 
+#if !(defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32C6))
+/* accepted: one byte read without the screen's task; a turn in between
+ * reads as either axis, for one key. */
+bool lcdterm_ribbon_down(void) {
+    return g_scr && RIBBON_AXIS(&g_scr->ribbon) == RIBBON_AXIS_Y;
+}
+#endif
+
 bool lcdterm_window_at(int x, int y, uint8_t *type, uint8_t *id, int *cx, int *cy) {
     return g_scr && screen_window_at(g_scr, x, y, type, id, cx, cy);
 }
@@ -894,11 +899,11 @@ bool lcdterm_canvas_origin(uint8_t cid, int *x0, int *y0) {
             *y0 = 0;
             return true;
         }
-        int cx0 = (int)w->rx0 - (int)g_scr->ribbon.x_view + 1;
-        int cx1 = (int)w->rx1 - (int)g_scr->ribbon.x_view - 1;
-        if (cx1 < 0 || cx0 >= (int)g_scr->cv.w) return false;
+        int cx0, cy0, cw, ch;
+        screen_win_content(g_scr, i, &cx0, &cy0, &cw, &ch);
+        if (!screen_win_shown(g_scr, i) || cx0 + cw - 1 < 0) return false;
         *x0 = cx0;
-        *y0 = SCREEN_TILE_Y + SCREEN_TITLEBAR_H;
+        *y0 = cy0;
         return true;
     }
     return false;
@@ -939,17 +944,15 @@ int lcdterm_get_visible_canvases565(uint8_t *out_cids, int *out_x0, int *out_y0,
     int count = 0;
     int sw = (int)g_scr->cv.w;
     int sh = (int)g_scr->cv.h;
-    int text_rows = (int)SCREEN_TEXT_ROWS(sh);
-    int tile_y0 = SCREEN_TILE_Y + SCREEN_TITLEBAR_H;
-    int tile_y1 = SCREEN_TEXT_Y + (int)FONT_CELL_H * text_rows - 1;
 
     for (uint8_t i = 0; i < g_scr->ribbon.count && count < max_wins; i++) {
         const ribbon_win_t *w = &g_scr->ribbon.wins[i];
         if (w->type == RIBBON_WIN_CANVAS) {
             uint8_t cid = w->vterm_id;
             if (cid < SCREEN_MAX_CANVASES && g_scr->canvases[cid].format == CANVAS_FMT_RGB565 && g_scr->canvases[cid].buf565) {
-                int cx0 = (int)w->rx0 - (int)g_scr->ribbon.x_view + 1;
-                int cx1 = (int)w->rx1 - (int)g_scr->ribbon.x_view - 1;
+                int cx0, tile_y0, cw, ch;
+                screen_win_content(g_scr, i, &cx0, &tile_y0, &cw, &ch);
+                int cx1 = cx0 + cw - 1, tile_y1 = tile_y0 + ch - 2;
                 if (g_scr->layout == SCREEN_LAYOUT_FULLSCREEN) {
                     /* Full-screen is the focused window's: another game's
                      * canvas, paused in the background, is not on screen. */
@@ -960,7 +963,7 @@ int lcdterm_get_visible_canvases565(uint8_t *out_cids, int *out_x0, int *out_y0,
                     if (out_x1) out_x1[count] = sw - 1;
                     if (out_y1) out_y1[count] = sh - 1;
                     count++;
-                } else if (cx1 >= 0 && cx0 < sw) {
+                } else if (screen_win_shown(g_scr, i) && cx1 >= 0) {
                     if (out_cids) out_cids[count] = cid;
                     if (out_x0) out_x0[count] = cx0;
                     if (out_y0) out_y0[count] = tile_y0;
@@ -977,7 +980,6 @@ int lcdterm_get_visible_canvases565(uint8_t *out_cids, int *out_x0, int *out_y0,
 int lcdterm_get_visible_terms(lcdterm_visible_term_t *out_terms, int max_terms) {
     if (!g_scr || max_terms <= 0) return 0;
     int count = 0;
-    int sw = (int)g_scr->cv.w;
 
     for (uint8_t i = 0; i < g_scr->ribbon.count && count < max_terms; i++) {
         const ribbon_win_t *w = &g_scr->ribbon.wins[i];
@@ -995,14 +997,14 @@ int lcdterm_get_visible_terms(lcdterm_visible_term_t *out_terms, int max_terms) 
         const vtterm_t *vt = &g_scr->terms[t].vt;
         if (vt->hidden || !vt->shadow) continue;
 
-        int32_t x0 = w->rx0 - g_scr->ribbon.x_view;
-        int32_t x1 = w->rx1 - g_scr->ribbon.x_view;
-        if (x1 < 0 || x0 >= sw) continue;
+        int x0, y0, x1, y1;
+        screen_win_frame(g_scr, i, &x0, &y0, &x1, &y1);
+        if (!screen_win_shown(g_scr, i) || x1 < 0) continue;
 
         int c0 = (int)(vt->text.xbyte / FONT_CELL_BYTES);
         out_terms[count].vterm_id = w->vterm_id;
         out_terms[count].x0 = c0 * (int)FONT_CELL_W;
-        out_terms[count].y0 = SCREEN_TEXT_Y;
+        out_terms[count].y0 = y0 + (SCREEN_TEXT_Y - SCREEN_TILE_Y);
         out_terms[count].cols = vt->text.cols;
         out_terms[count].rows = vt->text.rows;
         out_terms[count].shadow_cols = vt->shadow_cols;

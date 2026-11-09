@@ -2116,8 +2116,8 @@ def _alert_button(b: Board, status: str, hit_id: int) -> tuple[int, int] | None:
     `ribbon list`, and the chrome above the content (doubled on the Tab5)."""
     m = re.search(rf"hit id {hit_id} index 0: x (\d+)\.\.(\d+) y (\d+)\.\.(\d+)", status)
     rl = b.console_session.cmd("ribbon list", deadline=5.0)
-    v = re.search(r"x_view (\d+)", rl)
-    w = re.search(r"Launcher \(slot \d+, \d+ cols, rx (\d+)\.\.", rl)
+    v = re.search(r"view (\d+)", rl)
+    w = re.search(r"Launcher \(slot \d+, \d+ cols, at (\d+)\.\.", rl)
     if not (m and v and w):
         return None
     scale = 2 if is_tab5(b) else 1

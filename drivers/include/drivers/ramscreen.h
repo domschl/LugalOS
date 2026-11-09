@@ -16,6 +16,12 @@ const console_screen_t *ramscreen_console(void);
  * refused. */
 int ramscreen_set_size(unsigned w, unsigned h);
 void ramscreen_size(unsigned *w, unsigned *h);
+/* 76.3: turns the screen a quarter (w x h becomes h x w), its windows kept,
+ * as the Tab5's panel turns. -1 where the ribbon has no vertical axis, or
+ * the new width is not a multiple of 32. */
+int ramscreen_turn(void);
+/* Whether its ribbon runs down it now (after a turn to portrait). */
+bool ramscreen_ribbon_down(void);
 canvas1_t *ramscreen_get_canvas_backing(uint8_t cid);
 int        ramscreen_get_canvas_cid_by_name(const char *name);
 canvas1_t *ramscreen_get_reader_backing(uint8_t rid);

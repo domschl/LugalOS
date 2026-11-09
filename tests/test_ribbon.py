@@ -9,6 +9,7 @@ Runs automated verification in QEMU:
 
 from __future__ import annotations
 
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -17,6 +18,75 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "tests"))
 
 from runner import QemuSession  # type: ignore[import-untyped]
+
+
+WIN = re.compile(r"\[(\d)\] (\w+)\s+\((?:[^,]*, )*?(\d+) (cols|rows), at (\d+)\.\.(\d+)[^)]*\)( \*)?")
+
+
+def _ribbon(session: QemuSession) -> tuple[str, list[tuple[str, int, str, int, int, bool]]]:
+    _, log = session.send_and_expect("ribbon list", r"lsh> ", timeout=5.0)
+    head = re.search(r"axis (\w), view (\d+)", log)
+    wins = [(m.group(2), int(m.group(3)), m.group(4), int(m.group(5)), int(m.group(6)), bool(m.group(7)))
+            for m in WIN.finditer(log)]
+    return (f"{head.group(1)} {head.group(2)}" if head else "?"), wins
+
+
+def _portrait(session: QemuSession) -> bool:
+    steps: list[tuple[str, bool, str]] = []
+
+    def check(what: str, ok: bool, got: object) -> None:
+        steps.append((what, ok, str(got)))
+
+    for cmd, want in (("lisp", r"lisp> "), ("(canvas-window 'split-half)", r"=> #t"), ("exit", r"lsh> ")):
+        session.send_and_expect(cmd, want, timeout=5.0)
+    head0, land = _ribbon(session)
+    session.send_and_expect("ramscreen turn", r"ramscreen: 480 x 800", timeout=5.0)
+    head, port = _ribbon(session)
+    check("turned: axis Y, a top/bottom pair, order and focus kept",
+          head.startswith("Y") and [w[0] for w in port] == [w[0] for w in land] and
+          [w[5] for w in port] == [w[5] for w in land] and all(w[2] == "rows" for w in port) and
+          port[0][5] and port[1][3] > port[0][4] and port[1][4] + 2 < 800, port)
+    _, log = session.send_and_expect("lisp", r"lisp> ", timeout=5.0)
+    _, log = session.send_and_expect("(canvas-size)", r"=> \(\d+ \d+\)", timeout=5.0)
+    m = re.search(r"=> \((\d+) (\d+)\)", log)
+    session.send_and_expect("exit", r"lsh> ", timeout=5.0)
+    check("the canvas spans the width, under the terminal", bool(m) and int(m.group(1)) > 400 and int(m.group(2)) < 400,
+          m.group(0) if m else log[-200:])
+    session.send_and_expect("viewtest open", r"lsh> ", timeout=5.0)
+    head, three = _ribbon(session)
+    view = int(head.split()[1])
+    check("a window alone on the screen after the pair's first moves the view down to it",
+          len(three) == len(port) + 1 and three[1][0] == "View" and three[1][5] and
+          view > 0 and three[1][3] - view >= 22 and three[1][4] + 2 - view <= 800, (head, three))
+    # The focused window is always shown whole -- also a window alone at the
+    # ribbon's end (Cmd+Down to the last one).
+    for _ in range(len(three)):
+        session.send_and_expect("key cmd-down", r"lsh> ", timeout=5.0)
+    _, log = session.send_and_expect("ribbon list", r"lsh> ", timeout=5.0)
+    check("the last window, focused, is shown", "told: focused, shown" in log, log[-400:])
+    for _ in range(len(three)):
+        session.send_and_expect("key cmd-up", r"lsh> ", timeout=5.0)
+    session.send_and_expect("key cmd-down", r"lsh> ", timeout=5.0)
+    session.send_and_expect("key cmd-up", r"lsh> ", timeout=5.0)
+    head, up = _ribbon(session)
+    check("Cmd+Up: the window above, the view back at the top", up[0][5] and head.endswith(" 0"), (head, up))
+    session.send_and_expect("key cmd-down", r"lsh> ", timeout=5.0)
+    _, down = _ribbon(session)
+    check("Cmd+Down: the window below", down[1][5], down)
+    session.send_and_expect("key cmd-w", r"lsh> ", timeout=5.0)
+    _, closed = _ribbon(session)
+    if not closed[0][5]:
+        session.send_and_expect("key cmd-up", r"lsh> ", timeout=5.0)
+    session.send_and_expect("ramscreen turn", r"ramscreen: 800 x 480", timeout=5.0)
+    head, back = _ribbon(session)
+    check("turned back: the same columns, order and focus as before", head.startswith("X") and back == land, (back, land))
+    session.send_and_expect("lisp", r"lisp> ", timeout=5.0)
+    session.send_and_expect("(canvas-window 'text)", r"=> #t", timeout=5.0)
+    session.send_and_expect("exit", r"lsh> ", timeout=5.0)
+    ok = all(s[1] for s in steps)
+    for what, good, got in steps:
+        print(f"    [{'PASS' if good else 'FAIL'}] {what}" + ("" if good else f": {got}"))
+    return ok
 
 
 def run_tests() -> int:
@@ -119,6 +189,15 @@ def run_tests() -> int:
                     break
             if canvas_ok:
                 print("    [PASS] Canvas & Ribbon integration (split, split-narrow, ribbon, line, text)")
+
+        # 6. 76.3: the ribbon down a portrait screen (the RAM screen turned,
+        # as the Tab5's panel turns): a side-by-side pair becomes a top/bottom
+        # pair, the order and the focus kept; a third window moves the view
+        # down; Cmd+Up / Down step through it; turning back restores the
+        # columns.
+        print("  Testing the portrait ribbon (ramscreen turn)...")
+        portrait_ok = _portrait(session)
+        all_passed = all_passed and portrait_ok
 
     finally:
         session.close()

@@ -312,6 +312,14 @@ bool screen_window_at(const screen_t *scr, int x, int y, uint8_t *type, uint8_t 
  * keyboard takes: its height while it is out there (the focused terminal's,
  * or the focused view's that asked for it, 'k'), else 0. */
 int  screen_osk_rows(const screen_t *scr, unsigned idx);
+/* Window idx's frame on the screen now (its border, title bar included):
+ * across a landscape screen it spans the tile rows, down a portrait one
+ * (RIBBON_AXIS_Y) the full width. Its content is inside the border, under
+ * the title bar: its top-left pixel and size. Whether it is drawn: any of it
+ * on screen across, all of it down. idx < ribbon.count. */
+void screen_win_frame(const screen_t *scr, unsigned idx, int *x0, int *y0, int *x1, int *y1);
+void screen_win_content(const screen_t *scr, unsigned idx, int *cx, int *cy, int *cw, int *ch);
+bool screen_win_shown(const screen_t *scr, unsigned idx);
 /* The focused window's ribbon type and id; false when there is none. */
 bool screen_focused_window(const screen_t *scr, uint8_t *type, uint8_t *id);
 void screen_canvas_vterm(screen_t *scr, uint8_t vterm_id, const uint8_t *req, uint32_t n, uint8_t *reply, int16_t caller_pid);

@@ -528,7 +528,11 @@ static void view_send(const view_ops_t *v, uint8_t inst, uint8_t type, uint8_t f
     view_post(v, inst, &ev);                             /* the views task draws it */
 }
 
+static bool system_shortcut(key_event_t k);
+
 bool console_view_key(uint32_t key, uint8_t mods) {
+    key_event_t k = { .key = key, .mods = mods };
+    if (system_shortcut(k)) return true;                 /* as from a keyboard: the window manager's first */
     uint8_t inst = 0;
     const view_ops_t *v = focused_view(&inst);
     if (!v) return false;
@@ -540,9 +544,14 @@ bool console_view_key(uint32_t key, uint8_t mods) {
  * keys with it. */
 static keyseq_push_t g_view_keys;
 
+bool console_ribbon_down(void) {
+    return lcdterm_ribbon_down();
+}
+
 /* The system's Cmd shortcuts, whatever has the focus: Cmd-1..9 a window,
  * Cmd-W close, Cmd-\\ maximise, Cmd-[ / ] move the window, Cmd-Left / Right
- * the focus, Cmd-Shift-3 a screenshot. True when k was one. */
+ * the focus (and Cmd-Up / Down down a portrait screen), Cmd-Shift-3 a
+ * screenshot. True when k was one. */
 static bool system_shortcut(key_event_t k) {
     if (!(k.mods & KMOD_SUPER)) return false;
     if ((k.mods & KMOD_SHIFT) && k.key == '3') { console_hotkey(CONSOLE_HOTKEY_SCREENSHOT); return true; }
@@ -554,6 +563,14 @@ static bool system_shortcut(key_event_t k) {
     case ']':           console_hotkey(CONSOLE_HOTKEY_RIGHT); return true;
     case KEY_LEFT:      console_hotkey(CONSOLE_HOTKEY_FOCUS_LEFT); return true;
     case KEY_RIGHT:     console_hotkey(CONSOLE_HOTKEY_FOCUS_RIGHT); return true;
+    case KEY_UP:
+    case KEY_DOWN:
+        if (!console_ribbon_down()) return false;
+        if (k.mods & KMOD_CTRL)
+            console_hotkey(k.key == KEY_UP ? CONSOLE_HOTKEY_MOVE_LEFT : CONSOLE_HOTKEY_MOVE_RIGHT);
+        else
+            console_hotkey(k.key == KEY_UP ? CONSOLE_HOTKEY_FOCUS_LEFT : CONSOLE_HOTKEY_FOCUS_RIGHT);
+        return true;
     default:            return false;
     }
 }

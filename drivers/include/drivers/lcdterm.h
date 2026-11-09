@@ -193,6 +193,12 @@ typedef struct {
 } lcdterm_visible_term_t;
 
 int lcdterm_get_visible_terms(lcdterm_visible_term_t *out_terms, int max_terms);
+/* 76.3: whether the ribbon runs down the screen now (a portrait Tab5). */
+#if defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32C6)
+static inline bool lcdterm_ribbon_down(void) { return false; }
+#else
+bool lcdterm_ribbon_down(void);
+#endif
 #else
 #include "drivers/ramscreen.h"
 static inline bool lcdterm_is_animating(void) { return false; }
@@ -234,6 +240,7 @@ static inline bool lcdterm_window_at(int x, int y, uint8_t *type, uint8_t *id, i
     return ramscreen_window_at(x, y, type, id, cx, cy);
 }
 static inline bool lcdterm_canvas_origin(uint8_t cid, int *x0, int *y0) { (void)cid; (void)x0; (void)y0; return false; }
+static inline bool lcdterm_ribbon_down(void) { return ramscreen_ribbon_down(); }
 static inline bool lcdterm_set_canvas565_backing(uint8_t cid, uint16_t *buf) {
     (void)cid; (void)buf;
     return false;

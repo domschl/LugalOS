@@ -77,7 +77,13 @@ Sizing (`Cmd+[`, `Cmd+]`, `Cmd+\`) and order (`Ctrl+Cmd+Arrows`) are keyboard-on
 - `ribbon_t.axis`, renamed major-axis fields, row-based sizes; one-up and top/bottom pair in portrait; rotation preserves order and focus (§1.1).
 - Gesture arbitration along Y; `Cmd+Up/Down`; minimap variant chosen on the device.
 - **Acceptance:** `tests/test_ribbon.py` covers both axes (layout, viewport, insert/remove, rotation round trip); on the Tab5 portrait a terminal + reader pair is usable by touch and keys; landscape behaviour unchanged.
-- **Status:** planned.
+- **Status:** done 2026-11-09. The owner checked finger swipes on the Tab5 (vertical swipes on title bars work alongside the horizontal ones) and chose the horizontal minimap (window order, as in landscape); the vertical column trial was removed.
+  - Geometry: Tab5 portrait one window alone is 37 rows, a pair 17 + 18 (36 px of title bar and border per window). A window down the screen shows only whole; the ribbon jumps rather than slides there (a slide would blink windows in and out).
+  - Sizes go by shape: a turn keeps each window alone or paired; splits, a reader opened from a terminal and `Cmd+Enter` give the top/bottom pair in portrait.
+  - Touch: a vertical stroke from a title bar, the menu bar or the edge band (all four edges in portrait) steps the ribbon; inside a window it scrolls.
+  - Minimap: the row, as in landscape (owner's choice; the column variant was tried and dropped).
+  - Tests: `ribbonselftest` Y cases; `tests/test_ribbon.py` turns QEMU's RAM screen (`ramscreen turn`) and checks the pair, the canvas size, `Cmd+Up/Down` and the round trip; Tab5 portrait: terminal + reader pair, `hello_ugui` by mouse, touch and keys; LCD-7B and Tab5 landscape ribbon tests unchanged.
+  - Found: a P4 `p9share` session drops after ~340 KB (a 2.7 MB Tab5 screenshot needed eight resumed sessions).
 
 ### 76.4 — Window size and order by touch and mouse
 - **Why:** the ribbon's width steps, maximise and window order are keyboard-only, which leaves the Tab5 and the 7B without a keyboard unable to change them (owner, 2026-11-09).

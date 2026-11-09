@@ -450,6 +450,8 @@ uint32_t usbkbd_translate(usbkbd_xlate_t *x, uint32_t ev, uint32_t now_ms, uint8
                 /* Cmd + Ctrl + Left / Right: move window left / right */
                 if (u == 0x50) hk = USBKBD_HOTKEY_MOVE_LEFT;
                 else if (u == 0x4f) hk = USBKBD_HOTKEY_MOVE_RIGHT;
+                else if (u == 0x52 && console_ribbon_down()) hk = USBKBD_HOTKEY_MOVE_LEFT;   /* Up, portrait */
+                else if (u == 0x51 && console_ribbon_down()) hk = USBKBD_HOTKEY_MOVE_RIGHT;  /* Down */
             } else if (sh) {
                 /* Cmd + Shift + 3: screenshot */
                 if (u == 0x20) hk = USBKBD_HOTKEY_SCREENSHOT;
@@ -458,6 +460,8 @@ uint32_t usbkbd_translate(usbkbd_xlate_t *x, uint32_t ev, uint32_t now_ms, uint8
                 if (u == 0x28) hk = USBKBD_HOTKEY_NEW_TERM;         /* Enter: new terminal */
                 else if (u == 0x50) hk = USBKBD_HOTKEY_FOCUS_LEFT;  /* Left: focus left */
                 else if (u == 0x4f) hk = USBKBD_HOTKEY_FOCUS_RIGHT; /* Right: focus right */
+                else if (u == 0x52 && console_ribbon_down()) hk = USBKBD_HOTKEY_FOCUS_LEFT;   /* Up, portrait: the window above */
+                else if (u == 0x51 && console_ribbon_down()) hk = USBKBD_HOTKEY_FOCUS_RIGHT;  /* Down: the one below */
                 else if (u == 0x1a) hk = USBKBD_HOTKEY_CLOSE;       /* 'w' / 'W': close window */
                 else if (u == 0x12) hk = USBKBD_HOTKEY_ORIENT;      /* 'o' / 'O': toggle orientation */
                 else if (u == 0x2f) hk = USBKBD_HOTKEY_LEFT;        /* '[': shrink column */

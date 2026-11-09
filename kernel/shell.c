@@ -6249,10 +6249,12 @@ static void cmd_ribbon(const char *cmd_line) {
     if (console_canvas(req, 1, reply) && reply[0] == 0) {
         uint8_t count = reply[1];
         uint8_t active = reply[2];
-        int32_t x_view = (int32_t)(reply[3] | (reply[4] << 8));
-        int32_t x_target = (int32_t)(reply[5] | (reply[6] << 8));
-        cprintf("Ribbon Status: %d windows, active idx %d, x_view %ld, x_target %ld\n",
-                count, active, (long)x_view, (long)x_target);
+        int32_t m_view = (int32_t)(reply[3] | (reply[4] << 8));
+        int32_t m_target = (int32_t)(reply[5] | (reply[6] << 8));
+        bool down = reply[7] == RIBBON_AXIS_Y;
+        const char *unit = down ? "rows" : "cols";
+        cprintf("Ribbon Status: %d windows, active idx %d, axis %c, view %ld, target %ld\n",
+                count, active, down ? 'Y' : 'X', (long)m_view, (long)m_target);
         for (uint8_t i = 0; i < count; i++) {
             req[1] = i;
             if (!console_canvas(req, 2, reply) || reply[0] != 0) break;
@@ -6261,23 +6263,23 @@ static void cmd_ribbon(const char *cmd_line) {
             int32_t rx0 = (int32_t)(reply[4] | (reply[5] << 8));
             int32_t rx1 = (int32_t)(reply[6] | (reply[7] << 8));
             if (type == RIBBON_WIN_CANVAS)
-                cprintf("  [%d] Canvas (slot %d of vterm %d, %d cols, rx %ld..%ld, %s)%s\n",
-                        i, id, reply[8], cols, (long)rx0, (long)rx1,
+                cprintf("  [%d] Canvas (slot %d of vterm %d, %d %s, at %ld..%ld, %s)%s\n",
+                        i, id, reply[8], cols, unit, (long)rx0, (long)rx1,
                         (reply[9] == 1) ? "RGB565" : "1-bpp",
                         (i == active) ? " *" : "");
             else if (type == RIBBON_WIN_READER)
-                cprintf("  [%d] Reader   (slot %d, %d cols, rx %ld..%ld)%s\n",
-                        i, id, cols, (long)rx0, (long)rx1, (i == active) ? " *" : "");
+                cprintf("  [%d] Reader   (slot %d, %d %s, at %ld..%ld)%s\n",
+                        i, id, cols, unit, (long)rx0, (long)rx1, (i == active) ? " *" : "");
             else if (type == RIBBON_WIN_LAUNCHER)
-                cprintf("  [%d] Launcher (slot %d, %d cols, rx %ld..%ld)%s\n",
-                        i, id, cols, (long)rx0, (long)rx1, (i == active) ? " *" : "");
+                cprintf("  [%d] Launcher (slot %d, %d %s, at %ld..%ld)%s\n",
+                        i, id, cols, unit, (long)rx0, (long)rx1, (i == active) ? " *" : "");
             else if (ribbon_is_view(type)) {
                 const view_ops_t *v = view_for_window(type);
-                cprintf("  [%d] View     (%s, slot %d, %d cols, rx %ld..%ld)%s\n",
-                        i, v ? v->name : "unknown", id, cols, (long)rx0, (long)rx1, (i == active) ? " *" : "");
+                cprintf("  [%d] View     (%s, slot %d, %d %s, at %ld..%ld)%s\n",
+                        i, v ? v->name : "unknown", id, cols, unit, (long)rx0, (long)rx1, (i == active) ? " *" : "");
             } else
-                cprintf("  [%d] Term     (vterm %d, %d cols, rx %ld..%ld)%s\n",
-                        i, id, cols, (long)rx0, (long)rx1, (i == active) ? " *" : "");
+                cprintf("  [%d] Term     (vterm %d, %d %s, at %ld..%ld)%s\n",
+                        i, id, cols, unit, (long)rx0, (long)rx1, (i == active) ? " *" : "");
             cprintf("      told: %s, %s\n", (told & CONSOLE_WIN_FOCUSED) ? "focused" : "not focused",
                     (told & CONSOLE_WIN_VISIBLE) ? "shown" : "not shown");
         }
@@ -6972,6 +6974,16 @@ static void parse_and_eval_cmd(const char *cmd_line) {
         const char *a = cmd_line + 9;
         unsigned w = 0, h = 0;
         while (*a == ' ') a++;
+        if (strcmp(a, "turn") == 0) {
+            if (ramscreen_turn() != 0) {
+                cprintf("ramscreen: cannot turn here\n");
+                return;
+            }
+            console_sync_readers();                      /* the views' new sizes */
+            ramscreen_size(&w, &h);
+            cprintf("ramscreen: %u x %u\n", w, h);
+            return;
+        }
         while (*a >= '0' && *a <= '9') w = w * 10u + (unsigned)(*a++ - '0');
         while (*a == ' ' || *a == 'x') a++;
         while (*a >= '0' && *a <= '9') h = h * 10u + (unsigned)(*a++ - '0');

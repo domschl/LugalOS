@@ -73,6 +73,7 @@ typedef struct {
     uint32_t          polls, reports, presses, taps, swipes, longs, drags, nothings, errors;
     uint32_t          ends_lifted, ends_quiet;   /* how contacts ended: a lift report, or reports stopping */
     bool              edge;                      /* this contact began in the edge band */
+    bool              wm_stroke;                 /* portrait: a vertical stroke here steps the ribbon */
     win_t             owner;                     /* the window it is posted to raw, or -1 (gestures) */
     int               owner_x0, owner_y0;        /* that window's content origin when it began */
     int               last_px, last_py;          /* the last point posted to it */
@@ -168,6 +169,27 @@ static void map_point(unsigned rx, unsigned ry, int *x, int *y) {
  * fling, a tap taps, a long press opens the context menu (a mouse's right
  * click) and starts a held key's repeat. */
 static void gesture_act(gesture_kind_t kind, const gesture_t *ev) {
+    /* Down a portrait screen the ribbon runs vertically: a vertical stroke
+     * that began on a window's chrome or in the edge band moves it as a
+     * horizontal swipe does across a landscape one (up brings the window
+     * below), and scrolls nothing. */
+    if (g_t.wm_stroke) {
+        int dy = g_t.gs.y - g_t.gs.y0;
+        int far = gesture_mm_px(8u, CONFIG_PANEL_DPI);
+        switch (kind) {
+        case GESTURE_SWIPE_UP:
+        case GESTURE_SWIPE_DOWN:
+        case GESTURE_DRAG_END:
+            if (kind == GESTURE_DRAG_END && dy < far && -dy < far) break;
+            g_t.swipes++;
+            console_hotkey(dy < 0 ? CONSOLE_HOTKEY_FOCUS_RIGHT : CONSOLE_HOTKEY_FOCUS_LEFT);
+            return;
+        case GESTURE_DRAG:
+            return;
+        default:
+            break;
+        }
+    }
     switch (kind) {
     case GESTURE_SWIPE_LEFT:  g_t.swipes++; console_hotkey(CONSOLE_HOTKEY_FOCUS_RIGHT); break;
     case GESTURE_SWIPE_RIGHT: g_t.swipes++; console_hotkey(CONSOLE_HOTKEY_FOCUS_LEFT); break;
@@ -331,6 +353,15 @@ static void touch_task_body(void *arg) {
                 int band = gesture_mm_px(TOUCH_EDGE_MM, CONFIG_PANEL_DPI);
                 g_t.edge = g_t.scr_w && (x < band || x >= (int)g_t.scr_w - band);
                 if (g_t.edge) g_t.edge_contacts++;
+                bool down_axis = console_ribbon_down();
+                if (down_axis && g_t.scr_h && (y < band || y >= (int)g_t.scr_h - band)) g_t.edge = true;
+                {
+                    uint8_t wt, wid;
+                    int wcx, wcy, ox, oy, ow, oh;
+                    bool on_osk = lcdterm_osk_rect(&ox, &oy, &ow, &oh) && x >= ox && x < ox + ow && y >= oy && y < oy + oh;
+                    g_t.wm_stroke = down_axis && !on_osk &&
+                                    (g_t.edge || !lcdterm_window_at(x, y, &wt, &wid, &wcx, &wcy));
+                }
                 win_t w = g_t.edge ? -1 : window_focused();
                 g_t.owner = -1;
                 if (w >= 0 && (window_claims(w) & WIN_CLAIM_POINTER) && window_origin(w, &g_t.owner_x0, &g_t.owner_y0))

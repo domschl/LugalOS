@@ -537,6 +537,8 @@ static int line_key(line_state_t *st, key_event_t k, const char *prompt,
         else if (key == '\r' || key == '\n') console_hotkey(CONSOLE_HOTKEY_NEW_TERM);
         else if (key == KEY_LEFT) console_hotkey(ctrl ? CONSOLE_HOTKEY_MOVE_LEFT : CONSOLE_HOTKEY_FOCUS_LEFT);
         else if (key == KEY_RIGHT) console_hotkey(ctrl ? CONSOLE_HOTKEY_MOVE_RIGHT : CONSOLE_HOTKEY_FOCUS_RIGHT);
+        else if (key == KEY_UP && console_ribbon_down()) console_hotkey(ctrl ? CONSOLE_HOTKEY_MOVE_LEFT : CONSOLE_HOTKEY_FOCUS_LEFT);
+        else if (key == KEY_DOWN && console_ribbon_down()) console_hotkey(ctrl ? CONSOLE_HOTKEY_MOVE_RIGHT : CONSOLE_HOTKEY_FOCUS_RIGHT);
         else if (key == 'w' || key == 'W') console_hotkey(CONSOLE_HOTKEY_CLOSE);
         else if (key == 'o' || key == 'O') console_hotkey(CONSOLE_HOTKEY_ORIENT);
         else if (key == '[') console_hotkey(CONSOLE_HOTKEY_LEFT);

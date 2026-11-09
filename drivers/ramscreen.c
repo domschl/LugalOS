@@ -16,6 +16,7 @@
  */
 
 #include "drivers/ramscreen.h"
+#include "drivers/ribbon.h"
 #include "drivers/screen.h"
 #include "kernel/palloc.h"
 #include "kernel/console.h"
@@ -30,6 +31,10 @@
 static unsigned g_rs_w = 800u, g_rs_h = 480u;
 #define RS_FB    (g_rs_w / 8u * g_rs_h)
 #define RS_PAGES(bytes) (((bytes) + PAGE_SIZE - 1u) / PAGE_SIZE)
+
+/* A screen that turns (`ramscreen turn`, 76.3) where the ribbon runs down a
+ * portrait screen too: its terminals' shadows hold either shape. */
+#define RS_ROTATES (RIBBON_AXIS_Y_SUPPORTED != 0)
 
 /* guarded by: console_lock (rs_canvas()); `ramscreen W H` sets the size before a screen exists. */
 static screen_t *g_rs;
@@ -47,12 +52,12 @@ static bool rs_canvas_locked(const uint8_t *req, uint32_t n, uint8_t *reply) {
         }
         void *fb = palloc_pages(RS_PAGES(RS_FB));
         if (!fb) return false;
-        screen_t *scr = (screen_t *)palloc_pages(RS_PAGES(SCREEN_BYTES(g_rs_w, g_rs_h)));
+        screen_t *scr = (screen_t *)palloc_pages(RS_PAGES(SCREEN_BYTES_ROT(g_rs_w, g_rs_h, RS_ROTATES)));
         if (!scr) {
             palloc_free(fb, RS_PAGES(RS_FB));
             return false;
         }
-        screen_init(scr, fb, g_rs_w / 8u, g_rs_w, g_rs_h);
+        screen_init_rot(scr, fb, g_rs_w / 8u, g_rs_w, g_rs_h, RS_ROTATES);
         /* 38.8: the canvas stores, from the bulk zone -- QEMU's stand-in --
          * so the suite runs them; without one, the canvas is not kept. */
         void *st = palloc_pages_bulk(RS_PAGES(SCREEN_STORE_BYTES(g_rs_w, g_rs_h)));
@@ -91,7 +96,7 @@ int ramscreen_set_size(unsigned w, unsigned h) {
     if (w < 320u || h < 240u || w > 1600u || h > 1200u || (w % 32u) != 0) return -1;
     if (g_rs) {
         palloc_free(g_rs_fb, RS_PAGES(g_rs_built_w / 8u * g_rs_built_h));
-        palloc_free(g_rs, RS_PAGES(SCREEN_BYTES(g_rs_built_w, g_rs_built_h)));
+        palloc_free(g_rs, RS_PAGES(SCREEN_BYTES_ROT(g_rs_built_w, g_rs_built_h, RS_ROTATES)));
         if (g_rs_store) palloc_free(g_rs_store, RS_PAGES(SCREEN_STORE_BYTES(g_rs_built_w, g_rs_built_h)));
         g_rs = NULL;
         g_rs_fb = g_rs_store = NULL;
@@ -99,6 +104,28 @@ int ramscreen_set_size(unsigned w, unsigned h) {
     g_rs_w = w;
     g_rs_h = h;
     return 0;
+}
+
+int ramscreen_turn(void) {
+    if (!RS_ROTATES || (g_rs_h % 32u) != 0) return -1;
+    console_lock();
+    unsigned w = g_rs_h, h = g_rs_w;
+    g_rs_w = w;
+    g_rs_h = h;
+    if (g_rs) {
+        /* The frame and the stores hold w x h bytes either way round. */
+        screen_reorient(g_rs, g_rs_fb, w / 8u, w, h);
+        g_rs_built_w = w;
+        g_rs_built_h = h;
+        screen_report_windows(g_rs);
+    }
+    console_unlock();
+    return 0;
+}
+
+/* accepted: one byte read outside console_lock, as lcdterm_ribbon_down(). */
+bool ramscreen_ribbon_down(void) {
+    return g_rs && RIBBON_AXIS(&g_rs->ribbon) == RIBBON_AXIS_Y;
 }
 
 void ramscreen_size(unsigned *w, unsigned *h) {

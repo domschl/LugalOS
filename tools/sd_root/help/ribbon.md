@@ -29,6 +29,16 @@ The top of the screen displays a persistent status bar featuring:
 * **Minimap**: Visual representation of the full ribbon layout.
 * **System Clock**: Hardware RTC time synchronized at boot.
 
+### Portrait: the ribbon runs down the screen (Tab5)
+On a screen turned to portrait (the Tab5, `Cmd+O` or the IMU), the ribbon runs from top to bottom instead: every window is as wide as the screen, and its size is counted in text rows. A window is either alone on the screen (37 rows on the Tab5) or one of a **top/bottom pair** (17 rows each) -- never a narrow slice side by side.
+
+* **Turning keeps the windows**: their order, the focus, and their shape. A window alone stays alone; two side by side become the two of a top/bottom pair, and turning back makes them a side-by-side pair again.
+* **`Cmd+\`** switches the focused window between alone and half of a pair; `Cmd+[` / `Cmd+]` do the same in one step each.
+* **`Cmd+Up` / `Cmd+Down`** focus the window above / below (`Cmd+Left` / `Cmd+Right` still work, as previous / next); with `Ctrl` they move the focused window up / down.
+* **Touch**: a vertical swipe that starts on a title bar (or the menu bar, or within 3 mm of the screen's edge) moves to the window above or below. A vertical swipe inside a window scrolls it, as in landscape.
+* A window shows only when the whole of it is on the screen; the ribbon jumps to the next window rather than sliding.
+* The 7B and the RP2350-LCD-7 have no portrait ribbon; on the RP2350 it is not built.
+
 ---
 
 ## 2. Navigation & Window Controls
