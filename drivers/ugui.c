@@ -1501,7 +1501,7 @@ ugui_text_ev_t ugui_text_key(ugui_text_t *t, uint32_t key, uint8_t mods) {
         text_cut(t);
         return UGUI_TEXT_CHANGED;
     }
-    if (key >= 0x20 && key < 0x7f) {                     /* ASCII until the fonts go further (71.9) */
+    if (key >= 0x20 && key < 0x7f) {                     /* ASCII until the fonts go further */
         text_cut(t);
         if (t->len + 1u >= t->cap) return UGUI_TEXT_MOVED;
         memmove(t->buf + t->caret + 1, t->buf + t->caret, (size_t)(t->len - t->caret + 1));

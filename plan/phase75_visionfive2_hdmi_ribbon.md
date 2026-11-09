@@ -66,10 +66,10 @@ Inspection of the VisionFive 2 v1.3B schematic (`RV002_V1.3B_20230208.pdf`), JH7
 
 ```mermaid
 flowchart TD
-    subgraph P71 ["Phase 71 (Ribbon UX & Apps)"]
-        P71_LFN["71.6b FAT32 LFN\n(fs/fat32.c)"]
+    subgraph P71 ["Phases 71, 76-78 (Ribbon UX & Apps)"]
+        P71_LFN["76.1 FAT32 LFN\n(fs/fat32.c)"]
         P71_UGUI["71.1-71.3 ugui Widgets\n& Touch/Key Focus"]
-        P71_APPS["71.7-71.10 Book Reader,\nSettings & Launcher"]
+        P71_APPS["Phases 77-78 Launcher,\nSettings & Book Reader"]
     end
 
     subgraph P74 ["Phase 74 (NVMe & USB)"]
@@ -102,10 +102,10 @@ flowchart TD
      - Touch: Absolute `(X, Y)` tap down / tap release.
      - Mouse: Pointer hover, Left-click (= tap), Right-click (= context menu / action sheet), Scroll wheel (= vertical scrolling in reader, horizontal panning in ribbon).
    - In Phase 75, the Ribbon desktop runs at full 1080p (or 720p) resolution, allowing multiple Phase 71 apps (Book Reader, Settings app, Files face) to sit side-by-side on screen.
-3. **Phase 71 Milestone 71.6b (FAT32 LFN) Synchronization**:
+3. **Phase 76 Milestone 76.1 (FAT32 LFN, 71.6b before the 2026-11-09 split) Synchronization**:
    - The large book library (`/sd0/BOOKS/`) and document collections in Phase 71 require readable long file names.
    - With `/nvme0/` introduced in Phase 74, users can store gigabytes of e-books and data on the high-speed NVMe SSD.
-   - When 71.6b lands, both `/sd0/` and `/nvme0/` share the exact same VFAT long filename parsing and creation routines in [`fs/fat32.c`](file:///home/dsc/Source/gith/domschl/lugalos/fs/fat32.c).
+   - When 76.1 lands, both `/sd0/` and `/nvme0/` share the exact same VFAT long filename parsing and creation routines in [`fs/fat32.c`](file:///home/dsc/Source/gith/domschl/lugalos/fs/fat32.c).
 
 ---
 

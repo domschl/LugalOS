@@ -873,22 +873,22 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
         results.append(("Touch Toolkit Hit-Boxes And Drawing (71.0 uguiselftest)",
                         ok, log if not ok else ""))
 
-        # 71.4: the application registry and the associations are searched
+        # The application registry and the associations are searched
         # by binary search, so an entry out of order is silently not found.
         ok, log = session.send_and_expect("apps check", r"apps check: (PASS|FAIL)[^\n]*\n", timeout=10.0)
         if ok and "apps check: FAIL" in log:
             ok = False
-        results.append(("Application Registry Sorted And Consistent (71.4 apps check)",
+        results.append(("Application Registry Sorted And Consistent (71.5 apps check)",
                         ok, log if not ok else ""))
         ok, log = session.send_and_expect("icons check", r"icons check: (PASS|FAIL)[^\n]*\n", timeout=10.0)
         if ok and "icons check: FAIL" in log:
             ok = False
-        results.append(("Built-in Icons Sorted And Complete (71.4 icons check)",
+        results.append(("Built-in Icons Sorted And Complete (71.5 icons check)",
                         ok, log if not ok else ""))
         ok, log = session.send_and_expect("settings check", r"settings check: (PASS|FAIL)[^\n]*\n", timeout=10.0)
         if ok and "settings check: FAIL" in log:
             ok = False
-        results.append(("Settings Store Sorted, Defaults In Range (71.4 settings check)",
+        results.append(("Settings Store Sorted, Defaults In Range (71.5 settings check)",
                         ok, log if not ok else ""))
 
         # B6: a separately linked ELF, loaded from the filesystem into pages
@@ -3663,7 +3663,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
                 break
         results.append(("Two Canvases In One Terminal Keep Their Own Titles And Pixels", mix_ok, mix_log))
 
-        # 71.4p: a mouse, injected with `ms` on the 800 x 480 RAM screen (a
+        # A mouse, injected with `ms` on the 800 x 480 RAM screen (a
         # window's content at x 5, y 39 of its screen place; close boxes at
         # 8..18 px in, 25..35 px down). Hover outlines a launcher document,
         # a right click opens its action sheet and a click beside it closes
@@ -3692,9 +3692,9 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             if not ok:
                 mouse_ok, mouse_log = False, f"{cmd!r} did not give {pat!r}:\n{log}"
                 break
-        results.append(("Mouse: Hover, Click, Context Menu, Wheel Under The Pointer (71.4p ms)", mouse_ok, mouse_log))
+        results.append(("Mouse: Hover, Click, Context Menu, Wheel Under The Pointer (71.7 ms)", mouse_ok, mouse_log))
 
-        # 71.4: the text field's clipboard. The gallery's text tab (its tab
+        # The text field's clipboard. The gallery's text tab (its tab
         # at 265, 65, the field at 205, 124); a right click opens the edit
         # menu (Select All at y 404, Cut at 302, Paste at 370): all, cut,
         # pasted twice.
@@ -3713,7 +3713,7 @@ def test_qemu_architecture(elf_path: Path, img_path: Path, arch_name: str) -> li
             if not ok:
                 clip_ok, clip_log = False, f"{cmd!r} did not give {pat!r}:\n{log}"
                 break
-        results.append(("Text Field: Select All, Cut, Paste Through The Edit Menu (71.4 clipboard)", clip_ok, clip_log))
+        results.append(("Text Field: Select All, Cut, Paste Through The Edit Menu (71.6 clipboard)", clip_ok, clip_log))
 
 
         # 37.5b: the editor. Its own selftest (wrapping, movement over wrapped

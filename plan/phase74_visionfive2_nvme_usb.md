@@ -97,7 +97,7 @@ Direct inspection of the VisionFive 2 v1.3B schematic (`RV002_V1.3B_20230208.pdf
 ```
                        +---------------------------------------+
                        |   Phase 71: Touch UX, Apps & Books   |
-                       |   - 71.6b: FAT32 LFN (fs/fat32.c)    |
+                       |   - 76.1: FAT32 LFN (fs/fat32.c)     |
                        |   - 71.1-71.3: ugui Input Focus       |
                        +-------------------+-------------------+
                                            |
@@ -119,8 +119,8 @@ Direct inspection of the VisionFive 2 v1.3B schematic (`RV002_V1.3B_20230208.pdf
 +-------------------------------+
 ```
 
-1. **FAT32 Long File Name (LFN) Synchronization with Phase 71 Milestone 71.6b**:
-   - **The Problem**: In parallel development on the ribbon UX, [`plan/phase71_touch_ux_apps_and_books.md`](file:///home/dsc/Source/gith/domschl/lugalos/plan/phase71_touch_ux_apps_and_books.md) Milestone 71.6b is adding VFAT long filename read/write support to [`fs/fat32.c`](file:///home/dsc/Source/gith/domschl/lugalos/fs/fat32.c). At the same time, Phase 74 Milestones 74.2 and 74.3 introduce the 256 GB NVMe SSD mounted at `/nvme0/` using FAT32.
+1. **FAT32 Long File Name (LFN) Synchronization with Phase 76 Milestone 76.1** (71.6b before the 2026-11-09 split):
+   - **The Problem**: In parallel development on the ribbon UX, [`plan/phase76_ux_foundation_lfn_lisp_portrait.md`](file:///home/dsc/Source/gith/domschl/lugalos/plan/phase76_ux_foundation_lfn_lisp_portrait.md) Milestone 76.1 is adding VFAT long filename read/write support to [`fs/fat32.c`](file:///home/dsc/Source/gith/domschl/lugalos/fs/fat32.c). At the same time, Phase 74 Milestones 74.2 and 74.3 introduce the 256 GB NVMe SSD mounted at `/nvme0/` using FAT32.
    - **Synchronization Contract**: To avoid code churn and merge conflicts in `fs/fat32.c`, Phase 74 implements the NVMe driver strictly at the [`block_dev_t`](file:///home/dsc/Source/gith/domschl/lugalos/drivers/include/drivers/block.h) abstraction layer (`drivers/nvme.c`) and connects it to [`fs/vfs_server.c`](file:///home/dsc/Source/gith/domschl/lugalos/fs/vfs_server.c) via `fat32_init(&g_fat32_nvme, nvme_dev)`. Phase 74 will **not** modify `fs/fat32.c` internals. When 71.6b lands, `/nvme0/` will automatically inherit full LFN capability (long book paths, mixed-case document titles, UTF-8 conversion) across the entire 256 GB volume without requiring any refactoring.
 2. **Coupling with Phase 75 (HDMI Display & Ribbon Workstation)**:
    - **The Testing Dependency**: In Milestone 74.5, the USB keyboard and mouse are brought up on the VIA VL805 xHCI controller. The USB keyboard can be fully verified immediately because its keystrokes drive the serial shell and [`usbkbd`](file:///home/dsc/Source/gith/domschl/lugalos/drivers/include/drivers/usbkbd.h) pipeline. However, **the USB mouse input device can only be fully visually exercised once HDMI graphical output is available in Phase 75**.

@@ -162,7 +162,7 @@ flowchart LR
 
 - **[Phase 74 (Stage 3) — Dual PCIe 2.0, M.2 NVMe SSD & VIA VL805 USB 3.0 Host](file:///home/dsc/Source/gith/domschl/lugalos/plan/phase74_visionfive2_nvme_usb.md)**:
   - Extends TCP 9P synchronization: `tools/p9sync.py` can sync directly to the high-speed NVMe volume at `/nvme0/` in addition to `/sd0/`.
-  - Synchronizes with [Phase 71 Milestone 71.6b](file:///home/dsc/Source/gith/domschl/lugalos/plan/phase71_touch_ux_apps_and_books.md#716b--fat32-long-file-names-added-2026-11-06-owner-decision-before-it-starts) for VFAT long filenames.
+  - Synchronizes with [Phase 76 Milestone 76.1](file:///home/dsc/Source/gith/domschl/lugalos/plan/phase76_ux_foundation_lfn_lisp_portrait.md#761--fat32-long-file-names) (71.6b before the 2026-11-09 split) for VFAT long filenames.
 - **[Phase 75 (Stage 4) — HDMI 2.0 Display, DC8200 & Ribbon Workstation](file:///home/dsc/Source/gith/domschl/lugalos/plan/phase75_visionfive2_hdmi_ribbon.md)**:
   - Consumes network status and IP address established in Phase 73 for display on the HDMI workstation status bar and Phase 71 Settings app.
   - Marries Phase 74 USB mouse and keyboard input with 1080p60 graphical desktop.

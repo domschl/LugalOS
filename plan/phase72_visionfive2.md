@@ -346,7 +346,7 @@ To keep Phase 72 focused and fast to verify, the remaining peripheral subsystems
   - Headless SD auto-boot via `vf2_uEnv.txt` on `/sd0`.
 - **[Phase 74 (Stage 3) — PLDA PCIe Gen2 Root Complex (`pcie0`/`pcie1`), 256 GB M.2 NVMe (`/nvme0`) & VL805 xHCI USB 3.0 Host](file:///home/dsc/Source/gith/domschl/lugalos/plan/phase74_visionfive2_nvme_usb.md)** (**ACTIVE**):
   - Bring up dual PLDA XpressRICH3 PCIe Gen2 controllers (`pcie0@2B000000` and `pcie1@2C000000`, `STG_CRG` clocks/resets, `GPIO26`/`GPIO28` `PERST#`, `GPIO32`/`GPIO21` `PWREN`, ATR translation tables).
-  - High-performance bare-metal NVMe admin/I/O queue block driver (`drivers/nvme.c`) mounting the 256 GB M.2 SSD at `/nvme0` (synchronizing with Phase 71 Milestone 71.6b for VFAT long filenames).
+  - High-performance bare-metal NVMe admin/I/O queue block driver (`drivers/nvme.c`) mounting the 256 GB M.2 SSD at `/nvme0` (synchronizing with Phase 76 Milestone 76.1 for VFAT long filenames).
   - xHCI USB 3.0 host support on the PCIe0 VIA VL805 controller (`drivers/xhci_jh7110.c`) and USB HID keyboard and mouse driver (`drivers/usb_hid.c`).
 - **[Phase 75 (Stage 4) — VeriSilicon DC8200 + Innosilicon HDMI 2.0 Display & 64-Bit Ribbon Workstation](file:///home/dsc/Source/gith/domschl/lugalos/plan/phase75_visionfive2_hdmi_ribbon.md)** (**PLANNED**):
   - Bring up `DOM_VOUT_CRG` (`0x295C0000`), Innosilicon HDMI TX (`0x29590000`) with DDC EDID reader (`0x50`), and VeriSilicon DC8200 display controller (`0x29400000`) scanning out 1080p60/720p60 RGB565 framebuffers from DRAM.
