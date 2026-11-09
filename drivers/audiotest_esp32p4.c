@@ -13,10 +13,12 @@
 
 #include "drivers/audiotest_esp32p4.h"
 #include "drivers/audio_esp32p4.h"
+#include "drivers/ui_sound.h"
 #include "lugalos_config.h"
 #include "kernel/console.h"
 #include "kernel/printk.h"
 #include "kernel/time.h"
+#include "kernel/sched.h"
 #include "drivers/i2c_bus.h"
 
 #include <string.h>
@@ -291,6 +293,23 @@ void audiotest_cmd(const char *arg) {
         cprintf("  tone [hz] [ms]    - Play pure fixed-point sine test tone (default 440 Hz, 500 ms)\n");
         cprintf("  chord             - Play celestial 4-voice space ambient chord\n");
         cprintf("  melody            - Play opening theme of Beethoven Fuer Elise\n");
+        cprintf("  click [n]         - n UI clicks 300 ms apart (default 5), whatever ui.click_sound says, then what they did\n");
+        return;
+    }
+
+    if (arg && strncmp(arg, "click", 5) == 0 && (arg[5] == '\0' || arg[5] == ' ')) {
+        int n = 5;
+        const char *s = arg + 5;
+        while (*s == ' ') s++;
+        if (*s >= '0' && *s <= '9') {
+            n = 0;
+            while (*s >= '0' && *s <= '9') n = n * 10 + (*s++ - '0');
+        }
+        for (int i = 0; i < n; i++) {
+            ui_click_now();
+            task_sleep_ms(300);
+        }
+        ui_click_report();
         return;
     }
 

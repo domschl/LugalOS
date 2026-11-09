@@ -34,6 +34,7 @@ the milestone that needs it rather than here in advance.
 from __future__ import annotations
 
 import socket
+from collections.abc import Callable
 import threading
 
 ETH_HDR_LEN = 14
@@ -392,6 +393,34 @@ class TCPDriver:
             time.sleep(0.02)
         self._seen = len(self.peer.received())
         return out
+
+    def segments_with_data(self, timeout: float = 5.0) -> list[dict[str, object]]:
+        """As segments(), but waits for one that carries data. The guest
+        acknowledges a request at once and sends the reply after its server
+        task has run, so the first segment is often a bare ACK; segments()
+        would return with it, and the reply would arrive unseen."""
+        return self.segments_until(lambda s: bool(s["data"]), timeout)
+
+    def segments_until(self, want: "Callable[[dict[str, object]], bool]",
+                       timeout: float = 5.0) -> list[dict[str, object]]:
+        """Every segment since the last call, waiting until one satisfies
+        `want` (or `timeout`)."""
+        import time
+        out: list[dict[str, object]] = []
+        deadline = time.time() + timeout
+        while True:
+            frames = self.peer.received()
+            for frame in frames[self._seen:]:
+                _dst, _src, etype, payload = parse_eth(frame)
+                if etype != ETHERTYPE_IPV4:
+                    continue
+                ip = parse_ipv4(payload)
+                if ip["proto"] == IP_PROTO_TCP:
+                    out.append(parse_tcp(ip["payload"]))  # type: ignore[arg-type]
+            self._seen = len(frames)
+            if any(want(s) for s in out) or time.time() >= deadline:
+                return out
+            time.sleep(0.02)
 
     def handshake(self, timeout: float = 5.0, mss: int = 1460) -> dict[str, object]:
         self.send(TCP_SYN, mss=mss)

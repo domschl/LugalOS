@@ -75,7 +75,7 @@
     "drivers/tsl2591.c": 84,
     "drivers/uart_esp32p4.c": 899,
     "drivers/uart_net.c": 14740,
-    "drivers/ui_sound.c": 25,
+    "drivers/ui_sound.c": 41,
     "drivers/usbhost_esp32p4.c": 1108,
     "drivers/usbkbd_host.c": 109,
     "drivers/view.c": 28,
@@ -183,7 +183,7 @@
     "clock-app": 136,
     "crypto": 38,
     "display": 3838,
-    "drivers": 1285,
+    "drivers": 1301,
     "fs": 4160,
     "httpd": 70,
     "identity": 4237,
@@ -203,5 +203,5 @@
     "vfs": 4111
   },
   "ram_code": 1806,
-  "total": 216775
+  "total": 216791
 }

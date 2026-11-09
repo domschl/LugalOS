@@ -8775,7 +8775,7 @@ def test_tcp_state_machine(elf_path: Path, img_path: Path, arch_name: str) -> tu
 
         # 2. a real 9P exchange over it
         tcp.send(netpeer.TCP_ACK | netpeer.TCP_PSH, tversion())
-        segs = tcp.segments(timeout=5.0)
+        segs = tcp.segments_with_data(timeout=5.0)
         data = tcp.absorb(segs)
         if len(data) < 7:
             return (name, False, f"no Rversion came back (got {len(data)} bytes)")
@@ -8802,7 +8802,7 @@ def test_tcp_state_machine(elf_path: Path, img_path: Path, arch_name: str) -> tu
 
         # 4. the same segment, now in order, is accepted
         tcp.send(netpeer.TCP_ACK | netpeer.TCP_PSH, tversion())
-        segs = tcp.segments(timeout=5.0)
+        segs = tcp.segments_with_data(timeout=5.0)
         data = tcp.absorb(segs)
         if len(data) < 7 or data[4] != 101:
             return (name, False, "the in-order retransmission was not accepted")
@@ -8810,7 +8810,8 @@ def test_tcp_state_machine(elf_path: Path, img_path: Path, arch_name: str) -> tu
 
         # 5. half-close: our FIN must be acknowledged, and answered
         tcp.send(netpeer.TCP_FIN | netpeer.TCP_ACK)
-        segs = tcp.segments(timeout=5.0, count=1)
+        # The ACK of our FIN and the guest's own FIN may come apart.
+        segs = tcp.segments_until(lambda s: bool(s["flags"] & netpeer.TCP_FIN), timeout=5.0)
         if not segs:
             return (name, False, "the FIN was not answered")
         saw_ack = any(s["ack"] == tcp.snd for s in segs)
@@ -8916,7 +8917,7 @@ def test_tcp_under_impairment(elf_path: Path, img_path: Path, arch_name: str) ->
         # --- 1. a reply we never acknowledge must come back, unchanged ---
         tcp = dial(40100)
         tcp.send(netpeer.TCP_ACK | netpeer.TCP_PSH, tversion())
-        segs = [s for s in tcp.segments(timeout=5.0) if s["data"]]
+        segs = [s for s in tcp.segments_with_data(timeout=5.0) if s["data"]]
         if not segs:
             return (name, False, "no reply to acknowledge in the first place")
         first = segs[0]
@@ -8949,8 +8950,17 @@ def test_tcp_under_impairment(elf_path: Path, img_path: Path, arch_name: str) ->
         tcp2.send_raw(at, tcp2.rcv, netpeer.TCP_ACK | netpeer.TCP_PSH, req)
         tcp2.send_raw(at, tcp2.rcv, netpeer.TCP_ACK | netpeer.TCP_PSH, req)   # same seq, again
         tcp2.snd = at + len(req)
-        segs = tcp2.segments(timeout=5.0)
+        segs = tcp2.segments_with_data(timeout=5.0)
         replies = [s for s in segs if s["data"]]
+        if replies:
+            # Acknowledge the reply so it is not retransmitted, then give a
+            # second reply -- the request processed twice -- time to come.
+            # A retransmission repeats a sequence number; a second reply
+            # starts where the first ended.
+            tcp2.rcv = replies[0]["seq"] + len(replies[0]["data"])
+            tcp2.send(netpeer.TCP_ACK)
+            segs += tcp2.segments(timeout=1.0, count=1 << 30)
+        replies = {s["seq"] for s in segs if s["data"]}
         if len(replies) != 1:
             return (name, False,
                     f"a duplicated request produced {len(replies)} replies, expected 1 "
@@ -8972,7 +8982,7 @@ def test_tcp_under_impairment(elf_path: Path, img_path: Path, arch_name: str) ->
         if squeezed >= 65535 or squeezed == 0:
             return (name, False, f"window after a partial frame is {squeezed}, expected a shrink")
         tcp3.send(netpeer.TCP_ACK | netpeer.TCP_PSH, full[-1:])    # complete it
-        segs = tcp3.segments(timeout=5.0)
+        segs = tcp3.segments_with_data(timeout=5.0)
         replies = [s for s in segs if s["data"]]
         if not replies:
             return (name, False, "the completed frame was not answered")
@@ -9027,7 +9037,7 @@ def test_tcp_under_impairment(elf_path: Path, img_path: Path, arch_name: str) ->
             return (name, False, f"a reset connection is still in the table: {log[-400:]}")
         tcp6 = dial(40105)            # the slot must be dialable again
         tcp6.send(netpeer.TCP_ACK | netpeer.TCP_PSH, tversion())
-        replies = [s for s in tcp6.segments(timeout=5.0) if s["data"]]
+        replies = [s for s in tcp6.segments_with_data(timeout=5.0) if s["data"]]
         if not replies:
             return (name, False, "the slot freed by a reset could not be reused")
         drop(tcp6)

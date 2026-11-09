@@ -407,10 +407,10 @@ Moonbase's PPA pass (Phase 64) reads only 0.46 MB, a quarter-size source scaled 
 - Sizes in millimetres from the display's DPI at run time.
 - The click sound for on-screen keyboard keys (`ui.click_sound`).
 - **Acceptance:** on the Tab5 and the 7B without a keyboard, the gallery's text field opens the on-screen keyboard in its window and takes its keys, which also click with `ui.click_sound` on; the clipboard by keys and by menu (runner test); the touch targets measure ≥ 7 mm on every panel from the run-time DPI.
-- **Status: open** -- built; the click heard on the 7B (owner, 2026-11-09). Left:
-  1. **No click on the Tab5** (owner, 2026-11-09): `settings set ui.click_sound 1` acknowledged, no sound from on-screen keyboard keys; moonbase's sound works on the same board.
-  2. **On-screen keyboard keys lost after a game** (owner, 2026-11-09, Tab5): launcher → moonbase → end moonbase → back to a terminal: the keyboard's keys do not reach the terminal until it is tapped; after the tap they do (still no click).
-  3. The owner's decision whether the editor `e` also takes the Cmd keys (it keeps its Emacs bindings on the same clipboard for now).
+- **Status: open** -- built; the click heard on the 7B and the Tab5 (owner, 2026-11-09). Left: the owner's decision whether the editor `e` also takes the Cmd keys (it keeps its Emacs bindings on the same clipboard for now).
+- **Fixed 2026-11-09** (owner's Tab5 test):
+  - **On-screen keyboard keys lost after a game:** launcher → moonbase → end moonbase → back to a terminal, and the keyboard's keys did not reach the terminal until it was tapped. A program that closes its own window moves the focus without the console hearing of it, so its active terminal was stale; the keyboard's keys now go to the terminal the keyboard is out in (the tap's reply names it). The fault predates the keyboard-for-views work.
+  - **No click on the Tab5:** silent in the first test, heard after the next flash. `audiotest click [n]` (new) clicks whatever the setting says and prints what the clicks did; on the Tab5 it showed the stream started, every click played and the stream owned. The first build's silence was not explained; if it comes back, `audiotest click` tells a click that never played from one the speaker did not make.
 
 **Result** (commit d03fb415):
 - **Keyboard for views:** a view asks with `console_osk_for_view()` (the launcher whenever a text field is focused with nothing over it); where there is touch and no keyboard the keyboard comes out in that view's window (`'k'` with the view as owner, `screen_osk_rows()`), the view gets shorter (its `'R'` height, the `'W'` blit and the P4's surface rectangle stop above the keyboard), its keys reach the view as key events, and it goes when the field loses the focus, a keyboard is plugged in, or its hide key is pressed. Tried by injection on the RP2350-LCD-7 (`kbd off`).

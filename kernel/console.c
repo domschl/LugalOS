@@ -1394,7 +1394,16 @@ static void run_hotkey(void) {
                     uint8_t okinst = 0;
                     const view_ops_t *okv = focused_view(&okinst);
                     if (okv) osk_view_key(okv, okinst, key, mods);   /* a view's text field */
-                    else osk_feed_key(key);
+                    else {
+                        /* To the terminal the keyboard is out in: the active
+                         * one may be stale (a program that closed its own
+                         * window moved the focus without telling us). */
+                        if (reply[10] == 1 /* RIBBON_WIN_TERM */) {
+                            vterm_set_active(reply[1]);
+                            g_active_win_type = 1;
+                        }
+                        osk_feed_key(key);
+                    }
                     continue;
                 }
                 if (reply[8] == 0xB0) {                  /* the keyboard was hidden: a view's height back */
