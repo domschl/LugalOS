@@ -17,6 +17,8 @@ Scenarios (--scenario):
   ribbon    47.8: several terminals and canvases -- a second terminal, rule
             30 on its canvas beside the first's rule 90, focus and moves
             along the ribbon, a canvas closed and reopened
+  views     71.9: the views -- the launcher, its control gallery, a view of
+            its own type (`viewtest`, dev images), the mouse cursor over it
 
 Boards (--board):
   rp2350    the RP2350 terminal: console on if00, 9P on if02 (default)
@@ -113,6 +115,20 @@ RIBBON: list[tuple[str, float, str | None]] = [
     ("(lorenz 3000)", 8.0, "lorenz"),
     ('(load "/sd0/cas/cas.lisp")', 15.0, None),       # the CAS whole: plot titles use to-infix
     ("(plot '(- (^ x 3) (* 3 x)) '(x -3 3))", 8.0, "plot"),
+    ("ribbon", 1.5, None),
+]
+
+# The views and the cursor (71.9). `viewtest` is a dev image's.
+VIEWS: list[tuple[str, float, str | None]] = [
+    ("clear", 1.0, None),
+    ("launcher", 3.0, "launcher"),
+    ("launcher gallery", 3.0, "gallery"),
+    ("launcher close", 2.0, None),
+    ("viewtest open", 3.0, "viewtest"),
+    ("cursor show", 1.0, None),
+    ("ms move 300 200", 1.5, "cursor"),
+    ("cursor hide", 1.0, None),
+    ("KEY:cmd-w", 2.0, None),                     # closes the focused view
     ("ribbon", 1.5, None),
 ]
 
@@ -349,7 +365,7 @@ def main() -> int:
     ap.add_argument("--out", required=True, type=Path, help="directory for shots and the console log")
     ap.add_argument("--compare", type=Path, help="a previous --out directory to diff against")
     ap.add_argument("--board", choices=["rp2350", "lcd7b", "tab5"], default="rp2350")
-    ap.add_argument("--scenario", choices=["terminal", "ribbon"], default="terminal")
+    ap.add_argument("--scenario", choices=["terminal", "ribbon", "views"], default="terminal")
     ap.add_argument("--console", help="RP2350: override the console port (if00)")
     ap.add_argument("--net", help="RP2350: override the 9P port (if02)")
     args = ap.parse_args()
@@ -359,7 +375,7 @@ def main() -> int:
         print(f"no {args.board} board answering -- nothing to do")
         return 0
     args.out.mkdir(parents=True, exist_ok=True)
-    scenario = TERMINAL if args.scenario == "terminal" else RIBBON
+    scenario = {"terminal": TERMINAL, "ribbon": RIBBON, "views": VIEWS}[args.scenario]
 
     shots: list[str] = []
     log: list[str] = []
@@ -385,6 +401,9 @@ def main() -> int:
                 shots.append(shot)
         if args.scenario == "terminal":
             run_line(ser, "(canvas-window 'text)", 2.0)
+            run_line(ser, "clear", 1.0)
+        elif args.scenario == "views":
+            run_line(ser, "launcher close", 2.0)
             run_line(ser, "clear", 1.0)
         else:
             ribbon_cleanup(ser, log)

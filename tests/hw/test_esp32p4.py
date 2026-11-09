@@ -2169,6 +2169,94 @@ def test_system_events(b: Board) -> tuple[str, bool, str]:
     return name, True, ", ".join(want) + " delivered"
 
 
+
+def test_settings_persist(b: Board) -> tuple[str, bool, str]:
+    """71.5: a setting survives a reboot -- `ui.osk_preview` (no side effect
+    a test can see) turned round, kept past the save's 2 s debounce, read
+    back after a reset, and put back."""
+    name = "settings: a setting survives a reboot (71.5)"
+    c = b.console_session
+    m = re.search(r"ui\.osk_preview=(on|off)", c.cmd("settings get ui.osk_preview", deadline=5.0))
+    if not m:
+        return name, True, "SKIPPED (no settings store on this image)"
+    was = m.group(1)
+    other = "off" if was == "on" else "on"
+    c.cmd(f"settings set ui.osk_preview {other}", deadline=5.0)
+    time.sleep(4.0)                                      # saved 2 s after the last change, from the idle turn
+    c = reboot(b)
+    c.cmd("", deadline=10.0)
+    back = c.cmd("settings get ui.osk_preview", deadline=5.0)
+    c.cmd(f"settings set ui.osk_preview {was}", deadline=5.0)
+    time.sleep(4.0)
+    if f"ui.osk_preview={other}" not in back:
+        return name, False, f"set {other}, after the reboot: {back.strip()[-120:]}"
+    return name, True, f"ui.osk_preview {was} -> {other}, kept across a reboot, put back"
+
+
+def test_view_and_mouse(b: Board) -> tuple[str, bool, str]:
+    """71.4/71.7: a view of its own type (`viewtest`) on the panel: its window
+    opens focused, a mouse click injected with `ms` reaches it, the glass
+    check matches a full redraw with it on the screen, and Cmd+W closes it."""
+    name = "views and the mouse: viewtest, ms click, glass check, Cmd+W (71.4, 71.7)"
+    n0, _ = _ribbon(b)
+    if n0 < 0:
+        return name, True, "SKIPPED (no ribbon on this board)"
+    c = b.console_session
+    if "viewtest: open" not in c.cmd("viewtest open", deadline=10.0):
+        return name, False, "viewtest open did not open its window"
+    rl = c.cmd("ribbon", deadline=5.0)
+    if not re.search(r"View     \(viewtest[^\n]*\*", rl):
+        _raw(b, b"\x1b[119;9u", 2.0)
+        return name, False, f"its window is not listed focused:\n{rl.strip()[-400:]}"
+    c.cmd("ms click 200 150", deadline=5.0)
+    time.sleep(0.5)
+    st = c.cmd("viewtest", deadline=5.0)
+    chk = c.cmd("lcd check", deadline=20.0)
+    _raw(b, b"\x1b[119;9u", 2.0)                       # Cmd+W: the focused view
+    closed = c.cmd("viewtest", deadline=5.0)
+    m = re.search(r"taps (\d+)", st)
+    if not m or int(m.group(1)) < 1:
+        return name, False, f"the click did not reach the view: {st.strip()[-200:]}"
+    if "matches a full redraw" not in chk:
+        return name, False, f"glass check: {chk.strip()[-200:]}"
+    if "viewtest: closed" not in closed:
+        return name, False, f"Cmd+W left it open: {closed.strip()[-200:]}"
+    return name, True, "opened focused, a click reached it, glass check clean, closed by Cmd+W"
+
+
+# 71.1's closing `uxbench` medians (input to glass, ms): a row more than 20 %
+# slower fails. The Tab5 in landscape (270) only; the 7B's launcher row was
+# 50-66 ms, its upper end here.
+_UXBENCH_BASE = {
+    "tab5": {"pan": 577.0, "scroll": 472.0, "page": 786.0, "redraw": 157.0, "launcher": 140.0},
+    "lcd7b": {"pan": 215.0, "scroll": 166.0, "page": 331.0, "redraw": 83.0, "launcher": 66.0},
+}
+
+
+def test_uxbench_regression(b: Board) -> tuple[str, bool, str]:
+    """71.9: no `uxbench` row more than 20 % slower than 71.1's record."""
+    name = "uxbench: no row 20 % slower than the 71.1 record (71.9)"
+    n0, _ = _ribbon(b)
+    if n0 < 0:
+        return name, True, "SKIPPED (no ribbon on this board)"
+    out = b.console_session.cmd("uxbench", deadline=240.0)
+    rot = re.search(r"rotation (\d+)", out)
+    key = "tab5" if is_tab5(b) else "lcd7b"
+    if key == "tab5" and (not rot or rot.group(1) != "270"):
+        return name, True, "SKIPPED (the Tab5's record is for landscape, 270)"
+    got = {m.group(1): float(m.group(2))
+           for m in re.finditer(r"^uxbench (\w+)\s*: \d+ actions, input to glass median ([\d.]+) ms", out, re.M)}
+    base = _UXBENCH_BASE[key]
+    missing = [r for r in base if r not in got]
+    if missing:
+        return name, False, f"rows missing {missing}:\n{out.strip()[-600:]}"
+    slow = [f"{r} {got[r]:.0f} ms (record {base[r]:.0f})" for r in base if got[r] > base[r] * 1.2]
+    rows = ", ".join(f"{r} {got[r]:.0f}" for r in base)
+    if slow:
+        return name, False, "slower: " + "; ".join(slow)
+    return name, True, rows + " ms"
+
+
 TESTS = [
     test_boots,
     test_proc_readable,
@@ -2220,6 +2308,9 @@ TESTS = [
     dev_only(test_close_protocol),
     dev_only(test_close_game),
     dev_only(test_system_events),
+    dev_only(test_view_and_mouse),
+    test_settings_persist,
+    dev_only(test_uxbench_regression),
     test_screenshot_color_mode,
     test_color_canvas_rgb565,
     test_ribbon_slide_and_reader_smooth_scroll,

@@ -173,7 +173,12 @@ python3 tests/hw/lcdterm_shots.py --compare golden_dir
 
 # Run ribbon scenario (multi-window, Rule 30/90, chess, CAS plot) on LCD-7B:
 python3 tests/hw/lcdterm_shots.py --scenario ribbon --board lcd7b
+
+# The views: the launcher, its control gallery, a view of its own type and the mouse cursor (dev image):
+python3 tests/hw/lcdterm_shots.py --scenario views --board tab5
 ```
+
+On the Tab5 and the LCD-7B the shots come back over the console's own wire at 921,600 baud; a full RGB565 frame takes a while, so a scenario with several shots runs for some minutes.
 
 #### Notes on Visual Scenarios & Escapes:
 * **MicroSD 8.3 Names:** `/sd0` uses strict 8.3 FAT filenames; long names sharing a prefix will collide.
