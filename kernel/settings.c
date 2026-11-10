@@ -27,15 +27,17 @@ static const char *const k_face[] = { "shortcuts", "files" };
 
 #if defined(CONFIG_BOARD_TAB5)
 #define VOLUME_DEFAULT 70
+#define ORIENT_DEFAULT 2      /* auto: the Tab5 turns with the hand that holds it (owner, 2026-11-10) */
 #else
 #define VOLUME_DEFAULT 60
+#define ORIENT_DEFAULT 0
 #endif
 
 /* Sorted by key (strcmp). */
 static const setting_def_t k_settings[] = {
     { "audio.volume",       SETTING_INT,  VOLUME_DEFAULT, 0, 100, NULL },
     { "display.brightness", SETTING_INT,  100, 10, 100, NULL },
-    { "display.orient",     SETTING_ENUM, 0,   0,  2,   k_orient },
+    { "display.orient",     SETTING_ENUM, ORIENT_DEFAULT, 0, 2, k_orient },
     { "input.natural_scroll", SETTING_BOOL, 1, 0, 1, NULL },
     { "input.pointer_speed", SETTING_INT, 100, 25, 400, NULL },
     { "launcher.face",      SETTING_ENUM, 0,   0,  1,   k_face },
@@ -110,8 +112,12 @@ static void apply(const setting_def_t *d, int v) {
         if (v == 2) {
             orient_set_auto(true);
         } else {
+            /* Turned only if it is the other way round now: a landscape
+             * display upside down stays as it is (`orient off` keeps it). */
             orient_set_auto(false);
-            if (dsi_lcd_set_orientation(v == 1 ? 0 : 270) == 0) console_sync_readers();
+            int rot = dsi_lcd_get_orientation();
+            bool portrait_now = rot == 0 || rot == 180;
+            if (portrait_now != (v == 1) && dsi_lcd_set_orientation(v == 1 ? 0 : 270) == 0) console_sync_readers();
         }
     }
 #endif
@@ -219,6 +225,9 @@ void settings_poll(void) {
     char buf[512];
     unsigned o = (unsigned)ksnprintf(buf, sizeof buf, "# LugalOS settings (`settings` in the shell)\n");
     for (unsigned i = 0; i < N_SETTINGS && o < sizeof buf; i++) {
+        /* Only what was changed: a setting at its default is left out, so a
+         * new default reaches a card saved before it. */
+        if (snap[i] == k_settings[i].def) continue;
         char v[16];
         settings_format(&k_settings[i], snap[i], v, sizeof v);
         o += (unsigned)ksnprintf(buf + o, sizeof buf - o, "%s=%s\n", k_settings[i].key, v);

@@ -5,6 +5,7 @@
 #include "kernel/identity.h"
 #include "kernel/printk.h"
 #include "kernel/sched.h"
+#include "kernel/settings.h"
 #include "kernel/time.h"
 #include "lugalos_config.h"
 #include <string.h>
@@ -223,8 +224,11 @@ void orient_cmd(const char *arg) {
     if (strcmp(arg, "auto") == 0) on = true;
     else if (strcmp(arg, "off") == 0) on = false;
     else { cprintf("usage: orient [auto|off]\n"); return; }
-    g_mode = on ? ORIENT_AUTO : ORIENT_OFF;
-    if (node_identity_set_orient_auto(on) != NODE_ID_OK) cprintf("orient: set, but not stored\n");
+    /* Through the settings store, whose display.orient is applied at
+     * every boot: off keeps the display the way it is now. */
+    int rot = display_rot();
+    int v = on ? 2 : (rot == 0 || rot == 180) ? 1 : 0;
+    if (!settings_set("display.orient", v)) cprintf("orient: not set\n");
     cprintf("orient: %s\n", mode_name(g_mode));
 }
 
