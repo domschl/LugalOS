@@ -556,10 +556,33 @@ static bool touch_inject(const char *args) {
         cprintf("touch: held at %u,%u for %u ms, %u repeats\n", v[0], v[1], v[2], reps);
         return true;
     }
+    if (strncmp(args, "drag", 4) == 0) {
+        /* a finger pressed at X0 Y0 on what captures it (a handle, a
+         * slider), moved to X1 Y1 in steps, lifted: the captured path, no
+         * gesture -- as a finger that a control or a handle holds */
+        const char *p = args + 4;
+        unsigned v[4] = { 0, 0, 0, 0 };
+        for (int i = 0; i < 4; i++) {
+            while (*p == ' ') p++;
+            if (*p < '0' || *p > '9') { cprintf("usage: touch drag X0 Y0 X1 Y1\n"); return true; }
+            while (*p >= '0' && *p <= '9') v[i] = v[i] * 10u + (unsigned)(*p++ - '0');
+        }
+        if (!console_touch_captures(v[0], v[1])) { cprintf("touch: nothing at %u,%u takes a drag\n", v[0], v[1]); return true; }
+        console_touch_press(v[0], v[1]);
+        task_sleep_ms(30);
+        for (int k = 1; k <= 8; k++) {
+            console_touch_move(v[0] + (unsigned)(((int)v[2] - (int)v[0]) * k / 8), v[1] + (unsigned)(((int)v[3] - (int)v[1]) * k / 8));
+            task_sleep_ms(30);
+        }
+        console_touch_release();
+        cprintf("touch: dragged %u,%u to %u,%u\n", v[0], v[1], v[2], v[3]);
+        return true;
+    }
     if (strncmp(args, "osk", 3) == 0) {
-        if (strstr(args, "show")) {
-            uint8_t req[2] = { 'k', 1 }, reply[SCREEN_REPLY_LEN];
+        if (strstr(args, "show") || strstr(args, "hide")) {
+            uint8_t req[2] = { 'k', strstr(args, "show") ? 1u : 0u }, reply[SCREEN_REPLY_LEN];
             (void)console_canvas(req, 2, reply);
+            console_sync_readers();                         /* a view it was out for: its height back */
         }
         int x0, y0, w, h;
         if (lcdterm_osk_rect(&x0, &y0, &w, &h)) cprintf("touch: keyboard at x %d..%d y %d..%d\n", x0, x0 + w - 1, y0, y0 + h - 1);

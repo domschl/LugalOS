@@ -151,6 +151,10 @@ typedef struct {
     uint16_t  menu_tick;                /* bit i: item i is how the window is now */
     uint16_t  menu_sep;                 /* bit i: a line above item i */
     int16_t   menu_x0, menu_y0, menu_x1, menu_y1;   /* its box, the shadow included */
+    /* A column's edge or a stack's gap being dragged ('G'): which, and its
+     * window by type and id (a column's first window, a gap's upper one). */
+    uint8_t   grab_kind;                /* SCREEN_GRAB_WIDTH | SCREEN_GRAB_HEIGHT, 0 none */
+    uint8_t   grab_type, grab_id;
     uint8_t   locked;                   /* 37.5a: 'w' and 'X' may not change the split */
     uint8_t   swapped;                  /* 37.5a: the canvas on the right, text left */
     uint16_t  damage;                   /* bumped whenever the canvas is lost */
@@ -206,6 +210,9 @@ typedef struct {
  * to leave it, and the menu bar with the window's title bar, revealed from
  * the top edge. Both in the top SCREEN_FS_BAND rows. */
 #define SCREEN_MENU_OPEN  0x40u     /* screen_fs_state(): a title-bar menu is open */
+#define SCREEN_GRABBING   0x20u     /* screen_fs_state(): a column's edge or a stack's gap is dragged */
+#define SCREEN_GRAB_WIDTH  1u
+#define SCREEN_GRAB_HEIGHT 2u
 #define SCREEN_FS_HINT    0x01u
 #define SCREEN_FS_REVEAL  0x02u
 #define SCREEN_FS_ON      0x80u     /* screen_fs_state(): full screen when last told */
@@ -319,6 +326,22 @@ void screen_text_size(const screen_t *scr, unsigned *cols, unsigned *rows);
  *                                       it, a redraw handler's drawing made
  *                                       every other store stale, and each
  *                                       resize redrew (the owner, Lorenz)
+ *   'j' s8 dir                          76.4a: join the column on that side,
+ *                                       or leave the stack to it (Cmd+[ / ])
+ *   '^' s8 dir                          76.4a: the focus up / down the stack
+ *   'm' s8 dir                          76.4a: the window up / down the stack
+ *   'h' s8 dir                          76.4a: its height preset (-1, 1, 2 round)
+ *   'f' [u8 on]                         76.4a: full screen on / off (toggles)
+ *   'H' u8 mode u32 now [text]          76.4a: the overlay over a full-screen
+ *                                       window (0 none, 1 hint, 2 bars,
+ *                                       3 the console's look)
+ *   'Y' u8 idx                          76.4a: window idx's place in its stack
+ *   'n' u8 mode [x y | i]               76.4b: the title-bar menu (1 open at
+ *                                       x y, 0 close, 2 hover, 3 item i)
+ *   'G' u8 mode [x y]                   76.4b: a handle dragged (2 start at
+ *                                       x y, 1 moved, 0 let go)
+ *   (each a letter of its own: these are matched before the canvas's
+ *   drawing requests above, so one of theirs would be taken from them)
  *
  * The reply, SCREEN_REPLY_LEN bytes: [0] 0 done, 1 refused (no canvas in
  * this layout, or a bad request); [1] the pixel ('g'); [2..3] canvas width;
@@ -376,6 +399,11 @@ bool screen_overlay_rect(const screen_t *scr, int *x0, int *y0, int *x1, int *y1
  * (SCREEN_FS_HINT | SCREEN_FS_REVEAL, 0 unless full screen) and
  * SCREEN_FS_ON if it was full screen at its last 'H' 3. */
 uint8_t screen_fs_state(const screen_t *scr);
+/* Whether (x, y) is on a handle (across a landscape screen): the gap right
+ * of a column, which drags its width, or the gap between two stacked
+ * windows, which drags their heights -- the window manager's, as all
+ * chrome; SCREEN_GRAB_* or 0. No side effects. */
+unsigned screen_handle_at(const screen_t *scr, int x, int y);
 void screen_canvas_vterm(screen_t *scr, uint8_t vterm_id, const uint8_t *req, uint32_t n, uint8_t *reply, int16_t caller_pid);
 
 #endif /* LUGALOS_DRIVERS_SCREEN_H */

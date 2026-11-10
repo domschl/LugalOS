@@ -562,7 +562,8 @@ bool console_touch_captures(unsigned x, unsigned y) {
     uint8_t inst = 0;
     int cx = 0, cy = 0;
     const view_ops_t *v = view_at(x, y, &inst, &cx, &cy);
-    return v && v->captures && v->captures(inst, cx, cy);
+    if (v && v->captures && v->captures(inst, cx, cy)) return true;
+    return lcdterm_handle_at((int)x, (int)y) != 0;        /* a column's edge, a stack's gap: dragged */
 }
 
 void console_touch_move(unsigned x, unsigned y) {
@@ -575,6 +576,12 @@ void console_touch_move(unsigned x, unsigned y) {
 static void run_move_once(void) {
     if (!__atomic_exchange_n(&g_move_pending, false, __ATOMIC_ACQ_REL)) return;
     uint32_t xy = g_move_xy;
+    if (lcdterm_fs_state() & SCREEN_GRABBING) {          /* a handle dragged: the screen snaps it */
+        uint8_t req[6] = { 'G', 1, (uint8_t)(xy >> 16), (uint8_t)(xy >> 24), (uint8_t)xy, (uint8_t)(xy >> 8) };
+        uint8_t reply[SCREEN_REPLY_LEN];
+        (void)console_canvas(req, 6, reply);
+        return;
+    }
     uint8_t inst = 0;
     int cx = 0, cy = 0;
     const view_ops_t *v = view_at(xy >> 16, xy & 0xFFFFu, &inst, &cx, &cy);
@@ -666,6 +673,14 @@ static void run_press_once(void) {
     uint32_t xy = g_press_xy;
     int ox = 0, oy = 0, ow = 0, oh = 0;
     int px = (int)(xy >> 16), py = (int)(xy & 0xFFFFu);
+    if (lcdterm_handle_at(px, py)) {
+        /* a column's edge or a stack's gap: its drag begins (the screen
+         * keeps it until the release) */
+        uint8_t req[6] = { 'G', 2, (uint8_t)(xy >> 16), (uint8_t)(xy >> 24), (uint8_t)xy, (uint8_t)(xy >> 8) };
+        uint8_t reply[SCREEN_REPLY_LEN];
+        (void)console_canvas(req, 6, reply);
+        return;
+    }
     if (lcdterm_osk_rect(&ox, &oy, &ow, &oh) && px >= ox && px < ox + ow && py >= oy && py < oy + oh) {
         /* the on-screen keyboard's key, a terminal's or a view's text field's */
         uint8_t req[5] = { 'y', (uint8_t)(xy >> 16), (uint8_t)(xy >> 24), (uint8_t)xy, (uint8_t)(xy >> 8) };
@@ -702,8 +717,18 @@ static void run_press_once(void) {
     }
 }
 
+static void sys_resize_canvases(void);
+
 static void run_release_once(void) {
     if (!__atomic_exchange_n(&g_release_pending, false, __ATOMIC_ACQ_REL)) return;
+    if (lcdterm_fs_state() & SCREEN_GRABBING) {
+        /* the handle let go: the windows' programs told their sizes */
+        uint8_t req[2] = { 'G', 0 }, reply[SCREEN_REPLY_LEN];
+        (void)console_canvas(req, 2, reply);
+        console_sync_readers();
+        sys_resize_canvases();
+        return;
+    }
     if (g_press_view) {
         if (g_press_view->active(g_press_inst)) view_send(g_press_view, g_press_inst, WIN_EV_POINTER_UP, WIN_EVF_PRESS, 0, 0, 0, 0, 0);
         g_press_view = NULL;

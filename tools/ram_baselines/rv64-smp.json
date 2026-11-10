@@ -2,8 +2,8 @@
   "bulk_per_file": {},
   "bulk_per_subsystem": {},
   "bulk_total": 0,
-  "heap_bytes": 123928576,
-  "heap_pages": 30256,
+  "heap_bytes": 123924480,
+  "heap_pages": 30255,
   "per_file": {
     "(no line info: .rodata)": 14644,
     "(no line info: .sdata)": 9,
@@ -201,6 +201,6 @@
     "usb": 902,
     "vfs": 4382
   },
-  "ram_code": 1331452,
-  "total": 7846554
+  "ram_code": 1334038,
+  "total": 7849140
 }

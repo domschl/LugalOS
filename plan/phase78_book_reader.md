@@ -56,6 +56,7 @@
 
 ### 78.1 — Reader core for large documents
 - Layout index, chunked build with progress, visible-block rendering, byte-offset positions, link/TOC collection during indexing (§1).
+- **Its width after a turn** (owner, 2026-11-10, after 76.4b): a reader turned from landscape to portrait lays out too narrow -- it keeps a measure from the window it had, not the one it has. The layout follows the window's content width on every resize (`WIN_EV_RESIZE`), the turn included.
 - **Acceptance:** a 1 MB generated Markdown file opens with the first screen in ≤ 1 s on the Tab5; scrolling anywhere in it meets the targets; memory use is reported by `reader list`; the existing reader tests (`tests/test_markdown.py`, showcase document) render identically.
 - **Status:** planned; independent, can start first.
 

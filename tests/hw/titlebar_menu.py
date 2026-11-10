@@ -1,11 +1,13 @@
-"""The zoom box and the title-bar menu (76.4b) on a board.
+"""The zoom box, the title-bar menu and the handles (76.4b) on a board.
 
-On the launcher's title bar, by the mouse (`ms click X Y right`, clicks) and,
+On the launcher, by the mouse (`ms click X Y right`, clicks, `ms drag`) and,
 where the board has touch, by a finger (`ts hold X Y MS` -- the long press --
-and `ts tap`): the menu opens with the launcher's Close dimmed (it has no
-close box); 1/2 Width is ticked once chosen; the zoom box goes to the full
-width and back; a tap or click outside closes the menu; Join Left puts the
-launcher in a stack and Leave Stack Right takes it out. Every step is read
+`ts tap`, `ts drag`): the menu opens with the launcher's Close dimmed (it has
+no close box); 1/2 Width is ticked once chosen; the zoom box goes to the full
+width and back; a tap or click outside closes the menu. Across a landscape
+screen also: Join Left puts the launcher in a stack, the stack's gap dragged
+makes the upper window taller and shorter, Leave Stack Right takes it out,
+and its column's edge dragged makes it narrower and wider. Every step is read
 back from `ribbon list`, which lists an open menu's items with their places.
 
 A suite passes `console(line)` (one shell line's output), as for
@@ -18,6 +20,7 @@ from collections.abc import Callable
 
 WIN = re.compile(r"\[(\d)\] (\w+)\s+\((?:[^,]*, )*?(\d+) (cols|rows), at (-?\d+)\.\.(-?\d+)[^)]*\)( \*)?")
 HEAD = re.compile(r"Ribbon Status: (\d+) windows, active idx (\d+), axis (\w), view (\d+)")
+STACK = re.compile(r"stack: (\d) of (\d), (\d+) rows, y (\d+)\.\.(\d+)")
 MENU = re.compile(r"menu \[(\d+)\] (.+?) at (-?\d+) (-?\d+) size (\d+) (\d+)( \(dimmed\))?( \(ticked\))?")
 
 
@@ -93,11 +96,36 @@ def check(console: Callable[[str], str]) -> tuple[bool, str]:
         press(*open_menu()["Join Left"][:2])
         out = listing()[4]
         step(f"{way}: Join Left, a stack", "stack: 2 of 2" in out, out[-300:])
+        # The stack's gap dragged down and up (the keyboard away: out, it gives the
+        # focused window the whole column).
+        if touch:
+            console("ts osk hide")
+        st = [tuple(int(g) for g in m.groups()) for m in STACK.finditer(listing()[4])]
+        if len(st) == 2:
+            x0, x1, _, _ = bar()
+            gx, gap = max(x0, 0) + 60, (st[0][4] + st[1][3]) // 2
+            drag = "ts drag" if way == "touch" else "ms drag"
+            console(f"{drag} {gx} {gap} {gx} {st[1][4] - 20}")
+            st2 = [tuple(int(g) for g in m.groups()) for m in STACK.finditer(listing()[4])]
+            console(f"{drag} {gx} {(st2[0][4] + st2[1][3]) // 2 if len(st2) == 2 else gap} {gx} {st[0][3] + 40}")
+            st3 = [tuple(int(g) for g in m.groups()) for m in STACK.finditer(listing()[4])]
+            step(f"{way}: the stack's gap dragged down and up, the upper window taller and shorter",
+                 len(st2) == 2 and len(st3) == 2 and st2[0][2] > st[0][2] and st3[0][2] < st2[0][2], (st, st2, st3))
         items = open_menu()
         if "Leave Stack Right" in items:
             press(*items["Leave Stack Right"][:2])
         out = listing()[4]
         step(f"{way}: Leave Stack Right, a column of its own", "stack:" not in out, out[-300:])
+        # The column's edge dragged: narrower, then wider.
+        x0, x1, _, size = bar()
+        if x1 + 30 < 2000:
+            drag = "ts drag" if way == "touch" else "ms drag"
+            console(f"{drag} {x1 + 5} 300 {max(x0, 0) + (x1 - max(x0, 0)) // 2} 300")
+            narrow = bar()[3]
+            x0, x1, _, _ = bar()
+            console(f"{drag} {x1 + 5} 300 {x1 + 300} 300")
+            step(f"{way}: the column's edge dragged, narrower and wider again", narrow < size and bar()[3] > narrow,
+                 (size, narrow, bar()))
     console("launcher close")
 
     if not ways:

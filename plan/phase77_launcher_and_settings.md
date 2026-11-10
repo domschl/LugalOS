@@ -49,6 +49,7 @@ The launcher is the home view, with a tab bar for **Shortcuts | Files** (remembe
 - Tab bar; Shortcuts face with the persisted list, action sheet, defaults from `/flash0` (§1).
 - Files face: roots, traversal, path bar, virtual list, association icons, long and metadata names, open/open-with/add-to-shortcuts/info/delete-with-confirm.
 - `Cmd+Space` global hotkey.
+- **Narrow windows** (owner, 2026-11-10, after 76.4b): the launcher's widgets run into each other when its window is made small (a 2/5 column, a third of a stack's height -- the sizes the menu and the handles give now). The redesigned faces lay out for every size the ribbon gives a window, down to `RIBBON_TERM_MIN_COLS` across and `RIBBON_ROWS_MIN` rows down: fewer columns of icons, then a list.
 - **Acceptance:** a scripted keyboard-only session (QEMU with the RAM screen) browses from `/sd0` to a Markdown file, opens it, adds it as a shortcut, removes the shortcut; the same sequence by `ts` on the Tab5 and by `ms` with a mouse; a directory with 500 entries scrolls at frame rate.
 - **Status:** planned; needs 76.1.
 

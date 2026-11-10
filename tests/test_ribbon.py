@@ -313,6 +313,58 @@ def _menu(session: QemuSession) -> bool:
     return ok
 
 
+def _handles(session: QemuSession) -> bool:
+    """76.4b: a column's edge and a stack's gap dragged by the mouse (`ms
+    drag`) snap to the presets: the column to 2/3, the full width and 2/5
+    (64, 98, 38 columns at 800 px); the window above a gap to 2/3 of the
+    column and back to 1/3."""
+    steps: list[tuple[str, bool, str]] = []
+
+    def check(what: str, ok: bool, got: object) -> None:
+        steps.append((what, ok, str(got)[-500:]))
+
+    def listing() -> tuple[int, list[tuple[str, int, str, int, int, bool]], list[tuple[int, ...]]]:
+        _, log = session.send_and_expect("ribbon list", r"lsh> ", timeout=5.0)
+        head = re.search(r"view (\d+)", log)
+        wins = [(m.group(2), int(m.group(3)), m.group(4), int(m.group(5)), int(m.group(6)), bool(m.group(7)))
+                for m in WIN.finditer(log)]
+        return (int(head.group(1)) if head else 0), wins, [tuple(int(g) for g in m.groups()) for m in STACK.finditer(log)]  # type: ignore[misc]
+
+    session.send_and_expect("viewtest open", r"lsh> ", timeout=5.0)
+    session.send_and_expect("key cmd-left", r"lsh> ", timeout=5.0)    # the terminal: its column to half
+    for _ in range(3):
+        session.send_and_expect("key cmd--", r"lsh> ", timeout=5.0)
+    session.send_and_expect("key cmd-=", r"lsh> ", timeout=5.0)
+    v, wins, _ = listing()
+    fi = next(i for i, w in enumerate(wins) if w[5])              # the terminal's column, on the screen
+    edge = wins[fi][4] - v + 5                                     # in the gap right of it
+    check("the terminal's column at half (48)", wins[fi][1] == 48, wins)
+    for to, want in ((520, 64), (790, 98), (300, 38)):
+        x0 = wins[fi][3] - v
+        session.send_and_expect(f"ms drag {edge} 200 {x0 + to - 4} 200", r"lsh> ", timeout=10.0)
+        v, wins, _ = listing()
+        check(f"its edge dragged to {to - 4} px from its left: {want} columns", wins[fi][1] == want, wins)
+        edge = wins[fi][4] - v + 5
+    session.send_and_expect("key cmd-right", r"lsh> ", timeout=5.0)
+    session.send_and_expect("key cmd-[", r"lsh> ", timeout=5.0)    # the view below the terminal
+    v, wins, st = listing()
+    gx = wins[fi][3] - v + 50                                      # over the stacked column
+    gap = (st[0][4] + st[1][3]) // 2 if len(st) == 2 else 0
+    session.send_and_expect(f"ms drag {gx} {gap} {gx} 330", r"lsh> ", timeout=10.0)
+    _, _, st2 = listing()
+    check("the gap dragged down: the upper window at 2/3 (16 of 25 rows)", len(st2) == 2 and st2[0][2] == 16, (st, st2))
+    gap = (st2[0][4] + st2[1][3]) // 2 if len(st2) == 2 else 0
+    session.send_and_expect(f"ms drag {gx} {gap} {gx} 120", r"lsh> ", timeout=10.0)
+    _, _, st3 = listing()
+    check("... and up: 1/3 (8 rows)", len(st3) == 2 and st3[0][2] == 8, st3)
+    session.send_and_expect("key cmd-]", r"lsh> ", timeout=5.0)
+    session.send_and_expect("key cmd-w", r"lsh> ", timeout=5.0)
+    ok = all(st_[1] for st_ in steps)
+    for what, good, got in steps:
+        print(f"    [{'PASS' if good else 'FAIL'}] {what}" + ("" if good else f": {got}"))
+    return ok
+
+
 def run_tests() -> int:
     elf_path = REPO_ROOT / "build" / "rv32" / "lugalos.elf"
     img_path = REPO_ROOT / "build" / "rv32" / "lugalos_sd.img"
@@ -434,6 +486,9 @@ def run_tests() -> int:
 
         print("  Testing the zoom box and the title-bar menu (76.4b)...")
         all_passed = _menu(session) and all_passed
+
+        print("  Testing the handles: a column's edge, a stack's gap (76.4b)...")
+        all_passed = _handles(session) and all_passed
 
     finally:
         session.close()

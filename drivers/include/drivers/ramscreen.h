@@ -25,6 +25,7 @@ bool ramscreen_ribbon_down(void);
 /* Whether a window covers it (full screen). */
 bool ramscreen_fullscreen(void);
 uint8_t ramscreen_fs_state(void);
+unsigned ramscreen_handle_at(int x, int y);
 canvas1_t *ramscreen_get_canvas_backing(uint8_t cid);
 int        ramscreen_get_canvas_cid_by_name(const char *name);
 canvas1_t *ramscreen_get_reader_backing(uint8_t rid);

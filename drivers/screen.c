@@ -551,7 +551,8 @@ LCDTERM_UTEXT bool screen_fullscreen(const screen_t *scr) {
 
 LCDTERM_UTEXT uint8_t screen_fs_state(const screen_t *scr) {
     return (uint8_t)((fs_win(scr) != RIBBON_NONE ? scr->fs_overlay : 0u) | scr->fs_told |
-                     (scr->menu_type != RIBBON_WIN_EMPTY ? SCREEN_MENU_OPEN : 0u));
+                     (scr->menu_type != RIBBON_WIN_EMPTY ? SCREEN_MENU_OPEN : 0u) |
+                     (scr->grab_kind ? SCREEN_GRABBING : 0u));
 }
 
 LCDTERM_UTEXT int screen_overlay_band(const screen_t *scr) {
@@ -1434,7 +1435,12 @@ LCDTERM_UTEXT static void draw_wm_menu(screen_t *scr) {
     int x0 = scr->menu_x0, y0 = scr->menu_y0, x1 = scr->menu_x1 - 2 * s, y1 = scr->menu_y1 - 2 * s;
     canvas1_fill(cv, x1 + 1, y0 + 2 * s, x1 + 2 * s, y1 + 2 * s, CANVAS1_BLACK);   /* the shadow */
     canvas1_fill(cv, x0 + 2 * s, y1 + 1, x1 + 2 * s, y1 + 2 * s, CANVAS1_BLACK);
-    canvas1_fill(cv, x0, y0, x1, y1, CANVAS1_BLACK);
+    /* The border and the inside, never the whole box black first: on a
+     * screen scanned out as it is drawn (the VisionFive 2's) that blinked. */
+    canvas1_fill(cv, x0, y0, x1, y0 + s - 1, CANVAS1_BLACK);
+    canvas1_fill(cv, x0, y1 - s + 1, x1, y1, CANVAS1_BLACK);
+    canvas1_fill(cv, x0, y0, x0 + s - 1, y1, CANVAS1_BLACK);
+    canvas1_fill(cv, x1 - s + 1, y0, x1, y1, CANVAS1_BLACK);
     canvas1_fill(cv, x0 + s, y0 + s, x1 - s, y1 - s, CANVAS1_WHITE);
     for (int i = 0; i < (int)scr->menu_n; i++) {
         const menu_text_t *t = &k_menu_text[scr->menu_item[i]];
@@ -2074,6 +2080,7 @@ void screen_init_rot(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsig
     scr->fs_overlay = 0;
     scr->menu_type = RIBBON_WIN_EMPTY;
     scr->menu_n = 0;
+    scr->grab_kind = 0;
     scr->fs_told = 0;
     scr->fs_until_ms = 0;
     scr->fs_hint[0] = '\0';
@@ -2173,7 +2180,15 @@ LCDTERM_UTEXT void screen_write_vterm(screen_t *scr, uint8_t vterm_id, const cha
 
     vtterm_t *avt = active_vt(scr);
     if (avt && avt->title_seq != scr->title_drawn) draw_text_title(scr);
-    if (scr->fs_overlay || scr->menu_type != RIBBON_WIN_EMPTY) overlays_redraw(scr);
+    if (scr->fs_overlay || scr->menu_type != RIBBON_WIN_EMPTY) {
+        /* again over this terminal's output, if it is under them */
+        int ox0, oy0, ox1, oy1, w = ribbon_find_vterm(&scr->ribbon, vterm_id);
+        if (w >= 0 && screen_win_shown(scr, (unsigned)w) && screen_overlay_rect(scr, &ox0, &oy0, &ox1, &oy1)) {
+            int fx0, fy0, fx1, fy1;
+            screen_win_frame(scr, (unsigned)w, &fx0, &fy0, &fx1, &fy1);
+            if (fx0 <= ox1 && fx1 >= ox0 && fy0 <= oy1 && fy1 >= oy0) overlays_redraw(scr);
+        }
+    }
 }
 
 LCDTERM_UTEXT void screen_write(screen_t *scr, const char *s, uint32_t n) {
@@ -2774,6 +2789,93 @@ LCDTERM_UTEXT static void menu_act(screen_t *scr, uint8_t idx, uint8_t item, uin
     }
 }
 
+/* --- Handles: a column's edge, a stack's gap -------------------------------
+ * Dragged by a finger or the mouse, they snap to the presets as the pointer
+ * passes them: a column to 2/5, 1/2, 2/3 or the full width, the window
+ * above a gap to 1/3, 1/2 or 2/3 of its column. Each snap lays the windows
+ * out and draws them at once; there are few. */
+LCDTERM_UTEXT static unsigned handle_at(const screen_t *scr, int x, int y, uint8_t *win) {
+    if (axis_y(scr) || fs_win(scr) != RIBBON_NONE || scr->menu_type != RIBBON_WIN_EMPTY || y < SCREEN_TILE_Y) return 0;
+    const ribbon_t *r = &scr->ribbon;
+    int tol = 4 * (int)CHROME_SCALE;
+    for (uint8_t i = 0; i < r->count; i++) {                     /* the gaps in a stack first */
+        uint8_t next = (uint8_t)(i + 1u);
+        if (next >= ribbon_col_end(r, i) || !screen_win_shown(scr, i) || !screen_win_shown(scr, next)) continue;
+        int ax0, ay0, ax1, ay1, bx0, by0, bx1, by1;
+        screen_win_frame(scr, i, &ax0, &ay0, &ax1, &ay1);
+        screen_win_frame(scr, next, &bx0, &by0, &bx1, &by1);
+        if (x >= ax0 && x <= ax1 && y >= ay1 - tol && y <= by0 + tol) { *win = i; return SCREEN_GRAB_HEIGHT; }
+    }
+    for (uint8_t i = 0; i < r->count; i = ribbon_col_end(r, i)) {
+        if (!screen_win_shown(scr, i)) continue;
+        int x0, y0, x1, y1;
+        screen_win_frame(scr, i, &x0, &y0, &x1, &y1);
+        if (x >= x1 - tol && x <= x1 + RIBBON_GAP + tol && y <= tile_y1_x(scr)) { *win = i; return SCREEN_GRAB_WIDTH; }
+    }
+    return 0;
+}
+
+LCDTERM_UTEXT unsigned screen_handle_at(const screen_t *scr, int x, int y) {
+    uint8_t w = 0;
+    return handle_at(scr, x, y, &w);
+}
+
+/* The dragged handle's window now, or RIBBON_NONE. */
+LCDTERM_UTEXT static uint8_t grab_win(const screen_t *scr) {
+    if (!scr->grab_kind) return RIBBON_NONE;
+    for (uint8_t i = 0; i < scr->ribbon.count; i++)
+        if (scr->ribbon.wins[i].type == scr->grab_type && scr->ribbon.wins[i].vterm_id == scr->grab_id) return i;
+    return RIBBON_NONE;
+}
+
+/* The pointer at (x, y) while a handle is dragged: the preset nearest to
+ * where it puts the edge, if that is not the window's now. True when the
+ * windows changed. */
+LCDTERM_UTEXT static bool grab_move(screen_t *scr, int x, int y) {
+    uint8_t i = grab_win(scr);
+    if (i == RIBBON_NONE || axis_y(scr)) return false;
+    ribbon_t *r = &scr->ribbon;
+    int fx0, fy0, fx1, fy1;
+    screen_win_frame(scr, i, &fx0, &fy0, &fx1, &fy1);
+    (void)ribbon_focus(r, i);
+    bool changed = false;
+    if (scr->grab_kind == SCREEN_GRAB_WIDTH) {
+        int want = (x - fx0 + 1 - 7) / (int)FONT_CELL_W;           /* columns: a frame spans 8c + 7 px (16c + 7) */
+        uint16_t sw = r->screen_w;
+        uint8_t presets[4] = { RIBBON_COLS_TWO_FIFTHS(sw), RIBBON_COLS_HALF(sw), RIBBON_COLS_TWO_THIRDS(sw), ribbon_size_full(r) };
+        uint8_t best = presets[0];
+        for (unsigned k = 1; k < 4u; k++) {
+            int d = want - (int)presets[k], db = want - (int)best;
+            if ((d < 0 ? -d : d) < (db < 0 ? -db : db)) best = presets[k];
+        }
+        if (best != r->wins[i].size) changed = ribbon_set_width(r, best);
+    } else {
+        int want = (y - fy0 + 1 - (int)r->y_extra) / (int)FONT_CELL_H;   /* the upper window's rows */
+        uint8_t f = ribbon_col_first(r, i), e = ribbon_col_end(r, i);
+        int32_t total = 0;
+        {
+            int32_t cell = (int32_t)FONT_CELL_H;
+            int32_t px = cell * (int32_t)r->y_full - (int32_t)(e - f - 1) * ((int32_t)r->y_extra + RIBBON_GAP);
+            total = px > 0 ? px / cell : 0;
+        }
+        uint8_t best = RIBBON_SHARE_THIRD;
+        int bd = 1 << 30;
+        for (uint8_t sh = RIBBON_SHARE_THIRD; sh <= RIBBON_SHARE_TWO_THIRDS; sh++) {
+            int rows = sh == RIBBON_SHARE_THIRD ? (int)(total / 3) : sh == RIBBON_SHARE_HALF ? (int)(total / 2) : (int)(2 * total / 3);
+            int d = want - rows;
+            if (d < 0) d = -d;
+            if (d < bd) { bd = d; best = sh; }
+        }
+        if (ribbon_share_now(r, i) != best) changed = ribbon_set_height(r, best);
+    }
+    if (changed) {
+        r->m_view = r->m_target;
+        (void)place(scr, scr->layout);
+        draw_all_from(scr, true);
+    }
+    return changed;
+}
+
 LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t *req, uint32_t n, uint8_t *reply, int16_t caller_pid) {
     uint8_t status = 0, pixel = 0;
     uint8_t op = n ? req[0] : 0;
@@ -3133,6 +3235,34 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
         reply[0] = 0;
         reply[8] = SCREEN_REPLY_TAKEN;
         return;
+    } else if (op == 'G') {
+        /* 'G' 2 x y: a press on a handle starts its drag (refused off
+         * one); 'G' 1 x y: the pointer moved (reply[8]
+         * SCREEN_REPLY_RELAID when the windows changed); 'G' 0: let go.
+         * ('g' is a canvas's pixel read.) */
+        uint8_t mode = n >= 2 ? req[1] : 0;
+        int px = arg16(req + 1, n - 1, 0), py = arg16(req + 1, n - 1, 1);
+        status = 0;
+        if (mode == 2) {
+            uint8_t w = 0;
+            unsigned kind = handle_at(scr, px, py, &w);
+            scr->grab_kind = (uint8_t)kind;
+            if (kind) {
+                scr->grab_type = scr->ribbon.wins[w].type;
+                scr->grab_id = scr->ribbon.wins[w].vterm_id;
+            } else {
+                status = 1;
+            }
+        } else if (mode == 1) {
+            if (grab_move(scr, px, py)) {
+                reply[0] = 0;
+                reply[1] = window_vterm(scr, scr->ribbon.active_idx);
+                reply[8] = SCREEN_REPLY_RELAID;
+                return;
+            }
+        } else {
+            scr->grab_kind = 0;
+        }
     } else if (op == 'n') {
         /* 'n' 1 x y: the title-bar menu of the window whose title bar is at
          * (x, y), under it (refused off a title bar); 'n' 0: closed;
@@ -3156,8 +3286,17 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
             int hl = menu_win(scr) != RIBBON_NONE ? menu_hit(scr, px, py) : -1;
             if (hl >= 0 && (scr->menu_dim & (1u << hl))) hl = -1;
             if (hl != scr->menu_hl) {
+                /* only the two items change: inverted back and inverted */
+                int a, b, x0 = scr->menu_x0 + (int)CHROME_SCALE, x1 = scr->menu_x1 - 3 * (int)CHROME_SCALE;
+                if (scr->menu_hl >= 0) {
+                    menu_item_rows(scr, scr->menu_hl, &a, &b);
+                    canvas1_invert(&scr->cv, x0, a, x1, b);
+                }
+                if (hl >= 0) {
+                    menu_item_rows(scr, hl, &a, &b);
+                    canvas1_invert(&scr->cv, x0, a, x1, b);
+                }
                 scr->menu_hl = (int8_t)hl;
-                draw_wm_menu(scr);
             }
         } else if (mode == 3) {
             uint8_t i = n >= 3 ? req[2] : 0xffu;
@@ -3924,7 +4063,11 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
      * asked) and which window in [10..11]. */
     bool closing = (op == 'C' || op == 'q' || op == 'u') && (reply[8] == 0xCC || reply[8] == 0xCE);
     if (!closing) reply[8] = scr->layout;
-    if (scr->fs_overlay || scr->menu_type != RIBBON_WIN_EMPTY) overlays_redraw(scr);   /* over what this drew */
+    /* Over what this request drew -- not after those that draw nothing
+     * under the overlays, or draw them themselves (the menu's own). */
+    if ((scr->fs_overlay || scr->menu_type != RIBBON_WIN_EMPTY) &&
+        op != 'n' && op != 'G' && op != 'S' && op != 0 && op != 'H' && op != 'R' && op != 'Y')
+        overlays_redraw(scr);
     reply[9] = scr->swapped;
     if (op != 'C' && !closing) {
         if (scr->ribbon.count > 0 && scr->ribbon.active_idx < scr->ribbon.count) {

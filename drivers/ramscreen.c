@@ -133,6 +133,10 @@ bool ramscreen_fullscreen(void) {
     return g_rs && screen_fullscreen(g_rs);
 }
 
+unsigned ramscreen_handle_at(int x, int y) {
+    return g_rs ? screen_handle_at(g_rs, x, y) : 0;
+}
+
 uint8_t ramscreen_fs_state(void) {
     return g_rs ? screen_fs_state(g_rs) : 0;
 }
