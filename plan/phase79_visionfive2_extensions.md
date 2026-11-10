@@ -15,5 +15,13 @@
 
 - The 4 secret AI cores: what can they do? Can we build a minimal Deep Learning framework and some optimized inference framework (target: embeddings and 'cognitive core' style minimal LLM?)
 - Audio support
-- Graphics hardware, what can it do? Compute?
+- Graphics hardware, what can it do? Compute? Driver stack feasible?
+
+### AI tests
+
+- 'Micrograd' style toolkit, C-core, Lisp configuration(?). Let `float` sneak in for this one?
+- Embeddings: optimized integer-only inference engine specifically tuned for a small model: "Gemini: all-MiniLM-L6-v2 (22M parameters) or bge-small (33M parameters) require very little RAM (~45–130 MB) and rely on dense matrix multiplications (GEMM) over short token sequences"
+- Simple LLM inference with optimized integer-only engine: ternary models or quantization
+
+Model conversion: PTQ (Post training quantization)
 
