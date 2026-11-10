@@ -11,7 +11,8 @@
 | :--- | :--- |
 | 71.6 Settings app | 77.1 |
 | 71.7 Launcher: Shortcuts and Files (without the Books root) | 77.2 |
-| 71.11, for this phase's items | 77.3 |
+| 76.5 Damage tracking in `ugui` (moved here 2026-11-10) | 77.3 |
+| 71.11, for this phase's items | 77.4 |
 
 The Books root as a cover grid moved to 78.2, beside the catalog it reads.
 
@@ -53,7 +54,17 @@ The launcher is the home view, with a tab bar for **Shortcuts | Files** (remembe
 - **Acceptance:** a scripted keyboard-only session (QEMU with the RAM screen) browses from `/sd0` to a Markdown file, opens it, adds it as a shortcut, removes the shortcut; the same sequence by `ts` on the Tab5 and by `ms` with a mouse; a directory with 500 entries scrolls at frame rate.
 - **Status:** planned; needs 76.1.
 
-### 77.3 — Verification and documentation
+### 77.3 — Redraw only what changed in `ugui` (from 76.5)
+- **Why here** (owner, 2026-11-10): the settings app and the Files face are the first views with many controls and a long list; 76.5 had no use case to measure on.
+- **Measure first**, with `uxbench` on the Tab5 and the 7B: the launcher's redraw, a stepper tap, the Files list scrolling -- each stage apart (the view's own drawing, the 1-bpp conversion, the compositor's copy of the surface). In 76 the launcher's redraw on the 7B was dominated by its own drawing, which damage tracking alone does not reduce.
+- **Then the part the numbers ask for:**
+  - compositing dominant: `ugui_end()` returns the union of the rectangles whose state changed since the previous pass (widget id + state hash per hit box); the view hands it to the compositor, which copies only that (76.5 as planned);
+  - drawing dominant: `ugui` skips drawing a widget whose state hash is unchanged since the last pass -- which yields the same rectangles, so the compositor's part comes with it.
+- **Correctness first:** a partial pass must equal a full redraw, pixel for pixel -- `uguiselftest` compares both on QEMU's RAM screen, and on the boards a check that reads the panel's frame, not the caches (76.4a: `lcd check` trusted the same cell cache it was to check, and missed the Tab5's stale cells).
+- **Acceptance:** a measured gain on the named interactions on the Tab5 and the 7B; the 500-entry list of 77.2 scrolls at frame rate; the partial-vs-full check clean on QEMU and the boards.
+- **Status:** planned; after 77.1 and 77.2 have views to measure.
+
+### 77.4 — Verification and documentation
 - `tests/hw/test_esp32p4.py`: launcher faces and settings persistence checks.
 - `tests/hw/lcdterm_shots.py` scenarios: launcher both faces, settings.
 - Docs: new `doc/user/launcher.md`; `doc/user/shell.md` for any new commands; `python3 tools/gendocs.py --all` and `--check`.

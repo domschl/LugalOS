@@ -17,7 +17,7 @@
 | 71.5 Portrait major-axis ribbon | 76.3 |
 | — (new, 2026-11-10) stacked columns, Niri keys, full screen for every window | 76.4a |
 | — (new, 2026-11-09) window controls by touch and mouse | 76.4b |
-| 71.4's damage tracking (optional) | 76.5 |
+| 71.4's damage tracking (optional) | 76.5, moved to 77.3 |
 | 71.11, for this phase's items | 76.6 |
 
 ---
@@ -153,11 +153,8 @@ Sizing and order are keyboard-only today. Everything below sits on the title bar
   - The owner's check closed the menu's flicker and the acceptance (2026-11-10). A portrait pair has no handle or heights (76.3: alone or one of a pair; owner: as designed).
   - **Canvases mixed up between programs** (owner, VisionFive 2: the Lisp plot redrawn over chess, the cellular automaton over the board, after terminals were opened and closed): a drawing request names no canvas, so the screen took "the canvas of the caller's terminal" -- shared by two programs started from one terminal, carried by a program whose terminal closed, and when none was found it fell back to the focused canvas, another program's. Now a program's request means the canvas it opened or selected (its pid, which the screen task now receives), else its terminal's newest (the shell's next command); never the focused one. QEMU's RAM screen passes the caller's terminal and pid as the panel does, so the suite runs the boards' lookup (it used the focused terminal's).
 
-### 76.5 — Damage tracking in `ugui` (optional)
-- `ugui_end()` returns the union of rectangles whose state changed since the previous pass (widget id + state hash per hit-box); the view hands it to the compositor, so a stepper tap recomposites a few percent of the screen instead of the whole window.
-- Taken up only when a view needs it: phase 71's double-buffered surfaces and partial redraws made it an optimisation. Measure first with `uxbench` (launcher redraw on the 7B, now dominated by the launcher's own drawing).
-- **Acceptance:** a measured gain on a named interaction; `uguiselftest` checks the damage union; glass check (`lcd check`) clean.
-- **Status:** optional, not scheduled.
+### 76.5 — Damage tracking in `ugui` — moved to 77.3
+- **Moved to phase 77 (owner, 2026-11-10):** the settings app and the Files face are its real use case; there it is measured first and built as the numbers ask (`plan/phase77_launcher_and_settings.md`, 77.3).
 
 ### 76.6 — Verification and documentation
 - `tests/hw/lcdterm_shots.py`: a portrait pair scenario; a long-name directory listing; the title-bar menu open, and the grow-box outline mid-drag.
