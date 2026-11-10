@@ -6252,6 +6252,7 @@ static void cmd_ribbon(const char *cmd_line) {
         int32_t m_view = (int32_t)(reply[3] | (reply[4] << 8));
         int32_t m_target = (int32_t)(reply[5] | (reply[6] << 8));
         bool down = reply[7] == RIBBON_AXIS_Y;
+        uint8_t menu_n = reply[12];
         const char *unit = down ? "rows" : "cols";
         cprintf("Ribbon Status: %d windows, active idx %d, axis %c, view %ld, target %ld%s%s\n",
                 count, active, down ? 'Y' : 'X', (long)m_view, (long)m_target,
@@ -6289,6 +6290,15 @@ static void cmd_ribbon(const char *cmd_line) {
                 cprintf("      stack: %u of %u, %u rows, y %d..%d\n", (unsigned)yreply[6] + 1u, (unsigned)yreply[7],
                         (unsigned)yreply[5], (int)(int16_t)(yreply[1] | (yreply[2] << 8)),
                         (int)(int16_t)(yreply[3] | (yreply[4] << 8)));
+        }
+        for (uint8_t i = 0; i < menu_n; i++) {
+            uint8_t mreq[3] = { 'n', 3, i }, mreply[SCREEN_REPLY_LEN];
+            if (!console_canvas(mreq, 3, mreply) || mreply[0] != 0) break;
+            int x0 = (int)(int16_t)(mreply[4] | (mreply[5] << 8)), y0 = (int)(int16_t)(mreply[6] | (mreply[7] << 8));
+            int x1 = (int)(int16_t)(mreply[8] | (mreply[9] << 8)), y1 = (int)(int16_t)(mreply[10] | (mreply[11] << 8));
+            mreply[SCREEN_REPLY_LEN - 1] = 0;
+            cprintf("  menu [%u] %s at %d %d size %d %d%s%s\n", (unsigned)i, (const char *)mreply + 12, x0, y0,
+                    x1 - x0 + 1, y1 - y0 + 1, mreply[2] ? " (dimmed)" : "", mreply[3] ? " (ticked)" : "");
         }
         return;
     }

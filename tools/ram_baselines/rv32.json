@@ -2,8 +2,8 @@
   "bulk_per_file": {},
   "bulk_per_subsystem": {},
   "bulk_total": 0,
-  "heap_bytes": 125517824,
-  "heap_pages": 30644,
+  "heap_bytes": 125513728,
+  "heap_pages": 30643,
   "per_file": {
     "(no line info: .rodata)": 9395,
     "(no line info: .sdata)": 9,
@@ -44,7 +44,7 @@
     "drivers/ramscreen.c": 56,
     "drivers/reader_view.c": 39441,
     "drivers/ribbon.c": 4,
-    "drivers/screen.c": 64,
+    "drivers/screen.c": 724,
     "drivers/sensor.c": 912,
     "drivers/sensor_hub.c": 7652,
     "drivers/sgp30.c": 98,
@@ -181,7 +181,7 @@
     "chess": 46354,
     "clock-app": 484,
     "crypto": 1042,
-    "display": 84303,
+    "display": 84963,
     "drivers": 107266,
     "fs": 457,
     "httpd": 172,
@@ -200,6 +200,6 @@
     "usb": 902,
     "vfs": 3894
   },
-  "ram_code": 1352616,
-  "total": 6482905
+  "ram_code": 1361438,
+  "total": 6492387
 }

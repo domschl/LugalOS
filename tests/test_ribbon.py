@@ -235,6 +235,84 @@ def _fullscreen(session: QemuSession) -> bool:
     return ok
 
 
+MENU = re.compile(r"menu \[(\d+)\] (.+?) at (-?\d+) (-?\d+) size (\d+) (\d+)( \(dimmed\))?( \(ticked\))?")
+
+
+def _menu(session: QemuSession) -> bool:
+    """76.4b: the zoom box and the title-bar menu by the mouse (right click,
+    clicks on items): widths, the zoom box, a click outside, join, height,
+    leave the stack, full screen, close -- each the same as its key."""
+    steps: list[tuple[str, bool, str]] = []
+
+    def check(what: str, ok: bool, got: object) -> None:
+        steps.append((what, ok, str(got)[-500:]))
+
+    def listing() -> tuple[int, list[tuple[str, int, str, int, int, bool]], dict[str, tuple[int, int, bool, bool]], str]:
+        _, log = session.send_and_expect("ribbon list", r"lsh> ", timeout=5.0)
+        head = re.search(r"view (\d+)", log)
+        wins = [(m.group(2), int(m.group(3)), m.group(4), int(m.group(5)), int(m.group(6)), bool(m.group(7)))
+                for m in WIN.finditer(log)]
+        items = {m.group(2): (int(m.group(3)) + int(m.group(5)) // 2, int(m.group(4)) + int(m.group(6)) // 2,
+                              bool(m.group(7)), bool(m.group(8))) for m in MENU.finditer(log)}
+        return (int(head.group(1)) if head else 0), wins, items, log
+
+    def view_win() -> tuple[int, int, int, int]:
+        v, wins, _, _ = listing()
+        w = [x for x in wins if x[0] == "View"][0]
+        return w[3] - v, w[4] - v, w[1], len(wins)
+
+    def open_menu() -> dict[str, tuple[int, int, bool, bool]]:
+        x0, x1, _, _ = view_win()
+        session.send_and_expect(f"ms click {(x0 + x1) // 2} 30 right", r"lsh> ", timeout=5.0)
+        return listing()[2]
+
+    def pick(items: dict[str, tuple[int, int, bool, bool]], label: str) -> None:
+        x, y, _, _ = items[label]
+        session.send_and_expect(f"ms click {x} {y}", r"lsh> ", timeout=5.0)
+
+    session.send_and_expect("viewtest open", r"lsh> ", timeout=5.0)
+    items = open_menu()
+    cols = view_win()[2]
+    check("right click on the title bar: the menu, the width ticked, Move Right dimmed",
+          "1/2 Width" in items and "Close" in items and items["Move Right"][2] and
+          any(t[3] for k, t in items.items() if k.endswith("Width")), (cols, items))
+    pick(items, "1/2 Width")
+    x0, x1, cols, _ = view_win()
+    _, _, after, _ = listing()
+    check("1/2 Width: the view's column at half (48 columns), the menu closed", cols == 48 and not after, (cols, after))
+    session.send_and_expect(f"ms click {x1 - 10} 30", r"lsh> ", timeout=5.0)
+    check("the zoom box: full width", view_win()[2] == 98, view_win())
+    session.send_and_expect(f"ms click {view_win()[1] - 10} 30", r"lsh> ", timeout=5.0)
+    check("... and back", view_win()[2] == 48, view_win())
+    items = open_menu()
+    session.send_and_expect("ms click 5 300", r"lsh> ", timeout=5.0)
+    _, _, after, _ = listing()
+    check("a click outside closes the menu, nothing else", not after and view_win()[2] == 48, (after, view_win()))
+    pick(open_menu(), "Join Left")
+    _, _, _, log = listing()
+    check("Join Left: in the stack on its left", "stack: 2 of 2" in log, log)
+    items = open_menu()
+    check("in a stack: heights and Leave Stack", "2/3 Height" in items and "Leave Stack Right" in items, items)
+    pick(items, "2/3 Height")
+    items = open_menu()
+    check("2/3 Height: ticked now", items.get("2/3 Height", (0, 0, False, False))[3], items)
+    pick(items, "Leave Stack Right")
+    _, _, _, log = listing()
+    check("Leave Stack Right: a column of its own", "stack:" not in log, log)
+    pick(open_menu(), "Full Screen")
+    _, _, _, log = listing()
+    check("Full Screen", "full screen" in log, log[-300:])
+    session.send_and_expect("key cmd-shift-f", r"lsh> ", timeout=5.0)
+    pick(open_menu(), "Close")
+    _, wins, _, _ = listing()
+    check("Close: the view's window gone", not any(w[0] == "View" for w in wins), wins)
+
+    ok = all(st_[1] for st_ in steps)
+    for what, good, got in steps:
+        print(f"    [{'PASS' if good else 'FAIL'}] {what}" + ("" if good else f": {got}"))
+    return ok
+
+
 def run_tests() -> int:
     elf_path = REPO_ROOT / "build" / "rv32" / "lugalos.elf"
     img_path = REPO_ROOT / "build" / "rv32" / "lugalos_sd.img"
@@ -353,6 +431,9 @@ def run_tests() -> int:
 
         print("  Testing full screen (Cmd+Shift+F, the hint, the pointer at the top edge)...")
         all_passed = _fullscreen(session) and all_passed
+
+        print("  Testing the zoom box and the title-bar menu (76.4b)...")
+        all_passed = _menu(session) and all_passed
 
     finally:
         session.close()

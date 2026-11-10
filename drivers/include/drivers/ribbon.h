@@ -291,6 +291,14 @@ bool ribbon_move_stack(ribbon_t *r, int dir);
  * False alone in its column, or when nothing changes. */
 bool ribbon_height(ribbon_t *r, int dir);
 
+/* The title-bar menu's: the active window's column to `size` (columns
+ * across, rows down); its height preset in its stack (RIBBON_SHARE_THIRD
+ * .. _TWO_THIRDS). And the preset window idx's rows match now, or
+ * RIBBON_NONE (alone, or a share no preset gives). */
+bool    ribbon_set_width(ribbon_t *r, uint8_t size);
+bool    ribbon_set_height(ribbon_t *r, uint8_t share);
+uint8_t ribbon_share_now(const ribbon_t *r, uint8_t idx);
+
 /* Standalone selftest */
 void ribbon_selftest(void);
 

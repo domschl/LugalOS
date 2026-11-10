@@ -62,6 +62,11 @@
 #define CHROME_CLOSE_X1(vx0) ((int32_t)(vx0) + 32 * (int32_t)CHROME_SCALE)
 #define CHROME_CLOSE_Y0      ((int32_t)SCREEN_TILE_Y - 2 * (int32_t)CHROME_SCALE)
 #define CHROME_CLOSE_Y1      ((int32_t)(SCREEN_TILE_Y + SCREEN_TITLEBAR_H) + 4 * (int32_t)CHROME_SCALE)
+/* The zoom box, at the title bar's right end (vx1 its last pixel): its
+ * touch area, as the close box's, grown past what is drawn. */
+#define CHROME_ZOOM_X0(vx1)  ((int32_t)(vx1) - 32 * (int32_t)CHROME_SCALE)
+#define CHROME_ZOOM_X1(vx1)  ((int32_t)(vx1) + 2 * (int32_t)CHROME_SCALE)
+#define SCREEN_MENU_MAX      16u     /* a title-bar menu's items at most */
 #define SCREEN_TEXT_X        (FONT_CELL_W)
 #define SCREEN_TEXT_Y        (40 * CHROME_SCALE)
 #define SCREEN_TEXT_COLS(w)  ((unsigned)(w) / (unsigned)FONT_CELL_W - 2u)
@@ -134,6 +139,18 @@ typedef struct {
     uint8_t   fs_told;                  /* SCREEN_FS_ON: full screen when the console last looked ('H' 3) */
     uint32_t  fs_until_ms;              /* when the overlay goes */
     char      fs_hint[64];              /* the hint's text */
+    /* The title-bar menu (long press, right click): its window by type and
+     * id (a window closed or moved meanwhile is found or let go), its items
+     * (SCREEN_MI_*) and their state, its box on the screen. */
+    uint8_t   menu_type;                /* RIBBON_WIN_EMPTY: no menu */
+    uint8_t   menu_id;
+    uint8_t   menu_n;
+    int8_t    menu_hl;                  /* the item under the pointer, or -1 */
+    uint8_t   menu_item[SCREEN_MENU_MAX];
+    uint16_t  menu_dim;                 /* bit i: item i cannot apply here */
+    uint16_t  menu_tick;                /* bit i: item i is how the window is now */
+    uint16_t  menu_sep;                 /* bit i: a line above item i */
+    int16_t   menu_x0, menu_y0, menu_x1, menu_y1;   /* its box, the shadow included */
     uint8_t   locked;                   /* 37.5a: 'w' and 'X' may not change the split */
     uint8_t   swapped;                  /* 37.5a: the canvas on the right, text left */
     uint16_t  damage;                   /* bumped whenever the canvas is lost */
@@ -188,6 +205,7 @@ typedef struct {
 /* What shows over a full-screen window (screen_t.fs_overlay): the hint how
  * to leave it, and the menu bar with the window's title bar, revealed from
  * the top edge. Both in the top SCREEN_FS_BAND rows. */
+#define SCREEN_MENU_OPEN  0x40u     /* screen_fs_state(): a title-bar menu is open */
 #define SCREEN_FS_HINT    0x01u
 #define SCREEN_FS_REVEAL  0x02u
 #define SCREEN_FS_ON      0x80u     /* screen_fs_state(): full screen when last told */
@@ -306,6 +324,8 @@ void screen_text_size(const screen_t *scr, unsigned *cols, unsigned *rows);
  * this layout, or a bad request); [1] the pixel ('g'); [2..3] canvas width;
  * [4..5] canvas height (both 0 in TEXT); [6..7] damage; [8] layout; [9] 1 if
  * the panes are swapped. */
+#define SCREEN_REPLY_RELAID 0xCDu  /* reply[8] of a tap: windows changed size or place (zoom box, menu) */
+#define SCREEN_REPLY_TAKEN  0xCFu  /* reply[8] of a tap: the window manager's (it closed the menu), no window's */
 #define SCREEN_REPLY_LEN 32u     /* 'R' with an index puts the window's title at [12..31] */
 
 #define SCREEN_VIEW_SINGLETON 0x01u     /* 'v': focus the type's window if it has one */
@@ -347,6 +367,11 @@ bool screen_fullscreen(const screen_t *scr);
 /* The rows at the top an overlay takes over a full-screen window now
  * (SCREEN_FS_BAND), else 0: a compositor leaves them to the frame. */
 int  screen_overlay_band(const screen_t *scr);
+/* What is drawn over everything now -- an open title-bar menu, or the hint
+ * or the revealed bars over a full-screen window -- as one rectangle
+ * (inclusive); false for nothing. A compositor that draws surfaces over the
+ * frame draws this rectangle from the frame after them. */
+bool screen_overlay_rect(const screen_t *scr, int *x0, int *y0, int *x1, int *y1);
 /* For the console's look at full screen without a request: the overlay now
  * (SCREEN_FS_HINT | SCREEN_FS_REVEAL, 0 unless full screen) and
  * SCREEN_FS_ON if it was full screen at its last 'H' 3. */

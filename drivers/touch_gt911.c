@@ -370,10 +370,12 @@ static void touch_task_body(void *arg) {
                 if (down_axis && g_t.scr_h && (y < band || y >= (int)g_t.scr_h - band)) g_t.edge = true;
                 /* Full screen: the top edge, and the overlay's band while it
                  * shows (the revealed bars, the hint), are the window
-                 * manager's, whatever the window claims. */
+                 * manager's, whatever the window claims; with the title-bar
+                 * menu open, every contact is. */
                 bool fs = lcdterm_fullscreen();
                 g_t.top_edge = fs && y < band;
                 if (g_t.top_edge || (fs && y < lcdterm_overlay_band())) g_t.edge = true;
+                if (lcdterm_fs_state() & SCREEN_MENU_OPEN) g_t.edge = true;   /* the title-bar menu's, wherever */
                 {
                     uint8_t wt, wid;
                     int wcx, wcy, ox, oy, ow, oh;
@@ -526,8 +528,9 @@ static bool touch_inject(const char *args) {
         return true;
     }
     if (strncmp(args, "hold", 4) == 0) {
-        /* a finger held at X Y for MS ms: the press, its repeats from the
-         * long press on, the release; no tap, as a long press makes none */
+        /* a finger held at X Y for MS ms: the press, the long press (a
+         * title bar's menu, a field's context menu) and its repeats from
+         * then on, the release; no tap, as a long press makes none */
         const char *p = args + 4;
         unsigned v[3] = { 0, 0, 0 };
         for (int i = 0; i < 3; i++) {
@@ -538,8 +541,15 @@ static bool touch_inject(const char *args) {
         console_touch_press(v[0], v[1]);
         uint64_t t0 = time_get_ms(), next = t0 + GESTURE_LONG_MS;
         unsigned reps = 0;
+        bool longed = false;
         while (time_get_ms() - t0 < v[2]) {
-            if (time_get_ms() >= next) { console_touch_repeat(); reps++; next += TOUCH_REPEAT_MS; }
+            if (time_get_ms() >= next) {
+                if (!longed) console_touch_context(v[0], v[1]);   /* the long press, as the gesture code makes it */
+                longed = true;
+                console_touch_repeat();
+                reps++;
+                next += TOUCH_REPEAT_MS;
+            }
             task_sleep_ms(10);
         }
         console_touch_release();

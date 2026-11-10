@@ -550,7 +550,8 @@ LCDTERM_UTEXT bool screen_fullscreen(const screen_t *scr) {
 }
 
 LCDTERM_UTEXT uint8_t screen_fs_state(const screen_t *scr) {
-    return (uint8_t)((fs_win(scr) != RIBBON_NONE ? scr->fs_overlay : 0u) | scr->fs_told);
+    return (uint8_t)((fs_win(scr) != RIBBON_NONE ? scr->fs_overlay : 0u) | scr->fs_told |
+                     (scr->menu_type != RIBBON_WIN_EMPTY ? SCREEN_MENU_OPEN : 0u));
 }
 
 LCDTERM_UTEXT int screen_overlay_band(const screen_t *scr) {
@@ -772,13 +773,21 @@ LCDTERM_UTEXT static void draw_menu(screen_t *scr) {
  * white box. Inactive windows remain plain white inside with the title
  * (original classic Macintosh style). If can_close is true, draws a classic
  * Macintosh close box on the left. */
-LCDTERM_UTEXT static void draw_titlebar(const canvas1_t *cv, int x0, int y0, int x1, const char *t, bool active, bool can_close) {
+#define TB_CLOSE 0x1u   /* draw_titlebar(): the close box, at the left */
+#define TB_ZOOM  0x2u   /* ... the zoom box, at the right (Cmd+F) */
+
+LCDTERM_UTEXT static void draw_titlebar(const canvas1_t *cv, int x0, int y0, int x1, const char *t, bool active, unsigned boxes) {
     const int s = CHROME_SCALE;
     const int cw = (int)FONT_CELL_W;
     const int th = SCREEN_TITLEBAR_H;
     int vx0 = x0 < 0 ? 0 : x0;
     int vx1 = x1 >= (int)cv->w ? (int)cv->w - 1 : x1;
     if (vx0 >= vx1) return;
+    bool can_close = (boxes & TB_CLOSE) != 0;
+    /* The zoom box, where the title bar's right end is on the screen and
+     * there is room for it beside the close box. */
+    bool has_zoom = (boxes & TB_ZOOM) && x1 < (int)cv->w && vx0 + 48 * s < vx1;
+    int zx0 = vx1 - 8 * s - 10 * s;
 
     canvas1_fill(cv, vx0 + 1, y0 + 1, vx1 - 1, y0 + th - 2, CANVAS1_WHITE);
     canvas1_hline(cv, vx0, vx1, y0, CANVAS1_BLACK);
@@ -798,15 +807,19 @@ LCDTERM_UTEXT static void draw_titlebar(const canvas1_t *cv, int x0, int y0, int
                 if (vx0 + 2 * s <= bx0 - 3 * s) {
                     canvas1_fill(cv, vx0 + 2 * s, y, bx0 - 3 * s, y + s - 1, CANVAS1_BLACK);
                 }
-                /* Zebra stripes to the right of the close-box */
-                if (bx0 + 13 * s <= vx1 - 2 * s) {
-                    canvas1_fill(cv, bx0 + 13 * s, y, vx1 - 2 * s, y + s - 1, CANVAS1_BLACK);
+                /* Zebra stripes to the right of the close-box (up to the zoom box) */
+                int sx1 = has_zoom ? zx0 - 3 * s : vx1 - 2 * s;
+                if (bx0 + 13 * s <= sx1) {
+                    canvas1_fill(cv, bx0 + 13 * s, y, sx1, y + s - 1, CANVAS1_BLACK);
                 }
             } else {
-                if (vx0 + 2 * s <= vx1 - 2 * s) {
-                    canvas1_fill(cv, vx0 + 2 * s, y, vx1 - 2 * s, y + s - 1, CANVAS1_BLACK);
+                int sx1 = has_zoom ? zx0 - 3 * s : vx1 - 2 * s;
+                if (vx0 + 2 * s <= sx1) {
+                    canvas1_fill(cv, vx0 + 2 * s, y, sx1, y + s - 1, CANVAS1_BLACK);
                 }
             }
+            if (has_zoom && zx0 + 13 * s <= vx1 - 2 * s)
+                canvas1_fill(cv, zx0 + 13 * s, y, vx1 - 2 * s, y + s - 1, CANVAS1_BLACK);
         }
     }
 
@@ -818,9 +831,22 @@ LCDTERM_UTEXT static void draw_titlebar(const canvas1_t *cv, int x0, int y0, int
         canvas1_fill(cv, bx0 + bsz - (s - 1), by0, bx0 + bsz, by0 + bsz, CANVAS1_BLACK);
     }
 
+    if (has_zoom) {
+        /* Classic Macintosh zoom box: a box with a smaller one in its
+         * top-left corner. */
+        int zy0 = y0 + 3 * s, zsz = 10 * s;
+        canvas1_fill(cv, zx0, zy0, zx0 + zsz, zy0 + zsz, CANVAS1_WHITE);
+        canvas1_fill(cv, zx0, zy0, zx0 + zsz, zy0 + s - 1, CANVAS1_BLACK);
+        canvas1_fill(cv, zx0, zy0 + zsz - (s - 1), zx0 + zsz, zy0 + zsz, CANVAS1_BLACK);
+        canvas1_fill(cv, zx0, zy0, zx0 + s - 1, zy0 + zsz, CANVAS1_BLACK);
+        canvas1_fill(cv, zx0 + zsz - (s - 1), zy0, zx0 + zsz, zy0 + zsz, CANVAS1_BLACK);
+        canvas1_fill(cv, zx0, zy0 + 5 * s, zx0 + 5 * s, zy0 + 5 * s + s - 1, CANVAS1_BLACK);
+        canvas1_fill(cv, zx0 + 5 * s, zy0, zx0 + 5 * s + s - 1, zy0 + 5 * s, CANVAS1_BLACK);
+    }
+
     uint32_t n = cstr_len(t);
     unsigned len = canvas1_text_len(t, n);
-    int max = (vx1 - vx0 - 1 - (has_box ? 56 * s : 40 * s)) / cw;        /* leave some stripes either side */
+    int max = (vx1 - vx0 - 1 - (has_box ? 56 * s : 40 * s) - (has_zoom ? 16 * s : 0)) / cw;   /* leave some stripes either side */
     if (max < 0) max = 0;
     if (len > (unsigned)max) len = (unsigned)max;
     if (len > 0) {
@@ -834,7 +860,7 @@ LCDTERM_UTEXT static void draw_titlebar(const canvas1_t *cv, int x0, int y0, int
 }
 
 /* A tile: its frame and shadow, its interior white, and its title bar. */
-LCDTERM_UTEXT static void draw_tile(const canvas1_t *cv, int x0, int y0, int x1, int y1, const char *t, bool active, bool can_close) {
+LCDTERM_UTEXT static void draw_tile(const canvas1_t *cv, int x0, int y0, int x1, int y1, const char *t, bool active, unsigned boxes) {
     int vx0 = x0 < 0 ? 0 : x0;
     int vx1 = x1 >= (int)cv->w ? (int)cv->w - 1 : x1;
     if (vx0 >= vx1) return;
@@ -852,7 +878,7 @@ LCDTERM_UTEXT static void draw_tile(const canvas1_t *cv, int x0, int y0, int x1,
         canvas1_fill(cv, x1 + 1, y0, x1 + 1, y0, CANVAS1_GREY);
     }
     if (x0 >= 0) canvas1_fill(cv, x0, y1 + 1, x0, y1 + 1, CANVAS1_GREY);
-    draw_titlebar(cv, x0, y0, x1, t, active, can_close);
+    draw_titlebar(cv, x0, y0, x1, t, active, boxes);
 }
 
 LCDTERM_UTEXT static bool has_text(const screen_t *scr) {
@@ -898,10 +924,10 @@ LCDTERM_UTEXT static void draw_text_title(screen_t *scr) {
                 screen_win_frame(scr, (unsigned)idx, &x0, &y0, &x1, &y1);
                 bool can_close = !(scr->ribbon.wins[idx].type == RIBBON_WIN_TERM && scr->ribbon.wins[idx].vterm_id == 0) &&
                                  !(scr->ribbon.wins[idx].flags & RIBBON_FLAG_NO_CLOSE);
-                draw_titlebar(&scr->cv, x0, y0, x1, avt->title, idx == (int)act, can_close);
+                draw_titlebar(&scr->cv, x0, y0, x1, avt->title, idx == (int)act, (can_close ? TB_CLOSE : 0u) | TB_ZOOM);
             }
         } else if (scr->ribbon.count == 0) {
-            draw_titlebar(&scr->cv, scr->fx0, scr->fy0, scr->fx1, avt->title, true, false);
+            draw_titlebar(&scr->cv, scr->fx0, scr->fy0, scr->fx1, avt->title, true, 0u);
         }
     }
     scr->title_drawn = avt->title_seq;
@@ -1237,7 +1263,7 @@ LCDTERM_UTEXT static void draw_fs_overlay(screen_t *scr) {
         canvas1_fill(cv, 0, SCREEN_MENU_H, w - 1, SCREEN_FS_BAND - 1, CANVAS1_GREY);
         const ribbon_win_t *rw = &scr->ribbon.wins[fs];
         bool can_close = !(rw->type == RIBBON_WIN_TERM && rw->vterm_id == 0) && !(rw->flags & RIBBON_FLAG_NO_CLOSE);
-        draw_titlebar(cv, 0, SCREEN_TILE_Y, w - 1, win_title(scr, fs), true, can_close);
+        draw_titlebar(cv, 0, SCREEN_TILE_Y, w - 1, win_title(scr, fs), true, can_close ? TB_CLOSE : 0u);
         return;
     }
     uint32_t n = cstr_len(scr->fs_hint);
@@ -1251,6 +1277,219 @@ LCDTERM_UTEXT static void draw_fs_overlay(screen_t *scr) {
     canvas1_vline(cv, x0, y0, y0 + bh - 1, CANVAS1_BLACK);
     canvas1_vline(cv, x0 + bw - 1, y0, y0 + bh - 1, CANVAS1_BLACK);
     chrome_text(cv, x0 + 8 * s, y0 + 4 * s, scr->fs_hint, n, len, 0, FONT_CELL_H, false);
+}
+
+
+/* --- The title-bar menu --------------------------------------------------
+ * A long press or a right click on a title bar opens it under the press, a
+ * Classic Mac pull-down: the window's widths (its height in a stack), its
+ * moves, joining a column or leaving a stack, full screen, close -- each
+ * with its key, the current width and height ticked, what cannot apply
+ * dimmed. A tap or click on an item does it; anywhere else closes it. Drawn
+ * by the screen over everything, so it is in the frame (a compositor draws
+ * it over its surfaces: screen_overlay_rect()). */
+enum {
+    MI_W25 = 1, MI_W12, MI_W23, MI_WFULL, MI_ONEUP, MI_PAIR,
+    MI_H13, MI_H12, MI_H23,
+    MI_MOVE_L, MI_MOVE_R, MI_MOVE_U, MI_MOVE_D,
+    MI_JOIN_L, MI_JOIN_R, MI_LEAVE_L, MI_LEAVE_R,
+    MI_FULLSCREEN, MI_CLOSE, MI_COUNT
+};
+
+typedef struct { char label[18]; char key[15]; } menu_text_t;
+
+/* Index MI_*; in the terminal domain's constants (no string literal is). */
+static const menu_text_t k_menu_text[MI_COUNT] LCDTERM_URODATA = {
+    { "", "" },
+    { "2/5 Width", "" }, { "1/2 Width", "" }, { "2/3 Width", "" }, { "Full Width", "Cmd+F" },
+    { "Alone", "Cmd+F" }, { "One of a Pair", "" },
+    { "1/3 Height", "" }, { "1/2 Height", "" }, { "2/3 Height", "" },
+    { "Move Left", "Ctrl+Cmd+Left" }, { "Move Right", "Ctrl+Cmd+Right" },
+    { "Move Up", "Ctrl+Cmd+Up" }, { "Move Down", "Ctrl+Cmd+Down" },
+    { "Join Left", "Cmd+[" }, { "Join Right", "Cmd+]" },
+    { "Leave Stack Left", "Cmd+[" }, { "Leave Stack Right", "Cmd+]" },
+    { "Full Screen", "Shift+Cmd+F" }, { "Close", "Cmd+W" },
+};
+
+LCDTERM_UTEXT static int menu_item_h(void) { return (int)FONT_CELL_H + 4 * (int)CHROME_SCALE; }
+LCDTERM_UTEXT static int menu_sep_h(void) { return 7 * (int)CHROME_SCALE; }
+
+/* The window the menu is open for, or RIBBON_NONE (none, or it is gone). */
+LCDTERM_UTEXT static uint8_t menu_win(const screen_t *scr) {
+    if (scr->menu_type == RIBBON_WIN_EMPTY) return RIBBON_NONE;
+    for (uint8_t i = 0; i < scr->ribbon.count; i++)
+        if (scr->ribbon.wins[i].type == scr->menu_type && scr->ribbon.wins[i].vterm_id == scr->menu_id) return i;
+    return RIBBON_NONE;
+}
+
+LCDTERM_UTEXT static void menu_add(screen_t *scr, uint8_t item, bool dim, bool tick, bool sep) {
+    if (scr->menu_n >= SCREEN_MENU_MAX) return;
+    uint16_t bit = (uint16_t)(1u << scr->menu_n);
+    scr->menu_item[scr->menu_n] = item;
+    if (dim) scr->menu_dim |= bit;
+    if (tick) scr->menu_tick |= bit;
+    if (sep) scr->menu_sep |= bit;
+    scr->menu_n++;
+}
+
+/* The menu for window idx, its box from (px, y): what applies to the window
+ * now, the box kept on the screen. */
+LCDTERM_UTEXT static void menu_build(screen_t *scr, uint8_t idx, int px, int y) {
+    ribbon_t *r = &scr->ribbon;
+    const ribbon_win_t *w = &r->wins[idx];
+    scr->menu_type = w->type;
+    scr->menu_id = w->vterm_id;
+    scr->menu_n = 0;
+    scr->menu_hl = -1;
+    scr->menu_dim = scr->menu_tick = scr->menu_sep = 0;
+    uint8_t f = ribbon_col_first(r, idx), e = ribbon_col_end(r, idx);
+    uint8_t full = ribbon_size_full(r);
+    if (axis_y(scr)) {
+        menu_add(scr, MI_ONEUP, false, w->size >= full, false);
+        menu_add(scr, MI_PAIR, false, w->size < full, false);
+        menu_add(scr, MI_MOVE_U, idx == 0, false, true);
+        menu_add(scr, MI_MOVE_D, idx + 1u >= r->count, false, false);
+    } else {
+        uint16_t sw = r->screen_w;
+        menu_add(scr, MI_W25, false, w->size == RIBBON_COLS_TWO_FIFTHS(sw), false);
+        menu_add(scr, MI_W12, false, w->size == RIBBON_COLS_HALF(sw), false);
+        menu_add(scr, MI_W23, false, w->size == RIBBON_COLS_TWO_THIRDS(sw), false);
+        menu_add(scr, MI_WFULL, false, w->size >= full, false);
+        if (e - f > 1) {
+            uint8_t now = ribbon_share_now(r, idx);
+            menu_add(scr, MI_H13, false, now == RIBBON_SHARE_THIRD, true);
+            menu_add(scr, MI_H12, false, now == RIBBON_SHARE_HALF, false);
+            menu_add(scr, MI_H23, false, now == RIBBON_SHARE_TWO_THIRDS, false);
+        }
+        menu_add(scr, MI_MOVE_L, f == 0, false, true);
+        menu_add(scr, MI_MOVE_R, e >= r->count, false, false);
+        uint8_t deep = ribbon_stack_max(r);
+        if (e - f > 1) {
+            menu_add(scr, MI_LEAVE_L, false, false, true);
+            menu_add(scr, MI_LEAVE_R, false, false, false);
+        } else {
+            bool left = f > 0 && f - ribbon_col_first(r, (uint8_t)(f - 1u)) < deep;
+            bool right = e < r->count && ribbon_col_end(r, e) - e < deep;
+            menu_add(scr, MI_JOIN_L, !left, false, true);
+            menu_add(scr, MI_JOIN_R, !right, false, false);
+        }
+    }
+    bool can_close = !(w->type == RIBBON_WIN_TERM && w->vterm_id == 0) && !(w->flags & RIBBON_FLAG_NO_CLOSE);
+    menu_add(scr, MI_FULLSCREEN, false, false, true);
+    menu_add(scr, MI_CLOSE, !can_close, false, false);
+
+    unsigned lmax = 0, kmax = 0;
+    for (uint8_t i = 0; i < scr->menu_n; i++) {
+        const menu_text_t *t = &k_menu_text[scr->menu_item[i]];
+        unsigned l = cstr_len(t->label), k = cstr_len(t->key);
+        if (l > lmax) lmax = l;
+        if (k > kmax) kmax = k;
+    }
+    const int s = CHROME_SCALE, cw = (int)FONT_CELL_W;
+    int mw = cw * (int)(2u + lmax + 3u + kmax + 1u) + 2 * s;
+    int mh = 2 * s;
+    for (uint8_t i = 0; i < scr->menu_n; i++) mh += menu_item_h() + ((scr->menu_sep & (1u << i)) ? menu_sep_h() : 0);
+    mh += 2 * s;
+    int sw = (int)scr->cv.w, sh = (int)scr->cv.h;
+    if (mw > sw - 4 * s) mw = sw - 4 * s;
+    int x0 = px - 8 * s, y0 = y;
+    if (x0 + mw + 2 * s > sw) x0 = sw - mw - 2 * s;
+    if (x0 < 0) x0 = 0;
+    if (y0 + mh + 2 * s > sh) y0 = sh - mh - 2 * s;
+    if (y0 < SCREEN_MENU_H) y0 = SCREEN_MENU_H;
+    scr->menu_x0 = (int16_t)x0;
+    scr->menu_y0 = (int16_t)y0;
+    scr->menu_x1 = (int16_t)(x0 + mw - 1 + 2 * s);    /* the shadow's */
+    scr->menu_y1 = (int16_t)(y0 + mh - 1 + 2 * s);
+}
+
+/* Item i's rows on the screen. */
+LCDTERM_UTEXT static void menu_item_rows(const screen_t *scr, int i, int *y0, int *y1) {
+    int y = scr->menu_y0 + 2 * (int)CHROME_SCALE;
+    for (int k = 0; k <= i; k++) {
+        if (scr->menu_sep & (1u << k)) y += menu_sep_h();
+        if (k == i) break;
+        y += menu_item_h();
+    }
+    *y0 = y;
+    *y1 = y + menu_item_h() - 1;
+}
+
+/* The item at (x, y), or -1 (outside, or between items). */
+LCDTERM_UTEXT static int menu_hit(const screen_t *scr, int x, int y) {
+    const int s = CHROME_SCALE;
+    if (x < scr->menu_x0 || x > scr->menu_x1 - 2 * s || y < scr->menu_y0 || y > scr->menu_y1 - 2 * s) return -1;
+    for (int i = 0; i < (int)scr->menu_n; i++) {
+        int a, b;
+        menu_item_rows(scr, i, &a, &b);
+        if (y >= a && y <= b) return i;
+    }
+    return -1;
+}
+
+LCDTERM_UTEXT static void draw_wm_menu(screen_t *scr) {
+    if (menu_win(scr) == RIBBON_NONE) return;
+    const canvas1_t *cv = &scr->cv;
+    const int s = CHROME_SCALE, cw = (int)FONT_CELL_W;
+    int x0 = scr->menu_x0, y0 = scr->menu_y0, x1 = scr->menu_x1 - 2 * s, y1 = scr->menu_y1 - 2 * s;
+    canvas1_fill(cv, x1 + 1, y0 + 2 * s, x1 + 2 * s, y1 + 2 * s, CANVAS1_BLACK);   /* the shadow */
+    canvas1_fill(cv, x0 + 2 * s, y1 + 1, x1 + 2 * s, y1 + 2 * s, CANVAS1_BLACK);
+    canvas1_fill(cv, x0, y0, x1, y1, CANVAS1_BLACK);
+    canvas1_fill(cv, x0 + s, y0 + s, x1 - s, y1 - s, CANVAS1_WHITE);
+    for (int i = 0; i < (int)scr->menu_n; i++) {
+        const menu_text_t *t = &k_menu_text[scr->menu_item[i]];
+        int a, b;
+        menu_item_rows(scr, i, &a, &b);
+        if (scr->menu_sep & (1u << i)) {
+            int ly = a - menu_sep_h() / 2 - 1;
+            for (int x = x0 + s; x <= x1 - s; x += 2) canvas1_fill(cv, x, ly, x, ly + s - 1, CANVAS1_BLACK);
+        }
+        int ty = a + 2 * s;
+        uint32_t ln = cstr_len(t->label), kn = cstr_len(t->key);
+        chrome_text(cv, x0 + s + 2 * cw, ty, t->label, ln, canvas1_text_len(t->label, ln), 0, FONT_CELL_H, false);
+        if (kn) {
+            unsigned kl = canvas1_text_len(t->key, kn);
+            chrome_text(cv, x1 - s - cw - (int)kl * cw, ty, t->key, kn, kl, 0, FONT_CELL_H, false);
+        }
+        if (scr->menu_tick & (1u << i)) {
+            /* a check mark in the left column */
+            int cx = x0 + s + cw / 2, cy = (a + b) / 2;
+            for (int k = 0; k < s; k++) {
+                canvas1_line(cv, cx, cy + k, cx + 3 * s, cy + 3 * s + k, CANVAS1_BLACK);
+                canvas1_line(cv, cx + 3 * s, cy + 3 * s + k, cx + 8 * s, cy - 4 * s + k, CANVAS1_BLACK);
+            }
+        }
+        if (scr->menu_dim & (1u << i)) {
+            /* dimmed: every other pixel of the text back to white */
+            for (int y = a; y <= b; y++)
+                for (int x = x0 + s + ((y & 1) ? 1 : 0); x <= x1 - s; x += 2) canvas1_fill(cv, x, y, x, y, CANVAS1_WHITE);
+        } else if (i == scr->menu_hl) {
+            canvas1_invert(cv, x0 + s, a, x1 - s, b);
+        }
+    }
+}
+
+/* The overlays again over what was just drawn under them (a terminal's
+ * output, a view's update): the full-screen hint or bars, the menu. */
+LCDTERM_UTEXT static void draw_fs_overlay(screen_t *scr);
+LCDTERM_UTEXT static void overlays_redraw(screen_t *scr) {
+    if (scr->fs_overlay) draw_fs_overlay(scr);
+    if (scr->menu_type != RIBBON_WIN_EMPTY) draw_wm_menu(scr);
+}
+
+LCDTERM_UTEXT bool screen_overlay_rect(const screen_t *scr, int *x0, int *y0, int *x1, int *y1) {
+    bool any = false;
+    if (menu_win(scr) != RIBBON_NONE) {
+        *x0 = scr->menu_x0; *y0 = scr->menu_y0; *x1 = scr->menu_x1; *y1 = scr->menu_y1;
+        any = true;
+    }
+    int band = screen_overlay_band(scr);
+    if (band > 0) {
+        if (!any) { *x0 = 0; *y0 = 0; *x1 = (int)scr->cv.w - 1; *y1 = band - 1; }
+        else { *x0 = 0; *y0 = 0; *x1 = (int)scr->cv.w - 1; if (*y1 < band - 1) *y1 = band - 1; }
+        any = true;
+    }
+    return any;
 }
 
 /* Every pixel again. The canvas comes back blank, so its damage moves on --
@@ -1270,6 +1509,7 @@ LCDTERM_UTEXT static void draw_all_from(screen_t *scr, bool restore) {
                 blit_canvas_backing(scr, cid, 0, 0, (int)cv->w, (int)cv->h);
         }
         draw_fs_overlay(scr);
+        draw_wm_menu(scr);
         return;
     }
     if (fs != RIBBON_NONE) {
@@ -1293,7 +1533,7 @@ LCDTERM_UTEXT static void draw_all_from(screen_t *scr, bool restore) {
                     const char *title = win_title(scr, i);
                     bool can_close = !(w->type == RIBBON_WIN_TERM && w->vterm_id == 0) &&
                                      !(w->flags & RIBBON_FLAG_NO_CLOSE);
-                    draw_tile(cv, x0, y0, x1, y1, title, is_active, can_close);
+                    draw_tile(cv, x0, y0, x1, y1, title, is_active, (can_close ? TB_CLOSE : 0u) | TB_ZOOM);
                 }
             }
         }
@@ -1341,9 +1581,9 @@ LCDTERM_UTEXT static void draw_all_from(screen_t *scr, bool restore) {
             }
         }
     } else {
-        if (has_text(scr)) draw_tile(cv, scr->fx0, scr->fy0, scr->fx1, scr->fy1, scr->vt.title, true, false);
+        if (has_text(scr)) draw_tile(cv, scr->fx0, scr->fy0, scr->fx1, scr->fy1, scr->vt.title, true, 0u);
         if (has_canvas(scr)) {
-            draw_tile(cv, scr->cx0, scr->cy0, scr->cx1, scr->cy1, scr->ctitle, false, true);
+            draw_tile(cv, scr->cx0, scr->cy0, scr->cx1, scr->cy1, scr->ctitle, false, TB_CLOSE);
             if (!restore || !store_restore(scr)) {
                 canvas1_fill(cv, scr->cx0 + 1, scr->cy0 + SCREEN_TITLEBAR_H, scr->cx1 - 1, scr->cy1 - 1, CANVAS1_WHITE);
                 scr->damage++;
@@ -1396,6 +1636,7 @@ LCDTERM_UTEXT static void draw_all_from(screen_t *scr, bool restore) {
         vtterm_repaint(&scr->vt);
     }
     draw_fs_overlay(scr);
+    draw_wm_menu(scr);
 }
 
 /* Window i's title as its title bar shows it: a canvas's name, a
@@ -1831,6 +2072,8 @@ void screen_init_rot(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsig
     scr->cap_cols = (uint8_t)cap_cols;
     scr->cap_rows = (uint8_t)cap_rows;
     scr->fs_overlay = 0;
+    scr->menu_type = RIBBON_WIN_EMPTY;
+    scr->menu_n = 0;
     scr->fs_told = 0;
     scr->fs_until_ms = 0;
     scr->fs_hint[0] = '\0';
@@ -1930,6 +2173,7 @@ LCDTERM_UTEXT void screen_write_vterm(screen_t *scr, uint8_t vterm_id, const cha
 
     vtterm_t *avt = active_vt(scr);
     if (avt && avt->title_seq != scr->title_drawn) draw_text_title(scr);
+    if (scr->fs_overlay || scr->menu_type != RIBBON_WIN_EMPTY) overlays_redraw(scr);
 }
 
 LCDTERM_UTEXT void screen_write(screen_t *scr, const char *s, uint32_t n) {
@@ -2467,6 +2711,69 @@ LCDTERM_UTEXT static void set_fullscreen(screen_t *scr, bool on) {
     draw_all_from(scr, true);
 }
 
+/* The menu away, the screen drawn again without it. */
+LCDTERM_UTEXT static void menu_close(screen_t *scr) {
+    if (scr->menu_type == RIBBON_WIN_EMPTY) return;
+    scr->menu_type = RIBBON_WIN_EMPTY;
+    scr->menu_n = 0;
+    draw_all_from(scr, true);
+}
+
+/* Menu item `item` for window idx: the window focused, then what the item
+ * says. reply[8] SCREEN_REPLY_RELAID when windows changed size or place
+ * (the console tells their programs); a close answers as 'C' does. */
+LCDTERM_UTEXT static void menu_act(screen_t *scr, uint8_t idx, uint8_t item, uint8_t *reply) {
+    ribbon_t *r = &scr->ribbon;
+    scr->menu_type = RIBBON_WIN_EMPTY;
+    scr->menu_n = 0;
+    (void)ribbon_focus(r, idx);
+    if (item == MI_CLOSE) {
+        if (close_window(scr, idx, reply)) {
+            reply[0] = 0;
+            reply[1] = window_vterm(scr, r->active_idx);
+            if (reply[8] != 0xCE) reply[8] = 0xCC;
+        }
+        return;
+    }
+    if (item == MI_FULLSCREEN) {
+        set_fullscreen(scr, true);
+    } else {
+        uint16_t sw = r->screen_w;
+        switch (item) {
+        case MI_W25:     (void)ribbon_set_width(r, RIBBON_COLS_TWO_FIFTHS(sw)); break;
+        case MI_W12:     (void)ribbon_set_width(r, RIBBON_COLS_HALF(sw)); break;
+        case MI_W23:     (void)ribbon_set_width(r, RIBBON_COLS_TWO_THIRDS(sw)); break;
+        case MI_WFULL:
+        case MI_ONEUP:   (void)ribbon_set_width(r, ribbon_size_full(r)); break;
+        case MI_PAIR:    (void)ribbon_set_width(r, ribbon_size_half(r)); break;
+        case MI_H13:     (void)ribbon_set_height(r, RIBBON_SHARE_THIRD); break;
+        case MI_H12:     (void)ribbon_set_height(r, RIBBON_SHARE_HALF); break;
+        case MI_H23:     (void)ribbon_set_height(r, RIBBON_SHARE_TWO_THIRDS); break;
+        case MI_MOVE_L:
+        case MI_MOVE_U:  (void)ribbon_move(r, r->active_idx, -1); break;
+        case MI_MOVE_R:
+        case MI_MOVE_D:  (void)ribbon_move(r, r->active_idx, 1); break;
+        case MI_JOIN_L:
+        case MI_LEAVE_L: (void)ribbon_join(r, -1); break;
+        case MI_JOIN_R:
+        case MI_LEAVE_R: (void)ribbon_join(r, 1); break;
+        default: break;
+        }
+        fullscreen_follow_focus(scr);
+        r->m_target = ribbon_compute_viewport(r, r->active_idx, r->m_view);
+        r->m_view = r->m_target;
+        (void)place(scr, scr->layout);
+        draw_all_from(scr, true);
+    }
+    reply[0] = 0;
+    reply[1] = window_vterm(scr, r->active_idx);
+    reply[8] = SCREEN_REPLY_RELAID;
+    if (r->active_idx < r->count) {
+        reply[10] = r->wins[r->active_idx].type;
+        reply[11] = r->wins[r->active_idx].vterm_id;
+    }
+}
+
 LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t *req, uint32_t n, uint8_t *reply, int16_t caller_pid) {
     uint8_t status = 0, pixel = 0;
     uint8_t op = n ? req[0] : 0;
@@ -2474,6 +2781,11 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
      * where the focus is, never what the caller's buffer held before -- a
      * stale [1] made the input path switch the active terminal. */
     for (uint32_t i = 0; i < SCREEN_REPLY_LEN; i++) reply[i] = 0;   /* no libc in the U-mode domain */
+    /* Anything else done to the windows closes the title-bar menu first. */
+    if (scr->menu_type != RIBBON_WIN_EMPTY &&
+        (op == '<' || op == '>' || op == '[' || op == ']' || op == 'J' || op == 'M' || op == 'w' || op == 'j' ||
+         op == '^' || op == 'm' || op == 'h' || op == 'f' || op == 'C' || op == 'N' || op == 'k' || op == 'X'))
+        menu_close(scr);
     if (scr->ribbon.count > 0 && scr->ribbon.active_idx < scr->ribbon.count) {
         reply[1] = window_vterm(scr, scr->ribbon.active_idx);
         reply[10] = scr->ribbon.wins[scr->ribbon.active_idx].type;
@@ -2585,7 +2897,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
                 if (screen_win_shown(scr, scr->ribbon.active_idx)) {
                     int fx0, fy0, fx1, fy1;
                     screen_win_frame(scr, scr->ribbon.active_idx, &fx0, &fy0, &fx1, &fy1);
-                    draw_titlebar(&scr->cv, fx0, fy0, fx1, scr->readers[rid].title, true, true);
+                    draw_titlebar(&scr->cv, fx0, fy0, fx1, scr->readers[rid].title, true, TB_CLOSE | TB_ZOOM);
                 }
             }
             status = 0;
@@ -2612,7 +2924,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
                     int fx0, fy0, fx1, fy1;
                     screen_win_frame(scr, (unsigned)c_win, &fx0, &fy0, &fx1, &fy1);
                     bool active = (c_win == (int)scr->ribbon.active_idx);
-                    draw_titlebar(&scr->cv, fx0, fy0, fx1, scr->canvases[cid].title, active, true);
+                    draw_titlebar(&scr->cv, fx0, fy0, fx1, scr->canvases[cid].title, active, TB_CLOSE | TB_ZOOM);
                 }
             }
             status = 0;
@@ -2807,6 +3119,71 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
         } else {
             status = 1;
         }
+    } else if (op == 'P' && scr->menu_type != RIBBON_WIN_EMPTY) {
+        /* A tap or click with the title-bar menu open: an item does what
+         * it says (a dimmed one nothing); anywhere else only closes it. */
+        int px = arg16(req, n, 0), py = arg16(req, n, 1);
+        uint8_t idx = menu_win(scr);
+        int i = idx != RIBBON_NONE ? menu_hit(scr, px, py) : -1;
+        if (i >= 0 && !(scr->menu_dim & (1u << i))) {
+            menu_act(scr, idx, scr->menu_item[i], reply);
+            if (reply[8] == 0xCC || reply[8] == 0xCE || reply[8] == SCREEN_REPLY_RELAID) return;
+        }
+        menu_close(scr);
+        reply[0] = 0;
+        reply[8] = SCREEN_REPLY_TAKEN;
+        return;
+    } else if (op == 'n') {
+        /* 'n' 1 x y: the title-bar menu of the window whose title bar is at
+         * (x, y), under it (refused off a title bar); 'n' 0: closed;
+         * 'n' 2 x y: the item under the pointer highlighted; 'n' 3 i: item
+         * i -- [1] its MI_*, [2] dimmed, [3] ticked, [4..11] its box
+         * (x0, y0, x1, y1), [12..] its label. */
+        uint8_t mode = n >= 2 ? req[1] : 0;
+        int px = arg16(req + 1, n - 1, 0), py = arg16(req + 1, n - 1, 1);
+        status = 0;
+        if (mode == 1) {
+            int idx = fs_win(scr) == RIBBON_NONE ? window_at(scr, px, py) : -1;
+            int fx0 = 0, fy0 = 0, fx1 = 0, fy1 = 0;
+            if (idx >= 0) screen_win_frame(scr, (unsigned)idx, &fx0, &fy0, &fx1, &fy1);
+            if (idx < 0 || py < fy0 - 2 * (int)CHROME_SCALE || py >= fy0 + SCREEN_TITLEBAR_H + 4 * (int)CHROME_SCALE) {
+                status = 1;
+            } else {
+                menu_build(scr, (uint8_t)idx, px, fy0 + SCREEN_TITLEBAR_H);
+                draw_wm_menu(scr);
+            }
+        } else if (mode == 2) {
+            int hl = menu_win(scr) != RIBBON_NONE ? menu_hit(scr, px, py) : -1;
+            if (hl >= 0 && (scr->menu_dim & (1u << hl))) hl = -1;
+            if (hl != scr->menu_hl) {
+                scr->menu_hl = (int8_t)hl;
+                draw_wm_menu(scr);
+            }
+        } else if (mode == 3) {
+            uint8_t i = n >= 3 ? req[2] : 0xffu;
+            if (menu_win(scr) == RIBBON_NONE || i >= scr->menu_n) {
+                status = 1;
+            } else {
+                int a, b;
+                menu_item_rows(scr, i, &a, &b);
+                const menu_text_t *t = &k_menu_text[scr->menu_item[i]];
+                int x0 = scr->menu_x0 + (int)CHROME_SCALE, x1 = scr->menu_x1 - 3 * (int)CHROME_SCALE;
+                reply[0] = 0;
+                reply[1] = scr->menu_item[i];
+                reply[2] = (scr->menu_dim >> i) & 1u;
+                reply[3] = (scr->menu_tick >> i) & 1u;
+                reply[4] = (uint8_t)x0; reply[5] = (uint8_t)(x0 >> 8);
+                reply[6] = (uint8_t)a;  reply[7] = (uint8_t)(a >> 8);
+                reply[8] = (uint8_t)x1; reply[9] = (uint8_t)(x1 >> 8);
+                reply[10] = (uint8_t)b; reply[11] = (uint8_t)(b >> 8);
+                uint32_t k = 0;
+                while (k < 19u && t->label[k]) { reply[12 + k] = (uint8_t)t->label[k]; k++; }
+                reply[12 + k] = 0;
+                return;
+            }
+        } else {
+            menu_close(scr);
+        }
     } else if (op == 'P' && screen_overlay_band(scr) && (scr->fs_overlay & SCREEN_FS_REVEAL) &&
                arg16(req, n, 1) >= SCREEN_MENU_H && arg16(req, n, 1) < (int)SCREEN_FS_BAND) {
         /* A tap on a full-screen window's revealed title bar: its close box
@@ -2821,8 +3198,12 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
             return;
         }
         set_fullscreen(scr, false);
-        status = 0;
+        reply[0] = 0;
         reply[1] = window_vterm(scr, scr->ribbon.active_idx);
+        reply[8] = SCREEN_REPLY_RELAID;
+        reply[10] = scr->ribbon.wins[scr->ribbon.active_idx].type;
+        reply[11] = scr->ribbon.wins[scr->ribbon.active_idx].vterm_id;
+        return;
     } else if (op == 'P') {
         /* 47.12: a tap at (x, y) in screen pixels. On the menu bar: the
          * minimap block nearest to it; below: the window under it. Focuses
@@ -2845,6 +3226,23 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
         int fx0 = 0, fy0 = 0, fx1 = 0, fy1 = 0;
         if (idx >= 0) screen_win_frame(scr, (unsigned)idx, &fx0, &fy0, &fx1, &fy1);
         int ty = py - (fy0 - SCREEN_TILE_Y);             /* as if the window's title bar were at SCREEN_TILE_Y */
+        if (idx >= 0 && ty >= CHROME_CLOSE_Y0 && ty < CHROME_CLOSE_Y1 && fx1 < (int)scr->cv.w &&
+            px >= CHROME_ZOOM_X0(fx1) && px <= CHROME_ZOOM_X1(fx1) && fs_win(scr) == RIBBON_NONE) {
+            /* The zoom box: Cmd+F for this window. */
+            (void)ribbon_focus(&scr->ribbon, (uint8_t)idx);
+            if (ribbon_toggle_maximize(&scr->ribbon)) {
+                fullscreen_follow_focus(scr);
+                scr->ribbon.m_view = scr->ribbon.m_target;
+                (void)place(scr, scr->layout);
+                draw_all_from(scr, true);
+            }
+            reply[0] = 0;
+            reply[1] = window_vterm(scr, scr->ribbon.active_idx);
+            reply[8] = SCREEN_REPLY_RELAID;
+            reply[10] = scr->ribbon.wins[scr->ribbon.active_idx].type;
+            reply[11] = scr->ribbon.wins[scr->ribbon.active_idx].vterm_id;
+            return;
+        }
         if (idx >= 0 && ty >= CHROME_CLOSE_Y0 && ty < CHROME_CLOSE_Y1) {
             if (px >= CHROME_CLOSE_X0(fx0) && px <= CHROME_CLOSE_X1(fx0)) {
                 if (!(scr->ribbon.wins[idx].flags & RIBBON_FLAG_NO_CLOSE)) {
@@ -3124,6 +3522,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
         reply[7] = RIBBON_AXIS(&scr->ribbon);
         reply[8] = fs_win(scr) != RIBBON_NONE ? 1u : 0u;   /* the focused window covers the screen */
         reply[9] = scr->fs_overlay;
+        reply[12] = menu_win(scr) != RIBBON_NONE ? scr->menu_n : 0u;   /* an open title-bar menu's items */
         return;
     } else if (op == 'C') {
         /* Close active window (Cmd+W) */
@@ -3525,6 +3924,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
      * asked) and which window in [10..11]. */
     bool closing = (op == 'C' || op == 'q' || op == 'u') && (reply[8] == 0xCC || reply[8] == 0xCE);
     if (!closing) reply[8] = scr->layout;
+    if (scr->fs_overlay || scr->menu_type != RIBBON_WIN_EMPTY) overlays_redraw(scr);   /* over what this drew */
     reply[9] = scr->swapped;
     if (op != 'C' && !closing) {
         if (scr->ribbon.count > 0 && scr->ribbon.active_idx < scr->ribbon.count) {

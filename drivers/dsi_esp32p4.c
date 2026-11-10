@@ -1563,8 +1563,6 @@ typedef struct {
     int nt;
     lcdterm_visible_term_t terms[4];
     bool force, rearm;
-    int16_t top;                 /* rows at the top the surfaces leave to the frame (lcdterm_overlay_band()) */
-    int16_t top_drawn;           /* ... at the last pass (both in the padding before t0) */
     uint64_t t0;
 } term_snap_t;
 static term_snap_t g_snap;   /* guarded by: g_frame_lock */
@@ -1580,6 +1578,8 @@ typedef struct {
     int sx0[SRF_MAX], sy0[SRF_MAX], sx1[SRF_MAX], sy1[SRF_MAX];
     uint32_t sid[SRF_MAX];
     int8_t rslot[SRF_MAX];
+    bool ov;                     /* the screen's overlay (a menu, the full-screen hint or bars) ... */
+    int ox0, oy0, ox1, oy1;      /* ... its rectangle, clipped to the screen */
 } srf_snap_t;
 /* guarded by: g_frame_lock */
 static srf_snap_t g_ssrf BULK_BSS;
@@ -1610,6 +1610,8 @@ typedef struct {
     uint8_t skip_lo[ROT_MAX_BANDS][SKIP_SLOTS], skip_hi[ROT_MAX_BANDS][SKIP_SLOTS];
     uint8_t skip_n[ROT_MAX_BANDS];
     bool moved[4];               /* reader slot i is new or elsewhere in this back buffer */
+    bool ov_on[2];               /* the overlay as each back buffer last showed it */
+    int16_t ov_x0[2], ov_y0[2], ov_x1[2], ov_y1[2];
 } srf_track_t;
 /* guarded by: g_frame_lock */
 static srf_track_t g_srf BULK_BSS;
@@ -1725,8 +1727,8 @@ typedef enum {
 
 /* A window's extent clipped to the screen; false when nothing is left. */
 static bool srf_clip(const int *x0, const int *y0, const int *x1, const int *y1,
-                     int *ox0, int *oy0, int *ox1, int *oy1, int top) {
-    int a = *x0 < 0 ? 0 : *x0, b = *y0 < top ? top : *y0;
+                     int *ox0, int *oy0, int *ox1, int *oy1) {
+    int a = *x0 < 0 ? 0 : *x0, b = *y0 < 0 ? 0 : *y0;
     int c = *x1 >= (int)g_tbe.w ? (int)g_tbe.w - 1 : *x1;
     int d = *y1 >= (int)g_tbe.h ? (int)g_tbe.h - 1 : *y1;
     if (a > c || b > d) return false;
@@ -1905,13 +1907,12 @@ static term_go_t term_snapshot(unsigned y0, unsigned y1) {
     sn->force = g_t_force;
     sn->rearm = rearm;
     sn->t0 = t0;
-    /* An overlay over a full-screen window (its hint, its revealed title
-     * bar) is in the frame: the surfaces start below it, and every one is
-     * drawn again when it comes or goes. */
-    sn->top = (int16_t)lcdterm_overlay_band();
-    if (sn->top != sn->top_drawn) {
-        sn->force = true;
-        sn->top_drawn = sn->top;
+    /* What the screen draws over everything (srf_snap_t.ov): drawn from
+     * the frame after the surfaces and the text (step 2e). */
+    {
+        int a = 0, b = 0, c = -1, d = -1;
+        g_ssrf.ov = lcdterm_overlay_rect(&a, &b, &c, &d) &&
+                    srf_clip(&a, &b, &c, &d, &g_ssrf.ox0, &g_ssrf.oy0, &g_ssrf.ox1, &g_ssrf.oy1);
     }
 
     /* An RGB565 canvas on a GRAY8 frame switches the frame first: fb_start()
@@ -1974,7 +1975,7 @@ static term_go_t term_snapshot(unsigned y0, unsigned y1) {
         int x1 = sn->rx1[i], y1 = sn->ry1[i];
         if (sn->rw[i] > 0 && sn->rx0[i] + sn->rw[i] - 1 < x1) x1 = sn->rx0[i] + sn->rw[i] - 1;
         if (sn->rh[i] > 0 && sn->ry0[i] + sn->rh[i] - 1 < y1) y1 = sn->ry0[i] + sn->rh[i] - 1;
-        if (!srf_clip(&sn->rx0[i], &sn->ry0[i], &x1, &y1, &ss->sx0[k], &ss->sy0[k], &ss->sx1[k], &ss->sy1[k], sn->top)) continue;
+        if (!srf_clip(&sn->rx0[i], &sn->ry0[i], &x1, &y1, &ss->sx0[k], &ss->sy0[k], &ss->sx1[k], &ss->sy1[k])) continue;
         ss->sid[k] = 0x100u | rids[i];
         ss->rslot[k] = (int8_t)i;
         ss->ns++;
@@ -1986,7 +1987,7 @@ static term_go_t term_snapshot(unsigned y0, unsigned y1) {
         int x1 = sn->cx1[i], y1 = sn->cy1[i];
         if (sn->cx0[i] + sn->cw[i] * sc - 1 < x1) x1 = sn->cx0[i] + sn->cw[i] * sc - 1;
         if (sn->cy0[i] + sn->ch[i] * sc - 1 < y1) y1 = sn->cy0[i] + sn->ch[i] * sc - 1;
-        if (!srf_clip(&sn->cx0[i], &sn->cy0[i], &x1, &y1, &ss->sx0[k], &ss->sy0[k], &ss->sx1[k], &ss->sy1[k], sn->top)) continue;
+        if (!srf_clip(&sn->cx0[i], &sn->cy0[i], &x1, &y1, &ss->sx0[k], &ss->sy0[k], &ss->sx1[k], &ss->sy1[k])) continue;
         ss->sid[k] = 0x200u | (uint32_t)i;
         ss->rslot[k] = -1;
         ss->ns++;
@@ -2042,8 +2043,15 @@ static void term_pointer(void) {
 
 /* Back buffer b's pixels under a cursor drawn at (x, y), from their sources
  * at this pass. */
+static void rect_forget(const term_snap_t *sn, const srf_snap_t *ss, unsigned b, int x, int y, int x1, int y1);
+
 static void cursor_forget(const term_snap_t *sn, const srf_snap_t *ss, unsigned b, int x, int y) {
-    int x1 = x + cursor_px() - 1, y1 = y + cursor_px() - 1;
+    rect_forget(sn, ss, b, x, y, x + cursor_px() - 1, y + cursor_px() - 1);
+}
+
+/* Back buffer b's pixels x..x1, y..y1 drawn again in the coming pass from
+ * whatever is under them: a cursor or an overlay that was there is gone. */
+static void rect_forget(const term_snap_t *sn, const srf_snap_t *ss, unsigned b, int x, int y, int x1, int y1) {
     if (x1 >= (int)g_tbe.w) x1 = (int)g_tbe.w - 1;
     if (y1 >= (int)g_tbe.h) y1 = (int)g_tbe.h - 1;
     if (x > x1 || y > y1) return;
@@ -2106,6 +2114,39 @@ static void cursor_draw(uint8_t *fb, fb_fmt_t fmt, int x, int y, int *lo, int *h
     }
 }
 
+/* The overlay's rectangle (logical, inclusive) from the 1-bpp frame into
+ * fb, in its format and the panel's rotation, a pixel at a time: it is
+ * small (a menu) or short (the full-screen band), and drawn after
+ * everything the surfaces put there. */
+static void overlay_draw(uint8_t *fb, fb_fmt_t fmt, int x0, int y0, int x1, int y1,
+                         int *lo, int *hi, int *fpy0, int *fpy1) {
+    unsigned stride = g_tbe.stride;
+    for (int ly = y0; ly <= y1; ly++) {
+        const uint8_t *sh = g_t1_shadow + (size_t)ly * stride;
+        for (int lx = x0; lx <= x1; lx++) {
+            uint8_t byte = sh[lx >> 3];
+            unsigned px, py;
+            if (g_lcd_rot == 270)      { py = DSI_LCD_V_RES - 1u - (unsigned)lx; px = (unsigned)ly; }
+            else if (g_lcd_rot == 90)  { py = (unsigned)lx; px = DSI_LCD_H_RES - 1u - (unsigned)ly; }
+            else if (g_lcd_rot == 180) { py = DSI_LCD_V_RES - 1u - (unsigned)ly; px = DSI_LCD_H_RES - 1u - (unsigned)lx; }
+            else                       { py = (unsigned)ly; px = (unsigned)lx; }
+            if (px >= DSI_LCD_H_RES || py >= DSI_LCD_V_RES) continue;
+            if (fmt == FB_RGB565) ((uint16_t *)fb)[(size_t)py * DSI_LCD_H_RES + px] = g_lut565[byte][lx & 7];
+            else fb[(size_t)py * DSI_LCD_H_RES + px] = ((const uint8_t *)&g_lut8[byte])[lx & 7];
+        }
+    }
+    if (g_lcd_rot == 90 || g_lcd_rot == 270) {
+        int a = g_lcd_rot == 90 ? x0 : (int)DSI_LCD_V_RES - 1 - x1;
+        int z = g_lcd_rot == 90 ? x1 : (int)DSI_LCD_V_RES - 1 - x0;
+        if (*fpy0 < 0 || a < *fpy0) *fpy0 = a;
+        if (z > *fpy1) *fpy1 = z;
+    } else if (g_lcd_rot == 180) {
+        span_rows(lo, hi, (int)DSI_LCD_V_RES - 1 - y1, (int)DSI_LCD_V_RES - 1 - y0);
+    } else {
+        span_rows(lo, hi, y0, y1);
+    }
+}
+
 static void term_draw(void) {
     const term_snap_t *sn = &g_snap;
     const srf_snap_t *ss = &g_ssrf;
@@ -2123,6 +2164,13 @@ static void term_draw(void) {
     bool cur_on = console_pointer_shown(&cur_x, &cur_y) && cur_x < (int)g_tbe.w && cur_y < (int)g_tbe.h;
     if (g_cur_on[back_idx] && (!cur_on || cur_x != g_cur_x[back_idx] || cur_y != g_cur_y[back_idx]))
         cursor_forget(sn, ss, back_idx, g_cur_x[back_idx], g_cur_y[back_idx]);
+    /* The overlay this buffer showed, gone or elsewhere: what is under it
+     * again, the surfaces and the text included. */
+    if (g_srf.ov_on[back_idx] &&
+        (!ss->ov || ss->ox0 != g_srf.ov_x0[back_idx] || ss->oy0 != g_srf.ov_y0[back_idx] ||
+         ss->ox1 != g_srf.ov_x1[back_idx] || ss->oy1 != g_srf.ov_y1[back_idx]))
+        rect_forget(sn, ss, back_idx, g_srf.ov_x0[back_idx], g_srf.ov_y0[back_idx],
+                    g_srf.ov_x1[back_idx], g_srf.ov_y1[back_idx]);
     int lo = -1, hi = -1;
     int flush_py0 = -1, flush_py1 = -1;
     uint32_t n = 0;
@@ -2330,7 +2378,7 @@ static void term_draw(void) {
 
         int cl_x0 = x0 < 0 ? 0 : x0;
         int cl_x1 = x1 >= (int)g_tbe.w ? (int)g_tbe.w - 1 : x1;
-        int cl_y0 = y0 < sn->top ? sn->top : y0;   /* the overlay's band is the frame's */
+        int cl_y0 = y0 < 0 ? 0 : y0;
         int cl_y1 = y1 >= (int)g_tbe.h ? (int)g_tbe.h - 1 : y1;
         if (cl_x0 > cl_x1 || cl_y0 > cl_y1) continue;
 
@@ -2455,7 +2503,7 @@ static void term_draw(void) {
 
         int cl_x0 = x0 < 0 ? 0 : x0;
         int cl_x1 = x1 >= (int)g_tbe.w ? (int)g_tbe.w - 1 : x1;
-        int cl_y0 = y0 < sn->top ? sn->top : y0;   /* the overlay's band is the frame's */
+        int cl_y0 = y0 < 0 ? 0 : y0;
         int cl_y1 = y1 >= (int)g_tbe.h ? (int)g_tbe.h - 1 : y1;
         if (cl_x0 > cl_x1 || cl_y0 > cl_y1) continue;
 
@@ -2806,6 +2854,21 @@ static void term_draw(void) {
     }
 }
 #endif
+
+    /* 2e. The screen's overlay -- its title-bar menu, the full-screen hint
+     * or bars -- from the frame, over the surfaces and the text. */
+    if (ss->ov) {
+        overlay_draw(fb, fmt, ss->ox0, ss->oy0, ss->ox1, ss->oy1, &lo, &hi, &flush_py0, &flush_py1);
+        n++;
+        cpu_n++;
+    } else if (g_srf.ov_on[back_idx]) {
+        n++;                                             /* the frame without it: flipped */
+    }
+    g_srf.ov_on[back_idx] = ss->ov;
+    g_srf.ov_x0[back_idx] = (int16_t)ss->ox0;
+    g_srf.ov_y0[back_idx] = (int16_t)ss->oy0;
+    g_srf.ov_x1[back_idx] = (int16_t)ss->ox1;
+    g_srf.ov_y1[back_idx] = (int16_t)ss->oy1;
 
     /* The mouse cursor, over everything; a pass that moved it also wrote
      * back where it was (cursor_forget(): those rows were drawn again). */

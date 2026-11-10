@@ -1,6 +1,6 @@
 {
   "bulk_per_file": {
-    "drivers/dsi_esp32p4.c": 9012,
+    "drivers/dsi_esp32p4.c": 9048,
     "drivers/launcher_view.c": 22424,
     "drivers/lispui_view.c": 15856,
     "drivers/reader_view.c": 62432,
@@ -21,13 +21,13 @@
     "app:ceres": 31896,
     "app:moonbase": 73888,
     "chess": 1852,
-    "display": 93868,
+    "display": 93904,
     "drivers": 19280,
     "kernel": 35360,
     "lisp": 1532288,
     "selftest": 64
   },
-  "bulk_total": 1788496,
+  "bulk_total": 1788532,
   "heap_bytes": 360448,
   "heap_pages": 88,
   "per_file": {

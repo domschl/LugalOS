@@ -581,6 +581,35 @@ LCDTERM_UTEXT bool ribbon_move_stack(ribbon_t *r, int dir) {
     return false;
 }
 
+LCDTERM_UTEXT bool ribbon_set_width(ribbon_t *r, uint8_t size) {
+    if (!r || r->active_idx >= r->count || size == 0) return false;
+    col_set_size(r, size);
+    return true;
+}
+
+LCDTERM_UTEXT bool ribbon_set_height(ribbon_t *r, uint8_t share) {
+    if (!r || AXIS_Y(r) || r->active_idx >= r->count || share > RIBBON_SHARE_TWO_THIRDS) return false;
+    uint8_t a = r->active_idx, f = raw_col_first(r, a), e = raw_col_end(r, a);
+    if (e - f < 2) return false;
+    col_clear_shares(r, f, e);
+    r->wins[a].share = share;
+    settle(r);
+    return true;
+}
+
+LCDTERM_UTEXT uint8_t ribbon_share_now(const ribbon_t *r, uint8_t idx) {
+    if (!r || AXIS_Y(r) || idx >= r->count) return RIBBON_NONE;
+    uint8_t f = raw_col_first(r, idx), e = raw_col_end(r, idx);
+    unsigned n = (unsigned)(e - f);
+    if (n < 2u) return RIBBON_NONE;
+    int32_t h[RIBBON_STACK_MAX];
+    stack_layout(r, f, e, RIBBON_NONE, h);
+    int32_t total = stack_rows(r, n);
+    for (uint8_t sh = RIBBON_SHARE_THIRD; sh <= RIBBON_SHARE_TWO_THIRDS; sh++)
+        if (share_rows(sh, total) == h[idx - f]) return sh;
+    return RIBBON_NONE;
+}
+
 LCDTERM_UTEXT bool ribbon_height(ribbon_t *r, int dir) {
     if (!r || AXIS_Y(r) || r->active_idx >= r->count) return false;
     uint8_t a = r->active_idx, f = raw_col_first(r, a), e = raw_col_end(r, a);

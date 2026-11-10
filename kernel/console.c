@@ -867,7 +867,8 @@ void console_pointer(int x, int y, uint8_t buttons) {
      * menu bar and its title bar, and keeps them while it stays on them;
      * a press there is the title bar's, not a program's that takes the
      * pointer. */
-    bool on_bars = (lcdterm_fs_state() & SCREEN_FS_REVEAL) && y < (int)SCREEN_FS_BAND;
+    uint8_t wm = lcdterm_fs_state();
+    bool on_bars = ((wm & SCREEN_FS_REVEAL) && y < (int)SCREEN_FS_BAND) || (wm & SCREEN_MENU_OPEN);   /* the menu's press too */
     if (moved && !buttons && lcdterm_fullscreen() && (y <= 1 || on_bars)) console_hotkey(CONSOLE_HOTKEY_REVEAL);
 
     /* A press of a window that claims the pointer: the raw stream, every
@@ -980,6 +981,12 @@ static void run_pointer_once(void) {
     int cx = 0, cy = 0;
     if (__atomic_exchange_n(&g_hover_pending, false, __ATOMIC_ACQ_REL)) {
         uint32_t xy = g_hover_xy;
+        if (lcdterm_fs_state() & SCREEN_MENU_OPEN) {
+            /* the title-bar menu's item under the pointer, highlighted */
+            uint8_t mreq[6] = { 'n', 2, (uint8_t)(xy >> 16), (uint8_t)(xy >> 24), (uint8_t)xy, (uint8_t)(xy >> 8) };
+            uint8_t mreply[SCREEN_REPLY_LEN];
+            (void)console_canvas(mreq, 6, mreply);
+        }
         uint8_t type = 0, id = 0;
         const view_ops_t *v = NULL;
         win_event_t ev;
@@ -1008,7 +1015,12 @@ static void run_pointer_once(void) {
     if (__atomic_exchange_n(&g_context_pending, false, __ATOMIC_ACQ_REL)) {
         uint32_t xy = g_context_xy;
         const view_ops_t *v = view_at(xy >> 16, xy & 0xFFFFu, &inst, &cx, &cy);
-        if (v) {
+        if (!v) {
+            /* Not in a view's content: on a title bar, its menu. */
+            uint8_t mreq[6] = { 'n', 1, (uint8_t)(xy >> 16), (uint8_t)(xy >> 24), (uint8_t)xy, (uint8_t)(xy >> 8) };
+            uint8_t mreply[SCREEN_REPLY_LEN];
+            (void)console_canvas(mreq, 6, mreply);
+        } else {
             win_event_t ev;
             memset(&ev, 0, sizeof ev);
             ev.button = 2;
@@ -1489,6 +1501,13 @@ static void run_hotkey(void) {
                 }
                 if (reply[8] == 0xAA) {
                     view_post_call(launcher_open_cb, NULL);
+                    continue;
+                }
+                if (reply[8] == SCREEN_REPLY_TAKEN) continue;    /* the window manager's: it closed its menu */
+                if (reply[8] == SCREEN_REPLY_RELAID) {           /* zoom box, a menu item, out of full screen */
+                    focus_moved(reply);
+                    console_sync_readers();
+                    sys_resize_canvases();
                     continue;
                 }
                 if (reply[10] != 0) g_active_win_type = reply[10];

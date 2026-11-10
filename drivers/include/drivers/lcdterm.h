@@ -201,6 +201,8 @@ int  lcdterm_overlay_band(void);
 /* screen_fs_state(): the overlay over a full-screen window, and whether it
  * was full screen when the console last looked. */
 uint8_t lcdterm_fs_state(void);
+/* screen_overlay_rect(): what the screen draws over everything now. */
+bool lcdterm_overlay_rect(int *x0, int *y0, int *x1, int *y1);
 /* 76.3: whether the ribbon runs down the screen now (a portrait Tab5). */
 #if defined(CONFIG_BOARD_RP2350) || defined(CONFIG_BOARD_ESP32C6)
 static inline bool lcdterm_ribbon_down(void) { return false; }
@@ -252,6 +254,7 @@ static inline bool lcdterm_ribbon_down(void) { return ramscreen_ribbon_down(); }
 static inline bool lcdterm_fullscreen(void) { return ramscreen_fullscreen(); }
 static inline int  lcdterm_overlay_band(void) { return 0; }
 static inline uint8_t lcdterm_fs_state(void) { return ramscreen_fs_state(); }
+static inline bool lcdterm_overlay_rect(int *x0, int *y0, int *x1, int *y1) { (void)x0; (void)y0; (void)x1; (void)y1; return false; }
 static inline bool lcdterm_set_canvas565_backing(uint8_t cid, uint16_t *buf) {
     (void)cid; (void)buf;
     return false;

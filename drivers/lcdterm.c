@@ -864,6 +864,10 @@ int lcdterm_overlay_band(void) {
     return g_scr ? screen_overlay_band(g_scr) : 0;
 }
 
+bool lcdterm_overlay_rect(int *x0, int *y0, int *x1, int *y1) {
+    return g_scr && screen_overlay_rect(g_scr, x0, y0, x1, y1);
+}
+
 uint8_t lcdterm_fs_state(void) {
     return g_scr ? screen_fs_state(g_scr) : 0;
 }
