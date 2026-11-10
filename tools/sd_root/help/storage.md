@@ -50,7 +50,26 @@ FAT volumes (`/sd0`, `/flash0`, `/ram0`, `/nvme0`) keep **long file names** (VFA
 * A path of 128 bytes at most on the boards without PSRAM (Pico 2, RP2350 presets but the LCD-7, C6), 256 on the others. Over 9P (`p9sync.py`) the same limits hold.
 * Characters outside Latin-1 are stored exactly; the console's fonts may show them as a replacement glyph.
 
-Cards written by LugalOS before long names hold every name cut to 8.3 in capitals (`INIT.LIS` for `init.lisp`), and those are not found under their long names. Rebuild such a card: `format /sd0` (or on a PC), then `p9sync.py` its content back.
+Names on the card are **lowercase and full length** (the card image in `tools/sd_root` is; programs write lowercase: `/sd0/system/settings`, `/sd0/log/pYYMMDD.csv`, `/sd0/chess/games/`). The one exception is `vf2_uEnv.txt`, the name StarFive's U-Boot looks for.
+
+Cards written by LugalOS before long names hold every name cut to 8.3 in capitals (`INIT.LIS` for `init.lisp`), and those are not found under their long names. Rebuild such a card (next section).
+
+### Rebuilding a Card
+The steps, each board's way of reaching it, and what to put back. `tools/p9sync.py` pushes the card image (`build/PRESET/sd_root`) and, with `--pull DIR`, copies a card's files here -- run it again to resume one cut short.
+
+1. **Back up** what is yours: `tools/p9sync.py TRANSPORT --dst /sd0 --pull ~/card-backup/BOARD` (saved games in `chess/`, `ceres.dat`, `games/*.sav`, `system/history.lisp`, `system/settings`, screenshots, logs).
+2. **Format** on the board: `format /sd0`. It sizes the volume from the card (the RP2350's SPI driver reads the card's CSD; before it took every card for 1 GiB) and takes from seconds to a minute.
+3. **Sync** the image: `tools/p9sync.py TRANSPORT --src build/PRESET/sd_root --dst /sd0`.
+4. **Put back** your files, renamed to lowercase where they were not (`CHESS/GAMES/GAME-001.PGN` to `chess/games/game-001.pgn`): a directory laid out as the card is, synced with `--force`.
+
+| Board | Transport (`TRANSPORT`) | Afterwards |
+| :--- | :--- | :--- |
+| RP2350 (LCD-7, Pico 2) | `--serial /dev/serial/by-id/...-if02` (its own USB port) | The Pico 2 chess board: `/sd0/system/etc/usr_init.lisp` with the one line `(chess)`, which boots it into the chess app. |
+| ESP32-P4 LCD-7B | `--p4 lcd7b` (its console wire, `p9share`), with `LUGALOS_P4_LCD7B_PORT` set or `~/.config/lugalos/p4-ports.env` | -- |
+| M5Stack Tab5 | `--p4 tab5` (its USB console), or `--tcp IP --key HEX` over Wi-Fi (`net` shows the address; `p9key HEX` on the console sets a key for this boot) | -- |
+| VisionFive 2 | `--tcp IP --key HEX` over Ethernet (type `p9key` slowly on its serial console: its UART drops bytes typed fast); `--vf2` (serial) for small files | `tools/vf2run.py --enable-autoboot --save-sd --kernel build/visionfive2/lugalos.bin`: the MBR's partition alias, `vf2_uEnv.txt` and `lugalos.bin` U-Boot boots from. Check with `tools/vf2run.py --method sd`. |
+
+After `p9share`, a tool that ends its session leaves the wire in 9P mode: `p9share off` on the console before the next one, if it does not answer.
 
 ### Recounting Free Clusters (`df -r`)
 If an unexpected reset leaves FAT32 `FSInfo` out of sync:

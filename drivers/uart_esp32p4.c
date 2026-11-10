@@ -298,6 +298,11 @@ static void uart_commit(uintptr_t base) {
 #define USJ_OUT_RECV_PKT_INT    (1u << 2)
 #define USJ_FIFO_BYTES          64u
 #define USJ_TX_WAIT_US          2000u   /* how long a full FIFO is waited out, at most */
+/* ... while a 9P peer may share the wire (p9share): a byte dropped there is a
+ * frame lost, and the host waits for its end. A 4 KB reply is 64 packets the
+ * host has to take one by one; 2 ms without one taken happened, and reading
+ * a large file over the Tab5's USB console failed. */
+#define USJ_TX_WAIT_9P_US       500000u
 
 /* accepted: the uart task's (and the boot's, before it exists), except that
  * uart_critical_putc() writes them from any context, by design: a critical
@@ -307,16 +312,37 @@ static volatile unsigned g_usj_pending;
 static volatile bool     g_usj_host_gone;
 static volatile uint32_t g_usj_dropped, g_usj_dropped_total;
 
+/* The packet in the FIFO to the host. A transfer that ends on a full packet
+ * (64 bytes) needs a zero-length one after it, or the host waits for more:
+ * a 9P reply whose SLIP encoding came to a multiple of 64 bytes sat in the
+ * host's buffer until the next output pushed it out, and 9P over the Tab5's
+ * USB console failed on every file whose replies happened to (the IDF's
+ * driver sends the same zero-length packet). */
+static uint64_t usj_wait_us(void) {
+    return uart_demux_is_enabled() ? USJ_TX_WAIT_9P_US : USJ_TX_WAIT_US;
+}
+
+#define USJ_ZLP_OWED 0x100u     /* in g_usj_pending: the last packet sent was full */
+
 static void usj_flush(void) {
-    if (g_usj_pending) {
+    unsigned n = g_usj_pending & 0xffu;
+    if (n) {
         REG(USJ_EP1_CONF) = USJ_WR_DONE;
+        g_usj_pending = n >= USJ_FIFO_BYTES ? USJ_ZLP_OWED : 0u;
+    } else if ((g_usj_pending & USJ_ZLP_OWED) && (REG(USJ_EP1_CONF) & USJ_IN_FREE)) {
+        REG(USJ_EP1_CONF) = USJ_WR_DONE;            /* nothing in the FIFO: the zero-length packet */
         g_usj_pending = 0;
     }
 }
 
 static void usj_fifo_put(char c) {
     REG(USJ_EP1) = (uint32_t)(uint8_t)c;
-    if (++g_usj_pending >= USJ_FIFO_BYTES || c == '\n') usj_flush();
+    g_usj_pending = (g_usj_pending & 0xffu) + 1u;     /* a byte after a full packet: no zero-length one */
+    if (g_usj_pending >= USJ_FIFO_BYTES) {
+        usj_flush();
+        return;
+    }
+    if (c == '\n') usj_flush();
 }
 
 /* One byte to the USB host, never holding anyone up for long.
@@ -347,7 +373,7 @@ static void usj_putc(char c, bool may_wait) {
     if (!(REG(USJ_EP1_CONF) & USJ_IN_FREE)) {
         bool room = false;
         if (may_wait) {
-            uint64_t deadline = time_get_us() + USJ_TX_WAIT_US;
+            uint64_t deadline = time_get_us() + usj_wait_us();
             room = time_poll_until_us((REG(USJ_EP1_CONF) & USJ_IN_FREE) != 0, deadline);
         }
         if (!room) {
@@ -943,7 +969,7 @@ static void uart_drain_polling(unsigned h) {
         if (n < len && !usj_ready()) {
             uint64_t now = time_get_us();
             if (!usj_stall_since) usj_stall_since = now;
-            else if (now - usj_stall_since > USJ_TX_WAIT_US) g_usj_host_gone = true;
+            else if (now - usj_stall_since > usj_wait_us()) g_usj_host_gone = true;
         } else {
             usj_stall_since = 0;
         }

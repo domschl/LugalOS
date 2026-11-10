@@ -174,7 +174,10 @@ static uint8_t sd_send_acmd(uint8_t acmd, uint32_t arg, uint8_t crc, uint8_t *ou
     return sd_send_cmd_selected(acmd, arg, crc);
 }
 
-static block_dev_t g_spisd_dev;   /* defined below; its size set from the card's CSD */
+/* accepted: defined below, constant but for num_blocks, which
+ * spisd_init_hardware() sets once from the card's CSD before g_sd_initialized
+ * lets anyone use the device; a reader racing the first init sees 1 GiB. */
+static block_dev_t g_spisd_dev;
 
 static int spisd_init_hardware(void) {
     /* 1. Unreset SPI1 (bit 19 on RP2350), IO_BANK0 (bit 6), PADS_BANK0 (bit 9) */

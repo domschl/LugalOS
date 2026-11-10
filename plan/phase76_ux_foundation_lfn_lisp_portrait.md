@@ -166,7 +166,9 @@ Sizing and order are keyboard-only today. Everything below sits on the title bar
   - **VisionFive 2:** `/sd0` holds the kernel U-Boot boots: `tools/vf2run.py --enable-autoboot --save-sd --kernel build/visionfive2/lugalos.bin` after the sync. `/nvme0` checked for 8.3-only entries too.
   - **RP2350-LCD-7, LCD-7B, Tab5:** format and sync.
   - Check: `ls -R /sd0` shows no name in capitals beyond `vf2_uEnv.txt`.
-- **Status:** planned.
+- **Status:** in progress (2026-11-10).
+  - **Every card rebuilt** (owner): the RP2350-LCD-7 (16 GB), the Pico 2 chess (8 GB), the LCD-7B (32 GB), the Tab5 (32 GB) and the VisionFive 2 (62 GB, its autoboot and kernel written back and booted from); each backed up first to `~/lugalos-card-backups/2026-11-10/`, its owner's files (saved games, `ceres.dat`, the Zork save, history, settings) put back in lowercase; `ls` shows no capitals beyond `vf2_uEnv.txt`. Procedure in `doc/admin/storage.md` ("Rebuilding a Card"). `/nvme0` left as it is (owner: its own work adapts to long names).
+  - **Found and fixed on the way:** the RP2350's SPI SD driver took every card for 1 GiB (it reads the CSD now) and gave a write ~67 ms to finish (a 16 GB `format` failed at 70%); `/sd0/system/SETTINGS` is `settings`; the power log's `log/PYYMMDD.CSV` is `pyymmdd.csv`, its folder made again after a format; `p9sync.py --pull DIR` backs a card up and resumes; shared-wire 9P (`p9share`) works over the Tab5's USB console and no longer breaks on a log line -- frames under `console_lock`, a zero-length USB packet after a full one, a 500 ms drop limit while `p9share` is on (open issues, D).
 
 ---
 

@@ -49,26 +49,6 @@ and `(canvas-get 150 100)` reads 0 -- the layout's store is not brought back int
 on the board); QEMU's 38.8 checks (`vtselftest`) pass, so it is the board's path -- the U-mode
 screen task, or the store's size against the 512 KB state block. Not yet bisected further back.
 
-## The RP2350's SPI SD driver takes every card for 1 GiB (found 2026-11-09)
-
-**Destination: phase 40 backlog, or the next RP2350 storage work.** `drivers/spisd_rp2350.c:951`
-sets `num_blocks = 2097152` and never reads the card's CSD. `format /sd0` on the chess board's
-8 GB card therefore made a 1 GiB volume, and on a larger card formatted on a PC every cluster
-past the first GiB is refused (`lba + count > dev->num_blocks`): files there read as errors.
-**Fix shape:** CMD9 at init, C_SIZE from CSD v2 (SDHC/SDXC: `(C_SIZE + 1) * 1024` blocks), v1 for
-SDSC; `format` then sizes the card right.
-
-## A kernel log line during a shared-wire 9P session breaks its framing (found 2026-11-09)
-
-**Destination: the next 9P/console work.** With `p9share`, 9P and the console share one UART.
-A `printk` from a 9P request's own work (76.1 found it with `mkdir`'s "Subdirectory created",
-since removed) is written by klogd between a reply's bytes: the host sees a SLIP frame with log
-text inside it, and p9lib reports "connection closed while reading a SLIP frame". Seen on the
-VisionFive 2 (its log goes to UART0); the RP2350's 9P has its own CDC port and is immune. **This
-is likely the cause of the LCD-7B entry below** ("9P over its console stops answering").
-**Fix shape:** while a shared-wire peer is attached, hold kernel log output back (klogd keeps it)
-or send it as SLIP-framed console text between frames, never inside one.
-
 ## The VisionFive 2 sees an older /sd0 right after U-Boot `fatwrite` (found 2026-11-09)
 
 **Destination: the VisionFive 2 SDMMC driver.** Booted by `test_visionfive2.py` (YMODEM, then
@@ -422,6 +402,9 @@ Wi-Fi: not a hung board, a stuck console. A reset (`p4run.py --run`) or the rebo
 restores it. The other sessions ran to the end, one of them a whole C6 update through `/c6`. Not
 seen on the Tab5 in this round (its console was used once, for a C6 push).
 **Worked around:** `push-board --tcp HOST --keyfile KEY`; both P4s were updated that way.
+**2026-11-10:** a log line written between a 9P frame's bytes broke the frame (the shared-wire
+entry closed below, D); frames are now sent under `console_lock`. With that, a 20 MB card pull
+and a full card push over the 7B's console ran through. Kept open until a few OTA rounds pass.
 **What would settle it:** whether 0.19.0 does it too; and, at the moment it happens, read over 9P on
 TCP: the console demultiplexer's state (`/proc/uartdemux`, or what it has instead), the 9P link's
 counters and the tail of `/proc/kmsg`.
@@ -515,6 +498,18 @@ persona carries this noise; perft no longer does (1 %).
 ---
 
 # D. Lessons kept from closed entries
+
+**A link's framing is only as good as its quietest writer, and a USB packet's end is part of the
+data.** (Closed 2026-11-10.) 9P over a console wire (`p9share`) broke in three ways at once, and
+each hid the others: a kernel log line written between a frame's bytes (fixed: frames under
+`console_lock`, which every console writer takes); on the Tab5's USB-Serial/JTAG, a reply whose
+SLIP encoding was a multiple of 64 bytes stayed in the host until the next output -- a transfer
+ending on a full packet needs a zero-length packet after it (fixed: `usj_flush()`); and long
+replies lost bytes when the host paused over 2 ms, the console's drop limit (fixed: 500 ms while
+`p9share` is on). What localised the second: the reply arriving with the *next* request's, read
+off the raw byte stream. The same day the RP2350's SPI SD driver stopped taking every card for
+1 GiB (it reads the CSD) and waiting only ~67 ms for a write to finish (a 16 GB `format` failed
+at 70%).
 
 **A comment that reads like a justification is not one.** The P4's EMAC lost
 ~1 % of frames (closed 2026-09-16, phase 28 Z5) because `pad_iomux()` forced

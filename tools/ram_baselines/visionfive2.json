@@ -6,7 +6,7 @@
   "heap_pages": 30826,
   "per_file": {
     "(no line info: .data)": 9,
-    "(no line info: .rodata)": 15058,
+    "(no line info: .rodata)": 15080,
     "arch/riscv/common/elf.c": 1852,
     "arch/riscv/common/mem_domain.c": 20,
     "arch/riscv/common/trap.c": 15,
@@ -111,7 +111,7 @@
     "kernel/palloc.c": 199800,
     "kernel/path.c": 92,
     "kernel/pointer.c": 17,
-    "kernel/power.c": 251,
+    "kernel/power.c": 296,
     "kernel/privilege.c": 8,
     "kernel/radio_osi_test.c": 396,
     "kernel/random.c": 4,
@@ -178,7 +178,7 @@
   },
   "per_subsystem": {
     "(no line info: .data)": 9,
-    "(no line info: .rodata)": 15058,
+    "(no line info: .rodata)": 15080,
     "9p": 65752,
     "agent": 3501,
     "app:cc": 598,
@@ -193,7 +193,7 @@
     "fs": 853,
     "httpd": 184,
     "identity": 200,
-    "kernel": 238914,
+    "kernel": 238959,
     "lisp": 4921336,
     "log": 8373,
     "mqtt": 4646,
@@ -206,6 +206,6 @@
     "usb": 902,
     "vfs": 5255
   },
-  "ram_code": 723066,
-  "total": 7587958
+  "ram_code": 723188,
+  "total": 7588147
 }
