@@ -19,6 +19,10 @@ Scenarios (--scenario):
             along the ribbon, a canvas closed and reopened
   views     71.9: the views -- the launcher, its control gallery, a view of
             its own type (`viewtest`, dev images), the mouse cursor over it
+  ux76      phase 76: a directory of long names; the launcher stacked under
+            the terminal and its height changed; the title-bar menu open
+            (by the mouse); the full-screen hint; on the Tab5, a top/bottom
+            pair in portrait
 
 Boards (--board):
   rp2350    the RP2350 terminal: console on if00, 9P on if02 (default)
@@ -81,10 +85,18 @@ KEYS: dict[str, bytes] = {
     "cmd-enter": b"\x1b[13;9u",
     "cmd-left": b"\x1b[1;9D",
     "cmd-right": b"\x1b[1;9C",
+    "cmd-up": b"\x1b[1;9A",
+    "cmd-down": b"\x1b[1;9B",
     "cmd-ctrl-left": b"\x1b[1;13D",
     "cmd-ctrl-right": b"\x1b[1;13C",
     "cmd-w": b"\x1b[119;9u",
     "cmd-f": b"\x1b[102;9u",
+    "cmd-shift-f": b"\x1b[102;10u",
+    "cmd-[": b"\x1b[91;9u",
+    "cmd-]": b"\x1b[93;9u",
+    "cmd-r": b"\x1b[114;9u",
+    "cmd-shift-r": b"\x1b[114;10u",
+    "cmd-o": b"\x1b[111;9u",
     **{f"cmd-{n}": b"\x1b[%d;9u" % (48 + n) for n in range(1, 10)},
 }
 
@@ -131,6 +143,59 @@ VIEWS: list[tuple[str, float, str | None]] = [
     ("KEY:cmd-w", 2.0, None),                     # closes the focused view
     ("ribbon", 1.5, None),
 ]
+
+# Phase 76. "MENU:" right-clicks the focused window's title bar (its place
+# from the last `ribbon` listing); "TAB5:" runs a step on the Tab5 only.
+UX76: list[tuple[str, float, str | None]] = [
+    ("launcher close", 2.0, None),                # a launcher left open would cover the listing
+    ("KEY:cmd-1", 2.0, None),                     # the root terminal, where the shell's output goes
+    ("clear", 1.0, None),
+    ('(mkdir "/sd0/Long Names 76")', 1.5, None),
+    ('(write-file "/sd0/Long Names 76/A Rather Long File Name.md" "76.1")', 1.5, None),
+    ('(write-file "/sd0/Long Names 76/another one, with spaces.txt" "76.1")', 1.5, None),
+    ('(write-file "/sd0/Long Names 76/Ümlaut und Größe.txt" "76.1")', 1.5, None),
+    ('ls "/sd0/Long Names 76"', 2.0, "long-names"),
+    ("launcher", 3.0, None),
+    ("KEY:cmd-[", 3.0, "stack"),                  # the launcher under the terminal
+    ("KEY:cmd-shift-r", 3.0, "stack-height"),
+    ("ribbon", 1.5, None),
+    ("MENU:", 2.0, "title-bar-menu"),
+    ("ms click 5 300", 2.0, None),                # elsewhere: the menu closes, nothing else
+    ("KEY:cmd-]", 3.0, None),
+    ("KEY:cmd-shift-f", 1.5, "fullscreen-hint"),
+    ("KEY:cmd-shift-f", 3.0, None),
+    ("TAB5:KEY:cmd-o", 4.0, None),                # portrait: each window alone ...
+    ("TAB5:KEY:cmd-r", 3.0, None),                # ... until Cmd+R halves it
+    ("TAB5:KEY:cmd-up", 2.0, None),
+    ("TAB5:KEY:cmd-r", 3.0, "portrait-pair"),     # both halved: a top/bottom pair
+    ("TAB5:KEY:cmd-r", 3.0, None),
+    ("TAB5:KEY:cmd-down", 2.0, None),
+    ("TAB5:KEY:cmd-r", 3.0, None),
+    ("TAB5:KEY:cmd-o", 4.0, None),
+    ("TAB5:orient auto", 2.0, None),              # Cmd+O paused it
+    ("launcher close", 2.0, None),
+    ('(rm "/sd0/Long Names 76/A Rather Long File Name.md")', 1.0, None),
+    ('(rm "/sd0/Long Names 76/another one, with spaces.txt")', 1.0, None),
+    ('(rm "/sd0/Long Names 76/Ümlaut und Größe.txt")', 1.0, None),
+    ('(rmdir "/sd0/Long Names 76")', 1.0, None),
+]
+
+
+def menu_click(listing: str, board: str) -> str:
+    """`ms click X Y right` on the focused window's title bar, from a `ribbon`
+    listing (its place along the ribbon less the view): the title bar's
+    middle row 30 px down (60 on the Tab5's 2x chrome), or 8 px (16) below
+    the top of its frame in a stack."""
+    view = re.search(r"view (\d+)", listing)
+    m = re.search(r"at (-?\d+)\.\.(-?\d+)[^)]*\) \*\r?\n(?:[^\n]*told:[^\n]*\n)?(?:\s*stack: [^\n]*y (\d+)\.\.)?",
+                  listing)
+    if not view or not m:
+        raise SystemExit(f"MENU: no focused window in the last ribbon listing:\n{listing}")
+    x = (int(m.group(1)) + int(m.group(2))) // 2 - int(view.group(1))
+    scale = 2 if board == "tab5" else 1
+    y = int(m.group(3)) + 8 * scale if m.group(3) else 30 * scale   # in a stack, its own title bar
+    return f"ms click {x} {y} right"
+
 
 # FOCUS:<what> is Cmd+N for the window the last `ribbon` listing names: the
 # order depends on where each window went in (phase 44: a terminal right of
@@ -365,7 +430,7 @@ def main() -> int:
     ap.add_argument("--out", required=True, type=Path, help="directory for shots and the console log")
     ap.add_argument("--compare", type=Path, help="a previous --out directory to diff against")
     ap.add_argument("--board", choices=["rp2350", "lcd7b", "tab5"], default="rp2350")
-    ap.add_argument("--scenario", choices=["terminal", "ribbon", "views"], default="terminal")
+    ap.add_argument("--scenario", choices=["terminal", "ribbon", "views", "ux76"], default="terminal")
     ap.add_argument("--console", help="RP2350: override the console port (if00)")
     ap.add_argument("--net", help="RP2350: override the 9P port (if02)")
     args = ap.parse_args()
@@ -375,7 +440,7 @@ def main() -> int:
         print(f"no {args.board} board answering -- nothing to do")
         return 0
     args.out.mkdir(parents=True, exist_ok=True)
-    scenario = {"terminal": TERMINAL, "ribbon": RIBBON, "views": VIEWS}[args.scenario]
+    scenario = {"terminal": TERMINAL, "ribbon": RIBBON, "views": VIEWS, "ux76": UX76}[args.scenario]
 
     shots: list[str] = []
     log: list[str] = []
@@ -383,6 +448,12 @@ def main() -> int:
     try:
         listing = ""
         for line, wait, shot in scenario:
+            if line.startswith("TAB5:"):
+                if args.board != "tab5":
+                    continue
+                line = line[5:]
+            if line == "MENU:":
+                line = menu_click(listing, args.board)
             if line.startswith("FOCUS:"):
                 m = re.search(FOCUS_RE[line[6:]], listing)
                 if not m:
@@ -400,7 +471,7 @@ def main() -> int:
         if args.scenario == "terminal":
             run_line(ser, "(canvas-window 'text)", 2.0)
             run_line(ser, "clear", 1.0)
-        elif args.scenario == "views":
+        elif args.scenario in ("views", "ux76"):
             run_line(ser, "launcher close", 2.0)
             run_line(ser, "clear", 1.0)
         else:

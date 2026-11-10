@@ -30,6 +30,7 @@
 #include "kernel/printk.h"
 #include "kernel/sched.h"
 #include "kernel/time.h"
+#include "kernel/lock.h"
 #include "lugalos_config.h"
 
 #include <stdbool.h>
@@ -96,6 +97,58 @@ typedef struct {
  * it, and `ts` only reads. */
 static touch_t g_t;
 
+#if defined(CONFIG_BOARD_ESP32P4)
+#define TOUCH_STROKE 1
+/* A stroke `ts stroke` has the touch task play as a finger's: its points
+ * enter the contact path where the controller's do, so the edge band, the
+ * chrome and a window's claims decide about it as they do about a finger.
+ * The shell bumps seq; the touch task copies the request when no finger is
+ * down and sets done = seq after the lift. */
+typedef struct {
+    int      x0, y0, x1, y1;          /* screen pixels */
+    uint32_t ms;                      /* from the first point to the last */
+    uint32_t seq, done;
+} stroke_req_t;
+
+typedef struct {                      /* the touch task's copy, while it plays */
+    stroke_req_t r;
+    bool         on, lift;
+    uint64_t     t0;
+} stroke_play_t;
+
+/* guarded by: g_stroke_lock (the shell's `ts stroke` and the touch task) */
+static spinlock_t   g_stroke_lock = SPINLOCK_INIT;
+static stroke_req_t g_stroke;
+
+/* The stroke's next event for the touch task: 1 a point at *x, *y, 2 the
+ * lift, 0 none (no stroke asked, or a finger is down: it goes first). */
+static int stroke_next(stroke_play_t *p, bool down, int *x, int *y) {
+    if (!p->on) {
+        if (down) return 0;
+        uintptr_t f = spin_lock_irqsave(&g_stroke_lock);
+        bool take = g_stroke.seq != g_stroke.done;
+        if (take) p->r = g_stroke;
+        spin_unlock_irqrestore(&g_stroke_lock, f);
+        if (!take) return 0;
+        p->on = true;
+        p->lift = false;
+        p->t0 = time_get_ms();
+    }
+    if (p->lift) {
+        p->on = false;
+        uintptr_t f = spin_lock_irqsave(&g_stroke_lock);
+        g_stroke.done = p->r.seq;
+        spin_unlock_irqrestore(&g_stroke_lock, f);
+        return 2;
+    }
+    uint32_t el = (uint32_t)(time_get_ms() - p->t0);
+    if (el >= p->r.ms) { el = p->r.ms; p->lift = true; }
+    *x = p->r.x0 + (int)((int64_t)(p->r.x1 - p->r.x0) * el / p->r.ms);
+    *y = p->r.y0 + (int)((int64_t)(p->r.y1 - p->r.y0) * el / p->r.ms);
+    return 1;
+}
+#endif
+
 static bool reg_read(uint8_t addr, uint16_t reg, uint8_t *buf, uint32_t n) {
     uint8_t a[2] = { (uint8_t)(reg >> 8), (uint8_t)reg };
     return i2c_xfer(addr, a, 2, buf, n);
@@ -116,12 +169,20 @@ static bool reg_write8(uint8_t addr, uint16_t reg, uint8_t v) {
  * turned, Waveshare's own code mirrors both axes there), and whether the
  * board turns its picture (CONFIG_LCD_ROTATE_180, the RP2350 terminal), which
  * turns the touch with it. */
-static void map_point(unsigned rx, unsigned ry, int *x, int *y) {
+/* The screen's size now, kept in g_t for the edge band. */
+static void screen_size(unsigned *wp, unsigned *hp) {
     const uint8_t *fb;
     unsigned w = 0, h = 0, stride;
     if (!console_pixels(&fb, &w, &h, &stride) || !w || !h) { w = g_t.res_x; h = g_t.res_y; }
     g_t.scr_w = w;
     g_t.scr_h = h;
+    *wp = w;
+    *hp = h;
+}
+
+static void map_point(unsigned rx, unsigned ry, int *x, int *y) {
+    unsigned w, h;
+    screen_size(&w, &h);
 
     unsigned px = 0, py = 0;
 #if defined(HAS_DSI_ORIENT)
@@ -287,6 +348,10 @@ static void touch_task_body(void *arg) {
     uint64_t t_last = 0;
     gesture_init(&g_t.gs, CONFIG_PANEL_DPI);
     g_t.owner = -1;
+#if defined(TOUCH_STROKE)
+    stroke_play_t stroke;
+    memset(&stroke, 0, sizeof stroke);
+#endif
     for (;;) {
         task_sleep_ms(POLL_MS);
         g_t.polls++;
@@ -296,6 +361,13 @@ static void touch_task_body(void *arg) {
         bool st_empty_now = false;
         unsigned rx = 0, ry = 0;
 
+#if defined(TOUCH_STROKE)
+        int sx = 0, sy = 0;
+        int sp = stroke_next(&stroke, down, &sx, &sy);
+        if (sp == 1) got = true;
+        else if (sp == 2) lifted = true;
+        else
+#endif
         if (g_t.chip == CHIP_ST7123) {
             uint8_t adv = 0;
             if (!reg_read(g_t.addr, ST7123_STATUS, &adv, 1)) {
@@ -355,6 +427,14 @@ static void touch_task_body(void *arg) {
             empty_seen = false;
             t_last = now;
             g_t.reports++;
+#if defined(TOUCH_STROKE)
+            if (sp == 1) {
+                unsigned w, h;
+                screen_size(&w, &h);
+                x = sx;
+                y = sy;
+            } else
+#endif
             map_point(rx, ry, &x, &y);
             g_t.last_x = x;
             g_t.last_y = y;
@@ -609,6 +689,46 @@ void touch_command(const char *args) {
     while (*args == ' ') args++;
     if (touch_inject(args)) return;
     if (!g_t.found) { cprintf("touch: no touch controller found at boot\n"); return; }
+#if defined(TOUCH_STROKE)
+    if (strncmp(args, "stroke", 6) == 0) {               /* `ts stroke X0 Y0 X1 Y1 MS` */
+        const char *p = args + 6;
+        int v[5];
+        for (int i = 0; i < 5; i++) {
+            while (*p == ' ') p++;
+            if (*p < '0' || *p > '9') { cprintf("usage: ts stroke X0 Y0 X1 Y1 MS (MS 40..5000)\n"); return; }
+            v[i] = 0;
+            while (*p >= '0' && *p <= '9' && v[i] < 100000) v[i] = v[i] * 10 + (*p++ - '0');
+        }
+        if (v[4] < 40 || v[4] > 5000) { cprintf("usage: ts stroke X0 Y0 X1 Y1 MS (MS 40..5000)\n"); return; }
+        uint32_t swipes = g_t.swipes, drags = g_t.drags, taps = g_t.taps;
+        uintptr_t f = spin_lock_irqsave(&g_stroke_lock);
+        bool busy = g_stroke.seq != g_stroke.done;
+        uint32_t seq = g_stroke.seq + 1u;
+        if (!busy) {
+            g_stroke.x0 = v[0]; g_stroke.y0 = v[1]; g_stroke.x1 = v[2]; g_stroke.y1 = v[3];
+            g_stroke.ms = (uint32_t)v[4];
+            g_stroke.seq = seq;
+        }
+        spin_unlock_irqrestore(&g_stroke_lock, f);
+        if (busy) { cprintf("touch: a stroke is still playing\n"); return; }
+        uint64_t deadline = time_get_ms() + (uint64_t)v[4] + 2000u;
+        bool done = false;
+        for (;;) {
+            uint64_t now = time_get_ms();
+            f = spin_lock_irqsave(&g_stroke_lock);
+            done = g_stroke.done == seq;
+            spin_unlock_irqrestore(&g_stroke_lock, f);
+            if (done || now >= deadline) break;
+            task_sleep_ms(POLL_MS);
+        }
+        if (!done) { cprintf("touch: the stroke did not play (a finger down?)\n"); return; }
+        cprintf("touch: stroke %d,%d to %d,%d in %d ms: edge %d, window manager's %d, owner %d, "
+                "swipes +%u, drags +%u, taps +%u\n", v[0], v[1], v[2], v[3], v[4],
+                g_t.edge ? 1 : 0, g_t.wm_stroke ? 1 : 0, (int)g_t.owner,
+                (unsigned)(g_t.swipes - swipes), (unsigned)(g_t.drags - drags), (unsigned)(g_t.taps - taps));
+        return;
+    }
+#endif
     if (args[0] == 'l') {                               /* `ts log [s]` */
         const char *p = args;
         while (*p && *p != ' ') p++;

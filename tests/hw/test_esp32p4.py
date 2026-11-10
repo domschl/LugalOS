@@ -2108,6 +2108,62 @@ def test_tab5_portrait_180_terminals(b: Board) -> tuple[str, bool, str]:
     return name, True, f"{count} terminals at 180 deg, board answering"
 
 
+def test_tab5_portrait_claims(b: Board) -> tuple[str, bool, str]:
+    """Who takes a vertical stroke down a portrait screen (76.6). `ts stroke`
+    plays a finger's stroke through the touch task's own contact path, so
+    the touch-down decisions are the ones tested: a stroke on a terminal's
+    text scrolls it; one from the edge band or on a title bar steps the
+    ribbon (up brings the window below); one on the on-screen keyboard is
+    the keyboard's."""
+    name = "touch: portrait strokes -- content, edge band, title bar, keyboard (76.6)"
+    if not is_tab5(b):
+        return name, True, "SKIPPED (Tab5 only)"
+    out = b.console_session.cmd("ts stroke 1 1 1 1 1", deadline=5.0)
+    if "usage: ts stroke" not in out:
+        return name, True, "SKIPPED (no `ts stroke` in this build)"
+    b.console_session.cmd("lcd orient 0", deadline=10.0)
+    _raw(b, b"\x1b[13;9u", 3.0)                 # Cmd+Enter: a second terminal, below
+    notes: list[str] = []
+    ok = True
+
+    def check(what: str, good: bool, detail: str) -> None:
+        nonlocal ok
+        ok = ok and good
+        notes.append(("ok: " if good else "FAIL: ") + what + ("" if good else f" ({detail.strip()[-200:]})"))
+
+    try:
+        rl = b.console_session.cmd("ribbon", deadline=10.0)
+        m = re.search(r"\[1\] Term\s+\(vterm \d+, (\d+) rows, at (\d+)\.\.(\d+)\) \*", rl)
+        if "axis Y" not in rl or not m or int(m.group(1)) > 20:
+            check("a top/bottom pair of terminals, the lower focused", False, rl)
+            return name, False, "; ".join(notes)
+        lower = int(m.group(2))
+        out = b.console_session.cmd(f"ts stroke 360 {lower + 300} 360 {lower + 60} 200", deadline=8.0)
+        check("text: scrolls, not the window manager's",
+              "window manager's 0" in out and "drags +1" in out and _ribbon(b)[1] == 1, out)
+        out = b.console_session.cmd("ts stroke 360 1270 360 900 200", deadline=8.0)
+        check("bottom edge band: the window manager's", "edge 1, window manager's 1" in out, out)
+        b.console_session.cmd("ts stroke 360 20 360 400 200", deadline=8.0)
+        check("top edge band, down: the window above", _ribbon(b)[1] == 0, "focus stayed")
+        osk = b.console_session.cmd("ts osk show", deadline=5.0)
+        k = re.search(r"keyboard at x (\d+)\.\.(\d+) y (\d+)\.\.(\d+)", osk)
+        if k:
+            x = (int(k.group(1)) + int(k.group(2))) // 2
+            out = b.console_session.cmd(f"ts stroke {x} {int(k.group(4)) - 20} {x} {int(k.group(3)) + 20} 200",
+                                        deadline=8.0)
+            check("on-screen keyboard: its own", "window manager's 0" in out and _ribbon(b)[1] == 0, out)
+        else:
+            check("on-screen keyboard shown", False, osk)
+        b.console_session.cmd("ts osk hide", deadline=5.0)
+        b.console_session.cmd(f"ts stroke 360 {lower + 20} 360 {lower - 300} 200", deadline=8.0)
+        check("title bar, up: the window below", _ribbon(b)[1] == 1, "focus stayed")
+    finally:
+        _raw(b, b"\x1b[119;9u", 2.5)            # Cmd+W: the second terminal
+        b.console_session.cmd("lcd orient 270", deadline=10.0)
+        b.console_session.cmd("orient auto", deadline=5.0)
+    return name, ok, "; ".join(notes)
+
+
 def test_touch_launcher(b: Board) -> tuple[str, bool, str]:
     """70.3: Touch Launcher window (RIBBON_WIN_LAUNCHER) and ugui self-test."""
     name = "touch UX: ugui self-test and Ribbon Launcher window (70.3)"
@@ -2403,6 +2459,7 @@ TESTS = [
     test_ribbon_slide_and_reader_smooth_scroll,
     test_tab5_orientation,
     test_tab5_portrait_180_terminals,
+    test_tab5_portrait_claims,
     test_orient_auto,
     test_ram_ledger,
 ]

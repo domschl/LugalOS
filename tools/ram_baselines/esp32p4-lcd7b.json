@@ -72,7 +72,7 @@
     "drivers/sensor_hub.c": 7504,
     "drivers/sgp30.c": 76,
     "drivers/tmp117.c": 76,
-    "drivers/touch_gt911.c": 232,
+    "drivers/touch_gt911.c": 264,
     "drivers/tsl2561.c": 84,
     "drivers/tsl2591.c": 84,
     "drivers/uart_esp32p4.c": 899,
@@ -184,7 +184,7 @@
     "chess": 21396,
     "clock-app": 136,
     "crypto": 38,
-    "display": 3838,
+    "display": 3870,
     "drivers": 1301,
     "fs": 4160,
     "httpd": 70,
@@ -205,5 +205,5 @@
     "vfs": 3727
   },
   "ram_code": 1806,
-  "total": 216407
+  "total": 216439
 }
