@@ -243,20 +243,38 @@ LCDTERM_UTEXT static int screen_find_canvas_by_vterm(const screen_t *scr, uint8_
     return best;
 }
 
-/* Canvas `cid` is terminal `vid`'s current one from now on. */
-LCDTERM_UTEXT static void screen_canvas_select(screen_t *scr, int cid, uint8_t vid) {
+/* Canvas `cid` is terminal `vid`'s current one from now on, and program
+ * `pid`'s (-1: a request from no program, the kernel's). */
+LCDTERM_UTEXT static void screen_canvas_select(screen_t *scr, int cid, uint8_t vid, int16_t pid) {
     if (cid < 0 || cid >= (int)SCREEN_MAX_CANVASES || !scr->canvases[cid].in_use) return;
     scr->canvases[cid].vterm_id = vid;
+    if (pid >= 0) scr->canvases[cid].owner_pid = pid;
     scr->canvases[cid].used_seq = ++scr->canvas_seq;
+}
+
+/* The canvas a request from program `pid` on terminal `vid` means: the
+ * latest that program opened or selected (two programs started from one
+ * terminal share its number: by the terminal alone, one's requests went to
+ * the other's canvas); else the latest of its terminal's -- a shell runs
+ * each command in a task of its own, and the next command draws on the
+ * canvas the last one opened. -1 for none. */
+LCDTERM_UTEXT static int requester_canvas(const screen_t *scr, uint8_t vid, int16_t pid) {
+    int best = -1;
+    for (uint32_t i = 0; pid >= 0 && i < SCREEN_MAX_CANVASES; i++)
+        if (scr->canvases[i].in_use && scr->canvases[i].owner_pid == pid &&
+            (best < 0 || scr->canvases[i].used_seq > scr->canvases[best].used_seq)) best = (int)i;
+    if (best >= 0) return best;
+    for (uint32_t i = 0; i < SCREEN_MAX_CANVASES; i++)
+        if (scr->canvases[i].in_use && scr->canvases[i].vterm_id == vid &&
+            (best < 0 || scr->canvases[i].used_seq > scr->canvases[best].used_seq)) best = (int)i;
+    return best;
 }
 
 LCDTERM_UTEXT static int screen_alloc_canvas_named_fmt(screen_t *scr, const char *name, uint8_t vterm_id, uint8_t format) {
     int idx = -1;
     if (name && *name) {
         idx = screen_find_canvas_by_name(scr, name);
-    } else {
-        idx = screen_find_canvas_by_vterm(scr, vterm_id);
-    }
+    }   /* no name: a new one -- the caller looked for its program's own first */
     if (idx >= 0) {
 #if CANVAS_SUPPORT_RGB565
         if (format == CANVAS_FMT_RGB565 && scr->canvases[idx].format != CANVAS_FMT_RGB565) {
@@ -281,6 +299,7 @@ LCDTERM_UTEXT static int screen_alloc_canvas_named_fmt(screen_t *scr, const char
     for (uint32_t i = 0; i < SCREEN_MAX_CANVASES; i++) {
         if (!scr->canvases[i].in_use) {
             scr->canvases[i].in_use = true;
+            scr->canvases[i].owner_pid = -1;      /* its program's when it selects it */
             scr->canvases[i].detached = false;
             scr->canvases[i].locked = false;
             scr->canvases[i].drawn_w = 0;
@@ -378,6 +397,7 @@ LCDTERM_UTEXT static void screen_free_canvas(screen_t *scr, uint8_t cid) {
 #endif
         scr->canvases[cid].format = CANVAS_FMT_1BPP;
         scr->canvases[cid].in_use = false;
+        scr->canvases[cid].owner_pid = -1;
         scr->canvases[cid].locked = false;
         scr->canvases[cid].vterm_id = 0;
         scr->canvases[cid].drawn_w = 0;
@@ -2061,6 +2081,7 @@ void screen_init_rot(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsig
         canvas1_init(&scr->canvases[c].backing, 0, 0, 0, 0);
         scr->canvases[c].vterm_id = 0;
         scr->canvases[c].in_use = false;
+        scr->canvases[c].owner_pid = -1;
         scr->canvases[c].locked = false;
         scr->canvases[c].drawn_w = 0;
         scr->canvases[c].title[0] = '\0';
@@ -2071,6 +2092,7 @@ void screen_init_rot(screen_t *scr, void *fb, uint32_t stride, unsigned w, unsig
         scr->canvases[c].w565 = 0;
         scr->canvases[c].h565 = 0;
         scr->canvases[c].format = CANVAS_FMT_1BPP;
+        scr->canvases[c].owner_pid = -1;
     }
 
     uint16_t cap_cols = (uint16_t)SCREEN_SHADOW_COLS(w, h, rotates);
@@ -2226,7 +2248,7 @@ LCDTERM_UTEXT void screen_repaint(screen_t *scr) {
 }
 
 LCDTERM_UTEXT bool screen_set_layout_vterm_named_fmt(screen_t *scr, uint8_t vid, unsigned layout, const char *name, uint8_t format, int16_t caller_pid) {
-    int cid_check = (name && *name) ? screen_find_canvas_by_name(scr, name) : screen_find_canvas_by_vterm(scr, vid);
+    int cid_check = (name && *name) ? screen_find_canvas_by_name(scr, name) : requester_canvas(scr, vid, caller_pid);
     if (cid_check >= 0 && scr->canvases[cid_check].locked && layout != scr->layout && layout != SCREEN_LAYOUT_TEXT) return false;
 
     if (has_canvas(scr)) store_save(scr);
@@ -2236,8 +2258,8 @@ LCDTERM_UTEXT bool screen_set_layout_vterm_named_fmt(screen_t *scr, uint8_t vid,
         if (name && *name) {
             cid = screen_find_canvas_by_name(scr, name);
         } else {
-            cid = screen_find_canvas_by_vterm(scr, vid);
-            if (cid < 0 && scr->ribbon.count > 0 && scr->ribbon.active_idx < scr->ribbon.count &&
+            cid = requester_canvas(scr, vid, caller_pid);
+            if (cid < 0 && caller_pid < 0 && scr->ribbon.count > 0 && scr->ribbon.active_idx < scr->ribbon.count &&
                 scr->ribbon.wins[scr->ribbon.active_idx].type == RIBBON_WIN_CANVAS) {
                 cid = (int)scr->ribbon.wins[scr->ribbon.active_idx].vterm_id;
             }
@@ -2302,7 +2324,7 @@ LCDTERM_UTEXT bool screen_set_layout_vterm_named_fmt(screen_t *scr, uint8_t vid,
     if (name && *name) {
         cid = screen_find_canvas_by_name(scr, name);
     } else {
-        cid = screen_find_canvas_by_vterm(scr, vid);
+        cid = requester_canvas(scr, vid, caller_pid);
     }
     int c_win = (cid >= 0) ? ribbon_find_canvas_slot(&scr->ribbon, (uint8_t)cid) : -1;
     int t_win = ribbon_find_vterm(&scr->ribbon, vid);
@@ -2396,7 +2418,7 @@ LCDTERM_UTEXT bool screen_set_layout_vterm_named_fmt(screen_t *scr, uint8_t vid,
         }
     }
 
-    screen_canvas_select(scr, cid, vid);
+    screen_canvas_select(scr, cid, vid, caller_pid);
     /* Which canvas covers the screen while it has the focus (the games). */
     int fcid = cid;
     if (fcid >= 0) scr->canvases[fcid].fullscreen = layout == SCREEN_LAYOUT_FULLSCREEN;
@@ -2505,10 +2527,13 @@ static inline unsigned mono_fallback(uint16_t c565) {
 }
 #endif
 
-/* The canvas a request from terminal `vid` means: its own, else the focused
- * window's, else the first in the ribbon; -1 for none. */
-LCDTERM_UTEXT static int canvas_for(const screen_t *scr, uint8_t vid) {
-    int cid = screen_find_canvas_by_vterm(scr, vid);
+/* The canvas a drawing request from program `pid` on terminal `vid` means:
+ * its own (requester_canvas()). Only a request from no program (-1, the
+ * kernel's) falls back to the focused window's canvas, else the first in
+ * the ribbon: a program's went to whichever that was, another program's. */
+LCDTERM_UTEXT static int canvas_for(const screen_t *scr, uint8_t vid, int16_t pid) {
+    int cid = requester_canvas(scr, vid, pid);
+    if (pid >= 0) return cid;
     if (cid < 0 && scr->ribbon.active_idx < scr->ribbon.count &&
         scr->ribbon.wins[scr->ribbon.active_idx].type == RIBBON_WIN_CANVAS) {
         cid = (int)scr->ribbon.wins[scr->ribbon.active_idx].vterm_id;
@@ -3004,7 +3029,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
             }
             status = 0;
         } else {
-            int cid = canvas_for(scr, vid);
+            int cid = canvas_for(scr, vid, caller_pid);
             if (cid < 0) cid = 0;
 
             uint32_t len = n - 1u;
@@ -3051,7 +3076,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
             status = 1;
         }
     } else if (op == 'X') {
-        int cid = screen_find_canvas_by_vterm(scr, vid);
+        int cid = requester_canvas(scr, vid, caller_pid);
         if (cid >= 0 && scr->canvases[cid].locked) {
             status = 1;
         } else {
@@ -3696,7 +3721,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
             status = 1;
         }
     } else if (op == 'K') {
-        int cid = screen_find_canvas_by_vterm(scr, vid);
+        int cid = requester_canvas(scr, vid, caller_pid);
         if (cid >= 0) {
             scr->canvases[cid].locked = (n >= 2 && req[1]) ? true : false;
         }
@@ -3811,7 +3836,7 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
     } else if (!has_canvas(scr)) {
         status = 1;
     } else {
-        int cid = canvas_for(scr, vid);
+        int cid = canvas_for(scr, vid, caller_pid);
 
         if (cid < 0 || !scr->canvases[cid].in_use) {
             status = 1;
@@ -4051,10 +4076,10 @@ LCDTERM_UTEXT void screen_canvas_vterm(screen_t *scr, uint8_t vid, const uint8_t
             int ccx, ccy;
             screen_win_content(scr, scr->ribbon.active_idx, &ccx, &ccy, &sw, &sh);
         } else {
-            canvas_size(scr, canvas_for(scr, vid), &sw, &sh);
+            canvas_size(scr, canvas_for(scr, vid, caller_pid), &sw, &sh);
         }
     } else {
-        canvas_size(scr, canvas_for(scr, vid), &sw, &sh);
+        canvas_size(scr, canvas_for(scr, vid, caller_pid), &sw, &sh);
     }
     reply[2] = (uint8_t)sw; reply[3] = (uint8_t)(sw >> 8);
     reply[4] = (uint8_t)sh; reply[5] = (uint8_t)(sh >> 8);

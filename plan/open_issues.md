@@ -40,6 +40,15 @@ history.
 
 # A. Actionable
 
+## A canvas comes back blank after `(canvas-window 'text)` and `'split` again on the LCD-7 (found 2026-11-10)
+
+**Destination: the next canvas work (or phase 76.6's board pass).** `tests/hw/test_rp2350.py`'s
+`test_canvas_store` (38.8) fails: `(canvas-window 'split)`, draw a circle, `'text`, `'split` again,
+and `(canvas-get 150 100)` reads 0 -- the layout's store is not brought back into the canvas
+(`redraws 0`: no redraw was asked for either). Already so at `4a1201f7`, before phase 76.4 (bisected
+on the board); QEMU's 38.8 checks (`vtselftest`) pass, so it is the board's path -- the U-mode
+screen task, or the store's size against the 512 KB state block. Not yet bisected further back.
+
 ## The RP2350's SPI SD driver takes every card for 1 GiB (found 2026-11-09)
 
 **Destination: phase 40 backlog, or the next RP2350 storage work.** `drivers/spisd_rp2350.c:951`

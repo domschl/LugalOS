@@ -577,6 +577,14 @@ static unsigned st_get(screen_t *scr, int x, int y) {
     return rp[1];
 }
 
+/* The same, read as program `pid` on terminal 0 reads: its canvas's. */
+static unsigned st_get_pid(screen_t *scr, int16_t pid, int x, int y) {
+    const uint8_t req[5] = { 'g', (uint8_t)x, (uint8_t)((unsigned)x >> 8), (uint8_t)y, (uint8_t)((unsigned)y >> 8) };
+    uint8_t rp[SCREEN_REPLY_LEN];
+    screen_canvas_vterm(scr, 0, req, sizeof(req), rp, pid);
+    return rp[1];
+}
+
 /* A cell of an arbitrary grid (the screen's bar), against a code point. */
 static bool grid_cell_is(const fbtext_t *t, unsigned col, unsigned row, uint32_t cp, bool inverse) {
     const uint8_t *g = fbtext_glyph(cp);
@@ -1055,6 +1063,37 @@ int vtterm_selftest(void) {
                      wide_back && half_back && ended);
 #undef GET
 #undef PXW
+        }
+
+        /* Two programs started from one terminal (pids 100 and 200, both on
+         * vterm 0) draw each on the canvas it opened by name, whichever was
+         * opened last (by the terminal alone both drew on the newest); a
+         * third with none of its own -- the shell's next command -- draws on
+         * its terminal's newest; one on a terminal with no canvas, nowhere
+         * (it used to draw on the focused one, another program's). */
+        screen_init(scr, cx.buf, ST_WW / 8u, ST_WW, ST_LH);
+        screen_set_store(scr, (uint8_t *)sc.base + store_off, SCREEN_STORE_BYTES(ST_WW, ST_LH));
+        {
+#define REQP(pid, ...) do { const uint8_t r_[] = { __VA_ARGS__ }; screen_canvas_vterm(scr, 0, r_, sizeof(r_), rp, (pid)); } while (0)
+#define GETP(pid, x, y) st_get_pid(scr, (pid), (x), (y))
+            REQP(100, 'L', SCREEN_LAYOUT_CANVAS, 'a', 0);
+            REQP(100, 'F', I16(0));
+            REQP(200, 'L', SCREEN_LAYOUT_CANVAS, 'b', 0);
+            REQP(200, 'F', I16(0));
+            REQP(100, 'p', I16(3), I16(3), I16(1));
+            REQP(200, 'p', I16(5), I16(5), I16(1));
+            bool own = GETP(100, 3, 3) && !GETP(100, 5, 5) && GETP(200, 5, 5) && !GETP(200, 3, 3);
+            REQP(300, 'p', I16(7), I16(7), I16(1));
+            bool next = rp[0] == 0 && GETP(200, 7, 7) && !GETP(100, 7, 7);
+            {
+                const uint8_t r_[] = { 'p', I16(9), I16(9), I16(1) };
+                screen_canvas_vterm(scr, 5, r_, sizeof(r_), rp, 400);
+            }
+            bool none = rp[0] == 1 && !GETP(100, 9, 9) && !GETP(200, 9, 9);
+            st_check(&cx, "76.4: two programs on one terminal draw each on its own canvas; the next command on "
+                          "the newest; a terminal with none on none", own && next && none);
+#undef GETP
+#undef REQP
         }
         screen_set_store(scr, 0, 0);
 

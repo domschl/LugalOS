@@ -16,6 +16,7 @@
  */
 
 #include "drivers/ramscreen.h"
+#include "kernel/sched.h"
 #include "drivers/ribbon.h"
 #include "drivers/screen.h"
 #include "kernel/palloc.h"
@@ -68,7 +69,11 @@ static bool rs_canvas_locked(const uint8_t *req, uint32_t n, uint8_t *reply) {
         g_rs_built_w = g_rs_w;
         g_rs_built_h = g_rs_h;
     }
-    screen_canvas(g_rs, req, n, reply);
+    /* As the panel's (drivers/lcdterm.c): the calling task's terminal and
+     * pid, so the suite runs the lookup the boards run. */
+    int pid = sched_current_pid();
+    int vid = pid >= 0 ? task_get_vterm(pid) : 0;
+    screen_canvas_vterm(g_rs, (uint8_t)(vid < 0 ? 0 : vid), req, n, reply, (int16_t)pid);
     screen_report_windows(g_rs);
     return true;
 }

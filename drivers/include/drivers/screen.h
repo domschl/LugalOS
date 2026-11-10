@@ -105,6 +105,8 @@ typedef struct {
                                          * select it by name ('L') */
     uint32_t  used_seq;                 /* when its terminal last selected it ('L'): of a terminal's
                                          * canvases, the latest is the one its requests mean */
+    int16_t   owner_pid;                /* the program that opened or last selected it, -1 for none:
+                                         * its requests mean it, and no other program's do */
     bool      in_use;
     bool      locked;                   /* canvas layout locked for this slot */
     bool      buf565_owned;             /* true if buf565 was allocated by screen.c and should be freed by it */

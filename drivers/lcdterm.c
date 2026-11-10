@@ -181,11 +181,11 @@ LCDTERM_UTEXT static void lcdterm_umode_body(uintptr_t arg) {
         uint8_t req[2u + LCDTERM_BATCH];
         uint8_t reply[SCREEN_REPLY_LEN];
         long n = lcdterm_usys_serve_wait((const char *)name, req, (long)sizeof(req));
-        if (n >= 1 && req[0] == LCDTERM_OP_CANVAS) {
-            uint8_t vid = (n >= 2) ? req[1] : 0;
-            const uint8_t *creq = (n >= 2) ? (req + 2) : (req + 1);
-            uint32_t clen = (n >= 2) ? (uint32_t)(n - 2) : (uint32_t)(n - 1);
-            screen_canvas_vterm(scr, vid, creq, clen, reply, -1);
+        if (n >= 4 && req[0] == LCDTERM_OP_CANVAS) {
+            /* op, the caller's terminal, its pid (16 bits), the request */
+            uint8_t vid = req[1];
+            int16_t pid = (int16_t)(uint16_t)(req[2] | ((uint16_t)req[3] << 8));
+            screen_canvas_vterm(scr, vid, req + 4, (uint32_t)(n - 4), reply, pid);
             lcdterm_usys_serve_reply((const char *)name, reply, (long)sizeof(reply));
             continue;
         }
@@ -361,7 +361,7 @@ static void lcdterm_op(uint8_t op, const char *p, uint32_t len) {
  * here if the task is not there. The text batch goes first, so a layout
  * change lands after the output written before it. */
 static bool lcdterm_canvas(const uint8_t *req, uint32_t n, uint8_t *reply) {
-    if (!g_vt_ready || n == 0 || n > LCDTERM_BATCH) return false;
+    if (!g_vt_ready || n == 0 || n + 2u > LCDTERM_BATCH) return false;   /* + the pid, in the task's buffer */
     console_lock();
     lcdterm_screen_flush();
     bool sent = false;
@@ -373,8 +373,10 @@ static bool lcdterm_canvas(const uint8_t *req, uint32_t n, uint8_t *reply) {
         uint8_t buf[2u + LCDTERM_BATCH];
         buf[0] = LCDTERM_OP_CANVAS;
         buf[1] = (uint8_t)my_vid;
-        for (uint32_t i = 0; i < n; i++) buf[2u + i] = req[i];
-        if (chan_call_wait(g_lcdterm_ep, buf, 2u + n, g_lcdterm_resp, sizeof(g_lcdterm_resp),
+        buf[2] = (uint8_t)(pid & 0xff);        /* the canvas a request means is its program's */
+        buf[3] = (uint8_t)((pid >> 8) & 0xff);
+        for (uint32_t i = 0; i < n; i++) buf[4u + i] = req[i];
+        if (chan_call_wait(g_lcdterm_ep, buf, 4u + n, g_lcdterm_resp, sizeof(g_lcdterm_resp),
                            CHAN_WAIT_MS) >= 0) {
             g_lcdterm_calls++;
             for (uint32_t i = 0; i < SCREEN_REPLY_LEN; i++) reply[i] = g_lcdterm_resp[i];
