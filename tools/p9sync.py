@@ -178,9 +178,40 @@ def sync_tree(
     return (dirs_created, files_synced, files_skipped, bytes_written)
 
 
+def pull_tree(sess: p9lib.Session, src: str, dst: Path) -> tuple[int, int]:
+    """Remote tree `src` copied into local `dst` (created): every directory
+    and file, names as the board gives them. A file already there at its
+    size is skipped, so a run again resumes one cut short. Files that fail
+    to read are reported and skipped. Returns (files, bytes)."""
+    files = nbytes = 0
+    dst.mkdir(parents=True, exist_ok=True)
+    for st in sess.listdir(src):
+        if st.name in (".", ".."):
+            continue
+        rpath = f"{src.rstrip('/')}/{st.name}"
+        if st.is_dir:
+            f, b = pull_tree(sess, rpath, dst / st.name)
+            files += f
+            nbytes += b
+            continue
+        local = dst / st.name
+        if local.is_file() and local.stat().st_size == st.length:
+            continue                                     # pulled already: a run again resumes (a P4's session drops)
+        try:
+            data = sess.read(rpath)
+        except Exception as e:  # noqa: BLE001 -- one unreadable file must not stop a backup
+            print(f"  ! {rpath}: {e}")
+            continue
+        (dst / st.name).write_bytes(data)
+        files += 1
+        nbytes += len(data)
+        print(f"  {rpath} ({len(data)} bytes)")
+    return files, nbytes
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Synchronize a local directory to a LugalOS node over 9P."
+        description="Synchronize a local directory to a LugalOS node over 9P (or, with --pull, copy a node's tree here)."
     )
     parser.add_argument(
         "--serial",
@@ -234,6 +265,12 @@ def main() -> int:
     parser.add_argument("--key", metavar="HEX", help="the board's p9key, for --tcp")
     p9lib.add_expect_argument(parser, "sync to")
     parser.add_argument(
+        "--pull",
+        type=Path,
+        metavar="DIR",
+        help="the other way: copy the remote --dst tree into local DIR (a card's backup)",
+    )
+    parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="print detailed information on skipped items",
@@ -259,7 +296,7 @@ def main() -> int:
             args.serial = vf2run.find_default_port()
     if not args.serial and not args.tcp:
         sys.exit("Error: no 9P serial port specified or auto-detected.")
-    if not args.src or not args.src.is_dir():
+    if not args.pull and (not args.src or not args.src.is_dir()):
         sys.exit(f"Error: source directory '{args.src}' does not exist.")
 
     if args.p4 and not args.tcp:
@@ -279,8 +316,13 @@ def main() -> int:
     else:
         client = p9lib.connect_serial(args.serial, baudrate=args.baud)
     try:
-        p9lib.identify(client, args.expect, destructive=not args.dry_run)
+        p9lib.identify(client, args.expect, destructive=not args.dry_run and not args.pull)
         with p9lib.Session(client, aname="/", key=key) as sess:
+            if args.pull:
+                print(f"Pulling remote '{args.dst}' -> local '{args.pull}'...")
+                files, nbytes = pull_tree(sess, args.dst, args.pull)
+                print(f"\nPulled {files} files ({nbytes} bytes).")
+                return 0
             print(f"Syncing local '{args.src}' -> remote '{args.dst}' {'[DRY RUN]' if args.dry_run else ''}...")
             dirs, synced, skipped, total_bytes = sync_tree(
                 sess,

@@ -9,7 +9,7 @@
  * Typed keys with defaults and limits, in a sorted .rodata table: an integer
  * in a range, or one of a list of names. Setting one takes effect at once
  * (the volume, the backlight, the Tab5's orientation are applied here) and
- * is written to /sd0/system/SETTINGS -- /flash0/system/SETTINGS where there
+ * is written to /sd0/system/settings -- /flash0/system/settings where there
  * is no card -- about two seconds after the last change, so a run of
  * stepper taps is one write. The file is `key=value` lines; it is read and
  * applied at boot (settings_load()). Values are the names for the named

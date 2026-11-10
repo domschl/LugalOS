@@ -1,4 +1,5 @@
 #include "kernel/lock.h"
+#include "kernel/console.h"
 #include "drivers/uart_net.h"
 #include "kernel/identity.h"
 #include "fs/9p.h"
@@ -282,9 +283,18 @@ static int uart_demux_recv_frame(p9_link_t *link, uint8_t *buf, uint32_t max_len
     return (int)n;
 }
 
+/* The whole frame under console_lock. The console and the kernel log write
+ * the same wire, each under that lock (klog's drain, cprintf()), and a line
+ * written between a frame's bytes broke it: the host read log text inside a
+ * SLIP frame and gave up ("connection closed while reading a SLIP frame") --
+ * the Tab5's 9P over its USB console failed whenever its power logger wrote
+ * a line, the LCD-7B's and VisionFive 2's now and then. Output waits for the
+ * frame's end; the lock is recursive, so a sender already holding it is fine. */
 static int uart_demux_send_frame(p9_link_t *link, const uint8_t *buf, uint32_t len) {
-    (void)link;
-    return uart_slip_send_frame(link, buf, len); // TX has no demux ambiguity; reuse as-is
+    console_lock();
+    int r = uart_slip_send_frame(link, buf, len);
+    console_unlock();
+    return r;
 }
 
 static p9_link_t g_uart_demux_link = {

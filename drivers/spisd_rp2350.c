@@ -174,6 +174,8 @@ static uint8_t sd_send_acmd(uint8_t acmd, uint32_t arg, uint8_t crc, uint8_t *ou
     return sd_send_cmd_selected(acmd, arg, crc);
 }
 
+static block_dev_t g_spisd_dev;   /* defined below; its size set from the card's CSD */
+
 static int spisd_init_hardware(void) {
     /* 1. Unreset SPI1 (bit 19 on RP2350), IO_BANK0 (bit 6), PADS_BANK0 (bit 9) */
     uint32_t unreset_mask = (1u << 19) | (1u << 6) | (1u << 9);
@@ -315,6 +317,36 @@ static int spisd_init_hardware(void) {
         sd_send_cmd(16, 512, 0xFF);
     }
 
+    /* CMD9: the card's size from its CSD. Without it every card was taken
+     * for 1 GiB: `format` made a 1 GiB volume on a 32 GB card, and a card
+     * formatted elsewhere had every cluster past the first GiB refused. */
+    uint32_t blocks = 0;
+    if (sd_send_cmd(9, 0, 0xFF) == 0x00) {
+        int timeout = 0;
+        uint8_t token;
+        do {
+            token = spi_transfer(0xFF);
+        } while (token != 0xFE && ++timeout < 10000);
+        if (token == 0xFE) {
+            uint8_t csd[16];
+            for (int b = 0; b < 16; b++) csd[b] = spi_transfer(0xFF);
+            spi_transfer(0xFF);                          /* CRC */
+            spi_transfer(0xFF);
+            if ((csd[0] >> 6) == 1) {                    /* CSD 2.0 (SDHC, SDXC): (C_SIZE + 1) * 512 KiB */
+                uint32_t c_size = ((uint32_t)(csd[7] & 0x3Fu) << 16) | ((uint32_t)csd[8] << 8) | csd[9];
+                blocks = (c_size + 1u) * 1024u;
+            } else if ((csd[0] >> 6) == 0) {             /* CSD 1.0 (SDSC) */
+                uint32_t bl_len = csd[5] & 0x0Fu;
+                uint32_t c_size = ((uint32_t)(csd[6] & 0x03u) << 10) | ((uint32_t)csd[7] << 2) | (csd[8] >> 6);
+                uint32_t mult = ((uint32_t)(csd[9] & 0x03u) << 1) | (csd[10] >> 7);
+                blocks = ((c_size + 1u) << (mult + 2u)) << bl_len >> 9;
+            }
+        }
+    }
+    if (blocks) g_spisd_dev.num_blocks = blocks;
+    printk("[SPI SD Probe] %lu blocks (%lu MB)%s\n", (unsigned long)g_spisd_dev.num_blocks,
+           (unsigned long)(g_spisd_dev.num_blocks / 2048u), blocks ? "" : ", the CSD unread: assumed");
+
     cs_deselect();
 
     /* 4. Switch SPI clock prescaler to clk_peri / 12 for solid signal
@@ -417,8 +449,14 @@ static int spisd_hw_write_blocks(uint32_t lba, uint32_t count, const void *buf) 
         }
 
         /* Wait for write completion (card holds MISO low while busy) */
+        /* The card holds the line low while it programs the block: up to
+         * 250 ms by the spec for SDHC, longer now and then on a worn card.
+         * 100000 transfers (~67 ms at 12 MHz) gave up early and went on,
+         * and the next write was refused -- `format` of a 16 GB card failed
+         * at 70%. ~670 ms, then the write is reported failed. */
         int timeout = 0;
-        while (spi_transfer(0xFF) != 0xFF && ++timeout < 100000);
+        while (spi_transfer(0xFF) != 0xFF && ++timeout < 1000000);
+        if (timeout >= 1000000) { cs_deselect(); return -1; }
 
         cs_deselect();
         src += 512;
@@ -591,8 +629,14 @@ BLK_UATTR static int u_write_blocks(uint32_t lba, uint32_t count, const uint8_t 
         uint8_t resp = u_spi_transfer(0xFF);
         if ((resp & 0x1F) != 0x05) { u_cs_deselect(); return -1; }
 
+        /* The card holds the line low while it programs the block: up to
+         * 250 ms by the spec for SDHC, longer now and then on a worn card.
+         * 100000 transfers (~67 ms at 12 MHz) gave up early and went on,
+         * and the next write was refused -- `format` of a 16 GB card failed
+         * at 70%. ~670 ms, then the write is reported failed. */
         int timeout = 0;
-        while (u_spi_transfer(0xFF) != 0xFF && ++timeout < 100000);
+        while (u_spi_transfer(0xFF) != 0xFF && ++timeout < 1000000);
+        if (timeout >= 1000000) { u_cs_deselect(); return -1; }
 
         u_cs_deselect();
         src += 512;
@@ -948,7 +992,7 @@ bool blk_isolation_test(uintptr_t *out_canary, bool *out_exited_clean) {
 static block_dev_t g_spisd_dev = {
     .name = "spisd0",
     .block_size = 512,
-    .num_blocks = 2097152, // Default 1 GB capacity estimate
+    .num_blocks = 2097152, // 1 GiB until the card's CSD is read (spisd_init_hardware())
     .read_blocks = spisd_read_blocks,
     .write_blocks = spisd_write_blocks,
     .probe = spisd_probe,

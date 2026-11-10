@@ -54,8 +54,8 @@ static bool       g_loaded;               /* g_value holds values (else the defa
 static uint64_t   g_dirty_ms;             /* the last unsaved change; 0: saved */
 static spinlock_t g_settings_lock = SPINLOCK_INIT;
 
-#define SETTINGS_SD    "/sd0/system/SETTINGS"
-#define SETTINGS_FLASH "/flash0/system/SETTINGS"
+#define SETTINGS_SD    "/sd0/system/settings"
+#define SETTINGS_FLASH "/flash0/system/settings"
 #define SAVE_AFTER_MS  2000u
 
 static int index_of(const char *key) {

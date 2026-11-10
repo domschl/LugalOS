@@ -114,7 +114,7 @@ static void power_log_task(void *arg) {
  * line, the current by more than AUTO_DMA, the voltage by more than AUTO_DMV,
  * the charge by a percent -- so a plug-in or a load step is caught to the
  * second without a line every second for days. One file a day in AUTO_DIR
- * (8.3 names: PYYMMDD.CSV, local date; PNODATE.CSV until the clock is set),
+ * (pYYMMDD.csv, local date; pnodate.csv until the clock is set),
  * the UTC time in every line, so a file can span reboots. */
 #ifndef CONFIG_POWER_LOG_AUTO
 #define CONFIG_POWER_LOG_AUTO 1
@@ -137,12 +137,12 @@ static struct {
 
 static void auto_path(char *out, uint32_t cap) {
     if (!time_is_set()) {
-        ksnprintf(out, cap, AUTO_DIR "/PNODATE.CSV");
+        ksnprintf(out, cap, AUTO_DIR "/pnodate.csv");
         return;
     }
     rtc_time_t tm;
     time_get_local(&tm);
-    ksnprintf(out, cap, AUTO_DIR "/P%02u%02u%02u.CSV",
+    ksnprintf(out, cap, AUTO_DIR "/p%02u%02u%02u.csv",
               (unsigned)(tm.year % 100u), (unsigned)tm.month, (unsigned)tm.day);
 }
 
@@ -189,7 +189,16 @@ static void power_auto_task(void *arg) {
         int n = ksnprintf(line, sizeof line, "%ld,%lu,%ld,%ld,%ld,%ld,%d,%c\n",
                           (long)utc, (unsigned long)(now / 1000u), (long)p.mv, (long)p.ma,
                           (long)p.mw, (long)(p.have_soc ? p.soc_pm : -1), chg, why);
-        if (n > 0 && vfs_append(g_auto.path, line, (uint32_t)n) >= 0) g_auto.lines++;
+        bool ok = n > 0 && vfs_append(g_auto.path, line, (uint32_t)n) >= 0;
+        if (!ok && n > 0) {
+            /* The card formatted under it (or its folder removed): the
+             * folder and the file's header again, then the line. */
+            static const char hdr[] = "utc_s,uptime_s,mv,ma,mw,soc_pm,chg_stat,why\n";
+            (void)vfs_mkdir(AUTO_DIR);
+            if (vfs_stat(g_auto.path, &st) != 0) (void)vfs_append(g_auto.path, hdr, sizeof hdr - 1);
+            ok = vfs_append(g_auto.path, line, (uint32_t)n) >= 0;
+        }
+        if (ok) g_auto.lines++;
         else g_auto.errors++;
         last = p;
         last_chg = chg;
