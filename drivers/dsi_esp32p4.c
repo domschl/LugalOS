@@ -893,7 +893,7 @@ static bool              g_double_buffered = true;
 /* guarded by: console_lock, as every conversion and frame switch. */
 #define DIRTY_WORDS ((DSI_LCD_V_RES + 63u) / 64u)
 static uint64_t          g_dirty[2][DIRTY_WORDS];
-static uint64_t          g_dirty_trows[2];
+static uint64_t          g_dirty_trows[2];   /* bit k: frame rows 32k..32k+31 changed (the text pass maps them to a terminal's rows) */
 static uint16_t          g_dirty_x0[2];
 static uint16_t          g_dirty_x1[2];
 /* What each back buffer last drew into each visible terminal's cells (the
@@ -1734,16 +1734,29 @@ static bool srf_clip(const int *x0, const int *y0, const int *x1, const int *y1,
     return true;
 }
 
+#if defined(CONFIG_FONT_CELL_H) && (CONFIG_FONT_CELL_H == 32)
+/* A terminal's text rows (bit r) that cross a changed 32-row band of the
+ * frame (g_dirty_trows): its grid starts at frame row y0, wherever that is
+ * -- below its title bar, lower down in a stack, at the top full screen. */
+static uint64_t term_rows_dirty(uint64_t bands, int y0, unsigned rows) {
+    uint64_t m = 0;
+    for (unsigned r = 0; r < rows && r < 64u; r++) {
+        int top = y0 + (int)r * 32, bot = top + 31;
+        if (bot < 0) continue;
+        unsigned b0 = (unsigned)(top < 0 ? 0 : top) / 32u, b1 = (unsigned)bot / 32u;
+        if ((b0 < 64u && (bands >> b0) & 1u) || (b1 < 64u && (bands >> b1) & 1u)) m |= 1ull << r;
+    }
+    return m;
+}
+#endif
+
 /* Back buffer b's rows y0..y1, columns x0..x1, to be converted from the
  * 1-bpp shadow again (under g_frame_lock). */
 static void dirty_rect(unsigned b, int x0, int y0, int x1, int y1) {
     for (int y = y0; y <= y1 && y < (int)g_tbe.h; y++) {
         if (y < 0) continue;
         g_dirty[b][(unsigned)y / 64u] |= 1ull << ((unsigned)y % 64u);
-        if (y >= (int)SCREEN_TEXT_Y) {
-            unsigned tr = ((unsigned)y - SCREEN_TEXT_Y) / 32u;
-            if (tr < 64u) g_dirty_trows[b] |= 1ull << tr;
-        }
+        if ((unsigned)y / 32u < 64u) g_dirty_trows[b] |= 1ull << ((unsigned)y / 32u);
     }
     if (x0 < g_dirty_x0[b]) g_dirty_x0[b] = (uint16_t)x0;
     if (x1 > g_dirty_x1[b]) g_dirty_x1[b] = (uint16_t)x1;
@@ -1877,13 +1890,10 @@ static term_go_t term_snapshot(unsigned y0, unsigned y1) {
                 uint64_t mask = 1ull << (y % 64u);
                 g_dirty[0][w] |= mask;
                 g_dirty[1][w] |= mask;
-                if (y >= SCREEN_TEXT_Y) {
-                    unsigned tr = (y - SCREEN_TEXT_Y) / 32u;
-                    if (tr < 64u) {
-                        uint64_t tmask = 1ull << tr;
-                        g_dirty_trows[0] |= tmask;
-                        g_dirty_trows[1] |= tmask;
-                    }
+                if (y / 32u < 64u) {
+                    uint64_t tmask = 1ull << (y / 32u);
+                    g_dirty_trows[0] |= tmask;
+                    g_dirty_trows[1] |= tmask;
                 }
             }
         }
@@ -2594,6 +2604,13 @@ static void term_draw(void) {
     if (fmt == FB_RGB565) {
         uint64_t trows_mask = g_dirty_trows[back_idx];
         g_dirty_trows[back_idx] = 0;
+        /* A slot no terminal is in now forgets what it drew: whatever covered
+         * that place meanwhile (a window full screen, another layout), the
+         * terminal that comes back to it with the same place and size would
+         * otherwise trust cells this buffer no longer shows, and draw only
+         * those that changed since. */
+        for (unsigned ti = (unsigned)(sn->nt < 0 ? 0 : sn->nt); ti < TERM_CELL_SLOTS; ti++)
+            memset(&g_t_cell_key[back_idx][ti], 0xff, sizeof g_t_cell_key[0][0]);
         if (trows_mask || sn->nt) {
             const lcdterm_visible_term_t *terms = sn->terms;
             int tcount = sn->nt;
@@ -2620,7 +2637,7 @@ static void term_draw(void) {
                     uint16_t *drawn = g_t_cell_drawn[back_idx][ti];
                     cell_key_t key = { (int16_t)vt->x0, (int16_t)vt->y0, vt->cols, vt->rows,
                                        vt->col_offset, vt->vterm_id };
-                    uint64_t rows_mask = trows_mask;
+                    uint64_t rows_mask = term_rows_dirty(trows_mask, vt->y0, vt->rows);
                     if (memcmp(&key, &g_t_cell_key[back_idx][ti], sizeof key) != 0) {
                         g_t_cell_key[back_idx][ti] = key;
                         memset(drawn, 0xff, sizeof g_t_cell_drawn[0][0]);

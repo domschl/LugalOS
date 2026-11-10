@@ -1018,7 +1018,9 @@ int lcdterm_get_visible_terms(lcdterm_visible_term_t *out_terms, int max_terms) 
         int c0 = (int)(vt->text.xbyte / FONT_CELL_BYTES);
         out_terms[count].vterm_id = w->vterm_id;
         out_terms[count].x0 = c0 * (int)FONT_CELL_W;
-        out_terms[count].y0 = y0 + (SCREEN_TEXT_Y - SCREEN_TILE_Y);
+        /* where its grid is on the frame: under its title bar, or at the
+         * top full screen */
+        out_terms[count].y0 = (int)(((const uint8_t *)vt->text.fb - g_scr->cv.fb) / (ptrdiff_t)g_scr->cv.stride);
         out_terms[count].cols = vt->text.cols;
         out_terms[count].rows = vt->text.rows;
         out_terms[count].shadow_cols = vt->shadow_cols;
